@@ -6,7 +6,10 @@ use content::ContentDir;
 use database::Database;
 use serde::Serialize;
 use serde_json::Value;
+use std::path::PathBuf;
+use std::sync::Mutex;
 use tauri::Manager;
+use workspace::GlobalSettings;
 
 #[derive(Debug, thiserror::Error)]
 enum AppError {
@@ -25,63 +28,191 @@ struct QueryResult {
     rows: Vec<serde_json::Map<String, Value>>,
 }
 
+/// Holds the currently-open workspace's DB and content directory.
+/// Wrapped in Option so it can be None before a workspace is opened.
+struct ActiveWorkspace {
+    db: Database,
+    content: ContentDir,
+    #[allow(dead_code)]
+    path: PathBuf,
+}
+
+struct WorkspaceState {
+    inner: Mutex<Option<ActiveWorkspace>>,
+}
+
+/// Path to the global settings file in AppData.
+struct GlobalSettingsPath {
+    path: PathBuf,
+}
+
+// --- Workspace commands ---
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct OpenWorkspaceResult {
+    name: String,
+    is_existing: bool,
+}
+
+#[tauri::command]
+fn get_global_settings(
+    gs_path: tauri::State<'_, GlobalSettingsPath>,
+) -> Result<GlobalSettings, AppError> {
+    Ok(workspace::read_global_settings(&gs_path.path))
+}
+
+#[tauri::command]
+fn save_global_settings(
+    gs_path: tauri::State<'_, GlobalSettingsPath>,
+    settings: GlobalSettings,
+) -> Result<(), AppError> {
+    workspace::write_global_settings(&gs_path.path, &settings)?;
+    Ok(())
+}
+
+#[tauri::command]
+fn validate_workspace_path(path: String) -> bool {
+    let p = PathBuf::from(&path);
+    p.exists() && p.is_dir() && p.join("noveloom.db").exists()
+}
+
+#[tauri::command]
+fn open_workspace(
+    ws_state: tauri::State<'_, WorkspaceState>,
+    gs_path: tauri::State<'_, GlobalSettingsPath>,
+    path: String,
+) -> Result<OpenWorkspaceResult, AppError> {
+    let ws_path = PathBuf::from(&path);
+    std::fs::create_dir_all(&ws_path).map_err(|e| anyhow::anyhow!(e))?;
+
+    let is_existing = workspace::is_existing_workspace(&ws_path);
+
+    // Initialize workspace metadata
+    let uuid_str = uuid::Uuid::new_v4().to_string();
+    let now = chrono::Utc::now().to_rfc3339();
+    workspace::ensure_workspace_meta(&ws_path, &uuid_str, &now)?;
+
+    // Open database
+    let db_path = ws_path.join("noveloom.db");
+    let database = Database::new(&db_path)?;
+    database.migrate()?;
+
+    // Open content directory
+    let content_path = ws_path.join("content");
+    let content = ContentDir::new(content_path)?;
+
+    // Set as active workspace
+    let mut inner = ws_state
+        .inner
+        .lock()
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+    *inner = Some(ActiveWorkspace {
+        db: database,
+        content,
+        path: ws_path,
+    });
+
+    // Update global settings
+    let mut settings = workspace::read_global_settings(&gs_path.path);
+    let now = chrono::Utc::now().to_rfc3339();
+    workspace::touch_recent_workspace(&mut settings, &path, &now);
+    workspace::write_global_settings(&gs_path.path, &settings)?;
+
+    let name = workspace::workspace_name(&path);
+    Ok(OpenWorkspaceResult { name, is_existing })
+}
+
+// --- Existing DB/content commands (now workspace-aware) ---
+
+fn with_db<T>(
+    ws_state: &tauri::State<'_, WorkspaceState>,
+    f: impl FnOnce(&Database) -> anyhow::Result<T>,
+) -> Result<T, AppError> {
+    let inner = ws_state
+        .inner
+        .lock()
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+    let ws = inner
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("No workspace is open"))?;
+    Ok(f(&ws.db)?)
+}
+
+fn with_content<T>(
+    ws_state: &tauri::State<'_, WorkspaceState>,
+    f: impl FnOnce(&ContentDir) -> anyhow::Result<T>,
+) -> Result<T, AppError> {
+    let inner = ws_state
+        .inner
+        .lock()
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+    let ws = inner
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("No workspace is open"))?;
+    Ok(f(&ws.content)?)
+}
+
 #[tauri::command]
 fn db_execute(
-    state: tauri::State<'_, Database>,
+    ws_state: tauri::State<'_, WorkspaceState>,
     sql: String,
     params: Vec<Value>,
     method: String,
 ) -> Result<QueryResult, AppError> {
-    let rows = state.execute(&sql, &params, &method)?;
-    Ok(QueryResult { rows })
+    with_db(&ws_state, |db| {
+        let rows = db.execute(&sql, &params, &method)?;
+        Ok(QueryResult { rows })
+    })
 }
 
 #[tauri::command]
 fn content_write(
-    state: tauri::State<'_, ContentDir>,
+    ws_state: tauri::State<'_, WorkspaceState>,
     scene_id: String,
     markdown: String,
     title: String,
     chapter_order: u32,
     scene_order: u32,
 ) -> Result<(), AppError> {
-    state.write(&scene_id, &markdown, &title, chapter_order, scene_order)?;
-    Ok(())
+    with_content(&ws_state, |content| {
+        content.write(&scene_id, &markdown, &title, chapter_order, scene_order)
+    })
 }
 
 #[tauri::command]
 fn content_read(
-    state: tauri::State<'_, ContentDir>,
+    ws_state: tauri::State<'_, WorkspaceState>,
     scene_id: String,
 ) -> Result<String, AppError> {
-    let text = state.read(&scene_id)?;
-    Ok(text)
+    with_content(&ws_state, |content| content.read(&scene_id))
 }
 
 #[tauri::command]
 fn content_delete(
-    state: tauri::State<'_, ContentDir>,
+    ws_state: tauri::State<'_, WorkspaceState>,
     scene_id: String,
 ) -> Result<(), AppError> {
-    state.delete(&scene_id)?;
-    Ok(())
+    with_content(&ws_state, |content| content.delete(&scene_id))
 }
 
 #[tauri::command]
 fn content_rename(
-    state: tauri::State<'_, ContentDir>,
+    ws_state: tauri::State<'_, WorkspaceState>,
     scene_id: String,
     title: String,
     chapter_order: u32,
     scene_order: u32,
 ) -> Result<(), AppError> {
-    state.rename(&scene_id, &title, chapter_order, scene_order)?;
-    Ok(())
+    with_content(&ws_state, |content| {
+        content.rename(&scene_id, &title, chapter_order, scene_order)
+    })
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .setup(|app| {
             let app_dir = app
@@ -90,20 +221,22 @@ pub fn run() {
                 .expect("failed to get app data dir");
             std::fs::create_dir_all(&app_dir).ok();
 
-            let db_path = app_dir.join("noveloom.db");
-            let database =
-                Database::new(&db_path).expect("failed to open database");
-            database.migrate().expect("failed to migrate database");
-            app.manage(database);
+            // Global settings path (stays in AppData)
+            let gs_path = app_dir.join("global-settings.json");
+            app.manage(GlobalSettingsPath { path: gs_path });
 
-            let content_dir = app_dir.join("content");
-            let content =
-                ContentDir::new(content_dir).expect("failed to create content dir");
-            app.manage(content);
+            // Workspace state starts empty — frontend will call open_workspace
+            app.manage(WorkspaceState {
+                inner: Mutex::new(None),
+            });
 
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            get_global_settings,
+            save_global_settings,
+            validate_workspace_path,
+            open_workspace,
             db_execute,
             content_write,
             content_read,

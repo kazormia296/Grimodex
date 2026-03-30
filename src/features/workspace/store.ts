@@ -1,0 +1,107 @@
+import { create } from "zustand";
+import { invoke } from "@/lib/tauri";
+
+export interface RecentWorkspace {
+  path: string;
+  lastOpened: string;
+}
+
+export interface GlobalSettings {
+  recentWorkspaces: RecentWorkspace[];
+  lastActiveWorkspace: string | null;
+  theme: string;
+  showLauncherOnStartup: boolean;
+}
+
+export type AppView = "loading" | "welcome" | "launcher" | "editor";
+
+interface OpenWorkspaceResult {
+  name: string;
+  isExisting: boolean;
+}
+
+interface WorkspaceState {
+  view: AppView;
+  globalSettings: GlobalSettings | null;
+  activeWorkspacePath: string | null;
+  activeWorkspaceName: string | null;
+  error: string | null;
+
+  initialize: () => Promise<void>;
+  openWorkspace: (path: string) => Promise<void>;
+  showLauncher: () => void;
+  clearError: () => void;
+}
+
+export const useWorkspaceStore = create<WorkspaceState>()((set, get) => ({
+  view: "loading",
+  globalSettings: null,
+  activeWorkspacePath: null,
+  activeWorkspaceName: null,
+  error: null,
+
+  initialize: async () => {
+    try {
+      const settings = await invoke<GlobalSettings>("get_global_settings");
+      set({ globalSettings: settings });
+
+      // No workspaces at all → welcome screen
+      if (settings.recentWorkspaces.length === 0) {
+        set({ view: "welcome" });
+        return;
+      }
+
+      // User prefers launcher on startup
+      if (settings.showLauncherOnStartup) {
+        set({ view: "launcher" });
+        return;
+      }
+
+      // Try to open last active workspace
+      if (settings.lastActiveWorkspace) {
+        const valid = await invoke<boolean>("validate_workspace_path", {
+          path: settings.lastActiveWorkspace,
+        });
+        if (valid) {
+          await get().openWorkspace(settings.lastActiveWorkspace);
+          return;
+        }
+      }
+
+      // Last workspace invalid → launcher
+      set({ view: "launcher" });
+    } catch {
+      // On any error, show welcome (fresh start)
+      set({ view: "welcome", globalSettings: null });
+    }
+  },
+
+  openWorkspace: async (path: string) => {
+    try {
+      set({ error: null });
+      const result = await invoke<OpenWorkspaceResult>("open_workspace", {
+        path,
+      });
+      // Re-read global settings after open_workspace updated them
+      const settings = await invoke<GlobalSettings>("get_global_settings");
+      set({
+        view: "editor",
+        activeWorkspacePath: path,
+        activeWorkspaceName: result.name,
+        globalSettings: settings,
+      });
+    } catch (e) {
+      set({
+        error: e instanceof Error ? e.message : String(e),
+      });
+    }
+  },
+
+  showLauncher: () => {
+    set({ view: "launcher" });
+  },
+
+  clearError: () => {
+    set({ error: null });
+  },
+}));

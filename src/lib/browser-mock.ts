@@ -32,6 +32,7 @@ const SCHEMA_DDL = `
 `;
 
 const CONTENT_PREFIX = "noveloom:content:";
+const GLOBAL_SETTINGS_KEY = "noveloom:global-settings";
 
 export interface BrowserMock {
   invoke: <T = unknown>(
@@ -110,11 +111,76 @@ export async function createBrowserMock(): Promise<BrowserMock> {
     }
   }
 
+  function handleGetGlobalSettings(): Record<string, unknown> {
+    try {
+      const raw = localStorage.getItem(GLOBAL_SETTINGS_KEY);
+      if (raw) return JSON.parse(raw) as Record<string, unknown>;
+    } catch {
+      // noop
+    }
+    return {
+      recentWorkspaces: [],
+      lastActiveWorkspace: null,
+      theme: "system",
+      showLauncherOnStartup: false,
+    };
+  }
+
+  function handleSaveGlobalSettings(args: Record<string, unknown>): void {
+    const settings = args.settings as Record<string, unknown>;
+    try {
+      localStorage.setItem(GLOBAL_SETTINGS_KEY, JSON.stringify(settings));
+    } catch {
+      // noop
+    }
+  }
+
+  function handleValidateWorkspacePath(): boolean {
+    // In browser mock, always return true for any path
+    return true;
+  }
+
+  function handleOpenWorkspace(args: Record<string, unknown>): {
+    name: string;
+    isExisting: boolean;
+  } {
+    const path = args.path as string;
+    const parts = path.replace(/\\/g, "/").split("/");
+    const name = parts[parts.length - 1] || path;
+
+    // Update mock global settings
+    const settings = handleGetGlobalSettings();
+    const recent = (settings.recentWorkspaces ?? []) as Array<{
+      path: string;
+      lastOpened: string;
+    }>;
+    const filtered = recent.filter((w: { path: string }) => w.path !== path);
+    filtered.unshift({ path, lastOpened: new Date().toISOString() });
+    settings.recentWorkspaces = filtered.slice(0, 10);
+    settings.lastActiveWorkspace = path;
+    try {
+      localStorage.setItem(GLOBAL_SETTINGS_KEY, JSON.stringify(settings));
+    } catch {
+      // noop
+    }
+
+    return { name, isExisting: false };
+  }
+
   async function invoke<T = unknown>(
     cmd: string,
     args: Record<string, unknown> = {},
   ): Promise<T> {
     switch (cmd) {
+      case "get_global_settings":
+        return handleGetGlobalSettings() as T;
+      case "save_global_settings":
+        handleSaveGlobalSettings(args);
+        return undefined as T;
+      case "validate_workspace_path":
+        return handleValidateWorkspacePath() as T;
+      case "open_workspace":
+        return handleOpenWorkspace(args) as T;
       case "db_execute":
         return handleDbExecute(args) as T;
       case "content_write":

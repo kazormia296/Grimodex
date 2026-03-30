@@ -39,44 +39,105 @@ impl Default for GlobalSettings {
 
 /// Read global settings from the given file path.
 /// Returns default settings if the file does not exist or is invalid.
-pub fn read_global_settings(_path: &Path) -> GlobalSettings {
-    todo!()
+pub fn read_global_settings(path: &Path) -> GlobalSettings {
+    match std::fs::read_to_string(path) {
+        Ok(content) => serde_json::from_str(&content).unwrap_or_default(),
+        Err(_) => GlobalSettings::default(),
+    }
 }
 
 /// Write global settings to the given file path.
-pub fn write_global_settings(_path: &Path, _settings: &GlobalSettings) -> anyhow::Result<()> {
-    todo!()
+pub fn write_global_settings(path: &Path, settings: &GlobalSettings) -> anyhow::Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let json = serde_json::to_string_pretty(settings)?;
+    std::fs::write(path, json)?;
+    Ok(())
 }
 
 /// Check whether a given directory is (or can be) a valid workspace.
-pub fn is_valid_workspace_path(_path: &Path) -> bool {
-    todo!()
+/// Returns `true` if the directory exists and either:
+/// - contains `noveloom.db` (existing workspace), or
+/// - is empty or does not exist yet (new workspace).
+#[allow(dead_code)]
+pub fn is_valid_workspace_path(path: &Path) -> bool {
+    if !path.exists() {
+        return true; // Will be created
+    }
+    if !path.is_dir() {
+        return false;
+    }
+    if path.join("noveloom.db").exists() {
+        return true;
+    }
+    // Empty directory is valid
+    match std::fs::read_dir(path) {
+        Ok(mut entries) => entries.next().is_none(),
+        Err(_) => false,
+    }
 }
 
 /// Check if a path contains an existing workspace (has noveloom.db).
-pub fn is_existing_workspace(_path: &Path) -> bool {
-    todo!()
+pub fn is_existing_workspace(path: &Path) -> bool {
+    path.join("noveloom.db").exists()
 }
 
 /// Initialize workspace metadata in `.noveloom/workspace.json`.
 /// If metadata already exists, reads and returns it.
 /// Otherwise, creates new metadata with the given UUID and timestamp.
 pub fn ensure_workspace_meta(
-    _workspace_path: &Path,
-    _uuid_str: &str,
-    _now: &str,
+    workspace_path: &Path,
+    uuid_str: &str,
+    now: &str,
 ) -> anyhow::Result<WorkspaceMeta> {
-    todo!()
+    let meta_dir = workspace_path.join(".noveloom");
+    let meta_path = meta_dir.join("workspace.json");
+
+    if meta_path.exists() {
+        let content = std::fs::read_to_string(&meta_path)?;
+        let meta: WorkspaceMeta = serde_json::from_str(&content)?;
+        return Ok(meta);
+    }
+
+    std::fs::create_dir_all(&meta_dir)?;
+    let meta = WorkspaceMeta {
+        id: uuid_str.to_string(),
+        created_at: now.to_string(),
+    };
+    let json = serde_json::to_string_pretty(&meta)?;
+    std::fs::write(&meta_path, json)?;
+    Ok(meta)
 }
 
 /// Register (or update) a workspace in the recent-workspaces list.
-pub fn touch_recent_workspace(_settings: &mut GlobalSettings, _workspace_path: &str, _now: &str) {
-    todo!()
+pub fn touch_recent_workspace(settings: &mut GlobalSettings, workspace_path: &str, now: &str) {
+    // Remove existing entry for this path (if any)
+    settings
+        .recent_workspaces
+        .retain(|w| w.path != workspace_path);
+
+    // Insert at front
+    settings.recent_workspaces.insert(
+        0,
+        RecentWorkspace {
+            path: workspace_path.to_string(),
+            last_opened: now.to_string(),
+        },
+    );
+
+    // Keep max 10 entries
+    settings.recent_workspaces.truncate(10);
+
+    settings.last_active_workspace = Some(workspace_path.to_string());
 }
 
 /// Extract the folder name from a workspace path.
-pub fn workspace_name(_path: &str) -> String {
-    todo!()
+pub fn workspace_name(path: &str) -> String {
+    PathBuf::from(path)
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| path.to_string())
 }
 
 #[cfg(test)]
@@ -113,13 +174,15 @@ mod tests {
         fs::create_dir_all(&dir).ok();
         let path = dir.join("settings.json");
 
-        let mut settings = GlobalSettings::default();
-        settings.theme = "dark".to_string();
-        settings.recent_workspaces.push(RecentWorkspace {
-            path: "D:\\Novels\\MyNovel".to_string(),
-            last_opened: "2026-03-30T12:00:00Z".to_string(),
-        });
-        settings.last_active_workspace = Some("D:\\Novels\\MyNovel".to_string());
+        let settings = GlobalSettings {
+            theme: "dark".to_string(),
+            recent_workspaces: vec![RecentWorkspace {
+                path: "D:\\Novels\\MyNovel".to_string(),
+                last_opened: "2026-03-30T12:00:00Z".to_string(),
+            }],
+            last_active_workspace: Some("D:\\Novels\\MyNovel".to_string()),
+            ..GlobalSettings::default()
+        };
 
         write_global_settings(&path, &settings).expect("write");
         let loaded = read_global_settings(&path);
