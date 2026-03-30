@@ -158,6 +158,12 @@ pub async fn fetch_models(
 
     match provider {
         AiProvider::Ollama => {} // No auth needed
+        AiProvider::OpenRouter => {
+            req = req
+                .header("Authorization", format!("Bearer {api_key}"))
+                .header("HTTP-Referer", "https://github.com/noveloom/noveloom")
+                .header("X-Title", "NoveLoom");
+        }
         _ => {
             req = req.header("Authorization", format!("Bearer {api_key}"));
         }
@@ -278,14 +284,18 @@ pub async fn test_connection(
                 ]
             });
 
-            let resp = client
+            let mut req = client
                 .post(&url)
                 .header("Authorization", format!("Bearer {api_key}"))
-                .header("content-type", "application/json")
-                .json(&body)
-                .send()
-                .await?
-                .error_for_status()?;
+                .header("content-type", "application/json");
+
+            if matches!(provider, AiProvider::OpenRouter) {
+                req = req
+                    .header("HTTP-Referer", "https://github.com/noveloom/noveloom")
+                    .header("X-Title", "NoveLoom");
+            }
+
+            let resp = req.json(&body).send().await?.error_for_status()?;
 
             let result: serde_json::Value = resp.json().await?;
             let text = result["choices"][0]["message"]["content"]
