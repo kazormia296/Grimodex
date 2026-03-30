@@ -1,4 +1,4 @@
-import { useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import { useEditor, EditorContent } from "@tiptap/react";
 import StarterKit from "@tiptap/starter-kit";
 import { Markdown } from "tiptap-markdown";
@@ -12,6 +12,7 @@ export function SceneEditor() {
   const activeSceneId = useSceneStore((s) => s.activeSceneId);
   const prevSceneIdRef = useRef(activeSceneId);
   const editorRef = useRef<ReturnType<typeof useEditor>>(null);
+  const [charCount, setCharCount] = useState(0);
 
   const saveSceneIdRef = useRef(activeSceneId);
 
@@ -35,8 +36,9 @@ export function SceneEditor() {
         "aria-multiline": "true",
       },
     },
-    onUpdate() {
+    onUpdate({ editor: e }) {
       schedule();
+      setCharCount(e.state.doc.textContent.length);
     },
   });
 
@@ -62,6 +64,7 @@ export function SceneEditor() {
       const content = await loadSceneContent(activeSceneId);
       if (cancelled) return;
       editor!.commands.setContent(content || "");
+      setCharCount(editor!.state.doc.textContent.length);
       prevSceneIdRef.current = activeSceneId;
     }
 
@@ -71,8 +74,6 @@ export function SceneEditor() {
       cancelled = true;
     };
   }, [activeSceneId, editor, flush, cancel]);
-
-  const charCount = editor?.state.doc.textContent.length ?? 0;
 
   return (
     <div className="flex flex-col h-full">
