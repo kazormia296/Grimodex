@@ -1,57 +1,57 @@
-# NoveLoom - Product Specification
+# NoveLoom - 製品仕様書
 
-> Version: 0.1.0 (MVP)
-> Last updated: 2026-03-31
+> バージョン: 0.1.0 (MVP)
+> 最終更新: 2026-03-31
 
-## 1. Product Overview
+## 1. 製品概要
 
-NoveLoom is a desktop novel-writing editor inspired by Novelcrafter, built for Japanese fiction authors. It combines a rich text editor with an AI chat panel and a structured knowledge base (Codex), enabling writers to extract and organize knowledge from AI conversations and apply it directly to their manuscripts.
+NoveLoomは、Novelcrafterに着想を得た、日本語小説作家向けのデスクトップ執筆エディタである。リッチテキストエディタにAIチャットパネルと構造化ナレッジベース（Codex）を組み合わせ、AIとの対話から知識を抽出・整理し、原稿に直接活用できる。
 
-**Core experience:** Chat with AI, extract structured knowledge, write with context-aware assistance.
+**コア体験:** AIとチャットし、構造化された知識を抽出し、コンテキストを活用した執筆支援を受ける。
 
-### 1.1 Tech Stack
+### 1.1 技術スタック
 
-| Layer | Technology |
-|-------|-----------|
-| Desktop shell | Tauri v2 |
-| Frontend | React 19 + TypeScript (strict) |
-| Editor | TipTap (ProseMirror) |
-| State management | Zustand (global) + Jotai (local) |
-| UI components | shadcn/ui |
-| AI integration | Vercel AI SDK |
-| Database | SQLite (WAL mode) + FTS5 (trigram) |
+| レイヤー | 技術 |
+|---------|------|
+| デスクトップシェル | Tauri v2 |
+| フロントエンド | React 19 + TypeScript (strict) |
+| エディタ | TipTap (ProseMirror) |
+| 状態管理 | Zustand (グローバル) + Jotai (ローカル) |
+| UIコンポーネント | shadcn/ui |
+| AI統合 | Vercel AI SDK |
+| データベース | SQLite (WALモード) + FTS5 (trigram) |
 | ORM | Drizzle ORM |
-| Storage | Markdown files (source of truth) + SQLite (index/cache/metadata) |
+| ストレージ | Markdownファイル（信頼できる唯一の情報源） + SQLite（インデックス/キャッシュ/メタデータ） |
 
-### 1.2 Target User
+### 1.2 対象ユーザー
 
-Japanese-speaking individual novelists. The primary user is the developer themselves.
+日本語を使用する個人小説家。主な利用者は開発者本人。
 
 ---
 
-## 2. Architecture Principles
+## 2. アーキテクチャ原則
 
-### 2.1 Storage Model: Markdown-Primary
+### 2.1 ストレージモデル: Markdownファースト
 
-Markdown files on disk are the **single source of truth** for all prose content. SQLite serves as:
-- Full-text search index (FTS5 trigram)
-- Authorship tracking store
-- Codex metadata and relations
-- Chat history
-- Project settings and state
+ディスク上のMarkdownファイルが、すべての本文コンテンツの**唯一の信頼できる情報源**である。SQLiteは以下の用途で使用:
+- 全文検索インデックス（FTS5 trigram）
+- 帰属（authorship）追跡ストア
+- Codexのメタデータとリレーション
+- チャット履歴
+- プロジェクト設定と状態
 
-**Rationale:** Git-friendly, portable, no vendor lock-in. Users can read/edit files with any text editor.
+**設計根拠:** Git親和性、可搬性、ベンダーロックインの回避。ユーザーは任意のテキストエディタでファイルを閲覧・編集可能。
 
-### 2.2 Directory = Hierarchy
+### 2.2 ディレクトリ = 階層構造
 
-Project structure maps directly to the filesystem:
+プロジェクト構造はファイルシステムに直接マッピングされる:
 
 ```
 my-novel/
-  noveloom.json              # Project manifest
+  noveloom.json              # プロジェクトマニフェスト
   .noveloom/
-    db.sqlite                # SQLite index/cache/metadata
-    chat/                    # Chat history (JSON per thread)
+    db.sqlite                # SQLite インデックス/キャッシュ/メタデータ
+    chat/                    # チャット履歴（スレッドごとのJSON）
   codex/
     characters/
       太郎.md
@@ -71,14 +71,14 @@ my-novel/
       ...
 ```
 
-- Folders = structural hierarchy (arbitrary depth, Scrivener-like)
-- Leaf nodes = Markdown documents (scenes/chapters)
-- Rename/move = filesystem operations (Tauri fs API)
-- Sort order: controlled via `_order.json` in each folder
+- フォルダ = 構造的階層（任意の深さ、Scrivener風）
+- リーフノード = Markdownドキュメント（シーン/章）
+- リネーム/移動 = ファイルシステム操作（Tauri fs API）
+- ソート順: 各フォルダ内の `_order.json` で制御
 
-### 2.3 Document Format
+### 2.3 ドキュメントフォーマット
 
-Each manuscript document is a standard Markdown file with optional YAML frontmatter:
+各原稿ドキュメントは、オプションのYAML frontmatterを持つ標準的なMarkdownファイルである:
 
 ```markdown
 ---
@@ -95,9 +95,9 @@ modified: 2026-03-30T14:20:00+09:00
 本文がここに続く。標準的なMarkdown記法を使用。
 ```
 
-Frontmatter fields are indexed into SQLite for fast querying.
+frontmatterフィールドは高速クエリのためSQLiteにインデックスされる。
 
-### 2.4 Content File Naming Convention
+### 2.4 コンテンツファイル命名規則
 
 原稿ファイルはハイブリッド命名方式を採用する。ファイル名にソート順・タイトル・IDを埋め込むことで、ファイルシステム上での視認性とプログラムからの一意特定を両立する。
 
@@ -139,7 +139,7 @@ content/
 - `short_id` サフィックスにより、タイトル変更・並び替え後もファイルの同一性を追跡可能
 - タイトル埋め込みにより、NoveLoom外でもファイル内容を推測可能
 
-### 2.5 Workspace Metadata
+### 2.5 ワークスペースメタデータ
 
 ワークスペースの識別情報とアプリケーション全体の設定は、それぞれ別の場所に永続化する。
 
@@ -188,99 +188,99 @@ OSのアプリケーションデータディレクトリに格納。全ワーク
 
 ---
 
-## 3. Editor (TipTap)
+## 3. エディタ（TipTap）
 
-### 3.1 Core Requirements
+### 3.1 基本要件
 
-- One TipTap instance per open document (scene/chapter)
-- Standard rich-text editing: bold, italic, headings, block quotes, horizontal rules
-- Real-time word/character count
-- Autosave: debounced write to disk (500ms after last keystroke)
-- Undo/redo with full history per session
+- 開いているドキュメント（シーン/章）ごとに1つのTipTapインスタンス
+- 標準的なリッチテキスト編集: 太字、斜体、見出し、引用ブロック、水平線
+- リアルタイム文字数/単語数カウント
+- 自動保存: 最後のキー入力から500msのデバウンスでディスクに書き込み
+- セッションごとの完全な履歴によるundo/redo
 
-### 3.2 Authorship Tracking (Mark-level)
+### 3.2 帰属追跡（Markレベル）
 
-Every text span carries an authorship Mark attribute with one of three values:
+すべてのテキストスパンは、以下の3値のいずれかを持つauthorship Mark属性を保持する:
 
-| Value | Meaning |
-|-------|---------|
-| `human` | Typed by the user |
-| `ai` | Inserted from AI chat (untouched) |
-| `ai-edited` | AI-originated text subsequently edited by the user |
+| 値 | 意味 |
+|----|------|
+| `human` | ユーザーが入力したテキスト |
+| `ai` | AIチャットから挿入されたテキスト（未編集） |
+| `ai-edited` | AI由来のテキストをユーザーが編集したもの |
 
-**Implementation:**
+**実装:**
 
-- Custom TipTap Mark extension: `authorship` with `source` attribute (`human` | `ai` | `ai-edited`)
-- Default: all keystrokes produce `human` marks
-- "Insert to editor" from chat: inserted text gets `ai` mark
-- Paste detection: clipboard paste from chat panel → `ai` mark; external paste → `human` mark (use custom clipboard data type to distinguish)
-- When user edits within an `ai` span → transition to `ai-edited`
-- IME composition: track `compositionstart`/`compositionend` events; buffer input during composition, apply `human` mark on `compositionend`
+- カスタムTipTap Mark拡張: `authorship`（`source` 属性: `human` | `ai` | `ai-edited`）
+- デフォルト: すべてのキー入力は `human` マークを生成
+- チャットからの「エディタに挿入」: 挿入されたテキストに `ai` マークを付与
+- ペースト検出: チャットパネルからのクリップボードペースト → `ai` マーク、外部からのペースト → `human` マーク（カスタムクリップボードデータ型で判別）
+- ユーザーが `ai` スパン内を編集 → `ai-edited` に遷移
+- IME入力: `compositionstart`/`compositionend` イベントを追跡。入力中はバッファし、`compositionend` で `human` マークを適用
 
-**Persistence:**
+**永続化:**
 
-Authorship data is stored in **SQLite only** (not in Markdown files). The Markdown file remains clean, standard Markdown.
+帰属データは**SQLiteのみ**に保存（Markdownファイルには含めない）。Markdownファイルはクリーンな標準Markdownのまま維持する。
 
-SQLite schema for authorship:
+帰属のSQLiteスキーマ:
 ```sql
 CREATE TABLE authorship_spans (
   id          INTEGER PRIMARY KEY,
   document_id TEXT NOT NULL REFERENCES documents(id),
-  offset_start INTEGER NOT NULL,  -- character offset from document start
+  offset_start INTEGER NOT NULL,  -- ドキュメント先頭からの文字オフセット
   offset_end   INTEGER NOT NULL,
   source       TEXT NOT NULL CHECK(source IN ('human', 'ai', 'ai-edited')),
-  ai_message_id TEXT,             -- links back to the chat message that generated it
+  ai_message_id TEXT,             -- 生成元のチャットメッセージへのリンク
   created_at   TEXT NOT NULL,
   UNIQUE(document_id, offset_start, offset_end)
 );
 ```
 
-- On document save: serialize current TipTap Mark positions → update `authorship_spans`
-- On document open: load spans from SQLite → apply as TipTap Marks
-- On external edit (file changed on disk without NoveLoom): authorship data becomes stale → show warning, offer to clear authorship for the document
+- ドキュメント保存時: 現在のTipTap Markの位置をシリアライズ → `authorship_spans` を更新
+- ドキュメント読み込み時: SQLiteからスパンを読み込み → TipTap Markとして適用
+- 外部編集時（NoveLoom外でファイルが変更された場合）: 帰属データが陳腐化 → 警告を表示し、ドキュメントの帰属データのクリアを提案
 
-**Visual display:**
-- Toggle-able overlay: human text normal, `ai` text with subtle background tint, `ai-edited` with different tint
-- Status bar: show authorship ratio (% human / % ai / % ai-edited)
+**表示:**
+- トグル可能なオーバーレイ: humanテキストは通常表示、`ai` テキストは薄い背景色、`ai-edited` は異なる背景色
+- ステータスバー: 帰属比率を表示（human% / ai% / ai-edited%）
 
-### 3.3 Text Insertion from Chat
+### 3.3 チャットからのテキスト挿入
 
-Two mechanisms, both available simultaneously:
+2つの方式を同時に提供:
 
-1. **Copy button** on chat messages → copies to clipboard with custom data type (`application/x-noveloom-ai-text`). When pasted in editor, detected and marked as `ai`.
-2. **"Insert to editor" button** on chat messages → inserts at current cursor position programmatically, marked as `ai`.
+1. **コピーボタン** — チャットメッセージのテキストをカスタムデータ型（`application/x-noveloom-ai-text`）でクリップボードにコピー。エディタにペーストすると `ai` マークで検出・記録。
+2. **「エディタに挿入」ボタン** — プログラム的にカーソル位置にテキストを挿入し、`ai` マークを付与。
 
-If the editor has no cursor focus when "Insert" is clicked, insert at the end of the document.
+「挿入」クリック時にエディタにカーソルフォーカスがない場合は、ドキュメント末尾に挿入する。
 
 ---
 
-## 4. AI Chat Panel
+## 4. AIチャットパネル
 
-### 4.1 Provider: OpenRouter (MVP)
+### 4.1 プロバイダー: OpenRouter（MVP）
 
-- Single provider for MVP: OpenRouter API
-- BYOK (Bring Your Own Key): user provides their OpenRouter API key
-- Model selection: user chooses from available OpenRouter models
-- Streaming: Vercel AI SDK `useChat` with streaming enabled
-- All API calls from Rust backend (Tauri commands) to avoid CORS and keep keys secure
+- MVP段階では単一プロバイダー: OpenRouter API
+- BYOK（Bring Your Own Key）: ユーザーが自身のOpenRouter APIキーを提供
+- モデル選択: 利用可能なOpenRouterモデルからユーザーが選択
+- ストリーミング: Vercel AI SDK `useChat`（ストリーミング有効）
+- すべてのAPI呼び出しはRustバックエンド（Tauriコマンド）経由 — CORSの回避とキーのセキュリティ確保
 
-### 4.2 Thread Model
+### 4.2 スレッドモデル
 
 ```
-Project
-├── Project-level threads (worldbuilding, plotting, etc.)
-└── Document (scene/chapter)
-    ├── Thread: "プロット相談"
-    ├── Thread: "文体添削"
-    └── Thread: "キャラ深掘り"
+プロジェクト
+├── プロジェクトレベルスレッド（世界観構築、プロット等）
+└── ドキュメント（シーン/章）
+    ├── スレッド: "プロット相談"
+    ├── スレッド: "文体添削"
+    └── スレッド: "キャラ深掘り"
 ```
 
-- Each document can have **N chat threads**
-- Project-level threads are not bound to any document
-- Thread list shown in sidebar; active thread in chat panel
-- Threads are persisted as JSON files in `.noveloom/chat/{thread-id}.json`
+- 各ドキュメントは **N個のチャットスレッド** を持てる
+- プロジェクトレベルスレッドは特定のドキュメントに紐づかない
+- スレッド一覧はサイドバーに表示、アクティブスレッドはチャットパネルに表示
+- スレッドは `.noveloom/chat/{thread-id}.json` にJSONファイルとして永続化
 
-Thread schema:
+スレッドスキーマ:
 ```json
 {
   "id": "uuid-v7",
@@ -299,44 +299,44 @@ Thread schema:
 }
 ```
 
-### 4.3 Context Injection (Auto RAG + Manual @mention)
+### 4.3 コンテキスト注入（自動RAG + 手動@メンション）
 
-When the user sends a message, the system automatically constructs context:
+ユーザーがメッセージを送信すると、システムが自動的にコンテキストを構築する:
 
-**Automatic context (always included):**
-1. Current document content (if thread is bound to a document)
-2. Document frontmatter (synopsis, POV character, status)
-3. FTS5 search: query = user's message → top-K relevant Codex entries and document snippets
+**自動コンテキスト（常に含まれる）:**
+1. 現在のドキュメント内容（スレッドがドキュメントに紐づいている場合）
+2. ドキュメントのfrontmatter（あらすじ、視点キャラクター、ステータス）
+3. FTS5検索: クエリ = ユーザーのメッセージ → 上位K件の関連Codexエントリとドキュメントスニペット
 
-**Manual override via @mention:**
-- `@codex:太郎` — inject the Codex entry for 太郎
-- `@doc:第1章/シーン2` — inject a specific document's content
-- `@codex:*characters` — inject all character Codex entries
+**手動オーバーライド（@メンション）:**
+- `@codex:太郎` — 太郎のCodexエントリを注入
+- `@doc:第1章/シーン2` — 特定ドキュメントの内容を注入
+- `@codex:*characters` — 全キャラクターのCodexエントリを注入
 
-**Context budget management:**
-- Configurable token budget (default: 8000 tokens for context, rest for conversation)
-- Priority order: manual @mentions > current document > FTS results
-- If budget exceeded: truncate FTS results first, then current document (keep first/last N paragraphs)
-- Show user a "Context" expandable section above the chat input showing what was injected
+**コンテキストバジェット管理:**
+- 設定可能なトークンバジェット（デフォルト: コンテキストに8000トークン、残りは会話用）
+- 優先順位: 手動@メンション > 現在のドキュメント > FTS結果
+- バジェット超過時: FTS結果から先に削減、次に現在のドキュメント（先頭/末尾N段落を残す）
+- チャット入力の上に「コンテキスト」展開セクションを表示し、注入された内容を提示
 
-**System prompt:**
-- Default system prompt template per thread type (configurable)
-- Prompt template variables: `{{document}}`, `{{codex}}`, `{{synopsis}}`, `{{characters}}`
+**システムプロンプト:**
+- スレッドタイプごとのデフォルトシステムプロンプトテンプレート（設定可能）
+- テンプレート変数: `{{document}}`, `{{codex}}`, `{{synopsis}}`, `{{characters}}`
 
-### 4.4 Prompt Templates
+### 4.4 プロンプトテンプレート
 
-Users can create and manage prompt templates:
-- Built-in templates: "General Assistant", "Plot Consultant", "Style Editor", "Character Developer"
-- Custom templates with variable interpolation
-- Templates stored in `noveloom.json` or a dedicated `templates/` directory
+ユーザーはプロンプトテンプレートを作成・管理可能:
+- 組み込みテンプレート: 「汎用アシスタント」「プロットコンサルタント」「文体エディタ」「キャラクター深掘り」
+- カスタムテンプレート（変数展開対応）
+- テンプレートの保存先: `noveloom.json` または専用の `templates/` ディレクトリ
 
 ---
 
-## 5. Codex (Knowledge Base)
+## 5. Codex（ナレッジベース）
 
-### 5.1 Entry Structure: Key-Value + Free Text
+### 5.1 エントリ構造: Key-Value + フリーテキスト
 
-Each Codex entry is a Markdown file with structured frontmatter:
+各Codexエントリは、構造化frontmatterを持つMarkdownファイルである:
 
 ```markdown
 ---
@@ -372,159 +372,159 @@ modified: "ISO8601"
 - [2026-03-15 チャットから抽出](noveloom://chat/thread-id/message-id)
 ```
 
-**Design decisions:**
-- `Properties` section: arbitrary key-value pairs in Markdown list format. No fixed schema — user and AI can add any key.
-- `Notes` section: free-form text for unstructured information
-- `Source Messages` section: backlinks to originating chat messages (provenance tracking)
-- `relations` in frontmatter: explicit typed relations to other Codex entries
+**設計判断:**
+- `Properties` セクション: Markdownリスト形式の任意Key-Valueペア。固定スキーマなし — ユーザーとAIが任意のキーを追加可能。
+- `Notes` セクション: 非構造化情報のためのフリーテキスト
+- `Source Messages` セクション: 元のチャットメッセージへのバックリンク（出自追跡）
+- frontmatterの `relations`: 他のCodexエントリへの明示的な型付きリレーション
 
-### 5.2 Categories
+### 5.2 カテゴリ
 
-Default categories (user can add custom ones):
-- `character` — Characters
-- `location` — Places/settings
-- `item` — Objects, artifacts
-- `concept` — Magic systems, organizations, abstract concepts
-- `event` — Historical events, backstory
-- `snippet` — Text fragments, prose drafts, dialogue candidates
+デフォルトカテゴリ（ユーザーがカスタム追加可能）:
+- `character` — キャラクター
+- `location` — 場所・舞台
+- `item` — 物体・アーティファクト
+- `concept` — 魔法体系、組織、抽象的概念
+- `event` — 歴史的事件、バックストーリー
+- `snippet` — テキスト断片、文章の下書き、台詞候補
 
-### 5.3 Relations Graph
+### 5.3 リレーショングラフ
 
-Codex entries can have explicit typed relations:
+Codexエントリは明示的な型付きリレーションを持てる:
 
 ```typescript
 interface CodexRelation {
   sourceId: string;
   targetId: string;
-  type: string;       // "sibling", "parent", "possesses", "belongs_to", "enemy_of", etc.
-  label: string;      // Human-readable: "花子の兄"
-  bidirectional: boolean; // If true, auto-create reverse relation
+  type: string;       // "sibling", "parent", "possesses", "belongs_to", "enemy_of" 等
+  label: string;      // 人間が読める形式: "花子の兄"
+  bidirectional: boolean; // trueの場合、逆方向のリレーションを自動作成
 }
 ```
 
-- Relations stored in entry frontmatter AND indexed in SQLite for graph queries
-- Used by RAG: when a Codex entry is included in context, related entries (1-hop) are candidates for inclusion
-- MVP UI: simple list of relations per entry with add/remove. Graph visualization is post-MVP.
+- リレーションはエントリのfrontmatterに保存し、グラフクエリ用にSQLiteにもインデックス
+- RAGで使用: Codexエントリがコンテキストに含まれる場合、関連エントリ（1ホップ）が候補に追加される
+- MVP UI: エントリごとのリレーション一覧（追加/削除）。グラフ可視化はpost-MVP。
 
-### 5.4 Extraction from Chat
+### 5.4 チャットからの抽出
 
-**Message-level extraction:**
-- Each AI response has a "Save to Codex" button
-- Clicking opens a dialog:
-  - Pre-filled with AI-suggested category, name, key-value properties
-  - User can edit before saving
-  - Source message backlink is automatically created
+**メッセージレベルの抽出:**
+- 各AIレスポンスに「Codexに保存」ボタンを配置
+- クリックするとダイアログが開く:
+  - AIが提案したカテゴリ、名前、Key-Valueプロパティで事前入力
+  - ユーザーが保存前に編集可能
+  - ソースメッセージへのバックリンクを自動作成
 
-**AI auto-suggestion:**
-- After each AI response, the system checks if the response contains Codex-worthy content
-- Implementation: append a hidden instruction to the system prompt asking the AI to tag extractable entities in its response using a specific format (e.g., `[[codex:character:太郎]]`)
-- When detected, show a subtle "Codex candidates found" indicator on the message
-- User clicks to review and confirm/edit before saving
+**AI自動提案:**
+- 各AIレスポンス後、Codexに値する内容が含まれているかチェック
+- 実装: システムプロンプトに隠し指示を追加し、抽出可能なエンティティを特定フォーマット（例: `[[codex:character:太郎]]`）でタグ付けするようAIに依頼
+- 検出時、メッセージに控えめな「Codex候補あり」インジケーターを表示
+- ユーザーがクリックしてレビュー・確認/編集した後に保存
 
-**Extraction flow:**
-1. AI responds with content
-2. System detects `[[codex:...]]` markers (or user clicks "Save to Codex")
-3. Dialog shows: Name, Category, suggested Key-Value properties, free text
-4. User confirms → Codex entry MD file created, backlink stored
-5. SQLite index updated
+**抽出フロー:**
+1. AIがコンテンツを含むレスポンスを返す
+2. システムが `[[codex:...]]` マーカーを検出（またはユーザーが「Codexに保存」をクリック）
+3. ダイアログ表示: 名前、カテゴリ、提案されたKey-Valueプロパティ、フリーテキスト
+4. ユーザーが確認 → Codexエントリのmdファイルを作成、バックリンクを保存
+5. SQLiteインデックスを更新
 
 ---
 
-## 6. Data Flow & State Management
+## 6. データフローと状態管理
 
-### 6.1 State Architecture
-
-```
-Zustand stores (global):
-├── projectStore      — project metadata, file tree
-├── editorStore       — active document, dirty state
-├── chatStore         — active thread, messages, streaming state
-├── codexStore        — entries index, search results
-└── settingsStore     — API keys, preferences, UI state
-
-Jotai atoms (local):
-├── editorSelection   — current selection/cursor position
-├── chatInput         — current chat input text
-├── contextPreview    — resolved context for current message
-└── panelLayout       — splitter positions, panel visibility
-```
-
-### 6.2 Data Flow Diagram
+### 6.1 状態アーキテクチャ
 
 ```
-[Filesystem (MD files)]
+Zustand stores（グローバル）:
+├── projectStore      — プロジェクトメタデータ、ファイルツリー
+├── editorStore       — アクティブドキュメント、ダーティ状態
+├── chatStore         — アクティブスレッド、メッセージ、ストリーミング状態
+├── codexStore        — エントリインデックス、検索結果
+└── settingsStore     — APIキー、設定、UI状態
+
+Jotai atoms（ローカル）:
+├── editorSelection   — 現在の選択範囲/カーソル位置
+├── chatInput         — 現在のチャット入力テキスト
+├── contextPreview    — 現在のメッセージの解決済みコンテキスト
+└── panelLayout       — スプリッター位置、パネル表示状態
+```
+
+### 6.2 データフロー図
+
+```
+[ファイルシステム (MDファイル)]
        ↕ read/write (Tauri fs)
-[Rust Backend]
-       ↕ Tauri Commands (IPC)
-[React Frontend]
-  ├── TipTap Editor ←→ editorStore
-  ├── Chat Panel    ←→ chatStore
-  ├── Codex Panel   ←→ codexStore
-  └── File Tree     ←→ projectStore
-       ↕ indexed into
-[SQLite (via Drizzle)]
-  ├── FTS5 index (document content, codex content)
-  ├── Authorship spans
-  ├── Codex relations graph
-  └── Document metadata cache
+[Rustバックエンド]
+       ↕ Tauriコマンド (IPC)
+[Reactフロントエンド]
+  ├── TipTapエディタ ←→ editorStore
+  ├── チャットパネル  ←→ chatStore
+  ├── Codexパネル    ←→ codexStore
+  └── ファイルツリー  ←→ projectStore
+       ↕ インデックス化
+[SQLite (Drizzle経由)]
+  ├── FTS5インデックス（ドキュメント内容、Codex内容）
+  ├── 帰属スパン
+  ├── Codexリレーショングラフ
+  └── ドキュメントメタデータキャッシュ
 ```
 
-### 6.3 Key Data Flows
+### 6.3 主要データフロー
 
-**Writing flow:**
-1. User types in TipTap → `human` authorship mark applied
-2. Autosave (debounced 500ms) → write MD to disk + update authorship spans in SQLite
-3. SQLite FTS index updated on save
+**執筆フロー:**
+1. ユーザーがTipTapで入力 → `human` 帰属マークを適用
+2. 自動保存（500msデバウンス） → MDをディスクに書き込み + SQLiteの帰属スパンを更新
+3. 保存時にSQLite FTSインデックスを更新
 
-**AI chat flow:**
-1. User types message (optionally with @mentions)
-2. Frontend resolves context: current doc + FTS results + @mentioned entries
-3. Tauri command: send message to OpenRouter via Rust backend
-4. Stream response back to frontend
-5. Parse response for `[[codex:...]]` markers
-6. Display response with "Insert" and "Save to Codex" buttons
+**AIチャットフロー:**
+1. ユーザーがメッセージを入力（オプションで@メンション付き）
+2. フロントエンドがコンテキストを解決: 現在のドキュメント + FTS結果 + @メンションされたエントリ
+3. Tauriコマンド: Rustバックエンド経由でOpenRouterにメッセージを送信
+4. レスポンスをフロントエンドにストリーミング
+5. レスポンス内の `[[codex:...]]` マーカーをパース
+6. レスポンスを「挿入」「Codexに保存」ボタン付きで表示
 
-**Codex extraction flow:**
-1. User clicks "Save to Codex" on a chat message
-2. Dialog opens with AI-suggested structure
-3. User confirms → MD file written to `codex/{category}/{name}.md`
-4. SQLite index updated (FTS + relations)
-5. Backlink stored in both the Codex entry and the chat message
+**Codex抽出フロー:**
+1. ユーザーがチャットメッセージの「Codexに保存」をクリック
+2. AIが提案した構造でダイアログが開く
+3. ユーザーが確認 → `codex/{category}/{name}.md` にMDファイルを書き込み
+4. SQLiteインデックスを更新（FTS + リレーション）
+5. バックリンクをCodexエントリとチャットメッセージの両方に保存
 
-**Insert to editor flow:**
-1. User clicks "Insert to editor" on a chat message
-2. Text inserted at cursor position with `ai` authorship mark
-3. Authorship spans updated in SQLite on next save
-4. Chat message records which document received the insertion
+**エディタ挿入フロー:**
+1. ユーザーがチャットメッセージの「エディタに挿入」をクリック
+2. カーソル位置に `ai` 帰属マーク付きでテキストを挿入
+3. 次回保存時にSQLiteの帰属スパンを更新
+4. チャットメッセージに挿入先ドキュメントを記録
 
 ---
 
-## 7. SQLite Schema (Index/Cache/Metadata)
+## 7. SQLiteスキーマ（インデックス/キャッシュ/メタデータ）
 
 ```sql
--- Document metadata cache (source of truth is the MD file)
+-- ドキュメントメタデータキャッシュ（信頼できる情報源はMDファイル）
 CREATE TABLE documents (
   id          TEXT PRIMARY KEY,  -- UUID v7
-  path        TEXT NOT NULL UNIQUE, -- relative path from project root
+  path        TEXT NOT NULL UNIQUE, -- プロジェクトルートからの相対パス
   title       TEXT,
   synopsis    TEXT,
   pov         TEXT,
   status      TEXT DEFAULT 'draft',
   word_count  INTEGER DEFAULT 0,
-  parent_path TEXT,  -- parent folder path for hierarchy
+  parent_path TEXT,  -- 階層構造のための親フォルダパス
   sort_order  INTEGER DEFAULT 0,
   created_at  TEXT NOT NULL,
   modified_at TEXT NOT NULL
 );
 
--- FTS5 index for document content
+-- ドキュメント内容のFTS5インデックス
 CREATE VIRTUAL TABLE documents_fts USING fts5(
   title, content, synopsis,
   content=documents,
   tokenize='trigram'
 );
 
--- Authorship tracking
+-- 帰属追跡
 CREATE TABLE authorship_spans (
   id            INTEGER PRIMARY KEY,
   document_id   TEXT NOT NULL REFERENCES documents(id),
@@ -536,26 +536,26 @@ CREATE TABLE authorship_spans (
 );
 CREATE INDEX idx_authorship_doc ON authorship_spans(document_id);
 
--- Codex entries (source of truth is the MD file)
+-- Codexエントリ（信頼できる情報源はMDファイル）
 CREATE TABLE codex_entries (
   id          TEXT PRIMARY KEY,
   name        TEXT NOT NULL,
   category    TEXT NOT NULL,
   path        TEXT NOT NULL UNIQUE,
-  tags        TEXT,  -- JSON array
-  content     TEXT,  -- full text for FTS
+  tags        TEXT,  -- JSON配列
+  content     TEXT,  -- FTS用フルテキスト
   created_at  TEXT NOT NULL,
   modified_at TEXT NOT NULL
 );
 
--- FTS5 index for codex
+-- Codex用FTS5インデックス
 CREATE VIRTUAL TABLE codex_fts USING fts5(
   name, content, tags,
   content=codex_entries,
   tokenize='trigram'
 );
 
--- Codex relations
+-- Codexリレーション
 CREATE TABLE codex_relations (
   id              INTEGER PRIMARY KEY,
   source_id       TEXT NOT NULL REFERENCES codex_entries(id),
@@ -568,7 +568,7 @@ CREATE TABLE codex_relations (
 CREATE INDEX idx_relations_source ON codex_relations(source_id);
 CREATE INDEX idx_relations_target ON codex_relations(target_id);
 
--- Chat threads
+-- チャットスレッド
 CREATE TABLE chat_threads (
   id          TEXT PRIMARY KEY,
   title       TEXT NOT NULL,
@@ -577,7 +577,7 @@ CREATE TABLE chat_threads (
   modified_at TEXT NOT NULL
 );
 
--- Chat messages (also persisted as JSON files, SQLite for search)
+-- チャットメッセージ（JSONファイルとしても永続化、SQLiteは検索用）
 CREATE TABLE chat_messages (
   id          TEXT PRIMARY KEY,
   thread_id   TEXT NOT NULL REFERENCES chat_threads(id),
@@ -586,14 +586,14 @@ CREATE TABLE chat_messages (
   created_at  TEXT NOT NULL
 );
 
--- FTS for chat messages
+-- チャットメッセージ用FTS
 CREATE VIRTUAL TABLE chat_fts USING fts5(
   content,
   content=chat_messages,
   tokenize='trigram'
 );
 
--- Codex extraction provenance
+-- Codex抽出の出自追跡
 CREATE TABLE codex_extractions (
   id              INTEGER PRIMARY KEY,
   codex_entry_id  TEXT NOT NULL REFERENCES codex_entries(id),
@@ -601,7 +601,7 @@ CREATE TABLE codex_extractions (
   extracted_at    TEXT NOT NULL
 );
 
--- Settings
+-- 設定
 CREATE TABLE settings (
   key   TEXT PRIMARY KEY,
   value TEXT NOT NULL
@@ -610,9 +610,9 @@ CREATE TABLE settings (
 
 ---
 
-## 8. Tauri Command API (Rust ↔ JS Bridge)
+## 8. Tauriコマンド API（Rust ↔ JSブリッジ）
 
-### 8.1 Project Management
+### 8.1 プロジェクト管理
 ```rust
 #[tauri::command] fn open_project(path: String) -> Result<ProjectManifest>
 #[tauri::command] fn create_project(path: String, name: String) -> Result<ProjectManifest>
@@ -623,7 +623,7 @@ CREATE TABLE settings (
 #[tauri::command] fn reorder_entries(folder_path: String, order: Vec<String>) -> Result<()>
 ```
 
-### 8.2 Document Operations
+### 8.2 ドキュメント操作
 ```rust
 #[tauri::command] fn read_document(path: String) -> Result<DocumentData>
 #[tauri::command] fn save_document(path: String, content: String, frontmatter: Value) -> Result<()>
@@ -631,7 +631,7 @@ CREATE TABLE settings (
 #[tauri::command] fn save_authorship_spans(document_id: String, spans: Vec<AuthorshipSpan>) -> Result<()>
 ```
 
-### 8.3 Codex Operations
+### 8.3 Codex操作
 ```rust
 #[tauri::command] fn list_codex_entries(category: Option<String>) -> Result<Vec<CodexEntry>>
 #[tauri::command] fn read_codex_entry(id: String) -> Result<CodexEntry>
@@ -643,24 +643,24 @@ CREATE TABLE settings (
 #[tauri::command] fn get_related_entries(entry_id: String, depth: u32) -> Result<Vec<CodexEntry>>
 ```
 
-### 8.4 Search
+### 8.4 検索
 ```rust
 #[tauri::command] fn search_fts(query: String, scope: SearchScope) -> Result<Vec<SearchResult>>
 // SearchScope: All | Documents | Codex | Chat
 #[tauri::command] fn build_context(message: String, document_id: Option<String>, mentions: Vec<Mention>) -> Result<ContextPayload>
 ```
 
-### 8.5 AI Chat
+### 8.5 AIチャット
 ```rust
 #[tauri::command] fn list_threads(document_id: Option<String>) -> Result<Vec<ChatThread>>
 #[tauri::command] fn create_thread(title: String, document_id: Option<String>) -> Result<ChatThread>
 #[tauri::command] fn delete_thread(id: String) -> Result<()>
 #[tauri::command] fn send_message(thread_id: String, content: String, context: ContextPayload) -> Result<()>
-// Streaming is handled via Tauri events, not return values
-// Event: "chat:stream-chunk" { threadId, content, done }
+// ストリーミングはTauriイベント経由（戻り値ではない）
+// イベント: "chat:stream-chunk" { threadId, content, done }
 ```
 
-### 8.6 Settings
+### 8.6 設定
 ```rust
 #[tauri::command] fn get_settings() -> Result<Settings>
 #[tauri::command] fn update_settings(settings: PartialSettings) -> Result<Settings>
@@ -668,106 +668,106 @@ CREATE TABLE settings (
 
 ---
 
-## 9. UI Layout
+## 9. UIレイアウト
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│  Menu Bar                                                       │
+│  メニューバー                                                    │
 ├──────────┬──────────────────────────────────┬───────────────────┤
 │          │                                  │                   │
-│  File    │       TipTap Editor              │   AI Chat Panel   │
-│  Tree    │                                  │                   │
-│          │  [authorship overlay toggle]      │  [thread selector]│
-│  ────    │                                  │  [messages...]    │
-│          │                                  │  [context preview]│
-│  Codex   │                                  │  [input + send]   │
-│  List    │                                  │                   │
+│  ファイル │       TipTapエディタ              │  AIチャットパネル  │
+│  ツリー   │                                  │                   │
+│          │  [帰属オーバーレイ切替]             │  [スレッド選択]    │
+│  ────    │                                  │  [メッセージ...]   │
+│          │                                  │  [コンテキスト表示] │
+│  Codex   │                                  │  [入力 + 送信]    │
+│  一覧    │                                  │                   │
 │          │                                  │  ──────────────── │
 │          │                                  │                   │
-│          │                                  │  Codex Detail     │
-│          │                                  │  (when selected)  │
+│          │                                  │  Codex詳細        │
+│          │                                  │  （選択時に表示）   │
 │          │                                  │                   │
 ├──────────┴──────────────────────────────────┴───────────────────┤
-│  Status Bar: word count | authorship ratio | AI model | save    │
+│  ステータスバー: 文字数 | 帰属比率 | AIモデル | 保存状態          │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
-- Three-column layout with resizable splitters
-- Left sidebar: file tree (top) + codex list (bottom), collapsible
-- Center: editor, full height
-- Right sidebar: chat panel (top) + codex detail (bottom), collapsible
-- All panels are toggleable via keyboard shortcuts
+- リサイズ可能なスプリッター付き3カラムレイアウト
+- 左サイドバー: ファイルツリー（上部） + Codex一覧（下部）、折りたたみ可能
+- 中央: エディタ、全高表示
+- 右サイドバー: チャットパネル（上部） + Codex詳細（下部）、折りたたみ可能
+- すべてのパネルはキーボードショートカットで切替可能
 
 ---
 
-## 10. Export
+## 10. エクスポート
 
-### 10.1 MVP Export Formats
+### 10.1 MVPエクスポート形式
 
-| Format | Description |
-|--------|-------------|
-| Markdown | Already the native format — just copy the `manuscript/` folder |
-| Plain text | Concatenate all documents in order, strip Markdown formatting. For web novel submission sites (Narou, Kakuyomu) |
+| 形式 | 説明 |
+|------|------|
+| Markdown | ネイティブ形式そのもの — `manuscript/` フォルダをコピーするだけ |
+| プレーンテキスト | 全ドキュメントを順序通りに結合し、Markdown記法を除去。Web小説投稿サイト（なろう、カクヨム）用 |
 
-### 10.2 Export Options
+### 10.2 エクスポートオプション
 
-- Scope: entire project, selected chapters, single document
-- Order: follows `_order.json` sort order
-- Plain text: configurable scene separator (e.g., `***`, blank line)
-- Frontmatter: strip or include
-- Authorship: optionally annotate AI-generated sections (for transparency)
+- 範囲: プロジェクト全体、選択した章、単一ドキュメント
+- 順序: `_order.json` のソート順に従う
+- プレーンテキスト: 設定可能なシーン区切り（例: `***`、空行）
+- frontmatter: 除去または含める
+- 帰属: オプションでAI生成セクションを注釈（透明性のため）
 
 ### 10.3 Post-MVP
 
-- DOCX export (for doujinshi printing)
-- EPUB export
-- Vertical writing PDF preview (縦書きプレビュー)
+- DOCXエクスポート（同人誌印刷用）
+- EPUBエクスポート
+- 縦書きPDFプレビュー
 
 ---
 
-## 11. Performance Considerations
+## 11. パフォーマンス考慮事項
 
-### 11.1 Large Novels (100,000+ characters)
+### 11.1 大規模小説（10万文字以上）
 
-- **Editor:** One TipTap instance per document (scene). Scenes are typically 2,000-10,000 chars — no performance issue.
-- **File tree:** Lazy-load folder contents. Cache in projectStore.
-- **FTS5:** Trigram tokenizer handles Japanese well. Index updates are incremental (on document save only).
-- **Authorship spans:** Indexed by document_id. Batch update on save, not per-keystroke.
+- **エディタ:** ドキュメント（シーン）ごとに1つのTipTapインスタンス。シーンは通常2,000〜10,000文字 — パフォーマンス問題なし。
+- **ファイルツリー:** フォルダ内容の遅延読み込み。projectStoreでキャッシュ。
+- **FTS5:** trigramトークナイザーは日本語に対応。インデックス更新はインクリメンタル（ドキュメント保存時のみ）。
+- **帰属スパン:** document_idでインデックス化。保存時にバッチ更新（キー入力ごとではない）。
 
-### 11.2 Large Codex (100+ entries)
+### 11.2 大規模Codex（100エントリ以上）
 
-- Codex list: virtualized scrolling (react-window or TanStack Virtual)
-- FTS search: instant for trigram queries
-- Relations graph: limit hop depth to 2 for context injection
+- Codex一覧: 仮想化スクロール（react-windowまたはTanStack Virtual）
+- FTS検索: trigramクエリで即時応答
+- リレーショングラフ: コンテキスト注入時のホップ深度を2に制限
 
-### 11.3 AI Streaming
+### 11.3 AIストリーミング
 
-- Streaming via Tauri events (not HTTP polling)
-- Chat history: only load recent N messages (default: 50), lazy-load older ones
-- Context budget: hard cap prevents sending oversized requests
-
----
-
-## 12. Security
-
-- API keys stored in OS keychain via `tauri-plugin-stronghold` or OS credential manager
-- All AI API calls go through Rust backend — keys never touch the frontend
-- No telemetry, no external connections except user-configured AI provider
-- Project files are local-only
+- Tauriイベント経由のストリーミング（HTTPポーリングではない）
+- チャット履歴: 直近N件のみ読み込み（デフォルト: 50）、古いメッセージは遅延読み込み
+- コンテキストバジェット: ハードキャップにより過大なリクエスト送信を防止
 
 ---
 
-## 13. Settings
+## 12. セキュリティ
 
-| Setting | Type | Default |
-|---------|------|---------|
+- APIキーは `tauri-plugin-stronghold` またはOS認証情報マネージャー経由でOSキーチェーンに保存
+- すべてのAI API呼び出しはRustバックエンド経由 — キーはフロントエンドに渡さない
+- テレメトリーなし、ユーザーが設定したAIプロバイダー以外への外部通信なし
+- プロジェクトファイルはローカルのみ
+
+---
+
+## 13. 設定
+
+| 設定項目 | 型 | デフォルト |
+|---------|-----|----------|
 | `ai.provider` | `"openrouter"` | `"openrouter"` |
-| `ai.apiKey` | string (encrypted) | `""` |
+| `ai.apiKey` | string（暗号化） | `""` |
 | `ai.model` | string | `"anthropic/claude-sonnet-4"` |
-| `ai.contextBudget` | number (tokens) | `8000` |
+| `ai.contextBudget` | number（トークン数） | `8000` |
 | `ai.temperature` | number | `0.7` |
-| `ai.systemPromptTemplate` | string | (built-in default) |
-| `editor.autosaveDelay` | number (ms) | `500` |
+| `ai.systemPromptTemplate` | string | （組み込みデフォルト） |
+| `editor.autosaveDelay` | number（ミリ秒） | `500` |
 | `editor.showAuthorship` | boolean | `true` |
 | `editor.authorshipColors.ai` | string | `"#e8f0fe"` |
 | `editor.authorshipColors.aiEdited` | string | `"#fef7e0"` |
@@ -776,81 +776,87 @@ CREATE TABLE settings (
 
 ---
 
-## 14. MVP Scope & Boundaries
+## 14. MVPスコープと境界
 
-### In Scope (MVP)
+### スコープ内（MVP）
 
-- [x] TipTap editor with basic formatting
-- [x] Flexible folder hierarchy (filesystem-based)
-- [x] SQLite + FTS5 trigram index
-- [x] Authorship tracking (Mark-level, SQLite persistence)
-- [x] AI chat panel (OpenRouter, streaming)
-- [x] Scene 1:N threads + project-level threads
-- [x] Auto RAG context injection (FTS5) + @mention
-- [x] Codex: Key-Value + free text entries
-- [x] Codex: explicit typed relations
-- [x] Codex extraction from chat (message-level + AI auto-suggestion)
-- [x] Text insertion from chat to editor (copy + insert button)
-- [x] Export: Markdown + plain text
-- [x] Prompt templates (built-in + custom)
+- [x] 基本的な書式設定付きTipTapエディタ
+- [x] 柔軟なフォルダ階層（ファイルシステムベース）
+- [x] SQLite + FTS5 trigramインデックス
+- [x] 帰属追跡（Markレベル、SQLite永続化）
+- [x] AIチャットパネル（OpenRouter、ストリーミング）
+- [x] シーン1:Nスレッド + プロジェクトレベルスレッド
+- [x] 自動RAGコンテキスト注入（FTS5） + @メンション
+- [x] Codex: Key-Value + フリーテキストエントリ
+- [x] Codex: 明示的な型付きリレーション
+- [x] チャットからのCodex抽出（メッセージレベル + AI自動提案）
+- [x] チャットからエディタへのテキスト挿入（コピー + 挿入ボタン）
+- [x] エクスポート: Markdown + プレーンテキスト
+- [x] プロンプトテンプレート（組み込み + カスタム）
 
-### Out of Scope (Post-MVP)
+### スコープ外（Post-MVP）
 
-- [ ] Embedding-based vector search (RAG upgrade)
-- [ ] Multiple AI providers (direct OpenAI, Anthropic, Ollama)
-- [ ] DOCX/EPUB export
-- [ ] Vertical writing preview (縦書き)
-- [ ] Ruby text (ルビ)
-- [ ] Japanese morphological analysis for FTS
-- [ ] Codex relation graph visualization
-- [ ] Keystroke replay (Grammarly Authorship-style)
-- [ ] Collaboration / multi-user
-- [ ] Cloud sync
-- [ ] Plugin system
+- [ ] 埋め込みベースのベクトル検索（RAGアップグレード）
+- [ ] 複数AIプロバイダー（直接OpenAI、Anthropic、Ollama）
+- [ ] DOCX/EPUBエクスポート
+- [ ] 縦書きプレビュー
+- [ ] ルビテキスト
+- [ ] FTS用日本語形態素解析
+- [ ] Codexリレーショングラフ可視化
+- [ ] キーストロークリプレイ（Grammarly Authorship風）
+- [ ] コラボレーション / マルチユーザー
+- [ ] クラウド同期
+- [ ] プラグインシステム
 
 ---
 
-## 15. Development Phases
+## 15. 開発フェーズ
 
-### Phase 1: Foundation
-- Project creation/opening
-- File tree with folder hierarchy
-- Basic TipTap editor (read/write Markdown)
-- SQLite setup with Drizzle schema
-- Autosave
+### Phase 1: 基盤
 
-### Phase 2: AI Chat
-- Settings UI (API key, model selection)
-- Chat thread CRUD
-- OpenRouter integration via Rust backend
-- Streaming response display
-- Basic context injection (current document)
+- プロジェクトの作成/オープン
+- フォルダ階層付きファイルツリー
+- 基本的なTipTapエディタ（Markdown読み書き）
+- Drizzleスキーマ付きSQLiteセットアップ
+- 自動保存
+
+### Phase 2: AIチャット
+
+- 設定UI（APIキー、モデル選択）
+- チャットスレッドCRUD
+- Rustバックエンド経由のOpenRouter統合
+- ストリーミングレスポンス表示
+- 基本的なコンテキスト注入（現在のドキュメント）
 
 ### Phase 3: Codex
-- Codex entry CRUD (MD files + SQLite index)
-- Codex categories and tags
-- FTS5 search across documents and codex
-- @mention context injection
-- Auto RAG context building
 
-### Phase 4: Extraction & Integration
-- "Save to Codex" from chat messages
-- AI auto-suggestion of Codex candidates
-- "Insert to editor" with authorship marking
-- Copy with AI paste detection
-- Codex relations (add/remove/query)
+- CodexエントリCRUD（MDファイル + SQLiteインデックス）
+- Codexカテゴリとタグ
+- ドキュメント・Codex横断のFTS5検索
+- @メンションコンテキスト注入
+- 自動RAGコンテキスト構築
 
-### Phase 5: Authorship & Polish
-- Authorship Mark extension (TipTap)
-- IME composition handling
-- Authorship visual overlay
-- Authorship span persistence (SQLite)
-- Export (MD + plain text)
-- Prompt templates
+### Phase 4: 抽出と統合
 
-### Phase 6: Performance & Quality
-- FTS5 index optimization
-- Virtualized lists for large codex
-- Error handling and edge cases
-- Cross-reference integrity checks
-- UI polish and keyboard shortcuts
+- チャットメッセージからの「Codexに保存」
+- AI自動Codex候補提案
+- 帰属マーク付き「エディタに挿入」
+- AI由来ペースト検出付きコピー
+- Codexリレーション（追加/削除/クエリ）
+
+### Phase 5: 帰属追跡と仕上げ
+
+- 帰属Mark拡張（TipTap）
+- IME入力ハンドリング
+- 帰属ビジュアルオーバーレイ
+- 帰属スパン永続化（SQLite）
+- エクスポート（MD + プレーンテキスト）
+- プロンプトテンプレート
+
+### Phase 6: パフォーマンスと品質
+
+- FTS5インデックス最適化
+- 大規模Codex用仮想化リスト
+- エラーハンドリングとエッジケース
+- 相互参照の整合性チェック
+- UIの磨き上げとキーボードショートカット
