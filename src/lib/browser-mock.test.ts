@@ -91,10 +91,13 @@ describe("createBrowserMock", () => {
   });
 
   describe("content_write / content_read / content_delete", () => {
-    it("writes and reads markdown content", async () => {
+    it("writes and reads markdown content with metadata", async () => {
       await mock.invoke("content_write", {
         sceneId: "abc-123",
         markdown: "# Hello World",
+        title: "プロローグ",
+        chapterOrder: 1,
+        sceneOrder: 1,
       });
       const result = await mock.invoke<string>("content_read", {
         sceneId: "abc-123",
@@ -113,12 +116,37 @@ describe("createBrowserMock", () => {
       await mock.invoke("content_write", {
         sceneId: "abc-123",
         markdown: "# To Delete",
+        title: "削除対象",
+        chapterOrder: 1,
+        sceneOrder: 1,
       });
       await mock.invoke("content_delete", { sceneId: "abc-123" });
       const result = await mock.invoke<string>("content_read", {
         sceneId: "abc-123",
       });
       expect(result).toBe("");
+    });
+  });
+
+  describe("content_rename", () => {
+    it("preserves content after rename", async () => {
+      await mock.invoke("content_write", {
+        sceneId: "rename-test",
+        markdown: "# Content",
+        title: "旧名",
+        chapterOrder: 1,
+        sceneOrder: 1,
+      });
+      await mock.invoke("content_rename", {
+        sceneId: "rename-test",
+        title: "新名",
+        chapterOrder: 1,
+        sceneOrder: 2,
+      });
+      const result = await mock.invoke<string>("content_read", {
+        sceneId: "rename-test",
+      });
+      expect(result).toBe("# Content");
     });
   });
 
