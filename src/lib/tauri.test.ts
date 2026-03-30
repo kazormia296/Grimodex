@@ -18,6 +18,9 @@ describe("invoke wrapper", () => {
     await invoke("content_write", {
       sceneId: "test-1",
       markdown: "# Test",
+      title: "テスト",
+      chapterOrder: 1,
+      sceneOrder: 1,
     });
     const result = await invoke<string>("content_read", {
       sceneId: "test-1",

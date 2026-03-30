@@ -70,6 +70,10 @@ export const useSceneStore = create<SceneState>()((set, get) => ({
 
   renameScene: async (id, title) => {
     await api.updateScene(id, { title });
+    const scene = get().scenes.find((s) => s.id === id);
+    if (scene) {
+      await api.renameSceneContent(id, title, TEMP_CHAPTER_ID, scene.sortOrder);
+    }
     set((state) => ({
       scenes: state.scenes.map((s) => (s.id === id ? { ...s, title } : s)),
     }));

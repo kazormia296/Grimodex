@@ -125,6 +125,9 @@ export async function createBrowserMock(): Promise<BrowserMock> {
       case "content_delete":
         handleContentDelete(args);
         return undefined as T;
+      case "content_rename":
+        // In browser mock, rename is a no-op (content keyed by sceneId)
+        return undefined as T;
       default:
         throw new Error(`[browser-mock] Unknown Tauri command: ${cmd}`);
     }

@@ -43,11 +43,38 @@ export async function deleteScene(id: string): Promise<void> {
   await invoke("content_delete", { sceneId: id });
 }
 
+async function getSceneMetadata(sceneId: string) {
+  const rows = await db
+    .select({
+      title: scenes.title,
+      sortOrder: scenes.sortOrder,
+      chapterId: scenes.chapterId,
+    })
+    .from(scenes)
+    .where(eq(scenes.id, sceneId));
+  const scene = rows[0];
+  if (!scene) return { title: "untitled", chapterOrder: 0, sceneOrder: 0 };
+
+  // For now, use chapterId as chapterOrder (will be replaced with actual sort_order lookup later)
+  return {
+    title: scene.title,
+    chapterOrder: scene.chapterId,
+    sceneOrder: scene.sortOrder,
+  };
+}
+
 export async function saveSceneContent(
   sceneId: string,
   markdown: string,
 ): Promise<void> {
-  await invoke("content_write", { sceneId, markdown });
+  const meta = await getSceneMetadata(sceneId);
+  await invoke("content_write", {
+    sceneId,
+    markdown,
+    title: meta.title,
+    chapterOrder: meta.chapterOrder,
+    sceneOrder: meta.sceneOrder,
+  });
   await db
     .update(scenes)
     .set({ updatedAt: new Date().toISOString() })
@@ -56,4 +83,18 @@ export async function saveSceneContent(
 
 export async function loadSceneContent(sceneId: string): Promise<string> {
   return invoke<string>("content_read", { sceneId });
+}
+
+export async function renameSceneContent(
+  sceneId: string,
+  title: string,
+  chapterOrder: number,
+  sceneOrder: number,
+): Promise<void> {
+  await invoke("content_rename", {
+    sceneId,
+    title,
+    chapterOrder,
+    sceneOrder,
+  });
 }

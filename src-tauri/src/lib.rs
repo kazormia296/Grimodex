@@ -40,8 +40,11 @@ fn content_write(
     state: tauri::State<'_, ContentDir>,
     scene_id: String,
     markdown: String,
+    title: String,
+    chapter_order: u32,
+    scene_order: u32,
 ) -> Result<(), AppError> {
-    state.write(&scene_id, &markdown)?;
+    state.write(&scene_id, &markdown, &title, chapter_order, scene_order)?;
     Ok(())
 }
 
@@ -60,6 +63,18 @@ fn content_delete(
     scene_id: String,
 ) -> Result<(), AppError> {
     state.delete(&scene_id)?;
+    Ok(())
+}
+
+#[tauri::command]
+fn content_rename(
+    state: tauri::State<'_, ContentDir>,
+    scene_id: String,
+    title: String,
+    chapter_order: u32,
+    scene_order: u32,
+) -> Result<(), AppError> {
+    state.rename(&scene_id, &title, chapter_order, scene_order)?;
     Ok(())
 }
 
@@ -91,7 +106,8 @@ pub fn run() {
             db_execute,
             content_write,
             content_read,
-            content_delete
+            content_delete,
+            content_rename
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

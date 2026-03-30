@@ -33,6 +33,7 @@ vi.mock("./api", () => ({
       updatedAt: "2025-01-01T00:00:00Z",
     }),
   ),
+  renameSceneContent: vi.fn().mockResolvedValue(undefined),
 }));
 
 function resetStore() {

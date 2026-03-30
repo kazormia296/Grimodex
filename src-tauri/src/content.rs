@@ -5,6 +5,43 @@ pub struct ContentDir {
     base: Mutex<PathBuf>,
 }
 
+/// Max character length for the sanitized title portion of the filename.
+const MAX_TITLE_CHARS: usize = 30;
+
+/// Characters forbidden in filenames on Windows.
+const FORBIDDEN_CHARS: &[char] = &['/', '\\', ':', '*', '?', '"', '<', '>', '|'];
+
+/// Sanitize a scene title for use in a filename.
+fn sanitize_title(title: &str) -> String {
+    if title.is_empty() {
+        return "untitled".to_string();
+    }
+    let cleaned: String = title
+        .chars()
+        .map(|c| if FORBIDDEN_CHARS.contains(&c) { '_' } else { c })
+        .collect();
+    // Truncate to MAX_TITLE_CHARS (at a char boundary)
+    let truncated: String = cleaned.chars().take(MAX_TITLE_CHARS).collect();
+    truncated.trim().to_string()
+}
+
+/// Extract the first 8 characters of a UUID/ID to use as a short identifier.
+fn short_id(scene_id: &str) -> &str {
+    let end = scene_id
+        .char_indices()
+        .nth(8)
+        .map(|(i, _)| i)
+        .unwrap_or(scene_id.len());
+    &scene_id[..end]
+}
+
+/// Build the hybrid filename: {chapter_order}-{scene_order}_{title}_{short_id}.md
+fn build_filename(scene_id: &str, title: &str, chapter_order: u32, scene_order: u32) -> String {
+    let safe_title = sanitize_title(title);
+    let sid = short_id(scene_id);
+    format!("{:02}-{:02}_{safe_title}_{sid}.md", chapter_order, scene_order)
+}
+
 impl ContentDir {
     pub fn new(base: PathBuf) -> anyhow::Result<Self> {
         std::fs::create_dir_all(&base)?;
@@ -13,28 +50,74 @@ impl ContentDir {
         })
     }
 
-    pub fn write(&self, scene_id: &str, markdown: &str) -> anyhow::Result<()> {
+    /// Find an existing file for this scene_id by scanning for *_{short_id}.md.
+    fn find_existing(&self, base: &PathBuf, scene_id: &str) -> Option<PathBuf> {
+        let sid = short_id(scene_id);
+        let suffix = format!("_{sid}.md");
+        let entries = std::fs::read_dir(base).ok()?;
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().to_string();
+            if name.ends_with(&suffix) {
+                return Some(entry.path());
+            }
+        }
+        None
+    }
+
+    pub fn write(
+        &self,
+        scene_id: &str,
+        markdown: &str,
+        title: &str,
+        chapter_order: u32,
+        scene_order: u32,
+    ) -> anyhow::Result<()> {
         let base = self.base.lock().map_err(|e| anyhow::anyhow!("{e}"))?;
-        let path = base.join(format!("{scene_id}.md"));
-        std::fs::write(&path, markdown)?;
+        let new_name = build_filename(scene_id, title, chapter_order, scene_order);
+        let new_path = base.join(&new_name);
+
+        // Remove old file if it exists with a different name
+        if let Some(old_path) = self.find_existing(&base, scene_id) {
+            if old_path != new_path {
+                std::fs::remove_file(&old_path).ok();
+            }
+        }
+
+        std::fs::write(&new_path, markdown)?;
         Ok(())
     }
 
     pub fn read(&self, scene_id: &str) -> anyhow::Result<String> {
         let base = self.base.lock().map_err(|e| anyhow::anyhow!("{e}"))?;
-        let path = base.join(format!("{scene_id}.md"));
-        if path.exists() {
-            Ok(std::fs::read_to_string(&path)?)
-        } else {
-            Ok(String::new())
+        match self.find_existing(&base, scene_id) {
+            Some(path) => Ok(std::fs::read_to_string(&path)?),
+            None => Ok(String::new()),
         }
     }
 
     pub fn delete(&self, scene_id: &str) -> anyhow::Result<()> {
         let base = self.base.lock().map_err(|e| anyhow::anyhow!("{e}"))?;
-        let path = base.join(format!("{scene_id}.md"));
-        if path.exists() {
+        if let Some(path) = self.find_existing(&base, scene_id) {
             std::fs::remove_file(&path)?;
+        }
+        Ok(())
+    }
+
+    pub fn rename(
+        &self,
+        scene_id: &str,
+        title: &str,
+        chapter_order: u32,
+        scene_order: u32,
+    ) -> anyhow::Result<()> {
+        let base = self.base.lock().map_err(|e| anyhow::anyhow!("{e}"))?;
+        let new_name = build_filename(scene_id, title, chapter_order, scene_order);
+        let new_path = base.join(&new_name);
+
+        if let Some(old_path) = self.find_existing(&base, scene_id) {
+            if old_path != new_path {
+                std::fs::rename(&old_path, &new_path)?;
+            }
         }
         Ok(())
     }

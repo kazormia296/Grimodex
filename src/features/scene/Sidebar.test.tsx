@@ -36,6 +36,7 @@ vi.mock("./api", () => ({
   createScene: (...args: unknown[]) => mockCreateScene(...args),
   deleteScene: (...args: unknown[]) => mockDeleteScene(...args),
   updateScene: (...args: unknown[]) => mockUpdateScene(...args),
+  renameSceneContent: vi.fn().mockResolvedValue(undefined),
 }));
 
 function setStoreWithScenes(

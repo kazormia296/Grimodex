@@ -6,6 +6,7 @@ import { useSceneStore } from "./store";
 vi.mock("./api", () => ({
   loadSceneContent: vi.fn().mockResolvedValue(""),
   saveSceneContent: vi.fn().mockResolvedValue(undefined),
+  renameSceneContent: vi.fn().mockResolvedValue(undefined),
   listScenes: vi.fn().mockResolvedValue([]),
   createScene: vi.fn(),
   deleteScene: vi.fn(),
