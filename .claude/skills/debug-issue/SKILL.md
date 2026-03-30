@@ -1,0 +1,23 @@
+---
+name: debug-issue
+description: >
+  バグを調査・修正する。再現→原因特定→修正→検証の順で進める。
+  Use when: 「デバッグして」「修正して」「エラーが出る」「動かない」
+  と言われたとき。CIの失敗、ランタイムエラー、型エラーの修正に使う。
+allowed-tools: Read, Write, Edit, Grep, Glob, Bash, MultiEdit
+argument-hint: [bug-description-or-error-message]
+---
+
+「$1」を修正してください。
+
+1. エラーメッセージ・再現手順を確認する
+2. 関連コードを探索し、根本原因を特定する
+   - Tauri IPC関連なら Rust側とTypeScript側の両方を確認
+3. 修正方針を報告し、承認を得てから実装する
+4. 修正を実装する
+5. 既存テストが通過することを確認する
+6. 再発防止のためのテストを追加する
+7. `npm test` + `cargo test` で全テスト通過を確認
+8. 変更をコミットする
+
+**推測で修正しない。原因を特定してから修正すること。**
