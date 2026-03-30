@@ -1,50 +1,76 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useCallback } from "react";
 import { useEditor, EditorContent } from "@tiptap/react";
 import StarterKit from "@tiptap/starter-kit";
 import { Markdown } from "tiptap-markdown";
 import { Toolbar } from "@/features/editor/Toolbar";
 import { CharCount } from "@/features/editor/CharCount";
 import { useSceneStore } from "./store";
+import { loadSceneContent, saveSceneContent } from "./api";
+import { useAutoSave } from "@/hooks/useAutoSave";
 
 export function SceneEditor() {
   const activeSceneId = useSceneStore((s) => s.activeSceneId);
-  const scenes = useSceneStore((s) => s.scenes);
-  const updateSceneContent = useSceneStore((s) => s.updateSceneContent);
-
-  const activeScene = scenes.find((s) => s.id === activeSceneId);
   const prevSceneIdRef = useRef(activeSceneId);
+  const editorRef = useRef<ReturnType<typeof useEditor>>(null);
+
+  const saveSceneIdRef = useRef(activeSceneId);
+
+  const saveFn = useCallback(async () => {
+    const id = saveSceneIdRef.current;
+    const ed = editorRef.current;
+    if (!id || !ed) return;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const md = (ed.storage as any).markdown.getMarkdown() as string;
+    await saveSceneContent(id, md);
+  }, []);
+
+  const { schedule, cancel, flush } = useAutoSave(saveFn, 2000);
 
   const editor = useEditor({
     extensions: [StarterKit, Markdown],
-    content: activeScene?.content ?? "",
+    content: "",
     editorProps: {
       attributes: {
         role: "textbox",
         "aria-multiline": "true",
       },
     },
-    onUpdate({ editor: e }) {
-      const html = e.getHTML();
-      const currentId = useSceneStore.getState().activeSceneId;
-      updateSceneContent(currentId, html);
+    onUpdate() {
+      schedule();
     },
   });
 
+  // Keep editorRef in sync
+  editorRef.current = editor;
+
+  // Load content when active scene changes
   useEffect(() => {
-    if (!editor || activeSceneId === prevSceneIdRef.current) return;
+    if (!editor || !activeSceneId) return;
 
-    // Save current content before switching
-    const prevId = prevSceneIdRef.current;
-    const prevContent = editor.getHTML();
-    updateSceneContent(prevId, prevContent);
+    let cancelled = false;
 
-    // Load new scene content
-    const newScene = useSceneStore
-      .getState()
-      .scenes.find((s) => s.id === activeSceneId);
-    editor.commands.setContent(newScene?.content ?? "");
-    prevSceneIdRef.current = activeSceneId;
-  }, [activeSceneId, editor, updateSceneContent]);
+    async function switchScene() {
+      // Flush pending save for previous scene using its ID
+      if (prevSceneIdRef.current && prevSceneIdRef.current !== activeSceneId) {
+        await flush();
+      }
+
+      // Cancel any pending timer before switching saveSceneIdRef
+      cancel();
+      saveSceneIdRef.current = activeSceneId;
+
+      const content = await loadSceneContent(activeSceneId);
+      if (cancelled) return;
+      editor!.commands.setContent(content || "");
+      prevSceneIdRef.current = activeSceneId;
+    }
+
+    switchScene();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [activeSceneId, editor, flush, cancel]);
 
   const charCount = editor?.state.doc.textContent.length ?? 0;
 

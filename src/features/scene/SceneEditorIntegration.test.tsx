@@ -1,16 +1,32 @@
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach, vi } from "vitest";
 import { render, screen } from "@testing-library/react";
-import userEvent from "@testing-library/user-event";
 import { SceneEditor } from "./SceneEditor";
 import { useSceneStore } from "./store";
 
+vi.mock("./api", () => ({
+  loadSceneContent: vi.fn().mockResolvedValue(""),
+  saveSceneContent: vi.fn().mockResolvedValue(undefined),
+  listScenes: vi.fn().mockResolvedValue([]),
+  createScene: vi.fn(),
+  deleteScene: vi.fn(),
+  updateScene: vi.fn(),
+}));
+
 function resetStore() {
-  useSceneStore.setState(useSceneStore.getInitialState());
+  useSceneStore.setState({
+    scenes: [
+      { id: "s1", title: "シーン 1", sortOrder: 0 },
+      { id: "s2", title: "シーン 2", sortOrder: 1 },
+    ],
+    activeSceneId: "s1",
+    isLoading: false,
+  });
 }
 
 describe("SceneEditor integration", () => {
   beforeEach(() => {
     resetStore();
+    vi.clearAllMocks();
   });
 
   it("renders editor for the active scene", () => {
@@ -18,49 +34,15 @@ describe("SceneEditor integration", () => {
     expect(screen.getByRole("textbox")).toBeInTheDocument();
   });
 
-  it("preserves content when switching between scenes", async () => {
-    const user = userEvent.setup();
-
-    // Create second scene
-    useSceneStore.getState().createScene();
-    const { scenes } = useSceneStore.getState();
+  it("loads content from API when active scene changes", async () => {
+    const { loadSceneContent } = await import("./api");
+    (loadSceneContent as ReturnType<typeof vi.fn>).mockResolvedValue(
+      "# Scene 1 content",
+    );
 
     render(<SceneEditor />);
 
-    // Type in first scene
-    const editor = screen.getByRole("textbox");
-    await user.click(editor);
-    await user.type(editor, "シーン1のテキスト");
-
-    // Store should have content for scene 1
-    const scene1Content = useSceneStore.getState().scenes[0].content;
-    expect(scene1Content.length).toBeGreaterThan(0);
-
-    // Switch to scene 2
-    useSceneStore.getState().setActiveScene(scenes[1].id);
-
-    // Switch back to scene 1
-    useSceneStore.getState().setActiveScene(scenes[0].id);
-
-    // Content should be preserved
-    const restored = useSceneStore.getState().scenes[0].content;
-    expect(restored).toBe(scene1Content);
-  });
-
-  it("shows different content per scene", () => {
-    useSceneStore.getState().createScene();
-    const { scenes } = useSceneStore.getState();
-
-    // Set content for each scene directly in store
-    useSceneStore
-      .getState()
-      .updateSceneContent(scenes[0].id, "<p>First scene</p>");
-    useSceneStore
-      .getState()
-      .updateSceneContent(scenes[1].id, "<p>Second scene</p>");
-
-    const state = useSceneStore.getState();
-    expect(state.scenes[0].content).toBe("<p>First scene</p>");
-    expect(state.scenes[1].content).toBe("<p>Second scene</p>");
+    // loadSceneContent should be called for the active scene
+    expect(loadSceneContent).toHaveBeenCalledWith("s1");
   });
 });

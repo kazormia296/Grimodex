@@ -1,5 +1,5 @@
 import { drizzle } from "drizzle-orm/sqlite-proxy";
-import { invoke } from "@tauri-apps/api/core";
+import { invoke } from "@/lib/tauri";
 import * as schema from "./schema";
 
 interface QueryResult {

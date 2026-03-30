@@ -1,7 +1,7 @@
 import { db } from "@/db/client";
 import { scenes } from "@/db/schema";
 import { eq } from "drizzle-orm";
-import { invoke } from "@tauri-apps/api/core";
+import { invoke } from "@/lib/tauri";
 
 export type Scene = typeof scenes.$inferSelect;
 export type NewScene = typeof scenes.$inferInsert;

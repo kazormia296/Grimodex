@@ -2,15 +2,33 @@ import { useState, useCallback, useRef, useEffect } from "react";
 import { useSceneStore } from "./store";
 import { cn } from "@/lib/utils";
 
+const TEMP_CHAPTER_ID = 1;
+
 export function Sidebar() {
   const scenes = useSceneStore((s) => s.scenes);
   const activeSceneId = useSceneStore((s) => s.activeSceneId);
+  const isLoading = useSceneStore((s) => s.isLoading);
+  const loadScenes = useSceneStore((s) => s.loadScenes);
   const createScene = useSceneStore((s) => s.createScene);
   const deleteScene = useSceneStore((s) => s.deleteScene);
   const renameScene = useSceneStore((s) => s.renameScene);
   const setActiveScene = useSceneStore((s) => s.setActiveScene);
 
   const [editingId, setEditingId] = useState<string | null>(null);
+
+  useEffect(() => {
+    loadScenes(TEMP_CHAPTER_ID);
+  }, [loadScenes]);
+
+  if (isLoading && scenes.length === 0) {
+    return (
+      <nav className="flex h-full w-60 flex-col border-r border-sidebar-border bg-sidebar-background text-sidebar-foreground">
+        <div className="flex items-center justify-center py-4 text-sm text-muted-foreground">
+          読み込み中…
+        </div>
+      </nav>
+    );
+  }
 
   return (
     <nav className="flex h-full w-60 flex-col border-r border-sidebar-border bg-sidebar-background text-sidebar-foreground">
@@ -19,7 +37,7 @@ export function Sidebar() {
         <button
           type="button"
           aria-label="シーン追加"
-          onClick={createScene}
+          onClick={() => createScene()}
           className="rounded px-2 py-0.5 text-sm hover:bg-sidebar-accent"
         >
           +

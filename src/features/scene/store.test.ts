@@ -1,126 +1,125 @@
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach, vi } from "vitest";
 import { useSceneStore } from "./store";
 
+vi.mock("./api", () => ({
+  listScenes: vi.fn().mockResolvedValue([
+    {
+      id: "scene-1",
+      chapterId: 1,
+      title: "シーン 1",
+      sortOrder: 0,
+      synopsis: "",
+      createdAt: "2025-01-01T00:00:00Z",
+      updatedAt: "2025-01-01T00:00:00Z",
+    },
+  ]),
+  createScene: vi.fn().mockImplementation((data) =>
+    Promise.resolve({
+      ...data,
+      synopsis: "",
+      createdAt: "2025-01-01T00:00:00Z",
+      updatedAt: "2025-01-01T00:00:00Z",
+    }),
+  ),
+  deleteScene: vi.fn().mockResolvedValue(undefined),
+  updateScene: vi.fn().mockImplementation((id, data) =>
+    Promise.resolve({
+      id,
+      chapterId: 1,
+      ...data,
+      sortOrder: 0,
+      synopsis: "",
+      createdAt: "2025-01-01T00:00:00Z",
+      updatedAt: "2025-01-01T00:00:00Z",
+    }),
+  ),
+}));
+
 function resetStore() {
-  useSceneStore.setState(useSceneStore.getInitialState());
+  useSceneStore.setState({
+    scenes: [],
+    activeSceneId: "",
+    isLoading: false,
+  });
 }
 
 describe("useSceneStore", () => {
   beforeEach(() => {
     resetStore();
+    vi.clearAllMocks();
   });
 
-  describe("initial state", () => {
-    it("starts with one default scene", () => {
-      const { scenes } = useSceneStore.getState();
+  describe("loadScenes", () => {
+    it("loads scenes from API and sets first as active", async () => {
+      await useSceneStore.getState().loadScenes(1);
+      const { scenes, activeSceneId, isLoading } = useSceneStore.getState();
       expect(scenes).toHaveLength(1);
       expect(scenes[0].title).toBe("シーン 1");
-    });
-
-    it("selects the first scene by default", () => {
-      const { scenes, activeSceneId } = useSceneStore.getState();
-      expect(activeSceneId).toBe(scenes[0].id);
+      expect(activeSceneId).toBe("scene-1");
+      expect(isLoading).toBe(false);
     });
   });
 
   describe("createScene", () => {
-    it("adds a new scene with default title", () => {
-      useSceneStore.getState().createScene();
+    it("adds a new scene via API", async () => {
+      await useSceneStore.getState().loadScenes(1);
+      await useSceneStore.getState().createScene();
       const { scenes } = useSceneStore.getState();
       expect(scenes).toHaveLength(2);
       expect(scenes[1].title).toBe("シーン 2");
     });
 
-    it("assigns a unique id to each scene", () => {
-      useSceneStore.getState().createScene();
+    it("assigns a unique id to each scene", async () => {
+      await useSceneStore.getState().loadScenes(1);
+      await useSceneStore.getState().createScene();
       const { scenes } = useSceneStore.getState();
       expect(scenes[0].id).not.toBe(scenes[1].id);
-    });
-
-    it("initializes new scene with empty content", () => {
-      useSceneStore.getState().createScene();
-      const { scenes } = useSceneStore.getState();
-      expect(scenes[1].content).toBe("");
     });
   });
 
   describe("deleteScene", () => {
-    it("removes the specified scene", () => {
-      useSceneStore.getState().createScene();
+    it("removes the specified scene via API", async () => {
+      await useSceneStore.getState().loadScenes(1);
+      await useSceneStore.getState().createScene();
       const { scenes } = useSceneStore.getState();
-      const idToDelete = scenes[1].id;
-      useSceneStore.getState().deleteScene(idToDelete);
+      await useSceneStore.getState().deleteScene(scenes[1].id);
       expect(useSceneStore.getState().scenes).toHaveLength(1);
     });
 
-    it("does not delete the last remaining scene", () => {
-      const { scenes } = useSceneStore.getState();
-      useSceneStore.getState().deleteScene(scenes[0].id);
+    it("does not delete the last remaining scene", async () => {
+      await useSceneStore.getState().loadScenes(1);
+      await useSceneStore.getState().deleteScene("scene-1");
       expect(useSceneStore.getState().scenes).toHaveLength(1);
     });
 
-    it("switches activeSceneId when active scene is deleted", () => {
-      useSceneStore.getState().createScene();
+    it("switches activeSceneId when active scene is deleted", async () => {
+      await useSceneStore.getState().loadScenes(1);
+      await useSceneStore.getState().createScene();
       const { scenes } = useSceneStore.getState();
       const firstId = scenes[0].id;
       const secondId = scenes[1].id;
       useSceneStore.getState().setActiveScene(firstId);
-      useSceneStore.getState().deleteScene(firstId);
+      await useSceneStore.getState().deleteScene(firstId);
       expect(useSceneStore.getState().activeSceneId).toBe(secondId);
     });
   });
 
   describe("renameScene", () => {
-    it("updates the title of the specified scene", () => {
-      const { scenes } = useSceneStore.getState();
-      useSceneStore.getState().renameScene(scenes[0].id, "プロローグ");
+    it("updates the title of the specified scene via API", async () => {
+      await useSceneStore.getState().loadScenes(1);
+      await useSceneStore.getState().renameScene("scene-1", "プロローグ");
       expect(useSceneStore.getState().scenes[0].title).toBe("プロローグ");
-    });
-
-    it("does nothing for a non-existent scene id", () => {
-      useSceneStore.getState().renameScene("nonexistent", "test");
-      expect(useSceneStore.getState().scenes[0].title).toBe("シーン 1");
     });
   });
 
   describe("setActiveScene", () => {
-    it("switches the active scene", () => {
-      useSceneStore.getState().createScene();
+    it("switches the active scene", async () => {
+      await useSceneStore.getState().loadScenes(1);
+      await useSceneStore.getState().createScene();
       const { scenes } = useSceneStore.getState();
       const secondId = scenes[1].id;
       useSceneStore.getState().setActiveScene(secondId);
       expect(useSceneStore.getState().activeSceneId).toBe(secondId);
-    });
-  });
-
-  describe("updateSceneContent", () => {
-    it("updates content for the specified scene", () => {
-      const { scenes } = useSceneStore.getState();
-      useSceneStore.getState().updateSceneContent(scenes[0].id, "本文テスト");
-      expect(useSceneStore.getState().scenes[0].content).toBe("本文テスト");
-    });
-
-    it("preserves content of other scenes", () => {
-      useSceneStore.getState().createScene();
-      const { scenes } = useSceneStore.getState();
-      useSceneStore
-        .getState()
-        .updateSceneContent(scenes[0].id, "シーン1の内容");
-      useSceneStore
-        .getState()
-        .updateSceneContent(scenes[1].id, "シーン2の内容");
-      const updated = useSceneStore.getState().scenes;
-      expect(updated[0].content).toBe("シーン1の内容");
-      expect(updated[1].content).toBe("シーン2の内容");
-    });
-  });
-
-  describe("getActiveScene selector", () => {
-    it("returns the currently active scene", () => {
-      const state = useSceneStore.getState();
-      const active = state.scenes.find((s) => s.id === state.activeSceneId);
-      expect(active).toBeDefined();
-      expect(active?.title).toBe("シーン 1");
     });
   });
 });
