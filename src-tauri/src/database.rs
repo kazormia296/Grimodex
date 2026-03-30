@@ -49,6 +49,66 @@ impl Database {
                 updated_at  TEXT NOT NULL
             );
 
+            CREATE TABLE IF NOT EXISTS codex_entries (
+                id                      INTEGER PRIMARY KEY AUTOINCREMENT,
+                type                    TEXT NOT NULL,
+                name                    TEXT NOT NULL,
+                summary                 TEXT NOT NULL DEFAULT '',
+                content                 TEXT NOT NULL DEFAULT '',
+                tags                    TEXT NOT NULL DEFAULT '',
+                source_chat_message_id  TEXT,
+                created_at              TEXT NOT NULL,
+                updated_at              TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS snippets (
+                id                      INTEGER PRIMARY KEY AUTOINCREMENT,
+                title                   TEXT NOT NULL,
+                content                 TEXT NOT NULL DEFAULT '',
+                tags                    TEXT NOT NULL DEFAULT '',
+                scene_id                TEXT,
+                source_chat_message_id  TEXT,
+                created_at              TEXT NOT NULL
+            );
+
+            -- FTS5 full-text search indexes (trigram tokenizer for Japanese)
+            CREATE VIRTUAL TABLE IF NOT EXISTS codex_entries_fts USING fts5(
+                name, summary, content, tags,
+                tokenize='trigram'
+            );
+
+            CREATE VIRTUAL TABLE IF NOT EXISTS snippets_fts USING fts5(
+                title, content, tags,
+                tokenize='trigram'
+            );
+
+            -- Triggers to keep FTS indexes in sync
+            CREATE TRIGGER IF NOT EXISTS codex_entries_ai AFTER INSERT ON codex_entries BEGIN
+                INSERT INTO codex_entries_fts(rowid, name, summary, content, tags)
+                VALUES (new.id, new.name, new.summary, new.content, new.tags);
+            END;
+            CREATE TRIGGER IF NOT EXISTS codex_entries_ad AFTER DELETE ON codex_entries BEGIN
+                DELETE FROM codex_entries_fts WHERE rowid = old.id;
+            END;
+            CREATE TRIGGER IF NOT EXISTS codex_entries_au AFTER UPDATE ON codex_entries BEGIN
+                DELETE FROM codex_entries_fts WHERE rowid = old.id;
+                INSERT INTO codex_entries_fts(rowid, name, summary, content, tags)
+                VALUES (new.id, new.name, new.summary, new.content, new.tags);
+            END;
+
+            CREATE TRIGGER IF NOT EXISTS snippets_ai AFTER INSERT ON snippets BEGIN
+                INSERT INTO snippets_fts(rowid, title, content, tags)
+                VALUES (new.id, new.title, new.content, new.tags);
+            END;
+            CREATE TRIGGER IF NOT EXISTS snippets_ad AFTER DELETE ON snippets BEGIN
+                DELETE FROM snippets_fts WHERE rowid = old.id;
+            END;
+            CREATE TRIGGER IF NOT EXISTS snippets_au AFTER UPDATE ON snippets BEGIN
+                DELETE FROM snippets_fts WHERE rowid = old.id;
+                INSERT INTO snippets_fts(rowid, title, content, tags)
+                VALUES (new.id, new.title, new.content, new.tags);
+            END;
+
             -- Seed default project + chapter so scenes can reference chapter_id=1
             INSERT OR IGNORE INTO projects (id, title, description, created_at, updated_at)
               VALUES (1, '無題のプロジェクト', '', datetime('now'), datetime('now'));
@@ -565,6 +625,542 @@ mod tests {
 
         // Cleanup
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn test_migrate_creates_codex_entries_table() {
+        let db = test_db();
+        let rows = db
+            .execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='codex_entries'",
+                &[],
+                "all",
+            )
+            .expect("query");
+        assert_eq!(rows.len(), 1);
+    }
+
+    #[test]
+    fn test_migrate_creates_snippets_table() {
+        let db = test_db();
+        let rows = db
+            .execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='snippets'",
+                &[],
+                "all",
+            )
+            .expect("query");
+        assert_eq!(rows.len(), 1);
+    }
+
+    #[test]
+    fn test_crud_codex_entries() {
+        let db = test_db();
+
+        // Create
+        db.execute(
+            "INSERT INTO codex_entries (type, name, summary, content, tags, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            &[
+                Value::String("character".into()),
+                Value::String("太郎".into()),
+                Value::String("主人公".into()),
+                Value::String("太郎は勇敢な青年。".into()),
+                Value::String("主人公,勇者".into()),
+                Value::String("2025-01-01T00:00:00Z".into()),
+                Value::String("2025-01-01T00:00:00Z".into()),
+            ],
+            "run",
+        )
+        .expect("insert codex entry");
+
+        // Read
+        let rows = db
+            .execute("SELECT * FROM codex_entries", &[], "all")
+            .expect("select all");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0]["name"], Value::String("太郎".into()));
+        assert_eq!(rows[0]["type"], Value::String("character".into()));
+
+        // Update
+        db.execute(
+            "UPDATE codex_entries SET summary = ?, updated_at = ? WHERE id = ?",
+            &[
+                Value::String("更新された主人公".into()),
+                Value::String("2025-06-01T00:00:00Z".into()),
+                Value::Number(1.into()),
+            ],
+            "run",
+        )
+        .expect("update codex entry");
+
+        let rows = db
+            .execute(
+                "SELECT * FROM codex_entries WHERE id = ?",
+                &[Value::Number(1.into())],
+                "get",
+            )
+            .expect("get codex entry");
+        assert_eq!(
+            rows[0]["summary"],
+            Value::String("更新された主人公".into())
+        );
+
+        // Delete
+        db.execute(
+            "DELETE FROM codex_entries WHERE id = ?",
+            &[Value::Number(1.into())],
+            "run",
+        )
+        .expect("delete codex entry");
+
+        let rows = db
+            .execute("SELECT * FROM codex_entries", &[], "all")
+            .expect("select after delete");
+        assert_eq!(rows.len(), 0);
+    }
+
+    #[test]
+    fn test_crud_snippets() {
+        let db = test_db();
+
+        // Create
+        db.execute(
+            "INSERT INTO snippets (title, content, tags, scene_id, created_at) VALUES (?, ?, ?, ?, ?)",
+            &[
+                Value::String("伏線メモ".into()),
+                Value::String("第3章で回収する伏線。".into()),
+                Value::String("伏線".into()),
+                Value::Null,
+                Value::String("2025-01-01T00:00:00Z".into()),
+            ],
+            "run",
+        )
+        .expect("insert snippet");
+
+        // Read
+        let rows = db
+            .execute("SELECT * FROM snippets", &[], "all")
+            .expect("select all");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0]["title"], Value::String("伏線メモ".into()));
+        assert_eq!(rows[0]["scene_id"], Value::Null);
+
+        // Create with scene_id
+        db.execute(
+            "INSERT INTO snippets (title, content, tags, scene_id, source_chat_message_id, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+            &[
+                Value::String("シーンメモ".into()),
+                Value::String("雰囲気の詳細。".into()),
+                Value::String("雰囲気".into()),
+                Value::String("scene-uuid-1".into()),
+                Value::String("msg-001".into()),
+                Value::String("2025-01-01T00:00:00Z".into()),
+            ],
+            "run",
+        )
+        .expect("insert snippet with scene");
+
+        let rows = db
+            .execute(
+                "SELECT * FROM snippets WHERE scene_id = ?",
+                &[Value::String("scene-uuid-1".into())],
+                "all",
+            )
+            .expect("select by scene_id");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(
+            rows[0]["source_chat_message_id"],
+            Value::String("msg-001".into())
+        );
+
+        // Update
+        db.execute(
+            "UPDATE snippets SET title = ? WHERE id = ?",
+            &[
+                Value::String("更新されたメモ".into()),
+                Value::Number(1.into()),
+            ],
+            "run",
+        )
+        .expect("update snippet");
+
+        let rows = db
+            .execute(
+                "SELECT * FROM snippets WHERE id = ?",
+                &[Value::Number(1.into())],
+                "get",
+            )
+            .expect("get snippet");
+        assert_eq!(rows[0]["title"], Value::String("更新されたメモ".into()));
+
+        // Delete
+        db.execute(
+            "DELETE FROM snippets WHERE id = ?",
+            &[Value::Number(1.into())],
+            "run",
+        )
+        .expect("delete snippet");
+
+        let rows = db
+            .execute("SELECT * FROM snippets", &[], "all")
+            .expect("select after delete");
+        assert_eq!(rows.len(), 1); // second snippet remains
+    }
+
+    #[test]
+    fn test_fts5_tables_and_triggers_exist() {
+        let db = test_db();
+
+        // Check FTS virtual tables exist
+        let rows = db
+            .execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='codex_entries_fts'",
+                &[],
+                "all",
+            )
+            .expect("query fts table");
+        assert_eq!(rows.len(), 1, "codex_entries_fts should exist");
+
+        let rows = db
+            .execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='snippets_fts'",
+                &[],
+                "all",
+            )
+            .expect("query fts table");
+        assert_eq!(rows.len(), 1, "snippets_fts should exist");
+
+        // Check triggers exist
+        let rows = db
+            .execute(
+                "SELECT name FROM sqlite_master WHERE type='trigger' AND name LIKE 'codex_entries_%'",
+                &[],
+                "all",
+            )
+            .expect("query triggers");
+        assert_eq!(rows.len(), 3, "codex_entries should have 3 triggers (ai, ad, au)");
+
+        let rows = db
+            .execute(
+                "SELECT name FROM sqlite_master WHERE type='trigger' AND name LIKE 'snippets_%'",
+                &[],
+                "all",
+            )
+            .expect("query triggers");
+        assert_eq!(rows.len(), 3, "snippets should have 3 triggers (ai, ad, au)");
+    }
+
+    #[test]
+    fn test_fts5_codex_entries_search() {
+        let db = test_db();
+
+        db.execute(
+            "INSERT INTO codex_entries (type, name, summary, content, tags, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            &[
+                Value::String("character".into()),
+                Value::String("太郎".into()),
+                Value::String("勇敢な主人公".into()),
+                Value::String("太郎は村を守る勇者である。".into()),
+                Value::String("主人公,勇者".into()),
+                Value::String("2025-01-01T00:00:00Z".into()),
+                Value::String("2025-01-01T00:00:00Z".into()),
+            ],
+            "run",
+        )
+        .expect("insert");
+
+        db.execute(
+            "INSERT INTO codex_entries (type, name, summary, content, tags, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            &[
+                Value::String("location".into()),
+                Value::String("魔王城".into()),
+                Value::String("最終ダンジョン".into()),
+                Value::String("暗黒の城。魔物が棲む。".into()),
+                Value::String("ダンジョン".into()),
+                Value::String("2025-01-01T00:00:00Z".into()),
+                Value::String("2025-01-01T00:00:00Z".into()),
+            ],
+            "run",
+        )
+        .expect("insert");
+
+        // Verify base table has data
+        let base_rows = db
+            .execute("SELECT * FROM codex_entries", &[], "all")
+            .expect("base table");
+        assert_eq!(base_rows.len(), 2, "base table should have 2 entries");
+
+        // FTS trigram search: queries must be >= 3 Unicode codepoints
+        // Search for "勇敢な" (3 chars) which appears in summary of 太郎's entry
+        let rows = db
+            .execute(
+                "SELECT name FROM codex_entries_fts WHERE codex_entries_fts MATCH ?",
+                &[Value::String("勇敢な主人公".into())],
+                "all",
+            )
+            .expect("fts search");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0]["name"], Value::String("太郎".into()));
+
+        // Search for "魔王城" (3 chars) which appears in name
+        let rows = db
+            .execute(
+                "SELECT name FROM codex_entries_fts WHERE codex_entries_fts MATCH ?",
+                &[Value::String("魔王城".into())],
+                "all",
+            )
+            .expect("fts search");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0]["name"], Value::String("魔王城".into()));
+
+        // Search across content field: "村を守る" appears in 太郎's content
+        let rows = db
+            .execute(
+                "SELECT name FROM codex_entries_fts WHERE codex_entries_fts MATCH ?",
+                &[Value::String("村を守る".into())],
+                "all",
+            )
+            .expect("fts content search");
+        assert_eq!(rows.len(), 1);
+    }
+
+    #[test]
+    fn test_fts5_snippets_search() {
+        let db = test_db();
+
+        db.execute(
+            "INSERT INTO snippets (title, content, tags, created_at) VALUES (?, ?, ?, ?)",
+            &[
+                Value::String("森の描写".into()),
+                Value::String("暗い森の中、一筋の光が差し込んだ。".into()),
+                Value::String("描写,森".into()),
+                Value::String("2025-01-01T00:00:00Z".into()),
+            ],
+            "run",
+        )
+        .expect("insert");
+
+        // FTS search
+        let rows = db
+            .execute(
+                "SELECT title FROM snippets_fts WHERE snippets_fts MATCH ?",
+                &[Value::String("森の描写".into())],
+                "all",
+            )
+            .expect("fts search");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0]["title"], Value::String("森の描写".into()));
+    }
+
+    #[test]
+    fn test_fts5_sync_on_update() {
+        let db = test_db();
+
+        db.execute(
+            "INSERT INTO codex_entries (type, name, summary, content, tags, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            &[
+                Value::String("character".into()),
+                Value::String("山田太郎".into()),
+                Value::String("主人公キャラ".into()),
+                Value::String("勇者である".into()),
+                Value::String("".into()),
+                Value::String("2025-01-01T00:00:00Z".into()),
+                Value::String("2025-01-01T00:00:00Z".into()),
+            ],
+            "run",
+        )
+        .expect("insert");
+
+        // Update name (trigram: >= 3 chars)
+        db.execute(
+            "UPDATE codex_entries SET name = ? WHERE id = ?",
+            &[
+                Value::String("鈴木次郎".into()),
+                Value::Number(1.into()),
+            ],
+            "run",
+        )
+        .expect("update");
+
+        // Old name should not match
+        let rows = db
+            .execute(
+                "SELECT name FROM codex_entries_fts WHERE codex_entries_fts MATCH ?",
+                &[Value::String("山田太郎".into())],
+                "all",
+            )
+            .expect("fts search old");
+        assert_eq!(rows.len(), 0);
+
+        // New name should match
+        let rows = db
+            .execute(
+                "SELECT name FROM codex_entries_fts WHERE codex_entries_fts MATCH ?",
+                &[Value::String("鈴木次郎".into())],
+                "all",
+            )
+            .expect("fts search new");
+        assert_eq!(rows.len(), 1);
+    }
+
+    #[test]
+    fn test_fts5_sync_on_delete() {
+        let db = test_db();
+
+        db.execute(
+            "INSERT INTO codex_entries (type, name, summary, content, tags, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            &[
+                Value::String("item".into()),
+                Value::String("伝説の聖剣".into()),
+                Value::String("伝説の武器".into()),
+                Value::String("古代の鍛冶師".into()),
+                Value::String("".into()),
+                Value::String("2025-01-01T00:00:00Z".into()),
+                Value::String("2025-01-01T00:00:00Z".into()),
+            ],
+            "run",
+        )
+        .expect("insert");
+
+        // Verify FTS has data before delete
+        let rows = db
+            .execute(
+                "SELECT name FROM codex_entries_fts WHERE codex_entries_fts MATCH ?",
+                &[Value::String("伝説の聖剣".into())],
+                "all",
+            )
+            .expect("fts search before delete");
+        assert_eq!(rows.len(), 1);
+
+        db.execute(
+            "DELETE FROM codex_entries WHERE id = ?",
+            &[Value::Number(1.into())],
+            "run",
+        )
+        .expect("delete");
+
+        let rows = db
+            .execute(
+                "SELECT name FROM codex_entries_fts WHERE codex_entries_fts MATCH ?",
+                &[Value::String("伝説の聖剣".into())],
+                "all",
+            )
+            .expect("fts search after delete");
+        assert_eq!(rows.len(), 0);
+    }
+
+    #[test]
+    fn test_short_query_like_fallback_codex() {
+        let db = test_db();
+
+        db.execute(
+            "INSERT INTO codex_entries (type, name, summary, content, tags, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            &[
+                Value::String("character".into()),
+                Value::String("太郎".into()),
+                Value::String("主人公".into()),
+                Value::String("勇敢な青年".into()),
+                Value::String("主人公,勇者".into()),
+                Value::String("2025-01-01T00:00:00Z".into()),
+                Value::String("2025-01-01T00:00:00Z".into()),
+            ],
+            "run",
+        )
+        .expect("insert");
+
+        db.execute(
+            "INSERT INTO codex_entries (type, name, summary, content, tags, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            &[
+                Value::String("location".into()),
+                Value::String("魔王城".into()),
+                Value::String("最終ダンジョン".into()),
+                Value::String("暗黒の城".into()),
+                Value::String("ダンジョン".into()),
+                Value::String("2025-01-01T00:00:00Z".into()),
+                Value::String("2025-01-01T00:00:00Z".into()),
+            ],
+            "run",
+        )
+        .expect("insert");
+
+        // 2-char query "太郎" — LIKE fallback should find it
+        let rows = db
+            .execute(
+                "SELECT * FROM codex_entries WHERE name LIKE ? OR summary LIKE ? OR content LIKE ? OR tags LIKE ?",
+                &[
+                    Value::String("%太郎%".into()),
+                    Value::String("%太郎%".into()),
+                    Value::String("%太郎%".into()),
+                    Value::String("%太郎%".into()),
+                ],
+                "all",
+            )
+            .expect("like search");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0]["name"], Value::String("太郎".into()));
+
+        // 1-char query "城" — should match 魔王城
+        let rows = db
+            .execute(
+                "SELECT * FROM codex_entries WHERE name LIKE ? OR summary LIKE ? OR content LIKE ? OR tags LIKE ?",
+                &[
+                    Value::String("%城%".into()),
+                    Value::String("%城%".into()),
+                    Value::String("%城%".into()),
+                    Value::String("%城%".into()),
+                ],
+                "all",
+            )
+            .expect("like search single char");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0]["name"], Value::String("魔王城".into()));
+
+        // "勇者" in tags — should match via tags column
+        let rows = db
+            .execute(
+                "SELECT * FROM codex_entries WHERE name LIKE ? OR summary LIKE ? OR content LIKE ? OR tags LIKE ?",
+                &[
+                    Value::String("%勇者%".into()),
+                    Value::String("%勇者%".into()),
+                    Value::String("%勇者%".into()),
+                    Value::String("%勇者%".into()),
+                ],
+                "all",
+            )
+            .expect("like search tags");
+        assert_eq!(rows.len(), 1);
+    }
+
+    #[test]
+    fn test_short_query_like_fallback_snippets() {
+        let db = test_db();
+
+        db.execute(
+            "INSERT INTO snippets (title, content, tags, created_at) VALUES (?, ?, ?, ?)",
+            &[
+                Value::String("伏線".into()),
+                Value::String("第3章で回収する。".into()),
+                Value::String("伏線,設定".into()),
+                Value::String("2025-01-01T00:00:00Z".into()),
+            ],
+            "run",
+        )
+        .expect("insert");
+
+        // 2-char query "伏線" — LIKE should match
+        let rows = db
+            .execute(
+                "SELECT * FROM snippets WHERE title LIKE ? OR content LIKE ? OR tags LIKE ?",
+                &[
+                    Value::String("%伏線%".into()),
+                    Value::String("%伏線%".into()),
+                    Value::String("%伏線%".into()),
+                ],
+                "all",
+            )
+            .expect("like search");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0]["title"], Value::String("伏線".into()));
     }
 
     #[test]
