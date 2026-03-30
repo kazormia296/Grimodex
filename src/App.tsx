@@ -1,11 +1,17 @@
 import { useEffect, useState } from "react";
 import { Sidebar } from "@/features/scene/Sidebar";
 import { SceneEditor } from "@/features/scene/SceneEditor";
+import { ChatPanel } from "@/features/chat/ChatPanel";
 import { WelcomeScreen } from "@/features/workspace/WelcomeScreen";
 import { LauncherScreen } from "@/features/workspace/LauncherScreen";
 import { WorkspaceMenu } from "@/features/workspace/WorkspaceMenu";
 import { useWorkspaceStore } from "@/features/workspace/store";
 import { AiSettingsDialog } from "@/features/chat/AiSettingsDialog";
+import {
+  ResizablePanelGroup,
+  ResizablePanel,
+  ResizableHandle,
+} from "@/components/ui/resizable";
 
 function App() {
   const view = useWorkspaceStore((s) => s.view);
@@ -55,9 +61,15 @@ function EditorScreen() {
       />
       <div className="flex flex-1 overflow-hidden">
         <Sidebar />
-        <div className="flex-1 overflow-hidden">
-          <SceneEditor />
-        </div>
+        <ResizablePanelGroup orientation="horizontal">
+          <ResizablePanel id="editor" defaultSize="65%" minSize="30%">
+            <SceneEditor />
+          </ResizablePanel>
+          <ResizableHandle withHandle />
+          <ResizablePanel id="chat" defaultSize="35%" minSize="20%">
+            <ChatPanel />
+          </ResizablePanel>
+        </ResizablePanelGroup>
       </div>
     </main>
   );
