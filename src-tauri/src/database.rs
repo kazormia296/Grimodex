@@ -1050,6 +1050,120 @@ mod tests {
     }
 
     #[test]
+    fn test_short_query_like_fallback_codex() {
+        let db = test_db();
+
+        db.execute(
+            "INSERT INTO codex_entries (type, name, summary, content, tags, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            &[
+                Value::String("character".into()),
+                Value::String("太郎".into()),
+                Value::String("主人公".into()),
+                Value::String("勇敢な青年".into()),
+                Value::String("主人公,勇者".into()),
+                Value::String("2025-01-01T00:00:00Z".into()),
+                Value::String("2025-01-01T00:00:00Z".into()),
+            ],
+            "run",
+        )
+        .expect("insert");
+
+        db.execute(
+            "INSERT INTO codex_entries (type, name, summary, content, tags, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            &[
+                Value::String("location".into()),
+                Value::String("魔王城".into()),
+                Value::String("最終ダンジョン".into()),
+                Value::String("暗黒の城".into()),
+                Value::String("ダンジョン".into()),
+                Value::String("2025-01-01T00:00:00Z".into()),
+                Value::String("2025-01-01T00:00:00Z".into()),
+            ],
+            "run",
+        )
+        .expect("insert");
+
+        // 2-char query "太郎" — LIKE fallback should find it
+        let rows = db
+            .execute(
+                "SELECT * FROM codex_entries WHERE name LIKE ? OR summary LIKE ? OR content LIKE ? OR tags LIKE ?",
+                &[
+                    Value::String("%太郎%".into()),
+                    Value::String("%太郎%".into()),
+                    Value::String("%太郎%".into()),
+                    Value::String("%太郎%".into()),
+                ],
+                "all",
+            )
+            .expect("like search");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0]["name"], Value::String("太郎".into()));
+
+        // 1-char query "城" — should match 魔王城
+        let rows = db
+            .execute(
+                "SELECT * FROM codex_entries WHERE name LIKE ? OR summary LIKE ? OR content LIKE ? OR tags LIKE ?",
+                &[
+                    Value::String("%城%".into()),
+                    Value::String("%城%".into()),
+                    Value::String("%城%".into()),
+                    Value::String("%城%".into()),
+                ],
+                "all",
+            )
+            .expect("like search single char");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0]["name"], Value::String("魔王城".into()));
+
+        // "勇者" in tags — should match via tags column
+        let rows = db
+            .execute(
+                "SELECT * FROM codex_entries WHERE name LIKE ? OR summary LIKE ? OR content LIKE ? OR tags LIKE ?",
+                &[
+                    Value::String("%勇者%".into()),
+                    Value::String("%勇者%".into()),
+                    Value::String("%勇者%".into()),
+                    Value::String("%勇者%".into()),
+                ],
+                "all",
+            )
+            .expect("like search tags");
+        assert_eq!(rows.len(), 1);
+    }
+
+    #[test]
+    fn test_short_query_like_fallback_snippets() {
+        let db = test_db();
+
+        db.execute(
+            "INSERT INTO snippets (title, content, tags, created_at) VALUES (?, ?, ?, ?)",
+            &[
+                Value::String("伏線".into()),
+                Value::String("第3章で回収する。".into()),
+                Value::String("伏線,設定".into()),
+                Value::String("2025-01-01T00:00:00Z".into()),
+            ],
+            "run",
+        )
+        .expect("insert");
+
+        // 2-char query "伏線" — LIKE should match
+        let rows = db
+            .execute(
+                "SELECT * FROM snippets WHERE title LIKE ? OR content LIKE ? OR tags LIKE ?",
+                &[
+                    Value::String("%伏線%".into()),
+                    Value::String("%伏線%".into()),
+                    Value::String("%伏線%".into()),
+                ],
+                "all",
+            )
+            .expect("like search");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0]["title"], Value::String("伏線".into()));
+    }
+
+    #[test]
     fn test_wal_mode_enabled() {
         let dir = std::env::temp_dir().join("noveloom_test_wal");
         std::fs::create_dir_all(&dir).ok();
