@@ -47,7 +47,13 @@ impl Database {
                 synopsis    TEXT NOT NULL DEFAULT '',
                 created_at  TEXT NOT NULL,
                 updated_at  TEXT NOT NULL
-            );",
+            );
+
+            -- Seed default project + chapter so scenes can reference chapter_id=1
+            INSERT OR IGNORE INTO projects (id, title, description, created_at, updated_at)
+              VALUES (1, '無題のプロジェクト', '', datetime('now'), datetime('now'));
+            INSERT OR IGNORE INTO chapters (id, project_id, title, sort_order, created_at, updated_at)
+              VALUES (1, 1, '第1章', 0, datetime('now'), datetime('now'));",
         )?;
         Ok(())
     }
@@ -180,23 +186,23 @@ mod tests {
         )
         .expect("insert");
 
-        // Read all
+        // Read all (includes seed project)
         let rows = db
             .execute("SELECT * FROM projects", &[], "all")
             .expect("select all");
-        assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0]["title"], Value::String("Test Novel".into()));
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[1]["title"], Value::String("Test Novel".into()));
 
-        // Read one
+        // Read one (test-inserted project gets id=2 since seed has id=1)
         let rows = db
             .execute(
                 "SELECT * FROM projects WHERE id = ?",
-                &[Value::Number(1.into())],
+                &[Value::Number(2.into())],
                 "get",
             )
             .expect("select one");
         assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0]["id"], Value::Number(1.into()));
+        assert_eq!(rows[0]["id"], Value::Number(2.into()));
 
         // Update
         db.execute(
@@ -204,7 +210,7 @@ mod tests {
             &[
                 Value::String("Updated Novel".into()),
                 Value::String("2025-06-01T00:00:00Z".into()),
-                Value::Number(1.into()),
+                Value::Number(2.into()),
             ],
             "run",
         )
@@ -213,7 +219,7 @@ mod tests {
         let rows = db
             .execute(
                 "SELECT * FROM projects WHERE id = ?",
-                &[Value::Number(1.into())],
+                &[Value::Number(2.into())],
                 "get",
             )
             .expect("select after update");
@@ -222,7 +228,7 @@ mod tests {
         // Delete
         db.execute(
             "DELETE FROM projects WHERE id = ?",
-            &[Value::Number(1.into())],
+            &[Value::Number(2.into())],
             "run",
         )
         .expect("delete");
@@ -230,7 +236,7 @@ mod tests {
         let rows = db
             .execute("SELECT * FROM projects", &[], "all")
             .expect("select after delete");
-        assert_eq!(rows.len(), 0);
+        assert_eq!(rows.len(), 1); // seed project remains
     }
 
     #[test]
@@ -276,11 +282,11 @@ mod tests {
         )
         .expect("insert project");
 
-        // Create chapter
+        // Create chapter (project_id=2 is the test project; seed has id=1)
         db.execute(
             "INSERT INTO chapters (project_id, title, sort_order, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
             &[
-                Value::Number(1.into()),
+                Value::Number(2.into()),
                 Value::String("Chapter 1".into()),
                 Value::Number(0.into()),
                 Value::String("2025-01-01T00:00:00Z".into()),
@@ -293,19 +299,19 @@ mod tests {
         let rows = db
             .execute(
                 "SELECT * FROM chapters WHERE project_id = ?",
-                &[Value::Number(1.into())],
+                &[Value::Number(2.into())],
                 "all",
             )
             .expect("select chapters");
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0]["title"], Value::String("Chapter 1".into()));
 
-        // Update
+        // Update (test chapter gets id=2 since seed chapter has id=1)
         db.execute(
             "UPDATE chapters SET title = ? WHERE id = ?",
             &[
                 Value::String("Renamed Chapter".into()),
-                Value::Number(1.into()),
+                Value::Number(2.into()),
             ],
             "run",
         )
@@ -314,7 +320,7 @@ mod tests {
         let rows = db
             .execute(
                 "SELECT * FROM chapters WHERE id = ?",
-                &[Value::Number(1.into())],
+                &[Value::Number(2.into())],
                 "get",
             )
             .expect("get chapter");
@@ -491,7 +497,7 @@ mod tests {
             db.execute(
                 "INSERT INTO chapters (project_id, title, sort_order, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
                 &[
-                    Value::Number(1.into()),
+                    Value::Number(2.into()),
                     Value::String("Ch1".into()),
                     Value::Number(0.into()),
                     Value::String("2025-01-01T00:00:00Z".into()),
@@ -504,7 +510,7 @@ mod tests {
                 "INSERT INTO scenes (id, chapter_id, title, sort_order, synopsis, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
                 &[
                     Value::String("persist-scene".into()),
-                    Value::Number(1.into()),
+                    Value::Number(2.into()),
                     Value::String("Scene 1".into()),
                     Value::Number(0.into()),
                     Value::String("synopsis".into()),
@@ -522,29 +528,35 @@ mod tests {
             let db = Database::new(&db_path).expect("reopen db");
             db.migrate().expect("migrate again");
 
+            // 2 projects: seed + test-inserted
             let projects = db
                 .execute("SELECT * FROM projects", &[], "all")
                 .expect("select projects");
-            assert_eq!(projects.len(), 1);
-            assert_eq!(
-                projects[0]["title"],
-                Value::String("Persisted Novel".into())
-            );
+            assert_eq!(projects.len(), 2);
 
+            // Verify test-inserted data survived (id=2)
+            let rows = db
+                .execute(
+                    "SELECT * FROM projects WHERE id = ?",
+                    &[Value::Number(2.into())],
+                    "get",
+                )
+                .expect("select test project");
+            assert_eq!(rows[0]["title"], Value::String("Persisted Novel".into()));
+
+            // 2 chapters: seed + test-inserted
             let chapters = db
                 .execute("SELECT * FROM chapters", &[], "all")
                 .expect("select chapters");
-            assert_eq!(chapters.len(), 1);
-            assert_eq!(chapters[0]["title"], Value::String("Ch1".into()));
+            assert_eq!(chapters.len(), 2);
 
             let scenes = db
-                .execute("SELECT * FROM scenes", &[], "all")
-                .expect("select scenes");
+                .execute("SELECT * FROM scenes WHERE id = ?",
+                    &[Value::String("persist-scene".into())],
+                    "get",
+                )
+                .expect("select scene");
             assert_eq!(scenes.len(), 1);
-            assert_eq!(
-                scenes[0]["id"],
-                Value::String("persist-scene".into())
-            );
             assert_eq!(
                 scenes[0]["synopsis"],
                 Value::String("synopsis".into())
