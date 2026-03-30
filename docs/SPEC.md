@@ -1,7 +1,7 @@
 # NoveLoom - Product Specification
 
 > Version: 0.1.0 (MVP)
-> Last updated: 2026-03-30
+> Last updated: 2026-03-31
 
 ## 1. Product Overview
 
@@ -96,6 +96,95 @@ modified: 2026-03-30T14:20:00+09:00
 ```
 
 Frontmatter fields are indexed into SQLite for fast querying.
+
+### 2.4 Content File Naming Convention
+
+原稿ファイルはハイブリッド命名方式を採用する。ファイル名にソート順・タイトル・IDを埋め込むことで、ファイルシステム上での視認性とプログラムからの一意特定を両立する。
+
+**命名規則:**
+
+```
+{chapter_order:02d}-{scene_order:02d}_{sanitized_title}_{short_id}.md
+```
+
+| 部位 | 説明 | 例 |
+|------|------|----|
+| `chapter_order` | 章の並び順（2桁ゼロ埋め） | `01` |
+| `scene_order` | シーンの並び順（2桁ゼロ埋め） | `03` |
+| `sanitized_title` | サニタイズ済みタイトル | `夜明けの対話` |
+| `short_id` | シーンUUIDの先頭8文字 | `a3f1b2c4` |
+
+**実例:**
+```
+content/
+  01-01_プロローグ_a3f1b2c4.md
+  01-02_夜明けの対話_b1234567.md
+  02-01_旅立ち_cafebabe.md
+  02-03_新タイトル_deadbeef.md
+```
+
+**タイトルのサニタイズ規則:**
+- 最大30文字（Unicode文字境界で切断）
+- Windows禁止文字（`/ \ : * ? " < > |`）は `_` に置換
+- 空タイトルは `untitled` に置換
+- 前後の空白は除去
+
+**ファイルルックアップ:**
+- `short_id`（UUID先頭8文字）をキーとして `*_{short_id}.md` パターンで検索
+- タイトルや順序が変わってもIDで同一ファイルを特定可能
+- リネーム時は旧ファイルを削除し新ファイル名で再作成
+
+**設計根拠:**
+- ファイル名のソート順プレフィックスにより、エクスプローラーやGitで自然な順序表示
+- `short_id` サフィックスにより、タイトル変更・並び替え後もファイルの同一性を追跡可能
+- タイトル埋め込みにより、NoveLoom外でもファイル内容を推測可能
+
+### 2.5 Workspace Metadata
+
+ワークスペースの識別情報とアプリケーション全体の設定は、それぞれ別の場所に永続化する。
+
+**ワークスペースメタデータ（`.noveloom/workspace.json`）:**
+
+各ワークスペースのルートにある `.noveloom/` ディレクトリに格納。ワークスペースの一意識別に使用。
+
+```json
+{
+  "id": "550e8400-e29b-41d4-a716-446655440000",
+  "created_at": "2026-03-31T10:00:00+09:00"
+}
+```
+
+| フィールド | 型 | 説明 |
+|-----------|-----|------|
+| `id` | string (UUID) | ワークスペースの一意識別子 |
+| `created_at` | string (ISO8601) | 作成日時 |
+
+**グローバル設定（OS AppData `global-settings.json`）:**
+
+OSのアプリケーションデータディレクトリに格納。全ワークスペース共通の設定。
+
+```json
+{
+  "recentWorkspaces": [
+    { "path": "D:\\Novels\\MyNovel", "lastOpened": "2026-03-31T12:00:00Z" }
+  ],
+  "lastActiveWorkspace": "D:\\Novels\\MyNovel",
+  "theme": "system",
+  "showLauncherOnStartup": false
+}
+```
+
+| フィールド | 型 | デフォルト | 説明 |
+|-----------|-----|----------|------|
+| `recentWorkspaces` | array | `[]` | 最近開いたワークスペース（最大10件、MRU順） |
+| `lastActiveWorkspace` | string \| null | `null` | 最後にアクティブだったワークスペースのパス |
+| `theme` | string | `"system"` | UIテーマ |
+| `showLauncherOnStartup` | boolean | `false` | 起動時にランチャーを表示するか |
+
+**ワークスペースの判定:**
+- `noveloom.db` がルートに存在するディレクトリ → 既存ワークスペース
+- 空ディレクトリまたは存在しないパス → 新規ワークスペース作成可能
+- 上記以外（`noveloom.db` がないファイルを含むディレクトリ）→ 無効
 
 ---
 
