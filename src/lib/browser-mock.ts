@@ -59,6 +59,59 @@ export async function createBrowserMock(): Promise<BrowserMock> {
   );
 
   const contentStore = new Map<string, string>();
+  const apiKeyStore = new Map<string, string>();
+  const AI_SETTINGS_KEY = "noveloom:ai-settings";
+
+  function handleGetAiSettings(): Record<string, unknown> {
+    try {
+      const raw = localStorage.getItem(AI_SETTINGS_KEY);
+      if (raw) return JSON.parse(raw) as Record<string, unknown>;
+    } catch {
+      // noop
+    }
+    return {
+      provider: "openrouter",
+      model: "",
+      ollamaEndpoint: "http://localhost:11434",
+    };
+  }
+
+  function handleSaveAiSettings(args: Record<string, unknown>): void {
+    const settings = args.settings as Record<string, unknown>;
+    try {
+      localStorage.setItem(AI_SETTINGS_KEY, JSON.stringify(settings));
+    } catch {
+      // noop
+    }
+  }
+
+  function handleSaveApiKey(args: Record<string, unknown>): void {
+    const provider = args.provider as string;
+    const key = args.key as string;
+    apiKeyStore.set(provider, key);
+  }
+
+  function handleGetApiKey(args: Record<string, unknown>): string | null {
+    const provider = args.provider as string;
+    return apiKeyStore.get(provider) ?? null;
+  }
+
+  function handleDeleteApiKey(args: Record<string, unknown>): void {
+    const provider = args.provider as string;
+    apiKeyStore.delete(provider);
+  }
+
+  function handleListAiModels(): Array<{ id: string; name: string }> {
+    return [
+      { id: "openrouter/auto", name: "Auto (OpenRouter)" },
+      { id: "openai/gpt-4o", name: "GPT-4o" },
+      { id: "anthropic/claude-sonnet-4-6", name: "Claude Sonnet 4.6" },
+    ];
+  }
+
+  function handleTestAiConnection(): string {
+    return "Connection OK (browser mock)";
+  }
 
   function handleDbExecute(args: Record<string, unknown>): {
     rows: Record<string, unknown>[];
@@ -194,6 +247,23 @@ export async function createBrowserMock(): Promise<BrowserMock> {
       case "content_rename":
         // In browser mock, rename is a no-op (content keyed by sceneId)
         return undefined as T;
+      case "get_ai_settings":
+        return handleGetAiSettings() as T;
+      case "save_ai_settings":
+        handleSaveAiSettings(args);
+        return undefined as T;
+      case "save_api_key":
+        handleSaveApiKey(args);
+        return undefined as T;
+      case "get_api_key":
+        return handleGetApiKey(args) as T;
+      case "delete_api_key":
+        handleDeleteApiKey(args);
+        return undefined as T;
+      case "list_ai_models":
+        return handleListAiModels() as T;
+      case "test_ai_connection":
+        return handleTestAiConnection() as T;
       default:
         throw new Error(`[browser-mock] Unknown Tauri command: ${cmd}`);
     }

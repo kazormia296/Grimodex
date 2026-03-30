@@ -1,3 +1,4 @@
+mod ai;
 mod content;
 mod database;
 mod workspace;
@@ -43,6 +44,11 @@ struct WorkspaceState {
 
 /// Path to the global settings file in AppData.
 struct GlobalSettingsPath {
+    path: PathBuf,
+}
+
+/// Path to the AI settings file in AppData.
+struct AiSettingsPath {
     path: PathBuf,
 }
 
@@ -209,6 +215,66 @@ fn content_rename(
     })
 }
 
+// --- AI settings commands ---
+
+#[tauri::command]
+fn get_ai_settings(
+    ai_path: tauri::State<'_, AiSettingsPath>,
+) -> Result<ai::AiSettings, AppError> {
+    Ok(ai::read_ai_settings(&ai_path.path))
+}
+
+#[tauri::command]
+fn save_ai_settings(
+    ai_path: tauri::State<'_, AiSettingsPath>,
+    settings: ai::AiSettings,
+) -> Result<(), AppError> {
+    ai::write_ai_settings(&ai_path.path, &settings)?;
+    Ok(())
+}
+
+#[tauri::command]
+fn save_api_key(provider: ai::AiProvider, key: String) -> Result<(), AppError> {
+    ai::save_api_key(&provider, &key)?;
+    Ok(())
+}
+
+#[tauri::command]
+fn get_api_key(provider: ai::AiProvider) -> Result<Option<String>, AppError> {
+    Ok(ai::get_api_key(&provider)?)
+}
+
+#[tauri::command]
+fn delete_api_key(provider: ai::AiProvider) -> Result<(), AppError> {
+    ai::delete_api_key(&provider)?;
+    Ok(())
+}
+
+#[tauri::command]
+async fn list_ai_models(
+    ai_path: tauri::State<'_, AiSettingsPath>,
+    provider: ai::AiProvider,
+) -> Result<Vec<ai::AiModel>, AppError> {
+    let settings = ai::read_ai_settings(&ai_path.path);
+    let api_key = ai::get_api_key(&provider)?.unwrap_or_default();
+    let models = ai::fetch_models(&provider, &api_key, &settings.ollama_endpoint).await?;
+    Ok(models)
+}
+
+#[tauri::command]
+async fn test_ai_connection(
+    ai_path: tauri::State<'_, AiSettingsPath>,
+    provider: ai::AiProvider,
+    model: String,
+) -> Result<String, AppError> {
+    let settings = ai::read_ai_settings(&ai_path.path);
+    let api_key = ai::get_api_key(&provider)?
+        .ok_or_else(|| anyhow::anyhow!("No API key configured for {provider}"))?;
+    let result =
+        ai::test_connection(&provider, &model, &api_key, &settings.ollama_endpoint).await?;
+    Ok(result)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -224,6 +290,10 @@ pub fn run() {
             // Global settings path (stays in AppData)
             let gs_path = app_dir.join("global-settings.json");
             app.manage(GlobalSettingsPath { path: gs_path });
+
+            // AI settings path (stays in AppData)
+            let ai_path = app_dir.join("ai-settings.json");
+            app.manage(AiSettingsPath { path: ai_path });
 
             // Workspace state starts empty — frontend will call open_workspace
             app.manage(WorkspaceState {
@@ -241,7 +311,14 @@ pub fn run() {
             content_write,
             content_read,
             content_delete,
-            content_rename
+            content_rename,
+            get_ai_settings,
+            save_ai_settings,
+            save_api_key,
+            get_api_key,
+            delete_api_key,
+            list_ai_models,
+            test_ai_connection
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
