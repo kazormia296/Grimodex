@@ -28,6 +28,25 @@ impl Database {
                 description TEXT NOT NULL DEFAULT '',
                 created_at  TEXT NOT NULL,
                 updated_at  TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS chapters (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                project_id  INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                title       TEXT NOT NULL,
+                sort_order  INTEGER NOT NULL DEFAULT 0,
+                created_at  TEXT NOT NULL,
+                updated_at  TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS scenes (
+                id          TEXT PRIMARY KEY,
+                chapter_id  INTEGER NOT NULL REFERENCES chapters(id) ON DELETE CASCADE,
+                title       TEXT NOT NULL,
+                sort_order  INTEGER NOT NULL DEFAULT 0,
+                synopsis    TEXT NOT NULL DEFAULT '',
+                created_at  TEXT NOT NULL,
+                updated_at  TEXT NOT NULL
             );",
         )?;
         Ok(())
@@ -212,6 +231,328 @@ mod tests {
             .execute("SELECT * FROM projects", &[], "all")
             .expect("select after delete");
         assert_eq!(rows.len(), 0);
+    }
+
+    #[test]
+    fn test_migrate_creates_chapters_table() {
+        let db = test_db();
+        let rows = db
+            .execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='chapters'",
+                &[],
+                "all",
+            )
+            .expect("query");
+        assert_eq!(rows.len(), 1);
+    }
+
+    #[test]
+    fn test_migrate_creates_scenes_table() {
+        let db = test_db();
+        let rows = db
+            .execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='scenes'",
+                &[],
+                "all",
+            )
+            .expect("query");
+        assert_eq!(rows.len(), 1);
+    }
+
+    #[test]
+    fn test_crud_chapters() {
+        let db = test_db();
+
+        // Create project first (FK)
+        db.execute(
+            "INSERT INTO projects (title, description, created_at, updated_at) VALUES (?, ?, ?, ?)",
+            &[
+                Value::String("Novel".into()),
+                Value::String("".into()),
+                Value::String("2025-01-01T00:00:00Z".into()),
+                Value::String("2025-01-01T00:00:00Z".into()),
+            ],
+            "run",
+        )
+        .expect("insert project");
+
+        // Create chapter
+        db.execute(
+            "INSERT INTO chapters (project_id, title, sort_order, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+            &[
+                Value::Number(1.into()),
+                Value::String("Chapter 1".into()),
+                Value::Number(0.into()),
+                Value::String("2025-01-01T00:00:00Z".into()),
+                Value::String("2025-01-01T00:00:00Z".into()),
+            ],
+            "run",
+        )
+        .expect("insert chapter");
+
+        let rows = db
+            .execute(
+                "SELECT * FROM chapters WHERE project_id = ?",
+                &[Value::Number(1.into())],
+                "all",
+            )
+            .expect("select chapters");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0]["title"], Value::String("Chapter 1".into()));
+
+        // Update
+        db.execute(
+            "UPDATE chapters SET title = ? WHERE id = ?",
+            &[
+                Value::String("Renamed Chapter".into()),
+                Value::Number(1.into()),
+            ],
+            "run",
+        )
+        .expect("update chapter");
+
+        let rows = db
+            .execute(
+                "SELECT * FROM chapters WHERE id = ?",
+                &[Value::Number(1.into())],
+                "get",
+            )
+            .expect("get chapter");
+        assert_eq!(rows[0]["title"], Value::String("Renamed Chapter".into()));
+    }
+
+    #[test]
+    fn test_crud_scenes() {
+        let db = test_db();
+
+        // Setup: project + chapter
+        db.execute(
+            "INSERT INTO projects (title, description, created_at, updated_at) VALUES (?, ?, ?, ?)",
+            &[
+                Value::String("Novel".into()),
+                Value::String("".into()),
+                Value::String("2025-01-01T00:00:00Z".into()),
+                Value::String("2025-01-01T00:00:00Z".into()),
+            ],
+            "run",
+        )
+        .expect("insert project");
+        db.execute(
+            "INSERT INTO chapters (project_id, title, sort_order, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+            &[
+                Value::Number(1.into()),
+                Value::String("Ch1".into()),
+                Value::Number(0.into()),
+                Value::String("2025-01-01T00:00:00Z".into()),
+                Value::String("2025-01-01T00:00:00Z".into()),
+            ],
+            "run",
+        )
+        .expect("insert chapter");
+
+        // Create scene with UUID id
+        let scene_id = "550e8400-e29b-41d4-a716-446655440000";
+        db.execute(
+            "INSERT INTO scenes (id, chapter_id, title, sort_order, synopsis, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            &[
+                Value::String(scene_id.into()),
+                Value::Number(1.into()),
+                Value::String("Opening".into()),
+                Value::Number(0.into()),
+                Value::String("".into()),
+                Value::String("2025-01-01T00:00:00Z".into()),
+                Value::String("2025-01-01T00:00:00Z".into()),
+            ],
+            "run",
+        )
+        .expect("insert scene");
+
+        let rows = db
+            .execute(
+                "SELECT * FROM scenes WHERE chapter_id = ?",
+                &[Value::Number(1.into())],
+                "all",
+            )
+            .expect("select scenes");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0]["id"], Value::String(scene_id.into()));
+        assert_eq!(rows[0]["title"], Value::String("Opening".into()));
+
+        // Update synopsis
+        db.execute(
+            "UPDATE scenes SET synopsis = ? WHERE id = ?",
+            &[
+                Value::String("A dramatic opening".into()),
+                Value::String(scene_id.into()),
+            ],
+            "run",
+        )
+        .expect("update scene");
+
+        let rows = db
+            .execute(
+                "SELECT synopsis FROM scenes WHERE id = ?",
+                &[Value::String(scene_id.into())],
+                "get",
+            )
+            .expect("get scene");
+        assert_eq!(
+            rows[0]["synopsis"],
+            Value::String("A dramatic opening".into())
+        );
+    }
+
+    #[test]
+    fn test_cascade_delete() {
+        let db = test_db();
+
+        // project → chapter → scene
+        db.execute(
+            "INSERT INTO projects (title, description, created_at, updated_at) VALUES (?, ?, ?, ?)",
+            &[
+                Value::String("Novel".into()),
+                Value::String("".into()),
+                Value::String("2025-01-01T00:00:00Z".into()),
+                Value::String("2025-01-01T00:00:00Z".into()),
+            ],
+            "run",
+        )
+        .expect("insert project");
+        db.execute(
+            "INSERT INTO chapters (project_id, title, sort_order, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+            &[
+                Value::Number(1.into()),
+                Value::String("Ch1".into()),
+                Value::Number(0.into()),
+                Value::String("2025-01-01T00:00:00Z".into()),
+                Value::String("2025-01-01T00:00:00Z".into()),
+            ],
+            "run",
+        )
+        .expect("insert chapter");
+        db.execute(
+            "INSERT INTO scenes (id, chapter_id, title, sort_order, synopsis, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            &[
+                Value::String("scene-1".into()),
+                Value::Number(1.into()),
+                Value::String("S1".into()),
+                Value::Number(0.into()),
+                Value::String("".into()),
+                Value::String("2025-01-01T00:00:00Z".into()),
+                Value::String("2025-01-01T00:00:00Z".into()),
+            ],
+            "run",
+        )
+        .expect("insert scene");
+
+        // Delete project → should cascade to chapter → scene
+        db.execute(
+            "DELETE FROM projects WHERE id = ?",
+            &[Value::Number(1.into())],
+            "run",
+        )
+        .expect("delete project");
+
+        let chapters = db
+            .execute("SELECT * FROM chapters", &[], "all")
+            .expect("select chapters");
+        assert_eq!(chapters.len(), 0);
+
+        let scenes = db
+            .execute("SELECT * FROM scenes", &[], "all")
+            .expect("select scenes");
+        assert_eq!(scenes.len(), 0);
+    }
+
+    #[test]
+    fn test_data_persists_across_reopen() {
+        let dir = std::env::temp_dir().join("noveloom_test_persist");
+        std::fs::create_dir_all(&dir).ok();
+        let db_path = dir.join("persist.db");
+
+        // Remove any leftover from previous runs
+        std::fs::remove_file(&db_path).ok();
+
+        // First session: create data
+        {
+            let db = Database::new(&db_path).expect("open db");
+            db.migrate().expect("migrate");
+            db.execute(
+                "INSERT INTO projects (title, description, created_at, updated_at) VALUES (?, ?, ?, ?)",
+                &[
+                    Value::String("Persisted Novel".into()),
+                    Value::String("desc".into()),
+                    Value::String("2025-01-01T00:00:00Z".into()),
+                    Value::String("2025-01-01T00:00:00Z".into()),
+                ],
+                "run",
+            )
+            .expect("insert");
+            db.execute(
+                "INSERT INTO chapters (project_id, title, sort_order, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+                &[
+                    Value::Number(1.into()),
+                    Value::String("Ch1".into()),
+                    Value::Number(0.into()),
+                    Value::String("2025-01-01T00:00:00Z".into()),
+                    Value::String("2025-01-01T00:00:00Z".into()),
+                ],
+                "run",
+            )
+            .expect("insert chapter");
+            db.execute(
+                "INSERT INTO scenes (id, chapter_id, title, sort_order, synopsis, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                &[
+                    Value::String("persist-scene".into()),
+                    Value::Number(1.into()),
+                    Value::String("Scene 1".into()),
+                    Value::Number(0.into()),
+                    Value::String("synopsis".into()),
+                    Value::String("2025-01-01T00:00:00Z".into()),
+                    Value::String("2025-01-01T00:00:00Z".into()),
+                ],
+                "run",
+            )
+            .expect("insert scene");
+        }
+        // Connection dropped here
+
+        // Second session: verify data survived
+        {
+            let db = Database::new(&db_path).expect("reopen db");
+            db.migrate().expect("migrate again");
+
+            let projects = db
+                .execute("SELECT * FROM projects", &[], "all")
+                .expect("select projects");
+            assert_eq!(projects.len(), 1);
+            assert_eq!(
+                projects[0]["title"],
+                Value::String("Persisted Novel".into())
+            );
+
+            let chapters = db
+                .execute("SELECT * FROM chapters", &[], "all")
+                .expect("select chapters");
+            assert_eq!(chapters.len(), 1);
+            assert_eq!(chapters[0]["title"], Value::String("Ch1".into()));
+
+            let scenes = db
+                .execute("SELECT * FROM scenes", &[], "all")
+                .expect("select scenes");
+            assert_eq!(scenes.len(), 1);
+            assert_eq!(
+                scenes[0]["id"],
+                Value::String("persist-scene".into())
+            );
+            assert_eq!(
+                scenes[0]["synopsis"],
+                Value::String("synopsis".into())
+            );
+        }
+
+        // Cleanup
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

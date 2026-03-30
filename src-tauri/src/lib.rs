@@ -1,5 +1,7 @@
+mod content;
 mod database;
 
+use content::ContentDir;
 use database::Database;
 use serde::Serialize;
 use serde_json::Value;
@@ -33,6 +35,34 @@ fn db_execute(
     Ok(QueryResult { rows })
 }
 
+#[tauri::command]
+fn content_write(
+    state: tauri::State<'_, ContentDir>,
+    scene_id: String,
+    markdown: String,
+) -> Result<(), AppError> {
+    state.write(&scene_id, &markdown)?;
+    Ok(())
+}
+
+#[tauri::command]
+fn content_read(
+    state: tauri::State<'_, ContentDir>,
+    scene_id: String,
+) -> Result<String, AppError> {
+    let text = state.read(&scene_id)?;
+    Ok(text)
+}
+
+#[tauri::command]
+fn content_delete(
+    state: tauri::State<'_, ContentDir>,
+    scene_id: String,
+) -> Result<(), AppError> {
+    state.delete(&scene_id)?;
+    Ok(())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -43,14 +73,26 @@ pub fn run() {
                 .app_data_dir()
                 .expect("failed to get app data dir");
             std::fs::create_dir_all(&app_dir).ok();
+
             let db_path = app_dir.join("noveloom.db");
             let database =
                 Database::new(&db_path).expect("failed to open database");
             database.migrate().expect("failed to migrate database");
             app.manage(database);
+
+            let content_dir = app_dir.join("content");
+            let content =
+                ContentDir::new(content_dir).expect("failed to create content dir");
+            app.manage(content);
+
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![db_execute])
+        .invoke_handler(tauri::generate_handler![
+            db_execute,
+            content_write,
+            content_read,
+            content_delete
+        ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
