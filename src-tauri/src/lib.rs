@@ -1,5 +1,6 @@
 mod content;
 mod database;
+mod workspace;
 
 use content::ContentDir;
 use database::Database;
