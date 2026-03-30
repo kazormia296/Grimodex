@@ -63,14 +63,12 @@ describe("projects schema", () => {
       { schema },
     );
 
-    await db
-      .insert(projects)
-      .values({
-        title: "My Novel",
-        description: "A great story",
-        createdAt: "2025-01-01T00:00:00Z",
-        updatedAt: "2025-01-01T00:00:00Z",
-      });
+    await db.insert(projects).values({
+      title: "My Novel",
+      description: "A great story",
+      createdAt: "2025-01-01T00:00:00Z",
+      updatedAt: "2025-01-01T00:00:00Z",
+    });
     expect(executedQueries.length).toBe(1);
     expect(executedQueries[0].sql).toContain("insert");
     expect(executedQueries[0].sql).toContain("projects");
