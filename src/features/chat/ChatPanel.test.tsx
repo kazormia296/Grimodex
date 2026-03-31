@@ -329,7 +329,7 @@ describe("ChatPanel", () => {
     await user.click(screen.getByTestId("message-actions-a1"));
     await user.click(screen.getByTestId("insert-to-editor-a1"));
 
-    expect(mockInsert).toHaveBeenCalledWith("挿入するテキスト", "a1");
+    expect(mockInsert).toHaveBeenCalledWith("挿入するテキスト", "a1", undefined);
   });
 
   it("does NOT show actions menu when assistant message is empty", () => {
