@@ -107,7 +107,7 @@ describe("AiEditedPlugin", () => {
     editor.destroy();
   });
 
-  it("reclassifies ai to mixed on any user edit (1 char insert)", () => {
+  it("splits ai node on 1 char insert (no ai→mixed transition)", () => {
     insertAiText(editor, "AI文章");
 
     let aiPos = -1;
@@ -116,12 +116,13 @@ describe("AiEditedPlugin", () => {
     });
     expect(aiPos).toBeGreaterThan(0);
 
-    // Insert just 1 character — should immediately transition to mixed
+    // Insert 1 character — should split node, not transition to mixed
     editor.chain().focus().insertContentAt(aiPos + 1, "X").run();
 
     const sources = findAuthorshipSources(editor);
-    expect(sources).toContain("mixed");
-    expect(sources).not.toContain("ai");
+    // Flanking AI text stays "ai", inserted "X" has no authorship mark
+    expect(sources).toContain("ai");
+    expect(sources).not.toContain("mixed");
     editor.destroy();
   });
 
@@ -441,6 +442,43 @@ describe("AiEditedPlugin", () => {
       editor.destroy();
     });
 
+    it("does not transition mixed→human on pure insertion (node splitting)", () => {
+      // Mixed text "ABCDEFGHIJKLMNOPQRST" (20 chars, originalLength=20)
+      // Insert 80 chars → total 100, but originalLength still 20
+      // Each flanking mixed node is shorter than original, but this is a split, not deletion
+      const text = "ABCDEFGHIJKLMNOPQRST";
+      insertMixedText(editor, text, text.length);
+
+      let mixedPos = -1;
+      editor.state.doc.descendants((node, pos) => {
+        if (node.isText && node.text === text) mixedPos = pos;
+      });
+      expect(mixedPos).toBeGreaterThan(0);
+
+      // Insert text in the middle — should split, not trigger mixed→human
+      editor
+        .chain()
+        .focus()
+        .setTextSelection(mixedPos + 10)
+        .insertContentAt(mixedPos + 10, "X".repeat(80))
+        .run();
+
+      const nodes: { text: string; source: string | null }[] = [];
+      editor.state.doc.descendants((node) => {
+        if (!node.isText) return;
+        const mark = node.marks.find((m) => m.type.name === "authorship");
+        nodes.push({ text: node.text ?? "", source: mark ? (mark.attrs.source as string) : null });
+      });
+
+      // Flanking nodes should still be mixed (not human)
+      const mixedNodes = nodes.filter((n) => n.source === "mixed");
+      expect(mixedNodes.length).toBeGreaterThanOrEqual(2);
+      // Inserted text should have no authorship mark
+      const unmarkedNodes = nodes.filter((n) => n.source === null);
+      expect(unmarkedNodes.some((n) => n.text.includes("XXXX"))).toBe(true);
+      editor.destroy();
+    });
+
     it("does not transition mixed with manualOverride", () => {
       editor
         .chain()
@@ -484,6 +522,220 @@ describe("AiEditedPlugin", () => {
       const sources = findAuthorshipSources(editor);
       expect(sources).toContain("mixed");
       expect(sources).not.toContain("human");
+      editor.destroy();
+    });
+  });
+
+  // --- Node splitting on insertion ---
+
+  describe("node splitting on insertion within AI span", () => {
+    it("splits AI span into three parts on pure insertion", () => {
+      insertAiText(editor, "HelloWorld");
+
+      let aiPos = -1;
+      editor.state.doc.descendants((node, pos) => {
+        if (node.isText && node.text === "HelloWorld") aiPos = pos;
+      });
+      expect(aiPos).toBeGreaterThan(0);
+
+      // Insert "XYZ" between "Hello" and "World"
+      editor
+        .chain()
+        .focus()
+        .setTextSelection(aiPos + 5)
+        .insertContentAt(aiPos + 5, "XYZ")
+        .run();
+
+      const nodes: { text: string; source: string | null }[] = [];
+      editor.state.doc.descendants((node) => {
+        if (!node.isText) return;
+        const mark = node.marks.find((m) => m.type.name === "authorship");
+        nodes.push({
+          text: node.text ?? "",
+          source: mark ? (mark.attrs.source as string) : null,
+        });
+      });
+
+      // Should have: "テスト文章"(no mark) + "Hello"(ai) + "XYZ"(no mark) + "World"(ai)
+      // Filter out the initial "テスト文章" node
+      const relevantNodes = nodes.filter(
+        (n) => n.text !== "テスト文章",
+      );
+      expect(relevantNodes).toHaveLength(3);
+      expect(relevantNodes[0]).toEqual({ text: "Hello", source: "ai" });
+      expect(relevantNodes[1]).toEqual({ text: "XYZ", source: null });
+      expect(relevantNodes[2]).toEqual({ text: "World", source: "ai" });
+      editor.destroy();
+    });
+
+    it("keeps AI mark on flanking text after insertion (no ai→mixed)", () => {
+      insertAiText(editor, "ABCDE");
+
+      let aiPos = -1;
+      editor.state.doc.descendants((node, pos) => {
+        if (node.isText && node.text === "ABCDE") aiPos = pos;
+      });
+      expect(aiPos).toBeGreaterThan(0);
+
+      // Insert "X" between "AB" and "CDE"
+      editor
+        .chain()
+        .focus()
+        .setTextSelection(aiPos + 2)
+        .insertContentAt(aiPos + 2, "X")
+        .run();
+
+      const sources = findAuthorshipSources(editor);
+      expect(sources).toContain("ai");
+      expect(sources).not.toContain("mixed");
+      editor.destroy();
+    });
+
+    it("deletion still triggers ai→mixed (regression)", () => {
+      insertAiText(editor, "ABCDE");
+
+      let aiPos = -1;
+      editor.state.doc.descendants((node, pos) => {
+        if (node.isText && node.text === "ABCDE") aiPos = pos;
+      });
+      expect(aiPos).toBeGreaterThan(0);
+
+      editor
+        .chain()
+        .focus()
+        .setTextSelection(aiPos + 2)
+        .deleteRange({ from: aiPos + 2, to: aiPos + 3 })
+        .run();
+
+      const sources = findAuthorshipSources(editor);
+      expect(sources).toContain("mixed");
+      expect(sources).not.toContain("ai");
+      editor.destroy();
+    });
+
+    it("insertion inside mixed span splits without changing source", () => {
+      insertMixedText(editor, "HelloWorld", 10);
+
+      let mixedPos = -1;
+      editor.state.doc.descendants((node, pos) => {
+        if (node.isText && node.text === "HelloWorld") mixedPos = pos;
+      });
+      expect(mixedPos).toBeGreaterThan(0);
+
+      editor
+        .chain()
+        .focus()
+        .setTextSelection(mixedPos + 5)
+        .insertContentAt(mixedPos + 5, "XYZ")
+        .run();
+
+      const nodes: { text: string; source: string | null }[] = [];
+      editor.state.doc.descendants((node) => {
+        if (!node.isText) return;
+        const mark = node.marks.find((m) => m.type.name === "authorship");
+        nodes.push({
+          text: node.text ?? "",
+          source: mark ? (mark.attrs.source as string) : null,
+        });
+      });
+
+      const relevantNodes = nodes.filter(
+        (n) => n.text !== "テスト文章",
+      );
+      expect(relevantNodes).toHaveLength(3);
+      expect(relevantNodes[0]).toEqual({ text: "Hello", source: "mixed" });
+      expect(relevantNodes[1]).toEqual({ text: "XYZ", source: null });
+      expect(relevantNodes[2]).toEqual({ text: "World", source: "mixed" });
+      editor.destroy();
+    });
+
+    it("does not split manualOverride span on insertion", () => {
+      editor
+        .chain()
+        .focus()
+        .command(({ tr }) => {
+          tr.setMeta("programmaticInsert", true);
+          return true;
+        })
+        .insertContent([
+          {
+            type: "text",
+            text: "ABCDE",
+            marks: [
+              {
+                type: "authorship",
+                attrs: {
+                  source: "ai",
+                  chatMessageId: "msg-mo",
+                  manualOverride: true,
+                  originalLength: 5,
+                  traceId: crypto.randomUUID(),
+                },
+              },
+            ],
+          },
+        ])
+        .run();
+
+      let aiPos = -1;
+      editor.state.doc.descendants((node, pos) => {
+        if (node.isText && node.text === "ABCDE") aiPos = pos;
+      });
+      expect(aiPos).toBeGreaterThan(0);
+
+      editor
+        .chain()
+        .focus()
+        .setTextSelection(aiPos + 2)
+        .insertContentAt(aiPos + 2, "X")
+        .run();
+
+      // manualOverride node should not be split — inserted text inherits the mark
+      const sources = findAuthorshipSources(editor);
+      expect(sources).toContain("ai");
+      // The "X" should also have the ai mark (not split out)
+      let foundFullText = false;
+      editor.state.doc.descendants((node) => {
+        if (node.isText && node.text === "ABXCDE") foundFullText = true;
+      });
+      expect(foundFullText).toBe(true);
+      editor.destroy();
+    });
+
+    it("does not split on programmatic insert within AI span", () => {
+      insertAiText(editor, "ABCDE");
+
+      let aiPos = -1;
+      editor.state.doc.descendants((node, pos) => {
+        if (node.isText && node.text === "ABCDE") aiPos = pos;
+      });
+      expect(aiPos).toBeGreaterThan(0);
+
+      // Programmatic insert within the AI span
+      editor
+        .chain()
+        .focus()
+        .command(({ tr }) => {
+          tr.setMeta("programmaticInsert", true);
+          return true;
+        })
+        .insertContentAt(aiPos + 2, "X")
+        .run();
+
+      // Should not split — programmatic inserts are skipped
+      const nodes: { text: string; source: string | null }[] = [];
+      editor.state.doc.descendants((node) => {
+        if (!node.isText) return;
+        const mark = node.marks.find((m) => m.type.name === "authorship");
+        nodes.push({
+          text: node.text ?? "",
+          source: mark ? (mark.attrs.source as string) : null,
+        });
+      });
+
+      // The text should remain as one node (no splitting occurred)
+      const aiNodes = nodes.filter((n) => n.source === "ai");
+      expect(aiNodes.some((n) => n.text.includes("X"))).toBe(true);
       editor.destroy();
     });
   });

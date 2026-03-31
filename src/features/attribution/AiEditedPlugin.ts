@@ -1,5 +1,6 @@
 import { Plugin, PluginKey } from "@tiptap/pm/state";
 import type { Node as ProseMirrorNode } from "@tiptap/pm/model";
+import { ReplaceStep } from "@tiptap/pm/transform";
 
 export const aiEditedKey = new PluginKey("aiEdited");
 
@@ -64,11 +65,66 @@ export function createAiEditedPlugin(): Plugin {
         }
       });
 
+      // Phase 0: Insertion detection — strip authorship marks from user-inserted text
+      // so inserted characters become separate unmarked (human) nodes.
+      const splitTraceIds = new Set<string>();
+      let changed = false;
+
+      for (const transaction of transactions) {
+        if (transaction.getMeta("programmaticInsert") === true) continue;
+
+        const steps = transaction.steps;
+        for (let i = 0; i < steps.length; i++) {
+          const step = steps[i];
+          if (!(step instanceof ReplaceStep)) continue;
+
+          const { from, to } = step as { from: number; to: number };
+          const insertedSize = step.slice.content.size;
+          if (insertedSize === 0) continue;
+
+          const isPureInsertion = from === to;
+
+          // Check if the insertion/replacement position is inside an ai/mixed span
+          // Use oldState positions (step coordinates are in pre-step document)
+          let aiMark = null;
+          if (from < oldState.doc.content.size) {
+            const $pos = oldState.doc.resolve(from);
+            aiMark = $pos.marks().find(
+              (m) =>
+                m.type === authorshipType &&
+                (m.attrs.source === "ai" || m.attrs.source === "mixed") &&
+                !m.attrs.manualOverride,
+            );
+          }
+
+          if (aiMark) {
+            // Map the insertion range to newState coordinates
+            // For multi-step transactions, map through subsequent steps
+            let newFrom = from;
+            let newTo = from + insertedSize;
+            for (let j = i + 1; j < steps.length; j++) {
+              const map = steps[j].getMap();
+              newFrom = map.map(newFrom, -1);
+              newTo = map.map(newTo, 1);
+            }
+
+            tr.removeMark(newFrom, newTo, authorshipType);
+            changed = true;
+
+            // For pure insertions, record traceId to skip in fallback phase
+            // (the flanking AI text was not edited, just split)
+            if (isPureInsertion) {
+              const traceId = aiMark.attrs.traceId as string | null;
+              if (traceId) splitTraceIds.add(traceId);
+            }
+          }
+        }
+      }
+
       const cursorPos = newState.selection.anchor;
 
-      // Phase 1: Try cursor-based detection
+      // Phase 1: Try cursor-based detection (for deletions / replacements)
       let cursorNodeFound = false;
-      let changed = false;
 
       newState.doc.descendants((node: ProseMirrorNode, pos: number) => {
         if (!node.isText) return;
@@ -97,10 +153,14 @@ export function createAiEditedPlugin(): Plugin {
           if (!mark) return;
           if (mark.attrs.manualOverride) return;
 
+          // Skip nodes whose traceId was split by pure insertion
+          const traceId = mark.attrs.traceId as string | null;
+          if (traceId && splitTraceIds.has(traceId)) return;
+
           const nodeEnd = pos + node.nodeSize;
           if (cursorPos < pos || cursorPos > nodeEnd) return;
 
-          changed = applyTransition(
+          const didChange = applyTransition(
             tr,
             authorshipType,
             mark,
@@ -109,6 +169,7 @@ export function createAiEditedPlugin(): Plugin {
             nodeEnd,
             oldTextByTraceId,
           );
+          if (didChange) changed = true;
         });
       } else {
         // Fallback: traceId text comparison for each node
@@ -123,6 +184,10 @@ export function createAiEditedPlugin(): Plugin {
           if (mark.attrs.manualOverride) return;
 
           const traceId = mark.attrs.traceId as string | null;
+
+          // Skip nodes whose traceId was split by pure insertion
+          if (traceId && splitTraceIds.has(traceId)) return;
+
           if (traceId) {
             const old = oldTextByTraceId.get(traceId);
             if (old && old.text === (node.text ?? "")) return; // unchanged
