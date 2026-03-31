@@ -2,7 +2,11 @@ import { describe, it, expect, beforeEach } from "vitest";
 import { Editor } from "@tiptap/core";
 import StarterKit from "@tiptap/starter-kit";
 import { AuthorshipMark } from "./AuthorshipMark";
-import { createAiEditedPlugin } from "./AiEditedPlugin";
+import {
+  createAiEditedPlugin,
+  EDIT_RATIO_THRESHOLD,
+  EDIT_ABS_THRESHOLD,
+} from "./AiEditedPlugin";
 
 function createTestEditor(content = "") {
   const editor = new Editor({
@@ -190,6 +194,62 @@ describe("AiEditedPlugin", () => {
     const sources = findAuthorshipSources(editor);
     expect(sources).not.toContain("mixed");
     expect(sources).toContain("ai");
+    editor.destroy();
+  });
+
+  it("exports threshold constants", () => {
+    expect(EDIT_RATIO_THRESHOLD).toBe(0.1);
+    expect(EDIT_ABS_THRESHOLD).toBe(5);
+  });
+
+  it("keeps ai for minor edits below threshold", () => {
+    // Insert a long AI text (50 chars) so a 1-char edit is well below 10%
+    const longText =
+      "これは長いAI生成テキストです。テスト用の文章を書いています。あいうえお";
+    insertAiText(editor, longText);
+
+    let aiPos = -1;
+    editor.state.doc.descendants((node, pos) => {
+      if (node.isText && node.text === longText) {
+        aiPos = pos;
+      }
+    });
+    expect(aiPos).toBeGreaterThan(0);
+
+    // Insert 1 character — below both thresholds (< 10% ratio, < 5 abs chars)
+    editor
+      .chain()
+      .focus()
+      .insertContentAt(aiPos + 1, "X")
+      .run();
+
+    const sources = findAuthorshipSources(editor);
+    expect(sources).toContain("ai");
+    expect(sources).not.toContain("mixed");
+    editor.destroy();
+  });
+
+  it("transitions to mixed for large edits above threshold", () => {
+    // Insert a short AI text (5 chars)
+    insertAiText(editor, "短い文章だ");
+
+    let aiPos = -1;
+    editor.state.doc.descendants((node, pos) => {
+      if (node.isText && node.text === "短い文章だ") {
+        aiPos = pos;
+      }
+    });
+    expect(aiPos).toBeGreaterThan(0);
+
+    // Insert 6 characters — exceeds both thresholds (> 5 abs, > 10% ratio)
+    editor
+      .chain()
+      .focus()
+      .insertContentAt(aiPos + 1, "大幅な変更です")
+      .run();
+
+    const sources = findAuthorshipSources(editor);
+    expect(sources).toContain("mixed");
     editor.destroy();
   });
 });
