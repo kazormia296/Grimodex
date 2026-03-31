@@ -156,7 +156,9 @@ describe("codexStore", () => {
 
       await useCodexStore.getState().update(1, { name: "アリス改" });
 
-      expect(mockUpdateCodexEntry).toHaveBeenCalledWith(1, { name: "アリス改" });
+      expect(mockUpdateCodexEntry).toHaveBeenCalledWith(1, {
+        name: "アリス改",
+      });
     });
   });
 

@@ -96,7 +96,13 @@ export const useEditorStore = create<EditorState>()((set, get) => ({
     editor.chain().focus().insertContentAt(insertPos, content).run();
 
     const to = insertPos + text.length;
-    set({ lastInsertRange: { from: insertPos, to, chatMessageId: `snippet-${snippetId}` } });
+    set({
+      lastInsertRange: {
+        from: insertPos,
+        to,
+        chatMessageId: `snippet-${snippetId}`,
+      },
+    });
 
     if (highlightTimer) clearTimeout(highlightTimer);
     highlightTimer = setTimeout(() => {

@@ -1,9 +1,17 @@
-import { useState, useRef, useEffect, type KeyboardEvent } from "react";
+import {
+  useState,
+  useRef,
+  useEffect,
+  useCallback,
+  type KeyboardEvent,
+} from "react";
 import { Send } from "lucide-react";
 import { useChatStore } from "./chatStore";
 import { useSceneStore } from "@/features/scene/store";
 import { useEditorStore } from "@/features/editor/editorStore";
+import { useCodexStore } from "@/features/codex/codexStore";
 import { ChatMessage } from "./components/ChatMessage";
+import { CodexExtractionDialog } from "@/features/codex/CodexExtractionDialog";
 
 export function ChatPanel() {
   const messages = useChatStore((s) => s.messages);
@@ -22,6 +30,24 @@ export function ChatPanel() {
 
   const [input, setInput] = useState("");
   const bottomRef = useRef<HTMLDivElement>(null);
+
+  // Codex extraction dialog state
+  const [extractionDialog, setExtractionDialog] = useState<{
+    open: boolean;
+    messageId: string;
+    content: string;
+  }>({ open: false, messageId: "", content: "" });
+
+  const createCodexEntry = useCodexStore((s) => s.create);
+
+  const handleExtractCodex = useCallback(
+    (messageId: string, selectedText: string | null) => {
+      const msg = messages.find((m) => m.id === messageId);
+      const content = selectedText ?? msg?.content ?? "";
+      setExtractionDialog({ open: true, messageId, content });
+    },
+    [messages],
+  );
 
   useEffect(() => {
     if (typeof bottomRef.current?.scrollIntoView === "function") {
@@ -74,6 +100,7 @@ export function ChatPanel() {
                 msg={msg}
                 isStreaming={isStreaming}
                 onInsert={insertFromChat}
+                onExtractCodex={handleExtractCodex}
               />
             ))}
             {isStreaming && (
@@ -117,6 +144,19 @@ export function ChatPanel() {
           </button>
         </div>
       </div>
+
+      <CodexExtractionDialog
+        open={extractionDialog.open}
+        messageId={extractionDialog.messageId}
+        initialContent={extractionDialog.content}
+        onSave={async (data) => {
+          await createCodexEntry(data);
+          setExtractionDialog({ open: false, messageId: "", content: "" });
+        }}
+        onClose={() =>
+          setExtractionDialog({ open: false, messageId: "", content: "" })
+        }
+      />
     </div>
   );
 }

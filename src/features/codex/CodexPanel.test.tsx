@@ -17,6 +17,9 @@ vi.mock("./search", () => ({
   searchCodexEntries: vi.fn(() => Promise.resolve([])),
 }));
 
+import { listCodexEntries } from "./api";
+const mockListCodexEntries = vi.mocked(listCodexEntries);
+
 const mockEntries: CodexEntry[] = [
   {
     id: 1,
@@ -72,27 +75,34 @@ describe("CodexPanel", () => {
     expect(screen.getByTestId("codex-filter-select")).toBeInTheDocument();
   });
 
-  it("displays entry list", () => {
-    useCodexStore.setState({ entries: mockEntries });
+  it("displays entry list", async () => {
+    mockListCodexEntries.mockResolvedValue(mockEntries);
     render(<CodexPanel />);
 
-    expect(screen.getByText("アリス")).toBeInTheDocument();
+    await waitFor(() => {
+      expect(screen.getByText("アリス")).toBeInTheDocument();
+    });
     expect(screen.getByText("不思議の国")).toBeInTheDocument();
     expect(screen.getByText("魔法の鍵")).toBeInTheDocument();
   });
 
-  it("shows empty state when no entries", () => {
-    useCodexStore.setState({ entries: [] });
+  it("shows empty state when no entries", async () => {
+    mockListCodexEntries.mockResolvedValue([]);
     render(<CodexPanel />);
 
-    expect(screen.getByTestId("codex-empty-state")).toBeInTheDocument();
+    await waitFor(() => {
+      expect(screen.getByTestId("codex-empty-state")).toBeInTheDocument();
+    });
   });
 
   it("shows entry detail when an entry is clicked", async () => {
     const user = userEvent.setup();
-    useCodexStore.setState({ entries: mockEntries });
+    mockListCodexEntries.mockResolvedValue(mockEntries);
     render(<CodexPanel />);
 
+    await waitFor(() => {
+      expect(screen.getByText("アリス")).toBeInTheDocument();
+    });
     await user.click(screen.getByText("アリス"));
 
     expect(screen.getByTestId("codex-detail-view")).toBeInTheDocument();
@@ -101,13 +111,17 @@ describe("CodexPanel", () => {
 
   it("calls setFilterType when filter is changed", async () => {
     const user = userEvent.setup();
-    const { listCodexEntries } = await import("./api");
-    vi.mocked(listCodexEntries).mockResolvedValue([mockEntries[0]]);
-
-    useCodexStore.setState({ entries: mockEntries });
+    mockListCodexEntries.mockResolvedValue(mockEntries);
     render(<CodexPanel />);
 
-    const filterSelect = screen.getByTestId("codex-filter-select") as HTMLSelectElement;
+    await waitFor(() => {
+      expect(screen.getByText("アリス")).toBeInTheDocument();
+    });
+
+    mockListCodexEntries.mockResolvedValue([mockEntries[0]]);
+    const filterSelect = screen.getByTestId(
+      "codex-filter-select",
+    ) as HTMLSelectElement;
     await user.selectOptions(filterSelect, "character");
 
     await waitFor(() => {
@@ -120,6 +134,7 @@ describe("CodexPanel", () => {
     const { searchCodexEntries } = await import("./search");
     vi.mocked(searchCodexEntries).mockResolvedValue([mockEntries[0]]);
 
+    mockListCodexEntries.mockResolvedValue([]);
     render(<CodexPanel />);
 
     const searchInput = screen.getByTestId("codex-search-input");
@@ -132,9 +147,12 @@ describe("CodexPanel", () => {
 
   it("shows delete button in detail view", async () => {
     const user = userEvent.setup();
-    useCodexStore.setState({ entries: mockEntries });
+    mockListCodexEntries.mockResolvedValue(mockEntries);
     render(<CodexPanel />);
 
+    await waitFor(() => {
+      expect(screen.getByText("アリス")).toBeInTheDocument();
+    });
     await user.click(screen.getByText("アリス"));
 
     expect(screen.getByTestId("codex-delete-button")).toBeInTheDocument();
@@ -142,9 +160,12 @@ describe("CodexPanel", () => {
 
   it("shows edit button in detail view", async () => {
     const user = userEvent.setup();
-    useCodexStore.setState({ entries: mockEntries });
+    mockListCodexEntries.mockResolvedValue(mockEntries);
     render(<CodexPanel />);
 
+    await waitFor(() => {
+      expect(screen.getByText("アリス")).toBeInTheDocument();
+    });
     await user.click(screen.getByText("アリス"));
 
     expect(screen.getByTestId("codex-edit-button")).toBeInTheDocument();
@@ -152,9 +173,12 @@ describe("CodexPanel", () => {
 
   it("returns to list when back button is clicked in detail view", async () => {
     const user = userEvent.setup();
-    useCodexStore.setState({ entries: mockEntries });
+    mockListCodexEntries.mockResolvedValue(mockEntries);
     render(<CodexPanel />);
 
+    await waitFor(() => {
+      expect(screen.getByText("アリス")).toBeInTheDocument();
+    });
     await user.click(screen.getByText("アリス"));
     expect(screen.getByTestId("codex-detail-view")).toBeInTheDocument();
 

@@ -18,7 +18,9 @@ describe("CodexExtractionDialog", () => {
 
   it("does not render when open is false", () => {
     render(<CodexExtractionDialog {...defaultProps} open={false} />);
-    expect(screen.queryByTestId("codex-extraction-dialog")).not.toBeInTheDocument();
+    expect(
+      screen.queryByTestId("codex-extraction-dialog"),
+    ).not.toBeInTheDocument();
   });
 
   it("renders the dialog with form fields when open", () => {
@@ -36,7 +38,9 @@ describe("CodexExtractionDialog", () => {
   it("initializes content textarea with initialContent", () => {
     render(<CodexExtractionDialog {...defaultProps} />);
 
-    const textarea = screen.getByTestId("codex-content-textarea") as HTMLTextAreaElement;
+    const textarea = screen.getByTestId(
+      "codex-content-textarea",
+    ) as HTMLTextAreaElement;
     expect(textarea.value).toBe("抽出対象テキスト");
   });
 
@@ -45,7 +49,9 @@ describe("CodexExtractionDialog", () => {
     render(<CodexExtractionDialog {...defaultProps} />);
 
     // Type select
-    const typeSelect = screen.getByTestId("codex-type-select") as HTMLSelectElement;
+    const typeSelect = screen.getByTestId(
+      "codex-type-select",
+    ) as HTMLSelectElement;
     await user.selectOptions(typeSelect, "location");
     expect(typeSelect.value).toBe("location");
 
@@ -70,7 +76,10 @@ describe("CodexExtractionDialog", () => {
     const user = userEvent.setup();
     render(<CodexExtractionDialog {...defaultProps} />);
 
-    await user.selectOptions(screen.getByTestId("codex-type-select"), "character");
+    await user.selectOptions(
+      screen.getByTestId("codex-type-select"),
+      "character",
+    );
     await user.type(screen.getByTestId("codex-name-input"), "アリス");
     await user.type(screen.getByTestId("codex-tags-input"), "主人公");
     await user.click(screen.getByTestId("codex-save-button"));
@@ -106,7 +115,9 @@ describe("CodexExtractionDialog", () => {
   });
 
   it("resets form when opened with new content", () => {
-    const { rerender } = render(<CodexExtractionDialog {...defaultProps} open={false} />);
+    const { rerender } = render(
+      <CodexExtractionDialog {...defaultProps} open={false} />,
+    );
 
     rerender(
       <CodexExtractionDialog
@@ -116,7 +127,9 @@ describe("CodexExtractionDialog", () => {
       />,
     );
 
-    const textarea = screen.getByTestId("codex-content-textarea") as HTMLTextAreaElement;
+    const textarea = screen.getByTestId(
+      "codex-content-textarea",
+    ) as HTMLTextAreaElement;
     expect(textarea.value).toBe("新しいテキスト");
   });
 });
