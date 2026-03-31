@@ -41,6 +41,9 @@ export function createAiEditedPlugin(): Plugin {
         );
         if (!mark) return;
 
+        // Skip marks that were manually overridden by the user
+        if (mark.attrs.manualOverride) return;
+
         // This text node has source:"ai" — check if it was modified
         // by looking at the mapping from old to new positions.
         // We use a simple heuristic: if any transaction step maps

@@ -23,15 +23,22 @@ function buildDecorations(doc: ProseMirrorNode): DecorationSet {
       unknown: "attribution-unknown",
       snippet: "attribution-snippet",
     };
-    const className = classMap[source] ?? "attribution-unknown";
+    const isManualOverride = mark.attrs.manualOverride === true;
+    const classes = [
+      classMap[source] ?? "attribution-unknown",
+      isManualOverride ? "attribution-manual-override" : "",
+    ]
+      .filter(Boolean)
+      .join(" ");
 
     decos.push(
       Decoration.inline(pos, pos + node.nodeSize, {
-        class: className,
+        class: classes,
         "data-attribution-source": source,
         "data-attribution-model": mark.attrs.model ?? "",
         "data-attribution-timestamp": mark.attrs.timestamp ?? "",
         "data-attribution-message-id": mark.attrs.chatMessageId ?? "",
+        "data-manual-override": isManualOverride ? "true" : "",
       }),
     );
   });

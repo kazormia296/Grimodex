@@ -29,6 +29,7 @@ describe("AuthorshipMark", () => {
     expect(attrs).toHaveProperty("traceId");
     expect(attrs).toHaveProperty("toolName");
     expect(attrs).toHaveProperty("toolVersion");
+    expect(attrs).toHaveProperty("manualOverride");
     editor.destroy();
   });
 

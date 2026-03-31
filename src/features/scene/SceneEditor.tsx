@@ -14,6 +14,7 @@ import { useAttribution } from "@/features/attribution/useAttribution";
 import { useCursorEffect } from "@/features/editor/useCursorEffect";
 import { useCursorSettingsStore } from "@/features/editor/cursorSettingsStore";
 import { useAttributionStore } from "@/features/attribution/attributionStore";
+import { AttributionOverrideMenu } from "@/features/attribution/AttributionOverrideMenu";
 import type { ToolbarSlot } from "@/features/editor/Toolbar";
 import { VerticalPreview } from "@/features/editor/VerticalPreview";
 
@@ -165,6 +166,7 @@ export function SceneEditor() {
       <div className="flex-1 overflow-auto p-4">
         <EditorContent editor={editor} />
         <CodexPopover editor={editor} />
+        <AttributionOverrideMenu editor={editor} />
       </div>
       <div className="flex items-center justify-between border-t border-border px-4 py-1">
         <CharCount count={charCount} />

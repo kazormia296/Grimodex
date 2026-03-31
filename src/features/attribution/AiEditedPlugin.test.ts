@@ -142,4 +142,54 @@ describe("AiEditedPlugin", () => {
     expect(sources).not.toContain("mixed");
     editor.destroy();
   });
+
+  it("does not reclassify ai text with manualOverride", () => {
+    // Insert AI text with manualOverride: true
+    editor
+      .chain()
+      .focus()
+      .command(({ tr }) => {
+        tr.setMeta("programmaticInsert", true);
+        return true;
+      })
+      .insertContent([
+        {
+          type: "text",
+          text: "手動AI",
+          marks: [
+            {
+              type: "authorship",
+              attrs: {
+                source: "ai",
+                chatMessageId: "msg-manual",
+                timestamp: "2026-03-31T00:00:00.000Z",
+                manualOverride: true,
+              },
+            },
+          ],
+        },
+      ])
+      .run();
+
+    // Find position and edit
+    let aiPos = -1;
+    editor.state.doc.descendants((node, pos) => {
+      if (node.isText && node.text === "手動AI") {
+        aiPos = pos;
+      }
+    });
+    expect(aiPos).toBeGreaterThan(0);
+
+    editor
+      .chain()
+      .focus()
+      .insertContentAt(aiPos + 1, "追加")
+      .run();
+
+    // Should still be "ai", not "mixed", because manualOverride is true
+    const sources = findAuthorshipSources(editor);
+    expect(sources).not.toContain("mixed");
+    expect(sources).toContain("ai");
+    editor.destroy();
+  });
 });

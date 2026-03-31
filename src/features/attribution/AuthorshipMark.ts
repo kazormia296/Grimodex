@@ -19,6 +19,7 @@ export interface AuthorshipAttributes {
   traceId: string | null;
   toolName: string | null;
   toolVersion: string | null;
+  manualOverride: boolean;
 }
 
 export const AuthorshipMark = Mark.create({
@@ -46,6 +47,9 @@ export const AuthorshipMark = Mark.create({
       },
       toolVersion: {
         default: null,
+      },
+      manualOverride: {
+        default: false,
       },
     };
   },

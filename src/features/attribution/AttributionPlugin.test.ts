@@ -196,4 +196,70 @@ describe("AttributionPlugin", () => {
     expect(decos).toHaveLength(0);
     editor.destroy();
   });
+
+  it("adds manual-override class and data attribute for overridden marks", () => {
+    useAttributionStore.setState({ showAttribution: true });
+    const editor = createTestEditor();
+    editor
+      .chain()
+      .focus()
+      .insertContent([
+        {
+          type: "text",
+          text: "上書き済み",
+          marks: [
+            {
+              type: "authorship",
+              attrs: {
+                source: "human",
+                manualOverride: true,
+              },
+            },
+          ],
+        },
+      ])
+      .run();
+
+    const { tr } = editor.state;
+    tr.setMeta("attributionUpdate", true);
+    editor.view.dispatch(tr);
+
+    // human source is not decorated, so test with ai + manualOverride
+    editor
+      .chain()
+      .focus()
+      .insertContent([
+        {
+          type: "text",
+          text: "手動AI",
+          marks: [
+            {
+              type: "authorship",
+              attrs: {
+                source: "ai",
+                manualOverride: true,
+              },
+            },
+          ],
+        },
+      ])
+      .run();
+
+    const tr2 = editor.state.tr;
+    tr2.setMeta("attributionUpdate", true);
+    editor.view.dispatch(tr2);
+
+    const decoSet = attributionKey.getState(editor.state);
+    const decos = decoSet.find();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const overrideDeco = decos.find((d: any) => {
+      const attrs = getDecoAttrs(d);
+      return attrs["data-manual-override"] === "true";
+    });
+    expect(overrideDeco).toBeDefined();
+    expect(getDecoAttrs(overrideDeco!).class).toContain(
+      "attribution-manual-override",
+    );
+    editor.destroy();
+  });
 });
