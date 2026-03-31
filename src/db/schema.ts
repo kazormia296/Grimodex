@@ -70,3 +70,29 @@ export const snippets = sqliteTable("snippets", {
     .notNull()
     .$defaultFn(() => new Date().toISOString()),
 });
+
+export const chatThreads = sqliteTable("chat_threads", {
+  id: text("id").primaryKey(),
+  title: text("title").notNull(),
+  sceneId: text("scene_id").references(() => scenes.id, {
+    onDelete: "cascade",
+  }),
+  createdAt: text("created_at")
+    .notNull()
+    .$defaultFn(() => new Date().toISOString()),
+  modifiedAt: text("modified_at")
+    .notNull()
+    .$defaultFn(() => new Date().toISOString()),
+});
+
+export const chatMessages = sqliteTable("chat_messages", {
+  id: text("id").primaryKey(),
+  threadId: text("thread_id")
+    .notNull()
+    .references(() => chatThreads.id, { onDelete: "cascade" }),
+  role: text("role").notNull(), // 'user' | 'assistant' | 'system'
+  content: text("content").notNull(),
+  createdAt: text("created_at")
+    .notNull()
+    .$defaultFn(() => new Date().toISOString()),
+});

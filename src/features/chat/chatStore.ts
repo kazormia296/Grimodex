@@ -4,9 +4,15 @@ import { buildSystemPrompt, countTokens } from "./contextBuilder";
 import type { SceneContext, ProjectContext } from "./contextBuilder";
 import { loadSceneContent, getScene } from "@/features/scene/api";
 import { getProject } from "@/features/project/api";
-import type { ChatMessage } from "./chatTypes";
+import type { ChatMessage, ChatThread, MessageRole } from "./chatTypes";
 
 interface ChatState {
+  // Thread management (Task 2.5)
+  threads: ChatThread[];
+  activeThreadId: string | null;
+  isLoadingThreads: boolean;
+
+  // Messages & streaming (existing)
   messages: ChatMessage[];
   isStreaming: boolean;
   error: string | null;
@@ -14,7 +20,14 @@ interface ChatState {
   activeProjectId: number | null;
   contextTokenCount: number;
 
-  addUserMessage: (content: string) => void;
+  // Thread actions (Task 2.5)
+  loadThreads: (sceneId?: string) => Promise<void>;
+  selectThread: (threadId: string | null) => Promise<void>;
+  createNewThread: (title: string, sceneId?: string) => Promise<void>;
+  deleteThread: (threadId: string) => Promise<void>;
+  persistMessage: (role: MessageRole, content: string) => Promise<void>;
+
+  // Existing actions
   sendMessage: (content: string) => Promise<void>;
   clearMessages: () => void;
   clearError: () => void;
@@ -51,6 +64,9 @@ async function fetchProjectContext(
 }
 
 export const useChatStore = create<ChatState>()((set, get) => ({
+  threads: [],
+  activeThreadId: null,
+  isLoadingThreads: false,
   messages: [],
   isStreaming: false,
   error: null,
@@ -58,23 +74,66 @@ export const useChatStore = create<ChatState>()((set, get) => ({
   activeProjectId: null,
   contextTokenCount: 0,
 
-  addUserMessage: (content: string) => {
-    const msg: ChatMessage = {
-      id: crypto.randomUUID(),
-      role: "user",
-      content,
-      createdAt: new Date().toISOString(),
-    };
-    set((s) => ({ messages: [...s.messages, msg] }));
+  // --- Thread management (Task 2.5) ---
+
+  loadThreads: async (sceneId?: string) => {
+    set({ isLoadingThreads: true });
+    const threads = await chatApi.listThreads(sceneId);
+    set({ threads, isLoadingThreads: false });
   },
 
+  selectThread: async (threadId: string | null) => {
+    if (threadId === null) {
+      set({ activeThreadId: null, messages: [] });
+      return;
+    }
+    const messages = await chatApi.listMessages(threadId);
+    set({ activeThreadId: threadId, messages });
+  },
+
+  createNewThread: async (title: string, sceneId?: string) => {
+    const thread = await chatApi.createThread(title, sceneId);
+    set((state) => ({
+      threads: [thread, ...state.threads],
+      activeThreadId: thread.id,
+      messages: [],
+    }));
+  },
+
+  deleteThread: async (threadId: string) => {
+    await chatApi.deleteThread(threadId);
+    const { activeThreadId } = get();
+    set((state) => ({
+      threads: state.threads.filter((t) => t.id !== threadId),
+      ...(activeThreadId === threadId
+        ? { activeThreadId: null, messages: [] }
+        : {}),
+    }));
+  },
+
+  persistMessage: async (role: MessageRole, content: string) => {
+    const { activeThreadId } = get();
+    if (!activeThreadId) return;
+
+    const message = await chatApi.addMessage(activeThreadId, role, content);
+    set((state) => ({
+      messages: [...state.messages, message],
+    }));
+  },
+
+  // --- Streaming chat (existing, updated for thread awareness) ---
+
   sendMessage: async (content: string) => {
-    const { isStreaming, activeSceneId, activeProjectId } = get();
+    const { isStreaming, activeSceneId, activeProjectId, activeThreadId } =
+      get();
     if (isStreaming) return;
     if (!content.trim()) return;
 
+    const threadId = activeThreadId ?? "";
+
     const userMsg: ChatMessage = {
       id: crypto.randomUUID(),
+      threadId,
       role: "user",
       content,
       createdAt: new Date().toISOString(),
@@ -82,6 +141,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
 
     const assistantMsg: ChatMessage = {
       id: crypto.randomUUID(),
+      threadId,
       role: "assistant",
       content: "",
       createdAt: new Date().toISOString(),
@@ -113,6 +173,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
 
         const systemMsg: ChatMessage = {
           id: "system",
+          threadId,
           role: "system",
           content: systemPrompt,
           createdAt: new Date().toISOString(),
@@ -130,6 +191,20 @@ export const useChatStore = create<ChatState>()((set, get) => ({
           return { messages: msgs };
         });
       });
+
+      // Persist messages to DB after streaming completes
+      if (activeThreadId) {
+        const finalMessages = get().messages;
+        const lastMsg = finalMessages[finalMessages.length - 1];
+        await chatApi.addMessage(activeThreadId, "user", content);
+        if (lastMsg && lastMsg.role === "assistant" && lastMsg.content) {
+          await chatApi.addMessage(
+            activeThreadId,
+            "assistant",
+            lastMsg.content,
+          );
+        }
+      }
     } catch (e) {
       set({
         error: e instanceof Error ? e.message : String(e),

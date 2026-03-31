@@ -109,6 +109,22 @@ impl Database {
                 VALUES (new.id, new.title, new.content, new.tags);
             END;
 
+            CREATE TABLE IF NOT EXISTS chat_threads (
+                id          TEXT PRIMARY KEY,
+                title       TEXT NOT NULL,
+                scene_id    TEXT REFERENCES scenes(id) ON DELETE CASCADE,
+                created_at  TEXT NOT NULL,
+                modified_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS chat_messages (
+                id          TEXT PRIMARY KEY,
+                thread_id   TEXT NOT NULL REFERENCES chat_threads(id) ON DELETE CASCADE,
+                role        TEXT NOT NULL CHECK(role IN ('user', 'assistant', 'system')),
+                content     TEXT NOT NULL,
+                created_at  TEXT NOT NULL
+            );
+
             -- Seed default project + chapter so scenes can reference chapter_id=1
             INSERT OR IGNORE INTO projects (id, title, description, created_at, updated_at)
               VALUES (1, '無題のプロジェクト', '', datetime('now'), datetime('now'));
@@ -1161,6 +1177,257 @@ mod tests {
             .expect("like search");
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0]["title"], Value::String("伏線".into()));
+    }
+
+    #[test]
+    fn test_migrate_creates_chat_threads_table() {
+        let db = test_db();
+        let rows = db
+            .execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='chat_threads'",
+                &[],
+                "all",
+            )
+            .expect("query");
+        assert_eq!(rows.len(), 1);
+    }
+
+    #[test]
+    fn test_migrate_creates_chat_messages_table() {
+        let db = test_db();
+        let rows = db
+            .execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='chat_messages'",
+                &[],
+                "all",
+            )
+            .expect("query");
+        assert_eq!(rows.len(), 1);
+    }
+
+    #[test]
+    fn test_crud_chat_threads() {
+        let db = test_db();
+
+        db.execute(
+            "INSERT INTO chat_threads (id, title, scene_id, created_at, modified_at) VALUES (?, ?, ?, ?, ?)",
+            &[
+                Value::String("thread-1".into()),
+                Value::String("Test Thread".into()),
+                Value::Null,
+                Value::String("2025-01-01T00:00:00Z".into()),
+                Value::String("2025-01-01T00:00:00Z".into()),
+            ],
+            "run",
+        )
+        .expect("insert thread");
+
+        let rows = db
+            .execute("SELECT * FROM chat_threads", &[], "all")
+            .expect("select threads");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0]["title"], Value::String("Test Thread".into()));
+        assert_eq!(rows[0]["scene_id"], Value::Null);
+
+        db.execute(
+            "DELETE FROM chat_threads WHERE id = ?",
+            &[Value::String("thread-1".into())],
+            "run",
+        )
+        .expect("delete thread");
+        let rows = db
+            .execute("SELECT * FROM chat_threads", &[], "all")
+            .expect("select after delete");
+        assert_eq!(rows.len(), 0);
+    }
+
+    #[test]
+    fn test_crud_chat_messages() {
+        let db = test_db();
+
+        db.execute(
+            "INSERT INTO chat_threads (id, title, scene_id, created_at, modified_at) VALUES (?, ?, ?, ?, ?)",
+            &[
+                Value::String("thread-1".into()),
+                Value::String("Thread".into()),
+                Value::Null,
+                Value::String("2025-01-01T00:00:00Z".into()),
+                Value::String("2025-01-01T00:00:00Z".into()),
+            ],
+            "run",
+        )
+        .expect("insert thread");
+
+        db.execute(
+            "INSERT INTO chat_messages (id, thread_id, role, content, created_at) VALUES (?, ?, ?, ?, ?)",
+            &[
+                Value::String("msg-1".into()),
+                Value::String("thread-1".into()),
+                Value::String("user".into()),
+                Value::String("Hello".into()),
+                Value::String("2025-01-01T00:00:00Z".into()),
+            ],
+            "run",
+        )
+        .expect("insert message");
+
+        db.execute(
+            "INSERT INTO chat_messages (id, thread_id, role, content, created_at) VALUES (?, ?, ?, ?, ?)",
+            &[
+                Value::String("msg-2".into()),
+                Value::String("thread-1".into()),
+                Value::String("assistant".into()),
+                Value::String("Hi there!".into()),
+                Value::String("2025-01-01T00:00:01Z".into()),
+            ],
+            "run",
+        )
+        .expect("insert assistant message");
+
+        let rows = db
+            .execute(
+                "SELECT * FROM chat_messages WHERE thread_id = ? ORDER BY created_at",
+                &[Value::String("thread-1".into())],
+                "all",
+            )
+            .expect("select messages");
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0]["role"], Value::String("user".into()));
+        assert_eq!(rows[1]["role"], Value::String("assistant".into()));
+    }
+
+    #[test]
+    fn test_chat_messages_role_check_constraint() {
+        let db = test_db();
+
+        db.execute(
+            "INSERT INTO chat_threads (id, title, scene_id, created_at, modified_at) VALUES (?, ?, ?, ?, ?)",
+            &[
+                Value::String("thread-1".into()),
+                Value::String("Thread".into()),
+                Value::Null,
+                Value::String("2025-01-01T00:00:00Z".into()),
+                Value::String("2025-01-01T00:00:00Z".into()),
+            ],
+            "run",
+        )
+        .expect("insert thread");
+
+        let result = db.execute(
+            "INSERT INTO chat_messages (id, thread_id, role, content, created_at) VALUES (?, ?, ?, ?, ?)",
+            &[
+                Value::String("msg-bad".into()),
+                Value::String("thread-1".into()),
+                Value::String("invalid_role".into()),
+                Value::String("test".into()),
+                Value::String("2025-01-01T00:00:00Z".into()),
+            ],
+            "run",
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_chat_cascade_delete_thread() {
+        let db = test_db();
+
+        db.execute(
+            "INSERT INTO chat_threads (id, title, scene_id, created_at, modified_at) VALUES (?, ?, ?, ?, ?)",
+            &[
+                Value::String("thread-1".into()),
+                Value::String("Thread".into()),
+                Value::Null,
+                Value::String("2025-01-01T00:00:00Z".into()),
+                Value::String("2025-01-01T00:00:00Z".into()),
+            ],
+            "run",
+        )
+        .expect("insert thread");
+
+        db.execute(
+            "INSERT INTO chat_messages (id, thread_id, role, content, created_at) VALUES (?, ?, ?, ?, ?)",
+            &[
+                Value::String("msg-1".into()),
+                Value::String("thread-1".into()),
+                Value::String("user".into()),
+                Value::String("Hello".into()),
+                Value::String("2025-01-01T00:00:00Z".into()),
+            ],
+            "run",
+        )
+        .expect("insert message");
+
+        db.execute(
+            "DELETE FROM chat_threads WHERE id = ?",
+            &[Value::String("thread-1".into())],
+            "run",
+        )
+        .expect("delete thread");
+
+        let msgs = db
+            .execute("SELECT * FROM chat_messages", &[], "all")
+            .expect("select messages");
+        assert_eq!(msgs.len(), 0);
+    }
+
+    #[test]
+    fn test_chat_persist_across_reopen() {
+        let dir = std::env::temp_dir().join("noveloom_test_chat_persist");
+        std::fs::create_dir_all(&dir).ok();
+        let db_path = dir.join("chat_persist.db");
+        std::fs::remove_file(&db_path).ok();
+
+        {
+            let db = Database::new(&db_path).expect("open db");
+            db.migrate().expect("migrate");
+            db.execute(
+                "INSERT INTO chat_threads (id, title, scene_id, created_at, modified_at) VALUES (?, ?, ?, ?, ?)",
+                &[
+                    Value::String("thread-p".into()),
+                    Value::String("Persisted Thread".into()),
+                    Value::Null,
+                    Value::String("2025-01-01T00:00:00Z".into()),
+                    Value::String("2025-01-01T00:00:00Z".into()),
+                ],
+                "run",
+            )
+            .expect("insert thread");
+            db.execute(
+                "INSERT INTO chat_messages (id, thread_id, role, content, created_at) VALUES (?, ?, ?, ?, ?)",
+                &[
+                    Value::String("msg-p".into()),
+                    Value::String("thread-p".into()),
+                    Value::String("user".into()),
+                    Value::String("Persisted message".into()),
+                    Value::String("2025-01-01T00:00:00Z".into()),
+                ],
+                "run",
+            )
+            .expect("insert message");
+        }
+
+        {
+            let db = Database::new(&db_path).expect("reopen db");
+            db.migrate().expect("migrate again");
+
+            let threads = db
+                .execute("SELECT * FROM chat_threads", &[], "all")
+                .expect("select threads");
+            assert_eq!(threads.len(), 1);
+            assert_eq!(threads[0]["title"], Value::String("Persisted Thread".into()));
+
+            let msgs = db
+                .execute(
+                    "SELECT * FROM chat_messages WHERE thread_id = ?",
+                    &[Value::String("thread-p".into())],
+                    "all",
+                )
+                .expect("select messages");
+            assert_eq!(msgs.len(), 1);
+            assert_eq!(msgs[0]["content"], Value::String("Persisted message".into()));
+        }
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

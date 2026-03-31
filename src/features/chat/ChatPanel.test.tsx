@@ -6,6 +6,12 @@ import { useChatStore } from "./chatStore";
 
 vi.mock("./chatApi", () => ({
   sendChatMessage: vi.fn(),
+  listThreads: vi.fn(),
+  createThread: vi.fn(),
+  deleteThread: vi.fn(),
+  listMessages: vi.fn(),
+  addMessage: vi.fn(),
+  updateThreadTitle: vi.fn(),
 }));
 
 import * as chatApi from "./chatApi";
@@ -41,12 +47,14 @@ describe("ChatPanel", () => {
       messages: [
         {
           id: "1",
+          threadId: "",
           role: "user",
           content: "ユーザーの質問",
           createdAt: new Date().toISOString(),
         },
         {
           id: "2",
+          threadId: "",
           role: "assistant",
           content: "AIの回答",
           createdAt: new Date().toISOString(),
@@ -148,6 +156,7 @@ describe("ChatPanel", () => {
       messages: [
         {
           id: "1",
+          threadId: "",
           role: "assistant",
           content: "**太字テスト**",
           createdAt: new Date().toISOString(),
@@ -167,12 +176,14 @@ describe("ChatPanel", () => {
       messages: [
         {
           id: "1",
+          threadId: "",
           role: "user",
           content: "質問",
           createdAt: new Date().toISOString(),
         },
         {
           id: "2",
+          threadId: "",
           role: "assistant",
           content: "生成中...",
           createdAt: new Date().toISOString(),

@@ -2,6 +2,7 @@ export type MessageRole = "user" | "assistant" | "system";
 
 export interface ChatMessage {
   id: string;
+  threadId: string;
   role: MessageRole;
   content: string;
   createdAt: string;
@@ -9,8 +10,8 @@ export interface ChatMessage {
 
 export interface ChatThread {
   id: string;
-  sceneId: string;
   title: string;
-  messages: ChatMessage[];
+  sceneId: string | null;
   createdAt: string;
+  modifiedAt: string;
 }
