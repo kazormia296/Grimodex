@@ -1,6 +1,7 @@
 import { useMemo } from "react";
 import { useEditorStore } from "@/features/editor/editorStore";
 import { computeAttributionStats } from "./attributionStats";
+import { ExportAgentTraceButton } from "./ExportAgentTraceButton";
 
 interface StatBarProps {
   label: string;
@@ -81,8 +82,11 @@ export function AttributionReport() {
         total={stats.total}
         color="oklch(0.65 0.12 50)"
       />
-      <div className="text-xs text-muted-foreground text-right">
-        合計: {stats.total}字
+      <div className="flex items-center justify-between">
+        <ExportAgentTraceButton />
+        <span className="text-xs text-muted-foreground tabular-nums">
+          合計: {stats.total}字
+        </span>
       </div>
     </div>
   );
