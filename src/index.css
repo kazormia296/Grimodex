@@ -182,14 +182,23 @@
 
 /* Attribution decorations (Task 4.2) */
 .attribution-ai {
-  border-left: 3px solid oklch(0.65 0.18 250);
-  padding-left: 4px;
+  background-color: oklch(0.90 0.08 250);
+  border-radius: 2px;
+}
+.dark .attribution-ai {
+  background-color: oklch(0.30 0.08 250);
 }
 .attribution-ai-edited {
-  border-left: 3px solid oklch(0.65 0.15 150);
-  padding-left: 4px;
+  background-color: oklch(0.90 0.08 150);
+  border-radius: 2px;
+}
+.dark .attribution-ai-edited {
+  background-color: oklch(0.30 0.08 150);
 }
 .attribution-snippet {
-  border-left: 3px solid oklch(0.65 0.12 50);
-  padding-left: 4px;
+  background-color: oklch(0.90 0.08 50);
+  border-radius: 2px;
+}
+.dark .attribution-snippet {
+  background-color: oklch(0.30 0.08 50);
 }
