@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { MessageSquare, BookOpen, Bookmark } from "lucide-react";
 import { ChatPanel } from "@/features/chat/ChatPanel";
-import { CodexPanel } from "@/features/codex/CodexPanel";
+import { CodexManagementPanel } from "@/features/codex/CodexManagementPanel";
 import { SnippetPanel } from "@/features/snippets/SnippetPanel";
 
 type TabId = "chat" | "codex" | "snippets";
@@ -51,7 +51,7 @@ export function RightPanel() {
       </div>
       <div className="flex-1 overflow-hidden">
         {activeTab === "chat" && <ChatPanel />}
-        {activeTab === "codex" && <CodexPanel />}
+        {activeTab === "codex" && <CodexManagementPanel />}
         {activeTab === "snippets" && <SnippetPanel />}
       </div>
     </div>
