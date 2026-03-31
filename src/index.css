@@ -141,3 +141,30 @@
 .codex-highlight:hover {
   background-color: oklch(0.85 0.08 200 / 0.5);
 }
+
+/* Vertical writing preview (Task 5.2) */
+.vertical-preview {
+  writing-mode: vertical-rl;
+  text-orientation: mixed;
+  font-feature-settings: "vpal";
+  line-height: 2;
+}
+.vertical-preview p { margin: 0 0.5em; }
+.vertical-preview h1,
+.vertical-preview h2,
+.vertical-preview h3 { font-weight: bold; margin: 0 1em; }
+.vertical-preview ruby rt { font-size: 0.5em; }
+
+/* Attribution decorations (Task 4.2) */
+.attribution-ai {
+  border-left: 3px solid oklch(0.65 0.18 250);
+  padding-left: 4px;
+}
+.attribution-ai-edited {
+  border-left: 3px solid oklch(0.65 0.15 150);
+  padding-left: 4px;
+}
+.attribution-snippet {
+  border-left: 3px solid oklch(0.65 0.12 50);
+  padding-left: 4px;
+}

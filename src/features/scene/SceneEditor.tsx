@@ -10,6 +10,10 @@ import { useEditorStore } from "@/features/editor/editorStore";
 import { useInsertHighlight } from "@/features/editor/InsertHighlight";
 import { useCodexHighlight } from "@/features/editor/useCodexHighlight";
 import { CodexPopover } from "@/features/editor/CodexPopover";
+import { useAttribution } from "@/features/attribution/useAttribution";
+import { useAttributionStore } from "@/features/attribution/attributionStore";
+import type { ToolbarSlot } from "@/features/editor/Toolbar";
+import { VerticalPreview } from "@/features/editor/VerticalPreview";
 
 export function SceneEditor() {
   const activeSceneId = useSceneStore((s) => s.activeSceneId);
@@ -80,6 +84,25 @@ export function SceneEditor() {
   // Codex name highlighting (Task 3.6)
   useCodexHighlight(editor);
 
+  // Attribution visualization (Task 4.2)
+  useAttribution(editor);
+  const showAttribution = useAttributionStore((s) => s.showAttribution);
+  const toggleAttribution = useAttributionStore((s) => s.toggleAttribution);
+
+  const attributionSlot: ToolbarSlot = {
+    key: "attribution-toggle",
+    render: () => (
+      <button
+        type="button"
+        aria-label="帰属表示"
+        className={showAttribution ? "bg-muted" : ""}
+        onClick={toggleAttribution}
+      >
+        帰属
+      </button>
+    ),
+  };
+
   // Load content when active scene changes
   useEffect(() => {
     if (!editor || !activeSceneId) return;
@@ -112,13 +135,14 @@ export function SceneEditor() {
 
   return (
     <div className="flex flex-col h-full">
-      <Toolbar editor={editor} />
+      <Toolbar editor={editor} extraSlots={[attributionSlot]} />
       <div className="flex-1 overflow-auto p-4">
         <EditorContent editor={editor} />
         <CodexPopover editor={editor} />
       </div>
       <div className="flex items-center justify-between border-t border-border px-4 py-1">
         <CharCount count={charCount} />
+        <VerticalPreview />
       </div>
     </div>
   );
