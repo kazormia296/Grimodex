@@ -125,6 +125,25 @@ impl Database {
                 created_at  TEXT NOT NULL
             );
 
+            -- Triggers to nullify orphaned references on deletion
+            CREATE TRIGGER IF NOT EXISTS nullify_codex_source_on_msg_delete
+            AFTER DELETE ON chat_messages BEGIN
+                UPDATE codex_entries SET source_chat_message_id = NULL
+                WHERE source_chat_message_id = old.id;
+            END;
+
+            CREATE TRIGGER IF NOT EXISTS nullify_snippet_source_on_msg_delete
+            AFTER DELETE ON chat_messages BEGIN
+                UPDATE snippets SET source_chat_message_id = NULL
+                WHERE source_chat_message_id = old.id;
+            END;
+
+            CREATE TRIGGER IF NOT EXISTS nullify_snippet_scene_on_scene_delete
+            AFTER DELETE ON scenes BEGIN
+                UPDATE snippets SET scene_id = NULL
+                WHERE scene_id = old.id;
+            END;
+
             -- Seed default project + chapter so scenes can reference chapter_id=1
             INSERT OR IGNORE INTO projects (id, title, description, created_at, updated_at)
               VALUES (1, '無題のプロジェクト', '', datetime('now'), datetime('now'));
@@ -219,6 +238,67 @@ impl Database {
                 Ok(result)
             }
         }
+    }
+    pub fn integrity_check(&self) -> anyhow::Result<serde_json::Map<String, serde_json::Value>> {
+        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("{e}"))?;
+        let mut report = serde_json::Map::new();
+
+        let orphaned_codex_sources: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM codex_entries WHERE source_chat_message_id IS NOT NULL AND source_chat_message_id NOT IN (SELECT id FROM chat_messages)",
+            [],
+            |row| row.get(0),
+        )?;
+        report.insert("orphanedCodexSources".into(), orphaned_codex_sources.into());
+
+        let orphaned_snippet_sources: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM snippets WHERE source_chat_message_id IS NOT NULL AND source_chat_message_id NOT IN (SELECT id FROM chat_messages)",
+            [],
+            |row| row.get(0),
+        )?;
+        report.insert("orphanedSnippetSources".into(), orphaned_snippet_sources.into());
+
+        let orphaned_snippet_scenes: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM snippets WHERE scene_id IS NOT NULL AND scene_id NOT IN (SELECT id FROM scenes)",
+            [],
+            |row| row.get(0),
+        )?;
+        report.insert("orphanedSnippetScenes".into(), orphaned_snippet_scenes.into());
+
+        Ok(report)
+    }
+
+    pub fn repair_integrity(&self) -> anyhow::Result<serde_json::Map<String, serde_json::Value>> {
+        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("{e}"))?;
+        let mut report = serde_json::Map::new();
+
+        let codex_fixed = conn.execute(
+            "UPDATE codex_entries SET source_chat_message_id = NULL WHERE source_chat_message_id IS NOT NULL AND source_chat_message_id NOT IN (SELECT id FROM chat_messages)",
+            [],
+        )?;
+        report.insert("codexSourcesFixed".into(), (codex_fixed as i64).into());
+
+        let snippet_sources_fixed = conn.execute(
+            "UPDATE snippets SET source_chat_message_id = NULL WHERE source_chat_message_id IS NOT NULL AND source_chat_message_id NOT IN (SELECT id FROM chat_messages)",
+            [],
+        )?;
+        report.insert("snippetSourcesFixed".into(), (snippet_sources_fixed as i64).into());
+
+        let snippet_scenes_fixed = conn.execute(
+            "UPDATE snippets SET scene_id = NULL WHERE scene_id IS NOT NULL AND scene_id NOT IN (SELECT id FROM scenes)",
+            [],
+        )?;
+        report.insert("snippetScenesFixed".into(), (snippet_scenes_fixed as i64).into());
+
+        Ok(report)
+    }
+
+    pub fn fts_optimize(&self) -> anyhow::Result<()> {
+        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("{e}"))?;
+        conn.execute_batch(
+            "INSERT INTO codex_entries_fts(codex_entries_fts) VALUES('optimize');
+             INSERT INTO snippets_fts(snippets_fts) VALUES('optimize');",
+        )?;
+        Ok(())
     }
 }
 
@@ -1449,5 +1529,143 @@ mod tests {
         assert_eq!(mode, "wal");
         // Cleanup
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn test_nullify_codex_source_on_message_delete() {
+        let db = test_db();
+        // Create a scene and thread and message
+        db.execute(
+            "INSERT INTO scenes (id, chapter_id, title, sort_order, synopsis, created_at, updated_at) VALUES (?, 1, ?, 0, '', datetime('now'), datetime('now'))",
+            &[Value::String("s1".into()), Value::String("シーン1".into())],
+            "run",
+        ).expect("insert scene");
+        db.execute(
+            "INSERT INTO chat_threads (id, title, scene_id, created_at, modified_at) VALUES (?, ?, ?, datetime('now'), datetime('now'))",
+            &[Value::String("t1".into()), Value::String("スレッド1".into()), Value::String("s1".into())],
+            "run",
+        ).expect("insert thread");
+        db.execute(
+            "INSERT INTO chat_messages (id, thread_id, role, content, created_at) VALUES (?, ?, ?, ?, datetime('now'))",
+            &[Value::String("msg1".into()), Value::String("t1".into()), Value::String("user".into()), Value::String("hello".into())],
+            "run",
+        ).expect("insert message");
+
+        // Create codex entry referencing the message
+        db.execute(
+            "INSERT INTO codex_entries (type, name, source_chat_message_id, created_at, updated_at) VALUES (?, ?, ?, datetime('now'), datetime('now'))",
+            &[Value::String("character".into()), Value::String("テスト".into()), Value::String("msg1".into())],
+            "run",
+        ).expect("insert codex");
+
+        // Delete the message
+        db.execute(
+            "DELETE FROM chat_messages WHERE id = ?",
+            &[Value::String("msg1".into())],
+            "run",
+        ).expect("delete message");
+
+        // Verify source was nullified
+        let rows = db.execute(
+            "SELECT source_chat_message_id FROM codex_entries WHERE name = ?",
+            &[Value::String("テスト".into())],
+            "all",
+        ).expect("query");
+        assert_eq!(rows[0]["source_chat_message_id"], Value::Null);
+    }
+
+    #[test]
+    fn test_nullify_snippet_scene_on_scene_delete() {
+        let db = test_db();
+        // Create a scene
+        db.execute(
+            "INSERT INTO scenes (id, chapter_id, title, sort_order, synopsis, created_at, updated_at) VALUES (?, 1, ?, 0, '', datetime('now'), datetime('now'))",
+            &[Value::String("s1".into()), Value::String("シーン1".into())],
+            "run",
+        ).expect("insert scene");
+
+        // Create snippet referencing the scene
+        db.execute(
+            "INSERT INTO snippets (title, content, tags, scene_id, created_at) VALUES (?, ?, ?, ?, datetime('now'))",
+            &[Value::String("テスト".into()), Value::String("内容".into()), Value::String("".into()), Value::String("s1".into())],
+            "run",
+        ).expect("insert snippet");
+
+        // Delete the scene
+        db.execute(
+            "DELETE FROM scenes WHERE id = ?",
+            &[Value::String("s1".into())],
+            "run",
+        ).expect("delete scene");
+
+        // Verify scene_id was nullified
+        let rows = db.execute(
+            "SELECT scene_id FROM snippets WHERE title = ?",
+            &[Value::String("テスト".into())],
+            "all",
+        ).expect("query");
+        assert_eq!(rows[0]["scene_id"], Value::Null);
+    }
+
+    #[test]
+    fn test_integrity_check_clean_db() {
+        let db = test_db();
+        let report = db.integrity_check().expect("integrity check");
+        assert_eq!(report["orphanedCodexSources"], Value::Number(0.into()));
+        assert_eq!(report["orphanedSnippetSources"], Value::Number(0.into()));
+        assert_eq!(report["orphanedSnippetScenes"], Value::Number(0.into()));
+    }
+
+    #[test]
+    fn test_integrity_check_detects_and_repairs_orphans() {
+        let db = test_db();
+        // Insert codex with non-existent source_chat_message_id
+        db.execute(
+            "INSERT INTO codex_entries (type, name, source_chat_message_id, created_at, updated_at) VALUES (?, ?, ?, datetime('now'), datetime('now'))",
+            &[Value::String("character".into()), Value::String("孤立テスト".into()), Value::String("nonexistent".into())],
+            "run",
+        ).expect("insert");
+
+        // Check should detect orphan
+        let report = db.integrity_check().expect("check");
+        assert_eq!(report["orphanedCodexSources"], Value::Number(1.into()));
+
+        // Repair should fix it
+        let repair = db.repair_integrity().expect("repair");
+        assert_eq!(repair["codexSourcesFixed"], Value::Number(1.into()));
+
+        // Re-check should be clean
+        let report2 = db.integrity_check().expect("check2");
+        assert_eq!(report2["orphanedCodexSources"], Value::Number(0.into()));
+    }
+
+    #[test]
+    fn test_fts_optimize_succeeds() {
+        let db = test_db();
+        // Insert some data to make FTS indexes non-empty
+        db.execute(
+            "INSERT INTO codex_entries (type, name, summary, content, tags, created_at, updated_at) VALUES (?, ?, ?, ?, ?, datetime('now'), datetime('now'))",
+            &[
+                Value::String("character".into()),
+                Value::String("テスト太郎".into()),
+                Value::String("テスト用キャラクター".into()),
+                Value::String("テスト内容".into()),
+                Value::String("テスト".into()),
+            ],
+            "run",
+        ).expect("insert codex");
+
+        db.execute(
+            "INSERT INTO snippets (title, content, tags, created_at) VALUES (?, ?, ?, datetime('now'))",
+            &[
+                Value::String("テストスニペット".into()),
+                Value::String("スニペット内容".into()),
+                Value::String("タグ".into()),
+            ],
+            "run",
+        ).expect("insert snippet");
+
+        // fts_optimize should succeed without error
+        db.fts_optimize().expect("fts_optimize should succeed");
     }
 }

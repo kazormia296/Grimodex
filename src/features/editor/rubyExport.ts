@@ -5,7 +5,10 @@ import type { Node as ProseMirrorNode } from "@tiptap/pm/model";
  * Standard <ruby> tags are valid in both HTML and Markdown (inline HTML).
  */
 export function rubyToHtml(node: ProseMirrorNode): string {
-  const { base, annotation } = node.attrs as { base: string; annotation: string };
+  const { base, annotation } = node.attrs as {
+    base: string;
+    annotation: string;
+  };
   return `<ruby>${base}<rp>(</rp><rt>${annotation}</rt><rp>)</rp></ruby>`;
 }
 
@@ -14,7 +17,10 @@ export function rubyToHtml(node: ProseMirrorNode): string {
  * e.g. "漢字(かんじ)"
  */
 export function rubyToPlainText(node: ProseMirrorNode): string {
-  const { base, annotation } = node.attrs as { base: string; annotation: string };
+  const { base, annotation } = node.attrs as {
+    base: string;
+    annotation: string;
+  };
   return `${base}(${annotation})`;
 }
 

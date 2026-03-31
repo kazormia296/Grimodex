@@ -20,7 +20,8 @@ export async function searchSnippets(query: string): Promise<Snippet[]> {
     const result = await invoke<QueryResult>("db_execute", {
       sql: `SELECT s.* FROM snippets s
             JOIN snippets_fts fts ON s.id = fts.rowid
-            WHERE snippets_fts MATCH ?`,
+            WHERE snippets_fts MATCH ?
+            ORDER BY fts.rank`,
       params: [trimmed],
       method: "all",
     });

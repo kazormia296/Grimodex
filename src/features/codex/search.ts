@@ -20,7 +20,8 @@ export async function searchCodexEntries(query: string): Promise<CodexEntry[]> {
     const result = await invoke<QueryResult>("db_execute", {
       sql: `SELECT ce.* FROM codex_entries ce
             JOIN codex_entries_fts fts ON ce.id = fts.rowid
-            WHERE codex_entries_fts MATCH ?`,
+            WHERE codex_entries_fts MATCH ?
+            ORDER BY fts.rank`,
       params: [trimmed],
       method: "all",
     });

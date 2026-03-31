@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { Toaster } from "sonner";
 import { Sidebar } from "@/features/scene/Sidebar";
 import { SceneEditor } from "@/features/scene/SceneEditor";
 import { RightPanel } from "@/features/workspace/RightPanel";
@@ -21,20 +22,19 @@ function App() {
     initialize();
   }, [initialize]);
 
-  switch (view) {
-    case "loading":
-      return (
+  return (
+    <>
+      <Toaster position="bottom-right" richColors />
+      {view === "loading" && (
         <div className="flex h-screen items-center justify-center bg-background text-foreground">
           <p className="text-sm text-muted-foreground">読み込み中…</p>
         </div>
-      );
-    case "welcome":
-      return <WelcomeScreen />;
-    case "launcher":
-      return <LauncherScreen />;
-    case "editor":
-      return <EditorScreen />;
-  }
+      )}
+      {view === "welcome" && <WelcomeScreen />}
+      {view === "launcher" && <LauncherScreen />}
+      {view === "editor" && <EditorScreen />}
+    </>
+  );
 }
 
 function EditorScreen() {

@@ -90,6 +90,8 @@ export const useWorkspaceStore = create<WorkspaceState>()((set, get) => ({
         activeWorkspaceName: result.name,
         globalSettings: settings,
       });
+      // Optimize FTS indexes in background (fire-and-forget)
+      invoke("fts_optimize").catch(() => {});
     } catch (e) {
       set({
         error: e instanceof Error ? e.message : String(e),

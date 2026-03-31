@@ -1,5 +1,6 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { Search, ArrowLeft, Pencil, Trash2 } from "lucide-react";
+import { useVirtualizer } from "@tanstack/react-virtual";
 import { useCodexStore } from "./codexStore";
 import type { CodexEntry, CodexEntryType } from "./api";
 
@@ -187,6 +188,94 @@ function CodexEditView({
   );
 }
 
+function CodexVirtualList({
+  entries,
+  isLoading,
+  onSelect,
+}: {
+  entries: CodexEntry[];
+  isLoading: boolean;
+  onSelect: (entry: CodexEntry) => void;
+}) {
+  const parentRef = useRef<HTMLDivElement>(null);
+  const virtualizer = useVirtualizer({
+    count: entries.length,
+    getScrollElement: () => parentRef.current,
+    estimateSize: () => 52,
+    overscan: 5,
+  });
+
+  if (isLoading) {
+    return (
+      <p className="flex-1 p-3 text-center text-xs text-muted-foreground">
+        読み込み中...
+      </p>
+    );
+  }
+
+  if (entries.length === 0) {
+    return (
+      <div
+        data-testid="codex-empty-state"
+        className="flex-1 p-3 text-center text-xs text-muted-foreground"
+      >
+        エントリがありません
+      </div>
+    );
+  }
+
+  return (
+    <div ref={parentRef} className="flex-1 overflow-y-auto">
+      <div
+        style={{
+          height: `${virtualizer.getTotalSize()}px`,
+          width: "100%",
+          position: "relative",
+        }}
+      >
+        {virtualizer.getVirtualItems().map((virtualItem) => {
+          const entry = entries[virtualItem.index];
+          return (
+            <div
+              key={entry.id}
+              style={{
+                position: "absolute",
+                top: 0,
+                left: 0,
+                width: "100%",
+                height: `${virtualItem.size}px`,
+                transform: `translateY(${virtualItem.start}px)`,
+              }}
+              className="border-b border-border"
+            >
+              <button
+                type="button"
+                data-testid={`codex-entry-${entry.id}`}
+                onClick={() => onSelect(entry)}
+                className="h-full w-full px-3 py-2 text-left hover:bg-accent"
+              >
+                <div className="flex items-center gap-2">
+                  <span className="rounded-full bg-muted px-1.5 py-0.5 text-[9px] font-medium">
+                    {TYPE_LABELS[entry.type] ?? entry.type}
+                  </span>
+                  <span className="truncate text-sm font-medium">
+                    {entry.name}
+                  </span>
+                </div>
+                {entry.summary && (
+                  <p className="mt-0.5 truncate text-xs text-muted-foreground">
+                    {entry.summary}
+                  </p>
+                )}
+              </button>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 export function CodexPanel() {
   const entries = useCodexStore((s) => s.entries);
   const searchQuery = useCodexStore((s) => s.searchQuery);
@@ -201,6 +290,7 @@ export function CodexPanel() {
   const [selectedEntry, setSelectedEntry] = useState<CodexEntry | null>(null);
   const [isEditing, setIsEditing] = useState(false);
   const [localSearch, setLocalSearch] = useState(searchQuery);
+  const searchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     loadEntries();
@@ -209,7 +299,10 @@ export function CodexPanel() {
   const handleSearchChange = useCallback(
     (value: string) => {
       setLocalSearch(value);
-      search(value);
+      if (searchTimerRef.current) clearTimeout(searchTimerRef.current);
+      searchTimerRef.current = setTimeout(() => {
+        search(value);
+      }, 300);
     },
     [search],
   );
@@ -295,47 +388,11 @@ export function CodexPanel() {
         </select>
       </div>
 
-      <div className="flex-1 overflow-y-auto">
-        {isLoading ? (
-          <p className="p-3 text-center text-xs text-muted-foreground">
-            読み込み中...
-          </p>
-        ) : entries.length === 0 ? (
-          <div
-            data-testid="codex-empty-state"
-            className="p-3 text-center text-xs text-muted-foreground"
-          >
-            エントリがありません
-          </div>
-        ) : (
-          <ul className="divide-y divide-border">
-            {entries.map((entry) => (
-              <li key={entry.id}>
-                <button
-                  type="button"
-                  data-testid={`codex-entry-${entry.id}`}
-                  onClick={() => setSelectedEntry(entry)}
-                  className="w-full px-3 py-2 text-left hover:bg-accent"
-                >
-                  <div className="flex items-center gap-2">
-                    <span className="rounded-full bg-muted px-1.5 py-0.5 text-[9px] font-medium">
-                      {TYPE_LABELS[entry.type] ?? entry.type}
-                    </span>
-                    <span className="truncate text-sm font-medium">
-                      {entry.name}
-                    </span>
-                  </div>
-                  {entry.summary && (
-                    <p className="mt-0.5 truncate text-xs text-muted-foreground">
-                      {entry.summary}
-                    </p>
-                  )}
-                </button>
-              </li>
-            ))}
-          </ul>
-        )}
-      </div>
+      <CodexVirtualList
+        entries={entries}
+        isLoading={isLoading}
+        onSelect={setSelectedEntry}
+      />
     </div>
   );
 }

@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import { Search, Trash2, Save, MessageSquare } from "lucide-react";
 import { useEditor, EditorContent } from "@tiptap/react";
 import StarterKit from "@tiptap/starter-kit";
+import { useVirtualizer } from "@tanstack/react-virtual";
 import {
   ResizablePanelGroup,
   ResizablePanel,
@@ -275,6 +276,100 @@ function CodexDetailContent({
   );
 }
 
+// --- Virtualized Entry List ---
+
+function VirtualizedEntryList({
+  entries,
+  isLoading,
+  selectedEntryId,
+  onSelect,
+}: {
+  entries: CodexEntry[];
+  isLoading: boolean;
+  selectedEntryId: number | null;
+  onSelect: (entry: CodexEntry) => void;
+}) {
+  const parentRef = useRef<HTMLDivElement>(null);
+  const virtualizer = useVirtualizer({
+    count: entries.length,
+    getScrollElement: () => parentRef.current,
+    estimateSize: () => 52,
+    overscan: 5,
+  });
+
+  if (isLoading) {
+    return (
+      <p className="flex-1 p-3 text-center text-xs text-muted-foreground">
+        読み込み中...
+      </p>
+    );
+  }
+
+  if (entries.length === 0) {
+    return (
+      <div
+        data-testid="codex-empty-state"
+        className="flex-1 p-3 text-center text-xs text-muted-foreground"
+      >
+        エントリがありません
+      </div>
+    );
+  }
+
+  return (
+    <div ref={parentRef} className="flex-1 overflow-y-auto">
+      <div
+        style={{
+          height: `${virtualizer.getTotalSize()}px`,
+          width: "100%",
+          position: "relative",
+        }}
+      >
+        {virtualizer.getVirtualItems().map((virtualItem) => {
+          const entry = entries[virtualItem.index];
+          return (
+            <div
+              key={entry.id}
+              style={{
+                position: "absolute",
+                top: 0,
+                left: 0,
+                width: "100%",
+                height: `${virtualItem.size}px`,
+                transform: `translateY(${virtualItem.start}px)`,
+              }}
+              className="border-b border-border"
+            >
+              <button
+                type="button"
+                data-testid={`codex-entry-${entry.id}`}
+                onClick={() => onSelect(entry)}
+                className={`h-full w-full px-3 py-2 text-left hover:bg-accent ${
+                  selectedEntryId === entry.id ? "bg-accent" : ""
+                }`}
+              >
+                <div className="flex items-center gap-2">
+                  <span className="rounded-full bg-muted px-1.5 py-0.5 text-[9px] font-medium">
+                    {TYPE_LABELS[entry.type] ?? entry.type}
+                  </span>
+                  <span className="truncate text-sm font-medium">
+                    {entry.name}
+                  </span>
+                </div>
+                {entry.summary && (
+                  <p className="mt-0.5 truncate text-xs text-muted-foreground">
+                    {entry.summary}
+                  </p>
+                )}
+              </button>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 // --- Main Panel ---
 
 export function CodexManagementPanel() {
@@ -373,50 +468,13 @@ export function CodexManagementPanel() {
               ))}
             </div>
 
-            {/* Entry list */}
-            <div className="flex-1 overflow-y-auto">
-              {isLoading ? (
-                <p className="p-3 text-center text-xs text-muted-foreground">
-                  読み込み中...
-                </p>
-              ) : entries.length === 0 ? (
-                <div
-                  data-testid="codex-empty-state"
-                  className="p-3 text-center text-xs text-muted-foreground"
-                >
-                  エントリがありません
-                </div>
-              ) : (
-                <ul className="divide-y divide-border">
-                  {entries.map((entry) => (
-                    <li key={entry.id}>
-                      <button
-                        type="button"
-                        data-testid={`codex-entry-${entry.id}`}
-                        onClick={() => setSelectedEntry(entry)}
-                        className={`w-full px-3 py-2 text-left hover:bg-accent ${
-                          selectedEntry?.id === entry.id ? "bg-accent" : ""
-                        }`}
-                      >
-                        <div className="flex items-center gap-2">
-                          <span className="rounded-full bg-muted px-1.5 py-0.5 text-[9px] font-medium">
-                            {TYPE_LABELS[entry.type] ?? entry.type}
-                          </span>
-                          <span className="truncate text-sm font-medium">
-                            {entry.name}
-                          </span>
-                        </div>
-                        {entry.summary && (
-                          <p className="mt-0.5 truncate text-xs text-muted-foreground">
-                            {entry.summary}
-                          </p>
-                        )}
-                      </button>
-                    </li>
-                  ))}
-                </ul>
-              )}
-            </div>
+            {/* Entry list (virtualized) */}
+            <VirtualizedEntryList
+              entries={entries}
+              isLoading={isLoading}
+              selectedEntryId={selectedEntry?.id ?? null}
+              onSelect={setSelectedEntry}
+            />
           </div>
         </ResizablePanel>
 

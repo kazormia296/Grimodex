@@ -37,7 +37,10 @@ export function AttributionReport() {
 
   if (!stats || stats.total === 0) {
     return (
-      <div className="p-3 text-xs text-muted-foreground" data-testid="attribution-report">
+      <div
+        className="p-3 text-xs text-muted-foreground"
+        data-testid="attribution-report"
+      >
         テキストがありません
       </div>
     );
@@ -48,10 +51,30 @@ export function AttributionReport() {
   return (
     <div className="flex flex-col gap-2 p-3" data-testid="attribution-report">
       <h3 className="text-sm font-semibold">帰属レポート</h3>
-      <StatBar label="人間" count={humanTotal} total={stats.total} color="oklch(0.65 0.10 220)" />
-      <StatBar label="AI生成" count={stats.ai} total={stats.total} color="oklch(0.65 0.18 250)" />
-      <StatBar label="AI編集" count={stats.aiEdited} total={stats.total} color="oklch(0.65 0.15 150)" />
-      <StatBar label="スニペット" count={stats.snippet} total={stats.total} color="oklch(0.65 0.12 50)" />
+      <StatBar
+        label="人間"
+        count={humanTotal}
+        total={stats.total}
+        color="oklch(0.65 0.10 220)"
+      />
+      <StatBar
+        label="AI生成"
+        count={stats.ai}
+        total={stats.total}
+        color="oklch(0.65 0.18 250)"
+      />
+      <StatBar
+        label="AI編集"
+        count={stats.aiEdited}
+        total={stats.total}
+        color="oklch(0.65 0.15 150)"
+      />
+      <StatBar
+        label="スニペット"
+        count={stats.snippet}
+        total={stats.total}
+        color="oklch(0.65 0.12 50)"
+      />
       <div className="text-xs text-muted-foreground text-right">
         合計: {stats.total}字
       </div>

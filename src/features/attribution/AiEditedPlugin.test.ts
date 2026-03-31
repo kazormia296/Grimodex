@@ -79,7 +79,11 @@ describe("AiEditedPlugin", () => {
     expect(aiPos).toBeGreaterThan(0);
 
     // Simulate user typing (no programmaticInsert meta)
-    editor.chain().focus().insertContentAt(aiPos + 1, "追加").run();
+    editor
+      .chain()
+      .focus()
+      .insertContentAt(aiPos + 1, "追加")
+      .run();
 
     const sources = findAuthorshipSources(editor);
     expect(sources).toContain("ai-edited");
@@ -126,7 +130,11 @@ describe("AiEditedPlugin", () => {
     });
 
     if (snippetPos > 0) {
-      editor.chain().focus().insertContentAt(snippetPos + 1, "X").run();
+      editor
+        .chain()
+        .focus()
+        .insertContentAt(snippetPos + 1, "X")
+        .run();
     }
 
     const sources = findAuthorshipSources(editor);

@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import { toast } from "sonner";
 import * as snippetApi from "./api";
 import type { Snippet, NewSnippet } from "./api";
 import { searchSnippets } from "./search";
@@ -28,39 +29,67 @@ export const useSnippetStore = create<SnippetState>()((set) => ({
 
   loadEntries: async () => {
     set({ isLoading: true });
-    const entries = await snippetApi.listSnippets();
-    set({ entries, isLoading: false });
+    try {
+      const entries = await snippetApi.listSnippets();
+      set({ entries, isLoading: false });
+    } catch (e) {
+      set({ isLoading: false });
+      toast.error("スニペットの読み込みに失敗しました");
+      console.error("[SnippetStore] loadEntries:", e);
+    }
   },
 
   search: async (query: string) => {
     set({ searchQuery: query, isLoading: true });
-    if (query.trim() === "") {
-      const entries = await snippetApi.listSnippets();
-      set({ entries, isLoading: false });
-    } else {
-      const entries = await searchSnippets(query);
-      set({ entries, isLoading: false });
+    try {
+      if (query.trim() === "") {
+        const entries = await snippetApi.listSnippets();
+        set({ entries, isLoading: false });
+      } else {
+        const entries = await searchSnippets(query);
+        set({ entries, isLoading: false });
+      }
+    } catch (e) {
+      set({ isLoading: false });
+      toast.error("スニペット検索に失敗しました");
+      console.error("[SnippetStore] search:", e);
     }
   },
 
   create: async (data) => {
-    const created = await snippetApi.createSnippet(data);
-    set((state) => ({ entries: [...state.entries, created] }));
-    return created;
+    try {
+      const created = await snippetApi.createSnippet(data);
+      set((state) => ({ entries: [...state.entries, created] }));
+      return created;
+    } catch (e) {
+      toast.error("スニペットの作成に失敗しました");
+      console.error("[SnippetStore] create:", e);
+      throw e;
+    }
   },
 
   update: async (id, data) => {
-    const updated = await snippetApi.updateSnippet(id, data);
-    if (!updated) return;
-    set((state) => ({
-      entries: state.entries.map((e) => (e.id === id ? updated : e)),
-    }));
+    try {
+      const updated = await snippetApi.updateSnippet(id, data);
+      if (!updated) return;
+      set((state) => ({
+        entries: state.entries.map((e) => (e.id === id ? updated : e)),
+      }));
+    } catch (e) {
+      toast.error("スニペットの更新に失敗しました");
+      console.error("[SnippetStore] update:", e);
+    }
   },
 
   remove: async (id) => {
-    await snippetApi.deleteSnippet(id);
-    set((state) => ({
-      entries: state.entries.filter((e) => e.id !== id),
-    }));
+    try {
+      await snippetApi.deleteSnippet(id);
+      set((state) => ({
+        entries: state.entries.filter((e) => e.id !== id),
+      }));
+    } catch (e) {
+      toast.error("スニペットの削除に失敗しました");
+      console.error("[SnippetStore] remove:", e);
+    }
   },
 }));

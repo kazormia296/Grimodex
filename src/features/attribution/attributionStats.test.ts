@@ -31,16 +31,22 @@ describe("computeAttributionStats", () => {
 
   it("counts AI-sourced text", () => {
     const editor = createTestEditor();
-    editor.chain().focus().insertContent([
-      {
-        type: "text",
-        text: "AI生成テキスト",
-        marks: [{
-          type: "authorship",
-          attrs: { source: "ai", timestamp: "2026-03-31T00:00:00.000Z" },
-        }],
-      },
-    ]).run();
+    editor
+      .chain()
+      .focus()
+      .insertContent([
+        {
+          type: "text",
+          text: "AI生成テキスト",
+          marks: [
+            {
+              type: "authorship",
+              attrs: { source: "ai", timestamp: "2026-03-31T00:00:00.000Z" },
+            },
+          ],
+        },
+      ])
+      .run();
 
     const stats = computeAttributionStats(editor.state.doc);
     expect(stats.ai).toBeGreaterThanOrEqual(7);
@@ -50,32 +56,42 @@ describe("computeAttributionStats", () => {
 
   it("counts mixed sources correctly", () => {
     const editor = createTestEditor();
-    editor.chain().focus().insertContent([
-      {
-        type: "text",
-        text: "人間",
-        marks: [{
-          type: "authorship",
-          attrs: { source: "human" },
-        }],
-      },
-      {
-        type: "text",
-        text: "AI",
-        marks: [{
-          type: "authorship",
-          attrs: { source: "ai", timestamp: "t" },
-        }],
-      },
-      {
-        type: "text",
-        text: "編集",
-        marks: [{
-          type: "authorship",
-          attrs: { source: "ai-edited", timestamp: "t" },
-        }],
-      },
-    ]).run();
+    editor
+      .chain()
+      .focus()
+      .insertContent([
+        {
+          type: "text",
+          text: "人間",
+          marks: [
+            {
+              type: "authorship",
+              attrs: { source: "human" },
+            },
+          ],
+        },
+        {
+          type: "text",
+          text: "AI",
+          marks: [
+            {
+              type: "authorship",
+              attrs: { source: "ai", timestamp: "t" },
+            },
+          ],
+        },
+        {
+          type: "text",
+          text: "編集",
+          marks: [
+            {
+              type: "authorship",
+              attrs: { source: "ai-edited", timestamp: "t" },
+            },
+          ],
+        },
+      ])
+      .run();
 
     const stats = computeAttributionStats(editor.state.doc);
     expect(stats.human).toBe(2);
@@ -87,16 +103,22 @@ describe("computeAttributionStats", () => {
 
   it("counts snippet-sourced text", () => {
     const editor = createTestEditor();
-    editor.chain().focus().insertContent([
-      {
-        type: "text",
-        text: "スニペット",
-        marks: [{
-          type: "authorship",
-          attrs: { source: "snippet", timestamp: "t" },
-        }],
-      },
-    ]).run();
+    editor
+      .chain()
+      .focus()
+      .insertContent([
+        {
+          type: "text",
+          text: "スニペット",
+          marks: [
+            {
+              type: "authorship",
+              attrs: { source: "snippet", timestamp: "t" },
+            },
+          ],
+        },
+      ])
+      .run();
 
     const stats = computeAttributionStats(editor.state.doc);
     expect(stats.snippet).toBe(5);

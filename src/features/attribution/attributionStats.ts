@@ -9,7 +9,9 @@ export interface AttributionStats {
   total: number;
 }
 
-export function computeAttributionStats(doc: ProseMirrorNode): AttributionStats {
+export function computeAttributionStats(
+  doc: ProseMirrorNode,
+): AttributionStats {
   const stats: AttributionStats = {
     human: 0,
     ai: 0,

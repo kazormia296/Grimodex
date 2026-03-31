@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import { toast } from "sonner";
 import * as chatApi from "./chatApi";
 import { buildSystemPrompt, countTokens } from "./contextBuilder";
 import type {
@@ -84,8 +85,14 @@ export const useChatStore = create<ChatState>()((set, get) => ({
 
   loadThreads: async (sceneId?: string) => {
     set({ isLoadingThreads: true });
-    const threads = await chatApi.listThreads(sceneId);
-    set({ threads, isLoadingThreads: false });
+    try {
+      const threads = await chatApi.listThreads(sceneId);
+      set({ threads, isLoadingThreads: false });
+    } catch (e) {
+      set({ isLoadingThreads: false });
+      toast.error("チャットスレッドの読み込みに失敗しました");
+      console.error("[ChatStore] loadThreads:", e);
+    }
   },
 
   selectThread: async (threadId: string | null) => {
@@ -93,38 +100,58 @@ export const useChatStore = create<ChatState>()((set, get) => ({
       set({ activeThreadId: null, messages: [] });
       return;
     }
-    const messages = await chatApi.listMessages(threadId);
-    set({ activeThreadId: threadId, messages });
+    try {
+      const messages = await chatApi.listMessages(threadId);
+      set({ activeThreadId: threadId, messages });
+    } catch (e) {
+      toast.error("メッセージの読み込みに失敗しました");
+      console.error("[ChatStore] selectThread:", e);
+    }
   },
 
   createNewThread: async (title: string, sceneId?: string) => {
-    const thread = await chatApi.createThread(title, sceneId);
-    set((state) => ({
-      threads: [thread, ...state.threads],
-      activeThreadId: thread.id,
-      messages: [],
-    }));
+    try {
+      const thread = await chatApi.createThread(title, sceneId);
+      set((state) => ({
+        threads: [thread, ...state.threads],
+        activeThreadId: thread.id,
+        messages: [],
+      }));
+    } catch (e) {
+      toast.error("スレッドの作成に失敗しました");
+      console.error("[ChatStore] createNewThread:", e);
+    }
   },
 
   deleteThread: async (threadId: string) => {
-    await chatApi.deleteThread(threadId);
-    const { activeThreadId } = get();
-    set((state) => ({
-      threads: state.threads.filter((t) => t.id !== threadId),
-      ...(activeThreadId === threadId
-        ? { activeThreadId: null, messages: [] }
-        : {}),
-    }));
+    try {
+      await chatApi.deleteThread(threadId);
+      const { activeThreadId } = get();
+      set((state) => ({
+        threads: state.threads.filter((t) => t.id !== threadId),
+        ...(activeThreadId === threadId
+          ? { activeThreadId: null, messages: [] }
+          : {}),
+      }));
+    } catch (e) {
+      toast.error("スレッドの削除に失敗しました");
+      console.error("[ChatStore] deleteThread:", e);
+    }
   },
 
   persistMessage: async (role: MessageRole, content: string) => {
     const { activeThreadId } = get();
     if (!activeThreadId) return;
 
-    const message = await chatApi.addMessage(activeThreadId, role, content);
-    set((state) => ({
-      messages: [...state.messages, message],
-    }));
+    try {
+      const message = await chatApi.addMessage(activeThreadId, role, content);
+      set((state) => ({
+        messages: [...state.messages, message],
+      }));
+    } catch (e) {
+      toast.error("メッセージの保存に失敗しました");
+      console.error("[ChatStore] persistMessage:", e);
+    }
   },
 
   // --- Streaming chat (existing, updated for thread awareness) ---

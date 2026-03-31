@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import { toast } from "sonner";
 import {
   listCodexEntries,
   createCodexEntry,
@@ -38,42 +39,76 @@ export const useCodexStore = create<CodexState>()((set, get) => ({
 
   loadEntries: async () => {
     set({ isLoading: true });
-    const { filterType } = get();
-    const entries = await listCodexEntries(filterType ?? undefined);
-    set({ entries, isLoading: false });
+    try {
+      const { filterType } = get();
+      const entries = await listCodexEntries(filterType ?? undefined);
+      set({ entries, isLoading: false });
+    } catch (e) {
+      set({ isLoading: false });
+      toast.error("Codexの読み込みに失敗しました");
+      console.error("[CodexStore] loadEntries:", e);
+    }
   },
 
   search: async (query: string) => {
     set({ searchQuery: query, isLoading: true });
-    if (query.trim() === "") {
-      const { filterType } = get();
-      const entries = await listCodexEntries(filterType ?? undefined);
-      set({ entries, isLoading: false });
-    } else {
-      const entries = await searchCodexEntries(query);
-      set({ entries, isLoading: false });
+    try {
+      if (query.trim() === "") {
+        const { filterType } = get();
+        const entries = await listCodexEntries(filterType ?? undefined);
+        set({ entries, isLoading: false });
+      } else {
+        const entries = await searchCodexEntries(query);
+        set({ entries, isLoading: false });
+      }
+    } catch (e) {
+      set({ isLoading: false });
+      toast.error("検索に失敗しました");
+      console.error("[CodexStore] search:", e);
     }
   },
 
   create: async (data) => {
-    const entry = await createCodexEntry(data);
-    await get().loadEntries();
-    return entry;
+    try {
+      const entry = await createCodexEntry(data);
+      await get().loadEntries();
+      return entry;
+    } catch (e) {
+      toast.error("Codexエントリの作成に失敗しました");
+      console.error("[CodexStore] create:", e);
+      throw e;
+    }
   },
 
   update: async (id, data) => {
-    await updateCodexEntry(id, data);
-    await get().loadEntries();
+    try {
+      await updateCodexEntry(id, data);
+      await get().loadEntries();
+    } catch (e) {
+      toast.error("Codexエントリの更新に失敗しました");
+      console.error("[CodexStore] update:", e);
+    }
   },
 
   remove: async (id) => {
-    await deleteCodexEntry(id);
-    await get().loadEntries();
+    try {
+      await deleteCodexEntry(id);
+      await get().loadEntries();
+    } catch (e) {
+      toast.error("Codexエントリの削除に失敗しました");
+      console.error("[CodexStore] remove:", e);
+    }
   },
 
   setFilterType: async (type) => {
     set({ filterType: type, isLoading: true });
-    const entries = await listCodexEntries(type ?? undefined);
-    set({ entries, isLoading: false });
+    try {
+      const entries = await listCodexEntries(type ?? undefined);
+      set({ entries, isLoading: false });
+    } catch (e) {
+      set({ isLoading: false });
+      toast.error("フィルタの適用に失敗しました");
+      console.error("[CodexStore] setFilterType:", e);
+    }
   },
 }));

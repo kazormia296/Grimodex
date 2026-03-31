@@ -215,6 +215,29 @@ fn content_rename(
     })
 }
 
+// --- FTS commands ---
+
+#[tauri::command]
+fn fts_optimize(ws_state: tauri::State<'_, WorkspaceState>) -> Result<(), AppError> {
+    with_db(&ws_state, |db| db.fts_optimize())
+}
+
+// --- Integrity commands ---
+
+#[tauri::command]
+fn integrity_check(
+    ws_state: tauri::State<'_, WorkspaceState>,
+) -> Result<serde_json::Map<String, Value>, AppError> {
+    with_db(&ws_state, |db| db.integrity_check())
+}
+
+#[tauri::command]
+fn repair_integrity(
+    ws_state: tauri::State<'_, WorkspaceState>,
+) -> Result<serde_json::Map<String, Value>, AppError> {
+    with_db(&ws_state, |db| db.repair_integrity())
+}
+
 // --- Chat commands ---
 
 #[derive(serde::Deserialize)]
@@ -346,7 +369,10 @@ pub fn run() {
             delete_api_key,
             list_ai_models,
             test_ai_connection,
-            send_chat_message
+            send_chat_message,
+            fts_optimize,
+            integrity_check,
+            repair_integrity
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

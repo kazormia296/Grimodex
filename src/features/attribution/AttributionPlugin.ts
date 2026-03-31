@@ -50,10 +50,7 @@ export function createAttributionPlugin(): Plugin {
         const show = useAttributionStore.getState().showAttribution;
         if (!show) return DecorationSet.empty;
 
-        if (
-          tr.docChanged ||
-          tr.getMeta("attributionUpdate") === true
-        ) {
+        if (tr.docChanged || tr.getMeta("attributionUpdate") === true) {
           return buildDecorations(newState.doc);
         }
 

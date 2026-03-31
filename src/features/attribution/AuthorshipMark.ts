@@ -32,7 +32,7 @@ export const AuthorshipMark = Mark.create({
   parseHTML() {
     return [
       {
-        tag: 'span[data-authorship]',
+        tag: "span[data-authorship]",
       },
     ];
   },

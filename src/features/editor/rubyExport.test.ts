@@ -22,9 +22,7 @@ describe("rubyExport", () => {
       const editor = createTestEditor();
       const node = makeRubyNode(editor, "漢字", "かんじ");
       const html = rubyToHtml(node);
-      expect(html).toBe(
-        "<ruby>漢字<rp>(</rp><rt>かんじ</rt><rp>)</rp></ruby>",
-      );
+      expect(html).toBe("<ruby>漢字<rp>(</rp><rt>かんじ</rt><rp>)</rp></ruby>");
       editor.destroy();
     });
   });

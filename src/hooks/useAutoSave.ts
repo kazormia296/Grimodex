@@ -1,4 +1,5 @@
 import { useRef, useCallback, useEffect } from "react";
+import { toast } from "sonner";
 
 export interface AutoSave {
   schedule: () => void;
@@ -27,14 +28,24 @@ export function createAutoSave(
     timerId = setTimeout(async () => {
       timerId = null;
       pending = false;
-      await saveFn();
+      try {
+        await saveFn();
+      } catch (e) {
+        console.error("[AutoSave] save failed:", e);
+        toast.error("自動保存に失敗しました");
+      }
     }, delayMs);
   }
 
   async function flush() {
     if (!pending) return;
     cancel();
-    await saveFn();
+    try {
+      await saveFn();
+    } catch (e) {
+      console.error("[AutoSave] flush failed:", e);
+      toast.error("自動保存に失敗しました");
+    }
   }
 
   return { schedule, cancel, flush };

@@ -64,10 +64,14 @@ describe("RubyNode", () => {
 
   it("can insert ruby node via command", () => {
     const editor = createTestEditor("<p>テスト文章</p>");
-    editor.chain().focus().insertContent({
-      type: "ruby",
-      attrs: { base: "世界", annotation: "せかい" },
-    }).run();
+    editor
+      .chain()
+      .focus()
+      .insertContent({
+        type: "ruby",
+        attrs: { base: "世界", annotation: "せかい" },
+      })
+      .run();
 
     let rubyCount = 0;
     editor.state.doc.descendants((node) => {

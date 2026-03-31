@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect } from "react";
 import { openFolderDialog } from "@/lib/dialog";
 import { useWorkspaceStore } from "./store";
+import { IntegrityCheckDialog } from "./IntegrityCheckDialog";
 
 export function WorkspaceMenu() {
   const activeWorkspaceName = useWorkspaceStore((s) => s.activeWorkspaceName);
@@ -10,6 +11,7 @@ export function WorkspaceMenu() {
   const activeWorkspacePath = useWorkspaceStore((s) => s.activeWorkspacePath);
 
   const [isOpen, setIsOpen] = useState(false);
+  const [showIntegrityDialog, setShowIntegrityDialog] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -112,8 +114,26 @@ export function WorkspaceMenu() {
             <span className="w-4" />
             スタート画面
           </button>
+
+          <div className="my-1 border-t border-border" />
+
+          <button
+            type="button"
+            onClick={() => {
+              setIsOpen(false);
+              setShowIntegrityDialog(true);
+            }}
+            className="flex w-full items-center gap-2 px-3 py-1.5 text-sm hover:bg-accent hover:text-accent-foreground"
+          >
+            <span className="w-4" />
+            整合性チェック
+          </button>
         </div>
       )}
+      <IntegrityCheckDialog
+        open={showIntegrityDialog}
+        onClose={() => setShowIntegrityDialog(false)}
+      />
     </div>
   );
 }

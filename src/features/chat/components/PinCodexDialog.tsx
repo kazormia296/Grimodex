@@ -1,5 +1,79 @@
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
+import { useVirtualizer } from "@tanstack/react-virtual";
 import { useCodexStore } from "@/features/codex/codexStore";
+import type { CodexEntry } from "@/features/codex/api";
+
+const typeLabels: Record<string, string> = {
+  character: "キャラクター",
+  location: "場所",
+  item: "アイテム",
+  lore: "設定",
+};
+
+function PinCodexVirtualList({
+  entries,
+  pinnedIds,
+  onPin,
+  onUnpin,
+}: {
+  entries: CodexEntry[];
+  pinnedIds: Set<number>;
+  onPin: (id: number) => void;
+  onUnpin: (id: number) => void;
+}) {
+  const parentRef = useRef<HTMLDivElement>(null);
+  const virtualizer = useVirtualizer({
+    count: entries.length,
+    getScrollElement: () => parentRef.current,
+    estimateSize: () => 32,
+    overscan: 5,
+  });
+
+  return (
+    <div ref={parentRef} className="max-h-72 overflow-y-auto">
+      <div
+        style={{
+          height: `${virtualizer.getTotalSize()}px`,
+          width: "100%",
+          position: "relative",
+        }}
+      >
+        {virtualizer.getVirtualItems().map((virtualItem) => {
+          const entry = entries[virtualItem.index];
+          const isPinned = pinnedIds.has(entry.id);
+          return (
+            <div
+              key={entry.id}
+              style={{
+                position: "absolute",
+                top: 0,
+                left: 0,
+                width: "100%",
+                height: `${virtualItem.size}px`,
+                transform: `translateY(${virtualItem.start}px)`,
+              }}
+            >
+              <label className="flex h-full cursor-pointer items-center gap-2 rounded px-2 text-sm hover:bg-accent">
+                <input
+                  type="checkbox"
+                  checked={isPinned}
+                  onChange={() =>
+                    isPinned ? onUnpin(entry.id) : onPin(entry.id)
+                  }
+                  className="rounded"
+                />
+                <span>{entry.name}</span>
+                <span className="ml-auto text-xs text-muted-foreground">
+                  {typeLabels[entry.type] ?? entry.type}
+                </span>
+              </label>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
 
 interface PinCodexDialogProps {
   open: boolean;
@@ -25,13 +99,6 @@ export function PinCodexDialog({
 
   if (!open) return null;
 
-  const typeLabels: Record<string, string> = {
-    character: "キャラクター",
-    location: "場所",
-    item: "アイテム",
-    lore: "設定",
-  };
-
   return (
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/50"
@@ -47,30 +114,12 @@ export function PinCodexDialog({
             Codexエントリがありません
           </p>
         ) : (
-          <div className="space-y-1 max-h-72 overflow-y-auto">
-            {entries.map((entry) => {
-              const isPinned = pinnedIds.has(entry.id);
-              return (
-                <label
-                  key={entry.id}
-                  className="flex items-center gap-2 rounded px-2 py-1 hover:bg-accent cursor-pointer text-sm"
-                >
-                  <input
-                    type="checkbox"
-                    checked={isPinned}
-                    onChange={() =>
-                      isPinned ? onUnpin(entry.id) : onPin(entry.id)
-                    }
-                    className="rounded"
-                  />
-                  <span>{entry.name}</span>
-                  <span className="text-xs text-muted-foreground ml-auto">
-                    {typeLabels[entry.type] ?? entry.type}
-                  </span>
-                </label>
-              );
-            })}
-          </div>
+          <PinCodexVirtualList
+            entries={entries}
+            pinnedIds={pinnedIds}
+            onPin={onPin}
+            onUnpin={onUnpin}
+          />
         )}
         <button
           type="button"

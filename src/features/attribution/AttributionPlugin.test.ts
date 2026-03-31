@@ -2,10 +2,7 @@ import { describe, it, expect, beforeEach } from "vitest";
 import { Editor } from "@tiptap/core";
 import StarterKit from "@tiptap/starter-kit";
 import { AuthorshipMark } from "./AuthorshipMark";
-import {
-  attributionKey,
-  createAttributionPlugin,
-} from "./AttributionPlugin";
+import { attributionKey, createAttributionPlugin } from "./AttributionPlugin";
 import { useAttributionStore } from "./attributionStore";
 
 function createTestEditor(content = "") {

@@ -1,6 +1,12 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { createAutoSave } from "@/hooks/useAutoSave";
 
+vi.mock("sonner", () => ({
+  toast: { error: vi.fn() },
+}));
+
+import { toast } from "sonner";
+
 describe("createAutoSave", () => {
   beforeEach(() => {
     vi.useFakeTimers();
@@ -76,5 +82,25 @@ describe("createAutoSave", () => {
 
     await autoSave.flush();
     expect(saveFn).not.toHaveBeenCalled();
+  });
+
+  it("shows toast on schedule save failure", async () => {
+    const saveFn = vi.fn().mockRejectedValue(new Error("disk full"));
+    const autoSave = createAutoSave(saveFn, 500);
+
+    autoSave.schedule();
+    await vi.advanceTimersByTimeAsync(500);
+
+    expect(toast.error).toHaveBeenCalledWith("自動保存に失敗しました");
+  });
+
+  it("shows toast on flush failure", async () => {
+    const saveFn = vi.fn().mockRejectedValue(new Error("disk full"));
+    const autoSave = createAutoSave(saveFn, 5000);
+
+    autoSave.schedule();
+    await autoSave.flush();
+
+    expect(toast.error).toHaveBeenCalledWith("自動保存に失敗しました");
   });
 });
