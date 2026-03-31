@@ -12,6 +12,7 @@ import { useCodexHighlight } from "@/features/editor/useCodexHighlight";
 import { CodexPopover } from "@/features/editor/CodexPopover";
 import { useAttribution } from "@/features/attribution/useAttribution";
 import { useCursorEffect } from "@/features/editor/useCursorEffect";
+import { useCursorSettingsStore } from "@/features/editor/cursorSettingsStore";
 import { useAttributionStore } from "@/features/attribution/attributionStore";
 import type { ToolbarSlot } from "@/features/editor/Toolbar";
 import { VerticalPreview } from "@/features/editor/VerticalPreview";
@@ -86,12 +87,30 @@ export function SceneEditor() {
   useCodexHighlight(editor);
 
   // Typewriter cursor effect
-  useCursorEffect(editor);
+  const cursorAnimation = useCursorSettingsStore((s) => s.cursorAnimation);
+  const toggleCursorAnimation = useCursorSettingsStore(
+    (s) => s.toggleCursorAnimation,
+  );
+  useCursorEffect(editor, cursorAnimation);
 
   // Attribution visualization (Task 4.2)
   useAttribution(editor);
   const showAttribution = useAttributionStore((s) => s.showAttribution);
   const toggleAttribution = useAttributionStore((s) => s.toggleAttribution);
+
+  const cursorAnimationSlot: ToolbarSlot = {
+    key: "cursor-animation-toggle",
+    render: () => (
+      <button
+        type="button"
+        aria-label="カーソルアニメーション"
+        className={cursorAnimation ? "bg-muted" : ""}
+        onClick={toggleCursorAnimation}
+      >
+        カーソル
+      </button>
+    ),
+  };
 
   const attributionSlot: ToolbarSlot = {
     key: "attribution-toggle",
@@ -139,7 +158,10 @@ export function SceneEditor() {
 
   return (
     <div className="flex flex-col h-full">
-      <Toolbar editor={editor} extraSlots={[attributionSlot]} />
+      <Toolbar
+        editor={editor}
+        extraSlots={[cursorAnimationSlot, attributionSlot]}
+      />
       <div className="flex-1 overflow-auto p-4">
         <EditorContent editor={editor} />
         <CodexPopover editor={editor} />

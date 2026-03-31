@@ -7,12 +7,12 @@ import type { Editor } from "@tiptap/react";
  * - Smooth 80ms slide transition on cursor movement
  * - Transition disabled during IME composition and deletion
  */
-export function useCursorEffect(editor: Editor | null) {
+export function useCursorEffect(editor: Editor | null, enabled: boolean) {
   const cursorRef = useRef<HTMLDivElement | null>(null);
   const rafRef = useRef(0);
 
   useEffect(() => {
-    if (!editor) return;
+    if (!editor || !enabled) return;
 
     const dom = editor.view.dom;
     const wrapper = dom.parentElement;
@@ -102,5 +102,5 @@ export function useCursorEffect(editor: Editor | null) {
       cursor.remove();
       cursorRef.current = null;
     };
-  }, [editor]);
+  }, [editor, enabled]);
 }
