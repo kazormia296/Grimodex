@@ -70,12 +70,6 @@ export function AttributionReport() {
         total={stats.total}
         color="oklch(0.65 0.05 0)"
       />
-      <StatBar
-        label="スニペット"
-        count={stats.snippet}
-        total={stats.total}
-        color="oklch(0.65 0.12 50)"
-      />
       <div className="flex items-center justify-between">
         <ExportAgentTraceButton />
         <span className="text-xs text-muted-foreground tabular-nums">

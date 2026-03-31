@@ -199,10 +199,3 @@
   outline: 1px dashed oklch(0.60 0.15 300);
   outline-offset: -1px;
 }
-.attribution-snippet {
-  background-color: oklch(0.90 0.08 50);
-  border-radius: 2px;
-}
-.dark .attribution-snippet {
-  background-color: oklch(0.30 0.08 50);
-}

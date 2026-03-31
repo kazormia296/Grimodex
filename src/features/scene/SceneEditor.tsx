@@ -60,11 +60,15 @@ export function SceneEditor() {
         if (!snippetData) return false;
         event.preventDefault();
         try {
-          const { id, content } = JSON.parse(snippetData) as {
+          const { id, content, source, originalContent } = JSON.parse(
+            snippetData,
+          ) as {
             id: number;
             content: string;
+            source: "ai" | "human";
+            originalContent: string | null;
           };
-          insertFromSnippet(content, id);
+          insertFromSnippet(id, content, source, originalContent);
           return true;
         } catch {
           return false;

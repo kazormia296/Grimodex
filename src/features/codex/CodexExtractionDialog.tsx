@@ -7,6 +7,7 @@ interface CodexExtractionFormData {
   content: string;
   tags: string;
   sourceChatMessageId: string;
+  source: "ai" | "human";
 }
 
 interface CodexExtractionDialogProps {
@@ -55,6 +56,7 @@ export function CodexExtractionDialog({
       content,
       tags,
       sourceChatMessageId: messageId,
+      source: "ai",
     });
   };
 

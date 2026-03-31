@@ -21,6 +21,8 @@ describe("searchSnippets", () => {
     tags: "描写,森",
     sceneId: null,
     sourceChatMessageId: null,
+    source: "human",
+    originalContent: null,
     createdAt: "2025-01-01T00:00:00Z",
   };
 

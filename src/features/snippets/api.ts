@@ -19,7 +19,12 @@ export async function getSnippet(id: number): Promise<Snippet | undefined> {
 
 export async function createSnippet(
   data: Pick<NewSnippet, "title" | "content" | "tags"> &
-    Partial<Pick<NewSnippet, "sceneId" | "sourceChatMessageId">>,
+    Partial<
+      Pick<
+        NewSnippet,
+        "sceneId" | "sourceChatMessageId" | "source" | "originalContent"
+      >
+    >,
 ): Promise<Snippet> {
   const now = new Date().toISOString();
   const rows = await db

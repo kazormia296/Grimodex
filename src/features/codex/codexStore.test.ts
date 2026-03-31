@@ -10,6 +10,7 @@ const mockEntry: CodexEntry = {
   content: "不思議の国の住人",
   tags: "主人公,ファンタジー",
   sourceChatMessageId: "msg-1",
+  source: "ai",
   createdAt: "2024-01-01T00:00:00Z",
   updatedAt: "2024-01-01T00:00:00Z",
 };
@@ -22,6 +23,7 @@ const mockEntry2: CodexEntry = {
   content: "奇妙な世界",
   tags: "場所",
   sourceChatMessageId: null,
+  source: "human",
   createdAt: "2024-01-02T00:00:00Z",
   updatedAt: "2024-01-02T00:00:00Z",
 };

@@ -66,6 +66,8 @@ describe("SnippetExtractionDialog", () => {
         content: "選択されたテキスト",
         tags: "タグ",
         sourceChatMessageId: "msg-1",
+        source: "ai",
+        originalContent: "選択されたテキスト",
       });
     });
   });

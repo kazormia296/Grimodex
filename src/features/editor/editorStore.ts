@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import type { Editor } from "@tiptap/core";
+import { computeAttributedSegments } from "@/features/snippets/snippetDiff";
 
 export interface InsertRange {
   from: number;
@@ -17,7 +18,12 @@ interface EditorState {
     chatMessageId: string,
     model?: string,
   ) => boolean;
-  insertFromSnippet: (text: string, snippetId: number) => boolean;
+  insertFromSnippet: (
+    snippetId: number,
+    content: string,
+    source: "ai" | "human",
+    originalContent: string | null,
+  ) => boolean;
   clearInsertRange: () => void;
 }
 
@@ -85,7 +91,12 @@ export const useEditorStore = create<EditorState>()((set, get) => ({
     return true;
   },
 
-  insertFromSnippet: (text: string, snippetId: number) => {
+  insertFromSnippet: (
+    snippetId: number,
+    content: string,
+    source: "ai" | "human",
+    originalContent: string | null,
+  ) => {
     const { editor } = get();
     if (!editor) return false;
 
@@ -93,24 +104,32 @@ export const useEditorStore = create<EditorState>()((set, get) => ({
     const docEnd = editor.state.doc.content.size - 1;
     const insertPos = from > 0 ? from : Math.max(docEnd, 0);
 
-    const content = [
-      {
-        type: "text",
-        text,
-        marks: [
-          {
-            type: "authorship",
-            attrs: {
-              source: "snippet",
-              snippetId: String(snippetId),
-              timestamp: new Date().toISOString(),
-              originalLength: text.length,
-              traceId: crypto.randomUUID(),
-            },
+    // Determine whether to use diff-based partial attribution
+    const needsDiff =
+      source === "ai" &&
+      originalContent != null &&
+      content !== originalContent;
+
+    const segments = needsDiff
+      ? computeAttributedSegments(originalContent, content)
+      : [{ text: content, source }];
+
+    const now = new Date().toISOString();
+    const contentNodes = segments.map((seg) => ({
+      type: "text" as const,
+      text: seg.text,
+      marks: [
+        {
+          type: "authorship",
+          attrs: {
+            source: seg.source,
+            timestamp: now,
+            originalLength: seg.text.length,
+            traceId: crypto.randomUUID(),
           },
-        ],
-      },
-    ];
+        },
+      ],
+    }));
 
     editor
       .chain()
@@ -119,10 +138,10 @@ export const useEditorStore = create<EditorState>()((set, get) => ({
         tr.setMeta("programmaticInsert", true);
         return true;
       })
-      .insertContentAt(insertPos, content)
+      .insertContentAt(insertPos, contentNodes)
       .run();
 
-    const to = insertPos + text.length;
+    const to = insertPos + content.length;
     set({
       lastInsertRange: {
         from: insertPos,

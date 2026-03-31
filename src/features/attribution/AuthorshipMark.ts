@@ -9,7 +9,7 @@ export function normalizeModelId(provider: string, model: string): string {
   return `${provider}/${model}`;
 }
 
-export type AuthorshipSource = "human" | "ai" | "unknown" | "snippet";
+export type AuthorshipSource = "human" | "ai" | "unknown";
 
 export interface AuthorshipAttributes {
   source: AuthorshipSource;

@@ -4,7 +4,6 @@ export interface AttributionStats {
   human: number;
   ai: number;
   unknown: number;
-  snippet: number;
   unmarked: number;
   total: number;
 }
@@ -16,7 +15,6 @@ export function computeAttributionStats(
     human: 0,
     ai: 0,
     unknown: 0,
-    snippet: 0,
     unmarked: 0,
     total: 0,
   };
@@ -41,9 +39,6 @@ export function computeAttributionStats(
         break;
       case "unknown":
         stats.unknown += len;
-        break;
-      case "snippet":
-        stats.snippet += len;
         break;
       default:
         stats.unmarked += len;

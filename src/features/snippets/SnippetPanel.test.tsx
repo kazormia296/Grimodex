@@ -27,6 +27,8 @@ const fakeSnippet = (overrides: Partial<Snippet> = {}): Snippet => ({
   tags: "タグ1,タグ2",
   sceneId: null,
   sourceChatMessageId: null,
+  source: "human",
+  originalContent: null,
   createdAt: "2025-01-01T00:00:00Z",
   ...overrides,
 });
@@ -122,7 +124,12 @@ describe("SnippetPanel", () => {
     expect(setData).toHaveBeenCalledWith("text/plain", "ドラッグ内容");
     expect(setData).toHaveBeenCalledWith(
       "application/x-noveloom-snippet",
-      JSON.stringify({ id: 1, content: "ドラッグ内容" }),
+      JSON.stringify({
+        id: 1,
+        content: "ドラッグ内容",
+        source: "human",
+        originalContent: null,
+      }),
     );
   });
 

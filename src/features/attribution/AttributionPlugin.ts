@@ -20,7 +20,6 @@ function buildDecorations(doc: ProseMirrorNode): DecorationSet {
     const classMap: Record<string, string> = {
       ai: "attribution-ai",
       unknown: "attribution-unknown",
-      snippet: "attribution-snippet",
     };
     const isManualOverride = mark.attrs.manualOverride === true;
     const classes = [

@@ -101,30 +101,6 @@ describe("computeAttributionStats", () => {
     editor.destroy();
   });
 
-  it("counts snippet-sourced text", () => {
-    const editor = createTestEditor();
-    editor
-      .chain()
-      .focus()
-      .insertContent([
-        {
-          type: "text",
-          text: "スニペット",
-          marks: [
-            {
-              type: "authorship",
-              attrs: { source: "snippet", timestamp: "t" },
-            },
-          ],
-        },
-      ])
-      .run();
-
-    const stats = computeAttributionStats(editor.state.doc);
-    expect(stats.snippet).toBe(5);
-    editor.destroy();
-  });
-
   it("counts unknown-sourced text", () => {
     const editor = createTestEditor();
     editor

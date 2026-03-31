@@ -102,38 +102,6 @@ describe("AiEditedPlugin", () => {
     editor.destroy();
   });
 
-  it("does not split snippet text on insertion", () => {
-    editor
-      .chain()
-      .focus()
-      .command(({ tr }) => {
-        tr.setMeta("programmaticInsert", true);
-        return true;
-      })
-      .insertContent([
-        {
-          type: "text",
-          text: "スニペット",
-          marks: [{ type: "authorship", attrs: { source: "snippet" } }],
-        },
-      ])
-      .run();
-
-    let snippetPos = -1;
-    editor.state.doc.descendants((node, pos) => {
-      if (node.isText && node.text === "スニペット") snippetPos = pos;
-    });
-
-    if (snippetPos > 0) {
-      editor.chain().focus().insertContentAt(snippetPos + 1, "X").run();
-    }
-
-    // Snippet is not a splittable source, so no splitting occurs
-    const sources = findAuthorshipSources(editor);
-    expect(sources).toContain("snippet");
-    editor.destroy();
-  });
-
   it("does not split ai text with manualOverride", () => {
     editor
       .chain()

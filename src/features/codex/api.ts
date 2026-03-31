@@ -27,7 +27,7 @@ export async function getCodexEntry(
 
 export async function createCodexEntry(
   data: Pick<NewCodexEntry, "type" | "name" | "summary" | "content" | "tags"> &
-    Partial<Pick<NewCodexEntry, "sourceChatMessageId">>,
+    Partial<Pick<NewCodexEntry, "sourceChatMessageId" | "source">>,
 ): Promise<CodexEntry> {
   const now = new Date().toISOString();
   const rows = await db

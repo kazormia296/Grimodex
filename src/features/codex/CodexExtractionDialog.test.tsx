@@ -91,6 +91,7 @@ describe("CodexExtractionDialog", () => {
         content: "抽出対象テキスト",
         tags: "主人公",
         sourceChatMessageId: "msg-1",
+        source: "ai",
       });
     });
   });

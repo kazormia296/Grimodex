@@ -27,11 +27,24 @@ export function SnippetPanel() {
   );
 
   const handleDragStart = useCallback(
-    (e: React.DragEvent, snippet: { id: number; content: string }) => {
+    (
+      e: React.DragEvent,
+      snippet: {
+        id: number;
+        content: string;
+        source: string;
+        originalContent: string | null;
+      },
+    ) => {
       e.dataTransfer.setData("text/plain", snippet.content);
       e.dataTransfer.setData(
         "application/x-noveloom-snippet",
-        JSON.stringify({ id: snippet.id, content: snippet.content }),
+        JSON.stringify({
+          id: snippet.id,
+          content: snippet.content,
+          source: snippet.source,
+          originalContent: snippet.originalContent,
+        }),
       );
     },
     [],
@@ -87,6 +100,8 @@ export function SnippetPanel() {
                   handleDragStart(e, {
                     id: snippet.id,
                     content: snippet.content,
+                    source: snippet.source,
+                    originalContent: snippet.originalContent,
                   })
                 }
                 className="group cursor-grab rounded-md border border-border p-2 hover:bg-accent/50 active:cursor-grabbing"

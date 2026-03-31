@@ -13,7 +13,12 @@ interface SnippetState {
   search: (query: string) => Promise<void>;
   create: (
     data: Pick<NewSnippet, "title" | "content" | "tags"> &
-      Partial<Pick<NewSnippet, "sceneId" | "sourceChatMessageId">>,
+      Partial<
+        Pick<
+          NewSnippet,
+          "sceneId" | "sourceChatMessageId" | "source" | "originalContent"
+        >
+      >,
   ) => Promise<Snippet>;
   update: (
     id: number,

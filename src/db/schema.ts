@@ -51,6 +51,7 @@ export const codexEntries = sqliteTable("codex_entries", {
   content: text("content").notNull().default(""),
   tags: text("tags").notNull().default(""),
   sourceChatMessageId: text("source_chat_message_id"),
+  source: text("source").notNull().default("human"), // 'ai' | 'human'
   createdAt: text("created_at")
     .notNull()
     .$defaultFn(() => new Date().toISOString()),
@@ -66,6 +67,8 @@ export const snippets = sqliteTable("snippets", {
   tags: text("tags").notNull().default(""),
   sceneId: text("scene_id"),
   sourceChatMessageId: text("source_chat_message_id"),
+  source: text("source").notNull().default("human"), // 'ai' | 'human'
+  originalContent: text("original_content"),
   createdAt: text("created_at")
     .notNull()
     .$defaultFn(() => new Date().toISOString()),
@@ -113,7 +116,7 @@ export const authorshipSpans = sqliteTable("authorship_spans", {
     .references(() => scenes.id, { onDelete: "cascade" }),
   offsetStart: integer("offset_start").notNull(),
   offsetEnd: integer("offset_end").notNull(),
-  source: text("source").notNull(), // 'human' | 'ai' | 'unknown' | 'snippet'
+  source: text("source").notNull(), // 'human' | 'ai' | 'unknown'
   traceId: text("trace_id"),
   model: text("model"),
   aiMessageId: text("ai_message_id"),

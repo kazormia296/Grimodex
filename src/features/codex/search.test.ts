@@ -23,6 +23,7 @@ describe("searchCodexEntries", () => {
     content: "勇敢な青年。",
     tags: "主人公",
     sourceChatMessageId: null,
+    source: "human",
     createdAt: "2025-01-01T00:00:00Z",
     updatedAt: "2025-01-01T00:00:00Z",
   };

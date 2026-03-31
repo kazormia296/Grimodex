@@ -32,6 +32,8 @@ const fakeSnippet = (
   tags: "タグ1,タグ2",
   sceneId: null,
   sourceChatMessageId: null,
+  source: "human",
+  originalContent: null,
   createdAt: "2025-01-01T00:00:00Z",
   ...overrides,
 });

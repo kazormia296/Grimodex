@@ -19,7 +19,7 @@ interface CodexState {
   search: (query: string) => Promise<void>;
   create: (
     data: Pick<NewCodexEntry, "type" | "name" | "content" | "tags"> &
-      Partial<Pick<NewCodexEntry, "summary" | "sourceChatMessageId">>,
+      Partial<Pick<NewCodexEntry, "summary" | "sourceChatMessageId" | "source">>,
   ) => Promise<CodexEntry>;
   update: (
     id: number,

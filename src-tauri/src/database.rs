@@ -57,6 +57,7 @@ impl Database {
                 content                 TEXT NOT NULL DEFAULT '',
                 tags                    TEXT NOT NULL DEFAULT '',
                 source_chat_message_id  TEXT,
+                source                  TEXT NOT NULL DEFAULT 'human',
                 created_at              TEXT NOT NULL,
                 updated_at              TEXT NOT NULL
             );
@@ -68,6 +69,8 @@ impl Database {
                 tags                    TEXT NOT NULL DEFAULT '',
                 scene_id                TEXT,
                 source_chat_message_id  TEXT,
+                source                  TEXT NOT NULL DEFAULT 'human',
+                original_content        TEXT,
                 created_at              TEXT NOT NULL
             );
 
@@ -149,7 +152,7 @@ impl Database {
                 scene_id        TEXT NOT NULL REFERENCES scenes(id) ON DELETE CASCADE,
                 offset_start    INTEGER NOT NULL,
                 offset_end      INTEGER NOT NULL,
-                source          TEXT NOT NULL CHECK(source IN ('human','ai','unknown','snippet')),
+                source          TEXT NOT NULL CHECK(source IN ('human','ai','unknown')),
                 trace_id        TEXT,
                 model           TEXT,
                 ai_message_id   TEXT,
@@ -166,6 +169,40 @@ impl Database {
             INSERT OR IGNORE INTO chapters (id, project_id, title, sort_order, created_at, updated_at)
               VALUES (1, 1, '第1章', 0, datetime('now'), datetime('now'));",
         )?;
+
+        // Incremental migrations gated by PRAGMA user_version
+        let version: i64 = conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+
+        if version < 1 {
+            // v1: Add source/original_content to snippets & codex_entries,
+            //     migrate authorship_spans 'snippet' → 'ai'
+            //
+            // ALTER TABLE ADD COLUMN is a no-op error if the column already
+            // exists (new databases have them in the CREATE TABLE).  We
+            // ignore the error per-statement so we can re-run safely.
+            let alter_stmts = [
+                "ALTER TABLE snippets ADD COLUMN source TEXT NOT NULL DEFAULT 'human'",
+                "ALTER TABLE snippets ADD COLUMN original_content TEXT",
+                "ALTER TABLE codex_entries ADD COLUMN source TEXT NOT NULL DEFAULT 'human'",
+            ];
+            for stmt in &alter_stmts {
+                // Ignore "duplicate column name" errors
+                let _ = conn.execute(stmt, []);
+            }
+
+            conn.execute_batch(
+                "UPDATE snippets SET source = 'ai'
+                   WHERE source_chat_message_id IS NOT NULL AND source = 'human';
+                 UPDATE snippets SET original_content = content
+                   WHERE source_chat_message_id IS NOT NULL AND original_content IS NULL;
+                 UPDATE codex_entries SET source = 'ai'
+                   WHERE source_chat_message_id IS NOT NULL AND source = 'human';
+                 UPDATE authorship_spans SET source = 'ai'
+                   WHERE source = 'snippet';
+                 PRAGMA user_version = 1;",
+            )?;
+        }
+
         Ok(())
     }
 
