@@ -167,16 +167,33 @@ export async function createBrowserMock(): Promise<BrowserMock> {
   function handleGetGlobalSettings(): Record<string, unknown> {
     try {
       const raw = localStorage.getItem(GLOBAL_SETTINGS_KEY);
-      if (raw) return JSON.parse(raw) as Record<string, unknown>;
+      if (raw) {
+        const parsed = JSON.parse(raw) as Record<string, unknown>;
+        const recent = parsed.recentWorkspaces as unknown[];
+        // If stored settings have workspaces, use them as-is
+        if (Array.isArray(recent) && recent.length > 0) {
+          return parsed;
+        }
+      }
     } catch {
       // noop
     }
-    return {
-      recentWorkspaces: [],
-      lastActiveWorkspace: null,
+    // Auto-seed a dev workspace so browser preview skips folder selection
+    const devWorkspace = "/dev/workspace";
+    const devSettings: Record<string, unknown> = {
+      recentWorkspaces: [
+        { path: devWorkspace, lastOpened: new Date().toISOString() },
+      ],
+      lastActiveWorkspace: devWorkspace,
       theme: "system",
       showLauncherOnStartup: false,
     };
+    try {
+      localStorage.setItem(GLOBAL_SETTINGS_KEY, JSON.stringify(devSettings));
+    } catch {
+      // noop
+    }
+    return devSettings;
   }
 
   function handleSaveGlobalSettings(args: Record<string, unknown>): void {
