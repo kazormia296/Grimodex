@@ -15,6 +15,11 @@ import { useCursorEffect } from "@/features/editor/useCursorEffect";
 import { useCursorSettingsStore } from "@/features/editor/cursorSettingsStore";
 import { useAttributionStore } from "@/features/attribution/attributionStore";
 import { AttributionOverrideMenu } from "@/features/attribution/AttributionOverrideMenu";
+import {
+  saveAuthorshipSpans,
+  loadAuthorshipSpans,
+  spansToMarkData,
+} from "@/features/attribution/api";
 import type { ToolbarSlot } from "@/features/editor/Toolbar";
 import { VerticalPreview } from "@/features/editor/VerticalPreview";
 
@@ -33,6 +38,7 @@ export function SceneEditor() {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const md = (ed.storage as any).markdown.getMarkdown() as string;
     await saveSceneContent(id, md);
+    await saveAuthorshipSpans(id, ed.state.doc);
   }, []);
 
   const { schedule, cancel, flush } = useAutoSave(saveFn, 2000);
@@ -147,6 +153,37 @@ export function SceneEditor() {
       if (cancelled) return;
       editor!.commands.setContent(content || "");
       setCharCount(editor!.state.doc.textContent.length);
+
+      // Restore authorship marks from DB
+      const spans = await loadAuthorshipSpans(activeSceneId);
+      if (!cancelled && spans.length > 0) {
+        const markData = spansToMarkData(spans);
+        const authorshipType = editor!.schema.marks["authorship"];
+        if (authorshipType) {
+          editor!
+            .chain()
+            .focus()
+            .command(({ tr }) => {
+              tr.setMeta("programmaticInsert", true);
+              for (const { from, to, attrs } of markData) {
+                // Clamp to doc size to avoid out-of-range errors
+                const docSize = tr.doc.content.size;
+                const clampedFrom = Math.min(from + 1, docSize);
+                const clampedTo = Math.min(to + 1, docSize);
+                if (clampedFrom < clampedTo) {
+                  tr.addMark(
+                    clampedFrom,
+                    clampedTo,
+                    authorshipType.create(attrs),
+                  );
+                }
+              }
+              return true;
+            })
+            .run();
+        }
+      }
+
       prevSceneIdRef.current = activeSceneId;
     }
 

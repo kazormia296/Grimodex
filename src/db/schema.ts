@@ -105,3 +105,26 @@ export const chatThreadPinnedCodex = sqliteTable("chat_thread_pinned_codex", {
     .notNull()
     .references(() => codexEntries.id, { onDelete: "cascade" }),
 });
+
+export const authorshipSpans = sqliteTable("authorship_spans", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  sceneId: text("scene_id")
+    .notNull()
+    .references(() => scenes.id, { onDelete: "cascade" }),
+  offsetStart: integer("offset_start").notNull(),
+  offsetEnd: integer("offset_end").notNull(),
+  source: text("source").notNull(), // 'human' | 'ai' | 'mixed' | 'unknown' | 'snippet'
+  traceId: text("trace_id"),
+  model: text("model"),
+  aiMessageId: text("ai_message_id"),
+  manualOverride: integer("manual_override").notNull().default(0),
+  contentHash: text("content_hash"),
+  toolName: text("tool_name"),
+  toolVersion: text("tool_version"),
+  createdAt: text("created_at")
+    .notNull()
+    .$defaultFn(() => new Date().toISOString()),
+});
+
+export type AuthorshipSpan = typeof authorshipSpans.$inferSelect;
+export type NewAuthorshipSpan = typeof authorshipSpans.$inferInsert;

@@ -144,6 +144,22 @@ impl Database {
                 WHERE scene_id = old.id;
             END;
 
+            CREATE TABLE IF NOT EXISTS authorship_spans (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                scene_id        TEXT NOT NULL REFERENCES scenes(id) ON DELETE CASCADE,
+                offset_start    INTEGER NOT NULL,
+                offset_end      INTEGER NOT NULL,
+                source          TEXT NOT NULL CHECK(source IN ('human','ai','mixed','unknown','snippet')),
+                trace_id        TEXT,
+                model           TEXT,
+                ai_message_id   TEXT,
+                manual_override INTEGER NOT NULL DEFAULT 0,
+                content_hash    TEXT,
+                tool_name       TEXT,
+                tool_version    TEXT,
+                created_at      TEXT NOT NULL
+            );
+
             -- Seed default project + chapter so scenes can reference chapter_id=1
             INSERT OR IGNORE INTO projects (id, title, description, created_at, updated_at)
               VALUES (1, '無題のプロジェクト', '', datetime('now'), datetime('now'));
