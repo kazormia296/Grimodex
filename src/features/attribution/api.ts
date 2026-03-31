@@ -67,10 +67,9 @@ function extractDbSpans(
   doc: ProseMirrorNode,
 ): NewAuthorshipSpan[] {
   const spans: NewAuthorshipSpan[] = [];
-  let offset = 0;
   const now = new Date().toISOString();
 
-  doc.descendants((node) => {
+  doc.descendants((node, pos) => {
     if (!node.isText) return;
 
     const len = node.text?.length ?? 0;
@@ -79,8 +78,8 @@ function extractDbSpans(
     if (mark) {
       spans.push({
         sceneId,
-        offsetStart: offset,
-        offsetEnd: offset + len,
+        offsetStart: pos,
+        offsetEnd: pos + len,
         source: mark.attrs.source as AuthorshipSource,
         traceId: mark.attrs.traceId ?? null,
         model: mark.attrs.model ?? null,
@@ -92,8 +91,6 @@ function extractDbSpans(
         createdAt: mark.attrs.timestamp ?? now,
       });
     }
-
-    offset += len;
   });
 
   return spans;

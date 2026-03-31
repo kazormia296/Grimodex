@@ -168,8 +168,8 @@ export function SceneEditor() {
               for (const { from, to, attrs } of markData) {
                 // Clamp to doc size to avoid out-of-range errors
                 const docSize = tr.doc.content.size;
-                const clampedFrom = Math.min(from + 1, docSize);
-                const clampedTo = Math.min(to + 1, docSize);
+                const clampedFrom = Math.min(from, docSize);
+                const clampedTo = Math.min(to, docSize);
                 if (clampedFrom < clampedTo) {
                   tr.addMark(
                     clampedFrom,

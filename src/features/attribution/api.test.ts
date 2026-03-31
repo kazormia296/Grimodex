@@ -69,6 +69,115 @@ describe("spansToMarkData", () => {
   });
 });
 
+describe("extractDbSpans via saveAuthorshipSpans round-trip positions", () => {
+  it("preserves ProseMirror positions across multiple paragraphs", () => {
+    const html =
+      "<p>手書きの文章</p><p>AIの文章</p><p>編集済み</p>";
+    const editor = createTestEditor(html);
+    const authorshipType = editor.schema.marks["authorship"];
+
+    // Find actual ProseMirror positions of each paragraph's text
+    const textPositions: { pos: number; end: number; text: string }[] = [];
+    editor.state.doc.descendants((node, pos) => {
+      if (node.isText) {
+        textPositions.push({
+          pos,
+          end: pos + (node.text?.length ?? 0),
+          text: node.text ?? "",
+        });
+      }
+    });
+    expect(textPositions).toHaveLength(3);
+
+    const p2 = textPositions[1]; // "AIの文章"
+    const p3 = textPositions[2]; // "編集済み"
+
+    // Mark 2nd paragraph as "ai" and 3rd as "mixed"
+    editor
+      .chain()
+      .command(({ tr }) => {
+        tr.setMeta("programmaticInsert", true);
+        tr.addMark(
+          p2.pos,
+          p2.end,
+          authorshipType.create({ source: "ai" }),
+        );
+        tr.addMark(
+          p3.pos,
+          p3.end,
+          authorshipType.create({ source: "mixed" }),
+        );
+        return true;
+      })
+      .run();
+
+    // Extract spans (simulating extractDbSpans) using pos from descendants
+    const savedSpans: { from: number; to: number; source: string }[] = [];
+    editor.state.doc.descendants((node, pos) => {
+      if (!node.isText) return;
+      const mark = node.marks.find((m) => m.type.name === "authorship");
+      if (mark) {
+        savedSpans.push({
+          from: pos,
+          to: pos + (node.text?.length ?? 0),
+          source: mark.attrs.source as string,
+        });
+      }
+    });
+
+    expect(savedSpans).toHaveLength(2);
+    expect(savedSpans[0]).toEqual({
+      from: p2.pos,
+      to: p2.end,
+      source: "ai",
+    });
+    expect(savedSpans[1]).toEqual({
+      from: p3.pos,
+      to: p3.end,
+      source: "mixed",
+    });
+
+    // Simulate restoration into a fresh editor (same content)
+    const editor2 = createTestEditor(html);
+    const authorshipType2 = editor2.schema.marks["authorship"];
+    editor2
+      .chain()
+      .command(({ tr }) => {
+        tr.setMeta("programmaticInsert", true);
+        for (const span of savedSpans) {
+          tr.addMark(
+            span.from,
+            span.to,
+            authorshipType2.create({ source: span.source }),
+          );
+        }
+        return true;
+      })
+      .run();
+
+    // Verify marks are on the correct text
+    const restoredSpans: { text: string; source: string }[] = [];
+    editor2.state.doc.descendants((node) => {
+      if (!node.isText) return;
+      const mark = node.marks.find((m) => m.type.name === "authorship");
+      if (mark) {
+        restoredSpans.push({
+          text: node.text ?? "",
+          source: mark.attrs.source as string,
+        });
+      }
+    });
+
+    expect(restoredSpans).toEqual([
+      { text: "AIの文章", source: "ai" },
+      { text: "編集済み", source: "mixed" },
+    ]);
+
+    editor.destroy();
+    editor2.destroy();
+  });
+});
+
 describe("mark application", () => {
   it("applies restored marks to editor document", () => {
     const editor = createTestEditor("<p>テスト文章です</p>");
