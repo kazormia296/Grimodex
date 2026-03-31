@@ -14,6 +14,10 @@ import { useSnippetStore } from "@/features/snippets/snippetStore";
 import { ChatMessage } from "./components/ChatMessage";
 import { CodexExtractionDialog } from "@/features/codex/CodexExtractionDialog";
 import { SnippetExtractionDialog } from "@/features/snippets/SnippetExtractionDialog";
+import { PinnedCodexBadges } from "./components/PinnedCodexBadges";
+import { PinCodexDialog } from "./components/PinCodexDialog";
+import * as chatApi from "./chatApi";
+import type { CodexEntry } from "@/features/codex/api";
 
 interface SnippetDialogState {
   open: boolean;
@@ -28,6 +32,7 @@ export function ChatPanel() {
   const sendMessage = useChatStore((s) => s.sendMessage);
   const contextTokenCount = useChatStore((s) => s.contextTokenCount);
   const setActiveSceneId = useChatStore((s) => s.setActiveSceneId);
+  const activeThreadId = useChatStore((s) => s.activeThreadId);
 
   const activeSceneId = useSceneStore((s) => s.activeSceneId);
 
@@ -35,6 +40,40 @@ export function ChatPanel() {
   useEffect(() => {
     setActiveSceneId(activeSceneId);
   }, [activeSceneId, setActiveSceneId]);
+
+  // Pinned codex entries state (Task 3.5)
+  const [pinnedEntries, setPinnedEntries] = useState<CodexEntry[]>([]);
+  const [pinDialogOpen, setPinDialogOpen] = useState(false);
+
+  useEffect(() => {
+    if (!activeThreadId) {
+      setPinnedEntries([]);
+      return;
+    }
+    chatApi.listPinnedCodexEntries(activeThreadId).then(setPinnedEntries);
+  }, [activeThreadId]);
+
+  const pinnedIds = new Set(pinnedEntries.map((e) => e.id));
+
+  const handlePin = useCallback(
+    async (entryId: number) => {
+      if (!activeThreadId) return;
+      await chatApi.pinCodexEntry(activeThreadId, entryId);
+      const updated = await chatApi.listPinnedCodexEntries(activeThreadId);
+      setPinnedEntries(updated);
+    },
+    [activeThreadId],
+  );
+
+  const handleUnpin = useCallback(
+    async (entryId: number) => {
+      if (!activeThreadId) return;
+      await chatApi.unpinCodexEntry(activeThreadId, entryId);
+      const updated = await chatApi.listPinnedCodexEntries(activeThreadId);
+      setPinnedEntries(updated);
+    },
+    [activeThreadId],
+  );
 
   const [input, setInput] = useState("");
   const bottomRef = useRef<HTMLDivElement>(null);
@@ -112,6 +151,14 @@ export function ChatPanel() {
           </span>
         )}
       </div>
+
+      {activeThreadId && (
+        <PinnedCodexBadges
+          pinnedEntries={pinnedEntries}
+          onUnpin={handleUnpin}
+          onOpenPinDialog={() => setPinDialogOpen(true)}
+        />
+      )}
 
       <div className="flex-1 overflow-y-auto px-4 py-3">
         {messages.length === 0 ? (
@@ -192,6 +239,13 @@ export function ChatPanel() {
           await createSnippet(data);
         }}
         onClose={() => setSnippetDialog((s) => ({ ...s, open: false }))}
+      />
+      <PinCodexDialog
+        open={pinDialogOpen}
+        pinnedIds={pinnedIds}
+        onPin={handlePin}
+        onUnpin={handleUnpin}
+        onClose={() => setPinDialogOpen(false)}
       />
     </div>
   );

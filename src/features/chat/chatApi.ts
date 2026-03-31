@@ -1,8 +1,14 @@
 import { invoke } from "@/lib/tauri";
 import { db } from "@/db/client";
-import { chatThreads, chatMessages } from "@/db/schema";
-import { eq, desc } from "drizzle-orm";
+import {
+  chatThreads,
+  chatMessages,
+  chatThreadPinnedCodex,
+  codexEntries,
+} from "@/db/schema";
+import { eq, desc, and } from "drizzle-orm";
 import type { ChatThread, ChatMessage, MessageRole } from "./chatTypes";
+import type { CodexEntry } from "@/features/codex/api";
 
 // --- AI message sending (existing) ---
 
@@ -111,4 +117,43 @@ export async function updateThreadTitle(
     .update(chatThreads)
     .set({ title, modifiedAt: new Date().toISOString() })
     .where(eq(chatThreads.id, id));
+}
+
+// --- Pinned Codex entries (Task 3.5) ---
+
+export async function listPinnedCodexEntries(
+  threadId: string,
+): Promise<CodexEntry[]> {
+  const rows = await db
+    .select({ entry: codexEntries })
+    .from(chatThreadPinnedCodex)
+    .innerJoin(
+      codexEntries,
+      eq(chatThreadPinnedCodex.codexEntryId, codexEntries.id),
+    )
+    .where(eq(chatThreadPinnedCodex.threadId, threadId));
+  return rows.map((r) => r.entry);
+}
+
+export async function pinCodexEntry(
+  threadId: string,
+  entryId: number,
+): Promise<void> {
+  await db
+    .insert(chatThreadPinnedCodex)
+    .values({ threadId, codexEntryId: entryId });
+}
+
+export async function unpinCodexEntry(
+  threadId: string,
+  entryId: number,
+): Promise<void> {
+  await db
+    .delete(chatThreadPinnedCodex)
+    .where(
+      and(
+        eq(chatThreadPinnedCodex.threadId, threadId),
+        eq(chatThreadPinnedCodex.codexEntryId, entryId),
+      ),
+    );
 }

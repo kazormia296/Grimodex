@@ -10,6 +10,9 @@ vi.mock("./chatApi", () => ({
   listMessages: vi.fn(),
   addMessage: vi.fn(),
   updateThreadTitle: vi.fn(),
+  listPinnedCodexEntries: vi.fn(() => Promise.resolve([])),
+  pinCodexEntry: vi.fn(),
+  unpinCodexEntry: vi.fn(),
 }));
 
 vi.mock("./contextBuilder", () => ({
@@ -40,6 +43,14 @@ vi.mock("@/features/project/api", () => ({
       description: "概要",
     }),
   ),
+}));
+
+vi.mock("@/features/codex/api", () => ({
+  listCodexEntries: vi.fn(() => Promise.resolve([])),
+}));
+
+vi.mock("@/features/codex/codexMatcher", () => ({
+  findMentionedEntries: vi.fn(() => []),
 }));
 
 import * as chatApi from "./chatApi";

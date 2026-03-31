@@ -9,6 +9,8 @@ import { loadSceneContent, saveSceneContent } from "./api";
 import { useAutoSave } from "@/hooks/useAutoSave";
 import { useEditorStore } from "@/features/editor/editorStore";
 import { useInsertHighlight } from "@/features/editor/InsertHighlight";
+import { useCodexHighlight } from "@/features/editor/useCodexHighlight";
+import { CodexPopover } from "@/features/editor/CodexPopover";
 
 export function SceneEditor() {
   const activeSceneId = useSceneStore((s) => s.activeSceneId);
@@ -76,6 +78,9 @@ export function SceneEditor() {
   // Insert highlight decoration (Task 2.4)
   useInsertHighlight(editor);
 
+  // Codex name highlighting (Task 3.6)
+  useCodexHighlight(editor);
+
   // Load content when active scene changes
   useEffect(() => {
     if (!editor || !activeSceneId) return;
@@ -111,6 +116,7 @@ export function SceneEditor() {
       <Toolbar editor={editor} />
       <div className="flex-1 overflow-auto p-4">
         <EditorContent editor={editor} />
+        <CodexPopover editor={editor} />
       </div>
       <div className="flex items-center justify-between border-t border-border px-4 py-1">
         <CharCount count={charCount} />

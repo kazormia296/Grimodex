@@ -96,3 +96,12 @@ export const chatMessages = sqliteTable("chat_messages", {
     .notNull()
     .$defaultFn(() => new Date().toISOString()),
 });
+
+export const chatThreadPinnedCodex = sqliteTable("chat_thread_pinned_codex", {
+  threadId: text("thread_id")
+    .notNull()
+    .references(() => chatThreads.id, { onDelete: "cascade" }),
+  codexEntryId: integer("codex_entry_id")
+    .notNull()
+    .references(() => codexEntries.id, { onDelete: "cascade" }),
+});

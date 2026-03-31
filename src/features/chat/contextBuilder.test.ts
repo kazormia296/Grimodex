@@ -4,6 +4,7 @@ import {
   countTokens,
   type SceneContext,
   type ProjectContext,
+  type CodexContext,
 } from "./contextBuilder";
 
 describe("contextBuilder", () => {
@@ -76,6 +77,108 @@ describe("contextBuilder", () => {
 
       // System prompt should instruct AI to act as a writing assistant
       expect(result.length).toBeGreaterThan(0);
+    });
+
+    it("includes codex entries in the system prompt", () => {
+      const scene: SceneContext = {
+        id: "scene-1",
+        title: "シーン1",
+        content: "太郎が花子に話しかけた。",
+      };
+      const codexEntries: CodexContext[] = [
+        { id: 1, type: "character", name: "太郎", summary: "主人公の青年" },
+        { id: 2, type: "location", name: "東京", summary: "物語の舞台" },
+      ];
+
+      const result = buildSystemPrompt({ scene, codexEntries });
+
+      expect(result).toContain("登場キャラクター・設定情報");
+      expect(result).toContain("**太郎** (キャラクター): 主人公の青年");
+      expect(result).toContain("**東京** (場所): 物語の舞台");
+    });
+
+    it("includes pinned codex entries in the system prompt", () => {
+      const scene: SceneContext = {
+        id: "scene-1",
+        title: "シーン1",
+        content: "本文",
+      };
+      const pinnedCodexEntries: CodexContext[] = [
+        { id: 3, type: "item", name: "魔法の剣", summary: "伝説の武器" },
+      ];
+
+      const result = buildSystemPrompt({ scene, pinnedCodexEntries });
+
+      expect(result).toContain("**魔法の剣** (アイテム): 伝説の武器");
+    });
+
+    it("deduplicates entries that appear in both auto and pinned", () => {
+      const scene: SceneContext = {
+        id: "scene-1",
+        title: "シーン1",
+        content: "本文",
+      };
+      const sharedEntry: CodexContext = {
+        id: 1,
+        type: "character",
+        name: "太郎",
+        summary: "主人公の青年",
+      };
+      const codexEntries: CodexContext[] = [sharedEntry];
+      const pinnedCodexEntries: CodexContext[] = [sharedEntry];
+
+      const result = buildSystemPrompt({
+        scene,
+        codexEntries,
+        pinnedCodexEntries,
+      });
+
+      // Should appear only once
+      const matches = result.match(/\*\*太郎\*\*/g);
+      expect(matches).toHaveLength(1);
+    });
+
+    it("does not add codex section when no entries provided", () => {
+      const scene: SceneContext = {
+        id: "scene-1",
+        title: "シーン1",
+        content: "本文",
+      };
+
+      const result = buildSystemPrompt({ scene });
+
+      expect(result).not.toContain("登場キャラクター・設定情報");
+    });
+
+    it("does not add codex section when entries arrays are empty", () => {
+      const scene: SceneContext = {
+        id: "scene-1",
+        title: "シーン1",
+        content: "本文",
+      };
+
+      const result = buildSystemPrompt({
+        scene,
+        codexEntries: [],
+        pinnedCodexEntries: [],
+      });
+
+      expect(result).not.toContain("登場キャラクター・設定情報");
+    });
+
+    it("uses type label for lore entries", () => {
+      const scene: SceneContext = {
+        id: "scene-1",
+        title: "シーン1",
+        content: "本文",
+      };
+      const codexEntries: CodexContext[] = [
+        { id: 1, type: "lore", name: "魔法体系", summary: "世界の魔法ルール" },
+      ];
+
+      const result = buildSystemPrompt({ scene, codexEntries });
+
+      expect(result).toContain("**魔法体系** (設定): 世界の魔法ルール");
     });
   });
 

@@ -1,9 +1,15 @@
 import { create } from "zustand";
 import * as chatApi from "./chatApi";
 import { buildSystemPrompt, countTokens } from "./contextBuilder";
-import type { SceneContext, ProjectContext } from "./contextBuilder";
+import type {
+  SceneContext,
+  ProjectContext,
+  CodexContext,
+} from "./contextBuilder";
 import { loadSceneContent, getScene } from "@/features/scene/api";
 import { getProject } from "@/features/project/api";
+import { listCodexEntries } from "@/features/codex/api";
+import { findMentionedEntries } from "@/features/codex/codexMatcher";
 import type { ChatMessage, ChatThread, MessageRole } from "./chatTypes";
 
 interface ChatState {
@@ -164,9 +170,33 @@ export const useChatStore = create<ChatState>()((set, get) => ({
       const messagesForApi: ChatMessage[] = [...prevMessages, userMsg];
 
       if (sceneCtx) {
+        // Auto-detect codex entries mentioned in scene content
+        const allEntries = await listCodexEntries();
+        const mentioned = findMentionedEntries(sceneCtx.content, allEntries);
+        const codexEntries: CodexContext[] = mentioned.map((e) => ({
+          id: e.id,
+          type: e.type,
+          name: e.name,
+          summary: allEntries.find((a) => a.id === e.id)?.summary ?? "",
+        }));
+
+        // Load pinned codex entries for current thread
+        let pinnedCodexEntries: CodexContext[] = [];
+        if (activeThreadId) {
+          const pinned = await chatApi.listPinnedCodexEntries(activeThreadId);
+          pinnedCodexEntries = pinned.map((e) => ({
+            id: e.id,
+            type: e.type,
+            name: e.name,
+            summary: e.summary,
+          }));
+        }
+
         const systemPrompt = buildSystemPrompt({
           scene: sceneCtx,
           project: projectCtx ?? undefined,
+          codexEntries,
+          pinnedCodexEntries,
         });
 
         set({ contextTokenCount: countTokens(systemPrompt) });
