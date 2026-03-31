@@ -29,6 +29,44 @@ const SCHEMA_DDL = `
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
   );
+  CREATE TABLE IF NOT EXISTS codex_entries (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    type TEXT NOT NULL,
+    name TEXT NOT NULL,
+    summary TEXT NOT NULL DEFAULT '',
+    content TEXT NOT NULL DEFAULT '',
+    tags TEXT NOT NULL DEFAULT '',
+    source_chat_message_id TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS snippets (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    title TEXT NOT NULL,
+    content TEXT NOT NULL DEFAULT '',
+    tags TEXT NOT NULL DEFAULT '',
+    scene_id TEXT,
+    source_chat_message_id TEXT,
+    created_at TEXT NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS chat_threads (
+    id TEXT PRIMARY KEY,
+    title TEXT NOT NULL,
+    scene_id TEXT REFERENCES scenes(id) ON DELETE CASCADE,
+    created_at TEXT NOT NULL,
+    modified_at TEXT NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS chat_messages (
+    id TEXT PRIMARY KEY,
+    thread_id TEXT NOT NULL REFERENCES chat_threads(id) ON DELETE CASCADE,
+    role TEXT NOT NULL,
+    content TEXT NOT NULL,
+    created_at TEXT NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS chat_thread_pinned_codex (
+    thread_id TEXT NOT NULL REFERENCES chat_threads(id) ON DELETE CASCADE,
+    codex_entry_id INTEGER NOT NULL REFERENCES codex_entries(id) ON DELETE CASCADE
+  );
 `;
 
 const CONTENT_PREFIX = "noveloom:content:";
@@ -281,6 +319,8 @@ export async function createBrowserMock(): Promise<BrowserMock> {
         return handleListAiModels() as T;
       case "test_ai_connection":
         return handleTestAiConnection() as T;
+      case "send_chat_message":
+        return "[browser-mock] AIは未接続です。AI設定からAPIキーを設定してください。" as T;
       default:
         throw new Error(`[browser-mock] Unknown Tauri command: ${cmd}`);
     }
