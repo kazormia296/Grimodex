@@ -6,14 +6,50 @@ vi.mock("./chatApi", () => ({
   sendChatMessage: vi.fn(),
 }));
 
+vi.mock("./contextBuilder", () => ({
+  buildSystemPrompt: vi.fn(() => "mock system prompt"),
+  countTokens: vi.fn(() => 42),
+}));
+
+vi.mock("@/features/scene/api", () => ({
+  loadSceneContent: vi.fn(() => Promise.resolve("シーン本文")),
+  getScene: vi.fn(() =>
+    Promise.resolve({
+      id: "scene-1",
+      chapterId: 1,
+      title: "テストシーン",
+      sortOrder: 0,
+      synopsis: "",
+      createdAt: "",
+      updatedAt: "",
+    }),
+  ),
+}));
+
+vi.mock("@/features/project/api", () => ({
+  getProject: vi.fn(() =>
+    Promise.resolve({
+      id: 1,
+      title: "テストプロジェクト",
+      description: "概要",
+    }),
+  ),
+}));
+
 import * as chatApi from "./chatApi";
+import * as contextBuilder from "./contextBuilder";
 const mockSendChatMessage = vi.mocked(chatApi.sendChatMessage);
+const mockBuildSystemPrompt = vi.mocked(contextBuilder.buildSystemPrompt);
+const mockCountTokens = vi.mocked(contextBuilder.countTokens);
 
 function resetStore() {
   useChatStore.setState({
     messages: [],
     isStreaming: false,
     error: null,
+    activeSceneId: "scene-1",
+    activeProjectId: 1,
+    contextTokenCount: 0,
   });
 }
 
@@ -105,7 +141,7 @@ describe("useChatStore", () => {
       expect(mockSendChatMessage).not.toHaveBeenCalled();
     });
 
-    it("passes full message history to API", async () => {
+    it("passes full message history to API with system prompt prepended", async () => {
       useChatStore.setState({
         messages: [
           makeMessage("user", "前の質問"),
@@ -119,10 +155,12 @@ describe("useChatStore", () => {
       await useChatStore.getState().sendMessage("新しい質問");
 
       const passedMessages = mockSendChatMessage.mock.calls[0][0];
-      expect(passedMessages).toHaveLength(3);
-      expect(passedMessages[0].content).toBe("前の質問");
-      expect(passedMessages[1].content).toBe("前の回答");
-      expect(passedMessages[2].content).toBe("新しい質問");
+      // system + 前の質問 + 前の回答 + 新しい質問 = 4
+      expect(passedMessages).toHaveLength(4);
+      expect(passedMessages[0].role).toBe("system");
+      expect(passedMessages[1].content).toBe("前の質問");
+      expect(passedMessages[2].content).toBe("前の回答");
+      expect(passedMessages[3].content).toBe("新しい質問");
     });
   });
 
@@ -145,6 +183,48 @@ describe("useChatStore", () => {
       useChatStore.getState().clearError();
 
       expect(useChatStore.getState().error).toBeNull();
+    });
+  });
+
+  describe("context injection", () => {
+    it("passes system prompt to sendChatMessage", async () => {
+      mockBuildSystemPrompt.mockReturnValue("テスト用システムプロンプト");
+      mockSendChatMessage.mockImplementation(async (_msgs, onChunk) => {
+        onChunk("回答");
+      });
+
+      await useChatStore.getState().sendMessage("質問");
+
+      expect(mockSendChatMessage).toHaveBeenCalled();
+      const callArgs = mockSendChatMessage.mock.calls[0];
+      const messages = callArgs[0];
+      // First message should be system prompt
+      expect(messages[0].role).toBe("system");
+      expect(messages[0].content).toBe("テスト用システムプロンプト");
+    });
+
+    it("updates contextTokenCount when context changes", async () => {
+      mockCountTokens.mockReturnValue(100);
+      mockSendChatMessage.mockImplementation(async (_msgs, onChunk) => {
+        onChunk("回答");
+      });
+
+      await useChatStore.getState().sendMessage("質問");
+
+      const { contextTokenCount } = useChatStore.getState();
+      expect(contextTokenCount).toBe(100);
+    });
+
+    it("sets activeSceneId and updates context", () => {
+      useChatStore.getState().setActiveSceneId("scene-2");
+
+      expect(useChatStore.getState().activeSceneId).toBe("scene-2");
+    });
+
+    it("sets activeProjectId", () => {
+      useChatStore.getState().setActiveProjectId(2);
+
+      expect(useChatStore.getState().activeProjectId).toBe(2);
     });
   });
 });

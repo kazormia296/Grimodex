@@ -2,12 +2,22 @@ import { useState, useRef, useEffect, type KeyboardEvent } from "react";
 import ReactMarkdown from "react-markdown";
 import { Send } from "lucide-react";
 import { useChatStore } from "./chatStore";
+import { useSceneStore } from "@/features/scene/store";
 
 export function ChatPanel() {
   const messages = useChatStore((s) => s.messages);
   const isStreaming = useChatStore((s) => s.isStreaming);
   const error = useChatStore((s) => s.error);
   const sendMessage = useChatStore((s) => s.sendMessage);
+  const contextTokenCount = useChatStore((s) => s.contextTokenCount);
+  const setActiveSceneId = useChatStore((s) => s.setActiveSceneId);
+
+  const activeSceneId = useSceneStore((s) => s.activeSceneId);
+
+  // Sync scene store → chat store
+  useEffect(() => {
+    setActiveSceneId(activeSceneId);
+  }, [activeSceneId, setActiveSceneId]);
 
   const [input, setInput] = useState("");
   const bottomRef = useRef<HTMLDivElement>(null);
@@ -36,8 +46,16 @@ export function ChatPanel() {
 
   return (
     <div className="flex h-full flex-col bg-background">
-      <div className="border-b border-border px-4 py-2">
+      <div className="flex items-center justify-between border-b border-border px-4 py-2">
         <h2 className="text-sm font-semibold text-foreground">AIチャット</h2>
+        {contextTokenCount > 0 && (
+          <span
+            data-testid="context-token-count"
+            className="text-xs text-muted-foreground"
+          >
+            ctx: {contextTokenCount.toLocaleString()} tokens
+          </span>
+        )}
       </div>
 
       <div className="flex-1 overflow-y-auto px-4 py-3">

@@ -306,6 +306,105 @@ pub async fn test_connection(
     }
 }
 
+/// Send a chat completion request with the given messages.
+/// Messages are tuples of (role, content). Supports "system", "user", "assistant" roles.
+pub async fn send_chat(
+    provider: &AiProvider,
+    model: &str,
+    api_key: &str,
+    ollama_endpoint: &str,
+    messages: &[(&str, &str)],
+) -> anyhow::Result<String> {
+    let client = reqwest::Client::new();
+
+    match provider {
+        AiProvider::Anthropic => {
+            // Anthropic: system is a top-level field, not in messages
+            let system_content: String = messages
+                .iter()
+                .filter(|(role, _)| *role == "system")
+                .map(|(_, content)| *content)
+                .collect::<Vec<_>>()
+                .join("\n");
+
+            let chat_messages: Vec<serde_json::Value> = messages
+                .iter()
+                .filter(|(role, _)| *role != "system")
+                .map(|(role, content)| {
+                    serde_json::json!({ "role": role, "content": content })
+                })
+                .collect();
+
+            let mut body = serde_json::json!({
+                "model": model,
+                "max_tokens": 4096,
+                "messages": chat_messages,
+            });
+
+            if !system_content.is_empty() {
+                body["system"] = serde_json::Value::String(system_content);
+            }
+
+            let resp = client
+                .post(format!("{}/messages", provider.base_url(ollama_endpoint)))
+                .header("x-api-key", api_key)
+                .header("anthropic-version", "2023-06-01")
+                .header("content-type", "application/json")
+                .json(&body)
+                .send()
+                .await?
+                .error_for_status()?;
+
+            let result: serde_json::Value = resp.json().await?;
+            let text = result["content"][0]["text"]
+                .as_str()
+                .unwrap_or("")
+                .to_string();
+            Ok(text)
+        }
+        _ => {
+            // OpenAI-compatible format (OpenRouter, OpenAI, Ollama)
+            let chat_messages: Vec<serde_json::Value> = messages
+                .iter()
+                .map(|(role, content)| {
+                    serde_json::json!({ "role": role, "content": content })
+                })
+                .collect();
+
+            let body = serde_json::json!({
+                "model": model,
+                "max_tokens": 4096,
+                "messages": chat_messages,
+            });
+
+            let url = format!("{}/chat/completions", provider.base_url(ollama_endpoint));
+
+            let mut req = client
+                .post(&url)
+                .header("content-type", "application/json");
+
+            if !matches!(provider, AiProvider::Ollama) {
+                req = req.header("Authorization", format!("Bearer {api_key}"));
+            }
+
+            if matches!(provider, AiProvider::OpenRouter) {
+                req = req
+                    .header("HTTP-Referer", "https://github.com/noveloom/noveloom")
+                    .header("X-Title", "NoveLoom");
+            }
+
+            let resp = req.json(&body).send().await?.error_for_status()?;
+
+            let result: serde_json::Value = resp.json().await?;
+            let text = result["choices"][0]["message"]["content"]
+                .as_str()
+                .unwrap_or("")
+                .to_string();
+            Ok(text)
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
