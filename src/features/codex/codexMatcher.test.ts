@@ -168,7 +168,10 @@ describe("findMentionedEntries", () => {
       { id: 2, name: "花子", type: "character" },
       { id: 3, name: "次郎", type: "character" },
     ];
-    const mentioned = findMentionedEntries("太郎と花子が会い、太郎は笑った", entries);
+    const mentioned = findMentionedEntries(
+      "太郎と花子が会い、太郎は笑った",
+      entries,
+    );
     expect(mentioned).toHaveLength(2);
     expect(mentioned.map((e) => e.id).sort()).toEqual([1, 2]);
   });

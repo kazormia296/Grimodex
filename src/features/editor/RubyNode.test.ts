@@ -77,6 +77,22 @@ describe("RubyNode", () => {
     editor.destroy();
   });
 
+  it("inserts ruby via setRuby command", () => {
+    const editor = createTestEditor("<p>テスト</p>");
+    editor.chain().focus().setRuby("東京", "とうきょう").run();
+
+    let found = false;
+    editor.state.doc.descendants((node) => {
+      if (node.type.name === "ruby") {
+        found = true;
+        expect(node.attrs.base).toBe("東京");
+        expect(node.attrs.annotation).toBe("とうきょう");
+      }
+    });
+    expect(found).toBe(true);
+    editor.destroy();
+  });
+
   it("coexists with other inline content", () => {
     const editor = createTestEditor("<p>前文</p>");
     editor

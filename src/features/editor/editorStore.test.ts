@@ -14,6 +14,7 @@ function makeEditor(overrides = {}) {
     chain: vi.fn(() => {
       const chain: Record<string, unknown> = {};
       chain.focus = vi.fn(() => chain);
+      chain.command = vi.fn(() => chain);
       chain.insertContentAt = vi.fn(() => chain);
       chain.setTextSelection = vi.fn(() => chain);
       chain.run = vi.fn(() => true);

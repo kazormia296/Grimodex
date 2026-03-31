@@ -1,10 +1,11 @@
 import { useState } from "react";
-import { MessageSquare, BookOpen, Bookmark } from "lucide-react";
+import { MessageSquare, BookOpen, Bookmark, BarChart3 } from "lucide-react";
 import { ChatPanel } from "@/features/chat/ChatPanel";
 import { CodexManagementPanel } from "@/features/codex/CodexManagementPanel";
 import { SnippetPanel } from "@/features/snippets/SnippetPanel";
+import { AttributionReport } from "@/features/attribution/AttributionReport";
 
-type TabId = "chat" | "codex" | "snippets";
+type TabId = "chat" | "codex" | "snippets" | "stats";
 
 interface Tab {
   id: TabId;
@@ -23,6 +24,11 @@ const tabs: Tab[] = [
     id: "snippets",
     label: "Snippets",
     icon: <Bookmark className="h-3.5 w-3.5" />,
+  },
+  {
+    id: "stats",
+    label: "統計",
+    icon: <BarChart3 className="h-3.5 w-3.5" />,
   },
 ];
 
@@ -53,6 +59,7 @@ export function RightPanel() {
         {activeTab === "chat" && <ChatPanel />}
         {activeTab === "codex" && <CodexManagementPanel />}
         {activeTab === "snippets" && <SnippetPanel />}
+        {activeTab === "stats" && <AttributionReport />}
       </div>
     </div>
   );

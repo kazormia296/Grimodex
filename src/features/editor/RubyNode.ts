@@ -1,5 +1,14 @@
 import { Node, mergeAttributes } from "@tiptap/core";
 
+declare module "@tiptap/core" {
+  interface Commands<ReturnType> {
+    ruby: {
+      /** Insert a ruby (furigana) annotation. */
+      setRuby: (base: string, annotation: string) => ReturnType;
+    };
+  }
+}
+
 export const RubyNode = Node.create({
   name: "ruby",
   group: "inline",
@@ -14,6 +23,21 @@ export const RubyNode = Node.create({
       annotation: {
         default: "",
       },
+    };
+  },
+
+  addCommands() {
+    return {
+      setRuby:
+        (base: string, annotation: string) =>
+        ({ chain }) => {
+          return chain()
+            .insertContent({
+              type: this.name,
+              attrs: { base, annotation },
+            })
+            .run();
+        },
     };
   },
 

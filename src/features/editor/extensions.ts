@@ -12,7 +12,7 @@ import type { Extensions } from "@tiptap/core";
 export function getEditorExtensions(): Extensions {
   return [
     StarterKit,
-    Markdown,
+    Markdown.configure({ html: true }),
     AuthorshipMark,
     RubyNode,
   ];

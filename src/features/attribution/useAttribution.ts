@@ -2,21 +2,29 @@ import { useEffect } from "react";
 import type { Editor } from "@tiptap/core";
 import { useAttributionStore } from "./attributionStore";
 import { attributionKey, createAttributionPlugin } from "./AttributionPlugin";
+import { aiEditedKey, createAiEditedPlugin } from "./AiEditedPlugin";
 
 export function useAttribution(editor: Editor | null) {
   const showAttribution = useAttributionStore((s) => s.showAttribution);
 
-  // Register plugin
+  // Register plugins
   useEffect(() => {
     if (!editor) return;
-    const existing = editor.view.state.plugins.find(
+    const hasAttribution = editor.view.state.plugins.find(
       (p) => p.spec.key === attributionKey,
     );
-    if (!existing) {
+    if (!hasAttribution) {
       editor.registerPlugin(createAttributionPlugin());
+    }
+    const hasAiEdited = editor.view.state.plugins.find(
+      (p) => p.spec.key === aiEditedKey,
+    );
+    if (!hasAiEdited) {
+      editor.registerPlugin(createAiEditedPlugin());
     }
     return () => {
       editor.unregisterPlugin(attributionKey);
+      editor.unregisterPlugin(aiEditedKey);
     };
   }, [editor]);
 

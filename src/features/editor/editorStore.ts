@@ -52,7 +52,15 @@ export const useEditorStore = create<EditorState>()((set, get) => ({
       },
     ];
 
-    editor.chain().focus().insertContentAt(insertPos, content).run();
+    editor
+      .chain()
+      .focus()
+      .command(({ tr }) => {
+        tr.setMeta("programmaticInsert", true);
+        return true;
+      })
+      .insertContentAt(insertPos, content)
+      .run();
 
     // Calculate the range of inserted text
     const to = insertPos + text.length;
@@ -93,7 +101,15 @@ export const useEditorStore = create<EditorState>()((set, get) => ({
       },
     ];
 
-    editor.chain().focus().insertContentAt(insertPos, content).run();
+    editor
+      .chain()
+      .focus()
+      .command(({ tr }) => {
+        tr.setMeta("programmaticInsert", true);
+        return true;
+      })
+      .insertContentAt(insertPos, content)
+      .run();
 
     const to = insertPos + text.length;
     set({
