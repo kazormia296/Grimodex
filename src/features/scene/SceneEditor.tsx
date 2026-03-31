@@ -1,7 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { useEditor, EditorContent } from "@tiptap/react";
-import StarterKit from "@tiptap/starter-kit";
-import { Markdown } from "tiptap-markdown";
+import { getEditorExtensions } from "@/features/editor/extensions";
 import { Toolbar } from "@/features/editor/Toolbar";
 import { CharCount } from "@/features/editor/CharCount";
 import { useSceneStore } from "./store";
@@ -34,7 +33,7 @@ export function SceneEditor() {
   const insertFromSnippet = useEditorStore((s) => s.insertFromSnippet);
 
   const editor = useEditor({
-    extensions: [StarterKit, Markdown],
+    extensions: getEditorExtensions(),
     content: "",
     editorProps: {
       attributes: {

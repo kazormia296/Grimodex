@@ -1,10 +1,17 @@
 import type { Editor } from "@tiptap/react";
+import type { ReactNode } from "react";
+
+export interface ToolbarSlot {
+  key: string;
+  render: (editor: Editor) => ReactNode;
+}
 
 interface ToolbarProps {
   editor: Editor | null;
+  extraSlots?: ToolbarSlot[];
 }
 
-export function Toolbar({ editor }: ToolbarProps) {
+export function Toolbar({ editor, extraSlots }: ToolbarProps) {
   if (!editor) return null;
 
   return (
@@ -41,6 +48,9 @@ export function Toolbar({ editor }: ToolbarProps) {
       >
         List
       </button>
+      {extraSlots?.map((slot) => (
+        <span key={slot.key}>{slot.render(editor)}</span>
+      ))}
     </div>
   );
 }
