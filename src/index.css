@@ -188,13 +188,6 @@
 .dark .attribution-ai {
   background-color: oklch(0.30 0.08 250);
 }
-.attribution-mixed {
-  background-color: oklch(0.90 0.08 150);
-  border-radius: 2px;
-}
-.dark .attribution-mixed {
-  background-color: oklch(0.30 0.08 150);
-}
 .attribution-unknown {
   background-color: oklch(0.90 0.03 0);
   border-radius: 2px;

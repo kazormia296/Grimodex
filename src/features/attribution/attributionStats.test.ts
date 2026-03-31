@@ -54,7 +54,7 @@ describe("computeAttributionStats", () => {
     editor.destroy();
   });
 
-  it("counts mixed sources correctly", () => {
+  it("counts unknown sources correctly", () => {
     const editor = createTestEditor();
     editor
       .chain()
@@ -86,7 +86,7 @@ describe("computeAttributionStats", () => {
           marks: [
             {
               type: "authorship",
-              attrs: { source: "mixed", timestamp: "t" },
+              attrs: { source: "unknown", timestamp: "t" },
             },
           ],
         },
@@ -96,7 +96,7 @@ describe("computeAttributionStats", () => {
     const stats = computeAttributionStats(editor.state.doc);
     expect(stats.human).toBe(2);
     expect(stats.ai).toBe(2);
-    expect(stats.mixed).toBe(2);
+    expect(stats.unknown).toBe(2);
     expect(stats.total).toBe(6);
     editor.destroy();
   });

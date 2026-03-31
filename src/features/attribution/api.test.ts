@@ -92,7 +92,7 @@ describe("extractDbSpans via saveAuthorshipSpans round-trip positions", () => {
     const p2 = textPositions[1]; // "AIの文章"
     const p3 = textPositions[2]; // "編集済み"
 
-    // Mark 2nd paragraph as "ai" and 3rd as "mixed"
+    // Mark 2nd paragraph as "ai" and 3rd as "unknown"
     editor
       .chain()
       .command(({ tr }) => {
@@ -105,7 +105,7 @@ describe("extractDbSpans via saveAuthorshipSpans round-trip positions", () => {
         tr.addMark(
           p3.pos,
           p3.end,
-          authorshipType.create({ source: "mixed" }),
+          authorshipType.create({ source: "unknown" }),
         );
         return true;
       })
@@ -134,7 +134,7 @@ describe("extractDbSpans via saveAuthorshipSpans round-trip positions", () => {
     expect(savedSpans[1]).toEqual({
       from: p3.pos,
       to: p3.end,
-      source: "mixed",
+      source: "unknown",
     });
 
     // Simulate restoration into a fresh editor (same content)
@@ -170,7 +170,7 @@ describe("extractDbSpans via saveAuthorshipSpans round-trip positions", () => {
 
     expect(restoredSpans).toEqual([
       { text: "AIの文章", source: "ai" },
-      { text: "編集済み", source: "mixed" },
+      { text: "編集済み", source: "unknown" },
     ]);
 
     editor.destroy();

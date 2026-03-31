@@ -80,7 +80,7 @@ describe("AuthorshipMark", () => {
     editor.destroy();
   });
 
-  it("preserves mixed source value", () => {
+  it("preserves unknown source value", () => {
     const editor = createTestEditor();
     editor
       .chain()
@@ -93,7 +93,7 @@ describe("AuthorshipMark", () => {
             {
               type: "authorship",
               attrs: {
-                source: "mixed",
+                source: "unknown",
                 timestamp: "2026-03-31T00:00:00.000Z",
               },
             },
@@ -106,7 +106,7 @@ describe("AuthorshipMark", () => {
     editor.state.doc.descendants((node) => {
       if (node.isText) {
         const mark = node.marks.find((m) => m.type.name === "authorship");
-        if (mark && mark.attrs.source === "mixed") {
+        if (mark && mark.attrs.source === "unknown") {
           foundMark = true;
         }
       }

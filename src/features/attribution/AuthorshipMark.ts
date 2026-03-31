@@ -9,7 +9,7 @@ export function normalizeModelId(provider: string, model: string): string {
   return `${provider}/${model}`;
 }
 
-export type AuthorshipSource = "human" | "ai" | "mixed" | "unknown" | "snippet";
+export type AuthorshipSource = "human" | "ai" | "unknown" | "snippet";
 
 export interface AuthorshipAttributes {
   source: AuthorshipSource;
@@ -20,7 +20,6 @@ export interface AuthorshipAttributes {
   toolName: string | null;
   toolVersion: string | null;
   manualOverride: boolean;
-  /** Original text length at insertion time (for mixed→human ratio calculation) */
   originalLength: number | null;
 }
 

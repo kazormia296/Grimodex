@@ -149,7 +149,7 @@ impl Database {
                 scene_id        TEXT NOT NULL REFERENCES scenes(id) ON DELETE CASCADE,
                 offset_start    INTEGER NOT NULL,
                 offset_end      INTEGER NOT NULL,
-                source          TEXT NOT NULL CHECK(source IN ('human','ai','mixed','unknown','snippet')),
+                source          TEXT NOT NULL CHECK(source IN ('human','ai','unknown','snippet')),
                 trace_id        TEXT,
                 model           TEXT,
                 ai_message_id   TEXT,

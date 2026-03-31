@@ -113,7 +113,7 @@ export const authorshipSpans = sqliteTable("authorship_spans", {
     .references(() => scenes.id, { onDelete: "cascade" }),
   offsetStart: integer("offset_start").notNull(),
   offsetEnd: integer("offset_end").notNull(),
-  source: text("source").notNull(), // 'human' | 'ai' | 'mixed' | 'unknown' | 'snippet'
+  source: text("source").notNull(), // 'human' | 'ai' | 'unknown' | 'snippet'
   traceId: text("trace_id"),
   model: text("model"),
   aiMessageId: text("ai_message_id"),

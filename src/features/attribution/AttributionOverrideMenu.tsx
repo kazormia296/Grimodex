@@ -11,7 +11,6 @@ interface MenuPosition {
 const SOURCE_OPTIONS: { value: AuthorshipSource; label: string }[] = [
   { value: "human", label: "人間" },
   { value: "ai", label: "AI生成" },
-  { value: "mixed", label: "混合" },
   { value: "unknown", label: "不明" },
   { value: "snippet", label: "スニペット" },
 ];

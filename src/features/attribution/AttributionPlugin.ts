@@ -19,7 +19,6 @@ function buildDecorations(doc: ProseMirrorNode): DecorationSet {
 
     const classMap: Record<string, string> = {
       ai: "attribution-ai",
-      mixed: "attribution-mixed",
       unknown: "attribution-unknown",
       snippet: "attribution-snippet",
     };

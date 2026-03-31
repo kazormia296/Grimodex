@@ -109,7 +109,7 @@ describe("AttributionPlugin", () => {
     editor.destroy();
   });
 
-  it("applies mixed class for mixed source", () => {
+  it("applies unknown class for unknown source", () => {
     useAttributionStore.setState({ showAttribution: true });
     const editor = createTestEditor();
     editor
@@ -123,7 +123,7 @@ describe("AttributionPlugin", () => {
             {
               type: "authorship",
               attrs: {
-                source: "mixed",
+                source: "unknown",
                 timestamp: "2026-03-31T00:00:00.000Z",
               },
             },
@@ -139,7 +139,7 @@ describe("AttributionPlugin", () => {
     const decoSet = attributionKey.getState(editor.state);
     const decos = decoSet.find();
     expect(decos.length).toBeGreaterThan(0);
-    expect(getDecoAttrs(decos[0]).class).toBe("attribution-mixed");
+    expect(getDecoAttrs(decos[0]).class).toBe("attribution-unknown");
     editor.destroy();
   });
 
