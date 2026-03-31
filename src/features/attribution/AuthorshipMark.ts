@@ -26,6 +26,7 @@ export interface AuthorshipAttributes {
 
 export const AuthorshipMark = Mark.create({
   name: "authorship",
+  inclusive: false,
 
   addAttributes() {
     return {

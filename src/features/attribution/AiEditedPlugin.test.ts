@@ -33,6 +33,7 @@ function insertAiText(editor: Editor, text: string, msgId = "msg-1") {
               chatMessageId: msgId,
               timestamp: new Date().toISOString(),
               originalLength: text.length,
+              traceId: crypto.randomUUID(),
             },
           },
         ],
@@ -66,6 +67,7 @@ function insertMixedText(
               chatMessageId: msgId,
               timestamp: new Date().toISOString(),
               originalLength,
+              traceId: crypto.randomUUID(),
             },
           },
         ],
@@ -133,10 +135,11 @@ describe("AiEditedPlugin", () => {
     });
     expect(aiPos).toBeGreaterThan(0);
 
-    // Delete 1 character
+    // Delete 1 character (set cursor first, like real user interaction)
     editor
       .chain()
       .focus()
+      .setTextSelection(aiPos + 5)
       .deleteRange({ from: aiPos + 5, to: aiPos + 6 })
       .run();
 
@@ -245,9 +248,11 @@ describe("AiEditedPlugin", () => {
       }
     });
 
+    // Set cursor inside the 2nd node first (simulates real user interaction)
     editor
       .chain()
       .focus()
+      .setTextSelection(secondNodePos + 5)
       .deleteRange({ from: secondNodePos + 5, to: secondNodePos + 6 })
       .run();
 
@@ -269,6 +274,81 @@ describe("AiEditedPlugin", () => {
     editor.destroy();
   });
 
+  it("inclusive:false prevents mark inheritance at insertion boundary", () => {
+    // Simulate real insertFromChat: insertContentAt at cursor position after prior AI text
+    const text = "承知しました。「これは生成AIの生成した文章です。」";
+    for (let i = 0; i < 3; i++) {
+      const { from } = editor.state.selection;
+      const docEnd = editor.state.doc.content.size - 1;
+      const insertPos = from > 0 ? from : Math.max(docEnd, 0);
+
+      editor
+        .chain()
+        .focus()
+        .command(({ tr }) => {
+          tr.setMeta("programmaticInsert", true);
+          return true;
+        })
+        .insertContentAt(insertPos, [
+          {
+            type: "text",
+            text,
+            marks: [
+              {
+                type: "authorship",
+                attrs: {
+                  source: "ai",
+                  chatMessageId: `msg-${i}`,
+                  timestamp: new Date().toISOString(),
+                  originalLength: text.length,
+                  traceId: `trace-${i}`,
+                },
+              },
+            ],
+          },
+        ])
+        .run();
+    }
+
+    // Should have 3 separate text nodes (not merged)
+    const nodes: { traceId: string; source: string }[] = [];
+    editor.state.doc.descendants((node) => {
+      if (!node.isText) return;
+      const mark = node.marks.find((m) => m.type.name === "authorship");
+      if (mark) nodes.push({ traceId: mark.attrs.traceId, source: mark.attrs.source });
+    });
+    expect(nodes).toHaveLength(3);
+    expect(nodes[0].traceId).toBe("trace-0");
+    expect(nodes[1].traceId).toBe("trace-1");
+    expect(nodes[2].traceId).toBe("trace-2");
+
+    // Edit 2nd node — only it should become mixed
+    let count = 0;
+    let secondPos = -1;
+    editor.state.doc.descendants((node, pos) => {
+      if (!node.isText) return;
+      count++;
+      if (count === 2) secondPos = pos;
+    });
+    editor
+      .chain()
+      .focus()
+      .setTextSelection(secondPos + 2)
+      .deleteRange({ from: secondPos + 2, to: secondPos + 3 })
+      .run();
+
+    const after: { source: string }[] = [];
+    editor.state.doc.descendants((node) => {
+      if (!node.isText) return;
+      const mark = node.marks.find((m) => m.type.name === "authorship");
+      if (mark) after.push({ source: mark.attrs.source });
+    });
+    expect(after[0].source).toBe("ai");
+    expect(after[1].source).toBe("mixed");
+    expect(after[2].source).toBe("ai");
+    editor.destroy();
+  });
+
   // --- mixed → human transition ---
 
   describe("mixed → human transition", () => {
@@ -287,6 +367,7 @@ describe("AiEditedPlugin", () => {
       editor
         .chain()
         .focus()
+        .setTextSelection(mixedPos)
         .deleteRange({ from: mixedPos, to: mixedPos + 5 })
         .run();
 
@@ -311,6 +392,7 @@ describe("AiEditedPlugin", () => {
       editor
         .chain()
         .focus()
+        .setTextSelection(mixedPos)
         .deleteRange({ from: mixedPos, to: mixedPos + 17 })
         .run();
 
@@ -333,6 +415,7 @@ describe("AiEditedPlugin", () => {
       editor
         .chain()
         .focus()
+        .setTextSelection(pos)
         .deleteRange({ from: pos, to: pos + 4 })
         .run();
 
@@ -348,6 +431,7 @@ describe("AiEditedPlugin", () => {
       editor
         .chain()
         .focus()
+        .setTextSelection(pos)
         .deleteRange({ from: pos, to: pos + 4 })
         .run();
 
@@ -393,6 +477,7 @@ describe("AiEditedPlugin", () => {
       editor
         .chain()
         .focus()
+        .setTextSelection(mixedPos)
         .deleteRange({ from: mixedPos, to: mixedPos + 9 })
         .run();
 

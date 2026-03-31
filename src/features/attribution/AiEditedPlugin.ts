@@ -17,8 +17,13 @@ export const HUMAN_LENGTH_RATIO = 0.2;
  *   ai → mixed:  Any user edit within an AI span (immediate, no threshold)
  *   mixed → human: When remaining text ≤ 20% of originalLength
  *
- * Overlap detection uses OLD document coordinates to avoid
- * position-mapping edge cases at node boundaries.
+ * Detection strategy (hybrid):
+ *   1. Primary: cursor position — the node containing the selection anchor
+ *      is the node the user just edited. This correctly isolates edits even
+ *      when the browser reports a wide DOM mutation across adjacent marked nodes.
+ *   2. Fallback: traceId text comparison — if the cursor is not within any
+ *      ai/mixed node, compare text by traceId to detect changed nodes.
+ *      This handles programmatic edits and test scenarios.
  */
 export function createAiEditedPlugin(): Plugin {
   return new Plugin({
@@ -37,129 +42,155 @@ export function createAiEditedPlugin(): Plugin {
       const authorshipType = schema.marks["authorship"];
       if (!authorshipType) return null;
 
-      // Step 1: Collect ai/mixed spans from the OLD document
-      const oldSpans: {
-        start: number;
-        end: number;
-        source: string;
-        originalLength: number | null;
-      }[] = [];
-      oldState.doc.descendants((node: ProseMirrorNode, pos: number) => {
+      // Collect old text by traceId (for fallback comparison and originalLength)
+      const oldTextByTraceId = new Map<
+        string,
+        { text: string; originalLength: number | null }
+      >();
+      oldState.doc.descendants((node: ProseMirrorNode) => {
         if (!node.isText) return;
-        const mark = node.marks.find(
-          (m) =>
-            m.type === authorshipType &&
-            (m.attrs.source === "ai" || m.attrs.source === "mixed"),
-        );
-        if (mark) {
-          oldSpans.push({
-            start: pos,
-            end: pos + node.nodeSize,
-            source: mark.attrs.source as string,
-            originalLength: mark.attrs.originalLength as number | null,
-          });
-        }
-      });
-
-      if (oldSpans.length === 0) return null;
-
-      // Step 2: Determine which old spans were edited
-      // Check overlap in OLD coordinate system (robust against mapping edge cases)
-      const editedSpanIndices = new Set<number>();
-
-      for (const transaction of transactions) {
-        if (!transaction.docChanged) continue;
-        for (let i = 0; i < transaction.steps.length; i++) {
-          const stepMap = transaction.mapping.maps[i];
-          // Map old span positions forward to step i's coordinate space
-          const preStepMapping = transaction.mapping.slice(0, i);
-
-          stepMap.forEach(
-            (
-              oldStart: number,
-              oldEnd: number,
-              _newStart: number,
-              _newEnd: number,
-            ) => {
-              for (let si = 0; si < oldSpans.length; si++) {
-                // Adjust span positions to step i's coordinate space
-                const spanStart = preStepMapping.map(oldSpans[si].start, 1);
-                const spanEnd = preStepMapping.map(oldSpans[si].end, -1);
-                // Standard half-open range overlap: [oldStart, oldEnd) ∩ [spanStart, spanEnd)
-                if (oldStart < spanEnd && oldEnd > spanStart) {
-                  editedSpanIndices.add(si);
-                }
-              }
-            },
-          );
-        }
-      }
-
-      if (editedSpanIndices.size === 0) return null;
-
-      // Step 3: Iterate new nodes and apply transitions
-      let changed = false;
-
-      newState.doc.descendants((node: ProseMirrorNode, pos: number) => {
-        if (!node.isText) return;
-
         const mark = node.marks.find(
           (m) =>
             m.type === authorshipType &&
             (m.attrs.source === "ai" || m.attrs.source === "mixed"),
         );
         if (!mark) return;
-        if (mark.attrs.manualOverride) return;
-
-        const currentSource = mark.attrs.source as string;
-        const nodeEnd = pos + node.nodeSize;
-
-        // Match this new node to its closest old span
-        let bestSpanIdx = -1;
-        let bestDistance = Infinity;
-        for (let si = 0; si < oldSpans.length; si++) {
-          const span = oldSpans[si];
-          const distance =
-            Math.abs(span.start - pos) + Math.abs(span.end - nodeEnd);
-          if (distance < bestDistance) {
-            bestDistance = distance;
-            bestSpanIdx = si;
-          }
-        }
-
-        // Only transition if the matched old span was actually edited
-        if (bestSpanIdx < 0 || !editedSpanIndices.has(bestSpanIdx)) return;
-
-        const matchedOldSpan = oldSpans[bestSpanIdx];
-
-        if (currentSource === "ai") {
-          // ai → mixed: immediate on any edit
-          const newMark = authorshipType.create({
-            ...mark.attrs,
-            source: "mixed",
+        const tid = mark.attrs.traceId as string | null;
+        if (tid) {
+          oldTextByTraceId.set(tid, {
+            text: node.text ?? "",
+            originalLength: mark.attrs.originalLength as number | null,
           });
-          tr.addMark(pos, nodeEnd, newMark);
-          changed = true;
-        } else if (currentSource === "mixed") {
-          // mixed → human: when remaining text ≤ 20% of original length
-          const origLen =
-            (mark.attrs.originalLength as number | null) ??
-            matchedOldSpan.originalLength;
-          if (origLen == null || origLen === 0) return;
-
-          const remainingRatio = node.nodeSize / origLen;
-          if (remainingRatio <= HUMAN_LENGTH_RATIO) {
-            const newMark = authorshipType.create({
-              ...mark.attrs,
-              source: "human",
-            });
-            tr.addMark(pos, nodeEnd, newMark);
-            changed = true;
-          }
         }
       });
+
+      const cursorPos = newState.selection.anchor;
+
+      // Phase 1: Try cursor-based detection
+      let cursorNodeFound = false;
+      let changed = false;
+
+      newState.doc.descendants((node: ProseMirrorNode, pos: number) => {
+        if (!node.isText) return;
+        const mark = node.marks.find(
+          (m) =>
+            m.type === authorshipType &&
+            (m.attrs.source === "ai" || m.attrs.source === "mixed"),
+        );
+        if (!mark) return;
+
+        const nodeEnd = pos + node.nodeSize;
+        if (cursorPos >= pos && cursorPos <= nodeEnd) {
+          cursorNodeFound = true;
+        }
+      });
+
+      if (cursorNodeFound) {
+        // Cursor is within an ai/mixed node — only transition that node
+        newState.doc.descendants((node: ProseMirrorNode, pos: number) => {
+          if (!node.isText) return;
+          const mark = node.marks.find(
+            (m) =>
+              m.type === authorshipType &&
+              (m.attrs.source === "ai" || m.attrs.source === "mixed"),
+          );
+          if (!mark) return;
+          if (mark.attrs.manualOverride) return;
+
+          const nodeEnd = pos + node.nodeSize;
+          if (cursorPos < pos || cursorPos > nodeEnd) return;
+
+          changed = applyTransition(
+            tr,
+            authorshipType,
+            mark,
+            node,
+            pos,
+            nodeEnd,
+            oldTextByTraceId,
+          );
+        });
+      } else {
+        // Fallback: traceId text comparison for each node
+        newState.doc.descendants((node: ProseMirrorNode, pos: number) => {
+          if (!node.isText) return;
+          const mark = node.marks.find(
+            (m) =>
+              m.type === authorshipType &&
+              (m.attrs.source === "ai" || m.attrs.source === "mixed"),
+          );
+          if (!mark) return;
+          if (mark.attrs.manualOverride) return;
+
+          const traceId = mark.attrs.traceId as string | null;
+          if (traceId) {
+            const old = oldTextByTraceId.get(traceId);
+            if (old && old.text === (node.text ?? "")) return; // unchanged
+          }
+
+          const nodeEnd = pos + node.nodeSize;
+          const didChange = applyTransition(
+            tr,
+            authorshipType,
+            mark,
+            node,
+            pos,
+            nodeEnd,
+            oldTextByTraceId,
+          );
+          if (didChange) changed = true;
+        });
+      }
 
       return changed ? tr : null;
     },
   });
+}
+
+/**
+ * Apply ai→mixed or mixed→human transition to a single node.
+ * Returns true if a transition was applied.
+ */
+function applyTransition(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  tr: any,
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  authorshipType: any,
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  mark: any,
+  node: ProseMirrorNode,
+  pos: number,
+  nodeEnd: number,
+  oldTextByTraceId: Map<
+    string,
+    { text: string; originalLength: number | null }
+  >,
+): boolean {
+  const currentSource = mark.attrs.source as string;
+  const traceId = mark.attrs.traceId as string | null;
+
+  if (currentSource === "ai") {
+    const newMark = authorshipType.create({
+      ...mark.attrs,
+      source: "mixed",
+    });
+    tr.addMark(pos, nodeEnd, newMark);
+    return true;
+  } else if (currentSource === "mixed") {
+    const origLen =
+      (mark.attrs.originalLength as number | null) ??
+      (traceId ? (oldTextByTraceId.get(traceId)?.originalLength ?? null) : null);
+    if (origLen == null || origLen === 0) return false;
+
+    const remainingRatio = node.nodeSize / origLen;
+    if (remainingRatio <= HUMAN_LENGTH_RATIO) {
+      const newMark = authorshipType.create({
+        ...mark.attrs,
+        source: "human",
+      });
+      tr.addMark(pos, nodeEnd, newMark);
+      return true;
+    }
+  }
+  return false;
 }
