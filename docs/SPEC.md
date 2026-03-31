@@ -198,23 +198,43 @@ OSのアプリケーションデータディレクトリに格納。全ワーク
 - 自動保存: 最後のキー入力から500msのデバウンスでディスクに書き込み
 - セッションごとの完全な履歴によるundo/redo
 
-### 3.2 帰属追跡（Markレベル）
+### 3.2 帰属追跡（Markレベル） — Agent Trace v0.1.0 準拠
 
-すべてのテキストスパンは、以下の3値のいずれかを持つauthorship Mark属性を保持する:
+> 設計判断の詳細は [ADR-001](adr/001-agent-trace-attribution.md) を参照。
+
+すべてのテキストスパンは、以下の5値のいずれかを持つauthorship Mark属性を保持する:
 
 | 値 | 意味 |
 |----|------|
 | `human` | ユーザーが入力したテキスト |
-| `ai` | AIチャットから挿入されたテキスト（未編集） |
-| `ai-edited` | AI由来のテキストをユーザーが編集したもの |
+| `ai` | AIチャットから挿入されたテキスト（未編集、または軽微な編集のみ） |
+| `mixed` | AI由来のテキストをユーザーが大幅に編集したもの |
+| `unknown` | 出所不明（外部からのインポート/ペースト時のデフォルト） |
+| `snippet` | スニペットから挿入されたテキスト（NoveLoom独自拡張） |
+
+**Mark属性（AuthorshipAttributes）:**
+
+| 属性 | 型 | 説明 |
+|------|----|------|
+| `source` | AuthorshipSource | 上記5値のいずれか |
+| `timestamp` | string \| null | マーク付与時刻（ISO 8601） |
+| `model` | string \| null | `provider/model` 形式（例: `anthropic/claude-sonnet-4-6`） |
+| `chatMessageId` | string \| null | 生成元のチャットメッセージID |
+| `traceId` | string \| null | Agent Traceのトレース識別子（UUID） |
+| `toolName` | string \| null | ツール名（`noveloom` 固定） |
+| `toolVersion` | string \| null | アプリバージョン（例: `0.1.0`） |
+| `manualOverride` | boolean | ユーザーによる手動上書きフラグ |
 
 **実装:**
 
-- カスタムTipTap Mark拡張: `authorship`（`source` 属性: `human` | `ai` | `ai-edited`）
-- デフォルト: すべてのキー入力は `human` マークを生成
-- チャットからの「エディタに挿入」: 挿入されたテキストに `ai` マークを付与
-- ペースト検出: チャットパネルからのクリップボードペースト → `ai` マーク、外部からのペースト → `human` マーク（カスタムクリップボードデータ型で判別）
-- ユーザーが `ai` スパン内を編集 → `ai-edited` に遷移
+- カスタムTipTap Mark拡張: `authorship`（上記属性を保持）
+- デフォルト: マークなしのテキストは暗黙的に `human` として扱う
+- チャットからの「エディタに挿入」: `ai` マーク + `model`（`provider/model`形式）+ `toolName`/`toolVersion` を付与
+- ユーザーが `ai` スパン内を編集 → 編集率閾値で判定:
+  - 編集率 10% 未満 **かつ** 絶対変更 5文字未満 → `ai` のまま維持
+  - いずれかの閾値を超過 → `mixed` に遷移
+- `manualOverride: true` のマークは自動遷移をスキップ
+- 右クリックコンテキストメニューで帰属を手動変更可能（manualOverride が設定される）
 - IME入力: `compositionstart`/`compositionend` イベントを追跡。入力中はバッファし、`compositionend` で `human` マークを適用
 
 **永続化:**
@@ -224,24 +244,36 @@ OSのアプリケーションデータディレクトリに格納。全ワーク
 帰属のSQLiteスキーマ:
 ```sql
 CREATE TABLE authorship_spans (
-  id          INTEGER PRIMARY KEY,
-  document_id TEXT NOT NULL REFERENCES documents(id),
-  offset_start INTEGER NOT NULL,  -- ドキュメント先頭からの文字オフセット
-  offset_end   INTEGER NOT NULL,
-  source       TEXT NOT NULL CHECK(source IN ('human', 'ai', 'ai-edited')),
-  ai_message_id TEXT,             -- 生成元のチャットメッセージへのリンク
-  created_at   TEXT NOT NULL,
-  UNIQUE(document_id, offset_start, offset_end)
+  id              INTEGER PRIMARY KEY AUTOINCREMENT,
+  scene_id        TEXT NOT NULL REFERENCES scenes(id) ON DELETE CASCADE,
+  offset_start    INTEGER NOT NULL,
+  offset_end      INTEGER NOT NULL,
+  source          TEXT NOT NULL CHECK(source IN ('human','ai','mixed','unknown','snippet')),
+  trace_id        TEXT,
+  model           TEXT,
+  ai_message_id   TEXT,
+  manual_override INTEGER NOT NULL DEFAULT 0,
+  content_hash    TEXT,
+  tool_name       TEXT,
+  tool_version    TEXT,
+  created_at      TEXT NOT NULL
 );
 ```
 
-- ドキュメント保存時: 現在のTipTap Markの位置をシリアライズ → `authorship_spans` を更新
+- ドキュメント保存時: 現在のTipTap Markの位置をシリアライズ → `authorship_spans` を全置換更新
 - ドキュメント読み込み時: SQLiteからスパンを読み込み → TipTap Markとして適用
 - 外部編集時（NoveLoom外でファイルが変更された場合）: 帰属データが陳腐化 → 警告を表示し、ドキュメントの帰属データのクリアを提案
 
 **表示:**
-- トグル可能なオーバーレイ: humanテキストは通常表示、`ai` テキストは薄い背景色、`ai-edited` は異なる背景色
-- ステータスバー: 帰属比率を表示（human% / ai% / ai-edited%）
+- トグル可能なオーバーレイ: humanテキストは通常表示、`ai` / `mixed` / `unknown` / `snippet` はそれぞれ異なる背景色
+- 手動上書きされたマークは紫の破線アウトラインで視覚的に区別
+- 帰属レポートパネル: 人間 / AI生成 / 混合 / 不明 / スニペット の比率をバーグラフで表示
+
+**エクスポート:**
+- Agent Trace v0.1.0 準拠の JSON エクスポート（`.agent-trace.json`）
+- MIME type: `application/vnd.agent-trace.record+json`
+- 文字レベルのマークを集約したスパン、SHA-256コンテンツハッシュを含む
+- NoveLoom独自拡張は `dev.noveloom.*` 名前空間
 
 ### 3.3 チャットからのテキスト挿入
 
@@ -524,17 +556,22 @@ CREATE VIRTUAL TABLE documents_fts USING fts5(
   tokenize='trigram'
 );
 
--- 帰属追跡
+-- 帰属追跡（Agent Trace v0.1.0 準拠）
 CREATE TABLE authorship_spans (
-  id            INTEGER PRIMARY KEY,
-  document_id   TEXT NOT NULL REFERENCES documents(id),
-  offset_start  INTEGER NOT NULL,
-  offset_end    INTEGER NOT NULL,
-  source        TEXT NOT NULL CHECK(source IN ('human', 'ai', 'ai-edited')),
-  ai_message_id TEXT,
-  created_at    TEXT NOT NULL
+  id              INTEGER PRIMARY KEY AUTOINCREMENT,
+  scene_id        TEXT NOT NULL REFERENCES scenes(id) ON DELETE CASCADE,
+  offset_start    INTEGER NOT NULL,
+  offset_end      INTEGER NOT NULL,
+  source          TEXT NOT NULL CHECK(source IN ('human','ai','mixed','unknown','snippet')),
+  trace_id        TEXT,
+  model           TEXT,
+  ai_message_id   TEXT,
+  manual_override INTEGER NOT NULL DEFAULT 0,
+  content_hash    TEXT,
+  tool_name       TEXT,
+  tool_version    TEXT,
+  created_at      TEXT NOT NULL
 );
-CREATE INDEX idx_authorship_doc ON authorship_spans(document_id);
 
 -- Codexエントリ（信頼できる情報源はMDファイル）
 CREATE TABLE codex_entries (
@@ -627,8 +664,8 @@ CREATE TABLE settings (
 ```rust
 #[tauri::command] fn read_document(path: String) -> Result<DocumentData>
 #[tauri::command] fn save_document(path: String, content: String, frontmatter: Value) -> Result<()>
-#[tauri::command] fn get_authorship_spans(document_id: String) -> Result<Vec<AuthorshipSpan>>
-#[tauri::command] fn save_authorship_spans(document_id: String, spans: Vec<AuthorshipSpan>) -> Result<()>
+// 帰属スパンはDrizzle ORM経由でCRUD（Tauriコマンド不要）
+// see: src/features/attribution/api.ts
 ```
 
 ### 8.3 Codex操作
@@ -770,7 +807,8 @@ CREATE TABLE settings (
 | `editor.autosaveDelay` | number（ミリ秒） | `500` |
 | `editor.showAuthorship` | boolean | `true` |
 | `editor.authorshipColors.ai` | string | `"#e8f0fe"` |
-| `editor.authorshipColors.aiEdited` | string | `"#fef7e0"` |
+| `editor.authorshipColors.mixed` | string | `"#fef7e0"` |
+| `editor.authorshipColors.unknown` | string | `"#f0f0f0"` |
 | `export.sceneSeparator` | string | `"***"` |
 | `export.stripFrontmatter` | boolean | `true` |
 
