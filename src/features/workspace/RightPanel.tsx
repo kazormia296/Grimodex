@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { MessageSquare, BookOpen, Bookmark } from "lucide-react";
 import { ChatPanel } from "@/features/chat/ChatPanel";
+import { SnippetPanel } from "@/features/snippets/SnippetPanel";
 
 type TabId = "chat" | "codex" | "snippets";
 
@@ -11,9 +12,17 @@ interface Tab {
 }
 
 const tabs: Tab[] = [
-  { id: "chat", label: "チャット", icon: <MessageSquare className="h-3.5 w-3.5" /> },
+  {
+    id: "chat",
+    label: "チャット",
+    icon: <MessageSquare className="h-3.5 w-3.5" />,
+  },
   { id: "codex", label: "Codex", icon: <BookOpen className="h-3.5 w-3.5" /> },
-  { id: "snippets", label: "Snippets", icon: <Bookmark className="h-3.5 w-3.5" /> },
+  {
+    id: "snippets",
+    label: "Snippets",
+    icon: <Bookmark className="h-3.5 w-3.5" />,
+  },
 ];
 
 export function RightPanel() {
@@ -46,11 +55,7 @@ export function RightPanel() {
             Codexパネル（Task 3.2で実装）
           </div>
         )}
-        {activeTab === "snippets" && (
-          <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
-            Snippetパネル（Task 3.3で実装）
-          </div>
-        )}
+        {activeTab === "snippets" && <SnippetPanel />}
       </div>
     </div>
   );

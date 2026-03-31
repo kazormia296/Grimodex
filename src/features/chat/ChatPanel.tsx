@@ -1,9 +1,23 @@
-import { useState, useRef, useEffect, type KeyboardEvent } from "react";
+import {
+  useState,
+  useRef,
+  useEffect,
+  useCallback,
+  type KeyboardEvent,
+} from "react";
 import { Send } from "lucide-react";
 import { useChatStore } from "./chatStore";
 import { useSceneStore } from "@/features/scene/store";
 import { useEditorStore } from "@/features/editor/editorStore";
+import { useSnippetStore } from "@/features/snippets/snippetStore";
 import { ChatMessage } from "./components/ChatMessage";
+import { SnippetExtractionDialog } from "@/features/snippets/SnippetExtractionDialog";
+
+interface SnippetDialogState {
+  open: boolean;
+  messageId: string;
+  initialContent: string;
+}
 
 export function ChatPanel() {
   const messages = useChatStore((s) => s.messages);
@@ -22,6 +36,24 @@ export function ChatPanel() {
 
   const [input, setInput] = useState("");
   const bottomRef = useRef<HTMLDivElement>(null);
+
+  // Snippet extraction dialog state
+  const [snippetDialog, setSnippetDialog] = useState<SnippetDialogState>({
+    open: false,
+    messageId: "",
+    initialContent: "",
+  });
+
+  const createSnippet = useSnippetStore((s) => s.create);
+
+  const handleSaveSnippet = useCallback(
+    (messageId: string, selectedText: string | null) => {
+      const msg = messages.find((m) => m.id === messageId);
+      const content = selectedText ?? msg?.content ?? "";
+      setSnippetDialog({ open: true, messageId, initialContent: content });
+    },
+    [messages],
+  );
 
   useEffect(() => {
     if (typeof bottomRef.current?.scrollIntoView === "function") {
@@ -74,6 +106,7 @@ export function ChatPanel() {
                 msg={msg}
                 isStreaming={isStreaming}
                 onInsert={insertFromChat}
+                onSaveSnippet={handleSaveSnippet}
               />
             ))}
             {isStreaming && (
@@ -117,6 +150,15 @@ export function ChatPanel() {
           </button>
         </div>
       </div>
+      <SnippetExtractionDialog
+        open={snippetDialog.open}
+        initialContent={snippetDialog.initialContent}
+        messageId={snippetDialog.messageId}
+        onSave={async (data) => {
+          await createSnippet(data);
+        }}
+        onClose={() => setSnippetDialog((s) => ({ ...s, open: false }))}
+      />
     </div>
   );
 }

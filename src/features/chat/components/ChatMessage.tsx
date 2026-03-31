@@ -25,7 +25,9 @@ export function ChatMessage({
     <div
       data-testid={`chat-message-${msg.id}`}
       data-role={msg.role}
-      className={msg.role === "user" ? "flex justify-end" : "flex justify-start"}
+      className={
+        msg.role === "user" ? "flex justify-end" : "flex justify-start"
+      }
     >
       <div
         className={

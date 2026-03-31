@@ -31,7 +31,9 @@ export function MessageBadge({ messageId }: MessageBadgeProps) {
       }
     }
     load();
-    return () => { cancelled = true; };
+    return () => {
+      cancelled = true;
+    };
   }, [messageId]);
 
   if (!data) return null;

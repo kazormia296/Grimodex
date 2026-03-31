@@ -29,6 +29,8 @@ export function SceneEditor() {
 
   const { schedule, cancel, flush } = useAutoSave(saveFn, 2000);
 
+  const insertFromSnippet = useEditorStore((s) => s.insertFromSnippet);
+
   const editor = useEditor({
     extensions: [StarterKit, Markdown],
     content: "",
@@ -36,6 +38,23 @@ export function SceneEditor() {
       attributes: {
         role: "textbox",
         "aria-multiline": "true",
+      },
+      handleDrop(_view, event) {
+        const snippetData = event.dataTransfer?.getData(
+          "application/x-noveloom-snippet",
+        );
+        if (!snippetData) return false;
+        event.preventDefault();
+        try {
+          const { id, content } = JSON.parse(snippetData) as {
+            id: number;
+            content: string;
+          };
+          insertFromSnippet(content, id);
+          return true;
+        } catch {
+          return false;
+        }
       },
     },
     onUpdate({ editor: e }) {
