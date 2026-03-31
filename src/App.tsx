@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { Sidebar } from "@/features/scene/Sidebar";
 import { SceneEditor } from "@/features/scene/SceneEditor";
-import { ChatPanel } from "@/features/chat/ChatPanel";
+import { RightPanel } from "@/features/workspace/RightPanel";
 import { WelcomeScreen } from "@/features/workspace/WelcomeScreen";
 import { LauncherScreen } from "@/features/workspace/LauncherScreen";
 import { WorkspaceMenu } from "@/features/workspace/WorkspaceMenu";
@@ -67,7 +67,7 @@ function EditorScreen() {
           </ResizablePanel>
           <ResizableHandle withHandle />
           <ResizablePanel id="chat" defaultSize="35%" minSize="20%">
-            <ChatPanel />
+            <RightPanel />
           </ResizablePanel>
         </ResizablePanelGroup>
       </div>

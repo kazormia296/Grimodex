@@ -13,6 +13,7 @@ interface EditorState {
 
   setEditor: (editor: Editor | null) => void;
   insertFromChat: (text: string, chatMessageId: string) => boolean;
+  insertFromSnippet: (text: string, snippetId: number) => boolean;
   clearInsertRange: () => void;
 }
 
@@ -58,6 +59,45 @@ export const useEditorStore = create<EditorState>()((set, get) => ({
     set({ lastInsertRange: { from: insertPos, to, chatMessageId } });
 
     // Clear highlight after 3 seconds
+    if (highlightTimer) clearTimeout(highlightTimer);
+    highlightTimer = setTimeout(() => {
+      set({ lastInsertRange: null });
+      highlightTimer = null;
+    }, 3000);
+
+    return true;
+  },
+
+  insertFromSnippet: (text: string, snippetId: number) => {
+    const { editor } = get();
+    if (!editor) return false;
+
+    const { from } = editor.state.selection;
+    const docEnd = editor.state.doc.content.size - 1;
+    const insertPos = from > 0 ? from : Math.max(docEnd, 0);
+
+    const content = [
+      {
+        type: "text",
+        text,
+        marks: [
+          {
+            type: "authorship",
+            attrs: {
+              source: "snippet",
+              snippetId: String(snippetId),
+              timestamp: new Date().toISOString(),
+            },
+          },
+        ],
+      },
+    ];
+
+    editor.chain().focus().insertContentAt(insertPos, content).run();
+
+    const to = insertPos + text.length;
+    set({ lastInsertRange: { from: insertPos, to, chatMessageId: `snippet-${snippetId}` } });
+
     if (highlightTimer) clearTimeout(highlightTimer);
     highlightTimer = setTimeout(() => {
       set({ lastInsertRange: null });

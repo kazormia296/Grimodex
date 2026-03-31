@@ -54,3 +54,12 @@ export async function updateCodexEntry(
 export async function deleteCodexEntry(id: number): Promise<void> {
   await db.delete(codexEntries).where(eq(codexEntries.id, id));
 }
+
+export async function listCodexEntriesByMessageId(
+  messageId: string,
+): Promise<CodexEntry[]> {
+  return db
+    .select()
+    .from(codexEntries)
+    .where(eq(codexEntries.sourceChatMessageId, messageId));
+}

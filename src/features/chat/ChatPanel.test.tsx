@@ -21,11 +21,30 @@ vi.mock("@/features/editor/editorStore", async () => {
     editor: null,
     lastInsertRange: null,
     insertFromChat: vi.fn(() => true),
+    insertFromSnippet: vi.fn(() => true),
     clearInsertRange: vi.fn(),
     setEditor: vi.fn(),
   }));
   return { useEditorStore: store };
 });
+
+vi.mock("@/features/codex/api", () => ({
+  listCodexEntries: vi.fn(() => Promise.resolve([])),
+  getCodexEntry: vi.fn(),
+  createCodexEntry: vi.fn(),
+  updateCodexEntry: vi.fn(),
+  deleteCodexEntry: vi.fn(),
+  listCodexEntriesByMessageId: vi.fn(() => Promise.resolve([])),
+}));
+
+vi.mock("@/features/snippets/api", () => ({
+  listSnippets: vi.fn(() => Promise.resolve([])),
+  getSnippet: vi.fn(),
+  createSnippet: vi.fn(),
+  updateSnippet: vi.fn(),
+  deleteSnippet: vi.fn(),
+  listSnippetsByMessageId: vi.fn(() => Promise.resolve([])),
+}));
 
 import * as chatApi from "./chatApi";
 const mockSendChatMessage = vi.mocked(chatApi.sendChatMessage);
@@ -209,9 +228,9 @@ describe("ChatPanel", () => {
     expect(screen.getByTestId("streaming-indicator")).toBeInTheDocument();
   });
 
-  // --- Task 2.4: Insert button tests ---
+  // --- Task 2.4: Insert button tests (via actions menu) ---
 
-  it("shows insert button on assistant messages", () => {
+  it("shows actions menu on assistant messages", () => {
     useChatStore.setState({
       messages: [
         {
@@ -226,12 +245,34 @@ describe("ChatPanel", () => {
 
     render(<ChatPanel />);
 
+    const actionsBtn = screen.getByTestId("message-actions-a1");
+    expect(actionsBtn).toBeInTheDocument();
+  });
+
+  it("shows insert option in actions menu for assistant messages", async () => {
+    const user = userEvent.setup();
+    useChatStore.setState({
+      messages: [
+        {
+          id: "a1",
+          threadId: "",
+          role: "assistant",
+          content: "挿入可能なテキスト",
+          createdAt: new Date().toISOString(),
+        },
+      ],
+    });
+
+    render(<ChatPanel />);
+
+    await user.click(screen.getByTestId("message-actions-a1"));
     const insertBtn = screen.getByTestId("insert-to-editor-a1");
     expect(insertBtn).toBeInTheDocument();
   });
 
-  it("does NOT show insert button on user messages", () => {
+  it("does NOT show actions menu on user messages while streaming", () => {
     useChatStore.setState({
+      isStreaming: true,
       messages: [
         {
           id: "u1",
@@ -245,10 +286,10 @@ describe("ChatPanel", () => {
 
     render(<ChatPanel />);
 
-    expect(screen.queryByTestId("insert-to-editor-u1")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("message-actions-u1")).not.toBeInTheDocument();
   });
 
-  it("does NOT show insert button on assistant messages while streaming", () => {
+  it("does NOT show actions menu on assistant messages while streaming", () => {
     useChatStore.setState({
       isStreaming: true,
       messages: [
@@ -264,10 +305,10 @@ describe("ChatPanel", () => {
 
     render(<ChatPanel />);
 
-    expect(screen.queryByTestId("insert-to-editor-a1")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("message-actions-a1")).not.toBeInTheDocument();
   });
 
-  it("calls insertFromChat when insert button is clicked", async () => {
+  it("calls insertFromChat when insert option is clicked", async () => {
     const user = userEvent.setup();
     const mockInsert = vi.mocked(useEditorStore.getState().insertFromChat);
 
@@ -285,13 +326,13 @@ describe("ChatPanel", () => {
 
     render(<ChatPanel />);
 
-    const insertBtn = screen.getByTestId("insert-to-editor-a1");
-    await user.click(insertBtn);
+    await user.click(screen.getByTestId("message-actions-a1"));
+    await user.click(screen.getByTestId("insert-to-editor-a1"));
 
     expect(mockInsert).toHaveBeenCalledWith("挿入するテキスト", "a1");
   });
 
-  it("does NOT show insert button when assistant message is empty", () => {
+  it("does NOT show actions menu when assistant message is empty", () => {
     useChatStore.setState({
       messages: [
         {
@@ -306,6 +347,24 @@ describe("ChatPanel", () => {
 
     render(<ChatPanel />);
 
-    expect(screen.queryByTestId("insert-to-editor-a1")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("message-actions-a1")).not.toBeInTheDocument();
+  });
+
+  it("shows actions menu on user messages (for codex/snippet extraction)", () => {
+    useChatStore.setState({
+      messages: [
+        {
+          id: "u1",
+          threadId: "",
+          role: "user",
+          content: "ユーザーメッセージ",
+          createdAt: new Date().toISOString(),
+        },
+      ],
+    });
+
+    render(<ChatPanel />);
+
+    expect(screen.getByTestId("message-actions-u1")).toBeInTheDocument();
   });
 });

@@ -44,3 +44,12 @@ export async function updateSnippet(
 export async function deleteSnippet(id: number): Promise<void> {
   await db.delete(snippets).where(eq(snippets.id, id));
 }
+
+export async function listSnippetsByMessageId(
+  messageId: string,
+): Promise<Snippet[]> {
+  return db
+    .select()
+    .from(snippets)
+    .where(eq(snippets.sourceChatMessageId, messageId));
+}
