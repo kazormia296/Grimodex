@@ -27,7 +27,17 @@ export const useSceneStore = create<SceneState>()((set, get) => ({
 
   loadScenes: async (chapterId: number) => {
     set({ isLoading: true });
-    const rows = await api.listScenes(chapterId);
+    let rows = await api.listScenes(chapterId);
+    if (rows.length === 0) {
+      const id = crypto.randomUUID();
+      const created = await api.createScene({
+        id,
+        chapterId,
+        title: "シーン 1",
+        sortOrder: 0,
+      });
+      rows = [created];
+    }
     const scenes: SceneMeta[] = rows.map((r) => ({
       id: r.id,
       title: r.title,

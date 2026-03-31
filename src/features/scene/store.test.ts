@@ -59,6 +59,25 @@ describe("useSceneStore", () => {
       expect(activeSceneId).toBe("scene-1");
       expect(isLoading).toBe(false);
     });
+
+    it("auto-creates a default scene when DB returns empty", async () => {
+      const { listScenes, createScene } = await import("./api");
+      vi.mocked(listScenes).mockResolvedValueOnce([]);
+
+      await useSceneStore.getState().loadScenes(1);
+      const { scenes, activeSceneId } = useSceneStore.getState();
+
+      expect(createScene).toHaveBeenCalledWith(
+        expect.objectContaining({
+          chapterId: 1,
+          title: "シーン 1",
+          sortOrder: 0,
+        }),
+      );
+      expect(scenes).toHaveLength(1);
+      expect(scenes[0].title).toBe("シーン 1");
+      expect(activeSceneId).toBe(scenes[0].id);
+    });
   });
 
   describe("createScene", () => {
