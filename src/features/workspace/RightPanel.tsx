@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { MessageSquare, BookOpen, Bookmark } from "lucide-react";
 import { ChatPanel } from "@/features/chat/ChatPanel";
+import { CodexPanel } from "@/features/codex/CodexPanel";
 import { SnippetPanel } from "@/features/snippets/SnippetPanel";
 
 type TabId = "chat" | "codex" | "snippets";
@@ -50,11 +51,7 @@ export function RightPanel() {
       </div>
       <div className="flex-1 overflow-hidden">
         {activeTab === "chat" && <ChatPanel />}
-        {activeTab === "codex" && (
-          <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
-            Codexパネル（Task 3.2で実装）
-          </div>
-        )}
+        {activeTab === "codex" && <CodexPanel />}
         {activeTab === "snippets" && <SnippetPanel />}
       </div>
     </div>

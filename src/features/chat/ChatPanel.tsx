@@ -9,8 +9,10 @@ import { Send } from "lucide-react";
 import { useChatStore } from "./chatStore";
 import { useSceneStore } from "@/features/scene/store";
 import { useEditorStore } from "@/features/editor/editorStore";
+import { useCodexStore } from "@/features/codex/codexStore";
 import { useSnippetStore } from "@/features/snippets/snippetStore";
 import { ChatMessage } from "./components/ChatMessage";
+import { CodexExtractionDialog } from "@/features/codex/CodexExtractionDialog";
 import { SnippetExtractionDialog } from "@/features/snippets/SnippetExtractionDialog";
 
 interface SnippetDialogState {
@@ -36,6 +38,24 @@ export function ChatPanel() {
 
   const [input, setInput] = useState("");
   const bottomRef = useRef<HTMLDivElement>(null);
+
+  // Codex extraction dialog state
+  const [extractionDialog, setExtractionDialog] = useState<{
+    open: boolean;
+    messageId: string;
+    content: string;
+  }>({ open: false, messageId: "", content: "" });
+
+  const createCodexEntry = useCodexStore((s) => s.create);
+
+  const handleExtractCodex = useCallback(
+    (messageId: string, selectedText: string | null) => {
+      const msg = messages.find((m) => m.id === messageId);
+      const content = selectedText ?? msg?.content ?? "";
+      setExtractionDialog({ open: true, messageId, content });
+    },
+    [messages],
+  );
 
   // Snippet extraction dialog state
   const [snippetDialog, setSnippetDialog] = useState<SnippetDialogState>({
@@ -106,6 +126,7 @@ export function ChatPanel() {
                 msg={msg}
                 isStreaming={isStreaming}
                 onInsert={insertFromChat}
+                onExtractCodex={handleExtractCodex}
                 onSaveSnippet={handleSaveSnippet}
               />
             ))}
@@ -150,6 +171,19 @@ export function ChatPanel() {
           </button>
         </div>
       </div>
+
+      <CodexExtractionDialog
+        open={extractionDialog.open}
+        messageId={extractionDialog.messageId}
+        initialContent={extractionDialog.content}
+        onSave={async (data) => {
+          await createCodexEntry(data);
+          setExtractionDialog({ open: false, messageId: "", content: "" });
+        }}
+        onClose={() =>
+          setExtractionDialog({ open: false, messageId: "", content: "" })
+        }
+      />
       <SnippetExtractionDialog
         open={snippetDialog.open}
         initialContent={snippetDialog.initialContent}
