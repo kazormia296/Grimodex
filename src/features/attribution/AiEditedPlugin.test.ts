@@ -2,13 +2,7 @@ import { describe, it, expect, beforeEach } from "vitest";
 import { Editor } from "@tiptap/core";
 import StarterKit from "@tiptap/starter-kit";
 import { AuthorshipMark } from "./AuthorshipMark";
-import {
-  createAiEditedPlugin,
-  EDIT_RATIO_THRESHOLD,
-  EDIT_ABS_THRESHOLD,
-  HUMAN_RATIO_THRESHOLD,
-  HUMAN_ABS_THRESHOLD,
-} from "./AiEditedPlugin";
+import { createAiEditedPlugin, HUMAN_LENGTH_RATIO } from "./AiEditedPlugin";
 
 function createTestEditor(content = "") {
   const editor = new Editor({
@@ -19,7 +13,7 @@ function createTestEditor(content = "") {
   return editor;
 }
 
-function insertAiText(editor: Editor, text: string) {
+function insertAiText(editor: Editor, text: string, msgId = "msg-1") {
   editor
     .chain()
     .focus()
@@ -36,8 +30,9 @@ function insertAiText(editor: Editor, text: string) {
             type: "authorship",
             attrs: {
               source: "ai",
-              chatMessageId: "msg-1",
-              timestamp: "2026-03-31T00:00:00.000Z",
+              chatMessageId: msgId,
+              timestamp: new Date().toISOString(),
+              originalLength: text.length,
             },
           },
         ],
@@ -46,7 +41,12 @@ function insertAiText(editor: Editor, text: string) {
     .run();
 }
 
-function insertMixedText(editor: Editor, text: string) {
+function insertMixedText(
+  editor: Editor,
+  text: string,
+  originalLength: number,
+  msgId = "msg-1",
+) {
   editor
     .chain()
     .focus()
@@ -63,8 +63,9 @@ function insertMixedText(editor: Editor, text: string) {
             type: "authorship",
             attrs: {
               source: "mixed",
-              chatMessageId: "msg-1",
-              timestamp: "2026-03-31T00:00:00.000Z",
+              chatMessageId: msgId,
+              timestamp: new Date().toISOString(),
+              originalLength,
             },
           },
         ],
@@ -90,72 +91,63 @@ describe("AiEditedPlugin", () => {
     editor = createTestEditor("<p>テスト文章</p>");
   });
 
+  it("exports HUMAN_LENGTH_RATIO constant", () => {
+    expect(HUMAN_LENGTH_RATIO).toBe(0.2);
+  });
+
+  // --- ai → mixed: immediate on any edit ---
+
   it("does not reclassify on programmatic insert", () => {
     insertAiText(editor, "AI生成テキスト");
-
     const sources = findAuthorshipSources(editor);
     expect(sources).toContain("ai");
     expect(sources).not.toContain("mixed");
     editor.destroy();
   });
 
-  it("reclassifies ai to mixed when user types into ai text", () => {
+  it("reclassifies ai to mixed on any user edit (1 char insert)", () => {
     insertAiText(editor, "AI文章");
 
-    // Find the position of the AI text and type into it
     let aiPos = -1;
     editor.state.doc.descendants((node, pos) => {
-      if (node.isText && node.text === "AI文章") {
-        aiPos = pos;
-      }
+      if (node.isText && node.text === "AI文章") aiPos = pos;
     });
     expect(aiPos).toBeGreaterThan(0);
 
-    // Simulate user typing (no programmaticInsert meta)
-    // "AI文章" is 4 chars, inserting "追加" (2 chars) gives totalChanged=2
-    // editRatio = 2/4 = 0.5 >= 0.1, totalChanged = 2 < 5
-    // With BOTH required: ratio OK but abs NOT → stays ai
-    editor
-      .chain()
-      .focus()
-      .insertContentAt(aiPos + 1, "追加")
-      .run();
+    // Insert just 1 character — should immediately transition to mixed
+    editor.chain().focus().insertContentAt(aiPos + 1, "X").run();
 
-    // With BOTH thresholds required, 2 chars is below abs threshold of 5
     const sources = findAuthorshipSources(editor);
-    expect(sources).toContain("ai");
-    expect(sources).not.toContain("mixed");
+    expect(sources).toContain("mixed");
+    expect(sources).not.toContain("ai");
     editor.destroy();
   });
 
-  it("reclassifies ai to mixed when BOTH thresholds exceeded", () => {
-    insertAiText(editor, "AI文章");
+  it("reclassifies ai to mixed on 1 char delete", () => {
+    const longText = "これは長いAI生成テキストです。";
+    insertAiText(editor, longText);
 
     let aiPos = -1;
     editor.state.doc.descendants((node, pos) => {
-      if (node.isText && node.text === "AI文章") {
-        aiPos = pos;
-      }
+      if (node.isText && node.text === longText) aiPos = pos;
     });
     expect(aiPos).toBeGreaterThan(0);
 
-    // Insert 6 chars into 4-char span: ratio=6/4=1.5 (>=0.1), abs=6 (>=5)
-    // BOTH thresholds exceeded → mixed
+    // Delete 1 character
     editor
       .chain()
       .focus()
-      .insertContentAt(aiPos + 1, "大幅な変更です")
+      .deleteRange({ from: aiPos + 5, to: aiPos + 6 })
       .run();
 
     const sources = findAuthorshipSources(editor);
     expect(sources).toContain("mixed");
+    expect(sources).not.toContain("ai");
     editor.destroy();
   });
 
   it("does not reclassify human text", () => {
-    // Type some normal text (no authorship mark → unmarked)
     editor.chain().focus().insertContent("人間テキスト").run();
-
     const sources = findAuthorshipSources(editor);
     expect(sources).not.toContain("mixed");
     editor.destroy();
@@ -173,40 +165,26 @@ describe("AiEditedPlugin", () => {
         {
           type: "text",
           text: "スニペット",
-          marks: [
-            {
-              type: "authorship",
-              attrs: { source: "snippet" },
-            },
-          ],
+          marks: [{ type: "authorship", attrs: { source: "snippet" } }],
         },
       ])
       .run();
 
-    // Edit within snippet range
     let snippetPos = -1;
     editor.state.doc.descendants((node, pos) => {
-      if (node.isText && node.text === "スニペット") {
-        snippetPos = pos;
-      }
+      if (node.isText && node.text === "スニペット") snippetPos = pos;
     });
 
     if (snippetPos > 0) {
-      editor
-        .chain()
-        .focus()
-        .insertContentAt(snippetPos + 1, "X")
-        .run();
+      editor.chain().focus().insertContentAt(snippetPos + 1, "X").run();
     }
 
     const sources = findAuthorshipSources(editor);
-    // snippet should remain snippet, not become mixed
     expect(sources).not.toContain("mixed");
     editor.destroy();
   });
 
   it("does not reclassify ai text with manualOverride", () => {
-    // Insert AI text with manualOverride: true
     editor
       .chain()
       .focus()
@@ -224,8 +202,8 @@ describe("AiEditedPlugin", () => {
               attrs: {
                 source: "ai",
                 chatMessageId: "msg-manual",
-                timestamp: "2026-03-31T00:00:00.000Z",
                 manualOverride: true,
+                originalLength: 4,
               },
             },
           ],
@@ -233,157 +211,83 @@ describe("AiEditedPlugin", () => {
       ])
       .run();
 
-    // Find position and edit
     let aiPos = -1;
     editor.state.doc.descendants((node, pos) => {
-      if (node.isText && node.text === "手動AI") {
-        aiPos = pos;
-      }
+      if (node.isText && node.text === "手動AI") aiPos = pos;
     });
     expect(aiPos).toBeGreaterThan(0);
 
-    editor
-      .chain()
-      .focus()
-      .insertContentAt(aiPos + 1, "追加")
-      .run();
+    editor.chain().focus().insertContentAt(aiPos + 1, "追加").run();
 
-    // Should still be "ai", not "mixed", because manualOverride is true
     const sources = findAuthorshipSources(editor);
     expect(sources).not.toContain("mixed");
     expect(sources).toContain("ai");
     editor.destroy();
   });
 
-  it("exports threshold constants", () => {
-    expect(EDIT_RATIO_THRESHOLD).toBe(0.1);
-    expect(EDIT_ABS_THRESHOLD).toBe(5);
-    expect(HUMAN_RATIO_THRESHOLD).toBe(0.8);
-    expect(HUMAN_ABS_THRESHOLD).toBe(10);
-  });
+  // --- Adjacent node isolation ---
 
-  it("keeps ai for minor edits below threshold", () => {
-    // Insert a long AI text (50 chars) so a 1-char edit is well below 10%
-    const longText =
-      "これは長いAI生成テキストです。テスト用の文章を書いています。あいうえお";
-    insertAiText(editor, longText);
+  it("editing one node does NOT affect adjacent nodes", () => {
+    const text = "承知しました。「これは生成AIの生成した文章です。」";
+    insertAiText(editor, text, "msg-1");
+    insertAiText(editor, text, "msg-2");
+    insertAiText(editor, text, "msg-3");
 
-    let aiPos = -1;
+    // Find 2nd node and delete 1 char
+    let count = 0;
+    let secondNodePos = -1;
     editor.state.doc.descendants((node, pos) => {
-      if (node.isText && node.text === longText) {
-        aiPos = pos;
+      if (!node.isText) return;
+      const mark = node.marks.find((m) => m.type.name === "authorship");
+      if (mark?.attrs.source === "ai") {
+        count++;
+        if (count === 2) secondNodePos = pos;
       }
     });
-    expect(aiPos).toBeGreaterThan(0);
 
-    // Insert 1 character — below both thresholds (< 10% ratio, < 5 abs chars)
     editor
       .chain()
       .focus()
-      .insertContentAt(aiPos + 1, "X")
+      .deleteRange({ from: secondNodePos + 5, to: secondNodePos + 6 })
       .run();
 
-    const sources = findAuthorshipSources(editor);
-    expect(sources).toContain("ai");
-    expect(sources).not.toContain("mixed");
-    editor.destroy();
-  });
-
-  it("transitions to mixed for large edits above threshold", () => {
-    // Insert a short AI text (5 chars)
-    insertAiText(editor, "短い文章だ");
-
-    let aiPos = -1;
-    editor.state.doc.descendants((node, pos) => {
-      if (node.isText && node.text === "短い文章だ") {
-        aiPos = pos;
-      }
+    const sources: { text: string; source: string }[] = [];
+    editor.state.doc.descendants((node) => {
+      if (!node.isText) return;
+      const mark = node.marks.find((m) => m.type.name === "authorship");
+      if (mark)
+        sources.push({
+          text: (node.text ?? "").substring(0, 10),
+          source: mark.attrs.source as string,
+        });
     });
-    expect(aiPos).toBeGreaterThan(0);
 
-    // Insert 6 characters — exceeds both thresholds (> 5 abs, > 10% ratio)
-    editor
-      .chain()
-      .focus()
-      .insertContentAt(aiPos + 1, "大幅な変更です")
-      .run();
-
-    const sources = findAuthorshipSources(editor);
-    expect(sources).toContain("mixed");
+    // Only the 2nd node should become mixed
+    expect(sources[0].source).toBe("ai");
+    expect(sources[1].source).toBe("mixed");
+    expect(sources[2].source).toBe("ai");
     editor.destroy();
   });
 
-  it("keeps ai when only ratio threshold exceeded but abs below", () => {
-    // Short AI text (4 chars), 1 char edit = 25% ratio but only 1 abs char
-    insertAiText(editor, "短文です");
-
-    let aiPos = -1;
-    editor.state.doc.descendants((node, pos) => {
-      if (node.isText && node.text === "短文です") {
-        aiPos = pos;
-      }
-    });
-    expect(aiPos).toBeGreaterThan(0);
-
-    // Insert 1 char: ratio = 1/4 = 25% (≥10%) but abs = 1 (<5)
-    // BOTH required → stays ai
-    editor
-      .chain()
-      .focus()
-      .insertContentAt(aiPos + 1, "X")
-      .run();
-
-    const sources = findAuthorshipSources(editor);
-    expect(sources).toContain("ai");
-    expect(sources).not.toContain("mixed");
-    editor.destroy();
-  });
-
-  it("keeps ai when only abs threshold exceeded but ratio below", () => {
-    // Long AI text, 5 char edit = low ratio but abs ≥ 5
-    const longText =
-      "これはとても長いAI生成テキストです。百文字を超える長さのテキストを用意して、比率が低くなるようにしています。追加のパディングテキスト。";
-    insertAiText(editor, longText);
-
-    let aiPos = -1;
-    editor.state.doc.descendants((node, pos) => {
-      if (node.isText && node.text === longText) {
-        aiPos = pos;
-      }
-    });
-    expect(aiPos).toBeGreaterThan(0);
-
-    // Insert 5 chars: abs = 5 (≥5) but ratio = 5/68 ≈ 7.4% (<10%)
-    // BOTH required → stays ai
-    editor
-      .chain()
-      .focus()
-      .insertContentAt(aiPos + 1, "ABCDE")
-      .run();
-
-    const sources = findAuthorshipSources(editor);
-    expect(sources).toContain("ai");
-    expect(sources).not.toContain("mixed");
-    editor.destroy();
-  });
+  // --- mixed → human transition ---
 
   describe("mixed → human transition", () => {
-    it("keeps mixed for minor edits", () => {
-      insertMixedText(editor, "混合テキスト");
+    it("keeps mixed when remaining text > 20% of original", () => {
+      // "ABCDEFGHIJKLMNOPQRST" = 20 chars
+      const text = "ABCDEFGHIJKLMNOPQRST";
+      insertMixedText(editor, text, text.length);
 
       let mixedPos = -1;
       editor.state.doc.descendants((node, pos) => {
-        if (node.isText && node.text === "混合テキスト") {
-          mixedPos = pos;
-        }
+        if (node.isText && node.text === text) mixedPos = pos;
       });
       expect(mixedPos).toBeGreaterThan(0);
 
-      // Insert 1 char — well below both human thresholds
+      // Delete 5 chars → remaining 15/20 = 75% > 20% → stays mixed
       editor
         .chain()
         .focus()
-        .insertContentAt(mixedPos + 1, "X")
+        .deleteRange({ from: mixedPos, to: mixedPos + 5 })
         .run();
 
       const sources = findAuthorshipSources(editor);
@@ -392,58 +296,68 @@ describe("AiEditedPlugin", () => {
       editor.destroy();
     });
 
-    it("transitions mixed to human when both thresholds exceeded", () => {
-      // Short mixed text (10 chars)
-      insertMixedText(editor, "混合テキストです。ab");
+    it("transitions to human when remaining text ≤ 20% of original", () => {
+      // "ABCDEFGHIJKLMNOPQRST" = 20 chars
+      const text = "ABCDEFGHIJKLMNOPQRST";
+      insertMixedText(editor, text, text.length);
 
       let mixedPos = -1;
       editor.state.doc.descendants((node, pos) => {
-        if (node.isText && node.text === "混合テキストです。ab") {
-          mixedPos = pos;
-        }
+        if (node.isText && node.text === text) mixedPos = pos;
       });
       expect(mixedPos).toBeGreaterThan(0);
 
-      // Insert 10 chars: ratio = 10/10 = 100% (≥80%), abs = 10 (≥10)
-      // BOTH thresholds exceeded → human
+      // Delete 17 chars → remaining 3/20 = 15% ≤ 20% → human
       editor
         .chain()
         .focus()
-        .insertContentAt(mixedPos + 1, "ABCDEFGHIJ")
+        .deleteRange({ from: mixedPos, to: mixedPos + 17 })
         .run();
 
       const sources = findAuthorshipSources(editor);
       expect(sources).toContain("human");
+      expect(sources).not.toContain("mixed");
       editor.destroy();
     });
 
-    it("keeps mixed when only ratio threshold exceeded but abs below", () => {
-      // Very short mixed text (5 chars)
-      insertMixedText(editor, "混合です。");
+    it("transitions to human through incremental edits", () => {
+      // 10 chars original
+      insertMixedText(editor, "ABCDEFGHIJ", 10);
 
-      let mixedPos = -1;
-      editor.state.doc.descendants((node, pos) => {
-        if (node.isText && node.text === "混合です。") {
-          mixedPos = pos;
-        }
+      // Delete 4 chars → remaining 6/10 = 60% > 20% → stays mixed
+      let pos = -1;
+      editor.state.doc.descendants((node, p) => {
+        if (node.isText && node.marks.some((m) => m.attrs.source === "mixed"))
+          pos = p;
       });
-      expect(mixedPos).toBeGreaterThan(0);
-
-      // Insert 5 chars: ratio = 5/5 = 100% (≥80%) but abs = 5 (<10)
-      // BOTH required → stays mixed
       editor
         .chain()
         .focus()
-        .insertContentAt(mixedPos + 1, "ABCDE")
+        .deleteRange({ from: pos, to: pos + 4 })
         .run();
 
-      const sources = findAuthorshipSources(editor);
+      let sources = findAuthorshipSources(editor);
       expect(sources).toContain("mixed");
-      expect(sources).not.toContain("human");
+
+      // Delete 4 more chars → remaining 2/10 = 20% ≤ 20% → human
+      pos = -1;
+      editor.state.doc.descendants((node, p) => {
+        if (node.isText && node.marks.some((m) => m.attrs.source === "mixed"))
+          pos = p;
+      });
+      editor
+        .chain()
+        .focus()
+        .deleteRange({ from: pos, to: pos + 4 })
+        .run();
+
+      sources = findAuthorshipSources(editor);
+      expect(sources).toContain("human");
+      expect(sources).not.toContain("mixed");
       editor.destroy();
     });
 
-    it("does not reclassify mixed text with manualOverride", () => {
+    it("does not transition mixed with manualOverride", () => {
       editor
         .chain()
         .focus()
@@ -454,15 +368,14 @@ describe("AiEditedPlugin", () => {
         .insertContent([
           {
             type: "text",
-            text: "手動mixed",
+            text: "手動mixed12345",
             marks: [
               {
                 type: "authorship",
                 attrs: {
                   source: "mixed",
-                  chatMessageId: "msg-manual",
-                  timestamp: "2026-03-31T00:00:00.000Z",
                   manualOverride: true,
+                  originalLength: 10,
                 },
               },
             ],
@@ -472,17 +385,15 @@ describe("AiEditedPlugin", () => {
 
       let mixedPos = -1;
       editor.state.doc.descendants((node, pos) => {
-        if (node.isText && node.text === "手動mixed") {
-          mixedPos = pos;
-        }
+        if (node.isText && node.text === "手動mixed12345") mixedPos = pos;
       });
       expect(mixedPos).toBeGreaterThan(0);
 
-      // Large edit that would normally trigger human transition
+      // Delete most of it
       editor
         .chain()
         .focus()
-        .insertContentAt(mixedPos + 1, "ABCDEFGHIJKLMN")
+        .deleteRange({ from: mixedPos, to: mixedPos + 9 })
         .run();
 
       const sources = findAuthorshipSources(editor);

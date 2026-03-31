@@ -224,18 +224,17 @@ OSのアプリケーションデータディレクトリに格納。全ワーク
 | `toolName` | string \| null | ツール名（`noveloom` 固定） |
 | `toolVersion` | string \| null | アプリバージョン（例: `0.1.0`） |
 | `manualOverride` | boolean | ユーザーによる手動上書きフラグ |
+| `originalLength` | number \| null | 挿入時の元テキスト長（mixed→human比率計算用） |
 
 **実装:**
 
 - カスタムTipTap Mark拡張: `authorship`（上記属性を保持）
 - デフォルト: マークなしのテキストは暗黙的に `human` として扱う
-- チャットからの「エディタに挿入」: `ai` マーク + `model`（`provider/model`形式）+ `toolName`/`toolVersion` を付与
-- ユーザーが `ai` スパン内を編集 → 編集率閾値で判定:
-  - 編集率 10% 未満 **または** 絶対変更 5文字未満 → `ai` のまま維持
-  - 両方の閾値を超過 → `mixed` に遷移
-- ユーザーが `mixed` スパン内を大幅に編集 → 編集率閾値で判定:
-  - 編集率 80% 未満 **または** 絶対変更 10文字未満 → `mixed` のまま維持
-  - 両方の閾値を超過 → `human` に遷移
+- チャットからの「エディタに挿入」: `ai` マーク + `model`（`provider/model`形式）+ `toolName`/`toolVersion` + `originalLength` を付与
+- ユーザーが `ai` スパン内を編集 → 即座に `mixed` に遷移（閾値なし）
+- ユーザーが `mixed` スパン内を編集 → 残存テキスト比率で判定:
+  - 現在のノード長 / originalLength ≤ 0.2（元テキストの80%以上を削除）→ `human` に遷移
+  - インクリメンタルな編集でも自然に蓄積される
 - `manualOverride: true` のマークは自動遷移をスキップ
 - 右クリックコンテキストメニューで帰属を手動変更可能（manualOverride が設定される）
 - IME入力: `compositionstart`/`compositionend` イベントを追跡。入力中はバッファし、`compositionend` で `human` マークを適用

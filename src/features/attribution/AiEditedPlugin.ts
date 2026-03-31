@@ -3,37 +3,27 @@ import type { Node as ProseMirrorNode } from "@tiptap/pm/model";
 
 export const aiEditedKey = new PluginKey("aiEdited");
 
-/** Minimum edit ratio to trigger ai → mixed transition */
-export const EDIT_RATIO_THRESHOLD = 0.1;
-/** Minimum absolute character change to trigger ai → mixed transition */
-export const EDIT_ABS_THRESHOLD = 5;
-
-/** Edit ratio to trigger mixed → human transition (80% of original changed) */
-export const HUMAN_RATIO_THRESHOLD = 0.8;
-/** Minimum absolute character change to trigger mixed → human transition */
-export const HUMAN_ABS_THRESHOLD = 10;
+/**
+ * Ratio of remaining text to original length that triggers mixed → human.
+ * When nodeSize / originalLength ≤ 0.2 (i.e. 80%+ removed), transition fires.
+ */
+export const HUMAN_LENGTH_RATIO = 0.2;
 
 /**
- * ProseMirror plugin that automatically reclassifies "ai" marks
- * as "mixed" (Agent Trace compliant) when the user edits text within
- * an AI-attributed range beyond a minimum threshold.
+ * ProseMirror plugin that automatically reclassifies authorship marks
+ * when the user edits text within AI-attributed ranges.
  *
  * Transitions:
- *   ai → mixed:  fires when BOTH conditions are met:
- *     - edit ratio >= 10% of the original span length
- *     - absolute change >= 5 characters
- *   mixed → human: fires when BOTH conditions are met:
- *     - edit ratio >= 80% of the original span length
- *     - absolute change >= 10 characters
+ *   ai → mixed:  Any user edit within an AI span (immediate, no threshold)
+ *   mixed → human: When remaining text ≤ 20% of originalLength
  *
- * This prevents trivial typo corrections from reclassifying text.
+ * Overlap detection uses OLD document coordinates to avoid
+ * position-mapping edge cases at node boundaries.
  */
 export function createAiEditedPlugin(): Plugin {
   return new Plugin({
     key: aiEditedKey,
     appendTransaction(transactions, oldState, newState) {
-      // Only react to transactions that change the doc AND originate
-      // from user input (not programmatic inserts).
       const docChanged = transactions.some((tr) => tr.docChanged);
       if (!docChanged) return null;
 
@@ -47,8 +37,13 @@ export function createAiEditedPlugin(): Plugin {
       const authorshipType = schema.marks["authorship"];
       if (!authorshipType) return null;
 
-      // Build a list of AI/mixed-marked spans from the old document
-      const oldSpans: { start: number; end: number; len: number; source: string }[] = [];
+      // Step 1: Collect ai/mixed spans from the OLD document
+      const oldSpans: {
+        start: number;
+        end: number;
+        source: string;
+        originalLength: number | null;
+      }[] = [];
       oldState.doc.descendants((node: ProseMirrorNode, pos: number) => {
         if (!node.isText) return;
         const mark = node.marks.find(
@@ -60,12 +55,49 @@ export function createAiEditedPlugin(): Plugin {
           oldSpans.push({
             start: pos,
             end: pos + node.nodeSize,
-            len: node.nodeSize,
             source: mark.attrs.source as string,
+            originalLength: mark.attrs.originalLength as number | null,
           });
         }
       });
 
+      if (oldSpans.length === 0) return null;
+
+      // Step 2: Determine which old spans were edited
+      // Check overlap in OLD coordinate system (robust against mapping edge cases)
+      const editedSpanIndices = new Set<number>();
+
+      for (const transaction of transactions) {
+        if (!transaction.docChanged) continue;
+        for (let i = 0; i < transaction.steps.length; i++) {
+          const stepMap = transaction.mapping.maps[i];
+          // Map old span positions forward to step i's coordinate space
+          const preStepMapping = transaction.mapping.slice(0, i);
+
+          stepMap.forEach(
+            (
+              oldStart: number,
+              oldEnd: number,
+              _newStart: number,
+              _newEnd: number,
+            ) => {
+              for (let si = 0; si < oldSpans.length; si++) {
+                // Adjust span positions to step i's coordinate space
+                const spanStart = preStepMapping.map(oldSpans[si].start, 1);
+                const spanEnd = preStepMapping.map(oldSpans[si].end, -1);
+                // Standard half-open range overlap: [oldStart, oldEnd) ∩ [spanStart, spanEnd)
+                if (oldStart < spanEnd && oldEnd > spanStart) {
+                  editedSpanIndices.add(si);
+                }
+              }
+            },
+          );
+        }
+      }
+
+      if (editedSpanIndices.size === 0) return null;
+
+      // Step 3: Iterate new nodes and apply transitions
       let changed = false;
 
       newState.doc.descendants((node: ProseMirrorNode, pos: number) => {
@@ -77,68 +109,31 @@ export function createAiEditedPlugin(): Plugin {
             (m.attrs.source === "ai" || m.attrs.source === "mixed"),
         );
         if (!mark) return;
-
-        // Skip marks that were manually overridden by the user
         if (mark.attrs.manualOverride) return;
 
         const currentSource = mark.attrs.source as string;
         const nodeEnd = pos + node.nodeSize;
-        let overlaps = false;
-        let totalChangedChars = 0;
 
-        for (const transaction of transactions) {
-          if (!transaction.docChanged) continue;
-          for (let i = 0; i < transaction.steps.length; i++) {
-            const stepMap = transaction.mapping.maps[i];
-            stepMap.forEach(
-              (
-                oldStart: number,
-                oldEnd: number,
-                newStart: number,
-                newEnd: number,
-              ) => {
-                // Check overlap with current node range in new doc
-                const mappedOldStart = transaction.mapping.map(oldStart, -1);
-                const mappedOldEnd = transaction.mapping.map(oldEnd, 1);
-                if (mappedOldStart < nodeEnd && mappedOldEnd > pos) {
-                  overlaps = true;
-                  // Estimate changed characters from this step
-                  const deleted = oldEnd - oldStart;
-                  const inserted = newEnd - newStart;
-                  totalChangedChars += Math.max(deleted, inserted);
-                }
-              },
-            );
-          }
-        }
-
-        if (!overlaps) return;
-
-        // Find the original span length by matching position proximity
-        // instead of using max of all spans (which was incorrect)
-        let originalSpanLen = node.nodeSize;
+        // Match this new node to its closest old span
+        let bestSpanIdx = -1;
         let bestDistance = Infinity;
-        for (const span of oldSpans) {
+        for (let si = 0; si < oldSpans.length; si++) {
+          const span = oldSpans[si];
           const distance =
             Math.abs(span.start - pos) + Math.abs(span.end - nodeEnd);
           if (distance < bestDistance) {
             bestDistance = distance;
-            originalSpanLen = span.len;
+            bestSpanIdx = si;
           }
         }
 
-        const editRatio =
-          originalSpanLen > 0 ? totalChangedChars / originalSpanLen : 1;
+        // Only transition if the matched old span was actually edited
+        if (bestSpanIdx < 0 || !editedSpanIndices.has(bestSpanIdx)) return;
+
+        const matchedOldSpan = oldSpans[bestSpanIdx];
 
         if (currentSource === "ai") {
-          // ai → mixed: require BOTH thresholds to be met
-          if (
-            editRatio < EDIT_RATIO_THRESHOLD ||
-            totalChangedChars < EDIT_ABS_THRESHOLD
-          ) {
-            return; // Minor edit — keep as "ai"
-          }
-
+          // ai → mixed: immediate on any edit
           const newMark = authorshipType.create({
             ...mark.attrs,
             source: "mixed",
@@ -146,20 +141,21 @@ export function createAiEditedPlugin(): Plugin {
           tr.addMark(pos, nodeEnd, newMark);
           changed = true;
         } else if (currentSource === "mixed") {
-          // mixed → human: require BOTH thresholds to be met
-          if (
-            editRatio < HUMAN_RATIO_THRESHOLD ||
-            totalChangedChars < HUMAN_ABS_THRESHOLD
-          ) {
-            return; // Not enough editing — keep as "mixed"
-          }
+          // mixed → human: when remaining text ≤ 20% of original length
+          const origLen =
+            (mark.attrs.originalLength as number | null) ??
+            matchedOldSpan.originalLength;
+          if (origLen == null || origLen === 0) return;
 
-          const newMark = authorshipType.create({
-            ...mark.attrs,
-            source: "human",
-          });
-          tr.addMark(pos, nodeEnd, newMark);
-          changed = true;
+          const remainingRatio = node.nodeSize / origLen;
+          if (remainingRatio <= HUMAN_LENGTH_RATIO) {
+            const newMark = authorshipType.create({
+              ...mark.attrs,
+              source: "human",
+            });
+            tr.addMark(pos, nodeEnd, newMark);
+            changed = true;
+          }
         }
       });
 

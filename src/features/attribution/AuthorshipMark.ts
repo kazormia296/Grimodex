@@ -20,6 +20,8 @@ export interface AuthorshipAttributes {
   toolName: string | null;
   toolVersion: string | null;
   manualOverride: boolean;
+  /** Original text length at insertion time (for mixed→human ratio calculation) */
+  originalLength: number | null;
 }
 
 export const AuthorshipMark = Mark.create({
@@ -50,6 +52,9 @@ export const AuthorshipMark = Mark.create({
       },
       manualOverride: {
         default: false,
+      },
+      originalLength: {
+        default: null,
       },
     };
   },
