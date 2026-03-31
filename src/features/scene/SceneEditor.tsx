@@ -11,6 +11,7 @@ import { useInsertHighlight } from "@/features/editor/InsertHighlight";
 import { useCodexHighlight } from "@/features/editor/useCodexHighlight";
 import { CodexPopover } from "@/features/editor/CodexPopover";
 import { useAttribution } from "@/features/attribution/useAttribution";
+import { useCursorEffect } from "@/features/editor/useCursorEffect";
 import { useAttributionStore } from "@/features/attribution/attributionStore";
 import type { ToolbarSlot } from "@/features/editor/Toolbar";
 import { VerticalPreview } from "@/features/editor/VerticalPreview";
@@ -83,6 +84,9 @@ export function SceneEditor() {
 
   // Codex name highlighting (Task 3.6)
   useCodexHighlight(editor);
+
+  // Typewriter cursor effect
+  useCursorEffect(editor);
 
   // Attribution visualization (Task 4.2)
   useAttribution(editor);
