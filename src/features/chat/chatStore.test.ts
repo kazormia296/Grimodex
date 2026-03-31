@@ -28,7 +28,11 @@ vi.mock("@/features/scene/api", () => ({
 
 vi.mock("@/features/project/api", () => ({
   getProject: vi.fn(() =>
-    Promise.resolve({ id: 1, title: "テストプロジェクト", description: "概要" }),
+    Promise.resolve({
+      id: 1,
+      title: "テストプロジェクト",
+      description: "概要",
+    }),
   ),
 }));
 
@@ -137,7 +141,7 @@ describe("useChatStore", () => {
       expect(mockSendChatMessage).not.toHaveBeenCalled();
     });
 
-    it("passes full message history to API", async () => {
+    it("passes full message history to API with system prompt prepended", async () => {
       useChatStore.setState({
         messages: [
           makeMessage("user", "前の質問"),
@@ -151,10 +155,12 @@ describe("useChatStore", () => {
       await useChatStore.getState().sendMessage("新しい質問");
 
       const passedMessages = mockSendChatMessage.mock.calls[0][0];
-      expect(passedMessages).toHaveLength(3);
-      expect(passedMessages[0].content).toBe("前の質問");
-      expect(passedMessages[1].content).toBe("前の回答");
-      expect(passedMessages[2].content).toBe("新しい質問");
+      // system + 前の質問 + 前の回答 + 新しい質問 = 4
+      expect(passedMessages).toHaveLength(4);
+      expect(passedMessages[0].role).toBe("system");
+      expect(passedMessages[1].content).toBe("前の質問");
+      expect(passedMessages[2].content).toBe("前の回答");
+      expect(passedMessages[3].content).toBe("新しい質問");
     });
   });
 

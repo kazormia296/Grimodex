@@ -215,6 +215,33 @@ fn content_rename(
     })
 }
 
+// --- Chat commands ---
+
+#[derive(serde::Deserialize)]
+struct ChatMessagePayload {
+    role: String,
+    content: String,
+}
+
+#[tauri::command]
+async fn send_chat_message(
+    ai_path: tauri::State<'_, AiSettingsPath>,
+    messages: Vec<ChatMessagePayload>,
+) -> Result<String, AppError> {
+    let settings = ai::read_ai_settings(&ai_path.path);
+    let api_key = ai::get_api_key(&settings.provider)?
+        .ok_or_else(|| anyhow::anyhow!("No API key configured for {}", settings.provider))?;
+    let result = ai::send_chat(
+        &settings.provider,
+        &settings.model,
+        &api_key,
+        &settings.ollama_endpoint,
+        &messages.iter().map(|m| (m.role.as_str(), m.content.as_str())).collect::<Vec<_>>(),
+    )
+    .await?;
+    Ok(result)
+}
+
 // --- AI settings commands ---
 
 #[tauri::command]
@@ -318,7 +345,8 @@ pub fn run() {
             get_api_key,
             delete_api_key,
             list_ai_models,
-            test_ai_connection
+            test_ai_connection,
+            send_chat_message
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

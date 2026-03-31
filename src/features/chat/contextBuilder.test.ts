@@ -1,16 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
-
-vi.mock("@/features/scene/api", () => ({
-  loadSceneContent: vi.fn(),
-  getScene: vi.fn(),
-}));
-
-vi.mock("@/features/project/api", () => ({
-  getProject: vi.fn(),
-}));
-
-import { loadSceneContent, getScene } from "@/features/scene/api";
-import { getProject } from "@/features/project/api";
+import { describe, it, expect } from "vitest";
 import {
   buildSystemPrompt,
   countTokens,
@@ -18,15 +6,7 @@ import {
   type ProjectContext,
 } from "./contextBuilder";
 
-const mockLoadSceneContent = vi.mocked(loadSceneContent);
-const mockGetScene = vi.mocked(getScene);
-const mockGetProject = vi.mocked(getProject);
-
 describe("contextBuilder", () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-  });
-
   describe("buildSystemPrompt", () => {
     it("includes scene content in the system prompt", () => {
       const scene: SceneContext = {
@@ -113,7 +93,9 @@ describe("contextBuilder", () => {
 
     it("counts tokens for longer text", () => {
       const short = countTokens("Hello");
-      const long = countTokens("Hello world, this is a longer sentence with more tokens.");
+      const long = countTokens(
+        "Hello world, this is a longer sentence with more tokens.",
+      );
       expect(long).toBeGreaterThan(short);
     });
 
@@ -122,7 +104,10 @@ describe("contextBuilder", () => {
         { role: "system" as const, content: "You are a writing assistant." },
         { role: "user" as const, content: "こんにちは" },
       ];
-      const total = messages.reduce((sum, m) => sum + countTokens(m.content), 0);
+      const total = messages.reduce(
+        (sum, m) => sum + countTokens(m.content),
+        0,
+      );
       expect(total).toBeGreaterThan(0);
     });
   });

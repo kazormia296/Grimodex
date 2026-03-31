@@ -1,4 +1,4 @@
-// Stub — to be implemented in Phase 3
+import { encodingForModel } from "js-tiktoken";
 
 export interface SceneContext {
   id: string;
@@ -16,10 +16,34 @@ export interface BuildSystemPromptInput {
   project?: ProjectContext;
 }
 
-export function buildSystemPrompt(_input: BuildSystemPromptInput): string {
-  throw new Error("Not implemented");
+const encoder = encodingForModel("gpt-4o");
+
+export function buildSystemPrompt(input: BuildSystemPromptInput): string {
+  const parts: string[] = [];
+
+  parts.push(
+    "あなたは小説執筆を支援するAIアシスタントです。" +
+      "ユーザーの執筆スタイルを尊重し、創造的な提案や文章の改善を行ってください。",
+  );
+
+  if (input.project) {
+    parts.push(
+      `\n## プロジェクト情報\n` +
+        `タイトル: ${input.project.title}\n` +
+        `概要: ${input.project.description}`,
+    );
+  }
+
+  parts.push(`\n## 現在のシーン\n` + `タイトル: ${input.scene.title}`);
+
+  if (input.scene.content) {
+    parts.push(`\n### シーン本文\n${input.scene.content}`);
+  }
+
+  return parts.join("\n");
 }
 
-export function countTokens(_text: string): number {
-  throw new Error("Not implemented");
+export function countTokens(text: string): number {
+  if (!text) return 0;
+  return encoder.encode(text).length;
 }
