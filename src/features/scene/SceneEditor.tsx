@@ -7,6 +7,8 @@ import { CharCount } from "@/features/editor/CharCount";
 import { useSceneStore } from "./store";
 import { loadSceneContent, saveSceneContent } from "./api";
 import { useAutoSave } from "@/hooks/useAutoSave";
+import { useEditorStore } from "@/features/editor/editorStore";
+import { useInsertHighlight } from "@/features/editor/InsertHighlight";
 
 export function SceneEditor() {
   const activeSceneId = useSceneStore((s) => s.activeSceneId);
@@ -44,6 +46,16 @@ export function SceneEditor() {
 
   // Keep editorRef in sync
   editorRef.current = editor;
+
+  // Register editor in global store for cross-feature access (Task 2.4)
+  const setEditor = useEditorStore((s) => s.setEditor);
+  useEffect(() => {
+    setEditor(editor);
+    return () => setEditor(null);
+  }, [editor, setEditor]);
+
+  // Insert highlight decoration (Task 2.4)
+  useInsertHighlight(editor);
 
   // Load content when active scene changes
   useEffect(() => {

@@ -3,6 +3,7 @@ import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { ChatPanel } from "./ChatPanel";
 import { useChatStore } from "./chatStore";
+import { useEditorStore } from "@/features/editor/editorStore";
 
 vi.mock("./chatApi", () => ({
   sendChatMessage: vi.fn(),
@@ -13,6 +14,18 @@ vi.mock("./chatApi", () => ({
   addMessage: vi.fn(),
   updateThreadTitle: vi.fn(),
 }));
+
+vi.mock("@/features/editor/editorStore", async () => {
+  const { create } = await import("zustand");
+  const store = create(() => ({
+    editor: null,
+    lastInsertRange: null,
+    insertFromChat: vi.fn(() => true),
+    clearInsertRange: vi.fn(),
+    setEditor: vi.fn(),
+  }));
+  return { useEditorStore: store };
+});
 
 import * as chatApi from "./chatApi";
 const mockSendChatMessage = vi.mocked(chatApi.sendChatMessage);
@@ -194,5 +207,105 @@ describe("ChatPanel", () => {
     render(<ChatPanel />);
 
     expect(screen.getByTestId("streaming-indicator")).toBeInTheDocument();
+  });
+
+  // --- Task 2.4: Insert button tests ---
+
+  it("shows insert button on assistant messages", () => {
+    useChatStore.setState({
+      messages: [
+        {
+          id: "a1",
+          threadId: "",
+          role: "assistant",
+          content: "挿入可能なテキスト",
+          createdAt: new Date().toISOString(),
+        },
+      ],
+    });
+
+    render(<ChatPanel />);
+
+    const insertBtn = screen.getByTestId("insert-to-editor-a1");
+    expect(insertBtn).toBeInTheDocument();
+  });
+
+  it("does NOT show insert button on user messages", () => {
+    useChatStore.setState({
+      messages: [
+        {
+          id: "u1",
+          threadId: "",
+          role: "user",
+          content: "ユーザーメッセージ",
+          createdAt: new Date().toISOString(),
+        },
+      ],
+    });
+
+    render(<ChatPanel />);
+
+    expect(screen.queryByTestId("insert-to-editor-u1")).not.toBeInTheDocument();
+  });
+
+  it("does NOT show insert button on assistant messages while streaming", () => {
+    useChatStore.setState({
+      isStreaming: true,
+      messages: [
+        {
+          id: "a1",
+          threadId: "",
+          role: "assistant",
+          content: "生成中テキスト",
+          createdAt: new Date().toISOString(),
+        },
+      ],
+    });
+
+    render(<ChatPanel />);
+
+    expect(screen.queryByTestId("insert-to-editor-a1")).not.toBeInTheDocument();
+  });
+
+  it("calls insertFromChat when insert button is clicked", async () => {
+    const user = userEvent.setup();
+    const mockInsert = vi.mocked(useEditorStore.getState().insertFromChat);
+
+    useChatStore.setState({
+      messages: [
+        {
+          id: "a1",
+          threadId: "",
+          role: "assistant",
+          content: "挿入するテキスト",
+          createdAt: new Date().toISOString(),
+        },
+      ],
+    });
+
+    render(<ChatPanel />);
+
+    const insertBtn = screen.getByTestId("insert-to-editor-a1");
+    await user.click(insertBtn);
+
+    expect(mockInsert).toHaveBeenCalledWith("挿入するテキスト", "a1");
+  });
+
+  it("does NOT show insert button when assistant message is empty", () => {
+    useChatStore.setState({
+      messages: [
+        {
+          id: "a1",
+          threadId: "",
+          role: "assistant",
+          content: "",
+          createdAt: new Date().toISOString(),
+        },
+      ],
+    });
+
+    render(<ChatPanel />);
+
+    expect(screen.queryByTestId("insert-to-editor-a1")).not.toBeInTheDocument();
   });
 });

@@ -119,3 +119,13 @@
 
   p { margin: 0.5em 0; }
 }
+
+/* Task 2.4: Temporary highlight for AI-inserted text */
+.insert-highlight {
+  background-color: oklch(0.85 0.12 145);
+  border-radius: 2px;
+  transition: background-color 0.3s ease;
+}
+.dark .insert-highlight {
+  background-color: oklch(0.35 0.1 145);
+}

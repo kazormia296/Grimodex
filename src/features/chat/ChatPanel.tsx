@@ -1,8 +1,9 @@
 import { useState, useRef, useEffect, type KeyboardEvent } from "react";
 import ReactMarkdown from "react-markdown";
-import { Send } from "lucide-react";
+import { Send, FileInput } from "lucide-react";
 import { useChatStore } from "./chatStore";
 import { useSceneStore } from "@/features/scene/store";
+import { useEditorStore } from "@/features/editor/editorStore";
 
 export function ChatPanel() {
   const messages = useChatStore((s) => s.messages);
@@ -41,6 +42,8 @@ export function ChatPanel() {
       handleSend();
     }
   };
+
+  const insertFromChat = useEditorStore((s) => s.insertFromChat);
 
   const canSend = input.trim().length > 0 && !isStreaming;
 
@@ -84,9 +87,22 @@ export function ChatPanel() {
                   }
                 >
                   {msg.role === "assistant" ? (
-                    <div className="prose prose-sm max-w-none dark:prose-invert">
-                      <ReactMarkdown>{msg.content}</ReactMarkdown>
-                    </div>
+                    <>
+                      <div className="prose prose-sm max-w-none dark:prose-invert">
+                        <ReactMarkdown>{msg.content}</ReactMarkdown>
+                      </div>
+                      {!isStreaming && msg.content.length > 0 && (
+                        <button
+                          type="button"
+                          data-testid={`insert-to-editor-${msg.id}`}
+                          onClick={() => insertFromChat(msg.content, msg.id)}
+                          className="mt-2 inline-flex items-center gap-1 rounded border border-border px-2 py-1 text-xs text-muted-foreground hover:bg-accent hover:text-accent-foreground"
+                        >
+                          <FileInput className="h-3 w-3" />
+                          挿入
+                        </button>
+                      )}
+                    </>
                   ) : (
                     <p className="whitespace-pre-wrap">{msg.content}</p>
                   )}
