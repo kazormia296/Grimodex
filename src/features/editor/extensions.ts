@@ -1,5 +1,7 @@
 import StarterKit from "@tiptap/starter-kit";
 import { Markdown } from "tiptap-markdown";
+import { AuthorshipMark } from "@/features/attribution/AuthorshipMark";
+import { RubyNode } from "@/features/editor/RubyNode";
 import type { Extensions } from "@tiptap/core";
 
 /**
@@ -11,7 +13,7 @@ export function getEditorExtensions(): Extensions {
   return [
     StarterKit,
     Markdown,
-    // Phase 4: AuthorshipMark will be added here
-    // Phase 5: RubyNode will be added here
+    AuthorshipMark,
+    RubyNode,
   ];
 }
