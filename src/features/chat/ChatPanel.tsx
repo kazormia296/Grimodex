@@ -17,6 +17,8 @@ import { SnippetExtractionDialog } from "@/features/snippets/SnippetExtractionDi
 import { PinnedCodexBadges } from "./components/PinnedCodexBadges";
 import { PinCodexDialog } from "./components/PinCodexDialog";
 import * as chatApi from "./chatApi";
+import { useAiSettingsStore } from "./store";
+import { normalizeModelId } from "@/features/attribution/AuthorshipMark";
 import type { CodexEntry } from "@/features/codex/api";
 
 interface SnippetDialogState {
@@ -134,7 +136,17 @@ export function ChatPanel() {
     }
   };
 
-  const insertFromChat = useEditorStore((s) => s.insertFromChat);
+  const rawInsertFromChat = useEditorStore((s) => s.insertFromChat);
+  const aiSettings = useAiSettingsStore((s) => s.settings);
+  const insertFromChat = useCallback(
+    (content: string, messageId: string) => {
+      const model = aiSettings
+        ? normalizeModelId(aiSettings.provider, aiSettings.model)
+        : null;
+      rawInsertFromChat(content, messageId, model ?? undefined);
+    },
+    [rawInsertFromChat, aiSettings],
+  );
 
   const canSend = input.trim().length > 0 && !isStreaming;
 

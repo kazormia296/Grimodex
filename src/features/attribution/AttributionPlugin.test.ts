@@ -109,7 +109,7 @@ describe("AttributionPlugin", () => {
     editor.destroy();
   });
 
-  it("applies ai-edited class for ai-edited source", () => {
+  it("applies mixed class for mixed source", () => {
     useAttributionStore.setState({ showAttribution: true });
     const editor = createTestEditor();
     editor
@@ -123,7 +123,7 @@ describe("AttributionPlugin", () => {
             {
               type: "authorship",
               attrs: {
-                source: "ai-edited",
+                source: "mixed",
                 timestamp: "2026-03-31T00:00:00.000Z",
               },
             },
@@ -139,7 +139,38 @@ describe("AttributionPlugin", () => {
     const decoSet = attributionKey.getState(editor.state);
     const decos = decoSet.find();
     expect(decos.length).toBeGreaterThan(0);
-    expect(getDecoAttrs(decos[0]).class).toBe("attribution-ai-edited");
+    expect(getDecoAttrs(decos[0]).class).toBe("attribution-mixed");
+    editor.destroy();
+  });
+
+  it("applies unknown class for unknown source", () => {
+    useAttributionStore.setState({ showAttribution: true });
+    const editor = createTestEditor();
+    editor
+      .chain()
+      .focus()
+      .insertContent([
+        {
+          type: "text",
+          text: "不明テキスト",
+          marks: [
+            {
+              type: "authorship",
+              attrs: { source: "unknown" },
+            },
+          ],
+        },
+      ])
+      .run();
+
+    const { tr } = editor.state;
+    tr.setMeta("attributionUpdate", true);
+    editor.view.dispatch(tr);
+
+    const decoSet = attributionKey.getState(editor.state);
+    const decos = decoSet.find();
+    expect(decos.length).toBeGreaterThan(0);
+    expect(getDecoAttrs(decos[0]).class).toBe("attribution-unknown");
     editor.destroy();
   });
 

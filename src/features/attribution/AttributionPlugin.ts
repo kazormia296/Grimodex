@@ -17,12 +17,13 @@ function buildDecorations(doc: ProseMirrorNode): DecorationSet {
     const source = mark.attrs.source as string;
     if (source === "human") return;
 
-    const className =
-      source === "ai"
-        ? "attribution-ai"
-        : source === "ai-edited"
-          ? "attribution-ai-edited"
-          : "attribution-snippet";
+    const classMap: Record<string, string> = {
+      ai: "attribution-ai",
+      mixed: "attribution-mixed",
+      unknown: "attribution-unknown",
+      snippet: "attribution-snippet",
+    };
+    const className = classMap[source] ?? "attribution-unknown";
 
     decos.push(
       Decoration.inline(pos, pos + node.nodeSize, {

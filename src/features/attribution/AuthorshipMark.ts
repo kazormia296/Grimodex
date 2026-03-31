@@ -1,12 +1,24 @@
 import { Mark, mergeAttributes } from "@tiptap/core";
 
-export type AuthorshipSource = "human" | "ai" | "ai-edited" | "snippet";
+/**
+ * Normalize a model identifier to `provider/model` format (Agent Trace convention).
+ * If already in that format, returns as-is.
+ */
+export function normalizeModelId(provider: string, model: string): string {
+  if (model.includes("/")) return model;
+  return `${provider}/${model}`;
+}
+
+export type AuthorshipSource = "human" | "ai" | "mixed" | "unknown" | "snippet";
 
 export interface AuthorshipAttributes {
   source: AuthorshipSource;
   timestamp: string | null;
   model: string | null;
   chatMessageId: string | null;
+  traceId: string | null;
+  toolName: string | null;
+  toolVersion: string | null;
 }
 
 export const AuthorshipMark = Mark.create({
@@ -24,6 +36,15 @@ export const AuthorshipMark = Mark.create({
         default: null,
       },
       chatMessageId: {
+        default: null,
+      },
+      traceId: {
+        default: null,
+      },
+      toolName: {
+        default: null,
+      },
+      toolVersion: {
         default: null,
       },
     };

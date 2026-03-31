@@ -192,13 +192,17 @@ export async function testConnection(
     body = {
       model,
       max_tokens: 32,
-      messages: [{ role: "user", content: "Reply with exactly: Connection OK" }],
+      messages: [
+        { role: "user", content: "Reply with exactly: Connection OK" },
+      ],
     };
   } else {
     body = {
       model,
       max_tokens: 32,
-      messages: [{ role: "user", content: "Reply with exactly: Connection OK" }],
+      messages: [
+        { role: "user", content: "Reply with exactly: Connection OK" },
+      ],
     };
   }
 

@@ -64,10 +64,16 @@ export function AttributionReport() {
         color="oklch(0.65 0.18 250)"
       />
       <StatBar
-        label="AI編集"
-        count={stats.aiEdited}
+        label="混合"
+        count={stats.mixed}
         total={stats.total}
         color="oklch(0.65 0.15 150)"
+      />
+      <StatBar
+        label="不明"
+        count={stats.unknown}
+        total={stats.total}
+        color="oklch(0.65 0.05 0)"
       />
       <StatBar
         label="スニペット"

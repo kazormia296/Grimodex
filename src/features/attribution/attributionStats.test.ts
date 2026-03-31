@@ -86,7 +86,7 @@ describe("computeAttributionStats", () => {
           marks: [
             {
               type: "authorship",
-              attrs: { source: "ai-edited", timestamp: "t" },
+              attrs: { source: "mixed", timestamp: "t" },
             },
           ],
         },
@@ -96,7 +96,7 @@ describe("computeAttributionStats", () => {
     const stats = computeAttributionStats(editor.state.doc);
     expect(stats.human).toBe(2);
     expect(stats.ai).toBe(2);
-    expect(stats.aiEdited).toBe(2);
+    expect(stats.mixed).toBe(2);
     expect(stats.total).toBe(6);
     editor.destroy();
   });
@@ -122,6 +122,30 @@ describe("computeAttributionStats", () => {
 
     const stats = computeAttributionStats(editor.state.doc);
     expect(stats.snippet).toBe(5);
+    editor.destroy();
+  });
+
+  it("counts unknown-sourced text", () => {
+    const editor = createTestEditor();
+    editor
+      .chain()
+      .focus()
+      .insertContent([
+        {
+          type: "text",
+          text: "不明テキスト",
+          marks: [
+            {
+              type: "authorship",
+              attrs: { source: "unknown" },
+            },
+          ],
+        },
+      ])
+      .run();
+
+    const stats = computeAttributionStats(editor.state.doc);
+    expect(stats.unknown).toBe(6);
     editor.destroy();
   });
 });

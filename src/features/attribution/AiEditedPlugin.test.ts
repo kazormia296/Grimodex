@@ -62,11 +62,11 @@ describe("AiEditedPlugin", () => {
 
     const sources = findAuthorshipSources(editor);
     expect(sources).toContain("ai");
-    expect(sources).not.toContain("ai-edited");
+    expect(sources).not.toContain("mixed");
     editor.destroy();
   });
 
-  it("reclassifies ai to ai-edited when user types into ai text", () => {
+  it("reclassifies ai to mixed when user types into ai text", () => {
     insertAiText(editor, "AI文章");
 
     // Find the position of the AI text and type into it
@@ -86,7 +86,7 @@ describe("AiEditedPlugin", () => {
       .run();
 
     const sources = findAuthorshipSources(editor);
-    expect(sources).toContain("ai-edited");
+    expect(sources).toContain("mixed");
     editor.destroy();
   });
 
@@ -95,7 +95,7 @@ describe("AiEditedPlugin", () => {
     editor.chain().focus().insertContent("人間テキスト").run();
 
     const sources = findAuthorshipSources(editor);
-    expect(sources).not.toContain("ai-edited");
+    expect(sources).not.toContain("mixed");
     editor.destroy();
   });
 
@@ -138,8 +138,8 @@ describe("AiEditedPlugin", () => {
     }
 
     const sources = findAuthorshipSources(editor);
-    // snippet should remain snippet, not become ai-edited
-    expect(sources).not.toContain("ai-edited");
+    // snippet should remain snippet, not become mixed
+    expect(sources).not.toContain("mixed");
     editor.destroy();
   });
 });

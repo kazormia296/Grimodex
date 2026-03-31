@@ -3,7 +3,8 @@ import type { Node as ProseMirrorNode } from "@tiptap/pm/model";
 export interface AttributionStats {
   human: number;
   ai: number;
-  aiEdited: number;
+  mixed: number;
+  unknown: number;
   snippet: number;
   unmarked: number;
   total: number;
@@ -15,7 +16,8 @@ export function computeAttributionStats(
   const stats: AttributionStats = {
     human: 0,
     ai: 0,
-    aiEdited: 0,
+    mixed: 0,
+    unknown: 0,
     snippet: 0,
     unmarked: 0,
     total: 0,
@@ -39,8 +41,11 @@ export function computeAttributionStats(
       case "ai":
         stats.ai += len;
         break;
-      case "ai-edited":
-        stats.aiEdited += len;
+      case "mixed":
+        stats.mixed += len;
+        break;
+      case "unknown":
+        stats.unknown += len;
         break;
       case "snippet":
         stats.snippet += len;

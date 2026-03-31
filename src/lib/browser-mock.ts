@@ -4,11 +4,7 @@
 import initSqlJs from "sql.js/dist/sql-asm.js";
 import type { Database, SqlValue } from "sql.js";
 import type { AiProvider } from "@/features/chat/types";
-import {
-  sendChat,
-  fetchModels,
-  testConnection,
-} from "@/lib/browser-ai";
+import { sendChat, fetchModels, testConnection } from "@/lib/browser-ai";
 
 const SCHEMA_DDL = `
   CREATE TABLE IF NOT EXISTS projects (

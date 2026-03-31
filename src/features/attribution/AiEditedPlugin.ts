@@ -5,11 +5,12 @@ export const aiEditedKey = new PluginKey("aiEdited");
 
 /**
  * ProseMirror plugin that automatically reclassifies "ai" marks
- * as "ai-edited" when the user edits text within an AI-attributed range.
+ * as "mixed" (Agent Trace compliant) when the user edits text within
+ * an AI-attributed range.
  *
  * Detection strategy: on every doc change, scan the regions affected by
  * the transaction steps. If a step touches text that carries an "authorship"
- * mark with source "ai", update the mark to "ai-edited".
+ * mark with source "ai", update the mark to "mixed".
  */
 export function createAiEditedPlugin(): Plugin {
   return new Plugin({
@@ -61,7 +62,7 @@ export function createAiEditedPlugin(): Plugin {
             if (overlaps) {
               const newMark = authorshipType.create({
                 ...mark.attrs,
-                source: "ai-edited",
+                source: "mixed",
               });
               tr.addMark(pos, nodeEnd, newMark);
               changed = true;

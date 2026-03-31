@@ -85,9 +85,7 @@ describe("sendChat", () => {
       }),
     );
 
-    await sendChat("ollama", "llama3", "", [
-      { role: "user", content: "Hi" },
-    ]);
+    await sendChat("ollama", "llama3", "", [{ role: "user", content: "Hi" }]);
 
     const [url, opts] = mockFetch.mock.calls[0];
     expect(url).toBe("/api/ollama/v1/chat/completions");
@@ -118,10 +116,7 @@ describe("fetchModels", () => {
   it("fetches OpenAI models", async () => {
     mockFetch.mockResolvedValueOnce(
       jsonResponse({
-        data: [
-          { id: "gpt-4o", name: "GPT-4o" },
-          { id: "gpt-4o-mini" },
-        ],
+        data: [{ id: "gpt-4o", name: "GPT-4o" }, { id: "gpt-4o-mini" }],
       }),
     );
 
@@ -174,9 +169,7 @@ describe("testConnection", () => {
 
     const body = JSON.parse(mockFetch.mock.calls[0][1].body);
     expect(body.max_tokens).toBe(32);
-    expect(body.messages[0].content).toBe(
-      "Reply with exactly: Connection OK",
-    );
+    expect(body.messages[0].content).toBe("Reply with exactly: Connection OK");
   });
 
   it("extracts Anthropic response correctly", async () => {

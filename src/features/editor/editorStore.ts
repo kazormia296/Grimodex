@@ -12,7 +12,11 @@ interface EditorState {
   lastInsertRange: InsertRange | null;
 
   setEditor: (editor: Editor | null) => void;
-  insertFromChat: (text: string, chatMessageId: string) => boolean;
+  insertFromChat: (
+    text: string,
+    chatMessageId: string,
+    model?: string,
+  ) => boolean;
   insertFromSnippet: (text: string, snippetId: number) => boolean;
   clearInsertRange: () => void;
 }
@@ -25,7 +29,7 @@ export const useEditorStore = create<EditorState>()((set, get) => ({
 
   setEditor: (editor: Editor | null) => set({ editor }),
 
-  insertFromChat: (text: string, chatMessageId: string) => {
+  insertFromChat: (text: string, chatMessageId: string, model?: string) => {
     const { editor } = get();
     if (!editor) return false;
 
@@ -46,6 +50,9 @@ export const useEditorStore = create<EditorState>()((set, get) => ({
               source: "ai",
               chatMessageId,
               timestamp: new Date().toISOString(),
+              model: model ?? null,
+              toolName: "noveloom",
+              toolVersion: "0.1.0",
             },
           },
         ],
