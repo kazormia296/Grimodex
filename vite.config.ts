@@ -35,5 +35,30 @@ export default defineConfig(async () => ({
       // 3. tell Vite to ignore watching `src-tauri`
       ignored: ["**/src-tauri/**"],
     },
+    proxy: {
+      "/api/anthropic": {
+        target: "https://api.anthropic.com/v1",
+        changeOrigin: true,
+        rewrite: (p: string) => p.replace(/^\/api\/anthropic/, ""),
+        secure: true,
+      },
+      "/api/openai": {
+        target: "https://api.openai.com/v1",
+        changeOrigin: true,
+        rewrite: (p: string) => p.replace(/^\/api\/openai/, ""),
+        secure: true,
+      },
+      "/api/openrouter": {
+        target: "https://openrouter.ai/api/v1",
+        changeOrigin: true,
+        rewrite: (p: string) => p.replace(/^\/api\/openrouter/, ""),
+        secure: true,
+      },
+      "/api/ollama": {
+        target: "http://localhost:11434",
+        changeOrigin: true,
+        rewrite: (p: string) => p.replace(/^\/api\/ollama/, ""),
+      },
+    },
   },
 }));

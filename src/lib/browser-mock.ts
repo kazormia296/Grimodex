@@ -3,6 +3,12 @@
 // @ts-ignore — sql.js/dist/sql-asm.js has no dedicated type declarations
 import initSqlJs from "sql.js/dist/sql-asm.js";
 import type { Database, SqlValue } from "sql.js";
+import type { AiProvider } from "@/features/chat/types";
+import {
+  sendChat,
+  fetchModels,
+  testConnection,
+} from "@/lib/browser-ai";
 
 const SCHEMA_DDL = `
   CREATE TABLE IF NOT EXISTS projects (
@@ -97,8 +103,8 @@ export async function createBrowserMock(): Promise<BrowserMock> {
   );
 
   const contentStore = new Map<string, string>();
-  const apiKeyStore = new Map<string, string>();
   const AI_SETTINGS_KEY = "noveloom:ai-settings";
+  const API_KEY_PREFIX = "noveloom:api-key:";
 
   function handleGetAiSettings(): Record<string, unknown> {
     try {
@@ -126,29 +132,78 @@ export async function createBrowserMock(): Promise<BrowserMock> {
   function handleSaveApiKey(args: Record<string, unknown>): void {
     const provider = args.provider as string;
     const key = args.key as string;
-    apiKeyStore.set(provider, key);
+    try {
+      localStorage.setItem(API_KEY_PREFIX + provider, key);
+    } catch {
+      // noop
+    }
   }
 
   function handleGetApiKey(args: Record<string, unknown>): string | null {
     const provider = args.provider as string;
-    return apiKeyStore.get(provider) ?? null;
+    try {
+      return localStorage.getItem(API_KEY_PREFIX + provider) ?? null;
+    } catch {
+      return null;
+    }
   }
 
   function handleDeleteApiKey(args: Record<string, unknown>): void {
     const provider = args.provider as string;
-    apiKeyStore.delete(provider);
+    try {
+      localStorage.removeItem(API_KEY_PREFIX + provider);
+    } catch {
+      // noop
+    }
   }
 
-  function handleListAiModels(): Array<{ id: string; name: string }> {
-    return [
-      { id: "openrouter/auto", name: "Auto (OpenRouter)" },
-      { id: "openai/gpt-4o", name: "GPT-4o" },
-      { id: "anthropic/claude-sonnet-4-6", name: "Claude Sonnet 4.6" },
-    ];
+  async function handleListAiModels(
+    args: Record<string, unknown>,
+  ): Promise<Array<{ id: string; name: string }>> {
+    const settings = handleGetAiSettings();
+    const provider = (args.provider ?? settings.provider) as AiProvider;
+    const apiKey = handleGetApiKey({ provider })?.toString() ?? "";
+
+    try {
+      return await fetchModels(provider, apiKey);
+    } catch {
+      // Fallback to static list if fetch fails
+      return [
+        { id: "openrouter/auto", name: "Auto (OpenRouter)" },
+        { id: "openai/gpt-4o", name: "GPT-4o" },
+        { id: "anthropic/claude-sonnet-4-6", name: "Claude Sonnet 4.6" },
+      ];
+    }
   }
 
-  function handleTestAiConnection(): string {
-    return "Connection OK (browser mock)";
+  async function handleTestAiConnection(
+    args: Record<string, unknown>,
+  ): Promise<string> {
+    const provider = args.provider as AiProvider;
+    const model = args.model as string;
+    const apiKey = handleGetApiKey({ provider })?.toString() ?? "";
+
+    if (!apiKey && provider !== "ollama") {
+      throw new Error(`APIキーが設定されていません: ${provider}`);
+    }
+
+    return testConnection(provider, model, apiKey);
+  }
+
+  async function handleSendChatMessage(
+    args: Record<string, unknown>,
+  ): Promise<string> {
+    const settings = handleGetAiSettings();
+    const provider = settings.provider as AiProvider;
+    const model = settings.model as string;
+    const apiKey = handleGetApiKey({ provider })?.toString() ?? "";
+
+    if (!apiKey && provider !== "ollama") {
+      return "[browser-mock] AIは未接続です。AI設定からAPIキーを設定してください。";
+    }
+
+    const messages = args.messages as Array<{ role: string; content: string }>;
+    return sendChat(provider, model, apiKey, messages);
   }
 
   function handleDbExecute(args: Record<string, unknown>): {
@@ -316,11 +371,11 @@ export async function createBrowserMock(): Promise<BrowserMock> {
         handleDeleteApiKey(args);
         return undefined as T;
       case "list_ai_models":
-        return handleListAiModels() as T;
+        return (await handleListAiModels(args)) as T;
       case "test_ai_connection":
-        return handleTestAiConnection() as T;
+        return (await handleTestAiConnection(args)) as T;
       case "send_chat_message":
-        return "[browser-mock] AIは未接続です。AI設定からAPIキーを設定してください。" as T;
+        return (await handleSendChatMessage(args)) as T;
       default:
         throw new Error(`[browser-mock] Unknown Tauri command: ${cmd}`);
     }

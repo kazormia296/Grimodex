@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach } from "vitest";
 import { createBrowserMock } from "./browser-mock";
 
 describe("createBrowserMock", () => {
@@ -147,6 +147,68 @@ describe("createBrowserMock", () => {
         sceneId: "rename-test",
       });
       expect(result).toBe("# Content");
+    });
+  });
+
+  describe("API key persistence", () => {
+    it("persists API key in localStorage across mock instances", async () => {
+      await mock.invoke("save_api_key", {
+        provider: "openai",
+        key: "sk-test-123",
+      });
+
+      const key = await mock.invoke<string | null>("get_api_key", {
+        provider: "openai",
+      });
+      expect(key).toBe("sk-test-123");
+
+      // Create a new mock instance — key should survive
+      const mock2 = await createBrowserMock();
+      const key2 = await mock2.invoke<string | null>("get_api_key", {
+        provider: "openai",
+      });
+      expect(key2).toBe("sk-test-123");
+    });
+
+    it("deletes API key from localStorage", async () => {
+      await mock.invoke("save_api_key", {
+        provider: "anthropic",
+        key: "sk-ant",
+      });
+      await mock.invoke("delete_api_key", { provider: "anthropic" });
+
+      const key = await mock.invoke<string | null>("get_api_key", {
+        provider: "anthropic",
+      });
+      expect(key).toBeNull();
+    });
+  });
+
+  describe("list_ai_models", () => {
+    it("falls back to static list when fetch fails", async () => {
+      // fetch will fail because there's no real server — exercises the fallback
+      const mockFetch = vi.fn().mockRejectedValue(new Error("Network error"));
+      vi.stubGlobal("fetch", mockFetch);
+
+      const models = await mock.invoke<Array<{ id: string; name: string }>>(
+        "list_ai_models",
+        {},
+      );
+      expect(models.length).toBeGreaterThan(0);
+
+      vi.unstubAllGlobals();
+    });
+  });
+
+  describe("send_chat_message", () => {
+    it("returns fallback message when no API key is set", async () => {
+      // Ensure no key is stored
+      await mock.invoke("delete_api_key", { provider: "openrouter" });
+
+      const result = await mock.invoke<string>("send_chat_message", {
+        messages: [{ role: "user", content: "Hello" }],
+      });
+      expect(result).toContain("AIは未接続です");
     });
   });
 
