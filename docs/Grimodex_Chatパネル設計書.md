@@ -77,6 +77,8 @@ LLMに送信されるコンテキスト情報をユーザーに可視化する�
 | Project info | グレー | プロジェクト概要が注入されていることを示す。クリックで内容をポップオーバー表示 |
 | Scene: {文字数} | グレー | 現在のシーン本文がコンテキストに含まれている。文字数を表示 |
 | {Codexエントリ名} | Blue/Info | 自動検出またはピン留めされたCodexエントリ。クリックでCodex詳細。×で除外 |
+| {Codexエントリ名} auto | Blue/Info（薄） | `context_mode = always` のエントリ。常に表示。×で一時除外可能（セッション内） |
+| {子エントリ名} via {親名} | Blue/Info（薄） | 自動注入された子エントリ。×で個別除外可能 |
 | {Snippet名} | Purple | ピン留めされたSnippet。クリックでSnippet詳細。×で除外 |
 | ~{N} tokens | グレー（右寄せ） | システムプロンプトの合計トークン数概算 |
 
@@ -84,6 +86,8 @@ LLMに送信されるコンテキスト情報をユーザーに可視化する�
 
 - コンテキストバー末尾の「+」ボタンで、CodexエントリまたはSnippetを手動ピン留め
 - コマンドパレット風の検索UIでエントリを選択（Codex/Snippetをタブまたはフィルタで切り替え）
+- **`context_mode = hidden` のエントリはピン留め候補に表示しない**
+- **`context_mode = suppress` のエントリはミュート表示 + ツールチップ（「ピン留めでAIコンテキストに含まれます」）**
 - ピン留めしたエントリはセッション内で永続（セッション終了まで有効）
 - 自動検出されたCodexエントリも×ボタンで個別除外可能
 - **Pin with children**: Codexエントリのピン留め時に「子エントリも含める」オプションを提供。選択すると親+全子エントリ（depth 1）をまとめてピン留めし、それぞれcontent全文が注入される。個別の×ボタンで子エントリ単位の除外も可能
@@ -202,7 +206,7 @@ AIメッセージ内のテキストを選択すると、選択範囲の近くに
 ┌──────────────────────────────────────┐
 │ テキスト入力エリア（複数行対応）       │
 │                                      │
-│ [@] [/]              Sonnet 4.6 [▶]  │
+│ [/]                  Sonnet 4.6 [▶]  │
 └──────────────────────────────────────┘
 ```
 
@@ -214,11 +218,6 @@ AIメッセージ内のテキストを選択すると、選択範囲の近くに
 - プレースホルダー: 「Ask about this scene...」
 
 ### 特殊入力
-
-**@ メンション（Codex参照）**:
-- `@` を入力するとCodexエントリの検索オートコンプリートを表示
-- エントリ選択で `@エントリ名` がタグとして入力に挿入される
-- 送信時、メンションされたCodexエントリの全文をコンテキストに含める（Layer 4を強制追加）
 
 **/ コマンド**:
 - `/` を入力するとコマンド一覧を表示
@@ -335,12 +334,17 @@ LLM APIのシステムプロンプトに以下の5レイヤーを階層的に注
 - ~2,000-16,000 tokens
 
 **Layer 4: Codex entries + Snippets**
-- 現在のシーンで自動検出されたCodexエントリの要約
-- コンテキストバーでピン留めされたCodexエントリの全文
+- **context_mode フィルタ**: 各エントリの `context_mode` により注入可否を判定（Codexパネル設計書「コンテキスト制御モード」セクション参照）
+  - `hidden`: 注入リストから完全除外（ピンリストにあっても除外）
+  - `always`: 自動検出の有無に関わらず常に注入
+  - `mentioned`（デフォルト）: シーン内で検出された場合に注入
+  - `suppress`: 自動検出では注入しない。ピン留めされている場合のみ注入
+- 注入対象のCodexエントリのsummary + カスタムディテール（`include_in_context = 1`）
+- コンテキストバーでピン留めされたCodexエントリの全文 + カスタムディテール
 - コンテキストバーでピン留めされたSnippetの全文
-- **子エントリの自動注入**: 上記でマッチした親Codexエントリのdepth 1の子エントリのsummaryを自動追加（Codexパネル設計書「コンテキスト注入への影響」セクション参照）
-- 予算超過時は子エントリのsummaryから先に切り詰め
-- ~500-6,000 tokens（子エントリ・Snippetの注入により上限が上がる可能性）
+- **子エントリの自動注入**: 上記でマッチした親Codexエントリのdepth 1の子エントリのsummaryを自動追加（子のcontext_modeも個別に判定。Codexパネル設計書「コンテキスト注入への影響」セクション参照）
+- 予算超過時の優先順: always > mentioned > pinned content > 子エントリsummary（最初に切り詰め）
+- ~500-6,000 tokens（子エントリ・Snippet・カスタムディテールの注入により上限が上がる可能性）
 
 #### 検討済み・不採用のコンテキスト注入モード
 
@@ -379,6 +383,10 @@ function buildContext(sceneId: string, session: ChatSession): SystemPrompt {
   const layer1 = buildProjectInfo();          // 常時含める
   const layer3 = buildSceneContext(sceneId);  // 常時含める
   const layer4 = buildCodexContext(sceneId, session.pinnedCodex);
+  // buildCodexContext 内で context_mode フィルタ適用:
+  //   hidden → 除外、always → 無条件追加、mentioned → 検出時のみ、
+  //   suppress → ピンリスト存在時のみ
+  // カスタムディテール（include_in_context=1）も注入対象に含める
   const layer5 = truncateHistory(session.messages, remainingBudget);
   const layer2 = buildChapterSummaries(sceneId, remainingBudget);
 

@@ -16,8 +16,13 @@ ORM: Drizzle ORM（sqlite-proxy）
 |---------|------|--------|------|
 | `projects` | 通常 | Settings | プロジェクトのメタ情報 |
 | `tree_nodes` | 通常 | Scenes | Part/Chapter/Scene/Folder/Note の統一ツリー |
-| `codex_entries` | 通常 | Codex | 世界設定エントリ（Character/Location/Item/Lore） |
+| `codex_types` | 通常 | Codex | Codexエントリタイプ定義（ビルトイン+カスタム） |
+| `codex_entries` | 通常 | Codex | 世界設定エントリ |
 | `codex_relation_dismissed` | 通常 | Codex | リレーション提案のDismiss記録 |
+| `codex_tags` | 通常 | Codex | 構造化タグ定義（タイプ関連付け付き） |
+| `codex_entry_tags` | 通常 | Codex | エントリ↔タグの多対多リレーション |
+| `codex_detail_definitions` | 通常 | Codex | カスタムディテール定義（タイプごと） |
+| `codex_detail_values` | 通常 | Codex | カスタムディテール値（エントリごと） |
 | `snippets` | 通常 | Snippets | 再利用テキスト断片 |
 | `chat_sessions` | 通常 | Chat | チャットセッション（シーン or プロジェクトスコープ） |
 | `chat_messages` | 通常 | Chat | チャットメッセージ |
@@ -45,9 +50,20 @@ tree_nodes (1)
  ├──< snippets (*)            scene_id
  └──< authorship_spans (*)    node_id
 
+codex_types (1)
+ └──< codex_detail_definitions (*) type_slug (論理参照、FKなし)
+
 codex_entries (1)
  ├──< codex_entries (*)       parent_id (自己参照、リレーション)
- └──< codex_relation_dismissed (*) entry_id, dismissed_id
+ ├──< codex_relation_dismissed (*) entry_id, dismissed_id
+ ├──< codex_entry_tags (*)    entry_id
+ └──< codex_detail_values (*) entry_id
+
+codex_tags (1)
+ └──< codex_entry_tags (*)    tag_id
+
+codex_detail_definitions (1)
+ └──< codex_detail_values (*) definition_id
 
 chat_sessions (1)
  └──< chat_messages (*)       session_id (ON DELETE CASCADE)
@@ -104,21 +120,59 @@ CREATE INDEX idx_tree_parent ON tree_nodes(project_id, parent_id, sort_order);
 - Scene: `{pp}-{cc}-{ss}_{sanitized_title}_{short_id}.md`
 - Note: `note_{sanitized_title}_{short_id}.md`
 
+### codex_types
+
+Codexエントリのタイプ定義。ビルトイン4タイプ（character/location/item/lore）に加え、プロジェクト単位でカスタムタイプを追加可能。プロジェクト作成時にビルトイン4行をシードする。
+
+```sql
+CREATE TABLE codex_types (
+  id          TEXT PRIMARY KEY,
+  project_id  TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  slug        TEXT NOT NULL,            -- 'character', 'faction', 'magic_system' etc.
+  label       TEXT NOT NULL,            -- '勢力', '魔法体系' etc.（表示用）
+  color       TEXT NOT NULL DEFAULT '#888888',  -- カテゴリドット色（hex）
+  icon        TEXT,                     -- lucide icon名（optional）
+  file_prefix TEXT NOT NULL,            -- 4文字、コンテンツファイル命名用
+  is_builtin  INTEGER NOT NULL DEFAULT 0,  -- 1: ビルトイン（削除・slug変更不可）
+  sort_order  REAL NOT NULL DEFAULT 0.0,   -- フィルタタブの表示順
+  created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+  UNIQUE(project_id, slug),
+  UNIQUE(project_id, file_prefix)
+);
+
+CREATE INDEX idx_codex_types_project ON codex_types(project_id);
+```
+
+ビルトインタイプのシード値:
+
+| slug | label | color | file_prefix | sort_order |
+|------|-------|-------|-------------|------------|
+| `character` | キャラクター | `#534AB7` | `char` | 0.0 |
+| `location` | 場所 | `#0F6E56` | `loc` | 1.0 |
+| `item` | アイテム | `#BA7517` | `item` | 2.0 |
+| `lore` | 伝承 | `#993C1D` | `lore` | 3.0 |
+
+slug命名規則: `/^[a-z][a-z0-9_]{0,31}$/`。file_prefix: `/^[a-z]{4}$/`。
+
 ### codex_entries
 
 世界設定エントリ。content本文は `codex/{type_prefix}_{sanitized_name}_{short_id}.md` に保存。アイコン画像は `codex/icons/{short_id}.webp` に保存（128×128px WebP）。
+
+`type` カラムは `codex_types.slug` を参照（論理参照、FKなし）。`context_mode` でAIコンテキスト注入の振る舞いを制御。`tags_cache` はFTS5用の非正規化キャッシュ（正規データは `codex_entry_tags` テーブル）。
 
 ```sql
 CREATE TABLE codex_entries (
   id                      TEXT PRIMARY KEY,
   project_id              TEXT NOT NULL REFERENCES projects(id),
   parent_id               TEXT REFERENCES codex_entries(id),   -- リレーション（親エントリ）
-  type                    TEXT NOT NULL DEFAULT 'character',   -- 'character'|'location'|'item'|'lore'
+  type                    TEXT NOT NULL DEFAULT 'character',   -- codex_types.slug を参照
   name                    TEXT NOT NULL DEFAULT 'Untitled',
   aliases                 TEXT,            -- JSON array: ["エララ", "the apprentice"]
   excluded_aliases        TEXT,            -- JSON array: ["青い", "青の", "青く"]
   summary                 TEXT,            -- 短い要約（1-2文）
-  tags                    TEXT,            -- JSON array: ["protagonist", "mage"]
+  tags_cache              TEXT,            -- FTS5用非正規化キャッシュ（JSON array）
+  context_mode            TEXT NOT NULL DEFAULT 'mentioned'
+                            CHECK(context_mode IN ('always', 'mentioned', 'suppress', 'hidden')),
   source_chat_message_id  TEXT REFERENCES chat_messages(id),   -- 抽出元チャット（nullable）
   created_at              TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at              TEXT NOT NULL DEFAULT (datetime('now'))
@@ -128,6 +182,15 @@ CREATE INDEX idx_codex_project ON codex_entries(project_id, type);
 CREATE INDEX idx_codex_name    ON codex_entries(project_id, name);
 CREATE INDEX idx_codex_parent  ON codex_entries(parent_id);
 ```
+
+context_mode の動作:
+
+| モード | 動作 | ピン留め |
+|--------|------|---------|
+| `always` | シーン内の言及有無に関わらず常に注入 | 可（ピン時はcontent全文） |
+| `mentioned`（デフォルト） | シーン内で検出された場合に注入 | 可 |
+| `suppress` | 自動検出では注入しない。ピン留めで上書き可 | 可（ピンが明示的意思） |
+| `hidden` | AIコンテキストに一切含めない | 不可 |
 
 ### codex_relation_dismissed
 
@@ -139,6 +202,86 @@ CREATE TABLE codex_relation_dismissed (
   dismissed_id TEXT NOT NULL REFERENCES codex_entries(id) ON DELETE CASCADE,
   PRIMARY KEY (entry_id, dismissed_id)
 );
+```
+
+### codex_tags
+
+構造化タグ定義。タグごとにオプションで適用可能なCodexタイプを制限できる。
+
+```sql
+CREATE TABLE codex_tags (
+  id          TEXT PRIMARY KEY,
+  project_id  TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  name        TEXT NOT NULL,
+  color       TEXT,              -- hex e.g. '#ff6b6b'（nullable）
+  type_filter TEXT,              -- JSON string[] of allowed type slugs, NULL = 全タイプ
+  created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+  UNIQUE(project_id, name)
+);
+
+CREATE INDEX idx_codex_tags_project ON codex_tags(project_id);
+```
+
+### codex_entry_tags
+
+エントリ↔タグの多対多リレーション。変更時はアプリ層で `codex_entries.tags_cache` を同期更新すること（FTS5トリガーの発火に必要）。
+
+```sql
+CREATE TABLE codex_entry_tags (
+  entry_id TEXT NOT NULL REFERENCES codex_entries(id) ON DELETE CASCADE,
+  tag_id   TEXT NOT NULL REFERENCES codex_tags(id) ON DELETE CASCADE,
+  PRIMARY KEY (entry_id, tag_id)
+);
+
+CREATE INDEX idx_codex_entry_tags_tag ON codex_entry_tags(tag_id);
+```
+
+### codex_detail_definitions
+
+タイプごとのカスタムフィールド定義。各フィールドはAIコンテキスト注入の有無を個別制御可能。
+
+```sql
+CREATE TABLE codex_detail_definitions (
+  id                TEXT PRIMARY KEY,
+  project_id        TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  type_slug         TEXT NOT NULL,         -- 適用対象の codex_types.slug
+  name              TEXT NOT NULL,         -- フィールド名 e.g. '種族', '所属勢力'
+  field_type        TEXT NOT NULL DEFAULT 'text',
+                                           -- 'text' | 'dropdown' | 'codex_reference'
+  field_config      TEXT,                  -- JSON（field_typeごとに構造が異なる、後述）
+  sort_order        REAL NOT NULL DEFAULT 0.0,
+  include_in_context INTEGER NOT NULL DEFAULT 0,  -- 1: AIコンテキストに含める
+  created_at        TEXT NOT NULL DEFAULT (datetime('now')),
+  UNIQUE(project_id, type_slug, name)
+);
+
+CREATE INDEX idx_codex_detail_defs
+  ON codex_detail_definitions(project_id, type_slug, sort_order);
+```
+
+field_config のJSON構造:
+
+| field_type | field_config | 例 |
+|-----------|-------------|-----|
+| `text` | `{ "multiline": boolean }` | `{ "multiline": false }` |
+| `dropdown` | `{ "options": string[] }` | `{ "options": ["人間", "エルフ", "ドワーフ"] }` |
+| `codex_reference` | `{ "allowedTypes": string[] \| null }` | `{ "allowedTypes": ["faction"] }` |
+
+### codex_detail_values
+
+エントリごとのカスタムフィールド値。
+
+```sql
+CREATE TABLE codex_detail_values (
+  id            TEXT PRIMARY KEY,
+  entry_id      TEXT NOT NULL REFERENCES codex_entries(id) ON DELETE CASCADE,
+  definition_id TEXT NOT NULL REFERENCES codex_detail_definitions(id) ON DELETE CASCADE,
+  value         TEXT,   -- text: プレーンテキスト, dropdown: 選択肢文字列, codex_reference: エントリID
+  UNIQUE(entry_id, definition_id)
+);
+
+CREATE INDEX idx_codex_detail_values_entry ON codex_detail_values(entry_id);
+CREATE INDEX idx_codex_detail_values_def   ON codex_detail_values(definition_id);
 ```
 
 ### snippets
@@ -241,14 +384,14 @@ CREATE TABLE settings (
 
 ### codex_fts
 
-Codexエントリの検索用。name + aliases + summary + tags を対象。
+Codexエントリの検索用。name + aliases + summary + tags_cache を対象。tags_cacheは `codex_entry_tags` の非正規化キャッシュ。
 
 ```sql
 CREATE VIRTUAL TABLE codex_fts USING fts5(
   name,
   aliases,
   summary,
-  tags,
+  tags_cache,
   content=codex_entries,
   content_rowid=rowid,
   tokenize='trigram'
@@ -293,20 +436,24 @@ CREATE VIRTUAL TABLE chat_messages_fts USING fts5(
 
 ```sql
 CREATE TRIGGER codex_fts_ai AFTER INSERT ON codex_entries BEGIN
-  INSERT INTO codex_fts(rowid, name, aliases, summary, tags)
-    VALUES (new.rowid, new.name, new.aliases, new.summary, new.tags);
+  INSERT INTO codex_fts(rowid, name, aliases, summary, tags_cache)
+    VALUES (new.rowid, COALESCE(new.name, ''), COALESCE(new.aliases, ''),
+            COALESCE(new.summary, ''), COALESCE(new.tags_cache, ''));
 END;
 
 CREATE TRIGGER codex_fts_ad AFTER DELETE ON codex_entries BEGIN
-  INSERT INTO codex_fts(codex_fts, rowid, name, aliases, summary, tags)
-    VALUES ('delete', old.rowid, old.name, old.aliases, old.summary, old.tags);
+  INSERT INTO codex_fts(codex_fts, rowid, name, aliases, summary, tags_cache)
+    VALUES ('delete', old.rowid, COALESCE(old.name, ''), COALESCE(old.aliases, ''),
+            COALESCE(old.summary, ''), COALESCE(old.tags_cache, ''));
 END;
 
 CREATE TRIGGER codex_fts_au AFTER UPDATE ON codex_entries BEGIN
-  INSERT INTO codex_fts(codex_fts, rowid, name, aliases, summary, tags)
-    VALUES ('delete', old.rowid, old.name, old.aliases, old.summary, old.tags);
-  INSERT INTO codex_fts(rowid, name, aliases, summary, tags)
-    VALUES (new.rowid, new.name, new.aliases, new.summary, new.tags);
+  INSERT INTO codex_fts(codex_fts, rowid, name, aliases, summary, tags_cache)
+    VALUES ('delete', old.rowid, COALESCE(old.name, ''), COALESCE(old.aliases, ''),
+            COALESCE(old.summary, ''), COALESCE(old.tags_cache, ''));
+  INSERT INTO codex_fts(rowid, name, aliases, summary, tags_cache)
+    VALUES (new.rowid, COALESCE(new.name, ''), COALESCE(new.aliases, ''),
+            COALESCE(new.summary, ''), COALESCE(new.tags_cache, ''));
 END;
 ```
 
@@ -402,7 +549,9 @@ SQLiteにはネイティブJSON型がないため、TEXT カラムにJSON文字�
 |---------------|---------|-----|
 | `codex_entries.aliases` | `string[]` | `["エララ", "the apprentice"]` |
 | `codex_entries.excluded_aliases` | `string[]` | `["青い", "青の", "青く"]` |
-| `codex_entries.tags` | `string[]` | `["protagonist", "mage"]` |
+| `codex_entries.tags_cache` | `string[]` | `["protagonist", "mage"]`（FTS5用非正規化キャッシュ） |
+| `codex_tags.type_filter` | `string[] \| null` | `["character", "lore"]` または `null`（全タイプ） |
+| `codex_detail_definitions.field_config` | `object` | `{"multiline":true}`, `{"options":["人間","エルフ"]}`, `{"allowedTypes":["faction"]}` |
 | `snippets.tags` | `string[]` | `["dialogue", "elara"]` |
 | `chat_sessions.pinned_codex` | `string[]` | `["codex-id-1", "codex-id-2"]` |
 | `chat_messages.metadata` | `object` | `{"extractedCodex":["id1"],"extractedSnippets":["id2"]}` |

@@ -67,7 +67,9 @@ Codexパネルはプロジェクトの世界設定データベース。キャラ
 
 ## C. フィルタタブ
 
-カテゴリ別のフィルタタブ。各タブに該当エントリ数を表示。
+カテゴリ別のフィルタタブ。各タブに該当エントリ数を表示。`codex_types` テーブルから `sort_order` 順で動的生成。
+
+ビルトインタブ:
 
 | タブ | カラー | 説明 |
 |------|--------|------|
@@ -77,7 +79,18 @@ Codexパネルはプロジェクトの世界設定データベース。キャラ
 | Item | アンバー (#BA7517) | アイテム・道具 |
 | Lore | コーラル (#993C1D) | 伝承・歴史・設定 |
 
+カスタムタイプ（`codex_types` で `is_builtin = 0`）もタブとして表示される。表示名は `codex_types.label`、カラーは `codex_types.color`。
+
 タブはクリックで排他選択。フィルタタブと検索は組み合わせ可能（例: Character タブ + 検索「Elara」）。
+
+### タグフィルタ
+
+フィルタタブの下にタグフィルタドロップダウンを配置。`codex_tags` テーブルから候補を表示。
+
+- 複数タグ選択可能。**フィルタロジック: OR（いずれか一致）**
+- 選択中のタイプタブに該当するタグのみ表示（`codex_tags.type_filter` が NULL または選択タイプを含むタグ）
+- タグ選択状態はピルとして表示、×でクリア
+- タイプフィルタ + タグフィルタ + 検索は全て組み合わせ可能
 
 ---
 
@@ -118,7 +131,7 @@ Codexパネルはプロジェクトの世界設定データベース。キャラ
 |-------------|------|
 | Edit | 詳細画面を表示（スプリット時はフォーカス、スタック時は遷移） |
 | Rename | name をインライン編集 |
-| Change type | サブメニュー: Character / Location / Item / Lore |
+| Change type | サブメニュー: `codex_types` から動的生成（ビルトイン+カスタム） |
 | Duplicate | エントリを複製（「{name} (copy)」） |
 | --- | |
 | Pin to Chat | 現在のChatセッションにピン留め |
@@ -135,6 +148,7 @@ Codexパネルはプロジェクトの世界設定データベース。キャラ
 ```
 ┌─────────────────────────────────┐
 │ [🖼] Elara             character │  ← Header (icon + name + type)
+│ Context: [Mentioned ▾]          │  ← Context mode selector
 ├─────────────────────────────────┤
 │ Aliases: [エララ]               │  ← Aliases
 │          [the apprentice] [+]   │
@@ -151,7 +165,13 @@ Codexパネルはプロジェクトの世界設定データベース。キャラ
 │ through the Soulbind Amulet...  │
 │                  ^^^^^^^^^^^    │  ← Codex highlight (clickable)
 ├─────────────────────────────────┤
-│ Tags: [protagonist] [mage] [+]  │  ← Tags
+│ Details:                        │  ← Custom details (per type)
+│ 種族      [人間          ▾] 🤖  │
+│ 所属勢力  [● 白銀騎士団  →] 🤖  │
+│ 身長      [175cm            ]   │
+│ [+ Add field]  [⚙ Manage]      │
+├─────────────────────────────────┤
+│ Tags: [protagonist] [mage] [+]  │  ← Tags (structured)
 ├─────────────────────────────────┤
 │ Relations:                      │  ← Parent-child relations
 │ Parent: (none)                  │
@@ -175,6 +195,23 @@ Codexパネルはプロジェクトの世界設定データベース。キャラ
 ### ヘッダー
 
 - アイコン画像 + エントリ名（クリックでインライン編集）+ 右寄せでカテゴリバッジ（クリックでtype変更ドロップダウン）
+- カテゴリバッジのドロップダウンは `codex_types` テーブルから動的生成（ビルトイン+カスタム）
+
+### コンテキスト制御モード
+
+ヘッダー直下に「Context:」ドロップダウンを配置。エントリごとにAIコンテキスト注入の振る舞いを制御する。
+
+| モード | ラベル | 動作 |
+|--------|--------|------|
+| `always` | Always include | シーン内の言及有無に関わらず常に注入。ピン留め可 |
+| `mentioned` | When mentioned（デフォルト） | シーン内で検出された場合に注入。ピン留め可 |
+| `suppress` | Manual only | 自動検出では注入しない。ピン留めで上書き可 |
+| `hidden` | Exclude from AI | AIコンテキストに一切含めない。ピン留め不可 |
+
+- ドロップダウンの各選択肢にはモードの説明をサブテキストで表示
+- `hidden` 選択時はエントリカードにミュートアイコンを表示（リスト画面で視認可能）
+- `always` 選択時はエントリカードに常駐アイコンを表示
+- エディタハイライトへの影響はなし（全モードでハイライトされる）
 
 ### アイコン画像
 
@@ -233,12 +270,216 @@ Codexパネルはプロジェクトの世界設定データベース。キャラ
 - 自動保存（デバウンス2秒）
 - Attribution追跡あり（Chatから抽出されたcontentにはai markが付与済み）
 
-### Tags フィールド
+### Details セクション（カスタムディテール）
+
+Content フィールドの下に配置。タイプごとに定義されたカスタムフィールドの値を入力するセクション。フィールド定義は `codex_detail_definitions` テーブル、値は `codex_detail_values` テーブルに保存。
+
+#### フィールドタイプ
+
+| field_type | UI | 保存値 |
+|-----------|-----|--------|
+| `text` | `<input>` または `<textarea>`（`field_config.multiline` で制御） | プレーンテキスト |
+| `dropdown` | `<select>`。選択肢は `field_config.options` から生成 | 選択肢文字列 |
+| `codex_reference` | 検索UIでCodexエントリを選択。ピル表示（クリックで遷移） | エントリID |
+
+`codex_reference` の `field_config.allowedTypes` で参照可能なタイプを制限可能（NULL = 全タイプ）。
+
+#### AIコンテキスト注入制御
+
+各フィールドの右端に🤖アイコンを表示。`include_in_context = 1` のフィールドはアイコンがアクティブ状態。クリックでトグル。
+
+注入される場合、エントリのsummaryに付加してコンテキストに含まれる:
+
+```
+## エララ (キャラクター)
+主人公の幼馴染で、塔の見習い魔術師。
+- 種族: 人間
+- 所属勢力: 白銀騎士団
+```
+
+**注入条件チェーンフロー**: `context_mode` がゲート → `include_in_context` がフィールド単位の制御。`context_mode = 'hidden'` のエントリは全カスタムディテールも注入しない。
+
+`codex_reference` フィールドの注入時は参照先エントリのnameを表示（IDではなく）。
+
+#### フィールド管理
+
+- [+ Add field]: 現在のタイプに新しいフィールド定義を追加。クリックでManage fieldsダイアログの新規追加フォームを開く
+- [⚙ Manage fields]: タイプのフィールド定義を管理するダイアログを開く（後述）
+
+#### Manage fields ダイアログ
+
+タイプに紐づくカスタムフィールド定義を一括管理するモーダルダイアログ。`codex_detail_definitions` テーブルを操作する。
+
+##### ダイアログ構造
+
+```
+┌─────────────────────────────────────────────────────┐
+│ Manage fields: キャラクター                    [×]  │
+├─────────────────────────────────────────────────────┤
+│                                                     │
+│  ⠿ 種族              dropdown    🤖  [✎] [🗑]      │
+│  ⠿ 所属勢力          codex_ref   🤖  [✎] [🗑]      │
+│  ⠿ 身長              text             [✎] [🗑]      │
+│  ⠿ 一人称            text        🤖  [✎] [🗑]      │
+│                                                     │
+│  [+ Add field]                                      │
+│                                                     │
+├─────────────────────────────────────────────────────┤
+│                                        [Close]      │
+└─────────────────────────────────────────────────────┘
+```
+
+##### フィールド一覧
+
+| 要素 | 説明 |
+|------|------|
+| ⠿ ドラッグハンドル | D&Dで並び替え。`sort_order` を更新 |
+| フィールド名 | `name` を表示 |
+| タイプラベル | `field_type` を短縮表示（`text`, `dropdown`, `codex_ref`） |
+| 🤖 アイコン | `include_in_context = 1` の場合アクティブ表示。クリックでトグル |
+| [✎] 編集ボタン | フィールド編集フォームを展開（インラインアコーディオン） |
+| [🗑] 削除ボタン | 確認ダイアログ後に定義削除 |
+
+##### フィールド編集フォーム（アコーディオン展開）
+
+[✎] クリックまたは [+ Add field] クリックで、該当行の下にインラインフォームがアコーディオン展開する。
+
+```
+┌─────────────────────────────────────────────────────┐
+│  ⠿ 種族              dropdown    🤖  [▼] [🗑]      │
+│  ┌───────────────────────────────────────────────┐  │
+│  │ Name:        [種族                         ]  │  │
+│  │ Type:        [Dropdown               ▾]      │  │
+│  │ AI context:  [✓] Include in AI context        │  │
+│  │                                               │  │
+│  │ Options:                                      │  │
+│  │   人間                               [×]      │  │
+│  │   エルフ                             [×]      │  │
+│  │   ドワーフ                           [×]      │  │
+│  │   [+ Add option]                              │  │
+│  │                                               │  │
+│  │              [Cancel]  [Save]                  │  │
+│  └───────────────────────────────────────────────┘  │
+│  ⠿ 所属勢力          codex_ref   🤖  [✎] [🗑]      │
+└─────────────────────────────────────────────────────┘
+```
+
+##### 共通フィールド
+
+全 `field_type` で表示:
+
+| フィールド | UI | バリデーション |
+|-----------|-----|---------------|
+| Name | テキスト入力 | 必須。同一タイプ内でユニーク（`UNIQUE(project_id, type_slug, name)`） |
+| Type | ドロップダウン: `Text` / `Dropdown` / `Codex Reference` | 必須。変更時は後述の注意あり |
+| AI context | チェックボックス「Include in AI context」 | `include_in_context` カラムに対応 |
+
+##### field_type 別の追加設定
+
+**Text**:
+| 設定 | UI | 対応 |
+|------|-----|------|
+| Multiline | チェックボックス「Multiple lines」 | `field_config.multiline` |
+
+**Dropdown**:
+| 設定 | UI | 対応 |
+|------|-----|------|
+| Options | タグ入力風リスト。各選択肢に×ボタン + [+ Add option] | `field_config.options` |
+
+- 選択肢は最低1つ必要（空リストで保存不可）
+- 選択肢の並び順 = 配列順。D&Dで並び替え可能
+- 選択肢を削除しても、既存エントリでその値が選択されている場合は値を保持（ただしドロップダウンには表示されなくなるため、値がグレー表示 + 警告アイコンで「この選択肢は定義から削除されました」ツールチップ）
+
+**Codex Reference**:
+| 設定 | UI | 対応 |
+|------|-----|------|
+| Allowed types | チェックボックス群（`codex_types` から動的生成）。未選択 = 全タイプ | `field_config.allowedTypes` |
+
+- 全タイプにチェックが入っている状態 = `allowedTypes: null`（制限なし）
+- 「Select all」/「Clear」のヘルパーリンク
+
+##### field_type の変更
+
+既にエントリに値が存在する場合、`field_type` を変更すると既存値との互換性が問題になる。
+
+| 変更パターン | 振る舞い |
+|-------------|---------|
+| text → dropdown | 既存のテキスト値はそのまま保持。ドロップダウンの選択肢に含まれない場合は警告表示 |
+| text → codex_reference | 既存のテキスト値はクリア（エントリIDではないため）。確認ダイアログ表示 |
+| dropdown → text | 既存の選択肢文字列はそのままテキスト値として保持。互換あり |
+| dropdown → codex_reference | 既存値はクリア。確認ダイアログ表示 |
+| codex_reference → text | 既存のエントリIDはクリア（表示上意味がないため）。確認ダイアログ表示 |
+| codex_reference → dropdown | 既存値はクリア。確認ダイアログ表示 |
+
+確認ダイアログ: 「{N}件のエントリの値がクリアされます。続行しますか？」
+
+##### フィールド削除
+
+[🗑] クリックで確認ダイアログを表示:
+
+```
+このフィールドを削除しますか？
+
+「種族」を削除すると、このタイプの全エントリ（{N}件）から
+このフィールドの値が完全に削除されます。この操作は元に戻せません。
+
+                              [キャンセル]  [削除]
+```
+
+削除実行: `codex_detail_definitions` から行削除 → `codex_detail_values` がCASCADE削除。
+
+##### フィールド追加
+
+[+ Add field] クリックで一覧の末尾にフォームが展開:
+
+- Name: 空（カーソルフォーカス）
+- Type: `Text`（デフォルト）
+- AI context: OFF（デフォルト）
+- `sort_order`: 現在の最大値 + 1.0
+
+Save クリックで `codex_detail_definitions` に行追加。同一タイプの全エントリに対して空の `codex_detail_values` 行は作成しない（値が入力された時に初めて行を作成 = lazy insert）。
+
+##### 並び替え
+
+ドラッグハンドル（⠿）でD&D。ドロップ時に `sort_order` を更新（Fractional Indexing: ドロップ先の前後のsort_orderの中間値を計算）。並び順はDetailsセクションでのフィールド表示順、およびAIコンテキスト注入時の表示順に反映。
+
+##### ダイアログのスコープ
+
+- ダイアログのタイトルに対象タイプのlabelを表示（例: 「Manage fields: キャラクター」）
+- 表示するフィールドは `WHERE project_id = ? AND type_slug = ?` でフィルタ
+- 変更は即時保存（Save ボタン押下時）。Cancel は未保存の編集を破棄
+- 他のタイプのフィールドには影響しない
+
+#### エッジケース
+
+- `codex_reference` の参照先が削除された → 「[削除済み]」表示、値をNULLに更新
+- エントリのタイプ変更 → 旧タイプのフィールド値は保持（非表示）、新タイプの定義のみ表示。タイプを戻せば値が復活
+- 自動保存（デバウンス1秒）
+
+### Tags フィールド（構造化タグ）
+
+タグは `codex_tags` テーブルで構造化管理される。エントリとタグの関連は `codex_entry_tags` 多対多テーブルで保持。
 
 - ピル型タグ一覧 + [+] ボタンで追加
+- タグは `codex_tags.color` に応じた色付きピルで表示
 - タグをクリックすると、同じタグを持つ全エントリをフィルタ表示
-- タグの×ボタンで削除
+- タグの×ボタンで削除（`codex_entry_tags` から行削除 + `tags_cache` 同期更新）
 - [+] クリックでインライン入力欄が表示。既存タグのオートコンプリート付き
+  - **タイプフィルタ**: 現在のエントリのタイプに該当するタグのみ候補表示（`codex_tags.type_filter` が NULL または現在のタイプを含むタグ）
+  - 入力中に一致するタグがなければ、新規タグとして作成可能（`codex_tags` に行追加）
+  - 新規タグ作成時の初期設定: `type_filter = NULL`（全タイプ）、`color = NULL`
+- タグの色・タイプ関連付けの管理は Settings 内の「Tags」セクションで行う
+
+### Tags 管理画面（Settings内）
+
+プロジェクト設定の「Tags」セクションでタグの一括管理が可能:
+
+| 操作 | 詳細 |
+|------|------|
+| タグ名編集 | インライン編集。変更は全エントリに即時反映 |
+| 色変更 | カラーピッカー。hex値 |
+| タイプ関連付け | チェックボックス群（`codex_types` から動的生成）。未選択=全タイプ |
+| 削除 | 確認ダイアログ。CASCADE で全エントリから除去 + `tags_cache` 再構築 |
 
 ### Relations セクション
 
@@ -287,9 +528,11 @@ Codexエントリ間の親子関係を管理するセクション。詳細は「
 |-----------|--------|
 | name | 「Untitled」（カーソルが入り即時編集可能） |
 | type | `character`（デフォルト） |
+| context_mode | `mentioned`（デフォルト） |
 | summary | 空 |
 | content | 空 |
 | tags | 空 |
+| custom details | 空（タイプに定義がある場合のみフィールド表示） |
 
 ### 他パネルからの作成
 
@@ -347,57 +590,17 @@ Editorの本文ファイルと同じ方針。DBにはファイル名ではなく
 
 ## DBスキーマ
 
-```sql
-CREATE TABLE codex_entries (
-  id                      TEXT PRIMARY KEY,
-  project_id              TEXT NOT NULL REFERENCES projects(id),
-  parent_id               TEXT REFERENCES codex_entries(id),   -- リレーション（親エントリ、nullable）
-  type                    TEXT NOT NULL DEFAULT 'character',   -- 'character'|'location'|'item'|'lore'
-  name                    TEXT NOT NULL DEFAULT 'Untitled',
-  aliases                 TEXT,                                -- JSON array: ["エララ", "the apprentice"]
-  excluded_aliases        TEXT,                                -- JSON array: ["青い", "青の", "青く"]
-  summary                 TEXT,                                -- 短い要約（1-2文）
-  tags                    TEXT,                                -- JSON array: ["protagonist", "mage"]
-  source_chat_message_id  TEXT REFERENCES chat_messages(id),   -- 抽出元（nullable）
-  created_at              TEXT NOT NULL DEFAULT (datetime('now')),
-  updated_at              TEXT NOT NULL DEFAULT (datetime('now'))
-);
+DBスキーマの正規版は統合DBスキーマ設計書（`Grimodex_統合DBスキーマ.md`）を参照。以下は概要のみ記載。
 
-CREATE INDEX idx_codex_project ON codex_entries(project_id, type);
-CREATE INDEX idx_codex_name    ON codex_entries(project_id, name);
-CREATE INDEX idx_codex_parent  ON codex_entries(parent_id);
+主要テーブル:
+- `codex_types`: タイプ定義（ビルトイン4種 + カスタム）
+- `codex_entries`: エントリ本体（`context_mode`、`tags_cache` カラム含む）
+- `codex_tags` / `codex_entry_tags`: 構造化タグ（多対多）
+- `codex_detail_definitions` / `codex_detail_values`: カスタムディテール
+- `codex_relation_dismissed`: リレーション提案のDismiss記録
+- `codex_fts`: FTS5仮想テーブル（name + aliases + summary + tags_cache）
 
--- 全文検索用FTS5仮想テーブル
-CREATE VIRTUAL TABLE codex_fts USING fts5(
-  name,
-  aliases,
-  summary,
-  tags,
-  content=codex_entries,
-  content_rowid=rowid,
-  tokenize='trigram'
-);
-
--- FTS5同期トリガー
-CREATE TRIGGER codex_fts_ai AFTER INSERT ON codex_entries BEGIN
-  INSERT INTO codex_fts(rowid, name, aliases, summary, tags)
-    VALUES (new.rowid, new.name, new.aliases, new.summary, new.tags);
-END;
-
-CREATE TRIGGER codex_fts_ad AFTER DELETE ON codex_entries BEGIN
-  INSERT INTO codex_fts(codex_fts, rowid, name, aliases, summary, tags)
-    VALUES ('delete', old.rowid, old.name, old.aliases, old.summary, old.tags);
-END;
-
-CREATE TRIGGER codex_fts_au AFTER UPDATE ON codex_entries BEGIN
-  INSERT INTO codex_fts(codex_fts, rowid, name, aliases, summary, tags)
-    VALUES ('delete', old.rowid, old.name, old.aliases, old.summary, old.tags);
-  INSERT INTO codex_fts(rowid, name, aliases, summary, tags)
-    VALUES (new.rowid, new.name, new.aliases, new.summary, new.tags);
-END;
-```
-
-FTS5テーブルはname + aliases + summary + tagsを検索対象にする。contentの全文はMarkdownファイルに保存されているため、content検索が必要な場合はファイルを読み込んで検索するか、FTS5テーブルにcontentカラムを追加する（トレードオフ: インデックスサイズ増加）。MVPではname + aliases + summary + tagsの検索で十分と判断。
+FTS5テーブルはname + aliases + summary + tags_cacheを検索対象にする。contentの全文はMarkdownファイルに保存されているため、content検索が必要な場合はファイルを読み込んで検索するか、FTS5テーブルにcontentカラムを追加する（トレードオフ: インデックスサイズ増加）。MVPではname + aliases + summary + tags_cacheの検索で十分と判断。
 
 ---
 
@@ -857,17 +1060,32 @@ function buildCodexContext(matchedEntryIds: string[]): string {
 
 | 注入トリガー | 親エントリ | 子エントリ（depth 1） | 孫エントリ（depth 2+） |
 |-------------|-----------|---------------------|---------------------|
-| 自動検出（本文にnameが出現） | summary | summary（自動） | 注入しない |
-| ピン留め | content全文 | summary（自動） | 注入しない |
+| 自動検出（本文にnameが出現） | summary + カスタムディテール（include_in_context=1） | summary（自動） | 注入しない |
+| ピン留め | content全文 + カスタムディテール（include_in_context=1） | summary（自動） | 注入しない |
+
+**context_mode による制御**:
+
+注入の前段として、各エントリの `context_mode` を判定する:
+
+```
+1. hidden → 注入リストから除外（ピンリストにあっても除外）
+2. always → 自動検出の有無に関わらず注入リストに追加
+3. mentioned → 現行ロジック（自動検出時のみ）
+4. suppress → 自動検出結果から除外。ピンリストに存在する場合のみ注入
+5. 子エントリも個別にcontext_modeを判定（親のモードは伝播しない）
+```
+
+**カスタムディテールの注入**: `include_in_context = 1` のフィールドの値をsummaryに付加してコンテキストに含める。`codex_reference` フィールドは参照先エントリのnameに解決して表示。
 
 **トークン予算の制御**:
 
 子エントリの自動注入で予算を超過する場合の優先順位:
-1. 本文に直接出現するエントリのsummary（最優先）
-2. ピン留めされたエントリのcontent
-3. 自動注入された子エントリのsummary（最初に切り詰め対象）
+1. `always` エントリのsummary + カスタムディテール（最優先）
+2. 本文に直接出現するエントリのsummary + カスタムディテール
+3. ピン留めされたエントリのcontent + カスタムディテール
+4. 自動注入された子エントリのsummary（最初に切り詰め対象）
 
-Chatパネルのコンテキストバーには、自動注入された子エントリもピルとして表示する。ただし通常のピルとは異なるスタイル（薄い表示 + 「via {親名}」ラベル）で区別し、×で個別除外も可能。
+Chatパネルのコンテキストバーには、自動注入された子エントリもピルとして表示する。ただし通常のピルとは異なるスタイル（薄い表示 + 「via {親名}」ラベル）で区別し、×で個別除外も可能。`always` エントリは常にピルとして表示（薄いスタイル + 「auto」ラベル）。`hidden` エントリはピンダイアログに表示しない。
 
 ---
 
@@ -1019,3 +1237,49 @@ Chatの「Codex」ボタンでエントリを即時作成（AI抽出/通常抽�
 ### Scenesパネル設計書
 
 Codex QuickセクションはZustandストアの `sceneCodexMatches` を共有。エントリクリックでCodexパネルの詳細を開く。
+
+---
+
+## カスタムタイプ管理
+
+### 概要
+
+ビルトイン4タイプ（Character, Location, Item, Lore）に加え、プロジェクト単位でカスタムタイプを追加可能。Settings内のCodexセクションで管理する。
+
+### Settings内のUI
+
+```
+Codex Types
+────────────────────────────────────────────
+● キャラクター (character)  char  🔒 ビルトイン
+● 場所 (location)           loc   🔒 ビルトイン
+● アイテム (item)           item  🔒 ビルトイン
+● 伝承 (lore)               lore  🔒 ビルトイン
+────────────────────────────────────────────
+● 勢力 (faction)            fact  [✎] [×]
+● 魔法体系 (magic_system)   magi  [✎] [×]
+────────────────────────────────────────────
+[+ Add type]
+```
+
+### カスタムタイプの作成
+
+[+ Add type] クリックでダイアログ表示:
+
+| フィールド | 説明 | バリデーション |
+|-----------|------|---------------|
+| Label | 表示名（日本語OK） | 必須、最大32文字 |
+| Slug | 内部識別子 | `/^[a-z][a-z0-9_]{0,31}$/`、プロジェクト内ユニーク |
+| Color | カテゴリドット色 | hex値、カラーピッカー |
+| File prefix | ファイル命名用4文字 | `/^[a-z]{4}$/`、プロジェクト内ユニーク |
+| Icon | Lucideアイコン名 | optional |
+
+### 制約
+
+- ビルトインタイプ: 削除不可、slug変更不可。label・color・icon・sort_orderは変更可
+- カスタムタイプ削除: 該当タイプのエントリが存在する場合は削除不可（エラー表示 + エントリ数表示）
+- カスタムタイプ削除時の連鎖処理:
+  - `codex_tags.type_filter` から該当slugを除去
+  - `codex_detail_definitions` の該当type_slugの定義を削除（CASCADE で値も削除）
+- プロジェクト間のタイプ共有なし（各プロジェクト独立）
+- sort_order はD&Dで並び替え可能。フィルタタブの表示順に反映
