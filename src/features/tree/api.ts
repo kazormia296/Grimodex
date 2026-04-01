@@ -17,10 +17,7 @@ export async function listNodes(
         .select()
         .from(treeNodes)
         .where(
-          and(
-            eq(treeNodes.projectId, projectId),
-            isNull(treeNodes.parentId),
-          ),
+          and(eq(treeNodes.projectId, projectId), isNull(treeNodes.parentId)),
         );
     }
     return db

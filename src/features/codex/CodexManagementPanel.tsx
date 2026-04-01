@@ -145,15 +145,15 @@ function CodexDetailContent({
     entry.type as CodexEntryType,
   );
   const [name, setName] = useState(entry.name);
-  const [summary, setSummary] = useState(entry.summary);
-  const [tags, setTags] = useState(entry.tags);
+  const [summary, setSummary] = useState(entry.summary ?? "");
+  const [tags, setTags] = useState(entry.tags ?? "");
 
   // Sync form when entry changes
   useEffect(() => {
     setType(entry.type as CodexEntryType);
     setName(entry.name);
-    setSummary(entry.summary);
-    setTags(entry.tags);
+    setSummary(entry.summary ?? "");
+    setTags(entry.tags ?? "");
   }, [entry.id, entry.type, entry.name, entry.summary, entry.tags]);
 
   const handleSave = () => {

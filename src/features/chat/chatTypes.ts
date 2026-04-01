@@ -19,8 +19,8 @@ export interface ChatSession {
   nodeId: string | null;
   title: string;
   titleManual: number;
-  model: string | null;
-  pinnedCodex: string; // JSON string[]
+  model: string;
+  pinnedCodex: string | null; // JSON string[]
   createdAt: string;
   updatedAt: string;
 }

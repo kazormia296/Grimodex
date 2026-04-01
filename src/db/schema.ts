@@ -30,12 +30,12 @@ export const treeNodes = sqliteTable("tree_nodes", {
     .references(() => projects.id, { onDelete: "cascade" }),
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   parentId: text("parent_id").references((): any => treeNodes.id, {
-    onDelete: "cascade",
+    onDelete: "set null",
   }),
   nodeType: text("node_type").notNull(), // 'part' | 'chapter' | 'scene' | 'folder' | 'note'
   title: text("title").notNull().default("Untitled"),
   sortOrder: real("sort_order").notNull().default(0.0),
-  status: text("status").notNull().default("outline"), // 'outline' | 'draft' | 'complete' | 'revision' | 'final'
+  status: text("status").default("outline"), // 'outline' | 'draft' | 'complete' | 'revision' | 'final'
   createdAt: text("created_at")
     .notNull()
     .$defaultFn(() => new Date().toISOString()),
@@ -49,13 +49,16 @@ export const codexEntries = sqliteTable("codex_entries", {
   projectId: text("project_id")
     .notNull()
     .references(() => projects.id, { onDelete: "cascade" }),
-  parentId: text("parent_id"),
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  parentId: text("parent_id").references((): any => codexEntries.id, {
+    onDelete: "set null",
+  }),
   type: text("type").notNull().default("character"), // 'character' | 'location' | 'item' | 'lore'
   name: text("name").notNull().default("Untitled"),
-  aliases: text("aliases").notNull().default("[]"), // JSON string[]
-  excludedAliases: text("excluded_aliases").notNull().default("[]"), // JSON string[]
-  summary: text("summary").notNull().default(""),
-  tags: text("tags").notNull().default("[]"), // JSON string[]
+  aliases: text("aliases"), // JSON string[]
+  excludedAliases: text("excluded_aliases"), // JSON string[]
+  summary: text("summary"),
+  tags: text("tags"), // JSON string[]
   sourceChatMessageId: text("source_chat_message_id"),
   createdAt: text("created_at")
     .notNull()
@@ -85,8 +88,10 @@ export const snippets = sqliteTable("snippets", {
     .references(() => projects.id, { onDelete: "cascade" }),
   title: text("title").notNull().default("Untitled"),
   content: text("content").notNull().default(""),
-  tags: text("tags").notNull().default("[]"), // JSON string[]
-  sceneId: text("scene_id"),
+  tags: text("tags"), // JSON string[]
+  sceneId: text("scene_id").references(() => treeNodes.id, {
+    onDelete: "set null",
+  }),
   sourceChatMessageId: text("source_chat_message_id"),
   usageCount: integer("usage_count").notNull().default(0),
   createdAt: text("created_at")
@@ -105,8 +110,10 @@ export const chatSessions = sqliteTable("chat_sessions", {
   nodeId: text("node_id"),
   title: text("title").notNull().default("New session"),
   titleManual: integer("title_manual").notNull().default(0),
-  model: text("model"),
-  pinnedCodex: text("pinned_codex").notNull().default("[]"), // JSON string[]
+  model: text("model")
+    .notNull()
+    .default("openrouter/anthropic/claude-sonnet-4.6"),
+  pinnedCodex: text("pinned_codex"), // JSON string[]
   createdAt: text("created_at")
     .notNull()
     .$defaultFn(() => new Date().toISOString()),

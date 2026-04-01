@@ -100,8 +100,8 @@ function CodexEditView({
     entry.type as CodexEntryType,
   );
   const [name, setName] = useState(entry.name);
-  const [summary, setSummary] = useState(entry.summary);
-  const [tags, setTags] = useState(entry.tags);
+  const [summary, setSummary] = useState(entry.summary ?? "");
+  const [tags, setTags] = useState(entry.tags ?? "");
 
   const handleSave = () => {
     if (!name.trim()) return;

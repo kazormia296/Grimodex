@@ -42,7 +42,7 @@ impl Database {
                 node_type   TEXT NOT NULL,
                 title       TEXT NOT NULL DEFAULT 'Untitled',
                 sort_order  REAL NOT NULL DEFAULT 0.0,
-                status      TEXT NOT NULL DEFAULT 'outline',
+                status      TEXT DEFAULT 'outline',
                 created_at  TEXT NOT NULL DEFAULT (datetime('now')),
                 updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
             );
@@ -55,10 +55,10 @@ impl Database {
                 parent_id               TEXT REFERENCES codex_entries(id) ON DELETE SET NULL,
                 type                    TEXT NOT NULL DEFAULT 'character',
                 name                    TEXT NOT NULL DEFAULT 'Untitled',
-                aliases                 TEXT NOT NULL DEFAULT '[]',
-                excluded_aliases        TEXT NOT NULL DEFAULT '[]',
-                summary                 TEXT NOT NULL DEFAULT '',
-                tags                    TEXT NOT NULL DEFAULT '[]',
+                aliases                 TEXT,
+                excluded_aliases        TEXT,
+                summary                 TEXT,
+                tags                    TEXT,
                 source_chat_message_id  TEXT,
                 created_at              TEXT NOT NULL DEFAULT (datetime('now')),
                 updated_at              TEXT NOT NULL DEFAULT (datetime('now'))
@@ -81,7 +81,7 @@ impl Database {
                 project_id              TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
                 title                   TEXT NOT NULL DEFAULT 'Untitled',
                 content                 TEXT NOT NULL DEFAULT '',
-                tags                    TEXT NOT NULL DEFAULT '[]',
+                tags                    TEXT,
                 scene_id                TEXT REFERENCES tree_nodes(id) ON DELETE SET NULL,
                 source_chat_message_id  TEXT,
                 usage_count             INTEGER NOT NULL DEFAULT 0,
@@ -97,8 +97,8 @@ impl Database {
                 node_id      TEXT REFERENCES tree_nodes(id) ON DELETE SET NULL,
                 title        TEXT NOT NULL DEFAULT 'New session',
                 title_manual INTEGER NOT NULL DEFAULT 0,
-                model        TEXT,
-                pinned_codex TEXT NOT NULL DEFAULT '[]',
+                model        TEXT NOT NULL DEFAULT 'openrouter/anthropic/claude-sonnet-4.6',
+                pinned_codex TEXT,
                 created_at   TEXT NOT NULL DEFAULT (datetime('now')),
                 updated_at   TEXT NOT NULL DEFAULT (datetime('now'))
             );
@@ -141,16 +141,19 @@ impl Database {
             -- FTS5 full-text search indexes (trigram tokenizer for Japanese)
             CREATE VIRTUAL TABLE IF NOT EXISTS codex_fts USING fts5(
                 name, aliases, summary, tags,
+                content=codex_entries, content_rowid=rowid,
                 tokenize='trigram'
             );
 
             CREATE VIRTUAL TABLE IF NOT EXISTS snippets_fts USING fts5(
                 title, content, tags,
+                content=snippets, content_rowid=rowid,
                 tokenize='trigram'
             );
 
             CREATE VIRTUAL TABLE IF NOT EXISTS chat_messages_fts USING fts5(
                 content,
+                content=chat_messages, content_rowid=rowid,
                 tokenize='trigram'
             );
 
@@ -160,10 +163,12 @@ impl Database {
                 VALUES (new.rowid, new.name, new.aliases, new.summary, new.tags);
             END;
             CREATE TRIGGER IF NOT EXISTS codex_fts_ad AFTER DELETE ON codex_entries BEGIN
-                DELETE FROM codex_fts WHERE rowid = old.rowid;
+                INSERT INTO codex_fts(codex_fts, rowid, name, aliases, summary, tags)
+                VALUES ('delete', old.rowid, old.name, old.aliases, old.summary, old.tags);
             END;
             CREATE TRIGGER IF NOT EXISTS codex_fts_au AFTER UPDATE ON codex_entries BEGIN
-                DELETE FROM codex_fts WHERE rowid = old.rowid;
+                INSERT INTO codex_fts(codex_fts, rowid, name, aliases, summary, tags)
+                VALUES ('delete', old.rowid, old.name, old.aliases, old.summary, old.tags);
                 INSERT INTO codex_fts(rowid, name, aliases, summary, tags)
                 VALUES (new.rowid, new.name, new.aliases, new.summary, new.tags);
             END;
@@ -174,10 +179,12 @@ impl Database {
                 VALUES (new.rowid, new.title, new.content, new.tags);
             END;
             CREATE TRIGGER IF NOT EXISTS snippets_fts_ad AFTER DELETE ON snippets BEGIN
-                DELETE FROM snippets_fts WHERE rowid = old.rowid;
+                INSERT INTO snippets_fts(snippets_fts, rowid, title, content, tags)
+                VALUES ('delete', old.rowid, old.title, old.content, old.tags);
             END;
             CREATE TRIGGER IF NOT EXISTS snippets_fts_au AFTER UPDATE ON snippets BEGIN
-                DELETE FROM snippets_fts WHERE rowid = old.rowid;
+                INSERT INTO snippets_fts(snippets_fts, rowid, title, content, tags)
+                VALUES ('delete', old.rowid, old.title, old.content, old.tags);
                 INSERT INTO snippets_fts(rowid, title, content, tags)
                 VALUES (new.rowid, new.title, new.content, new.tags);
             END;
@@ -188,10 +195,12 @@ impl Database {
                 VALUES (new.rowid, new.content);
             END;
             CREATE TRIGGER IF NOT EXISTS chat_messages_fts_ad AFTER DELETE ON chat_messages BEGIN
-                DELETE FROM chat_messages_fts WHERE rowid = old.rowid;
+                INSERT INTO chat_messages_fts(chat_messages_fts, rowid, content)
+                VALUES ('delete', old.rowid, old.content);
             END;
             CREATE TRIGGER IF NOT EXISTS chat_messages_fts_au AFTER UPDATE ON chat_messages BEGIN
-                DELETE FROM chat_messages_fts WHERE rowid = old.rowid;
+                INSERT INTO chat_messages_fts(chat_messages_fts, rowid, content)
+                VALUES ('delete', old.rowid, old.content);
                 INSERT INTO chat_messages_fts(rowid, content)
                 VALUES (new.rowid, new.content);
             END;

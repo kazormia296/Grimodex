@@ -228,7 +228,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
             id: e.id,
             type: e.type,
             name: e.name,
-            summary: e.summary,
+            summary: e.summary ?? "",
           }));
         }
 

@@ -26,7 +26,7 @@ export function SnippetDetailContent({
   onDelete,
 }: SnippetDetailContentProps) {
   const [title, setTitle] = useState(snippet.title);
-  const [tags, setTags] = useState(snippet.tags);
+  const [tags, setTags] = useState(snippet.tags ?? "");
 
   const editor = useEditor({
     extensions: [StarterKit.configure(), AuthorshipMark],
@@ -38,7 +38,7 @@ export function SnippetDetailContent({
   // Sync form when snippet changes
   useEffect(() => {
     setTitle(snippet.title);
-    setTags(snippet.tags);
+    setTags(snippet.tags ?? "");
     editor?.commands.setContent(snippet.content);
   }, [snippet.id, snippet.title, snippet.tags, snippet.content, editor]);
 

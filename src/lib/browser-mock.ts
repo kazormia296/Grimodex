@@ -26,7 +26,7 @@ const SCHEMA_DDL = `
     node_type TEXT NOT NULL,
     title TEXT NOT NULL DEFAULT 'Untitled',
     sort_order REAL NOT NULL DEFAULT 0.0,
-    status TEXT NOT NULL DEFAULT 'outline',
+    status TEXT DEFAULT 'outline',
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
   );
@@ -36,10 +36,10 @@ const SCHEMA_DDL = `
     parent_id TEXT,
     type TEXT NOT NULL DEFAULT 'character',
     name TEXT NOT NULL DEFAULT 'Untitled',
-    aliases TEXT NOT NULL DEFAULT '[]',
-    excluded_aliases TEXT NOT NULL DEFAULT '[]',
-    summary TEXT NOT NULL DEFAULT '',
-    tags TEXT NOT NULL DEFAULT '[]',
+    aliases TEXT,
+    excluded_aliases TEXT,
+    summary TEXT,
+    tags TEXT,
     source_chat_message_id TEXT,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
@@ -54,7 +54,7 @@ const SCHEMA_DDL = `
     project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
     title TEXT NOT NULL DEFAULT 'Untitled',
     content TEXT NOT NULL DEFAULT '',
-    tags TEXT NOT NULL DEFAULT '[]',
+    tags TEXT,
     scene_id TEXT,
     source_chat_message_id TEXT,
     usage_count INTEGER NOT NULL DEFAULT 0,
@@ -67,8 +67,8 @@ const SCHEMA_DDL = `
     node_id TEXT,
     title TEXT NOT NULL DEFAULT 'New session',
     title_manual INTEGER NOT NULL DEFAULT 0,
-    model TEXT,
-    pinned_codex TEXT NOT NULL DEFAULT '[]',
+    model TEXT NOT NULL DEFAULT 'openrouter/anthropic/claude-sonnet-4.6',
+    pinned_codex TEXT,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
   );

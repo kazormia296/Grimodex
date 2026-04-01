@@ -145,10 +145,12 @@ export async function updateSessionTitle(
 
 // --- Pinned Codex entries (now stored as JSON in chat_sessions.pinned_codex) ---
 
-function safeParsePinnedCodex(raw: string): string[] {
+function safeParsePinnedCodex(raw: string | null): string[] {
+  if (!raw) return [];
   try {
     const parsed: unknown = JSON.parse(raw);
-    if (Array.isArray(parsed)) return parsed.filter((v) => typeof v === "string");
+    if (Array.isArray(parsed))
+      return parsed.filter((v) => typeof v === "string");
   } catch {
     // corrupted JSON — treat as empty
   }
