@@ -282,7 +282,7 @@ Codexエントリ間の親子関係を管理するセクション。詳細は「
 
 **Editorの「Add to Codex」**: 選択テキストがnameになり、typeは `character` デフォルト。即時作成後、Codexパネルの詳細画面が開く（Editor設計書参照）。
 
-**Chatの「Codex」ボタン**: 抽出ダイアログでtype/name/content/tagsを入力して作成。`source_chat_message_id` が自動付与される（Chat設計書参照）。
+**Chatの「Codex」ボタン**: ダイアログなしで即時作成。AI抽出モードではtype/name/tags を軽量モデルが自動提案、通常抽出モードではcontent のみで他は空白。`source_chat_message_id` が自動付与される（Chat設計書参照）。
 
 ---
 
@@ -951,7 +951,7 @@ CREATE TABLE codex_relation_dismissed (
 
 ### ← Chat
 
-- Chatの「Codex」抽出ダイアログ → エントリ作成（`source_chat_message_id` 付き）
+- Chatの「Codex」ボタン → エントリ即時作成（`source_chat_message_id` 付き）
 
 ### → Editor
 
@@ -997,7 +997,7 @@ Codexハイライト（Pure Decorations）のホバーポップオーバーか�
 
 ### Chatパネル設計書
 
-Chatの「Codex」抽出ダイアログ経由でエントリ作成。`source_chat_message_id` でChat→Codexのトレーサビリティ。Chatのコンテキスト注入Layer 4でCodexエントリのsummaryが自動注入される。
+Chatの「Codex」ボタンでエントリを即時作成（AI抽出/通常抽出モード切り替え可能）。`source_chat_message_id` でChat→Codexのトレーサビリティ。Chatのコンテキスト注入Layer 4でCodexエントリのsummaryが自動注入される。
 
 ### Scenesパネル設計書
 

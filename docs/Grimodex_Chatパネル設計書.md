@@ -121,7 +121,7 @@ LLMに送信されるコンテキスト情報をユーザーに可視化する�
 | ボタン | 動作 |
 |--------|------|
 | Insert | メッセージ全文（またはテキスト選択範囲）をEditorのカーソル位置に挿入。AuthorshipMark `{ source: 'ai', model, chatMessageId }` を付与。挿入後、エディタで一時的にハイライト表示（2秒でフェード） |
-| Codex | Codex抽出ダイアログを開く（後述） |
+| Codex | Codexエントリを即時作成（後述） |
 | Snippet | メッセージ全文（またはテキスト選択範囲）をSnippetとして保存 |
 | Copy | メッセージ全文をクリップボードにコピー |
 | ⋮ | オーバーフローメニュー: Regenerate / Edit prompt / Delete |
@@ -136,30 +136,28 @@ AIメッセージ内のテキストを選択すると、選択範囲の近くに
 
 これにより、メッセージ全体ではなく一部分だけを挿入・抽出できる。
 
-### Codex抽出ダイアログ
+### Codex抽出（即時作成）
 
-「Codex」ボタン押下時に表示されるダイアログ:
+「Codex」ボタン押下時、ダイアログを経由せず即座にCodexエントリを作成する。
+抽出モードはChatパネルのヘッダーまたは設定でトグル切り替え可能:
 
-```
-┌─────────────────────────────────┐
-│ Add to Codex                    │
-│                                 │
-│ Type:  [character ▼]            │
-│ Name:  [Elara        ] (AI提案) │
-│ Content:                        │
-│ ┌─────────────────────────────┐ │
-│ │ (メッセージ全文 or 選択範囲)│ │
-│ └─────────────────────────────┘ │
-│ Tags:  [protagonist, mage    ] │
-│                                 │
-│             [Cancel] [Save]     │
-└─────────────────────────────────┘
-```
+**AI抽出モード（デフォルト）:**
+- 軽量モデル（haiku等）でメッセージ内容を解析し、以下を自動提案して即時作成:
+  - Name: メッセージ内容から抽出
+  - Type: character / location / item / lore を自動判定
+  - Content: メッセージ全文、またはテキスト選択範囲
+  - Tags: 内容から自動生成
+- 作成後、トースト通知「Added to Codex: {name}」（クリックでCodexパネルへ遷移）
 
-- Type: character / location / item / lore から選択
-- Name: AIがメッセージ内容から提案、ユーザーが編集可能
-- Content: メッセージ全文、またはテキスト選択範囲
-- Tags: カンマ区切り
+**通常抽出モード:**
+- Content以外のフィールドを空白のまま即時作成:
+  - Name: 空白（Codexパネルで後から編集）
+  - Type: なし
+  - Content: メッセージ全文、またはテキスト選択範囲（未加工）
+  - Tags: なし
+- 作成後、トースト通知「Added to Codex (unnamed)」（クリックでCodexパネルへ遷移）
+
+**共通:**
 - 保存後、元メッセージに「Codex抽出済み」バッジ表示
 - `source_chat_message_id` で元メッセージとの紐付けを保持
 
@@ -411,7 +409,7 @@ function buildContext(sceneId: string, session: ChatSession): SystemPrompt {
 | メニュー項目 | 動作 |
 |-------------|------|
 | Insert to editor | メッセージ全文をエディタに挿入 |
-| Add to Codex... | Codex抽出ダイアログを開く |
+| Add to Codex | Codexエントリを即時作成 |
 | Save as Snippet | Snippetとして保存 |
 | Copy | クリップボードにコピー |
 | --- | |
@@ -425,7 +423,7 @@ function buildContext(sceneId: string, session: ChatSession): SystemPrompt {
 | メニュー項目 | 動作 |
 |-------------|------|
 | Insert selection | 選択範囲のみをエディタに挿入 |
-| Add selection to Codex... | 選択範囲でCodex抽出ダイアログ |
+| Add selection to Codex | 選択範囲でCodexエントリを即時作成 |
 | Save selection as Snippet | 選択範囲をSnippetとして保存 |
 
 ---
@@ -511,7 +509,7 @@ Note: EditorにはインラインAIコマンド機能がある（`/` またはCt
 
 ### Chat → Codex
 
-- 「Codex」ボタン → Codex抽出ダイアログ → `codex_entries` に保存
+- 「Codex」ボタン → Codexエントリを即時作成（AI抽出/通常抽出モードに応じて） → `codex_entries` に保存
 - 保存時に `source_chat_message_id` を記録
 - Codexパネルの各エントリに「抽出元チャット」へのリンクを表示
 
