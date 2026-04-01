@@ -145,6 +145,16 @@ export async function updateSessionTitle(
 
 // --- Pinned Codex entries (now stored as JSON in chat_sessions.pinned_codex) ---
 
+function safeParsePinnedCodex(raw: string): string[] {
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (Array.isArray(parsed)) return parsed.filter((v) => typeof v === "string");
+  } catch {
+    // corrupted JSON — treat as empty
+  }
+  return [];
+}
+
 export async function listPinnedCodexEntries(
   sessionId: string,
 ): Promise<CodexEntry[]> {
@@ -154,7 +164,7 @@ export async function listPinnedCodexEntries(
     .where(eq(chatSessions.id, sessionId));
   if (!rows[0]) return [];
 
-  const ids: string[] = JSON.parse(rows[0].pinnedCodex);
+  const ids = safeParsePinnedCodex(rows[0].pinnedCodex);
   if (ids.length === 0) return [];
 
   return db.select().from(codexEntries).where(inArray(codexEntries.id, ids));
@@ -170,7 +180,7 @@ export async function pinCodexEntry(
     .where(eq(chatSessions.id, sessionId));
   if (!rows[0]) return;
 
-  const ids: string[] = JSON.parse(rows[0].pinnedCodex);
+  const ids = safeParsePinnedCodex(rows[0].pinnedCodex);
   if (!ids.includes(entryId)) {
     ids.push(entryId);
     await db
@@ -190,7 +200,7 @@ export async function unpinCodexEntry(
     .where(eq(chatSessions.id, sessionId));
   if (!rows[0]) return;
 
-  const ids: string[] = JSON.parse(rows[0].pinnedCodex);
+  const ids = safeParsePinnedCodex(rows[0].pinnedCodex);
   const filtered = ids.filter((id) => id !== entryId);
   await db
     .update(chatSessions)

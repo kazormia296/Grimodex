@@ -89,7 +89,7 @@ const SCHEMA_DDL = `
     node_id TEXT NOT NULL REFERENCES tree_nodes(id) ON DELETE CASCADE,
     from_pos INTEGER NOT NULL,
     to_pos INTEGER NOT NULL,
-    source TEXT NOT NULL CHECK(source IN ('human','ai','unknown','snippet')),
+    source TEXT NOT NULL CHECK(source IN ('human','ai','unknown')),
     model TEXT,
     timestamp TEXT,
     chat_msg_id TEXT

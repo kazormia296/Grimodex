@@ -1,6 +1,6 @@
 import { db } from "@/db/client";
 import { treeNodes } from "@/db/schema";
-import { eq, and } from "drizzle-orm";
+import { eq, and, isNull } from "drizzle-orm";
 import { invoke } from "@/lib/tauri";
 
 export type TreeNode = typeof treeNodes.$inferSelect;
@@ -19,7 +19,7 @@ export async function listNodes(
         .where(
           and(
             eq(treeNodes.projectId, projectId),
-            // parentId IS NULL — top-level nodes
+            isNull(treeNodes.parentId),
           ),
         );
     }
@@ -71,12 +71,12 @@ export async function updateNode(
 }
 
 export async function deleteNode(id: string): Promise<void> {
-  // Check if it's a scene to delete content file
+  // Delete content file first (before DB record) to avoid orphaned files
   const node = await getNode(id);
-  await db.delete(treeNodes).where(eq(treeNodes.id, id));
   if (node?.nodeType === "scene") {
     await invoke("content_delete", { sceneId: id });
   }
+  await db.delete(treeNodes).where(eq(treeNodes.id, id));
 }
 
 // --- Scene content operations ---

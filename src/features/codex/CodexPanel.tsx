@@ -63,9 +63,6 @@ function CodexDetailView({
           {TYPE_LABELS[entry.type] ?? entry.type}
         </span>
         {entry.summary && (
-          <p className="mb-2 text-sm text-muted-foreground">{entry.summary}</p>
-        )}
-        {entry.summary && (
           <p className="whitespace-pre-wrap text-sm">{entry.summary}</p>
         )}
         {entry.tags && (
