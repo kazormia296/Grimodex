@@ -15,10 +15,10 @@ impl AiProvider {
     /// Keyring service name for this provider.
     fn keyring_service(&self) -> &str {
         match self {
-            AiProvider::OpenRouter => "noveloom-openrouter",
-            AiProvider::OpenAI => "noveloom-openai",
-            AiProvider::Anthropic => "noveloom-anthropic",
-            AiProvider::Ollama => "noveloom-ollama",
+            AiProvider::OpenRouter => "grimodex-openrouter",
+            AiProvider::OpenAI => "grimodex-openai",
+            AiProvider::Anthropic => "grimodex-anthropic",
+            AiProvider::Ollama => "grimodex-ollama",
         }
     }
 
@@ -103,7 +103,7 @@ pub fn write_ai_settings(path: &Path, settings: &AiSettings) -> anyhow::Result<(
     Ok(())
 }
 
-const KEYRING_USER: &str = "noveloom-user";
+const KEYRING_USER: &str = "grimodex-user";
 
 /// Save an API key to the OS keyring.
 pub fn save_api_key(provider: &AiProvider, key: &str) -> anyhow::Result<()> {
@@ -161,8 +161,8 @@ pub async fn fetch_models(
         AiProvider::OpenRouter => {
             req = req
                 .header("Authorization", format!("Bearer {api_key}"))
-                .header("HTTP-Referer", "https://github.com/noveloom/noveloom")
-                .header("X-Title", "NoveLoom");
+                .header("HTTP-Referer", "https://github.com/futurebassisdead/Grimodex")
+                .header("X-Title", "Grimodex");
         }
         _ => {
             req = req.header("Authorization", format!("Bearer {api_key}"));
@@ -291,8 +291,8 @@ pub async fn test_connection(
 
             if matches!(provider, AiProvider::OpenRouter) {
                 req = req
-                    .header("HTTP-Referer", "https://github.com/noveloom/noveloom")
-                    .header("X-Title", "NoveLoom");
+                    .header("HTTP-Referer", "https://github.com/futurebassisdead/Grimodex")
+                    .header("X-Title", "Grimodex");
             }
 
             let resp = req.json(&body).send().await?.error_for_status()?;
@@ -389,8 +389,8 @@ pub async fn send_chat(
 
             if matches!(provider, AiProvider::OpenRouter) {
                 req = req
-                    .header("HTTP-Referer", "https://github.com/noveloom/noveloom")
-                    .header("X-Title", "NoveLoom");
+                    .header("HTTP-Referer", "https://github.com/futurebassisdead/Grimodex")
+                    .header("X-Title", "Grimodex");
             }
 
             let resp = req.json(&body).send().await?.error_for_status()?;
@@ -412,7 +412,7 @@ mod tests {
     use std::path::PathBuf;
 
     fn temp_path(name: &str) -> PathBuf {
-        std::env::temp_dir().join(format!("noveloom_ai_test_{name}"))
+        std::env::temp_dir().join(format!("grimodex_ai_test_{name}"))
     }
 
     fn cleanup(path: &Path) {

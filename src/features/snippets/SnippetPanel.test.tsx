@@ -123,7 +123,7 @@ describe("SnippetPanel", () => {
 
     expect(setData).toHaveBeenCalledWith("text/plain", "ドラッグ内容");
     expect(setData).toHaveBeenCalledWith(
-      "application/x-noveloom-snippet",
+      "application/x-grimodex-snippet",
       JSON.stringify({
         id: 1,
         content: "ドラッグ内容",

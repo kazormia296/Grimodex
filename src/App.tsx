@@ -44,7 +44,7 @@ function EditorScreen() {
     <main className="flex h-screen flex-col">
       <header className="flex items-center gap-3 border-b border-border px-4 py-2">
         <WorkspaceMenu />
-        <h1 className="text-xl font-bold text-foreground">NoveLoom</h1>
+        <h1 className="text-xl font-bold text-foreground">Grimodex</h1>
         <div className="ml-auto">
           <button
             type="button"

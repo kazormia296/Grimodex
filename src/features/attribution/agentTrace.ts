@@ -2,7 +2,7 @@
  * Agent Trace v0.1.0 export types and conversion logic.
  *
  * MIME type: application/vnd.agent-trace.record+json
- * NoveLoom extensions use the `dev.noveloom.*` namespace.
+ * Grimodex extensions use the `dev.grimodex.*` namespace.
  */
 
 import type { Node as ProseMirrorNode } from "@tiptap/pm/model";
@@ -38,8 +38,8 @@ export interface AgentTraceRecord {
   generatedAt: string;
   /** Document identifier */
   documentId: string;
-  /** Document title (NoveLoom extension) */
-  "dev.noveloom.documentTitle": string;
+  /** Document title (Grimodex extension) */
+  "dev.grimodex.documentTitle": string;
   /** SHA-256 hash of the full document text */
   contentHash: string;
   /** Total character count */
@@ -166,7 +166,7 @@ export async function buildAgentTraceRecord(
     type: "application/vnd.agent-trace.record+json",
     generatedAt: new Date().toISOString(),
     documentId,
-    "dev.noveloom.documentTitle": documentTitle,
+    "dev.grimodex.documentTitle": documentTitle,
     contentHash,
     totalChars: fullText.length,
     spans,

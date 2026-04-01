@@ -128,7 +128,7 @@ mod tests {
     use super::*;
 
     fn temp_dir(name: &str) -> PathBuf {
-        std::env::temp_dir().join(format!("noveloom_content_{name}"))
+        std::env::temp_dir().join(format!("grimodex_content_{name}"))
     }
 
     fn cleanup(dir: &PathBuf) {

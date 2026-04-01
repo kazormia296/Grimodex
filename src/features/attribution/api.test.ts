@@ -26,7 +26,7 @@ describe("spansToMarkData", () => {
         aiMessageId: "msg-1",
         manualOverride: 0,
         contentHash: "abc123",
-        toolName: "noveloom",
+        toolName: "grimodex",
         toolVersion: "0.1.0",
         createdAt: "2026-03-31T00:00:00.000Z",
       },
@@ -56,7 +56,7 @@ describe("spansToMarkData", () => {
     expect(markData[0].attrs.source).toBe("ai");
     expect(markData[0].attrs.model).toBe("anthropic/claude-sonnet-4-6");
     expect(markData[0].attrs.manualOverride).toBe(false);
-    expect(markData[0].attrs.toolName).toBe("noveloom");
+    expect(markData[0].attrs.toolName).toBe("grimodex");
 
     expect(markData[1].from).toBe(10);
     expect(markData[1].to).toBe(20);

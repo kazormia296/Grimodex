@@ -43,7 +43,7 @@ describe("extractSpans", () => {
                 source: "ai",
                 model: "anthropic/claude-sonnet-4-6",
                 traceId: "trace-1",
-                toolName: "noveloom",
+                toolName: "grimodex",
                 toolVersion: "0.1.0",
               },
             },
@@ -57,7 +57,7 @@ describe("extractSpans", () => {
     expect(spans[0].source).toBe("ai");
     expect(spans[0].model).toBe("anthropic/claude-sonnet-4-6");
     expect(spans[0].traceId).toBe("trace-1");
-    expect(spans[0].toolName).toBe("noveloom");
+    expect(spans[0].toolName).toBe("grimodex");
     editor.destroy();
   });
 
@@ -204,7 +204,7 @@ describe("buildAgentTraceRecord", () => {
     expect(record.version).toBe("0.1.0");
     expect(record.type).toBe("application/vnd.agent-trace.record+json");
     expect(record.documentId).toBe("scene-1");
-    expect(record["dev.noveloom.documentTitle"]).toBe("第一章");
+    expect(record["dev.grimodex.documentTitle"]).toBe("第一章");
     expect(record.contentHash).toHaveLength(64);
     expect(record.totalChars).toBe(4);
     expect(record.spans.length).toBeGreaterThan(0);

@@ -1,4 +1,4 @@
-# NoveLoom — Claude Code 日常リファレンス
+# Grimodex — Claude Code 日常リファレンス
 
 ## セッション開始時
 

@@ -223,7 +223,7 @@ describe("AuthorshipMark", () => {
               attrs: {
                 source: "ai",
                 traceId: "trace-001",
-                toolName: "noveloom",
+                toolName: "grimodex",
                 toolVersion: "0.1.0",
               },
             },
@@ -242,7 +242,7 @@ describe("AuthorshipMark", () => {
       }
     });
     expect(attrs.traceId).toBe("trace-001");
-    expect(attrs.toolName).toBe("noveloom");
+    expect(attrs.toolName).toBe("grimodex");
     expect(attrs.toolVersion).toBe("0.1.0");
     editor.destroy();
   });

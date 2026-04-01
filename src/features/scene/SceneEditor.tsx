@@ -55,7 +55,7 @@ export function SceneEditor() {
       },
       handleDrop(_view, event) {
         const snippetData = event.dataTransfer?.getData(
-          "application/x-noveloom-snippet",
+          "application/x-grimodex-snippet",
         );
         if (!snippetData) return false;
         event.preventDefault();

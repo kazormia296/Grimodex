@@ -1,4 +1,4 @@
-# NoveLoom — AI統合小説執筆エディタ
+# Grimodex — AI統合小説執筆エディタ
 
 ## プロジェクト概要
 Tauri v2 + React 19 + TypeScript。TipTapベースのリッチテキストエディタに

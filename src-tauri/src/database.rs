@@ -681,7 +681,7 @@ mod tests {
 
     #[test]
     fn test_data_persists_across_reopen() {
-        let dir = std::env::temp_dir().join("noveloom_test_persist");
+        let dir = std::env::temp_dir().join("grimodex_test_persist");
         std::fs::create_dir_all(&dir).ok();
         let db_path = dir.join("persist.db");
 
@@ -1505,7 +1505,7 @@ mod tests {
 
     #[test]
     fn test_chat_persist_across_reopen() {
-        let dir = std::env::temp_dir().join("noveloom_test_chat_persist");
+        let dir = std::env::temp_dir().join("grimodex_test_chat_persist");
         std::fs::create_dir_all(&dir).ok();
         let db_path = dir.join("chat_persist.db");
         std::fs::remove_file(&db_path).ok();
@@ -1565,7 +1565,7 @@ mod tests {
 
     #[test]
     fn test_wal_mode_enabled() {
-        let dir = std::env::temp_dir().join("noveloom_test_wal");
+        let dir = std::env::temp_dir().join("grimodex_test_wal");
         std::fs::create_dir_all(&dir).ok();
         let db_path = dir.join("test.db");
         let db = Database::new(&db_path).expect("open db");

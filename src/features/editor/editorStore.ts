@@ -57,7 +57,7 @@ export const useEditorStore = create<EditorState>()((set, get) => ({
               chatMessageId,
               timestamp: new Date().toISOString(),
               model: model ?? null,
-              toolName: "noveloom",
+              toolName: "grimodex",
               toolVersion: "0.1.0",
               originalLength: text.length,
               traceId: crypto.randomUUID(),

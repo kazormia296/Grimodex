@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
-/// Metadata stored inside each workspace at `.noveloom/workspace.json`.
+/// Metadata stored inside each workspace at `.grimodex/workspace.json`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkspaceMeta {
     pub id: String,
@@ -58,7 +58,7 @@ pub fn write_global_settings(path: &Path, settings: &GlobalSettings) -> anyhow::
 
 /// Check whether a given directory is (or can be) a valid workspace.
 /// Returns `true` if the directory exists and either:
-/// - contains `noveloom.db` (existing workspace), or
+/// - contains `grimodex.db` (existing workspace), or
 /// - is empty or does not exist yet (new workspace).
 #[allow(dead_code)]
 pub fn is_valid_workspace_path(path: &Path) -> bool {
@@ -68,7 +68,7 @@ pub fn is_valid_workspace_path(path: &Path) -> bool {
     if !path.is_dir() {
         return false;
     }
-    if path.join("noveloom.db").exists() {
+    if path.join("grimodex.db").exists() {
         return true;
     }
     // Empty directory is valid
@@ -78,12 +78,12 @@ pub fn is_valid_workspace_path(path: &Path) -> bool {
     }
 }
 
-/// Check if a path contains an existing workspace (has noveloom.db).
+/// Check if a path contains an existing workspace (has grimodex.db).
 pub fn is_existing_workspace(path: &Path) -> bool {
-    path.join("noveloom.db").exists()
+    path.join("grimodex.db").exists()
 }
 
-/// Initialize workspace metadata in `.noveloom/workspace.json`.
+/// Initialize workspace metadata in `.grimodex/workspace.json`.
 /// If metadata already exists, reads and returns it.
 /// Otherwise, creates new metadata with the given UUID and timestamp.
 pub fn ensure_workspace_meta(
@@ -91,7 +91,7 @@ pub fn ensure_workspace_meta(
     uuid_str: &str,
     now: &str,
 ) -> anyhow::Result<WorkspaceMeta> {
-    let meta_dir = workspace_path.join(".noveloom");
+    let meta_dir = workspace_path.join(".grimodex");
     let meta_path = meta_dir.join("workspace.json");
 
     if meta_path.exists() {
@@ -146,7 +146,7 @@ mod tests {
     use std::fs;
 
     fn temp_dir(name: &str) -> PathBuf {
-        std::env::temp_dir().join(format!("noveloom_ws_test_{name}"))
+        std::env::temp_dir().join(format!("grimodex_ws_test_{name}"))
     }
 
     fn cleanup(dir: &Path) {
@@ -236,7 +236,7 @@ mod tests {
         let dir = temp_dir("ws_existing");
         cleanup(&dir);
         fs::create_dir_all(&dir).ok();
-        fs::write(dir.join("noveloom.db"), "fake db").ok();
+        fs::write(dir.join("grimodex.db"), "fake db").ok();
         assert!(is_valid_workspace_path(&dir));
         cleanup(&dir);
     }
@@ -270,7 +270,7 @@ mod tests {
         let dir = temp_dir("ws_has_db");
         cleanup(&dir);
         fs::create_dir_all(&dir).ok();
-        fs::write(dir.join("noveloom.db"), "fake").ok();
+        fs::write(dir.join("grimodex.db"), "fake").ok();
         assert!(is_existing_workspace(&dir));
         cleanup(&dir);
     }
@@ -297,7 +297,7 @@ mod tests {
         assert_eq!(meta.id, "test-uuid-1234");
         assert_eq!(meta.created_at, "2026-03-31T00:00:00Z");
 
-        let meta_path = dir.join(".noveloom").join("workspace.json");
+        let meta_path = dir.join(".grimodex").join("workspace.json");
         assert!(meta_path.exists());
 
         cleanup(&dir);
@@ -307,7 +307,7 @@ mod tests {
     fn test_ensure_workspace_meta_reads_existing() {
         let dir = temp_dir("ws_meta_existing");
         cleanup(&dir);
-        let meta_dir = dir.join(".noveloom");
+        let meta_dir = dir.join(".grimodex");
         fs::create_dir_all(&meta_dir).ok();
 
         let existing = WorkspaceMeta {

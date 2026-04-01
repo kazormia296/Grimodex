@@ -31,7 +31,7 @@ export function LauncherScreen() {
   return (
     <div className="flex h-screen flex-col items-center justify-center bg-background text-foreground">
       <div className="flex w-full max-w-lg flex-col gap-6 px-8">
-        <h1 className="text-2xl font-bold">NoveLoom</h1>
+        <h1 className="text-2xl font-bold">Grimodex</h1>
 
         <div>
           <h2 className="mb-3 text-sm font-semibold text-muted-foreground">

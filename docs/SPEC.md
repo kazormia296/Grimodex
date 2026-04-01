@@ -1,11 +1,11 @@
-# NoveLoom - 製品仕様書
+# Grimodex - 製品仕様書
 
 > バージョン: 0.1.0 (MVP)
 > 最終更新: 2026-03-31
 
 ## 1. 製品概要
 
-NoveLoomは、Novelcrafterに着想を得た、日本語小説作家向けのデスクトップ執筆エディタである。リッチテキストエディタにAIチャットパネルと構造化ナレッジベース（Codex）を組み合わせ、AIとの対話から知識を抽出・整理し、原稿に直接活用できる。
+Grimodexは、Novelcrafterに着想を得た、日本語小説作家向けのデスクトップ執筆エディタである。リッチテキストエディタにAIチャットパネルと構造化ナレッジベース（Codex）を組み合わせ、AIとの対話から知識を抽出・整理し、原稿に直接活用できる。
 
 **コア体験:** AIとチャットし、構造化された知識を抽出し、コンテキストを活用した執筆支援を受ける。
 
@@ -48,8 +48,8 @@ NoveLoomは、Novelcrafterに着想を得た、日本語小説作家向けのデ
 
 ```
 my-novel/
-  noveloom.json              # プロジェクトマニフェスト
-  .noveloom/
+  grimodex.json              # プロジェクトマニフェスト
+  .grimodex/
     db.sqlite                # SQLite インデックス/キャッシュ/メタデータ
     chat/                    # チャット履歴（スレッドごとのJSON）
   codex/
@@ -137,15 +137,15 @@ content/
 **設計根拠:**
 - ファイル名のソート順プレフィックスにより、エクスプローラーやGitで自然な順序表示
 - `short_id` サフィックスにより、タイトル変更・並び替え後もファイルの同一性を追跡可能
-- タイトル埋め込みにより、NoveLoom外でもファイル内容を推測可能
+- タイトル埋め込みにより、Grimodex外でもファイル内容を推測可能
 
 ### 2.5 ワークスペースメタデータ
 
 ワークスペースの識別情報とアプリケーション全体の設定は、それぞれ別の場所に永続化する。
 
-**ワークスペースメタデータ（`.noveloom/workspace.json`）:**
+**ワークスペースメタデータ（`.grimodex/workspace.json`）:**
 
-各ワークスペースのルートにある `.noveloom/` ディレクトリに格納。ワークスペースの一意識別に使用。
+各ワークスペースのルートにある `.grimodex/` ディレクトリに格納。ワークスペースの一意識別に使用。
 
 ```json
 {
@@ -182,9 +182,9 @@ OSのアプリケーションデータディレクトリに格納。全ワーク
 | `showLauncherOnStartup` | boolean | `false` | 起動時にランチャーを表示するか |
 
 **ワークスペースの判定:**
-- `noveloom.db` がルートに存在するディレクトリ → 既存ワークスペース
+- `grimodex.db` がルートに存在するディレクトリ → 既存ワークスペース
 - 空ディレクトリまたは存在しないパス → 新規ワークスペース作成可能
-- 上記以外（`noveloom.db` がないファイルを含むディレクトリ）→ 無効
+- 上記以外（`grimodex.db` がないファイルを含むディレクトリ）→ 無効
 
 ---
 
@@ -210,7 +210,7 @@ OSのアプリケーションデータディレクトリに格納。全ワーク
 | `ai` | AIチャットから挿入されたテキスト（未編集、または軽微な編集のみ） |
 | `mixed` | AI由来のテキストをユーザーが大幅に編集したもの |
 | `unknown` | 出所不明（外部からのインポート/ペースト時のデフォルト） |
-| `snippet` | スニペットから挿入されたテキスト（NoveLoom独自拡張） |
+| `snippet` | スニペットから挿入されたテキスト（Grimodex独自拡張） |
 
 **Mark属性（AuthorshipAttributes）:**
 
@@ -221,7 +221,7 @@ OSのアプリケーションデータディレクトリに格納。全ワーク
 | `model` | string \| null | `provider/model` 形式（例: `anthropic/claude-sonnet-4-6`） |
 | `chatMessageId` | string \| null | 生成元のチャットメッセージID |
 | `traceId` | string \| null | Agent Traceのトレース識別子（UUID） |
-| `toolName` | string \| null | ツール名（`noveloom` 固定） |
+| `toolName` | string \| null | ツール名（`grimodex` 固定） |
 | `toolVersion` | string \| null | アプリバージョン（例: `0.1.0`） |
 | `manualOverride` | boolean | ユーザーによる手動上書きフラグ |
 | `originalLength` | number \| null | 挿入時の元テキスト長（mixed→human比率計算用） |
@@ -264,7 +264,7 @@ CREATE TABLE authorship_spans (
 
 - ドキュメント保存時: 現在のTipTap Markの位置をシリアライズ → `authorship_spans` を全置換更新
 - ドキュメント読み込み時: SQLiteからスパンを読み込み → TipTap Markとして適用
-- 外部編集時（NoveLoom外でファイルが変更された場合）: 帰属データが陳腐化 → 警告を表示し、ドキュメントの帰属データのクリアを提案
+- 外部編集時（Grimodex外でファイルが変更された場合）: 帰属データが陳腐化 → 警告を表示し、ドキュメントの帰属データのクリアを提案
 
 **表示:**
 - トグル可能なオーバーレイ: humanテキストは通常表示、`ai` / `mixed` / `unknown` / `snippet` はそれぞれ異なる背景色
@@ -275,13 +275,13 @@ CREATE TABLE authorship_spans (
 - Agent Trace v0.1.0 準拠の JSON エクスポート（`.agent-trace.json`）
 - MIME type: `application/vnd.agent-trace.record+json`
 - 文字レベルのマークを集約したスパン、SHA-256コンテンツハッシュを含む
-- NoveLoom独自拡張は `dev.noveloom.*` 名前空間
+- Grimodex独自拡張は `dev.grimodex.*` 名前空間
 
 ### 3.3 チャットからのテキスト挿入
 
 2つの方式を同時に提供:
 
-1. **コピーボタン** — チャットメッセージのテキストをカスタムデータ型（`application/x-noveloom-ai-text`）でクリップボードにコピー。エディタにペーストすると `ai` マークで検出・記録。
+1. **コピーボタン** — チャットメッセージのテキストをカスタムデータ型（`application/x-grimodex-ai-text`）でクリップボードにコピー。エディタにペーストすると `ai` マークで検出・記録。
 2. **「エディタに挿入」ボタン** — プログラム的にカーソル位置にテキストを挿入し、`ai` マークを付与。
 
 「挿入」クリック時にエディタにカーソルフォーカスがない場合は、ドキュメント末尾に挿入する。
@@ -312,7 +312,7 @@ CREATE TABLE authorship_spans (
 - 各ドキュメントは **N個のチャットスレッド** を持てる
 - プロジェクトレベルスレッドは特定のドキュメントに紐づかない
 - スレッド一覧はサイドバーに表示、アクティブスレッドはチャットパネルに表示
-- スレッドは `.noveloom/chat/{thread-id}.json` にJSONファイルとして永続化
+- スレッドは `.grimodex/chat/{thread-id}.json` にJSONファイルとして永続化
 
 スレッドスキーマ:
 ```json
@@ -362,7 +362,7 @@ CREATE TABLE authorship_spans (
 ユーザーはプロンプトテンプレートを作成・管理可能:
 - 組み込みテンプレート: 「汎用アシスタント」「プロットコンサルタント」「文体エディタ」「キャラクター深掘り」
 - カスタムテンプレート（変数展開対応）
-- テンプレートの保存先: `noveloom.json` または専用の `templates/` ディレクトリ
+- テンプレートの保存先: `grimodex.json` または専用の `templates/` ディレクトリ
 
 ---
 
@@ -403,7 +403,7 @@ modified: "ISO8601"
 
 ## Source Messages
 
-- [2026-03-15 チャットから抽出](noveloom://chat/thread-id/message-id)
+- [2026-03-15 チャットから抽出](grimodex://chat/thread-id/message-id)
 ```
 
 **設計判断:**

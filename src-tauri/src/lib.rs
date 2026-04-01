@@ -80,7 +80,7 @@ fn save_global_settings(
 #[tauri::command]
 fn validate_workspace_path(path: String) -> bool {
     let p = PathBuf::from(&path);
-    p.exists() && p.is_dir() && p.join("noveloom.db").exists()
+    p.exists() && p.is_dir() && p.join("grimodex.db").exists()
 }
 
 #[tauri::command]
@@ -100,7 +100,7 @@ fn open_workspace(
     workspace::ensure_workspace_meta(&ws_path, &uuid_str, &now)?;
 
     // Open database
-    let db_path = ws_path.join("noveloom.db");
+    let db_path = ws_path.join("grimodex.db");
     let database = Database::new(&db_path)?;
     database.migrate()?;
 

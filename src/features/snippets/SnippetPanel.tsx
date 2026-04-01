@@ -38,7 +38,7 @@ export function SnippetPanel() {
     ) => {
       e.dataTransfer.setData("text/plain", snippet.content);
       e.dataTransfer.setData(
-        "application/x-noveloom-snippet",
+        "application/x-grimodex-snippet",
         JSON.stringify({
           id: snippet.id,
           content: snippet.content,

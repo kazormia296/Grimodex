@@ -73,9 +73,9 @@ describe("sendChat", () => {
     const [url, opts] = mockFetch.mock.calls[0];
     expect(url).toBe("/api/openrouter/chat/completions");
     expect(opts.headers["HTTP-Referer"]).toBe(
-      "https://github.com/noveloom/noveloom",
+      "https://github.com/futurebassisdead/Grimodex",
     );
-    expect(opts.headers["X-Title"]).toBe("NoveLoom");
+    expect(opts.headers["X-Title"]).toBe("Grimodex");
   });
 
   it("sends Ollama request without auth", async () => {
@@ -151,7 +151,7 @@ describe("fetchModels", () => {
     await fetchModels("openrouter", "sk-or");
     const [, opts] = mockFetch.mock.calls[0];
     expect(opts.headers["HTTP-Referer"]).toBe(
-      "https://github.com/noveloom/noveloom",
+      "https://github.com/futurebassisdead/Grimodex",
     );
   });
 });

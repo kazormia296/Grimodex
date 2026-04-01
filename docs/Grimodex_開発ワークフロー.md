@@ -1,4 +1,4 @@
-# NoveLoom — AI統合小説執筆エディタ 開発ワークフロー
+# Grimodex — AI統合小説執筆エディタ 開発ワークフロー
 
 ## 全体方針
 
@@ -31,7 +31,7 @@ P5  Japanese Features  — ルビ・縦書き・日本語FTS
 ### 1.1 ディレクトリ構成
 
 ```
-noveloom/
+grimodex/
 ├── CLAUDE.md
 ├── CLAUDE.local.md
 ├── .claudeignore
@@ -71,7 +71,7 @@ noveloom/
 ### 1.2 CLAUDE.md（更新版）
 
 ```markdown
-# NoveLoom — AI統合小説執筆エディタ
+# Grimodex — AI統合小説執筆エディタ
 
 ## プロジェクト概要
 Tauri v2 + React 19 + TypeScript。TipTapベースのリッチテキストエディタに

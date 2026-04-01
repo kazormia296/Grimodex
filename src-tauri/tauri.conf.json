@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "NoveLoom",
+  "productName": "Grimodex",
   "version": "0.1.0",
-  "identifier": "com.miyakey.noveloom",
+  "identifier": "com.miyakey.grimodex",
   "build": {
     "beforeDevCommand": "npm run dev",
     "devUrl": "http://localhost:1420",
@@ -12,7 +12,7 @@
   "app": {
     "windows": [
       {
-        "title": "NoveLoom",
+        "title": "Grimodex",
         "width": 800,
         "height": 600
       }

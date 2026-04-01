@@ -27,7 +27,7 @@ export function WelcomeScreen() {
   return (
     <div className="flex h-screen flex-col items-center justify-center bg-background text-foreground">
       <div className="flex max-w-md flex-col items-center gap-6 px-8">
-        <h1 className="text-3xl font-bold tracking-tight">NoveLoom</h1>
+        <h1 className="text-3xl font-bold tracking-tight">Grimodex</h1>
         <p className="text-center text-sm text-muted-foreground">
           原稿の保存先フォルダを選んでください。
           <br />

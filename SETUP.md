@@ -1,4 +1,4 @@
-# NoveLoom セットアップ手順（Windows）
+# Grimodex セットアップ手順（Windows）
 
 ## 前提条件の確認
 
@@ -21,8 +21,8 @@ copy GLOBAL_CLAUDE.md "$env:USERPROFILE\.claude\CLAUDE.md"
 ## Step 2: プロジェクトディレクトリを作成
 
 ```powershell
-mkdir noveloom
-cd noveloom
+mkdir grimodex
+cd grimodex
 git init
 ```
 

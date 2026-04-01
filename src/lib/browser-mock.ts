@@ -87,8 +87,8 @@ const SCHEMA_DDL = `
   );
 `;
 
-const CONTENT_PREFIX = "noveloom:content:";
-const GLOBAL_SETTINGS_KEY = "noveloom:global-settings";
+const CONTENT_PREFIX = "grimodex:content:";
+const GLOBAL_SETTINGS_KEY = "grimodex:global-settings";
 
 export interface BrowserMock {
   invoke: <T = unknown>(
@@ -115,8 +115,8 @@ export async function createBrowserMock(): Promise<BrowserMock> {
   );
 
   const contentStore = new Map<string, string>();
-  const AI_SETTINGS_KEY = "noveloom:ai-settings";
-  const API_KEY_PREFIX = "noveloom:api-key:";
+  const AI_SETTINGS_KEY = "grimodex:ai-settings";
+  const API_KEY_PREFIX = "grimodex:api-key:";
 
   function handleGetAiSettings(): Record<string, unknown> {
     try {
