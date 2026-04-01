@@ -160,33 +160,33 @@ impl Database {
             -- Triggers to keep FTS indexes in sync: codex_entries
             CREATE TRIGGER IF NOT EXISTS codex_fts_ai AFTER INSERT ON codex_entries BEGIN
                 INSERT INTO codex_fts(rowid, name, aliases, summary, tags)
-                VALUES (new.rowid, new.name, new.aliases, new.summary, new.tags);
+                VALUES (new.rowid, new.name, COALESCE(new.aliases, ''), COALESCE(new.summary, ''), COALESCE(new.tags, ''));
             END;
             CREATE TRIGGER IF NOT EXISTS codex_fts_ad AFTER DELETE ON codex_entries BEGIN
                 INSERT INTO codex_fts(codex_fts, rowid, name, aliases, summary, tags)
-                VALUES ('delete', old.rowid, old.name, old.aliases, old.summary, old.tags);
+                VALUES ('delete', old.rowid, old.name, COALESCE(old.aliases, ''), COALESCE(old.summary, ''), COALESCE(old.tags, ''));
             END;
             CREATE TRIGGER IF NOT EXISTS codex_fts_au AFTER UPDATE ON codex_entries BEGIN
                 INSERT INTO codex_fts(codex_fts, rowid, name, aliases, summary, tags)
-                VALUES ('delete', old.rowid, old.name, old.aliases, old.summary, old.tags);
+                VALUES ('delete', old.rowid, old.name, COALESCE(old.aliases, ''), COALESCE(old.summary, ''), COALESCE(old.tags, ''));
                 INSERT INTO codex_fts(rowid, name, aliases, summary, tags)
-                VALUES (new.rowid, new.name, new.aliases, new.summary, new.tags);
+                VALUES (new.rowid, new.name, COALESCE(new.aliases, ''), COALESCE(new.summary, ''), COALESCE(new.tags, ''));
             END;
 
             -- Triggers to keep FTS indexes in sync: snippets
             CREATE TRIGGER IF NOT EXISTS snippets_fts_ai AFTER INSERT ON snippets BEGIN
                 INSERT INTO snippets_fts(rowid, title, content, tags)
-                VALUES (new.rowid, new.title, new.content, new.tags);
+                VALUES (new.rowid, new.title, new.content, COALESCE(new.tags, ''));
             END;
             CREATE TRIGGER IF NOT EXISTS snippets_fts_ad AFTER DELETE ON snippets BEGIN
                 INSERT INTO snippets_fts(snippets_fts, rowid, title, content, tags)
-                VALUES ('delete', old.rowid, old.title, old.content, old.tags);
+                VALUES ('delete', old.rowid, old.title, old.content, COALESCE(old.tags, ''));
             END;
             CREATE TRIGGER IF NOT EXISTS snippets_fts_au AFTER UPDATE ON snippets BEGIN
                 INSERT INTO snippets_fts(snippets_fts, rowid, title, content, tags)
-                VALUES ('delete', old.rowid, old.title, old.content, old.tags);
+                VALUES ('delete', old.rowid, old.title, old.content, COALESCE(old.tags, ''));
                 INSERT INTO snippets_fts(rowid, title, content, tags)
-                VALUES (new.rowid, new.title, new.content, new.tags);
+                VALUES (new.rowid, new.title, new.content, COALESCE(new.tags, ''));
             END;
 
             -- Triggers to keep FTS indexes in sync: chat_messages
