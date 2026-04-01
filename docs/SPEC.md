@@ -53,6 +53,7 @@ my-novel/
     db.sqlite                # SQLite インデックス/キャッシュ/メタデータ
     chat/                    # チャット履歴（スレッドごとのJSON）
   codex/
+    icons/                   # アイコン画像（128×128 WebP）
     characters/
       太郎.md
       花子.md
@@ -60,6 +61,8 @@ my-novel/
       東京タワー.md
     items/
       聖剣.md
+  snippets/                  # SnippetのMarkdownコンテンツ
+    台詞案.md
   manuscript/
     第一部/
       第1章/

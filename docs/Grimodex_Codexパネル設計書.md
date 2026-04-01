@@ -134,7 +134,7 @@ Codexパネルはプロジェクトの世界設定データベース。キャラ
 
 ```
 ┌─────────────────────────────────┐
-│ ● Elara               character │  ← Header
+│ [🖼] Elara             character │  ← Header (icon + name + type)
 ├─────────────────────────────────┤
 │ Aliases: [エララ]               │  ← Aliases
 │          [the apprentice] [+]   │
@@ -174,8 +174,15 @@ Codexパネルはプロジェクトの世界設定データベース。キャラ
 
 ### ヘッダー
 
-- カテゴリドット + エントリ名（クリックでインライン編集）
-- 右寄せでカテゴリバッジ（クリックでtype変更ドロップダウン）
+- アイコン画像 + エントリ名（クリックでインライン編集）+ 右寄せでカテゴリバッジ（クリックでtype変更ドロップダウン）
+
+### アイコン画像
+
+- ヘッダー左端に32×32pxのアイコン画像を表示
+- クリックで画像選択ダイアログを開き、ローカル画像ファイルを選択
+- 画像は `codex/icons/` ディレクトリに保存（リサイズ: 128×128px、WebP変換）
+- 未設定時はカテゴリドット（typeに応じた色の●）をフォールバック表示
+- リスト画面のサムネイルにも同じアイコンを使用（24×24px）
 
 ### Aliases フィールド
 
@@ -209,10 +216,15 @@ Codexパネルはプロジェクトの世界設定データベース。キャラ
 - プレースホルダー: 「Short description...」
 - この内容がエディタのCodexハイライト ポップオーバー、Codex Quickセクション、Chatコンテキスト注入の「要約」として使われる
 - 自動保存（デバウンス1秒）
+- **AI自動要約**:
+  - summaryが空でcontentがある場合、入力欄内に「✨ Generate summary」ボタンを表示
+  - クリックで軽量モデル（haiku等）がcontentを要約し、summaryに自動入力
+  - 既にsummaryがある場合はボタン非表示。代わりに右クリックコンテキストメニューの「Regenerate summary」で上書き可能
+  - 生成中はスピナー表示、失敗時はトースト通知
 
 ### Content フィールド（TipTapミニエディタ）
 
-- TipTapの軽量インスタンス。StarterKitのサブセット（太字、斜体、見出し、リスト、リンク）
+- TipTapの軽量インスタンス。StarterKitのサブセット（太字、斜体、見出し、リスト、リンク）。Markdown記法をリアルタイムにリッチテキストとしてレンダリング
 - キャラクターの詳細な背景設定、場所の歴史、アイテムの由来など、長文の設定情報を記述
 - **CodexHighlight対応**: エディタ本文と同じCodexHighlight Pure Decorationを適用。Content内で言及された他のCodexエントリがハイライトされ、ホバーポップオーバーで確認、「Open in Codex →」で遷移可能。自エントリ自身のnameとaliasesはハイライト対象から除外
 - Content内で検出されたCodexエントリは「リレーション提案」としてRelationsセクションに表示される（後述）
@@ -300,12 +312,16 @@ summaryはSQLiteの `codex_entries.summary` カラムに直接保存。content�
 MyNovel.novel/
 ├── content/              ← Scene/Note本文
 ├── codex/                ← Codexエントリの詳細コンテンツ
+│   ├── icons/            ← アイコン画像（128×128 WebP）
 │   ├── char_elara_a3f8.md
 │   ├── char_master-orin_c9d3.md
 │   ├── loc_obsidian-tower_b7c2.md
 │   ├── loc_binding-chamber_e1f4.md
 │   ├── item_soulbind-amulet_d4e1.md
 │   └── lore_age-of-binding_f9a0.md
+├── snippets/             ← SnippetのMarkdownコンテンツ
+│   ├── elara-monologue_b2c1.md
+│   └── tower-description_d4e2.md
 └── project.db
 ```
 

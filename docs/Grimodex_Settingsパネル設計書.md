@@ -300,7 +300,7 @@ Inline AI palette                Ctrl+Space
 | [Backup now] | ボタン | — | 即座にバックアップを作成 |
 | [Open backups folder] | ボタン | — | バックアップフォルダをOSのファイルマネージャで開く |
 
-バックアップ形式: プロジェクトフォルダ全体（`content/` + `codex/` + `project.db`）をZIPアーカイブ。ファイル名: `{project_title}_{YYYYMMDD_HHmmss}.zip`
+バックアップ形式: プロジェクトフォルダ全体（`content/` + `codex/` + `snippets/` + `project.db`）をZIPアーカイブ。ファイル名: `{project_title}_{YYYYMMDD_HHmmss}.zip`
 
 ### エクスポート
 
