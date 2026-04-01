@@ -23,7 +23,12 @@ describe("projects schema", () => {
     const columns = Object.keys(projects);
     expect(columns).toContain("id");
     expect(columns).toContain("title");
-    expect(columns).toContain("description");
+    expect(columns).toContain("genre");
+    expect(columns).toContain("pov");
+    expect(columns).toContain("tense");
+    expect(columns).toContain("language");
+    expect(columns).toContain("styleGuide");
+    expect(columns).toContain("aiInstructions");
     expect(columns).toContain("createdAt");
     expect(columns).toContain("updatedAt");
   });
@@ -64,8 +69,8 @@ describe("projects schema", () => {
     );
 
     await db.insert(projects).values({
+      id: "proj-1",
       title: "My Novel",
-      description: "A great story",
       createdAt: "2025-01-01T00:00:00Z",
       updatedAt: "2025-01-01T00:00:00Z",
     });
@@ -88,7 +93,7 @@ describe("projects schema", () => {
     await db
       .update(projects)
       .set({ title: "Updated Title" })
-      .where(eq(projects.id, 1));
+      .where(eq(projects.id, "proj-1"));
     expect(executedQueries.length).toBe(1);
     expect(executedQueries[0].sql).toContain("update");
     expect(executedQueries[0].sql).toContain("projects");
@@ -105,7 +110,7 @@ describe("projects schema", () => {
       { schema },
     );
 
-    await db.delete(projects).where(eq(projects.id, 1));
+    await db.delete(projects).where(eq(projects.id, "proj-1"));
     expect(executedQueries.length).toBe(1);
     expect(executedQueries[0].sql).toContain("delete");
     expect(executedQueries[0].sql).toContain("projects");

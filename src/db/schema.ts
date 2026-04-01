@@ -1,9 +1,20 @@
-import { sqliteTable, text, integer } from "drizzle-orm/sqlite-core";
+import {
+  sqliteTable,
+  text,
+  integer,
+  real,
+  primaryKey,
+} from "drizzle-orm/sqlite-core";
 
 export const projects = sqliteTable("projects", {
-  id: integer("id").primaryKey({ autoIncrement: true }),
-  title: text("title").notNull(),
-  description: text("description").notNull().default(""),
+  id: text("id").primaryKey(),
+  title: text("title").notNull().default("Untitled Project"),
+  genre: text("genre"),
+  pov: text("pov"),
+  tense: text("tense"),
+  language: text("language").notNull().default("ja"),
+  styleGuide: text("style_guide"),
+  aiInstructions: text("ai_instructions"),
   createdAt: text("created_at")
     .notNull()
     .$defaultFn(() => new Date().toISOString()),
@@ -12,29 +23,19 @@ export const projects = sqliteTable("projects", {
     .$defaultFn(() => new Date().toISOString()),
 });
 
-export const chapters = sqliteTable("chapters", {
-  id: integer("id").primaryKey({ autoIncrement: true }),
-  projectId: integer("project_id")
+export const treeNodes = sqliteTable("tree_nodes", {
+  id: text("id").primaryKey(),
+  projectId: text("project_id")
     .notNull()
     .references(() => projects.id, { onDelete: "cascade" }),
-  title: text("title").notNull(),
-  sortOrder: integer("sort_order").notNull().default(0),
-  createdAt: text("created_at")
-    .notNull()
-    .$defaultFn(() => new Date().toISOString()),
-  updatedAt: text("updated_at")
-    .notNull()
-    .$defaultFn(() => new Date().toISOString()),
-});
-
-export const scenes = sqliteTable("scenes", {
-  id: text("id").primaryKey(), // UUID — content stored at content/{id}.md
-  chapterId: integer("chapter_id")
-    .notNull()
-    .references(() => chapters.id, { onDelete: "cascade" }),
-  title: text("title").notNull(),
-  sortOrder: integer("sort_order").notNull().default(0),
-  synopsis: text("synopsis").notNull().default(""),
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  parentId: text("parent_id").references((): any => treeNodes.id, {
+    onDelete: "cascade",
+  }),
+  nodeType: text("node_type").notNull(), // 'part' | 'chapter' | 'scene' | 'folder' | 'note'
+  title: text("title").notNull().default("Untitled"),
+  sortOrder: real("sort_order").notNull().default(0.0),
+  status: text("status").notNull().default("outline"), // 'outline' | 'draft' | 'complete' | 'revision' | 'final'
   createdAt: text("created_at")
     .notNull()
     .$defaultFn(() => new Date().toISOString()),
@@ -44,14 +45,18 @@ export const scenes = sqliteTable("scenes", {
 });
 
 export const codexEntries = sqliteTable("codex_entries", {
-  id: integer("id").primaryKey({ autoIncrement: true }),
-  type: text("type").notNull(), // 'character' | 'location' | 'item' | 'lore'
-  name: text("name").notNull(),
+  id: text("id").primaryKey(),
+  projectId: text("project_id")
+    .notNull()
+    .references(() => projects.id, { onDelete: "cascade" }),
+  parentId: text("parent_id"),
+  type: text("type").notNull().default("character"), // 'character' | 'location' | 'item' | 'lore'
+  name: text("name").notNull().default("Untitled"),
+  aliases: text("aliases").notNull().default("[]"), // JSON string[]
+  excludedAliases: text("excluded_aliases").notNull().default("[]"), // JSON string[]
   summary: text("summary").notNull().default(""),
-  content: text("content").notNull().default(""),
-  tags: text("tags").notNull().default(""),
+  tags: text("tags").notNull().default("[]"), // JSON string[]
   sourceChatMessageId: text("source_chat_message_id"),
-  source: text("source").notNull().default("human"), // 'ai' | 'human'
   createdAt: text("created_at")
     .notNull()
     .$defaultFn(() => new Date().toISOString()),
@@ -60,74 +65,91 @@ export const codexEntries = sqliteTable("codex_entries", {
     .$defaultFn(() => new Date().toISOString()),
 });
 
+export const codexRelationDismissed = sqliteTable(
+  "codex_relation_dismissed",
+  {
+    entryId: text("entry_id")
+      .notNull()
+      .references(() => codexEntries.id, { onDelete: "cascade" }),
+    dismissedId: text("dismissed_id")
+      .notNull()
+      .references(() => codexEntries.id, { onDelete: "cascade" }),
+  },
+  (table) => [primaryKey({ columns: [table.entryId, table.dismissedId] })],
+);
+
 export const snippets = sqliteTable("snippets", {
-  id: integer("id").primaryKey({ autoIncrement: true }),
-  title: text("title").notNull(),
+  id: text("id").primaryKey(),
+  projectId: text("project_id")
+    .notNull()
+    .references(() => projects.id, { onDelete: "cascade" }),
+  title: text("title").notNull().default("Untitled"),
   content: text("content").notNull().default(""),
-  tags: text("tags").notNull().default(""),
+  tags: text("tags").notNull().default("[]"), // JSON string[]
   sceneId: text("scene_id"),
   sourceChatMessageId: text("source_chat_message_id"),
-  source: text("source").notNull().default("human"), // 'ai' | 'human'
-  originalContent: text("original_content"),
+  usageCount: integer("usage_count").notNull().default(0),
   createdAt: text("created_at")
+    .notNull()
+    .$defaultFn(() => new Date().toISOString()),
+  updatedAt: text("updated_at")
     .notNull()
     .$defaultFn(() => new Date().toISOString()),
 });
 
-export const chatThreads = sqliteTable("chat_threads", {
+export const chatSessions = sqliteTable("chat_sessions", {
   id: text("id").primaryKey(),
-  title: text("title").notNull(),
-  sceneId: text("scene_id").references(() => scenes.id, {
-    onDelete: "cascade",
-  }),
+  projectId: text("project_id")
+    .notNull()
+    .references(() => projects.id, { onDelete: "cascade" }),
+  nodeId: text("node_id"),
+  title: text("title").notNull().default("New session"),
+  titleManual: integer("title_manual").notNull().default(0),
+  model: text("model"),
+  pinnedCodex: text("pinned_codex").notNull().default("[]"), // JSON string[]
   createdAt: text("created_at")
     .notNull()
     .$defaultFn(() => new Date().toISOString()),
-  modifiedAt: text("modified_at")
+  updatedAt: text("updated_at")
     .notNull()
     .$defaultFn(() => new Date().toISOString()),
 });
 
 export const chatMessages = sqliteTable("chat_messages", {
   id: text("id").primaryKey(),
-  threadId: text("thread_id")
+  sessionId: text("session_id")
     .notNull()
-    .references(() => chatThreads.id, { onDelete: "cascade" }),
+    .references(() => chatSessions.id, { onDelete: "cascade" }),
   role: text("role").notNull(), // 'user' | 'assistant' | 'system'
   content: text("content").notNull(),
+  model: text("model"),
+  tokensIn: integer("tokens_in"),
+  tokensOut: integer("tokens_out"),
+  durationMs: integer("duration_ms"),
+  metadata: text("metadata"), // JSON
   createdAt: text("created_at")
     .notNull()
     .$defaultFn(() => new Date().toISOString()),
-});
-
-export const chatThreadPinnedCodex = sqliteTable("chat_thread_pinned_codex", {
-  threadId: text("thread_id")
-    .notNull()
-    .references(() => chatThreads.id, { onDelete: "cascade" }),
-  codexEntryId: integer("codex_entry_id")
-    .notNull()
-    .references(() => codexEntries.id, { onDelete: "cascade" }),
 });
 
 export const authorshipSpans = sqliteTable("authorship_spans", {
-  id: integer("id").primaryKey({ autoIncrement: true }),
-  sceneId: text("scene_id")
+  id: text("id").primaryKey(),
+  nodeId: text("node_id")
     .notNull()
-    .references(() => scenes.id, { onDelete: "cascade" }),
-  offsetStart: integer("offset_start").notNull(),
-  offsetEnd: integer("offset_end").notNull(),
+    .references(() => treeNodes.id, { onDelete: "cascade" }),
+  fromPos: integer("from_pos").notNull(),
+  toPos: integer("to_pos").notNull(),
   source: text("source").notNull(), // 'human' | 'ai' | 'unknown'
-  traceId: text("trace_id"),
   model: text("model"),
-  aiMessageId: text("ai_message_id"),
-  manualOverride: integer("manual_override").notNull().default(0),
-  contentHash: text("content_hash"),
-  toolName: text("tool_name"),
-  toolVersion: text("tool_version"),
-  createdAt: text("created_at")
-    .notNull()
-    .$defaultFn(() => new Date().toISOString()),
+  timestamp: text("timestamp"),
+  chatMsgId: text("chat_msg_id"),
 });
 
+export const settings = sqliteTable("settings", {
+  key: text("key").primaryKey(),
+  value: text("value").notNull(),
+});
+
+// Type exports
 export type AuthorshipSpan = typeof authorshipSpans.$inferSelect;
 export type NewAuthorshipSpan = typeof authorshipSpans.$inferInsert;

@@ -22,38 +22,44 @@ const mockListCodexEntries = vi.mocked(listCodexEntries);
 
 const mockEntries: CodexEntry[] = [
   {
-    id: 1,
+    id: "codex-1",
+    projectId: "proj-1",
+    parentId: null,
     type: "character",
     name: "アリス",
     summary: "主人公",
-    content: "不思議の国の住人",
+    aliases: "[]",
+    excludedAliases: "[]",
     tags: "主人公,ファンタジー",
     sourceChatMessageId: "msg-1",
-    source: "ai",
     createdAt: "2024-01-01T00:00:00Z",
     updatedAt: "2024-01-01T00:00:00Z",
   },
   {
-    id: 2,
+    id: "codex-2",
+    projectId: "proj-1",
+    parentId: null,
     type: "location",
     name: "不思議の国",
     summary: "舞台",
-    content: "奇妙な世界",
+    aliases: "[]",
+    excludedAliases: "[]",
     tags: "場所",
     sourceChatMessageId: null,
-    source: "human",
     createdAt: "2024-01-02T00:00:00Z",
     updatedAt: "2024-01-02T00:00:00Z",
   },
   {
-    id: 3,
+    id: "codex-3",
+    projectId: "proj-1",
+    parentId: null,
     type: "item",
     name: "魔法の鍵",
     summary: "重要アイテム",
-    content: "扉を開ける鍵",
+    aliases: "[]",
+    excludedAliases: "[]",
     tags: "アイテム",
     sourceChatMessageId: null,
-    source: "human",
     createdAt: "2024-01-03T00:00:00Z",
     updatedAt: "2024-01-03T00:00:00Z",
   },
@@ -109,7 +115,7 @@ describe("CodexPanel", () => {
     await user.click(screen.getByText("アリス"));
 
     expect(screen.getByTestId("codex-detail-view")).toBeInTheDocument();
-    expect(screen.getByText("不思議の国の住人")).toBeInTheDocument();
+    expect(screen.getAllByText("主人公").length).toBeGreaterThan(0);
   });
 
   it("calls setFilterType when filter is changed", async () => {

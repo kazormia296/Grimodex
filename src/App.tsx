@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { Toaster } from "sonner";
-import { Sidebar } from "@/features/scene/Sidebar";
-import { SceneEditor } from "@/features/scene/SceneEditor";
+import { Sidebar } from "@/features/tree/Sidebar";
+import { SceneEditor } from "@/features/tree/SceneEditor";
 import { RightPanel } from "@/features/workspace/RightPanel";
 import { WelcomeScreen } from "@/features/workspace/WelcomeScreen";
 import { LauncherScreen } from "@/features/workspace/LauncherScreen";

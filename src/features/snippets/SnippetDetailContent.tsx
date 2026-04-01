@@ -4,7 +4,6 @@ import { useEditor, EditorContent } from "@tiptap/react";
 import StarterKit from "@tiptap/starter-kit";
 import { AuthorshipMark } from "@/features/attribution/AuthorshipMark";
 import { useAttribution } from "@/features/attribution/useAttribution";
-import { applyInitialAuthorshipMarks } from "@/features/attribution/applyInitialMarks";
 import {
   copyWithAttribution,
   handleCopyWithAttribution,
@@ -15,10 +14,10 @@ import type { Snippet } from "./api";
 interface SnippetDetailContentProps {
   snippet: Snippet;
   onSave: (
-    id: number,
+    id: string,
     data: { title: string; content: string; tags: string },
   ) => void;
-  onDelete: (id: number) => void;
+  onDelete: (id: string) => void;
 }
 
 export function SnippetDetailContent({
@@ -41,10 +40,7 @@ export function SnippetDetailContent({
     setTitle(snippet.title);
     setTags(snippet.tags);
     editor?.commands.setContent(snippet.content);
-    if (editor) {
-      applyInitialAuthorshipMarks(editor, snippet.source, snippet.content);
-    }
-  }, [snippet.id, snippet.title, snippet.tags, snippet.content, snippet.source, editor]);
+  }, [snippet.id, snippet.title, snippet.tags, snippet.content, editor]);
 
   const handleSave = () => {
     if (!title.trim()) return;
@@ -72,7 +68,7 @@ export function SnippetDetailContent({
             onClick={() =>
               copyWithAttribution(
                 editor?.getText() ?? snippet.content,
-                (snippet.source ?? "human") as AuthorshipSource,
+                "human" as AuthorshipSource,
               )
             }
             className="rounded p-1.5 text-muted-foreground hover:bg-accent hover:text-accent-foreground"
@@ -95,10 +91,7 @@ export function SnippetDetailContent({
       <div
         className="flex-1 space-y-3 overflow-y-auto px-3 py-3"
         onCopy={(e) =>
-          handleCopyWithAttribution(
-            e,
-            (snippet.source ?? "human") as AuthorshipSource,
-          )
+          handleCopyWithAttribution(e, "human" as AuthorshipSource)
         }
       >
         <div>

@@ -8,82 +8,95 @@ import { sendChat, fetchModels, testConnection } from "@/lib/browser-ai";
 
 const SCHEMA_DDL = `
   CREATE TABLE IF NOT EXISTS projects (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    title TEXT NOT NULL,
-    description TEXT NOT NULL DEFAULT '',
-    created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL
-  );
-  CREATE TABLE IF NOT EXISTS chapters (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-    title TEXT NOT NULL,
-    sort_order INTEGER NOT NULL DEFAULT 0,
-    created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL
-  );
-  CREATE TABLE IF NOT EXISTS scenes (
     id TEXT PRIMARY KEY,
-    chapter_id INTEGER NOT NULL REFERENCES chapters(id) ON DELETE CASCADE,
-    title TEXT NOT NULL,
-    sort_order INTEGER NOT NULL DEFAULT 0,
-    synopsis TEXT NOT NULL DEFAULT '',
+    title TEXT NOT NULL DEFAULT 'Untitled Project',
+    genre TEXT,
+    pov TEXT,
+    tense TEXT,
+    language TEXT NOT NULL DEFAULT 'ja',
+    style_guide TEXT,
+    ai_instructions TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS tree_nodes (
+    id TEXT PRIMARY KEY,
+    project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    parent_id TEXT REFERENCES tree_nodes(id) ON DELETE CASCADE,
+    node_type TEXT NOT NULL,
+    title TEXT NOT NULL DEFAULT 'Untitled',
+    sort_order REAL NOT NULL DEFAULT 0.0,
+    status TEXT NOT NULL DEFAULT 'outline',
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
   );
   CREATE TABLE IF NOT EXISTS codex_entries (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    type TEXT NOT NULL,
-    name TEXT NOT NULL,
+    id TEXT PRIMARY KEY,
+    project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    parent_id TEXT,
+    type TEXT NOT NULL DEFAULT 'character',
+    name TEXT NOT NULL DEFAULT 'Untitled',
+    aliases TEXT NOT NULL DEFAULT '[]',
+    excluded_aliases TEXT NOT NULL DEFAULT '[]',
     summary TEXT NOT NULL DEFAULT '',
-    content TEXT NOT NULL DEFAULT '',
-    tags TEXT NOT NULL DEFAULT '',
+    tags TEXT NOT NULL DEFAULT '[]',
     source_chat_message_id TEXT,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
   );
+  CREATE TABLE IF NOT EXISTS codex_relation_dismissed (
+    entry_id TEXT NOT NULL REFERENCES codex_entries(id) ON DELETE CASCADE,
+    dismissed_id TEXT NOT NULL REFERENCES codex_entries(id) ON DELETE CASCADE,
+    PRIMARY KEY (entry_id, dismissed_id)
+  );
   CREATE TABLE IF NOT EXISTS snippets (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    title TEXT NOT NULL,
+    id TEXT PRIMARY KEY,
+    project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    title TEXT NOT NULL DEFAULT 'Untitled',
     content TEXT NOT NULL DEFAULT '',
-    tags TEXT NOT NULL DEFAULT '',
+    tags TEXT NOT NULL DEFAULT '[]',
     scene_id TEXT,
     source_chat_message_id TEXT,
-    created_at TEXT NOT NULL
-  );
-  CREATE TABLE IF NOT EXISTS chat_threads (
-    id TEXT PRIMARY KEY,
-    title TEXT NOT NULL,
-    scene_id TEXT REFERENCES scenes(id) ON DELETE CASCADE,
+    usage_count INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL,
-    modified_at TEXT NOT NULL
+    updated_at TEXT NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS chat_sessions (
+    id TEXT PRIMARY KEY,
+    project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    node_id TEXT,
+    title TEXT NOT NULL DEFAULT 'New session',
+    title_manual INTEGER NOT NULL DEFAULT 0,
+    model TEXT,
+    pinned_codex TEXT NOT NULL DEFAULT '[]',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
   );
   CREATE TABLE IF NOT EXISTS chat_messages (
     id TEXT PRIMARY KEY,
-    thread_id TEXT NOT NULL REFERENCES chat_threads(id) ON DELETE CASCADE,
+    session_id TEXT NOT NULL REFERENCES chat_sessions(id) ON DELETE CASCADE,
     role TEXT NOT NULL,
     content TEXT NOT NULL,
+    model TEXT,
+    tokens_in INTEGER,
+    tokens_out INTEGER,
+    duration_ms INTEGER,
+    metadata TEXT,
     created_at TEXT NOT NULL
   );
-  CREATE TABLE IF NOT EXISTS chat_thread_pinned_codex (
-    thread_id TEXT NOT NULL REFERENCES chat_threads(id) ON DELETE CASCADE,
-    codex_entry_id INTEGER NOT NULL REFERENCES codex_entries(id) ON DELETE CASCADE
-  );
-
   CREATE TABLE IF NOT EXISTS authorship_spans (
-    id              INTEGER PRIMARY KEY AUTOINCREMENT,
-    scene_id        TEXT NOT NULL REFERENCES scenes(id) ON DELETE CASCADE,
-    offset_start    INTEGER NOT NULL,
-    offset_end      INTEGER NOT NULL,
-    source          TEXT NOT NULL CHECK(source IN ('human','ai','unknown','snippet')),
-    trace_id        TEXT,
-    model           TEXT,
-    ai_message_id   TEXT,
-    manual_override INTEGER NOT NULL DEFAULT 0,
-    content_hash    TEXT,
-    tool_name       TEXT,
-    tool_version    TEXT,
-    created_at      TEXT NOT NULL
+    id TEXT PRIMARY KEY,
+    node_id TEXT NOT NULL REFERENCES tree_nodes(id) ON DELETE CASCADE,
+    from_pos INTEGER NOT NULL,
+    to_pos INTEGER NOT NULL,
+    source TEXT NOT NULL CHECK(source IN ('human','ai','unknown','snippet')),
+    model TEXT,
+    timestamp TEXT,
+    chat_msg_id TEXT
+  );
+  CREATE TABLE IF NOT EXISTS settings (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
   );
 `;
 
@@ -103,14 +116,14 @@ export async function createBrowserMock(): Promise<BrowserMock> {
   db.run("PRAGMA foreign_keys = ON;");
   db.run(SCHEMA_DDL);
 
-  // Seed default project + chapter so scenes can reference chapter_id=1
+  // Seed default project + chapter so tree_nodes can reference parent
   const now = new Date().toISOString();
   db.run(
-    "INSERT OR IGNORE INTO projects (id, title, description, created_at, updated_at) VALUES (1, '無題のプロジェクト', '', ?, ?)",
+    "INSERT OR IGNORE INTO projects (id, title, language, created_at, updated_at) VALUES ('default-project', '無題のプロジェクト', 'ja', ?, ?)",
     [now, now],
   );
   db.run(
-    "INSERT OR IGNORE INTO chapters (id, project_id, title, sort_order, created_at, updated_at) VALUES (1, 1, '第1章', 0, ?, ?)",
+    "INSERT OR IGNORE INTO tree_nodes (id, project_id, node_type, title, sort_order, created_at, updated_at) VALUES ('default-chapter', 'default-project', 'chapter', '第1章', 0.0, ?, ?)",
     [now, now],
   );
 

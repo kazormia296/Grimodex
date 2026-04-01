@@ -100,50 +100,58 @@ const mockUpdateCodexEntry = vi.mocked(updateCodexEntry);
 
 const mockEntries: CodexEntry[] = [
   {
-    id: 1,
+    id: "codex-1",
+    projectId: "proj-1",
+    parentId: null,
     type: "character",
     name: "アリス",
     summary: "主人公",
-    content: "不思議の国の住人",
+    aliases: "[]",
+    excludedAliases: "[]",
     tags: "主人公,ファンタジー",
     sourceChatMessageId: "msg-1",
-    source: "ai",
     createdAt: "2024-01-01T00:00:00Z",
     updatedAt: "2024-01-01T00:00:00Z",
   },
   {
-    id: 2,
+    id: "codex-2",
+    projectId: "proj-1",
+    parentId: null,
     type: "location",
     name: "不思議の国",
     summary: "舞台",
-    content: "奇妙な世界",
+    aliases: "[]",
+    excludedAliases: "[]",
     tags: "場所",
     sourceChatMessageId: null,
-    source: "human",
     createdAt: "2024-01-02T00:00:00Z",
     updatedAt: "2024-01-02T00:00:00Z",
   },
   {
-    id: 3,
+    id: "codex-3",
+    projectId: "proj-1",
+    parentId: null,
     type: "item",
     name: "魔法の鍵",
     summary: "重要アイテム",
-    content: "扉を開ける鍵",
+    aliases: "[]",
+    excludedAliases: "[]",
     tags: "アイテム",
     sourceChatMessageId: null,
-    source: "human",
     createdAt: "2024-01-03T00:00:00Z",
     updatedAt: "2024-01-03T00:00:00Z",
   },
   {
-    id: 4,
+    id: "codex-4",
+    projectId: "proj-1",
+    parentId: null,
     type: "lore",
     name: "古代魔法",
     summary: "世界の魔法体系",
-    content: "この世界の魔法は...",
+    aliases: "[]",
+    excludedAliases: "[]",
     tags: "設定,魔法",
     sourceChatMessageId: "msg-2",
-    source: "ai",
     createdAt: "2024-01-04T00:00:00Z",
     updatedAt: "2024-01-04T00:00:00Z",
   },
@@ -254,9 +262,11 @@ describe("CodexManagementPanel", () => {
         expect(screen.getByText("アリス")).toBeInTheDocument();
       });
 
-      await user.click(screen.getByTestId("codex-entry-1"));
+      await user.click(screen.getByTestId("codex-entry-codex-1"));
 
-      expect(screen.getByTestId("codex-entry-1")).toHaveClass("bg-accent");
+      expect(screen.getByTestId("codex-entry-codex-1")).toHaveClass(
+        "bg-accent",
+      );
     });
   });
 
@@ -271,23 +281,10 @@ describe("CodexManagementPanel", () => {
       await waitFor(() => {
         expect(screen.getByText("アリス")).toBeInTheDocument();
       });
-      await user.click(screen.getByTestId("codex-entry-1"));
+      await user.click(screen.getByTestId("codex-entry-codex-1"));
 
       expect(screen.getByTestId("codex-detail-content")).toBeInTheDocument();
       expect(screen.getByDisplayValue("アリス")).toBeInTheDocument();
-    });
-
-    it("renders TipTap editor for content editing", async () => {
-      const user = userEvent.setup();
-      mockListCodexEntries.mockResolvedValue(mockEntries);
-      render(<CodexManagementPanel />);
-
-      await waitFor(() => {
-        expect(screen.getByText("アリス")).toBeInTheDocument();
-      });
-      await user.click(screen.getByTestId("codex-entry-1"));
-
-      expect(screen.getByTestId("tiptap-editor")).toBeInTheDocument();
     });
 
     it("shows type badge and editable fields", async () => {
@@ -298,7 +295,7 @@ describe("CodexManagementPanel", () => {
       await waitFor(() => {
         expect(screen.getByText("アリス")).toBeInTheDocument();
       });
-      await user.click(screen.getByTestId("codex-entry-1"));
+      await user.click(screen.getByTestId("codex-entry-codex-1"));
 
       // Name field
       expect(screen.getByTestId("codex-detail-name")).toBeInTheDocument();
@@ -319,14 +316,14 @@ describe("CodexManagementPanel", () => {
       await waitFor(() => {
         expect(screen.getByText("アリス")).toBeInTheDocument();
       });
-      await user.click(screen.getByTestId("codex-entry-1"));
+      await user.click(screen.getByTestId("codex-entry-codex-1"));
 
       // Save without editing — should call update with current values
       await user.click(screen.getByTestId("codex-save-button"));
 
       await waitFor(() => {
         expect(mockUpdateCodexEntry).toHaveBeenCalledWith(
-          1,
+          "codex-1",
           expect.objectContaining({ name: "アリス" }),
         );
       });
@@ -340,7 +337,7 @@ describe("CodexManagementPanel", () => {
       await waitFor(() => {
         expect(screen.getByText("アリス")).toBeInTheDocument();
       });
-      await user.click(screen.getByTestId("codex-entry-1"));
+      await user.click(screen.getByTestId("codex-entry-codex-1"));
       await user.click(screen.getByTestId("codex-detail-delete"));
 
       await waitFor(() => {
@@ -363,7 +360,7 @@ describe("CodexManagementPanel", () => {
         expect(screen.getByText("アリス")).toBeInTheDocument();
       });
       // Entry 1 has sourceChatMessageId: "msg-1"
-      await user.click(screen.getByTestId("codex-entry-1"));
+      await user.click(screen.getByTestId("codex-entry-codex-1"));
 
       expect(screen.getByTestId("codex-source-chat-link")).toBeInTheDocument();
     });
@@ -377,7 +374,7 @@ describe("CodexManagementPanel", () => {
         expect(screen.getByText("不思議の国")).toBeInTheDocument();
       });
       // Entry 2 has sourceChatMessageId: null
-      await user.click(screen.getByTestId("codex-entry-2"));
+      await user.click(screen.getByTestId("codex-entry-codex-2"));
 
       expect(
         screen.queryByTestId("codex-source-chat-link"),
@@ -448,11 +445,11 @@ describe("CodexManagementPanel", () => {
 
       await waitFor(() => {
         expect(
-          screen.getByTestId("codex-command-result-1"),
+          screen.getByTestId("codex-command-result-codex-1"),
         ).toBeInTheDocument();
       });
 
-      await user.click(screen.getByTestId("codex-command-result-1"));
+      await user.click(screen.getByTestId("codex-command-result-codex-1"));
 
       // Command palette closes and entry is selected
       await waitFor(() => {
@@ -493,11 +490,11 @@ describe("CodexManagementPanel", () => {
 
       await waitFor(() => {
         expect(
-          screen.getByTestId("codex-command-result-1"),
+          screen.getByTestId("codex-command-result-codex-1"),
         ).toBeInTheDocument();
       });
 
-      await user.click(screen.getByTestId("codex-command-result-1"));
+      await user.click(screen.getByTestId("codex-command-result-codex-1"));
 
       // Step 2: Detail view is shown
       await waitFor(() => {

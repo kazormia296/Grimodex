@@ -4,7 +4,7 @@ import { getEditorExtensions } from "@/features/editor/extensions";
 import { Toolbar } from "@/features/editor/Toolbar";
 import { CharCount } from "@/features/editor/CharCount";
 import { useSceneStore } from "./store";
-import { loadSceneContent, saveSceneContent } from "./api";
+import { loadSceneContent, saveSceneContent } from "@/features/tree/api";
 import { useAutoSave } from "@/hooks/useAutoSave";
 import { useEditorStore } from "@/features/editor/editorStore";
 import { parseClipboardHtml } from "@/lib/clipboardAttribution";
@@ -83,7 +83,7 @@ export function SceneEditor() {
           const { id, content, source, originalContent } = JSON.parse(
             snippetData,
           ) as {
-            id: number;
+            id: string;
             content: string;
             source: "ai" | "human";
             originalContent: string | null;

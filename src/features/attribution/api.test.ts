@@ -16,34 +16,24 @@ describe("spansToMarkData", () => {
   it("converts DB rows to mark-compatible data", () => {
     const spans: AuthorshipSpan[] = [
       {
-        id: 1,
-        sceneId: "scene-1",
-        offsetStart: 0,
-        offsetEnd: 10,
+        id: "span-1",
+        nodeId: "node-1",
+        fromPos: 0,
+        toPos: 10,
         source: "ai",
-        traceId: "trace-1",
         model: "anthropic/claude-sonnet-4-6",
-        aiMessageId: "msg-1",
-        manualOverride: 0,
-        contentHash: "abc123",
-        toolName: "grimodex",
-        toolVersion: "0.1.0",
-        createdAt: "2026-03-31T00:00:00.000Z",
+        timestamp: "2026-03-31T00:00:00.000Z",
+        chatMsgId: "msg-1",
       },
       {
-        id: 2,
-        sceneId: "scene-1",
-        offsetStart: 10,
-        offsetEnd: 20,
+        id: "span-2",
+        nodeId: "node-1",
+        fromPos: 10,
+        toPos: 20,
         source: "human",
-        traceId: null,
         model: null,
-        aiMessageId: null,
-        manualOverride: 1,
-        contentHash: "abc123",
-        toolName: null,
-        toolVersion: null,
-        createdAt: "2026-03-31T00:00:00.000Z",
+        timestamp: "2026-03-31T00:00:00.000Z",
+        chatMsgId: null,
       },
     ];
 
@@ -55,13 +45,12 @@ describe("spansToMarkData", () => {
     expect(markData[0].to).toBe(10);
     expect(markData[0].attrs.source).toBe("ai");
     expect(markData[0].attrs.model).toBe("anthropic/claude-sonnet-4-6");
-    expect(markData[0].attrs.manualOverride).toBe(false);
-    expect(markData[0].attrs.toolName).toBe("grimodex");
+    expect(markData[0].attrs.chatMessageId).toBe("msg-1");
 
     expect(markData[1].from).toBe(10);
     expect(markData[1].to).toBe(20);
     expect(markData[1].attrs.source).toBe("human");
-    expect(markData[1].attrs.manualOverride).toBe(true);
+    expect(markData[1].attrs.model).toBeNull();
   });
 
   it("returns empty array for no spans", () => {
@@ -71,8 +60,7 @@ describe("spansToMarkData", () => {
 
 describe("extractDbSpans via saveAuthorshipSpans round-trip positions", () => {
   it("preserves ProseMirror positions across multiple paragraphs", () => {
-    const html =
-      "<p>手書きの文章</p><p>AIの文章</p><p>編集済み</p>";
+    const html = "<p>手書きの文章</p><p>AIの文章</p><p>編集済み</p>";
     const editor = createTestEditor(html);
     const authorshipType = editor.schema.marks["authorship"];
 
@@ -97,11 +85,7 @@ describe("extractDbSpans via saveAuthorshipSpans round-trip positions", () => {
       .chain()
       .command(({ tr }) => {
         tr.setMeta("programmaticInsert", true);
-        tr.addMark(
-          p2.pos,
-          p2.end,
-          authorshipType.create({ source: "ai" }),
-        );
+        tr.addMark(p2.pos, p2.end, authorshipType.create({ source: "ai" }));
         tr.addMark(
           p3.pos,
           p3.end,

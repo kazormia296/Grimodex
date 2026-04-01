@@ -135,7 +135,11 @@ describe("AiEditedPlugin", () => {
     });
     expect(aiPos).toBeGreaterThan(0);
 
-    editor.chain().focus().insertContentAt(aiPos + 1, "追加").run();
+    editor
+      .chain()
+      .focus()
+      .insertContentAt(aiPos + 1, "追加")
+      .run();
 
     const sources = findAuthorshipSources(editor);
     expect(sources).toContain("ai");
@@ -217,7 +221,8 @@ describe("AiEditedPlugin", () => {
     editor.state.doc.descendants((node) => {
       if (!node.isText) return;
       const mark = node.marks.find((m) => m.type.name === "authorship");
-      if (mark) nodes.push({ traceId: mark.attrs.traceId, source: mark.attrs.source });
+      if (mark)
+        nodes.push({ traceId: mark.attrs.traceId, source: mark.attrs.source });
     });
     expect(nodes).toHaveLength(3);
     expect(nodes[0].traceId).toBe("trace-0");
@@ -281,9 +286,7 @@ describe("AiEditedPlugin", () => {
         });
       });
 
-      const relevantNodes = nodes.filter(
-        (n) => n.text !== "テスト文章",
-      );
+      const relevantNodes = nodes.filter((n) => n.text !== "テスト文章");
       expect(relevantNodes).toHaveLength(3);
       expect(relevantNodes[0]).toEqual({ text: "Hello", source: "ai" });
       expect(relevantNodes[1]).toEqual({ text: "XYZ", source: null });
@@ -359,9 +362,7 @@ describe("AiEditedPlugin", () => {
         });
       });
 
-      const relevantNodes = nodes.filter(
-        (n) => n.text !== "テスト文章",
-      );
+      const relevantNodes = nodes.filter((n) => n.text !== "テスト文章");
       expect(relevantNodes).toHaveLength(3);
       expect(relevantNodes[0]).toEqual({ text: "Hello", source: "unknown" });
       expect(relevantNodes[1]).toEqual({ text: "XYZ", source: null });

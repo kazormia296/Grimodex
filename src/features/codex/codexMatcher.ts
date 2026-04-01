@@ -1,11 +1,11 @@
 export interface CodexMatchTarget {
-  id: number;
+  id: string;
   name: string;
   type: string;
 }
 
 export interface CodexMatch {
-  entryId: number;
+  entryId: string;
   entryName: string;
   entryType: string;
   from: number;
@@ -91,7 +91,7 @@ export function findMentionedEntries(
   const matcher = createCodexMatcher(entries);
   const matches = matcher(text);
 
-  const seen = new Set<number>();
+  const seen = new Set<string>();
   const result: CodexMatchTarget[] = [];
   for (const m of matches) {
     if (!seen.has(m.entryId)) {

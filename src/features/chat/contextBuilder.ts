@@ -8,11 +8,15 @@ export interface SceneContext {
 
 export interface ProjectContext {
   title: string;
-  description: string;
+  genre?: string | null;
+  pov?: string | null;
+  tense?: string | null;
+  styleGuide?: string | null;
+  aiInstructions?: string | null;
 }
 
 export interface CodexContext {
-  id: number;
+  id: string;
   type: string;
   name: string;
   summary: string;
@@ -28,7 +32,7 @@ export interface BuildSystemPromptInput {
 const encoder = encodingForModel("gpt-4o");
 
 function deduplicateById(entries: CodexContext[]): CodexContext[] {
-  const seen = new Set<number>();
+  const seen = new Set<string>();
   return entries.filter((e) => {
     if (seen.has(e.id)) return false;
     seen.add(e.id);
@@ -45,11 +49,14 @@ export function buildSystemPrompt(input: BuildSystemPromptInput): string {
   );
 
   if (input.project) {
-    parts.push(
-      `\n## プロジェクト情報\n` +
-        `タイトル: ${input.project.title}\n` +
-        `概要: ${input.project.description}`,
-    );
+    const p = input.project;
+    const info: string[] = [`タイトル: ${p.title}`];
+    if (p.genre) info.push(`ジャンル: ${p.genre}`);
+    if (p.pov) info.push(`視点: ${p.pov}`);
+    if (p.tense) info.push(`時制: ${p.tense}`);
+    if (p.styleGuide) info.push(`文体ガイド:\n${p.styleGuide}`);
+    if (p.aiInstructions) info.push(`AI指示:\n${p.aiInstructions}`);
+    parts.push(`\n## プロジェクト情報\n${info.join("\n")}`);
   }
 
   parts.push(`\n## 現在のシーン\n` + `タイトル: ${input.scene.title}`);

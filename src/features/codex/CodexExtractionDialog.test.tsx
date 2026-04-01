@@ -29,17 +29,17 @@ describe("CodexExtractionDialog", () => {
     expect(screen.getByTestId("codex-extraction-dialog")).toBeInTheDocument();
     expect(screen.getByTestId("codex-type-select")).toBeInTheDocument();
     expect(screen.getByTestId("codex-name-input")).toBeInTheDocument();
-    expect(screen.getByTestId("codex-content-textarea")).toBeInTheDocument();
+    expect(screen.getByTestId("codex-summary-textarea")).toBeInTheDocument();
     expect(screen.getByTestId("codex-tags-input")).toBeInTheDocument();
     expect(screen.getByTestId("codex-save-button")).toBeInTheDocument();
     expect(screen.getByTestId("codex-cancel-button")).toBeInTheDocument();
   });
 
-  it("initializes content textarea with initialContent", () => {
+  it("initializes summary textarea with initialContent", () => {
     render(<CodexExtractionDialog {...defaultProps} />);
 
     const textarea = screen.getByTestId(
-      "codex-content-textarea",
+      "codex-summary-textarea",
     ) as HTMLTextAreaElement;
     expect(textarea.value).toBe("抽出対象テキスト");
   });
@@ -60,11 +60,11 @@ describe("CodexExtractionDialog", () => {
     await user.type(nameInput, "テスト名前");
     expect(nameInput).toHaveValue("テスト名前");
 
-    // Content textarea - clear and retype
-    const contentTextarea = screen.getByTestId("codex-content-textarea");
-    await user.clear(contentTextarea);
-    await user.type(contentTextarea, "編集済みテキスト");
-    expect(contentTextarea).toHaveValue("編集済みテキスト");
+    // Summary textarea - clear and retype
+    const summaryTextarea = screen.getByTestId("codex-summary-textarea");
+    await user.clear(summaryTextarea);
+    await user.type(summaryTextarea, "編集済みテキスト");
+    expect(summaryTextarea).toHaveValue("編集済みテキスト");
 
     // Tags input
     const tagsInput = screen.getByTestId("codex-tags-input");
@@ -88,10 +88,9 @@ describe("CodexExtractionDialog", () => {
       expect(defaultProps.onSave).toHaveBeenCalledWith({
         type: "character",
         name: "アリス",
-        content: "抽出対象テキスト",
+        summary: "抽出対象テキスト",
         tags: "主人公",
         sourceChatMessageId: "msg-1",
-        source: "ai",
       });
     });
   });
@@ -129,7 +128,7 @@ describe("CodexExtractionDialog", () => {
     );
 
     const textarea = screen.getByTestId(
-      "codex-content-textarea",
+      "codex-summary-textarea",
     ) as HTMLTextAreaElement;
     expect(textarea.value).toBe("新しいテキスト");
   });

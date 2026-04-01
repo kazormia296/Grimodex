@@ -17,9 +17,9 @@ function PinCodexVirtualList({
   onUnpin,
 }: {
   entries: CodexEntry[];
-  pinnedIds: Set<number>;
-  onPin: (id: number) => void;
-  onUnpin: (id: number) => void;
+  pinnedIds: Set<string>;
+  onPin: (id: string) => void;
+  onUnpin: (id: string) => void;
 }) {
   const parentRef = useRef<HTMLDivElement>(null);
   const virtualizer = useVirtualizer({
@@ -77,9 +77,9 @@ function PinCodexVirtualList({
 
 interface PinCodexDialogProps {
   open: boolean;
-  pinnedIds: Set<number>;
-  onPin: (entryId: number) => void;
-  onUnpin: (entryId: number) => void;
+  pinnedIds: Set<string>;
+  onPin: (entryId: string) => void;
+  onUnpin: (entryId: string) => void;
   onClose: () => void;
 }
 

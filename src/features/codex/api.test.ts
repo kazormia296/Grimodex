@@ -40,10 +40,11 @@ describe("codex API query generation", () => {
     await db
       .insert(codexEntries)
       .values({
+        id: "codex-1",
+        projectId: "proj-1",
         type: "character",
         name: "花子",
         summary: "ヒロイン",
-        content: "花子は聡明な少女である。",
         tags: "ヒロイン,魔法使い",
         createdAt: "2025-01-01T00:00:00Z",
         updatedAt: "2025-01-01T00:00:00Z",
@@ -60,10 +61,11 @@ describe("codex API query generation", () => {
     await db
       .insert(codexEntries)
       .values({
+        id: "codex-2",
+        projectId: "proj-1",
         type: "item",
         name: "聖剣",
         summary: "伝説の武器",
-        content: "古代の鍛冶師が作りし剣。",
         tags: "武器",
         sourceChatMessageId: "chat-msg-001",
         createdAt: "2025-01-01T00:00:00Z",
@@ -78,7 +80,7 @@ describe("codex API query generation", () => {
     await db
       .update(codexEntries)
       .set({ name: "更新された名前", updatedAt: "2025-06-01T00:00:00Z" })
-      .where(eq(codexEntries.id, 1))
+      .where(eq(codexEntries.id, "codex-1"))
       .returning();
     expect(queries).toHaveLength(1);
     expect(queries[0].sql).toContain("update");
@@ -87,7 +89,7 @@ describe("codex API query generation", () => {
 
   it("deletes a codex entry by id", async () => {
     const { db, queries } = createQueryCapture();
-    await db.delete(codexEntries).where(eq(codexEntries.id, 1));
+    await db.delete(codexEntries).where(eq(codexEntries.id, "codex-1"));
     expect(queries).toHaveLength(1);
     expect(queries[0].sql).toContain("delete");
     expect(queries[0].sql).toContain("codex_entries");

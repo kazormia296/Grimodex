@@ -57,12 +57,14 @@ export function createAiEditedPlugin(): Plugin {
           let mark = null;
           if (from < oldState.doc.content.size) {
             const $pos = oldState.doc.resolve(from);
-            mark = $pos.marks().find(
-              (m) =>
-                m.type === authorshipType &&
-                SPLITTABLE_SOURCES.has(m.attrs.source as string) &&
-                !m.attrs.manualOverride,
-            );
+            mark = $pos
+              .marks()
+              .find(
+                (m) =>
+                  m.type === authorshipType &&
+                  SPLITTABLE_SOURCES.has(m.attrs.source as string) &&
+                  !m.attrs.manualOverride,
+              );
           }
 
           if (mark) {

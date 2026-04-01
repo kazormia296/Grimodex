@@ -20,7 +20,7 @@ interface EditorState {
     model?: string,
   ) => boolean;
   insertFromSnippet: (
-    snippetId: number,
+    snippetId: string,
     content: string,
     source: "ai" | "human",
     originalContent: string | null,
@@ -41,12 +41,10 @@ export const useEditorStore = create<EditorState>()((set, get) => ({
     const { editor } = get();
     if (!editor) return false;
 
-    // Determine insertion position: cursor or end of document
     const { from } = editor.state.selection;
     const docEnd = editor.state.doc.content.size - 1;
     const insertPos = from > 0 ? from : Math.max(docEnd, 0);
 
-    // Build content with ai source metadata (for Phase 4 attribution)
     const content = [
       {
         type: "text",
@@ -59,10 +57,7 @@ export const useEditorStore = create<EditorState>()((set, get) => ({
               chatMessageId,
               timestamp: new Date().toISOString(),
               model: model ?? null,
-              toolName: "grimodex",
-              toolVersion: "0.1.0",
               originalLength: text.length,
-              traceId: crypto.randomUUID(),
             },
           },
         ],
@@ -79,11 +74,9 @@ export const useEditorStore = create<EditorState>()((set, get) => ({
       .insertContentAt(insertPos, content)
       .run();
 
-    // Calculate the range of inserted text
     const to = insertPos + text.length;
     set({ lastInsertRange: { from: insertPos, to, chatMessageId } });
 
-    // Clear highlight after 3 seconds
     if (highlightTimer) clearTimeout(highlightTimer);
     highlightTimer = setTimeout(() => {
       set({ lastInsertRange: null });
@@ -94,7 +87,7 @@ export const useEditorStore = create<EditorState>()((set, get) => ({
   },
 
   insertFromSnippet: (
-    snippetId: number,
+    snippetId: string,
     content: string,
     source: "ai" | "human",
     originalContent: string | null,
@@ -106,11 +99,8 @@ export const useEditorStore = create<EditorState>()((set, get) => ({
     const docEnd = editor.state.doc.content.size - 1;
     const insertPos = from > 0 ? from : Math.max(docEnd, 0);
 
-    // Determine whether to use diff-based partial attribution
     const needsDiff =
-      source === "ai" &&
-      originalContent != null &&
-      content !== originalContent;
+      source === "ai" && originalContent != null && content !== originalContent;
 
     const segments = needsDiff
       ? computeAttributedSegments(originalContent, content)
@@ -127,7 +117,6 @@ export const useEditorStore = create<EditorState>()((set, get) => ({
             source: seg.source,
             timestamp: now,
             originalLength: seg.text.length,
-            traceId: crypto.randomUUID(),
           },
         },
       ],
@@ -179,7 +168,6 @@ export const useEditorStore = create<EditorState>()((set, get) => ({
             source: seg.source,
             timestamp: now,
             originalLength: seg.text.length,
-            traceId: crypto.randomUUID(),
           },
         },
       ],

@@ -9,13 +9,19 @@ export async function listProjects(): Promise<Project[]> {
   return db.select().from(projects);
 }
 
-export async function getProject(id: number): Promise<Project | undefined> {
+export async function getProject(id: string): Promise<Project | undefined> {
   const rows = await db.select().from(projects).where(eq(projects.id, id));
   return rows[0];
 }
 
 export async function createProject(
-  data: Pick<NewProject, "title" | "description">,
+  data: Pick<NewProject, "id" | "title"> &
+    Partial<
+      Pick<
+        NewProject,
+        "genre" | "pov" | "tense" | "language" | "styleGuide" | "aiInstructions"
+      >
+    >,
 ): Promise<Project> {
   const now = new Date().toISOString();
   const rows = await db
@@ -26,8 +32,19 @@ export async function createProject(
 }
 
 export async function updateProject(
-  id: number,
-  data: Partial<Pick<NewProject, "title" | "description">>,
+  id: string,
+  data: Partial<
+    Pick<
+      NewProject,
+      | "title"
+      | "genre"
+      | "pov"
+      | "tense"
+      | "language"
+      | "styleGuide"
+      | "aiInstructions"
+    >
+  >,
 ): Promise<Project | undefined> {
   const rows = await db
     .update(projects)
@@ -37,6 +54,6 @@ export async function updateProject(
   return rows[0];
 }
 
-export async function deleteProject(id: number): Promise<void> {
+export async function deleteProject(id: string): Promise<void> {
   await db.delete(projects).where(eq(projects.id, id));
 }

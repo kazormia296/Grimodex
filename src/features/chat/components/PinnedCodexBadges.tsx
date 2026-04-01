@@ -3,7 +3,7 @@ import type { CodexEntry } from "@/features/codex/api";
 
 interface PinnedCodexBadgesProps {
   pinnedEntries: CodexEntry[];
-  onUnpin: (entryId: number) => void;
+  onUnpin: (entryId: string) => void;
   onOpenPinDialog: () => void;
 }
 

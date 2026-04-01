@@ -26,15 +26,16 @@ const mockSearchSnippets = vi.mocked(snippetSearch.searchSnippets);
 const fakeSnippet = (
   overrides: Partial<snippetApi.Snippet> = {},
 ): snippetApi.Snippet => ({
-  id: 1,
+  id: "snippet-1",
+  projectId: "default-project",
   title: "テストスニペット",
   content: "スニペット内容",
   tags: "タグ1,タグ2",
   sceneId: null,
   sourceChatMessageId: null,
-  source: "human",
-  originalContent: null,
+  usageCount: 0,
   createdAt: "2025-01-01T00:00:00Z",
+  updatedAt: "2025-01-01T00:00:00Z",
   ...overrides,
 });
 
@@ -51,8 +52,8 @@ describe("snippetStore", () => {
   describe("loadEntries", () => {
     it("loads all snippets and sets entries", async () => {
       const items = [
-        fakeSnippet({ id: 1 }),
-        fakeSnippet({ id: 2, title: "二つ目" }),
+        fakeSnippet({ id: "snippet-1" }),
+        fakeSnippet({ id: "snippet-2", title: "二つ目" }),
       ];
       mockListSnippets.mockResolvedValue(items);
 
@@ -82,7 +83,7 @@ describe("snippetStore", () => {
 
   describe("search", () => {
     it("searches snippets and updates entries", async () => {
-      const results = [fakeSnippet({ id: 3, title: "検索結果" })];
+      const results = [fakeSnippet({ id: "snippet-3", title: "検索結果" })];
       mockSearchSnippets.mockResolvedValue(results);
 
       await useSnippetStore.getState().search("検索");
@@ -93,7 +94,7 @@ describe("snippetStore", () => {
     });
 
     it("falls back to loadEntries when query is empty", async () => {
-      const all = [fakeSnippet({ id: 1 })];
+      const all = [fakeSnippet({ id: "snippet-1" })];
       mockListSnippets.mockResolvedValue(all);
 
       await useSnippetStore.getState().search("");
@@ -106,7 +107,7 @@ describe("snippetStore", () => {
 
   describe("create", () => {
     it("creates a snippet and adds it to entries", async () => {
-      const created = fakeSnippet({ id: 10, title: "新規" });
+      const created = fakeSnippet({ id: "snippet-10", title: "新規" });
       mockCreateSnippet.mockResolvedValue(created);
 
       await useSnippetStore.getState().create({
@@ -116,35 +117,40 @@ describe("snippetStore", () => {
         sourceChatMessageId: "msg-1",
       });
 
-      expect(mockCreateSnippet).toHaveBeenCalledWith({
-        title: "新規",
-        content: "内容",
-        tags: "タグ",
-        sourceChatMessageId: "msg-1",
-      });
+      expect(mockCreateSnippet).toHaveBeenCalledWith(
+        expect.objectContaining({
+          title: "新規",
+          content: "内容",
+          tags: "タグ",
+          sourceChatMessageId: "msg-1",
+          projectId: "default-project",
+        }),
+      );
       expect(useSnippetStore.getState().entries).toContainEqual(created);
     });
   });
 
   describe("update", () => {
     it("updates a snippet in entries", async () => {
-      const original = fakeSnippet({ id: 1, title: "元のタイトル" });
+      const original = fakeSnippet({ id: "snippet-1", title: "元のタイトル" });
       const updated = { ...original, title: "更新後" };
       useSnippetStore.setState({ entries: [original] });
       mockUpdateSnippet.mockResolvedValue(updated);
 
-      await useSnippetStore.getState().update(1, { title: "更新後" });
+      await useSnippetStore.getState().update("snippet-1", { title: "更新後" });
 
-      expect(mockUpdateSnippet).toHaveBeenCalledWith(1, { title: "更新後" });
+      expect(mockUpdateSnippet).toHaveBeenCalledWith("snippet-1", {
+        title: "更新後",
+      });
       expect(useSnippetStore.getState().entries[0].title).toBe("更新後");
     });
 
     it("does nothing if update returns undefined", async () => {
-      const original = fakeSnippet({ id: 1 });
+      const original = fakeSnippet({ id: "snippet-1" });
       useSnippetStore.setState({ entries: [original] });
       mockUpdateSnippet.mockResolvedValue(undefined);
 
-      await useSnippetStore.getState().update(1, { title: "更新後" });
+      await useSnippetStore.getState().update("snippet-1", { title: "更新後" });
 
       expect(useSnippetStore.getState().entries[0].title).toBe(
         "テストスニペット",
@@ -154,16 +160,16 @@ describe("snippetStore", () => {
 
   describe("remove", () => {
     it("deletes a snippet and removes from entries", async () => {
-      const s1 = fakeSnippet({ id: 1 });
-      const s2 = fakeSnippet({ id: 2, title: "二つ目" });
+      const s1 = fakeSnippet({ id: "snippet-1" });
+      const s2 = fakeSnippet({ id: "snippet-2", title: "二つ目" });
       useSnippetStore.setState({ entries: [s1, s2] });
       mockDeleteSnippet.mockResolvedValue(undefined);
 
-      await useSnippetStore.getState().remove(1);
+      await useSnippetStore.getState().remove("snippet-1");
 
-      expect(mockDeleteSnippet).toHaveBeenCalledWith(1);
+      expect(mockDeleteSnippet).toHaveBeenCalledWith("snippet-1");
       expect(useSnippetStore.getState().entries).toHaveLength(1);
-      expect(useSnippetStore.getState().entries[0].id).toBe(2);
+      expect(useSnippetStore.getState().entries[0].id).toBe("snippet-2");
     });
   });
 });

@@ -11,28 +11,34 @@ interface SceneState {
   scenes: SceneMeta[];
   activeSceneId: string;
   isLoading: boolean;
-  loadScenes: (chapterId: number) => Promise<void>;
+  projectId: string;
+  chapterId: string;
+  loadScenes: (projectId: string, chapterId: string) => Promise<void>;
   createScene: () => Promise<void>;
   deleteScene: (id: string) => Promise<void>;
   renameScene: (id: string, title: string) => Promise<void>;
   setActiveScene: (id: string) => void;
 }
 
-const TEMP_CHAPTER_ID = 1;
-
 export const useSceneStore = create<SceneState>()((set, get) => ({
   scenes: [],
   activeSceneId: "",
   isLoading: false,
+  projectId: "default-project",
+  chapterId: "default-chapter",
 
-  loadScenes: async (chapterId: number) => {
-    set({ isLoading: true });
-    let rows = await api.listScenes(chapterId);
+  loadScenes: async (projectId: string, chapterId: string) => {
+    set({ isLoading: true, projectId, chapterId });
+    let rows = await api.listNodes(projectId, chapterId);
+    // Filter to scene nodes only
+    rows = rows.filter((r) => r.nodeType === "scene");
     if (rows.length === 0) {
       const id = crypto.randomUUID();
-      const created = await api.createScene({
+      const created = await api.createNode({
         id,
-        chapterId,
+        projectId,
+        parentId: chapterId,
+        nodeType: "scene",
         title: "シーン 1",
         sortOrder: 0,
       });
@@ -51,13 +57,15 @@ export const useSceneStore = create<SceneState>()((set, get) => ({
   },
 
   createScene: async () => {
-    const { scenes } = get();
+    const { scenes, projectId, chapterId } = get();
     const id = crypto.randomUUID();
     const sortOrder = scenes.length;
-    const title = `シーン ${scenes.length + 1}`;
-    const created = await api.createScene({
+    const title = `シー��� ${scenes.length + 1}`;
+    const created = await api.createNode({
       id,
-      chapterId: TEMP_CHAPTER_ID,
+      projectId,
+      parentId: chapterId,
+      nodeType: "scene",
       title,
       sortOrder,
     });
@@ -72,17 +80,21 @@ export const useSceneStore = create<SceneState>()((set, get) => ({
   deleteScene: async (id) => {
     const { scenes, activeSceneId } = get();
     if (scenes.length <= 1) return;
-    await api.deleteScene(id);
+    await api.deleteNode(id);
     const remaining = scenes.filter((s) => s.id !== id);
     const newActive = activeSceneId === id ? remaining[0].id : activeSceneId;
     set({ scenes: remaining, activeSceneId: newActive });
   },
 
   renameScene: async (id, title) => {
-    await api.updateScene(id, { title });
+    await api.updateNode(id, { title });
     const scene = get().scenes.find((s) => s.id === id);
     if (scene) {
-      await api.renameSceneContent(id, title, TEMP_CHAPTER_ID, scene.sortOrder);
+      const { chapterId } = get();
+      // Get parent sort order for file naming
+      const parent = await api.getNode(chapterId);
+      const chapterOrder = Math.round(parent?.sortOrder ?? 0);
+      await api.renameSceneContent(id, title, chapterOrder, scene.sortOrder);
     }
     set((state) => ({
       scenes: state.scenes.map((s) => (s.id === id ? { ...s, title } : s)),

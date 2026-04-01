@@ -3,9 +3,9 @@ import { buildCrossReferenceFromTexts } from "./crossReference";
 
 describe("buildCrossReferenceFromTexts", () => {
   const entries = [
-    { id: 1, name: "太郎", type: "character" },
-    { id: 2, name: "花子", type: "character" },
-    { id: 3, name: "魔法の森", type: "location" },
+    { id: "codex-1", name: "太郎", type: "character" },
+    { id: "codex-2", name: "花子", type: "character" },
+    { id: "codex-3", name: "魔法の森", type: "location" },
   ];
 
   it("finds entries mentioned in scene texts", () => {

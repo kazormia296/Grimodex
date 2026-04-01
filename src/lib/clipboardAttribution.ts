@@ -65,7 +65,9 @@ export function parseClipboardHtml(
   // Case 1: Codex/Snippet copy (data-grimodex-source wrapper)
   const grimodexEl = doc.querySelector("[data-grimodex-source]");
   if (grimodexEl) {
-    const source = grimodexEl.getAttribute("data-grimodex-source") as AuthorshipSource;
+    const source = grimodexEl.getAttribute(
+      "data-grimodex-source",
+    ) as AuthorshipSource;
     const text = grimodexEl.textContent ?? "";
     if (text) return [{ text, source }];
     return null;
@@ -78,7 +80,8 @@ export function parseClipboardHtml(
     for (const span of authorshipSpans) {
       const text = span.textContent ?? "";
       if (!text) continue;
-      const source = (span.getAttribute("data-authorship") ?? "unknown") as AuthorshipSource;
+      const source = (span.getAttribute("data-authorship") ??
+        "unknown") as AuthorshipSource;
       // Merge adjacent segments with same source
       const last = segments[segments.length - 1];
       if (last && last.source === source) {
@@ -120,7 +123,8 @@ function extractMixedSegments(root: Element): AttributedSegment[] {
         "span[data-authorship]",
       );
       const source: AuthorshipSource = parentSpan
-        ? ((parentSpan.getAttribute("data-authorship") ?? "unknown") as AuthorshipSource)
+        ? ((parentSpan.getAttribute("data-authorship") ??
+            "unknown") as AuthorshipSource)
         : "human";
 
       const last = segments[segments.length - 1];

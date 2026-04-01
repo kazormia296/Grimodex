@@ -1,6 +1,6 @@
 import { useCallback } from "react";
 import { useEditorStore } from "@/features/editor/editorStore";
-import { useSceneStore } from "@/features/scene/store";
+import { useSceneStore } from "@/features/tree/store";
 import { buildAgentTraceRecord, serializeRecord } from "./agentTrace";
 
 function downloadJson(json: string, fileName: string): void {

@@ -12,19 +12,14 @@ interface SnippetState {
   loadEntries: () => Promise<void>;
   search: (query: string) => Promise<void>;
   create: (
-    data: Pick<NewSnippet, "title" | "content" | "tags"> &
-      Partial<
-        Pick<
-          NewSnippet,
-          "sceneId" | "sourceChatMessageId" | "source" | "originalContent"
-        >
-      >,
+    data: Pick<NewSnippet, "title" | "content"> &
+      Partial<Pick<NewSnippet, "tags" | "sceneId" | "sourceChatMessageId">>,
   ) => Promise<Snippet>;
   update: (
-    id: number,
+    id: string,
     data: Partial<Pick<NewSnippet, "title" | "content" | "tags" | "sceneId">>,
   ) => Promise<void>;
-  remove: (id: number) => Promise<void>;
+  remove: (id: string) => Promise<void>;
 }
 
 export const useSnippetStore = create<SnippetState>()((set) => ({
@@ -63,7 +58,11 @@ export const useSnippetStore = create<SnippetState>()((set) => ({
 
   create: async (data) => {
     try {
-      const created = await snippetApi.createSnippet(data);
+      const created = await snippetApi.createSnippet({
+        id: crypto.randomUUID(),
+        projectId: "default-project",
+        ...data,
+      });
       set((state) => ({ entries: [...state.entries, created] }));
       return created;
     } catch (e) {

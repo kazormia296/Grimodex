@@ -3,27 +3,31 @@ import { useCodexStore } from "./codexStore";
 import type { CodexEntry } from "./api";
 
 const mockEntry: CodexEntry = {
-  id: 1,
+  id: "codex-1",
+  projectId: "proj-1",
+  parentId: null,
   type: "character",
   name: "アリス",
   summary: "主人公",
-  content: "不思議の国の住人",
+  aliases: "[]",
+  excludedAliases: "[]",
   tags: "主人公,ファンタジー",
   sourceChatMessageId: "msg-1",
-  source: "ai",
   createdAt: "2024-01-01T00:00:00Z",
   updatedAt: "2024-01-01T00:00:00Z",
 };
 
 const mockEntry2: CodexEntry = {
-  id: 2,
+  id: "codex-2",
+  projectId: "proj-1",
+  parentId: null,
   type: "location",
   name: "不思議の国",
   summary: "舞台",
-  content: "奇妙な世界",
+  aliases: "[]",
+  excludedAliases: "[]",
   tags: "場所",
   sourceChatMessageId: null,
-  source: "human",
   createdAt: "2024-01-02T00:00:00Z",
   updatedAt: "2024-01-02T00:00:00Z",
 };
@@ -133,19 +137,20 @@ describe("codexStore", () => {
         type: "character",
         name: "アリス",
         summary: "主人公",
-        content: "不思議の国の住人",
         tags: "主人公,ファンタジー",
         sourceChatMessageId: "msg-1",
       });
 
-      expect(mockCreateCodexEntry).toHaveBeenCalledWith({
-        type: "character",
-        name: "アリス",
-        summary: "主人公",
-        content: "不思議の国の住人",
-        tags: "主人公,ファンタジー",
-        sourceChatMessageId: "msg-1",
-      });
+      expect(mockCreateCodexEntry).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: "character",
+          name: "アリス",
+          summary: "主人公",
+          tags: "主人公,ファンタジー",
+          sourceChatMessageId: "msg-1",
+          projectId: "default-project",
+        }),
+      );
       expect(result).toEqual(mockEntry);
     });
   });
@@ -156,9 +161,9 @@ describe("codexStore", () => {
       mockUpdateCodexEntry.mockResolvedValue(updated);
       mockListCodexEntries.mockResolvedValue([updated]);
 
-      await useCodexStore.getState().update(1, { name: "アリス改" });
+      await useCodexStore.getState().update("codex-1", { name: "アリス改" });
 
-      expect(mockUpdateCodexEntry).toHaveBeenCalledWith(1, {
+      expect(mockUpdateCodexEntry).toHaveBeenCalledWith("codex-1", {
         name: "アリス改",
       });
     });
@@ -170,9 +175,9 @@ describe("codexStore", () => {
       mockDeleteCodexEntry.mockResolvedValue(undefined);
       mockListCodexEntries.mockResolvedValue([mockEntry2]);
 
-      await useCodexStore.getState().remove(1);
+      await useCodexStore.getState().remove("codex-1");
 
-      expect(mockDeleteCodexEntry).toHaveBeenCalledWith(1);
+      expect(mockDeleteCodexEntry).toHaveBeenCalledWith("codex-1");
     });
   });
 

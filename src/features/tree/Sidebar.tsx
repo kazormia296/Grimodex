@@ -2,7 +2,8 @@ import { useState, useCallback, useRef, useEffect } from "react";
 import { useSceneStore } from "./store";
 import { cn } from "@/lib/utils";
 
-const TEMP_CHAPTER_ID = 1;
+const DEFAULT_PROJECT_ID = "default-project";
+const DEFAULT_CHAPTER_ID = "default-chapter";
 
 export function Sidebar() {
   const scenes = useSceneStore((s) => s.scenes);
@@ -17,7 +18,7 @@ export function Sidebar() {
   const [editingId, setEditingId] = useState<string | null>(null);
 
   useEffect(() => {
-    loadScenes(TEMP_CHAPTER_ID);
+    loadScenes(DEFAULT_PROJECT_ID, DEFAULT_CHAPTER_ID);
   }, [loadScenes]);
 
   if (isLoading && scenes.length === 0) {

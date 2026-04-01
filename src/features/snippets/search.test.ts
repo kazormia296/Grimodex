@@ -15,15 +15,16 @@ beforeEach(() => {
 
 describe("searchSnippets", () => {
   const fakeSnippet: Snippet = {
-    id: 1,
+    id: "snippet-1",
+    projectId: "default-project",
     title: "森の描写メモ",
     content: "暗い森の中、一筋の光が差し込んだ。",
     tags: "描写,森",
     sceneId: null,
     sourceChatMessageId: null,
-    source: "human",
-    originalContent: null,
+    usageCount: 0,
     createdAt: "2025-01-01T00:00:00Z",
+    updatedAt: "2025-01-01T00:00:00Z",
   };
 
   it("uses MATCH for queries with 3+ characters", async () => {

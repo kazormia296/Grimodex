@@ -19,7 +19,7 @@ export async function searchSnippets(query: string): Promise<Snippet[]> {
   if (charCount >= 3) {
     const result = await invoke<QueryResult>("db_execute", {
       sql: `SELECT s.* FROM snippets s
-            JOIN snippets_fts fts ON s.id = fts.rowid
+            JOIN snippets_fts fts ON s.rowid = fts.rowid
             WHERE snippets_fts MATCH ?
             ORDER BY fts.rank`,
       params: [trimmed],

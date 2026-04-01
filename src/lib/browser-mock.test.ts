@@ -12,8 +12,8 @@ describe("createBrowserMock", () => {
     it("inserts and selects a project", async () => {
       const now = new Date().toISOString();
       await mock.invoke("db_execute", {
-        sql: "insert into projects (title, description, created_at, updated_at) values (?, ?, ?, ?) returning *",
-        params: ["My Novel", "", now, now],
+        sql: "insert into projects (id, title, language, created_at, updated_at) values (?, ?, ?, ?, ?) returning *",
+        params: ["proj-test", "My Novel", "ja", now, now],
         method: "all",
       });
 
@@ -30,33 +30,31 @@ describe("createBrowserMock", () => {
       expect(result.rows[0]).toHaveProperty("title", "My Novel");
     });
 
-    it("inserts and selects a scene with TEXT primary key", async () => {
-      // Set up parent records
+    it("inserts and selects a tree_node with TEXT primary key", async () => {
       const now = new Date().toISOString();
-      await mock.invoke("db_execute", {
-        sql: "insert into projects (title, description, created_at, updated_at) values (?, ?, ?, ?) returning *",
-        params: ["P1", "", now, now],
-        method: "all",
-      });
-      await mock.invoke("db_execute", {
-        sql: "insert into chapters (project_id, title, sort_order, created_at, updated_at) values (?, ?, ?, ?, ?) returning *",
-        params: [1, "Ch1", 0, now, now],
-        method: "all",
-      });
 
-      // Insert scene with UUID
+      // Insert tree_node referencing default-project seed
       const uuid = "550e8400-e29b-41d4-a716-446655440000";
       await mock.invoke("db_execute", {
-        sql: "insert into scenes (id, chapter_id, title, sort_order, synopsis, created_at, updated_at) values (?, ?, ?, ?, ?, ?, ?) returning *",
-        params: [uuid, 1, "冒頭", 0, "", now, now],
+        sql: "insert into tree_nodes (id, project_id, parent_id, node_type, title, sort_order, created_at, updated_at) values (?, ?, ?, ?, ?, ?, ?, ?) returning *",
+        params: [
+          uuid,
+          "default-project",
+          "default-chapter",
+          "scene",
+          "冒頭",
+          0,
+          now,
+          now,
+        ],
         method: "all",
       });
 
       const result = await mock.invoke<{ rows: Record<string, unknown>[] }>(
         "db_execute",
         {
-          sql: "select * from scenes where chapter_id = ?",
-          params: [1],
+          sql: "select * from tree_nodes where node_type = ?",
+          params: ["scene"],
           method: "all",
         },
       );
@@ -69,20 +67,20 @@ describe("createBrowserMock", () => {
     it("deletes a row", async () => {
       const now = new Date().toISOString();
       await mock.invoke("db_execute", {
-        sql: "insert into projects (title, description, created_at, updated_at) values (?, ?, ?, ?) returning *",
-        params: ["ToDelete", "", now, now],
+        sql: "insert into projects (id, title, language, created_at, updated_at) values (?, ?, ?, ?, ?) returning *",
+        params: ["proj-del", "ToDelete", "ja", now, now],
         method: "all",
       });
       await mock.invoke("db_execute", {
-        sql: "delete from projects where title = ?",
-        params: ["ToDelete"],
+        sql: "delete from projects where id = ?",
+        params: ["proj-del"],
         method: "run",
       });
       const result = await mock.invoke<{ rows: Record<string, unknown>[] }>(
         "db_execute",
         {
-          sql: "select * from projects where title = ?",
-          params: ["ToDelete"],
+          sql: "select * from projects where id = ?",
+          params: ["proj-del"],
           method: "all",
         },
       );

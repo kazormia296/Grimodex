@@ -35,7 +35,6 @@ export function applyInitialAuthorshipMarks(
           authorshipType.create({
             source,
             timestamp: new Date().toISOString(),
-            traceId: crypto.randomUUID(),
           }),
         );
       }

@@ -1,10 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from "react";
-import { Search, Trash2, Save, Copy, MessageSquare } from "lucide-react";
-import { useEditor, EditorContent } from "@tiptap/react";
-import StarterKit from "@tiptap/starter-kit";
-import { AuthorshipMark } from "@/features/attribution/AuthorshipMark";
-import { useAttribution } from "@/features/attribution/useAttribution";
-import { applyInitialAuthorshipMarks } from "@/features/attribution/applyInitialMarks";
+import { Search, Trash2, Save, MessageSquare } from "lucide-react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import {
   ResizablePanelGroup,
@@ -13,11 +8,6 @@ import {
 } from "@/components/ui/resizable";
 import { useCodexStore } from "./codexStore";
 import type { CodexEntry, CodexEntryType } from "./api";
-import {
-  copyWithAttribution,
-  handleCopyWithAttribution,
-} from "@/lib/clipboardAttribution";
-import type { AuthorshipSource } from "@/features/attribution/AuthorshipMark";
 
 const TYPE_OPTIONS: { value: CodexEntryType | "all"; label: string }[] = [
   { value: "all", label: "すべて" },
@@ -141,16 +131,15 @@ function CodexDetailContent({
 }: {
   entry: CodexEntry;
   onSave: (
-    id: number,
+    id: string,
     data: {
       type: CodexEntryType;
       name: string;
       summary: string;
-      content: string;
       tags: string;
     },
   ) => void;
-  onDelete: (id: number) => void;
+  onDelete: (id: string) => void;
 }) {
   const [type, setType] = useState<CodexEntryType>(
     entry.type as CodexEntryType,
@@ -159,38 +148,17 @@ function CodexDetailContent({
   const [summary, setSummary] = useState(entry.summary);
   const [tags, setTags] = useState(entry.tags);
 
-  const editor = useEditor({
-    extensions: [StarterKit.configure(), AuthorshipMark],
-    content: entry.content,
-  });
-
-  useAttribution(editor);
-
   // Sync form when entry changes
   useEffect(() => {
     setType(entry.type as CodexEntryType);
     setName(entry.name);
     setSummary(entry.summary);
     setTags(entry.tags);
-    editor?.commands.setContent(entry.content);
-    if (editor) {
-      applyInitialAuthorshipMarks(editor, entry.source, entry.content);
-    }
-  }, [
-    entry.id,
-    entry.type,
-    entry.name,
-    entry.summary,
-    entry.tags,
-    entry.content,
-    entry.source,
-    editor,
-  ]);
+  }, [entry.id, entry.type, entry.name, entry.summary, entry.tags]);
 
   const handleSave = () => {
     if (!name.trim()) return;
-    const content = editor?.getHTML() ?? entry.content;
-    onSave(entry.id, { type, name: name.trim(), summary, content, tags });
+    onSave(entry.id, { type, name: name.trim(), summary, tags });
   };
 
   return (
@@ -209,20 +177,6 @@ function CodexDetailContent({
           </button>
           <button
             type="button"
-            data-testid="codex-copy-button"
-            onClick={() =>
-              copyWithAttribution(
-                editor?.getText() ?? entry.content,
-                (entry.source ?? "human") as AuthorshipSource,
-              )
-            }
-            className="rounded p-1.5 text-muted-foreground hover:bg-accent hover:text-accent-foreground"
-            title="コピー"
-          >
-            <Copy className="h-3.5 w-3.5" />
-          </button>
-          <button
-            type="button"
             data-testid="codex-detail-delete"
             onClick={() => onDelete(entry.id)}
             className="rounded p-1.5 text-destructive hover:bg-destructive/10"
@@ -233,15 +187,7 @@ function CodexDetailContent({
         </div>
       </div>
 
-      <div
-        className="flex-1 space-y-3 overflow-y-auto px-3 py-3"
-        onCopy={(e) =>
-          handleCopyWithAttribution(
-            e,
-            (entry.source ?? "human") as AuthorshipSource,
-          )
-        }
-      >
+      <div className="flex-1 space-y-3 overflow-y-auto px-3 py-3">
         <div>
           <label className="mb-1 block text-xs font-medium">タイプ</label>
           <select
@@ -271,20 +217,13 @@ function CodexDetailContent({
 
         <div>
           <label className="mb-1 block text-xs font-medium">概要</label>
-          <input
+          <textarea
             data-testid="codex-detail-summary"
-            type="text"
             value={summary}
             onChange={(e) => setSummary(e.target.value)}
-            className="w-full rounded-md border border-input bg-background px-2 py-1.5 text-sm"
+            rows={5}
+            className="w-full resize-none rounded-md border border-input bg-background px-2 py-1.5 text-sm"
           />
-        </div>
-
-        <div>
-          <label className="mb-1 block text-xs font-medium">内容</label>
-          <div className="rounded-md border border-input bg-background p-2">
-            <EditorContent editor={editor} />
-          </div>
         </div>
 
         <div>
@@ -322,7 +261,7 @@ function VirtualizedEntryList({
 }: {
   entries: CodexEntry[];
   isLoading: boolean;
-  selectedEntryId: number | null;
+  selectedEntryId: string | null;
   onSelect: (entry: CodexEntry) => void;
 }) {
   const parentRef = useRef<HTMLDivElement>(null);
@@ -445,12 +384,11 @@ export function CodexManagementPanel() {
 
   const handleSave = useCallback(
     async (
-      id: number,
+      id: string,
       data: {
         type: CodexEntryType;
         name: string;
         summary: string;
-        content: string;
         tags: string;
       },
     ) => {
@@ -460,7 +398,7 @@ export function CodexManagementPanel() {
   );
 
   const handleDelete = useCallback(
-    async (id: number) => {
+    async (id: string) => {
       await remove(id);
       setSelectedEntry(null);
     },

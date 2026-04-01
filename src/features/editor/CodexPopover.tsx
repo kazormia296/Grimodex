@@ -6,7 +6,7 @@ interface PopoverState {
   visible: boolean;
   x: number;
   y: number;
-  entryId: number | null;
+  entryId: string | null;
 }
 
 const typeLabels: Record<string, string> = {
@@ -35,7 +35,7 @@ export function CodexPopover({ editor }: { editor: Editor | null }) {
       hideTimerRef.current = null;
     }
 
-    const entryId = Number(target.getAttribute("data-codex-entry-id"));
+    const entryId = target.getAttribute("data-codex-entry-id");
     if (!entryId) return;
 
     const rect = target.getBoundingClientRect();

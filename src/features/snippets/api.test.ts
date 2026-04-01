@@ -40,10 +40,13 @@ describe("snippet API query generation", () => {
     await db
       .insert(snippets)
       .values({
+        id: "snippet-1",
+        projectId: "project-1",
         title: "伏線メモ",
         content: "第3章で回収する伏線の詳細。",
         tags: "伏線,第3章",
         createdAt: "2025-01-01T00:00:00Z",
+        updatedAt: "2025-01-01T00:00:00Z",
       })
       .returning();
     expect(queries).toHaveLength(1);
@@ -51,17 +54,20 @@ describe("snippet API query generation", () => {
     expect(queries[0].params).toContain("伏線メモ");
   });
 
-  it("creates a snippet with optional scene_id and source", async () => {
+  it("creates a snippet with optional scene_id and sourceChatMessageId", async () => {
     const { db, queries } = createQueryCapture();
     await db
       .insert(snippets)
       .values({
+        id: "snippet-2",
+        projectId: "project-1",
         title: "シーン固有メモ",
         content: "このシーンの雰囲気について。",
         tags: "雰囲気",
         sceneId: "scene-uuid-2",
         sourceChatMessageId: "chat-msg-002",
         createdAt: "2025-01-01T00:00:00Z",
+        updatedAt: "2025-01-01T00:00:00Z",
       })
       .returning();
     expect(queries[0].params).toContain("scene-uuid-2");
@@ -73,7 +79,7 @@ describe("snippet API query generation", () => {
     await db
       .update(snippets)
       .set({ title: "更新されたタイトル", content: "更新された内容" })
-      .where(eq(snippets.id, 1))
+      .where(eq(snippets.id, "snippet-1"))
       .returning();
     expect(queries).toHaveLength(1);
     expect(queries[0].sql).toContain("update");
@@ -82,7 +88,7 @@ describe("snippet API query generation", () => {
 
   it("deletes a snippet by id", async () => {
     const { db, queries } = createQueryCapture();
-    await db.delete(snippets).where(eq(snippets.id, 1));
+    await db.delete(snippets).where(eq(snippets.id, "snippet-1"));
     expect(queries).toHaveLength(1);
     expect(queries[0].sql).toContain("delete");
     expect(queries[0].sql).toContain("snippets");

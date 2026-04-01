@@ -1,13 +1,8 @@
 import { invoke } from "@/lib/tauri";
 import { db } from "@/db/client";
-import {
-  chatThreads,
-  chatMessages,
-  chatThreadPinnedCodex,
-  codexEntries,
-} from "@/db/schema";
-import { eq, desc, and } from "drizzle-orm";
-import type { ChatThread, ChatMessage, MessageRole } from "./chatTypes";
+import { chatSessions, chatMessages, codexEntries } from "@/db/schema";
+import { eq, desc, inArray } from "drizzle-orm";
+import type { ChatSession, ChatMessage, MessageRole } from "./chatTypes";
 import type { CodexEntry } from "@/features/codex/api";
 
 // --- AI message sending (existing) ---
@@ -23,137 +18,182 @@ export async function sendChatMessage(
   onChunk(response);
 }
 
-// --- Thread/message persistence (Task 2.5) ---
+// --- Session/message persistence ---
 
-function toThread(row: typeof chatThreads.$inferSelect): ChatThread {
+function toSession(row: typeof chatSessions.$inferSelect): ChatSession {
   return {
     id: row.id,
+    projectId: row.projectId,
+    nodeId: row.nodeId,
     title: row.title,
-    sceneId: row.sceneId,
+    titleManual: row.titleManual,
+    model: row.model,
+    pinnedCodex: row.pinnedCodex,
     createdAt: row.createdAt,
-    modifiedAt: row.modifiedAt,
+    updatedAt: row.updatedAt,
   };
 }
 
 function toMessage(row: typeof chatMessages.$inferSelect): ChatMessage {
   return {
     id: row.id,
-    threadId: row.threadId,
+    sessionId: row.sessionId,
     role: row.role as MessageRole,
     content: row.content,
+    model: row.model,
+    tokensIn: row.tokensIn,
+    tokensOut: row.tokensOut,
+    durationMs: row.durationMs,
+    metadata: row.metadata,
     createdAt: row.createdAt,
   };
 }
 
-export async function listThreads(sceneId?: string): Promise<ChatThread[]> {
-  const query = sceneId
+export async function listSessions(nodeId?: string): Promise<ChatSession[]> {
+  const query = nodeId
     ? db
         .select()
-        .from(chatThreads)
-        .where(eq(chatThreads.sceneId, sceneId))
-        .orderBy(desc(chatThreads.modifiedAt))
-    : db.select().from(chatThreads).orderBy(desc(chatThreads.modifiedAt));
+        .from(chatSessions)
+        .where(eq(chatSessions.nodeId, nodeId))
+        .orderBy(desc(chatSessions.updatedAt))
+    : db.select().from(chatSessions).orderBy(desc(chatSessions.updatedAt));
   const rows = await query;
-  return rows.map(toThread);
+  return rows.map(toSession);
 }
 
-export async function createThread(
+export async function createSession(
+  projectId: string,
   title: string,
-  sceneId?: string,
-): Promise<ChatThread> {
+  nodeId?: string,
+): Promise<ChatSession> {
   const id = crypto.randomUUID();
   const now = new Date().toISOString();
   const rows = await db
-    .insert(chatThreads)
+    .insert(chatSessions)
     .values({
       id,
+      projectId,
       title,
-      sceneId: sceneId ?? null,
+      nodeId: nodeId ?? null,
       createdAt: now,
-      modifiedAt: now,
+      updatedAt: now,
     })
     .returning();
-  return toThread(rows[0]);
+  return toSession(rows[0]);
 }
 
-export async function deleteThread(id: string): Promise<void> {
-  await db.delete(chatThreads).where(eq(chatThreads.id, id));
+export async function deleteSession(id: string): Promise<void> {
+  await db.delete(chatSessions).where(eq(chatSessions.id, id));
 }
 
-export async function listMessages(threadId: string): Promise<ChatMessage[]> {
+export async function listMessages(sessionId: string): Promise<ChatMessage[]> {
   const rows = await db
     .select()
     .from(chatMessages)
-    .where(eq(chatMessages.threadId, threadId))
+    .where(eq(chatMessages.sessionId, sessionId))
     .orderBy(chatMessages.createdAt);
   return rows.map(toMessage);
 }
 
 export async function addMessage(
-  threadId: string,
+  sessionId: string,
   role: MessageRole,
   content: string,
+  extra?: {
+    model?: string;
+    tokensIn?: number;
+    tokensOut?: number;
+    durationMs?: number;
+    metadata?: string;
+  },
 ): Promise<ChatMessage> {
   const id = crypto.randomUUID();
   const now = new Date().toISOString();
   const rows = await db
     .insert(chatMessages)
-    .values({ id, threadId, role, content, createdAt: now })
+    .values({
+      id,
+      sessionId,
+      role,
+      content,
+      model: extra?.model ?? null,
+      tokensIn: extra?.tokensIn ?? null,
+      tokensOut: extra?.tokensOut ?? null,
+      durationMs: extra?.durationMs ?? null,
+      metadata: extra?.metadata ?? null,
+      createdAt: now,
+    })
     .returning();
 
   await db
-    .update(chatThreads)
-    .set({ modifiedAt: now })
-    .where(eq(chatThreads.id, threadId));
+    .update(chatSessions)
+    .set({ updatedAt: now })
+    .where(eq(chatSessions.id, sessionId));
 
   return toMessage(rows[0]);
 }
 
-export async function updateThreadTitle(
+export async function updateSessionTitle(
   id: string,
   title: string,
 ): Promise<void> {
   await db
-    .update(chatThreads)
-    .set({ title, modifiedAt: new Date().toISOString() })
-    .where(eq(chatThreads.id, id));
+    .update(chatSessions)
+    .set({ title, updatedAt: new Date().toISOString() })
+    .where(eq(chatSessions.id, id));
 }
 
-// --- Pinned Codex entries (Task 3.5) ---
+// --- Pinned Codex entries (now stored as JSON in chat_sessions.pinned_codex) ---
 
 export async function listPinnedCodexEntries(
-  threadId: string,
+  sessionId: string,
 ): Promise<CodexEntry[]> {
   const rows = await db
-    .select({ entry: codexEntries })
-    .from(chatThreadPinnedCodex)
-    .innerJoin(
-      codexEntries,
-      eq(chatThreadPinnedCodex.codexEntryId, codexEntries.id),
-    )
-    .where(eq(chatThreadPinnedCodex.threadId, threadId));
-  return rows.map((r) => r.entry);
+    .select({ pinnedCodex: chatSessions.pinnedCodex })
+    .from(chatSessions)
+    .where(eq(chatSessions.id, sessionId));
+  if (!rows[0]) return [];
+
+  const ids: string[] = JSON.parse(rows[0].pinnedCodex);
+  if (ids.length === 0) return [];
+
+  return db.select().from(codexEntries).where(inArray(codexEntries.id, ids));
 }
 
 export async function pinCodexEntry(
-  threadId: string,
-  entryId: number,
+  sessionId: string,
+  entryId: string,
 ): Promise<void> {
-  await db
-    .insert(chatThreadPinnedCodex)
-    .values({ threadId, codexEntryId: entryId });
+  const rows = await db
+    .select({ pinnedCodex: chatSessions.pinnedCodex })
+    .from(chatSessions)
+    .where(eq(chatSessions.id, sessionId));
+  if (!rows[0]) return;
+
+  const ids: string[] = JSON.parse(rows[0].pinnedCodex);
+  if (!ids.includes(entryId)) {
+    ids.push(entryId);
+    await db
+      .update(chatSessions)
+      .set({ pinnedCodex: JSON.stringify(ids) })
+      .where(eq(chatSessions.id, sessionId));
+  }
 }
 
 export async function unpinCodexEntry(
-  threadId: string,
-  entryId: number,
+  sessionId: string,
+  entryId: string,
 ): Promise<void> {
+  const rows = await db
+    .select({ pinnedCodex: chatSessions.pinnedCodex })
+    .from(chatSessions)
+    .where(eq(chatSessions.id, sessionId));
+  if (!rows[0]) return;
+
+  const ids: string[] = JSON.parse(rows[0].pinnedCodex);
+  const filtered = ids.filter((id) => id !== entryId);
   await db
-    .delete(chatThreadPinnedCodex)
-    .where(
-      and(
-        eq(chatThreadPinnedCodex.threadId, threadId),
-        eq(chatThreadPinnedCodex.codexEntryId, entryId),
-      ),
-    );
+    .update(chatSessions)
+    .set({ pinnedCodex: JSON.stringify(filtered) })
+    .where(eq(chatSessions.id, sessionId));
 }

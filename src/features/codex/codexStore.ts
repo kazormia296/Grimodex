@@ -18,16 +18,23 @@ interface CodexState {
   loadEntries: () => Promise<void>;
   search: (query: string) => Promise<void>;
   create: (
-    data: Pick<NewCodexEntry, "type" | "name" | "content" | "tags"> &
-      Partial<Pick<NewCodexEntry, "summary" | "sourceChatMessageId" | "source">>,
+    data: Pick<NewCodexEntry, "type" | "name"> &
+      Partial<
+        Pick<
+          NewCodexEntry,
+          | "summary"
+          | "tags"
+          | "aliases"
+          | "excludedAliases"
+          | "sourceChatMessageId"
+        >
+      >,
   ) => Promise<CodexEntry>;
   update: (
-    id: number,
-    data: Partial<
-      Pick<NewCodexEntry, "type" | "name" | "summary" | "content" | "tags">
-    >,
+    id: string,
+    data: Partial<Pick<NewCodexEntry, "type" | "name" | "summary" | "tags">>,
   ) => Promise<void>;
-  remove: (id: number) => Promise<void>;
+  remove: (id: string) => Promise<void>;
   setFilterType: (type: CodexEntryType | null) => Promise<void>;
 }
 
@@ -70,7 +77,11 @@ export const useCodexStore = create<CodexState>()((set, get) => ({
 
   create: async (data) => {
     try {
-      const entry = await createCodexEntry(data);
+      const entry = await createCodexEntry({
+        id: crypto.randomUUID(),
+        projectId: "default-project",
+        ...data,
+      });
       await get().loadEntries();
       return entry;
     } catch (e) {

@@ -4,7 +4,7 @@ import type { CodexEntry } from "./api";
 import { createCodexMatcher } from "./codexMatcher";
 
 interface QueryResult {
-  rows: Array<{ id: string; title: string; chapter_id: number }>;
+  rows: Array<{ id: string; title: string; parent_id: string | null }>;
 }
 
 export interface SceneMention {
@@ -14,7 +14,7 @@ export interface SceneMention {
 }
 
 export interface CrossReferenceEntry {
-  entryId: number;
+  entryId: string;
   entryName: string;
   entryType: string;
   scenes: SceneMention[];
@@ -23,19 +23,17 @@ export interface CrossReferenceEntry {
 export async function buildCrossReferenceReport(): Promise<
   CrossReferenceEntry[]
 > {
-  // Load all codex entries and scenes
   const entries = await listCodexEntries();
   if (entries.length === 0) return [];
 
   const scenesResult = await invoke<QueryResult>("db_execute", {
-    sql: "SELECT id, title, chapter_id FROM scenes ORDER BY chapter_id, sort_order",
+    sql: "SELECT id, title, parent_id FROM tree_nodes WHERE node_type = 'scene' ORDER BY sort_order",
     params: [],
     method: "all",
   });
   const scenes = scenesResult.rows;
   if (scenes.length === 0) return [];
 
-  // Build matcher from entries
   const targets = entries.map((e: CodexEntry) => ({
     id: e.id,
     name: e.name,
@@ -43,9 +41,8 @@ export async function buildCrossReferenceReport(): Promise<
   }));
   const matcher = createCodexMatcher(targets);
 
-  // Scan each scene's content
   const mentionMap = new Map<
-    number,
+    string,
     { entry: CodexEntry; scenes: Map<string, SceneMention> }
   >();
 
@@ -61,8 +58,7 @@ export async function buildCrossReferenceReport(): Promise<
     if (!content) continue;
 
     const matches = matcher(content);
-    // Count mentions per entry in this scene
-    const countsByEntry = new Map<number, number>();
+    const countsByEntry = new Map<string, number>();
     for (const m of matches) {
       countsByEntry.set(m.entryId, (countsByEntry.get(m.entryId) ?? 0) + 1);
     }
@@ -81,7 +77,6 @@ export async function buildCrossReferenceReport(): Promise<
     }
   }
 
-  // Build result sorted by entry name
   const result: CrossReferenceEntry[] = [];
   for (const { entry, scenes: sceneMap } of mentionMap.values()) {
     result.push({
@@ -93,7 +88,6 @@ export async function buildCrossReferenceReport(): Promise<
   }
   result.sort((a, b) => a.entryName.localeCompare(b.entryName));
 
-  // Also include entries with no mentions (for completeness)
   for (const entry of entries) {
     if (!mentionMap.has(entry.id)) {
       result.push({
@@ -110,14 +104,14 @@ export async function buildCrossReferenceReport(): Promise<
 
 /** Simpler version: just ignore content_read, for testing */
 export function buildCrossReferenceFromTexts(
-  entries: Array<{ id: number; name: string; type: string }>,
+  entries: Array<{ id: string; name: string; type: string }>,
   sceneTexts: Array<{ id: string; title: string; content: string }>,
 ): CrossReferenceEntry[] {
   if (entries.length === 0) return [];
 
   const matcher = createCodexMatcher(entries);
   const mentionMap = new Map<
-    number,
+    string,
     {
       entry: (typeof entries)[0];
       scenes: Map<string, SceneMention>;
@@ -127,7 +121,7 @@ export function buildCrossReferenceFromTexts(
   for (const scene of sceneTexts) {
     if (!scene.content) continue;
     const matches = matcher(scene.content);
-    const countsByEntry = new Map<number, number>();
+    const countsByEntry = new Map<string, number>();
     for (const m of matches) {
       countsByEntry.set(m.entryId, (countsByEntry.get(m.entryId) ?? 0) + 1);
     }

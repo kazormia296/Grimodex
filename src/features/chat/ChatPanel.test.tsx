@@ -7,12 +7,12 @@ import { useEditorStore } from "@/features/editor/editorStore";
 
 vi.mock("./chatApi", () => ({
   sendChatMessage: vi.fn(),
-  listThreads: vi.fn(),
-  createThread: vi.fn(),
-  deleteThread: vi.fn(),
+  listSessions: vi.fn(),
+  createSession: vi.fn(),
+  deleteSession: vi.fn(),
   listMessages: vi.fn(),
   addMessage: vi.fn(),
-  updateThreadTitle: vi.fn(),
+  updateSessionTitle: vi.fn(),
 }));
 
 vi.mock("@/features/editor/editorStore", async () => {
@@ -79,14 +79,14 @@ describe("ChatPanel", () => {
       messages: [
         {
           id: "1",
-          threadId: "",
+          sessionId: "",
           role: "user",
           content: "ユーザーの質問",
           createdAt: new Date().toISOString(),
         },
         {
           id: "2",
-          threadId: "",
+          sessionId: "",
           role: "assistant",
           content: "AIの回答",
           createdAt: new Date().toISOString(),
@@ -188,7 +188,7 @@ describe("ChatPanel", () => {
       messages: [
         {
           id: "1",
-          threadId: "",
+          sessionId: "",
           role: "assistant",
           content: "**太字テスト**",
           createdAt: new Date().toISOString(),
@@ -208,14 +208,14 @@ describe("ChatPanel", () => {
       messages: [
         {
           id: "1",
-          threadId: "",
+          sessionId: "",
           role: "user",
           content: "質問",
           createdAt: new Date().toISOString(),
         },
         {
           id: "2",
-          threadId: "",
+          sessionId: "",
           role: "assistant",
           content: "生成中...",
           createdAt: new Date().toISOString(),
@@ -228,14 +228,14 @@ describe("ChatPanel", () => {
     expect(screen.getByTestId("streaming-indicator")).toBeInTheDocument();
   });
 
-  // --- Task 2.4: Insert button tests (via actions menu) ---
+  // --- Insert button tests (via actions menu) ---
 
   it("shows actions menu on assistant messages", () => {
     useChatStore.setState({
       messages: [
         {
           id: "a1",
-          threadId: "",
+          sessionId: "",
           role: "assistant",
           content: "挿入可能なテキスト",
           createdAt: new Date().toISOString(),
@@ -255,7 +255,7 @@ describe("ChatPanel", () => {
       messages: [
         {
           id: "a1",
-          threadId: "",
+          sessionId: "",
           role: "assistant",
           content: "挿入可能なテキスト",
           createdAt: new Date().toISOString(),
@@ -276,7 +276,7 @@ describe("ChatPanel", () => {
       messages: [
         {
           id: "u1",
-          threadId: "",
+          sessionId: "",
           role: "user",
           content: "ユーザーメッセージ",
           createdAt: new Date().toISOString(),
@@ -295,7 +295,7 @@ describe("ChatPanel", () => {
       messages: [
         {
           id: "a1",
-          threadId: "",
+          sessionId: "",
           role: "assistant",
           content: "生成中テキスト",
           createdAt: new Date().toISOString(),
@@ -316,7 +316,7 @@ describe("ChatPanel", () => {
       messages: [
         {
           id: "a1",
-          threadId: "",
+          sessionId: "",
           role: "assistant",
           content: "挿入するテキスト",
           createdAt: new Date().toISOString(),
@@ -329,7 +329,11 @@ describe("ChatPanel", () => {
     await user.click(screen.getByTestId("message-actions-a1"));
     await user.click(screen.getByTestId("insert-to-editor-a1"));
 
-    expect(mockInsert).toHaveBeenCalledWith("挿入するテキスト", "a1", undefined);
+    expect(mockInsert).toHaveBeenCalledWith(
+      "挿入するテキスト",
+      "a1",
+      undefined,
+    );
   });
 
   it("does NOT show actions menu when assistant message is empty", () => {
@@ -337,7 +341,7 @@ describe("ChatPanel", () => {
       messages: [
         {
           id: "a1",
-          threadId: "",
+          sessionId: "",
           role: "assistant",
           content: "",
           createdAt: new Date().toISOString(),
@@ -355,7 +359,7 @@ describe("ChatPanel", () => {
       messages: [
         {
           id: "u1",
-          threadId: "",
+          sessionId: "",
           role: "user",
           content: "ユーザーメッセージ",
           createdAt: new Date().toISOString(),

@@ -16,14 +16,16 @@ beforeEach(() => {
 
 describe("searchCodexEntries", () => {
   const fakeEntry: CodexEntry = {
-    id: 1,
+    id: "codex-1",
+    projectId: "proj-1",
+    parentId: null,
     type: "character",
     name: "山田太郎",
     summary: "主人公キャラ",
-    content: "勇敢な青年。",
+    aliases: "[]",
+    excludedAliases: "[]",
     tags: "主人公",
     sourceChatMessageId: null,
-    source: "human",
     createdAt: "2025-01-01T00:00:00Z",
     updatedAt: "2025-01-01T00:00:00Z",
   };

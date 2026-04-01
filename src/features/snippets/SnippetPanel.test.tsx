@@ -17,11 +17,9 @@ globalThis.ResizeObserver =
 
 // Mock react-resizable-panels to avoid jsdom issues
 vi.mock("@/components/ui/resizable", () => ({
-  ResizablePanelGroup: ({
-    children,
-  }: {
-    children: React.ReactNode;
-  }) => <div data-testid="resizable-group">{children}</div>,
+  ResizablePanelGroup: ({ children }: { children: React.ReactNode }) => (
+    <div data-testid="resizable-group">{children}</div>
+  ),
   ResizablePanel: ({ children }: { children: React.ReactNode }) => (
     <div>{children}</div>
   ),
@@ -50,15 +48,16 @@ vi.mock("./snippetStore", async () => {
 });
 
 const fakeSnippet = (overrides: Partial<Snippet> = {}): Snippet => ({
-  id: 1,
+  id: "snippet-1",
+  projectId: "default-project",
   title: "テストスニペット",
   content: "スニペット内容",
   tags: "タグ1,タグ2",
   sceneId: null,
   sourceChatMessageId: null,
-  source: "human",
-  originalContent: null,
+  usageCount: 0,
   createdAt: "2025-01-01T00:00:00Z",
+  updatedAt: "2025-01-01T00:00:00Z",
   ...overrides,
 });
 
@@ -92,8 +91,8 @@ describe("SnippetPanel", () => {
   it("displays snippet list", () => {
     useSnippetStore.setState({
       entries: [
-        fakeSnippet({ id: 1, title: "一つ目" }),
-        fakeSnippet({ id: 2, title: "二つ目" }),
+        fakeSnippet({ id: "snippet-1", title: "一つ目" }),
+        fakeSnippet({ id: "snippet-2", title: "二つ目" }),
       ],
     });
 
@@ -104,7 +103,7 @@ describe("SnippetPanel", () => {
 
   it("displays tags on snippet items", () => {
     useSnippetStore.setState({
-      entries: [fakeSnippet({ id: 1, tags: "伏線,キャラ" })],
+      entries: [fakeSnippet({ id: "snippet-1", tags: "伏線,キャラ" })],
     });
 
     render(<SnippetPanel />);
@@ -127,21 +126,21 @@ describe("SnippetPanel", () => {
 
   it("snippet items are draggable", () => {
     useSnippetStore.setState({
-      entries: [fakeSnippet({ id: 1, title: "ドラッグ可能" })],
+      entries: [fakeSnippet({ id: "snippet-1", title: "ドラッグ可能" })],
     });
 
     render(<SnippetPanel />);
-    const item = screen.getByTestId("snippet-item-1");
+    const item = screen.getByTestId("snippet-item-snippet-1");
     expect(item).toHaveAttribute("draggable", "true");
   });
 
   it("sets dataTransfer on drag start", () => {
     useSnippetStore.setState({
-      entries: [fakeSnippet({ id: 1, content: "ドラッグ内容" })],
+      entries: [fakeSnippet({ id: "snippet-1", content: "ドラッグ内容" })],
     });
 
     render(<SnippetPanel />);
-    const item = screen.getByTestId("snippet-item-1");
+    const item = screen.getByTestId("snippet-item-snippet-1");
 
     const setData = vi.fn();
     const dragEvent = new Event("dragstart", { bubbles: true });
@@ -154,7 +153,7 @@ describe("SnippetPanel", () => {
     expect(setData).toHaveBeenCalledWith(
       "application/x-grimodex-snippet",
       JSON.stringify({
-        id: 1,
+        id: "snippet-1",
         content: "ドラッグ内容",
         source: "human",
         originalContent: null,
@@ -165,15 +164,15 @@ describe("SnippetPanel", () => {
   it("shows delete button and calls remove on click", async () => {
     const remove = vi.fn();
     useSnippetStore.setState({
-      entries: [fakeSnippet({ id: 1 })],
+      entries: [fakeSnippet({ id: "snippet-1" })],
       remove,
     });
     const user = userEvent.setup();
 
     render(<SnippetPanel />);
-    await user.click(screen.getByTestId("snippet-delete-1"));
+    await user.click(screen.getByTestId("snippet-delete-snippet-1"));
 
-    expect(remove).toHaveBeenCalledWith(1);
+    expect(remove).toHaveBeenCalledWith("snippet-1");
   });
 
   it("shows loading state", () => {

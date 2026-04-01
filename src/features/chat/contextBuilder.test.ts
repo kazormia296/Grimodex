@@ -30,13 +30,21 @@ describe("contextBuilder", () => {
       };
       const project: ProjectContext = {
         title: "月と六文銭",
-        description: "芸術家の葛藤を描く長編小説",
+        genre: "文学",
+        pov: "三人称",
+        tense: "過去形",
+        styleGuide: "芸術家の葛藤を描く長編小説",
+        aiInstructions: "丁寧な文体で",
       };
 
       const result = buildSystemPrompt({ scene, project });
 
       expect(result).toContain("月と六文銭");
+      expect(result).toContain("文学");
+      expect(result).toContain("三人称");
+      expect(result).toContain("過去形");
       expect(result).toContain("芸術家の葛藤を描く長編小説");
+      expect(result).toContain("丁寧な文体で");
     });
 
     it("works without project context", () => {
@@ -86,8 +94,18 @@ describe("contextBuilder", () => {
         content: "太郎が花子に話しかけた。",
       };
       const codexEntries: CodexContext[] = [
-        { id: 1, type: "character", name: "太郎", summary: "主人公の青年" },
-        { id: 2, type: "location", name: "東京", summary: "物語の舞台" },
+        {
+          id: "codex-1",
+          type: "character",
+          name: "太郎",
+          summary: "主人公の青年",
+        },
+        {
+          id: "codex-2",
+          type: "location",
+          name: "東京",
+          summary: "物語の舞台",
+        },
       ];
 
       const result = buildSystemPrompt({ scene, codexEntries });
@@ -104,7 +122,12 @@ describe("contextBuilder", () => {
         content: "本文",
       };
       const pinnedCodexEntries: CodexContext[] = [
-        { id: 3, type: "item", name: "魔法の剣", summary: "伝説の武器" },
+        {
+          id: "codex-3",
+          type: "item",
+          name: "魔法の剣",
+          summary: "伝説の武器",
+        },
       ];
 
       const result = buildSystemPrompt({ scene, pinnedCodexEntries });
@@ -119,7 +142,7 @@ describe("contextBuilder", () => {
         content: "本文",
       };
       const sharedEntry: CodexContext = {
-        id: 1,
+        id: "codex-1",
         type: "character",
         name: "太郎",
         summary: "主人公の青年",
@@ -173,7 +196,12 @@ describe("contextBuilder", () => {
         content: "本文",
       };
       const codexEntries: CodexContext[] = [
-        { id: 1, type: "lore", name: "魔法体系", summary: "世界の魔法ルール" },
+        {
+          id: "codex-1",
+          type: "lore",
+          name: "魔法体系",
+          summary: "世界の魔法ルール",
+        },
       ];
 
       const result = buildSystemPrompt({ scene, codexEntries });

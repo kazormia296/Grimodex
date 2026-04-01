@@ -7,7 +7,7 @@ import {
 } from "react";
 import { Send } from "lucide-react";
 import { useChatStore } from "./chatStore";
-import { useSceneStore } from "@/features/scene/store";
+import { useSceneStore } from "@/features/tree/store";
 import { useEditorStore } from "@/features/editor/editorStore";
 import { useCodexStore } from "@/features/codex/codexStore";
 import { useSnippetStore } from "@/features/snippets/snippetStore";
@@ -35,7 +35,7 @@ export function ChatPanel() {
   const sendMessage = useChatStore((s) => s.sendMessage);
   const contextTokenCount = useChatStore((s) => s.contextTokenCount);
   const setActiveSceneId = useChatStore((s) => s.setActiveSceneId);
-  const activeThreadId = useChatStore((s) => s.activeThreadId);
+  const activeSessionId = useChatStore((s) => s.activeSessionId);
 
   const activeSceneId = useSceneStore((s) => s.activeSceneId);
 
@@ -49,33 +49,33 @@ export function ChatPanel() {
   const [pinDialogOpen, setPinDialogOpen] = useState(false);
 
   useEffect(() => {
-    if (!activeThreadId) {
+    if (!activeSessionId) {
       setPinnedEntries([]);
       return;
     }
-    chatApi.listPinnedCodexEntries(activeThreadId).then(setPinnedEntries);
-  }, [activeThreadId]);
+    chatApi.listPinnedCodexEntries(activeSessionId).then(setPinnedEntries);
+  }, [activeSessionId]);
 
   const pinnedIds = new Set(pinnedEntries.map((e) => e.id));
 
   const handlePin = useCallback(
-    async (entryId: number) => {
-      if (!activeThreadId) return;
-      await chatApi.pinCodexEntry(activeThreadId, entryId);
-      const updated = await chatApi.listPinnedCodexEntries(activeThreadId);
+    async (entryId: string) => {
+      if (!activeSessionId) return;
+      await chatApi.pinCodexEntry(activeSessionId, entryId);
+      const updated = await chatApi.listPinnedCodexEntries(activeSessionId);
       setPinnedEntries(updated);
     },
-    [activeThreadId],
+    [activeSessionId],
   );
 
   const handleUnpin = useCallback(
-    async (entryId: number) => {
-      if (!activeThreadId) return;
-      await chatApi.unpinCodexEntry(activeThreadId, entryId);
-      const updated = await chatApi.listPinnedCodexEntries(activeThreadId);
+    async (entryId: string) => {
+      if (!activeSessionId) return;
+      await chatApi.unpinCodexEntry(activeSessionId, entryId);
+      const updated = await chatApi.listPinnedCodexEntries(activeSessionId);
       setPinnedEntries(updated);
     },
-    [activeThreadId],
+    [activeSessionId],
   );
 
   const [input, setInput] = useState("");
@@ -95,7 +95,8 @@ export function ChatPanel() {
     (messageId: string, selectedText: string | null) => {
       const msg = messages.find((m) => m.id === messageId);
       const content = selectedText ?? msg?.content ?? "";
-      const messageRole = msg?.role === "user" ? "user" as const : "assistant" as const;
+      const messageRole =
+        msg?.role === "user" ? ("user" as const) : ("assistant" as const);
       setExtractionDialog({ open: true, messageId, content, messageRole });
     },
     [messages],
@@ -115,8 +116,14 @@ export function ChatPanel() {
     (messageId: string, selectedText: string | null) => {
       const msg = messages.find((m) => m.id === messageId);
       const content = selectedText ?? msg?.content ?? "";
-      const messageRole = msg?.role === "user" ? "user" as const : "assistant" as const;
-      setSnippetDialog({ open: true, messageId, initialContent: content, messageRole });
+      const messageRole =
+        msg?.role === "user" ? ("user" as const) : ("assistant" as const);
+      setSnippetDialog({
+        open: true,
+        messageId,
+        initialContent: content,
+        messageRole,
+      });
     },
     [messages],
   );
@@ -169,7 +176,7 @@ export function ChatPanel() {
         )}
       </div>
 
-      {activeThreadId && (
+      {activeSessionId && (
         <PinnedCodexBadges
           pinnedEntries={pinnedEntries}
           onUnpin={handleUnpin}
@@ -243,10 +250,20 @@ export function ChatPanel() {
         messageRole={extractionDialog.messageRole}
         onSave={async (data) => {
           await createCodexEntry(data);
-          setExtractionDialog({ open: false, messageId: "", content: "", messageRole: "assistant" });
+          setExtractionDialog({
+            open: false,
+            messageId: "",
+            content: "",
+            messageRole: "assistant",
+          });
         }}
         onClose={() =>
-          setExtractionDialog({ open: false, messageId: "", content: "", messageRole: "assistant" })
+          setExtractionDialog({
+            open: false,
+            messageId: "",
+            content: "",
+            messageRole: "assistant",
+          })
         }
       />
       <SnippetExtractionDialog

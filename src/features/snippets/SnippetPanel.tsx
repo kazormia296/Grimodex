@@ -44,10 +44,8 @@ export function SnippetPanel() {
     (
       e: React.DragEvent,
       snippet: {
-        id: number;
+        id: string;
         content: string;
-        source: string;
-        originalContent: string | null;
       },
     ) => {
       e.dataTransfer.setData("text/plain", snippet.content);
@@ -56,8 +54,8 @@ export function SnippetPanel() {
         JSON.stringify({
           id: snippet.id,
           content: snippet.content,
-          source: snippet.source,
-          originalContent: snippet.originalContent,
+          source: "human",
+          originalContent: null,
         }),
       );
     },
@@ -66,7 +64,7 @@ export function SnippetPanel() {
 
   const handleSave = useCallback(
     async (
-      id: number,
+      id: string,
       data: { title: string; content: string; tags: string },
     ) => {
       await update(id, data);
@@ -75,7 +73,7 @@ export function SnippetPanel() {
   );
 
   const handleDelete = useCallback(
-    async (id: number) => {
+    async (id: string) => {
       await remove(id);
       setSelectedSnippet(null);
     },
@@ -140,14 +138,12 @@ export function SnippetPanel() {
                         handleDragStart(e, {
                           id: snippet.id,
                           content: snippet.content,
-                          source: snippet.source,
-                          originalContent: snippet.originalContent,
                         })
                       }
                       onCopy={(e) =>
                         handleCopyWithAttribution(
                           e,
-                          snippet.source as AuthorshipSource,
+                          "human" as AuthorshipSource,
                         )
                       }
                       className={`group cursor-grab rounded-md border border-border p-2 hover:bg-accent/50 active:cursor-grabbing ${
@@ -166,7 +162,7 @@ export function SnippetPanel() {
                               e.stopPropagation();
                               copyWithAttribution(
                                 snippet.content,
-                                snippet.source as AuthorshipSource,
+                                "human" as AuthorshipSource,
                               );
                             }}
                             className="rounded p-0.5 text-muted-foreground opacity-0 hover:bg-accent hover:text-accent-foreground group-hover:opacity-100"

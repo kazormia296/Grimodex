@@ -1,15 +1,15 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { useChatStore } from "./chatStore";
-import type { ChatMessage, ChatThread } from "./chatTypes";
+import type { ChatMessage, ChatSession } from "./chatTypes";
 
 vi.mock("./chatApi", () => ({
   sendChatMessage: vi.fn(),
-  listThreads: vi.fn(),
-  createThread: vi.fn(),
-  deleteThread: vi.fn(),
+  listSessions: vi.fn(),
+  createSession: vi.fn(),
+  deleteSession: vi.fn(),
   listMessages: vi.fn(),
   addMessage: vi.fn(),
-  updateThreadTitle: vi.fn(),
+  updateSessionTitle: vi.fn(),
   listPinnedCodexEntries: vi.fn(() => Promise.resolve([])),
   pinCodexEntry: vi.fn(),
   unpinCodexEntry: vi.fn(),
@@ -20,17 +20,12 @@ vi.mock("./contextBuilder", () => ({
   countTokens: vi.fn(() => 42),
 }));
 
-vi.mock("@/features/scene/api", () => ({
+vi.mock("@/features/tree/api", () => ({
   loadSceneContent: vi.fn(() => Promise.resolve("シーン本文")),
-  getScene: vi.fn(() =>
+  getNode: vi.fn(() =>
     Promise.resolve({
       id: "scene-1",
-      chapterId: 1,
       title: "テストシーン",
-      sortOrder: 0,
-      synopsis: "",
-      createdAt: "",
-      updatedAt: "",
     }),
   ),
 }));
@@ -38,9 +33,9 @@ vi.mock("@/features/scene/api", () => ({
 vi.mock("@/features/project/api", () => ({
   getProject: vi.fn(() =>
     Promise.resolve({
-      id: 1,
+      id: "proj-1",
       title: "テストプロジェクト",
-      description: "概要",
+      genre: "ファンタジー",
     }),
   ),
 }));
@@ -58,22 +53,22 @@ import * as contextBuilder from "./contextBuilder";
 const mockSendChatMessage = vi.mocked(chatApi.sendChatMessage);
 const mockBuildSystemPrompt = vi.mocked(contextBuilder.buildSystemPrompt);
 const mockCountTokens = vi.mocked(contextBuilder.countTokens);
-const mockListThreads = vi.mocked(chatApi.listThreads);
-const mockCreateThread = vi.mocked(chatApi.createThread);
-const mockDeleteThread = vi.mocked(chatApi.deleteThread);
+const mockListSessions = vi.mocked(chatApi.listSessions);
+const mockCreateSession = vi.mocked(chatApi.createSession);
+const mockDeleteSession = vi.mocked(chatApi.deleteSession);
 const mockListMessages = vi.mocked(chatApi.listMessages);
 const mockAddMessage = vi.mocked(chatApi.addMessage);
 
 function resetStore() {
   useChatStore.setState({
-    threads: [],
-    activeThreadId: null,
-    isLoadingThreads: false,
+    sessions: [],
+    activeSessionId: null,
+    isLoadingSessions: false,
     messages: [],
     isStreaming: false,
     error: null,
     activeSceneId: "scene-1",
-    activeProjectId: 1,
+    activeProjectId: "proj-1",
     contextTokenCount: 0,
   });
 }
@@ -85,32 +80,40 @@ function makeMessage(
 ): ChatMessage {
   return {
     id,
-    threadId: "thread-1",
+    sessionId: "session-1",
     role,
     content,
     createdAt: new Date().toISOString(),
   };
 }
 
-const thread1: ChatThread = {
-  id: "thread-1",
+const session1: ChatSession = {
+  id: "session-1",
+  projectId: "proj-1",
+  nodeId: "scene-1",
   title: "会話1",
-  sceneId: "scene-1",
+  titleManual: 0,
+  model: null,
+  pinnedCodex: "[]",
   createdAt: "2025-01-01T00:00:00Z",
-  modifiedAt: "2025-01-01T00:00:00Z",
+  updatedAt: "2025-01-01T00:00:00Z",
 };
 
-const thread2: ChatThread = {
-  id: "thread-2",
+const session2: ChatSession = {
+  id: "session-2",
+  projectId: "proj-1",
+  nodeId: "scene-1",
   title: "会話2",
-  sceneId: "scene-1",
+  titleManual: 0,
+  model: null,
+  pinnedCodex: "[]",
   createdAt: "2025-01-01T00:01:00Z",
-  modifiedAt: "2025-01-01T00:01:00Z",
+  updatedAt: "2025-01-01T00:01:00Z",
 };
 
 const msg1: ChatMessage = {
   id: "msg-1",
-  threadId: "thread-1",
+  sessionId: "session-1",
   role: "user",
   content: "こんにちは",
   createdAt: "2025-01-01T00:00:00Z",
@@ -118,7 +121,7 @@ const msg1: ChatMessage = {
 
 const msg2: ChatMessage = {
   id: "msg-2",
-  threadId: "thread-1",
+  sessionId: "session-1",
   role: "assistant",
   content: "こんにちは！お手伝いします。",
   createdAt: "2025-01-01T00:00:01Z",
@@ -130,124 +133,130 @@ describe("useChatStore", () => {
     vi.clearAllMocks();
   });
 
-  // --- Thread management tests (Task 2.5) ---
+  // --- Session management tests ---
 
-  describe("loadThreads", () => {
-    it("loads threads for a scene", async () => {
-      mockListThreads.mockResolvedValueOnce([thread1, thread2]);
+  describe("loadSessions", () => {
+    it("loads sessions for a scene", async () => {
+      mockListSessions.mockResolvedValueOnce([session1, session2]);
 
-      await useChatStore.getState().loadThreads("scene-1");
+      await useChatStore.getState().loadSessions("scene-1");
 
       const state = useChatStore.getState();
-      expect(state.threads).toHaveLength(2);
-      expect(mockListThreads).toHaveBeenCalledWith("scene-1");
+      expect(state.sessions).toHaveLength(2);
+      expect(mockListSessions).toHaveBeenCalledWith("scene-1");
     });
 
-    it("loads all threads when no sceneId given", async () => {
-      mockListThreads.mockResolvedValueOnce([thread1]);
+    it("loads all sessions when no nodeId given", async () => {
+      mockListSessions.mockResolvedValueOnce([session1]);
 
-      await useChatStore.getState().loadThreads();
+      await useChatStore.getState().loadSessions();
 
-      expect(mockListThreads).toHaveBeenCalledWith(undefined);
+      expect(mockListSessions).toHaveBeenCalledWith(undefined);
     });
 
-    it("sets isLoadingThreads during load", async () => {
-      let resolvePromise: (value: ChatThread[]) => void;
-      const promise = new Promise<ChatThread[]>((resolve) => {
+    it("sets isLoadingSessions during load", async () => {
+      let resolvePromise: (value: ChatSession[]) => void;
+      const promise = new Promise<ChatSession[]>((resolve) => {
         resolvePromise = resolve;
       });
-      mockListThreads.mockReturnValueOnce(promise);
+      mockListSessions.mockReturnValueOnce(promise);
 
-      const loadPromise = useChatStore.getState().loadThreads("scene-1");
-      expect(useChatStore.getState().isLoadingThreads).toBe(true);
+      const loadPromise = useChatStore.getState().loadSessions("scene-1");
+      expect(useChatStore.getState().isLoadingSessions).toBe(true);
 
-      resolvePromise!([thread1]);
+      resolvePromise!([session1]);
       await loadPromise;
 
-      expect(useChatStore.getState().isLoadingThreads).toBe(false);
+      expect(useChatStore.getState().isLoadingSessions).toBe(false);
     });
   });
 
-  describe("selectThread", () => {
-    it("sets active thread and loads its messages", async () => {
-      useChatStore.setState({ threads: [thread1, thread2] });
+  describe("selectSession", () => {
+    it("sets active session and loads its messages", async () => {
+      useChatStore.setState({ sessions: [session1, session2] });
       mockListMessages.mockResolvedValueOnce([msg1, msg2]);
 
-      await useChatStore.getState().selectThread("thread-1");
+      await useChatStore.getState().selectSession("session-1");
 
       const state = useChatStore.getState();
-      expect(state.activeThreadId).toBe("thread-1");
+      expect(state.activeSessionId).toBe("session-1");
       expect(state.messages).toHaveLength(2);
-      expect(mockListMessages).toHaveBeenCalledWith("thread-1");
+      expect(mockListMessages).toHaveBeenCalledWith("session-1");
     });
 
     it("clears messages when selecting null", async () => {
       useChatStore.setState({
-        activeThreadId: "thread-1",
+        activeSessionId: "session-1",
         messages: [msg1],
       });
 
-      await useChatStore.getState().selectThread(null);
+      await useChatStore.getState().selectSession(null);
 
       const state = useChatStore.getState();
-      expect(state.activeThreadId).toBeNull();
+      expect(state.activeSessionId).toBeNull();
       expect(state.messages).toEqual([]);
     });
   });
 
-  describe("createNewThread", () => {
-    it("creates a thread and selects it", async () => {
-      mockCreateThread.mockResolvedValueOnce(thread1);
+  describe("createNewSession", () => {
+    it("creates a session and selects it", async () => {
+      mockCreateSession.mockResolvedValueOnce(session1);
 
-      await useChatStore.getState().createNewThread("会話1", "scene-1");
+      await useChatStore
+        .getState()
+        .createNewSession("proj-1", "会話1", "scene-1");
 
       const state = useChatStore.getState();
-      expect(mockCreateThread).toHaveBeenCalledWith("会話1", "scene-1");
-      expect(state.threads).toContainEqual(thread1);
-      expect(state.activeThreadId).toBe("thread-1");
+      expect(mockCreateSession).toHaveBeenCalledWith(
+        "proj-1",
+        "会話1",
+        "scene-1",
+      );
+      expect(state.sessions).toContainEqual(session1);
+      expect(state.activeSessionId).toBe("session-1");
     });
   });
 
-  describe("deleteThread", () => {
-    it("deletes a thread and clears selection if active", async () => {
+  describe("deleteSession", () => {
+    it("deletes a session and clears selection if active", async () => {
       useChatStore.setState({
-        threads: [thread1, thread2],
-        activeThreadId: "thread-1",
+        sessions: [session1, session2],
+        activeSessionId: "session-1",
         messages: [msg1],
       });
-      mockDeleteThread.mockResolvedValueOnce(undefined);
+      mockDeleteSession.mockResolvedValueOnce(undefined);
 
-      await useChatStore.getState().deleteThread("thread-1");
+      await useChatStore.getState().deleteSession("session-1");
 
       const state = useChatStore.getState();
-      expect(state.threads).toHaveLength(1);
-      expect(state.threads[0].id).toBe("thread-2");
-      expect(state.activeThreadId).toBeNull();
+      expect(state.sessions).toHaveLength(1);
+      expect(state.sessions[0].id).toBe("session-2");
+      expect(state.activeSessionId).toBeNull();
       expect(state.messages).toEqual([]);
     });
 
-    it("does not clear selection when deleting non-active thread", async () => {
+    it("does not clear selection when deleting non-active session", async () => {
       useChatStore.setState({
-        threads: [thread1, thread2],
-        activeThreadId: "thread-1",
+        sessions: [session1, session2],
+        activeSessionId: "session-1",
         messages: [msg1],
       });
-      mockDeleteThread.mockResolvedValueOnce(undefined);
+      mockDeleteSession.mockResolvedValueOnce(undefined);
 
-      await useChatStore.getState().deleteThread("thread-2");
+      await useChatStore.getState().deleteSession("session-2");
 
       const state = useChatStore.getState();
-      expect(state.threads).toHaveLength(1);
-      expect(state.activeThreadId).toBe("thread-1");
+      expect(state.sessions).toHaveLength(1);
+      expect(state.activeSessionId).toBe("session-1");
       expect(state.messages).toEqual([msg1]);
     });
   });
 
   describe("persistMessage", () => {
-    it("adds a message to the current thread", async () => {
+    it("adds a message to the current session", async () => {
       useChatStore.setState({
-        threads: [thread1],
-        activeThreadId: "thread-1",
+        sessions: [session1],
+        activeSessionId: "session-1",
         messages: [],
       });
       mockAddMessage.mockResolvedValueOnce(msg1);
@@ -258,14 +267,14 @@ describe("useChatStore", () => {
       expect(state.messages).toHaveLength(1);
       expect(state.messages[0].content).toBe("こんにちは");
       expect(mockAddMessage).toHaveBeenCalledWith(
-        "thread-1",
+        "session-1",
         "user",
         "こんにちは",
       );
     });
 
-    it("does nothing when no active thread", async () => {
-      useChatStore.setState({ activeThreadId: null });
+    it("does nothing when no active session", async () => {
+      useChatStore.setState({ activeSessionId: null });
 
       await useChatStore.getState().persistMessage("user", "test");
 
@@ -409,9 +418,9 @@ describe("useChatStore", () => {
     });
 
     it("sets activeProjectId", () => {
-      useChatStore.getState().setActiveProjectId(2);
+      useChatStore.getState().setActiveProjectId("proj-2");
 
-      expect(useChatStore.getState().activeProjectId).toBe(2);
+      expect(useChatStore.getState().activeProjectId).toBe("proj-2");
     });
   });
 });

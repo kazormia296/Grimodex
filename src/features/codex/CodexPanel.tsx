@@ -1,10 +1,8 @@
 import { useState, useEffect, useCallback, useRef } from "react";
-import { Search, ArrowLeft, Pencil, Trash2, Copy } from "lucide-react";
+import { Search, ArrowLeft, Pencil, Trash2 } from "lucide-react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { useCodexStore } from "./codexStore";
 import type { CodexEntry, CodexEntryType } from "./api";
-import { copyWithAttribution } from "@/lib/clipboardAttribution";
-import type { AuthorshipSource } from "@/features/attribution/AuthorshipMark";
 
 const TYPE_OPTIONS: { value: CodexEntryType; label: string }[] = [
   { value: "character", label: "キャラクター" },
@@ -53,19 +51,6 @@ function CodexDetailView({
         </button>
         <button
           type="button"
-          data-testid="codex-copy-button"
-          onClick={() =>
-            copyWithAttribution(
-              entry.content,
-              (entry.source ?? "human") as AuthorshipSource,
-            )
-          }
-          className="rounded p-1 text-muted-foreground hover:bg-accent hover:text-accent-foreground"
-        >
-          <Copy className="h-3.5 w-3.5" />
-        </button>
-        <button
-          type="button"
           data-testid="codex-delete-button"
           onClick={onDelete}
           className="rounded p-1 text-destructive hover:bg-destructive/10"
@@ -80,7 +65,9 @@ function CodexDetailView({
         {entry.summary && (
           <p className="mb-2 text-sm text-muted-foreground">{entry.summary}</p>
         )}
-        <p className="whitespace-pre-wrap text-sm">{entry.content}</p>
+        {entry.summary && (
+          <p className="whitespace-pre-wrap text-sm">{entry.summary}</p>
+        )}
         {entry.tags && (
           <div className="mt-3 flex flex-wrap gap-1">
             {entry.tags.split(",").map((tag) => (
@@ -108,7 +95,6 @@ function CodexEditView({
     type: CodexEntryType;
     name: string;
     summary: string;
-    content: string;
     tags: string;
   }) => void;
   onCancel: () => void;
@@ -118,12 +104,11 @@ function CodexEditView({
   );
   const [name, setName] = useState(entry.name);
   const [summary, setSummary] = useState(entry.summary);
-  const [content, setContent] = useState(entry.content);
   const [tags, setTags] = useState(entry.tags);
 
   const handleSave = () => {
     if (!name.trim()) return;
-    onSave({ type, name: name.trim(), summary, content, tags });
+    onSave({ type, name: name.trim(), summary, tags });
   };
 
   return (
@@ -157,18 +142,9 @@ function CodexEditView({
         </div>
         <div>
           <label className="mb-1 block text-xs font-medium">概要</label>
-          <input
-            type="text"
+          <textarea
             value={summary}
             onChange={(e) => setSummary(e.target.value)}
-            className="w-full rounded-md border border-input bg-background px-2 py-1.5 text-sm"
-          />
-        </div>
-        <div>
-          <label className="mb-1 block text-xs font-medium">内容</label>
-          <textarea
-            value={content}
-            onChange={(e) => setContent(e.target.value)}
             rows={5}
             className="w-full resize-none rounded-md border border-input bg-background px-2 py-1.5 text-sm"
           />
@@ -330,7 +306,7 @@ export function CodexPanel() {
   );
 
   const handleDelete = useCallback(
-    async (id: number) => {
+    async (id: string) => {
       await remove(id);
       setSelectedEntry(null);
     },
@@ -342,7 +318,6 @@ export function CodexPanel() {
       type: CodexEntryType;
       name: string;
       summary: string;
-      content: string;
       tags: string;
     }) => {
       if (!selectedEntry) return;

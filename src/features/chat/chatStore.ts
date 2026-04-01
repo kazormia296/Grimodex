@@ -7,31 +7,36 @@ import type {
   ProjectContext,
   CodexContext,
 } from "./contextBuilder";
-import { loadSceneContent, getScene } from "@/features/scene/api";
+import { loadSceneContent } from "@/features/tree/api";
+import { getNode } from "@/features/tree/api";
 import { getProject } from "@/features/project/api";
 import { listCodexEntries } from "@/features/codex/api";
 import { findMentionedEntries } from "@/features/codex/codexMatcher";
-import type { ChatMessage, ChatThread, MessageRole } from "./chatTypes";
+import type { ChatMessage, ChatSession, MessageRole } from "./chatTypes";
 
 interface ChatState {
-  // Thread management (Task 2.5)
-  threads: ChatThread[];
-  activeThreadId: string | null;
-  isLoadingThreads: boolean;
+  // Session management
+  sessions: ChatSession[];
+  activeSessionId: string | null;
+  isLoadingSessions: boolean;
 
-  // Messages & streaming (existing)
+  // Messages & streaming
   messages: ChatMessage[];
   isStreaming: boolean;
   error: string | null;
   activeSceneId: string;
-  activeProjectId: number | null;
+  activeProjectId: string | null;
   contextTokenCount: number;
 
-  // Thread actions (Task 2.5)
-  loadThreads: (sceneId?: string) => Promise<void>;
-  selectThread: (threadId: string | null) => Promise<void>;
-  createNewThread: (title: string, sceneId?: string) => Promise<void>;
-  deleteThread: (threadId: string) => Promise<void>;
+  // Session actions
+  loadSessions: (nodeId?: string) => Promise<void>;
+  selectSession: (sessionId: string | null) => Promise<void>;
+  createNewSession: (
+    projectId: string,
+    title: string,
+    nodeId?: string,
+  ) => Promise<void>;
+  deleteSession: (sessionId: string) => Promise<void>;
   persistMessage: (role: MessageRole, content: string) => Promise<void>;
 
   // Existing actions
@@ -39,41 +44,48 @@ interface ChatState {
   clearMessages: () => void;
   clearError: () => void;
   setActiveSceneId: (id: string) => void;
-  setActiveProjectId: (id: number | null) => void;
+  setActiveProjectId: (id: string | null) => void;
 }
 
 async function fetchSceneContext(
   sceneId: string,
 ): Promise<SceneContext | null> {
   try {
-    const [scene, content] = await Promise.all([
-      getScene(sceneId),
+    const [node, content] = await Promise.all([
+      getNode(sceneId),
       loadSceneContent(sceneId),
     ]);
-    if (!scene) return null;
-    return { id: scene.id, title: scene.title, content: content ?? "" };
+    if (!node) return null;
+    return { id: node.id, title: node.title, content: content ?? "" };
   } catch {
     return null;
   }
 }
 
 async function fetchProjectContext(
-  projectId: number | null,
+  projectId: string | null,
 ): Promise<ProjectContext | null> {
   if (projectId == null) return null;
   try {
     const project = await getProject(projectId);
     if (!project) return null;
-    return { title: project.title, description: project.description };
+    return {
+      title: project.title,
+      genre: project.genre,
+      pov: project.pov,
+      tense: project.tense,
+      styleGuide: project.styleGuide,
+      aiInstructions: project.aiInstructions,
+    };
   } catch {
     return null;
   }
 }
 
 export const useChatStore = create<ChatState>()((set, get) => ({
-  threads: [],
-  activeThreadId: null,
-  isLoadingThreads: false,
+  sessions: [],
+  activeSessionId: null,
+  isLoadingSessions: false,
   messages: [],
   isStreaming: false,
   error: null,
@@ -81,70 +93,74 @@ export const useChatStore = create<ChatState>()((set, get) => ({
   activeProjectId: null,
   contextTokenCount: 0,
 
-  // --- Thread management (Task 2.5) ---
+  // --- Session management ---
 
-  loadThreads: async (sceneId?: string) => {
-    set({ isLoadingThreads: true });
+  loadSessions: async (nodeId?: string) => {
+    set({ isLoadingSessions: true });
     try {
-      const threads = await chatApi.listThreads(sceneId);
-      set({ threads, isLoadingThreads: false });
+      const sessions = await chatApi.listSessions(nodeId);
+      set({ sessions, isLoadingSessions: false });
     } catch (e) {
-      set({ isLoadingThreads: false });
-      toast.error("チャットスレッドの読み込みに失敗しました");
-      console.error("[ChatStore] loadThreads:", e);
+      set({ isLoadingSessions: false });
+      toast.error("チャットセッションの読み込みに失敗しました");
+      console.error("[ChatStore] loadSessions:", e);
     }
   },
 
-  selectThread: async (threadId: string | null) => {
-    if (threadId === null) {
-      set({ activeThreadId: null, messages: [] });
+  selectSession: async (sessionId: string | null) => {
+    if (sessionId === null) {
+      set({ activeSessionId: null, messages: [] });
       return;
     }
     try {
-      const messages = await chatApi.listMessages(threadId);
-      set({ activeThreadId: threadId, messages });
+      const messages = await chatApi.listMessages(sessionId);
+      set({ activeSessionId: sessionId, messages });
     } catch (e) {
       toast.error("メッセージの読み込みに失敗しました");
-      console.error("[ChatStore] selectThread:", e);
+      console.error("[ChatStore] selectSession:", e);
     }
   },
 
-  createNewThread: async (title: string, sceneId?: string) => {
+  createNewSession: async (
+    projectId: string,
+    title: string,
+    nodeId?: string,
+  ) => {
     try {
-      const thread = await chatApi.createThread(title, sceneId);
+      const session = await chatApi.createSession(projectId, title, nodeId);
       set((state) => ({
-        threads: [thread, ...state.threads],
-        activeThreadId: thread.id,
+        sessions: [session, ...state.sessions],
+        activeSessionId: session.id,
         messages: [],
       }));
     } catch (e) {
-      toast.error("スレッドの作成に失敗しました");
-      console.error("[ChatStore] createNewThread:", e);
+      toast.error("セッションの作成に失敗しました");
+      console.error("[ChatStore] createNewSession:", e);
     }
   },
 
-  deleteThread: async (threadId: string) => {
+  deleteSession: async (sessionId: string) => {
     try {
-      await chatApi.deleteThread(threadId);
-      const { activeThreadId } = get();
+      await chatApi.deleteSession(sessionId);
+      const { activeSessionId } = get();
       set((state) => ({
-        threads: state.threads.filter((t) => t.id !== threadId),
-        ...(activeThreadId === threadId
-          ? { activeThreadId: null, messages: [] }
+        sessions: state.sessions.filter((s) => s.id !== sessionId),
+        ...(activeSessionId === sessionId
+          ? { activeSessionId: null, messages: [] }
           : {}),
       }));
     } catch (e) {
-      toast.error("スレッドの削除に失敗しました");
-      console.error("[ChatStore] deleteThread:", e);
+      toast.error("セッションの削除に失敗しました");
+      console.error("[ChatStore] deleteSession:", e);
     }
   },
 
   persistMessage: async (role: MessageRole, content: string) => {
-    const { activeThreadId } = get();
-    if (!activeThreadId) return;
+    const { activeSessionId } = get();
+    if (!activeSessionId) return;
 
     try {
-      const message = await chatApi.addMessage(activeThreadId, role, content);
+      const message = await chatApi.addMessage(activeSessionId, role, content);
       set((state) => ({
         messages: [...state.messages, message],
       }));
@@ -154,19 +170,19 @@ export const useChatStore = create<ChatState>()((set, get) => ({
     }
   },
 
-  // --- Streaming chat (existing, updated for thread awareness) ---
+  // --- Streaming chat ---
 
   sendMessage: async (content: string) => {
-    const { isStreaming, activeSceneId, activeProjectId, activeThreadId } =
+    const { isStreaming, activeSceneId, activeProjectId, activeSessionId } =
       get();
     if (isStreaming) return;
     if (!content.trim()) return;
 
-    const threadId = activeThreadId ?? "";
+    const sessionId = activeSessionId ?? "";
 
     const userMsg: ChatMessage = {
       id: crypto.randomUUID(),
-      threadId,
+      sessionId,
       role: "user",
       content,
       createdAt: new Date().toISOString(),
@@ -174,7 +190,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
 
     const assistantMsg: ChatMessage = {
       id: crypto.randomUUID(),
-      threadId,
+      sessionId,
       role: "assistant",
       content: "",
       createdAt: new Date().toISOString(),
@@ -188,7 +204,6 @@ export const useChatStore = create<ChatState>()((set, get) => ({
     });
 
     try {
-      // Build context
       const sceneCtx = activeSceneId
         ? await fetchSceneContext(activeSceneId)
         : null;
@@ -197,7 +212,6 @@ export const useChatStore = create<ChatState>()((set, get) => ({
       const messagesForApi: ChatMessage[] = [...prevMessages, userMsg];
 
       if (sceneCtx) {
-        // Auto-detect codex entries mentioned in scene content
         const allEntries = await listCodexEntries();
         const mentioned = findMentionedEntries(sceneCtx.content, allEntries);
         const codexEntries: CodexContext[] = mentioned.map((e) => ({
@@ -207,10 +221,9 @@ export const useChatStore = create<ChatState>()((set, get) => ({
           summary: allEntries.find((a) => a.id === e.id)?.summary ?? "",
         }));
 
-        // Load pinned codex entries for current thread
         let pinnedCodexEntries: CodexContext[] = [];
-        if (activeThreadId) {
-          const pinned = await chatApi.listPinnedCodexEntries(activeThreadId);
+        if (activeSessionId) {
+          const pinned = await chatApi.listPinnedCodexEntries(activeSessionId);
           pinnedCodexEntries = pinned.map((e) => ({
             id: e.id,
             type: e.type,
@@ -230,7 +243,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
 
         const systemMsg: ChatMessage = {
           id: "system",
-          threadId,
+          sessionId,
           role: "system",
           content: systemPrompt,
           createdAt: new Date().toISOString(),
@@ -249,14 +262,13 @@ export const useChatStore = create<ChatState>()((set, get) => ({
         });
       });
 
-      // Persist messages to DB after streaming completes
-      if (activeThreadId) {
+      if (activeSessionId) {
         const finalMessages = get().messages;
         const lastMsg = finalMessages[finalMessages.length - 1];
-        await chatApi.addMessage(activeThreadId, "user", content);
+        await chatApi.addMessage(activeSessionId, "user", content);
         if (lastMsg && lastMsg.role === "assistant" && lastMsg.content) {
           await chatApi.addMessage(
-            activeThreadId,
+            activeSessionId,
             "assistant",
             lastMsg.content,
           );
@@ -274,5 +286,5 @@ export const useChatStore = create<ChatState>()((set, get) => ({
   clearMessages: () => set({ messages: [] }),
   clearError: () => set({ error: null }),
   setActiveSceneId: (id: string) => set({ activeSceneId: id }),
-  setActiveProjectId: (id: number | null) => set({ activeProjectId: id }),
+  setActiveProjectId: (id: string | null) => set({ activeProjectId: id }),
 }));

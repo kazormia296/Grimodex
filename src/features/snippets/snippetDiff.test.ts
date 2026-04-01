@@ -8,7 +8,10 @@ describe("computeAttributedSegments", () => {
   });
 
   it("returns single human segment when fully replaced", () => {
-    const result = computeAttributedSegments("元のテキスト", "全く別のテキスト");
+    const result = computeAttributedSegments(
+      "元のテキスト",
+      "全く別のテキスト",
+    );
     // All text is new, so all segments should be human
     for (const seg of result) {
       if (seg.source === "ai") {

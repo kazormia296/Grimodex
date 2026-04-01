@@ -12,41 +12,36 @@ export async function listSnippets(sceneId?: string): Promise<Snippet[]> {
   return db.select().from(snippets);
 }
 
-export async function getSnippet(id: number): Promise<Snippet | undefined> {
+export async function getSnippet(id: string): Promise<Snippet | undefined> {
   const rows = await db.select().from(snippets).where(eq(snippets.id, id));
   return rows[0];
 }
 
 export async function createSnippet(
-  data: Pick<NewSnippet, "title" | "content" | "tags"> &
-    Partial<
-      Pick<
-        NewSnippet,
-        "sceneId" | "sourceChatMessageId" | "source" | "originalContent"
-      >
-    >,
+  data: Pick<NewSnippet, "id" | "projectId" | "title" | "content"> &
+    Partial<Pick<NewSnippet, "tags" | "sceneId" | "sourceChatMessageId">>,
 ): Promise<Snippet> {
   const now = new Date().toISOString();
   const rows = await db
     .insert(snippets)
-    .values({ ...data, createdAt: now })
+    .values({ ...data, createdAt: now, updatedAt: now })
     .returning();
   return rows[0];
 }
 
 export async function updateSnippet(
-  id: number,
+  id: string,
   data: Partial<Pick<NewSnippet, "title" | "content" | "tags" | "sceneId">>,
 ): Promise<Snippet | undefined> {
   const rows = await db
     .update(snippets)
-    .set(data)
+    .set({ ...data, updatedAt: new Date().toISOString() })
     .where(eq(snippets.id, id))
     .returning();
   return rows[0];
 }
 
-export async function deleteSnippet(id: number): Promise<void> {
+export async function deleteSnippet(id: string): Promise<void> {
   await db.delete(snippets).where(eq(snippets.id, id));
 }
 

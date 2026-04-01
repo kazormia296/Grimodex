@@ -16,7 +16,7 @@ export async function listCodexEntries(
 }
 
 export async function getCodexEntry(
-  id: number,
+  id: string,
 ): Promise<CodexEntry | undefined> {
   const rows = await db
     .select()
@@ -26,8 +26,18 @@ export async function getCodexEntry(
 }
 
 export async function createCodexEntry(
-  data: Pick<NewCodexEntry, "type" | "name" | "summary" | "content" | "tags"> &
-    Partial<Pick<NewCodexEntry, "sourceChatMessageId" | "source">>,
+  data: Pick<NewCodexEntry, "id" | "projectId" | "type" | "name"> &
+    Partial<
+      Pick<
+        NewCodexEntry,
+        | "summary"
+        | "tags"
+        | "aliases"
+        | "excludedAliases"
+        | "parentId"
+        | "sourceChatMessageId"
+      >
+    >,
 ): Promise<CodexEntry> {
   const now = new Date().toISOString();
   const rows = await db
@@ -38,9 +48,18 @@ export async function createCodexEntry(
 }
 
 export async function updateCodexEntry(
-  id: number,
+  id: string,
   data: Partial<
-    Pick<NewCodexEntry, "type" | "name" | "summary" | "content" | "tags">
+    Pick<
+      NewCodexEntry,
+      | "type"
+      | "name"
+      | "summary"
+      | "tags"
+      | "aliases"
+      | "excludedAliases"
+      | "parentId"
+    >
   >,
 ): Promise<CodexEntry | undefined> {
   const rows = await db
@@ -51,7 +70,7 @@ export async function updateCodexEntry(
   return rows[0];
 }
 
-export async function deleteCodexEntry(id: number): Promise<void> {
+export async function deleteCodexEntry(id: string): Promise<void> {
   await db.delete(codexEntries).where(eq(codexEntries.id, id));
 }
 

@@ -4,185 +4,247 @@ vi.mock("@/lib/tauri", () => ({
   invoke: vi.fn(),
 }));
 
-import { invoke } from "@/lib/tauri";
-const mockInvoke = vi.mocked(invoke);
+vi.mock("@/db/client", () => ({
+  db: {
+    select: vi.fn(),
+    insert: vi.fn(),
+    update: vi.fn(),
+    delete: vi.fn(),
+  },
+}));
+
+vi.mock("@/db/schema", () => ({
+  chatSessions: {
+    id: "id",
+    nodeId: "nodeId",
+    updatedAt: "updatedAt",
+    projectId: "projectId",
+  },
+  chatMessages: { id: "id", sessionId: "sessionId", createdAt: "createdAt" },
+  codexEntries: { id: "id" },
+}));
+
+vi.mock("drizzle-orm", () => ({
+  eq: vi.fn((...args: unknown[]) => ({ eq: args })),
+  desc: vi.fn((col: unknown) => ({ desc: col })),
+  inArray: vi.fn((...args: unknown[]) => ({ inArray: args })),
+}));
+
+import { db } from "@/db/client";
+const mockDb = vi.mocked(db);
 
 import {
-  listThreads,
-  createThread,
-  deleteThread,
+  listSessions,
+  createSession,
+  deleteSession,
   listMessages,
   addMessage,
-  updateThreadTitle,
+  updateSessionTitle,
 } from "./chatApi";
-import type { ChatThread } from "./chatTypes";
+import type { ChatSession } from "./chatTypes";
 
-function mockDbExecute(rows: Record<string, unknown>[]) {
-  mockInvoke.mockResolvedValueOnce({ rows });
+// Helper to set up chained drizzle query mock
+function mockSelectChain(rows: Record<string, unknown>[]) {
+  const chain = {
+    from: vi.fn().mockReturnThis(),
+    where: vi.fn().mockReturnThis(),
+    orderBy: vi.fn().mockResolvedValue(rows),
+  };
+  mockDb.select.mockReturnValue(chain as never);
+  return chain;
 }
 
-describe("chatApi - thread/message persistence", () => {
+function mockInsertChain(rows: Record<string, unknown>[]) {
+  const chain = {
+    values: vi.fn().mockReturnThis(),
+    returning: vi.fn().mockResolvedValue(rows),
+  };
+  mockDb.insert.mockReturnValue(chain as never);
+  return chain;
+}
+
+function mockUpdateChain() {
+  const chain = {
+    set: vi.fn().mockReturnThis(),
+    where: vi.fn().mockResolvedValue(undefined),
+  };
+  mockDb.update.mockReturnValue(chain as never);
+  return chain;
+}
+
+function mockDeleteChain() {
+  const chain = {
+    where: vi.fn().mockResolvedValue(undefined),
+  };
+  mockDb.delete.mockReturnValue(chain as never);
+  return chain;
+}
+
+describe("chatApi - session/message persistence", () => {
   beforeEach(() => {
     vi.clearAllMocks();
   });
 
-  describe("listThreads", () => {
-    it("returns threads for a given sceneId", async () => {
-      const thread: ChatThread = {
-        id: "thread-1",
+  describe("listSessions", () => {
+    it("returns sessions for a given nodeId", async () => {
+      const session: ChatSession = {
+        id: "session-1",
+        projectId: "proj-1",
+        nodeId: "node-abc",
         title: "会話1",
-        sceneId: "scene-abc",
+        titleManual: 0,
+        model: null,
+        pinnedCodex: "[]",
         createdAt: "2025-01-01T00:00:00Z",
-        modifiedAt: "2025-01-01T00:00:00Z",
+        updatedAt: "2025-01-01T00:00:00Z",
       };
-      mockDbExecute([
-        {
-          id: thread.id,
-          title: thread.title,
-          scene_id: thread.sceneId,
-          created_at: thread.createdAt,
-          modified_at: thread.modifiedAt,
-        },
-      ]);
+      mockSelectChain([session as unknown as Record<string, unknown>]);
 
-      const result = await listThreads("scene-abc");
+      const result = await listSessions("node-abc");
 
-      expect(mockInvoke).toHaveBeenCalledWith(
-        "db_execute",
-        expect.objectContaining({
-          method: "all",
-        }),
-      );
+      expect(mockDb.select).toHaveBeenCalled();
       expect(result).toHaveLength(1);
-      expect(result[0].id).toBe("thread-1");
-      expect(result[0].sceneId).toBe("scene-abc");
+      expect(result[0].id).toBe("session-1");
+      expect(result[0].nodeId).toBe("node-abc");
     });
 
-    it("returns all threads when no sceneId given", async () => {
-      mockDbExecute([]);
-      const result = await listThreads();
+    it("returns all sessions when no nodeId given", async () => {
+      mockSelectChain([]);
+      const result = await listSessions();
       expect(result).toHaveLength(0);
     });
   });
 
-  describe("createThread", () => {
-    it("creates a thread and returns it", async () => {
-      mockDbExecute([
-        {
-          id: "new-thread-id",
-          title: "新しい会話",
-          scene_id: "scene-1",
-          created_at: "2025-01-01T00:00:00Z",
-          modified_at: "2025-01-01T00:00:00Z",
-        },
-      ]);
+  describe("createSession", () => {
+    it("creates a session and returns it", async () => {
+      const row = {
+        id: "new-session-id",
+        projectId: "proj-1",
+        nodeId: "node-1",
+        title: "新しい会話",
+        titleManual: 0,
+        model: null,
+        pinnedCodex: "[]",
+        createdAt: "2025-01-01T00:00:00Z",
+        updatedAt: "2025-01-01T00:00:00Z",
+      };
+      mockInsertChain([row]);
 
-      const result = await createThread("新しい会話", "scene-1");
+      const result = await createSession("proj-1", "新しい会話", "node-1");
 
-      expect(mockInvoke).toHaveBeenCalled();
+      expect(mockDb.insert).toHaveBeenCalled();
       expect(result.title).toBe("新しい会話");
-      expect(result.sceneId).toBe("scene-1");
+      expect(result.nodeId).toBe("node-1");
+      expect(result.projectId).toBe("proj-1");
     });
 
-    it("creates a thread without sceneId", async () => {
-      mockDbExecute([
-        {
-          id: "thread-no-scene",
-          title: "フリー会話",
-          scene_id: null,
-          created_at: "2025-01-01T00:00:00Z",
-          modified_at: "2025-01-01T00:00:00Z",
-        },
-      ]);
+    it("creates a session without nodeId", async () => {
+      const row = {
+        id: "session-no-node",
+        projectId: "proj-1",
+        nodeId: null,
+        title: "フリー会話",
+        titleManual: 0,
+        model: null,
+        pinnedCodex: "[]",
+        createdAt: "2025-01-01T00:00:00Z",
+        updatedAt: "2025-01-01T00:00:00Z",
+      };
+      mockInsertChain([row]);
 
-      const result = await createThread("フリー会話");
-      expect(result.sceneId).toBeNull();
+      const result = await createSession("proj-1", "フリー会話");
+      expect(result.nodeId).toBeNull();
     });
   });
 
-  describe("deleteThread", () => {
-    it("deletes a thread by id", async () => {
-      mockDbExecute([]);
+  describe("deleteSession", () => {
+    it("deletes a session by id", async () => {
+      mockDeleteChain();
 
-      await deleteThread("thread-1");
+      await deleteSession("session-1");
 
-      expect(mockInvoke).toHaveBeenCalledWith(
-        "db_execute",
-        expect.objectContaining({
-          method: "run",
-        }),
-      );
+      expect(mockDb.delete).toHaveBeenCalled();
     });
   });
 
   describe("listMessages", () => {
-    it("returns messages for a thread ordered by createdAt", async () => {
-      mockDbExecute([
+    it("returns messages for a session ordered by createdAt", async () => {
+      mockSelectChain([
         {
           id: "msg-1",
-          thread_id: "thread-1",
+          sessionId: "session-1",
           role: "user",
           content: "こんにちは",
-          created_at: "2025-01-01T00:00:00Z",
+          model: null,
+          tokensIn: null,
+          tokensOut: null,
+          durationMs: null,
+          metadata: null,
+          createdAt: "2025-01-01T00:00:00Z",
         },
         {
           id: "msg-2",
-          thread_id: "thread-1",
+          sessionId: "session-1",
           role: "assistant",
           content: "こんにちは！",
-          created_at: "2025-01-01T00:00:01Z",
+          model: null,
+          tokensIn: null,
+          tokensOut: null,
+          durationMs: null,
+          metadata: null,
+          createdAt: "2025-01-01T00:00:01Z",
         },
       ]);
 
-      const result = await listMessages("thread-1");
+      const result = await listMessages("session-1");
 
       expect(result).toHaveLength(2);
       expect(result[0].role).toBe("user");
       expect(result[1].role).toBe("assistant");
     });
 
-    it("returns empty array for thread with no messages", async () => {
-      mockDbExecute([]);
-      const result = await listMessages("empty-thread");
+    it("returns empty array for session with no messages", async () => {
+      mockSelectChain([]);
+      const result = await listMessages("empty-session");
       expect(result).toEqual([]);
     });
   });
 
   describe("addMessage", () => {
     it("inserts a message and returns it", async () => {
-      // First call: insert message (returning)
-      mockDbExecute([
+      // Mock insert for message
+      mockInsertChain([
         {
           id: "msg-new",
-          thread_id: "thread-1",
+          sessionId: "session-1",
           role: "user",
           content: "テストメッセージ",
-          created_at: "2025-01-01T00:00:00Z",
+          model: null,
+          tokensIn: null,
+          tokensOut: null,
+          durationMs: null,
+          metadata: null,
+          createdAt: "2025-01-01T00:00:00Z",
         },
       ]);
-      // Second call: update thread modified_at
-      mockDbExecute([]);
+      // Mock update for session updatedAt
+      mockUpdateChain();
 
-      const result = await addMessage("thread-1", "user", "テストメッセージ");
+      const result = await addMessage("session-1", "user", "テストメッセージ");
 
-      expect(result.threadId).toBe("thread-1");
+      expect(result.sessionId).toBe("session-1");
       expect(result.role).toBe("user");
       expect(result.content).toBe("テストメッセージ");
     });
   });
 
-  describe("updateThreadTitle", () => {
-    it("updates the thread title", async () => {
-      mockDbExecute([]);
+  describe("updateSessionTitle", () => {
+    it("updates the session title", async () => {
+      mockUpdateChain();
 
-      await updateThreadTitle("thread-1", "新しいタイトル");
+      await updateSessionTitle("session-1", "新しいタイトル");
 
-      expect(mockInvoke).toHaveBeenCalledWith(
-        "db_execute",
-        expect.objectContaining({
-          method: "run",
-        }),
-      );
+      expect(mockDb.update).toHaveBeenCalled();
     });
   });
 });

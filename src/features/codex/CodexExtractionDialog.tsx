@@ -4,10 +4,9 @@ import type { CodexEntryType } from "./api";
 interface CodexExtractionFormData {
   type: CodexEntryType;
   name: string;
-  content: string;
+  summary: string;
   tags: string;
   sourceChatMessageId: string;
-  source: "ai" | "human";
 }
 
 interface CodexExtractionDialogProps {
@@ -30,20 +29,19 @@ export function CodexExtractionDialog({
   open,
   messageId,
   initialContent,
-  messageRole,
   onSave,
   onClose,
 }: CodexExtractionDialogProps) {
   const [type, setType] = useState<CodexEntryType>("character");
   const [name, setName] = useState("");
-  const [content, setContent] = useState(initialContent);
+  const [summary, setSummary] = useState(initialContent);
   const [tags, setTags] = useState("");
 
   useEffect(() => {
     if (open) {
       setType("character");
       setName("");
-      setContent(initialContent);
+      setSummary(initialContent);
       setTags("");
     }
   }, [open, initialContent]);
@@ -55,10 +53,9 @@ export function CodexExtractionDialog({
     onSave({
       type,
       name: name.trim(),
-      content,
+      summary,
       tags,
       sourceChatMessageId: messageId,
-      source: messageRole === "user" ? "human" : "ai",
     });
   };
 
@@ -99,11 +96,11 @@ export function CodexExtractionDialog({
         </div>
 
         <div className="mb-3">
-          <label className="mb-1 block text-sm font-medium">内容</label>
+          <label className="mb-1 block text-sm font-medium">概要</label>
           <textarea
-            data-testid="codex-content-textarea"
-            value={content}
-            onChange={(e) => setContent(e.target.value)}
+            data-testid="codex-summary-textarea"
+            value={summary}
+            onChange={(e) => setSummary(e.target.value)}
             rows={5}
             className="w-full resize-none rounded-md border border-input bg-background px-3 py-2 text-sm"
           />

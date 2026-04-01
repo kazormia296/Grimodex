@@ -7,18 +7,18 @@ describe("codexHighlightStore", () => {
   });
 
   it("sets match targets", () => {
-    const targets = [{ id: 1, name: "太郎", type: "character" }];
+    const targets = [{ id: "codex-1", name: "太郎", type: "character" }];
     useCodexHighlightStore.getState().setMatchTargets(targets);
     expect(useCodexHighlightStore.getState().matchTargets).toEqual(targets);
   });
 
   it("sets hovered entry id", () => {
-    useCodexHighlightStore.getState().setHoveredEntryId(42);
-    expect(useCodexHighlightStore.getState().hoveredEntryId).toBe(42);
+    useCodexHighlightStore.getState().setHoveredEntryId("codex-42");
+    expect(useCodexHighlightStore.getState().hoveredEntryId).toBe("codex-42");
   });
 
   it("clears hovered entry id", () => {
-    useCodexHighlightStore.getState().setHoveredEntryId(42);
+    useCodexHighlightStore.getState().setHoveredEntryId("codex-42");
     useCodexHighlightStore.getState().setHoveredEntryId(null);
     expect(useCodexHighlightStore.getState().hoveredEntryId).toBeNull();
   });
