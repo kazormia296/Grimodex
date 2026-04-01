@@ -1,8 +1,10 @@
 import { useState, useEffect, useCallback, useRef } from "react";
-import { Search, ArrowLeft, Pencil, Trash2 } from "lucide-react";
+import { Search, ArrowLeft, Pencil, Trash2, Copy } from "lucide-react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { useCodexStore } from "./codexStore";
 import type { CodexEntry, CodexEntryType } from "./api";
+import { copyWithAttribution } from "@/lib/clipboardAttribution";
+import type { AuthorshipSource } from "@/features/attribution/AuthorshipMark";
 
 const TYPE_OPTIONS: { value: CodexEntryType; label: string }[] = [
   { value: "character", label: "キャラクター" },
@@ -48,6 +50,19 @@ function CodexDetailView({
           className="rounded p-1 text-muted-foreground hover:bg-accent hover:text-accent-foreground"
         >
           <Pencil className="h-3.5 w-3.5" />
+        </button>
+        <button
+          type="button"
+          data-testid="codex-copy-button"
+          onClick={() =>
+            copyWithAttribution(
+              entry.content,
+              (entry.source ?? "human") as AuthorshipSource,
+            )
+          }
+          className="rounded p-1 text-muted-foreground hover:bg-accent hover:text-accent-foreground"
+        >
+          <Copy className="h-3.5 w-3.5" />
         </button>
         <button
           type="button"

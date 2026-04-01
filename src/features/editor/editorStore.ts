@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import type { Editor } from "@tiptap/core";
 import { computeAttributedSegments } from "@/features/snippets/snippetDiff";
+import type { AttributedSegment } from "@/lib/clipboardAttribution";
 
 export interface InsertRange {
   from: number;
@@ -24,6 +25,7 @@ interface EditorState {
     source: "ai" | "human",
     originalContent: string | null,
   ) => boolean;
+  insertFromPaste: (segments: AttributedSegment[]) => boolean;
   clearInsertRange: () => void;
 }
 
@@ -155,6 +157,43 @@ export const useEditorStore = create<EditorState>()((set, get) => ({
       set({ lastInsertRange: null });
       highlightTimer = null;
     }, 3000);
+
+    return true;
+  },
+
+  insertFromPaste: (segments: AttributedSegment[]) => {
+    const { editor } = get();
+    if (!editor) return false;
+
+    const { from, to } = editor.state.selection;
+    const insertPos = from !== to ? { from, to } : from;
+
+    const now = new Date().toISOString();
+    const contentNodes = segments.map((seg) => ({
+      type: "text" as const,
+      text: seg.text,
+      marks: [
+        {
+          type: "authorship",
+          attrs: {
+            source: seg.source,
+            timestamp: now,
+            originalLength: seg.text.length,
+            traceId: crypto.randomUUID(),
+          },
+        },
+      ],
+    }));
+
+    editor
+      .chain()
+      .focus()
+      .command(({ tr }) => {
+        tr.setMeta("programmaticInsert", true);
+        return true;
+      })
+      .insertContentAt(insertPos, contentNodes)
+      .run();
 
     return true;
   },

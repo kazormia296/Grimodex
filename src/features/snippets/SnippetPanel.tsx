@@ -1,6 +1,11 @@
 import { useEffect, useCallback, useRef } from "react";
-import { Search, Trash2 } from "lucide-react";
+import { Search, Trash2, Copy } from "lucide-react";
 import { useSnippetStore } from "./snippetStore";
+import {
+  copyWithAttribution,
+  handleCopyWithAttribution,
+} from "@/lib/clipboardAttribution";
+import type { AuthorshipSource } from "@/features/attribution/AuthorshipMark";
 
 export function SnippetPanel() {
   const entries = useSnippetStore((s) => s.entries);
@@ -104,20 +109,41 @@ export function SnippetPanel() {
                     originalContent: snippet.originalContent,
                   })
                 }
+                onCopy={(e) =>
+                  handleCopyWithAttribution(
+                    e,
+                    snippet.source as AuthorshipSource,
+                  )
+                }
                 className="group cursor-grab rounded-md border border-border p-2 hover:bg-accent/50 active:cursor-grabbing"
               >
                 <div className="flex items-start justify-between gap-1">
                   <h4 className="text-xs font-medium text-foreground truncate">
                     {snippet.title}
                   </h4>
-                  <button
-                    type="button"
-                    data-testid={`snippet-delete-${snippet.id}`}
-                    onClick={() => remove(snippet.id)}
-                    className="shrink-0 rounded p-0.5 text-muted-foreground opacity-0 hover:bg-destructive/10 hover:text-destructive group-hover:opacity-100"
-                  >
-                    <Trash2 className="h-3 w-3" />
-                  </button>
+                  <div className="flex shrink-0 gap-0.5">
+                    <button
+                      type="button"
+                      data-testid={`snippet-copy-${snippet.id}`}
+                      onClick={() =>
+                        copyWithAttribution(
+                          snippet.content,
+                          snippet.source as AuthorshipSource,
+                        )
+                      }
+                      className="rounded p-0.5 text-muted-foreground opacity-0 hover:bg-accent hover:text-accent-foreground group-hover:opacity-100"
+                    >
+                      <Copy className="h-3 w-3" />
+                    </button>
+                    <button
+                      type="button"
+                      data-testid={`snippet-delete-${snippet.id}`}
+                      onClick={() => remove(snippet.id)}
+                      className="rounded p-0.5 text-muted-foreground opacity-0 hover:bg-destructive/10 hover:text-destructive group-hover:opacity-100"
+                    >
+                      <Trash2 className="h-3 w-3" />
+                    </button>
+                  </div>
                 </div>
                 <p className="mt-1 line-clamp-2 text-xs text-muted-foreground">
                   {snippet.content}

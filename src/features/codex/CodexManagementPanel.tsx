@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from "react";
-import { Search, Trash2, Save, MessageSquare } from "lucide-react";
+import { Search, Trash2, Save, Copy, MessageSquare } from "lucide-react";
 import { useEditor, EditorContent } from "@tiptap/react";
 import StarterKit from "@tiptap/starter-kit";
 import { useVirtualizer } from "@tanstack/react-virtual";
@@ -10,6 +10,11 @@ import {
 } from "@/components/ui/resizable";
 import { useCodexStore } from "./codexStore";
 import type { CodexEntry, CodexEntryType } from "./api";
+import {
+  copyWithAttribution,
+  handleCopyWithAttribution,
+} from "@/lib/clipboardAttribution";
+import type { AuthorshipSource } from "@/features/attribution/AuthorshipMark";
 
 const TYPE_OPTIONS: { value: CodexEntryType | "all"; label: string }[] = [
   { value: "all", label: "すべて" },
@@ -195,6 +200,20 @@ function CodexDetailContent({
           </button>
           <button
             type="button"
+            data-testid="codex-copy-button"
+            onClick={() =>
+              copyWithAttribution(
+                editor?.getText() ?? entry.content,
+                (entry.source ?? "human") as AuthorshipSource,
+              )
+            }
+            className="rounded p-1.5 text-muted-foreground hover:bg-accent hover:text-accent-foreground"
+            title="コピー"
+          >
+            <Copy className="h-3.5 w-3.5" />
+          </button>
+          <button
+            type="button"
             data-testid="codex-detail-delete"
             onClick={() => onDelete(entry.id)}
             className="rounded p-1.5 text-destructive hover:bg-destructive/10"
@@ -205,7 +224,15 @@ function CodexDetailContent({
         </div>
       </div>
 
-      <div className="flex-1 space-y-3 overflow-y-auto px-3 py-3">
+      <div
+        className="flex-1 space-y-3 overflow-y-auto px-3 py-3"
+        onCopy={(e) =>
+          handleCopyWithAttribution(
+            e,
+            (entry.source ?? "human") as AuthorshipSource,
+          )
+        }
+      >
         <div>
           <label className="mb-1 block text-xs font-medium">タイプ</label>
           <select

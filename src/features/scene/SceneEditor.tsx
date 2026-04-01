@@ -7,6 +7,7 @@ import { useSceneStore } from "./store";
 import { loadSceneContent, saveSceneContent } from "./api";
 import { useAutoSave } from "@/hooks/useAutoSave";
 import { useEditorStore } from "@/features/editor/editorStore";
+import { parseClipboardHtml } from "@/lib/clipboardAttribution";
 import { useInsertHighlight } from "@/features/editor/InsertHighlight";
 import { useCodexHighlight } from "@/features/editor/useCodexHighlight";
 import { CodexPopover } from "@/features/editor/CodexPopover";
@@ -44,6 +45,7 @@ export function SceneEditor() {
   const { schedule, cancel, flush } = useAutoSave(saveFn, 2000);
 
   const insertFromSnippet = useEditorStore((s) => s.insertFromSnippet);
+  const insertFromPaste = useEditorStore((s) => s.insertFromPaste);
 
   const editor = useEditor({
     extensions: getEditorExtensions(),
@@ -52,6 +54,24 @@ export function SceneEditor() {
       attributes: {
         role: "textbox",
         "aria-multiline": "true",
+      },
+      handlePaste(_view, event) {
+        const html = event.clipboardData?.getData("text/html");
+        const plainText = event.clipboardData?.getData("text/plain") ?? "";
+
+        const segments = parseClipboardHtml(html);
+        if (segments) {
+          insertFromPaste(segments);
+          return true;
+        }
+
+        // External paste: mark as unknown
+        if (plainText) {
+          insertFromPaste([{ text: plainText, source: "unknown" }]);
+          return true;
+        }
+
+        return false;
       },
       handleDrop(_view, event) {
         const snippetData = event.dataTransfer?.getData(
