@@ -1,9 +1,38 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import type React from "react";
 import { SnippetPanel } from "./SnippetPanel";
 import { useSnippetStore } from "./snippetStore";
 import type { Snippet } from "./api";
+
+// Mock ResizeObserver for react-resizable-panels
+class ResizeObserverMock {
+  observe() {}
+  unobserve() {}
+  disconnect() {}
+}
+globalThis.ResizeObserver =
+  ResizeObserverMock as unknown as typeof ResizeObserver;
+
+// Mock react-resizable-panels to avoid jsdom issues
+vi.mock("@/components/ui/resizable", () => ({
+  ResizablePanelGroup: ({
+    children,
+  }: {
+    children: React.ReactNode;
+  }) => <div data-testid="resizable-group">{children}</div>,
+  ResizablePanel: ({ children }: { children: React.ReactNode }) => (
+    <div>{children}</div>
+  ),
+  ResizableHandle: () => <div data-testid="resizable-handle" />,
+}));
+
+vi.mock("./SnippetDetailContent", () => ({
+  SnippetDetailContent: () => (
+    <div data-testid="snippet-detail-content">detail</div>
+  ),
+}));
 
 vi.mock("./snippetStore", async () => {
   const { create } = await import("zustand");

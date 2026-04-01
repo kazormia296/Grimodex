@@ -2,6 +2,9 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import { Search, Trash2, Save, Copy, MessageSquare } from "lucide-react";
 import { useEditor, EditorContent } from "@tiptap/react";
 import StarterKit from "@tiptap/starter-kit";
+import { AuthorshipMark } from "@/features/attribution/AuthorshipMark";
+import { useAttribution } from "@/features/attribution/useAttribution";
+import { applyInitialAuthorshipMarks } from "@/features/attribution/applyInitialMarks";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import {
   ResizablePanelGroup,
@@ -157,9 +160,11 @@ function CodexDetailContent({
   const [tags, setTags] = useState(entry.tags);
 
   const editor = useEditor({
-    extensions: [StarterKit.configure()],
+    extensions: [StarterKit.configure(), AuthorshipMark],
     content: entry.content,
   });
+
+  useAttribution(editor);
 
   // Sync form when entry changes
   useEffect(() => {
@@ -168,6 +173,9 @@ function CodexDetailContent({
     setSummary(entry.summary);
     setTags(entry.tags);
     editor?.commands.setContent(entry.content);
+    if (editor) {
+      applyInitialAuthorshipMarks(editor, entry.source, entry.content);
+    }
   }, [
     entry.id,
     entry.type,
@@ -175,6 +183,7 @@ function CodexDetailContent({
     entry.summary,
     entry.tags,
     entry.content,
+    entry.source,
     editor,
   ]);
 

@@ -5,6 +5,7 @@ interface SnippetExtractionDialogProps {
   open: boolean;
   initialContent: string;
   messageId: string;
+  messageRole?: "user" | "assistant";
   onSave: (
     data: Pick<NewSnippet, "title" | "content" | "tags"> & {
       sourceChatMessageId: string;
@@ -19,6 +20,7 @@ export function SnippetExtractionDialog({
   open,
   initialContent,
   messageId,
+  messageRole,
   onSave,
   onClose,
 }: SnippetExtractionDialogProps) {
@@ -48,7 +50,7 @@ export function SnippetExtractionDialog({
       content,
       tags: tags.trim(),
       sourceChatMessageId: messageId,
-      source: "ai",
+      source: messageRole === "user" ? "human" : "ai",
       originalContent: initialContent,
     });
     setIsSaving(false);

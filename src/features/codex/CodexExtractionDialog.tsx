@@ -14,6 +14,7 @@ interface CodexExtractionDialogProps {
   open: boolean;
   messageId: string;
   initialContent: string;
+  messageRole?: "user" | "assistant";
   onSave: (data: CodexExtractionFormData) => void;
   onClose: () => void;
 }
@@ -29,6 +30,7 @@ export function CodexExtractionDialog({
   open,
   messageId,
   initialContent,
+  messageRole,
   onSave,
   onClose,
 }: CodexExtractionDialogProps) {
@@ -56,7 +58,7 @@ export function CodexExtractionDialog({
       content,
       tags,
       sourceChatMessageId: messageId,
-      source: "ai",
+      source: messageRole === "user" ? "human" : "ai",
     });
   };
 

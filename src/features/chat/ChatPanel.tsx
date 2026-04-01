@@ -25,6 +25,7 @@ interface SnippetDialogState {
   open: boolean;
   messageId: string;
   initialContent: string;
+  messageRole: "user" | "assistant";
 }
 
 export function ChatPanel() {
@@ -85,7 +86,8 @@ export function ChatPanel() {
     open: boolean;
     messageId: string;
     content: string;
-  }>({ open: false, messageId: "", content: "" });
+    messageRole: "user" | "assistant";
+  }>({ open: false, messageId: "", content: "", messageRole: "assistant" });
 
   const createCodexEntry = useCodexStore((s) => s.create);
 
@@ -93,7 +95,8 @@ export function ChatPanel() {
     (messageId: string, selectedText: string | null) => {
       const msg = messages.find((m) => m.id === messageId);
       const content = selectedText ?? msg?.content ?? "";
-      setExtractionDialog({ open: true, messageId, content });
+      const messageRole = msg?.role === "user" ? "user" as const : "assistant" as const;
+      setExtractionDialog({ open: true, messageId, content, messageRole });
     },
     [messages],
   );
@@ -103,6 +106,7 @@ export function ChatPanel() {
     open: false,
     messageId: "",
     initialContent: "",
+    messageRole: "assistant",
   });
 
   const createSnippet = useSnippetStore((s) => s.create);
@@ -111,7 +115,8 @@ export function ChatPanel() {
     (messageId: string, selectedText: string | null) => {
       const msg = messages.find((m) => m.id === messageId);
       const content = selectedText ?? msg?.content ?? "";
-      setSnippetDialog({ open: true, messageId, initialContent: content });
+      const messageRole = msg?.role === "user" ? "user" as const : "assistant" as const;
+      setSnippetDialog({ open: true, messageId, initialContent: content, messageRole });
     },
     [messages],
   );
@@ -235,18 +240,20 @@ export function ChatPanel() {
         open={extractionDialog.open}
         messageId={extractionDialog.messageId}
         initialContent={extractionDialog.content}
+        messageRole={extractionDialog.messageRole}
         onSave={async (data) => {
           await createCodexEntry(data);
-          setExtractionDialog({ open: false, messageId: "", content: "" });
+          setExtractionDialog({ open: false, messageId: "", content: "", messageRole: "assistant" });
         }}
         onClose={() =>
-          setExtractionDialog({ open: false, messageId: "", content: "" })
+          setExtractionDialog({ open: false, messageId: "", content: "", messageRole: "assistant" })
         }
       />
       <SnippetExtractionDialog
         open={snippetDialog.open}
         initialContent={snippetDialog.initialContent}
         messageId={snippetDialog.messageId}
+        messageRole={snippetDialog.messageRole}
         onSave={async (data) => {
           await createSnippet(data);
         }}

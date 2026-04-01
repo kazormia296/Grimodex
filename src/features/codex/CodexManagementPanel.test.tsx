@@ -70,6 +70,18 @@ vi.mock("@tiptap/starter-kit", () => ({
   },
 }));
 
+vi.mock("@/features/attribution/AuthorshipMark", () => ({
+  AuthorshipMark: {},
+}));
+
+vi.mock("@/features/attribution/useAttribution", () => ({
+  useAttribution: vi.fn(),
+}));
+
+vi.mock("@/features/attribution/applyInitialMarks", () => ({
+  applyInitialAuthorshipMarks: vi.fn(),
+}));
+
 vi.mock("./api", () => ({
   listCodexEntries: vi.fn(() => Promise.resolve([])),
   createCodexEntry: vi.fn(),
