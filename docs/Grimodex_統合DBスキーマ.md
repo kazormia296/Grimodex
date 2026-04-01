@@ -106,7 +106,7 @@ CREATE INDEX idx_tree_parent ON tree_nodes(project_id, parent_id, sort_order);
 
 ### codex_entries
 
-世界設定エントリ。content本文は `codex/{type_prefix}_{sanitized_name}_{short_id}.md` に保存。
+世界設定エントリ。content本文は `codex/{type_prefix}_{sanitized_name}_{short_id}.md` に保存。アイコン画像は `codex/icons/{short_id}.webp` に保存（128×128px WebP）。
 
 ```sql
 CREATE TABLE codex_entries (
@@ -143,7 +143,7 @@ CREATE TABLE codex_relation_dismissed (
 
 ### snippets
 
-再利用可能なテキスト断片。contentは短い（50-500文字が典型）ためSQLiteカラムに直接保存。
+再利用可能なテキスト断片。content本文は `snippets/{sanitized_title}_{short_id}.md` にMarkdownファイルとして保存（長文対応）。SQLiteの `content` カラムにはファイルパスへの参照を保持。
 
 ```sql
 CREATE TABLE snippets (
@@ -257,7 +257,7 @@ CREATE VIRTUAL TABLE codex_fts USING fts5(
 
 ### snippets_fts
 
-Snippetの検索用。title + content + tags を対象。
+Snippetの検索用。title + tags を対象（contentはMDファイルに外部化のため、MVPではFTS対象外）。
 
 ```sql
 CREATE VIRTUAL TABLE snippets_fts USING fts5(
@@ -379,9 +379,13 @@ DBの外に保存されるファイル。DBにはファイル名ではなくID�
 │   ├── note_世界観メモ_f9a0.md
 │   └── ...
 ├── codex/                              ← Codexエントリの詳細コンテンツ
+│   ├── icons/                          ← アイコン画像（128×128 WebP）
 │   ├── char_elara_a3f8.md
 │   ├── loc_obsidian-tower_b7c2.md
 │   ├── item_soulbind-amulet_d4e1.md
+│   └── ...
+├── snippets/                           ← SnippetのMarkdownコンテンツ
+│   ├── elara-monologue_b2c1.md
 │   └── ...
 └── backups/                            ← 自動バックアップ（ZIP）
     ├── My_Novel_20260401_143000.zip

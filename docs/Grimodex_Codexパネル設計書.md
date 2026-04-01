@@ -134,7 +134,7 @@ Codexパネルはプロジェクトの世界設定データベース。キャラ
 
 ```
 ┌─────────────────────────────────┐
-│ ● Elara               character │  ← Header
+│ [🖼] Elara             character │  ← Header (icon + name + type)
 ├─────────────────────────────────┤
 │ Aliases: [エララ]               │  ← Aliases
 │          [the apprentice] [+]   │
@@ -174,8 +174,16 @@ Codexパネルはプロジェクトの世界設定データベース。キャラ
 
 ### ヘッダー
 
-- カテゴリドット + エントリ名（クリックでインライン編集）
-- 右寄せでカテゴリバッジ（クリックでtype変更ドロップダウン）
+- アイコン画像 + エントリ名（クリックでインライン編集）+ 右寄せでカテゴリバッジ（クリックでtype変更ドロップダウン）
+
+### アイコン画像
+
+- ヘッダー左端に48×48pxのアイコン画像を表示（Notionページヘッダー風）
+- クリックで画像選択ダイアログを開き、ローカル画像ファイルを選択
+- 画像は `codex/icons/` ディレクトリに保存（リサイズ: 128×128px、WebP変換）
+- 未設定時はカテゴリドット（typeに応じた色の●）をフォールバック表示
+- リスト画面のサムネイルにも同じアイコンを使用（28×28px）
+- ポップオーバー（Editor等）では24×24pxで表示
 
 ### Aliases フィールド
 
@@ -209,10 +217,15 @@ Codexパネルはプロジェクトの世界設定データベース。キャラ
 - プレースホルダー: 「Short description...」
 - この内容がエディタのCodexハイライト ポップオーバー、Codex Quickセクション、Chatコンテキスト注入の「要約」として使われる
 - 自動保存（デバウンス1秒）
+- **AI自動要約**:
+  - summaryが空でcontentがある場合、入力欄内に「✨ Generate summary」ボタンを表示
+  - クリックで軽量モデル（haiku等）がcontentを要約し、summaryに自動入力
+  - 既にsummaryがある場合はボタン非表示。代わりに右クリックコンテキストメニューの「Regenerate summary」で上書き可能
+  - 生成中はスピナー表示、失敗時はトースト通知
 
 ### Content フィールド（TipTapミニエディタ）
 
-- TipTapの軽量インスタンス。StarterKitのサブセット（太字、斜体、見出し、リスト、リンク）
+- TipTapの軽量インスタンス。StarterKitのサブセット（太字、斜体、見出し、リスト、リンク）。Markdown記法をリアルタイムにリッチテキストとしてレンダリング
 - キャラクターの詳細な背景設定、場所の歴史、アイテムの由来など、長文の設定情報を記述
 - **CodexHighlight対応**: エディタ本文と同じCodexHighlight Pure Decorationを適用。Content内で言及された他のCodexエントリがハイライトされ、ホバーポップオーバーで確認、「Open in Codex →」で遷移可能。自エントリ自身のnameとaliasesはハイライト対象から除外
 - Content内で検出されたCodexエントリは「リレーション提案」としてRelationsセクションに表示される（後述）
@@ -282,7 +295,7 @@ Codexエントリ間の親子関係を管理するセクション。詳細は「
 
 **Editorの「Add to Codex」**: 選択テキストがnameになり、typeは `character` デフォルト。即時作成後、Codexパネルの詳細画面が開く（Editor設計書参照）。
 
-**Chatの「Codex」ボタン**: 抽出ダイアログでtype/name/content/tagsを入力して作成。`source_chat_message_id` が自動付与される（Chat設計書参照）。
+**Chatの「Codex」ボタン**: ダイアログなしで即時作成。AI抽出モードではtype/name/tags を軽量モデルが自動提案、通常抽出モードではcontent のみで他は空白。`source_chat_message_id` が自動付与される（Chat設計書参照）。
 
 ---
 
@@ -300,12 +313,16 @@ summaryはSQLiteの `codex_entries.summary` カラムに直接保存。content�
 MyNovel.novel/
 ├── content/              ← Scene/Note本文
 ├── codex/                ← Codexエントリの詳細コンテンツ
+│   ├── icons/            ← アイコン画像（128×128 WebP）
 │   ├── char_elara_a3f8.md
 │   ├── char_master-orin_c9d3.md
 │   ├── loc_obsidian-tower_b7c2.md
 │   ├── loc_binding-chamber_e1f4.md
 │   ├── item_soulbind-amulet_d4e1.md
 │   └── lore_age-of-binding_f9a0.md
+├── snippets/             ← SnippetのMarkdownコンテンツ
+│   ├── elara-monologue_b2c1.md
+│   └── tower-description_d4e2.md
 └── project.db
 ```
 
@@ -842,13 +859,12 @@ function buildCodexContext(matchedEntryIds: string[]): string {
 |-------------|-----------|---------------------|---------------------|
 | 自動検出（本文にnameが出現） | summary | summary（自動） | 注入しない |
 | ピン留め | content全文 | summary（自動） | 注入しない |
-| @メンション | content全文 | summary（自動） | 注入しない |
 
 **トークン予算の制御**:
 
 子エントリの自動注入で予算を超過する場合の優先順位:
 1. 本文に直接出現するエントリのsummary（最優先）
-2. ピン留め/@メンションされたエントリのcontent
+2. ピン留めされたエントリのcontent
 3. 自動注入された子エントリのsummary（最初に切り詰め対象）
 
 Chatパネルのコンテキストバーには、自動注入された子エントリもピルとして表示する。ただし通常のピルとは異なるスタイル（薄い表示 + 「via {親名}」ラベル）で区別し、×で個別除外も可能。
@@ -952,7 +968,7 @@ CREATE TABLE codex_relation_dismissed (
 
 ### ← Chat
 
-- Chatの「Codex」抽出ダイアログ → エントリ作成（`source_chat_message_id` 付き）
+- Chatの「Codex」ボタン → エントリ即時作成（`source_chat_message_id` 付き）
 
 ### → Editor
 
@@ -998,7 +1014,7 @@ Codexハイライト（Pure Decorations）のホバーポップオーバーか�
 
 ### Chatパネル設計書
 
-Chatの「Codex」抽出ダイアログ経由でエントリ作成。`source_chat_message_id` でChat→Codexのトレーサビリティ。Chatのコンテキスト注入Layer 4でCodexエントリのsummaryが自動注入される。
+Chatの「Codex」ボタンでエントリを即時作成（AI抽出/通常抽出モード切り替え可能）。`source_chat_message_id` でChat→Codexのトレーサビリティ。Chatのコンテキスト注入Layer 4でCodexエントリのsummaryが自動注入される。
 
 ### Scenesパネル設計書
 

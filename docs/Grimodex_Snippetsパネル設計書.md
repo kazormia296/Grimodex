@@ -150,7 +150,7 @@ Bottom Dockに配置されるため横長のレイアウトを想定。スニペ
 | フィールド | 詳細 |
 |-----------|------|
 | Title | インライン編集。`Enter` で確定、`Escape` でキャンセル |
-| Content | テキストエリア。プレーンテキスト（リッチテキストではない）。自動保存（デバウンス1秒） |
+| Content | TipTapミニエディタ。Markdown記法をリアルタイムにリッチテキストとしてレンダリング（太字、斜体、見出し、リスト、リンク対応）。Markdownファイルとして保存。自動保存（デバウンス2秒） |
 | Tags | ピル型。[+] で追加、×で削除。既存タグのオートコンプリート |
 | Source | `source_chat_message_id` がある場合、セッション名のリンク。クリックでChat Historyパネル経由で元セッションを開く |
 | Scene | `scene_id` がある場合、シーン名のリンク。クリックでEditorで開く |
@@ -300,7 +300,7 @@ CREATE TRIGGER snippets_fts_au AFTER UPDATE ON snippets BEGIN
 END;
 ```
 
-Snippetのcontentはプレーンテキストで短い（典型的に50-500文字）ため、Codexのように別ファイルに保存せずSQLiteのカラムに直接保存する。
+Snippetのcontentは長文にも対応するため、Codexと同様にMarkdownファイルとして `snippets/` ディレクトリに保存する（`snippets/{sanitized_title}_{short_id}.md`）。SQLiteの `content` カラムにはファイルパスへの参照を保持する。FTS5の検索対象にはファイル内容を含めるか、title + tags のみにするかはMVPではtitle + tagsで十分と判断。
 
 ---
 
@@ -355,7 +355,7 @@ Snippetのcontentはプレーンテキストで短い（典型的に50-500文字
 |------|-------|----------|
 | 用途 | 世界設定の構造化データベース | 再利用可能なテキスト断片の一時保管 |
 | 内容の性質 | 設定情報（キャラ、場所、伝承） | 散文テキスト（台詞、描写、文章の断片） |
-| 構造 | name + type + summary + content + aliases + relations | title + content（プレーンテキスト） |
+| 構造 | name + type + summary + content + aliases + relations | title + content（Markdown） |
 | エディタとの関係 | 本文中でハイライト表示、ポップオーバー参照 | D&Dで本文に挿入（挿入後はスニペットとの紐付けなし） |
 | AI連携 | コンテキスト注入（Layer 4）、マッチング | 直接的な連携なし |
 | 典型的なライフサイクル | 長期保持。プロジェクト全体で参照 | 短〜中期。挿入して役目を終えたら削除も |
