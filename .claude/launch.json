@@ -2,11 +2,28 @@
   "version": "0.0.1",
   "configurations": [
     {
-      "name": "dev",
+      "name": "Vite Dev Server",
       "runtimeExecutable": "npm",
       "runtimeArgs": ["run", "dev"],
-      "port": 1420,
-      "autoPort": false
+      "port": 1420
+    },
+    {
+      "name": "Tauri Dev",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "tauri", "dev"],
+      "port": 1420
+    },
+    {
+      "name": "Vite Preview",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "preview"],
+      "port": 4173
+    },
+    {
+      "name": "Vitest",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["test"],
+      "port": 51204
     }
   ]
 }
