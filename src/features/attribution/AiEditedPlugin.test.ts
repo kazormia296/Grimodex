@@ -453,5 +453,48 @@ describe("AiEditedPlugin", () => {
       expect(aiNodes.some((n) => n.text.includes("X"))).toBe(true);
       editor.destroy();
     });
+
+    it("splitting AI node with Enter preserves marks on both halves", () => {
+      // Regression: slice.content.size included structural tokens (openStart/openEnd),
+      // causing removeMark to strip the first 1-2 chars of the second paragraph.
+      const ed = createTestEditor();
+      insertAiText(ed, "HelloWorld");
+
+      let aiPos = -1;
+      ed.state.doc.descendants((node, pos) => {
+        if (node.isText && node.text === "HelloWorld") aiPos = pos;
+      });
+      expect(aiPos).toBeGreaterThan(0);
+
+      // Split the paragraph at position between "Hello" and "World"
+      const splitPos = aiPos + 5;
+      ed.chain()
+        .focus()
+        .setTextSelection(splitPos)
+        .command(({ tr, state }) => {
+          tr.split(state.selection.from);
+          return true;
+        })
+        .run();
+
+      const nodes: { text: string; source: string | null }[] = [];
+      ed.state.doc.descendants((node) => {
+        if (!node.isText) return;
+        const mark = node.marks.find((m) => m.type.name === "authorship");
+        nodes.push({
+          text: node.text ?? "",
+          source: mark ? (mark.attrs.source as string) : null,
+        });
+      });
+
+      // Both halves must retain "ai" — no characters should become human
+      const helloNode = nodes.find((n) => n.text === "Hello");
+      const worldNode = nodes.find((n) => n.text === "World");
+      expect(helloNode).toBeDefined();
+      expect(worldNode).toBeDefined();
+      expect(helloNode!.source).toBe("ai");
+      expect(worldNode!.source).toBe("ai");
+      ed.destroy();
+    });
   });
 });

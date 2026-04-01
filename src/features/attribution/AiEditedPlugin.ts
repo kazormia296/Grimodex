@@ -49,7 +49,7 @@ export function createAiEditedPlugin(): Plugin {
           if (!(step instanceof ReplaceStep)) continue;
 
           const { from } = step as { from: number };
-          const insertedSize = step.slice.content.size;
+          const insertedSize = step.slice.size;
           if (insertedSize === 0) continue;
 
           // Check if the insertion/replacement position is inside a splittable span
