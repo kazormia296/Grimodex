@@ -19,7 +19,7 @@ EditorパネルはGrimodexの中核コンポーネント。TipTapベースのリ
 │ Part 1  /  Chapter 1: Awakening  /  The tower         │
 ├──────────────────────────────────────────────────────┤
 │ C. Toolbar                                            │
-│ B I U S │ H1 H2 H3 │ ≡ 1. " — │ Ruby Link │ [Attr] [Focus] [TW] │ ⋮ │
+│ B I U S ﹅ │ H1 H2 H3 │ ≡ 1. " — │ Ruby Link │ [Attr] [Cmt] [Focus] [TW] │ ⋮ │
 ├──────────────────────────────────────────────────────┤
 │ D. Editor canvas (TipTap)                             │
 │                                                       │
