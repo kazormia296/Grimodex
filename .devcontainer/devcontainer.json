@@ -61,7 +61,8 @@
     "NODE_OPTIONS": "--max-old-space-size=4096",
     "CLAUDE_CONFIG_DIR": "/home/node/.claude",
     "POWERLEVEL9K_DISABLE_GITSTATUS": "true",
-    "DISPLAY": "host.docker.internal:0"
+    "DISPLAY": "host.docker.internal:0",
+    "WEBKIT_DISABLE_DMABUF_RENDERER": "1"
   },
   "workspaceMount": "source=${localWorkspaceFolder},target=/workspace,type=bind,consistency=delegated",
   "workspaceFolder": "/workspace",

@@ -43,6 +43,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
   # GUI runtime dependencies (for tauri dev via X11 forwarding)
   dbus-x11 \
   libdbus-1-3 \
+  at-spi2-core \
   xdg-utils \
   fonts-noto-cjk \
   # Locale support
