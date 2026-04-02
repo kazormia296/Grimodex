@@ -269,7 +269,7 @@ Mark.create({
 
 付与ルール:
 - キーボード入力 → `{ source: 'human' }`
-- AIチャットからの「挿入」→ `{ source: 'ai', model, chatMessageId }`
+- AIチャットからの「挿入」→ `{ source: 'ai', model, chatMessageId }`（エージェントが既存humanテキストを取得・再構成して提示した場合も、原文とAI生成部分の実態的な帰属の判別がつかないため `ai` とする）
 - インラインAIでAccept → `{ source: 'ai', model }`
 - SnippetのD&D挿入 → 元Snippetのsourceを継承
 - `ai` マーク付きテキストの編集 → **`ai` のまま変わらない**（人間が手を入れても元のsourceを維持）
