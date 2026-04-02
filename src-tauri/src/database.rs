@@ -333,6 +333,25 @@ impl Database {
                 WHERE scene_id = old.id;
             END;
 
+            -- Triggers to cascade-delete content_versions for polymorphic entity_id
+            CREATE TRIGGER IF NOT EXISTS delete_cv_on_tree_node_delete
+            AFTER DELETE ON tree_nodes BEGIN
+                DELETE FROM content_versions
+                WHERE entity_type IN ('scene', 'note') AND entity_id = old.id;
+            END;
+
+            CREATE TRIGGER IF NOT EXISTS delete_cv_on_codex_entry_delete
+            AFTER DELETE ON codex_entries BEGIN
+                DELETE FROM content_versions
+                WHERE entity_type = 'codex_entry' AND entity_id = old.id;
+            END;
+
+            CREATE TRIGGER IF NOT EXISTS delete_cv_on_snippet_delete
+            AFTER DELETE ON snippets BEGIN
+                DELETE FROM content_versions
+                WHERE entity_type = 'snippet' AND entity_id = old.id;
+            END;
+
             -- Seed built-in codex types for every new project
             CREATE TRIGGER IF NOT EXISTS seed_builtin_codex_types
             AFTER INSERT ON projects BEGIN
@@ -1835,5 +1854,133 @@ mod tests {
             "run",
         );
         assert!(result.is_err(), "Should reject invalid context_mode");
+    }
+
+    // --- authorship_spans CHECK constraint ---
+
+    #[test]
+    fn test_authorship_spans_check_rejects_zero_owners() {
+        let db = test_db();
+
+        // All three owner columns NULL → CHECK violation
+        let result = db.execute(
+            "INSERT INTO authorship_spans (id, from_pos, to_pos, source) VALUES (?, ?, ?, ?)",
+            &[
+                Value::String("span-no-owner".into()),
+                Value::Number(0.into()),
+                Value::Number(10.into()),
+                Value::String("human".into()),
+            ],
+            "run",
+        );
+        assert!(result.is_err(), "Should reject span with no owner (node_id/codex_entry_id/snippet_id all NULL)");
+    }
+
+    #[test]
+    fn test_authorship_spans_check_rejects_two_owners() {
+        let db = test_db();
+
+        // Two owner columns set → CHECK violation
+        let result = db.execute(
+            "INSERT INTO authorship_spans (id, node_id, codex_entry_id, from_pos, to_pos, source) VALUES (?, ?, ?, ?, ?, ?)",
+            &[
+                Value::String("span-two-owners".into()),
+                Value::String("default-chapter".into()),
+                Value::String("some-codex".into()),
+                Value::Number(0.into()),
+                Value::Number(10.into()),
+                Value::String("ai".into()),
+            ],
+            "run",
+        );
+        assert!(result.is_err(), "Should reject span with two owners");
+    }
+
+    #[test]
+    fn test_authorship_spans_check_accepts_single_owner() {
+        let db = test_db();
+
+        // node_id only → OK
+        let r1 = db.execute(
+            "INSERT INTO authorship_spans (id, node_id, from_pos, to_pos, source) VALUES (?, ?, ?, ?, ?)",
+            &[
+                Value::String("span-node".into()),
+                Value::String("default-chapter".into()),
+                Value::Number(0.into()),
+                Value::Number(10.into()),
+                Value::String("human".into()),
+            ],
+            "run",
+        );
+        assert!(r1.is_ok(), "Should accept span with node_id only");
+    }
+
+    // --- content_versions cascade delete via triggers ---
+
+    #[test]
+    fn test_content_versions_cascade_on_tree_node_delete() {
+        let db = test_db();
+
+        // Insert a scene node
+        db.execute(
+            "INSERT INTO tree_nodes (id, project_id, node_type, title, sort_order, created_at, updated_at) VALUES (?, ?, ?, ?, ?, datetime('now'), datetime('now'))",
+            &[Value::String("scene-cv".into()), Value::String("default-project".into()), Value::String("scene".into()), Value::String("シーン".into()), Value::Number(serde_json::Number::from_f64(1.0).unwrap())],
+            "run",
+        ).expect("insert scene");
+
+        // Insert a content_version referencing the scene
+        db.execute(
+            "INSERT INTO content_versions (id, entity_type, entity_id, content, version_number) VALUES (?, ?, ?, ?, ?)",
+            &[Value::String("cv-1".into()), Value::String("scene".into()), Value::String("scene-cv".into()), Value::String("{}".into()), Value::Number(1.into())],
+            "run",
+        ).expect("insert version");
+
+        // Delete the scene node
+        db.execute(
+            "DELETE FROM tree_nodes WHERE id = ?",
+            &[Value::String("scene-cv".into())],
+            "run",
+        ).expect("delete scene");
+
+        // content_versions should be cascade-deleted via trigger
+        let rows = db.execute(
+            "SELECT * FROM content_versions WHERE entity_id = ?",
+            &[Value::String("scene-cv".into())],
+            "all",
+        ).expect("query");
+        assert_eq!(rows.len(), 0, "content_versions should be deleted when tree_node is deleted");
+    }
+
+    #[test]
+    fn test_content_versions_cascade_on_codex_entry_delete() {
+        let db = test_db();
+
+        // Insert codex entry
+        db.execute(
+            "INSERT INTO codex_entries (id, project_id, type, name, created_at, updated_at) VALUES (?, ?, ?, ?, datetime('now'), datetime('now'))",
+            &[Value::String("ce-cv".into()), Value::String("default-project".into()), Value::String("character".into()), Value::String("テスト".into())],
+            "run",
+        ).expect("insert entry");
+
+        // Insert content_version
+        db.execute(
+            "INSERT INTO content_versions (id, entity_type, entity_id, content, version_number) VALUES (?, ?, ?, ?, ?)",
+            &[Value::String("cv-2".into()), Value::String("codex_entry".into()), Value::String("ce-cv".into()), Value::String("{}".into()), Value::Number(1.into())],
+            "run",
+        ).expect("insert version");
+
+        // Delete codex entry
+        db.execute(
+            "DELETE FROM codex_entries WHERE id = ?",
+            &[Value::String("ce-cv".into())],
+            "run",
+        ).expect("delete entry");
+
+        let rows = db.execute(
+            "SELECT * FROM content_versions WHERE entity_id = ?",
+            &[Value::String("ce-cv".into())],
+            "all",
+        ).expect("query");
+        assert_eq!(rows.len(), 0, "content_versions should be deleted when codex_entry is deleted");
     }
 }
