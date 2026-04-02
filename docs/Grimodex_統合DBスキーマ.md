@@ -26,7 +26,9 @@ ORM: Drizzle ORM（sqlite-proxy）
 | `snippets` | 通常 | Snippets | 再利用テキスト断片 |
 | `chat_sessions` | 通常 | Chat | チャットセッション（シーン or プロジェクトスコープ） |
 | `chat_messages` | 通常 | Chat | チャットメッセージ |
-| `content_versions` | 通常 | Editor | コンテンツのバージョン履歴 |
+| `content_versions` | 通常 | Editor | コンテンツのリビジョン履歴 |
+| `project_snapshots` | 通常 | Editor | プロジェクト全体のマスタースナップショット |
+| `project_snapshot_entries` | 通常 | Editor | マスタースナップショットとリビジョンの紐付け |
 | `authorship_spans` | 通常 | Editor | AI帰属追跡スパン |
 | `settings` | 通常 | Settings | Key-Value設定ストア |
 | `codex_fts` | FTS5仮想 | Codex | Codexエントリの全文検索 |
@@ -530,7 +532,7 @@ PRAGMA foreign_keys = ON;
 
 ## content_versions
 
-コンテンツのバージョン履歴。自動スナップショット（設定可能な間隔、デフォルト30分）と手動スナップショットを保存。エンティティごとに保持上限（デフォルト50件）を超えた場合、古いバージョンからFIFO削除する。
+コンテンツのリビジョン履歴。自動リビジョン（前回から最低間隔経過時、デフォルト5分）と手動リビジョン（`Ctrl+S`）を保存。エンティティごとに保持上限（デフォルト50件）を超えた場合、auto優先で古いものからFIFO削除する。詳細は [`Grimodex_リビジョン履歴設計書.md`](Grimodex_リビジョン履歴設計書.md) を参照。
 
 ```sql
 CREATE TABLE content_versions (
@@ -545,6 +547,34 @@ CREATE TABLE content_versions (
 );
 
 CREATE INDEX idx_cv_entity ON content_versions(entity_type, entity_id, version_number DESC);
+```
+
+### project_snapshots
+
+プロジェクト全体のマスタースナップショット。各エンティティの `content_versions` へのポインタを `project_snapshot_entries` で保持する軽量方式。詳細は [`Grimodex_リビジョン履歴設計書.md`](Grimodex_リビジョン履歴設計書.md) を参照。
+
+```sql
+CREATE TABLE project_snapshots (
+  id          TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
+  project_id  TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  name        TEXT NOT NULL,
+  description TEXT,
+  created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX idx_project_snapshots ON project_snapshots(project_id, created_at DESC);
+```
+
+### project_snapshot_entries
+
+マスタースナップショットと各エンティティのリビジョンの紐付け。参照先の `content_versions` レコードはプルーニングから保護される。
+
+```sql
+CREATE TABLE project_snapshot_entries (
+  snapshot_id TEXT NOT NULL REFERENCES project_snapshots(id) ON DELETE CASCADE,
+  version_id  TEXT NOT NULL REFERENCES content_versions(id),
+  PRIMARY KEY (snapshot_id, version_id)
+);
 ```
 
 ---
