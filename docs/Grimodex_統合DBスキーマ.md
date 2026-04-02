@@ -114,6 +114,7 @@ CREATE TABLE tree_nodes (
   parent_id   TEXT REFERENCES tree_nodes(id),  -- NULL = Project直下
   node_type   TEXT NOT NULL,        -- 'part'|'chapter'|'scene'|'folder'|'note'
   title       TEXT NOT NULL DEFAULT 'Untitled',
+  synopsis    TEXT,                  -- Sceneのみ: シーン要約（プレーンテキスト）。storySoFarコンテキスト注入に使用
   sort_order  REAL NOT NULL,        -- Fractional Indexing
   status      TEXT DEFAULT 'outline', -- Sceneのみ: 'outline'|'draft'|'complete'|'revision'|'final'
   content     TEXT NOT NULL DEFAULT '{}',  -- Scene/Note本文（ProseMirror JSON）

@@ -370,10 +370,12 @@ LLM APIのシステムプロンプトに以下の5レイヤーを階層的に注
 - ユーザーがSettingsで設定した「AI指示（グローバル）」
 - ~500-2,000 tokens
 
-**Layer 2: Chapter summaries（スライディングウィンドウ）**
-- 各チャプターの自動要約（チャプター完了時に安価なモデルで生成、SQLiteに保存）
-- 直近N章分を含める（Nはトークン予算に応じて動的に調整）
-- ~1,000-4,000 tokens
+**Layer 2: storySoFar（スライディングウィンドウ）**
+- 現在のアクティブシーンより前の全シーンの `synopsis` を時系列順に結合し、「これまでの物語」としてシステムプロンプトに注入
+- Synopsisが未記入のシーンはスキップ（本文フォールバックはしない — トークン爆発防止）
+- トークン予算に応じて、古いシーンのSynopsisから順に切り詰め（直近のシーンを優先）
+- Synopsisが全て未記入の場合はLayer 2自体を省略
+- ~500-4,000 tokens
 
 **Layer 3: Current scene + previous（常時）**
 - 現在のアクティブシーンの全文
@@ -442,7 +444,7 @@ function buildContext(sceneId: string, session: ChatSession): SystemPrompt {
   // summaryが未記入の場合はcontent全文をフォールバック注入
   // カスタムディテール（include_in_context=1）も注入対象に含める
   const layer5 = truncateHistory(session.messages, remainingBudget);
-  const layer2 = buildChapterSummaries(sceneId, remainingBudget);
+  const layer2 = buildStorySoFar(sceneId, remainingBudget);
 
   return assembleLayers([layer1, layer2, layer3, layer4, layer5]);
 }

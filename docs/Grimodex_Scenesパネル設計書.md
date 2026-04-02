@@ -107,6 +107,33 @@ Folder/Noteセクションは本編ツリーの下部にセパレーターで区
 
 ---
 
+## Synopsis（シーン要約）
+
+各Sceneノードは `synopsis` フィールドを持つ。「このシーンで何が起こるか」を1-3文で記述する要約文。
+
+### 目的
+
+- **プロッティング**: 執筆前にシーンの概要を計画する。Outlineビューモード（後述）で全シーンの流れを俯瞰
+- **コンテキスト注入**: storySoFar（後述）として、現在位置より前の全シーンのSynopsisをAIのシステムプロンプトに注入し、物語の文脈を維持する
+- **ナビゲーション**: ツリーのシーンホバー時にツールチップで表示。大量のシーンから目的のシーンを素早く見つけられる
+
+### 編集方法
+
+- Scenesパネルでシーンを選択 → Codex Quickセクションの上に表示されるSynopsisエリアで編集（プレーンテキスト、リッチテキスト不要）
+- Editorパネルのシーンヘッダー部にもSynopsis表示・編集エリアを配置（折りたたみ可能）
+- 空の場合はプレースホルダー「What happens in this scene?」を表示
+
+### 表示
+
+| 場所 | 表示内容 |
+|------|---------|
+| ツリー（通常モード） | ホバー時にツールチップで先頭100文字 |
+| ツリー（Outlineビュー） | タイトル直下にSynopsis全文をインライン表示 |
+| Scenesパネル下部 | 選択中シーンのSynopsis編集エリア |
+| Editorヘッダー | 折りたたみ可能な編集エリア |
+
+---
+
 ## シーンのステータス
 
 ### ステータス定義
@@ -162,6 +189,7 @@ Folder/Noteセクションは本編ツリーの下部にセパレーターで区
 - 全展開 → 全折りたたみ → 全展開 のトグル
 
 **[⋮] パネルメニュー**
+- View: Tree (default) / Outline
 - Sort by: Manual (default) / Title (A→Z) / Word count / Status
 - Show: Word counts ✓ / AI attribution ✓ / Status dots ✓
 - Filter by status: All ✓ / Outline / Draft / Complete / Revision / Final
@@ -178,6 +206,39 @@ Folder/Noteセクションは本編ツリーの下部にセパレーターで区
 - フィルタ中はノードの折りたたみ状態を無視して全マッチを展開表示
 - `Esc` でフィルタクリア
 - `Ctrl+F`（Scenesパネルにフォーカス時）でフィルタ入力欄にフォーカス
+
+---
+
+## ビューモード
+
+パネルメニューの「View」で切り替え。
+
+### Tree（デフォルト）
+
+現行のツリー表示。Part > Chapter > Scene の階層をインデント付きで表示する。Synopsisはシーンノードのホバー時にツールチップで先頭100文字を表示。
+
+### Outline
+
+プロッティング向けのシンプルな一覧表示。ツリー構造は維持しつつ、各シーンのSynopsis全文をタイトル直下にインライン表示する。
+
+```
+▼ ■ Part 1: 旅立ち
+  ▼ □ Chapter 1: 始まり
+    ● Scene 1: 朝の市場
+      エララが市場で謎の商人からアミュレットを受け取る。
+      商人は「満月の夜に塔へ行け」と告げて姿を消す。
+    ● Scene 2: 師匠の警告
+      師匠ガレンがアミュレットの危険性を警告。エララは
+      聞き入れず、塔への旅を決意する。
+  ▼ □ Chapter 2: 黒曜石の塔
+    ● Scene 3: 塔の入口
+      ...
+```
+
+- Synopsisが空のシーンはタイトルのみ表示（プレースホルダーなし）
+- ステータスドット・文字数は通常通り表示
+- D&Dによる並べ替えも通常通り動作
+- フィルター・ソートも通常通り適用
 
 ---
 
@@ -416,6 +477,7 @@ CREATE TABLE tree_nodes (
   parent_id   TEXT REFERENCES tree_nodes(id), -- NULL = Project直下
   node_type   TEXT NOT NULL,        -- 'part' | 'chapter' | 'scene' | 'folder' | 'note'
   title       TEXT NOT NULL DEFAULT 'Untitled',
+  synopsis    TEXT,                  -- Sceneのみ: シーン要約（プレーンテキスト）
   sort_order  REAL NOT NULL,        -- 浮動小数点で挿入時の再ソートを回避
   status      TEXT DEFAULT 'outline', -- Sceneのみ使用: 'outline'|'draft'|'complete'|'revision'|'final'
   created_at  TEXT NOT NULL DEFAULT (datetime('now')),
