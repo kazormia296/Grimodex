@@ -315,15 +315,15 @@ CREATE INDEX idx_snippets_project ON snippets(project_id, created_at DESC);
 
 ```sql
 CREATE TABLE chat_sessions (
-  id           TEXT PRIMARY KEY,
-  project_id   TEXT NOT NULL REFERENCES projects(id),
-  node_id      TEXT REFERENCES tree_nodes(id),   -- NULLの場合はプロジェクトスコープ
-  title        TEXT NOT NULL DEFAULT 'New session',
-  title_manual INTEGER NOT NULL DEFAULT 0,        -- 1: 手動リネーム済み、自動再生成を抑制
-  model        TEXT NOT NULL DEFAULT 'openrouter/anthropic/claude-sonnet-4.6',
-  pinned_codex TEXT,           -- JSON array of {id, source} objects. source: 'manual' | 'chat_mention'
-  created_at   TEXT NOT NULL DEFAULT (datetime('now')),
-  updated_at   TEXT NOT NULL DEFAULT (datetime('now'))
+  id            TEXT PRIMARY KEY,
+  project_id    TEXT NOT NULL REFERENCES projects(id),
+  node_id       TEXT REFERENCES tree_nodes(id),   -- NULLの場合はプロジェクトスコープ
+  title         TEXT NOT NULL DEFAULT 'New session',
+  title_manual  INTEGER NOT NULL DEFAULT 0,        -- 1: 手動リネーム済み、自動再生成を抑制
+  model         TEXT NOT NULL DEFAULT 'openrouter/anthropic/claude-sonnet-4.6',
+  pinned_codex  TEXT,           -- JSON array of {id, source} objects. source: 'manual' | 'chat_mention'
+  created_at    TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at    TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
 CREATE INDEX idx_chat_sessions_node ON chat_sessions(project_id, node_id);
