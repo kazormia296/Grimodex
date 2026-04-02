@@ -266,6 +266,7 @@ Codexパネルはプロジェクトの世界設定データベース。キャラ
 
 - TipTapの軽量インスタンス。StarterKitのサブセット（太字、斜体、見出し、リスト、リンク）。Markdown記法をリアルタイムにリッチテキストとしてレンダリング
 - キャラクターの詳細な背景設定、場所の歴史、アイテムの由来など、長文の設定情報を記述
+- **Open in Editor**: Content フィールドの右上に「Open in Editor ↗」ボタンを表示。クリックするとエディタパネルにCodexタブとして開き、エディタの全機能（インラインAI、CodexHighlight、Chat連携）で編集できる。Codexパネル内のミニエディタとエディタタブのcontentは同一ファイルを参照しており、一方の変更が他方に即時反映される
 - **CodexHighlight対応**: エディタ本文と同じCodexHighlight Pure Decorationを適用。Content内で言及された他のCodexエントリがハイライトされ、ホバーポップオーバーで確認、「Open in Codex →」で遷移可能。自エントリ自身のnameとaliasesはハイライト対象から除外
 - Content内で検出されたCodexエントリは「リレーション提案」としてRelationsセクションに表示される（後述）
 - エディタ本文と同じくMarkdownで保存（`codex/{type_prefix}_{sanitized_name}_{short_id}.md`）

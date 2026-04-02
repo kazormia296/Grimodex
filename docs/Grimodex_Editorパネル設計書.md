@@ -55,6 +55,16 @@ EditorパネルはGrimodexの中核コンポーネント。TipTapベースのリ
 - ダブルクリック、Enter、Ctrl+Enterで開いたシーン
 - 明示的に閉じるまで残る
 
+**Codex/Snippetタブ**
+- CodexエントリまたはSnippetのcontentをエディタの全機能（インラインAI、CodexHighlight、Attribution追跡）で編集できる
+- Codexパネルの詳細画面「Open in Editor」ボタン、またはSnippetの展開表示「Open in Editor」ボタンで開く
+- タブアイコンで区別: Codexは該当typeのカラードット、Snippetは🗂アイコン
+- タブタイトル: Codexは「{エントリ名}」、Snippetは「{Snippet title}」
+- エディタ上部にバナー表示: Codexは「Editing Codex entry — changes are saved to {type}: {name}」（typeカラードット付き）、Snippetは「Editing Snippet — changes are saved to Snippets」
+- 保存先は既存のCodex/Snippetのcontentファイル（エディタのシーン用Markdownとは別）
+- プレビュータブとして開く動作は無し（常に固定タブ）
+- **Chat連携**: Codex/Snippetタブがアクティブの場合、Chatパネルのコンテキスト（Layer 3）にはCodex/Snippetのcontent全文が注入される。ヘッダーの表示は「Codex: {エントリ名}」または「Snippet: {title}」に切り替わる
+
 ### タブの表示要素
 
 ```
@@ -832,22 +842,8 @@ content/
 - `tiptap-markdown` によるMarkdownエクスポートを保存
 - AuthorshipMarkはMarkdownには含まれない（エクスポート時に除外）
 - AuthorshipMarkのデータはSQLiteの `authorship_spans` テーブルに別途永続化
-
-```sql
-CREATE TABLE authorship_spans (
-  id          TEXT PRIMARY KEY,
-  node_id     TEXT NOT NULL REFERENCES tree_nodes(id),
-  from_pos    INTEGER NOT NULL,
-  to_pos      INTEGER NOT NULL,
-  source      TEXT NOT NULL,       -- 'human' | 'ai' | 'unknown'
-  model       TEXT,                -- AI生成時のモデル名
-  timestamp   TEXT,                -- ISO 8601
-  chat_msg_id TEXT                 -- 抽出元チャットメッセージID（nullable）
-  -- chat_msg_id に外部キー制約は付けない（チャット履歴削除時にAttribution統計が壊れるのを防ぐため）
-);
-
-CREATE INDEX idx_authorship_node ON authorship_spans(node_id, source);
-```
+- Codex/Snippetタブの場合は `node_id` の代わりに `codex_entry_id` または `snippet_id` を使用
+- 正規スキーマは統合DBスキーマ設計書（`Grimodex_統合DBスキーマ.md`）の `authorship_spans` を参照
 
 ### Undo/Redo
 
@@ -857,19 +853,22 @@ CREATE INDEX idx_authorship_node ON authorship_spans(node_id, source);
 
 ---
 
-## SceneとNoteの差異
+## タブ種別ごとの差異
 
-| 項目 | Scene | Note |
-|------|-------|------|
-| TipTapドキュメント | あり | あり |
-| ブレッドクラムのパス | Part / Chapter / Scene | Folder / Subfolder / Note |
-| タブアイコン | なし | 📝 |
-| エクスポート対象 | Yes | No |
-| Attribution追跡 | Yes | Yes |
-| Codexハイライト | Yes | Yes |
-| 文字数目標 | 設定可能 | 不可 |
-| ステータス（Draft等） | あり | なし |
-| エディタ上部バナー | なし | 「This note is not included in export」薄いバナー |
+| 項目 | Scene | Note | Codex content | Snippet content |
+|------|-------|------|---------------|-----------------|
+| TipTapドキュメント | あり | あり | あり | あり |
+| ブレッドクラムのパス | Part / Chapter / Scene | Folder / Subfolder / Note | Codex / {type} / {name} | Snippets / {title} |
+| タブアイコン | なし | 📝 | typeカラードット | 🗂 |
+| エクスポート対象 | Yes | No | No | No |
+| Attribution追跡 | Yes | Yes | Yes | Yes |
+| Codexハイライト | Yes | Yes | Yes（自エントリ除外） | Yes |
+| インラインAI | Yes | Yes | Yes | Yes |
+| 文字数目標 | 設定可能 | 不可 | 不可 | 不可 |
+| ステータス（Draft等） | あり | なし | なし | なし |
+| エディタ上部バナー | なし | 「This note is not included in export」 | 「Editing Codex entry — {type}: {name}」 | 「Editing Snippet」 |
+| Chat Layer 3 連携 | シーン全文 | シーン全文（Note自体） | Codex content全文 | Snippet content全文 |
+| 保存先 | `scenes/` Markdownファイル | `notes/` Markdownファイル | `codex/` Markdownファイル | `snippets/` Markdownファイル |
 
 ---
 
@@ -913,12 +912,14 @@ CREATE INDEX idx_authorship_node ON authorship_spans(node_id, source);
 
 - エディタ内のCodexハイライトをホバー → ポップオーバーの「Open in Codex」でCodexパネルの詳細画面を開く
 - エディタのコンテキストメニュー「Add to Codex」→ 選択テキストをnameとしてエントリ即時作成 → トーストの「Open」でCodexパネルの詳細画面へ
+- Codexパネルの「Open in Editor ↗」→ エディタにCodexタブとして開く。ミニエディタと同一ファイルを参照し、変更は双方向に即時反映
 
 ### Snippetsパネル
 
 - SnippetをD&Dでエディタにドロップ → カーソル位置に挿入（AuthorshipMarkは元Snippetのsourceを継承）
 - エディタのコンテキストメニュー「Save as Snippet」→ Snippetsパネルに保存
 - エディタのコンテキストメニュー「Insert from Snippet...」→ Snippet一覧ポップアップ
+- Snippetsパネルの「Open in Editor ↗」→ エディタにSnippetタブとして開く
 
 ### Attributionパネル
 

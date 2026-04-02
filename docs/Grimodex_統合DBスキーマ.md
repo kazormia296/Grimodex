@@ -48,7 +48,7 @@ tree_nodes (1)
  ├──< tree_nodes (*)          parent_id (自己参照、ツリー構造)
  ├──< chat_sessions (*)       node_id
  ├──< snippets (*)            scene_id
- └──< authorship_spans (*)    node_id
+ └──< authorship_spans (*)    node_id (nullable)
 
 codex_types (1)
  └──< codex_detail_definitions (*) type_slug (論理参照、FKなし)
@@ -57,7 +57,11 @@ codex_entries (1)
  ├──< codex_entries (*)       parent_id (自己参照、リレーション)
  ├──< codex_relation_dismissed (*) entry_id, dismissed_id
  ├──< codex_entry_tags (*)    entry_id
- └──< codex_detail_values (*) entry_id
+ ├──< codex_detail_values (*) entry_id
+ └──< authorship_spans (*)    codex_entry_id (nullable)
+
+snippets (1)
+ └──< authorship_spans (*)    snippet_id (nullable)
 
 codex_tags (1)
  └──< codex_entry_tags (*)    tag_id
@@ -349,20 +353,31 @@ CREATE INDEX idx_chat_messages_session ON chat_messages(session_id, created_at);
 ### authorship_spans
 
 AI帰属追跡。エディタの自動保存時にTipTap AuthorshipMarkから同期。
+対象ドキュメントの種別に応じて `node_id`、`codex_entry_id`、`snippet_id` のいずれか1つのみを設定する。
 
 ```sql
 CREATE TABLE authorship_spans (
-  id          TEXT PRIMARY KEY,
-  node_id     TEXT NOT NULL REFERENCES tree_nodes(id),
-  from_pos    INTEGER NOT NULL,
-  to_pos      INTEGER NOT NULL,
-  source      TEXT NOT NULL,       -- 'human'|'ai'|'unknown'
-  model       TEXT,                -- AI生成時のモデル名
-  timestamp   TEXT,                -- ISO 8601
-  chat_msg_id TEXT                 -- 抽出元チャットメッセージID（nullable）
+  id              TEXT PRIMARY KEY,
+  node_id         TEXT REFERENCES tree_nodes(id),       -- Scene/Note の場合
+  codex_entry_id  TEXT REFERENCES codex_entries(id),     -- Codex content の場合
+  snippet_id      TEXT REFERENCES snippets(id),          -- Snippet content の場合
+  from_pos        INTEGER NOT NULL,
+  to_pos          INTEGER NOT NULL,
+  source          TEXT NOT NULL,       -- 'human'|'ai'|'unknown'
+  model           TEXT,                -- AI生成時のモデル名
+  timestamp       TEXT,                -- ISO 8601
+  chat_msg_id     TEXT,                -- 抽出元チャットメッセージID（nullable）
+  -- node_id, codex_entry_id, snippet_id のいずれか1つのみNOT NULL
+  CHECK (
+    (node_id IS NOT NULL AND codex_entry_id IS NULL AND snippet_id IS NULL) OR
+    (node_id IS NULL AND codex_entry_id IS NOT NULL AND snippet_id IS NULL) OR
+    (node_id IS NULL AND codex_entry_id IS NULL AND snippet_id IS NOT NULL)
+  )
 );
 
 CREATE INDEX idx_authorship_node ON authorship_spans(node_id, source);
+CREATE INDEX idx_authorship_codex ON authorship_spans(codex_entry_id, source);
+CREATE INDEX idx_authorship_snippet ON authorship_spans(snippet_id, source);
 ```
 
 ### settings
@@ -591,3 +606,7 @@ Codex設計書のCREATE TABLEに `aliases` と `excluded_aliases` が含まれ�
 Editor設計書では `chat_msg_id TEXT` と定義されていたが、外部キー制約が未定義で、インデックスも未定義だった。
 
 **解決**: chat_messagesへの外部キー制約は意図的に付けない（chat_messages削除時にattribution統計が壊れるのを防ぐため）。方針をSQLコメントで明文化。`idx_authorship_node` インデックスをEditor設計書のCREATE TABLE直後に追加。Attribution設計書の重複インデックス定義はEditor設計書への参照に置き換え。
+
+### 4. authorship_spans のCodex/Snippet対応
+
+Codex/SnippetのcontentがEditorタブとして開けるようになったため、`node_id` を必須からnullableに変更し、`codex_entry_id`、`snippet_id` を追加。CHECK制約で3つのうちいずれか1つのみNOT NULLを保証。Editor設計書のCREATE TABLEは本スキーマへの参照に置き換え済み。

@@ -291,7 +291,7 @@ Left/Right/Bottom Dockはすべて同じ操作モデルを共有する。
 - 各パネルの状態（Closed / Docked / Collapsed / Floating）
 - 各パネルの所属ゾーンとタブ順序
 - ゾーン内のスプリット構造と比率
-- Editor Groupの分割構造と各Groupで開いているシーンタブ
+- Editor Groupの分割構造と各Groupで開いているタブ（Scene、Note、Codex content、Snippet content）。各タブはタブ種別と対象ID（node_id、codex_entry_id、snippet_id）で識別する
 - Activity Barのアイコン順序とゾーン割り当て
 - フローティングウィンドウの位置・サイズ
 - 各ゾーンの幅/高さ

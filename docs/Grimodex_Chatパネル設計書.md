@@ -62,6 +62,8 @@ Editorのアクティブタブが変わると、Chatパネルのシーンイン�
 1. そのシーンに既存のセッションがあれば最新セッションを表示
 2. なければ空の新規セッション画面を表示
 
+**Codex/Snippetタブの場合**: Editorのアクティブタブがcodex/Snippetタブの場合、ヘッダーのシーンインジケーターは「Codex: {エントリ名}」または「Snippet: {title}」に切り替わる。Layer 3にはCodex/Snippetのcontent全文が注入される。セッションはプロジェクトスコープ（`node_id = NULL`）として扱う
+
 ---
 
 ## B. コンテキストバー
