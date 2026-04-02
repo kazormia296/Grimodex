@@ -82,6 +82,34 @@ LLMに送信されるコンテキスト情報をユーザーに可視化する�
 | {Snippet名} | Purple | ピン留めされたSnippet。クリックでSnippet詳細。×で除外 |
 | ~{N} tokens | グレー（右寄せ） | システムプロンプトの合計トークン数概算 |
 
+### グループ化表示
+
+Codex + Snippetのピル合計が **6個を超えた場合**、個別ピル表示からグループ化表示に自動的に切り替わる。
+
+**通常表示**（6個以下）:
+```
+[Project] [Scene: 3,200] [Elara] [Taro] [Lira] [Ancient Tower] [+]  ~2,800 tokens
+```
+
+**グループ化表示**（7個以上）:
+```
+[Project] [Scene: 3,200] [Characters ▾ (5)] [Locations ▾ (2)] [Snippets ▾ (3)] [+]  ~4,200 tokens
+```
+
+**グループの構成**:
+- Codexエントリは `type`（character / location / item / lore / カスタムtype）でグループ化
+- Snippetは独立した「Snippets」グループ
+- 各グループピルにはグループ名と件数を表示（例: `Characters (5)`）
+- グループピルの色はCodex系はBlue/Info、SnippetsはPurple
+- エントリが0件のグループは非表示
+
+**グループの展開/折りたたみ**:
+- グループピルの ▾ をクリックで展開。グループピルの直下にそのグループの個別ピルが表示される
+- 展開中は ▾ が ▴ に変化
+- 個別ピルのクリック（ポップオーバー）や×（除外）は通常表示と同じ動作
+- 複数グループを同時に展開可能
+- グループ外のピル（Project info、Scene、トークン数）は常に表示
+
 ### ピン留め
 
 - コンテキストバー末尾の「+」ボタンで、CodexエントリまたはSnippetを手動ピン留め
