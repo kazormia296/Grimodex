@@ -198,9 +198,9 @@ OSのアプリケーションデータディレクトリに格納。全ワーク
 - 自動保存: 最後のキー入力から2000msのデバウンスでディスクに書き込み（0.5〜10秒の範囲で設定可能）
 - セッションごとの完全な履歴によるundo/redo
 
-### 3.2 帰属追跡（Markレベル） — Agent Trace v0.1.0 準拠
+### 3.2 帰属追跡（文字単位）
 
-> 設計判断の詳細は [ADR-001](adr/001-agent-trace-attribution.md) を参照。
+> 設計判断の詳細は [ADR-001](adr/001-character-level-authorship.md) を参照。
 
 すべてのテキストスパンは、以下の3値のいずれかを持つauthorship Mark属性を保持する:
 
@@ -232,19 +232,7 @@ OSのアプリケーションデータディレクトリに格納。全ワーク
 
 帰属データは**SQLiteのみ**に保存（Markdownファイルには含めない）。Markdownファイルはクリーンな標準Markdownのまま維持する。
 
-帰属のSQLiteスキーマ（正規版は `Grimodex_統合DBスキーマ.md` を参照）:
-```sql
-CREATE TABLE authorship_spans (
-  id          TEXT PRIMARY KEY,
-  node_id     TEXT NOT NULL REFERENCES tree_nodes(id) ON DELETE CASCADE,
-  from_pos    INTEGER NOT NULL,
-  to_pos      INTEGER NOT NULL,
-  source      TEXT NOT NULL CHECK(source IN ('human','ai','unknown')),
-  model       TEXT,
-  timestamp   TEXT,
-  chat_msg_id TEXT
-);
-```
+帰属のSQLiteスキーマ（正規版は `Grimodex_統合DBスキーマ.md` を参照）。対象ドキュメントの種別に応じて `node_id`（Scene/Note）、`codex_entry_id`（Codex content）、`snippet_id`（Snippet content）のいずれか1つを設定する。
 
 - ドキュメント保存時: 現在のTipTap Markの位置をシリアライズ → `authorship_spans` を全置換更新
 - ドキュメント読み込み時: SQLiteからスパンを読み込み → TipTap Markとして適用
@@ -254,11 +242,8 @@ CREATE TABLE authorship_spans (
 - 帰属レポートパネル: Human / AI / Unknown の比率をバーグラフで表示（Attributionパネル設計書参照）
 
 **エクスポート:**
-- Agent Trace v0.1.0 準拠の JSON エクスポート（`.agent-trace.json`）
-- MIME type: `application/vnd.agent-trace.record+json`
-- 文字レベルのマークを集約したスパン、SHA-256コンテンツハッシュを含む
-- Grimodex独自拡張は `dev.grimodex.*` 名前空間
 - Markdownエクスポート時にはAuthorshipMarkを除外し、クリーンなMarkdownを出力する
+- 将来的にAuthorship情報を含むエクスポート形式が必要になった場合は、Grimodex独自のJSON形式を定義する
 
 ### 3.3 チャットからのテキスト挿入
 
@@ -702,7 +687,7 @@ VS Code + JetBrains ハイブリッドのDock/Float/Tab/Splitモデルを採用:
 |------|------|
 | Markdown | ネイティブ形式そのもの — `content/` フォルダをコピーするだけ |
 | プレーンテキスト | 全シーンを順序通りに結合し、Markdown記法を除去。Web小説投稿サイト（なろう、カクヨム）用 |
-| Agent Trace JSON | `.agent-trace.json` — 帰属情報のエクスポート（Agent Trace v0.1.0 準拠） |
+| Attribution JSON | 帰属情報のエクスポート（Grimodex独自形式、将来実装） |
 | Attribution Report | Markdown / CSV — 帰属統計レポート |
 
 ### 10.2 エクスポートオプション
@@ -798,7 +783,7 @@ VS Code + JetBrains ハイブリッドのDock/Float/Tab/Splitモデルを採用:
 - [x] チャットからのCodex/Snippet抽出（AI mode + Manual mode）
 - [x] チャットからエディタへのテキスト挿入（コピー + 挿入ボタン）
 - [x] Snippets: 独立テーブルでテキスト断片管理
-- [x] エクスポート: Markdown + Agent Trace JSON
+- [x] エクスポート: Markdown + Attribution JSON
 - [x] スラッシュコマンド（/continue, /rewrite 等）
 - [x] 縦書きプレビュー
 - [x] ルビテキスト（RubyNode拡張）
@@ -858,7 +843,7 @@ VS Code + JetBrains ハイブリッドのDock/Float/Tab/Splitモデルを採用:
 - AuthorshipMark拡張（3値: human/ai/unknown）
 - 帰属ビジュアルオーバーレイ
 - 帰属スパン永続化（SQLite）
-- Agent Trace JSONエクスポート
+- Attribution JSONエクスポート（Grimodex独自形式）
 - 縦書きプレビュー、ルビテキスト
 
 ### Phase 6: パフォーマンスと品質（進行中）
