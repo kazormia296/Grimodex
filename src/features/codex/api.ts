@@ -4,7 +4,14 @@ import { eq } from "drizzle-orm";
 
 export type CodexEntry = typeof codexEntries.$inferSelect;
 export type NewCodexEntry = typeof codexEntries.$inferInsert;
-export type CodexEntryType = "character" | "location" | "item" | "lore";
+export const BUILTIN_CODEX_TYPES = [
+  "character",
+  "location",
+  "item",
+  "lore",
+] as const;
+export type BuiltinCodexEntryType = (typeof BUILTIN_CODEX_TYPES)[number];
+export type CodexEntryType = string;
 
 export async function listCodexEntries(
   type?: CodexEntryType,

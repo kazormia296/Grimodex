@@ -70,7 +70,7 @@ export const codexEntries = sqliteTable("codex_entries", {
   parentId: text("parent_id").references((): any => codexEntries.id, {
     onDelete: "set null",
   }),
-  type: text("type").notNull().default("character"), // codex_types.slug
+  type: text("type").notNull().default("character"), // FK (project_id, type) → codex_types(project_id, slug)
   name: text("name").notNull().default("Untitled"),
   aliases: text("aliases"), // JSON string[]
   excludedAliases: text("excluded_aliases"), // JSON string[]
@@ -130,9 +130,9 @@ export const codexDetailDefinitions = sqliteTable("codex_detail_definitions", {
   projectId: text("project_id")
     .notNull()
     .references(() => projects.id, { onDelete: "cascade" }),
-  typeSlug: text("type_slug").notNull(),
+  typeSlug: text("type_slug").notNull(), // FK (project_id, type_slug) → codex_types(project_id, slug)
   name: text("name").notNull(),
-  fieldType: text("field_type").notNull().default("text"), // 'text' | 'dropdown' | 'codex_reference'
+  fieldType: text("field_type").notNull().default("text"), // CHECK('text' | 'dropdown' | 'codex_reference')
   fieldConfig: text("field_config"), // JSON
   sortOrder: real("sort_order").notNull().default(0.0),
   includeInContext: integer("include_in_context").notNull().default(0),

@@ -80,7 +80,8 @@ impl Database {
                                           CHECK(context_mode IN ('always', 'mentioned', 'suppress', 'hidden')),
                 source_chat_message_id  TEXT,
                 created_at              TEXT NOT NULL DEFAULT (datetime('now')),
-                updated_at              TEXT NOT NULL DEFAULT (datetime('now'))
+                updated_at              TEXT NOT NULL DEFAULT (datetime('now')),
+                FOREIGN KEY (project_id, type) REFERENCES codex_types(project_id, slug)
             );
             CREATE INDEX IF NOT EXISTS idx_codex_project
                 ON codex_entries(project_id, type);
@@ -120,12 +121,14 @@ impl Database {
                 project_id        TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
                 type_slug         TEXT NOT NULL,
                 name              TEXT NOT NULL,
-                field_type        TEXT NOT NULL DEFAULT 'text',
+                field_type        TEXT NOT NULL DEFAULT 'text'
+                                    CHECK(field_type IN ('text', 'dropdown', 'codex_reference')),
                 field_config      TEXT,
                 sort_order        REAL NOT NULL DEFAULT 0.0,
                 include_in_context INTEGER NOT NULL DEFAULT 0,
                 created_at        TEXT NOT NULL DEFAULT (datetime('now')),
-                UNIQUE(project_id, type_slug, name)
+                UNIQUE(project_id, type_slug, name),
+                FOREIGN KEY (project_id, type_slug) REFERENCES codex_types(project_id, slug)
             );
             CREATE INDEX IF NOT EXISTS idx_codex_detail_defs
                 ON codex_detail_definitions(project_id, type_slug, sort_order);
@@ -290,21 +293,24 @@ impl Database {
                 WHERE scene_id = old.id;
             END;
 
+            -- Seed built-in codex types for every new project
+            CREATE TRIGGER IF NOT EXISTS seed_builtin_codex_types
+            AFTER INSERT ON projects BEGIN
+                INSERT OR IGNORE INTO codex_types (id, project_id, slug, label, color, file_prefix, is_builtin, sort_order, created_at)
+                  VALUES (new.id || '-character', new.id, 'character', 'キャラクター', '#534AB7', 'char', 1, 0.0, datetime('now'));
+                INSERT OR IGNORE INTO codex_types (id, project_id, slug, label, color, file_prefix, is_builtin, sort_order, created_at)
+                  VALUES (new.id || '-location', new.id, 'location', '場所', '#0F6E56', 'loc', 1, 1.0, datetime('now'));
+                INSERT OR IGNORE INTO codex_types (id, project_id, slug, label, color, file_prefix, is_builtin, sort_order, created_at)
+                  VALUES (new.id || '-item', new.id, 'item', 'アイテム', '#BA7517', 'item', 1, 2.0, datetime('now'));
+                INSERT OR IGNORE INTO codex_types (id, project_id, slug, label, color, file_prefix, is_builtin, sort_order, created_at)
+                  VALUES (new.id || '-lore', new.id, 'lore', '伝承', '#993C1D', 'lore', 1, 3.0, datetime('now'));
+            END;
+
             -- Seed default project + chapter node
             INSERT OR IGNORE INTO projects (id, title, language, created_at, updated_at)
               VALUES ('default-project', '無題のプロジェクト', 'ja', datetime('now'), datetime('now'));
             INSERT OR IGNORE INTO tree_nodes (id, project_id, node_type, title, sort_order, created_at, updated_at)
-              VALUES ('default-chapter', 'default-project', 'chapter', '第1章', 0.0, datetime('now'), datetime('now'));
-
-            -- Seed built-in codex types for default project
-            INSERT OR IGNORE INTO codex_types (id, project_id, slug, label, color, file_prefix, is_builtin, sort_order, created_at)
-              VALUES ('builtin-character', 'default-project', 'character', 'キャラクター', '#534AB7', 'char', 1, 0.0, datetime('now'));
-            INSERT OR IGNORE INTO codex_types (id, project_id, slug, label, color, file_prefix, is_builtin, sort_order, created_at)
-              VALUES ('builtin-location', 'default-project', 'location', '場所', '#0F6E56', 'loc', 1, 1.0, datetime('now'));
-            INSERT OR IGNORE INTO codex_types (id, project_id, slug, label, color, file_prefix, is_builtin, sort_order, created_at)
-              VALUES ('builtin-item', 'default-project', 'item', 'アイテム', '#BA7517', 'item', 1, 2.0, datetime('now'));
-            INSERT OR IGNORE INTO codex_types (id, project_id, slug, label, color, file_prefix, is_builtin, sort_order, created_at)
-              VALUES ('builtin-lore', 'default-project', 'lore', '伝承', '#993C1D', 'lore', 1, 3.0, datetime('now'));",
+              VALUES ('default-chapter', 'default-project', 'chapter', '第1章', 0.0, datetime('now'), datetime('now'));",
         )?;
 
         Ok(())
@@ -1444,5 +1450,346 @@ mod tests {
         assert_eq!(rows[0]["source"], Value::String("ai".into()));
         assert_eq!(rows[0]["from_pos"], Value::Number(0.into()));
         assert_eq!(rows[0]["to_pos"], Value::Number(100.into()));
+    }
+
+    // --- BUG 1: codex_detail_definitions.type_slug FK ---
+
+    #[test]
+    fn test_codex_detail_definitions_crud() {
+        let db = test_db();
+
+        // Insert a definition for built-in type
+        db.execute(
+            "INSERT INTO codex_detail_definitions (id, project_id, type_slug, name, field_type, sort_order) VALUES (?, ?, ?, ?, ?, ?)",
+            &[
+                Value::String("def-1".into()),
+                Value::String("default-project".into()),
+                Value::String("character".into()),
+                Value::String("身長".into()),
+                Value::String("text".into()),
+                Value::Number(serde_json::Number::from_f64(0.0).unwrap()),
+            ],
+            "run",
+        ).expect("insert definition");
+
+        let rows = db.execute("SELECT * FROM codex_detail_definitions WHERE id = ?", &[Value::String("def-1".into())], "get").expect("select");
+        assert_eq!(rows[0]["name"], Value::String("身長".into()));
+        assert_eq!(rows[0]["type_slug"], Value::String("character".into()));
+    }
+
+    #[test]
+    fn test_codex_detail_definitions_rejects_invalid_type_slug() {
+        let db = test_db();
+
+        let result = db.execute(
+            "INSERT INTO codex_detail_definitions (id, project_id, type_slug, name, field_type, sort_order) VALUES (?, ?, ?, ?, ?, ?)",
+            &[
+                Value::String("def-bad".into()),
+                Value::String("default-project".into()),
+                Value::String("nonexistent-type".into()),
+                Value::String("テスト".into()),
+                Value::String("text".into()),
+                Value::Number(serde_json::Number::from_f64(0.0).unwrap()),
+            ],
+            "run",
+        );
+        assert!(result.is_err(), "Should reject definition with nonexistent type_slug");
+    }
+
+    // --- BUG 2: codex_entries.type FK ---
+
+    #[test]
+    fn test_codex_entries_rejects_invalid_type() {
+        let db = test_db();
+
+        let result = db.execute(
+            "INSERT INTO codex_entries (id, project_id, type, name, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+            &[
+                Value::String("ce-bad".into()),
+                Value::String("default-project".into()),
+                Value::String("nonexistent-type".into()),
+                Value::String("テスト".into()),
+                Value::String("2025-01-01T00:00:00Z".into()),
+                Value::String("2025-01-01T00:00:00Z".into()),
+            ],
+            "run",
+        );
+        assert!(result.is_err(), "Should reject codex entry with nonexistent type slug");
+    }
+
+    // --- BUG 3: field_type CHECK constraint ---
+
+    #[test]
+    fn test_codex_detail_definitions_rejects_invalid_field_type() {
+        let db = test_db();
+
+        let result = db.execute(
+            "INSERT INTO codex_detail_definitions (id, project_id, type_slug, name, field_type, sort_order) VALUES (?, ?, ?, ?, ?, ?)",
+            &[
+                Value::String("def-badft".into()),
+                Value::String("default-project".into()),
+                Value::String("character".into()),
+                Value::String("テスト".into()),
+                Value::String("invalid_type".into()),
+                Value::Number(serde_json::Number::from_f64(0.0).unwrap()),
+            ],
+            "run",
+        );
+        assert!(result.is_err(), "Should reject definition with invalid field_type");
+    }
+
+    // --- BUG 4: Built-in types seeded for new projects ---
+
+    #[test]
+    fn test_builtin_types_seeded_on_new_project() {
+        let db = test_db();
+
+        // Create a new project
+        db.execute(
+            "INSERT INTO projects (id, title, created_at, updated_at) VALUES (?, ?, ?, ?)",
+            &[
+                Value::String("new-project".into()),
+                Value::String("新プロジェクト".into()),
+                Value::String("2025-01-01T00:00:00Z".into()),
+                Value::String("2025-01-01T00:00:00Z".into()),
+            ],
+            "run",
+        ).expect("insert new project");
+
+        // Check that built-in types were seeded
+        let rows = db.execute(
+            "SELECT * FROM codex_types WHERE project_id = ? ORDER BY sort_order",
+            &[Value::String("new-project".into())],
+            "all",
+        ).expect("select types");
+
+        assert_eq!(rows.len(), 4, "Should have 4 built-in types");
+        assert_eq!(rows[0]["slug"], Value::String("character".into()));
+        assert_eq!(rows[1]["slug"], Value::String("location".into()));
+        assert_eq!(rows[2]["slug"], Value::String("item".into()));
+        assert_eq!(rows[3]["slug"], Value::String("lore".into()));
+
+        // All should be marked as built-in
+        for row in &rows {
+            assert_eq!(row["is_builtin"], Value::Number(1.into()));
+        }
+    }
+
+    // --- Cascade delete tests for new tables ---
+
+    #[test]
+    fn test_cascade_delete_codex_entry_to_entry_tags() {
+        let db = test_db();
+
+        // Insert codex entry
+        db.execute(
+            "INSERT INTO codex_entries (id, project_id, type, name, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+            &[
+                Value::String("ce-cas".into()),
+                Value::String("default-project".into()),
+                Value::String("character".into()),
+                Value::String("テスト".into()),
+                Value::String("2025-01-01T00:00:00Z".into()),
+                Value::String("2025-01-01T00:00:00Z".into()),
+            ],
+            "run",
+        ).expect("insert entry");
+
+        // Insert a tag
+        db.execute(
+            "INSERT INTO codex_tags (id, project_id, name) VALUES (?, ?, ?)",
+            &[
+                Value::String("tag-1".into()),
+                Value::String("default-project".into()),
+                Value::String("重要".into()),
+            ],
+            "run",
+        ).expect("insert tag");
+
+        // Link entry to tag
+        db.execute(
+            "INSERT INTO codex_entry_tags (entry_id, tag_id) VALUES (?, ?)",
+            &[Value::String("ce-cas".into()), Value::String("tag-1".into())],
+            "run",
+        ).expect("insert entry_tag");
+
+        // Delete the entry
+        db.execute(
+            "DELETE FROM codex_entries WHERE id = ?",
+            &[Value::String("ce-cas".into())],
+            "run",
+        ).expect("delete entry");
+
+        // entry_tags should be cascade-deleted
+        let rows = db.execute(
+            "SELECT * FROM codex_entry_tags WHERE entry_id = ?",
+            &[Value::String("ce-cas".into())],
+            "all",
+        ).expect("select entry_tags");
+        assert_eq!(rows.len(), 0, "entry_tags should be cascade-deleted");
+    }
+
+    #[test]
+    fn test_cascade_delete_codex_entry_to_detail_values() {
+        let db = test_db();
+
+        // Insert codex entry
+        db.execute(
+            "INSERT INTO codex_entries (id, project_id, type, name, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+            &[
+                Value::String("ce-dv".into()),
+                Value::String("default-project".into()),
+                Value::String("character".into()),
+                Value::String("テスト".into()),
+                Value::String("2025-01-01T00:00:00Z".into()),
+                Value::String("2025-01-01T00:00:00Z".into()),
+            ],
+            "run",
+        ).expect("insert entry");
+
+        // Insert a detail definition
+        db.execute(
+            "INSERT INTO codex_detail_definitions (id, project_id, type_slug, name, field_type) VALUES (?, ?, ?, ?, ?)",
+            &[
+                Value::String("ddef-1".into()),
+                Value::String("default-project".into()),
+                Value::String("character".into()),
+                Value::String("身長".into()),
+                Value::String("text".into()),
+            ],
+            "run",
+        ).expect("insert definition");
+
+        // Insert a detail value
+        db.execute(
+            "INSERT INTO codex_detail_values (id, entry_id, definition_id, value) VALUES (?, ?, ?, ?)",
+            &[
+                Value::String("dval-1".into()),
+                Value::String("ce-dv".into()),
+                Value::String("ddef-1".into()),
+                Value::String("170cm".into()),
+            ],
+            "run",
+        ).expect("insert detail value");
+
+        // Delete the entry
+        db.execute(
+            "DELETE FROM codex_entries WHERE id = ?",
+            &[Value::String("ce-dv".into())],
+            "run",
+        ).expect("delete entry");
+
+        // detail_values should be cascade-deleted
+        let rows = db.execute(
+            "SELECT * FROM codex_detail_values WHERE entry_id = ?",
+            &[Value::String("ce-dv".into())],
+            "all",
+        ).expect("select detail_values");
+        assert_eq!(rows.len(), 0, "detail_values should be cascade-deleted");
+    }
+
+    // --- codex_types CRUD ---
+
+    #[test]
+    fn test_codex_types_crud() {
+        let db = test_db();
+
+        // Verify built-in types exist
+        let rows = db.execute(
+            "SELECT * FROM codex_types WHERE project_id = ? AND is_builtin = 1 ORDER BY sort_order",
+            &[Value::String("default-project".into())],
+            "all",
+        ).expect("select built-in types");
+        assert_eq!(rows.len(), 4);
+
+        // Insert user-defined type
+        db.execute(
+            "INSERT INTO codex_types (id, project_id, slug, label, color, file_prefix, is_builtin, sort_order) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            &[
+                Value::String("custom-org".into()),
+                Value::String("default-project".into()),
+                Value::String("organization".into()),
+                Value::String("組織".into()),
+                Value::String("#FF0000".into()),
+                Value::String("org".into()),
+                Value::Number(0.into()),
+                Value::Number(serde_json::Number::from_f64(4.0).unwrap()),
+            ],
+            "run",
+        ).expect("insert custom type");
+
+        // Verify total count
+        let rows = db.execute(
+            "SELECT * FROM codex_types WHERE project_id = ?",
+            &[Value::String("default-project".into())],
+            "all",
+        ).expect("select all types");
+        assert_eq!(rows.len(), 5);
+
+        // Create codex entry with custom type
+        db.execute(
+            "INSERT INTO codex_entries (id, project_id, type, name, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+            &[
+                Value::String("ce-org".into()),
+                Value::String("default-project".into()),
+                Value::String("organization".into()),
+                Value::String("騎士団".into()),
+                Value::String("2025-01-01T00:00:00Z".into()),
+                Value::String("2025-01-01T00:00:00Z".into()),
+            ],
+            "run",
+        ).expect("entry with custom type should succeed");
+    }
+
+    // --- codex_tags CRUD ---
+
+    #[test]
+    fn test_codex_tags_crud() {
+        let db = test_db();
+
+        db.execute(
+            "INSERT INTO codex_tags (id, project_id, name, color) VALUES (?, ?, ?, ?)",
+            &[
+                Value::String("tag-crud".into()),
+                Value::String("default-project".into()),
+                Value::String("重要".into()),
+                Value::String("#FF0000".into()),
+            ],
+            "run",
+        ).expect("insert tag");
+
+        let rows = db.execute(
+            "SELECT * FROM codex_tags WHERE id = ?",
+            &[Value::String("tag-crud".into())],
+            "get",
+        ).expect("select tag");
+        assert_eq!(rows[0]["name"], Value::String("重要".into()));
+
+        // Delete
+        db.execute("DELETE FROM codex_tags WHERE id = ?", &[Value::String("tag-crud".into())], "run").expect("delete tag");
+        let rows = db.execute("SELECT * FROM codex_tags WHERE id = ?", &[Value::String("tag-crud".into())], "all").expect("select after delete");
+        assert_eq!(rows.len(), 0);
+    }
+
+    // --- context_mode CHECK constraint ---
+
+    #[test]
+    fn test_context_mode_rejects_invalid_value() {
+        let db = test_db();
+
+        let result = db.execute(
+            "INSERT INTO codex_entries (id, project_id, type, name, context_mode, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            &[
+                Value::String("ce-badcm".into()),
+                Value::String("default-project".into()),
+                Value::String("character".into()),
+                Value::String("テスト".into()),
+                Value::String("invalid_mode".into()),
+                Value::String("2025-01-01T00:00:00Z".into()),
+                Value::String("2025-01-01T00:00:00Z".into()),
+            ],
+            "run",
+        );
+        assert!(result.is_err(), "Should reject invalid context_mode");
     }
 }

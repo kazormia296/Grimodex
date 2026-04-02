@@ -169,6 +169,20 @@ describe("codexStore", () => {
         name: "アリス改",
       });
     });
+
+    it("updates contextMode via store", async () => {
+      const updated = { ...mockEntry, contextMode: "always" };
+      mockUpdateCodexEntry.mockResolvedValue(updated);
+      mockListCodexEntries.mockResolvedValue([updated]);
+
+      await useCodexStore
+        .getState()
+        .update("codex-1", { contextMode: "always" });
+
+      expect(mockUpdateCodexEntry).toHaveBeenCalledWith("codex-1", {
+        contextMode: "always",
+      });
+    });
   });
 
   describe("remove", () => {

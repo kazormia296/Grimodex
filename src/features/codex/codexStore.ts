@@ -33,7 +33,10 @@ interface CodexState {
   update: (
     id: string,
     data: Partial<
-      Pick<NewCodexEntry, "type" | "name" | "summary" | "tagsCache">
+      Pick<
+        NewCodexEntry,
+        "type" | "name" | "summary" | "tagsCache" | "contextMode"
+      >
     >,
   ) => Promise<void>;
   remove: (id: string) => Promise<void>;
