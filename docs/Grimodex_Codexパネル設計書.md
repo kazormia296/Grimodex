@@ -271,7 +271,16 @@ Codexパネルはプロジェクトの世界設定データベース。キャラ
 - Content内で検出されたCodexエントリは「リレーション提案」としてRelationsセクションに表示される（後述）
 - エディタ本文と同じくMarkdownで保存（`codex/{type_prefix}_{sanitized_name}_{short_id}.md`）
 - 自動保存（デバウンス2秒）
-- Attribution追跡あり（Chatから抽出されたcontentにはai markが付与済み）
+- **Attribution追跡**: エディタ本文と同じAuthorshipMark体系を適用する。Codexパネルのミニエディタとエディタタブの両方でAuthorship付与が機能する
+  - キーボード入力 → `{ source: 'human' }`
+  - Chatから「Codex」ボタンで抽出されたcontent → `{ source: 'ai', model, chatMessageId }`
+  - インラインAI（エディタタブ）でAccept → `{ source: 'ai', model }`
+  - AI自動要約でsummaryから展開されたcontent → `{ source: 'ai', model }`
+  - アプリ内ペースト（エディタ、Chat、他のCodex/Snippet等からコピー）→ 元テキストのAuthorshipMarkを継承（Editorパネル設計書「クリップボードのAuthorship伝搬」参照）
+  - 外部ペースト（AuthorshipMark情報なし）→ `{ source: 'unknown' }`
+  - `ai` マーク付きテキストの編集 → `ai` のまま維持（エディタ本文と同じルール）
+  - AuthorshipMarkのデータは `authorship_spans` テーブルに `codex_entry_id` を指定して永続化（統合DBスキーマ参照）
+  - AttributionHighlight（背景色ハイライト）はエディタタブ・ミニエディタの両方で表示可能（Attr表示トグル連動）
 
 ### Details セクション（カスタムディテール）
 

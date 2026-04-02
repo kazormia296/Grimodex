@@ -150,7 +150,7 @@ Bottom Dockに配置されるため横長のレイアウトを想定。スニペ
 | フィールド | 詳細 |
 |-----------|------|
 | Title | インライン編集。`Enter` で確定、`Escape` でキャンセル |
-| Content | TipTapミニエディタ。Markdown記法をリアルタイムにリッチテキストとしてレンダリング（太字、斜体、見出し、リスト、リンク対応）。Markdownファイルとして保存。自動保存（デバウンス2秒）。右上に「Open in Editor ↗」ボタン — クリックでエディタパネルにSnippetタブとして開き、インラインAIやChat連携が利用可能 |
+| Content | TipTapミニエディタ。Markdown記法をリアルタイムにリッチテキストとしてレンダリング（太字、斜体、見出し、リスト、リンク対応）。Markdownファイルとして保存。自動保存（デバウンス2秒）。右上に「Open in Editor ↗」ボタン — クリックでエディタパネルにSnippetタブとして開き、インラインAIやChat連携が利用可能。**Attribution追跡あり**（後述） |
 | Tags | ピル型。[+] で追加、×で削除。既存タグのオートコンプリート |
 | Source | `source_chat_message_id` がある場合、セッション名のリンク。クリックでChat Historyパネル経由で元セッションを開く |
 | Scene | `scene_id` がある場合、シーン名のリンク。クリックでEditorで開く |
@@ -160,6 +160,23 @@ Bottom Dockに配置されるため横長のレイアウトを想定。スニペ
 | [Collapse] | 展開を閉じてカード表示に戻る |
 
 展開中は他のカードとの間にスペースが開き、展開カードが視覚的に浮き上がる（背景色変更のみ、シャドウなし）。
+
+### Attribution追跡
+
+エディタ本文と同じAuthorshipMark体系をSnippet contentに適用する。ミニエディタとエディタタブの両方でAuthorship付与が機能する。
+
+**付与ルール**:
+- キーボード入力 → `{ source: 'human' }`
+- Chatから「Snippet」ボタンで保存されたcontent → `{ source: 'ai', model, chatMessageId }`
+- Editorから「Save as Snippet」で保存されたcontent → 元テキストのAuthorshipMarkを継承
+- インラインAI（エディタタブ）でAccept → `{ source: 'ai', model }`
+- アプリ内ペースト（エディタ、Chat、他のCodex/Snippet等からコピー）→ 元テキストのAuthorshipMarkを継承（Editorパネル設計書「クリップボードのAuthorship伝搬」参照）
+- 外部ペースト（AuthorshipMark情報なし）→ `{ source: 'unknown' }`
+- `ai` マーク付きテキストの編集 → `ai` のまま維持
+
+**永続化**: `authorship_spans` テーブルに `snippet_id` を指定して保存（統合DBスキーマ参照）
+
+**表示**: AttributionHighlight（背景色ハイライト）はエディタタブ・ミニエディタの両方で表示可能（Attr表示トグル連動）
 
 ---
 

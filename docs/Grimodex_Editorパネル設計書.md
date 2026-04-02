@@ -273,12 +273,26 @@ Mark.create({
 - インラインAIでAccept → `{ source: 'ai', model }`
 - SnippetのD&D挿入 → 元Snippetのsourceを継承
 - `ai` マーク付きテキストの編集 → **`ai` のまま変わらない**（人間が手を入れても元のsourceを維持）
-- 外部ペースト、マイグレーション前のテキスト、AuthorshipMark未付与のテキスト → `{ source: 'unknown' }`
+- **アプリ内ペースト** → 元テキストのAuthorshipMarkを継承（後述「クリップボードのAuthorship伝搬」参照）
+- **外部ペースト**（AuthorshipMark情報なし）、マイグレーション前のテキスト、AuthorshipMark未付与のテキスト → `{ source: 'unknown' }`
 
 3つのsourceの定義:
 - `human`: ユーザーがキーボードで直接入力したテキスト
 - `ai`: AIが生成したテキスト（人間が編集しても変わらない）
 - `unknown`: 出自が追跡できないテキスト（外部ペースト、既存プロジェクトのインポート、マイグレーション前のデータ等）
+
+#### クリップボードのAuthorship伝搬
+
+アプリ内のテキストコピー時にAuthorshipMarkをクリップボードに保持し、ペースト時に復元する。
+
+**コピー元**: エディタ本文（Scene/Note/Codex/Snippet）、AIチャットメッセージ、Codexミニエディタ、Snippetミニエディタ
+
+**仕組み**:
+- コピー時にTipTapのクリップボードシリアライザを拡張し、通常の `text/plain` と `text/html` に加えてカスタムMIMEタイプ `application/x-grimodex-authorship` にAuthorshipMarkのJSONを付与する
+- ペースト時に `application/x-grimodex-authorship` が存在すればAuthorshipMarkを復元し、存在しなければ `{ source: 'unknown' }` を付与する
+- AIチャットメッセージのコピー（「Copy」ボタンまたはテキスト選択コピー）時はメッセージ全体に `{ source: 'ai', model, chatMessageId }` を付与する
+
+**例**: エディタで「人間が書いた文」と「AIが生成した文」を含むテキストをコピーし、別のシーンにペーストした場合、各範囲の `source` がそれぞれ `human` と `ai` として正しく復元される
 
 Markdownエクスポート時にはAuthorshipMarkを除外し、クリーンなMarkdownを出力する。
 

@@ -162,7 +162,7 @@ Codex + Snippetのピル合計が **6個を超えた場合**、個別ピル表�
 | Insert | メッセージ全文（またはテキスト選択範囲）をEditorのカーソル位置に挿入。AuthorshipMark `{ source: 'ai', model, chatMessageId }` を付与。挿入後、エディタで一時的にハイライト表示（2秒でフェード）。**ホバー時**: Editorのカーソル位置にゴーストテキスト（挿入予定のテキスト、薄い半透明表示）を表示し、挿入位置・内容をプレビュー。マウスアウトでゴーストテキスト消去 |
 | Codex | Codexエントリを即時作成（後述） |
 | Snippet | メッセージ全文（またはテキスト選択範囲）をSnippetとして保存 |
-| Copy | メッセージ全文をクリップボードにコピー |
+| Copy | メッセージ全文をクリップボードにコピー。**Authorship伝搬**: `text/plain` と `text/html` に加え、カスタムMIMEタイプ `application/x-grimodex-authorship` にAIメッセージとしてのAuthorship情報（`{ source: 'ai', model, chatMessageId }`）を付与する。ペースト先のTipTapエディタ（本文、Codex、Snippet）でAuthorshipMarkが復元される |
 | ⋮ | オーバーフローメニュー: Regenerate / Edit prompt / Delete |
 
 ### メッセージ内テキスト選択
@@ -173,7 +173,7 @@ AIメッセージ内のテキストを選択すると、選択範囲の近くに
 [Insert selection] [Codex] [Snippet] [Copy]
 ```
 
-これにより、メッセージ全体ではなく一部分だけを挿入・抽出できる。
+これにより、メッセージ全体ではなく一部分だけを挿入・抽出できる。テキスト選択コピー（`Ctrl+C`）時も同様に `application/x-grimodex-authorship` を付与する。
 
 ### Codex抽出（即時作成）
 
@@ -473,7 +473,7 @@ function buildContext(sceneId: string, session: ChatSession): SystemPrompt {
 | メニュー項目 | 動作 |
 |-------------|------|
 | Edit | メッセージを入力エリアに戻し再編集 |
-| Copy | メッセージをクリップボードにコピー |
+| Copy | メッセージをクリップボードにコピー。Authorship情報 `{ source: 'human' }` を `application/x-grimodex-authorship` に付与 |
 | Delete | このメッセージと以降の応答を削除 |
 
 ### AIメッセージの右クリック
@@ -483,7 +483,7 @@ function buildContext(sceneId: string, session: ChatSession): SystemPrompt {
 | Insert to editor | メッセージ全文をエディタに挿入 |
 | Add to Codex | Codexエントリを即時作成 |
 | Save as Snippet | Snippetとして保存 |
-| Copy | クリップボードにコピー |
+| Copy | クリップボードにコピー。Authorship情報 `{ source: 'ai', model, chatMessageId }` を `application/x-grimodex-authorship` に付与 |
 | --- | |
 | Regenerate | 同じプロンプトで再生成 |
 | Delete | このメッセージを削除 |
