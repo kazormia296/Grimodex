@@ -22,6 +22,8 @@ describe("searchCodexEntries", () => {
     type: "character",
     name: "山田太郎",
     summary: "主人公キャラ",
+    content: "{}",
+    icon: null,
     aliases: "[]",
     excludedAliases: "[]",
     tagsCache: "主人公",

@@ -14,6 +14,9 @@ import {
   chatSessions,
   chatMessages,
   authorshipSpans,
+  contentVersions,
+  projectSnapshots,
+  projectSnapshotEntries,
   settings,
   codexRelationDismissed,
 } from "./schema";
@@ -83,8 +86,10 @@ describe("treeNodes schema", () => {
     expect(columns).toContain("parentId");
     expect(columns).toContain("nodeType");
     expect(columns).toContain("title");
+    expect(columns).toContain("synopsis");
     expect(columns).toContain("sortOrder");
     expect(columns).toContain("status");
+    expect(columns).toContain("content");
     expect(columns).toContain("createdAt");
     expect(columns).toContain("updatedAt");
   });
@@ -206,6 +211,8 @@ describe("codexEntries schema", () => {
     expect(columns).toContain("aliases");
     expect(columns).toContain("excludedAliases");
     expect(columns).toContain("summary");
+    expect(columns).toContain("content");
+    expect(columns).toContain("icon");
     expect(columns).toContain("tagsCache");
     expect(columns).toContain("contextMode");
     expect(columns).toContain("sourceChatMessageId");
@@ -531,6 +538,8 @@ describe("authorshipSpans schema", () => {
     const columns = Object.keys(authorshipSpans);
     expect(columns).toContain("id");
     expect(columns).toContain("nodeId");
+    expect(columns).toContain("codexEntryId");
+    expect(columns).toContain("snippetId");
     expect(columns).toContain("fromPos");
     expect(columns).toContain("toPos");
     expect(columns).toContain("source");
@@ -539,7 +548,7 @@ describe("authorshipSpans schema", () => {
     expect(columns).toContain("chatMsgId");
   });
 
-  it("generates valid insert query", async () => {
+  it("generates valid insert query for scene span", async () => {
     const executedQueries: { sql: string; params: unknown[] }[] = [];
     const db = drizzle<typeof schema>(
       async (sql, params, _method) => {
@@ -560,6 +569,28 @@ describe("authorshipSpans schema", () => {
     expect(executedQueries[0].sql).toContain("insert");
     expect(executedQueries[0].sql).toContain("authorship_spans");
     expect(executedQueries[0].params).toContain("human");
+  });
+
+  it("generates valid insert query for codex span", async () => {
+    const executedQueries: { sql: string; params: unknown[] }[] = [];
+    const db = drizzle<typeof schema>(
+      async (sql, params, _method) => {
+        executedQueries.push({ sql, params });
+        return { rows: [] };
+      },
+      { schema },
+    );
+
+    await db.insert(authorshipSpans).values({
+      id: "span-002",
+      codexEntryId: "codex-001",
+      fromPos: 10,
+      toPos: 50,
+      source: "ai",
+      model: "claude-sonnet",
+    });
+    expect(executedQueries[0].params).toContain("codex-001");
+    expect(executedQueries[0].params).toContain("ai");
   });
 });
 
@@ -602,7 +633,6 @@ describe("codexTypes schema", () => {
     expect(columns).toContain("label");
     expect(columns).toContain("color");
     expect(columns).toContain("icon");
-    expect(columns).toContain("filePrefix");
     expect(columns).toContain("isBuiltin");
     expect(columns).toContain("sortOrder");
     expect(columns).toContain("createdAt");
@@ -624,7 +654,6 @@ describe("codexTypes schema", () => {
       slug: "faction",
       label: "勢力",
       color: "#ff6b6b",
-      filePrefix: "fact",
       createdAt: "2025-01-01T00:00:00Z",
     });
     expect(executedQueries).toHaveLength(1);
@@ -785,6 +814,76 @@ describe("codexDetailValues schema", () => {
   });
 });
 
+describe("contentVersions schema", () => {
+  it("has the correct table name", () => {
+    expect(getTableName(contentVersions)).toBe("content_versions");
+  });
+
+  it("has all required columns", () => {
+    const columns = Object.keys(contentVersions);
+    expect(columns).toContain("id");
+    expect(columns).toContain("entityType");
+    expect(columns).toContain("entityId");
+    expect(columns).toContain("content");
+    expect(columns).toContain("versionNumber");
+    expect(columns).toContain("snapshotType");
+    expect(columns).toContain("createdAt");
+  });
+
+  it("generates valid insert query", async () => {
+    const executedQueries: { sql: string; params: unknown[] }[] = [];
+    const db = drizzle<typeof schema>(
+      async (sql, params, _method) => {
+        executedQueries.push({ sql, params });
+        return { rows: [] };
+      },
+      { schema },
+    );
+
+    await db.insert(contentVersions).values({
+      id: "cv-001",
+      entityType: "scene",
+      entityId: "node-001",
+      content: "{}",
+      versionNumber: 1,
+      snapshotType: "auto",
+      createdAt: "2025-01-01T00:00:00Z",
+    });
+    expect(executedQueries).toHaveLength(1);
+    expect(executedQueries[0].sql).toContain("content_versions");
+    expect(executedQueries[0].params).toContain("scene");
+  });
+});
+
+describe("projectSnapshots schema", () => {
+  it("has the correct table name", () => {
+    expect(getTableName(projectSnapshots)).toBe("project_snapshots");
+  });
+
+  it("has all required columns", () => {
+    const columns = Object.keys(projectSnapshots);
+    expect(columns).toContain("id");
+    expect(columns).toContain("projectId");
+    expect(columns).toContain("name");
+    expect(columns).toContain("description");
+    expect(columns).toContain("createdAt");
+  });
+});
+
+describe("projectSnapshotEntries schema", () => {
+  it("has the correct table name", () => {
+    expect(getTableName(projectSnapshotEntries)).toBe(
+      "project_snapshot_entries",
+    );
+  });
+
+  it("has all required columns", () => {
+    const columns = Object.keys(projectSnapshotEntries);
+    expect(columns).toContain("snapshotId");
+    expect(columns).toContain("versionId");
+  });
+});
+
 describe("cross-table relationships", () => {
   it("all tables are accessible from the schema", () => {
     const db = createTestDb();
@@ -803,6 +902,11 @@ describe("cross-table relationships", () => {
     expect(getTableName(chatSessions)).toBe("chat_sessions");
     expect(getTableName(chatMessages)).toBe("chat_messages");
     expect(getTableName(authorshipSpans)).toBe("authorship_spans");
+    expect(getTableName(contentVersions)).toBe("content_versions");
+    expect(getTableName(projectSnapshots)).toBe("project_snapshots");
+    expect(getTableName(projectSnapshotEntries)).toBe(
+      "project_snapshot_entries",
+    );
     expect(getTableName(settings)).toBe("settings");
   });
 });

@@ -3,6 +3,7 @@ import {
   text,
   integer,
   real,
+  blob,
   primaryKey,
 } from "drizzle-orm/sqlite-core";
 
@@ -34,8 +35,10 @@ export const treeNodes = sqliteTable("tree_nodes", {
   }),
   nodeType: text("node_type").notNull(), // 'part' | 'chapter' | 'scene' | 'folder' | 'note'
   title: text("title").notNull().default("Untitled"),
+  synopsis: text("synopsis"), // Scene only: plain text summary for storySoFar context injection
   sortOrder: real("sort_order").notNull().default(0.0),
   status: text("status").default("outline"), // 'outline' | 'draft' | 'complete' | 'revision' | 'final'
+  content: text("content").notNull().default("{}"), // Scene/Note body (ProseMirror JSON)
   createdAt: text("created_at")
     .notNull()
     .$defaultFn(() => new Date().toISOString()),
@@ -53,7 +56,6 @@ export const codexTypes = sqliteTable("codex_types", {
   label: text("label").notNull(),
   color: text("color").notNull().default("#888888"),
   icon: text("icon"),
-  filePrefix: text("file_prefix").notNull(),
   isBuiltin: integer("is_builtin").notNull().default(0),
   sortOrder: real("sort_order").notNull().default(0.0),
   createdAt: text("created_at")
@@ -70,14 +72,18 @@ export const codexEntries = sqliteTable("codex_entries", {
   parentId: text("parent_id").references((): any => codexEntries.id, {
     onDelete: "set null",
   }),
-  type: text("type").notNull().default("character"), // FK (project_id, type) → codex_types(project_id, slug)
+  type: text("type").notNull().default("character"), // FK (project_id, type) → codex_types(project_id, slug) validated at app layer
   name: text("name").notNull().default("Untitled"),
   aliases: text("aliases"), // JSON string[]
   excludedAliases: text("excluded_aliases"), // JSON string[]
   summary: text("summary"),
+  content: text("content").notNull().default("{}"), // body (ProseMirror JSON)
+  icon: blob("icon"), // 128×128 WebP icon image (nullable)
   tagsCache: text("tags_cache"), // FTS5 denormalized cache (JSON string[])
   contextMode: text("context_mode").notNull().default("mentioned"), // 'always' | 'mentioned' | 'suppress' | 'hidden'
-  sourceChatMessageId: text("source_chat_message_id"),
+  sourceChatMessageId: text("source_chat_message_id").references(
+    () => chatMessages.id,
+  ),
   createdAt: text("created_at")
     .notNull()
     .$defaultFn(() => new Date().toISOString()),
@@ -130,7 +136,7 @@ export const codexDetailDefinitions = sqliteTable("codex_detail_definitions", {
   projectId: text("project_id")
     .notNull()
     .references(() => projects.id, { onDelete: "cascade" }),
-  typeSlug: text("type_slug").notNull(), // FK (project_id, type_slug) → codex_types(project_id, slug)
+  typeSlug: text("type_slug").notNull(), // logical ref to codex_types.slug
   name: text("name").notNull(),
   fieldType: text("field_type").notNull().default("text"), // CHECK('text' | 'dropdown' | 'codex_reference')
   fieldConfig: text("field_config"), // JSON
@@ -158,12 +164,14 @@ export const snippets = sqliteTable("snippets", {
     .notNull()
     .references(() => projects.id, { onDelete: "cascade" }),
   title: text("title").notNull().default("Untitled"),
-  content: text("content").notNull().default(""),
+  content: text("content").notNull().default("{}"), // ProseMirror JSON
   tags: text("tags"), // JSON string[]
   sceneId: text("scene_id").references(() => treeNodes.id, {
     onDelete: "set null",
   }),
-  sourceChatMessageId: text("source_chat_message_id"),
+  sourceChatMessageId: text("source_chat_message_id").references(
+    () => chatMessages.id,
+  ),
   usageCount: integer("usage_count").notNull().default(0),
   createdAt: text("created_at")
     .notNull()
@@ -178,13 +186,15 @@ export const chatSessions = sqliteTable("chat_sessions", {
   projectId: text("project_id")
     .notNull()
     .references(() => projects.id, { onDelete: "cascade" }),
-  nodeId: text("node_id"),
+  nodeId: text("node_id").references(() => treeNodes.id, {
+    onDelete: "set null",
+  }),
   title: text("title").notNull().default("New session"),
   titleManual: integer("title_manual").notNull().default(0),
   model: text("model")
     .notNull()
     .default("openrouter/anthropic/claude-sonnet-4.6"),
-  pinnedCodex: text("pinned_codex"), // JSON string[]
+  pinnedCodex: text("pinned_codex"), // JSON {id, source}[]
   createdAt: text("created_at")
     .notNull()
     .$defaultFn(() => new Date().toISOString()),
@@ -212,16 +222,60 @@ export const chatMessages = sqliteTable("chat_messages", {
 
 export const authorshipSpans = sqliteTable("authorship_spans", {
   id: text("id").primaryKey(),
-  nodeId: text("node_id")
-    .notNull()
-    .references(() => treeNodes.id, { onDelete: "cascade" }),
+  nodeId: text("node_id").references(() => treeNodes.id, {
+    onDelete: "cascade",
+  }), // nullable: Scene/Note
+  codexEntryId: text("codex_entry_id").references(() => codexEntries.id, {
+    onDelete: "cascade",
+  }), // nullable: Codex entry
+  snippetId: text("snippet_id").references(() => snippets.id, {
+    onDelete: "cascade",
+  }), // nullable: Snippet
   fromPos: integer("from_pos").notNull(),
   toPos: integer("to_pos").notNull(),
   source: text("source").notNull(), // 'human' | 'ai' | 'unknown'
   model: text("model"),
   timestamp: text("timestamp"),
   chatMsgId: text("chat_msg_id"),
+  // CHECK: exactly one of nodeId/codexEntryId/snippetId must be non-null (enforced in SQL)
 });
+
+export const contentVersions = sqliteTable("content_versions", {
+  id: text("id").primaryKey(),
+  entityType: text("entity_type").notNull(), // 'scene' | 'note' | 'codex_entry' | 'snippet'
+  entityId: text("entity_id").notNull(),
+  content: text("content").notNull(),
+  versionNumber: integer("version_number").notNull(),
+  snapshotType: text("snapshot_type").notNull().default("auto"), // 'auto' | 'manual'
+  createdAt: text("created_at")
+    .notNull()
+    .$defaultFn(() => new Date().toISOString()),
+});
+
+export const projectSnapshots = sqliteTable("project_snapshots", {
+  id: text("id").primaryKey(),
+  projectId: text("project_id")
+    .notNull()
+    .references(() => projects.id, { onDelete: "cascade" }),
+  name: text("name").notNull(),
+  description: text("description"),
+  createdAt: text("created_at")
+    .notNull()
+    .$defaultFn(() => new Date().toISOString()),
+});
+
+export const projectSnapshotEntries = sqliteTable(
+  "project_snapshot_entries",
+  {
+    snapshotId: text("snapshot_id")
+      .notNull()
+      .references(() => projectSnapshots.id, { onDelete: "cascade" }),
+    versionId: text("version_id")
+      .notNull()
+      .references(() => contentVersions.id),
+  },
+  (table) => [primaryKey({ columns: [table.snapshotId, table.versionId] })],
+);
 
 export const settings = sqliteTable("settings", {
   key: text("key").primaryKey(),
@@ -241,3 +295,7 @@ export type NewCodexDetailDefinition =
 export type CodexDetailValue = typeof codexDetailValues.$inferSelect;
 export type NewCodexDetailValue = typeof codexDetailValues.$inferInsert;
 export type CodexContextMode = "always" | "mentioned" | "suppress" | "hidden";
+export type ContentVersion = typeof contentVersions.$inferSelect;
+export type NewContentVersion = typeof contentVersions.$inferInsert;
+export type ProjectSnapshot = typeof projectSnapshots.$inferSelect;
+export type NewProjectSnapshot = typeof projectSnapshots.$inferInsert;

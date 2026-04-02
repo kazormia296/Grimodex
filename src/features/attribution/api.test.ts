@@ -18,6 +18,8 @@ describe("spansToMarkData", () => {
       {
         id: "span-1",
         nodeId: "node-1",
+        codexEntryId: null,
+        snippetId: null,
         fromPos: 0,
         toPos: 10,
         source: "ai",
@@ -28,6 +30,8 @@ describe("spansToMarkData", () => {
       {
         id: "span-2",
         nodeId: "node-1",
+        codexEntryId: null,
+        snippetId: null,
         fromPos: 10,
         toPos: 20,
         source: "human",

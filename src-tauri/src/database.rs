@@ -38,11 +38,13 @@ impl Database {
             CREATE TABLE IF NOT EXISTS tree_nodes (
                 id          TEXT PRIMARY KEY,
                 project_id  TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-                parent_id   TEXT REFERENCES tree_nodes(id) ON DELETE CASCADE,
+                parent_id   TEXT REFERENCES tree_nodes(id) ON DELETE SET NULL,
                 node_type   TEXT NOT NULL,
                 title       TEXT NOT NULL DEFAULT 'Untitled',
+                synopsis    TEXT,
                 sort_order  REAL NOT NULL DEFAULT 0.0,
                 status      TEXT DEFAULT 'outline',
+                content     TEXT NOT NULL DEFAULT '{}',
                 created_at  TEXT NOT NULL DEFAULT (datetime('now')),
                 updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
             );
@@ -56,12 +58,10 @@ impl Database {
                 label       TEXT NOT NULL,
                 color       TEXT NOT NULL DEFAULT '#888888',
                 icon        TEXT,
-                file_prefix TEXT NOT NULL,
                 is_builtin  INTEGER NOT NULL DEFAULT 0,
                 sort_order  REAL NOT NULL DEFAULT 0.0,
                 created_at  TEXT NOT NULL DEFAULT (datetime('now')),
-                UNIQUE(project_id, slug),
-                UNIQUE(project_id, file_prefix)
+                UNIQUE(project_id, slug)
             );
             CREATE INDEX IF NOT EXISTS idx_codex_types_project
                 ON codex_types(project_id);
@@ -75,13 +75,14 @@ impl Database {
                 aliases                 TEXT,
                 excluded_aliases        TEXT,
                 summary                 TEXT,
+                content                 TEXT NOT NULL DEFAULT '{}',
+                icon                    BLOB,
                 tags_cache              TEXT,
                 context_mode            TEXT NOT NULL DEFAULT 'mentioned'
                                           CHECK(context_mode IN ('always', 'mentioned', 'suppress', 'hidden')),
-                source_chat_message_id  TEXT,
+                source_chat_message_id  TEXT REFERENCES chat_messages(id),
                 created_at              TEXT NOT NULL DEFAULT (datetime('now')),
-                updated_at              TEXT NOT NULL DEFAULT (datetime('now')),
-                FOREIGN KEY (project_id, type) REFERENCES codex_types(project_id, slug)
+                updated_at              TEXT NOT NULL DEFAULT (datetime('now'))
             );
             CREATE INDEX IF NOT EXISTS idx_codex_project
                 ON codex_entries(project_id, type);
@@ -127,8 +128,7 @@ impl Database {
                 sort_order        REAL NOT NULL DEFAULT 0.0,
                 include_in_context INTEGER NOT NULL DEFAULT 0,
                 created_at        TEXT NOT NULL DEFAULT (datetime('now')),
-                UNIQUE(project_id, type_slug, name),
-                FOREIGN KEY (project_id, type_slug) REFERENCES codex_types(project_id, slug)
+                UNIQUE(project_id, type_slug, name)
             );
             CREATE INDEX IF NOT EXISTS idx_codex_detail_defs
                 ON codex_detail_definitions(project_id, type_slug, sort_order);
@@ -149,10 +149,10 @@ impl Database {
                 id                      TEXT PRIMARY KEY,
                 project_id              TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
                 title                   TEXT NOT NULL DEFAULT 'Untitled',
-                content                 TEXT NOT NULL DEFAULT '',
+                content                 TEXT NOT NULL DEFAULT '{}',
                 tags                    TEXT,
                 scene_id                TEXT REFERENCES tree_nodes(id) ON DELETE SET NULL,
-                source_chat_message_id  TEXT,
+                source_chat_message_id  TEXT REFERENCES chat_messages(id),
                 usage_count             INTEGER NOT NULL DEFAULT 0,
                 created_at              TEXT NOT NULL DEFAULT (datetime('now')),
                 updated_at              TEXT NOT NULL DEFAULT (datetime('now'))
@@ -190,17 +190,57 @@ impl Database {
                 ON chat_messages(session_id, created_at);
 
             CREATE TABLE IF NOT EXISTS authorship_spans (
-                id          TEXT PRIMARY KEY,
-                node_id     TEXT NOT NULL REFERENCES tree_nodes(id) ON DELETE CASCADE,
-                from_pos    INTEGER NOT NULL,
-                to_pos      INTEGER NOT NULL,
-                source      TEXT NOT NULL CHECK(source IN ('human','ai','unknown')),
-                model       TEXT,
-                timestamp   TEXT,
-                chat_msg_id TEXT
+                id              TEXT PRIMARY KEY,
+                node_id         TEXT REFERENCES tree_nodes(id) ON DELETE CASCADE,
+                codex_entry_id  TEXT REFERENCES codex_entries(id) ON DELETE CASCADE,
+                snippet_id      TEXT REFERENCES snippets(id) ON DELETE CASCADE,
+                from_pos        INTEGER NOT NULL,
+                to_pos          INTEGER NOT NULL,
+                source          TEXT NOT NULL CHECK(source IN ('human','ai','unknown')),
+                model           TEXT,
+                timestamp       TEXT,
+                chat_msg_id     TEXT,
+                CHECK (
+                    (node_id IS NOT NULL AND codex_entry_id IS NULL AND snippet_id IS NULL) OR
+                    (node_id IS NULL AND codex_entry_id IS NOT NULL AND snippet_id IS NULL) OR
+                    (node_id IS NULL AND codex_entry_id IS NULL AND snippet_id IS NOT NULL)
+                )
             );
             CREATE INDEX IF NOT EXISTS idx_authorship_node
                 ON authorship_spans(node_id, source);
+            CREATE INDEX IF NOT EXISTS idx_authorship_codex
+                ON authorship_spans(codex_entry_id, source);
+            CREATE INDEX IF NOT EXISTS idx_authorship_snippet
+                ON authorship_spans(snippet_id, source);
+
+            CREATE TABLE IF NOT EXISTS content_versions (
+                id             TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
+                entity_type    TEXT NOT NULL CHECK(entity_type IN ('scene', 'note', 'codex_entry', 'snippet')),
+                entity_id      TEXT NOT NULL,
+                content        TEXT NOT NULL,
+                version_number INTEGER NOT NULL,
+                snapshot_type  TEXT NOT NULL DEFAULT 'auto' CHECK(snapshot_type IN ('auto', 'manual')),
+                created_at     TEXT NOT NULL DEFAULT (datetime('now')),
+                UNIQUE(entity_type, entity_id, version_number)
+            );
+            CREATE INDEX IF NOT EXISTS idx_cv_entity
+                ON content_versions(entity_type, entity_id, version_number DESC);
+
+            CREATE TABLE IF NOT EXISTS project_snapshots (
+                id          TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
+                project_id  TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                name        TEXT NOT NULL,
+                description TEXT,
+                created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+            CREATE INDEX IF NOT EXISTS idx_project_snapshots
+                ON project_snapshots(project_id, created_at DESC);
+
+            CREATE TABLE IF NOT EXISTS project_snapshot_entries (
+                snapshot_id TEXT NOT NULL REFERENCES project_snapshots(id) ON DELETE CASCADE,
+                version_id  TEXT NOT NULL REFERENCES content_versions(id),
+                PRIMARY KEY (snapshot_id, version_id)
+            );
 
             CREATE TABLE IF NOT EXISTS settings (
                 key   TEXT PRIMARY KEY,
@@ -296,14 +336,14 @@ impl Database {
             -- Seed built-in codex types for every new project
             CREATE TRIGGER IF NOT EXISTS seed_builtin_codex_types
             AFTER INSERT ON projects BEGIN
-                INSERT OR IGNORE INTO codex_types (id, project_id, slug, label, color, file_prefix, is_builtin, sort_order, created_at)
-                  VALUES (new.id || '-character', new.id, 'character', 'キャラクター', '#534AB7', 'char', 1, 0.0, datetime('now'));
-                INSERT OR IGNORE INTO codex_types (id, project_id, slug, label, color, file_prefix, is_builtin, sort_order, created_at)
-                  VALUES (new.id || '-location', new.id, 'location', '場所', '#0F6E56', 'loc', 1, 1.0, datetime('now'));
-                INSERT OR IGNORE INTO codex_types (id, project_id, slug, label, color, file_prefix, is_builtin, sort_order, created_at)
-                  VALUES (new.id || '-item', new.id, 'item', 'アイテム', '#BA7517', 'item', 1, 2.0, datetime('now'));
-                INSERT OR IGNORE INTO codex_types (id, project_id, slug, label, color, file_prefix, is_builtin, sort_order, created_at)
-                  VALUES (new.id || '-lore', new.id, 'lore', '伝承', '#993C1D', 'lore', 1, 3.0, datetime('now'));
+                INSERT OR IGNORE INTO codex_types (id, project_id, slug, label, color, is_builtin, sort_order, created_at)
+                  VALUES (new.id || '-character', new.id, 'character', 'キャラクター', '#534AB7', 1, 0.0, datetime('now'));
+                INSERT OR IGNORE INTO codex_types (id, project_id, slug, label, color, is_builtin, sort_order, created_at)
+                  VALUES (new.id || '-location', new.id, 'location', '場所', '#0F6E56', 1, 1.0, datetime('now'));
+                INSERT OR IGNORE INTO codex_types (id, project_id, slug, label, color, is_builtin, sort_order, created_at)
+                  VALUES (new.id || '-item', new.id, 'item', 'アイテム', '#BA7517', 1, 2.0, datetime('now'));
+                INSERT OR IGNORE INTO codex_types (id, project_id, slug, label, color, is_builtin, sort_order, created_at)
+                  VALUES (new.id || '-lore', new.id, 'lore', '伝承', '#993C1D', 1, 3.0, datetime('now'));
             END;
 
             -- Seed default project + chapter node
@@ -1306,12 +1346,15 @@ mod tests {
     fn test_integrity_check_detects_and_repairs_orphans() {
         let db = test_db();
 
-        // Insert codex with non-existent source_chat_message_id
+        // source_chat_message_id now has a FK constraint; temporarily disable to simulate
+        // corrupted/migrated data that integrity_check is designed to catch
+        db.execute("PRAGMA foreign_keys=OFF", &[], "run").expect("disable fk");
         db.execute(
             "INSERT INTO codex_entries (id, project_id, type, name, source_chat_message_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, datetime('now'), datetime('now'))",
             &[Value::String("cx-orphan".into()), Value::String("default-project".into()), Value::String("character".into()), Value::String("孤立テスト".into()), Value::String("nonexistent".into())],
             "run",
-        ).expect("insert");
+        ).expect("insert orphan");
+        db.execute("PRAGMA foreign_keys=ON", &[], "run").expect("enable fk");
 
         let report = db.integrity_check().expect("check");
         assert_eq!(report["orphanedCodexSources"], Value::Number(1.into()));
@@ -1478,13 +1521,15 @@ mod tests {
     }
 
     #[test]
-    fn test_codex_detail_definitions_rejects_invalid_type_slug() {
+    fn test_codex_detail_definitions_allows_any_type_slug() {
+        // Per schema spec: type_slug is a logical reference to codex_types.slug (no FK).
+        // Validation is enforced at the application layer, not the DB layer.
         let db = test_db();
 
         let result = db.execute(
             "INSERT INTO codex_detail_definitions (id, project_id, type_slug, name, field_type, sort_order) VALUES (?, ?, ?, ?, ?, ?)",
             &[
-                Value::String("def-bad".into()),
+                Value::String("def-custom".into()),
                 Value::String("default-project".into()),
                 Value::String("nonexistent-type".into()),
                 Value::String("テスト".into()),
@@ -1493,19 +1538,19 @@ mod tests {
             ],
             "run",
         );
-        assert!(result.is_err(), "Should reject definition with nonexistent type_slug");
+        assert!(result.is_ok(), "DB should allow any type_slug; app layer validates");
     }
 
-    // --- BUG 2: codex_entries.type FK ---
-
     #[test]
-    fn test_codex_entries_rejects_invalid_type() {
+    fn test_codex_entries_allows_any_type() {
+        // Per schema spec: type is a logical reference to codex_types.slug (no FK).
+        // Validation is enforced at the application layer, not the DB layer.
         let db = test_db();
 
         let result = db.execute(
             "INSERT INTO codex_entries (id, project_id, type, name, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
             &[
-                Value::String("ce-bad".into()),
+                Value::String("ce-custom".into()),
                 Value::String("default-project".into()),
                 Value::String("nonexistent-type".into()),
                 Value::String("テスト".into()),
@@ -1514,7 +1559,7 @@ mod tests {
             ],
             "run",
         );
-        assert!(result.is_err(), "Should reject codex entry with nonexistent type slug");
+        assert!(result.is_ok(), "DB should allow any type; app layer validates");
     }
 
     // --- BUG 3: field_type CHECK constraint ---
@@ -1704,14 +1749,13 @@ mod tests {
 
         // Insert user-defined type
         db.execute(
-            "INSERT INTO codex_types (id, project_id, slug, label, color, file_prefix, is_builtin, sort_order) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO codex_types (id, project_id, slug, label, color, is_builtin, sort_order) VALUES (?, ?, ?, ?, ?, ?, ?)",
             &[
                 Value::String("custom-org".into()),
                 Value::String("default-project".into()),
                 Value::String("organization".into()),
                 Value::String("組織".into()),
                 Value::String("#FF0000".into()),
-                Value::String("org".into()),
                 Value::Number(0.into()),
                 Value::Number(serde_json::Number::from_f64(4.0).unwrap()),
             ],
