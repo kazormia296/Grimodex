@@ -294,6 +294,16 @@ Mark.create({
 
 **例**: エディタで「人間が書いた文」と「AIが生成した文」を含むテキストをコピーし、別のシーンにペーストした場合、各範囲の `source` がそれぞれ `human` と `ai` として正しく復元される
 
+#### AuthorshipMark のスパン操作ルール
+
+以下はいずれもTipTap/ProseMirrorの組み込み動作であり、カスタム実装は不要。本セクションは動作の明示的な文書化を目的とする。
+
+**挿入（Split）:** 既存のAuthorshipMarkスパン内にテキストを挿入した場合、挿入テキストには入力元に応じた新しいマークが付与される（`inclusive: false` 設定による）。既存スパンは挿入位置で2つに分割され、それぞれ元のマーク属性を維持する。
+
+**マージ（Merge）:** 同一の `source`・`model`・`timestamp` 属性を持つ隣接AuthorshipMarkスパンは、ProseMirrorが自動的にマージする（Mark normalization）。属性が1つでも異なる場合はマージされない。
+
+**削除（Delete）:** スパンの一部を削除した場合、残存部分は元のマーク属性を維持する。スパン全体が削除された場合、マークも消滅する。
+
 Markdownエクスポート時には `tiptap-markdown` を使用し、AuthorshipMarkを除外したクリーンなMarkdownを出力する。
 
 #### Pure Decorations（文書構造に影響しない装飾）
@@ -825,6 +835,14 @@ Acceptした直後に再度 `/` や `Ctrl+Shift+Space` を押せば、前の生�
 - TipTapの組み込みHistory拡張を使用
 - Undo/Redoはメモリ内のみ（保存済みのDBレコードには影響しない）
 - エディタを閉じるとUndoスタックは消失
+
+#### AuthorshipMark と Undo/Redo の相互作用
+
+AuthorshipMarkはProseMirror/TipTapのMark機構によりドキュメント状態に埋め込まれている。TipTapのHistory拡張（ProseMirrorのhistoryプラグイン）はMarkを含むドキュメント全体をUndoスタックに記録するため、**Undo/Redo時にAuthorshipMarkは自動的に正しく復元される**。追加のAuthorship同期処理は不要。
+
+例:
+- AI生成テキストをAccept後にUndo → テキストとともに `{source: 'ai'}` マークも除去される
+- Redo → テキストとマークが復元される
 
 ---
 

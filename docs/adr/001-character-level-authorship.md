@@ -132,3 +132,9 @@ Markdownエクスポート時にはAuthorshipMarkを除外し、クリーンなM
 - **Codexパネル設計書**: Codex contentのAttribution追跡
 - **Snippetsパネル設計書**: Snippet contentのAttribution追跡
 - **統合DBスキーマ**: `authorship_spans` テーブル定義
+
+## Undo/Redo・スパン操作との関係
+
+AuthorshipMarkはドキュメント状態の一部であり、ProseMirrorのHistory pluginによるUndo/Redoで自動的に正しく処理される。スパンの分割・マージ・削除はProseMirrorのMark normalizationにより標準動作で処理される。
+
+詳細はEditorパネル設計書の「AuthorshipMark のスパン操作ルール」セクションを参照。

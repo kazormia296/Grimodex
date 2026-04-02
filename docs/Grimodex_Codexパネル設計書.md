@@ -1064,6 +1064,15 @@ function buildCodexContext(matchedEntryIds: string[]): string {
 
 **カスタムディテールの注入**: `include_in_context = 1` のフィールドの値をsummaryに付加してコンテキストに含める。`codex_reference` フィールドは参照先エントリのnameに解決して表示。
 
+**codex_reference 循環参照防止:**
+
+`codex_reference` フィールドを通じた参照チェーン（A→B→C→...）は深度3を上限とする。コンテキスト注入時に訪問済みエントリIDの `Set` を管理し、以下のルールを適用する:
+
+- 深度 > 3 または既訪問IDに到達した場合 → そのエントリの注入をスキップ
+- 循環が検出された場合（A→B→A等）→ 2回目の訪問をスキップ
+
+これにより、A.ref→B、B.ref→A のような相互参照でも無限ループが発生しない。
+
 **トークン予算の制御**:
 
 子エントリの自動注入で予算を超過する場合の優先順位:

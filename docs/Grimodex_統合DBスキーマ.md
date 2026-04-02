@@ -189,6 +189,8 @@ CREATE INDEX idx_codex_name    ON codex_entries(project_id, name);
 CREATE INDEX idx_codex_parent  ON codex_entries(parent_id);
 ```
 
+> **`type` カラムのバリデーション:** `codex_types` テーブルとのFKは設定しない（`codex_types` は複合主キー `(project_id, slug)` であり、`type` カラムは `slug` のみを保持するため）。代わりにDrizzle ORMのカスタムバリデーションでinsert/update時に `(project_id, type)` の組み合わせが `codex_types` に存在することをアプリ層で検証する。
+
 context_mode の動作:
 
 | モード | 動作 | ピン留め |
@@ -310,6 +312,8 @@ CREATE TABLE snippets (
 
 CREATE INDEX idx_snippets_project ON snippets(project_id, created_at DESC);
 ```
+
+> **`tags` カラムの設計判断:** Codexの正規化タグテーブル（`codex_tags` + `codex_entry_tags`）とは異なり、Snippetのタグは `TEXT` JSON配列で保持する。理由: Snippetタグは色やタイプフィルタ等のメタデータを持たないシンプルなラベルであり、正規化テーブルは過剰設計。将来的に色管理等の要件が生じた場合に正規化を検討する。
 
 ### chat_sessions
 
