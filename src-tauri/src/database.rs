@@ -49,6 +49,23 @@ impl Database {
             CREATE INDEX IF NOT EXISTS idx_tree_parent
                 ON tree_nodes(project_id, parent_id, sort_order);
 
+            CREATE TABLE IF NOT EXISTS codex_types (
+                id          TEXT PRIMARY KEY,
+                project_id  TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                slug        TEXT NOT NULL,
+                label       TEXT NOT NULL,
+                color       TEXT NOT NULL DEFAULT '#888888',
+                icon        TEXT,
+                file_prefix TEXT NOT NULL,
+                is_builtin  INTEGER NOT NULL DEFAULT 0,
+                sort_order  REAL NOT NULL DEFAULT 0.0,
+                created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+                UNIQUE(project_id, slug),
+                UNIQUE(project_id, file_prefix)
+            );
+            CREATE INDEX IF NOT EXISTS idx_codex_types_project
+                ON codex_types(project_id);
+
             CREATE TABLE IF NOT EXISTS codex_entries (
                 id                      TEXT PRIMARY KEY,
                 project_id              TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
@@ -58,7 +75,9 @@ impl Database {
                 aliases                 TEXT,
                 excluded_aliases        TEXT,
                 summary                 TEXT,
-                tags                    TEXT,
+                tags_cache              TEXT,
+                context_mode            TEXT NOT NULL DEFAULT 'mentioned'
+                                          CHECK(context_mode IN ('always', 'mentioned', 'suppress', 'hidden')),
                 source_chat_message_id  TEXT,
                 created_at              TEXT NOT NULL DEFAULT (datetime('now')),
                 updated_at              TEXT NOT NULL DEFAULT (datetime('now'))
@@ -75,6 +94,53 @@ impl Database {
                 dismissed_id TEXT NOT NULL REFERENCES codex_entries(id) ON DELETE CASCADE,
                 PRIMARY KEY (entry_id, dismissed_id)
             );
+
+            CREATE TABLE IF NOT EXISTS codex_tags (
+                id          TEXT PRIMARY KEY,
+                project_id  TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                name        TEXT NOT NULL,
+                color       TEXT,
+                type_filter TEXT,
+                created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+                UNIQUE(project_id, name)
+            );
+            CREATE INDEX IF NOT EXISTS idx_codex_tags_project
+                ON codex_tags(project_id);
+
+            CREATE TABLE IF NOT EXISTS codex_entry_tags (
+                entry_id TEXT NOT NULL REFERENCES codex_entries(id) ON DELETE CASCADE,
+                tag_id   TEXT NOT NULL REFERENCES codex_tags(id) ON DELETE CASCADE,
+                PRIMARY KEY (entry_id, tag_id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_codex_entry_tags_tag
+                ON codex_entry_tags(tag_id);
+
+            CREATE TABLE IF NOT EXISTS codex_detail_definitions (
+                id                TEXT PRIMARY KEY,
+                project_id        TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                type_slug         TEXT NOT NULL,
+                name              TEXT NOT NULL,
+                field_type        TEXT NOT NULL DEFAULT 'text',
+                field_config      TEXT,
+                sort_order        REAL NOT NULL DEFAULT 0.0,
+                include_in_context INTEGER NOT NULL DEFAULT 0,
+                created_at        TEXT NOT NULL DEFAULT (datetime('now')),
+                UNIQUE(project_id, type_slug, name)
+            );
+            CREATE INDEX IF NOT EXISTS idx_codex_detail_defs
+                ON codex_detail_definitions(project_id, type_slug, sort_order);
+
+            CREATE TABLE IF NOT EXISTS codex_detail_values (
+                id            TEXT PRIMARY KEY,
+                entry_id      TEXT NOT NULL REFERENCES codex_entries(id) ON DELETE CASCADE,
+                definition_id TEXT NOT NULL REFERENCES codex_detail_definitions(id) ON DELETE CASCADE,
+                value         TEXT,
+                UNIQUE(entry_id, definition_id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_codex_detail_values_entry
+                ON codex_detail_values(entry_id);
+            CREATE INDEX IF NOT EXISTS idx_codex_detail_values_def
+                ON codex_detail_values(definition_id);
 
             CREATE TABLE IF NOT EXISTS snippets (
                 id                      TEXT PRIMARY KEY,
@@ -140,7 +206,7 @@ impl Database {
 
             -- FTS5 full-text search indexes (trigram tokenizer for Japanese)
             CREATE VIRTUAL TABLE IF NOT EXISTS codex_fts USING fts5(
-                name, aliases, summary, tags,
+                name, aliases, summary, tags_cache,
                 content=codex_entries, content_rowid=rowid,
                 tokenize='trigram'
             );
@@ -159,18 +225,18 @@ impl Database {
 
             -- Triggers to keep FTS indexes in sync: codex_entries
             CREATE TRIGGER IF NOT EXISTS codex_fts_ai AFTER INSERT ON codex_entries BEGIN
-                INSERT INTO codex_fts(rowid, name, aliases, summary, tags)
-                VALUES (new.rowid, new.name, COALESCE(new.aliases, ''), COALESCE(new.summary, ''), COALESCE(new.tags, ''));
+                INSERT INTO codex_fts(rowid, name, aliases, summary, tags_cache)
+                VALUES (new.rowid, COALESCE(new.name, ''), COALESCE(new.aliases, ''), COALESCE(new.summary, ''), COALESCE(new.tags_cache, ''));
             END;
             CREATE TRIGGER IF NOT EXISTS codex_fts_ad AFTER DELETE ON codex_entries BEGIN
-                INSERT INTO codex_fts(codex_fts, rowid, name, aliases, summary, tags)
-                VALUES ('delete', old.rowid, old.name, COALESCE(old.aliases, ''), COALESCE(old.summary, ''), COALESCE(old.tags, ''));
+                INSERT INTO codex_fts(codex_fts, rowid, name, aliases, summary, tags_cache)
+                VALUES ('delete', old.rowid, COALESCE(old.name, ''), COALESCE(old.aliases, ''), COALESCE(old.summary, ''), COALESCE(old.tags_cache, ''));
             END;
             CREATE TRIGGER IF NOT EXISTS codex_fts_au AFTER UPDATE ON codex_entries BEGIN
-                INSERT INTO codex_fts(codex_fts, rowid, name, aliases, summary, tags)
-                VALUES ('delete', old.rowid, old.name, COALESCE(old.aliases, ''), COALESCE(old.summary, ''), COALESCE(old.tags, ''));
-                INSERT INTO codex_fts(rowid, name, aliases, summary, tags)
-                VALUES (new.rowid, new.name, COALESCE(new.aliases, ''), COALESCE(new.summary, ''), COALESCE(new.tags, ''));
+                INSERT INTO codex_fts(codex_fts, rowid, name, aliases, summary, tags_cache)
+                VALUES ('delete', old.rowid, COALESCE(old.name, ''), COALESCE(old.aliases, ''), COALESCE(old.summary, ''), COALESCE(old.tags_cache, ''));
+                INSERT INTO codex_fts(rowid, name, aliases, summary, tags_cache)
+                VALUES (new.rowid, COALESCE(new.name, ''), COALESCE(new.aliases, ''), COALESCE(new.summary, ''), COALESCE(new.tags_cache, ''));
             END;
 
             -- Triggers to keep FTS indexes in sync: snippets
@@ -228,7 +294,17 @@ impl Database {
             INSERT OR IGNORE INTO projects (id, title, language, created_at, updated_at)
               VALUES ('default-project', '無題のプロジェクト', 'ja', datetime('now'), datetime('now'));
             INSERT OR IGNORE INTO tree_nodes (id, project_id, node_type, title, sort_order, created_at, updated_at)
-              VALUES ('default-chapter', 'default-project', 'chapter', '第1章', 0.0, datetime('now'), datetime('now'));",
+              VALUES ('default-chapter', 'default-project', 'chapter', '第1章', 0.0, datetime('now'), datetime('now'));
+
+            -- Seed built-in codex types for default project
+            INSERT OR IGNORE INTO codex_types (id, project_id, slug, label, color, file_prefix, is_builtin, sort_order, created_at)
+              VALUES ('builtin-character', 'default-project', 'character', 'キャラクター', '#534AB7', 'char', 1, 0.0, datetime('now'));
+            INSERT OR IGNORE INTO codex_types (id, project_id, slug, label, color, file_prefix, is_builtin, sort_order, created_at)
+              VALUES ('builtin-location', 'default-project', 'location', '場所', '#0F6E56', 'loc', 1, 1.0, datetime('now'));
+            INSERT OR IGNORE INTO codex_types (id, project_id, slug, label, color, file_prefix, is_builtin, sort_order, created_at)
+              VALUES ('builtin-item', 'default-project', 'item', 'アイテム', '#BA7517', 'item', 1, 2.0, datetime('now'));
+            INSERT OR IGNORE INTO codex_types (id, project_id, slug, label, color, file_prefix, is_builtin, sort_order, created_at)
+              VALUES ('builtin-lore', 'default-project', 'lore', '伝承', '#993C1D', 'lore', 1, 3.0, datetime('now'));",
         )?;
 
         Ok(())
@@ -634,7 +710,7 @@ mod tests {
         let db = test_db();
 
         db.execute(
-            "INSERT INTO codex_entries (id, project_id, type, name, summary, tags, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO codex_entries (id, project_id, type, name, summary, tags_cache, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
             &[
                 Value::String("codex-1".into()),
                 Value::String("default-project".into()),
@@ -917,7 +993,7 @@ mod tests {
         let db = test_db();
 
         db.execute(
-            "INSERT INTO codex_entries (id, project_id, type, name, summary, tags, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO codex_entries (id, project_id, type, name, summary, tags_cache, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
             &[
                 Value::String("c1".into()),
                 Value::String("default-project".into()),
@@ -933,7 +1009,7 @@ mod tests {
         .expect("insert");
 
         db.execute(
-            "INSERT INTO codex_entries (id, project_id, type, name, summary, tags, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO codex_entries (id, project_id, type, name, summary, tags_cache, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
             &[
                 Value::String("c2".into()),
                 Value::String("default-project".into()),
@@ -1046,7 +1122,7 @@ mod tests {
         let db = test_db();
 
         db.execute(
-            "INSERT INTO codex_entries (id, project_id, type, name, summary, tags, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO codex_entries (id, project_id, type, name, summary, tags_cache, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
             &[
                 Value::String("c-upd".into()),
                 Value::String("default-project".into()),
@@ -1097,7 +1173,7 @@ mod tests {
         let db = test_db();
 
         db.execute(
-            "INSERT INTO codex_entries (id, project_id, type, name, summary, tags, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO codex_entries (id, project_id, type, name, summary, tags_cache, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
             &[
                 Value::String("c-del".into()),
                 Value::String("default-project".into()),
@@ -1246,7 +1322,7 @@ mod tests {
         let db = test_db();
 
         db.execute(
-            "INSERT INTO codex_entries (id, project_id, type, name, summary, tags, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))",
+            "INSERT INTO codex_entries (id, project_id, type, name, summary, tags_cache, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))",
             &[
                 Value::String("c-opt".into()),
                 Value::String("default-project".into()),

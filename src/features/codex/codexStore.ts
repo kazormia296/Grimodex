@@ -23,7 +23,7 @@ interface CodexState {
         Pick<
           NewCodexEntry,
           | "summary"
-          | "tags"
+          | "tagsCache"
           | "aliases"
           | "excludedAliases"
           | "sourceChatMessageId"
@@ -32,7 +32,9 @@ interface CodexState {
   ) => Promise<CodexEntry>;
   update: (
     id: string,
-    data: Partial<Pick<NewCodexEntry, "type" | "name" | "summary" | "tags">>,
+    data: Partial<
+      Pick<NewCodexEntry, "type" | "name" | "summary" | "tagsCache">
+    >,
   ) => Promise<void>;
   remove: (id: string) => Promise<void>;
   setFilterType: (type: CodexEntryType | null) => Promise<void>;

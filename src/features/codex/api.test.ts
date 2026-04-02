@@ -45,7 +45,7 @@ describe("codex API query generation", () => {
         type: "character",
         name: "花子",
         summary: "ヒロイン",
-        tags: "ヒロイン,魔法使い",
+        tagsCache: "ヒロイン,魔法使い",
         createdAt: "2025-01-01T00:00:00Z",
         updatedAt: "2025-01-01T00:00:00Z",
       })
@@ -66,7 +66,7 @@ describe("codex API query generation", () => {
         type: "item",
         name: "聖剣",
         summary: "伝説の武器",
-        tags: "武器",
+        tagsCache: "武器",
         sourceChatMessageId: "chat-msg-001",
         createdAt: "2025-01-01T00:00:00Z",
         updatedAt: "2025-01-01T00:00:00Z",

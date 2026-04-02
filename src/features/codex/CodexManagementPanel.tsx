@@ -136,7 +136,7 @@ function CodexDetailContent({
       type: CodexEntryType;
       name: string;
       summary: string;
-      tags: string;
+      tagsCache: string;
     },
   ) => void;
   onDelete: (id: string) => void;
@@ -146,19 +146,19 @@ function CodexDetailContent({
   );
   const [name, setName] = useState(entry.name);
   const [summary, setSummary] = useState(entry.summary ?? "");
-  const [tags, setTags] = useState(entry.tags ?? "");
+  const [tags, setTags] = useState(entry.tagsCache ?? "");
 
   // Sync form when entry changes
   useEffect(() => {
     setType(entry.type as CodexEntryType);
     setName(entry.name);
     setSummary(entry.summary ?? "");
-    setTags(entry.tags ?? "");
-  }, [entry.id, entry.type, entry.name, entry.summary, entry.tags]);
+    setTags(entry.tagsCache ?? "");
+  }, [entry.id, entry.type, entry.name, entry.summary, entry.tagsCache]);
 
   const handleSave = () => {
     if (!name.trim()) return;
-    onSave(entry.id, { type, name: name.trim(), summary, tags });
+    onSave(entry.id, { type, name: name.trim(), summary, tagsCache: tags });
   };
 
   return (
@@ -389,7 +389,7 @@ export function CodexManagementPanel() {
         type: CodexEntryType;
         name: string;
         summary: string;
-        tags: string;
+        tagsCache: string;
       },
     ) => {
       await update(id, data);

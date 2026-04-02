@@ -5,6 +5,11 @@ import {
   projects,
   treeNodes,
   codexEntries,
+  codexTypes,
+  codexTags,
+  codexEntryTags,
+  codexDetailDefinitions,
+  codexDetailValues,
   snippets,
   chatSessions,
   chatMessages,
@@ -201,7 +206,8 @@ describe("codexEntries schema", () => {
     expect(columns).toContain("aliases");
     expect(columns).toContain("excludedAliases");
     expect(columns).toContain("summary");
-    expect(columns).toContain("tags");
+    expect(columns).toContain("tagsCache");
+    expect(columns).toContain("contextMode");
     expect(columns).toContain("sourceChatMessageId");
     expect(columns).toContain("createdAt");
     expect(columns).toContain("updatedAt");
@@ -223,7 +229,7 @@ describe("codexEntries schema", () => {
       type: "character",
       name: "太郎",
       summary: "主人公",
-      tags: '["主人公","勇者"]',
+      tagsCache: '["主人公","勇者"]',
       createdAt: "2025-01-01T00:00:00Z",
       updatedAt: "2025-01-01T00:00:00Z",
     });
@@ -583,13 +589,216 @@ describe("codexRelationDismissed schema", () => {
   });
 });
 
+describe("codexTypes schema", () => {
+  it("has the correct table name", () => {
+    expect(getTableName(codexTypes)).toBe("codex_types");
+  });
+
+  it("has all required columns", () => {
+    const columns = Object.keys(codexTypes);
+    expect(columns).toContain("id");
+    expect(columns).toContain("projectId");
+    expect(columns).toContain("slug");
+    expect(columns).toContain("label");
+    expect(columns).toContain("color");
+    expect(columns).toContain("icon");
+    expect(columns).toContain("filePrefix");
+    expect(columns).toContain("isBuiltin");
+    expect(columns).toContain("sortOrder");
+    expect(columns).toContain("createdAt");
+  });
+
+  it("generates valid insert query", async () => {
+    const executedQueries: { sql: string; params: unknown[] }[] = [];
+    const db = drizzle<typeof schema>(
+      async (sql, params, _method) => {
+        executedQueries.push({ sql, params });
+        return { rows: [] };
+      },
+      { schema },
+    );
+
+    await db.insert(codexTypes).values({
+      id: "type-001",
+      projectId: "proj-001",
+      slug: "faction",
+      label: "勢力",
+      color: "#ff6b6b",
+      filePrefix: "fact",
+      createdAt: "2025-01-01T00:00:00Z",
+    });
+    expect(executedQueries).toHaveLength(1);
+    expect(executedQueries[0].sql).toContain("codex_types");
+    expect(executedQueries[0].params).toContain("faction");
+    expect(executedQueries[0].params).toContain("勢力");
+  });
+});
+
+describe("codexTags schema", () => {
+  it("has the correct table name", () => {
+    expect(getTableName(codexTags)).toBe("codex_tags");
+  });
+
+  it("has all required columns", () => {
+    const columns = Object.keys(codexTags);
+    expect(columns).toContain("id");
+    expect(columns).toContain("projectId");
+    expect(columns).toContain("name");
+    expect(columns).toContain("color");
+    expect(columns).toContain("typeFilter");
+    expect(columns).toContain("createdAt");
+  });
+
+  it("generates valid insert query", async () => {
+    const executedQueries: { sql: string; params: unknown[] }[] = [];
+    const db = drizzle<typeof schema>(
+      async (sql, params, _method) => {
+        executedQueries.push({ sql, params });
+        return { rows: [] };
+      },
+      { schema },
+    );
+
+    await db.insert(codexTags).values({
+      id: "tag-001",
+      projectId: "proj-001",
+      name: "protagonist",
+      color: "#534AB7",
+      typeFilter: '["character"]',
+      createdAt: "2025-01-01T00:00:00Z",
+    });
+    expect(executedQueries).toHaveLength(1);
+    expect(executedQueries[0].sql).toContain("codex_tags");
+    expect(executedQueries[0].params).toContain("protagonist");
+  });
+});
+
+describe("codexEntryTags schema", () => {
+  it("has the correct table name", () => {
+    expect(getTableName(codexEntryTags)).toBe("codex_entry_tags");
+  });
+
+  it("has all required columns", () => {
+    const columns = Object.keys(codexEntryTags);
+    expect(columns).toContain("entryId");
+    expect(columns).toContain("tagId");
+  });
+
+  it("generates valid insert query", async () => {
+    const executedQueries: { sql: string; params: unknown[] }[] = [];
+    const db = drizzle<typeof schema>(
+      async (sql, params, _method) => {
+        executedQueries.push({ sql, params });
+        return { rows: [] };
+      },
+      { schema },
+    );
+
+    await db.insert(codexEntryTags).values({
+      entryId: "codex-001",
+      tagId: "tag-001",
+    });
+    expect(executedQueries).toHaveLength(1);
+    expect(executedQueries[0].sql).toContain("codex_entry_tags");
+  });
+});
+
+describe("codexDetailDefinitions schema", () => {
+  it("has the correct table name", () => {
+    expect(getTableName(codexDetailDefinitions)).toBe(
+      "codex_detail_definitions",
+    );
+  });
+
+  it("has all required columns", () => {
+    const columns = Object.keys(codexDetailDefinitions);
+    expect(columns).toContain("id");
+    expect(columns).toContain("projectId");
+    expect(columns).toContain("typeSlug");
+    expect(columns).toContain("name");
+    expect(columns).toContain("fieldType");
+    expect(columns).toContain("fieldConfig");
+    expect(columns).toContain("sortOrder");
+    expect(columns).toContain("includeInContext");
+    expect(columns).toContain("createdAt");
+  });
+
+  it("generates valid insert query", async () => {
+    const executedQueries: { sql: string; params: unknown[] }[] = [];
+    const db = drizzle<typeof schema>(
+      async (sql, params, _method) => {
+        executedQueries.push({ sql, params });
+        return { rows: [] };
+      },
+      { schema },
+    );
+
+    await db.insert(codexDetailDefinitions).values({
+      id: "def-001",
+      projectId: "proj-001",
+      typeSlug: "character",
+      name: "種族",
+      fieldType: "dropdown",
+      fieldConfig: '{"options":["人間","エルフ","ドワーフ"]}',
+      includeInContext: 1,
+      createdAt: "2025-01-01T00:00:00Z",
+    });
+    expect(executedQueries).toHaveLength(1);
+    expect(executedQueries[0].sql).toContain("codex_detail_definitions");
+    expect(executedQueries[0].params).toContain("種族");
+    expect(executedQueries[0].params).toContain("dropdown");
+  });
+});
+
+describe("codexDetailValues schema", () => {
+  it("has the correct table name", () => {
+    expect(getTableName(codexDetailValues)).toBe("codex_detail_values");
+  });
+
+  it("has all required columns", () => {
+    const columns = Object.keys(codexDetailValues);
+    expect(columns).toContain("id");
+    expect(columns).toContain("entryId");
+    expect(columns).toContain("definitionId");
+    expect(columns).toContain("value");
+  });
+
+  it("generates valid insert query", async () => {
+    const executedQueries: { sql: string; params: unknown[] }[] = [];
+    const db = drizzle<typeof schema>(
+      async (sql, params, _method) => {
+        executedQueries.push({ sql, params });
+        return { rows: [] };
+      },
+      { schema },
+    );
+
+    await db.insert(codexDetailValues).values({
+      id: "val-001",
+      entryId: "codex-001",
+      definitionId: "def-001",
+      value: "人間",
+    });
+    expect(executedQueries).toHaveLength(1);
+    expect(executedQueries[0].sql).toContain("codex_detail_values");
+    expect(executedQueries[0].params).toContain("人間");
+  });
+});
+
 describe("cross-table relationships", () => {
   it("all tables are accessible from the schema", () => {
     const db = createTestDb();
     expect(db).toBeDefined();
     expect(getTableName(projects)).toBe("projects");
     expect(getTableName(treeNodes)).toBe("tree_nodes");
+    expect(getTableName(codexTypes)).toBe("codex_types");
     expect(getTableName(codexEntries)).toBe("codex_entries");
+    expect(getTableName(codexTags)).toBe("codex_tags");
+    expect(getTableName(codexEntryTags)).toBe("codex_entry_tags");
+    expect(getTableName(codexDetailDefinitions)).toBe(
+      "codex_detail_definitions",
+    );
+    expect(getTableName(codexDetailValues)).toBe("codex_detail_values");
     expect(getTableName(snippets)).toBe("snippets");
     expect(getTableName(chatSessions)).toBe("chat_sessions");
     expect(getTableName(chatMessages)).toBe("chat_messages");

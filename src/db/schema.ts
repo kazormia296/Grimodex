@@ -44,6 +44,23 @@ export const treeNodes = sqliteTable("tree_nodes", {
     .$defaultFn(() => new Date().toISOString()),
 });
 
+export const codexTypes = sqliteTable("codex_types", {
+  id: text("id").primaryKey(),
+  projectId: text("project_id")
+    .notNull()
+    .references(() => projects.id, { onDelete: "cascade" }),
+  slug: text("slug").notNull(),
+  label: text("label").notNull(),
+  color: text("color").notNull().default("#888888"),
+  icon: text("icon"),
+  filePrefix: text("file_prefix").notNull(),
+  isBuiltin: integer("is_builtin").notNull().default(0),
+  sortOrder: real("sort_order").notNull().default(0.0),
+  createdAt: text("created_at")
+    .notNull()
+    .$defaultFn(() => new Date().toISOString()),
+});
+
 export const codexEntries = sqliteTable("codex_entries", {
   id: text("id").primaryKey(),
   projectId: text("project_id")
@@ -53,12 +70,13 @@ export const codexEntries = sqliteTable("codex_entries", {
   parentId: text("parent_id").references((): any => codexEntries.id, {
     onDelete: "set null",
   }),
-  type: text("type").notNull().default("character"), // 'character' | 'location' | 'item' | 'lore'
+  type: text("type").notNull().default("character"), // codex_types.slug
   name: text("name").notNull().default("Untitled"),
   aliases: text("aliases"), // JSON string[]
   excludedAliases: text("excluded_aliases"), // JSON string[]
   summary: text("summary"),
-  tags: text("tags"), // JSON string[]
+  tagsCache: text("tags_cache"), // FTS5 denormalized cache (JSON string[])
+  contextMode: text("context_mode").notNull().default("mentioned"), // 'always' | 'mentioned' | 'suppress' | 'hidden'
   sourceChatMessageId: text("source_chat_message_id"),
   createdAt: text("created_at")
     .notNull()
@@ -80,6 +98,59 @@ export const codexRelationDismissed = sqliteTable(
   },
   (table) => [primaryKey({ columns: [table.entryId, table.dismissedId] })],
 );
+
+export const codexTags = sqliteTable("codex_tags", {
+  id: text("id").primaryKey(),
+  projectId: text("project_id")
+    .notNull()
+    .references(() => projects.id, { onDelete: "cascade" }),
+  name: text("name").notNull(),
+  color: text("color"),
+  typeFilter: text("type_filter"), // JSON string[] | null
+  createdAt: text("created_at")
+    .notNull()
+    .$defaultFn(() => new Date().toISOString()),
+});
+
+export const codexEntryTags = sqliteTable(
+  "codex_entry_tags",
+  {
+    entryId: text("entry_id")
+      .notNull()
+      .references(() => codexEntries.id, { onDelete: "cascade" }),
+    tagId: text("tag_id")
+      .notNull()
+      .references(() => codexTags.id, { onDelete: "cascade" }),
+  },
+  (table) => [primaryKey({ columns: [table.entryId, table.tagId] })],
+);
+
+export const codexDetailDefinitions = sqliteTable("codex_detail_definitions", {
+  id: text("id").primaryKey(),
+  projectId: text("project_id")
+    .notNull()
+    .references(() => projects.id, { onDelete: "cascade" }),
+  typeSlug: text("type_slug").notNull(),
+  name: text("name").notNull(),
+  fieldType: text("field_type").notNull().default("text"), // 'text' | 'dropdown' | 'codex_reference'
+  fieldConfig: text("field_config"), // JSON
+  sortOrder: real("sort_order").notNull().default(0.0),
+  includeInContext: integer("include_in_context").notNull().default(0),
+  createdAt: text("created_at")
+    .notNull()
+    .$defaultFn(() => new Date().toISOString()),
+});
+
+export const codexDetailValues = sqliteTable("codex_detail_values", {
+  id: text("id").primaryKey(),
+  entryId: text("entry_id")
+    .notNull()
+    .references(() => codexEntries.id, { onDelete: "cascade" }),
+  definitionId: text("definition_id")
+    .notNull()
+    .references(() => codexDetailDefinitions.id, { onDelete: "cascade" }),
+  value: text("value"),
+});
 
 export const snippets = sqliteTable("snippets", {
   id: text("id").primaryKey(),
@@ -160,3 +231,13 @@ export const settings = sqliteTable("settings", {
 // Type exports
 export type AuthorshipSpan = typeof authorshipSpans.$inferSelect;
 export type NewAuthorshipSpan = typeof authorshipSpans.$inferInsert;
+export type CodexType = typeof codexTypes.$inferSelect;
+export type NewCodexType = typeof codexTypes.$inferInsert;
+export type CodexTag = typeof codexTags.$inferSelect;
+export type NewCodexTag = typeof codexTags.$inferInsert;
+export type CodexDetailDefinition = typeof codexDetailDefinitions.$inferSelect;
+export type NewCodexDetailDefinition =
+  typeof codexDetailDefinitions.$inferInsert;
+export type CodexDetailValue = typeof codexDetailValues.$inferSelect;
+export type NewCodexDetailValue = typeof codexDetailValues.$inferInsert;
+export type CodexContextMode = "always" | "mentioned" | "suppress" | "hidden";

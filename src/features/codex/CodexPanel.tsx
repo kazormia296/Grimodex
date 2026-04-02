@@ -65,9 +65,9 @@ function CodexDetailView({
         {entry.summary && (
           <p className="whitespace-pre-wrap text-sm">{entry.summary}</p>
         )}
-        {entry.tags && (
+        {entry.tagsCache && (
           <div className="mt-3 flex flex-wrap gap-1">
-            {entry.tags.split(",").map((tag) => (
+            {entry.tagsCache.split(",").map((tag) => (
               <span
                 key={tag}
                 className="rounded-full bg-primary/10 px-2 py-0.5 text-[10px] text-primary"
@@ -92,7 +92,7 @@ function CodexEditView({
     type: CodexEntryType;
     name: string;
     summary: string;
-    tags: string;
+    tagsCache: string;
   }) => void;
   onCancel: () => void;
 }) {
@@ -101,11 +101,11 @@ function CodexEditView({
   );
   const [name, setName] = useState(entry.name);
   const [summary, setSummary] = useState(entry.summary ?? "");
-  const [tags, setTags] = useState(entry.tags ?? "");
+  const [tags, setTags] = useState(entry.tagsCache ?? "");
 
   const handleSave = () => {
     if (!name.trim()) return;
-    onSave({ type, name: name.trim(), summary, tags });
+    onSave({ type, name: name.trim(), summary, tagsCache: tags });
   };
 
   return (
@@ -315,7 +315,7 @@ export function CodexPanel() {
       type: CodexEntryType;
       name: string;
       summary: string;
-      tags: string;
+      tagsCache: string;
     }) => {
       if (!selectedEntry) return;
       await update(selectedEntry.id, data);

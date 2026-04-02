@@ -31,7 +31,7 @@ export async function createCodexEntry(
       Pick<
         NewCodexEntry,
         | "summary"
-        | "tags"
+        | "tagsCache"
         | "aliases"
         | "excludedAliases"
         | "parentId"
@@ -55,10 +55,11 @@ export async function updateCodexEntry(
       | "type"
       | "name"
       | "summary"
-      | "tags"
+      | "tagsCache"
       | "aliases"
       | "excludedAliases"
       | "parentId"
+      | "contextMode"
     >
   >,
 ): Promise<CodexEntry | undefined> {

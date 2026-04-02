@@ -31,7 +31,7 @@ export async function searchCodexEntries(query: string): Promise<CodexEntry[]> {
   const likeParam = `%${trimmed}%`;
   const result = await invoke<QueryResult>("db_execute", {
     sql: `SELECT * FROM codex_entries
-          WHERE name LIKE ? OR summary LIKE ? OR tags LIKE ?`,
+          WHERE name LIKE ? OR summary LIKE ? OR tags_cache LIKE ?`,
     params: [likeParam, likeParam, likeParam],
     method: "all",
   });
