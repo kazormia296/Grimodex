@@ -34,7 +34,7 @@ AIチャットパネルとCodex/Snippet抽出機能を組み合わせた小説�
 - SQLite WALモード、FTS5有効
 - エディタ: チャプター/シーンごとに独立TipTapインスタンス
 - AIチャット: シーンごとに独立した会話履歴を保持
-- 帰属追跡: テキスト挿入時にsource metadata（human/ai/ai-edited）を記録
+- 帰属追跡: テキスト挿入時にsource metadata（human/ai/unknown）を記録
 
 ## スキル発火条件
 | トリガーワード | 発動スキル | 動作 |

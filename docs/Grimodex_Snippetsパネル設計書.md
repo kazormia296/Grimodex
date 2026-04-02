@@ -55,8 +55,7 @@ Bottom Dockに配置されるため横長のレイアウトを想定。スニペ
 
 ## B. 検索バー
 
-- スニペットの title と content をインクリメンタル検索
-- タグも検索対象に含む
+- スニペットの title、tags、content をインクリメンタル検索（FTS5経由）
 - デバウンス300ms
 - `Escape` でクリア
 
@@ -150,7 +149,7 @@ Bottom Dockに配置されるため横長のレイアウトを想定。スニペ
 | フィールド | 詳細 |
 |-----------|------|
 | Title | インライン編集。`Enter` で確定、`Escape` でキャンセル |
-| Content | TipTapミニエディタ。Markdown記法をリアルタイムにリッチテキストとしてレンダリング（太字、斜体、見出し、リスト、リンク対応）。Markdownファイルとして保存。自動保存（デバウンス2秒）。右上に「Open in Editor ↗」ボタン — クリックでエディタパネルにSnippetタブとして開き、インラインAIやChat連携が利用可能。**Attribution追跡あり**（後述） |
+| Content | TipTapミニエディタ。Markdown記法をリアルタイムにリッチテキストとしてレンダリング（太字、斜体、見出し、リスト、リンク対応）。DBの `snippets.content` カラムに保存。自動保存（デバウンス2秒）。右上に「Open in Editor ↗」ボタン — クリックでエディタパネルにSnippetタブとして開き、インラインAIやChat連携が利用可能。**Attribution追跡あり**（後述） |
 | Tags | ピル型。[+] で追加、×で削除。既存タグのオートコンプリート |
 | Source | `source_chat_message_id` がある場合、セッション名のリンク。クリックでChat Historyパネル経由で元セッションを開く |
 | Scene | `scene_id` がある場合、シーン名のリンク。クリックでEditorで開く |
@@ -277,7 +276,7 @@ CREATE TABLE snippets (
   id                      TEXT PRIMARY KEY,
   project_id              TEXT NOT NULL REFERENCES projects(id),
   title                   TEXT NOT NULL DEFAULT 'Untitled',
-  content                 TEXT NOT NULL DEFAULT '',
+  content                 TEXT NOT NULL DEFAULT '{}',  -- ProseMirror JSON
   tags                    TEXT,                               -- JSON array: ["dialogue", "elara"]
   scene_id                TEXT REFERENCES tree_nodes(id),     -- 作成元シーン（nullable）
   source_chat_message_id  TEXT REFERENCES chat_messages(id),  -- 抽出元チャット（nullable）
@@ -288,11 +287,11 @@ CREATE TABLE snippets (
 
 CREATE INDEX idx_snippets_project ON snippets(project_id, created_at DESC);
 
--- 全文検索用FTS5
+-- 全文検索用FTS5（title、tags、contentを検索対象）
 CREATE VIRTUAL TABLE snippets_fts USING fts5(
   title,
-  content,
   tags,
+  content_text,
   content=snippets,
   content_rowid=rowid,
   tokenize='trigram'
@@ -300,24 +299,24 @@ CREATE VIRTUAL TABLE snippets_fts USING fts5(
 
 -- FTS5同期トリガー
 CREATE TRIGGER snippets_fts_ai AFTER INSERT ON snippets BEGIN
-  INSERT INTO snippets_fts(rowid, title, content, tags)
-    VALUES (new.rowid, new.title, new.content, new.tags);
+  INSERT INTO snippets_fts(rowid, title, tags, content_text)
+    VALUES (new.rowid, new.title, new.tags, new.content);
 END;
 
 CREATE TRIGGER snippets_fts_ad AFTER DELETE ON snippets BEGIN
-  INSERT INTO snippets_fts(snippets_fts, rowid, title, content, tags)
-    VALUES ('delete', old.rowid, old.title, old.content, old.tags);
+  INSERT INTO snippets_fts(snippets_fts, rowid, title, tags, content_text)
+    VALUES ('delete', old.rowid, old.title, old.tags, old.content);
 END;
 
 CREATE TRIGGER snippets_fts_au AFTER UPDATE ON snippets BEGIN
-  INSERT INTO snippets_fts(snippets_fts, rowid, title, content, tags)
-    VALUES ('delete', old.rowid, old.title, old.content, old.tags);
-  INSERT INTO snippets_fts(rowid, title, content, tags)
-    VALUES (new.rowid, new.title, new.content, new.tags);
+  INSERT INTO snippets_fts(snippets_fts, rowid, title, tags, content_text)
+    VALUES ('delete', old.rowid, old.title, old.tags, old.content);
+  INSERT INTO snippets_fts(rowid, title, tags, content_text)
+    VALUES (new.rowid, new.title, new.tags, new.content);
 END;
 ```
 
-Snippetのcontentは長文にも対応するため、Codexと同様にMarkdownファイルとして `snippets/` ディレクトリに保存する（`snippets/{sanitized_title}_{short_id}.md`）。SQLiteの `content` カラムにはファイルパスへの参照を保持する。FTS5の検索対象にはファイル内容を含めるか、title + tags のみにするかはMVPではtitle + tagsで十分と判断。
+Snippetのcontentは `snippets.content` カラムにProseMirror JSON形式で保存する（TipTapミニエディタで編集されるため、エディタ本文と同じ保存形式を採用）。FTS5の検索対象にはtitle、tags、contentを含める。
 
 ---
 
@@ -372,7 +371,7 @@ Snippetのcontentは長文にも対応するため、Codexと同様にMarkdown�
 |------|-------|----------|
 | 用途 | 世界設定の構造化データベース | 再利用可能なテキスト断片の一時保管 |
 | 内容の性質 | 設定情報（キャラ、場所、伝承） | 散文テキスト（台詞、描写、文章の断片） |
-| 構造 | name + type + summary + content + aliases + relations | title + content（Markdown） |
+| 構造 | name + type + summary + content + aliases + relations | title + content |
 | エディタとの関係 | 本文中でハイライト表示、ポップオーバー参照 | D&Dで本文に挿入（挿入後はスニペットとの紐付けなし） |
 | AI連携 | コンテキスト注入（Layer 4）、マッチング | 直接的な連携なし |
 | 典型的なライフサイクル | 長期保持。プロジェクト全体で参照 | 短〜中期。挿入して役目を終えたら削除も |

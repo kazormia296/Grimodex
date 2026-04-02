@@ -6,7 +6,7 @@ LLMのTool Use（Function Calling）を活用し、プロジェクトデータ�
 
 **解決する課題**: 通常のコンテキスト注入では、LLMは注入されたデータからしか回答できない。「エルフのキャラクターをまとめて」「この設定に矛盾はない？」のような横断クエリには、LLMがプロジェクトデータを能動的に検索・フィルタする手段が必要。
 
-**技術基盤**: Vercel AI SDKの `tools` パラメータ。LLMがツール呼び出しを判断し、結果を受け取って回答を生成する。ツールの実行はTauriバックエンド（Rust）で行い、データはローカルSQLite + ファイルシステムから取得するためレイテンシは最小限。
+**技術基盤**: Vercel AI SDKの `tools` パラメータ。LLMがツール呼び出しを判断し、結果を受け取って回答を生成する。ツールの実行はTauriバックエンド（Rust）で行い、データはローカルSQLiteから取得するためレイテンシは最小限。
 
 ---
 
@@ -110,7 +110,7 @@ Codexエントリの全詳細を取得する。
 }
 ```
 
-**実行**: `codex_entries` + Markdownファイル読み込み + `codex_detail_values` JOIN `codex_detail_definitions` + 子エントリ一覧。content全文を含む。
+**実行**: `codex_entries`（`content` カラムから本文取得）+ `codex_detail_values` JOIN `codex_detail_definitions` + 子エントリ一覧。content全文を含む。
 
 #### list_codex_tags
 
@@ -174,7 +174,7 @@ Codexエントリの全詳細を取得する。
 }
 ```
 
-**実行**: `tree_nodes` + Markdownファイル読み込み。
+**実行**: `tree_nodes` の `content` カラムから本文を取得。
 
 #### search_scenes
 
@@ -190,7 +190,7 @@ Codexエントリの全詳細を取得する。
 }
 ```
 
-**実行**: シーンのMarkdownファイルをgrep検索（FTS5はシーン本文には未対応のため、ファイルシステム検索）。結果はシーンID、タイトル、マッチ周辺のスニペット（最大10件）。
+**実行**: `tree_nodes` のFTS5全文検索（`tree_nodes_fts` テーブル）。結果はシーンID、タイトル、マッチ周辺のスニペット（最大10件）。
 
 ### Snippets系
 

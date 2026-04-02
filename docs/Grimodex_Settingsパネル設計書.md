@@ -170,7 +170,7 @@ APIキーの保存先: Tauri keyring（OS標準のセキュアストレージ）
 | フィールド | UI要素 | 選択肢 | デフォルト |
 |-----------|--------|--------|-----------|
 | Font family | ドロップダウン | システムフォント一覧 + カスタムフォント指定 | 游明朝 / Noto Serif JP |
-| Font size | スライダー + 数値 | 12px - 24px (1px刻み) | 16px |
+| Font size | スライダー + 数値 | 14px - 24px (1px刻み) | 16px |
 | Line height | スライダー + 数値 | 1.2 - 3.0 (0.1刻み) | 1.8 |
 | Max content width | スライダー + 数値 | 480px - 960px (40px刻み) | 680px |
 | Paragraph spacing | スライダー + 数値 | 0px - 24px (2px刻み) | 12px |
@@ -190,7 +190,7 @@ APIキーの保存先: Tauri keyring（OS標準のセキュアストレージ）
 | フィールド | UI要素 | デフォルト | 詳細 |
 |-----------|--------|-----------|------|
 | Enable / command | トグル | ON | エディタ内の `/` コマンドトリガーを有効/無効 |
-| Enable Ctrl+Space | トグル | ON | Ctrl+Space パレットを有効/無効 |
+| Enable Ctrl+Shift+Space | トグル | ON | Ctrl+Shift+Space パレットを有効/無効 |
 
 ### アニメーション
 
@@ -379,7 +379,7 @@ const fontSize = await getSetting('editor.fontSize', '16');  // デフォルト�
 ### → Editor
 
 - Font size、Line height、Typewriter mode等の変更は即座にEditorに反映
-- InlineAI設定のON/OFFでEditorの `/` コマンドと `Ctrl+Space` の有効/無効が切り替わる
+- InlineAI設定のON/OFFでEditorの `/` コマンドと `Ctrl+Shift+Space` の有効/無効が切り替わる
 - Codex highlight設定でエディタ本文中のCodexハイライト表示をON/OFF
 
 ### → Chat

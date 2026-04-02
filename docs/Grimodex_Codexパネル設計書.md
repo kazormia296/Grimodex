@@ -217,7 +217,7 @@ Codexパネルはプロジェクトの世界設定データベース。キャラ
 
 - ヘッダー左端に48×48pxのアイコン画像を表示（Notionページヘッダー風）
 - クリックで画像選択ダイアログを開き、ローカル画像ファイルを選択
-- 画像は `codex/icons/` ディレクトリに保存（リサイズ: 128×128px、WebP変換）
+- 画像はDBの `codex_entries.icon` BLOBカラムに格納（リサイズ: 128×128px、WebP変換）
 - 未設定時はカテゴリドット（typeに応じた色の●）をフォールバック表示
 - リスト画面のサムネイルにも同じアイコンを使用（28×28px）
 - ポップオーバー（Editor等）では24×24pxで表示
@@ -264,12 +264,12 @@ Codexパネルはプロジェクトの世界設定データベース。キャラ
 
 ### Content フィールド（TipTapミニエディタ）
 
-- TipTapの軽量インスタンス。StarterKitのサブセット（太字、斜体、見出し、リスト、リンク）。Markdown記法をリアルタイムにリッチテキストとしてレンダリング
+- TipTapの軽量インスタンス。StarterKitのサブセット（太字、斜体、見出し、リスト、リンク）。入力時のMarkdown記法をリアルタイムにリッチテキストとしてレンダリング
 - キャラクターの詳細な背景設定、場所の歴史、アイテムの由来など、長文の設定情報を記述
-- **Open in Editor**: Content フィールドの右上に「Open in Editor ↗」ボタンを表示。クリックするとエディタパネルにCodexタブとして開き、エディタの全機能（インラインAI、CodexHighlight、Chat連携）で編集できる。Codexパネル内のミニエディタとエディタタブのcontentは同一ファイルを参照しており、一方の変更が他方に即時反映される
+- **Open in Editor**: Content フィールドの右上に「Open in Editor ↗」ボタンを表示。クリックするとエディタパネルにCodexタブとして開き、エディタの全機能（インラインAI、CodexHighlight、Chat連携）で編集できる。Codexパネル内のミニエディタとエディタタブのcontentは同一DBレコード（`codex_entries.content`）を参照しており、一方の変更が他方に即時反映される
 - **CodexHighlight対応**: エディタ本文と同じCodexHighlight Pure Decorationを適用。Content内で言及された他のCodexエントリがハイライトされ、ホバーポップオーバーで確認、「Open in Codex →」で遷移可能。自エントリ自身のnameとaliasesはハイライト対象から除外
 - Content内で検出されたCodexエントリは「リレーション提案」としてRelationsセクションに表示される（後述）
-- エディタ本文と同じくMarkdownで保存（`codex/{type_prefix}_{sanitized_name}_{short_id}.md`）
+- エディタ本文と同じくProseMirror JSONで `codex_entries.content` カラムに保存
 - 自動保存（デバウンス2秒）
 - **Attribution追跡**: エディタ本文と同じAuthorshipMark体系を適用する。Codexパネルのミニエディタとエディタタブの両方でAuthorship付与が機能する
   - キーボード入力 → `{ source: 'human' }`
@@ -558,45 +558,18 @@ Codexエントリ間の親子関係を管理するセクション。詳細は「
 
 ### 保存先
 
-summaryはSQLiteの `codex_entries.summary` カラムに直接保存。contentの長文テキストは `codex/` ディレクトリにMarkdownファイルとして保存。
-
-### ファイル命名規則
-
-`{type_prefix}_{sanitized_name}_{short_id}.md`
+summaryはSQLiteの `codex_entries.summary` カラムに直接保存。contentもSQLiteの `codex_entries.content` カラムに直接保存。アイコン画像はDBの `codex_entries.icon` BLOBカラムに格納（128×128 WebP）。
 
 ```
 MyNovel.novel/
-├── content/              ← Scene/Note本文
-├── codex/                ← Codexエントリの詳細コンテンツ
-│   ├── icons/            ← アイコン画像（128×128 WebP）
-│   ├── char_elara_a3f8.md
-│   ├── char_master-orin_c9d3.md
-│   ├── loc_obsidian-tower_b7c2.md
-│   ├── loc_binding-chamber_e1f4.md
-│   ├── item_soulbind-amulet_d4e1.md
-│   └── lore_age-of-binding_f9a0.md
-├── snippets/             ← SnippetのMarkdownコンテンツ
-│   ├── elara-monologue_b2c1.md
-│   └── tower-description_d4e2.md
-└── project.db
+└── project.db            ← codex_entries に全データ（content, icon含む）を格納
 ```
-
-| フィールド | 形式 | 説明 |
-|-----------|------|------|
-| `type_prefix` | 4文字 | `char` / `loc` / `item` / `lore` |
-| `sanitized_name` | 文字列 | エントリnameをサニタイズ（Editorのファイル命名と同じルール: スペース→ハイフン、禁止文字除去、最大30文字） |
-| `short_id` | 16進4文字 | entry IDの先頭4文字。同名エントリの衝突回避 |
-
-### リネーム戦略
-
-Editorの本文ファイルと同じ方針。DBにはファイル名ではなくentry IDのみを保持し、ファイル名はentry ID + type + nameから `buildCodexFilename(entryId)` で動的に算出する。name変更やtype変更時にファイルを自動リネーム。
 
 ### 自動保存
 
-- summaryフィールド: デバウンス1秒でSQLiteに保存
-- contentフィールド: デバウンス2秒でMarkdownファイルに保存
+- summaryフィールド: デバウンス1秒でDBに保存
+- contentフィールド: デバウンス2秒でDBに保存
 - name/type/tags/aliases/excluded_aliases変更: 即時保存
-- name/type変更時: Markdownファイルの自動リネームもトリガー
 
 ---
 
@@ -612,7 +585,7 @@ DBスキーマの正規版は統合DBスキーマ設計書（`Grimodex_統合DB�
 - `codex_relation_dismissed`: リレーション提案のDismiss記録
 - `codex_fts`: FTS5仮想テーブル（name + aliases + summary + tags_cache）
 
-FTS5テーブルはname + aliases + summary + tags_cacheを検索対象にする。contentの全文はMarkdownファイルに保存されているため、content検索が必要な場合はファイルを読み込んで検索するか、FTS5テーブルにcontentカラムを追加する（トレードオフ: インデックスサイズ増加）。MVPではname + aliases + summary + tags_cacheの検索で十分と判断。
+FTS5テーブルはname + aliases + summary + tags_cacheを検索対象にする。contentもDBに格納されているためFTS5に追加可能だが、MVPではname + aliases + summary + tags_cacheの検索で十分と判断。
 
 ---
 
@@ -1286,7 +1259,6 @@ Codex Types
 | Label | 表示名（日本語OK） | 必須、最大32文字 |
 | Slug | 内部識別子 | `/^[a-z][a-z0-9_]{0,31}$/`、プロジェクト内ユニーク |
 | Color | カテゴリドット色 | hex値、カラーピッカー |
-| File prefix | ファイル命名用4文字 | `/^[a-z]{4}$/`、プロジェクト内ユニーク |
 | Icon | Lucideアイコン名 | optional |
 
 ### 制約

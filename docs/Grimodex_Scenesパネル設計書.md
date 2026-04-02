@@ -437,12 +437,9 @@ Fractional Indexing（浮動小数点ソート）を採用。
 
 ### 本文の保存
 
-Scene と Note のみ本文を持つ。保存先は `content/` ディレクトリ。ファイル命名規則はEditorパネル設計書を参照。
+Scene と Note のみ本文を持つ。本文は `tree_nodes.content` カラム（TEXT型）にJSON形式で保存する。ファイルシステムは使用しない。
 
-- Scene: `{pp}-{cc}-{ss}_{sanitized_title}_{short_id}.md`（例: `01-03-02_最初の呪文_a3f8.md`）
-- Note: `note_{sanitized_title}_{short_id}.md`（例: `note_世界観メモ_f9a0.md`）
-
-タイトル変更・順序変更時はファイル名を自動リネームする。
+- タイトル変更・順序変更時はDB上の `title` / `sort_order` カラムを更新するだけでよい（ファイルリネーム不要）。
 
 ### 階層制約の検証
 

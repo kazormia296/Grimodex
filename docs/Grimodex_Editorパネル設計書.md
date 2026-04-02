@@ -61,7 +61,7 @@ EditorパネルはGrimodexの中核コンポーネント。TipTapベースのリ
 - タブアイコンで区別: Codexは該当typeのカラードット、Snippetは🗂アイコン
 - タブタイトル: Codexは「{エントリ名}」、Snippetは「{Snippet title}」
 - エディタ上部にバナー表示: Codexは「Editing Codex entry — changes are saved to {type}: {name}」（typeカラードット付き）、Snippetは「Editing Snippet — changes are saved to Snippets」
-- 保存先は既存のCodex/Snippetのcontentファイル（エディタのシーン用Markdownとは別）
+- 保存先は既存のCodex/SnippetのDBレコード（contentカラム）
 - プレビュータブとして開く動作は無し（常に固定タブ）
 - **Chat連携**: Codex/Snippetタブがアクティブの場合、Chatパネルのコンテキスト（Layer 3）にはCodex/Snippetのcontent全文が注入される。ヘッダーの表示は「Codex: {エントリ名}」または「Snippet: {title}」に切り替わる
 
@@ -222,7 +222,7 @@ Noteの場合:
 
 | 拡張 | 用途 |
 |------|------|
-| tiptap-markdown | Markdownインポート/エクスポート |
+| tiptap-markdown | Markdownインポート/エクスポート（保存時には使用しない） |
 
 #### カスタムノード
 
@@ -294,7 +294,7 @@ Mark.create({
 
 **例**: エディタで「人間が書いた文」と「AIが生成した文」を含むテキストをコピーし、別のシーンにペーストした場合、各範囲の `source` がそれぞれ `human` と `ai` として正しく復元される
 
-Markdownエクスポート時にはAuthorshipMarkを除外し、クリーンなMarkdownを出力する。
+Markdownエクスポート時には `tiptap-markdown` を使用し、AuthorshipMarkを除外したクリーンなMarkdownを出力する。
 
 #### Pure Decorations（文書構造に影響しない装飾）
 
@@ -632,13 +632,13 @@ Codexハイライト上での右クリックは通常のテキスト選択時コ
 | `/translate` | 選択必須 | 言語名（例: `English`, `日本語`） | 選択テキストを翻訳（置換diff） |
 | `/custom` | どちらも可 | 自由テキスト | 自由な指示で生成 |
 
-#### B. Ctrl+Space パレット（Cursor式）
+#### B. Ctrl+Shift+Space パレット（Cursor式）
 
-`Ctrl+Space` を押すと、カーソル位置の直下にインラインAIパレットが表示される。
+`Ctrl+Shift+Space` を押すと、カーソル位置の直下にインラインAIパレットが表示される。`Ctrl+Space` はIME（日本語入力）の変換候補トリガーと競合するため、`Ctrl+Shift+Space` を採用する。
 
 ```
 ┌─────────────────────────────────────┐
-│ Inline AI                    Ctrl+Space │
+│ Inline AI              Ctrl+Shift+Space │
 │ ┌─────────────────────────────────┐ │
 │ │ Rewrite to be more atmospheric  │ │
 │ └─────────────────────────────────┘ │
@@ -647,8 +647,8 @@ Codexハイライト上での右クリックは通常のテキスト選択時コ
 ```
 
 - 自由テキスト入力欄 + 送信ボタン
-- テキスト選択中に `Ctrl+Space` → 選択テキストが暗黙のコンテキストになる
-- テキスト非選択で `Ctrl+Space` → カーソル位置からの生成（`/continue` と同等）
+- テキスト選択中に `Ctrl+Shift+Space` → 選択テキストが暗黙のコンテキストになる
+- テキスト非選択で `Ctrl+Shift+Space` → カーソル位置からの生成（`/continue` と同等）
 - `Enter` で送信、`Escape` で閉じる
 - `/` で始めればコマンドオートコンプリートも使える（A方式との統合）
 
@@ -729,7 +729,7 @@ interface InlineAIState {
 
 ### 複数回の生成（チェイン）
 
-Acceptした直後に再度 `/` や `Ctrl+Space` を押せば、前の生成結果の続きにさらに生成を重ねられる。ただし各回は独立したUndoステップ。
+Acceptした直後に再度 `/` や `Ctrl+Shift+Space` を押せば、前の生成結果の続きにさらに生成を重ねられる。ただし各回は独立したUndoステップ。
 
 ### インラインAIと他機能の関係
 
@@ -751,7 +751,7 @@ Acceptした直後に再度 `/` や `Ctrl+Space` を押せば、前の生成結�
 | ショートカット | 動作 |
 |-------------|------|
 | `/`（行頭/空行） | インラインAIコマンドオートコンプリートを開く |
-| `Ctrl+Space` | インラインAIパレットを開く |
+| `Ctrl+Shift+Space` | インラインAIパレットを開く |
 | `Tab`（diff表示中） | Accept |
 | `Escape`（diff表示中） | Reject（ストリーミング中は停止） |
 | `↑` / `↓`（オートコンプリート中） | コマンド選択 |
@@ -807,56 +807,15 @@ Acceptした直後に再度 `/` や `Ctrl+Space` を押せば、前の生成結�
 - 保存完了: ステータスバーに「Saved」を表示、タブの未保存インジケーターを解除
 - 保存失敗: リトライ（最大3回、指数バックオフ）後、エラー通知をステータスバーに表示
 
-### ファイル命名規則
+### 保存先
 
-すべての本文ファイルは `content/` ディレクトリに保存する。ファイル名はツリー上の位置とタイトルから生成し、エクスプローラーや外部エディタで開いた場合にも中身が推測できるようにする。
-
-**Scene**: `{pp}-{cc}-{ss}_{sanitized_title}_{short_id}.md`
-
-```
-content/
-├── 01-01-01_塔の麓_a3f8.md            ← Part 1 / Chapter 1 / Scene 1
-├── 01-01-02_最初の呪文_b7c2.md         ← Part 1 / Chapter 1 / Scene 2
-├── 01-02-01_地下通路_c9d3.md           ← Part 1 / Chapter 2 / Scene 1
-├── 02-01-01_市場にて_d4e1.md           ← Part 2 / Chapter 1 / Scene 1
-├── 00-01-01_旅立ち_e5f2.md             ← Part なし / Chapter 1 / Scene 1
-├── note_世界観メモ_f9a0.md             ← Note
-└── note_エララ設定_c3b5.md             ← Note
-```
-
-**Note**: `note_{sanitized_title}_{short_id}.md`
-
-各フィールドの定義:
-
-| フィールド | 形式 | 説明 |
-|-----------|------|------|
-| `pp` | 2桁ゼロ埋め | Partのsort_order順。Partに属さないChapterは `00` |
-| `cc` | 2桁ゼロ埋め | Chapterのsort_order順（Part内での順序） |
-| `ss` | 2桁ゼロ埋め | Sceneのsort_order順（Chapter内での順序） |
-| `sanitized_title` | 文字列 | タイトルをサニタイズ（後述） |
-| `short_id` | 16進4文字 | node IDの先頭4文字。同名タイトルの衝突回避 |
-
-**タイトルのサニタイズルール**:
-- スペース → ハイフン `-`
-- ファイルシステム禁止文字（`/ \ : * ? " < > |`）を除去
-- 連続するハイフンを1つに圧縮
-- 最大30文字で切り詰め（末尾がハイフンの場合は除去）
-- 空文字列になった場合は `untitled`
-
-### リネーム戦略
-
-タイトル変更やD&Dによる順序変更時、ファイル名を自動リネームする。
-
-- DB（`tree_nodes`）にはファイル名ではなくnode IDのみを保持
-- ファイル名はnode ID + ツリー構造から動的に生成する関数 `buildFilename(nodeId)` で算出
-- 保存時に現在のファイル名と算出されたファイル名が異なる場合、ファイルシステム上でリネーム
-- リネーム失敗時（ファイルロック等）は旧ファイル名のまま保存を続行し、次回保存時にリトライ
-- 順序の一括変更（D&Dで複数ノードを移動）では、影響を受ける全ファイルをバッチリネーム
+本文コンテンツはDBの `tree_nodes.content` カラムに保存する。
 
 ### 保存内容
 
-- `tiptap-markdown` によるMarkdownエクスポートを保存
-- AuthorshipMarkはMarkdownには含まれない（エクスポート時に除外）
+- TipTapのProseMirror JSONをそのまま `JSON.stringify()` してDBのcontentカラムに保存
+- ロスレス保存: AuthorshipMark等のカスタムMarkもそのまま保持され、変換コストなし
+- `tiptap-markdown` はMarkdownインポート/エクスポート時のみ使用（自動保存には関与しない）
 - AuthorshipMarkのデータはSQLiteの `authorship_spans` テーブルに別途永続化
 - Codex/Snippetタブの場合は `node_id` の代わりに `codex_entry_id` または `snippet_id` を使用
 - 正規スキーマは統合DBスキーマ設計書（`Grimodex_統合DBスキーマ.md`）の `authorship_spans` を参照
@@ -864,7 +823,7 @@ content/
 ### Undo/Redo
 
 - TipTapの組み込みHistory拡張を使用
-- Undo/Redoはメモリ内のみ（保存済みのファイルには影響しない）
+- Undo/Redoはメモリ内のみ（保存済みのDBレコードには影響しない）
 - エディタを閉じるとUndoスタックは消失
 
 ---
@@ -884,7 +843,7 @@ content/
 | ステータス（Draft等） | あり | なし | なし | なし |
 | エディタ上部バナー | なし | 「This note is not included in export」 | 「Editing Codex entry — {type}: {name}」 | 「Editing Snippet」 |
 | Chat Layer 3 連携 | シーン全文 | シーン全文（Note自体） | Codex content全文 | Snippet content全文 |
-| 保存先 | `scenes/` Markdownファイル | `notes/` Markdownファイル | `codex/` Markdownファイル | `snippets/` Markdownファイル |
+| 保存先 | `tree_nodes.content` カラム | `tree_nodes.content` カラム | `codex_entries.content` カラム | `snippets.content` カラム |
 
 ---
 
@@ -901,7 +860,7 @@ content/
 | `Ctrl+Shift+F` | Find in all scenes（全シーン横断検索） |
 | `Ctrl+S` | 手動保存（自動保存があるが、安心感のため） |
 | `Ctrl+Enter`（Scenesパネルから） | 新しいEditor Groupにシーンを開く |
-| `Ctrl+Space` | インラインAIパレットを開く |
+| `Ctrl+Shift+Space` | インラインAIパレットを開く |
 | `/`（行頭/空行） | インラインAIコマンドオートコンプリート |
 | `Tab`（インラインAI diff表示中） | 生成テキストをAccept |
 | `Escape`（インラインAI diff表示中） | 生成テキストをReject / ストリーミング停止 |
@@ -928,7 +887,7 @@ content/
 
 - エディタ内のCodexハイライトをホバー → ポップオーバーの「Open in Codex」でCodexパネルの詳細画面を開く
 - エディタのコンテキストメニュー「Add to Codex」→ 選択テキストをnameとしてエントリ即時作成 → トーストの「Open」でCodexパネルの詳細画面へ
-- Codexパネルの「Open in Editor ↗」→ エディタにCodexタブとして開く。ミニエディタと同一ファイルを参照し、変更は双方向に即時反映
+- Codexパネルの「Open in Editor ↗」→ エディタにCodexタブとして開く。ミニエディタと同一DBレコードを参照し、変更は双方向に即時反映
 
 ### Snippetsパネル
 

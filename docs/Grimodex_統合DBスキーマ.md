@@ -26,6 +26,7 @@ ORM: Drizzle ORM（sqlite-proxy）
 | `snippets` | 通常 | Snippets | 再利用テキスト断片 |
 | `chat_sessions` | 通常 | Chat | チャットセッション（シーン or プロジェクトスコープ） |
 | `chat_messages` | 通常 | Chat | チャットメッセージ |
+| `content_versions` | 通常 | Editor | コンテンツのバージョン履歴 |
 | `authorship_spans` | 通常 | Editor | AI帰属追跡スパン |
 | `settings` | 通常 | Settings | Key-Value設定ストア |
 | `codex_fts` | FTS5仮想 | Codex | Codexエントリの全文検索 |
@@ -113,6 +114,7 @@ CREATE TABLE tree_nodes (
   title       TEXT NOT NULL DEFAULT 'Untitled',
   sort_order  REAL NOT NULL,        -- Fractional Indexing
   status      TEXT DEFAULT 'outline', -- Sceneのみ: 'outline'|'draft'|'complete'|'revision'|'final'
+  content     TEXT NOT NULL DEFAULT '{}',  -- Scene/Note本文（ProseMirror JSON）
   created_at  TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
 );
@@ -120,9 +122,7 @@ CREATE TABLE tree_nodes (
 CREATE INDEX idx_tree_parent ON tree_nodes(project_id, parent_id, sort_order);
 ```
 
-本文ファイルの保存先: `content/` ディレクトリ。命名規則は Editor 設計書参照。
-- Scene: `{pp}-{cc}-{ss}_{sanitized_title}_{short_id}.md`
-- Note: `note_{sanitized_title}_{short_id}.md`
+Scene/Noteの本文は `content` カラムに直接格納する。
 
 ### codex_types
 
@@ -136,12 +136,10 @@ CREATE TABLE codex_types (
   label       TEXT NOT NULL,            -- '勢力', '魔法体系' etc.（表示用）
   color       TEXT NOT NULL DEFAULT '#888888',  -- カテゴリドット色（hex）
   icon        TEXT,                     -- lucide icon名（optional）
-  file_prefix TEXT NOT NULL,            -- 4文字、コンテンツファイル命名用
   is_builtin  INTEGER NOT NULL DEFAULT 0,  -- 1: ビルトイン（削除・slug変更不可）
   sort_order  REAL NOT NULL DEFAULT 0.0,   -- フィルタタブの表示順
   created_at  TEXT NOT NULL DEFAULT (datetime('now')),
-  UNIQUE(project_id, slug),
-  UNIQUE(project_id, file_prefix)
+  UNIQUE(project_id, slug)
 );
 
 CREATE INDEX idx_codex_types_project ON codex_types(project_id);
@@ -149,18 +147,18 @@ CREATE INDEX idx_codex_types_project ON codex_types(project_id);
 
 ビルトインタイプのシード値:
 
-| slug | label | color | file_prefix | sort_order |
-|------|-------|-------|-------------|------------|
-| `character` | キャラクター | `#534AB7` | `char` | 0.0 |
-| `location` | 場所 | `#0F6E56` | `loc` | 1.0 |
-| `item` | アイテム | `#BA7517` | `item` | 2.0 |
-| `lore` | 伝承 | `#993C1D` | `lore` | 3.0 |
+| slug | label | color | sort_order |
+|------|-------|-------|------------|
+| `character` | キャラクター | `#534AB7` | 0.0 |
+| `location` | 場所 | `#0F6E56` | 1.0 |
+| `item` | アイテム | `#BA7517` | 2.0 |
+| `lore` | 伝承 | `#993C1D` | 3.0 |
 
-slug命名規則: `/^[a-z][a-z0-9_]{0,31}$/`。file_prefix: `/^[a-z]{4}$/`。
+slug命名規則: `/^[a-z][a-z0-9_]{0,31}$/`。
 
 ### codex_entries
 
-世界設定エントリ。content本文は `codex/{type_prefix}_{sanitized_name}_{short_id}.md` に保存。アイコン画像は `codex/icons/{short_id}.webp` に保存（128×128px WebP）。
+世界設定エントリ。content本文は `content` カラムに直接格納。アイコン画像は `icon` BLOBカラムに格納（128×128px WebP）。
 
 `type` カラムは `codex_types.slug` を参照（論理参照、FKなし）。`context_mode` でAIコンテキスト注入の振る舞いを制御。`tags_cache` はFTS5用の非正規化キャッシュ（正規データは `codex_entry_tags` テーブル）。
 
@@ -174,6 +172,8 @@ CREATE TABLE codex_entries (
   aliases                 TEXT,            -- JSON array: ["エララ", "the apprentice"]
   excluded_aliases        TEXT,            -- JSON array: ["青い", "青の", "青く"]
   summary                 TEXT,            -- 短い要約（1-2文）
+  content                 TEXT NOT NULL DEFAULT '{}',  -- 本文（ProseMirror JSON）
+  icon                    BLOB,            -- アイコン画像（128×128 WebP、nullable）
   tags_cache              TEXT,            -- FTS5用非正規化キャッシュ（JSON array）
   context_mode            TEXT NOT NULL DEFAULT 'mentioned'
                             CHECK(context_mode IN ('always', 'mentioned', 'suppress', 'hidden')),
@@ -290,14 +290,14 @@ CREATE INDEX idx_codex_detail_values_def   ON codex_detail_values(definition_id)
 
 ### snippets
 
-再利用可能なテキスト断片。content本文は `snippets/{sanitized_title}_{short_id}.md` にMarkdownファイルとして保存（長文対応）。SQLiteの `content` カラムにはファイルパスへの参照を保持。
+再利用可能なテキスト断片。content本文は `content` カラムにProseMirror JSON形式で格納する。
 
 ```sql
 CREATE TABLE snippets (
   id                      TEXT PRIMARY KEY,
   project_id              TEXT NOT NULL REFERENCES projects(id),
   title                   TEXT NOT NULL DEFAULT 'Untitled',
-  content                 TEXT NOT NULL DEFAULT '',
+  content                 TEXT NOT NULL DEFAULT '{}',  -- ProseMirror JSON
   tags                    TEXT,            -- JSON array: ["dialogue", "elara"]
   scene_id                TEXT REFERENCES tree_nodes(id),      -- 作成元シーン（nullable）
   source_chat_message_id  TEXT REFERENCES chat_messages(id),   -- 抽出元チャット（nullable）
@@ -415,14 +415,14 @@ CREATE VIRTUAL TABLE codex_fts USING fts5(
 
 ### snippets_fts
 
-Snippetの検索用。title + tags を対象（contentはMDファイルに外部化のため、MVPではFTS対象外）。
+Snippetの検索用。title + content + tags を対象。
 
 ```sql
 CREATE VIRTUAL TABLE snippets_fts USING fts5(
   title,
   content,
   tags,
-  content=snippets,
+  content='snippets',
   content_rowid=rowid,
   tokenize='trigram'
 );
@@ -528,30 +528,39 @@ PRAGMA foreign_keys = ON;
 
 ---
 
+## content_versions
+
+コンテンツのバージョン履歴。自動スナップショット（設定可能な間隔、デフォルト30分）と手動スナップショットを保存。エンティティごとに保持上限（デフォルト50件）を超えた場合、古いバージョンからFIFO削除する。
+
+```sql
+CREATE TABLE content_versions (
+  id             TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
+  entity_type    TEXT NOT NULL CHECK(entity_type IN ('scene', 'note', 'codex_entry', 'snippet')),
+  entity_id      TEXT NOT NULL,    -- tree_nodes.id / codex_entries.id / snippets.id
+  content        TEXT NOT NULL,
+  version_number INTEGER NOT NULL,
+  snapshot_type  TEXT NOT NULL DEFAULT 'auto' CHECK(snapshot_type IN ('auto', 'manual')),
+  created_at     TEXT NOT NULL DEFAULT (datetime('now')),
+  UNIQUE(entity_type, entity_id, version_number)
+);
+
+CREATE INDEX idx_cv_entity ON content_versions(entity_type, entity_id, version_number DESC);
+```
+
+---
+
 ## ファイルシステム構成
 
-DBの外に保存されるファイル。DBにはファイル名ではなくIDを保持し、ファイル名は動的算出。
+コンテンツは全てDBに格納。ファイルシステムにはバックアップとマイグレーションのみ保存。
 
 ```
 {project_name}.novel/
-├── project.db                          ← SQLiteデータベース
-├── content/                            ← Scene/Note本文
-│   ├── 01-01-01_塔の麓_a3f8.md
-│   ├── 01-01-02_最初の呪文_b7c2.md
-│   ├── note_世界観メモ_f9a0.md
+├── project.db                          ← SQLiteデータベース（全コンテンツ含む）
+├── .grimodex/
+│   └── workspace.json                  ← ワークスペースID + 作成日時
+├── backups/                            ← 自動バックアップ（ZIP）
 │   └── ...
-├── codex/                              ← Codexエントリの詳細コンテンツ
-│   ├── icons/                          ← アイコン画像（128×128 WebP）
-│   ├── char_elara_a3f8.md
-│   ├── loc_obsidian-tower_b7c2.md
-│   ├── item_soulbind-amulet_d4e1.md
-│   └── ...
-├── snippets/                           ← SnippetのMarkdownコンテンツ
-│   ├── elara-monologue_b2c1.md
-│   └── ...
-└── backups/                            ← 自動バックアップ（ZIP）
-    ├── My_Novel_20260401_143000.zip
-    └── ...
+└── migrations/                         ← DBマイグレーションファイル
 ```
 
 ---

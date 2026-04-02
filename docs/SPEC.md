@@ -21,7 +21,7 @@ Grimodexは、Novelcrafterに着想を得た、日本語小説作家向けのデ
 | AI統合 | Vercel AI SDK |
 | データベース | SQLite (WALモード) + FTS5 (trigram) |
 | ORM | Drizzle ORM |
-| ストレージ | Markdownファイル（信頼できる唯一の情報源） + SQLite（インデックス/キャッシュ/メタデータ） |
+| ストレージ | SQLite（唯一の信頼できる情報源、ProseMirror JSON保存） + Markdownインポート/エクスポート |
 
 ### 1.2 対象ユーザー
 
@@ -31,113 +31,58 @@ Grimodexは、Novelcrafterに着想を得た、日本語小説作家向けのデ
 
 ## 2. アーキテクチャ原則
 
-### 2.1 ストレージモデル: Markdownファースト
+### 2.1 ストレージモデル: SQLiteファースト
 
-ディスク上のMarkdownファイルが、すべての本文コンテンツの**唯一の信頼できる情報源**である。SQLiteは以下の用途で使用:
+すべてのコンテンツ（Scene/Note本文、Codexエントリ、Snippet）は**SQLiteに直接格納**する。SQLiteが唯一の信頼できる情報源である。
+
 - 全文検索インデックス（FTS5 trigram）
 - 帰属（authorship）追跡ストア
 - Codexのメタデータとリレーション
 - チャット履歴
 - プロジェクト設定と状態
+- **コンテンツ本文**（Scene/Note/Codex/Snippet）
+- **コンテンツバージョン履歴**
 
-**設計根拠:** Git親和性、可搬性、ベンダーロックインの回避。ユーザーは任意のテキストエディタでファイルを閲覧・編集可能。
+**設計根拠:** 単一ファイル（project.db）で完結し、ファイル同期・命名規則・I/O管理の複雑さを排除。Markdownとの相互運用はインポート/エクスポート機能で提供する。
 
-### 2.2 ディレクトリ構造 + SQLiteツリー
+### 2.2 ディレクトリ構造
 
 プロジェクトのディレクトリ構造:
 
 ```
 my-novel/
-  project.db                 # SQLite（メタデータ、ツリー、チャット、帰属等）
+  project.db                 # SQLite（全データを格納）
   .grimodex/
     workspace.json           # ワークスペースID + 作成日時
-  codex/
-    icons/                   # アイコン画像（128×128 WebP）
-    char_太郎_a3f1b2c4.md
-    char_花子_b1234567.md
-    loc_東京タワー_cafebabe.md
-    item_聖剣_deadbeef.md
-  snippets/                  # SnippetのMarkdownコンテンツ
-    台詞案_12345678.md
-  content/
-    01-01_プロローグ_a3f1b2c4.md
-    01-02_夜明けの対話_b1234567.md
-    02-01_旅立ち_cafebabe.md
+  backups/                   # 自動バックアップ（ZIP）
 ```
 
 - **階層構造は `tree_nodes` テーブル**で管理（Part/Chapter/Scene/Folder/Note）
-- リーフノード（Scene/Note）= Markdownファイル
+- Scene/Note/Codex/Snippetの本文は各テーブルの `content` カラムに格納
 - **ソート順: fractional indexing**（`sort_order REAL` カラム）で D&D 並び替えに対応
-- Codex/Snippetのコンテンツ = Markdownファイル。メタデータはSQLite。
 
 ### 2.3 ドキュメントフォーマット
 
-各原稿ドキュメント（Scene/Note）は標準的なMarkdownファイルである。メタデータ（タイトル、ステータス等）は `tree_nodes` テーブルで管理し、Markdownファイルにはfrontmatterを含めない。
+各原稿ドキュメント（Scene/Note）の本文はTipTapのProseMirror JSON形式で `tree_nodes.content` カラムに格納する。メタデータ（タイトル、ステータス等）は同テーブルの他カラムで管理する。ProseMirror JSONで保存することにより、AuthorshipMark等のカスタムMarkを含むドキュメント構造がロスレスで保持され、保存時の変換コストも発生しない。
 
-```markdown
-本文がここに続く。標準的なMarkdown記法を使用。
-```
+Codexエントリも同様に、メタデータは `codex_entries` テーブルの各カラム、本文は `codex_entries.content` カラムにProseMirror JSON形式で格納する。
 
-Codexエントリも同様に、メタデータは `codex_entries` テーブル、本文のみMarkdownファイルに保存する。
+Markdownとの相互変換は `tiptap-markdown` を使用し、インポート/エクスポート時にのみ行う（日常の保存処理では使用しない）。
 
-### 2.4 コンテンツファイル命名規則
+### 2.4 コンテンツバージョン管理
 
-全てのコンテンツファイルはハイブリッド命名方式を採用する。ファイル名にソート順・タイトル・IDを埋め込むことで、ファイルシステム上での視認性とプログラムからの一意特定を両立する。
+全コンテンツにバージョン管理機能を提供する。`content_versions` テーブルにスナップショットを保存し、任意の時点の内容に復元可能にする。
 
-**Scene/Note 命名規則:**
+**バージョニングポリシー:**
+- 自動スナップショット: 設定可能な間隔（デフォルト: 30分）で編集中に自動保存
+- 手動スナップショット: `Ctrl+S` またはメニューから明示的に作成
+- 保持上限: エンティティごとに設定可能（デフォルト: 50件）、超過時はFIFOで古いものから削除
 
-```
-{pp}-{cc}-{ss}_{sanitized_title}_{short_id}.md     # Scene
-note_{sanitized_title}_{short_id}.md                 # Note
-```
+**インポート/エクスポート:**
 
-| 部位 | 説明 | 例 |
-|------|------|----|
-| `pp` | 部の並び順（2桁ゼロ埋め） | `01` |
-| `cc` | 章の並び順（2桁ゼロ埋め） | `01` |
-| `ss` | シーンの並び順（2桁ゼロ埋め） | `03` |
-| `sanitized_title` | サニタイズ済みタイトル | `夜明けの対話` |
-| `short_id` | UUID先頭8文字 | `a3f1b2c4` |
-
-**Codex 命名規則:**
-
-```
-{type_prefix}_{sanitized_name}_{short_id}.md
-```
-
-| 部位 | 説明 | 例 |
-|------|------|----|
-| `type_prefix` | `codex_types.file_prefix`（char/loc/item/lore等） | `char` |
-| `sanitized_name` | サニタイズ済み名前 | `山田太郎` |
-
-**実例:**
-```
-content/
-  01-01-01_プロローグ_a3f1b2c4.md
-  01-01-02_夜明けの対話_b1234567.md
-  01-02-01_旅立ち_cafebabe.md
-codex/
-  char_山田太郎_a3f1b2c4.md
-  loc_東京タワー_cafebabe.md
-snippets/
-  台詞案_12345678.md
-```
-
-**タイトルのサニタイズ規則:**
-- 最大30文字（Unicode文字境界で切断）
-- Windows禁止文字（`/ \ : * ? " < > |`）は `_` に置換
-- 空タイトルは `untitled` に置換
-- 前後の空白は除去
-
-**ファイルルックアップ:**
-- `short_id`（UUID先頭8文字）をキーとして `*_{short_id}.md` パターンで検索
-- タイトルや順序が変わってもIDで同一ファイルを特定可能
-- リネーム時は旧ファイルを削除し新ファイル名で再作成
-
-**設計根拠:**
-- ファイル名のソート順プレフィックスにより、エクスプローラーやGitで自然な順序表示
-- `short_id` サフィックスにより、タイトル変更・並び替え後もファイルの同一性を追跡可能
-- タイトル埋め込みにより、Grimodex外でもファイル内容を推測可能
+Markdownとの相互運用はインポート/エクスポート機能で提供する:
+- **エクスポート**: DB内のコンテンツをMarkdownファイルとして出力（Scene/Note/Codex/Snippet）
+- **インポート**: Markdownファイルを読み込みDBに格納
 
 ### 2.5 ワークスペースメタデータ
 
@@ -195,7 +140,7 @@ OSのアプリケーションデータディレクトリに格納。全ワーク
 - 開いているドキュメント（シーン/章）ごとに1つのTipTapインスタンス
 - 標準的なリッチテキスト編集: 太字、斜体、見出し、引用ブロック、水平線
 - リアルタイム文字数/単語数カウント
-- 自動保存: 最後のキー入力から2000msのデバウンスでディスクに書き込み（0.5〜10秒の範囲で設定可能）
+- 自動保存: 最後のキー入力から2000msのデバウンスでDBに書き込み（0.5〜10秒の範囲で設定可能）
 - セッションごとの完全な履歴によるundo/redo
 
 ### 3.2 帰属追跡（文字単位）
@@ -230,7 +175,7 @@ OSのアプリケーションデータディレクトリに格納。全ワーク
 
 **永続化:**
 
-帰属データは**SQLiteのみ**に保存（Markdownファイルには含めない）。Markdownファイルはクリーンな標準Markdownのまま維持する。
+帰属データは**SQLiteのみ**に保存（コンテンツ本文とは別に管理）。なお、ProseMirror JSON保存によりAuthorshipMarkはドキュメント構造内にも保持されるが、正規データは `authorship_spans` テーブルとする。エクスポート時のMarkdownファイルはクリーンな標準Markdownのまま維持する。
 
 帰属のSQLiteスキーマ（正規版は `Grimodex_統合DBスキーマ.md` を参照）。対象ドキュメントの種別に応じて `node_id`（Scene/Note）、`codex_entry_id`（Codex content）、`snippet_id`（Snippet content）のいずれか1つを設定する。
 
@@ -242,7 +187,7 @@ OSのアプリケーションデータディレクトリに格納。全ワーク
 - 帰属レポートパネル: Human / AI / Unknown の比率をバーグラフで表示（Attributionパネル設計書参照）
 
 **エクスポート:**
-- Markdownエクスポート時にはAuthorshipMarkを除外し、クリーンなMarkdownを出力する
+- エクスポート時にはAuthorshipMarkを除外し、クリーンなMarkdownを出力する
 - 将来的にAuthorship情報を含むエクスポート形式が必要になった場合は、Grimodex独自のJSON形式を定義する
 
 ### 3.3 チャットからのテキスト挿入
@@ -376,9 +321,9 @@ LLM APIのシステムプロンプトに以下の5レイヤーを階層的に注
 
 ## 5. Codex（ナレッジベース）
 
-### 5.1 エントリ構造: SQLiteメタデータ + Markdownコンテンツ
+### 5.1 エントリ構造: SQLiteメタデータ + コンテンツ
 
-各Codexエントリは、SQLiteテーブル（`codex_entries`）にメタデータを保持し、本文はMarkdownファイルとして保存する:
+各Codexエントリは、SQLiteテーブル（`codex_entries`）にメタデータと本文を格納する:
 
 **SQLiteメタデータ（`codex_entries` テーブル）:**
 
@@ -394,9 +339,9 @@ LLM APIのシステムプロンプトに以下の5レイヤーを階層的に注
 | `parent_id` | 親エントリID（リレーション表現用の自己参照） |
 | `source_chat_message_id` | 抽出元のチャットメッセージID |
 
-**Markdownコンテンツ:**
+**コンテンツ:**
 
-`codex/{type_prefix}_{sanitized_name}_{short_id}.md` に保存。フリーテキストのノート・詳細情報を記述。
+`codex_entries.content` カラムに格納。フリーテキストのノート・詳細情報を記述。
 
 **カスタムディテール（タイプごとの構造化フィールド）:**
 
@@ -416,12 +361,12 @@ LLM APIのシステムプロンプトに以下の5レイヤーを階層的に注
 
 **ビルトインタイプ:**
 
-| slug | label | file_prefix | 説明 |
-|------|-------|-------------|------|
-| `character` | キャラクター | `char` | 登場人物 |
-| `location` | 場所 | `loc` | 場所・舞台 |
-| `item` | アイテム | `item` | 物体・アーティファクト |
-| `lore` | 設定・世界観 | `lore` | 魔法体系、組織、歴史、抽象的概念 |
+| slug | label | 説明 |
+|------|-------|------|
+| `character` | キャラクター | 登場人物 |
+| `location` | 場所 | 場所・舞台 |
+| `item` | アイテム | 物体・アーティファクト |
+| `lore` | 設定・世界観 | 魔法体系、組織、歴史、抽象的概念 |
 
 各タイプには `color`、`icon`、`sort_order` を設定可能。`is_builtin = 1` のタイプは削除不可。
 
@@ -451,7 +396,7 @@ Codexエントリは `parent_id` による自己参照で親子関係を表現�
 1. AIがコンテンツを含むレスポンスを返す
 2. ユーザーが「Codex」ボタンをクリック
 3. ダイアログ表示: 名前、タイプ、タグ、サマリー、コンテンツ（AI modeでは事前入力）
-4. ユーザーが確認 → `codex_entries` レコード作成 + Markdownファイル作成
+4. ユーザーが確認 → `codex_entries` レコード作成（メタデータ + コンテンツをDBに格納）
 5. `source_chat_message_id` で抽出元メッセージへの紐付けを保持
 
 ### 5.5 Snippets（テキスト断片）
@@ -508,10 +453,6 @@ Jotai atoms（ローカル）:
 ### 6.2 データフロー図
 
 ```
-[ファイルシステム (MDファイル)]
-       ↕ content_read/content_write (Tauri)
-[Rustバックエンド]
-       ↕ Tauriコマンド (IPC)
 [Reactフロントエンド]
   ├── TipTapエディタ ←→ editorStore
   ├── チャットパネル  ←→ chatStore
@@ -520,6 +461,8 @@ Jotai atoms（ローカル）:
   └── サイドバー     ←→ sceneStore
        ↕ db_execute (Drizzle proxy)
 [SQLite (Drizzle ORM経由)]
+  ├── コンテンツ本文（Scene/Note/Codex/Snippet）
+  ├── コンテンツバージョン履歴
   ├── FTS5インデックス（Codex / Snippet / チャットメッセージ）
   ├── 帰属スパン
   ├── Codexリレーション + カスタムディテール
@@ -531,7 +474,7 @@ Jotai atoms（ローカル）:
 
 **執筆フロー:**
 1. ユーザーがTipTapで入力 → `human` 帰属マークを適用
-2. 自動保存（2000msデバウンス） → MDをディスクに書き込み + SQLiteの帰属スパンを更新
+2. 自動保存（2000msデバウンス） → SQLiteのコンテンツと帰属スパンを更新
 
 **AIチャットフロー:**
 1. ユーザーがメッセージを入力
@@ -543,7 +486,7 @@ Jotai atoms（ローカル）:
 **Codex抽出フロー:**
 1. ユーザーがチャットメッセージの「Codex」をクリック
 2. 抽出ダイアログが開く（AI mode: 自動提案 / Manual mode: 空欄）
-3. ユーザーが確認 → `codex_entries` レコード + Markdownファイル作成
+3. ユーザーが確認 → `codex_entries` レコード作成（DBに格納）
 4. FTS5インデックスが自動更新（トリガー経由）
 5. `source_chat_message_id` で抽出元への紐付けを保持
 
@@ -603,12 +546,10 @@ FTS5仮想テーブルはトリガーにより自動同期される。
 // 全テーブルの CRUD はフロントエンド API 関数 (src/features/*/api.ts) で実装
 ```
 
-### 8.3 コンテンツファイル操作
+### 8.3 インポート/エクスポート
 ```rust
-#[tauri::command] fn content_read(path: String) -> Result<String>
-#[tauri::command] fn content_write(path: String, content: String) -> Result<()>
-#[tauri::command] fn content_delete(path: String) -> Result<()>
-#[tauri::command] fn content_rename(old_path: String, new_path: String) -> Result<()>
+#[tauri::command] fn export_markdown(scope: ExportScope, output_dir: String) -> Result<()>
+#[tauri::command] fn import_markdown(paths: Vec<String>) -> Result<ImportResult>
 ```
 
 ### 8.4 AIチャット
@@ -685,7 +626,7 @@ VS Code + JetBrains ハイブリッドのDock/Float/Tab/Splitモデルを採用:
 
 | 形式 | 説明 |
 |------|------|
-| Markdown | ネイティブ形式そのもの — `content/` フォルダをコピーするだけ |
+| Markdown | DB内のコンテンツをMarkdownファイルとしてエクスポート |
 | プレーンテキスト | 全シーンを順序通りに結合し、Markdown記法を除去。Web小説投稿サイト（なろう、カクヨム）用 |
 | Attribution JSON | 帰属情報のエクスポート（Grimodex独自形式、将来実装） |
 | Attribution Report | Markdown / CSV — 帰属統計レポート |
@@ -810,7 +751,7 @@ VS Code + JetBrains ハイブリッドのDock/Float/Tab/Splitモデルを採用:
 
 - ワークスペースの作成/オープン
 - tree_nodesテーブルによるシーン管理
-- 基本的なTipTapエディタ（Markdown読み書き）
+- 基本的なTipTapエディタ（ProseMirror JSON読み書き）
 - Drizzle ORM + 統合DBスキーマ（14テーブル + FTS5）
 - 自動保存（2秒デバウンス）
 
@@ -824,7 +765,7 @@ VS Code + JetBrains ハイブリッドのDock/Float/Tab/Splitモデルを採用:
 
 ### Phase 3: Codex ✅
 
-- CodexエントリCRUD（SQLite + Markdownファイル）
+- CodexエントリCRUD（SQLite）
 - タイプシステム（ビルトイン4種 + カスタム対応スキーマ）
 - FTS5検索（Codex/Snippet/Chat）
 - ピン留めコンテキスト注入

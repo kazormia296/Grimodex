@@ -575,7 +575,7 @@ CREATE INDEX idx_chat_messages_session ON chat_messages(session_id, created_at);
 - Editorのコンテキストメニュー「Open in Chat」（Scenesパネル経由）→ そのシーンのセッションを開く
 - `/rewrite` コマンド → エディタで選択中のテキストをコンテキストに含めて送信
 
-Note: EditorにはインラインAIコマンド機能がある（`/` またはCtrl+Space でトリガー）。インラインAIはChatの会話履歴に残らないワンショット生成で、結果はエディタ内にdiff表示される。Chat /コマンドとインラインAIは同じコマンド名を共有するが、実行コンテキストと結果表示方法が異なる。詳細はEditorパネル設計書の「インラインAIコマンド」セクション参照。
+Note: EditorにはインラインAIコマンド機能がある（`/` またはCtrl+Shift+Space でトリガー）。インラインAIはChatの会話履歴に残らないワンショット生成で、結果はエディタ内にdiff表示される。Chat /コマンドとインラインAIは同じコマンド名を共有するが、実行コンテキストと結果表示方法が異なる。詳細はEditorパネル設計書の「インラインAIコマンド」セクション参照。
 
 ### Chat → Editor
 
