@@ -456,6 +456,8 @@ Settings > Editor > Animations セクション:
 | --- | | |
 | Look up in Chat | | 選択テキストをChatパネルに送信して質問 |
 | --- | | |
+| Mark as ▶ | | 選択範囲のAuthorshipMarkのsourceを手動で上書きする。**Attribution表示（Attrトグル）がONの場合のみ表示**。サブメニューで `Human` / `AI` / `Unknown` を選択。現在のsourceと同じ項目はチェックマーク付きで表示（選択不可ではない） |
+| --- | | |
 | Select all | `Ctrl+A` | |
 
 ### テキスト非選択時
