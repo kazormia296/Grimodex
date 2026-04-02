@@ -148,6 +148,7 @@ Noteの場合:
 | *I* | 斜体 | `Ctrl+I` |
 | U | 下線 | `Ctrl+U` |
 | ~~S~~ | 取り消し線 | `Ctrl+Shift+X` |
+| ﹅ | 傍点（圏点） | `Ctrl+.` |
 
 #### グループ2: ブロックフォーマット
 
@@ -179,10 +180,11 @@ Noteの場合:
 | ボタン | 動作 | 状態 |
 |--------|------|------|
 | Attr | Attribution表示トグル | ON: AI帰属マーカー表示、OFF: 非表示 |
+| Cmt | コメント表示トグル | ON: コメント付きテキストの波線下線+ホバーポップオーバー表示、OFF: 非表示（コメントデータは保持） |
 | Focus | フォーカスモードトグル | ON: 現在の段落以外を半透明化 |
 | TW | タイプライターモードトグル | ON: カーソル行を常に垂直中央に固定 |
 
-これら3つは独立したトグルで、組み合わせ可能（Attr ON + Focus ON + TW ON も可）。
+これら4つは独立したトグルで、組み合わせ可能。
 
 #### オーバーフローメニュー（⋮）
 
@@ -281,6 +283,45 @@ Mark.create({
 - `ai`: AIが生成したテキスト（人間が編集しても変わらない）
 - `unknown`: 出自が追跡できないテキスト（外部ペースト、既存プロジェクトのインポート、マイグレーション前のデータ等）
 
+**EmphasisDotsMark（傍点・圏点）**
+
+日本語小説で頻出する強調表現。文字の上（横書き）または右（縦書き）にドット（﹅）を付与する。
+
+```typescript
+Mark.create({
+  name: 'emphasisDots',
+  // 属性なし（ON/OFFのみ）
+})
+```
+
+- CSS `text-emphasis: filled sesame` で描画。縦書きプレビューでも正しく表示される
+- ツールバーボタン（﹅）またはショートカット `Ctrl+.` でトグル
+- Markdownエクスポート時は `《圏点:テキスト》` 形式に変換（小説投稿サイトの慣例に準拠）
+- インポート時は `《圏点:テキスト》` パターンを検出してEmphasisDotsMarkに変換
+
+**CommentMark（インラインコメント）**
+
+執筆中の自分用メモ。テキストの特定範囲に紐づく非表示の注釈。エクスポート時に除外される。
+
+```typescript
+Mark.create({
+  name: 'comment',
+  addAttributes() {
+    return {
+      text: { default: '' },         // コメント本文
+      createdAt: { default: null },  // ISO 8601
+    }
+  },
+})
+```
+
+- コメント付きテキストはアンバーの波線下線で表示（`text-decoration: wavy underline`）
+- ホバーでコメント内容をポップオーバー表示（編集・削除可能）
+- ツールバーには配置しない。コンテキストメニューまたはショートカット `Ctrl+Shift+M` で追加
+- コメント追加時: テキスト選択 → `Ctrl+Shift+M` → インラインでコメント入力欄が表示 → Enter で確定
+- Markdownエクスポート時にはコメントを除外（クリーンなMarkdown）
+- Find & Replaceの検索対象にはならない（コメントは本文ではない）
+
 #### クリップボードのAuthorship伝搬
 
 アプリ内のテキストコピー時にAuthorshipMarkをクリップボードに保持し、ペースト時に復元する。
@@ -341,6 +382,7 @@ Markdownエクスポート時には `tiptap-markdown` を使用し、AuthorshipM
 - 最大幅: 680px（本文領域）。エディタキャンバスの幅が広い場合はセンタリング
 - 左右パディング: 40px
 - 上パディング: 24px
+- 段落字下げ: OFF（Settingsで変更可能: OFF / 1字 / 2字）。ONの場合、各段落の先頭に自動で全角スペース相当のインデントをCSS `text-indent` で付与する。本文データには全角スペースを挿入しない（表示上のみ）。Markdownエクスポート時は設定に関わらず字下げなし（投稿先の書式に委ねる）
 
 ### タイプライターモード
 
@@ -460,6 +502,7 @@ Settings > Editor > Animations セクション:
 | Paste | `Ctrl+V` | |
 | --- | | |
 | Set ruby... | | 選択テキストにルビを付与するダイアログ |
+| Add comment | `Ctrl+Shift+M` | 選択範囲にインラインコメントを追加 |
 | --- | | |
 | Add to Codex | | 選択テキストをname としてCodexエントリを即時作成（後述） |
 | Save as Snippet | | 選択テキストをSnippetとして即時保存（後述） |
@@ -876,6 +919,8 @@ AuthorshipMarkはProseMirror/TipTapのMark機構によりドキュメント状�
 | `Ctrl+F` | Find（エディタ内検索） |
 | `Ctrl+H` | Find & Replace |
 | `Ctrl+Shift+F` | Find in all scenes（全シーン横断検索） |
+| `Ctrl+.` | 傍点（圏点）のトグル |
+| `Ctrl+Shift+M` | 選択範囲にコメントを追加 |
 | `Ctrl+S` | 手動保存（自動保存があるが、安心感のため） |
 | `Ctrl+Enter`（Scenesパネルから） | 新しいEditor Groupにシーンを開く |
 | `Ctrl+Shift+Space` | インラインAIパレットを開く |
