@@ -76,7 +76,7 @@ LLMに送信されるコンテキスト情報をユーザーに可視化する�
 |------|-----|------|
 | Project info | グレー | プロジェクト概要が注入されていることを示す。クリックで内容をポップオーバー表示 |
 | Scene: {文字数} | グレー | 現在のシーン本文がコンテキストに含まれている。文字数を表示 |
-| {Codexエントリ名} | Blue/Info | 自動検出またはピン留めされたCodexエントリ。クリックでCodex詳細。×で除外 |
+| {Codexエントリ名} | Blue/Info | 自動検出またはピン留めされたCodexエントリ。クリックでポップオーバー（summary、カスタムディテール概要、「Open in Codex →」リンク、**ピン留めされていない場合は「Pin」ボタン**を表示）。×で除外 |
 | {Codexエントリ名} auto | Blue/Info（薄） | `context_mode = always` のエントリ。常に表示。×で一時除外可能（セッション内） |
 | {子エントリ名} via {親名} | Blue/Info（薄） | 自動注入された子エントリ。×で個別除外可能 |
 | {Snippet名} | Purple | ピン留めされたSnippet。クリックでSnippet詳細。×で除外 |
@@ -90,6 +90,9 @@ LLMに送信されるコンテキスト情報をユーザーに可視化する�
 - **`context_mode = suppress` のエントリはミュート表示 + ツールチップ（「ピン留めでAIコンテキストに含まれます」）**
 - ピン留めしたエントリはセッション内で永続（セッション終了まで有効）
 - 自動検出されたCodexエントリも×ボタンで個別除外可能
+- **ピルプレビュー内ピン昇格**: 自動検出（未ピン留め）のCodexエントリのピルをクリックしたポップオーバー内に「Pin」ボタンを表示。クリックでピン留めに昇格し、以降content全文が注入される
+- **チャット言及による自動ピン留め**: ユーザーのチャットメッセージ内でCodexエントリ名が検出された場合（CodexHighlightまたは@メンション経由）、そのエントリをセッションの `pinned_codex` に自動追加する。シーン本文での言及（summary注入）とは異なり、チャットでの言及はユーザーの明確な意図を示すため、content全文を注入する。自動ピン留めされたエントリはContext Barにピルとして表示され、不要な場合は×で除外可能
+- **チャット言及の編集による自動ピン解除**: 送信前にユーザーがメッセージを編集し、Codexエントリ名が入力欄から消えた場合、そのエントリの自動ピン留めを解除する。ただし手動ピン留め（「+」ボタンやピルプレビューのPinボタン経由）されたエントリは編集で解除されない。これを区別するため、`pinned_codex` の各エントリに `source: 'manual' | 'chat_mention'` を保持する
 - **Pin with children**: Codexエントリのピン留め時に「子エントリも含める」オプションを提供。選択すると親+全子エントリ（depth 1）をまとめてピン留めし、それぞれcontent全文が注入される。個別の×ボタンで子エントリ単位の除外も可能
 
 ### 折りたたみ
@@ -212,10 +215,15 @@ AIメッセージ内のテキストを選択すると、選択範囲の近くに
 
 ### テキスト入力
 
-- 複数行テキストエリア（`<textarea>` ベース）
-- `Enter` で送信、`Shift+Enter` で改行
+- **TipTapミニインスタンス**（Content用TipTapのサブセット）
+- 対応記法: 太字、斜体、インラインコード、リスト（見出し・画像は非対応）
+- Markdown記法をリアルタイムにリッチテキストとしてレンダリング
+- `Enter` で送信、`Shift+Enter` で改行（TipTapのキーマップでハンドル）
 - 入力内容に応じて高さが自動伸縮（最大5行まで、それ以降はスクロール）
 - プレースホルダー: 「Ask about this scene...」
+- **CodexHighlight対応**: エディタ本文と同じCodexHighlight Pure Decorationを適用。入力中にCodexエントリ名がハイライトされ、チャット言及による自動ピン留めの対象が視覚的に確認できる
+- **@メンション補完**: `@` 入力でCodexエントリの補完候補をポップアップ表示。選択するとエントリ名が挿入され、自動ピン留めの対象になる。`context_mode = hidden` のエントリは候補に表示しない
+- **送信時のテキスト変換**: 送信時にTipTapのHTML→Markdownに変換してLLMに渡す
 
 ### 特殊入力
 
@@ -339,8 +347,9 @@ LLM APIのシステムプロンプトに以下の5レイヤーを階層的に注
   - `always`: 自動検出の有無に関わらず常に注入
   - `mentioned`（デフォルト）: シーン内で検出された場合に注入
   - `suppress`: 自動検出では注入しない。ピン留めされている場合のみ注入
-- 注入対象のCodexエントリのsummary + カスタムディテール（`include_in_context = 1`）
+- 注入対象のCodexエントリのsummary + カスタムディテール（`include_in_context = 1`）。**summaryが未記入の場合はcontent全文をフォールバックとして注入する**
 - コンテキストバーでピン留めされたCodexエントリの全文 + カスタムディテール
+- **チャット言及による自動ピン留め**: ユーザーのチャットメッセージ内でCodexエントリ名が検出された場合、セッションの `pinned_codex` に自動追加し、content全文を注入する（シーン本文の自動検出とは区別）
 - コンテキストバーでピン留めされたSnippetの全文
 - **子エントリの自動注入**: 上記でマッチした親Codexエントリのdepth 1の子エントリのsummaryを自動追加（子のcontext_modeも個別に判定。Codexパネル設計書「コンテキスト注入への影響」セクション参照）
 - 予算超過時の優先順: always > mentioned > pinned content > 子エントリsummary（最初に切り詰め）
@@ -382,10 +391,16 @@ function buildContext(sceneId: string, session: ChatSession): SystemPrompt {
 
   const layer1 = buildProjectInfo();          // 常時含める
   const layer3 = buildSceneContext(sceneId);  // 常時含める
-  const layer4 = buildCodexContext(sceneId, session.pinnedCodex);
+  // チャットメッセージ内のCodex言及を検出し、自動ピン留め（source: 'chat_mention'）
+  // 入力エリアのCodexHighlight/@メンションから検出済みのIDを取得
+  const chatMentionedIds = detectCodexMentions(userMessage);
+  // 手動ピン（source: 'manual'）はそのまま維持、chat_mentionは差分更新
+  const updatedPins = reconcilePins(session.pinnedCodex, chatMentionedIds);
+  const layer4 = buildCodexContext(sceneId, updatedPins);
   // buildCodexContext 内で context_mode フィルタ適用:
   //   hidden → 除外、always → 無条件追加、mentioned → 検出時のみ、
   //   suppress → ピンリスト存在時のみ
+  // summaryが未記入の場合はcontent全文をフォールバック注入
   // カスタムディテール（include_in_context=1）も注入対象に含める
   const layer5 = truncateHistory(session.messages, remainingBudget);
   const layer2 = buildChapterSummaries(sceneId, remainingBudget);
@@ -467,7 +482,7 @@ CREATE TABLE chat_sessions (
   title       TEXT NOT NULL DEFAULT 'New session',
   title_manual INTEGER NOT NULL DEFAULT 0,  -- 1の場合、自動タイトル再生成を抑制
   model       TEXT NOT NULL DEFAULT 'openrouter/anthropic/claude-sonnet-4.6',
-  pinned_codex TEXT,            -- JSON array of pinned codex entry IDs
+  pinned_codex TEXT,            -- JSON array of {id, source} objects. source: 'manual' | 'chat_mention'
   created_at  TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
 );

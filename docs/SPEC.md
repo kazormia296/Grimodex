@@ -315,7 +315,7 @@ CREATE TABLE chat_sessions (
   title         TEXT NOT NULL DEFAULT '',
   title_manual  INTEGER NOT NULL DEFAULT 0,
   model         TEXT,
-  pinned_codex  TEXT DEFAULT '[]',  -- JSON配列
+  pinned_codex  TEXT DEFAULT '[]',  -- JSON配列: [{id, source: 'manual'|'chat_mention'}]
   created_at    TEXT NOT NULL,
   updated_at    TEXT NOT NULL
 );

@@ -254,6 +254,8 @@ Codexパネルはプロジェクトの世界設定データベース。キャラ
 - プレースホルダー: 「Short description...」
 - この内容がエディタのCodexハイライト ポップオーバー、Codex Quickセクション、Chatコンテキスト注入の「要約」として使われる
 - 自動保存（デバウンス1秒）
+- **summaryが未記入の場合のフォールバック**: コンテキスト注入時にsummaryが空の場合、content全文を注入する。これによりsummary未記入でもAIが情報不足にならないが、トークン効率は低下する
+- **ガイドラインメッセージ**: summaryが空でcontentがある場合、入力欄の下にインラインヒントを表示: 「Summaryを記入するとAIチャットでのトークン消費を抑えられます」（dismissible、一度閉じたらセッション内で再表示しない）
 - **AI自動要約**:
   - summaryが空でcontentがある場合、入力欄内に「✨ Generate summary」ボタンを表示
   - クリックで軽量モデル（haiku等）がcontentを要約し、summaryに自動入力
@@ -1040,6 +1042,7 @@ function buildCodexContext(matchedEntryIds: string[]): string {
     if (injectedIds.has(entryId)) continue;
 
     // 親エントリのsummary（またはpin時はcontent全文）
+    // summaryが未記入の場合はcontent全文をフォールバック
     contextParts.push(formatEntryContext(entry));
     injectedIds.add(entryId);
 
@@ -1060,8 +1063,9 @@ function buildCodexContext(matchedEntryIds: string[]): string {
 
 | 注入トリガー | 親エントリ | 子エントリ（depth 1） | 孫エントリ（depth 2+） |
 |-------------|-----------|---------------------|---------------------|
-| 自動検出（本文にnameが出現） | summary + カスタムディテール（include_in_context=1） | summary（自動） | 注入しない |
-| ピン留め | content全文 + カスタムディテール（include_in_context=1） | summary（自動） | 注入しない |
+| 自動検出（シーン本文にnameが出現） | summary + カスタムディテール（include_in_context=1）。**summaryが未記入の場合はcontent全文をフォールバック** | summary（自動） | 注入しない |
+| チャットメッセージ内で言及 | **自動ピン留め**: content全文 + カスタムディテール（include_in_context=1） | summary（自動） | 注入しない |
+| ピン留め（手動） | content全文 + カスタムディテール（include_in_context=1） | summary（自動） | 注入しない |
 
 **context_mode による制御**:
 
@@ -1195,8 +1199,9 @@ CREATE TABLE codex_relation_dismissed (
 
 ### → Chat（コンテキスト注入）
 
-- Codexエントリの summary がChatのシステムプロンプト Layer 4 に注入される
-- ピン留めされたエントリは content 全文が注入される
+- シーン本文で自動検出されたCodexエントリの summary がChatのシステムプロンプト Layer 4 に注入される（summaryが未記入の場合はcontent全文をフォールバック）
+- チャットメッセージ内で言及されたCodexエントリは自動的にピン留めされ、content全文が注入される
+- 手動ピン留めされたエントリは content 全文が注入される
 - 親エントリが注入される場合、depth 1の子エントリのsummaryも自動注入される（「エントリ間リレーション」セクション参照）
 - 自動注入された子エントリはコンテキストバーに薄いスタイルのピルで表示される
 

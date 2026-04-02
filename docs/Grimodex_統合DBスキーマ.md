@@ -317,7 +317,7 @@ CREATE TABLE chat_sessions (
   title        TEXT NOT NULL DEFAULT 'New session',
   title_manual INTEGER NOT NULL DEFAULT 0,        -- 1: 手動リネーム済み、自動再生成を抑制
   model        TEXT NOT NULL DEFAULT 'openrouter/anthropic/claude-sonnet-4.6',
-  pinned_codex TEXT,           -- JSON array of pinned codex entry IDs
+  pinned_codex TEXT,           -- JSON array of {id, source} objects. source: 'manual' | 'chat_mention'
   created_at   TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at   TEXT NOT NULL DEFAULT (datetime('now'))
 );
@@ -553,7 +553,7 @@ SQLiteにはネイティブJSON型がないため、TEXT カラムにJSON文字�
 | `codex_tags.type_filter` | `string[] \| null` | `["character", "lore"]` または `null`（全タイプ） |
 | `codex_detail_definitions.field_config` | `object` | `{"multiline":true}`, `{"options":["人間","エルフ"]}`, `{"allowedTypes":["faction"]}` |
 | `snippets.tags` | `string[]` | `["dialogue", "elara"]` |
-| `chat_sessions.pinned_codex` | `string[]` | `["codex-id-1", "codex-id-2"]` |
+| `chat_sessions.pinned_codex` | `{id: string, source: 'manual' \| 'chat_mention'}[]` | `[{"id":"codex-id-1","source":"manual"},{"id":"codex-id-2","source":"chat_mention"}]` |
 | `chat_messages.metadata` | `object` | `{"extractedCodex":["id1"],"extractedSnippets":["id2"]}` |
 | `settings.value` | `any` | `"16"`, `"system"`, `"true"` |
 
