@@ -76,15 +76,15 @@ LLMに送信されるコンテキスト情報をユーザーに可視化する�
 
 ### 表示するピル
 
-| ピル | 色 | 内容 |
-|------|-----|------|
-| Project info | グレー | プロジェクト概要が注入されていることを示す。クリックで内容をポップオーバー表示 |
-| Scene: {文字数} | グレー | 現在のシーン本文がコンテキストに含まれている。文字数を表示 |
-| {Codexエントリ名} | Blue/Info | 自動検出またはピン留めされたCodexエントリ。クリックでポップオーバー（summary、カスタムディテール概要、「Open in Codex →」リンク、**ピン留めされていない場合は「Pin」ボタン**を表示）。×で除外 |
-| {Codexエントリ名} auto | Blue/Info（薄） | `context_mode = always` のエントリ。常に表示。×で一時除外可能（セッション内） |
-| {子エントリ名} via {親名} | Blue/Info（薄） | 自動注入された子エントリ。×で個別除外可能 |
-| {Snippet名} | Purple | ピン留めされたSnippet。クリックでSnippet詳細。×で除外 |
-| ~{N} tokens | グレー（右寄せ） | システムプロンプトの合計トークン数概算 |
+| ピル                | 色            | 内容                                                                                                               |
+| ----------------- | ------------ | ---------------------------------------------------------------------------------------------------------------- |
+| Project info      | グレー          | プロジェクト概要が注入されていることを示す。クリックで内容をポップオーバー表示                                                                          |
+| Scene: {文字数}      | グレー          | 現在のシーン本文がコンテキストに含まれている。文字数を表示                                                                                    |
+| {Codexエントリ名}      | Blue/Info    | 自動検出またはピン留めされたCodexエントリ。クリックでポップオーバー（summary、カスタムディテール概要、「Open in Codex →」リンク、**ピン留めされていない場合は「Pin」ボタン**を表示）。×で除外 |
+| {Codexエントリ名} auto | Blue/Info（薄） | `context_mode = always` のエントリ。常に表示。×で一時除外可能（セッション内）                                                              |
+| {子エントリ名} via {親名} | Blue/Info（薄） | 自動注入された子エントリ。×で個別除外可能                                                                                            |
+| {Snippet名}        | Purple       | ピン留めされたSnippet。クリックでSnippet詳細。×で除外                                                                               |
+| ~{N} tokens       | グレー（右寄せ）     | システムプロンプトの合計トークン数概算。クリックでプロンプトプレビューモーダルを表示（全文 + レイヤー別トークン内訳）                                                     |
 
 ### グループ化表示
 
@@ -126,7 +126,7 @@ Codex + Snippetのピル合計が **6個を超えた場合**、個別ピル表�
 - **ピルプレビュー内ピン昇格**: 自動検出（未ピン留め）のCodexエントリのピルをクリックしたポップオーバー内に「Pin」ボタンを表示。クリックでピン留めに昇格し、以降content全文が注入される
 - **チャット言及による自動ピン留め**: ユーザーのチャットメッセージ内でCodexエントリ名が検出された場合（CodexHighlightまたは@メンション経由）、そのエントリをセッションの `pinned_codex` に自動追加する。シーン本文での言及（summary注入）とは異なり、チャットでの言及はユーザーの明確な意図を示すため、content全文を注入する。自動ピン留めされたエントリはContext Barにピルとして表示され、不要な場合は×で除外可能
 - **チャット言及の編集による自動ピン解除**: 送信前にユーザーがメッセージを編集し、Codexエントリ名が入力欄から消えた場合、そのエントリの自動ピン留めを解除する。ただし手動ピン留め（「+」ボタンやピルプレビューのPinボタン経由）されたエントリは編集で解除されない。これを区別するため、`pinned_codex` の各エントリに `source: 'manual' | 'chat_mention'` を保持する
-- **Pin with children**: Codexエントリのピン留め時に「子エントリも含める」オプションを提供。選択すると親+全子エントリ（depth 1）をまとめてピン留めし、それぞれcontent全文が注入される。個別の×ボタンで子エントリ単位の除外も可能
+- **Pin with children**: Codexエントリのピン留め時に「子エントリも含める」オプションを提供。選択すると親+全直接子エントリをまとめてピン留めし、それぞれcontent全文が注入される（手動ピンはサブツリートークン予算を無視する）。個別の×ボタンで子エントリ単位の除外も可能
 
 ### 折りたたみ
 
@@ -379,8 +379,8 @@ LLM APIのシステムプロンプトに以下の5レイヤーを階層的に注
 
 **Layer 3: Current scene + previous（常時）**
 - 現在のアクティブシーンの全文
-- 直前シーンの全文（コンテキスト連続性のため）
-- ~2,000-16,000 tokens
+- 直前シーンの synopsis + 末尾段落（最大3段落）。直前シーンの全文は含めない（トークン効率のため。全文が必要な場合はAgent modeの `get_scene` ツールを使用）
+- ~2,000-12,000 tokens
 
 **Layer 4: Codex entries + Snippets**
 - **context_mode フィルタ**: 各エントリの `context_mode` により注入可否を判定（Codexパネル設計書「コンテキスト制御モード」セクション参照）
@@ -392,18 +392,18 @@ LLM APIのシステムプロンプトに以下の5レイヤーを階層的に注
 - コンテキストバーでピン留めされたCodexエントリの全文 + カスタムディテール
 - **チャット言及による自動ピン留め**: ユーザーのチャットメッセージ内でCodexエントリ名が検出された場合、セッションの `pinned_codex` に自動追加し、content全文を注入する（シーン本文の自動検出とは区別）
 - コンテキストバーでピン留めされたSnippetの全文
-- **子エントリの自動注入**: 上記でマッチした親Codexエントリのdepth 1の子エントリのsummaryを自動追加（子のcontext_modeも個別に判定。Codexパネル設計書「コンテキスト注入への影響」セクション参照）
-- 予算超過時の優先順: always > mentioned > pinned content > 子エントリsummary（最初に切り詰め）
+- **子孫エントリの自動注入**: 上記でマッチした親Codexエントリの子孫エントリのsummaryを、サブツリートークン予算（エントリごとに設定、デフォルト800tok）の範囲内でBFS（幅優先）順に自動追加。depth制限はなく、予算が自然な制限として機能する（子のcontext_modeも個別に判定。Codexパネル設計書「コンテキスト注入への影響」セクション参照）
+- 予算超過時の優先順: always > mentioned > pinned content > 子孫エントリsummary（最初に切り詰め）
 - ~500-6,000 tokens（子エントリ・Snippet・カスタムディテールの注入により上限が上がる可能性）
 
 #### 検討済み・不採用のコンテキスト注入モード
 
 以下のモードを検討したが、いずれもグローバルモードとしては追加しない。
 
-**Strict モード（子エントリのcontent全文注入 + depth拡張）:**
-- 想定: ピン留めした親エントリの子のcontent全文を注入し、depth 2+まで辿る
+**Strict モード（子エントリのcontent全文注入 + 無制限depth拡張）:**
+- 想定: ピン留めした親エントリの子のcontent全文を注入し、depth 2+まで無制限に辿る
 - メリット: 子エントリの詳細情報をAIに渡せる。深い階層（例: 太郎 → 能力 → 火魔法）も参照可能
-- 不採用理由: トークン消費が予測不能に膨張する（子10個 × 500tok = 5,000tok追加）。depth 2+は指数的に増加。必要な子エントリを個別にピン留め（または「Pin with children」で一括ピン留め）すれば同等の効果が得られる
+- 不採用理由: トークン消費が予測不能に膨張する（子10個 × 500tok = 5,000tok追加）。depth 2+は指数的に増加。代わりにサブツリートークン予算方式を採用（Codexパネル設計書参照）: 親エントリごとにトークン上限（デフォルト800tok）を設定し、BFS順でsummaryを注入。予算が自然な深さ制限として機能する
 
 **Deep-dive モード（リレーション無関係にContent内の全言及Codexとその子を注入）:**
 - 想定: Content本文中で言及されている全Codexエントリ+その子を、明示的リレーションの有無に関係なく注入
@@ -414,15 +414,19 @@ LLM APIのシステムプロンプトに以下の5レイヤーを階層的に注
 
 **Layer 5: Conversation history**
 - 現在のセッションのメッセージ履歴
-- トークン予算に収まるよう、古いメッセージからFIFOで切り詰め
+- **Progressive summarization**: メッセージ数が閾値（8往復）を超え、かつトークン予算に収まらない場合、古いメッセージ群をLLMで要約し「会話要約」として先頭に保持する。直近の会話は原文を維持
+- ユーザーが「重要」マーク（⭐）を付けたメッセージは要約対象から除外し、原文を保持する
+- 要約生成にはSettingsのサマリー用モデルを使用（Synopsis自動生成と同じモデル）
+- フォールバック: 要約生成に失敗した場合は従来のFIFO切り詰めを適用
 - ~2,000-8,000 tokens
 
 ### トークン予算管理
 
 - 合計トークン数を `js-tiktoken` で計算
 - 使用モデルのコンテキスト上限から逆算して各レイヤーの予算を配分
-- 予算超過時の優先順位: Layer 1 > Layer 3 > Layer 4 > Layer 5 > Layer 2
+- 予算超過時の優先順位: Layer 1 > Layer 3 > Layer 2 > Layer 4 > Layer 5
 - コンテキストバーに合計トークン数を常時表示
+- **プロンプトプレビュー**: コンテキストバーのトークン数ピルをクリックすると、実際にLLMに送信されるシステムプロンプト全文をモーダルで表示。レイヤーごとのトークン内訳（L1: 800, L2: 2,100, L3: 8,500, L4: 3,200, L5: 4,800）も可視化する。デバッグやコンテキストチューニングに使用
 
 ### コンテキスト構築の関数
 
@@ -430,8 +434,10 @@ LLM APIのシステムプロンプトに以下の5レイヤーを階層的に注
 function buildContext(sceneId: string, session: ChatSession): SystemPrompt {
   const budget = getModelContextLimit(session.model) - reserveForResponse(2000);
 
+  // 優先順位: Layer 1 > Layer 3 > Layer 2 > Layer 4 > Layer 5
   const layer1 = buildProjectInfo();          // 常時含める
-  const layer3 = buildSceneContext(sceneId);  // 常時含める
+  const layer3 = buildSceneContext(sceneId);  // 現在シーン全文 + 前シーンsynopsis&末尾3段落
+  const layer2 = buildStorySoFar(sceneId, remainingBudget);  // storySoFar（L5より優先）
   // チャットメッセージ内のCodex言及を検出し、自動ピン留め（source: 'chat_mention'）
   // 入力エリアのCodexHighlight/@メンションから検出済みのIDを取得
   const chatMentionedIds = detectCodexMentions(userMessage);
@@ -443,8 +449,10 @@ function buildContext(sceneId: string, session: ChatSession): SystemPrompt {
   //   suppress → ピンリスト存在時のみ
   // summaryが未記入の場合はcontent全文をフォールバック注入
   // カスタムディテール（include_in_context=1）も注入対象に含める
-  const layer5 = truncateHistory(session.messages, remainingBudget);
-  const layer2 = buildStorySoFar(sceneId, remainingBudget);
+  // 子孫エントリはサブツリートークン予算内でBFS順に注入
+  const layer5 = buildConversationHistory(session.messages, remainingBudget);
+  // Progressive summarization: 8往復超のメッセージは要約化
+  // ⭐マーク付きメッセージは要約対象から除外
 
   return assembleLayers([layer1, layer2, layer3, layer4, layer5]);
 }

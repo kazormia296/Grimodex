@@ -509,6 +509,19 @@ Codexエントリ間の親子関係を管理するセクション。詳細は「
 - ×で子リレーション解除
 - [+ Add child] でCodexエントリ検索UIを表示し、子を追加
 
+**Context injection（コンテキスト注入設定）**:
+- Children セクション下部にドロップダウンで表示
+- このエントリが注入対象になった場合に、子孫エントリのsummaryを自動注入するトークン上限を設定
+- プリセット選択肢:
+  | 選択肢 | 値 | 説明 |
+  |--------|-----|------|
+  | None | 0 | 子孫を注入しない |
+  | Compact (default) | 800 | summary ~4件分。子が少ないエントリ向け |
+  | Standard | 1600 | summary ~8件分。中規模の子ツリー向け |
+  | Generous | 3200 | summary ~16件分。大きな組織・派閥向け |
+- デフォルト: Compact (800 tok)
+- 子エントリが0個の場合はこのセクションを非表示
+
 **Suggested（提案）**:
 - Content内で言及されているが、まだリレーションが設定されていないCodexエントリの一覧
 - 各候補の右に [+ Add] ボタン。クリックで子リレーションとして確定
@@ -959,23 +972,23 @@ Codexエントリ間に親子関係（リレーション）を設定できる。
 
 リレーションの主な用途:
 1. **ナビゲーション**: 詳細画面で関連エントリに素早く移動
-2. **コンテキスト注入**: 親エントリがChatに注入される場合、子エントリのsummaryも自動注入
+2. **コンテキスト注入**: 親エントリがChatに注入される場合、子孫エントリのsummaryをサブツリートークン予算内でBFS順に自動注入
 
 ### リレーションモデル
 
 - 1つのエントリは最大1つの親を持てる（多対1）
 - 1つのエントリは0個以上の子を持てる（1対多）
 - 循環参照は禁止（A→B→C→Aのようなループ）
-- 深さに制限はないが、コンテキスト注入はdepth 1（直接の子）のみ
+- 深さに制限はない。コンテキスト注入はサブツリートークン予算（デフォルト800tok）で制御され、BFS順で注入する
 
 ```
-Elara (character)
-├── Soulbind Amulet (item)         ← 子
-├── Binding Mark (lore)            ← 子
-└── Elara's Journal (item)         ← 子
-      └── Journal Entry #3 (lore)  ← 孫（depth 2、注入対象外）
+Elara (character)                       children_budget: 800
+├── Soulbind Amulet (item)         ← 子（BFS depth 1、優先注入）
+├── Binding Mark (lore)            ← 子（BFS depth 1、優先注入）
+└── Elara's Journal (item)         ← 子（BFS depth 1、優先注入）
+      └── Journal Entry #3 (lore)  ← 孫（BFS depth 2、予算が残っていれば注入）
 
-Obsidian Tower (location)
+Obsidian Tower (location)               children_budget: 800
 ├── Binding Chamber (location)     ← 子
 └── Warding Stones (item)          ← 子
 ```
@@ -1013,9 +1026,46 @@ function canSetParent(entryId: string, newParentId: string): boolean {
 
 ### コンテキスト注入への影響
 
-Chatパネルのコンテキスト注入Layer 4で、親エントリが注入対象になった場合、**直接の子（depth 1）のsummaryも自動注入する**。
+Chatパネルのコンテキスト注入Layer 4で、親エントリが注入対象になった場合、**子孫エントリのsummaryをサブツリートークン予算の範囲内でBFS（幅優先）順に自動注入する**。
+
+#### サブツリートークン予算
+
+深さ（depth）ではなく、**親エントリごとのトークン予算**で子孫注入を制御する。これにより「子が少なく深い構造」と「子が多く浅い構造」の両方に一貫して対応できる。
+
+- 各エントリの `children_budget` カラム（デフォルト800tok）で上限を設定
+- BFS順（depth 1 → depth 2 → ...）で注入するため、直接の子が優先される
+- 予算到達で打ち切り。depth制限は設けない（予算が自然な制限として機能する）
+- 手動ピン（「Pin with children」操作）は予算を無視する（ユーザーの明示的意図）
 
 ```typescript
+function injectDescendants(parentId: string, budget: number): DescendantContext[] {
+  const results: DescendantContext[] = [];
+  let remaining = budget;
+  const visited = new Set<string>();
+  const queue = codexStore.getChildren(parentId);  // depth 1 を先頭に
+
+  while (queue.length > 0 && remaining > 0) {
+    const child = queue.shift()!;
+    if (visited.has(child.id)) continue;
+    visited.add(child.id);
+
+    // 子エントリも個別にcontext_modeを判定（親のモードは伝播しない）
+    if (child.context_mode === 'hidden') continue;
+    if (child.context_mode === 'suppress' && !isPinned(child.id)) continue;
+
+    const tokens = estimateTokens(child.summary || child.content);
+    if (tokens > remaining) break;  // 予算不足で打ち切り
+
+    results.push({ entry: child, tokens, depth: getDepthFrom(parentId, child.id) });
+    remaining -= tokens;
+
+    // depth 2+ の子を末尾に追加（BFS: 幅優先で深掘り）
+    queue.push(...codexStore.getChildren(child.id));
+  }
+
+  return results;
+}
+
 function buildCodexContext(matchedEntryIds: string[]): string {
   const contextParts: string[] = [];
   const injectedIds = new Set<string>();
@@ -1029,12 +1079,12 @@ function buildCodexContext(matchedEntryIds: string[]): string {
     contextParts.push(formatEntryContext(entry));
     injectedIds.add(entryId);
 
-    // depth 1の子エントリのsummaryを追加
-    const children = codexStore.getChildren(entryId);
-    for (const child of children) {
-      if (injectedIds.has(child.id)) continue;
-      contextParts.push(formatChildContext(child));  // summaryのみ、contentは含まない
-      injectedIds.add(child.id);
+    // 子孫エントリをサブツリートークン予算内でBFS注入
+    const descendants = injectDescendants(entryId, entry.children_budget ?? 800);
+    for (const desc of descendants) {
+      if (injectedIds.has(desc.entry.id)) continue;
+      contextParts.push(formatChildContext(desc.entry));  // summaryのみ
+      injectedIds.add(desc.entry.id);
     }
   }
 
@@ -1044,11 +1094,12 @@ function buildCodexContext(matchedEntryIds: string[]): string {
 
 **注入ルール**:
 
-| 注入トリガー | 親エントリ | 子エントリ（depth 1） | 孫エントリ（depth 2+） |
-|-------------|-----------|---------------------|---------------------|
-| 自動検出（シーン本文にnameが出現） | summary + カスタムディテール（include_in_context=1）。**summaryが未記入の場合はcontent全文をフォールバック** | summary（自動） | 注入しない |
-| チャットメッセージ内で言及 | **自動ピン留め**: content全文 + カスタムディテール（include_in_context=1） | summary（自動） | 注入しない |
-| ピン留め（手動） | content全文 + カスタムディテール（include_in_context=1） | summary（自動） | 注入しない |
+| 注入トリガー | 親エントリ | 子孫エントリ（自動注入） |
+|-------------|-----------|----------------------|
+| 自動検出（シーン本文にnameが出現） | summary + カスタムディテール（include_in_context=1）。**summaryが未記入の場合はcontent全文をフォールバック** | summaryをBFS順に `children_budget`（デフォルト800tok）まで注入 |
+| チャットメッセージ内で言及 | **自動ピン留め**: content全文 + カスタムディテール（include_in_context=1） | summaryをBFS順に `children_budget` まで注入 |
+| ピン留め（手動） | content全文 + カスタムディテール（include_in_context=1） | summaryをBFS順に `children_budget` まで注入 |
+| Pin with children（手動） | content全文 + カスタムディテール | **予算無視**: 直接子のcontent全文を注入（個別除外可能） |
 
 **context_mode による制御**:
 
@@ -1075,13 +1126,15 @@ function buildCodexContext(matchedEntryIds: string[]): string {
 
 **トークン予算の制御**:
 
-子エントリの自動注入で予算を超過する場合の優先順位:
+Layer 4全体のトークン予算を超過する場合の優先順位:
 1. `always` エントリのsummary + カスタムディテール（最優先）
 2. 本文に直接出現するエントリのsummary + カスタムディテール
 3. ピン留めされたエントリのcontent + カスタムディテール
-4. 自動注入された子エントリのsummary（最初に切り詰め対象）
+4. 自動注入された子孫エントリのsummary（最初に切り詰め対象）
 
-Chatパネルのコンテキストバーには、自動注入された子エントリもピルとして表示する。ただし通常のピルとは異なるスタイル（薄い表示 + 「via {親名}」ラベル）で区別し、×で個別除外も可能。`always` エントリは常にピルとして表示（薄いスタイル + 「auto」ラベル）。`hidden` エントリはピンダイアログに表示しない。
+サブツリートークン予算はエントリ単位の制御であり、Layer 4全体の予算とは独立して適用される。Layer 4全体の予算超過時には、まず優先順位4（子孫エントリ）から切り詰める。
+
+Chatパネルのコンテキストバーには、自動注入された子孫エントリもピルとして表示する。ただし通常のピルとは異なるスタイル（薄い表示 + 「via {親名}」ラベル）で区別し、×で個別除外も可能。`always` エントリは常にピルとして表示（薄いスタイル + 「auto」ラベル）。`hidden` エントリはピンダイアログに表示しない。
 
 ---
 
@@ -1135,8 +1188,8 @@ Suggested: (from Content)
 
 Content内で言及されたエントリを自動的にリレーションにすると:
 
-1. **コンテキスト爆発**: 「カゾルミア帝国」のContentに20エントリが言及されていたら、帝国が登場するだけで20 x ~200tok = 4,000tokが自動注入される
-2. **再帰問題**: 子エントリのContent内にさらに別のエントリが言及されていると、depth制限があっても間接的に大量のエントリが巻き込まれる
+1. **コンテキスト爆発**: 「カゾルミア帝国」のContentに20エントリが言及されていたら、帝国が登場するだけで大量のエントリが自動注入される（サブツリートークン予算でリレーション経由の注入は制御されるが、Content言及は別経路であり制御外）
+2. **再帰問題**: 子エントリのContent内にさらに別のエントリが言及されていると、間接的に大量のエントリが巻き込まれる
 3. **意図しない関係**: Content内で「エララは黒曜石の塔とは無関係の村で育った」と書いてあっても、「黒曜石の塔」がマッチして子リレーションになってしまう
 
 提案にとどめることで、ユーザーが「この関係は本当にAIに伝えるべきか」を判断してから確定する動線になる。
@@ -1194,7 +1247,7 @@ CREATE TABLE codex_relation_dismissed (
 - シーン本文で自動検出されたCodexエントリの summary がChatのシステムプロンプト Layer 4 に注入される（summaryが未記入の場合はcontent全文をフォールバック）
 - チャットメッセージ内で言及されたCodexエントリは自動的にピン留めされ、content全文が注入される
 - 手動ピン留めされたエントリは content 全文が注入される
-- 親エントリが注入される場合、depth 1の子エントリのsummaryも自動注入される（「エントリ間リレーション」セクション参照）
+- 親エントリが注入される場合、子孫エントリのsummaryがサブツリートークン予算の範囲内でBFS順に自動注入される（「エントリ間リレーション」セクション参照）
 - 自動注入された子エントリはコンテキストバーに薄いスタイルのピルで表示される
 
 ### → Chat History

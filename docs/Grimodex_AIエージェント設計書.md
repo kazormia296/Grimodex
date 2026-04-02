@@ -19,8 +19,8 @@ Chatパネルのグローバルチャット（🌐ボタン）でプロジェク
 **有効化**: Chatパネルのヘッダーに **エージェントトグル**（🔧アイコン）を配置。ONにするとツール定義がシステムプロンプトに追加され、LLMがツールを使えるようになる。
 
 - エージェントモードON時、コンテキストバーに `[Agent mode]` ピルを表示
-- Layer 4（Codex/Snippetの自動注入）は**無効化**される（LLMが必要なデータを自分で取得するため、事前注入は不要かつトークンの無駄）
-- Layer 1（Project info）、Layer 3（シーンコンテキスト）、Layer 5（会話履歴）は維持
+- Layer 4（Codex/Snippetの自動注入・サブツリートークン予算による子孫注入を含む）は**無効化**される（LLMが必要なデータを自分で取得するため、事前注入は不要かつトークンの無駄）
+- Layer 1（Project info）、Layer 2（storySoFar）、Layer 3（シーンコンテキスト）、Layer 5（会話履歴）は維持
 - シーンスコープでもエージェントモードは使用可能（シーンに関する横断質問に有用）
 
 ### 2. コンテキストクリエイター（Chatパネル連携）
@@ -110,7 +110,7 @@ Codexエントリの全詳細を取得する。
 }
 ```
 
-**実行**: `codex_entries`（`content` カラムから本文取得）+ `codex_detail_values` JOIN `codex_detail_definitions` + 子エントリ一覧。content全文を含む。
+**実行**: `codex_entries`（`content` カラムから本文取得）+ `codex_detail_values` JOIN `codex_detail_definitions` + 子孫エントリ一覧（BFS順、`children_budget` トークン内のsummary）。content全文を含む。
 
 #### list_codex_tags
 

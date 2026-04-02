@@ -180,6 +180,7 @@ CREATE TABLE codex_entries (
   tags_cache              TEXT,            -- FTS5用非正規化キャッシュ（JSON array）
   context_mode            TEXT NOT NULL DEFAULT 'mentioned'
                             CHECK(context_mode IN ('always', 'mentioned', 'suppress', 'hidden')),
+  children_budget         INTEGER NOT NULL DEFAULT 800,        -- 子孫注入のサブツリートークン予算（0=注入なし）
   source_chat_message_id  TEXT REFERENCES chat_messages(id),   -- 抽出元チャット（nullable）
   created_at              TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at              TEXT NOT NULL DEFAULT (datetime('now'))
@@ -200,6 +201,12 @@ context_mode の動作:
 | `mentioned`（デフォルト） | シーン内で検出された場合に注入 | 可 |
 | `suppress` | 自動検出では注入しない。ピン留めで上書き可 | 可（ピンが明示的意思） |
 | `hidden` | AIコンテキストに一切含めない | 不可 |
+
+children_budget の動作:
+- 親エントリが注入対象になった場合、子孫エントリのsummaryを `children_budget` トークンの範囲内でBFS（幅優先）順に自動注入する
+- プリセット値: 0（なし）、800（Compact、デフォルト）、1600（Standard）、3200（Generous）
+- 手動ピン（Pin with children）は予算を無視する
+- 詳細はCodexパネル設計書「サブツリートークン予算」セクション参照
 
 ### codex_relation_dismissed
 

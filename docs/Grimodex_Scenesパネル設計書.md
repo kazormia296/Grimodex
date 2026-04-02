@@ -132,6 +132,29 @@ Synopsis編集エリアの右上に「✦ Generate」ボタンを配置。シー
 - 生成中はボタンがスピナーに変化、キャンセル可能
 - 生成結果はSynopsisフィールドに直接書き込み（ユーザーが即座に編集可能）
 
+### 自動生成の提案（オプトアウト方式）
+
+シーンのステータスが **Complete / Revision / Final** に遷移した時点で、synopsisが未記入の場合にAI生成を自動提案する。
+
+- ステータス遷移時にトースト通知: 「Synopsis is empty. Generate now?」 + [Generate] [Dismiss] ボタン
+- [Generate] → 上記のAI生成フローを実行（上書き確認なし、空のため）
+- [Dismiss] → 何もしない。同じシーンで再度ステータスが変わった場合は再提案する
+- Settingsの「Editor > Auto-suggest synopsis」トグル（デフォルト: ON）でオフにできる
+- 複数シーンを一括でComplete等に変更した場合、各シーンに対して順次生成（並列ではない）
+
+### storySoFar のSynopsisカバレッジ警告
+
+Chatパネルのコンテキストバーに、storySoFar（Layer 2）のSynopsisカバレッジ状態を表示する。
+
+- 現在シーンより前のシーン群のうち、synopsisが記入済みの割合を計算
+- カバレッジが50%未満の場合、コンテキストバーの「Project info」ピルの隣に警告ピルを表示:
+  ```
+  [⚠ storySoFar: 3/12 scenes] 
+  ```
+- クリックでポップオーバー: 「12 scenes before current position, but only 3 have synopses. AI will have limited story context. Generate missing synopses?」 + [Generate all] ボタン
+- [Generate all] → synopsis未記入かつシーン本文が存在する全シーンに対して順次AI生成を実行（プログレスバー表示）
+- カバレッジが100%の場合は警告ピルを非表示
+
 ### 表示
 
 | 場所 | 表示内容 |
