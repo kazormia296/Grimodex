@@ -28,7 +28,9 @@ export function CodexQuickSection() {
   // Combine auto-detected + pinned, deduplicated
   const displayed = [
     ...entries.filter((e) => matchedIds.has(e.id)),
-    ...entries.filter((e) => pinnedCodexIds.includes(e.id) && !matchedIds.has(e.id)),
+    ...entries.filter(
+      (e) => pinnedCodexIds.includes(e.id) && !matchedIds.has(e.id),
+    ),
   ];
 
   return (
@@ -85,8 +87,7 @@ export function CodexQuickSection() {
                   onClick={() => togglePinnedCodex(entry.id)}
                   className={cn(
                     "hidden h-4 w-4 flex-shrink-0 items-center justify-center rounded text-muted-foreground group-hover:flex",
-                    pinnedCodexIds.includes(entry.id) &&
-                      "flex text-primary",
+                    pinnedCodexIds.includes(entry.id) && "flex text-primary",
                   )}
                 >
                   {pinnedCodexIds.includes(entry.id) ? (

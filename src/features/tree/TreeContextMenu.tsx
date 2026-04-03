@@ -152,7 +152,9 @@ export function TreeContextMenu({
         })}
       {isPart &&
         item("チャプターを追加", () => {
-          createNode({ nodeType: "chapter", parentId: node.id }).catch(() => {});
+          createNode({ nodeType: "chapter", parentId: node.id }).catch(
+            () => {},
+          );
         })}
       {isFolder &&
         item("ノートを追加", () => {
@@ -177,12 +179,7 @@ export function TreeContextMenu({
 
       {/* Delete */}
       {sep()}
-      {item(
-        "削除",
-        () => deleteNode(node.id).catch(() => {}),
-        "Del",
-        false,
-      )}
+      {item("削除", () => deleteNode(node.id).catch(() => {}), "Del", false)}
     </div>
   );
 }

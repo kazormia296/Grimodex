@@ -106,7 +106,11 @@ interface TreeState {
   deleteNode: (id: string) => Promise<void>;
   updateSynopsis: (id: string, synopsis: string) => Promise<void>;
   setStatus: (id: string, status: SceneStatus) => Promise<void>;
-  moveNode: (id: string, newParentId: string | null, afterId: string | null) => Promise<void>;
+  moveNode: (
+    id: string,
+    newParentId: string | null,
+    afterId: string | null,
+  ) => Promise<void>;
 
   // UI state
   toggleExpand: (id: string) => void;

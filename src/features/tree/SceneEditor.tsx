@@ -305,7 +305,10 @@ export function SceneEditor() {
     <div className="flex flex-col h-full">
       <Toolbar
         editor={editor}
-        onFindReplace={() => { setFindOpen(true); setFindShowReplace(true); }}
+        onFindReplace={() => {
+          setFindOpen(true);
+          setFindShowReplace(true);
+        }}
         onVerticalPreview={() => setVerticalPreviewOpen(true)}
       />
       <SynopsisHeader sceneId={activeSceneId} />
