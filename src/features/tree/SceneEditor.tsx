@@ -6,6 +6,8 @@ import { CharCount } from "@/features/editor/CharCount";
 import { useSceneStore } from "./store";
 import { loadSceneContent, saveSceneContent } from "@/features/tree/api";
 import { useAutoSave } from "@/hooks/useAutoSave";
+import { createRevision } from "@/features/revision/api";
+import { useRevisionStore } from "@/features/revision/revisionStore";
 import { useEditorStore } from "@/features/editor/editorStore";
 import { parseClipboardHtml } from "@/lib/clipboardAttribution";
 import { useInsertHighlight } from "@/features/editor/InsertHighlight";
@@ -31,8 +33,10 @@ export function SceneEditor() {
   const [charCount, setCharCount] = useState(0);
 
   const saveSceneIdRef = useRef(activeSceneId);
+  const { shouldAutoRevision, recordAutoRevision } = useRevisionStore();
 
-  const saveFn = useCallback(async () => {
+  /** Core save: writes Markdown + authorship spans */
+  const coreSave = useCallback(async () => {
     const id = saveSceneIdRef.current;
     const ed = editorRef.current;
     if (!id || !ed) return;
@@ -41,6 +45,24 @@ export function SceneEditor() {
     await saveSceneContent(id, md);
     await saveAuthorshipSpans(id, ed.state.doc);
   }, []);
+
+  /** Auto-save callback: saves content + creates auto-revision if interval passed */
+  const saveFn = useCallback(async () => {
+    await coreSave();
+    const id = saveSceneIdRef.current;
+    const ed = editorRef.current;
+    if (!id || !ed) return;
+    if (shouldAutoRevision(id)) {
+      const content = JSON.stringify(ed.getJSON());
+      const rev = await createRevision({
+        entityType: "scene",
+        entityId: id,
+        content,
+        snapshotType: "auto",
+      });
+      if (rev) recordAutoRevision(id);
+    }
+  }, [coreSave, shouldAutoRevision, recordAutoRevision]);
 
   const { schedule, cancel, flush } = useAutoSave(saveFn, 2000);
 
@@ -110,6 +132,32 @@ export function SceneEditor() {
     setEditor(editor);
     return () => setEditor(null);
   }, [editor, setEditor]);
+
+  // Ctrl+S: manual save + manual revision (F-4)
+  const handleManualSave = useCallback(async () => {
+    await flush();
+    const id = saveSceneIdRef.current;
+    const ed = editorRef.current;
+    if (!id || !ed) return;
+    const content = JSON.stringify(ed.getJSON());
+    await createRevision({
+      entityType: "scene",
+      entityId: id,
+      content,
+      snapshotType: "manual",
+    });
+  }, [flush]);
+
+  useEffect(() => {
+    function onKeyDown(e: KeyboardEvent) {
+      if (e.ctrlKey && e.key === "s" && !e.altKey && !e.shiftKey) {
+        e.preventDefault();
+        handleManualSave();
+      }
+    }
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [handleManualSave]);
 
   // Insert highlight decoration (Task 2.4)
   useInsertHighlight(editor);

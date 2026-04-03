@@ -56,7 +56,10 @@ export async function createNode(
 export async function updateNode(
   id: string,
   data: Partial<
-    Pick<NewTreeNode, "title" | "sortOrder" | "parentId" | "status">
+    Pick<
+      NewTreeNode,
+      "title" | "sortOrder" | "parentId" | "status" | "synopsis"
+    >
   >,
 ): Promise<TreeNode | undefined> {
   const rows = await db
