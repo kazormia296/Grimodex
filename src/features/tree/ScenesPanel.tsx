@@ -515,16 +515,34 @@ export function ScenesPanel() {
     ({ active, over }: DragEndEvent) => {
       setDraggingId(null);
       setDropIndicator(null);
-      if (!over || active.id === over.id) return;
+      if (active.id === over?.id) return;
 
       const activeId = active.id as string;
+      const activeNode = nodeMap[activeId];
+      if (!activeNode) return;
+
+      // Handle drop below all items: pointer inside tree container but over==null
+      if (!over) {
+        const treeEl = treeRef.current;
+        if (!treeEl) return;
+        const rect = treeEl.getBoundingClientRect();
+        const py = pointerYRef.current;
+        if (py < rect.top || py > rect.bottom) return;
+        const lastNode = flatNodes.filter((n) => n.id !== activeId).slice(-1)[0];
+        if (!lastNode) return;
+        const parentNode = lastNode.parentId ? nodeMap[lastNode.parentId] : null;
+        if (!isValidParent(activeNode.nodeType, parentNode?.nodeType ?? null))
+          return;
+        moveNode(activeId, lastNode.parentId, lastNode.id).catch(() => {});
+        return;
+      }
+
       // over.id is like "drop-{nodeId}"
       const overId = String(over.id).replace(/^drop-/, "");
       if (activeId === overId) return;
 
-      const activeNode = nodeMap[activeId];
       const overNode = nodeMap[overId];
-      if (!activeNode || !overNode) return;
+      if (!overNode) return;
 
       // Compute drop position from pointer Y vs over element rect
       const overRect = over.rect;
@@ -570,13 +588,28 @@ export function ScenesPanel() {
 
       moveNode(activeId, newParentId, afterId).catch(() => {});
     },
-    [nodeMap, childMap, moveNode],
+    [nodeMap, childMap, moveNode, flatNodes],
   );
 
   // Update drop indicator during drag
   const onDragOver = useCallback(
     ({ active, over }: DragMoveEvent) => {
       if (!over) {
+        // Pointer inside tree container but below all items → "after" on last item
+        const treeEl = treeRef.current;
+        if (treeEl) {
+          const rect = treeEl.getBoundingClientRect();
+          const py = pointerYRef.current;
+          if (py >= rect.top && py <= rect.bottom) {
+            const lastNode = flatNodes
+              .filter((n) => n.id !== String(active.id))
+              .slice(-1)[0];
+            if (lastNode) {
+              setDropIndicator({ nodeId: lastNode.id, position: "after" });
+              return;
+            }
+          }
+        }
         setDropIndicator(null);
         return;
       }
@@ -612,7 +645,7 @@ export function ScenesPanel() {
       }
       setDropIndicator({ nodeId: overId, position });
     },
-    [nodeMap],
+    [nodeMap, flatNodes],
   );
 
   const activeNode = nodeMap[activeSceneId];
