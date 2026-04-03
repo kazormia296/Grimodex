@@ -2,32 +2,60 @@ import { X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useTabStore } from "./tabStore";
 import { useTreeStore } from "@/features/tree/treeStore";
+import type { GroupIndex } from "./tabStore";
 
-export function TabBar() {
-  const tabs = useTabStore((s) => s.tabs);
-  const activeTabId = useTabStore((s) => s.activeTabId);
-  const closeTab = useTabStore((s) => s.closeTab);
-  const setActiveTab = useTabStore((s) => s.setActiveTab);
-  const openPinned = useTabStore((s) => s.openPinned);
+interface TabBarProps {
+  groupIndex?: GroupIndex;
+}
+
+export function TabBar({ groupIndex = 0 }: TabBarProps) {
+  const primaryTabs = useTabStore((s) => s.tabs);
+  const primaryActiveTabId = useTabStore((s) => s.activeTabId);
+  const secondaryTabs = useTabStore((s) => s.secondaryTabs);
+  const secondaryActiveTabId = useTabStore((s) => s.secondaryActiveTabId);
+  const isSyncedScene = useTabStore((s) => s.isSyncedScene);
+
   const nodes = useTreeStore((s) => s.nodes);
+
+  const isPrimary = groupIndex === 0;
+  const tabs = isPrimary ? primaryTabs : secondaryTabs;
+  const activeTabId = isPrimary ? primaryActiveTabId : secondaryActiveTabId;
 
   if (tabs.length === 0) return null;
 
   function handleTabClick(nodeId: string) {
-    setActiveTab(nodeId);
-    useTreeStore.getState().setActiveScene(nodeId);
+    if (isPrimary) {
+      useTabStore.getState().setActiveTab(nodeId);
+      useTreeStore.getState().setActiveScene(nodeId);
+    } else {
+      useTabStore.getState().setSecondaryActiveTab(nodeId);
+      useTreeStore.getState().setActiveScene(nodeId);
+    }
   }
 
   function handleTabClose(e: React.MouseEvent, nodeId: string) {
     e.stopPropagation();
-    closeTab(nodeId);
-    const newActiveId = useTabStore.getState().activeTabId;
-    if (newActiveId) useTreeStore.getState().setActiveScene(newActiveId);
+    if (isPrimary) {
+      useTabStore.getState().closeTab(nodeId);
+      const newActiveId = useTabStore.getState().activeTabId;
+      if (newActiveId) useTreeStore.getState().setActiveScene(newActiveId);
+    } else {
+      useTabStore.getState().closeSecondaryTab(nodeId);
+      // If secondary group closed entirely, focus primary
+      const { secondaryTabs: remaining, activeTabId: primaryActive } =
+        useTabStore.getState();
+      if (remaining.length === 0 && primaryActive) {
+        useTreeStore.getState().setActiveScene(primaryActive);
+      }
+    }
   }
 
   function handleTabDoubleClick(nodeId: string, isPreview: boolean) {
-    if (isPreview) {
-      openPinned(nodeId);
+    if (!isPreview) return;
+    if (isPrimary) {
+      useTabStore.getState().openPinned(nodeId);
+    } else {
+      useTabStore.getState().pinSecondaryTab(nodeId);
     }
   }
 
@@ -37,6 +65,7 @@ export function TabBar() {
         const node = nodes.find((n) => n.id === tab.nodeId);
         const isActive = tab.nodeId === activeTabId;
         const title = node?.title ?? "…";
+        const synced = isSyncedScene(tab.nodeId);
 
         return (
           <div
@@ -56,6 +85,13 @@ export function TabBar() {
               handleTabDoubleClick(tab.nodeId, tab.isPreview)
             }
           >
+            {/* Sync badge: dot shown when same scene is open in the other group */}
+            {synced && (
+              <span
+                className="mr-0.5 h-1.5 w-1.5 flex-shrink-0 rounded-full bg-primary/70"
+                title="別のグループでも開かれています"
+              />
+            )}
             {node?.nodeType === "note" && (
               <span className="mr-0.5 text-teal-500">📝</span>
             )}

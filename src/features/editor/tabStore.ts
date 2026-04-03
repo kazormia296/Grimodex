@@ -5,9 +5,21 @@ export interface TabEntry {
   isPreview: boolean;
 }
 
+export type GroupIndex = 0 | 1;
+
 interface TabState {
+  // ---- Primary group ----
   tabs: TabEntry[];
   activeTabId: string | null;
+
+  // ---- Secondary group (split view) ----
+  secondaryTabs: TabEntry[];
+  secondaryActiveTabId: string | null;
+
+  /** Which group currently has keyboard focus (0 = primary, 1 = secondary) */
+  activeGroupIndex: GroupIndex;
+
+  // ---- Primary group operations ----
 
   /**
    * Single-click behavior: open as preview tab.
@@ -26,9 +38,7 @@ interface TabState {
    */
   openPinned: (nodeId: string) => void;
 
-  /**
-   * Promote a preview tab to pinned (called when user starts editing).
-   */
+  /** Promote a preview tab to pinned (called when user starts editing). */
   pinTab: (nodeId: string) => void;
 
   /** Close a tab. Activates adjacent tab if the closed one was active. */
@@ -38,31 +48,66 @@ interface TabState {
   setActiveTab: (nodeId: string) => void;
 
   /**
-   * Ensure a node has a pinned tab (used for external activeSceneId changes,
-   * e.g. when a new scene is created). If already open, just activate.
+   * Ensure a node has a pinned tab (used for external activeSceneId changes).
+   * If already open, just activate.
    */
   ensureTab: (nodeId: string) => void;
+
+  // ---- Secondary group operations ----
+
+  /**
+   * Open a scene in the secondary group (Ctrl+Enter).
+   * Creates a pinned tab in the secondary group and focuses it.
+   */
+  openInSecondaryGroup: (nodeId: string) => void;
+
+  /** Close a tab in the secondary group. Resets activeGroupIndex if last tab. */
+  closeSecondaryTab: (nodeId: string) => void;
+
+  /** Close all secondary tabs and reset to primary group. */
+  closeSecondaryGroup: () => void;
+
+  /** Activate a tab in the secondary group. No-op if not found. */
+  setSecondaryActiveTab: (nodeId: string) => void;
+
+  /** Promote a preview tab in the secondary group to pinned. */
+  pinSecondaryTab: (nodeId: string) => void;
+
+  // ---- Group-level operations ----
+
+  /** Set which group has keyboard focus. */
+  setActiveGroup: (index: GroupIndex) => void;
+
+  /**
+   * Returns true if the scene is currently open in BOTH groups.
+   * Used to show the sync badge in the tab bar.
+   */
+  isSyncedScene: (nodeId: string) => boolean;
 }
 
 export const useTabStore = create<TabState>()((set, get) => ({
   tabs: [],
   activeTabId: null,
+  secondaryTabs: [],
+  secondaryActiveTabId: null,
+  activeGroupIndex: 0,
+
+  // ---- Primary group ----
 
   openPreview(nodeId) {
     const { tabs } = get();
     const existing = tabs.find((t) => t.nodeId === nodeId);
 
     if (existing) {
-      // Already open (pinned or preview) — just activate
-      set({ activeTabId: nodeId });
+      set({ activeTabId: nodeId, activeGroupIndex: 0 });
       return;
     }
 
-    // Replace existing preview tab (if any) with the new one
     const withoutPreview = tabs.filter((t) => !t.isPreview);
     set({
       tabs: [...withoutPreview, { nodeId, isPreview: true }],
       activeTabId: nodeId,
+      activeGroupIndex: 0,
     });
   },
 
@@ -72,24 +117,23 @@ export const useTabStore = create<TabState>()((set, get) => ({
 
     if (existing) {
       if (existing.isPreview) {
-        // Promote preview → pinned
         set({
           tabs: tabs.map((t) =>
             t.nodeId === nodeId ? { ...t, isPreview: false } : t,
           ),
           activeTabId: nodeId,
+          activeGroupIndex: 0,
         });
       } else {
-        // Already pinned — just activate
-        set({ activeTabId: nodeId });
+        set({ activeTabId: nodeId, activeGroupIndex: 0 });
       }
       return;
     }
 
-    // New pinned tab
     set({
       tabs: [...tabs, { nodeId, isPreview: false }],
       activeTabId: nodeId,
+      activeGroupIndex: 0,
     });
   },
 
@@ -117,7 +161,6 @@ export const useTabStore = create<TabState>()((set, get) => ({
       if (remaining.length === 0) {
         newActive = null;
       } else {
-        // Prefer the tab that was after; fall back to the one before
         const nextTab = remaining[idx] ?? remaining[idx - 1];
         newActive = nextTab.nodeId;
       }
@@ -129,7 +172,7 @@ export const useTabStore = create<TabState>()((set, get) => ({
   setActiveTab(nodeId) {
     const { tabs } = get();
     if (!tabs.find((t) => t.nodeId === nodeId)) return;
-    set({ activeTabId: nodeId });
+    set({ activeTabId: nodeId, activeGroupIndex: 0 });
   },
 
   ensureTab(nodeId) {
@@ -142,5 +185,84 @@ export const useTabStore = create<TabState>()((set, get) => ({
       tabs: [...tabs, { nodeId, isPreview: false }],
       activeTabId: nodeId,
     });
+  },
+
+  // ---- Secondary group ----
+
+  openInSecondaryGroup(nodeId) {
+    const { secondaryTabs } = get();
+    const existing = secondaryTabs.find((t) => t.nodeId === nodeId);
+
+    if (existing) {
+      set({ secondaryActiveTabId: nodeId, activeGroupIndex: 1 });
+      return;
+    }
+
+    set({
+      secondaryTabs: [...secondaryTabs, { nodeId, isPreview: false }],
+      secondaryActiveTabId: nodeId,
+      activeGroupIndex: 1,
+    });
+  },
+
+  closeSecondaryTab(nodeId) {
+    const { secondaryTabs, secondaryActiveTabId } = get();
+    const idx = secondaryTabs.findIndex((t) => t.nodeId === nodeId);
+    if (idx === -1) return;
+
+    const remaining = secondaryTabs.filter((t) => t.nodeId !== nodeId);
+
+    let newActive = secondaryActiveTabId;
+    if (secondaryActiveTabId === nodeId) {
+      if (remaining.length === 0) {
+        newActive = null;
+      } else {
+        const nextTab = remaining[idx] ?? remaining[idx - 1];
+        newActive = nextTab.nodeId;
+      }
+    }
+
+    set({
+      secondaryTabs: remaining,
+      secondaryActiveTabId: newActive,
+      activeGroupIndex: remaining.length === 0 ? 0 : get().activeGroupIndex,
+    });
+  },
+
+  closeSecondaryGroup() {
+    set({
+      secondaryTabs: [],
+      secondaryActiveTabId: null,
+      activeGroupIndex: 0,
+    });
+  },
+
+  setSecondaryActiveTab(nodeId) {
+    const { secondaryTabs } = get();
+    if (!secondaryTabs.find((t) => t.nodeId === nodeId)) return;
+    set({ secondaryActiveTabId: nodeId });
+  },
+
+  pinSecondaryTab(nodeId) {
+    const { secondaryTabs } = get();
+    const existing = secondaryTabs.find((t) => t.nodeId === nodeId);
+    if (!existing || !existing.isPreview) return;
+
+    set({
+      secondaryTabs: secondaryTabs.map((t) =>
+        t.nodeId === nodeId ? { ...t, isPreview: false } : t,
+      ),
+    });
+  },
+
+  setActiveGroup(index) {
+    set({ activeGroupIndex: index });
+  },
+
+  isSyncedScene(nodeId) {
+    const { tabs, secondaryTabs } = get();
+    const inPrimary = tabs.some((t) => t.nodeId === nodeId);
+    const inSecondary = secondaryTabs.some((t) => t.nodeId === nodeId);
+    return inPrimary && inSecondary;
   },
 }));

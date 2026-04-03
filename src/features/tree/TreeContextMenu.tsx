@@ -1,6 +1,7 @@
 import { useEffect, useRef } from "react";
 import { cn } from "@/lib/utils";
 import { useTreeStore } from "./treeStore";
+import { useTabStore } from "@/features/editor/tabStore";
 import { StatusDot } from "./StatusDot";
 import type { TreeNodeData, SceneStatus } from "./treeStore";
 
@@ -112,7 +113,23 @@ export function TreeContextMenu({
     >
       {/* Open (Scene/Note only) */}
       {(isScene || isNote) &&
-        item("Editorで開く", () => setActiveScene(node.id), "Enter")}
+        item(
+          "Editorで開く",
+          () => {
+            useTabStore.getState().openPinned(node.id);
+            setActiveScene(node.id);
+          },
+          "Enter",
+        )}
+      {(isScene || isNote) &&
+        item(
+          "サイドで開く",
+          () => {
+            useTabStore.getState().openInSecondaryGroup(node.id);
+            setActiveScene(node.id);
+          },
+          "Ctrl+Enter",
+        )}
       {(isScene || isNote) && sep()}
 
       {/* Set Status (Scene only) */}

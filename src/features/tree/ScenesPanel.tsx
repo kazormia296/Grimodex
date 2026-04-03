@@ -478,6 +478,14 @@ export function ScenesPanel() {
         if (cur && (cur.nodeType === "scene" || cur.nodeType === "note")) {
           useTabStore.getState().openPreview(cur.id);
         }
+      } else if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
+        // Ctrl+Enter: open in secondary group (split view)
+        e.preventDefault();
+        const cur = nodeMap[activeSceneId];
+        if (cur && (cur.nodeType === "scene" || cur.nodeType === "note")) {
+          useTabStore.getState().openInSecondaryGroup(cur.id);
+          setActiveScene(cur.id);
+        }
       } else if (e.key === "Enter") {
         e.preventDefault();
         const cur = nodeMap[activeSceneId];
