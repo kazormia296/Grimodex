@@ -221,13 +221,13 @@ History ボタンクリックで **モーダルオーバーレイ** を表示す
 
 ---
 
-## マスタースナップショット（プロジェクト全体）
+## プロジェクトスナップショット（プロジェクト全体）
 
 個別エンティティのリビジョンとは別に、プロジェクト全体の状態を一括で記録・復元する機能。
 
 ### 概念
 
-マスタースナップショットは**軽量ポインタ**である。全エンティティの「その時点の content_version ID」を記録するだけで、content を二重に保存しない。
+プロジェクトスナップショットは**軽量ポインタ**である。全エンティティの「その時点の content_version ID」を記録するだけで、content を二重に保存しない。
 
 ### DBスキーマ
 
@@ -244,7 +244,7 @@ CREATE TABLE project_snapshots (
 
 CREATE INDEX idx_project_snapshots ON project_snapshots(project_id, created_at DESC);
 
--- マスタースナップショットと各エンティティの content_version の紐付け
+-- プロジェクトスナップショットと各エンティティの content_version の紐付け
 CREATE TABLE project_snapshot_entries (
   snapshot_id    TEXT NOT NULL REFERENCES project_snapshots(id) ON DELETE CASCADE,
   version_id     TEXT NOT NULL REFERENCES content_versions(id),
@@ -254,7 +254,7 @@ CREATE TABLE project_snapshot_entries (
 
 ### プルーニング保護
 
-マスタースナップショットが参照している `content_versions` レコードは、個別エンティティのプルーニング対象から**除外**する。これにより、マスタースナップショットの整合性が保証される。
+プロジェクトスナップショットが参照している `content_versions` レコードは、個別エンティティのプルーニング対象から**除外**する。これにより、プロジェクトスナップショットの整合性が保証される。
 
 ```sql
 -- プルーニング時の除外条件
@@ -267,7 +267,7 @@ WHERE id NOT IN (SELECT version_id FROM project_snapshot_entries)
 ### 作成フロー
 
 ```
-1. メニュー「Project → Create Snapshot...」または Ctrl+Alt+S
+1. メニュー「Project → Create Project Snapshot...」
 2. ダイアログ: 名前（必須）+ 説明（任意）を入力
 3. 作成処理:
    a. project_snapshots レコードを作成
@@ -280,11 +280,11 @@ WHERE id NOT IN (SELECT version_id FROM project_snapshot_entries)
 ### 復元フロー
 
 ```
-1. メニュー「Project → Snapshots...」でスナップショット一覧を表示
+1. メニュー「Project → Project Snapshots...」でスナップショット一覧を表示
 2. 復元対象を選択し「Restore」クリック
 3. 確認ダイアログ: "Restore project to '{name}'? All current content will be saved as snapshots first."
 4. 確認後:
-   a. 現在の全エンティティの状態を自動マスタースナップショットとして保存（セーフティネット、名前: "Before restore to '{name}'"）
+   a. 現在の全エンティティの状態を自動プロジェクトスナップショットとして保存（セーフティネット、名前: "Before restore to '{name}'"）
    b. project_snapshot_entries の各 version_id から content を取得
    c. 対応する各テーブルの content カラムを一括上書き
    d. 開いているエディタの TipTap インスタンスを更新
@@ -316,41 +316,36 @@ WHERE id NOT IN (SELECT version_id FROM project_snapshot_entries)
 
 ### 保持上限
 
-- マスタースナップショットはデフォルト上限なし（手動作成のため頻度が低い）
+- プロジェクトスナップショットはデフォルト上限なし（手動作成のため頻度が低い）
 - 削除は手動のみ。削除時は `project_snapshot_entries` もCASCADE削除
 - 参照されなくなった `content_versions` は次回プルーニング時に通常通り削除対象になる
 
 ### Tauri コマンド
 
 ```typescript
-// マスタースナップショット作成
+// プロジェクトスナップショット作成
 invoke('create_project_snapshot', {
   projectId: string,
   name: string,
   description?: string
 }): Promise<{ id: string; entryCount: number }>
 
-// マスタースナップショット一覧
+// プロジェクトスナップショット一覧
 invoke('list_project_snapshots', {
   projectId: string
 }): Promise<{ id: string; name: string; description: string | null; entryCount: number; createdAt: string }[]>
 
-// マスタースナップショット復元
+// プロジェクトスナップショット復元
 invoke('restore_project_snapshot', {
   snapshotId: string
 }): Promise<{ restoredCount: number; safetySnapshotId: string }>
 
-// マスタースナップショット削除
+// プロジェクトスナップショット削除
 invoke('delete_project_snapshot', {
   snapshotId: string
 }): Promise<void>
 ```
 
-### キーボードショートカット
-
-| ショートカット | 動作 |
-|-------------|------|
-| `Ctrl+Alt+S` | マスタースナップショット作成ダイアログを開く |
 
 ---
 

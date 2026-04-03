@@ -27,8 +27,8 @@ ORM: Drizzle ORM（sqlite-proxy）
 | `chat_sessions` | 通常 | Chat | チャットセッション（シーン or プロジェクトスコープ） |
 | `chat_messages` | 通常 | Chat | チャットメッセージ |
 | `content_versions` | 通常 | Editor | コンテンツのリビジョン履歴 |
-| `project_snapshots` | 通常 | Editor | プロジェクト全体のマスタースナップショット |
-| `project_snapshot_entries` | 通常 | Editor | マスタースナップショットとリビジョンの紐付け |
+| `project_snapshots` | 通常 | Editor | プロジェクト全体のプロジェクトスナップショット |
+| `project_snapshot_entries` | 通常 | Editor | プロジェクトスナップショットとリビジョンの紐付け |
 | `authorship_spans` | 通常 | Editor | AI帰属追跡スパン |
 | `settings` | 通常 | Settings | Key-Value設定ストア |
 | `codex_fts` | FTS5仮想 | Codex | Codexエントリの全文検索 |
@@ -570,7 +570,7 @@ CREATE INDEX idx_cv_entity ON content_versions(entity_type, entity_id, version_n
 
 ### project_snapshots
 
-プロジェクト全体のマスタースナップショット。各エンティティの `content_versions` へのポインタを `project_snapshot_entries` で保持する軽量方式。詳細は [`Grimodex_リビジョン履歴設計書.md`](Grimodex_リビジョン履歴設計書.md) を参照。
+プロジェクト全体のプロジェクトスナップショット。各エンティティの `content_versions` へのポインタを `project_snapshot_entries` で保持する軽量方式。詳細は [`Grimodex_リビジョン履歴設計書.md`](Grimodex_リビジョン履歴設計書.md) を参照。
 
 ```sql
 CREATE TABLE project_snapshots (
@@ -586,7 +586,7 @@ CREATE INDEX idx_project_snapshots ON project_snapshots(project_id, created_at D
 
 ### project_snapshot_entries
 
-マスタースナップショットと各エンティティのリビジョンの紐付け。参照先の `content_versions` レコードはプルーニングから保護される。
+プロジェクトスナップショットと各エンティティのリビジョンの紐付け。参照先の `content_versions` レコードはプルーニングから保護される。
 
 ```sql
 CREATE TABLE project_snapshot_entries (
