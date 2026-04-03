@@ -24,6 +24,7 @@ import { Sidebar } from "@/features/tree/Sidebar";
 import { CodexQuickPanel } from "@/features/tree/CodexQuickPanel";
 import { CodexManagementPanel } from "@/features/codex/CodexManagementPanel";
 import { ChatPanel } from "@/features/chat/ChatPanel";
+import { ChatHistoryPanel } from "@/features/chat/ChatHistoryPanel";
 import { SnippetPanel } from "@/features/snippets/SnippetPanel";
 import { AttributionReport } from "@/features/attribution/AttributionReport";
 import { useState } from "react";
@@ -39,11 +40,7 @@ function CodexContent(_props: IDockviewPanelProps) {
 }
 
 function ChatHistoryContent(_props: IDockviewPanelProps) {
-  return (
-    <div className="flex h-full items-center justify-center p-4 text-sm text-muted-foreground">
-      チャット履歴パネルは近日実装予定です
-    </div>
-  );
+  return <ChatHistoryPanel />;
 }
 
 function EditorContent(_props: IDockviewPanelProps) {
