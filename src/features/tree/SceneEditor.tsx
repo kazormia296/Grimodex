@@ -3,7 +3,9 @@ import { useEditor, EditorContent } from "@tiptap/react";
 import { getEditorExtensions } from "@/features/editor/extensions";
 import { Toolbar } from "@/features/editor/Toolbar";
 import { CharCount } from "@/features/editor/CharCount";
+import { SynopsisHeader } from "@/features/editor/SynopsisHeader";
 import { useSceneStore } from "./store";
+import { useTreeStore } from "@/features/tree/treeStore";
 import { loadSceneContent, saveSceneContent } from "@/features/tree/api";
 import { useAutoSave } from "@/hooks/useAutoSave";
 import { createRevision } from "@/features/revision/api";
@@ -25,12 +27,40 @@ import {
 } from "@/features/attribution/api";
 import type { ToolbarSlot } from "@/features/editor/Toolbar";
 import { VerticalPreview } from "@/features/editor/VerticalPreview";
+import type { SceneStatus } from "@/features/tree/treeStore";
+
+const STATUS_LABELS: Record<SceneStatus, string> = {
+  outline: "アウトライン",
+  draft: "下書き",
+  complete: "完成",
+  revision: "改訂中",
+  final: "最終",
+};
+
+const STATUS_COLORS: Record<SceneStatus, string> = {
+  outline: "text-muted-foreground",
+  draft: "text-yellow-500",
+  complete: "text-green-500",
+  revision: "text-purple-400",
+  final: "text-blue-400",
+};
 
 export function SceneEditor() {
   const activeSceneId = useSceneStore((s) => s.activeSceneId);
   const prevSceneIdRef = useRef(activeSceneId);
   const editorRef = useRef<ReturnType<typeof useEditor>>(null);
   const [charCount, setCharCount] = useState(0);
+  const [wordCount, setWordCount] = useState(0);
+  const [cursorPos, setCursorPos] = useState(0);
+  const [isDirty, setIsDirty] = useState(false);
+
+  const activeNode = useTreeStore((s) =>
+    s.nodes.find((n) => n.id === activeSceneId),
+  );
+  const activeStatus = (activeNode?.status ?? null) as SceneStatus | null;
+
+  const setIsDirtyRef = useRef(setIsDirty);
+  setIsDirtyRef.current = setIsDirty;
 
   const saveSceneIdRef = useRef(activeSceneId);
   const { shouldAutoRevision, recordAutoRevision } = useRevisionStore();
@@ -49,6 +79,7 @@ export function SceneEditor() {
   /** Auto-save callback: saves content + creates auto-revision if interval passed */
   const saveFn = useCallback(async () => {
     await coreSave();
+    setIsDirtyRef.current(false);
     const id = saveSceneIdRef.current;
     const ed = editorRef.current;
     if (!id || !ed) return;
@@ -119,7 +150,13 @@ export function SceneEditor() {
     },
     onUpdate({ editor: e }) {
       schedule();
-      setCharCount(e.state.doc.textContent.length);
+      setIsDirtyRef.current(true);
+      const text = e.state.doc.textContent;
+      setCharCount(text.length);
+      setWordCount(text.trim() === "" ? 0 : text.trim().split(/\s+/).length);
+    },
+    onSelectionUpdate({ editor: e }) {
+      setCursorPos(e.state.selection.anchor);
     },
   });
 
@@ -224,7 +261,11 @@ export function SceneEditor() {
       const content = await loadSceneContent(activeSceneId);
       if (cancelled) return;
       editor!.commands.setContent(content || "");
-      setCharCount(editor!.state.doc.textContent.length);
+      const text = editor!.state.doc.textContent;
+      setCharCount(text.length);
+      setWordCount(text.trim() === "" ? 0 : text.trim().split(/\s+/).length);
+      setCursorPos(0);
+      setIsDirty(false);
 
       // Restore authorship marks from DB
       const spans = await loadAuthorshipSpans(activeSceneId);
@@ -272,14 +313,32 @@ export function SceneEditor() {
         editor={editor}
         extraSlots={[cursorAnimationSlot, attributionSlot]}
       />
+      <SynopsisHeader sceneId={activeSceneId} />
       <div className="flex-1 overflow-auto p-4">
         <EditorContent editor={editor} />
         <CodexPopover editor={editor} />
         <AttributionOverrideMenu editor={editor} />
       </div>
-      <div className="flex items-center justify-between border-t border-border px-4 py-1">
-        <CharCount count={charCount} />
-        <VerticalPreview />
+      {/* C-3: Enhanced status bar */}
+      <div className="flex items-center justify-between border-t border-border px-3 py-1 text-xs text-muted-foreground">
+        <div className="flex items-center gap-3">
+          <CharCount count={charCount} />
+          <span>{wordCount} 語</span>
+          {cursorPos > 0 && <span>位置 {cursorPos}</span>}
+        </div>
+        <div className="flex items-center gap-3">
+          {activeStatus && (
+            <span className={STATUS_COLORS[activeStatus]}>
+              {STATUS_LABELS[activeStatus]}
+            </span>
+          )}
+          {isDirty ? (
+            <span className="opacity-50">未保存</span>
+          ) : (
+            <span className="opacity-40">保存済</span>
+          )}
+          <VerticalPreview />
+        </div>
       </div>
     </div>
   );
