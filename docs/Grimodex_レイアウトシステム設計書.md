@@ -36,7 +36,7 @@
 |--------|------|-----------|---------|
 | Left Top | 左端・上部 | 幅リサイズ可能（初期~18%） | デフォルトはScenesパネル |
 | Left Bottom | 左端・下部 | Left Topとの比率リサイズ可能 | デフォルトはCodex Quickパネル |
-| Center | 中央 | flex（残り領域を埋める） | Editor Group専用。最低1Group必須 |
+| Center | 中央 | flex（残り領域を埋める） | Editor Group専用 |
 | Right Top | 右端・上部 | 幅リサイズ可能（初期~30%） | デフォルトはChat + Chat Historyタブ |
 | Right Bottom | 右端・下部 | Right Topとの比率リサイズ可能 | デフォルトは空（パネル追加時に生成） |
 | Bottom Dock | Centerの下 | 高さリサイズ可能（初期非表示） | パネル0個で非表示→Centerが拡張 |
@@ -52,7 +52,7 @@ Left/Right DockはTop/Bottom間で縦分割（ゾーン内スプリット）が�
 | Scenes | Left Dock | 表示 | Part/Chapter/Sceneツリー + Folder/Note |
 | Codex Quick | Left Dock（Scenesの下） | 表示 | 現在アクティブなシーンに関連するCodexエントリを自動表示。手動ピン留め対応 |
 | Codex | Left Dock | 非表示 | 世界設定DB（Character/Location/Item/Lore）。リスト+詳細のマスター/ディテールUI |
-| Editor | Center | 表示 | TipTapエディタ。閉じ不可（最低1タブ） |
+| Editor | Center | 表示 | TipTapエディタ |
 | Chat | Right Dock | 表示 | BYOK AIチャット。シーンコンテキスト自動注入、Codex/Snippet抽出、エディタ挿入 |
 | Chat History | Right Top（Chatと同グループ） | 非表示（非アクティブタブ） | 全シーン横断のチャットセッション検索・閲覧 |
 | Snippets | Bottom Dock | 非表示 | 再利用可能なテキスト断片。Chat/Editorから保存、D&Dでエディタに挿入 |
@@ -189,11 +189,6 @@ Editor Groupの分割は以下の3つの方法で行える。
 - タブを別のGroupのタブバーにドラッグ → そのGroupに移動。
 - タブをGroupのエッジにドラッグ → 新しいGroupとしてスプリット。
 - タブをCenter外にドラッグ → フローティングエディタウィンドウ。
-
-### 制約
-
-- 最後のEditor Groupは閉じられない（最低1つのGroupが常に存在）。
-- 最後のGroupの最後のタブも閉じられない（空のエディタ状態を「新規シーン作成」プロンプトで表示する選択肢もあるが、MVP時点では最低1タブ維持とする）。
 
 ### 同一シーンの複数ビュー（同期編集）
 

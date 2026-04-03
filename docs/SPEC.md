@@ -615,7 +615,7 @@ VS Code + JetBrains ハイブリッドのDock/Float/Tab/Splitモデルを採用:
 |--------|-----------|----------------|
 | Left Top | ~18% | Scenes（表示）、Codex（非表示） |
 | Left Bottom | Left Topとの比率 | Codex Quick（表示） |
-| Center | フレキシブル | Editor Groups（必須、最低1グループ） |
+| Center | フレキシブル | Editor Groups |
 | Right Top | ~30% | Chat（表示）、Chat History（非表示・非アクティブタブ） |
 | Right Bottom | Right Topとの比率 | デフォルト空 |
 | Bottom Dock | 非表示 | Snippets（非表示）、Attribution（非表示） |
