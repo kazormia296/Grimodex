@@ -533,9 +533,13 @@ export function ScenesPanel() {
 
       // Handle drop on bottom zone → after last visible item
       if (rawOverId === BOTTOM_DROP_ZONE_ID) {
-        const lastNode = flatNodes.filter((n) => n.id !== activeId).slice(-1)[0];
+        const lastNode = flatNodes
+          .filter((n) => n.id !== activeId)
+          .slice(-1)[0];
         if (!lastNode) return;
-        const parentNode = lastNode.parentId ? nodeMap[lastNode.parentId] : null;
+        const parentNode = lastNode.parentId
+          ? nodeMap[lastNode.parentId]
+          : null;
         if (!isValidParent(activeNode.nodeType, parentNode?.nodeType ?? null))
           return;
         moveNode(activeId, lastNode.parentId, lastNode.id).catch(() => {});

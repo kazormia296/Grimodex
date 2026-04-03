@@ -171,7 +171,7 @@ export function TreeNodeItem({
     opacity: isDragging ? 0.3 : 1,
     paddingTop: isDropBefore ? 28 : 0,
     paddingBottom: isDropAfter ? 28 : 0,
-    transition: 'padding 100ms ease-out',
+    transition: "padding 100ms ease-out",
   };
 
   const handleClick = useCallback(() => {
@@ -223,7 +223,6 @@ export function TreeNodeItem({
 
   return (
     <li ref={setRef} style={style} className="list-none">
-
       <div
         className={cn(
           "group relative flex cursor-pointer items-center gap-0.5 rounded px-1 py-0.5 text-sm",
@@ -320,7 +319,6 @@ export function TreeNodeItem({
           </span>
         )}
       </div>
-
 
       {/* Children */}
       {isContainer && isExpanded && children && (

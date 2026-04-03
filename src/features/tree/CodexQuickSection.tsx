@@ -58,11 +58,15 @@ export function CodexQuickSection() {
             {entry.name}
           </span>
           {/* Type label */}
-          <span className="text-[10px] text-muted-foreground">{entry.type}</span>
+          <span className="text-[10px] text-muted-foreground">
+            {entry.type}
+          </span>
           {/* Pin/unpin button */}
           <button
             type="button"
-            title={pinnedCodexIds.includes(entry.id) ? "ピン留め解除" : "ピン留め"}
+            title={
+              pinnedCodexIds.includes(entry.id) ? "ピン留め解除" : "ピン留め"
+            }
             onClick={() => togglePinnedCodex(entry.id)}
             className={cn(
               "hidden h-4 w-4 flex-shrink-0 items-center justify-center rounded text-muted-foreground group-hover:flex",
