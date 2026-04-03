@@ -1,5 +1,12 @@
-import { useEffect, useRef, useCallback } from "react";
+import { useEffect, useCallback, useMemo } from "react";
 import { Toaster } from "sonner";
+import {
+  DockviewReact,
+  type DockviewReadyEvent,
+  type IDockviewPanelProps,
+} from "dockview-react";
+import "dockview-react/dist/styles/dockview.css";
+
 import { SceneEditor } from "@/features/tree/SceneEditor";
 import { WelcomeScreen } from "@/features/workspace/WelcomeScreen";
 import { LauncherScreen } from "@/features/workspace/LauncherScreen";
@@ -7,17 +14,106 @@ import { WorkspaceMenu } from "@/features/workspace/WorkspaceMenu";
 import { useWorkspaceStore } from "@/features/workspace/store";
 import { AiSettingsDialog } from "@/features/chat/AiSettingsDialog";
 import { ActivityBar } from "@/features/layout/ActivityBar";
-import { LeftDock } from "@/features/layout/LeftDock";
-import { BottomDock } from "@/features/layout/BottomDock";
-import { RightDock } from "@/features/layout/RightDock";
-import { useLayoutStore } from "@/features/layout/layoutStore";
 import {
-  ResizablePanelGroup,
-  ResizablePanel,
-  ResizableHandle,
-} from "@/components/ui/resizable";
-import type { PanelImperativeHandle } from "react-resizable-panels";
+  useLayoutStore,
+  PANEL_TITLES,
+  type PanelId,
+} from "@/features/layout/layoutStore";
+import { Sidebar } from "@/features/tree/Sidebar";
+import { CodexManagementPanel } from "@/features/codex/CodexManagementPanel";
+import { ChatPanel } from "@/features/chat/ChatPanel";
+import { SnippetPanel } from "@/features/snippets/SnippetPanel";
+import { AttributionReport } from "@/features/attribution/AttributionReport";
 import { useState } from "react";
+
+/* ── Panel content components for dockview ── */
+
+function ScenesContent(_props: IDockviewPanelProps) {
+  return <Sidebar />;
+}
+
+function CodexContent(_props: IDockviewPanelProps) {
+  return <CodexManagementPanel />;
+}
+
+function ChatHistoryContent(_props: IDockviewPanelProps) {
+  return (
+    <div className="flex h-full items-center justify-center p-4 text-sm text-muted-foreground">
+      チャット履歴パネルは近日実装予定です
+    </div>
+  );
+}
+
+function EditorContent(_props: IDockviewPanelProps) {
+  return <SceneEditor />;
+}
+
+function ChatContent(_props: IDockviewPanelProps) {
+  return <ChatPanel />;
+}
+
+function SnippetsContent(_props: IDockviewPanelProps) {
+  return <SnippetPanel />;
+}
+
+function AttributionContent(_props: IDockviewPanelProps) {
+  return <AttributionReport />;
+}
+
+/* ── Default layout builder ── */
+
+function buildDefaultLayout(api: DockviewReadyEvent["api"]) {
+  // Left group: Scenes (active), Codex, ChatHistory
+  api.addPanel({
+    id: "scenes",
+    component: "scenes",
+    title: PANEL_TITLES.scenes,
+  });
+  api.addPanel({
+    id: "codex",
+    component: "codex",
+    title: PANEL_TITLES.codex,
+    position: { referencePanel: "scenes", direction: "within" },
+    inactive: true,
+  });
+  api.addPanel({
+    id: "chat-history",
+    component: "chat-history",
+    title: PANEL_TITLES["chat-history"],
+    position: { referencePanel: "scenes", direction: "within" },
+    inactive: true,
+  });
+
+  // Center: Editor
+  api.addPanel({
+    id: "editor",
+    component: "editor",
+    title: PANEL_TITLES.editor,
+    position: { referencePanel: "scenes", direction: "right" },
+  });
+
+  // Right group: Chat
+  api.addPanel({
+    id: "chat",
+    component: "chat",
+    title: PANEL_TITLES.chat,
+    position: { referencePanel: "editor", direction: "right" },
+  });
+
+  // Set approximate sizes — left ~18%, center ~52%, right ~30%
+  const leftGroup = api.getPanel("scenes")?.group;
+  const centerGroup = api.getPanel("editor")?.group;
+  const rightGroup = api.getPanel("chat")?.group;
+  if (leftGroup && centerGroup && rightGroup) {
+    leftGroup.api.setSize({ width: Math.round(api.width * 0.18) });
+    rightGroup.api.setSize({ width: Math.round(api.width * 0.3) });
+  }
+
+  // Activate scenes tab
+  api.getPanel("scenes")?.api.setActive();
+}
+
+/* ── App root ── */
 
 function App() {
   const view = useWorkspaceStore((s) => s.view);
@@ -44,17 +140,23 @@ function App() {
 
 function EditorScreen() {
   const [showAiSettings, setShowAiSettings] = useState(false);
-  const { leftActive, rightActive, bottomActive, togglePanel, loadLayout } =
-    useLayoutStore();
+  const { togglePanel, loadLayout, setDockviewApi } = useLayoutStore();
 
-  const leftPanelRef = useRef<PanelImperativeHandle | null>(null);
-  const rightPanelRef = useRef<PanelImperativeHandle | null>(null);
-  const bottomPanelRef = useRef<PanelImperativeHandle | null>(null);
-
-  // Load persisted layout on mount
-  useEffect(() => {
-    loadLayout();
-  }, [loadLayout]);
+  // Component map for dockview — stable reference
+  const components = useMemo<
+    Record<string, React.FunctionComponent<IDockviewPanelProps>>
+  >(
+    () => ({
+      scenes: ScenesContent,
+      codex: CodexContent,
+      "chat-history": ChatHistoryContent,
+      editor: EditorContent,
+      chat: ChatContent,
+      snippets: SnippetsContent,
+      attribution: AttributionContent,
+    }),
+    [],
+  );
 
   // Open AI settings dialog when triggered by error handler (D-17)
   useEffect(() => {
@@ -65,99 +167,52 @@ function EditorScreen() {
     return () => window.removeEventListener("open-ai-settings", onOpenSettings);
   }, []);
 
-  // Sync left dock collapse state
-  useEffect(() => {
-    if (leftActive === null) {
-      leftPanelRef.current?.collapse();
-    } else {
-      leftPanelRef.current?.expand();
-    }
-  }, [leftActive]);
+  // Dockview ready handler — restore persisted layout or build default
+  const handleReady = useCallback(
+    async (event: DockviewReadyEvent) => {
+      const api = event.api;
+      setDockviewApi(api);
 
-  // Sync right dock collapse state
-  useEffect(() => {
-    if (rightActive === null) {
-      rightPanelRef.current?.collapse();
-    } else {
-      rightPanelRef.current?.expand();
-    }
-  }, [rightActive]);
-
-  // Sync bottom dock collapse state
-  useEffect(() => {
-    if (bottomActive === null) {
-      bottomPanelRef.current?.collapse();
-    } else {
-      bottomPanelRef.current?.expand();
-    }
-  }, [bottomActive]);
+      const saved = await loadLayout();
+      if (saved) {
+        try {
+          api.fromJSON(saved);
+          return;
+        } catch {
+          // Corrupted layout — fall through to default
+        }
+      }
+      buildDefaultLayout(api);
+    },
+    [setDockviewApi, loadLayout],
+  );
 
   // Keyboard shortcuts (Ctrl+Alt+*)
   const handleKeyDown = useCallback(
     (e: KeyboardEvent) => {
       if (!e.ctrlKey || !e.altKey) return;
-      switch (e.key.toLowerCase()) {
-        case "s":
-          e.preventDefault();
-          togglePanel("scenes");
-          break;
-        case "x":
-          e.preventDefault();
-          togglePanel("codex");
-          break;
-        case "h":
-          e.preventDefault();
-          togglePanel("chat-history");
-          break;
-        case "c":
-          e.preventDefault();
-          togglePanel("chat");
-          break;
-        case "n":
-          e.preventDefault();
-          togglePanel("snippets");
-          break;
-        case "a":
-          e.preventDefault();
-          togglePanel("attribution");
-          break;
-        case "b":
-          e.preventDefault();
-          // Toggle left dock
-          if (leftActive !== null) {
-            useLayoutStore
-              .getState()
-              .setLeftActive(leftActive === "scenes" ? "scenes" : leftActive);
-            useLayoutStore.setState({ leftActive: null });
-          } else {
-            useLayoutStore.setState({ leftActive: "scenes" });
-          }
-          break;
-        case "j":
-          e.preventDefault();
-          // Toggle bottom dock
-          if (bottomActive !== null) {
-            useLayoutStore.setState({ bottomActive: null });
-          } else {
-            useLayoutStore.setState({ bottomActive: "snippets" });
-          }
-          break;
-        case "r":
-          e.preventDefault();
-          // Toggle right dock
-          if (rightActive !== null) {
-            useLayoutStore.setState({ rightActive: null });
-          } else {
-            useLayoutStore.setState({ rightActive: "chat" });
-          }
-          break;
-        case ",":
-          e.preventDefault();
-          setShowAiSettings(true);
-          break;
+
+      const keyMap: Record<string, PanelId | "settings"> = {
+        s: "scenes",
+        x: "codex",
+        h: "chat-history",
+        c: "chat",
+        n: "snippets",
+        a: "attribution",
+        ",": "settings",
+      };
+
+      const target = keyMap[e.key.toLowerCase()];
+      if (!target) return;
+
+      e.preventDefault();
+      if (target === "settings") {
+        setShowAiSettings(true);
+      } else {
+        togglePanel(target);
       }
     },
-    [leftActive, rightActive, bottomActive, togglePanel],
+    [togglePanel],
   );
 
   useEffect(() => {
@@ -179,57 +234,12 @@ function EditorScreen() {
         {/* Activity Bar — fixed 40px */}
         <ActivityBar onSettingsOpen={() => setShowAiSettings(true)} />
 
-        {/* Main resizable layout */}
-        <ResizablePanelGroup orientation="horizontal" className="flex-1">
-          {/* Left Dock */}
-          <ResizablePanel
-            panelRef={leftPanelRef}
-            collapsible
-            defaultSize="18%"
-            minSize="12%"
-            maxSize="40%"
-            collapsedSize="0%"
-          >
-            <LeftDock />
-          </ResizablePanel>
-          <ResizableHandle />
-
-          {/* Center + Bottom Dock */}
-          <ResizablePanel defaultSize="52%" minSize="30%">
-            <ResizablePanelGroup orientation="vertical">
-              {/* Editor */}
-              <ResizablePanel defaultSize="75%" minSize="40%">
-                <SceneEditor />
-              </ResizablePanel>
-
-              <ResizableHandle horizontal />
-
-              {/* Bottom Dock */}
-              <ResizablePanel
-                panelRef={bottomPanelRef}
-                collapsible
-                defaultSize="25%"
-                minSize="15%"
-                collapsedSize="0%"
-              >
-                <BottomDock />
-              </ResizablePanel>
-            </ResizablePanelGroup>
-          </ResizablePanel>
-          <ResizableHandle />
-
-          {/* Right Dock */}
-          <ResizablePanel
-            panelRef={rightPanelRef}
-            collapsible
-            defaultSize="30%"
-            minSize="18%"
-            maxSize="50%"
-            collapsedSize="0%"
-          >
-            <RightDock />
-          </ResizablePanel>
-        </ResizablePanelGroup>
+        {/* Dockview layout */}
+        <DockviewReact
+          className="dockview-theme-dark flex-1"
+          onReady={handleReady}
+          components={components}
+        />
       </div>
     </main>
   );

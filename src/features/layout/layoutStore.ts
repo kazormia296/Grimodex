@@ -2,74 +2,96 @@ import { create } from "zustand";
 import { db } from "@/db/client";
 import { settings } from "@/db/schema";
 import { eq } from "drizzle-orm";
+import type { DockviewApi, SerializedDockview } from "dockview-react";
 
-export type LeftTab = "scenes" | "codex" | "chat-history";
-export type RightTab = "chat";
-export type BottomTab = "snippets" | "attribution";
-export type PanelId = LeftTab | RightTab | BottomTab;
+export type PanelId =
+  | "scenes"
+  | "codex"
+  | "chat-history"
+  | "editor"
+  | "chat"
+  | "snippets"
+  | "attribution";
+
+/** Human-readable panel titles */
+export const PANEL_TITLES: Record<PanelId, string> = {
+  scenes: "シーン",
+  codex: "Codex",
+  "chat-history": "履歴",
+  editor: "エディタ",
+  chat: "チャット",
+  snippets: "Snippets",
+  attribution: "帰属",
+};
 
 interface LayoutState {
-  /** Active tab in left dock, or null if dock is collapsed */
-  leftActive: LeftTab | null;
-  /** Active tab in right dock, or null if dock is collapsed */
-  rightActive: RightTab | null;
-  /** Active tab in bottom dock, or null if dock is hidden */
-  bottomActive: BottomTab | null;
+  /** Dockview API reference — set once in onReady */
+  dockviewApi: DockviewApi | null;
+  setDockviewApi: (api: DockviewApi) => void;
 
-  /** Toggle a panel from the Activity Bar */
+  /** Toggle a panel: if visible & active → close it; otherwise → show & focus */
   togglePanel: (panel: PanelId) => void;
-  setLeftActive: (tab: LeftTab) => void;
-  setRightActive: (tab: RightTab) => void;
-  setBottomActive: (tab: BottomTab) => void;
 
-  /** Load persisted layout from settings table */
-  loadLayout: () => Promise<void>;
+  /** Check whether a panel exists in the current layout */
+  isPanelVisible: (panel: PanelId) => boolean;
+
+  /** Load persisted layout; returns the serialized data or null */
+  loadLayout: () => Promise<SerializedDockview | null>;
   /** Save current layout to settings table (debounced internally) */
-  _saveLayout: () => Promise<void>;
+  saveLayout: () => void;
 }
 
-const SETTINGS_KEY = "layout.v1";
+const SETTINGS_KEY = "layout.dockview.v1";
 let saveTimer: ReturnType<typeof setTimeout> | null = null;
 
 function scheduleSave(get: () => LayoutState) {
   if (saveTimer !== null) clearTimeout(saveTimer);
   saveTimer = setTimeout(() => {
-    get()
-      ._saveLayout()
+    const api = get().dockviewApi;
+    if (!api) return;
+    const data = api.toJSON();
+    const value = JSON.stringify(data);
+    db.insert(settings)
+      .values({ key: SETTINGS_KEY, value })
+      .onConflictDoUpdate({ target: settings.key, set: { value } })
       .catch(() => {});
   }, 500);
 }
 
 export const useLayoutStore = create<LayoutState>()((set, get) => ({
-  leftActive: "scenes",
-  rightActive: "chat",
-  bottomActive: null,
+  dockviewApi: null,
 
-  togglePanel(panel) {
-    const { leftActive, rightActive, bottomActive } = get();
-    if (panel === "scenes" || panel === "codex" || panel === "chat-history") {
-      set({ leftActive: leftActive === panel ? null : panel });
-    } else if (panel === "chat") {
-      set({ rightActive: rightActive === "chat" ? null : "chat" });
-    } else if (panel === "snippets" || panel === "attribution") {
-      set({ bottomActive: bottomActive === panel ? null : panel });
+  setDockviewApi(api) {
+    set({ dockviewApi: api });
+
+    // Auto-save on any layout change
+    api.onDidLayoutChange(() => {
+      scheduleSave(get);
+    });
+  },
+
+  togglePanel(panelId) {
+    const api = get().dockviewApi;
+    if (!api) return;
+
+    const panel = api.getPanel(panelId);
+    if (panel) {
+      // Panel exists — if it's the active panel in its group, remove it; otherwise focus it
+      if (panel.group?.activePanel === panel) {
+        api.removePanel(panel);
+      } else {
+        panel.api.setActive();
+      }
+    } else {
+      // Panel doesn't exist — add it back with a reasonable position
+      addPanelWithDefaults(api, panelId);
     }
-    scheduleSave(get);
   },
 
-  setLeftActive(tab) {
-    set({ leftActive: tab });
-    scheduleSave(get);
-  },
-
-  setRightActive(tab) {
-    set({ rightActive: tab });
-    scheduleSave(get);
-  },
-
-  setBottomActive(tab) {
-    set({ bottomActive: tab });
-    scheduleSave(get);
+  isPanelVisible(panelId) {
+    const api = get().dockviewApi;
+    if (!api) return false;
+    return api.getPanel(panelId) !== undefined;
   },
 
   async loadLayout() {
@@ -79,32 +101,112 @@ export const useLayoutStore = create<LayoutState>()((set, get) => ({
         .from(settings)
         .where(eq(settings.key, SETTINGS_KEY));
       if (rows.length > 0) {
-        const saved = JSON.parse(rows[0].value) as Partial<{
-          leftActive: LeftTab | null;
-          rightActive: RightTab | null;
-          bottomActive: BottomTab | null;
-        }>;
-        set({
-          leftActive: saved.leftActive ?? "scenes",
-          rightActive: saved.rightActive ?? "chat",
-          bottomActive: saved.bottomActive ?? null,
-        });
+        return JSON.parse(rows[0].value) as SerializedDockview;
       }
     } catch {
-      // Use defaults on error
+      // Use default layout on error
     }
+    return null;
   },
 
-  async _saveLayout() {
-    const { leftActive, rightActive, bottomActive } = get();
-    const value = JSON.stringify({ leftActive, rightActive, bottomActive });
-    try {
-      await db
-        .insert(settings)
-        .values({ key: SETTINGS_KEY, value })
-        .onConflictDoUpdate({ target: settings.key, set: { value } });
-    } catch {
-      // Ignore save errors silently
-    }
+  saveLayout() {
+    scheduleSave(get);
   },
 }));
+
+/**
+ * Add a panel back to the layout at a sensible default position.
+ */
+function addPanelWithDefaults(api: DockviewApi, panelId: PanelId) {
+  const title = PANEL_TITLES[panelId];
+
+  // Try to group with a sibling panel, or fall back to a directional position
+  switch (panelId) {
+    case "scenes":
+    case "codex":
+    case "chat-history": {
+      // Left group — find any sibling
+      const sibling = findFirstPanel(
+        api,
+        ["scenes", "codex", "chat-history"],
+        panelId,
+      );
+      if (sibling) {
+        api.addPanel({
+          id: panelId,
+          component: panelId,
+          title,
+          position: { referencePanel: sibling, direction: "within" },
+        });
+      } else {
+        api.addPanel({
+          id: panelId,
+          component: panelId,
+          title,
+          position: { direction: "left" },
+        });
+      }
+      break;
+    }
+    case "chat": {
+      api.addPanel({
+        id: panelId,
+        component: panelId,
+        title,
+        position: { direction: "right" },
+      });
+      break;
+    }
+    case "snippets":
+    case "attribution": {
+      const sibling = findFirstPanel(api, ["snippets", "attribution"], panelId);
+      if (sibling) {
+        api.addPanel({
+          id: panelId,
+          component: panelId,
+          title,
+          position: { referencePanel: sibling, direction: "within" },
+        });
+      } else {
+        const editor = api.getPanel("editor");
+        if (editor) {
+          api.addPanel({
+            id: panelId,
+            component: panelId,
+            title,
+            position: { referencePanel: editor, direction: "below" },
+          });
+        } else {
+          api.addPanel({
+            id: panelId,
+            component: panelId,
+            title,
+            position: { direction: "below" },
+          });
+        }
+      }
+      break;
+    }
+    case "editor": {
+      // Editor should always be in center
+      api.addPanel({
+        id: panelId,
+        component: panelId,
+        title,
+        position: { direction: "right" },
+      });
+      break;
+    }
+  }
+}
+
+function findFirstPanel(
+  api: DockviewApi,
+  ids: PanelId[],
+  exclude: PanelId,
+): string | undefined {
+  for (const id of ids) {
+    if (id !== exclude && api.getPanel(id)) return id;
+  }
+  return undefined;
+}

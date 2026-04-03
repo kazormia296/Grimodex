@@ -8,12 +8,8 @@ import {
   Settings,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
-import {
-  useLayoutStore,
-  type PanelId,
-  type LeftTab,
-  type BottomTab,
-} from "./layoutStore";
+import type { DockviewApi } from "dockview-react";
+import { useLayoutStore, type PanelId } from "./layoutStore";
 
 interface PanelDef {
   id: PanelId;
@@ -39,24 +35,16 @@ const MAIN_PANELS: PanelDef[] = [
 ];
 
 function getDotState(
-  panel: PanelId,
-  leftActive: LeftTab | null,
-  rightActive: "chat" | null,
-  bottomActive: BottomTab | null,
+  panelId: PanelId,
+  api: DockviewApi | null,
 ): "active" | "inactive" | "none" {
-  if (panel === "scenes" || panel === "codex" || panel === "chat-history") {
-    if (leftActive === panel) return "active";
-    // Always docked (just might not be the active tab)
-    return "inactive";
-  }
-  if (panel === "chat") {
-    return rightActive === "chat" ? "active" : "inactive";
-  }
-  if (panel === "snippets" || panel === "attribution") {
-    if (bottomActive === panel) return "active";
-    return "none";
-  }
-  return "none";
+  if (!api) return "none";
+  const panel = api.getPanel(panelId);
+  if (!panel) return "none";
+  // Panel is active tab in its group
+  if (panel.group?.activePanel === panel) return "active";
+  // Panel exists but not active tab
+  return "inactive";
 }
 
 interface ActivityButtonProps {
@@ -97,8 +85,7 @@ interface ActivityBarProps {
 }
 
 export function ActivityBar({ onSettingsOpen }: ActivityBarProps) {
-  const { leftActive, rightActive, bottomActive, togglePanel } =
-    useLayoutStore();
+  const { dockviewApi, togglePanel } = useLayoutStore();
 
   return (
     <aside className="flex w-10 flex-shrink-0 flex-col items-center border-r border-border bg-sidebar-background py-1">
@@ -108,12 +95,7 @@ export function ActivityBar({ onSettingsOpen }: ActivityBarProps) {
           <ActivityButton
             key={panel.id}
             panel={panel}
-            dotState={getDotState(
-              panel.id,
-              leftActive,
-              rightActive,
-              bottomActive,
-            )}
+            dotState={getDotState(panel.id, dockviewApi)}
             onClick={() => togglePanel(panel.id)}
           />
         ))}
