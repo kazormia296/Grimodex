@@ -412,6 +412,19 @@ LLM APIのシステムプロンプトに以下の5レイヤーを階層的に注
 
 **代替として採用: 「Pin with children」操作**（ピン留めセクション参照）
 
+#### 将来の検討事項: 意味的類似性検索（Semantic Retrieval）
+
+現在のCodex検出はAho-Corasickによる完全な字句マッチングのみ。「王冠」というエントリがあるシーンで「王の頭上の宝飾」と書いた場合、aliasに登録しない限り検出されない。
+
+意味的類似性検索により、字句マッチの限界を補完できる可能性がある:
+
+- **アプローチ**: ローカル埋め込みモデル（e.g., all-MiniLM-L6-v2）でCodexエントリのembeddingを生成し、シーンテキストとのコサイン類似度で「関連するかもしれないエントリ」を候補提示
+- **導入箇所の候補**:
+  1. `mentioned` モードに `mentioned_semantic` サブモードを追加し、閾値を超えたエントリも注入対象にする
+  2. Agent mode の `search_codex` ツールにembedding検索オプションを追加（最小実装）
+  3. Codex QuickセクションやContext Barで「Suggested by similarity」として候補を表示し、ユーザーがピン留めで確定
+- **現時点で不採用の理由**: 現在の設計（Aho-Corasick + alias + Agent mode ツール検索）でほとんどのケースはカバーでき、embedding検索は実装コスト（ローカルモデルの管理、ベクトルDB、インデックス更新）に対してリターンが不確実。実際のユーザーフィードバックでalias運用の限界が顕在化した段階で再検討する
+
 **Layer 5: Conversation history**
 - 現在のセッションのメッセージ履歴
 - **Progressive summarization**: メッセージ数が閾値（8往復）を超え、かつトークン予算に収まらない場合、古いメッセージ群をLLMで要約し「会話要約」として先頭に保持する。直近の会話は原文を維持
