@@ -245,10 +245,10 @@ export function TreeNodeItem({
         <span
           {...attributes}
           {...listeners}
-          className="flex h-4 w-3 flex-shrink-0 cursor-grab items-center justify-center text-muted-foreground/50 opacity-0 group-hover:opacity-100"
+          className="flex h-5 w-4 flex-shrink-0 cursor-grab items-center justify-center text-muted-foreground/50 opacity-0 group-hover:opacity-100"
           onClick={(e) => e.stopPropagation()}
         >
-          <GripVertical className="h-3 w-3" />
+          <GripVertical className="h-4 w-4" />
         </span>
 
         {/* Expand/collapse chevron */}
