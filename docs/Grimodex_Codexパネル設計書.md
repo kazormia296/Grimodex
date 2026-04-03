@@ -512,14 +512,15 @@ Codexエントリ間の親子関係を管理するセクション。詳細は「
 **Context injection（コンテキスト注入設定）**:
 - Children セクション下部にドロップダウンで表示
 - このエントリが注入対象になった場合に、子孫エントリのsummaryを自動注入するトークン上限を設定
+- 予算はLayer 4予算に対する比率で指定。モデルのコンテキスト上限に応じて実トークン数が自動スケールする
 - プリセット選択肢:
-  | 選択肢 | 値 | 説明 |
-  |--------|-----|------|
-  | None | 0 | 子孫を注入しない |
-  | Compact (default) | 800 | summary ~4件分。子が少ないエントリ向け |
-  | Standard | 1600 | summary ~8件分。中規模の子ツリー向け |
-  | Generous | 3200 | summary ~16件分。大きな組織・派閥向け |
-- デフォルト: Compact (800 tok)
+  | 選択肢 | Layer 4比率 | 説明 |
+  |--------|-----------|------|
+  | None | 0% | 子孫を注入しない |
+  | Compact (default) | 15% | 子が少ないエントリ向け |
+  | Standard | 30% | 中規模の子ツリー向け |
+  | Generous | 50% | 大きな組織・派閥向け |
+- デフォルト: Compact (15%)
 - 子エントリが0個の場合はこのセクションを非表示
 
 **Suggested（提案）**:
@@ -979,16 +980,16 @@ Codexエントリ間に親子関係（リレーション）を設定できる。
 - 1つのエントリは最大1つの親を持てる（多対1）
 - 1つのエントリは0個以上の子を持てる（1対多）
 - 循環参照は禁止（A→B→C→Aのようなループ）
-- 深さに制限はない。コンテキスト注入はサブツリートークン予算（デフォルト800tok）で制御され、BFS順で注入する
+- 深さに制限はない。コンテキスト注入はサブツリートークン予算（Layer 4予算に対する比率、デフォルト: compact 15%）で制御され、BFS順で注入する
 
 ```
-Elara (character)                       children_budget: 800
+Elara (character)                       children_budget: compact (15%)
 ├── Soulbind Amulet (item)         ← 子（BFS depth 1、優先注入）
 ├── Binding Mark (lore)            ← 子（BFS depth 1、優先注入）
 └── Elara's Journal (item)         ← 子（BFS depth 1、優先注入）
       └── Journal Entry #3 (lore)  ← 孫（BFS depth 2、予算が残っていれば注入）
 
-Obsidian Tower (location)               children_budget: 800
+Obsidian Tower (location)               children_budget: compact (15%)
 ├── Binding Chamber (location)     ← 子
 └── Warding Stones (item)          ← 子
 ```
@@ -1032,12 +1033,30 @@ Chatパネルのコンテキスト注入Layer 4で、親エントリが注入対
 
 深さ（depth）ではなく、**親エントリごとのトークン予算**で子孫注入を制御する。これにより「子が少なく深い構造」と「子が多く浅い構造」の両方に一貫して対応できる。
 
-- 各エントリの `children_budget` カラム（デフォルト800tok）で上限を設定
+- 各エントリの `children_budget` カラムで、**Layer 4予算に対する比率**（プリセット）を指定
+- 実行時にモデルのコンテキスト上限からLayer 4予算を算出し、比率を掛けて実トークン数を決定
 - BFS順（depth 1 → depth 2 → ...）で注入するため、直接の子が優先される
 - 予算到達で打ち切り。depth制限は設けない（予算が自然な制限として機能する）
 - 手動ピン（「Pin with children」操作）は予算を無視する（ユーザーの明示的意図）
 
+**比率のモデル別実効値の例**（Compact 15%の場合）:
+
+| モデル | コンテキスト | Layer 4予算(~20%) | Compact実効値 |
+|--------|------------|-------------------|-------------|
+| Ollama llama3 (8k) | 8,000 | 1,600 | 240 tok (~1件) |
+| GPT-4o (128k) | 128,000 | 25,600 | 3,840 tok (~19件) |
+| Claude Sonnet (200k) | 200,000 | 40,000 | 6,000 tok (~30件) |
+| Claude Opus (1M) | 1,000,000 | 200,000 | 30,000 tok (~150件) |
+
 ```typescript
+function resolveChildrenBudget(entry: CodexEntry, layer4Budget: number): number {
+  // children_budget はプリセット名を格納。Layer 4予算に対する比率で実トークン数を算出
+  const ratios: Record<string, number> = {
+    none: 0, compact: 0.15, standard: 0.30, generous: 0.50
+  };
+  return Math.floor(layer4Budget * (ratios[entry.children_budget] ?? 0.15));
+}
+
 function injectDescendants(parentId: string, budget: number): DescendantContext[] {
   const results: DescendantContext[] = [];
   let remaining = budget;
@@ -1080,7 +1099,8 @@ function buildCodexContext(matchedEntryIds: string[]): string {
     injectedIds.add(entryId);
 
     // 子孫エントリをサブツリートークン予算内でBFS注入
-    const descendants = injectDescendants(entryId, entry.children_budget ?? 800);
+    const childBudget = resolveChildrenBudget(entry, layer4Budget);
+    const descendants = injectDescendants(entryId, childBudget);
     for (const desc of descendants) {
       if (injectedIds.has(desc.entry.id)) continue;
       contextParts.push(formatChildContext(desc.entry));  // summaryのみ
@@ -1096,7 +1116,7 @@ function buildCodexContext(matchedEntryIds: string[]): string {
 
 | 注入トリガー | 親エントリ | 子孫エントリ（自動注入） |
 |-------------|-----------|----------------------|
-| 自動検出（シーン本文にnameが出現） | summary + カスタムディテール（include_in_context=1）。**summaryが未記入の場合はcontent全文をフォールバック** | summaryをBFS順に `children_budget`（デフォルト800tok）まで注入 |
+| 自動検出（シーン本文にnameが出現） | summary + カスタムディテール（include_in_context=1）。**summaryが未記入の場合はcontent全文をフォールバック** | summaryをBFS順に `children_budget`（デフォルト: compact = Layer 4の15%）まで注入 |
 | チャットメッセージ内で言及 | **自動ピン留め**: content全文 + カスタムディテール（include_in_context=1） | summaryをBFS順に `children_budget` まで注入 |
 | ピン留め（手動） | content全文 + カスタムディテール（include_in_context=1） | summaryをBFS順に `children_budget` まで注入 |
 | Pin with children（手動） | content全文 + カスタムディテール | **予算無視**: 直接子のcontent全文を注入（個別除外可能） |

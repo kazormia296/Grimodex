@@ -180,7 +180,8 @@ CREATE TABLE codex_entries (
   tags_cache              TEXT,            -- FTS5用非正規化キャッシュ（JSON array）
   context_mode            TEXT NOT NULL DEFAULT 'mentioned'
                             CHECK(context_mode IN ('always', 'mentioned', 'suppress', 'hidden')),
-  children_budget         INTEGER NOT NULL DEFAULT 800,        -- 子孫注入のサブツリートークン予算（0=注入なし）
+  children_budget         TEXT NOT NULL DEFAULT 'compact'       -- サブツリートークン予算プリセット
+                            CHECK(children_budget IN ('none', 'compact', 'standard', 'generous')),
   source_chat_message_id  TEXT REFERENCES chat_messages(id),   -- 抽出元チャット（nullable）
   created_at              TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at              TEXT NOT NULL DEFAULT (datetime('now'))
@@ -203,8 +204,14 @@ context_mode の動作:
 | `hidden` | AIコンテキストに一切含めない | 不可 |
 
 children_budget の動作:
-- 親エントリが注入対象になった場合、子孫エントリのsummaryを `children_budget` トークンの範囲内でBFS（幅優先）順に自動注入する
-- プリセット値: 0（なし）、800（Compact、デフォルト）、1600（Standard）、3200（Generous）
+- 親エントリが注入対象になった場合、子孫エントリのsummaryをサブツリートークン予算の範囲内でBFS（幅優先）順に自動注入する
+- プリセット値はLayer 4予算に対する比率として定義。モデルのコンテキスト上限に応じて実トークン数が自動スケールする:
+  | プリセット | Layer 4比率 | 200kモデル時の実効値 | 1Mモデル時の実効値 |
+  |-----------|-----------|-------------------|------------------|
+  | `none` | 0% | 0 | 0 |
+  | `compact`（デフォルト） | 15% | ~6,000 tok | ~30,000 tok |
+  | `standard` | 30% | ~12,000 tok | ~60,000 tok |
+  | `generous` | 50% | ~20,000 tok | ~100,000 tok |
 - 手動ピン（Pin with children）は予算を無視する
 - 詳細はCodexパネル設計書「サブツリートークン予算」セクション参照
 

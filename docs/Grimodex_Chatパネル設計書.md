@@ -368,19 +368,19 @@ LLM APIのシステムプロンプトに以下の5レイヤーを階層的に注
 **Layer 1: Project info（常時）**
 - プロジェクトタイトル、ジャンル、視点、文体ガイド
 - ユーザーがSettingsで設定した「AI指示（グローバル）」
-- ~500-2,000 tokens
+- 予算配分: コンテキストの ~2%（最小500tok）
 
 **Layer 2: storySoFar（スライディングウィンドウ）**
 - 現在のアクティブシーンより前の全シーンの `synopsis` を時系列順に結合し、「これまでの物語」としてシステムプロンプトに注入
 - Synopsisが未記入のシーンはスキップ（本文フォールバックはしない — トークン爆発防止）
 - トークン予算に応じて、古いシーンのSynopsisから順に切り詰め（直近のシーンを優先）
 - Synopsisが全て未記入の場合はLayer 2自体を省略
-- ~500-4,000 tokens
+- 予算配分: コンテキストの ~10%
 
 **Layer 3: Current scene + previous（常時）**
 - 現在のアクティブシーンの全文
 - 直前シーンの synopsis + 末尾段落（最大3段落）。直前シーンの全文は含めない（トークン効率のため。全文が必要な場合はAgent modeの `get_scene` ツールを使用）
-- ~2,000-12,000 tokens
+- 予算配分: コンテキストの ~40%
 
 **Layer 4: Codex entries + Snippets**
 - **context_mode フィルタ**: 各エントリの `context_mode` により注入可否を判定（Codexパネル設計書「コンテキスト制御モード」セクション参照）
@@ -392,9 +392,9 @@ LLM APIのシステムプロンプトに以下の5レイヤーを階層的に注
 - コンテキストバーでピン留めされたCodexエントリの全文 + カスタムディテール
 - **チャット言及による自動ピン留め**: ユーザーのチャットメッセージ内でCodexエントリ名が検出された場合、セッションの `pinned_codex` に自動追加し、content全文を注入する（シーン本文の自動検出とは区別）
 - コンテキストバーでピン留めされたSnippetの全文
-- **子孫エントリの自動注入**: 上記でマッチした親Codexエントリの子孫エントリのsummaryを、サブツリートークン予算（エントリごとに設定、デフォルト800tok）の範囲内でBFS（幅優先）順に自動追加。depth制限はなく、予算が自然な制限として機能する（子のcontext_modeも個別に判定。Codexパネル設計書「コンテキスト注入への影響」セクション参照）
+- **子孫エントリの自動注入**: 上記でマッチした親Codexエントリの子孫エントリのsummaryを、サブツリートークン予算（エントリごとに設定、デフォルト: Layer 4予算の15%）の範囲内でBFS（幅優先）順に自動追加。depth制限はなく、予算が自然な制限として機能する（子のcontext_modeも個別に判定。Codexパネル設計書「コンテキスト注入への影響」セクション参照）
 - 予算超過時の優先順: always > mentioned > pinned content > 子孫エントリsummary（最初に切り詰め）
-- ~500-6,000 tokens（子エントリ・Snippet・カスタムディテールの注入により上限が上がる可能性）
+- 予算配分: コンテキストの ~20%
 
 #### 検討済み・不採用のコンテキスト注入モード
 
@@ -403,7 +403,7 @@ LLM APIのシステムプロンプトに以下の5レイヤーを階層的に注
 **Strict モード（子エントリのcontent全文注入 + 無制限depth拡張）:**
 - 想定: ピン留めした親エントリの子のcontent全文を注入し、depth 2+まで無制限に辿る
 - メリット: 子エントリの詳細情報をAIに渡せる。深い階層（例: 太郎 → 能力 → 火魔法）も参照可能
-- 不採用理由: トークン消費が予測不能に膨張する（子10個 × 500tok = 5,000tok追加）。depth 2+は指数的に増加。代わりにサブツリートークン予算方式を採用（Codexパネル設計書参照）: 親エントリごとにトークン上限（デフォルト800tok）を設定し、BFS順でsummaryを注入。予算が自然な深さ制限として機能する
+- 不採用理由: トークン消費が予測不能に膨張する。depth 2+は指数的に増加。代わりにサブツリートークン予算方式を採用（Codexパネル設計書参照）: 親エントリごとにLayer 4予算に対する比率でトークン上限を設定し、BFS順でsummaryを注入。予算が自然な深さ制限として機能する
 
 **Deep-dive モード（リレーション無関係にContent内の全言及Codexとその子を注入）:**
 - 想定: Content本文中で言及されている全Codexエントリ+その子を、明示的リレーションの有無に関係なく注入
@@ -418,39 +418,64 @@ LLM APIのシステムプロンプトに以下の5レイヤーを階層的に注
 - ユーザーが「重要」マーク（⭐）を付けたメッセージは要約対象から除外し、原文を保持する
 - 要約生成にはSettingsのサマリー用モデルを使用（Synopsis自動生成と同じモデル）
 - フォールバック: 要約生成に失敗した場合は従来のFIFO切り詰めを適用
-- ~2,000-8,000 tokens
+- 予算配分: コンテキストの ~20%
 
 ### トークン予算管理
 
 - 合計トークン数を `js-tiktoken` で計算
-- 使用モデルのコンテキスト上限から逆算して各レイヤーの予算を配分
+- **比率ベース配分**: 使用モデルのコンテキスト上限に対する比率で各レイヤーの予算を動的に算出。8kモデルでも1Mモデルでも同じ比率が適用される
+- 各レイヤーに最小トークン数（floor）を設定し、小コンテキストモデルでも最低限の機能を保証
+- **比率はSettings > AI > コンテキスト予算配分でカスタマイズ可能**（Settingsパネル設計書参照）
+- 応答予約: コンテキストの ~5%（最小2,000tok）
+
+| レイヤー | 比率 | 最小floor | 8k モデル | 200k モデル | 1M モデル |
+|---------|------|-----------|----------|------------|----------|
+| L1 Project | ~2% | 500 | 500 | 4,000 | 20,000 |
+| L2 storySoFar | ~10% | 500 | 500 | 20,000 | 100,000 |
+| L3 Scene | ~40% | 2,000 | 2,400 | 80,000 | 400,000 |
+| L4 Codex | ~20% | 500 | 500 | 40,000 | 200,000 |
+| L5 History | ~20% | 1,000 | 1,000 | 40,000 | 200,000 |
+| 応答予約 | ~5% | 2,000 | 2,000 | 10,000 | 50,000 |
+
+- 比率は目安であり、実際の注入量がレイヤー予算を下回る場合、余剰は下位優先のレイヤーに再配分する
 - 予算超過時の優先順位: Layer 1 > Layer 3 > Layer 2 > Layer 4 > Layer 5
 - コンテキストバーに合計トークン数を常時表示
-- **プロンプトプレビュー**: コンテキストバーのトークン数ピルをクリックすると、実際にLLMに送信されるシステムプロンプト全文をモーダルで表示。レイヤーごとのトークン内訳（L1: 800, L2: 2,100, L3: 8,500, L4: 3,200, L5: 4,800）も可視化する。デバッグやコンテキストチューニングに使用
+- **プロンプトプレビュー**: コンテキストバーのトークン数ピルをクリックすると、実際にLLMに送信されるシステムプロンプト全文をモーダルで表示。レイヤーごとのトークン内訳（配分比率と実使用量）も可視化する。デバッグやコンテキストチューニングに使用
 
 ### コンテキスト構築の関数
 
 ```typescript
 function buildContext(sceneId: string, session: ChatSession): SystemPrompt {
-  const budget = getModelContextLimit(session.model) - reserveForResponse(2000);
+  const contextLimit = getModelContextLimit(session.model);
+  const responseReserve = Math.max(2000, Math.floor(contextLimit * 0.05));
+  const budget = contextLimit - responseReserve;
+
+  // 比率ベースで各レイヤーの予算を算出（floor付き）
+  const allocations = allocateLayerBudgets(budget, {
+    layer1: { ratio: 0.02, floor: 500 },
+    layer2: { ratio: 0.10, floor: 500 },
+    layer3: { ratio: 0.40, floor: 2000 },
+    layer4: { ratio: 0.20, floor: 500 },
+    layer5: { ratio: 0.20, floor: 1000 },
+  });
 
   // 優先順位: Layer 1 > Layer 3 > Layer 2 > Layer 4 > Layer 5
-  const layer1 = buildProjectInfo();          // 常時含める
-  const layer3 = buildSceneContext(sceneId);  // 現在シーン全文 + 前シーンsynopsis&末尾3段落
-  const layer2 = buildStorySoFar(sceneId, remainingBudget);  // storySoFar（L5より優先）
+  const layer1 = buildProjectInfo(allocations.layer1);
+  const layer3 = buildSceneContext(sceneId, allocations.layer3);
+  const layer2 = buildStorySoFar(sceneId, allocations.layer2);
   // チャットメッセージ内のCodex言及を検出し、自動ピン留め（source: 'chat_mention'）
   // 入力エリアのCodexHighlight/@メンションから検出済みのIDを取得
   const chatMentionedIds = detectCodexMentions(userMessage);
   // 手動ピン（source: 'manual'）はそのまま維持、chat_mentionは差分更新
   const updatedPins = reconcilePins(session.pinnedCodex, chatMentionedIds);
-  const layer4 = buildCodexContext(sceneId, updatedPins);
+  const layer4 = buildCodexContext(sceneId, updatedPins, allocations.layer4);
   // buildCodexContext 内で context_mode フィルタ適用:
   //   hidden → 除外、always → 無条件追加、mentioned → 検出時のみ、
   //   suppress → ピンリスト存在時のみ
   // summaryが未記入の場合はcontent全文をフォールバック注入
   // カスタムディテール（include_in_context=1）も注入対象に含める
-  // 子孫エントリはサブツリートークン予算内でBFS順に注入
-  const layer5 = buildConversationHistory(session.messages, remainingBudget);
+  // 子孫エントリはサブツリートークン予算（Layer 4予算の比率）内でBFS順に注入
+  const layer5 = buildConversationHistory(session.messages, allocations.layer5);
   // Progressive summarization: 8往復超のメッセージは要約化
   // ⭐マーク付きメッセージは要約対象から除外
 
