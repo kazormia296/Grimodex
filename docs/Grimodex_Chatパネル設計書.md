@@ -521,23 +521,154 @@ function buildContext(sceneId: string, session: ChatSession): SystemPrompt {
 - ユーザーがデフォルトモデルを設定
 - チャット入力エリアからセッション単位でモデルを切り替え可能
 
-### 拡張思考（Extended Thinking）
+### 拡張思考（Extended Thinking）とeffortパラメータ
 
-モデルが拡張思考に対応している場合は **常に有効化する**:
+#### effort パラメータ
+
+APIリクエストの `effort` フィールドで、モデルの推論の深さを制御する。テキスト応答だけでなくツール呼び出しや拡張思考を含む**すべてのトークン消費**に影響する行動的シグナル。
+
+| レベル | 用途 | 備考 |
+|--------|------|------|
+| `low` | Synopsis自動生成、セッションタイトル生成などの軽量タスク | 簡単な問題では思考をスキップする場合あり |
+| `medium` | 通常のチャット応答、スラッシュコマンド | コストと品質のバランス |
+| `high` | Agent mode、複雑な質問、矛盾チェック | ほぼ必ず深い思考が走る。**APIのデフォルト** |
+| `max` | Opus 4.6 限定。最大限の推論が必要な場面 | 他モデルで指定するとエラー |
+
+**対応モデル**: Opus 4.6、Sonnet 4.6、Opus 4.5。それ以外のモデルでは無視される。
+
+**タスクごとのeffortマッピング**:
+
+| タスク | effort | 理由 |
+|--------|--------|------|
+| Synopsis自動生成 | `low` | 1-3文の要約、複雑な推論不要 |
+| セッションタイトル生成 | `low` | 軽量タスク |
+| 通常チャット応答 | `medium` | バランス重視 |
+| スラッシュコマンド（/continue, /describe等） | `medium` | 創作支援、標準的な推論 |
+| Agent mode（ツール呼び出し） | `high` | ツール選択の判断精度が重要 |
+| AI Codex抽出 | `low` | 構造化抽出、パターン認識 |
+
+effortはSettingsで上書き可能にはしない（タスクごとに最適値が異なるため、アプリ側で自動選択する方が合理的）。
+
+#### 拡張思考の有効化
+
+モデルが拡張思考に対応している場合は有効化する。**モデル世代によって方式が異なる**:
+
+**Opus 4.6 / Sonnet 4.6（推奨方式: adaptive thinking + effort）:**
+```json
+{
+  "model": "claude-opus-4-6",
+  "max_tokens": 16000,
+  "thinking": { "type": "adaptive", "effort": "high" }
+}
+```
+- `budget_tokens` による手動指定は**非推奨**（将来のモデルリリースで削除予定）
+- adaptive thinking が問題の複雑さに応じて思考するかどうか・どの程度思考するかを自動判断する
+- `effort` が思考の積極性を制御: `high`/`max` ではほぼ必ず深く思考、`low`/`medium` では簡単な問題で思考をスキップ
+- **interleaved thinking**: adaptive thinking で自動有効化。ツール呼び出しの間にも思考でき、中間結果を推論してから次のアクションを決定する
+
+**Opus 4.5 / Sonnet 4.5 など旧モデル（従来方式: budget_tokens）:**
+```json
+{
+  "model": "claude-sonnet-4-5-20250929",
+  "max_tokens": 16000,
+  "thinking": { "type": "enabled", "budget_tokens": 10000 },
+  "effort": "medium"
+}
+```
+- `budget_tokens` で思考トークン上限を手動指定（`max_tokens` 未満であること。応答予約の80%をデフォルトとする）
+- `effort` と併用可能: `budget_tokens` が思考トークンの上限、`effort` がそれ以外のトークン消費に影響
+- interleaved thinking を使う場合は `interleaved-thinking-2025-05-14` ベータヘッダーが必要。有効時は `budget_tokens` がコンテキストウィンドウ全体まで拡張可能
+
+**その他プロバイダ:**
 
 | プロバイダ | パラメータ | 対応モデル |
 |-----------|-----------|-----------|
-| Anthropic | `thinking: { type: "enabled", budget_tokens }` | Claude 3.7 Sonnet+, Claude 4+ |
 | OpenAI | reasoning tokens（`o1`, `o3` 系） | o1, o3-mini, o3 等 |
 | OpenRouter | モデル依存（上記プロバイダのパススルー） | 各モデルの仕様に従う |
 | Ollama | モデル依存（DeepSeek-R1 等） | 対応モデルのみ |
 
-- **検出**: モデルメタデータまたはプロバイダ SDK の機能フラグで拡張思考対応を判定
-- **budget_tokens**: コンテキスト予算から動的に算出（レスポンス予約の 80% をデフォルトとする）
+#### Thinking の表示制御（display パラメータ）
+
+Anthropic APIの `display` パラメータで、thinking ブロックの返却形式を制御できる:
+
+| display | 動作 | Grimodexでの用途 |
+|---------|------|-----------------|
+| `"summarized"`（デフォルト） | 思考過程の要約を返却 | **採用**: ユーザーが推論過程を確認できる |
+| `"omitted"` | thinking フィールドを空で返却（`signature` のみ） | 思考表示が不要なタスク（Synopsis生成等）で高速化に使用可能 |
+
+**重要**: Claude 4 モデルでは思考内容は要約されて返される（課金は全思考トークンに対して行われる）。レスポンスに見えるトークン数と課金されるトークン数は一致しない。
+
+Grimodexでの使い分け:
+- チャット応答・Agent mode: `display: "summarized"` — ユーザーが推論過程を確認するため
+- Synopsis生成・セッションタイトル生成: `display: "omitted"` — UIに思考を表示する必要がなく、TTFT（Time to First Text Token）を短縮
+
+#### Thinking ブロックの署名とマルチターン
+
+APIは thinking ブロックに暗号化された `signature` を付与する。マルチターン会話やツール呼び出しループで thinking ブロックを返す際は、**`signature` を含む完全なブロックを変更せずに返す**必要がある:
+
+```json
+{
+  "type": "thinking",
+  "thinking": "Let me analyze this step by step...",
+  "signature": "WaUjzkypQ2mUEVM36O2TxuC06KN8..."
+}
+```
+
+- `chat_messages.metadata` に thinking ブロック（`signature` 含む）を保存し、次のターンでそのまま送信する
+- thinking ブロックの内容を改変するとAPIエラーになる
+- ターンの途中でthinkingのON/OFFを切り替えることはできない（ツール呼び出しループは同一ターン扱い）
+
+#### 実装時のモデル分岐
+
+```typescript
+type EffortLevel = 'low' | 'medium' | 'high' | 'max';
+type DisplayMode = 'summarized' | 'omitted';
+
+function buildThinkingParams(
+  model: ModelInfo,
+  taskEffort: EffortLevel,
+  display: DisplayMode = 'summarized'
+) {
+  if (model.supportsAdaptiveThinking) {
+    // Opus 4.6, Sonnet 4.6: adaptive + effort（interleaved thinking 自動有効化）
+    return {
+      thinking: { type: 'adaptive', effort: taskEffort, display },
+    };
+  } else if (model.supportsThinking) {
+    // Opus 4.5, Sonnet 4.5 等: budget_tokens + effort
+    const budgetTokens = Math.floor(getResponseReserve(model) * 0.8);
+    return {
+      thinking: { type: 'enabled', budget_tokens: budgetTokens, display },
+      effort: taskEffort,  // effort はリクエストボディのトップレベル
+    };
+  }
+  // 拡張思考非対応モデル: effort のみ（対応していれば）
+  return model.supportsEffort ? { effort: taskEffort } : {};
+}
+```
+
+#### ストリーミング
+
+thinking ブロックのストリーミングは以下のイベント順序で配信される:
+
+1. `content_block_start` (type: thinking) — 思考ブロック開始
+2. `thinking_delta` イベント群 — 思考内容のインクリメンタル配信（`display: "omitted"` 時はスキップ）
+3. `signature_delta` — 暗号化署名の配信
+4. `content_block_stop` — 思考ブロック終了
+5. `content_block_start` (type: text) — 最終応答のストリーミング開始
+
+**UI表示**:
+- thinking 中は「考え中...」インジケータを表示
+- `display: "summarized"` 時: thinking ブロック内にリアルタイムで要約テキストを表示
+- `display: "omitted"` 時: インジケータのみ表示し、テキスト応答開始後に非表示
+
+#### UI・永続化
+
+- **検出**: モデルメタデータまたはプロバイダ SDK の機能フラグで拡張思考・effort・adaptive対応を判定
 - **UI表示**: thinking ブロックはAIメッセージ内に **折りたたみ式（デフォルト閉じ）** で表示する。「💭 Thinking...」ラベルのトグルをクリックで展開し、推論過程を確認可能。提案の意図やエージェントのツール選択理由の把握に活用できる
-- **トークン計上**: thinking トークンは `chat_messages.tokens_out` に含めて記録する
-- **永続化**: thinking ブロックの内容は `chat_messages.metadata` に保存し、セッション再表示時にも折りたたみ表示を再現する
-- **ストリーミング**: thinking 中は「考え中...」インジケータを表示。thinking 完了後に最終応答のストリーミングを開始する
+- **トークン計上**: thinking トークンは `chat_messages.tokens_out` に含めて記録する。**注意**: Claude 4 モデルでは要約された思考が返されるが、課金は全思考トークンに対して行われるため、レスポンスのトークン数と `tokens_out` は一致しない
+- **永続化**: thinking ブロックの内容と `signature` を `chat_messages.metadata` に保存する。`signature` はマルチターン会話で必須（APIに返す際に完全なブロックが必要）。セッション再表示時にも折りたたみ表示を再現する
+- **interleaved thinking**: Agent modeでツール結果を受け取った後にもthinkingブロックが出現する。各thinkingブロックを個別に折りたたみ表示し、ツール呼び出しの間に挟まる形で表示する
 
 ---
 

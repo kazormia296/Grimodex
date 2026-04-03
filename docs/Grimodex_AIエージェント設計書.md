@@ -417,9 +417,18 @@ Tool Use対応はモデルによって異なる:
 
 エージェントモードトグルは、現在のセッションモデルがTool Useに対応している場合のみ有効化する。対応状況は各プロバイダのSDK（`supportsToolUse` 等）またはSettings内のモデル設定で管理する。
 
-### 拡張思考との併用
+### 拡張思考・effortとの併用
 
-モデルが拡張思考（Extended Thinking）に対応している場合、エージェントモードでも **常に有効化する**。ツール呼び出しの判断精度向上に寄与する。詳細はChatパネル設計書「拡張思考（Extended Thinking）」セクションを参照。
+エージェントモードでは **effort: `high`** を使用する（ツール選択の判断精度が重要なため）。モデルが拡張思考に対応している場合は常に有効化する:
+
+- Opus 4.6 / Sonnet 4.6: `thinking: { type: "adaptive", effort: "high" }` — interleaved thinking が自動有効化され、ツール結果を受け取った後にも思考してから次のツール呼び出しを判断する
+- 旧モデル: `thinking: { type: "enabled", budget_tokens: N }` + `effort: "high"` + `interleaved-thinking-2025-05-14` ベータヘッダー
+
+**interleaved thinking のAgent modeへの効果**: ツール呼び出しの間にthinkingが入ることで、中間結果を推論してから次のアクションを決定できる。例: `search_codex` の結果を見て「この情報では不十分」と判断し、`get_codex_entry` で詳細を取得する、という段階的な推論が可能。
+
+エージェントモードではUI上にツール呼び出しと思考が交互に表示される。各thinkingブロックは折りたたみ表示（Chatパネル設計書の仕様に従う）。`display: "summarized"` を使用し、ユーザーがエージェントの推論過程を追跡できるようにする。
+
+詳細はChatパネル設計書「拡張思考（Extended Thinking）とeffortパラメータ」セクションを参照。
 
 ---
 
