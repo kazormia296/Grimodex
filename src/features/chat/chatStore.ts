@@ -71,6 +71,11 @@ import { getProject } from "@/features/project/api";
 import { useSettingsStore } from "@/features/settings/settingsStore";
 import { listCodexEntries } from "@/features/codex/api";
 import { findMentionedEntries } from "@/features/codex/codexMatcher";
+import {
+  getDescendantsBFS,
+  buildChildrenContext,
+  computeChildrenTokenBudget,
+} from "@/features/codex/childrenBudget";
 import type { ChatMessage, ChatSession, MessageRole } from "./chatTypes";
 
 interface ChatState {
@@ -419,12 +424,25 @@ export const useChatStore = create<ChatState>()((set, get) => ({
       if (sceneCtx) {
         const allEntries = await listCodexEntries();
         const mentioned = findMentionedEntries(sceneCtx.content, allEntries);
-        const codexEntries: CodexContext[] = mentioned.map((e) => ({
+        const baseCodExEntries: CodexContext[] = mentioned.map((e) => ({
           id: e.id,
           type: e.type,
           name: e.name,
           summary: allEntries.find((a) => a.id === e.id)?.summary ?? "",
         }));
+
+        // Enrich with children context (subtree token budget)
+        const L4_TOTAL_BUDGET = 60_000;
+        const codexEntries: CodexContext[] = baseCodExEntries.map((ctx) => {
+          const fullEntry = allEntries.find((e) => e.id === ctx.id);
+          if (!fullEntry) return ctx;
+          const preset = fullEntry.childrenBudget ?? "compact";
+          if (preset === "none") return ctx;
+          const budget = computeChildrenTokenBudget(preset, L4_TOTAL_BUDGET);
+          const descendants = getDescendantsBFS(fullEntry.id, allEntries);
+          const childrenContext = buildChildrenContext(descendants, budget);
+          return childrenContext ? { ...ctx, childrenContext } : ctx;
+        });
 
         let pinnedCodexEntries: CodexContext[] = [];
         if (activeSessionId) {

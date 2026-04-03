@@ -21,6 +21,7 @@ export interface CodexContext {
   type: string;
   name: string;
   summary: string;
+  childrenContext?: string; // pre-computed descendant summaries within budget
 }
 
 export interface BuildSystemPromptInput {
@@ -118,6 +119,9 @@ export function buildSystemPrompt(
     for (const entry of allCodex) {
       const label = typeLabels[entry.type] ?? entry.type;
       lines.push(`- **${entry.name}** (${label}): ${entry.summary}`);
+      if (entry.childrenContext) {
+        lines.push(entry.childrenContext);
+      }
     }
     l4Text = lines.join("\n");
   }

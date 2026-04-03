@@ -35,7 +35,13 @@ interface CodexState {
     data: Partial<
       Pick<
         NewCodexEntry,
-        "type" | "name" | "summary" | "tagsCache" | "contextMode"
+        | "type"
+        | "name"
+        | "summary"
+        | "tagsCache"
+        | "contextMode"
+        | "icon"
+        | "childrenBudget"
       >
     >,
   ) => Promise<void>;

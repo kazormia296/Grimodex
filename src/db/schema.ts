@@ -81,6 +81,7 @@ export const codexEntries = sqliteTable("codex_entries", {
   icon: blob("icon"), // 128×128 WebP icon image (nullable)
   tagsCache: text("tags_cache"), // FTS5 denormalized cache (JSON string[])
   contextMode: text("context_mode").notNull().default("mentioned"), // 'always' | 'mentioned' | 'suppress' | 'hidden'
+  childrenBudget: text("children_budget").notNull().default("compact"), // 'none' | 'compact' | 'standard' | 'generous'
   sourceChatMessageId: text("source_chat_message_id").references(
     () => chatMessages.id,
   ),

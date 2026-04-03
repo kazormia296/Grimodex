@@ -8,6 +8,15 @@ import {
 } from "@/components/ui/resizable";
 import { useCodexStore } from "./codexStore";
 import type { CodexEntry, CodexEntryType } from "./api";
+import { ChildrenBudgetSelector } from "./components/ChildrenBudgetSelector";
+import type { ChildrenBudgetPreset } from "./childrenBudget";
+import { getChildrenFromArray } from "./childrenBudget";
+import { listEntryTags } from "./tagApi";
+import type { CodexTag } from "./tagApi";
+import { TagSelector } from "./components/TagSelector";
+import { TagPill } from "./components/TagPill";
+import { IconPicker } from "./components/IconPicker";
+import { EntryIcon } from "./components/EntryIcon";
 
 const TYPE_OPTIONS: { value: CodexEntryType | "all"; label: string }[] = [
   { value: "all", label: "すべて" },
@@ -136,29 +145,60 @@ function CodexDetailContent({
       type: CodexEntryType;
       name: string;
       summary: string;
-      tagsCache: string;
+      childrenBudget: ChildrenBudgetPreset;
     },
   ) => void;
   onDelete: (id: string) => void;
 }) {
+  const entries = useCodexStore((s) => s.entries);
+  const update = useCodexStore((s) => s.update);
   const [type, setType] = useState<CodexEntryType>(
     entry.type as CodexEntryType,
   );
   const [name, setName] = useState(entry.name);
   const [summary, setSummary] = useState(entry.summary ?? "");
-  const [tags, setTags] = useState(entry.tagsCache ?? "");
+  const [childrenBudget, setChildrenBudget] = useState<ChildrenBudgetPreset>(
+    (entry.childrenBudget as ChildrenBudgetPreset) ?? "compact",
+  );
+  const [selectedTags, setSelectedTags] = useState<CodexTag[]>([]);
+  const [icon, setIcon] = useState<number[] | null>(
+    (entry.icon as number[] | null) ?? null,
+  );
 
   // Sync form when entry changes
   useEffect(() => {
     setType(entry.type as CodexEntryType);
     setName(entry.name);
     setSummary(entry.summary ?? "");
-    setTags(entry.tagsCache ?? "");
-  }, [entry.id, entry.type, entry.name, entry.summary, entry.tagsCache]);
+    setChildrenBudget(
+      (entry.childrenBudget as ChildrenBudgetPreset) ?? "compact",
+    );
+    setIcon((entry.icon as number[] | null) ?? null);
+  }, [
+    entry.id,
+    entry.type,
+    entry.name,
+    entry.summary,
+    entry.tagsCache,
+    entry.childrenBudget,
+    entry.icon,
+  ]);
+
+  // Load tags when entry changes
+  useEffect(() => {
+    listEntryTags(entry.id).then(setSelectedTags);
+  }, [entry.id]);
+
+  const hasChildren = getChildrenFromArray(entry.id, entries).length > 0;
 
   const handleSave = () => {
     if (!name.trim()) return;
-    onSave(entry.id, { type, name: name.trim(), summary, tagsCache: tags });
+    onSave(entry.id, {
+      type,
+      name: name.trim(),
+      summary,
+      childrenBudget,
+    });
   };
 
   return (
@@ -188,6 +228,15 @@ function CodexDetailContent({
       </div>
 
       <div className="flex-1 space-y-3 overflow-y-auto px-3 py-3">
+        <IconPicker
+          currentIcon={icon}
+          entryType={type}
+          onIconChange={(newIcon) => {
+            setIcon(newIcon);
+            void update(entry.id, { icon: newIcon as never });
+          }}
+        />
+
         <div>
           <label className="mb-1 block text-xs font-medium">タイプ</label>
           <select
@@ -228,14 +277,22 @@ function CodexDetailContent({
 
         <div>
           <label className="mb-1 block text-xs font-medium">タグ</label>
-          <input
-            data-testid="codex-detail-tags"
-            type="text"
-            value={tags}
-            onChange={(e) => setTags(e.target.value)}
-            className="w-full rounded-md border border-input bg-background px-2 py-1.5 text-sm"
+          <TagSelector
+            entryId={entry.id}
+            entryType={type}
+            selectedTags={selectedTags}
+            onTagsChange={setSelectedTags}
           />
         </div>
+
+        <ChildrenBudgetSelector
+          value={childrenBudget}
+          onChange={(preset) => {
+            setChildrenBudget(preset);
+            void update(entry.id, { childrenBudget: preset });
+          }}
+          hasChildren={hasChildren}
+        />
 
         {entry.sourceChatMessageId && (
           <div
@@ -302,6 +359,14 @@ function VirtualizedEntryList({
       >
         {virtualizer.getVirtualItems().map((virtualItem) => {
           const entry = entries[virtualItem.index];
+          let cachedTagNames: string[] = [];
+          try {
+            if (entry.tagsCache) {
+              cachedTagNames = JSON.parse(entry.tagsCache) as string[];
+            }
+          } catch {
+            cachedTagNames = [];
+          }
           return (
             <div
               key={entry.id}
@@ -324,6 +389,11 @@ function VirtualizedEntryList({
                 }`}
               >
                 <div className="flex items-center gap-2">
+                  <EntryIcon
+                    icon={entry.icon as number[] | null}
+                    entryType={entry.type}
+                    size={28}
+                  />
                   <span className="rounded-full bg-muted px-1.5 py-0.5 text-[9px] font-medium">
                     {TYPE_LABELS[entry.type] ?? entry.type}
                   </span>
@@ -335,6 +405,18 @@ function VirtualizedEntryList({
                   <p className="mt-0.5 truncate text-xs text-muted-foreground">
                     {entry.summary}
                   </p>
+                )}
+                {cachedTagNames.length > 0 && (
+                  <div className="mt-0.5 flex flex-wrap gap-0.5">
+                    {cachedTagNames.map((tagName) => (
+                      <TagPill
+                        key={tagName}
+                        name={tagName}
+                        color="#888888"
+                        size="sm"
+                      />
+                    ))}
+                  </div>
                 )}
               </button>
             </div>
@@ -389,7 +471,7 @@ export function CodexManagementPanel() {
         type: CodexEntryType;
         name: string;
         summary: string;
-        tagsCache: string;
+        childrenBudget: ChildrenBudgetPreset;
       },
     ) => {
       await update(id, data);

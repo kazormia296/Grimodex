@@ -67,6 +67,8 @@ export async function updateCodexEntry(
       | "excludedAliases"
       | "parentId"
       | "contextMode"
+      | "icon"
+      | "childrenBudget"
     >
   >,
 ): Promise<CodexEntry | undefined> {
