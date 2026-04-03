@@ -190,6 +190,30 @@ export function DataCategory() {
         </SettingRow>
       </SettingSection>
 
+      {/* Revision History */}
+      <SettingSection title="リビジョン履歴">
+        <SettingRow label="自動リビジョン間隔">
+          <SettingSlider
+            settingKey="revision.autoInterval"
+            min={1}
+            max={60}
+            step={1}
+            defaultValue={5}
+            format={(v) => `${v}分`}
+          />
+        </SettingRow>
+        <SettingRow label="リビジョン保持上限">
+          <SettingSlider
+            settingKey="revision.keepCount"
+            min={10}
+            max={200}
+            step={10}
+            defaultValue={50}
+            format={(v) => `${v}件`}
+          />
+        </SettingRow>
+      </SettingSection>
+
       {/* Export */}
       <SettingSection title="エクスポート">
         <div className="flex flex-wrap gap-2">

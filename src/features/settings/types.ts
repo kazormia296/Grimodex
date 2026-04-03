@@ -75,4 +75,7 @@ export const DEFAULT_SETTINGS: Record<string, string> = {
   "data.autoBackup": "true",
   "data.backupInterval": "60",
   "data.maxBackups": "10",
+  // Revision
+  "revision.autoInterval": "5",
+  "revision.keepCount": "50",
 };

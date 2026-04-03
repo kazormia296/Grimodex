@@ -1,5 +1,5 @@
 import { db } from "@/db/client";
-import { contentVersions } from "@/db/schema";
+import { contentVersions, projectSnapshotEntries } from "@/db/schema";
 import { eq, and, desc, max, sql, inArray } from "drizzle-orm";
 import type { ContentVersion } from "@/db/schema";
 
@@ -141,9 +141,18 @@ export async function pruneRevisions(
   if (all.length <= keepCount) return;
 
   const toDelete = all.slice(keepCount);
-  // Delete oldest auto revisions first, then manual if still over limit
   const autoToDelete = toDelete.filter((r) => r.snapshotType === "auto");
-  const deleteIds = autoToDelete.map((r) => r.id);
+  let deleteIds = autoToDelete.map((r) => r.id);
+
+  if (deleteIds.length === 0) return;
+
+  // Exclude IDs referenced by project snapshots
+  const protectedRows = await db
+    .select({ versionId: projectSnapshotEntries.versionId })
+    .from(projectSnapshotEntries)
+    .where(inArray(projectSnapshotEntries.versionId, deleteIds));
+  const protectedIds = new Set(protectedRows.map((r) => r.versionId));
+  deleteIds = deleteIds.filter((id) => !protectedIds.has(id));
 
   if (deleteIds.length === 0) return;
 

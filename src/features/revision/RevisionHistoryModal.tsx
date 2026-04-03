@@ -208,42 +208,61 @@ export function RevisionHistoryModal() {
   const [showDiff, setShowDiff] = useState(false);
   const [isRestoring, setIsRestoring] = useState(false);
   const [confirmRestore, setConfirmRestore] = useState(false);
+  const [prevRevisionContent, setPrevRevisionContent] = useState<string | null>(
+    null,
+  );
 
   // Reset local state when modal opens/closes
   useEffect(() => {
     if (!isOpen) {
       setShowDiff(false);
       setConfirmRestore(false);
+      setPrevRevisionContent(null);
     }
   }, [isOpen]);
+
+  // Fetch previous revision content for diff display
+  useEffect(() => {
+    if (!showDiff) {
+      setPrevRevisionContent(null);
+      return;
+    }
+    let cancelled = false;
+    async function fetchPrev() {
+      if (selectedRevisionId === null) {
+        // Current version: compare against latest saved revision
+        if (revisions.length > 0) {
+          const { getRevision } = await import("./api");
+          const rev = await getRevision(revisions[0].id);
+          if (!cancelled) setPrevRevisionContent(rev?.content ?? null);
+        } else {
+          if (!cancelled) setPrevRevisionContent(null);
+        }
+      } else {
+        const idx = revisions.findIndex((r) => r.id === selectedRevisionId);
+        const prevRevision = revisions[idx + 1];
+        if (prevRevision) {
+          const { getRevision } = await import("./api");
+          const rev = await getRevision(prevRevision.id);
+          if (!cancelled) setPrevRevisionContent(rev?.content ?? null);
+        } else {
+          if (!cancelled) setPrevRevisionContent(null);
+        }
+      }
+    }
+    fetchPrev().catch(console.error);
+    return () => {
+      cancelled = true;
+    };
+  }, [showDiff, selectedRevisionId, revisions]);
 
   // ---- Diff computation ----
   const diffHtml = (() => {
     if (!showDiff || !selectedContent) return null;
-
     const selectedText = prosemirrorJsonToText(selectedContent);
-
-    // "previous" text: if current version is selected → latest revision's content
-    // otherwise → the revision just before selected in the list
-    let prevText = "";
-    if (selectedRevisionId === null) {
-      // Current version selected; compare against first revision
-      if (revisions.length > 0) {
-        // We don't have full content in list metadata, so we compare against empty
-        // The actual previous content is not available without fetching; show nothing
-        prevText = "";
-      }
-    } else {
-      const idx = revisions.findIndex((r) => r.id === selectedRevisionId);
-      // idx+1 is the revision before this one (older)
-      const prevRevision = revisions[idx + 1];
-      if (prevRevision) {
-        // We don't have content in list items (performance), so we only have current content
-        // as baseline. If selectedRevisionId !== null, compare against currentContent.
-        prevText = currentContent ? prosemirrorJsonToText(currentContent) : "";
-      }
-    }
-
+    const prevText = prevRevisionContent
+      ? prosemirrorJsonToText(prevRevisionContent)
+      : "";
     return buildDiffHtml(prevText, selectedText);
   })();
 

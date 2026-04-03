@@ -19,6 +19,7 @@ import { useAttributionStore } from "@/features/attribution/attributionStore";
 import { useCursorEffect } from "@/features/editor/useCursorEffect";
 import { useCursorSettingsStore } from "@/features/editor/cursorSettingsStore";
 import { useEditorSettings } from "@/features/settings/hooks/useEditorSettings";
+import { useSettingsStore } from "@/features/settings/settingsStore";
 import { AttributionOverrideMenu } from "@/features/attribution/AttributionOverrideMenu";
 import {
   saveAuthorshipSpans,
@@ -157,7 +158,11 @@ export function EditorPane({ sceneId, groupIndex, onFocus }: EditorPaneProps) {
     const id = saveSceneIdRef.current;
     const ed = editorRef.current;
     if (!id || !ed) return;
-    if (shouldAutoRevision(id)) {
+    const intervalMs =
+      useSettingsStore.getState().getNumber("revision.autoInterval", 5) *
+      60 *
+      1000;
+    if (shouldAutoRevision(id, intervalMs)) {
       const content = JSON.stringify(ed.getJSON());
       const rev = await createRevision({
         entityType: "scene",
@@ -165,7 +170,15 @@ export function EditorPane({ sceneId, groupIndex, onFocus }: EditorPaneProps) {
         content,
         snapshotType: "auto",
       });
-      if (rev) recordAutoRevision(id);
+      if (rev) {
+        recordAutoRevision(id);
+        const keepCount = useSettingsStore
+          .getState()
+          .getNumber("revision.keepCount", 50);
+        import("@/features/revision/api").then(({ pruneRevisions }) => {
+          pruneRevisions("scene", id, keepCount).catch(console.error);
+        });
+      }
     }
   }, [coreSave, shouldAutoRevision, recordAutoRevision]);
 
