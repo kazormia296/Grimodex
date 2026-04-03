@@ -1,8 +1,10 @@
-const isTauri =
-  typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
+/** Check at call time, not module-load time, to avoid race with Tauri bridge injection. */
+function isTauri(): boolean {
+  return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
+}
 
 export async function openFolderDialog(): Promise<string | null> {
-  if (isTauri) {
+  if (isTauri()) {
     const { open } = await import("@tauri-apps/plugin-dialog");
     const result = await open({ directory: true, multiple: false });
     return typeof result === "string" ? result : null;

@@ -43,4 +43,30 @@ describe("invoke wrapper", () => {
     expect(mockInvoke).toHaveBeenCalledWith("some_command", { key: "value" });
     expect(result).toBe("tauri-result");
   });
+
+  it("rejects with timeout when tauri invoke never settles", async () => {
+    vi.useFakeTimers();
+
+    (window as unknown as Record<string, unknown>).__TAURI_INTERNALS__ = {};
+
+    // Return a promise that never resolves
+    const mockInvoke = vi.fn().mockReturnValue(new Promise(() => {}));
+    vi.doMock("@tauri-apps/api/core", () => ({
+      invoke: mockInvoke,
+    }));
+
+    const { invoke } = await import("./tauri");
+    const promise = invoke("hanging_command");
+
+    // Attach rejection handler BEFORE advancing timers to avoid unhandled rejection
+    const expectation = expect(promise).rejects.toThrow(/IPC timeout/);
+
+    // Advance past the timeout
+    await vi.advanceTimersByTimeAsync(11_000);
+
+    await expectation;
+
+    vi.clearAllTimers();
+    vi.useRealTimers();
+  });
 });

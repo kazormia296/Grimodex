@@ -66,6 +66,10 @@ export const useWorkspaceStore = create<WorkspaceState>()((set, get) => ({
         });
         if (valid) {
           await get().openWorkspace(settings.lastActiveWorkspace);
+          // Defensive: if openWorkspace failed internally, don't stay on loading
+          if (get().view === "loading") {
+            set({ view: "launcher" });
+          }
           return;
         }
       }
@@ -97,6 +101,8 @@ export const useWorkspaceStore = create<WorkspaceState>()((set, get) => ({
     } catch (e) {
       set({
         error: e instanceof Error ? e.message : String(e),
+        // If still on loading screen (called from initialize), recover to launcher
+        ...(get().view === "loading" ? { view: "launcher" as const } : {}),
       });
     }
   },

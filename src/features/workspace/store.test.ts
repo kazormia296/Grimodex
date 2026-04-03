@@ -78,6 +78,27 @@ describe("useWorkspaceStore", () => {
       expect(useWorkspaceStore.getState().view).toBe("launcher");
     });
 
+    it("falls back to launcher when openWorkspace fails during initialize", async () => {
+      mockInvoke
+        .mockResolvedValueOnce({
+          recentWorkspaces: [
+            { path: "D:\\Novels\\Test", lastOpened: "2026-03-30T12:00:00Z" },
+          ],
+          lastActiveWorkspace: "D:\\Novels\\Test",
+          theme: "system",
+          showLauncherOnStartup: false,
+        })
+        // validate_workspace_path
+        .mockResolvedValueOnce(true)
+        // open_workspace fails
+        .mockRejectedValueOnce(new Error("DB open failed"));
+
+      await useWorkspaceStore.getState().initialize();
+      const state = useWorkspaceStore.getState();
+      expect(state.view).toBe("launcher");
+      expect(state.error).toBeTruthy();
+    });
+
     it("shows launcher when showLauncherOnStartup is true", async () => {
       mockInvoke.mockResolvedValueOnce({
         recentWorkspaces: [

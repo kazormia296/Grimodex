@@ -1,7 +1,34 @@
 import type { BrowserMock } from "./browser-mock";
 
-const isTauri =
-  typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
+/** Check at call time, not module-load time, to avoid race with Tauri bridge injection. */
+function isTauri(): boolean {
+  return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
+}
+
+const IPC_TIMEOUT_MS = 10_000;
+
+function withTimeout<T>(
+  promise: Promise<T>,
+  ms: number,
+  label: string,
+): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timerId = setTimeout(
+      () => reject(new Error(`IPC timeout after ${ms}ms: ${label}`)),
+      ms,
+    );
+    promise.then(
+      (value) => {
+        clearTimeout(timerId);
+        resolve(value);
+      },
+      (error) => {
+        clearTimeout(timerId);
+        reject(error);
+      },
+    );
+  });
+}
 
 let browserMock: BrowserMock | null = null;
 let browserMockReady: Promise<BrowserMock> | null = null;
@@ -21,9 +48,10 @@ export async function invoke<T = unknown>(
   cmd: string,
   args?: Record<string, unknown>,
 ): Promise<T> {
-  if (isTauri) {
+  if (isTauri()) {
+    console.debug(`[tauri] invoke: ${cmd} (native)`);
     const { invoke: tauriInvoke } = await import("@tauri-apps/api/core");
-    return tauriInvoke<T>(cmd, args);
+    return withTimeout(tauriInvoke<T>(cmd, args), IPC_TIMEOUT_MS, cmd);
   }
   const mock = await getBrowserMock();
   return mock.invoke<T>(cmd, args);
