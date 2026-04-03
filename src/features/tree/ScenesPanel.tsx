@@ -767,7 +767,7 @@ export function ScenesPanel() {
       {createPortal(
         <DragOverlay>
           {draggingNode && (
-            <div className="flex items-center gap-0.5 rounded bg-background/95 px-1 py-0.5 text-sm shadow-lg ring-1 ring-primary">
+            <div className="flex items-center gap-0.5 rounded bg-background/80 px-1 py-0.5 text-sm shadow-lg ring-1 ring-primary">
               <span className="flex h-4 w-3 flex-shrink-0 items-center justify-center text-muted-foreground/50">
                 <GripVertical className="h-3 w-3" />
               </span>

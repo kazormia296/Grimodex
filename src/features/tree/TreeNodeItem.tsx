@@ -157,10 +157,21 @@ export function TreeNodeItem({
     [setDragRef, setDropRef],
   );
 
+  const isDropBefore =
+    dropIndicator?.nodeId === node.id && dropIndicator.position === "before";
+  const isDropAfter =
+    dropIndicator?.nodeId === node.id && dropIndicator.position === "after";
+  const isDropInside =
+    dropIndicator?.nodeId === node.id && dropIndicator.position === "inside";
+
   // DragOverlay handles the visual ghost, so suppress transform on the original.
   // Only reduce opacity to show the "source" placeholder in place.
+  // paddingTop/Bottom creates a gap at the insert position instead of a thin indicator line.
   const style = {
     opacity: isDragging ? 0.3 : 1,
+    paddingTop: isDropBefore ? 28 : 0,
+    paddingBottom: isDropAfter ? 28 : 0,
+    transition: 'padding 100ms ease-out',
   };
 
   const handleClick = useCallback(() => {
@@ -210,17 +221,8 @@ export function TreeNodeItem({
 
   if (!isVisible) return null;
 
-  const isDropBefore =
-    dropIndicator?.nodeId === node.id && dropIndicator.position === "before";
-  const isDropAfter =
-    dropIndicator?.nodeId === node.id && dropIndicator.position === "after";
-  const isDropInside =
-    dropIndicator?.nodeId === node.id && dropIndicator.position === "inside";
-
   return (
     <li ref={setRef} style={style} className="list-none">
-      {/* Drop-before indicator */}
-      {isDropBefore && <div className="mx-2 h-0.5 rounded-full bg-primary" />}
 
       <div
         className={cn(
@@ -319,8 +321,6 @@ export function TreeNodeItem({
         )}
       </div>
 
-      {/* Drop-after indicator */}
-      {isDropAfter && <div className="mx-2 h-0.5 rounded-full bg-primary" />}
 
       {/* Children */}
       {isContainer && isExpanded && children && (
