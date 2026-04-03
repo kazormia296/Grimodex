@@ -372,6 +372,8 @@ export function EditorPane({ sceneId, groupIndex, onFocus }: EditorPaneProps) {
     };
   }, [sceneId, editor, flush, cancel]);
 
+  const isNote = activeNode?.nodeType === "note";
+
   return (
     <div className="flex flex-1 flex-col overflow-hidden">
       <Toolbar
@@ -382,6 +384,14 @@ export function EditorPane({ sceneId, groupIndex, onFocus }: EditorPaneProps) {
         }}
         onVerticalPreview={() => setVerticalPreviewOpen(true)}
       />
+      {isNote && (
+        <div className="flex items-center gap-1.5 border-b border-amber-500/30 bg-amber-500/10 px-3 py-1 text-xs text-amber-600 dark:text-amber-400">
+          <span className="font-medium">ノート編集中</span>
+          <span className="text-amber-500/60">
+            — このファイルはシーンではなくノートです
+          </span>
+        </div>
+      )}
       <SynopsisHeader sceneId={sceneId} />
       <FindReplaceBar
         editor={editor}
