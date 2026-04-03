@@ -163,6 +163,11 @@ UI層は簡易版のみで、各パネル設計書の詳細仕様・レイアウ
 | ★ AI/Manual 抽出モード切替 | 未実装 |
 | ★ 入力エリア TipTap Mini（リッチテキスト、Markdownライブレンダー） | 未実装 |
 | エラーハンドリング（401認証/429レート制限/ネットワーク障害/ストリーム中断） | 未実装 |
+| ★ effort パラメータ（タスク別自動選択: low/medium/high） | 未実装 |
+| ★ 拡張思考（adaptive thinking + effort / 旧モデル budget_tokens） | 未実装 |
+| ★ thinking display 制御（summarized/omitted タスク別使い分け） | 未実装 |
+| ★ thinking signature 保持（マルチターン会話での署名付きブロック永続化） | 未実装 |
+| ★ thinking 折りたたみ UI（デフォルト閉じ、💭 ラベル） | 未実装 |
 | Chapter summary コンテキスト（Layer 2） | 未実装 |
 
 ### 2.5 AIエージェント設計書 ★ 新規
@@ -182,6 +187,8 @@ UI層は簡易版のみで、各パネル設計書の詳細仕様・レイアウ
 | Context Creator 検索フロー（軽量LLM） | 未実装 |
 | プレビューチェックボックス＋一括ピン追加 | 未実装 |
 | モデル互換性チェック（supportsToolUse） | 未実装 |
+| ★ Agent mode で effort: high + interleaved thinking 有効化 | 未実装 |
+| ★ interleaved thinking 可視化（ツール呼び出し間の thinking 折りたたみ表示） | 未実装 |
 | ツール呼び出し履歴の永続化（metadata） | 未実装 |
 
 ### 2.6 リビジョン履歴設計書 ★ 新規
@@ -333,7 +340,7 @@ UI層は簡易版のみで、各パネル設計書の詳細仕様・レイアウ
 | B-5 | 文字数・AI率バッジ | 各ノードの文字数と AI 帰属率を表示（オプション） |
 | B-6 | フィルタ入力 | インクリメンタル検索。祖先パス表示 |
 | B-7 | ★ Synopsis フィールド | シーン選択時に Synopsis エディタ表示。プレースホルダー「What happens in this scene?」 |
-| B-8 | ★ AI Synopsis 生成 | ✦ Generate ボタン。軽量モデルでシーン内容からSynopsis自動生成。既存Synopsis上書き確認。**AI設定（プロバイダー・APIキー）が前提** |
+| B-8 | ★ AI Synopsis 生成 | ✦ Generate ボタン。サマリー用モデル（`effort: low`, `display: "omitted"`）でSynopsis自動生成。既存Synopsis上書き確認。**AI設定が前提** |
 | B-9 | ★ Synopsis 自動提案 | ステータス遷移（Complete/Revision/Final）時にSynopsis未記入なら Toast で生成提案 |
 | B-10 | ★ storySoFar カバレッジ | 前シーンの Synopsis 充填率を表示。< 50% で警告ピル。「Generate all」ポップオーバー |
 | B-11 | ★ Outline ビューモード | ツリー/Outline 切替。Outline モードで Synopsis をタイトル下にインライン表示 |
@@ -367,7 +374,7 @@ Phase C との依存は C-8（インラインAI）連携部分のみで、大半
 | # | タスク | 概要 |
 |---|--------|------|
 | D-1 | セッション管理 UI | セッション一覧サイドシート。作成・削除・リネーム・切替 |
-| D-2 | セッション自動タイトル | 軽量モデルで 3-6 語のタイトル自動生成。手動編集後は再生成抑止 |
+| D-2 | セッション自動タイトル | サマリー用モデル（`effort: low`, `display: "omitted"`）で 3-6 語のタイトル自動生成。手動編集後は再生成抑止 |
 | D-3 | ★ Global Chat トグル | 🌐 ボタンでプロジェクトスコープチャット。node_id=NULL のセッション |
 | D-4 | コンテキストバー | ピル表示（Project / Scene / Codex / Snippets）。トークン数内訳 |
 | D-5 | ★ コンテキストモード反映 | always/mentioned/suppress/hidden のフィルタリングをコンテキスト構築に適用 |
@@ -384,6 +391,9 @@ Phase C との依存は C-8（インラインAI）連携部分のみで、大半
 | D-16 | ★ 入力エリア TipTap Mini | リッチテキスト入力（Bold/Italic/Code/List）。Markdownライブレンダー。Auto-height（5行まで） |
 | D-17 | エラーハンドリング | 401→Settings誘導、429→自動リトライ、ネットワーク→3回リトライ、ストリーム中断→受信テキスト保持 |
 | D-18 | ★ Context Creator | ✦ AI ボタン → 指示入力 → 軽量LLMがツールで検索 → プレビュー → 一括ピン追加（Agent Mode 不要で動作） |
+| D-19 | ★ effort パラメータ統合 | タスク別 effort 自動選択（通常チャット: medium、Synopsis/タイトル: low、Agent: high）。モデル分岐（adaptive vs budget_tokens） |
+| D-20 | ★ 拡張思考 UI | thinking ブロック折りたたみ表示（💭 デフォルト閉じ）。summarized/omitted の使い分け。signature 付き metadata 永続化 |
+| D-21 | ★ thinking ストリーミング | thinking_delta → signature_delta → text のイベント順処理。thinking 中「考え中...」インジケータ |
 
 ### Phase E: AIエージェント ★ 新規
 
@@ -396,8 +406,8 @@ E-2 の Tauri Backend ツール実装は Phase D と並行着手可能。
 |---|--------|------|
 | E-1 | Agent Mode トグル | 🔧 ボタン。Tool Use 対応モデルのみ有効化。非対応モデルはツールチップで説明 |
 | E-2 | ツール定義・実行基盤 | Tauri Backend にツール実行ハンドラ。16+ ツール（search_codex, get_scene 等）。**Phase D と並行着手可能** |
-| E-3 | Agent システムプロンプト | Agent Mode ON 時にツール定義を注入。Layer 4（自動Codex注入）を無効化 |
-| E-4 | ツール呼び出し可視化 | AI メッセージ内に折りたたみブロックでツール名・パラメータ・結果を表示 |
+| E-3 | Agent システムプロンプト | Agent Mode ON 時にツール定義を注入。Layer 4 無効化。`effort: high` + adaptive/interleaved thinking 有効化 |
+| E-4 | ツール呼び出し可視化 | AI メッセージ内に折りたたみブロックでツール名・パラメータ・結果を表示。interleaved thinking ブロックをツール呼び出し間に挿入表示 |
 | E-5 | 呼び出し制限 | 10回/メッセージ上限。超過時はシステムメッセージ挿入 |
 | E-6 | トークン予算管理 | モデルコンテキスト上限の30%（最小2,000トークン）。超過時はツール呼び出し拒否＋システムメッセージ挿入 |
 | E-7 | ツール呼び出し履歴 | chat_messages.metadata にパラメータ・結果サマリ・トークン数を永続化 |

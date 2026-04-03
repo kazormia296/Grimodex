@@ -433,6 +433,8 @@ export async function parseClipboard(): Promise<AttributedSegment[] | null> {
    - ✦ Generate ボタン → `send_chat_message` に Synopsis 生成用プロンプト送信
    - **前提**: AI 設定（プロバイダー・API キー・サマリー用モデル）が設定済みであること
    - モデル: Settings の `ai.summaryModel`（安価なモデル。未設定時は `ai.defaultChatModel` にフォールバック）
+   - **effort**: `low`（1-3文の要約に深い推論は不要）
+   - **thinking display**: `"omitted"`（UI に思考を表示する必要なし、TTFT 短縮）
    - プロンプト例: `"以下のシーンの内容を1-3文で要約してください:\n\n{sceneText}"`
    - 既存 synopsis がある場合: 上書き確認ダイアログ（Replace / Cancel）
    - 生成中: ボタンをスピナーに変更、キャンセル可能
