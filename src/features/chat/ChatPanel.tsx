@@ -16,9 +16,12 @@ import { CodexExtractionDialog } from "@/features/codex/CodexExtractionDialog";
 import { SnippetExtractionDialog } from "@/features/snippets/SnippetExtractionDialog";
 import { PinnedCodexBadges } from "./components/PinnedCodexBadges";
 import { PinCodexDialog } from "./components/PinCodexDialog";
+import { StorySoFarCoverage } from "./components/StorySoFarCoverage";
+import { SessionsPanel } from "./components/SessionsPanel";
 import * as chatApi from "./chatApi";
 import { useAiSettingsStore } from "./store";
 import { normalizeModelId } from "@/features/attribution/AuthorshipMark";
+import { useTreeStore } from "@/features/tree/treeStore";
 import type { CodexEntry } from "@/features/codex/api";
 
 interface SnippetDialogState {
@@ -38,6 +41,11 @@ export function ChatPanel() {
   const activeSessionId = useChatStore((s) => s.activeSessionId);
 
   const activeSceneId = useSceneStore((s) => s.activeSceneId);
+  const sceneTitle = useTreeStore(
+    (s) => s.nodes.find((n) => n.id === activeSceneId)?.title ?? "このシーン",
+  );
+
+  const [sessionsPanelOpen, setSessionsPanelOpen] = useState(false);
 
   // Sync scene store → chat store
   useEffect(() => {
@@ -164,16 +172,22 @@ export function ChatPanel() {
 
   return (
     <div className="flex h-full flex-col bg-background">
-      <div className="flex items-center justify-between border-b border-border px-4 py-2">
-        <h2 className="text-sm font-semibold text-foreground">AIチャット</h2>
-        {contextTokenCount > 0 && (
-          <span
-            data-testid="context-token-count"
-            className="text-xs text-muted-foreground"
-          >
-            ctx: {contextTokenCount.toLocaleString()} tokens
-          </span>
-        )}
+      <div className="flex flex-col border-b border-border">
+        <div className="flex items-center justify-between px-4 py-2">
+          <h2 className="text-sm font-semibold text-foreground">AIチャット</h2>
+          {contextTokenCount > 0 && (
+            <span
+              data-testid="context-token-count"
+              className="text-xs text-muted-foreground"
+            >
+              ctx: {contextTokenCount.toLocaleString()} tokens
+            </span>
+          )}
+        </div>
+        {/* B-10: storySoFar coverage warning */}
+        <div className="flex items-center gap-2 px-4 pb-1.5">
+          <StorySoFarCoverage />
+        </div>
       </div>
 
       {activeSessionId && (
