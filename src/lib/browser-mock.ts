@@ -105,6 +105,19 @@ const SCHEMA_DDL = `
     timestamp TEXT,
     chat_msg_id TEXT
   );
+  CREATE TABLE IF NOT EXISTS codex_tags (
+    id TEXT PRIMARY KEY,
+    project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    name TEXT NOT NULL,
+    color TEXT,
+    type_filter TEXT,
+    created_at TEXT NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS codex_entry_tags (
+    entry_id TEXT NOT NULL REFERENCES codex_entries(id) ON DELETE CASCADE,
+    tag_id TEXT NOT NULL REFERENCES codex_tags(id) ON DELETE CASCADE,
+    PRIMARY KEY (entry_id, tag_id)
+  );
   CREATE TABLE IF NOT EXISTS settings (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL

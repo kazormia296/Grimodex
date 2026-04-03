@@ -275,7 +275,7 @@ function CodexDetailContent({
           />
         </div>
 
-        <div>
+        <div data-testid="codex-detail-tags">
           <label className="mb-1 block text-xs font-medium">タグ</label>
           <TagSelector
             entryId={entry.id}
