@@ -38,6 +38,20 @@ export async function generateSynopsisFromContent(
   return invoke<string>("send_chat_message", { messages });
 }
 
+import type {
+  AgentMessagePayload,
+  AgentLLMResponse,
+  AgentToolDefinition,
+} from "./agent/agentTypes";
+
+/** Send a tool-aware agent message and return a structured response. */
+export async function sendAgentMessage(
+  messages: AgentMessagePayload[],
+  tools: AgentToolDefinition[],
+): Promise<AgentLLMResponse> {
+  return invoke<AgentLLMResponse>("send_agent_message", { messages, tools });
+}
+
 // --- Session/message persistence ---
 
 function toSession(row: typeof chatSessions.$inferSelect): ChatSession {

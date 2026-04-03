@@ -40,6 +40,7 @@ async function withNetworkRetry<T>(
 
 import {
   buildSystemPrompt,
+  buildAgentSystemPrompt,
   buildStorySoFar,
   countTokens,
 } from "./contextBuilder";
@@ -48,6 +49,16 @@ import type {
   ProjectContext,
   CodexContext,
 } from "./contextBuilder";
+import { runAgentLoop } from "./agent/agentLoop";
+import { executeTool } from "./agent/toolExecutors";
+import { AGENT_TOOLS } from "./agent/toolDefinitions";
+import { getToolTokenBudget } from "./agent/modelLimits";
+import { useAiSettingsStore } from "./store";
+import type {
+  AgentMessagePayload,
+  ToolCallRecord,
+  AgentLoopProgress,
+} from "./agent/agentTypes";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { loadSceneContent } from "@/features/tree/api";
 import { getNode } from "@/features/tree/api";
@@ -81,6 +92,11 @@ interface ChatState {
   ) => Promise<void>;
   deleteSession: (sessionId: string) => Promise<void>;
   persistMessage: (role: MessageRole, content: string) => Promise<void>;
+
+  // Agent mode
+  agentMode: boolean;
+  agentProgress: AgentLoopProgress | null;
+  setAgentMode: (on: boolean) => void;
 
   // Existing actions
   sendMessage: (content: string) => Promise<void>;
@@ -135,6 +151,8 @@ export const useChatStore = create<ChatState>()((set, get) => ({
   activeSceneId: "",
   activeProjectId: null,
   contextTokenCount: 0,
+  agentMode: false,
+  agentProgress: null,
 
   // --- Session management ---
 
@@ -246,6 +264,129 @@ export const useChatStore = create<ChatState>()((set, get) => ({
       error: null,
     });
 
+    // -----------------------------------------------------------------------
+    // Agent mode path — tool-use loop
+    // -----------------------------------------------------------------------
+    if (get().agentMode) {
+      try {
+        const sceneCtx = activeSceneId
+          ? await fetchSceneContext(activeSceneId)
+          : null;
+        const projectCtx = await fetchProjectContext(activeProjectId);
+
+        // Build agent system prompt (Layer 4 excluded)
+        const agentMsgs: AgentMessagePayload[] = [];
+        if (sceneCtx ?? projectCtx) {
+          const allNodes = useTreeStore.getState().nodes;
+          const l2Pct = useSettingsStore
+            .getState()
+            .getNumber("ai.contextBudget.l2", 10);
+          const storySoFarBudget = Math.round((l2Pct / 100) * 200_000);
+          const storySoFar = sceneCtx
+            ? buildStorySoFar(sceneCtx.id, allNodes, storySoFarBudget)
+            : "";
+          const systemPrompt = buildAgentSystemPrompt({
+            scene: sceneCtx ?? undefined,
+            project: projectCtx ?? undefined,
+            storySoFar: storySoFar || undefined,
+          });
+          set({ contextTokenCount: countTokens(systemPrompt) });
+          agentMsgs.push({ role: "system", content: systemPrompt });
+        }
+
+        // Convert conversation history
+        for (const msg of prevMessages) {
+          if (msg.role === "system") continue;
+          if (msg.role === "user") {
+            agentMsgs.push({ role: "user", content: msg.content });
+          } else if (msg.role === "assistant") {
+            agentMsgs.push({ role: "assistant", content: msg.content });
+          }
+        }
+        agentMsgs.push({ role: "user", content });
+
+        // Token budget
+        const aiSettings = useAiSettingsStore.getState().settings;
+        const tokenBudget = getToolTokenBudget(aiSettings?.model ?? "");
+
+        // Accumulate tool calls for live metadata update
+        const accToolCalls: ToolCallRecord[] = [];
+
+        const { toolCallRecords } = await runAgentLoop({
+          messages: agentMsgs,
+          tools: AGENT_TOOLS,
+          tokenBudget,
+          sendToLLM: (msgs, tools) => chatApi.sendAgentMessage(msgs, tools),
+          executeTool,
+          onProgress: (progress) => {
+            set({ agentProgress: progress });
+          },
+          onToolComplete: (record) => {
+            accToolCalls.push(record);
+            set((s) => {
+              const msgs = [...s.messages];
+              const last = msgs[msgs.length - 1];
+              if (last?.role === "assistant") {
+                msgs[msgs.length - 1] = {
+                  ...last,
+                  metadata: JSON.stringify({ tool_calls: accToolCalls }),
+                };
+              }
+              return { messages: msgs };
+            });
+          },
+          onTextChunk: (text) => {
+            set((s) => {
+              const msgs = [...s.messages];
+              const last = msgs[msgs.length - 1];
+              if (last?.role === "assistant") {
+                const prev = last.content;
+                msgs[msgs.length - 1] = {
+                  ...last,
+                  content: prev ? `${prev}\n\n${text}` : text,
+                };
+              }
+              return { messages: msgs };
+            });
+          },
+        });
+
+        // Persist
+        if (activeSessionId) {
+          await chatApi.addMessage(activeSessionId, "user", content);
+          const finalMessages = get().messages;
+          const lastMsg = finalMessages[finalMessages.length - 1];
+          if (lastMsg?.role === "assistant" && lastMsg.content) {
+            await chatApi.addMessage(
+              activeSessionId,
+              "assistant",
+              lastMsg.content,
+              { metadata: JSON.stringify({ tool_calls: toolCallRecords }) },
+            );
+          }
+        }
+      } catch (e) {
+        const kind = classifyError(e);
+        const msg = e instanceof Error ? e.message : String(e);
+        if (kind === "auth") {
+          toast.error("APIキーが無効です。設定を確認してください。");
+        } else if (kind === "network") {
+          toast.error(
+            "ネットワークエラーが発生しました。接続を確認してください。",
+          );
+        } else {
+          toast.error(`エージェント実行に失敗しました: ${msg}`);
+        }
+        set({ error: msg });
+      } finally {
+        set({ isStreaming: false, agentProgress: null });
+      }
+      return;
+    }
+
+    // -----------------------------------------------------------------------
+    // Normal mode path (existing)
+    // -----------------------------------------------------------------------
     try {
       const sceneCtx = activeSceneId
         ? await fetchSceneContext(activeSceneId)
@@ -376,6 +517,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
     }
   },
 
+  setAgentMode: (on: boolean) => set({ agentMode: on }),
   clearMessages: () => set({ messages: [] }),
   clearError: () => set({ error: null }),
   setActiveSceneId: (id: string) => set({ activeSceneId: id }),

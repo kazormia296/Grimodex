@@ -1,27 +1,23 @@
-import {
-  useState,
-  useRef,
-  useEffect,
-  useCallback,
-  type KeyboardEvent,
-} from "react";
-import { Send } from "lucide-react";
+import { useState, useRef, useEffect, useCallback } from "react";
 import { useChatStore } from "./chatStore";
 import { useSceneStore } from "@/features/tree/store";
 import { useEditorStore } from "@/features/editor/editorStore";
 import { useCodexStore } from "@/features/codex/codexStore";
 import { useSnippetStore } from "@/features/snippets/snippetStore";
 import { ChatMessage } from "./components/ChatMessage";
+import { ChatPanelHeader } from "./components/ChatPanelHeader";
+import { ChatInput } from "./components/ChatInput";
+import { AgentProgressBar } from "./components/AgentProgressBar";
 import { CodexExtractionDialog } from "@/features/codex/CodexExtractionDialog";
 import { SnippetExtractionDialog } from "@/features/snippets/SnippetExtractionDialog";
 import { PinnedCodexBadges } from "./components/PinnedCodexBadges";
 import { PinCodexDialog } from "./components/PinCodexDialog";
-import { StorySoFarCoverage } from "./components/StorySoFarCoverage";
 import { SessionsPanel } from "./components/SessionsPanel";
 import * as chatApi from "./chatApi";
 import { useAiSettingsStore } from "./store";
 import { normalizeModelId } from "@/features/attribution/AuthorshipMark";
 import { useTreeStore } from "@/features/tree/treeStore";
+import { modelSupportsTools } from "./agent/modelLimits";
 import type { CodexEntry } from "@/features/codex/api";
 
 interface SnippetDialogState {
@@ -39,20 +35,27 @@ export function ChatPanel() {
   const contextTokenCount = useChatStore((s) => s.contextTokenCount);
   const setActiveSceneId = useChatStore((s) => s.setActiveSceneId);
   const activeSessionId = useChatStore((s) => s.activeSessionId);
+  const agentMode = useChatStore((s) => s.agentMode);
+  const setAgentMode = useChatStore((s) => s.setAgentMode);
+  const agentProgress = useChatStore((s) => s.agentProgress);
 
   const activeSceneId = useSceneStore((s) => s.activeSceneId);
   const sceneTitle = useTreeStore(
     (s) => s.nodes.find((n) => n.id === activeSceneId)?.title ?? "このシーン",
   );
 
-  const [sessionsPanelOpen, setSessionsPanelOpen] = useState(false);
+  const aiSettings = useAiSettingsStore((s) => s.settings);
+  const currentModel = aiSettings?.model ?? "";
+  const canUseTools = modelSupportsTools(currentModel);
 
-  // Sync scene store → chat store
+  const [sessionsPanelOpen, setSessionsPanelOpen] = useState(false);
+  const [input, setInput] = useState("");
+
   useEffect(() => {
     setActiveSceneId(activeSceneId);
   }, [activeSceneId, setActiveSceneId]);
 
-  // Pinned codex entries state (Task 3.5)
+  // Pinned codex entries
   const [pinnedEntries, setPinnedEntries] = useState<CodexEntry[]>([]);
   const [pinDialogOpen, setPinDialogOpen] = useState(false);
 
@@ -86,10 +89,9 @@ export function ChatPanel() {
     [activeSessionId],
   );
 
-  const [input, setInput] = useState("");
   const bottomRef = useRef<HTMLDivElement>(null);
 
-  // Codex extraction dialog state
+  // Codex extraction dialog
   const [extractionDialog, setExtractionDialog] = useState<{
     open: boolean;
     messageId: string;
@@ -110,7 +112,7 @@ export function ChatPanel() {
     [messages],
   );
 
-  // Snippet extraction dialog state
+  // Snippet extraction dialog
   const [snippetDialog, setSnippetDialog] = useState<SnippetDialogState>({
     open: false,
     messageId: "",
@@ -142,22 +144,8 @@ export function ChatPanel() {
     }
   }, [messages]);
 
-  const handleSend = () => {
-    const trimmed = input.trim();
-    if (!trimmed || isStreaming) return;
-    setInput("");
-    sendMessage(trimmed);
-  };
-
-  const handleKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
-    if (e.key === "Enter" && !e.shiftKey) {
-      e.preventDefault();
-      handleSend();
-    }
-  };
-
   const rawInsertFromChat = useEditorStore((s) => s.insertFromChat);
-  const aiSettings = useAiSettingsStore((s) => s.settings);
+
   const insertFromChat = useCallback(
     (content: string, messageId: string) => {
       const model = aiSettings
@@ -168,38 +156,23 @@ export function ChatPanel() {
     [rawInsertFromChat, aiSettings],
   );
 
-  const canSend = input.trim().length > 0 && !isStreaming;
+  const handleSend = () => {
+    const trimmed = input.trim();
+    if (!trimmed || isStreaming) return;
+    setInput("");
+    sendMessage(trimmed);
+  };
 
   return (
     <div className="relative flex h-full flex-col bg-background">
-      <div className="flex flex-col border-b border-border">
-        <div className="flex items-center justify-between px-4 py-2">
-          <div className="flex items-center gap-2">
-            <h2 className="text-sm font-semibold text-foreground">
-              AIチャット
-            </h2>
-            <button
-              type="button"
-              onClick={() => setSessionsPanelOpen((v) => !v)}
-              className="rounded px-1.5 py-0.5 text-xs text-muted-foreground hover:bg-accent hover:text-foreground"
-            >
-              Sessions
-            </button>
-          </div>
-          {contextTokenCount > 0 && (
-            <span
-              data-testid="context-token-count"
-              className="text-xs text-muted-foreground"
-            >
-              ctx: {contextTokenCount.toLocaleString()} tokens
-            </span>
-          )}
-        </div>
-        {/* B-10: storySoFar coverage warning */}
-        <div className="flex items-center gap-2 px-4 pb-1.5">
-          <StorySoFarCoverage />
-        </div>
-      </div>
+      <ChatPanelHeader
+        sessionsPanelOpen={sessionsPanelOpen}
+        setSessionsPanelOpen={setSessionsPanelOpen}
+        contextTokenCount={contextTokenCount}
+        agentMode={agentMode}
+        setAgentMode={setAgentMode}
+        modelSupportsTools={canUseTools}
+      />
 
       {activeSessionId && (
         <PinnedCodexBadges
@@ -211,7 +184,7 @@ export function ChatPanel() {
 
       <div className="flex-1 overflow-y-auto px-4 py-3">
         {messages.length === 0 ? (
-          <p className="text-center text-sm text-muted-foreground mt-8">
+          <p className="mt-8 text-center text-sm text-muted-foreground">
             メッセージはまだありません
           </p>
         ) : (
@@ -245,28 +218,22 @@ export function ChatPanel() {
         </div>
       )}
 
-      <div className="border-t border-border p-3">
-        <div className="flex gap-2">
-          <textarea
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            onKeyDown={handleKeyDown}
-            placeholder="メッセージを入力…"
-            rows={1}
-            className="flex-1 resize-none rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-ring"
-            role="textbox"
-          />
-          <button
-            type="button"
-            onClick={handleSend}
-            disabled={!canSend}
-            aria-label="送信"
-            className="inline-flex items-center justify-center rounded-md bg-primary px-3 py-2 text-primary-foreground hover:bg-primary/90 disabled:opacity-50 disabled:pointer-events-none"
-          >
-            <Send className="h-4 w-4" />
-          </button>
-        </div>
-      </div>
+      {agentProgress && isStreaming && (
+        <AgentProgressBar
+          calls={agentProgress.totalCalls}
+          maxCalls={agentProgress.maxCalls}
+          tokensUsed={agentProgress.tokensUsed}
+          tokenBudget={agentProgress.tokenBudget}
+          currentToolName={agentProgress.currentToolName}
+        />
+      )}
+
+      <ChatInput
+        value={input}
+        onChange={setInput}
+        onSend={handleSend}
+        disabled={isStreaming}
+      />
 
       <CodexExtractionDialog
         open={extractionDialog.open}

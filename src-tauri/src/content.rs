@@ -39,7 +39,10 @@ fn short_id(scene_id: &str) -> &str {
 fn build_filename(scene_id: &str, title: &str, chapter_order: u32, scene_order: u32) -> String {
     let safe_title = sanitize_title(title);
     let sid = short_id(scene_id);
-    format!("{:02}-{:02}_{safe_title}_{sid}.md", chapter_order, scene_order)
+    format!(
+        "{:02}-{:02}_{safe_title}_{sid}.md",
+        chapter_order, scene_order
+    )
 }
 
 impl ContentDir {
@@ -272,9 +275,7 @@ mod tests {
 
         let id = "aabbccdd-1111-2222-3333-444455556666";
         let long_title = "あ".repeat(200);
-        content
-            .write(id, "body", &long_title, 1, 1)
-            .expect("write");
+        content.write(id, "body", &long_title, 1, 1).expect("write");
 
         let text = content.read(id).expect("read");
         assert_eq!(text, "body");
@@ -303,13 +304,9 @@ mod tests {
         let content = ContentDir::new(dir.clone()).expect("create");
 
         let id = "eeeeaaaa-bbbb-cccc-dddd-111122223333";
-        content
-            .write(id, "body", "元の名前", 1, 1)
-            .expect("write");
+        content.write(id, "body", "元の名前", 1, 1).expect("write");
 
-        content
-            .rename(id, "新しい名前", 1, 2)
-            .expect("rename");
+        content.rename(id, "新しい名前", 1, 2).expect("rename");
 
         let old_path = dir.join("01-01_元の名前_eeeeaaaa.md");
         let new_path = dir.join("01-02_新しい名前_eeeeaaaa.md");
@@ -329,9 +326,7 @@ mod tests {
         let content = ContentDir::new(dir.clone()).expect("create");
 
         let id = "00001111-2222-3333-4444-555566667777";
-        content
-            .write(id, "body", "", 1, 1)
-            .expect("write");
+        content.write(id, "body", "", 1, 1).expect("write");
 
         let entries: Vec<_> = std::fs::read_dir(&dir)
             .expect("read dir")

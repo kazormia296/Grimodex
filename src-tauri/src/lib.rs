@@ -109,10 +109,7 @@ fn open_workspace(
     let content = ContentDir::new(content_path)?;
 
     // Set as active workspace
-    let mut inner = ws_state
-        .inner
-        .lock()
-        .map_err(|e| anyhow::anyhow!("{e}"))?;
+    let mut inner = ws_state.inner.lock().map_err(|e| anyhow::anyhow!("{e}"))?;
     *inner = Some(ActiveWorkspace {
         db: database,
         content,
@@ -135,10 +132,7 @@ fn with_db<T>(
     ws_state: &tauri::State<'_, WorkspaceState>,
     f: impl FnOnce(&Database) -> anyhow::Result<T>,
 ) -> Result<T, AppError> {
-    let inner = ws_state
-        .inner
-        .lock()
-        .map_err(|e| anyhow::anyhow!("{e}"))?;
+    let inner = ws_state.inner.lock().map_err(|e| anyhow::anyhow!("{e}"))?;
     let ws = inner
         .as_ref()
         .ok_or_else(|| anyhow::anyhow!("No workspace is open"))?;
@@ -149,10 +143,7 @@ fn with_content<T>(
     ws_state: &tauri::State<'_, WorkspaceState>,
     f: impl FnOnce(&ContentDir) -> anyhow::Result<T>,
 ) -> Result<T, AppError> {
-    let inner = ws_state
-        .inner
-        .lock()
-        .map_err(|e| anyhow::anyhow!("{e}"))?;
+    let inner = ws_state.inner.lock().map_err(|e| anyhow::anyhow!("{e}"))?;
     let ws = inner
         .as_ref()
         .ok_or_else(|| anyhow::anyhow!("No workspace is open"))?;
@@ -259,7 +250,33 @@ async fn send_chat_message(
         &settings.model,
         &api_key,
         &settings.ollama_endpoint,
-        &messages.iter().map(|m| (m.role.as_str(), m.content.as_str())).collect::<Vec<_>>(),
+        &messages
+            .iter()
+            .map(|m| (m.role.as_str(), m.content.as_str()))
+            .collect::<Vec<_>>(),
+    )
+    .await?;
+    Ok(result)
+}
+
+// --- Agent / Tool Use command ---
+
+#[tauri::command]
+async fn send_agent_message(
+    ai_path: tauri::State<'_, AiSettingsPath>,
+    messages: Vec<ai::AgentMessage>,
+    tools: Vec<ai::AgentToolDef>,
+) -> Result<ai::ChatResponse, AppError> {
+    let settings = ai::read_ai_settings(&ai_path.path);
+    let api_key = ai::get_api_key(&settings.provider)?
+        .ok_or_else(|| anyhow::anyhow!("No API key configured for {}", settings.provider))?;
+    let result = ai::send_chat_with_tools(
+        &settings.provider,
+        &settings.model,
+        &api_key,
+        &settings.ollama_endpoint,
+        &messages,
+        &tools,
     )
     .await?;
     Ok(result)
@@ -268,9 +285,7 @@ async fn send_chat_message(
 // --- AI settings commands ---
 
 #[tauri::command]
-fn get_ai_settings(
-    ai_path: tauri::State<'_, AiSettingsPath>,
-) -> Result<ai::AiSettings, AppError> {
+fn get_ai_settings(ai_path: tauri::State<'_, AiSettingsPath>) -> Result<ai::AiSettings, AppError> {
     Ok(ai::read_ai_settings(&ai_path.path))
 }
 
@@ -370,6 +385,7 @@ pub fn run() {
             list_ai_models,
             test_ai_connection,
             send_chat_message,
+            send_agent_message,
             fts_optimize,
             integrity_check,
             repair_integrity

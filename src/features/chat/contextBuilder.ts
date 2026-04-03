@@ -92,6 +92,49 @@ export function buildSystemPrompt(input: BuildSystemPromptInput): string {
   return parts.join("\n");
 }
 
+export interface BuildAgentSystemPromptInput {
+  scene?: SceneContext;
+  project?: ProjectContext;
+  storySoFar?: string;
+}
+
+/** Agent mode用システムプロンプト — Layer 4（Codex自動注入）を除外 */
+export function buildAgentSystemPrompt(
+  input: BuildAgentSystemPromptInput,
+): string {
+  const parts: string[] = [];
+
+  parts.push(
+    "あなたは小説執筆を支援するAIアシスタントです。" +
+      "ユーザーの執筆スタイルを尊重し、創造的な提案や文章の改善を行ってください。\n" +
+      "プロジェクトデータを検索するツールが利用可能です。回答に必要な情報はツールで取得してください。",
+  );
+
+  if (input.project) {
+    const p = input.project;
+    const info: string[] = [`タイトル: ${p.title}`];
+    if (p.genre) info.push(`ジャンル: ${p.genre}`);
+    if (p.pov) info.push(`視点: ${p.pov}`);
+    if (p.tense) info.push(`時制: ${p.tense}`);
+    if (p.styleGuide) info.push(`文体ガイド:\n${p.styleGuide}`);
+    if (p.aiInstructions) info.push(`AI指示:\n${p.aiInstructions}`);
+    parts.push(`\n## プロジェクト情報\n${info.join("\n")}`);
+  }
+
+  if (input.storySoFar) {
+    parts.push(`\n${input.storySoFar}`);
+  }
+
+  if (input.scene) {
+    parts.push(`\n## 現在のシーン\n` + `タイトル: ${input.scene.title}`);
+    if (input.scene.content) {
+      parts.push(`\n### シーン本文\n${input.scene.content}`);
+    }
+  }
+
+  return parts.join("\n");
+}
+
 export function countTokens(text: string): number {
   if (!text) return 0;
   return encoder.encode(text).length;

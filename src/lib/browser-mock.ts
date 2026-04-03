@@ -4,7 +4,16 @@
 import initSqlJs from "sql.js/dist/sql-asm.js";
 import type { Database, SqlValue } from "sql.js";
 import type { AiProvider } from "@/features/chat/types";
-import { sendChat, fetchModels, testConnection } from "@/lib/browser-ai";
+import {
+  sendChat,
+  fetchModels,
+  testConnection,
+  sendChatWithTools,
+} from "@/lib/browser-ai";
+import type {
+  AgentMessagePayload,
+  AgentToolDefinition,
+} from "@/features/chat/agent/agentTypes";
 
 const SCHEMA_DDL = `
   CREATE TABLE IF NOT EXISTS projects (
@@ -25,8 +34,10 @@ const SCHEMA_DDL = `
     parent_id TEXT REFERENCES tree_nodes(id) ON DELETE CASCADE,
     node_type TEXT NOT NULL,
     title TEXT NOT NULL DEFAULT 'Untitled',
+    synopsis TEXT,
     sort_order REAL NOT NULL DEFAULT 0.0,
     status TEXT DEFAULT 'outline',
+    content TEXT NOT NULL DEFAULT '{}',
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
   );
@@ -231,6 +242,32 @@ export async function createBrowserMock(): Promise<BrowserMock> {
     return sendChat(provider, model, apiKey, messages);
   }
 
+  async function handleSendAgentMessage(
+    args: Record<string, unknown>,
+  ): Promise<unknown> {
+    const settings = handleGetAiSettings();
+    const provider = settings.provider as AiProvider;
+    const model = settings.model as string;
+    const apiKey = handleGetApiKey({ provider })?.toString() ?? "";
+
+    if (!apiKey && provider !== "ollama") {
+      return {
+        blocks: [
+          {
+            type: "text",
+            content:
+              "[browser-mock] AIは未接続です。AI設定からAPIキーを設定してください。",
+          },
+        ],
+        stopReason: "end_turn",
+      };
+    }
+
+    const messages = args.messages as AgentMessagePayload[];
+    const tools = args.tools as AgentToolDefinition[];
+    return sendChatWithTools(provider, model, apiKey, messages, tools);
+  }
+
   function handleDbExecute(args: Record<string, unknown>): {
     rows: Record<string, unknown>[];
   } {
@@ -401,6 +438,8 @@ export async function createBrowserMock(): Promise<BrowserMock> {
         return (await handleTestAiConnection(args)) as T;
       case "send_chat_message":
         return (await handleSendChatMessage(args)) as T;
+      case "send_agent_message":
+        return (await handleSendAgentMessage(args)) as T;
       default:
         throw new Error(`[browser-mock] Unknown Tauri command: ${cmd}`);
     }

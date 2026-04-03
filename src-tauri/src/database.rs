@@ -266,6 +266,12 @@ impl Database {
                 tokenize='trigram'
             );
 
+            CREATE VIRTUAL TABLE IF NOT EXISTS tree_nodes_fts USING fts5(
+                title, content,
+                content=tree_nodes, content_rowid=rowid,
+                tokenize='trigram'
+            );
+
             -- Triggers to keep FTS indexes in sync: codex_entries
             CREATE TRIGGER IF NOT EXISTS codex_fts_ai AFTER INSERT ON codex_entries BEGIN
                 INSERT INTO codex_fts(rowid, name, aliases, summary, tags_cache)
@@ -312,6 +318,22 @@ impl Database {
                 VALUES ('delete', old.rowid, old.content);
                 INSERT INTO chat_messages_fts(rowid, content)
                 VALUES (new.rowid, new.content);
+            END;
+
+            -- Triggers to keep FTS indexes in sync: tree_nodes
+            CREATE TRIGGER IF NOT EXISTS tree_nodes_fts_ai AFTER INSERT ON tree_nodes BEGIN
+                INSERT INTO tree_nodes_fts(rowid, title, content)
+                VALUES (new.rowid, COALESCE(new.title, ''), COALESCE(new.content, ''));
+            END;
+            CREATE TRIGGER IF NOT EXISTS tree_nodes_fts_ad AFTER DELETE ON tree_nodes BEGIN
+                INSERT INTO tree_nodes_fts(tree_nodes_fts, rowid, title, content)
+                VALUES ('delete', old.rowid, COALESCE(old.title, ''), COALESCE(old.content, ''));
+            END;
+            CREATE TRIGGER IF NOT EXISTS tree_nodes_fts_au AFTER UPDATE ON tree_nodes BEGIN
+                INSERT INTO tree_nodes_fts(tree_nodes_fts, rowid, title, content)
+                VALUES ('delete', old.rowid, COALESCE(old.title, ''), COALESCE(old.content, ''));
+                INSERT INTO tree_nodes_fts(rowid, title, content)
+                VALUES (new.rowid, COALESCE(new.title, ''), COALESCE(new.content, ''));
             END;
 
             -- Triggers to nullify orphaned references on deletion
@@ -413,30 +435,20 @@ impl Database {
             _ => {
                 // "all" or "get"
                 let mut stmt = conn.prepare(sql)?;
-                let column_names: Vec<String> = stmt
-                    .column_names()
-                    .iter()
-                    .map(|s| s.to_string())
-                    .collect();
+                let column_names: Vec<String> =
+                    stmt.column_names().iter().map(|s| s.to_string()).collect();
 
                 let rows = stmt.query_map(params_from_iter(param_refs.iter()), |row| {
                     let mut map = serde_json::Map::new();
                     for (i, col_name) in column_names.iter().enumerate() {
                         let val: Value = match row.get_ref(i) {
                             Ok(rusqlite::types::ValueRef::Null) => Value::Null,
-                            Ok(rusqlite::types::ValueRef::Integer(n)) => {
-                                Value::Number(n.into())
-                            }
-                            Ok(rusqlite::types::ValueRef::Real(f)) => {
-                                Value::Number(
-                                    serde_json::Number::from_f64(f)
-                                        .unwrap_or_else(|| 0.into()),
-                                )
-                            }
+                            Ok(rusqlite::types::ValueRef::Integer(n)) => Value::Number(n.into()),
+                            Ok(rusqlite::types::ValueRef::Real(f)) => Value::Number(
+                                serde_json::Number::from_f64(f).unwrap_or_else(|| 0.into()),
+                            ),
                             Ok(rusqlite::types::ValueRef::Text(s)) => {
-                                Value::String(
-                                    String::from_utf8_lossy(s).to_string(),
-                                )
+                                Value::String(String::from_utf8_lossy(s).to_string())
                             }
                             Ok(rusqlite::types::ValueRef::Blob(b)) => {
                                 Value::String(format!("[blob {} bytes]", b.len()))
@@ -478,14 +490,20 @@ impl Database {
             [],
             |row| row.get(0),
         )?;
-        report.insert("orphanedSnippetSources".into(), orphaned_snippet_sources.into());
+        report.insert(
+            "orphanedSnippetSources".into(),
+            orphaned_snippet_sources.into(),
+        );
 
         let orphaned_snippet_scenes: i64 = conn.query_row(
             "SELECT COUNT(*) FROM snippets WHERE scene_id IS NOT NULL AND scene_id NOT IN (SELECT id FROM tree_nodes)",
             [],
             |row| row.get(0),
         )?;
-        report.insert("orphanedSnippetScenes".into(), orphaned_snippet_scenes.into());
+        report.insert(
+            "orphanedSnippetScenes".into(),
+            orphaned_snippet_scenes.into(),
+        );
 
         Ok(report)
     }
@@ -504,13 +522,19 @@ impl Database {
             "UPDATE snippets SET source_chat_message_id = NULL WHERE source_chat_message_id IS NOT NULL AND source_chat_message_id NOT IN (SELECT id FROM chat_messages)",
             [],
         )?;
-        report.insert("snippetSourcesFixed".into(), (snippet_sources_fixed as i64).into());
+        report.insert(
+            "snippetSourcesFixed".into(),
+            (snippet_sources_fixed as i64).into(),
+        );
 
         let snippet_scenes_fixed = conn.execute(
             "UPDATE snippets SET scene_id = NULL WHERE scene_id IS NOT NULL AND scene_id NOT IN (SELECT id FROM tree_nodes)",
             [],
         )?;
-        report.insert("snippetScenesFixed".into(), (snippet_scenes_fixed as i64).into());
+        report.insert(
+            "snippetScenesFixed".into(),
+            (snippet_scenes_fixed as i64).into(),
+        );
 
         Ok(report)
     }
@@ -520,7 +544,8 @@ impl Database {
         conn.execute_batch(
             "INSERT INTO codex_fts(codex_fts) VALUES('optimize');
              INSERT INTO snippets_fts(snippets_fts) VALUES('optimize');
-             INSERT INTO chat_messages_fts(chat_messages_fts) VALUES('optimize');",
+             INSERT INTO chat_messages_fts(chat_messages_fts) VALUES('optimize');
+             INSERT INTO tree_nodes_fts(tree_nodes_fts) VALUES('optimize');",
         )?;
         Ok(())
     }
@@ -540,8 +565,15 @@ mod tests {
     fn test_migrate_creates_all_tables() {
         let db = test_db();
         let expected_tables = [
-            "projects", "tree_nodes", "codex_entries", "codex_relation_dismissed",
-            "snippets", "chat_sessions", "chat_messages", "authorship_spans", "settings",
+            "projects",
+            "tree_nodes",
+            "codex_entries",
+            "codex_relation_dismissed",
+            "snippets",
+            "chat_sessions",
+            "chat_messages",
+            "authorship_spans",
+            "settings",
         ];
         for table in &expected_tables {
             let rows = db
@@ -558,7 +590,12 @@ mod tests {
     #[test]
     fn test_migrate_creates_fts_tables() {
         let db = test_db();
-        let expected = ["codex_fts", "snippets_fts", "chat_messages_fts"];
+        let expected = [
+            "codex_fts",
+            "snippets_fts",
+            "chat_messages_fts",
+            "tree_nodes_fts",
+        ];
         for table in &expected {
             let rows = db
                 .execute(
@@ -1307,14 +1344,17 @@ mod tests {
             "DELETE FROM chat_messages WHERE id = ?",
             &[Value::String("msg1".into())],
             "run",
-        ).expect("delete message");
+        )
+        .expect("delete message");
 
         // Verify source was nullified
-        let rows = db.execute(
-            "SELECT source_chat_message_id FROM codex_entries WHERE id = ?",
-            &[Value::String("cx1".into())],
-            "all",
-        ).expect("query");
+        let rows = db
+            .execute(
+                "SELECT source_chat_message_id FROM codex_entries WHERE id = ?",
+                &[Value::String("cx1".into())],
+                "all",
+            )
+            .expect("query");
         assert_eq!(rows[0]["source_chat_message_id"], Value::Null);
     }
 
@@ -1341,14 +1381,17 @@ mod tests {
             "DELETE FROM tree_nodes WHERE id = ?",
             &[Value::String("sc1".into())],
             "run",
-        ).expect("delete scene node");
+        )
+        .expect("delete scene node");
 
         // Verify scene_id was nullified
-        let rows = db.execute(
-            "SELECT scene_id FROM snippets WHERE id = ?",
-            &[Value::String("sn1".into())],
-            "all",
-        ).expect("query");
+        let rows = db
+            .execute(
+                "SELECT scene_id FROM snippets WHERE id = ?",
+                &[Value::String("sn1".into())],
+                "all",
+            )
+            .expect("query");
         assert_eq!(rows[0]["scene_id"], Value::Null);
     }
 
@@ -1367,13 +1410,15 @@ mod tests {
 
         // source_chat_message_id now has a FK constraint; temporarily disable to simulate
         // corrupted/migrated data that integrity_check is designed to catch
-        db.execute("PRAGMA foreign_keys=OFF", &[], "run").expect("disable fk");
+        db.execute("PRAGMA foreign_keys=OFF", &[], "run")
+            .expect("disable fk");
         db.execute(
             "INSERT INTO codex_entries (id, project_id, type, name, source_chat_message_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, datetime('now'), datetime('now'))",
             &[Value::String("cx-orphan".into()), Value::String("default-project".into()), Value::String("character".into()), Value::String("孤立テスト".into()), Value::String("nonexistent".into())],
             "run",
         ).expect("insert orphan");
-        db.execute("PRAGMA foreign_keys=ON", &[], "run").expect("enable fk");
+        db.execute("PRAGMA foreign_keys=ON", &[], "run")
+            .expect("enable fk");
 
         let report = db.integrity_check().expect("check");
         assert_eq!(report["orphanedCodexSources"], Value::Number(1.into()));
@@ -1503,11 +1548,13 @@ mod tests {
             "run",
         ).expect("insert span");
 
-        let rows = db.execute(
-            "SELECT * FROM authorship_spans WHERE node_id = ?",
-            &[Value::String("sc-attr".into())],
-            "all",
-        ).expect("select spans");
+        let rows = db
+            .execute(
+                "SELECT * FROM authorship_spans WHERE node_id = ?",
+                &[Value::String("sc-attr".into())],
+                "all",
+            )
+            .expect("select spans");
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0]["source"], Value::String("ai".into()));
         assert_eq!(rows[0]["from_pos"], Value::Number(0.into()));
@@ -1534,7 +1581,13 @@ mod tests {
             "run",
         ).expect("insert definition");
 
-        let rows = db.execute("SELECT * FROM codex_detail_definitions WHERE id = ?", &[Value::String("def-1".into())], "get").expect("select");
+        let rows = db
+            .execute(
+                "SELECT * FROM codex_detail_definitions WHERE id = ?",
+                &[Value::String("def-1".into())],
+                "get",
+            )
+            .expect("select");
         assert_eq!(rows[0]["name"], Value::String("身長".into()));
         assert_eq!(rows[0]["type_slug"], Value::String("character".into()));
     }
@@ -1557,7 +1610,10 @@ mod tests {
             ],
             "run",
         );
-        assert!(result.is_ok(), "DB should allow any type_slug; app layer validates");
+        assert!(
+            result.is_ok(),
+            "DB should allow any type_slug; app layer validates"
+        );
     }
 
     #[test]
@@ -1578,7 +1634,10 @@ mod tests {
             ],
             "run",
         );
-        assert!(result.is_ok(), "DB should allow any type; app layer validates");
+        assert!(
+            result.is_ok(),
+            "DB should allow any type; app layer validates"
+        );
     }
 
     // --- BUG 3: field_type CHECK constraint ---
@@ -1599,7 +1658,10 @@ mod tests {
             ],
             "run",
         );
-        assert!(result.is_err(), "Should reject definition with invalid field_type");
+        assert!(
+            result.is_err(),
+            "Should reject definition with invalid field_type"
+        );
     }
 
     // --- BUG 4: Built-in types seeded for new projects ---
@@ -1618,14 +1680,17 @@ mod tests {
                 Value::String("2025-01-01T00:00:00Z".into()),
             ],
             "run",
-        ).expect("insert new project");
+        )
+        .expect("insert new project");
 
         // Check that built-in types were seeded
-        let rows = db.execute(
-            "SELECT * FROM codex_types WHERE project_id = ? ORDER BY sort_order",
-            &[Value::String("new-project".into())],
-            "all",
-        ).expect("select types");
+        let rows = db
+            .execute(
+                "SELECT * FROM codex_types WHERE project_id = ? ORDER BY sort_order",
+                &[Value::String("new-project".into())],
+                "all",
+            )
+            .expect("select types");
 
         assert_eq!(rows.len(), 4, "Should have 4 built-in types");
         assert_eq!(rows[0]["slug"], Value::String("character".into()));
@@ -1668,28 +1733,36 @@ mod tests {
                 Value::String("重要".into()),
             ],
             "run",
-        ).expect("insert tag");
+        )
+        .expect("insert tag");
 
         // Link entry to tag
         db.execute(
             "INSERT INTO codex_entry_tags (entry_id, tag_id) VALUES (?, ?)",
-            &[Value::String("ce-cas".into()), Value::String("tag-1".into())],
+            &[
+                Value::String("ce-cas".into()),
+                Value::String("tag-1".into()),
+            ],
             "run",
-        ).expect("insert entry_tag");
+        )
+        .expect("insert entry_tag");
 
         // Delete the entry
         db.execute(
             "DELETE FROM codex_entries WHERE id = ?",
             &[Value::String("ce-cas".into())],
             "run",
-        ).expect("delete entry");
+        )
+        .expect("delete entry");
 
         // entry_tags should be cascade-deleted
-        let rows = db.execute(
-            "SELECT * FROM codex_entry_tags WHERE entry_id = ?",
-            &[Value::String("ce-cas".into())],
-            "all",
-        ).expect("select entry_tags");
+        let rows = db
+            .execute(
+                "SELECT * FROM codex_entry_tags WHERE entry_id = ?",
+                &[Value::String("ce-cas".into())],
+                "all",
+            )
+            .expect("select entry_tags");
         assert_eq!(rows.len(), 0, "entry_tags should be cascade-deleted");
     }
 
@@ -1741,14 +1814,17 @@ mod tests {
             "DELETE FROM codex_entries WHERE id = ?",
             &[Value::String("ce-dv".into())],
             "run",
-        ).expect("delete entry");
+        )
+        .expect("delete entry");
 
         // detail_values should be cascade-deleted
-        let rows = db.execute(
-            "SELECT * FROM codex_detail_values WHERE entry_id = ?",
-            &[Value::String("ce-dv".into())],
-            "all",
-        ).expect("select detail_values");
+        let rows = db
+            .execute(
+                "SELECT * FROM codex_detail_values WHERE entry_id = ?",
+                &[Value::String("ce-dv".into())],
+                "all",
+            )
+            .expect("select detail_values");
         assert_eq!(rows.len(), 0, "detail_values should be cascade-deleted");
     }
 
@@ -1782,11 +1858,13 @@ mod tests {
         ).expect("insert custom type");
 
         // Verify total count
-        let rows = db.execute(
-            "SELECT * FROM codex_types WHERE project_id = ?",
-            &[Value::String("default-project".into())],
-            "all",
-        ).expect("select all types");
+        let rows = db
+            .execute(
+                "SELECT * FROM codex_types WHERE project_id = ?",
+                &[Value::String("default-project".into())],
+                "all",
+            )
+            .expect("select all types");
         assert_eq!(rows.len(), 5);
 
         // Create codex entry with custom type
@@ -1819,18 +1897,32 @@ mod tests {
                 Value::String("#FF0000".into()),
             ],
             "run",
-        ).expect("insert tag");
+        )
+        .expect("insert tag");
 
-        let rows = db.execute(
-            "SELECT * FROM codex_tags WHERE id = ?",
-            &[Value::String("tag-crud".into())],
-            "get",
-        ).expect("select tag");
+        let rows = db
+            .execute(
+                "SELECT * FROM codex_tags WHERE id = ?",
+                &[Value::String("tag-crud".into())],
+                "get",
+            )
+            .expect("select tag");
         assert_eq!(rows[0]["name"], Value::String("重要".into()));
 
         // Delete
-        db.execute("DELETE FROM codex_tags WHERE id = ?", &[Value::String("tag-crud".into())], "run").expect("delete tag");
-        let rows = db.execute("SELECT * FROM codex_tags WHERE id = ?", &[Value::String("tag-crud".into())], "all").expect("select after delete");
+        db.execute(
+            "DELETE FROM codex_tags WHERE id = ?",
+            &[Value::String("tag-crud".into())],
+            "run",
+        )
+        .expect("delete tag");
+        let rows = db
+            .execute(
+                "SELECT * FROM codex_tags WHERE id = ?",
+                &[Value::String("tag-crud".into())],
+                "all",
+            )
+            .expect("select after delete");
         assert_eq!(rows.len(), 0);
     }
 
@@ -1873,7 +1965,10 @@ mod tests {
             ],
             "run",
         );
-        assert!(result.is_err(), "Should reject span with no owner (node_id/codex_entry_id/snippet_id all NULL)");
+        assert!(
+            result.is_err(),
+            "Should reject span with no owner (node_id/codex_entry_id/snippet_id all NULL)"
+        );
     }
 
     #[test]
@@ -1940,15 +2035,22 @@ mod tests {
             "DELETE FROM tree_nodes WHERE id = ?",
             &[Value::String("scene-cv".into())],
             "run",
-        ).expect("delete scene");
+        )
+        .expect("delete scene");
 
         // content_versions should be cascade-deleted via trigger
-        let rows = db.execute(
-            "SELECT * FROM content_versions WHERE entity_id = ?",
-            &[Value::String("scene-cv".into())],
-            "all",
-        ).expect("query");
-        assert_eq!(rows.len(), 0, "content_versions should be deleted when tree_node is deleted");
+        let rows = db
+            .execute(
+                "SELECT * FROM content_versions WHERE entity_id = ?",
+                &[Value::String("scene-cv".into())],
+                "all",
+            )
+            .expect("query");
+        assert_eq!(
+            rows.len(),
+            0,
+            "content_versions should be deleted when tree_node is deleted"
+        );
     }
 
     #[test]
@@ -1974,13 +2076,20 @@ mod tests {
             "DELETE FROM codex_entries WHERE id = ?",
             &[Value::String("ce-cv".into())],
             "run",
-        ).expect("delete entry");
+        )
+        .expect("delete entry");
 
-        let rows = db.execute(
-            "SELECT * FROM content_versions WHERE entity_id = ?",
-            &[Value::String("ce-cv".into())],
-            "all",
-        ).expect("query");
-        assert_eq!(rows.len(), 0, "content_versions should be deleted when codex_entry is deleted");
+        let rows = db
+            .execute(
+                "SELECT * FROM content_versions WHERE entity_id = ?",
+                &[Value::String("ce-cv".into())],
+                "all",
+            )
+            .expect("query");
+        assert_eq!(
+            rows.len(),
+            0,
+            "content_versions should be deleted when codex_entry is deleted"
+        );
     }
 }

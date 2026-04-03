@@ -1,7 +1,27 @@
 import ReactMarkdown from "react-markdown";
 import type { ChatMessage as ChatMessageType } from "../chatTypes";
+import type { ToolCallRecord } from "../agent/agentTypes";
 import { ChatMessageActions } from "./ChatMessageActions";
 import { MessageBadge } from "./MessageBadge";
+import { ToolCallBlock } from "./ToolCallBlock";
+
+function parseToolCalls(metadata: string | null | undefined): ToolCallRecord[] {
+  if (!metadata) return [];
+  try {
+    const parsed: unknown = JSON.parse(metadata);
+    if (
+      parsed &&
+      typeof parsed === "object" &&
+      "tool_calls" in parsed &&
+      Array.isArray((parsed as { tool_calls: unknown }).tool_calls)
+    ) {
+      return (parsed as { tool_calls: ToolCallRecord[] }).tool_calls;
+    }
+  } catch {
+    // corrupted metadata
+  }
+  return [];
+}
 
 interface ChatMessageProps {
   msg: ChatMessageType;
@@ -20,6 +40,7 @@ export function ChatMessage({
 }: ChatMessageProps) {
   const isAssistant = msg.role === "assistant";
   const showActions = !isStreaming && msg.content.length > 0;
+  const toolCalls = isAssistant ? parseToolCalls(msg.metadata) : [];
 
   return (
     <div
@@ -38,6 +59,13 @@ export function ChatMessage({
       >
         {isAssistant ? (
           <>
+            {toolCalls.length > 0 && (
+              <div className="mb-2 space-y-1">
+                {toolCalls.map((record, i) => (
+                  <ToolCallBlock key={i} record={record} />
+                ))}
+              </div>
+            )}
             <div className="prose prose-sm max-w-none dark:prose-invert">
               <ReactMarkdown>{msg.content}</ReactMarkdown>
             </div>

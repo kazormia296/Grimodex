@@ -161,7 +161,10 @@ pub async fn fetch_models(
         AiProvider::OpenRouter => {
             req = req
                 .header("Authorization", format!("Bearer {api_key}"))
-                .header("HTTP-Referer", "https://github.com/futurebassisdead/Grimodex")
+                .header(
+                    "HTTP-Referer",
+                    "https://github.com/futurebassisdead/Grimodex",
+                )
                 .header("X-Title", "Grimodex");
         }
         _ => {
@@ -291,7 +294,10 @@ pub async fn test_connection(
 
             if matches!(provider, AiProvider::OpenRouter) {
                 req = req
-                    .header("HTTP-Referer", "https://github.com/futurebassisdead/Grimodex")
+                    .header(
+                        "HTTP-Referer",
+                        "https://github.com/futurebassisdead/Grimodex",
+                    )
                     .header("X-Title", "Grimodex");
             }
 
@@ -330,9 +336,7 @@ pub async fn send_chat(
             let chat_messages: Vec<serde_json::Value> = messages
                 .iter()
                 .filter(|(role, _)| *role != "system")
-                .map(|(role, content)| {
-                    serde_json::json!({ "role": role, "content": content })
-                })
+                .map(|(role, content)| serde_json::json!({ "role": role, "content": content }))
                 .collect();
 
             let mut body = serde_json::json!({
@@ -366,9 +370,7 @@ pub async fn send_chat(
             // OpenAI-compatible format (OpenRouter, OpenAI, Ollama)
             let chat_messages: Vec<serde_json::Value> = messages
                 .iter()
-                .map(|(role, content)| {
-                    serde_json::json!({ "role": role, "content": content })
-                })
+                .map(|(role, content)| serde_json::json!({ "role": role, "content": content }))
                 .collect();
 
             let body = serde_json::json!({
@@ -379,9 +381,7 @@ pub async fn send_chat(
 
             let url = format!("{}/chat/completions", provider.base_url(ollama_endpoint));
 
-            let mut req = client
-                .post(&url)
-                .header("content-type", "application/json");
+            let mut req = client.post(&url).header("content-type", "application/json");
 
             if !matches!(provider, AiProvider::Ollama) {
                 req = req.header("Authorization", format!("Bearer {api_key}"));
@@ -389,7 +389,10 @@ pub async fn send_chat(
 
             if matches!(provider, AiProvider::OpenRouter) {
                 req = req
-                    .header("HTTP-Referer", "https://github.com/futurebassisdead/Grimodex")
+                    .header(
+                        "HTTP-Referer",
+                        "https://github.com/futurebassisdead/Grimodex",
+                    )
                     .header("X-Title", "Grimodex");
             }
 
@@ -401,6 +404,368 @@ pub async fn send_chat(
                 .unwrap_or("")
                 .to_string();
             Ok(text)
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Agent / Tool Use types
+// ---------------------------------------------------------------------------
+
+/// A tool_use block inside an assistant message (multi-turn conversation).
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ToolUsePayload {
+    pub id: String,
+    pub name: String,
+    pub input: serde_json::Value,
+}
+
+/// Normalized message format for agent conversations.
+/// The `role` field acts as a discriminant tag.
+#[derive(Debug, Deserialize, Clone)]
+#[serde(tag = "role")]
+pub enum AgentMessage {
+    #[serde(rename = "user")]
+    User { content: String },
+    #[serde(rename = "system")]
+    System { content: String },
+    #[serde(rename = "assistant", rename_all = "camelCase")]
+    Assistant {
+        content: String,
+        #[serde(default)]
+        tool_uses: Vec<ToolUsePayload>,
+    },
+    #[serde(rename = "tool_result", rename_all = "camelCase")]
+    ToolResult {
+        tool_use_id: String,
+        content: String,
+        #[serde(default)]
+        is_error: bool,
+    },
+}
+
+/// Normalized tool definition sent by the frontend.
+#[derive(Debug, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentToolDef {
+    pub name: String,
+    pub description: String,
+    pub input_schema: serde_json::Value,
+}
+
+/// A block in a structured LLM response.
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ResponseBlock {
+    Text {
+        content: String,
+    },
+    ToolUse {
+        id: String,
+        name: String,
+        input: serde_json::Value,
+    },
+    Thinking {
+        content: String,
+        summary: Option<String>,
+    },
+}
+
+/// Structured response returned from `send_chat_with_tools`.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatResponse {
+    pub blocks: Vec<ResponseBlock>,
+    pub stop_reason: String,
+}
+
+fn parse_anthropic_response(result: &serde_json::Value) -> anyhow::Result<ChatResponse> {
+    let stop_reason = result["stop_reason"]
+        .as_str()
+        .unwrap_or("end_turn")
+        .to_string();
+    let mut blocks = Vec::new();
+
+    if let Some(content) = result["content"].as_array() {
+        for block in content {
+            match block["type"].as_str() {
+                Some("text") => {
+                    let text = block["text"].as_str().unwrap_or("").to_string();
+                    if !text.is_empty() {
+                        blocks.push(ResponseBlock::Text { content: text });
+                    }
+                }
+                Some("tool_use") => {
+                    let id = block["id"].as_str().unwrap_or("").to_string();
+                    let name = block["name"].as_str().unwrap_or("").to_string();
+                    let input = block["input"].clone();
+                    blocks.push(ResponseBlock::ToolUse { id, name, input });
+                }
+                Some("thinking") => {
+                    let content = block["thinking"].as_str().unwrap_or("").to_string();
+                    let summary = block["summary"].as_str().map(|s| s.to_string());
+                    blocks.push(ResponseBlock::Thinking { content, summary });
+                }
+                _ => {}
+            }
+        }
+    }
+
+    Ok(ChatResponse {
+        blocks,
+        stop_reason,
+    })
+}
+
+fn parse_openai_response(result: &serde_json::Value) -> anyhow::Result<ChatResponse> {
+    let choice = &result["choices"][0];
+    let finish_reason = choice["finish_reason"].as_str().unwrap_or("stop");
+    let stop_reason = if finish_reason == "tool_calls" {
+        "tool_use"
+    } else {
+        "end_turn"
+    }
+    .to_string();
+
+    let mut blocks = Vec::new();
+    let message = &choice["message"];
+
+    if let Some(content) = message["content"].as_str() {
+        if !content.is_empty() {
+            blocks.push(ResponseBlock::Text {
+                content: content.to_string(),
+            });
+        }
+    }
+
+    if let Some(tool_calls) = message["tool_calls"].as_array() {
+        for tc in tool_calls {
+            let id = tc["id"].as_str().unwrap_or("").to_string();
+            let name = tc["function"]["name"].as_str().unwrap_or("").to_string();
+            let args_str = tc["function"]["arguments"].as_str().unwrap_or("{}");
+            let input: serde_json::Value = serde_json::from_str(args_str)
+                .unwrap_or(serde_json::Value::Object(Default::default()));
+            blocks.push(ResponseBlock::ToolUse { id, name, input });
+        }
+    }
+
+    Ok(ChatResponse {
+        blocks,
+        stop_reason,
+    })
+}
+
+/// Send a tool-aware chat request and return a structured response.
+pub async fn send_chat_with_tools(
+    provider: &AiProvider,
+    model: &str,
+    api_key: &str,
+    ollama_endpoint: &str,
+    messages: &[AgentMessage],
+    tools: &[AgentToolDef],
+) -> anyhow::Result<ChatResponse> {
+    let client = reqwest::Client::new();
+
+    match provider {
+        AiProvider::Anthropic => {
+            // Collect system content
+            let system_content: String = messages
+                .iter()
+                .filter_map(|m| {
+                    if let AgentMessage::System { content } = m {
+                        Some(content.as_str())
+                    } else {
+                        None
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+
+            // Build Anthropic message array
+            let mut anthropic_messages: Vec<serde_json::Value> = Vec::new();
+            for msg in messages {
+                match msg {
+                    AgentMessage::User { content } => {
+                        anthropic_messages
+                            .push(serde_json::json!({ "role": "user", "content": content }));
+                    }
+                    AgentMessage::Assistant { content, tool_uses } => {
+                        if tool_uses.is_empty() {
+                            anthropic_messages.push(
+                                serde_json::json!({ "role": "assistant", "content": content }),
+                            );
+                        } else {
+                            let mut content_blocks: Vec<serde_json::Value> = Vec::new();
+                            if !content.is_empty() {
+                                content_blocks
+                                    .push(serde_json::json!({ "type": "text", "text": content }));
+                            }
+                            for tu in tool_uses {
+                                content_blocks.push(serde_json::json!({
+                                    "type": "tool_use",
+                                    "id": tu.id,
+                                    "name": tu.name,
+                                    "input": tu.input
+                                }));
+                            }
+                            anthropic_messages.push(serde_json::json!({
+                                "role": "assistant",
+                                "content": content_blocks
+                            }));
+                        }
+                    }
+                    AgentMessage::ToolResult {
+                        tool_use_id,
+                        content,
+                        is_error,
+                    } => {
+                        anthropic_messages.push(serde_json::json!({
+                            "role": "user",
+                            "content": [{
+                                "type": "tool_result",
+                                "tool_use_id": tool_use_id,
+                                "content": content,
+                                "is_error": is_error
+                            }]
+                        }));
+                    }
+                    AgentMessage::System { .. } => {}
+                }
+            }
+
+            // Build Anthropic tool definitions
+            let anthropic_tools: Vec<serde_json::Value> = tools
+                .iter()
+                .map(|t| {
+                    serde_json::json!({
+                        "name": t.name,
+                        "description": t.description,
+                        "input_schema": t.input_schema
+                    })
+                })
+                .collect();
+
+            let mut body = serde_json::json!({
+                "model": model,
+                "max_tokens": 4096,
+                "messages": anthropic_messages,
+                "tools": anthropic_tools
+            });
+            if !system_content.is_empty() {
+                body["system"] = serde_json::Value::String(system_content);
+            }
+
+            let resp = client
+                .post(format!("{}/messages", provider.base_url(ollama_endpoint)))
+                .header("x-api-key", api_key)
+                .header("anthropic-version", "2023-06-01")
+                .header("content-type", "application/json")
+                .json(&body)
+                .send()
+                .await?
+                .error_for_status()?;
+
+            let result: serde_json::Value = resp.json().await?;
+            parse_anthropic_response(&result)
+        }
+        _ => {
+            // OpenAI-compatible format (OpenAI, OpenRouter, Ollama)
+            let mut openai_messages: Vec<serde_json::Value> = Vec::new();
+            for msg in messages {
+                match msg {
+                    AgentMessage::User { content } => {
+                        openai_messages
+                            .push(serde_json::json!({ "role": "user", "content": content }));
+                    }
+                    AgentMessage::System { content } => {
+                        openai_messages
+                            .push(serde_json::json!({ "role": "system", "content": content }));
+                    }
+                    AgentMessage::Assistant { content, tool_uses } => {
+                        if tool_uses.is_empty() {
+                            openai_messages.push(
+                                serde_json::json!({ "role": "assistant", "content": content }),
+                            );
+                        } else {
+                            let tool_calls: Vec<serde_json::Value> = tool_uses
+                                .iter()
+                                .map(|tu| {
+                                    serde_json::json!({
+                                        "id": tu.id,
+                                        "type": "function",
+                                        "function": {
+                                            "name": tu.name,
+                                            "arguments": tu.input.to_string()
+                                        }
+                                    })
+                                })
+                                .collect();
+                            let content_val = if content.is_empty() {
+                                serde_json::Value::Null
+                            } else {
+                                serde_json::Value::String(content.clone())
+                            };
+                            openai_messages.push(serde_json::json!({
+                                "role": "assistant",
+                                "content": content_val,
+                                "tool_calls": tool_calls
+                            }));
+                        }
+                    }
+                    AgentMessage::ToolResult {
+                        tool_use_id,
+                        content,
+                        ..
+                    } => {
+                        openai_messages.push(serde_json::json!({
+                            "role": "tool",
+                            "tool_call_id": tool_use_id,
+                            "content": content
+                        }));
+                    }
+                }
+            }
+
+            // Build OpenAI tool definitions
+            let openai_tools: Vec<serde_json::Value> = tools
+                .iter()
+                .map(|t| {
+                    serde_json::json!({
+                        "type": "function",
+                        "function": {
+                            "name": t.name,
+                            "description": t.description,
+                            "parameters": t.input_schema
+                        }
+                    })
+                })
+                .collect();
+
+            let body = serde_json::json!({
+                "model": model,
+                "max_tokens": 4096,
+                "messages": openai_messages,
+                "tools": openai_tools
+            });
+
+            let url = format!("{}/chat/completions", provider.base_url(ollama_endpoint));
+            let mut req = client.post(&url).header("content-type", "application/json");
+
+            if !matches!(provider, AiProvider::Ollama) {
+                req = req.header("Authorization", format!("Bearer {api_key}"));
+            }
+            if matches!(provider, AiProvider::OpenRouter) {
+                req = req
+                    .header(
+                        "HTTP-Referer",
+                        "https://github.com/futurebassisdead/Grimodex",
+                    )
+                    .header("X-Title", "Grimodex");
+            }
+
+            let resp = req.json(&body).send().await?.error_for_status()?;
+            let result: serde_json::Value = resp.json().await?;
+            parse_openai_response(&result)
         }
     }
 }
