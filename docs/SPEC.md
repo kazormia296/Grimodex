@@ -614,17 +614,20 @@ VS Code + JetBrains ハイブリッドのDock/Float/Tab/Splitモデルを採用:
 | ゾーン | 初期幅/高さ | デフォルトパネル |
 |--------|-----------|----------------|
 | Activity Bar | 40px固定 | アイコン＋インジケータドット |
-| Left Dock | 200px | Scenes（表示）、Codex（非表示）、Chat History（非表示） |
+| Left Top | ~18% | Scenes（表示）、Codex（非表示） |
+| Left Bottom | Left Topとの比率 | Codex Quick（表示） |
 | Center | フレキシブル | Editor Groups（必須、最低1グループ） |
-| Right Dock | 280px | Chat（表示） |
+| Right Top | ~30% | Chat（表示）、Chat History（非表示・非アクティブタブ） |
+| Right Bottom | Right Topとの比率 | デフォルト空 |
 | Bottom Dock | 非表示 | Snippets（非表示）、Attribution（非表示） |
 
 **パネル状態:** Closed / Docked / Collapsed / Floating
 **Settings:** フローティング専用（Dockには配置しない）
 
 **キーボードショートカット（Ctrl+Alt プレフィクス）:**
-- `Ctrl+Alt+S`: Scenes、`Ctrl+Alt+C`: Chat、`Ctrl+Alt+X`: Codex
-- `Ctrl+Alt+H`: Chat History、`Ctrl+Alt+N`: Snippets、`Ctrl+Alt+A`: Attribution
+- `Ctrl+Alt+S`: Scenes、`Ctrl+Alt+Q`: Codex Quick、`Ctrl+Alt+X`: Codex
+- `Ctrl+Alt+C`: Chat、`Ctrl+Alt+H`: Chat History
+- `Ctrl+Alt+N`: Snippets、`Ctrl+Alt+A`: Attribution
 - `Ctrl+Alt+B/R/J`: Left/Right/Bottom Dockトグル
 - `Ctrl+Alt+,`: Settings
 

@@ -13,22 +13,21 @@
 
 ## ドックゾーン構成
 
-アプリウィンドウは以下の5つの領域で構成される。
+アプリウィンドウは以下の領域で構成される。Left/Right DockはそれぞれTop/Bottomに縦分割（ゾーン内スプリット）できる。
 
 ```
 ┌──────────────────────────────────────────────┐
 │                  Title Bar                    │
 ├────┬──────┬──────────────────┬────────────────┤
-│    │      │                  │                │
-│ A  │  L   │     Center       │       R        │
-│ c  │  e   │  (Editor Groups) │     i g        │
-│ t  │  f   │                  │     h t        │
-│ i  │  t   │                  │                │
-│ v  │      ├──────────────────┤                │
-│ i  │  D   │     Bottom       │                │
-│ t  │  o   │     Dock         │                │
-│ y  │  c   │                  │                │
-│    │  k   │                  │                │
+│    │  L   │                  │  R             │
+│ A  │  T   │     Center       │  T             │
+│ c  │  o   │  (Editor Groups) │  o             │
+│ t  │  p   │                  │  p             │
+│ i  ├──────┤                  ├────────────────┤
+│ v  │  L   ├──────────────────┤  R             │
+│ i  │  B   │     Bottom       │  B             │
+│ t  │  o   │     Dock         │  o             │
+│ y  │  t   │                  │  t             │
 │ B  │      │                  │                │
 │ a  │      │                  │                │
 │ r  │      │                  │                │
@@ -42,12 +41,14 @@
 | ゾーン | 位置 | サイズ挙動 | 特記事項 |
 |--------|------|-----------|---------|
 | Activity Bar | 最左端、縦一列 | 幅固定（40px） | ランチャー。ドックゾーンではない |
-| Left Dock | Activity Barの右隣 | 幅リサイズ可能（初期200px） | パネル0個で非表示→Centerが拡張 |
+| Left Top | Activity Barの右隣・上部 | 幅リサイズ可能（初期~18%） | デフォルトはScenesパネル |
+| Left Bottom | Activity Barの右隣・下部 | Left Topとの比率リサイズ可能 | デフォルトはCodex Quickパネル |
 | Center | 中央 | flex（残り領域を埋める） | Editor Group専用。最低1Group必須 |
-| Right Dock | 最右端 | 幅リサイズ可能（初期280px） | パネル0個で非表示→Centerが拡張 |
+| Right Top | 最右端・上部 | 幅リサイズ可能（初期~30%） | デフォルトはChat + Chat Historyタブ |
+| Right Bottom | 最右端・下部 | Right Topとの比率リサイズ可能 | デフォルトは空（パネル追加時に生成） |
 | Bottom Dock | Centerの下 | 高さリサイズ可能（初期非表示） | パネル0個で非表示→Centerが拡張 |
 
-BottomドックはLeft/Rightドックの間にのみ展開する（Activity Barの下には侵入しない）。
+Bottom DockはLeft/Right Dockの間にのみ展開する（Activity Barの下には侵入しない）。Left/Right DockはTop/Bottom間で縦分割（ゾーン内スプリット）が可能。
 
 ---
 
@@ -60,7 +61,7 @@ BottomドックはLeft/Rightドックの間にのみ展開する（Activity Bar�
 | Codex | Left Dock | 非表示 | 世界設定DB（Character/Location/Item/Lore）。リスト+詳細のマスター/ディテールUI |
 | Editor | Center | 表示 | TipTapエディタ。閉じ不可（最低1タブ） |
 | Chat | Right Dock | 表示 | BYOK AIチャット。シーンコンテキスト自動注入、Codex/Snippet抽出、エディタ挿入 |
-| Chat History | Left Dock | 非表示 | 全シーン横断のチャットセッション検索・閲覧 |
+| Chat History | Right Top（Chatと同グループ） | 非表示（非アクティブタブ） | 全シーン横断のチャットセッション検索・閲覧 |
 | Snippets | Bottom Dock | 非表示 | 再利用可能なテキスト断片。Chat/Editorから保存、D&Dでエディタに挿入 |
 | Attribution | Bottom Dock | 非表示 | AI帰属統計ダッシュボード。シーン/チャプター/プロジェクト単位の集計、モデル別使用状況 |
 | Settings | Float | 非表示 | プロジェクト/AI/エディタ/表示/キーバインド/データ管理。常にフローティング |
@@ -417,14 +418,14 @@ OS AppDataディレクトリ内の `global-settings.json` に保存する。レ�
 
 ```
 ┌────┬──────────────────┬──────────────────┬────────────────┐
-│    │ [シーン][Codex]   │                  │                │
-│ A  │ [履歴]           │                  │ [チャット]      │
-│ c  │                  │   [エディタ]      │                │
-│ t  │  Left Group      │   Center Group   │  Right Group   │
-│ i  │  (18%)           │   (52%)          │  (30%)         │
-│ v  │                  │                  │                │
+│    │ [シーン]          │                  │[チャット][履歴] │
+│ A  │                  │   [エディタ]      │                │
+│ c  │  Left Top        │   Center         │  Right Top     │
+│ t  │  (~18%)          │   (~52%)         │  (~30%)        │
+│ i  ├──────────────────┤                  │                │
+│ v  │ [Codex Quick]    │                  │                │
 │ i  │                  │                  │                │
-│ t  │                  │                  │                │
+│ t  │  Left Bottom     │                  │                │
 │ y  │                  │                  │                │
 │    │                  │                  │                │
 │ B  │                  │                  │                │
@@ -433,7 +434,8 @@ OS AppDataディレクトリ内の `global-settings.json` に保存する。レ�
 └────┴──────────────────┴──────────────────┴────────────────┘
 ```
 
-Snippets・Attributionパネルは初期状態では非表示。ActivityBarから追加するとEditor下部にグループとして配置される。
+- 履歴タブはチャットと同グループで非アクティブ（初期非表示）
+- Snippets・Attributionパネルは初期状態では非表示。ActivityBarから追加するとEditor下部にグループとして配置される。
 
 > **注記**: `react-resizable-panels` はCodexManagementPanelおよびSnippetPanelのマスター/ディテール内部分割に引き続き使用している。アプリレベルのドックレイアウトのみdockviewに移行済み。
 
