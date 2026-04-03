@@ -765,7 +765,7 @@ export function ScenesPanel() {
       {/* Drag overlay — portaled to body to escape dockview's transform context
          which breaks position:fixed used by DragOverlay */}
       {createPortal(
-        <DragOverlay>
+        <DragOverlay dropAnimation={null}>
           {draggingNode && (
             <div className="flex items-center gap-0.5 rounded bg-background/80 px-1 py-0.5 text-sm shadow-lg ring-1 ring-primary">
               <span className="flex h-4 w-3 flex-shrink-0 items-center justify-center text-muted-foreground/50">
