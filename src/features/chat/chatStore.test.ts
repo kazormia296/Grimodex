@@ -17,7 +17,15 @@ vi.mock("./chatApi", () => ({
 
 vi.mock("./contextBuilder", () => ({
   buildSystemPrompt: vi.fn(() => "mock system prompt"),
+  buildStorySoFar: vi.fn(() => ""),
   countTokens: vi.fn(() => 42),
+}));
+
+vi.mock("@/features/tree/treeStore", () => ({
+  useTreeStore: Object.assign(
+    vi.fn(() => ({ nodes: [] })),
+    { getState: vi.fn(() => ({ nodes: [] })) },
+  ),
 }));
 
 vi.mock("@/features/tree/api", () => ({
