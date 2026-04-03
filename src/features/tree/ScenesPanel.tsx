@@ -1,15 +1,11 @@
-import {
-  useEffect,
-  useRef,
-  useState,
-  useCallback,
-  useMemo,
-} from "react";
+import { useEffect, useRef, useState, useCallback, useMemo } from "react";
+import { createPortal } from "react-dom";
 import {
   Plus,
   ChevronsUpDown,
   MoreHorizontal,
   Check,
+  GripVertical,
 } from "lucide-react";
 import {
   DndContext,
@@ -26,7 +22,8 @@ import type {
 } from "@dnd-kit/core";
 import { cn } from "@/lib/utils";
 import { useTreeStore } from "./treeStore";
-import { TreeNodeItem } from "./TreeNodeItem";
+import { TreeNodeItem, NodeIcon } from "./TreeNodeItem";
+import { StatusDot } from "./StatusDot";
 import { SynopsisArea } from "./SynopsisArea";
 import { CodexQuickSection } from "./CodexQuickSection";
 import type { TreeNodeData, NodeType } from "./treeStore";
@@ -51,7 +48,9 @@ function flattenVisible(
     if (!isNodeVisible(node, childMap, nodeMap, query)) continue;
     result.push(node);
     const isContainer = ["part", "chapter", "folder"].includes(node.nodeType);
-    const expanded = expandedIds.includes(id) || (!!query && isNodeVisible(node, childMap, nodeMap, query));
+    const expanded =
+      expandedIds.includes(id) ||
+      (!!query && isNodeVisible(node, childMap, nodeMap, query));
     if (isContainer && expanded) {
       result.push(...flattenVisible(id, childMap, nodeMap, expandedIds, query));
     }
@@ -127,9 +126,7 @@ function TreeRenderer({
         const visible = isNodeVisible(node, childMap, nodeMap, query);
         const isExpanded = expandedIds.includes(id) || (!!query && visible);
         const isLeaf = node.nodeType === "scene" || node.nodeType === "note";
-        const count = isLeaf
-          ? (charCounts[id] ?? 0)
-          : (nodeTotals[id] ?? 0);
+        const count = isLeaf ? (charCounts[id] ?? 0) : (nodeTotals[id] ?? 0);
         return (
           <TreeNodeItem
             key={id}
@@ -148,7 +145,10 @@ function TreeRenderer({
               node.synopsis && (
                 <li
                   className="list-none text-[11px] text-muted-foreground"
-                  style={{ paddingLeft: `${depth * 12 + 24}px`, paddingBottom: 4 }}
+                  style={{
+                    paddingLeft: `${depth * 12 + 24}px`,
+                    paddingBottom: 4,
+                  }}
                 >
                   {node.synopsis}
                 </li>
@@ -189,10 +189,14 @@ interface PanelMenuProps {
 }
 
 function PanelMenu({
-  viewMode, setViewMode,
-  showWordCounts, setShowWordCounts,
-  showStatusDots, setShowStatusDots,
-  onExpandAll, onCollapseAll,
+  viewMode,
+  setViewMode,
+  showWordCounts,
+  setShowWordCounts,
+  showStatusDots,
+  setShowStatusDots,
+  onExpandAll,
+  onCollapseAll,
   onClose,
 }: PanelMenuProps) {
   const ref = useRef<HTMLDivElement>(null);
@@ -204,21 +208,41 @@ function PanelMenu({
     return () => document.removeEventListener("mousedown", close);
   }, [onClose]);
 
-  function toggle<T>(_label: string, value: T, options: T[], onSelect: (v: T) => void) {
+  function toggle<T>(
+    _label: string,
+    value: T,
+    options: T[],
+    onSelect: (v: T) => void,
+  ) {
     return options.map((opt) => (
       <button
         key={String(opt)}
         type="button"
-        onClick={() => { onSelect(opt); onClose(); }}
+        onClick={() => {
+          onSelect(opt);
+          onClose();
+        }}
         className="flex w-full items-center gap-2 px-3 py-1.5 text-xs hover:bg-accent"
       >
-        {value === opt ? <Check className="h-3 w-3" /> : <span className="w-3" />}
-        {String(opt) === "tree" ? "Tree" : String(opt) === "outline" ? "Outline" : String(opt)}
+        {value === opt ? (
+          <Check className="h-3 w-3" />
+        ) : (
+          <span className="w-3" />
+        )}
+        {String(opt) === "tree"
+          ? "Tree"
+          : String(opt) === "outline"
+            ? "Outline"
+            : String(opt)}
       </button>
     ));
   }
 
-  function checkItem(label: string, checked: boolean, onChange: (v: boolean) => void) {
+  function checkItem(
+    label: string,
+    checked: boolean,
+    onChange: (v: boolean) => void,
+  ) {
     return (
       <button
         type="button"
@@ -235,7 +259,10 @@ function PanelMenu({
     return (
       <button
         type="button"
-        onClick={() => { action(); onClose(); }}
+        onClick={() => {
+          action();
+          onClose();
+        }}
         className="flex w-full px-3 py-1.5 text-left text-xs hover:bg-accent"
       >
         {label}
@@ -248,10 +275,19 @@ function PanelMenu({
       ref={ref}
       className="absolute right-0 top-6 z-50 min-w-[180px] rounded-md border border-border bg-popover py-1 shadow-md"
     >
-      <div className="px-3 py-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">View</div>
-      {toggle("view", viewMode, ["tree", "outline"], setViewMode as (v: string) => void)}
+      <div className="px-3 py-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+        View
+      </div>
+      {toggle(
+        "view",
+        viewMode,
+        ["tree", "outline"],
+        setViewMode as (v: string) => void,
+      )}
       <div className="my-1 border-t border-border" />
-      <div className="px-3 py-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">Show</div>
+      <div className="px-3 py-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+        Show
+      </div>
       {checkItem("文字数", showWordCounts, setShowWordCounts)}
       {checkItem("ステータスドット", showStatusDots, setShowStatusDots)}
       <div className="my-1 border-t border-border" />
@@ -273,10 +309,26 @@ const CREATE_OPTIONS = [
 
 export function ScenesPanel() {
   const {
-    nodes, activeSceneId, isLoading, expandedIds, filterQuery, viewMode,
-    charCounts, showWordCounts, showStatusDots,
-    loadTree, createNode, expandAll, collapseAll, setFilterQuery, setViewMode,
-    setShowWordCounts, setShowStatusDots, toggleExpand, setActiveScene, moveNode,
+    nodes,
+    activeSceneId,
+    isLoading,
+    expandedIds,
+    filterQuery,
+    viewMode,
+    charCounts,
+    showWordCounts,
+    showStatusDots,
+    loadTree,
+    createNode,
+    expandAll,
+    collapseAll,
+    setFilterQuery,
+    setViewMode,
+    setShowWordCounts,
+    setShowStatusDots,
+    toggleExpand,
+    setActiveScene,
+    moveNode,
   } = useTreeStore();
 
   const filterRef = useRef<HTMLInputElement>(null);
@@ -285,10 +337,14 @@ export function ScenesPanel() {
   const [showPanelMenu, setShowPanelMenu] = useState(false);
   const allExpandedRef = useRef(false);
   const pointerYRef = useRef(0);
-  const [dropIndicator, setDropIndicator] = useState<DropIndicator | null>(null);
+  const [dropIndicator, setDropIndicator] = useState<DropIndicator | null>(
+    null,
+  );
   const [draggingId, setDraggingId] = useState<string | null>(null);
 
-  useEffect(() => { loadTree(DEFAULT_PROJECT_ID); }, [loadTree]);
+  useEffect(() => {
+    loadTree(DEFAULT_PROJECT_ID);
+  }, [loadTree]);
 
   const { childMap, nodeMap } = useMemo(() => {
     const nm: Record<string, TreeNodeData> = {};
@@ -325,7 +381,14 @@ export function ScenesPanel() {
 
   // Flat visible list for keyboard navigation
   const flatNodes = useMemo(
-    () => flattenVisible(null, childMap, nodeMap, expandedIds, filterQuery.toLowerCase()),
+    () =>
+      flattenVisible(
+        null,
+        childMap,
+        nodeMap,
+        expandedIds,
+        filterQuery.toLowerCase(),
+      ),
     [childMap, nodeMap, expandedIds, filterQuery],
   );
 
@@ -343,17 +406,27 @@ export function ScenesPanel() {
         const active = nodeMap[activeSceneId];
         if (active?.nodeType === "scene") parentId = active.parentId;
         else if (active?.nodeType === "chapter") parentId = active.id;
-        else parentId = Object.values(nodeMap).find((n) => n.nodeType === "chapter")?.id ?? null;
+        else
+          parentId =
+            Object.values(nodeMap).find((n) => n.nodeType === "chapter")?.id ??
+            null;
       } else if (type === "chapter") {
         const active = nodeMap[activeSceneId];
-        const parentChapter = active?.parentId ? nodeMap[active.parentId] : null;
+        const parentChapter = active?.parentId
+          ? nodeMap[active.parentId]
+          : null;
         parentId = parentChapter?.parentId ?? null;
       } else if (type === "note") {
         const active = nodeMap[activeSceneId];
         if (active?.nodeType === "note") parentId = active.parentId;
-        else parentId = Object.values(nodeMap).find((n) => n.nodeType === "folder")?.id ?? null;
+        else
+          parentId =
+            Object.values(nodeMap).find((n) => n.nodeType === "folder")?.id ??
+            null;
       }
-      createNode({ nodeType: type, parentId, afterId: activeSceneId }).catch(() => {});
+      createNode({ nodeType: type, parentId, afterId: activeSceneId }).catch(
+        () => {},
+      );
     },
     [createNode, activeSceneId, nodeMap],
   );
@@ -382,7 +455,11 @@ export function ScenesPanel() {
       } else if (e.key === "ArrowLeft") {
         e.preventDefault();
         const cur = nodeMap[activeSceneId];
-        if (cur && ["part", "chapter", "folder"].includes(cur.nodeType) && expandedIds.includes(activeSceneId)) {
+        if (
+          cur &&
+          ["part", "chapter", "folder"].includes(cur.nodeType) &&
+          expandedIds.includes(activeSceneId)
+        ) {
           toggleExpand(activeSceneId);
         } else if (cur?.parentId) {
           setActiveScene(cur.parentId);
@@ -390,8 +467,13 @@ export function ScenesPanel() {
       } else if (e.key === "F2") {
         e.preventDefault();
         // Trigger rename on active node via a custom event
-        const el = treeRef.current?.querySelector(`[data-node-id="${activeSceneId}"]`);
-        if (el) (el as HTMLElement).dispatchEvent(new CustomEvent("start-rename", { bubbles: true }));
+        const el = treeRef.current?.querySelector(
+          `[data-node-id="${activeSceneId}"]`,
+        );
+        if (el)
+          (el as HTMLElement).dispatchEvent(
+            new CustomEvent("start-rename", { bubbles: true }),
+          );
       } else if (e.key === "Delete" || e.key === "Backspace") {
         if (document.activeElement === treeRef.current) {
           e.preventDefault();
@@ -403,7 +485,14 @@ export function ScenesPanel() {
         filterRef.current?.focus();
       }
     },
-    [flatNodes, activeSceneId, nodeMap, expandedIds, setActiveScene, toggleExpand],
+    [
+      flatNodes,
+      activeSceneId,
+      nodeMap,
+      expandedIds,
+      setActiveScene,
+      toggleExpand,
+    ],
   );
 
   // D&D sensors
@@ -442,7 +531,9 @@ export function ScenesPanel() {
       const pointerY = pointerYRef.current;
       let position: "before" | "after" | "inside" = "after";
       if (overRect) {
-        const isContainer = ["part", "chapter", "folder"].includes(overNode.nodeType);
+        const isContainer = ["part", "chapter", "folder"].includes(
+          overNode.nodeType,
+        );
         const relY = pointerY - overRect.top;
         const h = overRect.height;
         if (isContainer) {
@@ -474,7 +565,8 @@ export function ScenesPanel() {
 
       // Validate
       const parentNode = newParentId ? nodeMap[newParentId] : null;
-      if (!isValidParent(activeNode.nodeType, parentNode?.nodeType ?? null)) return;
+      if (!isValidParent(activeNode.nodeType, parentNode?.nodeType ?? null))
+        return;
 
       moveNode(activeId, newParentId, afterId).catch(() => {});
     },
@@ -484,16 +576,30 @@ export function ScenesPanel() {
   // Update drop indicator during drag
   const onDragOver = useCallback(
     ({ active, over }: DragMoveEvent) => {
-      if (!over) { setDropIndicator(null); return; }
+      if (!over) {
+        setDropIndicator(null);
+        return;
+      }
       const overId = String(over.id).replace(/^drop-/, "");
-      if (active.id === overId) { setDropIndicator(null); return; }
+      if (active.id === overId) {
+        setDropIndicator(null);
+        return;
+      }
       const overNode = nodeMap[overId];
-      if (!overNode) { setDropIndicator(null); return; }
+      if (!overNode) {
+        setDropIndicator(null);
+        return;
+      }
 
       const overRect = over.rect;
-      if (!overRect) { setDropIndicator(null); return; }
+      if (!overRect) {
+        setDropIndicator(null);
+        return;
+      }
       const pointerY = pointerYRef.current;
-      const isContainer = ["part", "chapter", "folder"].includes(overNode.nodeType);
+      const isContainer = ["part", "chapter", "folder"].includes(
+        overNode.nodeType,
+      );
       const relY = pointerY - overRect.top;
       const h = overRect.height;
       let position: "before" | "after" | "inside";
@@ -525,7 +631,10 @@ export function ScenesPanel() {
     <DndContext
       sensors={sensors}
       onDragStart={onDragStart}
-      onDragMove={(e) => { onDragMove(e); onDragOver(e as unknown as DragMoveEvent); }}
+      onDragMove={(e) => {
+        onDragMove(e);
+        onDragOver(e as unknown as DragMoveEvent);
+      }}
       onDragEnd={onDragEnd}
     >
       <div className="flex h-full flex-col">
@@ -610,7 +719,9 @@ export function ScenesPanel() {
             type="text"
             value={filterQuery}
             onChange={(e) => setFilterQuery(e.target.value)}
-            onKeyDown={(e) => { if (e.key === "Escape") setFilterQuery(""); }}
+            onKeyDown={(e) => {
+              if (e.key === "Escape") setFilterQuery("");
+            }}
             placeholder="フィルター..."
             className="w-full rounded border border-border bg-background px-2 py-0.5 text-xs text-foreground placeholder:text-muted-foreground/60 focus:outline-none focus:ring-1 focus:ring-ring"
           />
@@ -651,14 +762,29 @@ export function ScenesPanel() {
         <CodexQuickSection />
       </div>
 
-      {/* Drag overlay */}
-      <DragOverlay>
-        {draggingNode && (
-          <div className="rounded border border-primary bg-background/90 px-2 py-1 text-xs shadow-lg">
-            {draggingNode.title}
-          </div>
-        )}
-      </DragOverlay>
+      {/* Drag overlay — portaled to body to escape dockview's transform context
+         which breaks position:fixed used by DragOverlay */}
+      {createPortal(
+        <DragOverlay>
+          {draggingNode && (
+            <div className="flex items-center gap-0.5 rounded bg-background/95 px-1 py-0.5 text-sm shadow-lg ring-1 ring-primary">
+              <span className="flex h-4 w-3 flex-shrink-0 items-center justify-center text-muted-foreground/50">
+                <GripVertical className="h-3 w-3" />
+              </span>
+              <span className="w-4 flex-shrink-0" />
+              {draggingNode.nodeType === "scene" && showStatusDots ? (
+                <StatusDot status={draggingNode.status} />
+              ) : (
+                <NodeIcon nodeType={draggingNode.nodeType} />
+              )}
+              <span className="block truncate text-xs leading-5">
+                {draggingNode.title}
+              </span>
+            </div>
+          )}
+        </DragOverlay>,
+        document.body,
+      )}
     </DndContext>
   );
 }

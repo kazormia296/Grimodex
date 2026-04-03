@@ -8,7 +8,7 @@ import {
   List,
   GripVertical,
 } from "lucide-react";
-import { useDraggable, useDroppable } from "@dnd-kit/core";
+import { useDraggable, useDroppable, useDndContext } from "@dnd-kit/core";
 import { cn } from "@/lib/utils";
 import { useTreeStore } from "./treeStore";
 import { StatusDot } from "./StatusDot";
@@ -30,7 +30,7 @@ const STATUS_LABELS: Record<SceneStatus, string> = {
   final: "Final",
 };
 
-function NodeIcon({ nodeType }: { nodeType: string }) {
+export function NodeIcon({ nodeType }: { nodeType: string }) {
   switch (nodeType) {
     case "part":
       return <List className="h-3.5 w-3.5 text-foreground/70" />;
@@ -131,6 +131,10 @@ export function TreeNodeItem({
     node.nodeType === "chapter" ||
     node.nodeType === "folder";
 
+  // Suppress rename/double-click while any drag is active
+  const { active: dndActive } = useDndContext();
+  const dragInProgress = dndActive !== null;
+
   // D&D: draggable
   const {
     attributes,
@@ -216,9 +220,7 @@ export function TreeNodeItem({
   return (
     <li ref={setRef} style={style} className="list-none">
       {/* Drop-before indicator */}
-      {isDropBefore && (
-        <div className="mx-2 h-0.5 rounded-full bg-primary" />
-      )}
+      {isDropBefore && <div className="mx-2 h-0.5 rounded-full bg-primary" />}
 
       <div
         className={cn(
@@ -230,9 +232,11 @@ export function TreeNodeItem({
             "border-l-2 border-primary",
           isDropInside && "ring-1 ring-primary ring-inset",
         )}
-        style={{ paddingLeft: `${depth * 12 + (isActive && (node.nodeType === "scene" || node.nodeType === "note") ? 2 : 4)}px` }}
-        onClick={handleClick}
-        onDoubleClick={startEdit}
+        style={{
+          paddingLeft: `${depth * 12 + (isActive && (node.nodeType === "scene" || node.nodeType === "note") ? 2 : 4)}px`,
+        }}
+        onClick={dragInProgress ? undefined : handleClick}
+        onDoubleClick={dragInProgress ? undefined : startEdit}
         onContextMenu={handleContextMenu}
       >
         {/* Drag handle — always in layout to prevent title shift */}
@@ -305,7 +309,9 @@ export function TreeNodeItem({
           <span
             className={cn(
               "ml-1 flex-shrink-0 text-[10px] tabular-nums",
-              charCount === 0 ? "text-muted-foreground/40" : "text-muted-foreground",
+              charCount === 0
+                ? "text-muted-foreground/40"
+                : "text-muted-foreground",
             )}
           >
             {charCount > 0 ? charCount.toLocaleString() : ""}
@@ -314,9 +320,7 @@ export function TreeNodeItem({
       </div>
 
       {/* Drop-after indicator */}
-      {isDropAfter && (
-        <div className="mx-2 h-0.5 rounded-full bg-primary" />
-      )}
+      {isDropAfter && <div className="mx-2 h-0.5 rounded-full bg-primary" />}
 
       {/* Children */}
       {isContainer && isExpanded && children && (
