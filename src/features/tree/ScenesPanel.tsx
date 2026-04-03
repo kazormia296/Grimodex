@@ -361,6 +361,9 @@ export function ScenesPanel() {
   // Keyboard navigation
   const handleTreeKeyDown = useCallback(
     (e: React.KeyboardEvent) => {
+      // Let input elements handle their own arrow/delete keys
+      if ((e.target as HTMLElement).tagName === "INPUT") return;
+
       const idx = flatNodes.findIndex((n) => n.id === activeSceneId);
       if (e.key === "ArrowDown") {
         e.preventDefault();
@@ -616,7 +619,7 @@ export function ScenesPanel() {
         {/* Tree */}
         <div
           ref={treeRef}
-          className="flex-1 overflow-auto py-1 outline-none"
+          className="flex-1 overflow-y-auto overflow-x-hidden py-1 outline-none"
           tabIndex={0}
           onKeyDown={handleTreeKeyDown}
         >

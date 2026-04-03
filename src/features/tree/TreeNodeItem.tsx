@@ -9,7 +9,6 @@ import {
   GripVertical,
 } from "lucide-react";
 import { useDraggable, useDroppable } from "@dnd-kit/core";
-import { CSS } from "@dnd-kit/utilities";
 import { cn } from "@/lib/utils";
 import { useTreeStore } from "./treeStore";
 import { StatusDot } from "./StatusDot";
@@ -137,7 +136,6 @@ export function TreeNodeItem({
     attributes,
     listeners,
     setNodeRef: setDragRef,
-    transform,
     isDragging,
   } = useDraggable({ id: node.id, data: { node } });
 
@@ -155,9 +153,10 @@ export function TreeNodeItem({
     [setDragRef, setDropRef],
   );
 
+  // DragOverlay handles the visual ghost, so suppress transform on the original.
+  // Only reduce opacity to show the "source" placeholder in place.
   const style = {
-    transform: CSS.Translate.toString(transform),
-    opacity: isDragging ? 0.4 : 1,
+    opacity: isDragging ? 0.3 : 1,
   };
 
   const handleClick = useCallback(() => {

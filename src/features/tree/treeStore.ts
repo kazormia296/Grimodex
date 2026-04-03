@@ -384,10 +384,35 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
     const { nodes } = get();
     const node = nodes.find((n) => n.id === id);
     if (!node) return;
-    const siblings = nodes.filter(
-      (n) => n.parentId === newParentId && n.id !== id,
-    );
-    const sortOrder = nextSortOrder(siblings, afterId ?? undefined);
+    const siblings = nodes
+      .filter((n) => n.parentId === newParentId && n.id !== id)
+      .sort((a, b) => a.sortOrder - b.sortOrder);
+
+    // afterId semantics:
+    //   null      → insert before first sibling (prepend)
+    //   undefined → append after last sibling
+    //   string    → insert after the named sibling
+    let sortOrder: number;
+    if (afterId === null) {
+      const first = siblings[0];
+      sortOrder = first ? first.sortOrder - 1.0 : 1.0;
+    } else if (afterId === undefined) {
+      const last = siblings[siblings.length - 1];
+      sortOrder = last ? last.sortOrder + 1.0 : 1.0;
+    } else {
+      const idx = siblings.findIndex((n) => n.id === afterId);
+      if (idx === -1) {
+        const last = siblings[siblings.length - 1];
+        sortOrder = last ? last.sortOrder + 1.0 : 1.0;
+      } else {
+        const after = siblings[idx];
+        const next = siblings[idx + 1];
+        sortOrder = next
+          ? (after.sortOrder + next.sortOrder) / 2
+          : after.sortOrder + 1.0;
+      }
+    }
+
     await api.updateNode(id, {
       parentId: newParentId ?? undefined,
       sortOrder,
