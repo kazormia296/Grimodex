@@ -14,6 +14,7 @@ import { WorkspaceMenu } from "@/features/workspace/WorkspaceMenu";
 import { useWorkspaceStore } from "@/features/workspace/store";
 import { AiSettingsDialog } from "@/features/chat/AiSettingsDialog";
 import { ActivityBar } from "@/features/layout/ActivityBar";
+import { DockviewWatermark } from "@/features/layout/DockviewWatermark";
 import {
   useLayoutStore,
   PANEL_TITLES,
@@ -256,6 +257,7 @@ function EditorScreen() {
           className="dockview-theme-dark flex-1"
           onReady={handleReady}
           components={components}
+          watermarkComponent={DockviewWatermark}
         />
       </div>
     </main>
