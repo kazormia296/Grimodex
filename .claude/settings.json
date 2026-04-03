@@ -31,7 +31,7 @@
       {
         "hooks": [{
           "type": "command",
-          "command": "powershell -c \"[System.Media.SystemSounds]::Asterisk.Play()\""
+          "command": "printf '\\a'"
         }]
       }
     ],
@@ -40,7 +40,7 @@
         "matcher": "permission_prompt",
         "hooks": [{
           "type": "command",
-          "command": "powershell -c \"[System.Media.SystemSounds]::Exclamation.Play()\""
+          "command": "printf '\\a'"
         }]
       }
     ],
@@ -49,7 +49,7 @@
         "matcher": "Bash",
         "hooks": [{
           "type": "command",
-          "command": "powershell -c \"$input = [Console]::In.ReadToEnd(); $cmd = ($input | ConvertFrom-Json).tool_input.command; if ($cmd -match 'rm -rf|sudo|tauri build.*--release') { Write-Error 'Blocked: dangerous command'; exit 2 }; exit 0\""
+          "command": "cmd=$(cat | jq -r '.tool_input.command // \"\"' 2>/dev/null); if echo \"$cmd\" | grep -qE 'rm -rf|sudo|tauri build.*--release'; then echo 'Blocked: dangerous command' >&2; exit 2; fi; exit 0"
         }]
       }
     ],
@@ -58,7 +58,7 @@
         "matcher": "Edit|MultiEdit|Write",
         "hooks": [{
           "type": "command",
-          "command": "powershell -c \"$input = [Console]::In.ReadToEnd(); $f = ($input | ConvertFrom-Json).tool_input.file_path; if ($f -match '\\.rs$') { cd src-tauri; cargo fmt -- $f 2>$null } elseif ($f -match '\\.(ts|tsx)$') { npx prettier --write $f 2>$null }; exit 0\""
+          "command": "f=$(cat | jq -r '.tool_input.file_path // \"\"'); if echo \"$f\" | grep -q '\\.rs$'; then (cd src-tauri && cargo fmt -- \"$f\" 2>/dev/null); elif echo \"$f\" | grep -qE '\\.(ts|tsx)$'; then npx prettier --write \"$f\" 2>/dev/null; fi; exit 0"
         }]
       }
     ]
