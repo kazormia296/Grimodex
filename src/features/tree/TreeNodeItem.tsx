@@ -1,4 +1,4 @@
-import { useState, useRef, useCallback } from "react";
+import { useState, useRef, useCallback, useEffect } from "react";
 import {
   ChevronRight,
   ChevronDown,
@@ -6,11 +6,15 @@ import {
   Folder,
   BookOpen,
   List,
+  GripVertical,
 } from "lucide-react";
+import { useDraggable, useDroppable } from "@dnd-kit/core";
+import { CSS } from "@dnd-kit/utilities";
 import { cn } from "@/lib/utils";
 import { useTreeStore } from "./treeStore";
 import { StatusDot } from "./StatusDot";
 import type { TreeNodeData, SceneStatus } from "./treeStore";
+import { TreeContextMenu } from "./TreeContextMenu";
 
 const STATUS_OPTIONS: SceneStatus[] = [
   "outline",
@@ -19,7 +23,6 @@ const STATUS_OPTIONS: SceneStatus[] = [
   "revision",
   "final",
 ];
-
 const STATUS_LABELS: Record<SceneStatus, string> = {
   outline: "Outline",
   draft: "Draft",
@@ -28,7 +31,6 @@ const STATUS_LABELS: Record<SceneStatus, string> = {
   final: "Final",
 };
 
-/** Returns appropriate icon for a node type */
 function NodeIcon({ nodeType }: { nodeType: string }) {
   switch (nodeType) {
     case "part":
@@ -44,13 +46,15 @@ function NodeIcon({ nodeType }: { nodeType: string }) {
   }
 }
 
-interface StatusPopoverProps {
+function StatusPopover({
+  status,
+  onSelect,
+  onClose,
+}: {
   status: string | null;
-  onSelect: (status: SceneStatus) => void;
+  onSelect: (s: SceneStatus) => void;
   onClose: () => void;
-}
-
-function StatusPopover({ status, onSelect, onClose }: StatusPopoverProps) {
+}) {
   return (
     <div
       className="absolute left-4 top-4 z-50 rounded-md border border-border bg-popover p-1 shadow-md"
@@ -77,6 +81,11 @@ function StatusPopover({ status, onSelect, onClose }: StatusPopoverProps) {
   );
 }
 
+export interface DropIndicator {
+  nodeId: string;
+  position: "before" | "after" | "inside";
+}
+
 interface TreeNodeItemProps {
   node: TreeNodeData;
   depth: number;
@@ -84,6 +93,11 @@ interface TreeNodeItemProps {
   isExpanded: boolean;
   children?: React.ReactNode;
   isVisible: boolean;
+  charCount: number;
+  showWordCounts: boolean;
+  showStatusDots: boolean;
+  dropIndicator: DropIndicator | null;
+  onStartRename?: () => void;
 }
 
 export function TreeNodeItem({
@@ -93,22 +107,58 @@ export function TreeNodeItem({
   isExpanded,
   children,
   isVisible,
+  charCount,
+  showWordCounts,
+  showStatusDots,
+  dropIndicator,
+  onStartRename,
 }: TreeNodeItemProps) {
   const toggleExpand = useTreeStore((s) => s.toggleExpand);
   const setActiveScene = useTreeStore((s) => s.setActiveScene);
   const updateNodeTitle = useTreeStore((s) => s.updateNodeTitle);
-  const deleteNode = useTreeStore((s) => s.deleteNode);
   const setStatus = useTreeStore((s) => s.setStatus);
 
   const [isEditing, setIsEditing] = useState(false);
   const [editTitle, setEditTitle] = useState(node.title);
   const [showStatusPopover, setShowStatusPopover] = useState(false);
+  const [contextMenu, setContextMenu] = useState<{
+    x: number;
+    y: number;
+  } | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
   const isContainer =
     node.nodeType === "part" ||
     node.nodeType === "chapter" ||
     node.nodeType === "folder";
+
+  // D&D: draggable
+  const {
+    attributes,
+    listeners,
+    setNodeRef: setDragRef,
+    transform,
+    isDragging,
+  } = useDraggable({ id: node.id, data: { node } });
+
+  // D&D: droppable
+  const { setNodeRef: setDropRef } = useDroppable({
+    id: `drop-${node.id}`,
+    data: { node },
+  });
+
+  const setRef = useCallback(
+    (el: HTMLLIElement | null) => {
+      setDragRef(el);
+      setDropRef(el);
+    },
+    [setDragRef, setDropRef],
+  );
+
+  const style = {
+    transform: CSS.Translate.toString(transform),
+    opacity: isDragging ? 0.4 : 1,
+  };
 
   const handleClick = useCallback(() => {
     if (node.nodeType === "scene" || node.nodeType === "note") {
@@ -123,6 +173,13 @@ export function TreeNodeItem({
     setIsEditing(true);
     setTimeout(() => inputRef.current?.select(), 0);
   }, [node.title]);
+
+  // Expose startEdit via prop
+  useEffect(() => {
+    if (onStartRename) {
+      // no-op: parent calls startEdit via the passed callback
+    }
+  }, [onStartRename]);
 
   const finishEdit = useCallback(() => {
     const trimmed = editTitle.trim();
@@ -143,21 +200,53 @@ export function TreeNodeItem({
     [finishEdit, node.title],
   );
 
+  const handleContextMenu = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    setContextMenu({ x: e.clientX, y: e.clientY });
+  }, []);
+
   if (!isVisible) return null;
 
+  const isDropBefore =
+    dropIndicator?.nodeId === node.id && dropIndicator.position === "before";
+  const isDropAfter =
+    dropIndicator?.nodeId === node.id && dropIndicator.position === "after";
+  const isDropInside =
+    dropIndicator?.nodeId === node.id && dropIndicator.position === "inside";
+
   return (
-    <li className="list-none">
+    <li ref={setRef} style={style} className="list-none">
+      {/* Drop-before indicator */}
+      {isDropBefore && (
+        <div className="mx-2 h-0.5 rounded-full bg-primary" />
+      )}
+
       <div
         className={cn(
           "group relative flex cursor-pointer items-center gap-0.5 rounded px-1 py-0.5 text-sm",
           "hover:bg-accent/50",
-          isActive && "bg-accent font-medium",
+          isActive && "bg-accent/70 font-medium",
+          isActive &&
+            (node.nodeType === "scene" || node.nodeType === "note") &&
+            "border-l-2 border-primary",
+          isDropInside && "ring-1 ring-primary ring-inset",
         )}
-        style={{ paddingLeft: `${depth * 12 + 4}px` }}
+        style={{ paddingLeft: `${depth * 12 + (isActive && (node.nodeType === "scene" || node.nodeType === "note") ? 2 : 4)}px` }}
         onClick={handleClick}
         onDoubleClick={startEdit}
+        onContextMenu={handleContextMenu}
       >
-        {/* Expand/collapse chevron for containers */}
+        {/* Drag handle */}
+        <span
+          {...attributes}
+          {...listeners}
+          className="hidden h-4 w-3 flex-shrink-0 cursor-grab items-center justify-center text-muted-foreground/50 group-hover:flex"
+          onClick={(e) => e.stopPropagation()}
+        >
+          <GripVertical className="h-3 w-3" />
+        </span>
+
+        {/* Expand/collapse chevron */}
         {isContainer ? (
           <span className="flex h-4 w-4 flex-shrink-0 items-center justify-center text-muted-foreground">
             {isExpanded ? (
@@ -170,8 +259,8 @@ export function TreeNodeItem({
           <span className="w-4 flex-shrink-0" />
         )}
 
-        {/* Status dot (scene only) or icon */}
-        {node.nodeType === "scene" ? (
+        {/* Status dot or icon */}
+        {node.nodeType === "scene" && showStatusDots ? (
           <div className="relative">
             <StatusDot
               status={node.status}
@@ -202,7 +291,7 @@ export function TreeNodeItem({
               onBlur={finishEdit}
               onKeyDown={handleKeyDown}
               onClick={(e) => e.stopPropagation()}
-              className="w-full rounded border border-ring bg-background px-1 text-sm focus:outline-none"
+              className="w-full rounded border border-ring bg-background px-1 text-xs focus:outline-none"
               autoFocus
             />
           ) : (
@@ -212,25 +301,41 @@ export function TreeNodeItem({
           )}
         </span>
 
-        {/* Delete button (hover) */}
-        {!isEditing && (
-          <button
-            type="button"
-            onClick={(e) => {
-              e.stopPropagation();
-              deleteNode(node.id);
-            }}
-            className="ml-1 hidden h-4 w-4 flex-shrink-0 items-center justify-center rounded text-muted-foreground opacity-60 hover:opacity-100 group-hover:flex"
-            aria-label="削除"
+        {/* Word count */}
+        {showWordCounts && !isEditing && (
+          <span
+            className={cn(
+              "ml-1 flex-shrink-0 text-[10px] tabular-nums",
+              charCount === 0 ? "text-muted-foreground/40" : "text-muted-foreground",
+            )}
           >
-            ×
-          </button>
+            {charCount > 0 ? charCount.toLocaleString() : ""}
+          </span>
         )}
       </div>
+
+      {/* Drop-after indicator */}
+      {isDropAfter && (
+        <div className="mx-2 h-0.5 rounded-full bg-primary" />
+      )}
 
       {/* Children */}
       {isContainer && isExpanded && children && (
         <ul className="list-none">{children}</ul>
+      )}
+
+      {/* Context menu */}
+      {contextMenu && (
+        <TreeContextMenu
+          node={node}
+          x={contextMenu.x}
+          y={contextMenu.y}
+          onClose={() => setContextMenu(null)}
+          onStartRename={() => {
+            setContextMenu(null);
+            startEdit();
+          }}
+        />
       )}
     </li>
   );

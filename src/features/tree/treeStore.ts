@@ -21,6 +21,25 @@ export interface TreeNodeData {
   status: string | null;
 }
 
+/** Validate whether a node type can be placed under a given parent type */
+export function isValidParent(
+  nodeType: NodeType,
+  parentType: NodeType | null,
+): boolean {
+  switch (nodeType) {
+    case "scene":
+      return parentType === "chapter";
+    case "chapter":
+      return parentType === null || parentType === "part";
+    case "part":
+      return parentType === null;
+    case "note":
+      return parentType === "folder";
+    case "folder":
+      return parentType === null || parentType === "folder";
+  }
+}
+
 /** Flat scene metadata for backward-compat */
 export interface SceneMeta {
   id: string;
@@ -63,6 +82,14 @@ interface TreeState {
   filterQuery: string;
   viewMode: ViewMode;
 
+  // Display settings
+  charCounts: Record<string, number>;
+  showWordCounts: boolean;
+  showStatusDots: boolean;
+
+  // Codex Quick pinned entries
+  pinnedCodexIds: string[];
+
   // Load full tree for a project
   loadTree: (projectId?: string) => Promise<void>;
 
@@ -79,6 +106,7 @@ interface TreeState {
   deleteNode: (id: string) => Promise<void>;
   updateSynopsis: (id: string, synopsis: string) => Promise<void>;
   setStatus: (id: string, status: SceneStatus) => Promise<void>;
+  moveNode: (id: string, newParentId: string | null, afterId: string | null) => Promise<void>;
 
   // UI state
   toggleExpand: (id: string) => void;
@@ -86,6 +114,14 @@ interface TreeState {
   collapseAll: () => void;
   setFilterQuery: (query: string) => void;
   setViewMode: (mode: ViewMode) => void;
+
+  // Display settings
+  setCharCount: (id: string, count: number) => void;
+  setShowWordCounts: (v: boolean) => void;
+  setShowStatusDots: (v: boolean) => void;
+
+  // Codex Quick
+  togglePinnedCodex: (id: string) => void;
 }
 
 export interface CreateNodeOpts {
@@ -128,6 +164,10 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
   expandedIds: [],
   filterQuery: "",
   viewMode: "tree",
+  charCounts: {},
+  showWordCounts: true,
+  showStatusDots: true,
+  pinnedCodexIds: [],
 
   async loadTree(projectId = DEFAULT_PROJECT_ID) {
     set({ isLoading: true, projectId });
@@ -338,5 +378,45 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
 
   setViewMode(mode) {
     set({ viewMode: mode });
+  },
+
+  async moveNode(id, newParentId, afterId) {
+    const { nodes } = get();
+    const node = nodes.find((n) => n.id === id);
+    if (!node) return;
+    const siblings = nodes.filter(
+      (n) => n.parentId === newParentId && n.id !== id,
+    );
+    const sortOrder = nextSortOrder(siblings, afterId ?? undefined);
+    await api.updateNode(id, {
+      parentId: newParentId ?? undefined,
+      sortOrder,
+    });
+    set((state) => {
+      const updated = state.nodes.map((n) =>
+        n.id === id ? { ...n, parentId: newParentId, sortOrder } : n,
+      );
+      return { nodes: updated, scenes: computeScenes(updated) };
+    });
+  },
+
+  setCharCount(id, count) {
+    set((state) => ({ charCounts: { ...state.charCounts, [id]: count } }));
+  },
+
+  setShowWordCounts(v) {
+    set({ showWordCounts: v });
+  },
+
+  setShowStatusDots(v) {
+    set({ showStatusDots: v });
+  },
+
+  togglePinnedCodex(id) {
+    set((state) => ({
+      pinnedCodexIds: state.pinnedCodexIds.includes(id)
+        ? state.pinnedCodexIds.filter((x) => x !== id)
+        : [...state.pinnedCodexIds, id],
+    }));
   },
 }));

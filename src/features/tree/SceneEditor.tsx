@@ -5,7 +5,7 @@ import { Toolbar } from "@/features/editor/Toolbar";
 import { CharCount } from "@/features/editor/CharCount";
 import { SynopsisHeader } from "@/features/editor/SynopsisHeader";
 import { useSceneStore } from "./store";
-import { useTreeStore } from "@/features/tree/treeStore";
+import { useTreeStore } from "./treeStore";
 import { loadSceneContent, saveSceneContent } from "@/features/tree/api";
 import { useAutoSave } from "@/hooks/useAutoSave";
 import { createRevision } from "@/features/revision/api";
@@ -158,8 +158,11 @@ export function SceneEditor() {
       schedule();
       setIsDirtyRef.current(true);
       const text = e.state.doc.textContent;
-      setCharCount(text.length);
+      const count = text.length;
+      setCharCount(count);
       setWordCount(text.trim() === "" ? 0 : text.trim().split(/\s+/).length);
+      const sid = saveSceneIdRef.current;
+      if (sid) useTreeStore.getState().setCharCount(sid, count);
     },
     onSelectionUpdate({ editor: e }) {
       setCursorPos(e.state.selection.anchor);
@@ -251,10 +254,12 @@ export function SceneEditor() {
       if (cancelled) return;
       editor!.commands.setContent(content || "");
       const text = editor!.state.doc.textContent;
-      setCharCount(text.length);
+      const count = text.length;
+      setCharCount(count);
       setWordCount(text.trim() === "" ? 0 : text.trim().split(/\s+/).length);
       setCursorPos(0);
       setIsDirty(false);
+      useTreeStore.getState().setCharCount(activeSceneId, count);
 
       // Restore authorship marks from DB
       const spans = await loadAuthorshipSpans(activeSceneId);
