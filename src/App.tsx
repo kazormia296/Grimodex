@@ -167,22 +167,31 @@ function EditorScreen() {
     return () => window.removeEventListener("open-ai-settings", onOpenSettings);
   }, []);
 
-  // Dockview ready handler — restore persisted layout or build default
+  // Dockview ready handler — build default layout synchronously, then
+  // try to restore persisted layout in the background (avoids blank screen
+  // if the DB query is slow or hangs in Tauri).
   const handleReady = useCallback(
-    async (event: DockviewReadyEvent) => {
+    (event: DockviewReadyEvent) => {
       const api = event.api;
       setDockviewApi(api);
 
-      const saved = await loadLayout();
-      if (saved) {
-        try {
-          api.fromJSON(saved);
-          return;
-        } catch {
-          // Corrupted layout — fall through to default
-        }
-      }
+      // Always show something immediately
       buildDefaultLayout(api);
+
+      // Then try to restore saved layout asynchronously
+      loadLayout()
+        .then((saved) => {
+          if (saved) {
+            try {
+              api.fromJSON(saved);
+            } catch {
+              // Corrupted layout — keep the default already showing
+            }
+          }
+        })
+        .catch(() => {
+          // DB unavailable — keep the default layout
+        });
     },
     [setDockviewApi, loadLayout],
   );
