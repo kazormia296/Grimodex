@@ -21,6 +21,9 @@ EditorパネルはGrimodexの中核コンポーネント。TipTapベースのリ
 │ C. Toolbar                                            │
 │ B I U S ﹅ │ H1 H2 H3 │ ≡ 1. " — │ Ruby Link │ [Attr] [Cmt] [Focus] [TW] │ ⋮ │
 ├──────────────────────────────────────────────────────┤
+│ C-4. Synopsis / Summary（Scene・Codexのみ表示）        │
+│ › Synopsis  What happens in this scene?...  [✦ Gen] │
+├──────────────────────────────────────────────────────┤
 │ D. Editor canvas (TipTap)                             │
 │                                                       │
 │   ┃  Elara stood at the base of the Obsidian Tower,  │
@@ -195,6 +198,53 @@ Noteの場合:
 | Vertical preview | | 縦書きプレビューパネルを開く |
 | Show breadcrumb | | ブレッドクラムの表示/非表示 |
 | Show line numbers | | 行番号の表示/非表示 |
+
+---
+
+## C-4. Synopsis / Summary（概要欄）
+
+ツールバーとエディタキャンバスの間に配置される折りたたみ可能な概要入力欄。
+**タブの種類によって表示・ラベルが異なる。**
+
+| タブ種類 | 表示 | ラベル |
+|---------|------|--------|
+| Scene | 表示する | **Synopsis** |
+| Codex | 表示する | **Summary** |
+| Snippet | **表示しない** | — |
+| Note | 表示しない | — |
+
+### 表示仕様
+
+- ヘッダー行（クリックで折りたたみ/展開）と本文テキストエリアで構成
+- **折りたたみ状態**: ヘッダー行のみ表示。シェブロン（›）アイコン + ラベル（"Synopsis" / "Summary"）。内容が入力済みの場合は先頭テキストをイタリック・省略表示
+- **展開状態**: テキストエリアを表示（rows=3）。入力可能
+
+### Synopsis（Scene）
+
+- **ラベル**: "Synopsis"
+- **データ**: `TreeNodeData.synopsis`（`tree` テーブルの synopsis カラム）
+- **自動保存**: 入力から 1,000ms のデバウンス後に `updateSynopsis()` で保存
+- **AI生成ボタン（✦ Generate）**:
+  - 押下時、シーン本文（`loadSceneContent()`）をもとに `generateSynopsisFromContent()` を呼び出し
+  - 既存の Synopsis がある場合は上書き確認ダイアログを表示
+  - 本文が空の場合は警告トーストを表示してキャンセル
+  - 生成成功時は "Synopsisを生成しました" トースト
+
+### Summary（Codex）
+
+- **ラベル**: "Summary"
+- **データ**: `CodexEntry.summary`（`codex_entries` テーブルの summary カラム）
+- **自動保存**: 入力から 1,000ms のデバウンス後に保存
+- **AI生成ボタン（✦ Generate）**:
+  - 押下時、Codexエントリの `content` をもとに Summary を生成
+  - 既存の Summary がある場合は上書き確認ダイアログを表示
+  - `content` が空の場合は警告トーストを表示してキャンセル
+  - 生成成功時は "Summaryを生成しました" トースト
+
+### 実装ファイル
+
+- `src/features/editor/SynopsisHeader.tsx` — 折りたたみヘッダー（Scene限定ガード済み: `nodeType !== "scene"` で null return）
+- `src/features/tree/SynopsisArea.tsx` — テキストエリア本体（同様に Scene 限定ガード済み）
 
 ---
 
