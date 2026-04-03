@@ -20,6 +20,7 @@ import {
   type PanelId,
 } from "@/features/layout/layoutStore";
 import { Sidebar } from "@/features/tree/Sidebar";
+import { CodexQuickPanel } from "@/features/tree/CodexQuickPanel";
 import { CodexManagementPanel } from "@/features/codex/CodexManagementPanel";
 import { ChatPanel } from "@/features/chat/ChatPanel";
 import { SnippetPanel } from "@/features/snippets/SnippetPanel";
@@ -60,31 +61,21 @@ function AttributionContent(_props: IDockviewPanelProps) {
   return <AttributionReport />;
 }
 
+function CodexQuickContent(_props: IDockviewPanelProps) {
+  return <CodexQuickPanel />;
+}
+
 /* ── Default layout builder ── */
 
 function buildDefaultLayout(api: DockviewReadyEvent["api"]) {
-  // Left group: Scenes (active), Codex, ChatHistory
+  // 1. Scenes (first panel — left)
   api.addPanel({
     id: "scenes",
     component: "scenes",
     title: PANEL_TITLES.scenes,
   });
-  api.addPanel({
-    id: "codex",
-    component: "codex",
-    title: PANEL_TITLES.codex,
-    position: { referencePanel: "scenes", direction: "within" },
-    inactive: true,
-  });
-  api.addPanel({
-    id: "chat-history",
-    component: "chat-history",
-    title: PANEL_TITLES["chat-history"],
-    position: { referencePanel: "scenes", direction: "within" },
-    inactive: true,
-  });
 
-  // Center: Editor
+  // 2. Editor (right of Scenes — establishes left/right split)
   api.addPanel({
     id: "editor",
     component: "editor",
@@ -92,12 +83,27 @@ function buildDefaultLayout(api: DockviewReadyEvent["api"]) {
     position: { referencePanel: "scenes", direction: "right" },
   });
 
-  // Right group: Chat
+  // 3. Chat + Chat History (right of Editor)
   api.addPanel({
     id: "chat",
     component: "chat",
     title: PANEL_TITLES.chat,
     position: { referencePanel: "editor", direction: "right" },
+  });
+  api.addPanel({
+    id: "chat-history",
+    component: "chat-history",
+    title: PANEL_TITLES["chat-history"],
+    position: { referencePanel: "chat", direction: "within" },
+    inactive: true,
+  });
+
+  // 4. Codex Quick (below Scenes — splits left column vertically)
+  api.addPanel({
+    id: "codex-quick",
+    component: "codex-quick",
+    title: PANEL_TITLES["codex-quick"],
+    position: { referencePanel: "scenes", direction: "below" },
   });
 
   // Set approximate sizes — left ~18%, center ~52%, right ~30%
@@ -154,6 +160,7 @@ function EditorScreen() {
       chat: ChatContent,
       snippets: SnippetsContent,
       attribution: AttributionContent,
+      "codex-quick": CodexQuickContent,
     }),
     [],
   );
@@ -208,6 +215,7 @@ function EditorScreen() {
         c: "chat",
         n: "snippets",
         a: "attribution",
+        q: "codex-quick",
         ",": "settings",
       };
 

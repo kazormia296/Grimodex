@@ -10,7 +10,8 @@ export type PanelId =
   | "editor"
   | "chat"
   | "snippets"
-  | "attribution";
+  | "attribution"
+  | "codex-quick";
 
 /** Human-readable panel titles */
 export const PANEL_TITLES: Record<PanelId, string> = {
@@ -21,6 +22,7 @@ export const PANEL_TITLES: Record<PanelId, string> = {
   chat: "チャット",
   snippets: "Snippets",
   attribution: "帰属",
+  "codex-quick": "Codex Quick",
 };
 
 interface LayoutState {
@@ -120,15 +122,30 @@ function addPanelWithDefaults(api: DockviewApi, panelId: PanelId) {
 
   // Try to group with a sibling panel, or fall back to a directional position
   switch (panelId) {
+    case "codex-quick": {
+      // Default: below scenes; fall back to left side
+      const scenes = api.getPanel("scenes");
+      if (scenes) {
+        api.addPanel({
+          id: panelId,
+          component: panelId,
+          title,
+          position: { referencePanel: "scenes", direction: "below" },
+        });
+      } else {
+        api.addPanel({
+          id: panelId,
+          component: panelId,
+          title,
+          position: { direction: "left" },
+        });
+      }
+      break;
+    }
     case "scenes":
-    case "codex":
-    case "chat-history": {
+    case "codex": {
       // Left group — find any sibling
-      const sibling = findFirstPanel(
-        api,
-        ["scenes", "codex", "chat-history"],
-        panelId,
-      );
+      const sibling = findFirstPanel(api, ["scenes", "codex"], panelId);
       if (sibling) {
         api.addPanel({
           id: panelId,
@@ -142,6 +159,26 @@ function addPanelWithDefaults(api: DockviewApi, panelId: PanelId) {
           component: panelId,
           title,
           position: { direction: "left" },
+        });
+      }
+      break;
+    }
+    case "chat-history": {
+      // Right group — group with chat if available
+      const chat = api.getPanel("chat");
+      if (chat) {
+        api.addPanel({
+          id: panelId,
+          component: panelId,
+          title,
+          position: { referencePanel: "chat", direction: "within" },
+        });
+      } else {
+        api.addPanel({
+          id: panelId,
+          component: panelId,
+          title,
+          position: { direction: "right" },
         });
       }
       break;

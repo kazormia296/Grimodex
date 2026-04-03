@@ -26,7 +26,6 @@ import { useTreeStore } from "./treeStore";
 import { TreeNodeItem, NodeIcon } from "./TreeNodeItem";
 import { StatusDot } from "./StatusDot";
 import { SynopsisArea } from "./SynopsisArea";
-import { CodexQuickSection } from "./CodexQuickSection";
 import type { TreeNodeData, NodeType } from "./treeStore";
 import { isValidParent } from "./treeStore";
 import type { DropIndicator } from "./TreeNodeItem";
@@ -798,9 +797,6 @@ export function ScenesPanel() {
         {activeNode?.nodeType === "scene" && (
           <SynopsisArea nodeId={activeSceneId} />
         )}
-
-        {/* Codex Quick section */}
-        <CodexQuickSection />
       </div>
 
       {/* Drag overlay — portaled to body to escape dockview's transform context

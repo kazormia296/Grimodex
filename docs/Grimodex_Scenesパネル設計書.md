@@ -421,24 +421,26 @@ Editorでアクティブなタブが変わると、Scenesパネルが連動す�
 
 ---
 
-## Codex Quickセクション
+## Codex Quickパネル
+
+> **注:** Codex QuickはScenesパネルへの内蔵セクションから独立したdockviewパネルに変更された。
+> 詳細仕様は `Grimodex_CodexQuickパネル設計書.md` を参照。
 
 ### 概要
 
-Scenesパネルの下部に折りたたみ可能なセクションとして内蔵。現在Editorでアクティブなシーンに関連するCodexエントリを自動表示する。
+Codex QuickはScenesパネルとは独立した専用パネル。デフォルト配置はScenesパネルの下にdock（Left Dock内で垂直分割）。現在Editorでアクティブなシーンに関連するCodexエントリを自動表示する。
 
 ```
 ┌─────────────────────────────────────┐
-│ ▼ Scenes tree                       │
-│   ...                               │
-│                                     │
+│ Scenes                          … ⋮ │  ← Scenesパネル（上）
+│   ▶ Chapter 1                       │
+│     • Scene 1                       │
+│     • Scene 2                       │
 ├─────────────────────────────────────┤
-│ ▼ Codex quick                       │
-│   ● Elara (protagonist)     character│
-│   ● The Obsidian Tower       location│
-│   ● Soulbind Amulet             item│
-│                                     │
-│   [+ Pin codex entry]              │
+│ Codex Quick                         │  ← Codex Quickパネル（下・独立）
+│   ● Elara (protagonist)   character │
+│   ● The Obsidian Tower     location │
+│   ● Soulbind Amulet            item │
 └─────────────────────────────────────┘
 ```
 
@@ -457,7 +459,7 @@ Scenesパネルの下部に折りたたみ可能なセクションとして内�
 | エントリをホバー | ポップオーバーでCodexエントリのプレビュー（名前、カテゴリ、要約の先頭100文字） |
 | [+ Pin codex entry] | コマンドパレット風の検索UIでCodexエントリを選択し、ピン留め |
 | ピン留めエントリの右の × | ピン留め解除 |
-| セクションヘッダーの ▶/▼ | セクション自体の折りたたみ/展開 |
+| `Ctrl+Alt+Q` | Codex Quickパネルにフォーカス/トグル |
 
 ### データフロー
 
@@ -466,14 +468,10 @@ Editor active scene changed
   → シーンの本文テキストを取得
   → Codexエントリ名のマッチング（FTS5 or 正規表現）
   → マッチ結果 + 手動ピン留めを結合
-  → Codex Quickセクションを更新
+  → Codex Quickパネルを更新
 ```
 
 このマッチングはエディタ内のCodexハイライト（Pure Decorations）と同じデータソースを使う。二重計算を避けるため、Zustandストアの `sceneCodexMatches` を共有する。
-
-### 折りたたみ状態の永続化
-
-Codex Quickセクションの折りたたみ状態はレイアウト永続化の一部として保存される。ツリー部分とCodex Quickの間の境界線はリサイズ可能（ドラッグで上下に移動）で、その比率も保存する。
 
 ---
 

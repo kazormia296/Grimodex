@@ -55,7 +55,8 @@ BottomドックはLeft/Rightドックの間にのみ展開する（Activity Bar�
 
 | パネル | デフォルト位置 | 初期状態 | 説明 |
 |--------|-------------|---------|------|
-| Scenes | Left Dock | 表示 | Part/Chapter/Sceneツリー + Folder/Note + Codex Quickセクション |
+| Scenes | Left Dock | 表示 | Part/Chapter/Sceneツリー + Folder/Note |
+| Codex Quick | Left Dock（Scenesの下） | 表示 | 現在アクティブなシーンに関連するCodexエントリを自動表示。手動ピン留め対応 |
 | Codex | Left Dock | 非表示 | 世界設定DB（Character/Location/Item/Lore）。リスト+詳細のマスター/ディテールUI |
 | Editor | Center | 表示 | TipTapエディタ。閉じ不可（最低1タブ） |
 | Chat | Right Dock | 表示 | BYOK AIチャット。シーンコンテキスト自動注入、Codex/Snippet抽出、エディタ挿入 |
@@ -350,6 +351,7 @@ OS AppDataディレクトリ内の `global-settings.json` に保存する。レ�
 | ショートカット | 動作 |
 |-------------|------|
 | `Ctrl+Alt+S` | Scenesパネルにフォーカス/トグル |
+| `Ctrl+Alt+Q` | Codex Quickパネルにフォーカス/トグル |
 | `Ctrl+Alt+C` | Chatパネルにフォーカス/トグル |
 | `Ctrl+Alt+H` | Chat Historyパネルにフォーカス/トグル |
 | `Ctrl+Alt+X` | Codexパネルにフォーカス/トグル |
