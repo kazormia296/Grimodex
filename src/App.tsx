@@ -185,20 +185,20 @@ function EditorScreen() {
           <ResizablePanel
             panelRef={leftPanelRef}
             collapsible
-            defaultSize={18}
-            minSize={12}
-            maxSize={40}
-            collapsedSize={0}
+            defaultSize="18%"
+            minSize="12%"
+            maxSize="40%"
+            collapsedSize="0%"
           >
             <LeftDock />
           </ResizablePanel>
           <ResizableHandle />
 
           {/* Center + Bottom Dock */}
-          <ResizablePanel defaultSize={52} minSize={30}>
+          <ResizablePanel defaultSize="52%" minSize="30%">
             <ResizablePanelGroup orientation="vertical">
               {/* Editor */}
-              <ResizablePanel defaultSize={75} minSize={40}>
+              <ResizablePanel defaultSize="75%" minSize="40%">
                 <SceneEditor />
               </ResizablePanel>
 
@@ -208,9 +208,9 @@ function EditorScreen() {
               <ResizablePanel
                 panelRef={bottomPanelRef}
                 collapsible
-                defaultSize={25}
-                minSize={15}
-                collapsedSize={0}
+                defaultSize="25%"
+                minSize="15%"
+                collapsedSize="0%"
               >
                 <BottomDock />
               </ResizablePanel>
@@ -222,10 +222,10 @@ function EditorScreen() {
           <ResizablePanel
             panelRef={rightPanelRef}
             collapsible
-            defaultSize={30}
-            minSize={18}
-            maxSize={50}
-            collapsedSize={0}
+            defaultSize="30%"
+            minSize="18%"
+            maxSize="50%"
+            collapsedSize="0%"
           >
             <RightDock />
           </ResizablePanel>
