@@ -29,6 +29,8 @@ import { FindReplaceBar } from "@/features/editor/FindReplaceBar";
 import { useTabStore } from "@/features/editor/tabStore";
 import { useSceneContentStore } from "@/features/editor/sceneContentStore";
 import { shouldAutoDraftTransition } from "@/features/editor/autoStatusTransition";
+import { shouldPromptSynopsis } from "@/features/editor/synopsisSuggestion";
+import { toast } from "sonner";
 import type { SceneStatus } from "@/features/tree/treeStore";
 import type { GroupIndex } from "@/features/editor/tabStore";
 
@@ -86,6 +88,23 @@ export function EditorPane({ sceneId, groupIndex, onFocus }: EditorPaneProps) {
 
   // Auto-draft: true when scene was empty at load time
   const wasEmptyRef = useRef(false);
+
+  // Synopsis suggestion: track previous status to detect transitions
+  const prevStatusRef = useRef<SceneStatus | null>(activeStatus);
+  useEffect(() => {
+    const prev = prevStatusRef.current;
+    prevStatusRef.current = activeStatus;
+    const synopsis = useTreeStore
+      .getState()
+      .nodes.find((n) => n.id === sceneId)?.synopsis;
+    if (shouldPromptSynopsis(prev, activeStatus, synopsis)) {
+      toast("あらすじを追加しましょう", {
+        description:
+          "シーンが完成段階になりました。あらすじを記入すると概要ビューで役立ちます。",
+        duration: 6000,
+      });
+    }
+  }, [activeStatus, sceneId]);
 
   const coreSave = useCallback(async () => {
     const id = saveSceneIdRef.current;
