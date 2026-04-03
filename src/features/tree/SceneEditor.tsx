@@ -29,6 +29,7 @@ import type { ToolbarSlot } from "@/features/editor/Toolbar";
 import { VerticalPreview } from "@/features/editor/VerticalPreview";
 import { EditorContextMenu } from "@/features/editor/EditorContextMenu";
 import { FindReplaceBar } from "@/features/editor/FindReplaceBar";
+import { RevisionHistoryModal } from "@/features/revision/RevisionHistoryModal";
 import type { SceneStatus } from "@/features/tree/treeStore";
 
 const STATUS_LABELS: Record<SceneStatus, string> = {
@@ -204,6 +205,14 @@ export function SceneEditor() {
         e.preventDefault();
         setFindOpen(true);
         setFindShowReplace(true);
+      } else if (e.ctrlKey && e.shiftKey && e.key === "H") {
+        e.preventDefault();
+        const id = saveSceneIdRef.current;
+        const ed = editorRef.current;
+        if (id && ed) {
+          const content = JSON.stringify(ed.getJSON());
+          useRevisionStore.getState().openHistory("scene", id, content);
+        }
       }
     }
     window.addEventListener("keydown", onKeyDown);
@@ -358,9 +367,25 @@ export function SceneEditor() {
           ) : (
             <span className="opacity-40">保存済</span>
           )}
+          <button
+            type="button"
+            title="リビジョン履歴 (Ctrl+Shift+H)"
+            onClick={() => {
+              const id = saveSceneIdRef.current;
+              const ed = editorRef.current;
+              if (id && ed) {
+                const content = JSON.stringify(ed.getJSON());
+                useRevisionStore.getState().openHistory("scene", id, content);
+              }
+            }}
+            className="hover:text-foreground"
+          >
+            履歴
+          </button>
           <VerticalPreview />
         </div>
       </div>
+      <RevisionHistoryModal />
     </div>
   );
 }

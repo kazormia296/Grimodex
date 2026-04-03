@@ -1,4 +1,5 @@
 import { encodingForModel } from "js-tiktoken";
+import type { TreeNodeData } from "@/features/tree/treeStore";
 
 export interface SceneContext {
   id: string;
@@ -25,6 +26,7 @@ export interface CodexContext {
 export interface BuildSystemPromptInput {
   scene: SceneContext;
   project?: ProjectContext;
+  storySoFar?: string;
   codexEntries?: CodexContext[];
   pinnedCodexEntries?: CodexContext[];
 }
@@ -59,6 +61,10 @@ export function buildSystemPrompt(input: BuildSystemPromptInput): string {
     parts.push(`\n## プロジェクト情報\n${info.join("\n")}`);
   }
 
+  if (input.storySoFar) {
+    parts.push(`\n${input.storySoFar}`);
+  }
+
   parts.push(`\n## 現在のシーン\n` + `タイトル: ${input.scene.title}`);
 
   if (input.scene.content) {
@@ -89,4 +95,51 @@ export function buildSystemPrompt(input: BuildSystemPromptInput): string {
 export function countTokens(text: string): number {
   if (!text) return 0;
   return encoder.encode(text).length;
+}
+
+export function buildStorySoFar(
+  currentSceneId: string,
+  allNodes: TreeNodeData[],
+  tokenBudget: number,
+): string {
+  // Find the current scene's sortOrder
+  const currentScene = allNodes.find((n) => n.id === currentSceneId);
+  if (!currentScene) return "";
+
+  // Find all scenes that come before the current scene in sortOrder
+  const precedingScenes = allNodes
+    .filter(
+      (n) =>
+        n.nodeType === "scene" &&
+        n.id !== currentSceneId &&
+        n.sortOrder < currentScene.sortOrder &&
+        n.synopsis != null &&
+        n.synopsis.trim() !== "",
+    )
+    .sort((a, b) => a.sortOrder - b.sortOrder);
+
+  if (precedingScenes.length === 0) return "";
+
+  // Build entries (oldest first)
+  const entries = precedingScenes.map((scene) => ({
+    title: scene.title,
+    synopsis: scene.synopsis as string,
+  }));
+
+  // Trim oldest scenes first if token budget exceeded
+  const header = "## これまでの物語\n\n";
+  let kept = [...entries];
+  while (kept.length > 0) {
+    const body = kept
+      .map((e) => `${e.title}\n${e.synopsis}`)
+      .join("\n\n");
+    const full = header + body;
+    if (countTokens(full) <= tokenBudget) {
+      return full;
+    }
+    // Remove the oldest entry
+    kept = kept.slice(1);
+  }
+
+  return "";
 }

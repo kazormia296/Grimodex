@@ -1,12 +1,13 @@
 import { create } from "zustand";
 import { toast } from "sonner";
 import * as chatApi from "./chatApi";
-import { buildSystemPrompt, countTokens } from "./contextBuilder";
+import { buildSystemPrompt, buildStorySoFar, countTokens } from "./contextBuilder";
 import type {
   SceneContext,
   ProjectContext,
   CodexContext,
 } from "./contextBuilder";
+import { useTreeStore } from "@/features/tree/treeStore";
 import { loadSceneContent } from "@/features/tree/api";
 import { getNode } from "@/features/tree/api";
 import { getProject } from "@/features/project/api";
@@ -232,9 +233,15 @@ export const useChatStore = create<ChatState>()((set, get) => ({
           }));
         }
 
+        // Layer 2: storySoFar — preceding scene synopses (~10% of 200k context ≈ 20,000 tok)
+        const allNodes = useTreeStore.getState().nodes;
+        const storySoFarBudget = 20_000;
+        const storySoFar = buildStorySoFar(sceneCtx.id, allNodes, storySoFarBudget);
+
         const systemPrompt = buildSystemPrompt({
           scene: sceneCtx,
           project: projectCtx ?? undefined,
+          storySoFar: storySoFar || undefined,
           codexEntries,
           pinnedCodexEntries,
         });
