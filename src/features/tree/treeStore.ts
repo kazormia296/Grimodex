@@ -71,6 +71,7 @@ const DEFAULT_PROJECT_ID = "default-project";
 const DEFAULT_CHAPTER_ID = "default-chapter";
 
 export type ViewMode = "tree" | "outline";
+export type SortMode = "manual" | "title" | "wordcount" | "status";
 
 interface TreeState {
   nodes: TreeNodeData[];
@@ -82,11 +83,14 @@ interface TreeState {
   expandedIds: string[];
   filterQuery: string;
   viewMode: ViewMode;
+  sortMode: SortMode;
+  statusFilter: SceneStatus | null; // null = show all
 
   // Display settings
   charCounts: Record<string, number>;
   showWordCounts: boolean;
   showStatusDots: boolean;
+  autoRevealActiveScene: boolean;
 
   // Codex Quick pinned entries
   pinnedCodexIds: string[];
@@ -124,11 +128,14 @@ interface TreeState {
   collapseAll: () => void;
   setFilterQuery: (query: string) => void;
   setViewMode: (mode: ViewMode) => void;
+  setSortMode: (mode: SortMode) => void;
+  setStatusFilter: (status: SceneStatus | null) => void;
 
   // Display settings
   setCharCount: (id: string, count: number) => void;
   setShowWordCounts: (v: boolean) => void;
   setShowStatusDots: (v: boolean) => void;
+  setAutoRevealActiveScene: (v: boolean) => void;
 
   // Codex Quick
   togglePinnedCodex: (id: string) => void;
@@ -175,9 +182,12 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
   expandedIds: [],
   filterQuery: "",
   viewMode: "tree",
+  sortMode: "manual",
+  statusFilter: null,
   charCounts: {},
   showWordCounts: true,
   showStatusDots: true,
+  autoRevealActiveScene: true,
   pinnedCodexIds: [],
 
   async loadTree(projectId = DEFAULT_PROJECT_ID) {
@@ -426,6 +436,14 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
     set({ viewMode: mode });
   },
 
+  setSortMode(mode) {
+    set({ sortMode: mode });
+  },
+
+  setStatusFilter(status) {
+    set({ statusFilter: status });
+  },
+
   async moveNode(id, newParentId, afterId) {
     const { nodes } = get();
     const node = nodes.find((n) => n.id === id);
@@ -481,6 +499,10 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
 
   setShowStatusDots(v) {
     set({ showStatusDots: v });
+  },
+
+  setAutoRevealActiveScene(v) {
+    set({ autoRevealActiveScene: v });
   },
 
   togglePinnedCodex(id) {

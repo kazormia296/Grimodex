@@ -46,20 +46,30 @@ function flattenVisible(
   nodeMap: Record<string, TreeNodeData>,
   expandedIds: string[],
   query: string,
+  statusFilter?: string | null,
 ): TreeNodeData[] {
   const ids = childMap[parentId ?? "root"] ?? [];
   const result: TreeNodeData[] = [];
   for (const id of ids) {
     const node = nodeMap[id];
     if (!node) continue;
-    if (!isNodeVisible(node, childMap, nodeMap, query)) continue;
+    if (!isNodeVisible(node, childMap, nodeMap, query, statusFilter)) continue;
     result.push(node);
     const isContainer = ["part", "chapter", "folder"].includes(node.nodeType);
     const expanded =
       expandedIds.includes(id) ||
-      (!!query && isNodeVisible(node, childMap, nodeMap, query));
+      (!!query && isNodeVisible(node, childMap, nodeMap, query, statusFilter));
     if (isContainer && expanded) {
-      result.push(...flattenVisible(id, childMap, nodeMap, expandedIds, query));
+      result.push(
+        ...flattenVisible(
+          id,
+          childMap,
+          nodeMap,
+          expandedIds,
+          query,
+          statusFilter,
+        ),
+      );
     }
   }
   return result;
@@ -84,7 +94,16 @@ function isNodeVisible(
   childMap: Record<string, string[]>,
   nodeMap: Record<string, TreeNodeData>,
   query: string,
+  statusFilter?: string | null,
 ): boolean {
+  // Status filter: hide scene nodes whose status doesn't match
+  if (
+    statusFilter &&
+    node.nodeType === "scene" &&
+    node.status !== statusFilter
+  ) {
+    return false;
+  }
   if (!query) return true;
   if (node.title.toLowerCase().includes(query)) return true;
   return hasMatchingDescendant(node.id, childMap, nodeMap, query);
@@ -100,6 +119,7 @@ interface TreeRendererProps {
   selectedIds: string[];
   expandedIds: string[];
   filterQuery: string;
+  statusFilter?: string | null;
   viewMode: string;
   charCounts: Record<string, number>;
   showWordCounts: boolean;
@@ -118,6 +138,7 @@ function TreeRenderer({
   selectedIds,
   expandedIds,
   filterQuery,
+  statusFilter,
   viewMode,
   charCounts,
   showWordCounts,
@@ -134,7 +155,13 @@ function TreeRenderer({
       {ids.map((id) => {
         const node = nodeMap[id];
         if (!node) return null;
-        const visible = isNodeVisible(node, childMap, nodeMap, query);
+        const visible = isNodeVisible(
+          node,
+          childMap,
+          nodeMap,
+          query,
+          statusFilter,
+        );
         const isExpanded = expandedIds.includes(id) || (!!query && visible);
         const isLeaf = node.nodeType === "scene" || node.nodeType === "note";
         const count = isLeaf ? (charCounts[id] ?? 0) : (nodeTotals[id] ?? 0);
@@ -175,6 +202,7 @@ function TreeRenderer({
               selectedIds={selectedIds}
               expandedIds={expandedIds}
               filterQuery={filterQuery}
+              statusFilter={statusFilter}
               viewMode={viewMode}
               charCounts={charCounts}
               showWordCounts={showWordCounts}
@@ -194,22 +222,55 @@ function TreeRenderer({
 interface PanelMenuProps {
   viewMode: string;
   setViewMode: (m: "tree" | "outline") => void;
+  sortMode: string;
+  setSortMode: (m: "manual" | "title" | "wordcount" | "status") => void;
+  statusFilter: string | null;
+  setStatusFilter: (
+    s: "outline" | "draft" | "complete" | "revision" | "final" | null,
+  ) => void;
   showWordCounts: boolean;
   setShowWordCounts: (v: boolean) => void;
   showStatusDots: boolean;
   setShowStatusDots: (v: boolean) => void;
+  autoRevealActiveScene: boolean;
+  setAutoRevealActiveScene: (v: boolean) => void;
   onExpandAll: () => void;
   onCollapseAll: () => void;
   onClose: () => void;
 }
 
+const SORT_LABELS: Record<string, string> = {
+  manual: "手動",
+  title: "タイトル順",
+  wordcount: "文字数順",
+  status: "ステータス順",
+};
+
+const STATUS_FILTER_OPTIONS: Array<{
+  value: "outline" | "draft" | "complete" | "revision" | "final" | null;
+  label: string;
+}> = [
+  { value: null, label: "すべて表示" },
+  { value: "outline", label: "Outline" },
+  { value: "draft", label: "Draft" },
+  { value: "complete", label: "Complete" },
+  { value: "revision", label: "Revision" },
+  { value: "final", label: "Final" },
+];
+
 function PanelMenu({
   viewMode,
   setViewMode,
+  sortMode,
+  setSortMode,
+  statusFilter,
+  setStatusFilter,
   showWordCounts,
   setShowWordCounts,
   showStatusDots,
   setShowStatusDots,
+  autoRevealActiveScene,
+  setAutoRevealActiveScene,
   onExpandAll,
   onCollapseAll,
   onClose,
@@ -223,34 +284,30 @@ function PanelMenu({
     return () => document.removeEventListener("mousedown", close);
   }, [onClose]);
 
-  function toggle<T>(
-    _label: string,
+  function radioItem<T extends string | null>(
     value: T,
-    options: T[],
+    current: string | null,
+    label: string,
     onSelect: (v: T) => void,
   ) {
-    return options.map((opt) => (
+    return (
       <button
-        key={String(opt)}
+        key={String(value)}
         type="button"
         onClick={() => {
-          onSelect(opt);
+          onSelect(value);
           onClose();
         }}
         className="flex w-full items-center gap-2 px-3 py-1.5 text-xs hover:bg-accent"
       >
-        {value === opt ? (
+        {current === value ? (
           <Check className="h-3 w-3" />
         ) : (
           <span className="w-3" />
         )}
-        {String(opt) === "tree"
-          ? "Tree"
-          : String(opt) === "outline"
-            ? "Outline"
-            : String(opt)}
+        {label}
       </button>
-    ));
+    );
   }
 
   function checkItem(
@@ -293,11 +350,26 @@ function PanelMenu({
       <div className="px-3 py-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
         View
       </div>
-      {toggle(
-        "view",
+      {radioItem("tree", viewMode, "Tree", setViewMode as (v: string) => void)}
+      {radioItem(
+        "outline",
         viewMode,
-        ["tree", "outline"],
+        "Outline",
         setViewMode as (v: string) => void,
+      )}
+      <div className="my-1 border-t border-border" />
+      <div className="px-3 py-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+        Sort by
+      </div>
+      {(["manual", "title", "wordcount", "status"] as const).map((m) =>
+        radioItem(m, sortMode, SORT_LABELS[m], setSortMode),
+      )}
+      <div className="my-1 border-t border-border" />
+      <div className="px-3 py-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+        Filter by status
+      </div>
+      {STATUS_FILTER_OPTIONS.map(({ value, label }) =>
+        radioItem(value, statusFilter, label, setStatusFilter),
       )}
       <div className="my-1 border-t border-border" />
       <div className="px-3 py-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
@@ -305,6 +377,11 @@ function PanelMenu({
       </div>
       {checkItem("文字数", showWordCounts, setShowWordCounts)}
       {checkItem("ステータスドット", showStatusDots, setShowStatusDots)}
+      {checkItem(
+        "アクティブを自動表示",
+        autoRevealActiveScene,
+        setAutoRevealActiveScene,
+      )}
       <div className="my-1 border-t border-border" />
       {menuItem("全展開", onExpandAll)}
       {menuItem("全折りたたみ", onCollapseAll)}
@@ -331,17 +408,23 @@ export function ScenesPanel() {
     expandedIds,
     filterQuery,
     viewMode,
+    sortMode,
+    statusFilter,
     charCounts,
     showWordCounts,
     showStatusDots,
+    autoRevealActiveScene,
     loadTree,
     createNode,
     expandAll,
     collapseAll,
     setFilterQuery,
     setViewMode,
+    setSortMode,
+    setStatusFilter,
     setShowWordCounts,
     setShowStatusDots,
+    setAutoRevealActiveScene,
     toggleExpand,
     setActiveScene,
     moveNode,
@@ -362,18 +445,54 @@ export function ScenesPanel() {
     loadTree(DEFAULT_PROJECT_ID);
   }, [loadTree]);
 
+  const STATUS_SORT_ORDER: Record<string, number> = {
+    outline: 0,
+    draft: 1,
+    complete: 2,
+    revision: 3,
+    final: 4,
+  };
+
   const { childMap, nodeMap } = useMemo(() => {
     const nm: Record<string, TreeNodeData> = {};
     const cm: Record<string, string[]> = { root: [] };
     for (const n of nodes) nm[n.id] = n;
-    const sorted = [...nodes].sort((a, b) => a.sortOrder - b.sortOrder);
+
+    // Base order: always sort by sortOrder first
+    let sorted = [...nodes].sort((a, b) => a.sortOrder - b.sortOrder);
+
+    // Apply sortMode to leaf nodes within each parent
+    if (sortMode !== "manual") {
+      sorted = sorted.sort((a, b) => {
+        // Keep containers in manual order; only sort leaves
+        const aIsLeaf = a.nodeType === "scene" || a.nodeType === "note";
+        const bIsLeaf = b.nodeType === "scene" || b.nodeType === "note";
+        if (!aIsLeaf || !bIsLeaf || a.parentId !== b.parentId) {
+          return a.sortOrder - b.sortOrder;
+        }
+        if (sortMode === "title") {
+          return a.title.localeCompare(b.title, "ja");
+        }
+        if (sortMode === "wordcount") {
+          return (charCounts[b.id] ?? 0) - (charCounts[a.id] ?? 0);
+        }
+        if (sortMode === "status") {
+          return (
+            (STATUS_SORT_ORDER[a.status ?? "outline"] ?? 0) -
+            (STATUS_SORT_ORDER[b.status ?? "outline"] ?? 0)
+          );
+        }
+        return 0;
+      });
+    }
+
     for (const n of sorted) {
       const key = n.parentId ?? "root";
       if (!cm[key]) cm[key] = [];
       cm[key].push(n.id);
     }
     return { childMap: cm, nodeMap: nm };
-  }, [nodes]);
+  }, [nodes, sortMode, charCounts]);
 
   // Compute container word count totals (sum of descendant scenes/notes)
   const nodeTotals = useMemo(() => {
@@ -404,9 +523,21 @@ export function ScenesPanel() {
         nodeMap,
         expandedIds,
         filterQuery.toLowerCase(),
+        statusFilter,
       ),
-    [childMap, nodeMap, expandedIds, filterQuery],
+    [childMap, nodeMap, expandedIds, filterQuery, statusFilter],
   );
+
+  // Auto-reveal active scene: scroll it into view when activeSceneId changes
+  useEffect(() => {
+    if (!autoRevealActiveScene || !treeRef.current) return;
+    const el = treeRef.current.querySelector(
+      `[data-node-id="${activeSceneId}"]`,
+    );
+    if (el) {
+      el.scrollIntoView({ block: "nearest", behavior: "smooth" });
+    }
+  }, [activeSceneId, autoRevealActiveScene]);
 
   const handleToggleAll = useCallback(() => {
     if (allExpandedRef.current) collapseAll();
@@ -785,10 +916,16 @@ export function ScenesPanel() {
                 <PanelMenu
                   viewMode={viewMode}
                   setViewMode={setViewMode}
+                  sortMode={sortMode}
+                  setSortMode={setSortMode}
+                  statusFilter={statusFilter}
+                  setStatusFilter={setStatusFilter}
                   showWordCounts={showWordCounts}
                   setShowWordCounts={setShowWordCounts}
                   showStatusDots={showStatusDots}
                   setShowStatusDots={setShowStatusDots}
+                  autoRevealActiveScene={autoRevealActiveScene}
+                  setAutoRevealActiveScene={setAutoRevealActiveScene}
                   onExpandAll={expandAll}
                   onCollapseAll={collapseAll}
                   onClose={() => setShowPanelMenu(false)}
@@ -830,6 +967,7 @@ export function ScenesPanel() {
               selectedIds={selectedIds}
               expandedIds={expandedIds}
               filterQuery={filterQuery}
+              statusFilter={statusFilter}
               viewMode={viewMode}
               charCounts={charCounts}
               showWordCounts={showWordCounts}
