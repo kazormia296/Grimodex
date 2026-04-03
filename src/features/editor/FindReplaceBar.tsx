@@ -52,9 +52,11 @@ export function FindReplaceBar({ editor, open, showReplace, onClose }: FindRepla
   const storage = editor.storage.findReplace as FindReplaceStorage;
   const matchCount = storage?.matches?.length ?? 0;
   const currentIdx = (storage?.currentIndex ?? 0) + 1;
+  const regexError = storage?.regexError ?? false;
 
-  const matchLabel =
-    matchCount === 0
+  const matchLabel = regexError
+    ? "無効な正規表現"
+    : matchCount === 0
       ? query ? "一致なし" : ""
       : `${currentIdx} / ${matchCount}`;
 
@@ -82,7 +84,7 @@ export function FindReplaceBar({ editor, open, showReplace, onClose }: FindRepla
             onChange={(e) => setQuery(e.target.value)}
             onKeyDown={handleFindKeyDown}
             placeholder="検索…"
-            className="w-full rounded border border-border bg-background px-2 py-0.5 pr-16 text-xs focus:outline-none focus:ring-1 focus:ring-primary"
+            className={`w-full rounded border bg-background px-2 py-0.5 pr-20 text-xs focus:outline-none focus:ring-1 focus:ring-primary ${regexError ? "border-destructive text-destructive" : "border-border"}`}
           />
           <span className="absolute right-2 text-xs text-muted-foreground whitespace-nowrap">
             {matchLabel}

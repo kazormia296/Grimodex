@@ -8,6 +8,8 @@ export interface FindReplaceStorage {
   useRegex: boolean;
   currentIndex: number;
   matches: Array<{ from: number; to: number }>;
+  /** true when useRegex=true and the pattern is syntactically invalid */
+  regexError: boolean;
 }
 
 const pluginKey = new PluginKey<DecorationSet>("findReplace");
@@ -17,8 +19,8 @@ function buildMatches(
   query: string,
   caseSensitive: boolean,
   useRegex: boolean,
-): Array<{ from: number; to: number }> {
-  if (!query) return [];
+): { matches: Array<{ from: number; to: number }>; regexError: boolean } {
+  if (!query) return { matches: [], regexError: false };
 
   const matches: Array<{ from: number; to: number }> = [];
 
@@ -36,10 +38,11 @@ function buildMatches(
       }
     });
   } catch {
-    // Invalid regex — return no matches
+    // Invalid regex pattern
+    return { matches: [], regexError: useRegex };
   }
 
-  return matches;
+  return { matches, regexError: false };
 }
 
 /**
@@ -56,6 +59,7 @@ export const FindReplaceExtension = Extension.create<object, FindReplaceStorage>
       useRegex: false,
       currentIndex: 0,
       matches: [],
+      regexError: false,
     };
   },
 
@@ -66,14 +70,14 @@ export const FindReplaceExtension = Extension.create<object, FindReplaceStorage>
         ({ editor, dispatch, tr }) => {
           editor.storage.findReplace.query = query;
           editor.storage.findReplace.currentIndex = 0;
-          const matches = buildMatches(
+          const { matches, regexError } = buildMatches(
             tr.doc,
             query,
             editor.storage.findReplace.caseSensitive,
             editor.storage.findReplace.useRegex,
           );
           editor.storage.findReplace.matches = matches;
-          // Trigger decoration update by dispatching a meta transaction
+          editor.storage.findReplace.regexError = regexError;
           if (dispatch) {
             tr.setMeta(pluginKey, { matches, currentIndex: 0 });
             dispatch(tr);
@@ -88,13 +92,14 @@ export const FindReplaceExtension = Extension.create<object, FindReplaceStorage>
             editor.storage.findReplace.caseSensitive = opts.caseSensitive;
           if (opts.useRegex !== undefined)
             editor.storage.findReplace.useRegex = opts.useRegex;
-          const matches = buildMatches(
+          const { matches, regexError } = buildMatches(
             tr.doc,
             editor.storage.findReplace.query,
             editor.storage.findReplace.caseSensitive,
             editor.storage.findReplace.useRegex,
           );
           editor.storage.findReplace.matches = matches;
+          editor.storage.findReplace.regexError = regexError;
           editor.storage.findReplace.currentIndex = 0;
           if (dispatch) {
             tr.setMeta(pluginKey, { matches, currentIndex: 0 });
@@ -146,7 +151,7 @@ export const FindReplaceExtension = Extension.create<object, FindReplaceStorage>
           if (dispatch) {
             tr.replaceWith(match.from, match.to, editor.schema.text(replacement));
             // Rebuild matches after replacement
-            const newMatches = buildMatches(
+            const { matches: newMatches, regexError } = buildMatches(
               tr.doc,
               storage.query,
               storage.caseSensitive,
@@ -154,6 +159,7 @@ export const FindReplaceExtension = Extension.create<object, FindReplaceStorage>
             );
             const newIndex = Math.min(storage.currentIndex, Math.max(newMatches.length - 1, 0));
             storage.matches = newMatches;
+            storage.regexError = regexError;
             storage.currentIndex = newIndex;
             tr.setMeta(pluginKey, { matches: newMatches, currentIndex: newIndex });
             dispatch(tr);
@@ -186,6 +192,7 @@ export const FindReplaceExtension = Extension.create<object, FindReplaceStorage>
           editor.storage.findReplace.query = "";
           editor.storage.findReplace.matches = [];
           editor.storage.findReplace.currentIndex = 0;
+          editor.storage.findReplace.regexError = false;
           if (dispatch) {
             tr.setMeta(pluginKey, { matches: [], currentIndex: 0 });
             dispatch(tr);

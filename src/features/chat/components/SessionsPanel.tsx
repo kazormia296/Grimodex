@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { X, MoreVertical, Plus } from "lucide-react";
+import { toast } from "sonner";
 import { useChatStore } from "@/features/chat/chatStore";
 import * as chatApi from "@/features/chat/chatApi";
 import type { ChatSession } from "@/features/chat/chatTypes";
@@ -169,8 +170,13 @@ export function SessionsPanel({
 
   const handleRename = useCallback(
     async (sessionId: string, newTitle: string) => {
-      await chatApi.updateSessionTitle(sessionId, newTitle);
-      await loadSessions(activeSceneId || undefined);
+      try {
+        await chatApi.updateSessionTitle(sessionId, newTitle);
+        await loadSessions(activeSceneId || undefined);
+      } catch (e) {
+        console.error("[SessionsPanel] rename failed:", e);
+        toast.error("名前の変更に失敗しました");
+      }
     },
     [activeSceneId, loadSessions],
   );
@@ -181,16 +187,26 @@ export function SessionsPanel({
         "このセッションを削除しますか？メッセージもすべて削除されます。",
       );
       if (!confirmed) return;
-      await deleteSession(sessionId);
-      await loadSessions(activeSceneId || undefined);
+      try {
+        await deleteSession(sessionId);
+        await loadSessions(activeSceneId || undefined);
+      } catch (e) {
+        console.error("[SessionsPanel] delete failed:", e);
+        toast.error("セッションの削除に失敗しました");
+      }
     },
     [activeSceneId, deleteSession, loadSessions],
   );
 
   const handleCreate = useCallback(async () => {
-    await createNewSession("default-project", "New session", activeSceneId || undefined);
-    await loadSessions(activeSceneId || undefined);
-    onClose();
+    try {
+      await createNewSession("default-project", "New session", activeSceneId || undefined);
+      await loadSessions(activeSceneId || undefined);
+      onClose();
+    } catch (e) {
+      console.error("[SessionsPanel] create failed:", e);
+      toast.error("セッションの作成に失敗しました");
+    }
   }, [activeSceneId, createNewSession, loadSessions, onClose]);
 
   // Close on click outside

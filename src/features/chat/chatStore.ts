@@ -8,13 +8,13 @@ import * as chatApi from "./chatApi";
 
 function classifyError(e: unknown): "auth" | "rate_limit" | "network" | "unknown" {
   const msg = e instanceof Error ? e.message : String(e);
-  if (/401|unauthorized|authentication|api.key|invalid.key/i.test(msg)) return "auth";
+  if (/401|unauthorized|authentication|api\.key|invalid\.key/i.test(msg)) return "auth";
   if (/429|rate.?limit|too.?many.?request/i.test(msg)) return "rate_limit";
   if (/network|connect|timeout|fetch|ECONNREFUSED/i.test(msg)) return "network";
   return "unknown";
 }
 
-async function withRetry<T>(
+async function withNetworkRetry<T>(
   fn: () => Promise<T>,
   maxRetries = 3,
   baseDelayMs = 1000,
@@ -24,6 +24,9 @@ async function withRetry<T>(
     try {
       return await fn();
     } catch (e) {
+      // Only retry transient network errors
+      const kind = classifyError(e);
+      if (kind !== "network") throw e;
       attempt++;
       if (attempt >= maxRetries) throw e;
       const delay = baseDelayMs * Math.pow(2, attempt - 1);
@@ -290,7 +293,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
         messagesForApi.unshift(systemMsg);
       }
 
-      await withRetry(
+      await withNetworkRetry(
         () =>
           chatApi.sendChatMessage(messagesForApi, (chunk: string) => {
             set((s) => {
@@ -302,8 +305,6 @@ export const useChatStore = create<ChatState>()((set, get) => ({
               return { messages: msgs };
             });
           }),
-        // Only retry on network errors — not rate limit or auth
-        1,
       );
 
       if (activeSessionId) {

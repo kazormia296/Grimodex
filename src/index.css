@@ -200,6 +200,25 @@
   outline-offset: -1px;
 }
 
+/* Revision diff display (F-8) */
+.diff-add {
+  background-color: oklch(0.88 0.10 145);
+  border-radius: 2px;
+}
+.dark .diff-add {
+  background-color: oklch(0.30 0.10 145);
+  color: oklch(0.80 0.12 145);
+}
+.diff-remove {
+  text-decoration: line-through;
+  background-color: oklch(0.90 0.08 25);
+  border-radius: 2px;
+}
+.dark .diff-remove {
+  background-color: oklch(0.28 0.08 25);
+  color: oklch(0.75 0.10 25);
+}
+
 /* Find & Replace decorations (C-7) */
 .find-match {
   background-color: oklch(0.90 0.12 85);

@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import { toast } from "sonner";
 import type { EntityType, SnapshotType, RevisionMeta } from "./api";
 
 interface RevisionHistoryState {
@@ -111,7 +112,9 @@ export const useRevisionStore = create<RevisionHistoryState>()((set, get) => ({
       const { getRevision } = await import("./api");
       const rev = await getRevision(id);
       set({ selectedContent: rev?.content ?? null, isLoadingContent: false });
-    } catch {
+    } catch (e) {
+      console.error("[revisionStore] selectRevision failed:", e);
+      toast.error("リビジョンの読み込みに失敗しました");
       set({ isLoadingContent: false });
     }
   },

@@ -1,6 +1,6 @@
 import { db } from "@/db/client";
 import { contentVersions } from "@/db/schema";
-import { eq, and, desc, max, sql, notInArray } from "drizzle-orm";
+import { eq, and, desc, max, sql, inArray } from "drizzle-orm";
 import type { ContentVersion } from "@/db/schema";
 
 export type EntityType = "scene" | "note" | "codex_entry" | "snippet";
@@ -151,13 +151,7 @@ export async function pruneRevisions(
     and(
       eq(contentVersions.entityType, entityType),
       eq(contentVersions.entityId, entityId),
-      // Don't delete snapshot-protected revisions
-      notInArray(
-        contentVersions.id,
-        // In a real app, we'd query project_snapshot_entries here.
-        // For now, we delete only if the ID is in our delete list.
-        deleteIds.filter(() => true), // placeholder
-      ),
+      inArray(contentVersions.id, deleteIds),
     ),
   );
 }

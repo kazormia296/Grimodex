@@ -19,6 +19,7 @@ export function StorySoFarCoverage() {
   const [isGenerating, setIsGenerating] = useState(false);
   const [progress, setProgress] = useState(0);
   const [total, setTotal] = useState(0);
+  const [failedCount, setFailedCount] = useState(0);
 
   const currentScene = nodes.find((n) => n.id === activeSceneId);
   if (!currentScene) return null;
@@ -42,9 +43,11 @@ export function StorySoFarCoverage() {
     const missing = precedingScenes.filter((n) => !n.synopsis?.trim());
     setTotal(missing.length);
     setProgress(0);
+    setFailedCount(0);
     setIsGenerating(true);
 
     let done = 0;
+    let failed = 0;
     for (const scene of missing) {
       try {
         const content = await loadSceneContent(scene.id);
@@ -53,7 +56,8 @@ export function StorySoFarCoverage() {
           await updateSynopsis(scene.id, synopsis.trim());
         }
       } catch {
-        // Continue with next scene on error
+        failed++;
+        setFailedCount(failed);
       }
       done++;
       setProgress(done);
@@ -61,7 +65,12 @@ export function StorySoFarCoverage() {
 
     setIsGenerating(false);
     setOpen(false);
-    toast.success(`${done}件のSynopsisを生成しました`);
+    const succeeded = done - failed;
+    if (failed > 0) {
+      toast.warning(`${succeeded}/${done}件のSynopsisを生成しました（${failed}件失敗）`);
+    } else {
+      toast.success(`${succeeded}件のSynopsisを生成しました`);
+    }
   }, [precedingScenes, updateSynopsis]);
 
   const coverageLabel = `${withSynopsis}/${totalPreceding}`;
@@ -94,7 +103,7 @@ export function StorySoFarCoverage() {
             {isGenerating ? (
               <div>
                 <div className="mb-1 flex justify-between">
-                  <span>生成中… {progress}/{total}</span>
+                  <span>生成中… {progress}/{total}{failedCount > 0 ? ` (${failedCount}件失敗)` : ""}</span>
                 </div>
                 <div className="h-1.5 rounded-full bg-muted overflow-hidden">
                   <div

@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from "react";
 import { useEditor, EditorContent } from "@tiptap/react";
 import { diff_match_patch } from "diff-match-patch";
+import { toast } from "sonner";
 import { useRevisionStore } from "./revisionStore";
 import { createRevision } from "./api";
 import { saveSceneContent } from "@/features/tree/api";
@@ -54,12 +55,10 @@ function buildDiffHtml(oldText: string, newText: string): string {
         .replace(/>/g, "&gt;")
         .replace(/\n/g, "<br/>");
       if (op === 1) {
-        // insertion
-        return `<span style="background:#16a34a33;color:#86efac;">${escaped}</span>`;
+        return `<span class="diff-add">${escaped}</span>`;
       }
       if (op === -1) {
-        // deletion
-        return `<span style="text-decoration:line-through;background:#dc262633;color:#fca5a5;">${escaped}</span>`;
+        return `<span class="diff-remove">${escaped}</span>`;
       }
       return escaped;
     })
@@ -280,15 +279,18 @@ export function RevisionHistoryModal() {
 
       // 4. Save the restored content as markdown (trigger Tauri write)
       if (entityType === "scene") {
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const md = (mainEditor.storage as any).markdown.getMarkdown() as string;
+        const getMarkdown = (mainEditor.storage as { markdown?: { getMarkdown?: () => string } })
+          ?.markdown?.getMarkdown;
+        const md = typeof getMarkdown === "function" ? getMarkdown() : "";
         await saveSceneContent(entityId, md);
       }
 
       setConfirmRestore(false);
+      toast.success("復元しました");
       closeHistory();
     } catch (err) {
       console.error("[RevisionHistoryModal] restore failed", err);
+      toast.error("復元に失敗しました");
     } finally {
       setIsRestoring(false);
     }
