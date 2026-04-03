@@ -76,6 +76,7 @@ interface TreeState {
   nodes: TreeNodeData[];
   scenes: SceneMeta[]; // flat scene list (backward compat)
   activeSceneId: string;
+  selectedIds: string[]; // multi-selection
   isLoading: boolean;
   projectId: string;
   expandedIds: string[];
@@ -111,6 +112,11 @@ interface TreeState {
     newParentId: string | null,
     afterId: string | null,
   ) => Promise<void>;
+
+  // Multi-selection
+  selectNode: (id: string, extend: boolean) => void;
+  rangeSelectNode: (id: string, orderedNodes: TreeNodeData[]) => void;
+  clearSelection: () => void;
 
   // UI state
   toggleExpand: (id: string) => void;
@@ -163,6 +169,7 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
   nodes: [],
   scenes: [],
   activeSceneId: "",
+  selectedIds: [],
   isLoading: false,
   projectId: DEFAULT_PROJECT_ID,
   expandedIds: [],
@@ -270,6 +277,41 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
 
   setActiveScene(id) {
     set({ activeSceneId: id });
+  },
+
+  // --- Multi-selection ---
+  selectNode(id, extend) {
+    if (extend) {
+      set((state) => {
+        const already = state.selectedIds.includes(id);
+        return {
+          selectedIds: already
+            ? state.selectedIds.filter((x) => x !== id)
+            : [...state.selectedIds, id],
+          activeSceneId: id,
+        };
+      });
+    } else {
+      set({ selectedIds: [id], activeSceneId: id });
+    }
+  },
+
+  rangeSelectNode(id, orderedNodes) {
+    const { activeSceneId } = get();
+    const anchorIdx = orderedNodes.findIndex((n) => n.id === activeSceneId);
+    const targetIdx = orderedNodes.findIndex((n) => n.id === id);
+    if (anchorIdx === -1 || targetIdx === -1) {
+      set({ selectedIds: [id] });
+      return;
+    }
+    const start = Math.min(anchorIdx, targetIdx);
+    const end = Math.max(anchorIdx, targetIdx);
+    const range = orderedNodes.slice(start, end + 1).map((n) => n.id);
+    set({ selectedIds: range });
+  },
+
+  clearSelection() {
+    set({ selectedIds: [] });
   },
 
   // --- New tree operations ---

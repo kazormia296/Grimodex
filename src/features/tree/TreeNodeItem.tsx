@@ -14,6 +14,7 @@ import { useTreeStore } from "./treeStore";
 import { StatusDot } from "./StatusDot";
 import type { TreeNodeData, SceneStatus } from "./treeStore";
 import { TreeContextMenu } from "./TreeContextMenu";
+import { useTabStore } from "@/features/editor/tabStore";
 
 const STATUS_OPTIONS: SceneStatus[] = [
   "outline",
@@ -89,6 +90,7 @@ interface TreeNodeItemProps {
   node: TreeNodeData;
   depth: number;
   isActive: boolean;
+  isSelected: boolean;
   isExpanded: boolean;
   children?: React.ReactNode;
   isVisible: boolean;
@@ -97,12 +99,15 @@ interface TreeNodeItemProps {
   showStatusDots: boolean;
   dropIndicator: DropIndicator | null;
   onStartRename?: () => void;
+  /** Ordered flat list of nodes for Shift+Click range selection */
+  orderedNodes: TreeNodeData[];
 }
 
 export function TreeNodeItem({
   node,
   depth,
   isActive,
+  isSelected,
   isExpanded,
   children,
   isVisible,
@@ -111,6 +116,7 @@ export function TreeNodeItem({
   showStatusDots,
   dropIndicator,
   onStartRename,
+  orderedNodes,
 }: TreeNodeItemProps) {
   const toggleExpand = useTreeStore((s) => s.toggleExpand);
   const setActiveScene = useTreeStore((s) => s.setActiveScene);
@@ -174,13 +180,31 @@ export function TreeNodeItem({
     transition: "padding 100ms ease-out",
   };
 
-  const handleClick = useCallback(() => {
+  const handleClick = useCallback(
+    (e: React.MouseEvent) => {
+      if (node.nodeType === "scene" || node.nodeType === "note") {
+        if (e.shiftKey) {
+          useTreeStore.getState().rangeSelectNode(node.id, orderedNodes);
+        } else if (e.ctrlKey || e.metaKey) {
+          useTreeStore.getState().selectNode(node.id, true);
+        } else {
+          useTreeStore.getState().selectNode(node.id, false);
+          useTabStore.getState().openPreview(node.id);
+          setActiveScene(node.id);
+        }
+      } else {
+        toggleExpand(node.id);
+      }
+    },
+    [node, orderedNodes, setActiveScene, toggleExpand],
+  );
+
+  const handleDoubleClick = useCallback(() => {
     if (node.nodeType === "scene" || node.nodeType === "note") {
+      useTabStore.getState().openPinned(node.id);
       setActiveScene(node.id);
-    } else {
-      toggleExpand(node.id);
     }
-  }, [node, setActiveScene, toggleExpand]);
+  }, [node, setActiveScene]);
 
   const startEdit = useCallback(() => {
     setEditTitle(node.title);
@@ -231,13 +255,14 @@ export function TreeNodeItem({
           isActive &&
             (node.nodeType === "scene" || node.nodeType === "note") &&
             "border-l-2 border-primary",
+          isSelected && !isActive && "bg-primary/20",
           isDropInside && "ring-1 ring-primary ring-inset",
         )}
         style={{
           paddingLeft: `${depth * 12 + (isActive && (node.nodeType === "scene" || node.nodeType === "note") ? 2 : 4)}px`,
         }}
-        onClick={dragInProgress ? undefined : handleClick}
-        onDoubleClick={dragInProgress ? undefined : startEdit}
+        onClick={dragInProgress ? undefined : (e) => handleClick(e)}
+        onDoubleClick={dragInProgress ? undefined : handleDoubleClick}
         onContextMenu={handleContextMenu}
       >
         {/* Drag handle — always in layout to prevent title shift */}

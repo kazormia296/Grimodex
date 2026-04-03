@@ -69,7 +69,11 @@ export function FindReplaceBar({
 
   function handleFindKeyDown(e: React.KeyboardEvent<HTMLInputElement>) {
     if (e.key === "Enter") {
-      e.shiftKey ? editor?.commands.findPrev() : editor?.commands.findNext();
+      if (e.shiftKey) {
+        editor?.commands.findPrev();
+      } else {
+        editor?.commands.findNext();
+      }
     } else if (e.key === "Escape") {
       onClose();
     }

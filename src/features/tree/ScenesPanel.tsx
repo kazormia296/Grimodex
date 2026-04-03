@@ -23,6 +23,7 @@ import type {
 } from "@dnd-kit/core";
 import { cn } from "@/lib/utils";
 import { useTreeStore } from "./treeStore";
+import { useTabStore } from "@/features/editor/tabStore";
 import { TreeNodeItem, NodeIcon } from "./TreeNodeItem";
 import { StatusDot } from "./StatusDot";
 import { SynopsisArea } from "./SynopsisArea";
@@ -96,6 +97,7 @@ interface TreeRendererProps {
   nodeMap: Record<string, TreeNodeData>;
   depth: number;
   activeSceneId: string;
+  selectedIds: string[];
   expandedIds: string[];
   filterQuery: string;
   viewMode: string;
@@ -104,6 +106,7 @@ interface TreeRendererProps {
   showStatusDots: boolean;
   dropIndicator: DropIndicator | null;
   nodeTotals: Record<string, number>;
+  orderedNodes: TreeNodeData[];
 }
 
 function TreeRenderer({
@@ -112,6 +115,7 @@ function TreeRenderer({
   nodeMap,
   depth,
   activeSceneId,
+  selectedIds,
   expandedIds,
   filterQuery,
   viewMode,
@@ -120,6 +124,7 @@ function TreeRenderer({
   showStatusDots,
   dropIndicator,
   nodeTotals,
+  orderedNodes,
 }: TreeRendererProps) {
   const ids = childMap[parentId ?? "root"] ?? [];
   const query = filterQuery.toLowerCase();
@@ -139,12 +144,14 @@ function TreeRenderer({
             node={node}
             depth={depth}
             isActive={node.id === activeSceneId}
+            isSelected={selectedIds.includes(id)}
             isExpanded={isExpanded}
             isVisible={visible}
             charCount={count}
             showWordCounts={showWordCounts}
             showStatusDots={showStatusDots}
             dropIndicator={dropIndicator}
+            orderedNodes={orderedNodes}
           >
             {viewMode === "outline" &&
               node.nodeType === "scene" &&
@@ -165,6 +172,7 @@ function TreeRenderer({
               nodeMap={nodeMap}
               depth={depth + 1}
               activeSceneId={activeSceneId}
+              selectedIds={selectedIds}
               expandedIds={expandedIds}
               filterQuery={filterQuery}
               viewMode={viewMode}
@@ -173,6 +181,7 @@ function TreeRenderer({
               showStatusDots={showStatusDots}
               dropIndicator={dropIndicator}
               nodeTotals={nodeTotals}
+              orderedNodes={orderedNodes}
             />
           </TreeNodeItem>
         );
@@ -317,6 +326,7 @@ export function ScenesPanel() {
   const {
     nodes,
     activeSceneId,
+    selectedIds,
     isLoading,
     expandedIds,
     filterQuery,
@@ -447,11 +457,36 @@ export function ScenesPanel() {
       if (e.key === "ArrowDown") {
         e.preventDefault();
         const next = flatNodes[idx + 1];
-        if (next) setActiveScene(next.id);
+        if (next) {
+          setActiveScene(next.id);
+          if (next.nodeType === "scene" || next.nodeType === "note") {
+            useTabStore.getState().openPreview(next.id);
+          }
+        }
       } else if (e.key === "ArrowUp") {
         e.preventDefault();
         const prev = flatNodes[idx - 1];
-        if (prev) setActiveScene(prev.id);
+        if (prev) {
+          setActiveScene(prev.id);
+          if (prev.nodeType === "scene" || prev.nodeType === "note") {
+            useTabStore.getState().openPreview(prev.id);
+          }
+        }
+      } else if (e.key === " ") {
+        e.preventDefault();
+        const cur = nodeMap[activeSceneId];
+        if (cur && (cur.nodeType === "scene" || cur.nodeType === "note")) {
+          useTabStore.getState().openPreview(cur.id);
+        }
+      } else if (e.key === "Enter") {
+        e.preventDefault();
+        const cur = nodeMap[activeSceneId];
+        if (cur && (cur.nodeType === "scene" || cur.nodeType === "note")) {
+          useTabStore.getState().openPinned(cur.id);
+          setActiveScene(cur.id);
+        } else if (cur) {
+          toggleExpand(cur.id);
+        }
       } else if (e.key === "ArrowRight") {
         e.preventDefault();
         const cur = nodeMap[activeSceneId];
@@ -784,6 +819,7 @@ export function ScenesPanel() {
               nodeMap={nodeMap}
               depth={0}
               activeSceneId={activeSceneId}
+              selectedIds={selectedIds}
               expandedIds={expandedIds}
               filterQuery={filterQuery}
               viewMode={viewMode}
@@ -792,6 +828,7 @@ export function ScenesPanel() {
               showStatusDots={showStatusDots}
               dropIndicator={dropIndicator}
               nodeTotals={nodeTotals}
+              orderedNodes={flatNodes}
             />
           </ul>
           <BottomDropZone />

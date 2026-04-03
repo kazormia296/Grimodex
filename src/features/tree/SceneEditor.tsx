@@ -28,6 +28,9 @@ import { VerticalPreview } from "@/features/editor/VerticalPreview";
 import { EditorContextMenu } from "@/features/editor/EditorContextMenu";
 import { FindReplaceBar } from "@/features/editor/FindReplaceBar";
 import { RevisionHistoryModal } from "@/features/revision/RevisionHistoryModal";
+import { TabBar } from "@/features/editor/TabBar";
+import { Breadcrumb } from "@/features/editor/Breadcrumb";
+import { useTabStore } from "@/features/editor/tabStore";
 import type { SceneStatus } from "@/features/tree/treeStore";
 
 const STATUS_LABELS: Record<SceneStatus, string> = {
@@ -49,6 +52,15 @@ const STATUS_COLORS: Record<SceneStatus, string> = {
 export function SceneEditor() {
   const activeSceneId = useSceneStore((s) => s.activeSceneId);
   const prevSceneIdRef = useRef(activeSceneId);
+
+  // Ensure the active scene always has a tab (handles external changes like node creation)
+  useEffect(() => {
+    if (!activeSceneId) return;
+    const tabs = useTabStore.getState().tabs;
+    if (!tabs.find((t) => t.nodeId === activeSceneId)) {
+      useTabStore.getState().ensureTab(activeSceneId);
+    }
+  }, [activeSceneId]);
   const editorRef = useRef<ReturnType<typeof useEditor>>(null);
   const [charCount, setCharCount] = useState(0);
   const [wordCount, setWordCount] = useState(0);
@@ -162,7 +174,11 @@ export function SceneEditor() {
       setCharCount(count);
       setWordCount(text.trim() === "" ? 0 : text.trim().split(/\s+/).length);
       const sid = saveSceneIdRef.current;
-      if (sid) useTreeStore.getState().setCharCount(sid, count);
+      if (sid) {
+        useTreeStore.getState().setCharCount(sid, count);
+        // Auto-promote preview tab to pinned when user starts editing
+        useTabStore.getState().pinTab(sid);
+      }
     },
     onSelectionUpdate({ editor: e }) {
       setCursorPos(e.state.selection.anchor);
@@ -303,6 +319,8 @@ export function SceneEditor() {
 
   return (
     <div className="flex flex-col h-full">
+      <TabBar />
+      <Breadcrumb />
       <Toolbar
         editor={editor}
         onFindReplace={() => {
