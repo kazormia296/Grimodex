@@ -27,6 +27,7 @@ import {
 } from "@/features/attribution/api";
 import type { ToolbarSlot } from "@/features/editor/Toolbar";
 import { VerticalPreview } from "@/features/editor/VerticalPreview";
+import { EditorContextMenu } from "@/features/editor/EditorContextMenu";
 import type { SceneStatus } from "@/features/tree/treeStore";
 
 const STATUS_LABELS: Record<SceneStatus, string> = {
@@ -58,6 +59,8 @@ export function SceneEditor() {
     s.nodes.find((n) => n.id === activeSceneId),
   );
   const activeStatus = (activeNode?.status ?? null) as SceneStatus | null;
+
+  const editorContainerRef = useRef<HTMLDivElement>(null);
 
   const setIsDirtyRef = useRef(setIsDirty);
   setIsDirtyRef.current = setIsDirty;
@@ -314,10 +317,11 @@ export function SceneEditor() {
         extraSlots={[cursorAnimationSlot, attributionSlot]}
       />
       <SynopsisHeader sceneId={activeSceneId} />
-      <div className="flex-1 overflow-auto p-4">
+      <div ref={editorContainerRef} className="flex-1 overflow-auto p-4">
         <EditorContent editor={editor} />
         <CodexPopover editor={editor} />
         <AttributionOverrideMenu editor={editor} />
+        <EditorContextMenu editor={editor} containerRef={editorContainerRef} />
       </div>
       {/* C-3: Enhanced status bar */}
       <div className="flex items-center justify-between border-t border-border px-3 py-1 text-xs text-muted-foreground">
