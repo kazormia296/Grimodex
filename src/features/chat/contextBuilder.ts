@@ -130,9 +130,7 @@ export function buildStorySoFar(
   const header = "## これまでの物語\n\n";
   let kept = [...entries];
   while (kept.length > 0) {
-    const body = kept
-      .map((e) => `${e.title}\n${e.synopsis}`)
-      .join("\n\n");
+    const body = kept.map((e) => `${e.title}\n${e.synopsis}`).join("\n\n");
     const full = header + body;
     if (countTokens(full) <= tokenBudget) {
       return full;

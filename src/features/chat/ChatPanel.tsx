@@ -175,7 +175,9 @@ export function ChatPanel() {
       <div className="flex flex-col border-b border-border">
         <div className="flex items-center justify-between px-4 py-2">
           <div className="flex items-center gap-2">
-            <h2 className="text-sm font-semibold text-foreground">AIチャット</h2>
+            <h2 className="text-sm font-semibold text-foreground">
+              AIチャット
+            </h2>
             <button
               type="button"
               onClick={() => setSessionsPanelOpen((v) => !v)}

@@ -25,7 +25,10 @@ interface EditorContextMenuProps {
  * C-6: Right-click context menu for editor selection.
  * "コデックスに追加" / "スニペットとして保存"
  */
-export function EditorContextMenu({ editor, containerRef }: EditorContextMenuProps) {
+export function EditorContextMenu({
+  editor,
+  containerRef,
+}: EditorContextMenuProps) {
   const [pos, setPos] = useState<Position | null>(null);
   const [mode, setMode] = useState<MenuMode>("root");
   const [selectedText, setSelectedText] = useState("");
@@ -148,7 +151,8 @@ export function EditorContextMenu({ editor, containerRef }: EditorContextMenuPro
       {mode === "root" && (
         <div className="flex flex-col py-1">
           <div className="px-3 py-1 text-xs text-muted-foreground truncate border-b border-border mb-1">
-            「{selectedText.slice(0, 30)}{selectedText.length > 30 ? "…" : ""}」
+            「{selectedText.slice(0, 30)}
+            {selectedText.length > 30 ? "…" : ""}」
           </div>
           <button
             type="button"
@@ -169,14 +173,18 @@ export function EditorContextMenu({ editor, containerRef }: EditorContextMenuPro
 
       {mode === "codex" && (
         <div className="flex flex-col gap-2 p-3">
-          <p className="text-xs font-medium text-foreground">コデックスに追加</p>
+          <p className="text-xs font-medium text-foreground">
+            コデックスに追加
+          </p>
           <select
             value={codexType}
             onChange={(e) => setCodexType(e.target.value)}
             className="rounded border border-border bg-background px-2 py-1 text-xs"
           >
             {BUILTIN_CODEX_TYPES.map((t) => (
-              <option key={t} value={t}>{t}</option>
+              <option key={t} value={t}>
+                {t}
+              </option>
             ))}
           </select>
           <input
@@ -204,7 +212,8 @@ export function EditorContextMenu({ editor, containerRef }: EditorContextMenuPro
               onClick={handleSaveCodex}
               className={cn(
                 "rounded px-2 py-1 text-xs bg-primary text-primary-foreground hover:opacity-90",
-                (saving || !codexName.trim()) && "opacity-50 pointer-events-none",
+                (saving || !codexName.trim()) &&
+                  "opacity-50 pointer-events-none",
               )}
             >
               追加
@@ -215,7 +224,9 @@ export function EditorContextMenu({ editor, containerRef }: EditorContextMenuPro
 
       {mode === "snippet" && (
         <div className="flex flex-col gap-2 p-3">
-          <p className="text-xs font-medium text-foreground">スニペットとして保存</p>
+          <p className="text-xs font-medium text-foreground">
+            スニペットとして保存
+          </p>
           <input
             autoFocus
             value={snippetTitle}
@@ -250,7 +261,8 @@ export function EditorContextMenu({ editor, containerRef }: EditorContextMenuPro
               onClick={handleSaveSnippet}
               className={cn(
                 "rounded px-2 py-1 text-xs bg-primary text-primary-foreground hover:opacity-90",
-                (saving || !snippetTitle.trim()) && "opacity-50 pointer-events-none",
+                (saving || !snippetTitle.trim()) &&
+                  "opacity-50 pointer-events-none",
               )}
             >
               保存

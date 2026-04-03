@@ -6,9 +6,12 @@ import * as chatApi from "./chatApi";
 // D-17: Error classification and retry helpers
 // ---------------------------------------------------------------------------
 
-function classifyError(e: unknown): "auth" | "rate_limit" | "network" | "unknown" {
+function classifyError(
+  e: unknown,
+): "auth" | "rate_limit" | "network" | "unknown" {
   const msg = e instanceof Error ? e.message : String(e);
-  if (/401|unauthorized|authentication|api\.key|invalid\.key/i.test(msg)) return "auth";
+  if (/401|unauthorized|authentication|api\.key|invalid\.key/i.test(msg))
+    return "auth";
   if (/429|rate.?limit|too.?many.?request/i.test(msg)) return "rate_limit";
   if (/network|connect|timeout|fetch|ECONNREFUSED/i.test(msg)) return "network";
   return "unknown";
@@ -35,8 +38,11 @@ async function withNetworkRetry<T>(
   }
 }
 
-
-import { buildSystemPrompt, buildStorySoFar, countTokens } from "./contextBuilder";
+import {
+  buildSystemPrompt,
+  buildStorySoFar,
+  countTokens,
+} from "./contextBuilder";
 import type {
   SceneContext,
   ProjectContext,
@@ -271,7 +277,11 @@ export const useChatStore = create<ChatState>()((set, get) => ({
         // Layer 2: storySoFar — preceding scene synopses (~10% of 200k context ≈ 20,000 tok)
         const allNodes = useTreeStore.getState().nodes;
         const storySoFarBudget = 20_000;
-        const storySoFar = buildStorySoFar(sceneCtx.id, allNodes, storySoFarBudget);
+        const storySoFar = buildStorySoFar(
+          sceneCtx.id,
+          allNodes,
+          storySoFarBudget,
+        );
 
         const systemPrompt = buildSystemPrompt({
           scene: sceneCtx,
@@ -293,18 +303,20 @@ export const useChatStore = create<ChatState>()((set, get) => ({
         messagesForApi.unshift(systemMsg);
       }
 
-      await withNetworkRetry(
-        () =>
-          chatApi.sendChatMessage(messagesForApi, (chunk: string) => {
-            set((s) => {
-              const msgs = [...s.messages];
-              const last = msgs[msgs.length - 1];
-              if (last && last.role === "assistant") {
-                msgs[msgs.length - 1] = { ...last, content: last.content + chunk };
-              }
-              return { messages: msgs };
-            });
-          }),
+      await withNetworkRetry(() =>
+        chatApi.sendChatMessage(messagesForApi, (chunk: string) => {
+          set((s) => {
+            const msgs = [...s.messages];
+            const last = msgs[msgs.length - 1];
+            if (last && last.role === "assistant") {
+              msgs[msgs.length - 1] = {
+                ...last,
+                content: last.content + chunk,
+              };
+            }
+            return { messages: msgs };
+          });
+        }),
       );
 
       if (activeSessionId) {
@@ -325,10 +337,13 @@ export const useChatStore = create<ChatState>()((set, get) => ({
 
       if (kind === "auth") {
         toast.error("APIキーが無効です。設定を確認してください。", {
-          action: { label: "設定を開く", onClick: () => {
-            // Signal to open settings dialog via a custom event
-            window.dispatchEvent(new CustomEvent("open-ai-settings"));
-          }},
+          action: {
+            label: "設定を開く",
+            onClick: () => {
+              // Signal to open settings dialog via a custom event
+              window.dispatchEvent(new CustomEvent("open-ai-settings"));
+            },
+          },
           duration: 8000,
         });
       } else if (kind === "rate_limit") {
@@ -340,7 +355,9 @@ export const useChatStore = create<ChatState>()((set, get) => ({
         set({ isStreaming: false });
         return;
       } else if (kind === "network") {
-        toast.error("ネットワークエラーが発生しました。接続を確認してください。");
+        toast.error(
+          "ネットワークエラーが発生しました。接続を確認してください。",
+        );
       } else {
         toast.error(`送信に失敗しました: ${msg}`);
       }

@@ -52,7 +52,10 @@ export function StorySoFarCoverage() {
       try {
         const content = await loadSceneContent(scene.id);
         if (content?.trim()) {
-          const synopsis = await generateSynopsisFromContent(scene.title, content);
+          const synopsis = await generateSynopsisFromContent(
+            scene.title,
+            content,
+          );
           await updateSynopsis(scene.id, synopsis.trim());
         }
       } catch {
@@ -67,7 +70,9 @@ export function StorySoFarCoverage() {
     setOpen(false);
     const succeeded = done - failed;
     if (failed > 0) {
-      toast.warning(`${succeeded}/${done}件のSynopsisを生成しました（${failed}件失敗）`);
+      toast.warning(
+        `${succeeded}/${done}件のSynopsisを生成しました（${failed}件失敗）`,
+      );
     } else {
       toast.success(`${succeeded}件のSynopsisを生成しました`);
     }
@@ -89,26 +94,29 @@ export function StorySoFarCoverage() {
       {open && (
         <>
           {/* Backdrop */}
-          <div
-            className="fixed inset-0 z-40"
-            onClick={() => setOpen(false)}
-          />
+          <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} />
           {/* Popover */}
           <div className="absolute left-0 top-full z-50 mt-1 w-72 rounded-md border border-border bg-popover p-3 shadow-md text-xs">
             <p className="text-muted-foreground mb-2">
-              現在のシーンより前に <strong>{totalPreceding}</strong> シーンありますが、
-              Synopsisが記入済みなのは <strong>{withSynopsis}</strong> シーンのみです。
+              現在のシーンより前に <strong>{totalPreceding}</strong>{" "}
+              シーンありますが、 Synopsisが記入済みなのは{" "}
+              <strong>{withSynopsis}</strong> シーンのみです。
               AIのstorySoFarコンテキストが制限されます。
             </p>
             {isGenerating ? (
               <div>
                 <div className="mb-1 flex justify-between">
-                  <span>生成中… {progress}/{total}{failedCount > 0 ? ` (${failedCount}件失敗)` : ""}</span>
+                  <span>
+                    生成中… {progress}/{total}
+                    {failedCount > 0 ? ` (${failedCount}件失敗)` : ""}
+                  </span>
                 </div>
                 <div className="h-1.5 rounded-full bg-muted overflow-hidden">
                   <div
                     className="h-full bg-primary transition-all"
-                    style={{ width: `${total > 0 ? (progress / total) * 100 : 0}%` }}
+                    style={{
+                      width: `${total > 0 ? (progress / total) * 100 : 0}%`,
+                    }}
                   />
                 </div>
               </div>

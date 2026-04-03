@@ -200,7 +200,11 @@ export function SessionsPanel({
 
   const handleCreate = useCallback(async () => {
     try {
-      await createNewSession("default-project", "New session", activeSceneId || undefined);
+      await createNewSession(
+        "default-project",
+        "New session",
+        activeSceneId || undefined,
+      );
       await loadSessions(activeSceneId || undefined);
       onClose();
     } catch (e) {

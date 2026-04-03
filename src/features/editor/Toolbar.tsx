@@ -15,7 +15,13 @@ interface ToolbarButtonProps {
   disabled?: boolean;
 }
 
-function ToolbarButton({ active, onClick, label, children, disabled }: ToolbarButtonProps) {
+function ToolbarButton({
+  active,
+  onClick,
+  label,
+  children,
+  disabled,
+}: ToolbarButtonProps) {
   return (
     <button
       type="button"

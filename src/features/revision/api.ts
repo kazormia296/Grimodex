@@ -147,11 +147,13 @@ export async function pruneRevisions(
 
   if (deleteIds.length === 0) return;
 
-  await db.delete(contentVersions).where(
-    and(
-      eq(contentVersions.entityType, entityType),
-      eq(contentVersions.entityId, entityId),
-      inArray(contentVersions.id, deleteIds),
-    ),
-  );
+  await db
+    .delete(contentVersions)
+    .where(
+      and(
+        eq(contentVersions.entityType, entityType),
+        eq(contentVersions.entityId, entityId),
+        inArray(contentVersions.id, deleteIds),
+      ),
+    );
 }

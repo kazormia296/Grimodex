@@ -279,8 +279,9 @@ export function RevisionHistoryModal() {
 
       // 4. Save the restored content as markdown (trigger Tauri write)
       if (entityType === "scene") {
-        const getMarkdown = (mainEditor.storage as { markdown?: { getMarkdown?: () => string } })
-          ?.markdown?.getMarkdown;
+        const getMarkdown = (
+          mainEditor.storage as { markdown?: { getMarkdown?: () => string } }
+        )?.markdown?.getMarkdown;
         const md = typeof getMarkdown === "function" ? getMarkdown() : "";
         await saveSceneContent(entityId, md);
       }

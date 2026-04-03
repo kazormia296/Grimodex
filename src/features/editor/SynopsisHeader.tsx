@@ -31,7 +31,9 @@ export function SynopsisHeader({ sceneId }: SynopsisHeaderProps) {
         )}
         <span className="font-medium">Synopsis</span>
         {collapsed && node.synopsis && (
-          <span className="ml-2 truncate italic opacity-70">{node.synopsis}</span>
+          <span className="ml-2 truncate italic opacity-70">
+            {node.synopsis}
+          </span>
         )}
       </button>
       {!collapsed && (

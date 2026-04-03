@@ -26,7 +26,9 @@ function buildMatches(
 
   try {
     const flags = caseSensitive ? "g" : "gi";
-    const pattern = useRegex ? query : query.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const pattern = useRegex
+      ? query
+      : query.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
     const regex = new RegExp(pattern, flags);
 
     doc.descendants((node, pos) => {
@@ -34,7 +36,10 @@ function buildMatches(
       let match: RegExpExecArray | null;
       regex.lastIndex = 0;
       while ((match = regex.exec(node.text)) !== null) {
-        matches.push({ from: pos + match.index, to: pos + match.index + match[0].length });
+        matches.push({
+          from: pos + match.index,
+          to: pos + match.index + match[0].length,
+        });
       }
     });
   } catch {
@@ -49,7 +54,10 @@ function buildMatches(
  * FindReplaceExtension — C-7: Find & Replace for TipTap editor
  * Manages search state and ProseMirror decorations for match highlighting.
  */
-export const FindReplaceExtension = Extension.create<object, FindReplaceStorage>({
+export const FindReplaceExtension = Extension.create<
+  object,
+  FindReplaceStorage
+>({
   name: "findReplace",
 
   addStorage() {
@@ -86,7 +94,9 @@ export const FindReplaceExtension = Extension.create<object, FindReplaceStorage>
         },
 
       setFindOptions:
-        (opts: Partial<Pick<FindReplaceStorage, "caseSensitive" | "useRegex">>) =>
+        (
+          opts: Partial<Pick<FindReplaceStorage, "caseSensitive" | "useRegex">>,
+        ) =>
         ({ editor, dispatch, tr }) => {
           if (opts.caseSensitive !== undefined)
             editor.storage.findReplace.caseSensitive = opts.caseSensitive;
@@ -117,7 +127,10 @@ export const FindReplaceExtension = Extension.create<object, FindReplaceStorage>
           storage.currentIndex = nextIndex;
           const match = storage.matches[nextIndex];
           if (dispatch) {
-            tr.setMeta(pluginKey, { matches: storage.matches, currentIndex: nextIndex });
+            tr.setMeta(pluginKey, {
+              matches: storage.matches,
+              currentIndex: nextIndex,
+            });
             dispatch(tr);
           }
           // Scroll match into view
@@ -131,11 +144,15 @@ export const FindReplaceExtension = Extension.create<object, FindReplaceStorage>
           const storage = editor.storage.findReplace as FindReplaceStorage;
           if (storage.matches.length === 0) return false;
           const prevIndex =
-            (storage.currentIndex - 1 + storage.matches.length) % storage.matches.length;
+            (storage.currentIndex - 1 + storage.matches.length) %
+            storage.matches.length;
           storage.currentIndex = prevIndex;
           const match = storage.matches[prevIndex];
           if (dispatch) {
-            tr.setMeta(pluginKey, { matches: storage.matches, currentIndex: prevIndex });
+            tr.setMeta(pluginKey, {
+              matches: storage.matches,
+              currentIndex: prevIndex,
+            });
             dispatch(tr);
           }
           editor.commands.setTextSelection({ from: match.from, to: match.to });
@@ -149,7 +166,11 @@ export const FindReplaceExtension = Extension.create<object, FindReplaceStorage>
           if (storage.matches.length === 0) return false;
           const match = storage.matches[storage.currentIndex];
           if (dispatch) {
-            tr.replaceWith(match.from, match.to, editor.schema.text(replacement));
+            tr.replaceWith(
+              match.from,
+              match.to,
+              editor.schema.text(replacement),
+            );
             // Rebuild matches after replacement
             const { matches: newMatches, regexError } = buildMatches(
               tr.doc,
@@ -157,11 +178,17 @@ export const FindReplaceExtension = Extension.create<object, FindReplaceStorage>
               storage.caseSensitive,
               storage.useRegex,
             );
-            const newIndex = Math.min(storage.currentIndex, Math.max(newMatches.length - 1, 0));
+            const newIndex = Math.min(
+              storage.currentIndex,
+              Math.max(newMatches.length - 1, 0),
+            );
             storage.matches = newMatches;
             storage.regexError = regexError;
             storage.currentIndex = newIndex;
-            tr.setMeta(pluginKey, { matches: newMatches, currentIndex: newIndex });
+            tr.setMeta(pluginKey, {
+              matches: newMatches,
+              currentIndex: newIndex,
+            });
             dispatch(tr);
           }
           return true;
@@ -175,7 +202,11 @@ export const FindReplaceExtension = Extension.create<object, FindReplaceStorage>
           // Replace from end to start so positions don't shift
           const sorted = [...storage.matches].sort((a, b) => b.from - a.from);
           for (const match of sorted) {
-            tr.replaceWith(match.from, match.to, editor.schema.text(replacement));
+            tr.replaceWith(
+              match.from,
+              match.to,
+              editor.schema.text(replacement),
+            );
           }
           storage.matches = [];
           storage.currentIndex = 0;
@@ -212,7 +243,10 @@ export const FindReplaceExtension = Extension.create<object, FindReplaceStorage>
           },
           apply(tr, old) {
             const meta = tr.getMeta(pluginKey) as
-              | { matches: Array<{ from: number; to: number }>; currentIndex: number }
+              | {
+                  matches: Array<{ from: number; to: number }>;
+                  currentIndex: number;
+                }
               | undefined;
             if (!meta) return old.map(tr.mapping, tr.doc);
             const { matches, currentIndex } = meta;

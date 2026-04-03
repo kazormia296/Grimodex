@@ -14,7 +14,12 @@ interface FindReplaceBarProps {
 /**
  * C-7: VS Code-style Find & Replace bar rendered above editor content.
  */
-export function FindReplaceBar({ editor, open, showReplace, onClose }: FindReplaceBarProps) {
+export function FindReplaceBar({
+  editor,
+  open,
+  showReplace,
+  onClose,
+}: FindReplaceBarProps) {
   const [query, setQuery] = useState("");
   const [replacement, setReplacement] = useState("");
   const [caseSensitive, setCaseSensitive] = useState(false);
@@ -57,7 +62,9 @@ export function FindReplaceBar({ editor, open, showReplace, onClose }: FindRepla
   const matchLabel = regexError
     ? "無効な正規表現"
     : matchCount === 0
-      ? query ? "一致なし" : ""
+      ? query
+        ? "一致なし"
+        : ""
       : `${currentIdx} / ${matchCount}`;
 
   function handleFindKeyDown(e: React.KeyboardEvent<HTMLInputElement>) {

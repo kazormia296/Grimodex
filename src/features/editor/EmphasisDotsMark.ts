@@ -14,7 +14,11 @@ export const EmphasisDotsMark = Mark.create({
   },
 
   renderHTML({ HTMLAttributes }) {
-    return ["span", mergeAttributes({ class: "emphasis-dots" }, HTMLAttributes), 0];
+    return [
+      "span",
+      mergeAttributes({ class: "emphasis-dots" }, HTMLAttributes),
+      0,
+    ];
   },
 
   addKeyboardShortcuts() {
