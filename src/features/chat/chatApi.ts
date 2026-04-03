@@ -7,15 +7,35 @@ import type { CodexEntry } from "@/features/codex/api";
 
 // --- AI message sending (existing) ---
 
+interface ChatResponsePayload {
+  blocks: Array<
+    | { type: "text"; content: string }
+    | { type: "tool_use"; id: string; name: string; input: unknown }
+    | {
+        type: "thinking";
+        content: string;
+        summary?: string;
+        signature?: string;
+      }
+  >;
+  stopReason: string;
+}
+
 export async function sendChatMessage(
   messages: ChatMessage[],
   onChunk: (chunk: string) => void,
 ): Promise<void> {
   const payload = messages.map((m) => ({ role: m.role, content: m.content }));
-  const response = await invoke<string>("send_chat_message", {
+  const response = await invoke<ChatResponsePayload>("send_chat_message", {
     messages: payload,
+    thinking: null,
+    effort: null,
   });
-  onChunk(response);
+  const text = response.blocks
+    .filter((b) => b.type === "text")
+    .map((b) => (b as { type: "text"; content: string }).content)
+    .join("\n");
+  onChunk(text);
 }
 
 /**
@@ -35,7 +55,15 @@ export async function generateSynopsisFromContent(
         `===シーン本文===\n${sceneContent}`,
     },
   ];
-  return invoke<string>("send_chat_message", { messages });
+  const response = await invoke<ChatResponsePayload>("send_chat_message", {
+    messages,
+    thinking: null,
+    effort: null,
+  });
+  return response.blocks
+    .filter((b) => b.type === "text")
+    .map((b) => (b as { type: "text"; content: string }).content)
+    .join("\n");
 }
 
 import type {
@@ -43,13 +71,61 @@ import type {
   AgentLLMResponse,
   AgentToolDefinition,
 } from "./agent/agentTypes";
+import type { ThinkingParams } from "./agent/modelLimits";
 
 /** Send a tool-aware agent message and return a structured response. */
 export async function sendAgentMessage(
   messages: AgentMessagePayload[],
   tools: AgentToolDefinition[],
+  thinkingParams?: ThinkingParams,
 ): Promise<AgentLLMResponse> {
-  return invoke<AgentLLMResponse>("send_agent_message", { messages, tools });
+  return invoke<AgentLLMResponse>("send_agent_message", {
+    messages,
+    tools,
+    thinking: thinkingParams?.thinking ?? null,
+    effort: thinkingParams?.effort ?? null,
+  });
+}
+
+export interface ChatMessageResult {
+  text: string;
+  thinkingBlocks: Array<{
+    thinking: string;
+    summary?: string;
+    signature?: string;
+  }>;
+}
+
+/** Send a simple (non-tool) chat message with optional thinking params. */
+export async function sendChatMessageWithThinking(
+  messages: { role: string; content: string }[],
+  thinkingParams?: ThinkingParams,
+): Promise<ChatMessageResult> {
+  const response = await invoke<ChatResponsePayload>("send_chat_message", {
+    messages,
+    thinking: thinkingParams?.thinking ?? null,
+    effort: thinkingParams?.effort ?? null,
+  });
+  const text = response.blocks
+    .filter((b) => b.type === "text")
+    .map((b) => (b as { type: "text"; content: string }).content)
+    .join("\n");
+  const thinkingBlocks = response.blocks
+    .filter((b) => b.type === "thinking")
+    .map((b) => {
+      const tb = b as {
+        type: "thinking";
+        content: string;
+        summary?: string;
+        signature?: string;
+      };
+      return {
+        thinking: tb.content,
+        summary: tb.summary,
+        signature: tb.signature,
+      };
+    });
+  return { text, thinkingBlocks };
 }
 
 // --- Session/message persistence ---

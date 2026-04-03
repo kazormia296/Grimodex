@@ -4,6 +4,7 @@ import type { ChatMessage, ChatSession } from "./chatTypes";
 
 vi.mock("./chatApi", () => ({
   sendChatMessage: vi.fn(),
+  sendChatMessageWithThinking: vi.fn(),
   listSessions: vi.fn(),
   createSession: vi.fn(),
   deleteSession: vi.fn(),
@@ -16,7 +17,11 @@ vi.mock("./chatApi", () => ({
 }));
 
 vi.mock("./contextBuilder", () => ({
-  buildSystemPrompt: vi.fn(() => "mock system prompt"),
+  buildSystemPrompt: vi.fn(() => ({
+    prompt: "mock system prompt",
+    totalTokens: 42,
+    layers: [],
+  })),
   buildStorySoFar: vi.fn(() => ""),
   countTokens: vi.fn(() => 42),
 }));
@@ -58,9 +63,11 @@ vi.mock("@/features/codex/codexMatcher", () => ({
 
 import * as chatApi from "./chatApi";
 import * as contextBuilder from "./contextBuilder";
-const mockSendChatMessage = vi.mocked(chatApi.sendChatMessage);
+const mockSendChatMessageWithThinking = vi.mocked(
+  chatApi.sendChatMessageWithThinking,
+);
 const mockBuildSystemPrompt = vi.mocked(contextBuilder.buildSystemPrompt);
-const mockCountTokens = vi.mocked(contextBuilder.countTokens);
+
 const mockListSessions = vi.mocked(chatApi.listSessions);
 const mockCreateSession = vi.mocked(chatApi.createSession);
 const mockDeleteSession = vi.mocked(chatApi.deleteSession);
@@ -290,13 +297,13 @@ describe("useChatStore", () => {
     });
   });
 
-  // --- Existing streaming chat tests ---
+  // --- sendMessage tests ---
 
   describe("sendMessage", () => {
     it("adds user message, sets streaming, and appends assistant response", async () => {
-      mockSendChatMessage.mockImplementation(async (_msgs, onChunk) => {
-        onChunk("こんに");
-        onChunk("ちは！");
+      mockSendChatMessageWithThinking.mockResolvedValueOnce({
+        text: "こんにちは！",
+        thinkingBlocks: [],
       });
 
       await useChatStore.getState().sendMessage("テスト");
@@ -312,8 +319,9 @@ describe("useChatStore", () => {
 
     it("sets isStreaming to true during API call", async () => {
       let streamingDuringCall = false;
-      mockSendChatMessage.mockImplementation(async () => {
+      mockSendChatMessageWithThinking.mockImplementation(async () => {
         streamingDuringCall = useChatStore.getState().isStreaming;
+        return { text: "", thinkingBlocks: [] };
       });
 
       await useChatStore.getState().sendMessage("テスト");
@@ -323,7 +331,9 @@ describe("useChatStore", () => {
     });
 
     it("sets error on API failure", async () => {
-      mockSendChatMessage.mockRejectedValueOnce(new Error("API error"));
+      mockSendChatMessageWithThinking.mockRejectedValueOnce(
+        new Error("API error"),
+      );
 
       await useChatStore.getState().sendMessage("テスト");
 
@@ -337,13 +347,13 @@ describe("useChatStore", () => {
 
       await useChatStore.getState().sendMessage("テスト");
 
-      expect(mockSendChatMessage).not.toHaveBeenCalled();
+      expect(mockSendChatMessageWithThinking).not.toHaveBeenCalled();
     });
 
     it("does not send empty messages", async () => {
       await useChatStore.getState().sendMessage("   ");
 
-      expect(mockSendChatMessage).not.toHaveBeenCalled();
+      expect(mockSendChatMessageWithThinking).not.toHaveBeenCalled();
     });
 
     it("passes full message history to API with system prompt prepended", async () => {
@@ -353,13 +363,14 @@ describe("useChatStore", () => {
           makeMessage("assistant", "前の回答"),
         ],
       });
-      mockSendChatMessage.mockImplementation(async (_msgs, onChunk) => {
-        onChunk("新しい回答");
+      mockSendChatMessageWithThinking.mockResolvedValueOnce({
+        text: "新しい回答",
+        thinkingBlocks: [],
       });
 
       await useChatStore.getState().sendMessage("新しい質問");
 
-      const passedMessages = mockSendChatMessage.mock.calls[0][0];
+      const passedMessages = mockSendChatMessageWithThinking.mock.calls[0][0];
       // system + 前の質問 + 前の回答 + 新しい質問 = 4
       expect(passedMessages).toHaveLength(4);
       expect(passedMessages[0].role).toBe("system");
@@ -392,25 +403,35 @@ describe("useChatStore", () => {
   });
 
   describe("context injection", () => {
-    it("passes system prompt to sendChatMessage", async () => {
-      mockBuildSystemPrompt.mockReturnValue("テスト用システムプロンプト");
-      mockSendChatMessage.mockImplementation(async (_msgs, onChunk) => {
-        onChunk("回答");
+    it("passes system prompt to sendChatMessageWithThinking", async () => {
+      mockBuildSystemPrompt.mockReturnValue({
+        prompt: "テスト用システムプロンプト",
+        totalTokens: 50,
+        layers: [],
+      });
+      mockSendChatMessageWithThinking.mockResolvedValueOnce({
+        text: "回答",
+        thinkingBlocks: [],
       });
 
       await useChatStore.getState().sendMessage("質問");
 
-      expect(mockSendChatMessage).toHaveBeenCalled();
-      const callArgs = mockSendChatMessage.mock.calls[0];
+      expect(mockSendChatMessageWithThinking).toHaveBeenCalled();
+      const callArgs = mockSendChatMessageWithThinking.mock.calls[0];
       const messages = callArgs[0];
       expect(messages[0].role).toBe("system");
       expect(messages[0].content).toBe("テスト用システムプロンプト");
     });
 
     it("updates contextTokenCount when context changes", async () => {
-      mockCountTokens.mockReturnValue(100);
-      mockSendChatMessage.mockImplementation(async (_msgs, onChunk) => {
-        onChunk("回答");
+      mockBuildSystemPrompt.mockReturnValue({
+        prompt: "mock system prompt",
+        totalTokens: 100,
+        layers: [],
+      });
+      mockSendChatMessageWithThinking.mockResolvedValueOnce({
+        text: "回答",
+        thinkingBlocks: [],
       });
 
       await useChatStore.getState().sendMessage("質問");

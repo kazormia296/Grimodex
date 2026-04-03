@@ -31,6 +31,18 @@ export interface BuildSystemPromptInput {
   pinnedCodexEntries?: CodexContext[];
 }
 
+export interface LayerBreakdown {
+  layer: string; // "L1" ~ "L5"
+  label: string; // "プロジェクト情報" 等
+  used: number; // 実使用トークン数
+}
+
+export interface SystemPromptResult {
+  prompt: string;
+  totalTokens: number;
+  layers: LayerBreakdown[];
+}
+
 const encoder = encodingForModel("gpt-4o");
 
 function deduplicateById(entries: CodexContext[]): CodexContext[] {
@@ -42,14 +54,18 @@ function deduplicateById(entries: CodexContext[]): CodexContext[] {
   });
 }
 
-export function buildSystemPrompt(input: BuildSystemPromptInput): string {
-  const parts: string[] = [];
+export function buildSystemPrompt(
+  input: BuildSystemPromptInput,
+): SystemPromptResult {
+  const layers: LayerBreakdown[] = [];
 
-  parts.push(
+  // Base instruction (L0)
+  const baseText =
     "あなたは小説執筆を支援するAIアシスタントです。" +
-      "ユーザーの執筆スタイルを尊重し、創造的な提案や文章の改善を行ってください。",
-  );
+    "ユーザーの執筆スタイルを尊重し、創造的な提案や文章の改善を行ってください。";
 
+  // L1: Project info
+  let l1Text = "";
   if (input.project) {
     const p = input.project;
     const info: string[] = [`タイトル: ${p.title}`];
@@ -58,23 +74,39 @@ export function buildSystemPrompt(input: BuildSystemPromptInput): string {
     if (p.tense) info.push(`時制: ${p.tense}`);
     if (p.styleGuide) info.push(`文体ガイド:\n${p.styleGuide}`);
     if (p.aiInstructions) info.push(`AI指示:\n${p.aiInstructions}`);
-    parts.push(`\n## プロジェクト情報\n${info.join("\n")}`);
+    l1Text = `\n## プロジェクト情報\n${info.join("\n")}`;
   }
+  layers.push({
+    layer: "L1",
+    label: "プロジェクト情報",
+    used: countTokens(l1Text),
+  });
 
-  if (input.storySoFar) {
-    parts.push(`\n${input.storySoFar}`);
-  }
+  // L2: Story so far
+  const l2Text = input.storySoFar ? `\n${input.storySoFar}` : "";
+  layers.push({
+    layer: "L2",
+    label: "これまでの物語",
+    used: countTokens(l2Text),
+  });
 
-  parts.push(`\n## 現在のシーン\n` + `タイトル: ${input.scene.title}`);
-
+  // L3: Current scene
+  let l3Text = `\n## 現在のシーン\nタイトル: ${input.scene.title}`;
   if (input.scene.content) {
-    parts.push(`\n### シーン本文\n${input.scene.content}`);
+    l3Text += `\n\n### シーン本文\n${input.scene.content}`;
   }
+  layers.push({
+    layer: "L3",
+    label: "現在のシーン",
+    used: countTokens(l3Text),
+  });
 
+  // L4: Codex entries
   const allCodex = deduplicateById([
     ...(input.codexEntries ?? []),
     ...(input.pinnedCodexEntries ?? []),
   ]);
+  let l4Text = "";
   if (allCodex.length > 0) {
     const typeLabels: Record<string, string> = {
       character: "キャラクター",
@@ -82,14 +114,23 @@ export function buildSystemPrompt(input: BuildSystemPromptInput): string {
       item: "アイテム",
       lore: "設定",
     };
-    parts.push("\n## 登場キャラクター・設定情報");
+    const lines = ["\n## 登場キャラクター・設定情報"];
     for (const entry of allCodex) {
       const label = typeLabels[entry.type] ?? entry.type;
-      parts.push(`- **${entry.name}** (${label}): ${entry.summary}`);
+      lines.push(`- **${entry.name}** (${label}): ${entry.summary}`);
     }
+    l4Text = lines.join("\n");
   }
+  layers.push({
+    layer: "L4",
+    label: "Codex・設定情報",
+    used: countTokens(l4Text),
+  });
 
-  return parts.join("\n");
+  const prompt = [baseText, l1Text, l2Text, l3Text, l4Text].join("\n");
+  const totalTokens = countTokens(prompt);
+
+  return { prompt, totalTokens, layers };
 }
 
 export interface BuildAgentSystemPromptInput {

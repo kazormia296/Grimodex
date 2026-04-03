@@ -18,8 +18,8 @@ describe("contextBuilder", () => {
 
       const result = buildSystemPrompt({ scene });
 
-      expect(result).toContain("夜明けの対話");
-      expect(result).toContain("太郎は窓の外を見つめていた。");
+      expect(result.prompt).toContain("夜明けの対話");
+      expect(result.prompt).toContain("太郎は窓の外を見つめていた。");
     });
 
     it("includes project overview when provided", () => {
@@ -39,12 +39,12 @@ describe("contextBuilder", () => {
 
       const result = buildSystemPrompt({ scene, project });
 
-      expect(result).toContain("月と六文銭");
-      expect(result).toContain("文学");
-      expect(result).toContain("三人称");
-      expect(result).toContain("過去形");
-      expect(result).toContain("芸術家の葛藤を描く長編小説");
-      expect(result).toContain("丁寧な文体で");
+      expect(result.prompt).toContain("月と六文銭");
+      expect(result.prompt).toContain("文学");
+      expect(result.prompt).toContain("三人称");
+      expect(result.prompt).toContain("過去形");
+      expect(result.prompt).toContain("芸術家の葛藤を描く長編小説");
+      expect(result.prompt).toContain("丁寧な文体で");
     });
 
     it("works without project context", () => {
@@ -56,9 +56,9 @@ describe("contextBuilder", () => {
 
       const result = buildSystemPrompt({ scene });
 
-      expect(result).toContain("シーン1");
-      expect(result).toContain("本文");
-      expect(typeof result).toBe("string");
+      expect(result.prompt).toContain("シーン1");
+      expect(result.prompt).toContain("本文");
+      expect(typeof result.prompt).toBe("string");
     });
 
     it("handles empty scene content gracefully", () => {
@@ -70,8 +70,8 @@ describe("contextBuilder", () => {
 
       const result = buildSystemPrompt({ scene });
 
-      expect(result).toContain("空のシーン");
-      expect(typeof result).toBe("string");
+      expect(result.prompt).toContain("空のシーン");
+      expect(typeof result.prompt).toBe("string");
     });
 
     it("includes a novel-writing assistant instruction", () => {
@@ -84,7 +84,7 @@ describe("contextBuilder", () => {
       const result = buildSystemPrompt({ scene });
 
       // System prompt should instruct AI to act as a writing assistant
-      expect(result.length).toBeGreaterThan(0);
+      expect(result.prompt.length).toBeGreaterThan(0);
     });
 
     it("includes codex entries in the system prompt", () => {
@@ -110,9 +110,9 @@ describe("contextBuilder", () => {
 
       const result = buildSystemPrompt({ scene, codexEntries });
 
-      expect(result).toContain("登場キャラクター・設定情報");
-      expect(result).toContain("**太郎** (キャラクター): 主人公の青年");
-      expect(result).toContain("**東京** (場所): 物語の舞台");
+      expect(result.prompt).toContain("登場キャラクター・設定情報");
+      expect(result.prompt).toContain("**太郎** (キャラクター): 主人公の青年");
+      expect(result.prompt).toContain("**東京** (場所): 物語の舞台");
     });
 
     it("includes pinned codex entries in the system prompt", () => {
@@ -132,7 +132,7 @@ describe("contextBuilder", () => {
 
       const result = buildSystemPrompt({ scene, pinnedCodexEntries });
 
-      expect(result).toContain("**魔法の剣** (アイテム): 伝説の武器");
+      expect(result.prompt).toContain("**魔法の剣** (アイテム): 伝説の武器");
     });
 
     it("deduplicates entries that appear in both auto and pinned", () => {
@@ -157,7 +157,7 @@ describe("contextBuilder", () => {
       });
 
       // Should appear only once
-      const matches = result.match(/\*\*太郎\*\*/g);
+      const matches = result.prompt.match(/\*\*太郎\*\*/g);
       expect(matches).toHaveLength(1);
     });
 
@@ -170,7 +170,7 @@ describe("contextBuilder", () => {
 
       const result = buildSystemPrompt({ scene });
 
-      expect(result).not.toContain("登場キャラクター・設定情報");
+      expect(result.prompt).not.toContain("登場キャラクター・設定情報");
     });
 
     it("does not add codex section when entries arrays are empty", () => {
@@ -186,7 +186,7 @@ describe("contextBuilder", () => {
         pinnedCodexEntries: [],
       });
 
-      expect(result).not.toContain("登場キャラクター・設定情報");
+      expect(result.prompt).not.toContain("登場キャラクター・設定情報");
     });
 
     it("uses type label for lore entries", () => {
@@ -206,7 +206,7 @@ describe("contextBuilder", () => {
 
       const result = buildSystemPrompt({ scene, codexEntries });
 
-      expect(result).toContain("**魔法体系** (設定): 世界の魔法ルール");
+      expect(result.prompt).toContain("**魔法体系** (設定): 世界の魔法ルール");
     });
   });
 

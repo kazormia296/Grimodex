@@ -48,11 +48,16 @@ import type {
   SceneContext,
   ProjectContext,
   CodexContext,
+  LayerBreakdown,
 } from "./contextBuilder";
 import { runAgentLoop } from "./agent/agentLoop";
 import { executeTool } from "./agent/toolExecutors";
 import { AGENT_TOOLS } from "./agent/toolDefinitions";
-import { getToolTokenBudget } from "./agent/modelLimits";
+import {
+  getToolTokenBudget,
+  buildThinkingParams,
+  getEffortForTask,
+} from "./agent/modelLimits";
 import { useAiSettingsStore } from "./store";
 import type {
   AgentMessagePayload,
@@ -81,6 +86,7 @@ interface ChatState {
   activeSceneId: string;
   activeProjectId: string | null;
   contextTokenCount: number;
+  contextLayers: LayerBreakdown[];
 
   // Session actions
   loadSessions: (nodeId?: string) => Promise<void>;
@@ -151,6 +157,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
   activeSceneId: "",
   activeProjectId: null,
   contextTokenCount: 0,
+  contextLayers: [],
   agentMode: false,
   agentProgress: null,
 
@@ -305,18 +312,25 @@ export const useChatStore = create<ChatState>()((set, get) => ({
         }
         agentMsgs.push({ role: "user", content });
 
-        // Token budget
+        // Token budget + thinking params
         const aiSettings = useAiSettingsStore.getState().settings;
-        const tokenBudget = getToolTokenBudget(aiSettings?.model ?? "");
+        const currentModel = aiSettings?.model ?? "";
+        const tokenBudget = getToolTokenBudget(currentModel);
+        const agentThinkingParams = buildThinkingParams(
+          currentModel,
+          getEffortForTask("agent"),
+          "summarized",
+        );
 
         // Accumulate tool calls for live metadata update
         const accToolCalls: ToolCallRecord[] = [];
 
-        const { toolCallRecords } = await runAgentLoop({
+        const { toolCallRecords, finalThinkingBlocks } = await runAgentLoop({
           messages: agentMsgs,
           tools: AGENT_TOOLS,
           tokenBudget,
-          sendToLLM: (msgs, tools) => chatApi.sendAgentMessage(msgs, tools),
+          sendToLLM: (msgs, tools) =>
+            chatApi.sendAgentMessage(msgs, tools, agentThinkingParams),
           executeTool,
           onProgress: (progress) => {
             set({ agentProgress: progress });
@@ -361,7 +375,14 @@ export const useChatStore = create<ChatState>()((set, get) => ({
               activeSessionId,
               "assistant",
               lastMsg.content,
-              { metadata: JSON.stringify({ tool_calls: toolCallRecords }) },
+              {
+                metadata: JSON.stringify({
+                  tool_calls: toolCallRecords,
+                  ...(finalThinkingBlocks.length > 0
+                    ? { thinking_blocks: finalThinkingBlocks }
+                    : {}),
+                }),
+              },
             );
           }
         }
@@ -428,7 +449,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
           storySoFarBudget,
         );
 
-        const systemPrompt = buildSystemPrompt({
+        const promptResult = buildSystemPrompt({
           scene: sceneCtx,
           project: projectCtx ?? undefined,
           storySoFar: storySoFar || undefined,
@@ -436,33 +457,51 @@ export const useChatStore = create<ChatState>()((set, get) => ({
           pinnedCodexEntries,
         });
 
-        set({ contextTokenCount: countTokens(systemPrompt) });
+        set({
+          contextTokenCount: promptResult.totalTokens,
+          contextLayers: promptResult.layers,
+        });
 
         const systemMsg: ChatMessage = {
           id: "system",
           sessionId,
           role: "system",
-          content: systemPrompt,
+          content: promptResult.prompt,
           createdAt: new Date().toISOString(),
         };
         messagesForApi.unshift(systemMsg);
       }
 
-      await withNetworkRetry(() =>
-        chatApi.sendChatMessage(messagesForApi, (chunk: string) => {
-          set((s) => {
-            const msgs = [...s.messages];
-            const last = msgs[msgs.length - 1];
-            if (last && last.role === "assistant") {
-              msgs[msgs.length - 1] = {
-                ...last,
-                content: last.content + chunk,
-              };
-            }
-            return { messages: msgs };
-          });
-        }),
+      const chatModel = useAiSettingsStore.getState().settings?.model ?? "";
+      const chatThinkingParams = buildThinkingParams(
+        chatModel,
+        getEffortForTask("chat"),
+        "summarized",
       );
+      const apiPayload = messagesForApi.map((m) => ({
+        role: m.role,
+        content: m.content,
+      }));
+      const { text: responseText, thinkingBlocks: chatThinkingBlocks } =
+        await withNetworkRetry(() =>
+          chatApi.sendChatMessageWithThinking(apiPayload, chatThinkingParams),
+        );
+      const chatMetadata =
+        chatThinkingBlocks.length > 0
+          ? JSON.stringify({ thinking_blocks: chatThinkingBlocks })
+          : undefined;
+      set((s) => {
+        const msgs = [...s.messages];
+        const last = msgs[msgs.length - 1];
+        if (last && last.role === "assistant") {
+          msgs[msgs.length - 1] = {
+            ...last,
+            content: responseText,
+            ...(chatMetadata ? { metadata: chatMetadata } : {}),
+          };
+        }
+        return { messages: msgs };
+      });
 
       if (activeSessionId) {
         const finalMessages = get().messages;
@@ -473,6 +512,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
             activeSessionId,
             "assistant",
             lastMsg.content,
+            ...(chatMetadata ? [{ metadata: chatMetadata }] : []),
           );
         }
       }

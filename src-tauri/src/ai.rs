@@ -320,7 +320,9 @@ pub async fn send_chat(
     api_key: &str,
     ollama_endpoint: &str,
     messages: &[(&str, &str)],
-) -> anyhow::Result<String> {
+    thinking: Option<ThinkingConfig>,
+    effort: Option<String>,
+) -> anyhow::Result<ChatResponse> {
     let client = reqwest::Client::new();
 
     match provider {
@@ -348,6 +350,7 @@ pub async fn send_chat(
             if !system_content.is_empty() {
                 body["system"] = serde_json::Value::String(system_content);
             }
+            apply_thinking_to_body(&mut body, &thinking, &effort);
 
             let resp = client
                 .post(format!("{}/messages", provider.base_url(ollama_endpoint)))
@@ -360,11 +363,7 @@ pub async fn send_chat(
                 .error_for_status()?;
 
             let result: serde_json::Value = resp.json().await?;
-            let text = result["content"][0]["text"]
-                .as_str()
-                .unwrap_or("")
-                .to_string();
-            Ok(text)
+            parse_anthropic_response(&result)
         }
         _ => {
             // OpenAI-compatible format (OpenRouter, OpenAI, Ollama)
@@ -397,13 +396,8 @@ pub async fn send_chat(
             }
 
             let resp = req.json(&body).send().await?.error_for_status()?;
-
             let result: serde_json::Value = resp.json().await?;
-            let text = result["choices"][0]["message"]["content"]
-                .as_str()
-                .unwrap_or("")
-                .to_string();
-            Ok(text)
+            parse_openai_response(&result)
         }
     }
 }
@@ -434,6 +428,9 @@ pub enum AgentMessage {
         content: String,
         #[serde(default)]
         tool_uses: Vec<ToolUsePayload>,
+        /// thinking ブロック（signature 付き）。マルチターン会話で API に返す必要がある。
+        #[serde(default)]
+        thinking_blocks: Vec<ThinkingPayload>,
     },
     #[serde(rename = "tool_result", rename_all = "camelCase")]
     ToolResult {
@@ -468,6 +465,30 @@ pub enum ResponseBlock {
     Thinking {
         content: String,
         summary: Option<String>,
+        signature: Option<String>,
+    },
+}
+
+/// thinking ブロック（マルチターン会話で assistant メッセージに含めるもの）
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ThinkingPayload {
+    pub thinking: String,
+    pub signature: String,
+}
+
+/// Thinking パラメータ設定（設計書 L627-647 準拠）
+#[derive(Debug, Deserialize, Clone)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ThinkingConfig {
+    /// Opus 4.6 / Sonnet 4.6: adaptive thinking
+    Adaptive {
+        effort: String,
+        display: Option<String>,
+    },
+    /// Opus 4.5 / Sonnet 4.5: budget_tokens
+    Enabled {
+        budget_tokens: u32,
+        display: Option<String>,
     },
 }
 
@@ -504,7 +525,12 @@ fn parse_anthropic_response(result: &serde_json::Value) -> anyhow::Result<ChatRe
                 Some("thinking") => {
                     let content = block["thinking"].as_str().unwrap_or("").to_string();
                     let summary = block["summary"].as_str().map(|s| s.to_string());
-                    blocks.push(ResponseBlock::Thinking { content, summary });
+                    let signature = block["signature"].as_str().map(|s| s.to_string());
+                    blocks.push(ResponseBlock::Thinking {
+                        content,
+                        summary,
+                        signature,
+                    });
                 }
                 _ => {}
             }
@@ -555,6 +581,50 @@ fn parse_openai_response(result: &serde_json::Value) -> anyhow::Result<ChatRespo
     })
 }
 
+/// thinking / effort パラメータを Anthropic リクエストボディに適用する。
+fn apply_thinking_to_body(
+    body: &mut serde_json::Value,
+    thinking: &Option<ThinkingConfig>,
+    effort: &Option<String>,
+) {
+    match thinking {
+        Some(ThinkingConfig::Adaptive {
+            effort: t_effort,
+            display,
+        }) => {
+            let mut thinking_obj = serde_json::json!({
+                "type": "adaptive",
+                "effort": t_effort
+            });
+            if let Some(d) = display {
+                thinking_obj["display"] = serde_json::Value::String(d.clone());
+            }
+            body["thinking"] = thinking_obj;
+        }
+        Some(ThinkingConfig::Enabled {
+            budget_tokens,
+            display,
+        }) => {
+            let mut thinking_obj = serde_json::json!({
+                "type": "enabled",
+                "budget_tokens": budget_tokens
+            });
+            if let Some(d) = display {
+                thinking_obj["display"] = serde_json::Value::String(d.clone());
+            }
+            body["thinking"] = thinking_obj;
+            if let Some(e) = effort {
+                body["effort"] = serde_json::Value::String(e.clone());
+            }
+        }
+        None => {
+            if let Some(e) = effort {
+                body["effort"] = serde_json::Value::String(e.clone());
+            }
+        }
+    }
+}
+
 /// Send a tool-aware chat request and return a structured response.
 pub async fn send_chat_with_tools(
     provider: &AiProvider,
@@ -563,6 +633,8 @@ pub async fn send_chat_with_tools(
     ollama_endpoint: &str,
     messages: &[AgentMessage],
     tools: &[AgentToolDef],
+    thinking: Option<ThinkingConfig>,
+    effort: Option<String>,
 ) -> anyhow::Result<ChatResponse> {
     let client = reqwest::Client::new();
 
@@ -589,13 +661,26 @@ pub async fn send_chat_with_tools(
                         anthropic_messages
                             .push(serde_json::json!({ "role": "user", "content": content }));
                     }
-                    AgentMessage::Assistant { content, tool_uses } => {
-                        if tool_uses.is_empty() {
+                    AgentMessage::Assistant {
+                        content,
+                        tool_uses,
+                        thinking_blocks,
+                    } => {
+                        let has_extra = !tool_uses.is_empty() || !thinking_blocks.is_empty();
+                        if !has_extra {
                             anthropic_messages.push(
                                 serde_json::json!({ "role": "assistant", "content": content }),
                             );
                         } else {
                             let mut content_blocks: Vec<serde_json::Value> = Vec::new();
+                            // thinking ブロックを先に追加（API 要件: signature 付き）
+                            for tb in thinking_blocks {
+                                content_blocks.push(serde_json::json!({
+                                    "type": "thinking",
+                                    "thinking": tb.thinking,
+                                    "signature": tb.signature
+                                }));
+                            }
                             if !content.is_empty() {
                                 content_blocks
                                     .push(serde_json::json!({ "type": "text", "text": content }));
@@ -654,16 +739,19 @@ pub async fn send_chat_with_tools(
             if !system_content.is_empty() {
                 body["system"] = serde_json::Value::String(system_content);
             }
+            // thinking / effort パラメータを追加
+            apply_thinking_to_body(&mut body, &thinking, &effort);
 
-            let resp = client
+            let mut req = client
                 .post(format!("{}/messages", provider.base_url(ollama_endpoint)))
                 .header("x-api-key", api_key)
                 .header("anthropic-version", "2023-06-01")
-                .header("content-type", "application/json")
-                .json(&body)
-                .send()
-                .await?
-                .error_for_status()?;
+                .header("content-type", "application/json");
+            // interleaved thinking 用ベータヘッダー
+            if thinking.is_some() {
+                req = req.header("anthropic-beta", "interleaved-thinking-2025-05-14");
+            }
+            let resp = req.json(&body).send().await?.error_for_status()?;
 
             let result: serde_json::Value = resp.json().await?;
             parse_anthropic_response(&result)
@@ -681,7 +769,9 @@ pub async fn send_chat_with_tools(
                         openai_messages
                             .push(serde_json::json!({ "role": "system", "content": content }));
                     }
-                    AgentMessage::Assistant { content, tool_uses } => {
+                    AgentMessage::Assistant {
+                        content, tool_uses, ..
+                    } => {
                         if tool_uses.is_empty() {
                             openai_messages.push(
                                 serde_json::json!({ "role": "assistant", "content": content }),

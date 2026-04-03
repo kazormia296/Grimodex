@@ -4,23 +4,38 @@ import type { ToolCallRecord } from "../agent/agentTypes";
 import { ChatMessageActions } from "./ChatMessageActions";
 import { MessageBadge } from "./MessageBadge";
 import { ToolCallBlock } from "./ToolCallBlock";
+import { ThinkingBlock } from "./ThinkingBlock";
 
-function parseToolCalls(metadata: string | null | undefined): ToolCallRecord[] {
-  if (!metadata) return [];
+interface ParsedMetadata {
+  tool_calls?: ToolCallRecord[];
+  thinking_blocks?: Array<{
+    thinking: string;
+    signature: string;
+    summary?: string;
+  }>;
+}
+
+function parseMetadata(metadata: string | null | undefined): ParsedMetadata {
+  if (!metadata) return {};
   try {
     const parsed: unknown = JSON.parse(metadata);
-    if (
-      parsed &&
-      typeof parsed === "object" &&
-      "tool_calls" in parsed &&
-      Array.isArray((parsed as { tool_calls: unknown }).tool_calls)
-    ) {
-      return (parsed as { tool_calls: ToolCallRecord[] }).tool_calls;
+    if (parsed && typeof parsed === "object") {
+      return parsed as ParsedMetadata;
     }
   } catch {
     // corrupted metadata
   }
-  return [];
+  return {};
+}
+
+function parseToolCalls(metadata: string | null | undefined): ToolCallRecord[] {
+  return parseMetadata(metadata).tool_calls ?? [];
+}
+
+function parseThinkingBlocks(
+  metadata: string | null | undefined,
+): Array<{ thinking: string; summary?: string }> {
+  return parseMetadata(metadata).thinking_blocks ?? [];
 }
 
 interface ChatMessageProps {
@@ -41,6 +56,7 @@ export function ChatMessage({
   const isAssistant = msg.role === "assistant";
   const showActions = !isStreaming && msg.content.length > 0;
   const toolCalls = isAssistant ? parseToolCalls(msg.metadata) : [];
+  const thinkingBlocks = isAssistant ? parseThinkingBlocks(msg.metadata) : [];
 
   return (
     <div
@@ -59,6 +75,17 @@ export function ChatMessage({
       >
         {isAssistant ? (
           <>
+            {thinkingBlocks.length > 0 && (
+              <div className="mb-2 space-y-1">
+                {thinkingBlocks.map((tb, i) => (
+                  <ThinkingBlock
+                    key={i}
+                    content={tb.thinking}
+                    summary={tb.summary}
+                  />
+                ))}
+              </div>
+            )}
             {toolCalls.length > 0 && (
               <div className="mb-2 space-y-1">
                 {toolCalls.map((record, i) => (

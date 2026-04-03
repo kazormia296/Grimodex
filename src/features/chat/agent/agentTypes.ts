@@ -17,6 +17,12 @@ export interface AgentToolDefinition {
   };
 }
 
+// thinking ブロック（マルチターン会話で signature ごと API に返す必要がある）
+export interface ThinkingBlock {
+  thinking: string;
+  signature: string;
+}
+
 // LLMレスポンスのブロック
 export type ResponseBlock =
   | { type: "text"; content: string }
@@ -26,7 +32,7 @@ export type ResponseBlock =
       name: string;
       input: Record<string, unknown>;
     }
-  | { type: "thinking"; content: string; summary?: string };
+  | { type: "thinking"; content: string; summary?: string; signature?: string };
 
 // LLMレスポンス（パース済み）
 export interface AgentLLMResponse {
@@ -45,7 +51,13 @@ export interface ToolUseBlock {
 export type AgentMessagePayload =
   | { role: "user"; content: string }
   | { role: "system"; content: string }
-  | { role: "assistant"; content: string; toolUses?: ToolUseBlock[] }
+  | {
+      role: "assistant";
+      content: string;
+      toolUses?: ToolUseBlock[];
+      /** thinking ブロック（signature 付き）。マルチターン会話でそのまま API に返す。 */
+      thinkingBlocks?: ThinkingBlock[];
+    }
   | {
       role: "tool_result";
       toolUseId: string;

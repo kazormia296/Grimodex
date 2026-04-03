@@ -6,6 +6,7 @@ import type {
   ToolResult,
   AgentLoopProgress,
   ResponseBlock,
+  ThinkingBlock,
   ToolUseBlock,
 } from "./agentTypes";
 
@@ -36,6 +37,8 @@ export interface AgentLoopOptions {
 export interface AgentLoopResult {
   finalText: string;
   toolCallRecords: ToolCallRecord[];
+  /** 最終レスポンスの thinking ブロック（UI 表示・metadata 保存用） */
+  finalThinkingBlocks: ThinkingBlock[];
 }
 
 function extractText(blocks: ResponseBlock[]): string {
@@ -43,6 +46,17 @@ function extractText(blocks: ResponseBlock[]): string {
     .filter((b): b is { type: "text"; content: string } => b.type === "text")
     .map((b) => b.content)
     .join("\n");
+}
+
+function extractThinkingBlocks(blocks: ResponseBlock[]): ThinkingBlock[] {
+  return blocks
+    .filter(
+      (b): b is { type: "thinking"; content: string; signature: string } =>
+        b.type === "thinking" &&
+        typeof b.signature === "string" &&
+        b.signature.length > 0,
+    )
+    .map((b) => ({ thinking: b.content, signature: b.signature }));
 }
 
 function extractToolUses(blocks: ResponseBlock[]): Array<{
@@ -89,38 +103,58 @@ export async function runAgentLoop(
     const textContent = extractText(response.blocks);
     if (textContent) onTextChunk(textContent);
 
+    const currentThinkingBlocks = extractThinkingBlocks(response.blocks);
+
     if (
       response.stopReason === "end_turn" ||
       response.stopReason === "max_tokens"
     ) {
-      return { finalText: textContent, toolCallRecords };
+      return {
+        finalText: textContent,
+        toolCallRecords,
+        finalThinkingBlocks: currentThinkingBlocks,
+      };
     }
 
     if (response.stopReason !== "tool_use") {
-      return { finalText: textContent, toolCallRecords };
+      return {
+        finalText: textContent,
+        toolCallRecords,
+        finalThinkingBlocks: currentThinkingBlocks,
+      };
     }
 
     // Process tool_use blocks
     const toolUses = extractToolUses(response.blocks);
     if (toolUses.length === 0) {
-      return { finalText: textContent, toolCallRecords };
+      return {
+        finalText: textContent,
+        toolCallRecords,
+        finalThinkingBlocks: currentThinkingBlocks,
+      };
     }
 
     // If limit was already inserted and LLM still wants tools, stop
     if (limitMessageInserted) {
-      return { finalText: textContent, toolCallRecords };
+      return {
+        finalText: textContent,
+        toolCallRecords,
+        finalThinkingBlocks: currentThinkingBlocks,
+      };
     }
 
-    // Append assistant message with tool_uses to conversation
+    // Append assistant message with tool_uses (and thinking blocks) to conversation
     const assistantToolUses: ToolUseBlock[] = toolUses.map((tu) => ({
       id: tu.id,
       name: tu.name,
       input: tu.input,
     }));
+    const thinkingBlocks = extractThinkingBlocks(response.blocks);
     conversation.push({
       role: "assistant",
       content: textContent,
       toolUses: assistantToolUses,
+      ...(thinkingBlocks.length > 0 ? { thinkingBlocks } : {}),
     });
 
     // Execute each tool

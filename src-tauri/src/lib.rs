@@ -241,7 +241,9 @@ struct ChatMessagePayload {
 async fn send_chat_message(
     ai_path: tauri::State<'_, AiSettingsPath>,
     messages: Vec<ChatMessagePayload>,
-) -> Result<String, AppError> {
+    thinking: Option<ai::ThinkingConfig>,
+    effort: Option<String>,
+) -> Result<ai::ChatResponse, AppError> {
     let settings = ai::read_ai_settings(&ai_path.path);
     let api_key = ai::get_api_key(&settings.provider)?
         .ok_or_else(|| anyhow::anyhow!("No API key configured for {}", settings.provider))?;
@@ -254,6 +256,8 @@ async fn send_chat_message(
             .iter()
             .map(|m| (m.role.as_str(), m.content.as_str()))
             .collect::<Vec<_>>(),
+        thinking,
+        effort,
     )
     .await?;
     Ok(result)
@@ -266,6 +270,8 @@ async fn send_agent_message(
     ai_path: tauri::State<'_, AiSettingsPath>,
     messages: Vec<ai::AgentMessage>,
     tools: Vec<ai::AgentToolDef>,
+    thinking: Option<ai::ThinkingConfig>,
+    effort: Option<String>,
 ) -> Result<ai::ChatResponse, AppError> {
     let settings = ai::read_ai_settings(&ai_path.path);
     let api_key = ai::get_api_key(&settings.provider)?
@@ -277,6 +283,8 @@ async fn send_agent_message(
         &settings.ollama_endpoint,
         &messages,
         &tools,
+        thinking,
+        effort,
     )
     .await?;
     Ok(result)
