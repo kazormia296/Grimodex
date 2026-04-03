@@ -73,6 +73,7 @@ import { listCodexEntries } from "@/features/codex/api";
 import { findMentionedEntries } from "@/features/codex/codexMatcher";
 import {
   getDescendantsBFS,
+  getChildrenFromArray,
   buildChildrenContext,
   computeChildrenTokenBudget,
 } from "@/features/codex/childrenBudget";
@@ -444,15 +445,28 @@ export const useChatStore = create<ChatState>()((set, get) => ({
           return childrenContext ? { ...ctx, childrenContext } : ctx;
         });
 
-        let pinnedCodexEntries: CodexContext[] = [];
+        let pinnedCodexEntries: import("./contextBuilder").PinnedCodexContext[] =
+          [];
         if (activeSessionId) {
           const pinned = await chatApi.listPinnedCodexEntries(activeSessionId);
-          pinnedCodexEntries = pinned.map((e) => ({
-            id: e.id,
-            type: e.type,
-            name: e.name,
-            summary: e.summary ?? "",
-          }));
+          pinnedCodexEntries = pinned.map((e) => {
+            const children = e.withChildren
+              ? getChildrenFromArray(e.id, allEntries).map((c) => ({
+                  id: c.id,
+                  type: c.type,
+                  name: c.name,
+                  summary: c.summary ?? "",
+                }))
+              : undefined;
+            return {
+              id: e.id,
+              type: e.type,
+              name: e.name,
+              summary: e.summary ?? "",
+              withChildren: e.withChildren,
+              children,
+            };
+          });
         }
 
         // Layer 2: storySoFar — use L2 context budget % from settings (default 10%)

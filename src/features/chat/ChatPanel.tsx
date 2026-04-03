@@ -18,7 +18,6 @@ import { useAiSettingsStore } from "./store";
 import { normalizeModelId } from "@/features/attribution/AuthorshipMark";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { modelSupportsTools } from "./agent/modelLimits";
-import type { CodexEntry } from "@/features/codex/api";
 
 interface SnippetDialogState {
   open: boolean;
@@ -60,7 +59,9 @@ export function ChatPanel() {
   }, [activeSceneId, setActiveSceneId]);
 
   // Pinned codex entries
-  const [pinnedEntries, setPinnedEntries] = useState<CodexEntry[]>([]);
+  const [pinnedEntries, setPinnedEntries] = useState<
+    import("./chatApi").PinnedCodexEntryWithData[]
+  >([]);
   const [pinDialogOpen, setPinDialogOpen] = useState(false);
 
   useEffect(() => {
@@ -87,6 +88,16 @@ export function ChatPanel() {
     async (entryId: string) => {
       if (!activeSessionId) return;
       await chatApi.unpinCodexEntry(activeSessionId, entryId);
+      const updated = await chatApi.listPinnedCodexEntries(activeSessionId);
+      setPinnedEntries(updated);
+    },
+    [activeSessionId],
+  );
+
+  const handleTogglePinChildren = useCallback(
+    async (entryId: string, withChildren: boolean) => {
+      if (!activeSessionId) return;
+      await chatApi.togglePinChildren(activeSessionId, entryId, withChildren);
       const updated = await chatApi.listPinnedCodexEntries(activeSessionId);
       setPinnedEntries(updated);
     },
@@ -282,8 +293,12 @@ export function ChatPanel() {
       <PinCodexDialog
         open={pinDialogOpen}
         pinnedIds={pinnedIds}
+        withChildrenIds={
+          new Set(pinnedEntries.filter((e) => e.withChildren).map((e) => e.id))
+        }
         onPin={handlePin}
         onUnpin={handleUnpin}
+        onToggleChildren={handleTogglePinChildren}
         onClose={() => setPinDialogOpen(false)}
       />
       {sessionsPanelOpen && (

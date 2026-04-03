@@ -4,6 +4,10 @@ import { chatSessions, chatMessages, codexEntries } from "@/db/schema";
 import { eq, desc, inArray } from "drizzle-orm";
 import type { ChatSession, ChatMessage, MessageRole } from "./chatTypes";
 import type { CodexEntry } from "@/features/codex/api";
+import {
+  normalizePinnedCodex,
+  type PinnedCodexEntry,
+} from "./pinnedCodexTypes";
 
 // --- AI message sending (existing) ---
 
@@ -255,36 +259,52 @@ export async function updateSessionTitle(
 
 // --- Pinned Codex entries (now stored as JSON in chat_sessions.pinned_codex) ---
 
-function safeParsePinnedCodex(raw: string | null): string[] {
+function safeParsePinnedCodex(raw: string | null): PinnedCodexEntry[] {
   if (!raw) return [];
   try {
     const parsed: unknown = JSON.parse(raw);
-    if (Array.isArray(parsed))
-      return parsed.filter((v) => typeof v === "string");
+    return normalizePinnedCodex(parsed);
   } catch {
     // corrupted JSON — treat as empty
   }
   return [];
 }
 
+export type PinnedCodexEntryWithData = CodexEntry & {
+  withChildren: boolean;
+};
+
 export async function listPinnedCodexEntries(
   sessionId: string,
-): Promise<CodexEntry[]> {
+): Promise<PinnedCodexEntryWithData[]> {
   const rows = await db
     .select({ pinnedCodex: chatSessions.pinnedCodex })
     .from(chatSessions)
     .where(eq(chatSessions.id, sessionId));
   if (!rows[0]) return [];
 
-  const ids = safeParsePinnedCodex(rows[0].pinnedCodex);
-  if (ids.length === 0) return [];
+  const pinned = safeParsePinnedCodex(rows[0].pinnedCodex);
+  if (pinned.length === 0) return [];
 
-  return db.select().from(codexEntries).where(inArray(codexEntries.id, ids));
+  const ids = pinned.map((p) => p.id);
+  const entries = await db
+    .select()
+    .from(codexEntries)
+    .where(inArray(codexEntries.id, ids));
+
+  const withChildrenMap = new Map(
+    pinned.map((p) => [p.id, p.withChildren ?? false]),
+  );
+  return entries.map((e) => ({
+    ...e,
+    withChildren: withChildrenMap.get(e.id) ?? false,
+  }));
 }
 
 export async function pinCodexEntry(
   sessionId: string,
   entryId: string,
+  withChildren = false,
 ): Promise<void> {
   const rows = await db
     .select({ pinnedCodex: chatSessions.pinnedCodex })
@@ -292,14 +312,35 @@ export async function pinCodexEntry(
     .where(eq(chatSessions.id, sessionId));
   if (!rows[0]) return;
 
-  const ids = safeParsePinnedCodex(rows[0].pinnedCodex);
-  if (!ids.includes(entryId)) {
-    ids.push(entryId);
+  const pinned = safeParsePinnedCodex(rows[0].pinnedCodex);
+  if (!pinned.some((p) => p.id === entryId)) {
+    pinned.push({ id: entryId, withChildren });
     await db
       .update(chatSessions)
-      .set({ pinnedCodex: JSON.stringify(ids) })
+      .set({ pinnedCodex: JSON.stringify(pinned) })
       .where(eq(chatSessions.id, sessionId));
   }
+}
+
+export async function togglePinChildren(
+  sessionId: string,
+  entryId: string,
+  withChildren: boolean,
+): Promise<void> {
+  const rows = await db
+    .select({ pinnedCodex: chatSessions.pinnedCodex })
+    .from(chatSessions)
+    .where(eq(chatSessions.id, sessionId));
+  if (!rows[0]) return;
+
+  const pinned = safeParsePinnedCodex(rows[0].pinnedCodex);
+  const updated = pinned.map((p) =>
+    p.id === entryId ? { ...p, withChildren } : p,
+  );
+  await db
+    .update(chatSessions)
+    .set({ pinnedCodex: JSON.stringify(updated) })
+    .where(eq(chatSessions.id, sessionId));
 }
 
 export async function unpinCodexEntry(
@@ -312,8 +353,8 @@ export async function unpinCodexEntry(
     .where(eq(chatSessions.id, sessionId));
   if (!rows[0]) return;
 
-  const ids = safeParsePinnedCodex(rows[0].pinnedCodex);
-  const filtered = ids.filter((id) => id !== entryId);
+  const pinned = safeParsePinnedCodex(rows[0].pinnedCodex);
+  const filtered = pinned.filter((p) => p.id !== entryId);
   await db
     .update(chatSessions)
     .set({ pinnedCodex: JSON.stringify(filtered) })

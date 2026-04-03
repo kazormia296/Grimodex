@@ -24,12 +24,17 @@ export interface CodexContext {
   childrenContext?: string; // pre-computed descendant summaries within budget
 }
 
+export interface PinnedCodexContext extends CodexContext {
+  withChildren?: boolean;
+  children?: CodexContext[]; // full content children (budget ignored)
+}
+
 export interface BuildSystemPromptInput {
   scene: SceneContext;
   project?: ProjectContext;
   storySoFar?: string;
   codexEntries?: CodexContext[];
-  pinnedCodexEntries?: CodexContext[];
+  pinnedCodexEntries?: PinnedCodexContext[];
 }
 
 export interface LayerBreakdown {
@@ -103,9 +108,24 @@ export function buildSystemPrompt(
   });
 
   // L4: Codex entries
+  // Build pinned entries with children injected (full content, budget ignored)
+  const pinnedChildIds = new Set<string>();
+  const pinnedWithChildren: CodexContext[] = [];
+  for (const pinned of input.pinnedCodexEntries ?? []) {
+    pinnedWithChildren.push(pinned);
+    if (pinned.withChildren && pinned.children) {
+      for (const child of pinned.children) {
+        if (!pinnedChildIds.has(child.id)) {
+          pinnedChildIds.add(child.id);
+          pinnedWithChildren.push(child);
+        }
+      }
+    }
+  }
+
   const allCodex = deduplicateById([
-    ...(input.codexEntries ?? []),
-    ...(input.pinnedCodexEntries ?? []),
+    ...(input.codexEntries ?? []).filter((e) => !pinnedChildIds.has(e.id)),
+    ...pinnedWithChildren,
   ]);
   let l4Text = "";
   if (allCodex.length > 0) {

@@ -1,6 +1,7 @@
 import { useEffect, useRef } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { useCodexStore } from "@/features/codex/codexStore";
+import { getChildrenFromArray } from "@/features/codex/childrenBudget";
 import type { CodexEntry } from "@/features/codex/api";
 
 const typeLabels: Record<string, string> = {
@@ -13,19 +14,23 @@ const typeLabels: Record<string, string> = {
 function PinCodexVirtualList({
   entries,
   pinnedIds,
+  withChildrenIds,
   onPin,
   onUnpin,
+  onToggleChildren,
 }: {
   entries: CodexEntry[];
   pinnedIds: Set<string>;
+  withChildrenIds: Set<string>;
   onPin: (id: string) => void;
   onUnpin: (id: string) => void;
+  onToggleChildren: (id: string, withChildren: boolean) => void;
 }) {
   const parentRef = useRef<HTMLDivElement>(null);
   const virtualizer = useVirtualizer({
     count: entries.length,
     getScrollElement: () => parentRef.current,
-    estimateSize: () => 32,
+    estimateSize: () => 48,
     overscan: 5,
   });
 
@@ -41,6 +46,10 @@ function PinCodexVirtualList({
         {virtualizer.getVirtualItems().map((virtualItem) => {
           const entry = entries[virtualItem.index];
           const isPinned = pinnedIds.has(entry.id);
+          const hasChildren =
+            getChildrenFromArray(entry.id, entries).length > 0;
+          const isWithChildren = withChildrenIds.has(entry.id);
+
           return (
             <div
               key={entry.id}
@@ -52,8 +61,9 @@ function PinCodexVirtualList({
                 height: `${virtualItem.size}px`,
                 transform: `translateY(${virtualItem.start}px)`,
               }}
+              className="flex flex-col justify-center rounded px-2 hover:bg-accent"
             >
-              <label className="flex h-full cursor-pointer items-center gap-2 rounded px-2 text-sm hover:bg-accent">
+              <label className="flex cursor-pointer items-center gap-2 text-sm">
                 <input
                   type="checkbox"
                   checked={isPinned}
@@ -67,6 +77,19 @@ function PinCodexVirtualList({
                   {typeLabels[entry.type] ?? entry.type}
                 </span>
               </label>
+              {isPinned && hasChildren && (
+                <label className="ml-5 flex cursor-pointer items-center gap-1.5 text-xs text-muted-foreground">
+                  <input
+                    type="checkbox"
+                    checked={isWithChildren}
+                    onChange={(e) =>
+                      onToggleChildren(entry.id, e.target.checked)
+                    }
+                    className="rounded"
+                  />
+                  子エントリを含める
+                </label>
+              )}
             </div>
           );
         })}
@@ -78,16 +101,20 @@ function PinCodexVirtualList({
 interface PinCodexDialogProps {
   open: boolean;
   pinnedIds: Set<string>;
+  withChildrenIds: Set<string>;
   onPin: (entryId: string) => void;
   onUnpin: (entryId: string) => void;
+  onToggleChildren: (entryId: string, withChildren: boolean) => void;
   onClose: () => void;
 }
 
 export function PinCodexDialog({
   open,
   pinnedIds,
+  withChildrenIds,
   onPin,
   onUnpin,
+  onToggleChildren,
   onClose,
 }: PinCodexDialogProps) {
   const entries = useCodexStore((s) => s.entries);
@@ -105,10 +132,10 @@ export function PinCodexDialog({
       onClick={onClose}
     >
       <div
-        className="w-80 max-h-96 rounded-lg border border-border bg-background p-4 shadow-lg"
+        className="max-h-96 w-80 rounded-lg border border-border bg-background p-4 shadow-lg"
         onClick={(e) => e.stopPropagation()}
       >
-        <h3 className="text-sm font-semibold mb-3">Codexエントリをピン留め</h3>
+        <h3 className="mb-3 text-sm font-semibold">Codexエントリをピン留め</h3>
         {entries.length === 0 ? (
           <p className="text-xs text-muted-foreground">
             Codexエントリがありません
@@ -117,8 +144,10 @@ export function PinCodexDialog({
           <PinCodexVirtualList
             entries={entries}
             pinnedIds={pinnedIds}
+            withChildrenIds={withChildrenIds}
             onPin={onPin}
             onUnpin={onUnpin}
+            onToggleChildren={onToggleChildren}
           />
         )}
         <button
