@@ -1,4 +1,4 @@
-import { useState, useCallback } from "react";
+import { useState, useCallback, useMemo } from "react";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { useSceneStore } from "@/features/tree/store";
 import { loadSceneContent } from "@/features/tree/api";
@@ -22,22 +22,24 @@ export function StorySoFarCoverage() {
   const [failedCount, setFailedCount] = useState(0);
 
   const currentScene = nodes.find((n) => n.id === activeSceneId);
-  if (!currentScene) return null;
 
-  // Count preceding scenes with/without synopsis
-  const precedingScenes = nodes.filter(
-    (n) =>
-      n.nodeType === "scene" &&
-      n.id !== activeSceneId &&
-      n.sortOrder < currentScene.sortOrder,
+  // Compute derived state before any early returns (Rules of Hooks)
+  const precedingScenes = useMemo(
+    () =>
+      currentScene
+        ? nodes.filter(
+            (n) =>
+              n.nodeType === "scene" &&
+              n.id !== activeSceneId &&
+              n.sortOrder < currentScene.sortOrder,
+          )
+        : [],
+    [nodes, activeSceneId, currentScene],
   );
 
   const totalPreceding = precedingScenes.length;
   const withSynopsis = precedingScenes.filter((n) => n.synopsis?.trim()).length;
   const coverage = totalPreceding === 0 ? 1 : withSynopsis / totalPreceding;
-
-  // Hide if coverage is sufficient or no preceding scenes
-  if (totalPreceding === 0 || coverage >= 1.0) return null;
 
   const handleGenerateAll = useCallback(async () => {
     const missing = precedingScenes.filter((n) => !n.synopsis?.trim());
@@ -77,6 +79,10 @@ export function StorySoFarCoverage() {
       toast.success(`${succeeded}件のSynopsisを生成しました`);
     }
   }, [precedingScenes, updateSynopsis]);
+
+  // Early returns after all hooks
+  if (!currentScene) return null;
+  if (totalPreceding === 0 || coverage >= 1.0) return null;
 
   const coverageLabel = `${withSynopsis}/${totalPreceding}`;
 
