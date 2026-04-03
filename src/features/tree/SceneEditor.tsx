@@ -18,14 +18,12 @@ import { CodexPopover } from "@/features/editor/CodexPopover";
 import { useAttribution } from "@/features/attribution/useAttribution";
 import { useCursorEffect } from "@/features/editor/useCursorEffect";
 import { useCursorSettingsStore } from "@/features/editor/cursorSettingsStore";
-import { useAttributionStore } from "@/features/attribution/attributionStore";
 import { AttributionOverrideMenu } from "@/features/attribution/AttributionOverrideMenu";
 import {
   saveAuthorshipSpans,
   loadAuthorshipSpans,
   spansToMarkData,
 } from "@/features/attribution/api";
-import type { ToolbarSlot } from "@/features/editor/Toolbar";
 import { VerticalPreview } from "@/features/editor/VerticalPreview";
 import { EditorContextMenu } from "@/features/editor/EditorContextMenu";
 import { FindReplaceBar } from "@/features/editor/FindReplaceBar";
@@ -65,6 +63,7 @@ export function SceneEditor() {
   const editorContainerRef = useRef<HTMLDivElement>(null);
   const [findOpen, setFindOpen] = useState(false);
   const [findShowReplace, setFindShowReplace] = useState(false);
+  const [verticalPreviewOpen, setVerticalPreviewOpen] = useState(false);
 
   const setIsDirtyRef = useRef(setIsDirty);
   setIsDirtyRef.current = setIsDirty;
@@ -227,43 +226,10 @@ export function SceneEditor() {
 
   // Typewriter cursor effect
   const cursorAnimation = useCursorSettingsStore((s) => s.cursorAnimation);
-  const toggleCursorAnimation = useCursorSettingsStore(
-    (s) => s.toggleCursorAnimation,
-  );
   useCursorEffect(editor, cursorAnimation);
 
   // Attribution visualization (Task 4.2)
   useAttribution(editor);
-  const showAttribution = useAttributionStore((s) => s.showAttribution);
-  const toggleAttribution = useAttributionStore((s) => s.toggleAttribution);
-
-  const cursorAnimationSlot: ToolbarSlot = {
-    key: "cursor-animation-toggle",
-    render: () => (
-      <button
-        type="button"
-        aria-label="カーソルアニメーション"
-        className={cursorAnimation ? "bg-muted" : ""}
-        onClick={toggleCursorAnimation}
-      >
-        カーソル
-      </button>
-    ),
-  };
-
-  const attributionSlot: ToolbarSlot = {
-    key: "attribution-toggle",
-    render: () => (
-      <button
-        type="button"
-        aria-label="帰属表示"
-        className={showAttribution ? "bg-muted" : ""}
-        onClick={toggleAttribution}
-      >
-        帰属
-      </button>
-    ),
-  };
 
   // Load content when active scene changes
   useEffect(() => {
@@ -334,7 +300,8 @@ export function SceneEditor() {
     <div className="flex flex-col h-full">
       <Toolbar
         editor={editor}
-        extraSlots={[cursorAnimationSlot, attributionSlot]}
+        onFindReplace={() => { setFindOpen(true); setFindShowReplace(true); }}
+        onVerticalPreview={() => setVerticalPreviewOpen(true)}
       />
       <SynopsisHeader sceneId={activeSceneId} />
       <FindReplaceBar
@@ -382,9 +349,12 @@ export function SceneEditor() {
           >
             履歴
           </button>
-          <VerticalPreview />
         </div>
       </div>
+      <VerticalPreview
+        open={verticalPreviewOpen}
+        onClose={() => setVerticalPreviewOpen(false)}
+      />
       <RevisionHistoryModal />
     </div>
   );

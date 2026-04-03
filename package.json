@@ -21,6 +21,7 @@
     "@tauri-apps/plugin-dialog": "^2.6.0",
     "@tauri-apps/plugin-opener": "^2",
     "@tiptap/extension-character-count": "^3.22.1",
+    "@tiptap/extension-link": "^3.21.0",
     "@tiptap/extension-placeholder": "^3.22.1",
     "@tiptap/extension-typography": "^3.22.1",
     "@tiptap/extension-underline": "^3.22.1",

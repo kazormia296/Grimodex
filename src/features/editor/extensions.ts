@@ -1,6 +1,7 @@
 import StarterKit from "@tiptap/starter-kit";
 import { Markdown } from "tiptap-markdown";
 import Underline from "@tiptap/extension-underline";
+import Link from "@tiptap/extension-link";
 import Placeholder from "@tiptap/extension-placeholder";
 import CharacterCount from "@tiptap/extension-character-count";
 import Typography from "@tiptap/extension-typography";
@@ -22,6 +23,10 @@ export function getEditorExtensions(): Extensions {
     Markdown.configure({ html: true }),
     // Official extensions
     Underline,
+    Link.configure({
+      openOnClick: false,
+      HTMLAttributes: { target: "_blank", rel: "noopener noreferrer" },
+    }),
     Placeholder.configure({ placeholder: "ここに書き始める…" }),
     CharacterCount,
     Typography,
