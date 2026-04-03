@@ -7,6 +7,11 @@ import {
   snippets,
 } from "@/db/schema";
 import { eq, desc, inArray } from "drizzle-orm";
+
+export interface SessionExtractions {
+  codex: Array<{ id: string; name: string; type: string }>;
+  snippets: Array<{ id: string; title: string }>;
+}
 import type { ChatSession, MessageRole } from "./chatTypes";
 
 export interface SessionWithStats extends ChatSession {
@@ -138,6 +143,38 @@ export async function listSessionsWithStats(
         : null,
     };
   });
+}
+
+/**
+ * List codex entries and snippets extracted from a specific chat session.
+ */
+export async function listExtractionsBySession(
+  sessionId: string,
+): Promise<SessionExtractions> {
+  const msgs = await db
+    .select({ id: chatMessages.id })
+    .from(chatMessages)
+    .where(eq(chatMessages.sessionId, sessionId));
+
+  if (msgs.length === 0) return { codex: [], snippets: [] };
+
+  const msgIds = msgs.map((m) => m.id);
+
+  const codex = await db
+    .select({
+      id: codexEntries.id,
+      name: codexEntries.name,
+      type: codexEntries.type,
+    })
+    .from(codexEntries)
+    .where(inArray(codexEntries.sourceChatMessageId, msgIds));
+
+  const snips = await db
+    .select({ id: snippets.id, title: snippets.title })
+    .from(snippets)
+    .where(inArray(snippets.sourceChatMessageId, msgIds));
+
+  return { codex, snippets: snips };
 }
 
 /**

@@ -9,6 +9,7 @@ import {
 } from "./chatHistoryStore";
 import { SessionCard } from "./components/SessionCard";
 import { useTreeStore } from "@/features/tree/treeStore";
+import { useTabStore } from "@/features/editor/tabStore";
 import type { SortMode } from "./chatHistoryStore";
 
 const DEFAULT_PROJECT_ID = "default-project";
@@ -77,11 +78,47 @@ export function ChatHistoryPanel() {
     return map;
   }, [nodes]);
 
-  // Scene options for filter dropdown
-  const sceneOptions = useMemo(
-    () => nodes.filter((n) => n.nodeType === "scene"),
-    [nodes],
-  );
+  // Scene filter dropdown: Part > Chapter > Scene hierarchy
+  const sceneGroups = useMemo(() => {
+    const partTitles = new Map(
+      nodes.filter((n) => n.nodeType === "part").map((n) => [n.id, n.title]),
+    );
+    const chapterMap = new Map(
+      nodes
+        .filter((n) => n.nodeType === "chapter")
+        .map((n) => [n.id, { title: n.title, parentId: n.parentId }]),
+    );
+    const sceneNodes = nodes.filter((n) => n.nodeType === "scene");
+
+    const byChapter = new Map<
+      string | null,
+      { groupLabel: string; scenes: typeof sceneNodes }
+    >();
+    for (const scene of sceneNodes) {
+      const chapterId = scene.parentId;
+      if (!byChapter.has(chapterId)) {
+        let groupLabel: string;
+        if (chapterId === null) {
+          groupLabel = "Uncategorized";
+        } else {
+          const chapter = chapterMap.get(chapterId);
+          if (chapter) {
+            const partTitle = chapter.parentId
+              ? partTitles.get(chapter.parentId)
+              : null;
+            groupLabel = partTitle
+              ? `${partTitle} / ${chapter.title}`
+              : chapter.title;
+          } else {
+            groupLabel = chapterId;
+          }
+        }
+        byChapter.set(chapterId, { groupLabel, scenes: [] });
+      }
+      byChapter.get(chapterId)!.scenes.push(scene);
+    }
+    return [...byChapter.values()];
+  }, [nodes]);
 
   useEffect(() => {
     loadSessions(DEFAULT_PROJECT_ID);
@@ -149,9 +186,8 @@ export function ChatHistoryPanel() {
     return [...bySession.entries()];
   }, [searchResults, isSearchMode]);
 
-  const totalCount = isSearchMode
-    ? searchGrouped.length
-    : filteredSessions.length;
+  const totalHits = searchResults.length;
+  const totalCount = filteredSessions.length;
 
   return (
     <div className="flex h-full flex-col">
@@ -161,7 +197,7 @@ export function ChatHistoryPanel() {
           Chat history
         </span>
         <span className="text-[10px] text-muted-foreground">
-          {totalCount} sessions
+          {isSearchMode ? `${totalHits} hits` : `${totalCount} sessions`}
         </span>
       </div>
 
@@ -204,10 +240,14 @@ export function ChatHistoryPanel() {
           className="h-5 max-w-[110px] rounded border border-border bg-background px-1 text-[10px] text-foreground focus:outline-none"
         >
           <option value="">All scenes</option>
-          {sceneOptions.map((n) => (
-            <option key={n.id} value={n.id}>
-              {n.title}
-            </option>
+          {sceneGroups.map((group) => (
+            <optgroup key={group.groupLabel} label={group.groupLabel}>
+              {group.scenes.map((scene) => (
+                <option key={scene.id} value={scene.id}>
+                  {scene.title}
+                </option>
+              ))}
+            </optgroup>
           ))}
         </select>
 
@@ -287,6 +327,9 @@ export function ChatHistoryPanel() {
                     ? (nodeMap[group.nodeId]?.title ?? group.nodeId)
                     : "Project scope"}{" "}
                   › {group.sessionTitle}
+                  <span className="ml-1 font-normal opacity-60">
+                    ({group.hits.length})
+                  </span>
                 </button>
                 <div className="space-y-1">
                   {group.hits.map((hit) => (
@@ -325,9 +368,22 @@ export function ChatHistoryPanel() {
             {sessionGroups.map((group) => (
               <div key={group.nodeId ?? "project-scope"} className="mb-3">
                 {/* Group header */}
-                <p className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
-                  {group.groupLabel}
-                </p>
+                {group.nodeId ? (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      useTreeStore.getState().setActiveScene(group.nodeId!);
+                      useTabStore.getState().openPinned(group.nodeId!);
+                    }}
+                    className="mb-1 w-full text-left text-[10px] font-semibold uppercase tracking-wide text-muted-foreground hover:text-foreground"
+                  >
+                    {group.groupLabel}
+                  </button>
+                ) : (
+                  <p className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+                    {group.groupLabel}
+                  </p>
+                )}
                 <div className="space-y-1">
                   {group.sessions.map((session) => (
                     <SessionCard
