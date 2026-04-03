@@ -1,0 +1,115 @@
+import type { LayerBreakdown } from "../contextBuilder";
+
+interface PromptPreviewModalProps {
+  systemPrompt: string;
+  layers: LayerBreakdown[];
+  totalTokens: number;
+  onClose: () => void;
+}
+
+export function PromptPreviewModal({
+  systemPrompt,
+  layers,
+  totalTokens,
+  onClose,
+}: PromptPreviewModalProps) {
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/50"
+      onClick={onClose}
+    >
+      <div
+        className="relative flex max-h-[80vh] w-[600px] max-w-[90vw] flex-col rounded-lg bg-background shadow-lg"
+        onClick={(e) => e.stopPropagation()}
+      >
+        {/* ヘッダー */}
+        <div className="flex items-center justify-between border-b border-border px-4 py-3">
+          <h2 className="text-sm font-semibold">
+            システムプロンプト プレビュー
+          </h2>
+          <button
+            type="button"
+            onClick={onClose}
+            className="rounded p-1 text-muted-foreground hover:bg-accent"
+          >
+            ✕
+          </button>
+        </div>
+
+        <div className="flex-1 overflow-y-auto p-4 space-y-4">
+          {/* レイヤー別内訳テーブル */}
+          {layers.length > 0 && (
+            <div>
+              <h3 className="mb-2 text-xs font-semibold text-muted-foreground uppercase">
+                レイヤー別トークン内訳
+              </h3>
+              <table className="w-full text-xs">
+                <thead>
+                  <tr className="border-b border-border text-left text-muted-foreground">
+                    <th className="pb-1 pr-4">レイヤー</th>
+                    <th className="pb-1 pr-4 text-right">使用 tokens</th>
+                    <th className="pb-1">使用率</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {layers.map((layer) => {
+                    const pct =
+                      totalTokens > 0
+                        ? Math.round((layer.used / totalTokens) * 100)
+                        : 0;
+                    return (
+                      <tr
+                        key={layer.layer}
+                        className="border-b border-border/40"
+                      >
+                        <td className="py-1 pr-4">
+                          <span className="font-mono text-muted-foreground">
+                            {layer.layer}
+                          </span>{" "}
+                          {layer.label}
+                        </td>
+                        <td className="py-1 pr-4 text-right tabular-nums">
+                          {layer.used.toLocaleString()}
+                        </td>
+                        <td className="py-1 w-32">
+                          <div className="flex items-center gap-1">
+                            <div className="h-1.5 flex-1 rounded-full bg-muted">
+                              <div
+                                className="h-1.5 rounded-full bg-primary"
+                                style={{ width: `${pct}%` }}
+                              />
+                            </div>
+                            <span className="tabular-nums text-muted-foreground">
+                              {pct}%
+                            </span>
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                  <tr className="font-semibold">
+                    <td className="py-1 pr-4">合計</td>
+                    <td className="py-1 pr-4 text-right tabular-nums">
+                      {totalTokens.toLocaleString()}
+                    </td>
+                    <td />
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          )}
+
+          {/* プロンプト全文 */}
+          <div>
+            <h3 className="mb-2 text-xs font-semibold text-muted-foreground uppercase">
+              プロンプト全文
+            </h3>
+            <pre className="whitespace-pre-wrap rounded bg-muted p-3 text-xs text-foreground">
+              {systemPrompt || "（プロンプトなし）"}
+            </pre>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}

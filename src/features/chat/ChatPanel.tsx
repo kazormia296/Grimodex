@@ -10,7 +10,7 @@ import { ChatInput } from "./components/ChatInput";
 import { AgentProgressBar } from "./components/AgentProgressBar";
 import { CodexExtractionDialog } from "@/features/codex/CodexExtractionDialog";
 import { SnippetExtractionDialog } from "@/features/snippets/SnippetExtractionDialog";
-import { PinnedCodexBadges } from "./components/PinnedCodexBadges";
+import { ContextBar } from "./components/ContextBar";
 import { PinCodexDialog } from "./components/PinCodexDialog";
 import { SessionsPanel } from "./components/SessionsPanel";
 import * as chatApi from "./chatApi";
@@ -33,6 +33,10 @@ export function ChatPanel() {
   const error = useChatStore((s) => s.error);
   const sendMessage = useChatStore((s) => s.sendMessage);
   const contextTokenCount = useChatStore((s) => s.contextTokenCount);
+  const contextLayers = useChatStore((s) => s.contextLayers);
+  const systemPrompt = useChatStore(
+    (s) => s.messages.find((m) => m.role === "system")?.content ?? "",
+  );
   const setActiveSceneId = useChatStore((s) => s.setActiveSceneId);
   const activeSessionId = useChatStore((s) => s.activeSessionId);
   const agentMode = useChatStore((s) => s.agentMode);
@@ -172,13 +176,20 @@ export function ChatPanel() {
         agentMode={agentMode}
         setAgentMode={setAgentMode}
         modelSupportsTools={canUseTools}
+        currentModel={currentModel}
       />
 
       {activeSessionId && (
-        <PinnedCodexBadges
+        <ContextBar
           pinnedEntries={pinnedEntries}
           onUnpin={handleUnpin}
+          onPin={handlePin}
           onOpenPinDialog={() => setPinDialogOpen(true)}
+          contextTokenCount={contextTokenCount}
+          contextLayers={contextLayers}
+          systemPrompt={systemPrompt}
+          model={currentModel}
+          canUseCreator={canUseTools}
         />
       )}
 

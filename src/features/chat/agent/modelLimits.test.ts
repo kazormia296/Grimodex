@@ -1,0 +1,122 @@
+import { describe, expect, it } from "vitest";
+import {
+  buildThinkingParams,
+  formatContextWindow,
+  getEffortForTask,
+  getModelCapabilities,
+  getToolTokenBudget,
+  modelSupportsTools,
+} from "./modelLimits";
+
+describe("getModelCapabilities", () => {
+  it("claude-opus-4-6: adaptive thinking, max effort, 1M context", () => {
+    const caps = getModelCapabilities("claude-opus-4-6");
+    expect(caps.contextWindow).toBe(1_000_000);
+    expect(caps.supportsAdaptiveThinking).toBe(true);
+    expect(caps.supportsThinking).toBe(false);
+    expect(caps.supportsMaxEffort).toBe(true);
+    expect(caps.supportsTools).toBe(true);
+  });
+
+  it("claude-sonnet-4-6: adaptive thinking, no max effort", () => {
+    const caps = getModelCapabilities("claude-sonnet-4-6");
+    expect(caps.supportsAdaptiveThinking).toBe(true);
+    expect(caps.supportsMaxEffort).toBe(false);
+  });
+
+  it("claude-opus-4-5: budget_tokens thinking", () => {
+    const caps = getModelCapabilities("claude-opus-4-5");
+    expect(caps.supportsThinking).toBe(true);
+    expect(caps.supportsAdaptiveThinking).toBe(false);
+  });
+
+  it("gpt-4o: tools only, no thinking", () => {
+    const caps = getModelCapabilities("gpt-4o");
+    expect(caps.supportsTools).toBe(true);
+    expect(caps.supportsThinking).toBe(false);
+    expect(caps.supportsAdaptiveThinking).toBe(false);
+  });
+
+  it("OpenRouter プレフィックス付きモデルを解決する", () => {
+    const caps = getModelCapabilities("anthropic/claude-opus-4-6");
+    expect(caps.contextWindow).toBe(1_000_000);
+    expect(caps.supportsAdaptiveThinking).toBe(true);
+  });
+
+  it("Ollama モデルはツール非対応", () => {
+    const caps = getModelCapabilities("ollama/llama3");
+    expect(caps.supportsTools).toBe(false);
+  });
+
+  it("未知モデルはデフォルト値を返す", () => {
+    const caps = getModelCapabilities("unknown/model");
+    expect(caps.contextWindow).toBe(8_000);
+    expect(caps.supportsTools).toBe(true);
+    expect(caps.supportsThinking).toBe(false);
+  });
+});
+
+describe("modelSupportsTools", () => {
+  it("Claude は対応", () =>
+    expect(modelSupportsTools("claude-opus-4-6")).toBe(true));
+  it("GPT-4o は対応", () => expect(modelSupportsTools("gpt-4o")).toBe(true));
+  it("Ollama は非対応", () =>
+    expect(modelSupportsTools("ollama/mistral")).toBe(false));
+});
+
+describe("getToolTokenBudget", () => {
+  it("1M モデルは 30% = 300k", () => {
+    expect(getToolTokenBudget("claude-opus-4-6")).toBe(300_000);
+  });
+  it("最低 2000 を保証", () => {
+    expect(getToolTokenBudget("unknown/tiny")).toBeGreaterThanOrEqual(2_000);
+  });
+});
+
+describe("getEffortForTask", () => {
+  it("agent は high", () => expect(getEffortForTask("agent")).toBe("high"));
+  it("chat は medium", () => expect(getEffortForTask("chat")).toBe("medium"));
+  it("synopsis は low", () => expect(getEffortForTask("synopsis")).toBe("low"));
+  it("session_title は low", () =>
+    expect(getEffortForTask("session_title")).toBe("low"));
+});
+
+describe("buildThinkingParams", () => {
+  it("adaptive thinking モデル (Opus 4.6) は adaptive を返す", () => {
+    const params = buildThinkingParams("claude-opus-4-6", "high");
+    expect(params.thinking?.type).toBe("adaptive");
+    expect(params.thinking?.effort).toBe("high");
+    expect(params.thinking?.display).toBe("summarized");
+    expect(params.effort).toBeUndefined();
+  });
+
+  it("budget_tokens モデル (Opus 4.5) は enabled + effort を返す", () => {
+    const params = buildThinkingParams("claude-opus-4-5", "medium");
+    expect(params.thinking?.type).toBe("enabled");
+    expect(params.thinking?.budget_tokens).toBeGreaterThan(0);
+    expect(params.effort).toBe("medium");
+  });
+
+  it("display: omitted を指定できる", () => {
+    const params = buildThinkingParams("claude-sonnet-4-6", "low", "omitted");
+    expect(params.thinking?.display).toBe("omitted");
+  });
+
+  it("thinking 非対応モデルは空を返す", () => {
+    const params = buildThinkingParams("gpt-4o", "medium");
+    expect(params.thinking).toBeUndefined();
+    expect(params.effort).toBeUndefined();
+  });
+
+  it("effort 対応モデルは effort のみ返す", () => {
+    const params = buildThinkingParams("claude-haiku-4-5-20251001", "medium");
+    expect(params.thinking).toBeUndefined();
+    expect(params.effort).toBe("medium");
+  });
+});
+
+describe("formatContextWindow", () => {
+  it("1M", () => expect(formatContextWindow(1_000_000)).toBe("1M"));
+  it("200k", () => expect(formatContextWindow(200_000)).toBe("200k"));
+  it("8192", () => expect(formatContextWindow(8_192)).toBe("8.192k"));
+});

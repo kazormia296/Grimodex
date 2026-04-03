@@ -1,41 +1,215 @@
-/** 既知モデルのコンテキストウィンドウ上限（トークン数） */
-const MODEL_CONTEXT_LIMITS: Record<string, number> = {
-  // Anthropic
-  "claude-opus-4-6": 1_000_000,
-  "claude-sonnet-4-6": 200_000,
-  "claude-haiku-4-5-20251001": 200_000,
-  // OpenAI
-  "gpt-4o": 128_000,
-  "gpt-4o-mini": 128_000,
-  "gpt-4-turbo": 128_000,
-  "gpt-4": 8_192,
-  // OpenRouter 経由の一般モデル名 (プレフィックス付き)
-  "openai/gpt-4o": 128_000,
-  "anthropic/claude-opus-4-6": 1_000_000,
-  "anthropic/claude-sonnet-4-6": 200_000,
-  "anthropic/claude-haiku-4-5-20251001": 200_000,
+/** モデルの能力情報 */
+export type EffortLevel = "low" | "medium" | "high" | "max";
+export type ThinkingDisplay = "summarized" | "omitted";
+
+export interface ModelCapabilities {
+  contextWindow: number;
+  supportsTools: boolean;
+  supportsThinking: boolean; // budget_tokens 方式 (4.5 系)
+  supportsAdaptiveThinking: boolean; // adaptive 方式 (4.6 系)
+  supportsEffort: boolean;
+  supportsMaxEffort: boolean; // Opus 4.6 限定
+}
+
+const DEFAULT_CAPABILITIES: ModelCapabilities = {
+  contextWindow: 8_000,
+  supportsTools: true,
+  supportsThinking: false,
+  supportsAdaptiveThinking: false,
+  supportsEffort: false,
+  supportsMaxEffort: false,
 };
+
+const MODEL_CAPABILITIES: Record<string, ModelCapabilities> = {
+  // Anthropic — Opus 4.6 (adaptive thinking + max effort)
+  "claude-opus-4-6": {
+    contextWindow: 1_000_000,
+    supportsTools: true,
+    supportsThinking: false,
+    supportsAdaptiveThinking: true,
+    supportsEffort: true,
+    supportsMaxEffort: true,
+  },
+  // Anthropic — Sonnet 4.6 (adaptive thinking)
+  "claude-sonnet-4-6": {
+    contextWindow: 200_000,
+    supportsTools: true,
+    supportsThinking: false,
+    supportsAdaptiveThinking: true,
+    supportsEffort: true,
+    supportsMaxEffort: false,
+  },
+  // Anthropic — Haiku 4.5 (no thinking)
+  "claude-haiku-4-5-20251001": {
+    contextWindow: 200_000,
+    supportsTools: true,
+    supportsThinking: false,
+    supportsAdaptiveThinking: false,
+    supportsEffort: true,
+    supportsMaxEffort: false,
+  },
+  // Anthropic — Opus 4.5 (budget_tokens thinking)
+  "claude-opus-4-5": {
+    contextWindow: 200_000,
+    supportsTools: true,
+    supportsThinking: true,
+    supportsAdaptiveThinking: false,
+    supportsEffort: true,
+    supportsMaxEffort: false,
+  },
+  // Anthropic — Sonnet 4.5 (budget_tokens thinking)
+  "claude-sonnet-4-5-20250929": {
+    contextWindow: 200_000,
+    supportsTools: true,
+    supportsThinking: true,
+    supportsAdaptiveThinking: false,
+    supportsEffort: true,
+    supportsMaxEffort: false,
+  },
+  // OpenAI
+  "gpt-4o": {
+    contextWindow: 128_000,
+    supportsTools: true,
+    supportsThinking: false,
+    supportsAdaptiveThinking: false,
+    supportsEffort: false,
+    supportsMaxEffort: false,
+  },
+  "gpt-4o-mini": {
+    contextWindow: 128_000,
+    supportsTools: true,
+    supportsThinking: false,
+    supportsAdaptiveThinking: false,
+    supportsEffort: false,
+    supportsMaxEffort: false,
+  },
+  "gpt-4-turbo": {
+    contextWindow: 128_000,
+    supportsTools: true,
+    supportsThinking: false,
+    supportsAdaptiveThinking: false,
+    supportsEffort: false,
+    supportsMaxEffort: false,
+  },
+  "gpt-4": {
+    contextWindow: 8_192,
+    supportsTools: true,
+    supportsThinking: false,
+    supportsAdaptiveThinking: false,
+    supportsEffort: false,
+    supportsMaxEffort: false,
+  },
+};
+
+/** OpenRouter プレフィックス付きモデルの能力マッピング */
+const OPENROUTER_PREFIXED: Record<string, string> = {
+  "openai/gpt-4o": "gpt-4o",
+  "openai/gpt-4o-mini": "gpt-4o-mini",
+  "anthropic/claude-opus-4-6": "claude-opus-4-6",
+  "anthropic/claude-sonnet-4-6": "claude-sonnet-4-6",
+  "anthropic/claude-haiku-4-5-20251001": "claude-haiku-4-5-20251001",
+  "anthropic/claude-opus-4-5": "claude-opus-4-5",
+  "anthropic/claude-sonnet-4-5-20250929": "claude-sonnet-4-5-20250929",
+};
+
+/**
+ * モデルの能力情報を取得する。
+ * 未知のモデルはデフォルト値を返す（Ollama 等）。
+ */
+export function getModelCapabilities(model: string): ModelCapabilities {
+  if (MODEL_CAPABILITIES[model]) return MODEL_CAPABILITIES[model];
+
+  const resolved = OPENROUTER_PREFIXED[model];
+  if (resolved && MODEL_CAPABILITIES[resolved])
+    return MODEL_CAPABILITIES[resolved];
+
+  // Ollama モデルはツール非対応
+  if (/^ollama\//i.test(model)) {
+    return { ...DEFAULT_CAPABILITIES, supportsTools: false };
+  }
+
+  return DEFAULT_CAPABILITIES;
+}
 
 /** ツール結果のトークン予算 = コンテキスト上限の30%（最低2,000） */
 export function getToolTokenBudget(model: string): number {
-  const limit = MODEL_CONTEXT_LIMITS[model] ?? 8_000;
-  return Math.max(2_000, Math.floor(limit * 0.3));
+  const { contextWindow } = getModelCapabilities(model);
+  return Math.max(2_000, Math.floor(contextWindow * 0.3));
 }
 
 /** Tool Use 対応モデルの判定 */
-const TOOL_UNSUPPORTED_PATTERNS = [/^ollama\//i];
-
-// OpenRouter経由の一部小型モデル名（追加が必要な場合は拡張）
-const TOOL_UNSUPPORTED_MODELS = new Set([
-  "ollama/llama2",
-  "ollama/mistral",
-  "ollama/phi",
-]);
-
 export function modelSupportsTools(model: string): boolean {
-  if (TOOL_UNSUPPORTED_MODELS.has(model)) return false;
-  for (const pattern of TOOL_UNSUPPORTED_PATTERNS) {
-    if (pattern.test(model)) return false;
+  return getModelCapabilities(model).supportsTools;
+}
+
+/** タスク種別 */
+export type TaskType =
+  | "chat"
+  | "agent"
+  | "synopsis"
+  | "session_title"
+  | "slash_command"
+  | "codex_extract";
+
+/** タスク種別ごとの effort レベル（設計書仕様） */
+export function getEffortForTask(task: TaskType): EffortLevel {
+  switch (task) {
+    case "synopsis":
+    case "session_title":
+    case "codex_extract":
+      return "low";
+    case "chat":
+    case "slash_command":
+      return "medium";
+    case "agent":
+      return "high";
   }
-  return true;
+}
+
+export interface ThinkingParams {
+  thinking?: {
+    type: "adaptive" | "enabled";
+    effort?: EffortLevel;
+    display?: ThinkingDisplay;
+    budget_tokens?: number;
+  };
+  effort?: EffortLevel;
+}
+
+/** モデルとタスクに応じた thinking/effort パラメータを構築する（設計書 L627-647 準拠） */
+export function buildThinkingParams(
+  model: string,
+  taskEffort: EffortLevel,
+  display: ThinkingDisplay = "summarized",
+): ThinkingParams {
+  const caps = getModelCapabilities(model);
+
+  if (caps.supportsAdaptiveThinking) {
+    // Opus 4.6, Sonnet 4.6: adaptive thinking + effort
+    return {
+      thinking: { type: "adaptive", effort: taskEffort, display },
+    };
+  }
+
+  if (caps.supportsThinking) {
+    // Opus 4.5, Sonnet 4.5 等: budget_tokens + effort
+    const budgetTokens = Math.floor(caps.contextWindow * 0.8 * 0.05);
+    return {
+      thinking: { type: "enabled", budget_tokens: budgetTokens, display },
+      effort: taskEffort,
+    };
+  }
+
+  if (caps.supportsEffort) {
+    return { effort: taskEffort };
+  }
+
+  return {};
+}
+
+/** コンテキスト窓サイズを人間が読みやすい形式に変換 */
+export function formatContextWindow(tokens: number): string {
+  if (tokens >= 1_000_000) return `${tokens / 1_000_000}M`;
+  if (tokens >= 1_000) return `${tokens / 1_000}k`;
+  return String(tokens);
 }
