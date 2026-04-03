@@ -2,6 +2,7 @@ import { create } from "zustand";
 import type { Editor } from "@tiptap/core";
 import { computeAttributedSegments } from "@/features/snippets/snippetDiff";
 import type { AttributedSegment } from "@/lib/clipboardAttribution";
+import { incrementSnippetUsageCount } from "@/features/snippets/api";
 
 export interface InsertRange {
   from: number;
@@ -140,6 +141,8 @@ export const useEditorStore = create<EditorState>()((set, get) => ({
         chatMessageId: `snippet-${snippetId}`,
       },
     });
+
+    incrementSnippetUsageCount(snippetId).catch(() => {});
 
     if (highlightTimer) clearTimeout(highlightTimer);
     highlightTimer = setTimeout(() => {

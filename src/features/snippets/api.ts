@@ -1,8 +1,10 @@
 import { db } from "@/db/client";
 import { snippets } from "@/db/schema";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 
-export type Snippet = typeof snippets.$inferSelect;
+export type Snippet = Omit<typeof snippets.$inferSelect, "contentSource"> & {
+  contentSource?: string | null;
+};
 export type NewSnippet = typeof snippets.$inferInsert;
 
 export async function listSnippets(sceneId?: string): Promise<Snippet[]> {
@@ -19,7 +21,12 @@ export async function getSnippet(id: string): Promise<Snippet | undefined> {
 
 export async function createSnippet(
   data: Pick<NewSnippet, "id" | "projectId" | "title" | "content"> &
-    Partial<Pick<NewSnippet, "tags" | "sceneId" | "sourceChatMessageId">>,
+    Partial<
+      Pick<
+        NewSnippet,
+        "tags" | "sceneId" | "sourceChatMessageId" | "contentSource"
+      >
+    >,
 ): Promise<Snippet> {
   const now = new Date().toISOString();
   const rows = await db
@@ -52,4 +59,11 @@ export async function listSnippetsByMessageId(
     .select()
     .from(snippets)
     .where(eq(snippets.sourceChatMessageId, messageId));
+}
+
+export async function incrementSnippetUsageCount(id: string): Promise<void> {
+  await db
+    .update(snippets)
+    .set({ usageCount: sql`${snippets.usageCount} + 1` })
+    .where(eq(snippets.id, id));
 }

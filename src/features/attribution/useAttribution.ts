@@ -6,6 +6,7 @@ import { aiEditedKey, createAiEditedPlugin } from "./AiEditedPlugin";
 
 export function useAttribution(editor: Editor | null) {
   const showAttribution = useAttributionStore((s) => s.showAttribution);
+  const filterSource = useAttributionStore((s) => s.filterSource);
 
   // Register plugins
   useEffect(() => {
@@ -28,11 +29,18 @@ export function useAttribution(editor: Editor | null) {
     };
   }, [editor]);
 
-  // Force decoration recalculation when toggle changes
+  // Force decoration recalculation when toggle or filter changes
   useEffect(() => {
     if (!editor) return;
     const { tr } = editor.state;
     tr.setMeta("attributionUpdate", true);
     editor.view.dispatch(tr);
   }, [editor, showAttribution]);
+
+  useEffect(() => {
+    if (!editor) return;
+    const { tr } = editor.state;
+    tr.setMeta("attributionUpdate", true);
+    editor.view.dispatch(tr);
+  }, [editor, filterSource]);
 }

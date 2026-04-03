@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { Save, Copy, Trash2, MessageSquare } from "lucide-react";
+import { Save, Copy, Trash2, MessageSquare, ExternalLink } from "lucide-react";
 import { useEditor, EditorContent } from "@tiptap/react";
 import StarterKit from "@tiptap/starter-kit";
 import { AuthorshipMark } from "@/features/attribution/AuthorshipMark";
@@ -10,6 +10,7 @@ import {
 } from "@/lib/clipboardAttribution";
 import type { AuthorshipSource } from "@/features/attribution/AuthorshipMark";
 import type { Snippet } from "./api";
+import { useTreeStore } from "@/features/tree/treeStore";
 
 interface SnippetDetailContentProps {
   snippet: Snippet;
@@ -25,6 +26,7 @@ export function SnippetDetailContent({
   onSave,
   onDelete,
 }: SnippetDetailContentProps) {
+  const setActiveScene = useTreeStore((s) => s.setActiveScene);
   const [title, setTitle] = useState(snippet.title);
   const [tags, setTags] = useState(snippet.tags ?? "");
 
@@ -76,6 +78,17 @@ export function SnippetDetailContent({
           >
             <Copy className="h-3.5 w-3.5" />
           </button>
+          {snippet.sceneId && (
+            <button
+              type="button"
+              data-testid="snippet-open-in-editor"
+              onClick={() => setActiveScene(snippet.sceneId!)}
+              className="rounded p-1.5 text-muted-foreground hover:bg-accent hover:text-accent-foreground"
+              title="エディタで開く"
+            >
+              <ExternalLink className="h-3.5 w-3.5" />
+            </button>
+          )}
           <button
             type="button"
             data-testid="snippet-detail-delete"

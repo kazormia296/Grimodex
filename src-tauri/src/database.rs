@@ -394,6 +394,9 @@ impl Database {
               VALUES ('default-chapter', 'default-project', 'chapter', '第1章', 0.0, datetime('now'), datetime('now'));",
         )?;
 
+        // Idempotent column additions
+        let _ = conn.execute("ALTER TABLE snippets ADD COLUMN content_source TEXT", []);
+
         Ok(())
     }
 

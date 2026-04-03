@@ -173,6 +173,7 @@ export const snippets = sqliteTable("snippets", {
     () => chatMessages.id,
   ),
   usageCount: integer("usage_count").notNull().default(0),
+  contentSource: text("content_source"),
   createdAt: text("created_at")
     .notNull()
     .$defaultFn(() => new Date().toISOString()),

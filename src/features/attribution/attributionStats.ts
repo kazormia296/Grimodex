@@ -6,6 +6,7 @@ export interface AttributionStats {
   unknown: number;
   unmarked: number;
   total: number;
+  modelBreakdown: Record<string, number>;
 }
 
 export function computeAttributionStats(
@@ -17,6 +18,7 @@ export function computeAttributionStats(
     unknown: 0,
     unmarked: 0,
     total: 0,
+    modelBreakdown: {},
   };
 
   doc.descendants((node) => {
@@ -36,6 +38,11 @@ export function computeAttributionStats(
         break;
       case "ai":
         stats.ai += len;
+        if (mark.attrs.model) {
+          const model = mark.attrs.model as string;
+          stats.modelBreakdown[model] =
+            (stats.modelBreakdown[model] ?? 0) + len;
+        }
         break;
       case "unknown":
         stats.unknown += len;

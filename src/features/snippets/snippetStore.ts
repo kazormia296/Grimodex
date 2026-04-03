@@ -13,13 +13,19 @@ interface SnippetState {
   search: (query: string) => Promise<void>;
   create: (
     data: Pick<NewSnippet, "title" | "content"> &
-      Partial<Pick<NewSnippet, "tags" | "sceneId" | "sourceChatMessageId">>,
+      Partial<
+        Pick<
+          NewSnippet,
+          "tags" | "sceneId" | "sourceChatMessageId" | "contentSource"
+        >
+      >,
   ) => Promise<Snippet>;
   update: (
     id: string,
     data: Partial<Pick<NewSnippet, "title" | "content" | "tags" | "sceneId">>,
   ) => Promise<void>;
   remove: (id: string) => Promise<void>;
+  incrementUsageCount: (id: string) => Promise<void>;
 }
 
 export const useSnippetStore = create<SnippetState>()((set) => ({
@@ -94,6 +100,19 @@ export const useSnippetStore = create<SnippetState>()((set) => ({
     } catch (e) {
       toast.error("スニペットの削除に失敗しました");
       console.error("[SnippetStore] remove:", e);
+    }
+  },
+
+  incrementUsageCount: async (id: string) => {
+    try {
+      await snippetApi.incrementSnippetUsageCount(id);
+      set((state) => ({
+        entries: state.entries.map((e) =>
+          e.id === id ? { ...e, usageCount: (e.usageCount ?? 0) + 1 } : e,
+        ),
+      }));
+    } catch (e) {
+      console.error("[SnippetStore] incrementUsageCount:", e);
     }
   },
 }));

@@ -15,6 +15,7 @@ import { useInsertHighlight } from "@/features/editor/InsertHighlight";
 import { useCodexHighlight } from "@/features/editor/useCodexHighlight";
 import { CodexPopover } from "@/features/editor/CodexPopover";
 import { useAttribution } from "@/features/attribution/useAttribution";
+import { useAttributionStore } from "@/features/attribution/attributionStore";
 import { useCursorEffect } from "@/features/editor/useCursorEffect";
 import { useCursorSettingsStore } from "@/features/editor/cursorSettingsStore";
 import { useEditorSettings } from "@/features/settings/hooks/useEditorSettings";
@@ -173,6 +174,8 @@ export function EditorPane({ sceneId, groupIndex, onFocus }: EditorPaneProps) {
     saveFn,
     editorSettings.autoSaveDelay,
   );
+
+  const filterSource = useAttributionStore((s) => s.filterSource);
 
   const insertFromSnippet = useEditorStore((s) => s.insertFromSnippet);
   const insertFromPaste = useEditorStore((s) => s.insertFromPaste);
@@ -437,7 +440,10 @@ export function EditorPane({ sceneId, groupIndex, onFocus }: EditorPaneProps) {
         showReplace={findShowReplace}
         onClose={() => setFindOpen(false)}
       />
-      <div ref={editorContainerRef} className="flex-1 overflow-auto p-4">
+      <div
+        ref={editorContainerRef}
+        className={`flex-1 overflow-auto p-4${filterSource ? ` attribution-filter-${filterSource}` : ""}`}
+      >
         <div
           style={{
             fontFamily: editorSettings.fontFamily,

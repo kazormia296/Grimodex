@@ -20,15 +20,50 @@ export function SnippetPanel() {
   const isLoading = useSnippetStore((s) => s.isLoading);
   const loadEntries = useSnippetStore((s) => s.loadEntries);
   const search = useSnippetStore((s) => s.search);
+  const create = useSnippetStore((s) => s.create);
   const update = useSnippetStore((s) => s.update);
   const remove = useSnippetStore((s) => s.remove);
 
   const [selectedSnippet, setSelectedSnippet] = useState<Snippet | null>(null);
+  const [gridCols, setGridCols] = useState(1);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const panelRef = useRef<HTMLDivElement>(null);
+  const listContainerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     loadEntries();
   }, [loadEntries]);
+
+  useEffect(() => {
+    const el = listContainerRef.current;
+    if (!el) return;
+    const observer = new ResizeObserver(([entry]) => {
+      const w = entry.contentRect.width;
+      setGridCols(w >= 700 ? 3 : w >= 400 ? 2 : 1);
+    });
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, []);
+
+  const handleKeyDown = useCallback(
+    async (e: React.KeyboardEvent) => {
+      if (e.ctrlKey && e.key === "v") {
+        e.preventDefault();
+        try {
+          const text = await navigator.clipboard.readText();
+          if (!text.trim()) return;
+          const created = await create({
+            title: text.slice(0, 40).trim() || "クリップボード",
+            content: text,
+          });
+          setSelectedSnippet(created);
+        } catch {
+          // clipboard permission denied - silently ignore
+        }
+      }
+    },
+    [create],
+  );
 
   const handleSearchChange = useCallback(
     (value: string) => {
@@ -46,6 +81,7 @@ export function SnippetPanel() {
       snippet: {
         id: string;
         content: string;
+        contentSource?: string | null;
       },
     ) => {
       e.dataTransfer.setData("text/plain", snippet.content);
@@ -54,7 +90,7 @@ export function SnippetPanel() {
         JSON.stringify({
           id: snippet.id,
           content: snippet.content,
-          source: "human",
+          source: (snippet.contentSource as "ai" | "human") ?? "human",
           originalContent: null,
         }),
       );
@@ -81,7 +117,13 @@ export function SnippetPanel() {
   );
 
   return (
-    <div className="flex h-full flex-col" data-testid="snippet-panel">
+    <div
+      ref={panelRef}
+      className="flex h-full flex-col"
+      data-testid="snippet-panel"
+      tabIndex={0}
+      onKeyDown={handleKeyDown}
+    >
       <ResizablePanelGroup orientation="horizontal">
         {/* Left Panel: List */}
         <ResizablePanel defaultSize={40} minSize={25}>
@@ -127,7 +169,15 @@ export function SnippetPanel() {
               )}
 
               {!isLoading && entries.length > 0 && (
-                <div className="space-y-1 p-2">
+                <div
+                  ref={listContainerRef}
+                  className="p-2"
+                  style={{
+                    display: "grid",
+                    gridTemplateColumns: `repeat(${gridCols}, minmax(0, 1fr))`,
+                    gap: "4px",
+                  }}
+                >
                   {entries.map((snippet) => (
                     <div
                       key={snippet.id}
@@ -138,6 +188,7 @@ export function SnippetPanel() {
                         handleDragStart(e, {
                           id: snippet.id,
                           content: snippet.content,
+                          contentSource: snippet.contentSource,
                         })
                       }
                       onCopy={(e) =>

@@ -150,6 +150,23 @@
   background-color: oklch(0.35 0.1 145);
 }
 
+/* Snippet D&D insert highlight - purple with 2s fade */
+@keyframes snippetHighlightFade {
+  0% { background-color: oklch(0.75 0.18 290); }
+  100% { background-color: transparent; }
+}
+.insert-highlight-snippet {
+  border-radius: 2px;
+  animation: snippetHighlightFade 2s ease forwards;
+}
+.dark .insert-highlight-snippet {
+  animation-name: snippetHighlightFadeDark;
+}
+@keyframes snippetHighlightFadeDark {
+  0% { background-color: oklch(0.45 0.16 290); }
+  100% { background-color: transparent; }
+}
+
 /* Codex highlight decorations (Task 3.6) */
 .codex-highlight {
   background-color: oklch(0.85 0.08 200 / 0.3);
@@ -218,6 +235,12 @@
 .attribution-manual-override {
   outline: 1px dashed oklch(0.60 0.15 300);
   outline-offset: -1px;
+}
+
+/* Attribution filter mode: dim non-matching text */
+.attribution-dimmed {
+  opacity: 0.15;
+  transition: opacity 0.2s;
 }
 
 /* Revision diff display (F-8) */

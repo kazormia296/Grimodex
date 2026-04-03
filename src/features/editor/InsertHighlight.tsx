@@ -21,9 +21,11 @@ function createHighlightPlugin(): Plugin {
         const docSize = newEditorState.doc.content.size;
         if (from >= docSize || to > docSize) return DecorationSet.empty;
 
-        const deco = Decoration.inline(from, to, {
-          class: "insert-highlight",
-        });
+        const chatMessageId = range.chatMessageId;
+        const cssClass = chatMessageId.startsWith("snippet-")
+          ? "insert-highlight-snippet"
+          : "insert-highlight";
+        const deco = Decoration.inline(from, to, { class: cssClass });
         return DecorationSet.create(newEditorState.doc, [deco]);
       },
     },

@@ -9,6 +9,7 @@ interface SnippetExtractionDialogProps {
   onSave: (
     data: Pick<NewSnippet, "title" | "content" | "tags"> & {
       sourceChatMessageId: string;
+      contentSource?: string;
     },
   ) => Promise<void>;
   onClose: () => void;
@@ -18,6 +19,7 @@ export function SnippetExtractionDialog({
   open,
   initialContent,
   messageId,
+  messageRole,
   onSave,
   onClose,
 }: SnippetExtractionDialogProps) {
@@ -47,6 +49,9 @@ export function SnippetExtractionDialog({
       content,
       tags: tags.trim(),
       sourceChatMessageId: messageId,
+      ...(messageRole !== undefined && {
+        contentSource: messageRole === "assistant" ? "ai" : "human",
+      }),
     });
     setIsSaving(false);
     onClose();
