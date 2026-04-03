@@ -28,6 +28,7 @@ import { EditorContextMenu } from "@/features/editor/EditorContextMenu";
 import { FindReplaceBar } from "@/features/editor/FindReplaceBar";
 import { useTabStore } from "@/features/editor/tabStore";
 import { useSceneContentStore } from "@/features/editor/sceneContentStore";
+import { shouldAutoDraftTransition } from "@/features/editor/autoStatusTransition";
 import type { SceneStatus } from "@/features/tree/treeStore";
 import type { GroupIndex } from "@/features/editor/tabStore";
 
@@ -82,6 +83,9 @@ export function EditorPane({ sceneId, groupIndex, onFocus }: EditorPaneProps) {
 
   // Prevent feedback loop when applying external content sync
   const isApplyingExternalUpdate = useRef(false);
+
+  // Auto-draft: true when scene was empty at load time
+  const wasEmptyRef = useRef(false);
 
   const coreSave = useCallback(async () => {
     const id = saveSceneIdRef.current;
@@ -176,6 +180,26 @@ export function EditorPane({ sceneId, groupIndex, onFocus }: EditorPaneProps) {
           useTabStore.getState().pinTab(sid);
         } else {
           useTabStore.getState().pinSecondaryTab(sid);
+        }
+        // Auto-transition outline → draft on first keystroke in empty scene
+        const nodeStatus = useTreeStore
+          .getState()
+          .nodes.find((n) => n.id === sid)?.status as
+          | SceneStatus
+          | null
+          | undefined;
+        if (
+          shouldAutoDraftTransition(
+            count,
+            wasEmptyRef.current,
+            nodeStatus ?? null,
+          )
+        ) {
+          wasEmptyRef.current = false;
+          useTreeStore
+            .getState()
+            .setStatus(sid, "draft")
+            .catch(() => {});
         }
         // Broadcast to other panes showing the same scene
         useSceneContentStore
@@ -289,6 +313,7 @@ export function EditorPane({ sceneId, groupIndex, onFocus }: EditorPaneProps) {
       setWordCount(text.trim() === "" ? 0 : text.trim().split(/\s+/).length);
       setCursorPos(0);
       setIsDirty(false);
+      wasEmptyRef.current = count === 0;
       useTreeStore.getState().setCharCount(sceneId, count);
 
       const spans = await loadAuthorshipSpans(sceneId);
