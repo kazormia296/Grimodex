@@ -171,10 +171,19 @@ export function ChatPanel() {
   const canSend = input.trim().length > 0 && !isStreaming;
 
   return (
-    <div className="flex h-full flex-col bg-background">
+    <div className="relative flex h-full flex-col bg-background">
       <div className="flex flex-col border-b border-border">
         <div className="flex items-center justify-between px-4 py-2">
-          <h2 className="text-sm font-semibold text-foreground">AIチャット</h2>
+          <div className="flex items-center gap-2">
+            <h2 className="text-sm font-semibold text-foreground">AIチャット</h2>
+            <button
+              type="button"
+              onClick={() => setSessionsPanelOpen((v) => !v)}
+              className="rounded px-1.5 py-0.5 text-xs text-muted-foreground hover:bg-accent hover:text-foreground"
+            >
+              Sessions
+            </button>
+          </div>
           {contextTokenCount > 0 && (
             <span
               data-testid="context-token-count"
@@ -297,6 +306,13 @@ export function ChatPanel() {
         onUnpin={handleUnpin}
         onClose={() => setPinDialogOpen(false)}
       />
+      {sessionsPanelOpen && (
+        <SessionsPanel
+          sceneTitle={sceneTitle}
+          activeSceneId={activeSceneId}
+          onClose={() => setSessionsPanelOpen(false)}
+        />
+      )}
     </div>
   );
 }
