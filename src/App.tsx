@@ -15,7 +15,7 @@ import { useWorkspaceStore } from "@/features/workspace/store";
 import { SettingsDialog } from "@/features/settings/SettingsDialog";
 import type { SettingsCategory } from "@/features/settings/types";
 import { getSetting } from "@/features/settings/api";
-import { ActivityBar } from "@/features/layout/ActivityBar";
+import { PanelToggleDropdown } from "@/features/layout/PanelToggleDropdown";
 import { DockviewWatermark } from "@/features/layout/DockviewWatermark";
 import {
   useLayoutStore,
@@ -30,6 +30,7 @@ import { ChatHistoryPanel } from "@/features/chat/ChatHistoryPanel";
 import { SnippetPanel } from "@/features/snippets/SnippetPanel";
 import { AttributionReport } from "@/features/attribution/AttributionReport";
 import { useState } from "react";
+import { Settings } from "lucide-react";
 
 /* ── Panel content components for dockview ── */
 
@@ -265,6 +266,19 @@ function EditorScreen() {
       <header className="flex flex-shrink-0 items-center gap-3 border-b border-border px-4 py-2">
         <WorkspaceMenu />
         <h1 className="text-xl font-bold text-foreground">Grimodex</h1>
+        <div className="flex-1" />
+        <PanelToggleDropdown />
+        <button
+          type="button"
+          title="設定 (Ctrl+Alt+,)"
+          onClick={() => {
+            setSettingsInitialCategory("project");
+            setShowSettings(true);
+          }}
+          className="flex h-8 w-8 items-center justify-center rounded text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+        >
+          <Settings className="h-4 w-4" />
+        </button>
       </header>
       <SettingsDialog
         open={showSettings}
@@ -272,14 +286,6 @@ function EditorScreen() {
         initialCategory={settingsInitialCategory}
       />
       <div className="flex flex-1 overflow-hidden">
-        {/* Activity Bar — fixed 40px */}
-        <ActivityBar
-          onSettingsOpen={(category) => {
-            setSettingsInitialCategory(category ?? "project");
-            setShowSettings(true);
-          }}
-        />
-
         {/* Dockview layout */}
         <DockviewReact
           className="dockview-theme-dark flex-1"
