@@ -1,5 +1,8 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { useTreeStore } from "./treeStore";
+import { loadSceneContent } from "./api";
+import { generateSynopsisFromContent } from "@/features/chat/chatApi";
+import { toast } from "sonner";
 
 interface SynopsisAreaProps {
   nodeId: string;
@@ -10,6 +13,7 @@ export function SynopsisArea({ nodeId }: SynopsisAreaProps) {
   const updateSynopsis = useTreeStore((s) => s.updateSynopsis);
   const node = nodes.find((n) => n.id === nodeId);
   const [text, setText] = useState(node?.synopsis ?? "");
+  const [isGenerating, setIsGenerating] = useState(false);
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Sync external changes
@@ -28,6 +32,34 @@ export function SynopsisArea({ nodeId }: SynopsisAreaProps) {
     [nodeId, updateSynopsis],
   );
 
+  const handleGenerate = useCallback(async () => {
+    if (!node) return;
+
+    // Confirm overwrite if synopsis exists
+    if (text.trim()) {
+      const ok = window.confirm("既存のSynopsisを上書きしますか？");
+      if (!ok) return;
+    }
+
+    setIsGenerating(true);
+    try {
+      const content = await loadSceneContent(nodeId);
+      if (!content?.trim()) {
+        toast.warning("シーン本文が空のため、Synopsisを生成できません。");
+        return;
+      }
+      const generated = await generateSynopsisFromContent(node.title, content);
+      const trimmed = generated.trim();
+      setText(trimmed);
+      await updateSynopsis(nodeId, trimmed);
+      toast.success("Synopsisを生成しました");
+    } catch {
+      toast.error("Synopsis生成に失敗しました");
+    } finally {
+      setIsGenerating(false);
+    }
+  }, [node, nodeId, text, updateSynopsis]);
+
   if (!node || node.nodeType !== "scene") return null;
 
   return (
@@ -36,6 +68,15 @@ export function SynopsisArea({ nodeId }: SynopsisAreaProps) {
         <span className="text-xs font-medium text-muted-foreground">
           Synopsis
         </span>
+        <button
+          type="button"
+          onClick={handleGenerate}
+          disabled={isGenerating}
+          title="AIでSynopsisを生成"
+          className="flex items-center gap-0.5 rounded px-1 py-0.5 text-xs text-muted-foreground hover:bg-accent hover:text-foreground disabled:opacity-40"
+        >
+          {isGenerating ? "生成中…" : "✦ Generate"}
+        </button>
       </div>
       <textarea
         value={text}

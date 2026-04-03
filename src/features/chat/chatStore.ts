@@ -1,6 +1,38 @@
 import { create } from "zustand";
 import { toast } from "sonner";
 import * as chatApi from "./chatApi";
+
+// ---------------------------------------------------------------------------
+// D-17: Error classification and retry helpers
+// ---------------------------------------------------------------------------
+
+function classifyError(e: unknown): "auth" | "rate_limit" | "network" | "unknown" {
+  const msg = e instanceof Error ? e.message : String(e);
+  if (/401|unauthorized|authentication|api.key|invalid.key/i.test(msg)) return "auth";
+  if (/429|rate.?limit|too.?many.?request/i.test(msg)) return "rate_limit";
+  if (/network|connect|timeout|fetch|ECONNREFUSED/i.test(msg)) return "network";
+  return "unknown";
+}
+
+async function withRetry<T>(
+  fn: () => Promise<T>,
+  maxRetries = 3,
+  baseDelayMs = 1000,
+): Promise<T> {
+  let attempt = 0;
+  while (true) {
+    try {
+      return await fn();
+    } catch (e) {
+      attempt++;
+      if (attempt >= maxRetries) throw e;
+      const delay = baseDelayMs * Math.pow(2, attempt - 1);
+      await new Promise((res) => setTimeout(res, delay));
+    }
+  }
+}
+
+
 import { buildSystemPrompt, buildStorySoFar, countTokens } from "./contextBuilder";
 import type {
   SceneContext,
@@ -258,16 +290,21 @@ export const useChatStore = create<ChatState>()((set, get) => ({
         messagesForApi.unshift(systemMsg);
       }
 
-      await chatApi.sendChatMessage(messagesForApi, (chunk: string) => {
-        set((s) => {
-          const msgs = [...s.messages];
-          const last = msgs[msgs.length - 1];
-          if (last && last.role === "assistant") {
-            msgs[msgs.length - 1] = { ...last, content: last.content + chunk };
-          }
-          return { messages: msgs };
-        });
-      });
+      await withRetry(
+        () =>
+          chatApi.sendChatMessage(messagesForApi, (chunk: string) => {
+            set((s) => {
+              const msgs = [...s.messages];
+              const last = msgs[msgs.length - 1];
+              if (last && last.role === "assistant") {
+                msgs[msgs.length - 1] = { ...last, content: last.content + chunk };
+              }
+              return { messages: msgs };
+            });
+          }),
+        // Only retry on network errors — not rate limit or auth
+        1,
+      );
 
       if (activeSessionId) {
         const finalMessages = get().messages;
@@ -282,9 +319,32 @@ export const useChatStore = create<ChatState>()((set, get) => ({
         }
       }
     } catch (e) {
-      set({
-        error: e instanceof Error ? e.message : String(e),
-      });
+      const kind = classifyError(e);
+      const msg = e instanceof Error ? e.message : String(e);
+
+      if (kind === "auth") {
+        toast.error("APIキーが無効です。設定を確認してください。", {
+          action: { label: "設定を開く", onClick: () => {
+            // Signal to open settings dialog via a custom event
+            window.dispatchEvent(new CustomEvent("open-ai-settings"));
+          }},
+          duration: 8000,
+        });
+      } else if (kind === "rate_limit") {
+        // Retry after a delay for 429
+        toast.warning("レート制限に達しました。10秒後に再試行します…");
+        setTimeout(() => {
+          get().sendMessage(content);
+        }, 10_000);
+        set({ isStreaming: false });
+        return;
+      } else if (kind === "network") {
+        toast.error("ネットワークエラーが発生しました。接続を確認してください。");
+      } else {
+        toast.error(`送信に失敗しました: ${msg}`);
+      }
+
+      set({ error: msg });
     } finally {
       set({ isStreaming: false });
     }

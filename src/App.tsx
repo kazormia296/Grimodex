@@ -56,6 +56,15 @@ function EditorScreen() {
     loadLayout();
   }, [loadLayout]);
 
+  // Open AI settings dialog when triggered by error handler (D-17)
+  useEffect(() => {
+    function onOpenSettings() {
+      setShowAiSettings(true);
+    }
+    window.addEventListener("open-ai-settings", onOpenSettings);
+    return () => window.removeEventListener("open-ai-settings", onOpenSettings);
+  }, []);
+
   // Sync left dock collapse state
   useEffect(() => {
     if (leftActive === null) {
