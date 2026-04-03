@@ -122,8 +122,10 @@ interface TreeRendererProps {
   statusFilter?: string | null;
   viewMode: string;
   charCounts: Record<string, number>;
+  aiRatios: Record<string, number>;
   showWordCounts: boolean;
   showStatusDots: boolean;
+  showAiAttribution: boolean;
   dropIndicator: DropIndicator | null;
   nodeTotals: Record<string, number>;
   orderedNodes: TreeNodeData[];
@@ -141,8 +143,10 @@ function TreeRenderer({
   statusFilter,
   viewMode,
   charCounts,
+  aiRatios,
   showWordCounts,
   showStatusDots,
+  showAiAttribution,
   dropIndicator,
   nodeTotals,
   orderedNodes,
@@ -177,8 +181,11 @@ function TreeRenderer({
             charCount={count}
             showWordCounts={showWordCounts}
             showStatusDots={showStatusDots}
+            showAiAttribution={showAiAttribution}
+            aiRatio={aiRatios[id] ?? 0}
             dropIndicator={dropIndicator}
             orderedNodes={orderedNodes}
+            viewMode={viewMode}
           >
             {viewMode === "outline" &&
               node.nodeType === "scene" &&
@@ -205,8 +212,10 @@ function TreeRenderer({
               statusFilter={statusFilter}
               viewMode={viewMode}
               charCounts={charCounts}
+              aiRatios={aiRatios}
               showWordCounts={showWordCounts}
               showStatusDots={showStatusDots}
+              showAiAttribution={showAiAttribution}
               dropIndicator={dropIndicator}
               nodeTotals={nodeTotals}
               orderedNodes={orderedNodes}
@@ -232,6 +241,8 @@ interface PanelMenuProps {
   setShowWordCounts: (v: boolean) => void;
   showStatusDots: boolean;
   setShowStatusDots: (v: boolean) => void;
+  showAiAttribution: boolean;
+  setShowAiAttribution: (v: boolean) => void;
   autoRevealActiveScene: boolean;
   setAutoRevealActiveScene: (v: boolean) => void;
   onExpandAll: () => void;
@@ -269,6 +280,8 @@ function PanelMenu({
   setShowWordCounts,
   showStatusDots,
   setShowStatusDots,
+  showAiAttribution,
+  setShowAiAttribution,
   autoRevealActiveScene,
   setAutoRevealActiveScene,
   onExpandAll,
@@ -377,6 +390,7 @@ function PanelMenu({
       </div>
       {checkItem("文字数", showWordCounts, setShowWordCounts)}
       {checkItem("ステータスドット", showStatusDots, setShowStatusDots)}
+      {checkItem("AI帰属バッジ", showAiAttribution, setShowAiAttribution)}
       {checkItem(
         "アクティブを自動表示",
         autoRevealActiveScene,
@@ -411,8 +425,10 @@ export function ScenesPanel() {
     sortMode,
     statusFilter,
     charCounts,
+    aiRatios,
     showWordCounts,
     showStatusDots,
+    showAiAttribution,
     autoRevealActiveScene,
     loadTree,
     createNode,
@@ -424,6 +440,7 @@ export function ScenesPanel() {
     setStatusFilter,
     setShowWordCounts,
     setShowStatusDots,
+    setShowAiAttribution,
     setAutoRevealActiveScene,
     toggleExpand,
     setActiveScene,
@@ -924,6 +941,8 @@ export function ScenesPanel() {
                   setShowWordCounts={setShowWordCounts}
                   showStatusDots={showStatusDots}
                   setShowStatusDots={setShowStatusDots}
+                  showAiAttribution={showAiAttribution}
+                  setShowAiAttribution={setShowAiAttribution}
                   autoRevealActiveScene={autoRevealActiveScene}
                   setAutoRevealActiveScene={setAutoRevealActiveScene}
                   onExpandAll={expandAll}
@@ -970,8 +989,10 @@ export function ScenesPanel() {
               statusFilter={statusFilter}
               viewMode={viewMode}
               charCounts={charCounts}
+              aiRatios={aiRatios}
               showWordCounts={showWordCounts}
               showStatusDots={showStatusDots}
+              showAiAttribution={showAiAttribution}
               dropIndicator={dropIndicator}
               nodeTotals={nodeTotals}
               orderedNodes={flatNodes}

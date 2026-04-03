@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import * as api from "./api";
 import type { TreeNode as ApiNode } from "./api";
+import { loadBatchAiRatio } from "@/features/attribution/api";
 
 export type NodeType = "part" | "chapter" | "scene" | "folder" | "note";
 export type SceneStatus =
@@ -88,8 +89,10 @@ interface TreeState {
 
   // Display settings
   charCounts: Record<string, number>;
+  aiRatios: Record<string, number>; // nodeId → AI attribution % (0-100)
   showWordCounts: boolean;
   showStatusDots: boolean;
+  showAiAttribution: boolean;
   autoRevealActiveScene: boolean;
 
   // Codex Quick pinned entries
@@ -133,8 +136,11 @@ interface TreeState {
 
   // Display settings
   setCharCount: (id: string, count: number) => void;
+  setAiRatios: (ratios: Record<string, number>) => void;
+  refreshAiRatio: (nodeId: string) => Promise<void>;
   setShowWordCounts: (v: boolean) => void;
   setShowStatusDots: (v: boolean) => void;
+  setShowAiAttribution: (v: boolean) => void;
   setAutoRevealActiveScene: (v: boolean) => void;
 
   // Codex Quick
@@ -185,8 +191,10 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
   sortMode: "manual",
   statusFilter: null,
   charCounts: {},
+  aiRatios: {},
   showWordCounts: true,
   showStatusDots: true,
+  showAiAttribution: false,
   autoRevealActiveScene: true,
   pinnedCodexIds: [],
 
@@ -232,6 +240,13 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
         isLoading: false,
         expandedIds: chapters.map((c) => c.id),
       });
+      // Load AI attribution ratios for all scene nodes
+      const sceneIds = nodes
+        .filter((n) => n.nodeType === "scene")
+        .map((n) => n.id);
+      loadBatchAiRatio(sceneIds)
+        .then((ratios) => set({ aiRatios: ratios }))
+        .catch(() => {});
     } catch {
       set({ isLoading: false });
     }
@@ -493,12 +508,31 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
     set((state) => ({ charCounts: { ...state.charCounts, [id]: count } }));
   },
 
+  setAiRatios(ratios) {
+    set({ aiRatios: ratios });
+  },
+
+  async refreshAiRatio(nodeId) {
+    try {
+      const ratios = await loadBatchAiRatio([nodeId]);
+      set((state) => ({
+        aiRatios: { ...state.aiRatios, ...ratios },
+      }));
+    } catch {
+      // ignore
+    }
+  },
+
   setShowWordCounts(v) {
     set({ showWordCounts: v });
   },
 
   setShowStatusDots(v) {
     set({ showStatusDots: v });
+  },
+
+  setShowAiAttribution(v) {
+    set({ showAiAttribution: v });
   },
 
   setAutoRevealActiveScene(v) {

@@ -31,6 +31,7 @@ import { useTabStore } from "@/features/editor/tabStore";
 import { useSceneContentStore } from "@/features/editor/sceneContentStore";
 import { shouldAutoDraftTransition } from "@/features/editor/autoStatusTransition";
 import { shouldPromptSynopsis } from "@/features/editor/synopsisSuggestion";
+import { generateSynopsisFromContent } from "@/features/chat/chatApi";
 import { toast } from "sonner";
 import type { SceneStatus } from "@/features/tree/treeStore";
 import type { GroupIndex } from "@/features/editor/tabStore";
@@ -99,10 +100,38 @@ export function EditorPane({ sceneId, groupIndex, onFocus }: EditorPaneProps) {
       .getState()
       .nodes.find((n) => n.id === sceneId)?.synopsis;
     if (shouldPromptSynopsis(prev, activeStatus, synopsis)) {
-      toast("あらすじを追加しましょう", {
-        description:
-          "シーンが完成段階になりました。あらすじを記入すると概要ビューで役立ちます。",
-        duration: 6000,
+      const id = sceneId;
+      toast("Synopsis が未記入です", {
+        description: "自動生成しますか？",
+        duration: 10000,
+        action: {
+          label: "Generate",
+          onClick: async () => {
+            const node = useTreeStore.getState().nodes.find((n) => n.id === id);
+            if (!node) return;
+            try {
+              const content = await loadSceneContent(id);
+              if (!content?.trim()) {
+                toast.warning("シーン本文が空のため生成できません");
+                return;
+              }
+              const generated = await generateSynopsisFromContent(
+                node.title,
+                content,
+              );
+              await useTreeStore
+                .getState()
+                .updateSynopsis(id, generated.trim());
+              toast.success("Synopsis を生成しました");
+            } catch {
+              toast.error("Synopsis 生成に失敗しました");
+            }
+          },
+        },
+        cancel: {
+          label: "Dismiss",
+          onClick: () => {},
+        },
       });
     }
   }, [activeStatus, sceneId]);
@@ -115,6 +144,10 @@ export function EditorPane({ sceneId, groupIndex, onFocus }: EditorPaneProps) {
     const md = (ed.storage as any).markdown.getMarkdown() as string;
     await saveSceneContent(id, md);
     await saveAuthorshipSpans(id, ed.state.doc);
+    useTreeStore
+      .getState()
+      .refreshAiRatio(id)
+      .catch(() => {});
   }, []);
 
   const saveFn = useCallback(async () => {

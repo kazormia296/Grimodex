@@ -97,10 +97,14 @@ interface TreeNodeItemProps {
   charCount: number;
   showWordCounts: boolean;
   showStatusDots: boolean;
+  showAiAttribution: boolean;
+  aiRatio: number; // 0-100; shown as badge when showAiAttribution && aiRatio > 0
   dropIndicator: DropIndicator | null;
   onStartRename?: () => void;
   /** Ordered flat list of nodes for Shift+Click range selection */
   orderedNodes: TreeNodeData[];
+  /** Current view mode — synopsis tooltip shown only in "tree" mode */
+  viewMode?: string;
 }
 
 export function TreeNodeItem({
@@ -114,9 +118,12 @@ export function TreeNodeItem({
   charCount,
   showWordCounts,
   showStatusDots,
+  showAiAttribution,
+  aiRatio,
   dropIndicator,
   onStartRename,
   orderedNodes,
+  viewMode,
 }: TreeNodeItemProps) {
   const toggleExpand = useTreeStore((s) => s.toggleExpand);
   const setActiveScene = useTreeStore((s) => s.setActiveScene);
@@ -261,6 +268,11 @@ export function TreeNodeItem({
         style={{
           paddingLeft: `${depth * 12 + (isActive && (node.nodeType === "scene" || node.nodeType === "note") ? 2 : 4)}px`,
         }}
+        title={
+          viewMode !== "outline" && node.nodeType === "scene" && node.synopsis
+            ? node.synopsis.slice(0, 100)
+            : undefined
+        }
         onClick={dragInProgress ? undefined : (e) => handleClick(e)}
         onDoubleClick={dragInProgress ? undefined : handleDoubleClick}
         onContextMenu={handleContextMenu}
@@ -329,6 +341,16 @@ export function TreeNodeItem({
             </span>
           )}
         </span>
+
+        {/* AI attribution badge */}
+        {showAiAttribution &&
+          node.nodeType === "scene" &&
+          aiRatio > 0 &&
+          !isEditing && (
+            <span className="ml-1 flex-shrink-0 rounded px-1 text-[10px] tabular-nums bg-purple-500/15 text-purple-400">
+              {aiRatio}%
+            </span>
+          )}
 
         {/* Word count */}
         {showWordCounts && !isEditing && (

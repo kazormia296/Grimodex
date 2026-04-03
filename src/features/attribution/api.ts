@@ -1,6 +1,6 @@
 import { db } from "@/db/client";
 import { authorshipSpans } from "@/db/schema";
-import { eq } from "drizzle-orm";
+import { eq, inArray } from "drizzle-orm";
 import type { NewAuthorshipSpan, AuthorshipSpan } from "@/db/schema";
 import type { Node as ProseMirrorNode } from "@tiptap/pm/model";
 import type { AuthorshipSource } from "./AuthorshipMark";
@@ -82,6 +82,38 @@ function extractDbSpans(
   });
 
   return spans;
+}
+
+/**
+ * Batch-compute AI attribution ratio (0–100 integer) per scene node.
+ * Returns a map of nodeId → AI percentage. Nodes with no spans are omitted.
+ */
+export async function loadBatchAiRatio(
+  nodeIds: string[],
+): Promise<Record<string, number>> {
+  if (nodeIds.length === 0) return {};
+
+  const spans = await db
+    .select()
+    .from(authorshipSpans)
+    .where(inArray(authorshipSpans.nodeId, nodeIds));
+
+  // Aggregate per node
+  const totals: Record<string, { ai: number; total: number }> = {};
+  for (const span of spans) {
+    const id = span.nodeId;
+    if (!id) continue;
+    const len = span.toPos - span.fromPos;
+    if (!totals[id]) totals[id] = { ai: 0, total: 0 };
+    totals[id].total += len;
+    if (span.source === "ai") totals[id].ai += len;
+  }
+
+  const result: Record<string, number> = {};
+  for (const [id, { ai, total }] of Object.entries(totals)) {
+    if (total > 0) result[id] = Math.round((ai / total) * 100);
+  }
+  return result;
 }
 
 /**
