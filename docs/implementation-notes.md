@@ -500,8 +500,9 @@ App.tsx
 
 ```
 App.tsx
-└── HStack
-    ├── ActivityBar (40px 固定)
+└── VStack
+    ├── Header ([メニュー] [タイトル] ... [パネル▼] [⚙])
+    └── HStack
     ├── LeftDock (リサイズ可能、初期 200px)
     │   └── TabGroup: [Scenes | Codex | ChatHistory]
     ├── CenterArea
@@ -539,10 +540,12 @@ App.tsx
    }
    ```
 
-2. **ActivityBar 作成**（A-2）
-   - 新規コンポーネント: `src/features/layout/ActivityBar.tsx`
-   - パネルアイコン一覧 + インジケータドット
+2. **PanelToggleDropdown 作成**（A-2）
+   - 新規コンポーネント: `src/features/layout/PanelToggleDropdown.tsx`
+   - ヘッダー右側のマルチセレクトドロップダウン
+   - チェックボックス + パネル名 + ショートカット表示
    - クリックで `layoutStore.togglePanel()` 呼び出し
+   - ホバー時に対象領域をハイライト（`PanelHighlightOverlay.tsx`）
 
 3. **DockZone 汎用コンポーネント作成**（A-3 〜 A-5）
    ```typescript
@@ -717,7 +720,9 @@ describe('diffsToDecorations', () => {
 | SceneBreakNode.test.ts | `src/features/editor/` | C-2 |
 | FocusDimPlugin.ts | `src/features/editor/` | C-2 |
 | ChatInput.tsx | `src/features/chat/` | D-16 |
-| ActivityBar.tsx | `src/features/layout/` | A-2 |
+| PanelToggleDropdown.tsx | `src/features/layout/` | A-2 |
+| PanelHighlightOverlay.tsx | `src/features/layout/` | A-2 |
+| panelRegions.ts | `src/features/layout/` | A-2 |
 | DockZone.tsx | `src/features/layout/` | A-3 |
 | layoutStore.ts | `src/features/layout/` | A-1 |
 | diffUtils.ts | `src/features/revision/` | F-6 |

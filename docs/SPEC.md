@@ -613,7 +613,6 @@ VS Code + JetBrains ハイブリッドのDock/Float/Tab/Splitモデルを採用:
 
 | ゾーン | 初期幅/高さ | デフォルトパネル |
 |--------|-----------|----------------|
-| Activity Bar | 40px固定 | アイコン＋インジケータドット |
 | Left Top | ~18% | Scenes（表示）、Codex（非表示） |
 | Left Bottom | Left Topとの比率 | Codex Quick（表示） |
 | Center | フレキシブル | Editor Groups（必須、最低1グループ） |
