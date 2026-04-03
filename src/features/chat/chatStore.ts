@@ -52,6 +52,7 @@ import { useTreeStore } from "@/features/tree/treeStore";
 import { loadSceneContent } from "@/features/tree/api";
 import { getNode } from "@/features/tree/api";
 import { getProject } from "@/features/project/api";
+import { useSettingsStore } from "@/features/settings/settingsStore";
 import { listCodexEntries } from "@/features/codex/api";
 import { findMentionedEntries } from "@/features/codex/codexMatcher";
 import type { ChatMessage, ChatSession, MessageRole } from "./chatTypes";
@@ -274,9 +275,12 @@ export const useChatStore = create<ChatState>()((set, get) => ({
           }));
         }
 
-        // Layer 2: storySoFar — preceding scene synopses (~10% of 200k context ≈ 20,000 tok)
+        // Layer 2: storySoFar — use L2 context budget % from settings (default 10%)
         const allNodes = useTreeStore.getState().nodes;
-        const storySoFarBudget = 20_000;
+        const l2Pct = useSettingsStore
+          .getState()
+          .getNumber("ai.contextBudget.l2", 10);
+        const storySoFarBudget = Math.round((l2Pct / 100) * 200_000);
         const storySoFar = buildStorySoFar(
           sceneCtx.id,
           allNodes,
@@ -341,7 +345,11 @@ export const useChatStore = create<ChatState>()((set, get) => ({
             label: "設定を開く",
             onClick: () => {
               // Signal to open settings dialog via a custom event
-              window.dispatchEvent(new CustomEvent("open-ai-settings"));
+              window.dispatchEvent(
+                new CustomEvent("open-settings", {
+                  detail: { category: "ai" },
+                }),
+              );
             },
           },
           duration: 8000,

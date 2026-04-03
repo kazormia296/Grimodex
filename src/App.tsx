@@ -12,7 +12,9 @@ import { WelcomeScreen } from "@/features/workspace/WelcomeScreen";
 import { LauncherScreen } from "@/features/workspace/LauncherScreen";
 import { WorkspaceMenu } from "@/features/workspace/WorkspaceMenu";
 import { useWorkspaceStore } from "@/features/workspace/store";
-import { AiSettingsDialog } from "@/features/chat/AiSettingsDialog";
+import { SettingsDialog } from "@/features/settings/SettingsDialog";
+import type { SettingsCategory } from "@/features/settings/types";
+import { getSetting } from "@/features/settings/api";
 import { ActivityBar } from "@/features/layout/ActivityBar";
 import { DockviewWatermark } from "@/features/layout/DockviewWatermark";
 import {
@@ -123,6 +125,24 @@ function App() {
   const view = useWorkspaceStore((s) => s.view);
   const initialize = useWorkspaceStore((s) => s.initialize);
 
+  // Apply persisted theme on startup
+  useEffect(() => {
+    getSetting("display.theme").then((theme) => {
+      const t = theme ?? "system";
+      const html = document.documentElement;
+      if (t === "dark") {
+        html.classList.add("dark");
+      } else if (t === "light") {
+        html.classList.remove("dark");
+      } else {
+        const prefersDark = window.matchMedia(
+          "(prefers-color-scheme: dark)",
+        ).matches;
+        html.classList.toggle("dark", prefersDark);
+      }
+    });
+  }, []);
+
   useEffect(() => {
     initialize();
   }, [initialize]);
@@ -143,7 +163,9 @@ function App() {
 }
 
 function EditorScreen() {
-  const [showAiSettings, setShowAiSettings] = useState(false);
+  const [showSettings, setShowSettings] = useState(false);
+  const [settingsInitialCategory, setSettingsInitialCategory] =
+    useState<SettingsCategory>("project");
   const { togglePanel, loadLayout, setDockviewApi } = useLayoutStore();
 
   // Component map for dockview — stable reference
@@ -163,13 +185,15 @@ function EditorScreen() {
     [],
   );
 
-  // Open AI settings dialog when triggered by error handler (D-17)
+  // Open settings dialog when triggered by error handler or other sources
   useEffect(() => {
-    function onOpenSettings() {
-      setShowAiSettings(true);
+    function onOpenSettings(e: Event) {
+      const detail = (e as CustomEvent<{ category?: SettingsCategory }>).detail;
+      setSettingsInitialCategory(detail?.category ?? "project");
+      setShowSettings(true);
     }
-    window.addEventListener("open-ai-settings", onOpenSettings);
-    return () => window.removeEventListener("open-ai-settings", onOpenSettings);
+    window.addEventListener("open-settings", onOpenSettings);
+    return () => window.removeEventListener("open-settings", onOpenSettings);
   }, []);
 
   // Dockview ready handler — build default layout synchronously, then
@@ -222,7 +246,8 @@ function EditorScreen() {
 
       e.preventDefault();
       if (target === "settings") {
-        setShowAiSettings(true);
+        setSettingsInitialCategory("project");
+        setShowSettings(true);
       } else {
         togglePanel(target);
       }
@@ -241,13 +266,19 @@ function EditorScreen() {
         <WorkspaceMenu />
         <h1 className="text-xl font-bold text-foreground">Grimodex</h1>
       </header>
-      <AiSettingsDialog
-        open={showAiSettings}
-        onClose={() => setShowAiSettings(false)}
+      <SettingsDialog
+        open={showSettings}
+        onClose={() => setShowSettings(false)}
+        initialCategory={settingsInitialCategory}
       />
       <div className="flex flex-1 overflow-hidden">
         {/* Activity Bar — fixed 40px */}
-        <ActivityBar onSettingsOpen={() => setShowAiSettings(true)} />
+        <ActivityBar
+          onSettingsOpen={(category) => {
+            setSettingsInitialCategory(category ?? "project");
+            setShowSettings(true);
+          }}
+        />
 
         {/* Dockview layout */}
         <DockviewReact

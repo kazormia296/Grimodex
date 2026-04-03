@@ -10,6 +10,7 @@ import {
 import { cn } from "@/lib/utils";
 import type { DockviewApi } from "dockview-react";
 import { useLayoutStore, type PanelId } from "./layoutStore";
+import type { SettingsCategory } from "@/features/settings/types";
 
 interface PanelDef {
   id: PanelId;
@@ -81,7 +82,7 @@ function ActivityButton({ panel, dotState, onClick }: ActivityButtonProps) {
 }
 
 interface ActivityBarProps {
-  onSettingsOpen?: () => void;
+  onSettingsOpen?: (category?: SettingsCategory) => void;
 }
 
 export function ActivityBar({ onSettingsOpen }: ActivityBarProps) {
@@ -111,7 +112,7 @@ export function ActivityBar({ onSettingsOpen }: ActivityBarProps) {
       <button
         type="button"
         title="設定"
-        onClick={onSettingsOpen}
+        onClick={() => onSettingsOpen?.()}
         className="flex h-10 w-10 items-center justify-center rounded text-muted-foreground transition-colors hover:bg-accent/50 hover:text-foreground"
       >
         <Settings className="h-5 w-5" />

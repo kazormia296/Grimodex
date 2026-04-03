@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import { useSettingsStore } from "@/features/settings/settingsStore";
 
 interface CursorSettingsState {
   cursorAnimation: boolean;
@@ -12,9 +13,20 @@ interface CursorSettingsState {
 export const useCursorSettingsStore = create<CursorSettingsState>()((set) => ({
   cursorAnimation: true,
   toggleCursorAnimation: () =>
-    set((s) => ({ cursorAnimation: !s.cursorAnimation })),
+    set((s) => {
+      const next = !s.cursorAnimation;
+      useSettingsStore.getState().set("editor.smoothCaret", String(next));
+      return { cursorAnimation: next };
+    }),
+
   focusMode: false,
-  toggleFocusMode: () => set((s) => ({ focusMode: !s.focusMode })),
+  toggleFocusMode: () =>
+    set((s) => {
+      const next = !s.focusMode;
+      useSettingsStore.getState().set("editor.typewriterMode", String(next));
+      return { focusMode: next };
+    }),
+
   showComments: false,
   toggleShowComments: () => set((s) => ({ showComments: !s.showComments })),
 }));

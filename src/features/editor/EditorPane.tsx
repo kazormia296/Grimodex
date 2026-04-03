@@ -17,6 +17,7 @@ import { CodexPopover } from "@/features/editor/CodexPopover";
 import { useAttribution } from "@/features/attribution/useAttribution";
 import { useCursorEffect } from "@/features/editor/useCursorEffect";
 import { useCursorSettingsStore } from "@/features/editor/cursorSettingsStore";
+import { useEditorSettings } from "@/features/settings/hooks/useEditorSettings";
 import { AttributionOverrideMenu } from "@/features/attribution/AttributionOverrideMenu";
 import {
   saveAuthorshipSpans,
@@ -134,7 +135,11 @@ export function EditorPane({ sceneId, groupIndex, onFocus }: EditorPaneProps) {
     }
   }, [coreSave, shouldAutoRevision, recordAutoRevision]);
 
-  const { schedule, cancel, flush } = useAutoSave(saveFn, 2000);
+  const editorSettings = useEditorSettings();
+  const { schedule, cancel, flush } = useAutoSave(
+    saveFn,
+    editorSettings.autoSaveDelay,
+  );
 
   const insertFromSnippet = useEditorStore((s) => s.insertFromSnippet);
   const insertFromPaste = useEditorStore((s) => s.insertFromPaste);
@@ -400,10 +405,23 @@ export function EditorPane({ sceneId, groupIndex, onFocus }: EditorPaneProps) {
         onClose={() => setFindOpen(false)}
       />
       <div ref={editorContainerRef} className="flex-1 overflow-auto p-4">
-        <EditorContent editor={editor} />
-        <CodexPopover editor={editor} />
-        <AttributionOverrideMenu editor={editor} />
-        <EditorContextMenu editor={editor} containerRef={editorContainerRef} />
+        <div
+          style={{
+            fontFamily: editorSettings.fontFamily,
+            fontSize: `${editorSettings.fontSize}px`,
+            lineHeight: editorSettings.lineHeight,
+            maxWidth: `${editorSettings.maxContentWidth}px`,
+            margin: "0 auto",
+          }}
+        >
+          <EditorContent editor={editor} />
+          <CodexPopover editor={editor} />
+          <AttributionOverrideMenu editor={editor} />
+          <EditorContextMenu
+            editor={editor}
+            containerRef={editorContainerRef}
+          />
+        </div>
       </div>
       <div className="flex items-center justify-between border-t border-border px-3 py-1 text-xs text-muted-foreground">
         <div className="flex items-center gap-3">

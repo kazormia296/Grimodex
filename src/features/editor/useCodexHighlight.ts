@@ -10,16 +10,15 @@ import {
 export function useCodexHighlight(editor: Editor | null) {
   const entries = useCodexStore((s) => s.entries);
   const setMatchTargets = useCodexHighlightStore((s) => s.setMatchTargets);
+  const enabled = useCodexHighlightStore((s) => s.enabled);
 
-  // Update match targets when codex entries change
+  // Update match targets when codex entries change or highlight is toggled
   useEffect(() => {
-    const targets = entries.map((e) => ({
-      id: e.id,
-      name: e.name,
-      type: e.type,
-    }));
+    const targets = enabled
+      ? entries.map((e) => ({ id: e.id, name: e.name, type: e.type }))
+      : [];
     setMatchTargets(targets);
-  }, [entries, setMatchTargets]);
+  }, [entries, setMatchTargets, enabled]);
 
   // Register plugin
   useEffect(() => {
