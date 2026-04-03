@@ -14,6 +14,7 @@ import {
   useSensor,
   useSensors,
   DragOverlay,
+  useDroppable,
 } from "@dnd-kit/core";
 import type {
   DragStartEvent,
@@ -31,6 +32,12 @@ import { isValidParent } from "./treeStore";
 import type { DropIndicator } from "./TreeNodeItem";
 
 const DEFAULT_PROJECT_ID = "default-project";
+const BOTTOM_DROP_ZONE_ID = "drop-bottom-zone";
+
+function BottomDropZone() {
+  const { setNodeRef } = useDroppable({ id: BOTTOM_DROP_ZONE_ID });
+  return <div ref={setNodeRef} className="min-h-6" />;
+}
 
 // ---- Utility: flat visible node list (for keyboard nav) ----
 function flattenVisible(
@@ -521,13 +528,12 @@ export function ScenesPanel() {
       const activeNode = nodeMap[activeId];
       if (!activeNode) return;
 
-      // Handle drop below all items: pointer inside tree container but over==null
-      if (!over) {
-        const treeEl = treeRef.current;
-        if (!treeEl) return;
-        const rect = treeEl.getBoundingClientRect();
-        const py = pointerYRef.current;
-        if (py < rect.top || py > rect.bottom) return;
+      if (!over) return;
+
+      const rawOverId = String(over.id);
+
+      // Handle drop on bottom zone → after last visible item
+      if (rawOverId === BOTTOM_DROP_ZONE_ID) {
         const lastNode = flatNodes.filter((n) => n.id !== activeId).slice(-1)[0];
         if (!lastNode) return;
         const parentNode = lastNode.parentId ? nodeMap[lastNode.parentId] : null;
@@ -538,7 +544,7 @@ export function ScenesPanel() {
       }
 
       // over.id is like "drop-{nodeId}"
-      const overId = String(over.id).replace(/^drop-/, "");
+      const overId = rawOverId.replace(/^drop-/, "");
       if (activeId === overId) return;
 
       const overNode = nodeMap[overId];
@@ -595,25 +601,26 @@ export function ScenesPanel() {
   const onDragOver = useCallback(
     ({ active, over }: DragMoveEvent) => {
       if (!over) {
-        // Pointer inside tree container but below all items → "after" on last item
-        const treeEl = treeRef.current;
-        if (treeEl) {
-          const rect = treeEl.getBoundingClientRect();
-          const py = pointerYRef.current;
-          if (py >= rect.top && py <= rect.bottom) {
-            const lastNode = flatNodes
-              .filter((n) => n.id !== String(active.id))
-              .slice(-1)[0];
-            if (lastNode) {
-              setDropIndicator({ nodeId: lastNode.id, position: "after" });
-              return;
-            }
-          }
-        }
         setDropIndicator(null);
         return;
       }
-      const overId = String(over.id).replace(/^drop-/, "");
+
+      const rawOverId = String(over.id);
+
+      // Bottom drop zone → "after" on last visible item
+      if (rawOverId === BOTTOM_DROP_ZONE_ID) {
+        const lastNode = flatNodes
+          .filter((n) => n.id !== String(active.id))
+          .slice(-1)[0];
+        if (lastNode) {
+          setDropIndicator({ nodeId: lastNode.id, position: "after" });
+        } else {
+          setDropIndicator(null);
+        }
+        return;
+      }
+
+      const overId = rawOverId.replace(/^drop-/, "");
       if (active.id === overId) {
         setDropIndicator(null);
         return;
@@ -784,6 +791,7 @@ export function ScenesPanel() {
               nodeTotals={nodeTotals}
             />
           </ul>
+          <BottomDropZone />
         </div>
 
         {/* Synopsis area */}
