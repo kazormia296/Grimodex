@@ -236,11 +236,11 @@ export function TreeNodeItem({
         onDoubleClick={startEdit}
         onContextMenu={handleContextMenu}
       >
-        {/* Drag handle */}
+        {/* Drag handle — always in layout to prevent title shift */}
         <span
           {...attributes}
           {...listeners}
-          className="hidden h-4 w-3 flex-shrink-0 cursor-grab items-center justify-center text-muted-foreground/50 group-hover:flex"
+          className="flex h-4 w-3 flex-shrink-0 cursor-grab items-center justify-center text-muted-foreground/50 opacity-0 group-hover:opacity-100"
           onClick={(e) => e.stopPropagation()}
         >
           <GripVertical className="h-3 w-3" />
