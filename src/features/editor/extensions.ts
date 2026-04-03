@@ -1,7 +1,14 @@
 import StarterKit from "@tiptap/starter-kit";
 import { Markdown } from "tiptap-markdown";
+import Underline from "@tiptap/extension-underline";
+import Placeholder from "@tiptap/extension-placeholder";
+import CharacterCount from "@tiptap/extension-character-count";
+import Typography from "@tiptap/extension-typography";
 import { AuthorshipMark } from "@/features/attribution/AuthorshipMark";
 import { RubyNode } from "@/features/editor/RubyNode";
+import { EmphasisDotsMark } from "@/features/editor/EmphasisDotsMark";
+import { SceneBreakNode } from "@/features/editor/SceneBreakNode";
+import { FindReplaceExtension } from "@/features/editor/FindReplaceExtension";
 import type { Extensions } from "@tiptap/core";
 
 /**
@@ -13,7 +20,16 @@ export function getEditorExtensions(): Extensions {
   return [
     StarterKit,
     Markdown.configure({ html: true }),
+    // Official extensions
+    Underline,
+    Placeholder.configure({ placeholder: "ここに書き始める…" }),
+    CharacterCount,
+    Typography,
+    // Custom marks/nodes
     AuthorshipMark,
+    EmphasisDotsMark,
     RubyNode,
+    SceneBreakNode,
+    FindReplaceExtension,
   ];
 }

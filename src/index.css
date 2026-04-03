@@ -199,3 +199,20 @@
   outline: 1px dashed oklch(0.60 0.15 300);
   outline-offset: -1px;
 }
+
+/* Find & Replace decorations (C-7) */
+.find-match {
+  background-color: oklch(0.90 0.12 85);
+  border-radius: 2px;
+}
+.dark .find-match {
+  background-color: oklch(0.40 0.12 85);
+}
+.find-current {
+  background-color: oklch(0.75 0.18 60);
+  border-radius: 2px;
+  outline: 1px solid oklch(0.55 0.18 60);
+}
+.dark .find-current {
+  background-color: oklch(0.55 0.18 60);
+}

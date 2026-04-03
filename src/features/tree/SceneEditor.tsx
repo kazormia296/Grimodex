@@ -28,6 +28,7 @@ import {
 import type { ToolbarSlot } from "@/features/editor/Toolbar";
 import { VerticalPreview } from "@/features/editor/VerticalPreview";
 import { EditorContextMenu } from "@/features/editor/EditorContextMenu";
+import { FindReplaceBar } from "@/features/editor/FindReplaceBar";
 import type { SceneStatus } from "@/features/tree/treeStore";
 
 const STATUS_LABELS: Record<SceneStatus, string> = {
@@ -61,6 +62,8 @@ export function SceneEditor() {
   const activeStatus = (activeNode?.status ?? null) as SceneStatus | null;
 
   const editorContainerRef = useRef<HTMLDivElement>(null);
+  const [findOpen, setFindOpen] = useState(false);
+  const [findShowReplace, setFindShowReplace] = useState(false);
 
   const setIsDirtyRef = useRef(setIsDirty);
   setIsDirtyRef.current = setIsDirty;
@@ -193,6 +196,14 @@ export function SceneEditor() {
       if (e.ctrlKey && e.key === "s" && !e.altKey && !e.shiftKey) {
         e.preventDefault();
         handleManualSave();
+      } else if (e.ctrlKey && e.key === "f" && !e.altKey && !e.shiftKey) {
+        e.preventDefault();
+        setFindOpen(true);
+        setFindShowReplace(false);
+      } else if (e.ctrlKey && e.key === "h" && !e.altKey && !e.shiftKey) {
+        e.preventDefault();
+        setFindOpen(true);
+        setFindShowReplace(true);
       }
     }
     window.addEventListener("keydown", onKeyDown);
@@ -317,6 +328,12 @@ export function SceneEditor() {
         extraSlots={[cursorAnimationSlot, attributionSlot]}
       />
       <SynopsisHeader sceneId={activeSceneId} />
+      <FindReplaceBar
+        editor={editor}
+        open={findOpen}
+        showReplace={findShowReplace}
+        onClose={() => setFindOpen(false)}
+      />
       <div ref={editorContainerRef} className="flex-1 overflow-auto p-4">
         <EditorContent editor={editor} />
         <CodexPopover editor={editor} />
