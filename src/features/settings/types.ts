@@ -39,6 +39,7 @@ export const DEFAULT_SETTINGS: Record<string, string> = {
   "editor.maxContentWidth": "720",
   "editor.paragraphSpacing": "8",
   "editor.typewriterMode": "false",
+  "editor.focusMode": "false",
   "editor.autoSaveDelay": "2000",
   "editor.spellCheck": "false",
   "editor.smartQuotes": "false",

@@ -7,6 +7,7 @@ export interface EditorSettings {
   maxContentWidth: number;
   paragraphSpacing: number;
   typewriterMode: boolean;
+  focusMode: boolean;
   autoSaveDelay: number;
   spellCheck: boolean;
   smartQuotes: boolean;
@@ -29,6 +30,7 @@ export function useEditorSettings(): EditorSettings {
     maxContentWidth: store.getNumber("editor.maxContentWidth", 720),
     paragraphSpacing: store.getNumber("editor.paragraphSpacing", 8),
     typewriterMode: store.getBoolean("editor.typewriterMode", false),
+    focusMode: store.getBoolean("editor.focusMode", false),
     autoSaveDelay: store.getNumber("editor.autoSaveDelay", 2000),
     spellCheck: store.getBoolean("editor.spellCheck", false),
     smartQuotes: store.getBoolean("editor.smartQuotes", false),

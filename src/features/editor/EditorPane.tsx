@@ -29,6 +29,12 @@ import {
 import { VerticalPreview } from "@/features/editor/VerticalPreview";
 import { EditorContextMenu } from "@/features/editor/EditorContextMenu";
 import { FindReplaceBar } from "@/features/editor/FindReplaceBar";
+import { useFocusMode } from "@/features/editor/useFocusMode";
+import { useTypewriterScroll } from "@/features/editor/useTypewriterScroll";
+import { useInlineAiDiff } from "@/features/editor/inlineAi/useInlineAiDiff";
+import { InlineAIPalette } from "@/features/editor/inlineAi/InlineAIPalette";
+import { InlineAIToolbar } from "@/features/editor/inlineAi/InlineAIToolbar";
+import type { InlineAiCommand } from "@/features/editor/inlineAi/inlineAiTypes";
 import { useTabStore } from "@/features/editor/tabStore";
 import { useSceneContentStore } from "@/features/editor/sceneContentStore";
 import { shouldAutoDraftTransition } from "@/features/editor/autoStatusTransition";
@@ -80,6 +86,9 @@ export function EditorPane({ sceneId, groupIndex, onFocus }: EditorPaneProps) {
   const [findOpen, setFindOpen] = useState(false);
   const [findShowReplace, setFindShowReplace] = useState(false);
   const [verticalPreviewOpen, setVerticalPreviewOpen] = useState(false);
+  const [paletteOpen, setPaletteOpen] = useState(false);
+  const [palettePreselect, setPalettePreselect] =
+    useState<InlineAiCommand | null>(null);
 
   const setIsDirtyRef = useRef(setIsDirty);
   setIsDirtyRef.current = setIsDirty;
@@ -334,6 +343,10 @@ export function EditorPane({ sceneId, groupIndex, onFocus }: EditorPaneProps) {
           const content = JSON.stringify(ed.getJSON());
           useRevisionStore.getState().openHistory("scene", id, content);
         }
+      } else if (e.ctrlKey && e.shiftKey && e.key === " ") {
+        e.preventDefault();
+        setPalettePreselect(null);
+        setPaletteOpen(true);
       }
     }
     window.addEventListener("keydown", onKeyDown);
@@ -342,10 +355,34 @@ export function EditorPane({ sceneId, groupIndex, onFocus }: EditorPaneProps) {
 
   useInsertHighlight(editor);
   useCodexHighlight(editor);
+  useFocusMode(editor);
+  const typewriterMode = useCursorSettingsStore((s) => s.typewriterMode);
+  useTypewriterScroll(editor, typewriterMode, editorContainerRef);
+  const { generate, accept, reject, retry } = useInlineAiDiff(editor);
 
   const cursorAnimation = useCursorSettingsStore((s) => s.cursorAnimation);
   useCursorEffect(editor, cursorAnimation);
   useAttribution(editor);
+
+  // Listen for slash-command events dispatched by SlashCommandExtension
+  useEffect(() => {
+    if (!editor) return;
+    function onSlashCommand(e: Event) {
+      const cmd = (e as CustomEvent).detail?.command as
+        | InlineAiCommand
+        | undefined;
+      if (cmd) {
+        setPalettePreselect(cmd);
+        setPaletteOpen(true);
+      }
+    }
+    editor.view.dom.addEventListener("inlineai:slash-command", onSlashCommand);
+    return () =>
+      editor.view.dom.removeEventListener(
+        "inlineai:slash-command",
+        onSlashCommand,
+      );
+  }, [editor]);
 
   // Subscribe to content sync from the other pane
   useEffect(() => {
@@ -455,7 +492,7 @@ export function EditorPane({ sceneId, groupIndex, onFocus }: EditorPaneProps) {
       />
       <div
         ref={editorContainerRef}
-        className={`flex-1 overflow-auto p-4${filterSource ? ` attribution-filter-${filterSource}` : ""}`}
+        className={`flex-1 overflow-auto p-4${typewriterMode ? " typewriter-padding" : ""}${filterSource ? ` attribution-filter-${filterSource}` : ""}`}
       >
         <div
           style={{
@@ -513,6 +550,32 @@ export function EditorPane({ sceneId, groupIndex, onFocus }: EditorPaneProps) {
         open={verticalPreviewOpen}
         onClose={() => setVerticalPreviewOpen(false)}
       />
+      {editor && (
+        <InlineAIPalette
+          editor={editor}
+          open={paletteOpen}
+          preselectedCommand={palettePreselect}
+          onClose={() => setPaletteOpen(false)}
+          onSubmit={(command, prompt) => {
+            const node = useTreeStore
+              .getState()
+              .nodes.find((n) => n.id === sceneId);
+            const sceneText = editor.getText();
+            const { from, to } = editor.state.selection;
+            const selectedText =
+              from !== to ? editor.state.doc.textBetween(from, to) : undefined;
+            generate(command, {
+              projectTitle: node?.title ?? "",
+              sceneTitle: node?.title ?? "",
+              sceneText,
+              codexSummaries: "",
+              selectedText,
+              arg: prompt || undefined,
+            });
+          }}
+        />
+      )}
+      <InlineAIToolbar onAccept={accept} onReject={reject} onRetry={retry} />
     </div>
   );
 }

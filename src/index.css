@@ -243,6 +243,18 @@
   transition: opacity 0.2s;
 }
 
+/* Focus Mode (C-10): dim blocks outside cursor's block */
+.focus-dimmed {
+  opacity: 0.3;
+  transition: opacity 0.15s ease;
+}
+
+/* Typewriter Mode (C-11): padding to allow centering at doc edges */
+.typewriter-padding .tiptap {
+  padding-top: 50vh;
+  padding-bottom: 50vh;
+}
+
 /* Revision diff display (F-8) */
 .diff-add {
   background-color: oklch(0.88 0.10 145);

@@ -60,10 +60,10 @@ export function Toolbar({
 
   const { showAttribution, toggleAttribution } = useAttributionStore();
   const {
-    cursorAnimation: typewriterMode,
-    toggleCursorAnimation: toggleTypewriter,
     focusMode,
     toggleFocusMode,
+    typewriterMode,
+    toggleTypewriterMode,
     showComments,
     toggleShowComments,
   } = useCursorSettingsStore();
@@ -315,7 +315,7 @@ export function Toolbar({
       <ToolbarButton
         label="タイプライターモード"
         active={typewriterMode}
-        onClick={toggleTypewriter}
+        onClick={toggleTypewriterMode}
       >
         TW
       </ToolbarButton>
