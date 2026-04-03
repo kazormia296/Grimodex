@@ -9,6 +9,7 @@ import {
 import { useCodexStore } from "./codexStore";
 import type { CodexEntry, CodexEntryType } from "./api";
 import { ChildrenBudgetSelector } from "./components/ChildrenBudgetSelector";
+import { RelationSection } from "./components/RelationSection";
 import type { ChildrenBudgetPreset } from "./childrenBudget";
 import { getChildrenFromArray } from "./childrenBudget";
 import { listEntryTags } from "./tagApi";
@@ -293,6 +294,8 @@ function CodexDetailContent({
           }}
           hasChildren={hasChildren}
         />
+
+        <RelationSection entry={entry} />
 
         {entry.sourceChatMessageId && (
           <div
