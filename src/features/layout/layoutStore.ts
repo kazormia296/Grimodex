@@ -1,8 +1,7 @@
 import { create } from "zustand";
-import { db } from "@/db/client";
-import { settings } from "@/db/schema";
-import { eq } from "drizzle-orm";
+import { invoke } from "@/lib/tauri";
 import type { DockviewApi, SerializedDockview } from "dockview-react";
+import type { GlobalSettings } from "@/features/workspace/store";
 
 export type PanelId =
   | "scenes"
@@ -35,26 +34,28 @@ interface LayoutState {
   /** Check whether a panel exists in the current layout */
   isPanelVisible: (panel: PanelId) => boolean;
 
-  /** Load persisted layout; returns the serialized data or null */
+  /** Load persisted layout from global settings; returns the serialized data or null */
   loadLayout: () => Promise<SerializedDockview | null>;
-  /** Save current layout to settings table (debounced internally) */
+  /** Save current layout to global settings (debounced internally) */
   saveLayout: () => void;
 }
 
-const SETTINGS_KEY = "layout.dockview.v1";
 let saveTimer: ReturnType<typeof setTimeout> | null = null;
 
 function scheduleSave(get: () => LayoutState) {
   if (saveTimer !== null) clearTimeout(saveTimer);
-  saveTimer = setTimeout(() => {
+  saveTimer = setTimeout(async () => {
     const api = get().dockviewApi;
     if (!api) return;
-    const data = api.toJSON();
-    const value = JSON.stringify(data);
-    db.insert(settings)
-      .values({ key: SETTINGS_KEY, value })
-      .onConflictDoUpdate({ target: settings.key, set: { value } })
-      .catch(() => {});
+    try {
+      const layout = api.toJSON();
+      const current = await invoke<GlobalSettings>("get_global_settings");
+      await invoke("save_global_settings", {
+        settings: { ...current, layout },
+      });
+    } catch {
+      // Ignore save errors silently
+    }
   }, 500);
 }
 
@@ -96,13 +97,10 @@ export const useLayoutStore = create<LayoutState>()((set, get) => ({
 
   async loadLayout() {
     try {
-      const rows = await db
-        .select()
-        .from(settings)
-        .where(eq(settings.key, SETTINGS_KEY));
-      if (rows.length > 0) {
-        return JSON.parse(rows[0].value) as SerializedDockview;
-      }
+      const settings = await invoke<
+        GlobalSettings & { layout?: SerializedDockview }
+      >("get_global_settings");
+      return settings.layout ?? null;
     } catch {
       // Use default layout on error
     }

@@ -11,6 +11,8 @@ export interface GlobalSettings {
   lastActiveWorkspace: string | null;
   theme: string;
   showLauncherOnStartup: boolean;
+  /** Dockview layout serialization (project-independent UI state) */
+  layout?: unknown;
 }
 
 export type AppView = "loading" | "welcome" | "launcher" | "editor";

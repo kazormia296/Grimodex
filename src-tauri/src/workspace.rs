@@ -24,6 +24,9 @@ pub struct GlobalSettings {
     pub last_active_workspace: Option<String>,
     pub theme: String,
     pub show_launcher_on_startup: bool,
+    /// Dockview layout serialization (project-independent UI state).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub layout: Option<serde_json::Value>,
 }
 
 impl Default for GlobalSettings {
@@ -33,6 +36,7 @@ impl Default for GlobalSettings {
             last_active_workspace: None,
             theme: "system".to_string(),
             show_launcher_on_startup: false,
+            layout: None,
         }
     }
 }
