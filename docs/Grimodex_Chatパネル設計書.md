@@ -483,6 +483,24 @@ function buildContext(sceneId: string, session: ChatSession): SystemPrompt {
 - ユーザーがデフォルトモデルを設定
 - チャット入力エリアからセッション単位でモデルを切り替え可能
 
+### 拡張思考（Extended Thinking）
+
+モデルが拡張思考に対応している場合は **常に有効化する**:
+
+| プロバイダ | パラメータ | 対応モデル |
+|-----------|-----------|-----------|
+| Anthropic | `thinking: { type: "enabled", budget_tokens }` | Claude 3.7 Sonnet+, Claude 4+ |
+| OpenAI | reasoning tokens（`o1`, `o3` 系） | o1, o3-mini, o3 等 |
+| OpenRouter | モデル依存（上記プロバイダのパススルー） | 各モデルの仕様に従う |
+| Ollama | モデル依存（DeepSeek-R1 等） | 対応モデルのみ |
+
+- **検出**: モデルメタデータまたはプロバイダ SDK の機能フラグで拡張思考対応を判定
+- **budget_tokens**: コンテキスト予算から動的に算出（レスポンス予約の 80% をデフォルトとする）
+- **UI表示**: thinking ブロックはAIメッセージ内に **折りたたみ式（デフォルト閉じ）** で表示する。「💭 Thinking...」ラベルのトグルをクリックで展開し、推論過程を確認可能。提案の意図やエージェントのツール選択理由の把握に活用できる
+- **トークン計上**: thinking トークンは `chat_messages.tokens_out` に含めて記録する
+- **永続化**: thinking ブロックの内容は `chat_messages.metadata` に保存し、セッション再表示時にも折りたたみ表示を再現する
+- **ストリーミング**: thinking 中は「考え中...」インジケータを表示。thinking 完了後に最終応答のストリーミングを開始する
+
 ---
 
 ## メッセージのコンテキストメニュー
