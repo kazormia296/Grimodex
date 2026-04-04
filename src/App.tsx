@@ -16,12 +16,10 @@ import { SettingsDialog } from "@/features/settings/SettingsDialog";
 import type { SettingsCategory } from "@/features/settings/types";
 import { getSetting } from "@/features/settings/api";
 import { PanelToggleDropdown } from "@/features/layout/PanelToggleDropdown";
+import { LayoutPresetDropdown } from "@/features/layout/LayoutPresetDropdown";
 import { DockviewWatermark } from "@/features/layout/DockviewWatermark";
-import {
-  useLayoutStore,
-  PANEL_TITLES,
-  type PanelId,
-} from "@/features/layout/layoutStore";
+import { useLayoutStore, type PanelId } from "@/features/layout/layoutStore";
+import { getBuiltinPreset } from "@/features/layout/layoutPresets";
 import { Sidebar } from "@/features/tree/Sidebar";
 import { CodexQuickPanel } from "@/features/tree/CodexQuickPanel";
 import { CodexManagementPanel } from "@/features/codex/CodexManagementPanel";
@@ -66,58 +64,11 @@ function CodexQuickContent(_props: IDockviewPanelProps) {
   return <CodexQuickPanel />;
 }
 
-/* ── Default layout builder ── */
+/* ── Default layout builder (delegates to builtin preset) ── */
 
 function buildDefaultLayout(api: DockviewReadyEvent["api"]) {
-  // 1. Scenes (first panel — left)
-  api.addPanel({
-    id: "scenes",
-    component: "scenes",
-    title: PANEL_TITLES.scenes,
-  });
-
-  // 2. Editor (right of Scenes — establishes left/right split)
-  api.addPanel({
-    id: "editor",
-    component: "editor",
-    title: PANEL_TITLES.editor,
-    position: { referencePanel: "scenes", direction: "right" },
-  });
-
-  // 3. Chat + Chat History (right of Editor)
-  api.addPanel({
-    id: "chat",
-    component: "chat",
-    title: PANEL_TITLES.chat,
-    position: { referencePanel: "editor", direction: "right" },
-  });
-  api.addPanel({
-    id: "chat-history",
-    component: "chat-history",
-    title: PANEL_TITLES["chat-history"],
-    position: { referencePanel: "chat", direction: "within" },
-    inactive: true,
-  });
-
-  // 4. Codex Quick (below Scenes — splits left column vertically)
-  api.addPanel({
-    id: "codex-quick",
-    component: "codex-quick",
-    title: PANEL_TITLES["codex-quick"],
-    position: { referencePanel: "scenes", direction: "below" },
-  });
-
-  // Set approximate sizes — left ~18%, center ~52%, right ~30%
-  const leftGroup = api.getPanel("scenes")?.group;
-  const centerGroup = api.getPanel("editor")?.group;
-  const rightGroup = api.getPanel("chat")?.group;
-  if (leftGroup && centerGroup && rightGroup) {
-    leftGroup.api.setSize({ width: Math.round(api.width * 0.18) });
-    rightGroup.api.setSize({ width: Math.round(api.width * 0.3) });
-  }
-
-  // Activate scenes tab
-  api.getPanel("scenes")?.api.setActive();
+  const preset = getBuiltinPreset("builtin:default");
+  preset?.build(api);
 }
 
 /* ── App root ── */
@@ -167,7 +118,8 @@ function EditorScreen() {
   const [showSettings, setShowSettings] = useState(false);
   const [settingsInitialCategory, setSettingsInitialCategory] =
     useState<SettingsCategory>("project");
-  const { togglePanel, loadLayout, setDockviewApi } = useLayoutStore();
+  const { togglePanel, loadLayout, loadPresets, setDockviewApi } =
+    useLayoutStore();
 
   // Component map for dockview — stable reference
   const components = useMemo<
@@ -222,8 +174,11 @@ function EditorScreen() {
         .catch(() => {
           // DB unavailable — keep the default layout
         });
+
+      // Load preset metadata (custom presets list + active ID)
+      loadPresets();
     },
-    [setDockviewApi, loadLayout],
+    [setDockviewApi, loadLayout, loadPresets],
   );
 
   // Keyboard shortcuts (Ctrl+Alt+*)
@@ -267,6 +222,7 @@ function EditorScreen() {
         <WorkspaceMenu />
         <h1 className="text-xl font-bold text-foreground">Grimodex</h1>
         <div className="flex-1" />
+        <LayoutPresetDropdown />
         <PanelToggleDropdown />
         <button
           type="button"

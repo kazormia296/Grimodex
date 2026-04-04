@@ -13,6 +13,10 @@ export interface GlobalSettings {
   showLauncherOnStartup: boolean;
   /** Dockview layout serialization (project-independent UI state) */
   layout?: unknown;
+  /** User-saved layout presets */
+  layoutPresets?: Array<{ id: string; name: string; layout: unknown }>;
+  /** ID of the last-applied layout preset */
+  activeLayoutPresetId?: string | null;
 }
 
 export type AppView = "loading" | "welcome" | "launcher" | "editor";

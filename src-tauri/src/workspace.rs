@@ -27,6 +27,12 @@ pub struct GlobalSettings {
     /// Dockview layout serialization (project-independent UI state).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub layout: Option<serde_json::Value>,
+    /// User-saved layout presets (array of {id, name, layout} objects).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub layout_presets: Option<serde_json::Value>,
+    /// ID of the last-applied layout preset.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub active_layout_preset_id: Option<String>,
 }
 
 impl Default for GlobalSettings {
@@ -37,6 +43,8 @@ impl Default for GlobalSettings {
             theme: "system".to_string(),
             show_launcher_on_startup: false,
             layout: None,
+            layout_presets: None,
+            active_layout_preset_id: None,
         }
     }
 }

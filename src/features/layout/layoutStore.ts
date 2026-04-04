@@ -2,6 +2,11 @@ import { create } from "zustand";
 import { invoke } from "@/lib/tauri";
 import type { DockviewApi, SerializedDockview } from "dockview-react";
 import type { GlobalSettings } from "@/features/workspace/store";
+import {
+  getBuiltinPreset,
+  clearLayout,
+  type CustomPreset,
+} from "./layoutPresets";
 
 export type PanelId =
   | "scenes"
@@ -40,6 +45,24 @@ interface LayoutState {
   loadLayout: () => Promise<SerializedDockview | null>;
   /** Save current layout to global settings (debounced internally) */
   saveLayout: () => void;
+
+  /* ── Preset management ── */
+
+  /** User-saved custom presets */
+  customPresets: CustomPreset[];
+  /** Currently active preset ID (builtin:* or custom UUID) */
+  activePresetId: string | null;
+
+  /** Load presets and active preset ID from global settings */
+  loadPresets: () => Promise<void>;
+  /** Apply a preset by ID (builtin or custom) */
+  applyPreset: (id: string) => void;
+  /** Save the current layout as a named custom preset */
+  saveCurrentAsPreset: (name: string) => Promise<void>;
+  /** Delete a custom preset */
+  deletePreset: (id: string) => Promise<void>;
+  /** Rename a custom preset */
+  renamePreset: (id: string, name: string) => Promise<void>;
 }
 
 let saveTimer: ReturnType<typeof setTimeout> | null = null;
@@ -111,6 +134,78 @@ export const useLayoutStore = create<LayoutState>()((set, get) => ({
 
   saveLayout() {
     scheduleSave(get);
+  },
+
+  /* ── Preset management ── */
+
+  customPresets: [],
+  activePresetId: null,
+
+  async loadPresets() {
+    try {
+      const settings = await invoke<GlobalSettings>("get_global_settings");
+      const presets: CustomPreset[] = Array.isArray(settings.layoutPresets)
+        ? (settings.layoutPresets as CustomPreset[])
+        : [];
+      set({
+        customPresets: presets,
+        activePresetId: settings.activeLayoutPresetId ?? null,
+      });
+    } catch {
+      // Ignore
+    }
+  },
+
+  applyPreset(id) {
+    const api = get().dockviewApi;
+    if (!api) return;
+
+    const builtin = getBuiltinPreset(id);
+    if (builtin) {
+      clearLayout(api);
+      builtin.build(api);
+      set({ activePresetId: id });
+      persistActivePresetId(id);
+      return;
+    }
+
+    const custom = get().customPresets.find((p) => p.id === id);
+    if (custom) {
+      try {
+        api.fromJSON(custom.layout);
+        set({ activePresetId: id });
+        persistActivePresetId(id);
+      } catch {
+        // Corrupted preset — ignore
+      }
+    }
+  },
+
+  async saveCurrentAsPreset(name) {
+    const api = get().dockviewApi;
+    if (!api) return;
+
+    const layout = api.toJSON();
+    const id = crypto.randomUUID();
+    const preset: CustomPreset = { id, name, builtin: false, layout };
+    const presets = [...get().customPresets, preset];
+    set({ customPresets: presets, activePresetId: id });
+    await persistPresets(presets, id);
+  },
+
+  async deletePreset(id) {
+    const presets = get().customPresets.filter((p) => p.id !== id);
+    const activeId = get().activePresetId === id ? null : get().activePresetId;
+    set({ customPresets: presets, activePresetId: activeId });
+    await persistPresets(presets, activeId);
+  },
+
+  async renamePreset(id, name) {
+    const presets = get().customPresets.map((p) =>
+      p.id === id ? { ...p, name } : p,
+    );
+    set({ customPresets: presets });
+    await persistPresets(presets, get().activePresetId);
   },
 }));
 
@@ -244,4 +339,35 @@ function findFirstPanel(
     if (id !== exclude && api.getPanel(id)) return id;
   }
   return undefined;
+}
+
+/* ── Persistence helpers ── */
+
+async function persistActivePresetId(id: string | null) {
+  try {
+    const current = await invoke<GlobalSettings>("get_global_settings");
+    await invoke("save_global_settings", {
+      settings: { ...current, activeLayoutPresetId: id },
+    });
+  } catch {
+    // Ignore
+  }
+}
+
+async function persistPresets(
+  presets: CustomPreset[],
+  activeId: string | null,
+) {
+  try {
+    const current = await invoke<GlobalSettings>("get_global_settings");
+    await invoke("save_global_settings", {
+      settings: {
+        ...current,
+        layoutPresets: presets,
+        activeLayoutPresetId: activeId,
+      },
+    });
+  } catch {
+    // Ignore
+  }
 }
