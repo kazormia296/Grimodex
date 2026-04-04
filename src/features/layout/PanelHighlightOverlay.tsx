@@ -115,6 +115,8 @@ export function PanelHighlightOverlay({ panelId }: PanelHighlightOverlayProps) {
       return;
     }
 
+    let rafId: number | null = null;
+
     function measure() {
       if (!panelId) return;
       const api = useLayoutStore.getState().dockviewApi;
@@ -134,10 +136,13 @@ export function PanelHighlightOverlay({ panelId }: PanelHighlightOverlayProps) {
     if (!target) return;
 
     const observer = new ResizeObserver(() => {
-      requestAnimationFrame(measure);
+      rafId = requestAnimationFrame(measure);
     });
     observer.observe(target);
-    return () => observer.disconnect();
+    return () => {
+      observer.disconnect();
+      if (rafId !== null) cancelAnimationFrame(rafId);
+    };
   }, [panelId]);
 
   if (!rect) return null;
