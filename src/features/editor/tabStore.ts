@@ -1,4 +1,8 @@
 import { create } from "zustand";
+import { getSetting, setSetting } from "@/features/settings/api";
+
+const TAB_STATE_KEY = "editor.tabState";
+const SAVE_DEBOUNCE_MS = 500;
 
 export interface TabEntry {
   nodeId: string;
@@ -6,6 +10,14 @@ export interface TabEntry {
 }
 
 export type GroupIndex = 0 | 1;
+
+interface PersistedTabState {
+  tabs: TabEntry[];
+  activeTabId: string | null;
+  secondaryTabs: TabEntry[];
+  secondaryActiveTabId: string | null;
+  activeGroupIndex: GroupIndex;
+}
 
 interface TabState {
   // ---- Primary group ----
@@ -83,6 +95,21 @@ interface TabState {
    * Used to show the sync badge in the tab bar.
    */
   isSyncedScene: (nodeId: string) => boolean;
+
+  // ---- Persistence ----
+
+  /** Load tab state from workspace settings. If validNodeIds is provided,
+   *  tabs referencing unknown IDs are filtered out. */
+  loadTabState: (validNodeIds?: Set<string>) => Promise<void>;
+
+  /** Save current tab state to workspace settings. */
+  saveTabState: () => Promise<void>;
+
+  /** Start auto-saving tab state on changes (debounced). */
+  initAutoSave: () => void;
+
+  /** Stop auto-saving (cleanup subscription). */
+  disposeAutoSave?: () => void;
 }
 
 export const useTabStore = create<TabState>()((set, get) => ({
@@ -264,5 +291,99 @@ export const useTabStore = create<TabState>()((set, get) => ({
     const inPrimary = tabs.some((t) => t.nodeId === nodeId);
     const inSecondary = secondaryTabs.some((t) => t.nodeId === nodeId);
     return inPrimary && inSecondary;
+  },
+
+  // ---- Persistence ----
+
+  async loadTabState(validNodeIds) {
+    try {
+      const json = await getSetting(TAB_STATE_KEY);
+      if (!json) return;
+
+      const parsed: PersistedTabState = JSON.parse(json);
+
+      let tabs = parsed.tabs ?? [];
+      let secondaryTabs = parsed.secondaryTabs ?? [];
+
+      if (validNodeIds) {
+        tabs = tabs.filter((t) => validNodeIds.has(t.nodeId));
+        secondaryTabs = secondaryTabs.filter((t) => validNodeIds.has(t.nodeId));
+      }
+
+      const activeTabId = tabs.find((t) => t.nodeId === parsed.activeTabId)
+        ? parsed.activeTabId
+        : (tabs[0]?.nodeId ?? null);
+
+      const secondaryActiveTabId = secondaryTabs.find(
+        (t) => t.nodeId === parsed.secondaryActiveTabId,
+      )
+        ? parsed.secondaryActiveTabId
+        : (secondaryTabs[0]?.nodeId ?? null);
+
+      const activeGroupIndex =
+        secondaryTabs.length === 0 ? 0 : (parsed.activeGroupIndex ?? 0);
+
+      set({
+        tabs,
+        activeTabId,
+        secondaryTabs,
+        secondaryActiveTabId,
+        activeGroupIndex,
+      });
+    } catch {
+      // Corrupted or missing — keep current state
+    }
+  },
+
+  async saveTabState() {
+    try {
+      const {
+        tabs,
+        activeTabId,
+        secondaryTabs,
+        secondaryActiveTabId,
+        activeGroupIndex,
+      } = get();
+      const data: PersistedTabState = {
+        tabs,
+        activeTabId,
+        secondaryTabs,
+        secondaryActiveTabId,
+        activeGroupIndex,
+      };
+      await setSetting(TAB_STATE_KEY, JSON.stringify(data));
+    } catch {
+      // Ignore save errors
+    }
+  },
+
+  initAutoSave() {
+    let timer: ReturnType<typeof setTimeout> | null = null;
+
+    const unsubscribe = useTabStore.subscribe((state, prev) => {
+      // Only save when tab-related state changes
+      if (
+        state.tabs === prev.tabs &&
+        state.activeTabId === prev.activeTabId &&
+        state.secondaryTabs === prev.secondaryTabs &&
+        state.secondaryActiveTabId === prev.secondaryActiveTabId &&
+        state.activeGroupIndex === prev.activeGroupIndex
+      ) {
+        return;
+      }
+
+      if (timer !== null) clearTimeout(timer);
+      timer = setTimeout(() => {
+        useTabStore.getState().saveTabState();
+      }, SAVE_DEBOUNCE_MS);
+    });
+
+    set({
+      disposeAutoSave: () => {
+        if (timer !== null) clearTimeout(timer);
+        unsubscribe();
+        set({ disposeAutoSave: undefined });
+      },
+    });
   },
 }));

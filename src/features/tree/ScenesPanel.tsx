@@ -460,7 +460,18 @@ export function ScenesPanel() {
   const [draggingId, setDraggingId] = useState<string | null>(null);
 
   useEffect(() => {
-    loadTree(DEFAULT_PROJECT_ID);
+    loadTree(DEFAULT_PROJECT_ID).then(() => {
+      const nodeIds = new Set(useTreeStore.getState().nodes.map((n) => n.id));
+      useTabStore
+        .getState()
+        .loadTabState(nodeIds)
+        .then(() => {
+          useTabStore.getState().initAutoSave();
+        });
+    });
+    return () => {
+      useTabStore.getState().disposeAutoSave?.();
+    };
   }, [loadTree]);
 
   const STATUS_SORT_ORDER: Record<string, number> = {
