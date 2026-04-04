@@ -63,6 +63,13 @@ interface LayoutState {
   deletePreset: (id: string) => Promise<void>;
   /** Rename a custom preset */
   renamePreset: (id: string, name: string) => Promise<void>;
+
+  /* ── Layout lock ── */
+
+  /** When true, panels cannot be closed, dragged, or rearranged */
+  layoutLocked: boolean;
+  /** Toggle the layout lock on/off */
+  toggleLayoutLock: () => void;
 }
 
 let saveTimer: ReturnType<typeof setTimeout> | null = null;
@@ -90,6 +97,13 @@ export const useLayoutStore = create<LayoutState>()((set, get) => ({
   setDockviewApi(api) {
     set({ dockviewApi: api });
 
+    // Apply lock state to newly added groups
+    api.onDidAddGroup((group) => {
+      if (get().layoutLocked) {
+        group.locked = "no-drop-target";
+      }
+    });
+
     // Auto-save on any layout change
     api.onDidLayoutChange(() => {
       scheduleSave(get);
@@ -102,8 +116,10 @@ export const useLayoutStore = create<LayoutState>()((set, get) => ({
 
     const panel = api.getPanel(panelId);
     if (panel) {
-      // Panel exists — if it's the active panel in its group, remove it; otherwise focus it
-      if (panel.group?.activePanel === panel) {
+      if (get().layoutLocked) {
+        // When locked, only allow focusing — don't close
+        panel.api.setActive();
+      } else if (panel.group?.activePanel === panel) {
         api.removePanel(panel);
       } else {
         panel.api.setActive();
@@ -206,6 +222,21 @@ export const useLayoutStore = create<LayoutState>()((set, get) => ({
     );
     set({ customPresets: presets });
     await persistPresets(presets, get().activePresetId);
+  },
+
+  /* ── Layout lock ── */
+
+  layoutLocked: false,
+
+  toggleLayoutLock() {
+    const next = !get().layoutLocked;
+    const api = get().dockviewApi;
+    if (api) {
+      for (const group of api.groups) {
+        group.locked = next ? "no-drop-target" : false;
+      }
+    }
+    set({ layoutLocked: next });
   },
 }));
 

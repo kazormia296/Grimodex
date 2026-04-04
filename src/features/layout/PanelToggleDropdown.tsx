@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { LayoutGrid, ChevronDown, Check } from "lucide-react";
+import { LayoutGrid, ChevronDown, Check, Lock, Unlock } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useLayoutStore, PANEL_TITLES, type PanelId } from "./layoutStore";
 import {
@@ -36,7 +36,8 @@ function useDockviewVersion() {
 }
 
 export function PanelToggleDropdown() {
-  const { dockviewApi, togglePanel } = useLayoutStore();
+  const { dockviewApi, togglePanel, layoutLocked, toggleLayoutLock } =
+    useLayoutStore();
   const [isOpen, setIsOpen] = useState(false);
   const [hoveredPanelId, setHoveredPanelId] = useState<PanelId | null>(null);
   const menuRef = useRef<HTMLDivElement>(null);
@@ -160,6 +161,23 @@ export function PanelToggleDropdown() {
               })}
             </div>
           ))}
+
+          {/* Layout lock toggle */}
+          <div className="my-1 border-t border-border" />
+          <button
+            type="button"
+            onClick={toggleLayoutLock}
+            className="flex w-full items-center gap-2 px-3 py-1.5 text-sm hover:bg-accent hover:text-accent-foreground"
+          >
+            {layoutLocked ? (
+              <Lock className="h-3.5 w-3.5 text-primary" />
+            ) : (
+              <Unlock className="h-3.5 w-3.5 text-muted-foreground" />
+            )}
+            <span className="flex-1 text-left">
+              {layoutLocked ? "レイアウトロック中" : "レイアウトをロック"}
+            </span>
+          </button>
         </div>
       )}
 
