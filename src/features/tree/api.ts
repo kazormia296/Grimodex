@@ -5,7 +5,7 @@ import { invoke } from "@/lib/tauri";
 
 export type TreeNode = typeof treeNodes.$inferSelect;
 export type NewTreeNode = typeof treeNodes.$inferInsert;
-export type NodeType = "part" | "chapter" | "scene" | "folder" | "note";
+export type NodeType = "folder" | "scene" | "note";
 
 export async function listNodes(
   projectId: string,
@@ -105,8 +105,8 @@ async function getSceneMetadata(sceneId: string) {
 
   return {
     title: node.title,
-    chapterOrder: Math.round(chapterOrder),
-    sceneOrder: Math.round(node.sortOrder),
+    chapterOrder: Math.max(0, Math.round(chapterOrder)),
+    sceneOrder: Math.max(0, Math.round(node.sortOrder)),
   };
 }
 

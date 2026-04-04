@@ -3,7 +3,7 @@ import * as api from "./api";
 import type { TreeNode as ApiNode } from "./api";
 import { loadBatchAiRatio } from "@/features/attribution/api";
 
-export type NodeType = "part" | "chapter" | "scene" | "folder" | "note";
+export type NodeType = "folder" | "scene" | "note";
 export type SceneStatus =
   | "outline"
   | "draft"
@@ -22,23 +22,9 @@ export interface TreeNodeData {
   status: string | null;
 }
 
-/** Validate whether a node type can be placed under a given parent type */
-export function isValidParent(
-  nodeType: NodeType,
-  parentType: NodeType | null,
-): boolean {
-  switch (nodeType) {
-    case "scene":
-      return parentType === "chapter";
-    case "chapter":
-      return parentType === null || parentType === "part";
-    case "part":
-      return parentType === null;
-    case "note":
-      return parentType === "folder";
-    case "folder":
-      return parentType === null || parentType === "folder";
-  }
+/** Returns true when a node type can hold children */
+export function canHaveChildren(type: NodeType): boolean {
+  return type === "folder";
 }
 
 /** Flat scene metadata for backward-compat */
@@ -207,11 +193,11 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
       if (scenes.length === 0) {
         const defaultChapter = raw.find((n) => n.id === DEFAULT_CHAPTER_ID);
         if (!defaultChapter) {
-          // Create a default chapter
+          // Create a default folder
           const ch = await api.createNode({
             id: DEFAULT_CHAPTER_ID,
             projectId,
-            nodeType: "chapter",
+            nodeType: "folder",
             title: "第1章",
             sortOrder: 1.0,
           });
@@ -229,10 +215,8 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
       }
       const nodes = raw.map(toNodeData);
       const sc = computeScenes(nodes);
-      // Expand chapters by default
-      const chapters = nodes.filter(
-        (n) => n.nodeType === "chapter" || n.nodeType === "part",
-      );
+      // Expand folders by default
+      const chapters = nodes.filter((n) => n.nodeType === "folder");
       set({
         nodes,
         scenes: sc,
@@ -348,13 +332,9 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
       title ??
       (nodeType === "scene"
         ? `シーン ${siblings.filter((n) => n.nodeType === "scene").length + 1}`
-        : nodeType === "chapter"
-          ? `第${siblings.filter((n) => n.nodeType === "chapter").length + 1}章`
-          : nodeType === "part"
-            ? `第${nodes.filter((n) => n.nodeType === "part").length + 1}部`
-            : nodeType === "folder"
-              ? "フォルダー"
-              : "ノート");
+        : nodeType === "folder"
+          ? "フォルダー"
+          : "ノート");
     const created = await api.createNode({
       id: crypto.randomUUID(),
       projectId,
@@ -430,12 +410,7 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
   },
 
   expandAll() {
-    const containers = get().nodes.filter(
-      (n) =>
-        n.nodeType === "part" ||
-        n.nodeType === "chapter" ||
-        n.nodeType === "folder",
-    );
+    const containers = get().nodes.filter((n) => n.nodeType === "folder");
     set({ expandedIds: containers.map((n) => n.id) });
   },
 

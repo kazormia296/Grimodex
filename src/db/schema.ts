@@ -33,7 +33,7 @@ export const treeNodes = sqliteTable("tree_nodes", {
   parentId: text("parent_id").references((): any => treeNodes.id, {
     onDelete: "set null",
   }),
-  nodeType: text("node_type").notNull(), // 'part' | 'chapter' | 'scene' | 'folder' | 'note'
+  nodeType: text("node_type").notNull(), // 'folder' | 'scene' | 'note'
   title: text("title").notNull().default("Untitled"),
   synopsis: text("synopsis"), // Scene only: plain text summary for storySoFar context injection
   sortOrder: real("sort_order").notNull().default(0.0),

@@ -7,7 +7,7 @@ const NODES: TreeNodeData[] = [
     id: "part-1",
     projectId: "p",
     parentId: null,
-    nodeType: "part",
+    nodeType: "folder",
     title: "第一部",
     synopsis: null,
     sortOrder: 1,
@@ -17,7 +17,7 @@ const NODES: TreeNodeData[] = [
     id: "chapter-1",
     projectId: "p",
     parentId: "part-1",
-    nodeType: "chapter",
+    nodeType: "folder",
     title: "第1章",
     synopsis: null,
     sortOrder: 1,
@@ -37,7 +37,7 @@ const NODES: TreeNodeData[] = [
     id: "chapter-2",
     projectId: "p",
     parentId: null,
-    nodeType: "chapter",
+    nodeType: "folder",
     title: "第2章",
     synopsis: null,
     sortOrder: 2,
@@ -88,19 +88,19 @@ const NODES: TreeNodeData[] = [
 const nodeMap = Object.fromEntries(NODES.map((n) => [n.id, n]));
 
 describe("computeBreadcrumbPath", () => {
-  it("returns full Part/Chapter/Scene path", () => {
+  it("returns full Folder/Folder/Scene path", () => {
     const path = computeBreadcrumbPath("scene-1", nodeMap);
     expect(path).toEqual([
-      { id: "part-1", title: "第一部", nodeType: "part" },
-      { id: "chapter-1", title: "第1章", nodeType: "chapter" },
+      { id: "part-1", title: "第一部", nodeType: "folder" },
+      { id: "chapter-1", title: "第1章", nodeType: "folder" },
       { id: "scene-1", title: "塔の麓", nodeType: "scene" },
     ]);
   });
 
-  it("returns Chapter/Scene path when no Part", () => {
+  it("returns Folder/Scene path when no parent folder", () => {
     const path = computeBreadcrumbPath("scene-2", nodeMap);
     expect(path).toEqual([
-      { id: "chapter-2", title: "第2章", nodeType: "chapter" },
+      { id: "chapter-2", title: "第2章", nodeType: "folder" },
       { id: "scene-2", title: "市場にて", nodeType: "scene" },
     ]);
   });

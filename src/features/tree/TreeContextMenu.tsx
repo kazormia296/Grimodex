@@ -99,11 +99,9 @@ export function TreeContextMenu({
   }
 
   const isScene = node.nodeType === "scene";
-  const isChapter = node.nodeType === "chapter";
-  const isPart = node.nodeType === "part";
   const isFolder = node.nodeType === "folder";
   const isNote = node.nodeType === "note";
-  const isContainer = isChapter || isPart || isFolder;
+  const isContainer = isFolder;
 
   return (
     <div
@@ -162,16 +160,10 @@ export function TreeContextMenu({
       {/* Rename */}
       {item("名前を変更", onStartRename, "F2")}
 
-      {/* Add children */}
-      {isChapter &&
+      {/* Add children inside folder */}
+      {isFolder &&
         item("シーンを追加", () => {
           createNode({ nodeType: "scene", parentId: node.id }).catch(() => {});
-        })}
-      {isPart &&
-        item("チャプターを追加", () => {
-          createNode({ nodeType: "chapter", parentId: node.id }).catch(
-            () => {},
-          );
         })}
       {isFolder &&
         item("ノートを追加", () => {
@@ -182,11 +174,27 @@ export function TreeContextMenu({
           createNode({ nodeType: "folder", parentId: node.id }).catch(() => {});
         })}
 
-      {/* Add sibling below (scene) */}
-      {isScene &&
+      {/* Add sibling below (scene / note) */}
+      {(isScene || isNote) &&
         item("下にシーンを追加", () => {
           createNode({
             nodeType: "scene",
+            parentId: node.parentId,
+            afterId: node.id,
+          }).catch(() => {});
+        })}
+      {(isScene || isNote) &&
+        item("下にノートを追加", () => {
+          createNode({
+            nodeType: "note",
+            parentId: node.parentId,
+            afterId: node.id,
+          }).catch(() => {});
+        })}
+      {(isScene || isNote) &&
+        item("下にフォルダーを追加", () => {
+          createNode({
+            nodeType: "folder",
             parentId: node.parentId,
             afterId: node.id,
           }).catch(() => {});

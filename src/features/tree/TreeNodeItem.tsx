@@ -4,8 +4,6 @@ import {
   ChevronDown,
   FileText,
   Folder,
-  BookOpen,
-  List,
   GripVertical,
 } from "lucide-react";
 import { useDraggable, useDroppable, useDndContext } from "@dnd-kit/core";
@@ -34,10 +32,6 @@ const STATUS_LABELS: Record<SceneStatus, string> = {
 
 export function NodeIcon({ nodeType }: { nodeType: string }) {
   switch (nodeType) {
-    case "part":
-      return <List className="h-3.5 w-3.5 text-foreground/70" />;
-    case "chapter":
-      return <BookOpen className="h-3.5 w-3.5 text-foreground/60" />;
     case "folder":
       return <Folder className="h-3.5 w-3.5 text-teal-500" />;
     case "note":
@@ -140,10 +134,7 @@ export function TreeNodeItem({
   } | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
-  const isContainer =
-    node.nodeType === "part" ||
-    node.nodeType === "chapter" ||
-    node.nodeType === "folder";
+  const isContainer = node.nodeType === "folder";
 
   // Suppress rename/double-click while any drag is active
   const { active: dndActive } = useDndContext();

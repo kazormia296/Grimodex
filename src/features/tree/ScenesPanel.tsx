@@ -29,7 +29,7 @@ import { TreeNodeItem, NodeIcon } from "./TreeNodeItem";
 import { StatusDot } from "./StatusDot";
 import { SynopsisArea } from "./SynopsisArea";
 import type { TreeNodeData, NodeType } from "./treeStore";
-import { isValidParent } from "./treeStore";
+import { canHaveChildren } from "./treeStore";
 import type { DropIndicator } from "./TreeNodeItem";
 
 const DEFAULT_PROJECT_ID = "default-project";
@@ -56,7 +56,7 @@ function flattenVisible(
     if (!node) continue;
     if (!isNodeVisible(node, childMap, nodeMap, query, statusFilter)) continue;
     result.push(node);
-    const isContainer = ["part", "chapter", "folder"].includes(node.nodeType);
+    const isContainer = node.nodeType === "folder";
     const expanded =
       expandedIds.includes(id) ||
       (!!query && isNodeVisible(node, childMap, nodeMap, query, statusFilter));
@@ -407,11 +407,9 @@ function PanelMenu({
 // ---- Main Panel ----
 const CREATE_OPTIONS = [
   { type: "scene" as NodeType, label: "New scene" },
-  { type: "chapter" as NodeType, label: "New chapter" },
-  { type: "part" as NodeType, label: "New part" },
+  { type: "note" as NodeType, label: "New note" },
   null, // separator
   { type: "folder" as NodeType, label: "New folder" },
-  { type: "note" as NodeType, label: "New note" },
 ];
 
 export function ScenesPanel() {
@@ -578,27 +576,11 @@ export function ScenesPanel() {
     (type: NodeType) => {
       setShowCreateMenu(false);
       let parentId: string | null = null;
-      if (type === "scene") {
-        const active = nodeMap[activeSceneId];
-        if (active?.nodeType === "scene") parentId = active.parentId;
-        else if (active?.nodeType === "chapter") parentId = active.id;
-        else
-          parentId =
-            Object.values(nodeMap).find((n) => n.nodeType === "chapter")?.id ??
-            null;
-      } else if (type === "chapter") {
-        const active = nodeMap[activeSceneId];
-        const parentChapter = active?.parentId
-          ? nodeMap[active.parentId]
-          : null;
-        parentId = parentChapter?.parentId ?? null;
-      } else if (type === "note") {
-        const active = nodeMap[activeSceneId];
-        if (active?.nodeType === "note") parentId = active.parentId;
-        else
-          parentId =
-            Object.values(nodeMap).find((n) => n.nodeType === "folder")?.id ??
-            null;
+      const active = nodeMap[activeSceneId];
+      if (active?.nodeType === "scene" || active?.nodeType === "note") {
+        parentId = active.parentId;
+      } else if (active?.nodeType === "folder") {
+        parentId = active.id;
       }
       createNode({ nodeType: type, parentId, afterId: activeSceneId }).catch(
         () => {},
@@ -678,7 +660,7 @@ export function ScenesPanel() {
       } else if (e.key === "ArrowRight") {
         e.preventDefault();
         const cur = nodeMap[activeSceneId];
-        if (cur && ["part", "chapter", "folder"].includes(cur.nodeType)) {
+        if (cur && cur.nodeType === "folder") {
           if (!expandedIds.includes(activeSceneId)) toggleExpand(activeSceneId);
         }
       } else if (e.key === "ArrowLeft") {
@@ -686,7 +668,7 @@ export function ScenesPanel() {
         const cur = nodeMap[activeSceneId];
         if (
           cur &&
-          ["part", "chapter", "folder"].includes(cur.nodeType) &&
+          cur.nodeType === "folder" &&
           expandedIds.includes(activeSceneId)
         ) {
           toggleExpand(activeSceneId);
@@ -763,8 +745,7 @@ export function ScenesPanel() {
         const parentNode = lastNode.parentId
           ? nodeMap[lastNode.parentId]
           : null;
-        if (!isValidParent(activeNode.nodeType, parentNode?.nodeType ?? null))
-          return;
+        if (parentNode && !canHaveChildren(parentNode.nodeType)) return;
         moveNode(activeId, lastNode.parentId, lastNode.id).catch(() => {});
         return;
       }
@@ -781,9 +762,7 @@ export function ScenesPanel() {
       const pointerY = pointerYRef.current;
       let position: "before" | "after" | "inside" = "after";
       if (overRect) {
-        const isContainer = ["part", "chapter", "folder"].includes(
-          overNode.nodeType,
-        );
+        const isContainer = overNode.nodeType === "folder";
         const relY = pointerY - overRect.top;
         const h = overRect.height;
         if (isContainer) {
@@ -813,10 +792,9 @@ export function ScenesPanel() {
         }
       }
 
-      // Validate
+      // Validate: only folders can receive children
       const parentNode = newParentId ? nodeMap[newParentId] : null;
-      if (!isValidParent(activeNode.nodeType, parentNode?.nodeType ?? null))
-        return;
+      if (parentNode && !canHaveChildren(parentNode.nodeType)) return;
 
       moveNode(activeId, newParentId, afterId).catch(() => {});
     },

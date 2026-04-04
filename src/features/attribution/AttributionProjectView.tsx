@@ -36,7 +36,7 @@ export function AttributionProjectView() {
       return next;
     });
 
-  const chapters = nodes.filter((n) => n.nodeType === "chapter");
+  const chapters = nodes.filter((n) => n.nodeType === "folder");
   const scenesByChapter: Record<string, typeof nodes> = {};
   for (const node of nodes) {
     if (node.nodeType === "scene" && node.parentId) {

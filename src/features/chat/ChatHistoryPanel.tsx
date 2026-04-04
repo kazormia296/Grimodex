@@ -78,46 +78,29 @@ export function ChatHistoryPanel() {
     return map;
   }, [nodes]);
 
-  // Scene filter dropdown: Part > Chapter > Scene hierarchy
+  // Scene filter dropdown: Folder > Scene hierarchy
   const sceneGroups = useMemo(() => {
-    const partTitles = new Map(
-      nodes.filter((n) => n.nodeType === "part").map((n) => [n.id, n.title]),
-    );
-    const chapterMap = new Map(
-      nodes
-        .filter((n) => n.nodeType === "chapter")
-        .map((n) => [n.id, { title: n.title, parentId: n.parentId }]),
+    const folderMap = new Map(
+      nodes.filter((n) => n.nodeType === "folder").map((n) => [n.id, n.title]),
     );
     const sceneNodes = nodes.filter((n) => n.nodeType === "scene");
 
-    const byChapter = new Map<
+    const byFolder = new Map<
       string | null,
       { groupLabel: string; scenes: typeof sceneNodes }
     >();
     for (const scene of sceneNodes) {
-      const chapterId = scene.parentId;
-      if (!byChapter.has(chapterId)) {
-        let groupLabel: string;
-        if (chapterId === null) {
-          groupLabel = "Uncategorized";
-        } else {
-          const chapter = chapterMap.get(chapterId);
-          if (chapter) {
-            const partTitle = chapter.parentId
-              ? partTitles.get(chapter.parentId)
-              : null;
-            groupLabel = partTitle
-              ? `${partTitle} / ${chapter.title}`
-              : chapter.title;
-          } else {
-            groupLabel = chapterId;
-          }
-        }
-        byChapter.set(chapterId, { groupLabel, scenes: [] });
+      const folderId = scene.parentId;
+      if (!byFolder.has(folderId)) {
+        const groupLabel =
+          folderId === null
+            ? "Uncategorized"
+            : (folderMap.get(folderId) ?? folderId);
+        byFolder.set(folderId, { groupLabel, scenes: [] });
       }
-      byChapter.get(chapterId)!.scenes.push(scene);
+      byFolder.get(folderId)!.scenes.push(scene);
     }
-    return [...byChapter.values()];
+    return [...byFolder.values()];
   }, [nodes]);
 
   useEffect(() => {

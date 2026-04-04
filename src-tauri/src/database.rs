@@ -395,11 +395,11 @@ impl Database {
                   VALUES (new.id || '-lore', new.id, 'lore', '伝承', '#993C1D', 1, 3.0, datetime('now'));
             END;
 
-            -- Seed default project + chapter node
+            -- Seed default project + folder node
             INSERT OR IGNORE INTO projects (id, title, language, created_at, updated_at)
               VALUES ('default-project', '無題のプロジェクト', 'ja', datetime('now'), datetime('now'));
             INSERT OR IGNORE INTO tree_nodes (id, project_id, node_type, title, sort_order, created_at, updated_at)
-              VALUES ('default-chapter', 'default-project', 'chapter', '第1章', 0.0, datetime('now'), datetime('now'));",
+              VALUES ('default-chapter', 'default-project', 'folder', '第1章', 0.0, datetime('now'), datetime('now'));",
         )?;
 
         // Idempotent column additions
@@ -448,6 +448,11 @@ impl Database {
                  INSERT INTO tree_nodes_fts(rowid, title, content)
                  VALUES (new.rowid, COALESCE(new.title, ''), COALESCE(new.content, ''));
              END;",
+        )?;
+
+        // v3: Collapse legacy part/chapter container types into folder
+        conn.execute_batch(
+            "UPDATE tree_nodes SET node_type = 'folder' WHERE node_type IN ('part', 'chapter');",
         )?;
 
         Ok(())
@@ -691,7 +696,7 @@ mod tests {
             .expect("select");
         assert_eq!(nodes.len(), 1);
         assert_eq!(nodes[0]["id"], Value::String("default-chapter".into()));
-        assert_eq!(nodes[0]["node_type"], Value::String("chapter".into()));
+        assert_eq!(nodes[0]["node_type"], Value::String("folder".into()));
     }
 
     #[test]
@@ -832,7 +837,7 @@ mod tests {
             &[
                 Value::String("ch-del".into()),
                 Value::String("proj-del".into()),
-                Value::String("chapter".into()),
+                Value::String("folder".into()),
                 Value::String("Ch1".into()),
                 Value::Number(serde_json::Number::from_f64(0.0).unwrap()),
                 Value::String("2025-01-01T00:00:00Z".into()),
@@ -840,7 +845,7 @@ mod tests {
             ],
             "run",
         )
-        .expect("insert chapter");
+        .expect("insert folder");
 
         db.execute(
             "INSERT INTO tree_nodes (id, project_id, parent_id, node_type, title, sort_order, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
