@@ -1,7 +1,8 @@
 import { useRef, useEffect } from "react";
-import { X, Trash2 } from "lucide-react";
+import { X, Trash2, Copy, ClipboardCopy } from "lucide-react";
+import { toast } from "sonner";
 import { cn } from "@/lib/utils";
-import { useDebugLogStore, type LogLevel } from "./debugLog";
+import { useDebugLogStore, type LogEntry, type LogLevel } from "./debugLog";
 
 const LEVEL_STYLES: Record<LogLevel, string> = {
   debug: "text-muted-foreground",
@@ -22,6 +23,23 @@ export function DebugLogViewer() {
 
   if (!isOpen) return null;
 
+  function formatEntry(e: LogEntry): string {
+    const parts = [e.timestamp, e.level.toUpperCase(), `[${e.tag}]`, e.message];
+    if (e.detail) parts.push(e.detail);
+    return parts.join(" ");
+  }
+
+  function copyAll() {
+    const text = entries.map(formatEntry).join("\n");
+    navigator.clipboard.writeText(text);
+    toast.success("ログをコピーしました");
+  }
+
+  function copyLine(entry: LogEntry) {
+    navigator.clipboard.writeText(formatEntry(entry));
+    toast.success("行をコピーしました");
+  }
+
   return (
     <div className="fixed inset-x-0 bottom-0 z-[9999] flex h-72 flex-col border-t border-border bg-background/95 backdrop-blur">
       {/* Header */}
@@ -31,6 +49,14 @@ export function DebugLogViewer() {
           ({entries.length} entries)
         </span>
         <div className="flex-1" />
+        <button
+          type="button"
+          onClick={copyAll}
+          className="rounded p-1 text-muted-foreground hover:text-foreground"
+          title="Copy all"
+        >
+          <ClipboardCopy className="h-3.5 w-3.5" />
+        </button>
         <button
           type="button"
           onClick={clear}
@@ -57,7 +83,7 @@ export function DebugLogViewer() {
         {entries.map((entry) => (
           <div
             key={entry.id}
-            className="flex gap-2 border-b border-border/30 px-3 py-0.5 hover:bg-accent/30"
+            className="group flex gap-2 border-b border-border/30 px-3 py-0.5 hover:bg-accent/30"
           >
             <span className="shrink-0 text-muted-foreground/60">
               {entry.timestamp.slice(11, 23)}
@@ -79,6 +105,14 @@ export function DebugLogViewer() {
                 {entry.detail}
               </span>
             )}
+            <button
+              type="button"
+              onClick={() => copyLine(entry)}
+              className="ml-auto hidden shrink-0 rounded p-0.5 text-muted-foreground hover:text-foreground group-hover:block"
+              title="Copy line"
+            >
+              <Copy className="h-3 w-3" />
+            </button>
           </div>
         ))}
         <div ref={bottomRef} />
