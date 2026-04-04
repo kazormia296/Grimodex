@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from "react";
 import { useEditor, EditorContent } from "@tiptap/react";
 import { diff_match_patch } from "diff-match-patch";
 import { toast } from "sonner";
+import { debugLog, errorDetail } from "@/lib/debugLog";
 import { useRevisionStore } from "./revisionStore";
 import { createRevision } from "./api";
 import { saveSceneContent } from "@/features/tree/api";
@@ -309,7 +310,7 @@ export function RevisionHistoryModal() {
       toast.success("復元しました");
       closeHistory();
     } catch (err) {
-      console.error("[RevisionHistoryModal] restore failed", err);
+      debugLog.error("RevisionHistory", "restore failed", errorDetail(err));
       toast.error("復元に失敗しました");
     } finally {
       setIsRestoring(false);

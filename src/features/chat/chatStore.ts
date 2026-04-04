@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import { toast } from "sonner";
 import * as chatApi from "./chatApi";
+import { debugLog, errorDetail } from "@/lib/debugLog";
 
 // ---------------------------------------------------------------------------
 // D-17: Error classification and retry helpers
@@ -177,7 +178,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
     } catch (e) {
       set({ isLoadingSessions: false });
       toast.error("チャットセッションの読み込みに失敗しました");
-      console.error("[ChatStore] loadSessions:", e);
+      debugLog.error("ChatStore", "loadSessions", errorDetail(e));
     }
   },
 
@@ -191,7 +192,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
       set({ activeSessionId: sessionId, messages });
     } catch (e) {
       toast.error("メッセージの読み込みに失敗しました");
-      console.error("[ChatStore] selectSession:", e);
+      debugLog.error("ChatStore", "selectSession", errorDetail(e));
     }
   },
 
@@ -209,7 +210,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
       }));
     } catch (e) {
       toast.error("セッションの作成に失敗しました");
-      console.error("[ChatStore] createNewSession:", e);
+      debugLog.error("ChatStore", "createNewSession", errorDetail(e));
     }
   },
 
@@ -225,7 +226,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
       }));
     } catch (e) {
       toast.error("セッションの削除に失敗しました");
-      console.error("[ChatStore] deleteSession:", e);
+      debugLog.error("ChatStore", "deleteSession", errorDetail(e));
     }
   },
 
@@ -240,7 +241,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
       }));
     } catch (e) {
       toast.error("メッセージの保存に失敗しました");
-      console.error("[ChatStore] persistMessage:", e);
+      debugLog.error("ChatStore", "persistMessage", errorDetail(e));
     }
   },
 

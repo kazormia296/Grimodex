@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { X, MoreVertical, Plus } from "lucide-react";
 import { toast } from "sonner";
+import { debugLog, errorDetail } from "@/lib/debugLog";
 import { useChatStore } from "@/features/chat/chatStore";
 import * as chatApi from "@/features/chat/chatApi";
 import type { ChatSession } from "@/features/chat/chatTypes";
@@ -174,7 +175,7 @@ export function SessionsPanel({
         await chatApi.updateSessionTitle(sessionId, newTitle);
         await loadSessions(activeSceneId || undefined);
       } catch (e) {
-        console.error("[SessionsPanel] rename failed:", e);
+        debugLog.error("SessionsPanel", "rename failed", errorDetail(e));
         toast.error("名前の変更に失敗しました");
       }
     },
@@ -191,7 +192,7 @@ export function SessionsPanel({
         await deleteSession(sessionId);
         await loadSessions(activeSceneId || undefined);
       } catch (e) {
-        console.error("[SessionsPanel] delete failed:", e);
+        debugLog.error("SessionsPanel", "delete failed", errorDetail(e));
         toast.error("セッションの削除に失敗しました");
       }
     },
@@ -208,7 +209,7 @@ export function SessionsPanel({
       await loadSessions(activeSceneId || undefined);
       onClose();
     } catch (e) {
-      console.error("[SessionsPanel] create failed:", e);
+      debugLog.error("SessionsPanel", "create failed", errorDetail(e));
       toast.error("セッションの作成に失敗しました");
     }
   }, [activeSceneId, createNewSession, loadSessions, onClose]);

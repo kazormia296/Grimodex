@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { toast } from "sonner";
 import { invoke } from "@/lib/tauri";
+import { debugLog, errorDetail } from "@/lib/debugLog";
 import {
   buildCrossReferenceReport,
   type CrossReferenceEntry,
@@ -42,7 +43,7 @@ export function IntegrityCheckDialog({
       setReport(result);
     } catch (e) {
       toast.error("整合性チェックに失敗しました");
-      console.error("[IntegrityCheck]", e);
+      debugLog.error("IntegrityCheck", "check failed", errorDetail(e));
     } finally {
       setIsChecking(false);
     }
@@ -60,7 +61,7 @@ export function IntegrityCheckDialog({
       setReport(updated);
     } catch (e) {
       toast.error("修復に失敗しました");
-      console.error("[IntegrityRepair]", e);
+      debugLog.error("IntegrityCheck", "repair failed", errorDetail(e));
     } finally {
       setIsRepairing(false);
     }
@@ -73,7 +74,11 @@ export function IntegrityCheckDialog({
       setCrossRefs(result);
     } catch (e) {
       toast.error("相互参照レポートの生成に失敗しました");
-      console.error("[CrossReference]", e);
+      debugLog.error(
+        "IntegrityCheck",
+        "cross-reference report failed",
+        errorDetail(e),
+      );
     } finally {
       setIsBuildingXref(false);
     }

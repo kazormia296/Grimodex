@@ -1,4 +1,5 @@
 import React from "react";
+import { debugLog, errorDetail } from "@/lib/debugLog";
 
 interface Props {
   children: React.ReactNode;
@@ -17,7 +18,11 @@ export class ErrorBoundary extends React.Component<Props, State> {
   }
 
   componentDidCatch(error: Error, info: React.ErrorInfo) {
-    console.error("[ErrorBoundary]", error, info.componentStack);
+    debugLog.error(
+      "ErrorBoundary",
+      error.message,
+      errorDetail(error) + "\n" + (info.componentStack ?? ""),
+    );
   }
 
   handleReload = () => {

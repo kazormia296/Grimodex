@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import { toast } from "sonner";
+import { debugLog, errorDetail } from "@/lib/debugLog";
 import * as snippetApi from "./api";
 import type { Snippet, NewSnippet } from "./api";
 import { searchSnippets } from "./search";
@@ -41,7 +42,7 @@ export const useSnippetStore = create<SnippetState>()((set) => ({
     } catch (e) {
       set({ isLoading: false });
       toast.error("スニペットの読み込みに失敗しました");
-      console.error("[SnippetStore] loadEntries:", e);
+      debugLog.error("SnippetStore", "loadEntries", errorDetail(e));
     }
   },
 
@@ -58,7 +59,7 @@ export const useSnippetStore = create<SnippetState>()((set) => ({
     } catch (e) {
       set({ isLoading: false });
       toast.error("スニペット検索に失敗しました");
-      console.error("[SnippetStore] search:", e);
+      debugLog.error("SnippetStore", "search", errorDetail(e));
     }
   },
 
@@ -73,7 +74,7 @@ export const useSnippetStore = create<SnippetState>()((set) => ({
       return created;
     } catch (e) {
       toast.error("スニペットの作成に失敗しました");
-      console.error("[SnippetStore] create:", e);
+      debugLog.error("SnippetStore", "create", errorDetail(e));
       throw e;
     }
   },
@@ -87,7 +88,7 @@ export const useSnippetStore = create<SnippetState>()((set) => ({
       }));
     } catch (e) {
       toast.error("スニペットの更新に失敗しました");
-      console.error("[SnippetStore] update:", e);
+      debugLog.error("SnippetStore", "update", errorDetail(e));
     }
   },
 
@@ -99,7 +100,7 @@ export const useSnippetStore = create<SnippetState>()((set) => ({
       }));
     } catch (e) {
       toast.error("スニペットの削除に失敗しました");
-      console.error("[SnippetStore] remove:", e);
+      debugLog.error("SnippetStore", "remove", errorDetail(e));
     }
   },
 
@@ -112,7 +113,7 @@ export const useSnippetStore = create<SnippetState>()((set) => ({
         ),
       }));
     } catch (e) {
-      console.error("[SnippetStore] incrementUsageCount:", e);
+      debugLog.error("SnippetStore", "incrementUsageCount", errorDetail(e));
     }
   },
 }));

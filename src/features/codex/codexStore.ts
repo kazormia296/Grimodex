@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import { toast } from "sonner";
+import { debugLog, errorDetail } from "@/lib/debugLog";
 import {
   listCodexEntries,
   createCodexEntry,
@@ -64,7 +65,7 @@ export const useCodexStore = create<CodexState>()((set, get) => ({
     } catch (e) {
       set({ isLoading: false });
       toast.error("Codexの読み込みに失敗しました");
-      console.error("[CodexStore] loadEntries:", e);
+      debugLog.error("CodexStore", "loadEntries", errorDetail(e));
     }
   },
 
@@ -82,7 +83,7 @@ export const useCodexStore = create<CodexState>()((set, get) => ({
     } catch (e) {
       set({ isLoading: false });
       toast.error("検索に失敗しました");
-      console.error("[CodexStore] search:", e);
+      debugLog.error("CodexStore", "search", errorDetail(e));
     }
   },
 
@@ -97,7 +98,7 @@ export const useCodexStore = create<CodexState>()((set, get) => ({
       return entry;
     } catch (e) {
       toast.error("Codexエントリの作成に失敗しました");
-      console.error("[CodexStore] create:", e);
+      debugLog.error("CodexStore", "create", errorDetail(e));
       throw e;
     }
   },
@@ -108,7 +109,7 @@ export const useCodexStore = create<CodexState>()((set, get) => ({
       await get().loadEntries();
     } catch (e) {
       toast.error("Codexエントリの更新に失敗しました");
-      console.error("[CodexStore] update:", e);
+      debugLog.error("CodexStore", "update", errorDetail(e));
     }
   },
 
@@ -118,7 +119,7 @@ export const useCodexStore = create<CodexState>()((set, get) => ({
       await get().loadEntries();
     } catch (e) {
       toast.error("Codexエントリの削除に失敗しました");
-      console.error("[CodexStore] remove:", e);
+      debugLog.error("CodexStore", "remove", errorDetail(e));
     }
   },
 
@@ -130,7 +131,7 @@ export const useCodexStore = create<CodexState>()((set, get) => ({
     } catch (e) {
       set({ isLoading: false });
       toast.error("フィルタの適用に失敗しました");
-      console.error("[CodexStore] setFilterType:", e);
+      debugLog.error("CodexStore", "setFilterType", errorDetail(e));
     }
   },
 }));
