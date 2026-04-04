@@ -93,20 +93,42 @@ export function rootCause(e: unknown): string {
   return current instanceof Error ? current.message : String(current);
 }
 
+/**
+ * Redact the "params:" line in DrizzleQueryError messages to prevent
+ * content (novel text, Codex entries, etc.) from leaking into logs.
+ */
+function redactParams(message: string): string {
+  return message.replace(
+    /^(params:\s*)(.*)$/m,
+    (_match, prefix: string, paramStr: string) => {
+      const params = paramStr.split(",");
+      const redacted = params.map((p) => {
+        const trimmed = p.trim();
+        return trimmed.length > 60
+          ? trimmed.slice(0, 40) + "…[redacted]"
+          : trimmed;
+      });
+      return prefix + redacted.join(", ");
+    },
+  );
+}
+
 /** Extract a useful message from an unknown thrown value, including cause chain */
 export function errorDetail(e: unknown): string {
-  if (!(e instanceof Error)) return String(e);
+  if (!(e instanceof Error)) return redactParams(String(e));
 
-  const parts: string[] = [`${e.message}\n${e.stack ?? ""}`];
+  const parts: string[] = [`${redactParams(e.message)}\n${e.stack ?? ""}`];
 
   let current: unknown = e.cause;
   let depth = 0;
   while (current && depth < 5) {
     if (current instanceof Error) {
-      parts.push(`Caused by: ${current.message}\n${current.stack ?? ""}`);
+      parts.push(
+        `Caused by: ${redactParams(current.message)}\n${current.stack ?? ""}`,
+      );
       current = current.cause;
     } else {
-      parts.push(`Caused by: ${String(current)}`);
+      parts.push(`Caused by: ${redactParams(String(current))}`);
       break;
     }
     depth++;
