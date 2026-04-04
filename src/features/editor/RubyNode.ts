@@ -1,4 +1,4 @@
-import { Node, mergeAttributes } from "@tiptap/core";
+import { Node, mergeAttributes, type RawCommands } from "@tiptap/core";
 
 declare module "@tiptap/core" {
   interface Commands<ReturnType> {
@@ -38,7 +38,7 @@ export const RubyNode = Node.create({
             })
             .run();
         },
-    };
+    } as Partial<RawCommands>;
   },
 
   parseHTML() {

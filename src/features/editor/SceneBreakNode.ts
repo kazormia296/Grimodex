@@ -1,4 +1,4 @@
-import { Node, mergeAttributes } from "@tiptap/core";
+import { Node, mergeAttributes, type RawCommands } from "@tiptap/core";
 
 /**
  * SceneBreakNode — シーン区切り (※ ※ ※)
@@ -28,7 +28,7 @@ export const SceneBreakNode = Node.create({
         ({ commands }) => {
           return commands.insertContent({ type: this.name });
         },
-    };
+    } as Partial<RawCommands>;
   },
 });
 

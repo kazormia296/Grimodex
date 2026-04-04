@@ -1,4 +1,4 @@
-import { Extension } from "@tiptap/core";
+import { Extension, type RawCommands } from "@tiptap/core";
 import { Plugin, PluginKey } from "prosemirror-state";
 import { Decoration, DecorationSet } from "prosemirror-view";
 
@@ -230,7 +230,7 @@ export const FindReplaceExtension = Extension.create<
           }
           return true;
         },
-    };
+    } as Partial<RawCommands>;
   },
 
   addProseMirrorPlugins() {
