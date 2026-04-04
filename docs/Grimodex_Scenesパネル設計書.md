@@ -2,7 +2,7 @@
 
 ## 概要
 
-Scenesパネルはプロジェクトの構造を管理するツリービューパネル。本編のPart/Chapter/Scene階層に加え、Scrivener式のFolder/Noteノードで取材メモや設定資料もプロジェクト内に一元管理する。
+Scenesパネルはプロジェクトの構造を管理するツリービューパネル。執筆本文（Scene）・メモ類（Note）・それらを束ねるコンテナ（Folder）の3種類のノードで構成される。階層制約なく自由に配置できる。
 
 デフォルト位置: Left Dock（表示状態）
 
@@ -14,46 +14,37 @@ Scenesパネルはプロジェクトの構造を管理するツリービュー�
 
 | ノードタイプ | 種別 | TipTapドキュメント | 子ノードを持てるか | エクスポート対象 |
 |-------------|------|-------------------|-------------------|----------------|
-| Project | ルート | なし | Yes | 全体のルート |
-| Part | コンテナ | なし | Yes（Chapter, Part） | Yes（見出し） |
-| Chapter | コンテナ | なし | Yes（Scene） | Yes（見出し） |
-| Scene | リーフ | **あり** | No | Yes（本文） |
-| Folder | コンテナ | なし | Yes（Note, Folder） | No |
+| Folder | コンテナ | なし | Yes（制限なし） | No |
+| Scene | リーフ | **あり** | No | **Yes**（本文） |
 | Note | リーフ | **あり** | No | No |
 
 ### 階層ルール
 
+制約は**なし**。Folderはどこにでもネストでき、Scene/NoteはFolderの中でも外（ルート直下）でも置ける。
+
 ```
-Project（ルート、UIには非表示）
-├── Part: 第一部 黎明篇
-│   ├── Chapter: 第1章 覚醒
-│   │   ├── Scene: 塔の麓
-│   │   ├── Scene: 最初の呪文
-│   │   └── Scene: 見知らぬ男
-│   └── Chapter: 第2章 降下
-│       ├── Scene: 地下通路
-│       └── Scene: 封印の間
-├── Part: 第二部 黄昏篇
-│   └── Chapter: 第3章 再会
-│       └── Scene: 市場にて
-├── Chapter: エピローグ          ← Part に属さない Chapter も可
-│   └── Scene: 旅立ち
-└── Folder: 資料
-    ├── Note: 世界観メモ
-    ├── Note: 年表
-    └── Folder: キャラクター設定
-        ├── Note: エララ設定
-        └── Note: 塔の歴史
+（例）
+Folder: 第一部
+  Folder: 第1章
+    Scene: 塔の麓          [export]
+    Scene: 最初の呪文       [export]
+    Note: 執筆メモ          [no-export]
+  Scene: 幕間              [export]   ← Folderを介さずに配置も可
+Folder: 資料
+  Note: 世界観メモ          [no-export]
+  Folder: キャラクター設定
+    Note: エララ設定        [no-export]
+Scene: エピローグ           [export]   ← ルート直下も可
 ```
 
-### 階層の制約
+### エクスポート区別
 
-- **Scene** は必ず **Chapter** の直下に置く。Part直下やFolder内には置けない。
-- **Chapter** は **Part** の直下、または **Project** の直下に置ける。Folder内には置けない。
-- **Part** は **Project** の直下にのみ置ける。ネストは不可。
-- **Note** は **Folder** の直下にのみ置ける。本編ツリー（Part/Chapter）には置けない。
-- **Folder** は **Project** の直下、または別の **Folder** の中に置ける（ネスト可）。
-- Part の使用は任意。Chapter を Project 直下に置けば2階層構成（Chapter → Scene）になる。
+Scene と Note はノード**作成時**に種別を選択する。作成後の変更は不可。
+
+| ノード | エクスポート | ステータス管理 | Synopsis |
+|--------|------------|--------------|---------|
+| Scene  | あり | あり | あり |
+| Note   | なし | なし | なし |
 
 ---
 
@@ -62,9 +53,9 @@ Project（ルート、UIには非表示）
 ### Sceneノード
 
 ```
-[●] Scene title                    [34%] 1,247
- ↑                                  ↑     ↑
- ステータスドット                   AI%   文字数
+● Scene title                      [34%] 1,247
+↑                                   ↑     ↑
+ステータスドット                    AI%   文字数
 ```
 
 | 要素 | 表示条件 | 詳細 |
@@ -76,40 +67,36 @@ Project（ルート、UIには非表示）
 
 アクティブシーン（Editorで開いているシーン）は左ボーダー + 背景ハイライトで強調。
 
-### Chapter / Partノード
+### Folderノード
 
 ```
-[▼] ■ Part title                      12,340
-[▼] □ Chapter title                    2,340
+[▼] 📁 Folder title                 12,340
 ```
 
 | 要素 | 表示条件 | 詳細 |
 |------|---------|------|
 | 折りたたみシェブロン | 常時 | ▶（折りたたみ）/ ▼（展開） |
-| アイコン | 常時 | Part: 塗りアイコン ■、Chapter: 線アイコン □ で階層を区別 |
+| アイコン | 常時 | 📁 teal系フォルダアイコン |
 | タイトル | 常時 | インライン編集可能 |
-| 合計文字数 | 常時 | 配下の全Sceneの文字数合計。右寄せ |
+| 合計文字数 | 常時 | 配下の全Scene + Noteの文字数合計。右寄せ |
 
-### Folder / Noteノード
+### Noteノード
 
 ```
-[▼] 📁 Folder title
-     📝 Note title                     832
+    📝 Note title                      832
 ```
 
 | 要素 | 表示条件 | 詳細 |
 |------|---------|------|
-| アイコン | 常時 | Teal系の色で本編ツリーと視覚的に区別 |
+| アイコン | 常時 | 📝 teal系ノートアイコン |
 | タイトル | 常時 | インライン編集可能 |
-| 文字数 | Noteのみ | 右寄せ |
-
-Folder/Noteセクションは本編ツリーの下部にセパレーターで区切って表示する。
+| 文字数 | 常時（パネルメニューでOFF可） | 右寄せ |
 
 ---
 
 ## Synopsis（シーン要約）
 
-各Sceneノードは `synopsis` フィールドを持つ。「このシーンで何が起こるか」を1-3文で記述する要約文。
+各Sceneノードは `synopsis` フィールドを持つ。「このシーンで何が起こるか」を1-3文で記述する要約文。Noteには不要のため持たない。
 
 ### 目的
 
@@ -140,7 +127,6 @@ Synopsis編集エリアの右上に「✦ Generate」ボタンを配置。シー
 - [Generate] → 上記のAI生成フローを実行（上書き確認なし、空のため）
 - [Dismiss] → 何もしない。同じシーンで再度ステータスが変わった場合は再提案する
 - Settingsの「Editor > Auto-suggest synopsis」トグル（デフォルト: ON）でオフにできる
-- 複数シーンを一括でComplete等に変更した場合、各シーンに対して順次生成（並列ではない）
 
 ### storySoFar のSynopsisカバレッジ警告
 
@@ -149,7 +135,7 @@ Chatパネルのコンテキストバーに、storySoFar（Layer 2）のSynopsis
 - 現在シーンより前のシーン群のうち、synopsisが記入済みの割合を計算
 - カバレッジが50%未満の場合、コンテキストバーの「Project info」ピルの隣に警告ピルを表示:
   ```
-  [⚠ storySoFar: 3/12 scenes] 
+  [⚠ storySoFar: 3/12 scenes]
   ```
 - クリックでポップオーバー: 「12 scenes before current position, but only 3 have synopses. AI will have limited story context. Generate missing synopses?」 + [Generate all] ボタン
 - [Generate all] → synopsis未記入かつシーン本文が存在する全シーンに対して順次AI生成を実行（プログレスバー表示）
@@ -204,18 +190,15 @@ Chatパネルのコンテキストバーに、storySoFar（Layer 2）のSynopsis
 
 **[+] 新規作成ボタン**
 クリックでドロップダウンメニューを表示:
-- New scene — 選択中のChapter内、選択中のノードの下に挿入
-- New chapter — 選択中のPart内（またはProject直下）に挿入
-- New part — Project直下に挿入
+- New scene — 選択中のノードの親フォルダ内（または直下）に挿入
+- New note — 同上
 - ---（セパレーター）
-- New folder — Project直下に挿入
-- New note — 選択中のFolder内に挿入
+- New folder — 選択中のフォルダ内（またはルート直下）に挿入
 
 挿入位置のルール:
 - ノード未選択時はツリー末尾に追加
-- Scene選択時に「New scene」→ その直下（同じChapter内の次の位置）
-- Chapter選択時に「New scene」→ そのChapterの末尾子要素として
-- Chapter選択時に「New chapter」→ そのChapterの直下の兄弟として
+- Scene/Note選択時 → その直下の兄弟として挿入
+- Folder選択時 → そのFolderの末尾子要素として挿入（New scene/note/folder共通）
 
 **[⊞] 展開/折りたたみトグル**
 - 全展開 → 全折りたたみ → 全展開 のトグル
@@ -223,13 +206,11 @@ Chatパネルのコンテキストバーに、storySoFar（Layer 2）のSynopsis
 **[⋮] パネルメニュー**
 - View: Tree (default) / Outline
 - Sort by: Manual (default) / Title (A→Z) / Word count / Status
-- Show: Word counts ✓ / AI attribution ✓ / Status dots ✓
+- Show: Word counts ✓ / AI attribution ✓ / Status dots ✓ / アクティブを自動表示 ✓
 - Filter by status: All ✓ / Outline / Draft / Complete / Revision / Final
 - ---
 - Expand all
 - Collapse all
-- ---
-- Compile project...
 
 ### フィルター入力欄
 
@@ -247,27 +228,28 @@ Chatパネルのコンテキストバーに、storySoFar（Layer 2）のSynopsis
 
 ### Tree（デフォルト）
 
-現行のツリー表示。Part > Chapter > Scene の階層をインデント付きで表示する。Synopsisはシーンノードのホバー時にツールチップで先頭100文字を表示。
+現行のツリー表示。Folder > Scene/Note の階層をインデント付きで表示する。SynopsisはSceneノードのホバー時にツールチップで先頭100文字を表示。
 
 ### Outline
 
-プロッティング向けのシンプルな一覧表示。ツリー構造は維持しつつ、各シーンのSynopsis全文をタイトル直下にインライン表示する。
+プロッティング向けのシンプルな一覧表示。ツリー構造は維持しつつ、各SceneのSynopsis全文をタイトル直下にインライン表示する。
 
 ```
-▼ ■ Part 1: 旅立ち
-  ▼ □ Chapter 1: 始まり
+▼ 📁 第一部: 旅立ち
+  ▼ 📁 第1章: 始まり
     ● Scene 1: 朝の市場
       エララが市場で謎の商人からアミュレットを受け取る。
       商人は「満月の夜に塔へ行け」と告げて姿を消す。
     ● Scene 2: 師匠の警告
       師匠ガレンがアミュレットの危険性を警告。エララは
       聞き入れず、塔への旅を決意する。
-  ▼ □ Chapter 2: 黒曜石の塔
+    📝 執筆メモ
+  ▼ 📁 第2章: 黒曜石の塔
     ● Scene 3: 塔の入口
       ...
 ```
 
-- Synopsisが空のシーンはタイトルのみ表示（プレースホルダーなし）
+- Synopsisが空のSceneはタイトルのみ表示（プレースホルダーなし）
 - ステータスドット・文字数は通常通り表示
 - D&Dによる並べ替えも通常通り動作
 - フィルター・ソートも通常通り適用
@@ -280,68 +262,45 @@ Chatパネルのコンテキストバーに、storySoFar（Layer 2）のSynopsis
 
 | メニュー項目 | ショートカット | 動作 |
 |-------------|-------------|------|
-| Open in new tab | `Enter` | Editorに固定タブとして開く |
-| Open to the side | `Ctrl+Enter` | 新しいEditor Groupにスプリットして開く |
+| Editorで開く | `Enter` | Editorに固定タブとして開く |
+| サイドで開く | `Ctrl+Enter` | 新しいEditor Groupにスプリットして開く |
 | --- | | |
 | Set status | ▶ | サブメニュー: Outline / Draft / Complete / Revision / Final |
 | --- | | |
-| Rename | `F2` | タイトルをインライン編集モードにする |
-| Duplicate | | 同じChapter内に「{title} (copy)」として複製 |
-| Move to... | ▶ | サブメニュー: Chapter一覧を表示、選択先に移動 |
+| 名前を変更 | `F2` | タイトルをインライン編集モードにする |
 | --- | | |
-| Add scene below | | 同じChapter内、このシーンの直後に新規Scene |
-| Add chapter above | | このシーンの親Chapterの直前に新規Chapter |
+| 下にシーンを追加 | | 同じ親の直後に新規Scene |
+| 下にノートを追加 | | 同じ親の直後に新規Note |
+| 下にフォルダーを追加 | | 同じ親の直後に新規Folder |
 | --- | | |
-| Copy as Markdown | | シーン本文をMarkdownとしてクリップボードにコピー |
-| Open in Chat | | Chatパネルをこのシーンのコンテキストで開く |
-| --- | | |
-| Delete | `Del` | 確認ダイアログ後に削除 |
+| 削除 | `Del` | 確認ダイアログ後に削除 |
 
-### Chapter / Partノードの右クリック
+### Noteノードの右クリック
 
 | メニュー項目 | ショートカット | 動作 |
 |-------------|-------------|------|
-| Rename | `F2` | タイトルをインライン編集モードにする |
-| Duplicate with children | | 配下のScene含め全て複製 |
-| Move to... | ▶ | Chapterの場合: Part一覧、Partの場合: 順序変更 |
+| Editorで開く | `Enter` | Editorにタブとして開く |
+| サイドで開く | `Ctrl+Enter` | 新しいEditor Groupにスプリットして開く |
 | --- | | |
-| Add scene inside | | このコンテナの末尾子要素として新規Scene |
-| Add chapter inside | | Partの場合: 末尾にChapter追加 |
-| Add part above | | このノードの直前にPart追加 |
+| 名前を変更 | `F2` | タイトルをインライン編集モードにする |
 | --- | | |
-| Expand all children | | 配下を全展開 |
-| Collapse all children | | 配下を全折りたたみ |
+| 下にシーンを追加 | | 同じ親の直後に新規Scene |
+| 下にノートを追加 | | 同じ親の直後に新規Note |
+| 下にフォルダーを追加 | | 同じ親の直後に新規Folder |
 | --- | | |
-| Compile this chapter... | | このChapter/Part以下をMarkdownエクスポート |
+| 削除 | `Del` | 確認ダイアログ後に削除 |
+
+### Folderノードの右クリック
+
+| メニュー項目 | ショートカット | 動作 |
+|-------------|-------------|------|
+| 名前を変更 | `F2` | タイトルをインライン編集モードにする |
 | --- | | |
-| Delete | `Del` | 確認ダイアログ（配下のScene数を表示）後に削除 |
-
-### Folder / Noteノードの右クリック
-
-| メニュー項目 | 動作 |
-|-------------|------|
-| Open in new tab | Noteのみ。Editorにタブとして開く |
-| Rename | タイトルをインライン編集 |
-| Duplicate | 複製 |
-| --- | |
-| Add note inside | Folderのみ。末尾にNote追加 |
-| Add folder inside | Folderのみ。末尾にサブFolder追加 |
-| --- | |
-| Delete | 確認ダイアログ後に削除 |
-
-### 空エリアの右クリック
-
-| メニュー項目 | 動作 |
-|-------------|------|
-| New scene | ツリー末尾のChapterの末尾に追加（Chapterがなければ先にChapter作成） |
-| New chapter | Project直下（またはPart末尾）に追加 |
-| New part | Project直下に追加 |
-| New folder | Project直下に追加 |
-| --- | |
-| Expand all | 全展開 |
-| Collapse all | 全折りたたみ |
-| --- | |
-| Compile project... | プロジェクト全体のエクスポート |
+| シーンを追加 | | このFolderの末尾に新規Scene |
+| ノートを追加 | | このFolderの末尾に新規Note |
+| フォルダーを追加 | | このFolderの末尾に新規Folder |
+| --- | | |
+| 削除 | `Del` | 確認ダイアログ（配下のノード数を表示）後に削除 |
 
 ---
 
@@ -349,36 +308,24 @@ Chatパネルのコンテキストバーに、storySoFar（Layer 2）のSynopsis
 
 ### ライブラリ
 
-`@dnd-kit/core` + `@dnd-kit/sortable` を使用。
+`@dnd-kit/core` を使用。
 
 ### D&Dルール
 
-| ドラッグ元 | 許可されるドロップ先 | 不可なドロップ先 |
-|----------|-------------------|----------------|
-| Scene | 同じChapter内（順序変更）、別のChapter内（移動） | Part直下、Folder内、Project直下 |
-| Chapter | 同じPart内（順序変更）、別のPart内（移動）、Project直下（Part未使用時） | Folder内、別のChapter内 |
-| Part | Project直下（順序変更） | 他のPart内、Folder内 |
-| Note | 同じFolder内（順序変更）、別のFolder内（移動） | 本編ツリー（Part/Chapter内） |
-| Folder | Project直下（順序変更）、別のFolder内（移動） | 本編ツリー内 |
+- **どのノードでも**任意の位置に移動可能（ノードタイプによる制限なし）
+- ただし **Folderにのみ「中に入れる」が可能**。Scene/Noteへのドロップは「前/後に並べ替え」のみ
+
+| ドラッグ元 | Folderへのドロップ | Scene/NoteへのドロップドロップOn | 空エリア |
+|----------|------------------|----------------------|--------|
+| Folder | 中に入れる / 前後に並べ替え | 前後に並べ替えのみ | ルート末尾 |
+| Scene | 中に入れる / 前後に並べ替え | 前後に並べ替えのみ | ルート末尾 |
+| Note | 中に入れる / 前後に並べ替え | 前後に並べ替えのみ | ルート末尾 |
 
 ### ドロップインジケーター
 
-- **ノード間の青い水平線** → 「この位置に挿入」
-- **ノード上の背景ハイライト** → 「このコンテナの中に入れる」（コンテナノードの場合のみ）
-- **禁止カーソル** → 許可されないドロップ先
-
-### 複数選択D&D
-
-- `Ctrl+Click` で個別追加選択
-- `Shift+Click` で範囲選択
-- 複数選択したノードをまとめてドラッグ可能
-- 制約: 異なるノードタイプ（SceneとChapter等）の混在選択は不可。同一タイプかつ同一親のノードのみ複数選択可能
-
-### Editorへのドラッグ
-
-- ツリーのSceneノードまたはNoteノードをEditorのCenter領域にドラッグ → Editorタブとして開く
-- Editor Groupのタブバーにドロップ → そのGroupにタブ追加
-- Editor Groupのエッジにドロップ → 新しいGroupとしてスプリット
+- **ノード間の青い水平線** → 「この位置に挿入（前後）」
+- **ノード上の背景ハイライト** → 「このFolderの中に入れる」（Folderにホバー中かつ中央25〜75%の位置）
+- ドロップ先ノードの上端25%以内 → before、下端25%以内 → after、中央50% → inside（Folderのみ）
 
 ---
 
@@ -388,10 +335,12 @@ Chatパネルのコンテキストバーに、storySoFar（Layer 2）のSynopsis
 
 | 操作 | Editorでの振る舞い | タブの扱い |
 |------|-------------------|----------|
-| シングルクリック | プレビューモードで開く | タブタイトルが *斜体* 。別ノードをクリックすると上書きされる |
+| シングルクリック | プレビューモードで開く | タブタイトルが *斜体*。別ノードをクリックすると上書きされる |
 | ダブルクリック | 固定タブとして開く | タブタイトルが通常表示。明示的に閉じるまで残る |
 | Enter | 固定タブとして開く | ダブルクリックと同じ |
 | Ctrl+Enter | 新しいEditor Groupに開く | 固定タブ。スプリット先にフォーカス移動 |
+
+SceneとNoteの両方がEditorで開ける。
 
 ### プレビューモード
 
@@ -417,7 +366,7 @@ Editorでアクティブなタブが変わると、Scenesパネルが連動す�
 - アクティブシーンのノードが自動的にツリー内で選択状態になる
 - 必要に応じて親ノードが自動展開され、アクティブシーンが見える位置にスクロール
 - Codex Quickセクションが新しいシーンの関連エントリに更新される
-- この自動追従はパネルメニューの「Auto-reveal active scene」でon/off可能
+- この自動追従はパネルメニューの「アクティブを自動表示」でon/off可能
 
 ---
 
@@ -434,34 +383,33 @@ Scenesパネルにフォーカスがある時のキーバインド:
 | キー | 動作 |
 |------|------|
 | `↑` / `↓` | 前/次のノードに移動（折りたたまれた子はスキップ） |
-| `←` | 展開されたコンテナ → 折りたたむ。リーフまたは折りたたみ済み → 親ノードに移動 |
-| `→` | 折りたたまれたコンテナ → 展開する。展開済み → 最初の子ノードに移動 |
-| `Enter` | Sceneの場合: 固定タブとして開く。コンテナの場合: 展開/折りたたみトグル |
-| `Space` | Sceneの場合: プレビューモードで開く |
+| `←` | 展開されたFolder → 折りたたむ。リーフまたは折りたたみ済み → 親ノードに移動 |
+| `→` | 折りたたまれたFolder → 展開する |
+| `Enter` | Scene/Noteの場合: 固定タブとして開く。Folderの場合: 展開/折りたたみトグル |
+| `Space` | Scene/Noteの場合: プレビューモードで開く |
 | `F2` | 選択中のノードの名前をインライン編集 |
 | `Del` / `Backspace` | 選択中のノードを削除（確認ダイアログ） |
 | `Ctrl+F` | フィルタ入力欄にフォーカス |
 | `Escape` | フィルタ入力欄からフォーカスを外す / フィルタクリア |
-| `Ctrl+Enter` | Sceneの場合: 新しいEditor Groupに開く |
+| `Ctrl+Enter` | Scene/Noteの場合: 新しいEditor Groupに開く |
 
 ---
 
-## DBスキーマへの影響
+## DBスキーマ
 
-現行の `projects → chapters → scenes` の3テーブル構成を、汎用ツリー構造に変更する。
-
-### 新スキーマ案
+### テーブル定義
 
 ```sql
 CREATE TABLE tree_nodes (
   id          TEXT PRIMARY KEY,     -- UUID
   project_id  TEXT NOT NULL REFERENCES projects(id),
-  parent_id   TEXT REFERENCES tree_nodes(id), -- NULL = Project直下
-  node_type   TEXT NOT NULL,        -- 'part' | 'chapter' | 'scene' | 'folder' | 'note'
+  parent_id   TEXT REFERENCES tree_nodes(id), -- NULL = ルート直下
+  node_type   TEXT NOT NULL,        -- 'folder' | 'scene' | 'note'
   title       TEXT NOT NULL DEFAULT 'Untitled',
   synopsis    TEXT,                  -- Sceneのみ: シーン要約（プレーンテキスト）
   sort_order  REAL NOT NULL,        -- 浮動小数点で挿入時の再ソートを回避
-  status      TEXT DEFAULT 'outline', -- Sceneのみ使用: 'outline'|'draft'|'complete'|'revision'|'final'
+  status      TEXT DEFAULT 'outline', -- Sceneのみ: 'outline'|'draft'|'complete'|'revision'|'final'
+  content     TEXT NOT NULL DEFAULT '{}', -- Scene/Note本文（ProseMirror JSON）
   created_at  TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
 );
@@ -477,48 +425,19 @@ Fractional Indexing（浮動小数点ソート）を採用。
 - ノードAとBの間に挿入: (A.sort_order + B.sort_order) / 2
 - 先頭に挿入: 最小値 - 1.0
 - 末尾に挿入: 最大値 + 1.0
-- 精度劣化が累積した場合（一定間隔以下になった場合）、兄弟ノードの sort_order を再割り当て
-
-**リバランス閾値:** 任意の隣接兄弟ノードペア間の `sort_order` 差が `1e-10` 未満になった場合、その親の全兄弟ノードの `sort_order` を整数間隔（1.0, 2.0, 3.0, ...）に一括再割り当てする。
-
-IEEE 754倍精度浮動小数点は約15桁の有効数字を持つ。`1e-10` の閾値は十分な余裕があり、通常の使用では到達しない（初期値1.0から始めて10億回の中間挿入でも到達しない計算になる）。
+- 精度劣化が累積した場合（隣接ペア間の差が `1e-10` 未満）、兄弟ノードの sort_order を整数間隔（1.0, 2.0, 3.0, ...）に一括再割り当て
 
 リバランス処理はDrag & Drop完了後、閾値チェックを経て必要な場合のみ実行する。
 
-### 本文の保存
-
-Scene と Note のみ本文を持つ。本文は `tree_nodes.content` カラム（TEXT型）にJSON形式で保存する。ファイルシステムは使用しない。
-
-- タイトル変更・順序変更時はDB上の `title` / `sort_order` カラムを更新するだけでよい（ファイルリネーム不要）。
-
 ### 階層制約の検証
 
-DB側ではCHECK制約での階層ルール強制は複雑になるため、アプリケーション層（Zustandストアの操作関数）でバリデーションする。
+DB側ではなく、アプリケーション層（Zustandストアの操作関数）でバリデーションする。
 
 ```typescript
-// 挿入時のバリデーション例
-function canInsertChild(parent: TreeNode | null, childType: NodeType): boolean {
-  if (childType === 'scene') return parent?.node_type === 'chapter';
-  if (childType === 'chapter') return parent?.node_type === 'part' || parent === null;
-  if (childType === 'part') return parent === null;
-  if (childType === 'note') return parent?.node_type === 'folder';
-  if (childType === 'folder') return parent === null || parent?.node_type === 'folder';
-  return false;
+/** フォルダのみ子ノードを持てる */
+function canHaveChildren(type: NodeType): boolean {
+  return type === "folder";
 }
 ```
 
----
-
-## 既存設計書との整合
-
-### レイアウトシステム設計書の更新箇所
-
-パネル一覧の Scenes の説明を以下に変更:
-
-> Scenes | Left Dock | 表示 | プロジェクトのPart/Chapter/Sceneツリー + Folder/Note
-
-### 開発ワークフローへの影響
-
-- タスク1.2（チャプター/シーンのカスタムノード）のスコープを拡大: Part, Folder, Note ノードタイプを含める
-- タスク2.1（SQLiteスキーマ）を `tree_nodes` テーブルベースに変更
-- タスク2.2（D&D並べ替え）にノードタイプ別のドロップ制約ロジックを追加
+D&Dドロップ時および `createNode` 時に検証する。
