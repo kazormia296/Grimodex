@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 /// Metadata stored inside each workspace at `.grimodex/workspace.json`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -150,16 +150,18 @@ pub fn touch_recent_workspace(settings: &mut GlobalSettings, workspace_path: &st
 
 /// Extract the folder name from a workspace path.
 pub fn workspace_name(path: &str) -> String {
-    PathBuf::from(path)
-        .file_name()
-        .map(|n| n.to_string_lossy().to_string())
-        .unwrap_or_else(|| path.to_string())
+    // Handle both Unix (/) and Windows (\) separators regardless of host OS
+    path.rsplit(['/', '\\'])
+        .find(|s| !s.is_empty())
+        .unwrap_or(path)
+        .to_string()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::fs;
+    use std::path::PathBuf;
 
     fn temp_dir(name: &str) -> PathBuf {
         std::env::temp_dir().join(format!("grimodex_ws_test_{name}"))
