@@ -51,11 +51,8 @@ export const DEFAULT_SETTINGS: Record<string, string> = {
   "editor.characterFadeIn": "false",
   "editor.characterFadeOut": "false",
   "editor.disableAllAnimations": "false",
-  // Display
-  "display.theme": "system",
+  // Display (theme, uiLanguage, uiScale are in GlobalSettings)
   "display.accentColor": "#7F77DD",
-  "display.uiLanguage": "ja",
-  "display.uiScale": "100",
   "display.showWordCount": "true",
   "display.showAiBadge": "false",
   "display.codexHighlight": "true",

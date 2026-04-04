@@ -23,6 +23,8 @@ pub struct GlobalSettings {
     pub recent_workspaces: Vec<RecentWorkspace>,
     pub last_active_workspace: Option<String>,
     pub theme: String,
+    pub ui_language: String,
+    pub ui_scale: u32,
     pub show_launcher_on_startup: bool,
     /// Dockview layout serialization (project-independent UI state).
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -41,6 +43,8 @@ impl Default for GlobalSettings {
             recent_workspaces: Vec::new(),
             last_active_workspace: None,
             theme: "system".to_string(),
+            ui_language: "ja".to_string(),
+            ui_scale: 100,
             show_launcher_on_startup: false,
             layout: None,
             layout_presets: None,

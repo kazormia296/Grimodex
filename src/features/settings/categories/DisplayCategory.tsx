@@ -7,6 +7,7 @@ import { SettingDropdown } from "../components/SettingDropdown";
 import { SettingColorPicker } from "../components/SettingColorPicker";
 import { useSettingControl } from "../useSettingControl";
 import { useCodexHighlightStore } from "@/features/editor/codexHighlightStore";
+import { useWorkspaceStore } from "@/features/workspace/store";
 
 const THEME_OPTIONS = [
   { value: "system", label: "システム" },
@@ -25,7 +26,15 @@ const CODEX_STYLE_OPTIONS = [
 ];
 
 export function DisplayCategory() {
-  const { value: theme } = useSettingControl("display.theme", "system");
+  // Global settings (stored in global-settings.json, available before workspace open)
+  const theme = useWorkspaceStore((s) => s.globalSettings?.theme ?? "system");
+  const uiLanguage = useWorkspaceStore(
+    (s) => s.globalSettings?.uiLanguage ?? "ja",
+  );
+  const uiScale = useWorkspaceStore((s) => s.globalSettings?.uiScale ?? 100);
+  const updateGlobal = useWorkspaceStore((s) => s.updateGlobalSettings);
+
+  // Workspace-specific settings (stored in workspace DB)
   const { value: accentColor, setValue: setAccentColor } = useSettingControl(
     "display.accentColor",
     "#7F77DD",
@@ -36,22 +45,6 @@ export function DisplayCategory() {
   );
   const setCodexHighlightEnabled = useCodexHighlightStore((s) => s.setEnabled);
 
-  // Apply theme to <html> element
-  useEffect(() => {
-    const html = document.documentElement;
-    if (theme === "dark") {
-      html.classList.add("dark");
-    } else if (theme === "light") {
-      html.classList.remove("dark");
-    } else {
-      // system
-      const prefersDark = window.matchMedia(
-        "(prefers-color-scheme: dark)",
-      ).matches;
-      html.classList.toggle("dark", prefersDark);
-    }
-  }, [theme]);
-
   // Sync codex highlight to store
   useEffect(() => {
     setCodexHighlightEnabled(codexHighlight === "true");
@@ -61,11 +54,17 @@ export function DisplayCategory() {
     <div className="p-6">
       <SettingSection title="テーマ">
         <SettingRow label="カラーテーマ">
-          <SettingDropdown
-            settingKey="display.theme"
-            options={THEME_OPTIONS}
-            defaultValue="system"
-          />
+          <select
+            value={theme}
+            onChange={(e) => updateGlobal({ theme: e.target.value })}
+            className="rounded-md border border-input bg-background px-2 py-1 text-sm focus:outline-none"
+          >
+            {THEME_OPTIONS.map((o) => (
+              <option key={o.value} value={o.value}>
+                {o.label}
+              </option>
+            ))}
+          </select>
         </SettingRow>
         <SettingRow label="アクセントカラー">
           <SettingColorPicker value={accentColor} onChange={setAccentColor} />
@@ -74,24 +73,38 @@ export function DisplayCategory() {
 
       <SettingSection title="UI">
         <SettingRow label="UI 言語">
-          <SettingDropdown
-            settingKey="display.uiLanguage"
-            options={LANGUAGE_OPTIONS}
-            defaultValue="ja"
-          />
+          <select
+            value={uiLanguage}
+            onChange={(e) => updateGlobal({ uiLanguage: e.target.value })}
+            className="rounded-md border border-input bg-background px-2 py-1 text-sm focus:outline-none"
+          >
+            {LANGUAGE_OPTIONS.map((o) => (
+              <option key={o.value} value={o.value}>
+                {o.label}
+              </option>
+            ))}
+          </select>
         </SettingRow>
         <SettingRow
           label="UI スケール"
           description="ウィンドウ全体のズーム (80〜150%)"
         >
-          <SettingSlider
-            settingKey="display.uiScale"
-            min={80}
-            max={150}
-            step={5}
-            defaultValue={100}
-            format={(v) => `${v}%`}
-          />
+          <div className="flex items-center gap-2">
+            <input
+              type="range"
+              min={80}
+              max={150}
+              step={5}
+              value={uiScale}
+              onChange={(e) =>
+                updateGlobal({ uiScale: Number(e.target.value) })
+              }
+              className="w-32"
+            />
+            <span className="w-10 text-right text-sm text-muted-foreground">
+              {uiScale}%
+            </span>
+          </div>
         </SettingRow>
         <SettingRow label="シーンツリーに文字数を表示">
           <SettingToggle

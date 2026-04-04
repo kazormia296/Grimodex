@@ -10,6 +10,8 @@ export interface GlobalSettings {
   recentWorkspaces: RecentWorkspace[];
   lastActiveWorkspace: string | null;
   theme: string;
+  uiLanguage: string;
+  uiScale: number;
   showLauncherOnStartup: boolean;
   /** Dockview layout serialization (project-independent UI state) */
   layout?: unknown;
@@ -35,6 +37,7 @@ interface WorkspaceState {
 
   initialize: () => Promise<void>;
   openWorkspace: (path: string) => Promise<void>;
+  updateGlobalSettings: (updates: Partial<GlobalSettings>) => Promise<void>;
   showLauncher: () => void;
   clearError: () => void;
 }
@@ -108,6 +111,19 @@ export const useWorkspaceStore = create<WorkspaceState>()((set, get) => ({
         // If still on loading screen (called from initialize), recover to launcher
         ...(get().view === "loading" ? { view: "launcher" as const } : {}),
       });
+    }
+  },
+
+  async updateGlobalSettings(updates: Partial<GlobalSettings>) {
+    const current = get().globalSettings;
+    if (!current) return;
+    const updated = { ...current, ...updates };
+    set({ globalSettings: updated });
+    try {
+      await invoke("save_global_settings", { settings: updated });
+    } catch {
+      // Revert on failure
+      set({ globalSettings: current });
     }
   },
 

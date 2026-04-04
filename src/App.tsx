@@ -14,7 +14,6 @@ import { WorkspaceMenu } from "@/features/workspace/WorkspaceMenu";
 import { useWorkspaceStore } from "@/features/workspace/store";
 import { SettingsDialog } from "@/features/settings/SettingsDialog";
 import type { SettingsCategory } from "@/features/settings/types";
-import { getSetting } from "@/features/settings/api";
 import { PanelToggleDropdown } from "@/features/layout/PanelToggleDropdown";
 import { LayoutPresetDropdown } from "@/features/layout/LayoutPresetDropdown";
 import { DockviewWatermark } from "@/features/layout/DockviewWatermark";
@@ -73,9 +72,30 @@ function buildDefaultLayout(api: DockviewReadyEvent["api"]) {
 
 /* ── App root ── */
 
+function applyTheme(theme: string) {
+  const html = document.documentElement;
+  if (theme === "dark") {
+    html.classList.add("dark");
+  } else if (theme === "light") {
+    html.classList.remove("dark");
+  } else {
+    const prefersDark = window.matchMedia(
+      "(prefers-color-scheme: dark)",
+    ).matches;
+    html.classList.toggle("dark", prefersDark);
+  }
+}
+
 function App() {
   const view = useWorkspaceStore((s) => s.view);
   const initialize = useWorkspaceStore((s) => s.initialize);
+  const theme = useWorkspaceStore((s) => s.globalSettings?.theme ?? "system");
+
+  // Apply theme reactively — globalSettings is loaded from global-settings.json
+  // (no workspace DB needed), so this works before any workspace is opened.
+  useEffect(() => {
+    applyTheme(theme);
+  }, [theme]);
 
   useEffect(() => {
     initialize();
@@ -102,24 +122,6 @@ function EditorScreen() {
     useState<SettingsCategory>("project");
   const { togglePanel, loadLayout, loadPresets, setDockviewApi } =
     useLayoutStore();
-
-  // Apply persisted theme — runs here because the workspace DB must be open
-  useEffect(() => {
-    getSetting("display.theme").then((theme) => {
-      const t = theme ?? "system";
-      const html = document.documentElement;
-      if (t === "dark") {
-        html.classList.add("dark");
-      } else if (t === "light") {
-        html.classList.remove("dark");
-      } else {
-        const prefersDark = window.matchMedia(
-          "(prefers-color-scheme: dark)",
-        ).matches;
-        html.classList.toggle("dark", prefersDark);
-      }
-    });
-  }, []);
 
   // Component map for dockview — stable reference
   const components = useMemo<
