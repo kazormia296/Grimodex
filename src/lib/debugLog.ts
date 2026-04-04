@@ -85,12 +85,14 @@ export const debugLog = {
 
 /** Extract a short root-cause message (for toasts) */
 export function rootCause(e: unknown): string {
-  if (!(e instanceof Error)) return String(e);
+  if (!(e instanceof Error)) return redactParams(String(e));
   let current: unknown = e;
   while (current instanceof Error && current.cause) {
     current = current.cause;
   }
-  return current instanceof Error ? current.message : String(current);
+  return current instanceof Error
+    ? redactParams(current.message)
+    : redactParams(String(current));
 }
 
 /**
@@ -117,14 +119,16 @@ function redactParams(message: string): string {
 export function errorDetail(e: unknown): string {
   if (!(e instanceof Error)) return redactParams(String(e));
 
-  const parts: string[] = [`${redactParams(e.message)}\n${e.stack ?? ""}`];
+  const parts: string[] = [
+    `${redactParams(e.message)}\n${redactParams(e.stack ?? "")}`,
+  ];
 
   let current: unknown = e.cause;
   let depth = 0;
   while (current && depth < 5) {
     if (current instanceof Error) {
       parts.push(
-        `Caused by: ${redactParams(current.message)}\n${current.stack ?? ""}`,
+        `Caused by: ${redactParams(current.message)}\n${redactParams(current.stack ?? "")}`,
       );
       current = current.cause;
     } else {
