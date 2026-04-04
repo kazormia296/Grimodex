@@ -1,7 +1,6 @@
 import { useState, useRef, useEffect } from "react";
 import { openFolderDialog } from "@/lib/dialog";
 import { useWorkspaceStore } from "./store";
-import { IntegrityCheckDialog } from "./IntegrityCheckDialog";
 import { ProjectSnapshotModal } from "@/features/revision/ProjectSnapshotModal";
 
 export function WorkspaceMenu() {
@@ -12,7 +11,6 @@ export function WorkspaceMenu() {
   const activeWorkspacePath = useWorkspaceStore((s) => s.activeWorkspacePath);
 
   const [isOpen, setIsOpen] = useState(false);
-  const [showIntegrityDialog, setShowIntegrityDialog] = useState(false);
   const [showSnapshotModal, setShowSnapshotModal] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
 
@@ -130,24 +128,8 @@ export function WorkspaceMenu() {
             <span className="w-4" />
             プロジェクトスナップショット…
           </button>
-
-          <button
-            type="button"
-            onClick={() => {
-              setIsOpen(false);
-              setShowIntegrityDialog(true);
-            }}
-            className="flex w-full items-center gap-2 px-3 py-1.5 text-sm hover:bg-accent hover:text-accent-foreground"
-          >
-            <span className="w-4" />
-            整合性チェック
-          </button>
         </div>
       )}
-      <IntegrityCheckDialog
-        open={showIntegrityDialog}
-        onClose={() => setShowIntegrityDialog(false)}
-      />
       <ProjectSnapshotModal
         open={showSnapshotModal}
         onClose={() => setShowSnapshotModal(false)}

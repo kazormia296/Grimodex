@@ -349,6 +349,7 @@ Inline AI palette                Ctrl+Space
 | Compact database | SQLiteの VACUUM を実行（データベースサイズ最適化） |
 | Clear chat history | 全チャットセッション・メッセージを削除（確認ダイアログ。Codex/Snippetの抽出済みデータは残る） |
 | Delete project | プロジェクト全体を削除（最終確認ダイアログ。テキスト入力での確認を要求） |
+| Check integrity | 孤立参照チェック＆修復、Codex×シーン相互参照レポート生成 |
 
 ---
 

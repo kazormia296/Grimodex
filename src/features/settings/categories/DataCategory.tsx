@@ -14,6 +14,7 @@ import {
   exportAsPlainText,
   exportCodexJson,
 } from "../exportUtils";
+import { IntegrityCheckSection } from "@/features/workspace/IntegrityCheckDialog";
 
 const PROJECT_ID = "default-project";
 
@@ -304,6 +305,11 @@ export function DataCategory() {
             </button>
           </div>
         </div>
+      </SettingSection>
+
+      {/* Integrity Check */}
+      <SettingSection title="整合性チェック">
+        <IntegrityCheckSection />
       </SettingSection>
     </div>
   );
