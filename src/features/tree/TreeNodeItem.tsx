@@ -15,6 +15,7 @@ import { StatusDot } from "./StatusDot";
 import type { TreeNodeData, SceneStatus } from "./treeStore";
 import { TreeContextMenu } from "./TreeContextMenu";
 import { useTabStore } from "@/features/editor/tabStore";
+import { useLayoutStore } from "@/features/layout/layoutStore";
 
 const STATUS_OPTIONS: SceneStatus[] = [
   "outline",
@@ -187,6 +188,21 @@ export function TreeNodeItem({
     transition: "padding 100ms ease-out",
   };
 
+  function focusEditorPanel() {
+    const { dockviewApi } = useLayoutStore.getState();
+    if (!dockviewApi) return;
+    const panel = dockviewApi.getPanel("editor");
+    if (panel) {
+      panel.api.setActive();
+    } else {
+      dockviewApi.addPanel({
+        id: "editor",
+        component: "editor",
+        title: "エディタ",
+      });
+    }
+  }
+
   const handleClick = useCallback(
     (e: React.MouseEvent) => {
       if (node.nodeType === "scene" || node.nodeType === "note") {
@@ -198,6 +214,7 @@ export function TreeNodeItem({
           useTreeStore.getState().selectNode(node.id, false);
           useTabStore.getState().openPreview(node.id);
           setActiveScene(node.id);
+          focusEditorPanel();
         }
       } else {
         toggleExpand(node.id);
@@ -210,6 +227,7 @@ export function TreeNodeItem({
     if (node.nodeType === "scene" || node.nodeType === "note") {
       useTabStore.getState().openPinned(node.id);
       setActiveScene(node.id);
+      focusEditorPanel();
     }
   }, [node, setActiveScene]);
 

@@ -492,15 +492,17 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
       }
     }
 
-    await api.updateNode(id, {
-      parentId: newParentId ?? undefined,
-      sortOrder,
-    });
+    // Optimistic update: apply state change immediately so the UI reflects the
+    // new order without waiting for the DB round-trip.
     set((state) => {
       const updated = state.nodes.map((n) =>
         n.id === id ? { ...n, parentId: newParentId, sortOrder } : n,
       );
       return { nodes: updated, scenes: computeScenes(updated) };
+    });
+    await api.updateNode(id, {
+      parentId: newParentId ?? undefined,
+      sortOrder,
     });
   },
 

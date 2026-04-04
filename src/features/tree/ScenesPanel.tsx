@@ -24,6 +24,7 @@ import type {
 import { cn } from "@/lib/utils";
 import { useTreeStore } from "./treeStore";
 import { useTabStore } from "@/features/editor/tabStore";
+import { useLayoutStore } from "@/features/layout/layoutStore";
 import { TreeNodeItem, NodeIcon } from "./TreeNodeItem";
 import { StatusDot } from "./StatusDot";
 import { SynopsisArea } from "./SynopsisArea";
@@ -595,6 +596,21 @@ export function ScenesPanel() {
     [createNode, activeSceneId, nodeMap],
   );
 
+  function focusEditorPanel() {
+    const { dockviewApi } = useLayoutStore.getState();
+    if (!dockviewApi) return;
+    const panel = dockviewApi.getPanel("editor");
+    if (panel) {
+      panel.api.setActive();
+    } else {
+      dockviewApi.addPanel({
+        id: "editor",
+        component: "editor",
+        title: "エディタ",
+      });
+    }
+  }
+
   // Keyboard navigation
   const handleTreeKeyDown = useCallback(
     (e: React.KeyboardEvent) => {
@@ -609,6 +625,7 @@ export function ScenesPanel() {
           setActiveScene(next.id);
           if (next.nodeType === "scene" || next.nodeType === "note") {
             useTabStore.getState().openPreview(next.id);
+            focusEditorPanel();
           }
         }
       } else if (e.key === "ArrowUp") {
@@ -618,6 +635,7 @@ export function ScenesPanel() {
           setActiveScene(prev.id);
           if (prev.nodeType === "scene" || prev.nodeType === "note") {
             useTabStore.getState().openPreview(prev.id);
+            focusEditorPanel();
           }
         }
       } else if (e.key === " ") {
@@ -625,6 +643,7 @@ export function ScenesPanel() {
         const cur = nodeMap[activeSceneId];
         if (cur && (cur.nodeType === "scene" || cur.nodeType === "note")) {
           useTabStore.getState().openPreview(cur.id);
+          focusEditorPanel();
         }
       } else if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
         // Ctrl+Enter: open in secondary group (split view)
@@ -633,6 +652,7 @@ export function ScenesPanel() {
         if (cur && (cur.nodeType === "scene" || cur.nodeType === "note")) {
           useTabStore.getState().openInSecondaryGroup(cur.id);
           setActiveScene(cur.id);
+          focusEditorPanel();
         }
       } else if (e.key === "Enter") {
         e.preventDefault();
@@ -640,6 +660,7 @@ export function ScenesPanel() {
         if (cur && (cur.nodeType === "scene" || cur.nodeType === "note")) {
           useTabStore.getState().openPinned(cur.id);
           setActiveScene(cur.id);
+          focusEditorPanel();
         } else if (cur) {
           toggleExpand(cur.id);
         }
