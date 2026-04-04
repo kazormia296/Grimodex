@@ -91,7 +91,9 @@ describe("createAutoSave", () => {
     autoSave.schedule();
     await vi.advanceTimersByTimeAsync(500);
 
-    expect(toast.error).toHaveBeenCalledWith("自動保存に失敗しました");
+    expect(toast.error).toHaveBeenCalledWith(
+      "自動保存に失敗しました: disk full",
+    );
   });
 
   it("shows toast on flush failure", async () => {
@@ -101,6 +103,8 @@ describe("createAutoSave", () => {
     autoSave.schedule();
     await autoSave.flush();
 
-    expect(toast.error).toHaveBeenCalledWith("自動保存に失敗しました");
+    expect(toast.error).toHaveBeenCalledWith(
+      "自動保存に失敗しました: disk full",
+    );
   });
 });

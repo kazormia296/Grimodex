@@ -41,6 +41,7 @@ import { shouldAutoDraftTransition } from "@/features/editor/autoStatusTransitio
 import { shouldPromptSynopsis } from "@/features/editor/synopsisSuggestion";
 import { generateSynopsisFromContent } from "@/features/chat/chatApi";
 import { toast } from "sonner";
+import { debugLog, errorDetail } from "@/lib/debugLog";
 import type { SceneStatus } from "@/features/tree/treeStore";
 import type { GroupIndex } from "@/features/editor/tabStore";
 
@@ -193,7 +194,11 @@ export function EditorPane({ sceneId, groupIndex, onFocus }: EditorPaneProps) {
         }
       }
     } catch (e) {
-      console.warn("[AutoSave] revision failed (content saved):", e);
+      debugLog.warn(
+        "AutoSave",
+        "revision failed (content saved)",
+        errorDetail(e),
+      );
     }
   }, [coreSave, shouldAutoRevision, recordAutoRevision]);
 

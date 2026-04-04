@@ -1,5 +1,6 @@
 import { useRef, useCallback, useEffect } from "react";
 import { toast } from "sonner";
+import { debugLog, errorDetail } from "@/lib/debugLog";
 
 export interface AutoSave {
   schedule: () => void;
@@ -31,8 +32,11 @@ export function createAutoSave(
       try {
         await saveFn();
       } catch (e) {
-        console.error("[AutoSave] save failed:", e);
-        toast.error("自動保存に失敗しました");
+        const detail = errorDetail(e);
+        debugLog.error("AutoSave", "save failed", detail);
+        toast.error(
+          `自動保存に失敗しました: ${e instanceof Error ? e.message : String(e)}`,
+        );
       }
     }, delayMs);
   }
@@ -43,8 +47,11 @@ export function createAutoSave(
     try {
       await saveFn();
     } catch (e) {
-      console.error("[AutoSave] flush failed:", e);
-      toast.error("自動保存に失敗しました");
+      const detail = errorDetail(e);
+      debugLog.error("AutoSave", "flush failed", detail);
+      toast.error(
+        `自動保存に失敗しました: ${e instanceof Error ? e.message : String(e)}`,
+      );
     }
   }
 

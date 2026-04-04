@@ -18,6 +18,8 @@ import { PanelToggleDropdown } from "@/features/layout/PanelToggleDropdown";
 import { LayoutPresetDropdown } from "@/features/layout/LayoutPresetDropdown";
 import { DockviewWatermark } from "@/features/layout/DockviewWatermark";
 import { useLayoutStore, type PanelId } from "@/features/layout/layoutStore";
+import { useDebugLogStore } from "@/lib/debugLog";
+import { DebugLogViewer } from "@/lib/DebugLogViewer";
 import { getBuiltinPreset } from "@/features/layout/layoutPresets";
 import { Sidebar } from "@/features/tree/Sidebar";
 import { CodexQuickPanel } from "@/features/tree/CodexQuickPanel";
@@ -101,6 +103,19 @@ function App() {
     initialize();
   }, [initialize]);
 
+  // Ctrl+Shift+D toggles debug log viewer
+  const toggleDebugLog = useDebugLogStore((s) => s.toggle);
+  useEffect(() => {
+    function onKeyDown(e: KeyboardEvent) {
+      if (e.ctrlKey && e.shiftKey && e.key.toLowerCase() === "d") {
+        e.preventDefault();
+        toggleDebugLog();
+      }
+    }
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [toggleDebugLog]);
+
   return (
     <>
       <Toaster position="bottom-right" richColors />
@@ -112,6 +127,7 @@ function App() {
       {view === "welcome" && <WelcomeScreen />}
       {view === "launcher" && <LauncherScreen />}
       {view === "editor" && <EditorScreen />}
+      <DebugLogViewer />
     </>
   );
 }
