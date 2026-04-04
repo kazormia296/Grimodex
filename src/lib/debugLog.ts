@@ -83,8 +83,34 @@ export const debugLog = {
     useDebugLogStore.getState().push("error", tag, msg, detail),
 };
 
-/** Extract a useful message from an unknown thrown value */
+/** Extract a short root-cause message (for toasts) */
+export function rootCause(e: unknown): string {
+  if (!(e instanceof Error)) return String(e);
+  let current: unknown = e;
+  while (current instanceof Error && current.cause) {
+    current = current.cause;
+  }
+  return current instanceof Error ? current.message : String(current);
+}
+
+/** Extract a useful message from an unknown thrown value, including cause chain */
 export function errorDetail(e: unknown): string {
-  if (e instanceof Error) return `${e.message}\n${e.stack ?? ""}`;
-  return String(e);
+  if (!(e instanceof Error)) return String(e);
+
+  const parts: string[] = [`${e.message}\n${e.stack ?? ""}`];
+
+  let current: unknown = e.cause;
+  let depth = 0;
+  while (current && depth < 5) {
+    if (current instanceof Error) {
+      parts.push(`Caused by: ${current.message}\n${current.stack ?? ""}`);
+      current = current.cause;
+    } else {
+      parts.push(`Caused by: ${String(current)}`);
+      break;
+    }
+    depth++;
+  }
+
+  return parts.join("\n");
 }

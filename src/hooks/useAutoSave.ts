@@ -1,6 +1,6 @@
 import { useRef, useCallback, useEffect } from "react";
 import { toast } from "sonner";
-import { debugLog, errorDetail } from "@/lib/debugLog";
+import { debugLog, errorDetail, rootCause } from "@/lib/debugLog";
 
 export interface AutoSave {
   schedule: () => void;
@@ -34,9 +34,7 @@ export function createAutoSave(
       } catch (e) {
         const detail = errorDetail(e);
         debugLog.error("AutoSave", "save failed", detail);
-        toast.error(
-          `自動保存に失敗しました: ${e instanceof Error ? e.message : String(e)}`,
-        );
+        toast.error(`自動保存に失敗しました: ${rootCause(e)}`);
       }
     }, delayMs);
   }
@@ -49,9 +47,7 @@ export function createAutoSave(
     } catch (e) {
       const detail = errorDetail(e);
       debugLog.error("AutoSave", "flush failed", detail);
-      toast.error(
-        `自動保存に失敗しました: ${e instanceof Error ? e.message : String(e)}`,
-      );
+      toast.error(`自動保存に失敗しました: ${rootCause(e)}`);
     }
   }
 
