@@ -164,30 +164,36 @@ export function EditorPane({ sceneId, groupIndex, onFocus }: EditorPaneProps) {
   const saveFn = useCallback(async () => {
     await coreSave();
     setIsDirtyRef.current(false);
-    const id = saveSceneIdRef.current;
-    const ed = editorRef.current;
-    if (!id || !ed) return;
-    const intervalMs =
-      useSettingsStore.getState().getNumber("revision.autoInterval", 5) *
-      60 *
-      1000;
-    if (shouldAutoRevision(id, intervalMs)) {
-      const content = JSON.stringify(ed.getJSON());
-      const rev = await createRevision({
-        entityType: "scene",
-        entityId: id,
-        content,
-        snapshotType: "auto",
-      });
-      if (rev) {
-        recordAutoRevision(id);
-        const keepCount = useSettingsStore
-          .getState()
-          .getNumber("revision.keepCount", 50);
-        import("@/features/revision/api").then(({ pruneRevisions }) => {
-          pruneRevisions("scene", id, keepCount).catch(console.error);
+
+    // Auto-revision is non-critical — don't let it trigger "save failed" toast
+    try {
+      const id = saveSceneIdRef.current;
+      const ed = editorRef.current;
+      if (!id || !ed) return;
+      const intervalMs =
+        useSettingsStore.getState().getNumber("revision.autoInterval", 5) *
+        60 *
+        1000;
+      if (shouldAutoRevision(id, intervalMs)) {
+        const content = JSON.stringify(ed.getJSON());
+        const rev = await createRevision({
+          entityType: "scene",
+          entityId: id,
+          content,
+          snapshotType: "auto",
         });
+        if (rev) {
+          recordAutoRevision(id);
+          const keepCount = useSettingsStore
+            .getState()
+            .getNumber("revision.keepCount", 50);
+          import("@/features/revision/api").then(({ pruneRevisions }) => {
+            pruneRevisions("scene", id, keepCount).catch(console.error);
+          });
+        }
       }
+    } catch (e) {
+      console.warn("[AutoSave] revision failed (content saved):", e);
     }
   }, [coreSave, shouldAutoRevision, recordAutoRevision]);
 
