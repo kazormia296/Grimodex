@@ -77,24 +77,6 @@ function App() {
   const view = useWorkspaceStore((s) => s.view);
   const initialize = useWorkspaceStore((s) => s.initialize);
 
-  // Apply persisted theme on startup
-  useEffect(() => {
-    getSetting("display.theme").then((theme) => {
-      const t = theme ?? "system";
-      const html = document.documentElement;
-      if (t === "dark") {
-        html.classList.add("dark");
-      } else if (t === "light") {
-        html.classList.remove("dark");
-      } else {
-        const prefersDark = window.matchMedia(
-          "(prefers-color-scheme: dark)",
-        ).matches;
-        html.classList.toggle("dark", prefersDark);
-      }
-    });
-  }, []);
-
   useEffect(() => {
     initialize();
   }, [initialize]);
@@ -120,6 +102,24 @@ function EditorScreen() {
     useState<SettingsCategory>("project");
   const { togglePanel, loadLayout, loadPresets, setDockviewApi } =
     useLayoutStore();
+
+  // Apply persisted theme — runs here because the workspace DB must be open
+  useEffect(() => {
+    getSetting("display.theme").then((theme) => {
+      const t = theme ?? "system";
+      const html = document.documentElement;
+      if (t === "dark") {
+        html.classList.add("dark");
+      } else if (t === "light") {
+        html.classList.remove("dark");
+      } else {
+        const prefersDark = window.matchMedia(
+          "(prefers-color-scheme: dark)",
+        ).matches;
+        html.classList.toggle("dark", prefersDark);
+      }
+    });
+  }, []);
 
   // Component map for dockview — stable reference
   const components = useMemo<
