@@ -23,13 +23,16 @@ export function AttributionProjectView() {
       .then((map) => setStatsMap(map))
       .catch(console.error)
       .finally(() => setIsLoading(false));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sceneIds.join(",")]);
 
   const toggleChapter = (id: string) =>
     setCollapsedChapters((prev) => {
       const next = new Set(prev);
-      next.has(id) ? next.delete(id) : next.add(id);
+      if (next.has(id)) {
+        next.delete(id);
+      } else {
+        next.add(id);
+      }
       return next;
     });
 

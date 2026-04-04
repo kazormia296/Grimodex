@@ -76,7 +76,6 @@ export function KeysCategory() {
 
     window.addEventListener("keydown", onKeyDown, true);
     return () => window.removeEventListener("keydown", onKeyDown, true);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [capturing, bindings, storedOverrides]);
 
   const filtered = COMMANDS.filter(
