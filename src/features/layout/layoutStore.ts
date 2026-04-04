@@ -326,13 +326,27 @@ function addPanelWithDefaults(api: DockviewApi, panelId: PanelId) {
       break;
     }
     case "editor": {
-      // Editor should always be in center
-      api.addPanel({
-        id: panelId,
-        component: panelId,
-        title,
-        position: { direction: "right" },
-      });
+      // Editor should always open in center — to the right of left-column
+      // panels (scenes/codex/codex-quick) if they exist
+      const leftRef = findFirstPanel(
+        api,
+        ["scenes", "codex", "codex-quick"],
+        panelId,
+      );
+      if (leftRef) {
+        api.addPanel({
+          id: panelId,
+          component: panelId,
+          title,
+          position: { referencePanel: leftRef, direction: "right" },
+        });
+      } else {
+        api.addPanel({
+          id: panelId,
+          component: panelId,
+          title,
+        });
+      }
       break;
     }
   }
