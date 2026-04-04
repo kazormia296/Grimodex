@@ -45,21 +45,21 @@ Left/Right DockはTop/Bottom間で縦分割（ゾーン内スプリット）が�
 
 ---
 
-## パネル一覧とデフォルト配置
+## パネル一覧
 
-| パネル | デフォルト位置 | 初期状態 | 説明 |
-|--------|-------------|---------|------|
-| Scenes | Left Dock | 表示 | Part/Chapter/Sceneツリー + Folder/Note |
-| Codex Quick | Left Dock（Scenesの下） | 表示 | 現在アクティブなシーンに関連するCodexエントリを自動表示。手動ピン留め対応 |
-| Codex | Left Dock | 非表示 | 世界設定DB（Character/Location/Item/Lore）。リスト+詳細のマスター/ディテールUI |
-| Editor | Center | 表示 | TipTapエディタ |
-| Chat | Right Dock | 表示 | BYOK AIチャット。シーンコンテキスト自動注入、Codex/Snippet抽出、エディタ挿入 |
-| Chat History | Right Top（Chatと同グループ） | 非表示（非アクティブタブ） | 全シーン横断のチャットセッション検索・閲覧 |
-| Snippets | Bottom Dock | 非表示 | 再利用可能なテキスト断片。Chat/Editorから保存、D&Dでエディタに挿入 |
-| Attribution | Bottom Dock | 非表示 | AI帰属統計ダッシュボード。シーン/チャプター/プロジェクト単位の集計、モデル別使用状況 |
-| Settings | Float | 非表示 | プロジェクト/AI/エディタ/表示/キーバインド/データ管理。常にフローティング |
+| パネル | 説明 |
+|--------|------|
+| Scenes | Part/Chapter/Sceneツリー + Folder/Note |
+| Codex Quick | 現在アクティブなシーンに関連するCodexエントリを自動表示。手動ピン留め対応 |
+| Codex | 世界設定DB（Character/Location/Item/Lore）。リスト+詳細のマスター/ディテールUI |
+| Editor | TipTapエディタ |
+| Chat | BYOK AIチャット。シーンコンテキスト自動注入、Codex/Snippet抽出、エディタ挿入 |
+| Chat History | 全シーン横断のチャットセッション検索・閲覧 |
+| Snippets | 再利用可能なテキスト断片。Chat/Editorから保存、D&Dでエディタに挿入 |
+| Attribution | AI帰属統計ダッシュボード。シーン/チャプター/プロジェクト単位の集計、モデル別使用状況 |
+| Settings | プロジェクト/AI/エディタ/表示/キーバインド/データ管理。常にフローティング |
 
-すべてのパネル（Settings以外）は任意のドックゾーンに移動可能。SettingsはEditorとは性質が異なるため、常にフローティング専用とする。
+すべてのパネル（Settings以外）は任意のドックゾーンに移動可能。SettingsはEditorとは性質が異なるため、常にフローティング専用とする。各プリセットでの配置は `layoutPresets.ts` のビルダー関数を参照。
 
 ---
 

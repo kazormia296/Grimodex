@@ -22,7 +22,7 @@ export type PanelId =
 export const PANEL_TITLES: Record<PanelId, string> = {
   scenes: "シーン",
   codex: "Codex",
-  "chat-history": "履歴",
+  "chat-history": "チャット履歴",
   editor: "エディタ",
   chat: "チャット",
   snippets: "Snippets",
@@ -287,33 +287,41 @@ function addPanelWithDefaults(api: DockviewApi, panelId: PanelId) {
       });
       break;
     }
-    case "snippets":
-    case "attribution": {
-      const sibling = findFirstPanel(api, ["snippets", "attribution"], panelId);
-      if (sibling) {
+    case "snippets": {
+      const codex = api.getPanel("codex");
+      if (codex) {
         api.addPanel({
           id: panelId,
           component: panelId,
           title,
-          position: { referencePanel: sibling, direction: "within" },
+          position: { referencePanel: "codex", direction: "within" },
         });
       } else {
-        const editor = api.getPanel("editor");
-        if (editor) {
-          api.addPanel({
-            id: panelId,
-            component: panelId,
-            title,
-            position: { referencePanel: editor, direction: "below" },
-          });
-        } else {
-          api.addPanel({
-            id: panelId,
-            component: panelId,
-            title,
-            position: { direction: "below" },
-          });
-        }
+        api.addPanel({
+          id: panelId,
+          component: panelId,
+          title,
+          position: { direction: "below" },
+        });
+      }
+      break;
+    }
+    case "attribution": {
+      const editor = api.getPanel("editor");
+      if (editor) {
+        api.addPanel({
+          id: panelId,
+          component: panelId,
+          title,
+          position: { referencePanel: "editor", direction: "below" },
+        });
+      } else {
+        api.addPanel({
+          id: panelId,
+          component: panelId,
+          title,
+          position: { direction: "below" },
+        });
       }
       break;
     }
