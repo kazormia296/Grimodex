@@ -281,7 +281,9 @@ impl Database {
                 INSERT INTO codex_fts(codex_fts, rowid, name, aliases, summary, tags_cache)
                 VALUES ('delete', old.rowid, COALESCE(old.name, ''), COALESCE(old.aliases, ''), COALESCE(old.summary, ''), COALESCE(old.tags_cache, ''));
             END;
-            CREATE TRIGGER IF NOT EXISTS codex_fts_au AFTER UPDATE ON codex_entries BEGIN
+            CREATE TRIGGER IF NOT EXISTS codex_fts_au AFTER UPDATE ON codex_entries
+              WHEN old.name IS NOT new.name OR old.aliases IS NOT new.aliases OR old.summary IS NOT new.summary OR old.tags_cache IS NOT new.tags_cache
+            BEGIN
                 INSERT INTO codex_fts(codex_fts, rowid, name, aliases, summary, tags_cache)
                 VALUES ('delete', old.rowid, COALESCE(old.name, ''), COALESCE(old.aliases, ''), COALESCE(old.summary, ''), COALESCE(old.tags_cache, ''));
                 INSERT INTO codex_fts(rowid, name, aliases, summary, tags_cache)
@@ -297,7 +299,9 @@ impl Database {
                 INSERT INTO snippets_fts(snippets_fts, rowid, title, content, tags)
                 VALUES ('delete', old.rowid, old.title, old.content, COALESCE(old.tags, ''));
             END;
-            CREATE TRIGGER IF NOT EXISTS snippets_fts_au AFTER UPDATE ON snippets BEGIN
+            CREATE TRIGGER IF NOT EXISTS snippets_fts_au AFTER UPDATE ON snippets
+              WHEN old.title IS NOT new.title OR old.content IS NOT new.content OR old.tags IS NOT new.tags
+            BEGIN
                 INSERT INTO snippets_fts(snippets_fts, rowid, title, content, tags)
                 VALUES ('delete', old.rowid, old.title, old.content, COALESCE(old.tags, ''));
                 INSERT INTO snippets_fts(rowid, title, content, tags)
@@ -313,7 +317,9 @@ impl Database {
                 INSERT INTO chat_messages_fts(chat_messages_fts, rowid, content)
                 VALUES ('delete', old.rowid, old.content);
             END;
-            CREATE TRIGGER IF NOT EXISTS chat_messages_fts_au AFTER UPDATE ON chat_messages BEGIN
+            CREATE TRIGGER IF NOT EXISTS chat_messages_fts_au AFTER UPDATE ON chat_messages
+              WHEN old.content IS NOT new.content
+            BEGIN
                 INSERT INTO chat_messages_fts(chat_messages_fts, rowid, content)
                 VALUES ('delete', old.rowid, old.content);
                 INSERT INTO chat_messages_fts(rowid, content)
@@ -329,7 +335,9 @@ impl Database {
                 INSERT INTO tree_nodes_fts(tree_nodes_fts, rowid, title, content)
                 VALUES ('delete', old.rowid, COALESCE(old.title, ''), COALESCE(old.content, ''));
             END;
-            CREATE TRIGGER IF NOT EXISTS tree_nodes_fts_au AFTER UPDATE ON tree_nodes BEGIN
+            CREATE TRIGGER IF NOT EXISTS tree_nodes_fts_au AFTER UPDATE ON tree_nodes
+              WHEN old.title IS NOT new.title OR old.content IS NOT new.content
+            BEGIN
                 INSERT INTO tree_nodes_fts(tree_nodes_fts, rowid, title, content)
                 VALUES ('delete', old.rowid, COALESCE(old.title, ''), COALESCE(old.content, ''));
                 INSERT INTO tree_nodes_fts(rowid, title, content)
@@ -396,6 +404,51 @@ impl Database {
 
         // Idempotent column additions
         let _ = conn.execute("ALTER TABLE snippets ADD COLUMN content_source TEXT", []);
+
+        // v2: Recreate FTS UPDATE triggers with WHEN guards so that non-FTS
+        // column updates (e.g. updated_at) don't touch FTS indexes.
+        conn.execute_batch(
+            "DROP TRIGGER IF EXISTS codex_fts_au;
+             DROP TRIGGER IF EXISTS snippets_fts_au;
+             DROP TRIGGER IF EXISTS chat_messages_fts_au;
+             DROP TRIGGER IF EXISTS tree_nodes_fts_au;
+
+             CREATE TRIGGER IF NOT EXISTS codex_fts_au AFTER UPDATE ON codex_entries
+               WHEN old.name IS NOT new.name OR old.aliases IS NOT new.aliases OR old.summary IS NOT new.summary OR old.tags_cache IS NOT new.tags_cache
+             BEGIN
+                 INSERT INTO codex_fts(codex_fts, rowid, name, aliases, summary, tags_cache)
+                 VALUES ('delete', old.rowid, COALESCE(old.name, ''), COALESCE(old.aliases, ''), COALESCE(old.summary, ''), COALESCE(old.tags_cache, ''));
+                 INSERT INTO codex_fts(rowid, name, aliases, summary, tags_cache)
+                 VALUES (new.rowid, COALESCE(new.name, ''), COALESCE(new.aliases, ''), COALESCE(new.summary, ''), COALESCE(new.tags_cache, ''));
+             END;
+
+             CREATE TRIGGER IF NOT EXISTS snippets_fts_au AFTER UPDATE ON snippets
+               WHEN old.title IS NOT new.title OR old.content IS NOT new.content OR old.tags IS NOT new.tags
+             BEGIN
+                 INSERT INTO snippets_fts(snippets_fts, rowid, title, content, tags)
+                 VALUES ('delete', old.rowid, old.title, old.content, COALESCE(old.tags, ''));
+                 INSERT INTO snippets_fts(rowid, title, content, tags)
+                 VALUES (new.rowid, new.title, new.content, COALESCE(new.tags, ''));
+             END;
+
+             CREATE TRIGGER IF NOT EXISTS chat_messages_fts_au AFTER UPDATE ON chat_messages
+               WHEN old.content IS NOT new.content
+             BEGIN
+                 INSERT INTO chat_messages_fts(chat_messages_fts, rowid, content)
+                 VALUES ('delete', old.rowid, old.content);
+                 INSERT INTO chat_messages_fts(rowid, content)
+                 VALUES (new.rowid, new.content);
+             END;
+
+             CREATE TRIGGER IF NOT EXISTS tree_nodes_fts_au AFTER UPDATE ON tree_nodes
+               WHEN old.title IS NOT new.title OR old.content IS NOT new.content
+             BEGIN
+                 INSERT INTO tree_nodes_fts(tree_nodes_fts, rowid, title, content)
+                 VALUES ('delete', old.rowid, COALESCE(old.title, ''), COALESCE(old.content, ''));
+                 INSERT INTO tree_nodes_fts(rowid, title, content)
+                 VALUES (new.rowid, COALESCE(new.title, ''), COALESCE(new.content, ''));
+             END;",
+        )?;
 
         Ok(())
     }
@@ -549,6 +602,18 @@ impl Database {
              INSERT INTO snippets_fts(snippets_fts) VALUES('optimize');
              INSERT INTO chat_messages_fts(chat_messages_fts) VALUES('optimize');
              INSERT INTO tree_nodes_fts(tree_nodes_fts) VALUES('optimize');",
+        )?;
+        Ok(())
+    }
+
+    /// Drop and rebuild all FTS5 indexes from scratch.
+    pub fn fts_rebuild(&self) -> anyhow::Result<()> {
+        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("{e}"))?;
+        conn.execute_batch(
+            "INSERT INTO codex_fts(codex_fts) VALUES('rebuild');
+             INSERT INTO snippets_fts(snippets_fts) VALUES('rebuild');
+             INSERT INTO chat_messages_fts(chat_messages_fts) VALUES('rebuild');
+             INSERT INTO tree_nodes_fts(tree_nodes_fts) VALUES('rebuild');",
         )?;
         Ok(())
     }

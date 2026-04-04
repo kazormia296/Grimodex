@@ -104,7 +104,7 @@ export function DataCategory() {
 
   async function handleRebuildFts() {
     try {
-      await invoke("fts_optimize");
+      await invoke("fts_rebuild");
       toast.success("FTS インデックスを再構築しました");
     } catch {
       toast.error("FTS 再構築に失敗しました");

@@ -213,6 +213,11 @@ fn fts_optimize(ws_state: tauri::State<'_, WorkspaceState>) -> Result<(), AppErr
     with_db(&ws_state, |db| db.fts_optimize())
 }
 
+#[tauri::command]
+fn fts_rebuild(ws_state: tauri::State<'_, WorkspaceState>) -> Result<(), AppError> {
+    with_db(&ws_state, |db| db.fts_rebuild())
+}
+
 // --- Integrity commands ---
 
 #[tauri::command]
@@ -395,6 +400,7 @@ pub fn run() {
             send_chat_message,
             send_agent_message,
             fts_optimize,
+            fts_rebuild,
             integrity_check,
             repair_integrity
         ])
