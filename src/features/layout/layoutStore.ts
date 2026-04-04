@@ -100,7 +100,7 @@ export const useLayoutStore = create<LayoutState>()((set, get) => ({
     // Apply lock state to newly added groups
     api.onDidAddGroup((group) => {
       if (get().layoutLocked) {
-        group.locked = "no-drop-target";
+        group.locked = true;
       }
     });
 
@@ -116,10 +116,7 @@ export const useLayoutStore = create<LayoutState>()((set, get) => ({
 
     const panel = api.getPanel(panelId);
     if (panel) {
-      if (get().layoutLocked) {
-        // When locked, only allow focusing — don't close
-        panel.api.setActive();
-      } else if (panel.group?.activePanel === panel) {
+      if (panel.group?.activePanel === panel) {
         api.removePanel(panel);
       } else {
         panel.api.setActive();
@@ -233,8 +230,9 @@ export const useLayoutStore = create<LayoutState>()((set, get) => ({
     const api = get().dockviewApi;
     if (api) {
       for (const group of api.groups) {
-        group.locked = next ? "no-drop-target" : false;
+        group.locked = next ? true : false;
       }
+      api.updateOptions({ disableDnd: next });
     }
     set({ layoutLocked: next });
   },
