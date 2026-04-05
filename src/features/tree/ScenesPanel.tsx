@@ -220,7 +220,7 @@ function TreeRenderer({
               <li
                 className="list-none text-[11px] text-muted-foreground"
                 style={{
-                  paddingLeft: `${depth * 12 + 24}px`,
+                  paddingLeft: `${depth * 12 + 58}px`,
                   paddingBottom: 4,
                 }}
               >
@@ -453,6 +453,7 @@ export function ScenesPanel() {
     null,
   );
   const [draggingId, setDraggingId] = useState<string | null>(null);
+  const [deleteConfirm, setDeleteConfirm] = useState<string[] | null>(null);
 
   useEffect(() => {
     loadTree(DEFAULT_PROJECT_ID).then(() => {
@@ -594,11 +595,35 @@ export function ScenesPanel() {
       } else if (active?.nodeType === "folder") {
         parentId = active.id;
       }
-      createNode({ nodeType: type, parentId, afterId: activeSceneId }).catch(
-        () => {},
-      );
+      createNode({ nodeType: type, parentId, afterId: activeSceneId })
+        .then((newNode) => {
+          if (newNode.nodeType === "scene" || newNode.nodeType === "note") {
+            useTabStore.getState().openPinned(newNode.id);
+          }
+        })
+        .catch(() => {});
     },
     [createNode, activeSceneId, nodeMap],
+  );
+
+  const initiateDelete = useCallback(
+    (ids: string[]) => {
+      // Scenes/notes with content or synopsis need confirmation
+      const needsConfirm = ids.filter((id) => {
+        const node = nodeMap[id];
+        if (!node || node.nodeType === "folder") return false;
+        return (charCounts[id] ?? 0) > 0 || !!node.synopsis;
+      });
+      if (needsConfirm.length > 0) {
+        setDeleteConfirm(ids);
+      } else {
+        // Delete immediately (all empty or folders)
+        Promise.all(
+          ids.map((id) => useTreeStore.getState().deleteNode(id)),
+        ).catch(() => {});
+      }
+    },
+    [nodeMap, charCounts],
   );
 
   function focusEditorPanel() {
@@ -627,21 +652,21 @@ export function ScenesPanel() {
         e.preventDefault();
         const next = flatNodes[idx + 1];
         if (next) {
-          setActiveScene(next.id);
           if (next.nodeType === "scene" || next.nodeType === "note") {
             useTabStore.getState().openPreview(next.id);
             focusEditorPanel();
           }
+          setActiveScene(next.id);
         }
       } else if (e.key === "ArrowUp") {
         e.preventDefault();
         const prev = flatNodes[idx - 1];
         if (prev) {
-          setActiveScene(prev.id);
           if (prev.nodeType === "scene" || prev.nodeType === "note") {
             useTabStore.getState().openPreview(prev.id);
             focusEditorPanel();
           }
+          setActiveScene(prev.id);
         }
       } else if (e.key === " ") {
         e.preventDefault();
@@ -700,8 +725,15 @@ export function ScenesPanel() {
       } else if (e.key === "Delete" || e.key === "Backspace") {
         if (document.activeElement === treeRef.current) {
           e.preventDefault();
-          const { deleteNode } = useTreeStore.getState();
-          deleteNode(activeSceneId).catch(() => {});
+          const idsToDelete =
+            selectedIds.length > 0
+              ? selectedIds
+              : activeSceneId
+                ? [activeSceneId]
+                : [];
+          if (idsToDelete.length > 0) {
+            initiateDelete(idsToDelete);
+          }
         }
       } else if (e.key === "f" && e.ctrlKey) {
         e.preventDefault();
@@ -715,6 +747,8 @@ export function ScenesPanel() {
       expandedIds,
       setActiveScene,
       toggleExpand,
+      selectedIds,
+      initiateDelete,
     ],
   );
 
@@ -908,7 +942,7 @@ export function ScenesPanel() {
       }}
       onDragEnd={onDragEnd}
     >
-      <div className="flex h-full flex-col">
+      <div className="relative flex h-full flex-col">
         {/* Toolbar */}
         <div className="flex flex-shrink-0 items-center justify-between border-b border-border px-2 py-1.5">
           <span className="text-xs font-semibold text-foreground">Scenes</span>
@@ -1014,6 +1048,44 @@ export function ScenesPanel() {
         {/* Synopsis area — hidden in Outline mode (synopsis is shown inline there) */}
         {viewMode !== "outline" && activeNode?.nodeType === "scene" && (
           <SynopsisArea nodeId={activeSceneId} />
+        )}
+
+        {deleteConfirm && (
+          <div className="absolute inset-0 z-50 flex items-center justify-center bg-background/80">
+            <div className="rounded-lg border border-border bg-popover p-4 shadow-xl w-72">
+              <p className="text-sm font-medium mb-1">削除の確認</p>
+              <p className="text-xs text-muted-foreground mb-4">
+                {
+                  deleteConfirm.filter(
+                    (id) => (charCounts[id] ?? 0) > 0 || nodeMap[id]?.synopsis,
+                  ).length
+                }
+                件のシーンに本文またはsynopsisがあります。削除すると元に戻せません。
+              </p>
+              <div className="flex gap-2 justify-end">
+                <button
+                  type="button"
+                  className="rounded px-3 py-1 text-xs border border-border hover:bg-accent"
+                  onClick={() => setDeleteConfirm(null)}
+                >
+                  キャンセル
+                </button>
+                <button
+                  type="button"
+                  className="rounded px-3 py-1 text-xs bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                  onClick={() => {
+                    const ids = deleteConfirm;
+                    setDeleteConfirm(null);
+                    Promise.all(
+                      ids.map((id) => useTreeStore.getState().deleteNode(id)),
+                    ).catch(() => {});
+                  }}
+                >
+                  削除する
+                </button>
+              </div>
+            </div>
+          </div>
         )}
       </div>
 

@@ -126,7 +126,9 @@ export const useTabStore = create<TabState>()((set, get) => ({
     const existing = tabs.find((t) => t.nodeId === nodeId);
 
     if (existing) {
-      set({ activeTabId: nodeId, activeGroupIndex: 0 });
+      // Remove any stale preview tab for other nodes
+      const cleaned = tabs.filter((t) => !t.isPreview || t.nodeId === nodeId);
+      set({ tabs: cleaned, activeTabId: nodeId, activeGroupIndex: 0 });
       return;
     }
 

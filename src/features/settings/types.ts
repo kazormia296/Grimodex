@@ -76,4 +76,9 @@ export const DEFAULT_SETTINGS: Record<string, string> = {
   // Revision
   "revision.autoInterval": "5",
   "revision.keepCount": "50",
+  // Tree / naming
+  "tree.folderNaming": "auto",
+  "tree.sceneNaming": "シーン",
+  "tree.noteNaming": "ノート",
+  "tree.numberingScope": "project",
 };

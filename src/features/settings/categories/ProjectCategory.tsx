@@ -1,4 +1,5 @@
 import { useProjectSettings } from "../hooks/useProjectSettings";
+import { useSettingControl } from "../useSettingControl";
 import { SettingSection } from "../components/SettingSection";
 import { SettingRow } from "../components/SettingRow";
 import { SettingTextarea } from "../components/SettingTextarea";
@@ -37,8 +38,22 @@ const LANGUAGE_OPTIONS = [
   { value: "ko", label: "한국어" },
 ];
 
+const FOLDER_NAMING_OPTIONS = [
+  { value: "auto", label: "自動（Part / Chapter / フォルダー）" },
+  { value: "none", label: "フォルダー（固定）" },
+];
+
+const NUMBERING_SCOPE_OPTIONS = [
+  { value: "project", label: "プロジェクト全体（一意）" },
+  { value: "folder", label: "フォルダーごと" },
+];
+
 export function ProjectCategory() {
   const { project, isLoading, updateField } = useProjectSettings();
+  const folderNaming = useSettingControl("tree.folderNaming", "auto");
+  const sceneNaming = useSettingControl("tree.sceneNaming", "シーン");
+  const noteNaming = useSettingControl("tree.noteNaming", "ノート");
+  const numberingScope = useSettingControl("tree.numberingScope", "project");
 
   if (isLoading || !project) {
     return <div className="p-6 text-sm text-muted-foreground">読み込み中…</div>;
@@ -101,6 +116,60 @@ export function ProjectCategory() {
             className="rounded-md border border-input bg-background px-2 py-1 text-sm focus:outline-none"
           >
             {LANGUAGE_OPTIONS.map((o) => (
+              <option key={o.value} value={o.value}>
+                {o.label}
+              </option>
+            ))}
+          </select>
+        </SettingRow>
+      </SettingSection>
+
+      <SettingSection title="ネーミングルール">
+        <SettingRow label="フォルダー命名">
+          <select
+            value={folderNaming.value}
+            onChange={(e) => folderNaming.setValue(e.target.value)}
+            className="rounded-md border border-input bg-background px-2 py-1 text-sm focus:outline-none"
+          >
+            {FOLDER_NAMING_OPTIONS.map((o) => (
+              <option key={o.value} value={o.value}>
+                {o.label}
+              </option>
+            ))}
+          </select>
+        </SettingRow>
+        <SettingRow
+          label="シーン命名プレフィックス"
+          description={
+            sceneNaming.value
+              ? `例: ${sceneNaming.value} 1, ${sceneNaming.value} 2, ...`
+              : "例: シーン（番号なし）"
+          }
+        >
+          <input
+            type="text"
+            value={sceneNaming.value}
+            onChange={(e) => sceneNaming.setValue(e.target.value)}
+            placeholder="シーン"
+            className="w-32 rounded-md border border-input bg-background px-2 py-1 text-sm focus:outline-none"
+          />
+        </SettingRow>
+        <SettingRow label="ノート命名プレフィックス">
+          <input
+            type="text"
+            value={noteNaming.value}
+            onChange={(e) => noteNaming.setValue(e.target.value)}
+            placeholder="ノート"
+            className="w-32 rounded-md border border-input bg-background px-2 py-1 text-sm focus:outline-none"
+          />
+        </SettingRow>
+        <SettingRow label="採番スコープ">
+          <select
+            value={numberingScope.value}
+            onChange={(e) => numberingScope.setValue(e.target.value)}
+            className="rounded-md border border-input bg-background px-2 py-1 text-sm focus:outline-none"
+          >
+            {NUMBERING_SCOPE_OPTIONS.map((o) => (
               <option key={o.value} value={o.value}>
                 {o.label}
               </option>

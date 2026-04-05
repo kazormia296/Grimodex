@@ -38,7 +38,7 @@ export function SceneEditor() {
       return;
     const { tabs } = useTabStore.getState();
     if (!tabs.find((t) => t.nodeId === activeSceneId)) {
-      useTabStore.getState().ensureTab(activeSceneId);
+      useTabStore.getState().openPreview(activeSceneId);
     }
   }, [activeSceneId]);
 

@@ -164,11 +164,19 @@ export function TreeContextMenu({
       {/* Add children inside folder */}
       {isFolder &&
         item("シーンを追加", () => {
-          createNode({ nodeType: "scene", parentId: node.id }).catch(() => {});
+          createNode({ nodeType: "scene", parentId: node.id })
+            .then((n) => {
+              useTabStore.getState().openPinned(n.id);
+            })
+            .catch(() => {});
         })}
       {isFolder &&
         item("ノートを追加", () => {
-          createNode({ nodeType: "note", parentId: node.id }).catch(() => {});
+          createNode({ nodeType: "note", parentId: node.id })
+            .then((n) => {
+              useTabStore.getState().openPinned(n.id);
+            })
+            .catch(() => {});
         })}
       {isFolder &&
         item("フォルダーを追加", () => {
@@ -182,7 +190,11 @@ export function TreeContextMenu({
             nodeType: "scene",
             parentId: node.parentId,
             afterId: node.id,
-          }).catch(() => {});
+          })
+            .then((n) => {
+              useTabStore.getState().openPinned(n.id);
+            })
+            .catch(() => {});
         })}
       {(isScene || isNote) &&
         item("下にノートを追加", () => {
@@ -190,7 +202,11 @@ export function TreeContextMenu({
             nodeType: "note",
             parentId: node.parentId,
             afterId: node.id,
-          }).catch(() => {});
+          })
+            .then((n) => {
+              useTabStore.getState().openPinned(n.id);
+            })
+            .catch(() => {});
         })}
       {(isScene || isNote) &&
         item("下にフォルダーを追加", () => {

@@ -366,6 +366,9 @@ export function TreeNodeItem({
                 useTreeStore
                   .getState()
                   .createNode({ nodeType: "scene", parentId: node.id })
+                  .then((n) => {
+                    useTabStore.getState().openPinned(n.id);
+                  })
                   .catch(() => {});
               }}
               className="flex h-4 w-4 items-center justify-center rounded text-muted-foreground hover:bg-accent/70 hover:text-foreground"

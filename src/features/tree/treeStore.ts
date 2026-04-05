@@ -2,6 +2,8 @@ import { create } from "zustand";
 import * as api from "./api";
 import type { TreeNode as ApiNode } from "./api";
 import { loadBatchAiRatio } from "@/features/attribution/api";
+import { useSettingsStore } from "@/features/settings/settingsStore";
+import { useTabStore } from "@/features/editor/tabStore";
 
 export type NodeType = "folder" | "scene" | "note";
 export type SceneStatus =
@@ -166,6 +168,127 @@ function nextSortOrder(
   const next = sorted[idx + 1];
   if (!next) return after.sortOrder + 1.0;
   return (after.sortOrder + next.sortOrder) / 2;
+}
+
+/** Extract trailing integer from a title like "シーン 3" → 3, or null */
+function extractTrailingNumber(title: string, prefix: string): number | null {
+  if (!prefix) return null;
+  const escaped = prefix.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const m = title.match(new RegExp(`^${escaped}\\s*(\\d+)$`));
+  return m ? parseInt(m[1], 10) : null;
+}
+
+/**
+ * Compute the next number for a scene or note, filling gaps at the insertion point.
+ * scope="project": uses numbers across all nodes of that type in the project.
+ * scope="folder":  uses numbers only within the same parent.
+ */
+function computeNextNumber(
+  nodeType: "scene" | "note",
+  parentId: string | null,
+  afterId: string | null | undefined,
+  allNodes: TreeNodeData[],
+  prefix: string,
+  scope: string,
+): number {
+  const scopeNodes =
+    scope === "folder"
+      ? allNodes.filter(
+          (n) => n.nodeType === nodeType && n.parentId === parentId,
+        )
+      : allNodes.filter((n) => n.nodeType === nodeType);
+
+  const usedNumbers = new Set(
+    scopeNodes
+      .map((n) => extractTrailingNumber(n.title, prefix))
+      .filter((n): n is number => n !== null),
+  );
+
+  // Siblings in insertion-order for boundary detection
+  const siblings = allNodes
+    .filter((n) => n.nodeType === nodeType && n.parentId === parentId)
+    .sort((a, b) => a.sortOrder - b.sortOrder);
+
+  let numBefore = 0;
+  let numAfter = Infinity;
+
+  if (afterId != null) {
+    const afterNode = allNodes.find((n) => n.id === afterId);
+    if (afterNode) {
+      numBefore = extractTrailingNumber(afterNode.title, prefix) ?? 0;
+    }
+    const afterIdx = siblings.findIndex((n) => n.id === afterId);
+    if (afterIdx >= 0 && afterIdx + 1 < siblings.length) {
+      numAfter =
+        extractTrailingNumber(siblings[afterIdx + 1].title, prefix) ?? Infinity;
+    }
+  } else {
+    // Appending at end: look at all scope nodes for the max
+    numBefore = usedNumbers.size > 0 ? Math.max(...usedNumbers) : 0;
+    numAfter = Infinity;
+  }
+
+  // Smallest integer in (numBefore, numAfter) not yet used
+  for (
+    let x = Math.max(1, numBefore + 1);
+    x < numAfter && x < numBefore + 1000;
+    x++
+  ) {
+    if (!usedNumbers.has(x)) return x;
+  }
+
+  // Fallback: max + 1
+  return usedNumbers.size > 0 ? Math.max(...usedNumbers) + 1 : 1;
+}
+
+/**
+ * Compute the auto-generated folder title based on nesting depth.
+ * Depth 0 (root): "Part.{N}"
+ * Depth 1 (inside root folder): "Chapter {N}"
+ * Depth 2+: フォルダー (no numbering)
+ */
+function computeFolderTitle(
+  parentId: string | null,
+  allNodes: TreeNodeData[],
+  folderNaming: string,
+): string {
+  if (folderNaming !== "auto") return "フォルダー";
+
+  // Determine depth by counting ancestors
+  let depth = 0;
+  let cur = parentId;
+  while (cur !== null) {
+    depth++;
+    cur = allNodes.find((n) => n.id === cur)?.parentId ?? null;
+  }
+
+  if (depth === 0) {
+    // Root level → Part.{N}
+    const prefix = "Part.";
+    const usedNums = new Set(
+      allNodes
+        .filter((n) => n.nodeType === "folder" && n.parentId === null)
+        .map((n) => extractTrailingNumber(n.title, prefix))
+        .filter((n): n is number => n !== null),
+    );
+    let i = 1;
+    while (usedNums.has(i)) i++;
+    return `${prefix}${i}`;
+  } else if (depth === 1) {
+    // One level deep → Chapter {N}
+    const prefix = "Chapter ";
+    const usedNums = new Set(
+      allNodes
+        .filter((n) => n.nodeType === "folder" && n.parentId === parentId)
+        .map((n) => extractTrailingNumber(n.title, prefix))
+        .filter((n): n is number => n !== null),
+    );
+    let i = 1;
+    while (usedNums.has(i)) i++;
+    return `${prefix}${i}`;
+  }
+
+  return "フォルダー";
 }
 
 export const useTreeStore = create<TreeState>()((set, get) => ({
@@ -350,13 +473,33 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
     const { projectId, nodes } = get();
     const siblings = nodes.filter((n) => n.parentId === parentId);
     const sortOrder = nextSortOrder(siblings, afterId);
-    const defaultTitle =
-      title ??
-      (nodeType === "scene"
-        ? `シーン ${siblings.filter((n) => n.nodeType === "scene").length + 1}`
-        : nodeType === "folder"
-          ? "フォルダー"
-          : "ノート");
+    const settingsState = useSettingsStore.getState();
+    const scenePrefix = settingsState.get("tree.sceneNaming", "シーン");
+    const notePrefix = settingsState.get("tree.noteNaming", "ノート");
+    const folderNaming = settingsState.get("tree.folderNaming", "auto");
+    const numberingScope = settingsState.get("tree.numberingScope", "project");
+
+    let defaultTitle: string;
+    if (title !== undefined) {
+      defaultTitle = title;
+    } else if (nodeType === "folder") {
+      defaultTitle = computeFolderTitle(parentId, nodes, folderNaming);
+    } else {
+      const prefix = nodeType === "scene" ? scenePrefix : notePrefix;
+      if (prefix) {
+        const n = computeNextNumber(
+          nodeType,
+          parentId,
+          afterId,
+          nodes,
+          prefix,
+          numberingScope,
+        );
+        defaultTitle = `${prefix} ${n}`;
+      } else {
+        defaultTitle = nodeType === "scene" ? "シーン" : "ノート";
+      }
+    }
     const created = await api.createNode({
       id: crypto.randomUUID(),
       projectId,
@@ -413,6 +556,12 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
       ? (newScenes[0]?.id ?? "")
       : activeSceneId;
     set({ nodes: remaining, scenes: newScenes, activeSceneId: newActive });
+    // Close editor tabs for all deleted nodes
+    const tabStore = useTabStore.getState();
+    for (const delId of [...toDelete]) {
+      tabStore.closeTab(delId);
+      tabStore.closeSecondaryTab(delId);
+    }
   },
 
   async updateSynopsis(id, synopsis) {
