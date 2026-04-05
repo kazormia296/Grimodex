@@ -659,7 +659,7 @@ export function ScenesPanel() {
             useTabStore.getState().openPreview(next.id);
             focusEditorPanel();
           }
-          setActiveScene(next.id);
+          useTreeStore.getState().selectNode(next.id, false);
         }
       } else if (e.key === "ArrowUp") {
         e.preventDefault();
@@ -669,7 +669,7 @@ export function ScenesPanel() {
             useTabStore.getState().openPreview(prev.id);
             focusEditorPanel();
           }
-          setActiveScene(prev.id);
+          useTreeStore.getState().selectNode(prev.id, false);
         }
       } else if (e.key === " ") {
         e.preventDefault();
