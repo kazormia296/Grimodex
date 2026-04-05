@@ -27,9 +27,15 @@ export function SceneEditor() {
 
   const hasSecondaryGroup = secondaryTabs.length > 0;
 
-  // Ensure the active scene always has a tab (handles external changes like node creation)
+  // Ensure the active scene always has a tab (handles external changes like node creation).
+  // Only open editor tabs for scene/note types — folders have no content.
   useEffect(() => {
     if (!activeSceneId) return;
+    const node = useTreeStore
+      .getState()
+      .nodes.find((n) => n.id === activeSceneId);
+    if (!node || (node.nodeType !== "scene" && node.nodeType !== "note"))
+      return;
     const { tabs } = useTabStore.getState();
     if (!tabs.find((t) => t.nodeId === activeSceneId)) {
       useTabStore.getState().ensureTab(activeSceneId);

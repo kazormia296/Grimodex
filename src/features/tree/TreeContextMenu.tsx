@@ -1,4 +1,5 @@
 import { useEffect, useRef } from "react";
+import { createPortal } from "react-dom";
 import { cn } from "@/lib/utils";
 import { useTreeStore } from "./treeStore";
 import { useTabStore } from "@/features/editor/tabStore";
@@ -103,7 +104,7 @@ export function TreeContextMenu({
   const isNote = node.nodeType === "note";
   const isContainer = isFolder;
 
-  return (
+  return createPortal(
     <div
       ref={menuRef}
       style={style}
@@ -205,6 +206,7 @@ export function TreeContextMenu({
       {/* Delete */}
       {sep()}
       {item("削除", () => deleteNode(node.id).catch(() => {}), "Del", false)}
-    </div>
+    </div>,
+    document.body,
   );
 }

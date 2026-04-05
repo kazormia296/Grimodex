@@ -4,6 +4,7 @@ import {
   ChevronDown,
   FileText,
   Folder,
+  FolderPlus,
   GripVertical,
 } from "lucide-react";
 import { useDraggable, useDroppable, useDndContext } from "@dnd-kit/core";
@@ -95,7 +96,6 @@ interface TreeNodeItemProps {
   showAiAttribution: boolean;
   aiRatio: number; // 0-100; shown as badge when showAiAttribution && aiRatio > 0
   dropIndicator: DropIndicator | null;
-  onStartRename?: () => void;
   /** Ordered flat list of nodes for Shift+Click range selection */
   orderedNodes: TreeNodeData[];
   /** Current view mode — synopsis tooltip shown only in "tree" mode */
@@ -116,7 +116,6 @@ export function TreeNodeItem({
   showAiAttribution,
   aiRatio,
   dropIndicator,
-  onStartRename,
   orderedNodes,
   viewMode,
 }: TreeNodeItemProps) {
@@ -124,6 +123,8 @@ export function TreeNodeItem({
   const setActiveScene = useTreeStore((s) => s.setActiveScene);
   const updateNodeTitle = useTreeStore((s) => s.updateNodeTitle);
   const setStatus = useTreeStore((s) => s.setStatus);
+  const pendingRenameId = useTreeStore((s) => s.pendingRenameId);
+  const setPendingRenameId = useTreeStore((s) => s.setPendingRenameId);
 
   const [isEditing, setIsEditing] = useState(false);
   const [editTitle, setEditTitle] = useState(node.title);
@@ -208,6 +209,8 @@ export function TreeNodeItem({
           focusEditorPanel();
         }
       } else {
+        // Folder: visually select + toggle expand/collapse
+        useTreeStore.getState().selectNode(node.id, false);
         toggleExpand(node.id);
       }
     },
@@ -228,12 +231,13 @@ export function TreeNodeItem({
     setTimeout(() => inputRef.current?.select(), 0);
   }, [node.title]);
 
-  // Expose startEdit via prop
+  // Auto-enter edit mode when this node was just created
   useEffect(() => {
-    if (onStartRename) {
-      // no-op: parent calls startEdit via the passed callback
+    if (pendingRenameId === node.id) {
+      startEdit();
+      setPendingRenameId(null);
     }
-  }, [onStartRename]);
+  }, [pendingRenameId, node.id, startEdit, setPendingRenameId]);
 
   const finishEdit = useCallback(() => {
     const trimmed = editTitle.trim();
@@ -332,7 +336,7 @@ export function TreeNodeItem({
         )}
 
         {/* Title */}
-        <span className="flex-1 overflow-hidden">
+        <span className="ml-1 flex-1 overflow-hidden">
           {isEditing ? (
             <input
               ref={inputRef}
@@ -350,6 +354,40 @@ export function TreeNodeItem({
             </span>
           )}
         </span>
+
+        {/* Folder hover quick-add buttons */}
+        {node.nodeType === "folder" && !isEditing && (
+          <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100">
+            <button
+              type="button"
+              title="シーンを追加"
+              onClick={(e) => {
+                e.stopPropagation();
+                useTreeStore
+                  .getState()
+                  .createNode({ nodeType: "scene", parentId: node.id })
+                  .catch(() => {});
+              }}
+              className="flex h-4 w-4 items-center justify-center rounded text-muted-foreground hover:bg-accent/70 hover:text-foreground"
+            >
+              <FileText className="h-3 w-3" />
+            </button>
+            <button
+              type="button"
+              title="フォルダーを追加"
+              onClick={(e) => {
+                e.stopPropagation();
+                useTreeStore
+                  .getState()
+                  .createNode({ nodeType: "folder", parentId: node.id })
+                  .catch(() => {});
+              }}
+              className="flex h-4 w-4 items-center justify-center rounded text-muted-foreground hover:bg-accent/70 hover:text-foreground"
+            >
+              <FolderPlus className="h-3 w-3" />
+            </button>
+          </div>
+        )}
 
         {/* AI attribution badge */}
         {showAiAttribution &&

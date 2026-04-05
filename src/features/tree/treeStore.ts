@@ -84,6 +84,10 @@ interface TreeState {
   // Codex Quick pinned entries
   pinnedCodexIds: string[];
 
+  // Pending rename: set after createNode to trigger auto-edit in TreeNodeItem
+  pendingRenameId: string | null;
+  setPendingRenameId: (id: string | null) => void;
+
   // Load full tree for a project
   loadTree: (projectId?: string) => Promise<void>;
 
@@ -183,6 +187,7 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
   showAiAttribution: false,
   autoRevealActiveScene: true,
   pinnedCodexIds: [],
+  pendingRenameId: null,
 
   async loadTree(projectId = DEFAULT_PROJECT_ID) {
     set({ isLoading: true, projectId });
@@ -231,6 +236,23 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
       loadBatchAiRatio(sceneIds)
         .then((ratios) => set({ aiRatios: ratios }))
         .catch(() => {});
+      // Background-load char counts for all scene/note nodes
+      const contentNodes = nodes.filter(
+        (n) => n.nodeType === "scene" || n.nodeType === "note",
+      );
+      Promise.allSettled(
+        contentNodes.map((n) =>
+          api
+            .loadSceneContent(n.id)
+            .then((content) => ({ id: n.id, count: content.length })),
+        ),
+      ).then((results) => {
+        const counts: Record<string, number> = {};
+        for (const r of results) {
+          if (r.status === "fulfilled") counts[r.value.id] = r.value.count;
+        }
+        set((state) => ({ charCounts: { ...state.charCounts, ...counts } }));
+      });
     } catch {
       set({ isLoading: false });
     }
@@ -347,10 +369,17 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
     set((state) => {
       const updated = [...state.nodes, newNode];
       const newScenes = computeScenes(updated);
+      // Expand parent folder so the new node is visible
+      const expandedIds =
+        parentId && !state.expandedIds.includes(parentId)
+          ? [...state.expandedIds, parentId]
+          : state.expandedIds;
       return {
         nodes: updated,
         scenes: newScenes,
         activeSceneId: nodeType === "scene" ? newNode.id : state.activeSceneId,
+        expandedIds,
+        pendingRenameId: newNode.id,
       };
     });
     return newNode;
@@ -522,5 +551,9 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
         ? state.pinnedCodexIds.filter((x) => x !== id)
         : [...state.pinnedCodexIds, id],
     }));
+  },
+
+  setPendingRenameId(id) {
+    set({ pendingRenameId: id });
   },
 }));

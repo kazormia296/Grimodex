@@ -1,4 +1,11 @@
-import { useEffect, useRef, useState, useCallback, useMemo } from "react";
+import {
+  useEffect,
+  useRef,
+  useState,
+  useCallback,
+  useMemo,
+  Fragment,
+} from "react";
 import { createPortal } from "react-dom";
 import {
   Plus,
@@ -171,57 +178,58 @@ function TreeRenderer({
         const isLeaf = node.nodeType === "scene" || node.nodeType === "note";
         const count = isLeaf ? (charCounts[id] ?? 0) : (nodeTotals[id] ?? 0);
         return (
-          <TreeNodeItem
-            key={id}
-            node={node}
-            depth={depth}
-            isActive={node.id === activeSceneId}
-            isSelected={selectedIds.includes(id)}
-            isExpanded={isExpanded}
-            isVisible={visible}
-            charCount={count}
-            showWordCounts={showWordCounts}
-            showStatusDots={showStatusDots}
-            showAiAttribution={showAiAttribution}
-            aiRatio={aiRatios[id] ?? 0}
-            dropIndicator={dropIndicator}
-            orderedNodes={orderedNodes}
-            viewMode={viewMode}
-          >
-            {viewMode === "outline" &&
-              node.nodeType === "scene" &&
-              node.synopsis && (
-                <li
-                  className="list-none text-[11px] text-muted-foreground"
-                  style={{
-                    paddingLeft: `${depth * 12 + 24}px`,
-                    paddingBottom: 4,
-                  }}
-                >
-                  {node.synopsis}
-                </li>
-              )}
-            <TreeRenderer
-              parentId={id}
-              childMap={childMap}
-              nodeMap={nodeMap}
-              depth={depth + 1}
-              activeSceneId={activeSceneId}
-              selectedIds={selectedIds}
-              expandedIds={expandedIds}
-              filterQuery={filterQuery}
-              statusFilter={statusFilter}
-              viewMode={viewMode}
-              charCounts={charCounts}
-              aiRatios={aiRatios}
+          <Fragment key={id}>
+            <TreeNodeItem
+              node={node}
+              depth={depth}
+              isActive={node.id === activeSceneId}
+              isSelected={selectedIds.includes(id)}
+              isExpanded={isExpanded}
+              isVisible={visible}
+              charCount={count}
               showWordCounts={showWordCounts}
               showStatusDots={showStatusDots}
               showAiAttribution={showAiAttribution}
+              aiRatio={aiRatios[id] ?? 0}
               dropIndicator={dropIndicator}
-              nodeTotals={nodeTotals}
               orderedNodes={orderedNodes}
-            />
-          </TreeNodeItem>
+              viewMode={viewMode}
+            >
+              <TreeRenderer
+                parentId={id}
+                childMap={childMap}
+                nodeMap={nodeMap}
+                depth={depth + 1}
+                activeSceneId={activeSceneId}
+                selectedIds={selectedIds}
+                expandedIds={expandedIds}
+                filterQuery={filterQuery}
+                statusFilter={statusFilter}
+                viewMode={viewMode}
+                charCounts={charCounts}
+                aiRatios={aiRatios}
+                showWordCounts={showWordCounts}
+                showStatusDots={showStatusDots}
+                showAiAttribution={showAiAttribution}
+                dropIndicator={dropIndicator}
+                nodeTotals={nodeTotals}
+                orderedNodes={orderedNodes}
+              />
+            </TreeNodeItem>
+            {viewMode === "outline" && node.nodeType === "scene" && visible && (
+              <li
+                className="list-none text-[11px] text-muted-foreground"
+                style={{
+                  paddingLeft: `${depth * 12 + 24}px`,
+                  paddingBottom: 4,
+                }}
+              >
+                {node.synopsis ?? (
+                  <span className="italic opacity-40">synopsis なし</span>
+                )}
+              </li>
+            )}
+          </Fragment>
         );
       })}
     </>
@@ -246,9 +254,8 @@ interface PanelMenuProps {
   setShowAiAttribution: (v: boolean) => void;
   autoRevealActiveScene: boolean;
   setAutoRevealActiveScene: (v: boolean) => void;
-  onExpandAll: () => void;
-  onCollapseAll: () => void;
   onClose: () => void;
+  excludedRef?: React.RefObject<HTMLButtonElement | null>;
 }
 
 const SORT_LABELS: Record<string, string> = {
@@ -285,18 +292,22 @@ function PanelMenu({
   setShowAiAttribution,
   autoRevealActiveScene,
   setAutoRevealActiveScene,
-  onExpandAll,
-  onCollapseAll,
   onClose,
+  excludedRef,
 }: PanelMenuProps) {
   const ref = useRef<HTMLDivElement>(null);
   useEffect(() => {
     function close(e: MouseEvent) {
-      if (!ref.current?.contains(e.target as Node)) onClose();
+      if (
+        !ref.current?.contains(e.target as Node) &&
+        !excludedRef?.current?.contains(e.target as Node)
+      ) {
+        onClose();
+      }
     }
     document.addEventListener("mousedown", close);
     return () => document.removeEventListener("mousedown", close);
-  }, [onClose]);
+  }, [onClose, excludedRef]);
 
   function radioItem<T extends string | null>(
     value: T,
@@ -310,7 +321,6 @@ function PanelMenu({
         type="button"
         onClick={() => {
           onSelect(value);
-          onClose();
         }}
         className="flex w-full items-center gap-2 px-3 py-1.5 text-xs hover:bg-accent"
       >
@@ -341,25 +351,10 @@ function PanelMenu({
     );
   }
 
-  function menuItem(label: string, action: () => void) {
-    return (
-      <button
-        type="button"
-        onClick={() => {
-          action();
-          onClose();
-        }}
-        className="flex w-full px-3 py-1.5 text-left text-xs hover:bg-accent"
-      >
-        {label}
-      </button>
-    );
-  }
-
   return (
     <div
       ref={ref}
-      className="absolute right-0 top-6 z-50 min-w-[180px] rounded-md border border-border bg-popover py-1 shadow-md"
+      className="min-w-[180px] rounded-md border border-border bg-popover py-1 shadow-md"
     >
       <div className="px-3 py-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
         View
@@ -397,9 +392,6 @@ function PanelMenu({
         autoRevealActiveScene,
         setAutoRevealActiveScene,
       )}
-      <div className="my-1 border-t border-border" />
-      {menuItem("全展開", onExpandAll)}
-      {menuItem("全折りたたみ", onCollapseAll)}
     </div>
   );
 }
@@ -450,6 +442,11 @@ export function ScenesPanel() {
   const treeRef = useRef<HTMLDivElement>(null);
   const [showCreateMenu, setShowCreateMenu] = useState(false);
   const [showPanelMenu, setShowPanelMenu] = useState(false);
+  const createBtnRef = useRef<HTMLButtonElement>(null);
+  const panelMenuBtnRef = useRef<HTMLButtonElement>(null);
+  const createMenuRef = useRef<HTMLDivElement>(null);
+  const [createMenuPos, setCreateMenuPos] = useState<DOMRect | null>(null);
+  const [panelMenuPos, setPanelMenuPos] = useState<DOMRect | null>(null);
   const allExpandedRef = useRef(false);
   const pointerYRef = useRef(0);
   const [dropIndicator, setDropIndicator] = useState<DropIndicator | null>(
@@ -471,6 +468,21 @@ export function ScenesPanel() {
       useTabStore.getState().disposeAutoSave?.();
     };
   }, [loadTree]);
+
+  // Close create menu when clicking outside (excluding the create button itself)
+  useEffect(() => {
+    if (!showCreateMenu) return;
+    function handleMouseDown(e: MouseEvent) {
+      if (
+        !createMenuRef.current?.contains(e.target as Node) &&
+        !createBtnRef.current?.contains(e.target as Node)
+      ) {
+        setShowCreateMenu(false);
+      }
+    }
+    document.addEventListener("mousedown", handleMouseDown);
+    return () => document.removeEventListener("mousedown", handleMouseDown);
+  }, [showCreateMenu]);
 
   const STATUS_SORT_ORDER: Record<string, number> = {
     outline: 0,
@@ -574,7 +586,7 @@ export function ScenesPanel() {
 
   const handleCreate = useCallback(
     (type: NodeType) => {
-      setShowCreateMenu(false);
+      // Keep the menu open so the user can create multiple items in a row
       let parentId: string | null = null;
       const active = nodeMap[activeSceneId];
       if (active?.nodeType === "scene" || active?.nodeType === "note") {
@@ -796,7 +808,22 @@ export function ScenesPanel() {
       const parentNode = newParentId ? nodeMap[newParentId] : null;
       if (parentNode && !canHaveChildren(parentNode.nodeType)) return;
 
-      moveNode(activeId, newParentId, afterId).catch(() => {});
+      // Multi-select: move all selected nodes if the dragged node is in the selection
+      const { selectedIds } = useTreeStore.getState();
+      if (selectedIds.includes(activeId) && selectedIds.length > 1) {
+        // Sort selected nodes by current sortOrder to preserve relative order
+        const selectedNodes = selectedIds
+          .map((id) => nodeMap[id])
+          .filter(Boolean)
+          .sort((a, b) => a!.sortOrder - b!.sortOrder) as TreeNodeData[];
+        let prevAfterId = afterId;
+        for (const selNode of selectedNodes) {
+          moveNode(selNode.id, newParentId, prevAfterId).catch(() => {});
+          prevAfterId = selNode.id;
+        }
+      } else {
+        moveNode(activeId, newParentId, afterId).catch(() => {});
+      }
     },
     [nodeMap, childMap, moveNode, flatNodes],
   );
@@ -887,34 +914,22 @@ export function ScenesPanel() {
           <span className="text-xs font-semibold text-foreground">Scenes</span>
           <div className="flex items-center gap-0.5">
             {/* Create button */}
-            <div className="relative">
-              <button
-                type="button"
-                title="新規作成"
-                onClick={() => setShowCreateMenu((v) => !v)}
-                className="flex h-6 w-6 items-center justify-center rounded text-muted-foreground hover:bg-accent hover:text-foreground"
-              >
-                <Plus className="h-3.5 w-3.5" />
-              </button>
-              {showCreateMenu && (
-                <div className="absolute right-0 top-6 z-50 min-w-[140px] rounded-md border border-border bg-popover p-1 shadow-md">
-                  {CREATE_OPTIONS.map((opt, i) =>
-                    opt === null ? (
-                      <div key={i} className="my-1 border-t border-border" />
-                    ) : (
-                      <button
-                        key={opt.type}
-                        type="button"
-                        className="flex w-full rounded px-2 py-1 text-xs hover:bg-accent"
-                        onClick={() => handleCreate(opt.type)}
-                      >
-                        {opt.label}
-                      </button>
-                    ),
-                  )}
-                </div>
-              )}
-            </div>
+            <button
+              ref={createBtnRef}
+              type="button"
+              title="新規作成"
+              onClick={() => {
+                if (!showCreateMenu && createBtnRef.current) {
+                  setCreateMenuPos(
+                    createBtnRef.current.getBoundingClientRect(),
+                  );
+                }
+                setShowCreateMenu((v) => !v);
+              }}
+              className="flex h-6 w-6 items-center justify-center rounded text-muted-foreground hover:bg-accent hover:text-foreground"
+            >
+              <Plus className="h-3.5 w-3.5" />
+            </button>
 
             {/* Expand/collapse toggle */}
             <button
@@ -927,40 +942,25 @@ export function ScenesPanel() {
             </button>
 
             {/* Panel menu */}
-            <div className="relative">
-              <button
-                type="button"
-                title="パネルメニュー"
-                onClick={() => setShowPanelMenu((v) => !v)}
-                className={cn(
-                  "flex h-6 w-6 items-center justify-center rounded text-muted-foreground hover:bg-accent hover:text-foreground",
-                  showPanelMenu && "bg-accent text-foreground",
-                )}
-              >
-                <MoreHorizontal className="h-3.5 w-3.5" />
-              </button>
-              {showPanelMenu && (
-                <PanelMenu
-                  viewMode={viewMode}
-                  setViewMode={setViewMode}
-                  sortMode={sortMode}
-                  setSortMode={setSortMode}
-                  statusFilter={statusFilter}
-                  setStatusFilter={setStatusFilter}
-                  showWordCounts={showWordCounts}
-                  setShowWordCounts={setShowWordCounts}
-                  showStatusDots={showStatusDots}
-                  setShowStatusDots={setShowStatusDots}
-                  showAiAttribution={showAiAttribution}
-                  setShowAiAttribution={setShowAiAttribution}
-                  autoRevealActiveScene={autoRevealActiveScene}
-                  setAutoRevealActiveScene={setAutoRevealActiveScene}
-                  onExpandAll={expandAll}
-                  onCollapseAll={collapseAll}
-                  onClose={() => setShowPanelMenu(false)}
-                />
+            <button
+              ref={panelMenuBtnRef}
+              type="button"
+              title="パネルメニュー"
+              onClick={() => {
+                if (!showPanelMenu && panelMenuBtnRef.current) {
+                  setPanelMenuPos(
+                    panelMenuBtnRef.current.getBoundingClientRect(),
+                  );
+                }
+                setShowPanelMenu((v) => !v);
+              }}
+              className={cn(
+                "flex h-6 w-6 items-center justify-center rounded text-muted-foreground hover:bg-accent hover:text-foreground",
+                showPanelMenu && "bg-accent text-foreground",
               )}
-            </div>
+            >
+              <MoreHorizontal className="h-3.5 w-3.5" />
+            </button>
           </div>
         </div>
 
@@ -1011,8 +1011,8 @@ export function ScenesPanel() {
           <BottomDropZone />
         </div>
 
-        {/* Synopsis area */}
-        {activeNode?.nodeType === "scene" && (
+        {/* Synopsis area — hidden in Outline mode (synopsis is shown inline there) */}
+        {viewMode !== "outline" && activeNode?.nodeType === "scene" && (
           <SynopsisArea nodeId={activeSceneId} />
         )}
       </div>
@@ -1040,6 +1040,72 @@ export function ScenesPanel() {
         </DragOverlay>,
         document.body,
       )}
+
+      {/* Create menu portal — escapes dockview stacking context */}
+      {showCreateMenu &&
+        createMenuPos &&
+        createPortal(
+          <div
+            ref={createMenuRef}
+            style={{
+              position: "fixed",
+              top: createMenuPos.bottom + 2,
+              right: window.innerWidth - createMenuPos.right,
+              zIndex: 9999,
+            }}
+            className="min-w-[140px] rounded-md border border-border bg-popover p-1 shadow-md"
+          >
+            {CREATE_OPTIONS.map((opt, i) =>
+              opt === null ? (
+                <div key={i} className="my-1 border-t border-border" />
+              ) : (
+                <button
+                  key={opt.type}
+                  type="button"
+                  className="flex w-full rounded px-2 py-1 text-xs hover:bg-accent"
+                  onClick={() => handleCreate(opt.type)}
+                >
+                  {opt.label}
+                </button>
+              ),
+            )}
+          </div>,
+          document.body,
+        )}
+
+      {/* Panel menu portal — escapes dockview stacking context */}
+      {showPanelMenu &&
+        panelMenuPos &&
+        createPortal(
+          <div
+            style={{
+              position: "fixed",
+              top: panelMenuPos.bottom + 2,
+              right: window.innerWidth - panelMenuPos.right,
+              zIndex: 9999,
+            }}
+          >
+            <PanelMenu
+              viewMode={viewMode}
+              setViewMode={setViewMode}
+              sortMode={sortMode}
+              setSortMode={setSortMode}
+              statusFilter={statusFilter}
+              setStatusFilter={setStatusFilter}
+              showWordCounts={showWordCounts}
+              setShowWordCounts={setShowWordCounts}
+              showStatusDots={showStatusDots}
+              setShowStatusDots={setShowStatusDots}
+              showAiAttribution={showAiAttribution}
+              setShowAiAttribution={setShowAiAttribution}
+              autoRevealActiveScene={autoRevealActiveScene}
+              setAutoRevealActiveScene={setAutoRevealActiveScene}
+              onClose={() => setShowPanelMenu(false)}
+              excludedRef={panelMenuBtnRef}
+            />
+          </div>,
+          document.body,
+        )}
     </DndContext>
   );
 }
