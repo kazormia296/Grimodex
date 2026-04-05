@@ -177,8 +177,11 @@ export function SceneEditor() {
       .nodes.find((n) => n.id === activeSceneId);
     if (!node || (node.nodeType !== "scene" && node.nodeType !== "note"))
       return;
-    const { tabs } = useTabStore.getState();
-    if (!tabs.find((t) => t.nodeId === activeSceneId)) {
+    const { tabs, secondaryTabs } = useTabStore.getState();
+    const inAnyGroup =
+      tabs.some((t) => t.nodeId === activeSceneId) ||
+      secondaryTabs.some((t) => t.nodeId === activeSceneId);
+    if (!inAnyGroup) {
       useTabStore.getState().openPreview(activeSceneId);
     }
   }, [activeSceneId]);
