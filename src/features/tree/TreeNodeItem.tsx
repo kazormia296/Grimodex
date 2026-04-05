@@ -260,6 +260,7 @@ export function TreeNodeItem({
 
   const handleContextMenu = useCallback((e: React.MouseEvent) => {
     e.preventDefault();
+    e.stopPropagation(); // Prevent ScenesPanel root context menu from also opening
     setContextMenu({ x: e.clientX, y: e.clientY });
   }, []);
 
