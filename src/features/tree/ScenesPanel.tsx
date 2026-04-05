@@ -617,10 +617,13 @@ export function ScenesPanel() {
       if (needsConfirm.length > 0) {
         setDeleteConfirm(ids);
       } else {
-        // Delete immediately (all empty or folders)
-        Promise.all(
-          ids.map((id) => useTreeStore.getState().deleteNode(id)),
-        ).catch(() => {});
+        // Delete sequentially to avoid state race conditions
+        ids
+          .reduce(
+            (p, id) => p.then(() => useTreeStore.getState().deleteNode(id)),
+            Promise.resolve(),
+          )
+          .catch(() => {});
       }
     },
     [nodeMap, charCounts],
@@ -1076,9 +1079,13 @@ export function ScenesPanel() {
                   onClick={() => {
                     const ids = deleteConfirm;
                     setDeleteConfirm(null);
-                    Promise.all(
-                      ids.map((id) => useTreeStore.getState().deleteNode(id)),
-                    ).catch(() => {});
+                    ids
+                      .reduce(
+                        (p, id) =>
+                          p.then(() => useTreeStore.getState().deleteNode(id)),
+                        Promise.resolve(),
+                      )
+                      .catch(() => {});
                   }}
                 >
                   削除する
