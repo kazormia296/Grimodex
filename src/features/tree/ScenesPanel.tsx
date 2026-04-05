@@ -613,13 +613,18 @@ export function ScenesPanel() {
 
   const initiateDelete = useCallback(
     (ids: string[]) => {
-      // Scenes/notes with content or synopsis need confirmation
-      const needsConfirm = ids.filter((id) => {
+      // Recursively collect all descendant IDs (inclusive)
+      function collectAll(id: string): string[] {
+        return [id, ...(childMap[id] ?? []).flatMap(collectAll)];
+      }
+
+      // Check all descendants (including folder contents) for content/synopsis
+      const needsConfirm = ids.flatMap(collectAll).some((id) => {
         const node = nodeMap[id];
         if (!node || node.nodeType === "folder") return false;
         return (charCounts[id] ?? 0) > 0 || !!node.synopsis;
       });
-      if (needsConfirm.length > 0) {
+      if (needsConfirm) {
         setDeleteConfirm(ids);
       } else {
         // Delete sequentially to avoid state race conditions
@@ -631,7 +636,7 @@ export function ScenesPanel() {
           .catch(() => {});
       }
     },
-    [nodeMap, charCounts],
+    [nodeMap, charCounts, childMap],
   );
 
   function focusEditorPanel() {
