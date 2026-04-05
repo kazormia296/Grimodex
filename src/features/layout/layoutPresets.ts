@@ -32,6 +32,7 @@ function buildDefault(api: DockviewApi) {
     component: "editor",
     title: PANEL_TITLES.editor,
     position: { referencePanel: "scenes", direction: "right" },
+    minimumWidth: 320,
   });
   api.addPanel({
     id: "chat",
@@ -117,6 +118,7 @@ function buildChatMain(api: DockviewApi) {
     component: "editor",
     title: PANEL_TITLES.editor,
     position: { referencePanel: "scenes", direction: "below" },
+    minimumWidth: 320,
   });
 
   // 4. Set sizes: left ~15%, right ~30%, center gets the rest (~55%)
@@ -141,6 +143,7 @@ function buildCodexMain(api: DockviewApi) {
     component: "editor",
     title: PANEL_TITLES.editor,
     position: { referencePanel: "codex", direction: "right" },
+    minimumWidth: 320,
   });
   api.addPanel({
     id: "chat",

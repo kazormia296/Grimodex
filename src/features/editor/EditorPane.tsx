@@ -568,12 +568,12 @@ export function EditorPane({ sceneId, groupIndex, onFocus }: EditorPaneProps) {
           />
         </div>
       </div>
-      <div className="flex items-center justify-between border-t border-border px-3 py-1 text-xs text-muted-foreground">
-        <div className="flex items-center gap-3">
+      <div className="flex flex-shrink-0 items-center justify-between overflow-hidden border-t border-border px-3 py-1 text-xs text-muted-foreground">
+        <div className="flex min-w-0 items-center gap-3">
           <CharCount count={charCount} />
           <span>{wordCount} 語</span>
         </div>
-        <div className="flex items-center gap-3">
+        <div className="flex flex-shrink-0 items-center gap-3">
           {activeStatus && (
             <span className={STATUS_COLORS[activeStatus]}>
               {STATUS_LABELS[activeStatus]}

@@ -97,6 +97,14 @@
   --radius-xl: calc(var(--radius) + 4px);
 }
 
+/* Hide scrollbar while keeping scroll functionality */
+.no-scrollbar {
+  scrollbar-width: none;
+}
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+
 @layer base {
   * {
     @apply border-border;
@@ -129,6 +137,12 @@
   --dv-tabs-and-actions-container-font-size: 12px;
   --dv-drag-over-background-color: oklch(0.3 0.02 264 / 0.4);
   --dv-drag-over-border-color: var(--primary);
+}
+
+/* Prevent panel content from overflowing DockView containers */
+.dv-groupview > .dv-content-container {
+  overflow: hidden;
+  min-width: 0;
 }
 
 /* Hide panel close button when layout is locked */

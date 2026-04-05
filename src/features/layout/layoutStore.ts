@@ -368,12 +368,14 @@ function addPanelWithDefaults(api: DockviewApi, panelId: PanelId) {
           component: panelId,
           title,
           position: { referencePanel: leftRef, direction: "right" },
+          minimumWidth: 320,
         });
       } else {
         api.addPanel({
           id: panelId,
           component: panelId,
           title,
+          minimumWidth: 320,
         });
       }
       break;
