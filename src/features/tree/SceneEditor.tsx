@@ -217,7 +217,7 @@ export function SceneEditor() {
         {/* ---- Primary group ---- */}
         <div className={primaryClass}>
           <TabBar groupIndex={0} />
-          <div className="relative flex-1 overflow-hidden">
+          <div className="relative flex flex-1 flex-col overflow-hidden">
             {primarySceneId ? (
               <EditorPane
                 sceneId={primarySceneId}
@@ -246,7 +246,7 @@ export function SceneEditor() {
         {secondaryGroupOpen && (
           <div className={secondaryClass}>
             <TabBar groupIndex={1} />
-            <div className="relative flex-1 overflow-hidden">
+            <div className="relative flex flex-1 flex-col overflow-hidden">
               {secondarySceneId ? (
                 <EditorPane
                   sceneId={secondarySceneId}
