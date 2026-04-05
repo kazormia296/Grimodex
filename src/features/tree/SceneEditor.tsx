@@ -56,7 +56,7 @@ export function SceneEditor() {
   const secondarySceneId = secondaryActiveTabId;
 
   return (
-    <div className="flex h-full flex-col">
+    <div className="flex h-full w-full flex-col overflow-hidden">
       {/* Breadcrumb spans full width above the split */}
       <Breadcrumb />
 
@@ -66,7 +66,7 @@ export function SceneEditor() {
           className={
             hasSecondaryGroup
               ? "flex w-1/2 flex-col border-r border-border"
-              : "flex flex-1 flex-col"
+              : "flex min-w-0 flex-1 flex-col"
           }
         >
           <TabBar groupIndex={0} />
