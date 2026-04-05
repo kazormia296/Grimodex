@@ -161,20 +161,49 @@ export const useEditorStore = create<EditorState>()((set, get) => ({
     const insertPos = from !== to ? { from, to } : from;
 
     const now = new Date().toISOString();
-    const contentNodes = segments.map((seg) => ({
-      type: "text" as const,
-      text: seg.text,
-      marks: [
-        {
-          type: "authorship",
-          attrs: {
-            source: seg.source,
-            timestamp: now,
-            originalLength: seg.text.length,
-          },
-        },
-      ],
-    }));
+
+    // Split each segment on "\n" and build paragraph-aware content.
+    // "\n" in a segment marks a paragraph boundary (from block-element
+    // separators inserted by extractMixedSegments, or newlines in plain text).
+    type TextNode = {
+      type: "text";
+      text: string;
+      marks: { type: string; attrs: object }[];
+    };
+    const paragraphs: TextNode[][] = [[]];
+
+    for (const seg of segments) {
+      const parts = seg.text.split("\n");
+      for (let i = 0; i < parts.length; i++) {
+        if (i > 0) paragraphs.push([]);
+        const part = parts[i];
+        if (part) {
+          paragraphs[paragraphs.length - 1].push({
+            type: "text",
+            text: part,
+            marks: [
+              {
+                type: "authorship",
+                attrs: {
+                  source: seg.source,
+                  timestamp: now,
+                  originalLength: part.length,
+                },
+              },
+            ],
+          });
+        }
+      }
+    }
+
+    // Single paragraph → insert inline nodes; multiple → wrap in paragraph nodes.
+    const contentNodes =
+      paragraphs.length === 1
+        ? paragraphs[0]
+        : paragraphs.map((content) => ({
+            type: "paragraph" as const,
+            content,
+          }));
 
     editor
       .chain()

@@ -434,10 +434,10 @@ export function EditorPane({ sceneId, groupIndex, onFocus }: EditorPaneProps) {
   const typewriterMode = useCursorSettingsStore((s) => s.typewriterMode);
   useTypewriterScroll(editor, typewriterMode, editorContainerRef);
 
-  // When typewriter mode is toggled on, scroll immediately to center the cursor
-  // to avoid a visual jump caused by the 50vh padding being added.
+  // When typewriter mode is toggled (on or off), scroll immediately to center
+  // the cursor to prevent a visual jump from the 50vh padding being added/removed.
   useEffect(() => {
-    if (!typewriterMode || !editorContainerRef.current || !editor) return;
+    if (!editorContainerRef.current || !editor) return;
     const container = editorContainerRef.current;
     const raf = requestAnimationFrame(() => {
       const { from } = editor.view.state.selection;
@@ -590,7 +590,7 @@ export function EditorPane({ sceneId, groupIndex, onFocus }: EditorPaneProps) {
             const docSize = ed.state.doc.content.size;
             const from = Math.min(saved.from, Math.max(0, docSize - 1));
             const to = Math.min(saved.to, Math.max(0, docSize - 1));
-            ed.commands.setTextSelection({ from, to });
+            ed.chain().focus().setTextSelection({ from, to }).run();
           }
           if (editorContainerRef.current) {
             editorContainerRef.current.scrollTop = saved.scrollTop;

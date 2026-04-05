@@ -73,52 +73,54 @@ export function parseClipboardHtml(
     return null;
   }
 
-  // Case 2: Editor body copy (span[data-authorship])
-  const authorshipSpans = doc.querySelectorAll("span[data-authorship]");
-  if (authorshipSpans.length > 0) {
-    const segments: AttributedSegment[] = [];
-    for (const span of authorshipSpans) {
-      const text = span.textContent ?? "";
-      if (!text) continue;
-      const source = (span.getAttribute("data-authorship") ??
-        "unknown") as AuthorshipSource;
-      // Merge adjacent segments with same source
-      const last = segments[segments.length - 1];
-      if (last && last.source === source) {
-        last.text += text;
-      } else {
-        segments.push({ text, source });
-      }
-    }
-    if (segments.length > 0) return segments;
-  }
-
-  // Case 3: Check for text nodes outside authorship spans (mixed editor copy)
-  // When editor content has both marked and unmarked text, unmarked text
-  // appears as bare text nodes without data-authorship spans.
-  // Walk the body to capture all text with correct attribution.
-  const body = doc.body;
-  if (body.querySelector("span[data-authorship]")) {
-    // We already handled pure-authorship case above; this branch handles mixed content
-    const segments = extractMixedSegments(body);
+  // Case 2: Editor body copy — walk DOM to preserve both attributed spans and
+  // bare text nodes (human-authored). Case 2 was previously split into a
+  // span-only path that returned early, dropping bare text nodes.
+  if (doc.body.querySelector("span[data-authorship]")) {
+    const segments = extractMixedSegments(doc.body);
     if (segments.length > 0) return segments;
   }
 
   return null;
 }
 
+// Block-level tags whose boundaries represent paragraph separators.
+const BLOCK_TAGS = new Set([
+  "P",
+  "DIV",
+  "H1",
+  "H2",
+  "H3",
+  "H4",
+  "H5",
+  "H6",
+  "BLOCKQUOTE",
+  "LI",
+]);
+
 /**
  * Walk DOM nodes to extract text with attribution, handling mixed
  * marked/unmarked content from editor copy.
+ * Block-level elements (p, div, h1-h6, blockquote, li) are separated
+ * by "\n" so callers can reconstruct paragraph structure.
  */
 function extractMixedSegments(root: Element): AttributedSegment[] {
   const segments: AttributedSegment[] = [];
+  let firstBlock = true;
+
+  function appendText(text: string, source: AuthorshipSource): void {
+    const last = segments[segments.length - 1];
+    if (last && last.source === source) {
+      last.text += text;
+    } else {
+      segments.push({ text, source });
+    }
+  }
 
   function walk(node: Node): void {
     if (node.nodeType === Node.TEXT_NODE) {
       const text = node.textContent ?? "";
       if (!text) return;
-      // Check if this text node is inside an authorship span
       const parentSpan = (node.parentElement as Element | null)?.closest?.(
         "span[data-authorship]",
       );
@@ -126,15 +128,19 @@ function extractMixedSegments(root: Element): AttributedSegment[] {
         ? ((parentSpan.getAttribute("data-authorship") ??
             "unknown") as AuthorshipSource)
         : "human";
-
-      const last = segments[segments.length - 1];
-      if (last && last.source === source) {
-        last.text += text;
-      } else {
-        segments.push({ text, source });
-      }
+      appendText(text, source);
     } else if (node.nodeType === Node.ELEMENT_NODE) {
-      for (const child of node.childNodes) {
+      const el = node as Element;
+      if (BLOCK_TAGS.has(el.tagName)) {
+        if (!firstBlock) {
+          // Paragraph separator before each block except the first
+          const last = segments[segments.length - 1];
+          if (last) last.text += "\n";
+          else segments.push({ text: "\n", source: "human" });
+        }
+        firstBlock = false;
+      }
+      for (const child of el.childNodes) {
         walk(child);
       }
     }
