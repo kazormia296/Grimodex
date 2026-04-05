@@ -10,12 +10,14 @@ function ToolbarButton({
   label,
   children,
   disabled,
+  allowFocus,
 }: {
   active?: boolean;
   onClick: () => void;
   label: string;
   children: React.ReactNode;
   disabled?: boolean;
+  allowFocus?: boolean;
 }) {
   return (
     <button
@@ -23,6 +25,7 @@ function ToolbarButton({
       aria-label={label}
       title={label}
       disabled={disabled}
+      onMouseDown={allowFocus ? undefined : (e) => e.preventDefault()}
       onClick={onClick}
       className={cn(
         "flex h-6 min-w-[24px] items-center justify-center rounded px-1 text-xs font-medium transition-colors",
@@ -344,6 +347,7 @@ export function Toolbar({
                 label="ルビ（ふりがな）"
                 active={rubyOpen || editor.isActive("ruby")}
                 onClick={openRuby}
+                allowFocus
               >
                 Ruby
               </ToolbarButton>
@@ -351,6 +355,7 @@ export function Toolbar({
                 label="リンク (Ctrl+K)"
                 active={editor.isActive("link") || linkOpen}
                 onClick={openLink}
+                allowFocus
               >
                 Link
               </ToolbarButton>
@@ -618,6 +623,7 @@ function OverflowItem({
     <button
       type="button"
       disabled={disabled}
+      onMouseDown={(e) => e.preventDefault()}
       onClick={onClick}
       className={cn(
         "flex w-full items-center justify-between px-3 py-1.5 text-left text-xs",
