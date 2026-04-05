@@ -605,7 +605,9 @@ export function EditorPane({ sceneId, groupIndex, onFocus }: EditorPaneProps) {
 
       // Decide whether to focus the editor immediately.
       // Tab clicks set the flag; Scenes-panel navigation does not.
-      const focusNow = useTabStore.getState().consumeEditorFocusRequest();
+      const focusNow = useTabStore
+        .getState()
+        .consumeEditorFocusRequest(groupIndex);
 
       // Clear any pending lazy restore from a previous scene switch so stale
       // state is never applied if this new switch doesn't produce saved data.

@@ -149,15 +149,16 @@ interface TabState {
   // ---- Editor focus intent ----
 
   /**
-   * Set by TabBar when the user explicitly clicks a tab.
-   * EditorPane consumes this once via consumeEditorFocusRequest() to decide
+   * Set by TabBar when the user explicitly clicks a tab in a specific group.
+   * EditorPane consumes this once via consumeEditorFocusRequest(group) to decide
    * whether to focus the editor immediately on scene switch.
    * Scenes-panel navigation does NOT set this flag, so the editor does not
    * steal focus from keyboard navigation.
+   * Scoped per group to avoid races in split-view mode.
    */
-  requestEditorFocus: () => void;
-  /** Read and clear the flag. Returns true if a focus was requested. */
-  consumeEditorFocusRequest: () => boolean;
+  requestEditorFocus: (group: GroupIndex) => void;
+  /** Read and clear the flag for the given group. Returns true if focus was requested. */
+  consumeEditorFocusRequest: (group: GroupIndex) => boolean;
 
   // ---- Unsaved-changes tracking ----
 
@@ -182,9 +183,13 @@ interface TabState {
   disposeAutoSave?: () => void;
 }
 
-// Module-level flag: does not need Zustand reactivity.
-// Set by TabBar on explicit tab click; consumed once by EditorPane.
-let _editorFocusRequested = false;
+// Module-level flags per group: does not need Zustand reactivity.
+// Set by TabBar on explicit tab click; consumed once by the matching EditorPane.
+// Using a Record so each group has an independent slot, preventing races in split-view.
+const _editorFocusRequested: Record<GroupIndex, boolean> = {
+  0: false,
+  1: false,
+};
 
 export const useTabStore = create<TabState>()((set, get) => ({
   tabs: [],
@@ -195,12 +200,12 @@ export const useTabStore = create<TabState>()((set, get) => ({
   activeGroupIndex: 0,
   splitDirection: "right",
   dirtyTabIds: new Set<string>(),
-  requestEditorFocus() {
-    _editorFocusRequested = true;
+  requestEditorFocus(group: GroupIndex) {
+    _editorFocusRequested[group] = true;
   },
-  consumeEditorFocusRequest() {
-    const val = _editorFocusRequested;
-    _editorFocusRequested = false;
+  consumeEditorFocusRequest(group: GroupIndex) {
+    const val = _editorFocusRequested[group];
+    _editorFocusRequested[group] = false;
     return val;
   },
 

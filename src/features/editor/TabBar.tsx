@@ -112,7 +112,7 @@ export function TabBar({ groupIndex = 0 }: TabBarProps) {
 
   function handleTabClick(nodeId: string) {
     setOverflowOpen(false);
-    useTabStore.getState().requestEditorFocus();
+    useTabStore.getState().requestEditorFocus(groupIndex);
     if (isPrimary) {
       useTabStore.getState().setActiveTab(nodeId);
       useTreeStore.getState().setActiveScene(nodeId);
