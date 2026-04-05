@@ -43,7 +43,7 @@ export async function createNode(
     NewTreeNode,
     "id" | "projectId" | "nodeType" | "title" | "sortOrder"
   > &
-    Partial<Pick<NewTreeNode, "parentId" | "status">>,
+    Partial<Pick<NewTreeNode, "parentId" | "status" | "synopsis">>,
 ): Promise<TreeNode> {
   const now = new Date().toISOString();
   const rows = await db

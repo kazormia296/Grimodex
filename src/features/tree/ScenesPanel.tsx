@@ -13,6 +13,8 @@ import {
   MoreHorizontal,
   Check,
   GripVertical,
+  Undo2,
+  Redo2,
 } from "lucide-react";
 import {
   DndContext,
@@ -30,6 +32,7 @@ import type {
 } from "@dnd-kit/core";
 import { cn } from "@/lib/utils";
 import { useTreeStore } from "./treeStore";
+import { useTreeHistoryStore } from "./treeHistoryStore";
 import { useTabStore } from "@/features/editor/tabStore";
 import { useLayoutStore } from "@/features/layout/layoutStore";
 import { TreeNodeItem, NodeIcon } from "./TreeNodeItem";
@@ -438,6 +441,8 @@ export function ScenesPanel() {
     moveNode,
   } = useTreeStore();
 
+  const { canUndo, canRedo } = useTreeHistoryStore();
+
   const filterRef = useRef<HTMLInputElement>(null);
   const treeRef = useRef<HTMLDivElement>(null);
   const [showCreateMenu, setShowCreateMenu] = useState(false);
@@ -741,6 +746,18 @@ export function ScenesPanel() {
       } else if (e.key === "f" && e.ctrlKey) {
         e.preventDefault();
         filterRef.current?.focus();
+      } else if (e.key === "z" && (e.ctrlKey || e.metaKey) && !e.shiftKey) {
+        e.preventDefault();
+        useTreeHistoryStore
+          .getState()
+          .undo()
+          .catch(() => {});
+      } else if (e.key === "z" && (e.ctrlKey || e.metaKey) && e.shiftKey) {
+        e.preventDefault();
+        useTreeHistoryStore
+          .getState()
+          .redo()
+          .catch(() => {});
       }
     },
     [
@@ -966,6 +983,38 @@ export function ScenesPanel() {
               className="flex h-6 w-6 items-center justify-center rounded text-muted-foreground hover:bg-accent hover:text-foreground"
             >
               <Plus className="h-3.5 w-3.5" />
+            </button>
+
+            {/* Undo */}
+            <button
+              type="button"
+              title="元に戻す (Ctrl+Z)"
+              disabled={!canUndo}
+              onClick={() =>
+                useTreeHistoryStore
+                  .getState()
+                  .undo()
+                  .catch(() => {})
+              }
+              className="flex h-6 w-6 items-center justify-center rounded text-muted-foreground hover:bg-accent hover:text-foreground disabled:pointer-events-none disabled:opacity-30"
+            >
+              <Undo2 className="h-3.5 w-3.5" />
+            </button>
+
+            {/* Redo */}
+            <button
+              type="button"
+              title="やり直し (Ctrl+Shift+Z)"
+              disabled={!canRedo}
+              onClick={() =>
+                useTreeHistoryStore
+                  .getState()
+                  .redo()
+                  .catch(() => {})
+              }
+              className="flex h-6 w-6 items-center justify-center rounded text-muted-foreground hover:bg-accent hover:text-foreground disabled:pointer-events-none disabled:opacity-30"
+            >
+              <Redo2 className="h-3.5 w-3.5" />
             </button>
 
             {/* Expand/collapse toggle */}

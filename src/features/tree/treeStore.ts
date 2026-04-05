@@ -4,6 +4,7 @@ import type { TreeNode as ApiNode } from "./api";
 import { loadBatchAiRatio } from "@/features/attribution/api";
 import { useSettingsStore } from "@/features/settings/settingsStore";
 import { useTabStore } from "@/features/editor/tabStore";
+import { useTreeHistoryStore } from "./treeHistoryStore";
 
 export type NodeType = "folder" | "scene" | "note";
 export type SceneStatus =
@@ -291,6 +292,23 @@ function computeFolderTitle(
   return "フォルダー";
 }
 
+/** Sort nodes so parents appear before their children (for restore operations). */
+function topologicalSort(nodes: TreeNodeData[]): TreeNodeData[] {
+  const ids = new Set(nodes.map((n) => n.id));
+  const result: TreeNodeData[] = [];
+  const visited = new Set<string>();
+  function visit(node: TreeNodeData) {
+    if (visited.has(node.id)) return;
+    if (node.parentId && ids.has(node.parentId)) {
+      visit(nodes.find((n) => n.id === node.parentId)!);
+    }
+    visited.add(node.id);
+    result.push(node);
+  }
+  for (const node of nodes) visit(node);
+  return result;
+}
+
 export const useTreeStore = create<TreeState>()((set, get) => ({
   nodes: [],
   scenes: [],
@@ -525,15 +543,84 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
         pendingRenameId: newNode.id,
       };
     });
+
+    if (!useTreeHistoryStore.getState().isReplaying) {
+      const captured = { ...newNode };
+      useTreeHistoryStore.getState().push({
+        async undo() {
+          await api.deleteNode(captured.id);
+          set((state) => {
+            const nodes = state.nodes.filter((n) => n.id !== captured.id);
+            return { nodes, scenes: computeScenes(nodes) };
+          });
+          useTabStore.getState().closeTab(captured.id);
+          useTabStore.getState().closeSecondaryTab(captured.id);
+        },
+        async redo() {
+          const recreated = await api.createNode({
+            id: captured.id,
+            projectId: captured.projectId,
+            parentId: captured.parentId ?? undefined,
+            nodeType: captured.nodeType,
+            title: captured.title,
+            sortOrder: captured.sortOrder,
+            status: captured.status ?? undefined,
+          });
+          const node = toNodeData(recreated);
+          set((state) => {
+            const updated = [...state.nodes, node];
+            const expandedIds =
+              captured.parentId &&
+              !state.expandedIds.includes(captured.parentId)
+                ? [...state.expandedIds, captured.parentId]
+                : state.expandedIds;
+            return {
+              nodes: updated,
+              scenes: computeScenes(updated),
+              activeSceneId:
+                node.nodeType === "scene" ? node.id : state.activeSceneId,
+              expandedIds,
+            };
+          });
+          if (node.nodeType === "scene" || node.nodeType === "note") {
+            useTabStore.getState().openPinned(node.id);
+          }
+        },
+      });
+    }
+
     return newNode;
   },
 
   async updateNodeTitle(id, title) {
+    const oldTitle = get().nodes.find((n) => n.id === id)?.title ?? "";
     await api.updateNode(id, { title });
     set((state) => {
       const nodes = state.nodes.map((n) => (n.id === id ? { ...n, title } : n));
       return { nodes, scenes: computeScenes(nodes) };
     });
+    if (!useTreeHistoryStore.getState().isReplaying) {
+      useTreeHistoryStore.getState().push({
+        async undo() {
+          await api.updateNode(id, { title: oldTitle });
+          set((state) => {
+            const nodes = state.nodes.map((n) =>
+              n.id === id ? { ...n, title: oldTitle } : n,
+            );
+            return { nodes, scenes: computeScenes(nodes) };
+          });
+        },
+        async redo() {
+          await api.updateNode(id, { title });
+          set((state) => {
+            const nodes = state.nodes.map((n) =>
+              n.id === id ? { ...n, title } : n,
+            );
+            return { nodes, scenes: computeScenes(nodes) };
+          });
+        },
+      });
+    }
   },
 
   async deleteNode(id) {
@@ -546,6 +633,24 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
       toDelete.add(cur);
       nodes.filter((n) => n.parentId === cur).forEach((c) => queue.push(c.id));
     }
+
+    // Capture snapshots before deletion so we can restore on undo
+    const trackHistory = !useTreeHistoryStore.getState().isReplaying;
+    const deletedNodes = nodes.filter((n) => toDelete.has(n.id));
+    const contentSnapshots: Record<string, string> = {};
+    if (trackHistory) {
+      for (const node of deletedNodes) {
+        if (node.nodeType === "scene") {
+          try {
+            contentSnapshots[node.id] = await api.loadSceneContent(node.id);
+          } catch {
+            contentSnapshots[node.id] = "";
+          }
+        }
+      }
+    }
+    const prevActiveSceneId = activeSceneId;
+
     // Delete from DB (leaf-first to avoid FK issues)
     for (const delId of [...toDelete].reverse()) {
       await api.deleteNode(delId);
@@ -562,20 +667,126 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
       tabStore.closeTab(delId);
       tabStore.closeSecondaryTab(delId);
     }
+
+    if (trackHistory) {
+      useTreeHistoryStore.getState().push({
+        async undo() {
+          // Restore nodes (parents before children)
+          const sorted = topologicalSort(deletedNodes);
+          for (const node of sorted) {
+            await api.createNode({
+              id: node.id,
+              projectId: node.projectId,
+              parentId: node.parentId ?? undefined,
+              nodeType: node.nodeType,
+              title: node.title,
+              synopsis: node.synopsis ?? undefined,
+              sortOrder: node.sortOrder,
+              status: node.status ?? undefined,
+            });
+            if (
+              node.nodeType === "scene" &&
+              contentSnapshots[node.id] !== undefined
+            ) {
+              await api.saveSceneContent(node.id, contentSnapshots[node.id]);
+            }
+          }
+          set((state) => {
+            const updated = [...state.nodes, ...deletedNodes];
+            return {
+              nodes: updated,
+              scenes: computeScenes(updated),
+              activeSceneId: prevActiveSceneId,
+            };
+          });
+        },
+        async redo() {
+          // Re-delete from the same root, collecting current descendants
+          const currentNodes = get().nodes;
+          const currentToDelete = new Set<string>();
+          const q = [id];
+          while (q.length > 0) {
+            const cur = q.shift()!;
+            if (!currentNodes.find((n) => n.id === cur)) continue;
+            currentToDelete.add(cur);
+            currentNodes
+              .filter((n) => n.parentId === cur)
+              .forEach((c) => q.push(c.id));
+          }
+          for (const delId of [...currentToDelete].reverse()) {
+            await api.deleteNode(delId);
+          }
+          const rem = currentNodes.filter((n) => !currentToDelete.has(n.id));
+          const sc = computeScenes(rem);
+          const curActive = get().activeSceneId;
+          const nextActive = currentToDelete.has(curActive)
+            ? (sc[0]?.id ?? "")
+            : curActive;
+          set({ nodes: rem, scenes: sc, activeSceneId: nextActive });
+          const tb = useTabStore.getState();
+          for (const delId of [...currentToDelete]) {
+            tb.closeTab(delId);
+            tb.closeSecondaryTab(delId);
+          }
+        },
+      });
+    }
   },
 
   async updateSynopsis(id, synopsis) {
+    const oldSynopsis = get().nodes.find((n) => n.id === id)?.synopsis ?? null;
     await api.updateNode(id, { synopsis });
     set((state) => ({
       nodes: state.nodes.map((n) => (n.id === id ? { ...n, synopsis } : n)),
     }));
+    if (!useTreeHistoryStore.getState().isReplaying) {
+      useTreeHistoryStore.getState().push({
+        async undo() {
+          await api.updateNode(id, { synopsis: oldSynopsis ?? undefined });
+          set((state) => ({
+            nodes: state.nodes.map((n) =>
+              n.id === id ? { ...n, synopsis: oldSynopsis } : n,
+            ),
+          }));
+        },
+        async redo() {
+          await api.updateNode(id, { synopsis });
+          set((state) => ({
+            nodes: state.nodes.map((n) =>
+              n.id === id ? { ...n, synopsis } : n,
+            ),
+          }));
+        },
+      });
+    }
   },
 
   async setStatus(id, status) {
+    const oldStatus = get().nodes.find((n) => n.id === id)?.status ?? null;
     await api.updateNode(id, { status });
     set((state) => ({
       nodes: state.nodes.map((n) => (n.id === id ? { ...n, status } : n)),
     }));
+    if (!useTreeHistoryStore.getState().isReplaying) {
+      useTreeHistoryStore.getState().push({
+        async undo() {
+          await api.updateNode(id, {
+            status: (oldStatus as SceneStatus) ?? undefined,
+          });
+          set((state) => ({
+            nodes: state.nodes.map((n) =>
+              n.id === id ? { ...n, status: oldStatus } : n,
+            ),
+          }));
+        },
+        async redo() {
+          await api.updateNode(id, { status });
+          set((state) => ({
+            nodes: state.nodes.map((n) => (n.id === id ? { ...n, status } : n)),
+          }));
+        },
+      });
+    }
   },
 
   // --- UI state ---
@@ -645,6 +856,9 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
       }
     }
 
+    const oldParentId = node.parentId;
+    const oldSortOrder = node.sortOrder;
+
     // Optimistic update: apply state change immediately so the UI reflects the
     // new order without waiting for the DB round-trip.
     set((state) => {
@@ -657,6 +871,37 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
       parentId: newParentId ?? undefined,
       sortOrder,
     });
+
+    if (!useTreeHistoryStore.getState().isReplaying) {
+      useTreeHistoryStore.getState().push({
+        async undo() {
+          await api.updateNode(id, {
+            parentId: oldParentId ?? undefined,
+            sortOrder: oldSortOrder,
+          });
+          set((state) => {
+            const updated = state.nodes.map((n) =>
+              n.id === id
+                ? { ...n, parentId: oldParentId, sortOrder: oldSortOrder }
+                : n,
+            );
+            return { nodes: updated, scenes: computeScenes(updated) };
+          });
+        },
+        async redo() {
+          await api.updateNode(id, {
+            parentId: newParentId ?? undefined,
+            sortOrder,
+          });
+          set((state) => {
+            const updated = state.nodes.map((n) =>
+              n.id === id ? { ...n, parentId: newParentId, sortOrder } : n,
+            );
+            return { nodes: updated, scenes: computeScenes(updated) };
+          });
+        },
+      });
+    }
   },
 
   setCharCount(id, count) {
