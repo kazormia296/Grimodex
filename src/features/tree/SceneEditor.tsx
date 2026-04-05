@@ -152,14 +152,14 @@ export function SceneEditor() {
   const activeGroupIndex = useTabStore((s) => s.activeGroupIndex);
   const splitDirection = useTabStore((s) => s.splitDirection);
 
-  const [isDraggingTab, setIsDraggingTab] = useState(false);
+  const isDraggingTab = useTabStore((s) => s.isDraggingTab);
 
   useEffect(() => {
     function onDragStart() {
-      setIsDraggingTab(true);
+      useTabStore.getState().setIsDraggingTab(true);
     }
     function onDragEnd() {
-      setIsDraggingTab(false);
+      useTabStore.getState().setIsDraggingTab(false);
     }
     document.addEventListener("dragstart", onDragStart);
     document.addEventListener("dragend", onDragEnd);

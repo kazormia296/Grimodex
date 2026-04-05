@@ -45,7 +45,7 @@ export function TabBar({ groupIndex = 0 }: TabBarProps) {
 
   // Drag-and-drop state
   const [dropTarget, setDropTarget] = useState<DropTarget | null>(null);
-  const [isDraggingTab, setIsDraggingTab] = useState(false);
+  const isDraggingTab = useTabStore((s) => s.isDraggingTab);
 
   // Context menu state
   const [contextMenu, setContextMenu] = useState<{
@@ -61,10 +61,10 @@ export function TabBar({ groupIndex = 0 }: TabBarProps) {
   // Track global drag start/end to show the split drop zone
   useEffect(() => {
     function onDragStart() {
-      setIsDraggingTab(true);
+      useTabStore.getState().setIsDraggingTab(true);
     }
     function onDragEnd() {
-      setIsDraggingTab(false);
+      useTabStore.getState().setIsDraggingTab(false);
       setDropTarget(null);
     }
     document.addEventListener("dragstart", onDragStart);

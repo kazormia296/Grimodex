@@ -136,6 +136,17 @@ interface TabState {
   /** Close all tabs in the group. Secondary group is auto-closed when empty. */
   closeAllTabsInGroup: (groupIndex: GroupIndex) => void;
 
+  // ---- Drag-and-drop state ----
+
+  /**
+   * True while a tab drag is in progress. Set by TabBar/SceneEditor via
+   * document dragstart/dragend listeners. Also reset inside moveTabBetweenGroups
+   * because dragend does not bubble to document when the source element is
+   * removed from the DOM during the drop handler.
+   */
+  isDraggingTab: boolean;
+  setIsDraggingTab: (v: boolean) => void;
+
   // ---- Split direction ----
 
   /** Direction of the secondary editor group split. */
@@ -199,6 +210,10 @@ export const useTabStore = create<TabState>()((set, get) => ({
   secondaryGroupOpen: false,
   activeGroupIndex: 0,
   splitDirection: "right",
+  isDraggingTab: false,
+  setIsDraggingTab(v) {
+    set({ isDraggingTab: v });
+  },
   dirtyTabIds: new Set<string>(),
   requestEditorFocus(group: GroupIndex) {
     _editorFocusRequested[group] = true;
@@ -464,8 +479,16 @@ export const useTabStore = create<TabState>()((set, get) => ({
         | "activeGroupIndex"
         | "secondaryGroupOpen"
         | "splitDirection"
+        | "isDraggingTab"
       >
-    > = {};
+    > = {
+      // When a cross-group move completes, the source tab element is removed
+      // from the DOM. In that case `dragend` fires on the detached element and
+      // never bubbles to `document`, so the usual document-level dragend listener
+      // cannot reset the flag. Resetting here (inside the same Zustand set call
+      // as the tab move) keeps the FullAreaDropZone from staying visible.
+      isDraggingTab: false,
+    };
 
     if (fromGroup === 0) {
       updates.tabs = newSrc;
