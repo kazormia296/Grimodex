@@ -5,6 +5,7 @@ import { nanoid } from "nanoid";
 import { createCodexEntry, BUILTIN_CODEX_TYPES } from "@/features/codex/api";
 import { createSnippet } from "@/features/snippets/api";
 import { useSceneStore } from "@/features/tree/store";
+import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 
 const PROJECT_ID = "default-project";
@@ -110,8 +111,10 @@ export function EditorContextMenu({
         name: codexName.trim(),
         summary: selectedText,
       });
+      toast.success(`「${codexName.trim()}」をCodexに追加しました`);
       close();
-    } finally {
+    } catch {
+      toast.error("Codexへの追加に失敗しました");
       setSaving(false);
     }
   };
@@ -128,8 +131,10 @@ export function EditorContextMenu({
         sceneId: activeSceneId || undefined,
         tags: snippetTags.trim() || undefined,
       });
+      toast.success(`スニペット「${snippetTitle.trim()}」を保存しました`);
       close();
-    } finally {
+    } catch {
+      toast.error("スニペットの保存に失敗しました");
       setSaving(false);
     }
   };

@@ -1,5 +1,7 @@
 import { create } from "zustand";
 import { invoke } from "@/lib/tauri";
+import { useSettingsStore } from "@/features/settings/settingsStore";
+import { useCursorSettingsStore } from "@/features/editor/cursorSettingsStore";
 
 export interface RecentWorkspace {
   path: string;
@@ -103,6 +105,9 @@ export const useWorkspaceStore = create<WorkspaceState>()((set, get) => ({
         activeWorkspaceName: result.name,
         globalSettings: settings,
       });
+      // Load persisted editor settings and apply to runtime stores
+      await useSettingsStore.getState().loadAll();
+      useCursorSettingsStore.getState().initFromSettings();
       // Optimize FTS indexes in background (fire-and-forget)
       invoke("fts_optimize").catch(() => {});
     } catch (e) {

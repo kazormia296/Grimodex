@@ -148,6 +148,42 @@
   ol { list-style: decimal; padding-left: 1.5em; margin: 1em 0; }
 
   p { margin: 0.5em 0; }
+
+  blockquote {
+    border-left: 3px solid var(--border);
+    padding-left: 1em;
+    margin: 1em 0;
+    color: var(--muted-foreground);
+    font-style: italic;
+  }
+
+  hr {
+    border: none;
+    border-top: 1px solid var(--border);
+    margin: 1.5em 0;
+  }
+
+  a {
+    color: oklch(0.5 0.2 240);
+    text-decoration: underline;
+    text-underline-offset: 2px;
+    cursor: pointer;
+  }
+}
+.dark .tiptap a {
+  color: oklch(0.7 0.15 240);
+}
+
+/* 傍点（圏点）— Japanese emphasis marks (sesame) */
+.tiptap .emphasis-dots {
+  -webkit-text-emphasis: sesame;
+  text-emphasis: sesame;
+  -webkit-text-emphasis-position: over right;
+  text-emphasis-position: over right;
+}
+.dark .tiptap .emphasis-dots {
+  -webkit-text-emphasis-color: oklch(0.7 0 0);
+  text-emphasis-color: oklch(0.7 0 0);
 }
 
 /* Task 2.4: Temporary highlight for AI-inserted text */

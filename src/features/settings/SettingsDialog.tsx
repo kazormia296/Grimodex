@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from "react";
 import { X } from "lucide-react";
 import { useSettingsStore } from "./settingsStore";
+import { useCursorSettingsStore } from "@/features/editor/cursorSettingsStore";
 import { CategoryNav } from "./CategoryNav";
 import type { SettingsCategory } from "./types";
 import { ProjectCategory } from "./categories/ProjectCategory";
@@ -51,6 +52,8 @@ export function SettingsDialog({
 
   const handleClose = useCallback(async () => {
     await flushPending();
+    // Sync runtime stores that mirror persisted settings
+    useCursorSettingsStore.getState().initFromSettings();
     onClose();
   }, [flushPending, onClose]);
 

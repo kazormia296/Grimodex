@@ -10,6 +10,8 @@ interface CursorSettingsState {
   toggleTypewriterMode: () => void;
   showComments: boolean;
   toggleShowComments: () => void;
+  /** Sync runtime state from persisted settings (call after loadAll). */
+  initFromSettings: () => void;
 }
 
 export const useCursorSettingsStore = create<CursorSettingsState>()((set) => ({
@@ -39,4 +41,13 @@ export const useCursorSettingsStore = create<CursorSettingsState>()((set) => ({
 
   showComments: false,
   toggleShowComments: () => set((s) => ({ showComments: !s.showComments })),
+
+  initFromSettings: () => {
+    const s = useSettingsStore.getState();
+    set({
+      cursorAnimation: s.getBoolean("editor.smoothCaret", true),
+      focusMode: s.getBoolean("editor.focusMode", false),
+      typewriterMode: s.getBoolean("editor.typewriterMode", false),
+    });
+  },
 }));

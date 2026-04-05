@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect, useCallback } from "react";
+import { createPortal } from "react-dom";
 import { ChevronRight } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useTreeStore } from "@/features/tree/treeStore";
@@ -38,6 +39,7 @@ export function computeBreadcrumbPath(
 interface SegmentDropdownProps {
   segment: BreadcrumbSegment;
   siblings: TreeNodeData[];
+  anchorEl: HTMLElement;
   onSelect: (id: string) => void;
   onClose: () => void;
 }
@@ -45,10 +47,23 @@ interface SegmentDropdownProps {
 function SegmentDropdown({
   segment,
   siblings,
+  anchorEl,
   onSelect,
   onClose,
 }: SegmentDropdownProps) {
   const ref = useRef<HTMLDivElement>(null);
+  const [style, setStyle] = useState<React.CSSProperties>({});
+
+  // Position the portal dropdown below the anchor element
+  useEffect(() => {
+    const rect = anchorEl.getBoundingClientRect();
+    setStyle({
+      position: "fixed",
+      top: rect.bottom + 2,
+      left: rect.left,
+      zIndex: 9999,
+    });
+  }, [anchorEl]);
 
   useEffect(() => {
     function handleClick(e: MouseEvent) {
@@ -58,10 +73,11 @@ function SegmentDropdown({
     return () => document.removeEventListener("mousedown", handleClick);
   }, [onClose]);
 
-  return (
+  return createPortal(
     <div
       ref={ref}
-      className="absolute left-0 top-full z-50 mt-0.5 min-w-[180px] rounded-md border border-border bg-popover py-1 shadow-md"
+      style={style}
+      className="min-w-[180px] rounded-md border border-border bg-popover py-1 shadow-md"
     >
       {siblings.map((sib) => (
         <button
@@ -79,7 +95,8 @@ function SegmentDropdown({
           {sib.title}
         </button>
       ))}
-    </div>
+    </div>,
+    document.body,
   );
 }
 
@@ -87,6 +104,7 @@ export function Breadcrumb() {
   const activeSceneId = useTreeStore((s) => s.activeSceneId);
   const nodes = useTreeStore((s) => s.nodes);
   const [openSegmentId, setOpenSegmentId] = useState<string | null>(null);
+  const buttonRefs = useRef<Map<string, HTMLButtonElement>>(new Map());
 
   const nodeMap = Object.fromEntries(nodes.map((n) => [n.id, n]));
   const path = computeBreadcrumbPath(activeSceneId, nodeMap);
@@ -116,12 +134,16 @@ export function Breadcrumb() {
   if (path.length === 0) return null;
 
   return (
-    <div className="flex items-center overflow-x-auto border-b border-border px-3 py-1 text-xs text-muted-foreground">
+    <div className="flex items-center border-b border-border px-3 py-1 text-xs text-muted-foreground">
       {path.map((segment, i) => (
         <span key={segment.id} className="flex items-center">
           {i > 0 && <ChevronRight className="mx-1 h-3 w-3 flex-shrink-0" />}
           <span className="relative">
             <button
+              ref={(el) => {
+                if (el) buttonRefs.current.set(segment.id, el);
+                else buttonRefs.current.delete(segment.id);
+              }}
               type="button"
               className={cn(
                 "rounded px-1 py-0.5 hover:bg-accent hover:text-foreground",
@@ -135,14 +157,16 @@ export function Breadcrumb() {
             >
               {segment.title}
             </button>
-            {openSegmentId === segment.id && (
-              <SegmentDropdown
-                segment={segment}
-                siblings={getSiblings(segment)}
-                onSelect={handleSelect}
-                onClose={() => setOpenSegmentId(null)}
-              />
-            )}
+            {openSegmentId === segment.id &&
+              buttonRefs.current.get(segment.id) && (
+                <SegmentDropdown
+                  segment={segment}
+                  siblings={getSiblings(segment)}
+                  anchorEl={buttonRefs.current.get(segment.id)!}
+                  onSelect={handleSelect}
+                  onClose={() => setOpenSegmentId(null)}
+                />
+              )}
           </span>
         </span>
       ))}

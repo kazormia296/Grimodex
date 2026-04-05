@@ -21,6 +21,7 @@ function ToolbarButton({
     <button
       type="button"
       aria-label={label}
+      title={label}
       disabled={disabled}
       onClick={onClick}
       className={cn(
@@ -68,6 +69,19 @@ export function Toolbar({
     toggleShowComments,
   } = useCursorSettingsStore();
 
+  // Force re-render when editor selection/state changes so isActive() is accurate
+  const [, setEditorTick] = useState(0);
+  useEffect(() => {
+    if (!editor) return;
+    const update = () => setEditorTick((t) => t + 1);
+    editor.on("selectionUpdate", update);
+    editor.on("transaction", update);
+    return () => {
+      editor.off("selectionUpdate", update);
+      editor.off("transaction", update);
+    };
+  }, [editor]);
+
   useEffect(() => {
     if (!overflowOpen) return;
     function close(e: MouseEvent) {
@@ -81,139 +95,174 @@ export function Toolbar({
   if (!editor) return null;
 
   function openRuby() {
-    const { from, to } = editor!.state.selection;
-    setRubyBase(editor!.state.doc.textBetween(from, to));
-    setRubyAnnotation("");
+    if (!editor) return;
+    // Pre-fill from existing ruby node if cursor is on one
+    if (editor.isActive("ruby")) {
+      const attrs = editor.getAttributes("ruby");
+      setRubyBase((attrs.base as string) ?? "");
+      setRubyAnnotation((attrs.annotation as string) ?? "");
+    } else {
+      const { from, to } = editor.state.selection;
+      setRubyBase(editor.state.doc.textBetween(from, to));
+      setRubyAnnotation("");
+    }
     setRubyOpen(true);
     setLinkOpen(false);
   }
 
   function applyRuby() {
-    if (!rubyBase) return;
-    editor!.chain().focus().setRuby(rubyBase, rubyAnnotation).run();
+    if (!rubyBase || !editor) return;
+    editor.chain().focus().setRuby(rubyBase, rubyAnnotation).run();
     setRubyOpen(false);
   }
 
   function openLink() {
-    setLinkUrl((editor!.getAttributes("link").href as string) ?? "");
+    if (!editor) return;
+    setLinkUrl((editor.getAttributes("link").href as string) ?? "");
     setLinkOpen(true);
     setRubyOpen(false);
   }
 
   function applyLink() {
-    if (linkUrl === "") editor!.chain().focus().unsetLink().run();
-    else editor!.chain().focus().setLink({ href: linkUrl }).run();
+    if (!editor) return;
+    if (linkUrl === "") editor.chain().focus().unsetLink().run();
+    else editor.chain().focus().setLink({ href: linkUrl }).run();
     setLinkOpen(false);
   }
 
+  function insertHorizontalRule() {
+    if (!editor) return;
+    // Prevent inserting HR when adjacent sibling is already an HR
+    const { $from, empty } = editor.state.selection;
+    if (empty) {
+      const parent = $from.node($from.depth);
+      const idx = $from.index($from.depth);
+      const prevSib = idx > 0 ? parent.child(idx - 1) : null;
+      if (prevSib?.type.name === "horizontalRule") return;
+    }
+    editor.chain().focus().setHorizontalRule().run();
+  }
+
   return (
-    <div className="relative flex flex-shrink-0 flex-wrap items-center gap-0.5 border-b border-border px-1.5 py-1">
-      {/* G1: インラインフォーマット */}
-      <ToolbarButton
-        label="太字 (Ctrl+B)"
-        active={editor.isActive("bold")}
-        onClick={() => editor.chain().focus().toggleBold().run()}
-      >
-        <strong>B</strong>
-      </ToolbarButton>
-      <ToolbarButton
-        label="斜体 (Ctrl+I)"
-        active={editor.isActive("italic")}
-        onClick={() => editor.chain().focus().toggleItalic().run()}
-      >
-        <em>I</em>
-      </ToolbarButton>
-      <ToolbarButton
-        label="下線 (Ctrl+U)"
-        active={editor.isActive("underline")}
-        onClick={() => editor.chain().focus().toggleUnderline().run()}
-      >
-        <span className="underline">U</span>
-      </ToolbarButton>
-      <ToolbarButton
-        label="取り消し線 (Ctrl+Shift+X)"
-        active={editor.isActive("strike")}
-        onClick={() => editor.chain().focus().toggleStrike().run()}
-      >
-        <span className="line-through">S</span>
-      </ToolbarButton>
-      <ToolbarButton
-        label="傍点 (Ctrl+.)"
-        active={editor.isActive("emphasisDots")}
-        onClick={() => editor.chain().focus().toggleMark("emphasisDots").run()}
-      >
-        ﹅
-      </ToolbarButton>
-      <Sep />
-      {/* G2: ブロックフォーマット */}
-      <ToolbarButton
-        label="見出し 1 (Ctrl+1)"
-        active={editor.isActive("heading", { level: 1 })}
-        onClick={() => editor.chain().focus().toggleHeading({ level: 1 }).run()}
-      >
-        H1
-      </ToolbarButton>
-      <ToolbarButton
-        label="見出し 2 (Ctrl+2)"
-        active={editor.isActive("heading", { level: 2 })}
-        onClick={() => editor.chain().focus().toggleHeading({ level: 2 }).run()}
-      >
-        H2
-      </ToolbarButton>
-      <ToolbarButton
-        label="見出し 3 (Ctrl+3)"
-        active={editor.isActive("heading", { level: 3 })}
-        onClick={() => editor.chain().focus().toggleHeading({ level: 3 }).run()}
-      >
-        H3
-      </ToolbarButton>
-      <Sep />
-      {/* G3: リスト・引用 */}
-      <ToolbarButton
-        label="箇条書き"
-        active={editor.isActive("bulletList")}
-        onClick={() => editor.chain().focus().toggleBulletList().run()}
-      >
-        ≡
-      </ToolbarButton>
-      <ToolbarButton
-        label="番号付きリスト"
-        active={editor.isActive("orderedList")}
-        onClick={() => editor.chain().focus().toggleOrderedList().run()}
-      >
-        1.
-      </ToolbarButton>
-      <ToolbarButton
-        label="引用"
-        active={editor.isActive("blockquote")}
-        onClick={() => editor.chain().focus().toggleBlockquote().run()}
-      >
-        ❝
-      </ToolbarButton>
-      <ToolbarButton
-        label="水平線"
-        onClick={() => editor.chain().focus().setHorizontalRule().run()}
-      >
-        —
-      </ToolbarButton>
-      <Sep />
-      {/* G4: 小説固有 */}
-      <ToolbarButton label="ルビ" active={rubyOpen} onClick={openRuby}>
-        Ruby
-      </ToolbarButton>
-      <ToolbarButton
-        label="リンク (Ctrl+K)"
-        active={editor.isActive("link") || linkOpen}
-        onClick={openLink}
-      >
-        Link
-      </ToolbarButton>
-      <ToolbarButton
-        label="シーン区切り (* * *)"
-        onClick={() => editor.chain().focus().insertSceneBreak().run()}
-      >
-        * * *
-      </ToolbarButton>
+    <div className="relative flex flex-shrink-0 items-center gap-0.5 border-b border-border px-1.5 py-1">
+      {/* Left group: wraps on narrow windows */}
+      <div className="flex min-w-0 flex-1 flex-wrap items-center gap-0.5">
+        {/* G1: インラインフォーマット */}
+        <ToolbarButton
+          label="太字 (Ctrl+B)"
+          active={editor.isActive("bold")}
+          onClick={() => editor.chain().focus().toggleBold().run()}
+        >
+          <strong>B</strong>
+        </ToolbarButton>
+        <ToolbarButton
+          label="斜体 (Ctrl+I)"
+          active={editor.isActive("italic")}
+          onClick={() => editor.chain().focus().toggleItalic().run()}
+        >
+          <em>I</em>
+        </ToolbarButton>
+        <ToolbarButton
+          label="下線 (Ctrl+U)"
+          active={editor.isActive("underline")}
+          onClick={() => editor.chain().focus().toggleUnderline().run()}
+        >
+          <span className="underline">U</span>
+        </ToolbarButton>
+        <ToolbarButton
+          label="取り消し線 (Ctrl+Shift+X)"
+          active={editor.isActive("strike")}
+          onClick={() => editor.chain().focus().toggleStrike().run()}
+        >
+          <span className="line-through">S</span>
+        </ToolbarButton>
+        <ToolbarButton
+          label="傍点 (Ctrl+.)"
+          active={editor.isActive("emphasisDots")}
+          onClick={() =>
+            editor.chain().focus().toggleMark("emphasisDots").run()
+          }
+        >
+          ﹅
+        </ToolbarButton>
+        <Sep />
+        {/* G2: ブロックフォーマット */}
+        <ToolbarButton
+          label="見出し 1 (Ctrl+1)"
+          active={editor.isActive("heading", { level: 1 })}
+          onClick={() =>
+            editor.chain().focus().toggleHeading({ level: 1 }).run()
+          }
+        >
+          H1
+        </ToolbarButton>
+        <ToolbarButton
+          label="見出し 2 (Ctrl+2)"
+          active={editor.isActive("heading", { level: 2 })}
+          onClick={() =>
+            editor.chain().focus().toggleHeading({ level: 2 }).run()
+          }
+        >
+          H2
+        </ToolbarButton>
+        <ToolbarButton
+          label="見出し 3 (Ctrl+3)"
+          active={editor.isActive("heading", { level: 3 })}
+          onClick={() =>
+            editor.chain().focus().toggleHeading({ level: 3 }).run()
+          }
+        >
+          H3
+        </ToolbarButton>
+        <Sep />
+        {/* G3: リスト・引用 */}
+        <ToolbarButton
+          label="箇条書き"
+          active={editor.isActive("bulletList")}
+          onClick={() => editor.chain().focus().toggleBulletList().run()}
+        >
+          ≡
+        </ToolbarButton>
+        <ToolbarButton
+          label="番号付きリスト"
+          active={editor.isActive("orderedList")}
+          onClick={() => editor.chain().focus().toggleOrderedList().run()}
+        >
+          1.
+        </ToolbarButton>
+        <ToolbarButton
+          label="引用 (ブロッククォート)"
+          active={editor.isActive("blockquote")}
+          onClick={() => editor.chain().focus().toggleBlockquote().run()}
+        >
+          ❝
+        </ToolbarButton>
+        <ToolbarButton label="水平線" onClick={insertHorizontalRule}>
+          —
+        </ToolbarButton>
+        <Sep />
+        {/* G4: 小説固有 */}
+        <ToolbarButton
+          label="ルビ（ふりがな）"
+          active={rubyOpen || editor.isActive("ruby")}
+          onClick={openRuby}
+        >
+          Ruby
+        </ToolbarButton>
+        <ToolbarButton
+          label="リンク (Ctrl+K)"
+          active={editor.isActive("link") || linkOpen}
+          onClick={openLink}
+        >
+          Link
+        </ToolbarButton>
+        <ToolbarButton
+          label="シーン区切り (* * *)"
+          onClick={() => editor.chain().focus().insertSceneBreak().run()}
+        >
+          * * *
+        </ToolbarButton>
+      </div>
 
       {/* Ruby入力ポップオーバー */}
       {rubyOpen && (
@@ -286,73 +335,72 @@ export function Toolbar({
         </div>
       )}
 
-      {/* スペーサー */}
-      <div className="flex-1" />
-
-      {/* G5: ビュートグル（右寄せ） */}
-      <ToolbarButton
-        label="帰属表示"
-        active={showAttribution}
-        onClick={toggleAttribution}
-      >
-        Attr
-      </ToolbarButton>
-      <ToolbarButton
-        label="コメント表示（未実装）"
-        active={showComments}
-        onClick={toggleShowComments}
-        disabled
-      >
-        Cmt
-      </ToolbarButton>
-      <ToolbarButton
-        label="フォーカスモード"
-        active={focusMode}
-        onClick={toggleFocusMode}
-      >
-        Focus
-      </ToolbarButton>
-      <ToolbarButton
-        label="タイプライターモード"
-        active={typewriterMode}
-        onClick={toggleTypewriterMode}
-      >
-        TW
-      </ToolbarButton>
-      <Sep />
-
-      {/* オーバーフローメニュー */}
-      <div ref={overflowRef} className="relative">
+      {/* Right group: always visible, never wraps */}
+      <div className="flex flex-shrink-0 items-center gap-0.5">
         <ToolbarButton
-          label="その他のオプション"
-          active={overflowOpen}
-          onClick={() => setOverflowOpen((v) => !v)}
+          label="帰属表示"
+          active={showAttribution}
+          onClick={toggleAttribution}
         >
-          ⋮
+          Attr
         </ToolbarButton>
-        {overflowOpen && (
-          <div className="absolute right-0 top-full z-50 mt-1 min-w-[200px] rounded border border-border bg-background py-1 shadow-md">
-            <OverflowItem
-              label="検索と置換"
-              shortcut="Ctrl+H"
-              onClick={() => {
-                onFindReplace();
-                setOverflowOpen(false);
-              }}
-            />
-            <OverflowItem label="目標文字数..." disabled />
-            <OverflowItem
-              label="縦書きプレビュー"
-              onClick={() => {
-                onVerticalPreview();
-                setOverflowOpen(false);
-              }}
-            />
-            <div className="my-1 border-t border-border" />
-            <OverflowItem label="ブレッドクラムを表示" disabled />
-            <OverflowItem label="行番号を表示" disabled />
-          </div>
-        )}
+        <ToolbarButton
+          label="コメント表示（未実装）"
+          active={showComments}
+          onClick={toggleShowComments}
+          disabled
+        >
+          Cmt
+        </ToolbarButton>
+        <ToolbarButton
+          label="フォーカスモード"
+          active={focusMode}
+          onClick={toggleFocusMode}
+        >
+          Focus
+        </ToolbarButton>
+        <ToolbarButton
+          label="タイプライターモード"
+          active={typewriterMode}
+          onClick={toggleTypewriterMode}
+        >
+          TW
+        </ToolbarButton>
+        <Sep />
+
+        {/* オーバーフローメニュー */}
+        <div ref={overflowRef} className="relative">
+          <ToolbarButton
+            label="その他のオプション"
+            active={overflowOpen}
+            onClick={() => setOverflowOpen((v) => !v)}
+          >
+            ⋮
+          </ToolbarButton>
+          {overflowOpen && (
+            <div className="absolute right-0 top-full z-50 mt-1 min-w-[200px] rounded border border-border bg-background py-1 shadow-md">
+              <OverflowItem
+                label="検索と置換"
+                shortcut="Ctrl+H"
+                onClick={() => {
+                  onFindReplace();
+                  setOverflowOpen(false);
+                }}
+              />
+              <OverflowItem label="目標文字数..." disabled />
+              <OverflowItem
+                label="縦書きプレビュー"
+                onClick={() => {
+                  onVerticalPreview();
+                  setOverflowOpen(false);
+                }}
+              />
+              <div className="my-1 border-t border-border" />
+              <OverflowItem label="ブレッドクラムを表示" disabled />
+              <OverflowItem label="行番号を表示" disabled />
+            </div>
+          )}
+        </div>
       </div>
     </div>
   );

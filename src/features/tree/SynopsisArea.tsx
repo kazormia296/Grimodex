@@ -14,6 +14,7 @@ export function SynopsisArea({ nodeId }: SynopsisAreaProps) {
   const node = nodes.find((n) => n.id === nodeId);
   const [text, setText] = useState(node?.synopsis ?? "");
   const [isGenerating, setIsGenerating] = useState(false);
+  const [confirmOverwrite, setConfirmOverwrite] = useState(false);
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Sync external changes
@@ -32,15 +33,9 @@ export function SynopsisArea({ nodeId }: SynopsisAreaProps) {
     [nodeId, updateSynopsis],
   );
 
-  const handleGenerate = useCallback(async () => {
+  const doGenerate = useCallback(async () => {
     if (!node) return;
-
-    // Confirm overwrite if synopsis exists
-    if (text.trim()) {
-      const ok = window.confirm("既存のSynopsisを上書きしますか？");
-      if (!ok) return;
-    }
-
+    setConfirmOverwrite(false);
     setIsGenerating(true);
     try {
       const content = await loadSceneContent(nodeId);
@@ -58,7 +53,23 @@ export function SynopsisArea({ nodeId }: SynopsisAreaProps) {
     } finally {
       setIsGenerating(false);
     }
-  }, [node, nodeId, text, updateSynopsis]);
+  }, [node, nodeId, updateSynopsis]);
+
+  const handleGenerate = useCallback(async () => {
+    if (!node) return;
+    // Check body content first, before asking about overwrite
+    const content = await loadSceneContent(nodeId);
+    if (!content?.trim()) {
+      toast.warning("シーン本文が空のため、Synopsisを生成できません。");
+      return;
+    }
+    // Show inline confirmation if synopsis already exists
+    if (text.trim()) {
+      setConfirmOverwrite(true);
+      return;
+    }
+    await doGenerate();
+  }, [node, nodeId, text, doGenerate]);
 
   if (!node || node.nodeType !== "scene") return null;
 
@@ -78,6 +89,30 @@ export function SynopsisArea({ nodeId }: SynopsisAreaProps) {
           {isGenerating ? "生成中…" : "✦ Generate"}
         </button>
       </div>
+
+      {/* Inline overwrite confirmation (replaces window.confirm) */}
+      {confirmOverwrite && (
+        <div className="mb-2 flex items-center gap-2 rounded border border-border bg-muted/40 px-2 py-1.5 text-xs">
+          <span className="flex-1 text-muted-foreground">
+            既存のSynopsisを上書きしますか？
+          </span>
+          <button
+            type="button"
+            onClick={doGenerate}
+            className="rounded bg-primary px-2 py-0.5 text-xs text-primary-foreground"
+          >
+            上書き
+          </button>
+          <button
+            type="button"
+            onClick={() => setConfirmOverwrite(false)}
+            className="rounded px-2 py-0.5 text-xs text-muted-foreground hover:bg-accent"
+          >
+            キャンセル
+          </button>
+        </div>
+      )}
+
       <textarea
         value={text}
         onChange={(e) => handleChange(e.target.value)}

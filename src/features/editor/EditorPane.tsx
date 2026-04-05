@@ -30,7 +30,10 @@ import { VerticalPreview } from "@/features/editor/VerticalPreview";
 import { EditorContextMenu } from "@/features/editor/EditorContextMenu";
 import { FindReplaceBar } from "@/features/editor/FindReplaceBar";
 import { useFocusMode } from "@/features/editor/useFocusMode";
-import { useTypewriterScroll } from "@/features/editor/useTypewriterScroll";
+import {
+  useTypewriterScroll,
+  computeTypewriterScrollTop,
+} from "@/features/editor/useTypewriterScroll";
 import { useInlineAiDiff } from "@/features/editor/inlineAi/useInlineAiDiff";
 import { InlineAIPalette } from "@/features/editor/inlineAi/InlineAIPalette";
 import { InlineAIToolbar } from "@/features/editor/inlineAi/InlineAIToolbar";
@@ -77,7 +80,6 @@ export function EditorPane({ sceneId, groupIndex, onFocus }: EditorPaneProps) {
   const editorRef = useRef<ReturnType<typeof useEditor>>(null);
   const [charCount, setCharCount] = useState(0);
   const [wordCount, setWordCount] = useState(0);
-  const [cursorPos, setCursorPos] = useState(0);
   const [isDirty, setIsDirty] = useState(false);
 
   const activeNode = useTreeStore((s) => s.nodes.find((n) => n.id === sceneId));
@@ -300,9 +302,7 @@ export function EditorPane({ sceneId, groupIndex, onFocus }: EditorPaneProps) {
           .setLiveContent(sid, e.getJSON(), groupIndex);
       }
     },
-    onSelectionUpdate({ editor: e }) {
-      setCursorPos(e.state.selection.anchor);
-    },
+    onSelectionUpdate() {},
     onFocus() {
       onFocus();
     },
@@ -369,6 +369,31 @@ export function EditorPane({ sceneId, groupIndex, onFocus }: EditorPaneProps) {
   useFocusMode(editor);
   const typewriterMode = useCursorSettingsStore((s) => s.typewriterMode);
   useTypewriterScroll(editor, typewriterMode, editorContainerRef);
+
+  // When typewriter mode is toggled on, scroll immediately to center the cursor
+  // to avoid a visual jump caused by the 50vh padding being added.
+  useEffect(() => {
+    if (!typewriterMode || !editorContainerRef.current || !editor) return;
+    const container = editorContainerRef.current;
+    const raf = requestAnimationFrame(() => {
+      const { from } = editor.view.state.selection;
+      let coordsTop: number;
+      try {
+        coordsTop = editor.view.coordsAtPos(from).top;
+      } catch {
+        return;
+      }
+      const containerRect = container.getBoundingClientRect();
+      const target = computeTypewriterScrollTop(
+        coordsTop,
+        containerRect.top,
+        container.scrollTop,
+        containerRect.height,
+      );
+      container.scrollTo({ top: Math.max(0, target), behavior: "auto" });
+    });
+    return () => cancelAnimationFrame(raf);
+  }, [typewriterMode, editor]);
   const { generate, accept, reject, retry } = useInlineAiDiff(editor);
 
   const cursorAnimation = useCursorSettingsStore((s) => s.cursorAnimation);
@@ -442,7 +467,6 @@ export function EditorPane({ sceneId, groupIndex, onFocus }: EditorPaneProps) {
       const count = text.length;
       setCharCount(count);
       setWordCount(text.trim() === "" ? 0 : text.trim().split(/\s+/).length);
-      setCursorPos(0);
       setIsDirty(false);
       wasEmptyRef.current = count === 0;
       useTreeStore.getState().setCharCount(sceneId, count);
@@ -519,6 +543,12 @@ export function EditorPane({ sceneId, groupIndex, onFocus }: EditorPaneProps) {
       <div
         ref={editorContainerRef}
         className={`flex-1 overflow-auto p-4${typewriterMode ? " typewriter-padding" : ""}${filterSource ? ` attribution-filter-${filterSource}` : ""}`}
+        onClick={(e) => {
+          // Focus editor when clicking on the padding/background area
+          if (e.target === e.currentTarget) {
+            editor?.commands.focus();
+          }
+        }}
       >
         <div
           style={{
@@ -542,7 +572,6 @@ export function EditorPane({ sceneId, groupIndex, onFocus }: EditorPaneProps) {
         <div className="flex items-center gap-3">
           <CharCount count={charCount} />
           <span>{wordCount} 語</span>
-          {cursorPos > 0 && <span>位置 {cursorPos}</span>}
         </div>
         <div className="flex items-center gap-3">
           {activeStatus && (
