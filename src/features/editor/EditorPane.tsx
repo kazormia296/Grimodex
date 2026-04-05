@@ -404,10 +404,13 @@ export function EditorPane({ sceneId, groupIndex, onFocus }: EditorPaneProps) {
         if (sourceGroupIndex === groupIndex) return; // Skip our own updates
         // isApplyingExternalUpdate guards the onUpdate handler from re-broadcasting
         isApplyingExternalUpdate.current = true;
-        editor.commands.setContent(
-          content as Parameters<typeof editor.commands.setContent>[0],
-        );
-        isApplyingExternalUpdate.current = false;
+        try {
+          editor.commands.setContent(
+            content as Parameters<typeof editor.commands.setContent>[0],
+          );
+        } finally {
+          isApplyingExternalUpdate.current = false;
+        }
       });
     return unsubscribe;
   }, [sceneId, groupIndex, editor]);
@@ -430,8 +433,11 @@ export function EditorPane({ sceneId, groupIndex, onFocus }: EditorPaneProps) {
       // Guard onUpdate so that programmatic content loading does not
       // trigger autosave scheduling or promote the preview tab to pinned.
       isApplyingExternalUpdate.current = true;
-      editor!.commands.setContent(content || "");
-      isApplyingExternalUpdate.current = false;
+      try {
+        editor!.commands.setContent(content || "");
+      } finally {
+        isApplyingExternalUpdate.current = false;
+      }
       const text = editor!.state.doc.textContent;
       const count = text.length;
       setCharCount(count);
@@ -447,27 +453,30 @@ export function EditorPane({ sceneId, groupIndex, onFocus }: EditorPaneProps) {
         const authorshipType = editor!.schema.marks["authorship"];
         if (authorshipType) {
           isApplyingExternalUpdate.current = true;
-          editor!
-            .chain()
-            .focus()
-            .command(({ tr }) => {
-              tr.setMeta("programmaticInsert", true);
-              for (const { from, to, attrs } of markData) {
-                const docSize = tr.doc.content.size;
-                const clampedFrom = Math.min(from, docSize);
-                const clampedTo = Math.min(to, docSize);
-                if (clampedFrom < clampedTo) {
-                  tr.addMark(
-                    clampedFrom,
-                    clampedTo,
-                    authorshipType.create(attrs),
-                  );
+          try {
+            editor!
+              .chain()
+              .focus()
+              .command(({ tr }) => {
+                tr.setMeta("programmaticInsert", true);
+                for (const { from, to, attrs } of markData) {
+                  const docSize = tr.doc.content.size;
+                  const clampedFrom = Math.min(from, docSize);
+                  const clampedTo = Math.min(to, docSize);
+                  if (clampedFrom < clampedTo) {
+                    tr.addMark(
+                      clampedFrom,
+                      clampedTo,
+                      authorshipType.create(attrs),
+                    );
+                  }
                 }
-              }
-              return true;
-            })
-            .run();
-          isApplyingExternalUpdate.current = false;
+                return true;
+              })
+              .run();
+          } finally {
+            isApplyingExternalUpdate.current = false;
+          }
         }
       }
 
