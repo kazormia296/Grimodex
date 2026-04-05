@@ -660,7 +660,7 @@ export function EditorPane({ sceneId, groupIndex, onFocus }: EditorPaneProps) {
           />
         </div>
       </div>
-      <div className="flex flex-shrink-0 items-center justify-between overflow-hidden border-t border-border px-3 py-1 text-xs text-muted-foreground">
+      <div className="flex flex-shrink-0 items-center justify-between border-t border-border px-3 py-1 text-xs text-muted-foreground">
         {/* Left: status badge */}
         <div className="relative flex min-w-0 items-center">
           {activeStatus ? (
