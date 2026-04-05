@@ -1,8 +1,8 @@
 import { useState, useEffect, useRef, useCallback } from "react";
+import { Clock } from "lucide-react";
 import { useEditor, EditorContent } from "@tiptap/react";
 import { getEditorExtensions } from "@/features/editor/extensions";
 import { Toolbar } from "@/features/editor/Toolbar";
-import { CharCount } from "@/features/editor/CharCount";
 import { SynopsisHeader } from "@/features/editor/SynopsisHeader";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { loadSceneContent, saveSceneContent } from "@/features/tree/api";
@@ -16,6 +16,7 @@ import { useCodexHighlight } from "@/features/editor/useCodexHighlight";
 import { CodexPopover } from "@/features/editor/CodexPopover";
 import { useAttribution } from "@/features/attribution/useAttribution";
 import { useAttributionStore } from "@/features/attribution/attributionStore";
+import { useLayoutStore } from "@/features/layout/layoutStore";
 import { useCursorEffect } from "@/features/editor/useCursorEffect";
 import { useCursorSettingsStore } from "@/features/editor/cursorSettingsStore";
 import { useEditorSettings } from "@/features/settings/hooks/useEditorSettings";
@@ -79,8 +80,12 @@ export function EditorPane({ sceneId, groupIndex, onFocus }: EditorPaneProps) {
   const prevSceneIdRef = useRef(sceneId);
   const editorRef = useRef<ReturnType<typeof useEditor>>(null);
   const [charCount, setCharCount] = useState(0);
-  const [wordCount, setWordCount] = useState(0);
+  const [, setWordCount] = useState(0);
   const [isDirty, setIsDirty] = useState(false);
+  const [isSaving, setIsSaving] = useState(false);
+  const [statusPopoverOpen, setStatusPopoverOpen] = useState(false);
+  const statusPopoverRef = useRef<HTMLDivElement>(null);
+  const statusBadgeRef = useRef<HTMLButtonElement>(null);
 
   const activeNode = useTreeStore((s) => s.nodes.find((n) => n.id === sceneId));
   const activeStatus = (activeNode?.status ?? null) as SceneStatus | null;
@@ -165,7 +170,12 @@ export function EditorPane({ sceneId, groupIndex, onFocus }: EditorPaneProps) {
   }, []);
 
   const saveFn = useCallback(async () => {
-    await coreSave();
+    setIsSaving(true);
+    try {
+      await coreSave();
+    } finally {
+      setIsSaving(false);
+    }
     setIsDirtyRef.current(false);
 
     // Auto-revision is non-critical — don't let it trigger "save failed" toast
@@ -211,6 +221,9 @@ export function EditorPane({ sceneId, groupIndex, onFocus }: EditorPaneProps) {
   );
 
   const filterSource = useAttributionStore((s) => s.filterSource);
+  const showAttribution = useAttributionStore((s) => s.showAttribution);
+  const aiRatio = useTreeStore((s) => s.aiRatios[sceneId] ?? 0);
+  const togglePanel = useLayoutStore((s) => s.togglePanel);
 
   const insertFromSnippet = useEditorStore((s) => s.insertFromSnippet);
   const insertFromPaste = useEditorStore((s) => s.insertFromPaste);
@@ -363,6 +376,21 @@ export function EditorPane({ sceneId, groupIndex, onFocus }: EditorPaneProps) {
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [handleManualSave]);
+
+  // Close status popover on outside click
+  useEffect(() => {
+    if (!statusPopoverOpen) return;
+    function onMouseDown(e: MouseEvent) {
+      const target = e.target as Node;
+      if (
+        !statusBadgeRef.current?.contains(target) &&
+        !statusPopoverRef.current?.contains(target)
+      )
+        setStatusPopoverOpen(false);
+    }
+    document.addEventListener("mousedown", onMouseDown);
+    return () => document.removeEventListener("mousedown", onMouseDown);
+  }, [statusPopoverOpen]);
 
   useInsertHighlight(editor);
   useCodexHighlight(editor);
@@ -569,20 +597,68 @@ export function EditorPane({ sceneId, groupIndex, onFocus }: EditorPaneProps) {
         </div>
       </div>
       <div className="flex flex-shrink-0 items-center justify-between overflow-hidden border-t border-border px-3 py-1 text-xs text-muted-foreground">
-        <div className="flex min-w-0 items-center gap-3">
-          <CharCount count={charCount} />
-          <span>{wordCount} 語</span>
+        {/* Left: status badge */}
+        <div className="relative flex min-w-0 items-center">
+          {activeStatus ? (
+            <>
+              <button
+                ref={statusBadgeRef}
+                type="button"
+                title="ステータスを変更"
+                onClick={() => setStatusPopoverOpen((v) => !v)}
+                className={`rounded px-1.5 py-0.5 font-medium hover:bg-accent ${STATUS_COLORS[activeStatus]}`}
+              >
+                {STATUS_LABELS[activeStatus]}
+              </button>
+              {statusPopoverOpen && (
+                <div
+                  ref={statusPopoverRef}
+                  className="absolute bottom-full left-0 z-50 mb-1 min-w-[120px] rounded border border-border bg-background py-1 shadow-md"
+                >
+                  {(
+                    Object.entries(STATUS_LABELS) as [SceneStatus, string][]
+                  ).map(([s, label]) => (
+                    <button
+                      key={s}
+                      type="button"
+                      onClick={() => {
+                        useTreeStore
+                          .getState()
+                          .setStatus(sceneId, s)
+                          .catch(() => {});
+                        setStatusPopoverOpen(false);
+                      }}
+                      className={`flex w-full items-center px-3 py-1.5 text-left text-xs hover:bg-accent ${s === activeStatus ? "font-medium" : ""} ${STATUS_COLORS[s]}`}
+                    >
+                      {label}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </>
+          ) : null}
         </div>
+        {/* Right: stats + save state + history */}
         <div className="flex flex-shrink-0 items-center gap-3">
-          {activeStatus && (
-            <span className={STATUS_COLORS[activeStatus]}>
-              {STATUS_LABELS[activeStatus]}
-            </span>
+          {showAttribution && aiRatio > 0 && (
+            <button
+              type="button"
+              title="Attributionパネルを開く"
+              onClick={() => togglePanel("attribution")}
+              className="tabular-nums text-purple-400 hover:text-foreground"
+            >
+              AI: {aiRatio}%
+            </button>
           )}
-          {isDirty ? (
-            <span className="opacity-50">未保存</span>
+          <span data-testid="char-count" className="tabular-nums">
+            {charCount.toLocaleString()} chars
+          </span>
+          {isSaving ? (
+            <span className="opacity-50">Saving...</span>
+          ) : isDirty ? (
+            <span className="text-amber-500">Unsaved</span>
           ) : (
-            <span className="opacity-40">保存済</span>
+            <span className="opacity-40">Saved</span>
           )}
           <button
             type="button"
@@ -597,7 +673,7 @@ export function EditorPane({ sceneId, groupIndex, onFocus }: EditorPaneProps) {
             }}
             className="hover:text-foreground"
           >
-            履歴
+            <Clock className="h-3.5 w-3.5" />
           </button>
         </div>
       </div>
