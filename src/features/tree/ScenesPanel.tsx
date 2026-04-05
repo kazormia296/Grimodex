@@ -1112,11 +1112,16 @@ export function ScenesPanel() {
             <div className="rounded-lg border border-border bg-popover p-4 shadow-xl w-72">
               <p className="text-sm font-medium mb-1">削除の確認</p>
               <p className="text-xs text-muted-foreground mb-4">
-                {
-                  deleteConfirm.filter(
-                    (id) => (charCounts[id] ?? 0) > 0 || nodeMap[id]?.synopsis,
-                  ).length
-                }
+                {(() => {
+                  function collectAll(id: string): string[] {
+                    return [id, ...(childMap[id] ?? []).flatMap(collectAll)];
+                  }
+                  return deleteConfirm.flatMap(collectAll).filter((id) => {
+                    const node = nodeMap[id];
+                    if (!node || node.nodeType === "folder") return false;
+                    return (charCounts[id] ?? 0) > 0 || !!node.synopsis;
+                  }).length;
+                })()}
                 件のシーンに本文またはsynopsisがあります。削除すると元に戻せません。
               </p>
               <div className="flex gap-2 justify-end">
