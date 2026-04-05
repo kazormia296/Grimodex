@@ -103,6 +103,14 @@ export function EditorPane({ sceneId, groupIndex, onFocus }: EditorPaneProps) {
   const savedEditorStateRef = useRef<
     Map<string, { from: number; to: number; scrollTop: number }>
   >(new Map());
+  // Pending cursor/scroll restore for lazy application on next editor focus.
+  // Set when the scene switch was triggered from the Scenes panel (no focus steal).
+  // Cleared either when consumed by onFocus or when a new scene starts loading.
+  const pendingCursorRestoreRef = useRef<{
+    from: number;
+    to: number;
+    scrollTop: number;
+  } | null>(null);
   const [charCount, setCharCount] = useState(0);
   const [, setWordCount] = useState(0);
   const [isDirty, setIsDirty] = useState(false);
@@ -354,6 +362,21 @@ export function EditorPane({ sceneId, groupIndex, onFocus }: EditorPaneProps) {
     onSelectionUpdate() {},
     onFocus() {
       onFocus();
+      // Apply lazy cursor/scroll restore if one was deferred (Scenes-panel navigation).
+      const pending = pendingCursorRestoreRef.current;
+      if (pending) {
+        pendingCursorRestoreRef.current = null;
+        const ed = editorRef.current;
+        if (ed) {
+          const docSize = ed.state.doc.content.size;
+          const from = Math.min(pending.from, Math.max(0, docSize - 1));
+          const to = Math.min(pending.to, Math.max(0, docSize - 1));
+          ed.commands.setTextSelection({ from, to });
+        }
+        if (editorContainerRef.current) {
+          editorContainerRef.current.scrollTop = pending.scrollTop;
+        }
+      }
     },
   });
 
@@ -580,22 +603,41 @@ export function EditorPane({ sceneId, groupIndex, onFocus }: EditorPaneProps) {
 
       prevSceneIdRef.current = sceneId;
 
-      // Restore cursor/scroll state if this scene was previously visited
+      // Decide whether to focus the editor immediately.
+      // Tab clicks set the flag; Scenes-panel navigation does not.
+      const focusNow = useTabStore.getState().consumeEditorFocusRequest();
+
+      // Clear any pending lazy restore from a previous scene switch so stale
+      // state is never applied if this new switch doesn't produce saved data.
+      pendingCursorRestoreRef.current = null;
+
+      // Restore cursor/scroll state if this scene was previously visited.
       const saved = savedEditorStateRef.current.get(sceneId);
       if (saved && !cancelled) {
-        requestAnimationFrame(() => {
-          if (cancelled) return;
-          const ed = editorRef.current;
-          if (ed) {
-            const docSize = ed.state.doc.content.size;
-            const from = Math.min(saved.from, Math.max(0, docSize - 1));
-            const to = Math.min(saved.to, Math.max(0, docSize - 1));
-            ed.chain().focus().setTextSelection({ from, to }).run();
-          }
-          if (editorContainerRef.current) {
-            editorContainerRef.current.scrollTop = saved.scrollTop;
-          }
-        });
+        if (focusNow) {
+          // Tab click: focus the editor and restore cursor/scroll immediately.
+          requestAnimationFrame(() => {
+            if (cancelled) return;
+            const ed = editorRef.current;
+            if (ed) {
+              const docSize = ed.state.doc.content.size;
+              const from = Math.min(saved.from, Math.max(0, docSize - 1));
+              const to = Math.min(saved.to, Math.max(0, docSize - 1));
+              ed.chain().focus().setTextSelection({ from, to }).run();
+            }
+            if (editorContainerRef.current) {
+              editorContainerRef.current.scrollTop = saved.scrollTop;
+            }
+          });
+        } else {
+          // Scenes-panel navigation: defer restore until the editor is focused
+          // so keyboard navigation in the panel is not interrupted.
+          pendingCursorRestoreRef.current = {
+            from: saved.from,
+            to: saved.to,
+            scrollTop: saved.scrollTop,
+          };
+        }
       }
     }
 

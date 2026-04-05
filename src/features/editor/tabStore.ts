@@ -146,6 +146,19 @@ interface TabState {
     direction: "right" | "below",
   ) => void;
 
+  // ---- Editor focus intent ----
+
+  /**
+   * Set by TabBar when the user explicitly clicks a tab.
+   * EditorPane consumes this once via consumeEditorFocusRequest() to decide
+   * whether to focus the editor immediately on scene switch.
+   * Scenes-panel navigation does NOT set this flag, so the editor does not
+   * steal focus from keyboard navigation.
+   */
+  requestEditorFocus: () => void;
+  /** Read and clear the flag. Returns true if a focus was requested. */
+  consumeEditorFocusRequest: () => boolean;
+
   // ---- Unsaved-changes tracking ----
 
   /** IDs of tabs that have unsaved content. Updated by EditorPane. */
@@ -169,6 +182,10 @@ interface TabState {
   disposeAutoSave?: () => void;
 }
 
+// Module-level flag: does not need Zustand reactivity.
+// Set by TabBar on explicit tab click; consumed once by EditorPane.
+let _editorFocusRequested = false;
+
 export const useTabStore = create<TabState>()((set, get) => ({
   tabs: [],
   activeTabId: null,
@@ -178,6 +195,14 @@ export const useTabStore = create<TabState>()((set, get) => ({
   activeGroupIndex: 0,
   splitDirection: "right",
   dirtyTabIds: new Set<string>(),
+  requestEditorFocus() {
+    _editorFocusRequested = true;
+  },
+  consumeEditorFocusRequest() {
+    const val = _editorFocusRequested;
+    _editorFocusRequested = false;
+    return val;
+  },
 
   // ---- Primary group ----
 
