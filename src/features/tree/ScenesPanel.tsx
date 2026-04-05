@@ -1122,7 +1122,7 @@ export function ScenesPanel() {
                     return (charCounts[id] ?? 0) > 0 || !!node.synopsis;
                   }).length;
                 })()}
-                件のシーンに本文またはsynopsisがあります。削除すると元に戻せません。
+                件のシーンに本文またはsynopsisがあります。削除してもよいですか？
               </p>
               <div className="flex gap-2 justify-end">
                 <button
