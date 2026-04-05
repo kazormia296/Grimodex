@@ -427,7 +427,11 @@ export function EditorPane({ sceneId, groupIndex, onFocus }: EditorPaneProps) {
 
       const content = await loadSceneContent(sceneId);
       if (cancelled) return;
+      // Guard onUpdate so that programmatic content loading does not
+      // trigger autosave scheduling or promote the preview tab to pinned.
+      isApplyingExternalUpdate.current = true;
       editor!.commands.setContent(content || "");
+      isApplyingExternalUpdate.current = false;
       const text = editor!.state.doc.textContent;
       const count = text.length;
       setCharCount(count);
@@ -442,6 +446,7 @@ export function EditorPane({ sceneId, groupIndex, onFocus }: EditorPaneProps) {
         const markData = spansToMarkData(spans);
         const authorshipType = editor!.schema.marks["authorship"];
         if (authorshipType) {
+          isApplyingExternalUpdate.current = true;
           editor!
             .chain()
             .focus()
@@ -462,6 +467,7 @@ export function EditorPane({ sceneId, groupIndex, onFocus }: EditorPaneProps) {
               return true;
             })
             .run();
+          isApplyingExternalUpdate.current = false;
         }
       }
 
