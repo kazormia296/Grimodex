@@ -5,6 +5,18 @@ import { useTabStore } from "./tabStore";
 import { useTreeStore } from "@/features/tree/treeStore";
 import type { GroupIndex } from "./tabStore";
 
+const DRAG_DATA_KEY = "application/grimodex-tab";
+
+interface DragPayload {
+  nodeId: string;
+  groupIndex: GroupIndex;
+}
+
+interface DropTarget {
+  nodeId: string;
+  side: "left" | "right";
+}
+
 interface TabBarProps {
   groupIndex?: GroupIndex;
 }
@@ -27,6 +39,27 @@ export function TabBar({ groupIndex = 0 }: TabBarProps) {
   const [hasOverflow, setHasOverflow] = useState(false);
   const [overflowOpen, setOverflowOpen] = useState(false);
   const overflowBtnRef = useRef<HTMLDivElement>(null);
+
+  // Drag-and-drop state
+  const [dropTarget, setDropTarget] = useState<DropTarget | null>(null);
+  const [isDraggingTab, setIsDraggingTab] = useState(false);
+
+  // Track global drag start/end to show the split drop zone
+  useEffect(() => {
+    function onDragStart() {
+      setIsDraggingTab(true);
+    }
+    function onDragEnd() {
+      setIsDraggingTab(false);
+      setDropTarget(null);
+    }
+    document.addEventListener("dragstart", onDragStart);
+    document.addEventListener("dragend", onDragEnd);
+    return () => {
+      document.removeEventListener("dragstart", onDragStart);
+      document.removeEventListener("dragend", onDragEnd);
+    };
+  }, []);
 
   // Detect when tabs overflow the container
   useEffect(() => {
@@ -89,22 +122,131 @@ export function TabBar({ groupIndex = 0 }: TabBarProps) {
     }
   }
 
+  // --- Drag handlers ---
+
+  function handleDragStart(e: React.DragEvent, nodeId: string) {
+    const payload: DragPayload = {
+      nodeId,
+      groupIndex: isPrimary ? 0 : 1,
+    };
+    e.dataTransfer.setData(DRAG_DATA_KEY, JSON.stringify(payload));
+    e.dataTransfer.effectAllowed = "move";
+  }
+
+  function handleDragOver(e: React.DragEvent, nodeId: string) {
+    if (!e.dataTransfer.types.includes(DRAG_DATA_KEY)) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = "move";
+    const rect = e.currentTarget.getBoundingClientRect();
+    const side = e.clientX < rect.left + rect.width / 2 ? "left" : "right";
+    setDropTarget((prev) =>
+      prev?.nodeId === nodeId && prev.side === side ? prev : { nodeId, side },
+    );
+  }
+
+  function handleDragLeave(e: React.DragEvent) {
+    if (!e.currentTarget.contains(e.relatedTarget as Node)) {
+      setDropTarget(null);
+    }
+  }
+
+  function handleDrop(e: React.DragEvent, targetNodeId: string) {
+    e.preventDefault();
+    setDropTarget(null);
+    const raw = e.dataTransfer.getData(DRAG_DATA_KEY);
+    if (!raw) return;
+    const { nodeId: srcId, groupIndex: srcGroup } = JSON.parse(
+      raw,
+    ) as DragPayload;
+
+    const dstGroup: GroupIndex = isPrimary ? 0 : 1;
+    const rect = e.currentTarget.getBoundingClientRect();
+    const side = e.clientX < rect.left + rect.width / 2 ? "left" : "right";
+    const dstIndex = tabs.findIndex((t) => t.nodeId === targetNodeId);
+    const insertIndex = side === "right" ? dstIndex + 1 : dstIndex;
+
+    if (srcGroup === dstGroup) {
+      const srcIndex = tabs.findIndex((t) => t.nodeId === srcId);
+      if (srcIndex === -1 || srcId === targetNodeId) return;
+      useTabStore.getState().reorderTab(srcIndex, insertIndex, dstGroup);
+    } else {
+      useTabStore
+        .getState()
+        .moveTabBetweenGroups(srcId, srcGroup, dstGroup, insertIndex);
+      const newActiveId =
+        dstGroup === 0
+          ? useTabStore.getState().activeTabId
+          : useTabStore.getState().secondaryActiveTabId;
+      if (newActiveId) useTreeStore.getState().setActiveScene(newActiveId);
+    }
+  }
+
+  // Drop on empty area after all tabs → append to end
+  function handleBarDrop(e: React.DragEvent) {
+    e.preventDefault();
+    setDropTarget(null);
+    const raw = e.dataTransfer.getData(DRAG_DATA_KEY);
+    if (!raw) return;
+    const { nodeId: srcId, groupIndex: srcGroup } = JSON.parse(
+      raw,
+    ) as DragPayload;
+    const dstGroup: GroupIndex = isPrimary ? 0 : 1;
+
+    if (srcGroup === dstGroup) {
+      const srcIndex = tabs.findIndex((t) => t.nodeId === srcId);
+      if (srcIndex === -1) return;
+      useTabStore.getState().reorderTab(srcIndex, tabs.length, dstGroup);
+    } else {
+      useTabStore.getState().moveTabBetweenGroups(srcId, srcGroup, dstGroup);
+      const newActiveId =
+        dstGroup === 0
+          ? useTabStore.getState().activeTabId
+          : useTabStore.getState().secondaryActiveTabId;
+      if (newActiveId) useTreeStore.getState().setActiveScene(newActiveId);
+    }
+  }
+
+  // Drop on the "split" zone → create secondary group
+  function handleSplitDrop(e: React.DragEvent) {
+    e.preventDefault();
+    const raw = e.dataTransfer.getData(DRAG_DATA_KEY);
+    if (!raw) return;
+    const { nodeId: srcId, groupIndex: srcGroup } = JSON.parse(
+      raw,
+    ) as DragPayload;
+    if (srcGroup !== 0) return;
+    const { tabs: currentTabs } = useTabStore.getState();
+    if (currentTabs.length <= 1) return; // can't leave primary empty
+    useTabStore.getState().moveTabBetweenGroups(srcId, 0, 1);
+    useTreeStore.getState().setActiveScene(srcId);
+  }
+
   return (
     <div className="flex items-center border-b border-border bg-background">
       {/* Scrollable tab list */}
       <div
         ref={scrollRef}
         className="flex min-w-0 flex-1 items-center overflow-x-auto"
+        onDragOver={(e) => {
+          if (!e.dataTransfer.types.includes(DRAG_DATA_KEY)) return;
+          e.preventDefault();
+        }}
+        onDrop={handleBarDrop}
       >
         {tabs.map((tab) => {
           const node = nodes.find((n) => n.id === tab.nodeId);
           const isActive = tab.nodeId === activeTabId;
           const title = node?.title ?? "…";
           const synced = isSyncedScene(tab.nodeId);
+          const isDropLeft =
+            dropTarget?.nodeId === tab.nodeId && dropTarget.side === "left";
+          const isDropRight =
+            dropTarget?.nodeId === tab.nodeId && dropTarget.side === "right";
 
           return (
             <div
               key={tab.nodeId}
+              draggable
               className={cn(
                 "group relative flex shrink-0 cursor-pointer items-center gap-1",
                 "border-r border-border px-3 py-1.5 text-xs",
@@ -115,15 +257,30 @@ export function TabBar({ groupIndex = 0 }: TabBarProps) {
                 isActive &&
                   "after:absolute after:bottom-0 after:left-0 after:right-0 after:h-0.5 after:bg-primary",
               )}
+              style={{
+                borderLeft: isDropLeft
+                  ? "2px solid hsl(var(--primary))"
+                  : undefined,
+                borderRight: isDropRight
+                  ? "2px solid hsl(var(--primary))"
+                  : undefined,
+              }}
               onClick={() => handleTabClick(tab.nodeId)}
               onDoubleClick={() =>
                 handleTabDoubleClick(tab.nodeId, tab.isPreview)
               }
               onMouseDown={(e) => {
                 if (e.button === 1) {
-                  e.preventDefault(); // prevent autoscroll
+                  e.preventDefault();
                   handleTabClose(e, tab.nodeId);
                 }
+              }}
+              onDragStart={(e) => handleDragStart(e, tab.nodeId)}
+              onDragOver={(e) => handleDragOver(e, tab.nodeId)}
+              onDragLeave={handleDragLeave}
+              onDrop={(e) => {
+                e.stopPropagation();
+                handleDrop(e, tab.nodeId);
               }}
             >
               {synced && (
@@ -157,7 +314,7 @@ export function TabBar({ groupIndex = 0 }: TabBarProps) {
       </div>
 
       {/* Split button: primary group only, when no secondary group exists */}
-      {isPrimary && !hasSecondaryGroup && activeTabId && (
+      {isPrimary && !hasSecondaryGroup && activeTabId && !isDraggingTab && (
         <button
           type="button"
           title="右に分割 (Ctrl+Enter)"
@@ -168,6 +325,22 @@ export function TabBar({ groupIndex = 0 }: TabBarProps) {
         >
           <Columns2 className="h-3.5 w-3.5" />
         </button>
+      )}
+
+      {/* Split drop zone: primary group only, when no secondary group, during drag */}
+      {isPrimary && !hasSecondaryGroup && isDraggingTab && tabs.length > 1 && (
+        <div
+          title="ここにドロップして分割"
+          className="flex h-full flex-shrink-0 items-center border-l border-primary/50 bg-primary/10 px-2 text-xs text-primary"
+          onDragOver={(e) => {
+            if (!e.dataTransfer.types.includes(DRAG_DATA_KEY)) return;
+            e.preventDefault();
+            e.dataTransfer.dropEffect = "move";
+          }}
+          onDrop={handleSplitDrop}
+        >
+          <Columns2 className="h-3.5 w-3.5" />
+        </div>
       )}
 
       {/* Close group button: secondary group */}

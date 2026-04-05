@@ -96,6 +96,26 @@ interface TabState {
    */
   isSyncedScene: (nodeId: string) => boolean;
 
+  /** Reorder a tab within its group. fromIndex and toIndex are positions in the original array. */
+  reorderTab: (
+    fromIndex: number,
+    toIndex: number,
+    groupIndex: GroupIndex,
+  ) => void;
+
+  /**
+   * Move a tab from one group to another.
+   * If the source group would become empty (primary), the move is blocked.
+   * If the secondary group becomes empty, it is automatically closed.
+   * insertIndex is the position in the destination array (before removal) to insert at.
+   */
+  moveTabBetweenGroups: (
+    nodeId: string,
+    fromGroup: GroupIndex,
+    toGroup: GroupIndex,
+    insertIndex?: number,
+  ) => void;
+
   // ---- Persistence ----
 
   /** Load tab state from workspace settings. If validNodeIds is provided,
@@ -293,6 +313,91 @@ export const useTabStore = create<TabState>()((set, get) => ({
     const inPrimary = tabs.some((t) => t.nodeId === nodeId);
     const inSecondary = secondaryTabs.some((t) => t.nodeId === nodeId);
     return inPrimary && inSecondary;
+  },
+
+  reorderTab(fromIndex, toIndex, groupIndex) {
+    const arr = [...(groupIndex === 0 ? get().tabs : get().secondaryTabs)];
+    if (fromIndex === toIndex || fromIndex < 0 || fromIndex >= arr.length)
+      return;
+    const [moved] = arr.splice(fromIndex, 1);
+    // toIndex was computed before removal; adjust if it came after fromIndex
+    const adjusted = toIndex > fromIndex ? toIndex - 1 : toIndex;
+    arr.splice(Math.min(adjusted, arr.length), 0, moved);
+    if (groupIndex === 0) set({ tabs: arr });
+    else set({ secondaryTabs: arr });
+  },
+
+  moveTabBetweenGroups(nodeId, fromGroup, toGroup, insertIndex) {
+    const { tabs, secondaryTabs, activeTabId, secondaryActiveTabId } = get();
+    const srcArr = fromGroup === 0 ? tabs : secondaryTabs;
+    const dstArr = toGroup === 0 ? tabs : secondaryTabs;
+
+    const movingTab = srcArr.find((t) => t.nodeId === nodeId);
+    if (!movingTab) return;
+    // Can't leave primary empty
+    if (fromGroup === 0 && srcArr.length <= 1) return;
+
+    // If already in destination, just activate it there
+    if (dstArr.some((t) => t.nodeId === nodeId)) {
+      if (toGroup === 0) set({ activeTabId: nodeId, activeGroupIndex: 0 });
+      else set({ secondaryActiveTabId: nodeId, activeGroupIndex: 1 });
+      return;
+    }
+
+    const newSrc = srcArr.filter((t) => t.nodeId !== nodeId);
+    const newDst = [...dstArr];
+    const at =
+      insertIndex !== undefined
+        ? Math.min(insertIndex, newDst.length)
+        : newDst.length;
+    newDst.splice(at, 0, { ...movingTab, isPreview: false });
+
+    // Pick new active for source group if we moved away the active tab
+    const srcActiveId = fromGroup === 0 ? activeTabId : secondaryActiveTabId;
+    let newSrcActiveId = srcActiveId;
+    if (srcActiveId === nodeId) {
+      const srcIdx = srcArr.findIndex((t) => t.nodeId === nodeId);
+      newSrcActiveId =
+        newSrc[srcIdx]?.nodeId ?? newSrc[srcIdx - 1]?.nodeId ?? null;
+    }
+
+    const updates: Partial<
+      Pick<
+        TabState,
+        | "tabs"
+        | "secondaryTabs"
+        | "activeTabId"
+        | "secondaryActiveTabId"
+        | "activeGroupIndex"
+      >
+    > = {};
+
+    if (fromGroup === 0) {
+      updates.tabs = newSrc;
+      updates.activeTabId = newSrcActiveId;
+    } else {
+      updates.secondaryTabs = newSrc;
+      updates.secondaryActiveTabId = newSrcActiveId;
+    }
+
+    if (toGroup === 0) {
+      updates.tabs = newDst;
+      updates.activeTabId = nodeId;
+      updates.activeGroupIndex = 0;
+    } else {
+      updates.secondaryTabs = newDst;
+      updates.secondaryActiveTabId = nodeId;
+      updates.activeGroupIndex = 1;
+    }
+
+    // Auto-close secondary if it became empty
+    if (fromGroup === 1 && newSrc.length === 0) {
+      updates.secondaryTabs = [];
+      updates.secondaryActiveTabId = null;
+      updates.activeGroupIndex = 0;
+    }
+
+    set(updates);
   },
 
   // ---- Persistence ----
