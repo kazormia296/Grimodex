@@ -539,7 +539,6 @@ export function EditorPane({ sceneId, groupIndex, onFocus }: EditorPaneProps) {
           try {
             editor!
               .chain()
-              .focus()
               .command(({ tr }) => {
                 tr.setMeta("programmaticInsert", true);
                 for (const { from, to, attrs } of markData) {
