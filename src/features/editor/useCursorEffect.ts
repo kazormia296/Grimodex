@@ -30,8 +30,9 @@ export function useCursorEffect(editor: Editor | null, enabled: boolean) {
     // Hide native caret
     dom.style.caretColor = "transparent";
 
-    // Track previous doc size to detect deletion
+    // Track previous doc size to detect rapid typing/deletion
     let prevDocSize = editor.view.state.doc.content.size;
+    let noTransitionTimer = 0;
 
     function update() {
       const el = cursorRef.current;
@@ -42,12 +43,16 @@ export function useCursorEffect(editor: Editor | null, enabled: boolean) {
         return;
       }
 
-      // Disable transition on deletion (doc got shorter)
+      // Disable transition on any doc size change (insertion or deletion);
+      // re-enable after 200ms of inactivity so the cursor slides again once
+      // the user pauses.
       const docSize = editor.view.state.doc.content.size;
-      if (docSize < prevDocSize) {
+      if (docSize !== prevDocSize) {
         el.classList.add("no-transition");
-      } else {
-        el.classList.remove("no-transition");
+        clearTimeout(noTransitionTimer);
+        noTransitionTimer = window.setTimeout(() => {
+          el.classList.remove("no-transition");
+        }, 200);
       }
       prevDocSize = docSize;
 
@@ -99,6 +104,7 @@ export function useCursorEffect(editor: Editor | null, enabled: boolean) {
       dom.removeEventListener("compositionend", onCompositionEnd);
       dom.style.caretColor = "";
       cancelAnimationFrame(rafRef.current);
+      clearTimeout(noTransitionTimer);
       cursor.remove();
       cursorRef.current = null;
     };

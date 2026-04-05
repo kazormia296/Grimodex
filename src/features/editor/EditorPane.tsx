@@ -79,6 +79,10 @@ interface EditorPaneProps {
 export function EditorPane({ sceneId, groupIndex, onFocus }: EditorPaneProps) {
   const prevSceneIdRef = useRef(sceneId);
   const editorRef = useRef<ReturnType<typeof useEditor>>(null);
+  // Per-scene editor state: cursor position + scroll (session-only, no persistence)
+  const savedEditorStateRef = useRef<
+    Map<string, { from: number; to: number; scrollTop: number }>
+  >(new Map());
   const [charCount, setCharCount] = useState(0);
   const [, setWordCount] = useState(0);
   const [isDirty, setIsDirty] = useState(false);
@@ -421,7 +425,7 @@ export function EditorPane({ sceneId, groupIndex, onFocus }: EditorPaneProps) {
       container.scrollTo({ top: Math.max(0, target), behavior: "auto" });
     });
     return () => cancelAnimationFrame(raf);
-  }, [typewriterMode, editor]);
+  }, [typewriterMode, editor, sceneId]);
   const { generate, accept, reject, retry } = useInlineAiDiff(editor);
 
   const cursorAnimation = useCursorSettingsStore((s) => s.cursorAnimation);
@@ -475,7 +479,18 @@ export function EditorPane({ sceneId, groupIndex, onFocus }: EditorPaneProps) {
     let cancelled = false;
 
     async function switchScene() {
-      if (prevSceneIdRef.current && prevSceneIdRef.current !== sceneId) {
+      const prevId = prevSceneIdRef.current;
+      if (prevId && prevId !== sceneId) {
+        // Save current cursor/scroll state before leaving this scene
+        const ed = editorRef.current;
+        if (ed) {
+          const { from, to } = ed.view.state.selection;
+          savedEditorStateRef.current.set(prevId, {
+            from,
+            to,
+            scrollTop: editorContainerRef.current?.scrollTop ?? 0,
+          });
+        }
         await flush();
       }
       cancel();
@@ -533,6 +548,24 @@ export function EditorPane({ sceneId, groupIndex, onFocus }: EditorPaneProps) {
       }
 
       prevSceneIdRef.current = sceneId;
+
+      // Restore cursor/scroll state if this scene was previously visited
+      const saved = savedEditorStateRef.current.get(sceneId);
+      if (saved && !cancelled) {
+        requestAnimationFrame(() => {
+          if (cancelled) return;
+          const ed = editorRef.current;
+          if (ed) {
+            const docSize = ed.state.doc.content.size;
+            const from = Math.min(saved.from, Math.max(0, docSize - 1));
+            const to = Math.min(saved.to, Math.max(0, docSize - 1));
+            ed.commands.setTextSelection({ from, to });
+          }
+          if (editorContainerRef.current) {
+            editorContainerRef.current.scrollTop = saved.scrollTop;
+          }
+        });
+      }
     }
 
     switchScene();

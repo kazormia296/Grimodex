@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useCallback } from "react";
+import { useState, useRef, useEffect, useCallback, useMemo } from "react";
 import { createPortal } from "react-dom";
 import { ChevronRight } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -107,7 +107,18 @@ export function Breadcrumb() {
   const buttonRefs = useRef<Map<string, HTMLButtonElement>>(new Map());
 
   const nodeMap = Object.fromEntries(nodes.map((n) => [n.id, n]));
-  const path = computeBreadcrumbPath(activeSceneId, nodeMap);
+
+  // Only update the displayed path when the active node is a scene or note.
+  // Selecting a folder in the Scenes panel should not change the breadcrumb.
+  const activePath = useMemo(() => {
+    const node = nodeMap[activeSceneId];
+    if (!node || node.nodeType === "folder") return null;
+    return computeBreadcrumbPath(activeSceneId, nodeMap);
+  }, [activeSceneId, nodeMap]);
+
+  const lastPathRef = useRef<BreadcrumbSegment[]>([]);
+  if (activePath) lastPathRef.current = activePath;
+  const path = activePath ?? lastPathRef.current;
 
   const getSiblings = useCallback(
     (segment: BreadcrumbSegment): TreeNodeData[] => {

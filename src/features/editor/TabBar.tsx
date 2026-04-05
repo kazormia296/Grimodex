@@ -1,5 +1,5 @@
 import { useRef, useState, useEffect } from "react";
-import { X, ChevronDown } from "lucide-react";
+import { X, ChevronDown, Columns2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useTabStore } from "./tabStore";
 import { useTreeStore } from "@/features/tree/treeStore";
@@ -18,6 +18,7 @@ export function TabBar({ groupIndex = 0 }: TabBarProps) {
 
   const nodes = useTreeStore((s) => s.nodes);
 
+  const hasSecondaryGroup = useTabStore((s) => s.secondaryTabs.length > 0);
   const isPrimary = groupIndex === 0;
   const tabs = isPrimary ? primaryTabs : secondaryTabs;
   const activeTabId = isPrimary ? primaryActiveTabId : secondaryActiveTabId;
@@ -118,6 +119,12 @@ export function TabBar({ groupIndex = 0 }: TabBarProps) {
               onDoubleClick={() =>
                 handleTabDoubleClick(tab.nodeId, tab.isPreview)
               }
+              onMouseDown={(e) => {
+                if (e.button === 1) {
+                  e.preventDefault(); // prevent autoscroll
+                  handleTabClose(e, tab.nodeId);
+                }
+              }}
             >
               {synced && (
                 <span
@@ -148,6 +155,32 @@ export function TabBar({ groupIndex = 0 }: TabBarProps) {
           );
         })}
       </div>
+
+      {/* Split button: primary group only, when no secondary group exists */}
+      {isPrimary && !hasSecondaryGroup && activeTabId && (
+        <button
+          type="button"
+          title="右に分割 (Ctrl+Enter)"
+          onClick={() =>
+            useTabStore.getState().openInSecondaryGroup(activeTabId)
+          }
+          className="flex h-full flex-shrink-0 items-center border-l border-border px-2 text-muted-foreground hover:bg-accent hover:text-foreground"
+        >
+          <Columns2 className="h-3.5 w-3.5" />
+        </button>
+      )}
+
+      {/* Close group button: secondary group */}
+      {!isPrimary && (
+        <button
+          type="button"
+          title="グループを閉じる"
+          onClick={() => useTabStore.getState().closeSecondaryGroup()}
+          className="flex h-full flex-shrink-0 items-center border-l border-border px-2 text-muted-foreground hover:bg-accent hover:text-foreground"
+        >
+          <X className="h-3.5 w-3.5" />
+        </button>
+      )}
 
       {/* Overflow dropdown button — shown when tabs don't all fit */}
       {hasOverflow && (
