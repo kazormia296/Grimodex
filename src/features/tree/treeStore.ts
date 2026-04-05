@@ -91,6 +91,10 @@ interface TreeState {
   pendingRenameId: string | null;
   setPendingRenameId: (id: string | null) => void;
 
+  // Pending reveal: set to make ScenesPanel scroll a node into view
+  pendingRevealId: string | null;
+  revealInTree: (id: string) => void;
+
   // Load full tree for a project
   loadTree: (projectId?: string) => Promise<void>;
 
@@ -949,5 +953,24 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
 
   setPendingRenameId(id) {
     set({ pendingRenameId: id });
+  },
+
+  pendingRevealId: null,
+
+  revealInTree(id) {
+    // Expand all ancestor folders so the node is visible
+    const nodeMap = Object.fromEntries(get().nodes.map((n) => [n.id, n]));
+    const ancestors: string[] = [];
+    let cur = nodeMap[id];
+    while (cur?.parentId) {
+      ancestors.push(cur.parentId);
+      cur = nodeMap[cur.parentId];
+    }
+    if (ancestors.length > 0) {
+      set((state) => ({
+        expandedIds: [...new Set([...state.expandedIds, ...ancestors])],
+      }));
+    }
+    set({ pendingRevealId: id });
   },
 }));

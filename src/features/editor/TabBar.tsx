@@ -3,6 +3,7 @@ import { X, ChevronDown, Columns2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useTabStore } from "./tabStore";
 import { useTreeStore } from "@/features/tree/treeStore";
+import { TabContextMenu } from "./TabContextMenu";
 import type { GroupIndex } from "./tabStore";
 
 const DRAG_DATA_KEY = "application/grimodex-tab";
@@ -43,6 +44,13 @@ export function TabBar({ groupIndex = 0 }: TabBarProps) {
   // Drag-and-drop state
   const [dropTarget, setDropTarget] = useState<DropTarget | null>(null);
   const [isDraggingTab, setIsDraggingTab] = useState(false);
+
+  // Context menu state
+  const [contextMenu, setContextMenu] = useState<{
+    nodeId: string;
+    x: number;
+    y: number;
+  } | null>(null);
 
   // Track global drag start/end to show the split drop zone
   useEffect(() => {
@@ -275,6 +283,14 @@ export function TabBar({ groupIndex = 0 }: TabBarProps) {
                   handleTabClose(e, tab.nodeId);
                 }
               }}
+              onContextMenu={(e) => {
+                e.preventDefault();
+                setContextMenu({
+                  nodeId: tab.nodeId,
+                  x: e.clientX,
+                  y: e.clientY,
+                });
+              }}
               onDragStart={(e) => handleDragStart(e, tab.nodeId)}
               onDragOver={(e) => handleDragOver(e, tab.nodeId)}
               onDragLeave={handleDragLeave}
@@ -400,6 +416,16 @@ export function TabBar({ groupIndex = 0 }: TabBarProps) {
             </div>
           )}
         </div>
+      )}
+
+      {contextMenu && (
+        <TabContextMenu
+          nodeId={contextMenu.nodeId}
+          groupIndex={isPrimary ? 0 : 1}
+          x={contextMenu.x}
+          y={contextMenu.y}
+          onClose={() => setContextMenu(null)}
+        />
       )}
     </div>
   );

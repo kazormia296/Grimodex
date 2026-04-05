@@ -40,6 +40,10 @@ import { InlineAIPalette } from "@/features/editor/inlineAi/InlineAIPalette";
 import { InlineAIToolbar } from "@/features/editor/inlineAi/InlineAIToolbar";
 import type { InlineAiCommand } from "@/features/editor/inlineAi/inlineAiTypes";
 import { useTabStore } from "@/features/editor/tabStore";
+import {
+  registerSaveHandler,
+  unregisterSaveHandler,
+} from "@/features/editor/editorSaveRegistry";
 import { useSceneContentStore } from "@/features/editor/sceneContentStore";
 import { shouldAutoDraftTransition } from "@/features/editor/autoStatusTransition";
 import { shouldPromptSynopsis } from "@/features/editor/synopsisSuggestion";
@@ -217,6 +221,18 @@ export function EditorPane({ sceneId, groupIndex, onFocus }: EditorPaneProps) {
       );
     }
   }, [coreSave, shouldAutoRevision, recordAutoRevision]);
+
+  // Register this pane's save function so the tab context menu can trigger it
+  useEffect(() => {
+    registerSaveHandler(sceneId, saveFn);
+    return () => unregisterSaveHandler(sceneId);
+  }, [sceneId, saveFn]);
+
+  // Sync isDirty to the tab store for unsaved-changes detection
+  useEffect(() => {
+    useTabStore.getState().setTabDirty(sceneId, isDirty);
+    return () => useTabStore.getState().setTabDirty(sceneId, false);
+  }, [sceneId, isDirty]);
 
   const editorSettings = useEditorSettings();
   const { schedule, cancel, flush } = useAutoSave(

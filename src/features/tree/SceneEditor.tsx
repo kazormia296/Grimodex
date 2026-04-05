@@ -24,6 +24,7 @@ export function SceneEditor() {
   const secondaryActiveTabId = useTabStore((s) => s.secondaryActiveTabId);
   const secondaryTabs = useTabStore((s) => s.secondaryTabs);
   const activeGroupIndex = useTabStore((s) => s.activeGroupIndex);
+  const splitDirection = useTabStore((s) => s.splitDirection);
 
   const hasSecondaryGroup = secondaryTabs.length > 0;
 
@@ -60,12 +61,20 @@ export function SceneEditor() {
       {/* Breadcrumb spans full width above the split */}
       <Breadcrumb />
 
-      <div className="flex flex-1 overflow-hidden">
+      <div
+        className={
+          hasSecondaryGroup && splitDirection === "below"
+            ? "flex flex-1 flex-col overflow-hidden"
+            : "flex flex-1 overflow-hidden"
+        }
+      >
         {/* Primary group */}
         <div
           className={
             hasSecondaryGroup
-              ? "flex w-1/2 flex-col border-r border-border"
+              ? splitDirection === "below"
+                ? "flex h-1/2 flex-col border-b border-border"
+                : "flex w-1/2 flex-col border-r border-border"
               : "flex min-w-0 flex-1 flex-col"
           }
         >
@@ -84,7 +93,13 @@ export function SceneEditor() {
 
         {/* Secondary group (only when there are secondary tabs) */}
         {hasSecondaryGroup && secondarySceneId && (
-          <div className="flex w-1/2 flex-col">
+          <div
+            className={
+              splitDirection === "below"
+                ? "flex h-1/2 flex-col"
+                : "flex w-1/2 flex-col"
+            }
+          >
             <TabBar groupIndex={1} />
             <EditorPane
               sceneId={secondarySceneId}

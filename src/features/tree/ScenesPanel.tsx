@@ -519,6 +519,7 @@ export function ScenesPanel() {
     toggleExpand,
     setActiveScene,
     moveNode,
+    pendingRevealId,
   } = useTreeStore();
 
   const { canUndo, canRedo } = useTreeHistoryStore();
@@ -667,6 +668,18 @@ export function ScenesPanel() {
       el.scrollIntoView({ block: "nearest", behavior: "smooth" });
     }
   }, [activeSceneId, autoRevealActiveScene]);
+
+  // Force-reveal when requested from outside (e.g. "Show in Scenes" tab context menu)
+  useEffect(() => {
+    if (!pendingRevealId || !treeRef.current) return;
+    // Defer one frame so expanded ancestors have rendered
+    const id = pendingRevealId;
+    requestAnimationFrame(() => {
+      const el = treeRef.current?.querySelector(`[data-node-id="${id}"]`);
+      if (el) el.scrollIntoView({ block: "nearest", behavior: "smooth" });
+    });
+    useTreeStore.setState({ pendingRevealId: null });
+  }, [pendingRevealId]);
 
   const handleToggleAll = useCallback(() => {
     if (allExpandedRef.current) collapseAll();

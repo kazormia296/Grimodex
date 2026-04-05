@@ -116,6 +116,34 @@ interface TabState {
     insertIndex?: number,
   ) => void;
 
+  // ---- Context-menu bulk-close operations ----
+
+  /** Close all tabs in the group except the given one. */
+  closeOtherTabsInGroup: (nodeId: string, groupIndex: GroupIndex) => void;
+  /** Close all tabs to the right of the given one. */
+  closeRightTabsInGroup: (nodeId: string, groupIndex: GroupIndex) => void;
+  /** Close all tabs to the left of the given one. */
+  closeLeftTabsInGroup: (nodeId: string, groupIndex: GroupIndex) => void;
+  /** Close all tabs in the group. Secondary group is auto-closed when empty. */
+  closeAllTabsInGroup: (groupIndex: GroupIndex) => void;
+
+  // ---- Split direction ----
+
+  /** Direction of the secondary editor group split. */
+  splitDirection: "right" | "below";
+  /** Open a scene in the secondary group with a given direction. */
+  openInSecondaryGroupDirectional: (
+    nodeId: string,
+    direction: "right" | "below",
+  ) => void;
+
+  // ---- Unsaved-changes tracking ----
+
+  /** IDs of tabs that have unsaved content. Updated by EditorPane. */
+  dirtyTabIds: Set<string>;
+  /** Called by EditorPane to register/unregister a tab as dirty. */
+  setTabDirty: (nodeId: string, dirty: boolean) => void;
+
   // ---- Persistence ----
 
   /** Load tab state from workspace settings. If validNodeIds is provided,
@@ -138,6 +166,8 @@ export const useTabStore = create<TabState>()((set, get) => ({
   secondaryTabs: [],
   secondaryActiveTabId: null,
   activeGroupIndex: 0,
+  splitDirection: "right",
+  dirtyTabIds: new Set<string>(),
 
   // ---- Primary group ----
 
@@ -398,6 +428,97 @@ export const useTabStore = create<TabState>()((set, get) => ({
     }
 
     set(updates);
+  },
+
+  // ---- Context-menu bulk-close operations ----
+
+  closeOtherTabsInGroup(nodeId, groupIndex) {
+    const arr = groupIndex === 0 ? get().tabs : get().secondaryTabs;
+    const remaining = arr.filter((t) => t.nodeId === nodeId);
+    if (groupIndex === 0) {
+      set({ tabs: remaining, activeTabId: remaining[0]?.nodeId ?? null });
+    } else {
+      set({
+        secondaryTabs: remaining,
+        secondaryActiveTabId: remaining[0]?.nodeId ?? null,
+      });
+    }
+  },
+
+  closeRightTabsInGroup(nodeId, groupIndex) {
+    const arr = groupIndex === 0 ? get().tabs : get().secondaryTabs;
+    const idx = arr.findIndex((t) => t.nodeId === nodeId);
+    if (idx === -1) return;
+    const remaining = arr.slice(0, idx + 1);
+    const curActive =
+      groupIndex === 0 ? get().activeTabId : get().secondaryActiveTabId;
+    const newActive = remaining.some((t) => t.nodeId === curActive)
+      ? curActive
+      : nodeId;
+    if (groupIndex === 0) {
+      set({ tabs: remaining, activeTabId: newActive });
+    } else {
+      set({ secondaryTabs: remaining, secondaryActiveTabId: newActive });
+    }
+  },
+
+  closeLeftTabsInGroup(nodeId, groupIndex) {
+    const arr = groupIndex === 0 ? get().tabs : get().secondaryTabs;
+    const idx = arr.findIndex((t) => t.nodeId === nodeId);
+    if (idx === -1) return;
+    const remaining = arr.slice(idx);
+    const curActive =
+      groupIndex === 0 ? get().activeTabId : get().secondaryActiveTabId;
+    const newActive = remaining.some((t) => t.nodeId === curActive)
+      ? curActive
+      : nodeId;
+    if (groupIndex === 0) {
+      set({ tabs: remaining, activeTabId: newActive });
+    } else {
+      set({ secondaryTabs: remaining, secondaryActiveTabId: newActive });
+    }
+  },
+
+  closeAllTabsInGroup(groupIndex) {
+    if (groupIndex === 0) {
+      set({ tabs: [], activeTabId: null });
+    } else {
+      set({
+        secondaryTabs: [],
+        secondaryActiveTabId: null,
+        activeGroupIndex: 0,
+      });
+    }
+  },
+
+  // ---- Directional split ----
+
+  openInSecondaryGroupDirectional(nodeId, direction) {
+    const { secondaryTabs } = get();
+    const existing = secondaryTabs.find((t) => t.nodeId === nodeId);
+    if (existing) {
+      set({
+        secondaryActiveTabId: nodeId,
+        activeGroupIndex: 1,
+        splitDirection: direction,
+      });
+      return;
+    }
+    set({
+      secondaryTabs: [...secondaryTabs, { nodeId, isPreview: false }],
+      secondaryActiveTabId: nodeId,
+      activeGroupIndex: 1,
+      splitDirection: direction,
+    });
+  },
+
+  // ---- Dirty-tab tracking ----
+
+  setTabDirty(nodeId, dirty) {
+    const next = new Set(get().dirtyTabIds);
+    if (dirty) next.add(nodeId);
+    else next.delete(nodeId);
+    set({ dirtyTabIds: next });
   },
 
   // ---- Persistence ----
