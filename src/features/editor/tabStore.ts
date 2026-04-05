@@ -121,6 +121,8 @@ interface TabState {
     fromGroup: GroupIndex,
     toGroup: GroupIndex,
     insertIndex?: number,
+    /** If secondary group doesn't exist yet, create it with this direction. */
+    createDirection?: "right" | "below",
   ) => void;
 
   // ---- Context-menu bulk-close operations ----
@@ -379,7 +381,13 @@ export const useTabStore = create<TabState>()((set, get) => ({
     else set({ secondaryTabs: arr });
   },
 
-  moveTabBetweenGroups(nodeId, fromGroup, toGroup, insertIndex) {
+  moveTabBetweenGroups(
+    nodeId,
+    fromGroup,
+    toGroup,
+    insertIndex,
+    createDirection,
+  ) {
     const { tabs, secondaryTabs, activeTabId, secondaryActiveTabId } = get();
     const srcArr = fromGroup === 0 ? tabs : secondaryTabs;
     const dstArr = toGroup === 0 ? tabs : secondaryTabs;
@@ -425,6 +433,7 @@ export const useTabStore = create<TabState>()((set, get) => ({
         | "secondaryActiveTabId"
         | "activeGroupIndex"
         | "secondaryGroupOpen"
+        | "splitDirection"
       >
     > = {};
 
@@ -445,6 +454,10 @@ export const useTabStore = create<TabState>()((set, get) => ({
       updates.secondaryActiveTabId = nodeId;
       updates.activeGroupIndex = 1;
       updates.secondaryGroupOpen = true;
+      // Set split direction when creating the secondary group for the first time
+      if (createDirection && !get().secondaryGroupOpen) {
+        updates.splitDirection = createDirection;
+      }
     }
 
     set(updates);

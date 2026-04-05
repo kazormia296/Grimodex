@@ -6,7 +6,9 @@ import { useTreeStore } from "@/features/tree/treeStore";
 import { TabContextMenu } from "./TabContextMenu";
 import type { GroupIndex } from "./tabStore";
 
-const DRAG_DATA_KEY = "application/grimodex-tab";
+export const DRAG_DATA_KEY = "application/grimodex-tab";
+/** Per-group marker so drop zones can detect source group during dragover. */
+export const DRAG_GROUP_KEY = (g: 0 | 1) => `application/grimodex-tab-g${g}`;
 
 interface DragPayload {
   nodeId: string;
@@ -152,6 +154,7 @@ export function TabBar({ groupIndex = 0 }: TabBarProps) {
       groupIndex: isPrimary ? 0 : 1,
     };
     e.dataTransfer.setData(DRAG_DATA_KEY, JSON.stringify(payload));
+    e.dataTransfer.setData(DRAG_GROUP_KEY(isPrimary ? 0 : 1), "");
     e.dataTransfer.effectAllowed = "move";
   }
 

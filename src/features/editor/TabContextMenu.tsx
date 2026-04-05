@@ -288,11 +288,10 @@ export function TabContextMenu({
             </>
           )}
 
-          {/* "移動" — move tab to the other group */}
+          {/* "移動" — move tab to the other group (always removes from source) */}
           {groupIndex === 0 ? (
-            // Primary → Secondary
             secondaryGroupOpen ? (
-              // Secondary already exists: one item, use its current direction label
+              // Secondary exists: move there (direction label matches current split)
               item(
                 useTabStore.getState().splitDirection === "below"
                   ? "下のグループに移動"
@@ -304,19 +303,19 @@ export function TabContextMenu({
                 },
               )
             ) : (
-              // No secondary: offer direction choice
+              // No secondary: create it with chosen direction and move the tab
               <>
                 {item("右に移動", () => {
                   useTabStore
                     .getState()
-                    .openInSecondaryGroupDirectional(nodeId, "right");
+                    .moveTabBetweenGroups(nodeId, 0, 1, undefined, "right");
                   useTreeStore.getState().setActiveScene(nodeId);
                   onClose();
                 })}
                 {item("下に移動", () => {
                   useTabStore
                     .getState()
-                    .openInSecondaryGroupDirectional(nodeId, "below");
+                    .moveTabBetweenGroups(nodeId, 0, 1, undefined, "below");
                   useTreeStore.getState().setActiveScene(nodeId);
                   onClose();
                 })}
