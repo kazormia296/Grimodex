@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, useLayoutEffect } from "react";
 import type { Editor } from "@tiptap/react";
 import { cn } from "@/lib/utils";
 import { useAttributionStore } from "@/features/attribution/attributionStore";
@@ -62,6 +62,15 @@ export function Toolbar({
   const rightGroupRef = useRef<HTMLDivElement>(null);
   const [rightGroupWidth, setRightGroupWidth] = useState(0);
 
+  // Overflow detection: measure each button unit, hide those that don't fit
+  const innerRef = useRef<HTMLDivElement>(null);
+  const unit1Ref = useRef<HTMLDivElement>(null); // G1: B I U S ﹅
+  const unit2Ref = useRef<HTMLDivElement>(null); // Sep + G2: H1 H2 H3
+  const unit3Ref = useRef<HTMLDivElement>(null); // Sep + G3: ≡ 1. ❝ —
+  const unit4Ref = useRef<HTMLDivElement>(null); // Sep + G4: Ruby Link * * *
+  const unitWidths = useRef<number[]>([]);
+  const [visibleUnitCount, setVisibleUnitCount] = useState(4);
+
   const { showAttribution, toggleAttribution } = useAttributionStore();
   const {
     focusMode,
@@ -85,7 +94,7 @@ export function Toolbar({
     };
   }, [editor]);
 
-  // Measure right group width so left scroll area can reserve space
+  // Measure right group width so overflow calculation can account for it
   useEffect(() => {
     const el = rightGroupRef.current;
     if (!el) return;
@@ -95,6 +104,61 @@ export function Toolbar({
     observer.observe(el);
     return () => observer.disconnect();
   }, []);
+
+  // Measure each button unit's width once after initial render (all units visible)
+  useLayoutEffect(() => {
+    unitWidths.current = [
+      unit1Ref.current?.offsetWidth ?? 0,
+      unit2Ref.current?.offsetWidth ?? 0,
+      unit3Ref.current?.offsetWidth ?? 0,
+      unit4Ref.current?.offsetWidth ?? 0,
+    ];
+  }, []);
+
+  // Recompute how many units fit whenever container or right-group width changes
+  useEffect(() => {
+    const container = innerRef.current;
+    if (!container) return;
+
+    const recompute = () => {
+      // Refresh measurements only when all units are currently in the DOM
+      if (
+        unit1Ref.current &&
+        unit2Ref.current &&
+        unit3Ref.current &&
+        unit4Ref.current
+      ) {
+        unitWidths.current = [
+          unit1Ref.current.offsetWidth,
+          unit2Ref.current.offsetWidth,
+          unit3Ref.current.offsetWidth,
+          unit4Ref.current.offsetWidth,
+        ];
+      }
+      if (!unitWidths.current.some((w) => w > 0)) return;
+
+      // px-1.5 on both sides of the button row = 12px total horizontal padding
+      const available = container.offsetWidth - rightGroupWidth - 12;
+      if (available <= 0) return;
+
+      let sum = 0;
+      let count = 0;
+      for (const w of unitWidths.current) {
+        if (sum + w <= available) {
+          sum += w;
+          count++;
+        } else {
+          break;
+        }
+      }
+      setVisibleUnitCount(count);
+    };
+
+    const observer = new ResizeObserver(recompute);
+    observer.observe(container);
+    recompute();
+    return () => observer.disconnect();
+  }, [rightGroupWidth]);
 
   useEffect(() => {
     if (!overflowOpen) return;
@@ -159,17 +223,15 @@ export function Toolbar({
     editor.chain().focus().setHorizontalRule().run();
   }
 
+  const hasOverflowedButtons = visibleUnitCount < 4;
+
   return (
     <div className="relative flex-shrink-0 border-b border-border">
       {/* Toolbar content area — overflow-hidden clips at panel width */}
-      <div className="relative overflow-hidden">
-        {/* Scrollable format buttons — right padding reserves space for the right group */}
-        <div
-          className="no-scrollbar overflow-x-auto"
-          style={{ paddingRight: rightGroupWidth }}
-        >
-          <div className="flex w-max items-center gap-0.5 px-1.5 py-1">
-            {/* G1: インラインフォーマット */}
+      <div ref={innerRef} className="relative overflow-hidden">
+        <div className="flex w-max items-center px-1.5 py-1">
+          {/* Unit 1: インラインフォーマット (always in toolbar) */}
+          <div ref={unit1Ref} className="flex items-center gap-0.5">
             <ToolbarButton
               label="太字 (Ctrl+B)"
               active={editor.isActive("bold")}
@@ -207,84 +269,99 @@ export function Toolbar({
             >
               ﹅
             </ToolbarButton>
-            <Sep />
-            {/* G2: ブロックフォーマット */}
-            <ToolbarButton
-              label="見出し 1 (Ctrl+1)"
-              active={editor.isActive("heading", { level: 1 })}
-              onClick={() =>
-                editor.chain().focus().toggleHeading({ level: 1 }).run()
-              }
-            >
-              H1
-            </ToolbarButton>
-            <ToolbarButton
-              label="見出し 2 (Ctrl+2)"
-              active={editor.isActive("heading", { level: 2 })}
-              onClick={() =>
-                editor.chain().focus().toggleHeading({ level: 2 }).run()
-              }
-            >
-              H2
-            </ToolbarButton>
-            <ToolbarButton
-              label="見出し 3 (Ctrl+3)"
-              active={editor.isActive("heading", { level: 3 })}
-              onClick={() =>
-                editor.chain().focus().toggleHeading({ level: 3 }).run()
-              }
-            >
-              H3
-            </ToolbarButton>
-            <Sep />
-            {/* G3: リスト・引用 */}
-            <ToolbarButton
-              label="箇条書き"
-              active={editor.isActive("bulletList")}
-              onClick={() => editor.chain().focus().toggleBulletList().run()}
-            >
-              ≡
-            </ToolbarButton>
-            <ToolbarButton
-              label="番号付きリスト"
-              active={editor.isActive("orderedList")}
-              onClick={() => editor.chain().focus().toggleOrderedList().run()}
-            >
-              1.
-            </ToolbarButton>
-            <ToolbarButton
-              label="引用 (ブロッククォート)"
-              active={editor.isActive("blockquote")}
-              onClick={() => editor.chain().focus().toggleBlockquote().run()}
-            >
-              ❝
-            </ToolbarButton>
-            <ToolbarButton label="水平線" onClick={insertHorizontalRule}>
-              —
-            </ToolbarButton>
-            <Sep />
-            {/* G4: 小説固有 */}
-            <ToolbarButton
-              label="ルビ（ふりがな）"
-              active={rubyOpen || editor.isActive("ruby")}
-              onClick={openRuby}
-            >
-              Ruby
-            </ToolbarButton>
-            <ToolbarButton
-              label="リンク (Ctrl+K)"
-              active={editor.isActive("link") || linkOpen}
-              onClick={openLink}
-            >
-              Link
-            </ToolbarButton>
-            <ToolbarButton
-              label="シーン区切り (* * *)"
-              onClick={() => editor.chain().focus().insertSceneBreak().run()}
-            >
-              * * *
-            </ToolbarButton>
           </div>
+
+          {/* Unit 2: ブロックフォーマット */}
+          {visibleUnitCount >= 2 && (
+            <div ref={unit2Ref} className="flex items-center gap-0.5">
+              <Sep />
+              <ToolbarButton
+                label="見出し 1 (Ctrl+1)"
+                active={editor.isActive("heading", { level: 1 })}
+                onClick={() =>
+                  editor.chain().focus().toggleHeading({ level: 1 }).run()
+                }
+              >
+                H1
+              </ToolbarButton>
+              <ToolbarButton
+                label="見出し 2 (Ctrl+2)"
+                active={editor.isActive("heading", { level: 2 })}
+                onClick={() =>
+                  editor.chain().focus().toggleHeading({ level: 2 }).run()
+                }
+              >
+                H2
+              </ToolbarButton>
+              <ToolbarButton
+                label="見出し 3 (Ctrl+3)"
+                active={editor.isActive("heading", { level: 3 })}
+                onClick={() =>
+                  editor.chain().focus().toggleHeading({ level: 3 }).run()
+                }
+              >
+                H3
+              </ToolbarButton>
+            </div>
+          )}
+
+          {/* Unit 3: リスト・引用 */}
+          {visibleUnitCount >= 3 && (
+            <div ref={unit3Ref} className="flex items-center gap-0.5">
+              <Sep />
+              <ToolbarButton
+                label="箇条書き"
+                active={editor.isActive("bulletList")}
+                onClick={() => editor.chain().focus().toggleBulletList().run()}
+              >
+                ≡
+              </ToolbarButton>
+              <ToolbarButton
+                label="番号付きリスト"
+                active={editor.isActive("orderedList")}
+                onClick={() => editor.chain().focus().toggleOrderedList().run()}
+              >
+                1.
+              </ToolbarButton>
+              <ToolbarButton
+                label="引用 (ブロッククォート)"
+                active={editor.isActive("blockquote")}
+                onClick={() => editor.chain().focus().toggleBlockquote().run()}
+              >
+                ❝
+              </ToolbarButton>
+              <ToolbarButton label="水平線" onClick={insertHorizontalRule}>
+                —
+              </ToolbarButton>
+            </div>
+          )}
+
+          {/* Unit 4: 小説固有 */}
+          {visibleUnitCount >= 4 && (
+            <div ref={unit4Ref} className="flex items-center gap-0.5">
+              <Sep />
+              <ToolbarButton
+                label="ルビ（ふりがな）"
+                active={rubyOpen || editor.isActive("ruby")}
+                onClick={openRuby}
+              >
+                Ruby
+              </ToolbarButton>
+              <ToolbarButton
+                label="リンク (Ctrl+K)"
+                active={editor.isActive("link") || linkOpen}
+                onClick={openLink}
+              >
+                Link
+              </ToolbarButton>
+              <ToolbarButton
+                label="シーン区切り (* * *)"
+                onClick={() => editor.chain().focus().insertSceneBreak().run()}
+              >
+                * * *
+              </ToolbarButton>
+            </div>
+          )}
         </div>
 
         {/* Right group: absolutely positioned at right edge, opaque background */}
@@ -411,6 +488,96 @@ export function Toolbar({
           ref={overflowDropdownRef}
           className="absolute right-0 top-full z-50 mt-1 min-w-[200px] rounded border border-border bg-background py-1 shadow-md"
         >
+          {/* ツールバーに収まらないボタン群 */}
+          {visibleUnitCount < 2 && (
+            <>
+              <OverflowItem
+                label="見出し 1"
+                shortcut="Ctrl+1"
+                onClick={() => {
+                  editor.chain().focus().toggleHeading({ level: 1 }).run();
+                  setOverflowOpen(false);
+                }}
+              />
+              <OverflowItem
+                label="見出し 2"
+                shortcut="Ctrl+2"
+                onClick={() => {
+                  editor.chain().focus().toggleHeading({ level: 2 }).run();
+                  setOverflowOpen(false);
+                }}
+              />
+              <OverflowItem
+                label="見出し 3"
+                shortcut="Ctrl+3"
+                onClick={() => {
+                  editor.chain().focus().toggleHeading({ level: 3 }).run();
+                  setOverflowOpen(false);
+                }}
+              />
+            </>
+          )}
+          {visibleUnitCount < 3 && (
+            <>
+              <OverflowItem
+                label="箇条書き"
+                onClick={() => {
+                  editor.chain().focus().toggleBulletList().run();
+                  setOverflowOpen(false);
+                }}
+              />
+              <OverflowItem
+                label="番号付きリスト"
+                onClick={() => {
+                  editor.chain().focus().toggleOrderedList().run();
+                  setOverflowOpen(false);
+                }}
+              />
+              <OverflowItem
+                label="引用 (ブロッククォート)"
+                onClick={() => {
+                  editor.chain().focus().toggleBlockquote().run();
+                  setOverflowOpen(false);
+                }}
+              />
+              <OverflowItem
+                label="水平線"
+                onClick={() => {
+                  insertHorizontalRule();
+                  setOverflowOpen(false);
+                }}
+              />
+            </>
+          )}
+          {visibleUnitCount < 4 && (
+            <>
+              <OverflowItem
+                label="ルビ（ふりがな）"
+                onClick={() => {
+                  openRuby();
+                  setOverflowOpen(false);
+                }}
+              />
+              <OverflowItem
+                label="リンク"
+                shortcut="Ctrl+K"
+                onClick={() => {
+                  openLink();
+                  setOverflowOpen(false);
+                }}
+              />
+              <OverflowItem
+                label="シーン区切り (* * *)"
+                onClick={() => {
+                  editor.chain().focus().insertSceneBreak().run();
+                  setOverflowOpen(false);
+                }}
+              />
+            </>
+          )}
+          {hasOverflowedButtons && (
+            <div className="my-1 border-t border-border" />
+          )}
           <OverflowItem
             label="検索と置換"
             shortcut="Ctrl+H"
