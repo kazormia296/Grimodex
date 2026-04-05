@@ -196,24 +196,44 @@ export const useEditorStore = create<EditorState>()((set, get) => ({
       }
     }
 
-    // Single paragraph → insert inline nodes; multiple → wrap in paragraph nodes.
-    const contentNodes =
-      paragraphs.length === 1
-        ? paragraphs[0]
-        : paragraphs.map((content) => ({
-            type: "paragraph" as const,
-            content,
-          }));
-
-    editor
+    // Build the insertion chain.
+    // For a single paragraph: insertContentAt handles range-replacement cleanly.
+    // For multiple paragraphs: using insertContentAt with block-level paragraph
+    // nodes splits the host paragraph and leaves empty paragraphs at the
+    // boundaries. Instead, insert the first paragraph's inline content at the
+    // cursor (replacing any selection), then use splitBlock + insertContent for
+    // each subsequent paragraph — mirroring what pressing Enter + typing does.
+    let chain = editor
       .chain()
       .focus()
       .command(({ tr }) => {
         tr.setMeta("programmaticInsert", true);
         return true;
-      })
-      .insertContentAt(insertPos, contentNodes)
-      .run();
+      });
+
+    if (paragraphs.length === 1) {
+      chain = chain.insertContentAt(
+        insertPos,
+        paragraphs[0].length > 0 ? paragraphs[0] : [],
+      );
+    } else {
+      // Delete range selection first so subsequent insertContent/splitBlock
+      // operate from a clean cursor position.
+      if (from !== to) {
+        chain = chain.deleteRange({ from, to });
+      }
+      if (paragraphs[0].length > 0) {
+        chain = chain.insertContent(paragraphs[0]);
+      }
+      for (let i = 1; i < paragraphs.length; i++) {
+        chain = chain.splitBlock();
+        if (paragraphs[i].length > 0) {
+          chain = chain.insertContent(paragraphs[i]);
+        }
+      }
+    }
+
+    chain.run();
 
     return true;
   },

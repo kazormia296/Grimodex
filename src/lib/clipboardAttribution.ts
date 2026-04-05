@@ -73,10 +73,16 @@ export function parseClipboardHtml(
     return null;
   }
 
-  // Case 2: Editor body copy — walk DOM to preserve both attributed spans and
-  // bare text nodes (human-authored). Case 2 was previously split into a
-  // span-only path that returned early, dropping bare text nodes.
-  if (doc.body.querySelector("span[data-authorship]")) {
+  // Case 2: TipTap/ProseMirror editor copy.
+  // ProseMirror sets data-pm-slice on the outermost clipboard element.
+  // data-authorship spans mark attributed (ai/unknown) text; absence means human.
+  // Both signals are checked so that human-only copies (no authorship spans but
+  // data-pm-slice present) are also handled and attributed as "human" rather than
+  // falling through to the plain-text "unknown" path below.
+  const isEditorCopy =
+    doc.body.querySelector("[data-pm-slice]") !== null ||
+    doc.body.querySelector("span[data-authorship]") !== null;
+  if (isEditorCopy) {
     const segments = extractMixedSegments(doc.body);
     if (segments.length > 0) return segments;
   }
@@ -85,9 +91,12 @@ export function parseClipboardHtml(
 }
 
 // Block-level tags whose boundaries represent paragraph separators.
+// DIV is intentionally excluded: ProseMirror wraps clipboard HTML in
+// <div data-pm-slice="…">, which is a structural container, not a paragraph.
+// Treating it as a block would cause firstBlock to flip prematurely, injecting
+// a spurious leading "\n" before the first real paragraph.
 const BLOCK_TAGS = new Set([
   "P",
-  "DIV",
   "H1",
   "H2",
   "H3",
@@ -101,7 +110,7 @@ const BLOCK_TAGS = new Set([
 /**
  * Walk DOM nodes to extract text with attribution, handling mixed
  * marked/unmarked content from editor copy.
- * Block-level elements (p, div, h1-h6, blockquote, li) are separated
+ * Block-level elements (p, h1-h6, blockquote, li) are separated
  * by "\n" so callers can reconstruct paragraph structure.
  */
 function extractMixedSegments(root: Element): AttributedSegment[] {
