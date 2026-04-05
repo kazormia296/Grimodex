@@ -129,7 +129,9 @@ function extractMixedSegments(root: Element): AttributedSegment[] {
   function walk(node: Node): void {
     if (node.nodeType === Node.TEXT_NODE) {
       const text = node.textContent ?? "";
-      if (!text) return;
+      // Skip whitespace-only text nodes — browsers inject "\n" / indentation
+      // between block elements as structural formatting, not content.
+      if (!text.trim()) return;
       const parentSpan = (node.parentElement as Element | null)?.closest?.(
         "span[data-authorship]",
       );

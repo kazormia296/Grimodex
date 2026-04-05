@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import type { Editor } from "@tiptap/core";
+import { Fragment, Slice } from "@tiptap/pm/model";
 import { computeAttributedSegments } from "@/features/snippets/snippetDiff";
 import type { AttributedSegment } from "@/lib/clipboardAttribution";
 import { incrementSnippetUsageCount } from "@/features/snippets/api";
@@ -158,7 +159,6 @@ export const useEditorStore = create<EditorState>()((set, get) => ({
     if (!editor) return false;
 
     const { from, to } = editor.state.selection;
-    const insertPos = from !== to ? { from, to } : from;
 
     const now = new Date().toISOString();
 
@@ -196,44 +196,56 @@ export const useEditorStore = create<EditorState>()((set, get) => ({
       }
     }
 
-    // Build the insertion chain.
-    // For a single paragraph: insertContentAt handles range-replacement cleanly.
-    // For multiple paragraphs: using insertContentAt with block-level paragraph
-    // nodes splits the host paragraph and leaves empty paragraphs at the
-    // boundaries. Instead, insert the first paragraph's inline content at the
-    // cursor (replacing any selection), then use splitBlock + insertContent for
-    // each subsequent paragraph — mirroring what pressing Enter + typing does.
-    let chain = editor
+    // Use ProseMirror Fragment/Slice directly to avoid TipTap's insertContentAt
+    // bug: when cursor is at parentOffset===0 with marked content, TipTap adjusts
+    // from = from - 1, which corrupts document structure by replacing before the
+    // paragraph opening token.
+    editor
       .chain()
       .focus()
       .command(({ tr }) => {
         tr.setMeta("programmaticInsert", true);
         return true;
-      });
+      })
+      .command(({ tr, editor: ed }) => {
+        const { schema } = ed;
 
-    if (paragraphs.length === 1) {
-      chain = chain.insertContentAt(
-        insertPos,
-        paragraphs[0].length > 0 ? paragraphs[0] : [],
-      );
-    } else {
-      // Delete range selection first so subsequent insertContent/splitBlock
-      // operate from a clean cursor position.
-      if (from !== to) {
-        chain = chain.deleteRange({ from, to });
-      }
-      if (paragraphs[0].length > 0) {
-        chain = chain.insertContent(paragraphs[0]);
-      }
-      for (let i = 1; i < paragraphs.length; i++) {
-        chain = chain.splitBlock();
-        if (paragraphs[i].length > 0) {
-          chain = chain.insertContent(paragraphs[i]);
+        const makeTextNode = (n: TextNode) => {
+          const markType = schema.marks["authorship"];
+          const mark = markType ? markType.create(n.marks[0].attrs) : undefined;
+          return mark ? schema.text(n.text, [mark]) : schema.text(n.text);
+        };
+
+        if (paragraphs.length === 1) {
+          if (paragraphs[0].length > 0) {
+            const inline = Fragment.fromArray(paragraphs[0].map(makeTextNode));
+            // openStart=0, openEnd=0: inline content, no paragraph boundaries
+            tr.replace(from, to, new Slice(inline, 0, 0));
+          } else if (from !== to) {
+            tr.delete(from, to);
+          }
+        } else {
+          const paragraphNodes = paragraphs.map((para) =>
+            para.length === 0
+              ? schema.nodes.paragraph.create({})
+              : schema.nodes.paragraph.create(
+                  {},
+                  Fragment.fromArray(para.map(makeTextNode)),
+                ),
+          );
+          // openStart=1, openEnd=1: standard paste — open at paragraph depth so
+          // the first pasted paragraph merges into the host paragraph at cursor,
+          // and the last pasted paragraph merges into the remainder.
+          tr.replace(
+            from,
+            to,
+            new Slice(Fragment.fromArray(paragraphNodes), 1, 1),
+          );
         }
-      }
-    }
 
-    chain.run();
+        return true;
+      })
+      .run();
 
     return true;
   },
