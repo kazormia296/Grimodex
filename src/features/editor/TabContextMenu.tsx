@@ -100,12 +100,17 @@ export function TabContextMenu({
   const tabs = useTabStore((s) =>
     groupIndex === 0 ? s.tabs : s.secondaryTabs,
   );
+  const activeTabId = useTabStore((s) =>
+    groupIndex === 0 ? s.activeTabId : s.secondaryActiveTabId,
+  );
+  const secondaryGroupOpen = useTabStore((s) => s.secondaryGroupOpen);
   const dirtyTabIds = useTabStore((s) => s.dirtyTabIds);
   const node = useTreeStore((s) => s.nodes.find((n) => n.id === nodeId));
 
   const tabIndex = tabs.findIndex((t) => t.nodeId === nodeId);
   const isPreview = tabs[tabIndex]?.isPreview ?? false;
   const isScene = node?.nodeType === "scene" || node?.nodeType === "note";
+  const isActiveTab = nodeId === activeTabId;
 
   const hasOthers = tabs.length > 1;
   const hasRight = tabIndex < tabs.length - 1;
@@ -262,20 +267,69 @@ export function TabContextMenu({
 
           {SEP}
 
-          {item("右に分割", () => {
-            useTabStore
-              .getState()
-              .openInSecondaryGroupDirectional(nodeId, "right");
-            useTreeStore.getState().setActiveScene(nodeId);
-            onClose();
-          })}
-          {item("下に分割", () => {
-            useTabStore
-              .getState()
-              .openInSecondaryGroupDirectional(nodeId, "below");
-            useTreeStore.getState().setActiveScene(nodeId);
-            onClose();
-          })}
+          {/* "右/下に分割" — only when right-clicking the active tab */}
+          {isActiveTab && (
+            <>
+              {item("右に分割", () => {
+                useTabStore
+                  .getState()
+                  .openInSecondaryGroupDirectional(nodeId, "right");
+                useTreeStore.getState().setActiveScene(nodeId);
+                onClose();
+              })}
+              {item("下に分割", () => {
+                useTabStore
+                  .getState()
+                  .openInSecondaryGroupDirectional(nodeId, "below");
+                useTreeStore.getState().setActiveScene(nodeId);
+                onClose();
+              })}
+              {SEP}
+            </>
+          )}
+
+          {/* "移動" — move tab to the other group */}
+          {groupIndex === 0 ? (
+            // Primary → Secondary
+            secondaryGroupOpen ? (
+              // Secondary already exists: one item, use its current direction label
+              item(
+                useTabStore.getState().splitDirection === "below"
+                  ? "下のグループに移動"
+                  : "右のグループに移動",
+                () => {
+                  useTabStore.getState().moveTabBetweenGroups(nodeId, 0, 1);
+                  useTreeStore.getState().setActiveScene(nodeId);
+                  onClose();
+                },
+              )
+            ) : (
+              // No secondary: offer direction choice
+              <>
+                {item("右に移動", () => {
+                  useTabStore
+                    .getState()
+                    .openInSecondaryGroupDirectional(nodeId, "right");
+                  useTreeStore.getState().setActiveScene(nodeId);
+                  onClose();
+                })}
+                {item("下に移動", () => {
+                  useTabStore
+                    .getState()
+                    .openInSecondaryGroupDirectional(nodeId, "below");
+                  useTreeStore.getState().setActiveScene(nodeId);
+                  onClose();
+                })}
+              </>
+            )
+          ) : (
+            // Secondary → Primary
+            item("プライマリグループに移動", () => {
+              useTabStore.getState().moveTabBetweenGroups(nodeId, 1, 0);
+              useTreeStore.getState().setActiveScene(nodeId);
+              onClose();
+            })
+          )}
 
           {isScene && SEP}
 

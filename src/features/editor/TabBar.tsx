@@ -31,7 +31,7 @@ export function TabBar({ groupIndex = 0 }: TabBarProps) {
 
   const nodes = useTreeStore((s) => s.nodes);
 
-  const hasSecondaryGroup = useTabStore((s) => s.secondaryTabs.length > 0);
+  const hasSecondaryGroup = useTabStore((s) => s.secondaryGroupOpen);
   const isPrimary = groupIndex === 0;
   const tabs = isPrimary ? primaryTabs : secondaryTabs;
   const activeTabId = isPrimary ? primaryActiveTabId : secondaryActiveTabId;
@@ -51,6 +51,10 @@ export function TabBar({ groupIndex = 0 }: TabBarProps) {
     x: number;
     y: number;
   } | null>(null);
+
+  // Split dropdown state (primary group only)
+  const splitMenuRef = useRef<HTMLDivElement>(null);
+  const [splitMenuOpen, setSplitMenuOpen] = useState(false);
 
   // Track global drag start/end to show the split drop zone
   useEffect(() => {
@@ -92,7 +96,17 @@ export function TabBar({ groupIndex = 0 }: TabBarProps) {
     return () => document.removeEventListener("mousedown", onMouseDown);
   }, [overflowOpen]);
 
-  if (tabs.length === 0) return null;
+  // Close split dropdown on outside click
+  useEffect(() => {
+    if (!splitMenuOpen) return;
+    function onMouseDown(e: MouseEvent) {
+      if (!splitMenuRef.current?.contains(e.target as Node)) {
+        setSplitMenuOpen(false);
+      }
+    }
+    document.addEventListener("mousedown", onMouseDown);
+    return () => document.removeEventListener("mousedown", onMouseDown);
+  }, [splitMenuOpen]);
 
   function handleTabClick(nodeId: string) {
     setOverflowOpen(false);
@@ -223,8 +237,6 @@ export function TabBar({ groupIndex = 0 }: TabBarProps) {
       raw,
     ) as DragPayload;
     if (srcGroup !== 0) return;
-    const { tabs: currentTabs } = useTabStore.getState();
-    if (currentTabs.length <= 1) return; // can't leave primary empty
     useTabStore.getState().moveTabBetweenGroups(srcId, 0, 1);
     useTreeStore.getState().setActiveScene(srcId);
   }
@@ -329,22 +341,52 @@ export function TabBar({ groupIndex = 0 }: TabBarProps) {
         })}
       </div>
 
-      {/* Split button: primary group only, when no secondary group exists */}
-      {isPrimary && !hasSecondaryGroup && activeTabId && !isDraggingTab && (
-        <button
-          type="button"
-          title="右に分割 (Ctrl+Enter)"
-          onClick={() =>
-            useTabStore.getState().openInSecondaryGroup(activeTabId)
-          }
-          className="flex h-full flex-shrink-0 items-center border-l border-border px-2 text-muted-foreground hover:bg-accent hover:text-foreground"
+      {/* Split dropdown button: primary group only, when no secondary group */}
+      {isPrimary && !hasSecondaryGroup && !isDraggingTab && (
+        <div
+          ref={splitMenuRef}
+          className="relative flex-shrink-0 border-l border-border"
         >
-          <Columns2 className="h-3.5 w-3.5" />
-        </button>
+          <button
+            type="button"
+            title="分割"
+            onClick={() => setSplitMenuOpen((v) => !v)}
+            className={cn(
+              "flex h-full items-center px-2 text-muted-foreground hover:bg-accent hover:text-foreground",
+              splitMenuOpen && "bg-accent text-foreground",
+            )}
+          >
+            <Columns2 className="h-3.5 w-3.5" />
+          </button>
+          {splitMenuOpen && (
+            <div className="absolute right-0 top-full z-50 min-w-[140px] rounded-md border border-border bg-popover py-1 shadow-md">
+              <button
+                type="button"
+                className="flex w-full items-center px-3 py-1.5 text-left text-xs text-foreground hover:bg-accent"
+                onClick={() => {
+                  useTabStore.getState().createEmptySecondaryGroup("right");
+                  setSplitMenuOpen(false);
+                }}
+              >
+                右に分割
+              </button>
+              <button
+                type="button"
+                className="flex w-full items-center px-3 py-1.5 text-left text-xs text-foreground hover:bg-accent"
+                onClick={() => {
+                  useTabStore.getState().createEmptySecondaryGroup("below");
+                  setSplitMenuOpen(false);
+                }}
+              >
+                下に分割
+              </button>
+            </div>
+          )}
+        </div>
       )}
 
       {/* Split drop zone: primary group only, when no secondary group, during drag */}
-      {isPrimary && !hasSecondaryGroup && isDraggingTab && tabs.length > 1 && (
+      {isPrimary && !hasSecondaryGroup && isDraggingTab && (
         <div
           title="ここにドロップして分割"
           className="flex h-full flex-shrink-0 items-center border-l border-primary/50 bg-primary/10 px-2 text-xs text-primary"

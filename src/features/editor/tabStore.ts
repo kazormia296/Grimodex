@@ -17,6 +17,8 @@ interface PersistedTabState {
   secondaryTabs: TabEntry[];
   secondaryActiveTabId: string | null;
   activeGroupIndex: GroupIndex;
+  secondaryGroupOpen: boolean;
+  splitDirection: "right" | "below";
 }
 
 interface TabState {
@@ -27,6 +29,8 @@ interface TabState {
   // ---- Secondary group (split view) ----
   secondaryTabs: TabEntry[];
   secondaryActiveTabId: string | null;
+  /** Whether the secondary editor group panel is visible (may be empty). */
+  secondaryGroupOpen: boolean;
 
   /** Which group currently has keyboard focus (0 = primary, 1 = secondary) */
   activeGroupIndex: GroupIndex;
@@ -73,10 +77,13 @@ interface TabState {
    */
   openInSecondaryGroup: (nodeId: string) => void;
 
-  /** Close a tab in the secondary group. Resets activeGroupIndex if last tab. */
+  /** Create an empty secondary group with the given split direction. */
+  createEmptySecondaryGroup: (direction: "right" | "below") => void;
+
+  /** Close a tab in the secondary group. Group stays visible even when empty. */
   closeSecondaryTab: (nodeId: string) => void;
 
-  /** Close all secondary tabs and reset to primary group. */
+  /** Close the secondary group panel entirely (X button). */
   closeSecondaryGroup: () => void;
 
   /** Activate a tab in the secondary group. No-op if not found. */
@@ -165,6 +172,7 @@ export const useTabStore = create<TabState>()((set, get) => ({
   activeTabId: null,
   secondaryTabs: [],
   secondaryActiveTabId: null,
+  secondaryGroupOpen: false,
   activeGroupIndex: 0,
   splitDirection: "right",
   dirtyTabIds: new Set<string>(),
@@ -273,13 +281,26 @@ export const useTabStore = create<TabState>()((set, get) => ({
     const existing = secondaryTabs.find((t) => t.nodeId === nodeId);
 
     if (existing) {
-      set({ secondaryActiveTabId: nodeId, activeGroupIndex: 1 });
+      set({
+        secondaryActiveTabId: nodeId,
+        activeGroupIndex: 1,
+        secondaryGroupOpen: true,
+      });
       return;
     }
 
     set({
       secondaryTabs: [...secondaryTabs, { nodeId, isPreview: false }],
       secondaryActiveTabId: nodeId,
+      activeGroupIndex: 1,
+      secondaryGroupOpen: true,
+    });
+  },
+
+  createEmptySecondaryGroup(direction) {
+    set({
+      secondaryGroupOpen: true,
+      splitDirection: direction,
       activeGroupIndex: 1,
     });
   },
@@ -304,7 +325,7 @@ export const useTabStore = create<TabState>()((set, get) => ({
     set({
       secondaryTabs: remaining,
       secondaryActiveTabId: newActive,
-      activeGroupIndex: remaining.length === 0 ? 0 : get().activeGroupIndex,
+      // Keep activeGroupIndex on secondary even when empty — group stays visible
     });
   },
 
@@ -312,6 +333,7 @@ export const useTabStore = create<TabState>()((set, get) => ({
     set({
       secondaryTabs: [],
       secondaryActiveTabId: null,
+      secondaryGroupOpen: false,
       activeGroupIndex: 0,
     });
   },
@@ -364,13 +386,16 @@ export const useTabStore = create<TabState>()((set, get) => ({
 
     const movingTab = srcArr.find((t) => t.nodeId === nodeId);
     if (!movingTab) return;
-    // Can't leave primary empty
-    if (fromGroup === 0 && srcArr.length <= 1) return;
 
     // If already in destination, just activate it there
     if (dstArr.some((t) => t.nodeId === nodeId)) {
       if (toGroup === 0) set({ activeTabId: nodeId, activeGroupIndex: 0 });
-      else set({ secondaryActiveTabId: nodeId, activeGroupIndex: 1 });
+      else
+        set({
+          secondaryActiveTabId: nodeId,
+          activeGroupIndex: 1,
+          secondaryGroupOpen: true,
+        });
       return;
     }
 
@@ -399,6 +424,7 @@ export const useTabStore = create<TabState>()((set, get) => ({
         | "activeTabId"
         | "secondaryActiveTabId"
         | "activeGroupIndex"
+        | "secondaryGroupOpen"
       >
     > = {};
 
@@ -418,13 +444,7 @@ export const useTabStore = create<TabState>()((set, get) => ({
       updates.secondaryTabs = newDst;
       updates.secondaryActiveTabId = nodeId;
       updates.activeGroupIndex = 1;
-    }
-
-    // Auto-close secondary if it became empty
-    if (fromGroup === 1 && newSrc.length === 0) {
-      updates.secondaryTabs = [];
-      updates.secondaryActiveTabId = null;
-      updates.activeGroupIndex = 0;
+      updates.secondaryGroupOpen = true;
     }
 
     set(updates);
@@ -483,11 +503,8 @@ export const useTabStore = create<TabState>()((set, get) => ({
     if (groupIndex === 0) {
       set({ tabs: [], activeTabId: null });
     } else {
-      set({
-        secondaryTabs: [],
-        secondaryActiveTabId: null,
-        activeGroupIndex: 0,
-      });
+      // Keep the group panel visible (empty state); user must click X to close it
+      set({ secondaryTabs: [], secondaryActiveTabId: null });
     }
   },
 
@@ -501,6 +518,7 @@ export const useTabStore = create<TabState>()((set, get) => ({
         secondaryActiveTabId: nodeId,
         activeGroupIndex: 1,
         splitDirection: direction,
+        secondaryGroupOpen: true,
       });
       return;
     }
@@ -509,6 +527,7 @@ export const useTabStore = create<TabState>()((set, get) => ({
       secondaryActiveTabId: nodeId,
       activeGroupIndex: 1,
       splitDirection: direction,
+      secondaryGroupOpen: true,
     });
   },
 
@@ -548,15 +567,21 @@ export const useTabStore = create<TabState>()((set, get) => ({
         ? parsed.secondaryActiveTabId
         : (secondaryTabs[0]?.nodeId ?? null);
 
-      const activeGroupIndex =
-        secondaryTabs.length === 0 ? 0 : (parsed.activeGroupIndex ?? 0);
+      const secondaryGroupOpen =
+        parsed.secondaryGroupOpen ?? secondaryTabs.length > 0;
+      const activeGroupIndex = !secondaryGroupOpen
+        ? 0
+        : (parsed.activeGroupIndex ?? 0);
+      const splitDirection = parsed.splitDirection ?? "right";
 
       set({
         tabs,
         activeTabId,
         secondaryTabs,
         secondaryActiveTabId,
+        secondaryGroupOpen,
         activeGroupIndex,
+        splitDirection,
       });
     } catch {
       // Corrupted or missing — keep current state
@@ -570,14 +595,18 @@ export const useTabStore = create<TabState>()((set, get) => ({
         activeTabId,
         secondaryTabs,
         secondaryActiveTabId,
+        secondaryGroupOpen,
         activeGroupIndex,
+        splitDirection,
       } = get();
       const data: PersistedTabState = {
         tabs,
         activeTabId,
         secondaryTabs,
         secondaryActiveTabId,
+        secondaryGroupOpen,
         activeGroupIndex,
+        splitDirection,
       };
       await setSetting(TAB_STATE_KEY, JSON.stringify(data));
     } catch {
@@ -595,6 +624,8 @@ export const useTabStore = create<TabState>()((set, get) => ({
         state.activeTabId === prev.activeTabId &&
         state.secondaryTabs === prev.secondaryTabs &&
         state.secondaryActiveTabId === prev.secondaryActiveTabId &&
+        state.secondaryGroupOpen === prev.secondaryGroupOpen &&
+        state.splitDirection === prev.splitDirection &&
         state.activeGroupIndex === prev.activeGroupIndex
       ) {
         return;
