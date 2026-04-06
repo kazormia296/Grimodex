@@ -114,7 +114,7 @@ const OPENROUTER_PREFIXED: Record<string, string> = {
 
 /**
  * モデルの能力情報を取得する。
- * 未知のモデルはデフォルト値を返す（Ollama 等）。
+ * 未知のモデルはデフォルト値を返す。
  */
 export function getModelCapabilities(model: string): ModelCapabilities {
   if (MODEL_CAPABILITIES[model]) return MODEL_CAPABILITIES[model];
@@ -122,11 +122,6 @@ export function getModelCapabilities(model: string): ModelCapabilities {
   const resolved = OPENROUTER_PREFIXED[model];
   if (resolved && MODEL_CAPABILITIES[resolved])
     return MODEL_CAPABILITIES[resolved];
-
-  // Ollama モデルはツール非対応
-  if (/^ollama\//i.test(model)) {
-    return { ...DEFAULT_CAPABILITIES, supportsTools: false };
-  }
 
   return DEFAULT_CAPABILITIES;
 }

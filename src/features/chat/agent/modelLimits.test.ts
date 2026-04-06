@@ -43,9 +43,9 @@ describe("getModelCapabilities", () => {
     expect(caps.supportsAdaptiveThinking).toBe(true);
   });
 
-  it("Ollama モデルはツール非対応", () => {
+  it("Ollama モデルはツール対応", () => {
     const caps = getModelCapabilities("ollama/llama3");
-    expect(caps.supportsTools).toBe(false);
+    expect(caps.supportsTools).toBe(true);
   });
 
   it("未知モデルはデフォルト値を返す", () => {
@@ -60,8 +60,8 @@ describe("modelSupportsTools", () => {
   it("Claude は対応", () =>
     expect(modelSupportsTools("claude-opus-4-6")).toBe(true));
   it("GPT-4o は対応", () => expect(modelSupportsTools("gpt-4o")).toBe(true));
-  it("Ollama は非対応", () =>
-    expect(modelSupportsTools("ollama/mistral")).toBe(false));
+  it("Ollama は対応", () =>
+    expect(modelSupportsTools("ollama/mistral")).toBe(true));
 });
 
 describe("getToolTokenBudget", () => {
