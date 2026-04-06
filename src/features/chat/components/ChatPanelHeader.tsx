@@ -1,126 +1,169 @@
-import {
-  formatContextWindow,
-  getModelCapabilities,
-} from "../agent/modelLimits";
-import { StorySoFarCoverage } from "./StorySoFarCoverage";
+import { useState, useRef, useEffect } from "react";
+import { Globe, ChevronDown, Plus } from "lucide-react";
+import { useTreeStore } from "@/features/tree/treeStore";
 
 interface ChatPanelHeaderProps {
   sessionsPanelOpen: boolean;
   setSessionsPanelOpen: (open: boolean) => void;
-  contextTokenCount: number;
-  agentMode: boolean;
-  setAgentMode: (on: boolean) => void;
-  modelSupportsTools: boolean;
-  currentModel: string;
-  thinkingEnabled: boolean;
-  onThinkingToggle: () => void;
+  isGlobalChat: boolean;
+  onToggleGlobalChat: () => void;
+  chatSceneId: string;
+  onSceneChange: (sceneId: string) => void;
+  onNewSession: () => void;
 }
 
 export function ChatPanelHeader({
   sessionsPanelOpen,
   setSessionsPanelOpen,
-  contextTokenCount,
-  agentMode,
-  setAgentMode,
-  modelSupportsTools,
-  currentModel,
-  thinkingEnabled,
-  onThinkingToggle,
+  isGlobalChat,
+  onToggleGlobalChat,
+  chatSceneId,
+  onSceneChange,
+  onNewSession,
 }: ChatPanelHeaderProps) {
-  const caps = getModelCapabilities(currentModel);
-  const ctxLabel = currentModel
-    ? formatContextWindow(caps.contextWindow)
-    : null;
-  const hasThinking = caps.supportsAdaptiveThinking || caps.supportsThinking;
+  const nodes = useTreeStore((s) => s.nodes);
+
+  // シーンをフォルダごとにグループ化
+  const sceneGroups = (() => {
+    const folderMap = new Map(
+      nodes.filter((n) => n.nodeType === "folder").map((n) => [n.id, n.title]),
+    );
+    const sceneNodes = nodes.filter((n) => n.nodeType === "scene");
+    const byFolder = new Map<
+      string | null,
+      { groupLabel: string; scenes: typeof sceneNodes }
+    >();
+    for (const scene of sceneNodes) {
+      const folderId = scene.parentId;
+      if (!byFolder.has(folderId)) {
+        const groupLabel =
+          folderId === null
+            ? "Uncategorized"
+            : (folderMap.get(folderId) ?? folderId);
+        byFolder.set(folderId, { groupLabel, scenes: [] });
+      }
+      byFolder.get(folderId)!.scenes.push(scene);
+    }
+    return [...byFolder.values()];
+  })();
+
+  const currentSceneTitle =
+    nodes.find((n) => n.id === chatSceneId)?.title ?? "Scene";
+
+  const [dropdownOpen, setDropdownOpen] = useState(false);
+  const dropdownRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!dropdownOpen) return;
+    function onOutside(e: MouseEvent) {
+      if (
+        dropdownRef.current &&
+        !dropdownRef.current.contains(e.target as Node)
+      ) {
+        setDropdownOpen(false);
+      }
+    }
+    document.addEventListener("mousedown", onOutside);
+    return () => document.removeEventListener("mousedown", onOutside);
+  }, [dropdownOpen]);
 
   return (
-    <div className="flex flex-col border-b border-border">
-      <div className="flex items-center justify-between px-4 py-2">
-        <div className="flex items-center gap-2">
-          <h2 className="text-sm font-semibold text-foreground">AIチャット</h2>
-          <button
-            type="button"
-            onClick={() => setSessionsPanelOpen(!sessionsPanelOpen)}
-            className="rounded px-1.5 py-0.5 text-xs text-muted-foreground hover:bg-accent hover:text-foreground"
-          >
-            Sessions
-          </button>
-          <button
-            type="button"
-            onClick={() => setAgentMode(!agentMode)}
-            disabled={!modelSupportsTools}
-            title={
-              !modelSupportsTools
-                ? "このモデルはAgent modeに対応していません（Claude / GPT-4 系を選択してください）"
-                : agentMode
-                  ? "Agent mode ON — クリックでOFF"
-                  : "Agent mode OFF — クリックでON"
-            }
-            className={[
-              "rounded px-1.5 py-0.5 text-xs transition-colors",
-              agentMode
-                ? "bg-primary text-primary-foreground"
-                : "text-muted-foreground hover:bg-accent hover:text-foreground",
-              !modelSupportsTools ? "cursor-not-allowed opacity-40" : "",
-            ].join(" ")}
-          >
-            🔧
-          </button>
-          {agentMode && (
-            <span className="rounded-full bg-primary/10 px-2 py-0.5 text-xs font-medium text-primary">
-              Agent mode
-            </span>
-          )}
-        </div>
+    <div className="flex items-center justify-between border-b border-border px-3 py-1.5">
+      {/* 左側: タイトル + グローバルトグル + シーンインジケーター */}
+      <div className="flex items-center gap-1.5 min-w-0">
+        <span className="text-sm font-semibold text-foreground shrink-0">
+          AIチャット
+        </span>
 
-        {/* モデル能力バッジ */}
-        <div className="flex items-center gap-1.5">
-          {ctxLabel && (
-            <span
-              title={`${currentModel} — コンテキスト窓: ${caps.contextWindow.toLocaleString()} トークン`}
-              className="rounded bg-muted px-1.5 py-0.5 text-xs text-muted-foreground"
-            >
-              {ctxLabel}
+        {/* 🌐 グローバルチャットトグル */}
+        <button
+          type="button"
+          onClick={onToggleGlobalChat}
+          title={
+            isGlobalChat
+              ? "Project scope ON — クリックでシーンに戻す"
+              : "Project scope OFF — クリックでプロジェクト全体に切り替え"
+          }
+          className={[
+            "rounded p-0.5 transition-colors",
+            isGlobalChat
+              ? "text-primary"
+              : "text-muted-foreground hover:text-foreground",
+          ].join(" ")}
+        >
+          <Globe className="h-3.5 w-3.5" />
+        </button>
+
+        {/* シーンインジケーター (ドロップダウン) */}
+        <div className="relative min-w-0" ref={dropdownRef}>
+          <button
+            type="button"
+            onClick={() => setDropdownOpen((v) => !v)}
+            className="flex items-center gap-0.5 rounded px-1.5 py-0.5 text-xs text-muted-foreground hover:bg-accent hover:text-foreground max-w-[140px]"
+            title="チャットのシーンコンテキストを切り替え"
+          >
+            <span className="truncate">
+              {isGlobalChat ? "Project" : currentSceneTitle}
             </span>
-          )}
-          {!modelSupportsTools && currentModel && (
-            <span
-              title="ツール呼び出し非対応"
-              className="rounded bg-muted px-1.5 py-0.5 text-xs text-muted-foreground line-through"
-            >
-              Tools
-            </span>
-          )}
-          {hasThinking && (
-            <button
-              type="button"
-              onClick={onThinkingToggle}
-              title={
-                thinkingEnabled
-                  ? "Thinking ON — クリックでOFF"
-                  : "Thinking OFF — クリックでON"
-              }
-              className={`rounded px-1.5 py-0.5 text-xs transition-colors hover:bg-accent ${
-                thinkingEnabled
-                  ? "bg-muted text-muted-foreground"
-                  : "bg-muted text-muted-foreground/40 line-through"
-              }`}
-            >
-              💭
-            </button>
-          )}
-          {contextTokenCount > 0 && (
-            <span
-              data-testid="context-token-count"
-              className="text-xs text-muted-foreground"
-            >
-              ctx: {contextTokenCount.toLocaleString()} tokens
-            </span>
+            <ChevronDown className="h-3 w-3 shrink-0" />
+          </button>
+
+          {dropdownOpen && (
+            <div className="absolute left-0 top-full z-50 mt-1 w-52 rounded-md border border-border bg-background shadow-lg">
+              <div className="max-h-64 overflow-y-auto py-1">
+                {sceneGroups.map((group) => (
+                  <div key={group.groupLabel}>
+                    <div className="px-2 py-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+                      {group.groupLabel}
+                    </div>
+                    {group.scenes.map((scene) => (
+                      <button
+                        key={scene.id}
+                        type="button"
+                        onClick={() => {
+                          onSceneChange(scene.id);
+                          setDropdownOpen(false);
+                        }}
+                        className={[
+                          "w-full px-3 py-1 text-left text-xs hover:bg-accent",
+                          scene.id === chatSceneId && !isGlobalChat
+                            ? "font-medium text-foreground"
+                            : "text-muted-foreground",
+                        ].join(" ")}
+                      >
+                        {scene.title}
+                      </button>
+                    ))}
+                  </div>
+                ))}
+                {sceneGroups.length === 0 && (
+                  <p className="px-3 py-2 text-xs text-muted-foreground">
+                    シーンがありません
+                  </p>
+                )}
+              </div>
+            </div>
           )}
         </div>
       </div>
-      <div className="flex items-center gap-2 px-4 pb-1.5">
-        <StorySoFarCoverage />
+
+      {/* 右側: Sessions + 新規セッション */}
+      <div className="flex items-center gap-1 shrink-0">
+        <button
+          type="button"
+          onClick={() => setSessionsPanelOpen(!sessionsPanelOpen)}
+          className="rounded px-1.5 py-0.5 text-xs text-muted-foreground hover:bg-accent hover:text-foreground"
+        >
+          Sessions
+        </button>
+        <button
+          type="button"
+          onClick={onNewSession}
+          title="新しいセッションを作成"
+          className="rounded p-0.5 text-muted-foreground hover:bg-accent hover:text-foreground"
+        >
+          <Plus className="h-3.5 w-3.5" />
+        </button>
       </div>
     </div>
   );

@@ -17,7 +17,6 @@ import * as chatApi from "./chatApi";
 import { useAiSettingsStore } from "./store";
 import { normalizeModelId } from "@/features/attribution/AuthorshipMark";
 import { useTreeStore } from "@/features/tree/treeStore";
-import { modelSupportsTools } from "./agent/modelLimits";
 
 interface SnippetDialogState {
   open: boolean;
@@ -39,44 +38,40 @@ export function ChatPanel() {
   const setActiveSceneId = useChatStore((s) => s.setActiveSceneId);
   const refreshContextLayers = useChatStore((s) => s.refreshContextLayers);
   const activeSessionId = useChatStore((s) => s.activeSessionId);
-  const agentMode = useChatStore((s) => s.agentMode);
-  const setAgentMode = useChatStore((s) => s.setAgentMode);
   const agentProgress = useChatStore((s) => s.agentProgress);
+  const createNewSession = useChatStore((s) => s.createNewSession);
+  const isGlobalChat = useChatStore((s) => s.isGlobalChat);
+  const setIsGlobalChat = useChatStore((s) => s.setIsGlobalChat);
 
-  const activeSceneId = useSceneStore((s) => s.activeSceneId);
+  // chatStore の activeSceneId (手動変更可能)
+  const chatSceneId = useChatStore((s) => s.activeSceneId);
+
+  // ツリーのアクティブシーン → chatStore に同期
+  const treeActiveSceneId = useSceneStore((s) => s.activeSceneId);
   const sceneTitle = useTreeStore(
-    (s) => s.nodes.find((n) => n.id === activeSceneId)?.title ?? "このシーン",
+    (s) =>
+      s.nodes.find((n) => n.id === treeActiveSceneId)?.title ?? "このシーン",
   );
 
   const aiSettings = useAiSettingsStore((s) => s.settings);
   const loadAiSettings = useAiSettingsStore((s) => s.loadSettings);
-  const saveAiSettings = useAiSettingsStore((s) => s.saveSettings);
   const currentModel = aiSettings?.model ?? "";
-  const canUseTools = modelSupportsTools(currentModel);
-  const thinkingEnabled = aiSettings?.thinkingEnabled ?? true;
 
   useEffect(() => {
     loadAiSettings();
   }, [loadAiSettings]);
 
-  const handleThinkingToggle = useCallback(() => {
-    if (!aiSettings) return;
-    saveAiSettings({
-      ...aiSettings,
-      thinkingEnabled: !aiSettings.thinkingEnabled,
-    });
-  }, [aiSettings, saveAiSettings]);
-
   const [sessionsPanelOpen, setSessionsPanelOpen] = useState(false);
   const [input, setInput] = useState("");
 
+  // ツリーのシーン変更を chatStore に伝播
   useEffect(() => {
-    setActiveSceneId(activeSceneId);
-  }, [activeSceneId, setActiveSceneId]);
+    setActiveSceneId(treeActiveSceneId);
+  }, [treeActiveSceneId, setActiveSceneId]);
 
   useEffect(() => {
     refreshContextLayers();
-  }, [activeSceneId, activeSessionId, refreshContextLayers]);
+  }, [treeActiveSceneId, activeSessionId, isGlobalChat, refreshContextLayers]);
 
   // Pinned codex entries
   const [pinnedEntries, setPinnedEntries] = useState<
@@ -198,18 +193,36 @@ export function ChatPanel() {
     sendMessage(trimmed);
   };
 
+  const handleToggleGlobalChat = useCallback(() => {
+    setIsGlobalChat(!isGlobalChat);
+  }, [isGlobalChat, setIsGlobalChat]);
+
+  const handleSceneChange = useCallback(
+    (sceneId: string) => {
+      // isGlobalChat が ON のときシーンを変えると自動でOFFになる (setActiveSceneId 内で処理)
+      setActiveSceneId(sceneId);
+    },
+    [setActiveSceneId],
+  );
+
+  const handleNewSession = useCallback(() => {
+    createNewSession(
+      "default-project",
+      "New session",
+      isGlobalChat ? undefined : chatSceneId || undefined,
+    );
+  }, [createNewSession, isGlobalChat, chatSceneId]);
+
   return (
     <div className="relative flex h-full flex-col bg-background">
       <ChatPanelHeader
         sessionsPanelOpen={sessionsPanelOpen}
         setSessionsPanelOpen={setSessionsPanelOpen}
-        contextTokenCount={contextTokenCount}
-        agentMode={agentMode}
-        setAgentMode={setAgentMode}
-        modelSupportsTools={canUseTools}
-        currentModel={currentModel}
-        thinkingEnabled={thinkingEnabled}
-        onThinkingToggle={handleThinkingToggle}
+        isGlobalChat={isGlobalChat}
+        onToggleGlobalChat={handleToggleGlobalChat}
+        chatSceneId={chatSceneId}
+        onSceneChange={handleSceneChange}
+        onNewSession={handleNewSession}
       />
 
       <ContextBar
@@ -221,7 +234,7 @@ export function ChatPanel() {
         contextLayers={contextLayers}
         systemPrompt={systemPrompt}
         model={currentModel}
-        canUseCreator={canUseTools}
+        canUseCreator={false}
       />
 
       <div className="flex-1 overflow-y-auto px-4 py-3">
@@ -324,7 +337,7 @@ export function ChatPanel() {
       {sessionsPanelOpen && (
         <SessionsPanel
           sceneTitle={sceneTitle}
-          activeSceneId={activeSceneId}
+          activeSceneId={treeActiveSceneId}
           onClose={() => setSessionsPanelOpen(false)}
         />
       )}

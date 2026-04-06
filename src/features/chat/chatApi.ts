@@ -1,7 +1,7 @@
 import { invoke } from "@/lib/tauri";
 import { db } from "@/db/client";
 import { chatSessions, chatMessages, codexEntries } from "@/db/schema";
-import { eq, desc, inArray } from "drizzle-orm";
+import { eq, desc, inArray, isNull } from "drizzle-orm";
 import type { ChatSession, ChatMessage, MessageRole } from "./chatTypes";
 import type { CodexEntry } from "@/features/codex/api";
 import {
@@ -163,14 +163,28 @@ function toMessage(row: typeof chatMessages.$inferSelect): ChatMessage {
   };
 }
 
-export async function listSessions(nodeId?: string): Promise<ChatSession[]> {
-  const query = nodeId
-    ? db
-        .select()
-        .from(chatSessions)
-        .where(eq(chatSessions.nodeId, nodeId))
-        .orderBy(desc(chatSessions.updatedAt))
-    : db.select().from(chatSessions).orderBy(desc(chatSessions.updatedAt));
+/**
+ * nodeId = string  → そのシーンのセッションのみ
+ * nodeId = null    → nodeId IS NULL (プロジェクトスコープ) のセッションのみ
+ * nodeId = undefined → 全セッション
+ */
+export async function listSessions(
+  nodeId?: string | null,
+): Promise<ChatSession[]> {
+  const query =
+    nodeId !== undefined
+      ? nodeId === null
+        ? db
+            .select()
+            .from(chatSessions)
+            .where(isNull(chatSessions.nodeId))
+            .orderBy(desc(chatSessions.updatedAt))
+        : db
+            .select()
+            .from(chatSessions)
+            .where(eq(chatSessions.nodeId, nodeId))
+            .orderBy(desc(chatSessions.updatedAt))
+      : db.select().from(chatSessions).orderBy(desc(chatSessions.updatedAt));
   const rows = await query;
   return rows.map(toSession);
 }

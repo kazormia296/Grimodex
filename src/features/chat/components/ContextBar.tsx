@@ -7,6 +7,10 @@ import { ContextCreatorButton } from "./ContextCreatorButton";
 import { ContextCreatorDialog } from "./ContextCreatorDialog";
 import { runContextCreator, type SuggestedEntry } from "../contextCreatorApi";
 import { useChatStore } from "../chatStore";
+import {
+  getModelCapabilities,
+  formatContextWindow,
+} from "../agent/modelLimits";
 
 interface ContextBarProps {
   pinnedEntries: CodexEntry[];
@@ -54,6 +58,10 @@ export function ContextBar({
   const l3 = contextLayers.find((l) => l.layer === "L3");
   const sceneTokens = l3?.used ?? 0;
 
+  const ctxWindowLabel = model
+    ? formatContextWindow(getModelCapabilities(model).contextWindow)
+    : null;
+
   return (
     <>
       <div className="border-b border-border" data-testid="context-bar">
@@ -66,17 +74,24 @@ export function ContextBar({
           <span className="font-medium">Context</span>
           <div className="flex items-center gap-2">
             {contextTokenCount > 0 && (
-              <button
-                type="button"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  setPreviewOpen(true);
-                }}
-                className="rounded bg-muted px-1.5 py-0.5 text-xs hover:bg-accent"
-                title="プロンプト全文を表示"
-              >
-                ~{contextTokenCount.toLocaleString()} tokens
-              </button>
+              <div className="flex items-center gap-1">
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setPreviewOpen(true);
+                  }}
+                  className="rounded bg-muted px-1.5 py-0.5 text-xs hover:bg-accent"
+                  title="プロンプト全文を表示"
+                >
+                  ~{contextTokenCount.toLocaleString()} tokens
+                </button>
+                {ctxWindowLabel && (
+                  <span className="text-xs text-muted-foreground/60">
+                    / {ctxWindowLabel}
+                  </span>
+                )}
+              </div>
             )}
             {collapsed ? (
               <ChevronDown className="h-3 w-3" />

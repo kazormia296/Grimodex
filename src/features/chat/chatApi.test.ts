@@ -28,6 +28,7 @@ vi.mock("drizzle-orm", () => ({
   eq: vi.fn((...args: unknown[]) => ({ eq: args })),
   desc: vi.fn((col: unknown) => ({ desc: col })),
   inArray: vi.fn((...args: unknown[]) => ({ inArray: args })),
+  isNull: vi.fn((col: unknown) => ({ isNull: col })),
 }));
 
 import { db } from "@/db/client";
@@ -112,6 +113,27 @@ describe("chatApi - session/message persistence", () => {
       mockSelectChain([]);
       const result = await listSessions();
       expect(result).toHaveLength(0);
+    });
+
+    it("returns project-scope sessions when nodeId is null", async () => {
+      const session: ChatSession = {
+        id: "session-proj",
+        projectId: "proj-1",
+        nodeId: null,
+        title: "プロジェクト会話",
+        titleManual: 0,
+        model: "openrouter/anthropic/claude-sonnet-4.6",
+        pinnedCodex: "[]",
+        createdAt: "2025-01-01T00:00:00Z",
+        updatedAt: "2025-01-01T00:00:00Z",
+      };
+      mockSelectChain([session as unknown as Record<string, unknown>]);
+
+      const result = await listSessions(null);
+
+      expect(mockDb.select).toHaveBeenCalled();
+      expect(result).toHaveLength(1);
+      expect(result[0].nodeId).toBeNull();
     });
   });
 

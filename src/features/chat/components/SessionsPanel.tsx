@@ -154,12 +154,16 @@ export function SessionsPanel({
   const selectSession = useChatStore((s) => s.selectSession);
   const createNewSession = useChatStore((s) => s.createNewSession);
   const deleteSession = useChatStore((s) => s.deleteSession);
+  const isGlobalChat = useChatStore((s) => s.isGlobalChat);
+
+  // グローバルモード時は null (nodeId IS NULL)、それ以外はシーンID
+  const effectiveNodeId = isGlobalChat ? null : activeSceneId || undefined;
 
   const overlayRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    loadSessions(activeSceneId || undefined);
-  }, [activeSceneId, loadSessions]);
+    loadSessions(effectiveNodeId);
+  }, [effectiveNodeId, loadSessions]);
 
   const handleSelect = useCallback(
     (sessionId: string) => {
@@ -173,13 +177,13 @@ export function SessionsPanel({
     async (sessionId: string, newTitle: string) => {
       try {
         await chatApi.updateSessionTitle(sessionId, newTitle);
-        await loadSessions(activeSceneId || undefined);
+        await loadSessions(effectiveNodeId);
       } catch (e) {
         debugLog.error("SessionsPanel", "rename failed", errorDetail(e));
         toast.error("名前の変更に失敗しました");
       }
     },
-    [activeSceneId, loadSessions],
+    [effectiveNodeId, loadSessions],
   );
 
   const handleDelete = useCallback(
@@ -190,13 +194,13 @@ export function SessionsPanel({
       if (!confirmed) return;
       try {
         await deleteSession(sessionId);
-        await loadSessions(activeSceneId || undefined);
+        await loadSessions(effectiveNodeId);
       } catch (e) {
         debugLog.error("SessionsPanel", "delete failed", errorDetail(e));
         toast.error("セッションの削除に失敗しました");
       }
     },
-    [activeSceneId, deleteSession, loadSessions],
+    [effectiveNodeId, deleteSession, loadSessions],
   );
 
   const handleCreate = useCallback(async () => {
@@ -204,15 +208,23 @@ export function SessionsPanel({
       await createNewSession(
         "default-project",
         "New session",
-        activeSceneId || undefined,
+        // グローバルモード → nodeId = null (undefined を渡すと DB で null になる)
+        isGlobalChat ? undefined : activeSceneId || undefined,
       );
-      await loadSessions(activeSceneId || undefined);
+      await loadSessions(effectiveNodeId);
       onClose();
     } catch (e) {
       debugLog.error("SessionsPanel", "create failed", errorDetail(e));
       toast.error("セッションの作成に失敗しました");
     }
-  }, [activeSceneId, createNewSession, loadSessions, onClose]);
+  }, [
+    activeSceneId,
+    isGlobalChat,
+    effectiveNodeId,
+    createNewSession,
+    loadSessions,
+    onClose,
+  ]);
 
   // Close on click outside
   const handleOverlayClick = (e: React.MouseEvent<HTMLDivElement>) => {

@@ -96,7 +96,7 @@ interface ChatState {
   contextLayers: LayerBreakdown[];
 
   // Session actions
-  loadSessions: (nodeId?: string) => Promise<void>;
+  loadSessions: (nodeId?: string | null) => Promise<void>;
   selectSession: (sessionId: string | null) => Promise<void>;
   createNewSession: (
     projectId: string,
@@ -110,6 +110,10 @@ interface ChatState {
   agentMode: boolean;
   agentProgress: AgentLoopProgress | null;
   setAgentMode: (on: boolean) => void;
+
+  // Global chat (project scope, no scene context)
+  isGlobalChat: boolean;
+  setIsGlobalChat: (on: boolean) => void;
 
   // Existing actions
   sendMessage: (content: string) => Promise<void>;
@@ -168,10 +172,11 @@ export const useChatStore = create<ChatState>()((set, get) => ({
   contextLayers: [],
   agentMode: false,
   agentProgress: null,
+  isGlobalChat: false,
 
   // --- Session management ---
 
-  loadSessions: async (nodeId?: string) => {
+  loadSessions: async (nodeId?: string | null) => {
     set({ isLoadingSessions: true });
     try {
       const sessions = await chatApi.listSessions(nodeId);
@@ -249,10 +254,16 @@ export const useChatStore = create<ChatState>()((set, get) => ({
   // --- Streaming chat ---
 
   sendMessage: async (content: string) => {
-    const { isStreaming, activeSceneId, activeProjectId, activeSessionId } =
-      get();
+    const {
+      isStreaming,
+      activeSceneId,
+      activeProjectId,
+      activeSessionId,
+      isGlobalChat,
+    } = get();
     if (isStreaming) return;
     if (!content.trim()) return;
+    const effectiveSceneId = isGlobalChat ? null : activeSceneId;
 
     const sessionId = activeSessionId ?? "";
 
@@ -284,8 +295,8 @@ export const useChatStore = create<ChatState>()((set, get) => ({
     // -----------------------------------------------------------------------
     if (get().agentMode) {
       try {
-        const sceneCtx = activeSceneId
-          ? await fetchSceneContext(activeSceneId)
+        const sceneCtx = effectiveSceneId
+          ? await fetchSceneContext(effectiveSceneId)
           : null;
         const projectCtx = await fetchProjectContext(activeProjectId);
 
@@ -418,8 +429,8 @@ export const useChatStore = create<ChatState>()((set, get) => ({
     // Normal mode path (existing)
     // -----------------------------------------------------------------------
     try {
-      const sceneCtx = activeSceneId
-        ? await fetchSceneContext(activeSceneId)
+      const sceneCtx = effectiveSceneId
+        ? await fetchSceneContext(effectiveSceneId)
         : null;
       const projectCtx = await fetchProjectContext(activeProjectId);
 
@@ -594,14 +605,16 @@ export const useChatStore = create<ChatState>()((set, get) => ({
   },
 
   refreshContextLayers: async () => {
-    const { activeSceneId, activeProjectId, activeSessionId } = get();
-    if (!activeSceneId) {
+    const { activeSceneId, activeProjectId, activeSessionId, isGlobalChat } =
+      get();
+    const effectiveSceneId = isGlobalChat ? null : activeSceneId;
+    if (!effectiveSceneId) {
       set({ contextTokenCount: 0, contextLayers: [] });
       return;
     }
     try {
       const [sceneCtx, projectCtx] = await Promise.all([
-        fetchSceneContext(activeSceneId),
+        fetchSceneContext(effectiveSceneId),
         fetchProjectContext(activeProjectId),
       ]);
       if (!sceneCtx) return;
@@ -676,8 +689,17 @@ export const useChatStore = create<ChatState>()((set, get) => ({
   },
 
   setAgentMode: (on: boolean) => set({ agentMode: on }),
+  setIsGlobalChat: (on: boolean) => set({ isGlobalChat: on }),
   clearMessages: () => set({ messages: [] }),
   clearError: () => set({ error: null }),
-  setActiveSceneId: (id: string) => set({ activeSceneId: id }),
+  setActiveSceneId: (id: string) => {
+    const { activeSceneId } = get();
+    // シーンが実際に変わったときのみグローバルモードをOFF
+    if (id !== activeSceneId) {
+      set({ activeSceneId: id, isGlobalChat: false });
+    } else {
+      set({ activeSceneId: id });
+    }
+  },
   setActiveProjectId: (id: string | null) => set({ activeProjectId: id }),
 }));
