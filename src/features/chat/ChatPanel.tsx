@@ -37,6 +37,7 @@ export function ChatPanel() {
     (s) => s.messages.find((m) => m.role === "system")?.content ?? "",
   );
   const setActiveSceneId = useChatStore((s) => s.setActiveSceneId);
+  const refreshContextLayers = useChatStore((s) => s.refreshContextLayers);
   const activeSessionId = useChatStore((s) => s.activeSessionId);
   const agentMode = useChatStore((s) => s.agentMode);
   const setAgentMode = useChatStore((s) => s.setAgentMode);
@@ -63,6 +64,10 @@ export function ChatPanel() {
   useEffect(() => {
     setActiveSceneId(activeSceneId);
   }, [activeSceneId, setActiveSceneId]);
+
+  useEffect(() => {
+    refreshContextLayers();
+  }, [activeSceneId, activeSessionId, refreshContextLayers]);
 
   // Pinned codex entries
   const [pinnedEntries, setPinnedEntries] = useState<
@@ -169,7 +174,7 @@ export function ChatPanel() {
 
   const insertFromChat = useCallback(
     (content: string, messageId: string) => {
-      const model = aiSettings
+      const model = aiSettings?.model
         ? normalizeModelId(aiSettings.provider, aiSettings.model)
         : null;
       rawInsertFromChat(content, messageId, model ?? undefined);

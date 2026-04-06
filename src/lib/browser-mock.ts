@@ -166,6 +166,7 @@ export async function createBrowserMock(): Promise<BrowserMock> {
       provider: "openrouter",
       model: "",
       ollamaEndpoint: "http://localhost:11434",
+      thinkingEnabled: true,
     };
   }
 

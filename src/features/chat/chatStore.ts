@@ -113,6 +113,7 @@ interface ChatState {
 
   // Existing actions
   sendMessage: (content: string) => Promise<void>;
+  refreshContextLayers: () => Promise<void>;
   clearMessages: () => void;
   clearError: () => void;
   setActiveSceneId: (id: string) => void;
@@ -589,6 +590,88 @@ export const useChatStore = create<ChatState>()((set, get) => ({
       set({ error: msg });
     } finally {
       set({ isStreaming: false });
+    }
+  },
+
+  refreshContextLayers: async () => {
+    const { activeSceneId, activeProjectId, activeSessionId } = get();
+    if (!activeSceneId) {
+      set({ contextTokenCount: 0, contextLayers: [] });
+      return;
+    }
+    try {
+      const [sceneCtx, projectCtx] = await Promise.all([
+        fetchSceneContext(activeSceneId),
+        fetchProjectContext(activeProjectId),
+      ]);
+      if (!sceneCtx) return;
+
+      const allEntries = await listCodexEntries();
+      const mentioned = findMentionedEntries(sceneCtx.content, allEntries);
+      const L4_TOTAL_BUDGET = 60_000;
+      const codexEntries: CodexContext[] = mentioned.map((e) => {
+        const fullEntry = allEntries.find((a) => a.id === e.id);
+        const summary = fullEntry?.summary ?? "";
+        if (!fullEntry)
+          return { id: e.id, type: e.type, name: e.name, summary };
+        const preset = fullEntry.childrenBudget ?? "compact";
+        if (preset === "none")
+          return { id: e.id, type: e.type, name: e.name, summary };
+        const budget = computeChildrenTokenBudget(preset, L4_TOTAL_BUDGET);
+        const descendants = getDescendantsBFS(fullEntry.id, allEntries);
+        const childrenContext = buildChildrenContext(descendants, budget);
+        return childrenContext
+          ? { id: e.id, type: e.type, name: e.name, summary, childrenContext }
+          : { id: e.id, type: e.type, name: e.name, summary };
+      });
+
+      let pinnedCodexEntries: import("./contextBuilder").PinnedCodexContext[] =
+        [];
+      if (activeSessionId) {
+        const pinned = await chatApi.listPinnedCodexEntries(activeSessionId);
+        pinnedCodexEntries = pinned.map((e) => {
+          const children = e.withChildren
+            ? getChildrenFromArray(e.id, allEntries).map((c) => ({
+                id: c.id,
+                type: c.type,
+                name: c.name,
+                summary: c.summary ?? "",
+              }))
+            : undefined;
+          return {
+            id: e.id,
+            type: e.type,
+            name: e.name,
+            summary: e.summary ?? "",
+            withChildren: e.withChildren,
+            children,
+          };
+        });
+      }
+
+      const allNodes = useTreeStore.getState().nodes;
+      const l2Pct = useSettingsStore
+        .getState()
+        .getNumber("ai.contextBudget.l2", 10);
+      const storySoFar = buildStorySoFar(
+        sceneCtx.id,
+        allNodes,
+        Math.round((l2Pct / 100) * 200_000),
+      );
+
+      const promptResult = buildSystemPrompt({
+        scene: sceneCtx,
+        project: projectCtx ?? undefined,
+        storySoFar: storySoFar || undefined,
+        codexEntries,
+        pinnedCodexEntries,
+      });
+      set({
+        contextTokenCount: promptResult.totalTokens,
+        contextLayers: promptResult.layers,
+      });
+    } catch {
+      // コンテキスト計算失敗は無視（送信時に再計算される）
     }
   },
 
