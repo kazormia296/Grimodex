@@ -50,6 +50,7 @@ export function ChatPanel() {
 
   const aiSettings = useAiSettingsStore((s) => s.settings);
   const loadAiSettings = useAiSettingsStore((s) => s.loadSettings);
+  const saveAiSettings = useAiSettingsStore((s) => s.saveSettings);
   const currentModel = aiSettings?.model ?? "";
   const canUseTools = modelSupportsTools(currentModel);
   const thinkingEnabled = aiSettings?.thinkingEnabled ?? true;
@@ -57,6 +58,14 @@ export function ChatPanel() {
   useEffect(() => {
     loadAiSettings();
   }, [loadAiSettings]);
+
+  const handleThinkingToggle = useCallback(() => {
+    if (!aiSettings) return;
+    saveAiSettings({
+      ...aiSettings,
+      thinkingEnabled: !aiSettings.thinkingEnabled,
+    });
+  }, [aiSettings, saveAiSettings]);
 
   const [sessionsPanelOpen, setSessionsPanelOpen] = useState(false);
   const [input, setInput] = useState("");
@@ -200,6 +209,7 @@ export function ChatPanel() {
         modelSupportsTools={canUseTools}
         currentModel={currentModel}
         thinkingEnabled={thinkingEnabled}
+        onThinkingToggle={handleThinkingToggle}
       />
 
       <ContextBar

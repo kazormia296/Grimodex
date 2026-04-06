@@ -13,6 +13,7 @@ interface ChatPanelHeaderProps {
   modelSupportsTools: boolean;
   currentModel: string;
   thinkingEnabled: boolean;
+  onThinkingToggle: () => void;
 }
 
 export function ChatPanelHeader({
@@ -24,6 +25,7 @@ export function ChatPanelHeader({
   modelSupportsTools,
   currentModel,
   thinkingEnabled,
+  onThinkingToggle,
 }: ChatPanelHeaderProps) {
   const caps = getModelCapabilities(currentModel);
   const ctxLabel = currentModel
@@ -90,22 +92,22 @@ export function ChatPanelHeader({
             </span>
           )}
           {hasThinking && (
-            <span
+            <button
+              type="button"
+              onClick={onThinkingToggle}
               title={
                 thinkingEnabled
-                  ? caps.supportsAdaptiveThinking
-                    ? "Adaptive Thinking ON"
-                    : "Extended Thinking ON (budget_tokens)"
-                  : "Thinking OFF"
+                  ? "Thinking ON — クリックでOFF"
+                  : "Thinking OFF — クリックでON"
               }
-              className={`rounded px-1.5 py-0.5 text-xs ${
+              className={`rounded px-1.5 py-0.5 text-xs transition-colors hover:bg-accent ${
                 thinkingEnabled
                   ? "bg-muted text-muted-foreground"
                   : "bg-muted text-muted-foreground/40 line-through"
               }`}
             >
               💭
-            </span>
+            </button>
           )}
           {contextTokenCount > 0 && (
             <span
