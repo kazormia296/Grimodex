@@ -1,6 +1,6 @@
 import { create } from "zustand";
 import { toast } from "sonner";
-import { debugLog, errorDetail } from "@/lib/debugLog";
+import { debugLog, errorDetail, rootCause } from "@/lib/debugLog";
 import {
   listCodexEntries,
   createCodexEntry,
@@ -65,7 +65,11 @@ export const useCodexStore = create<CodexState>()((set, get) => ({
     } catch (e) {
       set({ isLoading: false });
       toast.error("Codexの読み込みに失敗しました");
-      debugLog.error("CodexStore", "loadEntries", errorDetail(e));
+      debugLog.error(
+        "CodexStore",
+        `loadEntries: ${rootCause(e)}`,
+        errorDetail(e),
+      );
     }
   },
 
@@ -83,7 +87,7 @@ export const useCodexStore = create<CodexState>()((set, get) => ({
     } catch (e) {
       set({ isLoading: false });
       toast.error("検索に失敗しました");
-      debugLog.error("CodexStore", "search", errorDetail(e));
+      debugLog.error("CodexStore", `search: ${rootCause(e)}`, errorDetail(e));
     }
   },
 
@@ -98,7 +102,7 @@ export const useCodexStore = create<CodexState>()((set, get) => ({
       return entry;
     } catch (e) {
       toast.error("Codexエントリの作成に失敗しました");
-      debugLog.error("CodexStore", "create", errorDetail(e));
+      debugLog.error("CodexStore", `create: ${rootCause(e)}`, errorDetail(e));
       throw e;
     }
   },
@@ -109,7 +113,7 @@ export const useCodexStore = create<CodexState>()((set, get) => ({
       await get().loadEntries();
     } catch (e) {
       toast.error("Codexエントリの更新に失敗しました");
-      debugLog.error("CodexStore", "update", errorDetail(e));
+      debugLog.error("CodexStore", `update: ${rootCause(e)}`, errorDetail(e));
     }
   },
 
@@ -119,7 +123,7 @@ export const useCodexStore = create<CodexState>()((set, get) => ({
       await get().loadEntries();
     } catch (e) {
       toast.error("Codexエントリの削除に失敗しました");
-      debugLog.error("CodexStore", "remove", errorDetail(e));
+      debugLog.error("CodexStore", `remove: ${rootCause(e)}`, errorDetail(e));
     }
   },
 
@@ -131,7 +135,11 @@ export const useCodexStore = create<CodexState>()((set, get) => ({
     } catch (e) {
       set({ isLoading: false });
       toast.error("フィルタの適用に失敗しました");
-      debugLog.error("CodexStore", "setFilterType", errorDetail(e));
+      debugLog.error(
+        "CodexStore",
+        `setFilterType: ${rootCause(e)}`,
+        errorDetail(e),
+      );
     }
   },
 }));

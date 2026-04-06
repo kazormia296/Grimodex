@@ -404,6 +404,10 @@ impl Database {
 
         // Idempotent column additions
         let _ = conn.execute("ALTER TABLE snippets ADD COLUMN content_source TEXT", []);
+        let _ = conn.execute(
+            "ALTER TABLE codex_entries ADD COLUMN children_budget TEXT NOT NULL DEFAULT 'compact'",
+            [],
+        );
 
         // v2: Recreate FTS UPDATE triggers with WHEN guards so that non-FTS
         // column updates (e.g. updated_at) don't touch FTS indexes.

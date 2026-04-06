@@ -83,36 +83,38 @@ export function DebugLogViewer() {
         {entries.map((entry) => (
           <div
             key={entry.id}
-            className="group flex gap-2 border-b border-border/30 px-3 py-0.5 hover:bg-accent/30"
+            className="group border-b border-border/30 px-3 py-0.5 hover:bg-accent/30"
           >
-            <span className="shrink-0 text-muted-foreground/60">
-              {entry.timestamp.slice(11, 23)}
-            </span>
-            <span
-              className={cn(
-                "w-10 shrink-0 text-right uppercase",
-                LEVEL_STYLES[entry.level],
-              )}
-            >
-              {entry.level}
-            </span>
-            <span className="shrink-0 text-muted-foreground">
-              [{entry.tag}]
-            </span>
-            <span className="text-foreground">{entry.message}</span>
-            {entry.detail && (
-              <span className="truncate text-muted-foreground/70">
-                {entry.detail}
+            <div className="flex gap-2">
+              <span className="shrink-0 text-muted-foreground/60">
+                {entry.timestamp.slice(11, 23)}
               </span>
+              <span
+                className={cn(
+                  "w-10 shrink-0 text-right uppercase",
+                  LEVEL_STYLES[entry.level],
+                )}
+              >
+                {entry.level}
+              </span>
+              <span className="shrink-0 text-muted-foreground">
+                [{entry.tag}]
+              </span>
+              <span className="text-foreground">{entry.message}</span>
+              <button
+                type="button"
+                onClick={() => copyLine(entry)}
+                className="ml-auto hidden shrink-0 rounded p-0.5 text-muted-foreground hover:text-foreground group-hover:block"
+                title="Copy line"
+              >
+                <Copy className="h-3 w-3" />
+              </button>
+            </div>
+            {entry.detail && (
+              <pre className="mt-0.5 whitespace-pre-wrap break-all pl-[5.5rem] text-muted-foreground/70">
+                {entry.detail}
+              </pre>
             )}
-            <button
-              type="button"
-              onClick={() => copyLine(entry)}
-              className="ml-auto hidden shrink-0 rounded p-0.5 text-muted-foreground hover:text-foreground group-hover:block"
-              title="Copy line"
-            >
-              <Copy className="h-3 w-3" />
-            </button>
           </div>
         ))}
         <div ref={bottomRef} />
