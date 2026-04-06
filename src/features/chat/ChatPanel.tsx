@@ -197,19 +197,17 @@ export function ChatPanel() {
         thinkingEnabled={thinkingEnabled}
       />
 
-      {activeSessionId && (
-        <ContextBar
-          pinnedEntries={pinnedEntries}
-          onUnpin={handleUnpin}
-          onPin={handlePin}
-          onOpenPinDialog={() => setPinDialogOpen(true)}
-          contextTokenCount={contextTokenCount}
-          contextLayers={contextLayers}
-          systemPrompt={systemPrompt}
-          model={currentModel}
-          canUseCreator={canUseTools}
-        />
-      )}
+      <ContextBar
+        pinnedEntries={pinnedEntries}
+        onUnpin={handleUnpin}
+        onPin={handlePin}
+        onOpenPinDialog={() => setPinDialogOpen(true)}
+        contextTokenCount={contextTokenCount}
+        contextLayers={contextLayers}
+        systemPrompt={systemPrompt}
+        model={currentModel}
+        canUseCreator={canUseTools}
+      />
 
       <div className="flex-1 overflow-y-auto px-4 py-3">
         {messages.length === 0 ? (
