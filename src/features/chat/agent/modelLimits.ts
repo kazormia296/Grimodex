@@ -114,7 +114,8 @@ const OPENROUTER_PREFIXED: Record<string, string> = {
 
 /**
  * モデルの能力情報を取得する。
- * 未知のモデルはデフォルト値を返す。
+ * 完全一致 → OpenRouter プレフィックス完全一致 → プレフィックス前方一致（日付サフィックス対応）
+ * の順で解決し、未知のモデルはデフォルト値を返す。
  */
 export function getModelCapabilities(model: string): ModelCapabilities {
   if (MODEL_CAPABILITIES[model]) return MODEL_CAPABILITIES[model];
@@ -122,6 +123,15 @@ export function getModelCapabilities(model: string): ModelCapabilities {
   const resolved = OPENROUTER_PREFIXED[model];
   if (resolved && MODEL_CAPABILITIES[resolved])
     return MODEL_CAPABILITIES[resolved];
+
+  // 日付サフィックス付きモデルへの対応 (例: "anthropic/claude-sonnet-4-6-20250514")
+  for (const [prefixed, canonical] of Object.entries(OPENROUTER_PREFIXED)) {
+    if (model.startsWith(prefixed) && MODEL_CAPABILITIES[canonical])
+      return MODEL_CAPABILITIES[canonical];
+  }
+  for (const key of Object.keys(MODEL_CAPABILITIES)) {
+    if (model.startsWith(key)) return MODEL_CAPABILITIES[key];
+  }
 
   return DEFAULT_CAPABILITIES;
 }

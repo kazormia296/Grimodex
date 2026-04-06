@@ -43,6 +43,18 @@ describe("getModelCapabilities", () => {
     expect(caps.supportsAdaptiveThinking).toBe(true);
   });
 
+  it("OpenRouter の日付サフィックス付きモデルを解決する (anthropic/)", () => {
+    const caps = getModelCapabilities("anthropic/claude-sonnet-4-6-20250514");
+    expect(caps.supportsAdaptiveThinking).toBe(true);
+    expect(caps.contextWindow).toBe(200_000);
+  });
+
+  it("日付サフィックス付きモデル (プレフィックスなし) を解決する", () => {
+    const caps = getModelCapabilities("claude-opus-4-6-20250514");
+    expect(caps.supportsAdaptiveThinking).toBe(true);
+    expect(caps.contextWindow).toBe(1_000_000);
+  });
+
   it("Ollama モデルはツール対応", () => {
     const caps = getModelCapabilities("ollama/llama3");
     expect(caps.supportsTools).toBe(true);
