@@ -49,6 +49,18 @@ describe("getModelCapabilities", () => {
     expect(caps.contextWindow).toBe(200_000);
   });
 
+  it("OpenRouter のドット表記モデルを解決する (4.6 → 4-6)", () => {
+    const caps = getModelCapabilities("anthropic/claude-sonnet-4.6");
+    expect(caps.supportsAdaptiveThinking).toBe(true);
+    expect(caps.contextWindow).toBe(200_000);
+  });
+
+  it("OpenRouter のドット+日付サフィックスモデルを解決する", () => {
+    const caps = getModelCapabilities("anthropic/claude-opus-4.6-20250514");
+    expect(caps.supportsAdaptiveThinking).toBe(true);
+    expect(caps.contextWindow).toBe(1_000_000);
+  });
+
   it("日付サフィックス付きモデル (プレフィックスなし) を解決する", () => {
     const caps = getModelCapabilities("claude-opus-4-6-20250514");
     expect(caps.supportsAdaptiveThinking).toBe(true);

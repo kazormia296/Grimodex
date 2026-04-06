@@ -113,8 +113,16 @@ const OPENROUTER_PREFIXED: Record<string, string> = {
 };
 
 /**
+ * OpenRouter はバージョン番号にドットを使う ("4.6") が、
+ * Anthropic / 内部表記はダッシュ ("4-6")。統一するため正規化する。
+ */
+function normalizeModelVersion(model: string): string {
+  return model.replace(/(\d+)\.(\d+)/g, "$1-$2");
+}
+
+/**
  * モデルの能力情報を取得する。
- * 完全一致 → OpenRouter プレフィックス完全一致 → プレフィックス前方一致（日付サフィックス対応）
+ * 完全一致 → バージョン正規化後に再試行 → プレフィックス前方一致（日付サフィックス対応）
  * の順で解決し、未知のモデルはデフォルト値を返す。
  */
 export function getModelCapabilities(model: string): ModelCapabilities {
@@ -123,6 +131,13 @@ export function getModelCapabilities(model: string): ModelCapabilities {
   const resolved = OPENROUTER_PREFIXED[model];
   if (resolved && MODEL_CAPABILITIES[resolved])
     return MODEL_CAPABILITIES[resolved];
+
+  // ドット→ダッシュ正規化後に再試行 ("anthropic/claude-sonnet-4.6" → "anthropic/claude-sonnet-4-6")
+  const normalized = normalizeModelVersion(model);
+  if (normalized !== model) {
+    const caps = getModelCapabilities(normalized);
+    if (caps !== DEFAULT_CAPABILITIES) return caps;
+  }
 
   // 日付サフィックス付きモデルへの対応 (例: "anthropic/claude-sonnet-4-6-20250514")
   for (const [prefixed, canonical] of Object.entries(OPENROUTER_PREFIXED)) {
