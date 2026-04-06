@@ -7,6 +7,16 @@ function isTauri(): boolean {
 
 const IPC_TIMEOUT_MS = 10_000;
 
+/** AI inference can take several minutes on local hardware (Ollama etc.) */
+const AI_IPC_TIMEOUT_MS = 300_000; // 5 minutes
+
+const SLOW_COMMANDS = new Set([
+  "send_chat_message",
+  "send_agent_message",
+  "test_ai_connection",
+  "list_ai_models",
+]);
+
 function withTimeout<T>(
   promise: Promise<T>,
   ms: number,
@@ -51,7 +61,8 @@ export async function invoke<T = unknown>(
   if (isTauri()) {
     console.debug(`[tauri] invoke: ${cmd} (native)`);
     const { invoke: tauriInvoke } = await import("@tauri-apps/api/core");
-    return withTimeout(tauriInvoke<T>(cmd, args), IPC_TIMEOUT_MS, cmd);
+    const ms = SLOW_COMMANDS.has(cmd) ? AI_IPC_TIMEOUT_MS : IPC_TIMEOUT_MS;
+    return withTimeout(tauriInvoke<T>(cmd, args), ms, cmd);
   }
   const mock = await getBrowserMock();
   return mock.invoke<T>(cmd, args);
