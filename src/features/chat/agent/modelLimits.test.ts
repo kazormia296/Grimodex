@@ -108,6 +108,39 @@ describe("buildThinkingParams", () => {
     expect(params.effort).toBeUndefined();
   });
 
+  it("enabled=false のとき対応モデルでも空を返す (adaptive)", () => {
+    const params = buildThinkingParams(
+      "claude-opus-4-6",
+      "high",
+      "summarized",
+      false,
+    );
+    expect(params.thinking).toBeUndefined();
+    expect(params.effort).toBeUndefined();
+  });
+
+  it("enabled=false のとき対応モデルでも空を返す (budget_tokens)", () => {
+    const params = buildThinkingParams(
+      "claude-opus-4-5",
+      "medium",
+      "summarized",
+      false,
+    );
+    expect(params.thinking).toBeUndefined();
+    expect(params.effort).toBeUndefined();
+  });
+
+  it("enabled=true はデフォルト動作と同じ", () => {
+    const withFlag = buildThinkingParams(
+      "claude-sonnet-4-6",
+      "medium",
+      "summarized",
+      true,
+    );
+    const withDefault = buildThinkingParams("claude-sonnet-4-6", "medium");
+    expect(withFlag).toEqual(withDefault);
+  });
+
   it("effort 対応モデルは effort のみ返す", () => {
     const params = buildThinkingParams("claude-haiku-4-5-20251001", "medium");
     expect(params.thinking).toBeUndefined();

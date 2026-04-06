@@ -11,12 +11,14 @@ export interface AiSettings {
   provider: AiProvider;
   model: string;
   ollamaEndpoint: string;
+  thinkingEnabled: boolean;
 }
 
 export const DEFAULT_AI_SETTINGS: AiSettings = {
   provider: "openrouter",
   model: "",
   ollamaEndpoint: "http://localhost:11434",
+  thinkingEnabled: true,
 };
 
 export interface AiModel {

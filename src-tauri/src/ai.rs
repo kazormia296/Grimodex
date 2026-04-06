@@ -59,6 +59,10 @@ impl std::fmt::Display for AiProvider {
     }
 }
 
+fn default_thinking_enabled() -> bool {
+    true
+}
+
 /// AI settings persisted in AppData.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -66,6 +70,8 @@ pub struct AiSettings {
     pub provider: AiProvider,
     pub model: String,
     pub ollama_endpoint: String,
+    #[serde(default = "default_thinking_enabled")]
+    pub thinking_enabled: bool,
 }
 
 impl Default for AiSettings {
@@ -74,6 +80,7 @@ impl Default for AiSettings {
             provider: AiProvider::OpenRouter,
             model: String::new(),
             ollama_endpoint: "http://localhost:11434".to_string(),
+            thinking_enabled: true,
         }
     }
 }

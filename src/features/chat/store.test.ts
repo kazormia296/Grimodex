@@ -37,6 +37,7 @@ const defaultSettings: AiSettings = {
   provider: "openrouter",
   model: "",
   ollamaEndpoint: "http://localhost:11434",
+  thinkingEnabled: true,
 };
 
 describe("useAiSettingsStore", () => {
@@ -74,6 +75,7 @@ describe("useAiSettingsStore", () => {
         provider: "openai",
         model: "gpt-4o",
         ollamaEndpoint: "http://localhost:11434",
+        thinkingEnabled: true,
       };
 
       await useAiSettingsStore.getState().saveSettings(newSettings);

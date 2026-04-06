@@ -327,6 +327,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
           currentModel,
           getEffortForTask("agent"),
           "summarized",
+          aiSettings?.thinkingEnabled ?? true,
         );
 
         // Accumulate tool calls for live metadata update
@@ -510,6 +511,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
         chatModel,
         getEffortForTask("chat"),
         "summarized",
+        useAiSettingsStore.getState().settings?.thinkingEnabled ?? true,
       );
       const apiPayload = messagesForApi.map((m) => ({
         role: m.role,

@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from "react";
 import { useAiSettingsStore } from "@/features/chat/store";
 import { AI_PROVIDERS } from "@/features/chat/types";
 import type { AiProvider } from "@/features/chat/types";
+import { getModelCapabilities } from "@/features/chat/agent/modelLimits";
 import { SettingSection } from "../components/SettingSection";
 import { SettingRow } from "../components/SettingRow";
 import { useSettingsStore } from "../settingsStore";
@@ -103,6 +104,15 @@ export function AiCategory() {
 
   async function handleModelChange(model: string) {
     const updated = { ...localSettings!, model };
+    setLocalSettings(updated);
+    await saveSettings(updated);
+  }
+
+  async function handleThinkingToggle() {
+    const updated = {
+      ...localSettings!,
+      thinkingEnabled: !localSettings!.thinkingEnabled,
+    };
     setLocalSettings(updated);
     await saveSettings(updated);
   }
@@ -281,6 +291,36 @@ export function AiCategory() {
             ))}
           </select>
         </SettingRow>
+
+        {/* Thinking toggle — thinking対応モデル選択時のみ表示 */}
+        {localSettings.model &&
+          (() => {
+            const caps = getModelCapabilities(localSettings.model);
+            return caps.supportsAdaptiveThinking || caps.supportsThinking;
+          })() && (
+            <SettingRow
+              label="Thinking モード"
+              description="推論ステップを有効にします（レスポンスが遅くなる場合があります）"
+            >
+              <button
+                type="button"
+                onClick={handleThinkingToggle}
+                className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors focus:outline-none ${
+                  localSettings.thinkingEnabled
+                    ? "bg-primary"
+                    : "bg-muted-foreground/30"
+                }`}
+              >
+                <span
+                  className={`inline-block h-3.5 w-3.5 transform rounded-full bg-white transition-transform ${
+                    localSettings.thinkingEnabled
+                      ? "translate-x-4"
+                      : "translate-x-0.5"
+                  }`}
+                />
+              </button>
+            </SettingRow>
+          )}
 
         {/* Test connection */}
         <div className="mt-2">

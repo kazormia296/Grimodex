@@ -50,6 +50,7 @@ export function ChatPanel() {
   const aiSettings = useAiSettingsStore((s) => s.settings);
   const currentModel = aiSettings?.model ?? "";
   const canUseTools = modelSupportsTools(currentModel);
+  const thinkingEnabled = aiSettings?.thinkingEnabled ?? true;
 
   const [sessionsPanelOpen, setSessionsPanelOpen] = useState(false);
   const [input, setInput] = useState("");
@@ -188,6 +189,7 @@ export function ChatPanel() {
         setAgentMode={setAgentMode}
         modelSupportsTools={canUseTools}
         currentModel={currentModel}
+        thinkingEnabled={thinkingEnabled}
       />
 
       {activeSessionId && (

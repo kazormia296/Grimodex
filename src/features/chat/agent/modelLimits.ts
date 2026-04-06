@@ -176,7 +176,9 @@ export function buildThinkingParams(
   model: string,
   taskEffort: EffortLevel,
   display: ThinkingDisplay = "summarized",
+  enabled = true,
 ): ThinkingParams {
+  if (!enabled) return {};
   const caps = getModelCapabilities(model);
 
   if (caps.supportsAdaptiveThinking) {

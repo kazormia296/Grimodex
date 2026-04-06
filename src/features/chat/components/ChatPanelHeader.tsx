@@ -12,6 +12,7 @@ interface ChatPanelHeaderProps {
   setAgentMode: (on: boolean) => void;
   modelSupportsTools: boolean;
   currentModel: string;
+  thinkingEnabled: boolean;
 }
 
 export function ChatPanelHeader({
@@ -22,6 +23,7 @@ export function ChatPanelHeader({
   setAgentMode,
   modelSupportsTools,
   currentModel,
+  thinkingEnabled,
 }: ChatPanelHeaderProps) {
   const caps = getModelCapabilities(currentModel);
   const ctxLabel = currentModel
@@ -90,11 +92,17 @@ export function ChatPanelHeader({
           {hasThinking && (
             <span
               title={
-                caps.supportsAdaptiveThinking
-                  ? "Adaptive Thinking 対応"
-                  : "Extended Thinking 対応 (budget_tokens)"
+                thinkingEnabled
+                  ? caps.supportsAdaptiveThinking
+                    ? "Adaptive Thinking ON"
+                    : "Extended Thinking ON (budget_tokens)"
+                  : "Thinking OFF"
               }
-              className="rounded bg-muted px-1.5 py-0.5 text-xs text-muted-foreground"
+              className={`rounded px-1.5 py-0.5 text-xs ${
+                thinkingEnabled
+                  ? "bg-muted text-muted-foreground"
+                  : "bg-muted text-muted-foreground/40 line-through"
+              }`}
             >
               💭
             </span>
