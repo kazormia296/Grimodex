@@ -32,6 +32,15 @@ impl AiProvider {
         }
     }
 
+    /// OpenAI-compatible base URL (used for chat/completions).
+    /// Ollama exposes the OpenAI-compatible API at /v1, not /api.
+    pub fn openai_compat_base_url(&self, ollama_endpoint: &str) -> String {
+        match self {
+            AiProvider::Ollama => format!("{}/v1", ollama_endpoint.trim_end_matches('/')),
+            _ => self.base_url(ollama_endpoint),
+        }
+    }
+
     /// Models endpoint URL.
     pub fn models_url(&self, ollama_endpoint: &str) -> String {
         match self {
@@ -260,7 +269,10 @@ pub async fn test_connection(
             Ok(text.to_string())
         }
         AiProvider::Ollama => {
-            let url = format!("{}/chat/completions", provider.base_url(ollama_endpoint));
+            let url = format!(
+                "{}/chat/completions",
+                provider.openai_compat_base_url(ollama_endpoint)
+            );
             let body = serde_json::json!({
                 "model": model,
                 "max_tokens": 32,
@@ -385,7 +397,10 @@ pub async fn send_chat(
                 "messages": chat_messages,
             });
 
-            let url = format!("{}/chat/completions", provider.base_url(ollama_endpoint));
+            let url = format!(
+                "{}/chat/completions",
+                provider.openai_compat_base_url(ollama_endpoint)
+            );
 
             let mut req = client.post(&url).header("content-type", "application/json");
 
@@ -845,7 +860,10 @@ pub async fn send_chat_with_tools(
                 "tools": openai_tools
             });
 
-            let url = format!("{}/chat/completions", provider.base_url(ollama_endpoint));
+            let url = format!(
+                "{}/chat/completions",
+                provider.openai_compat_base_url(ollama_endpoint)
+            );
             let mut req = client.post(&url).header("content-type", "application/json");
 
             if !matches!(provider, AiProvider::Ollama) {
@@ -955,6 +973,25 @@ mod tests {
         assert_eq!(
             AiProvider::Ollama.base_url(endpoint),
             "http://localhost:11434/api"
+        );
+    }
+
+    #[test]
+    fn test_provider_openai_compat_base_url() {
+        let endpoint = "http://localhost:11434";
+        // Ollama uses /v1 for OpenAI-compatible endpoints
+        assert_eq!(
+            AiProvider::Ollama.openai_compat_base_url(endpoint),
+            "http://localhost:11434/v1"
+        );
+        // Other providers unchanged
+        assert_eq!(
+            AiProvider::OpenRouter.openai_compat_base_url(endpoint),
+            "https://openrouter.ai/api/v1"
+        );
+        assert_eq!(
+            AiProvider::OpenAI.openai_compat_base_url(endpoint),
+            "https://api.openai.com/v1"
         );
     }
 
