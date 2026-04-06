@@ -48,9 +48,14 @@ export function ChatPanel() {
   );
 
   const aiSettings = useAiSettingsStore((s) => s.settings);
+  const loadAiSettings = useAiSettingsStore((s) => s.loadSettings);
   const currentModel = aiSettings?.model ?? "";
   const canUseTools = modelSupportsTools(currentModel);
   const thinkingEnabled = aiSettings?.thinkingEnabled ?? true;
+
+  useEffect(() => {
+    loadAiSettings();
+  }, [loadAiSettings]);
 
   const [sessionsPanelOpen, setSessionsPanelOpen] = useState(false);
   const [input, setInput] = useState("");
