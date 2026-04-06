@@ -194,521 +194,525 @@ interface TabState {
   disposeAutoSave?: () => void;
 }
 
-// Module-level flags per group: does not need Zustand reactivity.
-// Set by TabBar on explicit tab click; consumed once by the matching EditorPane.
-// Using a Record so each group has an independent slot, preventing races in split-view.
-const _editorFocusRequested: Record<GroupIndex, boolean> = {
-  0: false,
-  1: false,
-};
+export const useTabStore = create<TabState>()((set, get) => {
+  // Closure-scoped flags per group: does not need Zustand reactivity.
+  // Set by TabBar on explicit tab click; consumed once by the matching EditorPane.
+  // Using a Record so each group has an independent slot, preventing races in split-view.
+  const _editorFocusRequested: Record<GroupIndex, boolean> = {
+    0: false,
+    1: false,
+  };
 
-export const useTabStore = create<TabState>()((set, get) => ({
-  tabs: [],
-  activeTabId: null,
-  secondaryTabs: [],
-  secondaryActiveTabId: null,
-  secondaryGroupOpen: false,
-  activeGroupIndex: 0,
-  splitDirection: "right",
-  isDraggingTab: false,
-  setIsDraggingTab(v) {
-    set({ isDraggingTab: v });
-  },
-  dirtyTabIds: new Set<string>(),
-  requestEditorFocus(group: GroupIndex) {
-    _editorFocusRequested[group] = true;
-  },
-  consumeEditorFocusRequest(group: GroupIndex) {
-    const val = _editorFocusRequested[group];
-    _editorFocusRequested[group] = false;
-    return val;
-  },
+  return {
+    tabs: [],
+    activeTabId: null,
+    secondaryTabs: [],
+    secondaryActiveTabId: null,
+    secondaryGroupOpen: false,
+    activeGroupIndex: 0,
+    splitDirection: "right",
+    isDraggingTab: false,
+    setIsDraggingTab(v) {
+      set({ isDraggingTab: v });
+    },
+    dirtyTabIds: new Set<string>(),
+    requestEditorFocus(group: GroupIndex) {
+      _editorFocusRequested[group] = true;
+    },
+    consumeEditorFocusRequest(group: GroupIndex) {
+      const val = _editorFocusRequested[group];
+      _editorFocusRequested[group] = false;
+      return val;
+    },
 
-  // ---- Primary group ----
+    // ---- Primary group ----
 
-  openPreview(nodeId) {
-    const { tabs } = get();
-    const existing = tabs.find((t) => t.nodeId === nodeId);
+    openPreview(nodeId) {
+      const { tabs } = get();
+      const existing = tabs.find((t) => t.nodeId === nodeId);
 
-    if (existing) {
-      // Remove any stale preview tab for other nodes
-      const cleaned = tabs.filter((t) => !t.isPreview || t.nodeId === nodeId);
-      set({ tabs: cleaned, activeTabId: nodeId, activeGroupIndex: 0 });
-      return;
-    }
-
-    const withoutPreview = tabs.filter((t) => !t.isPreview);
-    set({
-      tabs: [...withoutPreview, { nodeId, isPreview: true }],
-      activeTabId: nodeId,
-      activeGroupIndex: 0,
-    });
-  },
-
-  openPinned(nodeId) {
-    const { tabs } = get();
-    const existing = tabs.find((t) => t.nodeId === nodeId);
-
-    if (existing) {
-      if (existing.isPreview) {
-        set({
-          tabs: tabs.map((t) =>
-            t.nodeId === nodeId ? { ...t, isPreview: false } : t,
-          ),
-          activeTabId: nodeId,
-          activeGroupIndex: 0,
-        });
-      } else {
-        set({ activeTabId: nodeId, activeGroupIndex: 0 });
+      if (existing) {
+        // Remove any stale preview tab for other nodes
+        const cleaned = tabs.filter((t) => !t.isPreview || t.nodeId === nodeId);
+        set({ tabs: cleaned, activeTabId: nodeId, activeGroupIndex: 0 });
+        return;
       }
-      return;
-    }
 
-    set({
-      tabs: [...tabs, { nodeId, isPreview: false }],
-      activeTabId: nodeId,
-      activeGroupIndex: 0,
-    });
-  },
-
-  pinTab(nodeId) {
-    const { tabs } = get();
-    const existing = tabs.find((t) => t.nodeId === nodeId);
-    if (!existing || !existing.isPreview) return;
-
-    set({
-      tabs: tabs.map((t) =>
-        t.nodeId === nodeId ? { ...t, isPreview: false } : t,
-      ),
-    });
-  },
-
-  closeTab(nodeId) {
-    const { tabs, activeTabId } = get();
-    const idx = tabs.findIndex((t) => t.nodeId === nodeId);
-    if (idx === -1) return;
-
-    const remaining = tabs.filter((t) => t.nodeId !== nodeId);
-
-    let newActive = activeTabId;
-    if (activeTabId === nodeId) {
-      if (remaining.length === 0) {
-        newActive = null;
-      } else {
-        const nextTab = remaining[idx] ?? remaining[idx - 1];
-        newActive = nextTab.nodeId;
-      }
-    }
-
-    set({ tabs: remaining, activeTabId: newActive });
-  },
-
-  setActiveTab(nodeId) {
-    const { tabs } = get();
-    if (!tabs.find((t) => t.nodeId === nodeId)) return;
-    set({ activeTabId: nodeId, activeGroupIndex: 0 });
-  },
-
-  ensureTab(nodeId) {
-    const { tabs } = get();
-    if (tabs.find((t) => t.nodeId === nodeId)) {
-      set({ activeTabId: nodeId });
-      return;
-    }
-    set({
-      tabs: [...tabs, { nodeId, isPreview: false }],
-      activeTabId: nodeId,
-    });
-  },
-
-  // ---- Secondary group ----
-
-  openInSecondaryGroup(nodeId) {
-    const { secondaryTabs } = get();
-    const existing = secondaryTabs.find((t) => t.nodeId === nodeId);
-
-    if (existing) {
+      const withoutPreview = tabs.filter((t) => !t.isPreview);
       set({
-        secondaryActiveTabId: nodeId,
-        activeGroupIndex: 1,
-        secondaryGroupOpen: true,
+        tabs: [...withoutPreview, { nodeId, isPreview: true }],
+        activeTabId: nodeId,
+        activeGroupIndex: 0,
       });
-      return;
-    }
+    },
 
-    set({
-      secondaryTabs: [...secondaryTabs, { nodeId, isPreview: false }],
-      secondaryActiveTabId: nodeId,
-      activeGroupIndex: 1,
-      secondaryGroupOpen: true,
-    });
-  },
+    openPinned(nodeId) {
+      const { tabs } = get();
+      const existing = tabs.find((t) => t.nodeId === nodeId);
 
-  createEmptySecondaryGroup(direction) {
-    set({
-      secondaryGroupOpen: true,
-      splitDirection: direction,
-      activeGroupIndex: 1,
-    });
-  },
-
-  closeSecondaryTab(nodeId) {
-    const { secondaryTabs, secondaryActiveTabId } = get();
-    const idx = secondaryTabs.findIndex((t) => t.nodeId === nodeId);
-    if (idx === -1) return;
-
-    const remaining = secondaryTabs.filter((t) => t.nodeId !== nodeId);
-
-    let newActive = secondaryActiveTabId;
-    if (secondaryActiveTabId === nodeId) {
-      if (remaining.length === 0) {
-        newActive = null;
-      } else {
-        const nextTab = remaining[idx] ?? remaining[idx - 1];
-        newActive = nextTab.nodeId;
+      if (existing) {
+        if (existing.isPreview) {
+          set({
+            tabs: tabs.map((t) =>
+              t.nodeId === nodeId ? { ...t, isPreview: false } : t,
+            ),
+            activeTabId: nodeId,
+            activeGroupIndex: 0,
+          });
+        } else {
+          set({ activeTabId: nodeId, activeGroupIndex: 0 });
+        }
+        return;
       }
-    }
 
-    set({
-      secondaryTabs: remaining,
-      secondaryActiveTabId: newActive,
-      // Keep activeGroupIndex on secondary even when empty — group stays visible
-    });
-  },
+      set({
+        tabs: [...tabs, { nodeId, isPreview: false }],
+        activeTabId: nodeId,
+        activeGroupIndex: 0,
+      });
+    },
 
-  closeSecondaryGroup() {
-    set({
-      secondaryTabs: [],
-      secondaryActiveTabId: null,
-      secondaryGroupOpen: false,
-      activeGroupIndex: 0,
-    });
-  },
+    pinTab(nodeId) {
+      const { tabs } = get();
+      const existing = tabs.find((t) => t.nodeId === nodeId);
+      if (!existing || !existing.isPreview) return;
 
-  setSecondaryActiveTab(nodeId) {
-    const { secondaryTabs } = get();
-    if (!secondaryTabs.find((t) => t.nodeId === nodeId)) return;
-    set({ secondaryActiveTabId: nodeId });
-  },
+      set({
+        tabs: tabs.map((t) =>
+          t.nodeId === nodeId ? { ...t, isPreview: false } : t,
+        ),
+      });
+    },
 
-  pinSecondaryTab(nodeId) {
-    const { secondaryTabs } = get();
-    const existing = secondaryTabs.find((t) => t.nodeId === nodeId);
-    if (!existing || !existing.isPreview) return;
+    closeTab(nodeId) {
+      const { tabs, activeTabId } = get();
+      const idx = tabs.findIndex((t) => t.nodeId === nodeId);
+      if (idx === -1) return;
 
-    set({
-      secondaryTabs: secondaryTabs.map((t) =>
-        t.nodeId === nodeId ? { ...t, isPreview: false } : t,
-      ),
-    });
-  },
+      const remaining = tabs.filter((t) => t.nodeId !== nodeId);
 
-  setActiveGroup(index) {
-    set({ activeGroupIndex: index });
-  },
+      let newActive = activeTabId;
+      if (activeTabId === nodeId) {
+        if (remaining.length === 0) {
+          newActive = null;
+        } else {
+          const nextTab = remaining[idx] ?? remaining[idx - 1];
+          newActive = nextTab.nodeId;
+        }
+      }
 
-  isSyncedScene(nodeId) {
-    const { tabs, secondaryTabs } = get();
-    const inPrimary = tabs.some((t) => t.nodeId === nodeId);
-    const inSecondary = secondaryTabs.some((t) => t.nodeId === nodeId);
-    return inPrimary && inSecondary;
-  },
+      set({ tabs: remaining, activeTabId: newActive });
+    },
 
-  reorderTab(fromIndex, toIndex, groupIndex) {
-    const arr = [...(groupIndex === 0 ? get().tabs : get().secondaryTabs)];
-    if (fromIndex === toIndex || fromIndex < 0 || fromIndex >= arr.length)
-      return;
-    const [moved] = arr.splice(fromIndex, 1);
-    // toIndex was computed before removal; adjust if it came after fromIndex
-    const adjusted = toIndex > fromIndex ? toIndex - 1 : toIndex;
-    arr.splice(Math.min(adjusted, arr.length), 0, moved);
-    if (groupIndex === 0) set({ tabs: arr });
-    else set({ secondaryTabs: arr });
-  },
+    setActiveTab(nodeId) {
+      const { tabs } = get();
+      if (!tabs.find((t) => t.nodeId === nodeId)) return;
+      set({ activeTabId: nodeId, activeGroupIndex: 0 });
+    },
 
-  moveTabBetweenGroups(
-    nodeId,
-    fromGroup,
-    toGroup,
-    insertIndex,
-    createDirection,
-  ) {
-    const { tabs, secondaryTabs, activeTabId, secondaryActiveTabId } = get();
-    const srcArr = fromGroup === 0 ? tabs : secondaryTabs;
-    const dstArr = toGroup === 0 ? tabs : secondaryTabs;
+    ensureTab(nodeId) {
+      const { tabs } = get();
+      if (tabs.find((t) => t.nodeId === nodeId)) {
+        set({ activeTabId: nodeId });
+        return;
+      }
+      set({
+        tabs: [...tabs, { nodeId, isPreview: false }],
+        activeTabId: nodeId,
+      });
+    },
 
-    const movingTab = srcArr.find((t) => t.nodeId === nodeId);
-    if (!movingTab) return;
+    // ---- Secondary group ----
 
-    // If already in destination, just activate it there
-    if (dstArr.some((t) => t.nodeId === nodeId)) {
-      if (toGroup === 0) set({ activeTabId: nodeId, activeGroupIndex: 0 });
-      else
+    openInSecondaryGroup(nodeId) {
+      const { secondaryTabs } = get();
+      const existing = secondaryTabs.find((t) => t.nodeId === nodeId);
+
+      if (existing) {
         set({
           secondaryActiveTabId: nodeId,
           activeGroupIndex: 1,
           secondaryGroupOpen: true,
         });
-      return;
-    }
-
-    const newSrc = srcArr.filter((t) => t.nodeId !== nodeId);
-    const newDst = [...dstArr];
-    const at =
-      insertIndex !== undefined
-        ? Math.min(insertIndex, newDst.length)
-        : newDst.length;
-    newDst.splice(at, 0, { ...movingTab, isPreview: false });
-
-    // Pick new active for source group if we moved away the active tab
-    const srcActiveId = fromGroup === 0 ? activeTabId : secondaryActiveTabId;
-    let newSrcActiveId = srcActiveId;
-    if (srcActiveId === nodeId) {
-      const srcIdx = srcArr.findIndex((t) => t.nodeId === nodeId);
-      newSrcActiveId =
-        newSrc[srcIdx]?.nodeId ?? newSrc[srcIdx - 1]?.nodeId ?? null;
-    }
-
-    const updates: Partial<
-      Pick<
-        TabState,
-        | "tabs"
-        | "secondaryTabs"
-        | "activeTabId"
-        | "secondaryActiveTabId"
-        | "activeGroupIndex"
-        | "secondaryGroupOpen"
-        | "splitDirection"
-        | "isDraggingTab"
-      >
-    > = {
-      // When a cross-group move completes, the source tab element is removed
-      // from the DOM. In that case `dragend` fires on the detached element and
-      // never bubbles to `document`, so the usual document-level dragend listener
-      // cannot reset the flag. Resetting here (inside the same Zustand set call
-      // as the tab move) keeps the FullAreaDropZone from staying visible.
-      isDraggingTab: false,
-    };
-
-    if (fromGroup === 0) {
-      updates.tabs = newSrc;
-      updates.activeTabId = newSrcActiveId;
-    } else {
-      updates.secondaryTabs = newSrc;
-      updates.secondaryActiveTabId = newSrcActiveId;
-    }
-
-    if (toGroup === 0) {
-      updates.tabs = newDst;
-      updates.activeTabId = nodeId;
-      updates.activeGroupIndex = 0;
-    } else {
-      updates.secondaryTabs = newDst;
-      updates.secondaryActiveTabId = nodeId;
-      updates.activeGroupIndex = 1;
-      updates.secondaryGroupOpen = true;
-      // Set split direction when creating the secondary group for the first time
-      if (createDirection && !get().secondaryGroupOpen) {
-        updates.splitDirection = createDirection;
+        return;
       }
-    }
 
-    set(updates);
-  },
+      set({
+        secondaryTabs: [...secondaryTabs, { nodeId, isPreview: false }],
+        secondaryActiveTabId: nodeId,
+        activeGroupIndex: 1,
+        secondaryGroupOpen: true,
+      });
+    },
 
-  // ---- Context-menu bulk-close operations ----
+    createEmptySecondaryGroup(direction) {
+      set({
+        secondaryGroupOpen: true,
+        splitDirection: direction,
+        activeGroupIndex: 1,
+      });
+    },
 
-  closeOtherTabsInGroup(nodeId, groupIndex) {
-    const arr = groupIndex === 0 ? get().tabs : get().secondaryTabs;
-    const remaining = arr.filter((t) => t.nodeId === nodeId);
-    if (groupIndex === 0) {
-      set({ tabs: remaining, activeTabId: remaining[0]?.nodeId ?? null });
-    } else {
+    closeSecondaryTab(nodeId) {
+      const { secondaryTabs, secondaryActiveTabId } = get();
+      const idx = secondaryTabs.findIndex((t) => t.nodeId === nodeId);
+      if (idx === -1) return;
+
+      const remaining = secondaryTabs.filter((t) => t.nodeId !== nodeId);
+
+      let newActive = secondaryActiveTabId;
+      if (secondaryActiveTabId === nodeId) {
+        if (remaining.length === 0) {
+          newActive = null;
+        } else {
+          const nextTab = remaining[idx] ?? remaining[idx - 1];
+          newActive = nextTab.nodeId;
+        }
+      }
+
       set({
         secondaryTabs: remaining,
-        secondaryActiveTabId: remaining[0]?.nodeId ?? null,
+        secondaryActiveTabId: newActive,
+        // Keep activeGroupIndex on secondary even when empty — group stays visible
       });
-    }
-  },
+    },
 
-  closeRightTabsInGroup(nodeId, groupIndex) {
-    const arr = groupIndex === 0 ? get().tabs : get().secondaryTabs;
-    const idx = arr.findIndex((t) => t.nodeId === nodeId);
-    if (idx === -1) return;
-    const remaining = arr.slice(0, idx + 1);
-    const curActive =
-      groupIndex === 0 ? get().activeTabId : get().secondaryActiveTabId;
-    const newActive = remaining.some((t) => t.nodeId === curActive)
-      ? curActive
-      : nodeId;
-    if (groupIndex === 0) {
-      set({ tabs: remaining, activeTabId: newActive });
-    } else {
-      set({ secondaryTabs: remaining, secondaryActiveTabId: newActive });
-    }
-  },
-
-  closeLeftTabsInGroup(nodeId, groupIndex) {
-    const arr = groupIndex === 0 ? get().tabs : get().secondaryTabs;
-    const idx = arr.findIndex((t) => t.nodeId === nodeId);
-    if (idx === -1) return;
-    const remaining = arr.slice(idx);
-    const curActive =
-      groupIndex === 0 ? get().activeTabId : get().secondaryActiveTabId;
-    const newActive = remaining.some((t) => t.nodeId === curActive)
-      ? curActive
-      : nodeId;
-    if (groupIndex === 0) {
-      set({ tabs: remaining, activeTabId: newActive });
-    } else {
-      set({ secondaryTabs: remaining, secondaryActiveTabId: newActive });
-    }
-  },
-
-  closeAllTabsInGroup(groupIndex) {
-    if (groupIndex === 0) {
-      set({ tabs: [], activeTabId: null });
-    } else {
-      // Keep the group panel visible (empty state); user must click X to close it
-      set({ secondaryTabs: [], secondaryActiveTabId: null });
-    }
-  },
-
-  // ---- Directional split ----
-
-  openInSecondaryGroupDirectional(nodeId, direction) {
-    const { secondaryTabs } = get();
-    const existing = secondaryTabs.find((t) => t.nodeId === nodeId);
-    if (existing) {
+    closeSecondaryGroup() {
       set({
+        secondaryTabs: [],
+        secondaryActiveTabId: null,
+        secondaryGroupOpen: false,
+        activeGroupIndex: 0,
+      });
+    },
+
+    setSecondaryActiveTab(nodeId) {
+      const { secondaryTabs } = get();
+      if (!secondaryTabs.find((t) => t.nodeId === nodeId)) return;
+      set({ secondaryActiveTabId: nodeId });
+    },
+
+    pinSecondaryTab(nodeId) {
+      const { secondaryTabs } = get();
+      const existing = secondaryTabs.find((t) => t.nodeId === nodeId);
+      if (!existing || !existing.isPreview) return;
+
+      set({
+        secondaryTabs: secondaryTabs.map((t) =>
+          t.nodeId === nodeId ? { ...t, isPreview: false } : t,
+        ),
+      });
+    },
+
+    setActiveGroup(index) {
+      set({ activeGroupIndex: index });
+    },
+
+    isSyncedScene(nodeId) {
+      const { tabs, secondaryTabs } = get();
+      const inPrimary = tabs.some((t) => t.nodeId === nodeId);
+      const inSecondary = secondaryTabs.some((t) => t.nodeId === nodeId);
+      return inPrimary && inSecondary;
+    },
+
+    reorderTab(fromIndex, toIndex, groupIndex) {
+      const arr = [...(groupIndex === 0 ? get().tabs : get().secondaryTabs)];
+      if (fromIndex === toIndex || fromIndex < 0 || fromIndex >= arr.length)
+        return;
+      const [moved] = arr.splice(fromIndex, 1);
+      // toIndex was computed before removal; adjust if it came after fromIndex
+      const adjusted = toIndex > fromIndex ? toIndex - 1 : toIndex;
+      arr.splice(Math.min(adjusted, arr.length), 0, moved);
+      if (groupIndex === 0) set({ tabs: arr });
+      else set({ secondaryTabs: arr });
+    },
+
+    moveTabBetweenGroups(
+      nodeId,
+      fromGroup,
+      toGroup,
+      insertIndex,
+      createDirection,
+    ) {
+      const { tabs, secondaryTabs, activeTabId, secondaryActiveTabId } = get();
+      const srcArr = fromGroup === 0 ? tabs : secondaryTabs;
+      const dstArr = toGroup === 0 ? tabs : secondaryTabs;
+
+      const movingTab = srcArr.find((t) => t.nodeId === nodeId);
+      if (!movingTab) return;
+
+      // If already in destination, just activate it there
+      if (dstArr.some((t) => t.nodeId === nodeId)) {
+        if (toGroup === 0) set({ activeTabId: nodeId, activeGroupIndex: 0 });
+        else
+          set({
+            secondaryActiveTabId: nodeId,
+            activeGroupIndex: 1,
+            secondaryGroupOpen: true,
+          });
+        return;
+      }
+
+      const newSrc = srcArr.filter((t) => t.nodeId !== nodeId);
+      const newDst = [...dstArr];
+      const at =
+        insertIndex !== undefined
+          ? Math.min(insertIndex, newDst.length)
+          : newDst.length;
+      newDst.splice(at, 0, { ...movingTab, isPreview: false });
+
+      // Pick new active for source group if we moved away the active tab
+      const srcActiveId = fromGroup === 0 ? activeTabId : secondaryActiveTabId;
+      let newSrcActiveId = srcActiveId;
+      if (srcActiveId === nodeId) {
+        const srcIdx = srcArr.findIndex((t) => t.nodeId === nodeId);
+        newSrcActiveId =
+          newSrc[srcIdx]?.nodeId ?? newSrc[srcIdx - 1]?.nodeId ?? null;
+      }
+
+      const updates: Partial<
+        Pick<
+          TabState,
+          | "tabs"
+          | "secondaryTabs"
+          | "activeTabId"
+          | "secondaryActiveTabId"
+          | "activeGroupIndex"
+          | "secondaryGroupOpen"
+          | "splitDirection"
+          | "isDraggingTab"
+        >
+      > = {
+        // When a cross-group move completes, the source tab element is removed
+        // from the DOM. In that case `dragend` fires on the detached element and
+        // never bubbles to `document`, so the usual document-level dragend listener
+        // cannot reset the flag. Resetting here (inside the same Zustand set call
+        // as the tab move) keeps the FullAreaDropZone from staying visible.
+        isDraggingTab: false,
+      };
+
+      if (fromGroup === 0) {
+        updates.tabs = newSrc;
+        updates.activeTabId = newSrcActiveId;
+      } else {
+        updates.secondaryTabs = newSrc;
+        updates.secondaryActiveTabId = newSrcActiveId;
+      }
+
+      if (toGroup === 0) {
+        updates.tabs = newDst;
+        updates.activeTabId = nodeId;
+        updates.activeGroupIndex = 0;
+      } else {
+        updates.secondaryTabs = newDst;
+        updates.secondaryActiveTabId = nodeId;
+        updates.activeGroupIndex = 1;
+        updates.secondaryGroupOpen = true;
+        // Set split direction when creating the secondary group for the first time
+        if (createDirection && !get().secondaryGroupOpen) {
+          updates.splitDirection = createDirection;
+        }
+      }
+
+      set(updates);
+    },
+
+    // ---- Context-menu bulk-close operations ----
+
+    closeOtherTabsInGroup(nodeId, groupIndex) {
+      const arr = groupIndex === 0 ? get().tabs : get().secondaryTabs;
+      const remaining = arr.filter((t) => t.nodeId === nodeId);
+      if (groupIndex === 0) {
+        set({ tabs: remaining, activeTabId: remaining[0]?.nodeId ?? null });
+      } else {
+        set({
+          secondaryTabs: remaining,
+          secondaryActiveTabId: remaining[0]?.nodeId ?? null,
+        });
+      }
+    },
+
+    closeRightTabsInGroup(nodeId, groupIndex) {
+      const arr = groupIndex === 0 ? get().tabs : get().secondaryTabs;
+      const idx = arr.findIndex((t) => t.nodeId === nodeId);
+      if (idx === -1) return;
+      const remaining = arr.slice(0, idx + 1);
+      const curActive =
+        groupIndex === 0 ? get().activeTabId : get().secondaryActiveTabId;
+      const newActive = remaining.some((t) => t.nodeId === curActive)
+        ? curActive
+        : nodeId;
+      if (groupIndex === 0) {
+        set({ tabs: remaining, activeTabId: newActive });
+      } else {
+        set({ secondaryTabs: remaining, secondaryActiveTabId: newActive });
+      }
+    },
+
+    closeLeftTabsInGroup(nodeId, groupIndex) {
+      const arr = groupIndex === 0 ? get().tabs : get().secondaryTabs;
+      const idx = arr.findIndex((t) => t.nodeId === nodeId);
+      if (idx === -1) return;
+      const remaining = arr.slice(idx);
+      const curActive =
+        groupIndex === 0 ? get().activeTabId : get().secondaryActiveTabId;
+      const newActive = remaining.some((t) => t.nodeId === curActive)
+        ? curActive
+        : nodeId;
+      if (groupIndex === 0) {
+        set({ tabs: remaining, activeTabId: newActive });
+      } else {
+        set({ secondaryTabs: remaining, secondaryActiveTabId: newActive });
+      }
+    },
+
+    closeAllTabsInGroup(groupIndex) {
+      if (groupIndex === 0) {
+        set({ tabs: [], activeTabId: null });
+      } else {
+        // Keep the group panel visible (empty state); user must click X to close it
+        set({ secondaryTabs: [], secondaryActiveTabId: null });
+      }
+    },
+
+    // ---- Directional split ----
+
+    openInSecondaryGroupDirectional(nodeId, direction) {
+      const { secondaryTabs } = get();
+      const existing = secondaryTabs.find((t) => t.nodeId === nodeId);
+      if (existing) {
+        set({
+          secondaryActiveTabId: nodeId,
+          activeGroupIndex: 1,
+          splitDirection: direction,
+          secondaryGroupOpen: true,
+        });
+        return;
+      }
+      set({
+        secondaryTabs: [...secondaryTabs, { nodeId, isPreview: false }],
         secondaryActiveTabId: nodeId,
         activeGroupIndex: 1,
         splitDirection: direction,
         secondaryGroupOpen: true,
       });
-      return;
-    }
-    set({
-      secondaryTabs: [...secondaryTabs, { nodeId, isPreview: false }],
-      secondaryActiveTabId: nodeId,
-      activeGroupIndex: 1,
-      splitDirection: direction,
-      secondaryGroupOpen: true,
-    });
-  },
+    },
 
-  // ---- Dirty-tab tracking ----
+    // ---- Dirty-tab tracking ----
 
-  setTabDirty(nodeId, dirty) {
-    const next = new Set(get().dirtyTabIds);
-    if (dirty) next.add(nodeId);
-    else next.delete(nodeId);
-    set({ dirtyTabIds: next });
-  },
+    setTabDirty(nodeId, dirty) {
+      const next = new Set(get().dirtyTabIds);
+      if (dirty) next.add(nodeId);
+      else next.delete(nodeId);
+      set({ dirtyTabIds: next });
+    },
 
-  // ---- Persistence ----
+    // ---- Persistence ----
 
-  async loadTabState(validNodeIds) {
-    try {
-      const json = await getSetting(TAB_STATE_KEY);
-      if (!json) return;
+    async loadTabState(validNodeIds) {
+      try {
+        const json = await getSetting(TAB_STATE_KEY);
+        if (!json) return;
 
-      const parsed: PersistedTabState = JSON.parse(json);
+        const parsed: PersistedTabState = JSON.parse(json);
 
-      let tabs = parsed.tabs ?? [];
-      let secondaryTabs = parsed.secondaryTabs ?? [];
+        let tabs = parsed.tabs ?? [];
+        let secondaryTabs = parsed.secondaryTabs ?? [];
 
-      if (validNodeIds) {
-        tabs = tabs.filter((t) => validNodeIds.has(t.nodeId));
-        secondaryTabs = secondaryTabs.filter((t) => validNodeIds.has(t.nodeId));
+        if (validNodeIds) {
+          tabs = tabs.filter((t) => validNodeIds.has(t.nodeId));
+          secondaryTabs = secondaryTabs.filter((t) =>
+            validNodeIds.has(t.nodeId),
+          );
+        }
+
+        const activeTabId = tabs.find((t) => t.nodeId === parsed.activeTabId)
+          ? parsed.activeTabId
+          : (tabs[0]?.nodeId ?? null);
+
+        const secondaryActiveTabId = secondaryTabs.find(
+          (t) => t.nodeId === parsed.secondaryActiveTabId,
+        )
+          ? parsed.secondaryActiveTabId
+          : (secondaryTabs[0]?.nodeId ?? null);
+
+        const secondaryGroupOpen =
+          parsed.secondaryGroupOpen ?? secondaryTabs.length > 0;
+        const activeGroupIndex = !secondaryGroupOpen
+          ? 0
+          : (parsed.activeGroupIndex ?? 0);
+        const splitDirection = parsed.splitDirection ?? "right";
+
+        set({
+          tabs,
+          activeTabId,
+          secondaryTabs,
+          secondaryActiveTabId,
+          secondaryGroupOpen,
+          activeGroupIndex,
+          splitDirection,
+        });
+      } catch {
+        // Corrupted or missing — keep current state
       }
+    },
 
-      const activeTabId = tabs.find((t) => t.nodeId === parsed.activeTabId)
-        ? parsed.activeTabId
-        : (tabs[0]?.nodeId ?? null);
+    async saveTabState() {
+      try {
+        const {
+          tabs,
+          activeTabId,
+          secondaryTabs,
+          secondaryActiveTabId,
+          secondaryGroupOpen,
+          activeGroupIndex,
+          splitDirection,
+        } = get();
+        const data: PersistedTabState = {
+          tabs,
+          activeTabId,
+          secondaryTabs,
+          secondaryActiveTabId,
+          secondaryGroupOpen,
+          activeGroupIndex,
+          splitDirection,
+        };
+        await setSetting(TAB_STATE_KEY, JSON.stringify(data));
+      } catch {
+        // Ignore save errors
+      }
+    },
 
-      const secondaryActiveTabId = secondaryTabs.find(
-        (t) => t.nodeId === parsed.secondaryActiveTabId,
-      )
-        ? parsed.secondaryActiveTabId
-        : (secondaryTabs[0]?.nodeId ?? null);
+    initAutoSave() {
+      let timer: ReturnType<typeof setTimeout> | null = null;
 
-      const secondaryGroupOpen =
-        parsed.secondaryGroupOpen ?? secondaryTabs.length > 0;
-      const activeGroupIndex = !secondaryGroupOpen
-        ? 0
-        : (parsed.activeGroupIndex ?? 0);
-      const splitDirection = parsed.splitDirection ?? "right";
+      const unsubscribe = useTabStore.subscribe((state, prev) => {
+        // Only save when tab-related state changes
+        if (
+          state.tabs === prev.tabs &&
+          state.activeTabId === prev.activeTabId &&
+          state.secondaryTabs === prev.secondaryTabs &&
+          state.secondaryActiveTabId === prev.secondaryActiveTabId &&
+          state.secondaryGroupOpen === prev.secondaryGroupOpen &&
+          state.splitDirection === prev.splitDirection &&
+          state.activeGroupIndex === prev.activeGroupIndex
+        ) {
+          return;
+        }
+
+        if (timer !== null) clearTimeout(timer);
+        timer = setTimeout(() => {
+          useTabStore.getState().saveTabState();
+        }, SAVE_DEBOUNCE_MS);
+      });
 
       set({
-        tabs,
-        activeTabId,
-        secondaryTabs,
-        secondaryActiveTabId,
-        secondaryGroupOpen,
-        activeGroupIndex,
-        splitDirection,
+        disposeAutoSave: () => {
+          if (timer !== null) clearTimeout(timer);
+          unsubscribe();
+          set({ disposeAutoSave: undefined });
+        },
       });
-    } catch {
-      // Corrupted or missing — keep current state
-    }
-  },
-
-  async saveTabState() {
-    try {
-      const {
-        tabs,
-        activeTabId,
-        secondaryTabs,
-        secondaryActiveTabId,
-        secondaryGroupOpen,
-        activeGroupIndex,
-        splitDirection,
-      } = get();
-      const data: PersistedTabState = {
-        tabs,
-        activeTabId,
-        secondaryTabs,
-        secondaryActiveTabId,
-        secondaryGroupOpen,
-        activeGroupIndex,
-        splitDirection,
-      };
-      await setSetting(TAB_STATE_KEY, JSON.stringify(data));
-    } catch {
-      // Ignore save errors
-    }
-  },
-
-  initAutoSave() {
-    let timer: ReturnType<typeof setTimeout> | null = null;
-
-    const unsubscribe = useTabStore.subscribe((state, prev) => {
-      // Only save when tab-related state changes
-      if (
-        state.tabs === prev.tabs &&
-        state.activeTabId === prev.activeTabId &&
-        state.secondaryTabs === prev.secondaryTabs &&
-        state.secondaryActiveTabId === prev.secondaryActiveTabId &&
-        state.secondaryGroupOpen === prev.secondaryGroupOpen &&
-        state.splitDirection === prev.splitDirection &&
-        state.activeGroupIndex === prev.activeGroupIndex
-      ) {
-        return;
-      }
-
-      if (timer !== null) clearTimeout(timer);
-      timer = setTimeout(() => {
-        useTabStore.getState().saveTabState();
-      }, SAVE_DEBOUNCE_MS);
-    });
-
-    set({
-      disposeAutoSave: () => {
-        if (timer !== null) clearTimeout(timer);
-        unsubscribe();
-        set({ disposeAutoSave: undefined });
-      },
-    });
-  },
-}));
+    },
+  };
+});
