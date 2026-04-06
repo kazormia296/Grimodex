@@ -98,7 +98,13 @@ export const useCodexStore = create<CodexState>()((set, get) => ({
         projectId: "default-project",
         ...data,
       });
-      await get().loadEntries();
+      // Optimistic update: add to store immediately without triggering isLoading cycle.
+      // isLoading=true unmounts the virtualizer's scroll container, causing a one-frame
+      // gap where getVirtualItems() returns [] before ResizeObserver fires.
+      const { filterType } = get();
+      if (!filterType || filterType === entry.type) {
+        set((state) => ({ entries: [entry, ...state.entries] }));
+      }
       return entry;
     } catch (e) {
       toast.error("Codexエントリの作成に失敗しました");

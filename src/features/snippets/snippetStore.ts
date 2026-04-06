@@ -29,7 +29,7 @@ interface SnippetState {
   incrementUsageCount: (id: string) => Promise<void>;
 }
 
-export const useSnippetStore = create<SnippetState>()((set) => ({
+export const useSnippetStore = create<SnippetState>()((set, get) => ({
   entries: [],
   searchQuery: "",
   isLoading: false,
@@ -71,6 +71,18 @@ export const useSnippetStore = create<SnippetState>()((set) => ({
         ...data,
       });
       set((state) => ({ entries: [...state.entries, created] }));
+      // Background re-sync to fix race condition: if useEffect's loadEntries() was
+      // in-flight (e.g., after a layout preset change or during Tauri startup),
+      // it may resolve after this optimistic update and overwrite it with stale data.
+      // Re-fetch after the INSERT so our SELECT is guaranteed to include the new entry.
+      if (get().isLoading) {
+        snippetApi
+          .listSnippets()
+          .then((entries) =>
+            set((state) => (state.searchQuery ? state : { entries })),
+          )
+          .catch(() => {});
+      }
       return created;
     } catch (e) {
       toast.error("スニペットの作成に失敗しました");

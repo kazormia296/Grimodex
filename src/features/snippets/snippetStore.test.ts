@@ -128,6 +128,65 @@ describe("snippetStore", () => {
       );
       expect(useSnippetStore.getState().entries).toContainEqual(created);
     });
+
+    it("adds entry immediately without isLoading cycle when not loading", async () => {
+      const created = fakeSnippet({ id: "snippet-10", title: "新規" });
+      mockCreateSnippet.mockResolvedValue(created);
+      // isLoading starts as false (set in beforeEach)
+
+      await useSnippetStore
+        .getState()
+        .create({ title: "新規", content: "内容" });
+
+      expect(useSnippetStore.getState().entries).toContainEqual(created);
+      // No background re-sync needed — listSnippets must not have been called
+      expect(mockListSnippets).not.toHaveBeenCalled();
+      expect(useSnippetStore.getState().isLoading).toBe(false);
+    });
+
+    it("triggers background re-sync when isLoading is true at create time", async () => {
+      const created = fakeSnippet({ id: "snippet-10", title: "新規" });
+      const syncResult = [fakeSnippet({ id: "snippet-1" }), created];
+      mockCreateSnippet.mockResolvedValue(created);
+      mockListSnippets.mockResolvedValue(syncResult);
+      // Simulate race: loadEntries() is in-flight when create() is called
+      useSnippetStore.setState({ isLoading: true });
+
+      await useSnippetStore
+        .getState()
+        .create({ title: "新規", content: "内容" });
+      // Allow microtasks (the background .then()) to settle
+      await Promise.resolve();
+
+      expect(mockListSnippets).toHaveBeenCalled();
+      // Store should reflect the re-synced result
+      expect(useSnippetStore.getState().entries).toEqual(syncResult);
+    });
+
+    it("background re-sync does not overwrite active search results", async () => {
+      const created = fakeSnippet({ id: "snippet-10", title: "新規" });
+      const searchResults = [
+        fakeSnippet({ id: "snippet-99", title: "検索結果" }),
+      ];
+      mockCreateSnippet.mockResolvedValue(created);
+      mockListSnippets.mockResolvedValue([created]);
+      // Active search + in-flight load
+      useSnippetStore.setState({
+        isLoading: true,
+        searchQuery: "検索",
+        entries: searchResults,
+      });
+
+      await useSnippetStore
+        .getState()
+        .create({ title: "新規", content: "内容" });
+      await Promise.resolve();
+
+      // searchQuery is set, so re-sync must NOT overwrite entries
+      expect(useSnippetStore.getState().entries).toContainEqual(
+        expect.objectContaining({ id: "snippet-99" }),
+      );
+    });
   });
 
   describe("update", () => {

@@ -161,6 +161,69 @@ describe("codexStore", () => {
       );
       expect(result).toEqual(mockEntry);
     });
+
+    it("adds entry immediately to store without triggering isLoading cycle", async () => {
+      mockCreateCodexEntry.mockResolvedValue(mockEntry);
+
+      await useCodexStore.getState().create({
+        type: "character",
+        name: "アリス",
+      });
+
+      // Entry must be in store immediately after create() resolves
+      expect(useCodexStore.getState().entries).toContainEqual(mockEntry);
+      // loadEntries must NOT have been called (no isLoading cycle)
+      expect(mockListCodexEntries).not.toHaveBeenCalled();
+      // isLoading must remain false
+      expect(useCodexStore.getState().isLoading).toBe(false);
+    });
+
+    it("prepends new entry to existing entries", async () => {
+      useCodexStore.setState({ entries: [mockEntry2] });
+      mockCreateCodexEntry.mockResolvedValue(mockEntry);
+
+      await useCodexStore
+        .getState()
+        .create({ type: "character", name: "アリス" });
+
+      const entries = useCodexStore.getState().entries;
+      expect(entries[0]).toEqual(mockEntry);
+      expect(entries[1]).toEqual(mockEntry2);
+    });
+
+    it("does not add entry to store when filterType excludes its type", async () => {
+      useCodexStore.setState({ filterType: "location" });
+      mockCreateCodexEntry.mockResolvedValue(mockEntry); // type: "character"
+
+      await useCodexStore
+        .getState()
+        .create({ type: "character", name: "アリス" });
+
+      // "character" entry must NOT appear when filter is "location"
+      expect(useCodexStore.getState().entries).not.toContainEqual(mockEntry);
+    });
+
+    it("adds entry to store when filterType matches its type", async () => {
+      useCodexStore.setState({ filterType: "character" });
+      mockCreateCodexEntry.mockResolvedValue(mockEntry); // type: "character"
+
+      await useCodexStore
+        .getState()
+        .create({ type: "character", name: "アリス" });
+
+      expect(useCodexStore.getState().entries).toContainEqual(mockEntry);
+    });
+
+    it("adds entry to store when filterType is null (no filter)", async () => {
+      useCodexStore.setState({ filterType: null });
+      mockCreateCodexEntry.mockResolvedValue(mockEntry2); // type: "location"
+
+      await useCodexStore
+        .getState()
+        .create({ type: "location", name: "不思議の国" });
+
+      expect(useCodexStore.getState().entries).toContainEqual(mockEntry2);
+    });
   });
 
   describe("update", () => {
