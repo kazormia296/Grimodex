@@ -236,6 +236,15 @@ fn repair_integrity(
 
 // --- Chat commands ---
 
+/// Ollama はAPIキー不要のため空文字を返す。それ以外は設定済みキーを要求する。
+fn resolve_api_key(provider: &ai::AiProvider) -> anyhow::Result<String> {
+    if matches!(provider, ai::AiProvider::Ollama) {
+        return Ok(String::new());
+    }
+    ai::get_api_key(provider)?
+        .ok_or_else(|| anyhow::anyhow!("No API key configured for {}", provider))
+}
+
 #[derive(serde::Deserialize)]
 struct ChatMessagePayload {
     role: String,
@@ -250,8 +259,7 @@ async fn send_chat_message(
     effort: Option<String>,
 ) -> Result<ai::ChatResponse, AppError> {
     let settings = ai::read_ai_settings(&ai_path.path);
-    let api_key = ai::get_api_key(&settings.provider)?
-        .ok_or_else(|| anyhow::anyhow!("No API key configured for {}", settings.provider))?;
+    let api_key = resolve_api_key(&settings.provider)?;
     let result = ai::send_chat(
         &settings.provider,
         &settings.model,
@@ -279,8 +287,7 @@ async fn send_agent_message(
     effort: Option<String>,
 ) -> Result<ai::ChatResponse, AppError> {
     let settings = ai::read_ai_settings(&ai_path.path);
-    let api_key = ai::get_api_key(&settings.provider)?
-        .ok_or_else(|| anyhow::anyhow!("No API key configured for {}", settings.provider))?;
+    let api_key = resolve_api_key(&settings.provider)?;
     let result = ai::send_chat_with_tools(
         &settings.provider,
         &settings.model,
@@ -346,8 +353,7 @@ async fn test_ai_connection(
     model: String,
 ) -> Result<String, AppError> {
     let settings = ai::read_ai_settings(&ai_path.path);
-    let api_key = ai::get_api_key(&provider)?
-        .ok_or_else(|| anyhow::anyhow!("No API key configured for {provider}"))?;
+    let api_key = resolve_api_key(&provider)?;
     let result =
         ai::test_connection(&provider, &model, &api_key, &settings.ollama_endpoint).await?;
     Ok(result)

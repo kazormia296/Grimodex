@@ -903,6 +903,7 @@ mod tests {
             provider: AiProvider::OpenAI,
             model: "gpt-4o".to_string(),
             ollama_endpoint: "http://localhost:11434".to_string(),
+            thinking_enabled: true,
         };
 
         write_ai_settings(&path, &settings).expect("write");
