@@ -75,7 +75,7 @@ export function ChatPanelHeader({
         <div className="flex items-center gap-1.5">
           {ctxLabel && (
             <span
-              title={`コンテキスト窓: ${caps.contextWindow.toLocaleString()} トークン`}
+              title={`${currentModel} — コンテキスト窓: ${caps.contextWindow.toLocaleString()} トークン`}
               className="rounded bg-muted px-1.5 py-0.5 text-xs text-muted-foreground"
             >
               {ctxLabel}
