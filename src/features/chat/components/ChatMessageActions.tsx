@@ -1,18 +1,34 @@
 import { useState, useRef, useEffect } from "react";
-import { MoreVertical, FileInput, BookOpen, Bookmark } from "lucide-react";
+import {
+  MoreVertical,
+  FileInput,
+  BookOpen,
+  Bookmark,
+  Pencil,
+  Trash2,
+  RefreshCw,
+} from "lucide-react";
 
 interface ChatMessageActionsProps {
   messageId: string;
+  messageRole: "user" | "assistant";
   onInsert?: () => void;
   onExtractCodex?: (messageId: string, selectedText: string | null) => void;
   onSaveSnippet?: (messageId: string, selectedText: string | null) => void;
+  onEdit?: (messageId: string) => void;
+  onDelete?: (messageId: string) => void;
+  onRegenerate?: (messageId: string) => void;
 }
 
 export function ChatMessageActions({
   messageId,
+  messageRole,
   onInsert,
   onExtractCodex,
   onSaveSnippet,
+  onEdit,
+  onDelete,
+  onRegenerate,
 }: ChatMessageActionsProps) {
   const [open, setOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
@@ -50,6 +66,21 @@ export function ChatMessageActions({
     onInsert?.();
   };
 
+  const handleEdit = () => {
+    setOpen(false);
+    onEdit?.(messageId);
+  };
+
+  const handleDelete = () => {
+    setOpen(false);
+    onDelete?.(messageId);
+  };
+
+  const handleRegenerate = () => {
+    setOpen(false);
+    onRegenerate?.(messageId);
+  };
+
   return (
     <div className="relative mt-2 inline-flex" ref={menuRef}>
       <button
@@ -66,7 +97,8 @@ export function ChatMessageActions({
           data-testid={`message-actions-menu-${messageId}`}
           className="absolute bottom-full left-0 z-10 mb-1 min-w-[160px] rounded-md border border-border bg-popover py-1 shadow-md"
         >
-          {onInsert && (
+          {/* アシスタントメッセージ専用 */}
+          {messageRole === "assistant" && onInsert && (
             <button
               type="button"
               data-testid={`insert-to-editor-${messageId}`}
@@ -77,7 +109,7 @@ export function ChatMessageActions({
               エディタに挿入
             </button>
           )}
-          {onExtractCodex && (
+          {messageRole === "assistant" && onExtractCodex && (
             <button
               type="button"
               data-testid={`extract-codex-${messageId}`}
@@ -88,7 +120,7 @@ export function ChatMessageActions({
               Codexに抽出
             </button>
           )}
-          {onSaveSnippet && (
+          {messageRole === "assistant" && onSaveSnippet && (
             <button
               type="button"
               data-testid={`save-snippet-${messageId}`}
@@ -98,6 +130,48 @@ export function ChatMessageActions({
               <Bookmark className="h-3 w-3" />
               Snippetとして保存
             </button>
+          )}
+          {messageRole === "assistant" && onRegenerate && (
+            <button
+              type="button"
+              data-testid={`regenerate-${messageId}`}
+              onClick={handleRegenerate}
+              className="flex w-full items-center gap-2 px-3 py-1.5 text-xs text-popover-foreground hover:bg-accent"
+            >
+              <RefreshCw className="h-3 w-3" />
+              再生成
+            </button>
+          )}
+
+          {/* ユーザーメッセージ専用 */}
+          {messageRole === "user" && onEdit && (
+            <button
+              type="button"
+              data-testid={`edit-message-${messageId}`}
+              onClick={handleEdit}
+              className="flex w-full items-center gap-2 px-3 py-1.5 text-xs text-popover-foreground hover:bg-accent"
+            >
+              <Pencil className="h-3 w-3" />
+              編集
+            </button>
+          )}
+
+          {/* 共通: 削除 */}
+          {onDelete && (
+            <>
+              {(messageRole === "assistant"
+                ? onInsert || onRegenerate
+                : onEdit) && <div className="my-0.5 border-t border-border" />}
+              <button
+                type="button"
+                data-testid={`delete-message-${messageId}`}
+                onClick={handleDelete}
+                className="flex w-full items-center gap-2 px-3 py-1.5 text-xs text-destructive hover:bg-accent"
+              >
+                <Trash2 className="h-3 w-3" />
+                削除
+              </button>
+            </>
           )}
         </div>
       )}

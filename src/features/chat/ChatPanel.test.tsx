@@ -167,12 +167,18 @@ describe("ChatPanel", () => {
     });
   });
 
-  it("disables send button while streaming", () => {
+  it("shows stop button while streaming", () => {
     useChatStore.setState({ isStreaming: true });
 
     render(<ChatPanel />);
 
-    expect(screen.getByRole("button", { name: /送信/i })).toBeDisabled();
+    // ストリーミング中は Send→Stop ボタンに切り替わる
+    expect(
+      screen.getByRole("button", { name: /生成中断/i }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: /送信/i }),
+    ).not.toBeInTheDocument();
   });
 
   it("disables send button when input is empty", () => {

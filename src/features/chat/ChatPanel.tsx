@@ -30,6 +30,9 @@ export function ChatPanel() {
   const isStreaming = useChatStore((s) => s.isStreaming);
   const error = useChatStore((s) => s.error);
   const sendMessage = useChatStore((s) => s.sendMessage);
+  const deleteMessage = useChatStore((s) => s.deleteMessage);
+  const editUserMessage = useChatStore((s) => s.editUserMessage);
+  const regenerate = useChatStore((s) => s.regenerate);
   const contextTokenCount = useChatStore((s) => s.contextTokenCount);
   const contextLayers = useChatStore((s) => s.contextLayers);
   const systemPrompt = useChatStore(
@@ -211,6 +214,28 @@ export function ChatPanel() {
     [rawInsertFromChat, aiSettings],
   );
 
+  const handleEditMessage = useCallback(
+    (messageId: string) => {
+      const content = editUserMessage(messageId);
+      if (content) setInput(content);
+    },
+    [editUserMessage],
+  );
+
+  const handleDeleteMessage = useCallback(
+    (messageId: string) => {
+      deleteMessage(messageId);
+    },
+    [deleteMessage],
+  );
+
+  const handleRegenerate = useCallback(
+    (messageId: string) => {
+      regenerate(messageId);
+    },
+    [regenerate],
+  );
+
   const handleSend = () => {
     const trimmed = input.trim();
     if (!trimmed || isStreaming) return;
@@ -269,16 +294,21 @@ export function ChatPanel() {
           </p>
         ) : (
           <div className="space-y-4">
-            {messages.map((msg) => (
-              <ChatMessage
-                key={msg.id}
-                msg={msg}
-                isStreaming={isStreaming}
-                onInsert={insertFromChat}
-                onExtractCodex={handleExtractCodex}
-                onSaveSnippet={handleSaveSnippet}
-              />
-            ))}
+            {messages
+              .filter((msg) => msg.role !== "system")
+              .map((msg) => (
+                <ChatMessage
+                  key={msg.id}
+                  msg={msg}
+                  isStreaming={isStreaming}
+                  onInsert={insertFromChat}
+                  onExtractCodex={handleExtractCodex}
+                  onSaveSnippet={handleSaveSnippet}
+                  onEdit={handleEditMessage}
+                  onDelete={handleDeleteMessage}
+                  onRegenerate={handleRegenerate}
+                />
+              ))}
             {isStreaming && (
               <div
                 data-testid="streaming-indicator"

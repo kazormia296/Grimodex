@@ -117,6 +117,10 @@ interface ChatState {
 
   // Existing actions
   sendMessage: (content: string) => Promise<void>;
+  stopGeneration: () => void;
+  deleteMessage: (messageId: string) => Promise<void>;
+  editUserMessage: (messageId: string) => string;
+  regenerate: (assistantMessageId: string) => Promise<void>;
   refreshContextLayers: () => Promise<void>;
   clearMessages: () => void;
   clearError: () => void;
@@ -490,6 +494,21 @@ export const useChatStore = create<ChatState>()((set, get) => ({
           return childrenContext ? { ...ctx, childrenContext } : ctx;
         });
 
+        // P2-5: チャットメッセージ内のCodex言及を検出し自動ピン留め
+        if (sessionIdForPersist) {
+          const chatMentioned = findMentionedEntries(content, allEntries);
+          for (const entry of chatMentioned) {
+            await chatApi
+              .pinCodexEntry(
+                sessionIdForPersist,
+                entry.id,
+                false,
+                "chat_mention",
+              )
+              .catch(() => {});
+          }
+        }
+
         let pinnedCodexEntries: import("./contextBuilder").PinnedCodexContext[] =
           [];
         if (activeSessionId) {
@@ -770,6 +789,84 @@ export const useChatStore = create<ChatState>()((set, get) => ({
 
   setAgentMode: (on: boolean) => set({ agentMode: on }),
   setIsGlobalChat: (on: boolean) => set({ isGlobalChat: on }),
+
+  // --- P2-1: ストリーミング中断 ---
+  stopGeneration: () => {
+    set({ isStreaming: false, agentProgress: null });
+  },
+
+  // --- P2-2: メッセージ削除 ---
+  deleteMessage: async (messageId: string) => {
+    const { activeSessionId, messages } = get();
+    const idx = messages.findIndex((m) => m.id === messageId);
+    if (idx === -1) return;
+    const msg = messages[idx];
+    try {
+      if (msg.role === "user") {
+        // ユーザーメッセージ: 以降のメッセージも全削除
+        const toDelete = messages.slice(idx).filter((m) => m.role !== "system");
+        if (activeSessionId) {
+          for (const m of toDelete) {
+            await chatApi.deleteMessage(m.id);
+          }
+        }
+        set({ messages: messages.slice(0, idx) });
+      } else {
+        // AIメッセージ: 単独削除
+        if (activeSessionId) {
+          await chatApi.deleteMessage(messageId);
+        }
+        set({ messages: messages.filter((m) => m.id !== messageId) });
+      }
+    } catch (e) {
+      toast.error("メッセージの削除に失敗しました");
+      debugLog.error("ChatStore", "deleteMessage", errorDetail(e));
+    }
+  },
+
+  // --- P2-2: ユーザーメッセージ編集 (内容を返し、以降を削除) ---
+  editUserMessage: (messageId: string) => {
+    const { activeSessionId, messages } = get();
+    const idx = messages.findIndex((m) => m.id === messageId);
+    if (idx === -1) return "";
+    const content = messages[idx].content;
+    const toDelete = messages.slice(idx).filter((m) => m.role !== "system");
+    if (activeSessionId) {
+      Promise.all(toDelete.map((m) => chatApi.deleteMessage(m.id))).catch((e) =>
+        debugLog.error("ChatStore", "editUserMessage", errorDetail(e)),
+      );
+    }
+    set({ messages: messages.slice(0, idx) });
+    return content;
+  },
+
+  // --- P2-2: AIメッセージ再生成 ---
+  regenerate: async (assistantMessageId: string) => {
+    const { messages, activeSessionId } = get();
+    const assIdx = messages.findIndex((m) => m.id === assistantMessageId);
+    if (assIdx === -1) return;
+
+    // 直前のユーザーメッセージを探す
+    const userMsg = [...messages]
+      .slice(0, assIdx)
+      .reverse()
+      .find((m) => m.role === "user");
+    if (!userMsg) return;
+
+    // アシスタントメッセージを削除
+    if (activeSessionId) {
+      try {
+        await chatApi.deleteMessage(assistantMessageId);
+      } catch (e) {
+        debugLog.error("ChatStore", "regenerate delete", errorDetail(e));
+      }
+    }
+    set({ messages: messages.filter((m) => m.id !== assistantMessageId) });
+
+    // 再送信 (ユーザーメッセージは既にstateにある)
+    await get().sendMessage(userMsg.content);
+  },
+
   clearMessages: () => set({ messages: [] }),
   clearError: () => set({ error: null }),
   setActiveSceneId: (id: string) => {

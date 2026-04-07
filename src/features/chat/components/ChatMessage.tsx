@@ -44,6 +44,9 @@ interface ChatMessageProps {
   onInsert: (content: string, messageId: string) => void;
   onExtractCodex?: (messageId: string, selectedText: string | null) => void;
   onSaveSnippet?: (messageId: string, selectedText: string | null) => void;
+  onEdit?: (messageId: string) => void;
+  onDelete?: (messageId: string) => void;
+  onRegenerate?: (messageId: string) => void;
 }
 
 export function ChatMessage({
@@ -52,8 +55,12 @@ export function ChatMessage({
   onInsert,
   onExtractCodex,
   onSaveSnippet,
+  onEdit,
+  onDelete,
+  onRegenerate,
 }: ChatMessageProps) {
   const isAssistant = msg.role === "assistant";
+  const isUser = msg.role === "user";
   const showActions = !isStreaming && msg.content.length > 0;
   const toolCalls = isAssistant ? parseToolCalls(msg.metadata) : [];
   const thinkingBlocks = isAssistant ? parseThinkingBlocks(msg.metadata) : [];
@@ -99,27 +106,35 @@ export function ChatMessage({
             {showActions && (
               <ChatMessageActions
                 messageId={msg.id}
+                messageRole="assistant"
                 onInsert={() => onInsert(msg.content, msg.id)}
                 onExtractCodex={onExtractCodex}
                 onSaveSnippet={onSaveSnippet}
+                onRegenerate={onRegenerate}
+                onDelete={onDelete}
               />
             )}
           </>
-        ) : (
+        ) : isUser ? (
           <>
-            <div className="prose prose-sm max-w-none dark:prose-invert">
+            <div className="prose prose-sm max-w-none dark:prose-invert prose-p:text-primary-foreground prose-strong:text-primary-foreground prose-em:text-primary-foreground prose-code:text-primary-foreground">
               <ReactMarkdown>{msg.content}</ReactMarkdown>
             </div>
             {showActions && (
               <ChatMessageActions
                 messageId={msg.id}
-                onExtractCodex={onExtractCodex}
-                onSaveSnippet={onSaveSnippet}
+                messageRole="user"
+                onEdit={onEdit}
+                onDelete={onDelete}
               />
             )}
           </>
+        ) : (
+          <p className="text-center text-xs text-muted-foreground">
+            {msg.content}
+          </p>
         )}
-        <MessageBadge messageId={msg.id} />
+        {(isAssistant || isUser) && <MessageBadge messageId={msg.id} />}
       </div>
     </div>
   );

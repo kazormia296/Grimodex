@@ -1,7 +1,7 @@
 import { invoke } from "@/lib/tauri";
 import { db } from "@/db/client";
 import { chatSessions, chatMessages, codexEntries } from "@/db/schema";
-import { eq, desc, inArray, isNull } from "drizzle-orm";
+import { eq, desc, inArray, isNull, gte, and } from "drizzle-orm";
 import type { ChatSession, ChatMessage, MessageRole } from "./chatTypes";
 import type { CodexEntry } from "@/features/codex/api";
 import {
@@ -311,6 +311,24 @@ export async function addMessage(
     .where(eq(chatSessions.id, sessionId));
 
   return toMessage(rows[0]);
+}
+
+export async function deleteMessage(messageId: string): Promise<void> {
+  await db.delete(chatMessages).where(eq(chatMessages.id, messageId));
+}
+
+export async function deleteMessagesFrom(
+  sessionId: string,
+  fromCreatedAt: string,
+): Promise<void> {
+  await db
+    .delete(chatMessages)
+    .where(
+      and(
+        eq(chatMessages.sessionId, sessionId),
+        gte(chatMessages.createdAt, fromCreatedAt),
+      ),
+    );
 }
 
 export async function updateMessageMetadata(
