@@ -77,3 +77,7 @@ export function getEditorExtensions(): Extensions {
     SlashCommandExtension,
   ];
 }
+
+export function getReadonlyEditorExtensions(): Extensions {
+  return getEditorExtensions().filter((ext) => ext.name !== "placeholder");
+}

@@ -334,6 +334,22 @@
   color: oklch(0.75 0.10 25);
 }
 
+/* Revision diff block highlighting (side-by-side, F-8) */
+.diff-block-add {
+  background-color: oklch(0.92 0.07 145 / 0.5);
+  border-radius: 3px;
+}
+.dark .diff-block-add {
+  background-color: oklch(0.28 0.09 145 / 0.6);
+}
+.diff-block-remove {
+  background-color: oklch(0.93 0.06 25 / 0.5);
+  border-radius: 3px;
+}
+.dark .diff-block-remove {
+  background-color: oklch(0.28 0.07 25 / 0.6);
+}
+
 /* Find & Replace decorations (C-7) */
 .find-match {
   background-color: oklch(0.90 0.12 85);

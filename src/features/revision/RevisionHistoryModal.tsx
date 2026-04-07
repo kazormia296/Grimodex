@@ -1,13 +1,12 @@
 import { useState, useEffect, useCallback } from "react";
 import { useEditor, EditorContent } from "@tiptap/react";
-import { diff_match_patch } from "diff-match-patch";
 import { toast } from "sonner";
 import { debugLog, errorDetail } from "@/lib/debugLog";
 import { useRevisionStore } from "./revisionStore";
 import { createRevision } from "./api";
 import { saveSceneContent } from "@/features/tree/api";
 import { useEditorStore } from "@/features/editor/editorStore";
-import { getEditorExtensions } from "@/features/editor/extensions";
+import { getReadonlyEditorExtensions } from "@/features/editor/extensions";
 import type { RevisionMeta } from "./api";
 
 // ---------------------------------------------------------------------------
@@ -24,46 +23,6 @@ function formatTimestamp(iso: string): string {
     minute: "2-digit",
     second: "2-digit",
   });
-}
-
-/** Walk a ProseMirror JSON node and collect all text. */
-function extractText(node: Record<string, unknown>): string {
-  if (node.type === "text") return (node.text as string) ?? "";
-  const children = (node.content as Record<string, unknown>[]) ?? [];
-  return children.map(extractText).join("");
-}
-
-function prosemirrorJsonToText(contentString: string): string {
-  try {
-    const json = JSON.parse(contentString) as Record<string, unknown>;
-    return extractText(json);
-  } catch {
-    return "";
-  }
-}
-
-/** Build a safe HTML string representing the diff between oldText and newText. */
-function buildDiffHtml(oldText: string, newText: string): string {
-  const dmp = new diff_match_patch();
-  const diffs = dmp.diff_main(oldText, newText);
-  dmp.diff_cleanupSemantic(diffs);
-
-  return diffs
-    .map(([op, text]) => {
-      const escaped = text
-        .replace(/&/g, "&amp;")
-        .replace(/</g, "&lt;")
-        .replace(/>/g, "&gt;")
-        .replace(/\n/g, "<br/>");
-      if (op === 1) {
-        return `<span class="diff-add">${escaped}</span>`;
-      }
-      if (op === -1) {
-        return `<span class="diff-remove">${escaped}</span>`;
-      }
-      return escaped;
-    })
-    .join("");
 }
 
 // ---------------------------------------------------------------------------
@@ -115,41 +74,149 @@ function RevisionListItem({
 }
 
 // ---------------------------------------------------------------------------
+// Block-level diff helpers
+// ---------------------------------------------------------------------------
+
+function extractNodeText(node: Record<string, unknown>): string {
+  if (node.type === "text") return (node.text as string) ?? "";
+  const children = (node.content as Record<string, unknown>[]) ?? [];
+  return children.map(extractNodeText).join("");
+}
+
+function extractTopLevelTexts(contentString: string): string[] {
+  try {
+    const json = JSON.parse(contentString) as { content?: unknown[] };
+    return (json.content ?? []).map((n) =>
+      extractNodeText(n as Record<string, unknown>),
+    );
+  } catch {
+    return [];
+  }
+}
+
+/** LCS-based block diff. Returns indices of unmatched blocks in each version. */
+function computeBlockDiff(
+  prevBlocks: string[],
+  currBlocks: string[],
+): { prevChanged: Set<number>; currChanged: Set<number> } {
+  const m = prevBlocks.length;
+  const n = currBlocks.length;
+  const dp = Array.from({ length: m + 1 }, () =>
+    new Array<number>(n + 1).fill(0),
+  );
+  for (let i = 1; i <= m; i++) {
+    for (let j = 1; j <= n; j++) {
+      dp[i][j] =
+        prevBlocks[i - 1] === currBlocks[j - 1]
+          ? dp[i - 1][j - 1] + 1
+          : Math.max(dp[i - 1][j], dp[i][j - 1]);
+    }
+  }
+  const prevMatched = new Set<number>();
+  const currMatched = new Set<number>();
+  let i = m,
+    j = n;
+  while (i > 0 && j > 0) {
+    if (prevBlocks[i - 1] === currBlocks[j - 1]) {
+      prevMatched.add(i - 1);
+      currMatched.add(j - 1);
+      i--;
+      j--;
+    } else if (dp[i - 1][j] >= dp[i][j - 1]) {
+      i--;
+    } else {
+      j--;
+    }
+  }
+  return {
+    prevChanged: new Set(
+      Array.from({ length: m }, (_, k) => k).filter((k) => !prevMatched.has(k)),
+    ),
+    currChanged: new Set(
+      Array.from({ length: n }, (_, k) => k).filter((k) => !currMatched.has(k)),
+    ),
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Preview Panel
 // ---------------------------------------------------------------------------
 
 interface PreviewPanelProps {
   content: string | null;
+  prevContent: string | null;
   isLoading: boolean;
   showDiff: boolean;
-  diffHtml: string | null;
 }
 
 function PreviewPanel({
   content,
+  prevContent,
   isLoading,
   showDiff,
-  diffHtml,
 }: PreviewPanelProps) {
-  const previewEditor = useEditor({
-    extensions: getEditorExtensions(),
+  const currentEditor = useEditor({
+    extensions: getReadonlyEditorExtensions(),
+    editable: false,
+    content: "",
+  });
+
+  const prevEditor = useEditor({
+    extensions: getReadonlyEditorExtensions(),
     editable: false,
     content: "",
   });
 
   useEffect(() => {
-    if (!previewEditor) return;
+    if (!currentEditor) return;
     if (!content) {
-      previewEditor.commands.setContent("");
+      currentEditor.commands.setContent("");
       return;
     }
     try {
-      const json = JSON.parse(content) as object;
-      previewEditor.commands.setContent(json);
+      currentEditor.commands.setContent(JSON.parse(content) as object);
     } catch {
-      previewEditor.commands.setContent(content);
+      currentEditor.commands.setContent(content);
     }
-  }, [previewEditor, content]);
+  }, [currentEditor, content]);
+
+  useEffect(() => {
+    if (!prevEditor) return;
+    if (!prevContent) {
+      prevEditor.commands.setContent("");
+      return;
+    }
+    try {
+      prevEditor.commands.setContent(JSON.parse(prevContent) as object);
+    } catch {
+      prevEditor.commands.setContent(prevContent);
+    }
+  }, [prevEditor, prevContent]);
+
+  // Apply block-level diff highlights after content is set
+  useEffect(() => {
+    if (!showDiff || !content || !prevContent || !currentEditor || !prevEditor)
+      return;
+    const prevTexts = extractTopLevelTexts(prevContent);
+    const currTexts = extractTopLevelTexts(content);
+    const { prevChanged, currChanged } = computeBlockDiff(prevTexts, currTexts);
+    // setTimeout(0) ensures ProseMirror has finished updating the DOM
+    const handle = window.setTimeout(() => {
+      Array.from(prevEditor.view.dom.children).forEach((el, idx) => {
+        (el as HTMLElement).classList.toggle(
+          "diff-block-remove",
+          prevChanged.has(idx),
+        );
+      });
+      Array.from(currentEditor.view.dom.children).forEach((el, idx) => {
+        (el as HTMLElement).classList.toggle(
+          "diff-block-add",
+          currChanged.has(idx),
+        );
+      });
+    }, 0);
+    return () => window.clearTimeout(handle);
+  }, [currentEditor, prevEditor, content, prevContent, showDiff]);
 
   if (isLoading) {
     return (
@@ -167,19 +234,45 @@ function PreviewPanel({
     );
   }
 
-  if (showDiff && diffHtml) {
+  if (showDiff && prevContent) {
     return (
-      <div
-        className="h-full overflow-auto p-4 text-sm leading-relaxed whitespace-pre-wrap break-words"
-        // diffHtml is built from escaped text only — safe to set
-        dangerouslySetInnerHTML={{ __html: diffHtml }}
-      />
+      <div className="flex h-full overflow-hidden">
+        <div className="flex flex-col flex-1 overflow-hidden border-r border-border">
+          <div className="px-3 py-1 text-xs text-muted-foreground bg-muted/30 border-b border-border flex-shrink-0">
+            前のバージョン
+          </div>
+          <div className="flex-1 overflow-auto p-4 prose prose-sm dark:prose-invert max-w-none">
+            <EditorContent editor={prevEditor} />
+          </div>
+        </div>
+        <div className="flex flex-col flex-1 overflow-hidden">
+          <div className="px-3 py-1 text-xs text-muted-foreground bg-muted/30 border-b border-border flex-shrink-0">
+            このバージョン
+          </div>
+          <div className="flex-1 overflow-auto p-4 prose prose-sm dark:prose-invert max-w-none">
+            <EditorContent editor={currentEditor} />
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (showDiff && !prevContent) {
+    return (
+      <div className="flex flex-col h-full overflow-hidden">
+        <div className="px-3 py-1.5 text-xs text-muted-foreground bg-muted/30 border-b border-border flex-shrink-0">
+          比較対象の前バージョンがありません
+        </div>
+        <div className="flex-1 overflow-auto p-4 prose prose-sm dark:prose-invert max-w-none">
+          <EditorContent editor={currentEditor} />
+        </div>
+      </div>
     );
   }
 
   return (
     <div className="h-full overflow-auto p-4 prose prose-sm dark:prose-invert max-w-none">
-      <EditorContent editor={previewEditor} />
+      <EditorContent editor={currentEditor} />
     </div>
   );
 }
@@ -256,16 +349,6 @@ export function RevisionHistoryModal() {
       cancelled = true;
     };
   }, [showDiff, selectedRevisionId, revisions]);
-
-  // ---- Diff computation ----
-  const diffHtml = (() => {
-    if (!showDiff || !selectedContent) return null;
-    const selectedText = prosemirrorJsonToText(selectedContent);
-    const prevText = prevRevisionContent
-      ? prosemirrorJsonToText(prevRevisionContent)
-      : "";
-    return buildDiffHtml(prevText, selectedText);
-  })();
 
   // ---- Restore logic ----
   const selectedRevisionMeta = revisions.find(
@@ -381,7 +464,12 @@ export function RevisionHistoryModal() {
         if (e.target === e.currentTarget) closeHistory();
       }}
     >
-      <div className="bg-background rounded-lg border border-border shadow-xl w-[900px] max-w-[95vw] h-[70vh] flex flex-col">
+      <div
+        className={[
+          "bg-background rounded-lg border border-border shadow-xl h-[70vh] flex flex-col",
+          showDiff ? "w-[1200px] max-w-[98vw]" : "w-[900px] max-w-[95vw]",
+        ].join(" ")}
+      >
         {/* Header */}
         <div className="flex items-center justify-between px-4 py-3 border-b border-border flex-shrink-0">
           <h2 className="text-base font-semibold">変更履歴</h2>
@@ -418,9 +506,9 @@ export function RevisionHistoryModal() {
                 content={
                   isCurrentVersionSelected ? currentContent : selectedContent
                 }
+                prevContent={prevRevisionContent}
                 isLoading={isLoadingContent}
                 showDiff={showDiff}
-                diffHtml={diffHtml}
               />
             </div>
           </div>

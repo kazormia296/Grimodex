@@ -3,6 +3,7 @@ import type { Editor } from "@tiptap/react";
 import { cn } from "@/lib/utils";
 import { useAttributionStore } from "@/features/attribution/attributionStore";
 import { useCursorSettingsStore } from "@/features/editor/cursorSettingsStore";
+import { useSettingNumber } from "@/features/settings/useSettingControl";
 
 function ToolbarButton({
   active,
@@ -60,8 +61,11 @@ export function Toolbar({
   const [linkOpen, setLinkOpen] = useState(false);
   const [linkUrl, setLinkUrl] = useState("");
   const [overflowOpen, setOverflowOpen] = useState(false);
+  const [fontSizeOpen, setFontSizeOpen] = useState(false);
   const overflowBtnRef = useRef<HTMLDivElement>(null);
   const overflowDropdownRef = useRef<HTMLDivElement>(null);
+  const fontSizeBtnRef = useRef<HTMLDivElement>(null);
+  const fontSizeDropdownRef = useRef<HTMLDivElement>(null);
   const rightGroupRef = useRef<HTMLDivElement>(null);
   const [rightGroupWidth, setRightGroupWidth] = useState(0);
 
@@ -73,6 +77,11 @@ export function Toolbar({
   const unit4Ref = useRef<HTMLDivElement>(null); // Sep + G4: Ruby Link * * *
   const unitWidths = useRef<number[]>([]);
   const [visibleUnitCount, setVisibleUnitCount] = useState(4);
+
+  const { value: fontSize, setValue: setFontSize } = useSettingNumber(
+    "editor.fontSize",
+    18,
+  );
 
   const { showAttribution, toggleAttribution } = useAttributionStore();
   const {
@@ -176,6 +185,20 @@ export function Toolbar({
     document.addEventListener("mousedown", close);
     return () => document.removeEventListener("mousedown", close);
   }, [overflowOpen]);
+
+  useEffect(() => {
+    if (!fontSizeOpen) return;
+    function close(e: MouseEvent) {
+      const target = e.target as Node;
+      if (
+        !fontSizeBtnRef.current?.contains(target) &&
+        !fontSizeDropdownRef.current?.contains(target)
+      )
+        setFontSizeOpen(false);
+    }
+    document.addEventListener("mousedown", close);
+    return () => document.removeEventListener("mousedown", close);
+  }, [fontSizeOpen]);
 
   if (!editor) return null;
 
@@ -374,6 +397,15 @@ export function Toolbar({
           ref={rightGroupRef}
           className="absolute inset-y-0 right-0 flex items-center gap-0.5 border-l border-border bg-background px-1.5"
         >
+          <div ref={fontSizeBtnRef}>
+            <ToolbarButton
+              label="文字サイズ"
+              active={fontSizeOpen}
+              onClick={() => setFontSizeOpen((v) => !v)}
+            >
+              Aa
+            </ToolbarButton>
+          </div>
           <ToolbarButton
             label="帰属表示"
             active={showAttribution}
@@ -415,6 +447,29 @@ export function Toolbar({
           </div>
         </div>
       </div>
+
+      {/* 文字サイズポップオーバー */}
+      {fontSizeOpen && (
+        <div
+          ref={fontSizeDropdownRef}
+          className="absolute right-0 top-full z-50 mt-1 rounded border border-border bg-background p-3 shadow-md"
+        >
+          <div className="flex items-center gap-2">
+            <span className="min-w-[2.5rem] text-xs text-muted-foreground">
+              {fontSize}px
+            </span>
+            <input
+              type="range"
+              min={14}
+              max={24}
+              step={1}
+              value={fontSize}
+              onChange={(e) => setFontSize(Number(e.target.value))}
+              className="w-28"
+            />
+          </div>
+        </div>
+      )}
 
       {/* Ruby入力ポップオーバー — outside overflow-hidden wrapper */}
       {rubyOpen && (
