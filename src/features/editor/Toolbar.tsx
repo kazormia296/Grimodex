@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect, useLayoutEffect } from "react";
+import { createPortal } from "react-dom";
 import type { Editor } from "@tiptap/react";
 import { cn } from "@/lib/utils";
 import { useAttributionStore } from "@/features/attribution/attributionStore";
@@ -58,8 +59,10 @@ export function Toolbar({
   const [rubyOpen, setRubyOpen] = useState(false);
   const [rubyBase, setRubyBase] = useState("");
   const [rubyAnnotation, setRubyAnnotation] = useState("");
+  const [rubyPos, setRubyPos] = useState<{ x: number; y: number } | null>(null);
   const [linkOpen, setLinkOpen] = useState(false);
   const [linkUrl, setLinkUrl] = useState("");
+  const [linkPos, setLinkPos] = useState<{ x: number; y: number } | null>(null);
   const [overflowOpen, setOverflowOpen] = useState(false);
   const [fontSizeOpen, setFontSizeOpen] = useState(false);
   const overflowBtnRef = useRef<HTMLDivElement>(null);
@@ -202,6 +205,16 @@ export function Toolbar({
 
   if (!editor) return null;
 
+  function getSelectionCoords(): { x: number; y: number } | null {
+    if (!editor) return null;
+    const { from } = editor.state.selection;
+    const coords = editor.view.coordsAtPos(from);
+    const GAP = 6;
+    const x = Math.min(coords.left, window.innerWidth - 320);
+    const y = coords.bottom + GAP;
+    return { x, y };
+  }
+
   function openRuby() {
     if (!editor) return;
     if (editor.isActive("ruby")) {
@@ -213,6 +226,7 @@ export function Toolbar({
       setRubyBase(editor.state.doc.textBetween(from, to));
       setRubyAnnotation("");
     }
+    setRubyPos(getSelectionCoords());
     setRubyOpen(true);
     setLinkOpen(false);
   }
@@ -226,6 +240,7 @@ export function Toolbar({
   function openLink() {
     if (!editor) return;
     setLinkUrl((editor.getAttributes("link").href as string) ?? "");
+    setLinkPos(getSelectionCoords());
     setLinkOpen(true);
     setRubyOpen(false);
   }
@@ -471,77 +486,6 @@ export function Toolbar({
         </div>
       )}
 
-      {/* Ruby入力ポップオーバー — outside overflow-hidden wrapper */}
-      {rubyOpen && (
-        <div className="absolute left-0 top-full z-50 mt-1 flex items-center gap-1.5 rounded border border-border bg-background p-2 shadow-md">
-          <input
-            autoFocus
-            type="text"
-            placeholder="ベース"
-            value={rubyBase}
-            onChange={(e) => setRubyBase(e.target.value)}
-            className="w-20 rounded border border-border bg-background px-1.5 py-0.5 text-xs focus:outline-none"
-          />
-          <input
-            type="text"
-            placeholder="ふりがな"
-            value={rubyAnnotation}
-            onChange={(e) => setRubyAnnotation(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter") applyRuby();
-              if (e.key === "Escape") setRubyOpen(false);
-            }}
-            className="w-24 rounded border border-border bg-background px-1.5 py-0.5 text-xs focus:outline-none"
-          />
-          <button
-            type="button"
-            onClick={applyRuby}
-            className="rounded bg-primary px-2 py-0.5 text-xs text-primary-foreground"
-          >
-            OK
-          </button>
-          <button
-            type="button"
-            onClick={() => setRubyOpen(false)}
-            className="rounded px-1.5 py-0.5 text-xs text-muted-foreground hover:text-foreground"
-          >
-            ✕
-          </button>
-        </div>
-      )}
-
-      {/* Link入力ポップオーバー */}
-      {linkOpen && (
-        <div className="absolute left-0 top-full z-50 mt-1 flex items-center gap-1.5 rounded border border-border bg-background p-2 shadow-md">
-          <input
-            autoFocus
-            type="url"
-            placeholder="https://..."
-            value={linkUrl}
-            onChange={(e) => setLinkUrl(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter") applyLink();
-              if (e.key === "Escape") setLinkOpen(false);
-            }}
-            className="w-56 rounded border border-border bg-background px-1.5 py-0.5 text-xs focus:outline-none"
-          />
-          <button
-            type="button"
-            onClick={applyLink}
-            className="rounded bg-primary px-2 py-0.5 text-xs text-primary-foreground"
-          >
-            OK
-          </button>
-          <button
-            type="button"
-            onClick={() => setLinkOpen(false)}
-            className="rounded px-1.5 py-0.5 text-xs text-muted-foreground hover:text-foreground"
-          >
-            ✕
-          </button>
-        </div>
-      )}
-
       {/* オーバーフロードロップダウン */}
       {overflowOpen && (
         <div
@@ -659,6 +603,95 @@ export function Toolbar({
           <OverflowItem label="行番号を表示" disabled />
         </div>
       )}
+
+      {/* Ruby入力ダイアログ — 選択テキスト位置に表示 */}
+      {rubyOpen &&
+        rubyPos &&
+        createPortal(
+          <div
+            className="fixed z-50 flex items-center gap-1.5 rounded border border-border bg-background p-2 shadow-md"
+            style={{ left: rubyPos.x, top: rubyPos.y }}
+            onMouseDown={(e) => e.stopPropagation()}
+          >
+            <input
+              autoFocus
+              type="text"
+              placeholder="ベース"
+              value={rubyBase}
+              onChange={(e) => setRubyBase(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") applyRuby();
+                if (e.key === "Escape") setRubyOpen(false);
+              }}
+              className="w-20 rounded border border-border bg-background px-1.5 py-0.5 text-xs focus:outline-none"
+            />
+            <input
+              type="text"
+              placeholder="ふりがな"
+              value={rubyAnnotation}
+              onChange={(e) => setRubyAnnotation(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") applyRuby();
+                if (e.key === "Escape") setRubyOpen(false);
+              }}
+              className="w-24 rounded border border-border bg-background px-1.5 py-0.5 text-xs focus:outline-none"
+            />
+            <button
+              type="button"
+              onClick={applyRuby}
+              className="rounded bg-primary px-2 py-0.5 text-xs text-primary-foreground"
+            >
+              OK
+            </button>
+            <button
+              type="button"
+              onClick={() => setRubyOpen(false)}
+              className="rounded px-1.5 py-0.5 text-xs text-muted-foreground hover:text-foreground"
+            >
+              ✕
+            </button>
+          </div>,
+          document.body,
+        )}
+
+      {/* Link入力ダイアログ — 選択テキスト位置に表示 */}
+      {linkOpen &&
+        linkPos &&
+        createPortal(
+          <div
+            className="fixed z-50 flex items-center gap-1.5 rounded border border-border bg-background p-2 shadow-md"
+            style={{ left: linkPos.x, top: linkPos.y }}
+            onMouseDown={(e) => e.stopPropagation()}
+          >
+            <input
+              autoFocus
+              type="url"
+              placeholder="https://..."
+              value={linkUrl}
+              onChange={(e) => setLinkUrl(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") applyLink();
+                if (e.key === "Escape") setLinkOpen(false);
+              }}
+              className="w-56 rounded border border-border bg-background px-1.5 py-0.5 text-xs focus:outline-none"
+            />
+            <button
+              type="button"
+              onClick={applyLink}
+              className="rounded bg-primary px-2 py-0.5 text-xs text-primary-foreground"
+            >
+              OK
+            </button>
+            <button
+              type="button"
+              onClick={() => setLinkOpen(false)}
+              className="rounded px-1.5 py-0.5 text-xs text-muted-foreground hover:text-foreground"
+            >
+              ✕
+            </button>
+          </div>,
+          document.body,
+        )}
     </div>
   );
 }
