@@ -228,6 +228,7 @@ export async function addMessage(
   role: MessageRole,
   content: string,
   extra?: {
+    id?: string;
     model?: string;
     tokensIn?: number;
     tokensOut?: number;
@@ -235,7 +236,7 @@ export async function addMessage(
     metadata?: string;
   },
 ): Promise<ChatMessage> {
-  const id = crypto.randomUUID();
+  const id = extra?.id ?? crypto.randomUUID();
   const now = new Date().toISOString();
   const rows = await db
     .insert(chatMessages)

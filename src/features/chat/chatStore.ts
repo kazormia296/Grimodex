@@ -387,7 +387,9 @@ export const useChatStore = create<ChatState>()((set, get) => ({
 
         // Persist
         if (activeSessionId) {
-          await chatApi.addMessage(activeSessionId, "user", content);
+          await chatApi.addMessage(activeSessionId, "user", content, {
+            id: userMsg.id,
+          });
           const finalMessages = get().messages;
           const lastMsg = finalMessages[finalMessages.length - 1];
           if (lastMsg?.role === "assistant" && lastMsg.content) {
@@ -396,6 +398,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
               "assistant",
               lastMsg.content,
               {
+                id: assistantMsg.id,
                 metadata: JSON.stringify({
                   tool_calls: toolCallRecords,
                   ...(finalThinkingBlocks.length > 0
@@ -553,13 +556,18 @@ export const useChatStore = create<ChatState>()((set, get) => ({
       if (activeSessionId) {
         const finalMessages = get().messages;
         const lastMsg = finalMessages[finalMessages.length - 1];
-        await chatApi.addMessage(activeSessionId, "user", content);
+        await chatApi.addMessage(activeSessionId, "user", content, {
+          id: userMsg.id,
+        });
         if (lastMsg && lastMsg.role === "assistant" && lastMsg.content) {
           await chatApi.addMessage(
             activeSessionId,
             "assistant",
             lastMsg.content,
-            ...(chatMetadata ? [{ metadata: chatMetadata }] : []),
+            {
+              id: assistantMsg.id,
+              ...(chatMetadata ? { metadata: chatMetadata } : {}),
+            },
           );
         }
       }
