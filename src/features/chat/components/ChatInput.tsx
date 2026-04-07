@@ -1,25 +1,35 @@
-import { useRef, useEffect, useState } from "react";
-import type { KeyboardEvent } from "react";
+import { useRef, useEffect, useState, useCallback } from "react";
+import type { MutableRefObject } from "react";
 import { Send, Square, Wrench, ChevronDown } from "lucide-react";
+import { useEditor, EditorContent } from "@tiptap/react";
+import type { Editor } from "@tiptap/core";
 import { useAiSettingsStore } from "../store";
 import { useChatStore } from "../chatStore";
 import { getModelCapabilities } from "../agent/modelLimits";
+import { getChatInputExtensions } from "../extensions/chatInputExtensions";
+import { useCodexHighlight } from "@/features/editor/useCodexHighlight";
+import type { MentionPopupState } from "../extensions/ChatMentionExtension";
+import type { CommandPopupState } from "../extensions/ChatSlashCommandExtension";
+import { MentionPopup } from "./MentionPopup";
+import { ChatCommandPopup } from "./ChatCommandPopup";
+import type { CodexEntry } from "@/features/codex/api";
 
 interface ChatInputProps {
-  value: string;
-  onChange: (value: string) => void;
-  onSend: () => void;
+  onSend: (markdown: string) => void;
   disabled?: boolean;
+  editorRef?: MutableRefObject<Editor | null>;
+  isGlobalChat?: boolean;
+  onMentionPin?: (entryId: string) => void;
 }
 
 export function ChatInput({
-  value,
-  onChange,
   onSend,
   disabled,
+  editorRef,
+  isGlobalChat = false,
+  onMentionPin,
 }: ChatInputProps) {
   const isStreaming = disabled ?? false;
-  const canSend = value.trim().length > 0 && !isStreaming;
 
   const stopGeneration = useChatStore((s) => s.stopGeneration);
   const agentMode = useChatStore((s) => s.agentMode);
@@ -38,7 +48,72 @@ export function ChatInput({
   const optionsRef = useRef<HTMLDivElement>(null);
   const modelRef = useRef<HTMLDivElement>(null);
 
-  // close popovers on outside click
+  // ポップアップ状態
+  const [mentionPopup, setMentionPopup] = useState<MentionPopupState | null>(
+    null,
+  );
+  const [mentionIndex, setMentionIndex] = useState(0);
+  const [commandPopup, setCommandPopup] = useState<CommandPopupState | null>(
+    null,
+  );
+  const [commandIndex, setCommandIndex] = useState(0);
+
+  const placeholder = isStreaming
+    ? "生成中…"
+    : isGlobalChat
+      ? "Ask about this project..."
+      : "Ask about this scene...";
+
+  const handleSubmit = useCallback(
+    (markdown: string) => {
+      if (isStreaming) return;
+      onSend(markdown);
+    },
+    [isStreaming, onSend],
+  );
+
+  const handleStop = () => {
+    stopGeneration();
+  };
+
+  const editor = useEditor({
+    extensions: getChatInputExtensions({
+      placeholder,
+      onSubmit: handleSubmit,
+      onStop: handleStop,
+      setMentionPopup: (state) => {
+        setMentionPopup(state);
+        setMentionIndex(0);
+      },
+      setCommandPopup: (state) => {
+        setCommandPopup(state);
+        setCommandIndex(0);
+      },
+    }),
+    editorProps: {
+      attributes: {
+        role: "textbox",
+        "aria-multiline": "true",
+        class: "chat-input-prosemirror",
+      },
+    },
+  });
+
+  // editorRef を親に公開
+  useEffect(() => {
+    if (editorRef) editorRef.current = editor;
+  }, [editor, editorRef]);
+
+  // Codexハイライト有効化
+  useCodexHighlight(editor);
+
+  // ストリーミング中は編集不可
+  useEffect(() => {
+    if (!editor) return;
+    editor.setEditable(!isStreaming);
+  }, [editor, isStreaming]);
+
+  // 外部クリックでポップオーバーを閉じる
   useEffect(() => {
     function onOutside(e: MouseEvent) {
       if (optionsRef.current && !optionsRef.current.contains(e.target as Node))
@@ -49,16 +124,6 @@ export function ChatInput({
     document.addEventListener("mousedown", onOutside);
     return () => document.removeEventListener("mousedown", onOutside);
   }, []);
-
-  const handleKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
-    if (e.key === "Enter" && !e.shiftKey) {
-      e.preventDefault();
-      if (canSend) onSend();
-    }
-    if (e.key === "Escape" && isStreaming) {
-      stopGeneration();
-    }
-  };
 
   const modelLabel = (() => {
     if (!currentModel) return "モデル未設定";
@@ -85,23 +150,70 @@ export function ChatInput({
     });
   };
 
+  // @メンション選択: エントリ挿入 + 自動ピン
+  const handleMentionSelect = useCallback(
+    (entry: CodexEntry) => {
+      mentionPopup?.command?.(entry);
+      setMentionPopup(null);
+      onMentionPin?.(entry.id);
+    },
+    [mentionPopup, onMentionPin],
+  );
+
+  // /コマンド選択
+  const handleCommandSelect = useCallback(
+    (cmd: import("../extensions/chatCommands").ChatCommand) => {
+      commandPopup?.command?.(cmd);
+      setCommandPopup(null);
+    },
+    [commandPopup],
+  );
+
+  const handleSendClick = () => {
+    if (!editor || isStreaming) return;
+    const text = editor.getText().trim();
+    if (!text) return;
+    const markdownStorage = editor.storage as unknown as Record<
+      string,
+      { getMarkdown?: () => string } | undefined
+    >;
+    const markdown: string = markdownStorage.markdown?.getMarkdown?.() ?? text;
+    onSend(markdown);
+    editor.commands.clearContent();
+  };
+
   const canUseTools = caps.supportsTools;
   const canThink = caps.supportsThinking || caps.supportsAdaptiveThinking;
 
   return (
     <div className="border-t border-border p-3">
-      {/* テキスト入力エリア */}
-      <div className="flex gap-2">
-        <textarea
-          value={value}
-          onChange={(e) => onChange(e.target.value)}
-          onKeyDown={handleKeyDown}
-          placeholder={isStreaming ? "生成中…" : "メッセージを入力…"}
-          rows={1}
-          disabled={isStreaming}
-          className="flex-1 resize-none rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-ring disabled:opacity-50"
-          role="textbox"
+      {/* @メンション補完ポップアップ */}
+      {mentionPopup && (
+        <MentionPopup
+          items={mentionPopup.items}
+          selectedIndex={mentionIndex}
+          onSelect={handleMentionSelect}
+          onChangeIndex={setMentionIndex}
+          clientRect={mentionPopup.clientRect}
         />
+      )}
+
+      {/* /コマンド補完ポップアップ */}
+      {commandPopup && (
+        <ChatCommandPopup
+          items={commandPopup.items}
+          selectedIndex={commandIndex}
+          onSelect={handleCommandSelect}
+          onChangeIndex={setCommandIndex}
+          clientRect={commandPopup.clientRect}
+        />
+      )}
+
+      {/* TipTap エディタ入力エリア */}
+      <div className="flex gap-2">
+        <div className="chat-input-editor flex-1 rounded-md border border-input bg-background text-sm focus-within:ring-1 focus-within:ring-ring">
+          <EditorContent editor={editor} />
+        </div>
 
         {/* Send / Stop ボタン */}
         {isStreaming ? (
@@ -117,8 +229,8 @@ export function ChatInput({
         ) : (
           <button
             type="button"
-            onClick={onSend}
-            disabled={!canSend}
+            onClick={handleSendClick}
+            disabled={!editor || editor.getText().trim().length === 0}
             aria-label="送信"
             className="inline-flex items-center justify-center rounded-md bg-primary px-3 py-2 text-primary-foreground hover:bg-primary/90 disabled:pointer-events-none disabled:opacity-50"
           >

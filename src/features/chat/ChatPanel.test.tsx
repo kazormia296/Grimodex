@@ -6,6 +6,63 @@ import { ChatPanel } from "./ChatPanel";
 import { useChatStore } from "./chatStore";
 import { useEditorStore } from "@/features/editor/editorStore";
 
+// ChatInput を軽量なtextareaモックで置換（TipTapはhappy-domで動作不安定なため）
+vi.mock("./components/ChatInput", async () => {
+  const { useState } = await import("react");
+  return {
+    ChatInput: vi.fn(
+      ({
+        onSend,
+        disabled,
+      }: {
+        onSend: (markdown: string) => void;
+        disabled?: boolean;
+      }) => {
+        const [val, setVal] = useState("");
+        const isStreaming = disabled ?? false;
+        return (
+          <div>
+            <textarea
+              role="textbox"
+              value={val}
+              disabled={isStreaming}
+              onChange={(e) => setVal(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && !e.shiftKey) {
+                  e.preventDefault();
+                  if (val.trim() && !isStreaming) {
+                    onSend(val);
+                    setVal("");
+                  }
+                }
+              }}
+            />
+            {isStreaming ? (
+              <button type="button" aria-label="生成中断" onClick={() => {}}>
+                ■
+              </button>
+            ) : (
+              <button
+                type="button"
+                aria-label="送信"
+                disabled={!val.trim()}
+                onClick={() => {
+                  if (val.trim()) {
+                    onSend(val);
+                    setVal("");
+                  }
+                }}
+              >
+                →
+              </button>
+            )}
+          </div>
+        );
+      },
+    ),
+  };
+});
+
 vi.mock("./chatApi", () => ({
   sendChatMessage: vi.fn(),
   listSessions: vi.fn(() => Promise.resolve([])),

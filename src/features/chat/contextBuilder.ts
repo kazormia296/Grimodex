@@ -35,6 +35,8 @@ export interface BuildSystemPromptInput {
   storySoFar?: string;
   codexEntries?: CodexContext[];
   pinnedCodexEntries?: PinnedCodexContext[];
+  /** L6: /command で注入されるインストラクション（一回限り） */
+  commandInstruction?: string;
 }
 
 export interface LayerBreakdown {
@@ -151,7 +153,19 @@ export function buildSystemPrompt(
     used: countTokens(l4Text),
   });
 
-  const prompt = [baseText, l1Text, l2Text, l3Text, l4Text].join("\n");
+  // L6: Command instruction（一回限りのコマンド注入）
+  const l6Text = input.commandInstruction
+    ? `\n## 指示\n${input.commandInstruction}`
+    : "";
+  if (l6Text) {
+    layers.push({
+      layer: "L6",
+      label: "コマンド指示",
+      used: countTokens(l6Text),
+    });
+  }
+
+  const prompt = [baseText, l1Text, l2Text, l3Text, l4Text, l6Text].join("\n");
   const totalTokens = countTokens(prompt);
 
   return { prompt, totalTokens, layers };

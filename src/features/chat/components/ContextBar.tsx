@@ -11,6 +11,10 @@ import {
   getModelCapabilities,
   formatContextWindow,
 } from "../agent/modelLimits";
+import { getTypeLabel } from "../utils/typeLabels";
+import { ContextPillGroup } from "./ContextPillGroup";
+
+const GROUP_THRESHOLD = 6;
 
 interface ContextBarProps {
   pinnedEntries: CodexEntry[];
@@ -38,6 +42,28 @@ export function ContextBar({
   const [collapsed, setCollapsed] = useState(false);
   const [previewOpen, setPreviewOpen] = useState(false);
   const [creatorOpen, setCreatorOpen] = useState(false);
+  const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set());
+
+  const useGrouping = pinnedEntries.length > GROUP_THRESHOLD;
+
+  // type別グループマップ
+  const groupMap = new Map<string, CodexEntry[]>();
+  if (useGrouping) {
+    for (const entry of pinnedEntries) {
+      const group = groupMap.get(entry.type) ?? [];
+      group.push(entry);
+      groupMap.set(entry.type, group);
+    }
+  }
+
+  function toggleGroup(type: string) {
+    setExpandedGroups((prev) => {
+      const next = new Set(prev);
+      if (next.has(type)) next.delete(type);
+      else next.add(type);
+      return next;
+    });
+  }
 
   const pinnedIds = pinnedEntries.map((e) => e.id);
 
@@ -123,22 +149,35 @@ export function ContextBar({
               </span>
             )}
             {/* ピン留め Codex エントリ */}
-            {pinnedEntries.map((entry) => (
-              <span
-                key={entry.id}
-                className="inline-flex items-center gap-1 rounded-full bg-accent px-2 py-0.5 text-xs"
-              >
-                {entry.name}
-                <button
-                  type="button"
-                  onClick={() => onUnpin(entry.id)}
-                  className="hover:text-destructive"
-                  aria-label={`${entry.name}のピン留め解除`}
-                >
-                  <X className="h-3 w-3" />
-                </button>
-              </span>
-            ))}
+            {useGrouping
+              ? Array.from(groupMap.entries()).map(([type, groupEntries]) => (
+                  <ContextPillGroup
+                    key={type}
+                    type={type}
+                    label={getTypeLabel(type)}
+                    count={groupEntries.length}
+                    expanded={expandedGroups.has(type)}
+                    onToggle={() => toggleGroup(type)}
+                    entries={groupEntries}
+                    onUnpin={onUnpin}
+                  />
+                ))
+              : pinnedEntries.map((entry) => (
+                  <span
+                    key={entry.id}
+                    className="inline-flex items-center gap-1 rounded-full bg-accent px-2 py-0.5 text-xs"
+                  >
+                    {entry.name}
+                    <button
+                      type="button"
+                      onClick={() => onUnpin(entry.id)}
+                      className="hover:text-destructive"
+                      aria-label={`${entry.name}のピン留め解除`}
+                    >
+                      <X className="h-3 w-3" />
+                    </button>
+                  </span>
+                ))}
             {/* ピン留めボタン */}
             <button
               type="button"

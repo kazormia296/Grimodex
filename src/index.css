@@ -350,3 +350,19 @@
 .dark .find-current {
   background-color: oklch(0.55 0.18 60);
 }
+
+/* Chat input TipTap editor */
+.chat-input-editor .chat-input-prosemirror {
+  max-height: 7.5rem;
+  overflow-y: auto;
+  outline: none;
+  padding: 0.5rem 0.75rem;
+  font-size: 0.875rem;
+}
+.chat-input-editor .chat-input-prosemirror p.is-editor-empty:first-child::before {
+  content: attr(data-placeholder);
+  color: hsl(var(--muted-foreground));
+  pointer-events: none;
+  float: left;
+  height: 0;
+}

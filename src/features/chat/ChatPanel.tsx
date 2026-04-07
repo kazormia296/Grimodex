@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect, useCallback } from "react";
+import type { Editor } from "@tiptap/core";
 import { useChatStore } from "./chatStore";
 import { useSceneStore } from "@/features/tree/store";
 import { useEditorStore } from "@/features/editor/editorStore";
@@ -67,7 +68,7 @@ export function ChatPanel() {
   }, [loadAiSettings]);
 
   const [sessionsPanelOpen, setSessionsPanelOpen] = useState(false);
-  const [input, setInput] = useState("");
+  const chatEditorRef = useRef<Editor | null>(null);
 
   // ツリーのシーン変更を chatStore に伝播
   useEffect(() => {
@@ -217,7 +218,10 @@ export function ChatPanel() {
   const handleEditMessage = useCallback(
     (messageId: string) => {
       const content = editUserMessage(messageId);
-      if (content) setInput(content);
+      if (content && chatEditorRef.current) {
+        chatEditorRef.current.commands.setContent(content);
+        chatEditorRef.current.commands.focus("end");
+      }
     },
     [editUserMessage],
   );
@@ -236,12 +240,14 @@ export function ChatPanel() {
     [regenerate],
   );
 
-  const handleSend = () => {
-    const trimmed = input.trim();
-    if (!trimmed || isStreaming) return;
-    setInput("");
-    sendMessage(trimmed);
-  };
+  const handleSend = useCallback(
+    (markdown: string) => {
+      const trimmed = markdown.trim();
+      if (!trimmed || isStreaming) return;
+      sendMessage(trimmed);
+    },
+    [isStreaming, sendMessage],
+  );
 
   const handleToggleGlobalChat = useCallback(() => {
     setIsGlobalChat(!isGlobalChat);
@@ -339,10 +345,11 @@ export function ChatPanel() {
       )}
 
       <ChatInput
-        value={input}
-        onChange={setInput}
         onSend={handleSend}
         disabled={isStreaming}
+        editorRef={chatEditorRef}
+        isGlobalChat={isGlobalChat}
+        onMentionPin={handlePin}
       />
 
       <CodexExtractionDialog

@@ -3,13 +3,7 @@ import { useVirtualizer } from "@tanstack/react-virtual";
 import { useCodexStore } from "@/features/codex/codexStore";
 import { getChildrenFromArray } from "@/features/codex/childrenBudget";
 import type { CodexEntry } from "@/features/codex/api";
-
-const typeLabels: Record<string, string> = {
-  character: "キャラクター",
-  location: "場所",
-  item: "アイテム",
-  lore: "設定",
-};
+import { getTypeLabel } from "../utils/typeLabels";
 
 function PinCodexVirtualList({
   entries,
@@ -74,7 +68,7 @@ function PinCodexVirtualList({
                 />
                 <span>{entry.name}</span>
                 <span className="ml-auto text-xs text-muted-foreground">
-                  {typeLabels[entry.type] ?? entry.type}
+                  {getTypeLabel(entry.type)}
                 </span>
               </label>
               {isPinned && hasChildren && (

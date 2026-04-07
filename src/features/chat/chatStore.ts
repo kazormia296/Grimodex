@@ -116,7 +116,7 @@ interface ChatState {
   setIsGlobalChat: (on: boolean) => void;
 
   // Existing actions
-  sendMessage: (content: string) => Promise<void>;
+  sendMessage: (content: string, commandInstruction?: string) => Promise<void>;
   stopGeneration: () => void;
   deleteMessage: (messageId: string) => Promise<void>;
   editUserMessage: (messageId: string) => string;
@@ -257,7 +257,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
 
   // --- Streaming chat ---
 
-  sendMessage: async (content: string) => {
+  sendMessage: async (content: string, commandInstruction?: string) => {
     const {
       isStreaming,
       activeSceneId,
@@ -551,6 +551,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
           storySoFar: storySoFar || undefined,
           codexEntries,
           pinnedCodexEntries,
+          commandInstruction,
         });
 
         set({
