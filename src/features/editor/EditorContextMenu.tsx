@@ -1,14 +1,12 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { createPortal } from "react-dom";
 import type { Editor } from "@tiptap/react";
-import { nanoid } from "nanoid";
-import { createCodexEntry, BUILTIN_CODEX_TYPES } from "@/features/codex/api";
-import { createSnippet } from "@/features/snippets/api";
+import { BUILTIN_CODEX_TYPES } from "@/features/codex/api";
+import { useCodexStore } from "@/features/codex/codexStore";
+import { useSnippetStore } from "@/features/snippets/snippetStore";
 import { useSceneStore } from "@/features/tree/store";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
-
-const PROJECT_ID = "default-project";
 
 type MenuMode = "root" | "codex" | "snippet";
 
@@ -41,6 +39,8 @@ export function EditorContextMenu({
   const menuRef = useRef<HTMLDivElement>(null);
 
   const activeSceneId = useSceneStore((s) => s.activeSceneId);
+  const codexCreate = useCodexStore((s) => s.create);
+  const snippetCreate = useSnippetStore((s) => s.create);
 
   const close = useCallback(() => {
     setPos(null);
@@ -104,9 +104,7 @@ export function EditorContextMenu({
     if (!codexName.trim()) return;
     setSaving(true);
     try {
-      await createCodexEntry({
-        id: nanoid(),
-        projectId: PROJECT_ID,
+      await codexCreate({
         type: codexType,
         name: codexName.trim(),
         summary: selectedText,
@@ -114,7 +112,6 @@ export function EditorContextMenu({
       toast.success(`「${codexName.trim()}」をCodexに追加しました`);
       close();
     } catch {
-      toast.error("Codexへの追加に失敗しました");
       setSaving(false);
     }
   };
@@ -123,9 +120,7 @@ export function EditorContextMenu({
     if (!snippetTitle.trim()) return;
     setSaving(true);
     try {
-      await createSnippet({
-        id: nanoid(),
-        projectId: PROJECT_ID,
+      await snippetCreate({
         title: snippetTitle.trim(),
         content: selectedText,
         sceneId: activeSceneId || undefined,
@@ -134,7 +129,6 @@ export function EditorContextMenu({
       toast.success(`スニペット「${snippetTitle.trim()}」を保存しました`);
       close();
     } catch {
-      toast.error("スニペットの保存に失敗しました");
       setSaving(false);
     }
   };
