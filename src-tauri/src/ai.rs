@@ -520,6 +520,8 @@ pub enum ThinkingConfig {
 pub struct ChatResponse {
     pub blocks: Vec<ResponseBlock>,
     pub stop_reason: String,
+    pub input_tokens: Option<u64>,
+    pub output_tokens: Option<u64>,
 }
 
 fn parse_anthropic_response(result: &serde_json::Value) -> anyhow::Result<ChatResponse> {
@@ -559,9 +561,14 @@ fn parse_anthropic_response(result: &serde_json::Value) -> anyhow::Result<ChatRe
         }
     }
 
+    let input_tokens = result["usage"]["input_tokens"].as_u64();
+    let output_tokens = result["usage"]["output_tokens"].as_u64();
+
     Ok(ChatResponse {
         blocks,
         stop_reason,
+        input_tokens,
+        output_tokens,
     })
 }
 
@@ -597,9 +604,14 @@ fn parse_openai_response(result: &serde_json::Value) -> anyhow::Result<ChatRespo
         }
     }
 
+    let input_tokens = result["usage"]["prompt_tokens"].as_u64();
+    let output_tokens = result["usage"]["completion_tokens"].as_u64();
+
     Ok(ChatResponse {
         blocks,
         stop_reason,
+        input_tokens,
+        output_tokens,
     })
 }
 

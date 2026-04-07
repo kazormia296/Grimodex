@@ -23,6 +23,8 @@ interface ChatResponsePayload {
       }
   >;
   stopReason: string;
+  inputTokens?: number;
+  outputTokens?: number;
 }
 
 export async function sendChatMessage(
@@ -76,6 +78,7 @@ import type {
   AgentToolDefinition,
 } from "./agent/agentTypes";
 import type { ThinkingParams } from "./agent/modelLimits";
+import { buildThinkingParams, getEffortForTask } from "./agent/modelLimits";
 
 /** Send a tool-aware agent message and return a structured response. */
 export async function sendAgentMessage(
@@ -98,6 +101,8 @@ export interface ChatMessageResult {
     summary?: string;
     signature?: string;
   }>;
+  inputTokens?: number;
+  outputTokens?: number;
 }
 
 /** Send a simple (non-tool) chat message with optional thinking params. */
@@ -129,7 +134,53 @@ export async function sendChatMessageWithThinking(
         signature: tb.signature,
       };
     });
-  return { text, thinkingBlocks };
+  return {
+    text,
+    thinkingBlocks,
+    inputTokens: response.inputTokens,
+    outputTokens: response.outputTokens,
+  };
+}
+
+/**
+ * セッションタイトルを軽量モデルで自動生成する (P1-2)
+ * Returns the generated title, or null if generation failed.
+ */
+export async function generateSessionTitle(
+  userMessage: string,
+  assistantReply: string,
+  model: string,
+): Promise<string | null> {
+  try {
+    const thinkingParams = buildThinkingParams(
+      model,
+      getEffortForTask("session_title"),
+      "omitted",
+    );
+    const messages = [
+      {
+        role: "user",
+        content:
+          `以下のチャットのやり取りに、3〜6語の短いタイトルを付けてください。\n` +
+          `タイトルのみを出力してください。\n\n` +
+          `ユーザー: ${userMessage.slice(0, 500)}\n\n` +
+          `AI: ${assistantReply.slice(0, 500)}`,
+      },
+    ];
+    const response = await invoke<ChatResponsePayload>("send_chat_message", {
+      messages,
+      thinking: thinkingParams.thinking ?? null,
+      effort: thinkingParams.effort ?? null,
+    });
+    const title = response.blocks
+      .filter((b) => b.type === "text")
+      .map((b) => (b as { type: "text"; content: string }).content)
+      .join("")
+      .trim();
+    return title || null;
+  } catch {
+    return null;
+  }
 }
 
 // --- Session/message persistence ---
@@ -262,6 +313,27 @@ export async function addMessage(
   return toMessage(rows[0]);
 }
 
+export async function updateMessageMetadata(
+  messageId: string,
+  metadataUpdate: Record<string, unknown>,
+): Promise<void> {
+  const rows = await db
+    .select({ metadata: chatMessages.metadata })
+    .from(chatMessages)
+    .where(eq(chatMessages.id, messageId));
+  if (!rows[0]) return;
+
+  const existing: Record<string, unknown> = rows[0].metadata
+    ? (JSON.parse(rows[0].metadata) as Record<string, unknown>)
+    : {};
+  const merged = { ...existing, ...metadataUpdate };
+
+  await db
+    .update(chatMessages)
+    .set({ metadata: JSON.stringify(merged) })
+    .where(eq(chatMessages.id, messageId));
+}
+
 export async function updateSessionTitle(
   id: string,
   title: string,
@@ -320,6 +392,7 @@ export async function pinCodexEntry(
   sessionId: string,
   entryId: string,
   withChildren = false,
+  source: "manual" | "chat_mention" = "manual",
 ): Promise<void> {
   const rows = await db
     .select({ pinnedCodex: chatSessions.pinnedCodex })
@@ -329,7 +402,7 @@ export async function pinCodexEntry(
 
   const pinned = safeParsePinnedCodex(rows[0].pinnedCodex);
   if (!pinned.some((p) => p.id === entryId)) {
-    pinned.push({ id: entryId, withChildren });
+    pinned.push({ id: entryId, withChildren, source });
     await db
       .update(chatSessions)
       .set({ pinnedCodex: JSON.stringify(pinned) })

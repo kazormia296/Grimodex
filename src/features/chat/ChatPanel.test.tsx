@@ -8,12 +8,15 @@ import { useEditorStore } from "@/features/editor/editorStore";
 
 vi.mock("./chatApi", () => ({
   sendChatMessage: vi.fn(),
-  listSessions: vi.fn(),
+  listSessions: vi.fn(() => Promise.resolve([])),
   createSession: vi.fn(),
   deleteSession: vi.fn(),
-  listMessages: vi.fn(),
-  addMessage: vi.fn(),
-  updateSessionTitle: vi.fn(),
+  listMessages: vi.fn(() => Promise.resolve([])),
+  addMessage: vi.fn(() => Promise.resolve({})),
+  updateSessionTitle: vi.fn(() => Promise.resolve()),
+  listPinnedCodexEntries: vi.fn(() => Promise.resolve([])),
+  generateSessionTitle: vi.fn(() => Promise.resolve(null)),
+  updateMessageMetadata: vi.fn(() => Promise.resolve()),
 }));
 
 vi.mock("@/features/editor/editorStore", async () => {
@@ -53,6 +56,7 @@ const mockSendChatMessage = vi.mocked(chatApi.sendChatMessage);
 function resetStore() {
   useChatStore.setState({
     messages: [],
+    sessions: [],
     isStreaming: false,
     error: null,
   });

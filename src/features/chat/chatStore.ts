@@ -291,6 +291,34 @@ export const useChatStore = create<ChatState>()((set, get) => ({
     });
 
     // -----------------------------------------------------------------------
+    // セッションが未作成の場合は自動作成 (P0-2)
+    // -----------------------------------------------------------------------
+    let sessionIdForPersist = activeSessionId;
+    if (!sessionIdForPersist) {
+      const effectiveNodeId = isGlobalChat
+        ? undefined
+        : (effectiveSceneId ?? undefined);
+      try {
+        const session = await chatApi.createSession(
+          activeProjectId ?? "default-project",
+          "New session",
+          effectiveNodeId ?? undefined,
+        );
+        sessionIdForPersist = session.id;
+        set((state) => ({
+          sessions: [session, ...state.sessions],
+          activeSessionId: session.id,
+          messages: state.messages.map((m) => ({
+            ...m,
+            sessionId: session.id,
+          })),
+        }));
+      } catch (e) {
+        debugLog.error("ChatStore", "auto-create session", errorDetail(e));
+      }
+    }
+
+    // -----------------------------------------------------------------------
     // Agent mode path — tool-use loop
     // -----------------------------------------------------------------------
     if (get().agentMode) {
@@ -386,15 +414,15 @@ export const useChatStore = create<ChatState>()((set, get) => ({
         });
 
         // Persist
-        if (activeSessionId) {
-          await chatApi.addMessage(activeSessionId, "user", content, {
+        if (sessionIdForPersist) {
+          await chatApi.addMessage(sessionIdForPersist, "user", content, {
             id: userMsg.id,
           });
           const finalMessages = get().messages;
           const lastMsg = finalMessages[finalMessages.length - 1];
           if (lastMsg?.role === "assistant" && lastMsg.content) {
             await chatApi.addMessage(
-              activeSessionId,
+              sessionIdForPersist,
               "assistant",
               lastMsg.content,
               {
@@ -532,10 +560,16 @@ export const useChatStore = create<ChatState>()((set, get) => ({
         role: m.role,
         content: m.content,
       }));
-      const { text: responseText, thinkingBlocks: chatThinkingBlocks } =
-        await withNetworkRetry(() =>
-          chatApi.sendChatMessageWithThinking(apiPayload, chatThinkingParams),
-        );
+      const chatStartTime = performance.now();
+      const {
+        text: responseText,
+        thinkingBlocks: chatThinkingBlocks,
+        inputTokens: chatInputTokens,
+        outputTokens: chatOutputTokens,
+      } = await withNetworkRetry(() =>
+        chatApi.sendChatMessageWithThinking(apiPayload, chatThinkingParams),
+      );
+      const chatDurationMs = Math.round(performance.now() - chatStartTime);
       const chatMetadata =
         chatThinkingBlocks.length > 0
           ? JSON.stringify({ thinking_blocks: chatThinkingBlocks })
@@ -553,22 +587,60 @@ export const useChatStore = create<ChatState>()((set, get) => ({
         return { messages: msgs };
       });
 
-      if (activeSessionId) {
+      if (sessionIdForPersist) {
         const finalMessages = get().messages;
         const lastMsg = finalMessages[finalMessages.length - 1];
-        await chatApi.addMessage(activeSessionId, "user", content, {
+        await chatApi.addMessage(sessionIdForPersist, "user", content, {
           id: userMsg.id,
         });
         if (lastMsg && lastMsg.role === "assistant" && lastMsg.content) {
           await chatApi.addMessage(
-            activeSessionId,
+            sessionIdForPersist,
             "assistant",
             lastMsg.content,
             {
               id: assistantMsg.id,
+              model: chatModel || undefined,
+              tokensIn: chatInputTokens,
+              tokensOut: chatOutputTokens,
+              durationMs: chatDurationMs,
               ...(chatMetadata ? { metadata: chatMetadata } : {}),
             },
           );
+        }
+
+        // セッションタイトル自動生成 (P1-2) — fire-and-forget
+        const isFirstResponse =
+          prevMessages.filter((m) => m.role === "assistant").length === 0;
+        const currentSession = get().sessions.find(
+          (s) => s.id === sessionIdForPersist,
+        );
+        if (
+          isFirstResponse &&
+          currentSession &&
+          currentSession.titleManual === 0 &&
+          lastMsg?.role === "assistant" &&
+          lastMsg.content
+        ) {
+          chatApi
+            .generateSessionTitle(content, lastMsg.content, chatModel)
+            .then(async (title) => {
+              if (!title) {
+                // フォールバック: ユーザーメッセージの先頭30文字
+                title = content.slice(0, 30);
+              }
+              if (sessionIdForPersist) {
+                await chatApi.updateSessionTitle(sessionIdForPersist, title);
+                set((state) => ({
+                  sessions: state.sessions.map((s) =>
+                    s.id === sessionIdForPersist ? { ...s, title } : s,
+                  ),
+                }));
+              }
+            })
+            .catch((e) => {
+              debugLog.error("ChatStore", "title generation", errorDetail(e));
+            });
         }
       }
     } catch (e) {
@@ -702,9 +774,14 @@ export const useChatStore = create<ChatState>()((set, get) => ({
   clearError: () => set({ error: null }),
   setActiveSceneId: (id: string) => {
     const { activeSceneId } = get();
-    // シーンが実際に変わったときのみグローバルモードをOFF
+    // シーンが実際に変わったときのみグローバルモードをOFF + セッションをクリア
     if (id !== activeSceneId) {
-      set({ activeSceneId: id, isGlobalChat: false });
+      set({
+        activeSceneId: id,
+        isGlobalChat: false,
+        activeSessionId: null,
+        messages: [],
+      });
     } else {
       set({ activeSceneId: id });
     }

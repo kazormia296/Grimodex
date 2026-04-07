@@ -39,6 +39,8 @@ export function ChatPanel() {
   const refreshContextLayers = useChatStore((s) => s.refreshContextLayers);
   const activeSessionId = useChatStore((s) => s.activeSessionId);
   const agentProgress = useChatStore((s) => s.agentProgress);
+  const loadSessions = useChatStore((s) => s.loadSessions);
+  const selectSession = useChatStore((s) => s.selectSession);
   const createNewSession = useChatStore((s) => s.createNewSession);
   const isGlobalChat = useChatStore((s) => s.isGlobalChat);
   const setIsGlobalChat = useChatStore((s) => s.setIsGlobalChat);
@@ -68,6 +70,29 @@ export function ChatPanel() {
   useEffect(() => {
     setActiveSceneId(treeActiveSceneId);
   }, [treeActiveSceneId, setActiveSceneId]);
+
+  // シーン/グローバルモード切替時にセッションを自動ロードし最新を選択 (P0-1)
+  // シーンIDが空かつグローバルモードでもない初期状態ではスキップ
+  useEffect(() => {
+    if (!treeActiveSceneId && !isGlobalChat) return;
+    let stale = false;
+    const effectiveNodeId = isGlobalChat
+      ? null
+      : treeActiveSceneId || undefined;
+    (async () => {
+      await loadSessions(effectiveNodeId);
+      if (stale) return;
+      const { sessions } = useChatStore.getState();
+      if (sessions.length > 0) {
+        await selectSession(sessions[0].id);
+      } else {
+        await selectSession(null);
+      }
+    })();
+    return () => {
+      stale = true;
+    };
+  }, [treeActiveSceneId, isGlobalChat, loadSessions, selectSession]);
 
   useEffect(() => {
     refreshContextLayers();
@@ -296,7 +321,12 @@ export function ChatPanel() {
         initialContent={extractionDialog.content}
         messageRole={extractionDialog.messageRole}
         onSave={async (data) => {
-          await createCodexEntry(data);
+          const entry = await createCodexEntry(data);
+          if (entry && extractionDialog.messageId) {
+            await chatApi.updateMessageMetadata(extractionDialog.messageId, {
+              extractedCodex: [entry.id],
+            });
+          }
           setExtractionDialog({
             open: false,
             messageId: "",
@@ -319,7 +349,12 @@ export function ChatPanel() {
         messageId={snippetDialog.messageId}
         messageRole={snippetDialog.messageRole}
         onSave={async (data) => {
-          await createSnippet(data);
+          const snippet = await createSnippet(data);
+          if (snippet && snippetDialog.messageId) {
+            await chatApi.updateMessageMetadata(snippetDialog.messageId, {
+              extractedSnippets: [snippet.id],
+            });
+          }
         }}
         onClose={() => setSnippetDialog((s) => ({ ...s, open: false }))}
       />

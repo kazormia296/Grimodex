@@ -1,6 +1,7 @@
 export interface PinnedCodexEntry {
   id: string;
   withChildren?: boolean;
+  source?: "manual" | "chat_mention";
 }
 
 /**
@@ -17,9 +18,16 @@ export function normalizePinnedCodex(raw: unknown): PinnedCodexEntry[] {
         typeof item === "object" &&
         typeof (item as Record<string, unknown>).id === "string"
       ) {
+        const obj = item as Record<string, unknown>;
+        const rawSource = obj.source;
+        const source: "manual" | "chat_mention" | undefined =
+          rawSource === "manual" || rawSource === "chat_mention"
+            ? rawSource
+            : undefined;
         return {
-          id: (item as Record<string, unknown>).id as string,
-          withChildren: (item as Record<string, unknown>).withChildren === true,
+          id: obj.id as string,
+          withChildren: obj.withChildren === true,
+          source,
         };
       }
       return null;
