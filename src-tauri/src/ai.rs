@@ -341,6 +341,8 @@ pub async fn send_chat(
     messages: &[(&str, &str)],
     thinking: Option<ThinkingConfig>,
     effort: Option<String>,
+    reasoning_enabled: Option<bool>,
+    reasoning_effort: Option<String>,
 ) -> anyhow::Result<ChatResponse> {
     let client = reqwest::Client::new();
 
@@ -391,11 +393,13 @@ pub async fn send_chat(
                 .map(|(role, content)| serde_json::json!({ "role": role, "content": content }))
                 .collect();
 
-            let body = serde_json::json!({
+            let mut body = serde_json::json!({
                 "model": model,
                 "max_tokens": 4096,
                 "messages": chat_messages,
             });
+
+            apply_reasoning_to_body(&mut body, provider, reasoning_enabled, &reasoning_effort);
 
             let url = format!(
                 "{}/chat/completions",
@@ -585,6 +589,28 @@ fn parse_openai_response(result: &serde_json::Value) -> anyhow::Result<ChatRespo
     let mut blocks = Vec::new();
     let message = &choice["message"];
 
+    // Ollama: message.thinking フィールド
+    if let Some(thinking) = message["thinking"].as_str() {
+        if !thinking.is_empty() {
+            blocks.push(ResponseBlock::Thinking {
+                content: thinking.to_string(),
+                summary: None,
+                signature: None,
+            });
+        }
+    }
+
+    // OpenRouter: message.reasoning_content フィールド
+    if let Some(reasoning) = message["reasoning_content"].as_str() {
+        if !reasoning.is_empty() {
+            blocks.push(ResponseBlock::Thinking {
+                content: reasoning.to_string(),
+                summary: None,
+                signature: None,
+            });
+        }
+    }
+
     if let Some(content) = message["content"].as_str() {
         if !content.is_empty() {
             blocks.push(ResponseBlock::Text {
@@ -613,6 +639,35 @@ fn parse_openai_response(result: &serde_json::Value) -> anyhow::Result<ChatRespo
         input_tokens,
         output_tokens,
     })
+}
+
+/// Ollama/OpenRouter 向け reasoning パラメータをリクエストボディに適用する。
+fn apply_reasoning_to_body(
+    body: &mut serde_json::Value,
+    provider: &AiProvider,
+    reasoning_enabled: Option<bool>,
+    reasoning_effort: &Option<String>,
+) {
+    if matches!(provider, AiProvider::Ollama) {
+        if let Some(enabled) = reasoning_enabled {
+            body["think"] = serde_json::Value::Bool(enabled);
+        }
+    }
+
+    if matches!(provider, AiProvider::OpenRouter) {
+        if let Some(enabled) = reasoning_enabled {
+            if enabled {
+                let effort = match reasoning_effort.as_deref() {
+                    Some("max") => "xhigh",
+                    Some(e) => e,
+                    None => "medium",
+                };
+                body["reasoning"] = serde_json::json!({ "effort": effort });
+            } else {
+                body["reasoning"] = serde_json::json!({ "effort": "none" });
+            }
+        }
+    }
 }
 
 /// thinking / effort パラメータを Anthropic リクエストボディに適用する。
@@ -669,6 +724,8 @@ pub async fn send_chat_with_tools(
     tools: &[AgentToolDef],
     thinking: Option<ThinkingConfig>,
     effort: Option<String>,
+    reasoning_enabled: Option<bool>,
+    reasoning_effort: Option<String>,
 ) -> anyhow::Result<ChatResponse> {
     let client = reqwest::Client::new();
 
@@ -865,12 +922,14 @@ pub async fn send_chat_with_tools(
                 })
                 .collect();
 
-            let body = serde_json::json!({
+            let mut body = serde_json::json!({
                 "model": model,
                 "max_tokens": 4096,
                 "messages": openai_messages,
                 "tools": openai_tools
             });
+
+            apply_reasoning_to_body(&mut body, provider, reasoning_enabled, &reasoning_effort);
 
             let url = format!(
                 "{}/chat/completions",

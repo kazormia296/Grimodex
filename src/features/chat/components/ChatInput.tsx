@@ -183,7 +183,10 @@ export function ChatInput({
   };
 
   const canUseTools = caps.supportsTools;
-  const canThink = caps.supportsThinking || caps.supportsAdaptiveThinking;
+  const canThink =
+    caps.supportsThinking ||
+    caps.supportsAdaptiveThinking ||
+    caps.supportsReasoning;
 
   return (
     <div className="border-t border-border p-3">

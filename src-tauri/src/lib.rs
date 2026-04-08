@@ -257,6 +257,8 @@ async fn send_chat_message(
     messages: Vec<ChatMessagePayload>,
     thinking: Option<ai::ThinkingConfig>,
     effort: Option<String>,
+    reasoning_enabled: Option<bool>,
+    reasoning_effort: Option<String>,
 ) -> Result<ai::ChatResponse, AppError> {
     let settings = ai::read_ai_settings(&ai_path.path);
     let api_key = resolve_api_key(&settings.provider)?;
@@ -271,6 +273,8 @@ async fn send_chat_message(
             .collect::<Vec<_>>(),
         thinking,
         effort,
+        reasoning_enabled,
+        reasoning_effort,
     )
     .await?;
     Ok(result)
@@ -285,6 +289,8 @@ async fn send_agent_message(
     tools: Vec<ai::AgentToolDef>,
     thinking: Option<ai::ThinkingConfig>,
     effort: Option<String>,
+    reasoning_enabled: Option<bool>,
+    reasoning_effort: Option<String>,
 ) -> Result<ai::ChatResponse, AppError> {
     let settings = ai::read_ai_settings(&ai_path.path);
     let api_key = resolve_api_key(&settings.provider)?;
@@ -297,6 +303,8 @@ async fn send_agent_message(
         &tools,
         thinking,
         effort,
+        reasoning_enabled,
+        reasoning_effort,
     )
     .await?;
     Ok(result)

@@ -78,6 +78,33 @@ describe("getModelCapabilities", () => {
     expect(caps.supportsTools).toBe(true);
     expect(caps.supportsThinking).toBe(false);
   });
+
+  it("qwen3 (Ollama): supportsReasoning=true", () => {
+    const caps = getModelCapabilities("qwen3");
+    expect(caps.supportsReasoning).toBe(true);
+    expect(caps.supportsThinking).toBe(false);
+    expect(caps.supportsAdaptiveThinking).toBe(false);
+    expect(caps.contextWindow).toBe(32_768);
+  });
+
+  it("deepseek-r1 (Ollama): supportsReasoning=true, tools 非対応", () => {
+    const caps = getModelCapabilities("deepseek-r1");
+    expect(caps.supportsReasoning).toBe(true);
+    expect(caps.supportsTools).toBe(false);
+    expect(caps.contextWindow).toBe(64_000);
+  });
+
+  it("qwen/qwen3 (OpenRouter プレフィックス) を解決する", () => {
+    const caps = getModelCapabilities("qwen/qwen3-235b-a22b");
+    expect(caps.supportsReasoning).toBe(true);
+    expect(caps.contextWindow).toBe(32_768);
+  });
+
+  it("deepseek/deepseek-r1 (OpenRouter プレフィックス) を解決する", () => {
+    const caps = getModelCapabilities("deepseek/deepseek-r1");
+    expect(caps.supportsReasoning).toBe(true);
+    expect(caps.supportsTools).toBe(false);
+  });
 });
 
 describe("modelSupportsTools", () => {
@@ -169,6 +196,32 @@ describe("buildThinkingParams", () => {
     const params = buildThinkingParams("claude-haiku-4-5-20251001", "medium");
     expect(params.thinking).toBeUndefined();
     expect(params.effort).toBe("medium");
+  });
+
+  it("qwen3 (reasoning モデル): reasoningEnabled=true, reasoningEffort を返す", () => {
+    const params = buildThinkingParams("qwen3", "high");
+    expect(params.reasoningEnabled).toBe(true);
+    expect(params.reasoningEffort).toBe("high");
+    expect(params.thinking).toBeUndefined();
+    expect(params.effort).toBeUndefined();
+  });
+
+  it("deepseek-r1: reasoningEnabled=true を返す", () => {
+    const params = buildThinkingParams("deepseek-r1", "medium");
+    expect(params.reasoningEnabled).toBe(true);
+    expect(params.reasoningEffort).toBe("medium");
+  });
+
+  it("qwen3 + enabled=false: reasoningEnabled=true だが reasoningEffort は undefined", () => {
+    const params = buildThinkingParams("qwen3", "high", "summarized", false);
+    expect(params.reasoningEnabled).toBeUndefined();
+    expect(params.reasoningEffort).toBeUndefined();
+  });
+
+  it("OpenRouter qwen/qwen3-235b-a22b: reasoningEnabled を返す", () => {
+    const params = buildThinkingParams("qwen/qwen3-235b-a22b", "low");
+    expect(params.reasoningEnabled).toBe(true);
+    expect(params.reasoningEffort).toBe("low");
   });
 });
 

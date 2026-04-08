@@ -9,6 +9,7 @@ export interface ModelCapabilities {
   supportsAdaptiveThinking: boolean; // adaptive 方式 (4.6 系)
   supportsEffort: boolean;
   supportsMaxEffort: boolean; // Opus 4.6 限定
+  supportsReasoning: boolean; // Ollama/OpenRouter 推論モデル用
 }
 
 const DEFAULT_CAPABILITIES: ModelCapabilities = {
@@ -18,6 +19,7 @@ const DEFAULT_CAPABILITIES: ModelCapabilities = {
   supportsAdaptiveThinking: false,
   supportsEffort: false,
   supportsMaxEffort: false,
+  supportsReasoning: false,
 };
 
 const MODEL_CAPABILITIES: Record<string, ModelCapabilities> = {
@@ -29,6 +31,7 @@ const MODEL_CAPABILITIES: Record<string, ModelCapabilities> = {
     supportsAdaptiveThinking: true,
     supportsEffort: true,
     supportsMaxEffort: true,
+    supportsReasoning: false,
   },
   // Anthropic — Sonnet 4.6 (adaptive thinking)
   "claude-sonnet-4-6": {
@@ -38,6 +41,7 @@ const MODEL_CAPABILITIES: Record<string, ModelCapabilities> = {
     supportsAdaptiveThinking: true,
     supportsEffort: true,
     supportsMaxEffort: false,
+    supportsReasoning: false,
   },
   // Anthropic — Haiku 4.5 (no thinking)
   "claude-haiku-4-5-20251001": {
@@ -47,6 +51,7 @@ const MODEL_CAPABILITIES: Record<string, ModelCapabilities> = {
     supportsAdaptiveThinking: false,
     supportsEffort: true,
     supportsMaxEffort: false,
+    supportsReasoning: false,
   },
   // Anthropic — Opus 4.5 (budget_tokens thinking)
   "claude-opus-4-5": {
@@ -56,6 +61,7 @@ const MODEL_CAPABILITIES: Record<string, ModelCapabilities> = {
     supportsAdaptiveThinking: false,
     supportsEffort: true,
     supportsMaxEffort: false,
+    supportsReasoning: false,
   },
   // Anthropic — Sonnet 4.5 (budget_tokens thinking)
   "claude-sonnet-4-5-20250929": {
@@ -65,6 +71,7 @@ const MODEL_CAPABILITIES: Record<string, ModelCapabilities> = {
     supportsAdaptiveThinking: false,
     supportsEffort: true,
     supportsMaxEffort: false,
+    supportsReasoning: false,
   },
   // OpenAI
   "gpt-4o": {
@@ -74,6 +81,7 @@ const MODEL_CAPABILITIES: Record<string, ModelCapabilities> = {
     supportsAdaptiveThinking: false,
     supportsEffort: false,
     supportsMaxEffort: false,
+    supportsReasoning: false,
   },
   "gpt-4o-mini": {
     contextWindow: 128_000,
@@ -82,6 +90,7 @@ const MODEL_CAPABILITIES: Record<string, ModelCapabilities> = {
     supportsAdaptiveThinking: false,
     supportsEffort: false,
     supportsMaxEffort: false,
+    supportsReasoning: false,
   },
   "gpt-4-turbo": {
     contextWindow: 128_000,
@@ -90,6 +99,7 @@ const MODEL_CAPABILITIES: Record<string, ModelCapabilities> = {
     supportsAdaptiveThinking: false,
     supportsEffort: false,
     supportsMaxEffort: false,
+    supportsReasoning: false,
   },
   "gpt-4": {
     contextWindow: 8_192,
@@ -98,6 +108,26 @@ const MODEL_CAPABILITIES: Record<string, ModelCapabilities> = {
     supportsAdaptiveThinking: false,
     supportsEffort: false,
     supportsMaxEffort: false,
+    supportsReasoning: false,
+  },
+  // Ollama / OpenRouter 推論モデル
+  qwen3: {
+    contextWindow: 32_768,
+    supportsTools: true,
+    supportsThinking: false,
+    supportsAdaptiveThinking: false,
+    supportsEffort: false,
+    supportsMaxEffort: false,
+    supportsReasoning: true,
+  },
+  "deepseek-r1": {
+    contextWindow: 64_000,
+    supportsTools: false,
+    supportsThinking: false,
+    supportsAdaptiveThinking: false,
+    supportsEffort: false,
+    supportsMaxEffort: false,
+    supportsReasoning: true,
   },
 };
 
@@ -110,6 +140,8 @@ const OPENROUTER_PREFIXED: Record<string, string> = {
   "anthropic/claude-haiku-4-5-20251001": "claude-haiku-4-5-20251001",
   "anthropic/claude-opus-4-5": "claude-opus-4-5",
   "anthropic/claude-sonnet-4-5-20250929": "claude-sonnet-4-5-20250929",
+  "qwen/qwen3": "qwen3",
+  "deepseek/deepseek-r1": "deepseek-r1",
 };
 
 /**
@@ -194,6 +226,8 @@ export interface ThinkingParams {
     budget_tokens?: number;
   };
   effort?: EffortLevel;
+  reasoningEnabled?: boolean;
+  reasoningEffort?: EffortLevel;
 }
 
 /** モデルとタスクに応じた thinking/effort パラメータを構築する（設計書 L627-647 準拠） */
@@ -219,6 +253,14 @@ export function buildThinkingParams(
     return {
       thinking: { type: "enabled", budget_tokens: budgetTokens, display },
       effort: taskEffort,
+    };
+  }
+
+  if (caps.supportsReasoning) {
+    // Ollama/OpenRouter 推論モデル: reasoningEnabled/reasoningEffort
+    return {
+      reasoningEnabled: enabled,
+      reasoningEffort: enabled ? taskEffort : undefined,
     };
   }
 

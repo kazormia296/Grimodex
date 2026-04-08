@@ -36,6 +36,8 @@ export async function sendChatMessage(
     messages: payload,
     thinking: null,
     effort: null,
+    reasoningEnabled: null,
+    reasoningEffort: null,
   });
   const text = response.blocks
     .filter((b) => b.type === "text")
@@ -65,6 +67,8 @@ export async function generateSynopsisFromContent(
     messages,
     thinking: null,
     effort: null,
+    reasoningEnabled: null,
+    reasoningEffort: null,
   });
   return response.blocks
     .filter((b) => b.type === "text")
@@ -91,6 +95,8 @@ export async function sendAgentMessage(
     tools,
     thinking: thinkingParams?.thinking ?? null,
     effort: thinkingParams?.effort ?? null,
+    reasoningEnabled: thinkingParams?.reasoningEnabled ?? null,
+    reasoningEffort: thinkingParams?.reasoningEffort ?? null,
   });
 }
 
@@ -114,6 +120,8 @@ export async function sendChatMessageWithThinking(
     messages,
     thinking: thinkingParams?.thinking ?? null,
     effort: thinkingParams?.effort ?? null,
+    reasoningEnabled: thinkingParams?.reasoningEnabled ?? null,
+    reasoningEffort: thinkingParams?.reasoningEffort ?? null,
   });
   const text = response.blocks
     .filter((b) => b.type === "text")
@@ -171,6 +179,8 @@ export async function generateSessionTitle(
       messages,
       thinking: thinkingParams.thinking ?? null,
       effort: thinkingParams.effort ?? null,
+      reasoningEnabled: thinkingParams.reasoningEnabled ?? null,
+      reasoningEffort: thinkingParams.reasoningEffort ?? null,
     });
     const title = response.blocks
       .filter((b) => b.type === "text")
