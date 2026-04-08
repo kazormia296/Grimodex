@@ -1,5 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { Trash2, ArrowLeft } from "lucide-react";
+import { TagSelector } from "./TagSelector";
+import { TagPill } from "./TagPill";
 import { db } from "@/db/client";
 import { chatMessages, chatSessions } from "@/db/schema";
 import { eq } from "drizzle-orm";
@@ -287,6 +289,28 @@ export function CodexDetailContent({
             </div>
           </div>
         </div>
+
+        {/* Tags (always visible in header) */}
+        <div data-testid="codex-detail-tags" className="mt-2">
+          <TagSelector
+            entryId={entry.id}
+            entryType={type}
+            selectedTags={selectedTags}
+            onTagsChange={setSelectedTags}
+          />
+          {selectedTags.length > 0 && (
+            <div className="mt-1 flex flex-wrap gap-0.5">
+              {selectedTags.map((tag) => (
+                <TagPill
+                  key={tag.id}
+                  name={tag.name}
+                  color={tag.color ?? "#888888"}
+                  size="sm"
+                />
+              ))}
+            </div>
+          )}
+        </div>
       </div>
 
       {/* Tab bar */}
@@ -303,12 +327,9 @@ export function CodexDetailContent({
             entry={entry}
             aliases={aliases}
             summary={summary}
-            entryType={type}
-            selectedTags={selectedTags}
             onAliasesChange={(a) => void handleAliasesChange(a)}
             onSummaryChange={handleSummaryChange}
             onContentChange={handleContentChange}
-            onTagsChange={setSelectedTags}
           />
         )}
         {activeTab === "relations" && (

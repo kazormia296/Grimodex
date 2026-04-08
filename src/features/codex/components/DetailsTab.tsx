@@ -1,7 +1,4 @@
-import type { CodexEntry, CodexEntryType } from "../api";
-import type { CodexTag } from "../tagApi";
-import { TagSelector } from "./TagSelector";
-import { TagPill } from "./TagPill";
+import type { CodexEntry } from "../api";
 import { AliasesField } from "./AliasesField";
 import { CodexContentEditor } from "./CodexContentEditor";
 import { DetailsSection } from "./DetailsSection";
@@ -10,24 +7,18 @@ interface DetailsTabProps {
   entry: CodexEntry;
   aliases: string[];
   summary: string;
-  entryType: CodexEntryType;
-  selectedTags: CodexTag[];
   onAliasesChange: (aliases: string[]) => void;
   onSummaryChange: (value: string) => void;
   onContentChange: (content: string) => void;
-  onTagsChange: (tags: CodexTag[]) => void;
 }
 
 export function DetailsTab({
   entry,
   aliases,
   summary,
-  entryType,
-  selectedTags,
   onAliasesChange,
   onSummaryChange,
   onContentChange,
-  onTagsChange,
 }: DetailsTabProps) {
   const emptyContent = !entry.content || entry.content === "{}";
 
@@ -60,29 +51,6 @@ export function DetailsTab({
           content={emptyContent ? "" : entry.content}
           onContentChange={onContentChange}
         />
-      </div>
-
-      {/* Tags */}
-      <div data-testid="codex-detail-tags">
-        <label className="mb-1 block text-xs font-medium">タグ</label>
-        <TagSelector
-          entryId={entry.id}
-          entryType={entryType}
-          selectedTags={selectedTags}
-          onTagsChange={onTagsChange}
-        />
-        {selectedTags.length > 0 && (
-          <div className="mt-1 flex flex-wrap gap-0.5">
-            {selectedTags.map((tag) => (
-              <TagPill
-                key={tag.id}
-                name={tag.name}
-                color={tag.color ?? "#888888"}
-                size="sm"
-              />
-            ))}
-          </div>
-        )}
       </div>
 
       {/* Custom Details */}
