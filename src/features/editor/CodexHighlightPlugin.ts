@@ -47,7 +47,7 @@ export function mapMatchesToDecorations(
         const inlineStyle =
           highlightStyle === "underline"
             ? `text-decoration: underline; text-decoration-color: ${color}; text-underline-offset: 3px`
-            : `color: ${color}`;
+            : `color: ${color}; background-color: ${color}29; border-radius: 3px; padding: 0 2px`;
         decos.push(
           Decoration.inline(pmFrom, pmTo, {
             class: "codex-highlight",

@@ -26,7 +26,7 @@ const LANGUAGE_OPTIONS = [
 ];
 
 const CODEX_STYLE_OPTIONS = [
-  { value: "color-text", label: "文字色" },
+  { value: "color-text", label: "文字色 + ハイライト" },
   { value: "underline", label: "下線" },
 ];
 
