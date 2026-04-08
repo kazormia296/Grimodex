@@ -971,6 +971,6 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
         expandedIds: [...new Set([...state.expandedIds, ...ancestors])],
       }));
     }
-    set({ pendingRevealId: id });
+    set({ pendingRevealId: id, selectedIds: [id] });
   },
 }));
