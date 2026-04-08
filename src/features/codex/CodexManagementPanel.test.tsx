@@ -115,6 +115,7 @@ const mockEntries: CodexEntry[] = [
     contextMode: "mentioned",
     childrenBudget: "compact",
     sourceChatMessageId: "msg-1",
+    notes: null,
     createdAt: "2024-01-01T00:00:00Z",
     updatedAt: "2024-01-01T00:00:00Z",
   },
@@ -133,6 +134,7 @@ const mockEntries: CodexEntry[] = [
     contextMode: "mentioned",
     childrenBudget: "compact",
     sourceChatMessageId: null,
+    notes: null,
     createdAt: "2024-01-02T00:00:00Z",
     updatedAt: "2024-01-02T00:00:00Z",
   },
@@ -151,6 +153,7 @@ const mockEntries: CodexEntry[] = [
     contextMode: "mentioned",
     childrenBudget: "compact",
     sourceChatMessageId: null,
+    notes: null,
     createdAt: "2024-01-03T00:00:00Z",
     updatedAt: "2024-01-03T00:00:00Z",
   },
@@ -169,6 +172,7 @@ const mockEntries: CodexEntry[] = [
     contextMode: "mentioned",
     childrenBudget: "compact",
     sourceChatMessageId: "msg-2",
+    notes: null,
     createdAt: "2024-01-04T00:00:00Z",
     updatedAt: "2024-01-04T00:00:00Z",
   },
@@ -337,7 +341,7 @@ describe("CodexManagementPanel", () => {
       expect(screen.queryByTestId("codex-save-button")).not.toBeInTheDocument();
     });
 
-    it("shows context mode selector in detail view", async () => {
+    it("shows context mode selector in Tracking tab", async () => {
       const user = userEvent.setup();
       mockListCodexEntries.mockResolvedValue(mockEntries);
       render(<CodexManagementPanel />);
@@ -346,11 +350,13 @@ describe("CodexManagementPanel", () => {
         expect(screen.getByText("アリス")).toBeInTheDocument();
       });
       await user.click(screen.getByTestId("codex-entry-codex-1"));
+      // context-mode-selector is in the Tracking tab
+      await user.click(screen.getByTestId("detail-tab-tracking"));
 
       expect(screen.getByTestId("context-mode-selector")).toBeInTheDocument();
     });
 
-    it("shows aliases field in detail view", async () => {
+    it("shows aliases field in Details tab (default)", async () => {
       const user = userEvent.setup();
       mockListCodexEntries.mockResolvedValue(mockEntries);
       render(<CodexManagementPanel />);
@@ -360,7 +366,25 @@ describe("CodexManagementPanel", () => {
       });
       await user.click(screen.getByTestId("codex-entry-codex-1"));
 
+      // Details tab is the default – aliases are visible immediately
       expect(screen.getByTestId("aliases-add-button")).toBeInTheDocument();
+    });
+
+    it("shows detail tabs when entry is selected", async () => {
+      const user = userEvent.setup();
+      mockListCodexEntries.mockResolvedValue(mockEntries);
+      render(<CodexManagementPanel />);
+
+      await waitFor(() => {
+        expect(screen.getByText("アリス")).toBeInTheDocument();
+      });
+      await user.click(screen.getByTestId("codex-entry-codex-1"));
+
+      expect(screen.getByTestId("detail-tab-details")).toBeInTheDocument();
+      expect(screen.getByTestId("detail-tab-relations")).toBeInTheDocument();
+      expect(screen.getByTestId("detail-tab-tracking")).toBeInTheDocument();
+      expect(screen.getByTestId("detail-tab-mentions")).toBeInTheDocument();
+      expect(screen.getByTestId("detail-tab-research")).toBeInTheDocument();
     });
 
     it("deletes entry when delete button is clicked", async () => {
@@ -385,7 +409,7 @@ describe("CodexManagementPanel", () => {
   // --- Source Chat Link ---
 
   describe("Source chat link", () => {
-    it("shows source chat link when entry has sourceChatMessageId", async () => {
+    it("shows source chat link in Mentions tab when entry has sourceChatMessageId", async () => {
       const user = userEvent.setup();
       mockListCodexEntries.mockResolvedValue(mockEntries);
       render(<CodexManagementPanel />);
@@ -395,6 +419,8 @@ describe("CodexManagementPanel", () => {
       });
       // Entry 1 has sourceChatMessageId: "msg-1"
       await user.click(screen.getByTestId("codex-entry-codex-1"));
+      // source-chat-link is in the Mentions tab
+      await user.click(screen.getByTestId("detail-tab-mentions"));
 
       expect(screen.getByTestId("codex-source-chat-link")).toBeInTheDocument();
     });
@@ -409,6 +435,7 @@ describe("CodexManagementPanel", () => {
       });
       // Entry 2 has sourceChatMessageId: null
       await user.click(screen.getByTestId("codex-entry-codex-2"));
+      await user.click(screen.getByTestId("detail-tab-mentions"));
 
       expect(
         screen.queryByTestId("codex-source-chat-link"),
@@ -535,7 +562,8 @@ describe("CodexManagementPanel", () => {
         expect(screen.getByTestId("codex-detail-content")).toBeInTheDocument();
       });
 
-      // Step 3: Source chat link is visible (entry has sourceChatMessageId)
+      // Step 3: Switch to Mentions tab to see source chat link
+      await user.click(screen.getByTestId("detail-tab-mentions"));
       expect(screen.getByTestId("codex-source-chat-link")).toBeInTheDocument();
     });
   });
@@ -654,6 +682,53 @@ describe("CodexManagementPanel", () => {
       await waitFor(() =>
         expect(useCodexStore.getState().sortOrder).toBe("name-desc"),
       );
+    });
+
+    it("shows category group headers when sort is category", async () => {
+      useCodexStore.setState({ entries: mockEntries, sortOrder: "category" });
+      render(<CodexManagementPanel />);
+
+      await waitFor(() =>
+        expect(
+          screen.getByTestId("codex-category-group-character"),
+        ).toBeInTheDocument(),
+      );
+      expect(
+        screen.getByTestId("codex-category-group-location"),
+      ).toBeInTheDocument();
+      expect(
+        screen.getByTestId("codex-category-group-item"),
+      ).toBeInTheDocument();
+      expect(
+        screen.getByTestId("codex-category-group-lore"),
+      ).toBeInTheDocument();
+    });
+
+    it("shows entries under their category group", async () => {
+      useCodexStore.setState({ entries: mockEntries, sortOrder: "category" });
+      render(<CodexManagementPanel />);
+
+      await waitFor(() =>
+        expect(screen.getByText("アリス")).toBeInTheDocument(),
+      );
+      expect(screen.getByText("不思議の国")).toBeInTheDocument();
+      expect(screen.getByText("魔法の鍵")).toBeInTheDocument();
+      expect(screen.getByText("古代魔法")).toBeInTheDocument();
+    });
+
+    it("collapses group when header is clicked", async () => {
+      const user = userEvent.setup();
+      useCodexStore.setState({ entries: mockEntries, sortOrder: "category" });
+      render(<CodexManagementPanel />);
+
+      await waitFor(() =>
+        expect(screen.getByText("アリス")).toBeInTheDocument(),
+      );
+      // Click to collapse Character group
+      await user.click(screen.getByTestId("codex-category-group-character"));
+      expect(
+        screen.queryByTestId("codex-entry-codex-1"),
+      ).not.toBeInTheDocument();
     });
   });
 

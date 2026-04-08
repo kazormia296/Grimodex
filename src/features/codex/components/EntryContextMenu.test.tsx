@@ -20,6 +20,7 @@ const mockEntry: CodexEntry = {
   contextMode: "mentioned",
   childrenBudget: "compact",
   sourceChatMessageId: null,
+  notes: null,
   createdAt: "2024-01-01T00:00:00Z",
   updatedAt: "2024-01-01T00:00:00Z",
 };
@@ -31,6 +32,9 @@ const defaultProps = {
   onClose: vi.fn(),
   onDelete: vi.fn(),
   onRename: vi.fn(),
+  onDuplicate: vi.fn(),
+  onFindInScenes: vi.fn(),
+  codexTypes: [] as import("@/features/codex/typeApi").CodexType[],
 };
 
 describe("EntryContextMenu", () => {
@@ -92,5 +96,44 @@ describe("EntryContextMenu", () => {
     render(<EntryContextMenu {...defaultProps} onClose={onClose} />);
     await user.click(screen.getByTestId("entry-context-menu-delete"));
     expect(onClose).toHaveBeenCalled();
+  });
+
+  it("shows Duplicate menu item", () => {
+    render(<EntryContextMenu {...defaultProps} />);
+    expect(
+      screen.getByTestId("entry-context-menu-duplicate"),
+    ).toBeInTheDocument();
+  });
+
+  it("calls onDuplicate when Duplicate is clicked", async () => {
+    const user = userEvent.setup();
+    const onDuplicate = vi.fn();
+    render(<EntryContextMenu {...defaultProps} onDuplicate={onDuplicate} />);
+    await user.click(screen.getByTestId("entry-context-menu-duplicate"));
+    expect(onDuplicate).toHaveBeenCalledWith("entry-1");
+  });
+
+  it("shows Find in scenes menu item", () => {
+    render(<EntryContextMenu {...defaultProps} />);
+    expect(
+      screen.getByTestId("entry-context-menu-find-in-scenes"),
+    ).toBeInTheDocument();
+  });
+
+  it("calls onFindInScenes when Find in scenes is clicked", async () => {
+    const user = userEvent.setup();
+    const onFindInScenes = vi.fn();
+    render(
+      <EntryContextMenu {...defaultProps} onFindInScenes={onFindInScenes} />,
+    );
+    await user.click(screen.getByTestId("entry-context-menu-find-in-scenes"));
+    expect(onFindInScenes).toHaveBeenCalledWith("entry-1");
+  });
+
+  it("shows Change type menu item", () => {
+    render(<EntryContextMenu {...defaultProps} />);
+    expect(
+      screen.getByTestId("entry-context-menu-change-type"),
+    ).toBeInTheDocument();
   });
 });

@@ -85,6 +85,7 @@ export const codexEntries = sqliteTable("codex_entries", {
   sourceChatMessageId: text("source_chat_message_id").references(
     () => chatMessages.id,
   ),
+  notes: text("notes"), // Private notes (ProseMirror JSON) – never injected into AI context
   createdAt: text("created_at")
     .notNull()
     .$defaultFn(() => new Date().toISOString()),

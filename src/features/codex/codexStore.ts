@@ -10,7 +10,12 @@ import {
 import type { CodexEntry, CodexEntryType, NewCodexEntry } from "./api";
 import { searchCodexEntries } from "./search";
 
-export type CodexSortOrder = "name-asc" | "name-desc" | "updated" | "created";
+export type CodexSortOrder =
+  | "category"
+  | "name-asc"
+  | "name-desc"
+  | "updated"
+  | "created";
 
 interface CodexState {
   entries: CodexEntry[];
@@ -50,6 +55,7 @@ interface CodexState {
         | "contextMode"
         | "icon"
         | "childrenBudget"
+        | "notes"
       >
     >,
   ) => Promise<void>;
@@ -61,7 +67,7 @@ export const useCodexStore = create<CodexState>()((set, get) => ({
   entries: [],
   searchQuery: "",
   filterType: null,
-  sortOrder: "name-asc",
+  sortOrder: "category" as CodexSortOrder,
   isLoading: false,
 
   loadEntries: async () => {

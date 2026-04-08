@@ -30,6 +30,7 @@ function makeEntry(id: string, name: string, type = "character"): CodexEntry {
     aliases: null,
     excludedAliases: null,
     sourceChatMessageId: null,
+    notes: null,
     icon: null,
   };
 }

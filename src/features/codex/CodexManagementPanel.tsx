@@ -21,8 +21,9 @@ import { EntryIcon } from "./components/EntryIcon";
 import { TagPill } from "./components/TagPill";
 import { CodexDetailContent } from "./components/CodexDetailContent";
 import { EntryContextMenu } from "./components/EntryContextMenu";
+import { CategoryGroupHeader } from "./components/CategoryGroupHeader";
 
-// Fallback labels for when types haven't loaded yet
+// Fallback labels/colors for when types haven't loaded yet
 const FALLBACK_TYPE_LABELS: Record<string, string> = {
   character: "キャラクター",
   location: "場所",
@@ -30,7 +31,15 @@ const FALLBACK_TYPE_LABELS: Record<string, string> = {
   lore: "設定・世界観",
 };
 
+const FALLBACK_TYPE_COLORS: Record<string, string> = {
+  character: "#6B7ADB",
+  location: "#5BAD8F",
+  item: "#C27D3C",
+  lore: "#9B6BB5",
+};
+
 const SORT_OPTIONS: { value: CodexSortOrder; label: string }[] = [
+  { value: "category", label: "カテゴリ別" },
   { value: "name-asc", label: "名前 (A→Z)" },
   { value: "name-desc", label: "名前 (Z→A)" },
   { value: "updated", label: "更新順" },
@@ -137,7 +146,7 @@ function CommandPalette({
   );
 }
 
-// --- Virtualized Entry List ---
+// --- Virtualized Entry List (for non-category sorts) ---
 
 function VirtualizedEntryList({
   entries,
@@ -145,14 +154,22 @@ function VirtualizedEntryList({
   selectedEntryId,
   onSelect,
   onDelete,
+  onDuplicate,
+  onFindInScenes,
+  onChangeType,
   typeLabels,
+  codexTypes,
 }: {
   entries: CodexEntry[];
   isLoading: boolean;
   selectedEntryId: string | null;
   onSelect: (entry: CodexEntry) => void;
   onDelete: (id: string) => void;
+  onDuplicate: (id: string) => void;
+  onFindInScenes: (id: string) => void;
+  onChangeType: (id: string, newType: string) => void;
   typeLabels: Record<string, string>;
+  codexTypes: CodexType[];
 }) {
   const parentRef = useRef<HTMLDivElement>(null);
   const [contextMenu, setContextMenu] = useState<{
@@ -278,13 +295,240 @@ function VirtualizedEntryList({
           onRename={() => {
             setContextMenu(null);
           }}
+          onDuplicate={(id) => {
+            onDuplicate(id);
+            setContextMenu(null);
+          }}
+          onFindInScenes={(id) => {
+            onFindInScenes(id);
+            setContextMenu(null);
+          }}
+          onChangeType={(id, newType) => {
+            onChangeType(id, newType);
+            setContextMenu(null);
+          }}
+          codexTypes={codexTypes}
         />
       )}
     </div>
   );
 }
 
-// --- Sort utility ---
+// --- Entry Card (shared between flat and grouped list) ---
+
+function EntryCard({
+  entry,
+  isSelected,
+  onSelect,
+  onContextMenu,
+}: {
+  entry: CodexEntry;
+  isSelected: boolean;
+  onSelect: () => void;
+  onContextMenu: (e: React.MouseEvent) => void;
+}) {
+  let cachedTagNames: string[] = [];
+  try {
+    if (entry.tagsCache) {
+      cachedTagNames = JSON.parse(entry.tagsCache) as string[];
+    }
+  } catch {
+    cachedTagNames = [];
+  }
+
+  return (
+    <div className="border-b border-border">
+      <button
+        type="button"
+        data-testid={`codex-entry-${entry.id}`}
+        onClick={onSelect}
+        onContextMenu={onContextMenu}
+        className={`w-full px-3 py-2 text-left hover:bg-accent ${isSelected ? "bg-accent" : ""}`}
+      >
+        <div className="flex items-center gap-2">
+          <EntryIcon
+            icon={entry.icon as number[] | null}
+            entryType={entry.type}
+            size={28}
+          />
+          <span className="truncate text-sm font-medium">{entry.name}</span>
+        </div>
+        {entry.summary && (
+          <p className="mt-0.5 truncate text-xs text-muted-foreground">
+            {entry.summary}
+          </p>
+        )}
+        {cachedTagNames.length > 0 && (
+          <div className="mt-0.5 flex flex-wrap gap-0.5">
+            {cachedTagNames.map((tagName) => (
+              <TagPill key={tagName} name={tagName} color="#888888" size="sm" />
+            ))}
+          </div>
+        )}
+      </button>
+    </div>
+  );
+}
+
+// --- Category Grouped List ---
+
+function CategoryGroupedList({
+  entries,
+  isLoading,
+  selectedEntryId,
+  onSelect,
+  onDelete,
+  onDuplicate,
+  onFindInScenes,
+  onChangeType,
+  codexTypes,
+}: {
+  entries: CodexEntry[];
+  isLoading: boolean;
+  selectedEntryId: string | null;
+  onSelect: (entry: CodexEntry) => void;
+  onDelete: (id: string) => void;
+  onDuplicate: (id: string) => void;
+  onFindInScenes: (id: string) => void;
+  onChangeType: (id: string, newType: string) => void;
+  codexTypes: CodexType[];
+}) {
+  const [contextMenu, setContextMenu] = useState<{
+    entry: CodexEntry;
+    x: number;
+    y: number;
+  } | null>(null);
+  const [expandedGroups, setExpandedGroups] = useState<Record<string, boolean>>(
+    {},
+  );
+
+  // Group entries by type, ordered by codexTypes sortOrder
+  const groups = useMemo(() => {
+    const byType = new Map<string, CodexEntry[]>();
+    for (const entry of entries) {
+      if (!byType.has(entry.type)) byType.set(entry.type, []);
+      byType.get(entry.type)!.push(entry);
+    }
+
+    // Sort each group's entries by name
+    for (const grpEntries of byType.values()) {
+      grpEntries.sort((a, b) => a.name.localeCompare(b.name, "ja"));
+    }
+
+    // Order groups by codexTypes.sortOrder; types not in codexTypes go last
+    const typeOrder = new Map(
+      codexTypes.map((t, i) => [t.slug, t.sortOrder ?? i]),
+    );
+
+    return [...byType.entries()]
+      .sort(([aSlug], [bSlug]) => {
+        const aOrd = typeOrder.get(aSlug) ?? 9999;
+        const bOrd = typeOrder.get(bSlug) ?? 9999;
+        return aOrd - bOrd;
+      })
+      .map(([typeSlug, grpEntries]) => {
+        const codexType = codexTypes.find((t) => t.slug === typeSlug);
+        return {
+          slug: typeSlug,
+          label: codexType?.label ?? FALLBACK_TYPE_LABELS[typeSlug] ?? typeSlug,
+          color:
+            codexType?.color ?? FALLBACK_TYPE_COLORS[typeSlug] ?? "#888888",
+          entries: grpEntries,
+        };
+      });
+  }, [entries, codexTypes]);
+
+  const isExpanded = useCallback(
+    (slug: string) => expandedGroups[slug] !== false, // default: expanded
+    [expandedGroups],
+  );
+
+  const toggleGroup = useCallback(
+    (slug: string) => {
+      setExpandedGroups((prev) => ({ ...prev, [slug]: !isExpanded(slug) }));
+    },
+    [isExpanded],
+  );
+
+  if (isLoading) {
+    return (
+      <p className="flex-1 p-3 text-center text-xs text-muted-foreground">
+        読み込み中...
+      </p>
+    );
+  }
+
+  if (entries.length === 0) {
+    return (
+      <div
+        data-testid="codex-empty-state"
+        className="flex-1 p-3 text-center text-xs text-muted-foreground"
+      >
+        エントリがありません
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex-1 overflow-y-auto">
+      {groups.map((group) => (
+        <div key={group.slug}>
+          <CategoryGroupHeader
+            type={group.slug}
+            label={group.label}
+            color={group.color}
+            count={group.entries.length}
+            isExpanded={isExpanded(group.slug)}
+            onToggle={() => toggleGroup(group.slug)}
+          />
+          {isExpanded(group.slug) &&
+            group.entries.map((entry) => (
+              <EntryCard
+                key={entry.id}
+                entry={entry}
+                isSelected={selectedEntryId === entry.id}
+                onSelect={() => onSelect(entry)}
+                onContextMenu={(e) => {
+                  e.preventDefault();
+                  setContextMenu({ entry, x: e.clientX, y: e.clientY });
+                }}
+              />
+            ))}
+        </div>
+      ))}
+      {contextMenu && (
+        <EntryContextMenu
+          entry={contextMenu.entry}
+          x={contextMenu.x}
+          y={contextMenu.y}
+          onClose={() => setContextMenu(null)}
+          onDelete={(id) => {
+            onDelete(id);
+            setContextMenu(null);
+          }}
+          onRename={() => {
+            setContextMenu(null);
+          }}
+          onDuplicate={(id) => {
+            onDuplicate(id);
+            setContextMenu(null);
+          }}
+          onFindInScenes={(id) => {
+            onFindInScenes(id);
+            setContextMenu(null);
+          }}
+          onChangeType={(id, newType) => {
+            onChangeType(id, newType);
+            setContextMenu(null);
+          }}
+          codexTypes={codexTypes}
+        />
+      )}
+    </div>
+  );
+}
+
+// --- Sort utility (for non-category sorts) ---
 
 function sortEntries(
   entries: CodexEntry[],
@@ -329,6 +573,7 @@ export function CodexManagementPanel({
   const searchStore = useCodexStore((s) => s.search);
   const remove = useCodexStore((s) => s.remove);
   const create = useCodexStore((s) => s.create);
+  const update = useCodexStore((s) => s.update);
   const setFilterType = useCodexStore((s) => s.setFilterType);
   const setSort = useCodexStore((s) => s.setSort);
 
@@ -338,6 +583,8 @@ export function CodexManagementPanel({
   const [isStackMode, setIsStackMode] = useState(initialStackMode);
   const [showDetail, setShowDetail] = useState(false);
   const [codexTypes, setCodexTypes] = useState<CodexType[]>([]);
+  // When the user triggers "Find in scenes" we open the Mentions tab
+  const [detailInitialTab, setDetailInitialTab] = useState("details");
 
   const containerRef = useRef<HTMLDivElement>(null);
   const searchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -346,7 +593,6 @@ export function CodexManagementPanel({
     loadEntries();
   }, [loadEntries]);
 
-  // Load codex types (builtin + custom)
   useEffect(() => {
     ensureBuiltinTypes("default-project")
       .then(() => listCodexTypes("default-project"))
@@ -356,7 +602,7 @@ export function CodexManagementPanel({
 
   // Responsive: observe container width for stack/split switching
   useEffect(() => {
-    if (initialStackMode) return; // controlled by prop in tests
+    if (initialStackMode) return;
     const container = containerRef.current;
     if (!container) return;
     const observer = new ResizeObserver(([entry]) => {
@@ -410,12 +656,14 @@ export function CodexManagementPanel({
 
   const handleNewEntry = useCallback(async () => {
     const entry = await create({ type: "character", name: "Untitled" });
+    setDetailInitialTab("details");
     setSelectedEntry(entry);
     if (isStackMode) setShowDetail(true);
   }, [create, isStackMode]);
 
   const handleSelectEntry = useCallback(
-    (entry: CodexEntry) => {
+    (entry: CodexEntry, tab = "details") => {
+      setDetailInitialTab(tab);
       setSelectedEntry(entry);
       if (isStackMode) setShowDetail(true);
     },
@@ -431,6 +679,41 @@ export function CodexManagementPanel({
     [remove, isStackMode],
   );
 
+  const handleDuplicate = useCallback(
+    async (id: string) => {
+      const entry = entries.find((e) => e.id === id);
+      if (!entry) return;
+      const newEntry = await create({
+        type: entry.type as CodexEntryType,
+        name: `${entry.name} (copy)`,
+        summary: entry.summary ?? undefined,
+        aliases: entry.aliases ?? undefined,
+        excludedAliases: entry.excludedAliases ?? undefined,
+      });
+      setDetailInitialTab("details");
+      setSelectedEntry(newEntry);
+      if (isStackMode) setShowDetail(true);
+    },
+    [create, entries, isStackMode],
+  );
+
+  const handleFindInScenes = useCallback(
+    (id: string) => {
+      const entry = entries.find((e) => e.id === id);
+      if (!entry) return;
+      // Open entry detail at the Mentions tab
+      handleSelectEntry(entry, "mentions");
+    },
+    [entries, handleSelectEntry],
+  );
+
+  const handleChangeType = useCallback(
+    async (id: string, newType: string) => {
+      await update(id, { type: newType as CodexEntryType });
+    },
+    [update],
+  );
+
   const handleBack = useCallback(() => {
     setShowDetail(false);
     setSelectedEntry(null);
@@ -438,17 +721,25 @@ export function CodexManagementPanel({
 
   const handleCommandSelect = useCallback(
     (entry: CodexEntry) => {
+      setDetailInitialTab("details");
       setSelectedEntry(entry);
       if (isStackMode) setShowDetail(true);
     },
     [isStackMode],
   );
 
-  // Sorted entries (client-side)
+  // Sorted entries (client-side, only for non-category sorts)
   const sortedEntries = useMemo(
-    () => sortEntries(entries, sortOrder),
+    () =>
+      sortOrder === "category" ? entries : sortEntries(entries, sortOrder),
     [entries, sortOrder],
   );
+
+  // Build type label map from loaded types (fallback to hardcoded)
+  const typeLabels: Record<string, string> = useMemo(() => {
+    if (codexTypes.length === 0) return FALLBACK_TYPE_LABELS;
+    return Object.fromEntries(codexTypes.map((t) => [t.slug, t.label]));
+  }, [codexTypes]);
 
   // --- Header ---
   const header = (
@@ -508,12 +799,6 @@ export function CodexManagementPanel({
     </div>
   );
 
-  // Build type label map from loaded types (fallback to hardcoded)
-  const typeLabels: Record<string, string> = useMemo(() => {
-    if (codexTypes.length === 0) return FALLBACK_TYPE_LABELS;
-    return Object.fromEntries(codexTypes.map((t) => [t.slug, t.label]));
-  }, [codexTypes]);
-
   // --- Filter tabs ---
   const filterOptions: { value: CodexEntryType | "all"; label: string }[] =
     useMemo(() => {
@@ -523,7 +808,6 @@ export function CodexManagementPanel({
       if (codexTypes.length > 0) {
         codexTypes.forEach((t) => opts.push({ value: t.slug, label: t.label }));
       } else {
-        // Fallback while types load
         opts.push(
           { value: "character", label: "キャラクター" },
           { value: "location", label: "場所" },
@@ -555,29 +839,43 @@ export function CodexManagementPanel({
     </div>
   );
 
+  // Shared props for both list components
+  const listProps = {
+    isLoading,
+    selectedEntryId: selectedEntry?.id ?? null,
+    onSelect: handleSelectEntry,
+    onDelete: handleDelete,
+    onDuplicate: handleDuplicate,
+    onFindInScenes: handleFindInScenes,
+    onChangeType: handleChangeType,
+    codexTypes,
+  };
+
   // --- List panel content ---
   const listPanelContent = (
     <div data-testid="codex-list-panel" className="flex h-full flex-col">
       {searchBar}
       {filterTabs}
-      <VirtualizedEntryList
-        entries={sortedEntries}
-        isLoading={isLoading}
-        selectedEntryId={selectedEntry?.id ?? null}
-        onSelect={handleSelectEntry}
-        onDelete={handleDelete}
-        typeLabels={typeLabels}
-      />
+      {sortOrder === "category" && searchQuery === "" && filterType === null ? (
+        <CategoryGroupedList entries={entries} {...listProps} />
+      ) : (
+        <VirtualizedEntryList
+          entries={sortedEntries}
+          typeLabels={typeLabels}
+          {...listProps}
+        />
+      )}
     </div>
   );
 
   // --- Detail panel content ---
   const detailPanelContent = selectedEntry ? (
     <CodexDetailContent
-      key={selectedEntry.id}
+      key={`${selectedEntry.id}-${detailInitialTab}`}
       entry={selectedEntry}
       onDelete={handleDelete}
       onBack={isStackMode ? handleBack : undefined}
+      initialTab={detailInitialTab}
     />
   ) : (
     <div
@@ -607,7 +905,6 @@ export function CodexManagementPanel({
       {header}
 
       {isStackMode ? (
-        // Stack mode: list or detail, not both
         <div className="flex-1 overflow-hidden">
           {showDetail ? (
             <div data-testid="codex-detail-panel" className="h-full">
@@ -618,7 +915,6 @@ export function CodexManagementPanel({
           )}
         </div>
       ) : (
-        // Split mode
         <ResizablePanelGroup
           orientation="horizontal"
           className="flex-1 overflow-hidden"

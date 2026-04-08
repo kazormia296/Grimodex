@@ -30,6 +30,7 @@ describe("searchCodexEntries", () => {
     contextMode: "mentioned",
     childrenBudget: "compact",
     sourceChatMessageId: null,
+    notes: null,
     createdAt: "2025-01-01T00:00:00Z",
     updatedAt: "2025-01-01T00:00:00Z",
   };

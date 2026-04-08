@@ -17,6 +17,7 @@ const mockEntry: CodexEntry = {
   contextMode: "mentioned",
   childrenBudget: "compact",
   sourceChatMessageId: "msg-1",
+  notes: null,
   createdAt: "2024-01-01T00:00:00Z",
   updatedAt: "2024-01-01T00:00:00Z",
 };
@@ -36,6 +37,7 @@ const mockEntry2: CodexEntry = {
   contextMode: "mentioned",
   childrenBudget: "compact",
   sourceChatMessageId: null,
+  notes: null,
   createdAt: "2024-01-02T00:00:00Z",
   updatedAt: "2024-01-02T00:00:00Z",
 };

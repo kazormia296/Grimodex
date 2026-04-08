@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from "react";
-import { Trash2, MessageSquare, ArrowLeft } from "lucide-react";
+import { Trash2, ArrowLeft } from "lucide-react";
 import { db } from "@/db/client";
 import { chatMessages, chatSessions } from "@/db/schema";
 import { eq } from "drizzle-orm";
@@ -7,21 +7,16 @@ import { useAutoSave } from "@/hooks/useAutoSave";
 import { useCodexStore } from "../codexStore";
 import type { CodexEntry, CodexEntryType } from "../api";
 import type { ChildrenBudgetPreset } from "../childrenBudget";
-import { getChildrenFromArray } from "../childrenBudget";
 import { listEntryTags } from "../tagApi";
 import type { CodexTag } from "../tagApi";
 import type { CodexContextMode } from "@/db/schema";
-import { TagSelector } from "./TagSelector";
-import { TagPill } from "./TagPill";
 import { IconPicker } from "./IconPicker";
-import { ChildrenBudgetSelector } from "./ChildrenBudgetSelector";
-import { RelationSection } from "./RelationSection";
-import { ReferencesSection } from "./ReferencesSection";
-import { ContextModeSelector } from "./ContextModeSelector";
-import { AliasesField } from "./AliasesField";
-import { ExcludedAliasesField } from "./ExcludedAliasesField";
-import { CodexContentEditor } from "./CodexContentEditor";
-import { DetailsSection } from "./DetailsSection";
+import { DetailTabs } from "./DetailTabs";
+import { DetailsTab } from "./DetailsTab";
+import { RelationsTab } from "./RelationsTab";
+import { TrackingTab } from "./TrackingTab";
+import { MentionsTab } from "./MentionsTab";
+import { ResearchTab } from "./ResearchTab";
 
 const TYPE_OPTIONS: { value: CodexEntryType; label: string }[] = [
   { value: "character", label: "キャラクター" },
@@ -30,20 +25,30 @@ const TYPE_OPTIONS: { value: CodexEntryType; label: string }[] = [
   { value: "lore", label: "設定・世界観" },
 ];
 
+const TABS = [
+  { id: "details", label: "Details", testId: "detail-tab-details" },
+  { id: "relations", label: "Relations", testId: "detail-tab-relations" },
+  { id: "tracking", label: "Tracking", testId: "detail-tab-tracking" },
+  { id: "mentions", label: "Mentions", testId: "detail-tab-mentions" },
+  { id: "research", label: "Research", testId: "detail-tab-research" },
+];
+
 interface CodexDetailContentProps {
   entry: CodexEntry;
   onDelete: (id: string) => void;
   onBack?: () => void;
+  initialTab?: string;
 }
 
 export function CodexDetailContent({
   entry,
   onDelete,
   onBack,
+  initialTab = "details",
 }: CodexDetailContentProps) {
-  const entries = useCodexStore((s) => s.entries);
   const update = useCodexStore((s) => s.update);
 
+  const [activeTab, setActiveTab] = useState(initialTab);
   const [type, setType] = useState<CodexEntryType>(
     entry.type as CodexEntryType,
   );
@@ -77,14 +82,16 @@ export function CodexDetailContent({
     null,
   );
 
-  // Refs for auto-save closures (always read latest value)
   const summaryRef = useRef(summary);
   const emptyContent = !entry.content || entry.content === "{}";
   const contentRef = useRef(emptyContent ? "" : entry.content);
+  const emptyNotes = !entry.notes || entry.notes === "{}";
+  const notesRef = useRef(emptyNotes ? "" : (entry.notes ?? ""));
   summaryRef.current = summary;
 
-  // Sync form when entry.id changes (happens when key prop changes)
+  // Sync form when entry.id changes
   useEffect(() => {
+    setActiveTab(initialTab);
     setType(entry.type as CodexEntryType);
     setName(entry.name);
     setSummary(entry.summary ?? "");
@@ -113,14 +120,13 @@ export function CodexDetailContent({
     entry.excludedAliases,
     entry.childrenBudget,
     entry.icon,
+    initialTab,
   ]);
 
-  // Load tags when entry changes
   useEffect(() => {
     listEntryTags(entry.id).then(setSelectedTags);
   }, [entry.id]);
 
-  // Load source session title from sourceChatMessageId
   useEffect(() => {
     if (!entry.sourceChatMessageId) {
       setSourceSessionTitle(null);
@@ -152,9 +158,14 @@ export function CodexDetailContent({
     2000,
   );
 
-  const hasChildren = getChildrenFromArray(entry.id, entries).length > 0;
+  // Auto-save: notes (2 second debounce)
+  const { schedule: scheduleNotesSave } = useAutoSave(
+    useCallback(async () => {
+      await update(entry.id, { notes: notesRef.current });
+    }, [entry.id, update]),
+    2000,
+  );
 
-  // Immediate-save handlers
   const handleTypeChange = async (newType: CodexEntryType) => {
     setType(newType);
     await update(entry.id, { type: newType });
@@ -179,12 +190,36 @@ export function CodexDetailContent({
 
   const handleExcludedAliasesChange = async (newExcluded: string[]) => {
     setExcludedAliases(newExcluded);
-    await update(entry.id, { excludedAliases: JSON.stringify(newExcluded) });
+    await update(entry.id, {
+      excludedAliases: JSON.stringify(newExcluded),
+    });
+  };
+
+  const handleSummaryChange = (value: string) => {
+    setSummary(value);
+    summaryRef.current = value;
+    scheduleSummarySave();
+  };
+
+  const handleContentChange = (content: string) => {
+    contentRef.current = content;
+    scheduleContentSave();
+  };
+
+  const handleNotesChange = (notes: string) => {
+    notesRef.current = notes;
+    scheduleNotesSave();
+  };
+
+  const handleChildrenBudgetChange = (preset: ChildrenBudgetPreset) => {
+    setChildrenBudget(preset);
+    void update(entry.id, { childrenBudget: preset });
   };
 
   return (
     <div data-testid="codex-detail-content" className="flex h-full flex-col">
-      <div className="flex items-center justify-between border-b border-border px-3 py-2">
+      {/* Top bar */}
+      <div className="flex shrink-0 items-center justify-between border-b border-border px-3 py-2">
         <div className="flex items-center gap-1">
           {onBack && (
             <button
@@ -210,8 +245,8 @@ export function CodexDetailContent({
         </button>
       </div>
 
-      <div className="flex-1 space-y-3 overflow-y-auto px-3 py-3">
-        {/* Header: Icon + Name + Type */}
+      {/* Header: Icon + Name + Type (always visible, above tabs) */}
+      <div className="shrink-0 border-b border-border px-3 py-2">
         <div className="flex items-start gap-2">
           <IconPicker
             currentIcon={icon}
@@ -252,107 +287,53 @@ export function CodexDetailContent({
             </div>
           </div>
         </div>
+      </div>
 
-        {/* Context Mode */}
-        <ContextModeSelector
-          value={contextMode}
-          onChange={(mode) => void handleContextModeChange(mode)}
-        />
+      {/* Tab bar */}
+      <DetailTabs
+        tabs={TABS}
+        activeTab={activeTab}
+        onTabChange={setActiveTab}
+      />
 
-        {/* Aliases */}
-        <AliasesField
-          label="Aliases"
-          aliases={aliases}
-          onChange={(a) => void handleAliasesChange(a)}
-        />
-
-        {/* Excluded Aliases */}
-        <ExcludedAliasesField
-          excludedAliases={excludedAliases}
-          onChange={(e) => void handleExcludedAliasesChange(e)}
-        />
-
-        {/* Summary */}
-        <div>
-          <label className="mb-1 block text-xs font-medium">概要</label>
-          <textarea
-            data-testid="codex-detail-summary"
-            value={summary}
-            onChange={(e) => {
-              setSummary(e.target.value);
-              scheduleSummarySave();
-            }}
-            rows={3}
-            className="w-full resize-none rounded-md border border-input bg-background px-2 py-1.5 text-sm"
-            placeholder="Short description..."
-          />
-        </div>
-
-        {/* Content (TipTap) */}
-        <div>
-          <label className="mb-1 block text-xs font-medium">Content</label>
-          <CodexContentEditor
-            content={emptyContent ? "" : entry.content}
-            onContentChange={(content) => {
-              contentRef.current = content;
-              scheduleContentSave();
-            }}
-          />
-        </div>
-
-        {/* Tags */}
-        <div data-testid="codex-detail-tags">
-          <label className="mb-1 block text-xs font-medium">タグ</label>
-          <TagSelector
-            entryId={entry.id}
+      {/* Tab content */}
+      <div className="flex-1 overflow-y-auto px-3 py-3">
+        {activeTab === "details" && (
+          <DetailsTab
+            entry={entry}
+            aliases={aliases}
+            summary={summary}
             entryType={type}
             selectedTags={selectedTags}
+            onAliasesChange={(a) => void handleAliasesChange(a)}
+            onSummaryChange={handleSummaryChange}
+            onContentChange={handleContentChange}
             onTagsChange={setSelectedTags}
           />
-          {selectedTags.length > 0 && (
-            <div className="mt-1 flex flex-wrap gap-0.5">
-              {selectedTags.map((tag) => (
-                <TagPill
-                  key={tag.id}
-                  name={tag.name}
-                  color={tag.color ?? "#888888"}
-                  size="sm"
-                />
-              ))}
-            </div>
-          )}
-        </div>
-
-        {/* Children Budget */}
-        <ChildrenBudgetSelector
-          value={childrenBudget}
-          onChange={(preset) => {
-            setChildrenBudget(preset);
-            void update(entry.id, { childrenBudget: preset });
-          }}
-          hasChildren={hasChildren}
-        />
-
-        {/* Custom Details */}
-        <DetailsSection entry={entry} />
-
-        {/* References (Appears in) */}
-        <ReferencesSection entry={entry} />
-
-        {/* Relations */}
-        <RelationSection entry={entry} />
-
-        {/* Source */}
-        {entry.sourceChatMessageId && (
-          <div
-            data-testid="codex-source-chat-link"
-            className="flex items-center gap-1.5 rounded-md bg-muted/50 px-3 py-2 text-xs text-muted-foreground"
-          >
-            <MessageSquare className="h-3.5 w-3.5" />
-            <span>
-              抽出元チャット: {sourceSessionTitle ?? entry.sourceChatMessageId}
-            </span>
-          </div>
+        )}
+        {activeTab === "relations" && (
+          <RelationsTab
+            entry={entry}
+            childrenBudget={childrenBudget}
+            onChildrenBudgetChange={handleChildrenBudgetChange}
+          />
+        )}
+        {activeTab === "tracking" && (
+          <TrackingTab
+            contextMode={contextMode}
+            excludedAliases={excludedAliases}
+            onContextModeChange={(mode) => void handleContextModeChange(mode)}
+            onExcludedAliasesChange={(e) => void handleExcludedAliasesChange(e)}
+          />
+        )}
+        {activeTab === "mentions" && (
+          <MentionsTab entry={entry} sourceSessionTitle={sourceSessionTitle} />
+        )}
+        {activeTab === "research" && (
+          <ResearchTab
+            notes={emptyNotes ? "" : (entry.notes ?? "")}
+            onNotesChange={handleNotesChange}
+          />
         )}
       </div>
     </div>

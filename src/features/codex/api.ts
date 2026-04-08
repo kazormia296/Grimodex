@@ -70,6 +70,7 @@ export async function updateCodexEntry(
       | "contextMode"
       | "icon"
       | "childrenBudget"
+      | "notes"
     >
   >,
 ): Promise<CodexEntry | undefined> {

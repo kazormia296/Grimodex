@@ -1,6 +1,7 @@
-import { useEffect, useRef } from "react";
-import { Pencil, Trash2 } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import { Copy, MapPin, Pencil, Tag, Trash2 } from "lucide-react";
 import type { CodexEntry } from "../api";
+import type { CodexType } from "../typeApi";
 
 interface EntryContextMenuProps {
   entry: CodexEntry;
@@ -9,6 +10,10 @@ interface EntryContextMenuProps {
   onClose: () => void;
   onDelete: (id: string) => void;
   onRename: (id: string) => void;
+  onDuplicate?: (id: string) => void;
+  onFindInScenes?: (id: string) => void;
+  onChangeType?: (id: string, newType: string) => void;
+  codexTypes?: CodexType[];
 }
 
 export function EntryContextMenu({
@@ -18,10 +23,14 @@ export function EntryContextMenu({
   onClose,
   onDelete,
   onRename,
+  onDuplicate,
+  onFindInScenes,
+  onChangeType,
+  codexTypes = [],
 }: EntryContextMenuProps) {
   const menuRef = useRef<HTMLDivElement>(null);
+  const [showTypeSubmenu, setShowTypeSubmenu] = useState(false);
 
-  // Close on click outside
   useEffect(() => {
     const handlePointerDown = (e: PointerEvent) => {
       if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
@@ -32,7 +41,6 @@ export function EntryContextMenu({
     return () => document.removeEventListener("pointerdown", handlePointerDown);
   }, [onClose]);
 
-  // Close on Escape
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === "Escape") onClose();
@@ -51,12 +59,27 @@ export function EntryContextMenu({
     onClose();
   };
 
+  const handleDuplicate = () => {
+    onDuplicate?.(entry.id);
+    onClose();
+  };
+
+  const handleFindInScenes = () => {
+    onFindInScenes?.(entry.id);
+    onClose();
+  };
+
+  const handleChangeType = (newType: string) => {
+    onChangeType?.(entry.id, newType);
+    onClose();
+  };
+
   return (
     <div
       ref={menuRef}
       data-testid="entry-context-menu"
       style={{ left: `${x}px`, top: `${y}px` }}
-      className="fixed z-50 min-w-[160px] rounded-lg border border-border bg-background shadow-lg"
+      className="fixed z-50 min-w-[180px] rounded-lg border border-border bg-background shadow-lg"
     >
       {/* Header */}
       <div className="border-b border-border px-3 py-2">
@@ -74,6 +97,64 @@ export function EntryContextMenu({
         >
           <Pencil className="h-3.5 w-3.5 text-muted-foreground" />
           名前を変更
+        </button>
+
+        <button
+          type="button"
+          data-testid="entry-context-menu-duplicate"
+          onClick={handleDuplicate}
+          className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm hover:bg-accent"
+        >
+          <Copy className="h-3.5 w-3.5 text-muted-foreground" />
+          複製
+        </button>
+
+        {/* Change type */}
+        <div className="relative">
+          <button
+            type="button"
+            data-testid="entry-context-menu-change-type"
+            onClick={() => setShowTypeSubmenu((prev) => !prev)}
+            className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm hover:bg-accent"
+          >
+            <Tag className="h-3.5 w-3.5 text-muted-foreground" />
+            タイプ変更
+          </button>
+          {showTypeSubmenu && codexTypes.length > 0 && (
+            <div className="absolute left-full top-0 z-50 min-w-[140px] rounded-lg border border-border bg-background shadow-lg">
+              <div className="py-1">
+                {codexTypes.map((t) => (
+                  <button
+                    key={t.slug}
+                    type="button"
+                    data-testid={`entry-context-menu-type-${t.slug}`}
+                    onClick={() => handleChangeType(t.slug)}
+                    className={`flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm hover:bg-accent ${
+                      entry.type === t.slug ? "font-medium" : ""
+                    }`}
+                  >
+                    <span
+                      className="h-2 w-2 shrink-0 rounded-full"
+                      style={{ backgroundColor: t.color }}
+                    />
+                    {t.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+
+        <div className="my-1 border-t border-border" />
+
+        <button
+          type="button"
+          data-testid="entry-context-menu-find-in-scenes"
+          onClick={handleFindInScenes}
+          className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm hover:bg-accent"
+        >
+          <MapPin className="h-3.5 w-3.5 text-muted-foreground" />
+          シーンで検索
         </button>
 
         <div className="my-1 border-t border-border" />
