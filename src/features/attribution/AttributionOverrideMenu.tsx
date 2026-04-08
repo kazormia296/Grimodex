@@ -44,6 +44,7 @@ export function AttributionOverrideMenu({ editor }: { editor: Editor | null }) {
       if (!hasAuthorship) return;
 
       e.preventDefault();
+      e.stopPropagation();
       setPosition({ x: e.clientX, y: e.clientY });
     };
 
