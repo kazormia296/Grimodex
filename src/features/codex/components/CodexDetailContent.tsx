@@ -1,5 +1,8 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { Trash2, MessageSquare, ArrowLeft } from "lucide-react";
+import { db } from "@/db/client";
+import { chatMessages, chatSessions } from "@/db/schema";
+import { eq } from "drizzle-orm";
 import { useAutoSave } from "@/hooks/useAutoSave";
 import { useCodexStore } from "../codexStore";
 import type { CodexEntry, CodexEntryType } from "../api";
@@ -13,6 +16,7 @@ import { TagPill } from "./TagPill";
 import { IconPicker } from "./IconPicker";
 import { ChildrenBudgetSelector } from "./ChildrenBudgetSelector";
 import { RelationSection } from "./RelationSection";
+import { ReferencesSection } from "./ReferencesSection";
 import { ContextModeSelector } from "./ContextModeSelector";
 import { AliasesField } from "./AliasesField";
 import { ExcludedAliasesField } from "./ExcludedAliasesField";
@@ -69,6 +73,9 @@ export function CodexDetailContent({
   const [icon, setIcon] = useState<number[] | null>(
     (entry.icon as number[] | null) ?? null,
   );
+  const [sourceSessionTitle, setSourceSessionTitle] = useState<string | null>(
+    null,
+  );
 
   // Refs for auto-save closures (always read latest value)
   const summaryRef = useRef(summary);
@@ -111,6 +118,22 @@ export function CodexDetailContent({
   useEffect(() => {
     listEntryTags(entry.id).then(setSelectedTags);
   }, [entry.id]);
+
+  // Load source session title from sourceChatMessageId
+  useEffect(() => {
+    if (!entry.sourceChatMessageId) {
+      setSourceSessionTitle(null);
+      return;
+    }
+    db.select({ title: chatSessions.title })
+      .from(chatMessages)
+      .innerJoin(chatSessions, eq(chatMessages.sessionId, chatSessions.id))
+      .where(eq(chatMessages.id, entry.sourceChatMessageId))
+      .then((rows) => {
+        setSourceSessionTitle(rows[0]?.title ?? null);
+      })
+      .catch(() => setSourceSessionTitle(null));
+  }, [entry.sourceChatMessageId]);
 
   // Auto-save: summary (1 second debounce)
   const { schedule: scheduleSummarySave } = useAutoSave(
@@ -312,6 +335,9 @@ export function CodexDetailContent({
         {/* Custom Details */}
         <DetailsSection entry={entry} />
 
+        {/* References (Appears in) */}
+        <ReferencesSection entry={entry} />
+
         {/* Relations */}
         <RelationSection entry={entry} />
 
@@ -322,7 +348,9 @@ export function CodexDetailContent({
             className="flex items-center gap-1.5 rounded-md bg-muted/50 px-3 py-2 text-xs text-muted-foreground"
           >
             <MessageSquare className="h-3.5 w-3.5" />
-            <span>抽出元チャット: {entry.sourceChatMessageId}</span>
+            <span>
+              抽出元チャット: {sourceSessionTitle ?? entry.sourceChatMessageId}
+            </span>
           </div>
         )}
       </div>
