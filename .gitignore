@@ -5,3 +5,4 @@ dist/
 .claude/settings.local.json
 docs/.claude/settings.local.json
 .obsidian/
+temp/
