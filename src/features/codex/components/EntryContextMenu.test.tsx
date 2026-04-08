@@ -1,0 +1,96 @@
+// @vitest-environment happy-dom
+import { describe, it, expect, vi } from "vitest";
+import { render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { EntryContextMenu } from "./EntryContextMenu";
+import type { CodexEntry } from "@/features/codex/api";
+
+const mockEntry: CodexEntry = {
+  id: "entry-1",
+  projectId: "proj-1",
+  parentId: null,
+  type: "character",
+  name: "アリス",
+  summary: "主人公",
+  content: "{}",
+  icon: null,
+  aliases: "[]",
+  excludedAliases: "[]",
+  tagsCache: null,
+  contextMode: "mentioned",
+  childrenBudget: "compact",
+  sourceChatMessageId: null,
+  createdAt: "2024-01-01T00:00:00Z",
+  updatedAt: "2024-01-01T00:00:00Z",
+};
+
+const defaultProps = {
+  entry: mockEntry,
+  x: 100,
+  y: 200,
+  onClose: vi.fn(),
+  onDelete: vi.fn(),
+  onRename: vi.fn(),
+};
+
+describe("EntryContextMenu", () => {
+  it("renders at the specified position", () => {
+    render(<EntryContextMenu {...defaultProps} />);
+    const menu = screen.getByTestId("entry-context-menu");
+    expect(menu).toBeInTheDocument();
+    // Position is applied via inline style
+    expect(menu).toHaveStyle({ left: "100px", top: "200px" });
+  });
+
+  it("shows Delete menu item", () => {
+    render(<EntryContextMenu {...defaultProps} />);
+    expect(screen.getByTestId("entry-context-menu-delete")).toBeInTheDocument();
+  });
+
+  it("shows Rename menu item", () => {
+    render(<EntryContextMenu {...defaultProps} />);
+    expect(screen.getByTestId("entry-context-menu-rename")).toBeInTheDocument();
+  });
+
+  it("shows entry name in header", () => {
+    render(<EntryContextMenu {...defaultProps} />);
+    expect(screen.getByText("アリス")).toBeInTheDocument();
+  });
+
+  it("calls onDelete when Delete is clicked", async () => {
+    const user = userEvent.setup();
+    const onDelete = vi.fn();
+    render(<EntryContextMenu {...defaultProps} onDelete={onDelete} />);
+    await user.click(screen.getByTestId("entry-context-menu-delete"));
+    expect(onDelete).toHaveBeenCalledWith("entry-1");
+  });
+
+  it("calls onRename when Rename is clicked", async () => {
+    const user = userEvent.setup();
+    const onRename = vi.fn();
+    render(<EntryContextMenu {...defaultProps} onRename={onRename} />);
+    await user.click(screen.getByTestId("entry-context-menu-rename"));
+    expect(onRename).toHaveBeenCalledWith("entry-1");
+  });
+
+  it("calls onClose when clicking outside the menu", async () => {
+    const user = userEvent.setup();
+    const onClose = vi.fn();
+    render(
+      <div>
+        <EntryContextMenu {...defaultProps} onClose={onClose} />
+        <button data-testid="outside">outside</button>
+      </div>,
+    );
+    await user.click(screen.getByTestId("outside"));
+    expect(onClose).toHaveBeenCalled();
+  });
+
+  it("calls onClose after any action", async () => {
+    const user = userEvent.setup();
+    const onClose = vi.fn();
+    render(<EntryContextMenu {...defaultProps} onClose={onClose} />);
+    await user.click(screen.getByTestId("entry-context-menu-delete"));
+    expect(onClose).toHaveBeenCalled();
+  });
+});

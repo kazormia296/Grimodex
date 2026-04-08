@@ -20,6 +20,7 @@ import { listCodexTypes, ensureBuiltinTypes } from "./typeApi";
 import { EntryIcon } from "./components/EntryIcon";
 import { TagPill } from "./components/TagPill";
 import { CodexDetailContent } from "./components/CodexDetailContent";
+import { EntryContextMenu } from "./components/EntryContextMenu";
 
 // Fallback labels for when types haven't loaded yet
 const FALLBACK_TYPE_LABELS: Record<string, string> = {
@@ -143,15 +144,22 @@ function VirtualizedEntryList({
   isLoading,
   selectedEntryId,
   onSelect,
+  onDelete,
   typeLabels,
 }: {
   entries: CodexEntry[];
   isLoading: boolean;
   selectedEntryId: string | null;
   onSelect: (entry: CodexEntry) => void;
+  onDelete: (id: string) => void;
   typeLabels: Record<string, string>;
 }) {
   const parentRef = useRef<HTMLDivElement>(null);
+  const [contextMenu, setContextMenu] = useState<{
+    entry: CodexEntry;
+    x: number;
+    y: number;
+  } | null>(null);
   const virtualizer = useVirtualizer({
     count: entries.length,
     getScrollElement: () => parentRef.current,
@@ -214,6 +222,10 @@ function VirtualizedEntryList({
                 type="button"
                 data-testid={`codex-entry-${entry.id}`}
                 onClick={() => onSelect(entry)}
+                onContextMenu={(e) => {
+                  e.preventDefault();
+                  setContextMenu({ entry, x: e.clientX, y: e.clientY });
+                }}
                 className={`h-full w-full px-3 py-2 text-left hover:bg-accent ${
                   selectedEntryId === entry.id ? "bg-accent" : ""
                 }`}
@@ -253,6 +265,21 @@ function VirtualizedEntryList({
           );
         })}
       </div>
+      {contextMenu && (
+        <EntryContextMenu
+          entry={contextMenu.entry}
+          x={contextMenu.x}
+          y={contextMenu.y}
+          onClose={() => setContextMenu(null)}
+          onDelete={(id) => {
+            onDelete(id);
+            setContextMenu(null);
+          }}
+          onRename={() => {
+            setContextMenu(null);
+          }}
+        />
+      )}
     </div>
   );
 }
@@ -538,6 +565,7 @@ export function CodexManagementPanel({
         isLoading={isLoading}
         selectedEntryId={selectedEntry?.id ?? null}
         onSelect={handleSelectEntry}
+        onDelete={handleDelete}
         typeLabels={typeLabels}
       />
     </div>

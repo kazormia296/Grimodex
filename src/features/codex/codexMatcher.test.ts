@@ -170,6 +170,122 @@ describe("createCodexMatcher", () => {
   });
 });
 
+describe("aliases support", () => {
+  it("matches an alias in addition to the entry name", () => {
+    const entries: CodexMatchTarget[] = [
+      {
+        id: "codex-1",
+        name: "エララ",
+        type: "character",
+        aliases: ["the apprentice", "見習い"],
+      },
+    ];
+    const matcher = createCodexMatcher(entries);
+    expect(matcher("エララが来た")).toHaveLength(1);
+    expect(matcher("見習いが来た")[0]).toMatchObject({ entryId: "codex-1" });
+    expect(matcher("the apprentice arrived")[0]).toMatchObject({
+      entryId: "codex-1",
+    });
+  });
+
+  it("reports the matched alias text in entryName field", () => {
+    const entries: CodexMatchTarget[] = [
+      {
+        id: "codex-1",
+        name: "エララ",
+        type: "character",
+        aliases: ["見習い"],
+      },
+    ];
+    const matcher = createCodexMatcher(entries);
+    const matches = matcher("見習いが走った");
+    expect(matches[0].entryName).toBe("エララ");
+    expect(matches[0].from).toBe(0);
+    expect(matches[0].to).toBe(3);
+  });
+});
+
+describe("excluded aliases (exclusion patterns)", () => {
+  it("excludes matches covered by an exclusion pattern", () => {
+    const entries: CodexMatchTarget[] = [
+      {
+        id: "codex-1",
+        name: "青",
+        type: "character",
+        excludedAliases: ["青い", "青の", "青く"],
+      },
+    ];
+    const matcher = createCodexMatcher(entries);
+    // "青い" covers "青" at pos 0 → excluded
+    expect(matcher("青い空を見上げた")).toHaveLength(0);
+  });
+
+  it("keeps match not covered by exclusion pattern", () => {
+    const entries: CodexMatchTarget[] = [
+      {
+        id: "codex-1",
+        name: "青",
+        type: "character",
+        excludedAliases: ["青い", "青の", "青く"],
+      },
+    ];
+    const matcher = createCodexMatcher(entries);
+    // "青は振り返った" — "青は" is not an exclusion pattern
+    const matches = matcher("青は振り返った");
+    expect(matches).toHaveLength(1);
+    expect(matches[0]).toMatchObject({ entryId: "codex-1", from: 0, to: 1 });
+  });
+
+  it("only applies exclusions to the same entry", () => {
+    const entries: CodexMatchTarget[] = [
+      {
+        id: "codex-1",
+        name: "青",
+        type: "character",
+        excludedAliases: ["青い"],
+      },
+      { id: "codex-2", name: "空", type: "location", excludedAliases: [] },
+    ];
+    const matcher = createCodexMatcher(entries);
+    // "青い空" — "青" excluded by "青い", but "空" is not
+    const matches = matcher("青い空");
+    expect(matches).toHaveLength(1);
+    expect(matches[0].entryId).toBe("codex-2");
+  });
+});
+
+describe("CJK boundary checking", () => {
+  it("does not match CJK name embedded in longer same-class token", () => {
+    const entries: CodexMatchTarget[] = [
+      { id: "codex-1", name: "太郎", type: "character" },
+    ];
+    const matcher = createCodexMatcher(entries);
+    // "山田太郎" — 太郎 is preceded by kanji 田 → invalid boundary → no match
+    expect(matcher("山田太郎")).toHaveLength(0);
+    // But standalone 太郎 should still match
+    expect(matcher("太郎が来た")).toHaveLength(1);
+  });
+
+  it("matches katakana name followed by hiragana (valid boundary)", () => {
+    const entries: CodexMatchTarget[] = [
+      { id: "codex-1", name: "エララ", type: "character" },
+    ];
+    const matcher = createCodexMatcher(entries);
+    expect(matcher("エララが走った")).toHaveLength(1);
+  });
+
+  it("does not match katakana name followed by katakana", () => {
+    const entries: CodexMatchTarget[] = [
+      { id: "codex-1", name: "エラ", type: "character" },
+    ];
+    const matcher = createCodexMatcher(entries);
+    // "エラーが" — エラ + ー(katakana) → invalid boundary
+    expect(matcher("エラーが出た")).toHaveLength(0);
+    // But standalone エラ should match
+    expect(matcher("エラが来た")).toHaveLength(1);
+  });
+});
+
 describe("findMentionedEntries", () => {
   it("returns unique entries mentioned in text", () => {
     const entries: CodexMatchTarget[] = [
