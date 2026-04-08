@@ -38,6 +38,8 @@ export async function buildCrossReferenceReport(): Promise<
     id: e.id,
     name: e.name,
     type: e.type,
+    aliases: e.aliases,
+    excludedAliases: e.excludedAliases,
   }));
   const matcher = createCodexMatcher(targets);
 

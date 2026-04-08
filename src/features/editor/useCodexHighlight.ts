@@ -37,7 +37,13 @@ export function useCodexHighlight(editor: Editor | null) {
   // Update match targets when codex entries change or highlight is toggled
   useEffect(() => {
     const targets = enabled
-      ? entries.map((e) => ({ id: e.id, name: e.name, type: e.type }))
+      ? entries.map((e) => ({
+          id: e.id,
+          name: e.name,
+          type: e.type,
+          aliases: e.aliases,
+          excludedAliases: e.excludedAliases,
+        }))
       : [];
     setMatchTargets(targets);
   }, [entries, setMatchTargets, enabled]);
