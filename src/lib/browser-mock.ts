@@ -122,6 +122,23 @@ const SCHEMA_DDL = `
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL
   );
+  CREATE TABLE IF NOT EXISTS codex_detail_definitions (
+    id TEXT PRIMARY KEY,
+    project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    type_slug TEXT NOT NULL,
+    name TEXT NOT NULL,
+    field_type TEXT NOT NULL DEFAULT 'text',
+    field_config TEXT,
+    sort_order REAL NOT NULL DEFAULT 0.0,
+    include_in_context INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS codex_detail_values (
+    id TEXT PRIMARY KEY,
+    entry_id TEXT NOT NULL REFERENCES codex_entries(id) ON DELETE CASCADE,
+    definition_id TEXT NOT NULL REFERENCES codex_detail_definitions(id) ON DELETE CASCADE,
+    value TEXT
+  );
 `;
 
 const CONTENT_PREFIX = "grimodex:content:";

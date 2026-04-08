@@ -17,6 +17,7 @@ import { ContextModeSelector } from "./ContextModeSelector";
 import { AliasesField } from "./AliasesField";
 import { ExcludedAliasesField } from "./ExcludedAliasesField";
 import { CodexContentEditor } from "./CodexContentEditor";
+import { DetailsSection } from "./DetailsSection";
 
 const TYPE_OPTIONS: { value: CodexEntryType; label: string }[] = [
   { value: "character", label: "キャラクター" },
@@ -307,6 +308,9 @@ export function CodexDetailContent({
           }}
           hasChildren={hasChildren}
         />
+
+        {/* Custom Details */}
+        <DetailsSection entry={entry} />
 
         {/* Relations */}
         <RelationSection entry={entry} />
