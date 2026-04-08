@@ -264,7 +264,7 @@ Codexパネルはプロジェクトの世界設定データベース。キャラ
 
 ### Content フィールド（TipTapミニエディタ）
 
-- TipTapの軽量インスタンス。StarterKitのサブセット（太字、斜体、見出し、リスト、リンク）。入力時のMarkdown記法をリアルタイムにリッチテキストとしてレンダリング
+- TipTapの軽量インスタンス。StarterKitのサブセット（太字、斜体、見出し、リスト、リンク、表）。入力時のMarkdown記法をリアルタイムにリッチテキストとしてレンダリング
 - キャラクターの詳細な背景設定、場所の歴史、アイテムの由来など、長文の設定情報を記述
 - **Open in Editor**: Content フィールドの右上に「Open in Editor ↗」ボタンを表示。クリックするとエディタパネルにCodexタブとして開き、エディタの全機能（インラインAI、CodexHighlight、Chat連携）で編集できる。Codexパネル内のミニエディタとエディタタブのcontentは同一DBレコード（`codex_entries.content`）を参照しており、一方の変更が他方に即時反映される
 - **CodexHighlight対応**: エディタ本文と同じCodexHighlight Pure Decorationを適用。Content内で言及された他のCodexエントリがハイライトされ、ホバーポップオーバーで確認、「Open in Codex →」で遷移可能。自エントリ自身のnameとaliasesはハイライト対象から除外
@@ -290,11 +290,28 @@ Content フィールドの下に配置。タイプごとに定義されたカス
 
 | field_type | UI | 保存値 |
 |-----------|-----|--------|
-| `text` | `<input>` または `<textarea>`（`field_config.multiline` で制御） | プレーンテキスト |
+| `text` | TipTapミニエディタ（Contentフィールドと同一構成） | ProseMirror JSON |
 | `dropdown` | `<select>`。選択肢は `field_config.options` から生成 | 選択肢文字列 |
 | `codex_reference` | 検索UIでCodexエントリを選択。ピル表示（クリックで遷移） | エントリID |
 
 `codex_reference` の `field_config.allowedTypes` で参照可能なタイプを制限可能（NULL = 全タイプ）。
+
+#### text フィールドのTipTapエディタ
+
+`text` フィールドはContentフィールドと同一のTipTapミニエディタを使用する。機能はContentフィールドに準ずる:
+
+- **エディタ構成**: StarterKitのサブセット（太字、斜体、見出し、リスト、リンク、表）。Markdown記法のリアルタイムレンダリング
+- **CodexHighlight対応**: Contentフィールドと同じCodexHighlight Pure Decorationを適用。フィールド内で言及された他のCodexエントリがハイライトされ、ホバーポップオーバーで確認、「Open in Codex →」で遷移可能。自エントリ自身のnameとaliasesはハイライト対象から除外
+- **Attribution追跡**: Contentフィールドと同じAuthorshipMark体系を適用する
+  - キーボード入力 → `{ source: 'human' }`
+  - Chatから抽出されたテキスト → `{ source: 'ai', model, chatMessageId }`
+  - アプリ内ペースト → 元テキストのAuthorshipMarkを継承
+  - 外部ペースト → `{ source: 'unknown' }`
+  - `ai` マーク付きテキストの編集 → `ai` のまま維持
+  - AuthorshipMarkのデータは `authorship_spans` テーブルに `detail_value_id` を指定して永続化
+  - AttributionHighlight（背景色ハイライト）はAttr表示トグル連動
+- **保存**: ProseMirror JSONで `codex_detail_values.value` に保存。自動保存（デバウンス2秒）
+- **AIコンテキスト注入時**: ProseMirror JSONからプレーンテキストに変換して注入（Contentフィールドのフォールバック注入と同じ方式）
 
 #### AIコンテキスト注入制御
 
@@ -389,9 +406,8 @@ Content フィールドの下に配置。タイプごとに定義されたカス
 ##### field_type 別の追加設定
 
 **Text**:
-| 設定 | UI | 対応 |
-|------|-----|------|
-| Multiline | チェックボックス「Multiple lines」 | `field_config.multiline` |
+
+追加設定なし（TipTapミニエディタが複数行を標準でサポート）。
 
 **Dropdown**:
 | 設定 | UI | 対応 |
@@ -416,9 +432,9 @@ Content フィールドの下に配置。タイプごとに定義されたカス
 
 | 変更パターン | 振る舞い |
 |-------------|---------|
-| text → dropdown | 既存のテキスト値はそのまま保持。ドロップダウンの選択肢に含まれない場合は警告表示 |
-| text → codex_reference | 既存のテキスト値はクリア（エントリIDではないため）。確認ダイアログ表示 |
-| dropdown → text | 既存の選択肢文字列はそのままテキスト値として保持。互換あり |
+| text → dropdown | 既存のProseMirror JSONはクリア（形式が非互換）。確認ダイアログ表示。関連する `authorship_spans`（`detail_value_id`）も削除 |
+| text → codex_reference | 既存のProseMirror JSONはクリア（形式が非互換）。確認ダイアログ表示。関連する `authorship_spans` も削除 |
+| dropdown → text | 既存の選択肢文字列をプレーンテキストとしてProseMirror JSONの段落ノードに変換。互換あり |
 | dropdown → codex_reference | 既存値はクリア。確認ダイアログ表示 |
 | codex_reference → text | 既存のエントリIDはクリア（表示上意味がないため）。確認ダイアログ表示 |
 | codex_reference → dropdown | 既存値はクリア。確認ダイアログ表示 |

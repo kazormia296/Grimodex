@@ -72,6 +72,9 @@ codex_tags (1)
 codex_detail_definitions (1)
  └──< codex_detail_values (*) definition_id
 
+codex_detail_values (1)
+ └──< authorship_spans (*)    detail_value_id (nullable)
+
 chat_sessions (1)
  └──< chat_messages (*)       session_id (ON DELETE CASCADE)
 
@@ -286,7 +289,7 @@ field_config のJSON構造:
 
 | field_type | field_config | 例 |
 |-----------|-------------|-----|
-| `text` | `{ "multiline": boolean }` | `{ "multiline": false }` |
+| `text` | `{}` | `{}` |
 | `dropdown` | `{ "options": string[] }` | `{ "options": ["人間", "エルフ", "ドワーフ"] }` |
 | `codex_reference` | `{ "allowedTypes": string[] \| null }` | `{ "allowedTypes": ["faction"] }` |
 
@@ -299,7 +302,7 @@ CREATE TABLE codex_detail_values (
   id            TEXT PRIMARY KEY,
   entry_id      TEXT NOT NULL REFERENCES codex_entries(id) ON DELETE CASCADE,
   definition_id TEXT NOT NULL REFERENCES codex_detail_definitions(id) ON DELETE CASCADE,
-  value         TEXT,   -- text: プレーンテキスト, dropdown: 選択肢文字列, codex_reference: エントリID
+  value         TEXT,   -- text: ProseMirror JSON, dropdown: 選択肢文字列, codex_reference: エントリID
   UNIQUE(entry_id, definition_id)
 );
 
@@ -374,31 +377,34 @@ CREATE INDEX idx_chat_messages_session ON chat_messages(session_id, created_at);
 ### authorship_spans
 
 AI帰属追跡。エディタの自動保存時にTipTap AuthorshipMarkから同期。
-対象ドキュメントの種別に応じて `node_id`、`codex_entry_id`、`snippet_id` のいずれか1つのみを設定する。
+対象ドキュメントの種別に応じて `node_id`、`codex_entry_id`、`snippet_id`、`detail_value_id` のいずれか1つのみを設定する。
 
 ```sql
 CREATE TABLE authorship_spans (
   id              TEXT PRIMARY KEY,
-  node_id         TEXT REFERENCES tree_nodes(id),       -- Scene/Note の場合
-  codex_entry_id  TEXT REFERENCES codex_entries(id),     -- Codex content の場合
-  snippet_id      TEXT REFERENCES snippets(id),          -- Snippet content の場合
+  node_id         TEXT REFERENCES tree_nodes(id),              -- Scene/Note の場合
+  codex_entry_id  TEXT REFERENCES codex_entries(id),            -- Codex content の場合
+  snippet_id      TEXT REFERENCES snippets(id),                 -- Snippet content の場合
+  detail_value_id TEXT REFERENCES codex_detail_values(id) ON DELETE CASCADE, -- Codex カスタムディテール text フィールドの場合
   from_pos        INTEGER NOT NULL,
   to_pos          INTEGER NOT NULL,
   source          TEXT NOT NULL,       -- 'human'|'ai'|'unknown'
   model           TEXT,                -- AI生成時のモデル名
   timestamp       TEXT,                -- ISO 8601
   chat_msg_id     TEXT,                -- 抽出元チャットメッセージID（nullable）
-  -- node_id, codex_entry_id, snippet_id のいずれか1つのみNOT NULL
+  -- node_id, codex_entry_id, snippet_id, detail_value_id のいずれか1つのみNOT NULL
   CHECK (
-    (node_id IS NOT NULL AND codex_entry_id IS NULL AND snippet_id IS NULL) OR
-    (node_id IS NULL AND codex_entry_id IS NOT NULL AND snippet_id IS NULL) OR
-    (node_id IS NULL AND codex_entry_id IS NULL AND snippet_id IS NOT NULL)
+    (CASE WHEN node_id IS NOT NULL THEN 1 ELSE 0 END +
+     CASE WHEN codex_entry_id IS NOT NULL THEN 1 ELSE 0 END +
+     CASE WHEN snippet_id IS NOT NULL THEN 1 ELSE 0 END +
+     CASE WHEN detail_value_id IS NOT NULL THEN 1 ELSE 0 END) = 1
   )
 );
 
 CREATE INDEX idx_authorship_node ON authorship_spans(node_id, source);
 CREATE INDEX idx_authorship_codex ON authorship_spans(codex_entry_id, source);
 CREATE INDEX idx_authorship_snippet ON authorship_spans(snippet_id, source);
+CREATE INDEX idx_authorship_detail ON authorship_spans(detail_value_id, source);
 ```
 
 ### settings
