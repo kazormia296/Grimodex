@@ -227,10 +227,9 @@ describe("codexStore", () => {
   });
 
   describe("update", () => {
-    it("updates an entry and reloads", async () => {
+    it("calls updateCodexEntry with the given data", async () => {
       const updated = { ...mockEntry, name: "アリス改" };
       mockUpdateCodexEntry.mockResolvedValue(updated);
-      mockListCodexEntries.mockResolvedValue([updated]);
 
       await useCodexStore.getState().update("codex-1", { name: "アリス改" });
 
@@ -239,10 +238,20 @@ describe("codexStore", () => {
       });
     });
 
+    it("optimistically updates entries in store without reloading", async () => {
+      useCodexStore.setState({ entries: [mockEntry] });
+      const updated = { ...mockEntry, name: "アリス改" };
+      mockUpdateCodexEntry.mockResolvedValue(updated);
+
+      await useCodexStore.getState().update("codex-1", { name: "アリス改" });
+
+      expect(useCodexStore.getState().entries[0].name).toBe("アリス改");
+      expect(mockListCodexEntries).not.toHaveBeenCalled();
+    });
+
     it("updates contextMode via store", async () => {
       const updated = { ...mockEntry, contextMode: "always" };
       mockUpdateCodexEntry.mockResolvedValue(updated);
-      mockListCodexEntries.mockResolvedValue([updated]);
 
       await useCodexStore
         .getState()
@@ -250,6 +259,32 @@ describe("codexStore", () => {
 
       expect(mockUpdateCodexEntry).toHaveBeenCalledWith("codex-1", {
         contextMode: "always",
+      });
+    });
+
+    it("supports updating content field", async () => {
+      const updated = { ...mockEntry, content: '{"type":"doc","content":[]}' };
+      mockUpdateCodexEntry.mockResolvedValue(updated);
+
+      await useCodexStore.getState().update("codex-1", {
+        content: '{"type":"doc","content":[]}',
+      });
+
+      expect(mockUpdateCodexEntry).toHaveBeenCalledWith("codex-1", {
+        content: '{"type":"doc","content":[]}',
+      });
+    });
+
+    it("supports updating aliases field", async () => {
+      const updated = { ...mockEntry, aliases: '["エララ","the apprentice"]' };
+      mockUpdateCodexEntry.mockResolvedValue(updated);
+
+      await useCodexStore
+        .getState()
+        .update("codex-1", { aliases: '["エララ","the apprentice"]' });
+
+      expect(mockUpdateCodexEntry).toHaveBeenCalledWith("codex-1", {
+        aliases: '["エララ","the apprentice"]',
       });
     });
   });

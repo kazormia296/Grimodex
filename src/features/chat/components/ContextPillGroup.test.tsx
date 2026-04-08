@@ -11,6 +11,7 @@ function makeEntry(id: string, name: string, type = "character"): CodexEntry {
     name,
     type,
     summary: "テスト用サマリー",
+    content: "{}",
     contextMode: "auto",
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),

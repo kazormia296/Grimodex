@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from "react";
-import { Search, Trash2, Save, MessageSquare } from "lucide-react";
+import { Search } from "lucide-react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import {
   ResizablePanelGroup,
@@ -8,24 +8,9 @@ import {
 } from "@/components/ui/resizable";
 import { useCodexStore } from "./codexStore";
 import type { CodexEntry, CodexEntryType } from "./api";
-import { ChildrenBudgetSelector } from "./components/ChildrenBudgetSelector";
-import { RelationSection } from "./components/RelationSection";
-import type { ChildrenBudgetPreset } from "./childrenBudget";
-import { getChildrenFromArray } from "./childrenBudget";
-import { listEntryTags } from "./tagApi";
-import type { CodexTag } from "./tagApi";
-import { TagSelector } from "./components/TagSelector";
-import { TagPill } from "./components/TagPill";
-import { IconPicker } from "./components/IconPicker";
 import { EntryIcon } from "./components/EntryIcon";
-
-const TYPE_OPTIONS: { value: CodexEntryType | "all"; label: string }[] = [
-  { value: "all", label: "すべて" },
-  { value: "character", label: "キャラクター" },
-  { value: "location", label: "場所" },
-  { value: "item", label: "アイテム" },
-  { value: "lore", label: "設定・世界観" },
-];
+import { TagPill } from "./components/TagPill";
+import { CodexDetailContent } from "./components/CodexDetailContent";
 
 const TYPE_LABELS: Record<string, string> = {
   character: "キャラクター",
@@ -126,185 +111,6 @@ function CommandPalette({
           <p className="p-3 text-center text-xs text-muted-foreground">
             結果なし
           </p>
-        )}
-      </div>
-    </div>
-  );
-}
-
-// --- Detail Panel ---
-
-function CodexDetailContent({
-  entry,
-  onSave,
-  onDelete,
-}: {
-  entry: CodexEntry;
-  onSave: (
-    id: string,
-    data: {
-      type: CodexEntryType;
-      name: string;
-      summary: string;
-      childrenBudget: ChildrenBudgetPreset;
-    },
-  ) => void;
-  onDelete: (id: string) => void;
-}) {
-  const entries = useCodexStore((s) => s.entries);
-  const update = useCodexStore((s) => s.update);
-  const [type, setType] = useState<CodexEntryType>(
-    entry.type as CodexEntryType,
-  );
-  const [name, setName] = useState(entry.name);
-  const [summary, setSummary] = useState(entry.summary ?? "");
-  const [childrenBudget, setChildrenBudget] = useState<ChildrenBudgetPreset>(
-    (entry.childrenBudget as ChildrenBudgetPreset) ?? "compact",
-  );
-  const [selectedTags, setSelectedTags] = useState<CodexTag[]>([]);
-  const [icon, setIcon] = useState<number[] | null>(
-    (entry.icon as number[] | null) ?? null,
-  );
-
-  // Sync form when entry changes
-  useEffect(() => {
-    setType(entry.type as CodexEntryType);
-    setName(entry.name);
-    setSummary(entry.summary ?? "");
-    setChildrenBudget(
-      (entry.childrenBudget as ChildrenBudgetPreset) ?? "compact",
-    );
-    setIcon((entry.icon as number[] | null) ?? null);
-  }, [
-    entry.id,
-    entry.type,
-    entry.name,
-    entry.summary,
-    entry.tagsCache,
-    entry.childrenBudget,
-    entry.icon,
-  ]);
-
-  // Load tags when entry changes
-  useEffect(() => {
-    listEntryTags(entry.id).then(setSelectedTags);
-  }, [entry.id]);
-
-  const hasChildren = getChildrenFromArray(entry.id, entries).length > 0;
-
-  const handleSave = () => {
-    if (!name.trim()) return;
-    onSave(entry.id, {
-      type,
-      name: name.trim(),
-      summary,
-      childrenBudget,
-    });
-  };
-
-  return (
-    <div data-testid="codex-detail-content" className="flex h-full flex-col">
-      <div className="flex items-center justify-between border-b border-border px-3 py-2">
-        <h3 className="text-sm font-semibold">エントリ詳細</h3>
-        <div className="flex items-center gap-1">
-          <button
-            type="button"
-            data-testid="codex-save-button"
-            onClick={handleSave}
-            className="rounded p-1.5 text-muted-foreground hover:bg-accent hover:text-accent-foreground"
-            title="保存"
-          >
-            <Save className="h-3.5 w-3.5" />
-          </button>
-          <button
-            type="button"
-            data-testid="codex-detail-delete"
-            onClick={() => onDelete(entry.id)}
-            className="rounded p-1.5 text-destructive hover:bg-destructive/10"
-            title="削除"
-          >
-            <Trash2 className="h-3.5 w-3.5" />
-          </button>
-        </div>
-      </div>
-
-      <div className="flex-1 space-y-3 overflow-y-auto px-3 py-3">
-        <IconPicker
-          currentIcon={icon}
-          entryType={type}
-          onIconChange={(newIcon) => {
-            setIcon(newIcon);
-            void update(entry.id, { icon: newIcon as never });
-          }}
-        />
-
-        <div>
-          <label className="mb-1 block text-xs font-medium">タイプ</label>
-          <select
-            data-testid="codex-detail-type"
-            value={type}
-            onChange={(e) => setType(e.target.value as CodexEntryType)}
-            className="w-full rounded-md border border-input bg-background px-2 py-1.5 text-sm"
-          >
-            {TYPE_OPTIONS.filter((o) => o.value !== "all").map((opt) => (
-              <option key={opt.value} value={opt.value}>
-                {opt.label}
-              </option>
-            ))}
-          </select>
-        </div>
-
-        <div>
-          <label className="mb-1 block text-xs font-medium">名前</label>
-          <input
-            data-testid="codex-detail-name"
-            type="text"
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-            className="w-full rounded-md border border-input bg-background px-2 py-1.5 text-sm"
-          />
-        </div>
-
-        <div>
-          <label className="mb-1 block text-xs font-medium">概要</label>
-          <textarea
-            data-testid="codex-detail-summary"
-            value={summary}
-            onChange={(e) => setSummary(e.target.value)}
-            rows={5}
-            className="w-full resize-none rounded-md border border-input bg-background px-2 py-1.5 text-sm"
-          />
-        </div>
-
-        <div data-testid="codex-detail-tags">
-          <label className="mb-1 block text-xs font-medium">タグ</label>
-          <TagSelector
-            entryId={entry.id}
-            entryType={type}
-            selectedTags={selectedTags}
-            onTagsChange={setSelectedTags}
-          />
-        </div>
-
-        <ChildrenBudgetSelector
-          value={childrenBudget}
-          onChange={(preset) => {
-            setChildrenBudget(preset);
-            void update(entry.id, { childrenBudget: preset });
-          }}
-          hasChildren={hasChildren}
-        />
-
-        <RelationSection entry={entry} />
-
-        {entry.sourceChatMessageId && (
-          <div
-            data-testid="codex-source-chat-link"
-            className="flex items-center gap-1.5 rounded-md bg-muted/50 px-3 py-2 text-xs text-muted-foreground"
-          >
-            <MessageSquare className="h-3.5 w-3.5" />
-            <span>抽出元チャット: {entry.sourceChatMessageId}</span>
-          </div>
         )}
       </div>
     </div>
@@ -432,12 +238,19 @@ function VirtualizedEntryList({
 
 // --- Main Panel ---
 
+const FILTER_OPTIONS: { value: CodexEntryType | "all"; label: string }[] = [
+  { value: "all", label: "すべて" },
+  { value: "character", label: "キャラクター" },
+  { value: "location", label: "場所" },
+  { value: "item", label: "アイテム" },
+  { value: "lore", label: "設定・世界観" },
+];
+
 export function CodexManagementPanel() {
   const entries = useCodexStore((s) => s.entries);
   const filterType = useCodexStore((s) => s.filterType);
   const isLoading = useCodexStore((s) => s.isLoading);
   const loadEntries = useCodexStore((s) => s.loadEntries);
-  const update = useCodexStore((s) => s.update);
   const remove = useCodexStore((s) => s.remove);
   const setFilterType = useCodexStore((s) => s.setFilterType);
 
@@ -467,21 +280,6 @@ export function CodexManagementPanel() {
     [setFilterType],
   );
 
-  const handleSave = useCallback(
-    async (
-      id: string,
-      data: {
-        type: CodexEntryType;
-        name: string;
-        summary: string;
-        childrenBudget: ChildrenBudgetPreset;
-      },
-    ) => {
-      await update(id, data);
-    },
-    [update],
-  );
-
   const handleDelete = useCallback(
     async (id: string) => {
       await remove(id);
@@ -509,7 +307,7 @@ export function CodexManagementPanel() {
           <div data-testid="codex-list-panel" className="flex h-full flex-col">
             {/* Category filter buttons */}
             <div className="flex flex-wrap gap-1 border-b border-border px-2 py-2">
-              {TYPE_OPTIONS.map((opt) => (
+              {FILTER_OPTIONS.map((opt) => (
                 <button
                   key={opt.value}
                   type="button"
@@ -544,8 +342,8 @@ export function CodexManagementPanel() {
           <div data-testid="codex-detail-panel" className="h-full">
             {selectedEntry ? (
               <CodexDetailContent
+                key={selectedEntry.id}
                 entry={selectedEntry}
-                onSave={handleSave}
                 onDelete={handleDelete}
               />
             ) : (

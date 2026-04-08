@@ -39,7 +39,10 @@ interface CodexState {
         | "type"
         | "name"
         | "summary"
+        | "content"
         | "tagsCache"
+        | "aliases"
+        | "excludedAliases"
         | "contextMode"
         | "icon"
         | "childrenBudget"
@@ -115,8 +118,12 @@ export const useCodexStore = create<CodexState>()((set, get) => ({
 
   update: async (id, data) => {
     try {
-      await updateCodexEntry(id, data);
-      await get().loadEntries();
+      const updated = await updateCodexEntry(id, data);
+      if (updated) {
+        set((state) => ({
+          entries: state.entries.map((e) => (e.id === id ? updated : e)),
+        }));
+      }
     } catch (e) {
       toast.error("Codexエントリの更新に失敗しました");
       debugLog.error("CodexStore", `update: ${rootCause(e)}`, errorDetail(e));

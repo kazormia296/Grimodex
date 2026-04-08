@@ -324,10 +324,9 @@ describe("CodexManagementPanel", () => {
       expect(screen.getByTestId("codex-detail-type")).toBeInTheDocument();
     });
 
-    it("saves changes when save button is clicked", async () => {
+    it("does not show a save button (auto-save is used instead)", async () => {
       const user = userEvent.setup();
       mockListCodexEntries.mockResolvedValue(mockEntries);
-      mockUpdateCodexEntry.mockResolvedValue(mockEntries[0]);
       render(<CodexManagementPanel />);
 
       await waitFor(() => {
@@ -335,15 +334,33 @@ describe("CodexManagementPanel", () => {
       });
       await user.click(screen.getByTestId("codex-entry-codex-1"));
 
-      // Save without editing — should call update with current values
-      await user.click(screen.getByTestId("codex-save-button"));
+      expect(screen.queryByTestId("codex-save-button")).not.toBeInTheDocument();
+    });
+
+    it("shows context mode selector in detail view", async () => {
+      const user = userEvent.setup();
+      mockListCodexEntries.mockResolvedValue(mockEntries);
+      render(<CodexManagementPanel />);
 
       await waitFor(() => {
-        expect(mockUpdateCodexEntry).toHaveBeenCalledWith(
-          "codex-1",
-          expect.objectContaining({ name: "アリス" }),
-        );
+        expect(screen.getByText("アリス")).toBeInTheDocument();
       });
+      await user.click(screen.getByTestId("codex-entry-codex-1"));
+
+      expect(screen.getByTestId("context-mode-selector")).toBeInTheDocument();
+    });
+
+    it("shows aliases field in detail view", async () => {
+      const user = userEvent.setup();
+      mockListCodexEntries.mockResolvedValue(mockEntries);
+      render(<CodexManagementPanel />);
+
+      await waitFor(() => {
+        expect(screen.getByText("アリス")).toBeInTheDocument();
+      });
+      await user.click(screen.getByTestId("codex-entry-codex-1"));
+
+      expect(screen.getByTestId("aliases-add-button")).toBeInTheDocument();
     });
 
     it("deletes entry when delete button is clicked", async () => {
@@ -518,14 +535,7 @@ describe("CodexManagementPanel", () => {
         expect(screen.getByTestId("codex-detail-content")).toBeInTheDocument();
       });
 
-      // Step 3: Save the entry
-      await user.click(screen.getByTestId("codex-save-button"));
-
-      await waitFor(() => {
-        expect(mockUpdateCodexEntry).toHaveBeenCalled();
-      });
-
-      // Step 4: Source chat link is visible
+      // Step 3: Source chat link is visible (entry has sourceChatMessageId)
       expect(screen.getByTestId("codex-source-chat-link")).toBeInTheDocument();
     });
   });

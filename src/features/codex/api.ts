@@ -62,6 +62,7 @@ export async function updateCodexEntry(
       | "type"
       | "name"
       | "summary"
+      | "content"
       | "tagsCache"
       | "aliases"
       | "excludedAliases"
