@@ -1,7 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { Trash2, ArrowLeft } from "lucide-react";
 import { TagSelector } from "./TagSelector";
-import { TagPill } from "./TagPill";
 import { db } from "@/db/client";
 import { chatMessages, chatSessions } from "@/db/schema";
 import { eq } from "drizzle-orm";
@@ -298,18 +297,6 @@ export function CodexDetailContent({
             selectedTags={selectedTags}
             onTagsChange={setSelectedTags}
           />
-          {selectedTags.length > 0 && (
-            <div className="mt-1 flex flex-wrap gap-0.5">
-              {selectedTags.map((tag) => (
-                <TagPill
-                  key={tag.id}
-                  name={tag.name}
-                  color={tag.color ?? "#888888"}
-                  size="sm"
-                />
-              ))}
-            </div>
-          )}
         </div>
       </div>
 
