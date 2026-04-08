@@ -3,9 +3,9 @@ import { EntryIcon } from "./EntryIcon";
 import { resizeAndConvertToWebP } from "../iconUtils";
 
 interface IconPickerProps {
-  currentIcon?: number[] | null;
+  currentIcon?: string | null;
   entryType: string;
-  onIconChange: (icon: number[] | null) => void;
+  onIconChange: (icon: string | null) => void;
 }
 
 export function IconPicker({
@@ -24,7 +24,7 @@ export function IconPicker({
     e.target.value = "";
   };
 
-  const hasIcon = currentIcon != null && currentIcon.length > 0;
+  const hasIcon = currentIcon != null && currentIcon.startsWith("data:");
 
   return (
     <div className="flex items-center gap-2">

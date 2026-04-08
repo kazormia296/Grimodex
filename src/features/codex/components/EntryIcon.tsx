@@ -1,5 +1,4 @@
-import { useMemo, useEffect } from "react";
-import { numberArrayToObjectUrl } from "../iconUtils";
+import { iconToDataUrl } from "../iconUtils";
 
 const TYPE_COLOR_DEFAULTS: Record<string, string> = {
   character: "#534AB7",
@@ -9,24 +8,18 @@ const TYPE_COLOR_DEFAULTS: Record<string, string> = {
 };
 
 interface EntryIconProps {
-  icon?: number[] | null;
+  icon?: string | null;
   entryType: string;
   size: 24 | 28 | 48;
 }
 
 export function EntryIcon({ icon, entryType, size }: EntryIconProps) {
-  const objectUrl = useMemo(() => numberArrayToObjectUrl(icon), [icon]);
+  const dataUrl = iconToDataUrl(icon);
 
-  useEffect(() => {
-    return () => {
-      if (objectUrl) URL.revokeObjectURL(objectUrl);
-    };
-  }, [objectUrl]);
-
-  if (objectUrl) {
+  if (dataUrl) {
     return (
       <img
-        src={objectUrl}
+        src={dataUrl}
         width={size}
         height={size}
         alt={entryType}

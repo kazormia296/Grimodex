@@ -3,7 +3,6 @@ import {
   text,
   integer,
   real,
-  blob,
   primaryKey,
 } from "drizzle-orm/sqlite-core";
 
@@ -78,7 +77,7 @@ export const codexEntries = sqliteTable("codex_entries", {
   excludedAliases: text("excluded_aliases"), // JSON string[]
   summary: text("summary"),
   content: text("content").notNull().default("{}"), // body (ProseMirror JSON)
-  icon: blob("icon"), // 128×128 WebP icon image (nullable)
+  icon: text("icon"), // 128×128 WebP icon image as base64 data URL (nullable)
   tagsCache: text("tags_cache"), // FTS5 denormalized cache (JSON string[])
   contextMode: text("context_mode").notNull().default("mentioned"), // 'always' | 'mentioned' | 'suppress' | 'hidden'
   childrenBudget: text("children_budget").notNull().default("compact"), // 'none' | 'compact' | 'standard' | 'generous'

@@ -1,39 +1,27 @@
-import { describe, it, expect, vi, afterEach } from "vitest";
-import { numberArrayToObjectUrl } from "./iconUtils";
+import { describe, it, expect } from "vitest";
+import { iconToDataUrl } from "./iconUtils";
 
-afterEach(() => {
-  vi.unstubAllGlobals();
-});
-
-describe("numberArrayToObjectUrl", () => {
+describe("iconToDataUrl", () => {
   it("returns null for null input", () => {
-    const result = numberArrayToObjectUrl(null);
-    expect(result).toBeNull();
+    expect(iconToDataUrl(null)).toBeNull();
   });
 
   it("returns null for undefined input", () => {
-    const result = numberArrayToObjectUrl(undefined);
-    expect(result).toBeNull();
+    expect(iconToDataUrl(undefined)).toBeNull();
   });
 
-  it("returns null for empty array", () => {
-    const result = numberArrayToObjectUrl([]);
-    expect(result).toBeNull();
+  it("returns null for empty string", () => {
+    expect(iconToDataUrl("")).toBeNull();
   });
 
-  it("returns a blob: URL for non-empty array", () => {
-    vi.stubGlobal(
-      "URL",
-      class {
-        static createObjectURL(_blob: Blob) {
-          return "blob:http://localhost/test-uuid";
-        }
-        static revokeObjectURL(_url: string) {}
-      },
-    );
+  it("returns null for non-data-url strings", () => {
+    expect(iconToDataUrl("[blob 1234 bytes]")).toBeNull();
+    expect(iconToDataUrl("[1,2,3]")).toBeNull();
+    expect(iconToDataUrl("blob:http://localhost/test")).toBeNull();
+  });
 
-    const result = numberArrayToObjectUrl([137, 80, 78, 71]);
-    expect(result).not.toBeNull();
-    expect(result).toMatch(/^blob:/);
+  it("returns the string for valid data URLs", () => {
+    const url = "data:image/webp;base64,UklGRg==";
+    expect(iconToDataUrl(url)).toBe(url);
   });
 });

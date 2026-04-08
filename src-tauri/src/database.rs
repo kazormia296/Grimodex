@@ -404,6 +404,11 @@ impl Database {
 
         // Idempotent column additions
         let _ = conn.execute("ALTER TABLE snippets ADD COLUMN content_source TEXT", []);
+        // Migration: clear corrupted icon data (blobs and non-data-URL strings from old blob storage)
+        let _ = conn.execute(
+            "UPDATE codex_entries SET icon = NULL WHERE icon IS NOT NULL AND (typeof(icon) = 'blob' OR icon NOT LIKE 'data:%')",
+            [],
+        );
         let _ = conn.execute(
             "ALTER TABLE codex_entries ADD COLUMN children_budget TEXT NOT NULL DEFAULT 'compact'",
             [],

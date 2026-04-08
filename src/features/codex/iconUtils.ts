@@ -1,4 +1,4 @@
-export async function resizeAndConvertToWebP(file: File): Promise<number[]> {
+export async function resizeAndConvertToWebP(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
     const img = new Image();
     const objectUrl = URL.createObjectURL(file);
@@ -28,9 +28,10 @@ export async function resizeAndConvertToWebP(file: File): Promise<number[]> {
             reject(new Error("canvas.toBlob returned null"));
             return;
           }
-          blob.arrayBuffer().then((buf) => {
-            resolve(Array.from(new Uint8Array(buf)));
-          });
+          const reader = new FileReader();
+          reader.onload = () => resolve(reader.result as string);
+          reader.onerror = () => reject(new Error("FileReader failed"));
+          reader.readAsDataURL(blob);
         },
         "image/webp",
         0.85,
@@ -46,11 +47,7 @@ export async function resizeAndConvertToWebP(file: File): Promise<number[]> {
   });
 }
 
-export function numberArrayToObjectUrl(
-  data: number[] | null | undefined,
-): string | null {
-  if (!data || data.length === 0) return null;
-  const uint8 = new Uint8Array(data);
-  const blob = new Blob([uint8], { type: "image/webp" });
-  return URL.createObjectURL(blob);
+export function iconToDataUrl(data: string | null | undefined): string | null {
+  if (!data || !data.startsWith("data:")) return null;
+  return data;
 }

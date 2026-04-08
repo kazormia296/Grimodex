@@ -262,7 +262,7 @@ function VirtualizedEntryList({
               >
                 <div className="flex items-center gap-2 overflow-hidden">
                   <EntryIcon
-                    icon={entry.icon as number[] | null}
+                    icon={entry.icon as string | null}
                     entryType={entry.type}
                     size={28}
                   />
@@ -358,7 +358,7 @@ function EntryCard({
       >
         <div className="flex items-center gap-2 overflow-hidden">
           <EntryIcon
-            icon={entry.icon as number[] | null}
+            icon={entry.icon as string | null}
             entryType={entry.type}
             size={28}
           />

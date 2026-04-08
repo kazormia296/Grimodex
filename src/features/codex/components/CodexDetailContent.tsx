@@ -76,8 +76,8 @@ export function CodexDetailContent({
     (entry.childrenBudget as ChildrenBudgetPreset) ?? "compact",
   );
   const [selectedTags, setSelectedTags] = useState<CodexTag[]>([]);
-  const [icon, setIcon] = useState<number[] | null>(
-    (entry.icon as number[] | null) ?? null,
+  const [icon, setIcon] = useState<string | null>(
+    (entry.icon as string | null) ?? null,
   );
   const [sourceSessionTitle, setSourceSessionTitle] = useState<string | null>(
     null,
@@ -110,7 +110,7 @@ export function CodexDetailContent({
     setChildrenBudget(
       (entry.childrenBudget as ChildrenBudgetPreset) ?? "compact",
     );
-    setIcon((entry.icon as number[] | null) ?? null);
+    setIcon((entry.icon as string | null) ?? null);
   }, [
     entry.id,
     entry.type,
