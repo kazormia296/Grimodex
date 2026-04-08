@@ -267,7 +267,7 @@ export function TreeNodeItem({
   if (!isVisible) return null;
 
   return (
-    <li ref={setRef} style={style} className="list-none">
+    <li ref={setRef} style={style} className="list-none" data-node-id={node.id}>
       <div
         className={cn(
           "group relative flex cursor-pointer items-center gap-0.5 rounded px-1 py-0.5 text-sm",

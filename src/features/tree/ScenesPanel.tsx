@@ -672,13 +672,19 @@ export function ScenesPanel() {
   // Force-reveal when requested from outside (e.g. "Show in Scenes" tab context menu)
   useEffect(() => {
     if (!pendingRevealId || !treeRef.current) return;
-    // Defer one frame so expanded ancestors have rendered
     const id = pendingRevealId;
-    requestAnimationFrame(() => {
-      const el = treeRef.current?.querySelector(`[data-node-id="${id}"]`);
-      if (el) el.scrollIntoView({ block: "nearest", behavior: "smooth" });
-    });
     useTreeStore.setState({ pendingRevealId: null });
+    // Retry scroll until the element appears in the DOM (panel may still be mounting)
+    let attempts = 0;
+    const tryScroll = () => {
+      const el = treeRef.current?.querySelector(`[data-node-id="${id}"]`);
+      if (el) {
+        el.scrollIntoView({ block: "center", behavior: "smooth" });
+      } else if (attempts++ < 10) {
+        requestAnimationFrame(tryScroll);
+      }
+    };
+    requestAnimationFrame(tryScroll);
   }, [pendingRevealId]);
 
   const handleToggleAll = useCallback(() => {
