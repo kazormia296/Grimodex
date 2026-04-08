@@ -54,10 +54,10 @@ describe("tabStore — secondary group", () => {
       expect(useTabStore.getState().secondaryActiveTabId).toBe("scene-3");
     });
 
-    it("resets activeGroupIndex to 0 when last secondary tab is closed", () => {
+    it("keeps activeGroupIndex on secondary when last tab is closed", () => {
       useTabStore.getState().openInSecondaryGroup("scene-1");
       useTabStore.getState().closeSecondaryTab("scene-1");
-      expect(useTabStore.getState().activeGroupIndex).toBe(0);
+      expect(useTabStore.getState().activeGroupIndex).toBe(1);
     });
   });
 
