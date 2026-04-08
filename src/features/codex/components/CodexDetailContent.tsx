@@ -295,7 +295,17 @@ export function CodexDetailContent({
             entryId={entry.id}
             entryType={type}
             selectedTags={selectedTags}
-            onTagsChange={setSelectedTags}
+            onTagsChange={(tags) => {
+              setSelectedTags(tags);
+              // tagsCache は setEntryTags() が DB を更新済みなので、
+              // ストアのメモリ上エントリだけ同期すれば良い
+              const sorted = [...tags].sort((a, b) =>
+                a.name.localeCompare(b.name),
+              );
+              void update(entry.id, {
+                tagsCache: JSON.stringify(sorted.map((t) => t.name)),
+              });
+            }}
             maxVisible={3}
           />
         </div>

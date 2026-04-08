@@ -1,6 +1,6 @@
 import { db } from "@/db/client";
 import { codexTags, codexEntryTags, codexEntries } from "@/db/schema";
-import { eq, inArray } from "drizzle-orm";
+import { asc, eq, inArray } from "drizzle-orm";
 
 export type CodexTag = typeof codexTags.$inferSelect;
 
@@ -61,7 +61,8 @@ export async function listEntryTags(entryId: string): Promise<CodexTag[]> {
     .select({ tag: codexTags })
     .from(codexEntryTags)
     .innerJoin(codexTags, eq(codexEntryTags.tagId, codexTags.id))
-    .where(eq(codexEntryTags.entryId, entryId));
+    .where(eq(codexEntryTags.entryId, entryId))
+    .orderBy(asc(codexTags.name));
   return rows.map((r) => r.tag);
 }
 
@@ -79,13 +80,14 @@ export async function setEntryTags(
       .values(tagIds.map((tagId) => ({ entryId, tagId })));
   }
 
-  // Update tagsCache on codex entry
+  // Update tagsCache on codex entry (sorted alphabetically, consistent with listEntryTags)
   let tagNames: string[] = [];
   if (tagIds.length > 0) {
     const tags = await db
       .select()
       .from(codexTags)
-      .where(inArray(codexTags.id, tagIds));
+      .where(inArray(codexTags.id, tagIds))
+      .orderBy(asc(codexTags.name));
     tagNames = tags.map((t) => t.name);
   }
 
