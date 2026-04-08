@@ -28,11 +28,21 @@ export interface ThemePalette {
   "--sidebar-ring": string;
 }
 
+export interface PaletteSlot {
+  hl: string; // highlight background
+  tx: string; // text color on highlight background
+  fg: string; // text-only foreground color
+  label: string;
+}
+
+export const PALETTE_SIZE = 10;
+
 export interface ColorTheme {
   id: string;
   name: string;
   light: ThemePalette;
   dark: ThemePalette;
+  palette: { light: PaletteSlot[]; dark: PaletteSlot[] };
 }
 
 // CSS variable names that themes override
@@ -128,6 +138,32 @@ export const COLOR_THEMES: ColorTheme[] = [
       "--sidebar-border": "oklch(0.269 0 0)",
       "--sidebar-ring": "oklch(0.439 0 0)",
     },
+    palette: {
+      light: [
+        { hl: "#E8F0FF", tx: "#1A3A8F", fg: "#2045AA", label: "Blue" },
+        { hl: "#FFE8E8", tx: "#8F1A1A", fg: "#AA2020", label: "Red" },
+        { hl: "#E8F8E8", tx: "#1A6B1A", fg: "#208020", label: "Green" },
+        { hl: "#FFF0E0", tx: "#8F4A00", fg: "#A85500", label: "Orange" },
+        { hl: "#F0E8FF", tx: "#5A1A8F", fg: "#6A20AA", label: "Purple" },
+        { hl: "#E0F8F5", tx: "#0A5A52", fg: "#0D6B62", label: "Teal" },
+        { hl: "#F0E8DE", tx: "#5A3A1A", fg: "#6B4520", label: "Brown" },
+        { hl: "#EBEBEB", tx: "#3A3A3A", fg: "#4A4A4A", label: "Gray" },
+        { hl: "#EEF0D8", tx: "#4A4A10", fg: "#585810", label: "Olive" },
+        { hl: "#FFE8F4", tx: "#8F1A5A", fg: "#A82070", label: "Pink" },
+      ],
+      dark: [
+        { hl: "#102040", tx: "#80B0F0", fg: "#6898E0", label: "Blue" },
+        { hl: "#3A1010", tx: "#F08080", fg: "#E06868", label: "Red" },
+        { hl: "#103010", tx: "#80E080", fg: "#68C868", label: "Green" },
+        { hl: "#3A2000", tx: "#F0B060", fg: "#E09848", label: "Orange" },
+        { hl: "#200A3A", tx: "#D080F0", fg: "#B868E0", label: "Purple" },
+        { hl: "#0A2A28", tx: "#60E0D0", fg: "#48C8B8", label: "Teal" },
+        { hl: "#2A1A0A", tx: "#D0A870", fg: "#B89058", label: "Brown" },
+        { hl: "#282828", tx: "#B0B0B0", fg: "#989898", label: "Gray" },
+        { hl: "#1A1A08", tx: "#C0C060", fg: "#A8A848", label: "Olive" },
+        { hl: "#380A20", tx: "#F090C0", fg: "#E078A8", label: "Pink" },
+      ],
+    },
   },
   {
     id: "dark-academia",
@@ -189,6 +225,32 @@ export const COLOR_THEMES: ColorTheme[] = [
       "--sidebar-accent-foreground": "#E8D5A3",
       "--sidebar-border": "#3A3530",
       "--sidebar-ring": "#C9A84C",
+    },
+    palette: {
+      light: [
+        { hl: "#EDE0F5", tx: "#5B3080", fg: "#6B3D99", label: "Amethyst" },
+        { hl: "#F5DDE0", tx: "#802030", fg: "#992838", label: "Garnet" },
+        { hl: "#DDE5F5", tx: "#2A4080", fg: "#304899", label: "Sapphire" },
+        { hl: "#DEF0E5", tx: "#1E6040", fg: "#24724C", label: "Emerald" },
+        { hl: "#F5EDD5", tx: "#7A5D08", fg: "#8B6914", label: "Topaz" },
+        { hl: "#F8E0EC", tx: "#80305A", fg: "#993A6B", label: "Rose" },
+        { hl: "#EDE5D5", tx: "#6B5020", fg: "#7D5E28", label: "Bronze" },
+        { hl: "#E5E3E0", tx: "#4A4845", fg: "#5A5855", label: "Slate" },
+        { hl: "#DDE8DA", tx: "#2E5528", fg: "#386630", label: "Ivy" },
+        { hl: "#EDDDE0", tx: "#6B2035", fg: "#802840", label: "Burgundy" },
+      ],
+      dark: [
+        { hl: "#2D1F40", tx: "#CFC0E8", fg: "#B8A0D8", label: "Amethyst" },
+        { hl: "#3A1820", tx: "#E8B0B8", fg: "#D8909A", label: "Garnet" },
+        { hl: "#18253A", tx: "#A0C0E8", fg: "#88AAD8", label: "Sapphire" },
+        { hl: "#15302A", tx: "#A0D8C0", fg: "#80C8A8", label: "Emerald" },
+        { hl: "#302810", tx: "#E8D490", fg: "#D8C070", label: "Topaz" },
+        { hl: "#351828", tx: "#E8A8C8", fg: "#D890B8", label: "Rose" },
+        { hl: "#2E2518", tx: "#D8C8A0", fg: "#C0B080", label: "Bronze" },
+        { hl: "#28282A", tx: "#B8B8B8", fg: "#A0A0A0", label: "Slate" },
+        { hl: "#1A2E18", tx: "#A8D8A0", fg: "#90C888", label: "Ivy" },
+        { hl: "#30181E", tx: "#E0A0A8", fg: "#D08890", label: "Burgundy" },
+      ],
     },
   },
   {
@@ -252,6 +314,32 @@ export const COLOR_THEMES: ColorTheme[] = [
       "--sidebar-border": "#1A3348",
       "--sidebar-ring": "#00BCD4",
     },
+    palette: {
+      light: [
+        { hl: "#DFF5F8", tx: "#006878", fg: "#007888", label: "Cyan" },
+        { hl: "#DDDFF8", tx: "#2A2D80", fg: "#303599", label: "Indigo" },
+        { hl: "#F0DDF8", tx: "#6A2088", fg: "#7A2899", label: "Plasma" },
+        { hl: "#DDF5E8", tx: "#106848", fg: "#147852", label: "Emerald" },
+        { hl: "#F8F0D8", tx: "#7A6008", fg: "#8A6D10", label: "Amber" },
+        { hl: "#E8DDF8", tx: "#4A2080", fg: "#582899", label: "Violet" },
+        { hl: "#DDF0F8", tx: "#185880", fg: "#206699", label: "Ice" },
+        { hl: "#E2E6EA", tx: "#3A4A5A", fg: "#445566", label: "Steel" },
+        { hl: "#DAF8E8", tx: "#087050", fg: "#0A8060", label: "Neon" },
+        { hl: "#F8DDE0", tx: "#882030", fg: "#992838", label: "Signal" },
+      ],
+      dark: [
+        { hl: "#0A2A35", tx: "#80DEEA", fg: "#60C8D8", label: "Cyan" },
+        { hl: "#151540", tx: "#A0A0F0", fg: "#8888E0", label: "Indigo" },
+        { hl: "#2A1035", tx: "#D0A0E8", fg: "#C088D8", label: "Plasma" },
+        { hl: "#0A3028", tx: "#80E8C0", fg: "#60D8A8", label: "Emerald" },
+        { hl: "#302810", tx: "#E8D890", fg: "#D8C470", label: "Amber" },
+        { hl: "#201040", tx: "#B8A0F0", fg: "#A088E0", label: "Violet" },
+        { hl: "#0A2540", tx: "#80C0E8", fg: "#60A8D8", label: "Ice" },
+        { hl: "#1A2530", tx: "#98B0C0", fg: "#80A0B0", label: "Steel" },
+        { hl: "#082A20", tx: "#70E0B0", fg: "#58D0A0", label: "Neon" },
+        { hl: "#30151A", tx: "#E8A0A8", fg: "#D88890", label: "Signal" },
+      ],
+    },
   },
   {
     id: "warm-craft",
@@ -313,6 +401,32 @@ export const COLOR_THEMES: ColorTheme[] = [
       "--sidebar-accent-foreground": "#F5F0E1",
       "--sidebar-border": "#5A4035",
       "--sidebar-ring": "#D4930D",
+    },
+    palette: {
+      light: [
+        { hl: "#FAF0D0", tx: "#7A5D08", fg: "#8B6914", label: "Honey" },
+        { hl: "#F5D8E0", tx: "#802040", fg: "#993050", label: "Berry" },
+        { hl: "#D8E8F5", tx: "#1A4880", fg: "#205499", label: "Ocean" },
+        { hl: "#DAF0DA", tx: "#2A6030", fg: "#307038", label: "Herb" },
+        { hl: "#F8E0D0", tx: "#9A4010", fg: "#AA4A18", label: "Paprika" },
+        { hl: "#EAD8F0", tx: "#5A2878", fg: "#6A3088", label: "Plum" },
+        { hl: "#F0EAD8", tx: "#6A5828", fg: "#7A6430", label: "Sand" },
+        { hl: "#E0DEDB", tx: "#484440", fg: "#585450", label: "Charcoal" },
+        { hl: "#E0EACC", tx: "#4A5A18", fg: "#566820", label: "Olive" },
+        { hl: "#EAD8D0", tx: "#6A3828", fg: "#7A4230", label: "Cocoa" },
+      ],
+      dark: [
+        { hl: "#4A3820", tx: "#F0D880", fg: "#E0C868", label: "Honey" },
+        { hl: "#401828", tx: "#E8A0B8", fg: "#D888A0", label: "Berry" },
+        { hl: "#182840", tx: "#90B8E0", fg: "#78A8D0", label: "Ocean" },
+        { hl: "#1A3820", tx: "#90D898", fg: "#78C880", label: "Herb" },
+        { hl: "#402018", tx: "#E8A880", fg: "#D89868", label: "Paprika" },
+        { hl: "#281840", tx: "#C0A0E0", fg: "#B088D0", label: "Plum" },
+        { hl: "#383018", tx: "#D8D098", fg: "#C8C080", label: "Sand" },
+        { hl: "#303030", tx: "#B0B0A8", fg: "#989890", label: "Charcoal" },
+        { hl: "#283418", tx: "#B8D088", fg: "#A8C070", label: "Olive" },
+        { hl: "#3A2018", tx: "#D8B898", fg: "#C8A880", label: "Cocoa" },
+      ],
     },
   },
 ];

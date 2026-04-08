@@ -1,16 +1,17 @@
 import { create } from "zustand";
 import type { CodexMatchTarget } from "@/features/codex/codexMatcher";
+import type { ResolvedCodexColor } from "@/lib/resolveCodexColors";
 
 interface CodexHighlightState {
   matchTargets: CodexMatchTarget[];
   hoveredEntryId: string | null;
   enabled: boolean;
-  typeColorMap: Record<string, string>;
+  typeColorMap: Record<string, ResolvedCodexColor>;
 
   setMatchTargets: (targets: CodexMatchTarget[]) => void;
   setHoveredEntryId: (id: string | null) => void;
   setEnabled: (enabled: boolean) => void;
-  setTypeColorMap: (map: Record<string, string>) => void;
+  setTypeColorMap: (map: Record<string, ResolvedCodexColor>) => void;
 }
 
 export const useCodexHighlightStore = create<CodexHighlightState>()((set) => ({

@@ -17,6 +17,7 @@ import { useCodexStore, type CodexSortOrder } from "./codexStore";
 import type { CodexEntry, CodexEntryType } from "./api";
 import type { CodexType } from "./typeApi";
 import { listCodexTypes, ensureBuiltinTypes } from "./typeApi";
+import { useCodexHighlightStore } from "@/features/editor/codexHighlightStore";
 import { EntryIcon } from "./components/EntryIcon";
 import { TagPill } from "./components/TagPill";
 import { CodexDetailContent } from "./components/CodexDetailContent";
@@ -424,6 +425,7 @@ function CategoryGroupedList({
   const [expandedGroups, setExpandedGroups] = useState<Record<string, boolean>>(
     {},
   );
+  const typeColorMap = useCodexHighlightStore((s) => s.typeColorMap);
 
   // Group entries by type, ordered by codexTypes sortOrder
   const groups = useMemo(() => {
@@ -451,15 +453,19 @@ function CategoryGroupedList({
       })
       .map(([typeSlug, grpEntries]) => {
         const codexType = codexTypes.find((t) => t.slug === typeSlug);
+        const resolvedColor = typeColorMap[typeSlug];
         return {
           slug: typeSlug,
           label: codexType?.label ?? FALLBACK_TYPE_LABELS[typeSlug] ?? typeSlug,
           color:
-            codexType?.color ?? FALLBACK_TYPE_COLORS[typeSlug] ?? "#888888",
+            resolvedColor?.fg ??
+            codexType?.color ??
+            FALLBACK_TYPE_COLORS[typeSlug] ??
+            "#888888",
           entries: grpEntries,
         };
       });
-  }, [entries, codexTypes]);
+  }, [entries, codexTypes, typeColorMap]);
 
   const isExpanded = useCallback(
     (slug: string) => expandedGroups[slug] !== false, // default: expanded

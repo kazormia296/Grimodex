@@ -11,16 +11,83 @@ import {
   deleteCodexType,
   codexTypeHasEntries,
 } from "@/features/codex/typeApi";
+import { useWorkspaceStore } from "@/features/workspace/store";
+import {
+  COLOR_THEMES,
+  DEFAULT_COLOR_THEME,
+  PALETTE_SIZE,
+} from "@/lib/colorThemes";
 
 const PROJECT_ID = "default-project";
 
+// --- Palette Swatch Picker ---
+
+interface PaletteSwatchPickerProps {
+  selectedIndex: number | null;
+  usedIndices: Map<number, string>; // index -> type label that uses it
+  onChange: (index: number) => void;
+}
+
+function PaletteSwatchPicker({
+  selectedIndex,
+  usedIndices,
+  onChange,
+}: PaletteSwatchPickerProps) {
+  const colorTheme = useWorkspaceStore((s) => s.globalSettings?.colorTheme);
+  const isDark = document.documentElement.classList.contains("dark");
+  const resolvedId = colorTheme ?? DEFAULT_COLOR_THEME;
+  const theme = COLOR_THEMES.find((t) => t.id === resolvedId);
+  const palette = theme
+    ? isDark
+      ? theme.palette.dark
+      : theme.palette.light
+    : null;
+
+  if (!palette) return null;
+
+  return (
+    <div className="flex flex-wrap gap-1.5">
+      {palette.slice(0, PALETTE_SIZE).map((slot, i) => {
+        const isSelected = selectedIndex === i;
+        const usedBy = usedIndices.get(i);
+        return (
+          <button
+            key={i}
+            type="button"
+            title={usedBy ? `${slot.label}（${usedBy}が使用中）` : slot.label}
+            onClick={() => onChange(i)}
+            className="relative h-6 w-6 rounded-full border-2 transition-transform hover:scale-110"
+            style={{
+              backgroundColor: slot.hl,
+              borderColor: isSelected ? slot.tx : "transparent",
+              outline: isSelected ? `2px solid ${slot.tx}` : "none",
+              outlineOffset: "1px",
+            }}
+          >
+            <span
+              className="absolute inset-1 rounded-full"
+              style={{ backgroundColor: slot.fg }}
+            />
+            {usedBy && !isSelected && (
+              <span className="absolute -right-0.5 -top-0.5 h-2 w-2 rounded-full border border-background bg-muted-foreground" />
+            )}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+// --- Type Row ---
+
 interface TypeRowProps {
   type: CodexType;
+  dotColor: string;
   onEdit: (type: CodexType) => void;
   onDelete: (type: CodexType) => void;
 }
 
-function TypeRow({ type, onEdit, onDelete }: TypeRowProps) {
+function TypeRow({ type, dotColor, onEdit, onDelete }: TypeRowProps) {
   return (
     <div
       data-testid={`codex-type-row-${type.slug}`}
@@ -28,7 +95,7 @@ function TypeRow({ type, onEdit, onDelete }: TypeRowProps) {
     >
       <span
         className="h-3 w-3 rounded-full shrink-0"
-        style={{ backgroundColor: type.color }}
+        style={{ backgroundColor: dotColor }}
       />
       <span className="flex-1 text-sm">{type.label}</span>
       <span className="text-[10px] text-muted-foreground">{type.slug}</span>
@@ -61,21 +128,26 @@ function TypeRow({ type, onEdit, onDelete }: TypeRowProps) {
   );
 }
 
+// --- Edit Form ---
+
 interface EditFormProps {
   type: CodexType;
+  usedIndices: Map<number, string>;
   onSave: (updated: CodexType) => void;
   onCancel: () => void;
 }
 
-function EditForm({ type, onSave, onCancel }: EditFormProps) {
+function EditForm({ type, usedIndices, onSave, onCancel }: EditFormProps) {
   const [label, setLabel] = useState(type.label);
-  const [color, setColor] = useState(type.color);
+  const [paletteIndex, setPaletteIndex] = useState<number | null>(
+    type.paletteIndex ?? null,
+  );
 
   const handleSave = async () => {
     if (!label.trim()) return;
     const updated = await updateCodexType(type.id, {
       label: label.trim(),
-      color,
+      ...(paletteIndex !== null ? { paletteIndex } : {}),
     });
     if (updated) onSave(updated);
   };
@@ -86,13 +158,6 @@ function EditForm({ type, onSave, onCancel }: EditFormProps) {
       className="rounded-md border border-border bg-muted/30 p-3 space-y-2"
     >
       <div className="flex items-center gap-2">
-        <input
-          type="color"
-          value={color}
-          onChange={(e) => setColor(e.target.value)}
-          className="h-7 w-7 cursor-pointer rounded border border-input"
-          title="色を選択"
-        />
         <input
           data-testid={`codex-type-label-input-${type.slug}`}
           type="text"
@@ -119,6 +184,11 @@ function EditForm({ type, onSave, onCancel }: EditFormProps) {
           <X className="h-3.5 w-3.5" />
         </button>
       </div>
+      <PaletteSwatchPicker
+        selectedIndex={paletteIndex}
+        usedIndices={usedIndices}
+        onChange={setPaletteIndex}
+      />
       {type.isBuiltin === 1 && (
         <p className="text-[10px] text-muted-foreground">
           ※ ビルトインタイプはslugとisBuiltin属性を変更できません
@@ -128,16 +198,24 @@ function EditForm({ type, onSave, onCancel }: EditFormProps) {
   );
 }
 
+// --- Add Form ---
+
 interface AddFormProps {
+  usedIndices: Map<number, string>;
   onSave: (type: CodexType) => void;
   onCancel: () => void;
   maxSortOrder: number;
 }
 
-function AddForm({ onSave, onCancel, maxSortOrder }: AddFormProps) {
+function AddForm({
+  usedIndices,
+  onSave,
+  onCancel,
+  maxSortOrder,
+}: AddFormProps) {
   const [label, setLabel] = useState("");
   const [slug, setSlug] = useState("");
-  const [color, setColor] = useState("#888888");
+  const [paletteIndex, setPaletteIndex] = useState<number | null>(null);
 
   const handleSave = async () => {
     if (!label.trim() || !slug.trim()) return;
@@ -146,7 +224,7 @@ function AddForm({ onSave, onCancel, maxSortOrder }: AddFormProps) {
         projectId: PROJECT_ID,
         slug: slug.trim(),
         label: label.trim(),
-        color,
+        ...(paletteIndex !== null ? { paletteIndex } : {}),
         sortOrder: maxSortOrder + 1.0,
       });
       onSave(type);
@@ -161,12 +239,6 @@ function AddForm({ onSave, onCancel, maxSortOrder }: AddFormProps) {
       className="rounded-md border border-border bg-muted/30 p-3 space-y-2"
     >
       <div className="flex items-center gap-2">
-        <input
-          type="color"
-          value={color}
-          onChange={(e) => setColor(e.target.value)}
-          className="h-7 w-7 cursor-pointer rounded border border-input"
-        />
         <input
           data-testid="codex-type-add-label"
           type="text"
@@ -192,6 +264,14 @@ function AddForm({ onSave, onCancel, maxSortOrder }: AddFormProps) {
           className="flex-1 rounded-md border border-input bg-background px-2 py-1.5 text-sm font-mono"
         />
       </div>
+      <PaletteSwatchPicker
+        selectedIndex={paletteIndex}
+        usedIndices={usedIndices}
+        onChange={setPaletteIndex}
+      />
+      <p className="text-[10px] text-muted-foreground">
+        ※ 色を選ばない場合は空き色が自動割当されます
+      </p>
       <div className="flex justify-end gap-2">
         <button
           type="button"
@@ -214,11 +294,23 @@ function AddForm({ onSave, onCancel, maxSortOrder }: AddFormProps) {
   );
 }
 
+// --- Main Category ---
+
 export function CodexCategory() {
   const [types, setTypes] = useState<CodexType[]>([]);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [showAddForm, setShowAddForm] = useState(false);
   const [deletingType, setDeletingType] = useState<CodexType | null>(null);
+
+  const colorTheme = useWorkspaceStore((s) => s.globalSettings?.colorTheme);
+  const isDark = document.documentElement.classList.contains("dark");
+  const resolvedId = colorTheme ?? DEFAULT_COLOR_THEME;
+  const theme = COLOR_THEMES.find((t) => t.id === resolvedId);
+  const palette = theme
+    ? isDark
+      ? theme.palette.dark
+      : theme.palette.light
+    : null;
 
   const load = useCallback(async () => {
     await ensureBuiltinTypes(PROJECT_ID);
@@ -261,6 +353,25 @@ export function CodexCategory() {
 
   const maxSortOrder = Math.max(0, ...types.map((t) => t.sortOrder));
 
+  // Map of paletteIndex -> label for showing usage in swatch picker
+  const usedIndices = new Map<number, string>(
+    types
+      .filter((t) => t.paletteIndex !== null && t.paletteIndex !== undefined)
+      .map((t) => [t.paletteIndex as number, t.label]),
+  );
+
+  // Resolve dot color for TypeRow
+  const getDotColor = (type: CodexType): string => {
+    if (
+      palette &&
+      type.paletteIndex !== null &&
+      type.paletteIndex !== undefined
+    ) {
+      return palette[type.paletteIndex % PALETTE_SIZE]?.fg ?? type.color;
+    }
+    return type.color;
+  };
+
   return (
     <div className="space-y-6" data-testid="codex-category">
       <SettingSection title="Codexタイプ管理">
@@ -275,12 +386,14 @@ export function CodexCategory() {
                 {editingId === type.id ? (
                   <EditForm
                     type={type}
+                    usedIndices={usedIndices}
                     onSave={handleEditSave}
                     onCancel={() => setEditingId(null)}
                   />
                 ) : (
                   <TypeRow
                     type={type}
+                    dotColor={getDotColor(type)}
                     onEdit={(t) => setEditingId(t.id)}
                     onDelete={(t) => void handleDeleteClick(t)}
                   />
@@ -291,6 +404,7 @@ export function CodexCategory() {
 
           {showAddForm ? (
             <AddForm
+              usedIndices={usedIndices}
               onSave={handleAddSave}
               onCancel={() => setShowAddForm(false)}
               maxSortOrder={maxSortOrder}

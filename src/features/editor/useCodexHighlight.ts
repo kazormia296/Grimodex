@@ -3,11 +3,13 @@ import type { Editor } from "@tiptap/core";
 import { useCodexStore } from "@/features/codex/codexStore";
 import { listCodexTypes } from "@/features/codex/typeApi";
 import { useSettingsStore } from "@/features/settings/settingsStore";
+import { useWorkspaceStore } from "@/features/workspace/store";
 import { useCodexHighlightStore } from "./codexHighlightStore";
 import {
   codexHighlightKey,
   createCodexHighlightPlugin,
 } from "./CodexHighlightPlugin";
+import { resolveCodexColor } from "@/lib/resolveCodexColors";
 
 export function useCodexHighlight(editor: Editor | null) {
   const entries = useCodexStore((s) => s.entries);
@@ -17,13 +19,21 @@ export function useCodexHighlight(editor: Editor | null) {
   const highlightStyle = useSettingsStore((s) =>
     s.get("display.codexHighlightStyle", "color-text"),
   );
+  const colorTheme = useWorkspaceStore((s) => s.globalSettings?.colorTheme);
+  const theme = useWorkspaceStore((s) => s.globalSettings?.theme ?? "system");
 
-  // Load type color map
+  // Load type color map (re-resolves when theme or mode changes)
   useEffect(() => {
+    const isDark = document.documentElement.classList.contains("dark");
     listCodexTypes("default-project").then((types) => {
-      const map: Record<string, string> = {};
+      const map: Record<string, ReturnType<typeof resolveCodexColor>> = {};
       for (const t of types) {
-        map[t.slug] = t.color;
+        map[t.slug] = resolveCodexColor(
+          t.paletteIndex ?? null,
+          t.color,
+          colorTheme,
+          isDark,
+        );
       }
       setTypeColorMap(map);
       if (editor) {
@@ -32,7 +42,7 @@ export function useCodexHighlight(editor: Editor | null) {
         editor.view.dispatch(tr);
       }
     });
-  }, [entries, enabled, editor, setTypeColorMap]);
+  }, [entries, enabled, editor, setTypeColorMap, colorTheme, theme]);
 
   // Update match targets when codex entries change or highlight is toggled
   useEffect(() => {

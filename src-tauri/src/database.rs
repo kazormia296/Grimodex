@@ -414,6 +414,42 @@ impl Database {
             [],
         );
         let _ = conn.execute("ALTER TABLE codex_entries ADD COLUMN notes TEXT", []);
+        let _ = conn.execute(
+            "ALTER TABLE codex_types ADD COLUMN palette_index INTEGER",
+            [],
+        );
+        // Assign palette indices to existing builtin types
+        let _ = conn.execute(
+            "UPDATE codex_types SET palette_index = 0 WHERE slug = 'character' AND palette_index IS NULL",
+            [],
+        );
+        let _ = conn.execute(
+            "UPDATE codex_types SET palette_index = 1 WHERE slug = 'location' AND palette_index IS NULL",
+            [],
+        );
+        let _ = conn.execute(
+            "UPDATE codex_types SET palette_index = 2 WHERE slug = 'item' AND palette_index IS NULL",
+            [],
+        );
+        let _ = conn.execute(
+            "UPDATE codex_types SET palette_index = 3 WHERE slug = 'lore' AND palette_index IS NULL",
+            [],
+        );
+        // Recreate seed trigger to include palette_index for new projects
+        conn.execute_batch(
+            "DROP TRIGGER IF EXISTS seed_builtin_codex_types;
+             CREATE TRIGGER IF NOT EXISTS seed_builtin_codex_types
+             AFTER INSERT ON projects BEGIN
+                 INSERT OR IGNORE INTO codex_types (id, project_id, slug, label, color, palette_index, is_builtin, sort_order, created_at)
+                   VALUES (new.id || '-character', new.id, 'character', 'キャラクター', '#534AB7', 0, 1, 0.0, datetime('now'));
+                 INSERT OR IGNORE INTO codex_types (id, project_id, slug, label, color, palette_index, is_builtin, sort_order, created_at)
+                   VALUES (new.id || '-location', new.id, 'location', '場所', '#0F6E56', 1, 1, 1.0, datetime('now'));
+                 INSERT OR IGNORE INTO codex_types (id, project_id, slug, label, color, palette_index, is_builtin, sort_order, created_at)
+                   VALUES (new.id || '-item', new.id, 'item', 'アイテム', '#BA7517', 2, 1, 2.0, datetime('now'));
+                 INSERT OR IGNORE INTO codex_types (id, project_id, slug, label, color, palette_index, is_builtin, sort_order, created_at)
+                   VALUES (new.id || '-lore', new.id, 'lore', '伝承', '#993C1D', 3, 1, 3.0, datetime('now'));
+             END;",
+        )?;
 
         // v2: Recreate FTS UPDATE triggers with WHEN guards so that non-FTS
         // column updates (e.g. updated_at) don't touch FTS indexes.

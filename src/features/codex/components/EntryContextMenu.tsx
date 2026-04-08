@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { Copy, MapPin, Pencil, Tag, Trash2 } from "lucide-react";
 import type { CodexEntry } from "../api";
 import type { CodexType } from "../typeApi";
+import { useCodexHighlightStore } from "@/features/editor/codexHighlightStore";
 
 interface EntryContextMenuProps {
   entry: CodexEntry;
@@ -30,6 +31,7 @@ export function EntryContextMenu({
 }: EntryContextMenuProps) {
   const menuRef = useRef<HTMLDivElement>(null);
   const [showTypeSubmenu, setShowTypeSubmenu] = useState(false);
+  const typeColorMap = useCodexHighlightStore((s) => s.typeColorMap);
 
   useEffect(() => {
     const handlePointerDown = (e: PointerEvent) => {
@@ -135,7 +137,9 @@ export function EntryContextMenu({
                   >
                     <span
                       className="h-2 w-2 shrink-0 rounded-full"
-                      style={{ backgroundColor: t.color }}
+                      style={{
+                        backgroundColor: typeColorMap[t.slug]?.fg ?? t.color,
+                      }}
                     />
                     {t.label}
                   </button>

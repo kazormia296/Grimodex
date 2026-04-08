@@ -1,5 +1,12 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import { useCodexHighlightStore } from "./codexHighlightStore";
+import type { ResolvedCodexColor } from "@/lib/resolveCodexColors";
+
+const c = (fg: string): ResolvedCodexColor => ({
+  hl: fg + "29",
+  tx: fg,
+  fg,
+});
 
 describe("codexHighlightStore", () => {
   beforeEach(() => {
@@ -28,16 +35,23 @@ describe("codexHighlightStore", () => {
   });
 
   it("sets type color map", () => {
-    const map = { character: "#7F77DD", location: "#1D9E75" };
+    const map = {
+      character: c("#7F77DD"),
+      location: c("#1D9E75"),
+    };
     useCodexHighlightStore.getState().setTypeColorMap(map);
     expect(useCodexHighlightStore.getState().typeColorMap).toEqual(map);
   });
 
   it("replaces type color map on update", () => {
-    useCodexHighlightStore.getState().setTypeColorMap({ character: "#7F77DD" });
-    useCodexHighlightStore.getState().setTypeColorMap({ location: "#1D9E75" });
+    useCodexHighlightStore
+      .getState()
+      .setTypeColorMap({ character: c("#7F77DD") });
+    useCodexHighlightStore
+      .getState()
+      .setTypeColorMap({ location: c("#1D9E75") });
     expect(useCodexHighlightStore.getState().typeColorMap).toEqual({
-      location: "#1D9E75",
+      location: c("#1D9E75"),
     });
   });
 });

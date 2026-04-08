@@ -7,6 +7,7 @@ import {
 } from "@/features/codex/codexMatcher";
 import { useCodexHighlightStore } from "./codexHighlightStore";
 import { useSettingsStore } from "@/features/settings/settingsStore";
+import type { ResolvedCodexColor } from "@/lib/resolveCodexColors";
 
 export const codexHighlightKey = new PluginKey("codexHighlight");
 
@@ -18,7 +19,7 @@ export const codexHighlightKey = new PluginKey("codexHighlight");
 export function mapMatchesToDecorations(
   doc: ProseMirrorNode,
   matches: CodexMatch[],
-  typeColorMap: Record<string, string> = {},
+  typeColorMap: Record<string, ResolvedCodexColor> = {},
   highlightStyle: string = "color-text",
 ): Decoration[] {
   if (matches.length === 0) return [];
@@ -43,11 +44,15 @@ export function mapMatchesToDecorations(
       if (m.from >= nodeStart && m.to <= nodeEnd) {
         const pmFrom = pos + (m.from - nodeStart);
         const pmTo = pos + (m.to - nodeStart);
-        const color = typeColorMap[m.entryType] ?? "#888888";
+        const colors = typeColorMap[m.entryType] ?? {
+          hl: "#88888829",
+          tx: "#888888",
+          fg: "#888888",
+        };
         const inlineStyle =
           highlightStyle === "underline"
-            ? `text-decoration: underline; text-decoration-color: ${color}; text-underline-offset: 3px`
-            : `color: ${color}; background-color: ${color}29; border-radius: 3px; padding: 0 2px`;
+            ? `text-decoration: underline; text-decoration-color: ${colors.fg}; text-underline-offset: 3px`
+            : `background-color: ${colors.hl}; color: ${colors.tx}; border-radius: 3px; padding: 0 2px`;
         decos.push(
           Decoration.inline(pmFrom, pmTo, {
             class: "codex-highlight",

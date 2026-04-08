@@ -54,6 +54,7 @@ export const codexTypes = sqliteTable("codex_types", {
   slug: text("slug").notNull(),
   label: text("label").notNull(),
   color: text("color").notNull().default("#888888"),
+  paletteIndex: integer("palette_index"),
   icon: text("icon"),
   isBuiltin: integer("is_builtin").notNull().default(0),
   sortOrder: real("sort_order").notNull().default(0.0),
