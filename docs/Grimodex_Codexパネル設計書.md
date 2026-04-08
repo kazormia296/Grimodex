@@ -13,7 +13,8 @@ Codexパネルはプロジェクトの世界設定データベース。キャラ
 ```
 ┌──────────────────────────────────────────────┐
 │ A. Header          | E. Detail view          │
-│ Codex 24 entries[+]│ (icon)     👤character  | 
+│ Codex  24entries[+]│ (icon)     👤character  | 
+│ [By category ▾]    │                         |
 ├────────────────────┤         Elara           |
 │ B. Search bar      │  tags: MainCharacter [+]|
 │ [🔍 Search...]     │_________________________|
@@ -23,19 +24,19 @@ Codexパネルはプロジェクトの世界設定データベース。キャラ
 │ [...]              | Summary:                 │
 ├────────────────────| Protagonist, mage        |
 │ D. Entry list      │ apprentice at the Tower. │
-│                    │ Content: (TipTap editor)│
+│ ▼ Character (3)    │ Content: (TipTap editor)│
 │ ● Elara         ◄──│ A young woman who       │
 │   Protagonist...   │ discovers her connection │
-│                    │ to ancient magic...     │
-│ ● Obsidian Tower   │ CustomDetails:...       │
+│ ● Marcus           │ to ancient magic...     │
+│ ▼ Location (1)     │ CustomDetails:...       │
+│ ● Obsidian Tower   │                         │
 │   Ancient binding..│                         │
-│                    │                         │
+│ ▼ Item (1)         │                         │
 │ ● Soulbind Amulet  │                         │
 │   Elara's family...│                         │
-│                    │                         │
+│ ▼ Lore (1)         │                         │
 │ ● Age of Binding   │                         │
 │   Historical era...│                         │
-│                    │                         │
 │                    │                         │
 │                    │                         │
 └────────────────────┴─────────────────────────┘
@@ -49,6 +50,7 @@ Codexパネルはプロジェクトの世界設定データベース。キャラ
 
 - **パネルタイトル**: 「Codex」
 - **エントリ数**: フィルタ適用後の件数。右寄せ
+- **ソート順ドロップダウン**: エントリリストの並び順を変更（後述「ソート順」セクション参照）
 - **[+] ボタン**: 新規エントリ作成（後述）
 
 ---
@@ -115,13 +117,35 @@ Codexパネルはプロジェクトの世界設定データベース。キャラ
 
 ### ソート順
 
-デフォルトはアルファベット/50音順。ヘッダーのオーバーフローメニューから変更可能:
+ヘッダーのソート順ドロップダウンから変更可能:
 
-- Name (A→Z)（デフォルト）
+- **By category（デフォルト）**: タイプ別にアコーディオングループで表示。各グループ内はアルファベット/五十音順。グループの表示順は `codex_types.sort_order` に従う（Character → Location → Item → Lore → カスタムタイプ）。アコーディオンの開閉状態はセッション内で保持
+- Name (A→Z)
 - Name (Z→A)
 - Recently updated
 - Recently created
 - Most referenced（本文中の出現回数順）
+
+#### By category 表示
+
+```
+▼ Character (8)
+  ● Elara
+  ● Marcus
+  ● Thorne
+▼ Location (6)
+  ● Binding Chamber
+  ● Obsidian Tower
+▶ Item (4)              ← 折り畳み
+▼ Lore (6)
+  ● Age of Binding
+  ● Soulbind Prophecy
+```
+
+- 各グループヘッダーにカテゴリ色のドット + タイプラベル + 件数を表示
+- アコーディオンのクリックで開閉。デフォルトは全グループ展開
+- フィルタタブでタイプを絞り込んでいる場合、該当タイプのグループのみ表示（アコーディオンなしのフラットリスト）
+- 検索時はアコーディオンを解除し、マッチ結果をフラットリストで表示
 
 ### コンテキストメニュー
 
