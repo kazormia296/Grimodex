@@ -79,7 +79,8 @@ export function CodexDetailContent({
 
   // Refs for auto-save closures (always read latest value)
   const summaryRef = useRef(summary);
-  const contentRef = useRef(entry.content ?? "{}");
+  const emptyContent = !entry.content || entry.content === "{}";
+  const contentRef = useRef(emptyContent ? "" : entry.content);
   summaryRef.current = summary;
 
   // Sync form when entry.id changes (happens when key prop changes)
@@ -291,7 +292,7 @@ export function CodexDetailContent({
         <div>
           <label className="mb-1 block text-xs font-medium">Content</label>
           <CodexContentEditor
-            content={entry.content ?? "{}"}
+            content={emptyContent ? "" : entry.content}
             onContentChange={(content) => {
               contentRef.current = content;
               scheduleContentSave();
