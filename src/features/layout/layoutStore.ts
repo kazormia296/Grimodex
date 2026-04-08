@@ -38,6 +38,9 @@ interface LayoutState {
   /** Toggle a panel: if visible & active → close it; otherwise → show & focus */
   togglePanel: (panel: PanelId) => void;
 
+  /** Show a panel without closing it if already active */
+  showPanel: (panel: PanelId) => void;
+
   /** Check whether a panel exists in the current layout */
   isPanelVisible: (panel: PanelId) => boolean;
 
@@ -123,6 +126,18 @@ export const useLayoutStore = create<LayoutState>()((set, get) => ({
       }
     } else {
       // Panel doesn't exist — add it back with a reasonable position
+      addPanelWithDefaults(api, panelId);
+    }
+  },
+
+  showPanel(panelId) {
+    const api = get().dockviewApi;
+    if (!api) return;
+
+    const panel = api.getPanel(panelId);
+    if (panel) {
+      panel.api.setActive();
+    } else {
       addPanelWithDefaults(api, panelId);
     }
   },

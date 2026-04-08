@@ -334,7 +334,7 @@ export function TabContextMenu({
 
           {isScene &&
             item("Scenesで表示", () => {
-              useLayoutStore.getState().togglePanel("scenes");
+              useLayoutStore.getState().showPanel("scenes");
               useTreeStore.getState().revealInTree(nodeId);
               onClose();
             })}
