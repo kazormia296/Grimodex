@@ -1,6 +1,7 @@
 import { useRef, useEffect, useState, useCallback } from "react";
 import type { MutableRefObject } from "react";
 import { Send, Square, Wrench, ChevronDown } from "lucide-react";
+import { toast } from "sonner";
 import { useEditor, EditorContent } from "@tiptap/react";
 import type { Editor } from "@tiptap/core";
 import { useAiSettingsStore } from "../store";
@@ -32,6 +33,7 @@ export function ChatInput({
   const isStreaming = disabled ?? false;
 
   const stopGeneration = useChatStore((s) => s.stopGeneration);
+  const buildPromptForCopy = useChatStore((s) => s.buildPromptForCopy);
   const agentMode = useChatStore((s) => s.agentMode);
   const setAgentMode = useChatStore((s) => s.setAgentMode);
 
@@ -182,6 +184,28 @@ export function ChatInput({
     editor.commands.clearContent();
   };
 
+  const handleSendContextMenu = useCallback(
+    async (e: React.MouseEvent) => {
+      e.preventDefault();
+      if (!editor) return;
+      const markdownStorage = editor.storage as unknown as Record<
+        string,
+        { getMarkdown?: () => string } | undefined
+      >;
+      const text = editor.getText().trim();
+      const markdown: string =
+        markdownStorage.markdown?.getMarkdown?.() ?? text;
+      try {
+        const prompt = await buildPromptForCopy(markdown);
+        await navigator.clipboard.writeText(prompt);
+        toast.success("プロンプト全文をコピーしました");
+      } catch {
+        toast.error("コピーに失敗しました");
+      }
+    },
+    [editor, buildPromptForCopy],
+  );
+
   const canUseTools = caps.supportsTools;
   const canThink =
     caps.supportsThinking ||
@@ -233,8 +257,10 @@ export function ChatInput({
           <button
             type="button"
             onClick={handleSendClick}
+            onContextMenu={handleSendContextMenu}
             disabled={!editor || editor.getText().trim().length === 0}
             aria-label="送信"
+            title="送信 / 右クリック: プロンプトをコピー"
             className="inline-flex items-center justify-center rounded-md bg-primary px-3 py-2 text-primary-foreground hover:bg-primary/90 disabled:pointer-events-none disabled:opacity-50"
           >
             <Send className="h-4 w-4" />

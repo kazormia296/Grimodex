@@ -117,6 +117,7 @@ interface ChatState {
 
   // Existing actions
   sendMessage: (content: string, commandInstruction?: string) => Promise<void>;
+  buildPromptForCopy: (userInput: string) => Promise<string>;
   stopGeneration: () => void;
   deleteMessage: (messageId: string) => Promise<void>;
   editUserMessage: (messageId: string) => string;
@@ -253,6 +254,147 @@ export const useChatStore = create<ChatState>()((set, get) => ({
       toast.error("メッセージの保存に失敗しました");
       debugLog.error("ChatStore", "persistMessage", errorDetail(e));
     }
+  },
+
+  // --- Prompt preview for copy ---
+
+  buildPromptForCopy: async (userInput: string): Promise<string> => {
+    const {
+      activeSceneId,
+      activeProjectId,
+      activeSessionId,
+      isGlobalChat,
+      agentMode,
+      messages: prevMessages,
+    } = get();
+    const effectiveSceneId = isGlobalChat ? null : activeSceneId;
+
+    const parts: string[] = [];
+
+    try {
+      const [sceneCtx, projectCtx] = await Promise.all([
+        effectiveSceneId ? fetchSceneContext(effectiveSceneId) : null,
+        fetchProjectContext(activeProjectId),
+      ]);
+
+      if (sceneCtx || projectCtx) {
+        const allNodes = useTreeStore.getState().nodes;
+        const l2Pct = useSettingsStore
+          .getState()
+          .getNumber("ai.contextBudget.l2", 10);
+        const storySoFarBudget = Math.round((l2Pct / 100) * 200_000);
+
+        if (agentMode) {
+          const storySoFar = sceneCtx
+            ? buildStorySoFar(sceneCtx.id, allNodes, storySoFarBudget)
+            : "";
+          const systemPrompt = buildAgentSystemPrompt({
+            scene: sceneCtx ?? undefined,
+            project: projectCtx ?? undefined,
+            storySoFar: storySoFar || undefined,
+          });
+          parts.push(`[system]\n${systemPrompt}`);
+        } else if (sceneCtx) {
+          const allEntries = await listCodexEntries();
+          const mentioned = findMentionedEntries(sceneCtx.content, allEntries);
+          const L4_TOTAL_BUDGET = 60_000;
+          const codexEntries: CodexContext[] = mentioned.map((e) => {
+            const fullEntry = allEntries.find((a) => a.id === e.id);
+            if (!fullEntry)
+              return {
+                id: e.id,
+                type: e.type,
+                name: e.name,
+                summary: "",
+              };
+            const preset = fullEntry.childrenBudget ?? "compact";
+            if (preset === "none")
+              return {
+                id: e.id,
+                type: e.type,
+                name: e.name,
+                summary: fullEntry.summary ?? "",
+              };
+            const budget = computeChildrenTokenBudget(preset, L4_TOTAL_BUDGET);
+            const descendants = getDescendantsBFS(fullEntry.id, allEntries);
+            const childrenContext = buildChildrenContext(descendants, budget);
+            return childrenContext
+              ? {
+                  id: e.id,
+                  type: e.type,
+                  name: e.name,
+                  summary: fullEntry.summary ?? "",
+                  childrenContext,
+                }
+              : {
+                  id: e.id,
+                  type: e.type,
+                  name: e.name,
+                  summary: fullEntry.summary ?? "",
+                };
+          });
+
+          let pinnedCodexEntries: import("./contextBuilder").PinnedCodexContext[] =
+            [];
+          if (activeSessionId) {
+            const pinned =
+              await chatApi.listPinnedCodexEntries(activeSessionId);
+            pinnedCodexEntries = pinned.map((e) => {
+              const children = e.withChildren
+                ? getChildrenFromArray(e.id, allEntries).map((c) => ({
+                    id: c.id,
+                    type: c.type,
+                    name: c.name,
+                    summary: c.summary ?? "",
+                  }))
+                : undefined;
+              return {
+                id: e.id,
+                type: e.type,
+                name: e.name,
+                summary: e.summary ?? "",
+                withChildren: e.withChildren,
+                children,
+              };
+            });
+          }
+
+          const storySoFar = buildStorySoFar(
+            sceneCtx.id,
+            allNodes,
+            storySoFarBudget,
+          );
+          const { prompt } = buildSystemPrompt({
+            scene: sceneCtx,
+            project: projectCtx ?? undefined,
+            storySoFar: storySoFar || undefined,
+            codexEntries,
+            pinnedCodexEntries,
+          });
+          parts.push(`[system]\n${prompt}`);
+        } else if (projectCtx) {
+          // Global chat: project context only (no scene)
+          const { prompt } = buildSystemPrompt({
+            scene: { id: "", title: "", content: "" },
+            project: projectCtx,
+          });
+          parts.push(`[system]\n${prompt}`);
+        }
+      }
+    } catch {
+      // コンテキスト取得失敗は無視してメッセージ履歴のみ出力
+    }
+
+    // 会話履歴
+    for (const msg of prevMessages) {
+      if (msg.role === "system") continue;
+      parts.push(`[${msg.role}]\n${msg.content}`);
+    }
+
+    // 今回のユーザー入力
+    parts.push(`[user]\n${userInput}`);
+
+    return parts.join("\n\n---\n\n");
   },
 
   // --- Streaming chat ---
