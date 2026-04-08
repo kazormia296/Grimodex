@@ -122,6 +122,17 @@ const SCHEMA_DDL = `
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL
   );
+  CREATE TABLE IF NOT EXISTS codex_types (
+    id TEXT PRIMARY KEY,
+    project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    slug TEXT NOT NULL,
+    label TEXT NOT NULL,
+    color TEXT NOT NULL DEFAULT '#888888',
+    icon TEXT,
+    is_builtin INTEGER NOT NULL DEFAULT 0,
+    sort_order REAL NOT NULL DEFAULT 0.0,
+    created_at TEXT NOT NULL
+  );
   CREATE TABLE IF NOT EXISTS codex_detail_definitions (
     id TEXT PRIMARY KEY,
     project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,

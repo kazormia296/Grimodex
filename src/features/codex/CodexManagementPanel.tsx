@@ -15,24 +15,19 @@ import {
 } from "@/components/ui/resizable";
 import { useCodexStore, type CodexSortOrder } from "./codexStore";
 import type { CodexEntry, CodexEntryType } from "./api";
+import type { CodexType } from "./typeApi";
+import { listCodexTypes, ensureBuiltinTypes } from "./typeApi";
 import { EntryIcon } from "./components/EntryIcon";
 import { TagPill } from "./components/TagPill";
 import { CodexDetailContent } from "./components/CodexDetailContent";
 
-const TYPE_LABELS: Record<string, string> = {
+// Fallback labels for when types haven't loaded yet
+const FALLBACK_TYPE_LABELS: Record<string, string> = {
   character: "キャラクター",
   location: "場所",
   item: "アイテム",
   lore: "設定・世界観",
 };
-
-const FILTER_OPTIONS: { value: CodexEntryType | "all"; label: string }[] = [
-  { value: "all", label: "すべて" },
-  { value: "character", label: "キャラクター" },
-  { value: "location", label: "場所" },
-  { value: "item", label: "アイテム" },
-  { value: "lore", label: "設定・世界観" },
-];
 
 const SORT_OPTIONS: { value: CodexSortOrder; label: string }[] = [
   { value: "name-asc", label: "名前 (A→Z)" },
@@ -46,9 +41,11 @@ const SORT_OPTIONS: { value: CodexSortOrder; label: string }[] = [
 function CommandPalette({
   onSelect,
   onClose,
+  typeLabels,
 }: {
   onSelect: (entry: CodexEntry) => void;
   onClose: () => void;
+  typeLabels: Record<string, string>;
 }) {
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<CodexEntry[]>([]);
@@ -116,7 +113,7 @@ function CommandPalette({
                   className="flex w-full items-center gap-2 rounded-md px-3 py-2 text-left text-sm hover:bg-accent"
                 >
                   <span className="rounded-full bg-muted px-1.5 py-0.5 text-[9px] font-medium">
-                    {TYPE_LABELS[entry.type] ?? entry.type}
+                    {typeLabels[entry.type] ?? entry.type}
                   </span>
                   <span className="truncate font-medium">{entry.name}</span>
                   {entry.summary && (
@@ -146,11 +143,13 @@ function VirtualizedEntryList({
   isLoading,
   selectedEntryId,
   onSelect,
+  typeLabels,
 }: {
   entries: CodexEntry[];
   isLoading: boolean;
   selectedEntryId: string | null;
   onSelect: (entry: CodexEntry) => void;
+  typeLabels: Record<string, string>;
 }) {
   const parentRef = useRef<HTMLDivElement>(null);
   const virtualizer = useVirtualizer({
@@ -226,7 +225,7 @@ function VirtualizedEntryList({
                     size={28}
                   />
                   <span className="rounded-full bg-muted px-1.5 py-0.5 text-[9px] font-medium">
-                    {TYPE_LABELS[entry.type] ?? entry.type}
+                    {typeLabels[entry.type] ?? entry.type}
                   </span>
                   <span className="truncate text-sm font-medium">
                     {entry.name}
@@ -311,6 +310,7 @@ export function CodexManagementPanel({
   const [searchQuery, setSearchQuery] = useState("");
   const [isStackMode, setIsStackMode] = useState(initialStackMode);
   const [showDetail, setShowDetail] = useState(false);
+  const [codexTypes, setCodexTypes] = useState<CodexType[]>([]);
 
   const containerRef = useRef<HTMLDivElement>(null);
   const searchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -318,6 +318,14 @@ export function CodexManagementPanel({
   useEffect(() => {
     loadEntries();
   }, [loadEntries]);
+
+  // Load codex types (builtin + custom)
+  useEffect(() => {
+    ensureBuiltinTypes("default-project")
+      .then(() => listCodexTypes("default-project"))
+      .then(setCodexTypes)
+      .catch(() => setCodexTypes([]));
+  }, []);
 
   // Responsive: observe container width for stack/split switching
   useEffect(() => {
@@ -473,10 +481,35 @@ export function CodexManagementPanel({
     </div>
   );
 
+  // Build type label map from loaded types (fallback to hardcoded)
+  const typeLabels: Record<string, string> = useMemo(() => {
+    if (codexTypes.length === 0) return FALLBACK_TYPE_LABELS;
+    return Object.fromEntries(codexTypes.map((t) => [t.slug, t.label]));
+  }, [codexTypes]);
+
   // --- Filter tabs ---
+  const filterOptions: { value: CodexEntryType | "all"; label: string }[] =
+    useMemo(() => {
+      const opts: { value: CodexEntryType | "all"; label: string }[] = [
+        { value: "all", label: "すべて" },
+      ];
+      if (codexTypes.length > 0) {
+        codexTypes.forEach((t) => opts.push({ value: t.slug, label: t.label }));
+      } else {
+        // Fallback while types load
+        opts.push(
+          { value: "character", label: "キャラクター" },
+          { value: "location", label: "場所" },
+          { value: "item", label: "アイテム" },
+          { value: "lore", label: "設定・世界観" },
+        );
+      }
+      return opts;
+    }, [codexTypes]);
+
   const filterTabs = (
     <div className="flex flex-wrap gap-1 border-b border-border px-2 py-2">
-      {FILTER_OPTIONS.map((opt) => (
+      {filterOptions.map((opt) => (
         <button
           key={opt.value}
           type="button"
@@ -505,6 +538,7 @@ export function CodexManagementPanel({
         isLoading={isLoading}
         selectedEntryId={selectedEntry?.id ?? null}
         onSelect={handleSelectEntry}
+        typeLabels={typeLabels}
       />
     </div>
   );
@@ -538,6 +572,7 @@ export function CodexManagementPanel({
         <CommandPalette
           onSelect={handleCommandSelect}
           onClose={() => setShowCommandPalette(false)}
+          typeLabels={typeLabels}
         />
       )}
 

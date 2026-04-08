@@ -5,6 +5,7 @@ import {
   Monitor,
   Keyboard,
   Database,
+  BookOpen,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 
@@ -14,7 +15,8 @@ export type SettingsCategory =
   | "editor"
   | "display"
   | "keys"
-  | "data";
+  | "data"
+  | "codex";
 
 export interface CategoryDef {
   id: SettingsCategory;
@@ -29,6 +31,7 @@ export const SETTINGS_CATEGORIES: CategoryDef[] = [
   { id: "display", label: "Display", Icon: Monitor },
   { id: "keys", label: "Keys", Icon: Keyboard },
   { id: "data", label: "Data", Icon: Database },
+  { id: "codex", label: "Codex", Icon: BookOpen },
 ];
 
 export const DEFAULT_SETTINGS: Record<string, string> = {
