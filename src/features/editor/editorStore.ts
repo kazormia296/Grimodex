@@ -48,37 +48,78 @@ export const useEditorStore = create<EditorState>()((set, get) => {
       const docEnd = editor.state.doc.content.size - 1;
       const insertPos = from > 0 ? from : Math.max(docEnd, 0);
 
-      const content = [
-        {
-          type: "text",
-          text,
-          marks: [
-            {
-              type: "authorship",
-              attrs: {
-                source: "ai",
-                chatMessageId,
-                timestamp: new Date().toISOString(),
-                model: model ?? null,
-                originalLength: text.length,
-              },
-            },
-          ],
-        },
-      ];
+      const authAttrs = {
+        source: "ai",
+        chatMessageId,
+        timestamp: new Date().toISOString(),
+        model: model ?? null,
+        originalLength: text.length,
+      };
 
-      editor
-        .chain()
-        .focus()
-        .command(({ tr }) => {
-          tr.setMeta("programmaticInsert", true);
-          return true;
-        })
-        .insertContentAt(insertPos, content)
-        .run();
+      // GFMテーブル構文を検出（ヘッダー行と区切り行が必要）
+      const hasTable = /^\|.+\|$/m.test(text) && /^\|[\s\-:|]+\|$/m.test(text);
 
-      const to = insertPos + text.length;
-      set({ lastInsertRange: { from: insertPos, to, chatMessageId } });
+      let insertEnd: number;
+
+      if (hasTable) {
+        // テーブル: Markdown文字列をinsertContentAtに渡す
+        // tiptap-markdownがMarkdown→HTMLに変換し、テーブルノードとして挿入される
+        const docSizeBefore = editor.state.doc.content.size;
+
+        editor
+          .chain()
+          .focus()
+          .command(({ tr }) => {
+            tr.setMeta("programmaticInsert", true);
+            return true;
+          })
+          .insertContentAt(insertPos, text)
+          .run();
+
+        // 実際の挿入サイズをdocサイズ差分から計算してauthorshipを付与
+        const docSizeAfter = editor.state.doc.content.size;
+        const insertedSize = docSizeAfter - docSizeBefore;
+        insertEnd = Math.min(insertPos + insertedSize, docSizeAfter - 1);
+
+        if (insertedSize > 0) {
+          editor
+            .chain()
+            .command(({ tr }) => {
+              const markType = editor.schema.marks["authorship"];
+              if (markType) {
+                const mark = markType.create(authAttrs);
+                tr.addMark(insertPos, insertEnd, mark);
+              }
+              return true;
+            })
+            .run();
+        }
+      } else {
+        // プレーンテキスト: 既存パス（authorshipマーク付きテキストノード）
+        const content = [
+          {
+            type: "text",
+            text,
+            marks: [{ type: "authorship", attrs: authAttrs }],
+          },
+        ];
+
+        editor
+          .chain()
+          .focus()
+          .command(({ tr }) => {
+            tr.setMeta("programmaticInsert", true);
+            return true;
+          })
+          .insertContentAt(insertPos, content)
+          .run();
+
+        insertEnd = insertPos + text.length;
+      }
+
+      set({
+        lastInsertRange: { from: insertPos, to: insertEnd, chatMessageId },
+      });
 
       if (highlightTimer) clearTimeout(highlightTimer);
       highlightTimer = setTimeout(() => {

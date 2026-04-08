@@ -183,9 +183,53 @@
     text-underline-offset: 2px;
     cursor: pointer;
   }
+
+  table {
+    border-collapse: collapse;
+    table-layout: auto;
+    width: auto;
+    margin: 1em 0;
+  }
+  th,
+  td {
+    border: 1px solid var(--border);
+    padding: 0.4em 0.8em;
+    text-align: left;
+    vertical-align: top;
+    position: relative;
+  }
+  th {
+    background-color: var(--muted);
+    font-weight: bold;
+  }
+
+  /* prosemirror-tables: セル選択ハイライト */
+  .selectedCell::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background: oklch(0.7 0.15 240 / 0.2);
+    pointer-events: none;
+  }
 }
 .dark .tiptap a {
   color: oklch(0.7 0.15 240);
+}
+
+/* チャットパネルのテーブル（Tailwind Typography prose内） */
+.prose table {
+  border-collapse: collapse;
+  font-size: 0.85em;
+  margin: 0.5em 0;
+}
+.prose th,
+.prose td {
+  border: 1px solid var(--border);
+  padding: 0.25em 0.5em;
+}
+.prose th {
+  background-color: var(--muted);
+  font-weight: 600;
 }
 
 /* 傍点（圏点）— Japanese emphasis marks (sesame) */
@@ -251,6 +295,10 @@
 .vertical-preview h2,
 .vertical-preview h3 { font-weight: bold; margin: 0 1em; }
 .vertical-preview ruby rt { font-size: 0.5em; }
+.vertical-preview table {
+  writing-mode: horizontal-tb;
+  margin: 1em 0;
+}
 
 /* Typewriter cursor effect */
 @keyframes typewriter-blink {

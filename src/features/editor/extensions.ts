@@ -2,6 +2,10 @@ import StarterKit from "@tiptap/starter-kit";
 import { Markdown } from "tiptap-markdown";
 import Underline from "@tiptap/extension-underline";
 import Link from "@tiptap/extension-link";
+import { Table } from "@tiptap/extension-table";
+import TableRow from "@tiptap/extension-table-row";
+import TableHeader from "@tiptap/extension-table-header";
+import TableCell from "@tiptap/extension-table-cell";
 import Placeholder from "@tiptap/extension-placeholder";
 import CharacterCount from "@tiptap/extension-character-count";
 import Typography from "@tiptap/extension-typography";
@@ -68,6 +72,11 @@ export function getEditorExtensions(): Extensions {
     Placeholder.configure({ placeholder: "ここに書き始める…" }),
     CharacterCount,
     Typography,
+    // Table
+    Table.configure({ resizable: false }),
+    TableRow,
+    TableHeader,
+    TableCell,
     // Custom marks/nodes
     AuthorshipMark,
     EmphasisDotsMark,

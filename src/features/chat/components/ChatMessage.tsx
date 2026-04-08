@@ -1,4 +1,5 @@
 import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import type { ChatMessage as ChatMessageType } from "../chatTypes";
 import type { ToolCallRecord } from "../agent/agentTypes";
 import { ChatMessageActions } from "./ChatMessageActions";
@@ -101,7 +102,9 @@ export function ChatMessage({
               </div>
             )}
             <div className="prose prose-sm max-w-none dark:prose-invert">
-              <ReactMarkdown>{msg.content}</ReactMarkdown>
+              <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                {msg.content}
+              </ReactMarkdown>
             </div>
             {showActions && (
               <ChatMessageActions
@@ -118,7 +121,9 @@ export function ChatMessage({
         ) : isUser ? (
           <>
             <div className="prose prose-sm max-w-none dark:prose-invert prose-p:text-primary-foreground prose-strong:text-primary-foreground prose-em:text-primary-foreground prose-code:text-primary-foreground">
-              <ReactMarkdown>{msg.content}</ReactMarkdown>
+              <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                {msg.content}
+              </ReactMarkdown>
             </div>
             {showActions && (
               <ChatMessageActions
