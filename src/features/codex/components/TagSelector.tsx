@@ -18,6 +18,8 @@ interface TagSelectorProps {
   projectId?: string;
   selectedTags: CodexTag[];
   onTagsChange: (tags: CodexTag[]) => void;
+  /** 直接表示するタグの最大数。超えた分は +N ボタンに折りたたむ */
+  maxVisible?: number;
 }
 
 export function TagSelector({
@@ -26,13 +28,21 @@ export function TagSelector({
   projectId = "default-project",
   selectedTags,
   onTagsChange,
+  maxVisible,
 }: TagSelectorProps) {
   const [allTags, setAllTags] = useState<CodexTag[]>([]);
   const [dropdownOpen, setDropdownOpen] = useState(false);
+  const [overflowOpen, setOverflowOpen] = useState(false);
   const [showCreate, setShowCreate] = useState(false);
   const [newName, setNewName] = useState("");
   const [newColor, setNewColor] = useState(PRESET_COLORS[0]);
   const dropdownRef = useRef<HTMLDivElement>(null);
+  const overflowRef = useRef<HTMLDivElement>(null);
+
+  const visibleTags =
+    maxVisible !== undefined ? selectedTags.slice(0, maxVisible) : selectedTags;
+  const hiddenTags =
+    maxVisible !== undefined ? selectedTags.slice(maxVisible) : [];
 
   useEffect(() => {
     listCodexTags(projectId).then(setAllTags);
@@ -53,6 +63,21 @@ export function TagSelector({
     document.addEventListener("mousedown", handler);
     return () => document.removeEventListener("mousedown", handler);
   }, [dropdownOpen]);
+
+  // Close overflow dropdown on outside click
+  useEffect(() => {
+    if (!overflowOpen) return;
+    const handler = (e: MouseEvent) => {
+      if (
+        overflowRef.current &&
+        !overflowRef.current.contains(e.target as Node)
+      ) {
+        setOverflowOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [overflowOpen]);
 
   const filteredTags = allTags.filter((tag) => {
     if (!tag.typeFilter) return true;
@@ -108,7 +133,7 @@ export function TagSelector({
 
   return (
     <div className="flex flex-wrap items-center gap-1">
-      {selectedTags.map((tag) => (
+      {visibleTags.map((tag) => (
         <TagPill
           key={tag.id}
           name={tag.name}
@@ -117,6 +142,36 @@ export function TagSelector({
           size="sm"
         />
       ))}
+
+      {hiddenTags.length > 0 && (
+        <div className="relative" ref={overflowRef}>
+          <button
+            type="button"
+            data-testid="tag-overflow-button"
+            onClick={() => setOverflowOpen((v) => !v)}
+            className="rounded-full bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground hover:bg-muted/80"
+          >
+            +{hiddenTags.length}
+          </button>
+          {overflowOpen && (
+            <div
+              data-testid="tag-overflow-dropdown"
+              className="absolute left-0 top-full z-50 mt-1 min-w-[140px] rounded-md border border-border bg-popover p-1 shadow-md"
+            >
+              {hiddenTags.map((tag) => (
+                <div key={tag.id} className="py-0.5">
+                  <TagPill
+                    name={tag.name}
+                    color={tag.color}
+                    onRemove={() => handleRemove(tag.id)}
+                    size="sm"
+                  />
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
 
       <div className="relative" ref={dropdownRef}>
         <button

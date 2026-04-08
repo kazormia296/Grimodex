@@ -296,6 +296,7 @@ export function CodexDetailContent({
             entryType={type}
             selectedTags={selectedTags}
             onTagsChange={setSelectedTags}
+            maxVisible={3}
           />
         </div>
       </div>
