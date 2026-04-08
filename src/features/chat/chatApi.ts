@@ -8,6 +8,7 @@ import {
   normalizePinnedCodex,
   type PinnedCodexEntry,
 } from "./pinnedCodexTypes";
+import { sanitizeSceneContent } from "./contextBuilder";
 
 // --- AI message sending (existing) ---
 
@@ -60,7 +61,7 @@ export async function generateSynopsisFromContent(
       content:
         `以下のシーン「${sceneTitle}」の内容を1〜3文（100〜200文字程度）で簡潔にまとめたSynopsisを日本語で書いてください。\n` +
         `Synopsisのみを出力してください。余分な説明は不要です。\n\n` +
-        `===シーン本文===\n${sceneContent}`,
+        `===シーン本文===\n${sanitizeSceneContent(sceneContent)}`,
     },
   ];
   const response = await invoke<ChatResponsePayload>("send_chat_message", {

@@ -53,6 +53,18 @@ export interface SystemPromptResult {
 
 const encoder = encodingForModel("gpt-4o");
 
+/**
+ * TipTap HTMLからAuthorshipMarkのspanタグ（data-authorship属性）を除去する。
+ * ルビ・傍点等のHTMLタグは保持する。
+ */
+export function sanitizeSceneContent(html: string): string {
+  // data-authorship属性を持つspanタグのみ除去（内容テキストは保持）
+  return html.replace(
+    /<span\b[^>]*\bdata-authorship\b[^>]*>([\s\S]*?)<\/span>/g,
+    "$1",
+  );
+}
+
 function deduplicateById(entries: CodexContext[]): CodexContext[] {
   const seen = new Set<string>();
   return entries.filter((e) => {
@@ -101,7 +113,7 @@ export function buildSystemPrompt(
   // L3: Current scene
   let l3Text = `\n## 現在のシーン\nタイトル: ${input.scene.title}`;
   if (input.scene.content) {
-    l3Text += `\n\n### シーン本文\n${input.scene.content}`;
+    l3Text += `\n\n### シーン本文\n${sanitizeSceneContent(input.scene.content)}`;
   }
   layers.push({
     layer: "L3",
@@ -207,7 +219,9 @@ export function buildAgentSystemPrompt(
   if (input.scene) {
     parts.push(`\n## 現在のシーン\n` + `タイトル: ${input.scene.title}`);
     if (input.scene.content) {
-      parts.push(`\n### シーン本文\n${input.scene.content}`);
+      parts.push(
+        `\n### シーン本文\n${sanitizeSceneContent(input.scene.content)}`,
+      );
     }
   }
 

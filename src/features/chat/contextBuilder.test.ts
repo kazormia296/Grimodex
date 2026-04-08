@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   buildSystemPrompt,
   countTokens,
+  sanitizeSceneContent,
   type SceneContext,
   type ProjectContext,
   type CodexContext,
@@ -207,6 +208,54 @@ describe("contextBuilder", () => {
       const result = buildSystemPrompt({ scene, codexEntries });
 
       expect(result.prompt).toContain("**魔法体系** (設定): 世界の魔法ルール");
+    });
+  });
+
+  describe("sanitizeSceneContent", () => {
+    it("removes authorship spans but keeps their text", () => {
+      const html =
+        '<span data-authorship="ai" source="ai" timestamp="2026-01-01T00:00:00.000Z" manualoverride="false">AIが書いたテキスト</span>';
+      expect(sanitizeSceneContent(html)).toBe("AIが書いたテキスト");
+    });
+
+    it("removes human authorship spans too", () => {
+      const html =
+        '<span data-authorship="human" source="human" timestamp="2026-01-01T00:00:00.000Z" manualoverride="false">人間が書いたテキスト</span>';
+      expect(sanitizeSceneContent(html)).toBe("人間が書いたテキスト");
+    });
+
+    it("preserves ruby tags", () => {
+      const html =
+        '<ruby base="承知" data-base="承知" data-annotation="OK">承知<rp>(</rp><rt>OK</rt><rp>)</rp></ruby>';
+      expect(sanitizeSceneContent(html)).toBe(html);
+    });
+
+    it("strips authorship spans while preserving sibling ruby tags", () => {
+      const html =
+        '<span data-authorship="ai" source="ai" timestamp="2026-01-01T00:00:00.000Z" manualoverride="false">はい、</span>' +
+        '<ruby base="承知" data-base="承知" data-annotation="OK">承知<rp>(</rp><rt>OK</rt><rp>)</rp></ruby>' +
+        '<span data-authorship="ai" source="ai" timestamp="2026-01-01T00:00:00.000Z" manualoverride="false">。</span>';
+      expect(sanitizeSceneContent(html)).toBe(
+        'はい、<ruby base="承知" data-base="承知" data-annotation="OK">承知<rp>(</rp><rt>OK</rt><rp>)</rp></ruby>。',
+      );
+    });
+
+    it("leaves plain text unchanged", () => {
+      const text = "これは普通のテキストです。";
+      expect(sanitizeSceneContent(text)).toBe(text);
+    });
+
+    it("preserves p tags and other structural HTML", () => {
+      const html = "<p>段落テキスト</p>";
+      expect(sanitizeSceneContent(html)).toBe(html);
+    });
+
+    it("strips multiple authorship spans across the document", () => {
+      const html =
+        '<span data-authorship="ai" source="ai" timestamp="2026-01-01T00:00:00.000Z" chatmessageid="abc" manualoverride="false">文A</span>' +
+        "人間テキスト" +
+        '<span data-authorship="ai" source="ai" timestamp="2026-01-01T00:00:00.000Z" chatmessageid="abc" manualoverride="false">文B</span>';
+      expect(sanitizeSceneContent(html)).toBe("文A人間テキスト文B");
     });
   });
 
