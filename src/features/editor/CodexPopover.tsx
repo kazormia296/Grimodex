@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from "react";
+import { createPortal } from "react-dom";
 import type { Editor } from "@tiptap/core";
 import { useCodexStore } from "@/features/codex/codexStore";
 
@@ -76,7 +77,7 @@ export function CodexPopover({ editor }: { editor: Editor | null }) {
   const entry = entries.find((e) => e.id === popover.entryId);
   if (!entry) return null;
 
-  return (
+  return createPortal(
     <div
       className="codex-popover fixed z-50 w-64 rounded-lg border border-border bg-popover p-3 shadow-md"
       style={{ left: popover.x, top: popover.y }}
@@ -102,6 +103,7 @@ export function CodexPopover({ editor }: { editor: Editor | null }) {
           {entry.summary}
         </p>
       )}
-    </div>
+    </div>,
+    document.body,
   );
 }
