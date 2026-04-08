@@ -35,6 +35,7 @@ import {
   DEFAULT_COLOR_THEME,
   THEME_CSS_VARS,
 } from "@/lib/colorThemes";
+import { GrimodexLogo } from "@/components/GrimodexLogo";
 
 /* ── Panel content components for dockview ── */
 
@@ -273,7 +274,7 @@ function EditorScreen() {
     <main className="flex h-screen flex-col">
       <header className="flex flex-shrink-0 items-center gap-3 border-b border-border px-4 py-2">
         <WorkspaceMenu />
-        <h1 className="text-xl font-bold text-foreground">Grimodex</h1>
+        <GrimodexLogo height={24} className="text-foreground" />
         <div className="flex-1" />
         <LayoutPresetDropdown />
         <PanelToggleDropdown />
