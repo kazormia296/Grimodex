@@ -4,7 +4,6 @@ import { SettingRow } from "../components/SettingRow";
 import { SettingToggle } from "../components/SettingToggle";
 import { SettingSlider } from "../components/SettingSlider";
 import { SettingDropdown } from "../components/SettingDropdown";
-import { SettingColorPicker } from "../components/SettingColorPicker";
 import { useSettingControl } from "../useSettingControl";
 import { useCodexHighlightStore } from "@/features/editor/codexHighlightStore";
 import { useWorkspaceStore } from "@/features/workspace/store";
@@ -35,10 +34,6 @@ export function DisplayCategory() {
   const updateGlobal = useWorkspaceStore((s) => s.updateGlobalSettings);
 
   // Workspace-specific settings (stored in workspace DB)
-  const { value: accentColor, setValue: setAccentColor } = useSettingControl(
-    "display.accentColor",
-    "#7F77DD",
-  );
   const { value: codexHighlight } = useSettingControl(
     "display.codexHighlight",
     "true",
@@ -65,9 +60,6 @@ export function DisplayCategory() {
               </option>
             ))}
           </select>
-        </SettingRow>
-        <SettingRow label="アクセントカラー">
-          <SettingColorPicker value={accentColor} onChange={setAccentColor} />
         </SettingRow>
       </SettingSection>
 
