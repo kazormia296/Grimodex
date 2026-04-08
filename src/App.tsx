@@ -30,6 +30,11 @@ import { SnippetPanel } from "@/features/snippets/SnippetPanel";
 import { AttributionReport } from "@/features/attribution/AttributionReport";
 import { useState } from "react";
 import { Settings } from "lucide-react";
+import {
+  COLOR_THEMES,
+  DEFAULT_COLOR_THEME,
+  THEME_CSS_VARS,
+} from "@/lib/colorThemes";
 
 /* ── Panel content components for dockview ── */
 
@@ -74,8 +79,10 @@ function buildDefaultLayout(api: DockviewReadyEvent["api"]) {
 
 /* ── App root ── */
 
-function applyTheme(theme: string) {
+function applyTheme(theme: string, colorTheme?: string) {
   const html = document.documentElement;
+
+  // Light/dark mode
   if (theme === "dark") {
     html.classList.add("dark");
   } else if (theme === "light") {
@@ -86,18 +93,46 @@ function applyTheme(theme: string) {
     ).matches;
     html.classList.toggle("dark", prefersDark);
   }
+
+  // Named color theme
+  const isDark = html.classList.contains("dark");
+  const resolvedId = colorTheme ?? DEFAULT_COLOR_THEME;
+  const themeObj = COLOR_THEMES.find((t) => t.id === resolvedId);
+
+  if (!themeObj) {
+    // Unknown theme — remove overrides, fall back to CSS defaults
+    for (const prop of THEME_CSS_VARS) {
+      html.style.removeProperty(prop);
+    }
+    return;
+  }
+
+  const palette = isDark ? themeObj.dark : themeObj.light;
+  for (const prop of THEME_CSS_VARS) {
+    html.style.setProperty(prop, palette[prop]);
+  }
 }
 
 function App() {
   const view = useWorkspaceStore((s) => s.view);
   const initialize = useWorkspaceStore((s) => s.initialize);
   const theme = useWorkspaceStore((s) => s.globalSettings?.theme ?? "system");
+  const colorTheme = useWorkspaceStore((s) => s.globalSettings?.colorTheme);
 
   // Apply theme reactively — globalSettings is loaded from global-settings.json
   // (no workspace DB needed), so this works before any workspace is opened.
   useEffect(() => {
-    applyTheme(theme);
-  }, [theme]);
+    applyTheme(theme, colorTheme);
+  }, [theme, colorTheme]);
+
+  // Re-apply when OS light/dark preference changes while theme === "system"
+  useEffect(() => {
+    if (theme !== "system") return;
+    const mql = window.matchMedia("(prefers-color-scheme: dark)");
+    const handler = () => applyTheme("system", colorTheme);
+    mql.addEventListener("change", handler);
+    return () => mql.removeEventListener("change", handler);
+  }, [theme, colorTheme]);
 
   useEffect(() => {
     initialize();

@@ -7,12 +7,18 @@ import { SettingDropdown } from "../components/SettingDropdown";
 import { useSettingControl } from "../useSettingControl";
 import { useCodexHighlightStore } from "@/features/editor/codexHighlightStore";
 import { useWorkspaceStore } from "@/features/workspace/store";
+import { COLOR_THEMES, DEFAULT_COLOR_THEME } from "@/lib/colorThemes";
 
-const THEME_OPTIONS = [
+const LIGHT_DARK_OPTIONS = [
   { value: "system", label: "システム" },
   { value: "dark", label: "ダーク" },
   { value: "light", label: "ライト" },
 ];
+
+const COLOR_THEME_OPTIONS = COLOR_THEMES.map((t) => ({
+  value: t.id,
+  label: t.name,
+}));
 
 const LANGUAGE_OPTIONS = [
   { value: "ja", label: "日本語" },
@@ -27,6 +33,9 @@ const CODEX_STYLE_OPTIONS = [
 export function DisplayCategory() {
   // Global settings (stored in global-settings.json, available before workspace open)
   const theme = useWorkspaceStore((s) => s.globalSettings?.theme ?? "system");
+  const colorTheme = useWorkspaceStore(
+    (s) => s.globalSettings?.colorTheme ?? DEFAULT_COLOR_THEME,
+  );
   const uiLanguage = useWorkspaceStore(
     (s) => s.globalSettings?.uiLanguage ?? "ja",
   );
@@ -50,11 +59,24 @@ export function DisplayCategory() {
       <SettingSection title="テーマ">
         <SettingRow label="カラーテーマ">
           <select
+            value={colorTheme}
+            onChange={(e) => updateGlobal({ colorTheme: e.target.value })}
+            className="rounded-md border border-input bg-background px-2 py-1 text-sm focus:outline-none"
+          >
+            {COLOR_THEME_OPTIONS.map((o) => (
+              <option key={o.value} value={o.value}>
+                {o.label}
+              </option>
+            ))}
+          </select>
+        </SettingRow>
+        <SettingRow label="ライト / ダーク">
+          <select
             value={theme}
             onChange={(e) => updateGlobal({ theme: e.target.value })}
             className="rounded-md border border-input bg-background px-2 py-1 text-sm focus:outline-none"
           >
-            {THEME_OPTIONS.map((o) => (
+            {LIGHT_DARK_OPTIONS.map((o) => (
               <option key={o.value} value={o.value}>
                 {o.label}
               </option>

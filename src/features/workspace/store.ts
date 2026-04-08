@@ -21,6 +21,8 @@ export interface GlobalSettings {
   layoutPresets?: Array<{ id: string; name: string; layout: unknown }>;
   /** ID of the last-applied layout preset */
   activeLayoutPresetId?: string | null;
+  /** Named color theme (e.g. "dark-academia"). Undefined = default theme. */
+  colorTheme?: string;
 }
 
 export type AppView = "loading" | "welcome" | "launcher" | "editor";
