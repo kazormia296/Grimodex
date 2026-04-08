@@ -74,6 +74,7 @@ describe("codexStore", () => {
       searchQuery: "",
       filterType: null,
       isLoading: false,
+      sortOrder: "name-asc",
     });
   });
 
@@ -318,6 +319,29 @@ describe("codexStore", () => {
 
       expect(useCodexStore.getState().filterType).toBe(null);
       expect(mockListCodexEntries).toHaveBeenCalledWith(undefined);
+    });
+  });
+
+  describe("setSort", () => {
+    it("sets sort order", () => {
+      useCodexStore.getState().setSort("name-desc");
+      expect(useCodexStore.getState().sortOrder).toBe("name-desc");
+    });
+
+    it("defaults to name-asc", () => {
+      expect(useCodexStore.getState().sortOrder).toBe("name-asc");
+    });
+
+    it("supports all sort options", () => {
+      for (const order of [
+        "name-asc",
+        "name-desc",
+        "updated",
+        "created",
+      ] as const) {
+        useCodexStore.getState().setSort(order);
+        expect(useCodexStore.getState().sortOrder).toBe(order);
+      }
     });
   });
 });

@@ -1,12 +1,19 @@
-import { useState, useEffect, useCallback, useRef } from "react";
-import { Search } from "lucide-react";
+import {
+  useState,
+  useEffect,
+  useCallback,
+  useRef,
+  useMemo,
+  type KeyboardEvent,
+} from "react";
+import { Search, Plus } from "lucide-react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import {
   ResizablePanelGroup,
   ResizablePanel,
   ResizableHandle,
 } from "@/components/ui/resizable";
-import { useCodexStore } from "./codexStore";
+import { useCodexStore, type CodexSortOrder } from "./codexStore";
 import type { CodexEntry, CodexEntryType } from "./api";
 import { EntryIcon } from "./components/EntryIcon";
 import { TagPill } from "./components/TagPill";
@@ -18,6 +25,21 @@ const TYPE_LABELS: Record<string, string> = {
   item: "アイテム",
   lore: "設定・世界観",
 };
+
+const FILTER_OPTIONS: { value: CodexEntryType | "all"; label: string }[] = [
+  { value: "all", label: "すべて" },
+  { value: "character", label: "キャラクター" },
+  { value: "location", label: "場所" },
+  { value: "item", label: "アイテム" },
+  { value: "lore", label: "設定・世界観" },
+];
+
+const SORT_OPTIONS: { value: CodexSortOrder; label: string }[] = [
+  { value: "name-asc", label: "名前 (A→Z)" },
+  { value: "name-desc", label: "名前 (Z→A)" },
+  { value: "updated", label: "更新順" },
+  { value: "created", label: "作成順" },
+];
 
 // --- Command Palette ---
 
@@ -37,7 +59,7 @@ function CommandPalette({
   }, []);
 
   useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
+    const handleKeyDown = (e: globalThis.KeyboardEvent) => {
       if (e.key === "Escape") {
         e.preventDefault();
         onClose();
@@ -75,7 +97,7 @@ function CommandPalette({
             data-testid="codex-command-input"
             type="text"
             value={query}
-            onChange={(e) => handleSearch(e.target.value)}
+            onChange={(e) => void handleSearch(e.target.value)}
             placeholder="Codexを検索..."
             className="flex-1 bg-transparent py-3 text-sm outline-none"
           />
@@ -236,34 +258,83 @@ function VirtualizedEntryList({
   );
 }
 
+// --- Sort utility ---
+
+function sortEntries(
+  entries: CodexEntry[],
+  order: CodexSortOrder,
+): CodexEntry[] {
+  const sorted = [...entries];
+  switch (order) {
+    case "name-asc":
+      return sorted.sort((a, b) => a.name.localeCompare(b.name, "ja"));
+    case "name-desc":
+      return sorted.sort((a, b) => b.name.localeCompare(a.name, "ja"));
+    case "updated":
+      return sorted.sort(
+        (a, b) =>
+          new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime(),
+      );
+    case "created":
+      return sorted.sort(
+        (a, b) =>
+          new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
+      );
+    default:
+      return sorted;
+  }
+}
+
 // --- Main Panel ---
 
-const FILTER_OPTIONS: { value: CodexEntryType | "all"; label: string }[] = [
-  { value: "all", label: "すべて" },
-  { value: "character", label: "キャラクター" },
-  { value: "location", label: "場所" },
-  { value: "item", label: "アイテム" },
-  { value: "lore", label: "設定・世界観" },
-];
+interface CodexManagementPanelProps {
+  /** For testing: force stack mode (normally detected from panel width) */
+  initialStackMode?: boolean;
+}
 
-export function CodexManagementPanel() {
+export function CodexManagementPanel({
+  initialStackMode = false,
+}: CodexManagementPanelProps = {}) {
   const entries = useCodexStore((s) => s.entries);
   const filterType = useCodexStore((s) => s.filterType);
+  const sortOrder = useCodexStore((s) => s.sortOrder);
   const isLoading = useCodexStore((s) => s.isLoading);
   const loadEntries = useCodexStore((s) => s.loadEntries);
+  const searchStore = useCodexStore((s) => s.search);
   const remove = useCodexStore((s) => s.remove);
+  const create = useCodexStore((s) => s.create);
   const setFilterType = useCodexStore((s) => s.setFilterType);
+  const setSort = useCodexStore((s) => s.setSort);
 
   const [selectedEntry, setSelectedEntry] = useState<CodexEntry | null>(null);
   const [showCommandPalette, setShowCommandPalette] = useState(false);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [isStackMode, setIsStackMode] = useState(initialStackMode);
+  const [showDetail, setShowDetail] = useState(false);
+
+  const containerRef = useRef<HTMLDivElement>(null);
+  const searchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     loadEntries();
   }, [loadEntries]);
 
+  // Responsive: observe container width for stack/split switching
+  useEffect(() => {
+    if (initialStackMode) return; // controlled by prop in tests
+    const container = containerRef.current;
+    if (!container) return;
+    const observer = new ResizeObserver(([entry]) => {
+      const width = entry.contentRect.width;
+      setIsStackMode(width < 400);
+    });
+    observer.observe(container);
+    return () => observer.disconnect();
+  }, [initialStackMode]);
+
   // Ctrl+K handler
   useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
+    const handleKeyDown = (e: globalThis.KeyboardEvent) => {
       if ((e.ctrlKey || e.metaKey) && e.key === "k") {
         e.preventDefault();
         setShowCommandPalette((prev) => !prev);
@@ -273,6 +344,28 @@ export function CodexManagementPanel() {
     return () => document.removeEventListener("keydown", handleKeyDown);
   }, []);
 
+  // Debounced search (300ms)
+  const handleSearchChange = useCallback(
+    (value: string) => {
+      setSearchQuery(value);
+      if (searchTimerRef.current) clearTimeout(searchTimerRef.current);
+      searchTimerRef.current = setTimeout(() => {
+        void searchStore(value);
+      }, 300);
+    },
+    [searchStore],
+  );
+
+  const handleSearchKeyDown = useCallback(
+    (e: KeyboardEvent<HTMLInputElement>) => {
+      if (e.key === "Escape") {
+        setSearchQuery("");
+        void searchStore("");
+      }
+    },
+    [searchStore],
+  );
+
   const handleFilterClick = useCallback(
     (value: CodexEntryType | "all") => {
       setFilterType(value === "all" ? null : value);
@@ -280,20 +373,167 @@ export function CodexManagementPanel() {
     [setFilterType],
   );
 
+  const handleNewEntry = useCallback(async () => {
+    const entry = await create({ type: "character", name: "Untitled" });
+    setSelectedEntry(entry);
+    if (isStackMode) setShowDetail(true);
+  }, [create, isStackMode]);
+
+  const handleSelectEntry = useCallback(
+    (entry: CodexEntry) => {
+      setSelectedEntry(entry);
+      if (isStackMode) setShowDetail(true);
+    },
+    [isStackMode],
+  );
+
   const handleDelete = useCallback(
     async (id: string) => {
       await remove(id);
       setSelectedEntry(null);
+      if (isStackMode) setShowDetail(false);
     },
-    [remove],
+    [remove, isStackMode],
   );
 
-  const handleCommandSelect = useCallback((entry: CodexEntry) => {
-    setSelectedEntry(entry);
+  const handleBack = useCallback(() => {
+    setShowDetail(false);
+    setSelectedEntry(null);
   }, []);
 
+  const handleCommandSelect = useCallback(
+    (entry: CodexEntry) => {
+      setSelectedEntry(entry);
+      if (isStackMode) setShowDetail(true);
+    },
+    [isStackMode],
+  );
+
+  // Sorted entries (client-side)
+  const sortedEntries = useMemo(
+    () => sortEntries(entries, sortOrder),
+    [entries, sortOrder],
+  );
+
+  // --- Header ---
+  const header = (
+    <div
+      data-testid="codex-header"
+      className="flex items-center justify-between border-b border-border px-3 py-2"
+    >
+      <span data-testid="codex-header-title" className="text-sm font-semibold">
+        Codex
+      </span>
+      <div className="flex items-center gap-1">
+        <span
+          data-testid="codex-entry-count"
+          className="text-xs text-muted-foreground"
+        >
+          {entries.length}
+        </span>
+        <select
+          data-testid="codex-sort-selector"
+          value={sortOrder}
+          onChange={(e) => setSort(e.target.value as CodexSortOrder)}
+          className="rounded border border-input bg-background px-1 py-0.5 text-[10px]"
+          title="ソート順"
+        >
+          {SORT_OPTIONS.map((opt) => (
+            <option key={opt.value} value={opt.value}>
+              {opt.label}
+            </option>
+          ))}
+        </select>
+        <button
+          type="button"
+          data-testid="codex-new-entry-button"
+          onClick={() => void handleNewEntry()}
+          className="rounded p-1 text-muted-foreground hover:bg-accent hover:text-accent-foreground"
+          title="新規エントリ"
+        >
+          <Plus className="h-3.5 w-3.5" />
+        </button>
+      </div>
+    </div>
+  );
+
+  // --- Search bar ---
+  const searchBar = (
+    <div className="flex items-center gap-1 border-b border-border px-2 py-1.5">
+      <Search className="h-3 w-3 shrink-0 text-muted-foreground" />
+      <input
+        data-testid="codex-search-input"
+        type="text"
+        value={searchQuery}
+        onChange={(e) => handleSearchChange(e.target.value)}
+        onKeyDown={handleSearchKeyDown}
+        placeholder="検索..."
+        className="flex-1 bg-transparent text-xs outline-none"
+      />
+    </div>
+  );
+
+  // --- Filter tabs ---
+  const filterTabs = (
+    <div className="flex flex-wrap gap-1 border-b border-border px-2 py-2">
+      {FILTER_OPTIONS.map((opt) => (
+        <button
+          key={opt.value}
+          type="button"
+          data-testid={`codex-filter-${opt.value}`}
+          onClick={() => handleFilterClick(opt.value)}
+          className={`rounded-full px-2 py-0.5 text-[10px] font-medium transition-colors ${
+            (opt.value === "all" && filterType === null) ||
+            opt.value === filterType
+              ? "bg-primary text-primary-foreground"
+              : "bg-muted text-muted-foreground hover:bg-accent"
+          }`}
+        >
+          {opt.label}
+        </button>
+      ))}
+    </div>
+  );
+
+  // --- List panel content ---
+  const listPanelContent = (
+    <div data-testid="codex-list-panel" className="flex h-full flex-col">
+      {searchBar}
+      {filterTabs}
+      <VirtualizedEntryList
+        entries={sortedEntries}
+        isLoading={isLoading}
+        selectedEntryId={selectedEntry?.id ?? null}
+        onSelect={handleSelectEntry}
+      />
+    </div>
+  );
+
+  // --- Detail panel content ---
+  const detailPanelContent = selectedEntry ? (
+    <CodexDetailContent
+      key={selectedEntry.id}
+      entry={selectedEntry}
+      onDelete={handleDelete}
+      onBack={isStackMode ? handleBack : undefined}
+    />
+  ) : (
+    <div
+      data-testid="codex-detail-placeholder"
+      className="flex h-full items-center justify-center"
+    >
+      <p className="text-xs text-muted-foreground">
+        エントリを選択してください
+      </p>
+    </div>
+  );
+
   return (
-    <div data-testid="codex-management-panel" className="flex h-full flex-col">
+    <div
+      ref={containerRef}
+      data-testid="codex-management-panel"
+      className="flex h-full flex-col"
+    >
       {showCommandPalette && (
         <CommandPalette
           onSelect={handleCommandSelect}
@@ -301,64 +541,38 @@ export function CodexManagementPanel() {
         />
       )}
 
-      <ResizablePanelGroup orientation="horizontal">
-        {/* Left Panel: List */}
-        <ResizablePanel defaultSize={40} minSize={25}>
-          <div data-testid="codex-list-panel" className="flex h-full flex-col">
-            {/* Category filter buttons */}
-            <div className="flex flex-wrap gap-1 border-b border-border px-2 py-2">
-              {FILTER_OPTIONS.map((opt) => (
-                <button
-                  key={opt.value}
-                  type="button"
-                  data-testid={`codex-filter-${opt.value}`}
-                  onClick={() => handleFilterClick(opt.value)}
-                  className={`rounded-full px-2 py-0.5 text-[10px] font-medium transition-colors ${
-                    (opt.value === "all" && filterType === null) ||
-                    opt.value === filterType
-                      ? "bg-primary text-primary-foreground"
-                      : "bg-muted text-muted-foreground hover:bg-accent"
-                  }`}
-                >
-                  {opt.label}
-                </button>
-              ))}
+      {header}
+
+      {isStackMode ? (
+        // Stack mode: list or detail, not both
+        <div className="flex-1 overflow-hidden">
+          {showDetail ? (
+            <div data-testid="codex-detail-panel" className="h-full">
+              {detailPanelContent}
             </div>
+          ) : (
+            listPanelContent
+          )}
+        </div>
+      ) : (
+        // Split mode
+        <ResizablePanelGroup
+          orientation="horizontal"
+          className="flex-1 overflow-hidden"
+        >
+          <ResizablePanel defaultSize={40} minSize={25}>
+            {listPanelContent}
+          </ResizablePanel>
 
-            {/* Entry list (virtualized) */}
-            <VirtualizedEntryList
-              entries={entries}
-              isLoading={isLoading}
-              selectedEntryId={selectedEntry?.id ?? null}
-              onSelect={setSelectedEntry}
-            />
-          </div>
-        </ResizablePanel>
+          <ResizableHandle withHandle />
 
-        <ResizableHandle withHandle />
-
-        {/* Right Panel: Detail */}
-        <ResizablePanel defaultSize={60} minSize={30}>
-          <div data-testid="codex-detail-panel" className="h-full">
-            {selectedEntry ? (
-              <CodexDetailContent
-                key={selectedEntry.id}
-                entry={selectedEntry}
-                onDelete={handleDelete}
-              />
-            ) : (
-              <div
-                data-testid="codex-detail-placeholder"
-                className="flex h-full items-center justify-center"
-              >
-                <p className="text-xs text-muted-foreground">
-                  エントリを選択してください
-                </p>
-              </div>
-            )}
-          </div>
-        </ResizablePanel>
-      </ResizablePanelGroup>
+          <ResizablePanel defaultSize={60} minSize={30}>
+            <div data-testid="codex-detail-panel" className="h-full">
+              {detailPanelContent}
+            </div>
+          </ResizablePanel>
+        </ResizablePanelGroup>
+      )}
     </div>
   );
 }

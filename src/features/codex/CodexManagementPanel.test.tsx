@@ -539,4 +539,182 @@ describe("CodexManagementPanel", () => {
       expect(screen.getByTestId("codex-source-chat-link")).toBeInTheDocument();
     });
   });
+
+  // --- Header: [+] button + entry count ---
+
+  describe("Header: [+] button and entry count", () => {
+    it("shows Codex title in header", async () => {
+      mockListCodexEntries.mockResolvedValue(mockEntries);
+      render(<CodexManagementPanel />);
+      await waitFor(() =>
+        expect(screen.getByTestId("codex-header-title")).toBeInTheDocument(),
+      );
+    });
+
+    it("shows entry count in header", async () => {
+      mockListCodexEntries.mockResolvedValue(mockEntries);
+      render(<CodexManagementPanel />);
+      await waitFor(() =>
+        expect(screen.getByTestId("codex-entry-count")).toBeInTheDocument(),
+      );
+    });
+
+    it("creates new entry and selects it when [+] is clicked", async () => {
+      const user = userEvent.setup();
+      const { createCodexEntry } = await import("./api");
+      vi.mocked(createCodexEntry).mockResolvedValue(mockEntries[0]);
+      mockListCodexEntries.mockResolvedValue([]);
+      render(<CodexManagementPanel />);
+
+      await waitFor(() =>
+        expect(
+          screen.getByTestId("codex-new-entry-button"),
+        ).toBeInTheDocument(),
+      );
+      await user.click(screen.getByTestId("codex-new-entry-button"));
+
+      await waitFor(() =>
+        expect(screen.getByTestId("codex-detail-content")).toBeInTheDocument(),
+      );
+    });
+  });
+
+  // --- Search bar ---
+
+  describe("Inline search bar", () => {
+    it("renders search bar in list panel", async () => {
+      mockListCodexEntries.mockResolvedValue(mockEntries);
+      render(<CodexManagementPanel />);
+      await waitFor(() =>
+        expect(screen.getByTestId("codex-search-input")).toBeInTheDocument(),
+      );
+    });
+
+    it("filters entries when search query is typed", async () => {
+      const user = userEvent.setup();
+      const { searchCodexEntries } = await import("./search");
+      vi.mocked(searchCodexEntries).mockResolvedValue([mockEntries[0]]);
+      mockListCodexEntries.mockResolvedValue(mockEntries);
+      render(<CodexManagementPanel />);
+
+      await waitFor(() =>
+        expect(screen.getByText("アリス")).toBeInTheDocument(),
+      );
+
+      await user.type(screen.getByTestId("codex-search-input"), "アリス");
+
+      await waitFor(() => {
+        expect(useCodexStore.getState().searchQuery).toBe("アリス");
+      });
+    });
+
+    it("clears search when Escape is pressed", async () => {
+      const user = userEvent.setup();
+      mockListCodexEntries.mockResolvedValue(mockEntries);
+      render(<CodexManagementPanel />);
+
+      await waitFor(() =>
+        expect(screen.getByTestId("codex-search-input")).toBeInTheDocument(),
+      );
+
+      const input = screen.getByTestId("codex-search-input");
+      await user.type(input, "テスト");
+      await user.keyboard("{Escape}");
+
+      expect(input).toHaveValue("");
+    });
+  });
+
+  // --- Sort options ---
+
+  describe("Sort options", () => {
+    it("shows sort selector in header", async () => {
+      mockListCodexEntries.mockResolvedValue(mockEntries);
+      render(<CodexManagementPanel />);
+      await waitFor(() =>
+        expect(screen.getByTestId("codex-sort-selector")).toBeInTheDocument(),
+      );
+    });
+
+    it("sorts entries by name descending when Z→A is selected", async () => {
+      const user = userEvent.setup();
+      mockListCodexEntries.mockResolvedValue(mockEntries);
+      render(<CodexManagementPanel />);
+
+      await waitFor(() =>
+        expect(screen.getByText("アリス")).toBeInTheDocument(),
+      );
+
+      await user.selectOptions(
+        screen.getByTestId("codex-sort-selector"),
+        "name-desc",
+      );
+
+      // After sort change, the store sort order should be updated
+      await waitFor(() =>
+        expect(useCodexStore.getState().sortOrder).toBe("name-desc"),
+      );
+    });
+  });
+
+  // --- Responsive stack mode ---
+
+  describe("Responsive stack mode", () => {
+    it("shows back button in detail view when in stack mode", async () => {
+      const user = userEvent.setup();
+      mockListCodexEntries.mockResolvedValue(mockEntries);
+
+      // Simulate narrow panel width by setting stack mode
+      useCodexStore.setState({
+        entries: mockEntries,
+        searchQuery: "",
+        filterType: null,
+        isLoading: false,
+        sortOrder: "name-asc",
+      });
+
+      render(<CodexManagementPanel initialStackMode={true} />);
+
+      await waitFor(() =>
+        expect(screen.getByText("アリス")).toBeInTheDocument(),
+      );
+
+      await user.click(screen.getByTestId("codex-entry-codex-1"));
+
+      await waitFor(() =>
+        expect(screen.getByTestId("codex-back-button")).toBeInTheDocument(),
+      );
+    });
+
+    it("returns to list when back button is clicked in stack mode", async () => {
+      const user = userEvent.setup();
+      mockListCodexEntries.mockResolvedValue(mockEntries);
+
+      useCodexStore.setState({
+        entries: mockEntries,
+        searchQuery: "",
+        filterType: null,
+        isLoading: false,
+        sortOrder: "name-asc",
+      });
+
+      render(<CodexManagementPanel initialStackMode={true} />);
+
+      await waitFor(() =>
+        expect(screen.getByText("アリス")).toBeInTheDocument(),
+      );
+
+      await user.click(screen.getByTestId("codex-entry-codex-1"));
+
+      await waitFor(() =>
+        expect(screen.getByTestId("codex-back-button")).toBeInTheDocument(),
+      );
+
+      await user.click(screen.getByTestId("codex-back-button"));
+
+      await waitFor(() =>
+        expect(screen.getByTestId("codex-list-panel")).toBeInTheDocument(),
+      );
+    });
+  });
 });

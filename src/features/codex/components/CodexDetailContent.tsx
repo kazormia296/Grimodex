@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from "react";
-import { Trash2, MessageSquare } from "lucide-react";
+import { Trash2, MessageSquare, ArrowLeft } from "lucide-react";
 import { useAutoSave } from "@/hooks/useAutoSave";
 import { useCodexStore } from "../codexStore";
 import type { CodexEntry, CodexEntryType } from "../api";
@@ -28,11 +28,13 @@ const TYPE_OPTIONS: { value: CodexEntryType; label: string }[] = [
 interface CodexDetailContentProps {
   entry: CodexEntry;
   onDelete: (id: string) => void;
+  onBack?: () => void;
 }
 
 export function CodexDetailContent({
   entry,
   onDelete,
+  onBack,
 }: CodexDetailContentProps) {
   const entries = useCodexStore((s) => s.entries);
   const update = useCodexStore((s) => s.update);
@@ -158,7 +160,20 @@ export function CodexDetailContent({
   return (
     <div data-testid="codex-detail-content" className="flex h-full flex-col">
       <div className="flex items-center justify-between border-b border-border px-3 py-2">
-        <h3 className="text-sm font-semibold">エントリ詳細</h3>
+        <div className="flex items-center gap-1">
+          {onBack && (
+            <button
+              type="button"
+              data-testid="codex-back-button"
+              onClick={onBack}
+              className="rounded p-1.5 text-muted-foreground hover:bg-accent"
+              title="戻る"
+            >
+              <ArrowLeft className="h-3.5 w-3.5" />
+            </button>
+          )}
+          <h3 className="text-sm font-semibold">エントリ詳細</h3>
+        </div>
         <button
           type="button"
           data-testid="codex-detail-delete"

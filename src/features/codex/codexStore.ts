@@ -10,14 +10,18 @@ import {
 import type { CodexEntry, CodexEntryType, NewCodexEntry } from "./api";
 import { searchCodexEntries } from "./search";
 
+export type CodexSortOrder = "name-asc" | "name-desc" | "updated" | "created";
+
 interface CodexState {
   entries: CodexEntry[];
   searchQuery: string;
   filterType: CodexEntryType | null;
+  sortOrder: CodexSortOrder;
   isLoading: boolean;
 
   loadEntries: () => Promise<void>;
   search: (query: string) => Promise<void>;
+  setSort: (order: CodexSortOrder) => void;
   create: (
     data: Pick<NewCodexEntry, "type" | "name"> &
       Partial<
@@ -57,6 +61,7 @@ export const useCodexStore = create<CodexState>()((set, get) => ({
   entries: [],
   searchQuery: "",
   filterType: null,
+  sortOrder: "name-asc",
   isLoading: false,
 
   loadEntries: async () => {
@@ -74,6 +79,10 @@ export const useCodexStore = create<CodexState>()((set, get) => ({
         errorDetail(e),
       );
     }
+  },
+
+  setSort: (order) => {
+    set({ sortOrder: order });
   },
 
   search: async (query: string) => {
