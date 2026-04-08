@@ -146,6 +146,26 @@ function CommandPalette({
   );
 }
 
+// --- Tag cache parser ---
+
+type TagCacheItem = { name: string; color: string | null };
+
+function parseTags(tagsCache: string | null | undefined): TagCacheItem[] {
+  if (!tagsCache) return [];
+  try {
+    const parsed = JSON.parse(tagsCache) as unknown;
+    if (!Array.isArray(parsed) || parsed.length === 0) return [];
+    // New format: {name, color}[]
+    if (typeof parsed[0] === "object" && parsed[0] !== null) {
+      return parsed as TagCacheItem[];
+    }
+    // Old format: string[] (backward compat)
+    return (parsed as string[]).map((name) => ({ name, color: null }));
+  } catch {
+    return [];
+  }
+}
+
 // --- Virtualized Entry List (for non-category sorts) ---
 
 function VirtualizedEntryList({
@@ -214,14 +234,7 @@ function VirtualizedEntryList({
       >
         {virtualizer.getVirtualItems().map((virtualItem) => {
           const entry = entries[virtualItem.index];
-          let cachedTagNames: string[] = [];
-          try {
-            if (entry.tagsCache) {
-              cachedTagNames = JSON.parse(entry.tagsCache) as string[];
-            }
-          } catch {
-            cachedTagNames = [];
-          }
+          const cachedTags = parseTags(entry.tagsCache);
           return (
             <div
               key={entry.id}
@@ -247,35 +260,40 @@ function VirtualizedEntryList({
                   selectedEntryId === entry.id ? "bg-accent" : ""
                 }`}
               >
-                <div className="flex items-center gap-2">
+                <div className="flex items-center gap-2 overflow-hidden">
                   <EntryIcon
                     icon={entry.icon as number[] | null}
                     entryType={entry.type}
                     size={28}
                   />
-                  <span className="rounded-full bg-muted px-1.5 py-0.5 text-[9px] font-medium">
+                  <span className="shrink-0 rounded-full bg-muted px-1.5 py-0.5 text-[9px] font-medium">
                     {typeLabels[entry.type] ?? entry.type}
                   </span>
-                  <span className="truncate text-sm font-medium">
+                  <span className="min-w-0 flex-1 truncate text-sm font-medium">
                     {entry.name}
                   </span>
+                  {cachedTags.length > 0 && (
+                    <div className="flex shrink-0 items-center gap-0.5">
+                      {cachedTags.slice(0, 2).map((tag) => (
+                        <TagPill
+                          key={tag.name}
+                          name={tag.name}
+                          color={tag.color}
+                          size="sm"
+                        />
+                      ))}
+                      {cachedTags.length > 2 && (
+                        <span className="rounded-full bg-muted px-1 py-0.5 text-[10px] text-muted-foreground">
+                          +{cachedTags.length - 2}
+                        </span>
+                      )}
+                    </div>
+                  )}
                 </div>
                 {entry.summary && (
                   <p className="mt-0.5 truncate text-xs text-muted-foreground">
                     {entry.summary}
                   </p>
-                )}
-                {cachedTagNames.length > 0 && (
-                  <div className="mt-0.5 flex flex-wrap gap-0.5">
-                    {cachedTagNames.map((tagName) => (
-                      <TagPill
-                        key={tagName}
-                        name={tagName}
-                        color="#888888"
-                        size="sm"
-                      />
-                    ))}
-                  </div>
                 )}
               </button>
             </div>
@@ -327,14 +345,7 @@ function EntryCard({
   onSelect: () => void;
   onContextMenu: (e: React.MouseEvent) => void;
 }) {
-  let cachedTagNames: string[] = [];
-  try {
-    if (entry.tagsCache) {
-      cachedTagNames = JSON.parse(entry.tagsCache) as string[];
-    }
-  } catch {
-    cachedTagNames = [];
-  }
+  const cachedTags = parseTags(entry.tagsCache);
 
   return (
     <div className="border-b border-border">
@@ -345,25 +356,37 @@ function EntryCard({
         onContextMenu={onContextMenu}
         className={`w-full px-3 py-2 text-left hover:bg-accent ${isSelected ? "bg-accent" : ""}`}
       >
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 overflow-hidden">
           <EntryIcon
             icon={entry.icon as number[] | null}
             entryType={entry.type}
             size={28}
           />
-          <span className="truncate text-sm font-medium">{entry.name}</span>
+          <span className="min-w-0 flex-1 truncate text-sm font-medium">
+            {entry.name}
+          </span>
+          {cachedTags.length > 0 && (
+            <div className="flex shrink-0 items-center gap-0.5">
+              {cachedTags.slice(0, 2).map((tag) => (
+                <TagPill
+                  key={tag.name}
+                  name={tag.name}
+                  color={tag.color}
+                  size="sm"
+                />
+              ))}
+              {cachedTags.length > 2 && (
+                <span className="rounded-full bg-muted px-1 py-0.5 text-[10px] text-muted-foreground">
+                  +{cachedTags.length - 2}
+                </span>
+              )}
+            </div>
+          )}
         </div>
         {entry.summary && (
           <p className="mt-0.5 truncate text-xs text-muted-foreground">
             {entry.summary}
           </p>
-        )}
-        {cachedTagNames.length > 0 && (
-          <div className="mt-0.5 flex flex-wrap gap-0.5">
-            {cachedTagNames.map((tagName) => (
-              <TagPill key={tagName} name={tagName} color="#888888" size="sm" />
-            ))}
-          </div>
         )}
       </button>
     </div>

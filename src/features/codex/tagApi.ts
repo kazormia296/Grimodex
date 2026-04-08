@@ -81,20 +81,21 @@ export async function setEntryTags(
   }
 
   // Update tagsCache on codex entry (sorted alphabetically, consistent with listEntryTags)
-  let tagNames: string[] = [];
+  // Format: {name: string, color: string | null}[] — stores color for display in entry list
+  let tagCache: { name: string; color: string | null }[] = [];
   if (tagIds.length > 0) {
     const tags = await db
       .select()
       .from(codexTags)
       .where(inArray(codexTags.id, tagIds))
       .orderBy(asc(codexTags.name));
-    tagNames = tags.map((t) => t.name);
+    tagCache = tags.map((t) => ({ name: t.name, color: t.color }));
   }
 
   await db
     .update(codexEntries)
     .set({
-      tagsCache: JSON.stringify(tagNames),
+      tagsCache: JSON.stringify(tagCache),
       updatedAt: new Date().toISOString(),
     })
     .where(eq(codexEntries.id, entryId));
