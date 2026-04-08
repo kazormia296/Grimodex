@@ -3,7 +3,11 @@ import { useCodexHighlightStore } from "./codexHighlightStore";
 
 describe("codexHighlightStore", () => {
   beforeEach(() => {
-    useCodexHighlightStore.setState({ matchTargets: [], hoveredEntryId: null });
+    useCodexHighlightStore.setState({
+      matchTargets: [],
+      hoveredEntryId: null,
+      typeColorMap: {},
+    });
   });
 
   it("sets match targets", () => {
@@ -21,5 +25,19 @@ describe("codexHighlightStore", () => {
     useCodexHighlightStore.getState().setHoveredEntryId("codex-42");
     useCodexHighlightStore.getState().setHoveredEntryId(null);
     expect(useCodexHighlightStore.getState().hoveredEntryId).toBeNull();
+  });
+
+  it("sets type color map", () => {
+    const map = { character: "#7F77DD", location: "#1D9E75" };
+    useCodexHighlightStore.getState().setTypeColorMap(map);
+    expect(useCodexHighlightStore.getState().typeColorMap).toEqual(map);
+  });
+
+  it("replaces type color map on update", () => {
+    useCodexHighlightStore.getState().setTypeColorMap({ character: "#7F77DD" });
+    useCodexHighlightStore.getState().setTypeColorMap({ location: "#1D9E75" });
+    expect(useCodexHighlightStore.getState().typeColorMap).toEqual({
+      location: "#1D9E75",
+    });
   });
 });

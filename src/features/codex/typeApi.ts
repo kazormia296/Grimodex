@@ -13,12 +13,12 @@ const BUILTIN_TYPES: Array<{
   {
     slug: "character",
     label: "キャラクター",
-    color: "#6B7ADB",
+    color: "#7F77DD",
     sortOrder: 1.0,
   },
-  { slug: "location", label: "場所", color: "#5BAD8F", sortOrder: 2.0 },
-  { slug: "item", label: "アイテム", color: "#C27D3C", sortOrder: 3.0 },
-  { slug: "lore", label: "設定・世界観", color: "#9B6BB5", sortOrder: 4.0 },
+  { slug: "location", label: "場所", color: "#1D9E75", sortOrder: 2.0 },
+  { slug: "item", label: "アイテム", color: "#BA7517", sortOrder: 3.0 },
+  { slug: "lore", label: "設定・世界観", color: "#D85A30", sortOrder: 4.0 },
 ];
 
 export async function ensureBuiltinTypes(projectId: string): Promise<void> {

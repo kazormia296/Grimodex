@@ -273,14 +273,11 @@
 
 /* Codex highlight decorations (Task 3.6) */
 .codex-highlight {
-  background-color: oklch(0.85 0.08 200 / 0.3);
-  border-bottom: 1px dashed oklch(0.5 0.15 200);
   cursor: pointer;
-  border-radius: 2px;
-  transition: background-color 0.15s;
+  transition: opacity 0.15s;
 }
 .codex-highlight:hover {
-  background-color: oklch(0.85 0.08 200 / 0.5);
+  opacity: 0.7;
 }
 
 /* Vertical writing preview (Task 5.2) */
