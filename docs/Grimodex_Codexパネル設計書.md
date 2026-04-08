@@ -12,32 +12,32 @@ Codexパネルはプロジェクトの世界設定データベース。キャラ
 
 ```
 ┌──────────────────────────────────────────────┐
-│ A. Header                                     │
-│ Codex                    24 entries    [+]    │
-├──────────────────────────────────────────────┤
-│ B. Search bar                                 │
-│ [🔍 Search codex...                        ] │
-├──────────────────────────────────────────────┤
-│ C. Filter tabs                                │
-│ [All(24)] [Character(8)] [Location(6)]        │
-│ [Item(4)] [Lore(6)]                           │
-├────────────────────┬─────────────────────────┤
-│ D. Entry list      │ E. Detail view           │
-│                    │                          │
-│ ● Elara         ◄──│ ● Elara       character  │
-│   Protagonist...   │                          │
-│                    │ Summary:                 │
-│ ● Obsidian Tower   │ Protagonist, mage        │
-│   Ancient binding..│ apprentice at the Tower. │
-│                    │                          │
-│ ● Soulbind Amulet  │ Content: (TipTap editor) │
-│   Elara's family...│ A young woman who        │
-│                    │ discovers her connection  │
-│ ● Age of Binding   │ to ancient magic...      │
-│   Historical era...│                          │
-│                    │ Tags: [protagonist][mage] │
-│                    │ Appears in: The tower,... │
-│                    │ Source: Chat session...   │
+│ A. Header          | E. Detail view          │
+│ Codex 24 entries[+]│ (icon)     👤character  | 
+├────────────────────┤         Elara           |
+│ B. Search bar      │  tags: MainCharacter [+]|
+│ [🔍 Search...]     │_________________________|
+├────────────────────| Details  | Relations |        |
+│ C. Filter tabs     | Tracking | Mentions  |Research│
+│ [All(24)] [Item(8)]|--------------------------│
+│ [...]              | Summary:                 │
+├────────────────────| Protagonist, mage        |
+│ D. Entry list      │ apprentice at the Tower. │
+│                    │ Content: (TipTap editor)│
+│ ● Elara         ◄──│ A young woman who       │
+│   Protagonist...   │ discovers her connection │
+│                    │ to ancient magic...     │
+│ ● Obsidian Tower   │ CustomDetails:...       │
+│   Ancient binding..│                         │
+│                    │                         │
+│ ● Soulbind Amulet  │                         │
+│   Elara's family...│                         │
+│                    │                         │
+│ ● Age of Binding   │                         │
+│   Historical era...│                         │
+│                    │                         │
+│                    │                         │
+│                    │                         │
 └────────────────────┴─────────────────────────┘
 ```
 
@@ -71,13 +71,13 @@ Codexパネルはプロジェクトの世界設定データベース。キャラ
 
 ビルトインタブ:
 
-| タブ | カラー | 説明 |
-|------|--------|------|
-| All | Blue/Info | 全エントリ（デフォルト） |
-| Character | パープル (#534AB7) | キャラクター |
-| Location | ティール (#0F6E56) | 場所・地名 |
-| Item | アンバー (#BA7517) | アイテム・道具 |
-| Lore | コーラル (#993C1D) | 伝承・歴史・設定 |
+| タブ        | カラー            | 説明           |
+| --------- | -------------- | ------------ |
+| All       | Blue/Info      | 全エントリ（デフォルト） |
+| Character | パープル (#534AB7) | キャラクター       |
+| Location  | ティール (#0F6E56) | 場所・地名        |
+| Item      | アンバー (#BA7517) | アイテム・道具      |
+| Lore      | コーラル (#993C1D) | 伝承・歴史・設定     |
 
 カスタムタイプ（`codex_types` で `is_builtin = 0`）もタブとして表示される。表示名は `codex_types.label`、カラーは `codex_types.color`。
 
@@ -146,74 +146,43 @@ Codexパネルはプロジェクトの世界設定データベース。キャラ
 ### 構造
 
 ```
-┌─────────────────────────────────┐
-│ [🖼] Elara             character │  ← Header (icon + name + type)
-│ Context: [Mentioned ▾]          │  ← Context mode selector
-├─────────────────────────────────┤
-│ Aliases: [エララ]               │  ← Aliases
-│          [the apprentice] [+]   │
-│ Excluded: [青い] [青の]         │  ← Excluded aliases
-│           [青く] [+]            │
-├─────────────────────────────────┤
-│ Summary:                        │  ← Summary field
-│ Protagonist, mage apprentice    │
-│ at the Obsidian Tower.          │
-├─────────────────────────────────┤
-│ Content:                        │  ← TipTap mini-editor
-│ A young woman who discovers     │     (Codex highlight enabled)
-│ her connection to ancient magic │
-│ through the Soulbind Amulet...  │
-│                  ^^^^^^^^^^^    │  ← Codex highlight (clickable)
-├─────────────────────────────────┤
-│ Details:                        │  ← Custom details (per type)
-│ 種族      [人間          ▾] 🤖  │
-│ 所属勢力  [● 白銀騎士団  →] 🤖  │
-│ 身長      [175cm            ]   │
-│ [+ Add field]  [⚙ Manage]      │
-├─────────────────────────────────┤
-│ Tags: [protagonist] [mage] [+]  │  ← Tags (structured)
-├─────────────────────────────────┤
-│ Relations:                      │  ← Parent-child relations
-│ Parent: (none)                  │
-│ Children:                       │
-│   ● Soulbind Amulet        item │
-│   ● Binding Mark           lore │
-│   [+ Add child]                 │
-│ Suggested: (from Content)       │
-│   ○ Obsidian Tower    [+ Add]   │
-│   ○ Age of Binding    [+ Add]   │
-├─────────────────────────────────┤
-│ Appears in:                     │  ← References
-│ The tower, First spell,         │
-│ The stranger                    │
-├─────────────────────────────────┤
-│ Source:                         │  ← Provenance
-│ Character deep-dive (chat)      │
-└─────────────────────────────────┘
+┌─────────────────────────────────────────┐
+│ [🖼] Elara             👤character      │  ← ヘッダー（タブ外・常時表示）
+│ tags: [protagonist] [mage] [+]          │
+├─────────────────────────────────────────┤
+│ Details│Relations│Tracking│Mentions│Research│ ← タブ
+├═════════════════════════════════════════┤
+│                                         │  ← Details タブ
+│ Aliases: [エララ]                       │
+│          [the apprentice] [+]           │
+├╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌┤
+│ Summary:                                │
+│ Protagonist, mage apprentice            │
+│ at the Obsidian Tower.                  │
+├╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌┤
+│ Content:                                │  ← TipTap mini-editor
+│ A young woman who discovers             │     (Codex highlight enabled)
+│ her connection to ancient magic         │
+│ through the Soulbind Amulet...          │
+│                  ^^^^^^^^^^^            │  ← Codex highlight (clickable)
+├╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌┤
+│ Details:                                │  ← Custom details (per type)
+│ 種族      [人間          ▾] 🤖          │
+│ 所属勢力  [● 白銀騎士団  →] 🤖          │
+│ 身長      [175cm            ]           │
+│ [+ Add field]  [⚙ Manage]              │
+└─────────────────────────────────────────┘
 ```
 
-### ヘッダー
+パネル幅が狭い場合（例: Left Dock で幅200px程度）は、リスト表示のみに切り替わり、エントリクリックで詳細画面に遷移する（スタックナビゲーション）。十分な幅がある場合はスプリットビューを使用する。閾値: 400px以上でスプリット、未満でスタック。
 
-- アイコン画像 + エントリ名（クリックでインライン編集）+ 右寄せでカテゴリバッジ（クリックでtype変更ドロップダウン）
-- カテゴリバッジのドロップダウンは `codex_types` テーブルから動的生成（ビルトイン+カスタム）
+---
 
-### コンテキスト制御モード
+### ヘッダー（タブ外・常時表示）
 
-ヘッダー直下に「Context:」ドロップダウンを配置。エントリごとにAIコンテキスト注入の振る舞いを制御する。
+タブの外側に常時表示されるエントリの基本情報。
 
-| モード | ラベル | 動作 |
-|--------|--------|------|
-| `always` | Always include | シーン内の言及有無に関わらず常に注入。ピン留め可 |
-| `mentioned` | When mentioned（デフォルト） | シーン内で検出された場合に注入。ピン留め可 |
-| `suppress` | Manual only | 自動検出では注入しない。ピン留めで上書き可 |
-| `hidden` | Exclude from AI | AIコンテキストに一切含めない。ピン留め不可 |
-
-- ドロップダウンの各選択肢にはモードの説明をサブテキストで表示
-- `hidden` 選択時はエントリカードにミュートアイコンを表示（リスト画面で視認可能）
-- `always` 選択時はエントリカードに常駐アイコンを表示
-- エディタハイライトへの影響はなし（全モードでハイライトされる）
-
-### アイコン画像
+#### アイコン画像
 
 - ヘッダー左端に48×48pxのアイコン画像を表示（Notionページヘッダー風）
 - クリックで画像選択ダイアログを開き、ローカル画像ファイルを選択
@@ -222,7 +191,45 @@ Codexパネルはプロジェクトの世界設定データベース。キャラ
 - リスト画面のサムネイルにも同じアイコンを使用（28×28px）
 - ポップオーバー（Editor等）では24×24pxで表示
 
-### Aliases フィールド
+#### エントリ名
+
+- アイコンの右にエントリ名を表示。クリックでインライン編集
+
+#### Type バッジ
+
+- 右寄せでカテゴリバッジ（クリックでtype変更ドロップダウン）
+- カテゴリバッジのドロップダウンは `codex_types` テーブルから動的生成（ビルトイン+カスタム）
+
+#### Tags フィールド（構造化タグ）
+
+タグは `codex_tags` テーブルで構造化管理される。エントリとタグの関連は `codex_entry_tags` 多対多テーブルで保持。
+
+- ピル型タグ一覧 + [+] ボタンで追加
+- タグは `codex_tags.color` に応じた色付きピルで表示
+- タグをクリックすると、同じタグを持つ全エントリをフィルタ表示
+- タグの×ボタンで削除（`codex_entry_tags` から行削除 + `tags_cache` 同期更新）
+- [+] クリックでインライン入力欄が表示。既存タグのオートコンプリート付き
+  - **タイプフィルタ**: 現在のエントリのタイプに該当するタグのみ候補表示（`codex_tags.type_filter` が NULL または現在のタイプを含むタグ）
+  - 入力中に一致するタグがなければ、新規タグとして作成可能（`codex_tags` に行追加）
+  - 新規タグ作成時の初期設定: `type_filter = NULL`（全タイプ）、`color = NULL`
+- タグの色・タイプ関連付けの管理は Settings 内の「Tags」セクションで行う
+
+#### Tags 管理画面（Settings内）
+
+プロジェクト設定の「Tags」セクションでタグの一括管理が可能:
+
+| 操作 | 詳細 |
+|------|------|
+| タグ名編集 | インライン編集。変更は全エントリに即時反映 |
+| 色変更 | カラーピッカー。hex値 |
+| タイプ関連付け | チェックボックス群（`codex_types` から動的生成）。未選択=全タイプ |
+| 削除 | 確認ダイアログ。CASCADE で全エントリから除去 + `tags_cache` 再構築 |
+
+---
+
+### Details タブ
+
+#### Aliases フィールド
 
 - name の直下に「Aliases」入力欄
 - Tags と同じUIパターン: ピル型一覧 + [+] ボタンで追加、各ピルに × で削除
@@ -231,24 +238,7 @@ Codexパネルはプロジェクトの世界設定データベース。キャラ
 - aliasはCodexマッチング対象に含まれ、本文中で「エララ」が出現した場合も「Elara」エントリとしてハイライトされる
 - alias変更時はAho-Corasickオートマトンの再構築がトリガーされる
 
-### Excluded Aliases フィールド（除外パターン）
-
-- Aliases の直下に「Excluded」入力欄。同じピル型UIで追加/削除
-- エントリのnameやaliasesを含む文字列のうち、誤マッチを引き起こすパターンを登録
-- 典型的なユースケース: 一般名詞をキャラクター名に使っている場合（「青」「光」「響」「塔」「森」等）
-
-使用例:
-- エントリ名「青」(character) に excluded: `["青い", "青の", "青く", "青が", "青を", "青空", "青年"]`
-- 本文「青い空を見上げた」→ 「青い」が除外パターンにマッチ → ハイライトしない
-- 本文「青は振り返った」→ 「青は」は除外パターンになし、かつ「青」+「は」は文字クラス境界（漢字→ひらがな）→ ハイライトされる
-
-除外パターンの運用ガイド:
-- 名詞+助詞パターン（青い、青の、青く等）を登録するのが基本
-- 複合語パターン（青空、青年等）も必要に応じて追加
-- 除外パターンが多すぎる場合は、エントリ名自体を変更することも検討（例: 「青」→ フルネーム「青（あお）」にしてaliasesで「青」を残す）
-- 除外パターン変更時はAho-Corasickオートマトンの再構築がトリガーされる
-
-### Summary フィールド
+#### Summary フィールド
 
 - 1-2行のプレーンテキスト入力欄
 - プレースホルダー: 「Short description...」
@@ -262,7 +252,7 @@ Codexパネルはプロジェクトの世界設定データベース。キャラ
   - 既にsummaryがある場合はボタン非表示。代わりに右クリックコンテキストメニューの「Regenerate summary」で上書き可能
   - 生成中はスピナー表示、失敗時はトースト通知
 
-### Content フィールド（TipTapミニエディタ）
+#### Content フィールド（TipTapミニエディタ）
 
 - TipTapの軽量インスタンス。StarterKitのサブセット（太字、斜体、見出し、リスト、リンク、表）。入力時のMarkdown記法をリアルタイムにリッチテキストとしてレンダリング
 - キャラクターの詳細な背景設定、場所の歴史、アイテムの由来など、長文の設定情報を記述
@@ -282,11 +272,11 @@ Codexパネルはプロジェクトの世界設定データベース。キャラ
   - AuthorshipMarkのデータは `authorship_spans` テーブルに `codex_entry_id` を指定して永続化（統合DBスキーマ参照）
   - AttributionHighlight（背景色ハイライト）はエディタタブ・ミニエディタの両方で表示可能（Attr表示トグル連動）
 
-### Details セクション（カスタムディテール）
+#### Details セクション（カスタムディテール）
 
 Content フィールドの下に配置。タイプごとに定義されたカスタムフィールドの値を入力するセクション。フィールド定義は `codex_detail_definitions` テーブル、値は `codex_detail_values` テーブルに保存。
 
-#### フィールドタイプ
+##### フィールドタイプ
 
 | field_type | UI | 保存値 |
 |-----------|-----|--------|
@@ -296,7 +286,7 @@ Content フィールドの下に配置。タイプごとに定義されたカス
 
 `codex_reference` の `field_config.allowedTypes` で参照可能なタイプを制限可能（NULL = 全タイプ）。
 
-#### text フィールドのTipTapエディタ
+##### text フィールドのTipTapエディタ
 
 `text` フィールドはContentフィールドと同一のTipTapミニエディタを使用する。機能はContentフィールドに準ずる:
 
@@ -313,7 +303,7 @@ Content フィールドの下に配置。タイプごとに定義されたカス
 - **保存**: ProseMirror JSONで `codex_detail_values.value` に保存。自動保存（デバウンス2秒）
 - **AIコンテキスト注入時**: ProseMirror JSONからプレーンテキストに変換して注入（Contentフィールドのフォールバック注入と同じ方式）
 
-#### AIコンテキスト注入制御
+##### AIコンテキスト注入制御
 
 各フィールドの右端に🤖アイコンを表示。`include_in_context = 1` のフィールドはアイコンがアクティブ状態。クリックでトグル。
 
@@ -330,16 +320,16 @@ Content フィールドの下に配置。タイプごとに定義されたカス
 
 `codex_reference` フィールドの注入時は参照先エントリのnameを表示（IDではなく）。
 
-#### フィールド管理
+##### フィールド管理
 
 - [+ Add field]: 現在のタイプに新しいフィールド定義を追加。クリックでManage fieldsダイアログの新規追加フォームを開く
 - [⚙ Manage fields]: タイプのフィールド定義を管理するダイアログを開く（後述）
 
-#### Manage fields ダイアログ
+##### Manage fields ダイアログ
 
 タイプに紐づくカスタムフィールド定義を一括管理するモーダルダイアログ。`codex_detail_definitions` テーブルを操作する。
 
-##### ダイアログ構造
+###### ダイアログ構造
 
 ```
 ┌─────────────────────────────────────────────────────┐
@@ -358,7 +348,7 @@ Content フィールドの下に配置。タイプごとに定義されたカス
 └─────────────────────────────────────────────────────┘
 ```
 
-##### フィールド一覧
+###### フィールド一覧
 
 | 要素 | 説明 |
 |------|------|
@@ -369,7 +359,7 @@ Content フィールドの下に配置。タイプごとに定義されたカス
 | [✎] 編集ボタン | フィールド編集フォームを展開（インラインアコーディオン） |
 | [🗑] 削除ボタン | 確認ダイアログ後に定義削除 |
 
-##### フィールド編集フォーム（アコーディオン展開）
+###### フィールド編集フォーム（アコーディオン展開）
 
 [✎] クリックまたは [+ Add field] クリックで、該当行の下にインラインフォームがアコーディオン展開する。
 
@@ -393,7 +383,7 @@ Content フィールドの下に配置。タイプごとに定義されたカス
 └─────────────────────────────────────────────────────┘
 ```
 
-##### 共通フィールド
+###### 共通フィールド
 
 全 `field_type` で表示:
 
@@ -403,7 +393,7 @@ Content フィールドの下に配置。タイプごとに定義されたカス
 | Type | ドロップダウン: `Text` / `Dropdown` / `Codex Reference` | 必須。変更時は後述の注意あり |
 | AI context | チェックボックス「Include in AI context」 | `include_in_context` カラムに対応 |
 
-##### field_type 別の追加設定
+###### field_type 別の追加設定
 
 **Text**:
 
@@ -426,7 +416,7 @@ Content フィールドの下に配置。タイプごとに定義されたカス
 - 全タイプにチェックが入っている状態 = `allowedTypes: null`（制限なし）
 - 「Select all」/「Clear」のヘルパーリンク
 
-##### field_type の変更
+###### field_type の変更
 
 既にエントリに値が存在する場合、`field_type` を変更すると既存値との互換性が問題になる。
 
@@ -441,7 +431,7 @@ Content フィールドの下に配置。タイプごとに定義されたカス
 
 確認ダイアログ: 「{N}件のエントリの値がクリアされます。続行しますか？」
 
-##### フィールド削除
+###### フィールド削除
 
 [🗑] クリックで確認ダイアログを表示:
 
@@ -456,7 +446,7 @@ Content フィールドの下に配置。タイプごとに定義されたカス
 
 削除実行: `codex_detail_definitions` から行削除 → `codex_detail_values` がCASCADE削除。
 
-##### フィールド追加
+###### フィールド追加
 
 [+ Add field] クリックで一覧の末尾にフォームが展開:
 
@@ -467,49 +457,26 @@ Content フィールドの下に配置。タイプごとに定義されたカス
 
 Save クリックで `codex_detail_definitions` に行追加。同一タイプの全エントリに対して空の `codex_detail_values` 行は作成しない（値が入力された時に初めて行を作成 = lazy insert）。
 
-##### 並び替え
+###### 並び替え
 
 ドラッグハンドル（⠿）でD&D。ドロップ時に `sort_order` を更新（Fractional Indexing: ドロップ先の前後のsort_orderの中間値を計算）。並び順はDetailsセクションでのフィールド表示順、およびAIコンテキスト注入時の表示順に反映。
 
-##### ダイアログのスコープ
+###### ダイアログのスコープ
 
 - ダイアログのタイトルに対象タイプのlabelを表示（例: 「Manage fields: キャラクター」）
 - 表示するフィールドは `WHERE project_id = ? AND type_slug = ?` でフィルタ
 - 変更は即時保存（Save ボタン押下時）。Cancel は未保存の編集を破棄
 - 他のタイプのフィールドには影響しない
 
-#### エッジケース
+##### エッジケース
 
 - `codex_reference` の参照先が削除された → 「[削除済み]」表示、値をNULLに更新
 - エントリのタイプ変更 → 旧タイプのフィールド値は保持（非表示）、新タイプの定義のみ表示。タイプを戻せば値が復活
 - 自動保存（デバウンス1秒）
 
-### Tags フィールド（構造化タグ）
+---
 
-タグは `codex_tags` テーブルで構造化管理される。エントリとタグの関連は `codex_entry_tags` 多対多テーブルで保持。
-
-- ピル型タグ一覧 + [+] ボタンで追加
-- タグは `codex_tags.color` に応じた色付きピルで表示
-- タグをクリックすると、同じタグを持つ全エントリをフィルタ表示
-- タグの×ボタンで削除（`codex_entry_tags` から行削除 + `tags_cache` 同期更新）
-- [+] クリックでインライン入力欄が表示。既存タグのオートコンプリート付き
-  - **タイプフィルタ**: 現在のエントリのタイプに該当するタグのみ候補表示（`codex_tags.type_filter` が NULL または現在のタイプを含むタグ）
-  - 入力中に一致するタグがなければ、新規タグとして作成可能（`codex_tags` に行追加）
-  - 新規タグ作成時の初期設定: `type_filter = NULL`（全タイプ）、`color = NULL`
-- タグの色・タイプ関連付けの管理は Settings 内の「Tags」セクションで行う
-
-### Tags 管理画面（Settings内）
-
-プロジェクト設定の「Tags」セクションでタグの一括管理が可能:
-
-| 操作 | 詳細 |
-|------|------|
-| タグ名編集 | インライン編集。変更は全エントリに即時反映 |
-| 色変更 | カラーピッカー。hex値 |
-| タイプ関連付け | チェックボックス群（`codex_types` から動的生成）。未選択=全タイプ |
-| 削除 | 確認ダイアログ。CASCADE で全エントリから除去 + `tags_cache` 再構築 |
-
-### Relations セクション
+### Relations タブ
 
 Codexエントリ間の親子関係を管理するセクション。詳細は「エントリ間リレーション」セクション参照。
 
@@ -544,17 +511,96 @@ Codexエントリ間の親子関係を管理するセクション。詳細は「
 - 各候補の右に [+ Add] ボタン。クリックで子リレーションとして確定
 - Content変更時に自動更新。Dismissした候補は再表示しない
 
-### References セクション（Appears in）
+---
+
+### Tracking タブ
+
+#### コンテキスト制御モード（AI Context）
+
+Trackingタブ内に「Context:」ドロップダウンを配置。エントリごとにAIコンテキスト注入の振る舞いを制御する。
+
+| モード | ラベル | 動作 |
+|--------|--------|------|
+| `always` | Always include | シーン内の言及有無に関わらず常に注入。ピン留め可 |
+| `mentioned` | When mentioned（デフォルト） | シーン内で検出された場合に注入。ピン留め可 |
+| `suppress` | Manual only | 自動検出では注入しない。ピン留めで上書き可 |
+| `hidden` | Exclude from AI | AIコンテキストに一切含めない。ピン留め不可 |
+
+- ドロップダウンの各選択肢にはモードの説明をサブテキストで表示
+- `hidden` 選択時はエントリカードにミュートアイコンを表示（リスト画面で視認可能）
+- `always` 選択時はエントリカードに常駐アイコンを表示
+- エディタハイライトへの影響はなし（全モードでハイライトされる）
+
+#### Excluded Aliases フィールド（除外パターン）
+
+- Trackingタブ内に「Excluded」入力欄。ピル型UIで追加/削除
+- エントリのnameやaliasesを含む文字列のうち、誤マッチを引き起こすパターンを登録
+- 典型的なユースケース: 一般名詞をキャラクター名に使っている場合（「青」「光」「響」「塔」「森」等）
+
+使用例:
+- エントリ名「青」(character) に excluded: `["青い", "青の", "青く", "青が", "青を", "青空", "青年"]`
+- 本文「青い空を見上げた」→ 「青い」が除外パターンにマッチ → ハイライトしない
+- 本文「青は振り返った」→ 「青は」は除外パターンになし、かつ「青」+「は」は文字クラス境界（漢字→ひらがな）→ ハイライトされる
+
+除外パターンの運用ガイド:
+- 名詞+助詞パターン（青い、青の、青く等）を登録するのが基本
+- 複合語パターン（青空、青年等）も必要に応じて追加
+- 除外パターンが多すぎる場合は、エントリ名自体を変更することも検討（例: 「青」→ フルネーム「青（あお）」にしてaliasesで「青」を残す）
+- 除外パターン変更時はAho-Corasickオートマトンの再構築がトリガーされる
+
+---
+
+### Mentions タブ
+
+#### Appears in（References）
+
+このエントリ名が言及されている箇所を一覧表示する。以下のカテゴリに分類:
+
+| カテゴリ | 説明 | 状態 |
+|---------|------|------|
+| Manuscript | シーン本文（エディタ）内での出現 | 実装済み |
+| Codex | 他のCodexエントリのContent内での言及 | 未実装（将来対応） |
+| Chats | チャット内での言及 | 未実装（将来対応） |
+
+**Manuscript（実装済み）**:
 
 - このエントリ名が本文中に出現するシーンの一覧を自動表示
 - 各シーン名はクリック可能（Editorでそのシーンを開く）
 - データソース: Zustandストアの全シーンのCodexマッチ結果を逆引き
 
-### Source セクション（出自情報）
+**Codex（未実装）**:
+
+- 他のCodexエントリのContentフィールド内でこのエントリ名が言及されている箇所の一覧
+- 将来対応予定
+
+**Chats（未実装）**:
+
+- チャット会話内でこのエントリ名が言及されているメッセージの一覧
+- 将来対応予定
+
+#### Source（出自情報）
 
 - `source_chat_message_id` がある場合: 「{セッションタイトル} (chat)」のリンクを表示。クリックでChat Historyパネル経由で元のチャットセッションを開く
 - Editorの「Add to Codex」から作成された場合: 「Created from editor」表示
 - 手動作成の場合: 表示なし
+
+---
+
+### Research タブ
+
+#### Notes フィールド（プライベートノート）
+
+AIコンテキストに含まれないプライベートノート。執筆上のメモ、アイデア、検討事項など、AIに渡す必要のない情報を記録する。
+
+- Contentフィールドと同一構成のTipTapミニエディタ
+- StarterKitのサブセット（太字、斜体、見出し、リスト、リンク、表）。入力時のMarkdown記法をリアルタイムにリッチテキストとしてレンダリング
+- **AIコンテキスト注入対象外**: context_modeに関わらず、notesフィールドの内容はChatのシステムプロンプトに一切注入されない
+- **CodexHighlight対応**: Contentフィールドと同じCodexHighlight Pure Decorationを適用
+- **Attribution追跡**: Contentフィールドと同じAuthorshipMark体系を適用する
+- 自動保存（デバウンス2秒）
+- ProseMirror JSONで `codex_entries.notes` カラムに保存
+
+**DBスキーマ**: `codex_entries` テーブルに `notes TEXT` カラムを追加。Contentカラムと同じProseMirror JSON形式。
 
 ---
 
@@ -575,6 +621,7 @@ Codexエントリ間の親子関係を管理するセクション。詳細は「
 | content | 空 |
 | tags | 空 |
 | custom details | 空（タイプに定義がある場合のみフィールド表示） |
+| notes | 空 |
 
 ### 他パネルからの作成
 
@@ -599,6 +646,7 @@ MyNovel.novel/
 
 - summaryフィールド: デバウンス1秒でDBに保存
 - contentフィールド: デバウンス2秒でDBに保存
+- notesフィールド: デバウンス2秒でDBに保存
 - name/type/tags/aliases/excluded_aliases変更: 即時保存
 
 ---
@@ -609,7 +657,7 @@ DBスキーマの正規版は統合DBスキーマ設計書（`Grimodex_統合DB�
 
 主要テーブル:
 - `codex_types`: タイプ定義（ビルトイン4種 + カスタム）
-- `codex_entries`: エントリ本体（`context_mode`、`tags_cache` カラム含む）
+- `codex_entries`: エントリ本体（`context_mode`、`tags_cache`、`notes` カラム含む）
 - `codex_tags` / `codex_entry_tags`: 構造化タグ（多対多）
 - `codex_detail_definitions` / `codex_detail_values`: カスタムディテール
 - `codex_relation_dismissed`: リレーション提案のDismiss記録
