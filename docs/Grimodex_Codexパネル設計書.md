@@ -864,32 +864,31 @@ function applyExclusions(
 日本語テキストでは単語境界が存在しないため、独自の境界ヒューリスティックを適用する。
 
 ```typescript
-function isValidBoundary(text: string, start: number, end: number): boolean {
-  // マッチ前後の文字を取得
+function isValidBoundary(
+  text: string, start: number, end: number, pattern: CodexPattern
+): boolean {
   const charBefore = start > 0 ? text[start - 1] : '';
   const charAfter = end < text.length ? text[end] : '';
 
-  // ルール1: マッチがCJK文字で構成される場合
-  //   → 前後が同じ文字種（ひらがな、カタカナ、漢字）でなければOK
-  //   例: 「エララが」→ エララ + が（カタカナ→ひらがな境界）→ OK
-  //   例: 「エララン」→ エララ + ン（カタカナ→カタカナ）→ NG
-
-  // ルール2: マッチがラテン文字で構成される場合
-  //   → 前後がラテン文字/数字でなければOK（英語の\bと同等）
-
-  // ルール3: 混合（漢字+ひらがな等）のパターン
-  //   → パターン末尾の文字種と、次の文字の文字種で判定
-
-  return checkCharacterClassBoundary(charBefore, text[start])
-      && checkCharacterClassBoundary(text[end - 1], charAfter);
+  return checkCharacterClassBoundary(charBefore, text[start], pattern)
+      && checkCharacterClassBoundary(text[end - 1], charAfter, pattern);
 }
 
-function checkCharacterClassBoundary(a: string, b: string): boolean {
+function checkCharacterClassBoundary(
+  a: string, b: string, pattern: CodexPattern
+): boolean {
   if (!a || !b) return true;  // テキスト端はOK
   const classA = getCharClass(a);
   const classB = getCharClass(b);
-  // 同じ文字クラス同士はNG（部分一致の可能性）
-  return classA !== classB;
+  if (classA !== classB) return true;  // 異なるクラス → OK
+
+  // 同じクラスの場合: 漢字クラスは特別扱い
+  // 漢字2文字以上のパターンは漢字-漢字境界を許可する
+  // （理由: 漢字は語の境界でも同一クラスが連続する — 佐藤|上等兵、東京|都 等）
+  if (classA === 'kanji' && pattern.length >= 2) return true;
+
+  // それ以外（カタカナ-カタカナ、ラテン-ラテン等）→ NG
+  return false;
 }
 
 type CharClass = 'hiragana' | 'katakana' | 'kanji' | 'latin' | 'digit' | 'other';
@@ -913,12 +912,25 @@ function getCharClass(ch: string): CharClass {
 - 数字 (0-9)
 - その他（句読点、記号等）
 
-境界ルール: **マッチの前後で文字クラスが変わればOK、同じクラスが続いていればNG**。
+境界ルール:
+
+| 文字クラス | 同一クラス連続時の判定 | 理由 |
+|-----------|---------------------|------|
+| カタカナ-カタカナ | NG（境界なし扱い） | 「エララン」→ 同一語の可能性が高い |
+| ラテン-ラテン | NG（境界なし扱い） | 英語の `\b` と同等 |
+| ひらがな-ひらがな | NG（境界なし扱い） | 助詞連続など、語境界が曖昧 |
+| **漢字-漢字（パターン2文字以上）** | **OK（境界あり扱い）** | 漢字は語の境界でも同一クラスが連続する（佐藤\|上等兵） |
+| 漢字-漢字（パターン1文字） | NG（境界なし扱い） | 1文字漢字名（「青」「光」等）は誤マッチリスクが高いため厳格チェック。excluded_aliasesとの併用前提 |
+| 異なるクラス同士 | OK | 常に境界とみなす |
 
 具体例:
-- 「エララが塔に向かった」→ 「エララ」マッチ。後ろは「が」(ひらがな)、パターン末尾は「ラ」(カタカナ)。クラスが違うので → 有効
-- 「エラランの冒険」→ 「エララ」マッチ。後ろは「ン」(カタカナ)、パターン末尾は「ラ」(カタカナ)。同じクラスなので → 無効（誤マッチ排除）
-- 「黒曜石の塔が見えた」→ 「黒曜石の塔」マッチ。後ろは「が」(ひらがな)、パターン末尾は「塔」(漢字)。クラスが違うので → 有効
+- 「エララが塔に向かった」→ 「エララ」マッチ。後ろは「が」(ひらがな) ≠ 「ラ」(カタカナ) → **有効**
+- 「エラランの冒険」→ 「エララ」マッチ。後ろは「ン」(カタカナ) = 「ラ」(カタカナ) → **無効**（誤マッチ排除）
+- 「黒曜石の塔が見えた」→ 「黒曜石の塔」マッチ。後ろは「が」(ひらがな) ≠ 「塔」(漢字) → **有効**
+- 「佐藤上等兵は敬礼した」→ 「佐藤」マッチ(2文字)。後ろは「上」(漢字) = 「藤」(漢字)、**漢字2文字以上なので免除** → **有効**
+- 「佐藤先生に報告した」→ 「佐藤」マッチ(2文字)。後ろは「先」(漢字)、**漢字2文字以上なので免除** → **有効**
+- 「青い空を見上げた」→ 「青」マッチ(1文字)。除外パターン「青い」に包含 → **Step 3aで除外済み**
+- 「青空が広がった」→ 「青」マッチ(1文字)。後ろは「空」(漢字) = 「青」(漢字)、1文字なので厳格チェック → **無効**（excluded_aliasesで「青空」を登録するか、境界チェックが防止）
 
 **3c. 最長一致（Overlap解決）**
 
