@@ -173,6 +173,10 @@ describe("SnippetPanel", () => {
     render(<SnippetPanel />);
     await user.click(screen.getByTestId("snippet-delete-snippet-1"));
 
+    // Confirmation dialog should appear
+    expect(screen.getByText("削除の確認")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "削除する" }));
+
     expect(remove).toHaveBeenCalledWith("snippet-1");
   });
 

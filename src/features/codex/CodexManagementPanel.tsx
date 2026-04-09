@@ -28,6 +28,7 @@ import { CodexCommandPalette } from "./components/CodexCommandPalette";
 import { buildCrossReferenceReport } from "./crossReference";
 import * as chatApi from "@/features/chat/chatApi";
 import { useChatStore } from "@/features/chat/chatStore";
+import { useTabStore } from "@/features/editor/tabStore";
 
 // Fallback labels/colors for when types haven't loaded yet
 const FALLBACK_TYPE_LABELS: Record<string, string> = {
@@ -607,6 +608,8 @@ export function CodexManagementPanel({
   const [refCountLoading, setRefCountLoading] = useState(false);
   // M2: inline rename
   const [renamingEntryId, setRenamingEntryId] = useState<string | null>(null);
+  // Delete confirmation dialog
+  const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
   // S3: active chat session
   const activeSessionId = useChatStore((s) => s.activeSessionId);
 
@@ -678,6 +681,10 @@ export function CodexManagementPanel({
     return () => observer.disconnect();
   }, [initialStackMode]);
 
+  const initiateDelete = useCallback((id: string) => {
+    setDeleteConfirmId(id);
+  }, []);
+
   // Ctrl+K / Ctrl+F / ↑↓ / F2 / Delete shortcuts
   useEffect(() => {
     const handleKeyDown = (e: globalThis.KeyboardEvent) => {
@@ -714,15 +721,21 @@ export function CodexManagementPanel({
         return;
       }
       if (e.key === "Delete" && selectedEntry && !renamingEntryId) {
-        if (window.confirm(`"${selectedEntry.name}" を削除しますか？`)) {
-          void handleDelete(selectedEntry.id);
-        }
+        // Don't intercept Delete while editing text in an input/textarea/contenteditable
+        const ae = document.activeElement as HTMLElement | null;
+        if (
+          ae?.tagName === "INPUT" ||
+          ae?.tagName === "TEXTAREA" ||
+          ae?.contentEditable === "true"
+        )
+          return;
+        initiateDelete(selectedEntry.id);
         return;
       }
     };
     document.addEventListener("keydown", handleKeyDown);
     return () => document.removeEventListener("keydown", handleKeyDown);
-  }, [entries, selectedEntry, sortOrder, renamingEntryId]);
+  }, [entries, selectedEntry, sortOrder, renamingEntryId, initiateDelete]);
 
   // Debounced search (300ms)
   const handleSearchChange = useCallback(
@@ -769,14 +782,21 @@ export function CodexManagementPanel({
     [isStackMode],
   );
 
-  const handleDelete = useCallback(
-    async (id: string) => {
-      await remove(id);
-      setSelectedEntry(null);
-      if (isStackMode) setShowDetail(false);
-    },
-    [remove, isStackMode],
-  );
+  const confirmDelete = useCallback(async () => {
+    const id = deleteConfirmId;
+    if (!id) return;
+    setDeleteConfirmId(null);
+    await remove(id);
+    setSelectedEntry(null);
+    if (isStackMode) setShowDetail(false);
+    // Close editor tab if open
+    const tabState = useTabStore.getState();
+    if (tabState.tabs.some((t) => t.nodeId === id)) tabState.closeTab(id);
+    if (tabState.secondaryTabs.some((t) => t.nodeId === id))
+      tabState.closeSecondaryTab(id);
+  }, [deleteConfirmId, remove, isStackMode]);
+
+  const handleDelete = initiateDelete;
 
   const handleDuplicate = useCallback(
     async (id: string) => {
@@ -1088,6 +1108,36 @@ export function CodexManagementPanel({
             </div>
           </ResizablePanel>
         </ResizablePanelGroup>
+      )}
+
+      {deleteConfirmId && (
+        <div className="absolute inset-0 z-50 flex items-center justify-center bg-background/80">
+          <div className="w-72 rounded-lg border border-border bg-popover p-4 shadow-xl">
+            <p className="mb-1 text-sm font-medium">削除の確認</p>
+            <p className="mb-4 text-xs text-muted-foreground">
+              「
+              {entries.find((e) => e.id === deleteConfirmId)?.name ??
+                "このエントリ"}
+              」を削除しますか？この操作は元に戻せません。
+            </p>
+            <div className="flex justify-end gap-2">
+              <button
+                type="button"
+                className="rounded border border-border px-3 py-1 text-xs hover:bg-accent"
+                onClick={() => setDeleteConfirmId(null)}
+              >
+                キャンセル
+              </button>
+              <button
+                type="button"
+                className="rounded bg-destructive px-3 py-1 text-xs text-destructive-foreground hover:bg-destructive/90"
+                onClick={() => void confirmDelete()}
+              >
+                削除する
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );

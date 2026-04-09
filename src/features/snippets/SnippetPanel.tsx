@@ -7,6 +7,7 @@ import {
 } from "@/components/ui/resizable";
 import { useSnippetStore } from "./snippetStore";
 import { SnippetDetailContent } from "./SnippetDetailContent";
+import { useTabStore } from "@/features/editor/tabStore";
 import {
   copyWithAttribution,
   handleCopyWithAttribution,
@@ -25,6 +26,7 @@ export function SnippetPanel() {
   const remove = useSnippetStore((s) => s.remove);
 
   const [selectedSnippet, setSelectedSnippet] = useState<Snippet | null>(null);
+  const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
   const [gridCols, setGridCols] = useState(1);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const panelRef = useRef<HTMLDivElement>(null);
@@ -108,18 +110,29 @@ export function SnippetPanel() {
     [update],
   );
 
-  const handleDelete = useCallback(
-    async (id: string) => {
-      await remove(id);
-      setSelectedSnippet(null);
-    },
-    [remove],
-  );
+  const initiateDelete = useCallback((id: string) => {
+    setDeleteConfirmId(id);
+  }, []);
+
+  const confirmDelete = useCallback(async () => {
+    const id = deleteConfirmId;
+    if (!id) return;
+    setDeleteConfirmId(null);
+    await remove(id);
+    setSelectedSnippet((prev) => (prev?.id === id ? null : prev));
+    // Close editor tab if open
+    const tabState = useTabStore.getState();
+    if (tabState.tabs.some((t) => t.nodeId === id)) tabState.closeTab(id);
+    if (tabState.secondaryTabs.some((t) => t.nodeId === id))
+      tabState.closeSecondaryTab(id);
+  }, [deleteConfirmId, remove]);
+
+  const handleDelete = initiateDelete;
 
   return (
     <div
       ref={panelRef}
-      className="flex h-full flex-col"
+      className="relative flex h-full flex-col"
       data-testid="snippet-panel"
       tabIndex={0}
       onKeyDown={handleKeyDown}
@@ -225,7 +238,7 @@ export function SnippetPanel() {
                             data-testid={`snippet-delete-${snippet.id}`}
                             onClick={(e) => {
                               e.stopPropagation();
-                              remove(snippet.id);
+                              initiateDelete(snippet.id);
                             }}
                             className="rounded p-0.5 text-muted-foreground opacity-0 hover:bg-destructive/10 hover:text-destructive group-hover:opacity-100"
                           >
@@ -283,6 +296,36 @@ export function SnippetPanel() {
           </div>
         </ResizablePanel>
       </ResizablePanelGroup>
+
+      {deleteConfirmId && (
+        <div className="absolute inset-0 z-50 flex items-center justify-center bg-background/80">
+          <div className="w-72 rounded-lg border border-border bg-popover p-4 shadow-xl">
+            <p className="mb-1 text-sm font-medium">削除の確認</p>
+            <p className="mb-4 text-xs text-muted-foreground">
+              「
+              {entries.find((e) => e.id === deleteConfirmId)?.title ??
+                "このスニペット"}
+              」を削除しますか？この操作は元に戻せません。
+            </p>
+            <div className="flex justify-end gap-2">
+              <button
+                type="button"
+                className="rounded border border-border px-3 py-1 text-xs hover:bg-accent"
+                onClick={() => setDeleteConfirmId(null)}
+              >
+                キャンセル
+              </button>
+              <button
+                type="button"
+                className="rounded bg-destructive px-3 py-1 text-xs text-destructive-foreground hover:bg-destructive/90"
+                onClick={() => void confirmDelete()}
+              >
+                削除する
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

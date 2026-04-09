@@ -398,6 +398,10 @@ describe("CodexManagementPanel", () => {
       await user.click(screen.getByTestId("codex-entry-codex-1"));
       await user.click(screen.getByTestId("codex-detail-delete"));
 
+      // Confirmation dialog should appear
+      expect(screen.getByText("削除の確認")).toBeInTheDocument();
+      await user.click(screen.getByRole("button", { name: "削除する" }));
+
       await waitFor(() => {
         expect(
           screen.getByTestId("codex-detail-placeholder"),
