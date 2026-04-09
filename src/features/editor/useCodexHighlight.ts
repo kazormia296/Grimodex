@@ -119,10 +119,17 @@ export function useCodexHighlight(
     editor.view.dispatch(tr);
   }, [editor, entries, highlightStyle]);
 
-  // Schedule async match on every doc change
+  // Schedule async match on doc changes only
   useEffect(() => {
     if (!editor || typeof editor.on !== "function") return;
-    const handler = () => {
+    const handler = ({
+      transaction,
+    }: {
+      transaction: { docChanged: boolean };
+    }) => {
+      // Skip non-doc-change transactions (e.g. decoration updates from our own dispatch)
+      // to avoid the codexHighlightResult dispatch re-triggering another match cycle.
+      if (!transaction.docChanged) return;
       if (editor.isDestroyed || !editor.state) return;
       const targets = targetsRef.current;
       if (targets.length === 0) return;

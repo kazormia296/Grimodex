@@ -148,12 +148,14 @@ impl CachedMatcher {
                 .collect();
 
             for &name in &names {
-                patterns.push(name.to_lowercase());
+                let lowered = name.to_lowercase();
+                let byte_len = lowered.len();
+                patterns.push(lowered);
                 metas.push(PatternMeta {
                     entry_id: entry.id.clone(),
                     entry_name: entry.name.clone(),
                     entry_type: entry.entry_type.clone(),
-                    pattern_byte_len: name.len(),
+                    pattern_byte_len: byte_len,
                 });
             }
         }
