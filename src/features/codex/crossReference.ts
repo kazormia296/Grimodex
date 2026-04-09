@@ -2,6 +2,7 @@ import { invoke } from "@/lib/tauri";
 import { listCodexEntries } from "./api";
 import type { CodexEntry } from "./api";
 import { createCodexMatcher } from "./codexMatcher";
+import { rebuildMatcher, matchText } from "./rustMatcher";
 
 interface QueryResult {
   rows: Array<{ id: string; title: string; parent_id: string | null }>;
@@ -41,7 +42,7 @@ export async function buildCrossReferenceReport(): Promise<
     aliases: e.aliases,
     excludedAliases: e.excludedAliases,
   }));
-  const matcher = createCodexMatcher(targets);
+  await rebuildMatcher(targets);
 
   const mentionMap = new Map<
     string,
@@ -59,7 +60,7 @@ export async function buildCrossReferenceReport(): Promise<
     }
     if (!content) continue;
 
-    const matches = matcher(content);
+    const matches = await matchText(content, targets);
     const countsByEntry = new Map<string, number>();
     for (const m of matches) {
       countsByEntry.set(m.entryId, (countsByEntry.get(m.entryId) ?? 0) + 1);

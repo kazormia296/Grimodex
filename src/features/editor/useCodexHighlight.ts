@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import type { Editor } from "@tiptap/core";
 import { useCodexStore } from "@/features/codex/codexStore";
 import { listCodexTypes } from "@/features/codex/typeApi";
@@ -10,8 +10,12 @@ import {
   createCodexHighlightPlugin,
 } from "./CodexHighlightPlugin";
 import { resolveCodexColor } from "@/lib/resolveCodexColors";
+import { rebuildAndSchedule, scheduleMatch } from "./codexMatchOrchestrator";
 
-export function useCodexHighlight(editor: Editor | null) {
+export function useCodexHighlight(
+  editor: Editor | null,
+  excludeEntryIds: string[] = [],
+) {
   const entries = useCodexStore((s) => s.entries);
   const setMatchTargets = useCodexHighlightStore((s) => s.setMatchTargets);
   const setTypeColorMap = useCodexHighlightStore((s) => s.setTypeColorMap);
@@ -21,6 +25,19 @@ export function useCodexHighlight(editor: Editor | null) {
   );
   const colorTheme = useWorkspaceStore((s) => s.globalSettings?.colorTheme);
   const theme = useWorkspaceStore((s) => s.globalSettings?.theme ?? "system");
+
+  // Keep a stable ref to current targets so the transaction callback
+  // can access them without being recreated on every render.
+  const targetsRef = useRef<
+    Array<{
+      id: string;
+      name: string;
+      type: string;
+      aliases: (typeof entries)[0]["aliases"];
+      excludedAliases: (typeof entries)[0]["excludedAliases"];
+    }>
+  >([]);
+  const excludeRef = useRef(excludeEntryIds);
 
   // Load type color map (re-resolves when theme or mode changes)
   useEffect(() => {
@@ -44,7 +61,7 @@ export function useCodexHighlight(editor: Editor | null) {
         );
       }
       setTypeColorMap(map);
-      if (editor) {
+      if (editor && !editor.isDestroyed && editor.state) {
         const { tr } = editor.state;
         tr.setMeta("codexHighlightUpdate", true);
         editor.view.dispatch(tr);
@@ -52,7 +69,7 @@ export function useCodexHighlight(editor: Editor | null) {
     });
   }, [entries, enabled, editor, setTypeColorMap, colorTheme, theme]);
 
-  // Update match targets when codex entries change or highlight is toggled
+  // Update match targets + targetsRef when codex entries change or highlight is toggled
   useEffect(() => {
     const targets = enabled
       ? entries.map((e) => ({
@@ -63,12 +80,18 @@ export function useCodexHighlight(editor: Editor | null) {
           excludedAliases: e.excludedAliases,
         }))
       : [];
+    targetsRef.current = targets;
     setMatchTargets(targets);
   }, [entries, setMatchTargets, enabled]);
 
+  // Keep excludeRef in sync
+  useEffect(() => {
+    excludeRef.current = excludeEntryIds;
+  }, [excludeEntryIds]);
+
   // Register plugin
   useEffect(() => {
-    if (!editor) return;
+    if (!editor || editor.isDestroyed || !editor.view?.state) return;
     const existing = editor.view.state.plugins.find(
       (p) => p.spec.key === codexHighlightKey,
     );
@@ -76,15 +99,39 @@ export function useCodexHighlight(editor: Editor | null) {
       editor.registerPlugin(createCodexHighlightPlugin());
     }
     return () => {
-      editor.unregisterPlugin(codexHighlightKey);
+      if (!editor.isDestroyed) editor.unregisterPlugin(codexHighlightKey);
     };
   }, [editor]);
 
-  // Force decoration recalculation when entries or highlight style change
+  // Rebuild Rust matcher + initial match when entries or highlight style change
   useEffect(() => {
-    if (!editor) return;
-    const { tr } = editor.state;
-    tr.setMeta("codexHighlightUpdate", true);
+    if (!editor || editor.isDestroyed || !editor.state) return;
+    const targets = targetsRef.current;
+
+    if (targets.length === 0) {
+      const tr = editor.state.tr.setMeta("codexHighlightResult", []);
+      editor.view.dispatch(tr);
+      return;
+    }
+
+    void rebuildAndSchedule(editor, targets, excludeRef.current);
+    const tr = editor.state.tr.setMeta("codexHighlightUpdate", true);
     editor.view.dispatch(tr);
   }, [editor, entries, highlightStyle]);
+
+  // Schedule async match on every doc change
+  useEffect(() => {
+    if (!editor || typeof editor.on !== "function") return;
+    const handler = () => {
+      if (editor.isDestroyed || !editor.state) return;
+      const targets = targetsRef.current;
+      if (targets.length === 0) return;
+      const text = editor.state.doc.textContent;
+      scheduleMatch(text, editor, targets, excludeRef.current);
+    };
+    editor.on("transaction", handler);
+    return () => {
+      editor.off("transaction", handler);
+    };
+  }, [editor]);
 }

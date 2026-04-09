@@ -1,10 +1,7 @@
 import { Plugin, PluginKey } from "@tiptap/pm/state";
 import { Decoration, DecorationSet } from "@tiptap/pm/view";
 import type { Node as ProseMirrorNode } from "@tiptap/pm/model";
-import {
-  createCodexMatcher,
-  type CodexMatch,
-} from "@/features/codex/codexMatcher";
+import type { CodexMatch } from "@/features/codex/codexMatcher";
 import { useCodexHighlightStore } from "./codexHighlightStore";
 import { useSettingsStore } from "@/features/settings/settingsStore";
 import type { ResolvedCodexColor } from "@/lib/resolveCodexColors";
@@ -79,28 +76,33 @@ export function createCodexHighlightPlugin(): Plugin {
         return DecorationSet.empty;
       },
       apply(tr, oldDecos, _oldState, newState) {
-        const { matchTargets: targets, typeColorMap } =
-          useCodexHighlightStore.getState();
-        if (targets.length === 0) return DecorationSet.empty;
+        const { typeColorMap } = useCodexHighlightStore.getState();
 
-        // Only recalculate when doc changes or on forced update
-        if (!tr.docChanged && tr.getMeta("codexHighlightUpdate") !== true) {
+        // Async result delivered via transaction meta
+        const asyncResult = tr.getMeta("codexHighlightResult") as
+          | CodexMatch[]
+          | undefined;
+        if (asyncResult !== undefined) {
+          const highlightStyle = useSettingsStore
+            .getState()
+            .get("display.codexHighlightStyle", "color-text");
+          return DecorationSet.create(
+            newState.doc,
+            mapMatchesToDecorations(
+              newState.doc,
+              asyncResult,
+              typeColorMap,
+              highlightStyle,
+            ),
+          );
+        }
+
+        // Doc changed or forced color/style update → remap existing decos
+        if (tr.docChanged || tr.getMeta("codexHighlightUpdate") === true) {
           return oldDecos.map(tr.mapping, tr.doc);
         }
 
-        const highlightStyle = useSettingsStore
-          .getState()
-          .get("display.codexHighlightStyle", "color-text");
-        const matcher = createCodexMatcher(targets);
-        const text = newState.doc.textContent;
-        const matches = matcher(text);
-        const decos = mapMatchesToDecorations(
-          newState.doc,
-          matches,
-          typeColorMap,
-          highlightStyle,
-        );
-        return DecorationSet.create(newState.doc, decos);
+        return oldDecos;
       },
     },
     props: {

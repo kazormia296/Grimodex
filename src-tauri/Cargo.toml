@@ -31,4 +31,5 @@ chrono = "0.4"
 keyring = { version = "3", features = ["sync-secret-service", "windows-native", "apple-native"] }
 reqwest = { version = "0.13", features = ["json"] }
 tokio = { version = "1", features = ["macros"] }
+aho-corasick = "1"
 

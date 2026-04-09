@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Copy, MapPin, Pencil, Tag, Trash2 } from "lucide-react";
+import { Copy, MapPin, Pencil, Pin, Tag, Trash2 } from "lucide-react";
 import type { CodexEntry } from "../api";
 import type { CodexType } from "../typeApi";
 import { useCodexHighlightStore } from "@/features/editor/codexHighlightStore";
@@ -14,6 +14,7 @@ interface EntryContextMenuProps {
   onDuplicate?: (id: string) => void;
   onFindInScenes?: (id: string) => void;
   onChangeType?: (id: string, newType: string) => void;
+  onPinToChat?: (id: string) => void;
   codexTypes?: CodexType[];
 }
 
@@ -27,6 +28,7 @@ export function EntryContextMenu({
   onDuplicate,
   onFindInScenes,
   onChangeType,
+  onPinToChat,
   codexTypes = [],
 }: EntryContextMenuProps) {
   const menuRef = useRef<HTMLDivElement>(null);
@@ -160,6 +162,21 @@ export function EntryContextMenu({
           <MapPin className="h-3.5 w-3.5 text-muted-foreground" />
           シーンで検索
         </button>
+
+        {onPinToChat && (
+          <button
+            type="button"
+            data-testid="entry-context-menu-pin-to-chat"
+            onClick={() => {
+              onPinToChat(entry.id);
+              onClose();
+            }}
+            className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm hover:bg-accent"
+          >
+            <Pin className="h-3.5 w-3.5 text-muted-foreground" />
+            チャットにピン留め
+          </button>
+        )}
 
         <div className="my-1 border-t border-border" />
 

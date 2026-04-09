@@ -15,7 +15,8 @@ export type CodexSortOrder =
   | "name-asc"
   | "name-desc"
   | "updated"
-  | "created";
+  | "created"
+  | "most-referenced";
 
 interface CodexState {
   entries: CodexEntry[];

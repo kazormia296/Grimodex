@@ -2,15 +2,18 @@ import { useEditor, EditorContent } from "@tiptap/react";
 import StarterKit from "@tiptap/starter-kit";
 import { AuthorshipMark } from "@/features/attribution/AuthorshipMark";
 import { useAttribution } from "@/features/attribution/useAttribution";
+import { useCodexHighlight } from "@/features/editor/useCodexHighlight";
 
 interface CodexContentEditorProps {
   content: string;
   onContentChange: (content: string) => void;
+  entryId?: string;
 }
 
 export function CodexContentEditor({
   content,
   onContentChange,
+  entryId,
 }: CodexContentEditorProps) {
   const editor = useEditor({
     extensions: [StarterKit.configure(), AuthorshipMark],
@@ -25,6 +28,7 @@ export function CodexContentEditor({
   });
 
   useAttribution(editor);
+  useCodexHighlight(editor, entryId ? [entryId] : []);
 
   return (
     <div

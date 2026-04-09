@@ -71,7 +71,7 @@ import { getNode } from "@/features/tree/api";
 import { getProject } from "@/features/project/api";
 import { useSettingsStore } from "@/features/settings/settingsStore";
 import { listCodexEntries } from "@/features/codex/api";
-import { findMentionedEntries } from "@/features/codex/codexMatcher";
+import { findMentionedEntriesAsync } from "@/features/codex/rustMatcher";
 import {
   getDescendantsBFS,
   getChildrenFromArray,
@@ -296,7 +296,10 @@ export const useChatStore = create<ChatState>()((set, get) => ({
           parts.push(`[system]\n${systemPrompt}`);
         } else if (sceneCtx) {
           const allEntries = await listCodexEntries();
-          const mentioned = findMentionedEntries(sceneCtx.content, allEntries);
+          const mentioned = await findMentionedEntriesAsync(
+            sceneCtx.content,
+            allEntries,
+          );
           const L4_TOTAL_BUDGET = 60_000;
           const codexEntries: CodexContext[] = mentioned.map((e) => {
             const fullEntry = allEntries.find((a) => a.id === e.id);
@@ -615,7 +618,10 @@ export const useChatStore = create<ChatState>()((set, get) => ({
 
       if (sceneCtx) {
         const allEntries = await listCodexEntries();
-        const mentioned = findMentionedEntries(sceneCtx.content, allEntries);
+        const mentioned = await findMentionedEntriesAsync(
+          sceneCtx.content,
+          allEntries,
+        );
         const baseCodExEntries: CodexContext[] = mentioned.map((e) => ({
           id: e.id,
           type: e.type,
@@ -638,7 +644,10 @@ export const useChatStore = create<ChatState>()((set, get) => ({
 
         // P2-5: チャットメッセージ内のCodex言及を検出し自動ピン留め
         if (sessionIdForPersist) {
-          const chatMentioned = findMentionedEntries(content, allEntries);
+          const chatMentioned = await findMentionedEntriesAsync(
+            content,
+            allEntries,
+          );
           for (const entry of chatMentioned) {
             await chatApi
               .pinCodexEntry(
@@ -862,7 +871,10 @@ export const useChatStore = create<ChatState>()((set, get) => ({
       if (!sceneCtx) return;
 
       const allEntries = await listCodexEntries();
-      const mentioned = findMentionedEntries(sceneCtx.content, allEntries);
+      const mentioned = await findMentionedEntriesAsync(
+        sceneCtx.content,
+        allEntries,
+      );
       const L4_TOTAL_BUDGET = 60_000;
       const codexEntries: CodexContext[] = mentioned.map((e) => {
         const fullEntry = allEntries.find((a) => a.id === e.id);

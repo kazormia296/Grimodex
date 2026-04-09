@@ -1,8 +1,10 @@
 mod ai;
+mod codex_matching;
 mod content;
 mod database;
 mod workspace;
 
+use codex_matching::CodexMatcherState;
 use content::ContentDir;
 use database::Database;
 use serde::Serialize;
@@ -392,6 +394,11 @@ pub fn run() {
                 inner: Mutex::new(None),
             });
 
+            // Codex matcher state (rebuilt on demand via codex_rebuild_matcher)
+            app.manage(CodexMatcherState {
+                inner: Mutex::new(None),
+            });
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -416,7 +423,9 @@ pub fn run() {
             fts_optimize,
             fts_rebuild,
             integrity_check,
-            repair_integrity
+            repair_integrity,
+            codex_matching::codex_rebuild_matcher,
+            codex_matching::codex_match_text
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

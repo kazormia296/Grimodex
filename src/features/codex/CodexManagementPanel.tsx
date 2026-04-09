@@ -23,6 +23,10 @@ import { TagPill } from "./components/TagPill";
 import { CodexDetailContent } from "./components/CodexDetailContent";
 import { EntryContextMenu } from "./components/EntryContextMenu";
 import { CategoryGroupHeader } from "./components/CategoryGroupHeader";
+import { TagFilterBar } from "./components/TagFilterBar";
+import { buildCrossReferenceReport } from "./crossReference";
+import * as chatApi from "@/features/chat/chatApi";
+import { useChatStore } from "@/features/chat/chatStore";
 
 // Fallback labels/colors for when types haven't loaded yet
 const FALLBACK_TYPE_LABELS: Record<string, string> = {
@@ -45,7 +49,33 @@ const SORT_OPTIONS: { value: CodexSortOrder; label: string }[] = [
   { value: "name-desc", label: "名前 (Z→A)" },
   { value: "updated", label: "更新順" },
   { value: "created", label: "作成順" },
+  { value: "most-referenced", label: "参照数順" },
 ];
+
+// --- Search highlight helper ---
+
+function HighlightedName({
+  name,
+  query,
+}: {
+  name: string;
+  query: string;
+}): React.ReactElement {
+  if (!query) return <>{name}</>;
+  const lower = name.toLowerCase();
+  const lowerQ = query.toLowerCase();
+  const idx = lower.indexOf(lowerQ);
+  if (idx === -1) return <>{name}</>;
+  return (
+    <>
+      {name.slice(0, idx)}
+      <mark className="bg-yellow-200/60 dark:bg-yellow-500/30 rounded px-0.5">
+        {name.slice(idx, idx + query.length)}
+      </mark>
+      {name.slice(idx + query.length)}
+    </>
+  );
+}
 
 // --- Command Palette ---
 
@@ -178,8 +208,13 @@ function VirtualizedEntryList({
   onDuplicate,
   onFindInScenes,
   onChangeType,
-  typeLabels,
+  onPinToChat,
   codexTypes,
+  searchQuery = "",
+  renamingEntryId = null,
+  onRenameCommit,
+  onRenameCancel,
+  onStartRename,
 }: {
   entries: CodexEntry[];
   isLoading: boolean;
@@ -189,8 +224,13 @@ function VirtualizedEntryList({
   onDuplicate: (id: string) => void;
   onFindInScenes: (id: string) => void;
   onChangeType: (id: string, newType: string) => void;
-  typeLabels: Record<string, string>;
+  onPinToChat?: (id: string) => void;
   codexTypes: CodexType[];
+  searchQuery?: string;
+  renamingEntryId?: string | null;
+  onRenameCommit?: (id: string, name: string) => void;
+  onRenameCancel?: () => void;
+  onStartRename?: (id: string) => void;
 }) {
   const parentRef = useRef<HTMLDivElement>(null);
   const [contextMenu, setContextMenu] = useState<{
@@ -235,7 +275,6 @@ function VirtualizedEntryList({
       >
         {virtualizer.getVirtualItems().map((virtualItem) => {
           const entry = entries[virtualItem.index];
-          const cachedTags = parseTags(entry.tagsCache);
           return (
             <div
               key={entry.id}
@@ -247,56 +286,20 @@ function VirtualizedEntryList({
                 height: `${virtualItem.size}px`,
                 transform: `translateY(${virtualItem.start}px)`,
               }}
-              className="border-b border-border"
             >
-              <button
-                type="button"
-                data-testid={`codex-entry-${entry.id}`}
-                onClick={() => onSelect(entry)}
+              <EntryCard
+                entry={entry}
+                isSelected={selectedEntryId === entry.id}
+                onSelect={() => onSelect(entry)}
                 onContextMenu={(e) => {
                   e.preventDefault();
                   setContextMenu({ entry, x: e.clientX, y: e.clientY });
                 }}
-                className={`h-full w-full px-3 py-2 text-left hover:bg-accent ${
-                  selectedEntryId === entry.id ? "bg-accent" : ""
-                }`}
-              >
-                <div className="flex items-center gap-2 overflow-hidden">
-                  <EntryIcon
-                    icon={entry.icon as string | null}
-                    entryType={entry.type}
-                    size={28}
-                  />
-                  <span className="shrink-0 rounded-full bg-muted px-1.5 py-0.5 text-[9px] font-medium">
-                    {typeLabels[entry.type] ?? entry.type}
-                  </span>
-                  <span className="min-w-0 flex-1 truncate text-sm font-medium">
-                    {entry.name}
-                  </span>
-                  {cachedTags.length > 0 && (
-                    <div className="flex shrink-0 items-center gap-0.5">
-                      {cachedTags.slice(0, 2).map((tag) => (
-                        <TagPill
-                          key={tag.name}
-                          name={tag.name}
-                          color={tag.color}
-                          size="sm"
-                        />
-                      ))}
-                      {cachedTags.length > 2 && (
-                        <span className="rounded-full bg-muted px-1 py-0.5 text-[10px] text-muted-foreground">
-                          +{cachedTags.length - 2}
-                        </span>
-                      )}
-                    </div>
-                  )}
-                </div>
-                {entry.summary && (
-                  <p className="mt-0.5 truncate text-xs text-muted-foreground">
-                    {entry.summary}
-                  </p>
-                )}
-              </button>
+                searchQuery={searchQuery}
+                isRenaming={renamingEntryId === entry.id}
+                onRenameCommit={onRenameCommit}
+                onRenameCancel={onRenameCancel}
+              />
             </div>
           );
         })}
@@ -311,7 +314,8 @@ function VirtualizedEntryList({
             onDelete(id);
             setContextMenu(null);
           }}
-          onRename={() => {
+          onRename={(id) => {
+            onStartRename?.(id);
             setContextMenu(null);
           }}
           onDuplicate={(id) => {
@@ -326,6 +330,14 @@ function VirtualizedEntryList({
             onChangeType(id, newType);
             setContextMenu(null);
           }}
+          onPinToChat={
+            onPinToChat
+              ? (id) => {
+                  onPinToChat(id);
+                  setContextMenu(null);
+                }
+              : undefined
+          }
           codexTypes={codexTypes}
         />
       )}
@@ -340,13 +352,52 @@ function EntryCard({
   isSelected,
   onSelect,
   onContextMenu,
+  searchQuery = "",
+  isRenaming = false,
+  onRenameCommit,
+  onRenameCancel,
 }: {
   entry: CodexEntry;
   isSelected: boolean;
   onSelect: () => void;
   onContextMenu: (e: React.MouseEvent) => void;
+  searchQuery?: string;
+  isRenaming?: boolean;
+  onRenameCommit?: (id: string, name: string) => void;
+  onRenameCancel?: () => void;
 }) {
   const cachedTags = parseTags(entry.tagsCache);
+  const [renameValue, setRenameValue] = useState(entry.name);
+
+  // Reset when rename starts
+  useEffect(() => {
+    if (isRenaming) setRenameValue(entry.name);
+  }, [isRenaming, entry.name]);
+
+  if (isRenaming) {
+    return (
+      <div className="border-b border-border px-3 py-2">
+        <input
+          autoFocus
+          type="text"
+          value={renameValue}
+          onChange={(e) => setRenameValue(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") {
+              e.preventDefault();
+              onRenameCommit?.(entry.id, renameValue.trim() || entry.name);
+            } else if (e.key === "Escape") {
+              onRenameCancel?.();
+            }
+          }}
+          onBlur={() =>
+            onRenameCommit?.(entry.id, renameValue.trim() || entry.name)
+          }
+          className="w-full rounded border border-input bg-background px-2 py-0.5 text-sm outline-none focus:ring-1 focus:ring-ring"
+        />
+      </div>
+    );
+  }
 
   return (
     <div className="border-b border-border">
@@ -364,7 +415,7 @@ function EntryCard({
             size={28}
           />
           <span className="min-w-0 flex-1 truncate text-sm font-medium">
-            {entry.name}
+            <HighlightedName name={entry.name} query={searchQuery} />
           </span>
           {cachedTags.length > 0 && (
             <div className="flex shrink-0 items-center gap-0.5">
@@ -405,7 +456,12 @@ function CategoryGroupedList({
   onDuplicate,
   onFindInScenes,
   onChangeType,
+  onPinToChat,
   codexTypes,
+  renamingEntryId = null,
+  onRenameCommit,
+  onRenameCancel,
+  onStartRename,
 }: {
   entries: CodexEntry[];
   isLoading: boolean;
@@ -415,7 +471,12 @@ function CategoryGroupedList({
   onDuplicate: (id: string) => void;
   onFindInScenes: (id: string) => void;
   onChangeType: (id: string, newType: string) => void;
+  onPinToChat?: (id: string) => void;
   codexTypes: CodexType[];
+  renamingEntryId?: string | null;
+  onRenameCommit?: (id: string, name: string) => void;
+  onRenameCancel?: () => void;
+  onStartRename?: (id: string) => void;
 }) {
   const [contextMenu, setContextMenu] = useState<{
     entry: CodexEntry;
@@ -521,6 +582,9 @@ function CategoryGroupedList({
                   e.preventDefault();
                   setContextMenu({ entry, x: e.clientX, y: e.clientY });
                 }}
+                isRenaming={renamingEntryId === entry.id}
+                onRenameCommit={onRenameCommit}
+                onRenameCancel={onRenameCancel}
               />
             ))}
         </div>
@@ -535,7 +599,8 @@ function CategoryGroupedList({
             onDelete(id);
             setContextMenu(null);
           }}
-          onRename={() => {
+          onRename={(id) => {
+            onStartRename?.(id);
             setContextMenu(null);
           }}
           onDuplicate={(id) => {
@@ -550,6 +615,14 @@ function CategoryGroupedList({
             onChangeType(id, newType);
             setContextMenu(null);
           }}
+          onPinToChat={
+            onPinToChat
+              ? (id) => {
+                  onPinToChat(id);
+                  setContextMenu(null);
+                }
+              : undefined
+          }
           codexTypes={codexTypes}
         />
       )}
@@ -562,6 +635,7 @@ function CategoryGroupedList({
 function sortEntries(
   entries: CodexEntry[],
   order: CodexSortOrder,
+  refCountMap?: Map<string, number>,
 ): CodexEntry[] {
   const sorted = [...entries];
   switch (order) {
@@ -579,6 +653,12 @@ function sortEntries(
         (a, b) =>
           new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
       );
+    case "most-referenced":
+      return sorted.sort((a, b) => {
+        const ac = refCountMap?.get(a.id) ?? 0;
+        const bc = refCountMap?.get(b.id) ?? 0;
+        return bc - ac;
+      });
     default:
       return sorted;
   }
@@ -614,8 +694,21 @@ export function CodexManagementPanel({
   const [codexTypes, setCodexTypes] = useState<CodexType[]>([]);
   // When the user triggers "Find in scenes" we open the Mentions tab
   const [detailInitialTab, setDetailInitialTab] = useState("details");
+  // S1: tag filter
+  const [allTags, setAllTags] = useState<string[]>([]);
+  const [selectedTags, setSelectedTags] = useState<Set<string>>(new Set());
+  // M1: reference count cache
+  const [refCountMap, setRefCountMap] = useState<Map<string, number>>(
+    new Map(),
+  );
+  const [refCountLoading, setRefCountLoading] = useState(false);
+  // M2: inline rename
+  const [renamingEntryId, setRenamingEntryId] = useState<string | null>(null);
+  // S3: active chat session
+  const activeSessionId = useChatStore((s) => s.activeSessionId);
 
   const containerRef = useRef<HTMLDivElement>(null);
+  const searchInputRef = useRef<HTMLInputElement>(null);
   const searchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
@@ -628,6 +721,36 @@ export function CodexManagementPanel({
       .then(setCodexTypes)
       .catch(() => setCodexTypes([]));
   }, []);
+
+  // S1: collect all unique tag names from entries
+  useEffect(() => {
+    const tagSet = new Set<string>();
+    for (const entry of entries) {
+      for (const tag of parseTags(entry.tagsCache)) {
+        tagSet.add(tag.name);
+      }
+    }
+    setAllTags([...tagSet].sort());
+  }, [entries]);
+
+  // M1: load reference counts when sort changes to most-referenced
+  useEffect(() => {
+    if (sortOrder !== "most-referenced") return;
+    setRefCountLoading(true);
+    buildCrossReferenceReport()
+      .then((report) => {
+        const map = new Map<string, number>();
+        for (const item of report) {
+          map.set(
+            item.entryId,
+            item.scenes.reduce((sum, s) => sum + s.count, 0),
+          );
+        }
+        setRefCountMap(map);
+      })
+      .catch(() => setRefCountMap(new Map()))
+      .finally(() => setRefCountLoading(false));
+  }, [sortOrder]);
 
   // Responsive: observe container width for stack/split switching
   useEffect(() => {
@@ -642,17 +765,49 @@ export function CodexManagementPanel({
     return () => observer.disconnect();
   }, [initialStackMode]);
 
-  // Ctrl+K handler
+  // Ctrl+K / Ctrl+F / ↑↓ / F2 / Delete shortcuts
   useEffect(() => {
     const handleKeyDown = (e: globalThis.KeyboardEvent) => {
       if ((e.ctrlKey || e.metaKey) && e.key === "k") {
         e.preventDefault();
         setShowCommandPalette((prev) => !prev);
+        return;
+      }
+      if ((e.ctrlKey || e.metaKey) && e.key === "f") {
+        e.preventDefault();
+        searchInputRef.current?.focus();
+        return;
+      }
+      // Arrow navigation — only when focus is inside the panel
+      if (e.key === "ArrowUp" || e.key === "ArrowDown") {
+        const currentSorted =
+          sortOrder === "category" ? entries : sortEntries(entries, sortOrder);
+        if (currentSorted.length === 0) return;
+        const idx = selectedEntry
+          ? currentSorted.findIndex((e) => e.id === selectedEntry.id)
+          : -1;
+        const next =
+          e.key === "ArrowDown"
+            ? Math.min(idx + 1, currentSorted.length - 1)
+            : Math.max(idx - 1, 0);
+        handleSelectEntry(currentSorted[next]);
+        e.preventDefault();
+        return;
+      }
+      if (e.key === "F2" && selectedEntry) {
+        setRenamingEntryId(selectedEntry.id);
+        return;
+      }
+      if (e.key === "Delete" && selectedEntry && !renamingEntryId) {
+        if (window.confirm(`"${selectedEntry.name}" を削除しますか？`)) {
+          void handleDelete(selectedEntry.id);
+        }
+        return;
       }
     };
     document.addEventListener("keydown", handleKeyDown);
     return () => document.removeEventListener("keydown", handleKeyDown);
-  }, []);
+  }, [entries, selectedEntry, sortOrder, renamingEntryId]);
 
   // Debounced search (300ms)
   const handleSearchChange = useCallback(
@@ -748,6 +903,25 @@ export function CodexManagementPanel({
     setSelectedEntry(null);
   }, []);
 
+  // M2: inline rename
+  const handleRenameCommit = useCallback(
+    async (id: string, name: string) => {
+      setRenamingEntryId(null);
+      if (!name) return;
+      await update(id, { name });
+    },
+    [update],
+  );
+
+  // S3: pin to chat
+  const handlePinToChat = useCallback(
+    async (id: string) => {
+      if (!activeSessionId) return;
+      await chatApi.pinCodexEntry(activeSessionId, id);
+    },
+    [activeSessionId],
+  );
+
   const handleCommandSelect = useCallback(
     (entry: CodexEntry) => {
       setDetailInitialTab("details");
@@ -757,11 +931,22 @@ export function CodexManagementPanel({
     [isStackMode],
   );
 
+  // S1: tag-filtered entries
+  const tagFilteredEntries = useMemo(() => {
+    if (selectedTags.size === 0) return entries;
+    return entries.filter((e) => {
+      const tags = parseTags(e.tagsCache).map((t) => t.name);
+      return [...selectedTags].some((tag) => tags.includes(tag));
+    });
+  }, [entries, selectedTags]);
+
   // Sorted entries (client-side, only for non-category sorts)
   const sortedEntries = useMemo(
     () =>
-      sortOrder === "category" ? entries : sortEntries(entries, sortOrder),
-    [entries, sortOrder],
+      sortOrder === "category"
+        ? tagFilteredEntries
+        : sortEntries(tagFilteredEntries, sortOrder, refCountMap),
+    [tagFilteredEntries, sortOrder, refCountMap],
   );
 
   // Build type label map from loaded types (fallback to hardcoded)
@@ -817,6 +1002,7 @@ export function CodexManagementPanel({
     <div className="flex items-center gap-1 border-b border-border px-2 py-1.5">
       <Search className="h-3 w-3 shrink-0 text-muted-foreground" />
       <input
+        ref={searchInputRef}
         data-testid="codex-search-input"
         type="text"
         value={searchQuery}
@@ -868,16 +1054,38 @@ export function CodexManagementPanel({
     </div>
   );
 
+  // S1: tag filter bar
+  const tagFilterBar = (
+    <TagFilterBar
+      allTags={allTags}
+      selectedTags={selectedTags}
+      onToggle={(tag) =>
+        setSelectedTags((prev) => {
+          const next = new Set(prev);
+          if (next.has(tag)) next.delete(tag);
+          else next.add(tag);
+          return next;
+        })
+      }
+      onClear={() => setSelectedTags(new Set())}
+    />
+  );
+
   // Shared props for both list components
   const listProps = {
-    isLoading,
+    isLoading: isLoading || refCountLoading,
     selectedEntryId: selectedEntry?.id ?? null,
     onSelect: handleSelectEntry,
     onDelete: handleDelete,
     onDuplicate: handleDuplicate,
     onFindInScenes: handleFindInScenes,
     onChangeType: handleChangeType,
+    onPinToChat: activeSessionId ? handlePinToChat : undefined,
     codexTypes,
+    renamingEntryId,
+    onRenameCommit: handleRenameCommit,
+    onRenameCancel: () => setRenamingEntryId(null),
+    onStartRename: (id: string) => setRenamingEntryId(id),
   };
 
   // --- List panel content ---
@@ -885,12 +1093,16 @@ export function CodexManagementPanel({
     <div data-testid="codex-list-panel" className="flex h-full flex-col">
       {searchBar}
       {filterTabs}
-      {sortOrder === "category" && searchQuery === "" && filterType === null ? (
+      {tagFilterBar}
+      {sortOrder === "category" &&
+      searchQuery === "" &&
+      filterType === null &&
+      selectedTags.size === 0 ? (
         <CategoryGroupedList entries={entries} {...listProps} />
       ) : (
         <VirtualizedEntryList
           entries={sortedEntries}
-          typeLabels={typeLabels}
+          searchQuery={searchQuery}
           {...listProps}
         />
       )}

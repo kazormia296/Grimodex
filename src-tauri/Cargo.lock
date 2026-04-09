@@ -1482,6 +1482,7 @@ dependencies = [
 name = "grimodex"
 version = "0.1.0"
 dependencies = [
+ "aho-corasick",
  "anyhow",
  "chrono",
  "keyring",

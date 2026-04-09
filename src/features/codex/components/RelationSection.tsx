@@ -8,7 +8,7 @@ import {
   setParentRelation,
 } from "../relationApi";
 import { extractPlainText } from "../prosemirrorTextExtractor";
-import { findMentionedEntries } from "../codexMatcher";
+import { findMentionedEntriesAsync } from "../rustMatcher";
 import { getChildrenFromArray } from "../childrenBudget";
 
 const TYPE_LABELS: Record<string, string> = {
@@ -138,7 +138,8 @@ export function RelationSection({ entry }: RelationSectionProps) {
     [allEntries, entry.parentId],
   );
 
-  const suggestions = useMemo(() => {
+  const [suggestions, setSuggestions] = useState<CodexEntry[]>([]);
+  useEffect(() => {
     const text = extractPlainText(entry.content ?? "{}");
     const existingIds = new Set<string>(
       [
@@ -148,9 +149,11 @@ export function RelationSection({ entry }: RelationSectionProps) {
         ...dismissedIds,
       ].filter(Boolean) as string[],
     );
-    return findMentionedEntries(text, allEntries).filter(
-      (e) => !existingIds.has(e.id),
-    );
+    void findMentionedEntriesAsync(text, allEntries).then((mentioned) => {
+      setSuggestions(
+        mentioned.filter((e) => !existingIds.has(e.id)) as CodexEntry[],
+      );
+    });
   }, [entry, allEntries, children, dismissedIds]);
 
   const handleRemoveParent = useCallback(async () => {
