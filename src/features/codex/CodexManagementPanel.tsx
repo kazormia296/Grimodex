@@ -1079,25 +1079,29 @@ export function CodexManagementPanel({
         />
       )}
 
-      {header}
-
       {isStackMode ? (
-        <div className="flex-1 overflow-hidden">
-          {showDetail ? (
-            <div data-testid="codex-detail-panel" className="h-full">
-              {detailPanelContent}
-            </div>
-          ) : (
-            listPanelContent
-          )}
-        </div>
+        <>
+          {header}
+          <div className="flex-1 overflow-hidden">
+            {showDetail ? (
+              <div data-testid="codex-detail-panel" className="h-full">
+                {detailPanelContent}
+              </div>
+            ) : (
+              listPanelContent
+            )}
+          </div>
+        </>
       ) : (
         <ResizablePanelGroup
           orientation="horizontal"
           className="flex-1 overflow-hidden"
         >
           <ResizablePanel defaultSize={40} minSize={25}>
-            {listPanelContent}
+            <div className="flex h-full flex-col">
+              {header}
+              <div className="min-h-0 flex-1">{listPanelContent}</div>
+            </div>
           </ResizablePanel>
 
           <ResizableHandle withHandle />
