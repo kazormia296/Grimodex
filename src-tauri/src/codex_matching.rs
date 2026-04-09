@@ -290,6 +290,27 @@ impl CachedMatcher {
             last_end = *to;
         }
 
+        // Convert byte offsets → UTF-16 code unit offsets so that JavaScript
+        // (which uses UTF-16 strings) can use the positions directly.
+        // For BMP characters (all CJK/Japanese), 1 char = 1 UTF-16 unit.
+        // For supplementary chars (emoji), 1 char = 2 UTF-16 units.
+        if result.is_empty() {
+            return result;
+        }
+        let mut byte_to_utf16: Vec<usize> = vec![0; text.len() + 1];
+        {
+            let mut utf16_offset = 0usize;
+            for (bi, ch) in text.char_indices() {
+                byte_to_utf16[bi] = utf16_offset;
+                utf16_offset += ch.len_utf16();
+            }
+            byte_to_utf16[text.len()] = utf16_offset;
+        }
+        for m in &mut result {
+            m.from = byte_to_utf16[m.from];
+            m.to = byte_to_utf16[m.to];
+        }
+
         result
     }
 }
@@ -503,7 +524,7 @@ mod tests {
         assert_eq!(matches.len(), 1);
         assert_eq!(matches[0].entry_id, "c1");
         assert_eq!(matches[0].from, 0);
-        assert_eq!(matches[0].to, "太郎".len());
+        assert_eq!(matches[0].to, "太郎".chars().count()); // UTF-16 code units (= code points for BMP)
     }
 
     #[test]
@@ -536,7 +557,7 @@ mod tests {
         assert_eq!(matches.len(), 1);
         assert_eq!(matches[0].entry_id, "c2");
         assert_eq!(matches[0].from, 0);
-        assert_eq!(matches[0].to, "山田太郎".len());
+        assert_eq!(matches[0].to, "山田太郎".chars().count()); // UTF-16 code units
     }
 
     #[test]
