@@ -122,6 +122,7 @@ export function EditorPane({ sceneId, groupIndex, onFocus }: EditorPaneProps) {
   const activeNode = useTreeStore((s) => s.nodes.find((n) => n.id === sceneId));
   const activeStatus = (activeNode?.status ?? null) as SceneStatus | null;
 
+  const paneRef = useRef<HTMLDivElement>(null);
   const editorContainerRef = useRef<HTMLDivElement>(null);
   const [findOpen, setFindOpen] = useState(false);
   const [findShowReplace, setFindShowReplace] = useState(false);
@@ -407,6 +408,7 @@ export function EditorPane({ sceneId, groupIndex, onFocus }: EditorPaneProps) {
 
   useEffect(() => {
     function onKeyDown(e: KeyboardEvent) {
+      if (!paneRef.current?.contains(document.activeElement)) return;
       if (e.ctrlKey && e.key === "s" && !e.altKey && !e.shiftKey) {
         e.preventDefault();
         handleManualSave();
@@ -652,7 +654,7 @@ export function EditorPane({ sceneId, groupIndex, onFocus }: EditorPaneProps) {
   const isNote = activeNode?.nodeType === "note";
 
   return (
-    <div className="flex flex-1 flex-col overflow-hidden">
+    <div ref={paneRef} className="flex flex-1 flex-col overflow-hidden">
       <Toolbar
         editor={editor}
         onFindReplace={() => {
