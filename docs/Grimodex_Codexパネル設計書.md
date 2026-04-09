@@ -59,7 +59,8 @@ Codexパネルはプロジェクトの世界設定データベース。キャラ
 
 ### 全文検索
 
-- エントリの name、summary、content、tags をFTS5（trigramトークナイザー）でインクリメンタル検索
+- エントリの name、aliases、summary、tags_cache をFTS5（trigramトークナイザー）でインクリメンタル検索
+- 1-2文字の短いクエリはFTS5のtrigramトークナイザーでマッチできないため、name/summary/tags_cache に対するLIKEフォールバックで検索
 - 入力開始でデバウンス300msの即時フィルタ
 - マッチしたエントリのみリストに表示
 - 検索語がname内にマッチした場合は太字ハイライト
@@ -73,13 +74,15 @@ Codexパネルはプロジェクトの世界設定データベース。キャラ
 
 ビルトインタブ:
 
-| タブ        | カラー            | 説明           |
-| --------- | -------------- | ------------ |
-| All       | Blue/Info      | 全エントリ（デフォルト） |
-| Character | パープル (#534AB7) | キャラクター       |
-| Location  | ティール (#0F6E56) | 場所・地名        |
-| Item      | アンバー (#BA7517) | アイテム・道具      |
-| Lore      | コーラル (#993C1D) | 伝承・歴史・設定     |
+| タブ        | 説明           |
+| --------- | ------------ |
+| All       | 全エントリ（デフォルト） |
+| Character | キャラクター       |
+| Location  | 場所・地名        |
+| Item      | アイテム・道具      |
+| Lore      | 伝承           |
+
+各タブのカラーはテーマ連動パレットカラーシステム（`codex_types.palette_index` → CSS変数 `--palette-N`）で決定される。
 
 カスタムタイプ（`codex_types` で `is_builtin = 0`）もタブとして表示される。表示名は `codex_types.label`、カラーは `codex_types.color`。
 
@@ -109,11 +112,15 @@ Codexパネルはプロジェクトの世界設定データベース。キャラ
 
 | 要素 | 詳細 |
 |------|------|
-| カテゴリドット | カテゴリ色のドット（Character: パープル、Location: ティール、Item: アンバー、Lore: コーラル） |
+| カテゴリドット | カテゴリ色のドット（パレットカラーシステムに準ずる） |
 | エントリ名 | 太字。クリックで詳細画面を表示 |
 | サマリープレビュー | summaryフィールドの先頭40文字。未記入の場合はcontentの先頭40文字。未記入の場合はグレーで「No summary」 |
 
 選択中のエントリは左ボーダー + 背景ハイライトで強調。
+
+### バーチャルスクロール
+
+エントリリストは `@tanstack/react-virtual` による仮想化リストで描画する。エントリ数が増加してもスクロール性能を維持するため、ビューポート内の要素のみをDOMに描画する。
 
 ### ソート順
 
@@ -210,7 +217,7 @@ Codexパネルはプロジェクトの世界設定データベース。キャラ
 
 - ヘッダー左端に48×48pxのアイコン画像を表示（Notionページヘッダー風）
 - クリックで画像選択ダイアログを開き、ローカル画像ファイルを選択
-- 画像はDBの `codex_entries.icon` BLOBカラムに格納（リサイズ: 128×128px、WebP変換）
+- 画像はDBの `codex_entries.icon` TEXTカラムにbase64 WebPデータURL文字列として格納（リサイズ: 128×128px、WebP変換）
 - 未設定時はカテゴリドット（typeに応じた色の●）をフォールバック表示
 - リスト画面のサムネイルにも同じアイコンを使用（28×28px）
 - ポップオーバー（Editor等）では24×24pxで表示
@@ -267,7 +274,7 @@ Codexパネルはプロジェクトの世界設定データベース。キャラ
 - 1-2行のプレーンテキスト入力欄
 - プレースホルダー: 「Short description...」
 - この内容がエディタのCodexハイライト ポップオーバー、Codex Quickセクション、Chatコンテキスト注入の「要約」として使われる
-- 自動保存（デバウンス1秒）
+- 自動保存（デバウンス2秒）
 - **summaryが未記入の場合のフォールバック**: コンテキスト注入時にsummaryが空の場合、content全文を注入する。これによりsummary未記入でもAIが情報不足にならないが、トークン効率は低下する
 - **ガイドラインメッセージ**: summaryが空でcontentがある場合、入力欄の下にインラインヒントを表示: 「Summaryを記入するとAIチャットでのトークン消費を抑えられます」（dismissible、一度閉じたらセッション内で再表示しない）
 - **AI自動要約**:
@@ -496,7 +503,7 @@ Save クリックで `codex_detail_definitions` に行追加。同一タイプ�
 
 - `codex_reference` の参照先が削除された → 「[削除済み]」表示、値をNULLに更新
 - エントリのタイプ変更 → 旧タイプのフィールド値は保持（非表示）、新タイプの定義のみ表示。タイプを戻せば値が復活
-- 自動保存（デバウンス1秒）
+- 自動保存（デバウンス2秒）
 
 ---
 
@@ -659,7 +666,7 @@ AIコンテキストに含まれないプライベートノート。執筆上の
 
 ### 保存先
 
-summaryはSQLiteの `codex_entries.summary` カラムに直接保存。contentもSQLiteの `codex_entries.content` カラムに直接保存。アイコン画像はDBの `codex_entries.icon` BLOBカラムに格納（128×128 WebP）。
+summaryはSQLiteの `codex_entries.summary` カラムに直接保存。contentもSQLiteの `codex_entries.content` カラムに直接保存。アイコン画像はDBの `codex_entries.icon` TEXTカラムにbase64 WebPデータURL文字列として格納（128×128 WebP）。
 
 ```
 MyNovel.novel/
@@ -668,7 +675,7 @@ MyNovel.novel/
 
 ### 自動保存
 
-- summaryフィールド: デバウンス1秒でDBに保存
+- summaryフィールド: デバウンス2秒でDBに保存
 - contentフィールド: デバウンス2秒でDBに保存
 - notesフィールド: デバウンス2秒でDBに保存
 - name/type/tags/aliases/excluded_aliases変更: 即時保存
@@ -956,33 +963,29 @@ function resolveOverlaps(matches: RawMatch[]): RawMatch[] {
 
 例: 「Obsidian Tower」と「Tower」の両方がCodexにある場合、「Obsidian Tower」が先にマッチして「Tower」は破棄される。
 
-#### Step 4: Decoration適用（差分更新）
+#### Step 4: Decoration適用（ハイブリッド更新）
 
-ProseMirrorのDecorationSet に反映する。ここで重要なのは**差分更新**。テキスト変更のたびに全Decorationを再生成するとチラつきが発生するため、前回の結果との差分のみを適用する。
+ProseMirrorのDecorationSet に反映する。ここで重要なのは**不要な再構築の回避**。ProseMirrorプラグインの `apply` メソッドで、ドキュメント変更の有無に応じてハイブリッド戦略を取る。
 
 ```typescript
-interface CodexDecoration {
-  from: number;         // ProseMirrorドキュメント内の位置
-  to: number;
-  entryId: string;
-  entryName: string;
-  entryType: CodexEntryType;
-}
+// ProseMirror Plugin の apply メソッド
+apply(tr, oldDecos, _oldState, newState) {
+  // ドキュメント変更なし（選択、フォーマット等）→ 差分マッピングのみ
+  if (!tr.docChanged && tr.getMeta("codexHighlightUpdate") !== true) {
+    return oldDecos.map(tr.mapping, tr.doc);
+  }
 
-function diffDecorations(
-  prev: CodexDecoration[],
-  next: CodexDecoration[]
-): { added: CodexDecoration[]; removed: CodexDecoration[] } {
-  // エントリIDと位置で一致判定
-  // 同じエントリが同じ位置にある → 変更なし（維持）
-  // 新しく出現した → added
-  // 消えた → removed
+  // ドキュメント変更あり → 全再構築
+  const matches = runCodexMatcher(newState.doc.textContent);
+  const decos = mapMatchesToDecorations(newState.doc, matches);
+  return DecorationSet.create(newState.doc, decos);
 }
 ```
 
-差分更新の利点:
-- ユーザーがマッチ箇所以外を編集している場合、Decorationが再描画されずチラつかない
-- 新しいマッチが出現した箇所だけにアニメーション（フェードイン）を適用できる
+ハイブリッド更新の利点:
+- ドキュメント非変更時（選択移動、フォーマット変更等）は `DecorationSet.map()` による軽量な位置マッピングのみで済む
+- ドキュメント変更時のみマッチングパイプライン（Step 1-3）を再実行
+- `codexHighlightUpdate` メタフラグにより、Codexエントリの変更時に明示的な再構築をトリガー可能
 
 ### Zustandストアの設計
 
