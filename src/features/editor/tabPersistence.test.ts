@@ -49,9 +49,15 @@ describe("tabPersistence", () => {
       await useTabStore.getState().loadTabState();
 
       const state = useTabStore.getState();
-      expect(state.tabs).toEqual(saved.tabs);
+      // loadTabState migrates old data by adding contentType: "scene"
+      expect(state.tabs).toEqual([
+        { nodeId: "scene-1", isPreview: false, contentType: "scene" },
+        { nodeId: "scene-2", isPreview: true, contentType: "scene" },
+      ]);
       expect(state.activeTabId).toBe("scene-1");
-      expect(state.secondaryTabs).toEqual(saved.secondaryTabs);
+      expect(state.secondaryTabs).toEqual([
+        { nodeId: "scene-3", isPreview: false, contentType: "scene" },
+      ]);
       expect(state.secondaryActiveTabId).toBe("scene-3");
       expect(state.activeGroupIndex).toBe(1);
       expect(mockGetSetting).toHaveBeenCalledWith("editor.tabState");
@@ -99,13 +105,13 @@ describe("tabPersistence", () => {
 
       const state = useTabStore.getState();
       expect(state.tabs).toEqual([
-        { nodeId: "scene-1", isPreview: false },
-        { nodeId: "scene-2", isPreview: true },
+        { nodeId: "scene-1", isPreview: false, contentType: "scene" },
+        { nodeId: "scene-2", isPreview: true, contentType: "scene" },
       ]);
       // activeTabId was deleted-scene → falls back to first remaining tab
       expect(state.activeTabId).toBe("scene-1");
       expect(state.secondaryTabs).toEqual([
-        { nodeId: "scene-3", isPreview: false },
+        { nodeId: "scene-3", isPreview: false, contentType: "scene" },
       ]);
       // secondaryActiveTabId was also-deleted → falls back to first remaining
       expect(state.secondaryActiveTabId).toBe("scene-3");
@@ -142,7 +148,9 @@ describe("tabPersistence", () => {
 
       await useTabStore.getState().loadTabState();
 
-      expect(useTabStore.getState().tabs).toEqual(saved.tabs);
+      expect(useTabStore.getState().tabs).toEqual([
+        { nodeId: "any-id", isPreview: false, contentType: "scene" },
+      ]);
     });
   });
 
@@ -150,7 +158,7 @@ describe("tabPersistence", () => {
   describe("saveTabState", () => {
     it("persists current tab state to settings", async () => {
       useTabStore.setState({
-        tabs: [{ nodeId: "scene-1", isPreview: false }],
+        tabs: [{ nodeId: "scene-1", isPreview: false, contentType: "scene" }],
         activeTabId: "scene-1",
         secondaryTabs: [],
         secondaryActiveTabId: null,
@@ -166,7 +174,9 @@ describe("tabPersistence", () => {
       );
       const savedJson = mockSetSetting.mock.calls[0][1];
       const parsed = JSON.parse(savedJson);
-      expect(parsed.tabs).toEqual([{ nodeId: "scene-1", isPreview: false }]);
+      expect(parsed.tabs).toEqual([
+        { nodeId: "scene-1", isPreview: false, contentType: "scene" },
+      ]);
       expect(parsed.activeTabId).toBe("scene-1");
     });
 

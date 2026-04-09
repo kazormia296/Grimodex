@@ -17,7 +17,11 @@ describe("tabStore", () => {
       useTabStore.getState().openPreview("scene-1");
       const { tabs, activeTabId } = useTabStore.getState();
       expect(tabs).toHaveLength(1);
-      expect(tabs[0]).toEqual({ nodeId: "scene-1", isPreview: true });
+      expect(tabs[0]).toEqual({
+        nodeId: "scene-1",
+        isPreview: true,
+        contentType: "scene",
+      });
       expect(activeTabId).toBe("scene-1");
     });
 
@@ -26,7 +30,11 @@ describe("tabStore", () => {
       useTabStore.getState().openPreview("scene-2");
       const { tabs, activeTabId } = useTabStore.getState();
       expect(tabs).toHaveLength(1);
-      expect(tabs[0]).toEqual({ nodeId: "scene-2", isPreview: true });
+      expect(tabs[0]).toEqual({
+        nodeId: "scene-2",
+        isPreview: true,
+        contentType: "scene",
+      });
       expect(activeTabId).toBe("scene-2");
     });
 
@@ -73,7 +81,11 @@ describe("tabStore", () => {
       useTabStore.getState().openPinned("scene-1");
       const { tabs, activeTabId } = useTabStore.getState();
       expect(tabs).toHaveLength(1);
-      expect(tabs[0]).toEqual({ nodeId: "scene-1", isPreview: false });
+      expect(tabs[0]).toEqual({
+        nodeId: "scene-1",
+        isPreview: false,
+        contentType: "scene",
+      });
       expect(activeTabId).toBe("scene-1");
     });
 
@@ -82,7 +94,11 @@ describe("tabStore", () => {
       useTabStore.getState().openPinned("scene-1");
       const { tabs } = useTabStore.getState();
       expect(tabs).toHaveLength(1);
-      expect(tabs[0]).toEqual({ nodeId: "scene-1", isPreview: false });
+      expect(tabs[0]).toEqual({
+        nodeId: "scene-1",
+        isPreview: false,
+        contentType: "scene",
+      });
     });
 
     it("activates an already-pinned tab without adding a duplicate", () => {
@@ -191,7 +207,11 @@ describe("tabStore", () => {
       useTabStore.getState().ensureTab("scene-1");
       const { tabs, activeTabId } = useTabStore.getState();
       expect(tabs).toHaveLength(1);
-      expect(tabs[0]).toEqual({ nodeId: "scene-1", isPreview: false });
+      expect(tabs[0]).toEqual({
+        nodeId: "scene-1",
+        isPreview: false,
+        contentType: "scene",
+      });
       expect(activeTabId).toBe("scene-1");
     });
 

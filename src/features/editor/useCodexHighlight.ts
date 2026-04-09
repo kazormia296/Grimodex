@@ -12,10 +12,23 @@ import {
 import { resolveCodexColor } from "@/lib/resolveCodexColors";
 import { rebuildAndSchedule, scheduleMatch } from "./codexMatchOrchestrator";
 
+interface CodexHighlightOptions {
+  excludeEntryIds?: string[];
+  /** When true, skip updating the global matchedEntryIds (CodexQuick) store.
+   *  Visual decorations still apply. Use this for mini-editors in side panels. */
+  skipMatchedIds?: boolean;
+}
+
 export function useCodexHighlight(
   editor: Editor | null,
-  excludeEntryIds: string[] = [],
+  options?: CodexHighlightOptions | string[],
 ) {
+  // Support legacy positional array form: useCodexHighlight(editor, ["id1"])
+  const resolvedOptions: CodexHighlightOptions = Array.isArray(options)
+    ? { excludeEntryIds: options }
+    : (options ?? {});
+  const excludeEntryIds = resolvedOptions.excludeEntryIds ?? [];
+  const skipMatchedIds = resolvedOptions.skipMatchedIds ?? false;
   const entries = useCodexStore((s) => s.entries);
   const setMatchTargets = useCodexHighlightStore((s) => s.setMatchTargets);
   const setMatchedEntryIds = useCodexHighlightStore(
@@ -41,6 +54,7 @@ export function useCodexHighlight(
     }>
   >([]);
   const excludeRef = useRef(excludeEntryIds);
+  const skipMatchedIdsRef = useRef(skipMatchedIds);
 
   // Load type color map (re-resolves when theme or mode changes)
   useEffect(() => {
@@ -70,7 +84,14 @@ export function useCodexHighlight(
         const targets = targetsRef.current;
         if (targets.length > 0) {
           const text = editor.state.doc.textContent;
-          scheduleMatch(text, editor, targets, excludeRef.current, 0);
+          scheduleMatch(
+            text,
+            editor,
+            targets,
+            excludeRef.current,
+            0,
+            skipMatchedIdsRef.current,
+          );
         }
       }
     });
@@ -91,10 +112,14 @@ export function useCodexHighlight(
     setMatchTargets(targets);
   }, [entries, setMatchTargets, enabled]);
 
-  // Keep excludeRef in sync
+  // Keep excludeRef / skipMatchedIdsRef in sync
   useEffect(() => {
     excludeRef.current = excludeEntryIds;
   }, [excludeEntryIds]);
+
+  useEffect(() => {
+    skipMatchedIdsRef.current = skipMatchedIds;
+  }, [skipMatchedIds]);
 
   // Register plugin
   useEffect(() => {
@@ -107,7 +132,7 @@ export function useCodexHighlight(
     }
     return () => {
       if (!editor.isDestroyed) editor.unregisterPlugin(codexHighlightKey);
-      setMatchedEntryIds([]);
+      if (!skipMatchedIdsRef.current) setMatchedEntryIds([]);
     };
   }, [editor, setMatchedEntryIds]);
 
@@ -117,13 +142,18 @@ export function useCodexHighlight(
     const targets = targetsRef.current;
 
     if (targets.length === 0) {
-      setMatchedEntryIds([]);
+      if (!skipMatchedIdsRef.current) setMatchedEntryIds([]);
       const tr = editor.state.tr.setMeta("codexHighlightResult", []);
       editor.view.dispatch(tr);
       return;
     }
 
-    void rebuildAndSchedule(editor, targets, excludeRef.current);
+    void rebuildAndSchedule(
+      editor,
+      targets,
+      excludeRef.current,
+      skipMatchedIdsRef.current,
+    );
     const tr = editor.state.tr.setMeta("codexHighlightUpdate", true);
     editor.view.dispatch(tr);
   }, [editor, entries, highlightStyle]);
@@ -143,7 +173,14 @@ export function useCodexHighlight(
       const targets = targetsRef.current;
       if (targets.length === 0) return;
       const text = editor.state.doc.textContent;
-      scheduleMatch(text, editor, targets, excludeRef.current);
+      scheduleMatch(
+        text,
+        editor,
+        targets,
+        excludeRef.current,
+        150,
+        skipMatchedIdsRef.current,
+      );
     };
     editor.on("transaction", handler);
     return () => {

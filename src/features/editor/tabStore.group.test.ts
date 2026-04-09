@@ -22,7 +22,11 @@ describe("tabStore — secondary group", () => {
       const { secondaryTabs, secondaryActiveTabId, activeGroupIndex } =
         useTabStore.getState();
       expect(secondaryTabs).toHaveLength(1);
-      expect(secondaryTabs[0]).toEqual({ nodeId: "scene-1", isPreview: false });
+      expect(secondaryTabs[0]).toEqual({
+        nodeId: "scene-1",
+        isPreview: false,
+        contentType: "scene",
+      });
       expect(secondaryActiveTabId).toBe("scene-1");
       expect(activeGroupIndex).toBe(1);
     });
@@ -103,7 +107,9 @@ describe("tabStore — secondary group", () => {
     it("promotes a preview tab in the secondary group to pinned", () => {
       // Manually add a preview tab to secondary
       useTabStore.setState({
-        secondaryTabs: [{ nodeId: "scene-1", isPreview: true }],
+        secondaryTabs: [
+          { nodeId: "scene-1", isPreview: true, contentType: "scene" as const },
+        ],
         secondaryActiveTabId: "scene-1",
         activeGroupIndex: 1,
       });

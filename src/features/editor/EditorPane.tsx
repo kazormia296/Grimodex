@@ -6,6 +6,8 @@ import { Toolbar } from "@/features/editor/Toolbar";
 import { SynopsisHeader } from "@/features/editor/SynopsisHeader";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { loadSceneContent, saveSceneContent } from "@/features/tree/api";
+import { getCodexEntry, updateCodexEntry } from "@/features/codex/api";
+import { useCodexStore } from "@/features/codex/codexStore";
 import { useAutoSave } from "@/hooks/useAutoSave";
 import { createRevision } from "@/features/revision/api";
 import { useRevisionStore } from "@/features/revision/revisionStore";
@@ -52,7 +54,7 @@ import { generateSynopsisFromContent } from "@/features/chat/chatApi";
 import { toast } from "sonner";
 import { debugLog, errorDetail } from "@/lib/debugLog";
 import type { SceneStatus } from "@/features/tree/treeStore";
-import type { GroupIndex } from "@/features/editor/tabStore";
+import type { GroupIndex, TabContentType } from "@/features/editor/tabStore";
 
 const STATUS_LABELS: Record<SceneStatus, string> = {
   outline: "アウトライン",
@@ -86,7 +88,8 @@ function getDocText(doc: ProseMirrorNode): string {
 }
 
 interface EditorPaneProps {
-  sceneId: string;
+  nodeId: string;
+  contentType: TabContentType;
   groupIndex: GroupIndex;
   onFocus: () => void;
 }
@@ -94,10 +97,17 @@ interface EditorPaneProps {
 /**
  * A single TipTap editor pane.
  * Used as-is for the primary group, and duplicated for the secondary group.
- * When the same sceneId is open in both groups, edits propagate via sceneContentStore.
+ * When the same nodeId is open in both groups, edits propagate via sceneContentStore.
+ * Supports both scene/note content (Markdown via Tauri) and codex entry content (ProseMirror JSON via DB).
  */
-export function EditorPane({ sceneId, groupIndex, onFocus }: EditorPaneProps) {
-  const prevSceneIdRef = useRef(sceneId);
+export function EditorPane({
+  nodeId,
+  contentType,
+  groupIndex,
+  onFocus,
+}: EditorPaneProps) {
+  const isCodexMode = contentType === "codex";
+  const prevSceneIdRef = useRef(nodeId);
   const editorRef = useRef<ReturnType<typeof useEditor>>(null);
   // Per-scene editor state: cursor position + scroll (session-only, no persistence)
   const savedEditorStateRef = useRef<
@@ -119,7 +129,12 @@ export function EditorPane({ sceneId, groupIndex, onFocus }: EditorPaneProps) {
   const statusPopoverRef = useRef<HTMLDivElement>(null);
   const statusBadgeRef = useRef<HTMLButtonElement>(null);
 
-  const activeNode = useTreeStore((s) => s.nodes.find((n) => n.id === sceneId));
+  const activeNode = useTreeStore((s) =>
+    isCodexMode ? null : s.nodes.find((n) => n.id === nodeId),
+  );
+  const activeCodexEntry = useCodexStore((s) =>
+    isCodexMode ? s.entries.find((e) => e.id === nodeId) : null,
+  );
   const activeStatus = (activeNode?.status ?? null) as SceneStatus | null;
 
   const paneRef = useRef<HTMLDivElement>(null);
@@ -134,7 +149,7 @@ export function EditorPane({ sceneId, groupIndex, onFocus }: EditorPaneProps) {
   const setIsDirtyRef = useRef(setIsDirty);
   setIsDirtyRef.current = setIsDirty;
 
-  const saveSceneIdRef = useRef(sceneId);
+  const saveSceneIdRef = useRef(nodeId);
   const { shouldAutoRevision, recordAutoRevision } = useRevisionStore();
 
   // Prevent feedback loop when applying external content sync
@@ -143,16 +158,17 @@ export function EditorPane({ sceneId, groupIndex, onFocus }: EditorPaneProps) {
   // Auto-draft: true when scene was empty at load time
   const wasEmptyRef = useRef(false);
 
-  // Synopsis suggestion: track previous status to detect transitions
+  // Synopsis suggestion: track previous status to detect transitions (scene only)
   const prevStatusRef = useRef<SceneStatus | null>(activeStatus);
   useEffect(() => {
+    if (isCodexMode) return;
     const prev = prevStatusRef.current;
     prevStatusRef.current = activeStatus;
     const synopsis = useTreeStore
       .getState()
-      .nodes.find((n) => n.id === sceneId)?.synopsis;
+      .nodes.find((n) => n.id === nodeId)?.synopsis;
     if (shouldPromptSynopsis(prev, activeStatus, synopsis)) {
-      const id = sceneId;
+      const id = nodeId;
       toast("Synopsis が未記入です", {
         description: "自動生成しますか？",
         duration: 10000,
@@ -186,21 +202,26 @@ export function EditorPane({ sceneId, groupIndex, onFocus }: EditorPaneProps) {
         },
       });
     }
-  }, [activeStatus, sceneId]);
+  }, [activeStatus, nodeId, isCodexMode]);
 
   const coreSave = useCallback(async () => {
     const id = saveSceneIdRef.current;
     const ed = editorRef.current;
     if (!id || !ed) return;
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const md = (ed.storage as any).markdown.getMarkdown() as string;
-    await saveSceneContent(id, md);
-    await saveAuthorshipSpans(id, ed.state.doc);
-    useTreeStore
-      .getState()
-      .refreshAiRatio(id)
-      .catch(() => {});
-  }, []);
+    if (isCodexMode) {
+      const content = JSON.stringify(ed.getJSON());
+      await updateCodexEntry(id, { content });
+    } else {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const md = (ed.storage as any).markdown.getMarkdown() as string;
+      await saveSceneContent(id, md);
+      await saveAuthorshipSpans(id, ed.state.doc);
+      useTreeStore
+        .getState()
+        .refreshAiRatio(id)
+        .catch(() => {});
+    }
+  }, [isCodexMode]);
 
   const saveFn = useCallback(async () => {
     setIsSaving(true);
@@ -212,52 +233,55 @@ export function EditorPane({ sceneId, groupIndex, onFocus }: EditorPaneProps) {
     setIsDirtyRef.current(false);
 
     // Auto-revision is non-critical — don't let it trigger "save failed" toast
-    try {
-      const id = saveSceneIdRef.current;
-      const ed = editorRef.current;
-      if (!id || !ed) return;
-      const intervalMs =
-        useSettingsStore.getState().getNumber("revision.autoInterval", 5) *
-        60 *
-        1000;
-      if (shouldAutoRevision(id, intervalMs)) {
-        const content = JSON.stringify(ed.getJSON());
-        const rev = await createRevision({
-          entityType: "scene",
-          entityId: id,
-          content,
-          snapshotType: "auto",
-        });
-        if (rev) {
-          recordAutoRevision(id);
-          const keepCount = useSettingsStore
-            .getState()
-            .getNumber("revision.keepCount", 50);
-          import("@/features/revision/api").then(({ pruneRevisions }) => {
-            pruneRevisions("scene", id, keepCount).catch(console.error);
+    // Codex tabs don't use the revision system
+    if (!isCodexMode) {
+      try {
+        const id = saveSceneIdRef.current;
+        const ed = editorRef.current;
+        if (!id || !ed) return;
+        const intervalMs =
+          useSettingsStore.getState().getNumber("revision.autoInterval", 5) *
+          60 *
+          1000;
+        if (shouldAutoRevision(id, intervalMs)) {
+          const content = JSON.stringify(ed.getJSON());
+          const rev = await createRevision({
+            entityType: "scene",
+            entityId: id,
+            content,
+            snapshotType: "auto",
           });
+          if (rev) {
+            recordAutoRevision(id);
+            const keepCount = useSettingsStore
+              .getState()
+              .getNumber("revision.keepCount", 50);
+            import("@/features/revision/api").then(({ pruneRevisions }) => {
+              pruneRevisions("scene", id, keepCount).catch(console.error);
+            });
+          }
         }
+      } catch (e) {
+        debugLog.warn(
+          "AutoSave",
+          "revision failed (content saved)",
+          errorDetail(e),
+        );
       }
-    } catch (e) {
-      debugLog.warn(
-        "AutoSave",
-        "revision failed (content saved)",
-        errorDetail(e),
-      );
     }
-  }, [coreSave, shouldAutoRevision, recordAutoRevision]);
+  }, [isCodexMode, coreSave, shouldAutoRevision, recordAutoRevision]);
 
   // Register this pane's save function so the tab context menu can trigger it
   useEffect(() => {
-    registerSaveHandler(sceneId, saveFn);
-    return () => unregisterSaveHandler(sceneId);
-  }, [sceneId, saveFn]);
+    registerSaveHandler(nodeId, saveFn);
+    return () => unregisterSaveHandler(nodeId);
+  }, [nodeId, saveFn]);
 
   // Sync isDirty to the tab store for unsaved-changes detection
   useEffect(() => {
-    useTabStore.getState().setTabDirty(sceneId, isDirty);
-    return () => useTabStore.getState().setTabDirty(sceneId, false);
-  }, [sceneId, isDirty]);
+    useTabStore.getState().setTabDirty(nodeId, isDirty);
+    return () => useTabStore.getState().setTabDirty(nodeId, false);
+  }, [nodeId, isDirty]);
 
   const editorSettings = useEditorSettings();
   const { schedule, cancel, flush } = useAutoSave(
@@ -267,7 +291,9 @@ export function EditorPane({ sceneId, groupIndex, onFocus }: EditorPaneProps) {
 
   const filterSource = useAttributionStore((s) => s.filterSource);
   const showAttribution = useAttributionStore((s) => s.showAttribution);
-  const aiRatio = useTreeStore((s) => s.aiRatios[sceneId] ?? 0);
+  const aiRatio = useTreeStore((s) =>
+    isCodexMode ? 0 : (s.aiRatios[nodeId] ?? 0),
+  );
   const togglePanel = useLayoutStore((s) => s.togglePanel);
 
   const insertFromSnippet = useEditorStore((s) => s.insertFromSnippet);
@@ -327,34 +353,36 @@ export function EditorPane({ sceneId, groupIndex, onFocus }: EditorPaneProps) {
       setWordCount(text.trim() === "" ? 0 : text.trim().split(/\s+/).length);
       const sid = saveSceneIdRef.current;
       if (sid) {
-        useTreeStore.getState().setCharCount(sid, count);
         // Auto-promote preview tab to pinned when user starts editing
         if (groupIndex === 0) {
           useTabStore.getState().pinTab(sid);
         } else {
           useTabStore.getState().pinSecondaryTab(sid);
         }
-        // Auto-transition outline → draft on first keystroke in empty scene
-        const nodeStatus = useTreeStore
-          .getState()
-          .nodes.find((n) => n.id === sid)?.status as
-          | SceneStatus
-          | null
-          | undefined;
-        if (
-          shouldAutoDraftTransition(
-            count,
-            wasEmptyRef.current,
-            nodeStatus ?? null,
-          )
-        ) {
-          wasEmptyRef.current = false;
-          useTreeStore
+        if (!isCodexMode) {
+          useTreeStore.getState().setCharCount(sid, count);
+          // Auto-transition outline → draft on first keystroke in empty scene
+          const nodeStatus = useTreeStore
             .getState()
-            .setStatus(sid, "draft")
-            .catch(() => {});
+            .nodes.find((n) => n.id === sid)?.status as
+            | SceneStatus
+            | null
+            | undefined;
+          if (
+            shouldAutoDraftTransition(
+              count,
+              wasEmptyRef.current,
+              nodeStatus ?? null,
+            )
+          ) {
+            wasEmptyRef.current = false;
+            useTreeStore
+              .getState()
+              .setStatus(sid, "draft")
+              .catch(() => {});
+          }
         }
-        // Broadcast to other panes showing the same scene
+        // Broadcast to other panes showing the same content
         useSceneContentStore
           .getState()
           .setLiveContent(sid, e.getJSON(), groupIndex);
@@ -394,6 +422,7 @@ export function EditorPane({ sceneId, groupIndex, onFocus }: EditorPaneProps) {
   // Ctrl+S / Ctrl+F / Ctrl+H / Ctrl+Shift+H key handlers
   const handleManualSave = useCallback(async () => {
     await flush();
+    if (isCodexMode) return; // Codex entries: no revision on manual save
     const id = saveSceneIdRef.current;
     const ed = editorRef.current;
     if (!id || !ed) return;
@@ -404,7 +433,7 @@ export function EditorPane({ sceneId, groupIndex, onFocus }: EditorPaneProps) {
       content,
       snapshotType: "manual",
     });
-  }, [flush]);
+  }, [flush, isCodexMode]);
 
   useEffect(() => {
     function onKeyDown(e: KeyboardEvent) {
@@ -454,7 +483,10 @@ export function EditorPane({ sceneId, groupIndex, onFocus }: EditorPaneProps) {
   }, [statusPopoverOpen]);
 
   useInsertHighlight(editor);
-  useCodexHighlight(editor);
+  useCodexHighlight(
+    editor,
+    isCodexMode ? { excludeEntryIds: [nodeId] } : undefined,
+  );
   useFocusMode(editor);
   const typewriterMode = useCursorSettingsStore((s) => s.typewriterMode);
   useTypewriterScroll(editor, typewriterMode, editorContainerRef);
@@ -482,7 +514,7 @@ export function EditorPane({ sceneId, groupIndex, onFocus }: EditorPaneProps) {
       container.scrollTo({ top: Math.max(0, target), behavior: "auto" });
     });
     return () => cancelAnimationFrame(raf);
-  }, [typewriterMode, editor, sceneId]);
+  }, [typewriterMode, editor, nodeId]);
   const { generate, accept, reject, retry } = useInlineAiDiff(editor);
 
   const cursorAnimation = useCursorSettingsStore((s) => s.cursorAnimation);
@@ -509,12 +541,12 @@ export function EditorPane({ sceneId, groupIndex, onFocus }: EditorPaneProps) {
       );
   }, [editor]);
 
-  // Subscribe to content sync from the other pane
+  // Subscribe to content sync from the other pane (or CodexContentEditor mini-editor)
   useEffect(() => {
     if (!editor) return;
     const unsubscribe = useSceneContentStore
       .getState()
-      .subscribe(sceneId, (content, sourceGroupIndex) => {
+      .subscribe(nodeId, (content, sourceGroupIndex) => {
         if (sourceGroupIndex === groupIndex) return; // Skip our own updates
         // isApplyingExternalUpdate guards the onUpdate handler from re-broadcasting
         isApplyingExternalUpdate.current = true;
@@ -527,17 +559,17 @@ export function EditorPane({ sceneId, groupIndex, onFocus }: EditorPaneProps) {
         }
       });
     return unsubscribe;
-  }, [sceneId, groupIndex, editor]);
+  }, [nodeId, groupIndex, editor]);
 
-  // Load content when sceneId changes
+  // Load content when nodeId changes
   useEffect(() => {
-    if (!editor || !sceneId) return;
+    if (!editor || !nodeId) return;
 
     let cancelled = false;
 
     async function switchScene() {
       const prevId = prevSceneIdRef.current;
-      if (prevId && prevId !== sceneId) {
+      if (prevId && prevId !== nodeId) {
         // Save current cursor/scroll state before leaving this scene
         const ed = editorRef.current;
         if (ed) {
@@ -551,59 +583,73 @@ export function EditorPane({ sceneId, groupIndex, onFocus }: EditorPaneProps) {
         await flush();
       }
       cancel();
-      saveSceneIdRef.current = sceneId;
+      saveSceneIdRef.current = nodeId;
 
-      const content = await loadSceneContent(sceneId);
-      if (cancelled) return;
-      // Guard onUpdate so that programmatic content loading does not
-      // trigger autosave scheduling or promote the preview tab to pinned.
       isApplyingExternalUpdate.current = true;
       try {
-        editor!.commands.setContent(content || "");
+        if (isCodexMode) {
+          // Load codex entry content (ProseMirror JSON)
+          const entry = await getCodexEntry(nodeId);
+          if (cancelled) return;
+          const parsed =
+            entry?.content && entry.content !== "{}"
+              ? JSON.parse(entry.content)
+              : "";
+          editor!.commands.setContent(parsed);
+        } else {
+          // Load scene/note content (Markdown)
+          const content = await loadSceneContent(nodeId);
+          if (cancelled) return;
+          editor!.commands.setContent(content || "");
+        }
       } finally {
         isApplyingExternalUpdate.current = false;
       }
+
       const text = getDocText(editor!.state.doc);
       const count = text.length;
       setCharCount(count);
       setWordCount(text.trim() === "" ? 0 : text.trim().split(/\s+/).length);
       setIsDirty(false);
       wasEmptyRef.current = count === 0;
-      useTreeStore.getState().setCharCount(sceneId, count);
 
-      const spans = await loadAuthorshipSpans(sceneId);
-      if (!cancelled && spans.length > 0) {
-        const markData = spansToMarkData(spans);
-        const authorshipType = editor!.schema.marks["authorship"];
-        if (authorshipType) {
-          isApplyingExternalUpdate.current = true;
-          try {
-            editor!
-              .chain()
-              .command(({ tr }) => {
-                tr.setMeta("programmaticInsert", true);
-                for (const { from, to, attrs } of markData) {
-                  const docSize = tr.doc.content.size;
-                  const clampedFrom = Math.min(from, docSize);
-                  const clampedTo = Math.min(to, docSize);
-                  if (clampedFrom < clampedTo) {
-                    tr.addMark(
-                      clampedFrom,
-                      clampedTo,
-                      authorshipType.create(attrs),
-                    );
+      if (!isCodexMode) {
+        useTreeStore.getState().setCharCount(nodeId, count);
+
+        const spans = await loadAuthorshipSpans(nodeId);
+        if (!cancelled && spans.length > 0) {
+          const markData = spansToMarkData(spans);
+          const authorshipType = editor!.schema.marks["authorship"];
+          if (authorshipType) {
+            isApplyingExternalUpdate.current = true;
+            try {
+              editor!
+                .chain()
+                .command(({ tr }) => {
+                  tr.setMeta("programmaticInsert", true);
+                  for (const { from, to, attrs } of markData) {
+                    const docSize = tr.doc.content.size;
+                    const clampedFrom = Math.min(from, docSize);
+                    const clampedTo = Math.min(to, docSize);
+                    if (clampedFrom < clampedTo) {
+                      tr.addMark(
+                        clampedFrom,
+                        clampedTo,
+                        authorshipType.create(attrs),
+                      );
+                    }
                   }
-                }
-                return true;
-              })
-              .run();
-          } finally {
-            isApplyingExternalUpdate.current = false;
+                  return true;
+                })
+                .run();
+            } finally {
+              isApplyingExternalUpdate.current = false;
+            }
           }
         }
       }
 
-      prevSceneIdRef.current = sceneId;
+      prevSceneIdRef.current = nodeId;
 
       // Decide whether to focus the editor immediately.
       // Tab clicks set the flag; Scenes-panel navigation does not.
@@ -615,8 +661,8 @@ export function EditorPane({ sceneId, groupIndex, onFocus }: EditorPaneProps) {
       // state is never applied if this new switch doesn't produce saved data.
       pendingCursorRestoreRef.current = null;
 
-      // Restore cursor/scroll state if this scene was previously visited.
-      const saved = savedEditorStateRef.current.get(sceneId);
+      // Restore cursor/scroll state if this node was previously visited.
+      const saved = savedEditorStateRef.current.get(nodeId);
       if (saved && !cancelled) {
         if (focusNow) {
           // Tab click: focus the editor and restore cursor/scroll immediately.
@@ -649,9 +695,9 @@ export function EditorPane({ sceneId, groupIndex, onFocus }: EditorPaneProps) {
     return () => {
       cancelled = true;
     };
-  }, [sceneId, editor, flush, cancel]);
+  }, [nodeId, editor, flush, cancel, isCodexMode]);
 
-  const isNote = activeNode?.nodeType === "note";
+  const isNote = !isCodexMode && activeNode?.nodeType === "note";
 
   return (
     <div ref={paneRef} className="flex flex-1 flex-col overflow-hidden">
@@ -671,7 +717,17 @@ export function EditorPane({ sceneId, groupIndex, onFocus }: EditorPaneProps) {
           </span>
         </div>
       )}
-      <SynopsisHeader sceneId={sceneId} />
+      {isCodexMode && (
+        <div className="flex items-center gap-1.5 border-b border-purple-500/30 bg-purple-500/10 px-3 py-1 text-xs text-purple-600 dark:text-purple-400">
+          <span className="font-medium">📖 Codex エントリ編集中</span>
+          {activeCodexEntry && (
+            <span className="text-purple-500/60">
+              — {activeCodexEntry.name}
+            </span>
+          )}
+        </div>
+      )}
+      {!isCodexMode && <SynopsisHeader sceneId={nodeId} />}
       <FindReplaceBar
         editor={editor}
         open={findOpen}
@@ -734,7 +790,7 @@ export function EditorPane({ sceneId, groupIndex, onFocus }: EditorPaneProps) {
                       onClick={() => {
                         useTreeStore
                           .getState()
-                          .setStatus(sceneId, s)
+                          .setStatus(nodeId, s)
                           .catch(() => {});
                         setStatusPopoverOpen(false);
                       }}
@@ -800,7 +856,7 @@ export function EditorPane({ sceneId, groupIndex, onFocus }: EditorPaneProps) {
           onSubmit={(command, prompt) => {
             const node = useTreeStore
               .getState()
-              .nodes.find((n) => n.id === sceneId);
+              .nodes.find((n) => n.id === nodeId);
             const sceneText = editor.getText();
             const { from, to } = editor.state.selection;
             const selectedText =

@@ -4,9 +4,12 @@ import { getSetting, setSetting } from "@/features/settings/api";
 const TAB_STATE_KEY = "editor.tabState";
 const SAVE_DEBOUNCE_MS = 500;
 
+export type TabContentType = "scene" | "codex";
+
 export interface TabEntry {
   nodeId: string;
   isPreview: boolean;
+  contentType: TabContentType;
 }
 
 export type GroupIndex = 0 | 1;
@@ -68,6 +71,12 @@ interface TabState {
    * If already open, just activate.
    */
   ensureTab: (nodeId: string) => void;
+
+  /**
+   * Open a codex entry as a pinned tab in the primary group.
+   * If already open, just activate.
+   */
+  openCodexTab: (entryId: string) => void;
 
   // ---- Secondary group operations ----
 
@@ -240,7 +249,10 @@ export const useTabStore = create<TabState>()((set, get) => {
 
       const withoutPreview = tabs.filter((t) => !t.isPreview);
       set({
-        tabs: [...withoutPreview, { nodeId, isPreview: true }],
+        tabs: [
+          ...withoutPreview,
+          { nodeId, isPreview: true, contentType: "scene" },
+        ],
         activeTabId: nodeId,
         activeGroupIndex: 0,
       });
@@ -266,7 +278,7 @@ export const useTabStore = create<TabState>()((set, get) => {
       }
 
       set({
-        tabs: [...tabs, { nodeId, isPreview: false }],
+        tabs: [...tabs, { nodeId, isPreview: false, contentType: "scene" }],
         activeTabId: nodeId,
         activeGroupIndex: 0,
       });
@@ -317,8 +329,27 @@ export const useTabStore = create<TabState>()((set, get) => {
         return;
       }
       set({
-        tabs: [...tabs, { nodeId, isPreview: false }],
+        tabs: [...tabs, { nodeId, isPreview: false, contentType: "scene" }],
         activeTabId: nodeId,
+      });
+    },
+
+    openCodexTab(entryId) {
+      const { tabs } = get();
+      const existing = tabs.find((t) => t.nodeId === entryId);
+      if (existing) {
+        set({ activeTabId: entryId, activeGroupIndex: 0 });
+        return;
+      }
+      // Remove any stale preview tab before adding the codex tab
+      const withoutPreview = tabs.filter((t) => !t.isPreview);
+      set({
+        tabs: [
+          ...withoutPreview,
+          { nodeId: entryId, isPreview: false, contentType: "codex" },
+        ],
+        activeTabId: entryId,
+        activeGroupIndex: 0,
       });
     },
 
@@ -338,7 +369,10 @@ export const useTabStore = create<TabState>()((set, get) => {
       }
 
       set({
-        secondaryTabs: [...secondaryTabs, { nodeId, isPreview: false }],
+        secondaryTabs: [
+          ...secondaryTabs,
+          { nodeId, isPreview: false, contentType: "scene" },
+        ],
         secondaryActiveTabId: nodeId,
         activeGroupIndex: 1,
         secondaryGroupOpen: true,
@@ -590,7 +624,10 @@ export const useTabStore = create<TabState>()((set, get) => {
         return;
       }
       set({
-        secondaryTabs: [...secondaryTabs, { nodeId, isPreview: false }],
+        secondaryTabs: [
+          ...secondaryTabs,
+          { nodeId, isPreview: false, contentType: "scene" },
+        ],
         secondaryActiveTabId: nodeId,
         activeGroupIndex: 1,
         splitDirection: direction,
@@ -616,13 +653,23 @@ export const useTabStore = create<TabState>()((set, get) => {
 
         const parsed: PersistedTabState = JSON.parse(json);
 
-        let tabs = parsed.tabs ?? [];
-        let secondaryTabs = parsed.secondaryTabs ?? [];
+        // Migrate old persisted data that lacks contentType
+        let tabs = (parsed.tabs ?? []).map((t) => ({
+          ...t,
+          contentType: t.contentType ?? "scene",
+        })) as TabEntry[];
+        let secondaryTabs = (parsed.secondaryTabs ?? []).map((t) => ({
+          ...t,
+          contentType: t.contentType ?? "scene",
+        })) as TabEntry[];
 
         if (validNodeIds) {
-          tabs = tabs.filter((t) => validNodeIds.has(t.nodeId));
-          secondaryTabs = secondaryTabs.filter((t) =>
-            validNodeIds.has(t.nodeId),
+          // Only filter scene/note tabs against tree node IDs; codex tabs are validated lazily
+          tabs = tabs.filter(
+            (t) => t.contentType === "codex" || validNodeIds.has(t.nodeId),
+          );
+          secondaryTabs = secondaryTabs.filter(
+            (t) => t.contentType === "codex" || validNodeIds.has(t.nodeId),
           );
         }
 

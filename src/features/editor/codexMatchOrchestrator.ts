@@ -29,6 +29,9 @@ function getState(editor: Editor): OrchestratorState {
  * Debounce-schedule an async codex match for `editor`.
  * Dispatches a transaction with "codexHighlightResult" meta when the match
  * completes. Stale results (superseded by a newer call) are discarded.
+ *
+ * @param skipMatchedIds - When true, skip updating the global matchedEntryIds
+ *   store (e.g. for mini-editors that should not affect CodexQuick).
  */
 export function scheduleMatch(
   text: string,
@@ -36,6 +39,7 @@ export function scheduleMatch(
   entries: CodexMatchTarget[],
   excludeEntryIds: string[] = [],
   debounceMs = 150,
+  skipMatchedIds = false,
 ): void {
   const state = getState(editor);
 
@@ -56,7 +60,9 @@ export function scheduleMatch(
         if (state.version !== myVersion) return;
         if (editor.isDestroyed) return;
         const uniqueIds = [...new Set(matches.map((m) => m.entryId))];
-        useCodexHighlightStore.getState().setMatchedEntryIds(uniqueIds);
+        if (!skipMatchedIds) {
+          useCodexHighlightStore.getState().setMatchedEntryIds(uniqueIds);
+        }
         const tr = editor.state.tr.setMeta("codexHighlightResult", matches);
         editor.view.dispatch(tr);
       } catch {
@@ -69,20 +75,25 @@ export function scheduleMatch(
 /**
  * Immediately rebuild the Rust matcher and schedule a match.
  * Call this when the entries list changes.
+ *
+ * @param skipMatchedIds - When true, skip updating the global matchedEntryIds store.
  */
 export async function rebuildAndSchedule(
   editor: Editor,
   entries: CodexMatchTarget[],
   excludeEntryIds: string[] = [],
+  skipMatchedIds = false,
 ): Promise<void> {
   if (entries.length === 0) {
     // Clear decorations
-    useCodexHighlightStore.getState().setMatchedEntryIds([]);
+    if (!skipMatchedIds) {
+      useCodexHighlightStore.getState().setMatchedEntryIds([]);
+    }
     const tr = editor.state.tr.setMeta("codexHighlightResult", []);
     editor.view.dispatch(tr);
     return;
   }
   await rebuildMatcher(entries);
   const text = editor.state.doc.textContent;
-  scheduleMatch(text, editor, entries, excludeEntryIds, 0);
+  scheduleMatch(text, editor, entries, excludeEntryIds, 0, skipMatchedIds);
 }

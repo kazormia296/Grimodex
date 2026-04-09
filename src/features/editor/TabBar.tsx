@@ -3,6 +3,7 @@ import { X, ChevronDown, Columns2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useTabStore } from "./tabStore";
 import { useTreeStore } from "@/features/tree/treeStore";
+import { useCodexStore } from "@/features/codex/codexStore";
 import { TabContextMenu } from "./TabContextMenu";
 import type { GroupIndex } from "./tabStore";
 
@@ -32,6 +33,7 @@ export function TabBar({ groupIndex = 0 }: TabBarProps) {
   const isSyncedScene = useTabStore((s) => s.isSyncedScene);
 
   const nodes = useTreeStore((s) => s.nodes);
+  const codexEntries = useCodexStore((s) => s.entries);
 
   const hasSecondaryGroup = useTabStore((s) => s.secondaryGroupOpen);
   const isPrimary = groupIndex === 0;
@@ -107,12 +109,14 @@ export function TabBar({ groupIndex = 0 }: TabBarProps) {
   function handleTabClick(nodeId: string) {
     setOverflowOpen(false);
     useTabStore.getState().requestEditorFocus(groupIndex);
+    const clickedTab = tabs.find((t) => t.nodeId === nodeId);
+    const isCodexTab = clickedTab?.contentType === "codex";
     if (isPrimary) {
       useTabStore.getState().setActiveTab(nodeId);
-      useTreeStore.getState().setActiveScene(nodeId);
+      if (!isCodexTab) useTreeStore.getState().setActiveScene(nodeId);
     } else {
       useTabStore.getState().setSecondaryActiveTab(nodeId);
-      useTreeStore.getState().setActiveScene(nodeId);
+      if (!isCodexTab) useTreeStore.getState().setActiveScene(nodeId);
     }
   }
 
@@ -240,9 +244,13 @@ export function TabBar({ groupIndex = 0 }: TabBarProps) {
         onDrop={handleBarDrop}
       >
         {tabs.map((tab) => {
-          const node = nodes.find((n) => n.id === tab.nodeId);
+          const isCodex = tab.contentType === "codex";
+          const node = isCodex ? null : nodes.find((n) => n.id === tab.nodeId);
+          const codexEntry = isCodex
+            ? codexEntries.find((e) => e.id === tab.nodeId)
+            : null;
           const isActive = tab.nodeId === activeTabId;
-          const title = node?.title ?? "…";
+          const title = node?.title ?? codexEntry?.name ?? "…";
           const synced = isSyncedScene(tab.nodeId);
           const isDropLeft =
             dropTarget?.nodeId === tab.nodeId && dropTarget.side === "left";
@@ -306,6 +314,7 @@ export function TabBar({ groupIndex = 0 }: TabBarProps) {
               {node?.nodeType === "note" && (
                 <span className="mr-0.5 text-teal-500">📝</span>
               )}
+              {isCodex && <span className="mr-0.5 text-purple-500">📖</span>}
               <span
                 className={cn(
                   "max-w-[140px] truncate",
@@ -403,9 +412,15 @@ export function TabBar({ groupIndex = 0 }: TabBarProps) {
           {overflowOpen && (
             <div className="absolute right-0 top-full z-50 min-w-[180px] rounded-md border border-border bg-popover py-1 shadow-md">
               {tabs.map((tab) => {
-                const node = nodes.find((n) => n.id === tab.nodeId);
+                const isOverflowCodex = tab.contentType === "codex";
+                const node = isOverflowCodex
+                  ? null
+                  : nodes.find((n) => n.id === tab.nodeId);
+                const overflowCodexEntry = isOverflowCodex
+                  ? codexEntries.find((e) => e.id === tab.nodeId)
+                  : null;
                 const isActive = tab.nodeId === activeTabId;
-                const title = node?.title ?? "…";
+                const title = node?.title ?? overflowCodexEntry?.name ?? "…";
                 return (
                   <button
                     key={tab.nodeId}
@@ -420,6 +435,9 @@ export function TabBar({ groupIndex = 0 }: TabBarProps) {
                   >
                     {node?.nodeType === "note" && (
                       <span className="mr-1 text-teal-500">📝</span>
+                    )}
+                    {isOverflowCodex && (
+                      <span className="mr-1 text-purple-500">📖</span>
                     )}
                     {title}
                   </button>

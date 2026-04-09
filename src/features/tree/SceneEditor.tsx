@@ -151,6 +151,12 @@ export function SceneEditor() {
   const secondaryGroupOpen = useTabStore((s) => s.secondaryGroupOpen);
   const activeGroupIndex = useTabStore((s) => s.activeGroupIndex);
   const splitDirection = useTabStore((s) => s.splitDirection);
+  const primaryTab = useTabStore((s) =>
+    s.tabs.find((t) => t.nodeId === s.activeTabId),
+  );
+  const secondaryTab = useTabStore((s) =>
+    s.secondaryTabs.find((t) => t.nodeId === s.secondaryActiveTabId),
+  );
 
   const isDraggingTab = useTabStore((s) => s.isDraggingTab);
 
@@ -181,14 +187,24 @@ export function SceneEditor() {
     }
   }, [activeSceneId]);
 
-  // Sync activeGroupIndex → treeStore.activeSceneId
+  // Sync activeGroupIndex → treeStore.activeSceneId (skip for codex tabs)
   useEffect(() => {
     if (activeGroupIndex === 0 && primaryActiveTabId) {
-      useTreeStore.getState().setActiveScene(primaryActiveTabId);
+      if (primaryTab?.contentType !== "codex") {
+        useTreeStore.getState().setActiveScene(primaryActiveTabId);
+      }
     } else if (activeGroupIndex === 1 && secondaryActiveTabId) {
-      useTreeStore.getState().setActiveScene(secondaryActiveTabId);
+      if (secondaryTab?.contentType !== "codex") {
+        useTreeStore.getState().setActiveScene(secondaryActiveTabId);
+      }
     }
-  }, [activeGroupIndex, primaryActiveTabId, secondaryActiveTabId]);
+  }, [
+    activeGroupIndex,
+    primaryActiveTabId,
+    secondaryActiveTabId,
+    primaryTab,
+    secondaryTab,
+  ]);
 
   const primarySceneId = primaryActiveTabId;
   const secondarySceneId = secondaryActiveTabId;
@@ -218,11 +234,14 @@ export function SceneEditor() {
           <div className="relative flex flex-1 flex-col overflow-hidden">
             {primarySceneId ? (
               <EditorPane
-                sceneId={primarySceneId}
+                nodeId={primarySceneId}
+                contentType={primaryTab?.contentType ?? "scene"}
                 groupIndex={0}
                 onFocus={() => {
                   useTabStore.getState().setActiveGroup(0);
-                  useTreeStore.getState().setActiveScene(primarySceneId);
+                  if (primaryTab?.contentType !== "codex") {
+                    useTreeStore.getState().setActiveScene(primarySceneId);
+                  }
                 }}
               />
             ) : (
@@ -247,11 +266,14 @@ export function SceneEditor() {
             <div className="relative flex flex-1 flex-col overflow-hidden">
               {secondarySceneId ? (
                 <EditorPane
-                  sceneId={secondarySceneId}
+                  nodeId={secondarySceneId}
+                  contentType={secondaryTab?.contentType ?? "scene"}
                   groupIndex={1}
                   onFocus={() => {
                     useTabStore.getState().setActiveGroup(1);
-                    useTreeStore.getState().setActiveScene(secondarySceneId);
+                    if (secondaryTab?.contentType !== "codex") {
+                      useTreeStore.getState().setActiveScene(secondarySceneId);
+                    }
                   }}
                 />
               ) : (

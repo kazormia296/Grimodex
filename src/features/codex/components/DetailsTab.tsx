@@ -1,12 +1,13 @@
 import { useState } from "react";
 import { toast } from "sonner";
-import { Wand2 } from "lucide-react";
+import { ExternalLink, Wand2 } from "lucide-react";
 import type { CodexEntry } from "../api";
 import { AliasesField } from "./AliasesField";
 import { CodexContentEditor } from "./CodexContentEditor";
 import { DetailsSection } from "./DetailsSection";
 import { extractPlainText } from "../prosemirrorTextExtractor";
 import { generateSynopsisFromContent } from "@/features/chat/chatApi";
+import { useTabStore } from "@/features/editor/tabStore";
 
 interface DetailsTabProps {
   entry: CodexEntry;
@@ -15,6 +16,7 @@ interface DetailsTabProps {
   onAliasesChange: (aliases: string[]) => void;
   onSummaryChange: (value: string) => void;
   onContentChange: (content: string) => void;
+  onExternalSync?: (content: string) => void;
 }
 
 export function DetailsTab({
@@ -24,6 +26,7 @@ export function DetailsTab({
   onAliasesChange,
   onSummaryChange,
   onContentChange,
+  onExternalSync,
 }: DetailsTabProps) {
   const emptyContent = !entry.content || entry.content === "{}";
   const [isGenerating, setIsGenerating] = useState(false);
@@ -85,11 +88,23 @@ export function DetailsTab({
 
       {/* Content (TipTap) */}
       <div>
-        <label className="mb-1 block text-xs font-medium">Content</label>
+        <div className="mb-1 flex items-center justify-between">
+          <label className="block text-xs font-medium">Content</label>
+          <button
+            type="button"
+            onClick={() => useTabStore.getState().openCodexTab(entry.id)}
+            className="flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] text-muted-foreground hover:bg-accent"
+            title="エディタで開く"
+          >
+            <ExternalLink className="h-3 w-3" />
+            エディタで開く
+          </button>
+        </div>
         <CodexContentEditor
           content={emptyContent ? "" : entry.content}
           onContentChange={onContentChange}
           entryId={entry.id}
+          onExternalSync={onExternalSync}
         />
       </div>
 

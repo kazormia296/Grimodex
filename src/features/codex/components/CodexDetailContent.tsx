@@ -330,6 +330,9 @@ export function CodexDetailContent({
             onAliasesChange={(a) => void handleAliasesChange(a)}
             onSummaryChange={handleSummaryChange}
             onContentChange={handleContentChange}
+            onExternalSync={(content) => {
+              contentRef.current = content;
+            }}
           />
         )}
         {activeTab === "relations" && (
