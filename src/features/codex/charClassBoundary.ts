@@ -32,12 +32,18 @@ export function isValidBoundary(
   const firstChar = text[start];
   const lastChar = text[end - 1];
 
+  // Pattern length (in JS chars = UTF-16 code units, BMP only)
+  const patternLen = end - start;
+
   // Check left boundary
   if (charBefore) {
     const classBefore = getCharClass(charBefore);
     const classFirst = getCharClass(firstChar);
-    // Same class on the left = part of a larger token → invalid
-    if (classBefore === classFirst && classBefore !== "other") return false;
+    if (classBefore === classFirst && classBefore !== "other") {
+      // Kanji 2+ char patterns: allow kanji-kanji left boundary.
+      // Kanji compounds are naturally adjacent (e.g. 女|王様, 山田|太郎).
+      if (!(classBefore === "kanji" && patternLen >= 2)) return false;
+    }
   }
 
   // Check right boundary — only for katakana, kanji, latin endings.
@@ -47,7 +53,11 @@ export function isValidBoundary(
     const classLast = getCharClass(lastChar);
     if (classLast !== "hiragana" && classLast !== "other") {
       const classAfter = getCharClass(charAfter);
-      if (classLast === classAfter) return false;
+      if (classLast === classAfter) {
+        // Kanji 2+ char patterns: allow kanji-kanji right boundary.
+        // Reason: kanji are adjacent across word boundaries (佐藤|上等兵, 東京|都).
+        if (!(classLast === "kanji" && patternLen >= 2)) return false;
+      }
     }
   }
 

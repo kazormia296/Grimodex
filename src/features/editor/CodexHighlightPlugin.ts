@@ -21,49 +21,51 @@ export function mapMatchesToDecorations(
 ): Decoration[] {
   if (matches.length === 0) return [];
 
-  const decos: Decoration[] = [];
-  let flatPos = 0;
-  let matchIdx = 0;
-
-  // Sort matches by from position
-  const sorted = [...matches].sort((a, b) => a.from - b.from);
-
+  // Build a flat-text-index → ProseMirror-position mapping by walking all
+  // text nodes. Text nodes within the same paragraph have contiguous PM
+  // positions; paragraph open/close tokens introduce gaps.
+  const flatPmPos: number[] = [];
   doc.descendants((node, pos) => {
-    if (matchIdx >= sorted.length) return false;
     if (!node.isText) return;
-
-    const text = node.text!;
-    const nodeStart = flatPos;
-    const nodeEnd = flatPos + text.length;
-
-    while (matchIdx < sorted.length && sorted[matchIdx].from < nodeEnd) {
-      const m = sorted[matchIdx];
-      if (m.from >= nodeStart && m.to <= nodeEnd) {
-        const pmFrom = pos + (m.from - nodeStart);
-        const pmTo = pos + (m.to - nodeStart);
-        const colors = typeColorMap[m.entryType] ?? {
-          hl: "#88888829",
-          tx: "#888888",
-          fg: "#888888",
-        };
-        const inlineStyle =
-          highlightStyle === "underline"
-            ? `text-decoration: underline; text-decoration-color: ${colors.fg}; text-underline-offset: 3px`
-            : `background-color: ${colors.hl}; color: ${colors.tx}; border-radius: 3px; padding: 0 2px`;
-        decos.push(
-          Decoration.inline(pmFrom, pmTo, {
-            class: "codex-highlight",
-            style: inlineStyle,
-            "data-codex-entry-id": String(m.entryId),
-            "data-codex-entry-type": m.entryType,
-            "data-codex-entry-name": m.entryName,
-          }),
-        );
-      }
-      matchIdx++;
+    const len = node.text!.length;
+    for (let i = 0; i < len; i++) {
+      flatPmPos.push(pos + i);
     }
-    flatPos = nodeEnd;
   });
+
+  const sorted = [...matches].sort((a, b) => a.from - b.from);
+  const decos: Decoration[] = [];
+
+  for (const m of sorted) {
+    if (m.from < 0 || m.to > flatPmPos.length || m.from >= m.to) continue;
+
+    const pmFrom = flatPmPos[m.from];
+    const pmLastChar = flatPmPos[m.to - 1];
+    const pmTo = pmLastChar + 1;
+
+    // Skip matches whose characters are not contiguous in PM space (i.e. the
+    // match spans a paragraph boundary, which has open/close tokens in between).
+    if (pmLastChar - pmFrom !== m.to - m.from - 1) continue;
+
+    const colors = typeColorMap[m.entryType] ?? {
+      hl: "#88888829",
+      tx: "#888888",
+      fg: "#888888",
+    };
+    const inlineStyle =
+      highlightStyle === "underline"
+        ? `text-decoration: underline; text-decoration-color: ${colors.fg}; text-underline-offset: 3px`
+        : `background-color: ${colors.hl}; color: ${colors.tx}; border-radius: 3px; padding: 0 2px`;
+    decos.push(
+      Decoration.inline(pmFrom, pmTo, {
+        class: "codex-highlight",
+        style: inlineStyle,
+        "data-codex-entry-id": String(m.entryId),
+        "data-codex-entry-type": m.entryType,
+        "data-codex-entry-name": m.entryName,
+      }),
+    );
+  }
 
   return decos;
 }

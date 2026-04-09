@@ -75,12 +75,18 @@ fn is_valid_boundary(text: &str, start: usize, end: usize) -> bool {
     let first_char = chars[start_char];
     let last_char = chars[end_char - 1];
 
+    let pattern_len = end_char - start_char;
+
     // Check left boundary
     if start_char > 0 {
         let class_before = char_class(chars[start_char - 1]);
         let class_first = char_class(first_char);
         if class_before == class_first && class_before != CharClass::Other {
-            return false;
+            // Kanji 2+ char patterns: allow kanji-kanji left boundary.
+            // Kanji compounds are naturally adjacent (e.g. 女|王様, 山田|太郎).
+            if !(class_before == CharClass::Kanji && pattern_len >= 2) {
+                return false;
+            }
         }
     }
 
@@ -90,7 +96,11 @@ fn is_valid_boundary(text: &str, start: usize, end: usize) -> bool {
         if class_last != CharClass::Hiragana && class_last != CharClass::Other {
             let class_after = char_class(chars[end_char]);
             if class_last == class_after {
-                return false;
+                // Kanji 2+ char patterns: allow kanji-kanji right boundary.
+                // Reason: kanji are adjacent across word boundaries (佐藤|上等兵, 東京|都).
+                if !(class_last == CharClass::Kanji && pattern_len >= 2) {
+                    return false;
+                }
             }
         }
     }
@@ -477,11 +487,15 @@ mod tests {
 
     #[test]
     fn test_boundary_kanji_inside_longer_kanji() {
-        // "山田太郎" — 太郎 at pos [6,12] is preceded by kanji → invalid
+        // "太郎" (2 chars) in "山田太郎" — preceded by kanji, but 2+ char exception → valid
         let text = "山田太郎";
         let start = "山田".len();
         let end = text.len();
-        assert!(!is_valid_boundary(text, start, end));
+        assert!(is_valid_boundary(text, start, end));
+
+        // Single-kanji "太" (1 char) preceded by kanji → still invalid
+        let end_single = start + "太".len();
+        assert!(!is_valid_boundary(text, start, end_single));
     }
 
     #[test]
@@ -582,12 +596,32 @@ mod tests {
     }
 
     #[test]
-    fn test_cjk_boundary_no_match_inside_kanji_word() {
+    fn test_cjk_boundary_2char_kanji_matches_inside_compound() {
         let m = matcher(vec![entry("c1", "太郎", "character")]);
-        // 山田太郎 — 太郎 is inside a longer kanji word
-        assert!(m.match_text("山田太郎", &[]).is_empty());
-        // But standalone should match
+        // 太郎 (2 chars) — 2+ char kanji exception allows match even when
+        // preceded by another kanji (田). Single-kanji patterns would still be blocked.
+        let matches = m.match_text("山田太郎", &[]);
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].entry_id, "c1");
+        // Standalone should also match
         assert_eq!(m.match_text("太郎が来た", &[]).len(), 1);
+    }
+
+    #[test]
+    fn test_cjk_boundary_2char_right_side() {
+        let m = matcher(vec![entry("c1", "佐藤", "character")]);
+        // 佐藤 (2 chars) followed by 上 (kanji): 2+ char exception → should match
+        let matches = m.match_text("佐藤上等兵", &[]);
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].entry_id, "c1");
+    }
+
+    #[test]
+    fn test_cjk_boundary_1char_strict() {
+        // Single-kanji patterns should still fail kanji-kanji boundaries
+        let m = matcher(vec![entry("c1", "藤", "character")]);
+        // "藤" (1 char) surrounded by kanji on both sides
+        assert!(m.match_text("佐藤上等兵", &[]).is_empty());
     }
 
     #[test]

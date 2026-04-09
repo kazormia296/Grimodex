@@ -65,9 +65,29 @@ describe("isValidBoundary", () => {
     expect(isValidBoundary("太郎は", 0, 2)).toBe(true);
   });
 
-  it("returns false for kanji→kanji boundary (山田太郎 containing 太郎)", () => {
-    // "山田太郎" — 田(kanji) before 太郎: invalid for "太郎" starting at pos 2
-    expect(isValidBoundary("山田太郎", 2, 4)).toBe(false);
+  it("returns true for 2+ kanji pattern with kanji left boundary (山田太郎)", () => {
+    // "太郎" (2 chars) — 田(kanji) before 太: 2+ char exception → valid
+    expect(isValidBoundary("山田太郎", 2, 4)).toBe(true);
+  });
+
+  it("returns false for 1-char kanji pattern with kanji left boundary", () => {
+    // "太" (1 char) — 田(kanji) before 太: strict → invalid
+    expect(isValidBoundary("山田太郎", 2, 3)).toBe(false);
+  });
+
+  it("returns true for 2+ kanji pattern with kanji right boundary (佐藤上等兵)", () => {
+    // "佐藤" (2 chars) — 藤(kanji) followed by 上(kanji): 2+ char exception → valid
+    expect(isValidBoundary("佐藤上等兵", 0, 2)).toBe(true);
+  });
+
+  it("returns false for 1-char kanji pattern with kanji right boundary", () => {
+    // "藤" (1 char) — 藤(kanji) followed by 上(kanji): strict → invalid
+    expect(isValidBoundary("佐藤上等兵", 1, 2)).toBe(false);
+  });
+
+  it("returns true for 2+ kanji pattern with kanji on both sides (女王様)", () => {
+    // "王様" (2 chars) in "女王様" — 女(kanji) before 王, no char after → valid
+    expect(isValidBoundary("女王様", 1, 3)).toBe(true);
   });
 
   it("returns true for latin word boundary (word space)", () => {
