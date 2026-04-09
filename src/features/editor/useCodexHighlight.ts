@@ -24,7 +24,15 @@ export function useCodexHighlight(editor: Editor | null) {
 
   // Load type color map (re-resolves when theme or mode changes)
   useEffect(() => {
-    const isDark = document.documentElement.classList.contains("dark");
+    // Derive isDark from React state rather than reading the DOM class, because
+    // this effect runs before App.tsx's applyTheme effect (child-before-parent
+    // order) and would otherwise see the stale class when light/dark is toggled.
+    const isDark =
+      theme === "dark"
+        ? true
+        : theme === "light"
+          ? false
+          : window.matchMedia("(prefers-color-scheme: dark)").matches;
     listCodexTypes("default-project").then((types) => {
       const map: Record<string, ReturnType<typeof resolveCodexColor>> = {};
       for (const t of types) {
