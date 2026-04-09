@@ -495,7 +495,11 @@ export function EditorPane({
   useInsertHighlight(editor);
   useCodexHighlight(
     editor,
-    isCodexMode ? { excludeEntryIds: [nodeId] } : undefined,
+    isCodexMode
+      ? { excludeEntryIds: [nodeId], skipMatchedIds: true }
+      : isSnippetMode
+        ? { skipMatchedIds: true }
+        : undefined,
   );
   useFocusMode(editor);
   const typewriterMode = useCursorSettingsStore((s) => s.typewriterMode);

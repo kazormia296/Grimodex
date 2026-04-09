@@ -106,8 +106,8 @@ export function ChatInput({
     if (editorRef) editorRef.current = editor;
   }, [editor, editorRef]);
 
-  // Codexハイライト有効化
-  useCodexHighlight(editor);
+  // Codexハイライト有効化（チャット入力はCodexQuickに影響させない）
+  useCodexHighlight(editor, { skipMatchedIds: true });
 
   // ストリーミング中は編集不可
   useEffect(() => {
