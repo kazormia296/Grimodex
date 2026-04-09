@@ -97,7 +97,7 @@ export function createCodexHighlightPlugin(): Plugin {
           );
         }
 
-        // Doc changed or forced color/style update → remap existing decos
+        // Doc changed or forced update → remap existing decoration positions
         if (tr.docChanged || tr.getMeta("codexHighlightUpdate") === true) {
           return oldDecos.map(tr.mapping, tr.doc);
         }

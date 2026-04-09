@@ -64,10 +64,14 @@ export function useCodexHighlight(
         );
       }
       setTypeColorMap(map);
+      // Re-run the async matcher so codexHighlightResult rebuilds decorations
+      // with the updated typeColorMap (fixes stale colors after theme toggle).
       if (editor && !editor.isDestroyed && editor.state) {
-        const { tr } = editor.state;
-        tr.setMeta("codexHighlightUpdate", true);
-        editor.view.dispatch(tr);
+        const targets = targetsRef.current;
+        if (targets.length > 0) {
+          const text = editor.state.doc.textContent;
+          scheduleMatch(text, editor, targets, excludeRef.current, 0);
+        }
       }
     });
   }, [entries, enabled, editor, setTypeColorMap, colorTheme, theme]);
