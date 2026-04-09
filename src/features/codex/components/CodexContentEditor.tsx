@@ -27,9 +27,18 @@ export function CodexContentEditor({
   const onExternalSyncRef = useRef(onExternalSync);
   onExternalSyncRef.current = onExternalSync;
 
+  const parsedContent = (() => {
+    if (!content || content === "{}") return "";
+    try {
+      return JSON.parse(content) as object;
+    } catch {
+      return "";
+    }
+  })();
+
   const editor = useEditor({
     extensions: [StarterKit.configure(), AuthorshipMark],
-    content,
+    content: parsedContent,
     onUpdate: ({ editor: e }) => {
       if (isApplyingExternalUpdate.current) return;
       try {
