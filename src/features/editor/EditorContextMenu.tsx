@@ -5,6 +5,7 @@ import { BUILTIN_CODEX_TYPES } from "@/features/codex/api";
 import { useCodexStore } from "@/features/codex/codexStore";
 import { useSnippetStore } from "@/features/snippets/snippetStore";
 import { useSceneStore } from "@/features/tree/store";
+import { useLayoutStore } from "@/features/layout/layoutStore";
 
 interface Position {
   x: number;
@@ -82,13 +83,17 @@ export function EditorContextMenu({
     };
   }, [pos, close]);
 
-  const handleAddToCodex = () => {
+  const handleAddToCodex = async () => {
     close();
-    codexCreate({
+    const entry = await codexCreate({
       type: BUILTIN_CODEX_TYPES[0],
       name: selectedText.trim().slice(0, 60),
       summary: "",
     });
+    if (entry) {
+      useLayoutStore.getState().showPanel("codex");
+      useCodexStore.getState().requestSelectEntry(entry.id);
+    }
   };
 
   const handleSaveAsSnippet = () => {
