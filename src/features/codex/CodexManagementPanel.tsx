@@ -691,15 +691,15 @@ export function CodexManagementPanel({
         searchInputRef.current?.focus();
         return;
       }
-      // Arrow navigation — only when focus is NOT in a text editor or input field
+      // Non-modifier shortcuts — skip when focus is in a text editor or input
+      const active = document.activeElement;
+      const isTextEditing =
+        active instanceof HTMLInputElement ||
+        active instanceof HTMLTextAreaElement ||
+        (active instanceof HTMLElement && active.isContentEditable);
+      if (isTextEditing) return;
+
       if (e.key === "ArrowUp" || e.key === "ArrowDown") {
-        const active = document.activeElement;
-        if (
-          active instanceof HTMLInputElement ||
-          active instanceof HTMLTextAreaElement ||
-          (active instanceof HTMLElement && active.isContentEditable)
-        )
-          return;
         const currentSorted =
           sortOrder === "category" ? entries : sortEntries(entries, sortOrder);
         if (currentSorted.length === 0) return;
