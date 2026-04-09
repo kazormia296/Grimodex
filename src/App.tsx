@@ -35,6 +35,7 @@ import {
   DEFAULT_COLOR_THEME,
   THEME_CSS_VARS,
 } from "@/lib/colorThemes";
+import { useSettingsStore } from "@/features/settings/settingsStore";
 import { GrimodexLogo } from "@/components/GrimodexLogo";
 
 /* ── Panel content components for dockview ── */
@@ -134,6 +135,17 @@ function App() {
     mql.addEventListener("change", handler);
     return () => mql.removeEventListener("change", handler);
   }, [theme, colorTheme]);
+
+  // Sync attribution highlight opacity setting → CSS variable
+  const attributionOpacity = useSettingsStore((s) =>
+    s.getNumber("display.attributionHighlightOpacity", 10),
+  );
+  useEffect(() => {
+    document.documentElement.style.setProperty(
+      "--attribution-pct",
+      `${attributionOpacity * 2}%`,
+    );
+  }, [attributionOpacity]);
 
   useEffect(() => {
     initialize();
