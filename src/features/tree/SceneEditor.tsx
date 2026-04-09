@@ -187,14 +187,14 @@ export function SceneEditor() {
     }
   }, [activeSceneId]);
 
-  // Sync activeGroupIndex → treeStore.activeSceneId (skip for codex tabs)
+  // Sync activeGroupIndex → treeStore.activeSceneId (skip for codex/snippet tabs)
   useEffect(() => {
     if (activeGroupIndex === 0 && primaryActiveTabId) {
-      if (primaryTab?.contentType !== "codex") {
+      if (primaryTab?.contentType === "scene") {
         useTreeStore.getState().setActiveScene(primaryActiveTabId);
       }
     } else if (activeGroupIndex === 1 && secondaryActiveTabId) {
-      if (secondaryTab?.contentType !== "codex") {
+      if (secondaryTab?.contentType === "scene") {
         useTreeStore.getState().setActiveScene(secondaryActiveTabId);
       }
     }
@@ -239,7 +239,7 @@ export function SceneEditor() {
                 groupIndex={0}
                 onFocus={() => {
                   useTabStore.getState().setActiveGroup(0);
-                  if (primaryTab?.contentType !== "codex") {
+                  if (primaryTab?.contentType === "scene") {
                     useTreeStore.getState().setActiveScene(primarySceneId);
                   }
                 }}
@@ -271,7 +271,7 @@ export function SceneEditor() {
                   groupIndex={1}
                   onFocus={() => {
                     useTabStore.getState().setActiveGroup(1);
-                    if (secondaryTab?.contentType !== "codex") {
+                    if (secondaryTab?.contentType === "scene") {
                       useTreeStore.getState().setActiveScene(secondarySceneId);
                     }
                   }}

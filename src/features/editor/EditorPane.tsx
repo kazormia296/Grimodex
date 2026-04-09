@@ -8,6 +8,8 @@ import { useTreeStore } from "@/features/tree/treeStore";
 import { loadSceneContent, saveSceneContent } from "@/features/tree/api";
 import { getCodexEntry, updateCodexEntry } from "@/features/codex/api";
 import { useCodexStore } from "@/features/codex/codexStore";
+import { getSnippet, updateSnippet } from "@/features/snippets/api";
+import { useSnippetStore } from "@/features/snippets/snippetStore";
 import { useAutoSave } from "@/hooks/useAutoSave";
 import { createRevision } from "@/features/revision/api";
 import { useRevisionStore } from "@/features/revision/revisionStore";
@@ -107,6 +109,7 @@ export function EditorPane({
   onFocus,
 }: EditorPaneProps) {
   const isCodexMode = contentType === "codex";
+  const isSnippetMode = contentType === "snippet";
   const prevSceneIdRef = useRef(nodeId);
   const editorRef = useRef<ReturnType<typeof useEditor>>(null);
   // Per-scene editor state: cursor position + scroll (session-only, no persistence)
@@ -130,10 +133,13 @@ export function EditorPane({
   const statusBadgeRef = useRef<HTMLButtonElement>(null);
 
   const activeNode = useTreeStore((s) =>
-    isCodexMode ? null : s.nodes.find((n) => n.id === nodeId),
+    isCodexMode || isSnippetMode ? null : s.nodes.find((n) => n.id === nodeId),
   );
   const activeCodexEntry = useCodexStore((s) =>
     isCodexMode ? s.entries.find((e) => e.id === nodeId) : null,
+  );
+  const activeSnippetEntry = useSnippetStore((s) =>
+    isSnippetMode ? s.entries.find((e) => e.id === nodeId) : null,
   );
   const activeStatus = (activeNode?.status ?? null) as SceneStatus | null;
 
@@ -161,7 +167,7 @@ export function EditorPane({
   // Synopsis suggestion: track previous status to detect transitions (scene only)
   const prevStatusRef = useRef<SceneStatus | null>(activeStatus);
   useEffect(() => {
-    if (isCodexMode) return;
+    if (isCodexMode || isSnippetMode) return;
     const prev = prevStatusRef.current;
     prevStatusRef.current = activeStatus;
     const synopsis = useTreeStore
@@ -202,7 +208,7 @@ export function EditorPane({
         },
       });
     }
-  }, [activeStatus, nodeId, isCodexMode]);
+  }, [activeStatus, nodeId, isCodexMode, isSnippetMode]);
 
   const coreSave = useCallback(async () => {
     const id = saveSceneIdRef.current;
@@ -211,6 +217,10 @@ export function EditorPane({
     if (isCodexMode) {
       const content = JSON.stringify(ed.getJSON());
       await updateCodexEntry(id, { content });
+    } else if (isSnippetMode) {
+      const content = ed.getHTML();
+      await updateSnippet(id, { content });
+      useSnippetStore.getState().update(id, { content });
     } else {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const md = (ed.storage as any).markdown.getMarkdown() as string;
@@ -221,7 +231,7 @@ export function EditorPane({
         .refreshAiRatio(id)
         .catch(() => {});
     }
-  }, [isCodexMode]);
+  }, [isCodexMode, isSnippetMode]);
 
   const saveFn = useCallback(async () => {
     setIsSaving(true);
@@ -233,8 +243,8 @@ export function EditorPane({
     setIsDirtyRef.current(false);
 
     // Auto-revision is non-critical — don't let it trigger "save failed" toast
-    // Codex tabs don't use the revision system
-    if (!isCodexMode) {
+    // Codex/snippet tabs don't use the revision system
+    if (!isCodexMode && !isSnippetMode) {
       try {
         const id = saveSceneIdRef.current;
         const ed = editorRef.current;
@@ -359,7 +369,7 @@ export function EditorPane({
         } else {
           useTabStore.getState().pinSecondaryTab(sid);
         }
-        if (!isCodexMode) {
+        if (!isCodexMode && !isSnippetMode) {
           useTreeStore.getState().setCharCount(sid, count);
           // Auto-transition outline → draft on first keystroke in empty scene
           const nodeStatus = useTreeStore
@@ -422,7 +432,7 @@ export function EditorPane({
   // Ctrl+S / Ctrl+F / Ctrl+H / Ctrl+Shift+H key handlers
   const handleManualSave = useCallback(async () => {
     await flush();
-    if (isCodexMode) return; // Codex entries: no revision on manual save
+    if (isCodexMode || isSnippetMode) return; // Codex/snippet entries: no revision on manual save
     const id = saveSceneIdRef.current;
     const ed = editorRef.current;
     if (!id || !ed) return;
@@ -596,6 +606,11 @@ export function EditorPane({
               ? JSON.parse(entry.content)
               : "";
           editor!.commands.setContent(parsed);
+        } else if (isSnippetMode) {
+          // Load snippet content (HTML)
+          const snippet = await getSnippet(nodeId);
+          if (cancelled) return;
+          editor!.commands.setContent(snippet?.content || "");
         } else {
           // Load scene/note content (Markdown)
           const content = await loadSceneContent(nodeId);
@@ -613,7 +628,7 @@ export function EditorPane({
       setIsDirty(false);
       wasEmptyRef.current = count === 0;
 
-      if (!isCodexMode) {
+      if (!isCodexMode && !isSnippetMode) {
         useTreeStore.getState().setCharCount(nodeId, count);
 
         const spans = await loadAuthorshipSpans(nodeId);
@@ -695,9 +710,10 @@ export function EditorPane({
     return () => {
       cancelled = true;
     };
-  }, [nodeId, editor, flush, cancel, isCodexMode]);
+  }, [nodeId, editor, flush, cancel, isCodexMode, isSnippetMode]);
 
-  const isNote = !isCodexMode && activeNode?.nodeType === "note";
+  const isNote =
+    !isCodexMode && !isSnippetMode && activeNode?.nodeType === "note";
 
   return (
     <div ref={paneRef} className="flex flex-1 flex-col overflow-hidden">
@@ -727,7 +743,17 @@ export function EditorPane({
           )}
         </div>
       )}
-      {!isCodexMode && <SynopsisHeader sceneId={nodeId} />}
+      {isSnippetMode && (
+        <div className="flex items-center gap-1.5 border-b border-emerald-500/30 bg-emerald-500/10 px-3 py-1 text-xs text-emerald-600 dark:text-emerald-400">
+          <span className="font-medium">📎 スニペット編集中</span>
+          {activeSnippetEntry && (
+            <span className="text-emerald-500/60">
+              — {activeSnippetEntry.title}
+            </span>
+          )}
+        </div>
+      )}
+      {!isCodexMode && !isSnippetMode && <SynopsisHeader sceneId={nodeId} />}
       <FindReplaceBar
         editor={editor}
         open={findOpen}

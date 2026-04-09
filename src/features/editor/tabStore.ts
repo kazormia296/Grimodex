@@ -4,7 +4,7 @@ import { getSetting, setSetting } from "@/features/settings/api";
 const TAB_STATE_KEY = "editor.tabState";
 const SAVE_DEBOUNCE_MS = 500;
 
-export type TabContentType = "scene" | "codex";
+export type TabContentType = "scene" | "codex" | "snippet";
 
 export interface TabEntry {
   nodeId: string;
@@ -77,6 +77,12 @@ interface TabState {
    * If already open, just activate.
    */
   openCodexTab: (entryId: string) => void;
+
+  /**
+   * Open a snippet as a pinned tab in the primary group.
+   * If already open, just activate.
+   */
+  openSnippetTab: (snippetId: string) => void;
 
   // ---- Secondary group operations ----
 
@@ -349,6 +355,25 @@ export const useTabStore = create<TabState>()((set, get) => {
           { nodeId: entryId, isPreview: false, contentType: "codex" },
         ],
         activeTabId: entryId,
+        activeGroupIndex: 0,
+      });
+    },
+
+    openSnippetTab(snippetId) {
+      const { tabs } = get();
+      const existing = tabs.find((t) => t.nodeId === snippetId);
+      if (existing) {
+        set({ activeTabId: snippetId, activeGroupIndex: 0 });
+        return;
+      }
+      // Remove any stale preview tab before adding the snippet tab
+      const withoutPreview = tabs.filter((t) => !t.isPreview);
+      set({
+        tabs: [
+          ...withoutPreview,
+          { nodeId: snippetId, isPreview: false, contentType: "snippet" },
+        ],
+        activeTabId: snippetId,
         activeGroupIndex: 0,
       });
     },
@@ -664,12 +689,18 @@ export const useTabStore = create<TabState>()((set, get) => {
         })) as TabEntry[];
 
         if (validNodeIds) {
-          // Only filter scene/note tabs against tree node IDs; codex tabs are validated lazily
+          // Only filter scene/note tabs against tree node IDs; codex/snippet tabs are validated lazily
           tabs = tabs.filter(
-            (t) => t.contentType === "codex" || validNodeIds.has(t.nodeId),
+            (t) =>
+              t.contentType === "codex" ||
+              t.contentType === "snippet" ||
+              validNodeIds.has(t.nodeId),
           );
           secondaryTabs = secondaryTabs.filter(
-            (t) => t.contentType === "codex" || validNodeIds.has(t.nodeId),
+            (t) =>
+              t.contentType === "codex" ||
+              t.contentType === "snippet" ||
+              validNodeIds.has(t.nodeId),
           );
         }
 

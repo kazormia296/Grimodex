@@ -1,5 +1,12 @@
 import { useState, useEffect } from "react";
-import { Save, Copy, Trash2, MessageSquare, ExternalLink } from "lucide-react";
+import {
+  Save,
+  Copy,
+  Trash2,
+  MessageSquare,
+  ExternalLink,
+  FileText,
+} from "lucide-react";
 import { useEditor, EditorContent } from "@tiptap/react";
 import StarterKit from "@tiptap/starter-kit";
 import { AuthorshipMark } from "@/features/attribution/AuthorshipMark";
@@ -11,6 +18,7 @@ import {
 import type { AuthorshipSource } from "@/features/attribution/AuthorshipMark";
 import type { Snippet } from "./api";
 import { useTreeStore } from "@/features/tree/treeStore";
+import { useTabStore } from "@/features/editor/tabStore";
 
 interface SnippetDetailContentProps {
   snippet: Snippet;
@@ -78,15 +86,24 @@ export function SnippetDetailContent({
           >
             <Copy className="h-3.5 w-3.5" />
           </button>
+          <button
+            type="button"
+            data-testid="snippet-open-in-editor"
+            onClick={() => useTabStore.getState().openSnippetTab(snippet.id)}
+            className="rounded p-1.5 text-muted-foreground hover:bg-accent hover:text-accent-foreground"
+            title="エディタで開く"
+          >
+            <ExternalLink className="h-3.5 w-3.5" />
+          </button>
           {snippet.sceneId && (
             <button
               type="button"
-              data-testid="snippet-open-in-editor"
+              data-testid="snippet-navigate-to-scene"
               onClick={() => setActiveScene(snippet.sceneId!)}
               className="rounded p-1.5 text-muted-foreground hover:bg-accent hover:text-accent-foreground"
-              title="エディタで開く"
+              title="関連シーンへ移動"
             >
-              <ExternalLink className="h-3.5 w-3.5" />
+              <FileText className="h-3.5 w-3.5" />
             </button>
           )}
           <button
