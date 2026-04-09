@@ -272,6 +272,15 @@ function EditorScreen() {
         setShowSettings(true);
       } else {
         togglePanel(target);
+        // Ensure the panel receives focus after being shown
+        if (target === "codex-quick") {
+          requestAnimationFrame(() => {
+            useLayoutStore
+              .getState()
+              .dockviewApi?.getPanel("codex-quick")
+              ?.api.setActive();
+          });
+        }
       }
     },
     [togglePanel],

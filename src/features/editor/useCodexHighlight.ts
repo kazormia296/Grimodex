@@ -18,6 +18,9 @@ export function useCodexHighlight(
 ) {
   const entries = useCodexStore((s) => s.entries);
   const setMatchTargets = useCodexHighlightStore((s) => s.setMatchTargets);
+  const setMatchedEntryIds = useCodexHighlightStore(
+    (s) => s.setMatchedEntryIds,
+  );
   const setTypeColorMap = useCodexHighlightStore((s) => s.setTypeColorMap);
   const enabled = useCodexHighlightStore((s) => s.enabled);
   const highlightStyle = useSettingsStore((s) =>
@@ -100,8 +103,9 @@ export function useCodexHighlight(
     }
     return () => {
       if (!editor.isDestroyed) editor.unregisterPlugin(codexHighlightKey);
+      setMatchedEntryIds([]);
     };
-  }, [editor]);
+  }, [editor, setMatchedEntryIds]);
 
   // Rebuild Rust matcher + initial match when entries or highlight style change
   useEffect(() => {
@@ -109,6 +113,7 @@ export function useCodexHighlight(
     const targets = targetsRef.current;
 
     if (targets.length === 0) {
+      setMatchedEntryIds([]);
       const tr = editor.state.tr.setMeta("codexHighlightResult", []);
       editor.view.dispatch(tr);
       return;

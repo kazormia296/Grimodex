@@ -5,6 +5,11 @@ import { loadBatchAiRatio } from "@/features/attribution/api";
 import { useSettingsStore } from "@/features/settings/settingsStore";
 import { useTabStore } from "@/features/editor/tabStore";
 import { useTreeHistoryStore } from "./treeHistoryStore";
+import {
+  listPinnedCodexIds,
+  addPinnedCodex,
+  removePinnedCodex,
+} from "./codexQuickPinApi";
 
 export type NodeType = "folder" | "scene" | "note";
 export type SceneStatus =
@@ -142,6 +147,7 @@ interface TreeState {
 
   // Codex Quick
   togglePinnedCodex: (id: string) => void;
+  loadPinnedCodexIds: () => Promise<void>;
 }
 
 export interface CreateNodeOpts {
@@ -380,6 +386,10 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
         .map((n) => n.id);
       loadBatchAiRatio(sceneIds)
         .then((ratios) => set({ aiRatios: ratios }))
+        .catch(() => {});
+      // Load persisted Codex Quick pins
+      get()
+        .loadPinnedCodexIds()
         .catch(() => {});
       // Background-load char counts for all scene/note nodes
       const contentNodes = nodes.filter(
@@ -944,11 +954,22 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
   },
 
   togglePinnedCodex(id) {
+    const wasPinned = get().pinnedCodexIds.includes(id);
     set((state) => ({
-      pinnedCodexIds: state.pinnedCodexIds.includes(id)
+      pinnedCodexIds: wasPinned
         ? state.pinnedCodexIds.filter((x) => x !== id)
         : [...state.pinnedCodexIds, id],
     }));
+    if (wasPinned) {
+      removePinnedCodex(id).catch(() => {});
+    } else {
+      addPinnedCodex(id).catch(() => {});
+    }
+  },
+
+  async loadPinnedCodexIds() {
+    const ids = await listPinnedCodexIds();
+    set({ pinnedCodexIds: ids });
   },
 
   setPendingRenameId(id) {

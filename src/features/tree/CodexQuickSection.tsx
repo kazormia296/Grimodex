@@ -1,8 +1,13 @@
-import { Pin, X } from "lucide-react";
+import { useState } from "react";
+import { Pin, PinOff, Plus } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useCodexHighlightStore } from "@/features/editor/codexHighlightStore";
 import { useCodexStore } from "@/features/codex/codexStore";
+import { useLayoutStore } from "@/features/layout/layoutStore";
 import { useTreeStore } from "./treeStore";
+import { CodexQuickPopover } from "./CodexQuickPopover";
+import { CodexCommandPalette } from "@/features/codex/components/CodexCommandPalette";
+import type { CodexEntry } from "@/features/codex/api";
 
 const TYPE_COLORS: Record<string, string> = {
   character: "bg-purple-500",
@@ -11,17 +16,29 @@ const TYPE_COLORS: Record<string, string> = {
   lore: "bg-coral-500",
 };
 
+const TYPE_LABELS: Record<string, string> = {
+  character: "キャラクター",
+  location: "場所",
+  item: "アイテム",
+  lore: "設定",
+};
+
 function typeDotColor(type: string): string {
   return TYPE_COLORS[type] ?? "bg-muted-foreground";
 }
 
 export function CodexQuickSection() {
-  const matchTargets = useCodexHighlightStore((s) => s.matchTargets);
+  const matchedEntryIds = useCodexHighlightStore((s) => s.matchedEntryIds);
   const entries = useCodexStore((s) => s.entries);
   const { pinnedCodexIds, togglePinnedCodex } = useTreeStore();
+  const [hoveredEntry, setHoveredEntry] = useState<{
+    entry: CodexEntry;
+    rect: DOMRect;
+  } | null>(null);
+  const [showPinPalette, setShowPinPalette] = useState(false);
 
-  // Build matched entry list (deduplicated)
-  const matchedIds = new Set(matchTargets.map((m) => m.id));
+  // Build matched entry set (deduplicated)
+  const matchedIds = new Set(matchedEntryIds);
 
   // Combine auto-detected + pinned, deduplicated
   const displayed = [
@@ -31,56 +48,106 @@ export function CodexQuickSection() {
     ),
   ];
 
-  if (displayed.length === 0) {
-    return (
-      <p className="px-3 py-2 text-[11px] text-muted-foreground">
-        エントリなし
-      </p>
-    );
+  function handleEntryClick(entry: CodexEntry) {
+    useLayoutStore.getState().showPanel("codex");
+    useCodexStore.getState().requestSelectEntry(entry.id);
   }
 
   return (
-    <div className="py-1">
-      {displayed.map((entry) => (
-        <div
-          key={entry.id}
-          className="group flex items-center gap-2 px-2 py-1 hover:bg-accent/50"
+    <>
+      <div className="py-1">
+        {displayed.length === 0 ? (
+          <p className="px-3 py-2 text-[11px] text-muted-foreground">
+            エントリなし
+          </p>
+        ) : (
+          displayed.map((entry) => (
+            <div
+              key={entry.id}
+              className="group flex cursor-pointer items-center gap-2 px-2 py-1 hover:bg-accent/50"
+              onClick={() => handleEntryClick(entry)}
+              onMouseEnter={(e) => {
+                setHoveredEntry({
+                  entry,
+                  rect: e.currentTarget.getBoundingClientRect(),
+                });
+              }}
+              onMouseLeave={() => setHoveredEntry(null)}
+            >
+              {/* Category dot */}
+              <span
+                className={cn(
+                  "h-2 w-2 flex-shrink-0 rounded-full",
+                  typeDotColor(entry.type),
+                )}
+              />
+              {/* Name */}
+              <span className="flex-1 truncate text-xs text-foreground">
+                {entry.name}
+              </span>
+              {/* Type label */}
+              <span className="text-[10px] text-muted-foreground">
+                {entry.type}
+              </span>
+              {/* Pin/unpin button */}
+              <button
+                type="button"
+                title={
+                  pinnedCodexIds.includes(entry.id)
+                    ? "ピン留め解除"
+                    : "ピン留め"
+                }
+                onClick={(e) => {
+                  e.stopPropagation();
+                  togglePinnedCodex(entry.id);
+                }}
+                className={cn(
+                  "hidden h-4 w-4 flex-shrink-0 items-center justify-center rounded text-muted-foreground group-hover:flex",
+                  pinnedCodexIds.includes(entry.id) && "flex text-primary",
+                )}
+              >
+                {pinnedCodexIds.includes(entry.id) ? (
+                  <PinOff className="h-3 w-3" />
+                ) : (
+                  <Pin className="h-3 w-3" />
+                )}
+              </button>
+            </div>
+          ))
+        )}
+
+        {/* Add pin button */}
+        <button
+          type="button"
+          onClick={() => setShowPinPalette(true)}
+          className="mt-1 flex w-full items-center gap-1.5 px-2 py-1 text-[11px] text-muted-foreground hover:text-foreground"
         >
-          {/* Category dot */}
-          <span
-            className={cn(
-              "h-2 w-2 flex-shrink-0 rounded-full",
-              typeDotColor(entry.type),
-            )}
-          />
-          {/* Name */}
-          <span className="flex-1 truncate text-xs text-foreground">
-            {entry.name}
-          </span>
-          {/* Type label */}
-          <span className="text-[10px] text-muted-foreground">
-            {entry.type}
-          </span>
-          {/* Pin/unpin button */}
-          <button
-            type="button"
-            title={
-              pinnedCodexIds.includes(entry.id) ? "ピン留め解除" : "ピン留め"
-            }
-            onClick={() => togglePinnedCodex(entry.id)}
-            className={cn(
-              "hidden h-4 w-4 flex-shrink-0 items-center justify-center rounded text-muted-foreground group-hover:flex",
-              pinnedCodexIds.includes(entry.id) && "flex text-primary",
-            )}
-          >
-            {pinnedCodexIds.includes(entry.id) ? (
-              <X className="h-3 w-3" />
-            ) : (
-              <Pin className="h-3 w-3" />
-            )}
-          </button>
-        </div>
-      ))}
-    </div>
+          <Plus className="h-3 w-3" />
+          Codexをピン留め
+        </button>
+      </div>
+
+      {/* Hover popover */}
+      {hoveredEntry && (
+        <CodexQuickPopover
+          entry={hoveredEntry.entry}
+          rect={hoveredEntry.rect}
+          onClose={() => setHoveredEntry(null)}
+          typeLabels={TYPE_LABELS}
+        />
+      )}
+
+      {/* Pin search palette */}
+      {showPinPalette && (
+        <CodexCommandPalette
+          onSelect={(entry) => {
+            togglePinnedCodex(entry.id);
+            setShowPinPalette(false);
+          }}
+          onClose={() => setShowPinPalette(false)}
+          typeLabels={TYPE_LABELS}
+        />
+      )}
+    </>
   );
 }

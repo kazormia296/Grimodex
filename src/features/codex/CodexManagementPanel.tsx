@@ -24,6 +24,7 @@ import { CodexDetailContent } from "./components/CodexDetailContent";
 import { EntryContextMenu } from "./components/EntryContextMenu";
 import { CategoryGroupHeader } from "./components/CategoryGroupHeader";
 import { TagFilterBar } from "./components/TagFilterBar";
+import { CodexCommandPalette } from "./components/CodexCommandPalette";
 import { buildCrossReferenceReport } from "./crossReference";
 import * as chatApi from "@/features/chat/chatApi";
 import { useChatStore } from "@/features/chat/chatStore";
@@ -74,106 +75,6 @@ function HighlightedName({
       </mark>
       {name.slice(idx + query.length)}
     </>
-  );
-}
-
-// --- Command Palette ---
-
-function CommandPalette({
-  onSelect,
-  onClose,
-  typeLabels,
-}: {
-  onSelect: (entry: CodexEntry) => void;
-  onClose: () => void;
-  typeLabels: Record<string, string>;
-}) {
-  const [query, setQuery] = useState("");
-  const [results, setResults] = useState<CodexEntry[]>([]);
-  const inputRef = useRef<HTMLInputElement>(null);
-
-  useEffect(() => {
-    inputRef.current?.focus();
-  }, []);
-
-  useEffect(() => {
-    const handleKeyDown = (e: globalThis.KeyboardEvent) => {
-      if (e.key === "Escape") {
-        e.preventDefault();
-        onClose();
-      }
-    };
-    document.addEventListener("keydown", handleKeyDown);
-    return () => document.removeEventListener("keydown", handleKeyDown);
-  }, [onClose]);
-
-  const handleSearch = useCallback(async (value: string) => {
-    setQuery(value);
-    if (value.trim() === "") {
-      setResults([]);
-      return;
-    }
-    const { searchCodexEntries } = await import("./search");
-    const entries = await searchCodexEntries(value);
-    setResults(entries);
-  }, []);
-
-  return (
-    <div
-      data-testid="codex-command-palette"
-      className="fixed inset-0 z-50 flex items-start justify-center pt-[20vh]"
-      onClick={onClose}
-    >
-      <div
-        className="w-full max-w-md rounded-lg border border-border bg-background shadow-lg"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <div className="flex items-center border-b border-border px-3">
-          <Search className="mr-2 h-4 w-4 text-muted-foreground" />
-          <input
-            ref={inputRef}
-            data-testid="codex-command-input"
-            type="text"
-            value={query}
-            onChange={(e) => void handleSearch(e.target.value)}
-            placeholder="Codexを検索..."
-            className="flex-1 bg-transparent py-3 text-sm outline-none"
-          />
-        </div>
-        {results.length > 0 && (
-          <ul className="max-h-64 overflow-y-auto p-1">
-            {results.map((entry) => (
-              <li key={entry.id}>
-                <button
-                  type="button"
-                  data-testid={`codex-command-result-${entry.id}`}
-                  onClick={() => {
-                    onSelect(entry);
-                    onClose();
-                  }}
-                  className="flex w-full items-center gap-2 rounded-md px-3 py-2 text-left text-sm hover:bg-accent"
-                >
-                  <span className="rounded-full bg-muted px-1.5 py-0.5 text-[9px] font-medium">
-                    {typeLabels[entry.type] ?? entry.type}
-                  </span>
-                  <span className="truncate font-medium">{entry.name}</span>
-                  {entry.summary && (
-                    <span className="truncate text-xs text-muted-foreground">
-                      {entry.summary}
-                    </span>
-                  )}
-                </button>
-              </li>
-            ))}
-          </ul>
-        )}
-        {query.trim() !== "" && results.length === 0 && (
-          <p className="p-3 text-center text-xs text-muted-foreground">
-            結果なし
-          </p>
-        )}
-      </div>
-    </div>
   );
 }
 
@@ -679,6 +580,8 @@ export function CodexManagementPanel({
   const sortOrder = useCodexStore((s) => s.sortOrder);
   const isLoading = useCodexStore((s) => s.isLoading);
   const loadEntries = useCodexStore((s) => s.loadEntries);
+  const pendingEntryId = useCodexStore((s) => s.pendingEntryId);
+  const clearPendingEntry = useCodexStore((s) => s.clearPendingEntry);
   const searchStore = useCodexStore((s) => s.search);
   const remove = useCodexStore((s) => s.remove);
   const create = useCodexStore((s) => s.create);
@@ -714,6 +617,16 @@ export function CodexManagementPanel({
   useEffect(() => {
     loadEntries();
   }, [loadEntries]);
+
+  // Handle external entry selection request (e.g. from CodexQuick panel click)
+  useEffect(() => {
+    if (!pendingEntryId) return;
+    const entry = entries.find((e) => e.id === pendingEntryId);
+    if (!entry) return; // wait for entries to load
+    setSelectedEntry(entry);
+    if (isStackMode) setShowDetail(true);
+    clearPendingEntry();
+  }, [pendingEntryId, entries, isStackMode, clearPendingEntry]);
 
   useEffect(() => {
     ensureBuiltinTypes("default-project")
@@ -1136,7 +1049,7 @@ export function CodexManagementPanel({
       className="flex h-full flex-col"
     >
       {showCommandPalette && (
-        <CommandPalette
+        <CodexCommandPalette
           onSelect={handleCommandSelect}
           onClose={() => setShowCommandPalette(false)}
           typeLabels={typeLabels}

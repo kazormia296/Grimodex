@@ -24,6 +24,7 @@ interface CodexState {
   filterType: CodexEntryType | null;
   sortOrder: CodexSortOrder;
   isLoading: boolean;
+  pendingEntryId: string | null;
 
   loadEntries: () => Promise<void>;
   search: (query: string) => Promise<void>;
@@ -62,6 +63,8 @@ interface CodexState {
   ) => Promise<void>;
   remove: (id: string) => Promise<void>;
   setFilterType: (type: CodexEntryType | null) => Promise<void>;
+  requestSelectEntry: (id: string) => void;
+  clearPendingEntry: () => void;
 }
 
 export const useCodexStore = create<CodexState>()((set, get) => ({
@@ -70,6 +73,7 @@ export const useCodexStore = create<CodexState>()((set, get) => ({
   filterType: null,
   sortOrder: "category" as CodexSortOrder,
   isLoading: false,
+  pendingEntryId: null,
 
   loadEntries: async () => {
     set({ isLoading: true });
@@ -155,6 +159,9 @@ export const useCodexStore = create<CodexState>()((set, get) => ({
       debugLog.error("CodexStore", `remove: ${rootCause(e)}`, errorDetail(e));
     }
   },
+
+  requestSelectEntry: (id) => set({ pendingEntryId: id }),
+  clearPendingEntry: () => set({ pendingEntryId: null }),
 
   setFilterType: async (type) => {
     set({ filterType: type, isLoading: true });

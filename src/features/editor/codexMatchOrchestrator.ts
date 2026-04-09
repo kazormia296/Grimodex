@@ -1,6 +1,7 @@
 import type { Editor } from "@tiptap/core";
 import { rebuildMatcher, matchText } from "@/features/codex/rustMatcher";
 import type { CodexMatchTarget } from "@/features/codex/codexMatcher";
+import { useCodexHighlightStore } from "./codexHighlightStore";
 
 // ---------------------------------------------------------------------------
 // Per-editor orchestrator state
@@ -54,6 +55,8 @@ export function scheduleMatch(
         // Discard stale result
         if (state.version !== myVersion) return;
         if (editor.isDestroyed) return;
+        const uniqueIds = [...new Set(matches.map((m) => m.entryId))];
+        useCodexHighlightStore.getState().setMatchedEntryIds(uniqueIds);
         const tr = editor.state.tr.setMeta("codexHighlightResult", matches);
         editor.view.dispatch(tr);
       } catch {
@@ -74,6 +77,7 @@ export async function rebuildAndSchedule(
 ): Promise<void> {
   if (entries.length === 0) {
     // Clear decorations
+    useCodexHighlightStore.getState().setMatchedEntryIds([]);
     const tr = editor.state.tr.setMeta("codexHighlightResult", []);
     editor.view.dispatch(tr);
     return;

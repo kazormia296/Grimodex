@@ -501,6 +501,14 @@ impl Database {
             "UPDATE tree_nodes SET node_type = 'folder' WHERE node_type IN ('part', 'chapter');",
         )?;
 
+        // v4: Codex Quick pins persistence
+        let _ = conn.execute(
+            "CREATE TABLE IF NOT EXISTS codex_quick_pins (
+                entry_id TEXT PRIMARY KEY REFERENCES codex_entries(id) ON DELETE CASCADE
+            )",
+            [],
+        );
+
         Ok(())
     }
 

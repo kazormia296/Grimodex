@@ -280,6 +280,12 @@ export const projectSnapshotEntries = sqliteTable(
   (table) => [primaryKey({ columns: [table.snapshotId, table.versionId] })],
 );
 
+export const codexQuickPins = sqliteTable("codex_quick_pins", {
+  entryId: text("entry_id")
+    .primaryKey()
+    .references(() => codexEntries.id, { onDelete: "cascade" }),
+});
+
 export const settings = sqliteTable("settings", {
   key: text("key").primaryKey(),
   value: text("value").notNull(),
