@@ -155,16 +155,11 @@ export function SceneEditor() {
   const isDraggingTab = useTabStore((s) => s.isDraggingTab);
 
   useEffect(() => {
-    function onDragStart() {
-      useTabStore.getState().setIsDraggingTab(true);
-    }
     function onDragEnd() {
       useTabStore.getState().setIsDraggingTab(false);
     }
-    document.addEventListener("dragstart", onDragStart);
     document.addEventListener("dragend", onDragEnd);
     return () => {
-      document.removeEventListener("dragstart", onDragStart);
       document.removeEventListener("dragend", onDragEnd);
     };
   }, []);

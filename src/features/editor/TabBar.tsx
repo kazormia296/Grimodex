@@ -45,7 +45,6 @@ export function TabBar({ groupIndex = 0 }: TabBarProps) {
 
   // Drag-and-drop state
   const [dropTarget, setDropTarget] = useState<DropTarget | null>(null);
-  const isDraggingTab = useTabStore((s) => s.isDraggingTab);
 
   // Context menu state
   const [contextMenu, setContextMenu] = useState<{
@@ -58,19 +57,14 @@ export function TabBar({ groupIndex = 0 }: TabBarProps) {
   const splitMenuRef = useRef<HTMLDivElement>(null);
   const [splitMenuOpen, setSplitMenuOpen] = useState(false);
 
-  // Track global drag start/end to show the split drop zone
+  // Reset drag state on dragend (safety net for normal drops)
   useEffect(() => {
-    function onDragStart() {
-      useTabStore.getState().setIsDraggingTab(true);
-    }
     function onDragEnd() {
       useTabStore.getState().setIsDraggingTab(false);
       setDropTarget(null);
     }
-    document.addEventListener("dragstart", onDragStart);
     document.addEventListener("dragend", onDragEnd);
     return () => {
-      document.removeEventListener("dragstart", onDragStart);
       document.removeEventListener("dragend", onDragEnd);
     };
   }, []);
@@ -157,6 +151,7 @@ export function TabBar({ groupIndex = 0 }: TabBarProps) {
     e.dataTransfer.setData(DRAG_DATA_KEY, JSON.stringify(payload));
     e.dataTransfer.setData(DRAG_GROUP_KEY(isPrimary ? 0 : 1), "");
     e.dataTransfer.effectAllowed = "move";
+    useTabStore.getState().setIsDraggingTab(true);
   }
 
   function handleDragOver(e: React.DragEvent, nodeId: string) {
@@ -230,19 +225,6 @@ export function TabBar({ groupIndex = 0 }: TabBarProps) {
           : useTabStore.getState().secondaryActiveTabId;
       if (newActiveId) useTreeStore.getState().setActiveScene(newActiveId);
     }
-  }
-
-  // Drop on the "split" zone → create secondary group
-  function handleSplitDrop(e: React.DragEvent) {
-    e.preventDefault();
-    const raw = e.dataTransfer.getData(DRAG_DATA_KEY);
-    if (!raw) return;
-    const { nodeId: srcId, groupIndex: srcGroup } = JSON.parse(
-      raw,
-    ) as DragPayload;
-    if (srcGroup !== 0) return;
-    useTabStore.getState().moveTabBetweenGroups(srcId, 0, 1);
-    useTreeStore.getState().setActiveScene(srcId);
   }
 
   return (
@@ -346,7 +328,7 @@ export function TabBar({ groupIndex = 0 }: TabBarProps) {
       </div>
 
       {/* Split dropdown button: primary group only, when no secondary group */}
-      {isPrimary && !hasSecondaryGroup && !isDraggingTab && (
+      {isPrimary && !hasSecondaryGroup && (
         <div
           ref={splitMenuRef}
           className="relative flex-shrink-0 border-l border-border"
@@ -386,22 +368,6 @@ export function TabBar({ groupIndex = 0 }: TabBarProps) {
               </button>
             </div>
           )}
-        </div>
-      )}
-
-      {/* Split drop zone: primary group only, when no secondary group, during drag */}
-      {isPrimary && !hasSecondaryGroup && isDraggingTab && (
-        <div
-          title="ここにドロップして分割"
-          className="flex h-full flex-shrink-0 items-center border-l border-primary/50 bg-primary/10 px-2 text-xs text-primary"
-          onDragOver={(e) => {
-            if (!e.dataTransfer.types.includes(DRAG_DATA_KEY)) return;
-            e.preventDefault();
-            e.dataTransfer.dropEffect = "move";
-          }}
-          onDrop={handleSplitDrop}
-        >
-          <Columns2 className="h-3.5 w-3.5" />
         </div>
       )}
 
