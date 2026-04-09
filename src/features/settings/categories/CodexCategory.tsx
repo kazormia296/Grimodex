@@ -34,7 +34,15 @@ function PaletteSwatchPicker({
   onChange,
 }: PaletteSwatchPickerProps) {
   const colorTheme = useWorkspaceStore((s) => s.globalSettings?.colorTheme);
-  const isDark = document.documentElement.classList.contains("dark");
+  const themeMode = useWorkspaceStore(
+    (s) => s.globalSettings?.theme ?? "system",
+  );
+  const isDark =
+    themeMode === "dark"
+      ? true
+      : themeMode === "light"
+        ? false
+        : window.matchMedia("(prefers-color-scheme: dark)").matches;
   const resolvedId = colorTheme ?? DEFAULT_COLOR_THEME;
   const theme = COLOR_THEMES.find((t) => t.id === resolvedId);
   const palette = theme
@@ -303,7 +311,15 @@ export function CodexCategory() {
   const [deletingType, setDeletingType] = useState<CodexType | null>(null);
 
   const colorTheme = useWorkspaceStore((s) => s.globalSettings?.colorTheme);
-  const isDark = document.documentElement.classList.contains("dark");
+  const themeMode = useWorkspaceStore(
+    (s) => s.globalSettings?.theme ?? "system",
+  );
+  const isDark =
+    themeMode === "dark"
+      ? true
+      : themeMode === "light"
+        ? false
+        : window.matchMedia("(prefers-color-scheme: dark)").matches;
   const resolvedId = colorTheme ?? DEFAULT_COLOR_THEME;
   const theme = COLOR_THEMES.find((t) => t.id === resolvedId);
   const palette = theme
