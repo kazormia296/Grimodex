@@ -691,8 +691,15 @@ export function CodexManagementPanel({
         searchInputRef.current?.focus();
         return;
       }
-      // Arrow navigation — only when focus is inside the panel
+      // Arrow navigation — only when focus is NOT in a text editor or input field
       if (e.key === "ArrowUp" || e.key === "ArrowDown") {
+        const active = document.activeElement;
+        if (
+          active instanceof HTMLInputElement ||
+          active instanceof HTMLTextAreaElement ||
+          (active instanceof HTMLElement && active.isContentEditable)
+        )
+          return;
         const currentSorted =
           sortOrder === "category" ? entries : sortEntries(entries, sortOrder);
         if (currentSorted.length === 0) return;
