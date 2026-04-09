@@ -681,6 +681,9 @@ export function CodexManagementPanel({
   // Ctrl+K / Ctrl+F / ↑↓ / F2 / Delete shortcuts
   useEffect(() => {
     const handleKeyDown = (e: globalThis.KeyboardEvent) => {
+      // Only handle when focus is inside this panel
+      if (!containerRef.current?.contains(document.activeElement)) return;
+
       if ((e.ctrlKey || e.metaKey) && e.key === "k") {
         e.preventDefault();
         setShowCommandPalette((prev) => !prev);
@@ -691,14 +694,6 @@ export function CodexManagementPanel({
         searchInputRef.current?.focus();
         return;
       }
-      // Non-modifier shortcuts — skip when focus is in a text editor or input
-      const active = document.activeElement;
-      const isTextEditing =
-        active instanceof HTMLInputElement ||
-        active instanceof HTMLTextAreaElement ||
-        (active instanceof HTMLElement && active.isContentEditable);
-      if (isTextEditing) return;
-
       if (e.key === "ArrowUp" || e.key === "ArrowDown") {
         const currentSorted =
           sortOrder === "category" ? entries : sortEntries(entries, sortOrder);
@@ -1052,8 +1047,9 @@ export function CodexManagementPanel({
   return (
     <div
       ref={containerRef}
+      tabIndex={-1}
       data-testid="codex-management-panel"
-      className="flex h-full flex-col"
+      className="flex h-full flex-col outline-none"
     >
       {showCommandPalette && (
         <CodexCommandPalette

@@ -454,6 +454,7 @@ describe("CodexManagementPanel", () => {
         expect(screen.getByText("アリス")).toBeInTheDocument();
       });
 
+      screen.getByTestId("codex-management-panel").focus();
       fireEvent.keyDown(document, { key: "k", ctrlKey: true });
 
       await waitFor(() => {
@@ -469,6 +470,7 @@ describe("CodexManagementPanel", () => {
         expect(screen.getByText("アリス")).toBeInTheDocument();
       });
 
+      screen.getByTestId("codex-management-panel").focus();
       fireEvent.keyDown(document, { key: "k", ctrlKey: true });
 
       await waitFor(() => {
@@ -495,6 +497,7 @@ describe("CodexManagementPanel", () => {
         expect(screen.getByText("アリス")).toBeInTheDocument();
       });
 
+      screen.getByTestId("codex-management-panel").focus();
       fireEvent.keyDown(document, { key: "k", ctrlKey: true });
 
       await waitFor(() => {
@@ -541,6 +544,7 @@ describe("CodexManagementPanel", () => {
       });
 
       // Step 1: Search via command palette
+      screen.getByTestId("codex-management-panel").focus();
       fireEvent.keyDown(document, { key: "k", ctrlKey: true });
       await waitFor(() => {
         expect(screen.getByTestId("codex-command-palette")).toBeInTheDocument();
