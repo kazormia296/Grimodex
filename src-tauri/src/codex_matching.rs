@@ -307,6 +307,16 @@ impl CachedMatcher {
             byte_to_utf16[text.len()] = utf16_offset;
         }
         for m in &mut result {
+            debug_assert!(
+                m.from == 0 || byte_to_utf16[m.from] > 0,
+                "byte_to_utf16 lookup at non-character-boundary: from={}",
+                m.from
+            );
+            debug_assert!(
+                m.to == 0 || byte_to_utf16[m.to] > 0,
+                "byte_to_utf16 lookup at non-character-boundary: to={}",
+                m.to
+            );
             m.from = byte_to_utf16[m.from];
             m.to = byte_to_utf16[m.to];
         }
@@ -696,5 +706,61 @@ mod tests {
         assert_eq!(matches.len(), 1);
         assert_eq!(matches[0].from, 0);
         assert_eq!(matches[0].to, "C.C.".len());
+    }
+
+    // --- surrogate pair (supplementary character) tests ---
+
+    #[test]
+    fn test_surrogate_pair_in_text_before_match() {
+        // 🎭 is U+1F3AD: 4 bytes in UTF-8, 2 code units in UTF-16
+        let m = matcher(vec![entry("c1", "太郎", "character")]);
+        let text = "🎭太郎は走った";
+        let matches = m.match_text(text, &[]);
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].entry_id, "c1");
+        // 🎭 = 2 UTF-16 units, 太郎 = 2 UTF-16 units
+        assert_eq!(matches[0].from, 2);
+        assert_eq!(matches[0].to, 4);
+    }
+
+    #[test]
+    fn test_surrogate_pair_in_text_between_matches() {
+        // Emoji between two matches — offsets must account for surrogate pairs
+        let m = matcher(vec![
+            entry("c1", "太郎", "character"),
+            entry("c2", "花子", "character"),
+        ]);
+        let text = "太郎🎭花子";
+        let matches = m.match_text(text, &[]);
+        assert_eq!(matches.len(), 2);
+        // 太郎: UTF-16 [0, 2)
+        assert_eq!(matches[0].from, 0);
+        assert_eq!(matches[0].to, 2);
+        // 花子: 🎭 = 2 UTF-16 units, so offset starts at 2+2=4
+        assert_eq!(matches[1].from, 4);
+        assert_eq!(matches[1].to, 6);
+    }
+
+    #[test]
+    fn test_surrogate_pair_in_entry_name() {
+        // Codex entry name contains emoji
+        let m = matcher(vec![entry("c1", "🎭劇団", "organization")]);
+        let text = "🎭劇団が公演を行った";
+        let matches = m.match_text(text, &[]);
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].from, 0);
+        // 🎭 = 2, 劇団 = 2 → total 4 UTF-16 units
+        assert_eq!(matches[0].to, 4);
+    }
+
+    #[test]
+    fn test_multiple_surrogate_pairs_in_text() {
+        let m = matcher(vec![entry("c1", "太郎", "character")]);
+        let text = "🎭🎪太郎が来た";
+        let matches = m.match_text(text, &[]);
+        assert_eq!(matches.len(), 1);
+        // 🎭 = 2, 🎪 = 2, 太郎 starts at UTF-16 offset 4
+        assert_eq!(matches[0].from, 4);
+        assert_eq!(matches[0].to, 6);
     }
 }
