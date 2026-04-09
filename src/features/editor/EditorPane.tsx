@@ -762,7 +762,7 @@ export function EditorPane({
       />
       <div
         ref={editorContainerRef}
-        className={`flex-1 overflow-auto content-zone p-4${typewriterMode ? " typewriter-padding" : ""}${filterSource ? ` attribution-filter-${filterSource}` : ""}`}
+        className={`flex-1 overflow-auto bg-content-background text-content-foreground-secondary p-4${typewriterMode ? " typewriter-padding" : ""}${filterSource ? ` attribution-filter-${filterSource}` : ""}`}
         onClick={(e) => {
           // Focus editor when clicking on the padding/background area
           if (e.target === e.currentTarget) {

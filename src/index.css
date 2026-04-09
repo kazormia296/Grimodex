@@ -170,12 +170,6 @@
   display: none !important;
 }
 
-/* Content zone base — outside @layer for reliable cascade priority */
-.content-zone {
-  background-color: var(--content-background);
-  color: var(--content-foreground-secondary);
-}
-
 /* TipTap editor typography — restore styles reset by Preflight */
 .tiptap {
   outline: none;
