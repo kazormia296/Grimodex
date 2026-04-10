@@ -218,6 +218,21 @@ export const chatMessages = sqliteTable("chat_messages", {
   tokensOut: integer("tokens_out"),
   durationMs: integer("duration_ms"),
   metadata: text("metadata"), // JSON
+  isStarred: integer("is_starred").notNull().default(0),
+  isSummarized: integer("is_summarized").notNull().default(0),
+  createdAt: text("created_at")
+    .notNull()
+    .$defaultFn(() => new Date().toISOString()),
+});
+
+export const chatSummaries = sqliteTable("chat_summaries", {
+  id: text("id").primaryKey(),
+  sessionId: text("session_id")
+    .notNull()
+    .references(() => chatSessions.id, { onDelete: "cascade" }),
+  summary: text("summary").notNull(),
+  sourceMessageIds: text("source_message_ids").notNull(), // JSON string[]
+  tokenCount: integer("token_count"),
   createdAt: text("created_at")
     .notNull()
     .$defaultFn(() => new Date().toISOString()),

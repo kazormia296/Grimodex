@@ -1,8 +1,10 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { useCodexStore } from "@/features/codex/codexStore";
+import { useSnippetStore } from "@/features/snippets/snippetStore";
 import { getChildrenFromArray } from "@/features/codex/childrenBudget";
 import type { CodexEntry } from "@/features/codex/api";
+import type { Snippet } from "@/features/snippets/api";
 import { getTypeLabel } from "../utils/typeLabels";
 
 function PinCodexVirtualList({
@@ -92,11 +94,76 @@ function PinCodexVirtualList({
   );
 }
 
+function PinSnippetVirtualList({
+  snippets,
+  pinnedSnippetIds,
+  onPin,
+  onUnpin,
+}: {
+  snippets: Snippet[];
+  pinnedSnippetIds: Set<string>;
+  onPin: (id: string) => void;
+  onUnpin: (id: string) => void;
+}) {
+  const parentRef = useRef<HTMLDivElement>(null);
+  const virtualizer = useVirtualizer({
+    count: snippets.length,
+    getScrollElement: () => parentRef.current,
+    estimateSize: () => 40,
+    overscan: 5,
+  });
+
+  return (
+    <div ref={parentRef} className="max-h-72 overflow-y-auto">
+      <div
+        style={{
+          height: `${virtualizer.getTotalSize()}px`,
+          width: "100%",
+          position: "relative",
+        }}
+      >
+        {virtualizer.getVirtualItems().map((virtualItem) => {
+          const snippet = snippets[virtualItem.index];
+          const isPinned = pinnedSnippetIds.has(snippet.id);
+
+          return (
+            <div
+              key={snippet.id}
+              style={{
+                position: "absolute",
+                top: 0,
+                left: 0,
+                width: "100%",
+                height: `${virtualItem.size}px`,
+                transform: `translateY(${virtualItem.start}px)`,
+              }}
+              className="flex items-center rounded px-2 hover:bg-accent"
+            >
+              <label className="flex w-full cursor-pointer items-center gap-2 text-sm">
+                <input
+                  type="checkbox"
+                  checked={isPinned}
+                  onChange={() =>
+                    isPinned ? onUnpin(snippet.id) : onPin(snippet.id)
+                  }
+                  className="rounded"
+                />
+                <span className="truncate">{snippet.title}</span>
+              </label>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 interface PinCodexDialogProps {
   open: boolean;
   pinnedIds: Set<string>;
   withChildrenIds: Set<string>;
-  onPin: (entryId: string) => void;
+  pinnedSnippetIds: Set<string>;
+  onPin: (entryId: string, type?: "codex" | "snippet") => void;
   onUnpin: (entryId: string) => void;
   onToggleChildren: (entryId: string, withChildren: boolean) => void;
   onClose: () => void;
@@ -106,17 +173,24 @@ export function PinCodexDialog({
   open,
   pinnedIds,
   withChildrenIds,
+  pinnedSnippetIds,
   onPin,
   onUnpin,
   onToggleChildren,
   onClose,
 }: PinCodexDialogProps) {
+  const [activeTab, setActiveTab] = useState<"codex" | "snippet">("codex");
   const entries = useCodexStore((s) => s.entries);
   const loadEntries = useCodexStore((s) => s.loadEntries);
+  const snippetEntries = useSnippetStore((s) => s.entries);
+  const loadSnippets = useSnippetStore((s) => s.loadEntries);
 
   useEffect(() => {
-    if (open) loadEntries();
-  }, [open, loadEntries]);
+    if (open) {
+      loadEntries();
+      loadSnippets();
+    }
+  }, [open, loadEntries, loadSnippets]);
 
   if (!open) return null;
 
@@ -126,24 +200,65 @@ export function PinCodexDialog({
       onClick={onClose}
     >
       <div
-        className="max-h-96 w-80 rounded-lg border border-border bg-background p-4 shadow-lg"
+        className="max-h-[28rem] w-80 rounded-lg border border-border bg-background p-4 shadow-lg"
         onClick={(e) => e.stopPropagation()}
       >
-        <h3 className="mb-3 text-sm font-semibold">Codexエントリをピン留め</h3>
-        {entries.length === 0 ? (
+        <h3 className="mb-3 text-sm font-semibold">エントリをピン留め</h3>
+
+        {/* Tab selector */}
+        <div className="mb-3 flex rounded-md border border-border overflow-hidden">
+          <button
+            type="button"
+            onClick={() => setActiveTab("codex")}
+            className={`flex-1 px-3 py-1 text-xs font-medium transition-colors ${
+              activeTab === "codex"
+                ? "bg-primary text-primary-foreground"
+                : "bg-background text-muted-foreground hover:bg-accent"
+            }`}
+          >
+            Codex
+          </button>
+          <button
+            type="button"
+            onClick={() => setActiveTab("snippet")}
+            className={`flex-1 px-3 py-1 text-xs font-medium transition-colors ${
+              activeTab === "snippet"
+                ? "bg-primary text-primary-foreground"
+                : "bg-background text-muted-foreground hover:bg-accent"
+            }`}
+          >
+            Snippet
+          </button>
+        </div>
+
+        {activeTab === "codex" ? (
+          entries.length === 0 ? (
+            <p className="text-xs text-muted-foreground">
+              Codexエントリがありません
+            </p>
+          ) : (
+            <PinCodexVirtualList
+              entries={entries}
+              pinnedIds={pinnedIds}
+              withChildrenIds={withChildrenIds}
+              onPin={(id) => onPin(id, "codex")}
+              onUnpin={onUnpin}
+              onToggleChildren={onToggleChildren}
+            />
+          )
+        ) : snippetEntries.length === 0 ? (
           <p className="text-xs text-muted-foreground">
-            Codexエントリがありません
+            Snippetがありません
           </p>
         ) : (
-          <PinCodexVirtualList
-            entries={entries}
-            pinnedIds={pinnedIds}
-            withChildrenIds={withChildrenIds}
-            onPin={onPin}
+          <PinSnippetVirtualList
+            snippets={snippetEntries}
+            pinnedSnippetIds={pinnedSnippetIds}
+            onPin={(id) => onPin(id, "snippet")}
             onUnpin={onUnpin}
-            onToggleChildren={onToggleChildren}
           />
         )}
+
         <button
           type="button"
           onClick={onClose}

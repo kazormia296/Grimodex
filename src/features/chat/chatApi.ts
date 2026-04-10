@@ -485,7 +485,16 @@ function safeParsePinnedCodex(raw: string | null): PinnedCodexEntry[] {
 
 export type PinnedCodexEntryWithData = CodexEntry & {
   withChildren: boolean;
+  pinnedType: "codex" | "snippet";
 };
+
+/** A snippet entry returned as a pinned item. */
+export interface PinnedSnippetEntryWithData {
+  id: string;
+  title: string;
+  content: string; // ProseMirror JSON
+  pinnedType: "snippet";
+}
 
 export async function listPinnedCodexEntries(
   sessionId: string,
@@ -499,18 +508,51 @@ export async function listPinnedCodexEntries(
   const pinned = safeParsePinnedCodex(rows[0].pinnedCodex);
   if (pinned.length === 0) return [];
 
-  const ids = pinned.map((p) => p.id);
+  // Only fetch codex-type entries from codexEntries table
+  const codexPinned = pinned.filter((p) => p.type !== "snippet");
+  if (codexPinned.length === 0) return [];
+
+  const ids = codexPinned.map((p) => p.id);
   const entries = await db
     .select()
     .from(codexEntries)
     .where(inArray(codexEntries.id, ids));
 
   const withChildrenMap = new Map(
-    pinned.map((p) => [p.id, p.withChildren ?? false]),
+    codexPinned.map((p) => [p.id, p.withChildren ?? false]),
   );
   return entries.map((e) => ({
     ...e,
     withChildren: withChildrenMap.get(e.id) ?? false,
+    pinnedType: "codex" as const,
+  }));
+}
+
+/** List pinned snippet entries (type="snippet") for a session. */
+export async function listPinnedSnippetEntries(
+  sessionId: string,
+): Promise<PinnedSnippetEntryWithData[]> {
+  const rows = await db
+    .select({ pinnedCodex: chatSessions.pinnedCodex })
+    .from(chatSessions)
+    .where(eq(chatSessions.id, sessionId));
+  if (!rows[0]) return [];
+
+  const pinned = safeParsePinnedCodex(rows[0].pinnedCodex);
+  const snippetPinned = pinned.filter((p) => p.type === "snippet");
+  if (snippetPinned.length === 0) return [];
+
+  const ids = snippetPinned.map((p) => p.id);
+  const entries = await db
+    .select()
+    .from(snippets)
+    .where(inArray(snippets.id, ids));
+
+  return entries.map((e) => ({
+    id: e.id,
+    title: e.title,
+    content: e.content,
+    pinnedType: "snippet" as const,
   }));
 }
 
@@ -519,6 +561,7 @@ export async function pinCodexEntry(
   entryId: string,
   withChildren = false,
   source: "manual" | "chat_mention" = "manual",
+  type: "codex" | "snippet" = "codex",
 ): Promise<void> {
   const rows = await db
     .select({ pinnedCodex: chatSessions.pinnedCodex })
@@ -528,7 +571,7 @@ export async function pinCodexEntry(
 
   const pinned = safeParsePinnedCodex(rows[0].pinnedCodex);
   if (!pinned.some((p) => p.id === entryId)) {
-    pinned.push({ id: entryId, withChildren, source });
+    pinned.push({ id: entryId, type, withChildren, source });
     await db
       .update(chatSessions)
       .set({ pinnedCodex: JSON.stringify(pinned) })
@@ -569,6 +612,34 @@ export async function unpinCodexEntry(
 
   const pinned = safeParsePinnedCodex(rows[0].pinnedCodex);
   const filtered = pinned.filter((p) => p.id !== entryId);
+  await db
+    .update(chatSessions)
+    .set({ pinnedCodex: JSON.stringify(filtered) })
+    .where(eq(chatSessions.id, sessionId));
+}
+
+/**
+ * G20: Unpin entries matching the given IDs and source filter.
+ * Only entries whose `source` matches `sourceFilter` are removed.
+ */
+export async function unpinCodexEntriesByIds(
+  sessionId: string,
+  entryIds: string[],
+  sourceFilter: "chat_mention",
+): Promise<void> {
+  if (entryIds.length === 0) return;
+  const rows = await db
+    .select({ pinnedCodex: chatSessions.pinnedCodex })
+    .from(chatSessions)
+    .where(eq(chatSessions.id, sessionId));
+  if (!rows[0]) return;
+
+  const pinned = safeParsePinnedCodex(rows[0].pinnedCodex);
+  const idSet = new Set(entryIds);
+  const filtered = pinned.filter(
+    (p) => !(idSet.has(p.id) && p.source === sourceFilter),
+  );
+  if (filtered.length === pinned.length) return; // nothing changed
   await db
     .update(chatSessions)
     .set({ pinnedCodex: JSON.stringify(filtered) })

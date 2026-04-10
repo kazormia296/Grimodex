@@ -509,6 +509,31 @@ impl Database {
             [],
         );
 
+        // v5: Progressive Summarization
+        let _ = conn.execute(
+            "ALTER TABLE chat_messages ADD COLUMN is_starred INTEGER NOT NULL DEFAULT 0",
+            [],
+        );
+        let _ = conn.execute(
+            "ALTER TABLE chat_messages ADD COLUMN is_summarized INTEGER NOT NULL DEFAULT 0",
+            [],
+        );
+        let _ = conn.execute(
+            "CREATE TABLE IF NOT EXISTS chat_summaries (
+                id                  TEXT PRIMARY KEY,
+                session_id          TEXT NOT NULL REFERENCES chat_sessions(id) ON DELETE CASCADE,
+                summary             TEXT NOT NULL,
+                source_message_ids  TEXT NOT NULL,
+                token_count         INTEGER,
+                created_at          TEXT NOT NULL DEFAULT (datetime('now'))
+            )",
+            [],
+        );
+        let _ = conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_chat_summaries_session ON chat_summaries(session_id, created_at)",
+            [],
+        );
+
         Ok(())
     }
 

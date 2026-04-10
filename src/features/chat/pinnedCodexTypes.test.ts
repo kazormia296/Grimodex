@@ -12,35 +12,45 @@ describe("normalizePinnedCodex", () => {
     expect(normalizePinnedCodex({})).toEqual([]);
   });
 
-  it("normalizes old string[] format", () => {
+  it("normalizes old string[] format (defaults type to codex)", () => {
     expect(normalizePinnedCodex(["id-1", "id-2"])).toEqual([
-      { id: "id-1", withChildren: false },
-      { id: "id-2", withChildren: false },
+      { id: "id-1", type: "codex", withChildren: false },
+      { id: "id-2", type: "codex", withChildren: false },
     ]);
   });
 
-  it("normalizes new PinnedCodexEntry[] format", () => {
+  it("normalizes new PinnedCodexEntry[] format (defaults type to codex when missing)", () => {
     expect(
       normalizePinnedCodex([
         { id: "id-1", withChildren: true },
         { id: "id-2", withChildren: false },
       ]),
     ).toEqual([
-      { id: "id-1", withChildren: true },
-      { id: "id-2", withChildren: false },
+      { id: "id-1", type: "codex", withChildren: true, source: undefined },
+      { id: "id-2", type: "codex", withChildren: false, source: undefined },
+    ]);
+  });
+
+  it("preserves type=snippet", () => {
+    expect(
+      normalizePinnedCodex([
+        { id: "snip-1", type: "snippet", withChildren: false },
+      ]),
+    ).toEqual([
+      { id: "snip-1", type: "snippet", withChildren: false, source: undefined },
     ]);
   });
 
   it("defaults withChildren to false when missing in object", () => {
     expect(normalizePinnedCodex([{ id: "id-1" }])).toEqual([
-      { id: "id-1", withChildren: false },
+      { id: "id-1", type: "codex", withChildren: false, source: undefined },
     ]);
   });
 
   it("filters out invalid entries", () => {
     expect(
       normalizePinnedCodex([null, 42, { noId: true }, "valid-id"]),
-    ).toEqual([{ id: "valid-id", withChildren: false }]);
+    ).toEqual([{ id: "valid-id", type: "codex", withChildren: false }]);
   });
 
   it("handles empty array", () => {
