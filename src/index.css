@@ -139,8 +139,10 @@
   }
 }
 
-/* Dockview theme overrides — match project design tokens */
-.dockview-theme-dark {
+/* Dockview theme overrides — match project design tokens.
+   Doubled selector raises specificity (0-2-0) to beat the <style> tag
+   that dockview-core injects at runtime via styleInject(). */
+.dockview-theme-dark.dockview-theme-dark {
   --dv-group-view-background-color: var(--background);
   --dv-tabs-and-actions-container-background-color: var(--sidebar-background);
   --dv-activegroup-visiblepanel-tab-background-color: var(--background);
