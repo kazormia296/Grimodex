@@ -1,10 +1,11 @@
 import { useEffect, useState } from "react";
-import { BookOpen, Bookmark } from "lucide-react";
+import { BookOpen, Bookmark, StopCircle } from "lucide-react";
 import { listCodexEntriesByMessageId } from "@/features/codex/api";
 import { listSnippetsByMessageId } from "@/features/snippets/api";
 
 interface MessageBadgeProps {
   messageId: string;
+  stopped?: boolean;
 }
 
 interface BadgeData {
@@ -12,7 +13,7 @@ interface BadgeData {
   snippetCount: number;
 }
 
-export function MessageBadge({ messageId }: MessageBadgeProps) {
+export function MessageBadge({ messageId, stopped }: MessageBadgeProps) {
   const [data, setData] = useState<BadgeData | null>(null);
 
   useEffect(() => {
@@ -36,11 +37,19 @@ export function MessageBadge({ messageId }: MessageBadgeProps) {
     };
   }, [messageId]);
 
-  if (!data) return null;
+  if (!data && !stopped) return null;
 
   return (
     <div className="mt-1 flex flex-wrap gap-1">
-      {data.codexCount > 0 && (
+      {stopped && (
+        <span
+          data-testid={`badge-stopped-${messageId}`}
+          className="inline-flex items-center gap-1 rounded-full bg-amber-100 px-2 py-0.5 text-[10px] text-amber-700 dark:bg-amber-900 dark:text-amber-300"
+        >
+          <StopCircle className="h-2.5 w-2.5" /> Stopped
+        </span>
+      )}
+      {data && data.codexCount > 0 && (
         <span
           data-testid={`badge-codex-${messageId}`}
           className="inline-flex items-center gap-1 rounded-full bg-blue-100 px-2 py-0.5 text-[10px] text-blue-700 dark:bg-blue-900 dark:text-blue-300"
@@ -49,7 +58,7 @@ export function MessageBadge({ messageId }: MessageBadgeProps) {
           Codex抽出済 ({data.codexCount})
         </span>
       )}
-      {data.snippetCount > 0 && (
+      {data && data.snippetCount > 0 && (
         <span
           data-testid={`badge-snippet-${messageId}`}
           className="inline-flex items-center gap-1 rounded-full bg-green-100 px-2 py-0.5 text-[10px] text-green-700 dark:bg-green-900 dark:text-green-300"

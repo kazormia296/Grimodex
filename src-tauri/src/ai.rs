@@ -1,5 +1,7 @@
+use futures::StreamExt;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
+use std::sync::{atomic::Ordering, Arc};
 
 /// Supported AI providers.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -1088,5 +1090,304 @@ mod tests {
             AiProvider::Ollama.base_url("http://localhost:11434/"),
             "http://localhost:11434/api"
         );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// G1: Streaming chat
+// ---------------------------------------------------------------------------
+
+pub async fn send_chat_stream(
+    provider: &AiProvider,
+    model: &str,
+    api_key: &str,
+    ollama_endpoint: &str,
+    messages: &[(&str, &str)],
+    thinking: Option<ThinkingConfig>,
+    effort: Option<String>,
+    reasoning_enabled: Option<bool>,
+    reasoning_effort: Option<String>,
+    abort_flag: Arc<std::sync::atomic::AtomicBool>,
+    app_handle: tauri::AppHandle,
+) -> anyhow::Result<()> {
+    use tauri::Emitter;
+
+    let client = reqwest::Client::new();
+
+    match provider {
+        AiProvider::Anthropic => {
+            let system_content: String = messages
+                .iter()
+                .filter(|(role, _)| *role == "system")
+                .map(|(_, content)| *content)
+                .collect::<Vec<_>>()
+                .join("\n");
+
+            let chat_messages: Vec<serde_json::Value> = messages
+                .iter()
+                .filter(|(role, _)| *role != "system")
+                .map(|(role, content)| serde_json::json!({ "role": role, "content": content }))
+                .collect();
+
+            let mut body = serde_json::json!({
+                "model": model,
+                "max_tokens": 4096,
+                "messages": chat_messages,
+                "stream": true,
+            });
+
+            if !system_content.is_empty() {
+                body["system"] = serde_json::Value::String(system_content);
+            }
+            apply_thinking_to_body(&mut body, &thinking, &effort);
+
+            let mut req = client
+                .post(format!("{}/messages", provider.base_url(ollama_endpoint)))
+                .header("x-api-key", api_key)
+                .header("anthropic-version", "2023-06-01")
+                .header("content-type", "application/json");
+            if thinking.is_some() {
+                req = req.header("anthropic-beta", "interleaved-thinking-2025-05-14");
+            }
+
+            let resp = req.json(&body).send().await?;
+            if !resp.status().is_success() {
+                let status = resp.status();
+                let body_text = resp.text().await.unwrap_or_default();
+                return Err(anyhow::anyhow!("HTTP {}: {}", status, body_text));
+            }
+
+            let mut stream = resp.bytes_stream();
+            let mut buf = String::new();
+            let mut current_block_type = "text".to_string();
+            let mut stop_reason = "end_turn".to_string();
+            let mut input_tokens: Option<u64> = None;
+            let mut output_tokens: Option<u64> = None;
+
+            while let Some(chunk) = stream.next().await {
+                if abort_flag.load(Ordering::Relaxed) {
+                    stop_reason = "stopped".to_string();
+                    break;
+                }
+                let bytes = chunk.map_err(|e| anyhow::anyhow!("stream error: {e}"))?;
+                buf.push_str(&String::from_utf8_lossy(&bytes));
+
+                // Process complete SSE messages separated by \n\n
+                while let Some(pos) = buf.find("\n\n") {
+                    let chunk_str = buf[..pos].to_string();
+                    buf.drain(..pos + 2);
+
+                    for line in chunk_str.lines() {
+                        if let Some(data) = line.strip_prefix("data: ") {
+                            if data == "[DONE]" {
+                                break;
+                            }
+                            let Ok(json) = serde_json::from_str::<serde_json::Value>(data) else {
+                                continue;
+                            };
+
+                            match json["type"].as_str() {
+                                Some("content_block_start") => {
+                                    let bt =
+                                        json["content_block"]["type"].as_str().unwrap_or("text");
+                                    current_block_type = if bt == "thinking" {
+                                        "thinking".to_string()
+                                    } else {
+                                        "text".to_string()
+                                    };
+                                }
+                                Some("content_block_delta") => {
+                                    let delta_type = json["delta"]["type"].as_str().unwrap_or("");
+                                    let delta_text = if delta_type == "thinking_delta" {
+                                        json["delta"]["thinking"].as_str().unwrap_or("")
+                                    } else if delta_type == "text_delta" {
+                                        json["delta"]["text"].as_str().unwrap_or("")
+                                    } else {
+                                        ""
+                                    };
+                                    if !delta_text.is_empty() {
+                                        let _ = app_handle.emit(
+                                            "chat:stream-chunk",
+                                            serde_json::json!({
+                                                "delta": delta_text,
+                                                "block_type": current_block_type
+                                            }),
+                                        );
+                                    }
+                                }
+                                Some("message_delta") => {
+                                    if let Some(reason) = json["delta"]["stop_reason"].as_str() {
+                                        stop_reason = reason.to_string();
+                                    }
+                                    if let Some(out) = json["usage"]["output_tokens"].as_u64() {
+                                        output_tokens = Some(out);
+                                    }
+                                }
+                                Some("message_start") => {
+                                    if let Some(inp) =
+                                        json["message"]["usage"]["input_tokens"].as_u64()
+                                    {
+                                        input_tokens = Some(inp);
+                                    }
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+                }
+            }
+
+            let _ = app_handle.emit(
+                "chat:stream-done",
+                serde_json::json!({
+                    "stop_reason": stop_reason,
+                    "input_tokens": input_tokens,
+                    "output_tokens": output_tokens,
+                }),
+            );
+            Ok(())
+        }
+        _ => {
+            // OpenAI-compatible format (OpenAI, OpenRouter, Ollama)
+            let chat_messages: Vec<serde_json::Value> = messages
+                .iter()
+                .map(|(role, content)| serde_json::json!({ "role": role, "content": content }))
+                .collect();
+
+            let mut body = serde_json::json!({
+                "model": model,
+                "max_tokens": 4096,
+                "messages": chat_messages,
+                "stream": true,
+            });
+
+            apply_reasoning_to_body(&mut body, provider, reasoning_enabled, &reasoning_effort);
+
+            let url = format!(
+                "{}/chat/completions",
+                provider.openai_compat_base_url(ollama_endpoint)
+            );
+
+            let mut req = client.post(&url).header("content-type", "application/json");
+
+            if !matches!(provider, AiProvider::Ollama) {
+                req = req.header("Authorization", format!("Bearer {api_key}"));
+            }
+            if matches!(provider, AiProvider::OpenRouter) {
+                req = req
+                    .header(
+                        "HTTP-Referer",
+                        "https://github.com/futurebassisdead/Grimodex",
+                    )
+                    .header("X-Title", "Grimodex");
+            }
+
+            let resp = req.json(&body).send().await?;
+            if !resp.status().is_success() {
+                let status = resp.status();
+                let body_text = resp.text().await.unwrap_or_default();
+                return Err(anyhow::anyhow!("HTTP {}: {}", status, body_text));
+            }
+
+            let mut stream = resp.bytes_stream();
+            let mut buf = String::new();
+            let mut stop_reason = "end_turn".to_string();
+            let mut input_tokens: Option<u64> = None;
+            let mut output_tokens: Option<u64> = None;
+
+            while let Some(chunk) = stream.next().await {
+                if abort_flag.load(Ordering::Relaxed) {
+                    stop_reason = "stopped".to_string();
+                    break;
+                }
+                let bytes = chunk.map_err(|e| anyhow::anyhow!("stream error: {e}"))?;
+                buf.push_str(&String::from_utf8_lossy(&bytes));
+
+                while let Some(pos) = buf.find("\n\n") {
+                    let chunk_str = buf[..pos].to_string();
+                    buf.drain(..pos + 2);
+
+                    for line in chunk_str.lines() {
+                        if let Some(data) = line.strip_prefix("data: ") {
+                            if data.trim() == "[DONE]" {
+                                break;
+                            }
+                            let Ok(json) = serde_json::from_str::<serde_json::Value>(data) else {
+                                continue;
+                            };
+
+                            // Accumulate usage
+                            if let Some(inp) = json["usage"]["prompt_tokens"].as_u64() {
+                                input_tokens = Some(inp);
+                            }
+                            if let Some(out) = json["usage"]["completion_tokens"].as_u64() {
+                                output_tokens = Some(out);
+                            }
+
+                            // finish_reason
+                            if let Some(reason) = json["choices"][0]["finish_reason"].as_str() {
+                                if reason != "null" {
+                                    stop_reason = if reason == "stop" {
+                                        "end_turn".to_string()
+                                    } else {
+                                        reason.to_string()
+                                    };
+                                }
+                            }
+
+                            let delta = &json["choices"][0]["delta"];
+
+                            // Ollama: thinking フィールド
+                            if let Some(thinking_text) = delta["thinking"].as_str() {
+                                if !thinking_text.is_empty() {
+                                    let _ = app_handle.emit(
+                                        "chat:stream-chunk",
+                                        serde_json::json!({
+                                            "delta": thinking_text,
+                                            "block_type": "thinking"
+                                        }),
+                                    );
+                                }
+                            }
+
+                            // OpenRouter: reasoning_content フィールド
+                            if let Some(reasoning) = delta["reasoning_content"].as_str() {
+                                if !reasoning.is_empty() {
+                                    let _ = app_handle.emit(
+                                        "chat:stream-chunk",
+                                        serde_json::json!({
+                                            "delta": reasoning,
+                                            "block_type": "thinking"
+                                        }),
+                                    );
+                                }
+                            }
+
+                            if let Some(content) = delta["content"].as_str() {
+                                if !content.is_empty() {
+                                    let _ = app_handle.emit(
+                                        "chat:stream-chunk",
+                                        serde_json::json!({
+                                            "delta": content,
+                                            "block_type": "text"
+                                        }),
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            let _ = app_handle.emit(
+                "chat:stream-done",
+                serde_json::json!({
+                    "stop_reason": stop_reason,
+                    "input_tokens": input_tokens,
+                    "output_tokens": output_tokens,
+                }),
+            );
+            Ok(())
+        }
     }
 }

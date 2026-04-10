@@ -24,27 +24,6 @@ function classifyError(
   return "unknown";
 }
 
-async function withNetworkRetry<T>(
-  fn: () => Promise<T>,
-  maxRetries = 3,
-  baseDelayMs = 1000,
-): Promise<T> {
-  let attempt = 0;
-  while (true) {
-    try {
-      return await fn();
-    } catch (e) {
-      // Only retry transient network errors
-      const kind = classifyError(e);
-      if (kind !== "network") throw e;
-      attempt++;
-      if (attempt >= maxRetries) throw e;
-      const delay = baseDelayMs * Math.pow(2, attempt - 1);
-      await new Promise((res) => setTimeout(res, delay));
-    }
-  }
-}
-
 import {
   buildSystemPrompt,
   buildAgentSystemPrompt,
@@ -88,6 +67,41 @@ import {
   computeChildrenTokenBudget,
 } from "@/features/codex/childrenBudget";
 import type { ChatMessage, ChatSession, MessageRole } from "./chatTypes";
+import type { CodexEntry } from "@/features/codex/api";
+import { listContextDetailsByEntryIds } from "@/features/codex/detailApi";
+
+// G14: Enrich CodexContext array with customDetails (batch query, no N+1)
+async function enrichWithCustomDetails(
+  entries: CodexContext[],
+  allEntries: CodexEntry[],
+): Promise<CodexContext[]> {
+  if (entries.length === 0) return entries;
+  const entryIds = entries.map((e) => e.id);
+  const details = await listContextDetailsByEntryIds(entryIds);
+
+  // Group by entryId
+  const byEntryId = new Map<
+    string,
+    Array<{ fieldName: string; value: string }>
+  >();
+  for (const d of details) {
+    if (d.value == null) continue;
+    let resolved = d.value;
+    // codex_reference: resolve entry ID → name
+    if (d.fieldType === "codex_reference") {
+      const ref = allEntries.find((e) => e.id === d.value);
+      resolved = ref ? ref.name : d.value;
+    }
+    const arr = byEntryId.get(d.entryId) ?? [];
+    arr.push({ fieldName: d.fieldName, value: resolved });
+    byEntryId.set(d.entryId, arr);
+  }
+
+  return entries.map((entry) => {
+    const customDetails = byEntryId.get(entry.id);
+    return customDetails?.length ? { ...entry, customDetails } : entry;
+  });
+}
 
 interface ChatState {
   // Session management
@@ -103,6 +117,10 @@ interface ChatState {
   activeProjectId: string | null;
   contextTokenCount: number;
   contextLayers: LayerBreakdown[];
+
+  // G15: auto-detected and always-mode entries (excluding pinned)
+  detectedEntries: CodexEntry[];
+  alwaysEntries: CodexEntry[];
 
   // Session actions
   loadSessions: (nodeId?: string | null) => Promise<void>;
@@ -173,6 +191,9 @@ async function fetchProjectContext(
   }
 }
 
+// Module-level cleanup function for the active stream
+let _streamCleanup: (() => void) | null = null;
+
 export const useChatStore = create<ChatState>()((set, get) => ({
   sessions: [],
   activeSessionId: null,
@@ -184,6 +205,8 @@ export const useChatStore = create<ChatState>()((set, get) => ({
   activeProjectId: null,
   contextTokenCount: 0,
   contextLayers: [],
+  detectedEntries: [],
+  alwaysEntries: [],
   agentMode: false,
   agentProgress: null,
   isGlobalChat: false,
@@ -371,6 +394,12 @@ export const useChatStore = create<ChatState>()((set, get) => ({
             });
           }
 
+          // G14: enrich with custom details
+          const enrichedCodexEntries = await enrichWithCustomDetails(
+            codexEntries,
+            allEntries,
+          );
+
           const storySoFar = buildStorySoFar(
             sceneCtx.id,
             allNodes,
@@ -380,7 +409,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
             scene: sceneCtx,
             project: projectCtx ?? undefined,
             storySoFar: storySoFar || undefined,
-            codexEntries,
+            codexEntries: enrichedCodexEntries,
             pinnedCodexEntries,
           });
           parts.push(`[system]\n${prompt}`);
@@ -677,7 +706,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
         const { contextWindow } = getModelCapabilities(chatModel);
         const budgets = allocateLayerBudgets(contextWindow);
         const L4_TOTAL_BUDGET = budgets.l4;
-        const codexEntries: CodexContext[] = baseCodexEntries.map((ctx) => {
+        const withChildrenCtx: CodexContext[] = baseCodexEntries.map((ctx) => {
           const fullEntry = allEntries.find((e) => e.id === ctx.id);
           if (!fullEntry) return ctx;
           const preset = fullEntry.childrenBudget ?? "compact";
@@ -687,6 +716,12 @@ export const useChatStore = create<ChatState>()((set, get) => ({
           const childrenContext = buildChildrenContext(descendants, budget);
           return childrenContext ? { ...ctx, childrenContext } : ctx;
         });
+
+        // G14: enrich with custom details (includeInContext=1)
+        const codexEntries: CodexContext[] = await enrichWithCustomDetails(
+          withChildrenCtx,
+          allEntries,
+        );
 
         // P2-5: チャットメッセージ内のCodex言及を検出し自動ピン留め
         if (sessionIdForPersist) {
@@ -727,6 +762,21 @@ export const useChatStore = create<ChatState>()((set, get) => ({
               withChildren: e.withChildren,
               children,
             };
+          });
+        }
+
+        // G15: update detectedEntries / alwaysEntries (excluding pinned)
+        {
+          const pinnedIdSet = new Set(pinnedCodexEntries.map((e) => e.id));
+          const mentionedNotPinned = mentioned.filter(
+            (e) => !pinnedIdSet.has(e.id),
+          );
+          const alwaysNotPinned = alwaysEntries.filter(
+            (e) => !pinnedIdSet.has(e.id) && !mentionedIds.has(e.id),
+          );
+          set({
+            detectedEntries: mentionedNotPinned,
+            alwaysEntries: alwaysNotPinned,
           });
         }
 
@@ -799,205 +849,160 @@ export const useChatStore = create<ChatState>()((set, get) => ({
         "summarized",
         useAiSettingsStore.getState().settings?.thinkingEnabled ?? true,
       );
-
-      // G25: aggressiveTrim=true の場合は L2/L5 を除外して再ビルド
-      const callApi = async (aggressiveTrim: boolean) => {
-        let payload = messagesForApi;
-        if (aggressiveTrim && sceneCtx) {
-          // system message を除いた会話メッセージ
-          const conversationMsgs = messagesForApi.filter(
-            (m) => m.role !== "system",
-          );
-          const conversationTokens = conversationMsgs.reduce(
-            (sum, m) => sum + countTokens(m.content),
-            0,
-          );
-          const contextWindow = getModelCapabilities(chatModel).contextWindow;
-          const allNodes = useTreeStore.getState().nodes;
-          const l2Pct = useSettingsStore
-            .getState()
-            .getNumber("ai.contextBudget.l2", 10);
-          const storySoFarBudget = Math.round((l2Pct / 100) * 200_000);
-          const storySoFar = buildStorySoFar(
-            sceneCtx.id,
-            allNodes,
-            storySoFarBudget,
-          );
-          const allEntries = await listCodexEntries();
-          const mentioned = await findMentionedEntriesAsync(
-            sceneCtx.content,
-            allEntries,
-          );
-          const L4_TOTAL_BUDGET = 60_000;
-          const aggressiveCodexEntries: CodexContext[] = mentioned.map((e) => {
-            const fullEntry = allEntries.find((a) => a.id === e.id);
-            const summary = fullEntry?.summary ?? "";
-            if (!fullEntry)
-              return { id: e.id, type: e.type, name: e.name, summary };
-            const preset = fullEntry.childrenBudget ?? "compact";
-            if (preset === "none")
-              return { id: e.id, type: e.type, name: e.name, summary };
-            const budget = computeChildrenTokenBudget(preset, L4_TOTAL_BUDGET);
-            const descendants = getDescendantsBFS(fullEntry.id, allEntries);
-            const childrenContext = buildChildrenContext(descendants, budget);
-            return childrenContext
-              ? {
-                  id: e.id,
-                  type: e.type,
-                  name: e.name,
-                  summary,
-                  childrenContext,
-                }
-              : { id: e.id, type: e.type, name: e.name, summary };
-          });
-          let aggressivePinned: import("./contextBuilder").PinnedCodexContext[] =
-            [];
-          if (activeSessionId) {
-            const pinned =
-              await chatApi.listPinnedCodexEntries(activeSessionId);
-            aggressivePinned = pinned.map((e) => {
-              const children = e.withChildren
-                ? getChildrenFromArray(e.id, allEntries).map((c) => ({
-                    id: c.id,
-                    type: c.type,
-                    name: c.name,
-                    summary: c.summary ?? "",
-                  }))
-                : undefined;
-              return {
-                id: e.id,
-                type: e.type,
-                name: e.name,
-                summary: e.summary ?? "",
-                withChildren: e.withChildren,
-                children,
-              };
-            });
-          }
-          const retryPromptResult = buildSystemPrompt({
-            scene: sceneCtx,
-            project: projectCtx ?? undefined,
-            storySoFar: storySoFar || undefined,
-            codexEntries: aggressiveCodexEntries,
-            pinnedCodexEntries: aggressivePinned,
-            commandInstruction,
-            conversationTokens,
-            contextWindow,
-            excludeLayers: ["L2", "L5"],
-          });
-          const retrySystemMsg: ChatMessage = {
-            id: "system",
-            sessionId,
-            role: "system",
-            content: retryPromptResult.prompt,
-            createdAt: new Date().toISOString(),
-          };
-          payload = [retrySystemMsg, ...conversationMsgs];
-        }
-        const apiPayload = payload.map((m) => ({
-          role: m.role,
-          content: m.content,
-        }));
-        return chatApi.sendChatMessageWithThinking(
-          apiPayload,
-          chatThinkingParams,
-        );
-      };
-
+      const apiPayload = messagesForApi.map((m) => ({
+        role: m.role,
+        content: m.content,
+      }));
       const chatStartTime = performance.now();
-      let apiResult: Awaited<
-        ReturnType<typeof chatApi.sendChatMessageWithThinking>
-      >;
-      try {
-        apiResult = await withNetworkRetry(() => callApi(false));
-      } catch (e) {
-        if (classifyError(e) === "context_length") {
-          toast.info("コンテキストが長すぎます。自動トリムして再送信します…");
-          apiResult = await withNetworkRetry(() => callApi(true));
-        } else {
-          throw e;
-        }
-      }
-      const {
-        text: responseText,
-        thinkingBlocks: chatThinkingBlocks,
-        inputTokens: chatInputTokens,
-        outputTokens: chatOutputTokens,
-      } = apiResult;
-      const chatDurationMs = Math.round(performance.now() - chatStartTime);
-      const chatMetadata =
-        chatThinkingBlocks.length > 0
-          ? JSON.stringify({ thinking_blocks: chatThinkingBlocks })
-          : undefined;
-      set((s) => {
-        const msgs = [...s.messages];
-        const last = msgs[msgs.length - 1];
-        if (last && last.role === "assistant") {
-          msgs[msgs.length - 1] = {
-            ...last,
-            content: responseText,
-            ...(chatMetadata ? { metadata: chatMetadata } : {}),
-          };
-        }
-        return { messages: msgs };
-      });
 
-      if (sessionIdForPersist) {
-        const finalMessages = get().messages;
-        const lastMsg = finalMessages[finalMessages.length - 1];
-        await chatApi.addMessage(sessionIdForPersist, "user", content, {
-          id: userMsg.id,
-        });
-        if (lastMsg && lastMsg.role === "assistant" && lastMsg.content) {
-          await chatApi.addMessage(
-            sessionIdForPersist,
-            "assistant",
-            lastMsg.content,
-            {
-              id: assistantMsg.id,
-              model: chatModel || undefined,
-              tokensIn: chatInputTokens,
-              tokensOut: chatOutputTokens,
-              durationMs: chatDurationMs,
-              ...(chatMetadata ? { metadata: chatMetadata } : {}),
+      // Accumulate thinking text locally during streaming
+      let thinkingAccumulator = "";
+      const isFirstResponse =
+        prevMessages.filter((m) => m.role === "assistant").length === 0;
+
+      // Start streaming — returns a Promise<cleanup_fn>
+      await new Promise<void>((resolve, reject) => {
+        chatApi
+          .sendChatMessageStream(apiPayload, chatThinkingParams, {
+            onTextDelta: (delta) => {
+              set((s) => {
+                const msgs = [...s.messages];
+                const idx = msgs.findIndex((m) => m.id === assistantMsg.id);
+                if (idx >= 0) {
+                  msgs[idx] = {
+                    ...msgs[idx],
+                    content: msgs[idx].content + delta,
+                  };
+                }
+                return { messages: msgs };
+              });
             },
-          );
-        }
+            onThinkingDelta: (delta) => {
+              thinkingAccumulator += delta;
+            },
+            onDone: (info) => {
+              const chatDurationMs = Math.round(
+                performance.now() - chatStartTime,
+              );
 
-        // セッションタイトル自動生成 (P1-2) — fire-and-forget
-        const isFirstResponse =
-          prevMessages.filter((m) => m.role === "assistant").length === 0;
-        const currentSession = get().sessions.find(
-          (s) => s.id === sessionIdForPersist,
-        );
-        if (
-          isFirstResponse &&
-          currentSession &&
-          currentSession.titleManual === 0 &&
-          lastMsg?.role === "assistant" &&
-          lastMsg.content
-        ) {
-          chatApi
-            .generateSessionTitle(content, lastMsg.content, chatModel)
-            .then(async (title) => {
-              if (!title) {
-                // フォールバック: ユーザーメッセージの先頭30文字
-                title = content.slice(0, 30);
+              // Build metadata: thinking blocks + stopped flag
+              const metadataObj: Record<string, unknown> = {};
+              if (thinkingAccumulator) {
+                metadataObj.thinking_blocks = [
+                  { thinking: thinkingAccumulator },
+                ];
               }
-              if (sessionIdForPersist) {
-                await chatApi.updateSessionTitle(sessionIdForPersist, title);
-                set((state) => ({
-                  sessions: state.sessions.map((s) =>
-                    s.id === sessionIdForPersist ? { ...s, title } : s,
-                  ),
-                }));
+              if (info.stopReason === "stopped") {
+                metadataObj.stopped = true;
               }
-            })
-            .catch((e) => {
-              debugLog.error("ChatStore", "title generation", errorDetail(e));
-            });
-        }
-      }
+              const chatMetadata =
+                Object.keys(metadataObj).length > 0
+                  ? JSON.stringify(metadataObj)
+                  : undefined;
+
+              // Update final assistant message state
+              set((s) => {
+                const msgs = [...s.messages];
+                const idx = msgs.findIndex((m) => m.id === assistantMsg.id);
+                if (idx >= 0 && chatMetadata) {
+                  msgs[idx] = { ...msgs[idx], metadata: chatMetadata };
+                }
+                return { messages: msgs };
+              });
+
+              // Persist to DB
+              const persistToDb = async () => {
+                if (!sessionIdForPersist) return;
+                const finalMessages = get().messages;
+                const lastMsg = finalMessages[finalMessages.length - 1];
+                await chatApi.addMessage(sessionIdForPersist, "user", content, {
+                  id: userMsg.id,
+                });
+                if (
+                  lastMsg &&
+                  lastMsg.role === "assistant" &&
+                  lastMsg.content
+                ) {
+                  await chatApi.addMessage(
+                    sessionIdForPersist,
+                    "assistant",
+                    lastMsg.content,
+                    {
+                      id: assistantMsg.id,
+                      model: chatModel || undefined,
+                      tokensIn: info.inputTokens,
+                      tokensOut: info.outputTokens,
+                      durationMs: chatDurationMs,
+                      ...(chatMetadata ? { metadata: chatMetadata } : {}),
+                    },
+                  );
+                }
+
+                // セッションタイトル自動生成 (P1-2) — fire-and-forget
+                const currentSession = get().sessions.find(
+                  (s) => s.id === sessionIdForPersist,
+                );
+                if (
+                  isFirstResponse &&
+                  currentSession &&
+                  currentSession.titleManual === 0 &&
+                  lastMsg?.role === "assistant" &&
+                  lastMsg.content
+                ) {
+                  chatApi
+                    .generateSessionTitle(content, lastMsg.content, chatModel)
+                    .then(async (title) => {
+                      if (!title) {
+                        title = content.slice(0, 30);
+                      }
+                      if (sessionIdForPersist) {
+                        await chatApi.updateSessionTitle(
+                          sessionIdForPersist,
+                          title,
+                        );
+                        set((state) => ({
+                          sessions: state.sessions.map((s) =>
+                            s.id === sessionIdForPersist ? { ...s, title } : s,
+                          ),
+                        }));
+                      }
+                    })
+                    .catch((e) => {
+                      debugLog.error(
+                        "ChatStore",
+                        "title generation",
+                        errorDetail(e),
+                      );
+                    });
+                }
+              };
+
+              persistToDb()
+                .catch((e) => {
+                  debugLog.error(
+                    "ChatStore",
+                    "persist after stream",
+                    errorDetail(e),
+                  );
+                })
+                .finally(() => {
+                  _streamCleanup?.();
+                  _streamCleanup = null;
+                  set({ isStreaming: false });
+                  resolve();
+                });
+            },
+            onError: (message) => {
+              _streamCleanup?.();
+              _streamCleanup = null;
+              reject(new Error(message));
+            },
+          })
+          .then((cleanup) => {
+            _streamCleanup = cleanup;
+          })
+          .catch(reject);
+      });
     } catch (e) {
       const kind = classifyError(e);
       const msg = e instanceof Error ? e.message : String(e);
@@ -1035,7 +1040,11 @@ export const useChatStore = create<ChatState>()((set, get) => ({
 
       set({ error: msg });
     } finally {
-      set({ isStreaming: false });
+      // isStreaming is set to false inside onDone/onError callbacks
+      // but guard here in case of early exit
+      if (get().isStreaming) {
+        set({ isStreaming: false });
+      }
     }
   },
 
@@ -1055,12 +1064,28 @@ export const useChatStore = create<ChatState>()((set, get) => ({
       if (!sceneCtx) return;
 
       const allEntries = await listCodexEntries();
+
+      // G12: context_mode filter (same as sendMessage)
+      const detectableEntries = allEntries.filter(
+        (e) => e.contextMode !== "hidden" && e.contextMode !== "suppress",
+      );
+      const refreshAlwaysEntries = allEntries.filter(
+        (e) => e.contextMode === "always",
+      );
+
       const mentioned = await findMentionedEntriesAsync(
         sceneCtx.content,
-        allEntries,
+        detectableEntries,
       );
+
+      const mentionedIds = new Set(mentioned.map((e) => e.id));
+      const alwaysNotMentioned = refreshAlwaysEntries.filter(
+        (e) => !mentionedIds.has(e.id),
+      );
+      const rawCodexEntries = [...mentioned, ...alwaysNotMentioned];
+
       const L4_TOTAL_BUDGET = 60_000;
-      const codexEntries: CodexContext[] = mentioned.map((e) => {
+      const baseCodexEntries: CodexContext[] = rawCodexEntries.map((e) => {
         const fullEntry = allEntries.find((a) => a.id === e.id);
         const summary = fullEntry?.summary ?? "";
         if (!fullEntry)
@@ -1075,6 +1100,12 @@ export const useChatStore = create<ChatState>()((set, get) => ({
           ? { id: e.id, type: e.type, name: e.name, summary, childrenContext }
           : { id: e.id, type: e.type, name: e.name, summary };
       });
+
+      // G14: enrich with custom details
+      const codexEntries = await enrichWithCustomDetails(
+        baseCodexEntries,
+        allEntries,
+      );
 
       let pinnedCodexEntries: import("./contextBuilder").PinnedCodexContext[] =
         [];
@@ -1097,6 +1128,21 @@ export const useChatStore = create<ChatState>()((set, get) => ({
             withChildren: e.withChildren,
             children,
           };
+        });
+      }
+
+      // G15: update detectedEntries / alwaysEntries (excluding pinned)
+      {
+        const pinnedIdSet = new Set(pinnedCodexEntries.map((e) => e.id));
+        const mentionedNotPinned = mentioned.filter(
+          (e) => !pinnedIdSet.has(e.id),
+        );
+        const alwaysNotPinned = refreshAlwaysEntries.filter(
+          (e) => !pinnedIdSet.has(e.id) && !mentionedIds.has(e.id),
+        );
+        set({
+          detectedEntries: mentionedNotPinned,
+          alwaysEntries: alwaysNotPinned,
         });
       }
 
@@ -1131,6 +1177,9 @@ export const useChatStore = create<ChatState>()((set, get) => ({
 
   // --- P2-1: ストリーミング中断 ---
   stopGeneration: () => {
+    void chatApi.abortChatStream().catch(() => {});
+    _streamCleanup?.();
+    _streamCleanup = null;
     set({ isStreaming: false, agentProgress: null });
   },
 

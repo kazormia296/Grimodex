@@ -1,8 +1,19 @@
-import { invoke } from "@/lib/tauri";
+import { invoke, listen } from "@/lib/tauri";
 import { db } from "@/db/client";
-import { chatSessions, chatMessages, codexEntries } from "@/db/schema";
+import {
+  chatSessions,
+  chatMessages,
+  chatSummaries,
+  codexEntries,
+  snippets,
+} from "@/db/schema";
 import { eq, desc, inArray, isNull, gte, and } from "drizzle-orm";
-import type { ChatSession, ChatMessage, MessageRole } from "./chatTypes";
+import type {
+  ChatSession,
+  ChatMessage,
+  ChatSummary,
+  MessageRole,
+} from "./chatTypes";
 import type { CodexEntry } from "@/features/codex/api";
 import {
   normalizePinnedCodex,
@@ -151,6 +162,90 @@ export async function sendChatMessageWithThinking(
   };
 }
 
+// ---------------------------------------------------------------------------
+// G1: Streaming API
+// ---------------------------------------------------------------------------
+
+interface StreamChunkPayload {
+  delta: string;
+  block_type: "text" | "thinking";
+}
+
+interface StreamDonePayload {
+  stop_reason: string;
+  input_tokens?: number;
+  output_tokens?: number;
+}
+
+interface StreamErrorPayload {
+  message: string;
+}
+
+export interface StreamCallbacks {
+  onTextDelta: (delta: string) => void;
+  onThinkingDelta: (delta: string) => void;
+  onDone: (info: {
+    stopReason: string;
+    inputTokens?: number;
+    outputTokens?: number;
+  }) => void;
+  onError: (message: string) => void;
+}
+
+/**
+ * Send a chat message with streaming response.
+ * Returns a cleanup function to remove event listeners.
+ */
+export async function sendChatMessageStream(
+  messages: { role: string; content: string }[],
+  thinkingParams: ThinkingParams | undefined,
+  callbacks: StreamCallbacks,
+): Promise<() => void> {
+  const unlisteners = await Promise.all([
+    listen<StreamChunkPayload>("chat:stream-chunk", (payload) => {
+      if (payload.block_type === "thinking") {
+        callbacks.onThinkingDelta(payload.delta);
+      } else {
+        callbacks.onTextDelta(payload.delta);
+      }
+    }),
+    listen<StreamDonePayload>("chat:stream-done", (payload) => {
+      callbacks.onDone({
+        stopReason: payload.stop_reason,
+        inputTokens: payload.input_tokens,
+        outputTokens: payload.output_tokens,
+      });
+    }),
+    listen<StreamErrorPayload>("chat:stream-error", (payload) => {
+      callbacks.onError(payload.message);
+    }),
+  ]);
+
+  const cleanup = () => {
+    unlisteners.forEach((u) => u());
+  };
+
+  // Fire-and-forget the stream command (events arrive via listeners above)
+  invoke<void>("send_chat_message_stream", {
+    messages,
+    thinking: thinkingParams?.thinking ?? null,
+    effort: thinkingParams?.effort ?? null,
+    reasoningEnabled: thinkingParams?.reasoningEnabled ?? null,
+    reasoningEffort: thinkingParams?.reasoningEffort ?? null,
+  }).catch((e: unknown) => {
+    // Error is also emitted as chat:stream-error from Rust, but handle here too
+    const msg = e instanceof Error ? e.message : String(e);
+    callbacks.onError(msg);
+  });
+
+  return cleanup;
+}
+
+/** Abort an in-progress streaming response. */
+export async function abortChatStream(): Promise<void> {
+  await invoke<void>("abort_chat_stream");
+}
+
 /**
  * セッションタイトルを軽量モデルで自動生成する (P1-2)
  * Returns the generated title, or null if generation failed.
@@ -221,6 +316,8 @@ function toMessage(row: typeof chatMessages.$inferSelect): ChatMessage {
     tokensOut: row.tokensOut,
     durationMs: row.durationMs,
     metadata: row.metadata,
+    isStarred: row.isStarred ?? 0,
+    isSummarized: row.isSummarized ?? 0,
     createdAt: row.createdAt,
   };
 }
@@ -476,4 +573,76 @@ export async function unpinCodexEntry(
     .update(chatSessions)
     .set({ pinnedCodex: JSON.stringify(filtered) })
     .where(eq(chatSessions.id, sessionId));
+}
+
+// ---------------------------------------------------------------------------
+// G17: Progressive Summarization CRUD
+// ---------------------------------------------------------------------------
+
+export async function toggleStarMessage(
+  messageId: string,
+  starred: boolean,
+): Promise<void> {
+  await db
+    .update(chatMessages)
+    .set({ isStarred: starred ? 1 : 0 })
+    .where(eq(chatMessages.id, messageId));
+}
+
+function toSummary(row: typeof chatSummaries.$inferSelect): ChatSummary {
+  let ids: string[] = [];
+  try {
+    ids = JSON.parse(row.sourceMessageIds) as string[];
+  } catch {
+    ids = [];
+  }
+  return {
+    id: row.id,
+    sessionId: row.sessionId,
+    summary: row.summary,
+    sourceMessageIds: ids,
+    tokenCount: row.tokenCount,
+    createdAt: row.createdAt,
+  };
+}
+
+export async function listSummaries(sessionId: string): Promise<ChatSummary[]> {
+  const rows = await db
+    .select()
+    .from(chatSummaries)
+    .where(eq(chatSummaries.sessionId, sessionId))
+    .orderBy(chatSummaries.createdAt);
+  return rows.map(toSummary);
+}
+
+export async function addSummary(
+  sessionId: string,
+  summary: string,
+  sourceMessageIds: string[],
+  tokenCount?: number,
+): Promise<ChatSummary> {
+  const id = crypto.randomUUID();
+  const now = new Date().toISOString();
+  const rows = await db
+    .insert(chatSummaries)
+    .values({
+      id,
+      sessionId,
+      summary,
+      sourceMessageIds: JSON.stringify(sourceMessageIds),
+      tokenCount: tokenCount ?? null,
+      createdAt: now,
+    })
+    .returning();
+  return toSummary(rows[0]);
+}
+
+export async function markMessagesSummarized(
+  messageIds: string[],
+): Promise<void> {
+  if (messageIds.length === 0) return;
+  await db
+    .update(chatMessages)
+    .set({ isSummarized: 1 })
+    .where(inArray(chatMessages.id, messageIds));
 }

@@ -1,4 +1,5 @@
 import type { BrowserMock } from "./browser-mock";
+export type { BrowserMock };
 
 /** Check at call time, not module-load time, to avoid race with Tauri bridge injection. */
 function isTauri(): boolean {
@@ -52,6 +53,27 @@ function getBrowserMock(): Promise<BrowserMock> {
     });
   }
   return browserMockReady;
+}
+
+/**
+ * Listen to a Tauri event (or browser CustomEvent in non-Tauri env).
+ * Returns an unlisten function.
+ */
+export async function listen<T>(
+  event: string,
+  handler: (payload: T) => void,
+): Promise<() => void> {
+  if (isTauri()) {
+    const { listen: tauriListen } = await import("@tauri-apps/api/event");
+    return tauriListen<T>(event, (e) => handler(e.payload));
+  }
+  // Browser fallback: use CustomEvent
+  const listener = (e: Event) => {
+    const detail = (e as CustomEvent<T>).detail;
+    handler(detail);
+  };
+  window.addEventListener(event, listener);
+  return () => window.removeEventListener(event, listener);
 }
 
 export async function invoke<T = unknown>(

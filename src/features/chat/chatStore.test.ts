@@ -5,12 +5,15 @@ import type { ChatMessage, ChatSession } from "./chatTypes";
 vi.mock("./chatApi", () => ({
   sendChatMessage: vi.fn(),
   sendChatMessageWithThinking: vi.fn(),
+  sendChatMessageStream: vi.fn(),
+  abortChatStream: vi.fn(() => Promise.resolve()),
   listSessions: vi.fn(),
   createSession: vi.fn(),
   deleteSession: vi.fn(),
   listMessages: vi.fn(),
   addMessage: vi.fn(),
   updateSessionTitle: vi.fn(),
+  generateSessionTitle: vi.fn(() => Promise.resolve(null)),
   listPinnedCodexEntries: vi.fn(() => Promise.resolve([])),
   pinCodexEntry: vi.fn(),
   unpinCodexEntry: vi.fn(),
@@ -73,11 +76,35 @@ vi.mock("@/features/codex/codexMatcher", () => ({
 }));
 
 import * as chatApi from "./chatApi";
+import type { StreamCallbacks } from "./chatApi";
 import * as contextBuilder from "./contextBuilder";
-const mockSendChatMessageWithThinking = vi.mocked(
-  chatApi.sendChatMessageWithThinking,
-);
+const mockSendChatMessageStream = vi.mocked(chatApi.sendChatMessageStream);
 const mockBuildSystemPrompt = vi.mocked(contextBuilder.buildSystemPrompt);
+
+/**
+ * Helper: set up sendChatMessageStream mock to immediately call onTextDelta + onDone.
+ */
+function mockStreamResponse(text: string) {
+  mockSendChatMessageStream.mockImplementation(
+    async (_messages, _params, callbacks: StreamCallbacks) => {
+      callbacks.onTextDelta(text);
+      callbacks.onDone({ stopReason: "end_turn" });
+      return () => {};
+    },
+  );
+}
+
+/**
+ * Helper: set up sendChatMessageStream mock to call onError.
+ */
+function mockStreamError(message: string) {
+  mockSendChatMessageStream.mockImplementation(
+    async (_messages, _params, callbacks: StreamCallbacks) => {
+      callbacks.onError(message);
+      return () => {};
+    },
+  );
+}
 
 const mockListSessions = vi.mocked(chatApi.listSessions);
 const mockCreateSession = vi.mocked(chatApi.createSession);
@@ -312,10 +339,7 @@ describe("useChatStore", () => {
 
   describe("sendMessage", () => {
     it("adds user message, sets streaming, and appends assistant response", async () => {
-      mockSendChatMessageWithThinking.mockResolvedValueOnce({
-        text: "こんにちは！",
-        thinkingBlocks: [],
-      });
+      mockStreamResponse("こんにちは！");
 
       await useChatStore.getState().sendMessage("テスト");
 
@@ -330,10 +354,14 @@ describe("useChatStore", () => {
 
     it("sets isStreaming to true during API call", async () => {
       let streamingDuringCall = false;
-      mockSendChatMessageWithThinking.mockImplementation(async () => {
-        streamingDuringCall = useChatStore.getState().isStreaming;
-        return { text: "", thinkingBlocks: [] };
-      });
+      mockSendChatMessageStream.mockImplementation(
+        async (_messages, _params, callbacks: StreamCallbacks) => {
+          streamingDuringCall = useChatStore.getState().isStreaming;
+          callbacks.onTextDelta("");
+          callbacks.onDone({ stopReason: "end_turn" });
+          return () => {};
+        },
+      );
 
       await useChatStore.getState().sendMessage("テスト");
 
@@ -342,9 +370,7 @@ describe("useChatStore", () => {
     });
 
     it("sets error on API failure", async () => {
-      mockSendChatMessageWithThinking.mockRejectedValueOnce(
-        new Error("API error"),
-      );
+      mockStreamError("API error");
 
       await useChatStore.getState().sendMessage("テスト");
 
@@ -358,13 +384,13 @@ describe("useChatStore", () => {
 
       await useChatStore.getState().sendMessage("テスト");
 
-      expect(mockSendChatMessageWithThinking).not.toHaveBeenCalled();
+      expect(mockSendChatMessageStream).not.toHaveBeenCalled();
     });
 
     it("does not send empty messages", async () => {
       await useChatStore.getState().sendMessage("   ");
 
-      expect(mockSendChatMessageWithThinking).not.toHaveBeenCalled();
+      expect(mockSendChatMessageStream).not.toHaveBeenCalled();
     });
 
     it("passes full message history to API with system prompt prepended", async () => {
@@ -374,14 +400,11 @@ describe("useChatStore", () => {
           makeMessage("assistant", "前の回答"),
         ],
       });
-      mockSendChatMessageWithThinking.mockResolvedValueOnce({
-        text: "新しい回答",
-        thinkingBlocks: [],
-      });
+      mockStreamResponse("新しい回答");
 
       await useChatStore.getState().sendMessage("新しい質問");
 
-      const passedMessages = mockSendChatMessageWithThinking.mock.calls[0][0];
+      const passedMessages = mockSendChatMessageStream.mock.calls[0][0];
       // system + 前の質問 + 前の回答 + 新しい質問 = 4
       expect(passedMessages).toHaveLength(4);
       expect(passedMessages[0].role).toBe("system");
@@ -413,15 +436,9 @@ describe("useChatStore", () => {
     });
   });
 
-  describe("classifyError — context_length", () => {
-    it("sets error state when API throws context_length_exceeded", async () => {
-      mockSendChatMessageWithThinking.mockRejectedValueOnce(
-        new Error("context_length_exceeded"),
-      );
-      // second call (aggressive trim retry) also fails to avoid infinite hang
-      mockSendChatMessageWithThinking.mockRejectedValueOnce(
-        new Error("context_length_exceeded"),
-      );
+  describe("classifyError — streaming errors", () => {
+    it("sets error state when streaming fails", async () => {
+      mockStreamError("context_length_exceeded");
 
       await useChatStore.getState().sendMessage("テスト");
 
@@ -429,57 +446,29 @@ describe("useChatStore", () => {
       expect(error).toBeTruthy();
     });
 
-    it("sets error state when API throws maximum context length exceeded", async () => {
-      mockSendChatMessageWithThinking.mockRejectedValueOnce(
-        new Error("maximum context length exceeded"),
-      );
-      mockSendChatMessageWithThinking.mockRejectedValueOnce(
-        new Error("maximum context length exceeded"),
-      );
+    it("sets error state when streaming fails with network error", async () => {
+      mockStreamError("network connection failed");
 
       await useChatStore.getState().sendMessage("テスト");
 
       const { error } = useChatStore.getState();
       expect(error).toBeTruthy();
-    });
-
-    it("retries with aggressive trim on context_length error and succeeds", async () => {
-      // First call fails with context_length
-      mockSendChatMessageWithThinking.mockRejectedValueOnce(
-        new Error("context_length_exceeded"),
-      );
-      // Second call (aggressive trim) succeeds
-      mockSendChatMessageWithThinking.mockResolvedValueOnce({
-        text: "リトライ後の回答",
-        thinkingBlocks: [],
-      });
-
-      await useChatStore.getState().sendMessage("テスト");
-
-      const { messages, error } = useChatStore.getState();
-      expect(error).toBeNull();
-      expect(messages.some((m) => m.content === "リトライ後の回答")).toBe(true);
-      // API should have been called twice (first attempt + retry)
-      expect(mockSendChatMessageWithThinking).toHaveBeenCalledTimes(2);
     });
   });
 
   describe("context injection", () => {
-    it("passes system prompt to sendChatMessageWithThinking", async () => {
+    it("passes system prompt to sendChatMessageStream", async () => {
       mockBuildSystemPrompt.mockReturnValue({
         prompt: "テスト用システムプロンプト",
         totalTokens: 50,
         layers: [],
       });
-      mockSendChatMessageWithThinking.mockResolvedValueOnce({
-        text: "回答",
-        thinkingBlocks: [],
-      });
+      mockStreamResponse("回答");
 
       await useChatStore.getState().sendMessage("質問");
 
-      expect(mockSendChatMessageWithThinking).toHaveBeenCalled();
-      const callArgs = mockSendChatMessageWithThinking.mock.calls[0];
+      expect(mockSendChatMessageStream).toHaveBeenCalled();
+      const callArgs = mockSendChatMessageStream.mock.calls[0];
       const messages = callArgs[0];
       expect(messages[0].role).toBe("system");
       expect(messages[0].content).toBe("テスト用システムプロンプト");
@@ -491,10 +480,7 @@ describe("useChatStore", () => {
         totalTokens: 100,
         layers: [],
       });
-      mockSendChatMessageWithThinking.mockResolvedValueOnce({
-        text: "回答",
-        thinkingBlocks: [],
-      });
+      mockStreamResponse("回答");
 
       await useChatStore.getState().sendMessage("質問");
 

@@ -10,9 +10,14 @@ use database::Database;
 use serde::Serialize;
 use serde_json::Value;
 use std::path::PathBuf;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use tauri::Manager;
 use workspace::GlobalSettings;
+
+/// AtomicBool flag to request aborting an in-progress stream.
+struct StreamAbortFlag {
+    flag: Arc<std::sync::atomic::AtomicBool>,
+}
 
 #[derive(Debug, thiserror::Error)]
 enum AppError {
@@ -282,6 +287,68 @@ async fn send_chat_message(
     Ok(result)
 }
 
+// --- Stream abort command ---
+
+#[tauri::command]
+fn abort_chat_stream(abort_flag: tauri::State<'_, StreamAbortFlag>) -> Result<(), AppError> {
+    abort_flag
+        .flag
+        .store(true, std::sync::atomic::Ordering::Relaxed);
+    Ok(())
+}
+
+// --- Streaming chat command ---
+
+#[tauri::command]
+async fn send_chat_message_stream(
+    ai_path: tauri::State<'_, AiSettingsPath>,
+    abort_flag: tauri::State<'_, StreamAbortFlag>,
+    app_handle: tauri::AppHandle,
+    messages: Vec<ChatMessagePayload>,
+    thinking: Option<ai::ThinkingConfig>,
+    effort: Option<String>,
+    reasoning_enabled: Option<bool>,
+    reasoning_effort: Option<String>,
+) -> Result<(), AppError> {
+    // Reset abort flag before starting
+    abort_flag
+        .flag
+        .store(false, std::sync::atomic::Ordering::Relaxed);
+
+    let settings = ai::read_ai_settings(&ai_path.path);
+    let api_key = resolve_api_key(&settings.provider)?;
+    let flag_clone = Arc::clone(&abort_flag.flag);
+
+    let result = ai::send_chat_stream(
+        &settings.provider,
+        &settings.model,
+        &api_key,
+        &settings.ollama_endpoint,
+        &messages
+            .iter()
+            .map(|m| (m.role.as_str(), m.content.as_str()))
+            .collect::<Vec<_>>(),
+        thinking,
+        effort,
+        reasoning_enabled,
+        reasoning_effort,
+        flag_clone,
+        app_handle.clone(),
+    )
+    .await;
+
+    if let Err(e) = result {
+        use tauri::Emitter;
+        let _ = app_handle.emit(
+            "chat:stream-error",
+            serde_json::json!({ "message": e.to_string() }),
+        );
+        return Err(AppError::Anyhow(e));
+    }
+
+    Ok(())
+}
+
 // --- Agent / Tool Use command ---
 
 #[tauri::command]
@@ -399,6 +466,11 @@ pub fn run() {
                 inner: Mutex::new(None),
             });
 
+            // Stream abort flag
+            app.manage(StreamAbortFlag {
+                flag: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            });
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -419,6 +491,8 @@ pub fn run() {
             list_ai_models,
             test_ai_connection,
             send_chat_message,
+            send_chat_message_stream,
+            abort_chat_stream,
             send_agent_message,
             fts_optimize,
             fts_rebuild,
