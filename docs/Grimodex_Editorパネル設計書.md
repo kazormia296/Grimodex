@@ -449,7 +449,10 @@ Markdownエクスポート時には `tiptap-markdown` を使用し、AuthorshipM
   - Lore: コーラル (#D85A30)
 - オプション: Settings > Display > Codex highlight style で「Underline」に切り替え可能。Underline選択時は文字色はそのまま、点線の下線をカテゴリカラーで表示
 - ホバーでポップオーバー表示（名前、カテゴリ、要約100文字、「Open in Codex」リンク）。詳細は「Codexハイライトのホバーポップオーバー」セクション参照
-- データソース: Zustandストアの `sceneCodexMatches`（Codex Quickセクションと共有）
+- データソース: `useCodexHighlightStore.matchedEntryIds`（Codex Quickパネルと共有）
+- **Codexタブ編集時**: 編集中のエントリ自身は除外（`excludeEntryIds`）してマッチングし、Codex Quickを更新する
+- **Snippetタブ編集時**: Codex Quickは更新しない（`skipMatchedIds: true`）
+- **Split mode時**: フォーカスグループ（`activeGroupIndex`）のエディタのみが Codex Quickを更新する。非フォーカスグループはハイライトは機能するが Codex Quickには影響しない
 
 **AttributionHighlight**
 - ツールバーの「Attr」トグルがON時のみ表示

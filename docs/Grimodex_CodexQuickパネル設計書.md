@@ -2,7 +2,7 @@
 
 ## 概要
 
-Codex QuickはScenesパネルとは独立した専用パネル。デフォルト配置はScenesパネルの下にdock（Left Dock内で垂直分割）。現在Editorでアクティブなシーンに関連するCodexエントリを自動表示する。
+Codex QuickはScenesパネルとは独立した専用パネル。デフォルト配置はScenesパネルの下にdock（Left Dock内で垂直分割）。**現在エディタでアクティブなコンテンツ**（シーン・Note・Codexエントリのcontent）に関連するCodexエントリを自動表示する。
 
 ```
 ┌─────────────────────────────────────┐
@@ -38,11 +38,25 @@ Codex QuickはScenesパネルとは独立した専用パネル。デフォルト
 ## データフロー
 
 ```
-Editor active scene changed
-  → シーンの本文テキストを取得
-  → Codexエントリ名のマッチング（FTS5 or 正規表現）
+エディタのアクティブコンテンツが変化（シーン切り替え・Codexタブ切り替え・本文編集）
+  → 本文テキストを取得
+  → Codexエントリ名のマッチング（Rustマッチャー）
   → マッチ結果 + 手動ピン留めを結合
   → Codex Quickパネルを更新
 ```
 
-このマッチングはエディタ内のCodexハイライト（Pure Decorations）と同じデータソースを使う。二重計算を避けるため、Zustandストアの `sceneCodexMatches` を共有する。
+このマッチングはエディタ内のCodexハイライト（Pure Decorations）と同じパイプライン（`useCodexHighlight` → `codexMatchOrchestrator`）を使い、`useCodexHighlightStore.matchedEntryIds` を共有する。
+
+### タブ種別ごとの挙動
+
+| タブ種別 | Codex Quickへの反映 | 自己参照の扱い |
+|---------|---------------------|---------------|
+| シーン / Note | 反映する | — |
+| Codexエントリ（content編集） | 反映する | 編集中のエントリ自身は除外 |
+| Snippet | 反映しない | — |
+
+### Split mode（2グループ表示時）
+
+エディタがSplit modeの場合、**フォーカスされているグループ**（`activeGroupIndex`）のコンテンツのみがCodexQuickを更新する。非アクティブグループは `skipMatchedIds: true` で動作し、視覚デコレーション（ハイライト）は機能するがCodexQuickには影響しない。
+
+グループをクリックしてフォーカスを切り替えると、即座にそのグループのコンテンツで再マッチングが走りCodexQuickが更新される。
