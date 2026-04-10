@@ -24,6 +24,17 @@ vi.mock("./contextBuilder", () => ({
   })),
   buildStorySoFar: vi.fn(() => ""),
   countTokens: vi.fn(() => 42),
+  allocateLayerBudgets: vi.fn(() => ({
+    responseReservation: 10_000,
+    l1: 4_000,
+    l2: 19_000,
+    l3: 76_000,
+    l4: 38_000,
+  })),
+}));
+
+vi.mock("@/features/codex/prosemirrorTextExtractor", () => ({
+  extractPlainText: vi.fn(() => ""),
 }));
 
 vi.mock("@/features/tree/treeStore", () => ({

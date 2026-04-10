@@ -48,6 +48,46 @@ export function handleCopyWithAttribution(
 }
 
 /**
+ * Copy an AI chat message to clipboard with Grimodex chat attribution metadata.
+ * Sets text/plain, text/html (with data-grimodex-source), and attempts to
+ * include application/x-grimodex-authorship for downstream paste handling.
+ */
+export async function copyChatMessageWithAttribution(
+  text: string,
+  messageId: string,
+  model?: string | null,
+): Promise<void> {
+  const html = `<span data-grimodex-source="ai" data-message-id="${escapeHtml(messageId)}">${escapeHtml(text)}</span>`;
+  const authorshipJson = JSON.stringify({
+    source: "ai",
+    model: model ?? null,
+    messageId,
+  });
+  try {
+    // "web " prefix allows custom MIME types in ClipboardItem (Chrome 101+)
+    const item = new ClipboardItem({
+      "text/plain": new Blob([text], { type: "text/plain" }),
+      "text/html": new Blob([html], { type: "text/html" }),
+      "web application/x-grimodex-authorship": new Blob([authorshipJson], {
+        type: "application/x-grimodex-authorship",
+      }),
+    });
+    await navigator.clipboard.write([item]);
+  } catch {
+    // Fallback: custom MIME unsupported — write without it
+    try {
+      const item = new ClipboardItem({
+        "text/plain": new Blob([text], { type: "text/plain" }),
+        "text/html": new Blob([html], { type: "text/html" }),
+      });
+      await navigator.clipboard.write([item]);
+    } catch {
+      await navigator.clipboard.writeText(text);
+    }
+  }
+}
+
+/**
  * Parse clipboard HTML to extract attributed segments.
  *
  * Returns segments in these cases:

@@ -1,3 +1,5 @@
+import { useCallback } from "react";
+import { toast } from "sonner";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type { ChatMessage as ChatMessageType } from "../chatTypes";
@@ -6,6 +8,7 @@ import { ChatMessageActions } from "./ChatMessageActions";
 import { MessageBadge } from "./MessageBadge";
 import { ToolCallBlock } from "./ToolCallBlock";
 import { ThinkingBlock } from "./ThinkingBlock";
+import { copyChatMessageWithAttribution } from "@/lib/clipboardAttribution";
 
 interface ParsedMetadata {
   tool_calls?: ToolCallRecord[];
@@ -43,8 +46,16 @@ interface ChatMessageProps {
   msg: ChatMessageType;
   isStreaming: boolean;
   onInsert: (content: string, messageId: string) => void;
-  onExtractCodex?: (messageId: string, selectedText: string | null) => void;
-  onSaveSnippet?: (messageId: string, selectedText: string | null) => void;
+  onExtractCodexQuick?: (messageId: string) => void;
+  onExtractCodexDetailed?: (
+    messageId: string,
+    selectedText: string | null,
+  ) => void;
+  onSaveSnippetQuick?: (messageId: string) => void;
+  onSaveSnippetDetailed?: (
+    messageId: string,
+    selectedText: string | null,
+  ) => void;
   onEdit?: (messageId: string) => void;
   onDelete?: (messageId: string) => void;
   onRegenerate?: (messageId: string) => void;
@@ -54,8 +65,10 @@ export function ChatMessage({
   msg,
   isStreaming,
   onInsert,
-  onExtractCodex,
-  onSaveSnippet,
+  onExtractCodexQuick,
+  onExtractCodexDetailed,
+  onSaveSnippetQuick,
+  onSaveSnippetDetailed,
   onEdit,
   onDelete,
   onRegenerate,
@@ -65,6 +78,13 @@ export function ChatMessage({
   const showActions = !isStreaming && msg.content.length > 0;
   const toolCalls = isAssistant ? parseToolCalls(msg.metadata) : [];
   const thinkingBlocks = isAssistant ? parseThinkingBlocks(msg.metadata) : [];
+
+  // G2 + G23: Copy with attribution MIME
+  const handleCopy = useCallback(() => {
+    copyChatMessageWithAttribution(msg.content, msg.id, msg.model)
+      .then(() => toast.success("コピーしました"))
+      .catch(() => toast.error("コピーに失敗しました"));
+  }, [msg.content, msg.id, msg.model]);
 
   return (
     <div
@@ -78,7 +98,7 @@ export function ChatMessage({
         className={
           msg.role === "user"
             ? "max-w-[85%] rounded-lg bg-primary px-3 py-2 text-sm text-primary-foreground"
-            : "max-w-[85%] rounded-lg bg-muted px-3 py-2 text-sm text-foreground"
+            : "max-w-[95%] rounded-lg bg-muted px-3 py-2 text-sm text-foreground"
         }
       >
         {isAssistant ? (
@@ -106,13 +126,30 @@ export function ChatMessage({
                 {msg.content}
               </ReactMarkdown>
             </div>
+            {/* G3: Meta info row */}
+            {(msg.model || msg.tokensOut != null || msg.durationMs != null) && (
+              <div className="mt-1 text-[10px] text-muted-foreground/60">
+                {[
+                  msg.model,
+                  msg.tokensOut != null ? `${msg.tokensOut} tok` : null,
+                  msg.durationMs != null
+                    ? `${(msg.durationMs / 1000).toFixed(1)}s`
+                    : null,
+                ]
+                  .filter(Boolean)
+                  .join(" · ")}
+              </div>
+            )}
             {showActions && (
               <ChatMessageActions
                 messageId={msg.id}
                 messageRole="assistant"
                 onInsert={() => onInsert(msg.content, msg.id)}
-                onExtractCodex={onExtractCodex}
-                onSaveSnippet={onSaveSnippet}
+                onExtractCodexQuick={onExtractCodexQuick}
+                onExtractCodexDetailed={onExtractCodexDetailed}
+                onSaveSnippetQuick={onSaveSnippetQuick}
+                onSaveSnippetDetailed={onSaveSnippetDetailed}
+                onCopy={handleCopy}
                 onRegenerate={onRegenerate}
                 onDelete={onDelete}
               />

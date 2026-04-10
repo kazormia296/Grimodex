@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 import type { Editor } from "@tiptap/core";
+import { toast } from "sonner";
 import { useChatStore } from "./chatStore";
 import { useSceneStore } from "@/features/tree/store";
 import { useEditorStore } from "@/features/editor/editorStore";
@@ -160,7 +161,7 @@ export function ChatPanel() {
 
   const createCodexEntry = useCodexStore((s) => s.create);
 
-  const handleExtractCodex = useCallback(
+  const handleExtractCodexDetailed = useCallback(
     (messageId: string, selectedText: string | null) => {
       const msg = messages.find((m) => m.id === messageId);
       const content = selectedText ?? msg?.content ?? "";
@@ -169,6 +170,29 @@ export function ChatPanel() {
       setExtractionDialog({ open: true, messageId, content, messageRole });
     },
     [messages],
+  );
+
+  const handleExtractCodexQuick = useCallback(
+    async (messageId: string) => {
+      const msg = messages.find((m) => m.id === messageId);
+      if (!msg) return;
+      const text = msg.content;
+      const name =
+        text.replace(/\n/g, " ").slice(0, 30).trimEnd() || "Untitled";
+      const entry = await createCodexEntry({
+        name,
+        type: "lore",
+        summary: text,
+        sourceChatMessageId: messageId,
+      });
+      if (entry) {
+        await chatApi.updateMessageMetadata(messageId, {
+          extractedCodex: [entry.id],
+        });
+      }
+      toast.success("Codexに抽出しました");
+    },
+    [messages, createCodexEntry],
   );
 
   // Snippet extraction dialog
@@ -181,7 +205,7 @@ export function ChatPanel() {
 
   const createSnippet = useSnippetStore((s) => s.create);
 
-  const handleSaveSnippet = useCallback(
+  const handleSaveSnippetDetailed = useCallback(
     (messageId: string, selectedText: string | null) => {
       const msg = messages.find((m) => m.id === messageId);
       const content = selectedText ?? msg?.content ?? "";
@@ -195,6 +219,27 @@ export function ChatPanel() {
       });
     },
     [messages],
+  );
+
+  const handleSaveSnippetQuick = useCallback(
+    async (messageId: string) => {
+      const msg = messages.find((m) => m.id === messageId);
+      if (!msg) return;
+      const content = msg.content;
+      const title =
+        content.replace(/\n/g, " ").slice(0, 30).trimEnd() || "Untitled";
+      const snippet = await createSnippet({
+        title,
+        content,
+        sourceChatMessageId: messageId,
+      });
+      if (snippet) {
+        await chatApi.updateMessageMetadata(messageId, {
+          extractedSnippets: [snippet.id],
+        });
+      }
+    },
+    [messages, createSnippet],
   );
 
   useEffect(() => {
@@ -308,8 +353,10 @@ export function ChatPanel() {
                   msg={msg}
                   isStreaming={isStreaming}
                   onInsert={insertFromChat}
-                  onExtractCodex={handleExtractCodex}
-                  onSaveSnippet={handleSaveSnippet}
+                  onExtractCodexQuick={handleExtractCodexQuick}
+                  onExtractCodexDetailed={handleExtractCodexDetailed}
+                  onSaveSnippetQuick={handleSaveSnippetQuick}
+                  onSaveSnippetDetailed={handleSaveSnippetDetailed}
                   onEdit={handleEditMessage}
                   onDelete={handleDeleteMessage}
                   onRegenerate={handleRegenerate}

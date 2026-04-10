@@ -44,6 +44,7 @@ import {
   buildAgentSystemPrompt,
   buildStorySoFar,
   countTokens,
+  allocateLayerBudgets,
 } from "./contextBuilder";
 import type {
   SceneContext,
@@ -51,6 +52,7 @@ import type {
   CodexContext,
   LayerBreakdown,
 } from "./contextBuilder";
+import { extractPlainText } from "@/features/codex/prosemirrorTextExtractor";
 import { runAgentLoop } from "./agent/agentLoop";
 import { executeTool } from "./agent/toolExecutors";
 import { AGENT_TOOLS } from "./agent/toolDefinitions";
@@ -58,6 +60,7 @@ import {
   getToolTokenBudget,
   buildThinkingParams,
   getEffortForTask,
+  getModelCapabilities,
 } from "./agent/modelLimits";
 import { useAiSettingsStore } from "./store";
 import type {
@@ -618,20 +621,57 @@ export const useChatStore = create<ChatState>()((set, get) => ({
 
       if (sceneCtx) {
         const allEntries = await listCodexEntries();
+
+        // G12: context_mode フィルタ
+        // hidden → 除外, always → 無条件追加, mentioned → 検出時のみ, suppress → ピンのみ
+        const detectableEntries = allEntries.filter(
+          (e) => e.contextMode !== "hidden" && e.contextMode !== "suppress",
+        );
+        const alwaysEntries = allEntries.filter(
+          (e) => e.contextMode === "always",
+        );
+
         const mentioned = await findMentionedEntriesAsync(
           sceneCtx.content,
-          allEntries,
+          detectableEntries,
         );
-        const baseCodExEntries: CodexContext[] = mentioned.map((e) => ({
-          id: e.id,
-          type: e.type,
-          name: e.name,
-          summary: allEntries.find((a) => a.id === e.id)?.summary ?? "",
-        }));
+
+        // Merge: always + mentioned (deduplicated)
+        const mentionedIds = new Set(mentioned.map((e) => e.id));
+        const alwaysNotMentioned = alwaysEntries.filter(
+          (e) => !mentionedIds.has(e.id),
+        );
+        const rawCodexEntries = [...mentioned, ...alwaysNotMentioned];
+
+        const buildCodexContext = (e: (typeof allEntries)[0]): CodexContext => {
+          const summary = e.summary ?? "";
+          // G13: summary空ならcontent全文をフォールバック
+          const contentFallback = summary.trim()
+            ? undefined
+            : extractPlainText(e.content) || undefined;
+          return {
+            id: e.id,
+            type: e.type,
+            name: e.name,
+            summary,
+            contentFallback,
+          };
+        };
+
+        const baseCodexEntries: CodexContext[] = rawCodexEntries.map((e) => {
+          const full = allEntries.find((a) => a.id === e.id);
+          return full
+            ? buildCodexContext(full)
+            : { id: e.id, type: e.type, name: e.name, summary: "" };
+        });
 
         // Enrich with children context (subtree token budget)
-        const L4_TOTAL_BUDGET = 60_000;
-        const codexEntries: CodexContext[] = baseCodExEntries.map((ctx) => {
+        // G8: use ratio-based budget from model contextWindow
+        const chatModel = useAiSettingsStore.getState().settings?.model ?? "";
+        const { contextWindow } = getModelCapabilities(chatModel);
+        const budgets = allocateLayerBudgets(contextWindow);
+        const L4_TOTAL_BUDGET = budgets.l4;
+        const codexEntries: CodexContext[] = baseCodexEntries.map((ctx) => {
           const fullEntry = allEntries.find((e) => e.id === ctx.id);
           if (!fullEntry) return ctx;
           const preset = fullEntry.childrenBudget ?? "compact";
@@ -684,25 +724,45 @@ export const useChatStore = create<ChatState>()((set, get) => ({
           });
         }
 
-        // Layer 2: storySoFar — use L2 context budget % from settings (default 10%)
+        // G8: ratio-based L2 budget from model contextWindow
         const allNodes = useTreeStore.getState().nodes;
-        const l2Pct = useSettingsStore
-          .getState()
-          .getNumber("ai.contextBudget.l2", 10);
-        const storySoFarBudget = Math.round((l2Pct / 100) * 200_000);
+        const storySoFarBudget = budgets.l2;
         const storySoFar = buildStorySoFar(
           sceneCtx.id,
           allNodes,
           storySoFarBudget,
         );
 
+        // G11: 直前シーンのsynopsisを取得
+        const currentScene = allNodes.find((n) => n.id === sceneCtx.id);
+        const previousSceneNode = currentScene
+          ? allNodes
+              .filter(
+                (n) =>
+                  n.nodeType === "scene" &&
+                  n.id !== sceneCtx.id &&
+                  n.sortOrder < currentScene.sortOrder &&
+                  n.synopsis != null &&
+                  n.synopsis.trim() !== "",
+              )
+              .sort((a, b) => b.sortOrder - a.sortOrder)[0]
+          : undefined;
+        const previousScene = previousSceneNode
+          ? {
+              title: previousSceneNode.title,
+              synopsis: previousSceneNode.synopsis as string,
+            }
+          : undefined;
+
         const promptResult = buildSystemPrompt({
           scene: sceneCtx,
           project: projectCtx ?? undefined,
           storySoFar: storySoFar || undefined,
+          previousScene,
           codexEntries,
           pinnedCodexEntries,
           commandInstruction,
+          contextWindow,
         });
 
         set({

@@ -35,6 +35,8 @@ export function ChatInput({
   const stopGeneration = useChatStore((s) => s.stopGeneration);
   const buildPromptForCopy = useChatStore((s) => s.buildPromptForCopy);
   const agentMode = useChatStore((s) => s.agentMode);
+  const messages = useChatStore((s) => s.messages);
+  const editUserMessage = useChatStore((s) => s.editUserMessage);
   const setAgentMode = useChatStore((s) => s.setAgentMode);
 
   const aiSettings = useAiSettingsStore((s) => s.settings);
@@ -60,6 +62,9 @@ export function ChatInput({
   );
   const [commandIndex, setCommandIndex] = useState(0);
 
+  // G18: ↑キーで直前ユーザーメッセージを入力欄に復帰
+  const editLastFnRef = useRef<() => void>(() => {});
+
   const placeholder = isStreaming
     ? "生成中…"
     : isGlobalChat
@@ -83,6 +88,7 @@ export function ChatInput({
       placeholder,
       onSubmit: handleSubmit,
       onStop: handleStop,
+      onEditLast: () => editLastFnRef.current(),
       setMentionPopup: (state) => {
         setMentionPopup(state);
         setMentionIndex(0);
@@ -105,6 +111,21 @@ export function ChatInput({
   useEffect(() => {
     if (editorRef) editorRef.current = editor;
   }, [editor, editorRef]);
+
+  // G18: editLastFnRef を最新の messages/editor に合わせて更新
+  useEffect(() => {
+    editLastFnRef.current = () => {
+      if (!editor) return;
+      const userMessages = messages.filter((m) => m.role === "user");
+      const last = userMessages[userMessages.length - 1];
+      if (!last) return;
+      const content = editUserMessage(last.id);
+      if (content) {
+        editor.commands.setContent(content);
+        editor.commands.focus("end");
+      }
+    };
+  }, [editor, messages, editUserMessage]);
 
   // Codexハイライト有効化（チャット入力はCodexQuickに影響させない）
   useCodexHighlight(editor, { skipMatchedIds: true });

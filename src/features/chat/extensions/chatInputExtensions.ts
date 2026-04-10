@@ -12,6 +12,7 @@ export interface ChatInputExtensionOptions {
   placeholder: string;
   onSubmit: (markdown: string) => void;
   onStop: () => void;
+  onEditLast?: () => void;
   setMentionPopup?: (state: MentionPopupState | null) => void;
   setCommandPopup?: (state: CommandPopupState | null) => void;
 }
@@ -34,6 +35,7 @@ export function getChatInputExtensions(
     ChatInputKeymap.configure({
       onSubmit: options.onSubmit,
       onStop: options.onStop,
+      onEditLast: options.onEditLast,
     }),
   ];
 

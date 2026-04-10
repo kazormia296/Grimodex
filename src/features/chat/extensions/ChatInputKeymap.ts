@@ -3,6 +3,7 @@ import { Extension } from "@tiptap/core";
 interface ChatInputKeymapOptions {
   onSubmit: (markdown: string) => void;
   onStop: () => void;
+  onEditLast?: () => void;
 }
 
 /**
@@ -16,6 +17,7 @@ export const ChatInputKeymap = Extension.create<ChatInputKeymapOptions>({
     return {
       onSubmit: () => {},
       onStop: () => {},
+      onEditLast: undefined as (() => void) | undefined,
     };
   },
 
@@ -34,6 +36,12 @@ export const ChatInputKeymap = Extension.create<ChatInputKeymapOptions>({
           markdownStorage.markdown?.getMarkdown?.() ?? text;
         this.options.onSubmit(markdown);
         editor.commands.clearContent();
+        return true;
+      },
+      ArrowUp: ({ editor }) => {
+        // Only intercept when editor is empty — restores last user message
+        if (!editor.isEmpty) return false;
+        this.options.onEditLast?.();
         return true;
       },
       "Shift-Enter": ({ editor }) => {

@@ -21,6 +21,7 @@ export interface CodexContext {
   type: string;
   name: string;
   summary: string;
+  contentFallback?: string; // G13: plain text from content if summary is empty
   childrenContext?: string; // pre-computed descendant summaries within budget
 }
 
@@ -33,10 +34,38 @@ export interface BuildSystemPromptInput {
   scene: SceneContext;
   project?: ProjectContext;
   storySoFar?: string;
+  /** G11: 直前シーンのsynopsis（L3に追加） */
+  previousScene?: { title: string; synopsis: string };
   codexEntries?: CodexContext[];
   pinnedCodexEntries?: PinnedCodexContext[];
   /** L6: /command で注入されるインストラクション（一回限り） */
   commandInstruction?: string;
+  /** G8/G10: モデルのコンテキストウィンドウサイズ（比率ベース予算配分に使用） */
+  contextWindow?: number;
+}
+
+export interface LayerBudgets {
+  responseReservation: number;
+  l1: number;
+  l2: number;
+  l3: number;
+  l4: number;
+}
+
+/**
+ * G8/G10: コンテキストウィンドウに対する比率ベース予算配分。
+ * 応答予約（~5%, 最小2,000）を先に確保し、残りを各レイヤーに配分。
+ */
+export function allocateLayerBudgets(contextWindow: number): LayerBudgets {
+  const responseReservation = Math.max(Math.round(contextWindow * 0.05), 2000);
+  const available = contextWindow - responseReservation;
+  return {
+    responseReservation,
+    l1: Math.round(available * 0.02),
+    l2: Math.round(available * 0.1),
+    l3: Math.round(available * 0.4),
+    l4: Math.round(available * 0.2),
+  };
 }
 
 export interface LayerBreakdown {
@@ -110,8 +139,12 @@ export function buildSystemPrompt(
     used: countTokens(l2Text),
   });
 
-  // L3: Current scene
-  let l3Text = `\n## 現在のシーン\nタイトル: ${input.scene.title}`;
+  // L3: Current scene (+ G11: preceding scene synopsis)
+  let l3Text = "";
+  if (input.previousScene) {
+    l3Text += `\n## 直前のシーン\nタイトル: ${input.previousScene.title}\n要約: ${input.previousScene.synopsis}`;
+  }
+  l3Text += `\n## 現在のシーン\nタイトル: ${input.scene.title}`;
   if (input.scene.content) {
     l3Text += `\n\n### シーン本文\n${sanitizeSceneContent(input.scene.content)}`;
   }
@@ -152,7 +185,10 @@ export function buildSystemPrompt(
     const lines = ["\n## 登場キャラクター・設定情報"];
     for (const entry of allCodex) {
       const label = typeLabels[entry.type] ?? entry.type;
-      lines.push(`- **${entry.name}** (${label}): ${entry.summary}`);
+      // G13: summary未記入時はcontentPlainTextにフォールバック
+      const displaySummary =
+        entry.summary.trim() || entry.contentFallback || "";
+      lines.push(`- **${entry.name}** (${label}): ${displaySummary}`);
       if (entry.childrenContext) {
         lines.push(entry.childrenContext);
       }
