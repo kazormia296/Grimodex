@@ -9,13 +9,6 @@ import { CodexQuickPopover } from "./CodexQuickPopover";
 import { CodexCommandPalette } from "@/features/codex/components/CodexCommandPalette";
 import type { CodexEntry } from "@/features/codex/api";
 
-const TYPE_COLORS: Record<string, string> = {
-  character: "bg-purple-500",
-  location: "bg-teal-500",
-  item: "bg-amber-500",
-  lore: "bg-coral-500",
-};
-
 const TYPE_LABELS: Record<string, string> = {
   character: "キャラクター",
   location: "場所",
@@ -23,12 +16,9 @@ const TYPE_LABELS: Record<string, string> = {
   lore: "設定",
 };
 
-function typeDotColor(type: string): string {
-  return TYPE_COLORS[type] ?? "bg-muted-foreground";
-}
-
 export function CodexQuickSection() {
   const matchedEntryIds = useCodexHighlightStore((s) => s.matchedEntryIds);
+  const typeColorMap = useCodexHighlightStore((s) => s.typeColorMap);
   const entries = useCodexStore((s) => s.entries);
   const { pinnedCodexIds, togglePinnedCodex } = useTreeStore();
   const [hoveredEntry, setHoveredEntry] = useState<{
@@ -76,10 +66,10 @@ export function CodexQuickSection() {
             >
               {/* Category dot */}
               <span
-                className={cn(
-                  "h-2 w-2 flex-shrink-0 rounded-full",
-                  typeDotColor(entry.type),
-                )}
+                className="h-2 w-2 flex-shrink-0 rounded-full"
+                style={{
+                  backgroundColor: typeColorMap[entry.type]?.fg ?? "#888888",
+                }}
               />
               {/* Name */}
               <span className="flex-1 truncate text-xs text-foreground">
