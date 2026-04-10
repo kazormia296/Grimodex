@@ -1,6 +1,6 @@
 import { db } from "@/db/client";
 import { snippets } from "@/db/schema";
-import { eq, sql } from "drizzle-orm";
+import { eq, sql, desc } from "drizzle-orm";
 
 export type Snippet = Omit<typeof snippets.$inferSelect, "contentSource"> & {
   contentSource?: string | null;
@@ -9,9 +9,13 @@ export type NewSnippet = typeof snippets.$inferInsert;
 
 export async function listSnippets(sceneId?: string): Promise<Snippet[]> {
   if (sceneId) {
-    return db.select().from(snippets).where(eq(snippets.sceneId, sceneId));
+    return db
+      .select()
+      .from(snippets)
+      .where(eq(snippets.sceneId, sceneId))
+      .orderBy(desc(snippets.createdAt));
   }
-  return db.select().from(snippets);
+  return db.select().from(snippets).orderBy(desc(snippets.createdAt));
 }
 
 export async function getSnippet(id: string): Promise<Snippet | undefined> {

@@ -5,13 +5,24 @@ import * as snippetApi from "./api";
 import type { Snippet, NewSnippet } from "./api";
 import { searchSnippets } from "./search";
 
+export type SnippetSourceFilter =
+  | "all"
+  | "from-chat"
+  | "from-editor"
+  | "manual";
+export type SnippetSortOrder = "recent" | "oldest" | "title-asc" | "most-used";
+
 interface SnippetState {
   entries: Snippet[];
   searchQuery: string;
   isLoading: boolean;
+  sourceFilter: SnippetSourceFilter;
+  sortOrder: SnippetSortOrder;
 
   loadEntries: () => Promise<void>;
   search: (query: string) => Promise<void>;
+  setSourceFilter: (filter: SnippetSourceFilter) => void;
+  setSortOrder: (order: SnippetSortOrder) => void;
   create: (
     data: Pick<NewSnippet, "title" | "content"> &
       Partial<
@@ -33,6 +44,11 @@ export const useSnippetStore = create<SnippetState>()((set, get) => ({
   entries: [],
   searchQuery: "",
   isLoading: false,
+  sourceFilter: "all",
+  sortOrder: "recent",
+
+  setSourceFilter: (filter) => set({ sourceFilter: filter }),
+  setSortOrder: (order) => set({ sortOrder: order }),
 
   loadEntries: async () => {
     set({ isLoading: true });
@@ -83,6 +99,7 @@ export const useSnippetStore = create<SnippetState>()((set, get) => ({
           )
           .catch(() => {});
       }
+      toast.success("Saved as Snippet");
       return created;
     } catch (e) {
       toast.error("スニペットの作成に失敗しました");

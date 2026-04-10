@@ -1,19 +1,38 @@
-import { useState, useEffect, useCallback, useRef } from "react";
-import { Search, Trash2, Copy } from "lucide-react";
+import { useState, useEffect, useCallback, useRef, useMemo } from "react";
+import { Search, Trash2, Copy, Plus, GripVertical } from "lucide-react";
+import { toast } from "sonner";
 import {
   ResizablePanelGroup,
   ResizablePanel,
   ResizableHandle,
 } from "@/components/ui/resizable";
 import { useSnippetStore } from "./snippetStore";
+import type { SnippetSourceFilter, SnippetSortOrder } from "./snippetStore";
 import { SnippetDetailContent } from "./SnippetDetailContent";
+import { SnippetContextMenu } from "./SnippetContextMenu";
 import { useTabStore } from "@/features/editor/tabStore";
+import { useEditorStore } from "@/features/editor/editorStore";
+import { useTreeStore } from "@/features/tree/treeStore";
 import {
   copyWithAttribution,
   handleCopyWithAttribution,
 } from "@/lib/clipboardAttribution";
 import type { AuthorshipSource } from "@/features/attribution/AuthorshipMark";
 import type { Snippet } from "./api";
+
+const SOURCE_FILTER_OPTIONS: { value: SnippetSourceFilter; label: string }[] = [
+  { value: "all", label: "All" },
+  { value: "from-chat", label: "From chat" },
+  { value: "from-editor", label: "From editor" },
+  { value: "manual", label: "Manual" },
+];
+
+const SORT_OPTIONS: { value: SnippetSortOrder; label: string }[] = [
+  { value: "recent", label: "新しい順" },
+  { value: "oldest", label: "古い順" },
+  { value: "title-asc", label: "タイトル順" },
+  { value: "most-used", label: "使用回数順" },
+];
 
 export function SnippetPanel() {
   const entries = useSnippetStore((s) => s.entries);
@@ -24,13 +43,28 @@ export function SnippetPanel() {
   const create = useSnippetStore((s) => s.create);
   const update = useSnippetStore((s) => s.update);
   const remove = useSnippetStore((s) => s.remove);
+  const incrementUsageCount = useSnippetStore((s) => s.incrementUsageCount);
+  const sourceFilter = useSnippetStore((s) => s.sourceFilter);
+  const sortOrder = useSnippetStore((s) => s.sortOrder);
+  const setSourceFilter = useSnippetStore((s) => s.setSourceFilter);
+  const setSortOrder = useSnippetStore((s) => s.setSortOrder);
+  const nodes = useTreeStore((s) => s.nodes);
+  const setActiveScene = useTreeStore((s) => s.setActiveScene);
 
   const [selectedSnippet, setSelectedSnippet] = useState<Snippet | null>(null);
   const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
   const [gridCols, setGridCols] = useState(1);
+  const [focusedIndex, setFocusedIndex] = useState(-1);
+  const [contextMenu, setContextMenu] = useState<{
+    snippet: Snippet;
+    x: number;
+    y: number;
+  } | null>(null);
+
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const panelRef = useRef<HTMLDivElement>(null);
   const listContainerRef = useRef<HTMLDivElement>(null);
+  const searchInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     loadEntries();
@@ -47,8 +81,57 @@ export function SnippetPanel() {
     return () => observer.disconnect();
   }, []);
 
+  // Reset focused index when filter/sort changes
+  useEffect(() => {
+    setFocusedIndex(-1);
+  }, [sourceFilter, sortOrder]);
+
+  const filteredEntries = useMemo(() => {
+    let filtered = entries;
+    if (sourceFilter === "from-chat") {
+      filtered = filtered.filter((s) => s.sourceChatMessageId != null);
+    } else if (sourceFilter === "from-editor") {
+      filtered = filtered.filter(
+        (s) => s.sourceChatMessageId == null && s.sceneId != null,
+      );
+    } else if (sourceFilter === "manual") {
+      filtered = filtered.filter(
+        (s) => s.sourceChatMessageId == null && s.sceneId == null,
+      );
+    }
+
+    switch (sortOrder) {
+      case "recent":
+        return [...filtered].sort((a, b) =>
+          b.createdAt.localeCompare(a.createdAt),
+        );
+      case "oldest":
+        return [...filtered].sort((a, b) =>
+          a.createdAt.localeCompare(b.createdAt),
+        );
+      case "title-asc":
+        return [...filtered].sort((a, b) => a.title.localeCompare(b.title));
+      case "most-used":
+        return [...filtered].sort(
+          (a, b) => (b.usageCount ?? 0) - (a.usageCount ?? 0),
+        );
+      default:
+        return filtered;
+    }
+  }, [entries, sourceFilter, sortOrder]);
+
+  const handleNew = useCallback(async () => {
+    try {
+      const created = await create({ title: "新規スニペット", content: "" });
+      setSelectedSnippet(created);
+    } catch {
+      // error toast shown by store
+    }
+  }, [create]);
+
   const handleKeyDown = useCallback(
     async (e: React.KeyboardEvent) => {
+      // Ctrl+V: paste from clipboard
       if (e.ctrlKey && e.key === "v") {
         e.preventDefault();
         try {
@@ -62,9 +145,86 @@ export function SnippetPanel() {
         } catch {
           // clipboard permission denied - silently ignore
         }
+        return;
+      }
+
+      // Ctrl+F: focus search
+      if (e.ctrlKey && e.key === "f") {
+        e.preventDefault();
+        searchInputRef.current?.focus();
+        return;
+      }
+
+      const total = filteredEntries.length;
+
+      if (e.key === "ArrowDown" && total > 0) {
+        e.preventDefault();
+        setFocusedIndex((prev) => (prev + 1) % total);
+        return;
+      }
+
+      if (e.key === "ArrowUp" && total > 0) {
+        e.preventDefault();
+        setFocusedIndex((prev) => (prev - 1 + total) % total);
+        return;
+      }
+
+      if (e.ctrlKey && e.key === "Enter" && focusedIndex >= 0) {
+        e.preventDefault();
+        const snippet = filteredEntries[focusedIndex];
+        if (snippet) {
+          const { insertFromSnippet } = useEditorStore.getState();
+          const source = (snippet.contentSource as "ai" | "human") ?? "human";
+          const success = insertFromSnippet(
+            snippet.id,
+            snippet.content,
+            source,
+            null,
+          );
+          if (success) {
+            void incrementUsageCount(snippet.id);
+            toast.success("挿入しました");
+          }
+        }
+        return;
+      }
+
+      if (e.key === "Enter" && focusedIndex >= 0) {
+        e.preventDefault();
+        const snippet = filteredEntries[focusedIndex];
+        if (snippet) {
+          setSelectedSnippet((prev) =>
+            prev?.id === snippet.id ? null : snippet,
+          );
+        }
+        return;
+      }
+
+      if (e.key === "Delete" && focusedIndex >= 0) {
+        e.preventDefault();
+        const snippet = filteredEntries[focusedIndex];
+        if (snippet) setDeleteConfirmId(snippet.id);
+        return;
+      }
+
+      if (e.key === "Escape") {
+        if (searchQuery) {
+          search("");
+          if (searchInputRef.current) searchInputRef.current.value = "";
+        } else {
+          setSelectedSnippet(null);
+          setFocusedIndex(-1);
+        }
       }
     },
-    [create],
+    [
+      filteredEntries,
+      focusedIndex,
+      searchQuery,
+      create,
+      search,
+      incrementUsageCount,
+    ],
   );
 
   const handleSearchChange = useCallback(
@@ -120,14 +280,11 @@ export function SnippetPanel() {
     setDeleteConfirmId(null);
     await remove(id);
     setSelectedSnippet((prev) => (prev?.id === id ? null : prev));
-    // Close editor tab if open
     const tabState = useTabStore.getState();
     if (tabState.tabs.some((t) => t.nodeId === id)) tabState.closeTab(id);
     if (tabState.secondaryTabs.some((t) => t.nodeId === id))
       tabState.closeSecondaryTab(id);
   }, [deleteConfirmId, remove]);
-
-  const handleDelete = initiateDelete;
 
   return (
     <div
@@ -144,18 +301,84 @@ export function SnippetPanel() {
             data-testid="snippet-list-panel"
             className="flex h-full flex-col"
           >
+            {/* Header */}
+            <div className="flex items-center justify-between border-b border-border px-3 py-2">
+              <span className="text-sm font-semibold">Snippets</span>
+              <div className="flex items-center gap-1">
+                <span
+                  data-testid="snippet-count"
+                  className="text-xs text-muted-foreground"
+                >
+                  {filteredEntries.length}
+                </span>
+                <button
+                  type="button"
+                  data-testid="snippet-new-button"
+                  onClick={() => void handleNew()}
+                  className="rounded p-1 text-muted-foreground hover:bg-accent hover:text-accent-foreground"
+                  title="新規スニペット"
+                >
+                  <Plus className="h-3.5 w-3.5" />
+                </button>
+              </div>
+            </div>
+
+            {/* Search */}
             <div className="border-b border-border p-2">
               <div className="relative">
                 <Search className="absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
                 <input
+                  ref={searchInputRef}
                   data-testid="snippet-search-input"
                   type="text"
                   defaultValue={searchQuery}
                   onChange={(e) => handleSearchChange(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Escape") {
+                      e.stopPropagation();
+                      search("");
+                      e.currentTarget.value = "";
+                      e.currentTarget.blur();
+                    }
+                  }}
                   placeholder="Snippetを検索…"
                   className="w-full rounded-md border border-input bg-background pl-8 pr-3 py-1.5 text-xs focus:outline-none focus:ring-1 focus:ring-ring"
                 />
               </div>
+            </div>
+
+            {/* Filter bar */}
+            <div className="flex flex-wrap items-center gap-1 border-b border-border px-2 py-1.5">
+              {SOURCE_FILTER_OPTIONS.map((opt) => (
+                <button
+                  key={opt.value}
+                  type="button"
+                  data-testid={`snippet-filter-${opt.value}`}
+                  onClick={() => setSourceFilter(opt.value)}
+                  className={`rounded-full px-2 py-0.5 text-[10px] font-medium transition-colors ${
+                    sourceFilter === opt.value
+                      ? "bg-primary text-primary-foreground"
+                      : "bg-muted text-muted-foreground hover:bg-accent"
+                  }`}
+                >
+                  {opt.label}
+                </button>
+              ))}
+              <select
+                data-testid="snippet-sort-selector"
+                value={sortOrder}
+                onChange={(e) =>
+                  setSortOrder(e.target.value as SnippetSortOrder)
+                }
+                className="ml-auto rounded border border-input bg-background px-1 py-0.5 text-[10px]"
+                title="ソート順"
+              >
+                {SORT_OPTIONS.map((opt) => (
+                  <option key={opt.value} value={opt.value}>
+                    {opt.label}
+                  </option>
+                ))}
+              </select>
             </div>
 
             <div className="flex-1 overflow-y-auto">
@@ -164,13 +387,13 @@ export function SnippetPanel() {
                   data-testid="snippet-loading"
                   className="flex items-center justify-center py-8"
                 >
-                  <span className="text-xs text-muted-foreground animate-pulse">
+                  <span className="animate-pulse text-xs text-muted-foreground">
                     読み込み中…
                   </span>
                 </div>
               )}
 
-              {!isLoading && entries.length === 0 && (
+              {!isLoading && filteredEntries.length === 0 && (
                 <div
                   data-testid="snippet-empty-state"
                   className="flex h-full items-center justify-center"
@@ -181,7 +404,7 @@ export function SnippetPanel() {
                 </div>
               )}
 
-              {!isLoading && entries.length > 0 && (
+              {!isLoading && filteredEntries.length > 0 && (
                 <div
                   ref={listContainerRef}
                   className="p-2"
@@ -191,81 +414,134 @@ export function SnippetPanel() {
                     gap: "4px",
                   }}
                 >
-                  {entries.map((snippet) => (
-                    <div
-                      key={snippet.id}
-                      data-testid={`snippet-item-${snippet.id}`}
-                      draggable="true"
-                      onClick={() => setSelectedSnippet(snippet)}
-                      onDragStart={(e) =>
-                        handleDragStart(e, {
-                          id: snippet.id,
-                          content: snippet.content,
-                          contentSource: snippet.contentSource,
-                        })
-                      }
-                      onCopy={(e) =>
-                        handleCopyWithAttribution(
-                          e,
-                          "human" as AuthorshipSource,
-                        )
-                      }
-                      className={`group cursor-grab rounded-md border border-border p-2 hover:bg-accent/50 active:cursor-grabbing ${
-                        selectedSnippet?.id === snippet.id ? "bg-accent" : ""
-                      }`}
-                    >
-                      <div className="flex items-start justify-between gap-1">
-                        <h4 className="text-xs font-medium text-foreground truncate">
-                          {snippet.title}
-                        </h4>
-                        <div className="flex shrink-0 gap-0.5">
-                          <button
-                            type="button"
-                            data-testid={`snippet-copy-${snippet.id}`}
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              copyWithAttribution(
-                                snippet.content,
-                                "human" as AuthorshipSource,
-                              );
-                            }}
-                            className="rounded p-0.5 text-muted-foreground opacity-0 hover:bg-accent hover:text-accent-foreground group-hover:opacity-100"
-                          >
-                            <Copy className="h-3 w-3" />
-                          </button>
-                          <button
-                            type="button"
-                            data-testid={`snippet-delete-${snippet.id}`}
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              initiateDelete(snippet.id);
-                            }}
-                            className="rounded p-0.5 text-muted-foreground opacity-0 hover:bg-destructive/10 hover:text-destructive group-hover:opacity-100"
-                          >
-                            <Trash2 className="h-3 w-3" />
-                          </button>
+                  {filteredEntries.map((snippet, idx) => {
+                    const sceneName = snippet.sceneId
+                      ? nodes.find((n) => n.id === snippet.sceneId)?.title
+                      : null;
+                    return (
+                      <div
+                        key={snippet.id}
+                        data-testid={`snippet-item-${snippet.id}`}
+                        draggable="true"
+                        onClick={() => {
+                          setSelectedSnippet(snippet);
+                          setFocusedIndex(idx);
+                        }}
+                        onDoubleClick={() => {
+                          const source =
+                            (snippet.contentSource as AuthorshipSource) ??
+                            "human";
+                          copyWithAttribution(snippet.content, source);
+                          toast.success("コピーしました");
+                        }}
+                        onContextMenu={(e) => {
+                          e.preventDefault();
+                          setContextMenu({
+                            snippet,
+                            x: e.clientX,
+                            y: e.clientY,
+                          });
+                        }}
+                        onDragStart={(e) =>
+                          handleDragStart(e, {
+                            id: snippet.id,
+                            content: snippet.content,
+                            contentSource: snippet.contentSource,
+                          })
+                        }
+                        onCopy={(e) =>
+                          handleCopyWithAttribution(
+                            e,
+                            "human" as AuthorshipSource,
+                          )
+                        }
+                        className={`group flex cursor-grab items-start gap-1 rounded-md border border-border p-2 hover:bg-accent/50 active:cursor-grabbing ${
+                          selectedSnippet?.id === snippet.id ? "bg-accent" : ""
+                        } ${focusedIndex === idx ? "ring-1 ring-ring" : ""}`}
+                      >
+                        <GripVertical className="mt-0.5 h-3 w-3 shrink-0 text-muted-foreground opacity-50" />
+                        <div className="min-w-0 flex-1">
+                          <div className="flex items-start justify-between gap-1">
+                            <h4 className="truncate text-xs font-medium text-foreground">
+                              {snippet.title}
+                            </h4>
+                            <div className="flex shrink-0 gap-0.5">
+                              <button
+                                type="button"
+                                data-testid={`snippet-copy-${snippet.id}`}
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  copyWithAttribution(
+                                    snippet.content,
+                                    "human" as AuthorshipSource,
+                                  );
+                                }}
+                                className="rounded p-0.5 text-muted-foreground opacity-0 hover:bg-accent hover:text-accent-foreground group-hover:opacity-100"
+                              >
+                                <Copy className="h-3 w-3" />
+                              </button>
+                              <button
+                                type="button"
+                                data-testid={`snippet-delete-${snippet.id}`}
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  initiateDelete(snippet.id);
+                                }}
+                                className="rounded p-0.5 text-muted-foreground opacity-0 hover:bg-destructive/10 hover:text-destructive group-hover:opacity-100"
+                              >
+                                <Trash2 className="h-3 w-3" />
+                              </button>
+                            </div>
+                          </div>
+                          <p className="mt-1 line-clamp-2 text-xs text-muted-foreground">
+                            {snippet.content}
+                          </p>
+                          {/* Source badge + char count + scene name */}
+                          <div className="mt-1 flex flex-wrap items-center gap-1.5">
+                            {snippet.contentSource === "ai" ? (
+                              <span className="rounded-full bg-purple-500/20 px-1.5 py-0.5 text-[10px] text-purple-400">
+                                AI
+                              </span>
+                            ) : snippet.contentSource === "human" ? (
+                              <span className="rounded-full bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">
+                                Human
+                              </span>
+                            ) : null}
+                            <span className="text-[10px] text-muted-foreground">
+                              {snippet.content.length} chars
+                            </span>
+                            {sceneName && (
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setActiveScene(snippet.sceneId!);
+                                }}
+                                className="text-[10px] text-muted-foreground underline hover:text-foreground"
+                              >
+                                {sceneName}
+                              </button>
+                            )}
+                          </div>
+                          {snippet.tags && (
+                            <div className="mt-1 flex flex-wrap gap-1">
+                              {snippet.tags
+                                .split(",")
+                                .filter(Boolean)
+                                .map((tag) => (
+                                  <span
+                                    key={tag}
+                                    className="inline-block rounded-full bg-accent px-1.5 py-0.5 text-[10px] text-accent-foreground"
+                                  >
+                                    {tag.trim()}
+                                  </span>
+                                ))}
+                            </div>
+                          )}
                         </div>
                       </div>
-                      <p className="mt-1 line-clamp-2 text-xs text-muted-foreground">
-                        {snippet.content}
-                      </p>
-                      {snippet.tags && (
-                        <div className="mt-1 flex flex-wrap gap-1">
-                          {snippet.tags
-                            .split(",")
-                            .filter(Boolean)
-                            .map((tag) => (
-                              <span
-                                key={tag}
-                                className="inline-block rounded-full bg-accent px-1.5 py-0.5 text-[10px] text-accent-foreground"
-                              >
-                                {tag.trim()}
-                              </span>
-                            ))}
-                        </div>
-                      )}
-                    </div>
-                  ))}
+                    );
+                  })}
                 </div>
               )}
             </div>
@@ -281,7 +557,7 @@ export function SnippetPanel() {
               <SnippetDetailContent
                 snippet={selectedSnippet}
                 onSave={handleSave}
-                onDelete={handleDelete}
+                onDelete={initiateDelete}
               />
             ) : (
               <div
@@ -325,6 +601,17 @@ export function SnippetPanel() {
             </div>
           </div>
         </div>
+      )}
+
+      {contextMenu && (
+        <SnippetContextMenu
+          snippet={contextMenu.snippet}
+          x={contextMenu.x}
+          y={contextMenu.y}
+          onClose={() => setContextMenu(null)}
+          onEdit={(snippet) => setSelectedSnippet(snippet)}
+          onDelete={initiateDelete}
+        />
       )}
     </div>
   );

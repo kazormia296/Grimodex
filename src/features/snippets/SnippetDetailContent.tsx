@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import {
   Save,
   Copy,
@@ -6,7 +6,9 @@ import {
   MessageSquare,
   ExternalLink,
   FileText,
+  TextCursorInput,
 } from "lucide-react";
+import { toast } from "sonner";
 import { useEditor, EditorContent } from "@tiptap/react";
 import StarterKit from "@tiptap/starter-kit";
 import { AuthorshipMark } from "@/features/attribution/AuthorshipMark";
@@ -19,6 +21,8 @@ import type { AuthorshipSource } from "@/features/attribution/AuthorshipMark";
 import type { Snippet } from "./api";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { useTabStore } from "@/features/editor/tabStore";
+import { useEditorStore } from "@/features/editor/editorStore";
+import { useSnippetStore } from "./snippetStore";
 
 interface SnippetDetailContentProps {
   snippet: Snippet;
@@ -35,8 +39,18 @@ export function SnippetDetailContent({
   onDelete,
 }: SnippetDetailContentProps) {
   const setActiveScene = useTreeStore((s) => s.setActiveScene);
+  const insertFromSnippet = useEditorStore((s) => s.insertFromSnippet);
+  const incrementUsageCount = useSnippetStore((s) => s.incrementUsageCount);
+
   const [title, setTitle] = useState(snippet.title);
   const [tags, setTags] = useState(snippet.tags ?? "");
+
+  const titleRef = useRef(title);
+  const tagsRef = useRef(tags);
+  titleRef.current = title;
+  tagsRef.current = tags;
+
+  const autoSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const editor = useEditor({
     extensions: [StarterKit.configure(), AuthorshipMark],
@@ -47,22 +61,66 @@ export function SnippetDetailContent({
 
   // Sync form when snippet changes
   useEffect(() => {
+    if (autoSaveTimerRef.current) clearTimeout(autoSaveTimerRef.current);
     setTitle(snippet.title);
     setTags(snippet.tags ?? "");
     editor?.commands.setContent(snippet.content);
   }, [snippet.id, snippet.title, snippet.tags, snippet.content, editor]);
 
-  const handleSave = () => {
+  // Auto-save on editor content change
+  useEffect(() => {
+    if (!editor) return;
+    const handleUpdate = () => scheduleAutoSave();
+    editor.on("update", handleUpdate);
+    return () => {
+      editor.off("update", handleUpdate);
+    };
+  });
+
+  function scheduleAutoSave() {
+    const snippetId = snippet.id;
+    if (autoSaveTimerRef.current) clearTimeout(autoSaveTimerRef.current);
+    autoSaveTimerRef.current = setTimeout(() => {
+      const content = editor?.getHTML() ?? snippet.content;
+      onSave(snippetId, {
+        title: titleRef.current.trim() || snippet.title,
+        content,
+        tags: tagsRef.current,
+      });
+    }, 2000);
+  }
+
+  const handleSave = useCallback(() => {
+    if (autoSaveTimerRef.current) clearTimeout(autoSaveTimerRef.current);
     if (!title.trim()) return;
     const content = editor?.getHTML() ?? snippet.content;
     onSave(snippet.id, { title: title.trim(), content, tags });
-  };
+  }, [title, tags, editor, snippet, onSave]);
+
+  function handleInsertAtCursor() {
+    const content = editor?.getHTML() ?? snippet.content;
+    const source = (snippet.contentSource as "ai" | "human") ?? "human";
+    const success = insertFromSnippet(snippet.id, content, source, null);
+    if (success) {
+      void incrementUsageCount(snippet.id);
+      toast.success("挿入しました");
+    }
+  }
 
   return (
     <div data-testid="snippet-detail-content" className="flex h-full flex-col">
       <div className="flex items-center justify-between border-b border-border px-3 py-2">
         <h3 className="text-sm font-semibold">Snippet詳細</h3>
         <div className="flex items-center gap-1">
+          <button
+            type="button"
+            data-testid="snippet-insert-at-cursor"
+            onClick={handleInsertAtCursor}
+            className="rounded p-1.5 text-muted-foreground hover:bg-accent hover:text-accent-foreground"
+            title="カーソル位置に挿入"
+          >
+            <TextCursorInput className="h-3.5 w-3.5" />
+          </button>
           <button
             type="button"
             data-testid="snippet-save-button"
@@ -130,7 +188,10 @@ export function SnippetDetailContent({
             data-testid="snippet-detail-title"
             type="text"
             value={title}
-            onChange={(e) => setTitle(e.target.value)}
+            onChange={(e) => {
+              setTitle(e.target.value);
+              scheduleAutoSave();
+            }}
             className="w-full rounded-md border border-input bg-background px-2 py-1.5 text-sm"
           />
         </div>
@@ -148,9 +209,31 @@ export function SnippetDetailContent({
             data-testid="snippet-detail-tags"
             type="text"
             value={tags}
-            onChange={(e) => setTags(e.target.value)}
+            onChange={(e) => {
+              setTags(e.target.value);
+              scheduleAutoSave();
+            }}
             className="w-full rounded-md border border-input bg-background px-2 py-1.5 text-sm"
           />
+        </div>
+
+        {/* Metadata */}
+        <div className="space-y-1 text-xs text-muted-foreground">
+          <div>
+            作成日: {new Date(snippet.createdAt).toLocaleString("ja-JP")}
+          </div>
+          <div className="flex items-center gap-2">
+            <span>使用回数: {snippet.usageCount ?? 0}</span>
+            {snippet.contentSource === "ai" ? (
+              <span className="rounded-full bg-purple-500/20 px-1.5 py-0.5 text-[10px] text-purple-400">
+                AI
+              </span>
+            ) : snippet.contentSource === "human" ? (
+              <span className="rounded-full bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">
+                Human
+              </span>
+            ) : null}
+          </div>
         </div>
 
         {snippet.sourceChatMessageId && (
