@@ -8,11 +8,13 @@ import {
   Pencil,
   Trash2,
   RefreshCw,
+  Star,
 } from "lucide-react";
 
 interface ChatMessageActionsProps {
   messageId: string;
   messageRole: "user" | "assistant";
+  isStarred?: boolean;
   onInsert?: () => void;
   onInsertHover?: (hovering: boolean) => void;
   onExtractCodexQuick?: (messageId: string) => void;
@@ -29,11 +31,13 @@ interface ChatMessageActionsProps {
   onEdit?: (messageId: string) => void;
   onDelete?: (messageId: string) => void;
   onRegenerate?: (messageId: string) => void;
+  onStar?: (messageId: string, starred: boolean) => void;
 }
 
 export function ChatMessageActions({
   messageId,
   messageRole,
+  isStarred,
   onInsert,
   onInsertHover,
   onExtractCodexQuick,
@@ -44,6 +48,7 @@ export function ChatMessageActions({
   onEdit,
   onDelete,
   onRegenerate,
+  onStar,
 }: ChatMessageActionsProps) {
   const [open, setOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
@@ -105,6 +110,23 @@ export function ChatMessageActions({
       ref={menuRef}
       data-testid={`message-actions-wrapper-${messageId}`}
     >
+      {/* スターボタン（全ロール共通） */}
+      {onStar && (
+        <button
+          type="button"
+          data-testid={`star-message-${messageId}`}
+          onClick={() => onStar(messageId, !isStarred)}
+          title={isStarred ? "スターを外す" : "スター付き（要約対象外）"}
+          className={`inline-flex items-center gap-1 rounded border px-1.5 py-1 text-xs transition-colors ${
+            isStarred
+              ? "border-amber-400 bg-amber-50 text-amber-500 hover:bg-amber-100 dark:bg-amber-900/20 dark:hover:bg-amber-800/30"
+              : "border-border text-muted-foreground hover:bg-accent hover:text-accent-foreground"
+          }`}
+        >
+          <Star className={`h-3 w-3 ${isStarred ? "fill-amber-400" : ""}`} />
+        </button>
+      )}
+
       {/* アシスタント専用インラインボタン */}
       {messageRole === "assistant" && (
         <>

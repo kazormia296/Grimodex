@@ -64,6 +64,7 @@ export function ChatPanel() {
   const createNewSession = useChatStore((s) => s.createNewSession);
   const isGlobalChat = useChatStore((s) => s.isGlobalChat);
   const setIsGlobalChat = useChatStore((s) => s.setIsGlobalChat);
+  const starMessage = useChatStore((s) => s.starMessage);
 
   // chatStore の activeSceneId (手動変更可能)
   const chatSceneId = useChatStore((s) => s.activeSceneId);
@@ -143,7 +144,13 @@ export function ChatPanel() {
   const handlePin = useCallback(
     async (entryId: string, type: "codex" | "snippet" = "codex") => {
       if (!activeSessionId) return;
-      await chatApi.pinCodexEntry(activeSessionId, entryId, false, "manual", type);
+      await chatApi.pinCodexEntry(
+        activeSessionId,
+        entryId,
+        false,
+        "manual",
+        type,
+      );
       const [updatedCodex, updatedSnippets] = await Promise.all([
         chatApi.listPinnedCodexEntries(activeSessionId),
         chatApi.listPinnedSnippetEntries(activeSessionId),
@@ -314,6 +321,13 @@ export function ChatPanel() {
     [regenerate],
   );
 
+  const handleStar = useCallback(
+    (messageId: string, starred: boolean) => {
+      starMessage(messageId, starred);
+    },
+    [starMessage],
+  );
+
   // Context menu state
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
 
@@ -412,7 +426,7 @@ export function ChatPanel() {
         ) : (
           <div className="space-y-4">
             {messages
-              .filter((msg) => msg.role !== "system")
+              .filter((msg) => msg.role !== "system" && !msg.isSummarized)
               .map((msg) => (
                 <ChatMessage
                   key={msg.id}
@@ -426,6 +440,7 @@ export function ChatPanel() {
                   onEdit={handleEditMessage}
                   onDelete={handleDeleteMessage}
                   onRegenerate={handleRegenerate}
+                  onStar={handleStar}
                   onContextMenu={handleContextMenu}
                 />
               ))}

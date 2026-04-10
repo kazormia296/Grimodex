@@ -10,6 +10,17 @@ export interface ChatMessage {
   tokensOut?: number | null;
   durationMs?: number | null;
   metadata?: string | null;
+  isStarred?: number;
+  isSummarized?: number;
+  createdAt: string;
+}
+
+export interface ChatSummary {
+  id: string;
+  sessionId: string;
+  summary: string;
+  sourceMessageIds: string[]; // parsed from JSON
+  tokenCount?: number | null;
   createdAt: string;
 }
 

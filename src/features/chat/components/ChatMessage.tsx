@@ -8,6 +8,7 @@ import { ChatMessageActions } from "./ChatMessageActions";
 import { MessageBadge } from "./MessageBadge";
 import { ToolCallBlock } from "./ToolCallBlock";
 import { ThinkingBlock } from "./ThinkingBlock";
+import { SummaryBlock } from "./SummaryBlock";
 import { copyChatMessageWithAttribution } from "@/lib/clipboardAttribution";
 import { useEditorStore } from "@/features/editor/editorStore";
 import { useTextSelection } from "@/features/chat/hooks/useTextSelection";
@@ -33,6 +34,18 @@ function parseMetadata(metadata: string | null | undefined): ParsedMetadata {
     // corrupted metadata
   }
   return {};
+}
+
+function isSummaryMarker(msg: ChatMessageType): boolean {
+  if (!msg.metadata) return false;
+  try {
+    const parsed: unknown = JSON.parse(msg.metadata);
+    return (
+      parsed !== null && typeof parsed === "object" && "summary_id" in parsed
+    );
+  } catch {
+    return false;
+  }
 }
 
 function parseToolCalls(metadata: string | null | undefined): ToolCallRecord[] {
@@ -62,6 +75,7 @@ interface ChatMessageProps {
   onEdit?: (messageId: string) => void;
   onDelete?: (messageId: string) => void;
   onRegenerate?: (messageId: string) => void;
+  onStar?: (messageId: string, starred: boolean) => void;
   onContextMenu?: (e: React.MouseEvent, msg: ChatMessageType) => void;
 }
 
@@ -76,13 +90,17 @@ export function ChatMessage({
   onEdit,
   onDelete,
   onRegenerate,
+  onStar,
   onContextMenu,
 }: ChatMessageProps) {
   const isAssistant = msg.role === "assistant";
   const isUser = msg.role === "user";
-  const showActions = !isStreaming && msg.content.length > 0;
-  const toolCalls = isAssistant ? parseToolCalls(msg.metadata) : [];
-  const thinkingBlocks = isAssistant ? parseThinkingBlocks(msg.metadata) : [];
+  const isSummary = isSummaryMarker(msg);
+  const showActions = !isStreaming && msg.content.length > 0 && !isSummary;
+  const toolCalls =
+    isAssistant && !isSummary ? parseToolCalls(msg.metadata) : [];
+  const thinkingBlocks =
+    isAssistant && !isSummary ? parseThinkingBlocks(msg.metadata) : [];
 
   const containerRef = useRef<HTMLDivElement>(null);
   const showGhostPreview = useEditorStore((s) => s.showGhostPreview);
@@ -119,7 +137,9 @@ export function ChatMessage({
         }
         onContextMenu={handleContextMenu}
       >
-        {isAssistant ? (
+        {isAssistant && isSummary ? (
+          <SummaryBlock summary={msg.content} />
+        ) : isAssistant ? (
           <>
             {thinkingBlocks.length > 0 && (
               <div className="mb-2 space-y-1">
@@ -162,6 +182,7 @@ export function ChatMessage({
               <ChatMessageActions
                 messageId={msg.id}
                 messageRole="assistant"
+                isStarred={!!msg.isStarred}
                 onInsert={() => onInsert(msg.content, msg.id)}
                 onInsertHover={(hovering) =>
                   hovering ? showGhostPreview(msg.content) : clearGhostPreview()
@@ -173,6 +194,7 @@ export function ChatMessage({
                 onCopy={handleCopy}
                 onRegenerate={onRegenerate}
                 onDelete={onDelete}
+                onStar={onStar}
               />
             )}
             {isAssistant && selectionInfo && (
@@ -205,8 +227,10 @@ export function ChatMessage({
               <ChatMessageActions
                 messageId={msg.id}
                 messageRole="user"
+                isStarred={!!msg.isStarred}
                 onEdit={onEdit}
                 onDelete={onDelete}
+                onStar={onStar}
               />
             )}
           </>

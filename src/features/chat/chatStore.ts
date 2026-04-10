@@ -163,6 +163,8 @@ interface ChatState {
   clearError: () => void;
   setActiveSceneId: (id: string) => void;
   setActiveProjectId: (id: string | null) => void;
+  /** G17: スターのトグル（要約対象外フラグ） */
+  starMessage: (messageId: string, starred: boolean) => Promise<void>;
   /** G20: stores old message content when editing, to detect removed @mentions */
   _editingOldContent: string | null;
 }
@@ -933,7 +935,8 @@ export const useChatStore = create<ChatState>()((set, get) => ({
         const effectiveSessionId = sessionIdForPersist ?? activeSessionId;
         if (effectiveSessionId) {
           try {
-            const snippetItems = await listPinnedSnippetEntries(effectiveSessionId);
+            const snippetItems =
+              await listPinnedSnippetEntries(effectiveSessionId);
             pinnedSnippets = snippetItems.map((s) => ({
               id: s.id,
               title: s.title,
@@ -990,7 +993,8 @@ export const useChatStore = create<ChatState>()((set, get) => ({
           previousScene,
           codexEntries,
           pinnedCodexEntries,
-          pinnedSnippets: pinnedSnippets.length > 0 ? pinnedSnippets : undefined,
+          pinnedSnippets:
+            pinnedSnippets.length > 0 ? pinnedSnippets : undefined,
           activeTabContent,
           commandInstruction,
           conversationTokens,
@@ -1332,8 +1336,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
       let refreshPinnedSnippets: PinnedSnippetContext[] = [];
       if (activeSessionId) {
         try {
-          const snippetItems =
-            await listPinnedSnippetEntries(activeSessionId);
+          const snippetItems = await listPinnedSnippetEntries(activeSessionId);
           refreshPinnedSnippets = snippetItems.map((s) => ({
             id: s.id,
             title: s.title,
@@ -1354,9 +1357,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
           (t) => t.nodeId === tabState.activeTabId,
         );
         if (activeTab?.contentType === "codex") {
-          const codexEntry = allEntries.find(
-            (e) => e.id === activeTab.nodeId,
-          );
+          const codexEntry = allEntries.find((e) => e.id === activeTab.nodeId);
           if (codexEntry) {
             refreshActiveTabContent = {
               type: "codex",
@@ -1390,9 +1391,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
         codexEntries,
         pinnedCodexEntries,
         pinnedSnippets:
-          refreshPinnedSnippets.length > 0
-            ? refreshPinnedSnippets
-            : undefined,
+          refreshPinnedSnippets.length > 0 ? refreshPinnedSnippets : undefined,
         activeTabContent: refreshActiveTabContent,
       });
       set({
@@ -1441,6 +1440,21 @@ export const useChatStore = create<ChatState>()((set, get) => ({
     } catch (e) {
       toast.error("メッセージの削除に失敗しました");
       debugLog.error("ChatStore", "deleteMessage", errorDetail(e));
+    }
+  },
+
+  // --- G17: スターのトグル ---
+  starMessage: async (messageId: string, starred: boolean) => {
+    try {
+      await chatApi.toggleStarMessage(messageId, starred);
+      set((s) => ({
+        messages: s.messages.map((m) =>
+          m.id === messageId ? { ...m, isStarred: starred ? 1 : 0 } : m,
+        ),
+      }));
+    } catch (e) {
+      toast.error("スターの更新に失敗しました");
+      debugLog.error("ChatStore", "starMessage", errorDetail(e));
     }
   },
 
