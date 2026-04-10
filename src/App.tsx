@@ -37,6 +37,8 @@ import {
 } from "@/lib/colorThemes";
 import { useSettingsStore } from "@/features/settings/settingsStore";
 import { GrimodexLogo } from "@/components/GrimodexLogo";
+import { WindowControls } from "@/components/WindowControls";
+import { TitleBar } from "@/components/TitleBar";
 import { useTabStore } from "@/features/editor/tabStore";
 import { useTreeStore } from "@/features/tree/treeStore";
 
@@ -171,6 +173,7 @@ function App() {
       <Toaster position="bottom-right" richColors />
       {view === "loading" && (
         <div className="flex h-screen items-center justify-center bg-background text-foreground">
+          <TitleBar />
           <p className="text-sm text-muted-foreground">読み込み中…</p>
         </div>
       )}
@@ -341,9 +344,12 @@ function EditorScreen() {
 
   return (
     <main className="flex h-screen flex-col">
-      <header className="flex flex-shrink-0 items-center gap-3 border-b border-border px-4 py-2">
-        <WorkspaceMenu />
+      <header
+        className="flex flex-shrink-0 items-center gap-3 border-b border-border px-4 py-2"
+        data-tauri-drag-region
+      >
         <GrimodexLogo height={24} className="text-foreground" />
+        <WorkspaceMenu />
         <div className="flex-1" />
         <LayoutPresetDropdown />
         <PanelToggleDropdown />
@@ -358,6 +364,8 @@ function EditorScreen() {
         >
           <Settings className="h-4 w-4" />
         </button>
+        <div className="h-4 w-px bg-border" />
+        <WindowControls />
       </header>
       <SettingsDialog
         open={showSettings}

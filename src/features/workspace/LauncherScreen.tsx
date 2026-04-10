@@ -3,6 +3,7 @@ import { openFolderDialog } from "@/lib/dialog";
 import { useWorkspaceStore } from "./store";
 import type { RecentWorkspace } from "./store";
 import { cn } from "@/lib/utils";
+import { TitleBar } from "@/components/TitleBar";
 
 export function LauncherScreen() {
   const globalSettings = useWorkspaceStore((s) => s.globalSettings);
@@ -30,6 +31,7 @@ export function LauncherScreen() {
 
   return (
     <div className="flex h-screen flex-col items-center justify-center bg-background text-foreground">
+      <TitleBar />
       <div className="flex w-full max-w-lg flex-col gap-6 px-8">
         <h1 className="text-2xl font-bold">Grimodex</h1>
 
