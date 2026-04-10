@@ -127,10 +127,6 @@ export function CodexQuickSection() {
             TYPE_LABELS[hoveredEntry.entry.type] ?? hoveredEntry.entry.type
           }
           onClose={() => setHoveredEntry(null)}
-          onOpenInCodex={() => {
-            setHoveredEntry(null);
-            handleEntryClick(hoveredEntry.entry);
-          }}
         />
       )}
 

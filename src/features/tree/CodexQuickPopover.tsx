@@ -8,7 +8,6 @@ interface CodexQuickPopoverProps {
   dotColor: string;
   typeLabel: string;
   onClose: () => void;
-  onOpenInCodex: () => void;
 }
 
 export function CodexQuickPopover({
@@ -17,7 +16,6 @@ export function CodexQuickPopover({
   dotColor,
   typeLabel,
   onClose,
-  onOpenInCodex,
 }: CodexQuickPopoverProps) {
   return createPortal(
     <div
@@ -32,7 +30,6 @@ export function CodexQuickPopover({
         entry={entry}
         dotColor={dotColor}
         typeLabel={typeLabel}
-        onOpenInCodex={onOpenInCodex}
       />
     </div>,
     document.body,
