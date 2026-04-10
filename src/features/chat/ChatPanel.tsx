@@ -331,32 +331,6 @@ export function ChatPanel() {
     [messages],
   );
 
-  const handleExtractCodexQuick = useCallback(
-    (messageId: string) => {
-      const msg = messages.find((m) => m.id === messageId);
-      if (!msg) return;
-      createCodexEntry({
-        type: "character",
-        name: msg.content.trim().slice(0, 60),
-        summary: "",
-        sourceChatMessageId: messageId,
-      }).catch(() => toast.error("Codex抽出に失敗しました"));
-    },
-    [messages, createCodexEntry],
-  );
-
-  const handleSaveSnippetQuick = useCallback(
-    (messageId: string) => {
-      const msg = messages.find((m) => m.id === messageId);
-      if (!msg) return;
-      createSnippet({
-        title: msg.content.trim().slice(0, 30),
-        content: msg.content,
-      }).catch(() => toast.error("Snippet保存に失敗しました"));
-    },
-    [messages, createSnippet],
-  );
-
   const handleSend = useCallback(
     (markdown: string) => {
       const trimmed = markdown.trim();
