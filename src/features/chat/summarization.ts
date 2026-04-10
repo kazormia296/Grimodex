@@ -1,5 +1,6 @@
 import type { ChatMessage } from "./chatTypes";
 import type { ChatMessageResult } from "./chatApi";
+import type { ThinkingParams } from "./agent/modelLimits";
 
 export const SUMMARIZATION_THRESHOLD = 16;
 export const KEEP_RECENT_COUNT = 8;
@@ -59,7 +60,7 @@ export async function runSummarization(
   candidates: ChatMessage[],
   sendMessage: (
     messages: { role: string; content: string }[],
-    thinkingParams?: { effort?: string | null },
+    thinkingParams?: ThinkingParams,
   ) => Promise<ChatMessageResult>,
 ): Promise<string> {
   const prompt = createSummarizationPrompt(candidates);
