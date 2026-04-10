@@ -492,14 +492,19 @@ export function EditorPane({
     return () => document.removeEventListener("mousedown", onMouseDown);
   }, [statusPopoverOpen]);
 
+  const activeGroupIndex = useTabStore((s) => s.activeGroupIndex);
+  const isActiveGroup = groupIndex === activeGroupIndex;
+
   useInsertHighlight(editor);
   useCodexHighlight(
     editor,
-    isCodexMode
-      ? { excludeEntryIds: [nodeId] }
-      : isSnippetMode
-        ? { skipMatchedIds: true }
-        : undefined,
+    isSnippetMode
+      ? { skipMatchedIds: true }
+      : isCodexMode
+        ? { excludeEntryIds: [nodeId], skipMatchedIds: !isActiveGroup }
+        : !isActiveGroup
+          ? { skipMatchedIds: true }
+          : undefined,
   );
   useFocusMode(editor);
   const typewriterMode = useCursorSettingsStore((s) => s.typewriterMode);

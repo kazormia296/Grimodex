@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import type { Editor } from "@tiptap/core";
 import { scheduleMatch, rebuildAndSchedule } from "./codexMatchOrchestrator";
 import type { CodexMatchTarget } from "@/features/codex/codexMatcher";
+import { useCodexHighlightStore } from "./codexHighlightStore";
 
 // ---------------------------------------------------------------------------
 // Mocks
@@ -134,6 +135,26 @@ describe("scheduleMatch", () => {
 
     expect(matchText).toHaveBeenCalledWith("text", ENTRIES, ["c1"]);
   });
+
+  it("updates matchedEntryIds when skipMatchedIds is false (default)", async () => {
+    useCodexHighlightStore.setState({ matchedEntryIds: [] });
+    const editor = makeEditor();
+    scheduleMatch("太郎は走った", editor, ENTRIES, [], 0, false);
+    await vi.runAllTimersAsync();
+
+    expect(useCodexHighlightStore.getState().matchedEntryIds).toEqual(["c1"]);
+  });
+
+  it("does NOT update matchedEntryIds when skipMatchedIds is true", async () => {
+    useCodexHighlightStore.setState({ matchedEntryIds: [] });
+    const editor = makeEditor();
+    scheduleMatch("太郎は走った", editor, ENTRIES, [], 0, true);
+    await vi.runAllTimersAsync();
+
+    // dispatch still fires (decorations), but matchedEntryIds stays empty
+    expect(editor.view.dispatch).toHaveBeenCalledTimes(1);
+    expect(useCodexHighlightStore.getState().matchedEntryIds).toEqual([]);
+  });
 });
 
 describe("rebuildAndSchedule", () => {
@@ -154,6 +175,22 @@ describe("rebuildAndSchedule", () => {
     // The dispatch should carry codexHighlightResult = []
     const tr = (editor as ReturnType<typeof makeEditor>).state.tr;
     expect(tr.setMeta).toHaveBeenCalledWith("codexHighlightResult", []);
+  });
+
+  it("clears matchedEntryIds when entries empty and skipMatchedIds is false", async () => {
+    useCodexHighlightStore.setState({ matchedEntryIds: ["c1"] });
+    const editor = makeEditor();
+    await rebuildAndSchedule(editor, [], [], false);
+
+    expect(useCodexHighlightStore.getState().matchedEntryIds).toEqual([]);
+  });
+
+  it("does NOT clear matchedEntryIds when entries empty and skipMatchedIds is true", async () => {
+    useCodexHighlightStore.setState({ matchedEntryIds: ["c1"] });
+    const editor = makeEditor();
+    await rebuildAndSchedule(editor, [], [], true);
+
+    expect(useCodexHighlightStore.getState().matchedEntryIds).toEqual(["c1"]);
   });
 
   it("calls rebuildMatcher then schedules match with debounce=0", async () => {
