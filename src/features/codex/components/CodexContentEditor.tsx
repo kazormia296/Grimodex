@@ -5,6 +5,7 @@ import { AuthorshipMark } from "@/features/attribution/AuthorshipMark";
 import { useAttribution } from "@/features/attribution/useAttribution";
 import { useCodexHighlight } from "@/features/editor/useCodexHighlight";
 import { useSceneContentStore } from "@/features/editor/sceneContentStore";
+import { CodexPopover } from "@/features/editor/CodexPopover";
 
 // Sentinel group index — distinguishes mini-editor updates from pane 0 / pane 1
 const CODEX_MINI_GROUP = 99;
@@ -84,11 +85,14 @@ export function CodexContentEditor({
   }, [entryId, editor]);
 
   return (
-    <div
-      data-testid="codex-content-editor"
-      className="min-h-[80px] rounded-md border border-input bg-background px-2 py-1.5 text-sm [&_.ProseMirror]:min-h-[60px] [&_.ProseMirror]:outline-none"
-    >
-      <EditorContent editor={editor} />
-    </div>
+    <>
+      <div
+        data-testid="codex-content-editor"
+        className="min-h-[80px] rounded-md border border-input bg-background px-2 py-1.5 text-sm [&_.ProseMirror]:min-h-[60px] [&_.ProseMirror]:outline-none"
+      >
+        <EditorContent editor={editor} />
+      </div>
+      <CodexPopover editor={editor} />
+    </>
   );
 }

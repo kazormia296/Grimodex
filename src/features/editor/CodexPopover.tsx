@@ -72,7 +72,7 @@ export function CodexPopover({ editor }: { editor: Editor | null }) {
   }, []);
 
   useEffect(() => {
-    if (!editor) return;
+    if (!editor || !editor.view?.dom) return;
     const dom = editor.view.dom;
     dom.addEventListener("mouseover", handleMouseOver);
     dom.addEventListener("mouseout", handleMouseOut);
