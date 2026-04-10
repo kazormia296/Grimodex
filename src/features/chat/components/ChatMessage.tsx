@@ -59,6 +59,7 @@ interface ChatMessageProps {
   onEdit?: (messageId: string) => void;
   onDelete?: (messageId: string) => void;
   onRegenerate?: (messageId: string) => void;
+  onContextMenu?: (e: React.MouseEvent, msg: ChatMessageType) => void;
 }
 
 export function ChatMessage({
@@ -72,6 +73,7 @@ export function ChatMessage({
   onEdit,
   onDelete,
   onRegenerate,
+  onContextMenu,
 }: ChatMessageProps) {
   const isAssistant = msg.role === "assistant";
   const isUser = msg.role === "user";
@@ -85,6 +87,12 @@ export function ChatMessage({
       .then(() => toast.success("コピーしました"))
       .catch(() => toast.error("コピーに失敗しました"));
   }, [msg.content, msg.id, msg.model]);
+
+  const handleContextMenu = (e: React.MouseEvent) => {
+    if (!showActions) return;
+    e.preventDefault();
+    onContextMenu?.(e, msg);
+  };
 
   return (
     <div
@@ -100,6 +108,7 @@ export function ChatMessage({
             ? "max-w-[85%] rounded-lg bg-primary px-3 py-2 text-sm text-primary-foreground"
             : "max-w-[95%] rounded-lg bg-muted px-3 py-2 text-sm text-foreground"
         }
+        onContextMenu={handleContextMenu}
       >
         {isAssistant ? (
           <>
