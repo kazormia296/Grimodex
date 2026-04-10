@@ -23,11 +23,18 @@ export interface CodexContext {
   summary: string;
   contentFallback?: string; // G13: plain text from content if summary is empty
   childrenContext?: string; // pre-computed descendant summaries within budget
+  customDetails?: Array<{ fieldName: string; value: string }>; // G14
 }
 
 export interface PinnedCodexContext extends CodexContext {
   withChildren?: boolean;
   children?: CodexContext[]; // full content children (budget ignored)
+}
+
+export interface PinnedSnippetContext {
+  id: string;
+  title: string;
+  content: string; // plain text extracted from ProseMirror JSON
 }
 
 export interface TrimInput {
@@ -62,6 +69,16 @@ export interface BuildSystemPromptInput {
   conversationTokens?: number;
   /** G25: トリムで除外するレイヤー（空文字に置換される） */
   excludeLayers?: string[];
+  /** G17: 会話の要約テキスト（L5レイヤー） */
+  conversationSummary?: string;
+  /** G16: ピン留めされたSnippetエントリ (L4に注入) */
+  pinnedSnippets?: PinnedSnippetContext[];
+  /** G19: アクティブタブのコンテンツ (L3に注入) */
+  activeTabContent?: {
+    type: "codex" | "snippet";
+    title: string;
+    content: string; // plain text
+  };
 }
 
 export interface LayerBudgets {
@@ -328,7 +345,7 @@ export function buildSystemPrompt(
   // L2: Story so far
   let l2Text = input.storySoFar ? `\n${input.storySoFar}` : "";
 
-  // L3: Current scene (+ G11: preceding scene synopsis)
+  // L3: Current scene (+ G11: preceding scene synopsis + G19: active tab content)
   let l3Text = "";
   if (input.previousScene) {
     l3Text += `\n## 直前のシーン\nタイトル: ${input.previousScene.title}\n要約: ${input.previousScene.synopsis}`;
@@ -336,6 +353,12 @@ export function buildSystemPrompt(
   l3Text += `\n## 現在のシーン\nタイトル: ${input.scene.title}`;
   if (input.scene.content) {
     l3Text += `\n\n### シーン本文\n${sanitizeSceneContent(input.scene.content)}`;
+  }
+  if (input.activeTabContent) {
+    const typeLabel =
+      input.activeTabContent.type === "codex" ? "Codex" : "Snippet";
+    l3Text +=
+      `\n\n## 参照中のコンテンツ\nタイプ: ${typeLabel}\nタイトル: ${input.activeTabContent.title}\n内容: ${input.activeTabContent.content}`;
   }
 
   // L4: Codex entries
@@ -359,7 +382,9 @@ export function buildSystemPrompt(
     ...pinnedWithChildren,
   ]);
   let l4Text = "";
-  if (allCodex.length > 0) {
+  const hasPinnedSnippets =
+    input.pinnedSnippets && input.pinnedSnippets.length > 0;
+  if (allCodex.length > 0 || hasPinnedSnippets) {
     const typeLabels: Record<string, string> = {
       character: "キャラクター",
       location: "場所",
@@ -373,15 +398,26 @@ export function buildSystemPrompt(
       const displaySummary =
         entry.summary.trim() || entry.contentFallback || "";
       lines.push(`- **${entry.name}** (${label}): ${displaySummary}`);
+      if (entry.customDetails?.length) {
+        for (const detail of entry.customDetails) {
+          lines.push(`  - ${detail.fieldName}: ${detail.value}`);
+        }
+      }
       if (entry.childrenContext) {
         lines.push(entry.childrenContext);
       }
     }
+    // G16: ピン留めSnippetをL4に注入
+    for (const snippet of input.pinnedSnippets ?? []) {
+      lines.push(`- **${snippet.title}** (Snippet): ${snippet.content}`);
+    }
     l4Text = lines.join("\n");
   }
 
-  // L5: 将来用 (現在は常に空)
-  const l5Text = "";
+  // L5: G17 会話要約（Progressive Summarization）
+  const l5Text = input.conversationSummary
+    ? `\n## これまでの会話の要約\n${input.conversationSummary}`
+    : "";
 
   // L6: Command instruction（一回限りのコマンド注入）
   const l6Text = input.commandInstruction
@@ -453,6 +489,13 @@ export function buildSystemPrompt(
     label: "Codex・設定情報",
     used: countTokens(effectiveL4),
   });
+  if (effectiveL5) {
+    layers.push({
+      layer: "L5",
+      label: "会話要約",
+      used: countTokens(effectiveL5),
+    });
+  }
   if (effectiveL6) {
     layers.push({
       layer: "L6",

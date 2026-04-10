@@ -22,6 +22,7 @@ import { normalizeModelId } from "@/features/attribution/AuthorshipMark";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { copyWithAttribution } from "@/lib/clipboardAttribution";
 import type { ChatMessage as ChatMessageType } from "./chatTypes";
+import type { PinnedSnippetEntryWithData } from "./chatApi";
 
 interface SnippetDialogState {
   open: boolean;
@@ -49,6 +50,8 @@ export function ChatPanel() {
   const regenerate = useChatStore((s) => s.regenerate);
   const contextTokenCount = useChatStore((s) => s.contextTokenCount);
   const contextLayers = useChatStore((s) => s.contextLayers);
+  const detectedEntries = useChatStore((s) => s.detectedEntries);
+  const alwaysEntries = useChatStore((s) => s.alwaysEntries);
   const systemPrompt = useChatStore(
     (s) => s.messages.find((m) => m.role === "system")?.content ?? "",
   );
@@ -119,24 +122,34 @@ export function ChatPanel() {
   const [pinnedEntries, setPinnedEntries] = useState<
     import("./chatApi").PinnedCodexEntryWithData[]
   >([]);
+  const [pinnedSnippets, setPinnedSnippets] = useState<
+    PinnedSnippetEntryWithData[]
+  >([]);
   const [pinDialogOpen, setPinDialogOpen] = useState(false);
 
   useEffect(() => {
     if (!activeSessionId) {
       setPinnedEntries([]);
+      setPinnedSnippets([]);
       return;
     }
     chatApi.listPinnedCodexEntries(activeSessionId).then(setPinnedEntries);
+    chatApi.listPinnedSnippetEntries(activeSessionId).then(setPinnedSnippets);
   }, [activeSessionId]);
 
   const pinnedIds = new Set(pinnedEntries.map((e) => e.id));
+  const pinnedSnippetIds = new Set(pinnedSnippets.map((s) => s.id));
 
   const handlePin = useCallback(
-    async (entryId: string) => {
+    async (entryId: string, type: "codex" | "snippet" = "codex") => {
       if (!activeSessionId) return;
-      await chatApi.pinCodexEntry(activeSessionId, entryId);
-      const updated = await chatApi.listPinnedCodexEntries(activeSessionId);
-      setPinnedEntries(updated);
+      await chatApi.pinCodexEntry(activeSessionId, entryId, false, "manual", type);
+      const [updatedCodex, updatedSnippets] = await Promise.all([
+        chatApi.listPinnedCodexEntries(activeSessionId),
+        chatApi.listPinnedSnippetEntries(activeSessionId),
+      ]);
+      setPinnedEntries(updatedCodex);
+      setPinnedSnippets(updatedSnippets);
     },
     [activeSessionId],
   );
@@ -145,8 +158,12 @@ export function ChatPanel() {
     async (entryId: string) => {
       if (!activeSessionId) return;
       await chatApi.unpinCodexEntry(activeSessionId, entryId);
-      const updated = await chatApi.listPinnedCodexEntries(activeSessionId);
-      setPinnedEntries(updated);
+      const [updatedCodex, updatedSnippets] = await Promise.all([
+        chatApi.listPinnedCodexEntries(activeSessionId),
+        chatApi.listPinnedSnippetEntries(activeSessionId),
+      ]);
+      setPinnedEntries(updatedCodex);
+      setPinnedSnippets(updatedSnippets);
     },
     [activeSessionId],
   );
@@ -374,6 +391,9 @@ export function ChatPanel() {
 
       <ContextBar
         pinnedEntries={pinnedEntries}
+        pinnedSnippets={pinnedSnippets}
+        detectedEntries={detectedEntries}
+        alwaysEntries={alwaysEntries}
         onUnpin={handleUnpin}
         onPin={handlePin}
         onOpenPinDialog={() => setPinDialogOpen(true)}
@@ -443,7 +463,7 @@ export function ChatPanel() {
         disabled={isStreaming}
         editorRef={chatEditorRef}
         isGlobalChat={isGlobalChat}
-        onMentionPin={handlePin}
+        onMentionPin={(id) => handlePin(id, "codex")}
       />
 
       <CodexExtractionDialog
@@ -495,6 +515,7 @@ export function ChatPanel() {
         withChildrenIds={
           new Set(pinnedEntries.filter((e) => e.withChildren).map((e) => e.id))
         }
+        pinnedSnippetIds={pinnedSnippetIds}
         onPin={handlePin}
         onUnpin={handleUnpin}
         onToggleChildren={handleTogglePinChildren}
@@ -518,9 +539,9 @@ export function ChatPanel() {
           onClose={() => setContextMenu(null)}
           onInsert={insertFromChat}
           onExtractCodexQuick={handleExtractCodexQuick}
-          onExtractCodexDetailed={handleExtractCodex}
+          onExtractCodexDetailed={handleExtractCodexDetailed}
           onSaveSnippetQuick={handleSaveSnippetQuick}
-          onSaveSnippetDetailed={handleSaveSnippet}
+          onSaveSnippetDetailed={handleSaveSnippetDetailed}
           onCopy={handleContextCopy}
           onEdit={handleEditMessage}
           onDelete={handleDeleteMessage}

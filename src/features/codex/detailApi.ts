@@ -1,6 +1,38 @@
 import { db } from "@/db/client";
 import { codexDetailDefinitions, codexDetailValues } from "@/db/schema";
-import { eq, and } from "drizzle-orm";
+import { eq, and, inArray } from "drizzle-orm";
+
+export interface ContextDetail {
+  entryId: string;
+  fieldName: string;
+  fieldType: string;
+  value: string | null;
+}
+
+export async function listContextDetailsByEntryIds(
+  entryIds: string[],
+): Promise<ContextDetail[]> {
+  if (entryIds.length === 0) return [];
+  const rows = await db
+    .select({
+      entryId: codexDetailValues.entryId,
+      fieldName: codexDetailDefinitions.name,
+      fieldType: codexDetailDefinitions.fieldType,
+      value: codexDetailValues.value,
+    })
+    .from(codexDetailValues)
+    .innerJoin(
+      codexDetailDefinitions,
+      eq(codexDetailValues.definitionId, codexDetailDefinitions.id),
+    )
+    .where(
+      and(
+        inArray(codexDetailValues.entryId, entryIds),
+        eq(codexDetailDefinitions.includeInContext, 1),
+      ),
+    );
+  return rows;
+}
 
 export type CodexDetailDefinition = typeof codexDetailDefinitions.$inferSelect;
 export type CodexDetailValue = typeof codexDetailValues.$inferSelect;

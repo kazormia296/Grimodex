@@ -1,6 +1,7 @@
 import { useState } from "react";
-import { X, BookOpen, ChevronDown, ChevronUp } from "lucide-react";
+import { X, BookOpen, ChevronDown, ChevronUp, Pin } from "lucide-react";
 import type { CodexEntry } from "@/features/codex/api";
+import type { PinnedSnippetEntryWithData } from "../chatApi";
 import type { LayerBreakdown } from "../contextBuilder";
 import { PromptPreviewModal } from "./PromptPreviewModal";
 import { ContextCreatorButton } from "./ContextCreatorButton";
@@ -18,6 +19,12 @@ const GROUP_THRESHOLD = 6;
 
 interface ContextBarProps {
   pinnedEntries: CodexEntry[];
+  /** G15: auto-detected entries (excluding pinned) */
+  detectedEntries?: CodexEntry[];
+  /** G15: always-mode entries (excluding pinned and detected) */
+  alwaysEntries?: CodexEntry[];
+  /** G16: pinned snippet entries */
+  pinnedSnippets?: PinnedSnippetEntryWithData[];
   onUnpin: (entryId: string) => void;
   onPin: (entryId: string) => Promise<void>;
   onOpenPinDialog: () => void;
@@ -30,6 +37,9 @@ interface ContextBarProps {
 
 export function ContextBar({
   pinnedEntries,
+  detectedEntries = [],
+  alwaysEntries = [],
+  pinnedSnippets = [],
   onUnpin,
   onPin,
   onOpenPinDialog,
@@ -44,9 +54,15 @@ export function ContextBar({
   const [creatorOpen, setCreatorOpen] = useState(false);
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set());
 
-  const useGrouping = pinnedEntries.length > GROUP_THRESHOLD;
+  const allContextEntries = [
+    ...pinnedEntries,
+    ...detectedEntries,
+    ...alwaysEntries,
+  ];
+  const useGrouping =
+    allContextEntries.length + pinnedSnippets.length > GROUP_THRESHOLD;
 
-  // type別グループマップ
+  // type別グループマップ (pinned only — detected/always are shown separately)
   const groupMap = new Map<string, CodexEntry[]>();
   if (useGrouping) {
     for (const entry of pinnedEntries) {
@@ -178,12 +194,67 @@ export function ContextBar({
                     </button>
                   </span>
                 ))}
+            {/* G15: auto-detected entries */}
+            {detectedEntries.map((entry) => (
+              <span
+                key={entry.id}
+                data-testid="detected-pill"
+                className="inline-flex items-center gap-1 rounded-full bg-accent/50 px-2 py-0.5 text-xs"
+              >
+                {entry.name}
+                <span className="text-muted-foreground/70">auto</span>
+                <button
+                  type="button"
+                  onClick={() => onPin(entry.id)}
+                  className="hover:text-foreground text-muted-foreground/70"
+                  aria-label={`${entry.name}をピン留め`}
+                >
+                  <Pin className="h-3 w-3" />
+                </button>
+              </span>
+            ))}
+            {/* G15: always-mode entries */}
+            {alwaysEntries.map((entry) => (
+              <span
+                key={entry.id}
+                data-testid="always-pill"
+                className="inline-flex items-center gap-1 rounded-full bg-accent/50 px-2 py-0.5 text-xs"
+              >
+                {entry.name}
+                <span className="text-muted-foreground/70">auto</span>
+                <button
+                  type="button"
+                  onClick={() => onPin(entry.id)}
+                  className="hover:text-foreground text-muted-foreground/70"
+                  aria-label={`${entry.name}をピン留め`}
+                >
+                  <Pin className="h-3 w-3" />
+                </button>
+              </span>
+            ))}
+            {/* G16: ピン留め Snippet エントリ */}
+            {pinnedSnippets.map((snippet) => (
+              <span
+                key={snippet.id}
+                className="inline-flex items-center gap-1 rounded-full bg-purple-100 px-2 py-0.5 text-xs text-purple-800"
+              >
+                {snippet.title}
+                <button
+                  type="button"
+                  onClick={() => onUnpin(snippet.id)}
+                  className="hover:text-destructive"
+                  aria-label={`${snippet.title}のピン留め解除`}
+                >
+                  <X className="h-3 w-3" />
+                </button>
+              </span>
+            ))}
             {/* ピン留めボタン */}
             <button
               type="button"
               onClick={onOpenPinDialog}
               className="inline-flex items-center gap-1 rounded-md border border-dashed border-border px-2 py-0.5 text-xs text-muted-foreground hover:bg-accent"
-              aria-label="Codexをピン留め"
+              aria-label="Codex/Snippetをピン留め"
             >
               <BookOpen className="h-3 w-3" />
               ピン留め

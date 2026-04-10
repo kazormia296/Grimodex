@@ -67,8 +67,17 @@ import {
   computeChildrenTokenBudget,
 } from "@/features/codex/childrenBudget";
 import type { ChatMessage, ChatSession, MessageRole } from "./chatTypes";
+import {
+  shouldSummarize,
+  selectSummarizationCandidates,
+  runSummarization,
+} from "./summarization";
 import type { CodexEntry } from "@/features/codex/api";
 import { listContextDetailsByEntryIds } from "@/features/codex/detailApi";
+import { useTabStore } from "@/features/editor/tabStore";
+import { getSnippet } from "@/features/snippets/api";
+import { listPinnedSnippetEntries } from "./chatApi";
+import type { PinnedSnippetContext } from "./contextBuilder";
 
 // G14: Enrich CodexContext array with customDetails (batch query, no N+1)
 async function enrichWithCustomDetails(
@@ -154,6 +163,8 @@ interface ChatState {
   clearError: () => void;
   setActiveSceneId: (id: string) => void;
   setActiveProjectId: (id: string | null) => void;
+  /** G20: stores old message content when editing, to detect removed @mentions */
+  _editingOldContent: string | null;
 }
 
 async function fetchSceneContext(
@@ -210,6 +221,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
   agentMode: false,
   agentProgress: null,
   isGlobalChat: false,
+  _editingOldContent: null,
 
   // --- Session management ---
 
@@ -652,7 +664,65 @@ export const useChatStore = create<ChatState>()((set, get) => ({
         : null;
       const projectCtx = await fetchProjectContext(activeProjectId);
 
-      const messagesForApi: ChatMessage[] = [...prevMessages, userMsg];
+      // G17: 要約トリガーチェック
+      let currentMessages = get().messages;
+      if (sessionIdForPersist && shouldSummarize(prevMessages)) {
+        try {
+          const candidates = selectSummarizationCandidates(prevMessages);
+          if (candidates.length > 0) {
+            const summaryText = await runSummarization(
+              candidates,
+              chatApi.sendChatMessageWithThinking,
+            );
+            const candidateIds = candidates.map((m) => m.id);
+            const chatSummary = await chatApi.addSummary(
+              sessionIdForPersist,
+              summaryText,
+              candidateIds,
+            );
+            await chatApi.markMessagesSummarized(candidateIds);
+            // Update in-memory state: mark candidates as summarized, inject summary into messages
+            set((s) => {
+              const updatedMessages = s.messages.map((m) =>
+                candidateIds.includes(m.id) ? { ...m, isSummarized: 1 } : m,
+              );
+              const summaryMarkerMsg: ChatMessage = {
+                id: `summary-${chatSummary.id}`,
+                sessionId: sessionIdForPersist ?? "",
+                role: "assistant",
+                content: summaryText,
+                metadata: JSON.stringify({ summary_id: chatSummary.id }),
+                createdAt: chatSummary.createdAt,
+                isSummarized: 0,
+              };
+              // Insert summary marker after the last summarized message
+              const lastCandidateIdx = updatedMessages.reduce(
+                (acc, m, idx) => (candidateIds.includes(m.id) ? idx : acc),
+                -1,
+              );
+              const withSummary = [
+                ...updatedMessages.slice(0, lastCandidateIdx + 1),
+                summaryMarkerMsg,
+                ...updatedMessages.slice(lastCandidateIdx + 1),
+              ];
+              return { messages: withSummary };
+            });
+            currentMessages = get().messages;
+          }
+        } catch (e) {
+          debugLog.error("ChatStore", "summarization", errorDetail(e));
+          // 要約失敗は警告のみ、チャットは続行
+        }
+      }
+
+      // G17: 要約済みメッセージを除外（starred は保持）し、APIペイロードを構築
+      const messagesForApi: ChatMessage[] = [
+        ...currentMessages.filter(
+          (m) =>
+            m.id !== userMsg.id && m.id !== assistantMsg.id && !m.isSummarized,
+        ),
+        userMsg,
+      ];
 
       if (sceneCtx) {
         const allEntries = await listCodexEntries();
@@ -739,6 +809,33 @@ export const useChatStore = create<ChatState>()((set, get) => ({
               )
               .catch(() => {});
           }
+
+          // G20: メッセージ編集時に削除された@言及のピンを解除
+          const { _editingOldContent } = get();
+          if (_editingOldContent !== null) {
+            try {
+              const oldMentioned = await findMentionedEntriesAsync(
+                _editingOldContent,
+                allEntries,
+              );
+              const newMentionedIds = new Set(chatMentioned.map((e) => e.id));
+              const removedIds = oldMentioned
+                .filter((e) => !newMentionedIds.has(e.id))
+                .map((e) => e.id);
+              if (removedIds.length > 0) {
+                await chatApi
+                  .unpinCodexEntriesByIds(
+                    sessionIdForPersist,
+                    removedIds,
+                    "chat_mention",
+                  )
+                  .catch(() => {});
+              }
+            } catch {
+              // 解除失敗は無視
+            }
+            set({ _editingOldContent: null });
+          }
         }
 
         let pinnedCodexEntries: import("./contextBuilder").PinnedCodexContext[] =
@@ -768,9 +865,10 @@ export const useChatStore = create<ChatState>()((set, get) => ({
         // G15: update detectedEntries / alwaysEntries (excluding pinned)
         {
           const pinnedIdSet = new Set(pinnedCodexEntries.map((e) => e.id));
-          const mentionedNotPinned = mentioned.filter(
-            (e) => !pinnedIdSet.has(e.id),
-          );
+          const mentionedNotPinned = mentioned
+            .filter((e) => !pinnedIdSet.has(e.id))
+            .map((e) => allEntries.find((a) => a.id === e.id))
+            .filter((e): e is CodexEntry => e !== undefined);
           const alwaysNotPinned = alwaysEntries.filter(
             (e) => !pinnedIdSet.has(e.id) && !mentionedIds.has(e.id),
           );
@@ -815,6 +913,76 @@ export const useChatStore = create<ChatState>()((set, get) => ({
           .filter((m) => m.role !== "system")
           .reduce((sum, m) => sum + countTokens(m.content), 0);
 
+        // G17: 会話要約を取得してL5に注入
+        let conversationSummary: string | undefined;
+        if (sessionIdForPersist) {
+          try {
+            const summaries = await chatApi.listSummaries(sessionIdForPersist);
+            if (summaries.length > 0) {
+              conversationSummary = summaries
+                .map((s) => s.summary)
+                .join("\n\n");
+            }
+          } catch {
+            // 要約取得失敗は無視
+          }
+        }
+
+        // G16: fetch pinned snippets and build PinnedSnippetContext[]
+        let pinnedSnippets: PinnedSnippetContext[] = [];
+        const effectiveSessionId = sessionIdForPersist ?? activeSessionId;
+        if (effectiveSessionId) {
+          try {
+            const snippetItems = await listPinnedSnippetEntries(effectiveSessionId);
+            pinnedSnippets = snippetItems.map((s) => ({
+              id: s.id,
+              title: s.title,
+              content: extractPlainText(s.content) || s.title,
+            }));
+          } catch {
+            // 取得失敗は無視
+          }
+        }
+
+        // G19: アクティブタブのコンテンツをL3に注入
+        let activeTabContent:
+          | { type: "codex" | "snippet"; title: string; content: string }
+          | undefined;
+        try {
+          const tabState = useTabStore.getState();
+          const activeTab = tabState.tabs.find(
+            (t) => t.nodeId === tabState.activeTabId,
+          );
+          if (activeTab?.contentType === "codex") {
+            const codexEntry = allEntries.find(
+              (e) => e.id === activeTab.nodeId,
+            );
+            if (codexEntry) {
+              activeTabContent = {
+                type: "codex",
+                title: codexEntry.name,
+                content:
+                  extractPlainText(codexEntry.content) ||
+                  codexEntry.summary ||
+                  "",
+              };
+            }
+          } else if (activeTab?.contentType === "snippet") {
+            const snippet = await getSnippet(activeTab.nodeId).catch(
+              () => undefined,
+            );
+            if (snippet) {
+              activeTabContent = {
+                type: "snippet",
+                title: snippet.title,
+                content: extractPlainText(snippet.content) || snippet.title,
+              };
+            }
+          }
+        } catch {
+          // アクティブタブ取得失敗は無視
+        }
+
         const promptResult = buildSystemPrompt({
           scene: sceneCtx,
           project: projectCtx ?? undefined,
@@ -822,9 +990,12 @@ export const useChatStore = create<ChatState>()((set, get) => ({
           previousScene,
           codexEntries,
           pinnedCodexEntries,
+          pinnedSnippets: pinnedSnippets.length > 0 ? pinnedSnippets : undefined,
+          activeTabContent,
           commandInstruction,
           conversationTokens,
           contextWindow,
+          conversationSummary,
         });
 
         set({
@@ -1134,9 +1305,10 @@ export const useChatStore = create<ChatState>()((set, get) => ({
       // G15: update detectedEntries / alwaysEntries (excluding pinned)
       {
         const pinnedIdSet = new Set(pinnedCodexEntries.map((e) => e.id));
-        const mentionedNotPinned = mentioned.filter(
-          (e) => !pinnedIdSet.has(e.id),
-        );
+        const mentionedNotPinned = mentioned
+          .filter((e) => !pinnedIdSet.has(e.id))
+          .map((e) => allEntries.find((a) => a.id === e.id))
+          .filter((e): e is CodexEntry => e !== undefined);
         const alwaysNotPinned = refreshAlwaysEntries.filter(
           (e) => !pinnedIdSet.has(e.id) && !mentionedIds.has(e.id),
         );
@@ -1156,12 +1328,72 @@ export const useChatStore = create<ChatState>()((set, get) => ({
         Math.round((l2Pct / 100) * 200_000),
       );
 
+      // G16: fetch pinned snippets for context display
+      let refreshPinnedSnippets: PinnedSnippetContext[] = [];
+      if (activeSessionId) {
+        try {
+          const snippetItems =
+            await listPinnedSnippetEntries(activeSessionId);
+          refreshPinnedSnippets = snippetItems.map((s) => ({
+            id: s.id,
+            title: s.title,
+            content: extractPlainText(s.content) || s.title,
+          }));
+        } catch {
+          // 取得失敗は無視
+        }
+      }
+
+      // G19: アクティブタブのコンテンツをL3に注入
+      let refreshActiveTabContent:
+        | { type: "codex" | "snippet"; title: string; content: string }
+        | undefined;
+      try {
+        const tabState = useTabStore.getState();
+        const activeTab = tabState.tabs.find(
+          (t) => t.nodeId === tabState.activeTabId,
+        );
+        if (activeTab?.contentType === "codex") {
+          const codexEntry = allEntries.find(
+            (e) => e.id === activeTab.nodeId,
+          );
+          if (codexEntry) {
+            refreshActiveTabContent = {
+              type: "codex",
+              title: codexEntry.name,
+              content:
+                extractPlainText(codexEntry.content) ||
+                codexEntry.summary ||
+                "",
+            };
+          }
+        } else if (activeTab?.contentType === "snippet") {
+          const snippet = await getSnippet(activeTab.nodeId).catch(
+            () => undefined,
+          );
+          if (snippet) {
+            refreshActiveTabContent = {
+              type: "snippet",
+              title: snippet.title,
+              content: extractPlainText(snippet.content) || snippet.title,
+            };
+          }
+        }
+      } catch {
+        // アクティブタブ取得失敗は無視
+      }
+
       const promptResult = buildSystemPrompt({
         scene: sceneCtx,
         project: projectCtx ?? undefined,
         storySoFar: storySoFar || undefined,
         codexEntries,
         pinnedCodexEntries,
+        pinnedSnippets:
+          refreshPinnedSnippets.length > 0
+            ? refreshPinnedSnippets
+            : undefined,
+        activeTabContent: refreshActiveTabContent,
       });
       set({
         contextTokenCount: promptResult.totalTokens,
@@ -1224,7 +1456,8 @@ export const useChatStore = create<ChatState>()((set, get) => ({
         debugLog.error("ChatStore", "editUserMessage", errorDetail(e)),
       );
     }
-    set({ messages: messages.slice(0, idx) });
+    // G20: save old content to detect removed @mentions on re-send
+    set({ messages: messages.slice(0, idx), _editingOldContent: content });
     return content;
   },
 
