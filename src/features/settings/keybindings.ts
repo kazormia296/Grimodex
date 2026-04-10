@@ -54,6 +54,12 @@ export const COMMANDS: CommandDef[] = [
     label: "エディタを横分割",
     defaultBinding: "Ctrl+Shift+\\",
   },
+  { id: "nextTab", label: "次のタブに移動", defaultBinding: "Ctrl+Tab" },
+  {
+    id: "prevTab",
+    label: "前のタブに移動",
+    defaultBinding: "Ctrl+Shift+Tab",
+  },
   { id: "find", label: "検索", defaultBinding: "Ctrl+F" },
   { id: "findReplace", label: "検索と置換", defaultBinding: "Ctrl+H" },
   {

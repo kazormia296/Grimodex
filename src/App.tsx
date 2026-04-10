@@ -37,6 +37,8 @@ import {
 } from "@/lib/colorThemes";
 import { useSettingsStore } from "@/features/settings/settingsStore";
 import { GrimodexLogo } from "@/components/GrimodexLogo";
+import { useTabStore } from "@/features/editor/tabStore";
+import { useTreeStore } from "@/features/tree/treeStore";
 
 /* ── Panel content components for dockview ── */
 
@@ -290,6 +292,52 @@ function EditorScreen() {
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [handleKeyDown]);
+
+  // Ctrl+Tab / Ctrl+Shift+Tab: switch tabs in the active editor group
+  useEffect(() => {
+    function onTabSwitch(e: KeyboardEvent) {
+      if (!e.ctrlKey || e.key !== "Tab") return;
+      e.preventDefault();
+
+      const {
+        activeGroupIndex,
+        tabs,
+        activeTabId,
+        secondaryTabs,
+        secondaryActiveTabId,
+        setActiveTab,
+        setSecondaryActiveTab,
+      } = useTabStore.getState();
+
+      const currentTabs = activeGroupIndex === 0 ? tabs : secondaryTabs;
+      const currentActiveId =
+        activeGroupIndex === 0 ? activeTabId : secondaryActiveTabId;
+
+      if (currentTabs.length < 2) return;
+
+      const currentIdx = currentTabs.findIndex(
+        (t) => t.nodeId === currentActiveId,
+      );
+      if (currentIdx === -1) return;
+
+      const nextIdx = e.shiftKey
+        ? (currentIdx - 1 + currentTabs.length) % currentTabs.length
+        : (currentIdx + 1) % currentTabs.length;
+
+      const nextTab = currentTabs[nextIdx];
+      if (activeGroupIndex === 0) {
+        setActiveTab(nextTab.nodeId);
+      } else {
+        setSecondaryActiveTab(nextTab.nodeId);
+      }
+      if (nextTab.contentType === "scene") {
+        useTreeStore.getState().setActiveScene(nextTab.nodeId);
+      }
+    }
+
+    window.addEventListener("keydown", onTabSwitch);
+    return () => window.removeEventListener("keydown", onTabSwitch);
+  }, []);
 
   return (
     <main className="flex h-screen flex-col">
