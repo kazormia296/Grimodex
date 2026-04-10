@@ -1,11 +1,13 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 import type { Editor } from "@tiptap/core";
+import { toast } from "sonner";
 import { useChatStore } from "./chatStore";
 import { useSceneStore } from "@/features/tree/store";
 import { useEditorStore } from "@/features/editor/editorStore";
 import { useCodexStore } from "@/features/codex/codexStore";
 import { useSnippetStore } from "@/features/snippets/snippetStore";
 import { ChatMessage } from "./components/ChatMessage";
+import { ChatMessageContextMenu } from "./components/ChatMessageContextMenu";
 import { ChatPanelHeader } from "./components/ChatPanelHeader";
 import { ChatInput } from "./components/ChatInput";
 import { AgentProgressBar } from "./components/AgentProgressBar";
@@ -18,12 +20,23 @@ import * as chatApi from "./chatApi";
 import { useAiSettingsStore } from "./store";
 import { normalizeModelId } from "@/features/attribution/AuthorshipMark";
 import { useTreeStore } from "@/features/tree/treeStore";
+import { copyWithAttribution } from "@/lib/clipboardAttribution";
+import type { ChatMessage as ChatMessageType } from "./chatTypes";
 
 interface SnippetDialogState {
   open: boolean;
   messageId: string;
   initialContent: string;
   messageRole: "user" | "assistant";
+}
+
+interface ContextMenuState {
+  messageId: string;
+  messageRole: "user" | "assistant";
+  messageContent: string;
+  selectedText: string | null;
+  x: number;
+  y: number;
 }
 
 export function ChatPanel() {
@@ -240,6 +253,66 @@ export function ChatPanel() {
     [regenerate],
   );
 
+  // Context menu state
+  const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
+
+  const handleContextMenu = useCallback(
+    (e: React.MouseEvent, msg: ChatMessageType) => {
+      const sel = window.getSelection();
+      let selectedText: string | null = null;
+      if (sel && !sel.isCollapsed) {
+        const text = sel.toString().trim();
+        if (text.length > 0) selectedText = text;
+      }
+      setContextMenu({
+        messageId: msg.id,
+        messageRole: msg.role === "user" ? "user" : "assistant",
+        messageContent: msg.content,
+        selectedText,
+        x: e.clientX,
+        y: e.clientY,
+      });
+    },
+    [],
+  );
+
+  const handleContextCopy = useCallback(
+    (text: string, messageId: string) => {
+      const msg = messages.find((m) => m.id === messageId);
+      const source = msg?.role === "assistant" ? "ai" : "human";
+      copyWithAttribution(text, source)
+        .then(() => toast.success("コピーしました"))
+        .catch(() => toast.error("コピーに失敗しました"));
+    },
+    [messages],
+  );
+
+  const handleExtractCodexQuick = useCallback(
+    (messageId: string) => {
+      const msg = messages.find((m) => m.id === messageId);
+      if (!msg) return;
+      createCodexEntry({
+        type: "character",
+        name: msg.content.trim().slice(0, 60),
+        summary: "",
+        sourceChatMessageId: messageId,
+      }).catch(() => toast.error("Codex抽出に失敗しました"));
+    },
+    [messages, createCodexEntry],
+  );
+
+  const handleSaveSnippetQuick = useCallback(
+    (messageId: string) => {
+      const msg = messages.find((m) => m.id === messageId);
+      if (!msg) return;
+      createSnippet({
+        title: msg.content.trim().slice(0, 30),
+        content: msg.content,
+      }).catch(() => toast.error("Snippet保存に失敗しました"));
+    },
+    [messages, createSnippet],
+  );
+
   const handleSend = useCallback(
     (markdown: string) => {
       const trimmed = markdown.trim();
@@ -313,6 +386,7 @@ export function ChatPanel() {
                   onEdit={handleEditMessage}
                   onDelete={handleDeleteMessage}
                   onRegenerate={handleRegenerate}
+                  onContextMenu={handleContextMenu}
                 />
               ))}
             {isStreaming && (
@@ -411,6 +485,26 @@ export function ChatPanel() {
           sceneTitle={sceneTitle}
           activeSceneId={treeActiveSceneId}
           onClose={() => setSessionsPanelOpen(false)}
+        />
+      )}
+      {contextMenu && (
+        <ChatMessageContextMenu
+          messageId={contextMenu.messageId}
+          messageRole={contextMenu.messageRole}
+          messageContent={contextMenu.messageContent}
+          selectedText={contextMenu.selectedText}
+          x={contextMenu.x}
+          y={contextMenu.y}
+          onClose={() => setContextMenu(null)}
+          onInsert={insertFromChat}
+          onExtractCodexQuick={handleExtractCodexQuick}
+          onExtractCodexDetailed={handleExtractCodex}
+          onSaveSnippetQuick={handleSaveSnippetQuick}
+          onSaveSnippetDetailed={handleSaveSnippet}
+          onCopy={handleContextCopy}
+          onEdit={handleEditMessage}
+          onDelete={handleDeleteMessage}
+          onRegenerate={handleRegenerate}
         />
       )}
     </div>
