@@ -122,8 +122,15 @@ export function CodexQuickSection() {
         <CodexQuickPopover
           entry={hoveredEntry.entry}
           rect={hoveredEntry.rect}
+          dotColor={typeColorMap[hoveredEntry.entry.type]?.fg ?? "#888888"}
+          typeLabel={
+            TYPE_LABELS[hoveredEntry.entry.type] ?? hoveredEntry.entry.type
+          }
           onClose={() => setHoveredEntry(null)}
-          typeLabels={TYPE_LABELS}
+          onOpenInCodex={() => {
+            setHoveredEntry(null);
+            handleEntryClick(hoveredEntry.entry);
+          }}
         />
       )}
 

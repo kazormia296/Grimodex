@@ -1,18 +1,23 @@
 import { createPortal } from "react-dom";
 import type { CodexEntry } from "@/features/codex/api";
+import { CodexEntryPopoverContent } from "@/features/codex/components/CodexEntryPopoverContent";
 
 interface CodexQuickPopoverProps {
   entry: CodexEntry;
   rect: DOMRect;
+  dotColor: string;
+  typeLabel: string;
   onClose: () => void;
-  typeLabels: Record<string, string>;
+  onOpenInCodex: () => void;
 }
 
 export function CodexQuickPopover({
   entry,
   rect,
+  dotColor,
+  typeLabel,
   onClose,
-  typeLabels,
+  onOpenInCodex,
 }: CodexQuickPopoverProps) {
   return createPortal(
     <div
@@ -23,17 +28,12 @@ export function CodexQuickPopover({
       }}
       onMouseLeave={onClose}
     >
-      <div className="mb-1 flex items-center gap-2">
-        <span className="text-sm font-semibold">{entry.name}</span>
-        <span className="rounded-full bg-accent px-2 py-0.5 text-xs text-muted-foreground">
-          {typeLabels[entry.type] ?? entry.type}
-        </span>
-      </div>
-      {entry.summary && (
-        <p className="line-clamp-3 text-xs text-muted-foreground">
-          {entry.summary}
-        </p>
-      )}
+      <CodexEntryPopoverContent
+        entry={entry}
+        dotColor={dotColor}
+        typeLabel={typeLabel}
+        onOpenInCodex={onOpenInCodex}
+      />
     </div>,
     document.body,
   );

@@ -71,21 +71,21 @@ describe("CodexEntryPopoverContent", () => {
     );
     const dot = container.querySelector("[data-testid='entry-dot']");
     expect(dot).toBeInTheDocument();
-    expect((dot as HTMLElement).style.backgroundColor).toBe(
-      "rgb(107, 122, 219)",
-    );
+    // happy-domはhex→rgb変換しないためhex値で比較
+    expect((dot as HTMLElement).style.backgroundColor).toBe("#6B7ADB");
   });
 
   it("iconがある場合はimg要素を表示する", () => {
     const entryWithIcon = { ...mockEntry, icon: "data:image/webp;base64,abc" };
-    render(
+    const { container } = render(
       <CodexEntryPopoverContent
         entry={entryWithIcon}
         dotColor="#6B7ADB"
         typeLabel="キャラクター"
       />,
     );
-    expect(screen.getByRole("img")).toBeInTheDocument();
+    // alt=""の装飾画像はARIA上role="presentation"になるためquerySelectorで確認
+    expect(container.querySelector("img")).toBeInTheDocument();
   });
 
   it("onOpenInCodexが渡された場合はOpen in Codexボタンを表示する", () => {

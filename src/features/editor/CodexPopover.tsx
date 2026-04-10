@@ -4,6 +4,7 @@ import type { Editor } from "@tiptap/core";
 import { useCodexStore } from "@/features/codex/codexStore";
 import { useCodexHighlightStore } from "@/features/editor/codexHighlightStore";
 import { useLayoutStore } from "@/features/layout/layoutStore";
+import { CodexEntryPopoverContent } from "@/features/codex/components/CodexEntryPopoverContent";
 
 const FALLBACK_TYPE_LABELS: Record<string, string> = {
   character: "キャラクター",
@@ -91,12 +92,6 @@ export function CodexPopover({ editor }: { editor: Editor | null }) {
     typeColorMap[entry.type]?.fg ??
     FALLBACK_TYPE_COLORS[entry.type] ??
     "#888888";
-  const summaryText = entry.summary
-    ? entry.summary.length > 100
-      ? entry.summary.slice(0, 100) + "…"
-      : entry.summary
-    : null;
-
   function handleOpenInCodex() {
     setPopover((s) => ({ ...s, visible: false }));
     useLayoutStore.getState().showPanel("codex");
@@ -118,36 +113,12 @@ export function CodexPopover({ editor }: { editor: Editor | null }) {
         setPopover((s) => ({ ...s, visible: false }));
       }}
     >
-      <div className="mb-1.5 flex items-center gap-2">
-        {entry.icon ? (
-          <img
-            src={entry.icon}
-            alt=""
-            className="h-6 w-6 flex-shrink-0 rounded-sm object-cover"
-          />
-        ) : (
-          <span
-            className="h-6 w-6 flex-shrink-0 rounded-full"
-            style={{ backgroundColor: dotColor }}
-          />
-        )}
-        <span className="flex-1 truncate text-sm font-semibold">
-          {entry.name}
-        </span>
-        <span className="shrink-0 rounded-full bg-accent px-2 py-0.5 text-xs text-muted-foreground">
-          {FALLBACK_TYPE_LABELS[entry.type] ?? entry.type}
-        </span>
-      </div>
-      {summaryText && (
-        <p className="mb-2 text-xs text-muted-foreground">{summaryText}</p>
-      )}
-      <button
-        type="button"
-        className="text-xs text-primary hover:underline"
-        onClick={handleOpenInCodex}
-      >
-        Open in Codex →
-      </button>
+      <CodexEntryPopoverContent
+        entry={entry}
+        dotColor={dotColor}
+        typeLabel={FALLBACK_TYPE_LABELS[entry.type] ?? entry.type}
+        onOpenInCodex={handleOpenInCodex}
+      />
     </div>,
     document.body,
   );
