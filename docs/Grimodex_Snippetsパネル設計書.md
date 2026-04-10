@@ -10,38 +10,37 @@ Snippetsパネルは再利用可能なテキスト断片を管理するパネル
 
 ## パネル構造
 
+左右分割ペイン（ResizablePanelGroup）。左にリスト、右に選択スニペットの詳細エディタを表示する。Bottom Dockの横長レイアウトに最適化した設計で、カードをクリックするだけで即座にdetailが切り替わり、複数カードの素早い比較が可能。
+
 ```
-┌──────────────────────────────────────────────┐
-│ A. Header                                     │
-│ Snippets                    12 snippets  [+]  │
-├──────────────────────────────────────────────┤
-│ B. Search bar                                 │
-│ [🔍 Search snippets...                      ] │
-├──────────────────────────────────────────────┤
-│ C. Filter bar                                 │
-│ [All] [From chat] [From editor] [Manual]      │
-│                                 Sort: Recent  │
-├──────────────────────────────────────────────┤
-│ D. Snippet list                               │
-│                                               │
-│ ⠿ A jolt of recognition surges through...     │
-│   A jolt of recognition surges through her    │
-│   fingertips — not pain, but a deep...        │
-│   [AI]  142 chars  The tower                  │
-│                                               │
-│ ⠿ The runes pulsed with amber light           │
-│   The runes pulsed with amber light, each     │
-│   symbol flickering in sequence like a...     │
-│   [Human]  118 chars  First spell             │
-│                                               │
-│ ⠿ Standard tavern description template        │
-│   The tavern smelled of woodsmoke and...      │
-│   186 chars  [tavern] [description]           │
-│                                               │
-└──────────────────────────────────────────────┘
+┌─────────────────────────────┬────────────────────────────────┐
+│ A. Header                    │ E. Detail pane                  │
+│ Snippets     12 snippets [+] │                                 │
+├─────────────────────────────┤ Title: [A jolt of recognition..] │
+│ B. Search bar                │                                 │
+│ [🔍 Search snippets...     ] │ A jolt of recognition surges    │
+├─────────────────────────────┤ through her fingertips — not     │
+│ C. Filter bar                │ pain, but a deep resonance...   │
+│ [All][From chat][From editor]│                                 │
+│ [Manual]       Sort: Recent  │ Tags: [dialogue] [elara] [+]    │
+├─────────────────────────────┤                                 │
+│ D. Snippet list              │ [AI]                            │
+│                              │ Source: Character deep-dive →   │
+│ ⠿ A jolt of recogn...    ×  │ Scene: The tower →              │
+│   A jolt of recognition...   │ Created: Today 14:32            │
+│   [AI]  142 chars  The tower │ Used: 2 times                   │
+│                              │                                 │
+│ ⠿ The runes pulsed...    ×  │ [Insert at cursor]              │
+│   The runes pulsed with...   │                                 │
+│   [Human]  118 chars         │                                 │
+│                              │                                 │
+│ ⠿ Standard tavern...     ×  │                                 │
+│   The tavern smelled of...   │                                 │
+│   186 chars [tavern][descr.] │                                 │
+└─────────────────────────────┴────────────────────────────────┘
 ```
 
-Bottom Dockに配置されるため横長のレイアウトを想定。スニペットカードは横スクロールではなく縦リスト。パネル幅が十分な場合はカードを2-3カラムのグリッドで表示。
+左ペインのスニペットリストは縦リスト。ペイン幅が十分な場合はカードを2-3カラムのグリッドで表示。
 
 ---
 
@@ -49,7 +48,7 @@ Bottom Dockに配置されるため横長のレイアウトを想定。スニペ
 
 - **パネルタイトル**: 「Snippets」
 - **スニペット数**: フィルタ適用後の件数。右寄せ
-- **[+] ボタン**: 新規スニペット作成（空のスニペットを作成し、インライン展開で即時編集）
+- **[+] ボタン**: 新規スニペット作成（空のスニペットを作成し、詳細ペインで即時編集）
 
 ---
 
@@ -116,49 +115,67 @@ Bottom Dockに配置されるため横長のレイアウトを想定。スニペ
 
 | 操作 | 動作 |
 |------|------|
-| クリック | カードをインライン展開して詳細表示（後述） |
+| クリック | 右の詳細ペインにスニペットを表示 |
 | ドラッグ（→ Editor） | エディタのカーソル位置にスニペット内容を挿入 |
 | ダブルクリック | コンテンツ全文をクリップボードにコピー |
 | 右クリック | コンテキストメニュー（後述） |
 | ホバー | 軽いハイライト + × ボタン表示 |
 
-### インライン展開（詳細表示）
+### E. 詳細ペイン（Detail pane）
 
-スニペットカードをクリックすると、カードが展開してフル編集モードになる。
+リストでカードをクリックすると、右の詳細ペインにフル編集モードで表示される。
 
 ```
-┌──────────────────────────────────────────┐
-│ Title: [A jolt of recognition surges...] │  ← 編集可能
-├──────────────────────────────────────────┤
-│ A jolt of recognition surges through     │
-│ her fingertips — not pain, but a deep    │  ← 全文表示、編集可能
-│ resonance, as if the stone remembers     │     (テキストエリア)
-│ her from another lifetime.               │
-├──────────────────────────────────────────┤
-│ Tags: [dialogue] [elara] [+]             │  ← 編集可能
-├──────────────────────────────────────────┤
-│ Source: Character deep-dive (chat) →     │
-│ Scene: The tower →                       │
-│ Created: Today 14:32                     │
-│ Used: 2 times                            │
-├──────────────────────────────────────────┤
-│         [Insert at cursor] [Collapse]    │
-└──────────────────────────────────────────┘
+┌──────────────────────────────────────────────────┐
+│ Snippet詳細         [💾][📋][↗][📄][🗑] [Insert] │
+├──────────────────────────────────────────────────┤
+│ タイトル                                          │
+│ [A jolt of recognition surges...]                │  ← 編集可能
+│                                                  │
+│ 内容                                              │
+│ ┌──────────────────────────────────────────────┐ │
+│ │ A jolt of recognition surges through         │ │
+│ │ her fingertips — not pain, but a deep        │ │  ← TipTapミニエディタ
+│ │ resonance, as if the stone remembers         │ │
+│ │ her from another lifetime.                   │ │
+│ └──────────────────────────────────────────────┘ │
+│                                                  │
+│ タグ                                              │
+│ [dialogue, elara]                                │  ← 編集可能
+│                                                  │
+│ [AI]                                             │  ← ソースバッジ
+│ 抽出元チャット: Character deep-dive →             │
+│ 関連シーン: The tower →                           │
+│ 作成日: 2026-04-10 14:32                          │
+│ 使用回数: 2                                       │
+└──────────────────────────────────────────────────┘
 ```
+
+#### ツールバーボタン
+
+| ボタン | 詳細 |
+|--------|------|
+| 保存 (💾) | 即時保存（自動保存のflush）。自動保存（デバウンス2秒）が有効なため通常は不要 |
+| コピー (📋) | コンテンツをクリップボードにコピー（Attribution付き） |
+| Open in Editor (↗) | エディタパネルにSnippetタブとして開き、インラインAIやChat連携が利用可能 |
+| 関連シーン (📄) | `scene_id` がある場合のみ表示。クリックでEditorで開く |
+| 削除 (🗑) | 削除確認ダイアログ |
+| Insert at cursor | エディタのカーソル位置に挿入。D&Dの代替手段 |
+
+#### フィールド
 
 | フィールド | 詳細 |
 |-----------|------|
-| Title | インライン編集。`Enter` で確定、`Escape` でキャンセル |
-| Content | TipTapミニエディタ。Markdown記法をリアルタイムにリッチテキストとしてレンダリング（太字、斜体、見出し、リスト、リンク対応）。DBの `snippets.content` カラムに保存。自動保存（デバウンス2秒）。右上に「Open in Editor ↗」ボタン — クリックでエディタパネルにSnippetタブとして開き、インラインAIやChat連携が利用可能。**Attribution追跡あり**（後述） |
-| Tags | ピル型。[+] で追加、×で削除。既存タグのオートコンプリート |
+| Title | 編集可能な入力フィールド |
+| Content | TipTapミニエディタ。Markdown記法をリアルタイムにリッチテキストとしてレンダリング（太字、斜体、見出し、リスト、リンク対応）。DBの `snippets.content` カラムに保存。自動保存（デバウンス2秒）。**Attribution追跡あり**（後述） |
+| Tags | カンマ区切りの入力フィールド |
+| ソースバッジ | [AI]: パープルのピル / [Human]: グレーのピル / バッジなし: 手動作成 |
 | Source | `source_chat_message_id` がある場合、セッション名のリンク。クリックでChat Historyパネル経由で元セッションを開く |
 | Scene | `scene_id` がある場合、シーン名のリンク。クリックでEditorで開く |
 | Created | 作成日時 |
 | Used | エディタに挿入された回数（`usage_count`） |
-| [Insert at cursor] | エディタのカーソル位置に挿入。D&Dの代替手段 |
-| [Collapse] | 展開を閉じてカード表示に戻る |
 
-展開中は他のカードとの間にスペースが開き、展開カードが視覚的に浮き上がる（背景色変更のみ、シャドウなし）。
+スニペット未選択時は「Snippetを選択してください」のプレースホルダーを表示。
 
 ### Attribution追跡
 
@@ -197,8 +214,8 @@ Bottom Dockに配置されるため横長のレイアウトを想定。スニペ
 
 ### 3. Snippetsパネルから（手動作成）
 
-- ヘッダーの [+] ボタン → 空のスニペットを作成し、リスト先頭にインライン展開で表示
-- タイトルフィールドにフォーカスが当たり、即時入力可能
+- ヘッダーの [+] ボタン → 空のスニペットを作成し、詳細ペインに表示
+- 詳細ペインのタイトルフィールドにフォーカスが当たり、即時入力可能
 - `source_chat_message_id` と `scene_id` はどちらもNULL
 
 ### 4. クリップボードから
@@ -230,9 +247,9 @@ Bottom Dockに配置されるため横長のレイアウトを想定。スニペ
 - 検索UIではタイトルとコンテンツのプレビューを表示
 - 選択すると即挿入（D&Dと同じAuthorship処理）
 
-### インライン展開の [Insert at cursor] ボタン
+### 詳細ペインの [Insert at cursor] ボタン
 
-- Snippetsパネルでスニペットを展開中に「Insert at cursor」クリック → Editorのカーソル位置に挿入
+- Snippetsパネルの詳細ペインで「Insert at cursor」クリック → Editorのカーソル位置に挿入
 - D&Dが不便な場合（パネルとEditorが離れている等）の代替
 
 ---
@@ -245,7 +262,7 @@ Bottom Dockに配置されるため横長のレイアウトを想定。スニペ
 |-------------|------|
 | Insert at cursor | エディタのカーソル位置に挿入 |
 | Copy content | コンテンツをクリップボードにコピー |
-| Edit | インライン展開して編集モード |
+| Edit | 詳細ペインで編集モード |
 | --- | |
 | Duplicate | スニペットを複製（「{title} (copy)」） |
 | Go to source chat | `source_chat_message_id` がある場合のみ表示。Chat Historyで元セッションを開く |
@@ -257,10 +274,10 @@ Bottom Dockに配置されるため横長のレイアウトを想定。スニペ
 
 ## グリッドレイアウト
 
-Bottom Dockに配置される場合、横幅が広いのでカードを複数カラムで表示する。
+左ペインのスニペットリスト内で、ペイン幅に応じてカードを複数カラムで表示する。
 
-| パネル幅 | カラム数 | カード幅 |
-|---------|---------|---------|
+| 左ペイン幅 | カラム数 | カード幅 |
+|-----------|---------|---------|
 | ~400px未満 | 1カラム | 100% |
 | 400-700px | 2カラム | 50% |
 | 700px以上 | 3カラム | 33% |
@@ -280,6 +297,7 @@ CREATE TABLE snippets (
   tags                    TEXT,                               -- JSON array: ["dialogue", "elara"]
   scene_id                TEXT REFERENCES tree_nodes(id),     -- 作成元シーン（nullable）
   source_chat_message_id  TEXT REFERENCES chat_messages(id),  -- 抽出元チャット（nullable）
+  content_source          TEXT,                               -- 'ai' | 'human'（ソース追跡）
   usage_count             INTEGER NOT NULL DEFAULT 0,
   created_at              TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at              TEXT NOT NULL DEFAULT (datetime('now'))
@@ -287,11 +305,11 @@ CREATE TABLE snippets (
 
 CREATE INDEX idx_snippets_project ON snippets(project_id, created_at DESC);
 
--- 全文検索用FTS5（title、tags、contentを検索対象）
+-- 全文検索用FTS5（title、content、tagsを検索対象）
 CREATE VIRTUAL TABLE snippets_fts USING fts5(
   title,
+  content,
   tags,
-  content_text,
   content=snippets,
   content_rowid=rowid,
   tokenize='trigram'
@@ -299,24 +317,24 @@ CREATE VIRTUAL TABLE snippets_fts USING fts5(
 
 -- FTS5同期トリガー
 CREATE TRIGGER snippets_fts_ai AFTER INSERT ON snippets BEGIN
-  INSERT INTO snippets_fts(rowid, title, tags, content_text)
-    VALUES (new.rowid, new.title, new.tags, new.content);
+  INSERT INTO snippets_fts(rowid, title, content, tags)
+    VALUES (new.rowid, new.title, new.content, new.tags);
 END;
 
 CREATE TRIGGER snippets_fts_ad AFTER DELETE ON snippets BEGIN
-  INSERT INTO snippets_fts(snippets_fts, rowid, title, tags, content_text)
-    VALUES ('delete', old.rowid, old.title, old.tags, old.content);
+  INSERT INTO snippets_fts(snippets_fts, rowid, title, content, tags)
+    VALUES ('delete', old.rowid, old.title, old.content, old.tags);
 END;
 
 CREATE TRIGGER snippets_fts_au AFTER UPDATE ON snippets BEGIN
-  INSERT INTO snippets_fts(snippets_fts, rowid, title, tags, content_text)
-    VALUES ('delete', old.rowid, old.title, old.tags, old.content);
-  INSERT INTO snippets_fts(rowid, title, tags, content_text)
-    VALUES (new.rowid, new.title, new.tags, new.content);
+  INSERT INTO snippets_fts(snippets_fts, rowid, title, content, tags)
+    VALUES ('delete', old.rowid, old.title, old.content, old.tags);
+  INSERT INTO snippets_fts(rowid, title, content, tags)
+    VALUES (new.rowid, new.title, new.content, new.tags);
 END;
 ```
 
-Snippetのcontentは `snippets.content` カラムにProseMirror JSON形式で保存する（TipTapミニエディタで編集されるため、エディタ本文と同じ保存形式を採用）。FTS5の検索対象にはtitle、tags、contentを含める。
+Snippetのcontentは `snippets.content` カラムにProseMirror JSON形式で保存する（TipTapミニエディタで編集されるため、エディタ本文と同じ保存形式を採用）。FTS5の検索対象にはtitle、content、tagsを含める。`content_source` はスニペットの作成元（ai/human）を記録し、ソースバッジの表示とAttribution追跡に使用する。
 
 ---
 
@@ -329,11 +347,11 @@ Snippetのcontentは `snippets.content` カラムにProseMirror JSON形式で保
 | `Ctrl+Alt+N` | Snippetsパネルにフォーカス/トグル（レイアウト設計書で定義済み） |
 | `Ctrl+F`（パネルフォーカス時） | 検索バーにフォーカス |
 | `↑` / `↓` | スニペットカード間のフォーカス移動 |
-| `Enter` | 選択スニペットをインライン展開 / 展開中なら折りたたみ |
+| `Enter` | 選択スニペットを詳細ペインに表示 / 表示中なら選択解除 |
 | `Ctrl+Enter` | 選択スニペットをEditorのカーソル位置に挿入 |
 | `Ctrl+V` | クリップボードから新規スニペット作成 |
 | `Del` | 選択スニペットを削除（確認ダイアログ） |
-| `Escape` | 検索クリア / 展開を閉じる |
+| `Escape` | 検索クリア / 選択解除 |
 
 ---
 
@@ -353,7 +371,7 @@ Snippetのcontentは `snippets.content` カラムにProseMirror JSON形式で保
 
 - D&D挿入 → AuthorshipMark付与（ソースに応じてai/human）
 - コンテキストメニュー「Insert from Snippet...」→ コマンドパレット風検索UIで挿入
-- インライン展開の「Insert at cursor」ボタン
+- 詳細ペインの「Insert at cursor」ボタン
 
 ### → Chat History
 
