@@ -1,4 +1,4 @@
-import { useCallback } from "react";
+import { useCallback, useRef } from "react";
 import { toast } from "sonner";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -9,6 +9,9 @@ import { MessageBadge } from "./MessageBadge";
 import { ToolCallBlock } from "./ToolCallBlock";
 import { ThinkingBlock } from "./ThinkingBlock";
 import { copyChatMessageWithAttribution } from "@/lib/clipboardAttribution";
+import { useEditorStore } from "@/features/editor/editorStore";
+import { useTextSelection } from "@/features/chat/hooks/useTextSelection";
+import { SelectionToolbar } from "./SelectionToolbar";
 
 interface ParsedMetadata {
   tool_calls?: ToolCallRecord[];
@@ -81,6 +84,11 @@ export function ChatMessage({
   const toolCalls = isAssistant ? parseToolCalls(msg.metadata) : [];
   const thinkingBlocks = isAssistant ? parseThinkingBlocks(msg.metadata) : [];
 
+  const containerRef = useRef<HTMLDivElement>(null);
+  const showGhostPreview = useEditorStore((s) => s.showGhostPreview);
+  const clearGhostPreview = useEditorStore((s) => s.clearGhostPreview);
+  const { selectionInfo } = useTextSelection(containerRef);
+
   // G2 + G23: Copy with attribution MIME
   const handleCopy = useCallback(() => {
     copyChatMessageWithAttribution(msg.content, msg.id, msg.model)
@@ -103,6 +111,7 @@ export function ChatMessage({
       }
     >
       <div
+        ref={isAssistant ? containerRef : undefined}
         className={
           msg.role === "user"
             ? "max-w-[85%] rounded-lg bg-primary px-3 py-2 text-sm text-primary-foreground"
@@ -154,6 +163,9 @@ export function ChatMessage({
                 messageId={msg.id}
                 messageRole="assistant"
                 onInsert={() => onInsert(msg.content, msg.id)}
+                onInsertHover={(hovering) =>
+                  hovering ? showGhostPreview(msg.content) : clearGhostPreview()
+                }
                 onExtractCodexQuick={onExtractCodexQuick}
                 onExtractCodexDetailed={onExtractCodexDetailed}
                 onSaveSnippetQuick={onSaveSnippetQuick}
@@ -161,6 +173,24 @@ export function ChatMessage({
                 onCopy={handleCopy}
                 onRegenerate={onRegenerate}
                 onDelete={onDelete}
+              />
+            )}
+            {isAssistant && selectionInfo && (
+              <SelectionToolbar
+                selectionInfo={selectionInfo}
+                messageId={msg.id}
+                onInsertSelection={(text, messageId) => {
+                  onInsert(text, messageId);
+                }}
+                onExtractCodex={(messageId, selectedText) => {
+                  onExtractCodexDetailed?.(messageId, selectedText);
+                }}
+                onSaveSnippet={(messageId, selectedText) => {
+                  onSaveSnippetDetailed?.(messageId, selectedText);
+                }}
+                onCopy={(text) => {
+                  void navigator.clipboard.writeText(text);
+                }}
               />
             )}
           </>

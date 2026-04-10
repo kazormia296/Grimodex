@@ -14,6 +14,7 @@ interface ChatMessageActionsProps {
   messageId: string;
   messageRole: "user" | "assistant";
   onInsert?: () => void;
+  onInsertHover?: (hovering: boolean) => void;
   onExtractCodexQuick?: (messageId: string) => void;
   onExtractCodexDetailed?: (
     messageId: string,
@@ -34,6 +35,7 @@ export function ChatMessageActions({
   messageId,
   messageRole,
   onInsert,
+  onInsertHover,
   onExtractCodexQuick,
   onExtractCodexDetailed,
   onSaveSnippetQuick,
@@ -111,6 +113,8 @@ export function ChatMessageActions({
               type="button"
               data-testid={`insert-to-editor-${messageId}`}
               onClick={() => onInsert()}
+              onMouseEnter={() => onInsertHover?.(true)}
+              onMouseLeave={() => onInsertHover?.(false)}
               title="エディタに挿入"
               className="inline-flex items-center gap-1 rounded border border-border px-2 py-1 text-xs text-muted-foreground hover:bg-accent hover:text-accent-foreground"
             >

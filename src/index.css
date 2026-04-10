@@ -291,6 +291,15 @@
   100% { background-color: transparent; }
 }
 
+/* G4: Ghost preview text — shown at cursor position on Insert button hover */
+.ghost-preview-text {
+  opacity: 0.4;
+  pointer-events: none;
+  user-select: none;
+  white-space: pre-wrap;
+  color: currentColor;
+}
+
 /* Codex highlight decorations (Task 3.6) */
 .codex-highlight {
   cursor: pointer;

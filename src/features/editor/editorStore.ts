@@ -14,8 +14,11 @@ export interface InsertRange {
 interface EditorState {
   editor: Editor | null;
   lastInsertRange: InsertRange | null;
+  ghostPreview: { text: string; pos: number } | null;
 
   setEditor: (editor: Editor | null) => void;
+  showGhostPreview: (text: string) => void;
+  clearGhostPreview: () => void;
   insertFromChat: (
     text: string,
     chatMessageId: string,
@@ -37,8 +40,20 @@ export const useEditorStore = create<EditorState>()((set, get) => {
   return {
     editor: null,
     lastInsertRange: null,
+    ghostPreview: null,
 
     setEditor: (editor: Editor | null) => set({ editor }),
+
+    showGhostPreview: (text: string) => {
+      const { editor } = get();
+      if (!editor) return;
+      const pos = editor.state.selection.from;
+      set({ ghostPreview: { text, pos } });
+    },
+
+    clearGhostPreview: () => {
+      set({ ghostPreview: null });
+    },
 
     insertFromChat: (text: string, chatMessageId: string, model?: string) => {
       const { editor } = get();

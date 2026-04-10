@@ -16,6 +16,7 @@ import { useRevisionStore } from "@/features/revision/revisionStore";
 import { useEditorStore } from "@/features/editor/editorStore";
 import { parseClipboardHtml } from "@/lib/clipboardAttribution";
 import { useInsertHighlight } from "@/features/editor/InsertHighlight";
+import { useGhostPreview } from "@/features/editor/useGhostPreview";
 import { useCodexHighlight } from "@/features/editor/useCodexHighlight";
 import { CodexPopover } from "@/features/editor/CodexPopover";
 import { useAttribution } from "@/features/attribution/useAttribution";
@@ -496,6 +497,7 @@ export function EditorPane({
   const isActiveGroup = groupIndex === activeGroupIndex;
 
   useInsertHighlight(editor);
+  useGhostPreview(editor);
   useCodexHighlight(
     editor,
     isSnippetMode
