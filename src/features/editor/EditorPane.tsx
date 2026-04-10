@@ -496,7 +496,7 @@ export function EditorPane({
   useCodexHighlight(
     editor,
     isCodexMode
-      ? { excludeEntryIds: [nodeId], skipMatchedIds: true }
+      ? { excludeEntryIds: [nodeId] }
       : isSnippetMode
         ? { skipMatchedIds: true }
         : undefined,
