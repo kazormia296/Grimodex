@@ -693,6 +693,7 @@ describe("CodexManagementPanel", () => {
     });
 
     it("shows category group headers when sort is category", async () => {
+      mockListCodexEntries.mockResolvedValue(mockEntries);
       useCodexStore.setState({ entries: mockEntries, sortOrder: "category" });
       render(<CodexManagementPanel />);
 
@@ -713,6 +714,7 @@ describe("CodexManagementPanel", () => {
     });
 
     it("shows entries under their category group", async () => {
+      mockListCodexEntries.mockResolvedValue(mockEntries);
       useCodexStore.setState({ entries: mockEntries, sortOrder: "category" });
       render(<CodexManagementPanel />);
 
@@ -726,6 +728,7 @@ describe("CodexManagementPanel", () => {
 
     it("collapses group when header is clicked", async () => {
       const user = userEvent.setup();
+      mockListCodexEntries.mockResolvedValue(mockEntries);
       useCodexStore.setState({ entries: mockEntries, sortOrder: "category" });
       render(<CodexManagementPanel />);
 

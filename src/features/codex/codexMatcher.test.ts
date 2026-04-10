@@ -255,14 +255,15 @@ describe("excluded aliases (exclusion patterns)", () => {
 });
 
 describe("CJK boundary checking", () => {
-  it("does not match CJK name embedded in longer same-class token", () => {
+  it("matches 2+ kanji name even when preceded by kanji (left boundary exception)", () => {
     const entries: CodexMatchTarget[] = [
       { id: "codex-1", name: "太郎", type: "character" },
     ];
     const matcher = createCodexMatcher(entries);
-    // "山田太郎" — 太郎 is preceded by kanji 田 → invalid boundary → no match
-    expect(matcher("山田太郎")).toHaveLength(0);
-    // But standalone 太郎 should still match
+    // "山田太郎" — 2文字以上の漢字パターンは左境界の漢字-漢字を許可する。
+    // 不一致にしたい場合はExcludedAliasでユーザーが明示的に除外する。
+    expect(matcher("山田太郎")).toHaveLength(1);
+    // Standalone 太郎 should also match
     expect(matcher("太郎が来た")).toHaveLength(1);
   });
 
