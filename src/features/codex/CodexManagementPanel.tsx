@@ -617,6 +617,13 @@ export function CodexManagementPanel({
   const searchInputRef = useRef<HTMLInputElement>(null);
   const searchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  // Clean up debounce timer on unmount
+  useEffect(() => {
+    return () => {
+      if (searchTimerRef.current) clearTimeout(searchTimerRef.current);
+    };
+  }, []);
+
   useEffect(() => {
     loadEntries();
   }, [loadEntries]);
