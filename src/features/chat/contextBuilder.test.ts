@@ -1,11 +1,13 @@
 import { describe, it, expect } from "vitest";
 import {
   buildSystemPrompt,
+  trimToFit,
   countTokens,
   sanitizeSceneContent,
   type SceneContext,
   type ProjectContext,
   type CodexContext,
+  type TrimInput,
 } from "./contextBuilder";
 
 describe("contextBuilder", () => {
@@ -256,6 +258,200 @@ describe("contextBuilder", () => {
         "人間テキスト" +
         '<span data-authorship="ai" source="ai" timestamp="2026-01-01T00:00:00.000Z" chatmessageid="abc" manualoverride="false">文B</span>';
       expect(sanitizeSceneContent(html)).toBe("文A人間テキスト文B");
+    });
+  });
+
+  describe("trimToFit", () => {
+    function makeLayers(overrides: Partial<TrimInput> = {}): TrimInput {
+      return {
+        baseText: "base",
+        l1Text: "",
+        l2Text: "",
+        l3Text: "",
+        l4Text: "",
+        l5Text: "",
+        l6Text: "",
+        ...overrides,
+      };
+    }
+
+    it("returns unchanged texts when total tokens <= budget", () => {
+      const layers = makeLayers({ l4Text: "短い文章" });
+      const budget = 100_000;
+      const result = trimToFit(layers, budget);
+      expect(result.trimmedLayers).toHaveLength(0);
+      expect(result.trimmedTexts.l4Text).toBe("短い文章");
+    });
+
+    it("trims L5 before L4 (priority order)", () => {
+      // L5 has content (simulate), L4 also has content
+      // budget is tiny so both may be touched, but L5 is cleared first
+      const l5Content = "L5コンテンツ: ".repeat(500);
+      const l4Content =
+        "- **キャラA** (character): 説明\n- **キャラB** (character): 説明";
+      const layers = makeLayers({ l5Text: l5Content, l4Text: l4Content });
+      const totalTokens =
+        countTokens("base") + countTokens(l5Content) + countTokens(l4Content);
+      // budget = total - (L5 tokens) => forces L5 to be trimmed but L4 untouched
+      const l5Tokens = countTokens(l5Content);
+      const budget = totalTokens - l5Tokens;
+
+      const result = trimToFit(layers, budget);
+      expect(result.trimmedLayers).toContain("L5");
+      expect(result.trimmedTexts.l5Text).toBe("");
+      // L4 should be untouched since trimming L5 brought us within budget
+      expect(result.trimmedTexts.l4Text).toBe(l4Content);
+    });
+
+    it("trims L4 when L5 trimming is not enough", () => {
+      // L5 is empty, L4 has many entries — budget is smaller than L4 alone
+      const l4Content = [
+        "\n## 登場キャラクター・設定情報",
+        "- **キャラA** (キャラクター): 詳しい説明文A",
+        "- **キャラB** (キャラクター): 詳しい説明文B",
+        "- **キャラC** (キャラクター): 詳しい説明文C",
+        "- **キャラD** (キャラクター): 詳しい説明文D",
+      ].join("\n");
+      const layers = makeLayers({ l4Text: l4Content });
+      const totalTokens = countTokens("base") + countTokens(l4Content);
+      // Force trimming by setting budget below total
+      const budget =
+        totalTokens -
+        countTokens("- **キャラD** (キャラクター): 詳しい説明文D");
+
+      const result = trimToFit(layers, budget);
+      expect(result.trimmedLayers).toContain("L4");
+      expect(result.totalTokens).toBeLessThanOrEqual(budget);
+    });
+
+    it("does not exceed budget after trimming", () => {
+      const l4Content = Array.from(
+        { length: 50 },
+        (_, i) =>
+          `- **キャラ${i}** (キャラクター): これはキャラクター${i}の詳細な説明文です。`,
+      ).join("\n");
+      const layers = makeLayers({
+        l4Text: "\n## 登場キャラクター・設定情報\n" + l4Content,
+        l2Text: "## これまでの物語\n\n第一章の概要\n\n第二章の概要",
+      });
+      const budget = 50;
+      const result = trimToFit(layers, budget);
+      expect(result.totalTokens).toBeLessThanOrEqual(budget);
+    });
+
+    it("records all trimmed layer names", () => {
+      // Use a very tight budget to force multiple layers to be trimmed
+      const l5Content = "L5data ".repeat(100);
+      const l4Content =
+        "\n## 登場キャラクター・設定情報\n" +
+        Array.from(
+          { length: 20 },
+          (_, i) => `- **C${i}** (キャラクター): 説明${i}`,
+        ).join("\n");
+      const l2Content =
+        "## これまでの物語\n\n" +
+        Array.from({ length: 10 }, (_, i) => `シーン${i}\n概要${i}`).join(
+          "\n\n",
+        );
+      const layers = makeLayers({
+        l5Text: l5Content,
+        l4Text: l4Content,
+        l2Text: l2Content,
+      });
+      const result = trimToFit(layers, 5);
+      // With budget=5, multiple layers should be trimmed
+      expect(result.trimmedLayers.length).toBeGreaterThan(0);
+    });
+  });
+
+  describe("buildSystemPrompt — excludeLayers", () => {
+    it("excludes L2 when excludeLayers contains 'L2'", () => {
+      const scene: SceneContext = {
+        id: "scene-1",
+        title: "テスト",
+        content: "内容",
+      };
+      const storySoFar = "## これまでの物語\n\n過去のシーン概要";
+
+      const normalResult = buildSystemPrompt({ scene, storySoFar });
+      expect(normalResult.prompt).toContain("これまでの物語");
+
+      const excludedResult = buildSystemPrompt({
+        scene,
+        storySoFar,
+        excludeLayers: ["L2"],
+      });
+      expect(excludedResult.prompt).not.toContain("これまでの物語");
+    });
+
+    it("excludes L4 when excludeLayers contains 'L4'", () => {
+      const scene: SceneContext = {
+        id: "scene-1",
+        title: "テスト",
+        content: "内容",
+      };
+      const codexEntries: CodexContext[] = [
+        { id: "c1", type: "character", name: "太郎", summary: "主人公" },
+      ];
+
+      const normalResult = buildSystemPrompt({ scene, codexEntries });
+      expect(normalResult.prompt).toContain("太郎");
+
+      const excludedResult = buildSystemPrompt({
+        scene,
+        codexEntries,
+        excludeLayers: ["L4"],
+      });
+      expect(excludedResult.prompt).not.toContain("太郎");
+    });
+
+    it("can exclude multiple layers at once", () => {
+      const scene: SceneContext = {
+        id: "scene-1",
+        title: "テスト",
+        content: "内容",
+      };
+      const storySoFar = "## これまでの物語\n\n概要";
+      const codexEntries: CodexContext[] = [
+        { id: "c1", type: "character", name: "太郎", summary: "主人公" },
+      ];
+
+      const result = buildSystemPrompt({
+        scene,
+        storySoFar,
+        codexEntries,
+        excludeLayers: ["L2", "L4"],
+      });
+      expect(result.prompt).not.toContain("これまでの物語");
+      expect(result.prompt).not.toContain("太郎");
+    });
+
+    it("returns trimmedLayers in result when trimming occurs via conversationTokens", () => {
+      // Build a scene with enough content that trimming occurs
+      const scene: SceneContext = {
+        id: "scene-1",
+        title: "テスト",
+        content: "内容",
+      };
+      const codexEntries: CodexContext[] = Array.from(
+        { length: 30 },
+        (_, i) => ({
+          id: `c${i}`,
+          type: "character",
+          name: `キャラ${i}`,
+          summary: `これはキャラクター${i}の詳しい説明文です。`.repeat(5),
+        }),
+      );
+      // Tiny contextWindow to force trimming
+      const result = buildSystemPrompt({
+        scene,
+        codexEntries,
+        contextWindow: 500,
+        conversationTokens: 0,
+      });
+      // trimmedLayers should be set since L4 will be trimmed
+      expect(result.trimmedLayers).toBeDefined();
+      expect(result.trimmedLayers!.length).toBeGreaterThan(0);
     });
   });
 

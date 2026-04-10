@@ -9,12 +9,18 @@ import { debugLog, errorDetail } from "@/lib/debugLog";
 
 function classifyError(
   e: unknown,
-): "auth" | "rate_limit" | "network" | "unknown" {
+): "auth" | "rate_limit" | "network" | "context_length" | "unknown" {
   const msg = e instanceof Error ? e.message : String(e);
   if (/401|unauthorized|authentication|api\.key|invalid\.key/i.test(msg))
     return "auth";
   if (/429|rate.?limit|too.?many.?request/i.test(msg)) return "rate_limit";
   if (/network|connect|timeout|fetch|ECONNREFUSED/i.test(msg)) return "network";
+  if (
+    /context.length.exceeded|maximum.context|token.limit|too.long|content.too.large/i.test(
+      msg,
+    )
+  )
+    return "context_length";
   return "unknown";
 }
 
@@ -58,6 +64,7 @@ import {
   getToolTokenBudget,
   buildThinkingParams,
   getEffortForTask,
+  getModelCapabilities,
 } from "./agent/modelLimits";
 import { useAiSettingsStore } from "./store";
 import type {
@@ -696,6 +703,16 @@ export const useChatStore = create<ChatState>()((set, get) => ({
           storySoFarBudget,
         );
 
+        // conversationTokens: system message を除いた会話履歴のトークン数
+        const conversationTokens = messagesForApi
+          .filter((m) => m.role !== "system")
+          .reduce((sum, m) => sum + countTokens(m.content), 0);
+
+        const chatModelForCtx =
+          useAiSettingsStore.getState().settings?.model ?? "";
+        const contextWindow =
+          getModelCapabilities(chatModelForCtx).contextWindow;
+
         const promptResult = buildSystemPrompt({
           scene: sceneCtx,
           project: projectCtx ?? undefined,
@@ -703,6 +720,8 @@ export const useChatStore = create<ChatState>()((set, get) => ({
           codexEntries,
           pinnedCodexEntries,
           commandInstruction,
+          conversationTokens,
+          contextWindow,
         });
 
         set({
@@ -727,19 +746,131 @@ export const useChatStore = create<ChatState>()((set, get) => ({
         "summarized",
         useAiSettingsStore.getState().settings?.thinkingEnabled ?? true,
       );
-      const apiPayload = messagesForApi.map((m) => ({
-        role: m.role,
-        content: m.content,
-      }));
+
+      // G25: aggressiveTrim=true の場合は L2/L5 を除外して再ビルド
+      const callApi = async (aggressiveTrim: boolean) => {
+        let payload = messagesForApi;
+        if (aggressiveTrim && sceneCtx) {
+          // system message を除いた会話メッセージ
+          const conversationMsgs = messagesForApi.filter(
+            (m) => m.role !== "system",
+          );
+          const conversationTokens = conversationMsgs.reduce(
+            (sum, m) => sum + countTokens(m.content),
+            0,
+          );
+          const contextWindow = getModelCapabilities(chatModel).contextWindow;
+          const allNodes = useTreeStore.getState().nodes;
+          const l2Pct = useSettingsStore
+            .getState()
+            .getNumber("ai.contextBudget.l2", 10);
+          const storySoFarBudget = Math.round((l2Pct / 100) * 200_000);
+          const storySoFar = buildStorySoFar(
+            sceneCtx.id,
+            allNodes,
+            storySoFarBudget,
+          );
+          const allEntries = await listCodexEntries();
+          const mentioned = await findMentionedEntriesAsync(
+            sceneCtx.content,
+            allEntries,
+          );
+          const L4_TOTAL_BUDGET = 60_000;
+          const aggressiveCodexEntries: CodexContext[] = mentioned.map((e) => {
+            const fullEntry = allEntries.find((a) => a.id === e.id);
+            const summary = fullEntry?.summary ?? "";
+            if (!fullEntry)
+              return { id: e.id, type: e.type, name: e.name, summary };
+            const preset = fullEntry.childrenBudget ?? "compact";
+            if (preset === "none")
+              return { id: e.id, type: e.type, name: e.name, summary };
+            const budget = computeChildrenTokenBudget(preset, L4_TOTAL_BUDGET);
+            const descendants = getDescendantsBFS(fullEntry.id, allEntries);
+            const childrenContext = buildChildrenContext(descendants, budget);
+            return childrenContext
+              ? {
+                  id: e.id,
+                  type: e.type,
+                  name: e.name,
+                  summary,
+                  childrenContext,
+                }
+              : { id: e.id, type: e.type, name: e.name, summary };
+          });
+          let aggressivePinned: import("./contextBuilder").PinnedCodexContext[] =
+            [];
+          if (activeSessionId) {
+            const pinned =
+              await chatApi.listPinnedCodexEntries(activeSessionId);
+            aggressivePinned = pinned.map((e) => {
+              const children = e.withChildren
+                ? getChildrenFromArray(e.id, allEntries).map((c) => ({
+                    id: c.id,
+                    type: c.type,
+                    name: c.name,
+                    summary: c.summary ?? "",
+                  }))
+                : undefined;
+              return {
+                id: e.id,
+                type: e.type,
+                name: e.name,
+                summary: e.summary ?? "",
+                withChildren: e.withChildren,
+                children,
+              };
+            });
+          }
+          const retryPromptResult = buildSystemPrompt({
+            scene: sceneCtx,
+            project: projectCtx ?? undefined,
+            storySoFar: storySoFar || undefined,
+            codexEntries: aggressiveCodexEntries,
+            pinnedCodexEntries: aggressivePinned,
+            commandInstruction,
+            conversationTokens,
+            contextWindow,
+            excludeLayers: ["L2", "L5"],
+          });
+          const retrySystemMsg: ChatMessage = {
+            id: "system",
+            sessionId,
+            role: "system",
+            content: retryPromptResult.prompt,
+            createdAt: new Date().toISOString(),
+          };
+          payload = [retrySystemMsg, ...conversationMsgs];
+        }
+        const apiPayload = payload.map((m) => ({
+          role: m.role,
+          content: m.content,
+        }));
+        return chatApi.sendChatMessageWithThinking(
+          apiPayload,
+          chatThinkingParams,
+        );
+      };
+
       const chatStartTime = performance.now();
+      let apiResult: Awaited<
+        ReturnType<typeof chatApi.sendChatMessageWithThinking>
+      >;
+      try {
+        apiResult = await withNetworkRetry(() => callApi(false));
+      } catch (e) {
+        if (classifyError(e) === "context_length") {
+          toast.info("コンテキストが長すぎます。自動トリムして再送信します…");
+          apiResult = await withNetworkRetry(() => callApi(true));
+        } else {
+          throw e;
+        }
+      }
       const {
         text: responseText,
         thinkingBlocks: chatThinkingBlocks,
         inputTokens: chatInputTokens,
         outputTokens: chatOutputTokens,
-      } = await withNetworkRetry(() =>
-        chatApi.sendChatMessageWithThinking(apiPayload, chatThinkingParams),
-      );
+      } = apiResult;
       const chatDurationMs = Math.round(performance.now() - chatStartTime);
       const chatMetadata =
         chatThinkingBlocks.length > 0

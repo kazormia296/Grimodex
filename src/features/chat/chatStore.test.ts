@@ -402,6 +402,57 @@ describe("useChatStore", () => {
     });
   });
 
+  describe("classifyError — context_length", () => {
+    it("sets error state when API throws context_length_exceeded", async () => {
+      mockSendChatMessageWithThinking.mockRejectedValueOnce(
+        new Error("context_length_exceeded"),
+      );
+      // second call (aggressive trim retry) also fails to avoid infinite hang
+      mockSendChatMessageWithThinking.mockRejectedValueOnce(
+        new Error("context_length_exceeded"),
+      );
+
+      await useChatStore.getState().sendMessage("テスト");
+
+      const { error } = useChatStore.getState();
+      expect(error).toBeTruthy();
+    });
+
+    it("sets error state when API throws maximum context length exceeded", async () => {
+      mockSendChatMessageWithThinking.mockRejectedValueOnce(
+        new Error("maximum context length exceeded"),
+      );
+      mockSendChatMessageWithThinking.mockRejectedValueOnce(
+        new Error("maximum context length exceeded"),
+      );
+
+      await useChatStore.getState().sendMessage("テスト");
+
+      const { error } = useChatStore.getState();
+      expect(error).toBeTruthy();
+    });
+
+    it("retries with aggressive trim on context_length error and succeeds", async () => {
+      // First call fails with context_length
+      mockSendChatMessageWithThinking.mockRejectedValueOnce(
+        new Error("context_length_exceeded"),
+      );
+      // Second call (aggressive trim) succeeds
+      mockSendChatMessageWithThinking.mockResolvedValueOnce({
+        text: "リトライ後の回答",
+        thinkingBlocks: [],
+      });
+
+      await useChatStore.getState().sendMessage("テスト");
+
+      const { messages, error } = useChatStore.getState();
+      expect(error).toBeNull();
+      expect(messages.some((m) => m.content === "リトライ後の回答")).toBe(true);
+      // API should have been called twice (first attempt + retry)
+      expect(mockSendChatMessageWithThinking).toHaveBeenCalledTimes(2);
+    });
+  });
+
   describe("context injection", () => {
     it("passes system prompt to sendChatMessageWithThinking", async () => {
       mockBuildSystemPrompt.mockReturnValue({
