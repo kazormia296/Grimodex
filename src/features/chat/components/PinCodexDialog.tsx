@@ -247,9 +247,7 @@ export function PinCodexDialog({
             />
           )
         ) : snippetEntries.length === 0 ? (
-          <p className="text-xs text-muted-foreground">
-            Snippetがありません
-          </p>
+          <p className="text-xs text-muted-foreground">Snippetがありません</p>
         ) : (
           <PinSnippetVirtualList
             snippets={snippetEntries}

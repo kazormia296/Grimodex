@@ -343,7 +343,7 @@ export function buildSystemPrompt(
   }
 
   // L2: Story so far
-  let l2Text = input.storySoFar ? `\n${input.storySoFar}` : "";
+  const l2Text = input.storySoFar ? `\n${input.storySoFar}` : "";
 
   // L3: Current scene (+ G11: preceding scene synopsis + G19: active tab content)
   let l3Text = "";
@@ -357,8 +357,7 @@ export function buildSystemPrompt(
   if (input.activeTabContent) {
     const typeLabel =
       input.activeTabContent.type === "codex" ? "Codex" : "Snippet";
-    l3Text +=
-      `\n\n## 参照中のコンテンツ\nタイプ: ${typeLabel}\nタイトル: ${input.activeTabContent.title}\n内容: ${input.activeTabContent.content}`;
+    l3Text += `\n\n## 参照中のコンテンツ\nタイプ: ${typeLabel}\nタイトル: ${input.activeTabContent.title}\n内容: ${input.activeTabContent.content}`;
   }
 
   // L4: Codex entries
