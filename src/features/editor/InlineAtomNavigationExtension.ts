@@ -1,28 +1,33 @@
 import { Extension } from "@tiptap/core";
-import { TextSelection } from "prosemirror-state";
+import {
+  Plugin,
+  PluginKey,
+  TextSelection,
+  NodeSelection,
+} from "prosemirror-state";
 import type { Node as ProseMirrorNode } from "prosemirror-model";
 import type { EditorView } from "prosemirror-view";
 
+const pluginKey = new PluginKey("inlineAtomNavigation");
+
 /**
- * テキストブロックノードがインラインatomの子を持つか判定する。
- * 矢印キーハンドラでブラウザネイティブ処理をバイパスするか否かの判定に使用。
+ * テキストブロックノードがインラインatomの子（ルビ等）を持つか判定する。
  */
 export function textblockHasInlineAtom(node: ProseMirrorNode): boolean {
   for (let i = 0; i < node.childCount; i++) {
     const child = node.child(i);
-    // テキストノードはleafのためisAtom===trueだが対象外
     if (!child.isText && child.isAtom && child.isInline) return true;
   }
   return false;
 }
 
 /**
- * 視覚行の端位置をcoordAtPosで走査して返す。
+ * 視覚行の端位置を coordsAtPos の bottom 座標で走査して返す。
  *
- * @param view - ProseMirror EditorView
- * @param startPos - 走査開始のdoc位置
- * @param dir - "right"で行末、"left"で行頭を探す
- * @returns 同一視覚行にある最端のdoc位置
+ * bottom を基準にする理由: ルビの <rt> アノテーションが top を押し上げるため
+ * top 比較ではルビ前後で行変更と誤検出される。bottom は同一ベースライン上で安定。
+ *
+ * @returns 同一視覚行にある最端のdoc位置。検出できなければ startPos を返す。
  */
 export function findVisualLineEdge(
   view: EditorView,
@@ -33,7 +38,6 @@ export function findVisualLineEdge(
   const parentStart = $start.start();
   const parentEnd = $start.end();
 
-  // 折り返し点での座標取得: 行末は -1 side（前の文字寄り）、行頭は +1 side（次の文字寄り）
   const startSide =
     dir === "right"
       ? startPos === parentStart
@@ -43,13 +47,14 @@ export function findVisualLineEdge(
         ? -1
         : 1;
 
-  let startCoords: { top: number };
+  let startCoords: { bottom: number };
   try {
     startCoords = view.coordsAtPos(startPos, startSide);
   } catch {
-    return startPos;
+    // coordsAtPos が失敗する場合はテキストブロック端にフォールバック
+    return dir === "right" ? parentEnd : parentStart;
   }
-  const refTop = startCoords.top;
+  const refBottom = startCoords.bottom;
 
   const step = dir === "right" ? 1 : -1;
   const checkSide = dir === "right" ? -1 : 1;
@@ -59,19 +64,93 @@ export function findVisualLineEdge(
   let pos = startPos + step;
 
   while (dir === "right" ? pos <= limit : pos >= limit) {
-    let coords: { top: number };
+    let coords: { bottom: number };
     try {
       coords = view.coordsAtPos(pos, checkSide);
     } catch {
       break;
     }
-    // 4px以上ずれたら別の視覚行
-    if (Math.abs(coords.top - refTop) >= 4) break;
+    // bottom が 8px 以上ずれたら別の視覚行
+    if (Math.abs(coords.bottom - refBottom) >= 8) break;
     bestPos = pos;
     pos += step;
   }
 
   return bestPos;
+}
+
+function handleEndHome(
+  view: EditorView,
+  dir: "left" | "right",
+  extending: boolean,
+): boolean {
+  const { state } = view;
+  const { selection } = state;
+
+  let headPos: number;
+  let anchorPos: number;
+
+  if (selection instanceof TextSelection) {
+    headPos = selection.$head.pos;
+    anchorPos = selection.$anchor.pos;
+    if (!selection.$head.parent.isTextblock) return false;
+  } else if (selection instanceof NodeSelection) {
+    // NodeSelection からは選択端をheadとして扱う
+    headPos = dir === "right" ? selection.$to.pos : selection.$from.pos;
+    anchorPos = extending ? selection.$from.pos : headPos;
+    const $pos = state.doc.resolve(headPos);
+    if (!$pos.parent.isTextblock) return false;
+  } else {
+    return false;
+  }
+
+  const targetPos = findVisualLineEdge(view, headPos, dir);
+
+  // 既に行端にいても true を返しブラウザのネイティブ処理を防ぐ
+  if (targetPos !== headPos) {
+    const newSel = extending
+      ? TextSelection.create(state.doc, anchorPos, targetPos)
+      : TextSelection.create(state.doc, targetPos);
+    view.dispatch(state.tr.setSelection(newSel).scrollIntoView());
+  }
+  return true;
+}
+
+function handleArrow(
+  view: EditorView,
+  dir: 1 | -1,
+  extending: boolean,
+): boolean {
+  const { state } = view;
+  const { selection } = state;
+
+  // NodeSelection の場合は ProseMirror の selectHorizontally に委譲
+  if (selection instanceof NodeSelection) return false;
+  if (!(selection instanceof TextSelection)) return false;
+
+  // 範囲選択の解消は ProseMirror に委譲
+  if (!extending && !selection.empty) return false;
+
+  const { $head } = selection;
+  if (!$head.parent.isTextblock) return false;
+  if (!textblockHasInlineAtom($head.parent)) return false;
+
+  // テキストブロック端 → ProseMirror にブロック間移動を委譲
+  if (dir > 0 && $head.parentOffset >= $head.parent.content.size) return false;
+  if (dir < 0 && $head.parentOffset <= 0) return false;
+
+  // textOffset===0 で隣接ノードがatomの場合 → ProseMirror の NodeSelection 生成に委譲
+  if ($head.textOffset === 0) {
+    const adjacent = dir > 0 ? $head.nodeAfter : $head.nodeBefore;
+    if (adjacent && !adjacent.isText && adjacent.isAtom) return false;
+  }
+
+  const newHead = $head.pos + dir;
+  const newSel = extending
+    ? TextSelection.create(state.doc, selection.$anchor.pos, newHead)
+    : TextSelection.create(state.doc, newHead);
+  view.dispatch(state.tr.setSelection(newSel).scrollIntoView());
+  return true;
 }
 
 /**
@@ -80,184 +159,35 @@ export function findVisualLineEdge(
  * ProseMirrorはインラインatomノード（ルビなど）に contenteditable="false" を付与するため、
  * ブラウザのネイティブカーソル処理が以下の問題を起こす：
  *   1. End/Homeキー: ProseMirrorにバインドなし → ブラウザが誤動作
- *   2. 矢印キー: テキスト内（textOffset > 0）ではProseMirrorがブラウザに委譲 → 誤動作
+ *   2. 矢印キー: テキスト内ではProseMirrorがブラウザに委譲 → 誤動作
  *   3. 折り返し行のEnd: 視覚行末でなく次行頭へ移動する
  *
- * 修正: End/Homeを座標ベースで視覚行の端を検出して移動。
- *       矢印キーはatom含有テキストブロック内でのみ自前処理。
+ * handleKeyDown で直接キーイベントを処理し、確実にブラウザのネイティブ動作を抑止する。
  */
 export const InlineAtomNavigationExtension = Extension.create({
   name: "inlineAtomNavigation",
-  priority: 200,
 
-  addKeyboardShortcuts() {
-    return {
-      // End: 視覚行末へ移動
-      End: () => {
-        const { view } = this.editor;
-        const { state } = view;
-        const { selection } = state;
-        if (!(selection instanceof TextSelection)) return false;
-        const { $head } = selection;
-        if (!$head.parent.isTextblock) return false;
-
-        const targetPos = findVisualLineEdge(view, $head.pos, "right");
-        if (targetPos === $head.pos) return false;
-        view.dispatch(
-          state.tr
-            .setSelection(TextSelection.create(state.doc, targetPos))
-            .scrollIntoView(),
-        );
-        return true;
-      },
-
-      // Home: 視覚行頭へ移動
-      Home: () => {
-        const { view } = this.editor;
-        const { state } = view;
-        const { selection } = state;
-        if (!(selection instanceof TextSelection)) return false;
-        const { $head } = selection;
-        if (!$head.parent.isTextblock) return false;
-
-        const targetPos = findVisualLineEdge(view, $head.pos, "left");
-        if (targetPos === $head.pos) return false;
-        view.dispatch(
-          state.tr
-            .setSelection(TextSelection.create(state.doc, targetPos))
-            .scrollIntoView(),
-        );
-        return true;
-      },
-
-      // Shift-End: 視覚行末まで選択拡張
-      "Shift-End": () => {
-        const { view } = this.editor;
-        const { state } = view;
-        const { selection } = state;
-        if (!(selection instanceof TextSelection)) return false;
-        const { $head, $anchor } = selection;
-        if (!$head.parent.isTextblock) return false;
-
-        const targetPos = findVisualLineEdge(view, $head.pos, "right");
-        if (targetPos === $head.pos) return false;
-        view.dispatch(
-          state.tr
-            .setSelection(
-              TextSelection.create(state.doc, $anchor.pos, targetPos),
-            )
-            .scrollIntoView(),
-        );
-        return true;
-      },
-
-      // Shift-Home: 視覚行頭まで選択拡張
-      "Shift-Home": () => {
-        const { view } = this.editor;
-        const { state } = view;
-        const { selection } = state;
-        if (!(selection instanceof TextSelection)) return false;
-        const { $head, $anchor } = selection;
-        if (!$head.parent.isTextblock) return false;
-
-        const targetPos = findVisualLineEdge(view, $head.pos, "left");
-        if (targetPos === $head.pos) return false;
-        view.dispatch(
-          state.tr
-            .setSelection(
-              TextSelection.create(state.doc, $anchor.pos, targetPos),
-            )
-            .scrollIntoView(),
-        );
-        return true;
-      },
-
-      // ArrowRight: atom含有テキストブロック内でブラウザ処理をバイパス
-      // textOffset === 0 の場合はProseMirrorのselectHorizontallyが正しく処理するため委譲
-      ArrowRight: () => {
-        const { view } = this.editor;
-        const { state } = view;
-        const { selection } = state;
-        if (!(selection instanceof TextSelection)) return false;
-        if (!selection.empty) return false;
-        const { $head } = selection;
-        if (!$head.parent.isTextblock) return false;
-        if ($head.textOffset === 0) return false;
-        if (!textblockHasInlineAtom($head.parent)) return false;
-        if ($head.parentOffset >= $head.parent.content.size) return false;
-
-        view.dispatch(
-          state.tr
-            .setSelection(TextSelection.create(state.doc, $head.pos + 1))
-            .scrollIntoView(),
-        );
-        return true;
-      },
-
-      // ArrowLeft: atom含有テキストブロック内でブラウザ処理をバイパス
-      ArrowLeft: () => {
-        const { view } = this.editor;
-        const { state } = view;
-        const { selection } = state;
-        if (!(selection instanceof TextSelection)) return false;
-        if (!selection.empty) return false;
-        const { $head } = selection;
-        if (!$head.parent.isTextblock) return false;
-        if ($head.textOffset === 0) return false;
-        if (!textblockHasInlineAtom($head.parent)) return false;
-        if ($head.parentOffset <= 0) return false;
-
-        view.dispatch(
-          state.tr
-            .setSelection(TextSelection.create(state.doc, $head.pos - 1))
-            .scrollIntoView(),
-        );
-        return true;
-      },
-
-      // Shift-ArrowRight: atom含有テキストブロック内で選択拡張
-      "Shift-ArrowRight": () => {
-        const { view } = this.editor;
-        const { state } = view;
-        const { selection } = state;
-        if (!(selection instanceof TextSelection)) return false;
-        const { $head, $anchor } = selection;
-        if (!$head.parent.isTextblock) return false;
-        if ($head.textOffset === 0) return false;
-        if (!textblockHasInlineAtom($head.parent)) return false;
-        if ($head.parentOffset >= $head.parent.content.size) return false;
-
-        view.dispatch(
-          state.tr
-            .setSelection(
-              TextSelection.create(state.doc, $anchor.pos, $head.pos + 1),
-            )
-            .scrollIntoView(),
-        );
-        return true;
-      },
-
-      // Shift-ArrowLeft: atom含有テキストブロック内で選択拡張
-      "Shift-ArrowLeft": () => {
-        const { view } = this.editor;
-        const { state } = view;
-        const { selection } = state;
-        if (!(selection instanceof TextSelection)) return false;
-        const { $head, $anchor } = selection;
-        if (!$head.parent.isTextblock) return false;
-        if ($head.textOffset === 0) return false;
-        if (!textblockHasInlineAtom($head.parent)) return false;
-        if ($head.parentOffset <= 0) return false;
-
-        view.dispatch(
-          state.tr
-            .setSelection(
-              TextSelection.create(state.doc, $anchor.pos, $head.pos - 1),
-            )
-            .scrollIntoView(),
-        );
-        return true;
-      },
-    };
+  addProseMirrorPlugins() {
+    return [
+      new Plugin({
+        key: pluginKey,
+        props: {
+          handleKeyDown(view, event) {
+            switch (event.key) {
+              case "End":
+                return handleEndHome(view, "right", event.shiftKey);
+              case "Home":
+                return handleEndHome(view, "left", event.shiftKey);
+              case "ArrowRight":
+                return handleArrow(view, 1, event.shiftKey);
+              case "ArrowLeft":
+                return handleArrow(view, -1, event.shiftKey);
+              default:
+                return false;
+            }
+          },
+        },
+      }),
+    ];
   },
 });
