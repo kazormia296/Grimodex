@@ -29,6 +29,7 @@ interface EditorState {
     content: string,
     source: "ai" | "human",
     originalContent: string | null,
+    dropPos?: number,
   ) => boolean;
   insertFromPaste: (segments: AttributedSegment[]) => boolean;
   clearInsertRange: () => void;
@@ -150,13 +151,19 @@ export const useEditorStore = create<EditorState>()((set, get) => {
       content: string,
       source: "ai" | "human",
       originalContent: string | null,
+      dropPos?: number,
     ) => {
       const { editor } = get();
       if (!editor) return false;
 
-      const { from } = editor.state.selection;
       const docEnd = editor.state.doc.content.size - 1;
-      const insertPos = from > 0 ? from : Math.max(docEnd, 0);
+      const insertPos =
+        dropPos != null
+          ? Math.min(dropPos, Math.max(docEnd, 0))
+          : (() => {
+              const { from } = editor.state.selection;
+              return from > 0 ? from : Math.max(docEnd, 0);
+            })();
 
       const needsDiff =
         source === "ai" &&

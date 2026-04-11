@@ -332,7 +332,7 @@ export function EditorPane({
         }
         return false;
       },
-      handleDrop(_view, event) {
+      handleDrop(view, event) {
         const snippetData = event.dataTransfer?.getData(
           "application/x-grimodex-snippet",
         );
@@ -347,7 +347,11 @@ export function EditorPane({
             source: "ai" | "human";
             originalContent: string | null;
           };
-          insertFromSnippet(id, content, source, originalContent);
+          const coords = view.posAtCoords({
+            left: event.clientX,
+            top: event.clientY,
+          });
+          insertFromSnippet(id, content, source, originalContent, coords?.pos);
           return true;
         } catch {
           return false;
