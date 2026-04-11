@@ -43,7 +43,8 @@ export function resolveVerticalBias(
     }
     if (endAbove) return -1;
     if (startAbove) return 1;
-    return 1; // fallback: line-start side
+    // Neither candidate moved above prevTop — preserve current visual position.
+    return 1;
   }
 
   // direction === "down"
@@ -54,7 +55,8 @@ export function resolveVerticalBias(
   }
   if (endBelow) return -1;
   if (startBelow) return 1;
-  return -1; // fallback: line-end side
+  // Neither candidate moved below prevTop — preserve current visual position.
+  return -1;
 }
 
 /**

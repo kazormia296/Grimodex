@@ -67,6 +67,19 @@ export function createCursorOverlayPlugin(getEnabled: () => boolean): Plugin {
   });
 }
 
+/** Keys that should not alter soft-wrap bias (modifiers, locks, etc.). */
+const IGNORE_KEYS = new Set([
+  "Shift",
+  "Control",
+  "Alt",
+  "Meta",
+  "CapsLock",
+  "NumLock",
+  "ScrollLock",
+  "Escape",
+  "ContextMenu",
+]);
+
 class CursorOverlayView {
   private el: HTMLDivElement;
   private wrapper: HTMLElement;
@@ -86,9 +99,9 @@ class CursorOverlayView {
    */
   private pendingClickY: number | null = null;
   /**
-   * Viewport-relative top of the last rendered cursor position.
-   * Used to resolve wrap affinity after ArrowUp/Down by comparing
-   * the two candidate Y coordinates against the previous position.
+   * Wrapper-content-relative top of the last rendered cursor position.
+   * Stored as `viewportY - wrapperRect.top + wrapper.scrollTop` so
+   * the value is stable across scroll changes.
    */
   private prevTop: number | null = null;
   /**
@@ -117,6 +130,7 @@ class CursorOverlayView {
 
   update(view: EditorView, _prevState: EditorState) {
     this.view = view;
+    if (this.el.classList.contains("composing")) return;
     this.updateCursor(view);
   }
 
@@ -141,12 +155,15 @@ class CursorOverlayView {
         this.pendingVertical = null;
         break;
       case "ArrowUp":
+      case "PageUp":
         this.pendingVertical = "up";
         break;
       case "ArrowDown":
+      case "PageDown":
         this.pendingVertical = "down";
         break;
       default:
+        if (IGNORE_KEYS.has(event.key)) break;
         this.bias = 1;
         this.pendingVertical = null;
         break;
@@ -208,10 +225,12 @@ class CursorOverlayView {
     }
 
     // Resolve wrap affinity after ArrowUp/Down using previous Y position.
+    // Coordinates are converted to wrapper-content-relative to stay stable
+    // across scrolls that may occur between the previous and current frame.
     if (this.pendingVertical !== null && this.prevTop !== null) {
       try {
-        const endTop = view.coordsAtPos(from, -1).top;
-        const startTop = view.coordsAtPos(from, 1).top;
+        const endTop = this.toContentY(view.coordsAtPos(from, -1).top);
+        const startTop = this.toContentY(view.coordsAtPos(from, 1).top);
         const resolved = resolveVerticalBias(
           endTop,
           startTop,
@@ -233,7 +252,7 @@ class CursorOverlayView {
       return;
     }
 
-    this.prevTop = coords.top;
+    this.prevTop = this.toContentY(coords.top);
 
     const pos = toContainerRelative(
       coords,
@@ -262,5 +281,14 @@ class CursorOverlayView {
     } else {
       this.el.classList.remove("composing");
     }
+  }
+
+  /** Convert a viewport-relative Y to wrapper-content-relative Y. */
+  private toContentY(viewportY: number): number {
+    return (
+      viewportY -
+      this.wrapper.getBoundingClientRect().top +
+      this.wrapper.scrollTop
+    );
   }
 }
