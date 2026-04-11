@@ -173,8 +173,9 @@ function App() {
     <>
       <Toaster position="bottom-right" richColors />
       {view === "loading" && (
-        <div className="flex h-screen items-center justify-center bg-background text-foreground">
+        <div className="flex h-screen flex-col items-center justify-center gap-4 bg-background text-foreground">
           <TitleBar />
+          <GrimodexLogo height={40} className="text-foreground" />
           <p className="text-sm text-muted-foreground">読み込み中…</p>
         </div>
       )}

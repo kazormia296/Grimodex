@@ -2,6 +2,7 @@ import { useState } from "react";
 import { openFolderDialog } from "@/lib/dialog";
 import { useWorkspaceStore } from "./store";
 import { TitleBar } from "@/components/TitleBar";
+import { GrimodexLogo } from "@/components/GrimodexLogo";
 
 export function WelcomeScreen() {
   const openWorkspace = useWorkspaceStore((s) => s.openWorkspace);
@@ -29,7 +30,7 @@ export function WelcomeScreen() {
     <div className="flex h-screen flex-col items-center justify-center bg-background text-foreground">
       <TitleBar />
       <div className="flex max-w-md flex-col items-center gap-6 px-8">
-        <h1 className="text-3xl font-bold tracking-tight">Grimodex</h1>
+        <GrimodexLogo height={36} className="text-foreground" />
         <p className="text-center text-sm text-muted-foreground">
           原稿の保存先フォルダを選んでください。
           <br />

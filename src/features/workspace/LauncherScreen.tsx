@@ -4,6 +4,7 @@ import { useWorkspaceStore } from "./store";
 import type { RecentWorkspace } from "./store";
 import { cn } from "@/lib/utils";
 import { TitleBar } from "@/components/TitleBar";
+import { GrimodexLogo } from "@/components/GrimodexLogo";
 
 export function LauncherScreen() {
   const globalSettings = useWorkspaceStore((s) => s.globalSettings);
@@ -33,7 +34,7 @@ export function LauncherScreen() {
     <div className="flex h-screen flex-col items-center justify-center bg-background text-foreground">
       <TitleBar />
       <div className="flex w-full max-w-lg flex-col gap-6 px-8">
-        <h1 className="text-2xl font-bold">Grimodex</h1>
+        <GrimodexLogo height={32} className="text-foreground" />
 
         <div>
           <h2 className="mb-3 text-sm font-semibold text-muted-foreground">
