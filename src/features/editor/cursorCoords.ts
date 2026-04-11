@@ -23,49 +23,21 @@ export function toContainerRelative(
 /**
  * Resolve cursor coordinates for the given ProseMirror position.
  *
- * 1. Normal case: coordsAtPos(from) is unambiguous — use it directly.
- * 2. Wrap boundary: coordsAtPos with side=-1 and side=1 yield different Y
- *    positions.  Consult the DOM Selection to determine which visual side
- *    the browser chose.  Fall back to the line-start side if DOM Selection
- *    is unavailable.
+ * `bias` controls which visual side of a soft-wrap boundary to use:
+ *   -1 = line-end side  (End key, ArrowLeft arriving from next line)
+ *    1 = line-start side (Home key, ArrowRight arriving on next line)
+ *
+ * At non-wrap positions both sides produce identical coordinates, so
+ * the bias value has no visible effect there.
  */
-export function resolveCoords(view: EditorView, from: number): Coords | null {
-  let lineEndCoords: Coords | null = null;
-  let lineStartCoords: Coords | null = null;
-  let isWrapPoint = false;
-
+export function resolveCoords(
+  view: EditorView,
+  from: number,
+  bias: -1 | 1,
+): Coords | null {
   try {
-    lineEndCoords = view.coordsAtPos(from, -1);
-    lineStartCoords = view.coordsAtPos(from, 1);
-    isWrapPoint = Math.abs(lineEndCoords.top - lineStartCoords.top) > 2;
-  } catch {
-    // coordsAtPos can throw near inline atom nodes — not a wrap point
-  }
-
-  if (isWrapPoint && lineEndCoords && lineStartCoords) {
-    const domCoords = getDomSelectionCoords(view);
-    if (domCoords) {
-      const distToEnd = Math.abs(domCoords.top - lineEndCoords.top);
-      const distToStart = Math.abs(domCoords.top - lineStartCoords.top);
-      return distToEnd < distToStart ? lineEndCoords : lineStartCoords;
-    }
-    return lineStartCoords;
-  }
-
-  try {
-    return view.coordsAtPos(from);
+    return view.coordsAtPos(from, bias);
   } catch {
     return null;
   }
-}
-
-/** Read caret coordinates from the DOM Selection's client rects. */
-export function getDomSelectionCoords(view: EditorView): Coords | null {
-  const win = view.dom.ownerDocument.defaultView;
-  const domSel = win?.getSelection();
-  if (!domSel?.isCollapsed || !domSel.rangeCount) return null;
-  const rects = domSel.getRangeAt(0).getClientRects();
-  if (!rects.length) return null;
-  const r = rects[0];
-  return { left: r.left, top: r.top, bottom: r.bottom };
 }

@@ -12,18 +12,13 @@ export const cursorOverlayKey = new PluginKey("cursorOverlay");
  * - Smooth 80ms slide transition on cursor movement
  * - Transition disabled during IME composition and deletion
  *
- * Using the Plugin `view()` lifecycle (constructor / update / destroy) gives a
- * timing guarantee that the DOM Selection is already synced when `update()` is
- * called, avoiding the race conditions that exist with React event listeners.
- *
- * @param getEnabled - Callback to read the current enabled state. Called on
- *   every update so that toggling the setting takes effect without
- *   re-registering the plugin.
+ * Soft-wrap affinity is resolved by tracking the last user action as a
+ * `bias` value (-1 = line-end, 1 = line-start) and passing it directly to
+ * `coordsAtPos(from, bias)`.  At non-wrap positions both sides return the
+ * same coordinates so the bias has no effect.  This avoids reading the DOM
+ * Selection after ProseMirror has re-set it (which loses affinity context).
  */
 export function createCursorOverlayPlugin(getEnabled: () => boolean): Plugin {
-  // Shared reference between view() factory and handleDOMEvents handlers.
-  // view() is called synchronously during plugin registration, so this is
-  // always set before any DOM event can fire.
   let overlayView: CursorOverlayView | null = null;
 
   return new Plugin({
@@ -35,7 +30,17 @@ export function createCursorOverlayPlugin(getEnabled: () => boolean): Plugin {
     },
 
     props: {
+      // Capture-phase so bias is set before ProseMirror processes the key.
+      handleKeyDown(_view, event) {
+        overlayView?.updateBiasFromKey(event);
+        return false;
+      },
+
       handleDOMEvents: {
+        mousedown(view, event) {
+          overlayView?.updateBiasFromClick(view, event as MouseEvent);
+          return false;
+        },
         focus(view) {
           overlayView?.updateCursor(view);
           return false;
@@ -50,7 +55,6 @@ export function createCursorOverlayPlugin(getEnabled: () => boolean): Plugin {
         },
         compositionend(view) {
           overlayView?.setComposing(false);
-          // Defer one frame so the editor state reflects the committed text
           requestAnimationFrame(() => overlayView?.updateCursor(view));
           return false;
         },
@@ -65,6 +69,18 @@ class CursorOverlayView {
   private prevDocSize: number;
   private noTransitionTimer = 0;
   private rafHandle = 0;
+  /**
+   * Soft-wrap affinity bias.
+   *   -1  line-end side  (End, ArrowLeft, Backspace)
+   *    1  line-start side (Home, ArrowRight, typing, default)
+   */
+  private bias: -1 | 1 = 1;
+  /**
+   * Y coordinate of the most recent mousedown (viewport-relative).
+   * Used once in the next updateCursor call to resolve wrap affinity,
+   * then cleared.
+   */
+  private pendingClickY: number | null = null;
 
   constructor(
     private view: EditorView,
@@ -95,14 +111,42 @@ class CursorOverlayView {
     this.view.dom.style.caretColor = "";
   }
 
+  updateBiasFromKey(event: KeyboardEvent) {
+    switch (event.key) {
+      case "End":
+      case "ArrowLeft":
+      case "Backspace":
+        this.bias = -1;
+        break;
+      case "Home":
+      case "ArrowRight":
+        this.bias = 1;
+        break;
+      case "ArrowUp":
+      case "ArrowDown":
+        // Preserve current bias — vertical movement keeps column memory.
+        break;
+      default:
+        this.bias = 1;
+        break;
+    }
+  }
+
+  /**
+   * For mouse clicks: store the click Y so updateCursor can compare it
+   * against the two candidate line positions at a wrap boundary.
+   */
+  updateBiasFromClick(_view: EditorView, event: MouseEvent) {
+    this.pendingClickY = event.clientY;
+    this.bias = 1; // will be refined in updateCursor if wrap point
+  }
+
   updateCursor(view: EditorView) {
-    // Manage native caret visibility based on enabled state
     if (!this.getEnabled()) {
       view.dom.style.caretColor = "";
       this.el.style.visibility = "hidden";
       return;
     }
-    // Overlay is active: hide native caret
     view.dom.style.caretColor = "transparent";
 
     if (!view.hasFocus() || !view.state.selection.empty) {
@@ -110,7 +154,7 @@ class CursorOverlayView {
       return;
     }
 
-    // Disable transition during rapid typing/deletion; re-enable after 200ms
+    // Disable slide transition during rapid typing/deletion.
     const docSize = view.state.doc.content.size;
     if (docSize !== this.prevDocSize) {
       this.el.classList.add("no-transition");
@@ -122,7 +166,26 @@ class CursorOverlayView {
     this.prevDocSize = docSize;
 
     const { from } = view.state.selection;
-    const coords = resolveCoords(view, from);
+
+    // For mouse clicks: refine bias using click Y vs. the two candidate
+    // line positions at a soft-wrap boundary.
+    if (this.pendingClickY !== null) {
+      const clickY = this.pendingClickY;
+      this.pendingClickY = null;
+      try {
+        const endCoords = view.coordsAtPos(from, -1);
+        const startCoords = view.coordsAtPos(from, 1);
+        if (Math.abs(endCoords.top - startCoords.top) > 2) {
+          const distToEnd = Math.abs(clickY - endCoords.top);
+          const distToStart = Math.abs(clickY - startCoords.top);
+          this.bias = distToEnd < distToStart ? -1 : 1;
+        }
+      } catch {
+        // Not a wrap point or atom node — keep default bias.
+      }
+    }
+
+    const coords = resolveCoords(view, from, this.bias);
     if (!coords) {
       this.hide();
       return;
@@ -137,7 +200,7 @@ class CursorOverlayView {
     this.el.style.top = `${pos.top}px`;
     this.el.style.height = `${pos.height}px`;
 
-    // Restart blink: render solid cursor for one frame, then resume blinking
+    // Restart blink: solid for one frame, then resume blinking.
     this.el.classList.remove("blinking");
     cancelAnimationFrame(this.rafHandle);
     this.rafHandle = requestAnimationFrame(() => {
