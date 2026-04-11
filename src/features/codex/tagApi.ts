@@ -1,5 +1,11 @@
 import { db } from "@/db/client";
-import { codexTags, codexEntryTags, codexEntries } from "@/db/schema";
+import {
+  codexTags,
+  codexEntryTags,
+  codexEntries,
+  snippetEntryTags,
+  snippets,
+} from "@/db/schema";
 import { asc, eq, inArray } from "drizzle-orm";
 
 export type CodexTag = typeof codexTags.$inferSelect;
@@ -64,6 +70,45 @@ export async function listEntryTags(entryId: string): Promise<CodexTag[]> {
     .where(eq(codexEntryTags.entryId, entryId))
     .orderBy(asc(codexTags.name));
   return rows.map((r) => r.tag);
+}
+
+export async function listSnippetEntryTags(
+  snippetId: string,
+): Promise<CodexTag[]> {
+  const rows = await db
+    .select({ tag: codexTags })
+    .from(snippetEntryTags)
+    .innerJoin(codexTags, eq(snippetEntryTags.tagId, codexTags.id))
+    .where(eq(snippetEntryTags.snippetId, snippetId))
+    .orderBy(asc(codexTags.name));
+  return rows.map((r) => r.tag);
+}
+
+export async function setSnippetEntryTags(
+  snippetId: string,
+  tagIds: string[],
+): Promise<void> {
+  await db
+    .delete(snippetEntryTags)
+    .where(eq(snippetEntryTags.snippetId, snippetId));
+  if (tagIds.length > 0) {
+    await db
+      .insert(snippetEntryTags)
+      .values(tagIds.map((tagId) => ({ snippetId, tagId })));
+  }
+  let tagCache: { name: string; color: string | null }[] = [];
+  if (tagIds.length > 0) {
+    const tags = await db
+      .select()
+      .from(codexTags)
+      .where(inArray(codexTags.id, tagIds))
+      .orderBy(asc(codexTags.name));
+    tagCache = tags.map((t) => ({ name: t.name, color: t.color }));
+  }
+  await db
+    .update(snippets)
+    .set({ tagsCache: JSON.stringify(tagCache) })
+    .where(eq(snippets.id, snippetId));
 }
 
 export async function setEntryTags(

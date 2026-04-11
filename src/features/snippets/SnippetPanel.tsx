@@ -261,10 +261,7 @@ export function SnippetPanel() {
   );
 
   const handleSave = useCallback(
-    async (
-      id: string,
-      data: { title: string; content: string; tags: string },
-    ) => {
+    async (id: string, data: { title: string; content: string }) => {
       await update(id, data);
     },
     [update],
@@ -523,19 +520,24 @@ export function SnippetPanel() {
                               </button>
                             )}
                           </div>
-                          {snippet.tags && (
+                          {snippet.tagsCache && (
                             <div className="mt-1 flex flex-wrap gap-1">
-                              {snippet.tags
-                                .split(",")
-                                .filter(Boolean)
-                                .map((tag) => (
-                                  <span
-                                    key={tag}
-                                    className="inline-block rounded-full bg-accent px-1.5 py-0.5 text-[10px] text-accent-foreground"
-                                  >
-                                    {tag.trim()}
-                                  </span>
-                                ))}
+                              {(
+                                JSON.parse(snippet.tagsCache) as {
+                                  name: string;
+                                  color: string | null;
+                                }[]
+                              ).map((tag) => (
+                                <span
+                                  key={tag.name}
+                                  className="inline-block rounded-full px-1.5 py-0.5 text-[10px] text-white"
+                                  style={{
+                                    backgroundColor: tag.color ?? "#888888",
+                                  }}
+                                >
+                                  {tag.name}
+                                </span>
+                              ))}
                             </div>
                           )}
                         </div>

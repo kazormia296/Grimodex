@@ -96,6 +96,7 @@ const fakeSnippet = (overrides: Partial<Snippet> = {}): Snippet => ({
   title: "テストスニペット",
   content: "スニペット内容",
   tags: "タグ1,タグ2",
+  tagsCache: null,
   sceneId: null,
   sourceChatMessageId: null,
   usageCount: 0,

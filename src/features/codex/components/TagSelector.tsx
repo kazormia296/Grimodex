@@ -3,6 +3,8 @@ import { TagPill } from "./TagPill";
 import { listCodexTags, createCodexTag, setEntryTags } from "../tagApi";
 import type { CodexTag } from "../tagApi";
 
+type PersistFn = (entryId: string, tagIds: string[]) => Promise<void>;
+
 const PRESET_COLORS = [
   "#534AB7",
   "#0F6E56",
@@ -20,6 +22,8 @@ interface TagSelectorProps {
   onTagsChange: (tags: CodexTag[]) => void;
   /** 直接表示するタグの最大数。超えた分は +N ボタンに折りたたむ */
   maxVisible?: number;
+  /** タグ永続化関数。省略時は setEntryTags を使用 */
+  persistTags?: PersistFn;
 }
 
 export function TagSelector({
@@ -29,6 +33,7 @@ export function TagSelector({
   selectedTags,
   onTagsChange,
   maxVisible,
+  persistTags = setEntryTags,
 }: TagSelectorProps) {
   const [allTags, setAllTags] = useState<CodexTag[]>([]);
   const [dropdownOpen, setDropdownOpen] = useState(false);
@@ -96,7 +101,7 @@ export function TagSelector({
       ? selectedTags.filter((t) => t.id !== tag.id)
       : [...selectedTags, tag];
     onTagsChange(next);
-    await setEntryTags(
+    await persistTags(
       entryId,
       next.map((t) => t.id),
     );
@@ -105,7 +110,7 @@ export function TagSelector({
   const handleRemove = async (tagId: string) => {
     const next = selectedTags.filter((t) => t.id !== tagId);
     onTagsChange(next);
-    await setEntryTags(
+    await persistTags(
       entryId,
       next.map((t) => t.id),
     );
@@ -122,7 +127,7 @@ export function TagSelector({
     setAllTags((prev) => [...prev, tag]);
     const next = [...selectedTags, tag];
     onTagsChange(next);
-    await setEntryTags(
+    await persistTags(
       entryId,
       next.map((t) => t.id),
     );

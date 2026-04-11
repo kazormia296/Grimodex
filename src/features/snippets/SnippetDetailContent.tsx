@@ -23,13 +23,16 @@ import { useTreeStore } from "@/features/tree/treeStore";
 import { useTabStore } from "@/features/editor/tabStore";
 import { useEditorStore } from "@/features/editor/editorStore";
 import { useSnippetStore } from "./snippetStore";
+import { TagSelector } from "@/features/codex/components/TagSelector";
+import {
+  listSnippetEntryTags,
+  setSnippetEntryTags,
+} from "@/features/codex/tagApi";
+import type { CodexTag } from "@/features/codex/tagApi";
 
 interface SnippetDetailContentProps {
   snippet: Snippet;
-  onSave: (
-    id: string,
-    data: { title: string; content: string; tags: string },
-  ) => void;
+  onSave: (id: string, data: { title: string; content: string }) => void;
   onDelete: (id: string) => void;
 }
 
@@ -43,12 +46,10 @@ export function SnippetDetailContent({
   const incrementUsageCount = useSnippetStore((s) => s.incrementUsageCount);
 
   const [title, setTitle] = useState(snippet.title);
-  const [tags, setTags] = useState(snippet.tags ?? "");
+  const [selectedTags, setSelectedTags] = useState<CodexTag[]>([]);
 
   const titleRef = useRef(title);
-  const tagsRef = useRef(tags);
   titleRef.current = title;
-  tagsRef.current = tags;
 
   const autoSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -59,13 +60,17 @@ export function SnippetDetailContent({
 
   useAttribution(editor);
 
+  // Load relational tags when snippet changes
+  useEffect(() => {
+    listSnippetEntryTags(snippet.id).then(setSelectedTags);
+  }, [snippet.id]);
+
   // Sync form when snippet changes
   useEffect(() => {
     if (autoSaveTimerRef.current) clearTimeout(autoSaveTimerRef.current);
     setTitle(snippet.title);
-    setTags(snippet.tags ?? "");
     editor?.commands.setContent(snippet.content);
-  }, [snippet.id, snippet.title, snippet.tags, snippet.content, editor]);
+  }, [snippet.id, snippet.title, snippet.content, editor]);
 
   // Auto-save on editor content change
   useEffect(() => {
@@ -85,7 +90,6 @@ export function SnippetDetailContent({
       onSave(snippetId, {
         title: titleRef.current.trim() || snippet.title,
         content,
-        tags: tagsRef.current,
       });
     }, 2000);
   }
@@ -94,8 +98,8 @@ export function SnippetDetailContent({
     if (autoSaveTimerRef.current) clearTimeout(autoSaveTimerRef.current);
     if (!title.trim()) return;
     const content = editor?.getHTML() ?? snippet.content;
-    onSave(snippet.id, { title: title.trim(), content, tags });
-  }, [title, tags, editor, snippet, onSave]);
+    onSave(snippet.id, { title: title.trim(), content });
+  }, [title, editor, snippet, onSave]);
 
   function handleInsertAtCursor() {
     const content = editor?.getHTML() ?? snippet.content;
@@ -197,24 +201,21 @@ export function SnippetDetailContent({
         </div>
 
         <div>
+          <label className="mb-1 block text-xs font-medium">タグ</label>
+          <TagSelector
+            entryId={snippet.id}
+            entryType="snippet"
+            selectedTags={selectedTags}
+            onTagsChange={setSelectedTags}
+            persistTags={setSnippetEntryTags}
+          />
+        </div>
+
+        <div>
           <label className="mb-1 block text-xs font-medium">内容</label>
           <div className="rounded-md border border-input bg-background p-2">
             <EditorContent editor={editor} />
           </div>
-        </div>
-
-        <div>
-          <label className="mb-1 block text-xs font-medium">タグ</label>
-          <input
-            data-testid="snippet-detail-tags"
-            type="text"
-            value={tags}
-            onChange={(e) => {
-              setTags(e.target.value);
-              scheduleAutoSave();
-            }}
-            className="w-full rounded-md border border-input bg-background px-2 py-1.5 text-sm"
-          />
         </div>
 
         {/* Metadata */}

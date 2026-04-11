@@ -167,7 +167,8 @@ export const snippets = sqliteTable("snippets", {
     .references(() => projects.id, { onDelete: "cascade" }),
   title: text("title").notNull().default("Untitled"),
   content: text("content").notNull().default("{}"), // ProseMirror JSON
-  tags: text("tags"), // JSON string[]
+  tags: text("tags"), // legacy: comma-separated (superseded by snippet_entry_tags)
+  tagsCache: text("tags_cache"), // denormalized JSON {name, color}[] from snippet_entry_tags
   sceneId: text("scene_id").references(() => treeNodes.id, {
     onDelete: "set null",
   }),
@@ -183,6 +184,19 @@ export const snippets = sqliteTable("snippets", {
     .notNull()
     .$defaultFn(() => new Date().toISOString()),
 });
+
+export const snippetEntryTags = sqliteTable(
+  "snippet_entry_tags",
+  {
+    snippetId: text("snippet_id")
+      .notNull()
+      .references(() => snippets.id, { onDelete: "cascade" }),
+    tagId: text("tag_id")
+      .notNull()
+      .references(() => codexTags.id, { onDelete: "cascade" }),
+  },
+  (table) => [primaryKey({ columns: [table.snippetId, table.tagId] })],
+);
 
 export const chatSessions = sqliteTable("chat_sessions", {
   id: text("id").primaryKey(),

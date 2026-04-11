@@ -534,6 +534,21 @@ impl Database {
             [],
         );
 
+        // v6: Snippet relational tags (shared tag pool with Codex)
+        let _ = conn.execute(
+            "CREATE TABLE IF NOT EXISTS snippet_entry_tags (
+                snippet_id TEXT NOT NULL REFERENCES snippets(id) ON DELETE CASCADE,
+                tag_id     TEXT NOT NULL REFERENCES codex_tags(id) ON DELETE CASCADE,
+                PRIMARY KEY (snippet_id, tag_id)
+            )",
+            [],
+        );
+        let _ = conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_snippet_entry_tags_tag_id ON snippet_entry_tags(tag_id)",
+            [],
+        );
+        let _ = conn.execute("ALTER TABLE snippets ADD COLUMN tags_cache TEXT", []);
+
         Ok(())
     }
 

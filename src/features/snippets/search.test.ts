@@ -20,6 +20,7 @@ describe("searchSnippets", () => {
     title: "森の描写メモ",
     content: "暗い森の中、一筋の光が差し込んだ。",
     tags: "描写,森",
+    tagsCache: null,
     sceneId: null,
     sourceChatMessageId: null,
     usageCount: 0,
