@@ -19,6 +19,8 @@ export interface EditorSettings {
   characterFadeIn: boolean;
   characterFadeOut: boolean;
   disableAllAnimations: boolean;
+  wordBreak: string;
+  lineBreak: string;
 }
 
 export function useEditorSettings(): EditorSettings {
@@ -45,5 +47,7 @@ export function useEditorSettings(): EditorSettings {
       "editor.disableAllAnimations",
       false,
     ),
+    wordBreak: store.get("editor.wordBreak", "auto-phrase"),
+    lineBreak: store.get("editor.lineBreak", "strict"),
   };
 }

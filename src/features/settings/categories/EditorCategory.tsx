@@ -5,6 +5,20 @@ import { SettingSlider } from "../components/SettingSlider";
 import { SettingDropdown } from "../components/SettingDropdown";
 import { useSettingBoolean } from "../useSettingControl";
 
+const WORD_BREAK_OPTIONS = [
+  { value: "auto-phrase", label: "語句優先 (auto-phrase)" },
+  { value: "normal", label: "標準 (normal)" },
+  { value: "break-all", label: "どこでも改行 (break-all)" },
+  { value: "keep-all", label: "単語優先 (keep-all)" },
+];
+
+const LINE_BREAK_OPTIONS = [
+  { value: "strict", label: "厳密 (strict)" },
+  { value: "normal", label: "標準 (normal)" },
+  { value: "loose", label: "ゆるい (loose)" },
+  { value: "auto", label: "自動 (auto)" },
+];
+
 const FONT_FAMILY_OPTIONS = [
   { value: "serif", label: "デフォルト (serif)" },
   { value: '"Noto Serif JP", serif', label: "Noto Serif JP" },
@@ -96,6 +110,26 @@ export function EditorCategory() {
             step={2}
             defaultValue={8}
             format={(v) => `${v}px`}
+          />
+        </SettingRow>
+        <SettingRow
+          label="単語の折り返し"
+          description="行末での単語・語句の折り返し方法"
+        >
+          <SettingDropdown
+            settingKey="editor.wordBreak"
+            options={WORD_BREAK_OPTIONS}
+            defaultValue="auto-phrase"
+          />
+        </SettingRow>
+        <SettingRow
+          label="禁則処理"
+          description="行頭・行末に置けない文字のルール（日本語）"
+        >
+          <SettingDropdown
+            settingKey="editor.lineBreak"
+            options={LINE_BREAK_OPTIONS}
+            defaultValue="strict"
           />
         </SettingRow>
       </SettingSection>
