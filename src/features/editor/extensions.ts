@@ -16,6 +16,7 @@ import { RubyNode } from "@/features/editor/RubyNode";
 import { EmphasisDotsMark } from "@/features/editor/EmphasisDotsMark";
 import { SceneBreakNode } from "@/features/editor/SceneBreakNode";
 import { FindReplaceExtension } from "@/features/editor/FindReplaceExtension";
+import { InlineAtomNavigationExtension } from "@/features/editor/InlineAtomNavigationExtension";
 import { SlashCommandExtension } from "@/features/editor/inlineAi/SlashCommandExtension";
 import type { Extensions } from "@tiptap/core";
 
@@ -83,6 +84,7 @@ export function getEditorExtensions(): Extensions {
     RubyNode,
     SceneBreakNode,
     FindReplaceExtension,
+    InlineAtomNavigationExtension,
     SlashCommandExtension,
   ];
 }
