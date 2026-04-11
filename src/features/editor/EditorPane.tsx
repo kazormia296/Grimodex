@@ -318,14 +318,39 @@ export function EditorPane({
         role: "textbox",
         "aria-multiline": "true",
       },
-      handlePaste(_view, event) {
+      handlePaste(view, event, slice) {
         const html = event.clipboardData?.getData("text/html");
         const plainText = event.clipboardData?.getData("text/plain") ?? "";
-        const segments = parseClipboardHtml(html);
-        if (segments) {
-          insertFromPaste(segments);
-          return true;
+
+        if (html) {
+          // Case 1: Grimodex 固有コピー（Codex/Snippet/Chat パネル）
+          if (html.includes("data-grimodex-source")) {
+            const segments = parseClipboardHtml(html);
+            if (segments) {
+              insertFromPaste(segments);
+              return true;
+            }
+          }
+
+          // Case 2: エディタ内コピー — ProseMirror パース済み Slice を使用
+          // data-pm-slice は ProseMirror がコピー時に付与するマーカー。
+          // 第3引数 slice は全マーク・ノード（ruby, emphasisDots, underline,
+          // authorship 等）を保持している。programmaticInsert meta を設定して
+          // AiEditedPlugin による authorship マーク除去を防ぐ。
+          if (html.includes("data-pm-slice") && slice.size > 0) {
+            view.dispatch(
+              view.state.tr
+                .setMeta("programmaticInsert", true)
+                .setMeta("paste", true)
+                .setMeta("uiEvent", "paste")
+                .replaceSelection(slice)
+                .scrollIntoView(),
+            );
+            return true;
+          }
         }
+
+        // Case 3: 外部テキスト貼り付け
         if (plainText) {
           insertFromPaste([{ text: plainText, source: "unknown" }]);
           return true;
