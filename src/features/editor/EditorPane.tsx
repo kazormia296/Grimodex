@@ -22,7 +22,7 @@ import { CodexPopover } from "@/features/editor/CodexPopover";
 import { useAttribution } from "@/features/attribution/useAttribution";
 import { useAttributionStore } from "@/features/attribution/attributionStore";
 import { useLayoutStore } from "@/features/layout/layoutStore";
-import { useCursorEffect } from "@/features/editor/useCursorEffect";
+import { useCursorOverlay } from "@/features/editor/useCursorOverlay";
 import { useCursorSettingsStore } from "@/features/editor/cursorSettingsStore";
 import { useEditorSettings } from "@/features/settings/hooks/useEditorSettings";
 import { useSettingsStore } from "@/features/settings/settingsStore";
@@ -567,8 +567,7 @@ export function EditorPane({
   }, [typewriterMode, editor, nodeId]);
   const { generate, accept, reject, retry } = useInlineAiDiff(editor);
 
-  const cursorAnimation = useCursorSettingsStore((s) => s.cursorAnimation);
-  useCursorEffect(editor, cursorAnimation);
+  useCursorOverlay(editor);
   useAttribution(editor);
 
   // Listen for slash-command events dispatched by SlashCommandExtension
