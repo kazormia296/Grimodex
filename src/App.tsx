@@ -41,6 +41,7 @@ import { WindowControls } from "@/components/WindowControls";
 import { TitleBar } from "@/components/TitleBar";
 import { useTabStore } from "@/features/editor/tabStore";
 import { useTreeStore } from "@/features/tree/treeStore";
+import { getProject } from "@/features/project/api";
 
 /* ── Panel content components for dockview ── */
 
@@ -189,6 +190,13 @@ function EditorScreen() {
   const [showSettings, setShowSettings] = useState(false);
   const [settingsInitialCategory, setSettingsInitialCategory] =
     useState<SettingsCategory>("project");
+
+  // 執筆言語を <html lang> に反映（初期ロード時）
+  useEffect(() => {
+    getProject("default-project").then((p) => {
+      if (p?.language) document.documentElement.lang = p.language;
+    });
+  }, []);
   const { togglePanel, loadLayout, loadPresets, setDockviewApi } =
     useLayoutStore();
 

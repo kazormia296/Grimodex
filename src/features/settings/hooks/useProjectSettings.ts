@@ -27,6 +27,11 @@ export function useProjectSettings() {
     ) => {
       setProject((prev) => (prev ? { ...prev, [field]: value } : prev));
 
+      // 執筆言語が変わったら <html lang> をすぐ更新
+      if (field === "language" && value) {
+        document.documentElement.lang = value;
+      }
+
       // Debounced DB write per field
       const existing = timers.current.get(field);
       if (existing) clearTimeout(existing);
