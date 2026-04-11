@@ -1,14 +1,10 @@
 // @vitest-environment happy-dom
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect } from "vitest";
 import { Editor } from "@tiptap/core";
 import StarterKit from "@tiptap/starter-kit";
-import { TextSelection } from "prosemirror-state";
+import { TextSelection, Selection } from "prosemirror-state";
 import { RubyNode } from "./RubyNode";
-import {
-  textblockHasInlineAtom,
-  findVisualLineEdge,
-  InlineAtomNavigationExtension,
-} from "./InlineAtomNavigationExtension";
+import { InlineAtomNavigationExtension } from "./InlineAtomNavigationExtension";
 
 function createTestEditor(content = "") {
   return new Editor({
@@ -17,253 +13,157 @@ function createTestEditor(content = "") {
   });
 }
 
-// ——— textblockHasInlineAtom ———
-
-describe("textblockHasInlineAtom", () => {
-  it("テキストのみの段落では false を返す", () => {
-    const editor = createTestEditor("<p>テスト文章</p>");
-    const para = editor.state.doc.child(0);
-    expect(textblockHasInlineAtom(para)).toBe(false);
-    editor.destroy();
-  });
-
-  it("ルビを含む段落では true を返す", () => {
-    const editor = createTestEditor(
-      '<p>前<ruby data-base="漢字" data-annotation="かんじ">漢字<rp>(</rp><rt>かんじ</rt><rp>)</rp></ruby>後</p>',
-    );
-    const para = editor.state.doc.child(0);
-    expect(textblockHasInlineAtom(para)).toBe(true);
-    editor.destroy();
-  });
-
-  it("空の段落では false を返す", () => {
-    const editor = createTestEditor("<p></p>");
-    const para = editor.state.doc.child(0);
-    expect(textblockHasInlineAtom(para)).toBe(false);
-    editor.destroy();
-  });
-});
-
-// ——— findVisualLineEdge ———
-
-describe("findVisualLineEdge", () => {
-  it("coordsAtPos が同一 bottom を返す間は前進する", () => {
-    const editor = createTestEditor("<p>テスト文章</p>");
-    const view = editor.view;
-
-    vi.spyOn(view, "coordsAtPos").mockReturnValue({
-      top: 10,
-      bottom: 24,
-      left: 0,
-      right: 10,
-    });
-
-    const $start = editor.state.doc.resolve(1);
-    const parentEnd = $start.end();
-    expect(findVisualLineEdge(view, 1, "right")).toBe(parentEnd);
-
-    vi.restoreAllMocks();
-    editor.destroy();
-  });
-
-  it("bottom が 8px 以上ずれたら停止し直前の位置を返す", () => {
-    const editor = createTestEditor("<p>テスト文章</p>");
-    const view = editor.view;
-    let callCount = 0;
-
-    vi.spyOn(view, "coordsAtPos").mockImplementation(() => {
-      const bottom = callCount++ < 2 ? 24 : 48;
-      return { top: bottom - 14, bottom, left: 0, right: 10 };
-    });
-
-    expect(findVisualLineEdge(view, 1, "right")).toBe(2);
-
-    vi.restoreAllMocks();
-    editor.destroy();
-  });
-
-  it("ルビの top が異なっても bottom が同一なら同一行と判定する", () => {
-    const editor = createTestEditor(
-      '<p>テスト<ruby data-base="漢字" data-annotation="かんじ">漢字<rp>(</rp><rt>かんじ</rt><rp>)</rp></ruby>です</p>',
-    );
-    const view = editor.view;
-
-    vi.spyOn(view, "coordsAtPos").mockImplementation(
-      (pos: number, _side?: number) => {
-        const $pos = view.state.doc.resolve(pos);
-        const parentOffset = $pos.parentOffset;
-        const isRubyArea = parentOffset >= 3 && parentOffset < 4;
-        return {
-          top: isRubyArea ? 0 : 10,
-          bottom: 24,
-          left: parentOffset * 10,
-          right: (parentOffset + 1) * 10,
-        };
-      },
-    );
-
-    const $start = view.state.doc.resolve(1);
-    expect(findVisualLineEdge(view, 1, "right")).toBe($start.end());
-
-    vi.restoreAllMocks();
-    editor.destroy();
-  });
-
-  it("atom付近でcoordsAtPosが例外を投げてもスキップして走査を続行する", () => {
-    const editor = createTestEditor(
-      '<p>テスト<ruby data-base="漢字" data-annotation="かんじ">漢字<rp>(</rp><rt>かんじ</rt><rp>)</rp></ruby>です</p>',
-    );
-    const view = editor.view;
-
-    // parentOffset 3..4 (ruby付近) で例外、それ以外は bottom=24
-    vi.spyOn(view, "coordsAtPos").mockImplementation(
-      (pos: number, _side?: number) => {
-        const $pos = view.state.doc.resolve(pos);
-        const parentOffset = $pos.parentOffset;
-        if (parentOffset >= 3 && parentOffset <= 4)
-          throw new Error("atom coord error");
-        return { top: 10, bottom: 24, left: 0, right: 10 };
-      },
-    );
-
-    const $start = view.state.doc.resolve(1);
-    const result = findVisualLineEdge(view, 1, "right");
-    // 例外位置をスキップして最後まで走査 → parentEnd
-    expect(result).toBe($start.end());
-
-    vi.restoreAllMocks();
-    editor.destroy();
-  });
-
-  it("開始位置で例外の場合はテキストブロック端にフォールバックする", () => {
-    const editor = createTestEditor("<p>テスト</p>");
-    const view = editor.view;
-    vi.spyOn(view, "coordsAtPos").mockImplementation(() => {
-      throw new Error("layout error");
-    });
-
-    const $start = view.state.doc.resolve(1);
-    expect(findVisualLineEdge(view, 1, "right")).toBe($start.end());
-
-    vi.restoreAllMocks();
-    editor.destroy();
-  });
-});
-
-// ——— handleArrow ガード条件 ———
-
-describe("handleArrow ガード条件", () => {
-  it("atom含有ブロック内でtextOffset>0 のとき1ポジション移動する", () => {
-    const editor = createTestEditor(
-      '<p>テスト<ruby data-base="漢字" data-annotation="かんじ">漢字<rp>(</rp><rt>かんじ</rt><rp>)</rp></ruby>です</p>',
-    );
-    editor.view.dispatch(
-      editor.state.tr.setSelection(TextSelection.create(editor.state.doc, 3)),
-    );
-
-    const { $head } = editor.state.selection as TextSelection;
-    expect($head.textOffset).toBeGreaterThan(0);
-    expect(textblockHasInlineAtom($head.parent)).toBe(true);
-
-    const before = $head.pos;
-    const handled = editor.commands.command(({ state, dispatch }) => {
-      const { selection } = state;
-      if (!(selection instanceof TextSelection)) return false;
-      if (!selection.empty) return false;
-      const h = selection.$head;
-      if (!h.parent.isTextblock) return false;
-      if (!textblockHasInlineAtom(h.parent)) return false;
-      if (h.parentOffset >= h.parent.content.size) return false;
-      if (h.textOffset === 0) {
-        const adj = h.nodeAfter;
-        if (adj && !adj.isText && adj.isAtom) return false;
-      }
-      if (dispatch) {
-        dispatch(
-          state.tr
-            .setSelection(TextSelection.create(state.doc, h.pos + 1))
-            .scrollIntoView(),
-        );
-      }
-      return true;
-    });
-
-    expect(handled).toBe(true);
-    expect((editor.state.selection as TextSelection).$head.pos).toBe(
-      before + 1,
-    );
-    editor.destroy();
-  });
-
-  it("atom非含有ブロックでは false を返す", () => {
-    const editor = createTestEditor("<p>テスト文章です</p>");
-    editor.view.dispatch(
-      editor.state.tr.setSelection(TextSelection.create(editor.state.doc, 3)),
-    );
-
-    const handled = editor.commands.command(({ state, dispatch }) => {
-      const { selection } = state;
-      if (!(selection instanceof TextSelection)) return false;
-      if (!selection.empty) return false;
-      const h = selection.$head;
-      if (!h.parent.isTextblock) return false;
-      if (!textblockHasInlineAtom(h.parent)) return false;
-      if (h.parentOffset >= h.parent.content.size) return false;
-      if (dispatch) {
-        dispatch(
-          state.tr
-            .setSelection(TextSelection.create(state.doc, h.pos + 1))
-            .scrollIntoView(),
-        );
-      }
-      return true;
-    });
-    expect(handled).toBe(false);
-    editor.destroy();
-  });
-
-  it("textOffset===0 でatom隣接の場合は false を返す（ProseMirror委譲）", () => {
-    const editor = createTestEditor(
-      '<p><ruby data-base="漢字" data-annotation="かんじ">漢字<rp>(</rp><rt>かんじ</rt><rp>)</rp></ruby>後</p>',
-    );
-    editor.view.dispatch(
-      editor.state.tr.setSelection(TextSelection.create(editor.state.doc, 1)),
-    );
-    const { $head } = editor.state.selection as TextSelection;
-    expect($head.textOffset).toBe(0);
-    expect($head.nodeAfter?.type.name).toBe("ruby");
-
-    const handled = editor.commands.command(({ state, dispatch }) => {
-      const { selection } = state;
-      if (!(selection instanceof TextSelection)) return false;
-      if (!selection.empty) return false;
-      const h = selection.$head;
-      if (!h.parent.isTextblock) return false;
-      if (!textblockHasInlineAtom(h.parent)) return false;
-      if (h.parentOffset >= h.parent.content.size) return false;
-      if (h.textOffset === 0) {
-        const adj = h.nodeAfter;
-        if (adj && !adj.isText && adj.isAtom) return false;
-      }
-      if (dispatch) {
-        dispatch(
-          state.tr
-            .setSelection(TextSelection.create(state.doc, h.pos + 1))
-            .scrollIntoView(),
-        );
-      }
-      return true;
-    });
-    expect(handled).toBe(false);
-    editor.destroy();
-  });
-
+describe("InlineAtomNavigationExtension", () => {
   it("プラグインが正しく登録される", () => {
     const editor = createTestEditor("<p>テスト</p>");
     const plugin = editor.view.state.plugins.find(
       (p) => (p as unknown as { key: string }).key === "inlineAtomNavigation$",
     );
     expect(plugin).toBeDefined();
+    editor.destroy();
+  });
+});
+
+// ——— Ctrl+Home/End ———
+
+describe("handleCtrlEndHome", () => {
+  it("Ctrl+End でドキュメント末尾に移動する", () => {
+    const editor = createTestEditor("<p>第一段落</p><p>第二段落</p>");
+    // カーソルを先頭に
+    editor.view.dispatch(
+      editor.state.tr.setSelection(TextSelection.create(editor.state.doc, 1)),
+    );
+
+    const endPos = Selection.atEnd(editor.state.doc).to;
+
+    // Ctrl+End をシミュレート
+    const event = new KeyboardEvent("keydown", {
+      key: "End",
+      ctrlKey: true,
+      bubbles: true,
+    });
+    editor.view.dom.dispatchEvent(event);
+
+    expect(editor.state.selection.$head.pos).toBe(endPos);
+    editor.destroy();
+  });
+
+  it("Ctrl+Home でドキュメント先頭に移動する", () => {
+    const editor = createTestEditor("<p>第一段落</p><p>第二段落</p>");
+    const endPos = Selection.atEnd(editor.state.doc).to;
+    editor.view.dispatch(
+      editor.state.tr.setSelection(
+        TextSelection.create(editor.state.doc, endPos),
+      ),
+    );
+
+    const startPos = Selection.atStart(editor.state.doc).from;
+
+    const event = new KeyboardEvent("keydown", {
+      key: "Home",
+      ctrlKey: true,
+      bubbles: true,
+    });
+    editor.view.dom.dispatchEvent(event);
+
+    expect(editor.state.selection.$head.pos).toBe(startPos);
+    editor.destroy();
+  });
+
+  it("Shift+Ctrl+End で選択範囲を末尾まで拡張する", () => {
+    const editor = createTestEditor("<p>第一段落</p><p>第二段落</p>");
+    editor.view.dispatch(
+      editor.state.tr.setSelection(TextSelection.create(editor.state.doc, 1)),
+    );
+
+    const endPos = Selection.atEnd(editor.state.doc).to;
+
+    const event = new KeyboardEvent("keydown", {
+      key: "End",
+      ctrlKey: true,
+      shiftKey: true,
+      bubbles: true,
+    });
+    editor.view.dom.dispatchEvent(event);
+
+    const sel = editor.state.selection as TextSelection;
+    expect(sel.$anchor.pos).toBe(1);
+    expect(sel.$head.pos).toBe(endPos);
+    editor.destroy();
+  });
+
+  it("Ctrl なしの End/Home はハンドルしない（ブラウザに委譲）", () => {
+    const editor = createTestEditor("<p>テスト</p>");
+    editor.view.dispatch(
+      editor.state.tr.setSelection(TextSelection.create(editor.state.doc, 1)),
+    );
+
+    const posBeforeEvent = editor.state.selection.$head.pos;
+
+    // Ctrl なしの End — happy-dom ではブラウザ動作が再現されないため
+    // ハンドラが false を返すことを間接的に確認（選択が変わらない）
+    const event = new KeyboardEvent("keydown", {
+      key: "End",
+      ctrlKey: false,
+      bubbles: true,
+    });
+    editor.view.dom.dispatchEvent(event);
+
+    // ブラウザに委譲されるため happy-dom ではカーソル位置は変わらない
+    expect(editor.state.selection.$head.pos).toBe(posBeforeEvent);
+    editor.destroy();
+  });
+});
+
+// ——— RubyNode NodeView ———
+
+describe("RubyNode NodeView", () => {
+  it("ruby-atom クラスの span wrapper で描画される", () => {
+    const editor = createTestEditor(
+      '<p>前<ruby data-base="漢字" data-annotation="かんじ">漢字<rp>(</rp><rt>かんじ</rt><rp>)</rp></ruby>後</p>',
+    );
+
+    const wrapper = editor.view.dom.querySelector(".ruby-atom");
+    expect(wrapper).not.toBeNull();
+    expect(wrapper!.tagName).toBe("SPAN");
+    expect((wrapper as HTMLElement).contentEditable).toBe("false");
+
+    const ruby = wrapper!.querySelector("ruby");
+    expect(ruby).not.toBeNull();
+    expect(ruby!.getAttribute("data-base")).toBe("漢字");
+    expect(ruby!.getAttribute("data-annotation")).toBe("かんじ");
+
+    editor.destroy();
+  });
+
+  it("ruby 内に正しいテキストと rt を含む", () => {
+    const editor = createTestEditor(
+      '<p><ruby data-base="東京" data-annotation="とうきょう">東京<rp>(</rp><rt>とうきょう</rt><rp>)</rp></ruby></p>',
+    );
+
+    const ruby = editor.view.dom.querySelector(".ruby-atom ruby")!;
+    const rt = ruby.querySelector("rt");
+    expect(rt).not.toBeNull();
+    expect(rt!.textContent).toBe("とうきょう");
+    expect(ruby.firstChild!.textContent).toBe("東京");
+
+    editor.destroy();
+  });
+
+  it("ノード更新時に属性が反映される", () => {
+    const editor = createTestEditor(
+      '<p><ruby data-base="漢字" data-annotation="かんじ">漢字<rp>(</rp><rt>かんじ</rt><rp>)</rp></ruby></p>',
+    );
+
+    // setRuby で新しいルビを挿入（既存のものを置換）
+    editor.commands.setTextSelection({ from: 1, to: 2 });
+    editor.commands.setRuby("新字", "しんじ");
+
+    const ruby = editor.view.dom.querySelector(".ruby-atom ruby")!;
+    expect(ruby.getAttribute("data-base")).toBe("新字");
+    expect(ruby.getAttribute("data-annotation")).toBe("しんじ");
+    expect(ruby.querySelector("rt")!.textContent).toBe("しんじ");
+
     editor.destroy();
   });
 });

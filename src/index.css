@@ -254,6 +254,18 @@
   font-weight: 600;
 }
 
+/* ルビ atom NodeView — inline-block でブラウザのキャレット移動を正常化 */
+.tiptap .ruby-atom {
+  display: inline-block;
+  vertical-align: baseline;
+  line-height: normal;
+  user-select: all;
+}
+.tiptap .ruby-atom.ProseMirror-selectednode {
+  outline: 2px solid oklch(0.6 0.15 250);
+  border-radius: 2px;
+}
+
 /* 傍点（圏点）— Japanese emphasis marks (sesame) */
 .tiptap .emphasis-dots {
   -webkit-text-emphasis: sesame;
