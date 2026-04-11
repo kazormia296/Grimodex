@@ -1,7 +1,11 @@
 import { Plugin, PluginKey } from "@tiptap/pm/state";
 import type { EditorState } from "@tiptap/pm/state";
 import type { EditorView } from "@tiptap/pm/view";
-import { resolveCoords, toContainerRelative } from "./cursorCoords";
+import {
+  resolveCoords,
+  resolveVerticalBias,
+  toContainerRelative,
+} from "./cursorCoords";
 
 export const cursorOverlayKey = new PluginKey("cursorOverlay");
 
@@ -81,6 +85,18 @@ class CursorOverlayView {
    * then cleared.
    */
   private pendingClickY: number | null = null;
+  /**
+   * Viewport-relative top of the last rendered cursor position.
+   * Used to resolve wrap affinity after ArrowUp/Down by comparing
+   * the two candidate Y coordinates against the previous position.
+   */
+  private prevTop: number | null = null;
+  /**
+   * Set by ArrowUp/Down in updateBiasFromKey, consumed by updateCursor.
+   * When non-null, updateCursor resolves bias by comparing candidate
+   * coordinates against prevTop rather than using the preserved bias.
+   */
+  private pendingVertical: "up" | "down" | null = null;
 
   constructor(
     private view: EditorView,
@@ -117,17 +133,22 @@ class CursorOverlayView {
       case "ArrowLeft":
       case "Backspace":
         this.bias = -1;
+        this.pendingVertical = null;
         break;
       case "Home":
       case "ArrowRight":
         this.bias = 1;
+        this.pendingVertical = null;
         break;
       case "ArrowUp":
+        this.pendingVertical = "up";
+        break;
       case "ArrowDown":
-        // Preserve current bias — vertical movement keeps column memory.
+        this.pendingVertical = "down";
         break;
       default:
         this.bias = 1;
+        this.pendingVertical = null;
         break;
     }
   }
@@ -138,6 +159,7 @@ class CursorOverlayView {
    */
   updateBiasFromClick(_view: EditorView, event: MouseEvent) {
     this.pendingClickY = event.clientY;
+    this.pendingVertical = null;
     this.bias = 1; // will be refined in updateCursor if wrap point
   }
 
@@ -185,11 +207,33 @@ class CursorOverlayView {
       }
     }
 
+    // Resolve wrap affinity after ArrowUp/Down using previous Y position.
+    if (this.pendingVertical !== null && this.prevTop !== null) {
+      try {
+        const endTop = view.coordsAtPos(from, -1).top;
+        const startTop = view.coordsAtPos(from, 1).top;
+        const resolved = resolveVerticalBias(
+          endTop,
+          startTop,
+          this.prevTop,
+          this.pendingVertical,
+        );
+        if (resolved !== null) this.bias = resolved;
+      } catch {
+        // Not a wrap point or atom node — keep current bias.
+      }
+      this.pendingVertical = null;
+    } else if (this.pendingVertical !== null) {
+      this.pendingVertical = null;
+    }
+
     const coords = resolveCoords(view, from, this.bias);
     if (!coords) {
       this.hide();
       return;
     }
+
+    this.prevTop = coords.top;
 
     const pos = toContainerRelative(
       coords,

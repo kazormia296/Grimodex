@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   toContainerRelative,
   resolveCoords,
+  resolveVerticalBias,
   type Coords,
 } from "./cursorCoords";
 import type { EditorView } from "@tiptap/pm/view";
@@ -36,6 +37,55 @@ describe("toContainerRelative", () => {
       top: -80,
       height: 20,
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// resolveVerticalBias
+// ---------------------------------------------------------------------------
+describe("resolveVerticalBias", () => {
+  it("returns null when not at a wrap boundary", () => {
+    expect(resolveVerticalBias(100, 101, 160, "up")).toBeNull();
+    expect(resolveVerticalBias(100, 100, 160, "down")).toBeNull();
+  });
+
+  // Reported bug: ArrowLeft (bias=-1) then ArrowUp lands at wrap boundary.
+  // prevTop=160 (line 2), endTop=100 (line 0), startTop=130 (line 1).
+  // Should pick startTop=130 (bias=1, line 1) — the closest line above.
+  it("ArrowUp: picks line-start side when both above and start is closer", () => {
+    expect(resolveVerticalBias(100, 130, 160, "up")).toBe(1);
+  });
+
+  // Triple-wrap: cursor at line 1 end (prevTop=130), ArrowUp lands at
+  // wrap boundary between line 0 (endTop=100) and line 1 (startTop=130).
+  // startTop=130 is NOT < 129, so only endTop qualifies → bias=-1.
+  it("ArrowUp: picks line-end side when only it is above prevTop", () => {
+    expect(resolveVerticalBias(100, 130, 130, "up")).toBe(-1);
+  });
+
+  it("ArrowUp: picks line-start side when only it is above prevTop", () => {
+    expect(resolveVerticalBias(160, 130, 160, "up")).toBe(1);
+  });
+
+  it("ArrowUp: falls back to line-start when neither is above", () => {
+    expect(resolveVerticalBias(170, 180, 160, "up")).toBe(1);
+  });
+
+  it("ArrowDown: picks line-end side when both below and end is closer", () => {
+    // prevTop=100, endTop=130 (line 1 end), startTop=160 (line 2 start)
+    expect(resolveVerticalBias(130, 160, 100, "down")).toBe(-1);
+  });
+
+  it("ArrowDown: picks line-end side when only it is below prevTop", () => {
+    expect(resolveVerticalBias(130, 100, 100, "down")).toBe(-1);
+  });
+
+  it("ArrowDown: picks line-start side when only it is below prevTop", () => {
+    expect(resolveVerticalBias(100, 130, 100, "down")).toBe(1);
+  });
+
+  it("ArrowDown: falls back to line-end when neither is below", () => {
+    expect(resolveVerticalBias(80, 90, 160, "down")).toBe(-1);
   });
 });
 
