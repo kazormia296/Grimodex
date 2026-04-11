@@ -10,7 +10,8 @@
     "test": "vitest",
     "lint": "eslint src",
     "lint:fix": "eslint src --fix",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "generate:licenses": "tsx scripts/generate-licenses.ts"
   },
   "dependencies": {
     "@dnd-kit/core": "^6.3.1",
@@ -74,6 +75,7 @@
     "prettier": "^3.8.1",
     "sql.js": "^1.14.1",
     "tailwindcss": "^4.2.2",
+    "tsx": "^4.21.0",
     "typescript": "~5.8.3",
     "typescript-eslint": "^8.58.0",
     "vite": "^8.0.6",
