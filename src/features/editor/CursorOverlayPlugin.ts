@@ -75,8 +75,8 @@ class CursorOverlayView {
   private rafHandle = 0;
   /**
    * Soft-wrap affinity bias.
-   *   -1  line-end side  (End, ArrowLeft, Backspace)
-   *    1  line-start side (Home, ArrowRight, typing, default)
+   *   -1  line-end side  (End, Backspace)
+   *    1  line-start side (Home, ArrowLeft, ArrowRight, typing, default)
    */
   private bias: -1 | 1 = 1;
   /**
@@ -130,12 +130,12 @@ class CursorOverlayView {
   updateBiasFromKey(event: KeyboardEvent) {
     switch (event.key) {
       case "End":
-      case "ArrowLeft":
       case "Backspace":
         this.bias = -1;
         this.pendingVertical = null;
         break;
       case "Home":
+      case "ArrowLeft":
       case "ArrowRight":
         this.bias = 1;
         this.pendingVertical = null;

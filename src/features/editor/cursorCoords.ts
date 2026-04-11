@@ -61,8 +61,8 @@ export function resolveVerticalBias(
  * Resolve cursor coordinates for the given ProseMirror position.
  *
  * `bias` controls which visual side of a soft-wrap boundary to use:
- *   -1 = line-end side  (End key, ArrowLeft arriving from next line)
- *    1 = line-start side (Home key, ArrowRight arriving on next line)
+ *   -1 = line-end side  (End key, Backspace)
+ *    1 = line-start side (Home, ArrowLeft, ArrowRight, typing)
  *
  * At non-wrap positions both sides produce identical coordinates, so
  * the bias value has no visible effect there.
