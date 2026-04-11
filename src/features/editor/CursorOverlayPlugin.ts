@@ -37,12 +37,6 @@ export function createCursorOverlayPlugin(getEnabled: () => boolean): Plugin {
       // Capture-phase so bias is set before ProseMirror processes the key.
       handleKeyDown(_view, event) {
         overlayView?.updateBiasFromKey(event);
-        // ArrowLeft at a wrap boundary may only change affinity without
-        // moving the ProseMirror position.  In that case update() is not
-        // called, so schedule a forced redraw to reflect the bias change.
-        if (event.key === "ArrowLeft") {
-          overlayView?.scheduleRedraw();
-        }
         return false;
       },
 
@@ -256,11 +250,6 @@ class CursorOverlayView {
     this.rafHandle = requestAnimationFrame(() => {
       this.el.classList.add("blinking");
     });
-  }
-
-  /** Force an overlay redraw on the next animation frame. */
-  scheduleRedraw() {
-    requestAnimationFrame(() => this.updateCursor(this.view));
   }
 
   hide() {
