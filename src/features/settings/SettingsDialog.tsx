@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { X } from "lucide-react";
 import { useSettingsStore } from "./settingsStore";
 import { useCursorSettingsStore } from "@/features/editor/cursorSettingsStore";
@@ -48,6 +48,7 @@ export function SettingsDialog({
   const [activeCategory, setActiveCategory] =
     useState<SettingsCategory>(initialCategory);
   const { loadAll, flushPending } = useSettingsStore();
+  const mouseDownOnBackdrop = useRef(false);
 
   useEffect(() => {
     if (open) {
@@ -77,12 +78,16 @@ export function SettingsDialog({
   return (
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/50"
+      onMouseDown={(e) => {
+        mouseDownOnBackdrop.current = e.target === e.currentTarget;
+      }}
       onClick={(e) => {
-        if (e.target === e.currentTarget) handleClose();
+        if (e.target === e.currentTarget && mouseDownOnBackdrop.current)
+          handleClose();
       }}
     >
       <div
-        className="flex h-[520px] w-[680px] min-h-[400px] min-w-[480px] max-h-[90vh] max-w-[90vw] resize overflow-hidden rounded-lg border border-border bg-background shadow-xl"
+        className="flex h-[600px] w-[780px] min-h-[400px] min-w-[480px] max-h-[90vh] max-w-[90vw] resize overflow-hidden rounded-lg border border-border bg-background shadow-xl"
         onClick={(e) => e.stopPropagation()}
       >
         {/* Header */}
