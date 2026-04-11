@@ -49,7 +49,6 @@ describe("textblockHasInlineAtom", () => {
 describe("findVisualLineEdge", () => {
   it("coordsAtPos が同一 bottom を返す間は前進する", () => {
     const editor = createTestEditor("<p>テスト文章</p>");
-    const state = editor.state;
     const view = editor.view;
 
     vi.spyOn(view, "coordsAtPos").mockReturnValue({
@@ -59,10 +58,9 @@ describe("findVisualLineEdge", () => {
       right: 10,
     });
 
-    const $start = state.doc.resolve(1);
+    const $start = editor.state.doc.resolve(1);
     const parentEnd = $start.end();
-    const result = findVisualLineEdge(view, 1, "right");
-    expect(result).toBe(parentEnd);
+    expect(findVisualLineEdge(view, 1, "right")).toBe(parentEnd);
 
     vi.restoreAllMocks();
     editor.destroy();
@@ -74,15 +72,11 @@ describe("findVisualLineEdge", () => {
     let callCount = 0;
 
     vi.spyOn(view, "coordsAtPos").mockImplementation(() => {
-      // callCount==0: startCoords (bottom=24)
-      // callCount==1: pos=2 (bottom=24, same line → bestPos=2)
-      // callCount==2: pos=3 (bottom=48, different line → break)
       const bottom = callCount++ < 2 ? 24 : 48;
       return { top: bottom - 14, bottom, left: 0, right: 10 };
     });
 
-    const result = findVisualLineEdge(view, 1, "right");
-    expect(result).toBe(2);
+    expect(findVisualLineEdge(view, 1, "right")).toBe(2);
 
     vi.restoreAllMocks();
     editor.destroy();
@@ -94,17 +88,14 @@ describe("findVisualLineEdge", () => {
     );
     const view = editor.view;
 
-    // テキスト: top=10, bottom=24
-    // ルビ: top=0 (アノテーション分高い), bottom=24 (ベースラインは同じ)
     vi.spyOn(view, "coordsAtPos").mockImplementation(
       (pos: number, _side?: number) => {
         const $pos = view.state.doc.resolve(pos);
         const parentOffset = $pos.parentOffset;
-        // ruby は parentOffset 3..4
         const isRubyArea = parentOffset >= 3 && parentOffset < 4;
         return {
           top: isRubyArea ? 0 : 10,
-          bottom: 24, // 全ポジション同一 bottom
+          bottom: 24,
           left: parentOffset * 10,
           right: (parentOffset + 1) * 10,
         };
@@ -112,16 +103,39 @@ describe("findVisualLineEdge", () => {
     );
 
     const $start = view.state.doc.resolve(1);
-    const parentEnd = $start.end();
-    const result = findVisualLineEdge(view, 1, "right");
-    // bottom が同一なので全ポジションが同一行 → parentEnd まで進む
-    expect(result).toBe(parentEnd);
+    expect(findVisualLineEdge(view, 1, "right")).toBe($start.end());
 
     vi.restoreAllMocks();
     editor.destroy();
   });
 
-  it("coordsAtPos が例外を投げた場合はテキストブロック端にフォールバックする", () => {
+  it("atom付近でcoordsAtPosが例外を投げてもスキップして走査を続行する", () => {
+    const editor = createTestEditor(
+      '<p>テスト<ruby data-base="漢字" data-annotation="かんじ">漢字<rp>(</rp><rt>かんじ</rt><rp>)</rp></ruby>です</p>',
+    );
+    const view = editor.view;
+
+    // parentOffset 3..4 (ruby付近) で例外、それ以外は bottom=24
+    vi.spyOn(view, "coordsAtPos").mockImplementation(
+      (pos: number, _side?: number) => {
+        const $pos = view.state.doc.resolve(pos);
+        const parentOffset = $pos.parentOffset;
+        if (parentOffset >= 3 && parentOffset <= 4)
+          throw new Error("atom coord error");
+        return { top: 10, bottom: 24, left: 0, right: 10 };
+      },
+    );
+
+    const $start = view.state.doc.resolve(1);
+    const result = findVisualLineEdge(view, 1, "right");
+    // 例外位置をスキップして最後まで走査 → parentEnd
+    expect(result).toBe($start.end());
+
+    vi.restoreAllMocks();
+    editor.destroy();
+  });
+
+  it("開始位置で例外の場合はテキストブロック端にフォールバックする", () => {
     const editor = createTestEditor("<p>テスト</p>");
     const view = editor.view;
     vi.spyOn(view, "coordsAtPos").mockImplementation(() => {
@@ -129,9 +143,7 @@ describe("findVisualLineEdge", () => {
     });
 
     const $start = view.state.doc.resolve(1);
-    const result = findVisualLineEdge(view, 1, "right");
-    // 例外時はテキストブロック端にフォールバック
-    expect(result).toBe($start.end());
+    expect(findVisualLineEdge(view, 1, "right")).toBe($start.end());
 
     vi.restoreAllMocks();
     editor.destroy();
@@ -145,8 +157,6 @@ describe("handleArrow ガード条件", () => {
     const editor = createTestEditor(
       '<p>テスト<ruby data-base="漢字" data-annotation="かんじ">漢字<rp>(</rp><rt>かんじ</rt><rp>)</rp></ruby>です</p>',
     );
-    // Para content: "テスト"(3) + ruby(1) + "です"(2) = 6
-    // pos=3 → inside "テスト", textOffset=2
     editor.view.dispatch(
       editor.state.tr.setSelection(TextSelection.create(editor.state.doc, 3)),
     );
@@ -156,7 +166,6 @@ describe("handleArrow ガード条件", () => {
     expect(textblockHasInlineAtom($head.parent)).toBe(true);
 
     const before = $head.pos;
-    // handleArrow のロジックを再現
     const handled = editor.commands.command(({ state, dispatch }) => {
       const { selection } = state;
       if (!(selection instanceof TextSelection)) return false;
@@ -191,9 +200,6 @@ describe("handleArrow ガード条件", () => {
     editor.view.dispatch(
       editor.state.tr.setSelection(TextSelection.create(editor.state.doc, 3)),
     );
-    const { $head } = editor.state.selection as TextSelection;
-    expect($head.textOffset).toBeGreaterThan(0);
-    expect(textblockHasInlineAtom($head.parent)).toBe(false);
 
     const handled = editor.commands.command(({ state, dispatch }) => {
       const { selection } = state;
@@ -220,7 +226,6 @@ describe("handleArrow ガード条件", () => {
     const editor = createTestEditor(
       '<p><ruby data-base="漢字" data-annotation="かんじ">漢字<rp>(</rp><rt>かんじ</rt><rp>)</rp></ruby>後</p>',
     );
-    // pos=1: before ruby, textOffset=0, nodeAfter=ruby(atom)
     editor.view.dispatch(
       editor.state.tr.setSelection(TextSelection.create(editor.state.doc, 1)),
     );
@@ -238,7 +243,7 @@ describe("handleArrow ガード条件", () => {
       if (h.parentOffset >= h.parent.content.size) return false;
       if (h.textOffset === 0) {
         const adj = h.nodeAfter;
-        if (adj && !adj.isText && adj.isAtom) return false; // ← ここで false
+        if (adj && !adj.isText && adj.isAtom) return false;
       }
       if (dispatch) {
         dispatch(

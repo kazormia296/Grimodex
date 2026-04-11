@@ -2,6 +2,7 @@ import { Extension } from "@tiptap/core";
 import {
   Plugin,
   PluginKey,
+  Selection,
   TextSelection,
   NodeSelection,
 } from "prosemirror-state";
@@ -27,7 +28,8 @@ export function textblockHasInlineAtom(node: ProseMirrorNode): boolean {
  * bottom を基準にする理由: ルビの <rt> アノテーションが top を押し上げるため
  * top 比較ではルビ前後で行変更と誤検出される。bottom は同一ベースライン上で安定。
  *
- * @returns 同一視覚行にある最端のdoc位置。検出できなければ startPos を返す。
+ * atom ノード付近で coordsAtPos が例外を投げる場合はその位置をスキップし
+ * （同一行と見なして）走査を続行する。
  */
 export function findVisualLineEdge(
   view: EditorView,
@@ -47,14 +49,13 @@ export function findVisualLineEdge(
         ? -1
         : 1;
 
-  let startCoords: { bottom: number };
+  let refBottom: number;
   try {
-    startCoords = view.coordsAtPos(startPos, startSide);
+    refBottom = view.coordsAtPos(startPos, startSide).bottom;
   } catch {
-    // coordsAtPos が失敗する場合はテキストブロック端にフォールバック
+    // 開始位置すら測定不能ならテキストブロック端にフォールバック
     return dir === "right" ? parentEnd : parentStart;
   }
-  const refBottom = startCoords.bottom;
 
   const step = dir === "right" ? 1 : -1;
   const checkSide = dir === "right" ? -1 : 1;
@@ -64,14 +65,17 @@ export function findVisualLineEdge(
   let pos = startPos + step;
 
   while (dir === "right" ? pos <= limit : pos >= limit) {
-    let coords: { bottom: number };
+    let bottom: number;
     try {
-      coords = view.coordsAtPos(pos, checkSide);
+      bottom = view.coordsAtPos(pos, checkSide).bottom;
     } catch {
-      break;
+      // atom 付近で座標取得不能 → 同一行と仮定してスキップ
+      bestPos = pos;
+      pos += step;
+      continue;
     }
     // bottom が 8px 以上ずれたら別の視覚行
-    if (Math.abs(coords.bottom - refBottom) >= 8) break;
+    if (Math.abs(bottom - refBottom) >= 8) break;
     bestPos = pos;
     pos += step;
   }
@@ -79,6 +83,7 @@ export function findVisualLineEdge(
   return bestPos;
 }
 
+/** End/Home キー処理。視覚行の端に移動する。 */
 function handleEndHome(
   view: EditorView,
   dir: "left" | "right",
@@ -95,7 +100,6 @@ function handleEndHome(
     anchorPos = selection.$anchor.pos;
     if (!selection.$head.parent.isTextblock) return false;
   } else if (selection instanceof NodeSelection) {
-    // NodeSelection からは選択端をheadとして扱う
     headPos = dir === "right" ? selection.$to.pos : selection.$from.pos;
     anchorPos = extending ? selection.$from.pos : headPos;
     const $pos = state.doc.resolve(headPos);
@@ -106,16 +110,45 @@ function handleEndHome(
 
   const targetPos = findVisualLineEdge(view, headPos, dir);
 
-  // 既に行端にいても true を返しブラウザのネイティブ処理を防ぐ
   if (targetPos !== headPos) {
     const newSel = extending
       ? TextSelection.create(state.doc, anchorPos, targetPos)
       : TextSelection.create(state.doc, targetPos);
     view.dispatch(state.tr.setSelection(newSel).scrollIntoView());
   }
+  // 既に行端でもブラウザのネイティブ処理を防ぐため true を返す
   return true;
 }
 
+/** Ctrl+Home/End キー処理。ドキュメントの先頭/末尾に移動する。 */
+function handleCtrlEndHome(
+  view: EditorView,
+  dir: "left" | "right",
+  extending: boolean,
+): boolean {
+  const { state } = view;
+  const { doc } = state;
+
+  // ドキュメント先頭: コンテンツ開始位置、末尾: コンテンツ終了位置
+  const targetPos =
+    dir === "right" ? Selection.atEnd(doc).to : Selection.atStart(doc).from;
+
+  const { selection } = state;
+  const anchorPos =
+    selection instanceof TextSelection
+      ? selection.$anchor.pos
+      : selection instanceof NodeSelection
+        ? selection.$from.pos
+        : targetPos;
+
+  const newSel = extending
+    ? TextSelection.create(doc, anchorPos, targetPos)
+    : TextSelection.create(doc, targetPos);
+  view.dispatch(state.tr.setSelection(newSel).scrollIntoView());
+  return true;
+}
+
+/** 矢印キー処理。atom含有テキストブロック内でブラウザ処理をバイパスする。 */
 function handleArrow(
   view: EditorView,
   dir: 1 | -1,
@@ -173,10 +206,16 @@ export const InlineAtomNavigationExtension = Extension.create({
         key: pluginKey,
         props: {
           handleKeyDown(view, event) {
+            const ctrl = event.ctrlKey || event.metaKey;
+
             switch (event.key) {
               case "End":
+                if (ctrl)
+                  return handleCtrlEndHome(view, "right", event.shiftKey);
                 return handleEndHome(view, "right", event.shiftKey);
               case "Home":
+                if (ctrl)
+                  return handleCtrlEndHome(view, "left", event.shiftKey);
                 return handleEndHome(view, "left", event.shiftKey);
               case "ArrowRight":
                 return handleArrow(view, 1, event.shiftKey);
