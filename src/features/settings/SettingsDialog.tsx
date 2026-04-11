@@ -11,6 +11,7 @@ import { DisplayCategory } from "./categories/DisplayCategory";
 import { KeysCategory } from "./categories/KeysCategory";
 import { DataCategory } from "./categories/DataCategory";
 import { CodexCategory } from "./categories/CodexCategory";
+import { AboutCategory } from "./categories/AboutCategory";
 
 interface SettingsDialogProps {
   open: boolean;
@@ -34,6 +35,8 @@ function CategoryContent({ category }: { category: SettingsCategory }) {
       return <DataCategory />;
     case "codex":
       return <CodexCategory />;
+    case "about":
+      return <AboutCategory />;
   }
 }
 
