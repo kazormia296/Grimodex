@@ -176,7 +176,7 @@
 .tiptap {
   outline: none;
   overflow-wrap: break-word;
-  word-break: normal;
+  word-break: auto-phrase;
   line-break: strict;
 
   h1 { font-size: 2em; font-weight: bold; margin: 0.67em 0; color: var(--content-foreground); }
