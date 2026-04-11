@@ -45,6 +45,15 @@ export function createCursorOverlayPlugin(getEnabled: () => boolean): Plugin {
           overlayView?.updateBiasFromClick(view, event as MouseEvent);
           return false;
         },
+        mouseup(view) {
+          // At soft-wrap boundaries the "end of visual line N" and
+          // "start of visual line N+1" share the same document position.
+          // ProseMirror skips the transaction when the position doesn't
+          // change, so update() is never called and the pending bias
+          // from mousedown is never consumed.  Force re-evaluation here.
+          overlayView?.updateCursor(view);
+          return false;
+        },
         focus(view) {
           overlayView?.updateCursor(view);
           return false;
