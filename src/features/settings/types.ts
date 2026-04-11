@@ -54,7 +54,7 @@ export const DEFAULT_SETTINGS: Record<string, string> = {
   "editor.characterFadeIn": "false",
   "editor.characterFadeOut": "false",
   "editor.disableAllAnimations": "false",
-  "editor.wordBreak": "auto-phrase",
+  "editor.wordBreak": "normal",
   "editor.lineBreak": "strict",
   // Display (theme, uiLanguage, uiScale are in GlobalSettings)
   "display.showWordCount": "true",

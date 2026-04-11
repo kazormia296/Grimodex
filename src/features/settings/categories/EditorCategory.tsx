@@ -119,7 +119,7 @@ export function EditorCategory() {
           <SettingDropdown
             settingKey="editor.wordBreak"
             options={WORD_BREAK_OPTIONS}
-            defaultValue="auto-phrase"
+            defaultValue="normal"
           />
         </SettingRow>
         <SettingRow

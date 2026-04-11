@@ -47,7 +47,7 @@ export function useEditorSettings(): EditorSettings {
       "editor.disableAllAnimations",
       false,
     ),
-    wordBreak: store.get("editor.wordBreak", "auto-phrase"),
+    wordBreak: store.get("editor.wordBreak", "normal"),
     lineBreak: store.get("editor.lineBreak", "strict"),
   };
 }
