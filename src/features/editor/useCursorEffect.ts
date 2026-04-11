@@ -65,6 +65,7 @@ export function useCursorEffect(editor: Editor | null, enabled: boolean) {
           lastNavAction = "end";
           break;
         case "ArrowLeft":
+        case "Backspace":
           lastNavAction = "left";
           break;
         case "ArrowRight":
@@ -127,10 +128,14 @@ export function useCursorEffect(editor: Editor | null, enabled: boolean) {
 
         if (isWrapPoint && lineEndCoords && lineStartCoords) {
           // At a wrap point: choose visual position based on navigation action
-          if (lastNavAction === "end" || lastNavAction === "right") {
-            coords = lineEndCoords; // end of current visual line
-          } else if (lastNavAction === "home" || lastNavAction === "left") {
-            coords = lineStartCoords; // start of next visual line
+          if (lastNavAction === "end") {
+            coords = lineEndCoords; // only End reaches the visual line-end
+          } else if (
+            lastNavAction === "home" ||
+            lastNavAction === "left" ||
+            lastNavAction === "right"
+          ) {
+            coords = lineStartCoords; // arrow keys always land on the next-line side
           } else if (lastNavAction === "up" || lastNavAction === "down") {
             // Vertical movement: pick the side whose X is closest to the
             // previous cursor X position (mimics the browser's column-memory).
