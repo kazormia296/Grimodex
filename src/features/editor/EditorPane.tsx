@@ -142,10 +142,15 @@ export function EditorPane({
   const activeSnippetEntry = useSnippetStore((s) =>
     isSnippetMode ? s.entries.find((e) => e.id === nodeId) : null,
   );
+  const updateNodeTitle = useTreeStore((s) => s.updateNodeTitle);
+  const updateCodexEntryStore = useCodexStore((s) => s.update);
+  const updateSnippetEntryStore = useSnippetStore((s) => s.update);
   const activeStatus = (activeNode?.status ?? null) as SceneStatus | null;
 
   const paneRef = useRef<HTMLDivElement>(null);
   const editorContainerRef = useRef<HTMLDivElement>(null);
+  const [titleEditing, setTitleEditing] = useState(false);
+  const [titleDraft, setTitleDraft] = useState("");
   const [findOpen, setFindOpen] = useState(false);
   const [findShowReplace, setFindShowReplace] = useState(false);
   const [verticalPreviewOpen, setVerticalPreviewOpen] = useState(false);
@@ -754,6 +759,35 @@ export function EditorPane({
   const isNote =
     !isCodexMode && !isSnippetMode && activeNode?.nodeType === "note";
 
+  const editorTitle = isCodexMode
+    ? (activeCodexEntry?.name ?? "")
+    : isSnippetMode
+      ? (activeSnippetEntry?.title ?? "")
+      : (activeNode?.title ?? "");
+
+  const handleTitleEditStart = () => {
+    setTitleDraft(editorTitle);
+    setTitleEditing(true);
+  };
+
+  const handleTitleSave = () => {
+    const trimmed = titleDraft.trim();
+    if (trimmed && trimmed !== editorTitle) {
+      if (isCodexMode) {
+        updateCodexEntryStore(nodeId, { name: trimmed }).catch(() => {});
+      } else if (isSnippetMode) {
+        updateSnippetEntryStore(nodeId, { title: trimmed }).catch(() => {});
+      } else {
+        updateNodeTitle(nodeId, trimmed).catch(() => {});
+      }
+    }
+    setTitleEditing(false);
+  };
+
+  const handleTitleCancel = () => {
+    setTitleEditing(false);
+  };
+
   return (
     <div ref={paneRef} className="flex flex-1 flex-col overflow-hidden">
       <Toolbar
@@ -822,6 +856,49 @@ export function EditorPane({
               editorSettings.lineBreak as React.CSSProperties["lineBreak"],
           }}
         >
+          {editorTitle && (
+            <div
+              className="mb-6 border-b border-border/40 pb-4"
+              style={{
+                fontSize: `${Math.round(editorSettings.fontSize * 1.6)}px`,
+              }}
+            >
+              {titleEditing ? (
+                <input
+                  // eslint-disable-next-line jsx-a11y/no-autofocus
+                  autoFocus
+                  type="text"
+                  value={titleDraft}
+                  onChange={(e) => setTitleDraft(e.target.value)}
+                  onBlur={handleTitleSave}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") {
+                      e.preventDefault();
+                      handleTitleSave();
+                    } else if (e.key === "Escape") {
+                      e.preventDefault();
+                      handleTitleCancel();
+                    }
+                  }}
+                  className="w-full bg-transparent font-semibold text-content-foreground/60 outline-none placeholder:text-content-foreground/30"
+                  style={{ fontFamily: "inherit", fontSize: "inherit" }}
+                />
+              ) : (
+                <div
+                  role="button"
+                  tabIndex={0}
+                  onClick={handleTitleEditStart}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" || e.key === "F2")
+                      handleTitleEditStart();
+                  }}
+                  className="cursor-text select-none font-semibold text-content-foreground/60 hover:text-content-foreground/80"
+                >
+                  {editorTitle}
+                </div>
+              )}
+            </div>
+          )}
           <EditorContent editor={editor} />
           <CodexPopover editor={editor} />
           <AttributionOverrideMenu editor={editor} />
