@@ -2,7 +2,7 @@
 
 ## 概要
 
-Codexパネルはプロジェクトの世界設定データベース。キャラクター、場所、アイテム、伝承の4カテゴリのエントリを管理する。左にエントリ一覧（マスター）、右に詳細編集画面（ディテール）のスプリットビュー。エントリはEditorやChatから作成され、エディタ本文中のCodexハイライトやChatのコンテキスト注入で活用される。
+Codexパネルはプロジェクトの世界設定データベース。キャラクター、場所、アイテム、伝承の4カテゴリのエントリを管理する。左にエントリ一覧（マスター）、右に詳細編集画面（ディテール）のスプリットビュー。エントリはEditorやChatから作成され、エディタ本文中のCodexハイライトやChatのコンテキスト注入で活用される。各エントリはフェーズシステムにより物語の進行に伴う経時的変化を管理でき、AIコンテキスト注入にはシーンに応じた適切な状態が反映される。
 
 デフォルト位置: Left Dock（非表示）。Scenesとタブ切り替えで共存。
 
@@ -181,7 +181,7 @@ Codexパネルはプロジェクトの世界設定データベース。キャラ
 │ [🖼] Elara             👤character      │  ← ヘッダー（タブ外・常時表示）
 │ tags: [protagonist] [mage] [+]          │
 ├─────────────────────────────────────────┤
-│ Details│Relations│Tracking│Mentions│Research│ ← タブ
+│ Details│Relations│Timeline│Tracking│Mentions│Research│ ← タブ
 ├═════════════════════════════════════════┤
 │                                         │  ← Details タブ
 │ Aliases: [エララ]                       │
@@ -259,6 +259,46 @@ Codexパネルはプロジェクトの世界設定データベース。キャラ
 ---
 
 ### Details タブ
+
+#### フェーズインジケーター
+
+エントリにフェーズ（経時的変化）が設定されている場合、Detailsタブの最上部にフェーズインジケーターを表示する。フェーズの詳細は「フェーズシステム（経時的変化）」セクション参照。
+
+```
+┌─────────────────────────────────────────┐
+│ ⏱ Phase: 反乱参加 (Ch.15 Sc.1) [▾]    │  ← フェーズセレクター
+│   Base → 追放 → [反乱参加] → 覚醒       │  ← ミニタイムライン
+└─────────────────────────────────────────┘
+```
+
+- 現在のエディタのアクティブシーンに連動して自動選択（状態解決アルゴリズムに基づく）
+- ドロップダウンで手動切り替え可能（プレビュー用）
+- 「Base」「Phase名 (シーン名)」のリスト表示
+- フェーズが0個のエントリでは非表示
+- フェーズで上書きされたフィールドは左ボーダー（アクセントカラー）で強調し、Base値を薄い文字でインライン表示
+- フィールド右の「×」でそのフィールドの上書きを解除（Baseに戻す）
+
+**Content フィールドのフェーズ対応**:
+
+フェーズ適用中にContentフィールドを編集した場合、変更は `codex_entry_phases.content_override` に保存される（Base の `codex_entries.content` には影響しない）。
+
+```
+┌─────────────────────────────────────��───┐
+│ Content:                    [Open in Editor ↗]│
+│ ┌─ ⏱ Phase: 反乱参加 ───────────────┐  │
+│ │ このフェーズの内容を編集中           │  │
+│ │ [Base contentを表示 ▾]              │  │
+│ ├─────────────────────────────────────┤  │
+│ │ 反乱軍に加わったエララは、かつて      │  │
+│ │ 師匠から教わった魔法を戦場で         │  │
+│ │ 振るうことになった...               │  │
+│ └─────────────────────────────────────┘  │
+└─────────────────────────────────────────┘
+```
+
+- フェーズインジケーター内に「Base contentを表示」折りたたみ。展開するとBase content を読み取り専用で参考表示
+- Base状態でContentを編集 → 従来通り `codex_entries.content` に保存
+- **Open in Editor ↗**: フェーズ適用中は content_override をエディタタブで開く。タブタイトルは「{エントリ名} — {フェーズラベル}」（例: 「Elara — 反乱参加」）。保存先は `codex_entry_phases.content_override`
 
 #### Aliases フィールド
 
@@ -635,6 +675,101 @@ AIコンテキストに含まれないプライベートノート。執筆上の
 
 ---
 
+### Timeline タブ
+
+エントリの経時的変化（フェーズ）を時系列で管理するタブ。フェーズシステムの詳細は「フェーズシステム（経時的変化）」セクション参照。
+
+```
+┌─────────────────────────────────────────┐
+│Details│Relations│Timeline│Tracking│Mentions│Research│
+├═════════════════════════════════════════┤
+│                                         │
+│ ⏱ Timeline                             │
+│                                         │
+│ ┃ ● Base state                          │
+│ ┃   塔の見習い魔術師                      │
+│ ┃   所属: 白銀騎士団                      │
+│ ┃                                       │
+│ ┃─── Ch.8 Sc.3 ─────────────────────    │
+│ ┃                                       │
+│ ┃ ● 追放                                │
+│ ┃   summary → 「塔を追われた元見習い」     │
+│ ┃   content → 📝 (上書きあり)            │
+│ ┃   所属 → (なし)                        │
+│ ┃   [Edit] [Delete]                     │
+│ ┃                                       │
+│ ┃─── Ch.15 Sc.1 ────────────────────    │
+│ ┃                                       │
+│ ┃ ◉ 反乱参加              ← 現在のシーン │
+│ ┃   summary → 「反乱軍の魔術師」          │
+│ ┃   content → 📝 (上書きあり)            │
+│ ┃   所属 → 反乱軍                        │
+│ ┃   [Edit] [Delete]                     │
+│ ┃                                       │
+│ ┃─── Ch.24 Sc.5 ────────────────────    │
+│ ┃                                       │
+│ ┃ ● 覚醒                                │
+│ ┃   summary → 「古代魔法の継承者」         │
+│ ┃   [Edit] [Delete]                     │
+│ ┃                                       │
+│ [+ Add phase]                           │
+└─────────────────────────────────────────┘
+```
+
+#### タイムライン表示
+
+- 縦のタイムラインUI。上が物語の始まり、下が終わり
+- 最上部に「Base state」を表示（Base状態のsummary + 主要カスタムフィールド値）
+- 各フェーズ間にアンカーシーンの位置を区切り線で表示（「Ch.{N} Sc.{M}」）
+- 現在のエディタアクティブシーンに該当するフェーズは ◉（塗りつぶし丸）で強調。それ以外は ●（通常丸）
+- 各フェーズノードには変更されたフィールドのみ表示（差分ビュー）
+  - summary上書き: `summary → 「新しい値」`
+  - content上書き: `content → 📝 (上書きあり)` （テキスト全文は表示しない）
+  - カスタムフィールド上書き: `フィールド名 → 新しい値`
+  - context_mode上書き: `context → 新しいモード`
+- 各フェーズに [Edit] / [Delete] ボタン
+
+#### [+ Add phase] ボタン
+
+クリックでフェーズ作成ダイアログを表示（「フェーズシステム」セクションの「フェーズ作成/編集ダイアログ」参照）。
+
+#### フェーズが0個の場合
+
+「フェーズなし」メッセージ + 説明テキスト + [+ Add phase] ボタンのみ表示:
+
+```
+┌─────────────────────────────────────────┐
+│ ⏱ Timeline                             │
+│                                         │
+│ フェーズが設定されていません。              │
+│ フェーズを追加すると、物語の進行に          │
+│ 伴うこのエントリの変化を管理できます。       │
+│                                         │
+│ [+ Add phase]                           │
+└─────────────────────────────────────────┘
+```
+
+#### [Edit] ボタン
+
+クリックでフェーズ編集ダイアログを表示。作成ダイアログと同一構成で、既存の値がプリフィルされる。
+
+#### [Delete] ボタン
+
+確認ダイアログを表示:
+
+```
+このフェーズを削除しますか？
+
+「追放」（Ch.8 Sc.3）を削除すると、このフェーズの
+上書き内容がすべて失われます。この操作は元に戻せません。
+
+                              [キャンセル]  [削除]
+```
+
+削除実行: `codex_entry_phases` から行削除 → `codex_phase_detail_overrides` がCASCADE削除。関連する `authorship_spans`（`phase_id`）もCASCADE削除。
+
+---
+
 ## 新規エントリ作成
 
 ### ヘッダーの [+] ボタン
@@ -692,9 +827,14 @@ DBスキーマの正規版は統合DBスキーマ設計書（`Grimodex_統合DB�
 - `codex_tags` / `codex_entry_tags`: 構造化タグ（多対多）
 - `codex_detail_definitions` / `codex_detail_values`: カスタムディテール
 - `codex_relation_dismissed`: リレーション提案のDismiss記録
+- `codex_entry_phases`: フェーズ（経時的変化。アンカーシーン + フィールド上書き）
+- `codex_phase_detail_overrides`: フェーズ内のカスタムフィールド上書き値
 - `codex_fts`: FTS5仮想テーブル（name + aliases + summary + tags_cache）
 
 FTS5テーブルはname + aliases + summary + tags_cacheを検索対象にする。contentもDBに格納されているためFTS5に追加可能だが、MVPではname + aliases + summary + tags_cacheの検索で十分と判断。
+
+`authorship_spans` テーブルにフェーズ用カラムを追加:
+- `phase_id TEXT REFERENCES codex_entry_phases(id) ON DELETE CASCADE`: フェーズの content_override に対する帰属追跡用。`codex_entry_id` が non-null かつ `phase_id` が non-null の場合はフェーズ content_override のスパン。`codex_entry_id` が non-null かつ `phase_id` が null の場合は Base content のスパン。
 
 ---
 
@@ -1215,13 +1355,15 @@ function buildCodexContext(matchedEntryIds: string[]): string {
 }
 ```
 
+**フェーズ解決との統合**: エントリにフェーズが設定されている場合、注入されるsummary・content・カスタムディテール・context_modeはすべて**フェーズ解決後の値**が使用される。詳細は「フェーズシステム（経時的変化）」セクションの「AIコンテキスト注入への統合」参照。
+
 **注入ルール**:
 
 | 注入トリガー | 親エントリ | 子孫エントリ（自動注入） |
 |-------------|-----------|----------------------|
-| 自動検出（シーン本文にnameが出現） | summary + カスタムディテール（include_in_context=1）。**summaryが未記入の場合はcontent全文をフォールバック** | summaryをBFS順に `children_budget`（デフォルト: compact = Layer 4の15%）まで注入 |
-| チャットメッセージ内で言及 | **自動ピン留め**: content全文 + カスタムディテール（include_in_context=1） | summaryをBFS順に `children_budget` まで注入 |
-| ピン留め（手動） | content全文 + カスタムディテール（include_in_context=1） | summaryをBFS順に `children_budget` まで注入 |
+| 自動検出（シーン本文にnameが出現） | フェーズ解決後のsummary + カスタムディテール（include_in_context=1）。**summaryが未記入の場合はフェーズ解決後のcontent全文をフォールバック** | フェーズ解決後のsummaryをBFS順に `children_budget`（デフォルト: compact = Layer 4の15%）まで注入 |
+| チャットメッセージ内で言及 | **自動ピン留め**: フェーズ解決後のcontent全文 + カスタムディテール（include_in_context=1） | フェーズ解決後のsummaryをBFS順に `children_budget` まで注入 |
+| ピン留め（手動） | フェーズ解決後のcontent全文 + カスタムディテール（include_in_context=1） | フェーズ解決後のsummaryをBFS順に `children_budget` まで注入 |
 | Pin with children（手動） | content全文 + カスタムディテール | **予算無視**: 直接子のcontent全文を注入（個別除外可能） |
 
 **context_mode による制御**:
@@ -1329,6 +1471,423 @@ CREATE TABLE codex_relation_dismissed (
 
 ---
 
+## フェーズシステム（経時的変化）
+
+### 概要
+
+小説では物語の進行に伴いキャラクターの所属や能力、場所の状態、アイテムの所有者などが変化する。フェーズシステムは、Codexエントリの状態が物語のどの時点でどう変わるかを構造化して管理し、AIコンテキスト注入にシーン適切な状態を反映する機能。
+
+フェーズがないエントリは現行と完全に同じ動作であり、既存のコードに影響しない（後方互換）。
+
+### コアコンセプト
+
+**フェーズ（Phase）**は「物語上のある時点からの状態変化」を表す。各フェーズはアンカーシーン（変化が発生するシーン）に紐づき、変化するフィールドの上書き値を持つ。
+
+```
+Elara (character)
+├── Base state: 「塔の見習い魔術師」所属=白銀騎士団
+├── Phase 1 [Ch.8 Sc.3 "追放"]: summary→「塔を追われた元見習い」所属=なし
+├── Phase 2 [Ch.15 Sc.1 "反乱参加"]: summary→「反乱軍の魔術師」所属=反乱軍
+└── Phase 3 [Ch.24 Sc.5 "覚醒"]: summary→「古代魔法の継承者」
+```
+
+あるシーンでのエントリの有効状態は、そのシーン以前の全フェーズを順に適用した結果:
+
+```
+シーン5を執筆中  → Base state（Phase 1 はCh.8以降なので未適用）
+シーン10を執筆中 → Base + Phase 1 適用
+シーン20を執筆中 → Base + Phase 1 + Phase 2 適用
+シーン30を執筆中 → Base + Phase 1 + Phase 2 + Phase 3 適用
+```
+
+### 上書き対象フィールド
+
+| フィールド | 上書き対象 | 理由 |
+|-----------|----------|------|
+| summary | **対象** | 最頻変化。AIコンテキストへの影響大 |
+| content | **対象** | 詳細な背景設定の変化。ProseMirror JSON |
+| カスタムフィールド | **対象** | 所属/称号/能力などの構造化データ |
+| context_mode | **対象** | 「Ch.20以降は隠しキャラをAIに見せる」等 |
+| name / aliases | **対象外** | 変更するとマッチングが崩壊する。aliasで対応可能 |
+| tags | **対象外** | メタ管理用であり物語内変化ではない |
+| notes | **対象外** | プライベートメモは時系列管理不要 |
+
+### DBスキーマ
+
+```sql
+CREATE TABLE codex_entry_phases (
+  id                    TEXT PRIMARY KEY,
+  entry_id              TEXT NOT NULL REFERENCES codex_entries(id) ON DELETE CASCADE,
+  anchor_node_id        TEXT REFERENCES tree_nodes(id) ON DELETE SET NULL,
+  label                 TEXT NOT NULL DEFAULT '',
+  summary_override      TEXT,
+  content_override      TEXT,
+  context_mode_override TEXT,
+  created_at            TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at            TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX idx_codex_phases_entry ON codex_entry_phases(entry_id);
+CREATE INDEX idx_codex_phases_anchor ON codex_entry_phases(anchor_node_id);
+
+CREATE TABLE codex_phase_detail_overrides (
+  id            TEXT PRIMARY KEY,
+  phase_id      TEXT NOT NULL REFERENCES codex_entry_phases(id) ON DELETE CASCADE,
+  definition_id TEXT NOT NULL REFERENCES codex_detail_definitions(id) ON DELETE CASCADE,
+  value         TEXT,
+  UNIQUE(phase_id, definition_id)
+);
+```
+
+- `summary_override`: NULL = 変更なし（前のフェーズ/Baseを継承）。空文字 = summaryを空にクリア
+- `content_override`: NULL = 変更なし。ProseMirror JSON形式
+- `context_mode_override`: NULL = 変更なし。値は `always` / `mentioned` / `suppress` / `hidden`
+- `anchor_node_id`: `ON DELETE SET NULL` — アンカーシーン削除時はNULLになり、フェーズは無効化（UIで警告表示）
+
+### シーン順序の解決（タイムライン計算）
+
+`tree_nodes` はツリー構造（Part → Chapter → Scene）のため、「シーンAがシーンBより前か」を判定するにはグローバル順序が必要。ツリーをDFS（深さ優先）で走査し、各シーンにグローバルインデックスを割り当てる。
+
+```typescript
+/**
+ * ツリーをDFS走査し、グローバルなシーン順序を計算する。
+ * Part → Chapter → Scene の順序で、各階層内はsort_orderでソート。
+ */
+function computeGlobalSceneOrder(nodes: TreeNode[]): Map<string, number> {
+  const orderMap = new Map<string, number>();
+  let index = 0;
+
+  function traverse(parentId: string | null) {
+    const children = nodes
+      .filter(n => n.parentId === parentId)
+      .sort((a, b) => a.sortOrder - b.sortOrder);
+    for (const child of children) {
+      if (child.nodeType === 'scene') {
+        orderMap.set(child.id, index++);
+      }
+      traverse(child.id);
+    }
+  }
+
+  traverse(null);
+  return orderMap;
+}
+```
+
+**キャッシュ戦略**: グローバル順序はツリー構造変更時（ノード追加/削除/移動）のみ再計算。Zustandストアに保持。
+
+### 状態解決アルゴリズム
+
+```typescript
+interface ResolvedCodexState {
+  summary: string;
+  content: string | null;
+  contextMode: ContextMode;
+  detailValues: Map<string, string>;  // definitionId → value
+  activePhaseId: string | null;       // 適用中のフェーズID（UI表示用）
+  activePhaseLabel: string | null;
+}
+
+function resolveCodexState(
+  entry: CodexEntry,
+  phases: CodexEntryPhase[],
+  phaseDetails: Map<string, PhaseDetailOverride[]>,  // phaseId → overrides
+  baseDetails: Map<string, string>,                   // definitionId → value
+  currentSceneId: string | null,
+  sceneOrder: Map<string, number>,
+): ResolvedCodexState {
+  // 1. Base state
+  const state: ResolvedCodexState = {
+    summary: entry.summary ?? '',
+    content: entry.content,
+    contextMode: entry.contextMode,
+    detailValues: new Map(baseDetails),
+    activePhaseId: null,
+    activePhaseLabel: null,
+  };
+
+  if (!currentSceneId) return state;
+
+  const currentOrder = sceneOrder.get(currentSceneId);
+  if (currentOrder === undefined) return state;
+
+  // 2. 適用可能フェーズをシーン順でソート
+  const applicablePhases = phases
+    .filter(p => {
+      const anchorOrder = sceneOrder.get(p.anchorNodeId);
+      return anchorOrder !== undefined && anchorOrder <= currentOrder;
+    })
+    .sort((a, b) => {
+      const orderA = sceneOrder.get(a.anchorNodeId)!;
+      const orderB = sceneOrder.get(b.anchorNodeId)!;
+      return orderA - orderB;
+    });
+
+  // 3. フェーズを順に適用（上書きがあるフィールドのみ）
+  for (const phase of applicablePhases) {
+    if (phase.summaryOverride !== null) {
+      state.summary = phase.summaryOverride;
+    }
+    if (phase.contentOverride !== null) {
+      state.content = phase.contentOverride;
+    }
+    if (phase.contextModeOverride !== null) {
+      state.contextMode = phase.contextModeOverride;
+    }
+    const overrides = phaseDetails.get(phase.id) ?? [];
+    for (const ov of overrides) {
+      state.detailValues.set(ov.definitionId, ov.value);
+    }
+    state.activePhaseId = phase.id;
+    state.activePhaseLabel = phase.label;
+  }
+
+  return state;
+}
+```
+
+### Content上書きの仕様
+
+#### 保存
+
+- フェーズ適用中にContentフィールドを編集 → `codex_entry_phases.content_override` に保存
+- Base状態でContentを編集 → 従来通り `codex_entries.content` に保存
+- 自動保存（デバウンス2秒、既存のContent保存と同一動線）
+
+#### content_override の初期値
+
+- フェーズ作成時に「Contentを上書き」チェックを入れた場合、前のフェーズの content_override（またはBase content）をコピーして初期値とする。ゼロから書き直すより、既存を編集するほうが自然なため
+- チェックを入れなかった場合: `content_override = NULL`（前のフェーズ/Baseを継承）
+
+#### Open in Editor ↗
+
+- フェーズ適用中は content_override をエディタタブで開く
+- エディタタブのタイトル: 「{エントリ名} — {フェーズラベル}」（例: 「Elara — 反乱参加」）
+- 保存先は `codex_entry_phases.content_override`（BaseのcontentではなくフェーズのDBレコード）
+- Codexパネル内のミニエディタとエディタタブのcontent_overrideは同一レコードを参照しており、一方の変更が他方に即時反映される
+
+#### CodexHighlight
+
+フェーズ適用中のcontent_overrideに対しても既存のAho-Corasickパイプラインがそのまま動作する。自エントリ除外ルールも同様。追加実装は不要。
+
+#### Attribution追跡
+
+`authorship_spans` テーブルの `phase_id` カラムでフェーズ別の帰属追跡を実現する:
+
+| codex_entry_id | phase_id | 対象 |
+|----------------|----------|------|
+| non-null | null | Base contentのスパン |
+| non-null | non-null | フェーズ content_override のスパン |
+
+- フェーズ削除時は `phase_id` が CASCADE 削除され、関連するスパンも自動削除
+- Attribution追跡の動作（AiEditedPlugin、AuthorshipMark体系）はBase contentと同一
+
+#### AIコンテキスト注入でのcontent
+
+既存ルール「summaryが空ならcontent全文をフォールバック」はフェーズ解決後の値に適用される:
+
+- フェーズ解決後のsummaryが空 → フェーズ解決後のcontentでフォールバック
+- フェーズがcontent_overrideを持つ場合はそのcontentが使われる
+
+### フェーズ作成/編集ダイアログ
+
+```
+┌─────────────────────────────────────────────────┐
+│ Add Phase                                  [×]  │
+├─────────────────────────────────────────────────┤
+│                                                 │
+│ Label:        [追放後                       ]   │
+│ Anchor scene: [Ch.8 Sc.3 "追放される日"   ▾]   │
+│                                                 │
+│ ─── Override fields ───                         │
+│                                                 │
+│ [✓] Summary                                     │
+│     [塔を追われた元見習い              ]         │
+│                                                 │
+│ [✓] Content                                     │
+│     初期値: 前フェーズの内容をコピー             │
+│     (保存後にContent editorで編集可能)           │
+│                                                 │
+│ [✓] 所属勢力                                     │
+│     [(空欄)                          ▾]         │
+│                                                 │
+│ [ ] 種族                                         │
+│ [ ] 身長                                         │
+│                                                 │
+│ [ ] Context mode                                │
+│                                                 │
+│                         [Cancel]  [Save]        │
+└─────────────────────────────────────────────────┘
+```
+
+| 要素 | 説明 |
+|------|------|
+| Label | フェーズのラベル（例: 「追放後」「覚醒後」）。必須 |
+| Anchor scene | フェーズの開始シーン。ツリーセレクターで選択（Part > Chapter > Scene の階層表示）。必須 |
+| Override fields | チェックボックスで上書き対象フィールドを選択。チェックなし = 前のフェーズ/Baseから継承 |
+
+- Summary: テキスト入力欄（チェック時に表示）
+- Content: チェック時に前フェーズ/Baseのcontentをコピーして初期化。ダイアログ内ではインライン編集せず、保存後にDetailsタブのContent editorで編集
+- カスタムフィールド: `codex_detail_definitions` から現在のタイプのフィールドを動的生成。フィールドタイプに応じたUI（text/dropdown/codex_reference）
+- Context mode: ドロップダウン（always/mentioned/suppress/hidden）
+
+**バリデーション**:
+- Label は必須
+- Anchor scene は必須
+- 同一エントリ内で同じアンカーシーンのフェーズは複数作成可能（同一シーンで複数の変化を記録する場合。UI上では作成順で並ぶ）
+- 少なくとも1つのフィールドが上書き対象として選択されていること
+
+**編集時**: 既存の値がプリフィルされる。Override fields のチェックを外すと、そのフィールドの上書きが解除される（NULL に戻る）。Content の上書きチェックを外す場合、content_override が破棄される旨の確認ダイアログを表示。
+
+### AIコンテキスト注入への統合
+
+#### シーンスコープChat
+
+シーンスコープのChat（`isGlobalChat = false`）では、アクティブシーンに基づいてフェーズ解決済みの状態をコンテキストに注入する。
+
+注入フローの変更点:
+
+```
+既存: entry.summary → formatEntryContext(entry) → コンテキスト文字列
+新規: resolveCodexState(entry, phases, currentSceneId) → resolved.summary → formatEntryContext(entry, resolved) → コンテキスト文字列
+```
+
+- `formatEntryContext` はフェーズ解決済みの summary、content、detailValues、contextMode を使用
+- context_mode の判定もフェーズ解決後の値で行う（例: `context_mode_override = 'always'` のフェーズが適用されると、そのシーン以降は常に注入）
+- フェーズラベルをコンテキストに付記してAIにキャラクターの現在状態を明示:
+
+```
+## エララ (キャラクター) [反乱参加]
+反乱軍の魔術師
+- 所属勢力: 反乱軍
+- 種族: 人間
+```
+
+- 子孫エントリの自動注入（BFS、サブツリートークン予算）も各子エントリのフェーズを個別に解決して注入
+
+#### プロジェクトスコープChat
+
+プロジェクトスコープのChat（`isGlobalChat = true`、`nodeId = NULL`）では、特定のシーン位置がないため、**タイムライン全体を俯瞰した注入**を行う。
+
+フェーズ解決の分岐:
+
+| Chatスコープ | currentSceneId | フェーズ解決方針 |
+|-------------|----------------|----------------|
+| シーンスコープ | アクティブシーンID | そのシーン時点の状態を解決 |
+| プロジェクトスコープ | null | タイムライン全体を俯瞰 |
+
+**フェーズがあるエントリの注入フォーマット**:
+
+```
+## エララ (キャラクター)
+最新: 古代魔法の継承者（所属: ―）
+
+変遷:
+- 初期: 塔の見習い魔術師（所属: 白銀騎士団）
+- Ch.8 Sc.3「追放」以降: 塔を追われた元見習い（所属: なし）
+- Ch.15 Sc.1「反乱参加」以降: 反乱軍の魔術師（所属: 反乱軍）
+- Ch.24 Sc.5「覚醒」以降: 古代魔法の継承者
+```
+
+**フェーズがないエントリ**: 従来通り summary（または content フォールバック）のみを注入。変遷セクションは表示しない。
+
+**トークン予算への影響**:
+
+タイムライン注入は単一状態より長くなるため、予算制御が必要:
+
+| フェーズ数 | 概算トークン増分（1エントリあたり） |
+|-----------|-------------------------------|
+| 0 | 0（従来通り） |
+| 1-3 | +50〜150 tok |
+| 4-10 | +150〜400 tok |
+
+予算超過時の縮退:
+- Layer 4予算の範囲内で、シーンスコープと同じ優先順位ルールを適用
+- 予算超過時はフェーズの少ないエントリから変遷セクションを省略（最新状態のみに縮退）
+- `context_mode` はフェーズ解決後の**最新状態**の値で判定
+
+**プロジェクトスコープChatのコンテキストバー表示**:
+
+```
+┌────────────────────────────────────────────────────┐
+│ 🌐 Project scope                                   │
+│ Codex: [エララ ⏱3] [マーカス] [黒曜石の塔 ⏱1] ... │
+│         ↑ フェーズ数バッジ                           │
+└────────────────────────────────────────────────────┘
+```
+
+- フェーズを持つエントリのピルに `⏱N`（フェーズ数）バッジを表示
+- ピルホバーで「タイムライン全体が注入されます」のツールチップ
+
+### エディタハイライト連携
+
+CodexHighlightのポップオーバーもフェーズ解決済み状態を表示:
+
+```
+┌─────────────────────────┐
+│ 👤 Elara                │
+│ ⏱ 反乱参加              │  ← フェーズラベル表示（フェーズ適用中のみ）
+│ 反乱軍の魔術師           │  ← フェーズ適用後のsummary
+│ [Open in Codex →]       │
+└─────────────────────────┘
+```
+
+フェーズが適用されていない場合（Base状態）は、フェーズラベル行を表示しない（現行と同じ）。
+
+### 再計算タイミング
+
+| トリガー | 再計算対象 |
+|---------|-----------|
+| フェーズの追加/削除/編集 | 該当エントリのフェーズ解決済み状態を再計算 → コンテキスト再構築、ポップオーバー更新 |
+| アクティブシーンの切り替え | 全エントリのフェーズ解決済み状態を再計算（キャッシュ活用で高速化） |
+| ツリー構造の変更（シーン移動/追加/削除） | グローバルシーン順序を再計算 → 全エントリのフェーズ解決を再実行 |
+| フェーズのアンカーシーン変更 | グローバル順序は再計算不要。該当エントリのフェーズ解決のみ |
+
+### エッジケース
+
+#### アンカーシーンの削除
+
+`ON DELETE SET NULL` で処理。`anchor_node_id` が NULL になったフェーズは:
+- Timeline UIで「⚠ シーン削除済み」と警告表示
+- 状態解決時はスキップ（適用されない）
+- ユーザーに [Edit] から再アンカーを促す
+
+#### シーン順序の変更（D&D移動）
+
+シーンの並び替えでグローバル順序が変わると、フェーズの適用順も変わる可能性がある:
+- グローバル順序マップを再計算
+- 影響を受けるCodexエントリの状態を再解決
+- 大きな順序変更でフェーズの適用順が変わった場合はトースト通知:「Codexフェーズの適用順が変わった可能性があります」
+
+#### エントリのタイプ変更
+
+エントリのタイプを変更した場合、フェーズ内のカスタムフィールド上書きは既存の `codex_detail_values` と同じルールに従う:
+- 旧タイプのフィールド上書き値は保持（非表示）
+- 新タイプの定義のみ表示。タイプを戻せば値が復活
+
+#### 複数フェーズが同一シーンにアンカー
+
+同一エントリ内で複数のフェーズが同じシーンにアンカーされている場合、`created_at` の昇順で適用する。UIのTimelineタブでは同一シーンのフェーズが連続して表示される。
+
+### パフォーマンス
+
+- フェーズ数は1エントリあたり典型的に0〜10程度
+- 状態解決はO(P)（P=フェーズ数）で十分高速
+- グローバル順序計算はO(N)（N=ノード数）でツリー変更時のみ実行
+- 全エントリの一括再解決: O(E × P_avg)（E=エントリ数、P_avg=平均フェーズ数）。500エントリ × 5フェーズ = 2500回の比較で1ms以下
+
+### 将来拡張
+
+| 拡張 | 概要 | 優先度 |
+|------|------|--------|
+| tags上書き | フェーズごとにタグ変更 | 低 |
+| フェーズ間diff表示 | 2つのフェーズの差分をハイライト表示 | 中 |
+| AIフェーズ提案 | チャットの会話からフェーズを自動提案 | 中 |
+| タイムラインビュー | 全エントリの全フェーズを横断的に表示する専用ビュー | 高 |
+| フェーズテンプレート | 「戦争開始」で複数エントリの一括フェーズ作成 | 低 |
+
+---
+
 ## キーボードショートカット
 
 ### Codexパネルにフォーカス時
@@ -1367,11 +1926,19 @@ CREATE TABLE codex_relation_dismissed (
 
 ### → Chat（コンテキスト注入）
 
-- シーン本文で自動検出されたCodexエントリの summary がChatのシステムプロンプト Layer 4 に注入される（summaryが未記入の場合はcontent全文をフォールバック）
-- チャットメッセージ内で言及されたCodexエントリは自動的にピン留めされ、content全文が注入される
-- 手動ピン留めされたエントリは content 全文が注入される
-- 親エントリが注入される場合、子孫エントリのsummaryがサブツリートークン予算の範囲内でBFS順に自動注入される（「エントリ間リレーション」セクション参照）
+**シーンスコープChat**（`isGlobalChat = false`）:
+- シーン本文で自動検出されたCodexエントリの**フェーズ解決後の** summary がChatのシステムプロンプト Layer 4 に注入される（summaryが未記入の場合はフェーズ解決後のcontent全文をフォールバック）
+- チャットメッセージ内で言及されたCodexエントリは自動的にピン留めされ、フェーズ解決後のcontent全文が注入される
+- 手動ピン留めされたエントリはフェーズ解決後の content 全文が注入される
+- 親エントリが注入される場合、子孫エントリのフェーズ解決後のsummaryがサブツリートークン予算の範囲内でBFS順に自動注入される（「エントリ間リレーション」セクション参照）
 - 自動注入された子エントリはコンテキストバーに薄いスタイルのピルで表示される
+- フェーズが適用されているエントリは、コンテキストにフェーズラベルが付記される（例: `## エララ (キャラクター) [反乱参加]`）
+
+**プロジェクトスコープChat**（`isGlobalChat = true`、`nodeId = NULL`）:
+- 特定のシーン位置がないため、フェーズを持つエントリは**タイムライン全体を俯瞰した注入**を行う（最新状態 + 変遷リスト）
+- フェーズがないエントリは従来通り summary のみを注入
+- コンテキストバーでフェーズを持つエントリのピルに `⏱N`（フェーズ数）バッジを表示
+- 詳細は「フェーズシステム（経時的変化）」セクションの「プロジェクトスコープChat」参照
 
 ### → Chat History
 
@@ -1405,7 +1972,7 @@ Codexハイライト（Pure Decorations）のホバーポップオーバーか�
 
 ### Chatパネル設計書
 
-Chatの「Codex」ボタンでエントリを即時作成（AI抽出/通常抽出モード切り替え可能）。`source_chat_message_id` でChat→Codexのトレーサビリティ。Chatのコンテキスト注入Layer 4でCodexエントリのsummaryが自動注入される。
+Chatの「Codex」ボタンでエントリを即時作成（AI抽出/通常抽出モード切り替え可能）。`source_chat_message_id` でChat→Codexのトレーサビリティ。Chatのコンテキスト注入Layer 4でCodexエントリのフェーズ解決後のsummaryが自動注入される。プロジェクトスコープChat（`nodeId = NULL`）ではタイムライン全体を俯瞰した注入を行う（「フェーズシステム」セクション参照）。
 
 ### Scenesパネル設計書
 
@@ -1455,3 +2022,65 @@ Codex Types
   - `codex_detail_definitions` の該当type_slugの定義を削除（CASCADE で値も削除）
 - プロジェクト間のタイプ共有なし（各プロジェクト独立）
 - sort_order はD&Dで並び替え可能。フィルタタブの表示順に反映
+
+---
+
+## 将来対応: シーン単位Codexタグ（未実装）
+
+### 概要
+
+シーンにCodexエントリを手動でタグ付けする機能。文字列マッチによる自動検出を補完し、テキスト中にname/aliasが出現しないCodexエントリとシーンの関連性を明示する。
+
+Synopsisが「何が起こるか」を記述するのに対し、Codexタグは「誰/何が関与するか」を宣言する。
+
+### ユースケース
+
+- 代名詞のみで語られるシーンで、関与するキャラクターを明示
+- テーマ・モチーフとしてシーンに関連するLoreエントリを紐づけ
+- 伏線が張られている箇所に、回収先のCodexエントリを関連付け
+- `context_mode: mentioned` のエントリを、name出現なしでもAIコンテキストに注入
+
+### 自動検出との区別
+
+| 種別 | ソース | 表示 |
+|------|--------|------|
+| 自動検出 | Aho-Corasickによるname/aliasマッチ | 現行のCodex Quick表示 |
+| 手動タグ | ユーザーが明示的に付与 | 手動タグであることが視認できるスタイル |
+
+手動タグは自動検出とは独立して管理され、テキスト編集の影響を受けない。
+
+### AIコンテキスト注入への影響
+
+手動タグ付けされたCodexエントリは、自動検出と同様にChatのLayer 4注入候補となる。`context_mode` の設定は引き続き尊重される（`hidden` のエントリは手動タグがあっても注入しない）。
+
+### Mentionsタブへの反映
+
+Mentionsタブの「Manuscript」セクションに、手動タグ由来の関連を自動検出由来と区別して表示する。
+
+---
+
+## 将来対応: スパン単位セマンティックリンク（未実装）
+
+### 概要
+
+エディタ本文中の任意のテキスト範囲に、Codexエントリへの意味的リンクを手動で付与する機能。文字列マッチ（name/alias一致）とは独立した、作者の意図の明示的エンコーディング。
+
+### 文字列マッチとの違い
+
+文字列マッチは「テキスト表層に名前が出現しているか」を検出する。セマンティックリンクは「作者がこのテキスト範囲をこのCodexエントリに関連づけたい」という意図を記録する。両者は独立して共存する。
+
+### ユースケース
+
+- **叙述トリック・信頼できない語り手**: テキスト上の「彼」が実は別人を指すケースで、AIに真の対応関係を教える
+- **二つ名・称号の文脈依存**: 「銀の魔女」が文脈によって別人を指す場合（Aliasにすると常に片方にマッチする）
+- **メタファー・象徴**: 「鎖」が自由の束縛を意味する箇所と、物理的な鎖の箇所を区別
+- **回想シーン**: 地の文と回想で同じ代名詞が別人を指す
+
+いずれも共通点は**「Aliasでは表現できない文脈依存の参照」**であること。
+
+### 設計上の考慮事項
+
+- TipTap Markとして実装する場合、テキスト編集時のMark維持・分割の挙動を慎重に設計する必要がある
+- 視覚的表現: CodexHighlight（自動検出）との区別が必要。スタイルの差別化方針は要検討
+- AIコンテキスト注入: セマンティックリンクが付与された範囲とCodexエントリの対応をどの粒度でAIに伝えるか要検討
+- **漏洩リスク**: 叙述トリックの真実をAIに教えた場合、AIの生成テキストにネタバレが混入する危険がある。注入時の注意書きや、セマンティックリンク専用の `context_mode` が必要になる可能性がある

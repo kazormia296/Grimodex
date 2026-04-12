@@ -83,6 +83,7 @@ LLMに送信されるコンテキスト情報をユーザーに可視化する�
 | {Codexエントリ名} | Blue/Info | 自動検出されたCodexエントリ（summaryのみ注入）。クリックでポップオーバー（上記に加え「📌ピン留め」ボタンを表示。ピン留めでcontent全文に昇格）。×で除外 |
 | {Codexエントリ名} | Blue/Info | `context_mode = always` のエントリ（summaryのみ注入）。常に表示。ポップオーバーからピン留めでcontent全文に昇格。×で一時除外可能（セッション内） |
 | {子エントリ名} via {親名} | Blue/Info | 自動注入された子エントリ（summaryのみ注入）。×で個別除外可能 |
+| {Codexエントリ名} ⏱{N} | Blue/Info | フェーズを持つCodexエントリ。⏱{N}バッジはフェーズ数を表示。シーンスコープ時はアクティブシーン時点の状態が注入される。プロジェクトスコープ時はタイムライン全体が注入される（Codexパネル設計書「フェーズシステム」セクション参照） |
 | {Snippet名} | Purple | ピン留めされたSnippet。クリックでSnippet詳細。×で除外 |
 | ~{N} tokens | グレー（右寄せ） | システムプロンプトの合計トークン数概算。クリックでプロンプトプレビューモーダルを表示（全文 + レイヤー別トークン内訳） |
 | {N}k | グレー（右寄せ） | 選択モデルのコンテキストウィンドウサイズ |
@@ -377,11 +378,12 @@ AIメッセージ内のテキストを選択すると、選択範囲の近くに
 | L1 Project info | ✅ | ✅ |
 | L2 storySoFar | ✅ | ❌ |
 | L3 Current scene | ✅ | ❌ |
-| L4 Codex entries | ✅ (自動検出+ピン留め) | ✅ (ピン留めのみ) |
+| L4 Codex entries | ✅ (自動検出+ピン留め、フェーズ解決済み) | ✅ (ピン留めのみ、タイムライン注入) |
 | L5 Conversation history | ✅ | ✅ |
 
 - プロジェクトスコープではシーンが存在しないため、シーン依存のL2・L3は省略される
 - L4はシーン本文からの自動検出ができないため、ピン留めされたエントリのみ注入
+- **フェーズ解決**: シーンスコープではアクティブシーン時点のフェーズ解決済み状態（summary/content/カスタムフィールド/context_mode）を注入。プロジェクトスコープではフェーズを持つエントリに対しタイムライン全体（最新状態 + 変遷リスト）を注入（Codexパネル設計書「フェーズシステム」セクション参照）
 - L2・L3が省略される分、余剰トークンはL4・L5に再配分される
 
 ### 階層モデル
@@ -406,13 +408,14 @@ LLM APIのシステムプロンプトに以下の5レイヤーを階層的に注
 - 予算配分: コンテキストの ~40%
 
 **Layer 4: Codex entries + Snippets**
-- **context_mode フィルタ**: 各エントリの `context_mode` により注入可否を判定（Codexパネル設計書「コンテキスト制御モード」セクション参照）
+- **フェーズ解決**: エントリにフェーズ（経時的変化）が設定されている場合、注入されるsummary・content・カスタムディテール・context_modeはすべて**アクティブシーン時点のフェーズ解決後の値**が使用される。プロジェクトスコープ時はタイムライン全体（最新状態 + 変遷リスト）を注入する。詳細はCodexパネル設計書「フェーズシステム（経時的変化）」セクション参照
+- **context_mode フィルタ**: 各エントリの**フェーズ解決後の** `context_mode` により注入可否を判定（Codexパネル設計書「コンテキスト制御モード」セクション参照）
   - `hidden`: 注入リストから完全除外（ピンリストにあっても除外）
   - `always`: 自動検出の有無に関わらず常に注入
   - `mentioned`（デフォルト）: シーン内で検出された場合に注入
   - `suppress`: 自動検出では注入しない。ピン留めされている場合のみ注入
-- 注入対象のCodexエントリのsummary + カスタムディテール（`include_in_context = 1`）。**summaryが未記入の場合はcontent全文をフォールバックとして注入する**
-- コンテキストバーでピン留めされたCodexエントリの全文 + カスタムディテール
+- 注入対象のCodexエントリのフェーズ解決後のsummary + カスタムディテール（`include_in_context = 1`）。**summaryが未記入の場合はフェーズ解決後のcontent全文をフォールバックとして注入する**
+- コンテキストバーでピン留めされたCodexエントリのフェーズ解決後の全文 + カスタムディテール
 - **チャット言及による自動ピン留め**: ユーザーのチャットメッセージ内でCodexエントリ名が検出された場合、セッションの `pinned_codex` に自動追加し、content全文を注入する（シーン本文の自動検出とは区別）
 - コンテキストバーでピン留めされたSnippetの全文
 - **子孫エントリの自動注入**: 上記でマッチした親Codexエントリの子孫エントリのsummaryを、サブツリートークン予算（エントリごとに設定、デフォルト: Layer 4予算の15%）の範囲内でBFS（幅優先）順に自動追加。depth制限はなく、予算が自然な制限として機能する（子のcontext_modeも個別に判定。Codexパネル設計書「コンテキスト注入への影響」セクション参照）
@@ -518,12 +521,17 @@ function buildContext(
   const updatedPins = reconcilePins(session.pinnedCodex, chatMentionedIds);
   // プロジェクトスコープ時: sceneId=null → 自動検出なし、ピン留めのみ
   const layer4 = buildCodexContext(sceneId, updatedPins, allocations.layer4);
-  // buildCodexContext 内で context_mode フィルタ適用:
-  //   hidden → 除外、always → 無条件追加、mentioned → 検出時のみ、
-  //   suppress → ピンリスト存在時のみ
-  // summaryが未記入の場合はcontent全文をフォールバック注入
-  // カスタムディテール（include_in_context=1）も注入対象に含める
-  // 子孫エントリはサブツリートークン予算（Layer 4予算の比率）内でBFS順に注入
+  // buildCodexContext 内でフェーズ解決 + context_mode フィルタ適用:
+  //   1. 各エントリのフェーズをアクティブシーン時点で解決（resolveCodexState）
+  //      → summary, content, detailValues, contextMode がフェーズ適用後の値に
+  //   2. プロジェクトスコープ時はタイムライン全体を俯瞰注入（最新状態+変遷リスト）
+  //   3. context_mode フィルタ（フェーズ解決後の値で判定）:
+  //      hidden → 除外、always → 無条件追加、mentioned → 検出時のみ、
+  //      suppress → ピンリスト存在時のみ
+  //   4. summaryが未記入の場合はcontent全文をフォールバック注入
+  //   5. カスタムディテール（include_in_context=1）も注入対象に含める
+  //   6. 子孫エントリはサブツリートークン予算（Layer 4予算の比率）内でBFS順に注入
+  //      （各子エントリも個別にフェーズ解決）
   const layer5 = buildConversationHistory(session.messages, allocations.layer5);
   // Progressive summarization: 8往復超のメッセージは要約化
   // ⭐マーク付きメッセージは要約対象から除外
@@ -836,8 +844,9 @@ Note: EditorにはインラインAIコマンド機能がある（`/` またはCt
 ### Codex → Chat（逆方向）
 
 - Codex QuickセクションやCodexパネルからエントリをChatにピン留め
-
-- 自動検出されたCodexエントリのシステムプロンプト注入
+- 自動検出されたCodexエントリのシステムプロンプト注入（フェーズ解決後の状態を使用）
+- シーンスコープ: アクティブシーン時点のフェーズ解決済み状態を注入。フェーズラベルがコンテキストに付記される（例: `## エララ (キャラクター) [反乱参加]`）
+- プロジェクトスコープ: フェーズを持つエントリはタイムライン全体（最新状態 + 変遷リスト）を注入
 
 ---
 
@@ -888,6 +897,10 @@ Chatパネルはdock/float可能。デフォルト位置はRight Dock。パネ�
 ### Editorパネル設計書
 
 「Chat → Editor」の挿入時のAuthorshipMark付与、フローティングツールバー「Look up in Chat」の動作はEditorパネル設計書の記載を正とする。
+
+### Codexパネル設計書
+
+Codexエントリのフェーズシステム（経時的変化）により、Layer 4のコンテキスト注入ではフェーズ解決後の状態が使用される。シーンスコープではアクティブシーン時点、プロジェクトスコープではタイムライン全体の注入となる。context_modeのフェーズ上書きにも対応。
 
 ### Scenesパネル設計書
 
