@@ -7,6 +7,7 @@ import {
   clearLayout,
   type CustomPreset,
 } from "./layoutPresets";
+import { validateSerializedLayout } from "./layoutValidation";
 
 export type PanelId =
   | "scenes"
@@ -73,6 +74,9 @@ interface LayoutState {
   layoutLocked: boolean;
   /** Toggle the layout lock on/off */
   toggleLayoutLock: () => void;
+
+  /** Reset layout to builtin default and clear saved layout */
+  resetToDefaultLayout: () => Promise<void>;
 }
 
 let saveTimer: ReturnType<typeof setTimeout> | null = null;
@@ -84,6 +88,9 @@ function scheduleSave(get: () => LayoutState) {
     if (!api) return;
     try {
       const layout = api.toJSON();
+      // Skip saving degenerate layouts (e.g. during drag/resize transitions)
+      const check = validateSerializedLayout(layout);
+      if (!check.valid) return;
       const current = await invoke<GlobalSettings>("get_global_settings");
       await invoke("save_global_settings", {
         settings: { ...current, layout },
@@ -199,12 +206,20 @@ export const useLayoutStore = create<LayoutState>()((set, get) => ({
 
     const custom = get().customPresets.find((p) => p.id === id);
     if (custom) {
+      const preCheck = validateSerializedLayout(custom.layout);
+      if (!preCheck.valid) return;
+      const snapshot = api.toJSON();
       try {
         api.fromJSON(custom.layout);
         set({ activePresetId: id });
         persistActivePresetId(id);
       } catch {
-        // Corrupted preset — ignore
+        // Corrupted preset — revert to snapshot
+        try {
+          api.fromJSON(snapshot);
+        } catch {
+          // ignore
+        }
       }
     }
   },
@@ -250,6 +265,20 @@ export const useLayoutStore = create<LayoutState>()((set, get) => ({
       api.updateOptions({ disableDnd: next });
     }
     set({ layoutLocked: next });
+  },
+
+  /* ── Reset ── */
+
+  async resetToDefaultLayout() {
+    const api = get().dockviewApi;
+    if (!api) return;
+    const builtin = getBuiltinPreset("builtin:default");
+    if (!builtin) return;
+    clearLayout(api);
+    builtin.build(api);
+    set({ activePresetId: "builtin:default" });
+    await clearSavedLayout();
+    await persistActivePresetId("builtin:default");
   },
 }));
 
@@ -435,6 +464,20 @@ async function persistPresets(
         activeLayoutPresetId: activeId,
       },
     });
+  } catch {
+    // Ignore
+  }
+}
+
+/** Remove the persisted layout from global settings (leaves other settings intact) */
+export async function clearSavedLayout() {
+  try {
+    const current = await invoke<GlobalSettings & { layout?: unknown }>(
+      "get_global_settings",
+    );
+    const settings: GlobalSettings & { layout?: unknown } = { ...current };
+    delete settings.layout;
+    await invoke("save_global_settings", { settings });
   } catch {
     // Ignore
   }

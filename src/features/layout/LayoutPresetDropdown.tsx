@@ -1,5 +1,12 @@
 import { useEffect, useRef, useState } from "react";
-import { Columns3, ChevronDown, Save, Trash2, Check } from "lucide-react";
+import {
+  Columns3,
+  ChevronDown,
+  Save,
+  Trash2,
+  Check,
+  RotateCcw,
+} from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useLayoutStore } from "./layoutStore";
 import { BUILTIN_PRESETS } from "./layoutPresets";
@@ -11,6 +18,7 @@ export function LayoutPresetDropdown() {
     applyPreset,
     saveCurrentAsPreset,
     deletePreset,
+    resetToDefaultLayout,
   } = useLayoutStore();
 
   const [isOpen, setIsOpen] = useState(false);
@@ -217,6 +225,20 @@ export function LayoutPresetDropdown() {
               <span>現在のレイアウトを保存</span>
             </button>
           )}
+
+          {/* Reset to default */}
+          <div className="my-1 border-t border-border" />
+          <button
+            type="button"
+            onClick={() => {
+              resetToDefaultLayout();
+              setIsOpen(false);
+            }}
+            className="flex w-full items-center gap-2 px-3 py-1.5 text-sm text-destructive hover:bg-destructive/10"
+          >
+            <RotateCcw className="h-3.5 w-3.5" />
+            <span>デフォルトに戻す</span>
+          </button>
         </div>
       )}
     </div>

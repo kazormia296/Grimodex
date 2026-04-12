@@ -52,7 +52,7 @@ describe("validateSerializedLayout", () => {
   it("rejects null", () => {
     const result = validateSerializedLayout(null);
     expect(result.valid).toBe(false);
-    expect(result.reason).toBeTruthy();
+    if (!result.valid) expect(result.reason).toBeTruthy();
   });
 
   it("rejects undefined", () => {
@@ -100,7 +100,7 @@ describe("validateSerializedLayout", () => {
     });
     const result = validateSerializedLayout(layout);
     expect(result.valid).toBe(false);
-    expect(result.reason).toBeTruthy();
+    if (!result.valid) expect(result.reason).toBeTruthy();
   });
 
   it("rejects layout with only 1 leaf even in a branch", () => {
@@ -174,7 +174,7 @@ describe("validateRuntimeLayout", () => {
   it("rejects layout with 0 groups", () => {
     const result = validateRuntimeLayout(makeApi([]));
     expect(result.valid).toBe(false);
-    expect(result.reason).toBeTruthy();
+    if (!result.valid) expect(result.reason).toBeTruthy();
   });
 
   it("rejects layout with 1 group", () => {
@@ -188,7 +188,7 @@ describe("validateRuntimeLayout", () => {
       makeApi([{ width: 1021 }, { width: 179 }]),
     );
     expect(result.valid).toBe(false);
-    expect(result.reason).toBeTruthy();
+    if (!result.valid) expect(result.reason).toBeTruthy();
   });
 
   it("rejects degenerate layout: 1 group = 100% width", () => {

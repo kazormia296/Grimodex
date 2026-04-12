@@ -1,5 +1,5 @@
 import { useEffect, useCallback, useMemo } from "react";
-import { Toaster } from "sonner";
+import { Toaster, toast } from "sonner";
 import {
   DockviewReact,
   type DockviewReadyEvent,
@@ -17,7 +17,15 @@ import type { SettingsCategory } from "@/features/settings/types";
 import { PanelToggleDropdown } from "@/features/layout/PanelToggleDropdown";
 import { LayoutPresetDropdown } from "@/features/layout/LayoutPresetDropdown";
 import { DockviewWatermark } from "@/features/layout/DockviewWatermark";
-import { useLayoutStore, type PanelId } from "@/features/layout/layoutStore";
+import {
+  useLayoutStore,
+  clearSavedLayout,
+  type PanelId,
+} from "@/features/layout/layoutStore";
+import {
+  validateSerializedLayout,
+  validateRuntimeLayout,
+} from "@/features/layout/layoutValidation";
 import { useDebugLogStore } from "@/lib/debugLog";
 import { DebugLogViewer } from "@/lib/DebugLogViewer";
 import { getBuiltinPreset } from "@/features/layout/layoutPresets";
@@ -237,18 +245,45 @@ function EditorScreen() {
       const api = event.api;
       setDockviewApi(api);
 
-      // Always show something immediately
+      // Always show something immediately, then snapshot for fallback
       buildDefaultLayout(api);
+      const defaultSnapshot = api.toJSON();
 
       // Then try to restore saved layout asynchronously
       loadLayout()
-        .then((saved) => {
-          if (saved) {
-            try {
-              api.fromJSON(saved);
-            } catch {
-              // Corrupted layout — keep the default already showing
-            }
+        .then(async (saved) => {
+          if (!saved) return;
+
+          // 1. Pre-validate before fromJSON
+          const preCheck = validateSerializedLayout(saved);
+          if (!preCheck.valid) {
+            toast.warning(
+              `保存済みレイアウトが不正なため、デフォルトに戻しました。（${preCheck.reason}）`,
+            );
+            await clearSavedLayout();
+            return;
+          }
+
+          // 2. Apply
+          try {
+            api.fromJSON(saved);
+          } catch {
+            toast.warning(
+              "レイアウトの復元に失敗しました。デフォルトに戻します。",
+            );
+            api.fromJSON(defaultSnapshot);
+            await clearSavedLayout();
+            return;
+          }
+
+          // 3. Post-validate after fromJSON
+          const postCheck = validateRuntimeLayout(api);
+          if (!postCheck.valid) {
+            toast.warning(
+              `レイアウトが退化しているため、デフォルトに戻しました。（${postCheck.reason}）`,
+            );
+            api.fromJSON(defaultSnapshot);
+            await clearSavedLayout();
           }
         })
         .catch(() => {
