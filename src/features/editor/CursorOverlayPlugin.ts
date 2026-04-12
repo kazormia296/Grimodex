@@ -224,9 +224,11 @@ class CursorOverlayView {
         const endCoords = view.coordsAtPos(from, -1);
         const startCoords = view.coordsAtPos(from, 1);
         if (Math.abs(endCoords.top - startCoords.top) > 2) {
-          const distToEnd = Math.abs(clickY - endCoords.top);
-          const distToStart = Math.abs(clickY - startCoords.top);
-          this.bias = distToEnd < distToStart ? -1 : 1;
+          const endMid = (endCoords.top + endCoords.bottom) / 2;
+          const startMid = (startCoords.top + startCoords.bottom) / 2;
+          const distToEnd = Math.abs(clickY - endMid);
+          const distToStart = Math.abs(clickY - startMid);
+          this.bias = distToEnd <= distToStart ? -1 : 1;
         }
       } catch {
         // Not a wrap point or atom node — keep default bias.
