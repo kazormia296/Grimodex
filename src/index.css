@@ -148,7 +148,9 @@
   --dv-activegroup-visiblepanel-tab-background-color: var(--background);
   --dv-activegroup-hiddenpanel-tab-background-color: var(--sidebar-background);
   --dv-inactivegroup-visiblepanel-tab-background-color: var(--background);
-  --dv-inactivegroup-hiddenpanel-tab-background-color: var(--sidebar-background);
+  --dv-inactivegroup-hiddenpanel-tab-background-color: var(
+    --sidebar-background
+  );
   --dv-activegroup-visiblepanel-tab-color: var(--foreground);
   --dv-activegroup-hiddenpanel-tab-color: var(--muted-foreground);
   --dv-inactivegroup-visiblepanel-tab-color: var(--muted-foreground);
@@ -177,14 +179,39 @@
   outline: none;
   overflow-wrap: break-word;
 
-  h1 { font-size: 2em; font-weight: bold; margin: 0.67em 0; color: var(--content-foreground); }
-  h2 { font-size: 1.5em; font-weight: bold; margin: 0.83em 0; color: var(--content-foreground); }
-  h3 { font-size: 1.17em; font-weight: bold; margin: 1em 0; color: var(--content-foreground); }
+  h1 {
+    font-size: 2em;
+    font-weight: bold;
+    margin: 0.67em 0;
+    color: var(--content-foreground);
+  }
+  h2 {
+    font-size: 1.5em;
+    font-weight: bold;
+    margin: 0.83em 0;
+    color: var(--content-foreground);
+  }
+  h3 {
+    font-size: 1.17em;
+    font-weight: bold;
+    margin: 1em 0;
+    color: var(--content-foreground);
+  }
 
-  ul { list-style: disc; padding-left: 1.5em; margin: 1em 0; }
-  ol { list-style: decimal; padding-left: 1.5em; margin: 1em 0; }
+  ul {
+    list-style: disc;
+    padding-left: 1.5em;
+    margin: 1em 0;
+  }
+  ol {
+    list-style: decimal;
+    padding-left: 1.5em;
+    margin: 1em 0;
+  }
 
-  p { margin: 0.5em 0; }
+  p {
+    margin: 0.5em 0;
+  }
 
   blockquote {
     border-left: 3px solid var(--content-border);
@@ -291,8 +318,12 @@
 
 /* Snippet D&D insert highlight - purple with 2s fade */
 @keyframes snippetHighlightFade {
-  0% { background-color: oklch(0.75 0.18 290); }
-  100% { background-color: transparent; }
+  0% {
+    background-color: oklch(0.75 0.18 290);
+  }
+  100% {
+    background-color: transparent;
+  }
 }
 .insert-highlight-snippet {
   border-radius: 2px;
@@ -302,8 +333,12 @@
   animation-name: snippetHighlightFadeDark;
 }
 @keyframes snippetHighlightFadeDark {
-  0% { background-color: oklch(0.45 0.16 290); }
-  100% { background-color: transparent; }
+  0% {
+    background-color: oklch(0.45 0.16 290);
+  }
+  100% {
+    background-color: transparent;
+  }
 }
 
 /* G4: Ghost preview text — shown at cursor position on Insert button hover */
@@ -331,11 +366,18 @@
   font-feature-settings: "vpal";
   line-height: 2;
 }
-.vertical-preview p { margin: 0 0.5em; }
+.vertical-preview p {
+  margin: 0 0.5em;
+}
 .vertical-preview h1,
 .vertical-preview h2,
-.vertical-preview h3 { font-weight: bold; margin: 0 1em; }
-.vertical-preview ruby rt { font-size: 0.5em; }
+.vertical-preview h3 {
+  font-weight: bold;
+  margin: 0 1em;
+}
+.vertical-preview ruby rt {
+  font-size: 0.5em;
+}
 .vertical-preview table {
   writing-mode: horizontal-tb;
   margin: 1em 0;
@@ -343,8 +385,14 @@
 
 /* Typewriter cursor effect */
 @keyframes typewriter-blink {
-  0%, 53% { opacity: 1; }
-  73%, 100% { opacity: 0; }
+  0%,
+  55% {
+    opacity: 1;
+  }
+  85%,
+  100% {
+    opacity: 0;
+  }
 }
 
 .typewriter-cursor {
@@ -354,11 +402,14 @@
   pointer-events: none;
   z-index: 10;
   opacity: 1;
-  transition: left 80ms ease-out, top 80ms ease-out;
+  transition:
+    left 80ms ease-out,
+    top 80ms ease-out,
+    height 80ms ease-out;
 }
 
 .typewriter-cursor.blinking {
-  animation: typewriter-blink 1s infinite;
+  animation: typewriter-blink 0.5s 20 alternate;
 }
 
 .typewriter-cursor.composing,
@@ -371,11 +422,19 @@
    AI = teal-green (hue 165°, "processed/machine"), Unknown = warm amber (hue 30°, "uncertain").
    --attribution-pct is set from display.attributionHighlightOpacity setting. */
 .attribution-ai {
-  background-color: color-mix(in oklch, oklch(0.72 0.20 165) var(--attribution-pct), var(--content-background));
+  background-color: color-mix(
+    in oklch,
+    oklch(0.72 0.2 165) var(--attribution-pct),
+    var(--content-background)
+  );
   border-radius: 2px;
 }
 .attribution-unknown {
-  background-color: color-mix(in oklch, oklch(0.72 0.14 30) var(--attribution-pct), var(--content-background));
+  background-color: color-mix(
+    in oklch,
+    oklch(0.72 0.14 30) var(--attribution-pct),
+    var(--content-background)
+  );
   border-radius: 2px;
 }
 .attribution-manual-override {
@@ -403,21 +462,21 @@
 
 /* Revision diff display (F-8) */
 .diff-add {
-  background-color: oklch(0.88 0.10 145);
+  background-color: oklch(0.88 0.1 145);
   border-radius: 2px;
 }
 .dark .diff-add {
-  background-color: oklch(0.30 0.10 145);
-  color: oklch(0.80 0.12 145);
+  background-color: oklch(0.3 0.1 145);
+  color: oklch(0.8 0.12 145);
 }
 .diff-remove {
   text-decoration: line-through;
-  background-color: oklch(0.90 0.08 25);
+  background-color: oklch(0.9 0.08 25);
   border-radius: 2px;
 }
 .dark .diff-remove {
   background-color: oklch(0.28 0.08 25);
-  color: oklch(0.75 0.10 25);
+  color: oklch(0.75 0.1 25);
 }
 
 /* Revision diff block highlighting (side-by-side, F-8) */
@@ -438,11 +497,11 @@
 
 /* Find & Replace decorations (C-7) */
 .find-match {
-  background-color: oklch(0.90 0.12 85);
+  background-color: oklch(0.9 0.12 85);
   border-radius: 2px;
 }
 .dark .find-match {
-  background-color: oklch(0.40 0.12 85);
+  background-color: oklch(0.4 0.12 85);
 }
 .find-current {
   background-color: oklch(0.75 0.18 60);
@@ -461,7 +520,9 @@
   padding: 0.5rem 0.75rem;
   font-size: 0.875rem;
 }
-.chat-input-editor .chat-input-prosemirror p.is-editor-empty:first-child::before {
+.chat-input-editor
+  .chat-input-prosemirror
+  p.is-editor-empty:first-child::before {
   content: attr(data-placeholder);
   color: hsl(var(--muted-foreground));
   pointer-events: none;
