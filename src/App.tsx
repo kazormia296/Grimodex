@@ -28,7 +28,7 @@ import {
 } from "@/features/layout/layoutValidation";
 import { useDebugLogStore } from "@/lib/debugLog";
 import { DebugLogViewer } from "@/lib/DebugLogViewer";
-import { getBuiltinPreset } from "@/features/layout/layoutPresets";
+import { getBuiltinPreset, clearLayout } from "@/features/layout/layoutPresets";
 import { Sidebar } from "@/features/tree/Sidebar";
 import { CodexQuickPanel } from "@/features/tree/CodexQuickPanel";
 import { CodexManagementPanel } from "@/features/codex/CodexManagementPanel";
@@ -245,16 +245,15 @@ function EditorScreen() {
       const api = event.api;
       setDockviewApi(api);
 
-      // Always show something immediately, then snapshot for fallback
+      // Always show something immediately
       buildDefaultLayout(api);
-      const defaultSnapshot = api.toJSON();
 
       // Then try to restore saved layout asynchronously
       loadLayout()
         .then(async (saved) => {
           if (!saved) return;
 
-          // 1. Pre-validate before fromJSON
+          // 1. Pre-validate before fromJSON — rejects definitively broken structure
           const preCheck = validateSerializedLayout(saved);
           if (!preCheck.valid) {
             toast.warning(
@@ -264,25 +263,26 @@ function EditorScreen() {
             return;
           }
 
-          // 2. Apply
+          // 2. Apply — exceptions here are format-compatibility issues (e.g. old
+          //    dockview serialization). Silently rebuild default and let scheduleSave
+          //    overwrite the incompatible layout on the next change event.
           try {
             api.fromJSON(saved);
           } catch {
-            toast.warning(
-              "レイアウトの復元に失敗しました。デフォルトに戻します。",
-            );
-            api.fromJSON(defaultSnapshot);
-            await clearSavedLayout();
+            clearLayout(api);
+            buildDefaultLayout(api);
             return;
           }
 
-          // 3. Post-validate after fromJSON
+          // 3. Post-validate — catches layouts that loaded but are degenerate
+          //    (e.g. single panel taking 100% after resize/drag accident)
           const postCheck = validateRuntimeLayout(api);
           if (!postCheck.valid) {
             toast.warning(
               `レイアウトが退化しているため、デフォルトに戻しました。（${postCheck.reason}）`,
             );
-            api.fromJSON(defaultSnapshot);
+            clearLayout(api);
+            buildDefaultLayout(api);
             await clearSavedLayout();
           }
         })
