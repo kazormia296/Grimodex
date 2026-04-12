@@ -60,9 +60,15 @@ export const usePhaseStore = create<PhaseState>()((set, get) => ({
   resolvedStates: {},
 
   async loadPhasesForEntry(entryId) {
-    const phases = await phaseApi.listPhasesByEntry(entryId);
-    const phaseIds = phases.map((p) => p.id);
-    const allOverrides = await phaseApi.listDetailOverridesByPhaseIds(phaseIds);
+    let phases: CodexEntryPhase[];
+    let allOverrides: CodexPhaseDetailOverride[];
+    try {
+      phases = await phaseApi.listPhasesByEntry(entryId);
+      const phaseIds = phases.map((p) => p.id);
+      allOverrides = await phaseApi.listDetailOverridesByPhaseIds(phaseIds);
+    } catch {
+      return; // DB未接続時などは無視
+    }
 
     const overridesByPhase: Record<string, CodexPhaseDetailOverride[]> = {};
     for (const ov of allOverrides) {

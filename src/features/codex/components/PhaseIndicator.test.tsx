@@ -41,6 +41,7 @@ vi.mock("../phaseStore", () => ({
 
 const mockTreeState = {
   activeSceneId: "scene-1",
+  nodes: [{ id: "scene-1", title: "シーン 1" }],
 };
 
 vi.mock("@/features/tree/treeStore", () => ({
@@ -64,13 +65,12 @@ describe("PhaseIndicator", () => {
     expect(container.firstChild).toBeNull();
   });
 
-  it("フェーズが存在するが現在シーンより後のアンカーの場合「フェーズなし」バッジを表示する", () => {
-    // シーン順序: scene-1=0, scene-2=1
+  it("フェーズが存在する場合にPhaseドロップダウントリガーを表示する", () => {
     mockPhaseState.globalSceneOrder = new Map([
       ["scene-1", 0],
       ["scene-2", 1],
     ]);
-    // フェーズのアンカーはscene-2（現在scene-1より後）
+    // アンカーがscene-2（現在scene-1より後）→ Base stateが現在
     mockPhaseState.phasesByEntry = {
       "entry-1": [
         {
@@ -88,15 +88,14 @@ describe("PhaseIndicator", () => {
     };
 
     render(<PhaseIndicator entry={mockEntry} />);
-    expect(screen.getByText("フェーズなし")).toBeInTheDocument();
+    // ドロップダウントリガーが存在する
+    expect(screen.getByText(/Phase:/)).toBeInTheDocument();
+    // Base stateが現在なのでmini timelineにBaseが含まれる
+    expect(screen.getByText("Base")).toBeInTheDocument();
   });
 
-  it("アンカーシーンが現在シーン以前の場合「現在のフェーズ: {label}」バッジを表示する", () => {
-    // シーン順序: scene-1=0, scene-2=1
-    mockPhaseState.globalSceneOrder = new Map([
-      ["scene-1", 0],
-      ["scene-2", 1],
-    ]);
+  it("アンカーシーンが現在シーン以前の場合フェーズラベルをmini timelineに表示する", () => {
+    mockPhaseState.globalSceneOrder = new Map([["scene-1", 0]]);
     // アンカーがscene-1（=現在シーン）なので適用される
     mockPhaseState.phasesByEntry = {
       "entry-1": [
@@ -115,6 +114,7 @@ describe("PhaseIndicator", () => {
     };
 
     render(<PhaseIndicator entry={mockEntry} />);
-    expect(screen.getByText("現在のフェーズ: 変身後")).toBeInTheDocument();
+    // mini timelineに[変身後]が表示される
+    expect(screen.getByText("[変身後]")).toBeInTheDocument();
   });
 });

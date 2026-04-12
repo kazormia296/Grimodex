@@ -27,12 +27,11 @@ const mockEntry: CodexEntry = {
 
 const mockPhaseState = {
   phasesByEntry: {} as Record<string, CodexEntryPhase[]>,
+  globalSceneOrder: new Map<string, number>(),
   loadPhasesForEntry: vi.fn().mockResolvedValue(undefined),
   deletePhase: vi.fn().mockResolvedValue(undefined),
   createPhase: vi.fn(),
   updatePhase: vi.fn(),
-  getResolvedState: vi.fn().mockReturnValue(null),
-  resolvedStates: {},
 };
 
 vi.mock("../phaseStore", () => ({
@@ -45,6 +44,7 @@ vi.mock("../phaseStore", () => ({
 
 const mockTreeState = {
   nodes: [],
+  activeSceneId: "",
 };
 
 vi.mock("@/features/tree/treeStore", () => ({
@@ -58,21 +58,24 @@ describe("TimelineTab", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockPhaseState.phasesByEntry = {};
+    mockPhaseState.globalSceneOrder = new Map();
     mockPhaseState.loadPhasesForEntry = vi.fn().mockResolvedValue(undefined);
     mockPhaseState.deletePhase = vi.fn().mockResolvedValue(undefined);
   });
 
-  it("フェーズなし時にプレースホルダーが表示される", async () => {
+  it("フェーズなし時に説明テキストが表示される", async () => {
     render(<TimelineTab entry={mockEntry} />);
     await waitFor(() => {
-      expect(screen.getByText("フェーズはまだありません")).toBeInTheDocument();
+      expect(
+        screen.getByText("フェーズが設定されていません。"),
+      ).toBeInTheDocument();
     });
   });
 
-  it("「+ フェーズを追加」ボタンが存在する", async () => {
+  it("「Add phase」ボタンが存在する", async () => {
     render(<TimelineTab entry={mockEntry} />);
     await waitFor(() => {
-      expect(screen.getByText("フェーズを追加")).toBeInTheDocument();
+      expect(screen.getAllByText("Add phase").length).toBeGreaterThan(0);
     });
   });
 
@@ -83,15 +86,16 @@ describe("TimelineTab", () => {
     });
   });
 
-  it("フェーズがある場合にフェーズカードを表示する", async () => {
+  it("フェーズがある場合にBase stateとフェーズラベルが表示される", async () => {
+    mockPhaseState.globalSceneOrder = new Map([["scene-1", 0]]);
     mockPhaseState.phasesByEntry = {
       "entry-1": [
         {
           id: "phase-1",
           entryId: "entry-1",
           label: "変身後",
-          anchorNodeId: null,
-          summaryOverride: null,
+          anchorNodeId: "scene-1",
+          summaryOverride: "変身した",
           contentOverride: null,
           contextModeOverride: null,
           createdAt: "2024-01-01T00:00:00Z",
@@ -101,6 +105,7 @@ describe("TimelineTab", () => {
     };
     render(<TimelineTab entry={mockEntry} />);
     await waitFor(() => {
+      expect(screen.getByText("Base state")).toBeInTheDocument();
       expect(screen.getByText("変身後")).toBeInTheDocument();
     });
   });

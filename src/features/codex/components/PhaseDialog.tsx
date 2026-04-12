@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { X } from "lucide-react";
 import type { CodexEntryPhase } from "../phaseApi";
 import { usePhaseStore } from "../phaseStore";
 import { SceneSelector } from "./SceneSelector";
@@ -13,35 +14,50 @@ export function PhaseDialog({ entryId, phase, onClose }: PhaseDialogProps) {
   const createPhase = usePhaseStore((s) => s.createPhase);
   const updatePhase = usePhaseStore((s) => s.updatePhase);
 
+  const isEditing = phase != null;
+
   const [label, setLabel] = useState(phase?.label ?? "");
   const [anchorNodeId, setAnchorNodeId] = useState<string | null>(
     phase?.anchorNodeId ?? null,
   );
-  const [summaryOverride, setSummaryOverride] = useState(
+
+  // Override fields: チェックで有効化
+  const [summaryEnabled, setSummaryEnabled] = useState(
+    phase?.summaryOverride != null,
+  );
+  const [summaryValue, setSummaryValue] = useState(
     phase?.summaryOverride ?? "",
   );
+  const [contentEnabled, setContentEnabled] = useState(
+    phase?.contentOverride != null,
+  );
+  const [contextModeEnabled, setContextModeEnabled] = useState(
+    phase?.contextModeOverride != null,
+  );
+  const [contextModeValue, setContextModeValue] = useState(
+    phase?.contextModeOverride ?? "mentioned",
+  );
+
   const [isSubmitting, setIsSubmitting] = useState(false);
 
-  const isEditing = phase != null;
+  const hasOverride = summaryEnabled || contentEnabled || contextModeEnabled;
+  const canSubmit = label.trim() && anchorNodeId && hasOverride;
 
   const handleSubmit = async () => {
-    const trimmedLabel = label.trim();
-    if (!trimmedLabel) return;
+    if (!canSubmit) return;
     setIsSubmitting(true);
     try {
+      const data = {
+        label: label.trim(),
+        anchorNodeId,
+        summaryOverride: summaryEnabled ? summaryValue.trim() || "" : null,
+        contentOverride: contentEnabled ? (phase?.contentOverride ?? "") : null,
+        contextModeOverride: contextModeEnabled ? contextModeValue : null,
+      };
       if (isEditing) {
-        await updatePhase(phase.id, {
-          label: trimmedLabel,
-          anchorNodeId,
-          summaryOverride: summaryOverride.trim() || null,
-        });
+        await updatePhase(phase.id, data);
       } else {
-        await createPhase({
-          entryId,
-          label: trimmedLabel,
-          anchorNodeId,
-          summaryOverride: summaryOverride.trim() || null,
-        });
+        await createPhase({ entryId, ...data });
       }
       onClose();
     } finally {
@@ -50,24 +66,34 @@ export function PhaseDialog({ entryId, phase, onClose }: PhaseDialogProps) {
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30">
-      <div className="w-96 rounded-lg border border-border bg-background p-4 shadow-lg">
-        <h3 className="mb-4 text-sm font-semibold">
-          {isEditing ? "フェーズを編集" : "フェーズを追加"}
-        </h3>
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
+      <div className="w-[420px] rounded-lg border border-border bg-background shadow-xl">
+        {/* Header */}
+        <div className="flex items-center justify-between border-b border-border px-4 py-3">
+          <h3 className="text-sm font-semibold">
+            {isEditing ? "Edit Phase" : "Add Phase"}
+          </h3>
+          <button
+            type="button"
+            onClick={onClose}
+            className="rounded p-1 text-muted-foreground hover:bg-accent"
+          >
+            <X className="h-3.5 w-3.5" />
+          </button>
+        </div>
 
-        <div className="space-y-3">
+        <div className="space-y-4 px-4 py-4">
           {/* Label */}
           <div>
             <label className="mb-1 block text-xs font-medium">
-              ラベル <span className="text-destructive">*</span>
+              Label <span className="text-destructive">*</span>
             </label>
             <input
               type="text"
               value={label}
               onChange={(e) => setLabel(e.target.value)}
               className="w-full rounded-md border border-input bg-background px-2 py-1.5 text-sm"
-              placeholder="例: 変身後、第二章以降..."
+              placeholder="例: 追放後、反乱参加..."
               autoFocus
             />
           </div>
@@ -75,45 +101,110 @@ export function PhaseDialog({ entryId, phase, onClose }: PhaseDialogProps) {
           {/* Anchor scene */}
           <div>
             <label className="mb-1 block text-xs font-medium">
-              アンカーシーン
+              Anchor scene <span className="text-destructive">*</span>
             </label>
             <SceneSelector value={anchorNodeId} onChange={setAnchorNodeId} />
+            <p className="mt-1 text-[11px] text-muted-foreground">
+              このフェーズが開始するシーン
+            </p>
           </div>
 
-          {/* Summary override */}
+          {/* Override fields */}
           <div>
-            <label className="mb-1 block text-xs font-medium">
-              概要の上書き
-              <span className="ml-1 text-[10px] text-muted-foreground">
-                (任意)
-              </span>
-            </label>
-            <textarea
-              value={summaryOverride}
-              onChange={(e) => setSummaryOverride(e.target.value)}
-              rows={3}
-              className="w-full resize-none rounded-md border border-input bg-background px-2 py-1.5 text-sm"
-              placeholder="このフェーズ以降の概要..."
-            />
+            <p className="mb-2 text-xs font-medium text-muted-foreground">
+              ─── Override fields ───
+            </p>
+            <div className="space-y-3">
+              {/* Summary */}
+              <div>
+                <label className="flex cursor-pointer items-center gap-2">
+                  <input
+                    type="checkbox"
+                    checked={summaryEnabled}
+                    onChange={(e) => setSummaryEnabled(e.target.checked)}
+                    className="h-3.5 w-3.5 rounded accent-primary"
+                  />
+                  <span className="text-xs font-medium">Summary</span>
+                </label>
+                {summaryEnabled && (
+                  <textarea
+                    value={summaryValue}
+                    onChange={(e) => setSummaryValue(e.target.value)}
+                    rows={2}
+                    className="mt-1.5 w-full resize-none rounded-md border border-input bg-background px-2 py-1.5 text-sm"
+                    placeholder="このフェーズ以降の概要..."
+                  />
+                )}
+              </div>
+
+              {/* Content */}
+              <div>
+                <label className="flex cursor-pointer items-center gap-2">
+                  <input
+                    type="checkbox"
+                    checked={contentEnabled}
+                    onChange={(e) => setContentEnabled(e.target.checked)}
+                    className="h-3.5 w-3.5 rounded accent-primary"
+                  />
+                  <span className="text-xs font-medium">Content</span>
+                </label>
+                {contentEnabled && (
+                  <p className="mt-1.5 rounded-md bg-muted/50 px-2 py-1.5 text-xs text-muted-foreground">
+                    保存後にDetailsタブのContent editorで編集できます
+                  </p>
+                )}
+              </div>
+
+              {/* Context mode */}
+              <div>
+                <label className="flex cursor-pointer items-center gap-2">
+                  <input
+                    type="checkbox"
+                    checked={contextModeEnabled}
+                    onChange={(e) => setContextModeEnabled(e.target.checked)}
+                    className="h-3.5 w-3.5 rounded accent-primary"
+                  />
+                  <span className="text-xs font-medium">Context mode</span>
+                </label>
+                {contextModeEnabled && (
+                  <select
+                    value={contextModeValue}
+                    onChange={(e) => setContextModeValue(e.target.value)}
+                    className="mt-1.5 w-full rounded-md border border-input bg-background px-2 py-1.5 text-sm"
+                  >
+                    <option value="always">always</option>
+                    <option value="mentioned">mentioned</option>
+                    <option value="suppress">suppress</option>
+                    <option value="hidden">hidden</option>
+                  </select>
+                )}
+              </div>
+            </div>
+
+            {!hasOverride && (
+              <p className="mt-2 text-[11px] text-destructive">
+                少なくとも1つのフィールドを上書き対象に選択してください
+              </p>
+            )}
           </div>
         </div>
 
-        {/* Buttons */}
-        <div className="mt-4 flex justify-end gap-2">
+        {/* Footer */}
+        <div className="flex justify-end gap-2 border-t border-border px-4 py-3">
           <button
             type="button"
             onClick={onClose}
             className="rounded-md px-3 py-1.5 text-sm text-muted-foreground hover:bg-accent"
           >
-            キャンセル
+            Cancel
           </button>
           <button
             type="button"
             onClick={() => void handleSubmit()}
-            disabled={!label.trim() || isSubmitting}
+            disabled={!canSubmit || isSubmitting}
             className="rounded-md bg-primary px-3 py-1.5 text-sm text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
           >
-            {isSubmitting ? "保存中..." : "保存"}
+            {isSubmitting ? "保存中..." : "Save"}
           </button>
         </div>
       </div>
