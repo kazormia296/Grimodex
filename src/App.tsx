@@ -271,6 +271,7 @@ function EditorScreen() {
           } catch {
             clearLayout(api);
             buildDefaultLayout(api);
+            await clearSavedLayout();
             return;
           }
 
