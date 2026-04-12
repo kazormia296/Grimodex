@@ -58,7 +58,7 @@
         "matcher": "Edit|MultiEdit|Write",
         "hooks": [{
           "type": "command",
-          "command": "f=$(cat | jq -r '.tool_input.file_path // \"\"'); if echo \"$f\" | grep -q '\\.rs$'; then (cd src-tauri && cargo fmt -- \"$f\" 2>/dev/null); elif echo \"$f\" | grep -qE '\\.(ts|tsx)$'; then npx prettier --write \"$f\" 2>/dev/null; fi; exit 0"
+          "command": "f=$(cat | jq -r '.tool_input.file_path // \"\"'); if echo \"$f\" | grep -q '\\.rs$'; then (cd src-tauri && cargo fmt -- \"$f\" 2>/dev/null); elif echo \"$f\" | grep -qE '\\.(ts|tsx|css)$'; then npx prettier --write \"$f\" 2>/dev/null; fi; exit 0"
         }]
       }
     ]
