@@ -16,6 +16,17 @@ interface CodexContentEditorProps {
   entryId?: string;
   /** Called when the EditorPane pushes a change here so the parent can keep its contentRef in sync */
   onExternalSync?: (content: string) => void;
+  /** フェーズプレビュー用: 非nullの場合このコンテンツをエディタに適用（読み取り専用） */
+  externalContent?: string | null;
+}
+
+function parseContent(raw: string): object | "" {
+  if (!raw || raw === "{}") return "";
+  try {
+    return JSON.parse(raw) as object;
+  } catch {
+    return "";
+  }
 }
 
 export function CodexContentEditor({
@@ -23,19 +34,15 @@ export function CodexContentEditor({
   onContentChange,
   entryId,
   onExternalSync,
+  externalContent,
 }: CodexContentEditorProps) {
   const isApplyingExternalUpdate = useRef(false);
   const onExternalSyncRef = useRef(onExternalSync);
   onExternalSyncRef.current = onExternalSync;
+  const contentRef = useRef(content);
+  contentRef.current = content;
 
-  const parsedContent = (() => {
-    if (!content || content === "{}") return "";
-    try {
-      return JSON.parse(content) as object;
-    } catch {
-      return "";
-    }
-  })();
+  const parsedContent = parseContent(content);
 
   const editor = useEditor({
     extensions: [StarterKit.configure(), AuthorshipMark],
@@ -63,6 +70,24 @@ export function CodexContentEditor({
     excludeEntryIds: entryId ? [entryId] : [],
     skipMatchedIds: true,
   });
+
+  // externalContent（フェーズプレビュー）変化時にエディタ内容を更新
+  useEffect(() => {
+    if (!editor) return;
+    // externalContent が null → base content に戻す
+    const target =
+      externalContent != null ? externalContent : contentRef.current;
+    const parsed = parseContent(target);
+    isApplyingExternalUpdate.current = true;
+    try {
+      editor.commands.setContent(
+        parsed as Parameters<typeof editor.commands.setContent>[0],
+      );
+    } finally {
+      isApplyingExternalUpdate.current = false;
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [externalContent]);
 
   // Subscribe to EditorPane updates and apply them to this mini-editor
   useEffect(() => {

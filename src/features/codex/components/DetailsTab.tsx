@@ -194,12 +194,30 @@ export function DetailsTab({
             エディタで開く
           </button>
         </div>
-        <CodexContentEditor
-          content={emptyContent ? "" : entry.content}
-          onContentChange={onContentChange}
-          entryId={entry.id}
-          onExternalSync={onExternalSync}
-        />
+        {/* プレビュー中かつcontentOverrideがある場合は左ボーダーで強調 */}
+        <div
+          className={
+            previewPhaseId != null &&
+            previewResolvedState != null &&
+            previewResolvedState.content !== (entry.content ?? "{}")
+              ? "border-l-2 border-primary pl-2"
+              : ""
+          }
+        >
+          <CodexContentEditor
+            content={emptyContent ? "" : entry.content}
+            onContentChange={
+              previewPhaseId == null ? onContentChange : () => {}
+            }
+            entryId={previewPhaseId == null ? entry.id : undefined}
+            onExternalSync={previewPhaseId == null ? onExternalSync : undefined}
+            externalContent={
+              previewPhaseId != null && previewResolvedState != null
+                ? previewResolvedState.content
+                : null
+            }
+          />
+        </div>
       </div>
 
       {/* Custom Details */}
