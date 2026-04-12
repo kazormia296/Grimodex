@@ -27,8 +27,8 @@ const mockEntry: CodexEntry = {
 
 const mockPhaseState = {
   phasesByEntry: {} as Record<string, CodexEntryPhase[]>,
-  getResolvedState: vi.fn().mockReturnValue(null),
-  resolvedStates: {},
+  globalSceneOrder: new Map<string, number>(),
+  loadPhasesForEntry: vi.fn().mockResolvedValue(undefined),
 };
 
 vi.mock("../phaseStore", () => ({
@@ -39,11 +39,23 @@ vi.mock("../phaseStore", () => ({
   ),
 }));
 
+const mockTreeState = {
+  activeSceneId: "scene-1",
+};
+
+vi.mock("@/features/tree/treeStore", () => ({
+  useTreeStore: Object.assign(
+    (selector: (s: typeof mockTreeState) => unknown) => selector(mockTreeState),
+    { getState: () => mockTreeState },
+  ),
+}));
+
 describe("PhaseIndicator", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockPhaseState.phasesByEntry = {};
-    mockPhaseState.getResolvedState = vi.fn().mockReturnValue(null);
+    mockPhaseState.globalSceneOrder = new Map();
+    mockPhaseState.loadPhasesForEntry = vi.fn().mockResolvedValue(undefined);
   });
 
   it("フェーズなし時は何も表示しない（nullレンダリング）", () => {
@@ -52,14 +64,20 @@ describe("PhaseIndicator", () => {
     expect(container.firstChild).toBeNull();
   });
 
-  it("フェーズが1件以上ありappliedPhaseIdsが空の場合は「フェーズなし」バッジを表示する", () => {
+  it("フェーズが存在するが現在シーンより後のアンカーの場合「フェーズなし」バッジを表示する", () => {
+    // シーン順序: scene-1=0, scene-2=1
+    mockPhaseState.globalSceneOrder = new Map([
+      ["scene-1", 0],
+      ["scene-2", 1],
+    ]);
+    // フェーズのアンカーはscene-2（現在scene-1より後）
     mockPhaseState.phasesByEntry = {
       "entry-1": [
         {
           id: "phase-1",
           entryId: "entry-1",
           label: "変身後",
-          anchorNodeId: "scene-1",
+          anchorNodeId: "scene-2",
           summaryOverride: null,
           contentOverride: null,
           contextModeOverride: null,
@@ -68,15 +86,18 @@ describe("PhaseIndicator", () => {
         },
       ],
     };
-    mockPhaseState.getResolvedState = vi
-      .fn()
-      .mockReturnValue({ appliedPhaseIds: [] });
 
     render(<PhaseIndicator entry={mockEntry} />);
     expect(screen.getByText("フェーズなし")).toBeInTheDocument();
   });
 
-  it("appliedPhaseIdsにIDがある場合は「現在のフェーズ: {label}」バッジを表示する", () => {
+  it("アンカーシーンが現在シーン以前の場合「現在のフェーズ: {label}」バッジを表示する", () => {
+    // シーン順序: scene-1=0, scene-2=1
+    mockPhaseState.globalSceneOrder = new Map([
+      ["scene-1", 0],
+      ["scene-2", 1],
+    ]);
+    // アンカーがscene-1（=現在シーン）なので適用される
     mockPhaseState.phasesByEntry = {
       "entry-1": [
         {
@@ -92,9 +113,6 @@ describe("PhaseIndicator", () => {
         },
       ],
     };
-    mockPhaseState.getResolvedState = vi
-      .fn()
-      .mockReturnValue({ appliedPhaseIds: ["phase-1"] });
 
     render(<PhaseIndicator entry={mockEntry} />);
     expect(screen.getByText("現在のフェーズ: 変身後")).toBeInTheDocument();
