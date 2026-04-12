@@ -18,6 +18,7 @@ import { RelationsTab } from "./RelationsTab";
 import { TrackingTab } from "./TrackingTab";
 import { MentionsTab } from "./MentionsTab";
 import { ResearchTab } from "./ResearchTab";
+import { TimelineTab } from "./TimelineTab";
 
 const TYPE_OPTIONS: { value: CodexEntryType; label: string }[] = [
   { value: "character", label: "キャラクター" },
@@ -32,6 +33,7 @@ const TABS = [
   { id: "tracking", label: "Tracking", testId: "detail-tab-tracking" },
   { id: "mentions", label: "Mentions", testId: "detail-tab-mentions" },
   { id: "research", label: "Research", testId: "detail-tab-research" },
+  { id: "timeline", label: "Timeline", testId: "detail-tab-timeline" },
 ];
 
 interface CodexDetailContentProps {
@@ -359,6 +361,7 @@ export function CodexDetailContent({
             onNotesChange={handleNotesChange}
           />
         )}
+        {activeTab === "timeline" && <TimelineTab entry={entry} />}
       </div>
     </div>
   );

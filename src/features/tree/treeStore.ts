@@ -10,6 +10,7 @@ import {
   addPinnedCodex,
   removePinnedCodex,
 } from "./codexQuickPinApi";
+import { usePhaseStore } from "@/features/codex/phaseStore";
 
 export type NodeType = "folder" | "scene" | "note";
 export type SceneStatus =
@@ -380,6 +381,8 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
         isLoading: false,
         expandedIds: chapters.map((c) => c.id),
       });
+      // Recompute phase scene order for phase resolution
+      usePhaseStore.getState().recomputeSceneOrder(nodes);
       // Load AI attribution ratios for all scene nodes
       const sceneIds = nodes
         .filter((n) => n.nodeType === "scene")
@@ -451,6 +454,7 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
       const nodes = state.nodes.filter((n) => n.id !== id);
       return { nodes, scenes: computeScenes(nodes), activeSceneId: newActive };
     });
+    usePhaseStore.getState().recomputeSceneOrder(get().nodes);
   },
 
   async renameScene(id, title) {
@@ -557,6 +561,7 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
         pendingRenameId: newNode.id,
       };
     });
+    usePhaseStore.getState().recomputeSceneOrder(get().nodes);
 
     if (!useTreeHistoryStore.getState().isReplaying) {
       const captured = { ...newNode };
@@ -675,6 +680,7 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
       ? (newScenes[0]?.id ?? "")
       : activeSceneId;
     set({ nodes: remaining, scenes: newScenes, activeSceneId: newActive });
+    usePhaseStore.getState().recomputeSceneOrder(remaining);
     // Close editor tabs for all deleted nodes
     const tabStore = useTabStore.getState();
     for (const delId of [...toDelete]) {
@@ -881,6 +887,7 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
       );
       return { nodes: updated, scenes: computeScenes(updated) };
     });
+    usePhaseStore.getState().recomputeSceneOrder(get().nodes);
     await api.updateNode(id, {
       parentId: newParentId ?? undefined,
       sortOrder,

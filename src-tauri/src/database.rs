@@ -549,6 +549,48 @@ impl Database {
         );
         let _ = conn.execute("ALTER TABLE snippets ADD COLUMN tags_cache TEXT", []);
 
+        // v7: Codex Phase System (経時的変化)
+        let _ = conn.execute(
+            "CREATE TABLE IF NOT EXISTS codex_entry_phases (
+                id TEXT PRIMARY KEY,
+                entry_id TEXT NOT NULL REFERENCES codex_entries(id) ON DELETE CASCADE,
+                anchor_node_id TEXT REFERENCES tree_nodes(id) ON DELETE SET NULL,
+                label TEXT NOT NULL DEFAULT '',
+                summary_override TEXT,
+                content_override TEXT,
+                context_mode_override TEXT,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+            )",
+            [],
+        );
+        let _ = conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_codex_phases_entry ON codex_entry_phases(entry_id)",
+            [],
+        );
+        let _ = conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_codex_phases_anchor ON codex_entry_phases(anchor_node_id)",
+            [],
+        );
+        let _ = conn.execute(
+            "CREATE TABLE IF NOT EXISTS codex_phase_detail_overrides (
+                id TEXT PRIMARY KEY,
+                phase_id TEXT NOT NULL REFERENCES codex_entry_phases(id) ON DELETE CASCADE,
+                definition_id TEXT NOT NULL REFERENCES codex_detail_definitions(id) ON DELETE CASCADE,
+                value TEXT,
+                UNIQUE(phase_id, definition_id)
+            )",
+            [],
+        );
+        let _ = conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_phase_detail_overrides_phase ON codex_phase_detail_overrides(phase_id)",
+            [],
+        );
+        let _ = conn.execute(
+            "ALTER TABLE authorship_spans ADD COLUMN phase_id TEXT REFERENCES codex_entry_phases(id) ON DELETE CASCADE",
+            [],
+        );
+
         Ok(())
     }
 

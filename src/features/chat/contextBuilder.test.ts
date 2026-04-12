@@ -211,6 +211,52 @@ describe("contextBuilder", () => {
 
       expect(result.prompt).toContain("**魔法体系** (設定): 世界の魔法ルール");
     });
+
+    it("phaseLabelありのCodexContextが正しくフォーマットされる", () => {
+      const scene: SceneContext = {
+        id: "scene-1",
+        title: "シーン1",
+        content: "本文",
+      };
+      const codexEntries: CodexContext[] = [
+        {
+          id: "codex-1",
+          type: "character",
+          name: "アリス",
+          summary: "変化後の概要",
+          phaseLabel: "フェーズ1",
+        },
+      ];
+
+      const result = buildSystemPrompt({ scene, codexEntries });
+
+      expect(result.prompt).toContain(
+        "**アリス** [フェーズ1] (キャラクター): 変化後の概要",
+      );
+    });
+
+    it("phaseLabelなしのCodexContextは通常フォーマット", () => {
+      const scene: SceneContext = {
+        id: "scene-1",
+        title: "シーン1",
+        content: "本文",
+      };
+      const codexEntries: CodexContext[] = [
+        {
+          id: "codex-1",
+          type: "character",
+          name: "ボブ",
+          summary: "普通のキャラクター",
+        },
+      ];
+
+      const result = buildSystemPrompt({ scene, codexEntries });
+
+      expect(result.prompt).toContain(
+        "**ボブ** (キャラクター): 普通のキャラクター",
+      );
+      expect(result.prompt).not.toContain("[");
+    });
   });
 
   describe("sanitizeSceneContent", () => {

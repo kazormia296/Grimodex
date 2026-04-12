@@ -5,6 +5,7 @@ import type { CodexEntry } from "../api";
 import { AliasesField } from "./AliasesField";
 import { CodexContentEditor } from "./CodexContentEditor";
 import { DetailsSection } from "./DetailsSection";
+import { PhaseIndicator } from "./PhaseIndicator";
 import { extractPlainText } from "../prosemirrorTextExtractor";
 import { generateSynopsisFromContent } from "@/features/chat/chatApi";
 import { useTabStore } from "@/features/editor/tabStore";
@@ -33,6 +34,7 @@ export function DetailsTab({
 
   return (
     <div className="space-y-3">
+      <PhaseIndicator entry={entry} />
       {/* Aliases */}
       <AliasesField
         label="Aliases"

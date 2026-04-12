@@ -1,5 +1,9 @@
 import { encodingForModel } from "js-tiktoken";
 import type { TreeNodeData } from "@/features/tree/treeStore";
+import {
+  formatTimelineContext,
+  type ResolvedCodexState,
+} from "@/features/codex/phaseResolver";
 
 export interface SceneContext {
   id: string;
@@ -24,6 +28,7 @@ export interface CodexContext {
   contentFallback?: string; // G13: plain text from content if summary is empty
   childrenContext?: string; // pre-computed descendant summaries within budget
   customDetails?: Array<{ fieldName: string; value: string }>; // G14
+  phaseLabel?: string; // フェーズラベル（フェーズ適用中のみ）
 }
 
 export interface PinnedCodexContext extends CodexContext {
@@ -396,7 +401,10 @@ export function buildSystemPrompt(
       // G13: summary未記入時はcontentPlainTextにフォールバック
       const displaySummary =
         entry.summary.trim() || entry.contentFallback || "";
-      lines.push(`- **${entry.name}** (${label}): ${displaySummary}`);
+      const phaseSuffix = entry.phaseLabel ? ` [${entry.phaseLabel}]` : "";
+      lines.push(
+        `- **${entry.name}**${phaseSuffix} (${label}): ${displaySummary}`,
+      );
       if (entry.customDetails?.length) {
         for (const detail of entry.customDetails) {
           lines.push(`  - ${detail.fieldName}: ${detail.value}`);
@@ -615,4 +623,41 @@ export function buildStorySoFar(
   }
 
   return "";
+}
+
+/**
+ * プロジェクトスコープ用: タイムライン付きCodexエントリフォーマット
+ */
+export function formatTimelineEntry(
+  entry: CodexContext,
+  phases: {
+    label: string;
+    anchorTitle: string;
+    summaryOverride: string | null;
+  }[],
+): string {
+  if (phases.length > 0) {
+    const latestResolved: ResolvedCodexState = {
+      summary: entry.summary || null,
+      content: "",
+      contextMode: "mentioned",
+      detailValues: new Map(),
+      appliedPhaseIds: [],
+    };
+    return formatTimelineContext(
+      { name: entry.name, type: entry.type, summary: entry.summary || null },
+      phases,
+      latestResolved,
+    );
+  }
+  // フェーズなし: 通常フォーマット
+  const typeLabels: Record<string, string> = {
+    character: "キャラクター",
+    location: "場所",
+    item: "アイテム",
+    lore: "設定",
+  };
+  const label = typeLabels[entry.type] ?? entry.type;
+  const displaySummary = entry.summary.trim() || entry.contentFallback || "";
+  return `- **${entry.name}** (${label}): ${displaySummary}`;
 }

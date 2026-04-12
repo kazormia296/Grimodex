@@ -269,6 +269,11 @@ export const authorshipSpans = sqliteTable("authorship_spans", {
   model: text("model"),
   timestamp: text("timestamp"),
   chatMsgId: text("chat_msg_id"),
+  phaseId: text("phase_id").references(
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (): any => codexEntryPhases.id,
+    { onDelete: "cascade" },
+  ),
   // CHECK: exactly one of nodeId/codexEntryId/snippetId must be non-null (enforced in SQL)
 });
 
@@ -315,6 +320,41 @@ export const codexQuickPins = sqliteTable("codex_quick_pins", {
     .references(() => codexEntries.id, { onDelete: "cascade" }),
 });
 
+export const codexEntryPhases = sqliteTable("codex_entry_phases", {
+  id: text("id").primaryKey(),
+  entryId: text("entry_id")
+    .notNull()
+    .references(() => codexEntries.id, { onDelete: "cascade" }),
+  anchorNodeId: text("anchor_node_id").references(() => treeNodes.id, {
+    onDelete: "set null",
+  }),
+  label: text("label").notNull().default(""),
+  summaryOverride: text("summary_override"),
+  contentOverride: text("content_override"),
+  contextModeOverride: text("context_mode_override"),
+  createdAt: text("created_at")
+    .notNull()
+    .$defaultFn(() => new Date().toISOString()),
+  updatedAt: text("updated_at")
+    .notNull()
+    .$defaultFn(() => new Date().toISOString()),
+});
+
+export const codexPhaseDetailOverrides = sqliteTable(
+  "codex_phase_detail_overrides",
+  {
+    id: text("id").primaryKey(),
+    phaseId: text("phase_id")
+      .notNull()
+      .references(() => codexEntryPhases.id, { onDelete: "cascade" }),
+    definitionId: text("definition_id")
+      .notNull()
+      .references(() => codexDetailDefinitions.id, { onDelete: "cascade" }),
+    value: text("value"),
+  },
+  (table) => [primaryKey({ columns: [table.phaseId, table.definitionId] })],
+);
+
 export const settings = sqliteTable("settings", {
   key: text("key").primaryKey(),
   value: text("value").notNull(),
@@ -337,3 +377,9 @@ export type ContentVersion = typeof contentVersions.$inferSelect;
 export type NewContentVersion = typeof contentVersions.$inferInsert;
 export type ProjectSnapshot = typeof projectSnapshots.$inferSelect;
 export type NewProjectSnapshot = typeof projectSnapshots.$inferInsert;
+export type CodexEntryPhase = typeof codexEntryPhases.$inferSelect;
+export type NewCodexEntryPhase = typeof codexEntryPhases.$inferInsert;
+export type CodexPhaseDetailOverride =
+  typeof codexPhaseDetailOverrides.$inferSelect;
+export type NewCodexPhaseDetailOverride =
+  typeof codexPhaseDetailOverrides.$inferInsert;

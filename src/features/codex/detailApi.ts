@@ -108,6 +108,23 @@ export async function deleteDefinition(id: string): Promise<void> {
     .where(eq(codexDetailDefinitions.id, id));
 }
 
+export async function listRawDetailValuesByEntryIds(
+  entryIds: string[],
+): Promise<
+  Array<{ entryId: string; definitionId: string; value: string | null }>
+> {
+  if (entryIds.length === 0) return [];
+  const rows = await db
+    .select({
+      entryId: codexDetailValues.entryId,
+      definitionId: codexDetailValues.definitionId,
+      value: codexDetailValues.value,
+    })
+    .from(codexDetailValues)
+    .where(inArray(codexDetailValues.entryId, entryIds));
+  return rows;
+}
+
 export async function listValuesByEntry(
   entryId: string,
 ): Promise<DetailValueWithDefinition[]> {

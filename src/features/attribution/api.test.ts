@@ -27,6 +27,7 @@ describe("spansToMarkData", () => {
         model: "anthropic/claude-sonnet-4-6",
         timestamp: "2026-03-31T00:00:00.000Z",
         chatMsgId: "msg-1",
+        phaseId: null,
       },
       {
         id: "span-2",
@@ -39,6 +40,7 @@ describe("spansToMarkData", () => {
         model: null,
         timestamp: "2026-03-31T00:00:00.000Z",
         chatMsgId: null,
+        phaseId: null,
       },
     ];
 

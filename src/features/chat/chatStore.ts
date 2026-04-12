@@ -73,11 +73,108 @@ import {
   runSummarization,
 } from "./summarization";
 import type { CodexEntry } from "@/features/codex/api";
-import { listContextDetailsByEntryIds } from "@/features/codex/detailApi";
+import {
+  listContextDetailsByEntryIds,
+  listRawDetailValuesByEntryIds,
+} from "@/features/codex/detailApi";
+import {
+  listPhasesByEntryIds,
+  listDetailOverridesByPhaseIds,
+} from "@/features/codex/phaseApi";
+import type { CodexEntryPhase } from "@/features/codex/phaseApi";
+import { resolveCodexState } from "@/features/codex/phaseResolver";
+import type { ResolvedCodexState } from "@/features/codex/phaseResolver";
+import { usePhaseStore } from "@/features/codex/phaseStore";
 import { useTabStore } from "@/features/editor/tabStore";
 import { getSnippet } from "@/features/snippets/api";
 import { listPinnedSnippetEntries } from "./chatApi";
 import type { PinnedSnippetContext } from "./contextBuilder";
+
+// フェーズ解決ヘルパー: エントリ配列に対してフェーズを一括解決する
+async function resolveEntriesForContext(
+  entries: CodexEntry[],
+  effectiveSceneId: string | null,
+): Promise<{
+  resolved: Map<string, ResolvedCodexState>;
+  phases: Map<string, CodexEntryPhase[]>;
+}> {
+  const resolved = new Map<string, ResolvedCodexState>();
+  const phasesMap = new Map<string, CodexEntryPhase[]>();
+
+  if (entries.length === 0) return { resolved, phases: phasesMap };
+
+  const entryIds = entries.map((e) => e.id);
+
+  // フェーズと上書き情報を一括取得
+  const allPhases = await listPhasesByEntryIds(entryIds);
+  const phaseIds = allPhases.map((p) => p.id);
+  const allOverrides = await listDetailOverridesByPhaseIds(phaseIds);
+
+  // phaseId → overrides マップ
+  const overridesByPhase = new Map<
+    string,
+    import("@/features/codex/phaseApi").CodexPhaseDetailOverride[]
+  >();
+  for (const ov of allOverrides) {
+    const arr = overridesByPhase.get(ov.phaseId) ?? [];
+    arr.push(ov);
+    overridesByPhase.set(ov.phaseId, arr);
+  }
+
+  // entryId → phases マップ
+  const phasesByEntry = new Map<string, CodexEntryPhase[]>();
+  for (const phase of allPhases) {
+    const arr = phasesByEntry.get(phase.entryId) ?? [];
+    arr.push(phase);
+    phasesByEntry.set(phase.entryId, arr);
+  }
+
+  // ベースdetailValues取得 (definitionId → value)
+  const rawDetails = await listRawDetailValuesByEntryIds(entryIds);
+  const detailsByEntry = new Map<string, Map<string, string | null>>();
+  for (const row of rawDetails) {
+    const m =
+      detailsByEntry.get(row.entryId) ?? new Map<string, string | null>();
+    m.set(row.definitionId, row.value);
+    detailsByEntry.set(row.entryId, m);
+  }
+
+  const globalSceneOrder = usePhaseStore.getState().globalSceneOrder;
+
+  for (const entry of entries) {
+    const phases = phasesByEntry.get(entry.id) ?? [];
+    phasesMap.set(entry.id, phases);
+
+    const phaseDetailsMap = new Map<
+      string,
+      import("@/features/codex/phaseApi").CodexPhaseDetailOverride[]
+    >();
+    for (const phase of phases) {
+      phaseDetailsMap.set(phase.id, overridesByPhase.get(phase.id) ?? []);
+    }
+
+    const baseDetails =
+      detailsByEntry.get(entry.id) ?? new Map<string, string | null>();
+
+    resolved.set(
+      entry.id,
+      resolveCodexState(
+        {
+          summary: entry.summary ?? null,
+          content: entry.content,
+          contextMode: entry.contextMode,
+        },
+        phases,
+        phaseDetailsMap,
+        baseDetails,
+        effectiveSceneId,
+        globalSceneOrder,
+      ),
+    );
+  }
+
+  return { resolved, phases: phasesMap };
+}
 
 // G14: Enrich CodexContext array with customDetails (batch query, no N+1)
 async function enrichWithCustomDetails(
@@ -790,10 +887,30 @@ export const useChatStore = create<ChatState>()((set, get) => ({
         });
 
         // G14: enrich with custom details (includeInContext=1)
-        const codexEntries: CodexContext[] = await enrichWithCustomDetails(
-          withChildrenCtx,
-          allEntries,
-        );
+        const enrichedCodexEntries: CodexContext[] =
+          await enrichWithCustomDetails(withChildrenCtx, allEntries);
+
+        // フェーズ解決: rawCodexEntriesに対応するfullEntryを取得しフェーズ適用
+        const rawFullEntries = rawCodexEntries
+          .map((e) => allEntries.find((a) => a.id === e.id))
+          .filter((e): e is CodexEntry => e !== undefined);
+        const { resolved: phaseResolved, phases: entryPhases } =
+          await resolveEntriesForContext(rawFullEntries, effectiveSceneId);
+
+        const codexEntries: CodexContext[] = enrichedCodexEntries.map((ctx) => {
+          const rs = phaseResolved.get(ctx.id);
+          if (!rs) return ctx;
+          const phases = entryPhases.get(ctx.id) ?? [];
+          const lastPhaseId = rs.appliedPhaseIds[rs.appliedPhaseIds.length - 1];
+          const lastPhase = lastPhaseId
+            ? phases.find((p) => p.id === lastPhaseId)
+            : undefined;
+          return {
+            ...ctx,
+            summary: rs.summary ?? ctx.summary,
+            ...(lastPhase ? { phaseLabel: lastPhase.label } : {}),
+          };
+        });
 
         // P2-5: チャットメッセージ内のCodex言及を検出し自動ピン留め
         if (sessionIdForPersist) {
