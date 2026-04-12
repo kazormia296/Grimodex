@@ -26,6 +26,8 @@ EditorパネルはGrimodexの中核コンポーネント。TipTapベースのリ
 ├──────────────────────────────────────────────────────┤
 │ D. Editor canvas (TipTap)                             │
 │                                                       │
+│   The tower                                           │
+│   ─────────────────────────────────────────────────  │
 │   ┃  Elara stood at the base of the Obsidian Tower,  │
 │   ┃  her fingers tracing the cold stone...            │
 │   │                                                   │
@@ -299,6 +301,36 @@ Noteの場合:
 ---
 
 ## D. エディタキャンバス
+
+### D-0. タイトル見出し
+
+エディタキャンバスの最上部（本文の前）に、現在開いているシーン/Codex/Snippetの名前を見出しとして表示する。
+
+#### 表示仕様
+
+- 本文フォントを継承しつつ、フォントサイズは本文の **1.6倍**
+- 薄いボーダー（`border-border/40`）で本文と区切る
+- 色は `text-content-foreground/60`（本文よりやや薄め）
+- タイトルが空文字の場合は非表示
+
+| タブ種類 | 表示テキスト |
+|---------|------------|
+| Scene / Note | `TreeNode.title` |
+| Codex | `CodexEntry.name` |
+| Snippet | `Snippet.title` |
+
+#### インライン編集
+
+- **編集開始**: タイトルをクリック、またはフォーカス後 `Enter` / `F2` キー
+- **編集中**: インライン `<input>` に切り替わり、`autoFocus` でフォーカス済み。スタイルは表示時と同一（フォントファミリー・サイズを継承、背景透明）
+- **保存**: `Enter` またはフォーカスアウト（Blur）で確定。空文字の場合は変更前の名前を維持
+- **キャンセル**: `Escape` で変更破棄、編集前の名前に戻る
+- **保存先**:
+  - Scene / Note → `treeStore.updateNodeTitle(id, title)`
+  - Codex → `codexStore.update(id, { name })`
+  - Snippet → `snippetStore.update(id, { title })`
+
+---
 
 ### TipTap構成
 
