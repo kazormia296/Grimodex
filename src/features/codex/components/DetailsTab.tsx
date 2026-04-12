@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 import { ExternalLink, Wand2 } from "lucide-react";
 import type { CodexEntry } from "../api";
@@ -9,6 +9,9 @@ import { PhaseIndicator } from "./PhaseIndicator";
 import { extractPlainText } from "../prosemirrorTextExtractor";
 import { generateSynopsisFromContent } from "@/features/chat/chatApi";
 import { useTabStore } from "@/features/editor/tabStore";
+import { usePhaseStore } from "../phaseStore";
+import { useTreeStore } from "@/features/tree/treeStore";
+import { resolveCodexState } from "../phaseResolver";
 
 interface DetailsTabProps {
   entry: CodexEntry;
@@ -32,9 +35,75 @@ export function DetailsTab({
   const emptyContent = !entry.content || entry.content === "{}";
   const [isGenerating, setIsGenerating] = useState(false);
 
+  // プレビューフェーズ管理
+  const [previewPhaseId, setPreviewPhaseId] = useState<string | null>(null);
+  const activeSceneId = useTreeStore((s) => s.activeSceneId);
+  const phases = usePhaseStore((s) => s.phasesByEntry[entry.id]);
+  const detailOverrides = usePhaseStore((s) => s.detailOverrides);
+  const globalSceneOrder = usePhaseStore((s) => s.globalSceneOrder);
+
+  // アクティブシーン変更時にプレビューをリセット
+  useEffect(() => {
+    setPreviewPhaseId(null);
+  }, [activeSceneId]);
+
+  // エントリ変更時もリセット
+  useEffect(() => {
+    setPreviewPhaseId(null);
+  }, [entry.id]);
+
+  // プレビュー用の解決済み状態を計算
+  const previewResolvedState = useMemo(() => {
+    if (previewPhaseId == null || !phases) return null;
+
+    // プレビュー対象のシーンIDを決定
+    let previewSceneId: string | null;
+    if (previewPhaseId === "__base__") {
+      previewSceneId = null; // Base state
+    } else {
+      const targetPhase = phases.find((p) => p.id === previewPhaseId);
+      previewSceneId = targetPhase?.anchorNodeId ?? null;
+    }
+
+    const phaseDetailsMap = new Map(
+      phases.map((p) => [p.id, detailOverrides[p.id] ?? []]),
+    );
+
+    return resolveCodexState(
+      {
+        summary: entry.summary ?? null,
+        content: entry.content ?? "{}",
+        contextMode: entry.contextMode ?? "mentioned",
+      },
+      phases,
+      phaseDetailsMap,
+      new Map(),
+      previewSceneId,
+      globalSceneOrder,
+    );
+  }, [
+    previewPhaseId,
+    phases,
+    detailOverrides,
+    globalSceneOrder,
+    entry.summary,
+    entry.content,
+    entry.contextMode,
+  ]);
+
+  // プレビュー中の summary（null = Base 値と同じ or プレビューなし）
+  const previewSummary =
+    previewResolvedState != null ? previewResolvedState.summary : null;
+  const hasPreviewSummary =
+    previewSummary != null && previewSummary !== (entry.summary ?? "");
+
   return (
     <div className="space-y-3">
-      <PhaseIndicator entry={entry} />
+      <PhaseIndicator
+        entry={entry}
+        previewPhaseId={previewPhaseId}
+        onPreviewChange={setPreviewPhaseId}
+      />
       {/* Aliases */}
       <AliasesField
         label="Aliases"
@@ -45,22 +114,45 @@ export function DetailsTab({
       {/* Summary */}
       <div>
         <label className="mb-1 block text-xs font-medium">概要</label>
-        <textarea
-          data-testid="codex-detail-summary"
-          value={summary}
-          onChange={(e) => onSummaryChange(e.target.value)}
-          rows={3}
-          className="w-full resize-none rounded-md border border-input bg-background px-2 py-1.5 text-sm"
-          placeholder="Short description..."
-        />
+        {hasPreviewSummary ? (
+          // フェーズプレビュー中: 解決済み値を読み取り専用表示
+          <div className="border-l-2 border-primary pl-2">
+            <p className="rounded-md border border-input bg-background px-2 py-1.5 text-sm text-foreground">
+              {previewSummary || (
+                <span className="text-muted-foreground">(空)</span>
+              )}
+            </p>
+            {entry.summary && (
+              <p className="mt-0.5 text-[11px] text-muted-foreground">
+                Base: {entry.summary}
+              </p>
+            )}
+          </div>
+        ) : (
+          <textarea
+            data-testid="codex-detail-summary"
+            value={
+              previewPhaseId != null && previewResolvedState != null
+                ? (previewResolvedState.summary ?? "")
+                : summary
+            }
+            onChange={(e) => {
+              if (previewPhaseId == null) onSummaryChange(e.target.value);
+            }}
+            readOnly={previewPhaseId != null}
+            rows={3}
+            className={`w-full resize-none rounded-md border border-input bg-background px-2 py-1.5 text-sm ${previewPhaseId != null ? "cursor-default opacity-70" : ""}`}
+            placeholder="Short description..."
+          />
+        )}
         {/* S5: hint when summary is empty but content exists */}
-        {summary === "" && !emptyContent && (
+        {summary === "" && !emptyContent && previewPhaseId == null && (
           <p className="mt-1 text-[11px] text-muted-foreground">
             Summaryを記入するとAIチャットでのトークン消費を抑えられます
           </p>
         )}
         {/* M4: AI auto-generate button */}
-        {summary === "" && !emptyContent && (
+        {summary === "" && !emptyContent && previewPhaseId == null && (
           <button
             type="button"
             data-testid="codex-generate-summary"

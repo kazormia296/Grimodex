@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { ChevronDown } from "lucide-react";
+import { ChevronDown, X } from "lucide-react";
 import type { CodexEntry } from "../api";
 import type { CodexEntryPhase } from "../phaseApi";
 import { usePhaseStore } from "../phaseStore";
@@ -9,9 +9,15 @@ const EMPTY_PHASES: CodexEntryPhase[] = [];
 
 interface PhaseIndicatorProps {
   entry: CodexEntry;
+  previewPhaseId: string | null;
+  onPreviewChange: (phaseId: string | null) => void;
 }
 
-export function PhaseIndicator({ entry }: PhaseIndicatorProps) {
+export function PhaseIndicator({
+  entry,
+  previewPhaseId,
+  onPreviewChange,
+}: PhaseIndicatorProps) {
   const rawPhases = usePhaseStore((s) => s.phasesByEntry[entry.id]);
   const phases = rawPhases ?? EMPTY_PHASES;
   const globalSceneOrder = usePhaseStore((s) => s.globalSceneOrder);
@@ -70,8 +76,16 @@ export function PhaseIndicator({ entry }: PhaseIndicatorProps) {
   // フェーズなし → 非表示
   if (phases.length === 0) return null;
 
-  const currentLabel = activePhase
-    ? `${activePhase.label} (${getSceneTitle(activePhase.anchorNodeId)})`
+  // プレビュー中のフェーズ（手動選択）または自動解決フェーズ
+  const previewPhase =
+    previewPhaseId != null && previewPhaseId !== "__base__"
+      ? (sortedPhases.find((p) => p.id === previewPhaseId) ?? null)
+      : null;
+  const displayPhase = previewPhaseId != null ? previewPhase : activePhase;
+  const isPreviewMode = previewPhaseId != null;
+
+  const currentLabel = displayPhase
+    ? `${displayPhase.label} (${getSceneTitle(displayPhase.anchorNodeId)})`
     : "Base state";
 
   return (
@@ -80,40 +94,57 @@ export function PhaseIndicator({ entry }: PhaseIndicatorProps) {
       className="relative mb-3 rounded-md border border-border bg-muted/30 px-3 py-2"
     >
       {/* フェーズセレクター */}
-      <button
-        type="button"
-        onClick={() => setDropdownOpen((v) => !v)}
-        className="flex w-full items-center gap-1.5 text-left"
-      >
-        <span className="text-xs text-muted-foreground">⏱</span>
-        <span className="flex-1 truncate text-xs font-medium">
-          Phase: {currentLabel}
-        </span>
-        <ChevronDown
-          className={`h-3.5 w-3.5 shrink-0 text-muted-foreground transition-transform ${dropdownOpen ? "rotate-180" : ""}`}
-        />
-      </button>
+      <div className="flex items-center gap-1">
+        <button
+          type="button"
+          onClick={() => setDropdownOpen((v) => !v)}
+          className="flex flex-1 items-center gap-1.5 text-left"
+        >
+          <span className="text-xs text-muted-foreground">⏱</span>
+          <span className="flex-1 truncate text-xs font-medium">
+            Phase: {currentLabel}
+          </span>
+          {isPreviewMode && (
+            <span className="shrink-0 rounded bg-primary/10 px-1 py-0.5 text-[10px] font-medium text-primary">
+              プレビュー
+            </span>
+          )}
+          <ChevronDown
+            className={`h-3.5 w-3.5 shrink-0 text-muted-foreground transition-transform ${dropdownOpen ? "rotate-180" : ""}`}
+          />
+        </button>
+        {isPreviewMode && (
+          <button
+            type="button"
+            onClick={() => onPreviewChange(null)}
+            className="shrink-0 rounded p-0.5 text-muted-foreground hover:bg-accent"
+            title="プレビューを終了"
+          >
+            <X className="h-3 w-3" />
+          </button>
+        )}
+      </div>
 
       {/* ミニタイムライン */}
       <div className="mt-1.5 flex flex-wrap items-center gap-1 text-[11px] text-muted-foreground">
         <span
-          className={`rounded px-1 py-0.5 ${!activePhase ? "bg-primary/10 font-medium text-primary" : ""}`}
+          className={`rounded px-1 py-0.5 ${displayPhase == null ? "bg-primary/10 font-medium text-primary" : ""}`}
         >
           Base
         </span>
         {sortedPhases.map((phase) => {
-          const isActive = phase.id === activePhase?.id;
+          const isDisplay = phase.id === displayPhase?.id;
           return (
             <span key={phase.id} className="flex items-center gap-1">
               <span className="text-muted-foreground/50">→</span>
               <span
                 className={`rounded px-1 py-0.5 ${
-                  isActive
+                  isDisplay
                     ? "bg-primary/10 font-medium text-primary"
                     : "text-muted-foreground"
                 }`}
               >
-                {isActive ? `[${phase.label}]` : phase.label}
+                {isDisplay ? `[${phase.label}]` : phase.label}
               </span>
             </span>
           );
@@ -126,32 +157,63 @@ export function PhaseIndicator({ entry }: PhaseIndicatorProps) {
           {/* Base state */}
           <button
             type="button"
-            onClick={() => setDropdownOpen(false)}
-            className={`flex w-full items-center gap-2 px-3 py-2 text-left text-xs hover:bg-accent ${!activePhase ? "text-primary" : "text-foreground"}`}
+            onClick={() => {
+              // 自動解決がBase（activePhaseなし）の場合はプレビューをクリア
+              onPreviewChange(
+                !activePhase
+                  ? null
+                  : previewPhaseId === "__base__"
+                    ? null
+                    : "__base__",
+              );
+              setDropdownOpen(false);
+            }}
+            className={`flex w-full items-center gap-2 px-3 py-2 text-left text-xs hover:bg-accent ${previewPhaseId === "__base__" || (!isPreviewMode && !activePhase) ? "text-primary" : "text-foreground"}`}
           >
             <span>Base state</span>
-            {!activePhase && (
+            {!activePhase && !isPreviewMode && (
               <span className="ml-auto text-[10px] text-muted-foreground">
                 現在
               </span>
             )}
+            {previewPhaseId === "__base__" && (
+              <span className="ml-auto text-[10px] text-primary">
+                プレビュー中
+              </span>
+            )}
           </button>
           {sortedPhases.map((phase) => {
-            const isActive = phase.id === activePhase?.id;
+            const isAutoActive = phase.id === activePhase?.id;
+            const isPreviewSelected = phase.id === previewPhaseId;
             return (
               <button
                 key={phase.id}
                 type="button"
-                onClick={() => setDropdownOpen(false)}
-                className={`flex w-full items-center gap-2 border-t border-border px-3 py-2 text-left text-xs hover:bg-accent ${isActive ? "text-primary" : "text-foreground"}`}
+                onClick={() => {
+                  // 自動解決フェーズをクリックした場合はプレビューをクリア
+                  onPreviewChange(
+                    isAutoActive
+                      ? null
+                      : previewPhaseId === phase.id
+                        ? null
+                        : phase.id,
+                  );
+                  setDropdownOpen(false);
+                }}
+                className={`flex w-full items-center gap-2 border-t border-border px-3 py-2 text-left text-xs hover:bg-accent ${isPreviewSelected || (!isPreviewMode && isAutoActive) ? "text-primary" : "text-foreground"}`}
               >
                 <span className="truncate">{phase.label}</span>
                 <span className="ml-1 shrink-0 text-[10px] text-muted-foreground">
                   {getSceneTitle(phase.anchorNodeId)}
                 </span>
-                {isActive && (
+                {isAutoActive && !isPreviewMode && (
                   <span className="ml-auto text-[10px] text-muted-foreground">
                     現在
+                  </span>
+                )}
+                {isPreviewSelected && (
+                  <span className="ml-auto text-[10px] text-primary">
+                    プレビュー中
                   </span>
                 )}
               </button>

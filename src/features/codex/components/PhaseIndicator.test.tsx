@@ -61,7 +61,13 @@ describe("PhaseIndicator", () => {
 
   it("フェーズなし時は何も表示しない（nullレンダリング）", () => {
     mockPhaseState.phasesByEntry = {};
-    const { container } = render(<PhaseIndicator entry={mockEntry} />);
+    const { container } = render(
+      <PhaseIndicator
+        entry={mockEntry}
+        previewPhaseId={null}
+        onPreviewChange={vi.fn()}
+      />,
+    );
     expect(container.firstChild).toBeNull();
   });
 
@@ -87,7 +93,13 @@ describe("PhaseIndicator", () => {
       ],
     };
 
-    render(<PhaseIndicator entry={mockEntry} />);
+    render(
+      <PhaseIndicator
+        entry={mockEntry}
+        previewPhaseId={null}
+        onPreviewChange={vi.fn()}
+      />,
+    );
     // ドロップダウントリガーが存在する
     expect(screen.getByText(/Phase:/)).toBeInTheDocument();
     // Base stateが現在なのでmini timelineにBaseが含まれる
@@ -113,7 +125,13 @@ describe("PhaseIndicator", () => {
       ],
     };
 
-    render(<PhaseIndicator entry={mockEntry} />);
+    render(
+      <PhaseIndicator
+        entry={mockEntry}
+        previewPhaseId={null}
+        onPreviewChange={vi.fn()}
+      />,
+    );
     // mini timelineに[変身後]が表示される
     expect(screen.getByText("[変身後]")).toBeInTheDocument();
   });
