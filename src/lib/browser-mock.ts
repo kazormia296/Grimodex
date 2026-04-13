@@ -175,7 +175,7 @@ export async function createBrowserMock(): Promise<BrowserMock> {
     [now, now],
   );
   db.run(
-    "INSERT OR IGNORE INTO tree_nodes (id, project_id, node_type, title, sort_order, created_at, updated_at) VALUES ('default-chapter', 'default-project', 'folder', '第1章', 0.0, ?, ?)",
+    "INSERT OR IGNORE INTO tree_nodes (id, project_id, node_type, title, sort_order, created_at, updated_at) VALUES ('default-chapter', 'default-project', 'folder', 'Part.1', 0.0, ?, ?)",
     [now, now],
   );
 
