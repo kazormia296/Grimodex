@@ -2,6 +2,7 @@ import { useRef, useEffect, useState, useCallback } from "react";
 import type { MutableRefObject } from "react";
 import { Send, Square, Wrench, ChevronDown } from "lucide-react";
 import { toast } from "sonner";
+import { useTranslation } from "react-i18next";
 import { useEditor, EditorContent } from "@tiptap/react";
 import type { Editor } from "@tiptap/core";
 import { useAiSettingsStore } from "../store";
@@ -30,6 +31,7 @@ export function ChatInput({
   isGlobalChat = false,
   onMentionPin,
 }: ChatInputProps) {
+  const { t } = useTranslation();
   const isStreaming = disabled ?? false;
 
   const stopGeneration = useChatStore((s) => s.stopGeneration);
@@ -66,10 +68,10 @@ export function ChatInput({
   const editLastFnRef = useRef<() => void>(() => {});
 
   const placeholder = isStreaming
-    ? "生成中…"
+    ? t("chat.placeholderStreaming")
     : isGlobalChat
-      ? "Ask about this project..."
-      : "Ask about this scene...";
+      ? t("chat.placeholderGlobal")
+      : t("chat.placeholderScene");
 
   const handleSubmit = useCallback(
     (markdown: string) => {
@@ -149,7 +151,7 @@ export function ChatInput({
   }, []);
 
   const modelLabel = (() => {
-    if (!currentModel) return "モデル未設定";
+    if (!currentModel) return t("chat.noModel");
     const parts = currentModel.split("/");
     return parts[parts.length - 1];
   })();
@@ -219,9 +221,9 @@ export function ChatInput({
       try {
         const prompt = await buildPromptForCopy(markdown);
         await navigator.clipboard.writeText(prompt);
-        toast.success("プロンプト全文をコピーしました");
+        toast.success(t("chat.promptCopied"));
       } catch {
-        toast.error("コピーに失敗しました");
+        toast.error(t("chat.copyFailed"));
       }
     },
     [editor, buildPromptForCopy],
@@ -268,8 +270,8 @@ export function ChatInput({
           <button
             type="button"
             onClick={stopGeneration}
-            aria-label="生成中断"
-            title="生成中断 (Esc)"
+            aria-label={t("chat.stopAriaLabel")}
+            title={t("chat.stopTitle")}
             className="inline-flex items-center justify-center rounded-md bg-destructive px-3 py-2 text-destructive-foreground hover:bg-destructive/90"
           >
             <Square className="h-4 w-4" />
@@ -280,8 +282,8 @@ export function ChatInput({
             onClick={handleSendClick}
             onContextMenu={handleSendContextMenu}
             disabled={!editor || editor.getText().trim().length === 0}
-            aria-label="送信"
-            title="送信 / 右クリック: プロンプトをコピー"
+            aria-label={t("chat.sendAriaLabel")}
+            title={t("chat.sendTitle")}
             className="inline-flex items-center justify-center rounded-md bg-primary px-3 py-2 text-primary-foreground hover:bg-primary/90 disabled:pointer-events-none disabled:opacity-50"
           >
             <Send className="h-4 w-4" />
@@ -297,7 +299,7 @@ export function ChatInput({
             type="button"
             onClick={() => setOptionsOpen((v) => !v)}
             disabled={!canUseTools && !canThink}
-            title="AIオプション"
+            title={t("chat.aiOptions")}
             className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-xs text-muted-foreground hover:bg-accent hover:text-foreground disabled:cursor-not-allowed disabled:opacity-40"
           >
             <Wrench className="h-3 w-3" />
@@ -315,7 +317,7 @@ export function ChatInput({
                   className="h-3 w-3"
                 />
                 <span className={!canUseTools ? "opacity-40" : ""}>
-                  🔧 エージェントモード
+                  {t("chat.agentMode")}
                 </span>
               </label>
 
@@ -329,14 +331,14 @@ export function ChatInput({
                   className="h-3 w-3"
                 />
                 <span className={!canThink ? "opacity-40" : ""}>
-                  💡 Thinking
+                  {t("chat.thinkingMode")}
                 </span>
               </label>
 
               {/* RAG トグル (未実装) */}
               <label className="flex cursor-not-allowed items-center gap-2 px-3 py-1.5 text-xs opacity-40">
                 <input type="checkbox" disabled className="h-3 w-3" />
-                🌐 RAG (未実装)
+                {t("chat.ragUnimplemented")}
               </label>
             </div>
           )}
@@ -348,7 +350,7 @@ export function ChatInput({
             type="button"
             onClick={handleOpenModelMenu}
             className="flex items-center gap-0.5 rounded px-1.5 py-0.5 text-xs text-muted-foreground hover:bg-accent hover:text-foreground"
-            title="モデルを変更"
+            title={t("chat.changeModel")}
           >
             <span className="max-w-[120px] truncate">{modelLabel}</span>
             <ChevronDown className="h-3 w-3 shrink-0" />
@@ -358,7 +360,7 @@ export function ChatInput({
             <div className="absolute bottom-full right-0 z-20 mb-1 max-h-48 min-w-[200px] overflow-y-auto rounded-md border border-border bg-popover py-1 shadow-md">
               {models.length === 0 ? (
                 <p className="px-3 py-2 text-xs text-muted-foreground">
-                  モデルを読み込み中…
+                  {t("chat.loadingModels")}
                 </p>
               ) : (
                 models.map((m) => (

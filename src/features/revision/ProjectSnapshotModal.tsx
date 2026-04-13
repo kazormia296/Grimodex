@@ -1,5 +1,6 @@
 import { useState, useEffect } from "react";
 import { toast } from "sonner";
+import { useTranslation } from "react-i18next";
 import {
   createProjectSnapshot,
   listProjectSnapshots,
@@ -28,6 +29,7 @@ export function ProjectSnapshotModal({
   open,
   onClose,
 }: ProjectSnapshotModalProps) {
+  const { t } = useTranslation();
   const [snapshots, setSnapshots] = useState<ProjectSnapshotMeta[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -63,7 +65,7 @@ export function ProjectSnapshotModal({
       const list = await listProjectSnapshots();
       setSnapshots(list);
     } catch {
-      toast.error("スナップショットの読み込みに失敗しました");
+      toast.error(t("snapshot.loadError"));
     } finally {
       setIsLoading(false);
     }
@@ -78,14 +80,17 @@ export function ProjectSnapshotModal({
         description: createDesc.trim() || undefined,
       });
       toast.success(
-        `スナップショット「${createName.trim()}」を作成しました（${result.entryCount} エンティティ）`,
+        t("snapshot.createSuccess", {
+          name: createName.trim(),
+          count: result.entryCount,
+        }),
       );
       setShowCreate(false);
       setCreateName("");
       setCreateDesc("");
       await loadSnapshots();
     } catch {
-      toast.error("スナップショットの作成に失敗しました");
+      toast.error(t("snapshot.createError"));
     } finally {
       setIsCreating(false);
     }
@@ -99,7 +104,10 @@ export function ProjectSnapshotModal({
     try {
       const result = await restoreProjectSnapshot(snap.id, snap.name);
       toast.success(
-        `スナップショット「${snap.name}」に復元しました（${result.restoredCount} エンティティ）`,
+        t("snapshot.restoreSuccess", {
+          name: snap.name,
+          count: result.restoredCount,
+        }),
       );
       setConfirmRestoreId(null);
       setSelectedId(null);
@@ -107,7 +115,7 @@ export function ProjectSnapshotModal({
       // Content is restored in DB; page reload ensures editors reflect changes
       window.location.reload();
     } catch {
-      toast.error("復元に失敗しました");
+      toast.error(t("snapshot.restoreError"));
     } finally {
       setIsRestoring(false);
     }
@@ -119,12 +127,12 @@ export function ProjectSnapshotModal({
     setIsDeleting(true);
     try {
       await deleteProjectSnapshot(confirmDeleteId);
-      toast.success(`スナップショット「${snap?.name ?? ""}」を削除しました`);
+      toast.success(t("snapshot.deleteSuccess", { name: snap?.name ?? "" }));
       setConfirmDeleteId(null);
       if (selectedId === confirmDeleteId) setSelectedId(null);
       await loadSnapshots();
     } catch {
-      toast.error("削除に失敗しました");
+      toast.error(t("snapshot.deleteError"));
     } finally {
       setIsDeleting(false);
     }
@@ -138,11 +146,13 @@ export function ProjectSnapshotModal({
     return (
       <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center">
         <div className="bg-background rounded-lg border border-border shadow-xl p-6 w-[440px] max-w-[95vw]">
-          <h2 className="text-base font-semibold mb-3">プロジェクトを復元</h2>
+          <h2 className="text-base font-semibold mb-3">
+            {t("snapshot.restoreTitle")}
+          </h2>
           <p className="text-sm text-muted-foreground mb-6">
-            「{snap?.name}」に復元しますか？
+            {t("snapshot.restoreDesc", { name: snap?.name })}
             <br />
-            現在の状態はスナップショットとして自動保存されます。
+            {t("snapshot.restoreDescSub")}
           </p>
           <div className="flex justify-end gap-2">
             <button
@@ -151,7 +161,7 @@ export function ProjectSnapshotModal({
               onClick={() => setConfirmRestoreId(null)}
               disabled={isRestoring}
             >
-              キャンセル
+              {t("snapshot.cancel")}
             </button>
             <button
               type="button"
@@ -159,7 +169,9 @@ export function ProjectSnapshotModal({
               onClick={handleRestoreConfirm}
               disabled={isRestoring}
             >
-              {isRestoring ? "復元中…" : "復元する"}
+              {isRestoring
+                ? t("snapshot.restoring")
+                : t("snapshot.restoreConfirm")}
             </button>
           </div>
         </div>
@@ -174,10 +186,10 @@ export function ProjectSnapshotModal({
       <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center">
         <div className="bg-background rounded-lg border border-border shadow-xl p-6 w-[440px] max-w-[95vw]">
           <h2 className="text-base font-semibold mb-3">
-            スナップショットを削除
+            {t("snapshot.deleteTitle")}
           </h2>
           <p className="text-sm text-muted-foreground mb-6">
-            「{snap?.name}」を削除しますか？この操作は取り消せません。
+            {t("snapshot.deleteDesc", { name: snap?.name })}
           </p>
           <div className="flex justify-end gap-2">
             <button
@@ -186,7 +198,7 @@ export function ProjectSnapshotModal({
               onClick={() => setConfirmDeleteId(null)}
               disabled={isDeleting}
             >
-              キャンセル
+              {t("snapshot.cancel")}
             </button>
             <button
               type="button"
@@ -194,7 +206,9 @@ export function ProjectSnapshotModal({
               onClick={handleDeleteConfirm}
               disabled={isDeleting}
             >
-              {isDeleting ? "削除中…" : "削除する"}
+              {isDeleting
+                ? t("snapshot.deleting")
+                : t("snapshot.deleteConfirm")}
             </button>
           </div>
         </div>
@@ -212,12 +226,10 @@ export function ProjectSnapshotModal({
       <div className="bg-background rounded-lg border border-border shadow-xl w-[580px] max-w-[95vw] flex flex-col max-h-[80vh]">
         {/* Header */}
         <div className="flex items-center justify-between px-4 py-3 border-b border-border flex-shrink-0">
-          <h2 className="text-base font-semibold">
-            プロジェクトスナップショット
-          </h2>
+          <h2 className="text-base font-semibold">{t("snapshot.title")}</h2>
           <button
             type="button"
-            aria-label="閉じる"
+            aria-label={t("snapshot.close")}
             className="text-muted-foreground hover:text-foreground transition-colors"
             onClick={onClose}
           >
@@ -231,7 +243,7 @@ export function ProjectSnapshotModal({
             <div className="space-y-2">
               <input
                 type="text"
-                placeholder="スナップショット名（必須）"
+                placeholder={t("snapshot.namePlaceholder")}
                 value={createName}
                 onChange={(e) => setCreateName(e.target.value)}
                 className="w-full rounded border border-border bg-background px-3 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-primary"
@@ -243,7 +255,7 @@ export function ProjectSnapshotModal({
               />
               <input
                 type="text"
-                placeholder="説明（任意）"
+                placeholder={t("snapshot.descPlaceholder")}
                 value={createDesc}
                 onChange={(e) => setCreateDesc(e.target.value)}
                 className="w-full rounded border border-border bg-background px-3 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-primary"
@@ -255,7 +267,7 @@ export function ProjectSnapshotModal({
                   onClick={() => setShowCreate(false)}
                   disabled={isCreating}
                 >
-                  キャンセル
+                  {t("snapshot.cancel")}
                 </button>
                 <button
                   type="button"
@@ -263,7 +275,7 @@ export function ProjectSnapshotModal({
                   onClick={handleCreate}
                   disabled={isCreating || !createName.trim()}
                 >
-                  {isCreating ? "作成中…" : "作成"}
+                  {isCreating ? t("snapshot.creating") : t("snapshot.create")}
                 </button>
               </div>
             </div>
@@ -273,7 +285,7 @@ export function ProjectSnapshotModal({
               className="w-full rounded border border-dashed border-border px-3 py-2 text-sm text-muted-foreground hover:text-foreground hover:border-foreground/50 transition-colors"
               onClick={() => setShowCreate(true)}
             >
-              + 新しいスナップショットを作成
+              {t("snapshot.newSnapshot")}
             </button>
           )}
         </div>
@@ -282,11 +294,11 @@ export function ProjectSnapshotModal({
         <div className="flex-1 overflow-y-auto p-2 space-y-1">
           {isLoading ? (
             <p className="text-sm text-muted-foreground text-center py-8">
-              読み込み中…
+              {t("snapshot.loading")}
             </p>
           ) : snapshots.length === 0 ? (
             <p className="text-sm text-muted-foreground text-center py-8">
-              スナップショットはありません
+              {t("snapshot.empty")}
             </p>
           ) : (
             snapshots.map((snap) => (
@@ -319,7 +331,7 @@ export function ProjectSnapshotModal({
                       {formatTimestamp(snap.createdAt)}
                     </span>
                     <span className="block text-xs text-muted-foreground">
-                      {snap.entryCount} エンティティ
+                      {t("snapshot.entityCount", { count: snap.entryCount })}
                     </span>
                   </div>
                 </div>
@@ -336,7 +348,7 @@ export function ProjectSnapshotModal({
             onClick={() => selectedId && setConfirmDeleteId(selectedId)}
             disabled={!selectedId}
           >
-            削除
+            {t("snapshot.delete")}
           </button>
           <div className="flex gap-2">
             <button
@@ -344,7 +356,7 @@ export function ProjectSnapshotModal({
               className="px-3 py-1.5 text-sm rounded border border-border hover:bg-muted transition-colors"
               onClick={onClose}
             >
-              閉じる
+              {t("snapshot.close")}
             </button>
             <button
               type="button"
@@ -352,7 +364,7 @@ export function ProjectSnapshotModal({
               onClick={() => selectedId && setConfirmRestoreId(selectedId)}
               disabled={!selectedId}
             >
-              この時点に復元
+              {t("snapshot.restore")}
             </button>
           </div>
         </div>

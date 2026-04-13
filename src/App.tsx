@@ -46,6 +46,8 @@ import {
 } from "@/lib/colorThemes";
 import { useSettingsStore } from "@/features/settings/settingsStore";
 import { GrimodexLogo } from "@/components/GrimodexLogo";
+import i18next from "@/lib/i18n";
+import { useTranslation } from "react-i18next";
 import { WindowControls } from "@/components/WindowControls";
 import { TitleBar } from "@/components/TitleBar";
 import { useTabStore } from "@/features/editor/tabStore";
@@ -135,6 +137,17 @@ function App() {
   const initialize = useWorkspaceStore((s) => s.initialize);
   const theme = useWorkspaceStore((s) => s.globalSettings?.theme ?? "system");
   const colorTheme = useWorkspaceStore((s) => s.globalSettings?.colorTheme);
+  const uiLanguage = useWorkspaceStore(
+    (s) => s.globalSettings?.uiLanguage ?? "ja",
+  );
+  const { t } = useTranslation();
+
+  // Sync uiLanguage setting → i18next
+  useEffect(() => {
+    if (i18next.language !== uiLanguage) {
+      i18next.changeLanguage(uiLanguage);
+    }
+  }, [uiLanguage]);
 
   // Apply theme reactively — globalSettings is loaded from global-settings.json
   // (no workspace DB needed), so this works before any workspace is opened.
@@ -186,7 +199,7 @@ function App() {
         <div className="flex h-screen flex-col items-center justify-center gap-4 bg-background text-foreground">
           <TitleBar />
           <GrimodexLogo height={40} className="text-foreground" />
-          <p className="text-sm text-muted-foreground">読み込み中…</p>
+          <p className="text-sm text-muted-foreground">{t("app.loading")}</p>
         </div>
       )}
       {view === "welcome" && <WelcomeScreen />}
@@ -198,6 +211,7 @@ function App() {
 }
 
 function EditorScreen() {
+  const { t } = useTranslation();
   const [showSettings, setShowSettings] = useState(false);
   const [settingsInitialCategory, setSettingsInitialCategory] =
     useState<SettingsCategory>("project");
@@ -269,7 +283,7 @@ function EditorScreen() {
           const preCheck = validateSerializedLayout(saved);
           if (!preCheck.valid) {
             toast.warning(
-              `保存済みレイアウトが不正なため、デフォルトに戻しました。（${preCheck.reason}）`,
+              i18next.t("app.invalidLayout", { reason: preCheck.reason }),
             );
             await clearSavedLayout();
             return;
@@ -292,7 +306,7 @@ function EditorScreen() {
           const postCheck = validateRuntimeLayout(api);
           if (!postCheck.valid) {
             toast.warning(
-              `レイアウトが退化しているため、デフォルトに戻しました。（${postCheck.reason}）`,
+              i18next.t("app.degenLayout", { reason: postCheck.reason }),
             );
             clearLayout(api);
             buildDefaultLayout(api);
@@ -416,7 +430,7 @@ function EditorScreen() {
         <WorkspaceMenu />
         <button
           type="button"
-          title="エクスポート (Ctrl+Shift+E)"
+          title={t("app.exportTitle")}
           onClick={() => setShowExport((v) => !v)}
           className="flex h-8 w-8 items-center justify-center rounded text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
         >
@@ -427,7 +441,7 @@ function EditorScreen() {
         <PanelToggleDropdown />
         <button
           type="button"
-          title="設定 (Ctrl+Alt+,)"
+          title={t("app.settingsTitle")}
           onClick={() => {
             setSettingsInitialCategory("project");
             setShowSettings(true);

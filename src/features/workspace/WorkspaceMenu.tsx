@@ -1,9 +1,11 @@
 import { useState, useRef, useEffect } from "react";
+import { useTranslation } from "react-i18next";
 import { openFolderDialog } from "@/lib/dialog";
 import { useWorkspaceStore } from "./store";
 import { ProjectSnapshotModal } from "@/features/revision/ProjectSnapshotModal";
 
 export function WorkspaceMenu() {
+  const { t } = useTranslation();
   const activeWorkspaceName = useWorkspaceStore((s) => s.activeWorkspaceName);
   const globalSettings = useWorkspaceStore((s) => s.globalSettings);
   const openWorkspace = useWorkspaceStore((s) => s.openWorkspace);
@@ -57,7 +59,7 @@ export function WorkspaceMenu() {
         className="flex items-center gap-1 rounded px-2 py-1 text-sm font-medium hover:bg-accent hover:text-accent-foreground"
       >
         <span className="max-w-40 truncate">
-          {activeWorkspaceName ?? "ワークスペース"}
+          {activeWorkspaceName ?? t("workspaceMenu.fallback")}
         </span>
         <span className="text-xs">▾</span>
       </button>
@@ -94,7 +96,7 @@ export function WorkspaceMenu() {
             className="flex w-full items-center gap-2 px-3 py-1.5 text-sm hover:bg-accent hover:text-accent-foreground"
           >
             <span className="w-4" />
-            他のフォルダを開く…
+            {t("workspaceMenu.openOther")}
           </button>
           <button
             type="button"
@@ -102,7 +104,7 @@ export function WorkspaceMenu() {
             className="flex w-full items-center gap-2 px-3 py-1.5 text-sm hover:bg-accent hover:text-accent-foreground"
           >
             <span className="w-4" />
-            新規ワークスペース
+            {t("workspaceMenu.newWorkspace")}
           </button>
 
           <div className="my-1 border-t border-border" />
@@ -113,7 +115,7 @@ export function WorkspaceMenu() {
             className="flex w-full items-center gap-2 px-3 py-1.5 text-sm hover:bg-accent hover:text-accent-foreground"
           >
             <span className="w-4" />
-            スタート画面
+            {t("workspaceMenu.startScreen")}
           </button>
 
           <div className="my-1 border-t border-border" />
@@ -127,7 +129,7 @@ export function WorkspaceMenu() {
             className="flex w-full items-center gap-2 px-3 py-1.5 text-sm hover:bg-accent hover:text-accent-foreground"
           >
             <span className="w-4" />
-            プロジェクトスナップショット…
+            {t("workspaceMenu.projectSnapshot")}
           </button>
         </div>
       )}

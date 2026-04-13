@@ -7,6 +7,7 @@ import {
   type KeyboardEvent,
 } from "react";
 import { Search, Plus } from "lucide-react";
+import { useTranslation } from "react-i18next";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import {
   ResizablePanelGroup,
@@ -30,29 +31,13 @@ import * as chatApi from "@/features/chat/chatApi";
 import { useChatStore } from "@/features/chat/chatStore";
 import { useTabStore } from "@/features/editor/tabStore";
 
-// Fallback labels/colors for when types haven't loaded yet
-const FALLBACK_TYPE_LABELS: Record<string, string> = {
-  character: "キャラクター",
-  location: "場所",
-  item: "アイテム",
-  lore: "設定・世界観",
-};
-
+// Fallback colors for when types haven't loaded yet
 const FALLBACK_TYPE_COLORS: Record<string, string> = {
   character: "#6B7ADB",
   location: "#5BAD8F",
   item: "#C27D3C",
   lore: "#9B6BB5",
 };
-
-const SORT_OPTIONS: { value: CodexSortOrder; label: string }[] = [
-  { value: "category", label: "カテゴリ別" },
-  { value: "name-asc", label: "名前 (A→Z)" },
-  { value: "name-desc", label: "名前 (Z→A)" },
-  { value: "updated", label: "更新順" },
-  { value: "created", label: "作成順" },
-  { value: "most-referenced", label: "参照数順" },
-];
 
 // --- Search highlight helper ---
 
@@ -134,6 +119,7 @@ function VirtualizedEntryList({
   onRenameCancel?: () => void;
   onStartRename?: (id: string) => void;
 }) {
+  const { t } = useTranslation();
   const parentRef = useRef<HTMLDivElement>(null);
   const [contextMenu, setContextMenu] = useState<{
     entry: CodexEntry;
@@ -150,7 +136,7 @@ function VirtualizedEntryList({
   if (isLoading) {
     return (
       <p className="flex-1 p-3 text-center text-xs text-muted-foreground">
-        読み込み中...
+        {t("common.loading")}
       </p>
     );
   }
@@ -161,7 +147,7 @@ function VirtualizedEntryList({
         data-testid="codex-empty-state"
         className="flex-1 p-3 text-center text-xs text-muted-foreground"
       >
-        エントリがありません
+        {t("codex.empty")}
       </div>
     );
   }
@@ -380,6 +366,7 @@ function CategoryGroupedList({
   onRenameCancel?: () => void;
   onStartRename?: (id: string) => void;
 }) {
+  const { t } = useTranslation();
   const [contextMenu, setContextMenu] = useState<{
     entry: CodexEntry;
     x: number;
@@ -419,7 +406,9 @@ function CategoryGroupedList({
         const resolvedColor = typeColorMap[typeSlug];
         return {
           slug: typeSlug,
-          label: codexType?.label ?? FALLBACK_TYPE_LABELS[typeSlug] ?? typeSlug,
+          label:
+            codexType?.label ??
+            t(`codex.${typeSlug}`, { defaultValue: typeSlug }),
           color:
             resolvedColor?.fg ??
             codexType?.color ??
@@ -445,7 +434,7 @@ function CategoryGroupedList({
   if (isLoading) {
     return (
       <p className="flex-1 p-3 text-center text-xs text-muted-foreground">
-        読み込み中...
+        {t("common.loading")}
       </p>
     );
   }
@@ -456,7 +445,7 @@ function CategoryGroupedList({
         data-testid="codex-empty-state"
         className="flex-1 p-3 text-center text-xs text-muted-foreground"
       >
-        エントリがありません
+        {t("codex.empty")}
       </div>
     );
   }
@@ -576,6 +565,17 @@ interface CodexManagementPanelProps {
 export function CodexManagementPanel({
   initialStackMode = false,
 }: CodexManagementPanelProps = {}) {
+  const { t } = useTranslation();
+
+  const SORT_OPTIONS: { value: CodexSortOrder; label: string }[] = [
+    { value: "category", label: t("codex.sortCategory") },
+    { value: "name-asc", label: t("codex.sortNameAsc") },
+    { value: "name-desc", label: t("codex.sortNameDesc") },
+    { value: "updated", label: t("codex.sortUpdated") },
+    { value: "created", label: t("codex.sortCreated") },
+    { value: "most-referenced", label: t("codex.sortMostReferenced") },
+  ];
+
   const entries = useCodexStore((s) => s.entries);
   const filterType = useCodexStore((s) => s.filterType);
   const sortOrder = useCodexStore((s) => s.sortOrder);
@@ -891,11 +891,18 @@ export function CodexManagementPanel({
     [tagFilteredEntries, sortOrder, refCountMap],
   );
 
-  // Build type label map from loaded types (fallback to hardcoded)
+  // Build type label map from loaded types (fallback to i18n)
   const typeLabels: Record<string, string> = useMemo(() => {
-    if (codexTypes.length === 0) return FALLBACK_TYPE_LABELS;
-    return Object.fromEntries(codexTypes.map((t) => [t.slug, t.label]));
-  }, [codexTypes]);
+    if (codexTypes.length === 0) {
+      return {
+        character: t("codex.character"),
+        location: t("codex.location"),
+        item: t("codex.item"),
+        lore: t("codex.lore"),
+      };
+    }
+    return Object.fromEntries(codexTypes.map((ct) => [ct.slug, ct.label]));
+  }, [codexTypes, t]);
 
   // --- Header ---
   const header = (
@@ -918,7 +925,7 @@ export function CodexManagementPanel({
           value={sortOrder}
           onChange={(e) => setSort(e.target.value as CodexSortOrder)}
           className="rounded border border-input bg-background px-1 py-0.5 text-[10px]"
-          title="ソート順"
+          title={t("codex.sortOrderTitle")}
         >
           {SORT_OPTIONS.map((opt) => (
             <option key={opt.value} value={opt.value}>
@@ -931,7 +938,7 @@ export function CodexManagementPanel({
           data-testid="codex-new-entry-button"
           onClick={() => void handleNewEntry()}
           className="rounded p-1 text-muted-foreground hover:bg-accent hover:text-accent-foreground"
-          title="新規エントリ"
+          title={t("codex.newEntry")}
         >
           <Plus className="h-3.5 w-3.5" />
         </button>
@@ -950,7 +957,7 @@ export function CodexManagementPanel({
         value={searchQuery}
         onChange={(e) => handleSearchChange(e.target.value)}
         onKeyDown={handleSearchKeyDown}
-        placeholder="検索..."
+        placeholder={t("codex.searchPlaceholder")}
         className="flex-1 bg-transparent text-xs outline-none"
       />
     </div>
@@ -960,16 +967,18 @@ export function CodexManagementPanel({
   const filterOptions: { value: CodexEntryType | "all"; label: string }[] =
     useMemo(() => {
       const opts: { value: CodexEntryType | "all"; label: string }[] = [
-        { value: "all", label: "すべて" },
+        { value: "all", label: t("codex.filterAll") },
       ];
       if (codexTypes.length > 0) {
-        codexTypes.forEach((t) => opts.push({ value: t.slug, label: t.label }));
+        codexTypes.forEach((ct) =>
+          opts.push({ value: ct.slug, label: ct.label }),
+        );
       } else {
         opts.push(
-          { value: "character", label: "キャラクター" },
-          { value: "location", label: "場所" },
-          { value: "item", label: "アイテム" },
-          { value: "lore", label: "設定・世界観" },
+          { value: "character", label: t("codex.character") },
+          { value: "location", label: t("codex.location") },
+          { value: "item", label: t("codex.item") },
+          { value: "lore", label: t("codex.lore") },
         );
       }
       return opts;
@@ -1065,9 +1074,7 @@ export function CodexManagementPanel({
       data-testid="codex-detail-placeholder"
       className="flex h-full items-center justify-center"
     >
-      <p className="text-xs text-muted-foreground">
-        エントリを選択してください
-      </p>
+      <p className="text-xs text-muted-foreground">{t("codex.selectPrompt")}</p>
     </div>
   );
 
@@ -1124,12 +1131,13 @@ export function CodexManagementPanel({
       {deleteConfirmId && (
         <div className="absolute inset-0 z-50 flex items-center justify-center bg-background/80">
           <div className="w-72 rounded-lg border border-border bg-popover p-4 shadow-xl">
-            <p className="mb-1 text-sm font-medium">削除の確認</p>
+            <p className="mb-1 text-sm font-medium">
+              {t("common.deleteConfirmTitle")}
+            </p>
             <p className="mb-4 text-xs text-muted-foreground">
-              「
-              {entries.find((e) => e.id === deleteConfirmId)?.name ??
-                "このエントリ"}
-              」を削除しますか？この操作は元に戻せません。
+              {t("codex.deleteConfirmDesc", {
+                name: entries.find((e) => e.id === deleteConfirmId)?.name ?? "",
+              })}
             </p>
             <div className="flex justify-end gap-2">
               <button
@@ -1137,14 +1145,14 @@ export function CodexManagementPanel({
                 className="rounded border border-border px-3 py-1 text-xs hover:bg-accent"
                 onClick={() => setDeleteConfirmId(null)}
               >
-                キャンセル
+                {t("common.cancel")}
               </button>
               <button
                 type="button"
                 className="rounded bg-destructive px-3 py-1 text-xs text-destructive-foreground hover:bg-destructive/90"
                 onClick={() => void confirmDelete()}
               >
-                削除する
+                {t("common.deleteConfirm")}
               </button>
             </div>
           </div>

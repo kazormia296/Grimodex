@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import type { Editor } from "@tiptap/react";
+import { useTranslation } from "react-i18next";
 import { cn } from "@/lib/utils";
 import { INLINE_AI_COMMANDS } from "./inlineAiCommands";
 import type { InlineAiCommand } from "./inlineAiTypes";
@@ -23,6 +24,7 @@ export function InlineAIPalette({
   onClose,
   onSubmit,
 }: InlineAIPaletteProps) {
+  const { t } = useTranslation();
   const [prompt, setPrompt] = useState("");
   const [selectedCommand, setSelectedCommand] = useState<InlineAiCommand>(
     preselectedCommand ?? INLINE_AI_COMMANDS[0],
@@ -103,8 +105,9 @@ export function InlineAIPalette({
             }}
             placeholder={
               selectedCommand.needsArg
-                ? (selectedCommand.argPlaceholder ?? "指示を入力…")
-                : "追加の指示（省略可）"
+                ? (selectedCommand.argPlaceholder ??
+                  t("inlineAi.commands.custom.placeholder"))
+                : t("inlineAi.additionalPrompt")
             }
             className="flex-1 rounded border border-border bg-background px-2 py-1.5 text-xs focus:outline-none focus:ring-1 focus:ring-ring"
           />

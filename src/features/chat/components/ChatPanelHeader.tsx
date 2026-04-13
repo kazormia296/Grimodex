@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect } from "react";
+import { useTranslation } from "react-i18next";
 import { Globe, ChevronDown, Plus } from "lucide-react";
 import { useTreeStore } from "@/features/tree/treeStore";
 
@@ -21,6 +22,7 @@ export function ChatPanelHeader({
   onSceneChange,
   onNewSession,
 }: ChatPanelHeaderProps) {
+  const { t } = useTranslation();
   const nodes = useTreeStore((s) => s.nodes);
 
   // シーンをフォルダごとにグループ化
@@ -72,7 +74,7 @@ export function ChatPanelHeader({
       {/* 左側: タイトル + グローバルトグル + シーンインジケーター */}
       <div className="flex items-center gap-1.5 min-w-0">
         <span className="text-sm font-semibold text-foreground shrink-0">
-          AIチャット
+          {t("chat.title")}
         </span>
 
         {/* 🌐 グローバルチャットトグル */}
@@ -80,9 +82,7 @@ export function ChatPanelHeader({
           type="button"
           onClick={onToggleGlobalChat}
           title={
-            isGlobalChat
-              ? "Project scope ON — クリックでシーンに戻す"
-              : "Project scope OFF — クリックでプロジェクト全体に切り替え"
+            isGlobalChat ? t("chat.globalScopeOn") : t("chat.globalScopeOff")
           }
           className={[
             "rounded p-0.5 transition-colors",
@@ -100,7 +100,7 @@ export function ChatPanelHeader({
             type="button"
             onClick={() => setDropdownOpen((v) => !v)}
             className="flex items-center gap-0.5 rounded px-1.5 py-0.5 text-xs text-muted-foreground hover:bg-accent hover:text-foreground max-w-[140px]"
-            title="チャットのシーンコンテキストを切り替え"
+            title={t("chat.sceneContext")}
           >
             <span className="truncate">
               {isGlobalChat ? "Project" : currentSceneTitle}
@@ -138,7 +138,7 @@ export function ChatPanelHeader({
                 ))}
                 {sceneGroups.length === 0 && (
                   <p className="px-3 py-2 text-xs text-muted-foreground">
-                    シーンがありません
+                    {t("chat.noScenes")}
                   </p>
                 )}
               </div>
@@ -154,12 +154,12 @@ export function ChatPanelHeader({
           onClick={() => setSessionsPanelOpen(!sessionsPanelOpen)}
           className="rounded px-1.5 py-0.5 text-xs text-muted-foreground hover:bg-accent hover:text-foreground"
         >
-          Sessions
+          {t("chat.sessions")}
         </button>
         <button
           type="button"
           onClick={onNewSession}
-          title="新しいセッションを作成"
+          title={t("chat.newSession")}
           className="rounded p-0.5 text-muted-foreground hover:bg-accent hover:text-foreground"
         >
           <Plus className="h-3.5 w-3.5" />

@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import { Search, Trash2, Copy, Plus, GripVertical } from "lucide-react";
 import { toast } from "sonner";
+import { useTranslation } from "react-i18next";
 import {
   ResizablePanelGroup,
   ResizablePanel,
@@ -27,14 +28,16 @@ const SOURCE_FILTER_OPTIONS: { value: SnippetSourceFilter; label: string }[] = [
   { value: "manual", label: "Manual" },
 ];
 
-const SORT_OPTIONS: { value: SnippetSortOrder; label: string }[] = [
-  { value: "recent", label: "新しい順" },
-  { value: "oldest", label: "古い順" },
-  { value: "title-asc", label: "タイトル順" },
-  { value: "most-used", label: "使用回数順" },
-];
-
 export function SnippetPanel() {
+  const { t } = useTranslation();
+
+  const SORT_OPTIONS: { value: SnippetSortOrder; label: string }[] = [
+    { value: "recent", label: t("snippets.sortRecent") },
+    { value: "oldest", label: t("snippets.sortOldest") },
+    { value: "title-asc", label: t("snippets.sortTitleAsc") },
+    { value: "most-used", label: t("snippets.sortMostUsed") },
+  ];
+
   const entries = useSnippetStore((s) => s.entries);
   const searchQuery = useSnippetStore((s) => s.searchQuery);
   const isLoading = useSnippetStore((s) => s.isLoading);
@@ -183,7 +186,7 @@ export function SnippetPanel() {
           );
           if (success) {
             void incrementUsageCount(snippet.id);
-            toast.success("挿入しました");
+            toast.success(t("snippets.inserted"));
           }
         }
         return;
@@ -313,7 +316,7 @@ export function SnippetPanel() {
                   data-testid="snippet-new-button"
                   onClick={() => void handleNew()}
                   className="rounded p-1 text-muted-foreground hover:bg-accent hover:text-accent-foreground"
-                  title="新規スニペット"
+                  title={t("snippets.newSnippet")}
                 >
                   <Plus className="h-3.5 w-3.5" />
                 </button>
@@ -338,7 +341,7 @@ export function SnippetPanel() {
                       e.currentTarget.blur();
                     }
                   }}
-                  placeholder="Snippetを検索…"
+                  placeholder={t("snippets.searchPlaceholder")}
                   className="w-full rounded-md border border-input bg-background pl-8 pr-3 py-1.5 text-xs focus:outline-none focus:ring-1 focus:ring-ring"
                 />
               </div>
@@ -368,7 +371,7 @@ export function SnippetPanel() {
                   setSortOrder(e.target.value as SnippetSortOrder)
                 }
                 className="ml-auto rounded border border-input bg-background px-1 py-0.5 text-[10px]"
-                title="ソート順"
+                title={t("snippets.sortOrder")}
               >
                 {SORT_OPTIONS.map((opt) => (
                   <option key={opt.value} value={opt.value}>
@@ -385,7 +388,7 @@ export function SnippetPanel() {
                   className="flex items-center justify-center py-8"
                 >
                   <span className="animate-pulse text-xs text-muted-foreground">
-                    読み込み中…
+                    {t("common.loading")}
                   </span>
                 </div>
               )}
@@ -396,7 +399,7 @@ export function SnippetPanel() {
                   className="flex h-full items-center justify-center"
                 >
                   <p className="text-xs text-muted-foreground">
-                    Snippetはまだありません
+                    {t("snippets.empty")}
                   </p>
                 </div>
               )}
@@ -429,7 +432,7 @@ export function SnippetPanel() {
                             (snippet.contentSource as AuthorshipSource) ??
                             "human";
                           copyWithAttribution(snippet.content, source);
-                          toast.success("コピーしました");
+                          toast.success(t("snippets.copied"));
                         }}
                         onContextMenu={(e) => {
                           e.preventDefault();
@@ -567,7 +570,7 @@ export function SnippetPanel() {
                 className="flex h-full items-center justify-center"
               >
                 <p className="text-xs text-muted-foreground">
-                  Snippetを選択してください
+                  {t("snippets.selectPrompt")}
                 </p>
               </div>
             )}
@@ -578,12 +581,14 @@ export function SnippetPanel() {
       {deleteConfirmId && (
         <div className="absolute inset-0 z-50 flex items-center justify-center bg-background/80">
           <div className="w-72 rounded-lg border border-border bg-popover p-4 shadow-xl">
-            <p className="mb-1 text-sm font-medium">削除の確認</p>
+            <p className="mb-1 text-sm font-medium">
+              {t("common.deleteConfirmTitle")}
+            </p>
             <p className="mb-4 text-xs text-muted-foreground">
-              「
-              {entries.find((e) => e.id === deleteConfirmId)?.title ??
-                "このスニペット"}
-              」を削除しますか？この操作は元に戻せません。
+              {t("snippets.deleteConfirmDesc", {
+                name:
+                  entries.find((e) => e.id === deleteConfirmId)?.title ?? "",
+              })}
             </p>
             <div className="flex justify-end gap-2">
               <button
@@ -591,14 +596,14 @@ export function SnippetPanel() {
                 className="rounded border border-border px-3 py-1 text-xs hover:bg-accent"
                 onClick={() => setDeleteConfirmId(null)}
               >
-                キャンセル
+                {t("common.cancel")}
               </button>
               <button
                 type="button"
                 className="rounded bg-destructive px-3 py-1 text-xs text-destructive-foreground hover:bg-destructive/90"
                 onClick={() => void confirmDelete()}
               >
-                削除する
+                {t("common.deleteConfirm")}
               </button>
             </div>
           </div>

@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from "react";
+import { useTranslation } from "react-i18next";
 import { useAiSettingsStore } from "@/features/chat/store";
 import { AI_PROVIDERS } from "@/features/chat/types";
 import type { AiProvider } from "@/features/chat/types";
@@ -11,39 +12,51 @@ const PROVIDER_LABELS: Record<AiProvider, string> = {
   openrouter: "OpenRouter",
   openai: "OpenAI",
   anthropic: "Anthropic",
-  ollama: "Ollama (ローカル)",
+  ollama: "ollama-local",
 };
 
-const BUDGET_LAYERS = [
-  {
-    key: "ai.contextBudget.l1",
-    label: "L1 プロジェクト情報",
-    min: 1,
-    default: 2,
-  },
-  {
-    key: "ai.contextBudget.l2",
-    label: "L2 これまでの物語",
-    min: 1,
-    default: 10,
-  },
-  { key: "ai.contextBudget.l3", label: "L3 現在のシーン", min: 5, default: 40 },
-  {
-    key: "ai.contextBudget.l4",
-    label: "L4 Codex & Snippets",
-    min: 1,
-    default: 20,
-  },
-  { key: "ai.contextBudget.l5", label: "L5 会話履歴", min: 1, default: 20 },
-  {
-    key: "ai.contextBudget.reserve",
-    label: "レスポンス予約",
-    min: 1,
-    default: 5,
-  },
-];
-
 export function AiCategory() {
+  const { t } = useTranslation();
+
+  const BUDGET_LAYERS = [
+    {
+      key: "ai.contextBudget.l1",
+      label: t("settings.ai.contextBudgetL1"),
+      min: 1,
+      default: 2,
+    },
+    {
+      key: "ai.contextBudget.l2",
+      label: t("settings.ai.contextBudgetL2"),
+      min: 1,
+      default: 10,
+    },
+    {
+      key: "ai.contextBudget.l3",
+      label: t("settings.ai.contextBudgetL3"),
+      min: 5,
+      default: 40,
+    },
+    {
+      key: "ai.contextBudget.l4",
+      label: t("settings.ai.contextBudgetL4"),
+      min: 1,
+      default: 20,
+    },
+    {
+      key: "ai.contextBudget.l5",
+      label: t("settings.ai.contextBudgetL5"),
+      min: 1,
+      default: 20,
+    },
+    {
+      key: "ai.contextBudget.reserve",
+      label: t("settings.ai.contextBudgetReserve"),
+      min: 1,
+      default: 5,
+    },
+  ];
+
   const {
     settings,
     hasApiKey,
@@ -133,14 +146,21 @@ export function AiCategory() {
   const budgetTotal = budgetValues.reduce((sum, l) => sum + l.value, 0);
   const budgetError = budgetTotal > 100;
 
+  const providerLabel = (p: AiProvider) =>
+    p === "ollama" ? t("settings.ai.ollamaLocal") : PROVIDER_LABELS[p];
+
   if (!localSettings) {
-    return <div className="p-6 text-sm text-muted-foreground">読み込み中…</div>;
+    return (
+      <div className="p-6 text-sm text-muted-foreground">
+        {t("common.loading")}
+      </div>
+    );
   }
 
   return (
     <div className="p-6">
       {/* Provider */}
-      <SettingSection title="プロバイダー">
+      <SettingSection title={t("settings.ai.provider")}>
         <div className="flex flex-wrap gap-2 mb-3">
           {AI_PROVIDERS.map((p) => (
             <button
@@ -153,14 +173,14 @@ export function AiCategory() {
                   : "border-border hover:bg-accent"
               }`}
             >
-              {PROVIDER_LABELS[p]}
+              {providerLabel(p)}
             </button>
           ))}
         </div>
 
         {/* Ollama endpoint */}
         {localSettings.provider === "ollama" && (
-          <SettingRow label="エンドポイント">
+          <SettingRow label={t("settings.ai.endpoint")}>
             <input
               type="text"
               value={localSettings.ollamaEndpoint}
@@ -174,18 +194,18 @@ export function AiCategory() {
 
         {/* API Key */}
         {localSettings.provider !== "ollama" && (
-          <SettingRow label="API キー">
+          <SettingRow label={t("settings.ai.apiKey")}>
             {hasApiKey ? (
               <div className="flex items-center gap-2">
                 <span className="text-sm text-muted-foreground">
-                  設定済み ✓
+                  {t("settings.ai.keySet")}
                 </span>
                 <button
                   type="button"
                   onClick={handleDeleteKey}
                   className="rounded-md border border-destructive px-2 py-1 text-xs text-destructive hover:bg-destructive/10"
                 >
-                  削除
+                  {t("settings.ai.deleteKey")}
                 </button>
               </div>
             ) : (
@@ -204,7 +224,9 @@ export function AiCategory() {
                     onClick={() => setShowKey(!showKey)}
                     className="absolute right-2 top-1/2 -translate-y-1/2 text-xs text-muted-foreground"
                   >
-                    {showKey ? "隠す" : "表示"}
+                    {showKey
+                      ? t("settings.ai.hideKey")
+                      : t("settings.ai.showKey")}
                   </button>
                 </div>
                 <button
@@ -212,7 +234,7 @@ export function AiCategory() {
                   onClick={handleSaveKey}
                   className="rounded-md bg-primary px-3 py-1 text-sm text-primary-foreground hover:bg-primary/90"
                 >
-                  保存
+                  {t("settings.ai.saveKey")}
                 </button>
               </div>
             )}
@@ -221,8 +243,8 @@ export function AiCategory() {
       </SettingSection>
 
       {/* Models */}
-      <SettingSection title="モデル">
-        <SettingRow label="デフォルトチャットモデル">
+      <SettingSection title={t("settings.ai.models")}>
+        <SettingRow label={t("settings.ai.defaultChatModel")}>
           <div className="flex gap-2">
             <select
               value={localSettings.model}
@@ -231,7 +253,9 @@ export function AiCategory() {
               disabled={isLoadingModels}
             >
               <option value="">
-                {isLoadingModels ? "読み込み中…" : "モデルを選択"}
+                {isLoadingModels
+                  ? t("settings.ai.loadingModels")
+                  : t("settings.ai.selectModel")}
               </option>
               {models.map((m) => (
                 <option key={m.id} value={m.id}>
@@ -245,14 +269,14 @@ export function AiCategory() {
               disabled={isLoadingModels}
               className="rounded-md border border-border px-2 py-1 text-sm hover:bg-accent disabled:opacity-50"
             >
-              更新
+              {t("settings.ai.refresh")}
             </button>
           </div>
         </SettingRow>
 
         <SettingRow
-          label="インラインAIモデル"
-          description="Editor の /コマンドで使用するモデル"
+          label={t("settings.ai.inlineModel")}
+          description={t("settings.ai.inlineModelDesc")}
         >
           <select
             value={settingsStore.get("ai.inlineModel")}
@@ -262,7 +286,7 @@ export function AiCategory() {
             className="rounded-md border border-input bg-background px-2 py-1 text-sm focus:outline-none"
             disabled={isLoadingModels}
           >
-            <option value="">チャットモデルと同じ</option>
+            <option value="">{t("settings.ai.sameChatModel")}</option>
             {models.map((m) => (
               <option key={m.id} value={m.id}>
                 {m.name}
@@ -272,8 +296,8 @@ export function AiCategory() {
         </SettingRow>
 
         <SettingRow
-          label="セッションタイトルモデル"
-          description="セッション名の自動生成に使用するモデル"
+          label={t("settings.ai.titleModel")}
+          description={t("settings.ai.titleModelDesc")}
         >
           <select
             value={settingsStore.get("ai.sessionTitleModel")}
@@ -283,7 +307,7 @@ export function AiCategory() {
             className="rounded-md border border-input bg-background px-2 py-1 text-sm focus:outline-none"
             disabled={isLoadingModels}
           >
-            <option value="">チャットモデルと同じ</option>
+            <option value="">{t("settings.ai.sameChatModel")}</option>
             {models.map((m) => (
               <option key={m.id} value={m.id}>
                 {m.name}
@@ -299,8 +323,8 @@ export function AiCategory() {
             return caps.supportsAdaptiveThinking || caps.supportsThinking;
           })() && (
             <SettingRow
-              label="Thinking モード"
-              description="推論ステップを有効にします（レスポンスが遅くなる場合があります）"
+              label={t("settings.ai.thinkingMode")}
+              description={t("settings.ai.thinkingModeDesc")}
             >
               <button
                 type="button"
@@ -334,7 +358,9 @@ export function AiCategory() {
             }
             className="rounded-md bg-secondary px-3 py-1.5 text-sm text-secondary-foreground hover:bg-secondary/80 disabled:opacity-50"
           >
-            {isTestingConnection ? "接続テスト中…" : "接続テスト"}
+            {isTestingConnection
+              ? t("settings.ai.testing")
+              : t("settings.ai.testConnection")}
           </button>
           {connectionTestResult && (
             <p
@@ -352,7 +378,7 @@ export function AiCategory() {
       </SettingSection>
 
       {/* Context budget */}
-      <SettingSection title="コンテキスト予算配分">
+      <SettingSection title={t("settings.ai.contextBudget")}>
         <div className="space-y-2">
           {budgetValues.map((layer) => (
             <div key={layer.key} className="flex items-center gap-3">
@@ -380,7 +406,9 @@ export function AiCategory() {
                 : "text-muted-foreground"
             }`}
           >
-            合計: {budgetTotal}%{budgetError && " (100% を超えています)"}
+            {budgetError
+              ? t("settings.ai.budgetOverflow", { total: budgetTotal })
+              : t("settings.ai.budgetTotal", { total: budgetTotal })}
           </div>
           <button
             type="button"
@@ -391,7 +419,7 @@ export function AiCategory() {
             }}
             className="mt-1 text-xs text-muted-foreground underline hover:text-foreground"
           >
-            デフォルトにリセット
+            {t("settings.ai.resetBudget")}
           </button>
         </div>
       </SettingSection>

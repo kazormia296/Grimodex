@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from "react";
 import type { Editor } from "@tiptap/react";
 import { X } from "lucide-react";
+import { useTranslation } from "react-i18next";
 import { cn } from "@/lib/utils";
 import type { FindReplaceStorage } from "./FindReplaceExtension";
 
@@ -20,6 +21,7 @@ export function FindReplaceBar({
   showReplace,
   onClose,
 }: FindReplaceBarProps) {
+  const { t } = useTranslation();
   const [query, setQuery] = useState("");
   const [replacement, setReplacement] = useState("");
   const [caseSensitive, setCaseSensitive] = useState(false);
@@ -60,10 +62,10 @@ export function FindReplaceBar({
   const regexError = storage?.regexError ?? false;
 
   const matchLabel = regexError
-    ? "無効な正規表現"
+    ? t("editor.find.invalidRegex")
     : matchCount === 0
       ? query
-        ? "一致なし"
+        ? t("editor.find.noMatch")
         : ""
       : `${currentIdx} / ${matchCount}`;
 
@@ -94,7 +96,7 @@ export function FindReplaceBar({
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             onKeyDown={handleFindKeyDown}
-            placeholder="検索…"
+            placeholder={t("editor.find.placeholder")}
             className={`w-full rounded border bg-background px-2 py-0.5 pr-20 text-xs focus:outline-none focus:ring-1 focus:ring-primary ${regexError ? "border-destructive text-destructive" : "border-border"}`}
           />
           <span className="absolute right-2 text-xs text-muted-foreground whitespace-nowrap">
@@ -105,7 +107,7 @@ export function FindReplaceBar({
         {/* Options */}
         <button
           type="button"
-          title="大文字/小文字区別"
+          title={t("editor.find.caseSensitive")}
           onClick={() => setCaseSensitive((v) => !v)}
           className={cn(
             "flex h-6 w-6 items-center justify-center rounded text-xs hover:bg-accent",
@@ -116,7 +118,7 @@ export function FindReplaceBar({
         </button>
         <button
           type="button"
-          title="正規表現"
+          title={t("editor.find.regex")}
           onClick={() => setUseRegex((v) => !v)}
           className={cn(
             "flex h-6 w-6 items-center justify-center rounded text-xs hover:bg-accent",
@@ -129,7 +131,7 @@ export function FindReplaceBar({
         {/* Navigation */}
         <button
           type="button"
-          title="前へ (Shift+Enter)"
+          title={t("editor.find.prev")}
           onClick={() => editor.commands.findPrev()}
           disabled={matchCount === 0}
           className="flex h-6 w-6 items-center justify-center rounded text-xs hover:bg-accent disabled:opacity-30"
@@ -138,7 +140,7 @@ export function FindReplaceBar({
         </button>
         <button
           type="button"
-          title="次へ (Enter)"
+          title={t("editor.find.next")}
           onClick={() => editor.commands.findNext()}
           disabled={matchCount === 0}
           className="flex h-6 w-6 items-center justify-center rounded text-xs hover:bg-accent disabled:opacity-30"
@@ -148,7 +150,7 @@ export function FindReplaceBar({
 
         <button
           type="button"
-          title="閉じる (Esc)"
+          title={t("editor.find.close")}
           onClick={onClose}
           className="flex h-6 w-6 items-center justify-center rounded hover:bg-accent"
         >
@@ -164,26 +166,26 @@ export function FindReplaceBar({
             value={replacement}
             onChange={(e) => setReplacement(e.target.value)}
             onKeyDown={handleReplaceKeyDown}
-            placeholder="置換…"
+            placeholder={t("editor.find.replacePlaceholder")}
             className="flex-1 rounded border border-border bg-background px-2 py-0.5 text-xs focus:outline-none focus:ring-1 focus:ring-primary"
           />
           <button
             type="button"
-            title="置換"
+            title={t("editor.find.replace")}
             onClick={() => editor.commands.replaceOne(replacement)}
             disabled={matchCount === 0}
             className="rounded border border-border px-2 py-0.5 text-xs hover:bg-accent disabled:opacity-30"
           >
-            置換
+            {t("editor.find.replace")}
           </button>
           <button
             type="button"
-            title="全て置換"
+            title={t("editor.find.replaceAll")}
             onClick={() => editor.commands.replaceAll(replacement)}
             disabled={matchCount === 0}
             className="rounded border border-border px-2 py-0.5 text-xs hover:bg-accent disabled:opacity-30"
           >
-            全置換
+            {t("editor.find.replaceAll")}
           </button>
         </div>
       )}

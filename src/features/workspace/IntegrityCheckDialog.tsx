@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { toast } from "sonner";
+import { useTranslation } from "react-i18next";
 import { invoke } from "@/lib/tauri";
 import { debugLog, errorDetail } from "@/lib/debugLog";
 import {
@@ -20,6 +21,7 @@ interface RepairReport {
 }
 
 export function IntegrityCheckSection() {
+  const { t } = useTranslation();
   const [isChecking, setIsChecking] = useState(false);
   const [isRepairing, setIsRepairing] = useState(false);
   const [isBuildingXref, setIsBuildingXref] = useState(false);
@@ -34,7 +36,7 @@ export function IntegrityCheckSection() {
       const result = await invoke<IntegrityReport>("integrity_check");
       setReport(result);
     } catch (e) {
-      toast.error("整合性チェックに失敗しました");
+      toast.error(t("integrity.checkError"));
       debugLog.error("IntegrityCheck", "check failed", errorDetail(e));
     } finally {
       setIsChecking(false);
@@ -46,13 +48,17 @@ export function IntegrityCheckSection() {
     try {
       const result = await invoke<RepairReport>("repair_integrity");
       toast.success(
-        `修復完了: Codex ${result.codexSourcesFixed}件, スニペット参照元 ${result.snippetSourcesFixed}件, スニペットシーン ${result.snippetScenesFixed}件`,
+        t("integrity.repairSuccess", {
+          codex: result.codexSourcesFixed,
+          snippetSrc: result.snippetSourcesFixed,
+          snippetScene: result.snippetScenesFixed,
+        }),
       );
       // Re-run check to update display
       const updated = await invoke<IntegrityReport>("integrity_check");
       setReport(updated);
     } catch (e) {
-      toast.error("修復に失敗しました");
+      toast.error(t("integrity.repairError"));
       debugLog.error("IntegrityCheck", "repair failed", errorDetail(e));
     } finally {
       setIsRepairing(false);
@@ -65,7 +71,7 @@ export function IntegrityCheckSection() {
       const result = await buildCrossReferenceReport();
       setCrossRefs(result);
     } catch (e) {
-      toast.error("相互参照レポートの生成に失敗しました");
+      toast.error(t("integrity.crossRefError"));
       debugLog.error(
         "IntegrityCheck",
         "cross-reference report failed",
@@ -86,14 +92,16 @@ export function IntegrityCheckSection() {
     <>
       {/* Integrity Check Section */}
       <section className="mb-6">
-        <h3 className="mb-2 text-sm font-semibold">孤立参照チェック</h3>
+        <h3 className="mb-2 text-sm font-semibold">
+          {t("integrity.orphanCheck")}
+        </h3>
         <button
           type="button"
           onClick={runCheck}
           disabled={isChecking}
           className="rounded bg-primary px-3 py-1.5 text-sm text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
         >
-          {isChecking ? "チェック中..." : "チェック実行"}
+          {isChecking ? t("integrity.checking") : t("integrity.runCheck")}
         </button>
 
         {report && (
@@ -102,7 +110,7 @@ export function IntegrityCheckSection() {
               <tbody>
                 <tr>
                   <td className="py-1 text-muted-foreground">
-                    Codex: 削除済みメッセージへの参照
+                    {t("integrity.codexOrphans")}
                   </td>
                   <td className="py-1 text-right font-mono">
                     {report.orphanedCodexSources}
@@ -110,7 +118,7 @@ export function IntegrityCheckSection() {
                 </tr>
                 <tr>
                   <td className="py-1 text-muted-foreground">
-                    スニペット: 削除済みメッセージへの参照
+                    {t("integrity.snippetSourceOrphans")}
                   </td>
                   <td className="py-1 text-right font-mono">
                     {report.orphanedSnippetSources}
@@ -118,7 +126,7 @@ export function IntegrityCheckSection() {
                 </tr>
                 <tr>
                   <td className="py-1 text-muted-foreground">
-                    スニペット: 削除済みシーンへの参照
+                    {t("integrity.snippetSceneOrphans")}
                   </td>
                   <td className="py-1 text-right font-mono">
                     {report.orphanedSnippetScenes}
@@ -135,14 +143,14 @@ export function IntegrityCheckSection() {
                 className="mt-3 rounded bg-destructive px-3 py-1.5 text-sm text-destructive-foreground hover:bg-destructive/90 disabled:opacity-50"
               >
                 {isRepairing
-                  ? "修復中..."
-                  : `修復（${totalOrphans}件の孤立参照をクリア）`}
+                  ? t("integrity.repairing")
+                  : t("integrity.repairCount", { count: totalOrphans })}
               </button>
             )}
 
             {totalOrphans === 0 && (
               <p className="mt-2 text-sm text-green-600">
-                問題は見つかりませんでした。
+                {t("integrity.noIssues")}
               </p>
             )}
           </div>
@@ -152,7 +160,7 @@ export function IntegrityCheckSection() {
       {/* Cross-reference Report Section */}
       <section>
         <h3 className="mb-2 text-sm font-semibold">
-          Codex × シーン 相互参照レポート
+          {t("integrity.crossRefSection")}
         </h3>
         <button
           type="button"
@@ -160,27 +168,29 @@ export function IntegrityCheckSection() {
           disabled={isBuildingXref}
           className="rounded bg-primary px-3 py-1.5 text-sm text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
         >
-          {isBuildingXref ? "生成中..." : "レポート生成"}
+          {isBuildingXref
+            ? t("integrity.crossRefBuilding")
+            : t("integrity.generateReport")}
         </button>
 
         {crossRefs && (
           <div className="mt-3 max-h-64 overflow-y-auto rounded border border-border">
             {crossRefs.length === 0 ? (
               <p className="p-3 text-sm text-muted-foreground">
-                Codexエントリがありません。
+                {t("integrity.noEntries")}
               </p>
             ) : (
               <table className="w-full text-sm">
                 <thead className="sticky top-0 bg-muted">
                   <tr>
                     <th className="px-3 py-1.5 text-left font-medium">
-                      エントリ
+                      {t("integrity.entry")}
                     </th>
                     <th className="px-3 py-1.5 text-left font-medium">
-                      タイプ
+                      {t("integrity.type")}
                     </th>
                     <th className="px-3 py-1.5 text-left font-medium">
-                      言及シーン
+                      {t("integrity.mentionedScenes")}
                     </th>
                   </tr>
                 </thead>
@@ -193,7 +203,9 @@ export function IntegrityCheckSection() {
                       </td>
                       <td className="px-3 py-1.5">
                         {ref.scenes.length === 0 ? (
-                          <span className="text-muted-foreground">未使用</span>
+                          <span className="text-muted-foreground">
+                            {t("integrity.unused")}
+                          </span>
                         ) : (
                           <span>
                             {ref.scenes

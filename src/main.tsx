@@ -3,6 +3,7 @@ import ReactDOM from "react-dom/client";
 import App from "./App";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import { debugLog, errorDetail } from "./lib/debugLog";
+import "./lib/i18n";
 import "./index.css";
 
 window.addEventListener("unhandledrejection", (event) => {

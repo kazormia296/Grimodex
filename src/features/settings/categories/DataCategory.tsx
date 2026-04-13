@@ -1,5 +1,6 @@
 import { useState, useEffect } from "react";
 import { toast } from "sonner";
+import { useTranslation } from "react-i18next";
 import { invoke } from "@/lib/tauri";
 import { useWorkspaceStore } from "@/features/workspace/store";
 import { db } from "@/db/client";
@@ -66,6 +67,7 @@ async function triggerDownload(filename: string, content: string) {
 }
 
 export function DataCategory() {
+  const { t } = useTranslation();
   const workspacePath = useWorkspaceStore((s) => s.activeWorkspacePath);
   const [stats, setStats] = useState<ProjectStats | null>(null);
   const [isExportingCodex, setIsExportingCodex] = useState(false);
@@ -83,9 +85,9 @@ export function DataCategory() {
     try {
       const json = await exportCodexJson();
       await triggerDownload("codex.json", json);
-      toast.success("エクスポートしました");
+      toast.success(t("settings.data.exportSuccess"));
     } catch {
-      toast.error("エクスポートに失敗しました");
+      toast.error(t("settings.data.exportFail"));
     } finally {
       setIsExportingCodex(false);
     }
@@ -98,18 +100,18 @@ export function DataCategory() {
   async function handleRebuildFts() {
     try {
       await invoke("fts_rebuild");
-      toast.success("FTS インデックスを再構築しました");
+      toast.success(t("settings.data.ftsSuccess"));
     } catch {
-      toast.error("FTS 再構築に失敗しました");
+      toast.error(t("settings.data.ftsFail"));
     }
   }
 
   async function handleVacuum() {
     try {
       await db.run("VACUUM" as never);
-      toast.success("データベースを最適化しました");
+      toast.success(t("settings.data.vacuumSuccess"));
     } catch {
-      toast.error("VACUUM に失敗しました");
+      toast.error(t("settings.data.vacuumFail"));
     }
   }
 
@@ -130,26 +132,26 @@ export function DataCategory() {
       await db
         .delete(chatSessions)
         .where(eq(chatSessions.projectId, PROJECT_ID));
-      toast.success("チャット履歴を削除しました");
+      toast.success(t("settings.data.clearChatSuccess"));
       setConfirmClear(false);
     } catch {
-      toast.error("削除に失敗しました");
+      toast.error(t("settings.data.clearChatFail"));
     }
   }
 
   return (
     <div className="p-6">
       {/* Project Info */}
-      <SettingSection title="プロジェクト情報">
-        <SettingRow label="保存先">
+      <SettingSection title={t("settings.data.projectInfo")}>
+        <SettingRow label={t("settings.data.savePath")}>
           <span className="max-w-[200px] truncate text-xs text-muted-foreground">
             {workspacePath ?? "—"}
           </span>
         </SettingRow>
-        <SettingRow label="シーン数">
+        <SettingRow label={t("settings.data.sceneCount")}>
           <span className="text-sm">{stats?.sceneCount ?? "…"}</span>
         </SettingRow>
-        <SettingRow label="総文字数">
+        <SettingRow label={t("settings.data.totalChars")}>
           <span className="text-sm">
             {stats ? stats.totalChars.toLocaleString() : "…"}
           </span>
@@ -157,71 +159,71 @@ export function DataCategory() {
       </SettingSection>
 
       {/* Backup */}
-      <SettingSection title="バックアップ">
-        <SettingRow label="自動バックアップ">
+      <SettingSection title={t("settings.data.backup")}>
+        <SettingRow label={t("settings.data.autoBackup")}>
           <SettingToggle settingKey="data.autoBackup" defaultValue={true} />
         </SettingRow>
-        <SettingRow label="バックアップ間隔">
+        <SettingRow label={t("settings.data.backupInterval")}>
           <SettingSlider
             settingKey="data.backupInterval"
             min={15}
             max={360}
             step={15}
             defaultValue={60}
-            format={(v) => `${v}分`}
+            format={(v) => t("settings.data.backupIntervalFormat", { v })}
           />
         </SettingRow>
-        <SettingRow label="最大保持数">
+        <SettingRow label={t("settings.data.maxBackups")}>
           <SettingSlider
             settingKey="data.maxBackups"
             min={1}
             max={50}
             step={1}
             defaultValue={10}
-            format={(v) => `${v}件`}
+            format={(v) => t("settings.data.maxBackupsFormat", { v })}
           />
         </SettingRow>
       </SettingSection>
 
       {/* Revision History */}
-      <SettingSection title="リビジョン履歴">
-        <SettingRow label="自動リビジョン間隔">
+      <SettingSection title={t("settings.data.revision")}>
+        <SettingRow label={t("settings.data.revisionInterval")}>
           <SettingSlider
             settingKey="revision.autoInterval"
             min={1}
             max={60}
             step={1}
             defaultValue={5}
-            format={(v) => `${v}分`}
+            format={(v) => t("settings.data.revisionIntervalFormat", { v })}
           />
         </SettingRow>
-        <SettingRow label="リビジョン保持上限">
+        <SettingRow label={t("settings.data.revisionKeep")}>
           <SettingSlider
             settingKey="revision.keepCount"
             min={10}
             max={200}
             step={10}
             defaultValue={50}
-            format={(v) => `${v}件`}
+            format={(v) => t("settings.data.revisionKeepFormat", { v })}
           />
         </SettingRow>
       </SettingSection>
 
       {/* Export */}
-      <SettingSection title="エクスポート">
+      <SettingSection title={t("settings.data.export")}>
         <div className="flex flex-col gap-2">
           <div className="flex items-center justify-between">
-            <span className="text-sm">シーンをエクスポート…</span>
+            <span className="text-sm">{t("settings.data.exportScenes")}</span>
             <button
               type="button"
               onClick={openExportDialog}
               className="rounded-md border border-border px-3 py-1.5 text-sm hover:bg-accent"
             >
-              開く
+              {t("common.open")}
             </button>
           </div>
           <div className="flex items-center justify-between">
-            <span className="text-sm">Codex JSON をエクスポート</span>
+            <span className="text-sm">{t("settings.data.exportCodex")}</span>
             <button
               type="button"
               onClick={handleExportCodex}
@@ -235,20 +237,20 @@ export function DataCategory() {
       </SettingSection>
 
       {/* Data Management */}
-      <SettingSection title="データ管理">
+      <SettingSection title={t("settings.data.management")}>
         <div className="space-y-2">
           <div className="flex items-center justify-between">
-            <span className="text-sm">FTS インデックス再構築</span>
+            <span className="text-sm">{t("settings.data.ftsRebuild")}</span>
             <button
               type="button"
               onClick={handleRebuildFts}
               className="rounded-md border border-border px-3 py-1.5 text-sm hover:bg-accent"
             >
-              再構築
+              {t("settings.data.rebuild")}
             </button>
           </div>
           <div className="flex items-center justify-between">
-            <span className="text-sm">データベースを最適化</span>
+            <span className="text-sm">{t("settings.data.vacuum")}</span>
             <button
               type="button"
               onClick={handleVacuum}
@@ -259,9 +261,9 @@ export function DataCategory() {
           </div>
           <div className="flex items-center justify-between">
             <div>
-              <span className="text-sm">チャット履歴を削除</span>
+              <span className="text-sm">{t("settings.data.clearChat")}</span>
               <p className="text-xs text-muted-foreground">
-                抽出済みの Codex/Snippets は残ります
+                {t("settings.data.clearChatDesc")}
               </p>
             </div>
             <button
@@ -273,16 +275,18 @@ export function DataCategory() {
                   : "border-border hover:bg-accent"
               }`}
             >
-              {confirmClear ? "本当に削除する" : "削除"}
+              {confirmClear
+                ? t("settings.data.clearChatConfirm")
+                : t("common.delete")}
             </button>
           </div>
           <div className="flex items-center justify-between pt-2">
             <div>
               <span className="text-sm text-destructive">
-                プロジェクトを削除
+                {t("settings.data.deleteProject")}
               </span>
               <p className="text-xs text-muted-foreground">
-                この操作は取り消せません
+                {t("settings.data.deleteProjectDesc")}
               </p>
             </div>
             <button
@@ -290,14 +294,16 @@ export function DataCategory() {
               onClick={() => setConfirmDelete(!confirmDelete)}
               className="rounded-md border border-destructive px-3 py-1.5 text-sm text-destructive hover:bg-destructive/10"
             >
-              {confirmDelete ? "未実装（キャンセル）" : "削除…"}
+              {confirmDelete
+                ? t("settings.data.deleteProjectNotImpl")
+                : `${t("common.delete")}…`}
             </button>
           </div>
         </div>
       </SettingSection>
 
       {/* Integrity Check */}
-      <SettingSection title="整合性チェック">
+      <SettingSection title={t("settings.data.integrityCheck")}>
         <IntegrityCheckSection />
       </SettingSection>
     </div>

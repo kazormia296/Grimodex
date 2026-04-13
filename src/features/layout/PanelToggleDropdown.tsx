@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { LayoutGrid, ChevronDown, Check, Lock, Unlock } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { useLayoutStore, PANEL_TITLES, type PanelId } from "./layoutStore";
+import { useLayoutStore, type PanelId } from "./layoutStore";
 import {
   TOGGLEABLE_PANELS,
   KEYBOARD_SHORTCUT_MAP,
@@ -9,12 +10,6 @@ import {
   type PanelRegion,
 } from "./panelRegions";
 import { PanelHighlightOverlay } from "./PanelHighlightOverlay";
-
-const REGION_LABELS: Record<PanelRegion, string> = {
-  left: "左",
-  right: "右",
-  "center-bottom": "下部",
-};
 
 /** Force re-render when dockview adds/removes panels */
 function useDockviewVersion() {
@@ -36,12 +31,19 @@ function useDockviewVersion() {
 }
 
 export function PanelToggleDropdown() {
+  const { t } = useTranslation();
   const { dockviewApi, togglePanel, layoutLocked, toggleLayoutLock } =
     useLayoutStore();
   const [isOpen, setIsOpen] = useState(false);
   const [hoveredPanelId, setHoveredPanelId] = useState<PanelId | null>(null);
   const menuRef = useRef<HTMLDivElement>(null);
   useDockviewVersion();
+
+  const REGION_LABELS: Record<PanelRegion, string> = {
+    left: t("layout.regionLeft"),
+    right: t("layout.regionRight"),
+    "center-bottom": t("layout.regionBottom"),
+  };
 
   // Click-outside to close
   useEffect(() => {
@@ -92,7 +94,7 @@ export function PanelToggleDropdown() {
       {/* Trigger button */}
       <button
         type="button"
-        title="パネルの表示切替"
+        title={t("layout.panelToggle")}
         onClick={() => {
           setIsOpen((o) => !o);
           if (isOpen) setHoveredPanelId(null);
@@ -105,7 +107,7 @@ export function PanelToggleDropdown() {
         )}
       >
         <LayoutGrid className="h-4 w-4" />
-        <span>パネル</span>
+        <span>{t("layout.panels")}</span>
         <ChevronDown
           className={cn("h-3 w-3 transition-transform", isOpen && "rotate-180")}
         />
@@ -147,7 +149,7 @@ export function PanelToggleDropdown() {
 
                     {/* Panel name */}
                     <span className="flex-1 text-left">
-                      {PANEL_TITLES[panelId]}
+                      {t(`layout.panel.${panelId}`)}
                     </span>
 
                     {/* Keyboard shortcut */}
@@ -175,7 +177,7 @@ export function PanelToggleDropdown() {
               <Unlock className="h-3.5 w-3.5 text-muted-foreground" />
             )}
             <span className="flex-1 text-left">
-              {layoutLocked ? "レイアウトロック中" : "レイアウトをロック"}
+              {layoutLocked ? t("layout.lockedLayout") : t("layout.lockLayout")}
             </span>
           </button>
         </div>

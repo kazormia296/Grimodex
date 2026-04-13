@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useCallback, useMemo } from "react";
 import { Search, X, Check } from "lucide-react";
+import { useTranslation } from "react-i18next";
 import { cn } from "@/lib/utils";
 import { useChatStore } from "./chatStore";
 import {
@@ -41,6 +42,7 @@ const SORT_LABELS: Record<SortMode, string> = {
 };
 
 export function ChatHistoryPanel() {
+  const { t } = useTranslation();
   const {
     sessions,
     isLoading,
@@ -282,7 +284,7 @@ export function ChatHistoryPanel() {
       <div className="flex-1 overflow-y-auto px-2 py-2">
         {isLoading && sessions.length === 0 && (
           <p className="py-8 text-center text-xs text-muted-foreground">
-            読み込み中…
+            {t("common.loading")}
           </p>
         )}
 
@@ -291,12 +293,12 @@ export function ChatHistoryPanel() {
           <>
             {isSearching && (
               <p className="py-4 text-center text-xs text-muted-foreground">
-                検索中…
+                {t("chat.searching")}
               </p>
             )}
             {!isSearching && searchGrouped.length === 0 && (
               <p className="py-8 text-center text-xs text-muted-foreground">
-                "{searchQuery}" に一致するメッセージはありません
+                {t("chat.noSearchResults", { query: searchQuery })}
               </p>
             )}
             {searchGrouped.map(([sessionId, group]) => (
@@ -345,7 +347,7 @@ export function ChatHistoryPanel() {
           <>
             {filteredSessions.length === 0 && !isLoading && (
               <p className="py-8 text-center text-xs text-muted-foreground">
-                セッションがありません
+                {t("chat.noSessions")}
               </p>
             )}
             {sessionGroups.map((group) => (

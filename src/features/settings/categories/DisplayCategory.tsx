@@ -1,4 +1,5 @@
 import { useEffect } from "react";
+import { useTranslation } from "react-i18next";
 import { SettingSection } from "../components/SettingSection";
 import { SettingRow } from "../components/SettingRow";
 import { SettingToggle } from "../components/SettingToggle";
@@ -8,12 +9,6 @@ import { useSettingControl } from "../useSettingControl";
 import { useCodexHighlightStore } from "@/features/editor/codexHighlightStore";
 import { useWorkspaceStore } from "@/features/workspace/store";
 import { COLOR_THEMES, DEFAULT_COLOR_THEME } from "@/lib/colorThemes";
-
-const LIGHT_DARK_OPTIONS = [
-  { value: "system", label: "システム" },
-  { value: "dark", label: "ダーク" },
-  { value: "light", label: "ライト" },
-];
 
 const COLOR_THEME_OPTIONS = COLOR_THEMES.map((t) => ({
   value: t.id,
@@ -25,12 +20,20 @@ const LANGUAGE_OPTIONS = [
   { value: "en", label: "English" },
 ];
 
-const CODEX_STYLE_OPTIONS = [
-  { value: "color-text", label: "文字色 + ハイライト" },
-  { value: "underline", label: "下線" },
-];
-
 export function DisplayCategory() {
+  const { t } = useTranslation();
+
+  const LIGHT_DARK_OPTIONS = [
+    { value: "system", label: t("settings.display.system") },
+    { value: "dark", label: t("settings.display.dark") },
+    { value: "light", label: t("settings.display.light") },
+  ];
+
+  const CODEX_STYLE_OPTIONS = [
+    { value: "color-text", label: t("settings.display.colorText") },
+    { value: "underline", label: t("settings.display.underline") },
+  ];
+
   // Global settings (stored in global-settings.json, available before workspace open)
   const theme = useWorkspaceStore((s) => s.globalSettings?.theme ?? "system");
   const colorTheme = useWorkspaceStore(
@@ -56,8 +59,8 @@ export function DisplayCategory() {
 
   return (
     <div className="p-6">
-      <SettingSection title="テーマ">
-        <SettingRow label="カラーテーマ">
+      <SettingSection title={t("settings.display.theme")}>
+        <SettingRow label={t("settings.display.colorTheme")}>
           <select
             value={colorTheme}
             onChange={(e) => updateGlobal({ colorTheme: e.target.value })}
@@ -70,7 +73,7 @@ export function DisplayCategory() {
             ))}
           </select>
         </SettingRow>
-        <SettingRow label="ライト / ダーク">
+        <SettingRow label={t("settings.display.lightDark")}>
           <select
             value={theme}
             onChange={(e) => updateGlobal({ theme: e.target.value })}
@@ -85,8 +88,8 @@ export function DisplayCategory() {
         </SettingRow>
       </SettingSection>
 
-      <SettingSection title="UI">
-        <SettingRow label="UI 言語">
+      <SettingSection title={t("settings.display.ui")}>
+        <SettingRow label={t("settings.display.uiLanguage")}>
           <select
             value={uiLanguage}
             onChange={(e) => updateGlobal({ uiLanguage: e.target.value })}
@@ -100,8 +103,8 @@ export function DisplayCategory() {
           </select>
         </SettingRow>
         <SettingRow
-          label="UI スケール"
-          description="ウィンドウ全体のズーム (80〜150%)"
+          label={t("settings.display.uiScale")}
+          description={t("settings.display.uiScaleDesc")}
         >
           <div className="flex items-center gap-2">
             <input
@@ -120,13 +123,13 @@ export function DisplayCategory() {
             </span>
           </div>
         </SettingRow>
-        <SettingRow label="シーンツリーに文字数を表示">
+        <SettingRow label={t("settings.display.showWordCount")}>
           <SettingToggle
             settingKey="display.showWordCount"
             defaultValue={true}
           />
         </SettingRow>
-        <SettingRow label="シーンツリーに AI 帰属バッジを表示">
+        <SettingRow label={t("settings.display.showAiBadge")}>
           <SettingToggle
             settingKey="display.showAiBadge"
             defaultValue={false}
@@ -134,14 +137,14 @@ export function DisplayCategory() {
         </SettingRow>
       </SettingSection>
 
-      <SettingSection title="Codex ハイライト">
-        <SettingRow label="Codex ハイライトを有効化">
+      <SettingSection title={t("settings.display.codexHighlight")}>
+        <SettingRow label={t("settings.display.enableHighlight")}>
           <SettingToggle
             settingKey="display.codexHighlight"
             defaultValue={true}
           />
         </SettingRow>
-        <SettingRow label="ハイライトスタイル">
+        <SettingRow label={t("settings.display.highlightStyle")}>
           <SettingDropdown
             settingKey="display.codexHighlightStyle"
             options={CODEX_STYLE_OPTIONS}
@@ -150,10 +153,10 @@ export function DisplayCategory() {
         </SettingRow>
       </SettingSection>
 
-      <SettingSection title="帰属表示">
+      <SettingSection title={t("settings.display.attribution")}>
         <SettingRow
-          label="帰属ハイライトの不透明度"
-          description="Attribution 表示時の背景色の強さ (5〜25%)"
+          label={t("settings.display.attributionOpacity")}
+          description={t("settings.display.attributionOpacityDesc")}
         >
           <SettingSlider
             settingKey="display.attributionHighlightOpacity"

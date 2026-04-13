@@ -1,5 +1,6 @@
 import { useState, useEffect, useMemo } from "react";
 import { Search } from "lucide-react";
+import { useTranslation } from "react-i18next";
 import { parseLicensesMarkdown } from "@/features/licenses/parser";
 import type { LicenseEntry } from "@/features/licenses/types";
 
@@ -26,6 +27,7 @@ function LicenseBadge({ license }: { license: string }) {
 }
 
 function EntryItem({ entry }: { entry: LicenseEntry }) {
+  const { t } = useTranslation();
   const [open, setOpen] = useState(false);
   return (
     <div className="border-b border-border/40 py-2 last:border-0">
@@ -51,7 +53,7 @@ function EntryItem({ entry }: { entry: LicenseEntry }) {
               onClick={() => setOpen((v) => !v)}
               className="text-xs text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
             >
-              {open ? "閉じる" : "全文"}
+              {open ? t("common.close") : t("settings.about.full")}
             </button>
           )}
         </div>
@@ -101,6 +103,7 @@ function EntryList({
 }
 
 export function AboutCategory() {
+  const { t } = useTranslation();
   const [state, setState] = useState<LoadState>({ status: "loading" });
   const [query, setQuery] = useState("");
 
@@ -125,7 +128,7 @@ export function AboutCategory() {
   if (state.status === "loading") {
     return (
       <div className="flex h-full items-center justify-center p-6 text-sm text-muted-foreground">
-        読み込み中…
+        {t("common.loading")}
       </div>
     );
   }
@@ -133,7 +136,7 @@ export function AboutCategory() {
   if (state.status === "error") {
     return (
       <div className="p-6 text-sm text-destructive">
-        ライセンス情報の読み込みに失敗しました: {state.message}
+        {t("settings.about.loadError", { message: state.message })}
       </div>
     );
   }
@@ -148,7 +151,9 @@ export function AboutCategory() {
           <Search className="absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
           <input
             type="search"
-            placeholder={`${total} 件のライブラリを検索…`}
+            placeholder={t("settings.about.searchPlaceholder", {
+              count: total,
+            })}
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             className="w-full rounded-md border border-border bg-background py-1.5 pl-8 pr-3 text-sm placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-ring"
@@ -172,7 +177,7 @@ export function AboutCategory() {
               e.license.toLowerCase().includes(query.toLowerCase()),
           ).length === 0 && (
             <p className="py-8 text-center text-sm text-muted-foreground">
-              「{query}」に一致するライブラリは見つかりません
+              {t("settings.about.notFound", { query })}
             </p>
           )}
       </div>

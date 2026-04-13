@@ -1,4 +1,5 @@
 import { useMemo, useCallback } from "react";
+import { useTranslation } from "react-i18next";
 import { Download } from "lucide-react";
 import { useEditorStore } from "@/features/editor/editorStore";
 import { computeAttributionStats } from "./attributionStats";
@@ -31,13 +32,18 @@ function StatBar({
   activeFilter,
   onFilter,
 }: StatBarProps) {
+  const { t } = useTranslation();
   const pct = total > 0 ? Math.round((count / total) * 100) : 0;
   const isActive = activeFilter === source;
   return (
     <div
       className={`flex items-center gap-2 text-xs cursor-pointer rounded px-1 py-0.5 transition-colors ${isActive ? "bg-accent" : "hover:bg-accent/50"}`}
       onClick={() => onFilter(isActive ? null : source)}
-      title={isActive ? "フィルタを解除" : `${label}のみ表示`}
+      title={
+        isActive
+          ? t("attribution.clearFilterTitle")
+          : t("attribution.filterOnlyTitle", { label })
+      }
     >
       <span className="w-20 shrink-0 text-muted-foreground">{label}</span>
       <div className="flex-1 h-3 rounded bg-muted overflow-hidden">
@@ -47,13 +53,14 @@ function StatBar({
         />
       </div>
       <span className="w-16 text-right tabular-nums text-muted-foreground">
-        {count}字 ({pct}%)
+        {t("attribution.charCount", { count, pct })}
       </span>
     </div>
   );
 }
 
 export function AttributionReport() {
+  const { t } = useTranslation();
   const editor = useEditorStore((s) => s.editor);
   const scope = useAttributionStore((s) => s.scope);
   const filterSource = useAttributionStore((s) => s.filterSource);
@@ -80,7 +87,7 @@ export function AttributionReport() {
   return (
     <div className="flex flex-col gap-3 p-3" data-testid="attribution-report">
       <div className="flex items-center justify-between">
-        <h3 className="text-sm font-semibold">帰属レポート</h3>
+        <h3 className="text-sm font-semibold">{t("attribution.report")}</h3>
         <div className="flex gap-1">
           {(["scene", "project"] as const).map((s) => (
             <button
@@ -89,7 +96,9 @@ export function AttributionReport() {
               onClick={() => setScope(s)}
               className={`rounded px-2 py-0.5 text-xs transition-colors ${scope === s ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:bg-accent"}`}
             >
-              {s === "scene" ? "シーン" : "プロジェクト"}
+              {s === "scene"
+                ? t("attribution.scene")
+                : t("attribution.project")}
             </button>
           ))}
         </div>
@@ -98,23 +107,25 @@ export function AttributionReport() {
       {scope === "project" ? (
         <AttributionProjectView />
       ) : !stats || stats.total === 0 ? (
-        <p className="text-xs text-muted-foreground">テキストがありません</p>
+        <p className="text-xs text-muted-foreground">
+          {t("attribution.noText")}
+        </p>
       ) : (
         <>
           {filterSource && (
             <div className="flex items-center gap-1 text-xs text-muted-foreground">
-              <span>フィルタ中:</span>
+              <span>{t("attribution.filtering")}</span>
               <button
                 type="button"
                 onClick={() => setFilterSource(null)}
                 className="text-primary underline"
               >
-                解除
+                {t("attribution.clearFilter")}
               </button>
             </div>
           )}
           <StatBar
-            label="人間"
+            label={t("attribution.human")}
             count={stats.human + stats.unmarked}
             total={stats.total}
             color="oklch(0.65 0.10 220)"
@@ -123,7 +134,7 @@ export function AttributionReport() {
             onFilter={setFilterSource}
           />
           <StatBar
-            label="AI生成"
+            label={t("attribution.ai")}
             count={stats.ai}
             total={stats.total}
             color="oklch(0.65 0.18 250)"
@@ -132,7 +143,7 @@ export function AttributionReport() {
             onFilter={setFilterSource}
           />
           <StatBar
-            label="不明"
+            label={t("attribution.unknown")}
             count={stats.unknown}
             total={stats.total}
             color="oklch(0.65 0.05 0)"
@@ -144,7 +155,7 @@ export function AttributionReport() {
           {Object.keys(stats.modelBreakdown).length > 0 && (
             <div className="mt-1">
               <p className="mb-1 text-xs font-medium text-muted-foreground">
-                モデル別
+                {t("attribution.byModel")}
               </p>
               {Object.entries(stats.modelBreakdown).map(([model, count]) => {
                 const pct =
@@ -158,7 +169,7 @@ export function AttributionReport() {
                       {model}
                     </span>
                     <span className="tabular-nums text-muted-foreground">
-                      {count}字 ({pct}%)
+                      {t("attribution.charCount", { count, pct })}
                     </span>
                   </div>
                 );
@@ -173,7 +184,7 @@ export function AttributionReport() {
                 type="button"
                 onClick={handleExportMd}
                 className="flex items-center gap-1 rounded px-1.5 py-1 text-xs text-muted-foreground hover:bg-accent"
-                title="Markdownエクスポート"
+                title="Markdown export"
               >
                 <Download className="h-3 w-3" /> MD
               </button>
@@ -181,13 +192,13 @@ export function AttributionReport() {
                 type="button"
                 onClick={handleExportCsv}
                 className="flex items-center gap-1 rounded px-1.5 py-1 text-xs text-muted-foreground hover:bg-accent"
-                title="CSVエクスポート"
+                title="CSV export"
               >
                 <Download className="h-3 w-3" /> CSV
               </button>
             </div>
             <span className="text-xs text-muted-foreground tabular-nums">
-              合計: {stats.total}字
+              {t("attribution.total", { count: stats.total })}
             </span>
           </div>
         </>

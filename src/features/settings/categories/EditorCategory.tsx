@@ -1,3 +1,4 @@
+import { useTranslation } from "react-i18next";
 import { SettingSection } from "../components/SettingSection";
 import { SettingRow } from "../components/SettingRow";
 import { SettingToggle } from "../components/SettingToggle";
@@ -5,31 +6,33 @@ import { SettingSlider } from "../components/SettingSlider";
 import { SettingDropdown } from "../components/SettingDropdown";
 import { useSettingBoolean } from "../useSettingControl";
 
-const WORD_BREAK_OPTIONS = [
-  { value: "auto-phrase", label: "語句優先 (auto-phrase)" },
-  { value: "normal", label: "標準 (normal)" },
-  { value: "break-all", label: "どこでも改行 (break-all)" },
-  { value: "keep-all", label: "単語優先 (keep-all)" },
-];
-
-const LINE_BREAK_OPTIONS = [
-  { value: "strict", label: "厳密 (strict)" },
-  { value: "normal", label: "標準 (normal)" },
-  { value: "loose", label: "ゆるい (loose)" },
-  { value: "auto", label: "自動 (auto)" },
-];
-
-const FONT_FAMILY_OPTIONS = [
-  { value: "serif", label: "デフォルト (serif)" },
-  { value: '"Noto Serif JP", serif', label: "Noto Serif JP" },
-  { value: '"Noto Sans JP", sans-serif', label: "Noto Sans JP" },
-  { value: '"BIZ UDMincho", serif', label: "BIZ UDMincho" },
-  { value: '"BIZ UDGothic", sans-serif', label: "BIZ UDGothic" },
-  { value: '"Source Han Serif JP", serif', label: "Source Han Serif" },
-  { value: "monospace", label: "等幅フォント" },
-];
-
 export function EditorCategory() {
+  const { t } = useTranslation();
+
+  const WORD_BREAK_OPTIONS = [
+    { value: "auto-phrase", label: t("settings.editor.wordBreakAutoPhrase") },
+    { value: "normal", label: t("settings.editor.wordBreakNormal") },
+    { value: "break-all", label: t("settings.editor.wordBreakBreakAll") },
+    { value: "keep-all", label: t("settings.editor.wordBreakKeepAll") },
+  ];
+
+  const LINE_BREAK_OPTIONS = [
+    { value: "strict", label: t("settings.editor.lineBreakStrict") },
+    { value: "normal", label: t("settings.editor.lineBreakNormal") },
+    { value: "loose", label: t("settings.editor.lineBreakLoose") },
+    { value: "auto", label: t("settings.editor.lineBreakAuto") },
+  ];
+
+  const FONT_FAMILY_OPTIONS = [
+    { value: "serif", label: t("settings.editor.fontDefault") },
+    { value: '"Noto Serif JP", serif', label: "Noto Serif JP" },
+    { value: '"Noto Sans JP", sans-serif', label: "Noto Sans JP" },
+    { value: '"BIZ UDMincho", serif', label: "BIZ UDMincho" },
+    { value: '"BIZ UDGothic", sans-serif', label: "BIZ UDGothic" },
+    { value: '"Source Han Serif JP", serif', label: "Source Han Serif" },
+    { value: "monospace", label: t("settings.editor.fontMono") },
+  ];
+
   const { value: disableAll, setValue: setDisableAll } = useSettingBoolean(
     "editor.disableAllAnimations",
     false,
@@ -64,15 +67,15 @@ export function EditorCategory() {
 
   return (
     <div className="p-6">
-      <SettingSection title="テキスト表示">
-        <SettingRow label="フォント">
+      <SettingSection title={t("settings.editor.textDisplay")}>
+        <SettingRow label={t("settings.editor.font")}>
           <SettingDropdown
             settingKey="editor.fontFamily"
             options={FONT_FAMILY_OPTIONS}
             defaultValue="serif"
           />
         </SettingRow>
-        <SettingRow label="フォントサイズ">
+        <SettingRow label={t("settings.editor.fontSize")}>
           <SettingSlider
             settingKey="editor.fontSize"
             min={14}
@@ -82,7 +85,7 @@ export function EditorCategory() {
             format={(v) => `${v}px`}
           />
         </SettingRow>
-        <SettingRow label="行間">
+        <SettingRow label={t("settings.editor.lineHeight")}>
           <SettingSlider
             settingKey="editor.lineHeight"
             min={1.2}
@@ -92,7 +95,7 @@ export function EditorCategory() {
             format={(v) => v.toFixed(1)}
           />
         </SettingRow>
-        <SettingRow label="最大コンテンツ幅">
+        <SettingRow label={t("settings.editor.maxWidth")}>
           <SettingSlider
             settingKey="editor.maxContentWidth"
             min={480}
@@ -102,7 +105,7 @@ export function EditorCategory() {
             format={(v) => `${v}px`}
           />
         </SettingRow>
-        <SettingRow label="段落間隔">
+        <SettingRow label={t("settings.editor.paragraphSpacing")}>
           <SettingSlider
             settingKey="editor.paragraphSpacing"
             min={0}
@@ -113,8 +116,8 @@ export function EditorCategory() {
           />
         </SettingRow>
         <SettingRow
-          label="単語の折り返し"
-          description="行末での単語・語句の折り返し方法"
+          label={t("settings.editor.wordBreak")}
+          description={t("settings.editor.wordBreakDesc")}
         >
           <SettingDropdown
             settingKey="editor.wordBreak"
@@ -123,8 +126,8 @@ export function EditorCategory() {
           />
         </SettingRow>
         <SettingRow
-          label="禁則処理"
-          description="行頭・行末に置けない文字のルール（日本語）"
+          label={t("settings.editor.lineBreak")}
+          description={t("settings.editor.lineBreakDesc")}
         >
           <SettingDropdown
             settingKey="editor.lineBreak"
@@ -134,10 +137,10 @@ export function EditorCategory() {
         </SettingRow>
       </SettingSection>
 
-      <SettingSection title="編集体験">
+      <SettingSection title={t("settings.editor.experience")}>
         <SettingRow
-          label="タイプライターモード"
-          description="カーソル行を常に画面中央に固定"
+          label={t("settings.editor.typewriterMode")}
+          description={t("settings.editor.typewriterModeDesc")}
         >
           <SettingToggle
             settingKey="editor.typewriterMode"
@@ -145,8 +148,8 @@ export function EditorCategory() {
           />
         </SettingRow>
         <SettingRow
-          label="自動保存間隔"
-          description="入力停止後に保存するまでの時間"
+          label={t("settings.editor.autoSave")}
+          description={t("settings.editor.autoSaveDesc")}
         >
           <SettingSlider
             settingKey="editor.autoSaveDelay"
@@ -154,31 +157,34 @@ export function EditorCategory() {
             max={10000}
             step={500}
             defaultValue={2000}
-            format={(v) => `${v / 1000}秒`}
+            format={(v) => t("settings.editor.autoSaveFormat", { v: v / 1000 })}
           />
         </SettingRow>
-        <SettingRow label="スペルチェック">
+        <SettingRow label={t("settings.editor.spellCheck")}>
           <SettingToggle settingKey="editor.spellCheck" defaultValue={false} />
         </SettingRow>
         <SettingRow
-          label="スマートクォート"
-          description={`" → " " の自動変換（日本語ではOFF推奨）`}
+          label={t("settings.editor.smartQuotes")}
+          description={t("settings.editor.smartQuotesDesc")}
         >
           <SettingToggle settingKey="editor.smartQuotes" defaultValue={false} />
         </SettingRow>
-        <SettingRow label="スマートダッシュ" description="-- → — の自動変換">
+        <SettingRow
+          label={t("settings.editor.smartDashes")}
+          description={t("settings.editor.smartDashesDesc")}
+        >
           <SettingToggle settingKey="editor.smartDashes" defaultValue={false} />
         </SettingRow>
       </SettingSection>
 
-      <SettingSection title="インライン AI">
-        <SettingRow label="/ コマンドを有効化">
+      <SettingSection title={t("settings.editor.inlineAi")}>
+        <SettingRow label={t("settings.editor.slashCommand")}>
           <SettingToggle
             settingKey="editor.inlineAiCommand"
             defaultValue={true}
           />
         </SettingRow>
-        <SettingRow label="Ctrl+Shift+Space パレットを有効化">
+        <SettingRow label={t("settings.editor.paletteShortcut")}>
           <SettingToggle
             settingKey="editor.inlineAiShortcut"
             defaultValue={true}
@@ -186,35 +192,35 @@ export function EditorCategory() {
         </SettingRow>
       </SettingSection>
 
-      <SettingSection title="アニメーション">
+      <SettingSection title={t("settings.editor.animation")}>
         <SettingRow
-          label="すべてのアニメーションを無効化"
-          description="以下の設定を一括でOFF"
+          label={t("settings.editor.disableAll")}
+          description={t("settings.editor.disableAllDesc")}
         >
           <DisableAllToggle value={disableAll} onChange={handleDisableAll} />
         </SettingRow>
-        <SettingRow label="スムーズカーソル">
+        <SettingRow label={t("settings.editor.smoothCaret")}>
           <AnimToggle
             value={smoothCaret}
             onChange={setSmoothCaret}
             disabled={disableAll}
           />
         </SettingRow>
-        <SettingRow label="カーソル点滅">
+        <SettingRow label={t("settings.editor.cursorBlink")}>
           <AnimToggle
             value={cursorBlink}
             onChange={setCursorBlink}
             disabled={disableAll}
           />
         </SettingRow>
-        <SettingRow label="文字フェードイン">
+        <SettingRow label={t("settings.editor.fadeIn")}>
           <AnimToggle
             value={fadeIn}
             onChange={setFadeIn}
             disabled={disableAll}
           />
         </SettingRow>
-        <SettingRow label="文字フェードアウト">
+        <SettingRow label={t("settings.editor.fadeOut")}>
           <AnimToggle
             value={fadeOut}
             onChange={setFadeOut}

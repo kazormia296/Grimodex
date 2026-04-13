@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import { useTranslation } from "react-i18next";
 import { cn } from "@/lib/utils";
 import { useTabStore } from "./tabStore";
 import { useTreeStore } from "@/features/tree/treeStore";
@@ -30,6 +31,7 @@ function UnsavedDialog({
   onCloseWithoutSave,
   onCancel,
 }: UnsavedDialogProps) {
+  const { t } = useTranslation();
   const overlayRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -51,8 +53,8 @@ function UnsavedDialog({
       <div className="min-w-[360px] rounded-lg border border-border bg-popover p-5 shadow-xl">
         <p className="mb-4 text-sm text-foreground">
           {count === 1
-            ? "1個のタブに未保存の変更があります。保存しますか？"
-            : `${count}個のタブに未保存の変更があります。保存しますか？`}
+            ? t("editor.tab.unsavedOne")
+            : t("editor.tab.unsavedMany", { count })}
         </p>
         <div className="flex justify-end gap-2">
           <button
@@ -60,21 +62,21 @@ function UnsavedDialog({
             onClick={onCancel}
             className="rounded px-3 py-1.5 text-xs text-muted-foreground hover:bg-accent"
           >
-            キャンセル
+            {t("common.cancel")}
           </button>
           <button
             type="button"
             onClick={onCloseWithoutSave}
             className="rounded px-3 py-1.5 text-xs text-muted-foreground hover:bg-accent"
           >
-            保存せず閉じる
+            {t("editor.tab.closeWithoutSave")}
           </button>
           <button
             type="button"
             onClick={onSaveAndClose}
             className="rounded bg-primary px-3 py-1.5 text-xs text-primary-foreground hover:bg-primary/90"
           >
-            すべて保存して閉じる
+            {t("editor.tab.saveAndClose")}
           </button>
         </div>
       </div>
@@ -92,6 +94,7 @@ export function TabContextMenu({
   y,
   onClose,
 }: TabContextMenuProps) {
+  const { t } = useTranslation();
   const menuRef = useRef<HTMLDivElement>(null);
   const [pendingClose, setPendingClose] = useState<{
     nodeIds: string[];
@@ -218,9 +221,9 @@ export function TabContextMenu({
           style={style}
           className="min-w-[200px] rounded-md border border-border bg-popover py-1 shadow-lg"
         >
-          {item("閉じる", () => closeTabs([nodeId]))}
+          {item(t("editor.tab.close"), () => closeTabs([nodeId]))}
           {item(
-            "他を閉じる",
+            t("editor.tab.closeOthers"),
             () => {
               const others = tabs
                 .filter((t) => t.nodeId !== nodeId)
@@ -230,7 +233,7 @@ export function TabContextMenu({
             !hasOthers,
           )}
           {item(
-            "右を閉じる",
+            t("editor.tab.closeRight"),
             () => {
               const right = tabs.slice(tabIndex + 1).map((t) => t.nodeId);
               closeTabs(right);
@@ -238,14 +241,14 @@ export function TabContextMenu({
             !hasRight,
           )}
           {item(
-            "左を閉じる",
+            t("editor.tab.closeLeft"),
             () => {
               const left = tabs.slice(0, tabIndex).map((t) => t.nodeId);
               closeTabs(left);
             },
             !hasLeft,
           )}
-          {item("すべて閉じる", () => {
+          {item(t("editor.tab.closeAll"), () => {
             const all = tabs.map((t) => t.nodeId);
             closeTabs(all);
           })}
@@ -254,7 +257,7 @@ export function TabContextMenu({
           {isPreview && (
             <>
               {SEP}
-              {item("タブを固定する", () => {
+              {item(t("editor.tab.pin"), () => {
                 if (groupIndex === 0) {
                   useTabStore.getState().pinTab(nodeId);
                 } else {
@@ -270,14 +273,14 @@ export function TabContextMenu({
           {/* "右/下に分割" — only when right-clicking the active tab */}
           {isActiveTab && (
             <>
-              {item("右に分割", () => {
+              {item(t("editor.tab.splitRight"), () => {
                 useTabStore
                   .getState()
                   .openInSecondaryGroupDirectional(nodeId, "right");
                 useTreeStore.getState().setActiveScene(nodeId);
                 onClose();
               })}
-              {item("下に分割", () => {
+              {item(t("editor.tab.splitBelow"), () => {
                 useTabStore
                   .getState()
                   .openInSecondaryGroupDirectional(nodeId, "below");
@@ -294,8 +297,8 @@ export function TabContextMenu({
               // Secondary exists: move there (direction label matches current split)
               item(
                 useTabStore.getState().splitDirection === "below"
-                  ? "下のグループに移動"
-                  : "右のグループに移動",
+                  ? t("editor.tab.moveBelow")
+                  : t("editor.tab.moveRight"),
                 () => {
                   useTabStore.getState().moveTabBetweenGroups(nodeId, 0, 1);
                   useTreeStore.getState().setActiveScene(nodeId);
@@ -305,14 +308,14 @@ export function TabContextMenu({
             ) : (
               // No secondary: create it with chosen direction and move the tab
               <>
-                {item("右に移動", () => {
+                {item(t("editor.tab.moveRight"), () => {
                   useTabStore
                     .getState()
                     .moveTabBetweenGroups(nodeId, 0, 1, undefined, "right");
                   useTreeStore.getState().setActiveScene(nodeId);
                   onClose();
                 })}
-                {item("下に移動", () => {
+                {item(t("editor.tab.moveBelow"), () => {
                   useTabStore
                     .getState()
                     .moveTabBetweenGroups(nodeId, 0, 1, undefined, "below");
@@ -323,7 +326,7 @@ export function TabContextMenu({
             )
           ) : (
             // Secondary → Primary
-            item("プライマリグループに移動", () => {
+            item(t("editor.tab.movePrimary"), () => {
               useTabStore.getState().moveTabBetweenGroups(nodeId, 1, 0);
               useTreeStore.getState().setActiveScene(nodeId);
               onClose();
@@ -333,7 +336,7 @@ export function TabContextMenu({
           {isScene && SEP}
 
           {isScene &&
-            item("Scenesで表示", () => {
+            item(t("editor.tab.showInScenes"), () => {
               useLayoutStore.getState().showPanel("scenes");
               useTreeStore.getState().revealInTree(nodeId);
               onClose();

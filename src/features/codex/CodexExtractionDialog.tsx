@@ -1,4 +1,5 @@
 import { useState, useEffect } from "react";
+import { useTranslation } from "react-i18next";
 import type { CodexEntryType } from "./api";
 
 interface CodexExtractionFormData {
@@ -18,13 +19,6 @@ interface CodexExtractionDialogProps {
   onClose: () => void;
 }
 
-const TYPE_OPTIONS: { value: CodexEntryType; label: string }[] = [
-  { value: "character", label: "キャラクター" },
-  { value: "location", label: "場所" },
-  { value: "item", label: "アイテム" },
-  { value: "lore", label: "設定・世界観" },
-];
-
 export function CodexExtractionDialog({
   open,
   messageId,
@@ -32,10 +26,18 @@ export function CodexExtractionDialog({
   onSave,
   onClose,
 }: CodexExtractionDialogProps) {
+  const { t } = useTranslation();
   const [type, setType] = useState<CodexEntryType>("character");
   const [name, setName] = useState("");
   const [summary, setSummary] = useState(initialContent);
   const [tags, setTags] = useState("");
+
+  const TYPE_OPTIONS: { value: CodexEntryType; label: string }[] = [
+    { value: "character", label: t("codex.character") },
+    { value: "location", label: t("codex.location") },
+    { value: "item", label: t("codex.item") },
+    { value: "lore", label: t("codex.lore") },
+  ];
 
   useEffect(() => {
     if (open) {
@@ -65,10 +67,14 @@ export function CodexExtractionDialog({
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/50"
     >
       <div className="w-full max-w-lg rounded-lg border border-border bg-background p-6 shadow-xl">
-        <h2 className="mb-4 text-lg font-semibold">Codexに抽出</h2>
+        <h2 className="mb-4 text-lg font-semibold">
+          {t("codex.extraction.title")}
+        </h2>
 
         <div className="mb-3">
-          <label className="mb-1 block text-sm font-medium">タイプ</label>
+          <label className="mb-1 block text-sm font-medium">
+            {t("codex.extraction.type")}
+          </label>
           <select
             data-testid="codex-type-select"
             value={type}
@@ -84,19 +90,23 @@ export function CodexExtractionDialog({
         </div>
 
         <div className="mb-3">
-          <label className="mb-1 block text-sm font-medium">名前</label>
+          <label className="mb-1 block text-sm font-medium">
+            {t("codex.extraction.name")}
+          </label>
           <input
             data-testid="codex-name-input"
             type="text"
             value={name}
             onChange={(e) => setName(e.target.value)}
-            placeholder="エントリ名を入力"
+            placeholder={t("codex.extraction.namePlaceholder")}
             className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
           />
         </div>
 
         <div className="mb-3">
-          <label className="mb-1 block text-sm font-medium">概要</label>
+          <label className="mb-1 block text-sm font-medium">
+            {t("codex.extraction.summary")}
+          </label>
           <textarea
             data-testid="codex-summary-textarea"
             value={summary}
@@ -107,13 +117,15 @@ export function CodexExtractionDialog({
         </div>
 
         <div className="mb-4">
-          <label className="mb-1 block text-sm font-medium">タグ</label>
+          <label className="mb-1 block text-sm font-medium">
+            {t("codex.extraction.tags")}
+          </label>
           <input
             data-testid="codex-tags-input"
             type="text"
             value={tags}
             onChange={(e) => setTags(e.target.value)}
-            placeholder="タグをカンマ区切りで入力"
+            placeholder={t("codex.extraction.tagsPlaceholder")}
             className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
           />
         </div>
@@ -125,7 +137,7 @@ export function CodexExtractionDialog({
             onClick={onClose}
             className="rounded-md border border-border px-4 py-2 text-sm hover:bg-accent"
           >
-            キャンセル
+            {t("common.cancel")}
           </button>
           <button
             type="button"
@@ -133,7 +145,7 @@ export function CodexExtractionDialog({
             onClick={handleSave}
             className="rounded-md bg-primary px-4 py-2 text-sm text-primary-foreground hover:bg-primary/90"
           >
-            保存
+            {t("common.save")}
           </button>
         </div>
       </div>

@@ -1,4 +1,5 @@
 import { useState, useEffect } from "react";
+import { useTranslation } from "react-i18next";
 import { useSettingsStore } from "../settingsStore";
 import {
   COMMANDS,
@@ -8,6 +9,7 @@ import {
 } from "../keybindings";
 
 export function KeysCategory() {
+  const { t } = useTranslation();
   const store = useSettingsStore();
   const [search, setSearch] = useState("");
   const [capturing, setCapturing] = useState<string | null>(null);
@@ -92,7 +94,7 @@ export function KeysCategory() {
           type="text"
           value={search}
           onChange={(e) => setSearch(e.target.value)}
-          placeholder="キーバインドを検索…"
+          placeholder={t("settings.keys.search")}
           className="w-56 rounded-md border border-input bg-background px-3 py-1.5 text-sm focus:outline-none"
         />
         <button
@@ -100,15 +102,19 @@ export function KeysCategory() {
           onClick={resetAll}
           className="text-xs text-muted-foreground underline hover:text-foreground"
         >
-          すべてデフォルトにリセット
+          {t("settings.keys.resetAll")}
         </button>
       </div>
 
       <table className="w-full text-sm">
         <thead>
           <tr className="border-b border-border text-xs text-muted-foreground">
-            <th className="pb-1.5 text-left font-medium">コマンド</th>
-            <th className="pb-1.5 text-right font-medium">キーバインド</th>
+            <th className="pb-1.5 text-left font-medium">
+              {t("settings.keys.command")}
+            </th>
+            <th className="pb-1.5 text-right font-medium">
+              {t("settings.keys.keybinding")}
+            </th>
           </tr>
         </thead>
         <tbody>
@@ -126,7 +132,9 @@ export function KeysCategory() {
                 <td className="py-1.5 text-right">
                   <div className="flex items-center justify-end gap-2">
                     {hasConflict && (
-                      <span className="text-xs text-destructive">競合</span>
+                      <span className="text-xs text-destructive">
+                        {t("settings.keys.conflict")}
+                      </span>
                     )}
                     <button
                       type="button"
@@ -140,8 +148,8 @@ export function KeysCategory() {
                       }`}
                     >
                       {isCapturing
-                        ? "キーを押してください…"
-                        : (bindings[cmd.id] ?? "未設定")}
+                        ? t("settings.keys.pressKey")
+                        : (bindings[cmd.id] ?? t("common.unset"))}
                     </button>
                     {isModified && (
                       <button
@@ -149,7 +157,7 @@ export function KeysCategory() {
                         onClick={() => resetOne(cmd.id)}
                         className="invisible text-xs text-muted-foreground underline hover:text-foreground group-hover:visible"
                       >
-                        リセット
+                        {t("settings.keys.reset")}
                       </button>
                     )}
                   </div>

@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { useTranslation } from "react-i18next";
 import { openFolderDialog } from "@/lib/dialog";
 import { useWorkspaceStore } from "./store";
 import type { RecentWorkspace } from "./store";
@@ -7,6 +8,7 @@ import { TitleBar } from "@/components/TitleBar";
 import { GrimodexLogo } from "@/components/GrimodexLogo";
 
 export function LauncherScreen() {
+  const { t } = useTranslation();
   const globalSettings = useWorkspaceStore((s) => s.globalSettings);
   const openWorkspace = useWorkspaceStore((s) => s.openWorkspace);
   const openRecentWorkspace = useWorkspaceStore((s) => s.openRecentWorkspace);
@@ -41,11 +43,11 @@ export function LauncherScreen() {
 
         <div>
           <h2 className="mb-3 text-sm font-semibold text-muted-foreground">
-            最近のワークスペース
+            {t("launcher.recentWorkspaces")}
           </h2>
           {recentWorkspaces.length === 0 ? (
             <p className="py-4 text-center text-sm text-muted-foreground">
-              ワークスペースがありません
+              {t("launcher.noWorkspaces")}
             </p>
           ) : (
             <ul className="divide-y divide-border rounded-md border border-border">
@@ -69,14 +71,14 @@ export function LauncherScreen() {
             onClick={handleBrowse}
             className="flex-1 rounded-md border border-input bg-background px-4 py-2 text-sm font-medium hover:bg-accent hover:text-accent-foreground"
           >
-            フォルダを開く
+            {t("launcher.openFolder")}
           </button>
           <button
             type="button"
             onClick={handleBrowse}
             className="flex-1 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90"
           >
-            新規作成
+            {t("launcher.newWorkspace")}
           </button>
         </div>
       </div>

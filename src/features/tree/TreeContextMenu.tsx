@@ -1,5 +1,6 @@
 import { useEffect, useRef } from "react";
 import { createPortal } from "react-dom";
+import { useTranslation } from "react-i18next";
 import { cn } from "@/lib/utils";
 import { useTreeStore } from "./treeStore";
 import { useTabStore } from "@/features/editor/tabStore";
@@ -36,6 +37,7 @@ export function TreeContextMenu({
   onClose,
   onStartRename,
 }: ContextMenuProps) {
+  const { t } = useTranslation();
   const menuRef = useRef<HTMLDivElement>(null);
   const { deleteNode, setStatus, createNode, setActiveScene } = useTreeStore();
 
@@ -113,7 +115,7 @@ export function TreeContextMenu({
       {/* Open (Scene/Note only) */}
       {(isScene || isNote) &&
         item(
-          "Editorで開く",
+          t("tree.openInEditor"),
           () => {
             useTabStore.getState().openPinned(node.id);
             setActiveScene(node.id);
@@ -122,7 +124,7 @@ export function TreeContextMenu({
         )}
       {(isScene || isNote) &&
         item(
-          "サイドで開く",
+          t("tree.openInSide"),
           () => {
             useTabStore.getState().openInSecondaryGroup(node.id);
             setActiveScene(node.id);
@@ -135,7 +137,7 @@ export function TreeContextMenu({
       {isScene && (
         <>
           <div className="px-3 py-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
-            Set status
+            {t("tree.setStatus")}
           </div>
           {STATUS_OPTIONS.map((s) => (
             <button
@@ -159,11 +161,11 @@ export function TreeContextMenu({
       )}
 
       {/* Rename */}
-      {item("名前を変更", onStartRename, "F2")}
+      {item(t("tree.rename"), onStartRename, "F2")}
 
       {/* Add children inside folder */}
       {isFolder &&
-        item("シーンを追加", () => {
+        item(t("tree.addScene"), () => {
           createNode({ nodeType: "scene", parentId: node.id })
             .then((n) => {
               useTabStore.getState().openPinned(n.id);
@@ -171,7 +173,7 @@ export function TreeContextMenu({
             .catch(() => {});
         })}
       {isFolder &&
-        item("ノートを追加", () => {
+        item(t("tree.addNote"), () => {
           createNode({ nodeType: "note", parentId: node.id })
             .then((n) => {
               useTabStore.getState().openPinned(n.id);
@@ -179,13 +181,13 @@ export function TreeContextMenu({
             .catch(() => {});
         })}
       {isFolder &&
-        item("フォルダーを追加", () => {
+        item(t("tree.addFolder"), () => {
           createNode({ nodeType: "folder", parentId: node.id }).catch(() => {});
         })}
 
       {/* Add sibling below (scene / note) */}
       {(isScene || isNote) &&
-        item("下にシーンを追加", () => {
+        item(t("tree.addSceneBelow"), () => {
           createNode({
             nodeType: "scene",
             parentId: node.parentId,
@@ -197,7 +199,7 @@ export function TreeContextMenu({
             .catch(() => {});
         })}
       {(isScene || isNote) &&
-        item("下にノートを追加", () => {
+        item(t("tree.addNoteBelow"), () => {
           createNode({
             nodeType: "note",
             parentId: node.parentId,
@@ -209,7 +211,7 @@ export function TreeContextMenu({
             .catch(() => {});
         })}
       {(isScene || isNote) &&
-        item("下にフォルダーを追加", () => {
+        item(t("tree.addFolderBelow"), () => {
           createNode({
             nodeType: "folder",
             parentId: node.parentId,
@@ -221,7 +223,12 @@ export function TreeContextMenu({
 
       {/* Delete */}
       {sep()}
-      {item("削除", () => deleteNode(node.id).catch(() => {}), "Del", false)}
+      {item(
+        t("tree.delete"),
+        () => deleteNode(node.id).catch(() => {}),
+        "Del",
+        false,
+      )}
     </div>,
     document.body,
   );
