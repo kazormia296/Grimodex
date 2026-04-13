@@ -3,6 +3,7 @@ import { Clock } from "lucide-react";
 import { useEditor, EditorContent } from "@tiptap/react";
 import { getEditorExtensions } from "@/features/editor/extensions";
 import { Toolbar } from "@/features/editor/Toolbar";
+import type { ToolbarActions } from "@/features/editor/Toolbar";
 import { SynopsisHeader } from "@/features/editor/SynopsisHeader";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { loadSceneContent, saveSceneContent } from "@/features/tree/api";
@@ -159,6 +160,7 @@ export function EditorPane({
 
   const paneRef = useRef<HTMLDivElement>(null);
   const editorContainerRef = useRef<HTMLDivElement>(null);
+  const toolbarActionsRef = useRef<ToolbarActions | null>(null);
   const [titleEditing, setTitleEditing] = useState(false);
   const [titleDraft, setTitleDraft] = useState("");
   const [findOpen, setFindOpen] = useState(false);
@@ -527,6 +529,12 @@ export function EditorPane({
         e.preventDefault();
         setPalettePreselect(null);
         setPaletteOpen(true);
+      } else if (e.ctrlKey && e.key === "k" && !e.altKey && !e.shiftKey) {
+        e.preventDefault();
+        toolbarActionsRef.current?.openLink();
+      } else if (e.ctrlKey && e.shiftKey && e.key === "R") {
+        e.preventDefault();
+        toolbarActionsRef.current?.openRuby();
       }
     }
     window.addEventListener("keydown", onKeyDown);
@@ -883,6 +891,7 @@ export function EditorPane({
           setFindShowReplace(true);
         }}
         onVerticalPreview={() => setVerticalPreviewOpen(true)}
+        actionsRef={toolbarActionsRef}
       />
       {isNote && (
         <div className="flex items-center gap-1.5 border-b border-amber-500/30 bg-amber-500/10 px-3 py-1 text-xs text-amber-600 dark:text-amber-400">

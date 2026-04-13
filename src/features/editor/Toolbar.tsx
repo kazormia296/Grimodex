@@ -45,16 +45,23 @@ function Sep() {
   return <div className="mx-0.5 h-4 w-px bg-border" />;
 }
 
+export interface ToolbarActions {
+  openLink: () => void;
+  openRuby: () => void;
+}
+
 interface ToolbarProps {
   editor: Editor | null;
   onFindReplace: () => void;
   onVerticalPreview: () => void;
+  actionsRef?: React.RefObject<ToolbarActions | null>;
 }
 
 export function Toolbar({
   editor,
   onFindReplace,
   onVerticalPreview,
+  actionsRef,
 }: ToolbarProps) {
   const [rubyOpen, setRubyOpen] = useState(false);
   const [rubyBase, setRubyBase] = useState("");
@@ -204,6 +211,9 @@ export function Toolbar({
   }, [fontSizeOpen]);
 
   if (!editor) return null;
+
+  // Register imperative handles so EditorPane can trigger dialogs via keyboard shortcuts.
+  if (actionsRef) actionsRef.current = { openLink, openRuby };
 
   function getSelectionCoords(): { x: number; y: number } | null {
     if (!editor) return null;
@@ -382,7 +392,7 @@ export function Toolbar({
             <div ref={unit4Ref} className="flex items-center gap-0.5">
               <Sep />
               <ToolbarButton
-                label="ルビ（ふりがな）"
+                label="ルビ（ふりがな）(Ctrl+Shift+R)"
                 active={rubyOpen || editor.isActive("ruby")}
                 onClick={openRuby}
                 allowFocus

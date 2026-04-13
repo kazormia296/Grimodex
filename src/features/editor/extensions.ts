@@ -1,4 +1,5 @@
 import StarterKit from "@tiptap/starter-kit";
+import { Extension } from "@tiptap/core";
 import { Markdown } from "tiptap-markdown";
 import Underline from "@tiptap/extension-underline";
 import Link from "@tiptap/extension-link";
@@ -55,6 +56,28 @@ const ParagraphWithEmptyLineSupport = Paragraph.extend({
 });
 
 /**
+ * Toolbar keyboard shortcuts not covered by StarterKit defaults.
+ *
+ * StarterKit ships:  Mod-Shift-s (strike), Mod-Alt-1/2/3 (headings)
+ * Toolbar shows:     Ctrl+Shift+X (strike), Ctrl+1/2/3 (headings)
+ *
+ * This extension adds the shortcuts that match what the toolbar labels
+ * display, so both sets of keys work.
+ */
+const ToolbarShortcutsExtension = Extension.create({
+  name: "toolbarShortcuts",
+
+  addKeyboardShortcuts() {
+    return {
+      "Mod-Shift-x": () => this.editor.commands.toggleStrike(),
+      "Mod-1": () => this.editor.commands.toggleHeading({ level: 1 }),
+      "Mod-2": () => this.editor.commands.toggleHeading({ level: 2 }),
+      "Mod-3": () => this.editor.commands.toggleHeading({ level: 3 }),
+    };
+  },
+});
+
+/**
  * Centralizes all TipTap extensions.
  * Each feature registers its extensions here to avoid merge conflicts
  * when multiple features add extensions in parallel.
@@ -78,6 +101,7 @@ export function getEditorExtensions(): Extensions {
     TableRow,
     TableHeader,
     TableCell,
+    ToolbarShortcutsExtension,
     // Custom marks/nodes
     AuthorshipMark,
     EmphasisDotsMark,
