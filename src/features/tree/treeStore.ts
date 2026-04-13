@@ -355,7 +355,7 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
             id: DEFAULT_CHAPTER_ID,
             projectId,
             nodeType: "folder",
-            title: "第1章",
+            title: "Part.1",
             sortOrder: 1.0,
           });
           raw = [...raw, ch];
