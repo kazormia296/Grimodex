@@ -9,16 +9,17 @@ import { GrimodexLogo } from "@/components/GrimodexLogo";
 export function LauncherScreen() {
   const globalSettings = useWorkspaceStore((s) => s.globalSettings);
   const openWorkspace = useWorkspaceStore((s) => s.openWorkspace);
+  const openRecentWorkspace = useWorkspaceStore((s) => s.openRecentWorkspace);
   const error = useWorkspaceStore((s) => s.error);
   const clearError = useWorkspaceStore((s) => s.clearError);
   const [opening, setOpening] = useState<string | null>(null);
 
   const recentWorkspaces = globalSettings?.recentWorkspaces ?? [];
 
-  async function handleOpen(path: string) {
+  async function handleOpenRecent(path: string) {
     clearError();
     setOpening(path);
-    await openWorkspace(path);
+    await openRecentWorkspace(path);
     setOpening(null);
   }
 
@@ -26,7 +27,9 @@ export function LauncherScreen() {
     clearError();
     const path = await openFolderDialog();
     if (path) {
-      await handleOpen(path);
+      setOpening(path);
+      await openWorkspace(path);
+      setOpening(null);
     }
   }
 
@@ -51,7 +54,7 @@ export function LauncherScreen() {
                   key={ws.path}
                   workspace={ws}
                   isOpening={opening === ws.path}
-                  onOpen={() => handleOpen(ws.path)}
+                  onOpen={() => handleOpenRecent(ws.path)}
                 />
               ))}
             </ul>

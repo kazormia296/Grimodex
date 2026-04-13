@@ -41,6 +41,7 @@ interface WorkspaceState {
 
   initialize: () => Promise<void>;
   openWorkspace: (path: string) => Promise<void>;
+  openRecentWorkspace: (path: string) => Promise<void>;
   updateGlobalSettings: (updates: Partial<GlobalSettings>) => Promise<void>;
   showLauncher: () => void;
   clearError: () => void;
@@ -119,6 +120,25 @@ export const useWorkspaceStore = create<WorkspaceState>()((set, get) => ({
         ...(get().view === "loading" ? { view: "launcher" as const } : {}),
       });
     }
+  },
+
+  async openRecentWorkspace(path: string) {
+    const isValid = await invoke<boolean>("validate_workspace_path", { path });
+    if (!isValid) {
+      const current = get().globalSettings;
+      if (current) {
+        await get().updateGlobalSettings({
+          recentWorkspaces: current.recentWorkspaces.filter(
+            (ws) => ws.path !== path,
+          ),
+        });
+      }
+      set({
+        error: `ワークスペース "${path}" は存在しないか無効です。一覧から削除しました。`,
+      });
+      return;
+    }
+    await get().openWorkspace(path);
   },
 
   async updateGlobalSettings(updates: Partial<GlobalSettings>) {

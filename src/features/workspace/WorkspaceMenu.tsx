@@ -7,6 +7,7 @@ export function WorkspaceMenu() {
   const activeWorkspaceName = useWorkspaceStore((s) => s.activeWorkspaceName);
   const globalSettings = useWorkspaceStore((s) => s.globalSettings);
   const openWorkspace = useWorkspaceStore((s) => s.openWorkspace);
+  const openRecentWorkspace = useWorkspaceStore((s) => s.openRecentWorkspace);
   const showLauncher = useWorkspaceStore((s) => s.showLauncher);
   const activeWorkspacePath = useWorkspaceStore((s) => s.activeWorkspacePath);
 
@@ -76,7 +77,7 @@ export function WorkspaceMenu() {
               type="button"
               onClick={() => {
                 setIsOpen(false);
-                openWorkspace(ws.path);
+                openRecentWorkspace(ws.path);
               }}
               className="flex w-full items-center gap-2 px-3 py-1.5 text-sm hover:bg-accent hover:text-accent-foreground"
             >

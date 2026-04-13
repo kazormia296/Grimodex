@@ -458,7 +458,11 @@ impl Database {
             INSERT OR IGNORE INTO projects (id, title, language, created_at, updated_at)
               VALUES ('default-project', '無題のプロジェクト', 'ja', datetime('now'), datetime('now'));
             INSERT OR IGNORE INTO tree_nodes (id, project_id, node_type, title, sort_order, created_at, updated_at)
-              VALUES ('default-chapter', 'default-project', 'folder', '第1章', 0.0, datetime('now'), datetime('now'));",
+              VALUES ('default-chapter', 'default-project', 'folder', 'Part.1', 0.0, datetime('now'), datetime('now'));
+
+            -- Fix legacy default folder name (e7af0e35)
+            UPDATE tree_nodes SET title = 'Part.1'
+              WHERE id = 'default-chapter' AND title = '第1章';",
         )?;
 
         Ok(())
