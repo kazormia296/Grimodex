@@ -66,6 +66,7 @@ export function Toolbar({
   const [rubyOpen, setRubyOpen] = useState(false);
   const [rubyBase, setRubyBase] = useState("");
   const [rubyAnnotation, setRubyAnnotation] = useState("");
+  const [rubyFocusAnnotation, setRubyFocusAnnotation] = useState(false);
   const [rubyPos, setRubyPos] = useState<{ x: number; y: number } | null>(null);
   const [linkOpen, setLinkOpen] = useState(false);
   const [linkUrl, setLinkUrl] = useState("");
@@ -231,10 +232,14 @@ export function Toolbar({
       const attrs = editor.getAttributes("ruby");
       setRubyBase((attrs.base as string) ?? "");
       setRubyAnnotation((attrs.annotation as string) ?? "");
+      setRubyFocusAnnotation(false);
     } else {
       const { from, to } = editor.state.selection;
-      setRubyBase(editor.state.doc.textBetween(from, to));
+      const selected = editor.state.doc.textBetween(from, to);
+      setRubyBase(selected);
       setRubyAnnotation("");
+      // When text is pre-selected, base is already filled → focus annotation field.
+      setRubyFocusAnnotation(selected.length > 0);
     }
     setRubyPos(getSelectionCoords());
     setRubyOpen(true);
@@ -624,7 +629,7 @@ export function Toolbar({
             onMouseDown={(e) => e.stopPropagation()}
           >
             <input
-              autoFocus
+              autoFocus={!rubyFocusAnnotation}
               type="text"
               placeholder="ベース"
               value={rubyBase}
@@ -636,6 +641,7 @@ export function Toolbar({
               className="w-20 rounded border border-border bg-background px-1.5 py-0.5 text-xs focus:outline-none"
             />
             <input
+              autoFocus={rubyFocusAnnotation}
               type="text"
               placeholder="ふりがな"
               value={rubyAnnotation}

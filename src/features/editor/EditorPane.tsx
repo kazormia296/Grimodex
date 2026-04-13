@@ -788,6 +788,11 @@ export function EditorPane({
         }
       }
 
+      // Reset scroll to top after scene load; saved state will be restored below.
+      if (editorContainerRef.current) {
+        editorContainerRef.current.scrollTop = 0;
+      }
+
       prevSceneIdRef.current = nodeId;
 
       // Decide whether to focus the editor immediately.
