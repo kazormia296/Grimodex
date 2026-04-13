@@ -51,7 +51,9 @@ export function PhaseDialog({ entryId, phase, onClose }: PhaseDialogProps) {
         label: label.trim(),
         anchorNodeId,
         summaryOverride: summaryEnabled ? summaryValue.trim() || "" : null,
-        contentOverride: contentEnabled ? (phase?.contentOverride ?? "") : null,
+        contentOverride: contentEnabled
+          ? (phase?.contentOverride ?? null)
+          : null,
         contextModeOverride: contextModeEnabled ? contextModeValue : null,
       };
       if (isEditing) {

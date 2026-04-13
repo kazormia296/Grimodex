@@ -91,9 +91,49 @@ export function DetailsTab({
     entry.contextMode,
   ]);
 
+  // アクティブシーン（現在シーン）での自動解決済み状態
+  const activeResolvedState = useMemo(() => {
+    if (!activeSceneId || !phases) return null;
+    const phaseDetailsMap = new Map(
+      phases.map((p) => [p.id, detailOverrides[p.id] ?? []]),
+    );
+    return resolveCodexState(
+      {
+        summary: entry.summary ?? null,
+        content: entry.content ?? "{}",
+        contextMode: entry.contextMode ?? "mentioned",
+      },
+      phases,
+      phaseDetailsMap,
+      new Map(),
+      activeSceneId,
+      globalSceneOrder,
+    );
+  }, [
+    activeSceneId,
+    phases,
+    detailOverrides,
+    globalSceneOrder,
+    entry.summary,
+    entry.content,
+    entry.contextMode,
+  ]);
+
+  // 有効な解決済み状態（手動プレビュー優先、次にアクティブシーン自動解決）
+  const effectiveResolvedState = previewResolvedState ?? activeResolvedState;
+
+  // アクティブフェーズがベース値を上書きしているか
+  const isActivePhaseOverriding =
+    activeResolvedState != null &&
+    (activeResolvedState.summary !== (entry.summary ?? "") ||
+      activeResolvedState.content !== (entry.content ?? "{}"));
+
+  // 読み取り専用か（手動プレビュー中 OR アクティブフェーズが上書き中）
+  const isFieldReadOnly = previewPhaseId != null || isActivePhaseOverriding;
+
   // プレビュー中の summary（null = Base 値と同じ or プレビューなし）
   const previewSummary =
-    previewResolvedState != null ? previewResolvedState.summary : null;
+    effectiveResolvedState != null ? effectiveResolvedState.summary : null;
   const hasPreviewSummary =
     previewSummary != null && previewSummary !== (entry.summary ?? "");
 
@@ -132,27 +172,27 @@ export function DetailsTab({
           <textarea
             data-testid="codex-detail-summary"
             value={
-              previewPhaseId != null && previewResolvedState != null
-                ? (previewResolvedState.summary ?? "")
+              isFieldReadOnly && effectiveResolvedState != null
+                ? (effectiveResolvedState.summary ?? "")
                 : summary
             }
             onChange={(e) => {
-              if (previewPhaseId == null) onSummaryChange(e.target.value);
+              if (!isFieldReadOnly) onSummaryChange(e.target.value);
             }}
-            readOnly={previewPhaseId != null}
+            readOnly={isFieldReadOnly}
             rows={3}
-            className={`w-full resize-none rounded-md border border-input bg-background px-2 py-1.5 text-sm ${previewPhaseId != null ? "cursor-default opacity-70" : ""}`}
+            className={`w-full resize-none rounded-md border border-input bg-background px-2 py-1.5 text-sm ${isFieldReadOnly ? "cursor-default opacity-70" : ""}`}
             placeholder="Short description..."
           />
         )}
         {/* S5: hint when summary is empty but content exists */}
-        {summary === "" && !emptyContent && previewPhaseId == null && (
+        {summary === "" && !emptyContent && !isFieldReadOnly && (
           <p className="mt-1 text-[11px] text-muted-foreground">
             Summaryを記入するとAIチャットでのトークン消費を抑えられます
           </p>
         )}
         {/* M4: AI auto-generate button */}
-        {summary === "" && !emptyContent && previewPhaseId == null && (
+        {summary === "" && !emptyContent && !isFieldReadOnly && (
           <button
             type="button"
             data-testid="codex-generate-summary"
@@ -194,26 +234,24 @@ export function DetailsTab({
             エディタで開く
           </button>
         </div>
-        {/* プレビュー中かつcontentOverrideがある場合は左ボーダーで強調 */}
+        {/* フェーズによるcontentOverrideがある場合は左ボーダーで強調 */}
         <div
           className={
-            previewPhaseId != null &&
-            previewResolvedState != null &&
-            previewResolvedState.content !== (entry.content ?? "{}")
+            effectiveResolvedState != null &&
+            effectiveResolvedState.content !== (entry.content ?? "{}")
               ? "border-l-2 border-primary pl-2"
               : ""
           }
         >
           <CodexContentEditor
             content={emptyContent ? "" : entry.content}
-            onContentChange={
-              previewPhaseId == null ? onContentChange : () => {}
-            }
-            entryId={previewPhaseId == null ? entry.id : undefined}
-            onExternalSync={previewPhaseId == null ? onExternalSync : undefined}
+            onContentChange={isFieldReadOnly ? () => {} : onContentChange}
+            entryId={isFieldReadOnly ? undefined : entry.id}
+            onExternalSync={isFieldReadOnly ? undefined : onExternalSync}
             externalContent={
-              previewPhaseId != null && previewResolvedState != null
-                ? previewResolvedState.content
+              effectiveResolvedState != null &&
+              effectiveResolvedState.content !== (entry.content ?? "{}")
+                ? effectiveResolvedState.content
                 : null
             }
           />
