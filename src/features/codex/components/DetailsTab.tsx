@@ -122,8 +122,14 @@ export function DetailsTab({
   // 有効な解決済み状態（手動プレビュー優先、次にアクティブシーン自動解決）
   const effectiveResolvedState = previewResolvedState ?? activeResolvedState;
 
-  // 読み取り専用か（手動プレビュー中のみ。自動フェーズ適用中はベース値を編集可能）
-  const isFieldReadOnly = previewPhaseId != null;
+  // アクティブフェーズがベース値を上書きしているか
+  const isActivePhaseOverriding =
+    activeResolvedState != null &&
+    (activeResolvedState.summary !== (entry.summary ?? "") ||
+      activeResolvedState.content !== (entry.content ?? "{}"));
+
+  // 読み取り専用か（手動プレビュー中 OR アクティブフェーズが上書き中）
+  const isFieldReadOnly = previewPhaseId != null || isActivePhaseOverriding;
 
   // プレビュー中の summary（null = Base 値と同じ or プレビューなし）
   const previewSummary =
@@ -149,29 +155,17 @@ export function DetailsTab({
       <div>
         <label className="mb-1 block text-xs font-medium">概要</label>
         {hasPreviewSummary ? (
-          // フェーズ上書きあり: 解決済み値を表示
+          // フェーズプレビュー中: 解決済み値を読み取り専用表示
           <div className="border-l-2 border-primary pl-2">
             <p className="rounded-md border border-input bg-background px-2 py-1.5 text-sm text-foreground">
               {previewSummary || (
                 <span className="text-muted-foreground">(空)</span>
               )}
             </p>
-            {/* 自動フェーズ適用中: ベース値は引き続き編集可能 */}
-            {previewPhaseId == null ? (
-              <textarea
-                data-testid="codex-detail-summary"
-                value={summary}
-                onChange={(e) => onSummaryChange(e.target.value)}
-                rows={2}
-                className="mt-1 w-full resize-none rounded-md border border-input bg-muted/20 px-2 py-1 text-xs text-muted-foreground"
-                placeholder="Base summary..."
-              />
-            ) : (
-              entry.summary && (
-                <p className="mt-0.5 text-[11px] text-muted-foreground">
-                  Base: {entry.summary}
-                </p>
-              )
+            {entry.summary && (
+              <p className="mt-0.5 text-[11px] text-muted-foreground">
+                Base: {entry.summary}
+              </p>
             )}
           </div>
         ) : (
@@ -192,13 +186,13 @@ export function DetailsTab({
           />
         )}
         {/* S5: hint when summary is empty but content exists */}
-        {summary === "" && !emptyContent && previewPhaseId == null && (
+        {summary === "" && !emptyContent && !isFieldReadOnly && (
           <p className="mt-1 text-[11px] text-muted-foreground">
             Summaryを記入するとAIチャットでのトークン消費を抑えられます
           </p>
         )}
         {/* M4: AI auto-generate button */}
-        {summary === "" && !emptyContent && previewPhaseId == null && (
+        {summary === "" && !emptyContent && !isFieldReadOnly && (
           <button
             type="button"
             data-testid="codex-generate-summary"
@@ -240,12 +234,11 @@ export function DetailsTab({
             エディタで開く
           </button>
         </div>
-        {/* 手動プレビュー中かつcontentOverrideがある場合は左ボーダーで強調 */}
+        {/* フェーズによるcontentOverrideがある場合は左ボーダーで強調 */}
         <div
           className={
-            previewPhaseId != null &&
-            previewResolvedState != null &&
-            previewResolvedState.content !== (entry.content ?? "{}")
+            effectiveResolvedState != null &&
+            effectiveResolvedState.content !== (entry.content ?? "{}")
               ? "border-l-2 border-primary pl-2"
               : ""
           }
@@ -256,22 +249,13 @@ export function DetailsTab({
             entryId={isFieldReadOnly ? undefined : entry.id}
             onExternalSync={isFieldReadOnly ? undefined : onExternalSync}
             externalContent={
-              previewPhaseId != null &&
-              previewResolvedState != null &&
-              previewResolvedState.content !== (entry.content ?? "{}")
-                ? previewResolvedState.content
+              effectiveResolvedState != null &&
+              effectiveResolvedState.content !== (entry.content ?? "{}")
+                ? effectiveResolvedState.content
                 : null
             }
           />
         </div>
-        {/* 自動フェーズ適用中にcontentOverrideがある場合のインジケータ */}
-        {previewPhaseId == null &&
-          activeResolvedState != null &&
-          activeResolvedState.content !== (entry.content ?? "{}") && (
-            <p className="mt-1 text-[11px] text-primary">
-              このフェーズはContent上書きあり（プレビューで確認）
-            </p>
-          )}
       </div>
 
       {/* Custom Details */}
