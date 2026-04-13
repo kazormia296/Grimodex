@@ -130,6 +130,7 @@ function applyTheme(theme: string, colorTheme?: string) {
 
 function App() {
   const view = useWorkspaceStore((s) => s.view);
+  const activeWorkspacePath = useWorkspaceStore((s) => s.activeWorkspacePath);
   const initialize = useWorkspaceStore((s) => s.initialize);
   const theme = useWorkspaceStore((s) => s.globalSettings?.theme ?? "system");
   const colorTheme = useWorkspaceStore((s) => s.globalSettings?.colorTheme);
@@ -189,7 +190,7 @@ function App() {
       )}
       {view === "welcome" && <WelcomeScreen />}
       {view === "launcher" && <LauncherScreen />}
-      {view === "editor" && <EditorScreen />}
+      {view === "editor" && <EditorScreen key={activeWorkspacePath ?? ""} />}
       <DebugLogViewer />
     </>
   );
