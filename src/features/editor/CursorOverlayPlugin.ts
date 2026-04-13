@@ -139,7 +139,6 @@ class CursorOverlayView {
 
   update(view: EditorView, _prevState: EditorState) {
     this.view = view;
-    if (this.el.classList.contains("composing")) return;
     this.updateCursor(view);
   }
 
