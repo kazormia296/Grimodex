@@ -5,12 +5,48 @@ import { useTabStore } from "./tabStore";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { useCodexStore } from "@/features/codex/codexStore";
 import { useSnippetStore } from "@/features/snippets/snippetStore";
+import { usePhaseStore } from "@/features/codex/phaseStore";
 import { TabContextMenu } from "./TabContextMenu";
-import type { GroupIndex } from "./tabStore";
+import type { GroupIndex, TabEntry } from "./tabStore";
+import type { CodexEntryPhase } from "@/features/codex/phaseApi";
 
 export const DRAG_DATA_KEY = "application/grimodex-tab";
 /** Per-group marker so drop zones can detect source group during dragover. */
 export const DRAG_GROUP_KEY = (g: 0 | 1) => `application/grimodex-tab-g${g}`;
+
+/** Returns the label of the phase currently shown in a codex tab, or null. */
+function getTabPhaseLabel(
+  tab: TabEntry,
+  phasesByEntry: Record<string, CodexEntryPhase[]>,
+  globalSceneOrder: Map<string, number>,
+  activeSceneId: string | null,
+): string | null {
+  if (tab.contentType !== "codex") return null;
+  const phases = phasesByEntry[tab.nodeId];
+  if (!phases || phases.length === 0) return null;
+
+  if (tab.overridePhaseId === "__base__") return null; // explicitly showing base
+  if (tab.overridePhaseId) {
+    return phases.find((p) => p.id === tab.overridePhaseId)?.label ?? null;
+  }
+  // Auto-resolve from active scene
+  if (!activeSceneId) return null;
+  const currentOrder = globalSceneOrder.get(activeSceneId);
+  if (currentOrder === undefined) return null;
+  const applicable = phases
+    .filter(
+      (p) =>
+        p.anchorNodeId != null &&
+        globalSceneOrder.has(p.anchorNodeId) &&
+        globalSceneOrder.get(p.anchorNodeId!)! <= currentOrder,
+    )
+    .sort(
+      (a, b) =>
+        globalSceneOrder.get(a.anchorNodeId!)! -
+        globalSceneOrder.get(b.anchorNodeId!)!,
+    );
+  return applicable[applicable.length - 1]?.label ?? null;
+}
 
 interface DragPayload {
   nodeId: string;
@@ -34,8 +70,11 @@ export function TabBar({ groupIndex = 0 }: TabBarProps) {
   const isSyncedScene = useTabStore((s) => s.isSyncedScene);
 
   const nodes = useTreeStore((s) => s.nodes);
+  const activeSceneId = useTreeStore((s) => s.activeSceneId);
   const codexEntries = useCodexStore((s) => s.entries);
   const snippetEntries = useSnippetStore((s) => s.entries);
+  const phasesByEntry = usePhaseStore((s) => s.phasesByEntry);
+  const globalSceneOrder = usePhaseStore((s) => s.globalSceneOrder);
 
   const hasSecondaryGroup = useTabStore((s) => s.secondaryGroupOpen);
   const isPrimary = groupIndex === 0;
@@ -261,6 +300,12 @@ export function TabBar({ groupIndex = 0 }: TabBarProps) {
           const isActive = tab.nodeId === activeTabId;
           const title =
             node?.title ?? codexEntry?.name ?? snippetEntry?.title ?? "…";
+          const phaseLabel = getTabPhaseLabel(
+            tab,
+            phasesByEntry,
+            globalSceneOrder,
+            activeSceneId,
+          );
           const synced = isSyncedScene(tab.nodeId);
           const isDropLeft =
             dropTarget?.nodeId === tab.nodeId && dropTarget.side === "left";
@@ -327,12 +372,17 @@ export function TabBar({ groupIndex = 0 }: TabBarProps) {
               {isCodex && <span className="mr-0.5 text-purple-500">📖</span>}
               <span
                 className={cn(
-                  "max-w-[140px] truncate",
+                  "max-w-[120px] truncate",
                   tab.isPreview && "italic",
                 )}
               >
                 {title}
               </span>
+              {phaseLabel && (
+                <span className="ml-0.5 shrink-0 rounded bg-purple-500/15 px-1 py-0.5 text-[10px] text-purple-500">
+                  {phaseLabel}
+                </span>
+              )}
               <button
                 type="button"
                 title="閉じる"
@@ -440,6 +490,12 @@ export function TabBar({ groupIndex = 0 }: TabBarProps) {
                   overflowCodexEntry?.name ??
                   overflowSnippetEntry?.title ??
                   "…";
+                const overflowPhaseLabel = getTabPhaseLabel(
+                  tab,
+                  phasesByEntry,
+                  globalSceneOrder,
+                  activeSceneId,
+                );
                 return (
                   <button
                     key={tab.nodeId}
@@ -459,6 +515,11 @@ export function TabBar({ groupIndex = 0 }: TabBarProps) {
                       <span className="mr-1 text-purple-500">📖</span>
                     )}
                     {title}
+                    {overflowPhaseLabel && (
+                      <span className="ml-1.5 rounded bg-purple-500/15 px-1 py-0.5 text-[10px] text-purple-500">
+                        {overflowPhaseLabel}
+                      </span>
+                    )}
                   </button>
                 );
               })}

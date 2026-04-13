@@ -7,7 +7,6 @@ import { SynopsisHeader } from "@/features/editor/SynopsisHeader";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { loadSceneContent, saveSceneContent } from "@/features/tree/api";
 import { getCodexEntry, updateCodexEntry } from "@/features/codex/api";
-import { listPhasesByEntry } from "@/features/codex/phaseApi";
 import { usePhaseStore } from "@/features/codex/phaseStore";
 import { useCodexStore } from "@/features/codex/codexStore";
 import { getSnippet, updateSnippet } from "@/features/snippets/api";
@@ -149,6 +148,10 @@ export function EditorPane({
     const allTabs = groupIndex === 0 ? s.tabs : s.secondaryTabs;
     return allTabs.find((t) => t.nodeId === nodeId)?.overridePhaseId ?? null;
   });
+  // Phases for this codex entry (populated into store during load)
+  const codexPhases = usePhaseStore((s) =>
+    isCodexMode ? (s.phasesByEntry[nodeId] ?? null) : null,
+  );
   const updateNodeTitle = useTreeStore((s) => s.updateNodeTitle);
   const updateCodexEntryStore = useCodexStore((s) => s.update);
   const updateSnippetEntryStore = useSnippetStore((s) => s.update);
@@ -171,6 +174,8 @@ export function EditorPane({
   const saveSceneIdRef = useRef(nodeId);
   // Codex mode: non-null when the loaded content came from a phase contentOverride → save back to that phase
   const activePhaseIdRef = useRef<string | null>(null);
+  // Reactive version of activePhaseIdRef for display purposes
+  const [loadedPhaseId, setLoadedPhaseId] = useState<string | null>(null);
   const { shouldAutoRevision, recordAutoRevision } = useRevisionStore();
 
   // Prevent feedback loop when applying external content sync
@@ -665,7 +670,13 @@ export function EditorPane({
           const entry = await getCodexEntry(nodeId);
           if (cancelled) return;
 
+          // Load phases into store so TabBar and banner can display the phase label
+          await usePhaseStore.getState().loadPhasesForEntry(nodeId);
+          if (cancelled) return;
+
           const phaseStore = usePhaseStore.getState();
+          const phases = phaseStore.phasesByEntry[nodeId] ?? [];
+          const globalSceneOrder = phaseStore.globalSceneOrder;
           let phaseContentOverride: string | null = null;
           let resolvedPhaseId: string | null = null;
 
@@ -673,9 +684,6 @@ export function EditorPane({
             // Explicit base: skip phase resolution, show entry.content as-is
           } else if (overridePhaseId) {
             // Explicit phase ID from preview: load that phase's contentOverride
-            const cachedPhases = phaseStore.phasesByEntry[nodeId];
-            const phases = cachedPhases ?? (await listPhasesByEntry(nodeId));
-            if (cancelled) return;
             const targetPhase = phases.find((p) => p.id === overridePhaseId);
             if (targetPhase?.contentOverride != null) {
               phaseContentOverride = targetPhase.contentOverride;
@@ -683,11 +691,7 @@ export function EditorPane({
             }
           } else {
             // Auto-resolve: use the phase active at the current scene
-            const cachedPhases = phaseStore.phasesByEntry[nodeId];
-            const phases = cachedPhases ?? (await listPhasesByEntry(nodeId));
-            if (cancelled) return;
             const activeSceneId = useTreeStore.getState().activeSceneId;
-            const globalSceneOrder = phaseStore.globalSceneOrder;
             if (activeSceneId) {
               const currentOrder = globalSceneOrder.get(activeSceneId);
               if (currentOrder !== undefined) {
@@ -712,6 +716,7 @@ export function EditorPane({
             }
           }
           activePhaseIdRef.current = resolvedPhaseId;
+          setLoadedPhaseId(resolvedPhaseId);
 
           const rawContent = phaseContentOverride ?? entry?.content ?? null;
           const parsed =
@@ -840,6 +845,12 @@ export function EditorPane({
       ? (activeSnippetEntry?.title ?? "")
       : (activeNode?.title ?? "");
 
+  // Phase label for display in banner and title (null = no active phase / base content)
+  const loadedPhaseLabel =
+    loadedPhaseId != null
+      ? (codexPhases?.find((p) => p.id === loadedPhaseId)?.label ?? null)
+      : null;
+
   const handleTitleEditStart = () => {
     setTitleDraft(editorTitle);
     setTitleEditing(true);
@@ -887,6 +898,11 @@ export function EditorPane({
           {activeCodexEntry && (
             <span className="text-purple-500/60">
               — {activeCodexEntry.name}
+            </span>
+          )}
+          {loadedPhaseLabel && (
+            <span className="ml-auto rounded bg-purple-500/20 px-1.5 py-0.5 font-medium">
+              {loadedPhaseLabel}
             </span>
           )}
         </div>
@@ -970,6 +986,14 @@ export function EditorPane({
                   className="cursor-text select-none font-semibold text-content-foreground/60 hover:text-content-foreground/80"
                 >
                   {editorTitle}
+                </div>
+              )}
+              {loadedPhaseLabel && (
+                <div
+                  className="mt-1 text-sm font-normal text-purple-500/70"
+                  style={{ fontSize: `${editorSettings.fontSize}px` }}
+                >
+                  [{loadedPhaseLabel}]
                 </div>
               )}
             </div>
