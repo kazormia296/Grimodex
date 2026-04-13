@@ -95,8 +95,8 @@ const fakeSnippet = (overrides: Partial<Snippet> = {}): Snippet => ({
   projectId: "default-project",
   title: "テストスニペット",
   content: "スニペット内容",
-  tags: "タグ1,タグ2",
   tagsCache: null,
+  contentSource: null,
   sceneId: null,
   sourceChatMessageId: null,
   usageCount: 0,
@@ -204,7 +204,15 @@ describe("SnippetPanel", () => {
 
   it("displays tags on snippet items", () => {
     useSnippetStore.setState({
-      entries: [fakeSnippet({ id: "snippet-1", tags: "伏線,キャラ" })],
+      entries: [
+        fakeSnippet({
+          id: "snippet-1",
+          tagsCache: JSON.stringify([
+            { name: "伏線", color: null },
+            { name: "キャラ", color: null },
+          ]),
+        }),
+      ],
     });
 
     render(<SnippetPanel />);

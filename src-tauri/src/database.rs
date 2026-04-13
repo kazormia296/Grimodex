@@ -56,9 +56,10 @@ impl Database {
                 project_id  TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
                 slug        TEXT NOT NULL,
                 label       TEXT NOT NULL,
-                color       TEXT NOT NULL DEFAULT '#888888',
-                icon        TEXT,
-                is_builtin  INTEGER NOT NULL DEFAULT 0,
+                color         TEXT NOT NULL DEFAULT '#888888',
+                palette_index INTEGER,
+                icon          TEXT,
+                is_builtin    INTEGER NOT NULL DEFAULT 0,
                 sort_order  REAL NOT NULL DEFAULT 0.0,
                 created_at  TEXT NOT NULL DEFAULT (datetime('now')),
                 UNIQUE(project_id, slug)
@@ -76,11 +77,14 @@ impl Database {
                 excluded_aliases        TEXT,
                 summary                 TEXT,
                 content                 TEXT NOT NULL DEFAULT '{}',
-                icon                    BLOB,
+                icon                    TEXT,
                 tags_cache              TEXT,
                 context_mode            TEXT NOT NULL DEFAULT 'mentioned'
                                           CHECK(context_mode IN ('always', 'mentioned', 'suppress', 'hidden')),
+                children_budget         TEXT NOT NULL DEFAULT 'compact'
+                                          CHECK(children_budget IN ('none', 'compact', 'standard', 'generous')),
                 source_chat_message_id  TEXT REFERENCES chat_messages(id),
+                notes                   TEXT,
                 created_at              TEXT NOT NULL DEFAULT (datetime('now')),
                 updated_at              TEXT NOT NULL DEFAULT (datetime('now'))
             );
@@ -90,6 +94,10 @@ impl Database {
                 ON codex_entries(project_id, name);
             CREATE INDEX IF NOT EXISTS idx_codex_parent
                 ON codex_entries(parent_id);
+
+            CREATE TABLE IF NOT EXISTS codex_quick_pins (
+                entry_id TEXT PRIMARY KEY REFERENCES codex_entries(id) ON DELETE CASCADE
+            );
 
             CREATE TABLE IF NOT EXISTS codex_relation_dismissed (
                 entry_id     TEXT NOT NULL REFERENCES codex_entries(id) ON DELETE CASCADE,
@@ -150,7 +158,8 @@ impl Database {
                 project_id              TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
                 title                   TEXT NOT NULL DEFAULT 'Untitled',
                 content                 TEXT NOT NULL DEFAULT '{}',
-                tags                    TEXT,
+                tags_cache              TEXT,
+                content_source          TEXT,
                 scene_id                TEXT REFERENCES tree_nodes(id) ON DELETE SET NULL,
                 source_chat_message_id  TEXT REFERENCES chat_messages(id),
                 usage_count             INTEGER NOT NULL DEFAULT 0,
@@ -159,6 +168,14 @@ impl Database {
             );
             CREATE INDEX IF NOT EXISTS idx_snippets_project
                 ON snippets(project_id, created_at DESC);
+
+            CREATE TABLE IF NOT EXISTS snippet_entry_tags (
+                snippet_id TEXT NOT NULL REFERENCES snippets(id) ON DELETE CASCADE,
+                tag_id     TEXT NOT NULL REFERENCES codex_tags(id) ON DELETE CASCADE,
+                PRIMARY KEY (snippet_id, tag_id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_snippet_entry_tags_tag_id
+                ON snippet_entry_tags(tag_id);
 
             CREATE TABLE IF NOT EXISTS chat_sessions (
                 id           TEXT PRIMARY KEY,
@@ -183,23 +200,63 @@ impl Database {
                 tokens_in   INTEGER,
                 tokens_out  INTEGER,
                 duration_ms INTEGER,
-                metadata    TEXT,
-                created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+                metadata      TEXT,
+                is_starred    INTEGER NOT NULL DEFAULT 0,
+                is_summarized INTEGER NOT NULL DEFAULT 0,
+                created_at    TEXT NOT NULL DEFAULT (datetime('now'))
             );
             CREATE INDEX IF NOT EXISTS idx_chat_messages_session
                 ON chat_messages(session_id, created_at);
+
+            CREATE TABLE IF NOT EXISTS chat_summaries (
+                id                 TEXT PRIMARY KEY,
+                session_id         TEXT NOT NULL REFERENCES chat_sessions(id) ON DELETE CASCADE,
+                summary            TEXT NOT NULL,
+                source_message_ids TEXT NOT NULL,
+                token_count        INTEGER,
+                created_at         TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+            CREATE INDEX IF NOT EXISTS idx_chat_summaries_session
+                ON chat_summaries(session_id, created_at);
+
+            CREATE TABLE IF NOT EXISTS codex_entry_phases (
+                id                    TEXT PRIMARY KEY,
+                entry_id              TEXT NOT NULL REFERENCES codex_entries(id) ON DELETE CASCADE,
+                anchor_node_id        TEXT REFERENCES tree_nodes(id) ON DELETE SET NULL,
+                label                 TEXT NOT NULL DEFAULT '',
+                summary_override      TEXT,
+                content_override      TEXT,
+                context_mode_override TEXT,
+                created_at            TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at            TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+            CREATE INDEX IF NOT EXISTS idx_codex_phases_entry
+                ON codex_entry_phases(entry_id);
+            CREATE INDEX IF NOT EXISTS idx_codex_phases_anchor
+                ON codex_entry_phases(anchor_node_id);
+
+            CREATE TABLE IF NOT EXISTS codex_phase_detail_overrides (
+                phase_id      TEXT NOT NULL REFERENCES codex_entry_phases(id) ON DELETE CASCADE,
+                definition_id TEXT NOT NULL REFERENCES codex_detail_definitions(id) ON DELETE CASCADE,
+                value         TEXT,
+                PRIMARY KEY (phase_id, definition_id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_phase_detail_overrides_phase
+                ON codex_phase_detail_overrides(phase_id);
 
             CREATE TABLE IF NOT EXISTS authorship_spans (
                 id              TEXT PRIMARY KEY,
                 node_id         TEXT REFERENCES tree_nodes(id) ON DELETE CASCADE,
                 codex_entry_id  TEXT REFERENCES codex_entries(id) ON DELETE CASCADE,
                 snippet_id      TEXT REFERENCES snippets(id) ON DELETE CASCADE,
+                detail_value_id TEXT REFERENCES codex_detail_values(id),
                 from_pos        INTEGER NOT NULL,
                 to_pos          INTEGER NOT NULL,
                 source          TEXT NOT NULL CHECK(source IN ('human','ai','unknown')),
                 model           TEXT,
                 timestamp       TEXT,
                 chat_msg_id     TEXT,
+                phase_id        TEXT REFERENCES codex_entry_phases(id) ON DELETE CASCADE,
                 CHECK (
                     (node_id IS NOT NULL AND codex_entry_id IS NULL AND snippet_id IS NULL) OR
                     (node_id IS NULL AND codex_entry_id IS NOT NULL AND snippet_id IS NULL) OR
@@ -212,6 +269,8 @@ impl Database {
                 ON authorship_spans(codex_entry_id, source);
             CREATE INDEX IF NOT EXISTS idx_authorship_snippet
                 ON authorship_spans(snippet_id, source);
+            CREATE INDEX IF NOT EXISTS idx_authorship_detail
+                ON authorship_spans(detail_value_id);
 
             CREATE TABLE IF NOT EXISTS content_versions (
                 id             TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
@@ -255,7 +314,7 @@ impl Database {
             );
 
             CREATE VIRTUAL TABLE IF NOT EXISTS snippets_fts USING fts5(
-                title, content, tags,
+                title, content, tags_cache,
                 content=snippets, content_rowid=rowid,
                 tokenize='trigram'
             );
@@ -292,20 +351,20 @@ impl Database {
 
             -- Triggers to keep FTS indexes in sync: snippets
             CREATE TRIGGER IF NOT EXISTS snippets_fts_ai AFTER INSERT ON snippets BEGIN
-                INSERT INTO snippets_fts(rowid, title, content, tags)
-                VALUES (new.rowid, new.title, new.content, COALESCE(new.tags, ''));
+                INSERT INTO snippets_fts(rowid, title, content, tags_cache)
+                VALUES (new.rowid, new.title, new.content, COALESCE(new.tags_cache, ''));
             END;
             CREATE TRIGGER IF NOT EXISTS snippets_fts_ad AFTER DELETE ON snippets BEGIN
-                INSERT INTO snippets_fts(snippets_fts, rowid, title, content, tags)
-                VALUES ('delete', old.rowid, old.title, old.content, COALESCE(old.tags, ''));
+                INSERT INTO snippets_fts(snippets_fts, rowid, title, content, tags_cache)
+                VALUES ('delete', old.rowid, old.title, old.content, COALESCE(old.tags_cache, ''));
             END;
             CREATE TRIGGER IF NOT EXISTS snippets_fts_au AFTER UPDATE ON snippets
-              WHEN old.title IS NOT new.title OR old.content IS NOT new.content OR old.tags IS NOT new.tags
+              WHEN old.title IS NOT new.title OR old.content IS NOT new.content OR old.tags_cache IS NOT new.tags_cache
             BEGIN
-                INSERT INTO snippets_fts(snippets_fts, rowid, title, content, tags)
-                VALUES ('delete', old.rowid, old.title, old.content, COALESCE(old.tags, ''));
-                INSERT INTO snippets_fts(rowid, title, content, tags)
-                VALUES (new.rowid, new.title, new.content, COALESCE(new.tags, ''));
+                INSERT INTO snippets_fts(snippets_fts, rowid, title, content, tags_cache)
+                VALUES ('delete', old.rowid, old.title, old.content, COALESCE(old.tags_cache, ''));
+                INSERT INTO snippets_fts(rowid, title, content, tags_cache)
+                VALUES (new.rowid, new.title, new.content, COALESCE(new.tags_cache, ''));
             END;
 
             -- Triggers to keep FTS indexes in sync: chat_messages
@@ -385,14 +444,14 @@ impl Database {
             -- Seed built-in codex types for every new project
             CREATE TRIGGER IF NOT EXISTS seed_builtin_codex_types
             AFTER INSERT ON projects BEGIN
-                INSERT OR IGNORE INTO codex_types (id, project_id, slug, label, color, is_builtin, sort_order, created_at)
-                  VALUES (new.id || '-character', new.id, 'character', 'キャラクター', '#534AB7', 1, 0.0, datetime('now'));
-                INSERT OR IGNORE INTO codex_types (id, project_id, slug, label, color, is_builtin, sort_order, created_at)
-                  VALUES (new.id || '-location', new.id, 'location', '場所', '#0F6E56', 1, 1.0, datetime('now'));
-                INSERT OR IGNORE INTO codex_types (id, project_id, slug, label, color, is_builtin, sort_order, created_at)
-                  VALUES (new.id || '-item', new.id, 'item', 'アイテム', '#BA7517', 1, 2.0, datetime('now'));
-                INSERT OR IGNORE INTO codex_types (id, project_id, slug, label, color, is_builtin, sort_order, created_at)
-                  VALUES (new.id || '-lore', new.id, 'lore', '伝承', '#993C1D', 1, 3.0, datetime('now'));
+                INSERT OR IGNORE INTO codex_types (id, project_id, slug, label, color, palette_index, is_builtin, sort_order, created_at)
+                  VALUES (new.id || '-character', new.id, 'character', 'キャラクター', '#534AB7', 0, 1, 0.0, datetime('now'));
+                INSERT OR IGNORE INTO codex_types (id, project_id, slug, label, color, palette_index, is_builtin, sort_order, created_at)
+                  VALUES (new.id || '-location', new.id, 'location', '場所', '#0F6E56', 1, 1, 1.0, datetime('now'));
+                INSERT OR IGNORE INTO codex_types (id, project_id, slug, label, color, palette_index, is_builtin, sort_order, created_at)
+                  VALUES (new.id || '-item', new.id, 'item', 'アイテム', '#BA7517', 2, 1, 2.0, datetime('now'));
+                INSERT OR IGNORE INTO codex_types (id, project_id, slug, label, color, palette_index, is_builtin, sort_order, created_at)
+                  VALUES (new.id || '-lore', new.id, 'lore', '伝承', '#993C1D', 3, 1, 3.0, datetime('now'));
             END;
 
             -- Seed default project + folder node
@@ -401,195 +460,6 @@ impl Database {
             INSERT OR IGNORE INTO tree_nodes (id, project_id, node_type, title, sort_order, created_at, updated_at)
               VALUES ('default-chapter', 'default-project', 'folder', '第1章', 0.0, datetime('now'), datetime('now'));",
         )?;
-
-        // Idempotent column additions
-        let _ = conn.execute("ALTER TABLE snippets ADD COLUMN content_source TEXT", []);
-        // Migration: clear corrupted icon data (blobs and non-data-URL strings from old blob storage)
-        let _ = conn.execute(
-            "UPDATE codex_entries SET icon = NULL WHERE icon IS NOT NULL AND (typeof(icon) = 'blob' OR icon NOT LIKE 'data:%')",
-            [],
-        );
-        let _ = conn.execute(
-            "ALTER TABLE codex_entries ADD COLUMN children_budget TEXT NOT NULL DEFAULT 'compact'",
-            [],
-        );
-        let _ = conn.execute("ALTER TABLE codex_entries ADD COLUMN notes TEXT", []);
-        let _ = conn.execute(
-            "ALTER TABLE codex_types ADD COLUMN palette_index INTEGER",
-            [],
-        );
-        // Assign palette indices to existing builtin types
-        let _ = conn.execute(
-            "UPDATE codex_types SET palette_index = 0 WHERE slug = 'character' AND palette_index IS NULL",
-            [],
-        );
-        let _ = conn.execute(
-            "UPDATE codex_types SET palette_index = 1 WHERE slug = 'location' AND palette_index IS NULL",
-            [],
-        );
-        let _ = conn.execute(
-            "UPDATE codex_types SET palette_index = 2 WHERE slug = 'item' AND palette_index IS NULL",
-            [],
-        );
-        let _ = conn.execute(
-            "UPDATE codex_types SET palette_index = 3 WHERE slug = 'lore' AND palette_index IS NULL",
-            [],
-        );
-        // Recreate seed trigger to include palette_index for new projects
-        conn.execute_batch(
-            "DROP TRIGGER IF EXISTS seed_builtin_codex_types;
-             CREATE TRIGGER IF NOT EXISTS seed_builtin_codex_types
-             AFTER INSERT ON projects BEGIN
-                 INSERT OR IGNORE INTO codex_types (id, project_id, slug, label, color, palette_index, is_builtin, sort_order, created_at)
-                   VALUES (new.id || '-character', new.id, 'character', 'キャラクター', '#534AB7', 0, 1, 0.0, datetime('now'));
-                 INSERT OR IGNORE INTO codex_types (id, project_id, slug, label, color, palette_index, is_builtin, sort_order, created_at)
-                   VALUES (new.id || '-location', new.id, 'location', '場所', '#0F6E56', 1, 1, 1.0, datetime('now'));
-                 INSERT OR IGNORE INTO codex_types (id, project_id, slug, label, color, palette_index, is_builtin, sort_order, created_at)
-                   VALUES (new.id || '-item', new.id, 'item', 'アイテム', '#BA7517', 2, 1, 2.0, datetime('now'));
-                 INSERT OR IGNORE INTO codex_types (id, project_id, slug, label, color, palette_index, is_builtin, sort_order, created_at)
-                   VALUES (new.id || '-lore', new.id, 'lore', '伝承', '#993C1D', 3, 1, 3.0, datetime('now'));
-             END;",
-        )?;
-
-        // v2: Recreate FTS UPDATE triggers with WHEN guards so that non-FTS
-        // column updates (e.g. updated_at) don't touch FTS indexes.
-        conn.execute_batch(
-            "DROP TRIGGER IF EXISTS codex_fts_au;
-             DROP TRIGGER IF EXISTS snippets_fts_au;
-             DROP TRIGGER IF EXISTS chat_messages_fts_au;
-             DROP TRIGGER IF EXISTS tree_nodes_fts_au;
-
-             CREATE TRIGGER IF NOT EXISTS codex_fts_au AFTER UPDATE ON codex_entries
-               WHEN old.name IS NOT new.name OR old.aliases IS NOT new.aliases OR old.summary IS NOT new.summary OR old.tags_cache IS NOT new.tags_cache
-             BEGIN
-                 INSERT INTO codex_fts(codex_fts, rowid, name, aliases, summary, tags_cache)
-                 VALUES ('delete', old.rowid, COALESCE(old.name, ''), COALESCE(old.aliases, ''), COALESCE(old.summary, ''), COALESCE(old.tags_cache, ''));
-                 INSERT INTO codex_fts(rowid, name, aliases, summary, tags_cache)
-                 VALUES (new.rowid, COALESCE(new.name, ''), COALESCE(new.aliases, ''), COALESCE(new.summary, ''), COALESCE(new.tags_cache, ''));
-             END;
-
-             CREATE TRIGGER IF NOT EXISTS snippets_fts_au AFTER UPDATE ON snippets
-               WHEN old.title IS NOT new.title OR old.content IS NOT new.content OR old.tags IS NOT new.tags
-             BEGIN
-                 INSERT INTO snippets_fts(snippets_fts, rowid, title, content, tags)
-                 VALUES ('delete', old.rowid, old.title, old.content, COALESCE(old.tags, ''));
-                 INSERT INTO snippets_fts(rowid, title, content, tags)
-                 VALUES (new.rowid, new.title, new.content, COALESCE(new.tags, ''));
-             END;
-
-             CREATE TRIGGER IF NOT EXISTS chat_messages_fts_au AFTER UPDATE ON chat_messages
-               WHEN old.content IS NOT new.content
-             BEGIN
-                 INSERT INTO chat_messages_fts(chat_messages_fts, rowid, content)
-                 VALUES ('delete', old.rowid, old.content);
-                 INSERT INTO chat_messages_fts(rowid, content)
-                 VALUES (new.rowid, new.content);
-             END;
-
-             CREATE TRIGGER IF NOT EXISTS tree_nodes_fts_au AFTER UPDATE ON tree_nodes
-               WHEN old.title IS NOT new.title OR old.content IS NOT new.content
-             BEGIN
-                 INSERT INTO tree_nodes_fts(tree_nodes_fts, rowid, title, content)
-                 VALUES ('delete', old.rowid, COALESCE(old.title, ''), COALESCE(old.content, ''));
-                 INSERT INTO tree_nodes_fts(rowid, title, content)
-                 VALUES (new.rowid, COALESCE(new.title, ''), COALESCE(new.content, ''));
-             END;",
-        )?;
-
-        // v3: Collapse legacy part/chapter container types into folder
-        conn.execute_batch(
-            "UPDATE tree_nodes SET node_type = 'folder' WHERE node_type IN ('part', 'chapter');",
-        )?;
-
-        // v4: Codex Quick pins persistence
-        let _ = conn.execute(
-            "CREATE TABLE IF NOT EXISTS codex_quick_pins (
-                entry_id TEXT PRIMARY KEY REFERENCES codex_entries(id) ON DELETE CASCADE
-            )",
-            [],
-        );
-
-        // v5: Progressive Summarization
-        let _ = conn.execute(
-            "ALTER TABLE chat_messages ADD COLUMN is_starred INTEGER NOT NULL DEFAULT 0",
-            [],
-        );
-        let _ = conn.execute(
-            "ALTER TABLE chat_messages ADD COLUMN is_summarized INTEGER NOT NULL DEFAULT 0",
-            [],
-        );
-        let _ = conn.execute(
-            "CREATE TABLE IF NOT EXISTS chat_summaries (
-                id                  TEXT PRIMARY KEY,
-                session_id          TEXT NOT NULL REFERENCES chat_sessions(id) ON DELETE CASCADE,
-                summary             TEXT NOT NULL,
-                source_message_ids  TEXT NOT NULL,
-                token_count         INTEGER,
-                created_at          TEXT NOT NULL DEFAULT (datetime('now'))
-            )",
-            [],
-        );
-        let _ = conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_chat_summaries_session ON chat_summaries(session_id, created_at)",
-            [],
-        );
-
-        // v6: Snippet relational tags (shared tag pool with Codex)
-        let _ = conn.execute(
-            "CREATE TABLE IF NOT EXISTS snippet_entry_tags (
-                snippet_id TEXT NOT NULL REFERENCES snippets(id) ON DELETE CASCADE,
-                tag_id     TEXT NOT NULL REFERENCES codex_tags(id) ON DELETE CASCADE,
-                PRIMARY KEY (snippet_id, tag_id)
-            )",
-            [],
-        );
-        let _ = conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_snippet_entry_tags_tag_id ON snippet_entry_tags(tag_id)",
-            [],
-        );
-        let _ = conn.execute("ALTER TABLE snippets ADD COLUMN tags_cache TEXT", []);
-
-        // v7: Codex Phase System (経時的変化)
-        let _ = conn.execute(
-            "CREATE TABLE IF NOT EXISTS codex_entry_phases (
-                id TEXT PRIMARY KEY,
-                entry_id TEXT NOT NULL REFERENCES codex_entries(id) ON DELETE CASCADE,
-                anchor_node_id TEXT REFERENCES tree_nodes(id) ON DELETE SET NULL,
-                label TEXT NOT NULL DEFAULT '',
-                summary_override TEXT,
-                content_override TEXT,
-                context_mode_override TEXT,
-                created_at TEXT NOT NULL DEFAULT (datetime('now')),
-                updated_at TEXT NOT NULL DEFAULT (datetime('now'))
-            )",
-            [],
-        );
-        let _ = conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_codex_phases_entry ON codex_entry_phases(entry_id)",
-            [],
-        );
-        let _ = conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_codex_phases_anchor ON codex_entry_phases(anchor_node_id)",
-            [],
-        );
-        let _ = conn.execute(
-            "CREATE TABLE IF NOT EXISTS codex_phase_detail_overrides (
-                id TEXT PRIMARY KEY,
-                phase_id TEXT NOT NULL REFERENCES codex_entry_phases(id) ON DELETE CASCADE,
-                definition_id TEXT NOT NULL REFERENCES codex_detail_definitions(id) ON DELETE CASCADE,
-                value TEXT,
-                UNIQUE(phase_id, definition_id)
-            )",
-            [],
-        );
-        let _ = conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_phase_detail_overrides_phase ON codex_phase_detail_overrides(phase_id)",
-            [],
-        );
-        let _ = conn.execute(
-            "ALTER TABLE authorship_spans ADD COLUMN phase_id TEXT REFERENCES codex_entry_phases(id) ON DELETE CASCADE",
-            [],
-        );
 
         Ok(())
     }
@@ -1079,7 +949,7 @@ mod tests {
         let db = test_db();
 
         db.execute(
-            "INSERT INTO snippets (id, project_id, title, content, tags, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO snippets (id, project_id, title, content, tags_cache, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
             &[
                 Value::String("snip-1".into()),
                 Value::String("default-project".into()),
@@ -1363,7 +1233,7 @@ mod tests {
         let db = test_db();
 
         db.execute(
-            "INSERT INTO snippets (id, project_id, title, content, tags, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO snippets (id, project_id, title, content, tags_cache, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
             &[
                 Value::String("s1".into()),
                 Value::String("default-project".into()),
@@ -1657,7 +1527,7 @@ mod tests {
         ).expect("insert codex");
 
         db.execute(
-            "INSERT INTO snippets (id, project_id, title, content, tags, created_at, updated_at) VALUES (?, ?, ?, ?, ?, datetime('now'), datetime('now'))",
+            "INSERT INTO snippets (id, project_id, title, content, tags_cache, created_at, updated_at) VALUES (?, ?, ?, ?, ?, datetime('now'), datetime('now'))",
             &[
                 Value::String("s-opt".into()),
                 Value::String("default-project".into()),

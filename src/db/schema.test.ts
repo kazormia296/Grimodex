@@ -335,12 +335,14 @@ describe("snippets schema", () => {
     expect(columns).toContain("projectId");
     expect(columns).toContain("title");
     expect(columns).toContain("content");
-    expect(columns).toContain("tags");
+    expect(columns).toContain("tagsCache");
+    expect(columns).toContain("contentSource");
     expect(columns).toContain("sceneId");
     expect(columns).toContain("sourceChatMessageId");
     expect(columns).toContain("usageCount");
     expect(columns).toContain("createdAt");
     expect(columns).toContain("updatedAt");
+    expect(columns).not.toContain("tags");
   });
 
   it("generates valid insert query with text id", async () => {
@@ -358,7 +360,7 @@ describe("snippets schema", () => {
       projectId: "proj-001",
       title: "冒頭の描写",
       content: "暗い森の中、一筋の光が差し込んだ。",
-      tags: '["描写","森"]',
+      tagsCache: '["描写","森"]',
       createdAt: "2025-01-01T00:00:00Z",
       updatedAt: "2025-01-01T00:00:00Z",
     });
@@ -383,7 +385,8 @@ describe("snippets schema", () => {
       projectId: "proj-001",
       title: "メモ",
       content: "後で使う設定メモ",
-      tags: "[]",
+      tagsCache: "[]",
+      contentSource: "ai",
       sceneId: "scene-uuid-1",
       sourceChatMessageId: "msg-456",
       createdAt: "2025-01-01T00:00:00Z",
@@ -540,12 +543,14 @@ describe("authorshipSpans schema", () => {
     expect(columns).toContain("nodeId");
     expect(columns).toContain("codexEntryId");
     expect(columns).toContain("snippetId");
+    expect(columns).toContain("detailValueId");
     expect(columns).toContain("fromPos");
     expect(columns).toContain("toPos");
     expect(columns).toContain("source");
     expect(columns).toContain("model");
     expect(columns).toContain("timestamp");
     expect(columns).toContain("chatMsgId");
+    expect(columns).toContain("phaseId");
   });
 
   it("generates valid insert query for scene span", async () => {

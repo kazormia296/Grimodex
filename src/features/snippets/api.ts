@@ -28,7 +28,7 @@ export async function createSnippet(
     Partial<
       Pick<
         NewSnippet,
-        "tags" | "sceneId" | "sourceChatMessageId" | "contentSource"
+        "tagsCache" | "sceneId" | "sourceChatMessageId" | "contentSource"
       >
     >,
 ): Promise<Snippet> {
@@ -42,7 +42,9 @@ export async function createSnippet(
 
 export async function updateSnippet(
   id: string,
-  data: Partial<Pick<NewSnippet, "title" | "content" | "tags" | "sceneId">>,
+  data: Partial<
+    Pick<NewSnippet, "title" | "content" | "tagsCache" | "sceneId">
+  >,
 ): Promise<Snippet | undefined> {
   const rows = await db
     .update(snippets)

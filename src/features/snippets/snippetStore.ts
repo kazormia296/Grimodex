@@ -28,13 +28,15 @@ interface SnippetState {
       Partial<
         Pick<
           NewSnippet,
-          "tags" | "sceneId" | "sourceChatMessageId" | "contentSource"
+          "tagsCache" | "sceneId" | "sourceChatMessageId" | "contentSource"
         >
       >,
   ) => Promise<Snippet>;
   update: (
     id: string,
-    data: Partial<Pick<NewSnippet, "title" | "content" | "tags" | "sceneId">>,
+    data: Partial<
+      Pick<NewSnippet, "title" | "content" | "tagsCache" | "sceneId">
+    >,
   ) => Promise<void>;
   remove: (id: string) => Promise<void>;
   incrementUsageCount: (id: string) => Promise<void>;

@@ -7,7 +7,7 @@ interface SnippetExtractionDialogProps {
   messageId: string;
   messageRole?: "user" | "assistant";
   onSave: (
-    data: Pick<NewSnippet, "title" | "content" | "tags"> & {
+    data: Pick<NewSnippet, "title" | "content" | "tagsCache"> & {
       sourceChatMessageId: string;
       contentSource?: string;
     },
@@ -47,7 +47,14 @@ export function SnippetExtractionDialog({
     await onSave({
       title: title.trim(),
       content,
-      tags: tags.trim(),
+      tagsCache: tags.trim()
+        ? JSON.stringify(
+            tags
+              .split(",")
+              .map((t) => t.trim())
+              .filter(Boolean),
+          )
+        : undefined,
       sourceChatMessageId: messageId,
       ...(messageRole !== undefined && {
         contentSource: messageRole === "assistant" ? "ai" : "human",

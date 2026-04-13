@@ -44,7 +44,7 @@ describe("snippet API query generation", () => {
         projectId: "project-1",
         title: "伏線メモ",
         content: "第3章で回収する伏線の詳細。",
-        tags: "伏線,第3章",
+        tagsCache: '["伏線","第3章"]',
         createdAt: "2025-01-01T00:00:00Z",
         updatedAt: "2025-01-01T00:00:00Z",
       })
@@ -63,7 +63,7 @@ describe("snippet API query generation", () => {
         projectId: "project-1",
         title: "シーン固有メモ",
         content: "このシーンの雰囲気について。",
-        tags: "雰囲気",
+        tagsCache: '["雰囲気"]',
         sceneId: "scene-uuid-2",
         sourceChatMessageId: "chat-msg-002",
         createdAt: "2025-01-01T00:00:00Z",

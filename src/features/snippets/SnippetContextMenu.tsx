@@ -80,7 +80,7 @@ export function SnippetContextMenu({
     await create({
       title: `${snippet.title} (copy)`,
       content: snippet.content,
-      tags: snippet.tags ?? undefined,
+      tagsCache: snippet.tagsCache ?? undefined,
     });
     onClose();
   }

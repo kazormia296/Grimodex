@@ -65,7 +65,7 @@ describe("SnippetExtractionDialog", () => {
       expect(defaultProps.onSave).toHaveBeenCalledWith({
         title: "タイトル",
         content: "選択されたテキスト",
-        tags: "タグ",
+        tagsCache: '["タグ"]',
         sourceChatMessageId: "msg-1",
       });
     });

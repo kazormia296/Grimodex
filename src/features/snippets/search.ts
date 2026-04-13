@@ -31,7 +31,7 @@ export async function searchSnippets(query: string): Promise<Snippet[]> {
   const likeParam = `%${trimmed}%`;
   const result = await invoke<QueryResult>("db_execute", {
     sql: `SELECT * FROM snippets
-          WHERE title LIKE ? OR content LIKE ? OR tags LIKE ?`,
+          WHERE title LIKE ? OR content LIKE ? OR tags_cache LIKE ?`,
     params: [likeParam, likeParam, likeParam],
     method: "all",
   });

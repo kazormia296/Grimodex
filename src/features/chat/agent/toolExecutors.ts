@@ -409,7 +409,7 @@ async function searchSnippets(
 
   if (charCount >= 3) {
     const result = await invoke<QueryResult>("db_execute", {
-      sql: `SELECT s.id, s.title, s.tags, SUBSTR(s.content, 1, 200) as preview
+      sql: `SELECT s.id, s.title, s.tags_cache, SUBSTR(s.content, 1, 200) as preview
             FROM snippets s
             JOIN snippets_fts fts ON s.rowid = fts.rowid
             WHERE snippets_fts MATCH ?
@@ -422,9 +422,9 @@ async function searchSnippets(
   } else {
     const like = `%${query}%`;
     const result = await invoke<QueryResult>("db_execute", {
-      sql: `SELECT id, title, tags, SUBSTR(content, 1, 200) as preview
+      sql: `SELECT id, title, tags_cache, SUBSTR(content, 1, 200) as preview
             FROM snippets
-            WHERE title LIKE ? OR content LIKE ? OR tags LIKE ?
+            WHERE title LIKE ? OR content LIKE ? OR tags_cache LIKE ?
             LIMIT 10`,
       params: [like, like, like],
       method: "all",
@@ -435,7 +435,9 @@ async function searchSnippets(
   const content = rows.map((r) => ({
     id: r["id"],
     title: r["title"],
-    tags: r["tags"] ? (JSON.parse(r["tags"] as string) as string[]) : [],
+    tags: r["tags_cache"]
+      ? (JSON.parse(r["tags_cache"] as string) as string[])
+      : [],
     preview: r["preview"] ?? "",
   }));
   const json = JSON.stringify(content);

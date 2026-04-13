@@ -39,7 +39,6 @@ const mockPhase: CodexEntryPhase = {
 };
 
 const mockOverride: CodexPhaseDetailOverride = {
-  id: "override-1",
   phaseId: "phase-1",
   definitionId: "def-1",
   value: "新しい値",

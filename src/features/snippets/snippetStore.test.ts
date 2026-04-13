@@ -30,8 +30,8 @@ const fakeSnippet = (
   projectId: "default-project",
   title: "テストスニペット",
   content: "スニペット内容",
-  tags: "タグ1,タグ2",
   tagsCache: null,
+  contentSource: null,
   sceneId: null,
   sourceChatMessageId: null,
   usageCount: 0,
@@ -114,7 +114,7 @@ describe("snippetStore", () => {
       await useSnippetStore.getState().create({
         title: "新規",
         content: "内容",
-        tags: "タグ",
+        tagsCache: '["タグ"]',
         sourceChatMessageId: "msg-1",
       });
 
@@ -122,7 +122,7 @@ describe("snippetStore", () => {
         expect.objectContaining({
           title: "新規",
           content: "内容",
-          tags: "タグ",
+          tagsCache: '["タグ"]',
           sourceChatMessageId: "msg-1",
           projectId: "default-project",
         }),

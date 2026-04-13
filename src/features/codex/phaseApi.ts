@@ -142,7 +142,6 @@ export async function upsertDetailOverride(
     const rows = await db
       .insert(codexPhaseDetailOverrides)
       .values({
-        id: crypto.randomUUID(),
         phaseId,
         definitionId,
         value,
