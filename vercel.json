@@ -1,0 +1,26 @@
+{
+  "buildCommand": "npm run build",
+  "outputDirectory": "dist",
+  "rewrites": [
+    {
+      "source": "/api/anthropic/:path*",
+      "destination": "https://api.anthropic.com/v1/:path*"
+    },
+    {
+      "source": "/api/openai/:path*",
+      "destination": "https://api.openai.com/v1/:path*"
+    },
+    {
+      "source": "/api/openrouter/:path*",
+      "destination": "https://openrouter.ai/api/v1/:path*"
+    },
+    {
+      "source": "/api/ollama/:path*",
+      "destination": "http://localhost:11434/:path*"
+    },
+    {
+      "source": "/((?!assets/).*)",
+      "destination": "/index.html"
+    }
+  ]
+}
