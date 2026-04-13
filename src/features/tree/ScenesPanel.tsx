@@ -520,6 +520,7 @@ export function ScenesPanel() {
     setActiveScene,
     moveNode,
     pendingRevealId,
+    setPendingRenameId,
   } = useTreeStore();
 
   const { canUndo, canRedo } = useTreeHistoryStore();
@@ -830,14 +831,7 @@ export function ScenesPanel() {
         }
       } else if (e.key === "F2") {
         e.preventDefault();
-        // Trigger rename on active node via a custom event
-        const el = treeRef.current?.querySelector(
-          `[data-node-id="${activeSceneId}"]`,
-        );
-        if (el)
-          (el as HTMLElement).dispatchEvent(
-            new CustomEvent("start-rename", { bubbles: true }),
-          );
+        if (activeSceneId) setPendingRenameId(activeSceneId);
       } else if (e.key === "Delete" || e.key === "Backspace") {
         if (document.activeElement === treeRef.current) {
           e.preventDefault();
