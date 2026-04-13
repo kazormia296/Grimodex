@@ -1,7 +1,7 @@
 {
   "name": "grimodex",
   "private": true,
-  "license": "AGPL-3.0-or-later",
+  "license": "Elastic-2.0",
   "version": "0.1.0",
   "type": "module",
   "scripts": {
