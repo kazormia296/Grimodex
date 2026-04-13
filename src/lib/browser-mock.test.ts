@@ -211,6 +211,21 @@ describe("createBrowserMock", () => {
     });
   });
 
+  describe("seed data", () => {
+    it("seeds default chapter with node_type 'folder' so it expands in ScenesPanel", async () => {
+      const result = await mock.invoke<{ rows: Record<string, unknown>[] }>(
+        "db_execute",
+        {
+          sql: "select * from tree_nodes where id = ?",
+          params: ["default-chapter"],
+          method: "all",
+        },
+      );
+      expect(result.rows).toHaveLength(1);
+      expect(result.rows[0]).toHaveProperty("node_type", "folder");
+    });
+  });
+
   describe("unknown command", () => {
     it("throws for unsupported commands", async () => {
       await expect(mock.invoke("unknown_command", {})).rejects.toThrow();
