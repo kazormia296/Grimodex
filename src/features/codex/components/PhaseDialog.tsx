@@ -8,9 +8,16 @@ interface PhaseDialogProps {
   entryId: string;
   phase?: CodexEntryPhase | null;
   onClose: () => void;
+  /** 新規作成時のContent初期値（直前フェーズ or ベースコンテンツ） */
+  currentContent?: string;
 }
 
-export function PhaseDialog({ entryId, phase, onClose }: PhaseDialogProps) {
+export function PhaseDialog({
+  entryId,
+  phase,
+  onClose,
+  currentContent,
+}: PhaseDialogProps) {
   const createPhase = usePhaseStore((s) => s.createPhase);
   const updatePhase = usePhaseStore((s) => s.updatePhase);
 
@@ -52,7 +59,7 @@ export function PhaseDialog({ entryId, phase, onClose }: PhaseDialogProps) {
         anchorNodeId,
         summaryOverride: summaryEnabled ? summaryValue.trim() || "" : null,
         contentOverride: contentEnabled
-          ? (phase?.contentOverride ?? null)
+          ? (phase?.contentOverride ?? currentContent ?? null)
           : null,
         contextModeOverride: contextModeEnabled ? contextModeValue : null,
       };

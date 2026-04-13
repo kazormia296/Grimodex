@@ -44,6 +44,17 @@ export function TimelineTab({ entry }: TimelineTabProps) {
       );
   }, [phases, globalSceneOrder]);
 
+  // 現在有効なコンテンツ（新規フェーズ作成時のContent初期値として使用）
+  // sortedPhasesを後ろから走査して最初のcontentOverrideを返す、なければベース
+  const currentEffectiveContent = useMemo(() => {
+    for (let i = sortedPhases.length - 1; i >= 0; i--) {
+      if (sortedPhases[i].contentOverride !== null) {
+        return sortedPhases[i].contentOverride!;
+      }
+    }
+    return entry.content ?? "{}";
+  }, [sortedPhases, entry.content]);
+
   // アンカーなし（順序不明）のフェーズ
   const unsortedPhases = useMemo(() => {
     return phases.filter(
@@ -110,7 +121,12 @@ export function TimelineTab({ entry }: TimelineTabProps) {
         </button>
 
         {dialogOpen && (
-          <PhaseDialog entryId={entry.id} phase={null} onClose={handleClose} />
+          <PhaseDialog
+            entryId={entry.id}
+            phase={null}
+            onClose={handleClose}
+            currentContent={currentEffectiveContent}
+          />
         )}
       </div>
     );
@@ -281,6 +297,7 @@ export function TimelineTab({ entry }: TimelineTabProps) {
           entryId={entry.id}
           phase={editingPhase}
           onClose={handleClose}
+          currentContent={currentEffectiveContent}
         />
       )}
 

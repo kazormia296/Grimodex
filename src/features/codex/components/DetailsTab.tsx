@@ -1,6 +1,6 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
-import { ExternalLink, Wand2 } from "lucide-react";
+import { ChevronDown, ChevronRight, ExternalLink, Wand2 } from "lucide-react";
 import type { CodexEntry } from "../api";
 import { AliasesField } from "./AliasesField";
 import { CodexContentEditor } from "./CodexContentEditor";
@@ -12,6 +12,7 @@ import { useTabStore } from "@/features/editor/tabStore";
 import { usePhaseStore } from "../phaseStore";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { resolveCodexState } from "../phaseResolver";
+import { useAutoSave } from "@/hooks/useAutoSave";
 
 interface DetailsTabProps {
   entry: CodexEntry;
@@ -41,6 +42,7 @@ export function DetailsTab({
   const phases = usePhaseStore((s) => s.phasesByEntry[entry.id]);
   const detailOverrides = usePhaseStore((s) => s.detailOverrides);
   const globalSceneOrder = usePhaseStore((s) => s.globalSceneOrder);
+  const updatePhase = usePhaseStore((s) => s.updatePhase);
 
   // アクティブシーン変更時にプレビューをリセット
   useEffect(() => {
@@ -52,14 +54,38 @@ export function DetailsTab({
     setPreviewPhaseId(null);
   }, [entry.id]);
 
-  // プレビュー用の解決済み状態を計算
+  // シーン順でソートされたフェーズ
+  const sortedPhases = useMemo(() => {
+    if (!phases) return [];
+    return [...phases]
+      .filter(
+        (p) => p.anchorNodeId != null && globalSceneOrder.has(p.anchorNodeId),
+      )
+      .sort(
+        (a, b) =>
+          globalSceneOrder.get(a.anchorNodeId!)! -
+          globalSceneOrder.get(b.anchorNodeId!)!,
+      );
+  }, [phases, globalSceneOrder]);
+
+  // 現在のアクティブフェーズ（シーン基準で自動解決）
+  const activePhase = useMemo(() => {
+    if (!activeSceneId) return null;
+    const currentOrder = globalSceneOrder.get(activeSceneId);
+    if (currentOrder === undefined) return null;
+    const applicable = sortedPhases.filter(
+      (p) => globalSceneOrder.get(p.anchorNodeId!)! <= currentOrder,
+    );
+    return applicable[applicable.length - 1] ?? null;
+  }, [sortedPhases, globalSceneOrder, activeSceneId]);
+
+  // プレビュー用の解決済み状態を計算（プレビューモード時のみ）
   const previewResolvedState = useMemo(() => {
     if (previewPhaseId == null || !phases) return null;
 
-    // プレビュー対象のシーンIDを決定
     let previewSceneId: string | null;
     if (previewPhaseId === "__base__") {
-      previewSceneId = null; // Base state
+      previewSceneId = null;
     } else {
       const targetPhase = phases.find((p) => p.id === previewPhaseId);
       previewSceneId = targetPhase?.anchorNodeId ?? null;
@@ -91,51 +117,99 @@ export function DetailsTab({
     entry.contextMode,
   ]);
 
-  // アクティブシーン（現在シーン）での自動解決済み状態
-  const activeResolvedState = useMemo(() => {
-    if (!activeSceneId || !phases) return null;
-    const phaseDetailsMap = new Map(
-      phases.map((p) => [p.id, detailOverrides[p.id] ?? []]),
-    );
-    return resolveCodexState(
-      {
-        summary: entry.summary ?? null,
-        content: entry.content ?? "{}",
-        contextMode: entry.contextMode ?? "mentioned",
-      },
-      phases,
-      phaseDetailsMap,
-      new Map(),
-      activeSceneId,
-      globalSceneOrder,
-    );
-  }, [
-    activeSceneId,
-    phases,
-    detailOverrides,
-    globalSceneOrder,
-    entry.summary,
-    entry.content,
-    entry.contextMode,
-  ]);
+  // モードフラグ
+  const isPreviewMode = previewPhaseId != null;
+  const isActivePhaseSummaryMode =
+    !isPreviewMode && (activePhase?.summaryOverride ?? null) !== null;
+  const isActivePhaseContentMode =
+    !isPreviewMode && (activePhase?.contentOverride ?? null) !== null;
 
-  // 有効な解決済み状態（手動プレビュー優先、次にアクティブシーン自動解決）
-  const effectiveResolvedState = previewResolvedState ?? activeResolvedState;
+  // フェーズsummaryのローカル状態（入力ラグ防止）
+  const [phaseSummaryLocal, setPhaseSummaryLocal] = useState(
+    activePhase?.summaryOverride ?? "",
+  );
+  const phaseSummaryRef = useRef(phaseSummaryLocal);
+  phaseSummaryRef.current = phaseSummaryLocal;
 
-  // アクティブフェーズがベース値を上書きしているか
-  const isActivePhaseOverriding =
-    activeResolvedState != null &&
-    (activeResolvedState.summary !== (entry.summary ?? "") ||
-      activeResolvedState.content !== (entry.content ?? "{}"));
+  // アクティブフェーズが変わったときにローカル状態を同期
+  useEffect(() => {
+    setPhaseSummaryLocal(activePhase?.summaryOverride ?? "");
+  }, [activePhase?.id]); // intentional: sync only when phase identity changes, not on value update
 
-  // 読み取り専用か（手動プレビュー中 OR アクティブフェーズが上書き中）
-  const isFieldReadOnly = previewPhaseId != null || isActivePhaseOverriding;
+  // Phase summaryの自動保存（1秒デバウンス）
+  const { schedule: schedulePhaseSummarySave } = useAutoSave(
+    useCallback(async () => {
+      if (!activePhase) return;
+      await updatePhase(activePhase.id, {
+        summaryOverride: phaseSummaryRef.current,
+      });
+    }, [activePhase?.id, updatePhase]), // intentional: phaseSummaryRef used for latest value
+    1000,
+  );
 
-  // プレビュー中の summary（null = Base 値と同じ or プレビューなし）
+  // Base contentを表示の折りたたみ状態
+  const [showBaseContent, setShowBaseContent] = useState(false);
+
+  // プレビューsummary（プレビューモードのみ）
   const previewSummary =
-    effectiveResolvedState != null ? effectiveResolvedState.summary : null;
+    isPreviewMode && previewResolvedState != null
+      ? previewResolvedState.summary
+      : null;
   const hasPreviewSummary =
     previewSummary != null && previewSummary !== (entry.summary ?? "");
+
+  // Contentエディタのkeyとinitial content
+  // - activePhaseContentMode: フェーズのcontentOverrideで初期化、フェーズ変更時に再マウント
+  // - previewMode: ベースcontentで初期化、externalContentでオーバーライド
+  // - base: entry.content
+  const contentEditorKey = isActivePhaseContentMode
+    ? `phase-${activePhase?.id ?? "none"}`
+    : isPreviewMode
+      ? `preview-${previewPhaseId}`
+      : "base";
+
+  const contentForEditor = isActivePhaseContentMode
+    ? (activePhase?.contentOverride ?? "")
+    : emptyContent
+      ? ""
+      : entry.content;
+
+  // externalContentはプレビューモードのみ使用
+  const contentExternalContent =
+    isPreviewMode &&
+    previewResolvedState != null &&
+    previewResolvedState.content !== (entry.content ?? "{}")
+      ? previewResolvedState.content
+      : null;
+
+  // Summary変更ハンドラ
+  const handleSummaryChange = (value: string) => {
+    if (isPreviewMode) return;
+    if (isActivePhaseSummaryMode && activePhase) {
+      setPhaseSummaryLocal(value);
+      schedulePhaseSummarySave();
+    } else {
+      onSummaryChange(value);
+    }
+  };
+
+  // Content変更ハンドラ
+  const handleContentChange = (newContent: string) => {
+    if (isPreviewMode) return;
+    if (isActivePhaseContentMode && activePhase) {
+      void updatePhase(activePhase.id, { contentOverride: newContent });
+    } else {
+      onContentChange(newContent);
+    }
+  };
+
+  // ContentエディタのentryId（フェーズ/プレビューモード時はsceneContentStore連携を無効化）
+  const contentEntryId =
+    isActivePhaseContentMode || isPreviewMode ? undefined : entry.id;
+
+  // ContentのexternalSync（フェーズ/プレビューモード時は無効化）
+  const contentExternalSync =
+    isActivePhaseContentMode || isPreviewMode ? undefined : onExternalSync;
 
   return (
     <div className="space-y-3">
@@ -168,56 +242,71 @@ export function DetailsTab({
               </p>
             )}
           </div>
+        ) : isActivePhaseSummaryMode ? (
+          // アクティブフェーズがsummaryを上書き中: フェーズ値を編集可能表示
+          <div className="border-l-2 border-primary pl-2">
+            <textarea
+              value={phaseSummaryLocal}
+              onChange={(e) => handleSummaryChange(e.target.value)}
+              rows={3}
+              className="w-full resize-none rounded-md border border-input bg-background px-2 py-1.5 text-sm"
+              placeholder="このフェーズ以降の概要..."
+            />
+            {entry.summary && (
+              <p className="mt-0.5 text-[11px] text-muted-foreground">
+                Base: {entry.summary}
+              </p>
+            )}
+          </div>
         ) : (
           <textarea
             data-testid="codex-detail-summary"
-            value={
-              isFieldReadOnly && effectiveResolvedState != null
-                ? (effectiveResolvedState.summary ?? "")
-                : summary
-            }
-            onChange={(e) => {
-              if (!isFieldReadOnly) onSummaryChange(e.target.value);
-            }}
-            readOnly={isFieldReadOnly}
+            value={summary}
+            onChange={(e) => handleSummaryChange(e.target.value)}
             rows={3}
-            className={`w-full resize-none rounded-md border border-input bg-background px-2 py-1.5 text-sm ${isFieldReadOnly ? "cursor-default opacity-70" : ""}`}
+            className="w-full resize-none rounded-md border border-input bg-background px-2 py-1.5 text-sm"
             placeholder="Short description..."
           />
         )}
         {/* S5: hint when summary is empty but content exists */}
-        {summary === "" && !emptyContent && !isFieldReadOnly && (
-          <p className="mt-1 text-[11px] text-muted-foreground">
-            Summaryを記入するとAIチャットでのトークン消費を抑えられます
-          </p>
-        )}
+        {summary === "" &&
+          !emptyContent &&
+          !isActivePhaseSummaryMode &&
+          !isPreviewMode && (
+            <p className="mt-1 text-[11px] text-muted-foreground">
+              Summaryを記入するとAIチャットでのトークン消費を抑えられます
+            </p>
+          )}
         {/* M4: AI auto-generate button */}
-        {summary === "" && !emptyContent && !isFieldReadOnly && (
-          <button
-            type="button"
-            data-testid="codex-generate-summary"
-            disabled={isGenerating}
-            onClick={async () => {
-              setIsGenerating(true);
-              try {
-                const plainText = extractPlainText(entry.content ?? "{}");
-                const generated = await generateSynopsisFromContent(
-                  entry.name,
-                  plainText,
-                );
-                onSummaryChange(generated);
-              } catch {
-                toast.error("AI要約の生成に失敗しました");
-              } finally {
-                setIsGenerating(false);
-              }
-            }}
-            className="mt-1 flex items-center gap-1 rounded px-2 py-1 text-[11px] text-muted-foreground hover:bg-accent disabled:opacity-50"
-          >
-            <Wand2 className="h-3 w-3" />
-            {isGenerating ? "生成中..." : "AI要約を生成"}
-          </button>
-        )}
+        {summary === "" &&
+          !emptyContent &&
+          !isActivePhaseSummaryMode &&
+          !isPreviewMode && (
+            <button
+              type="button"
+              data-testid="codex-generate-summary"
+              disabled={isGenerating}
+              onClick={async () => {
+                setIsGenerating(true);
+                try {
+                  const plainText = extractPlainText(entry.content ?? "{}");
+                  const generated = await generateSynopsisFromContent(
+                    entry.name,
+                    plainText,
+                  );
+                  onSummaryChange(generated);
+                } catch {
+                  toast.error("AI要約の生成に失敗しました");
+                } finally {
+                  setIsGenerating(false);
+                }
+              }}
+              className="mt-1 flex items-center gap-1 rounded px-2 py-1 text-[11px] text-muted-foreground hover:bg-accent disabled:opacity-50"
+            >
+              <Wand2 className="h-3 w-3" />
+              {isGenerating ? "生成中..." : "AI要約を生成"}
+            </button>
+          )}
       </div>
 
       {/* Content (TipTap) */}
@@ -237,25 +326,47 @@ export function DetailsTab({
         {/* フェーズによるcontentOverrideがある場合は左ボーダーで強調 */}
         <div
           className={
-            effectiveResolvedState != null &&
-            effectiveResolvedState.content !== (entry.content ?? "{}")
+            isActivePhaseContentMode || contentExternalContent != null
               ? "border-l-2 border-primary pl-2"
               : ""
           }
         >
           <CodexContentEditor
-            content={emptyContent ? "" : entry.content}
-            onContentChange={isFieldReadOnly ? () => {} : onContentChange}
-            entryId={isFieldReadOnly ? undefined : entry.id}
-            onExternalSync={isFieldReadOnly ? undefined : onExternalSync}
-            externalContent={
-              effectiveResolvedState != null &&
-              effectiveResolvedState.content !== (entry.content ?? "{}")
-                ? effectiveResolvedState.content
-                : null
-            }
+            key={contentEditorKey}
+            content={contentForEditor}
+            onContentChange={isPreviewMode ? () => {} : handleContentChange}
+            entryId={contentEntryId}
+            onExternalSync={contentExternalSync}
+            externalContent={contentExternalContent}
           />
         </div>
+
+        {/* アクティブフェーズがcontentを上書き中: Base contentを折りたたみ表示 */}
+        {isActivePhaseContentMode && (
+          <div className="mt-2">
+            <button
+              type="button"
+              onClick={() => setShowBaseContent((v) => !v)}
+              className="flex items-center gap-1 text-[11px] text-muted-foreground hover:text-foreground"
+            >
+              {showBaseContent ? (
+                <ChevronDown className="h-3 w-3" />
+              ) : (
+                <ChevronRight className="h-3 w-3" />
+              )}
+              Base contentを表示
+            </button>
+            {showBaseContent && (
+              <div className="mt-1 rounded-md border border-input bg-muted/30 px-2 py-1.5 text-xs text-muted-foreground">
+                {emptyContent ? (
+                  <span className="italic">(空)</span>
+                ) : (
+                  extractPlainText(entry.content ?? "{}")
+                )}
+              </div>
+            )}
+          </div>
+        )}
       </div>
 
       {/* Custom Details */}
