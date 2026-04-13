@@ -1,6 +1,25 @@
 import { Node, mergeAttributes, type RawCommands } from "@tiptap/core";
 import type { Node as ProseMirrorNode } from "prosemirror-model";
 
+/**
+ * Extract text from a ProseMirror document, including ruby base characters.
+ * Unlike `doc.textContent`, atom ruby nodes are visited and their `base`
+ * attribute is included in the output string.
+ */
+export function getDocText(doc: ProseMirrorNode): string {
+  let text = "";
+  doc.descendants((node) => {
+    if (node.type.name === "ruby") {
+      text += (node.attrs.base as string) ?? "";
+      return false;
+    }
+    if (node.isText) {
+      text += node.text ?? "";
+    }
+  });
+  return text;
+}
+
 declare module "@tiptap/core" {
   interface Commands<ReturnType> {
     ruby: {

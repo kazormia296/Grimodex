@@ -53,8 +53,8 @@ import {
 } from "@/features/editor/editorSaveRegistry";
 import { useSceneContentStore } from "@/features/editor/sceneContentStore";
 import { shouldAutoDraftTransition } from "@/features/editor/autoStatusTransition";
-import type { Node as ProseMirrorNode } from "@tiptap/pm/model";
 import { shouldPromptSynopsis } from "@/features/editor/synopsisSuggestion";
+import { getDocText } from "@/features/editor/RubyNode";
 import { generateSynopsisFromContent } from "@/features/chat/chatApi";
 import { toast } from "sonner";
 import { debugLog, errorDetail } from "@/lib/debugLog";
@@ -76,21 +76,6 @@ const STATUS_COLORS: Record<SceneStatus, string> = {
   revision: "text-purple-400",
   final: "text-blue-400",
 };
-
-/** Returns the full text of a document, including ruby base characters (which are atom nodes and not part of textContent). */
-function getDocText(doc: ProseMirrorNode): string {
-  let text = "";
-  doc.descendants((node) => {
-    if (node.type.name === "ruby") {
-      text += (node.attrs.base as string) ?? "";
-      return false;
-    }
-    if (node.isText) {
-      text += node.text ?? "";
-    }
-  });
-  return text;
-}
 
 interface EditorPaneProps {
   nodeId: string;

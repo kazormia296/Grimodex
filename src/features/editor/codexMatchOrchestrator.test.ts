@@ -33,7 +33,20 @@ function makeEditor() {
     setMeta: vi.fn().mockReturnThis(),
   };
   return {
-    state: { tr, doc: { textContent: "太郎は走った" } },
+    state: {
+      tr,
+      doc: {
+        textContent: "太郎は走った",
+        descendants: (
+          cb: (
+            node: { isText: boolean; text: string; type: { name: string } },
+            pos: number,
+          ) => void,
+        ) => {
+          cb({ isText: true, text: "太郎は走った", type: { name: "text" } }, 0);
+        },
+      },
+    },
     view: { dispatch: vi.fn((t) => dispatched.push(t)) },
     isDestroyed: false,
     _dispatched: dispatched,

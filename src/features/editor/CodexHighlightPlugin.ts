@@ -24,12 +24,24 @@ export function mapMatchesToDecorations(
   // Build a flat-text-index → ProseMirror-position mapping by walking all
   // text nodes. Text nodes within the same paragraph have contiguous PM
   // positions; paragraph open/close tokens introduce gaps.
+  // Ruby atom nodes are also included: every character of the base text maps
+  // to the same PM node position (atoms have nodeSize=1).
   const flatPmPos: number[] = [];
+  const flatIsRuby: boolean[] = [];
   doc.descendants((node, pos) => {
+    if (node.type.name === "ruby") {
+      const base = (node.attrs.base as string) ?? "";
+      for (let i = 0; i < base.length; i++) {
+        flatPmPos.push(pos);
+        flatIsRuby.push(true);
+      }
+      return false;
+    }
     if (!node.isText) return;
     const len = node.text!.length;
     for (let i = 0; i < len; i++) {
       flatPmPos.push(pos + i);
+      flatIsRuby.push(false);
     }
   });
 
@@ -43,10 +55,6 @@ export function mapMatchesToDecorations(
     const pmLastChar = flatPmPos[m.to - 1];
     const pmTo = pmLastChar + 1;
 
-    // Skip matches whose characters are not contiguous in PM space (i.e. the
-    // match spans a paragraph boundary, which has open/close tokens in between).
-    if (pmLastChar - pmFrom !== m.to - m.from - 1) continue;
-
     const colors = typeColorMap[m.entryType] ?? {
       hl: "#88888829",
       tx: "#888888",
@@ -56,6 +64,39 @@ export function mapMatchesToDecorations(
       highlightStyle === "underline"
         ? `text-decoration: underline; text-decoration-color: ${colors.fg}; text-underline-offset: 3px`
         : `background-color: ${colors.hl}; color: ${colors.tx}; border-radius: 3px; padding: 0 2px`;
+
+    // Check if the match is entirely within a single ruby atom.
+    // All flat chars must map to the same PM position (the atom's pos).
+    let isRubyMatch = flatIsRuby[m.from];
+    if (isRubyMatch) {
+      for (let i = m.from + 1; i < m.to; i++) {
+        if (flatPmPos[i] !== pmFrom) {
+          isRubyMatch = false;
+          break;
+        }
+      }
+    }
+
+    if (isRubyMatch) {
+      // Use Decoration.node so the highlight is applied to the ruby atom's
+      // outer DOM element (span.ruby-atom). ProseMirror's patchOuterDeco
+      // applies class/style/data-* attributes to the NodeView's dom.
+      decos.push(
+        Decoration.node(pmFrom, pmFrom + 1, {
+          class: "codex-highlight",
+          style: inlineStyle,
+          "data-codex-entry-id": String(m.entryId),
+          "data-codex-entry-type": m.entryType,
+          "data-codex-entry-name": m.entryName,
+        }),
+      );
+      continue;
+    }
+
+    // Skip matches whose characters are not contiguous in PM space (i.e. the
+    // match spans a paragraph boundary, which has open/close tokens in between).
+    if (pmLastChar - pmFrom !== m.to - m.from - 1) continue;
+
     decos.push(
       Decoration.inline(pmFrom, pmTo, {
         class: "codex-highlight",

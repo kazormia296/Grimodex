@@ -11,6 +11,7 @@ import {
 } from "./CodexHighlightPlugin";
 import { resolveCodexColor } from "@/lib/resolveCodexColors";
 import { rebuildAndSchedule, scheduleMatch } from "./codexMatchOrchestrator";
+import { getDocText } from "./RubyNode";
 
 interface CodexHighlightOptions {
   excludeEntryIds?: string[];
@@ -83,7 +84,7 @@ export function useCodexHighlight(
       if (editor && !editor.isDestroyed && editor.state) {
         const targets = targetsRef.current;
         if (targets.length > 0) {
-          const text = editor.state.doc.textContent;
+          const text = getDocText(editor.state.doc);
           scheduleMatch(
             text,
             editor,
@@ -172,7 +173,7 @@ export function useCodexHighlight(
       if (editor.isDestroyed || !editor.state) return;
       const targets = targetsRef.current;
       if (targets.length === 0) return;
-      const text = editor.state.doc.textContent;
+      const text = getDocText(editor.state.doc);
       scheduleMatch(
         text,
         editor,

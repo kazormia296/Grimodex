@@ -92,7 +92,17 @@ function makeEditor(): Editor {
   return {
     state: {
       tr: { setMeta: vi.fn().mockReturnThis() },
-      doc: { textContent: "太郎は走った" },
+      doc: {
+        textContent: "太郎は走った",
+        descendants: (
+          cb: (
+            node: { isText: boolean; text: string; type: { name: string } },
+            pos: number,
+          ) => void,
+        ) => {
+          cb({ isText: true, text: "太郎は走った", type: { name: "text" } }, 0);
+        },
+      },
       plugins: [],
     },
     view: {

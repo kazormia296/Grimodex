@@ -2,6 +2,7 @@ import type { Editor } from "@tiptap/core";
 import { rebuildMatcher, matchText } from "@/features/codex/rustMatcher";
 import type { CodexMatchTarget } from "@/features/codex/codexMatcher";
 import { useCodexHighlightStore } from "./codexHighlightStore";
+import { getDocText } from "./RubyNode";
 
 // ---------------------------------------------------------------------------
 // Per-editor orchestrator state
@@ -94,6 +95,6 @@ export async function rebuildAndSchedule(
     return;
   }
   await rebuildMatcher(entries);
-  const text = editor.state.doc.textContent;
+  const text = getDocText(editor.state.doc);
   scheduleMatch(text, editor, entries, excludeEntryIds, 0, skipMatchedIds);
 }
