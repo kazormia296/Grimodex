@@ -7,6 +7,8 @@ import { SynopsisHeader } from "@/features/editor/SynopsisHeader";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { loadSceneContent, saveSceneContent } from "@/features/tree/api";
 import { getCodexEntry, updateCodexEntry } from "@/features/codex/api";
+import { listPhasesByEntry } from "@/features/codex/phaseApi";
+import { usePhaseStore } from "@/features/codex/phaseStore";
 import { useCodexStore } from "@/features/codex/codexStore";
 import { getSnippet, updateSnippet } from "@/features/snippets/api";
 import { useSnippetStore } from "@/features/snippets/snippetStore";
@@ -162,6 +164,8 @@ export function EditorPane({
   setIsDirtyRef.current = setIsDirty;
 
   const saveSceneIdRef = useRef(nodeId);
+  // Codex mode: non-null when the loaded content came from a phase contentOverride → save back to that phase
+  const activePhaseIdRef = useRef<string | null>(null);
   const { shouldAutoRevision, recordAutoRevision } = useRevisionStore();
 
   // Prevent feedback loop when applying external content sync
@@ -222,7 +226,14 @@ export function EditorPane({
     if (!id || !ed) return;
     if (isCodexMode) {
       const content = JSON.stringify(ed.getJSON());
-      await updateCodexEntry(id, { content });
+      const phaseId = activePhaseIdRef.current;
+      if (phaseId) {
+        await usePhaseStore
+          .getState()
+          .updatePhase(phaseId, { contentOverride: content });
+      } else {
+        await updateCodexEntry(id, { content });
+      }
     } else if (isSnippetMode) {
       const content = ed.getHTML();
       await updateSnippet(id, { content });
@@ -645,10 +656,43 @@ export function EditorPane({
           // Load codex entry content (ProseMirror JSON)
           const entry = await getCodexEntry(nodeId);
           if (cancelled) return;
+
+          // Determine whether an active phase has a contentOverride
+          const phaseStore = usePhaseStore.getState();
+          const cachedPhases = phaseStore.phasesByEntry[nodeId];
+          const phases = cachedPhases ?? (await listPhasesByEntry(nodeId));
+          if (cancelled) return;
+          const activeSceneId = useTreeStore.getState().activeSceneId;
+          const globalSceneOrder = phaseStore.globalSceneOrder;
+          let phaseContentOverride: string | null = null;
+          let resolvedPhaseId: string | null = null;
+          if (activeSceneId) {
+            const currentOrder = globalSceneOrder.get(activeSceneId);
+            if (currentOrder !== undefined) {
+              const applicable = phases
+                .filter(
+                  (p) =>
+                    p.anchorNodeId != null &&
+                    globalSceneOrder.has(p.anchorNodeId) &&
+                    globalSceneOrder.get(p.anchorNodeId!)! <= currentOrder,
+                )
+                .sort(
+                  (a, b) =>
+                    globalSceneOrder.get(a.anchorNodeId!)! -
+                    globalSceneOrder.get(b.anchorNodeId!)!,
+                );
+              const activePhase = applicable[applicable.length - 1] ?? null;
+              if (activePhase?.contentOverride != null) {
+                phaseContentOverride = activePhase.contentOverride;
+                resolvedPhaseId = activePhase.id;
+              }
+            }
+          }
+          activePhaseIdRef.current = resolvedPhaseId;
+
+          const rawContent = phaseContentOverride ?? entry?.content ?? null;
           const parsed =
-            entry?.content && entry.content !== "{}"
-              ? JSON.parse(entry.content)
-              : "";
+            rawContent && rawContent !== "{}" ? JSON.parse(rawContent) : "";
           editor!.commands.setContent(parsed);
         } else if (isSnippetMode) {
           // Load snippet content (HTML)
