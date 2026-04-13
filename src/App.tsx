@@ -37,7 +37,8 @@ import { ChatHistoryPanel } from "@/features/chat/ChatHistoryPanel";
 import { SnippetPanel } from "@/features/snippets/SnippetPanel";
 import { AttributionReport } from "@/features/attribution/AttributionReport";
 import { useState } from "react";
-import { Settings } from "lucide-react";
+import { Settings, FileOutput } from "lucide-react";
+import { ExportDialog } from "@/features/export/ExportDialog";
 import {
   COLOR_THEMES,
   DEFAULT_COLOR_THEME,
@@ -200,6 +201,7 @@ function EditorScreen() {
   const [showSettings, setShowSettings] = useState(false);
   const [settingsInitialCategory, setSettingsInitialCategory] =
     useState<SettingsCategory>("project");
+  const [showExport, setShowExport] = useState(false);
 
   // 執筆言語を <html lang> に反映（初期ロード時）
   useEffect(() => {
@@ -236,6 +238,15 @@ function EditorScreen() {
     }
     window.addEventListener("open-settings", onOpenSettings);
     return () => window.removeEventListener("open-settings", onOpenSettings);
+  }, []);
+
+  // Open export dialog via custom event (e.g. from Settings > Data)
+  useEffect(() => {
+    function onOpenExport() {
+      setShowExport(true);
+    }
+    window.addEventListener("open-export-dialog", onOpenExport);
+    return () => window.removeEventListener("open-export-dialog", onOpenExport);
   }, []);
 
   // Dockview ready handler — build default layout synchronously, then
@@ -301,6 +312,13 @@ function EditorScreen() {
   // Keyboard shortcuts (Ctrl+Alt+*)
   const handleKeyDown = useCallback(
     (e: KeyboardEvent) => {
+      // Ctrl+Shift+E: エクスポートダイアログ開閉
+      if (e.ctrlKey && e.shiftKey && e.key.toLowerCase() === "e") {
+        e.preventDefault();
+        setShowExport((v) => !v);
+        return;
+      }
+
       if (!e.ctrlKey || !e.altKey) return;
 
       const keyMap: Record<string, PanelId | "settings"> = {
@@ -396,6 +414,14 @@ function EditorScreen() {
       >
         <GrimodexLogo height={24} className="text-foreground" />
         <WorkspaceMenu />
+        <button
+          type="button"
+          title="エクスポート (Ctrl+Shift+E)"
+          onClick={() => setShowExport((v) => !v)}
+          className="flex h-8 w-8 items-center justify-center rounded text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+        >
+          <FileOutput className="h-4 w-4" />
+        </button>
         <div className="flex-1" />
         <LayoutPresetDropdown />
         <PanelToggleDropdown />
@@ -418,6 +444,7 @@ function EditorScreen() {
         onClose={() => setShowSettings(false)}
         initialCategory={settingsInitialCategory}
       />
+      <ExportDialog open={showExport} onClose={() => setShowExport(false)} />
       <div className="flex flex-1 overflow-hidden">
         {/* Dockview layout */}
         <DockviewReact

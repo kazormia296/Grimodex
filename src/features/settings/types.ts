@@ -88,4 +88,15 @@ export const DEFAULT_SETTINGS: Record<string, string> = {
   "tree.sceneNaming": "シーン",
   "tree.noteNaming": "ノート",
   "tree.numberingScope": "project",
+  // Export
+  "export.format": "plaintext",
+  "export.folderHeading": "true",
+  "export.folderHeadingStyle": "squares",
+  "export.sceneDivider": "blank",
+  "export.sceneDividerCustom": "",
+  "export.sceneTitle": "none",
+  "export.rubyStyle": "",
+  "export.emphasisDotsStyle": "",
+  "export.sceneBreakStyle": "asterisks",
+  "export.sceneBreakCustom": "",
 };

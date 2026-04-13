@@ -9,11 +9,7 @@ import { SettingSection } from "../components/SettingSection";
 import { SettingRow } from "../components/SettingRow";
 import { SettingToggle } from "../components/SettingToggle";
 import { SettingSlider } from "../components/SettingSlider";
-import {
-  exportAsMarkdown,
-  exportAsPlainText,
-  exportCodexJson,
-} from "../exportUtils";
+import { exportCodexJson } from "../exportUtils";
 import { IntegrityCheckSection } from "@/features/workspace/IntegrityCheckDialog";
 
 const PROJECT_ID = "default-project";
@@ -72,7 +68,7 @@ async function triggerDownload(filename: string, content: string) {
 export function DataCategory() {
   const workspacePath = useWorkspaceStore((s) => s.activeWorkspacePath);
   const [stats, setStats] = useState<ProjectStats | null>(null);
-  const [isExporting, setIsExporting] = useState(false);
+  const [isExportingCodex, setIsExportingCodex] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [confirmClear, setConfirmClear] = useState(false);
 
@@ -82,25 +78,21 @@ export function DataCategory() {
       .catch(() => setStats(null));
   }, []);
 
-  async function handleExport(type: "markdown" | "plain" | "codex") {
-    setIsExporting(true);
+  async function handleExportCodex() {
+    setIsExportingCodex(true);
     try {
-      if (type === "markdown") {
-        const md = await exportAsMarkdown();
-        await triggerDownload("export.md", md);
-      } else if (type === "plain") {
-        const txt = await exportAsPlainText();
-        await triggerDownload("export.txt", txt);
-      } else {
-        const json = await exportCodexJson();
-        await triggerDownload("codex.json", json);
-      }
+      const json = await exportCodexJson();
+      await triggerDownload("codex.json", json);
       toast.success("エクスポートしました");
     } catch {
       toast.error("エクスポートに失敗しました");
     } finally {
-      setIsExporting(false);
+      setIsExportingCodex(false);
     }
+  }
+
+  function openExportDialog() {
+    window.dispatchEvent(new CustomEvent("open-export-dialog"));
   }
 
   async function handleRebuildFts() {
@@ -217,31 +209,28 @@ export function DataCategory() {
 
       {/* Export */}
       <SettingSection title="エクスポート">
-        <div className="flex flex-wrap gap-2">
-          <button
-            type="button"
-            onClick={() => handleExport("markdown")}
-            disabled={isExporting}
-            className="rounded-md border border-border px-3 py-1.5 text-sm hover:bg-accent disabled:opacity-50"
-          >
-            Markdown
-          </button>
-          <button
-            type="button"
-            onClick={() => handleExport("plain")}
-            disabled={isExporting}
-            className="rounded-md border border-border px-3 py-1.5 text-sm hover:bg-accent disabled:opacity-50"
-          >
-            プレーンテキスト
-          </button>
-          <button
-            type="button"
-            onClick={() => handleExport("codex")}
-            disabled={isExporting}
-            className="rounded-md border border-border px-3 py-1.5 text-sm hover:bg-accent disabled:opacity-50"
-          >
-            Codex JSON
-          </button>
+        <div className="flex flex-col gap-2">
+          <div className="flex items-center justify-between">
+            <span className="text-sm">シーンをエクスポート…</span>
+            <button
+              type="button"
+              onClick={openExportDialog}
+              className="rounded-md border border-border px-3 py-1.5 text-sm hover:bg-accent"
+            >
+              開く
+            </button>
+          </div>
+          <div className="flex items-center justify-between">
+            <span className="text-sm">Codex JSON をエクスポート</span>
+            <button
+              type="button"
+              onClick={handleExportCodex}
+              disabled={isExportingCodex}
+              className="rounded-md border border-border px-3 py-1.5 text-sm hover:bg-accent disabled:opacity-50"
+            >
+              Codex JSON
+            </button>
+          </div>
         </div>
       </SettingSection>
 
