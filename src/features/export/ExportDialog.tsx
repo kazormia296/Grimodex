@@ -295,7 +295,7 @@ export function ExportDialog({ open, onClose }: Props) {
       }}
     >
       <div
-        className="flex h-[560px] w-[720px] min-h-[400px] min-w-[560px] max-h-[90vh] max-w-[90vw] resize flex-col overflow-hidden rounded-lg border border-border bg-background shadow-xl"
+        className="flex h-[780px] w-[1000px] min-h-[400px] min-w-[560px] max-h-[90vh] max-w-[90vw] resize flex-col overflow-hidden rounded-lg border border-border bg-background shadow-xl"
         onClick={(e) => e.stopPropagation()}
       >
         {/* ヘッダー */}
