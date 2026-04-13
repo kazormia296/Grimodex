@@ -144,6 +144,11 @@ export function EditorPane({
   const activeSnippetEntry = useSnippetStore((s) =>
     isSnippetMode ? s.entries.find((e) => e.id === nodeId) : null,
   );
+  // Codex tabs: which phase's content to display/edit (set via openCodexTab)
+  const overridePhaseId = useTabStore((s) => {
+    const allTabs = groupIndex === 0 ? s.tabs : s.secondaryTabs;
+    return allTabs.find((t) => t.nodeId === nodeId)?.overridePhaseId ?? null;
+  });
   const updateNodeTitle = useTreeStore((s) => s.updateNodeTitle);
   const updateCodexEntryStore = useCodexStore((s) => s.update);
   const updateSnippetEntryStore = useSnippetStore((s) => s.update);
@@ -646,6 +651,9 @@ export function EditorPane({
           });
         }
         await flush();
+      } else if (prevId === nodeId) {
+        // Same node, phase override changed: flush unsaved changes before reloading
+        await flush();
       }
       cancel();
       saveSceneIdRef.current = nodeId;
@@ -657,34 +665,49 @@ export function EditorPane({
           const entry = await getCodexEntry(nodeId);
           if (cancelled) return;
 
-          // Determine whether an active phase has a contentOverride
           const phaseStore = usePhaseStore.getState();
-          const cachedPhases = phaseStore.phasesByEntry[nodeId];
-          const phases = cachedPhases ?? (await listPhasesByEntry(nodeId));
-          if (cancelled) return;
-          const activeSceneId = useTreeStore.getState().activeSceneId;
-          const globalSceneOrder = phaseStore.globalSceneOrder;
           let phaseContentOverride: string | null = null;
           let resolvedPhaseId: string | null = null;
-          if (activeSceneId) {
-            const currentOrder = globalSceneOrder.get(activeSceneId);
-            if (currentOrder !== undefined) {
-              const applicable = phases
-                .filter(
-                  (p) =>
-                    p.anchorNodeId != null &&
-                    globalSceneOrder.has(p.anchorNodeId) &&
-                    globalSceneOrder.get(p.anchorNodeId!)! <= currentOrder,
-                )
-                .sort(
-                  (a, b) =>
-                    globalSceneOrder.get(a.anchorNodeId!)! -
-                    globalSceneOrder.get(b.anchorNodeId!)!,
-                );
-              const activePhase = applicable[applicable.length - 1] ?? null;
-              if (activePhase?.contentOverride != null) {
-                phaseContentOverride = activePhase.contentOverride;
-                resolvedPhaseId = activePhase.id;
+
+          if (overridePhaseId === "__base__") {
+            // Explicit base: skip phase resolution, show entry.content as-is
+          } else if (overridePhaseId) {
+            // Explicit phase ID from preview: load that phase's contentOverride
+            const cachedPhases = phaseStore.phasesByEntry[nodeId];
+            const phases = cachedPhases ?? (await listPhasesByEntry(nodeId));
+            if (cancelled) return;
+            const targetPhase = phases.find((p) => p.id === overridePhaseId);
+            if (targetPhase?.contentOverride != null) {
+              phaseContentOverride = targetPhase.contentOverride;
+              resolvedPhaseId = targetPhase.id;
+            }
+          } else {
+            // Auto-resolve: use the phase active at the current scene
+            const cachedPhases = phaseStore.phasesByEntry[nodeId];
+            const phases = cachedPhases ?? (await listPhasesByEntry(nodeId));
+            if (cancelled) return;
+            const activeSceneId = useTreeStore.getState().activeSceneId;
+            const globalSceneOrder = phaseStore.globalSceneOrder;
+            if (activeSceneId) {
+              const currentOrder = globalSceneOrder.get(activeSceneId);
+              if (currentOrder !== undefined) {
+                const applicable = phases
+                  .filter(
+                    (p) =>
+                      p.anchorNodeId != null &&
+                      globalSceneOrder.has(p.anchorNodeId) &&
+                      globalSceneOrder.get(p.anchorNodeId!)! <= currentOrder,
+                  )
+                  .sort(
+                    (a, b) =>
+                      globalSceneOrder.get(a.anchorNodeId!)! -
+                      globalSceneOrder.get(b.anchorNodeId!)!,
+                  );
+                const activePhase = applicable[applicable.length - 1] ?? null;
+                if (activePhase?.contentOverride != null) {
+                  phaseContentOverride = activePhase.contentOverride;
+                  resolvedPhaseId = activePhase.id;
+                }
               }
             }
           }
@@ -798,7 +821,15 @@ export function EditorPane({
     return () => {
       cancelled = true;
     };
-  }, [nodeId, editor, flush, cancel, isCodexMode, isSnippetMode]);
+  }, [
+    nodeId,
+    editor,
+    flush,
+    cancel,
+    isCodexMode,
+    isSnippetMode,
+    overridePhaseId,
+  ]);
 
   const isNote =
     !isCodexMode && !isSnippetMode && activeNode?.nodeType === "note";

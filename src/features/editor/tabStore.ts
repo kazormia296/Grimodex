@@ -10,6 +10,12 @@ export interface TabEntry {
   nodeId: string;
   isPreview: boolean;
   contentType: TabContentType;
+  /** Codex tabs only: which phase's content to show/edit.
+   *  - undefined/null → auto-resolve from active scene
+   *  - "__base__"     → show base entry content (ignore active phase)
+   *  - "<phase-id>"  → show/edit that phase's contentOverride
+   */
+  overridePhaseId?: string | null;
 }
 
 export type GroupIndex = 0 | 1;
@@ -74,9 +80,10 @@ interface TabState {
 
   /**
    * Open a codex entry as a pinned tab in the primary group.
-   * If already open, just activate.
+   * If already open, update overridePhaseId and activate.
+   * @param phaseId undefined = auto-resolve, "__base__" = base content, phase-id = that phase
    */
-  openCodexTab: (entryId: string) => void;
+  openCodexTab: (entryId: string, phaseId?: string | null) => void;
 
   /**
    * Open a snippet as a pinned tab in the primary group.
@@ -340,11 +347,20 @@ export const useTabStore = create<TabState>()((set, get) => {
       });
     },
 
-    openCodexTab(entryId) {
+    openCodexTab(entryId, phaseId) {
       const { tabs } = get();
       const existing = tabs.find((t) => t.nodeId === entryId);
       if (existing) {
-        set({ activeTabId: entryId, activeGroupIndex: 0 });
+        // Update overridePhaseId so EditorPane reloads with the correct phase
+        set({
+          tabs: tabs.map((t) =>
+            t.nodeId === entryId
+              ? { ...t, overridePhaseId: phaseId ?? null }
+              : t,
+          ),
+          activeTabId: entryId,
+          activeGroupIndex: 0,
+        });
         return;
       }
       // Remove any stale preview tab before adding the codex tab
@@ -352,7 +368,12 @@ export const useTabStore = create<TabState>()((set, get) => {
       set({
         tabs: [
           ...withoutPreview,
-          { nodeId: entryId, isPreview: false, contentType: "codex" },
+          {
+            nodeId: entryId,
+            isPreview: false,
+            contentType: "codex",
+            overridePhaseId: phaseId ?? null,
+          },
         ],
         activeTabId: entryId,
         activeGroupIndex: 0,

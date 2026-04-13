@@ -315,7 +315,14 @@ export function DetailsTab({
           <label className="block text-xs font-medium">Content</label>
           <button
             type="button"
-            onClick={() => useTabStore.getState().openCodexTab(entry.id)}
+            onClick={() =>
+              useTabStore
+                .getState()
+                .openCodexTab(
+                  entry.id,
+                  isPreviewMode ? previewPhaseId : undefined,
+                )
+            }
             className="flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] text-muted-foreground hover:bg-accent"
             title="エディタで開く"
           >
