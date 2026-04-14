@@ -43,11 +43,57 @@ struct SceneResult {
     content: String,
 }
 
+/// Strip `<span data-authorship="...">text</span>` tags from Markdown content,
+/// keeping the inner text. AuthorshipMark serializes as inline HTML; MCP output
+/// should expose clean prose without tracking metadata.
+///
+/// Other inline HTML (e.g. `<span class="emphasis-dots">`, `<ruby>`) is preserved.
+fn strip_authorship_spans(input: &str) -> String {
+    let mut result = String::with_capacity(input.len());
+    let mut rest = input;
+
+    while let Some(rel) = rest.find("<span") {
+        let before = &rest[..rel];
+        let after_open = &rest[rel + 5..]; // skip "<span"
+
+        // Find end of opening tag
+        let Some(tag_end) = after_open.find('>') else {
+            // Malformed tag — emit everything and stop
+            result.push_str(rest);
+            return result;
+        };
+
+        let attrs = &after_open[..tag_end];
+        if attrs.contains("data-authorship") {
+            // Authorship span — emit before, then only the inner text
+            result.push_str(before);
+            let inner_start = rel + 5 + tag_end + 1; // after '>'
+            let remaining = &rest[inner_start..];
+            if let Some(close) = remaining.find("</span>") {
+                result.push_str(&remaining[..close]);
+                rest = &remaining[close + 7..]; // skip "</span>"
+            } else {
+                result.push_str(remaining);
+                return result;
+            }
+        } else {
+            // Non-authorship span — keep it verbatim
+            result.push_str(before);
+            result.push_str("<span");
+            result.push_str(&after_open[..tag_end + 1]); // attrs + '>'
+            rest = &after_open[tag_end + 1..];
+        }
+    }
+
+    result.push_str(rest);
+    result
+}
+
 fn load_scene(conn: &Connection, server: &GrimodexServer, node: &TreeNode) -> SceneResult {
     // Priority 1: Markdown file in content dir
     let md = content::read_scene_markdown(&server.content_dir, &node.id).unwrap_or_default();
     let content = if !md.is_empty() {
-        md
+        strip_authorship_spans(&md)
     } else {
         // Priority 2: ProseMirror JSON stored in DB content column
         match db::get_scene_content(conn, &node.id) {
@@ -142,4 +188,48 @@ pub async fn read_scenes_batch(
     Ok(CallToolResult::success(vec![rmcp::model::Content::text(
         json,
     )]))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_strip_authorship_simple() {
+        let input = r#"<span data-authorship="unknown" source="unknown" timestamp="2026-01-01T00:00:00Z" manualoverride="false">　メロスは</span>激怒した。"#;
+        let result = strip_authorship_spans(input);
+        assert_eq!(result, "　メロスは激怒した。");
+    }
+
+    #[test]
+    fn test_strip_authorship_multiple() {
+        let input = r#"<span data-authorship="human">Hello</span> world <span data-authorship="ai">foo</span>"#;
+        let result = strip_authorship_spans(input);
+        assert_eq!(result, "Hello world foo");
+    }
+
+    #[test]
+    fn test_strip_authorship_preserves_other_spans() {
+        let input =
+            r#"<span class="emphasis-dots">注目</span><span data-authorship="human">通常</span>"#;
+        let result = strip_authorship_spans(input);
+        assert_eq!(result, r#"<span class="emphasis-dots">注目</span>通常"#);
+    }
+
+    #[test]
+    fn test_strip_authorship_no_spans() {
+        let input = "plain text without any spans";
+        let result = strip_authorship_spans(input);
+        assert_eq!(result, input);
+    }
+
+    #[test]
+    fn test_strip_authorship_with_ruby() {
+        let input = r#"<span data-authorship="unknown">　メロスは</span><ruby base="激怒" annotation="激おこ">激怒<rp>(</rp><rt>激おこ</rt><rp>)</rp></ruby><span data-authorship="unknown">した。</span>"#;
+        let result = strip_authorship_spans(input);
+        assert_eq!(
+            result,
+            r#"　メロスは<ruby base="激怒" annotation="激おこ">激怒<rp>(</rp><rt>激おこ</rt><rp>)</rp></ruby>した。"#
+        );
+    }
 }
