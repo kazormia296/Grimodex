@@ -6,6 +6,7 @@ import {
   useMemo,
   Fragment,
 } from "react";
+import { useTranslation } from "react-i18next";
 import { createPortal } from "react-dom";
 import {
   Plus,
@@ -162,6 +163,7 @@ function TreeRenderer({
   nodeTotals,
   orderedNodes,
 }: TreeRendererProps) {
+  const { t } = useTranslation();
   const ids = childMap[parentId ?? "root"] ?? [];
   const query = filterQuery.toLowerCase();
 
@@ -228,7 +230,9 @@ function TreeRenderer({
                 }}
               >
                 {node.synopsis ?? (
-                  <span className="italic opacity-40">synopsis なし</span>
+                  <span className="italic opacity-40">
+                    {t("scenes.noSynopsis")}
+                  </span>
                 )}
               </li>
             )}
@@ -261,24 +265,16 @@ interface PanelMenuProps {
   excludedRef?: React.RefObject<HTMLButtonElement | null>;
 }
 
-const SORT_LABELS: Record<string, string> = {
-  manual: "手動",
-  title: "タイトル順",
-  wordcount: "文字数順",
-  status: "ステータス順",
+const SORT_LABEL_KEYS: Record<string, string> = {
+  manual: "scenes.sortManual",
+  title: "scenes.sortTitle",
+  wordcount: "scenes.sortWordcount",
+  status: "scenes.sortStatus",
 };
 
-const STATUS_FILTER_OPTIONS: Array<{
-  value: "outline" | "draft" | "complete" | "revision" | "final" | null;
-  label: string;
-}> = [
-  { value: null, label: "すべて表示" },
-  { value: "outline", label: "Outline" },
-  { value: "draft", label: "Draft" },
-  { value: "complete", label: "Complete" },
-  { value: "revision", label: "Revision" },
-  { value: "final", label: "Final" },
-];
+const STATUS_FILTER_VALUES: Array<
+  "outline" | "draft" | "complete" | "revision" | "final" | null
+> = [null, "outline", "draft", "complete", "revision", "final"];
 
 function PanelMenu({
   viewMode,
@@ -298,6 +294,7 @@ function PanelMenu({
   onClose,
   excludedRef,
 }: PanelMenuProps) {
+  const { t } = useTranslation();
   const ref = useRef<HTMLDivElement>(null);
   useEffect(() => {
     function close(e: MouseEvent) {
@@ -360,7 +357,7 @@ function PanelMenu({
       className="min-w-[180px] rounded-md border border-border bg-popover py-1 shadow-md"
     >
       <div className="px-3 py-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
-        View
+        {t("scenes.viewLabel")}
       </div>
       {radioItem("tree", viewMode, "Tree", setViewMode as (v: string) => void)}
       {radioItem(
@@ -371,27 +368,38 @@ function PanelMenu({
       )}
       <div className="my-1 border-t border-border" />
       <div className="px-3 py-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
-        Sort by
+        {t("scenes.sortByLabel")}
       </div>
       {(["manual", "title", "wordcount", "status"] as const).map((m) =>
-        radioItem(m, sortMode, SORT_LABELS[m], setSortMode),
+        radioItem(m, sortMode, t(SORT_LABEL_KEYS[m]), setSortMode),
       )}
       <div className="my-1 border-t border-border" />
       <div className="px-3 py-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
-        Filter by status
+        {t("scenes.filterByStatusLabel")}
       </div>
-      {STATUS_FILTER_OPTIONS.map(({ value, label }) =>
-        radioItem(value, statusFilter, label, setStatusFilter),
+      {STATUS_FILTER_VALUES.map((value) =>
+        radioItem(
+          value,
+          statusFilter,
+          value === null
+            ? t("scenes.filterAll")
+            : value.charAt(0).toUpperCase() + value.slice(1),
+          setStatusFilter,
+        ),
       )}
       <div className="my-1 border-t border-border" />
       <div className="px-3 py-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
-        Show
+        {t("scenes.showLabel")}
       </div>
-      {checkItem("文字数", showWordCounts, setShowWordCounts)}
-      {checkItem("ステータスドット", showStatusDots, setShowStatusDots)}
-      {checkItem("AI帰属バッジ", showAiAttribution, setShowAiAttribution)}
+      {checkItem(t("scenes.showWordCount"), showWordCounts, setShowWordCounts)}
+      {checkItem(t("scenes.showStatusDots"), showStatusDots, setShowStatusDots)}
       {checkItem(
-        "アクティブを自動表示",
+        t("scenes.showAiBadge"),
+        showAiAttribution,
+        setShowAiAttribution,
+      )}
+      {checkItem(
+        t("scenes.autoRevealActive"),
         autoRevealActiveScene,
         setAutoRevealActiveScene,
       )}
@@ -411,6 +419,7 @@ interface RootContextMenuProps {
 }
 
 function RootContextMenu({ x, y, onClose, createNode }: RootContextMenuProps) {
+  const { t } = useTranslation();
   const ref = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -457,21 +466,21 @@ function RootContextMenu({ x, y, onClose, createNode }: RootContextMenuProps) {
       style={style}
       className="min-w-[192px] rounded-md border border-border bg-popover py-1 shadow-lg"
     >
-      {item("シーンを追加", () => {
+      {item(t("scenes.addScene"), () => {
         createNode({ nodeType: "scene", parentId: null })
           .then((n) => {
             useTabStore.getState().openPinned(n.id);
           })
           .catch(() => {});
       })}
-      {item("ノートを追加", () => {
+      {item(t("scenes.addNote"), () => {
         createNode({ nodeType: "note", parentId: null })
           .then((n) => {
             useTabStore.getState().openPinned(n.id);
           })
           .catch(() => {});
       })}
-      {item("フォルダーを追加", () => {
+      {item(t("scenes.addFolder"), () => {
         createNode({ nodeType: "folder", parentId: null }).catch(() => {});
       })}
     </div>,
@@ -481,13 +490,14 @@ function RootContextMenu({ x, y, onClose, createNode }: RootContextMenuProps) {
 
 // ---- Main Panel ----
 const CREATE_OPTIONS = [
-  { type: "scene" as NodeType, label: "New scene" },
-  { type: "note" as NodeType, label: "New note" },
+  { type: "scene" as NodeType, labelKey: "scenes.newScene" },
+  { type: "note" as NodeType, labelKey: "scenes.newNote" },
   null, // separator
-  { type: "folder" as NodeType, label: "New folder" },
+  { type: "folder" as NodeType, labelKey: "scenes.newFolder" },
 ];
 
 export function ScenesPanel() {
+  const { t } = useTranslation();
   const {
     nodes,
     activeSceneId,
@@ -753,7 +763,7 @@ export function ScenesPanel() {
       dockviewApi.addPanel({
         id: "editor",
         component: "editor",
-        title: "エディタ",
+        title: t("layout.panel.editor"),
       });
     }
   }
@@ -1047,7 +1057,7 @@ export function ScenesPanel() {
   if (isLoading && nodes.length === 0) {
     return (
       <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
-        読み込み中…
+        {t("common.loading")}
       </div>
     );
   }
@@ -1073,7 +1083,7 @@ export function ScenesPanel() {
             <button
               ref={createBtnRef}
               type="button"
-              title="新規作成"
+              title={t("scenes.create")}
               onClick={() => {
                 if (!showCreateMenu && createBtnRef.current) {
                   setCreateMenuPos(
@@ -1090,7 +1100,7 @@ export function ScenesPanel() {
             {/* Undo */}
             <button
               type="button"
-              title="元に戻す (Ctrl+Z)"
+              title={t("scenes.undo")}
               disabled={!canUndo}
               onClick={() =>
                 useTreeHistoryStore
@@ -1106,7 +1116,7 @@ export function ScenesPanel() {
             {/* Redo */}
             <button
               type="button"
-              title="やり直し (Ctrl+Shift+Z)"
+              title={t("scenes.redo")}
               disabled={!canRedo}
               onClick={() =>
                 useTreeHistoryStore
@@ -1122,7 +1132,7 @@ export function ScenesPanel() {
             {/* Expand/collapse toggle */}
             <button
               type="button"
-              title="全展開/折りたたみ"
+              title={t("scenes.expandCollapse")}
               onClick={handleToggleAll}
               className="flex h-6 w-6 items-center justify-center rounded text-muted-foreground hover:bg-accent hover:text-foreground"
             >
@@ -1133,7 +1143,7 @@ export function ScenesPanel() {
             <button
               ref={panelMenuBtnRef}
               type="button"
-              title="パネルメニュー"
+              title={t("scenes.panelMenu")}
               onClick={() => {
                 if (!showPanelMenu && panelMenuBtnRef.current) {
                   setPanelMenuPos(
@@ -1162,7 +1172,7 @@ export function ScenesPanel() {
             onKeyDown={(e) => {
               if (e.key === "Escape") setFilterQuery("");
             }}
-            placeholder="フィルター..."
+            placeholder={t("scenes.filterPlaceholder")}
             className="w-full rounded border border-border bg-background px-2 py-0.5 text-xs text-foreground placeholder:text-muted-foreground/60 focus:outline-none focus:ring-1 focus:ring-ring"
           />
         </div>
@@ -1220,19 +1230,22 @@ export function ScenesPanel() {
         {deleteConfirm && (
           <div className="absolute inset-0 z-50 flex items-center justify-center bg-background/80">
             <div className="rounded-lg border border-border bg-popover p-4 shadow-xl w-72">
-              <p className="text-sm font-medium mb-1">削除の確認</p>
+              <p className="text-sm font-medium mb-1">
+                {t("scenes.deleteConfirmTitle")}
+              </p>
               <p className="text-xs text-muted-foreground mb-4">
-                {(() => {
-                  function collectAll(id: string): string[] {
-                    return [id, ...(childMap[id] ?? []).flatMap(collectAll)];
-                  }
-                  return deleteConfirm.flatMap(collectAll).filter((id) => {
-                    const node = nodeMap[id];
-                    if (!node || node.nodeType === "folder") return false;
-                    return (charCounts[id] ?? 0) > 0 || !!node.synopsis;
-                  }).length;
-                })()}
-                件のシーンに本文またはsynopsisがあります。削除してもよいですか？
+                {t("scenes.deleteConfirmBody", {
+                  count: (() => {
+                    function collectAll(id: string): string[] {
+                      return [id, ...(childMap[id] ?? []).flatMap(collectAll)];
+                    }
+                    return deleteConfirm.flatMap(collectAll).filter((id) => {
+                      const node = nodeMap[id];
+                      if (!node || node.nodeType === "folder") return false;
+                      return (charCounts[id] ?? 0) > 0 || !!node.synopsis;
+                    }).length;
+                  })(),
+                })}
               </p>
               <div className="flex gap-2 justify-end">
                 <button
@@ -1240,7 +1253,7 @@ export function ScenesPanel() {
                   className="rounded px-3 py-1 text-xs border border-border hover:bg-accent"
                   onClick={() => setDeleteConfirm(null)}
                 >
-                  キャンセル
+                  {t("common.cancel")}
                 </button>
                 <button
                   type="button"
@@ -1257,7 +1270,7 @@ export function ScenesPanel() {
                       .catch(() => {});
                   }}
                 >
-                  削除する
+                  {t("common.deleteConfirm")}
                 </button>
               </div>
             </div>
@@ -1313,7 +1326,7 @@ export function ScenesPanel() {
                   className="flex w-full rounded px-2 py-1 text-xs hover:bg-accent"
                   onClick={() => handleCreate(opt.type)}
                 >
-                  {opt.label}
+                  {t(opt.labelKey)}
                 </button>
               ),
             )}

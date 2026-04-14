@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { Minus, Square, Copy, X } from "lucide-react";
 
 function isTauri(): boolean {
@@ -6,6 +7,7 @@ function isTauri(): boolean {
 }
 
 export function WindowControls() {
+  const { t } = useTranslation();
   const [isMaximized, setIsMaximized] = useState(false);
 
   useEffect(() => {
@@ -52,7 +54,7 @@ export function WindowControls() {
     <div className="flex items-center">
       <button
         type="button"
-        title="最小化"
+        title={t("window.minimize")}
         onClick={minimize}
         className="flex h-8 w-10 items-center justify-center text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
       >
@@ -60,7 +62,7 @@ export function WindowControls() {
       </button>
       <button
         type="button"
-        title={isMaximized ? "元に戻す" : "最大化"}
+        title={isMaximized ? t("window.restore") : t("window.maximize")}
         onClick={toggleMaximize}
         className="flex h-8 w-10 items-center justify-center text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
       >
@@ -72,7 +74,7 @@ export function WindowControls() {
       </button>
       <button
         type="button"
-        title="閉じる"
+        title={t("window.close")}
         onClick={close}
         className="flex h-8 w-10 items-center justify-center text-muted-foreground transition-colors hover:bg-red-600 hover:text-white"
       >

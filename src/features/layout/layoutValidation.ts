@@ -1,4 +1,5 @@
 import type { DockviewApi } from "dockview-react";
+import i18next from "@/lib/i18n";
 
 export type ValidationResult =
   | { valid: true }
@@ -25,34 +26,40 @@ function countLeaves(node: unknown): number {
  */
 export function validateSerializedLayout(data: unknown): ValidationResult {
   if (!data || typeof data !== "object") {
-    return { valid: false, reason: "レイアウトデータが不正です" };
+    return { valid: false, reason: i18next.t("validation.invalidData") };
   }
 
   const d = data as Record<string, unknown>;
 
   if (!d.grid || typeof d.grid !== "object") {
-    return { valid: false, reason: "grid フィールドがありません" };
+    return { valid: false, reason: i18next.t("validation.missingGrid") };
   }
 
   const grid = d.grid as Record<string, unknown>;
 
   if (!grid.root) {
-    return { valid: false, reason: "grid.root がありません" };
+    return { valid: false, reason: i18next.t("validation.missingGridRoot") };
   }
 
   if (typeof grid.width !== "number" || grid.width <= 0) {
-    return { valid: false, reason: `grid.width が不正です (${grid.width})` };
+    return {
+      valid: false,
+      reason: i18next.t("validation.invalidGridWidth", { value: grid.width }),
+    };
   }
 
   if (typeof grid.height !== "number" || grid.height <= 0) {
-    return { valid: false, reason: `grid.height が不正です (${grid.height})` };
+    return {
+      valid: false,
+      reason: i18next.t("validation.invalidGridHeight", { value: grid.height }),
+    };
   }
 
   const leafCount = countLeaves(grid.root);
   if (leafCount < 2) {
     return {
       valid: false,
-      reason: `レイアウトが退化しています（グループ数: ${leafCount}）`,
+      reason: i18next.t("validation.degenerateLayout", { count: leafCount }),
     };
   }
 
@@ -60,7 +67,9 @@ export function validateSerializedLayout(data: unknown): ValidationResult {
   if (!panels || typeof panels !== "object" || Object.keys(panels).length < 2) {
     return {
       valid: false,
-      reason: `パネル数が不足しています（${Object.keys(panels ?? {}).length}）`,
+      reason: i18next.t("validation.insufficientPanels", {
+        count: Object.keys(panels ?? {}).length,
+      }),
     };
   }
 
@@ -78,7 +87,9 @@ export function validateRuntimeLayout(api: DockviewApi): ValidationResult {
   if (groups.length < 2) {
     return {
       valid: false,
-      reason: `グループ数が不足しています（${groups.length}）`,
+      reason: i18next.t("validation.insufficientGroups", {
+        count: groups.length,
+      }),
     };
   }
 
@@ -89,7 +100,9 @@ export function validateRuntimeLayout(api: DockviewApi): ValidationResult {
       if (ratio > 0.85) {
         return {
           valid: false,
-          reason: `単一グループが画面幅の ${Math.round(ratio * 100)}% を占めています`,
+          reason: i18next.t("validation.singleGroupDominates", {
+            pct: Math.round(ratio * 100),
+          }),
         };
       }
     }

@@ -5,13 +5,7 @@ import { useCodexStore } from "@/features/codex/codexStore";
 import { useCodexHighlightStore } from "@/features/editor/codexHighlightStore";
 import { useLayoutStore } from "@/features/layout/layoutStore";
 import { CodexEntryPopoverContent } from "@/features/codex/components/CodexEntryPopoverContent";
-
-const FALLBACK_TYPE_LABELS: Record<string, string> = {
-  character: "キャラクター",
-  location: "場所",
-  item: "アイテム",
-  lore: "設定・世界観",
-};
+import { getTypeLabel } from "@/features/chat/utils/typeLabels";
 
 const FALLBACK_TYPE_COLORS: Record<string, string> = {
   character: "#6B7ADB",
@@ -116,7 +110,7 @@ export function CodexPopover({ editor }: { editor: Editor | null }) {
       <CodexEntryPopoverContent
         entry={entry}
         dotColor={dotColor}
-        typeLabel={FALLBACK_TYPE_LABELS[entry.type] ?? entry.type}
+        typeLabel={getTypeLabel(entry.type)}
         onOpenInCodex={handleOpenInCodex}
       />
     </div>,

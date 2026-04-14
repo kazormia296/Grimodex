@@ -1,5 +1,5 @@
 import type { DockviewApi, SerializedDockview } from "dockview-react";
-import { PANEL_TITLES } from "./layoutStore";
+import { getPanelTitle } from "./layoutStore";
 
 /* ── Types ── */
 
@@ -25,44 +25,44 @@ function buildDefault(api: DockviewApi) {
   api.addPanel({
     id: "scenes",
     component: "scenes",
-    title: PANEL_TITLES.scenes,
+    title: getPanelTitle("scenes"),
   });
   api.addPanel({
     id: "editor",
     component: "editor",
-    title: PANEL_TITLES.editor,
+    title: getPanelTitle("editor"),
     position: { referencePanel: "scenes", direction: "right" },
     minimumWidth: 320,
   });
   api.addPanel({
     id: "chat",
     component: "chat",
-    title: PANEL_TITLES.chat,
+    title: getPanelTitle("chat"),
     position: { referencePanel: "editor", direction: "right" },
   });
   api.addPanel({
     id: "chat-history",
     component: "chat-history",
-    title: PANEL_TITLES["chat-history"],
+    title: getPanelTitle("chat-history"),
     position: { referencePanel: "chat", direction: "within" },
     inactive: true,
   });
   api.addPanel({
     id: "codex-quick",
     component: "codex-quick",
-    title: PANEL_TITLES["codex-quick"],
+    title: getPanelTitle("codex-quick"),
     position: { referencePanel: "scenes", direction: "below" },
   });
   api.addPanel({
     id: "codex",
     component: "codex",
-    title: PANEL_TITLES.codex,
+    title: getPanelTitle("codex"),
     position: { referencePanel: "chat", direction: "below" },
   });
   api.addPanel({
     id: "snippets",
     component: "snippets",
-    title: PANEL_TITLES.snippets,
+    title: getPanelTitle("snippets"),
     position: { referencePanel: "codex", direction: "within" },
     inactive: true,
   });
@@ -81,18 +81,18 @@ function buildChatMain(api: DockviewApi) {
   api.addPanel({
     id: "scenes",
     component: "scenes",
-    title: PANEL_TITLES.scenes,
+    title: getPanelTitle("scenes"),
   });
   api.addPanel({
     id: "chat",
     component: "chat",
-    title: PANEL_TITLES.chat,
+    title: getPanelTitle("chat"),
     position: { referencePanel: "scenes", direction: "right" },
   });
   api.addPanel({
     id: "codex",
     component: "codex",
-    title: PANEL_TITLES.codex,
+    title: getPanelTitle("codex"),
     position: { referencePanel: "chat", direction: "right" },
   });
 
@@ -100,14 +100,14 @@ function buildChatMain(api: DockviewApi) {
   api.addPanel({
     id: "chat-history",
     component: "chat-history",
-    title: PANEL_TITLES["chat-history"],
+    title: getPanelTitle("chat-history"),
     position: { referencePanel: "chat", direction: "within" },
     inactive: true,
   });
   api.addPanel({
     id: "snippets",
     component: "snippets",
-    title: PANEL_TITLES.snippets,
+    title: getPanelTitle("snippets"),
     position: { referencePanel: "codex", direction: "within" },
     inactive: true,
   });
@@ -116,7 +116,7 @@ function buildChatMain(api: DockviewApi) {
   api.addPanel({
     id: "editor",
     component: "editor",
-    title: PANEL_TITLES.editor,
+    title: getPanelTitle("editor"),
     position: { referencePanel: "scenes", direction: "below" },
     minimumWidth: 320,
   });
@@ -136,32 +136,32 @@ function buildCodexMain(api: DockviewApi) {
   api.addPanel({
     id: "codex",
     component: "codex",
-    title: PANEL_TITLES.codex,
+    title: getPanelTitle("codex"),
   });
   api.addPanel({
     id: "editor",
     component: "editor",
-    title: PANEL_TITLES.editor,
+    title: getPanelTitle("editor"),
     position: { referencePanel: "codex", direction: "right" },
     minimumWidth: 320,
   });
   api.addPanel({
     id: "chat",
     component: "chat",
-    title: PANEL_TITLES.chat,
+    title: getPanelTitle("chat"),
     position: { referencePanel: "editor", direction: "right" },
   });
   api.addPanel({
     id: "snippets",
     component: "snippets",
-    title: PANEL_TITLES.snippets,
+    title: getPanelTitle("snippets"),
     position: { referencePanel: "codex", direction: "within" },
     inactive: true,
   });
   api.addPanel({
     id: "chat-history",
     component: "chat-history",
-    title: PANEL_TITLES["chat-history"],
+    title: getPanelTitle("chat-history"),
     position: { referencePanel: "chat", direction: "within" },
     inactive: true,
   });

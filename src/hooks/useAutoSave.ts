@@ -1,5 +1,6 @@
 import { useRef, useCallback, useEffect } from "react";
 import { toast } from "sonner";
+import i18next from "@/lib/i18n";
 import { debugLog, errorDetail, rootCause } from "@/lib/debugLog";
 
 export interface AutoSave {
@@ -34,7 +35,7 @@ export function createAutoSave(
       } catch (e) {
         const detail = errorDetail(e);
         debugLog.error("AutoSave", "save failed", detail);
-        toast.error(`自動保存に失敗しました: ${rootCause(e)}`);
+        toast.error(i18next.t("autoSave.failed", { reason: rootCause(e) }));
       }
     }, delayMs);
   }
@@ -47,7 +48,7 @@ export function createAutoSave(
     } catch (e) {
       const detail = errorDetail(e);
       debugLog.error("AutoSave", "flush failed", detail);
-      toast.error(`自動保存に失敗しました: ${rootCause(e)}`);
+      toast.error(i18next.t("autoSave.failed", { reason: rootCause(e) }));
     }
   }
 

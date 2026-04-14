@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import { invoke } from "@/lib/tauri";
+import i18next from "@/lib/i18n";
 import type { DockviewApi, SerializedDockview } from "dockview-react";
 import type { GlobalSettings } from "@/features/workspace/store";
 import {
@@ -19,17 +20,10 @@ export type PanelId =
   | "attribution"
   | "codex-quick";
 
-/** Human-readable panel titles */
-export const PANEL_TITLES: Record<PanelId, string> = {
-  scenes: "シーン",
-  codex: "Codex",
-  "chat-history": "チャット履歴",
-  editor: "エディタ",
-  chat: "チャット",
-  snippets: "Snippets",
-  attribution: "帰属",
-  "codex-quick": "Codex Quick",
-};
+/** Human-readable panel title resolved via i18n */
+export function getPanelTitle(id: PanelId): string {
+  return i18next.t(`layout.panel.${id}`);
+}
 
 interface LayoutState {
   /** Dockview API reference — set once in onReady */
@@ -286,7 +280,7 @@ export const useLayoutStore = create<LayoutState>()((set, get) => ({
  * Add a panel back to the layout at a sensible default position.
  */
 function addPanelWithDefaults(api: DockviewApi, panelId: PanelId) {
-  const title = PANEL_TITLES[panelId];
+  const title = getPanelTitle(panelId);
 
   // Try to group with a sibling panel, or fall back to a directional position
   switch (panelId) {

@@ -83,7 +83,7 @@ export function KeysCategory() {
   const filtered = COMMANDS.filter(
     (c) =>
       !search ||
-      c.label.toLowerCase().includes(search.toLowerCase()) ||
+      t(`keys.${c.id}`).toLowerCase().includes(search.toLowerCase()) ||
       bindings[c.id]?.toLowerCase().includes(search.toLowerCase()),
   );
 
@@ -128,7 +128,9 @@ export function KeysCategory() {
                 key={cmd.id}
                 className="group border-b border-border/50 last:border-0"
               >
-                <td className="py-1.5 pr-4 text-foreground">{cmd.label}</td>
+                <td className="py-1.5 pr-4 text-foreground">
+                  {t(`keys.${cmd.id}`)}
+                </td>
                 <td className="py-1.5 text-right">
                   <div className="flex items-center justify-end gap-2">
                     {hasConflict && (

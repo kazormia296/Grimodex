@@ -209,7 +209,12 @@ export function IntegrityCheckSection() {
                         ) : (
                           <span>
                             {ref.scenes
-                              .map((s) => `${s.sceneTitle}(${s.count}回)`)
+                              .map((s) =>
+                                t("scenes.mentionCount", {
+                                  title: s.sceneTitle,
+                                  count: s.count,
+                                }),
+                              )
                               .join(", ")}
                           </span>
                         )}

@@ -1,18 +1,21 @@
 import { useState, useEffect, useCallback, useRef } from "react";
+import { useTranslation } from "react-i18next";
 import { Search } from "lucide-react";
 import type { CodexEntry } from "@/features/codex/api";
+import { getTypeLabel } from "@/features/chat/utils/typeLabels";
 
 interface CodexCommandPaletteProps {
   onSelect: (entry: CodexEntry) => void;
   onClose: () => void;
-  typeLabels: Record<string, string>;
+  /** @deprecated No longer needed — labels are resolved via i18n internally */
+  typeLabels?: Record<string, string>;
 }
 
 export function CodexCommandPalette({
   onSelect,
   onClose,
-  typeLabels,
 }: CodexCommandPaletteProps) {
+  const { t } = useTranslation();
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<CodexEntry[]>([]);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -61,7 +64,7 @@ export function CodexCommandPalette({
             type="text"
             value={query}
             onChange={(e) => void handleSearch(e.target.value)}
-            placeholder="Codexを検索..."
+            placeholder={t("codex.searchPlaceholder")}
             className="flex-1 bg-transparent py-3 text-sm outline-none"
           />
         </div>
@@ -79,7 +82,7 @@ export function CodexCommandPalette({
                   className="flex w-full items-center gap-2 rounded-md px-3 py-2 text-left text-sm hover:bg-accent"
                 >
                   <span className="rounded-full bg-muted px-1.5 py-0.5 text-[9px] font-medium">
-                    {typeLabels[entry.type] ?? entry.type}
+                    {getTypeLabel(entry.type)}
                   </span>
                   <span className="truncate font-medium">{entry.name}</span>
                   {entry.summary && (
@@ -94,7 +97,7 @@ export function CodexCommandPalette({
         )}
         {query.trim() !== "" && results.length === 0 && (
           <p className="p-3 text-center text-xs text-muted-foreground">
-            結果なし
+            {t("codex.empty")}
           </p>
         )}
       </div>

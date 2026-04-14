@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import { toast } from "sonner";
+import i18next from "@/lib/i18n";
 import { debugLog, errorDetail } from "@/lib/debugLog";
 import type { EntityType, SnapshotType, RevisionMeta } from "./api";
 
@@ -115,7 +116,7 @@ export const useRevisionStore = create<RevisionHistoryState>()((set, get) => ({
       set({ selectedContent: rev?.content ?? null, isLoadingContent: false });
     } catch (e) {
       debugLog.error("RevisionStore", "selectRevision failed", errorDetail(e));
-      toast.error("リビジョンの読み込みに失敗しました");
+      toast.error(i18next.t("revision.loadFailed"));
       set({ isLoadingContent: false });
     }
   },

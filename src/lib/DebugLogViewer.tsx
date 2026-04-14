@@ -1,4 +1,5 @@
 import { useRef, useEffect } from "react";
+import { useTranslation } from "react-i18next";
 import { X, Trash2, Copy, ClipboardCopy } from "lucide-react";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
@@ -12,6 +13,7 @@ const LEVEL_STYLES: Record<LogLevel, string> = {
 };
 
 export function DebugLogViewer() {
+  const { t } = useTranslation();
   const { entries, isOpen, setOpen, clear } = useDebugLogStore();
   const bottomRef = useRef<HTMLDivElement>(null);
 
@@ -32,12 +34,12 @@ export function DebugLogViewer() {
   function copyAll() {
     const text = entries.map(formatEntry).join("\n");
     navigator.clipboard.writeText(text);
-    toast.success("ログをコピーしました");
+    toast.success(t("debugLog.logCopied"));
   }
 
   function copyLine(entry: LogEntry) {
     navigator.clipboard.writeText(formatEntry(entry));
-    toast.success("行をコピーしました");
+    toast.success(t("debugLog.lineCopied"));
   }
 
   return (

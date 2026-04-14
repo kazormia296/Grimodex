@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from "react";
+import { useTranslation } from "react-i18next";
 import { useEditor, EditorContent } from "@tiptap/react";
 import { toast } from "sonner";
 import { debugLog, errorDetail } from "@/lib/debugLog";
@@ -40,6 +41,7 @@ function RevisionListItem({
   isSelected,
   onClick,
 }: RevisionListItemProps) {
+  const { t } = useTranslation();
   const isManual = revision.snapshotType === "manual";
 
   return (
@@ -66,7 +68,8 @@ function RevisionListItem({
           {formatTimestamp(revision.createdAt)}
         </span>
         <span className="text-xs text-muted-foreground">
-          {isManual ? "手動" : "自動"} · v{revision.versionNumber}
+          {isManual ? t("revision.manual") : t("revision.auto")} · v
+          {revision.versionNumber}
         </span>
       </span>
     </button>
@@ -155,6 +158,7 @@ function PreviewPanel({
   isLoading,
   showDiff,
 }: PreviewPanelProps) {
+  const { t } = useTranslation();
   const currentEditor = useEditor({
     extensions: getReadonlyEditorExtensions(),
     editable: false,
@@ -221,7 +225,7 @@ function PreviewPanel({
   if (isLoading) {
     return (
       <div className="flex items-center justify-center h-full text-muted-foreground text-sm">
-        読み込み中…
+        {t("revision.loading")}
       </div>
     );
   }
@@ -229,7 +233,7 @@ function PreviewPanel({
   if (!content) {
     return (
       <div className="flex items-center justify-center h-full text-muted-foreground text-sm">
-        リビジョンを選択してください
+        {t("revision.selectRevision")}
       </div>
     );
   }
@@ -239,7 +243,7 @@ function PreviewPanel({
       <div className="flex h-full overflow-hidden">
         <div className="flex flex-col flex-1 overflow-hidden border-r border-border">
           <div className="px-3 py-1 text-xs text-muted-foreground bg-muted/30 border-b border-border flex-shrink-0">
-            前のバージョン
+            {t("revision.prevVersion")}
           </div>
           <div className="flex-1 overflow-auto p-4 prose prose-sm dark:prose-invert max-w-none">
             <EditorContent editor={prevEditor} />
@@ -247,7 +251,7 @@ function PreviewPanel({
         </div>
         <div className="flex flex-col flex-1 overflow-hidden">
           <div className="px-3 py-1 text-xs text-muted-foreground bg-muted/30 border-b border-border flex-shrink-0">
-            このバージョン
+            {t("revision.thisVersion")}
           </div>
           <div className="flex-1 overflow-auto p-4 prose prose-sm dark:prose-invert max-w-none">
             <EditorContent editor={currentEditor} />
@@ -261,7 +265,7 @@ function PreviewPanel({
     return (
       <div className="flex flex-col h-full overflow-hidden">
         <div className="px-3 py-1.5 text-xs text-muted-foreground bg-muted/30 border-b border-border flex-shrink-0">
-          比較対象の前バージョンがありません
+          {t("revision.noPrevVersion")}
         </div>
         <div className="flex-1 overflow-auto p-4 prose prose-sm dark:prose-invert max-w-none">
           <EditorContent editor={currentEditor} />
@@ -282,6 +286,7 @@ function PreviewPanel({
 // ---------------------------------------------------------------------------
 
 export function RevisionHistoryModal() {
+  const { t } = useTranslation();
   const {
     isOpen,
     entityType,
@@ -390,11 +395,11 @@ export function RevisionHistoryModal() {
       }
 
       setConfirmRestore(false);
-      toast.success("復元しました");
+      toast.success(t("revision.restored"));
       closeHistory();
     } catch (err) {
       debugLog.error("RevisionHistory", "restore failed", errorDetail(err));
-      toast.error("復元に失敗しました");
+      toast.error(t("revision.restoreFailed"));
     } finally {
       setIsRestoring(false);
     }
@@ -427,12 +432,14 @@ export function RevisionHistoryModal() {
     return (
       <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center">
         <div className="bg-background rounded-lg border border-border shadow-xl p-6 w-[440px] max-w-[95vw]">
-          <h2 className="text-base font-semibold mb-3">リビジョンを復元</h2>
+          <h2 className="text-base font-semibold mb-3">
+            {t("revision.restoreTitle")}
+          </h2>
           <p className="text-sm text-muted-foreground mb-6">
             {formatTimestamp(selectedRevisionMeta.createdAt)}{" "}
-            のリビジョンに復元しますか？
+            {t("revision.restoreConfirmMsg")}
             <br />
-            現在の内容はスナップショットとして保存されます。
+            {t("revision.restoreNote")}
           </p>
           <div className="flex justify-end gap-2">
             <button
@@ -441,7 +448,7 @@ export function RevisionHistoryModal() {
               onClick={() => setConfirmRestore(false)}
               disabled={isRestoring}
             >
-              キャンセル
+              {t("common.cancel")}
             </button>
             <button
               type="button"
@@ -449,7 +456,9 @@ export function RevisionHistoryModal() {
               onClick={handleRestoreConfirm}
               disabled={isRestoring}
             >
-              {isRestoring ? "復元中…" : "復元する"}
+              {isRestoring
+                ? t("revision.restoring")
+                : t("revision.restoreAction")}
             </button>
           </div>
         </div>
@@ -472,10 +481,12 @@ export function RevisionHistoryModal() {
       >
         {/* Header */}
         <div className="flex items-center justify-between px-4 py-3 border-b border-border flex-shrink-0">
-          <h2 className="text-base font-semibold">変更履歴</h2>
+          <h2 className="text-base font-semibold">
+            {t("revision.historyTitle")}
+          </h2>
           <button
             type="button"
-            aria-label="閉じる"
+            aria-label={t("common.close")}
             className="text-muted-foreground hover:text-foreground transition-colors"
             onClick={closeHistory}
           >
@@ -496,7 +507,7 @@ export function RevisionHistoryModal() {
                   onChange={(e) => setShowDiff(e.target.checked)}
                   className="rounded"
                 />
-                変更を表示
+                {t("revision.showDiff")}
               </label>
             </div>
 
@@ -529,9 +540,11 @@ export function RevisionHistoryModal() {
               >
                 <span className="w-2 h-2 rounded-full flex-shrink-0 bg-transparent" />
                 <span>
-                  <span className="block font-medium">現在のバージョン</span>
+                  <span className="block font-medium">
+                    {t("revision.currentVersion")}
+                  </span>
                   <span className="text-xs text-muted-foreground">
-                    未保存の変更を含む
+                    {t("revision.unsavedChanges")}
                   </span>
                 </span>
               </button>
@@ -553,13 +566,13 @@ export function RevisionHistoryModal() {
                   className="w-full text-center py-2 text-xs text-muted-foreground hover:text-foreground transition-colors"
                   onClick={loadMore}
                 >
-                  さらに読み込む
+                  {t("revision.loadMore")}
                 </button>
               )}
 
               {revisions.length === 0 && (
                 <p className="text-xs text-muted-foreground px-3 py-4 text-center">
-                  保存済みのリビジョンはありません
+                  {t("revision.noRevisions")}
                 </p>
               )}
             </div>
@@ -573,7 +586,7 @@ export function RevisionHistoryModal() {
             className="px-3 py-1.5 text-sm rounded border border-border hover:bg-muted transition-colors"
             onClick={closeHistory}
           >
-            閉じる
+            {t("common.close")}
           </button>
           <button
             type="button"
@@ -581,7 +594,7 @@ export function RevisionHistoryModal() {
             onClick={handleRestoreClick}
             disabled={!canRestore}
           >
-            この時点に復元
+            {t("revision.restoreToThis")}
           </button>
         </div>
       </div>

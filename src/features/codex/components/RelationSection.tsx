@@ -10,13 +10,7 @@ import {
 import { extractPlainText } from "../prosemirrorTextExtractor";
 import { findMentionedEntriesAsync } from "../rustMatcher";
 import { getChildrenFromArray } from "../childrenBudget";
-
-const TYPE_LABELS: Record<string, string> = {
-  character: "キャラクター",
-  location: "場所",
-  item: "アイテム",
-  lore: "設定・世界観",
-};
+import { getTypeLabel } from "@/features/chat/utils/typeLabels";
 
 interface RelationSectionProps {
   entry: CodexEntry;
@@ -25,7 +19,7 @@ interface RelationSectionProps {
 function TypeBadge({ type }: { type: string }) {
   return (
     <span className="rounded-full bg-muted px-1.5 py-0.5 text-[9px] font-medium">
-      {TYPE_LABELS[type] ?? type}
+      {getTypeLabel(type)}
     </span>
   );
 }

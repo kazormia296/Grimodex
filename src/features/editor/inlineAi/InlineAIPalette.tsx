@@ -85,7 +85,7 @@ export function InlineAIPalette({
                   : "bg-muted text-muted-foreground hover:bg-accent hover:text-foreground",
               )}
             >
-              {cmd.label}
+              {t(`inlineAi.commands.${cmd.id}.label`)}
             </button>
           ))}
         </div>
@@ -105,8 +105,7 @@ export function InlineAIPalette({
             }}
             placeholder={
               selectedCommand.needsArg
-                ? (selectedCommand.argPlaceholder ??
-                  t("inlineAi.commands.custom.placeholder"))
+                ? t(`inlineAi.commands.${selectedCommand.id}.placeholder`)
                 : t("inlineAi.additionalPrompt")
             }
             className="flex-1 rounded border border-border bg-background px-2 py-1.5 text-xs focus:outline-none focus:ring-1 focus:ring-ring"
@@ -121,7 +120,7 @@ export function InlineAIPalette({
         </div>
 
         <div className="mt-1.5 text-xs text-muted-foreground opacity-60">
-          {selectedCommand.description}
+          {t(`inlineAi.commands.${selectedCommand.id}.desc`)}
         </div>
       </div>
     </div>

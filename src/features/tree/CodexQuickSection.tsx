@@ -7,14 +7,8 @@ import { useLayoutStore } from "@/features/layout/layoutStore";
 import { useTreeStore } from "./treeStore";
 import { CodexQuickPopover } from "./CodexQuickPopover";
 import { CodexCommandPalette } from "@/features/codex/components/CodexCommandPalette";
+import { getTypeLabel } from "@/features/chat/utils/typeLabels";
 import type { CodexEntry } from "@/features/codex/api";
-
-const TYPE_LABELS: Record<string, string> = {
-  character: "キャラクター",
-  location: "場所",
-  item: "アイテム",
-  lore: "設定",
-};
 
 export function CodexQuickSection() {
   const matchedEntryIds = useCodexHighlightStore((s) => s.matchedEntryIds);
@@ -123,9 +117,7 @@ export function CodexQuickSection() {
           entry={hoveredEntry.entry}
           rect={hoveredEntry.rect}
           dotColor={typeColorMap[hoveredEntry.entry.type]?.fg ?? "#888888"}
-          typeLabel={
-            TYPE_LABELS[hoveredEntry.entry.type] ?? hoveredEntry.entry.type
-          }
+          typeLabel={getTypeLabel(hoveredEntry.entry.type)}
           onClose={() => setHoveredEntry(null)}
         />
       )}
@@ -138,7 +130,6 @@ export function CodexQuickSection() {
             setShowPinPalette(false);
           }}
           onClose={() => setShowPinPalette(false)}
-          typeLabels={TYPE_LABELS}
         />
       )}
     </>

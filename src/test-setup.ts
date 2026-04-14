@@ -1,4 +1,5 @@
 import "@testing-library/jest-dom/vitest";
+import "@/lib/i18n";
 import { vi } from "vitest";
 
 // Mock @tanstack/react-virtual for jsdom (no ResizeObserver / element dimensions)

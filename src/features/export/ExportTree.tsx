@@ -1,4 +1,5 @@
 import { useCallback } from "react";
+import { useTranslation } from "react-i18next";
 import { ChevronRight, ChevronDown, Folder } from "lucide-react";
 import type { TreeNodeData } from "@/features/tree/treeStore";
 
@@ -231,6 +232,7 @@ function TreeNode({
 // ────────────────────────────────────────────────────────────────────
 
 export function ExportTree({ nodes, state, onChange }: Props) {
+  const { t } = useTranslation();
   const { checkedIds, expandedIds } = state;
 
   const allSceneIds = nodes
@@ -275,14 +277,16 @@ export function ExportTree({ nodes, state, onChange }: Props) {
       {/* ヘッダー */}
       <div className="flex flex-shrink-0 items-center gap-2 border-b border-border px-3 py-2">
         <TriStateCheckbox state={headerCheckState} onChange={handleSelectAll} />
-        <span className="text-xs text-muted-foreground">全選択</span>
+        <span className="text-xs text-muted-foreground">
+          {t("export.selectAll")}
+        </span>
         <div className="flex-1" />
         <button
           type="button"
           onClick={handleToggleExpandAll}
           className="text-xs text-muted-foreground hover:text-foreground"
         >
-          {allExpanded ? "折りたたむ" : "展開"}
+          {allExpanded ? t("export.collapse") : t("export.expand")}
         </button>
       </div>
 
@@ -300,7 +304,7 @@ export function ExportTree({ nodes, state, onChange }: Props) {
         ))}
         {rootChildren.length === 0 && (
           <p className="p-3 text-xs text-muted-foreground">
-            シーンがありません
+            {t("export.noScenes")}
           </p>
         )}
       </div>

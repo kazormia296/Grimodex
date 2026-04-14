@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { cn } from "@/lib/utils";
 import { filterCommands } from "./inlineAiCommands";
 import type { InlineAiCommand } from "./inlineAiTypes";
@@ -20,6 +21,7 @@ export function SlashCommandPopup({
   onSelect,
   onClose,
 }: SlashCommandPopupProps) {
+  const { t } = useTranslation();
   const items = filterCommands(query);
   const [selectedIndex, setSelectedIndex] = useState(0);
   const ref = useRef<HTMLDivElement>(null);
@@ -81,7 +83,7 @@ export function SlashCommandPopup({
         >
           <span className="text-xs font-medium">/{cmd.id}</span>
           <span className="text-xs text-muted-foreground">
-            {cmd.description}
+            {t(`inlineAi.commands.${cmd.id}.desc`)}
           </span>
         </button>
       ))}

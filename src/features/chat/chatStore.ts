@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import { toast } from "sonner";
+import i18next from "@/lib/i18n";
 import * as chatApi from "./chatApi";
 import { debugLog, errorDetail } from "@/lib/debugLog";
 
@@ -331,7 +332,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
       set({ sessions, isLoadingSessions: false });
     } catch (e) {
       set({ isLoadingSessions: false });
-      toast.error("チャットセッションの読み込みに失敗しました");
+      toast.error(i18next.t("chat.loadSessionsFailed"));
       debugLog.error("ChatStore", "loadSessions", errorDetail(e));
     }
   },
@@ -345,7 +346,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
       const messages = await chatApi.listMessages(sessionId);
       set({ activeSessionId: sessionId, messages });
     } catch (e) {
-      toast.error("メッセージの読み込みに失敗しました");
+      toast.error(i18next.t("chat.loadMessagesFailed"));
       debugLog.error("ChatStore", "selectSession", errorDetail(e));
     }
   },
@@ -363,7 +364,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
         messages: [],
       }));
     } catch (e) {
-      toast.error("セッションの作成に失敗しました");
+      toast.error(i18next.t("chat.createSessionFailed"));
       debugLog.error("ChatStore", "createNewSession", errorDetail(e));
     }
   },
@@ -379,7 +380,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
           : {}),
       }));
     } catch (e) {
-      toast.error("セッションの削除に失敗しました");
+      toast.error(i18next.t("chat.deleteSessionFailed"));
       debugLog.error("ChatStore", "deleteSession", errorDetail(e));
     }
   },
@@ -394,7 +395,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
         messages: [...state.messages, message],
       }));
     } catch (e) {
-      toast.error("メッセージの保存に失敗しました");
+      toast.error(i18next.t("chat.saveMessageFailed"));
       debugLog.error("ChatStore", "persistMessage", errorDetail(e));
     }
   },
@@ -739,13 +740,11 @@ export const useChatStore = create<ChatState>()((set, get) => ({
         const kind = classifyError(e);
         const msg = e instanceof Error ? e.message : String(e);
         if (kind === "auth") {
-          toast.error("APIキーが無効です。設定を確認してください。");
+          toast.error(i18next.t("chat.invalidApiKey"));
         } else if (kind === "network") {
-          toast.error(
-            "ネットワークエラーが発生しました。接続を確認してください。",
-          );
+          toast.error(i18next.t("chat.networkError"));
         } else {
-          toast.error(`エージェント実行に失敗しました: ${msg}`);
+          toast.error(i18next.t("chat.agentFailed", { message: msg }));
         }
         set({ error: msg });
       } finally {
@@ -1300,9 +1299,9 @@ export const useChatStore = create<ChatState>()((set, get) => ({
       const msg = e instanceof Error ? e.message : String(e);
 
       if (kind === "auth") {
-        toast.error("APIキーが無効です。設定を確認してください。", {
+        toast.error(i18next.t("chat.invalidApiKey"), {
           action: {
-            label: "設定を開く",
+            label: i18next.t("chat.openSettings"),
             onClick: () => {
               // Signal to open settings dialog via a custom event
               window.dispatchEvent(
@@ -1316,18 +1315,16 @@ export const useChatStore = create<ChatState>()((set, get) => ({
         });
       } else if (kind === "rate_limit") {
         // Retry after a delay for 429
-        toast.warning("レート制限に達しました。10秒後に再試行します…");
+        toast.warning(i18next.t("chat.rateLimited"));
         setTimeout(() => {
           get().sendMessage(content);
         }, 10_000);
         set({ isStreaming: false });
         return;
       } else if (kind === "network") {
-        toast.error(
-          "ネットワークエラーが発生しました。接続を確認してください。",
-        );
+        toast.error(i18next.t("chat.networkError"));
       } else {
-        toast.error(`送信に失敗しました: ${msg}`);
+        toast.error(i18next.t("chat.sendFailed", { message: msg }));
       }
 
       set({ error: msg });
@@ -1555,7 +1552,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
         set({ messages: messages.filter((m) => m.id !== messageId) });
       }
     } catch (e) {
-      toast.error("メッセージの削除に失敗しました");
+      toast.error(i18next.t("chat.deleteMessageFailed"));
       debugLog.error("ChatStore", "deleteMessage", errorDetail(e));
     }
   },
@@ -1570,7 +1567,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
         ),
       }));
     } catch (e) {
-      toast.error("スターの更新に失敗しました");
+      toast.error(i18next.t("chat.starUpdateFailed"));
       debugLog.error("ChatStore", "starMessage", errorDetail(e));
     }
   },

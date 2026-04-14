@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import i18next from "@/lib/i18n";
 import { invoke } from "@/lib/tauri";
 import { useSettingsStore } from "@/features/settings/settingsStore";
 import { useCursorSettingsStore } from "@/features/editor/cursorSettingsStore";
@@ -134,7 +135,7 @@ export const useWorkspaceStore = create<WorkspaceState>()((set, get) => ({
         });
       }
       set({
-        error: `ワークスペース "${path}" は存在しないか無効です。一覧から削除しました。`,
+        error: i18next.t("workspace.invalidPath", { path }),
       });
       return;
     }

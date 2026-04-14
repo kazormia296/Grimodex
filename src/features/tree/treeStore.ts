@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import i18next from "@/lib/i18n";
 import * as api from "./api";
 import type { TreeNode as ApiNode } from "./api";
 import { loadBatchAiRatio } from "@/features/attribution/api";
@@ -264,7 +265,7 @@ function computeFolderTitle(
   allNodes: TreeNodeData[],
   folderNaming: string,
 ): string {
-  if (folderNaming !== "auto") return "フォルダー";
+  if (folderNaming !== "auto") return i18next.t("tree.defaultFolder");
 
   // Determine depth by counting ancestors
   let depth = 0;
@@ -300,7 +301,7 @@ function computeFolderTitle(
     return `${prefix}${i}`;
   }
 
-  return "フォルダー";
+  return i18next.t("tree.defaultFolder");
 }
 
 /** Sort nodes so parents appear before their children (for restore operations). */
@@ -365,7 +366,7 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
           projectId,
           parentId: DEFAULT_CHAPTER_ID,
           nodeType: "scene",
-          title: "シーン 1",
+          title: `${i18next.t("tree.defaultScene")} 1`,
           sortOrder: 1.0,
         });
         raw = [...raw, scene];
@@ -433,7 +434,7 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
       projectId,
       parentId: chapterNode?.id ?? null,
       nodeType: "scene",
-      title: `シーン ${siblings.filter((n) => n.nodeType === "scene").length + 1}`,
+      title: `${i18next.t("tree.defaultScene")} ${siblings.filter((n) => n.nodeType === "scene").length + 1}`,
       sortOrder,
     });
     const newNode = toNodeData(created);
@@ -510,8 +511,14 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
     const siblings = nodes.filter((n) => n.parentId === parentId);
     const sortOrder = nextSortOrder(siblings, afterId);
     const settingsState = useSettingsStore.getState();
-    const scenePrefix = settingsState.get("tree.sceneNaming", "シーン");
-    const notePrefix = settingsState.get("tree.noteNaming", "ノート");
+    const scenePrefix = settingsState.get(
+      "tree.sceneNaming",
+      i18next.t("tree.defaultScene"),
+    );
+    const notePrefix = settingsState.get(
+      "tree.noteNaming",
+      i18next.t("tree.defaultNote"),
+    );
     const folderNaming = settingsState.get("tree.folderNaming", "auto");
     const numberingScope = settingsState.get("tree.numberingScope", "project");
 
@@ -533,7 +540,10 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
         );
         defaultTitle = `${prefix} ${n}`;
       } else {
-        defaultTitle = nodeType === "scene" ? "シーン" : "ノート";
+        defaultTitle =
+          nodeType === "scene"
+            ? i18next.t("tree.defaultScene")
+            : i18next.t("tree.defaultNote");
       }
     }
     const created = await api.createNode({

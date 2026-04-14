@@ -1,3 +1,4 @@
+import { useTranslation } from "react-i18next";
 import { useEditorStore } from "./editorStore";
 
 interface VerticalPreviewProps {
@@ -6,6 +7,7 @@ interface VerticalPreviewProps {
 }
 
 export function VerticalPreview({ open, onClose }: VerticalPreviewProps) {
+  const { t } = useTranslation();
   const editor = useEditorStore((s) => s.editor);
 
   if (!open) return null;
@@ -19,10 +21,12 @@ export function VerticalPreview({ open, onClose }: VerticalPreviewProps) {
     >
       <div className="relative flex h-[85vh] w-[90vw] flex-col rounded-lg border border-border bg-background shadow-lg">
         <div className="flex items-center justify-between border-b border-border px-4 py-2">
-          <h2 className="text-sm font-semibold">縦書きプレビュー</h2>
+          <h2 className="text-sm font-semibold">
+            {t("verticalPreview.title")}
+          </h2>
           <button
             type="button"
-            aria-label="閉じる"
+            aria-label={t("common.close")}
             className="text-muted-foreground hover:text-foreground"
             onClick={onClose}
           >

@@ -300,7 +300,24 @@
     "fallbackSceneTitle": "This scene",
     "searching": "Searching…",
     "noSearchResults": "No messages match \"{{query}}\"",
-    "noSessions": "No sessions"
+    "noSessions": "No sessions",
+    "loadSessionsFailed": "Failed to load chat sessions",
+    "loadMessagesFailed": "Failed to load messages",
+    "createSessionFailed": "Failed to create session",
+    "deleteSessionFailed": "Failed to delete session",
+    "saveMessageFailed": "Failed to save message",
+    "invalidApiKey": "Invalid API key. Please check your settings.",
+    "networkError": "A network error occurred. Please check your connection.",
+    "agentFailed": "Agent execution failed: {{message}}",
+    "rateLimited": "Rate limited. Retrying in 10 seconds…",
+    "sendFailed": "Send failed: {{message}}",
+    "openSettings": "Open Settings",
+    "deleteMessageFailed": "Failed to delete message",
+    "starUpdateFailed": "Failed to update star",
+    "extractedToCodex": "Extracted to Codex",
+    "copied": "Copied",
+    "copyFailed": "Copy failed",
+    "noMessages": "No messages yet"
   },
 
   "codex": {
@@ -321,6 +338,12 @@
     "newEntry": "New entry",
     "selectPrompt": "Select an entry",
     "deleteConfirmDesc": "Delete \"{{name}}\"? This cannot be undone.",
+    "editEntry": "Edit Entry",
+    "typeLabel": "Type",
+    "nameLabel": "Name",
+    "summaryLabel": "Summary",
+    "tagsLabel": "Tags",
+    "noResults": "No results",
     "extraction": {
       "title": "Extract to Codex",
       "type": "Type",
@@ -358,7 +381,10 @@
     "addSceneBelow": "Add Scene Below",
     "addNoteBelow": "Add Note Below",
     "addFolderBelow": "Add Folder Below",
-    "delete": "Delete"
+    "delete": "Delete",
+    "defaultFolder": "Folder",
+    "defaultScene": "Scene",
+    "defaultNote": "Note"
   },
 
   "editor": {
@@ -506,6 +532,117 @@
     "createError": "Failed to create snapshot",
     "restoreError": "Restore failed",
     "deleteError": "Delete failed"
+  },
+
+  "validation": {
+    "invalidData": "Layout data is invalid",
+    "missingGrid": "Missing grid field",
+    "missingGridRoot": "Missing grid.root",
+    "invalidGridWidth": "Invalid grid.width ({{value}})",
+    "invalidGridHeight": "Invalid grid.height ({{value}})",
+    "degenerateLayout": "Layout is degenerate (group count: {{count}})",
+    "insufficientPanels": "Insufficient panels ({{count}})",
+    "insufficientGroups": "Insufficient groups ({{count}})",
+    "singleGroupDominates": "A single group occupies {{pct}}% of the viewport width"
+  },
+
+  "window": {
+    "minimize": "Minimize",
+    "restore": "Restore",
+    "maximize": "Maximize",
+    "close": "Close"
+  },
+
+  "error": {
+    "unexpected": "An unexpected error occurred",
+    "description": "Something went wrong. Please reload the application.",
+    "details": "Details",
+    "reload": "Reload"
+  },
+
+  "autoSave": {
+    "failed": "Auto-save failed: {{reason}}"
+  },
+
+  "debugLog": {
+    "logCopied": "Logs copied",
+    "lineCopied": "Line copied"
+  },
+
+  "dialog": {
+    "workspacePathPrompt": "Enter workspace path:"
+  },
+
+  "verticalPreview": {
+    "title": "Vertical Preview"
+  },
+
+  "revision": {
+    "loadFailed": "Failed to load revision",
+    "manual": "Manual",
+    "auto": "Auto",
+    "loading": "Loading…",
+    "selectRevision": "Select a revision",
+    "prevVersion": "Previous version",
+    "thisVersion": "This version",
+    "noPrevVersion": "No previous version to compare",
+    "restored": "Restored",
+    "restoreFailed": "Restore failed",
+    "restoreTitle": "Restore Revision",
+    "restoreConfirmMsg": "Restore to this revision?",
+    "restoreNote": "Current content will be saved as a snapshot.",
+    "restoring": "Restoring…",
+    "restoreAction": "Restore",
+    "historyTitle": "Revision History",
+    "showDiff": "Show diff",
+    "currentVersion": "Current version",
+    "unsavedChanges": "Includes unsaved changes",
+    "loadMore": "Load more",
+    "noRevisions": "No saved revisions",
+    "restoreToThis": "Restore to this point"
+  },
+
+  "workspace": {
+    "invalidPath": "Workspace \"{{path}}\" does not exist or is invalid. Removed from the list."
+  },
+
+  "export": {
+    "selectAll": "Select all",
+    "collapse": "Collapse",
+    "expand": "Expand",
+    "noScenes": "No scenes"
+  },
+
+  "scenes": {
+    "sortManual": "Manual",
+    "sortTitle": "By title",
+    "sortWordcount": "By word count",
+    "sortStatus": "By status",
+    "filterAll": "Show all",
+    "noSynopsis": "No synopsis",
+    "viewLabel": "View",
+    "sortByLabel": "Sort by",
+    "filterByStatusLabel": "Filter by status",
+    "showLabel": "Show",
+    "showWordCount": "Word count",
+    "showStatusDots": "Status dots",
+    "showAiBadge": "AI attribution badge",
+    "autoRevealActive": "Auto-reveal active",
+    "addScene": "Add Scene",
+    "addNote": "Add Note",
+    "addFolder": "Add Folder",
+    "newScene": "New scene",
+    "newNote": "New note",
+    "newFolder": "New folder",
+    "mentionCount": "{{title}}({{count}})",
+    "create": "Create",
+    "undo": "Undo (Ctrl+Z)",
+    "redo": "Redo (Ctrl+Shift+Z)",
+    "expandCollapse": "Expand/Collapse all",
+    "panelMenu": "Panel menu",
+    "filterPlaceholder": "Filter...",
+    "deleteConfirmTitle": "Confirm Delete",
+    "deleteConfirmBody": "{{count}} scenes have content or synopsis. Are you sure you want to delete?"
   },
 
   "integrity": {

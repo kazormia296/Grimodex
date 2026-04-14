@@ -1,12 +1,15 @@
-/** Codex entry type → 日本語ラベル の共有マップ */
-export const TYPE_LABELS: Record<string, string> = {
-  character: "キャラクター",
-  location: "場所",
-  item: "アイテム",
-  lore: "設定",
+import i18next from "@/lib/i18n";
+
+/** Codex type slug → localized label lookup map (keyed to codex.* locale keys) */
+const TYPE_LABEL_KEYS: Record<string, string> = {
+  character: "codex.character",
+  location: "codex.location",
+  item: "codex.item",
+  lore: "codex.lore",
 };
 
-/** type 文字列を日本語ラベルに変換。未知の type はそのまま返す */
+/** type 文字列をローカライズ済みラベルに変換。未知の type はそのまま返す */
 export function getTypeLabel(type: string): string {
-  return TYPE_LABELS[type] ?? type;
+  const key = TYPE_LABEL_KEYS[type];
+  return key ? i18next.t(key) : type;
 }

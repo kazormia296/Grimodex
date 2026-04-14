@@ -300,7 +300,24 @@
     "fallbackSceneTitle": "このシーン",
     "searching": "検索中…",
     "noSearchResults": "\"{{query}}\" に一致するメッセージはありません",
-    "noSessions": "セッションがありません"
+    "noSessions": "セッションがありません",
+    "loadSessionsFailed": "チャットセッションの読み込みに失敗しました",
+    "loadMessagesFailed": "メッセージの読み込みに失敗しました",
+    "createSessionFailed": "セッションの作成に失敗しました",
+    "deleteSessionFailed": "セッションの削除に失敗しました",
+    "saveMessageFailed": "メッセージの保存に失敗しました",
+    "invalidApiKey": "APIキーが無効です。設定を確認してください。",
+    "networkError": "ネットワークエラーが発生しました。接続を確認してください。",
+    "agentFailed": "エージェント実行に失敗しました: {{message}}",
+    "rateLimited": "レート制限に達しました。10秒後に再試行します…",
+    "sendFailed": "送信に失敗しました: {{message}}",
+    "openSettings": "設定を開く",
+    "deleteMessageFailed": "メッセージの削除に失敗しました",
+    "starUpdateFailed": "スターの更新に失敗しました",
+    "extractedToCodex": "Codexに抽出しました",
+    "copied": "コピーしました",
+    "copyFailed": "コピーに失敗しました",
+    "noMessages": "メッセージはまだありません"
   },
 
   "codex": {
@@ -321,6 +338,12 @@
     "newEntry": "新規エントリ",
     "selectPrompt": "エントリを選択してください",
     "deleteConfirmDesc": "「{{name}}」を削除しますか？この操作は元に戻せません。",
+    "editEntry": "エントリ編集",
+    "typeLabel": "タイプ",
+    "nameLabel": "名前",
+    "summaryLabel": "概要",
+    "tagsLabel": "タグ",
+    "noResults": "結果なし",
     "extraction": {
       "title": "Codexに抽出",
       "type": "タイプ",
@@ -358,7 +381,10 @@
     "addSceneBelow": "下にシーンを追加",
     "addNoteBelow": "下にノートを追加",
     "addFolderBelow": "下にフォルダーを追加",
-    "delete": "削除"
+    "delete": "削除",
+    "defaultFolder": "フォルダー",
+    "defaultScene": "シーン",
+    "defaultNote": "ノート"
   },
 
   "editor": {
@@ -506,6 +532,117 @@
     "createError": "スナップショットの作成に失敗しました",
     "restoreError": "復元に失敗しました",
     "deleteError": "削除に失敗しました"
+  },
+
+  "validation": {
+    "invalidData": "レイアウトデータが不正です",
+    "missingGrid": "grid フィールドがありません",
+    "missingGridRoot": "grid.root がありません",
+    "invalidGridWidth": "grid.width が不正です ({{value}})",
+    "invalidGridHeight": "grid.height が不正です ({{value}})",
+    "degenerateLayout": "レイアウトが退化しています（グループ数: {{count}}）",
+    "insufficientPanels": "パネル数が不足しています（{{count}}）",
+    "insufficientGroups": "グループ数が不足しています（{{count}}）",
+    "singleGroupDominates": "単一グループが画面幅の {{pct}}% を占めています"
+  },
+
+  "window": {
+    "minimize": "最小化",
+    "restore": "元に戻す",
+    "maximize": "最大化",
+    "close": "閉じる"
+  },
+
+  "error": {
+    "unexpected": "予期しないエラーが発生しました",
+    "description": "アプリケーションで問題が発生しました。再読み込みしてください。",
+    "details": "詳細",
+    "reload": "再読み込み"
+  },
+
+  "autoSave": {
+    "failed": "自動保存に失敗しました: {{reason}}"
+  },
+
+  "debugLog": {
+    "logCopied": "ログをコピーしました",
+    "lineCopied": "行をコピーしました"
+  },
+
+  "dialog": {
+    "workspacePathPrompt": "ワークスペースのパスを入力してください:"
+  },
+
+  "verticalPreview": {
+    "title": "縦書きプレビュー"
+  },
+
+  "revision": {
+    "loadFailed": "リビジョンの読み込みに失敗しました",
+    "manual": "手動",
+    "auto": "自動",
+    "loading": "読み込み中…",
+    "selectRevision": "リビジョンを選択してください",
+    "prevVersion": "前のバージョン",
+    "thisVersion": "このバージョン",
+    "noPrevVersion": "比較対象の前バージョンがありません",
+    "restored": "復元しました",
+    "restoreFailed": "復元に失敗しました",
+    "restoreTitle": "リビジョンを復元",
+    "restoreConfirmMsg": "のリビジョンに復元しますか？",
+    "restoreNote": "現在の内容はスナップショットとして保存されます。",
+    "restoring": "復元中…",
+    "restoreAction": "復元する",
+    "historyTitle": "変更履歴",
+    "showDiff": "変更を表示",
+    "currentVersion": "現在のバージョン",
+    "unsavedChanges": "未保存の変更を含む",
+    "loadMore": "さらに読み込む",
+    "noRevisions": "保存済みのリビジョンはありません",
+    "restoreToThis": "この時点に復元"
+  },
+
+  "workspace": {
+    "invalidPath": "ワークスペース \"{{path}}\" は存在しないか無効です。一覧から削除しました。"
+  },
+
+  "export": {
+    "selectAll": "全選択",
+    "collapse": "折りたたむ",
+    "expand": "展開",
+    "noScenes": "シーンがありません"
+  },
+
+  "scenes": {
+    "sortManual": "手動",
+    "sortTitle": "タイトル順",
+    "sortWordcount": "文字数順",
+    "sortStatus": "ステータス順",
+    "filterAll": "すべて表示",
+    "noSynopsis": "synopsis なし",
+    "viewLabel": "表示",
+    "sortByLabel": "ソート",
+    "filterByStatusLabel": "ステータスで絞り込み",
+    "showLabel": "表示項目",
+    "showWordCount": "文字数",
+    "showStatusDots": "ステータスドット",
+    "showAiBadge": "AI帰属バッジ",
+    "autoRevealActive": "アクティブを自動表示",
+    "addScene": "シーンを追加",
+    "addNote": "ノートを追加",
+    "addFolder": "フォルダーを追加",
+    "newScene": "New scene",
+    "newNote": "New note",
+    "newFolder": "New folder",
+    "mentionCount": "{{title}}({{count}}回)",
+    "create": "新規作成",
+    "undo": "元に戻す (Ctrl+Z)",
+    "redo": "やり直し (Ctrl+Shift+Z)",
+    "expandCollapse": "全展開/折りたたみ",
+    "panelMenu": "パネルメニュー",
+    "filterPlaceholder": "フィルター...",
+    "deleteConfirmTitle": "削除の確認",
+    "deleteConfirmBody": "{{count}}件のシーンに本文またはsynopsisがあります。削除してもよいですか？"
   },
 
   "integrity": {

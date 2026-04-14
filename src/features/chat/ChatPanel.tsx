@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect, useCallback } from "react";
+import { useTranslation } from "react-i18next";
 import type { Editor } from "@tiptap/core";
 import { toast } from "sonner";
 import { useChatStore } from "./chatStore";
@@ -41,6 +42,7 @@ interface ContextMenuState {
 }
 
 export function ChatPanel() {
+  const { t } = useTranslation();
   const messages = useChatStore((s) => s.messages);
   const isStreaming = useChatStore((s) => s.isStreaming);
   const error = useChatStore((s) => s.error);
@@ -73,7 +75,8 @@ export function ChatPanel() {
   const treeActiveSceneId = useSceneStore((s) => s.activeSceneId);
   const sceneTitle = useTreeStore(
     (s) =>
-      s.nodes.find((n) => n.id === treeActiveSceneId)?.title ?? "このシーン",
+      s.nodes.find((n) => n.id === treeActiveSceneId)?.title ??
+      t("chat.fallbackSceneTitle"),
   );
 
   const aiSettings = useAiSettingsStore((s) => s.settings);
@@ -226,7 +229,7 @@ export function ChatPanel() {
           extractedCodex: [entry.id],
         });
       }
-      toast.success("Codexに抽出しました");
+      toast.success(t("chat.extractedToCodex"));
     },
     [messages, createCodexEntry],
   );
@@ -356,8 +359,8 @@ export function ChatPanel() {
       const msg = messages.find((m) => m.id === messageId);
       const source = msg?.role === "assistant" ? "ai" : "human";
       copyWithAttribution(text, source)
-        .then(() => toast.success("コピーしました"))
-        .catch(() => toast.error("コピーに失敗しました"));
+        .then(() => toast.success(t("chat.copied")))
+        .catch(() => toast.error(t("chat.copyFailed")));
     },
     [messages],
   );
@@ -421,7 +424,7 @@ export function ChatPanel() {
       <div className="flex-1 overflow-y-auto px-4 py-3">
         {messages.length === 0 ? (
           <p className="mt-8 text-center text-sm text-muted-foreground">
-            メッセージはまだありません
+            {t("chat.noMessages")}
           </p>
         ) : (
           <div className="space-y-4">
@@ -449,7 +452,9 @@ export function ChatPanel() {
                 data-testid="streaming-indicator"
                 className="flex items-center gap-1 text-muted-foreground"
               >
-                <span className="animate-pulse text-xs">生成中…</span>
+                <span className="animate-pulse text-xs">
+                  {t("chat.generating")}
+                </span>
               </div>
             )}
           </div>

@@ -1,3 +1,4 @@
+import i18next from "@/lib/i18n";
 import type { InlineAiCommand } from "./inlineAiTypes";
 
 export const INLINE_AI_COMMANDS: InlineAiCommand[] = [
@@ -82,7 +83,10 @@ export function filterCommands(query: string): InlineAiCommand[] {
   return INLINE_AI_COMMANDS.filter(
     (cmd) =>
       cmd.id.startsWith(q) ||
-      cmd.label.includes(q) ||
-      cmd.description.includes(q),
+      i18next
+        .t(`inlineAi.commands.${cmd.id}.label`)
+        .toLowerCase()
+        .includes(q) ||
+      i18next.t(`inlineAi.commands.${cmd.id}.desc`).toLowerCase().includes(q),
   );
 }
