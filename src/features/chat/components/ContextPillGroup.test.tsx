@@ -68,7 +68,7 @@ describe("ContextPillGroup", () => {
       />,
     );
     expect(screen.getByText(/キャラクター/)).toBeInTheDocument();
-    expect(screen.getByText("(3)")).toBeInTheDocument();
+    expect(screen.getByText("(2/3)")).toBeInTheDocument();
     expect(screen.queryByText("Elara")).not.toBeInTheDocument();
   });
 

@@ -46,7 +46,8 @@ export function ContextPillGroup({
   const { t } = useTranslation();
   const [open, setOpen] = useState(false);
   const wrapperRef = useRef<HTMLDivElement>(null);
-  const count = pinnedEntries.length + autoEntries.length;
+  const pinnedCount = pinnedEntries.length;
+  const totalCount = pinnedEntries.length + autoEntries.length;
   const pillStyle = resolvedColor
     ? { backgroundColor: resolvedColor.hl, color: resolvedColor.fg }
     : undefined;
@@ -124,7 +125,9 @@ export function ContextPillGroup({
       >
         <span>{label}</span>
         <span>{open ? "▴" : "▾"}</span>
-        <span>({count})</span>
+        <span>
+          ({pinnedCount}/{totalCount})
+        </span>
       </button>
 
       {/* ポップオーバー: グループ内エントリを縦一覧 */}
