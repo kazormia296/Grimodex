@@ -442,6 +442,419 @@ pub fn find_codex_by_name(
         .context("find_codex_by_name query failed")
 }
 
+// ─── Phase 2 types ───────────────────────────────────────────────────────────
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct SearchResult {
+    pub source_type: String, // "scene" | "codex" | "snippet" | "chat"
+    pub id: String,
+    pub title: String,
+    pub excerpt: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ChatSession {
+    pub id: String,
+    pub project_id: String,
+    pub node_id: Option<String>,
+    pub node_title: Option<String>,
+    pub title: String,
+    pub model: String,
+    pub message_count: i64,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ChatMessage {
+    pub id: String,
+    pub session_id: String,
+    pub role: String,
+    pub content: String,
+    pub model: Option<String>,
+    pub is_starred: bool,
+    pub created_at: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct SnippetSummary {
+    pub id: String,
+    pub project_id: String,
+    pub title: String,
+    pub content: String, // raw ProseMirror JSON; caller converts
+    pub tags_cache: Option<String>,
+    pub scene_id: Option<String>,
+    pub usage_count: i64,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct AttributionSourceSummary {
+    pub source: String, // "human" | "ai" | "unknown"
+    pub char_count: i64,
+    pub span_count: i64,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct SceneAttribution {
+    pub scene_id: String,
+    pub scene_title: String,
+    pub sources: Vec<AttributionSourceSummary>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct AttributionReport {
+    pub total_char_count: i64,
+    pub by_source: Vec<AttributionSourceSummary>,
+    pub by_scene: Vec<SceneAttribution>,
+}
+
+// ─── Phase 2 queries ─────────────────────────────────────────────────────────
+
+/// Validate a FTS5 query: reject empty, too-long, or wildcard-heavy input.
+pub fn validate_fts_query(query: &str) -> Result<()> {
+    if query.trim().is_empty() {
+        anyhow::bail!("Search query must not be empty");
+    }
+    if query.len() > 500 {
+        anyhow::bail!("Search query too long (max 500 characters)");
+    }
+    let wildcard_count = query.chars().filter(|&c| c == '*').count();
+    if wildcard_count > 3 {
+        anyhow::bail!("Too many wildcards in query (max 3)");
+    }
+    Ok(())
+}
+
+pub fn search_fts(
+    conn: &Connection,
+    project_id: &str,
+    query: &str,
+    scope: &str,
+    limit: u32,
+) -> Result<Vec<SearchResult>> {
+    let mut results: Vec<SearchResult> = Vec::new();
+    let lim = limit.min(50) as i64;
+
+    if scope == "all" || scope == "scenes" {
+        let mut stmt = conn.prepare(
+            "SELECT tn.id, tn.title, COALESCE(tn.synopsis, '')
+             FROM tree_nodes_fts f
+             JOIN tree_nodes tn ON tn.rowid = f.rowid
+             WHERE f MATCH ?1 AND tn.project_id = ?2 AND tn.node_type = 'scene'
+             ORDER BY rank LIMIT ?3",
+        )?;
+        let rows = stmt.query_map(params![query, project_id, lim], |row| {
+            Ok(SearchResult {
+                source_type: "scene".to_string(),
+                id: row.get(0)?,
+                title: row.get(1)?,
+                excerpt: row.get(2)?,
+            })
+        })?;
+        for r in rows {
+            results.push(r.context("search scenes")?);
+        }
+    }
+
+    if scope == "all" || scope == "codex" {
+        let mut stmt = conn.prepare(
+            "SELECT e.id, e.name, COALESCE(e.summary, '')
+             FROM codex_fts f
+             JOIN codex_entries e ON e.rowid = f.rowid
+             WHERE f MATCH ?1 AND e.project_id = ?2
+             ORDER BY rank LIMIT ?3",
+        )?;
+        let rows = stmt.query_map(params![query, project_id, lim], |row| {
+            Ok(SearchResult {
+                source_type: "codex".to_string(),
+                id: row.get(0)?,
+                title: row.get(1)?,
+                excerpt: row.get(2)?,
+            })
+        })?;
+        for r in rows {
+            results.push(r.context("search codex")?);
+        }
+    }
+
+    if scope == "all" || scope == "snippets" {
+        let mut stmt = conn.prepare(
+            "SELECT s.id, s.title, COALESCE(s.tags_cache, '')
+             FROM snippets_fts f
+             JOIN snippets s ON s.rowid = f.rowid
+             WHERE f MATCH ?1 AND s.project_id = ?2
+             ORDER BY rank LIMIT ?3",
+        )?;
+        let rows = stmt.query_map(params![query, project_id, lim], |row| {
+            Ok(SearchResult {
+                source_type: "snippet".to_string(),
+                id: row.get(0)?,
+                title: row.get(1)?,
+                excerpt: row.get(2)?,
+            })
+        })?;
+        for r in rows {
+            results.push(r.context("search snippets")?);
+        }
+    }
+
+    if scope == "all" || scope == "chat" {
+        let mut stmt = conn.prepare(
+            "SELECT m.id, cs.title, substr(m.content, 1, 300)
+             FROM chat_messages_fts f
+             JOIN chat_messages m ON m.rowid = f.rowid
+             JOIN chat_sessions cs ON cs.id = m.session_id
+             WHERE f MATCH ?1 AND cs.project_id = ?2
+             ORDER BY rank LIMIT ?3",
+        )?;
+        let rows = stmt.query_map(params![query, project_id, lim], |row| {
+            Ok(SearchResult {
+                source_type: "chat".to_string(),
+                id: row.get(0)?,
+                title: row.get(1)?,
+                excerpt: row.get(2)?,
+            })
+        })?;
+        for r in rows {
+            results.push(r.context("search chat")?);
+        }
+    }
+
+    Ok(results)
+}
+
+pub fn list_chat_sessions(
+    conn: &Connection,
+    project_id: &str,
+    node_id: Option<&str>,
+) -> Result<Vec<ChatSession>> {
+    let sql = if node_id.is_some() {
+        "SELECT cs.id, cs.project_id, cs.node_id, tn.title, cs.title, cs.model,
+                COUNT(cm.id) as message_count, cs.created_at, cs.updated_at
+         FROM chat_sessions cs
+         LEFT JOIN tree_nodes tn ON tn.id = cs.node_id
+         LEFT JOIN chat_messages cm ON cm.session_id = cs.id
+         WHERE cs.project_id = ?1 AND cs.node_id = ?2
+         GROUP BY cs.id ORDER BY cs.updated_at DESC"
+    } else {
+        "SELECT cs.id, cs.project_id, cs.node_id, tn.title, cs.title, cs.model,
+                COUNT(cm.id) as message_count, cs.created_at, cs.updated_at
+         FROM chat_sessions cs
+         LEFT JOIN tree_nodes tn ON tn.id = cs.node_id
+         LEFT JOIN chat_messages cm ON cm.session_id = cs.id
+         WHERE cs.project_id = ?1
+         GROUP BY cs.id ORDER BY cs.updated_at DESC"
+    };
+
+    let mut stmt = conn.prepare(sql)?;
+    let map_row = |row: &rusqlite::Row<'_>| {
+        Ok(ChatSession {
+            id: row.get(0)?,
+            project_id: row.get(1)?,
+            node_id: row.get(2)?,
+            node_title: row.get(3)?,
+            title: row.get(4)?,
+            model: row.get(5)?,
+            message_count: row.get(6)?,
+            created_at: row.get(7)?,
+            updated_at: row.get(8)?,
+        })
+    };
+
+    let rows = if let Some(nid) = node_id {
+        stmt.query_map(params![project_id, nid], map_row)?
+    } else {
+        stmt.query_map(params![project_id], map_row)?
+    };
+
+    rows.collect::<rusqlite::Result<Vec<_>>>()
+        .context("list_chat_sessions query failed")
+}
+
+pub fn get_chat_messages(
+    conn: &Connection,
+    session_id: &str,
+    starred_only: bool,
+    limit: u32,
+) -> Result<Vec<ChatMessage>> {
+    let sql = if starred_only {
+        "SELECT id, session_id, role, content, model, is_starred, created_at
+         FROM chat_messages WHERE session_id = ?1 AND is_starred = 1
+         ORDER BY created_at LIMIT ?2"
+    } else {
+        "SELECT id, session_id, role, content, model, is_starred, created_at
+         FROM chat_messages WHERE session_id = ?1
+         ORDER BY created_at LIMIT ?2"
+    };
+    let mut stmt = conn.prepare(sql)?;
+    let lim = limit.min(200) as i64;
+    let rows = stmt.query_map(params![session_id, lim], |row| {
+        Ok(ChatMessage {
+            id: row.get(0)?,
+            session_id: row.get(1)?,
+            role: row.get(2)?,
+            content: row.get(3)?,
+            model: row.get(4)?,
+            is_starred: row.get::<_, i64>(5)? != 0,
+            created_at: row.get(6)?,
+        })
+    })?;
+    rows.collect::<rusqlite::Result<Vec<_>>>()
+        .context("get_chat_messages query failed")
+}
+
+pub fn list_snippets(
+    conn: &Connection,
+    project_id: &str,
+    tag: Option<&str>,
+    limit: u32,
+) -> Result<Vec<SnippetSummary>> {
+    let sql = if tag.is_some() {
+        "SELECT s.id, s.project_id, s.title, s.content, s.tags_cache,
+                s.scene_id, s.usage_count, s.created_at, s.updated_at
+         FROM snippets s
+         WHERE s.project_id = ?1
+           AND EXISTS (
+               SELECT 1 FROM snippet_entry_tags st
+               JOIN codex_tags t ON t.id = st.tag_id
+               WHERE st.snippet_id = s.id AND t.name LIKE ?2
+           )
+         ORDER BY s.updated_at DESC LIMIT ?3"
+    } else {
+        "SELECT id, project_id, title, content, tags_cache,
+                scene_id, usage_count, created_at, updated_at
+         FROM snippets WHERE project_id = ?1
+         ORDER BY updated_at DESC LIMIT ?2"
+    };
+    let lim = limit.min(100) as i64;
+    let mut stmt = conn.prepare(sql)?;
+
+    let map_row = |row: &rusqlite::Row<'_>| {
+        Ok(SnippetSummary {
+            id: row.get(0)?,
+            project_id: row.get(1)?,
+            title: row.get(2)?,
+            content: row.get(3)?,
+            tags_cache: row.get(4)?,
+            scene_id: row.get(5)?,
+            usage_count: row.get(6)?,
+            created_at: row.get(7)?,
+            updated_at: row.get(8)?,
+        })
+    };
+
+    let rows = if let Some(t) = tag {
+        let pattern = format!("%{t}%");
+        stmt.query_map(params![project_id, pattern, lim], map_row)?
+    } else {
+        stmt.query_map(params![project_id, lim], map_row)?
+    };
+
+    rows.collect::<rusqlite::Result<Vec<_>>>()
+        .context("list_snippets query failed")
+}
+
+pub fn get_attribution_report(
+    conn: &Connection,
+    project_id: &str,
+    scene_id: Option<&str>,
+) -> Result<AttributionReport> {
+    // Total and by-source aggregation
+    let sql_global = if scene_id.is_some() {
+        "SELECT a.source,
+                SUM(a.to_pos - a.from_pos) as char_count,
+                COUNT(*) as span_count
+         FROM authorship_spans a
+         WHERE a.node_id = ?1
+         GROUP BY a.source ORDER BY char_count DESC"
+    } else {
+        "SELECT a.source,
+                SUM(a.to_pos - a.from_pos) as char_count,
+                COUNT(*) as span_count
+         FROM authorship_spans a
+         JOIN tree_nodes tn ON tn.id = a.node_id
+         WHERE tn.project_id = ?1 AND a.node_id IS NOT NULL
+         GROUP BY a.source ORDER BY char_count DESC"
+    };
+
+    let mut stmt = conn.prepare(sql_global)?;
+    let rows: Vec<AttributionSourceSummary> = if let Some(sid) = scene_id {
+        stmt.query_map(params![sid], |row| {
+            Ok(AttributionSourceSummary {
+                source: row.get(0)?,
+                char_count: row.get(1)?,
+                span_count: row.get(2)?,
+            })
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?
+    } else {
+        stmt.query_map(params![project_id], |row| {
+            Ok(AttributionSourceSummary {
+                source: row.get(0)?,
+                char_count: row.get(1)?,
+                span_count: row.get(2)?,
+            })
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?
+    };
+
+    let total_char_count: i64 = rows.iter().map(|r| r.char_count).sum();
+
+    // Per-scene breakdown (only when querying the whole project)
+    let by_scene = if scene_id.is_none() {
+        let mut stmt2 = conn.prepare(
+            "SELECT tn.id, tn.title, a.source,
+                    SUM(a.to_pos - a.from_pos) as char_count,
+                    COUNT(*) as span_count
+             FROM authorship_spans a
+             JOIN tree_nodes tn ON tn.id = a.node_id
+             WHERE tn.project_id = ?1 AND a.node_id IS NOT NULL
+             GROUP BY tn.id, a.source
+             ORDER BY tn.sort_order, a.source",
+        )?;
+        let mut raw: Vec<(String, String, AttributionSourceSummary)> = stmt2
+            .query_map(params![project_id], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    AttributionSourceSummary {
+                        source: row.get(2)?,
+                        char_count: row.get(3)?,
+                        span_count: row.get(4)?,
+                    },
+                ))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+
+        // Group by scene
+        let mut scenes: Vec<SceneAttribution> = Vec::new();
+        for (sid, stitle, asum) in raw.drain(..) {
+            if let Some(last) = scenes.last_mut() {
+                if last.scene_id == sid {
+                    last.sources.push(asum);
+                    continue;
+                }
+            }
+            scenes.push(SceneAttribution {
+                scene_id: sid,
+                scene_title: stitle,
+                sources: vec![asum],
+            });
+        }
+        scenes
+    } else {
+        Vec::new()
+    };
+
+    Ok(AttributionReport {
+        total_char_count,
+        by_source: rows,
+        by_scene,
+    })
+}
+
 pub fn get_project_stats(conn: &Connection, project_id: &str) -> Result<ProjectStats> {
     let scene_count: i64 = conn.query_row(
         "SELECT COUNT(*) FROM tree_nodes WHERE project_id = ?1 AND node_type = 'scene'",
@@ -585,6 +998,63 @@ mod tests {
                 context_mode_override TEXT,
                 created_at TEXT NOT NULL DEFAULT (datetime('now')),
                 updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+            CREATE TABLE chat_sessions (
+                id TEXT PRIMARY KEY,
+                project_id TEXT NOT NULL,
+                node_id TEXT,
+                title TEXT NOT NULL DEFAULT 'New session',
+                title_manual INTEGER NOT NULL DEFAULT 0,
+                model TEXT NOT NULL DEFAULT 'claude-sonnet-4-6',
+                pinned_codex TEXT,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+            CREATE TABLE chat_messages (
+                id TEXT PRIMARY KEY,
+                session_id TEXT NOT NULL,
+                role TEXT NOT NULL,
+                content TEXT NOT NULL,
+                model TEXT,
+                tokens_in INTEGER,
+                tokens_out INTEGER,
+                duration_ms INTEGER,
+                metadata TEXT,
+                is_starred INTEGER NOT NULL DEFAULT 0,
+                is_summarized INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+            CREATE TABLE snippets (
+                id TEXT PRIMARY KEY,
+                project_id TEXT NOT NULL,
+                title TEXT NOT NULL DEFAULT 'Untitled',
+                content TEXT NOT NULL DEFAULT '{}',
+                tags_cache TEXT,
+                content_source TEXT,
+                scene_id TEXT,
+                source_chat_message_id TEXT,
+                usage_count INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+            CREATE TABLE snippet_entry_tags (
+                snippet_id TEXT NOT NULL,
+                tag_id TEXT NOT NULL,
+                PRIMARY KEY (snippet_id, tag_id)
+            );
+            CREATE TABLE authorship_spans (
+                id TEXT PRIMARY KEY,
+                node_id TEXT,
+                codex_entry_id TEXT,
+                snippet_id TEXT,
+                detail_value_id TEXT,
+                from_pos INTEGER NOT NULL,
+                to_pos INTEGER NOT NULL,
+                source TEXT NOT NULL,
+                model TEXT,
+                timestamp TEXT,
+                chat_msg_id TEXT,
+                phase_id TEXT
             );",
         )
         .unwrap();
@@ -761,6 +1231,148 @@ mod tests {
         let conn = make_simple_db();
         let result = get_scene_content(&conn, "no-such-id");
         assert!(result.is_err());
+    }
+
+    // ── Phase 2 tests ────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_validate_fts_query_ok() {
+        assert!(validate_fts_query("Alice in Wonderland").is_ok());
+        assert!(validate_fts_query("a* b* c*").is_ok()); // 3 wildcards – ok
+    }
+
+    #[test]
+    fn test_validate_fts_query_empty() {
+        assert!(validate_fts_query("   ").is_err());
+    }
+
+    #[test]
+    fn test_validate_fts_query_too_long() {
+        let q: String = "a".repeat(501);
+        assert!(validate_fts_query(&q).is_err());
+    }
+
+    #[test]
+    fn test_validate_fts_query_too_many_wildcards() {
+        assert!(validate_fts_query("a* b* c* d*").is_err());
+    }
+
+    #[test]
+    fn test_list_chat_sessions_all() {
+        let conn = make_simple_db();
+        insert_project(&conn, "p1", "Novel");
+        conn.execute(
+            "INSERT INTO chat_sessions (id, project_id, title) VALUES ('cs1', 'p1', 'Session 1')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO chat_sessions (id, project_id, title) VALUES ('cs2', 'p1', 'Session 2')",
+            [],
+        )
+        .unwrap();
+        let sessions = list_chat_sessions(&conn, "p1", None).unwrap();
+        assert_eq!(sessions.len(), 2);
+    }
+
+    #[test]
+    fn test_list_chat_sessions_filter_node() {
+        let conn = make_simple_db();
+        insert_project(&conn, "p1", "Novel");
+        insert_scene(&conn, "s1", "p1", "Prologue", "draft");
+        conn.execute(
+            "INSERT INTO chat_sessions (id, project_id, node_id, title) VALUES ('cs1', 'p1', 's1', 'S1 chat')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO chat_sessions (id, project_id, title) VALUES ('cs2', 'p1', 'Other')",
+            [],
+        )
+        .unwrap();
+        let sessions = list_chat_sessions(&conn, "p1", Some("s1")).unwrap();
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].title, "S1 chat");
+    }
+
+    #[test]
+    fn test_get_chat_messages() {
+        let conn = make_simple_db();
+        insert_project(&conn, "p1", "Novel");
+        conn.execute(
+            "INSERT INTO chat_sessions (id, project_id, title) VALUES ('cs1', 'p1', 'Session')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO chat_messages (id, session_id, role, content) VALUES ('m1', 'cs1', 'user', 'Hello')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO chat_messages (id, session_id, role, content, is_starred) VALUES ('m2', 'cs1', 'assistant', 'Hi', 1)",
+            [],
+        )
+        .unwrap();
+        let all = get_chat_messages(&conn, "cs1", false, 100).unwrap();
+        assert_eq!(all.len(), 2);
+        let starred = get_chat_messages(&conn, "cs1", true, 100).unwrap();
+        assert_eq!(starred.len(), 1);
+        assert!(starred[0].is_starred);
+    }
+
+    #[test]
+    fn test_list_snippets() {
+        let conn = make_simple_db();
+        insert_project(&conn, "p1", "Novel");
+        conn.execute(
+            "INSERT INTO snippets (id, project_id, title, content) VALUES ('sn1', 'p1', 'Intro', '{}')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO snippets (id, project_id, title, content) VALUES ('sn2', 'p1', 'Action', '{}')",
+            [],
+        )
+        .unwrap();
+        let snips = list_snippets(&conn, "p1", None, 50).unwrap();
+        assert_eq!(snips.len(), 2);
+    }
+
+    #[test]
+    fn test_get_attribution_report_empty() {
+        let conn = make_simple_db();
+        insert_project(&conn, "p1", "Novel");
+        let report = get_attribution_report(&conn, "p1", None).unwrap();
+        assert_eq!(report.total_char_count, 0);
+        assert!(report.by_source.is_empty());
+        assert!(report.by_scene.is_empty());
+    }
+
+    #[test]
+    fn test_get_attribution_report_with_spans() {
+        let conn = make_simple_db();
+        insert_project(&conn, "p1", "Novel");
+        insert_scene(&conn, "s1", "p1", "Scene 1", "draft");
+        conn.execute(
+            "INSERT INTO authorship_spans (id, node_id, from_pos, to_pos, source)
+             VALUES ('a1', 's1', 0, 100, 'human')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO authorship_spans (id, node_id, from_pos, to_pos, source)
+             VALUES ('a2', 's1', 100, 160, 'ai')",
+            [],
+        )
+        .unwrap();
+        let report = get_attribution_report(&conn, "p1", None).unwrap();
+        assert_eq!(report.total_char_count, 160);
+        assert_eq!(report.by_source.len(), 2);
+        // scene-level filter
+        let scene_report = get_attribution_report(&conn, "p1", Some("s1")).unwrap();
+        assert_eq!(scene_report.total_char_count, 160);
+        assert!(scene_report.by_scene.is_empty()); // by_scene is empty when scene_id filter used
     }
 
     #[test]

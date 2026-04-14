@@ -100,6 +100,61 @@ impl GrimodexServer {
     ) -> Result<CallToolResult, ErrorData> {
         tools::codex::get_codex_entry(self, params.0).await
     }
+
+    /// Search across scenes, Codex entries, snippets, and chat messages using full-text search.
+    #[tool(
+        description = "Search across scenes, Codex entries, snippets, and chat messages using full-text search. Scope: 'all'|'scenes'|'codex'|'snippets'|'chat'."
+    )]
+    async fn search_project(
+        &self,
+        params: Parameters<tools::search::SearchProjectParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        tools::search::search_project(self, params.0).await
+    }
+
+    /// List all chat sessions in the project, optionally filtered by scene/node ID.
+    #[tool(
+        description = "List all chat sessions in the project, optionally filtered by scene/node ID."
+    )]
+    async fn list_chat_sessions(
+        &self,
+        params: Parameters<tools::chat::ListChatSessionsParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        tools::chat::list_chat_sessions(self, params.0).await
+    }
+
+    /// Read the message history of a chat session. Filter by starred messages or limit count.
+    #[tool(
+        description = "Read the message history of a chat session. Filter by starred messages or limit count."
+    )]
+    async fn read_chat_history(
+        &self,
+        params: Parameters<tools::chat::ReadChatHistoryParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        tools::chat::read_chat_history(self, params.0).await
+    }
+
+    /// List snippets (saved text fragments). Optionally filter by tag name.
+    #[tool(
+        description = "List snippets (saved text fragments). Optionally filter by tag name. Content is returned as Markdown."
+    )]
+    async fn list_snippets(
+        &self,
+        params: Parameters<tools::snippets::ListSnippetsParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        tools::snippets::list_snippets(self, params.0).await
+    }
+
+    /// Get authorship attribution report: how much text was written by human vs AI.
+    #[tool(
+        description = "Get authorship attribution report showing human vs AI text contribution. Optionally filter to a single scene."
+    )]
+    async fn get_attribution_report(
+        &self,
+        params: Parameters<tools::stats::GetAttributionReportParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        tools::stats::get_attribution_report(self, params.0).await
+    }
 }
 
 #[tool_handler]

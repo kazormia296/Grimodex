@@ -1,4 +1,8 @@
+pub mod chat;
 pub mod codex;
 pub mod project;
 pub mod scene;
+pub mod search;
+pub mod snippets;
+pub mod stats;
 pub mod tree;
