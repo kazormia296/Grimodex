@@ -66,13 +66,19 @@ export function ContextBar({
   const useGrouping =
     allContextEntries.length + pinnedSnippets.length > GROUP_THRESHOLD;
 
-  // type別グループマップ (pinned only — detected/always are shown separately)
+  // type別グループマップ
   const groupMap = new Map<string, CodexEntry[]>();
+  const autoGroupMap = new Map<string, CodexEntry[]>();
   if (useGrouping) {
     for (const entry of pinnedEntries) {
       const group = groupMap.get(entry.type) ?? [];
       group.push(entry);
       groupMap.set(entry.type, group);
+    }
+    for (const entry of [...detectedEntries, ...alwaysEntries]) {
+      const group = autoGroupMap.get(entry.type) ?? [];
+      group.push(entry);
+      autoGroupMap.set(entry.type, group);
     }
   }
 
@@ -211,62 +217,56 @@ export function ContextBar({
                     </span>
                   );
                 })}
-            {/* G15: auto-detected entries */}
-            {detectedEntries.map((entry) => {
-              const rc = typeColorMap[entry.type];
-              return (
-                <span
-                  key={entry.id}
-                  data-testid="detected-pill"
-                  className="inline-flex items-center gap-1 rounded-full bg-accent/50 px-2 py-0.5 text-xs"
-                  style={
-                    rc
-                      ? { backgroundColor: rc.hl, color: rc.fg, opacity: 0.75 }
-                      : undefined
-                  }
-                >
-                  {entry.name}
-                  <span className="text-muted-foreground/70">auto</span>
-                  <button
-                    type="button"
-                    onClick={() => onPin(entry.id)}
-                    className="hover:text-foreground text-muted-foreground/70"
-                    aria-label={t("chat.context.pinEntry", {
-                      name: entry.name,
-                    })}
-                  >
-                    <Pin className="h-3 w-3" />
-                  </button>
-                </span>
-              );
-            })}
-            {/* G15: always-mode entries */}
-            {alwaysEntries.map((entry) => {
-              const rc = typeColorMap[entry.type];
-              return (
-                <span
-                  key={entry.id}
-                  data-testid="always-pill"
-                  className="inline-flex items-center gap-1 rounded-full bg-accent/50 px-2 py-0.5 text-xs"
-                  style={
-                    rc ? { backgroundColor: rc.hl, color: rc.fg } : undefined
-                  }
-                >
-                  {entry.name}
-                  <span className="text-muted-foreground/70">auto</span>
-                  <button
-                    type="button"
-                    onClick={() => onPin(entry.id)}
-                    className="hover:text-foreground text-muted-foreground/70"
-                    aria-label={t("chat.context.pinEntry", {
-                      name: entry.name,
-                    })}
-                  >
-                    <Pin className="h-3 w-3" />
-                  </button>
-                </span>
-              );
-            })}
+            {/* G15: auto entries (detected + always) */}
+            {useGrouping
+              ? Array.from(autoGroupMap.entries()).map(
+                  ([type, groupEntries]) => (
+                    <ContextPillGroup
+                      key={`auto-${type}`}
+                      type={type}
+                      label={getTypeLabel(type)}
+                      count={groupEntries.length}
+                      expanded={expandedGroups.has(`auto-${type}`)}
+                      onToggle={() => toggleGroup(`auto-${type}`)}
+                      entries={groupEntries}
+                      onPin={onPin}
+                      resolvedColor={typeColorMap[type]}
+                    />
+                  ),
+                )
+              : [...detectedEntries, ...alwaysEntries].map((entry) => {
+                  const rc = typeColorMap[entry.type];
+                  const isDetected = detectedEntries.includes(entry);
+                  return (
+                    <span
+                      key={entry.id}
+                      data-testid={isDetected ? "detected-pill" : "always-pill"}
+                      className="inline-flex items-center gap-1 rounded-full bg-accent/50 px-2 py-0.5 text-xs"
+                      style={
+                        rc
+                          ? {
+                              backgroundColor: rc.hl,
+                              color: rc.fg,
+                              opacity: 0.75,
+                            }
+                          : undefined
+                      }
+                    >
+                      {entry.name}
+                      <span className="text-muted-foreground/70">auto</span>
+                      <button
+                        type="button"
+                        onClick={() => onPin(entry.id)}
+                        className="hover:text-foreground text-muted-foreground/70"
+                        aria-label={t("chat.context.pinEntry", {
+                          name: entry.name,
+                        })}
+                      >
+                        <Pin className="h-3 w-3" />
+                      </button>
+                    </span>
+                  );
+                })}
             {/* G16: ピン留め Snippet エントリ */}
             {pinnedSnippets.map((snippet) => (
               <span
