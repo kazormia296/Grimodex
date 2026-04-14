@@ -1,4 +1,5 @@
 import { useState, useEffect } from "react";
+import { useTranslation } from "react-i18next";
 import type { NewSnippet } from "./api";
 
 interface SnippetExtractionDialogProps {
@@ -23,6 +24,7 @@ export function SnippetExtractionDialog({
   onSave,
   onClose,
 }: SnippetExtractionDialogProps) {
+  const { t } = useTranslation();
   const [title, setTitle] = useState("");
   const [content, setContent] = useState(initialContent);
   const [tags, setTags] = useState("");
@@ -74,27 +76,27 @@ export function SnippetExtractionDialog({
     >
       <div className="w-full max-w-md rounded-lg border border-border bg-background p-6 shadow-lg">
         <h3 className="mb-4 text-sm font-semibold text-foreground">
-          Snippetとして保存
+          {t("snippets.extraction.title")}
         </h3>
 
         <div className="space-y-3">
           <div>
             <label className="mb-1 block text-xs text-muted-foreground">
-              タイトル
+              {t("snippets.extraction.titleLabel")}
             </label>
             <input
               data-testid="snippet-title-input"
               type="text"
               value={title}
               onChange={(e) => setTitle(e.target.value)}
-              placeholder="Snippetのタイトル"
+              placeholder={t("snippets.extraction.titlePlaceholder")}
               className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-ring"
             />
           </div>
 
           <div>
             <label className="mb-1 block text-xs text-muted-foreground">
-              内容
+              {t("snippets.extraction.contentLabel")}
             </label>
             <textarea
               data-testid="snippet-content-input"
@@ -107,14 +109,14 @@ export function SnippetExtractionDialog({
 
           <div>
             <label className="mb-1 block text-xs text-muted-foreground">
-              タグ（カンマ区切り）
+              {t("snippets.extraction.tagsLabel")}
             </label>
             <input
               data-testid="snippet-tags-input"
               type="text"
               value={tags}
               onChange={(e) => setTags(e.target.value)}
-              placeholder="タグ1,タグ2"
+              placeholder={t("snippets.extraction.tagsPlaceholder")}
               className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-ring"
             />
           </div>
@@ -127,7 +129,7 @@ export function SnippetExtractionDialog({
             onClick={onClose}
             className="rounded-md border border-border px-3 py-1.5 text-xs text-muted-foreground hover:bg-accent"
           >
-            キャンセル
+            {t("common.cancel")}
           </button>
           <button
             type="button"
@@ -136,7 +138,7 @@ export function SnippetExtractionDialog({
             disabled={!canSave}
             className="rounded-md bg-primary px-3 py-1.5 text-xs text-primary-foreground hover:bg-primary/90 disabled:opacity-50 disabled:pointer-events-none"
           >
-            保存
+            {t("common.save")}
           </button>
         </div>
       </div>

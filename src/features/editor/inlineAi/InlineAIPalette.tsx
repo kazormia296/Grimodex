@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import type { Editor } from "@tiptap/react";
 import { useTranslation } from "react-i18next";
 import { cn } from "@/lib/utils";
-import { INLINE_AI_COMMANDS } from "./inlineAiCommands";
+import { getInlineAiCommands } from "./inlineAiCommands";
 import type { InlineAiCommand } from "./inlineAiTypes";
 
 interface InlineAIPaletteProps {
@@ -25,16 +25,17 @@ export function InlineAIPalette({
   onSubmit,
 }: InlineAIPaletteProps) {
   const { t } = useTranslation();
+  const commands = getInlineAiCommands();
   const [prompt, setPrompt] = useState("");
   const [selectedCommand, setSelectedCommand] = useState<InlineAiCommand>(
-    preselectedCommand ?? INLINE_AI_COMMANDS[0],
+    preselectedCommand ?? commands[0],
   );
   const inputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     if (open) {
       setPrompt("");
-      setSelectedCommand(preselectedCommand ?? INLINE_AI_COMMANDS[0]);
+      setSelectedCommand(preselectedCommand ?? commands[0]);
       setTimeout(() => inputRef.current?.focus(), 0);
     }
   }, [open, preselectedCommand]);
@@ -73,7 +74,7 @@ export function InlineAIPalette({
 
         {/* Command selector */}
         <div className="mb-2 flex flex-wrap gap-1">
-          {INLINE_AI_COMMANDS.map((cmd) => (
+          {commands.map((cmd) => (
             <button
               key={cmd.id}
               type="button"
@@ -85,7 +86,7 @@ export function InlineAIPalette({
                   : "bg-muted text-muted-foreground hover:bg-accent hover:text-foreground",
               )}
             >
-              {t(`inlineAi.commands.${cmd.id}.label`)}
+              {cmd.label}
             </button>
           ))}
         </div>
@@ -104,8 +105,8 @@ export function InlineAIPalette({
               }
             }}
             placeholder={
-              selectedCommand.needsArg
-                ? t(`inlineAi.commands.${selectedCommand.id}.placeholder`)
+              selectedCommand.needsArg && selectedCommand.argPlaceholder
+                ? selectedCommand.argPlaceholder
                 : t("inlineAi.additionalPrompt")
             }
             className="flex-1 rounded border border-border bg-background px-2 py-1.5 text-xs focus:outline-none focus:ring-1 focus:ring-ring"
@@ -120,7 +121,7 @@ export function InlineAIPalette({
         </div>
 
         <div className="mt-1.5 text-xs text-muted-foreground opacity-60">
-          {t(`inlineAi.commands.${selectedCommand.id}.desc`)}
+          {selectedCommand.description}
         </div>
       </div>
     </div>

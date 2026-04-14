@@ -2,7 +2,7 @@ import { useState, useEffect } from "react";
 import { useTranslation } from "react-i18next";
 import { useSettingsStore } from "../settingsStore";
 import {
-  COMMANDS,
+  getCommands,
   DEFAULT_KEYBINDINGS,
   keyEventToString,
   detectConflicts,
@@ -80,7 +80,7 @@ export function KeysCategory() {
     return () => window.removeEventListener("keydown", onKeyDown, true);
   }, [capturing, bindings, storedOverrides]);
 
-  const filtered = COMMANDS.filter(
+  const filtered = getCommands().filter(
     (c) =>
       !search ||
       t(`keys.${c.id}`).toLowerCase().includes(search.toLowerCase()) ||

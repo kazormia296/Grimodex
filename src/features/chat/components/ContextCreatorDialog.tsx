@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect } from "react";
+import { useTranslation } from "react-i18next";
 import { Loader2 } from "lucide-react";
 import type { SuggestedEntry } from "../contextCreatorApi";
 
@@ -13,6 +14,7 @@ export function ContextCreatorDialog({
   onAddSelected,
   onClose,
 }: ContextCreatorDialogProps) {
+  const { t } = useTranslation();
   const [input, setInput] = useState("");
   const [isSearching, setIsSearching] = useState(false);
   const [results, setResults] = useState<SuggestedEntry[] | null>(null);
@@ -72,10 +74,10 @@ export function ContextCreatorDialog({
   }
 
   const typeLabel: Record<string, string> = {
-    character: "キャラクター",
-    location: "場所",
-    item: "アイテム",
-    lore: "設定",
+    character: t("codex.character"),
+    location: t("codex.location"),
+    item: t("codex.item"),
+    lore: t("codex.lore"),
   };
 
   const newlySelected = results
@@ -94,7 +96,7 @@ export function ContextCreatorDialog({
           onKeyDown={(e) => {
             if (e.key === "Enter") handleSearch();
           }}
-          placeholder="コンテキストに追加するものを指示..."
+          placeholder={t("chat.context.inputPlaceholder")}
           className="flex-1 rounded border border-border bg-background px-2 py-1 text-xs outline-none focus:ring-1 focus:ring-primary"
           disabled={isSearching}
         />
@@ -125,12 +127,12 @@ export function ContextCreatorDialog({
         <div className="mt-2">
           {results.length === 0 ? (
             <p className="text-xs text-muted-foreground">
-              該当するエントリが見つかりませんでした。
+              {t("chat.context.noResults")}
             </p>
           ) : (
             <>
               <p className="mb-1 text-xs text-muted-foreground">
-                Found {results.length} entries:
+                {t("chat.context.foundEntries", { count: results.length })}
               </p>
               <ul className="space-y-1 max-h-40 overflow-y-auto">
                 {results.map((entry) => (
@@ -153,7 +155,7 @@ export function ContextCreatorDialog({
                       </span>
                       {entry.alreadyPinned && (
                         <span className="ml-1 text-muted-foreground">
-                          (ピン済み)
+                          {t("chat.context.alreadyPinned")}
                         </span>
                       )}
                       {entry.summary && (
@@ -175,7 +177,9 @@ export function ContextCreatorDialog({
                   {isAdding ? (
                     <Loader2 className="h-3 w-3 animate-spin" />
                   ) : (
-                    `Add selected (${newlySelected.length})`
+                    t("chat.context.addSelected", {
+                      count: newlySelected.length,
+                    })
                   )}
                 </button>
               )}

@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { Pencil, Trash2, Plus } from "lucide-react";
 import type { CodexEntry } from "../api";
 import type { CodexEntryPhase } from "../phaseApi";
@@ -13,6 +14,7 @@ interface TimelineTabProps {
 const EMPTY_PHASES: CodexEntryPhase[] = [];
 
 export function TimelineTab({ entry }: TimelineTabProps) {
+  const { t } = useTranslation();
   const rawPhases = usePhaseStore((s) => s.phasesByEntry[entry.id]);
   const phases = rawPhases ?? EMPTY_PHASES;
   const globalSceneOrder = usePhaseStore((s) => s.globalSceneOrder);
@@ -106,10 +108,10 @@ export function TimelineTab({ entry }: TimelineTabProps) {
     return (
       <div className="flex flex-col items-center gap-3 py-8 text-center">
         <p className="text-[13px] font-medium text-foreground">
-          フェーズが設定されていません。
+          {t("codex.timeline.noPhases")}
         </p>
         <p className="max-w-[240px] text-xs text-muted-foreground">
-          フェーズを追加すると、物語の進行に伴うこのエントリの変化を管理できます。
+          {t("codex.timeline.noPhasesDesc")}
         </p>
         <button
           type="button"
@@ -174,7 +176,9 @@ export function TimelineTab({ entry }: TimelineTabProps) {
               <div className="flex flex-col items-center">
                 <span
                   className={`mt-1 text-xs ${isActive ? "text-primary" : "text-muted-foreground"}`}
-                  title={isActive ? "現在のシーン" : undefined}
+                  title={
+                    isActive ? t("codex.timeline.currentScene") : undefined
+                  }
                 >
                   {isActive ? "◉" : "●"}
                 </span>
@@ -188,7 +192,7 @@ export function TimelineTab({ entry }: TimelineTabProps) {
                     {phase.label}
                     {isActive && (
                       <span className="ml-1.5 text-[10px] font-normal text-muted-foreground">
-                        ← 現在のシーン
+                        {t("codex.timeline.currentSceneArrow")}
                       </span>
                     )}
                   </p>
@@ -217,13 +221,13 @@ export function TimelineTab({ entry }: TimelineTabProps) {
                       <span className="text-foreground/60">summary →</span>{" "}
                       {phase.summaryOverride
                         ? `「${phase.summaryOverride}」`
-                        : "(空)"}
+                        : t("codex.timeline.empty")}
                     </p>
                   )}
                   {phase.contentOverride != null && (
                     <p className="text-[11px] text-muted-foreground">
                       <span className="text-foreground/60">content →</span> 📝
-                      (上書きあり)
+                      {t("codex.timeline.contentOverride")}
                     </p>
                   )}
                   {phase.contextModeOverride != null && (

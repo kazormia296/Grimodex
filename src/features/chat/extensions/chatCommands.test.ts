@@ -1,5 +1,9 @@
 import { describe, it, expect } from "vitest";
-import { CHAT_COMMANDS, filterChatCommands } from "./chatCommands";
+import {
+  CHAT_COMMANDS,
+  getChatCommands,
+  filterChatCommands,
+} from "./chatCommands";
 
 describe("CHAT_COMMANDS", () => {
   it("必要なコマンドがすべて定義されている", () => {
@@ -14,14 +18,14 @@ describe("CHAT_COMMANDS", () => {
   });
 
   it("各コマンドに label と description が存在する", () => {
-    for (const cmd of CHAT_COMMANDS) {
+    for (const cmd of getChatCommands()) {
       expect(cmd.label).toBeTruthy();
       expect(cmd.description).toBeTruthy();
     }
   });
 
   it("needsArg=true のコマンドに argPlaceholder がある", () => {
-    const withArg = CHAT_COMMANDS.filter((c) => c.needsArg);
+    const withArg = getChatCommands().filter((c) => c.needsArg);
     for (const cmd of withArg) {
       expect(cmd.argPlaceholder).toBeTruthy();
     }

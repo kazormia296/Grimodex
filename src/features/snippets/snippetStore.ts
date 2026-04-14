@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import { toast } from "sonner";
+import i18next from "i18next";
 import { debugLog, errorDetail } from "@/lib/debugLog";
 import * as snippetApi from "./api";
 import type { Snippet, NewSnippet } from "./api";
@@ -59,7 +60,7 @@ export const useSnippetStore = create<SnippetState>()((set, get) => ({
       set({ entries, isLoading: false });
     } catch (e) {
       set({ isLoading: false });
-      toast.error("スニペットの読み込みに失敗しました");
+      toast.error(i18next.t("snippets.store.loadFailed"));
       debugLog.error("SnippetStore", "loadEntries", errorDetail(e));
     }
   },
@@ -76,7 +77,7 @@ export const useSnippetStore = create<SnippetState>()((set, get) => ({
       }
     } catch (e) {
       set({ isLoading: false });
-      toast.error("スニペット検索に失敗しました");
+      toast.error(i18next.t("snippets.store.searchFailed"));
       debugLog.error("SnippetStore", "search", errorDetail(e));
     }
   },
@@ -101,10 +102,10 @@ export const useSnippetStore = create<SnippetState>()((set, get) => ({
           )
           .catch(() => {});
       }
-      toast.success("Saved as Snippet");
+      toast.success(i18next.t("snippets.store.saved"));
       return created;
     } catch (e) {
-      toast.error("スニペットの作成に失敗しました");
+      toast.error(i18next.t("snippets.store.createFailed"));
       debugLog.error("SnippetStore", "create", errorDetail(e));
       throw e;
     }
@@ -118,7 +119,7 @@ export const useSnippetStore = create<SnippetState>()((set, get) => ({
         entries: state.entries.map((e) => (e.id === id ? updated : e)),
       }));
     } catch (e) {
-      toast.error("スニペットの更新に失敗しました");
+      toast.error(i18next.t("snippets.store.updateFailed"));
       debugLog.error("SnippetStore", "update", errorDetail(e));
     }
   },
@@ -130,7 +131,7 @@ export const useSnippetStore = create<SnippetState>()((set, get) => ({
         entries: state.entries.filter((e) => e.id !== id),
       }));
     } catch (e) {
-      toast.error("スニペットの削除に失敗しました");
+      toast.error(i18next.t("snippets.store.deleteFailed"));
       debugLog.error("SnippetStore", "remove", errorDetail(e));
     }
   },

@@ -1,4 +1,5 @@
 import { useState, useRef } from "react";
+import { useTranslation } from "react-i18next";
 import { Plus, X } from "lucide-react";
 
 interface AliasesFieldProps {
@@ -14,6 +15,7 @@ export function AliasesField({
   onChange,
   fieldId = "aliases",
 }: AliasesFieldProps) {
+  const { t } = useTranslation();
   const [isAdding, setIsAdding] = useState(false);
   const [inputValue, setInputValue] = useState("");
   const inputRef = useRef<HTMLInputElement>(null);
@@ -79,7 +81,7 @@ export function AliasesField({
             onKeyDown={handleKeyDown}
             onBlur={handleSubmit}
             className="w-24 rounded border border-input bg-background px-1.5 py-0.5 text-xs outline-none focus:ring-1 focus:ring-ring"
-            placeholder="別名..."
+            placeholder={t("codex.aliasPlaceholder")}
           />
         ) : (
           <button

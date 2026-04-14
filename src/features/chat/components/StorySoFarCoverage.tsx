@@ -1,4 +1,5 @@
 import { useState, useCallback, useMemo } from "react";
+import { useTranslation } from "react-i18next";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { useSceneStore } from "@/features/tree/store";
 import { loadSceneContent } from "@/features/tree/api";
@@ -20,6 +21,7 @@ export function StorySoFarCoverage() {
   const [progress, setProgress] = useState(0);
   const [total, setTotal] = useState(0);
   const [failedCount, setFailedCount] = useState(0);
+  const { t } = useTranslation();
 
   const currentScene = nodes.find((n) => n.id === activeSceneId);
 
@@ -73,12 +75,16 @@ export function StorySoFarCoverage() {
     const succeeded = done - failed;
     if (failed > 0) {
       toast.warning(
-        `${succeeded}/${done}件のSynopsisを生成しました（${failed}件失敗）`,
+        t("chat.storySoFar.partialSuccess", {
+          succeeded: done - failed,
+          total: done,
+          failed,
+        }),
       );
     } else {
-      toast.success(`${succeeded}件のSynopsisを生成しました`);
+      toast.success(t("chat.storySoFar.success", { count: succeeded }));
     }
-  }, [precedingScenes, updateSynopsis]);
+  }, [precedingScenes, updateSynopsis, t]);
 
   // Early returns after all hooks
   if (!currentScene) return null;
@@ -92,7 +98,7 @@ export function StorySoFarCoverage() {
         type="button"
         onClick={() => setOpen((v) => !v)}
         className="flex items-center gap-1 rounded-full bg-yellow-500/15 px-2 py-0.5 text-xs text-yellow-600 dark:text-yellow-400 hover:bg-yellow-500/25"
-        title="storySoFar Synopsisカバレッジ"
+        title={t("chat.storySoFar.coverageTitle")}
       >
         ⚠ storySoFar: {coverageLabel}
       </button>
@@ -104,17 +110,19 @@ export function StorySoFarCoverage() {
           {/* Popover */}
           <div className="absolute left-0 top-full z-50 mt-1 w-72 rounded-md border border-border bg-popover p-3 shadow-md text-xs">
             <p className="text-muted-foreground mb-2">
-              現在のシーンより前に <strong>{totalPreceding}</strong>{" "}
-              シーンありますが、 Synopsisが記入済みなのは{" "}
-              <strong>{withSynopsis}</strong> シーンのみです。
-              AIのstorySoFarコンテキストが制限されます。
+              {t("chat.storySoFar.coverageDesc", {
+                total: totalPreceding,
+                filled: withSynopsis,
+              })}
             </p>
             {isGenerating ? (
               <div>
                 <div className="mb-1 flex justify-between">
                   <span>
-                    生成中… {progress}/{total}
-                    {failedCount > 0 ? ` (${failedCount}件失敗)` : ""}
+                    {t("chat.storySoFar.generating", { progress, total })}
+                    {failedCount > 0
+                      ? ` ${t("chat.storySoFar.failedCount", { count: failedCount })}`
+                      : ""}
                   </span>
                 </div>
                 <div className="h-1.5 rounded-full bg-muted overflow-hidden">

@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { useTranslation } from "react-i18next";
 import { Pin, PinOff, Plus } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useCodexHighlightStore } from "@/features/editor/codexHighlightStore";
@@ -11,6 +12,7 @@ import { getTypeLabel } from "@/features/chat/utils/typeLabels";
 import type { CodexEntry } from "@/features/codex/api";
 
 export function CodexQuickSection() {
+  const { t } = useTranslation();
   const matchedEntryIds = useCodexHighlightStore((s) => s.matchedEntryIds);
   const typeColorMap = useCodexHighlightStore((s) => s.typeColorMap);
   const entries = useCodexStore((s) => s.entries);
@@ -78,8 +80,8 @@ export function CodexQuickSection() {
                 type="button"
                 title={
                   pinnedCodexIds.includes(entry.id)
-                    ? "ピン留め解除"
-                    : "ピン留め"
+                    ? t("tree.quickSection.unpin")
+                    : t("tree.quickSection.pin")
                 }
                 onClick={(e) => {
                   e.stopPropagation();

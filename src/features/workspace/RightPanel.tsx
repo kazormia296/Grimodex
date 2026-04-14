@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { useTranslation } from "react-i18next";
 import { MessageSquare, BookOpen, Bookmark, BarChart3 } from "lucide-react";
 import { ChatPanel } from "@/features/chat/ChatPanel";
 import { CodexManagementPanel } from "@/features/codex/CodexManagementPanel";
@@ -13,27 +14,28 @@ interface Tab {
   icon: React.ReactNode;
 }
 
-const tabs: Tab[] = [
-  {
-    id: "chat",
-    label: "チャット",
-    icon: <MessageSquare className="h-3.5 w-3.5" />,
-  },
-  { id: "codex", label: "Codex", icon: <BookOpen className="h-3.5 w-3.5" /> },
-  {
-    id: "snippets",
-    label: "Snippets",
-    icon: <Bookmark className="h-3.5 w-3.5" />,
-  },
-  {
-    id: "stats",
-    label: "統計",
-    icon: <BarChart3 className="h-3.5 w-3.5" />,
-  },
-];
-
 export function RightPanel() {
+  const { t } = useTranslation();
   const [activeTab, setActiveTab] = useState<TabId>("chat");
+
+  const tabs: Tab[] = [
+    {
+      id: "chat",
+      label: t("layout.panel.chat"),
+      icon: <MessageSquare className="h-3.5 w-3.5" />,
+    },
+    { id: "codex", label: "Codex", icon: <BookOpen className="h-3.5 w-3.5" /> },
+    {
+      id: "snippets",
+      label: "Snippets",
+      icon: <Bookmark className="h-3.5 w-3.5" />,
+    },
+    {
+      id: "stats",
+      label: t("layout.panel.stats"),
+      icon: <BarChart3 className="h-3.5 w-3.5" />,
+    },
+  ];
 
   return (
     <div className="flex h-full flex-col">

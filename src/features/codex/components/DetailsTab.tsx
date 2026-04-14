@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import { ChevronDown, ChevronRight, ExternalLink, Wand2 } from "lucide-react";
 import type { CodexEntry } from "../api";
@@ -33,6 +34,7 @@ export function DetailsTab({
   onContentChange,
   onExternalSync,
 }: DetailsTabProps) {
+  const { t } = useTranslation();
   const emptyContent = !entry.content || entry.content === "{}";
   const [isGenerating, setIsGenerating] = useState(false);
 
@@ -227,13 +229,17 @@ export function DetailsTab({
 
       {/* Summary */}
       <div>
-        <label className="mb-1 block text-xs font-medium">概要</label>
+        <label className="mb-1 block text-xs font-medium">
+          {t("codex.detail.summaryLabel")}
+        </label>
         {hasPreviewSummary ? (
           // フェーズプレビュー中: 解決済み値を読み取り専用表示
           <div className="border-l-2 border-primary pl-2">
             <p className="rounded-md border border-input bg-background px-2 py-1.5 text-sm text-foreground">
               {previewSummary || (
-                <span className="text-muted-foreground">(空)</span>
+                <span className="text-muted-foreground">
+                  {t("codex.detail.empty")}
+                </span>
               )}
             </p>
             {entry.summary && (
@@ -250,7 +256,7 @@ export function DetailsTab({
               onChange={(e) => handleSummaryChange(e.target.value)}
               rows={3}
               className="w-full resize-none rounded-md border border-input bg-background px-2 py-1.5 text-sm"
-              placeholder="このフェーズ以降の概要..."
+              placeholder={t("codex.detail.phaseSummaryPlaceholder")}
             />
             {entry.summary && (
               <p className="mt-0.5 text-[11px] text-muted-foreground">
@@ -274,7 +280,7 @@ export function DetailsTab({
           !isActivePhaseSummaryMode &&
           !isPreviewMode && (
             <p className="mt-1 text-[11px] text-muted-foreground">
-              Summaryを記入するとAIチャットでのトークン消費を抑えられます
+              {t("codex.detail.summaryHint")}
             </p>
           )}
         {/* M4: AI auto-generate button */}
@@ -296,7 +302,7 @@ export function DetailsTab({
                   );
                   onSummaryChange(generated);
                 } catch {
-                  toast.error("AI要約の生成に失敗しました");
+                  toast.error(t("codex.detail.aiSummaryFailed"));
                 } finally {
                   setIsGenerating(false);
                 }
@@ -304,7 +310,9 @@ export function DetailsTab({
               className="mt-1 flex items-center gap-1 rounded px-2 py-1 text-[11px] text-muted-foreground hover:bg-accent disabled:opacity-50"
             >
               <Wand2 className="h-3 w-3" />
-              {isGenerating ? "生成中..." : "AI要約を生成"}
+              {isGenerating
+                ? t("codex.detail.generating")
+                : t("codex.detail.generateAiSummary")}
             </button>
           )}
       </div>
@@ -324,10 +332,10 @@ export function DetailsTab({
                 )
             }
             className="flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] text-muted-foreground hover:bg-accent"
-            title="エディタで開く"
+            title={t("codex.detail.openInEditor")}
           >
             <ExternalLink className="h-3 w-3" />
-            エディタで開く
+            {t("codex.detail.openInEditor")}
           </button>
         </div>
         {/* フェーズによるcontentOverrideがある場合は左ボーダーで強調 */}
@@ -361,12 +369,12 @@ export function DetailsTab({
               ) : (
                 <ChevronRight className="h-3 w-3" />
               )}
-              Base contentを表示
+              {t("codex.detail.showBaseContent")}
             </button>
             {showBaseContent && (
               <div className="mt-1 rounded-md border border-input bg-muted/30 px-2 py-1.5 text-xs text-muted-foreground">
                 {emptyContent ? (
-                  <span className="italic">(空)</span>
+                  <span className="italic">{t("codex.detail.empty")}</span>
                 ) : (
                   extractPlainText(entry.content ?? "{}")
                 )}

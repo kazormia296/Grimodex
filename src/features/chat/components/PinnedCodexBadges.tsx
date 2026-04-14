@@ -1,4 +1,5 @@
 import { X, BookOpen } from "lucide-react";
+import { useTranslation } from "react-i18next";
 import type { PinnedCodexEntryWithData } from "@/features/chat/chatApi";
 import { getChildrenFromArray } from "@/features/codex/childrenBudget";
 import { useCodexStore } from "@/features/codex/codexStore";
@@ -14,6 +15,7 @@ export function PinnedCodexBadges({
   onUnpin,
   onOpenPinDialog,
 }: PinnedCodexBadgesProps) {
+  const { t } = useTranslation();
   const allEntries = useCodexStore((s) => s.entries);
 
   return (
@@ -25,10 +27,10 @@ export function PinnedCodexBadges({
         type="button"
         onClick={onOpenPinDialog}
         className="inline-flex items-center gap-1 rounded-md border border-dashed border-border px-2 py-0.5 text-xs text-muted-foreground hover:bg-accent"
-        aria-label="Codexをピン留め"
+        aria-label={t("chat.context.pinCodex")}
       >
         <BookOpen className="h-3 w-3" />
-        ピン留め
+        {t("chat.context.pin")}
       </button>
       {pinnedEntries.map((entry) => {
         const children = entry.withChildren
@@ -43,7 +45,7 @@ export function PinnedCodexBadges({
                 type="button"
                 onClick={() => onUnpin(entry.id)}
                 className="hover:text-destructive"
-                aria-label={`${entry.name}のピン留め解除`}
+                aria-label={t("chat.context.unpinEntry", { name: entry.name })}
               >
                 <X className="h-3 w-3" />
               </button>

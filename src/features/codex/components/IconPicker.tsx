@@ -1,4 +1,5 @@
 import { useRef } from "react";
+import { useTranslation } from "react-i18next";
 import { EntryIcon } from "./EntryIcon";
 import { resizeAndConvertToWebP } from "../iconUtils";
 
@@ -13,6 +14,7 @@ export function IconPicker({
   entryType,
   onIconChange,
 }: IconPickerProps) {
+  const { t } = useTranslation();
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -33,11 +35,11 @@ export function IconPicker({
           type="button"
           onClick={() => fileInputRef.current?.click()}
           className="group relative block rounded-full focus:outline-none focus:ring-2 focus:ring-primary"
-          title="アイコンを変更"
+          title={t("codex.iconPicker.changeIcon")}
         >
           <EntryIcon icon={currentIcon} entryType={entryType} size={48} />
           <span className="absolute inset-0 flex items-center justify-center rounded-full bg-black/40 text-[10px] text-white opacity-0 transition-opacity group-hover:opacity-100">
-            変更
+            {t("codex.iconPicker.change")}
           </span>
         </button>
         <input

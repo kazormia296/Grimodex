@@ -1,3 +1,4 @@
+import i18next from "@/lib/i18n";
 import { countTokens } from "@/features/chat/contextBuilder";
 import type { CodexEntry } from "./api";
 
@@ -10,12 +11,21 @@ export const BUDGET_RATIOS: Record<ChildrenBudgetPreset, number> = {
   generous: 0.5,
 };
 
-export const BUDGET_LABELS: Record<ChildrenBudgetPreset, string> = {
-  none: "なし (0%)",
-  compact: "コンパクト (15%)",
-  standard: "標準 (30%)",
-  generous: "充実 (50%)",
+const BUDGET_LABEL_KEYS: Record<ChildrenBudgetPreset, string> = {
+  none: "codex.childrenBudget.none",
+  compact: "codex.childrenBudget.compact",
+  standard: "codex.childrenBudget.standard",
+  generous: "codex.childrenBudget.generous",
 };
+
+export function getBudgetLabels(): Record<ChildrenBudgetPreset, string> {
+  return Object.fromEntries(
+    Object.entries(BUDGET_LABEL_KEYS).map(([k, v]) => [k, i18next.t(v)]),
+  ) as Record<ChildrenBudgetPreset, string>;
+}
+
+/** @deprecated Use getBudgetLabels() for localized labels */
+export const BUDGET_LABELS = BUDGET_LABEL_KEYS;
 
 /**
  * Get children of an entry from an already-loaded entries array (synchronous).

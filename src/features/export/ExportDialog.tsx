@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from "react";
+import { useTranslation } from "react-i18next";
 import { X, ClipboardCopy, Check, Download } from "lucide-react";
 import { toast } from "sonner";
 import { db } from "@/db/client";
@@ -128,6 +129,7 @@ interface Props {
 }
 
 export function ExportDialog({ open, onClose }: Props) {
+  const { t } = useTranslation();
   const nodes = useTreeStore((s) => s.nodes);
   const expandedIds = useTreeStore((s) => s.expandedIds);
   const settingsStore = useSettingsStore();
@@ -257,7 +259,7 @@ export function ExportDialog({ open, onClose }: Props) {
       if (copyTimerRef.current) clearTimeout(copyTimerRef.current);
       copyTimerRef.current = setTimeout(() => setIsCopied(false), 1500);
     } catch {
-      toast.error("クリップボードへのコピーに失敗しました");
+      toast.error(t("export.dialog.clipboardFailed"));
     }
   }
 
@@ -273,10 +275,10 @@ export function ExportDialog({ open, onClose }: Props) {
         projectTitle,
       );
       if (savedPath) {
-        toast.success(`エクスポート完了: ${savedPath}`);
+        toast.success(t("export.dialog.exportComplete", { path: savedPath }));
       }
     } catch (err) {
-      toast.error(`エクスポートに失敗しました: ${String(err)}`);
+      toast.error(t("export.dialog.exportFailed", { error: String(err) }));
     } finally {
       setIsExporting(false);
     }
@@ -301,7 +303,7 @@ export function ExportDialog({ open, onClose }: Props) {
         {/* ヘッダー */}
         <div className="flex flex-shrink-0 items-center justify-between border-b border-border px-4 py-2">
           <h2 className="text-sm font-semibold text-foreground">
-            エクスポート
+            {t("export.dialog.title")}
           </h2>
           <button
             type="button"
@@ -338,10 +340,12 @@ export function ExportDialog({ open, onClose }: Props) {
         {/* フッター */}
         <div className="flex flex-shrink-0 items-center gap-3 border-t border-border px-4 py-2">
           <span className="text-xs text-muted-foreground">
-            選択中: {sceneCount}/{totalScenes} シーン
+            {t("export.dialog.selectedScenes", { sceneCount, totalScenes })}
           </span>
           <span className="text-xs text-muted-foreground">
-            約{charCount.toLocaleString()}文字
+            {t("export.dialog.approxChars", {
+              count: charCount.toLocaleString(),
+            })}
           </span>
           <div className="flex-1" />
           {/* コピーボタン */}
@@ -354,12 +358,12 @@ export function ExportDialog({ open, onClose }: Props) {
             {isCopied ? (
               <>
                 <Check className="h-3.5 w-3.5 text-green-500" />
-                コピー済み
+                {t("export.dialog.copied")}
               </>
             ) : (
               <>
                 <ClipboardCopy className="h-3.5 w-3.5" />
-                コピー
+                {t("export.dialog.copy")}
               </>
             )}
           </button>
@@ -371,7 +375,9 @@ export function ExportDialog({ open, onClose }: Props) {
             className="flex items-center gap-1.5 rounded bg-primary px-3 py-1.5 text-xs text-primary-foreground hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-40"
           >
             <Download className="h-3.5 w-3.5" />
-            {isExporting ? "保存中…" : "エクスポート"}
+            {isExporting
+              ? t("export.dialog.saving")
+              : t("export.dialog.export")}
           </button>
         </div>
       </div>

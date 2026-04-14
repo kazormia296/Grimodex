@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import { toast } from "sonner";
+import i18next from "i18next";
 import { debugLog, errorDetail, rootCause } from "@/lib/debugLog";
 import {
   listCodexEntries,
@@ -83,7 +84,7 @@ export const useCodexStore = create<CodexState>()((set, get) => ({
       set({ entries, isLoading: false });
     } catch (e) {
       set({ isLoading: false });
-      toast.error("Codexの読み込みに失敗しました");
+      toast.error(i18next.t("codex.store.loadFailed"));
       debugLog.error(
         "CodexStore",
         `loadEntries: ${rootCause(e)}`,
@@ -109,7 +110,7 @@ export const useCodexStore = create<CodexState>()((set, get) => ({
       }
     } catch (e) {
       set({ isLoading: false });
-      toast.error("検索に失敗しました");
+      toast.error(i18next.t("codex.store.searchFailed"));
       debugLog.error("CodexStore", `search: ${rootCause(e)}`, errorDetail(e));
     }
   },
@@ -130,7 +131,7 @@ export const useCodexStore = create<CodexState>()((set, get) => ({
       }
       return entry;
     } catch (e) {
-      toast.error("Codexエントリの作成に失敗しました");
+      toast.error(i18next.t("codex.store.createFailed"));
       debugLog.error("CodexStore", `create: ${rootCause(e)}`, errorDetail(e));
       throw e;
     }
@@ -145,7 +146,7 @@ export const useCodexStore = create<CodexState>()((set, get) => ({
         }));
       }
     } catch (e) {
-      toast.error("Codexエントリの更新に失敗しました");
+      toast.error(i18next.t("codex.store.updateFailed"));
       debugLog.error("CodexStore", `update: ${rootCause(e)}`, errorDetail(e));
     }
   },
@@ -155,7 +156,7 @@ export const useCodexStore = create<CodexState>()((set, get) => ({
       await deleteCodexEntry(id);
       await get().loadEntries();
     } catch (e) {
-      toast.error("Codexエントリの削除に失敗しました");
+      toast.error(i18next.t("codex.store.deleteFailed"));
       debugLog.error("CodexStore", `remove: ${rootCause(e)}`, errorDetail(e));
     }
   },
@@ -170,7 +171,7 @@ export const useCodexStore = create<CodexState>()((set, get) => ({
       set({ entries, isLoading: false });
     } catch (e) {
       set({ isLoading: false });
-      toast.error("フィルタの適用に失敗しました");
+      toast.error(i18next.t("codex.store.filterFailed"));
       debugLog.error(
         "CodexStore",
         `setFilterType: ${rootCause(e)}`,

@@ -1,3 +1,5 @@
+import { useTranslation } from "react-i18next";
+
 const TYPE_COLOR_DEFAULTS: Record<string, string> = {
   character: "#534AB7",
   location: "#0F6E56",
@@ -20,6 +22,7 @@ export function TagPill({
   onClick,
   size = "md",
 }: TagPillProps) {
+  const { t } = useTranslation();
   const bg = color ?? TYPE_COLOR_DEFAULTS[name] ?? "#888888";
   const sizeClasses =
     size === "sm" ? "px-1.5 py-0.5 text-[10px]" : "px-2 py-0.5 text-xs";
@@ -48,7 +51,7 @@ export function TagPill({
             onRemove();
           }}
           className="ml-0.5 leading-none opacity-70 hover:opacity-100"
-          aria-label={`${name}を削除`}
+          aria-label={t("codex.tagPill.removeTag", { name })}
         >
           ×
         </button>

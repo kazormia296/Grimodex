@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from "react";
+import { useTranslation } from "react-i18next";
 import { X, Pencil, Trash2 } from "lucide-react";
 import type { CodexDetailDefinition } from "../detailApi";
 import {
@@ -31,6 +32,7 @@ function AddForm({
   onSave,
   onCancel,
 }: AddFormProps) {
+  const { t } = useTranslation();
   const [name, setName] = useState("");
   const [fieldType, setFieldType] = useState("text");
   const [includeInContext, setIncludeInContext] = useState(false);
@@ -63,7 +65,7 @@ function AddForm({
           onChange={(e) => setName(e.target.value)}
           autoFocus
           className="w-full rounded-md border border-input bg-background px-2 py-1.5 text-sm"
-          placeholder="フィールド名"
+          placeholder={t("codex.detail.fieldNamePlaceholder")}
         />
       </div>
       <div>
@@ -265,6 +267,7 @@ export function ManageFieldsDialog({
   open,
   onClose,
 }: ManageFieldsDialogProps) {
+  const { t } = useTranslation();
   const [definitions, setDefinitions] = useState<CodexDetailDefinition[]>([]);
   const [showAddForm, setShowAddForm] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -354,7 +357,7 @@ export function ManageFieldsDialog({
                       setEditingId(editingId === def.id ? null : def.id)
                     }
                     className="rounded p-1 text-muted-foreground hover:bg-accent"
-                    title="編集"
+                    title={t("common.edit")}
                   >
                     <Pencil className="h-3 w-3" />
                   </button>
@@ -363,7 +366,7 @@ export function ManageFieldsDialog({
                     data-testid={`manage-field-delete-${def.id}`}
                     onClick={() => setDeletingDef(def)}
                     className="rounded p-1 text-destructive hover:bg-destructive/10"
-                    title="削除"
+                    title={t("common.delete")}
                   >
                     <Trash2 className="h-3 w-3" />
                   </button>

@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from "react";
+import { useTranslation } from "react-i18next";
 import { TagPill } from "./TagPill";
 import { listCodexTags, createCodexTag, setEntryTags } from "../tagApi";
 import type { CodexTag } from "../tagApi";
@@ -35,6 +36,7 @@ export function TagSelector({
   maxVisible,
   persistTags = setEntryTags,
 }: TagSelectorProps) {
+  const { t } = useTranslation();
   const [allTags, setAllTags] = useState<CodexTag[]>([]);
   const [dropdownOpen, setDropdownOpen] = useState(false);
   const [overflowOpen, setOverflowOpen] = useState(false);
@@ -224,7 +226,7 @@ export function TagSelector({
                   onClick={() => setShowCreate(true)}
                   className="w-full rounded px-2 py-1 text-left text-xs text-muted-foreground hover:bg-accent"
                 >
-                  + 新規作成
+                  {t("codex.tagSelector.createNew")}
                 </button>
               ) : (
                 <div className="space-y-1 p-1">
@@ -232,7 +234,7 @@ export function TagSelector({
                     type="text"
                     value={newName}
                     onChange={(e) => setNewName(e.target.value)}
-                    placeholder="タグ名"
+                    placeholder={t("codex.tagSelector.tagNamePlaceholder")}
                     autoFocus
                     className="w-full rounded border border-input bg-background px-1.5 py-0.5 text-xs"
                     onKeyDown={(e) => {

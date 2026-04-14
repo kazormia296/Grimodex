@@ -1,4 +1,5 @@
 import { useEffect, useRef } from "react";
+import { useTranslation } from "react-i18next";
 import type { CodexEntry } from "@/features/codex/api";
 import { getTypeLabel } from "../utils/typeLabels";
 
@@ -17,6 +18,7 @@ export function MentionPopup({
   onChangeIndex,
   clientRect,
 }: MentionPopupProps) {
+  const { t } = useTranslation();
   const listRef = useRef<HTMLUListElement>(null);
 
   // キーボードナビゲーションは親からキーイベントを受け取る
@@ -58,7 +60,7 @@ export function MentionPopup({
     <ul
       ref={listRef}
       role="listbox"
-      aria-label="@メンション候補"
+      aria-label={t("chat.context.mentionSuggestions")}
       style={style}
       className="max-h-48 min-w-[200px] overflow-y-auto rounded-md border border-border bg-popover py-1 shadow-md"
     >

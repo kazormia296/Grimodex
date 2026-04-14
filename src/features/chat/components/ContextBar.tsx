@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { useTranslation } from "react-i18next";
 import { X, BookOpen, ChevronDown, ChevronUp, Pin } from "lucide-react";
 import type { CodexEntry } from "@/features/codex/api";
 import type { PinnedSnippetEntryWithData } from "../chatApi";
@@ -49,6 +50,7 @@ export function ContextBar({
   model,
   canUseCreator = false,
 }: ContextBarProps) {
+  const { t } = useTranslation();
   const [collapsed, setCollapsed] = useState(false);
   const [previewOpen, setPreviewOpen] = useState(false);
   const [creatorOpen, setCreatorOpen] = useState(false);
@@ -124,7 +126,7 @@ export function ContextBar({
                     setPreviewOpen(true);
                   }}
                   className="rounded bg-muted px-1.5 py-0.5 text-xs hover:bg-accent"
-                  title="プロンプト全文を表示"
+                  title={t("chat.context.showPrompt")}
                 >
                   ~{contextTokenCount.toLocaleString()} tokens
                 </button>
@@ -150,7 +152,7 @@ export function ContextBar({
             {contextLayers.find((l) => l.layer === "L1" && l.used > 0) && (
               <span
                 className="rounded bg-muted px-1.5 py-0.5 text-xs text-muted-foreground"
-                title="プロジェクト情報"
+                title={t("chat.context.projectInfo")}
               >
                 Project
               </span>
@@ -159,7 +161,9 @@ export function ContextBar({
             {sceneTokens > 0 && (
               <span
                 className="rounded bg-muted px-1.5 py-0.5 text-xs text-muted-foreground"
-                title={`シーン: ${sceneTokens.toLocaleString()} tokens`}
+                title={t("chat.context.sceneTokens", {
+                  count: sceneTokens.toLocaleString(),
+                })}
               >
                 Scene: {sceneTokens.toLocaleString()}
               </span>
@@ -188,7 +192,9 @@ export function ContextBar({
                       type="button"
                       onClick={() => onUnpin(entry.id)}
                       className="hover:text-destructive"
-                      aria-label={`${entry.name}のピン留め解除`}
+                      aria-label={t("chat.context.unpinEntry", {
+                        name: entry.name,
+                      })}
                     >
                       <X className="h-3 w-3" />
                     </button>
@@ -207,7 +213,7 @@ export function ContextBar({
                   type="button"
                   onClick={() => onPin(entry.id)}
                   className="hover:text-foreground text-muted-foreground/70"
-                  aria-label={`${entry.name}をピン留め`}
+                  aria-label={t("chat.context.pinEntry", { name: entry.name })}
                 >
                   <Pin className="h-3 w-3" />
                 </button>
@@ -226,7 +232,7 @@ export function ContextBar({
                   type="button"
                   onClick={() => onPin(entry.id)}
                   className="hover:text-foreground text-muted-foreground/70"
-                  aria-label={`${entry.name}をピン留め`}
+                  aria-label={t("chat.context.pinEntry", { name: entry.name })}
                 >
                   <Pin className="h-3 w-3" />
                 </button>
@@ -243,7 +249,9 @@ export function ContextBar({
                   type="button"
                   onClick={() => onUnpin(snippet.id)}
                   className="hover:text-destructive"
-                  aria-label={`${snippet.title}のピン留め解除`}
+                  aria-label={t("chat.context.unpinEntry", {
+                    name: snippet.title,
+                  })}
                 >
                   <X className="h-3 w-3" />
                 </button>
@@ -254,10 +262,10 @@ export function ContextBar({
               type="button"
               onClick={onOpenPinDialog}
               className="inline-flex items-center gap-1 rounded-md border border-dashed border-border px-2 py-0.5 text-xs text-muted-foreground hover:bg-accent"
-              aria-label="Codex/Snippetをピン留め"
+              aria-label={t("chat.context.pinCodexSnippet")}
             >
               <BookOpen className="h-3 w-3" />
-              ピン留め
+              {t("chat.context.pin")}
             </button>
             {/* ✦ AI コンテキスト提案ボタン */}
             <ContextCreatorButton

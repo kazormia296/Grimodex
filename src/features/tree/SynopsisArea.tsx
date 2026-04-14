@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from "react";
+import { useTranslation } from "react-i18next";
 import { useTreeStore } from "./treeStore";
 import { loadSceneContent } from "./api";
 import { generateSynopsisFromContent } from "@/features/chat/chatApi";
@@ -16,6 +17,7 @@ export function SynopsisArea({ nodeId }: SynopsisAreaProps) {
   const [isGenerating, setIsGenerating] = useState(false);
   const [confirmOverwrite, setConfirmOverwrite] = useState(false);
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const { t } = useTranslation();
 
   // Sync external changes
   useEffect(() => {
@@ -40,16 +42,16 @@ export function SynopsisArea({ nodeId }: SynopsisAreaProps) {
     try {
       const content = await loadSceneContent(nodeId);
       if (!content?.trim()) {
-        toast.warning("シーン本文が空のため、Synopsisを生成できません。");
+        toast.warning(t("tree.synopsis.emptySceneWarning"));
         return;
       }
       const generated = await generateSynopsisFromContent(node.title, content);
       const trimmed = generated.trim();
       setText(trimmed);
       await updateSynopsis(nodeId, trimmed);
-      toast.success("Synopsisを生成しました");
+      toast.success(t("tree.synopsis.generated"));
     } catch {
-      toast.error("Synopsis生成に失敗しました");
+      toast.error(t("tree.synopsis.generateFailed"));
     } finally {
       setIsGenerating(false);
     }
@@ -60,7 +62,7 @@ export function SynopsisArea({ nodeId }: SynopsisAreaProps) {
     // Check body content first, before asking about overwrite
     const content = await loadSceneContent(nodeId);
     if (!content?.trim()) {
-      toast.warning("シーン本文が空のため、Synopsisを生成できません。");
+      toast.warning(t("tree.synopsis.emptySceneWarning"));
       return;
     }
     // Show inline confirmation if synopsis already exists
@@ -83,10 +85,10 @@ export function SynopsisArea({ nodeId }: SynopsisAreaProps) {
           type="button"
           onClick={handleGenerate}
           disabled={isGenerating}
-          title="AIでSynopsisを生成"
+          title={t("tree.synopsis.generateTitle")}
           className="flex items-center gap-0.5 rounded px-1 py-0.5 text-xs text-muted-foreground hover:bg-accent hover:text-foreground disabled:opacity-40"
         >
-          {isGenerating ? "生成中…" : "✦ Generate"}
+          {isGenerating ? t("tree.synopsis.generating") : "✦ Generate"}
         </button>
       </div>
 
@@ -94,21 +96,21 @@ export function SynopsisArea({ nodeId }: SynopsisAreaProps) {
       {confirmOverwrite && (
         <div className="mb-2 flex items-center gap-2 rounded border border-border bg-muted/40 px-2 py-1.5 text-xs">
           <span className="flex-1 text-muted-foreground">
-            既存のSynopsisを上書きしますか？
+            {t("tree.synopsis.overwriteConfirm")}
           </span>
           <button
             type="button"
             onClick={doGenerate}
             className="rounded bg-primary px-2 py-0.5 text-xs text-primary-foreground"
           >
-            上書き
+            {t("tree.synopsis.overwrite")}
           </button>
           <button
             type="button"
             onClick={() => setConfirmOverwrite(false)}
             className="rounded px-2 py-0.5 text-xs text-muted-foreground hover:bg-accent"
           >
-            キャンセル
+            {t("common.cancel")}
           </button>
         </div>
       )}

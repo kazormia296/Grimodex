@@ -1,4 +1,5 @@
 import { useRef, useState, useEffect } from "react";
+import { useTranslation } from "react-i18next";
 import { X, ChevronDown, Columns2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useTabStore } from "./tabStore";
@@ -63,6 +64,7 @@ interface TabBarProps {
 }
 
 export function TabBar({ groupIndex = 0 }: TabBarProps) {
+  const { t } = useTranslation();
   const primaryTabs = useTabStore((s) => s.tabs);
   const primaryActiveTabId = useTabStore((s) => s.activeTabId);
   const secondaryTabs = useTabStore((s) => s.secondaryTabs);
@@ -363,7 +365,7 @@ export function TabBar({ groupIndex = 0 }: TabBarProps) {
               {synced && (
                 <span
                   className="mr-0.5 h-1.5 w-1.5 flex-shrink-0 rounded-full bg-primary/70"
-                  title="別のグループでも開かれています"
+                  title={t("editor.tabBar.syncedIndicator")}
                 />
               )}
               {node?.nodeType === "note" && (
@@ -385,7 +387,7 @@ export function TabBar({ groupIndex = 0 }: TabBarProps) {
               )}
               <button
                 type="button"
-                title="閉じる"
+                title={t("common.close")}
                 className="ml-1 rounded p-0.5 opacity-0 hover:bg-accent group-hover:opacity-100"
                 onClick={(e) => handleTabClose(e, tab.nodeId)}
               >
@@ -404,7 +406,7 @@ export function TabBar({ groupIndex = 0 }: TabBarProps) {
         >
           <button
             type="button"
-            title="分割"
+            title={t("editor.tabBar.split")}
             onClick={() => setSplitMenuOpen((v) => !v)}
             className={cn(
               "flex h-full items-center px-2 text-muted-foreground hover:bg-accent hover:text-foreground",
@@ -423,7 +425,7 @@ export function TabBar({ groupIndex = 0 }: TabBarProps) {
                   setSplitMenuOpen(false);
                 }}
               >
-                右に分割
+                {t("editor.tabBar.splitRight")}
               </button>
               <button
                 type="button"
@@ -433,7 +435,7 @@ export function TabBar({ groupIndex = 0 }: TabBarProps) {
                   setSplitMenuOpen(false);
                 }}
               >
-                下に分割
+                {t("editor.tabBar.splitBelow")}
               </button>
             </div>
           )}
@@ -444,7 +446,7 @@ export function TabBar({ groupIndex = 0 }: TabBarProps) {
       {!isPrimary && (
         <button
           type="button"
-          title="グループを閉じる"
+          title={t("editor.tabBar.closeGroup")}
           onClick={() => useTabStore.getState().closeSecondaryGroup()}
           className="flex h-full flex-shrink-0 items-center border-l border-border px-2 text-muted-foreground hover:bg-accent hover:text-foreground"
         >
@@ -460,7 +462,7 @@ export function TabBar({ groupIndex = 0 }: TabBarProps) {
         >
           <button
             type="button"
-            title="タブ一覧"
+            title={t("editor.tabBar.tabList")}
             onClick={() => setOverflowOpen((v) => !v)}
             className={cn(
               "flex h-full items-center gap-0.5 px-2 py-1.5 text-xs text-muted-foreground hover:bg-accent hover:text-foreground",

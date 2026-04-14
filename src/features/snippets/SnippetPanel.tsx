@@ -125,7 +125,10 @@ export function SnippetPanel() {
 
   const handleNew = useCallback(async () => {
     try {
-      const created = await create({ title: "新規スニペット", content: "" });
+      const created = await create({
+        title: t("snippets.newSnippet"),
+        content: "",
+      });
       setSelectedSnippet(created);
     } catch {
       // error toast shown by store
@@ -141,7 +144,7 @@ export function SnippetPanel() {
           const text = await navigator.clipboard.readText();
           if (!text.trim()) return;
           const created = await create({
-            title: text.slice(0, 40).trim() || "クリップボード",
+            title: text.slice(0, 40).trim() || t("snippets.clipboard"),
             content: text,
           });
           setSelectedSnippet(created);

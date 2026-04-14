@@ -19,6 +19,7 @@ import { SceneBreakNode } from "@/features/editor/SceneBreakNode";
 import { FindReplaceExtension } from "@/features/editor/FindReplaceExtension";
 import { InlineAtomNavigationExtension } from "@/features/editor/InlineAtomNavigationExtension";
 import { SlashCommandExtension } from "@/features/editor/inlineAi/SlashCommandExtension";
+import i18next from "@/lib/i18n";
 import type { Extensions } from "@tiptap/core";
 
 // Extends Paragraph to preserve empty paragraphs during markdown roundtrip.
@@ -93,7 +94,9 @@ export function getEditorExtensions(): Extensions {
       openOnClick: false,
       HTMLAttributes: { target: "_blank", rel: "noopener noreferrer" },
     }),
-    Placeholder.configure({ placeholder: "ここに書き始める…" }),
+    Placeholder.configure({
+      placeholder: () => i18next.t("editor.placeholder"),
+    }),
     CharacterCount,
     Typography,
     // Table

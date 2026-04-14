@@ -1,4 +1,5 @@
 import { X } from "lucide-react";
+import { useTranslation } from "react-i18next";
 import type { CodexEntry } from "@/features/codex/api";
 
 interface ContextPillGroupProps {
@@ -21,13 +22,14 @@ export function ContextPillGroup({
   onUnpin,
   colorClass = "bg-accent",
 }: ContextPillGroupProps) {
+  const { t } = useTranslation();
   return (
     <>
       {/* グループヘッダーピル */}
       <button
         type="button"
         onClick={onToggle}
-        aria-label={`${label} グループ`}
+        aria-label={t("chat.context.group", { label })}
         className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs ${colorClass}`}
       >
         <span>{label}</span>
@@ -47,7 +49,7 @@ export function ContextPillGroup({
               type="button"
               onClick={() => onUnpin(entry.id)}
               className="hover:text-destructive"
-              aria-label={`${entry.name}のピン留め解除`}
+              aria-label={t("chat.context.unpinEntry", { name: entry.name })}
             >
               <X className="h-3 w-3" />
             </button>

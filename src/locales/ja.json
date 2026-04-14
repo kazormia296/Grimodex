@@ -172,6 +172,8 @@
       "sceneNamingPrefixDesc": "例: {{prefix}} 1, {{prefix}} 2, ...",
       "sceneNamingPrefixDescNone": "例: シーン（番号なし）",
       "noteNamingPrefix": "ノート命名プレフィックス",
+      "sceneNamingPlaceholder": "シーン",
+      "noteNamingPlaceholder": "ノート",
       "numberingScope": "採番スコープ",
       "numberingScopeProject": "プロジェクト全体（一意）",
       "numberingScopeFolder": "フォルダーごと",
@@ -242,7 +244,8 @@
       "deleteTypeDesc": "「{{label}}」（{{slug}}）を削除します。この操作は元に戻せません。",
       "cannotDelete": "「{{label}}」タイプのエントリが存在するため削除できません",
       "deleteSuccess": "「{{label}}」を削除しました",
-      "createError": "タイプの作成に失敗しました"
+      "createError": "タイプの作成に失敗しました",
+      "colorInUse": "{{label}}（{{usedBy}}が使用中）"
     },
     "about": {
       "searchPlaceholder": "{{count}} 件のライブラリを検索…",
@@ -253,6 +256,11 @@
   },
 
   "layout": {
+    "watermark": {
+      "panelsClosed": "パネルが閉じられています",
+      "scene": "シーン",
+      "chat": "チャット"
+    },
     "panelToggle": "パネルの表示切替",
     "panels": "パネル",
     "regionLeft": "左",
@@ -268,7 +276,20 @@
       "chat": "チャット",
       "snippets": "Snippets",
       "attribution": "帰属",
-      "codex-quick": "Codex Quick"
+      "codex-quick": "Codex Quick",
+      "stats": "統計"
+    },
+    "preset": {
+      "title": "レイアウトプリセット",
+      "layout": "レイアウト",
+      "builtinSection": "プリセット",
+      "customSection": "カスタム",
+      "saveName": "プリセット名",
+      "default": "デフォルト",
+      "chatMain": "チャットメイン",
+      "codexMain": "Codexメイン",
+      "saveLayout": "現在のレイアウトを保存",
+      "resetDefault": "デフォルトに戻す"
     }
   },
 
@@ -317,7 +338,93 @@
     "extractedToCodex": "Codexに抽出しました",
     "copied": "コピーしました",
     "copyFailed": "コピーに失敗しました",
-    "noMessages": "メッセージはまだありません"
+    "noMessages": "メッセージはまだありません",
+    "actions": {
+      "unstar": "スターを外す",
+      "star": "スター付き（要約対象外）",
+      "insertToEditor": "エディタに挿入",
+      "extractCodexQuick": "Codexに即時抽出",
+      "saveSnippetQuick": "Snippetとして即時保存",
+      "copyWithAttribution": "コピー（帰属情報付き）",
+      "extractCodexDetailed": "Codexに抽出（詳細）",
+      "saveSnippetDetailed": "Snippetとして保存（詳細）",
+      "regenerate": "再生成",
+      "edit": "編集",
+      "delete": "削除"
+    },
+    "contextMenu": {
+      "insertSelectionToEditor": "選択テキストをエディタに挿入",
+      "extractToCodex": "Codexに抽出",
+      "saveAsSnippet": "Snippetとして保存",
+      "copy": "コピー",
+      "insertToEditor": "エディタに挿入",
+      "codexQuickExtract": "Codex即時抽出",
+      "codexDetailedExtract": "Codex詳細抽出",
+      "snippetQuickSave": "Snippet即時保存",
+      "snippetDetailedSave": "Snippet詳細保存",
+      "regenerate": "再生成",
+      "edit": "編集",
+      "delete": "削除"
+    },
+    "contextCreator": {
+      "disabledTitle": "このモデルはツール使用に対応していません",
+      "enabledTitle": "AIがコンテキストに追加するエントリを提案します",
+      "ariaLabel": "AIコンテキスト提案"
+    },
+    "context": {
+      "showPrompt": "プロンプト全文を表示",
+      "projectInfo": "プロジェクト情報",
+      "sceneTokens": "シーン: {{count}} tokens",
+      "unpinEntry": "{{name}}のピン留め解除",
+      "pinEntry": "{{name}}をピン留め",
+      "pinCodexSnippet": "Codex/Snippetをピン留め",
+      "pin": "ピン留め",
+      "group": "{{label}} グループ",
+      "noResults": "該当するエントリが見つかりませんでした。",
+      "inputPlaceholder": "コンテキストに追加するものを指示...",
+      "alreadyPinned": "(ピン済み)",
+      "foundEntries": "{{count}} 件のエントリが見つかりました:",
+      "addSelected": "選択を追加 ({{count}})",
+      "running": "実行中: {{name}}",
+      "commandSuggestions": "コマンド候補",
+      "mentionSuggestions": "@メンション候補",
+      "codexExtracted": "Codex抽出済 ({{count}})",
+      "snippetSaved": "Snippet保存済 ({{count}})",
+      "includeChildren": "子エントリを含める",
+      "pinEntries": "エントリをピン留め",
+      "noCodexEntries": "Codexエントリがありません",
+      "noSnippets": "Snippetがありません",
+      "pinCodex": "Codexをピン留め",
+      "promptPreviewTitle": "システムプロンプト プレビュー",
+      "layerBreakdown": "レイヤー別トークン内訳",
+      "layerColumn": "レイヤー",
+      "usedTokens": "使用 tokens",
+      "usageRate": "使用率",
+      "totalRow": "合計",
+      "fullPrompt": "プロンプト全文",
+      "emptyPrompt": "（プロンプトなし）"
+    },
+    "conversationSummary": "会話要約",
+    "sessionMenu": "セッションメニュー",
+    "sessionRename": "名前を変更",
+    "sessionRenameFailed": "名前の変更に失敗しました",
+    "sessionDeleteConfirm": "このセッションを削除しますか？メッセージもすべて削除されます。",
+    "sessionsFor": "Sessions: {{title}}",
+    "storySoFar": {
+      "coverageTitle": "storySoFar Synopsisカバレッジ",
+      "coverageDesc": "現在のシーンより前に <strong>{{total}}</strong> シーンありますが、Synopsisが記入済みなのは <strong>{{filled}}</strong> シーンのみです。AIのstorySoFarコンテキストが制限されます。",
+      "generating": "生成中… {{progress}}/{{total}}",
+      "failedCount": "({{count}}件失敗)",
+      "partialSuccess": "{{succeeded}}/{{total}}件のSynopsisを生成しました（{{failed}}件失敗）",
+      "success": "{{count}}件のSynopsisを生成しました",
+      "generateAll": "Generate all ({{count}} missing)"
+    },
+    "selectionToolbar": {
+      "insertToEditor": "エディタに挿入",
+      "extractToCodex": "Codexに抽出",
+      "saveAsSnippet": "Snippetとして保存",
+      "copy": "コピー"
+    }
   },
 
   "codex": {
@@ -325,6 +432,7 @@
     "location": "場所",
     "item": "アイテム",
     "lore": "設定・世界観",
+    "aliasPlaceholder": "別名...",
     "sortCategory": "カテゴリ別",
     "sortNameAsc": "名前 (A→Z)",
     "sortNameDesc": "名前 (Z→A)",
@@ -344,6 +452,93 @@
     "summaryLabel": "概要",
     "tagsLabel": "タグ",
     "noResults": "結果なし",
+    "childrenBudget": {
+      "label": "子エントリのコンテキスト量",
+      "noChildren": "子エントリがありません",
+      "none": "なし (0%)",
+      "compact": "コンパクト (15%)",
+      "standard": "標準 (30%)",
+      "generous": "充実 (50%)"
+    },
+    "detail": {
+      "back": "戻る",
+      "openInEditor": "エディタで開く",
+      "phaseSummaryPlaceholder": "このフェーズ以降の概要...",
+      "summaryHint": "Summaryを記入するとAIチャットでのトークン消費を抑えられます",
+      "aiSummaryFailed": "AI要約の生成に失敗しました",
+      "generating": "生成中...",
+      "generateAiSummary": "AI要約を生成",
+      "aiContextEnabled": "AIコンテキストに含める（クリックで無効化）",
+      "aiContextDisabled": "AIコンテキストに含めない（クリックで有効化）",
+      "entryIdPlaceholder": "エントリIDを入力...",
+      "addField": "フィールドを追加",
+      "manageFields": "フィールドを管理",
+      "noFields": "フィールドがありません",
+      "fieldNamePlaceholder": "フィールド名",
+      "summaryLabel": "概要",
+      "empty": "(空)",
+      "showBaseContent": "Base contentを表示",
+      "selectPlaceholder": "— 選択 —"
+    },
+    "relation": {
+      "title": "リレーション",
+      "parent": "親エントリ",
+      "addChild": "子を追加",
+      "children": "子エントリ",
+      "searchPlaceholder": "名前で検索...",
+      "removeParent": "親を解除",
+      "none": "(なし)",
+      "suggestions": "提案",
+      "addAsChild": "子として追加",
+      "dismiss": "却下"
+    },
+    "iconPicker": {
+      "changeIcon": "アイコンを変更",
+      "change": "変更"
+    },
+    "references": {
+      "searching": "検索中...",
+      "checkOccurrences": "出現シーンを確認",
+      "noMentions": "本文中での言及なし"
+    },
+    "tagFilter": {
+      "clearFilter": "フィルタをクリア"
+    },
+    "tagPill": {
+      "removeTag": "{{name}}を削除"
+    },
+    "tagSelector": {
+      "tagNamePlaceholder": "タグ名",
+      "createNew": "+ 新規作成"
+    },
+    "tab": {
+      "details": "詳細",
+      "relations": "リレーション",
+      "tracking": "トラッキング",
+      "mentions": "言及",
+      "research": "リサーチ",
+      "timeline": "タイムライン"
+    },
+    "phaseIndicator": {
+      "preview": "プレビュー",
+      "exitPreview": "プレビューを終了"
+    },
+    "timeline": {
+      "noPhases": "フェーズが設定されていません。",
+      "noPhasesDesc": "フェーズを追加すると、物語の進行に伴うこのエントリの変化を管理できます。",
+      "currentScene": "現在のシーン",
+      "currentSceneArrow": "← 現在のシーン",
+      "empty": "(空)",
+      "contentOverride": "(上書きあり)"
+    },
+    "store": {
+      "loadFailed": "Codexの読み込みに失敗しました",
+      "searchFailed": "検索に失敗しました",
+      "createFailed": "Codexエントリの作成に失敗しました",
+      "updateFailed": "Codexエントリの更新に失敗しました",
+      "deleteFailed": "Codexエントリの削除に失敗しました",
+      "filterFailed": "フィルタの適用に失敗しました"
+    },
     "extraction": {
       "title": "Codexに抽出",
       "type": "タイプ",
@@ -359,6 +554,7 @@
     "sortRecent": "新しい順",
     "sortOldest": "古い順",
     "sortTitleAsc": "タイトル順",
+    "clipboard": "クリップボード",
     "sortMostUsed": "使用回数順",
     "newSnippet": "新規スニペット",
     "searchPlaceholder": "Snippetを検索…",
@@ -367,7 +563,43 @@
     "selectPrompt": "Snippetを選択してください",
     "deleteConfirmDesc": "「{{name}}」を削除しますか？この操作は元に戻せません。",
     "copied": "コピーしました",
-    "inserted": "挿入しました"
+    "inserted": "挿入しました",
+    "extraction": {
+      "title": "Snippetとして保存",
+      "titleLabel": "タイトル",
+      "titlePlaceholder": "Snippetのタイトル",
+      "contentLabel": "内容",
+      "tagsLabel": "タグ（カンマ区切り）",
+      "tagsPlaceholder": "タグ1,タグ2"
+    },
+    "detailTitle": "Snippet詳細",
+    "detail": {
+      "insertAtCursor": "カーソル位置に挿入",
+      "openInEditor": "エディタで開く",
+      "goToScene": "関連シーンへ移動",
+      "titleLabel": "タイトル",
+      "tagsLabel": "タグ",
+      "contentLabel": "内容",
+      "createdAt": "作成日: {{date}}",
+      "usageCount": "使用回数: {{count}}",
+      "sourceChat": "抽出元チャット: {{id}}"
+    },
+    "store": {
+      "loadFailed": "スニペットの読み込みに失敗しました",
+      "searchFailed": "スニペット検索に失敗しました",
+      "saved": "Snippetとして保存しました",
+      "createFailed": "スニペットの作成に失敗しました",
+      "updateFailed": "スニペットの更新に失敗しました",
+      "deleteFailed": "スニペットの削除に失敗しました"
+    },
+    "contextMenu": {
+      "insertAtCursor": "カーソル位置に挿入",
+      "copy": "コピー",
+      "edit": "編集",
+      "duplicate": "複製",
+      "goToScene": "シーンへ移動",
+      "delete": "削除"
+    }
   },
 
   "tree": {
@@ -384,10 +616,96 @@
     "delete": "削除",
     "defaultFolder": "フォルダー",
     "defaultScene": "シーン",
-    "defaultNote": "ノート"
+    "defaultNote": "ノート",
+    "synopsis": {
+      "emptySceneWarning": "シーン本文が空のため、Synopsisを生成できません。",
+      "generated": "Synopsisを生成しました",
+      "generateFailed": "Synopsis生成に失敗しました",
+      "generateTitle": "AIでSynopsisを生成",
+      "generating": "生成中…",
+      "overwriteConfirm": "既存のSynopsisを上書きしますか？",
+      "overwrite": "上書き"
+    },
+    "quickSection": {
+      "unpin": "ピン留め解除",
+      "pin": "ピン留め"
+    }
+  },
+
+  "chatCommands": {
+    "continue": { "description": "現在のシーンの続きを生成" },
+    "describe": { "description": "対象の描写を生成", "argPlaceholder": "対象" },
+    "dialogue": { "description": "キャラクターの台詞を生成", "argPlaceholder": "キャラ名" },
+    "summarize": { "description": "現在のシーンの要約を生成" },
+    "brainstorm": { "description": "プロットのブレインストーミング" },
+    "rewrite": { "description": "選択中テキストの書き直し" },
+    "translate": { "description": "選択テキストを翻訳", "argPlaceholder": "言語" }
   },
 
   "editor": {
+    "placeholder": "ここに書き始める…",
+    "toolbar": {
+      "bold": "太字 (Ctrl+B)",
+      "italic": "斜体 (Ctrl+I)",
+      "underline": "下線 (Ctrl+U)",
+      "strikethrough": "取り消し線 (Ctrl+Shift+X)",
+      "emphasisDots": "傍点 (Ctrl+.)",
+      "heading1": "見出し 1 (Ctrl+1)",
+      "heading1Short": "見出し 1",
+      "heading2": "見出し 2 (Ctrl+2)",
+      "heading2Short": "見出し 2",
+      "heading3": "見出し 3 (Ctrl+3)",
+      "heading3Short": "見出し 3",
+      "bulletList": "箇条書き",
+      "orderedList": "番号付きリスト",
+      "blockquote": "引用 (ブロッククォート)",
+      "horizontalRule": "水平線",
+      "ruby": "ルビ（ふりがな）(Ctrl+Shift+R)",
+      "rubyShort": "ルビ（ふりがな）",
+      "link": "リンク (Ctrl+K)",
+      "linkShort": "リンク",
+      "sceneBreak": "シーン区切り (* * *)",
+      "fontSize": "文字サイズ",
+      "attribution": "帰属表示",
+      "comments": "コメント表示（未実装）",
+      "focusMode": "フォーカスモード",
+      "typewriterMode": "タイプライターモード",
+      "moreOptions": "その他のオプション",
+      "findReplace": "検索と置換",
+      "targetWordCount": "目標文字数...",
+      "verticalPreview": "縦書きプレビュー",
+      "showBreadcrumb": "ブレッドクラムを表示",
+      "showLineNumbers": "行番号を表示",
+      "rubyBase": "ベース",
+      "rubyAnnotation": "ふりがな"
+    },
+    "status": {
+      "outline": "アウトライン",
+      "draft": "下書き",
+      "complete": "完成",
+      "revision": "改訂中",
+      "final": "最終",
+      "changeStatus": "ステータスを変更",
+      "synopsisEmpty": "Synopsis が未記入です",
+      "synopsisPrompt": "自動生成しますか？",
+      "emptySceneWarning": "シーン本文が空のため生成できません",
+      "synopsisGenerated": "Synopsis を生成しました",
+      "synopsisGenerateFailed": "Synopsis 生成に失敗しました",
+      "openAttribution": "Attributionパネルを開く",
+      "revisionHistory": "リビジョン履歴 (Ctrl+Shift+H)"
+    },
+    "tabBar": {
+      "syncedIndicator": "別のグループでも開かれています",
+      "split": "分割",
+      "splitRight": "右に分割",
+      "splitBelow": "下に分割",
+      "closeGroup": "グループを閉じる",
+      "tabList": "タブ一覧"
+    },
+    "contextMenu": {
+      "addToCodex": "コデックスに追加",
+      "saveAsSnippet": "スニペットとして保存"
+    },
     "find": {
       "placeholder": "検索…",
       "noMatch": "一致なし",
@@ -422,6 +740,7 @@
   },
 
   "inlineAi": {
+    "generateFailed": "生成に失敗しました",
     "additionalPrompt": "追加の指示（省略可）",
     "commands": {
       "continue": {
@@ -499,7 +818,29 @@
     "filterOnlyTitle": "{{label}}のみ表示",
     "clearFilterTitle": "フィルタを解除",
     "charCount": "{{count}}字 ({{pct}}%)",
-    "total": "合計: {{count}}字"
+    "total": "合計: {{count}}字",
+    "changeAttribution": "帰属を変更",
+    "exportTrace": "帰属エクスポート",
+    "aiPctChars": "AI: {{pct}}% ({{count}}字)",
+    "humanPct": "{{pct}}%人",
+    "charSuffix": "{{count}}字"
+  },
+
+  "phase": {
+    "editTitle": "フェーズを編集",
+    "addTitle": "フェーズを追加",
+    "labelField": "ラベル",
+    "labelPlaceholder": "例: 追放後、反乱参加...",
+    "anchorScene": "アンカーシーン",
+    "anchorSceneDesc": "このフェーズが開始するシーン",
+    "overrideFields": "上書きフィールド",
+    "summary": "概要",
+    "summaryPlaceholder": "このフェーズ以降の概要...",
+    "content": "コンテンツ",
+    "contentNote": "保存後にDetailsタブのContent editorで編集できます",
+    "contextMode": "コンテキストモード",
+    "overrideRequired": "少なくとも1つのフィールドを上書き対象に選択してください",
+    "saving": "保存中..."
   },
 
   "snapshot": {
@@ -610,7 +951,57 @@
     "selectAll": "全選択",
     "collapse": "折りたたむ",
     "expand": "展開",
-    "noScenes": "シーンがありません"
+    "noScenes": "シーンがありません",
+    "dialog": {
+      "title": "エクスポート",
+      "selectedScenes": "選択中: {{sceneCount}}/{{totalScenes}} シーン",
+      "approxChars": "約{{count}}文字",
+      "copied": "コピー済み",
+      "clipboardFailed": "クリップボードへのコピーに失敗しました",
+      "exportComplete": "エクスポート完了: {{path}}",
+      "exportFailed": "エクスポートに失敗しました: {{error}}",
+      "copy": "コピー",
+      "saving": "保存中…",
+      "export": "エクスポート"
+    },
+    "settings": {
+      "outputFormat": "出力形式",
+      "plaintext": "プレーンテキスト (.txt)",
+      "markdown": "Markdown (.md)",
+      "html": "HTML (.html)",
+      "folderHeading": "フォルダー見出し",
+      "folderHeadingEnable": "フォルダー名を見出しにする",
+      "headingSymbol": "見出し記号",
+      "headingNoSymbol": "記号なし",
+      "sceneDivider": "シーン区切り",
+      "betweenScenes": "シーン間",
+      "blank": "空行",
+      "blank2": "空行×2",
+      "rule": "罫線",
+      "none": "なし",
+      "custom": "カスタム",
+      "dividerPlaceholder": "区切り文字を入力",
+      "sceneTitle": "シーンタイトル",
+      "dontInclude": "含めない",
+      "asHeading": "見出しとして",
+      "asBold": "太字として",
+      "asIs": "そのまま",
+      "specialExpressions": "特殊表現",
+      "ruby": "ルビ",
+      "auto": "自動",
+      "htmlRuby": "HTML rubyタグ",
+      "parentheses": "括弧表記",
+      "aozora": "青空文庫形式",
+      "baseOnly": "ベースのみ",
+      "emphasisDots": "傍点",
+      "htmlTag": "HTMLタグ",
+      "plain": "そのまま",
+      "sceneBreak": "シーンブレイク",
+      "breakPlaceholder": "ブレイク文字を入力",
+      "preview": "プレビュー",
+      "previewError": "(プレビュー生成エラー)",
+      "noScenesSelected": "(シーンが選択されていません)"
+    }
   },
 
   "scenes": {

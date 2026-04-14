@@ -1,4 +1,5 @@
 import { useEffect, useState, useCallback, useMemo } from "react";
+import { useTranslation } from "react-i18next";
 import { Plus, X } from "lucide-react";
 import { useCodexStore } from "../codexStore";
 import type { CodexEntry } from "../api";
@@ -41,6 +42,7 @@ function AddChildInput({
   currentChildIds: Set<string>;
   onAdd: (entry: CodexEntry) => void;
 }) {
+  const { t } = useTranslation();
   const [query, setQuery] = useState("");
   const [open, setOpen] = useState(false);
 
@@ -62,7 +64,7 @@ function AddChildInput({
         className="mt-1 flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] text-muted-foreground hover:bg-accent hover:text-accent-foreground"
       >
         <Plus className="h-3 w-3" />
-        子を追加
+        {t("codex.relation.addChild")}
       </button>
     );
   }
@@ -77,7 +79,7 @@ function AddChildInput({
         onKeyDown={(e) => {
           if (e.key === "Escape") setOpen(false);
         }}
-        placeholder="名前で検索..."
+        placeholder={t("codex.relation.searchPlaceholder")}
         className="w-full rounded border border-input bg-background px-2 py-1 text-xs outline-none"
       />
       {results.length > 0 && (
@@ -105,13 +107,14 @@ function AddChildInput({
         onClick={() => setOpen(false)}
         className="mt-0.5 text-[10px] text-muted-foreground hover:underline"
       >
-        キャンセル
+        {t("common.cancel")}
       </button>
     </div>
   );
 }
 
 export function RelationSection({ entry }: RelationSectionProps) {
+  const { t } = useTranslation();
   const allEntries = useCodexStore((s) => s.entries);
   const loadEntries = useCodexStore((s) => s.loadEntries);
   const [dismissedIds, setDismissedIds] = useState<Set<string>>(new Set());
@@ -186,11 +189,11 @@ export function RelationSection({ entry }: RelationSectionProps) {
 
   return (
     <div className="space-y-3 border-t border-border pt-3">
-      <h3 className="text-xs font-semibold">リレーション</h3>
+      <h3 className="text-xs font-semibold">{t("codex.relation.title")}</h3>
 
       {/* Parent */}
       <div>
-        <SectionLabel>親エントリ</SectionLabel>
+        <SectionLabel>{t("codex.relation.parent")}</SectionLabel>
         {parent ? (
           <div className="flex items-center gap-2 rounded bg-muted/50 px-2 py-1.5">
             <TypeBadge type={parent.type} />
@@ -200,20 +203,22 @@ export function RelationSection({ entry }: RelationSectionProps) {
             <button
               type="button"
               onClick={handleRemoveParent}
-              title="親を解除"
+              title={t("codex.relation.removeParent")}
               className="text-muted-foreground hover:text-destructive"
             >
               <X className="h-3 w-3" />
             </button>
           </div>
         ) : (
-          <p className="text-[11px] text-muted-foreground">(なし)</p>
+          <p className="text-[11px] text-muted-foreground">
+            {t("codex.relation.none")}
+          </p>
         )}
       </div>
 
       {/* Children */}
       <div>
-        <SectionLabel>子エントリ</SectionLabel>
+        <SectionLabel>{t("codex.relation.children")}</SectionLabel>
         {children.length > 0 ? (
           <ul className="space-y-1">
             {children.map((child) => (
@@ -227,7 +232,9 @@ export function RelationSection({ entry }: RelationSectionProps) {
             ))}
           </ul>
         ) : (
-          <p className="text-[11px] text-muted-foreground">(なし)</p>
+          <p className="text-[11px] text-muted-foreground">
+            {t("codex.relation.none")}
+          </p>
         )}
         <AddChildInput
           allEntries={allEntries}
@@ -239,7 +246,7 @@ export function RelationSection({ entry }: RelationSectionProps) {
       {/* Suggestions */}
       {suggestions.length > 0 && (
         <div>
-          <SectionLabel>提案</SectionLabel>
+          <SectionLabel>{t("codex.relation.suggestions")}</SectionLabel>
           <ul className="space-y-1">
             {suggestions.map((s) => (
               <li
@@ -253,7 +260,7 @@ export function RelationSection({ entry }: RelationSectionProps) {
                 <span className="flex-1 truncate text-xs">{s.name}</span>
                 <button
                   type="button"
-                  title="子として追加"
+                  title={t("codex.relation.addAsChild")}
                   onClick={() => void handleAddSuggestion(s.id)}
                   className="rounded p-0.5 text-muted-foreground hover:bg-accent hover:text-accent-foreground"
                 >
@@ -261,7 +268,7 @@ export function RelationSection({ entry }: RelationSectionProps) {
                 </button>
                 <button
                   type="button"
-                  title="却下"
+                  title={t("codex.relation.dismiss")}
                   onClick={() => void handleDismiss(s.id)}
                   className="rounded p-0.5 text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
                 >

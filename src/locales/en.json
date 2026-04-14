@@ -172,6 +172,8 @@
       "sceneNamingPrefixDesc": "e.g. {{prefix}} 1, {{prefix}} 2, ...",
       "sceneNamingPrefixDescNone": "e.g. Scene (no number)",
       "noteNamingPrefix": "Note Naming Prefix",
+      "sceneNamingPlaceholder": "Scene",
+      "noteNamingPlaceholder": "Note",
       "numberingScope": "Numbering Scope",
       "numberingScopeProject": "Project-wide (unique)",
       "numberingScopeFolder": "Per folder",
@@ -242,7 +244,8 @@
       "deleteTypeDesc": "Delete \"{{label}}\" ({{slug}}). This action cannot be undone.",
       "cannotDelete": "Cannot delete: entries exist for type \"{{label}}\"",
       "deleteSuccess": "\"{{label}}\" deleted",
-      "createError": "Failed to create type"
+      "createError": "Failed to create type",
+      "colorInUse": "{{label}} (in use by {{usedBy}})"
     },
     "about": {
       "searchPlaceholder": "Search {{count}} libraries…",
@@ -253,6 +256,11 @@
   },
 
   "layout": {
+    "watermark": {
+      "panelsClosed": "Panels are closed",
+      "scene": "Scenes",
+      "chat": "Chat"
+    },
     "panelToggle": "Toggle panels",
     "panels": "Panels",
     "regionLeft": "Left",
@@ -268,7 +276,20 @@
       "chat": "Chat",
       "snippets": "Snippets",
       "attribution": "Attribution",
-      "codex-quick": "Codex Quick"
+      "codex-quick": "Codex Quick",
+      "stats": "Stats"
+    },
+    "preset": {
+      "title": "Layout presets",
+      "layout": "Layout",
+      "builtinSection": "Presets",
+      "customSection": "Custom",
+      "saveName": "Preset name",
+      "default": "Default",
+      "chatMain": "Chat Main",
+      "codexMain": "Codex Main",
+      "saveLayout": "Save current layout",
+      "resetDefault": "Reset to default"
     }
   },
 
@@ -317,7 +338,93 @@
     "extractedToCodex": "Extracted to Codex",
     "copied": "Copied",
     "copyFailed": "Copy failed",
-    "noMessages": "No messages yet"
+    "noMessages": "No messages yet",
+    "actions": {
+      "unstar": "Remove star",
+      "star": "Starred (excluded from summary)",
+      "insertToEditor": "Insert to editor",
+      "extractCodexQuick": "Quick extract to Codex",
+      "saveSnippetQuick": "Quick save as Snippet",
+      "copyWithAttribution": "Copy (with attribution)",
+      "extractCodexDetailed": "Extract to Codex (detailed)",
+      "saveSnippetDetailed": "Save as Snippet (detailed)",
+      "regenerate": "Regenerate",
+      "edit": "Edit",
+      "delete": "Delete"
+    },
+    "contextMenu": {
+      "insertSelectionToEditor": "Insert selection to editor",
+      "extractToCodex": "Extract to Codex",
+      "saveAsSnippet": "Save as Snippet",
+      "copy": "Copy",
+      "insertToEditor": "Insert to editor",
+      "codexQuickExtract": "Codex quick extract",
+      "codexDetailedExtract": "Codex detailed extract",
+      "snippetQuickSave": "Snippet quick save",
+      "snippetDetailedSave": "Snippet detailed save",
+      "regenerate": "Regenerate",
+      "edit": "Edit",
+      "delete": "Delete"
+    },
+    "contextCreator": {
+      "disabledTitle": "This model does not support tool use",
+      "enabledTitle": "AI suggests entries to add to context",
+      "ariaLabel": "AI context suggestions"
+    },
+    "context": {
+      "showPrompt": "Show full prompt",
+      "projectInfo": "Project info",
+      "sceneTokens": "Scene: {{count}} tokens",
+      "unpinEntry": "Unpin {{name}}",
+      "pinEntry": "Pin {{name}}",
+      "pinCodexSnippet": "Pin Codex/Snippet",
+      "pin": "Pin",
+      "group": "{{label}} group",
+      "noResults": "No matching entries found.",
+      "inputPlaceholder": "Describe what to add to context...",
+      "alreadyPinned": "(already pinned)",
+      "foundEntries": "Found {{count}} entries:",
+      "addSelected": "Add selected ({{count}})",
+      "running": "Running: {{name}}",
+      "commandSuggestions": "Command suggestions",
+      "mentionSuggestions": "Mention suggestions",
+      "codexExtracted": "Codex extracted ({{count}})",
+      "snippetSaved": "Snippet saved ({{count}})",
+      "includeChildren": "Include child entries",
+      "pinEntries": "Pin entries",
+      "noCodexEntries": "No Codex entries",
+      "noSnippets": "No snippets",
+      "pinCodex": "Pin Codex",
+      "promptPreviewTitle": "System prompt preview",
+      "layerBreakdown": "Token breakdown by layer",
+      "layerColumn": "Layer",
+      "usedTokens": "Used tokens",
+      "usageRate": "Usage",
+      "totalRow": "Total",
+      "fullPrompt": "Full prompt",
+      "emptyPrompt": "(No prompt)"
+    },
+    "conversationSummary": "Conversation summary",
+    "sessionMenu": "Session menu",
+    "sessionRename": "Rename",
+    "sessionRenameFailed": "Rename failed",
+    "sessionDeleteConfirm": "Delete this session? All messages will also be deleted.",
+    "sessionsFor": "Sessions: {{title}}",
+    "storySoFar": {
+      "coverageTitle": "storySoFar Synopsis coverage",
+      "coverageDesc": "There are <strong>{{total}}</strong> scenes before the current scene, but only <strong>{{filled}}</strong> have a synopsis. AI storySoFar context will be limited.",
+      "generating": "Generating… {{progress}}/{{total}}",
+      "failedCount": "({{count}} failed)",
+      "partialSuccess": "Generated {{succeeded}}/{{total}} synopses ({{failed}} failed)",
+      "success": "Generated {{count}} synopses",
+      "generateAll": "Generate all ({{count}} missing)"
+    },
+    "selectionToolbar": {
+      "insertToEditor": "Insert to editor",
+      "extractToCodex": "Extract to Codex",
+      "saveAsSnippet": "Save as Snippet",
+      "copy": "Copy"
+    }
   },
 
   "codex": {
@@ -325,6 +432,7 @@
     "location": "Location",
     "item": "Item",
     "lore": "Lore",
+    "aliasPlaceholder": "Alias...",
     "sortCategory": "By category",
     "sortNameAsc": "Name (A→Z)",
     "sortNameDesc": "Name (Z→A)",
@@ -344,6 +452,93 @@
     "summaryLabel": "Summary",
     "tagsLabel": "Tags",
     "noResults": "No results",
+    "childrenBudget": {
+      "label": "Children entry context budget",
+      "noChildren": "No child entries",
+      "none": "None (0%)",
+      "compact": "Compact (15%)",
+      "standard": "Standard (30%)",
+      "generous": "Generous (50%)"
+    },
+    "detail": {
+      "back": "Back",
+      "openInEditor": "Open in editor",
+      "phaseSummaryPlaceholder": "Summary for this phase onward...",
+      "summaryHint": "Adding a summary reduces token usage in AI chat",
+      "aiSummaryFailed": "Failed to generate AI summary",
+      "generating": "Generating...",
+      "generateAiSummary": "Generate AI summary",
+      "aiContextEnabled": "Included in AI context (click to disable)",
+      "aiContextDisabled": "Not in AI context (click to enable)",
+      "entryIdPlaceholder": "Enter entry ID...",
+      "addField": "Add field",
+      "manageFields": "Manage fields",
+      "noFields": "No fields",
+      "fieldNamePlaceholder": "Field name",
+      "summaryLabel": "Summary",
+      "empty": "(empty)",
+      "showBaseContent": "Show base content",
+      "selectPlaceholder": "— Select —"
+    },
+    "relation": {
+      "title": "Relations",
+      "parent": "Parent entry",
+      "addChild": "Add child",
+      "children": "Child entries",
+      "searchPlaceholder": "Search by name...",
+      "removeParent": "Remove parent",
+      "none": "(none)",
+      "suggestions": "Suggestions",
+      "addAsChild": "Add as child",
+      "dismiss": "Dismiss"
+    },
+    "iconPicker": {
+      "changeIcon": "Change icon",
+      "change": "Change"
+    },
+    "references": {
+      "searching": "Searching...",
+      "checkOccurrences": "Check occurrences",
+      "noMentions": "Not mentioned in text"
+    },
+    "tagFilter": {
+      "clearFilter": "Clear filter"
+    },
+    "tagPill": {
+      "removeTag": "Remove {{name}}"
+    },
+    "tagSelector": {
+      "tagNamePlaceholder": "Tag name",
+      "createNew": "+ Create new"
+    },
+    "tab": {
+      "details": "Details",
+      "relations": "Relations",
+      "tracking": "Tracking",
+      "mentions": "Mentions",
+      "research": "Research",
+      "timeline": "Timeline"
+    },
+    "phaseIndicator": {
+      "preview": "Preview",
+      "exitPreview": "Exit preview"
+    },
+    "timeline": {
+      "noPhases": "No phases configured.",
+      "noPhasesDesc": "Add phases to manage how this entry changes as the story progresses.",
+      "currentScene": "Current scene",
+      "currentSceneArrow": "← Current scene",
+      "empty": "(empty)",
+      "contentOverride": "(overridden)"
+    },
+    "store": {
+      "loadFailed": "Failed to load Codex",
+      "searchFailed": "Search failed",
+      "createFailed": "Failed to create Codex entry",
+      "updateFailed": "Failed to update Codex entry",
+      "deleteFailed": "Failed to delete Codex entry",
+      "filterFailed": "Failed to apply filter"
+    },
     "extraction": {
       "title": "Extract to Codex",
       "type": "Type",
@@ -359,6 +554,7 @@
     "sortRecent": "Newest",
     "sortOldest": "Oldest",
     "sortTitleAsc": "By title",
+    "clipboard": "Clipboard",
     "sortMostUsed": "Most used",
     "newSnippet": "New Snippet",
     "searchPlaceholder": "Search snippets…",
@@ -367,7 +563,43 @@
     "selectPrompt": "Select a snippet",
     "deleteConfirmDesc": "Delete \"{{name}}\"? This cannot be undone.",
     "copied": "Copied",
-    "inserted": "Inserted"
+    "inserted": "Inserted",
+    "extraction": {
+      "title": "Save as Snippet",
+      "titleLabel": "Title",
+      "titlePlaceholder": "Snippet title",
+      "contentLabel": "Content",
+      "tagsLabel": "Tags (comma-separated)",
+      "tagsPlaceholder": "tag1,tag2"
+    },
+    "detailTitle": "Snippet Detail",
+    "detail": {
+      "insertAtCursor": "Insert at cursor",
+      "openInEditor": "Open in editor",
+      "goToScene": "Go to related scene",
+      "titleLabel": "Title",
+      "tagsLabel": "Tags",
+      "contentLabel": "Content",
+      "createdAt": "Created: {{date}}",
+      "usageCount": "Usage: {{count}}",
+      "sourceChat": "Source chat: {{id}}"
+    },
+    "store": {
+      "loadFailed": "Failed to load snippets",
+      "searchFailed": "Snippet search failed",
+      "saved": "Saved as Snippet",
+      "createFailed": "Failed to create snippet",
+      "updateFailed": "Failed to update snippet",
+      "deleteFailed": "Failed to delete snippet"
+    },
+    "contextMenu": {
+      "insertAtCursor": "Insert at cursor",
+      "copy": "Copy",
+      "edit": "Edit",
+      "duplicate": "Duplicate",
+      "goToScene": "Go to scene",
+      "delete": "Delete"
+    }
   },
 
   "tree": {
@@ -384,10 +616,96 @@
     "delete": "Delete",
     "defaultFolder": "Folder",
     "defaultScene": "Scene",
-    "defaultNote": "Note"
+    "defaultNote": "Note",
+    "synopsis": {
+      "emptySceneWarning": "Cannot generate synopsis: scene content is empty.",
+      "generated": "Synopsis generated",
+      "generateFailed": "Synopsis generation failed",
+      "generateTitle": "Generate synopsis with AI",
+      "generating": "Generating…",
+      "overwriteConfirm": "Overwrite existing synopsis?",
+      "overwrite": "Overwrite"
+    },
+    "quickSection": {
+      "unpin": "Unpin",
+      "pin": "Pin"
+    }
+  },
+
+  "chatCommands": {
+    "continue": { "description": "Generate continuation of the current scene" },
+    "describe": { "description": "Generate description of a subject", "argPlaceholder": "Subject" },
+    "dialogue": { "description": "Generate character dialogue", "argPlaceholder": "Character name" },
+    "summarize": { "description": "Generate summary of the current scene" },
+    "brainstorm": { "description": "Brainstorm plot ideas" },
+    "rewrite": { "description": "Rewrite selected text" },
+    "translate": { "description": "Translate selected text", "argPlaceholder": "Language" }
   },
 
   "editor": {
+    "placeholder": "Start writing here…",
+    "toolbar": {
+      "bold": "Bold (Ctrl+B)",
+      "italic": "Italic (Ctrl+I)",
+      "underline": "Underline (Ctrl+U)",
+      "strikethrough": "Strikethrough (Ctrl+Shift+X)",
+      "emphasisDots": "Emphasis dots (Ctrl+.)",
+      "heading1": "Heading 1 (Ctrl+1)",
+      "heading1Short": "Heading 1",
+      "heading2": "Heading 2 (Ctrl+2)",
+      "heading2Short": "Heading 2",
+      "heading3": "Heading 3 (Ctrl+3)",
+      "heading3Short": "Heading 3",
+      "bulletList": "Bullet list",
+      "orderedList": "Ordered list",
+      "blockquote": "Blockquote",
+      "horizontalRule": "Horizontal rule",
+      "ruby": "Ruby (Ctrl+Shift+R)",
+      "rubyShort": "Ruby",
+      "link": "Link (Ctrl+K)",
+      "linkShort": "Link",
+      "sceneBreak": "Scene break (* * *)",
+      "fontSize": "Font size",
+      "attribution": "Attribution",
+      "comments": "Comments (not implemented)",
+      "focusMode": "Focus mode",
+      "typewriterMode": "Typewriter mode",
+      "moreOptions": "More options",
+      "findReplace": "Find and replace",
+      "targetWordCount": "Target word count...",
+      "verticalPreview": "Vertical preview",
+      "showBreadcrumb": "Show breadcrumb",
+      "showLineNumbers": "Show line numbers",
+      "rubyBase": "Base",
+      "rubyAnnotation": "Reading"
+    },
+    "status": {
+      "outline": "Outline",
+      "draft": "Draft",
+      "complete": "Complete",
+      "revision": "Revision",
+      "final": "Final",
+      "changeStatus": "Change status",
+      "synopsisEmpty": "Synopsis is not filled in",
+      "synopsisPrompt": "Auto-generate?",
+      "emptySceneWarning": "Cannot generate: scene is empty",
+      "synopsisGenerated": "Synopsis generated",
+      "synopsisGenerateFailed": "Synopsis generation failed",
+      "openAttribution": "Open Attribution panel",
+      "revisionHistory": "Revision history (Ctrl+Shift+H)"
+    },
+    "tabBar": {
+      "syncedIndicator": "Also open in another group",
+      "split": "Split",
+      "splitRight": "Split right",
+      "splitBelow": "Split below",
+      "closeGroup": "Close group",
+      "tabList": "Tab list"
+    },
+    "contextMenu": {
+      "addToCodex": "Add to Codex",
+      "saveAsSnippet": "Save as Snippet"
+    },
     "find": {
       "placeholder": "Search…",
       "noMatch": "No match",
@@ -422,6 +740,7 @@
   },
 
   "inlineAi": {
+    "generateFailed": "Generation failed",
     "additionalPrompt": "Additional instructions (optional)",
     "commands": {
       "continue": {
@@ -499,7 +818,29 @@
     "filterOnlyTitle": "Show only {{label}}",
     "clearFilterTitle": "Clear filter",
     "charCount": "{{count}} chars ({{pct}}%)",
-    "total": "Total: {{count}} chars"
+    "total": "Total: {{count}} chars",
+    "changeAttribution": "Change attribution",
+    "exportTrace": "Export attribution",
+    "aiPctChars": "AI: {{pct}}% ({{count}} chars)",
+    "humanPct": "{{pct}}% human",
+    "charSuffix": "{{count}} chars"
+  },
+
+  "phase": {
+    "editTitle": "Edit Phase",
+    "addTitle": "Add Phase",
+    "labelField": "Label",
+    "labelPlaceholder": "e.g. After exile, joining rebellion...",
+    "anchorScene": "Anchor scene",
+    "anchorSceneDesc": "The scene where this phase begins",
+    "overrideFields": "Override fields",
+    "summary": "Summary",
+    "summaryPlaceholder": "Overview from this phase onward...",
+    "content": "Content",
+    "contentNote": "After saving, edit in the Details tab Content editor",
+    "contextMode": "Context mode",
+    "overrideRequired": "Select at least one field to override",
+    "saving": "Saving..."
   },
 
   "snapshot": {
@@ -610,7 +951,57 @@
     "selectAll": "Select all",
     "collapse": "Collapse",
     "expand": "Expand",
-    "noScenes": "No scenes"
+    "noScenes": "No scenes",
+    "dialog": {
+      "title": "Export",
+      "selectedScenes": "Selected: {{sceneCount}}/{{totalScenes}} scenes",
+      "approxChars": "~{{count}} chars",
+      "copied": "Copied",
+      "clipboardFailed": "Failed to copy to clipboard",
+      "exportComplete": "Export complete: {{path}}",
+      "exportFailed": "Export failed: {{error}}",
+      "copy": "Copy",
+      "saving": "Saving…",
+      "export": "Export"
+    },
+    "settings": {
+      "outputFormat": "Output format",
+      "plaintext": "Plain text (.txt)",
+      "markdown": "Markdown (.md)",
+      "html": "HTML (.html)",
+      "folderHeading": "Folder headings",
+      "folderHeadingEnable": "Use folder names as headings",
+      "headingSymbol": "Heading symbol",
+      "headingNoSymbol": "No symbols",
+      "sceneDivider": "Scene dividers",
+      "betweenScenes": "Between scenes",
+      "blank": "Blank line",
+      "blank2": "Double blank line",
+      "rule": "Rule",
+      "none": "None",
+      "custom": "Custom",
+      "dividerPlaceholder": "Enter divider text",
+      "sceneTitle": "Scene title",
+      "dontInclude": "Don't include",
+      "asHeading": "As heading",
+      "asBold": "As bold",
+      "asIs": "As-is",
+      "specialExpressions": "Special expressions",
+      "ruby": "Ruby",
+      "auto": "Auto",
+      "htmlRuby": "HTML ruby tag",
+      "parentheses": "Parenthetical",
+      "aozora": "Aozora format",
+      "baseOnly": "Base only",
+      "emphasisDots": "Emphasis dots",
+      "htmlTag": "HTML tag",
+      "plain": "As-is",
+      "sceneBreak": "Scene break",
+      "breakPlaceholder": "Enter break text",
+      "preview": "Preview",
+      "previewError": "(Preview generation error)",
+      "noScenesSelected": "(No scenes selected)"
+    }
   },
 
   "scenes": {

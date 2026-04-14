@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
 import type { ExportSettings } from "./types";
 import { generateExport } from "./exportEngine";
 import type { TreeNodeData } from "@/features/tree/treeStore";
@@ -99,6 +100,7 @@ function ExportPreview({
   checkedIds: Set<string>;
   settings: ExportSettings;
 }) {
+  const { t } = useTranslation();
   const [preview, setPreview] = useState("");
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -114,7 +116,7 @@ function ExportPreview({
         });
         setPreview(full.slice(0, 400));
       } catch {
-        setPreview("(プレビュー生成エラー)");
+        setPreview(t("export.settings.previewError"));
       }
     }, 200);
     return () => {
@@ -125,7 +127,7 @@ function ExportPreview({
   return (
     <div className="mt-1 max-h-[160px] overflow-y-auto rounded border border-border bg-muted/30 p-2">
       <pre className="whitespace-pre-wrap font-mono text-[10px] leading-relaxed text-foreground">
-        {preview || "(シーンが選択されていません)"}
+        {preview || t("export.settings.noScenesSelected")}
       </pre>
     </div>
   );
@@ -150,6 +152,8 @@ export function ExportSettingsPanel({
   contentMap,
   checkedIds,
 }: Props) {
+  const { t } = useTranslation();
+
   function update<K extends keyof ExportSettings>(
     key: K,
     value: ExportSettings[K],
@@ -160,13 +164,13 @@ export function ExportSettingsPanel({
   return (
     <div className="flex h-full flex-col overflow-y-auto px-3 py-2 text-xs">
       {/* 出力形式 */}
-      <SectionTitle>出力形式</SectionTitle>
+      <SectionTitle>{t("export.settings.outputFormat")}</SectionTitle>
       <div className="space-y-1">
         {(
           [
-            { value: "plaintext", label: "プレーンテキスト (.txt)" },
-            { value: "markdown", label: "Markdown (.md)" },
-            { value: "html", label: "HTML (.html)" },
+            { value: "plaintext", label: t("export.settings.plaintext") },
+            { value: "markdown", label: t("export.settings.markdown") },
+            { value: "html", label: t("export.settings.html") },
           ] as const
         ).map((opt) => (
           <label
@@ -187,22 +191,25 @@ export function ExportSettingsPanel({
       </div>
 
       {/* フォルダー見出し */}
-      <SectionTitle>フォルダー見出し</SectionTitle>
+      <SectionTitle>{t("export.settings.folderHeading")}</SectionTitle>
       <div className="space-y-1.5">
         <Checkbox
           checked={settings.folderHeading}
           onChange={(v) => update("folderHeading", v)}
-          label="フォルダー名を見出しにする"
+          label={t("export.settings.folderHeadingEnable")}
         />
         {settings.folderHeading && settings.format === "plaintext" && (
-          <Row label="見出し記号">
+          <Row label={t("export.settings.headingSymbol")}>
             <Select
               value={settings.folderHeadingStyle}
               onChange={(v) => update("folderHeadingStyle", v)}
               options={[
                 { value: "squares", label: "■□◇" },
                 { value: "brackets", label: "【】〈〉「」" },
-                { value: "numbers", label: "記号なし" },
+                {
+                  value: "numbers",
+                  label: t("export.settings.headingNoSymbol"),
+                },
               ]}
             />
           </Row>
@@ -210,20 +217,20 @@ export function ExportSettingsPanel({
       </div>
 
       {/* シーン区切り */}
-      <SectionTitle>シーン区切り</SectionTitle>
+      <SectionTitle>{t("export.settings.sceneDivider")}</SectionTitle>
       <div className="space-y-1.5">
-        <Row label="シーン間">
+        <Row label={t("export.settings.betweenScenes")}>
           <Select
             value={settings.sceneDivider}
             onChange={(v) => update("sceneDivider", v)}
             options={[
-              { value: "blank", label: "空行" },
-              { value: "blank2", label: "空行×2" },
+              { value: "blank", label: t("export.settings.blank") },
+              { value: "blank2", label: t("export.settings.blank2") },
               { value: "asterisks", label: "* * *" },
               { value: "hr", label: "---" },
-              { value: "rule", label: "罫線" },
-              { value: "none", label: "なし" },
-              { value: "custom", label: "カスタム" },
+              { value: "rule", label: t("export.settings.rule") },
+              { value: "none", label: t("export.settings.none") },
+              { value: "custom", label: t("export.settings.custom") },
             ]}
           />
         </Row>
@@ -232,28 +239,28 @@ export function ExportSettingsPanel({
             type="text"
             value={settings.sceneDividerCustom}
             onChange={(e) => update("sceneDividerCustom", e.target.value)}
-            placeholder="区切り文字を入力"
+            placeholder={t("export.settings.dividerPlaceholder")}
             className="w-full rounded border border-border bg-background px-2 py-1 text-xs"
           />
         )}
-        <Row label="シーンタイトル">
+        <Row label={t("export.settings.sceneTitle")}>
           <Select
             value={settings.sceneTitle}
             onChange={(v) => update("sceneTitle", v)}
             options={[
-              { value: "none", label: "含めない" },
-              { value: "heading", label: "見出しとして" },
-              { value: "bold", label: "太字として" },
-              { value: "plain", label: "そのまま" },
+              { value: "none", label: t("export.settings.dontInclude") },
+              { value: "heading", label: t("export.settings.asHeading") },
+              { value: "bold", label: t("export.settings.asBold") },
+              { value: "plain", label: t("export.settings.asIs") },
             ]}
           />
         </Row>
       </div>
 
       {/* 特殊表現 */}
-      <SectionTitle>特殊表現</SectionTitle>
+      <SectionTitle>{t("export.settings.specialExpressions")}</SectionTitle>
       <div className="space-y-1.5">
-        <Row label="ルビ">
+        <Row label={t("export.settings.ruby")}>
           <Select
             value={settings.rubyStyle ?? "auto"}
             onChange={(v) =>
@@ -263,15 +270,15 @@ export function ExportSettingsPanel({
               )
             }
             options={[
-              { value: "auto", label: "自動" },
-              { value: "html", label: "HTML rubyタグ" },
-              { value: "parentheses", label: "括弧表記" },
-              { value: "aozora", label: "青空文庫形式" },
-              { value: "base", label: "ベースのみ" },
+              { value: "auto", label: t("export.settings.auto") },
+              { value: "html", label: t("export.settings.htmlRuby") },
+              { value: "parentheses", label: t("export.settings.parentheses") },
+              { value: "aozora", label: t("export.settings.aozora") },
+              { value: "base", label: t("export.settings.baseOnly") },
             ]}
           />
         </Row>
-        <Row label="傍点">
+        <Row label={t("export.settings.emphasisDots")}>
           <Select
             value={settings.emphasisDotsStyle ?? "auto"}
             onChange={(v) =>
@@ -283,23 +290,23 @@ export function ExportSettingsPanel({
               )
             }
             options={[
-              { value: "auto", label: "自動" },
-              { value: "html", label: "HTMLタグ" },
-              { value: "aozora", label: "青空文庫形式" },
+              { value: "auto", label: t("export.settings.auto") },
+              { value: "html", label: t("export.settings.htmlTag") },
+              { value: "aozora", label: t("export.settings.aozora") },
               { value: "double-angle", label: "《《》》" },
-              { value: "plain", label: "そのまま" },
+              { value: "plain", label: t("export.settings.plain") },
             ]}
           />
         </Row>
-        <Row label="シーンブレイク">
+        <Row label={t("export.settings.sceneBreak")}>
           <Select
             value={settings.sceneBreakStyle}
             onChange={(v) => update("sceneBreakStyle", v)}
             options={[
               { value: "asterisks", label: "* * *" },
               { value: "hr", label: "---" },
-              { value: "blank", label: "空行" },
-              { value: "custom", label: "カスタム" },
+              { value: "blank", label: t("export.settings.blank") },
+              { value: "custom", label: t("export.settings.custom") },
             ]}
           />
         </Row>
@@ -308,14 +315,14 @@ export function ExportSettingsPanel({
             type="text"
             value={settings.sceneBreakCustom}
             onChange={(e) => update("sceneBreakCustom", e.target.value)}
-            placeholder="ブレイク文字を入力"
+            placeholder={t("export.settings.breakPlaceholder")}
             className="w-full rounded border border-border bg-background px-2 py-1 text-xs"
           />
         )}
       </div>
 
       {/* プレビュー */}
-      <SectionTitle>プレビュー</SectionTitle>
+      <SectionTitle>{t("export.settings.preview")}</SectionTitle>
       <ExportPreview
         nodes={nodes}
         contentMap={contentMap}

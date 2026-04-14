@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from "react";
+import { useTranslation } from "react-i18next";
 import {
   Save,
   Copy,
@@ -41,6 +42,7 @@ export function SnippetDetailContent({
   onSave,
   onDelete,
 }: SnippetDetailContentProps) {
+  const { t } = useTranslation();
   const setActiveScene = useTreeStore((s) => s.setActiveScene);
   const insertFromSnippet = useEditorStore((s) => s.insertFromSnippet);
   const incrementUsageCount = useSnippetStore((s) => s.incrementUsageCount);
@@ -107,21 +109,21 @@ export function SnippetDetailContent({
     const success = insertFromSnippet(snippet.id, content, source, null);
     if (success) {
       void incrementUsageCount(snippet.id);
-      toast.success("挿入しました");
+      toast.success(t("snippets.inserted"));
     }
   }
 
   return (
     <div data-testid="snippet-detail-content" className="flex h-full flex-col">
       <div className="flex items-center justify-between border-b border-border px-3 py-2">
-        <h3 className="text-sm font-semibold">Snippet詳細</h3>
+        <h3 className="text-sm font-semibold">{t("snippets.detailTitle")}</h3>
         <div className="flex items-center gap-1">
           <button
             type="button"
             data-testid="snippet-insert-at-cursor"
             onClick={handleInsertAtCursor}
             className="rounded p-1.5 text-muted-foreground hover:bg-accent hover:text-accent-foreground"
-            title="カーソル位置に挿入"
+            title={t("snippets.detail.insertAtCursor")}
           >
             <TextCursorInput className="h-3.5 w-3.5" />
           </button>
@@ -130,7 +132,7 @@ export function SnippetDetailContent({
             data-testid="snippet-save-button"
             onClick={handleSave}
             className="rounded p-1.5 text-muted-foreground hover:bg-accent hover:text-accent-foreground"
-            title="保存"
+            title={t("common.save")}
           >
             <Save className="h-3.5 w-3.5" />
           </button>
@@ -144,7 +146,7 @@ export function SnippetDetailContent({
               )
             }
             className="rounded p-1.5 text-muted-foreground hover:bg-accent hover:text-accent-foreground"
-            title="コピー"
+            title={t("snippets.contextMenu.copy")}
           >
             <Copy className="h-3.5 w-3.5" />
           </button>
@@ -153,7 +155,7 @@ export function SnippetDetailContent({
             data-testid="snippet-open-in-editor"
             onClick={() => useTabStore.getState().openSnippetTab(snippet.id)}
             className="rounded p-1.5 text-muted-foreground hover:bg-accent hover:text-accent-foreground"
-            title="エディタで開く"
+            title={t("snippets.detail.openInEditor")}
           >
             <ExternalLink className="h-3.5 w-3.5" />
           </button>
@@ -163,7 +165,7 @@ export function SnippetDetailContent({
               data-testid="snippet-navigate-to-scene"
               onClick={() => setActiveScene(snippet.sceneId!)}
               className="rounded p-1.5 text-muted-foreground hover:bg-accent hover:text-accent-foreground"
-              title="関連シーンへ移動"
+              title={t("snippets.detail.goToScene")}
             >
               <FileText className="h-3.5 w-3.5" />
             </button>
@@ -173,7 +175,7 @@ export function SnippetDetailContent({
             data-testid="snippet-detail-delete"
             onClick={() => onDelete(snippet.id)}
             className="rounded p-1.5 text-destructive hover:bg-destructive/10"
-            title="削除"
+            title={t("common.delete")}
           >
             <Trash2 className="h-3.5 w-3.5" />
           </button>
@@ -187,7 +189,9 @@ export function SnippetDetailContent({
         }
       >
         <div>
-          <label className="mb-1 block text-xs font-medium">タイトル</label>
+          <label className="mb-1 block text-xs font-medium">
+            {t("snippets.detail.titleLabel")}
+          </label>
           <input
             data-testid="snippet-detail-title"
             type="text"
@@ -201,7 +205,9 @@ export function SnippetDetailContent({
         </div>
 
         <div>
-          <label className="mb-1 block text-xs font-medium">タグ</label>
+          <label className="mb-1 block text-xs font-medium">
+            {t("snippets.detail.tagsLabel")}
+          </label>
           <TagSelector
             entryId={snippet.id}
             entryType="snippet"
@@ -212,7 +218,9 @@ export function SnippetDetailContent({
         </div>
 
         <div>
-          <label className="mb-1 block text-xs font-medium">内容</label>
+          <label className="mb-1 block text-xs font-medium">
+            {t("snippets.detail.contentLabel")}
+          </label>
           <div className="rounded-md border border-input bg-background p-2">
             <EditorContent editor={editor} />
           </div>
@@ -221,10 +229,16 @@ export function SnippetDetailContent({
         {/* Metadata */}
         <div className="space-y-1 text-xs text-muted-foreground">
           <div>
-            作成日: {new Date(snippet.createdAt).toLocaleString("ja-JP")}
+            {t("snippets.detail.createdAt", {
+              date: new Date(snippet.createdAt).toLocaleString(),
+            })}
           </div>
           <div className="flex items-center gap-2">
-            <span>使用回数: {snippet.usageCount ?? 0}</span>
+            <span>
+              {t("snippets.detail.usageCount", {
+                count: snippet.usageCount ?? 0,
+              })}
+            </span>
             {snippet.contentSource === "ai" ? (
               <span className="rounded-full bg-purple-500/20 px-1.5 py-0.5 text-[10px] text-purple-400">
                 AI
@@ -243,7 +257,11 @@ export function SnippetDetailContent({
             className="flex items-center gap-1.5 rounded-md bg-muted/50 px-3 py-2 text-xs text-muted-foreground"
           >
             <MessageSquare className="h-3.5 w-3.5" />
-            <span>抽出元チャット: {snippet.sourceChatMessageId}</span>
+            <span>
+              {t("snippets.detail.sourceChat", {
+                id: snippet.sourceChatMessageId,
+              })}
+            </span>
           </div>
         )}
       </div>

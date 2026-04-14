@@ -1,4 +1,5 @@
 import { useEffect, useRef } from "react";
+import { useTranslation } from "react-i18next";
 import { Copy, FilePlus, Pencil, TextCursorInput, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import { copyWithAttribution } from "@/lib/clipboardAttribution";
@@ -25,6 +26,7 @@ export function SnippetContextMenu({
   onEdit,
   onDelete,
 }: SnippetContextMenuProps) {
+  const { t } = useTranslation();
   const menuRef = useRef<HTMLDivElement>(null);
   const create = useSnippetStore((s) => s.create);
   const incrementUsageCount = useSnippetStore((s) => s.incrementUsageCount);
@@ -59,7 +61,7 @@ export function SnippetContextMenu({
     );
     if (success) {
       void incrementUsageCount(snippet.id);
-      toast.success("挿入しました");
+      toast.success(t("snippets.inserted"));
     }
     onClose();
   }
@@ -67,7 +69,7 @@ export function SnippetContextMenu({
   function handleCopy() {
     const source = (snippet.contentSource as AuthorshipSource) ?? "human";
     copyWithAttribution(snippet.content, source);
-    toast.success("コピーしました");
+    toast.success(t("snippets.copied"));
     onClose();
   }
 
@@ -116,7 +118,7 @@ export function SnippetContextMenu({
           className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm hover:bg-accent"
         >
           <TextCursorInput className="h-3.5 w-3.5 text-muted-foreground" />
-          カーソル位置に挿入
+          {t("snippets.contextMenu.insertAtCursor")}
         </button>
 
         <button
@@ -126,7 +128,7 @@ export function SnippetContextMenu({
           className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm hover:bg-accent"
         >
           <Copy className="h-3.5 w-3.5 text-muted-foreground" />
-          コピー
+          {t("snippets.contextMenu.copy")}
         </button>
 
         <button
@@ -136,7 +138,7 @@ export function SnippetContextMenu({
           className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm hover:bg-accent"
         >
           <Pencil className="h-3.5 w-3.5 text-muted-foreground" />
-          編集
+          {t("snippets.contextMenu.edit")}
         </button>
 
         <div className="my-1 border-t border-border" />
@@ -148,7 +150,7 @@ export function SnippetContextMenu({
           className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm hover:bg-accent"
         >
           <FilePlus className="h-3.5 w-3.5 text-muted-foreground" />
-          複製
+          {t("snippets.contextMenu.duplicate")}
         </button>
 
         {snippet.sceneId && (
@@ -161,7 +163,7 @@ export function SnippetContextMenu({
             <span className="h-3.5 w-3.5 shrink-0 text-muted-foreground">
               📄
             </span>
-            シーンへ移動
+            {t("snippets.contextMenu.goToScene")}
           </button>
         )}
 
@@ -174,7 +176,7 @@ export function SnippetContextMenu({
           className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm text-destructive hover:bg-destructive/10"
         >
           <Trash2 className="h-3.5 w-3.5" />
-          削除
+          {t("snippets.contextMenu.delete")}
         </button>
       </div>
     </div>

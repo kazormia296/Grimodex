@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { useTranslation } from "react-i18next";
 import { X } from "lucide-react";
 import type { CodexEntryPhase } from "../phaseApi";
 import { usePhaseStore } from "../phaseStore";
@@ -18,6 +19,7 @@ export function PhaseDialog({
   onClose,
   currentContent,
 }: PhaseDialogProps) {
+  const { t } = useTranslation();
   const createPhase = usePhaseStore((s) => s.createPhase);
   const updatePhase = usePhaseStore((s) => s.updatePhase);
 
@@ -80,7 +82,7 @@ export function PhaseDialog({
         {/* Header */}
         <div className="flex items-center justify-between border-b border-border px-4 py-3">
           <h3 className="text-sm font-semibold">
-            {isEditing ? "Edit Phase" : "Add Phase"}
+            {isEditing ? t("phase.editTitle") : t("phase.addTitle")}
           </h3>
           <button
             type="button"
@@ -95,14 +97,15 @@ export function PhaseDialog({
           {/* Label */}
           <div>
             <label className="mb-1 block text-xs font-medium">
-              Label <span className="text-destructive">*</span>
+              {t("phase.labelField")}{" "}
+              <span className="text-destructive">*</span>
             </label>
             <input
               type="text"
               value={label}
               onChange={(e) => setLabel(e.target.value)}
               className="w-full rounded-md border border-input bg-background px-2 py-1.5 text-sm"
-              placeholder="例: 追放後、反乱参加..."
+              placeholder={t("phase.labelPlaceholder")}
               autoFocus
             />
           </div>
@@ -110,18 +113,19 @@ export function PhaseDialog({
           {/* Anchor scene */}
           <div>
             <label className="mb-1 block text-xs font-medium">
-              Anchor scene <span className="text-destructive">*</span>
+              {t("phase.anchorScene")}{" "}
+              <span className="text-destructive">*</span>
             </label>
             <SceneSelector value={anchorNodeId} onChange={setAnchorNodeId} />
             <p className="mt-1 text-[11px] text-muted-foreground">
-              このフェーズが開始するシーン
+              {t("phase.anchorSceneDesc")}
             </p>
           </div>
 
           {/* Override fields */}
           <div>
             <p className="mb-2 text-xs font-medium text-muted-foreground">
-              ─── Override fields ───
+              ─── {t("phase.overrideFields")} ───
             </p>
             <div className="space-y-3">
               {/* Summary */}
@@ -133,7 +137,9 @@ export function PhaseDialog({
                     onChange={(e) => setSummaryEnabled(e.target.checked)}
                     className="h-3.5 w-3.5 rounded accent-primary"
                   />
-                  <span className="text-xs font-medium">Summary</span>
+                  <span className="text-xs font-medium">
+                    {t("phase.summary")}
+                  </span>
                 </label>
                 {summaryEnabled && (
                   <textarea
@@ -141,7 +147,7 @@ export function PhaseDialog({
                     onChange={(e) => setSummaryValue(e.target.value)}
                     rows={2}
                     className="mt-1.5 w-full resize-none rounded-md border border-input bg-background px-2 py-1.5 text-sm"
-                    placeholder="このフェーズ以降の概要..."
+                    placeholder={t("phase.summaryPlaceholder")}
                   />
                 )}
               </div>
@@ -155,11 +161,13 @@ export function PhaseDialog({
                     onChange={(e) => setContentEnabled(e.target.checked)}
                     className="h-3.5 w-3.5 rounded accent-primary"
                   />
-                  <span className="text-xs font-medium">Content</span>
+                  <span className="text-xs font-medium">
+                    {t("phase.content")}
+                  </span>
                 </label>
                 {contentEnabled && (
                   <p className="mt-1.5 rounded-md bg-muted/50 px-2 py-1.5 text-xs text-muted-foreground">
-                    保存後にDetailsタブのContent editorで編集できます
+                    {t("phase.contentNote")}
                   </p>
                 )}
               </div>
@@ -173,7 +181,9 @@ export function PhaseDialog({
                     onChange={(e) => setContextModeEnabled(e.target.checked)}
                     className="h-3.5 w-3.5 rounded accent-primary"
                   />
-                  <span className="text-xs font-medium">Context mode</span>
+                  <span className="text-xs font-medium">
+                    {t("phase.contextMode")}
+                  </span>
                 </label>
                 {contextModeEnabled && (
                   <select
@@ -192,7 +202,7 @@ export function PhaseDialog({
 
             {!hasOverride && (
               <p className="mt-2 text-[11px] text-destructive">
-                少なくとも1つのフィールドを上書き対象に選択してください
+                {t("phase.overrideRequired")}
               </p>
             )}
           </div>
@@ -205,7 +215,7 @@ export function PhaseDialog({
             onClick={onClose}
             className="rounded-md px-3 py-1.5 text-sm text-muted-foreground hover:bg-accent"
           >
-            Cancel
+            {t("common.cancel")}
           </button>
           <button
             type="button"
@@ -213,7 +223,7 @@ export function PhaseDialog({
             disabled={!canSubmit || isSubmitting}
             className="rounded-md bg-primary px-3 py-1.5 text-sm text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
           >
-            {isSubmitting ? "保存中..." : "Save"}
+            {isSubmitting ? t("phase.saving") : t("common.save")}
           </button>
         </div>
       </div>

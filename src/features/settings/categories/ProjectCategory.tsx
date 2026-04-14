@@ -164,7 +164,7 @@ export function ProjectCategory() {
             type="text"
             value={sceneNaming.value}
             onChange={(e) => sceneNaming.setValue(e.target.value)}
-            placeholder="シーン"
+            placeholder={t("settings.project.sceneNamingPlaceholder")}
             className="w-32 rounded-md border border-input bg-background px-2 py-1 text-sm focus:outline-none"
           />
         </SettingRow>
@@ -173,7 +173,7 @@ export function ProjectCategory() {
             type="text"
             value={noteNaming.value}
             onChange={(e) => noteNaming.setValue(e.target.value)}
-            placeholder="ノート"
+            placeholder={t("settings.project.noteNamingPlaceholder")}
             className="w-32 rounded-md border border-input bg-background px-2 py-1 text-sm focus:outline-none"
           />
         </SettingRow>

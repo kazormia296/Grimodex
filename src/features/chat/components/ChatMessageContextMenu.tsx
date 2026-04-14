@@ -1,5 +1,6 @@
 import { useEffect, useRef } from "react";
 import { createPortal } from "react-dom";
+import { useTranslation } from "react-i18next";
 import {
   FileInput,
   BookOpen,
@@ -53,6 +54,7 @@ export function ChatMessageContextMenu({
   onDelete,
   onRegenerate,
 }: ChatMessageContextMenuProps) {
+  const { t } = useTranslation();
   const menuRef = useRef<HTMLDivElement>(null);
 
   // Close on pointer down outside or Escape key
@@ -159,107 +161,104 @@ export function ChatMessageContextMenu({
       onMouseDown={(e) => e.stopPropagation()}
     >
       {selectedText != null ? (
-        // テキスト選択モード: 4項目
         <>
           {menuItem(
             "ctx-insert-selection",
             <FileInput className="h-3 w-3" />,
-            "選択テキストをエディタに挿入",
+            t("chat.contextMenu.insertSelectionToEditor"),
             () => handleInsert(selectedText),
           )}
           {menuItem(
             "ctx-extract-codex-selection",
             <BookOpen className="h-3 w-3" />,
-            "Codexに抽出",
+            t("chat.contextMenu.extractToCodex"),
             handleExtractCodexDetailed,
           )}
           {menuItem(
             "ctx-save-snippet-selection",
             <Bookmark className="h-3 w-3" />,
-            "Snippetとして保存",
+            t("chat.contextMenu.saveAsSnippet"),
             handleSaveSnippetDetailed,
           )}
           {menuItem(
             "ctx-copy",
             <Copy className="h-3 w-3" />,
-            "コピー",
+            t("chat.contextMenu.copy"),
             handleCopy,
           )}
         </>
       ) : messageRole === "assistant" ? (
-        // アシスタントメッセージ（選択なし）: 8項目
         <>
           {menuItem(
             "ctx-insert",
             <FileInput className="h-3 w-3" />,
-            "エディタに挿入",
+            t("chat.contextMenu.insertToEditor"),
             () => handleInsert(messageContent),
           )}
           {menuItem(
             "ctx-extract-codex-quick",
             <BookOpen className="h-3 w-3" />,
-            "Codex即時抽出",
+            t("chat.contextMenu.codexQuickExtract"),
             handleExtractCodexQuick,
           )}
           {menuItem(
             "ctx-extract-codex-detailed",
             <BookOpen className="h-3 w-3" />,
-            "Codex詳細抽出",
+            t("chat.contextMenu.codexDetailedExtract"),
             handleExtractCodexDetailed,
           )}
           {menuItem(
             "ctx-save-snippet-quick",
             <Bookmark className="h-3 w-3" />,
-            "Snippet即時保存",
+            t("chat.contextMenu.snippetQuickSave"),
             handleSaveSnippetQuick,
           )}
           {menuItem(
             "ctx-save-snippet-detailed",
             <Bookmark className="h-3 w-3" />,
-            "Snippet詳細保存",
+            t("chat.contextMenu.snippetDetailedSave"),
             handleSaveSnippetDetailed,
           )}
           {menuItem(
             "ctx-copy",
             <Copy className="h-3 w-3" />,
-            "コピー",
+            t("chat.contextMenu.copy"),
             handleCopy,
           )}
           {menuItem(
             "ctx-regenerate",
             <RefreshCw className="h-3 w-3" />,
-            "再生成",
+            t("chat.contextMenu.regenerate"),
             handleRegenerate,
           )}
           {separator("sep-delete")}
           {menuItem(
             "ctx-delete",
             <Trash2 className="h-3 w-3" />,
-            "削除",
+            t("chat.contextMenu.delete"),
             handleDelete,
             true,
           )}
         </>
       ) : (
-        // ユーザーメッセージ（選択なし）: 3項目
         <>
           {menuItem(
             "ctx-edit",
             <Pencil className="h-3 w-3" />,
-            "編集",
+            t("chat.contextMenu.edit"),
             handleEdit,
           )}
           {menuItem(
             "ctx-copy",
             <Copy className="h-3 w-3" />,
-            "コピー",
+            t("chat.contextMenu.copy"),
             handleCopy,
           )}
           {separator("sep-delete")}
           {menuItem(
             "ctx-delete",
             <Trash2 className="h-3 w-3" />,
-            "削除",
+            t("chat.contextMenu.delete"),
             handleDelete,
             true,
           )}

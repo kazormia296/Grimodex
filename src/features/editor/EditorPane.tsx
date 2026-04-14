@@ -58,16 +58,19 @@ import { getDocText } from "@/features/editor/RubyNode";
 import { generateSynopsisFromContent } from "@/features/chat/chatApi";
 import { toast } from "sonner";
 import { debugLog, errorDetail } from "@/lib/debugLog";
+import i18next from "i18next";
 import type { SceneStatus } from "@/features/tree/treeStore";
 import type { GroupIndex, TabContentType } from "@/features/editor/tabStore";
 
-const STATUS_LABELS: Record<SceneStatus, string> = {
-  outline: "アウトライン",
-  draft: "下書き",
-  complete: "完成",
-  revision: "改訂中",
-  final: "最終",
-};
+function getStatusLabels(): Record<SceneStatus, string> {
+  return {
+    outline: i18next.t("editor.status.outline"),
+    draft: i18next.t("editor.status.draft"),
+    complete: i18next.t("editor.status.complete"),
+    revision: i18next.t("editor.status.revision"),
+    final: i18next.t("editor.status.final"),
+  };
+}
 
 const STATUS_COLORS: Record<SceneStatus, string> = {
   outline: "text-muted-foreground",
@@ -182,8 +185,8 @@ export function EditorPane({
       .nodes.find((n) => n.id === nodeId)?.synopsis;
     if (shouldPromptSynopsis(prev, activeStatus, synopsis)) {
       const id = nodeId;
-      toast("Synopsis が未記入です", {
-        description: "自動生成しますか？",
+      toast(i18next.t("editor.status.synopsisEmpty"), {
+        description: i18next.t("editor.status.synopsisPrompt"),
         duration: 10000,
         action: {
           label: "Generate",
@@ -193,7 +196,7 @@ export function EditorPane({
             try {
               const content = await loadSceneContent(id);
               if (!content?.trim()) {
-                toast.warning("シーン本文が空のため生成できません");
+                toast.warning(i18next.t("editor.status.emptySceneWarning"));
                 return;
               }
               const generated = await generateSynopsisFromContent(
@@ -203,9 +206,9 @@ export function EditorPane({
               await useTreeStore
                 .getState()
                 .updateSynopsis(id, generated.trim());
-              toast.success("Synopsis を生成しました");
+              toast.success(i18next.t("editor.status.synopsisGenerated"));
             } catch {
-              toast.error("Synopsis 生成に失敗しました");
+              toast.error(i18next.t("editor.status.synopsisGenerateFailed"));
             }
           },
         },
@@ -1014,11 +1017,11 @@ export function EditorPane({
               <button
                 ref={statusBadgeRef}
                 type="button"
-                title="ステータスを変更"
+                title={i18next.t("editor.status.changeStatus")}
                 onClick={() => setStatusPopoverOpen((v) => !v)}
                 className={`rounded px-1.5 py-0.5 font-medium hover:bg-accent ${STATUS_COLORS[activeStatus]}`}
               >
-                {STATUS_LABELS[activeStatus]}
+                {getStatusLabels()[activeStatus]}
               </button>
               {statusPopoverOpen && (
                 <div
@@ -1026,7 +1029,7 @@ export function EditorPane({
                   className="absolute bottom-full left-0 z-50 mb-1 min-w-[120px] rounded border border-border bg-background py-1 shadow-md"
                 >
                   {(
-                    Object.entries(STATUS_LABELS) as [SceneStatus, string][]
+                    Object.entries(getStatusLabels()) as [SceneStatus, string][]
                   ).map(([s, label]) => (
                     <button
                       key={s}
@@ -1053,7 +1056,7 @@ export function EditorPane({
           {showAttribution && aiRatio > 0 && (
             <button
               type="button"
-              title="Attributionパネルを開く"
+              title={i18next.t("editor.status.openAttribution")}
               onClick={() => togglePanel("attribution")}
               className="tabular-nums text-purple-400 hover:text-foreground"
             >
@@ -1072,7 +1075,7 @@ export function EditorPane({
           )}
           <button
             type="button"
-            title="リビジョン履歴 (Ctrl+Shift+H)"
+            title={i18next.t("editor.status.revisionHistory")}
             onClick={() => {
               const id = saveSceneIdRef.current;
               const ed = editorRef.current;

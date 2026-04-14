@@ -1,4 +1,5 @@
 import { useCallback } from "react";
+import { useTranslation } from "react-i18next";
 import { useEditorStore } from "@/features/editor/editorStore";
 import { useSceneStore } from "@/features/tree/store";
 import { buildAgentTraceRecord, serializeRecord } from "./agentTrace";
@@ -14,6 +15,7 @@ function downloadJson(json: string, fileName: string): void {
 }
 
 export function ExportAgentTraceButton() {
+  const { t } = useTranslation();
   const editor = useEditorStore((s) => s.editor);
   const activeSceneId = useSceneStore((s) => s.activeSceneId);
   const scenes = useSceneStore((s) => s.scenes);
@@ -42,7 +44,7 @@ export function ExportAgentTraceButton() {
       disabled={!editor || !activeSceneId}
       className="text-xs text-muted-foreground hover:text-foreground disabled:opacity-50"
     >
-      帰属エクスポート
+      {t("attribution.exportTrace")}
     </button>
   );
 }

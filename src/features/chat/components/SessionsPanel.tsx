@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from "react";
+import { useTranslation } from "react-i18next";
 import { X, MoreVertical, Plus } from "lucide-react";
 import { toast } from "sonner";
 import { debugLog, errorDetail } from "@/lib/debugLog";
@@ -50,6 +51,8 @@ function SessionItem({
     document.addEventListener("mousedown", handleClickOutside);
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, [menuOpen]);
+
+  const { t } = useTranslation();
 
   const handleRenameSubmit = () => {
     const trimmed = editValue.trim();
@@ -103,7 +106,7 @@ function SessionItem({
       <div className="relative" ref={menuRef}>
         <button
           type="button"
-          aria-label="セッションメニュー"
+          aria-label={t("chat.sessionMenu")}
           onClick={(e) => {
             e.stopPropagation();
             setMenuOpen((v) => !v);
@@ -123,7 +126,7 @@ function SessionItem({
               }}
               className="w-full px-3 py-1.5 text-left text-xs hover:bg-accent"
             >
-              名前を変更
+              {t("chat.sessionRename")}
             </button>
             <button
               type="button"
@@ -134,7 +137,7 @@ function SessionItem({
               }}
               className="w-full px-3 py-1.5 text-left text-xs text-destructive hover:bg-accent"
             >
-              削除
+              {t("common.delete")}
             </button>
           </div>
         )}
@@ -155,6 +158,7 @@ export function SessionsPanel({
   const createNewSession = useChatStore((s) => s.createNewSession);
   const deleteSession = useChatStore((s) => s.deleteSession);
   const isGlobalChat = useChatStore((s) => s.isGlobalChat);
+  const { t } = useTranslation();
 
   // グローバルモード時は null (nodeId IS NULL)、それ以外はシーンID
   const effectiveNodeId = isGlobalChat ? null : activeSceneId || undefined;
@@ -180,27 +184,25 @@ export function SessionsPanel({
         await loadSessions(effectiveNodeId);
       } catch (e) {
         debugLog.error("SessionsPanel", "rename failed", errorDetail(e));
-        toast.error("名前の変更に失敗しました");
+        toast.error(t("chat.sessionRenameFailed"));
       }
     },
-    [effectiveNodeId, loadSessions],
+    [effectiveNodeId, loadSessions, t],
   );
 
   const handleDelete = useCallback(
     async (sessionId: string) => {
-      const confirmed = window.confirm(
-        "このセッションを削除しますか？メッセージもすべて削除されます。",
-      );
+      const confirmed = window.confirm(t("chat.sessionDeleteConfirm"));
       if (!confirmed) return;
       try {
         await deleteSession(sessionId);
         await loadSessions(effectiveNodeId);
       } catch (e) {
         debugLog.error("SessionsPanel", "delete failed", errorDetail(e));
-        toast.error("セッションの削除に失敗しました");
+        toast.error(t("chat.deleteSessionFailed"));
       }
     },
-    [effectiveNodeId, deleteSession, loadSessions],
+    [effectiveNodeId, deleteSession, loadSessions, t],
   );
 
   const handleCreate = useCallback(async () => {
@@ -215,7 +217,7 @@ export function SessionsPanel({
       onClose();
     } catch (e) {
       debugLog.error("SessionsPanel", "create failed", errorDetail(e));
-      toast.error("セッションの作成に失敗しました");
+      toast.error(t("chat.createSessionFailed"));
     }
   }, [
     activeSceneId,
@@ -224,6 +226,7 @@ export function SessionsPanel({
     createNewSession,
     loadSessions,
     onClose,
+    t,
   ]);
 
   // Close on click outside
@@ -249,7 +252,7 @@ export function SessionsPanel({
           </div>
           <button
             type="button"
-            aria-label="閉じる"
+            aria-label={t("common.close")}
             onClick={onClose}
             className="ml-2 rounded p-0.5 hover:bg-muted text-muted-foreground"
           >
@@ -261,7 +264,7 @@ export function SessionsPanel({
         <div className="flex-1 overflow-y-auto p-2 space-y-0.5">
           {sessions.length === 0 ? (
             <p className="text-center text-xs text-muted-foreground mt-4">
-              セッションがありません
+              {t("chat.noSessions")}
             </p>
           ) : (
             sessions.map((session) => (

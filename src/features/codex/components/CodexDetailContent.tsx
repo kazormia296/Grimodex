@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from "react";
+import i18next from "i18next";
 import { Trash2, ArrowLeft } from "lucide-react";
 import { TagSelector } from "./TagSelector";
 import { db } from "@/db/client";
@@ -20,21 +21,49 @@ import { MentionsTab } from "./MentionsTab";
 import { ResearchTab } from "./ResearchTab";
 import { TimelineTab } from "./TimelineTab";
 
-const TYPE_OPTIONS: { value: CodexEntryType; label: string }[] = [
-  { value: "character", label: "キャラクター" },
-  { value: "location", label: "場所" },
-  { value: "item", label: "アイテム" },
-  { value: "lore", label: "設定・世界観" },
-];
+function getTypeOptions(): { value: CodexEntryType; label: string }[] {
+  return [
+    { value: "character", label: i18next.t("codex.character") },
+    { value: "location", label: i18next.t("codex.location") },
+    { value: "item", label: i18next.t("codex.item") },
+    { value: "lore", label: i18next.t("codex.lore") },
+  ];
+}
 
-const TABS = [
-  { id: "details", label: "Details", testId: "detail-tab-details" },
-  { id: "relations", label: "Relations", testId: "detail-tab-relations" },
-  { id: "tracking", label: "Tracking", testId: "detail-tab-tracking" },
-  { id: "mentions", label: "Mentions", testId: "detail-tab-mentions" },
-  { id: "research", label: "Research", testId: "detail-tab-research" },
-  { id: "timeline", label: "Timeline", testId: "detail-tab-timeline" },
-];
+function getTabs() {
+  return [
+    {
+      id: "details",
+      label: i18next.t("codex.tab.details"),
+      testId: "detail-tab-details",
+    },
+    {
+      id: "relations",
+      label: i18next.t("codex.tab.relations"),
+      testId: "detail-tab-relations",
+    },
+    {
+      id: "tracking",
+      label: i18next.t("codex.tab.tracking"),
+      testId: "detail-tab-tracking",
+    },
+    {
+      id: "mentions",
+      label: i18next.t("codex.tab.mentions"),
+      testId: "detail-tab-mentions",
+    },
+    {
+      id: "research",
+      label: i18next.t("codex.tab.research"),
+      testId: "detail-tab-research",
+    },
+    {
+      id: "timeline",
+      label: i18next.t("codex.tab.timeline"),
+      testId: "detail-tab-timeline",
+    },
+  ];
+}
 
 interface CodexDetailContentProps {
   entry: CodexEntry;
@@ -230,19 +259,21 @@ export function CodexDetailContent({
               data-testid="codex-back-button"
               onClick={onBack}
               className="rounded p-1.5 text-muted-foreground hover:bg-accent"
-              title="戻る"
+              title={i18next.t("codex.detail.back")}
             >
               <ArrowLeft className="h-3.5 w-3.5" />
             </button>
           )}
-          <h3 className="text-sm font-semibold">エントリ詳細</h3>
+          <h3 className="text-sm font-semibold">
+            {i18next.t("codex.editEntry")}
+          </h3>
         </div>
         <button
           type="button"
           data-testid="codex-detail-delete"
           onClick={() => onDelete(entry.id)}
           className="rounded p-1.5 text-destructive hover:bg-destructive/10"
-          title="削除"
+          title={i18next.t("common.delete")}
         >
           <Trash2 className="h-3.5 w-3.5" />
         </button>
@@ -261,7 +292,9 @@ export function CodexDetailContent({
           />
           <div className="flex-1 space-y-2">
             <div>
-              <label className="mb-1 block text-xs font-medium">名前</label>
+              <label className="mb-1 block text-xs font-medium">
+                {i18next.t("codex.nameLabel")}
+              </label>
               <input
                 data-testid="codex-detail-name"
                 type="text"
@@ -272,7 +305,9 @@ export function CodexDetailContent({
               />
             </div>
             <div>
-              <label className="mb-1 block text-xs font-medium">タイプ</label>
+              <label className="mb-1 block text-xs font-medium">
+                {i18next.t("codex.typeLabel")}
+              </label>
               <select
                 data-testid="codex-detail-type"
                 value={type}
@@ -281,7 +316,7 @@ export function CodexDetailContent({
                 }
                 className="w-full rounded-md border border-input bg-background px-2 py-1.5 text-sm"
               >
-                {TYPE_OPTIONS.map((opt) => (
+                {getTypeOptions().map((opt) => (
                   <option key={opt.value} value={opt.value}>
                     {opt.label}
                   </option>
@@ -317,7 +352,7 @@ export function CodexDetailContent({
 
       {/* Tab bar */}
       <DetailTabs
-        tabs={TABS}
+        tabs={getTabs()}
         activeTab={activeTab}
         onTabChange={setActiveTab}
       />

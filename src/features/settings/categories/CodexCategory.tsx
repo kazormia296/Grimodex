@@ -34,6 +34,7 @@ function PaletteSwatchPicker({
   usedIndices,
   onChange,
 }: PaletteSwatchPickerProps) {
+  const { t } = useTranslation();
   const colorTheme = useWorkspaceStore((s) => s.globalSettings?.colorTheme);
   const themeMode = useWorkspaceStore(
     (s) => s.globalSettings?.theme ?? "system",
@@ -63,7 +64,11 @@ function PaletteSwatchPicker({
           <button
             key={i}
             type="button"
-            title={usedBy ? `${slot.label}（${usedBy}が使用中）` : slot.label}
+            title={
+              usedBy
+                ? t("settings.codex.colorInUse", { label: slot.label, usedBy })
+                : slot.label
+            }
             onClick={() => onChange(i)}
             className="relative h-6 w-6 rounded-full border-2 transition-transform hover:scale-110"
             style={{

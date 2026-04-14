@@ -1,4 +1,5 @@
 import { useEffect } from "react";
+import { useTranslation } from "react-i18next";
 import type { ChatCommand } from "../extensions/chatCommands";
 
 interface ChatCommandPopupProps {
@@ -16,6 +17,7 @@ export function ChatCommandPopup({
   onChangeIndex,
   clientRect,
 }: ChatCommandPopupProps) {
+  const { t } = useTranslation();
   useEffect(() => {
     function onKeyDown(e: KeyboardEvent) {
       if (e.key === "ArrowDown") {
@@ -52,7 +54,7 @@ export function ChatCommandPopup({
   return (
     <ul
       role="listbox"
-      aria-label="コマンド候補"
+      aria-label={t("chat.context.commandSuggestions")}
       style={style}
       className="max-h-48 min-w-[220px] overflow-y-auto rounded-md border border-border bg-popover py-1 shadow-md"
     >

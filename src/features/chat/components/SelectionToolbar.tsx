@@ -1,4 +1,5 @@
 import { createPortal } from "react-dom";
+import { useTranslation } from "react-i18next";
 import { FileInput, BookOpen, Bookmark, Copy } from "lucide-react";
 import type { SelectionInfo } from "@/features/chat/hooks/useTextSelection";
 
@@ -24,6 +25,7 @@ export function SelectionToolbar({
   onSaveSnippet,
   onCopy,
 }: SelectionToolbarProps) {
+  const { t } = useTranslation();
   const { text, rect } = selectionInfo;
 
   const vpWidth = window.innerWidth;
@@ -57,7 +59,7 @@ export function SelectionToolbar({
     >
       <button
         type="button"
-        title="エディタに挿入"
+        title={t("chat.selectionToolbar.insertToEditor")}
         onClick={() => onInsertSelection(text, messageId)}
         className="flex items-center gap-1 rounded border border-border px-2 py-1 text-xs text-popover-foreground hover:bg-accent hover:text-accent-foreground"
       >
@@ -66,7 +68,7 @@ export function SelectionToolbar({
       </button>
       <button
         type="button"
-        title="Codexに抽出"
+        title={t("chat.selectionToolbar.extractToCodex")}
         onClick={() => onExtractCodex(messageId, text)}
         className="flex items-center gap-1 rounded border border-border px-2 py-1 text-xs text-popover-foreground hover:bg-accent hover:text-accent-foreground"
       >
@@ -75,7 +77,7 @@ export function SelectionToolbar({
       </button>
       <button
         type="button"
-        title="Snippetとして保存"
+        title={t("chat.selectionToolbar.saveAsSnippet")}
         onClick={() => onSaveSnippet(messageId, text)}
         className="flex items-center gap-1 rounded border border-border px-2 py-1 text-xs text-popover-foreground hover:bg-accent hover:text-accent-foreground"
       >
@@ -84,7 +86,7 @@ export function SelectionToolbar({
       </button>
       <button
         type="button"
-        title="コピー"
+        title={t("chat.selectionToolbar.copy")}
         onClick={() => onCopy(text)}
         className="flex items-center gap-1 rounded border border-border px-2 py-1 text-xs text-popover-foreground hover:bg-accent hover:text-accent-foreground"
       >

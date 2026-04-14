@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { useTranslation } from "react-i18next";
 import { BookOpen } from "lucide-react";
 import { buildCrossReferenceReport } from "../crossReference";
 import { useTreeStore } from "@/features/tree/treeStore";
@@ -10,6 +11,7 @@ interface ReferencesSectionProps {
 }
 
 export function ReferencesSection({ entry }: ReferencesSectionProps) {
+  const { t } = useTranslation();
   const [scenes, setScenes] = useState<SceneMention[] | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const setActiveScene = useTreeStore((s) => s.setActiveScene);
@@ -43,14 +45,16 @@ export function ReferencesSection({ entry }: ReferencesSectionProps) {
           className="flex items-center gap-1 rounded px-2 py-1 text-xs text-muted-foreground hover:bg-accent disabled:opacity-50"
         >
           <BookOpen className="h-3 w-3" />
-          {isLoading ? "検索中..." : "出現シーンを確認"}
+          {isLoading
+            ? t("codex.references.searching")
+            : t("codex.references.checkOccurrences")}
         </button>
       ) : scenes.length === 0 ? (
         <p
           data-testid="references-empty"
           className="text-xs text-muted-foreground"
         >
-          本文中での言及なし
+          {t("codex.references.noMentions")}
         </p>
       ) : (
         <ul className="space-y-0.5">

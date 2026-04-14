@@ -1,10 +1,12 @@
 import { useState, useEffect } from "react";
+import { useTranslation } from "react-i18next";
 import { ChevronRight, ChevronDown } from "lucide-react";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { loadProjectAttributionStats } from "./projectStats";
 import type { AttributionStats } from "./attributionStats";
 
 export function AttributionProjectView() {
+  const { t } = useTranslation();
   const nodes = useTreeStore((s) => s.nodes);
   const [statsMap, setStatsMap] = useState<Record<string, AttributionStats>>(
     {},
@@ -47,12 +49,16 @@ export function AttributionProjectView() {
 
   if (isLoading) {
     return (
-      <p className="text-xs text-muted-foreground animate-pulse">読み込み中…</p>
+      <p className="text-xs text-muted-foreground animate-pulse">
+        {t("common.loading")}
+      </p>
     );
   }
 
   if (chapters.length === 0) {
-    return <p className="text-xs text-muted-foreground">シーンがありません</p>;
+    return (
+      <p className="text-xs text-muted-foreground">{t("chat.noScenes")}</p>
+    );
   }
 
   return (
@@ -93,7 +99,10 @@ export function AttributionProjectView() {
               )}
               <span className="flex-1 truncate text-left">{chapter.title}</span>
               <span className="tabular-nums text-muted-foreground">
-                AI: {aiPct}% ({chapterStats.total}字)
+                {t("attribution.aiPctChars", {
+                  pct: aiPct,
+                  count: chapterStats.total,
+                })}
               </span>
             </button>
 
@@ -120,13 +129,13 @@ export function AttributionProjectView() {
                       {st ? (
                         <>
                           <span className="tabular-nums text-blue-500/70">
-                            {humanP}%人
+                            {t("attribution.humanPct", { pct: humanP })}
                           </span>
                           <span className="tabular-nums text-purple-500/70">
                             {aiP}%AI
                           </span>
                           <span className="tabular-nums text-muted-foreground/60">
-                            {st.total}字
+                            {t("attribution.charSuffix", { count: st.total })}
                           </span>
                         </>
                       ) : (

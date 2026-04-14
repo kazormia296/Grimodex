@@ -1,4 +1,5 @@
 import { useState, useRef, useCallback, useEffect } from "react";
+import { useTranslation } from "react-i18next";
 import {
   ChevronRight,
   ChevronDown,
@@ -126,6 +127,7 @@ export function TreeNodeItem({
   const pendingRenameId = useTreeStore((s) => s.pendingRenameId);
   const setPendingRenameId = useTreeStore((s) => s.setPendingRenameId);
 
+  const { t } = useTranslation();
   const [isEditing, setIsEditing] = useState(false);
   const [editTitle, setEditTitle] = useState(node.title);
   const [showStatusPopover, setShowStatusPopover] = useState(false);
@@ -190,7 +192,7 @@ export function TreeNodeItem({
       dockviewApi.addPanel({
         id: "editor",
         component: "editor",
-        title: "エディタ",
+        title: t("layout.panel.editor"),
       });
     }
   }
@@ -361,7 +363,7 @@ export function TreeNodeItem({
           <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100">
             <button
               type="button"
-              title="シーンを追加"
+              title={t("tree.addScene")}
               onClick={(e) => {
                 e.stopPropagation();
                 useTreeStore
@@ -378,7 +380,7 @@ export function TreeNodeItem({
             </button>
             <button
               type="button"
-              title="フォルダーを追加"
+              title={t("tree.addFolder")}
               onClick={(e) => {
                 e.stopPropagation();
                 useTreeStore

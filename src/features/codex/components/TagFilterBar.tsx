@@ -1,3 +1,4 @@
+import { useTranslation } from "react-i18next";
 import { X } from "lucide-react";
 
 interface TagFilterBarProps {
@@ -13,6 +14,7 @@ export function TagFilterBar({
   onToggle,
   onClear,
 }: TagFilterBarProps) {
+  const { t } = useTranslation();
   if (allTags.length === 0) return null;
 
   return (
@@ -37,7 +39,7 @@ export function TagFilterBar({
           type="button"
           onClick={onClear}
           className="ml-auto rounded p-0.5 text-muted-foreground hover:bg-accent"
-          title="フィルタをクリア"
+          title={t("codex.tagFilter.clearFilter")}
         >
           <X className="h-3 w-3" />
         </button>

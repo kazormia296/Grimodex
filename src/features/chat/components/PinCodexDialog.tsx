@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { useCodexStore } from "@/features/codex/codexStore";
 import { useSnippetStore } from "@/features/snippets/snippetStore";
@@ -22,6 +23,7 @@ function PinCodexVirtualList({
   onUnpin: (id: string) => void;
   onToggleChildren: (id: string, withChildren: boolean) => void;
 }) {
+  const { t } = useTranslation();
   const parentRef = useRef<HTMLDivElement>(null);
   const virtualizer = useVirtualizer({
     count: entries.length,
@@ -83,7 +85,7 @@ function PinCodexVirtualList({
                     }
                     className="rounded"
                   />
-                  子エントリを含める
+                  {t("chat.context.includeChildren")}
                 </label>
               )}
             </div>
@@ -179,6 +181,7 @@ export function PinCodexDialog({
   onToggleChildren,
   onClose,
 }: PinCodexDialogProps) {
+  const { t } = useTranslation();
   const [activeTab, setActiveTab] = useState<"codex" | "snippet">("codex");
   const entries = useCodexStore((s) => s.entries);
   const loadEntries = useCodexStore((s) => s.loadEntries);
@@ -203,7 +206,9 @@ export function PinCodexDialog({
         className="max-h-[28rem] w-80 rounded-lg border border-border bg-background p-4 shadow-lg"
         onClick={(e) => e.stopPropagation()}
       >
-        <h3 className="mb-3 text-sm font-semibold">エントリをピン留め</h3>
+        <h3 className="mb-3 text-sm font-semibold">
+          {t("chat.context.pinEntries")}
+        </h3>
 
         {/* Tab selector */}
         <div className="mb-3 flex rounded-md border border-border overflow-hidden">
@@ -234,7 +239,7 @@ export function PinCodexDialog({
         {activeTab === "codex" ? (
           entries.length === 0 ? (
             <p className="text-xs text-muted-foreground">
-              Codexエントリがありません
+              {t("chat.context.noCodexEntries")}
             </p>
           ) : (
             <PinCodexVirtualList
@@ -247,7 +252,9 @@ export function PinCodexDialog({
             />
           )
         ) : snippetEntries.length === 0 ? (
-          <p className="text-xs text-muted-foreground">Snippetがありません</p>
+          <p className="text-xs text-muted-foreground">
+            {t("chat.context.noSnippets")}
+          </p>
         ) : (
           <PinSnippetVirtualList
             snippets={snippetEntries}
@@ -262,7 +269,7 @@ export function PinCodexDialog({
           onClick={onClose}
           className="mt-3 w-full rounded-md bg-primary px-3 py-1.5 text-xs text-primary-foreground hover:bg-primary/90"
         >
-          閉じる
+          {t("common.close")}
         </button>
       </div>
     </div>

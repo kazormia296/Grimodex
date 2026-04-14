@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { ChevronDown, X } from "lucide-react";
 import type { CodexEntry } from "../api";
 import type { CodexEntryPhase } from "../phaseApi";
@@ -18,6 +19,7 @@ export function PhaseIndicator({
   previewPhaseId,
   onPreviewChange,
 }: PhaseIndicatorProps) {
+  const { t } = useTranslation();
   const rawPhases = usePhaseStore((s) => s.phasesByEntry[entry.id]);
   const phases = rawPhases ?? EMPTY_PHASES;
   const globalSceneOrder = usePhaseStore((s) => s.globalSceneOrder);
@@ -106,7 +108,7 @@ export function PhaseIndicator({
           </span>
           {isPreviewMode && (
             <span className="shrink-0 rounded bg-primary/10 px-1 py-0.5 text-[10px] font-medium text-primary">
-              プレビュー
+              {t("codex.phaseIndicator.preview")}
             </span>
           )}
           <ChevronDown
@@ -118,7 +120,7 @@ export function PhaseIndicator({
             type="button"
             onClick={() => onPreviewChange(null)}
             className="shrink-0 rounded p-0.5 text-muted-foreground hover:bg-accent"
-            title="プレビューを終了"
+            title={t("codex.phaseIndicator.exitPreview")}
           >
             <X className="h-3 w-3" />
           </button>

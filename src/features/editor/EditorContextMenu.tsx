@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { createPortal } from "react-dom";
+import { useTranslation } from "react-i18next";
 import type { Editor } from "@tiptap/react";
 import { BUILTIN_CODEX_TYPES } from "@/features/codex/api";
 import { useCodexStore } from "@/features/codex/codexStore";
@@ -25,6 +26,7 @@ export function EditorContextMenu({
   editor,
   containerRef,
 }: EditorContextMenuProps) {
+  const { t } = useTranslation();
   const [pos, setPos] = useState<Position | null>(null);
   const [selectedText, setSelectedText] = useState("");
   const menuRef = useRef<HTMLDivElement>(null);
@@ -129,14 +131,14 @@ export function EditorContextMenu({
           className="px-3 py-1.5 text-sm text-left hover:bg-accent"
           onClick={handleAddToCodex}
         >
-          コデックスに追加
+          {t("editor.contextMenu.addToCodex")}
         </button>
         <button
           type="button"
           className="px-3 py-1.5 text-sm text-left hover:bg-accent"
           onClick={handleSaveAsSnippet}
         >
-          スニペットとして保存
+          {t("editor.contextMenu.saveAsSnippet")}
         </button>
       </div>
     </div>,

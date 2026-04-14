@@ -1,4 +1,5 @@
 import { useCallback, useRef } from "react";
+import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -93,6 +94,7 @@ export function ChatMessage({
   onStar,
   onContextMenu,
 }: ChatMessageProps) {
+  const { t } = useTranslation();
   const isAssistant = msg.role === "assistant";
   const isUser = msg.role === "user";
   const isSummary = isSummaryMarker(msg);
@@ -110,8 +112,8 @@ export function ChatMessage({
   // G2 + G23: Copy with attribution MIME
   const handleCopy = useCallback(() => {
     copyChatMessageWithAttribution(msg.content, msg.id, msg.model)
-      .then(() => toast.success("コピーしました"))
-      .catch(() => toast.error("コピーに失敗しました"));
+      .then(() => toast.success(t("chat.copied")))
+      .catch(() => toast.error(t("chat.copyFailed")));
   }, [msg.content, msg.id, msg.model]);
 
   const handleContextMenu = (e: React.MouseEvent) => {

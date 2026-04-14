@@ -1,3 +1,5 @@
+import { useTranslation } from "react-i18next";
+
 interface AgentProgressBarProps {
   calls: number;
   maxCalls: number;
@@ -13,6 +15,7 @@ export function AgentProgressBar({
   tokenBudget,
   currentToolName,
 }: AgentProgressBarProps) {
+  const { t } = useTranslation();
   const tokenPct =
     tokenBudget > 0 ? Math.min(100, (tokensUsed / tokenBudget) * 100) : 0;
 
@@ -37,7 +40,7 @@ export function AgentProgressBar({
       </div>
       {currentToolName && (
         <div className="mt-0.5 truncate opacity-70">
-          実行中: {currentToolName}
+          {t("chat.context.running", { name: currentToolName })}
         </div>
       )}
     </div>

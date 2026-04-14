@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from "react";
+import { useTranslation } from "react-i18next";
 import { Bot, Settings, Plus } from "lucide-react";
 import { useAutoSave } from "@/hooks/useAutoSave";
 import type { CodexEntry } from "../api";
@@ -54,6 +55,7 @@ function DropdownField({
   initialValue,
   entryId,
 }: DropdownFieldProps) {
+  const { t } = useTranslation();
   const [value, setValue] = useState(initialValue);
 
   let options: string[];
@@ -79,7 +81,7 @@ function DropdownField({
         onChange={(e) => void handleChange(e.target.value)}
         className="w-full rounded-md border border-input bg-background px-2 py-1.5 text-sm"
       >
-        <option value="">— 選択 —</option>
+        <option value="">{t("codex.detail.selectPlaceholder")}</option>
         {options.map((opt) => (
           <option key={opt} value={opt}>
             {opt}
@@ -103,6 +105,7 @@ function DetailFieldRow({
   currentValue,
   onToggleContext,
 }: DetailFieldRowProps) {
+  const { t } = useTranslation();
   return (
     <div className="space-y-1">
       <div className="flex items-center justify-between">
@@ -118,8 +121,8 @@ function DetailFieldRow({
           }`}
           title={
             definition.includeInContext === 1
-              ? "AIコンテキストに含める（クリックで無効化）"
-              : "AIコンテキストに含めない（クリックで有効化）"
+              ? t("codex.detail.aiContextEnabled")
+              : t("codex.detail.aiContextDisabled")
           }
         >
           <Bot className="h-3 w-3" />
@@ -152,7 +155,7 @@ function DetailFieldRow({
             onBlur={async (e) => {
               await upsertValue(entryId, definition.id, e.target.value);
             }}
-            placeholder="エントリIDを入力..."
+            placeholder={t("codex.detail.entryIdPlaceholder")}
             className="w-full rounded-md border border-input bg-background px-2 py-1.5 text-sm"
           />
         </div>
@@ -166,6 +169,7 @@ interface DetailsSectionProps {
 }
 
 export function DetailsSection({ entry }: DetailsSectionProps) {
+  const { t } = useTranslation();
   const [definitions, setDefinitions] = useState<CodexDetailDefinition[]>([]);
   const [valuesMap, setValuesMap] = useState<Map<string, string>>(new Map());
   const [isManageOpen, setIsManageOpen] = useState(false);
@@ -212,7 +216,7 @@ export function DetailsSection({ entry }: DetailsSectionProps) {
             data-testid="details-add-field-button"
             onClick={() => setIsManageOpen(true)}
             className="flex items-center gap-0.5 rounded px-1.5 py-0.5 text-[10px] text-muted-foreground hover:bg-accent"
-            title="フィールドを追加"
+            title={t("codex.detail.addField")}
           >
             <Plus className="h-3 w-3" />
             Add field
@@ -222,7 +226,7 @@ export function DetailsSection({ entry }: DetailsSectionProps) {
             data-testid="details-manage-button"
             onClick={() => setIsManageOpen(true)}
             className="rounded p-1 text-muted-foreground hover:bg-accent"
-            title="フィールドを管理"
+            title={t("codex.detail.manageFields")}
           >
             <Settings className="h-3 w-3" />
           </button>
@@ -234,7 +238,7 @@ export function DetailsSection({ entry }: DetailsSectionProps) {
           data-testid="details-section-empty"
           className="text-xs text-muted-foreground"
         >
-          フィールドがありません
+          {t("codex.detail.noFields")}
         </p>
       ) : (
         <div className="space-y-3">

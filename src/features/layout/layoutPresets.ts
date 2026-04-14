@@ -1,4 +1,5 @@
 import type { DockviewApi, SerializedDockview } from "dockview-react";
+import i18next from "i18next";
 import { getPanelTitle } from "./layoutStore";
 
 /* ── Types ── */
@@ -177,29 +178,31 @@ function buildCodexMain(api: DockviewApi) {
 
 /* ── Exports ── */
 
-export const BUILTIN_PRESETS: BuiltinPreset[] = [
-  {
-    id: "builtin:default",
-    name: "デフォルト",
-    builtin: true,
-    build: buildDefault,
-  },
-  {
-    id: "builtin:chat-main",
-    name: "チャットメイン",
-    builtin: true,
-    build: buildChatMain,
-  },
-  {
-    id: "builtin:codex-main",
-    name: "Codexメイン",
-    builtin: true,
-    build: buildCodexMain,
-  },
-];
+export function getBuiltinPresets(): BuiltinPreset[] {
+  return [
+    {
+      id: "builtin:default",
+      name: i18next.t("layout.preset.default"),
+      builtin: true,
+      build: buildDefault,
+    },
+    {
+      id: "builtin:chat-main",
+      name: i18next.t("layout.preset.chatMain"),
+      builtin: true,
+      build: buildChatMain,
+    },
+    {
+      id: "builtin:codex-main",
+      name: i18next.t("layout.preset.codexMain"),
+      builtin: true,
+      build: buildCodexMain,
+    },
+  ];
+}
 
 export function getBuiltinPreset(id: string): BuiltinPreset | undefined {
-  return BUILTIN_PRESETS.find((p) => p.id === id);
+  return getBuiltinPresets().find((p) => p.id === id);
 }
 
 /** Clear all panels from the layout */

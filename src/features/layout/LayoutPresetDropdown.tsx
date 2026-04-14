@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
 import {
   Columns3,
   ChevronDown,
@@ -9,9 +10,10 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useLayoutStore } from "./layoutStore";
-import { BUILTIN_PRESETS } from "./layoutPresets";
+import { getBuiltinPresets } from "./layoutPresets";
 
 export function LayoutPresetDropdown() {
+  const { t } = useTranslation();
   const {
     customPresets,
     activePresetId,
@@ -67,8 +69,10 @@ export function LayoutPresetDropdown() {
     }
   }, [isSaving]);
 
+  const builtinPresets = getBuiltinPresets();
+
   const activeName =
-    BUILTIN_PRESETS.find((p) => p.id === activePresetId)?.name ??
+    builtinPresets.find((p) => p.id === activePresetId)?.name ??
     customPresets.find((p) => p.id === activePresetId)?.name ??
     null;
 
@@ -85,7 +89,7 @@ export function LayoutPresetDropdown() {
       {/* Trigger button */}
       <button
         type="button"
-        title="レイアウトプリセット"
+        title={t("layout.preset.title")}
         onClick={() => {
           setIsOpen((o) => !o);
           if (isOpen) {
@@ -101,7 +105,7 @@ export function LayoutPresetDropdown() {
         )}
       >
         <Columns3 className="h-4 w-4" />
-        <span>{activeName ?? "レイアウト"}</span>
+        <span>{activeName ?? t("layout.preset.layout")}</span>
         <ChevronDown
           className={cn("h-3 w-3 transition-transform", isOpen && "rotate-180")}
         />
@@ -112,9 +116,9 @@ export function LayoutPresetDropdown() {
         <div className="absolute right-0 top-full z-50 mt-1 min-w-56 rounded-md border border-border bg-background py-1 shadow-lg">
           {/* Builtin presets */}
           <div className="px-3 pb-0.5 pt-1 text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
-            プリセット
+            {t("layout.preset.builtinSection")}
           </div>
-          {BUILTIN_PRESETS.map((preset) => (
+          {builtinPresets.map((preset) => (
             <button
               key={preset.id}
               type="button"
@@ -145,7 +149,7 @@ export function LayoutPresetDropdown() {
             <>
               <div className="my-1 border-t border-border" />
               <div className="px-3 pb-0.5 pt-1 text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
-                カスタム
+                {t("layout.preset.customSection")}
               </div>
               {customPresets.map((preset) => (
                 <div
@@ -176,7 +180,7 @@ export function LayoutPresetDropdown() {
                   </button>
                   <button
                     type="button"
-                    title="削除"
+                    title={t("common.delete")}
                     onClick={(e) => {
                       e.stopPropagation();
                       deletePreset(preset.id);
@@ -203,7 +207,7 @@ export function LayoutPresetDropdown() {
                   if (e.key === "Enter") handleSave();
                   e.stopPropagation();
                 }}
-                placeholder="プリセット名"
+                placeholder={t("layout.preset.saveName")}
                 className="flex-1 rounded border border-border bg-muted px-2 py-1 text-sm outline-none focus:border-primary"
               />
               <button
@@ -222,7 +226,7 @@ export function LayoutPresetDropdown() {
               className="flex w-full items-center gap-2 px-3 py-1.5 text-sm hover:bg-accent hover:text-accent-foreground"
             >
               <Save className="h-3.5 w-3.5 text-muted-foreground" />
-              <span>現在のレイアウトを保存</span>
+              <span>{t("layout.preset.saveLayout")}</span>
             </button>
           )}
 
@@ -237,7 +241,7 @@ export function LayoutPresetDropdown() {
             className="flex w-full items-center gap-2 px-3 py-1.5 text-sm text-destructive hover:bg-destructive/10"
           >
             <RotateCcw className="h-3.5 w-3.5" />
-            <span>デフォルトに戻す</span>
+            <span>{t("layout.preset.resetDefault")}</span>
           </button>
         </div>
       )}

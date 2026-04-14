@@ -1,7 +1,7 @@
 import { Extension } from "@tiptap/core";
 import Suggestion from "@tiptap/suggestion";
 import type { SuggestionOptions } from "@tiptap/suggestion";
-import { filterCommands, INLINE_AI_COMMANDS } from "./inlineAiCommands";
+import { filterCommands, getInlineAiCommands } from "./inlineAiCommands";
 import type { InlineAiCommand } from "./inlineAiTypes";
 
 export type SlashCommandSuggestionOptions = Omit<
@@ -77,4 +77,4 @@ export const SlashCommandExtension = Extension.create<{
   },
 });
 
-export { INLINE_AI_COMMANDS };
+export { getInlineAiCommands };

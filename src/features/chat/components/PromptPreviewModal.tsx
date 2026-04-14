@@ -1,3 +1,4 @@
+import { useTranslation } from "react-i18next";
 import type { LayerBreakdown } from "../contextBuilder";
 
 interface PromptPreviewModalProps {
@@ -13,6 +14,7 @@ export function PromptPreviewModal({
   totalTokens,
   onClose,
 }: PromptPreviewModalProps) {
+  const { t } = useTranslation();
   return (
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/50"
@@ -25,7 +27,7 @@ export function PromptPreviewModal({
         {/* ヘッダー */}
         <div className="flex items-center justify-between border-b border-border px-4 py-3">
           <h2 className="text-sm font-semibold">
-            システムプロンプト プレビュー
+            {t("chat.context.promptPreviewTitle")}
           </h2>
           <button
             type="button"
@@ -41,14 +43,18 @@ export function PromptPreviewModal({
           {layers.length > 0 && (
             <div>
               <h3 className="mb-2 text-xs font-semibold text-muted-foreground uppercase">
-                レイヤー別トークン内訳
+                {t("chat.context.layerBreakdown")}
               </h3>
               <table className="w-full text-xs">
                 <thead>
                   <tr className="border-b border-border text-left text-muted-foreground">
-                    <th className="pb-1 pr-4">レイヤー</th>
-                    <th className="pb-1 pr-4 text-right">使用 tokens</th>
-                    <th className="pb-1">使用率</th>
+                    <th className="pb-1 pr-4">
+                      {t("chat.context.layerColumn")}
+                    </th>
+                    <th className="pb-1 pr-4 text-right">
+                      {t("chat.context.usedTokens")}
+                    </th>
+                    <th className="pb-1">{t("chat.context.usageRate")}</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -88,7 +94,7 @@ export function PromptPreviewModal({
                     );
                   })}
                   <tr className="font-semibold">
-                    <td className="py-1 pr-4">合計</td>
+                    <td className="py-1 pr-4">{t("chat.context.totalRow")}</td>
                     <td className="py-1 pr-4 text-right tabular-nums">
                       {totalTokens.toLocaleString()}
                     </td>
@@ -102,10 +108,10 @@ export function PromptPreviewModal({
           {/* プロンプト全文 */}
           <div>
             <h3 className="mb-2 text-xs font-semibold text-muted-foreground uppercase">
-              プロンプト全文
+              {t("chat.context.fullPrompt")}
             </h3>
             <pre className="whitespace-pre-wrap rounded bg-muted p-3 text-xs text-foreground">
-              {systemPrompt || "（プロンプトなし）"}
+              {systemPrompt || t("chat.context.emptyPrompt")}
             </pre>
           </div>
         </div>

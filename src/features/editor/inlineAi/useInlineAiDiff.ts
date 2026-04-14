@@ -1,5 +1,6 @@
 import { useEffect, useCallback, useRef } from "react";
 import type { Editor } from "@tiptap/core";
+import i18next from "i18next";
 import { useInlineAiStore } from "./inlineAiStore";
 import {
   inlineAiDiffKey,
@@ -92,7 +93,10 @@ export function useInlineAiDiff(editor: Editor | null) {
         useInlineAiStore.getState().finishGeneration("claude-sonnet-4-6");
         dispatchDiffUpdate(editor);
       } catch (err) {
-        const msg = err instanceof Error ? err.message : "生成に失敗しました";
+        const msg =
+          err instanceof Error
+            ? err.message
+            : i18next.t("inlineAi.generateFailed");
         useInlineAiStore.getState().setError(msg);
       }
     },

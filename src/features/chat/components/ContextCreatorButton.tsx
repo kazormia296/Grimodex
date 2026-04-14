@@ -1,4 +1,5 @@
 import { Sparkles } from "lucide-react";
+import { useTranslation } from "react-i18next";
 
 interface ContextCreatorButtonProps {
   onClick: () => void;
@@ -9,6 +10,8 @@ export function ContextCreatorButton({
   onClick,
   disabled,
 }: ContextCreatorButtonProps) {
+  const { t } = useTranslation();
+
   return (
     <button
       type="button"
@@ -16,11 +19,11 @@ export function ContextCreatorButton({
       disabled={disabled}
       title={
         disabled
-          ? "このモデルはツール使用に対応していません"
-          : "AIがコンテキストに追加するエントリを提案します"
+          ? t("chat.contextCreator.disabledTitle")
+          : t("chat.contextCreator.enabledTitle")
       }
       className="inline-flex items-center gap-1 rounded-md border border-dashed border-border px-2 py-0.5 text-xs text-muted-foreground hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
-      aria-label="AIコンテキスト提案"
+      aria-label={t("chat.contextCreator.ariaLabel")}
     >
       <Sparkles className="h-3 w-3" />✦ AI
     </button>

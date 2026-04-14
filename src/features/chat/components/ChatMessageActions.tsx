@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect } from "react";
+import { useTranslation } from "react-i18next";
 import {
   MoreVertical,
   FileInput,
@@ -50,6 +51,7 @@ export function ChatMessageActions({
   onRegenerate,
   onStar,
 }: ChatMessageActionsProps) {
+  const { t } = useTranslation();
   const [open, setOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
 
@@ -116,7 +118,7 @@ export function ChatMessageActions({
           type="button"
           data-testid={`star-message-${messageId}`}
           onClick={() => onStar(messageId, !isStarred)}
-          title={isStarred ? "スターを外す" : "スター付き（要約対象外）"}
+          title={isStarred ? t("chat.actions.unstar") : t("chat.actions.star")}
           className={`inline-flex items-center gap-1 rounded border px-1.5 py-1 text-xs transition-colors ${
             isStarred
               ? "border-amber-400 bg-amber-50 text-amber-500 hover:bg-amber-100 dark:bg-amber-900/20 dark:hover:bg-amber-800/30"
@@ -137,7 +139,7 @@ export function ChatMessageActions({
               onClick={() => onInsert()}
               onMouseEnter={() => onInsertHover?.(true)}
               onMouseLeave={() => onInsertHover?.(false)}
-              title="エディタに挿入"
+              title={t("chat.actions.insertToEditor")}
               className="inline-flex items-center gap-1 rounded border border-border px-2 py-1 text-xs text-muted-foreground hover:bg-accent hover:text-accent-foreground"
             >
               <FileInput className="h-3 w-3" />
@@ -149,7 +151,7 @@ export function ChatMessageActions({
               type="button"
               data-testid={`extract-codex-quick-${messageId}`}
               onClick={() => onExtractCodexQuick(messageId)}
-              title="Codexに即時抽出"
+              title={t("chat.actions.extractCodexQuick")}
               className="inline-flex items-center gap-1 rounded border border-border px-2 py-1 text-xs text-muted-foreground hover:bg-accent hover:text-accent-foreground"
             >
               <BookOpen className="h-3 w-3" />
@@ -161,7 +163,7 @@ export function ChatMessageActions({
               type="button"
               data-testid={`save-snippet-quick-${messageId}`}
               onClick={() => onSaveSnippetQuick(messageId)}
-              title="Snippetとして即時保存"
+              title={t("chat.actions.saveSnippetQuick")}
               className="inline-flex items-center gap-1 rounded border border-border px-2 py-1 text-xs text-muted-foreground hover:bg-accent hover:text-accent-foreground"
             >
               <Bookmark className="h-3 w-3" />
@@ -173,7 +175,7 @@ export function ChatMessageActions({
               type="button"
               data-testid={`copy-message-${messageId}`}
               onClick={onCopy}
-              title="コピー（帰属情報付き）"
+              title={t("chat.actions.copyWithAttribution")}
               className="inline-flex items-center gap-1 rounded border border-border px-2 py-1 text-xs text-muted-foreground hover:bg-accent hover:text-accent-foreground"
             >
               <Copy className="h-3 w-3" />
@@ -210,7 +212,7 @@ export function ChatMessageActions({
                       className="flex w-full items-center gap-2 px-3 py-1.5 text-xs text-popover-foreground hover:bg-accent"
                     >
                       <BookOpen className="h-3 w-3" />
-                      Codexに抽出（詳細）
+                      {t("chat.actions.extractCodexDetailed")}
                     </button>
                   )}
                   {onSaveSnippetDetailed && (
@@ -221,7 +223,7 @@ export function ChatMessageActions({
                       className="flex w-full items-center gap-2 px-3 py-1.5 text-xs text-popover-foreground hover:bg-accent"
                     >
                       <Bookmark className="h-3 w-3" />
-                      Snippetとして保存（詳細）
+                      {t("chat.actions.saveSnippetDetailed")}
                     </button>
                   )}
                   {onRegenerate && (
@@ -232,7 +234,7 @@ export function ChatMessageActions({
                       className="flex w-full items-center gap-2 px-3 py-1.5 text-xs text-popover-foreground hover:bg-accent"
                     >
                       <RefreshCw className="h-3 w-3" />
-                      再生成
+                      {t("chat.actions.regenerate")}
                     </button>
                   )}
                   {onDelete &&
@@ -252,7 +254,7 @@ export function ChatMessageActions({
                   className="flex w-full items-center gap-2 px-3 py-1.5 text-xs text-popover-foreground hover:bg-accent"
                 >
                   <Pencil className="h-3 w-3" />
-                  編集
+                  {t("chat.actions.edit")}
                 </button>
               )}
               {messageRole === "user" && onDelete && onEdit && (
@@ -267,7 +269,7 @@ export function ChatMessageActions({
                   className="flex w-full items-center gap-2 px-3 py-1.5 text-xs text-destructive hover:bg-accent"
                 >
                   <Trash2 className="h-3 w-3" />
-                  削除
+                  {t("chat.actions.delete")}
                 </button>
               )}
             </div>

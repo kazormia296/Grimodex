@@ -1,3 +1,5 @@
+import i18next from "i18next";
+
 export interface KeyCombo {
   ctrl?: boolean;
   alt?: boolean;
@@ -12,65 +14,79 @@ export interface CommandDef {
   defaultBinding: string;
 }
 
-export const COMMANDS: CommandDef[] = [
-  {
-    id: "focusScenes",
-    label: "Scenes パネルにフォーカス",
-    defaultBinding: "Ctrl+Alt+S",
-  },
-  {
-    id: "focusChat",
-    label: "Chat パネルにフォーカス",
-    defaultBinding: "Ctrl+Alt+C",
-  },
-  {
-    id: "focusCodex",
-    label: "Codex パネルにフォーカス",
-    defaultBinding: "Ctrl+Alt+X",
-  },
-  {
-    id: "focusSnippets",
-    label: "Snippets パネルにフォーカス",
-    defaultBinding: "Ctrl+Alt+N",
-  },
-  {
-    id: "focusAttribution",
-    label: "Attribution パネルにフォーカス",
-    defaultBinding: "Ctrl+Alt+A",
-  },
-  {
-    id: "focusChatHistory",
-    label: "Chat History パネルにフォーカス",
-    defaultBinding: "Ctrl+Alt+H",
-  },
-  {
-    id: "openSettings",
-    label: "Settings を開く",
-    defaultBinding: "Ctrl+Alt+,",
-  },
-  { id: "splitVertical", label: "エディタを縦分割", defaultBinding: "Ctrl+\\" },
-  {
-    id: "splitHorizontal",
-    label: "エディタを横分割",
-    defaultBinding: "Ctrl+Shift+\\",
-  },
-  { id: "nextTab", label: "次のタブに移動", defaultBinding: "Ctrl+Tab" },
-  {
-    id: "prevTab",
-    label: "前のタブに移動",
-    defaultBinding: "Ctrl+Shift+Tab",
-  },
-  { id: "find", label: "検索", defaultBinding: "Ctrl+F" },
-  { id: "findReplace", label: "検索と置換", defaultBinding: "Ctrl+H" },
-  {
-    id: "inlineAiPalette",
-    label: "インライン AI パレット",
-    defaultBinding: "Ctrl+Shift+Space",
-  },
-];
+export function getCommands(): CommandDef[] {
+  return [
+    {
+      id: "focusScenes",
+      label: i18next.t("keys.focusScenes"),
+      defaultBinding: "Ctrl+Alt+S",
+    },
+    {
+      id: "focusChat",
+      label: i18next.t("keys.focusChat"),
+      defaultBinding: "Ctrl+Alt+C",
+    },
+    {
+      id: "focusCodex",
+      label: i18next.t("keys.focusCodex"),
+      defaultBinding: "Ctrl+Alt+X",
+    },
+    {
+      id: "focusSnippets",
+      label: i18next.t("keys.focusSnippets"),
+      defaultBinding: "Ctrl+Alt+N",
+    },
+    {
+      id: "focusAttribution",
+      label: i18next.t("keys.focusAttribution"),
+      defaultBinding: "Ctrl+Alt+A",
+    },
+    {
+      id: "focusChatHistory",
+      label: i18next.t("keys.focusChatHistory"),
+      defaultBinding: "Ctrl+Alt+H",
+    },
+    {
+      id: "openSettings",
+      label: i18next.t("keys.openSettings"),
+      defaultBinding: "Ctrl+Alt+,",
+    },
+    {
+      id: "splitVertical",
+      label: i18next.t("keys.splitVertical"),
+      defaultBinding: "Ctrl+\\",
+    },
+    {
+      id: "splitHorizontal",
+      label: i18next.t("keys.splitHorizontal"),
+      defaultBinding: "Ctrl+Shift+\\",
+    },
+    {
+      id: "nextTab",
+      label: i18next.t("keys.nextTab"),
+      defaultBinding: "Ctrl+Tab",
+    },
+    {
+      id: "prevTab",
+      label: i18next.t("keys.prevTab"),
+      defaultBinding: "Ctrl+Shift+Tab",
+    },
+    { id: "find", label: i18next.t("keys.find"), defaultBinding: "Ctrl+F" },
+    {
+      id: "findReplace",
+      label: i18next.t("keys.findReplace"),
+      defaultBinding: "Ctrl+H",
+    },
+    {
+      id: "inlineAiPalette",
+      label: i18next.t("keys.inlineAiPalette"),
+      defaultBinding: "Ctrl+Shift+Space",
+    },
+  ];
+}
 
 export const DEFAULT_KEYBINDINGS: Record<string, string> = Object.fromEntries(
-  COMMANDS.map((c) => [c.id, c.defaultBinding]),
+  getCommands().map((c) => [c.id, c.defaultBinding]),
 );
 
 export function parseKeybinding(str: string): KeyCombo {

@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from "react";
+import { useTranslation } from "react-i18next";
 import type { Editor } from "@tiptap/core";
 import type { AuthorshipSource } from "./AuthorshipMark";
 import { useAttributionStore } from "./attributionStore";
@@ -8,13 +9,14 @@ interface MenuPosition {
   y: number;
 }
 
-const SOURCE_OPTIONS: { value: AuthorshipSource; label: string }[] = [
-  { value: "human", label: "人間" },
-  { value: "ai", label: "AI生成" },
-  { value: "unknown", label: "不明" },
-];
-
 export function AttributionOverrideMenu({ editor }: { editor: Editor | null }) {
+  const { t } = useTranslation();
+
+  const sourceOptions: { value: AuthorshipSource; label: string }[] = [
+    { value: "human", label: t("attribution.human") },
+    { value: "ai", label: t("attribution.ai") },
+    { value: "unknown", label: t("attribution.unknown") },
+  ];
   const [position, setPosition] = useState<MenuPosition | null>(null);
   const menuRef = useRef<HTMLDivElement>(null);
   const showAttribution = useAttributionStore((s) => s.showAttribution);
@@ -112,9 +114,9 @@ export function AttributionOverrideMenu({ editor }: { editor: Editor | null }) {
       style={{ left: position.x, top: position.y }}
     >
       <div className="px-3 py-1 text-xs font-semibold text-muted-foreground">
-        帰属を変更
+        {t("attribution.changeAttribution")}
       </div>
-      {SOURCE_OPTIONS.map((opt) => (
+      {sourceOptions.map((opt) => (
         <button
           key={opt.value}
           type="button"

@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { BookOpen, Bookmark, StopCircle } from "lucide-react";
 import { listCodexEntriesByMessageId } from "@/features/codex/api";
 import { listSnippetsByMessageId } from "@/features/snippets/api";
@@ -14,6 +15,7 @@ interface BadgeData {
 }
 
 export function MessageBadge({ messageId, stopped }: MessageBadgeProps) {
+  const { t } = useTranslation();
   const [data, setData] = useState<BadgeData | null>(null);
 
   useEffect(() => {
@@ -55,7 +57,7 @@ export function MessageBadge({ messageId, stopped }: MessageBadgeProps) {
           className="inline-flex items-center gap-1 rounded-full bg-blue-100 px-2 py-0.5 text-[10px] text-blue-700 dark:bg-blue-900 dark:text-blue-300"
         >
           <BookOpen className="h-2.5 w-2.5" />
-          Codex抽出済 ({data.codexCount})
+          {t("chat.context.codexExtracted", { count: data.codexCount })}
         </span>
       )}
       {data && data.snippetCount > 0 && (
@@ -64,7 +66,7 @@ export function MessageBadge({ messageId, stopped }: MessageBadgeProps) {
           className="inline-flex items-center gap-1 rounded-full bg-green-100 px-2 py-0.5 text-[10px] text-green-700 dark:bg-green-900 dark:text-green-300"
         >
           <Bookmark className="h-2.5 w-2.5" />
-          Snippet保存済 ({data.snippetCount})
+          {t("chat.context.snippetSaved", { count: data.snippetCount })}
         </span>
       )}
     </div>

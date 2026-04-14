@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect, useLayoutEffect } from "react";
 import { createPortal } from "react-dom";
 import type { Editor } from "@tiptap/react";
+import { useTranslation } from "react-i18next";
 import { cn } from "@/lib/utils";
 import { useAttributionStore } from "@/features/attribution/attributionStore";
 import { useCursorSettingsStore } from "@/features/editor/cursorSettingsStore";
@@ -73,6 +74,7 @@ export function Toolbar({
   const [linkPos, setLinkPos] = useState<{ x: number; y: number } | null>(null);
   const [overflowOpen, setOverflowOpen] = useState(false);
   const [fontSizeOpen, setFontSizeOpen] = useState(false);
+  const { t } = useTranslation();
   const overflowBtnRef = useRef<HTMLDivElement>(null);
   const overflowDropdownRef = useRef<HTMLDivElement>(null);
   const fontSizeBtnRef = useRef<HTMLDivElement>(null);
@@ -289,35 +291,35 @@ export function Toolbar({
           {/* Unit 1: インラインフォーマット (always in toolbar) */}
           <div ref={unit1Ref} className="flex items-center gap-0.5">
             <ToolbarButton
-              label="太字 (Ctrl+B)"
+              label={t("editor.toolbar.bold")}
               active={editor.isActive("bold")}
               onClick={() => editor.chain().focus().toggleBold().run()}
             >
               <strong>B</strong>
             </ToolbarButton>
             <ToolbarButton
-              label="斜体 (Ctrl+I)"
+              label={t("editor.toolbar.italic")}
               active={editor.isActive("italic")}
               onClick={() => editor.chain().focus().toggleItalic().run()}
             >
               <em>I</em>
             </ToolbarButton>
             <ToolbarButton
-              label="下線 (Ctrl+U)"
+              label={t("editor.toolbar.underline")}
               active={editor.isActive("underline")}
               onClick={() => editor.chain().focus().toggleUnderline().run()}
             >
               <span className="underline">U</span>
             </ToolbarButton>
             <ToolbarButton
-              label="取り消し線 (Ctrl+Shift+X)"
+              label={t("editor.toolbar.strikethrough")}
               active={editor.isActive("strike")}
               onClick={() => editor.chain().focus().toggleStrike().run()}
             >
               <span className="line-through">S</span>
             </ToolbarButton>
             <ToolbarButton
-              label="傍点 (Ctrl+.)"
+              label={t("editor.toolbar.emphasisDots")}
               active={editor.isActive("emphasisDots")}
               onClick={() =>
                 editor.chain().focus().toggleMark("emphasisDots").run()
@@ -332,7 +334,7 @@ export function Toolbar({
             <div ref={unit2Ref} className="flex items-center gap-0.5">
               <Sep />
               <ToolbarButton
-                label="見出し 1 (Ctrl+1)"
+                label={t("editor.toolbar.heading1")}
                 active={editor.isActive("heading", { level: 1 })}
                 onClick={() =>
                   editor.chain().focus().toggleHeading({ level: 1 }).run()
@@ -341,7 +343,7 @@ export function Toolbar({
                 H1
               </ToolbarButton>
               <ToolbarButton
-                label="見出し 2 (Ctrl+2)"
+                label={t("editor.toolbar.heading2")}
                 active={editor.isActive("heading", { level: 2 })}
                 onClick={() =>
                   editor.chain().focus().toggleHeading({ level: 2 }).run()
@@ -350,7 +352,7 @@ export function Toolbar({
                 H2
               </ToolbarButton>
               <ToolbarButton
-                label="見出し 3 (Ctrl+3)"
+                label={t("editor.toolbar.heading3")}
                 active={editor.isActive("heading", { level: 3 })}
                 onClick={() =>
                   editor.chain().focus().toggleHeading({ level: 3 }).run()
@@ -366,27 +368,30 @@ export function Toolbar({
             <div ref={unit3Ref} className="flex items-center gap-0.5">
               <Sep />
               <ToolbarButton
-                label="箇条書き"
+                label={t("editor.toolbar.bulletList")}
                 active={editor.isActive("bulletList")}
                 onClick={() => editor.chain().focus().toggleBulletList().run()}
               >
                 ≡
               </ToolbarButton>
               <ToolbarButton
-                label="番号付きリスト"
+                label={t("editor.toolbar.orderedList")}
                 active={editor.isActive("orderedList")}
                 onClick={() => editor.chain().focus().toggleOrderedList().run()}
               >
                 1.
               </ToolbarButton>
               <ToolbarButton
-                label="引用 (ブロッククォート)"
+                label={t("editor.toolbar.blockquote")}
                 active={editor.isActive("blockquote")}
                 onClick={() => editor.chain().focus().toggleBlockquote().run()}
               >
                 ❝
               </ToolbarButton>
-              <ToolbarButton label="水平線" onClick={insertHorizontalRule}>
+              <ToolbarButton
+                label={t("editor.toolbar.horizontalRule")}
+                onClick={insertHorizontalRule}
+              >
                 —
               </ToolbarButton>
             </div>
@@ -397,7 +402,7 @@ export function Toolbar({
             <div ref={unit4Ref} className="flex items-center gap-0.5">
               <Sep />
               <ToolbarButton
-                label="ルビ（ふりがな）(Ctrl+Shift+R)"
+                label={t("editor.toolbar.ruby")}
                 active={rubyOpen || editor.isActive("ruby")}
                 onClick={openRuby}
                 allowFocus
@@ -405,7 +410,7 @@ export function Toolbar({
                 Ruby
               </ToolbarButton>
               <ToolbarButton
-                label="リンク (Ctrl+K)"
+                label={t("editor.toolbar.link")}
                 active={editor.isActive("link") || linkOpen}
                 onClick={openLink}
                 allowFocus
@@ -413,7 +418,7 @@ export function Toolbar({
                 Link
               </ToolbarButton>
               <ToolbarButton
-                label="シーン区切り (* * *)"
+                label={t("editor.toolbar.sceneBreak")}
                 onClick={() => editor.chain().focus().insertSceneBreak().run()}
               >
                 * * *
@@ -429,7 +434,7 @@ export function Toolbar({
         >
           <div ref={fontSizeBtnRef}>
             <ToolbarButton
-              label="文字サイズ"
+              label={t("editor.toolbar.fontSize")}
               active={fontSizeOpen}
               onClick={() => setFontSizeOpen((v) => !v)}
             >
@@ -437,14 +442,14 @@ export function Toolbar({
             </ToolbarButton>
           </div>
           <ToolbarButton
-            label="帰属表示"
+            label={t("editor.toolbar.attribution")}
             active={showAttribution}
             onClick={toggleAttribution}
           >
             Attr
           </ToolbarButton>
           <ToolbarButton
-            label="コメント表示（未実装）"
+            label={t("editor.toolbar.comments")}
             active={showComments}
             onClick={toggleShowComments}
             disabled
@@ -452,14 +457,14 @@ export function Toolbar({
             Cmt
           </ToolbarButton>
           <ToolbarButton
-            label="フォーカスモード"
+            label={t("editor.toolbar.focusMode")}
             active={focusMode}
             onClick={toggleFocusMode}
           >
             Focus
           </ToolbarButton>
           <ToolbarButton
-            label="タイプライターモード"
+            label={t("editor.toolbar.typewriterMode")}
             active={typewriterMode}
             onClick={toggleTypewriterMode}
           >
@@ -468,7 +473,7 @@ export function Toolbar({
           <Sep />
           <div ref={overflowBtnRef}>
             <ToolbarButton
-              label="その他のオプション"
+              label={t("editor.toolbar.moreOptions")}
               active={overflowOpen}
               onClick={() => setOverflowOpen((v) => !v)}
             >
@@ -511,7 +516,7 @@ export function Toolbar({
           {visibleUnitCount < 2 && (
             <>
               <OverflowItem
-                label="見出し 1"
+                label={t("editor.toolbar.heading1Short")}
                 shortcut="Ctrl+1"
                 onClick={() => {
                   editor.chain().focus().toggleHeading({ level: 1 }).run();
@@ -519,7 +524,7 @@ export function Toolbar({
                 }}
               />
               <OverflowItem
-                label="見出し 2"
+                label={t("editor.toolbar.heading2Short")}
                 shortcut="Ctrl+2"
                 onClick={() => {
                   editor.chain().focus().toggleHeading({ level: 2 }).run();
@@ -527,7 +532,7 @@ export function Toolbar({
                 }}
               />
               <OverflowItem
-                label="見出し 3"
+                label={t("editor.toolbar.heading3Short")}
                 shortcut="Ctrl+3"
                 onClick={() => {
                   editor.chain().focus().toggleHeading({ level: 3 }).run();
@@ -539,28 +544,28 @@ export function Toolbar({
           {visibleUnitCount < 3 && (
             <>
               <OverflowItem
-                label="箇条書き"
+                label={t("editor.toolbar.bulletList")}
                 onClick={() => {
                   editor.chain().focus().toggleBulletList().run();
                   setOverflowOpen(false);
                 }}
               />
               <OverflowItem
-                label="番号付きリスト"
+                label={t("editor.toolbar.orderedList")}
                 onClick={() => {
                   editor.chain().focus().toggleOrderedList().run();
                   setOverflowOpen(false);
                 }}
               />
               <OverflowItem
-                label="引用 (ブロッククォート)"
+                label={t("editor.toolbar.blockquote")}
                 onClick={() => {
                   editor.chain().focus().toggleBlockquote().run();
                   setOverflowOpen(false);
                 }}
               />
               <OverflowItem
-                label="水平線"
+                label={t("editor.toolbar.horizontalRule")}
                 onClick={() => {
                   insertHorizontalRule();
                   setOverflowOpen(false);
@@ -571,14 +576,14 @@ export function Toolbar({
           {visibleUnitCount < 4 && (
             <>
               <OverflowItem
-                label="ルビ（ふりがな）"
+                label={t("editor.toolbar.rubyShort")}
                 onClick={() => {
                   openRuby();
                   setOverflowOpen(false);
                 }}
               />
               <OverflowItem
-                label="リンク"
+                label={t("editor.toolbar.linkShort")}
                 shortcut="Ctrl+K"
                 onClick={() => {
                   openLink();
@@ -586,7 +591,7 @@ export function Toolbar({
                 }}
               />
               <OverflowItem
-                label="シーン区切り (* * *)"
+                label={t("editor.toolbar.sceneBreak")}
                 onClick={() => {
                   editor.chain().focus().insertSceneBreak().run();
                   setOverflowOpen(false);
@@ -598,24 +603,24 @@ export function Toolbar({
             <div className="my-1 border-t border-border" />
           )}
           <OverflowItem
-            label="検索と置換"
+            label={t("editor.toolbar.findReplace")}
             shortcut="Ctrl+H"
             onClick={() => {
               onFindReplace();
               setOverflowOpen(false);
             }}
           />
-          <OverflowItem label="目標文字数..." disabled />
+          <OverflowItem label={t("editor.toolbar.targetWordCount")} disabled />
           <OverflowItem
-            label="縦書きプレビュー"
+            label={t("editor.toolbar.verticalPreview")}
             onClick={() => {
               onVerticalPreview();
               setOverflowOpen(false);
             }}
           />
           <div className="my-1 border-t border-border" />
-          <OverflowItem label="ブレッドクラムを表示" disabled />
-          <OverflowItem label="行番号を表示" disabled />
+          <OverflowItem label={t("editor.toolbar.showBreadcrumb")} disabled />
+          <OverflowItem label={t("editor.toolbar.showLineNumbers")} disabled />
         </div>
       )}
 
@@ -631,7 +636,7 @@ export function Toolbar({
             <input
               autoFocus={!rubyFocusAnnotation}
               type="text"
-              placeholder="ベース"
+              placeholder={t("editor.toolbar.rubyBase")}
               value={rubyBase}
               onChange={(e) => setRubyBase(e.target.value)}
               onKeyDown={(e) => {
@@ -643,7 +648,7 @@ export function Toolbar({
             <input
               autoFocus={rubyFocusAnnotation}
               type="text"
-              placeholder="ふりがな"
+              placeholder={t("editor.toolbar.rubyAnnotation")}
               value={rubyAnnotation}
               onChange={(e) => setRubyAnnotation(e.target.value)}
               onKeyDown={(e) => {
