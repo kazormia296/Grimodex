@@ -36,8 +36,6 @@ const autoEntries: CodexEntry[] = [makeEntry("3", "Lira")];
 const defaultProps = {
   type: "character",
   label: "キャラクター",
-  expanded: false,
-  onToggle: vi.fn(),
   pinnedEntries,
   autoEntries: [] as CodexEntry[],
   onUnpin: vi.fn(),
@@ -45,7 +43,7 @@ const defaultProps = {
 };
 
 describe("ContextPillGroup", () => {
-  it("折りたたみ時にラベルと合計件数を表示する", () => {
+  it("閉じているときはラベルと合計件数を表示し、個別ピルは非表示", () => {
     render(
       <ContextPillGroup
         {...defaultProps}
@@ -54,75 +52,99 @@ describe("ContextPillGroup", () => {
       />,
     );
     expect(screen.getByText(/キャラクター/)).toBeInTheDocument();
-    // count = pinned(2) + auto(1) = 3
     expect(screen.getByText("(3)")).toBeInTheDocument();
     expect(screen.queryByText("Elara")).not.toBeInTheDocument();
   });
 
-  it("展開時に pinnedEntries → autoEntries の順で表示する", () => {
+  it("グループピルをクリックするとポップオーバーが開き個別ピルが表示される", async () => {
+    const user = userEvent.setup();
     render(
       <ContextPillGroup
         {...defaultProps}
-        expanded={true}
         pinnedEntries={pinnedEntries}
         autoEntries={autoEntries}
       />,
     );
+    await user.click(screen.getByRole("button", { name: /キャラクター/ }));
+    expect(screen.getByText("Elara")).toBeInTheDocument();
+    expect(screen.getByText("Taro")).toBeInTheDocument();
+    expect(screen.getByText("Lira")).toBeInTheDocument();
+  });
+
+  it("ポップオーバー内で pinnedEntries → autoEntries の順で表示する", async () => {
+    const user = userEvent.setup();
+    render(
+      <ContextPillGroup
+        {...defaultProps}
+        pinnedEntries={pinnedEntries}
+        autoEntries={autoEntries}
+      />,
+    );
+    await user.click(screen.getByRole("button", { name: /キャラクター/ }));
     const items = screen.getAllByText(/Elara|Taro|Lira/);
     expect(items[0]).toHaveTextContent("Elara");
     expect(items[1]).toHaveTextContent("Taro");
     expect(items[2]).toHaveTextContent("Lira");
   });
 
-  it("グループピルクリック時に onToggle を呼び出す", async () => {
-    const onToggle = vi.fn();
+  it("再クリックでポップオーバーが閉じる", async () => {
     const user = userEvent.setup();
-    render(<ContextPillGroup {...defaultProps} onToggle={onToggle} />);
+    render(
+      <ContextPillGroup
+        {...defaultProps}
+        pinnedEntries={pinnedEntries}
+        autoEntries={[]}
+      />,
+    );
     await user.click(screen.getByRole("button", { name: /キャラクター/ }));
-    expect(onToggle).toHaveBeenCalledOnce();
+    expect(screen.getByText("Elara")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: /キャラクター/ }));
+    expect(screen.queryByText("Elara")).not.toBeInTheDocument();
   });
 
-  it("展開時にピン済みエントリは×ボタンで onUnpin を呼び出す", async () => {
+  it("ポップオーバー表示中はヘッダーピルに▴を表示する", async () => {
+    const user = userEvent.setup();
+    render(<ContextPillGroup {...defaultProps} />);
+    await user.click(screen.getByRole("button", { name: /キャラクター/ }));
+    expect(screen.getByText("▴")).toBeInTheDocument();
+  });
+
+  it("ポップオーバー非表示時はグループピルに▾を表示する", () => {
+    render(<ContextPillGroup {...defaultProps} />);
+    expect(screen.getByText("▾")).toBeInTheDocument();
+  });
+
+  it("ポップオーバー内のピン済みエントリは×ボタンで onUnpin を呼び出す", async () => {
     const onUnpin = vi.fn();
     const user = userEvent.setup();
     render(
       <ContextPillGroup
         {...defaultProps}
-        expanded={true}
         pinnedEntries={pinnedEntries}
         autoEntries={[]}
         onUnpin={onUnpin}
       />,
     );
+    await user.click(screen.getByRole("button", { name: /キャラクター/ }));
     await user.click(
       screen.getByRole("button", { name: /Elaraのピン留め解除/ }),
     );
     expect(onUnpin).toHaveBeenCalledWith("1");
   });
 
-  it("展開時にautoエントリはPinボタンで onPin を呼び出す", async () => {
+  it("ポップオーバー内のautoエントリはPinボタンで onPin を呼び出す", async () => {
     const onPin = vi.fn();
     const user = userEvent.setup();
     render(
       <ContextPillGroup
         {...defaultProps}
-        expanded={true}
         pinnedEntries={[]}
         autoEntries={autoEntries}
         onPin={onPin}
       />,
     );
+    await user.click(screen.getByRole("button", { name: /キャラクター/ }));
     await user.click(screen.getByRole("button", { name: /Liraをピン留め/ }));
     expect(onPin).toHaveBeenCalledWith("3");
-  });
-
-  it("展開時はヘッダーピルに▴を表示する", () => {
-    render(<ContextPillGroup {...defaultProps} expanded={true} />);
-    expect(screen.getByText("▴")).toBeInTheDocument();
-  });
-
-  it("折りたたみ時はグループピルに▾を表示する", () => {
-    render(<ContextPillGroup {...defaultProps} expanded={false} />);
-    expect(screen.getByText("▾")).toBeInTheDocument();
   });
 });

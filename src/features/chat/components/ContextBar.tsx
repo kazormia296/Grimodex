@@ -55,7 +55,6 @@ export function ContextBar({
   const [collapsed, setCollapsed] = useState(false);
   const [previewOpen, setPreviewOpen] = useState(false);
   const [creatorOpen, setCreatorOpen] = useState(false);
-  const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set());
   const typeColorMap = useCodexHighlightStore((s) => s.typeColorMap);
 
   const allContextEntries = [
@@ -80,15 +79,6 @@ export function ContextBar({
       g.auto.push(entry);
       groupMap.set(entry.type, g);
     }
-  }
-
-  function toggleGroup(type: string) {
-    setExpandedGroups((prev) => {
-      const next = new Set(prev);
-      if (next.has(type)) next.delete(type);
-      else next.add(type);
-      return next;
-    });
   }
 
   const pinnedIds = pinnedEntries.map((e) => e.id);
@@ -183,8 +173,6 @@ export function ContextBar({
                     key={type}
                     type={type}
                     label={getTypeLabel(type)}
-                    expanded={expandedGroups.has(type)}
-                    onToggle={() => toggleGroup(type)}
                     pinnedEntries={group.pinned}
                     autoEntries={group.auto}
                     onUnpin={onUnpin}
