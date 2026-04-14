@@ -301,10 +301,6 @@ export function ContextBar({
 export function ContextBarConnected(
   props: Omit<ContextBarProps, "systemPrompt">,
 ) {
-  // messages の先頭の system メッセージからプロンプトを取得
-  const systemPrompt = useChatStore((s) => {
-    const sys = s.messages.find((m) => m.role === "system");
-    return sys?.content ?? "";
-  });
+  const systemPrompt = useChatStore((s) => s.lastSystemPrompt);
   return <ContextBar {...props} systemPrompt={systemPrompt} />;
 }

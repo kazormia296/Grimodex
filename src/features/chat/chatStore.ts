@@ -224,6 +224,7 @@ interface ChatState {
   activeProjectId: string | null;
   contextTokenCount: number;
   contextLayers: LayerBreakdown[];
+  lastSystemPrompt: string;
 
   // G15: auto-detected and always-mode entries (excluding pinned)
   detectedEntries: CodexEntry[];
@@ -316,6 +317,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
   activeProjectId: null,
   contextTokenCount: 0,
   contextLayers: [],
+  lastSystemPrompt: "",
   detectedEntries: [],
   alwaysEntries: [],
   agentMode: false,
@@ -643,7 +645,10 @@ export const useChatStore = create<ChatState>()((set, get) => ({
             project: projectCtx ?? undefined,
             storySoFar: storySoFar || undefined,
           });
-          set({ contextTokenCount: countTokens(systemPrompt) });
+          set({
+            contextTokenCount: countTokens(systemPrompt),
+            lastSystemPrompt: systemPrompt,
+          });
           agentMsgs.push({ role: "system", content: systemPrompt });
         }
 
@@ -1121,6 +1126,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
         set({
           contextTokenCount: promptResult.totalTokens,
           contextLayers: promptResult.layers,
+          lastSystemPrompt: promptResult.prompt,
         });
 
         const systemMsg: ChatMessage = {
@@ -1511,6 +1517,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
       set({
         contextTokenCount: promptResult.totalTokens,
         contextLayers: promptResult.layers,
+        lastSystemPrompt: promptResult.prompt,
       });
     } catch {
       // コンテキスト計算失敗は無視（送信時に再計算される）
