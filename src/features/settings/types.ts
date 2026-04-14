@@ -85,8 +85,8 @@ export const DEFAULT_SETTINGS: Record<string, string> = {
   "revision.keepCount": "50",
   // Tree / naming
   "tree.folderNaming": "auto",
-  "tree.sceneNaming": "シーン",
-  "tree.noteNaming": "ノート",
+  // tree.sceneNaming / tree.noteNaming: intentionally omitted — fallback
+  // is resolved via i18next so the default follows the active UI language.
   "tree.numberingScope": "project",
   // Export
   "export.format": "plaintext",

@@ -16,8 +16,14 @@ export function ProjectCategory() {
   const { t } = useTranslation();
   const { project, isLoading, updateField } = useProjectSettings();
   const folderNaming = useSettingControl("tree.folderNaming", "auto");
-  const sceneNaming = useSettingControl("tree.sceneNaming", "シーン");
-  const noteNaming = useSettingControl("tree.noteNaming", "ノート");
+  const sceneNaming = useSettingControl(
+    "tree.sceneNaming",
+    t("tree.defaultScene"),
+  );
+  const noteNaming = useSettingControl(
+    "tree.noteNaming",
+    t("tree.defaultNote"),
+  );
   const numberingScope = useSettingControl("tree.numberingScope", "project");
 
   const GENRE_OPTIONS = [
