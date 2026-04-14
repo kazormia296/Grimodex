@@ -1,0 +1,927 @@
+# Grimodex MCP サーバー設計書
+
+## 1. 概要
+
+### 目的
+
+Grimodex のプロジェクトデータ（シーン本文、Codex、チャット履歴等）を
+**MCP (Model Context Protocol)** サーバーとして公開し、
+Claude Code などの AI エージェントから自然言語で操作できるようにする。
+
+### ユースケース
+
+```
+ユーザー → Claude Code → MCP Server → Grimodex DB / Content Files
+              ↓
+  「第3章のキャラ名を全シーンで置換して」
+  「Codexに未登場のキャラがいないか確認して」
+  「伏線を整理して未回収のものをリストにして」
+  「全体の文体を統一して」
+```
+
+### 棲み分け
+
+| 操作タイプ | 担当 |
+|-----------|------|
+| 1シーンの執筆・対話 | Grimodex 内蔵 AI チャット |
+| プロジェクト横断の分析・一括操作 | Claude Code + MCP Server |
+
+### スコープ
+
+- **v1**: 読み取り中心 + Codex 書き込み
+- **v2**: シーン書き込み（ファイル監視連携が前提）
+- **v3**: AI チャット履歴の活用、スナップショット操作
+
+---
+
+## 2. アーキテクチャ
+
+### 全体構成
+
+```
+┌──────────────────────┐
+│    Claude Code       │
+│  (MCP Client)        │
+└────────┬─────────────┘
+         │ stdio (JSON-RPC 2.0)
+         │
+┌────────▼─────────────┐
+│  grimodex-mcp        │
+│  (スタンドアロン     │
+│   Rust バイナリ)      │
+└────────┬─────────────┘
+         │ 直接アクセス
+    ┌────┴────┐
+    │         │
+┌───▼───┐ ┌──▼──────────┐
+│SQLite │ │ Content Dir  │
+│(WAL)  │ │ (.md files)  │
+└───────┘ └─────────────┘
+    ▲         ▲
+    │         │  ← 同じ DB / ディレクトリを共有
+┌───┴─────────┴──┐
+│  Grimodex      │
+│  (Tauri App)   │
+└────────────────┘
+```
+
+### 設計判断
+
+| 決定事項 | 選択 | 理由 |
+|---------|------|------|
+| 配置形態 | スタンドアロンバイナリ | Grimodex 未起動でも動作、Claude Code から直接 spawn |
+| トランスポート | stdio | ローカル用途、設定がシンプル、MCP 標準 |
+| DB 同時アクセス | WAL モード + busy_timeout | 読み取り中心なら安全、書き込みは Codex のみ (v1) |
+| シーン書き込み | v1 では不可（読み取り専用） | エディタ内バッファとの競合を回避 |
+| コンテンツ形式 | Markdown テキスト | Claude Code が処理しやすい。ProseMirror JSON は返さない |
+| Rust SDK | `rmcp` クレート | 公式 Rust SDK、tokio ベース |
+
+### Cargo ワークスペース構成
+
+```
+src-tauri/
+├── Cargo.toml          ← workspace root に変更
+├── src/                ← 既存の Tauri アプリ
+├── crates/
+│   └── grimodex-mcp/
+│       ├── Cargo.toml
+│       └── src/
+│           ├── main.rs       ← エントリポイント (stdio server)
+│           ├── tools/        ← MCP Tool ハンドラ
+│           │   ├── mod.rs
+│           │   ├── project.rs
+│           │   ├── scene.rs
+│           │   ├── codex.rs
+│           │   ├── search.rs
+│           │   ├── chat.rs
+│           │   └── stats.rs
+│           ├── db.rs          ← DB 接続 (rusqlite + WAL)
+│           ├── content.rs     ← Markdown ファイル読み取り
+│           └── convert.rs     ← ProseMirror JSON → Markdown 変換
+```
+
+将来的には `database.rs`, `content.rs` 等を共有ライブラリクレート
+(`grimodex-core`) に抽出し、Tauri アプリと MCP サーバーの両方から
+参照する構成にする。v1 では MCP サーバー側に必要最低限のコードを複製する。
+
+### DB 接続
+
+```rust
+// grimodex-mcp/src/db.rs
+use rusqlite::Connection;
+
+pub fn open_db(workspace_path: &Path) -> Result<Connection> {
+    let db_path = workspace_path.join("grimodex.db");
+    let conn = Connection::open(&db_path)?;
+
+    // Grimodex 本体と同じ PRAGMA 設定
+    conn.execute_batch("
+        PRAGMA journal_mode = WAL;
+        PRAGMA foreign_keys = ON;
+        PRAGMA busy_timeout = 5000;
+    ")?;
+
+    Ok(conn)
+}
+```
+
+---
+
+## 3. MCP Tools
+
+### 3.1 プロジェクト情報
+
+#### `get_project`
+
+プロジェクトの基本情報を取得する。
+
+```json
+{
+  "name": "get_project",
+  "description": "プロジェクトのタイトル、ジャンル、文体設定、AI指示などの基本情報を取得する",
+  "inputSchema": {
+    "type": "object",
+    "properties": {},
+    "required": []
+  }
+}
+```
+
+**戻り値:**
+```json
+{
+  "id": "uuid",
+  "title": "影の回廊",
+  "genre": "ファンタジー",
+  "pov": "一人称",
+  "tense": "現在形",
+  "language": "ja",
+  "styleGuide": "比喩は視覚的なものを優先...",
+  "aiInstructions": "...",
+  "createdAt": "2026-01-15T...",
+  "updatedAt": "2026-04-10T..."
+}
+```
+
+---
+
+### 3.2 シーン・構造
+
+#### `list_tree`
+
+章・シーン・ノートのツリー構造を取得する。
+
+```json
+{
+  "name": "list_tree",
+  "description": "プロジェクトの章・シーン・ノートのツリー構造を階層的に取得する。各ノードのタイトル、種類(folder/scene/note)、ステータス、あらすじを含む",
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "node_type": {
+        "type": "string",
+        "enum": ["folder", "scene", "note"],
+        "description": "フィルタ: 指定した種類のノードのみ返す"
+      },
+      "status": {
+        "type": "string",
+        "enum": ["outline", "draft", "complete", "revision", "final"],
+        "description": "フィルタ: 指定したステータスのノードのみ返す"
+      }
+    },
+    "required": []
+  }
+}
+```
+
+**戻り値:**
+```json
+[
+  {
+    "id": "uuid",
+    "parentId": null,
+    "nodeType": "folder",
+    "title": "第1章 目覚め",
+    "sortOrder": 1.0,
+    "status": null,
+    "synopsis": null,
+    "children": [
+      {
+        "id": "uuid",
+        "parentId": "parent-uuid",
+        "nodeType": "scene",
+        "title": "朝の教室",
+        "sortOrder": 1.0,
+        "status": "draft",
+        "synopsis": "主人公が異変に気づく場面",
+        "wordCount": 2340,
+        "children": []
+      }
+    ]
+  }
+]
+```
+
+#### `read_scene`
+
+シーンの本文を Markdown で取得する。
+
+```json
+{
+  "name": "read_scene",
+  "description": "指定したシーンの本文をMarkdown形式で取得する。シーンID、タイトル、またはパス（章名/シーン名）で指定可能",
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "scene_id": {
+        "type": "string",
+        "description": "シーンのUUID"
+      },
+      "title": {
+        "type": "string",
+        "description": "シーンのタイトル（部分一致検索）"
+      }
+    },
+    "required": []
+  }
+}
+```
+
+**戻り値:**
+```json
+{
+  "id": "uuid",
+  "title": "朝の教室",
+  "status": "draft",
+  "synopsis": "主人公が異変に気づく場面",
+  "chapter": "第1章 目覚め",
+  "wordCount": 2340,
+  "markdown": "　教室に入ると、いつもと空気が違った。\n\n..."
+}
+```
+
+#### `read_scenes_batch`
+
+複数シーンの本文を一括取得する。
+
+```json
+{
+  "name": "read_scenes_batch",
+  "description": "複数シーンの本文を一括でMarkdown形式で取得する。章単位やステータスでフィルタ可能",
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "scene_ids": {
+        "type": "array",
+        "items": { "type": "string" },
+        "description": "取得するシーンIDの配列"
+      },
+      "parent_id": {
+        "type": "string",
+        "description": "指定した章(folder)配下の全シーンを取得"
+      },
+      "status": {
+        "type": "string",
+        "enum": ["outline", "draft", "complete", "revision", "final"],
+        "description": "指定したステータスのシーンのみ取得"
+      }
+    },
+    "required": []
+  }
+}
+```
+
+---
+
+### 3.3 全文検索
+
+#### `search`
+
+FTS5 トリグラムインデックスを使った横断検索。日本語対応。
+
+```json
+{
+  "name": "search",
+  "description": "プロジェクト全体をFTS5全文検索する。シーン本文、Codexエントリ、チャット履歴、ノートを横断的に検索。日本語対応（トリグラムトークナイザ）",
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "query": {
+        "type": "string",
+        "description": "検索クエリ（FTS5構文対応: AND/OR/NOT、フレーズ検索 \"...\" ）"
+      },
+      "scope": {
+        "type": "array",
+        "items": {
+          "type": "string",
+          "enum": ["scenes", "codex", "chat", "notes"]
+        },
+        "description": "検索対象を限定する。省略時は全対象を検索"
+      },
+      "limit": {
+        "type": "integer",
+        "default": 20,
+        "description": "最大結果数"
+      }
+    },
+    "required": ["query"]
+  }
+}
+```
+
+**戻り値:**
+```json
+{
+  "results": [
+    {
+      "type": "scene",
+      "id": "uuid",
+      "title": "朝の教室",
+      "chapter": "第1章 目覚め",
+      "snippet": "...教室に入ると、いつもと<<空気が違った>>。窓の外は...",
+      "rank": 0.95
+    },
+    {
+      "type": "codex",
+      "id": "uuid",
+      "name": "真田陽介",
+      "entryType": "character",
+      "snippet": "...<<空気>>を読む能力に長けている...",
+      "rank": 0.72
+    }
+  ],
+  "totalCount": 15
+}
+```
+
+---
+
+### 3.4 Codex（設定資料）
+
+#### `list_codex_entries`
+
+Codex エントリの一覧を取得する。
+
+```json
+{
+  "name": "list_codex_entries",
+  "description": "Codex（設定資料）エントリの一覧を取得する。キャラクター、場所、アイテム等のカテゴリでフィルタ可能",
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "type": {
+        "type": "string",
+        "description": "エントリタイプのslugでフィルタ (例: character, location, item, lore)"
+      },
+      "tag": {
+        "type": "string",
+        "description": "タグ名でフィルタ"
+      }
+    },
+    "required": []
+  }
+}
+```
+
+**戻り値:**
+```json
+[
+  {
+    "id": "uuid",
+    "name": "真田陽介",
+    "type": "character",
+    "typeLabel": "キャラクター",
+    "aliases": ["陽介", "真田"],
+    "summary": "主人公。22歳、魔法工学科の学生。",
+    "tags": ["主要キャラ", "工学科"],
+    "contextMode": "mentioned",
+    "hasChildren": true
+  }
+]
+```
+
+#### `get_codex_entry`
+
+Codex エントリの詳細を取得する。
+
+```json
+{
+  "name": "get_codex_entry",
+  "description": "指定したCodexエントリの完全な詳細を取得する。プロフィール項目、フェーズ情報、関連タグを含む",
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "entry_id": {
+        "type": "string",
+        "description": "エントリのUUID"
+      },
+      "name": {
+        "type": "string",
+        "description": "エントリ名で検索（部分一致）"
+      }
+    },
+    "required": []
+  }
+}
+```
+
+**戻り値:**
+```json
+{
+  "id": "uuid",
+  "name": "真田陽介",
+  "type": "character",
+  "aliases": ["陽介", "真田"],
+  "summary": "主人公。22歳、魔法工学科の学生。",
+  "content": "真田陽介は魔法工学科の3年生で...(Markdown)",
+  "notes": "第8章で覚醒イベント予定 (Markdown)",
+  "tags": ["主要キャラ", "工学科"],
+  "details": [
+    { "name": "年齢", "value": "22" },
+    { "name": "所属", "value": "魔法工学科" },
+    { "name": "関係者", "value": "桐谷凛（同級生）" }
+  ],
+  "phases": [
+    {
+      "id": "uuid",
+      "label": "覚醒後",
+      "anchorScene": "第8章 - 真実",
+      "summaryOverride": "覚醒後の陽介は..."
+    }
+  ],
+  "children": [
+    { "id": "uuid", "name": "真田の剣", "type": "item" }
+  ]
+}
+```
+
+#### `create_codex_entry`
+
+新しい Codex エントリを作成する。
+
+```json
+{
+  "name": "create_codex_entry",
+  "description": "新しいCodexエントリを作成する。キャラクター、場所、アイテム、設定などの設定資料を追加",
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "name": {
+        "type": "string",
+        "description": "エントリ名"
+      },
+      "type": {
+        "type": "string",
+        "description": "エントリタイプ slug (例: character, location, item, lore)"
+      },
+      "aliases": {
+        "type": "array",
+        "items": { "type": "string" },
+        "description": "別名リスト（本文中のハイライト検出に使用）"
+      },
+      "summary": {
+        "type": "string",
+        "description": "概要（AI コンテキストに注入される要約文）"
+      },
+      "content": {
+        "type": "string",
+        "description": "詳細な説明（Markdown）"
+      },
+      "parent_id": {
+        "type": "string",
+        "description": "親エントリのID（子エントリとして作成する場合）"
+      }
+    },
+    "required": ["name", "type"]
+  }
+}
+```
+
+#### `update_codex_entry`
+
+既存の Codex エントリを更新する。
+
+```json
+{
+  "name": "update_codex_entry",
+  "description": "既存のCodexエントリを更新する。指定したフィールドのみ更新される",
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "entry_id": {
+        "type": "string",
+        "description": "更新するエントリのUUID"
+      },
+      "name": { "type": "string" },
+      "aliases": {
+        "type": "array",
+        "items": { "type": "string" }
+      },
+      "summary": { "type": "string" },
+      "content": { "type": "string", "description": "Markdown" }
+    },
+    "required": ["entry_id"]
+  }
+}
+```
+
+---
+
+### 3.5 チャット履歴
+
+#### `list_chat_sessions`
+
+チャットセッション一覧を取得する。
+
+```json
+{
+  "name": "list_chat_sessions",
+  "description": "チャットセッションの一覧を取得する。シーン単位のセッションとその概要を確認できる",
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "scene_id": {
+        "type": "string",
+        "description": "特定シーンに紐づくセッションのみ取得"
+      }
+    },
+    "required": []
+  }
+}
+```
+
+#### `read_chat_history`
+
+チャットセッションのメッセージ履歴を取得する。
+
+```json
+{
+  "name": "read_chat_history",
+  "description": "指定したチャットセッションのメッセージ履歴を取得する。AIとの過去の議論内容を確認できる",
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "session_id": {
+        "type": "string",
+        "description": "チャットセッションのUUID"
+      },
+      "starred_only": {
+        "type": "boolean",
+        "default": false,
+        "description": "スター付きメッセージのみ取得"
+      },
+      "limit": {
+        "type": "integer",
+        "default": 50,
+        "description": "最大メッセージ数"
+      }
+    },
+    "required": ["session_id"]
+  }
+}
+```
+
+---
+
+### 3.6 スニペット
+
+#### `list_snippets`
+
+スニペット（抽出されたテキスト断片）の一覧を取得する。
+
+```json
+{
+  "name": "list_snippets",
+  "description": "チャットやシーンから抽出されたスニペットの一覧を取得する",
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "tag": {
+        "type": "string",
+        "description": "タグ名でフィルタ"
+      },
+      "limit": {
+        "type": "integer",
+        "default": 50
+      }
+    },
+    "required": []
+  }
+}
+```
+
+---
+
+### 3.7 統計・分析
+
+#### `get_project_stats`
+
+プロジェクトの統計情報を取得する。
+
+```json
+{
+  "name": "get_project_stats",
+  "description": "プロジェクト全体の統計情報を取得する。文字数、シーン数、章ごとの内訳、Codexエントリ数、ステータス分布を含む",
+  "inputSchema": {
+    "type": "object",
+    "properties": {},
+    "required": []
+  }
+}
+```
+
+**戻り値:**
+```json
+{
+  "totalWordCount": 85200,
+  "totalScenes": 42,
+  "totalChapters": 12,
+  "chaptersBreakdown": [
+    {
+      "title": "第1章 目覚め",
+      "scenes": 4,
+      "wordCount": 8500,
+      "status": { "draft": 2, "complete": 2 }
+    }
+  ],
+  "statusDistribution": {
+    "outline": 5,
+    "draft": 18,
+    "complete": 12,
+    "revision": 5,
+    "final": 2
+  },
+  "codexEntries": {
+    "character": 15,
+    "location": 8,
+    "item": 12,
+    "lore": 6
+  },
+  "attribution": {
+    "human": 0.72,
+    "ai": 0.24,
+    "unknown": 0.04
+  }
+}
+```
+
+#### `get_attribution_report`
+
+帰属（AI/人間）の詳細レポートを取得する。
+
+```json
+{
+  "name": "get_attribution_report",
+  "description": "各シーンのAI/人間のテキスト寄与率を詳細に取得する",
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "scene_id": {
+        "type": "string",
+        "description": "特定シーンのレポートのみ取得。省略時は全シーン"
+      }
+    },
+    "required": []
+  }
+}
+```
+
+---
+
+### 3.8 ツール一覧（サマリ）
+
+| ツール名 | 読/書 | v1 | 概要 |
+|---------|------|-----|------|
+| `get_project` | R | o | プロジェクト基本情報 |
+| `list_tree` | R | o | ツリー構造一覧 |
+| `read_scene` | R | o | シーン本文（Markdown） |
+| `read_scenes_batch` | R | o | 複数シーン一括取得 |
+| `search` | R | o | FTS5 横断検索 |
+| `list_codex_entries` | R | o | Codex 一覧 |
+| `get_codex_entry` | R | o | Codex 詳細 |
+| `create_codex_entry` | W | o | Codex 新規作成 |
+| `update_codex_entry` | W | o | Codex 更新 |
+| `list_chat_sessions` | R | o | チャットセッション一覧 |
+| `read_chat_history` | R | o | チャット履歴取得 |
+| `list_snippets` | R | o | スニペット一覧 |
+| `get_project_stats` | R | o | プロジェクト統計 |
+| `get_attribution_report` | R | o | 帰属レポート |
+| `write_scene` | W | v2 | シーン本文書き込み |
+| `create_scene` | W | v2 | シーン新規作成 |
+| `update_scene_metadata` | W | v2 | シーンメタデータ更新 |
+
+---
+
+## 4. MCP Resources
+
+URI ベースで Grimodex のデータをリソースとして公開する。
+Claude Code がコンテキストとして参照できる。
+
+| URI パターン | 説明 |
+|-------------|------|
+| `grimodex://project` | プロジェクト情報 |
+| `grimodex://tree` | ツリー構造全体 |
+| `grimodex://scene/{id}` | シーン本文 (Markdown) |
+| `grimodex://codex/{id}` | Codex エントリ詳細 |
+| `grimodex://codex` | Codex 全エントリ概要 |
+| `grimodex://stats` | プロジェクト統計 |
+
+---
+
+## 5. コンテンツ変換
+
+### ProseMirror JSON → Markdown
+
+Codex エントリの `content` と `notes` は ProseMirror JSON で保存されている。
+MCP サーバーはこれを Markdown に変換して返す。
+
+対応するノードタイプ:
+
+| ProseMirror Node | Markdown 出力 |
+|-----------------|---------------|
+| `paragraph` | テキスト + 改行 |
+| `heading` | `#` ~ `######` |
+| `bulletList` / `listItem` | `- ` |
+| `orderedList` / `listItem` | `1. ` |
+| `codeBlock` | ` ``` ` |
+| `blockquote` | `> ` |
+| `horizontalRule` | `---` |
+| `table` | GFM テーブル |
+| `ruby` | `{漢字\|かんじ}` |
+| `sceneBreak` | `***` |
+
+対応するマーク:
+
+| Mark | Markdown |
+|------|----------|
+| `bold` | `**text**` |
+| `italic` | `*text*` |
+| `strike` | `~~text~~` |
+| `code` | `` `text` `` |
+| `link` | `[text](url)` |
+| `underline` | `<u>text</u>` |
+| `emphasisDots` | `《《text》》` |
+
+`authorship` マークは変換時に除去する（帰属情報は別途 API で取得）。
+
+### シーン本文
+
+シーンの本文は Content Dir に Markdown ファイルとして保存されている。
+`content_read` 相当の処理でファイルを直接読み取る。
+DB 上の `treeNodes.content`（ProseMirror JSON）は使用しない。
+
+---
+
+## 6. 設定
+
+### .mcp.json
+
+Claude Code 用の設定ファイル。プロジェクトルートまたはユーザーホームに配置。
+
+```json
+{
+  "mcpServers": {
+    "grimodex": {
+      "command": "grimodex-mcp",
+      "args": ["--workspace", "/path/to/your/novel-project"],
+      "env": {}
+    }
+  }
+}
+```
+
+### CLI オプション
+
+```
+grimodex-mcp [OPTIONS]
+
+Options:
+  -w, --workspace <PATH>   Grimodex ワークスペースのパス（必須）
+  -p, --project <ID>       プロジェクトID（省略時は最初のプロジェクトを使用）
+      --readonly           書き込みツールを無効化
+      --verbose            デバッグログを stderr に出力
+  -h, --help               ヘルプ表示
+```
+
+### 起動時の検証
+
+1. `--workspace` パスに `grimodex.db` が存在するか確認
+2. DB を WAL モードで開く（`busy_timeout = 5000`）
+3. スキーマバージョンを確認（互換性チェック）
+4. Content Dir のパスを解決: `{workspace}/content/`
+   （Tauri 本体と同じ: `lib.rs` L115 `ws_path.join("content")`）
+5. MCP サーバーを stdio で起動
+
+---
+
+## 7. セキュリティ
+
+### データアクセス
+
+- MCP サーバーは**ローカルのみ**で動作（stdio）。ネットワーク公開しない
+- API キーにはアクセスしない（keyring は Tauri 側のみ）
+- `--readonly` フラグで書き込みを完全に無効化可能
+
+### 書き込み制限 (v1)
+
+- シーン本文への書き込みは v1 では無効
+  - エディタの in-memory バッファとの競合を回避
+  - v2 でファイル監視（`notify` クレート）を導入後に解禁
+- Codex エントリの書き込みは許可（条件付き）
+  - Codex パネルは `entries` を Zustand ストアにキャッシュし、
+    明示的な操作（作成・削除・フィルタ変更）時のみ DB から再読み込みする
+  - MCP からの書き込みは Grimodex 側に即座には反映されない
+  - **Phase 3 前提タスク**: Codex ストアに DB 変更検知 or 定期リロードを追加し、
+    外部書き込みを安全にハンドリングできることを確認してから書き込みツールを有効化する
+  - 暫定対応: MCP で Codex を更新した後、ユーザーに Grimodex 側で
+    パネルを閉じて開き直す旨を返答メッセージに含める
+- DB の `busy_timeout` を 5000ms に設定し、`SQLITE_BUSY` をエラーとして返す
+
+### 入力バリデーション
+
+- SQL インジェクション防止: パラメータ化クエリのみ使用（`db_execute` パターン踏襲）
+- パストラバーサル防止: `scene_id` は UUID 形式のみ受け付け
+- 入力サイズ制限: `content` フィールドは 1MB まで
+
+---
+
+## 8. 実装フェーズ
+
+### Phase 1: 基盤 + 読み取りツール
+
+1. Cargo ワークスペース構成を作成
+2. `rmcp` で stdio MCP サーバーの骨格を実装
+3. DB 接続 + Content Dir 読み取りを実装
+4. ProseMirror JSON → Markdown 変換器を実装
+5. 読み取りツールを実装:
+   - `get_project`, `list_tree`, `read_scene`, `read_scenes_batch`
+   - `list_codex_entries`, `get_codex_entry`
+   - `get_project_stats`
+6. Claude Code で接続テスト
+
+### Phase 2: 検索 + チャット
+
+1. FTS5 検索ツール `search` を実装
+2. チャット履歴ツール `list_chat_sessions`, `read_chat_history` を実装
+3. スニペット `list_snippets` を実装
+4. `get_attribution_report` を実装
+5. MCP Resources を実装
+
+### Phase 3: Codex 書き込み
+
+1. `create_codex_entry` を実装
+2. `update_codex_entry` を実装
+3. FTS5 インデックスの同期更新を実装
+4. 書き込み時の排他制御テスト
+
+### Phase 4: シーン書き込み (v2)
+
+1. Grimodex 本体にファイル監視（`notify` クレート）を追加
+2. 外部変更検出時のエディタ再読み込み UI を実装
+3. `write_scene`, `create_scene`, `update_scene_metadata` を実装
+4. 書き込み時の Content Dir + DB 両方の整合性を保証
+
+---
+
+## 9. 依存クレート（追加分）
+
+```toml
+[dependencies]
+rmcp = { version = "0.1", features = ["server", "transport-io"] }
+schemars = "1"
+rusqlite = { version = "0.39", features = ["bundled"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+tokio = { version = "1", features = ["full"] }
+clap = { version = "4", features = ["derive"] }
+anyhow = "1"
+thiserror = "2"
+uuid = { version = "1", features = ["v4"] }
+tracing = "0.1"
+tracing-subscriber = "0.3"
+```
+
+---
+
+## 10. テスト計画
+
+### 単体テスト
+
+- ProseMirror JSON → Markdown 変換の各ノードタイプ
+- DB クエリの正確性（テスト用 in-memory DB）
+- Content Dir のファイル解決ロジック
+- 入力バリデーション（UUID 形式、サイズ制限）
+
+### 統合テスト
+
+- テスト用ワークスペースを作成し、全ツールの動作を確認
+- Grimodex 本体と MCP サーバーの同時アクセス（WAL 動作確認）
+- `SQLITE_BUSY` 発生時のエラーハンドリング
+
+### E2E テスト
+
+- Claude Code から `.mcp.json` 経由で接続
+- 自然言語での操作テスト:
+  - 「このプロジェクトの構成を教えて」→ `list_tree` + `get_project`
+  - 「田中というキャラを検索して」→ `search` or `list_codex_entries`
+  - 「新しいキャラをCodexに追加して」→ `create_codex_entry`
