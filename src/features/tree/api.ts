@@ -113,6 +113,7 @@ async function getSceneMetadata(sceneId: string) {
 export async function saveSceneContent(
   sceneId: string,
   markdown: string,
+  contentJson?: string,
 ): Promise<void> {
   const meta = await getSceneMetadata(sceneId);
   await invoke("content_write", {
@@ -124,7 +125,10 @@ export async function saveSceneContent(
   });
   await db
     .update(treeNodes)
-    .set({ updatedAt: new Date().toISOString() })
+    .set({
+      updatedAt: new Date().toISOString(),
+      ...(contentJson !== undefined ? { content: contentJson } : {}),
+    })
     .where(eq(treeNodes.id, sceneId));
 }
 

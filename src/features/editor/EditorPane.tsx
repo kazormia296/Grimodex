@@ -243,7 +243,7 @@ export function EditorPane({
     } else {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const md = (ed.storage as any).markdown.getMarkdown() as string;
-      await saveSceneContent(id, md);
+      await saveSceneContent(id, md, JSON.stringify(ed.getJSON()));
       await saveAuthorshipSpans(id, ed.state.doc);
       useTreeStore
         .getState()
