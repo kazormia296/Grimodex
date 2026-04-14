@@ -44,7 +44,7 @@ export function CodexQuickSection() {
       <div className="py-1">
         {displayed.length === 0 ? (
           <p className="px-3 py-2 text-[11px] text-muted-foreground">
-            エントリなし
+            {t("tree.quickSection.noEntries")}
           </p>
         ) : (
           displayed.map((entry) => (
@@ -109,7 +109,7 @@ export function CodexQuickSection() {
           className="mt-1 flex w-full items-center gap-1.5 px-2 py-1 text-[11px] text-muted-foreground hover:text-foreground"
         >
           <Plus className="h-3 w-3" />
-          Codexをピン留め
+          {t("tree.quickSection.pinCodex")}
         </button>
       </div>
 

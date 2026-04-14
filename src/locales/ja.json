@@ -286,8 +286,8 @@
       "customSection": "カスタム",
       "saveName": "プリセット名",
       "default": "デフォルト",
-      "chatMain": "チャットメイン",
-      "codexMain": "Codexメイン",
+      "chatMain": "チャット",
+      "codexMain": "Codex",
       "saveLayout": "現在のレイアウトを保存",
       "resetDefault": "デフォルトに戻す"
     }
@@ -628,18 +628,26 @@
     },
     "quickSection": {
       "unpin": "ピン留め解除",
-      "pin": "ピン留め"
+      "pin": "ピン留め",
+      "noEntries": "エントリなし",
+      "pinCodex": "Codexをピン留め"
     }
   },
 
   "chatCommands": {
     "continue": { "description": "現在のシーンの続きを生成" },
     "describe": { "description": "対象の描写を生成", "argPlaceholder": "対象" },
-    "dialogue": { "description": "キャラクターの台詞を生成", "argPlaceholder": "キャラ名" },
+    "dialogue": {
+      "description": "キャラクターの台詞を生成",
+      "argPlaceholder": "キャラ名"
+    },
     "summarize": { "description": "現在のシーンの要約を生成" },
     "brainstorm": { "description": "プロットのブレインストーミング" },
     "rewrite": { "description": "選択中テキストの書き直し" },
-    "translate": { "description": "選択テキストを翻訳", "argPlaceholder": "言語" }
+    "translate": {
+      "description": "選択テキストを翻訳",
+      "argPlaceholder": "言語"
+    }
   },
 
   "editor": {

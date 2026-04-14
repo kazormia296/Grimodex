@@ -286,8 +286,8 @@
       "customSection": "Custom",
       "saveName": "Preset name",
       "default": "Default",
-      "chatMain": "Chat Main",
-      "codexMain": "Codex Main",
+      "chatMain": "Chat",
+      "codexMain": "Codex",
       "saveLayout": "Save current layout",
       "resetDefault": "Reset to default"
     }
@@ -628,18 +628,29 @@
     },
     "quickSection": {
       "unpin": "Unpin",
-      "pin": "Pin"
+      "pin": "Pin",
+      "noEntries": "No entries",
+      "pinCodex": "Pin Codex entry"
     }
   },
 
   "chatCommands": {
     "continue": { "description": "Generate continuation of the current scene" },
-    "describe": { "description": "Generate description of a subject", "argPlaceholder": "Subject" },
-    "dialogue": { "description": "Generate character dialogue", "argPlaceholder": "Character name" },
+    "describe": {
+      "description": "Generate description of a subject",
+      "argPlaceholder": "Subject"
+    },
+    "dialogue": {
+      "description": "Generate character dialogue",
+      "argPlaceholder": "Character name"
+    },
     "summarize": { "description": "Generate summary of the current scene" },
     "brainstorm": { "description": "Brainstorm plot ideas" },
     "rewrite": { "description": "Rewrite selected text" },
-    "translate": { "description": "Translate selected text", "argPlaceholder": "Language" }
+    "translate": {
+      "description": "Translate selected text",
+      "argPlaceholder": "Language"
+    }
   },
 
   "editor": {
