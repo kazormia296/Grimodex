@@ -68,6 +68,7 @@ export const DEFAULT_SETTINGS: Record<string, string> = {
   // AI
   "ai.inlineModel": "",
   "ai.sessionTitleModel": "",
+  "ai.modelWhitelist": "[]",
   "ai.contextBudget.l1": "2",
   "ai.contextBudget.l2": "10",
   "ai.contextBudget.l3": "40",

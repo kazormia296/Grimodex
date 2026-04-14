@@ -148,7 +148,11 @@
       "contextBudgetL3": "L3 Current scene",
       "contextBudgetL4": "L4 Codex & Snippets",
       "contextBudgetL5": "L5 Chat history",
-      "contextBudgetReserve": "Response reserve"
+      "contextBudgetReserve": "Response reserve",
+      "modelWhitelist": "Models shown in chat",
+      "modelWhitelistDesc": "Only checked models appear in the chat panel. Leave all unchecked to show every model.",
+      "modelWhitelistSearch": "Search models…",
+      "modelWhitelistNoResults": "No models match your search"
     },
     "project": {
       "basic": "Basic Info",

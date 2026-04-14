@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from "react";
 import { useTranslation } from "react-i18next";
 import { useAiSettingsStore } from "@/features/chat/store";
-import { AI_PROVIDERS } from "@/features/chat/types";
+import { AI_PROVIDERS, groupModelsByDeveloper } from "@/features/chat/types";
 import type { AiProvider } from "@/features/chat/types";
 import { getModelCapabilities } from "@/features/chat/agent/modelLimits";
 import { SettingSection } from "../components/SettingSection";
@@ -77,6 +77,7 @@ export function AiCategory() {
   const [apiKeyInput, setApiKeyInput] = useState("");
   const [localSettings, setLocalSettings] = useState(settings);
   const [showKey, setShowKey] = useState(false);
+  const [whitelistFilter, setWhitelistFilter] = useState("");
 
   useEffect(() => {
     loadSettings();
@@ -244,77 +245,190 @@ export function AiCategory() {
 
       {/* Models */}
       <SettingSection title={t("settings.ai.models")}>
-        <SettingRow label={t("settings.ai.defaultChatModel")}>
-          <div className="flex gap-2">
-            <select
-              value={localSettings.model}
-              onChange={(e) => handleModelChange(e.target.value)}
-              className="rounded-md border border-input bg-background px-2 py-1 text-sm focus:outline-none"
-              disabled={isLoadingModels}
-            >
-              <option value="">
-                {isLoadingModels
-                  ? t("settings.ai.loadingModels")
-                  : t("settings.ai.selectModel")}
-              </option>
-              {models.map((m) => (
-                <option key={m.id} value={m.id}>
-                  {m.name}
-                </option>
+        {(() => {
+          const grouped = groupModelsByDeveloper(models);
+          const devLabel = (dev: string) =>
+            dev
+              ? dev.charAt(0).toUpperCase() + dev.slice(1)
+              : t("common.other");
+          const modelOptgroups = (extraOption?: React.ReactNode) => (
+            <>
+              {extraOption}
+              {grouped.map(([dev, devModels]) => (
+                <optgroup key={dev || "__other"} label={devLabel(dev)}>
+                  {devModels.map((m) => (
+                    <option key={m.id} value={m.id}>
+                      {m.name}
+                    </option>
+                  ))}
+                </optgroup>
               ))}
-            </select>
-            <button
-              type="button"
-              onClick={handleLoadModels}
-              disabled={isLoadingModels}
-              className="rounded-md border border-border px-2 py-1 text-sm hover:bg-accent disabled:opacity-50"
-            >
-              {t("settings.ai.refresh")}
-            </button>
-          </div>
-        </SettingRow>
+            </>
+          );
 
-        <SettingRow
-          label={t("settings.ai.inlineModel")}
-          description={t("settings.ai.inlineModelDesc")}
-        >
-          <select
-            value={settingsStore.get("ai.inlineModel")}
-            onChange={(e) =>
-              settingsStore.set("ai.inlineModel", e.target.value)
+          const whitelist: string[] = (() => {
+            try {
+              return JSON.parse(settingsStore.get("ai.modelWhitelist") || "[]");
+            } catch {
+              return [];
             }
-            className="rounded-md border border-input bg-background px-2 py-1 text-sm focus:outline-none"
-            disabled={isLoadingModels}
-          >
-            <option value="">{t("settings.ai.sameChatModel")}</option>
-            {models.map((m) => (
-              <option key={m.id} value={m.id}>
-                {m.name}
-              </option>
-            ))}
-          </select>
-        </SettingRow>
+          })();
+          const handleWhitelistToggle = (modelId: string, add: boolean) => {
+            const current: string[] = (() => {
+              try {
+                return JSON.parse(
+                  settingsStore.get("ai.modelWhitelist") || "[]",
+                );
+              } catch {
+                return [];
+              }
+            })();
+            const next = add
+              ? [...current, modelId]
+              : current.filter((id) => id !== modelId);
+            settingsStore.set("ai.modelWhitelist", JSON.stringify(next));
+          };
 
-        <SettingRow
-          label={t("settings.ai.titleModel")}
-          description={t("settings.ai.titleModelDesc")}
-        >
-          <select
-            value={settingsStore.get("ai.sessionTitleModel")}
-            onChange={(e) =>
-              settingsStore.set("ai.sessionTitleModel", e.target.value)
-            }
-            className="rounded-md border border-input bg-background px-2 py-1 text-sm focus:outline-none"
-            disabled={isLoadingModels}
-          >
-            <option value="">{t("settings.ai.sameChatModel")}</option>
-            {models.map((m) => (
-              <option key={m.id} value={m.id}>
-                {m.name}
-              </option>
-            ))}
-          </select>
-        </SettingRow>
+          return (
+            <>
+              <SettingRow label={t("settings.ai.defaultChatModel")}>
+                <div className="flex gap-2">
+                  <select
+                    value={localSettings.model}
+                    onChange={(e) => handleModelChange(e.target.value)}
+                    className="rounded-md border border-input bg-background px-2 py-1 text-sm focus:outline-none"
+                    disabled={isLoadingModels}
+                  >
+                    {modelOptgroups(
+                      <option value="">
+                        {isLoadingModels
+                          ? t("settings.ai.loadingModels")
+                          : t("settings.ai.selectModel")}
+                      </option>,
+                    )}
+                  </select>
+                  <button
+                    type="button"
+                    onClick={handleLoadModels}
+                    disabled={isLoadingModels}
+                    className="rounded-md border border-border px-2 py-1 text-sm hover:bg-accent disabled:opacity-50"
+                  >
+                    {t("settings.ai.refresh")}
+                  </button>
+                </div>
+              </SettingRow>
+
+              <SettingRow
+                label={t("settings.ai.inlineModel")}
+                description={t("settings.ai.inlineModelDesc")}
+              >
+                <select
+                  value={settingsStore.get("ai.inlineModel")}
+                  onChange={(e) =>
+                    settingsStore.set("ai.inlineModel", e.target.value)
+                  }
+                  className="rounded-md border border-input bg-background px-2 py-1 text-sm focus:outline-none"
+                  disabled={isLoadingModels}
+                >
+                  {modelOptgroups(
+                    <option value="">{t("settings.ai.sameChatModel")}</option>,
+                  )}
+                </select>
+              </SettingRow>
+
+              <SettingRow
+                label={t("settings.ai.titleModel")}
+                description={t("settings.ai.titleModelDesc")}
+              >
+                <select
+                  value={settingsStore.get("ai.sessionTitleModel")}
+                  onChange={(e) =>
+                    settingsStore.set("ai.sessionTitleModel", e.target.value)
+                  }
+                  className="rounded-md border border-input bg-background px-2 py-1 text-sm focus:outline-none"
+                  disabled={isLoadingModels}
+                >
+                  {modelOptgroups(
+                    <option value="">{t("settings.ai.sameChatModel")}</option>,
+                  )}
+                </select>
+              </SettingRow>
+
+              {/* Model whitelist */}
+              {models.length > 0 && (
+                <div className="mt-3">
+                  <p className="mb-1 text-sm font-medium text-foreground">
+                    {t("settings.ai.modelWhitelist")}
+                  </p>
+                  <p className="mb-2 text-xs text-muted-foreground">
+                    {t("settings.ai.modelWhitelistDesc")}
+                  </p>
+                  <input
+                    type="search"
+                    value={whitelistFilter}
+                    onChange={(e) => setWhitelistFilter(e.target.value)}
+                    placeholder={t("settings.ai.modelWhitelistSearch")}
+                    className="mb-1.5 w-full rounded-md border border-input bg-background px-2 py-1 text-xs focus:outline-none"
+                  />
+                  <div className="max-h-48 overflow-y-auto rounded-md border border-border bg-muted/30 p-2">
+                    {(() => {
+                      const q = whitelistFilter.trim().toLowerCase();
+                      const filteredGrouped = q
+                        ? grouped
+                            .map(
+                              ([dev, devModels]) =>
+                                [
+                                  dev,
+                                  devModels.filter(
+                                    (m) =>
+                                      (m.name || m.id)
+                                        .toLowerCase()
+                                        .includes(q) ||
+                                      dev.toLowerCase().includes(q),
+                                  ),
+                                ] as [string, typeof devModels],
+                            )
+                            .filter(([, devModels]) => devModels.length > 0)
+                        : grouped;
+                      if (filteredGrouped.length === 0) {
+                        return (
+                          <p className="px-1.5 py-2 text-xs text-muted-foreground">
+                            {t("settings.ai.modelWhitelistNoResults")}
+                          </p>
+                        );
+                      }
+                      return filteredGrouped.map(([dev, devModels]) => (
+                        <div key={dev || "__other"}>
+                          {grouped.length > 1 && (
+                            <div className="px-1.5 pb-0.5 pt-2 first:pt-0 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+                              {devLabel(dev)}
+                            </div>
+                          )}
+                          {devModels.map((m) => (
+                            <label
+                              key={m.id}
+                              className="flex cursor-pointer items-center gap-2 rounded px-1.5 py-1 text-xs hover:bg-accent"
+                            >
+                              <input
+                                type="checkbox"
+                                checked={whitelist.includes(m.id)}
+                                onChange={(e) =>
+                                  handleWhitelistToggle(m.id, e.target.checked)
+                                }
+                                className="h-3 w-3 shrink-0"
+                              />
+                              <span className="truncate">{m.name || m.id}</span>
+                            </label>
+                          ))}
+                        </div>
+                      ));
+                    })()}
+                  </div>
+                </div>
+              )}
+            </>
+          );
+        })()}
 
         {/* Thinking toggle — thinking対応モデル選択時のみ表示 */}
         {localSettings.model &&

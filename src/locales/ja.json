@@ -148,7 +148,11 @@
       "contextBudgetL3": "L3 現在のシーン",
       "contextBudgetL4": "L4 Codex & Snippets",
       "contextBudgetL5": "L5 会話履歴",
-      "contextBudgetReserve": "レスポンス予約"
+      "contextBudgetReserve": "レスポンス予約",
+      "modelWhitelist": "チャットに表示するモデル",
+      "modelWhitelistDesc": "チェックしたモデルのみチャットパネルに表示します。未選択の場合はすべてのモデルを表示します。",
+      "modelWhitelistSearch": "モデルを検索…",
+      "modelWhitelistNoResults": "該当するモデルがありません"
     },
     "project": {
       "basic": "基本情報",

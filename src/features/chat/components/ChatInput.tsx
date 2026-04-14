@@ -7,6 +7,7 @@ import { useEditor, EditorContent } from "@tiptap/react";
 import type { Editor } from "@tiptap/core";
 import { useAiSettingsStore } from "../store";
 import { useChatStore } from "../chatStore";
+import { useSettingsStore } from "@/features/settings/settingsStore";
 import { getModelCapabilities } from "../agent/modelLimits";
 import { getChatInputExtensions } from "../extensions/chatInputExtensions";
 import { useCodexHighlight } from "@/features/editor/useCodexHighlight";
@@ -43,8 +44,18 @@ export function ChatInput({
 
   const aiSettings = useAiSettingsStore((s) => s.settings);
   const saveSettings = useAiSettingsStore((s) => s.saveSettings);
-  const models = useAiSettingsStore((s) => s.models);
+  const allModels = useAiSettingsStore((s) => s.models);
   const loadModels = useAiSettingsStore((s) => s.loadModels);
+  const modelWhitelistRaw = useSettingsStore((s) => s.get("ai.modelWhitelist"));
+  const models = (() => {
+    try {
+      const whitelist: string[] = JSON.parse(modelWhitelistRaw || "[]");
+      if (whitelist.length === 0) return allModels;
+      return allModels.filter((m) => whitelist.includes(m.id));
+    } catch {
+      return allModels;
+    }
+  })();
 
   const currentModel = aiSettings?.model ?? "";
   const caps = getModelCapabilities(currentModel);
