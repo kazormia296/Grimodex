@@ -57,6 +57,7 @@ import { shouldAutoDraftTransition } from "@/features/editor/autoStatusTransitio
 import { shouldPromptSynopsis } from "@/features/editor/synopsisSuggestion";
 import { getDocText } from "@/features/editor/RubyNode";
 import { generateSynopsisFromContent } from "@/features/chat/chatApi";
+import { prosemirrorToText } from "@/lib/prosemirror";
 import { toast } from "sonner";
 import { debugLog, errorDetail } from "@/lib/debugLog";
 import i18next from "i18next";
@@ -196,7 +197,8 @@ export function EditorPane({
             const node = useTreeStore.getState().nodes.find((n) => n.id === id);
             if (!node) return;
             try {
-              const content = await loadSceneContent(id);
+              const rawContent = await loadSceneContent(id);
+              const content = prosemirrorToText(rawContent);
               if (!content?.trim()) {
                 toast.warning(i18next.t("editor.status.emptySceneWarning"));
                 return;
@@ -241,9 +243,7 @@ export function EditorPane({
       await updateSnippet(id, { content });
       useSnippetStore.getState().update(id, { content });
     } else {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const md = (ed.storage as any).markdown.getMarkdown() as string;
-      await saveSceneContent(id, md, JSON.stringify(ed.getJSON()));
+      await saveSceneContent(id, JSON.stringify(ed.getJSON()));
       await saveAuthorshipSpans(id, ed.state.doc);
       useTreeStore
         .getState()
@@ -726,10 +726,11 @@ export function EditorPane({
           if (cancelled) return;
           editor!.commands.setContent(snippet?.content || "");
         } else {
-          // Load scene/note content (Markdown)
+          // Load scene/note content (ProseMirror JSON)
           const content = await loadSceneContent(nodeId);
           if (cancelled) return;
-          editor!.commands.setContent(content || "");
+          const parsed = content && content !== "{}" ? JSON.parse(content) : "";
+          editor!.commands.setContent(parsed);
         }
       } finally {
         isApplyingExternalUpdate.current = false;

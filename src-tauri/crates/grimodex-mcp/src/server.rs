@@ -1,6 +1,5 @@
 //! GrimodexServer – rmcp ServerHandler implementation.
 
-use std::path::PathBuf;
 use std::sync::Mutex;
 
 use rmcp::handler::server::wrapper::Parameters;
@@ -12,7 +11,6 @@ use crate::tools;
 
 pub struct GrimodexServer {
     pub conn: Mutex<Connection>,
-    pub content_dir: PathBuf,
     pub project_id: String,
     /// Used in Phase 3 to gate write tools.
     #[allow(dead_code)]
@@ -20,10 +18,9 @@ pub struct GrimodexServer {
 }
 
 impl GrimodexServer {
-    pub fn new(conn: Connection, content_dir: PathBuf, project_id: String, readonly: bool) -> Self {
+    pub fn new(conn: Connection, project_id: String, readonly: bool) -> Self {
         Self {
             conn: Mutex::new(conn),
-            content_dir,
             project_id,
             readonly,
         }

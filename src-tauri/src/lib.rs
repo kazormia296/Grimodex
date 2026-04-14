@@ -1,11 +1,9 @@
 mod ai;
 mod codex_matching;
-mod content;
 mod database;
 mod workspace;
 
 use codex_matching::CodexMatcherState;
-use content::ContentDir;
 use database::Database;
 use serde::Serialize;
 use serde_json::Value;
@@ -36,11 +34,10 @@ struct QueryResult {
     rows: Vec<serde_json::Map<String, Value>>,
 }
 
-/// Holds the currently-open workspace's DB and content directory.
+/// Holds the currently-open workspace's DB.
 /// Wrapped in Option so it can be None before a workspace is opened.
 struct ActiveWorkspace {
     db: Database,
-    content: ContentDir,
     #[allow(dead_code)]
     path: PathBuf,
 }
@@ -111,15 +108,10 @@ fn open_workspace(
     let database = Database::new(&db_path)?;
     database.migrate()?;
 
-    // Open content directory
-    let content_path = ws_path.join("content");
-    let content = ContentDir::new(content_path)?;
-
     // Set as active workspace
     let mut inner = ws_state.inner.lock().map_err(|e| anyhow::anyhow!("{e}"))?;
     *inner = Some(ActiveWorkspace {
         db: database,
-        content,
         path: ws_path,
     });
 
@@ -146,17 +138,6 @@ fn with_db<T>(
     Ok(f(&ws.db)?)
 }
 
-fn with_content<T>(
-    ws_state: &tauri::State<'_, WorkspaceState>,
-    f: impl FnOnce(&ContentDir) -> anyhow::Result<T>,
-) -> Result<T, AppError> {
-    let inner = ws_state.inner.lock().map_err(|e| anyhow::anyhow!("{e}"))?;
-    let ws = inner
-        .as_ref()
-        .ok_or_else(|| anyhow::anyhow!("No workspace is open"))?;
-    Ok(f(&ws.content)?)
-}
-
 #[tauri::command]
 fn db_execute(
     ws_state: tauri::State<'_, WorkspaceState>,
@@ -167,49 +148,6 @@ fn db_execute(
     with_db(&ws_state, |db| {
         let rows = db.execute(&sql, &params, &method)?;
         Ok(QueryResult { rows })
-    })
-}
-
-#[tauri::command]
-fn content_write(
-    ws_state: tauri::State<'_, WorkspaceState>,
-    scene_id: String,
-    markdown: String,
-    title: String,
-    chapter_order: u32,
-    scene_order: u32,
-) -> Result<(), AppError> {
-    with_content(&ws_state, |content| {
-        content.write(&scene_id, &markdown, &title, chapter_order, scene_order)
-    })
-}
-
-#[tauri::command]
-fn content_read(
-    ws_state: tauri::State<'_, WorkspaceState>,
-    scene_id: String,
-) -> Result<String, AppError> {
-    with_content(&ws_state, |content| content.read(&scene_id))
-}
-
-#[tauri::command]
-fn content_delete(
-    ws_state: tauri::State<'_, WorkspaceState>,
-    scene_id: String,
-) -> Result<(), AppError> {
-    with_content(&ws_state, |content| content.delete(&scene_id))
-}
-
-#[tauri::command]
-fn content_rename(
-    ws_state: tauri::State<'_, WorkspaceState>,
-    scene_id: String,
-    title: String,
-    chapter_order: u32,
-    scene_order: u32,
-) -> Result<(), AppError> {
-    with_content(&ws_state, |content| {
-        content.rename(&scene_id, &title, chapter_order, scene_order)
     })
 }
 
@@ -479,10 +417,6 @@ pub fn run() {
             validate_workspace_path,
             open_workspace,
             db_execute,
-            content_write,
-            content_read,
-            content_delete,
-            content_rename,
             get_ai_settings,
             save_ai_settings,
             save_api_key,

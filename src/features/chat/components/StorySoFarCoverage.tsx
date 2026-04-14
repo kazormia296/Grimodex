@@ -3,6 +3,7 @@ import { useTranslation } from "react-i18next";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { useSceneStore } from "@/features/tree/store";
 import { loadSceneContent } from "@/features/tree/api";
+import { prosemirrorToText } from "@/lib/prosemirror";
 import { generateSynopsisFromContent } from "@/features/chat/chatApi";
 import { toast } from "sonner";
 
@@ -54,7 +55,8 @@ export function StorySoFarCoverage() {
     let failed = 0;
     for (const scene of missing) {
       try {
-        const content = await loadSceneContent(scene.id);
+        const rawContent = await loadSceneContent(scene.id);
+        const content = prosemirrorToText(rawContent);
         if (content?.trim()) {
           const synopsis = await generateSynopsisFromContent(
             scene.title,

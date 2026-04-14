@@ -1,32 +1,9 @@
 import { db } from "@/db/client";
 import { treeNodes, codexEntries, codexTypes } from "@/db/schema";
 import { eq, asc } from "drizzle-orm";
+import { prosemirrorToText } from "@/lib/prosemirror";
 
 const PROJECT_ID = "default-project";
-
-/** Convert ProseMirror JSON content to plain text */
-function prosemirrorToText(content: string): string {
-  try {
-    const doc = JSON.parse(content);
-    return extractText(doc);
-  } catch {
-    return content;
-  }
-}
-
-function extractText(node: {
-  type?: string;
-  text?: string;
-  content?: unknown[];
-}): string {
-  if (node.text) return node.text;
-  if (!node.content) return "";
-  const parts = node.content.map((child) => extractText(child as typeof node));
-  if (node.type === "paragraph" || node.type === "heading") {
-    return parts.join("") + "\n";
-  }
-  return parts.join("");
-}
 
 export async function exportAsMarkdown(): Promise<string> {
   const scenes = await db

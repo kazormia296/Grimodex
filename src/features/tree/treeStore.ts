@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import i18next from "@/lib/i18n";
+import { prosemirrorToText } from "@/lib/prosemirror";
 import * as api from "./api";
 import type { TreeNode as ApiNode } from "./api";
 import { loadBatchAiRatio } from "@/features/attribution/api";
@@ -401,9 +402,10 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
       );
       Promise.allSettled(
         contentNodes.map((n) =>
-          api
-            .loadSceneContent(n.id)
-            .then((content) => ({ id: n.id, count: content.length })),
+          api.loadSceneContent(n.id).then((content) => ({
+            id: n.id,
+            count: prosemirrorToText(content).length,
+          })),
         ),
       ).then((results) => {
         const counts: Record<string, number> = {};

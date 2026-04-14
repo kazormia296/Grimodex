@@ -55,8 +55,8 @@ import type {
   AgentLoopProgress,
 } from "./agent/agentTypes";
 import { useTreeStore } from "@/features/tree/treeStore";
-import { loadSceneContent } from "@/features/tree/api";
-import { getNode } from "@/features/tree/api";
+import { loadSceneContent, getNode } from "@/features/tree/api";
+import { prosemirrorToText } from "@/lib/prosemirror";
 import { getProject } from "@/features/project/api";
 import { useSettingsStore } from "@/features/settings/settingsStore";
 import { listCodexEntries } from "@/features/codex/api";
@@ -279,7 +279,11 @@ async function fetchSceneContext(
       loadSceneContent(sceneId),
     ]);
     if (!node) return null;
-    return { id: node.id, title: node.title, content: content ?? "" };
+    return {
+      id: node.id,
+      title: node.title,
+      content: prosemirrorToText(content ?? ""),
+    };
   } catch {
     return null;
   }

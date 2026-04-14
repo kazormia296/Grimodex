@@ -2,6 +2,7 @@ import { useState, useEffect, useRef, useCallback } from "react";
 import { useTranslation } from "react-i18next";
 import { useTreeStore } from "./treeStore";
 import { loadSceneContent } from "./api";
+import { prosemirrorToText } from "@/lib/prosemirror";
 import { generateSynopsisFromContent } from "@/features/chat/chatApi";
 import { toast } from "sonner";
 
@@ -40,7 +41,8 @@ export function SynopsisArea({ nodeId }: SynopsisAreaProps) {
     setConfirmOverwrite(false);
     setIsGenerating(true);
     try {
-      const content = await loadSceneContent(nodeId);
+      const rawContent = await loadSceneContent(nodeId);
+      const content = prosemirrorToText(rawContent);
       if (!content?.trim()) {
         toast.warning(t("tree.synopsis.emptySceneWarning"));
         return;
@@ -60,7 +62,8 @@ export function SynopsisArea({ nodeId }: SynopsisAreaProps) {
   const handleGenerate = useCallback(async () => {
     if (!node) return;
     // Check body content first, before asking about overwrite
-    const content = await loadSceneContent(nodeId);
+    const rawContent = await loadSceneContent(nodeId);
+    const content = prosemirrorToText(rawContent);
     if (!content?.trim()) {
       toast.warning(t("tree.synopsis.emptySceneWarning"));
       return;

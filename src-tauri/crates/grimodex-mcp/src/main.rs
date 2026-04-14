@@ -1,4 +1,3 @@
-mod content;
 mod convert;
 mod db;
 mod sanitize;
@@ -43,8 +42,6 @@ async fn main() -> anyhow::Result<()> {
             cli.workspace.display()
         );
     }
-    let content_dir = cli.workspace.join("content");
-
     // Open DB
     let conn = db::open_db(&db_path)?;
 
@@ -62,7 +59,7 @@ async fn main() -> anyhow::Result<()> {
     );
 
     // Build and run server
-    let handler = server::GrimodexServer::new(conn, content_dir, project_id, cli.readonly);
+    let handler = server::GrimodexServer::new(conn, project_id, cli.readonly);
     let (stdin, stdout) = rmcp::transport::io::stdio();
     let service = rmcp::serve_server(handler, (stdin, stdout)).await?;
     service.waiting().await?;

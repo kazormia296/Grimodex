@@ -1,4 +1,6 @@
 import { invoke } from "@/lib/tauri";
+import { loadSceneContent } from "@/features/tree/api";
+import { prosemirrorToText } from "@/lib/prosemirror";
 import { listCodexEntries } from "./api";
 import type { CodexEntry } from "./api";
 import { createCodexMatcher } from "./codexMatcher";
@@ -52,9 +54,8 @@ export async function buildCrossReferenceReport(): Promise<
   for (const scene of scenes) {
     let content: string;
     try {
-      content = await invoke<string>("content_read", {
-        sceneId: scene.id,
-      });
+      const rawContent = await loadSceneContent(scene.id);
+      content = prosemirrorToText(rawContent);
     } catch {
       continue;
     }
@@ -105,7 +106,7 @@ export async function buildCrossReferenceReport(): Promise<
   return result;
 }
 
-/** Simpler version: just ignore content_read, for testing */
+/** Simpler version: accepts pre-loaded scene texts, for testing */
 export function buildCrossReferenceFromTexts(
   entries: Array<{ id: string; name: string; type: string }>,
   sceneTexts: Array<{ id: string; title: string; content: string }>,

@@ -1,7 +1,6 @@
 import { db } from "@/db/client";
 import { treeNodes } from "@/db/schema";
 import { eq, and, isNull } from "drizzle-orm";
-import { invoke } from "@/lib/tauri";
 
 export type TreeNode = typeof treeNodes.$inferSelect;
 export type NewTreeNode = typeof treeNodes.$inferInsert;
@@ -71,81 +70,30 @@ export async function updateNode(
 }
 
 export async function deleteNode(id: string): Promise<void> {
-  // Delete content file first (before DB record) to avoid orphaned files
-  const node = await getNode(id);
-  if (node?.nodeType === "scene") {
-    await invoke("content_delete", { sceneId: id });
-  }
   await db.delete(treeNodes).where(eq(treeNodes.id, id));
 }
 
 // --- Scene content operations ---
 
-async function getSceneMetadata(sceneId: string) {
-  const rows = await db
-    .select({
-      title: treeNodes.title,
-      sortOrder: treeNodes.sortOrder,
-      parentId: treeNodes.parentId,
-    })
-    .from(treeNodes)
-    .where(eq(treeNodes.id, sceneId));
-  const node = rows[0];
-  if (!node) return { title: "untitled", chapterOrder: 0, sceneOrder: 0 };
-
-  // Get parent's sort order for file naming
-  let chapterOrder = 0;
-  if (node.parentId) {
-    const parentRows = await db
-      .select({ sortOrder: treeNodes.sortOrder })
-      .from(treeNodes)
-      .where(eq(treeNodes.id, node.parentId));
-    chapterOrder = parentRows[0]?.sortOrder ?? 0;
-  }
-
-  return {
-    title: node.title,
-    chapterOrder: Math.max(0, Math.round(chapterOrder)),
-    sceneOrder: Math.max(0, Math.round(node.sortOrder)),
-  };
-}
-
+/** Save ProseMirror JSON content for a scene to the DB. */
 export async function saveSceneContent(
   sceneId: string,
-  markdown: string,
-  contentJson?: string,
+  contentJson: string,
 ): Promise<void> {
-  const meta = await getSceneMetadata(sceneId);
-  await invoke("content_write", {
-    sceneId,
-    markdown,
-    title: meta.title,
-    chapterOrder: meta.chapterOrder,
-    sceneOrder: meta.sceneOrder,
-  });
   await db
     .update(treeNodes)
     .set({
+      content: contentJson,
       updatedAt: new Date().toISOString(),
-      ...(contentJson !== undefined ? { content: contentJson } : {}),
     })
     .where(eq(treeNodes.id, sceneId));
 }
 
+/** Load ProseMirror JSON content for a scene from the DB. Returns empty string if not found. */
 export async function loadSceneContent(sceneId: string): Promise<string> {
-  return invoke<string>("content_read", { sceneId });
-}
-
-export async function renameSceneContent(
-  sceneId: string,
-  title: string,
-  chapterOrder: number,
-  sceneOrder: number,
-): Promise<void> {
-  await invoke("content_rename", {
-    sceneId,
-    title,
-    chapterOrder,
-    sceneOrder,
-  });
+  const rows = await db
+    .select({ content: treeNodes.content })
+    .from(treeNodes)
+    .where(eq(treeNodes.id, sceneId));
+  return rows[0]?.content ?? "";
 }

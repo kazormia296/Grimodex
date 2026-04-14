@@ -15,18 +15,9 @@ describe("invoke wrapper", () => {
 
   it("uses browser mock when __TAURI_INTERNALS__ is absent", async () => {
     const { invoke } = await import("./tauri");
-    // Should work without Tauri — content mock
-    await invoke("content_write", {
-      sceneId: "test-1",
-      markdown: "# Test",
-      title: "テスト",
-      chapterOrder: 1,
-      sceneOrder: 1,
-    });
-    const result = await invoke<string>("content_read", {
-      sceneId: "test-1",
-    });
-    expect(result).toBe("# Test");
+    // Should work without Tauri — global settings mock
+    const result = await invoke("get_global_settings");
+    expect(result).toBeDefined();
   });
 
   it("delegates to tauri invoke when __TAURI_INTERNALS__ is present", async () => {

@@ -152,7 +152,6 @@ const SCHEMA_DDL = `
   );
 `;
 
-const CONTENT_PREFIX = "grimodex:content:";
 const GLOBAL_SETTINGS_KEY = "grimodex:global-settings";
 
 export interface BrowserMock {
@@ -179,7 +178,6 @@ export async function createBrowserMock(): Promise<BrowserMock> {
     [now, now],
   );
 
-  const contentStore = new Map<string, string>();
   const AI_SETTINGS_KEY = "grimodex:ai-settings";
   const API_KEY_PREFIX = "grimodex:api-key:";
 
@@ -329,38 +327,6 @@ export async function createBrowserMock(): Promise<BrowserMock> {
     return { rows };
   }
 
-  function handleContentWrite(args: Record<string, unknown>): void {
-    const sceneId = args.sceneId as string;
-    const markdown = args.markdown as string;
-    contentStore.set(sceneId, markdown);
-    try {
-      localStorage.setItem(CONTENT_PREFIX + sceneId, markdown);
-    } catch {
-      // localStorage may not be available in test env
-    }
-  }
-
-  function handleContentRead(args: Record<string, unknown>): string {
-    const sceneId = args.sceneId as string;
-    const cached = contentStore.get(sceneId);
-    if (cached !== undefined) return cached;
-    try {
-      return localStorage.getItem(CONTENT_PREFIX + sceneId) ?? "";
-    } catch {
-      return "";
-    }
-  }
-
-  function handleContentDelete(args: Record<string, unknown>): void {
-    const sceneId = args.sceneId as string;
-    contentStore.delete(sceneId);
-    try {
-      localStorage.removeItem(CONTENT_PREFIX + sceneId);
-    } catch {
-      // noop
-    }
-  }
-
   function handleGetGlobalSettings(): Record<string, unknown> {
     try {
       const raw = localStorage.getItem(GLOBAL_SETTINGS_KEY);
@@ -450,17 +416,6 @@ export async function createBrowserMock(): Promise<BrowserMock> {
         return handleOpenWorkspace(args) as T;
       case "db_execute":
         return handleDbExecute(args) as T;
-      case "content_write":
-        handleContentWrite(args);
-        return undefined as T;
-      case "content_read":
-        return handleContentRead(args) as T;
-      case "content_delete":
-        handleContentDelete(args);
-        return undefined as T;
-      case "content_rename":
-        // In browser mock, rename is a no-op (content keyed by sceneId)
-        return undefined as T;
       case "get_ai_settings":
         return handleGetAiSettings() as T;
       case "save_ai_settings":

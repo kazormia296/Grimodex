@@ -1,4 +1,6 @@
 import { invoke } from "@/lib/tauri";
+import { loadSceneContent } from "@/features/tree/api";
+import { prosemirrorToText } from "@/lib/prosemirror";
 import { db } from "@/db/client";
 import {
   codexEntries,
@@ -323,7 +325,8 @@ async function getScene(
     };
   }
 
-  const markdown = await invoke<string>("content_read", { sceneId: id });
+  const rawContent = await loadSceneContent(id);
+  const markdown = prosemirrorToText(rawContent);
   const content = { id, title: node.title, content: markdown };
   const json = JSON.stringify(content);
   return {

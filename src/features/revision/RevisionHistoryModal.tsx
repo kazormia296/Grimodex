@@ -385,17 +385,9 @@ export function RevisionHistoryModal() {
       // 3. Set editor content
       mainEditor.commands.setContent(json);
 
-      // 4. Save the restored content as markdown + ProseMirror JSON
+      // 4. Save the restored content as ProseMirror JSON
       if (entityType === "scene") {
-        const getMarkdown = (
-          mainEditor.storage as { markdown?: { getMarkdown?: () => string } }
-        )?.markdown?.getMarkdown;
-        const md = typeof getMarkdown === "function" ? getMarkdown() : "";
-        await saveSceneContent(
-          entityId,
-          md,
-          JSON.stringify(mainEditor.getJSON()),
-        );
+        await saveSceneContent(entityId, JSON.stringify(mainEditor.getJSON()));
       }
 
       setConfirmRestore(false);
