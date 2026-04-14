@@ -189,7 +189,7 @@ export function TagSelector({
           }}
           className="rounded-full border border-dashed border-muted-foreground/40 px-1.5 py-0.5 text-[10px] text-muted-foreground hover:border-muted-foreground/70"
         >
-          + タグを追加
+          {t("codex.tagSelector.addTag")}
         </button>
 
         {dropdownOpen && (
@@ -197,7 +197,7 @@ export function TagSelector({
             <div className="max-h-48 overflow-y-auto p-1">
               {filteredTags.length === 0 && !showCreate && (
                 <p className="px-2 py-1 text-[10px] text-muted-foreground">
-                  タグなし
+                  {t("codex.tagSelector.noTags")}
                 </p>
               )}
               {filteredTags.map((tag) => (

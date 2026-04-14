@@ -402,7 +402,15 @@
       "usageRate": "使用率",
       "totalRow": "合計",
       "fullPrompt": "プロンプト全文",
-      "emptyPrompt": "（プロンプトなし）"
+      "emptyPrompt": "（プロンプトなし）",
+      "layer": {
+        "L1": "プロジェクト情報",
+        "L2": "これまでの物語",
+        "L3": "現在のシーン",
+        "L4": "Codex・設定情報",
+        "L5": "会話要約",
+        "L6": "コマンド指示"
+      }
     },
     "conversationSummary": "会話要約",
     "sessionMenu": "セッションメニュー",
@@ -492,6 +500,13 @@
       "addAsChild": "子として追加",
       "dismiss": "却下"
     },
+    "research": {
+      "notesLabel": "ノート",
+      "notInContext": "AIコンテキストに含まれません"
+    },
+    "sceneSelector": {
+      "none": "--- なし ---"
+    },
     "iconPicker": {
       "changeIcon": "アイコンを変更",
       "change": "変更"
@@ -509,7 +524,9 @@
     },
     "tagSelector": {
       "tagNamePlaceholder": "タグ名",
-      "createNew": "+ 新規作成"
+      "createNew": "+ 新規作成",
+      "addTag": "+ タグを追加",
+      "noTags": "タグなし"
     },
     "tab": {
       "details": "詳細",

@@ -402,7 +402,15 @@
       "usageRate": "Usage",
       "totalRow": "Total",
       "fullPrompt": "Full prompt",
-      "emptyPrompt": "(No prompt)"
+      "emptyPrompt": "(No prompt)",
+      "layer": {
+        "L1": "Project info",
+        "L2": "Story so far",
+        "L3": "Current scene",
+        "L4": "Codex & settings",
+        "L5": "Conversation summary",
+        "L6": "Command instruction"
+      }
     },
     "conversationSummary": "Conversation summary",
     "sessionMenu": "Session menu",
@@ -492,6 +500,13 @@
       "addAsChild": "Add as child",
       "dismiss": "Dismiss"
     },
+    "research": {
+      "notesLabel": "Notes",
+      "notInContext": "Not included in AI context"
+    },
+    "sceneSelector": {
+      "none": "--- None ---"
+    },
     "iconPicker": {
       "changeIcon": "Change icon",
       "change": "Change"
@@ -509,7 +524,9 @@
     },
     "tagSelector": {
       "tagNamePlaceholder": "Tag name",
-      "createNew": "+ Create new"
+      "createNew": "+ Create new",
+      "addTag": "+ Add tag",
+      "noTags": "No tags"
     },
     "tab": {
       "details": "Details",

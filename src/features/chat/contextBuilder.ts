@@ -1,4 +1,5 @@
 import { encodingForModel } from "js-tiktoken";
+import i18next from "@/lib/i18n";
 import type { TreeNodeData } from "@/features/tree/treeStore";
 import {
   formatTimelineContext,
@@ -478,35 +479,35 @@ export function buildSystemPrompt(
 
   layers.push({
     layer: "L1",
-    label: "プロジェクト情報",
+    label: i18next.t("chat.context.layer.L1"),
     used: countTokens(effectiveL1),
   });
   layers.push({
     layer: "L2",
-    label: "これまでの物語",
+    label: i18next.t("chat.context.layer.L2"),
     used: countTokens(effectiveL2),
   });
   layers.push({
     layer: "L3",
-    label: "現在のシーン",
+    label: i18next.t("chat.context.layer.L3"),
     used: countTokens(effectiveL3),
   });
   layers.push({
     layer: "L4",
-    label: "Codex・設定情報",
+    label: i18next.t("chat.context.layer.L4"),
     used: countTokens(effectiveL4),
   });
   if (effectiveL5) {
     layers.push({
       layer: "L5",
-      label: "会話要約",
+      label: i18next.t("chat.context.layer.L5"),
       used: countTokens(effectiveL5),
     });
   }
   if (effectiveL6) {
     layers.push({
       layer: "L6",
-      label: "コマンド指示",
+      label: i18next.t("chat.context.layer.L6"),
       used: countTokens(effectiveL6),
     });
   }

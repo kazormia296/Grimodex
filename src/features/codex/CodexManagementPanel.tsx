@@ -18,6 +18,7 @@ import { useCodexStore, type CodexSortOrder } from "./codexStore";
 import type { CodexEntry, CodexEntryType } from "./api";
 import type { CodexType } from "./typeApi";
 import { listCodexTypes, ensureBuiltinTypes } from "./typeApi";
+import { getTypeLabel } from "@/features/chat/utils/typeLabels";
 import { useCodexHighlightStore } from "@/features/editor/codexHighlightStore";
 import { EntryIcon } from "./components/EntryIcon";
 import { TagPill } from "./components/TagPill";
@@ -406,9 +407,10 @@ function CategoryGroupedList({
         const resolvedColor = typeColorMap[typeSlug];
         return {
           slug: typeSlug,
-          label:
-            codexType?.label ??
-            t(`codex.${typeSlug}`, { defaultValue: typeSlug }),
+          label: codexType?.isBuiltin
+            ? getTypeLabel(typeSlug)
+            : (codexType?.label ??
+              t(`codex.${typeSlug}`, { defaultValue: typeSlug })),
           color:
             resolvedColor?.fg ??
             codexType?.color ??
@@ -971,7 +973,10 @@ export function CodexManagementPanel({
       ];
       if (codexTypes.length > 0) {
         codexTypes.forEach((ct) =>
-          opts.push({ value: ct.slug, label: ct.label }),
+          opts.push({
+            value: ct.slug,
+            label: ct.isBuiltin ? getTypeLabel(ct.slug) : ct.label,
+          }),
         );
       } else {
         opts.push(
