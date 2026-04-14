@@ -537,88 +537,175 @@ pub fn search_fts(
     let mut results: Vec<SearchResult> = Vec::new();
     let lim = limit.min(50) as i64;
 
+    // FTS5 trigram requires ≥3 chars; fall back to LIKE for shorter queries.
+    let use_like = query.chars().count() < 3;
+    let like_pattern = format!("%{query}%");
+
     if scope == "all" || scope == "scenes" {
-        let mut stmt = conn.prepare(
-            "SELECT tn.id, tn.title, COALESCE(tn.synopsis, '')
-             FROM tree_nodes_fts
-             JOIN tree_nodes tn ON tn.rowid = tree_nodes_fts.rowid
-             WHERE tree_nodes_fts MATCH ?1 AND tn.project_id = ?2 AND tn.node_type = 'scene'
-             ORDER BY rank LIMIT ?3",
-        )?;
-        let rows = stmt.query_map(params![query, project_id, lim], |row| {
-            Ok(SearchResult {
-                source_type: "scene".to_string(),
-                id: row.get(0)?,
-                title: row.get(1)?,
-                excerpt: row.get(2)?,
-            })
-        })?;
-        for r in rows {
-            results.push(r.context("search scenes")?);
+        if use_like {
+            let mut stmt = conn.prepare(
+                "SELECT id, title, COALESCE(synopsis, '')
+                 FROM tree_nodes
+                 WHERE project_id = ?1 AND node_type = 'scene'
+                   AND (title LIKE ?2 OR content LIKE ?2)
+                 LIMIT ?3",
+            )?;
+            let rows = stmt.query_map(params![project_id, like_pattern, lim], |row| {
+                Ok(SearchResult {
+                    source_type: "scene".to_string(),
+                    id: row.get(0)?,
+                    title: row.get(1)?,
+                    excerpt: row.get(2)?,
+                })
+            })?;
+            for r in rows {
+                results.push(r.context("search scenes (like)")?);
+            }
+        } else {
+            let mut stmt = conn.prepare(
+                "SELECT tn.id, tn.title, COALESCE(tn.synopsis, '')
+                 FROM tree_nodes_fts
+                 JOIN tree_nodes tn ON tn.rowid = tree_nodes_fts.rowid
+                 WHERE tree_nodes_fts MATCH ?1 AND tn.project_id = ?2 AND tn.node_type = 'scene'
+                 ORDER BY rank LIMIT ?3",
+            )?;
+            let rows = stmt.query_map(params![query, project_id, lim], |row| {
+                Ok(SearchResult {
+                    source_type: "scene".to_string(),
+                    id: row.get(0)?,
+                    title: row.get(1)?,
+                    excerpt: row.get(2)?,
+                })
+            })?;
+            for r in rows {
+                results.push(r.context("search scenes")?);
+            }
         }
     }
 
     if scope == "all" || scope == "codex" {
-        let mut stmt = conn.prepare(
-            "SELECT e.id, e.name, COALESCE(e.summary, '')
-             FROM codex_fts
-             JOIN codex_entries e ON e.rowid = codex_fts.rowid
-             WHERE codex_fts MATCH ?1 AND e.project_id = ?2
-             ORDER BY rank LIMIT ?3",
-        )?;
-        let rows = stmt.query_map(params![query, project_id, lim], |row| {
-            Ok(SearchResult {
-                source_type: "codex".to_string(),
-                id: row.get(0)?,
-                title: row.get(1)?,
-                excerpt: row.get(2)?,
-            })
-        })?;
-        for r in rows {
-            results.push(r.context("search codex")?);
+        if use_like {
+            let mut stmt = conn.prepare(
+                "SELECT id, name, COALESCE(summary, '')
+                 FROM codex_entries
+                 WHERE project_id = ?1
+                   AND (name LIKE ?2 OR aliases LIKE ?2 OR summary LIKE ?2 OR content LIKE ?2)
+                 LIMIT ?3",
+            )?;
+            let rows = stmt.query_map(params![project_id, like_pattern, lim], |row| {
+                Ok(SearchResult {
+                    source_type: "codex".to_string(),
+                    id: row.get(0)?,
+                    title: row.get(1)?,
+                    excerpt: row.get(2)?,
+                })
+            })?;
+            for r in rows {
+                results.push(r.context("search codex (like)")?);
+            }
+        } else {
+            let mut stmt = conn.prepare(
+                "SELECT e.id, e.name, COALESCE(e.summary, '')
+                 FROM codex_fts
+                 JOIN codex_entries e ON e.rowid = codex_fts.rowid
+                 WHERE codex_fts MATCH ?1 AND e.project_id = ?2
+                 ORDER BY rank LIMIT ?3",
+            )?;
+            let rows = stmt.query_map(params![query, project_id, lim], |row| {
+                Ok(SearchResult {
+                    source_type: "codex".to_string(),
+                    id: row.get(0)?,
+                    title: row.get(1)?,
+                    excerpt: row.get(2)?,
+                })
+            })?;
+            for r in rows {
+                results.push(r.context("search codex")?);
+            }
         }
     }
 
     if scope == "all" || scope == "snippets" {
-        let mut stmt = conn.prepare(
-            "SELECT s.id, s.title, COALESCE(s.tags_cache, '')
-             FROM snippets_fts
-             JOIN snippets s ON s.rowid = snippets_fts.rowid
-             WHERE snippets_fts MATCH ?1 AND s.project_id = ?2
-             ORDER BY rank LIMIT ?3",
-        )?;
-        let rows = stmt.query_map(params![query, project_id, lim], |row| {
-            Ok(SearchResult {
-                source_type: "snippet".to_string(),
-                id: row.get(0)?,
-                title: row.get(1)?,
-                excerpt: row.get(2)?,
-            })
-        })?;
-        for r in rows {
-            results.push(r.context("search snippets")?);
+        if use_like {
+            let mut stmt = conn.prepare(
+                "SELECT id, title, COALESCE(tags_cache, '')
+                 FROM snippets
+                 WHERE project_id = ?1 AND (title LIKE ?2 OR content LIKE ?2)
+                 LIMIT ?3",
+            )?;
+            let rows = stmt.query_map(params![project_id, like_pattern, lim], |row| {
+                Ok(SearchResult {
+                    source_type: "snippet".to_string(),
+                    id: row.get(0)?,
+                    title: row.get(1)?,
+                    excerpt: row.get(2)?,
+                })
+            })?;
+            for r in rows {
+                results.push(r.context("search snippets (like)")?);
+            }
+        } else {
+            let mut stmt = conn.prepare(
+                "SELECT s.id, s.title, COALESCE(s.tags_cache, '')
+                 FROM snippets_fts
+                 JOIN snippets s ON s.rowid = snippets_fts.rowid
+                 WHERE snippets_fts MATCH ?1 AND s.project_id = ?2
+                 ORDER BY rank LIMIT ?3",
+            )?;
+            let rows = stmt.query_map(params![query, project_id, lim], |row| {
+                Ok(SearchResult {
+                    source_type: "snippet".to_string(),
+                    id: row.get(0)?,
+                    title: row.get(1)?,
+                    excerpt: row.get(2)?,
+                })
+            })?;
+            for r in rows {
+                results.push(r.context("search snippets")?);
+            }
         }
     }
 
     if scope == "all" || scope == "chat" {
-        let mut stmt = conn.prepare(
-            "SELECT m.id, cs.title, substr(m.content, 1, 300)
-             FROM chat_messages_fts
-             JOIN chat_messages m ON m.rowid = chat_messages_fts.rowid
-             JOIN chat_sessions cs ON cs.id = m.session_id
-             WHERE chat_messages_fts MATCH ?1 AND cs.project_id = ?2
-             ORDER BY rank LIMIT ?3",
-        )?;
-        let rows = stmt.query_map(params![query, project_id, lim], |row| {
-            Ok(SearchResult {
-                source_type: "chat".to_string(),
-                id: row.get(0)?,
-                title: row.get(1)?,
-                excerpt: row.get(2)?,
-            })
-        })?;
-        for r in rows {
-            results.push(r.context("search chat")?);
+        if use_like {
+            let mut stmt = conn.prepare(
+                "SELECT m.id, cs.title, substr(m.content, 1, 300)
+                 FROM chat_messages m
+                 JOIN chat_sessions cs ON cs.id = m.session_id
+                 WHERE cs.project_id = ?1 AND m.content LIKE ?2
+                 LIMIT ?3",
+            )?;
+            let rows = stmt.query_map(params![project_id, like_pattern, lim], |row| {
+                Ok(SearchResult {
+                    source_type: "chat".to_string(),
+                    id: row.get(0)?,
+                    title: row.get(1)?,
+                    excerpt: row.get(2)?,
+                })
+            })?;
+            for r in rows {
+                results.push(r.context("search chat (like)")?);
+            }
+        } else {
+            let mut stmt = conn.prepare(
+                "SELECT m.id, cs.title, substr(m.content, 1, 300)
+                 FROM chat_messages_fts
+                 JOIN chat_messages m ON m.rowid = chat_messages_fts.rowid
+                 JOIN chat_sessions cs ON cs.id = m.session_id
+                 WHERE chat_messages_fts MATCH ?1 AND cs.project_id = ?2
+                 ORDER BY rank LIMIT ?3",
+            )?;
+            let rows = stmt.query_map(params![query, project_id, lim], |row| {
+                Ok(SearchResult {
+                    source_type: "chat".to_string(),
+                    id: row.get(0)?,
+                    title: row.get(1)?,
+                    excerpt: row.get(2)?,
+                })
+            })?;
+            for r in rows {
+                results.push(r.context("search chat")?);
+            }
         }
     }
 
