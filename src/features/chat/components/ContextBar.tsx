@@ -15,6 +15,7 @@ import {
 } from "../agent/modelLimits";
 import { getTypeLabel } from "../utils/typeLabels";
 import { ContextPillGroup } from "./ContextPillGroup";
+import { useCodexHighlightStore } from "@/features/editor/codexHighlightStore";
 
 const GROUP_THRESHOLD = 6;
 
@@ -55,6 +56,7 @@ export function ContextBar({
   const [previewOpen, setPreviewOpen] = useState(false);
   const [creatorOpen, setCreatorOpen] = useState(false);
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set());
+  const typeColorMap = useCodexHighlightStore((s) => s.typeColorMap);
 
   const allContextEntries = [
     ...pinnedEntries,
@@ -180,64 +182,91 @@ export function ContextBar({
                     onToggle={() => toggleGroup(type)}
                     entries={groupEntries}
                     onUnpin={onUnpin}
+                    resolvedColor={typeColorMap[type]}
                   />
                 ))
-              : pinnedEntries.map((entry) => (
-                  <span
-                    key={entry.id}
-                    className="inline-flex items-center gap-1 rounded-full bg-accent px-2 py-0.5 text-xs"
-                  >
-                    {entry.name}
-                    <button
-                      type="button"
-                      onClick={() => onUnpin(entry.id)}
-                      className="hover:text-destructive"
-                      aria-label={t("chat.context.unpinEntry", {
-                        name: entry.name,
-                      })}
+              : pinnedEntries.map((entry) => {
+                  const rc = typeColorMap[entry.type];
+                  return (
+                    <span
+                      key={entry.id}
+                      className="inline-flex items-center gap-1 rounded-full bg-accent px-2 py-0.5 text-xs"
+                      style={
+                        rc
+                          ? { backgroundColor: rc.hl, color: rc.fg }
+                          : undefined
+                      }
                     >
-                      <X className="h-3 w-3" />
-                    </button>
-                  </span>
-                ))}
+                      {entry.name}
+                      <button
+                        type="button"
+                        onClick={() => onUnpin(entry.id)}
+                        className="hover:text-destructive"
+                        aria-label={t("chat.context.unpinEntry", {
+                          name: entry.name,
+                        })}
+                      >
+                        <X className="h-3 w-3" />
+                      </button>
+                    </span>
+                  );
+                })}
             {/* G15: auto-detected entries */}
-            {detectedEntries.map((entry) => (
-              <span
-                key={entry.id}
-                data-testid="detected-pill"
-                className="inline-flex items-center gap-1 rounded-full bg-accent/50 px-2 py-0.5 text-xs"
-              >
-                {entry.name}
-                <span className="text-muted-foreground/70">auto</span>
-                <button
-                  type="button"
-                  onClick={() => onPin(entry.id)}
-                  className="hover:text-foreground text-muted-foreground/70"
-                  aria-label={t("chat.context.pinEntry", { name: entry.name })}
+            {detectedEntries.map((entry) => {
+              const rc = typeColorMap[entry.type];
+              return (
+                <span
+                  key={entry.id}
+                  data-testid="detected-pill"
+                  className="inline-flex items-center gap-1 rounded-full bg-accent/50 px-2 py-0.5 text-xs"
+                  style={
+                    rc
+                      ? { backgroundColor: rc.hl, color: rc.fg, opacity: 0.75 }
+                      : undefined
+                  }
                 >
-                  <Pin className="h-3 w-3" />
-                </button>
-              </span>
-            ))}
+                  {entry.name}
+                  <span className="text-muted-foreground/70">auto</span>
+                  <button
+                    type="button"
+                    onClick={() => onPin(entry.id)}
+                    className="hover:text-foreground text-muted-foreground/70"
+                    aria-label={t("chat.context.pinEntry", {
+                      name: entry.name,
+                    })}
+                  >
+                    <Pin className="h-3 w-3" />
+                  </button>
+                </span>
+              );
+            })}
             {/* G15: always-mode entries */}
-            {alwaysEntries.map((entry) => (
-              <span
-                key={entry.id}
-                data-testid="always-pill"
-                className="inline-flex items-center gap-1 rounded-full bg-accent/50 px-2 py-0.5 text-xs"
-              >
-                {entry.name}
-                <span className="text-muted-foreground/70">auto</span>
-                <button
-                  type="button"
-                  onClick={() => onPin(entry.id)}
-                  className="hover:text-foreground text-muted-foreground/70"
-                  aria-label={t("chat.context.pinEntry", { name: entry.name })}
+            {alwaysEntries.map((entry) => {
+              const rc = typeColorMap[entry.type];
+              return (
+                <span
+                  key={entry.id}
+                  data-testid="always-pill"
+                  className="inline-flex items-center gap-1 rounded-full bg-accent/50 px-2 py-0.5 text-xs"
+                  style={
+                    rc ? { backgroundColor: rc.hl, color: rc.fg } : undefined
+                  }
                 >
-                  <Pin className="h-3 w-3" />
-                </button>
-              </span>
-            ))}
+                  {entry.name}
+                  <span className="text-muted-foreground/70">auto</span>
+                  <button
+                    type="button"
+                    onClick={() => onPin(entry.id)}
+                    className="hover:text-foreground text-muted-foreground/70"
+                    aria-label={t("chat.context.pinEntry", {
+                      name: entry.name,
+                    })}
+                  >
+                    <Pin className="h-3 w-3" />
+                  </button>
+                </span>
+              );
+            })}
             {/* G16: ピン留め Snippet エントリ */}
             {pinnedSnippets.map((snippet) => (
               <span

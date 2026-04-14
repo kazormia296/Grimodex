@@ -1,6 +1,7 @@
 import { X } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import type { CodexEntry } from "@/features/codex/api";
+import type { ResolvedCodexColor } from "@/lib/resolveCodexColors";
 
 interface ContextPillGroupProps {
   type: string;
@@ -10,7 +11,7 @@ interface ContextPillGroupProps {
   onToggle: () => void;
   entries: CodexEntry[];
   onUnpin: (entryId: string) => void;
-  colorClass?: string;
+  resolvedColor?: ResolvedCodexColor;
 }
 
 export function ContextPillGroup({
@@ -20,9 +21,12 @@ export function ContextPillGroup({
   onToggle,
   entries,
   onUnpin,
-  colorClass = "bg-accent",
+  resolvedColor,
 }: ContextPillGroupProps) {
   const { t } = useTranslation();
+  const pillStyle = resolvedColor
+    ? { backgroundColor: resolvedColor.hl, color: resolvedColor.fg }
+    : undefined;
   return (
     <>
       {/* グループヘッダーピル */}
@@ -30,7 +34,8 @@ export function ContextPillGroup({
         type="button"
         onClick={onToggle}
         aria-label={t("chat.context.group", { label })}
-        className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs ${colorClass}`}
+        className="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs bg-accent"
+        style={pillStyle}
       >
         <span>{label}</span>
         <span>{expanded ? "▴" : "▾"}</span>
@@ -43,6 +48,7 @@ export function ContextPillGroup({
           <span
             key={entry.id}
             className="inline-flex items-center gap-1 rounded-full bg-accent px-2 py-0.5 text-xs"
+            style={pillStyle}
           >
             {entry.name}
             <button
