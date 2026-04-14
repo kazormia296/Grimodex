@@ -5,6 +5,8 @@ use rmcp::ErrorData;
 use schemars;
 use serde::{Deserialize, Serialize};
 
+use rusqlite::Connection;
+
 use crate::content;
 use crate::convert::prosemirror_to_markdown;
 use crate::db::{self, TreeFilter, TreeNode};
@@ -41,18 +43,23 @@ struct SceneResult {
     content: String,
 }
 
-fn load_scene(server: &GrimodexServer, node: &TreeNode) -> SceneResult {
-    // Read from content dir; fall back to ProseMirror JSON in DB
+fn load_scene(conn: &Connection, server: &GrimodexServer, node: &TreeNode) -> SceneResult {
+    // Priority 1: Markdown file in content dir
     let md = content::read_scene_markdown(&server.content_dir, &node.id).unwrap_or_default();
-    let content = if md.is_empty() {
-        // Try converting DB content field (ProseMirror JSON)
-        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&node.id) {
-            prosemirror_to_markdown(&v)
-        } else {
-            String::new()
-        }
-    } else {
+    let content = if !md.is_empty() {
         md
+    } else {
+        // Priority 2: ProseMirror JSON stored in DB content column
+        match db::get_scene_content(conn, &node.id) {
+            Ok(raw) => {
+                if let Ok(v) = serde_json::from_str::<serde_json::Value>(&raw) {
+                    prosemirror_to_markdown(&v)
+                } else {
+                    raw // plain text fallback
+                }
+            }
+            Err(_) => String::new(),
+        }
     };
     SceneResult {
         id: node.id.clone(),
@@ -89,9 +96,9 @@ pub async fn read_scene(
         ));
     };
 
-    drop(conn); // release lock before file I/O
+    let results: Vec<SceneResult> = nodes.iter().map(|n| load_scene(&conn, server, n)).collect();
+    drop(conn);
 
-    let results: Vec<SceneResult> = nodes.iter().map(|n| load_scene(server, n)).collect();
     let json = serde_json::to_string_pretty(&results)
         .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
     Ok(CallToolResult::success(vec![rmcp::model::Content::text(
@@ -127,9 +134,9 @@ pub async fn read_scenes_batch(
         all
     };
 
+    let results: Vec<SceneResult> = nodes.iter().map(|n| load_scene(&conn, server, n)).collect();
     drop(conn);
 
-    let results: Vec<SceneResult> = nodes.iter().map(|n| load_scene(server, n)).collect();
     let json = serde_json::to_string_pretty(&results)
         .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
     Ok(CallToolResult::success(vec![rmcp::model::Content::text(

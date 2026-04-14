@@ -213,6 +213,16 @@ pub fn get_scene_meta(conn: &Connection, scene_id: &str) -> Result<TreeNode> {
     .with_context(|| format!("Scene '{scene_id}' not found"))
 }
 
+/// Fetch the raw `content` column (ProseMirror JSON) for a scene.
+pub fn get_scene_content(conn: &Connection, scene_id: &str) -> Result<String> {
+    conn.query_row(
+        "SELECT content FROM tree_nodes WHERE id = ?1",
+        params![scene_id],
+        |row| row.get(0),
+    )
+    .with_context(|| format!("Scene content for '{scene_id}' not found"))
+}
+
 pub fn find_scene_by_title(
     conn: &Connection,
     project_id: &str,
@@ -730,6 +740,27 @@ mod tests {
         assert!(entry.detail_values.is_empty());
         assert!(entry.phases.is_empty());
         assert!(entry.tags.is_empty());
+    }
+
+    #[test]
+    fn test_get_scene_content() {
+        let conn = make_simple_db();
+        insert_project(&conn, "p1", "Novel");
+        conn.execute(
+            "INSERT INTO tree_nodes (id, project_id, node_type, title, content, status)
+             VALUES ('s1', 'p1', 'scene', 'Prologue', '{\"type\":\"doc\"}', 'draft')",
+            [],
+        )
+        .unwrap();
+        let content = get_scene_content(&conn, "s1").unwrap();
+        assert_eq!(content, "{\"type\":\"doc\"}");
+    }
+
+    #[test]
+    fn test_get_scene_content_not_found() {
+        let conn = make_simple_db();
+        let result = get_scene_content(&conn, "no-such-id");
+        assert!(result.is_err());
     }
 
     #[test]
