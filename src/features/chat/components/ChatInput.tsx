@@ -3,7 +3,7 @@ import type { MutableRefObject } from "react";
 import { Send, Square, Wrench, ChevronDown } from "lucide-react";
 import { toast } from "sonner";
 import { useTranslation } from "react-i18next";
-import { useEditor, EditorContent } from "@tiptap/react";
+import { useEditor, EditorContent, useEditorState } from "@tiptap/react";
 import type { Editor } from "@tiptap/core";
 import { useAiSettingsStore } from "../store";
 import { useChatStore } from "../chatStore";
@@ -142,6 +142,12 @@ export function ChatInput({
 
   // Codexハイライト有効化（チャット入力はCodexQuickに影響させない）
   useCodexHighlight(editor, { skipMatchedIds: true });
+
+  // エディタのテキスト有無をリアクティブに購読（disabled 制御に使用）
+  const hasText = useEditorState({
+    editor,
+    selector: (ctx) => ctx.editor.getText().trim().length > 0,
+  });
 
   // ストリーミング中は編集不可
   useEffect(() => {
@@ -292,7 +298,7 @@ export function ChatInput({
             type="button"
             onClick={handleSendClick}
             onContextMenu={handleSendContextMenu}
-            disabled={!editor || editor.getText().trim().length === 0}
+            disabled={!editor || !hasText}
             aria-label={t("chat.sendAriaLabel")}
             title={t("chat.sendTitle")}
             className="inline-flex items-center justify-center rounded-md bg-primary px-3 py-2 text-primary-foreground hover:bg-primary/90 disabled:pointer-events-none disabled:opacity-50"
