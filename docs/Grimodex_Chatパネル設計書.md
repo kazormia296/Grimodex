@@ -424,7 +424,10 @@ LLM APIのシステムプロンプトに以下の5レイヤーを階層的に注
 
 **Layer 5: Conversation history**
 - 現在のセッションのメッセージ履歴
-- **Progressive summarization**: メッセージ数が閾値（8往復）を超え、かつトークン予算に収まらない場合、古いメッセージ群をLLMで要約し「会話要約」として先頭に保持する。直近の会話は原文を維持
+- **Progressive summarization**: 以下の2段階トリガーで古いメッセージ群をLLMで要約し「会話要約」として先頭に保持する。直近の会話は原文を維持
+  - **予防的圧縮**: 4往復を超え、かつLayer 5予算の80%を消費している場合 → 次のターンでオーバーフローしないよう早めに圧縮
+  - **緊急圧縮**: Layer 5予算を超過した場合（往復数問わず、最低3往復経過後）→ 即時圧縮でAPIエラーを回避
+  - 最低往復数（3往復）未満では圧縮しない（1〜2往復の要約は意味をなさないため）
 - ユーザーが「重要」マーク（⭐）を付けたメッセージは要約対象から除外し、原文を保持する
 - 要約生成にはSettingsのサマリー用モデルを使用（Synopsis自動生成と同じモデル）
 - フォールバック: 要約生成に失敗した場合は従来のFIFO切り詰めを適用
@@ -533,7 +536,9 @@ function buildContext(
   //   6. 子孫エントリはサブツリートークン予算（Layer 4予算の比率）内でBFS順に注入
   //      （各子エントリも個別にフェーズ解決）
   const layer5 = buildConversationHistory(session.messages, allocations.layer5);
-  // Progressive summarization: 8往復超のメッセージは要約化
+  // Progressive summarization: 2段階トリガー
+  //   予防的: 4往復超 && Layer5予算80%超 → 早めに圧縮
+  //   緊急:   Layer5予算超過 && 最低3往復経過 → 即時圧縮でAPIエラー回避
   // ⭐マーク付きメッセージは要約対象から除外
 
   return assembleLayers([layer1, layer2, layer3, layer4, layer5]);
