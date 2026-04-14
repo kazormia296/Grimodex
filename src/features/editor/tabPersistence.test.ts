@@ -63,7 +63,20 @@ describe("tabPersistence", () => {
       expect(mockGetSetting).toHaveBeenCalledWith("editor.tabState");
     });
 
-    it("does nothing when no saved state exists", async () => {
+    it("resets to empty state when no saved state exists (new workspace)", async () => {
+      // Simulate having tabs from a previous workspace
+      useTabStore.setState({
+        tabs: [{ nodeId: "old-scene", isPreview: false, contentType: "scene" }],
+        activeTabId: "old-scene",
+        secondaryTabs: [
+          { nodeId: "old-scene-2", isPreview: false, contentType: "scene" },
+        ],
+        secondaryActiveTabId: "old-scene-2",
+        secondaryGroupOpen: true,
+        activeGroupIndex: 1,
+        splitDirection: "below",
+      });
+
       mockGetSetting.mockResolvedValueOnce(null);
 
       await useTabStore.getState().loadTabState();
@@ -71,6 +84,11 @@ describe("tabPersistence", () => {
       const state = useTabStore.getState();
       expect(state.tabs).toEqual([]);
       expect(state.activeTabId).toBeNull();
+      expect(state.secondaryTabs).toEqual([]);
+      expect(state.secondaryActiveTabId).toBeNull();
+      expect(state.secondaryGroupOpen).toBe(false);
+      expect(state.activeGroupIndex).toBe(0);
+      expect(state.splitDirection).toBe("right");
     });
 
     it("does nothing when saved state is corrupted JSON", async () => {

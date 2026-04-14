@@ -695,7 +695,19 @@ export const useTabStore = create<TabState>()((set, get) => {
     async loadTabState(validNodeIds) {
       try {
         const json = await getSetting(TAB_STATE_KEY);
-        if (!json) return;
+        if (!json) {
+          // New workspace has no persisted state — reset to empty
+          set({
+            tabs: [],
+            activeTabId: null,
+            secondaryTabs: [],
+            secondaryActiveTabId: null,
+            secondaryGroupOpen: false,
+            activeGroupIndex: 0,
+            splitDirection: "right",
+          });
+          return;
+        }
 
         const parsed: PersistedTabState = JSON.parse(json);
 
