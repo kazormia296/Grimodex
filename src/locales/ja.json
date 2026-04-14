@@ -248,6 +248,7 @@
       "colorInUse": "{{label}}（{{usedBy}}が使用中）"
     },
     "about": {
+      "github": "GitHub",
       "searchPlaceholder": "{{count}} 件のライブラリを検索…",
       "notFound": "「{{query}}」に一致するライブラリは見つかりません",
       "full": "全文",
