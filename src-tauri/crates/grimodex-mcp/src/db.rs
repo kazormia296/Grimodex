@@ -953,7 +953,8 @@ pub fn update_codex_entry(conn: &Connection, input: UpdateCodexInput<'_>) -> Res
     Ok(())
 }
 
-/// Upsert tags into codex_tags and link to a codex entry.
+/// Upsert tags into codex_tags, link to a codex entry, then refresh `tags_cache`.
+/// Refreshing tags_cache also fires the FTS sync trigger, keeping codex_fts correct.
 fn link_codex_tags(
     conn: &Connection,
     project_id: &str,
@@ -961,13 +962,12 @@ fn link_codex_tags(
     tags: &[String],
 ) -> Result<()> {
     for tag_name in tags {
-        // Upsert tag
         let tag_id: String = conn
             .query_row(
                 "INSERT INTO codex_tags (id, project_id, name)
-             VALUES (lower(hex(randomblob(16))), ?1, ?2)
-             ON CONFLICT(project_id, name) DO UPDATE SET name = excluded.name
-             RETURNING id",
+                 VALUES (lower(hex(randomblob(16))), ?1, ?2)
+                 ON CONFLICT(project_id, name) DO UPDATE SET name = excluded.name
+                 RETURNING id",
                 params![project_id, tag_name],
                 |row| row.get(0),
             )
@@ -978,6 +978,19 @@ fn link_codex_tags(
             params![entry_id, tag_id],
         )?;
     }
+
+    // Keep tags_cache in sync (also fires codex_fts_au trigger)
+    conn.execute(
+        "UPDATE codex_entries SET tags_cache = (
+             SELECT GROUP_CONCAT(t.name, ',')
+             FROM codex_tags t
+             JOIN codex_entry_tags et ON et.tag_id = t.id
+             WHERE et.entry_id = ?1
+         ) WHERE id = ?1",
+        params![entry_id],
+    )
+    .context("refresh tags_cache failed")?;
+
     Ok(())
 }
 
@@ -1553,7 +1566,10 @@ mod tests {
         assert!(!id.is_empty());
         let entry = get_codex_entry_full(&conn, &id).unwrap();
         assert_eq!(entry.summary.name, "Bob");
-        assert_eq!(entry.summary.summary.as_deref(), Some("A mysterious figure"));
+        assert_eq!(
+            entry.summary.summary.as_deref(),
+            Some("A mysterious figure")
+        );
     }
 
     #[test]
