@@ -436,7 +436,7 @@ export function ChatPanel() {
       <ContextBar
         pinnedEntries={pinnedEntries}
         pinnedSnippets={pinnedSnippets}
-        detectedEntries={detectedEntries}
+        detectedEntries={isGlobalChat ? [] : detectedEntries}
         alwaysEntries={alwaysEntries}
         onReturnToAuto={handleReturnToAuto}
         onRemove={handleRemoveFromContext}
