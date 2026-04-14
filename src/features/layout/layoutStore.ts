@@ -25,6 +25,14 @@ export function getPanelTitle(id: PanelId): string {
   return i18next.t(`layout.panel.${id}`);
 }
 
+/** Re-apply i18n panel titles to all live dockview panels (call after language change or layout restore) */
+export function refreshPanelTitles(api: DockviewApi) {
+  for (const panel of api.panels) {
+    const title = getPanelTitle(panel.id as PanelId);
+    panel.api.setTitle(title);
+  }
+}
+
 interface LayoutState {
   /** Dockview API reference — set once in onReady */
   dockviewApi: DockviewApi | null;
@@ -205,12 +213,14 @@ export const useLayoutStore = create<LayoutState>()((set, get) => ({
       const snapshot = api.toJSON();
       try {
         api.fromJSON(custom.layout);
+        refreshPanelTitles(api);
         set({ activePresetId: id });
         persistActivePresetId(id);
       } catch {
         // Corrupted preset — revert to snapshot
         try {
           api.fromJSON(snapshot);
+          refreshPanelTitles(api);
         } catch {
           // ignore
         }

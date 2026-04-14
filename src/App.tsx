@@ -20,6 +20,7 @@ import { DockviewWatermark } from "@/features/layout/DockviewWatermark";
 import {
   useLayoutStore,
   clearSavedLayout,
+  refreshPanelTitles,
   type PanelId,
 } from "@/features/layout/layoutStore";
 import {
@@ -142,10 +143,13 @@ function App() {
   );
   const { t } = useTranslation();
 
-  // Sync uiLanguage setting → i18next
+  // Sync uiLanguage setting → i18next + refresh dockview panel titles
   useEffect(() => {
     if (i18next.language !== uiLanguage) {
-      i18next.changeLanguage(uiLanguage);
+      i18next.changeLanguage(uiLanguage).then(() => {
+        const api = useLayoutStore.getState().dockviewApi;
+        if (api) refreshPanelTitles(api);
+      });
     }
   }, [uiLanguage]);
 
@@ -294,6 +298,7 @@ function EditorScreen() {
           //    overwrite the incompatible layout on the next change event.
           try {
             api.fromJSON(saved);
+            refreshPanelTitles(api);
           } catch {
             clearLayout(api);
             buildDefaultLayout(api);
