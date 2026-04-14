@@ -66,19 +66,19 @@ export function ContextBar({
   const useGrouping =
     allContextEntries.length + pinnedSnippets.length > GROUP_THRESHOLD;
 
-  // type別グループマップ
-  const groupMap = new Map<string, CodexEntry[]>();
-  const autoGroupMap = new Map<string, CodexEntry[]>();
+  // type別グループマップ（pinned + auto を統合、pinned が先頭）
+  type MergedGroup = { pinned: CodexEntry[]; auto: CodexEntry[] };
+  const groupMap = new Map<string, MergedGroup>();
   if (useGrouping) {
     for (const entry of pinnedEntries) {
-      const group = groupMap.get(entry.type) ?? [];
-      group.push(entry);
-      groupMap.set(entry.type, group);
+      const g = groupMap.get(entry.type) ?? { pinned: [], auto: [] };
+      g.pinned.push(entry);
+      groupMap.set(entry.type, g);
     }
     for (const entry of [...detectedEntries, ...alwaysEntries]) {
-      const group = autoGroupMap.get(entry.type) ?? [];
-      group.push(entry);
-      autoGroupMap.set(entry.type, group);
+      const g = groupMap.get(entry.type) ?? { pinned: [], auto: [] };
+      g.auto.push(entry);
+      groupMap.set(entry.type, g);
     }
   }
 
@@ -176,18 +176,19 @@ export function ContextBar({
                 Scene: {sceneTokens.toLocaleString()}
               </span>
             )}
-            {/* ピン留め Codex エントリ */}
+            {/* Codex エントリ: グループ時は pinned + auto を統合 */}
             {useGrouping
-              ? Array.from(groupMap.entries()).map(([type, groupEntries]) => (
+              ? Array.from(groupMap.entries()).map(([type, group]) => (
                   <ContextPillGroup
                     key={type}
                     type={type}
                     label={getTypeLabel(type)}
-                    count={groupEntries.length}
                     expanded={expandedGroups.has(type)}
                     onToggle={() => toggleGroup(type)}
-                    entries={groupEntries}
+                    pinnedEntries={group.pinned}
+                    autoEntries={group.auto}
                     onUnpin={onUnpin}
+                    onPin={onPin}
                     resolvedColor={typeColorMap[type]}
                   />
                 ))
@@ -217,56 +218,41 @@ export function ContextBar({
                     </span>
                   );
                 })}
-            {/* G15: auto entries (detected + always) */}
-            {useGrouping
-              ? Array.from(autoGroupMap.entries()).map(
-                  ([type, groupEntries]) => (
-                    <ContextPillGroup
-                      key={`auto-${type}`}
-                      type={type}
-                      label={getTypeLabel(type)}
-                      count={groupEntries.length}
-                      expanded={expandedGroups.has(`auto-${type}`)}
-                      onToggle={() => toggleGroup(`auto-${type}`)}
-                      entries={groupEntries}
-                      onPin={onPin}
-                      resolvedColor={typeColorMap[type]}
-                    />
-                  ),
-                )
-              : [...detectedEntries, ...alwaysEntries].map((entry) => {
-                  const rc = typeColorMap[entry.type];
-                  const isDetected = detectedEntries.includes(entry);
-                  return (
-                    <span
-                      key={entry.id}
-                      data-testid={isDetected ? "detected-pill" : "always-pill"}
-                      className="inline-flex items-center gap-1 rounded-full bg-accent/50 px-2 py-0.5 text-xs"
-                      style={
-                        rc
-                          ? {
-                              backgroundColor: rc.hl,
-                              color: rc.fg,
-                              opacity: 0.75,
-                            }
-                          : undefined
-                      }
+            {/* G15: auto entries (非グループ時のみ個別表示) */}
+            {!useGrouping &&
+              [...detectedEntries, ...alwaysEntries].map((entry) => {
+                const rc = typeColorMap[entry.type];
+                const isDetected = detectedEntries.includes(entry);
+                return (
+                  <span
+                    key={entry.id}
+                    data-testid={isDetected ? "detected-pill" : "always-pill"}
+                    className="inline-flex items-center gap-1 rounded-full bg-accent/50 px-2 py-0.5 text-xs"
+                    style={
+                      rc
+                        ? {
+                            backgroundColor: rc.hl,
+                            color: rc.fg,
+                            opacity: 0.75,
+                          }
+                        : undefined
+                    }
+                  >
+                    {entry.name}
+                    <span className="text-muted-foreground/70">auto</span>
+                    <button
+                      type="button"
+                      onClick={() => onPin(entry.id)}
+                      className="hover:text-foreground text-muted-foreground/70"
+                      aria-label={t("chat.context.pinEntry", {
+                        name: entry.name,
+                      })}
                     >
-                      {entry.name}
-                      <span className="text-muted-foreground/70">auto</span>
-                      <button
-                        type="button"
-                        onClick={() => onPin(entry.id)}
-                        className="hover:text-foreground text-muted-foreground/70"
-                        aria-label={t("chat.context.pinEntry", {
-                          name: entry.name,
-                        })}
-                      >
-                        <Pin className="h-3 w-3" />
-                      </button>
-                    </span>
-                  );
-                })}
+                      <Pin className="h-3 w-3" />
+                    </button>
+                  </span>
+                );
+              })}
             {/* G16: ピン留め Snippet エントリ */}
             {pinnedSnippets.map((snippet) => (
               <span
