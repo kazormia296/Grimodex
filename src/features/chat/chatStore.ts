@@ -266,6 +266,8 @@ interface ChatState {
   starMessage: (messageId: string, starred: boolean) => Promise<void>;
   /** G20: stores old message content when editing, to detect removed @mentions */
   _editingOldContent: string | null;
+  /** autoリストから特定エントリを即時除去（ピン直後のBug#1修正用） */
+  removeEntryFromAuto: (entryId: string) => void;
 }
 
 async function fetchSceneContext(
@@ -324,6 +326,13 @@ export const useChatStore = create<ChatState>()((set, get) => ({
   agentProgress: null,
   isGlobalChat: false,
   _editingOldContent: null,
+
+  removeEntryFromAuto: (entryId: string) => {
+    set((state) => ({
+      detectedEntries: state.detectedEntries.filter((e) => e.id !== entryId),
+      alwaysEntries: state.alwaysEntries.filter((e) => e.id !== entryId),
+    }));
+  },
 
   // --- Session management ---
 

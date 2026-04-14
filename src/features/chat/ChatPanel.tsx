@@ -57,6 +57,7 @@ export function ChatPanel() {
   const systemPrompt = useChatStore((s) => s.lastSystemPrompt);
   const setActiveSceneId = useChatStore((s) => s.setActiveSceneId);
   const refreshContextLayers = useChatStore((s) => s.refreshContextLayers);
+  const removeEntryFromAuto = useChatStore((s) => s.removeEntryFromAuto);
   const activeSessionId = useChatStore((s) => s.activeSessionId);
   const agentProgress = useChatStore((s) => s.agentProgress);
   const loadSessions = useChatStore((s) => s.loadSessions);
@@ -152,6 +153,8 @@ export function ChatPanel() {
         "manual",
         type,
       );
+      // Bug#1: ピン直後にautoリストから即時除去
+      removeEntryFromAuto(entryId);
       const [updatedCodex, updatedSnippets] = await Promise.all([
         chatApi.listPinnedCodexEntries(activeSessionId),
         chatApi.listPinnedSnippetEntries(activeSessionId),
@@ -159,7 +162,7 @@ export function ChatPanel() {
       setPinnedEntries(updatedCodex);
       setPinnedSnippets(updatedSnippets);
     },
-    [activeSessionId],
+    [activeSessionId, removeEntryFromAuto],
   );
 
   const handleUnpin = useCallback(
@@ -174,6 +177,23 @@ export function ChatPanel() {
       setPinnedSnippets(updatedSnippets);
     },
     [activeSessionId],
+  );
+
+  // 手動ピンをautoに戻す: unpinのみ（次のコンテキスト再構築でautoに自然復帰）
+  const handleReturnToAuto = useCallback(
+    async (entryId: string) => {
+      await handleUnpin(entryId);
+    },
+    [handleUnpin],
+  );
+
+  // コンテキストから完全除去: unpin + autoリストからも即時除去
+  const handleRemoveFromContext = useCallback(
+    async (entryId: string) => {
+      await handleUnpin(entryId);
+      removeEntryFromAuto(entryId);
+    },
+    [handleUnpin, removeEntryFromAuto],
   );
 
   const handleTogglePinChildren = useCallback(
@@ -409,7 +429,8 @@ export function ChatPanel() {
         pinnedSnippets={pinnedSnippets}
         detectedEntries={detectedEntries}
         alwaysEntries={alwaysEntries}
-        onUnpin={handleUnpin}
+        onReturnToAuto={handleReturnToAuto}
+        onRemove={handleRemoveFromContext}
         onPin={handlePin}
         onOpenPinDialog={() => setPinDialogOpen(true)}
         contextTokenCount={contextTokenCount}

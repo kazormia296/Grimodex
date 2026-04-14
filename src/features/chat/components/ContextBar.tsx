@@ -1,8 +1,11 @@
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
-import { X, BookOpen, ChevronDown, ChevronUp, Pin } from "lucide-react";
+import { X, BookOpen, ChevronDown, ChevronUp, Pin, Undo2 } from "lucide-react";
 import type { CodexEntry } from "@/features/codex/api";
-import type { PinnedSnippetEntryWithData } from "../chatApi";
+import type {
+  PinnedCodexEntryWithData,
+  PinnedSnippetEntryWithData,
+} from "../chatApi";
 import type { LayerBreakdown } from "../contextBuilder";
 import { PromptPreviewModal } from "./PromptPreviewModal";
 import { ContextCreatorButton } from "./ContextCreatorButton";
@@ -20,14 +23,17 @@ import { useCodexHighlightStore } from "@/features/editor/codexHighlightStore";
 const GROUP_THRESHOLD = 6;
 
 interface ContextBarProps {
-  pinnedEntries: CodexEntry[];
+  pinnedEntries: PinnedCodexEntryWithData[];
   /** G15: auto-detected entries (excluding pinned) */
   detectedEntries?: CodexEntry[];
   /** G15: always-mode entries (excluding pinned and detected) */
   alwaysEntries?: CodexEntry[];
   /** G16: pinned snippet entries */
   pinnedSnippets?: PinnedSnippetEntryWithData[];
-  onUnpin: (entryId: string) => void;
+  /** 手動ピンをautoに戻す（source==="manual"のエントリのみ） */
+  onReturnToAuto: (entryId: string) => void;
+  /** ピン解除してcontextから完全除去 */
+  onRemove: (entryId: string) => void;
   onPin: (entryId: string) => Promise<void>;
   onOpenPinDialog: () => void;
   contextTokenCount: number;
@@ -42,7 +48,8 @@ export function ContextBar({
   detectedEntries = [],
   alwaysEntries = [],
   pinnedSnippets = [],
-  onUnpin,
+  onReturnToAuto,
+  onRemove,
   onPin,
   onOpenPinDialog,
   contextTokenCount,
@@ -66,7 +73,7 @@ export function ContextBar({
     allContextEntries.length + pinnedSnippets.length > GROUP_THRESHOLD;
 
   // type別グループマップ（pinned + auto を統合、pinned が先頭）
-  type MergedGroup = { pinned: CodexEntry[]; auto: CodexEntry[] };
+  type MergedGroup = { pinned: PinnedCodexEntryWithData[]; auto: CodexEntry[] };
   const groupMap = new Map<string, MergedGroup>();
   if (useGrouping) {
     for (const entry of pinnedEntries) {
@@ -175,13 +182,15 @@ export function ContextBar({
                     label={getTypeLabel(type)}
                     pinnedEntries={group.pinned}
                     autoEntries={group.auto}
-                    onUnpin={onUnpin}
+                    onReturnToAuto={onReturnToAuto}
+                    onRemove={onRemove}
                     onPin={onPin}
                     resolvedColor={typeColorMap[type]}
                   />
                 ))
               : pinnedEntries.map((entry) => {
                   const rc = typeColorMap[entry.type];
+                  const isManual = entry.pinSource === "manual";
                   return (
                     <span
                       key={entry.id}
@@ -193,9 +202,21 @@ export function ContextBar({
                       }
                     >
                       {entry.name}
+                      {isManual && (
+                        <button
+                          type="button"
+                          onClick={() => onReturnToAuto(entry.id)}
+                          className="hover:text-foreground text-muted-foreground/70"
+                          aria-label={t("chat.context.returnToAuto", {
+                            name: entry.name,
+                          })}
+                        >
+                          <Undo2 className="h-3 w-3" />
+                        </button>
+                      )}
                       <button
                         type="button"
-                        onClick={() => onUnpin(entry.id)}
+                        onClick={() => onRemove(entry.id)}
                         className="hover:text-destructive"
                         aria-label={t("chat.context.unpinEntry", {
                           name: entry.name,
@@ -250,7 +271,7 @@ export function ContextBar({
                 {snippet.title}
                 <button
                   type="button"
-                  onClick={() => onUnpin(snippet.id)}
+                  onClick={() => onRemove(snippet.id)}
                   className="hover:text-destructive"
                   aria-label={t("chat.context.unpinEntry", {
                     name: snippet.title,

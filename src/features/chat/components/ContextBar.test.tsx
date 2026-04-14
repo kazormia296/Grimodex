@@ -4,6 +4,7 @@ import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { ContextBar } from "./ContextBar";
 import type { CodexEntry } from "@/features/codex/api";
+import type { PinnedCodexEntryWithData } from "../chatApi";
 
 vi.mock("../chatStore", () => ({
   useChatStore: vi.fn(() => ""),
@@ -35,8 +36,22 @@ function makeEntry(id: string, name: string, type = "character"): CodexEntry {
   };
 }
 
+function makePinnedEntry(
+  id: string,
+  name: string,
+  type = "character",
+): PinnedCodexEntryWithData {
+  return {
+    ...makeEntry(id, name, type),
+    withChildren: false,
+    pinnedType: "codex",
+    pinSource: "manual",
+  };
+}
+
 const defaultProps = {
-  onUnpin: vi.fn(),
+  onReturnToAuto: vi.fn(),
+  onRemove: vi.fn(),
   onPin: vi.fn(),
   onOpenPinDialog: vi.fn(),
   contextTokenCount: 0,
@@ -48,7 +63,7 @@ const defaultProps = {
 describe("ContextBar グループ化", () => {
   it("6件以下では個別ピルを表示する", () => {
     const entries = Array.from({ length: 6 }, (_, i) =>
-      makeEntry(`e${i}`, `エントリ${i}`),
+      makePinnedEntry(`e${i}`, `エントリ${i}`),
     );
     render(<ContextBar {...defaultProps} pinnedEntries={entries} />);
     expect(screen.getByText("エントリ0")).toBeInTheDocument();
@@ -60,10 +75,10 @@ describe("ContextBar グループ化", () => {
   it("7件以上ではグループ化ピルを表示する", () => {
     const entries = [
       ...Array.from({ length: 5 }, (_, i) =>
-        makeEntry(`c${i}`, `キャラ${i}`, "character"),
+        makePinnedEntry(`c${i}`, `キャラ${i}`, "character"),
       ),
       ...Array.from({ length: 2 }, (_, i) =>
-        makeEntry(`l${i}`, `場所${i}`, "location"),
+        makePinnedEntry(`l${i}`, `場所${i}`, "location"),
       ),
     ];
     render(<ContextBar {...defaultProps} pinnedEntries={entries} />);
@@ -78,10 +93,10 @@ describe("ContextBar グループ化", () => {
     const user = userEvent.setup();
     const entries = [
       ...Array.from({ length: 5 }, (_, i) =>
-        makeEntry(`c${i}`, `キャラ${i}`, "character"),
+        makePinnedEntry(`c${i}`, `キャラ${i}`, "character"),
       ),
       ...Array.from({ length: 2 }, (_, i) =>
-        makeEntry(`l${i}`, `場所${i}`, "location"),
+        makePinnedEntry(`l${i}`, `場所${i}`, "location"),
       ),
     ];
     render(<ContextBar {...defaultProps} pinnedEntries={entries} />);
@@ -91,26 +106,28 @@ describe("ContextBar グループ化", () => {
     expect(screen.queryByText("場所0")).not.toBeInTheDocument();
   });
 
-  it("複数グループを同時に展開できる", async () => {
+  it("別グループクリックで前のポップオーバーが閉じ新しいポップオーバーが開く", async () => {
     const user = userEvent.setup();
     const entries = [
       ...Array.from({ length: 5 }, (_, i) =>
-        makeEntry(`c${i}`, `キャラ${i}`, "character"),
+        makePinnedEntry(`c${i}`, `キャラ${i}`, "character"),
       ),
       ...Array.from({ length: 2 }, (_, i) =>
-        makeEntry(`l${i}`, `場所${i}`, "location"),
+        makePinnedEntry(`l${i}`, `場所${i}`, "location"),
       ),
     ];
     render(<ContextBar {...defaultProps} pinnedEntries={entries} />);
     await user.click(screen.getByRole("button", { name: /キャラクター/ }));
-    await user.click(screen.getByRole("button", { name: /場所/ }));
     expect(screen.getByText("キャラ0")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: /場所/ }));
     expect(screen.getByText("場所0")).toBeInTheDocument();
+    // キャラクターグループのポップオーバーは閉じている
+    expect(screen.queryByText("キャラ0")).not.toBeInTheDocument();
   });
 
   it("0件のグループは表示しない", () => {
     const entries = Array.from({ length: 7 }, (_, i) =>
-      makeEntry(`c${i}`, `キャラ${i}`, "character"),
+      makePinnedEntry(`c${i}`, `キャラ${i}`, "character"),
     );
     render(<ContextBar {...defaultProps} pinnedEntries={entries} />);
     expect(screen.getByText(/キャラクター/)).toBeInTheDocument();

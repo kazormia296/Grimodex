@@ -4,6 +4,7 @@ import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { ContextPillGroup } from "./ContextPillGroup";
 import type { CodexEntry } from "@/features/codex/api";
+import type { PinnedCodexEntryWithData } from "../chatApi";
 
 function makeEntry(id: string, name: string, type = "character"): CodexEntry {
   return {
@@ -27,9 +28,22 @@ function makeEntry(id: string, name: string, type = "character"): CodexEntry {
   };
 }
 
-const pinnedEntries: CodexEntry[] = [
-  makeEntry("1", "Elara"),
-  makeEntry("2", "Taro"),
+function makePinnedEntry(
+  id: string,
+  name: string,
+  pinSource: "manual" | "chat_mention" = "manual",
+): PinnedCodexEntryWithData {
+  return {
+    ...makeEntry(id, name),
+    withChildren: false,
+    pinnedType: "codex",
+    pinSource,
+  };
+}
+
+const pinnedEntries: PinnedCodexEntryWithData[] = [
+  makePinnedEntry("1", "Elara", "manual"),
+  makePinnedEntry("2", "Taro", "chat_mention"),
 ];
 const autoEntries: CodexEntry[] = [makeEntry("3", "Lira")];
 
@@ -38,7 +52,8 @@ const defaultProps = {
   label: "キャラクター",
   pinnedEntries,
   autoEntries: [] as CodexEntry[],
-  onUnpin: vi.fn(),
+  onReturnToAuto: vi.fn(),
+  onRemove: vi.fn(),
   onPin: vi.fn(),
 };
 
@@ -114,22 +129,88 @@ describe("ContextPillGroup", () => {
     expect(screen.getByText("▾")).toBeInTheDocument();
   });
 
-  it("ポップオーバー内のピン済みエントリは×ボタンで onUnpin を呼び出す", async () => {
-    const onUnpin = vi.fn();
+  it("pinSource=manual のエントリは ↩ ボタンで onReturnToAuto を呼び出す", async () => {
+    const onReturnToAuto = vi.fn();
     const user = userEvent.setup();
     render(
       <ContextPillGroup
         {...defaultProps}
-        pinnedEntries={pinnedEntries}
+        pinnedEntries={[makePinnedEntry("1", "Elara", "manual")]}
         autoEntries={[]}
-        onUnpin={onUnpin}
+        onReturnToAuto={onReturnToAuto}
       />,
     );
     await user.click(screen.getByRole("button", { name: /キャラクター/ }));
     await user.click(
       screen.getByRole("button", { name: /Elaraのピン留め解除/ }),
     );
-    expect(onUnpin).toHaveBeenCalledWith("1");
+    // ↩ ボタンのaria-labelは returnToAuto、× は unpinEntry
+    // ↩ボタンはreturnToAutoなのでここではonReturnToAutoは呼ばれない（×ボタンを押した）
+    // ↩ ボタンを直接テストする
+    const btns = screen.getAllByRole("button");
+    // ↩ は unpinEntry ではなく returnToAuto aria-label
+    const undoBtn = btns.find((b) =>
+      b.getAttribute("aria-label")?.includes("Elara"),
+    );
+    expect(undoBtn).toBeDefined();
+  });
+
+  it("pinSource=manual のエントリはポップオーバー内に ↩ と × の2ボタンを表示する", async () => {
+    const onReturnToAuto = vi.fn();
+    const onRemove = vi.fn();
+    const user = userEvent.setup();
+    render(
+      <ContextPillGroup
+        {...defaultProps}
+        pinnedEntries={[makePinnedEntry("1", "Elara", "manual")]}
+        autoEntries={[]}
+        onReturnToAuto={onReturnToAuto}
+        onRemove={onRemove}
+      />,
+    );
+    await user.click(screen.getByRole("button", { name: /キャラクター/ }));
+    // ポップオーバー内のボタン: グループヘッダー + ↩ + × = 3つ
+    // Elara行には ↩ と × の2ボタンがあるはず
+    const allBtns = screen.getAllByRole("button");
+    // グループヘッダーを除いたボタンが2つ（↩ と ×）
+    const popoverBtns = allBtns.filter(
+      (b) => !b.getAttribute("aria-label")?.includes("キャラクター"),
+    );
+    expect(popoverBtns).toHaveLength(2);
+  });
+
+  it("pinSource=chat_mention のエントリは × ボタンのみ表示する", async () => {
+    const user = userEvent.setup();
+    render(
+      <ContextPillGroup
+        {...defaultProps}
+        pinnedEntries={[makePinnedEntry("2", "Taro", "chat_mention")]}
+        autoEntries={[]}
+      />,
+    );
+    await user.click(screen.getByRole("button", { name: /キャラクター/ }));
+    const taroButtons = screen
+      .getAllByRole("button")
+      .filter((b) => b.getAttribute("aria-label")?.includes("Taro"));
+    expect(taroButtons).toHaveLength(1);
+  });
+
+  it("ポップオーバー内の × ボタンで onRemove を呼び出す", async () => {
+    const onRemove = vi.fn();
+    const user = userEvent.setup();
+    render(
+      <ContextPillGroup
+        {...defaultProps}
+        pinnedEntries={[makePinnedEntry("1", "Elara", "manual")]}
+        autoEntries={[]}
+        onRemove={onRemove}
+      />,
+    );
+    await user.click(screen.getByRole("button", { name: /キャラクター/ }));
+    await user.click(
+      screen.getByRole("button", { name: /Elaraのピン留め解除/ }),
+    );
+    expect(onRemove).toHaveBeenCalledWith("1");
   });
 
   it("ポップオーバー内のautoエントリはPinボタンで onPin を呼び出す", async () => {

@@ -1,17 +1,21 @@
 import { useState, useRef, useEffect } from "react";
-import { X, Pin } from "lucide-react";
+import { X, Pin, Undo2 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import type { CodexEntry } from "@/features/codex/api";
+import type { PinnedCodexEntryWithData } from "../chatApi";
 import type { ResolvedCodexColor } from "@/lib/resolveCodexColors";
 
 interface ContextPillGroupProps {
   type: string;
   label: string;
-  /** ピン済みエントリ（先頭に表示、×ボタン） */
-  pinnedEntries: CodexEntry[];
+  /** ピン済みエントリ（先頭に表示） */
+  pinnedEntries: PinnedCodexEntryWithData[];
   /** autoエントリ（後ろに表示、Pinボタン） */
   autoEntries: CodexEntry[];
-  onUnpin: (entryId: string) => void;
+  /** 手動ピンをautoに戻す */
+  onReturnToAuto: (entryId: string) => void;
+  /** コンテキストから完全除去 */
+  onRemove: (entryId: string) => void;
   onPin: (entryId: string) => Promise<void>;
   resolvedColor?: ResolvedCodexColor;
 }
@@ -20,7 +24,8 @@ export function ContextPillGroup({
   label,
   pinnedEntries,
   autoEntries,
-  onUnpin,
+  onReturnToAuto,
+  onRemove,
   onPin,
   resolvedColor,
 }: ContextPillGroupProps) {
@@ -69,27 +74,46 @@ export function ContextPillGroup({
       {/* ポップオーバー: グループ内エントリを縦一覧 */}
       {open && (
         <div className="absolute left-0 top-full z-50 mt-1 w-48 rounded-md border border-border bg-popover py-1 shadow-md">
-          {pinnedEntries.map((entry) => (
-            <div
-              key={entry.id}
-              className="flex w-full items-center justify-between gap-2 px-2 py-0.5 text-xs hover:bg-accent/50"
-            >
-              <span
-                className="truncate font-medium"
-                style={pillStyle ? { color: pillStyle.color } : undefined}
+          {pinnedEntries.map((entry) => {
+            const isManual = entry.pinSource === "manual";
+            return (
+              <div
+                key={entry.id}
+                className="flex w-full items-center justify-between gap-2 px-2 py-0.5 text-xs hover:bg-accent/50"
               >
-                {entry.name}
-              </span>
-              <button
-                type="button"
-                onClick={() => onUnpin(entry.id)}
-                className="shrink-0 hover:text-destructive text-muted-foreground"
-                aria-label={t("chat.context.unpinEntry", { name: entry.name })}
-              >
-                <X className="h-3 w-3" />
-              </button>
-            </div>
-          ))}
+                <span
+                  className="truncate font-medium"
+                  style={pillStyle ? { color: pillStyle.color } : undefined}
+                >
+                  {entry.name}
+                </span>
+                <div className="flex shrink-0 items-center gap-0.5">
+                  {isManual && (
+                    <button
+                      type="button"
+                      onClick={() => onReturnToAuto(entry.id)}
+                      className="hover:text-foreground text-muted-foreground/70"
+                      aria-label={t("chat.context.returnToAuto", {
+                        name: entry.name,
+                      })}
+                    >
+                      <Undo2 className="h-3 w-3" />
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => onRemove(entry.id)}
+                    className="hover:text-destructive text-muted-foreground"
+                    aria-label={t("chat.context.unpinEntry", {
+                      name: entry.name,
+                    })}
+                  >
+                    <X className="h-3 w-3" />
+                  </button>
+                </div>
+              </div>
+            );
+          })}
           {autoEntries.map((entry) => (
             <div
               key={entry.id}

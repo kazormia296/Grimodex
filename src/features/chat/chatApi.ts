@@ -486,6 +486,8 @@ function safeParsePinnedCodex(raw: string | null): PinnedCodexEntry[] {
 export type PinnedCodexEntryWithData = CodexEntry & {
   withChildren: boolean;
   pinnedType: "codex" | "snippet";
+  /** ピンの起源: "manual" = 手動ピン, "chat_mention" = チャット@メンション */
+  pinSource?: "manual" | "chat_mention";
 };
 
 /** A snippet entry returned as a pinned item. */
@@ -521,10 +523,12 @@ export async function listPinnedCodexEntries(
   const withChildrenMap = new Map(
     codexPinned.map((p) => [p.id, p.withChildren ?? false]),
   );
+  const pinSourceMap = new Map(codexPinned.map((p) => [p.id, p.source]));
   return entries.map((e) => ({
     ...e,
     withChildren: withChildrenMap.get(e.id) ?? false,
     pinnedType: "codex" as const,
+    pinSource: pinSourceMap.get(e.id),
   }));
 }
 

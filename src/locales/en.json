@@ -377,6 +377,7 @@
       "projectInfo": "Project info",
       "sceneTokens": "Scene: {{count}} tokens",
       "unpinEntry": "Unpin {{name}}",
+      "returnToAuto": "Return {{name}} to auto",
       "pinEntry": "Pin {{name}}",
       "pinCodexSnippet": "Pin Codex/Snippet",
       "pin": "Pin",

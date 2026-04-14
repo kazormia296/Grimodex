@@ -377,6 +377,7 @@
       "projectInfo": "プロジェクト情報",
       "sceneTokens": "シーン: {{count}} tokens",
       "unpinEntry": "{{name}}のピン留め解除",
+      "returnToAuto": "{{name}}をautoに戻す",
       "pinEntry": "{{name}}をピン留め",
       "pinCodexSnippet": "Codex/Snippetをピン留め",
       "pin": "ピン留め",
