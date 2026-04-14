@@ -1,6 +1,7 @@
 mod content;
 mod convert;
 mod db;
+mod sanitize;
 mod server;
 mod tools;
 

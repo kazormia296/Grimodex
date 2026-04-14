@@ -1,12 +1,13 @@
-//! list_codex_entries, get_codex_entry tools.
+//! list_codex_entries, get_codex_entry, create_codex_entry, update_codex_entry tools.
 
 use rmcp::model::CallToolResult;
 use rmcp::ErrorData;
 use schemars;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::convert::prosemirror_to_markdown;
 use crate::db::{self, CodexEntryFull, CodexFilter};
+use crate::sanitize;
 use crate::server::GrimodexServer;
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -90,6 +91,203 @@ pub async fn get_codex_entry(
 
     let json = serde_json::to_string_pretty(&entries)
         .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+    Ok(CallToolResult::success(vec![rmcp::model::Content::text(
+        json,
+    )]))
+}
+
+// ─── Phase 3: write tools ────────────────────────────────────────────────────
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct CreateCodexEntryParams {
+    /// Type slug: "character", "location", "item", "lore", or a custom slug.
+    pub type_slug: String,
+    /// Entry name (required, max 255 characters).
+    pub name: String,
+    /// Aliases list (optional, max 50, each max 100 chars).
+    pub aliases: Option<Vec<String>>,
+    /// Short summary (optional, max 2000 characters).
+    pub summary: Option<String>,
+    /// Main content as plain Markdown text (optional, max 1 MB).
+    pub content: Option<String>,
+    /// Tags to assign (will be created if they don't exist).
+    pub tags: Option<Vec<String>>,
+}
+
+#[derive(Debug, Serialize)]
+struct CreateCodexResult {
+    id: String,
+    message: String,
+}
+
+pub async fn create_codex_entry(
+    server: &GrimodexServer,
+    params: CreateCodexEntryParams,
+) -> Result<CallToolResult, ErrorData> {
+    if server.readonly {
+        return Err(ErrorData::invalid_params(
+            "Server is running in readonly mode; write tools are disabled",
+            None,
+        ));
+    }
+
+    let name = sanitize::sanitize_name(&params.name)
+        .map_err(|e| ErrorData::invalid_params(e.to_string(), None))?;
+    let type_slug = sanitize::sanitize_name(&params.type_slug)
+        .map_err(|e| ErrorData::invalid_params(e.to_string(), None))?;
+
+    let aliases_vec = if let Some(a) = &params.aliases {
+        sanitize::sanitize_aliases(a).map_err(|e| ErrorData::invalid_params(e.to_string(), None))?
+    } else {
+        Vec::new()
+    };
+    let aliases_str = if aliases_vec.is_empty() {
+        None
+    } else {
+        Some(aliases_vec.join(","))
+    };
+
+    let summary = if let Some(s) = &params.summary {
+        let cleaned = sanitize::sanitize_summary(s)
+            .map_err(|e| ErrorData::invalid_params(e.to_string(), None))?;
+        if cleaned.is_empty() {
+            None
+        } else {
+            Some(cleaned)
+        }
+    } else {
+        None
+    };
+
+    let content_pm = if let Some(md) = &params.content {
+        sanitize::validate_content_size(md)
+            .map_err(|e| ErrorData::invalid_params(e.to_string(), None))?;
+        sanitize::markdown_to_prosemirror(md)
+    } else {
+        r#"{"type":"doc","content":[]}"#.to_string()
+    };
+
+    let tags = params.tags.unwrap_or_default();
+
+    let conn = server
+        .conn
+        .lock()
+        .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+
+    let new_id = db::create_codex_entry(
+        &conn,
+        db::CreateCodexInput {
+            project_id: &server.project_id,
+            type_slug: &type_slug,
+            name: &name,
+            aliases: aliases_str.as_deref(),
+            summary: summary.as_deref(),
+            content_pm: &content_pm,
+            tags: &tags,
+        },
+    )
+    .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+
+    let result = CreateCodexResult {
+        id: new_id.clone(),
+        message: format!("Codex entry '{}' created with id {}", name, new_id),
+    };
+    let json = serde_json::to_string_pretty(&result)
+        .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+    Ok(CallToolResult::success(vec![rmcp::model::Content::text(
+        json,
+    )]))
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct UpdateCodexEntryParams {
+    /// ID of the Codex entry to update (required).
+    pub entry_id: String,
+    /// New name (optional).
+    pub name: Option<String>,
+    /// New aliases list (optional; replaces existing aliases).
+    pub aliases: Option<Vec<String>>,
+    /// New summary (optional).
+    pub summary: Option<String>,
+    /// New content as plain Markdown (optional; replaces existing content).
+    pub content: Option<String>,
+    /// New tags list (optional; replaces existing tags).
+    pub tags: Option<Vec<String>>,
+}
+
+pub async fn update_codex_entry(
+    server: &GrimodexServer,
+    params: UpdateCodexEntryParams,
+) -> Result<CallToolResult, ErrorData> {
+    if server.readonly {
+        return Err(ErrorData::invalid_params(
+            "Server is running in readonly mode; write tools are disabled",
+            None,
+        ));
+    }
+
+    let name = if let Some(n) = &params.name {
+        Some(
+            sanitize::sanitize_name(n)
+                .map_err(|e| ErrorData::invalid_params(e.to_string(), None))?,
+        )
+    } else {
+        None
+    };
+
+    let aliases_str = if let Some(a) = &params.aliases {
+        let cleaned = sanitize::sanitize_aliases(a)
+            .map_err(|e| ErrorData::invalid_params(e.to_string(), None))?;
+        Some(if cleaned.is_empty() {
+            String::new()
+        } else {
+            cleaned.join(",")
+        })
+    } else {
+        None
+    };
+
+    let summary = if let Some(s) = &params.summary {
+        Some(
+            sanitize::sanitize_summary(s)
+                .map_err(|e| ErrorData::invalid_params(e.to_string(), None))?,
+        )
+    } else {
+        None
+    };
+
+    let content_pm = if let Some(md) = &params.content {
+        sanitize::validate_content_size(md)
+            .map_err(|e| ErrorData::invalid_params(e.to_string(), None))?;
+        Some(sanitize::markdown_to_prosemirror(md))
+    } else {
+        None
+    };
+
+    let conn = server
+        .conn
+        .lock()
+        .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+
+    db::update_codex_entry(
+        &conn,
+        db::UpdateCodexInput {
+            entry_id: &params.entry_id,
+            project_id: &server.project_id,
+            name: name.as_deref(),
+            aliases: aliases_str.as_deref(),
+            summary: summary.as_deref(),
+            content_pm: content_pm.as_deref(),
+            tags: params.tags.as_deref(),
+        },
+    )
+    .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+
+    let json = serde_json::json!({
+        "id": params.entry_id,
+        "message": "Codex entry updated successfully"
+    })
+    .to_string();
     Ok(CallToolResult::success(vec![rmcp::model::Content::text(
         json,
     )]))

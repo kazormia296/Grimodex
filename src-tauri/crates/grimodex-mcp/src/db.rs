@@ -855,6 +855,132 @@ pub fn get_attribution_report(
     })
 }
 
+// ─── Phase 3: write helpers ───────────────────────────────────────────────────
+
+pub struct CreateCodexInput<'a> {
+    pub project_id: &'a str,
+    pub type_slug: &'a str,
+    pub name: &'a str,
+    pub aliases: Option<&'a str>,
+    pub summary: Option<&'a str>,
+    pub content_pm: &'a str,
+    pub tags: &'a [String],
+}
+
+pub struct UpdateCodexInput<'a> {
+    pub entry_id: &'a str,
+    pub project_id: &'a str,
+    pub name: Option<&'a str>,
+    pub aliases: Option<&'a str>,
+    pub summary: Option<&'a str>,
+    pub content_pm: Option<&'a str>,
+    pub tags: Option<&'a [String]>,
+}
+
+/// Create a new Codex entry. Returns the new entry's UUID.
+pub fn create_codex_entry(conn: &Connection, input: CreateCodexInput<'_>) -> Result<String> {
+    let id = uuid::Uuid::new_v4().to_string();
+    conn.execute(
+        "INSERT INTO codex_entries
+         (id, project_id, type, name, aliases, summary, content)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        params![
+            id,
+            input.project_id,
+            input.type_slug,
+            input.name,
+            input.aliases,
+            input.summary,
+            input.content_pm
+        ],
+    )
+    .context("create_codex_entry insert failed")?;
+
+    link_codex_tags(conn, input.project_id, &id, input.tags)?;
+
+    Ok(id)
+}
+
+/// Update fields of an existing Codex entry (only non-None fields are changed).
+pub fn update_codex_entry(conn: &Connection, input: UpdateCodexInput<'_>) -> Result<()> {
+    let entry_id = input.entry_id;
+    // Verify entry exists
+    let exists: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM codex_entries WHERE id = ?1)",
+        params![entry_id],
+        |row| row.get(0),
+    )?;
+    if !exists {
+        anyhow::bail!("Codex entry '{}' not found", entry_id);
+    }
+
+    // Build dynamic SET clause and parameter list together.
+    // ?1 is always the entry_id (WHERE clause); additional ?N slots are SET values.
+    let mut sets: Vec<String> = vec!["updated_at = datetime('now')".to_string()];
+    let mut values: Vec<rusqlite::types::Value> =
+        vec![rusqlite::types::Value::Text(entry_id.to_string())];
+
+    if let Some(n) = input.name {
+        sets.push(format!("name = ?{}", values.len() + 1));
+        values.push(rusqlite::types::Value::Text(n.to_string()));
+    }
+    if let Some(a) = input.aliases {
+        sets.push(format!("aliases = ?{}", values.len() + 1));
+        values.push(rusqlite::types::Value::Text(a.to_string()));
+    }
+    if let Some(s) = input.summary {
+        sets.push(format!("summary = ?{}", values.len() + 1));
+        values.push(rusqlite::types::Value::Text(s.to_string()));
+    }
+    if let Some(c) = input.content_pm {
+        sets.push(format!("content = ?{}", values.len() + 1));
+        values.push(rusqlite::types::Value::Text(c.to_string()));
+    }
+
+    let sql = format!("UPDATE codex_entries SET {} WHERE id = ?1", sets.join(", "));
+    conn.execute(&sql, rusqlite::params_from_iter(values.iter()))
+        .context("update_codex_entry failed")?;
+
+    // Replace tags if provided
+    if let Some(tag_list) = input.tags {
+        conn.execute(
+            "DELETE FROM codex_entry_tags WHERE entry_id = ?1",
+            params![entry_id],
+        )?;
+        link_codex_tags(conn, input.project_id, entry_id, tag_list)?;
+    }
+
+    Ok(())
+}
+
+/// Upsert tags into codex_tags and link to a codex entry.
+fn link_codex_tags(
+    conn: &Connection,
+    project_id: &str,
+    entry_id: &str,
+    tags: &[String],
+) -> Result<()> {
+    for tag_name in tags {
+        // Upsert tag
+        let tag_id: String = conn
+            .query_row(
+                "INSERT INTO codex_tags (id, project_id, name)
+             VALUES (lower(hex(randomblob(16))), ?1, ?2)
+             ON CONFLICT(project_id, name) DO UPDATE SET name = excluded.name
+             RETURNING id",
+                params![project_id, tag_name],
+                |row| row.get(0),
+            )
+            .context("upsert codex tag failed")?;
+
+        conn.execute(
+            "INSERT OR IGNORE INTO codex_entry_tags (entry_id, tag_id) VALUES (?1, ?2)",
+            params![entry_id, tag_id],
+        )?;
+    }
+    Ok(())
+}
+
 pub fn get_project_stats(conn: &Connection, project_id: &str) -> Result<ProjectStats> {
     let scene_count: i64 = conn.query_row(
         "SELECT COUNT(*) FROM tree_nodes WHERE project_id = ?1 AND node_type = 'scene'",
@@ -1392,5 +1518,104 @@ mod tests {
         assert_eq!(stats.scene_count, 2);
         assert_eq!(stats.folder_count, 1);
         assert_eq!(stats.codex_entry_count, 1);
+    }
+
+    // ── Phase 3 tests ────────────────────────────────────────────────────────
+
+    fn make_simple_db_with_unique_constraint() -> Connection {
+        // codex_tags needs UNIQUE(project_id, name) for ON CONFLICT upsert
+        let conn = make_simple_db();
+        conn.execute_batch(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_codex_tags_name
+             ON codex_tags(project_id, name);",
+        )
+        .unwrap();
+        conn
+    }
+
+    #[test]
+    fn test_create_codex_entry_basic() {
+        let conn = make_simple_db_with_unique_constraint();
+        insert_project(&conn, "p1", "Novel");
+        let id = create_codex_entry(
+            &conn,
+            CreateCodexInput {
+                project_id: "p1",
+                type_slug: "character",
+                name: "Bob",
+                aliases: None,
+                summary: Some("A mysterious figure"),
+                content_pm: r#"{"type":"doc","content":[]}"#,
+                tags: &[],
+            },
+        )
+        .unwrap();
+        assert!(!id.is_empty());
+        let entry = get_codex_entry_full(&conn, &id).unwrap();
+        assert_eq!(entry.summary.name, "Bob");
+        assert_eq!(entry.summary.summary.as_deref(), Some("A mysterious figure"));
+    }
+
+    #[test]
+    fn test_create_codex_entry_with_tags() {
+        let conn = make_simple_db_with_unique_constraint();
+        insert_project(&conn, "p1", "Novel");
+        let tags = vec!["protagonist".to_string(), "magic".to_string()];
+        let id = create_codex_entry(
+            &conn,
+            CreateCodexInput {
+                project_id: "p1",
+                type_slug: "character",
+                name: "Alice",
+                aliases: Some("Al,Alicia"),
+                summary: None,
+                content_pm: r#"{"type":"doc","content":[]}"#,
+                tags: &tags,
+            },
+        )
+        .unwrap();
+        let entry = get_codex_entry_full(&conn, &id).unwrap();
+        assert_eq!(entry.tags.len(), 2);
+        assert!(entry.tags.contains(&"protagonist".to_string()));
+    }
+
+    #[test]
+    fn test_update_codex_entry_name() {
+        let conn = make_simple_db_with_unique_constraint();
+        insert_project(&conn, "p1", "Novel");
+        insert_codex_entry(&conn, "e1", "p1", "Alice", "character");
+        update_codex_entry(
+            &conn,
+            UpdateCodexInput {
+                entry_id: "e1",
+                project_id: "p1",
+                name: Some("Alicia"),
+                aliases: None,
+                summary: None,
+                content_pm: None,
+                tags: None,
+            },
+        )
+        .unwrap();
+        let entry = get_codex_entry_full(&conn, "e1").unwrap();
+        assert_eq!(entry.summary.name, "Alicia");
+    }
+
+    #[test]
+    fn test_update_codex_entry_not_found() {
+        let conn = make_simple_db_with_unique_constraint();
+        let result = update_codex_entry(
+            &conn,
+            UpdateCodexInput {
+                entry_id: "no-such-id",
+                project_id: "p1",
+                name: Some("X"),
+                aliases: None,
+                summary: None,
+                content_pm: None,
+                tags: None,
+            },
+        );
+        assert!(result.is_err());
     }
 }

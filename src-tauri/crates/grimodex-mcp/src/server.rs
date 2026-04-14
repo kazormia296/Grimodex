@@ -155,6 +155,28 @@ impl GrimodexServer {
     ) -> Result<CallToolResult, ErrorData> {
         tools::stats::get_attribution_report(self, params.0).await
     }
+
+    /// Create a new Codex entry. Disabled in readonly mode.
+    #[tool(
+        description = "Create a new Codex entry (character, location, item, lore, or custom type). Disabled in readonly mode."
+    )]
+    async fn create_codex_entry(
+        &self,
+        params: Parameters<tools::codex::CreateCodexEntryParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        tools::codex::create_codex_entry(self, params.0).await
+    }
+
+    /// Update an existing Codex entry. Only provided fields are changed. Disabled in readonly mode.
+    #[tool(
+        description = "Update fields of an existing Codex entry. Only provided fields are changed. Disabled in readonly mode."
+    )]
+    async fn update_codex_entry(
+        &self,
+        params: Parameters<tools::codex::UpdateCodexEntryParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        tools::codex::update_codex_entry(self, params.0).await
+    }
 }
 
 #[tool_handler]
