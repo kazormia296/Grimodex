@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "grimodex": {
+      "command": "./src-tauri/target/debug/grimodex-mcp",
+      "args": ["--workspace", "/path/to/your/novel-project"]
+    }
+  }
+}

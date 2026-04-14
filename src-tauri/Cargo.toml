@@ -1,3 +1,6 @@
+[workspace]
+members = ["crates/grimodex-mcp"]
+
 [package]
 name = "grimodex"
 version = "0.1.0"
