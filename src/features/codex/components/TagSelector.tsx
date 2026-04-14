@@ -262,7 +262,7 @@ export function TagSelector({
                     onClick={handleCreate}
                     className="w-full rounded bg-primary px-1.5 py-0.5 text-[10px] text-primary-foreground hover:bg-primary/90"
                   >
-                    作成
+                    {t("common.create")}
                   </button>
                 </div>
               )}

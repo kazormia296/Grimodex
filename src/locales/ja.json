@@ -761,6 +761,12 @@
       "unsavedMany": "{{count}}個のタブに未保存の変更があります。保存しますか？",
       "saveAndClose": "すべて保存して閉じる",
       "closeWithoutSave": "保存せず閉じる"
+    },
+    "ribbon": {
+      "noteEditing": "ノート編集中",
+      "noteDescription": "このファイルはシーンではなくノートです",
+      "codexEditing": "Codex エントリ編集中",
+      "snippetEditing": "スニペット編集中"
     }
   },
 

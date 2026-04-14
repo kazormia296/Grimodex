@@ -764,6 +764,12 @@
       "unsavedMany": "{{count}} tabs have unsaved changes. Save?",
       "saveAndClose": "Save All and Close",
       "closeWithoutSave": "Close Without Saving"
+    },
+    "ribbon": {
+      "noteEditing": "Editing Note",
+      "noteDescription": "This file is a note, not a scene",
+      "codexEditing": "Editing Codex Entry",
+      "snippetEditing": "Editing Snippet"
     }
   },
 
