@@ -540,9 +540,9 @@ pub fn search_fts(
     if scope == "all" || scope == "scenes" {
         let mut stmt = conn.prepare(
             "SELECT tn.id, tn.title, COALESCE(tn.synopsis, '')
-             FROM tree_nodes_fts f
-             JOIN tree_nodes tn ON tn.rowid = f.rowid
-             WHERE f MATCH ?1 AND tn.project_id = ?2 AND tn.node_type = 'scene'
+             FROM tree_nodes_fts
+             JOIN tree_nodes tn ON tn.rowid = tree_nodes_fts.rowid
+             WHERE tree_nodes_fts MATCH ?1 AND tn.project_id = ?2 AND tn.node_type = 'scene'
              ORDER BY rank LIMIT ?3",
         )?;
         let rows = stmt.query_map(params![query, project_id, lim], |row| {
@@ -561,9 +561,9 @@ pub fn search_fts(
     if scope == "all" || scope == "codex" {
         let mut stmt = conn.prepare(
             "SELECT e.id, e.name, COALESCE(e.summary, '')
-             FROM codex_fts f
-             JOIN codex_entries e ON e.rowid = f.rowid
-             WHERE f MATCH ?1 AND e.project_id = ?2
+             FROM codex_fts
+             JOIN codex_entries e ON e.rowid = codex_fts.rowid
+             WHERE codex_fts MATCH ?1 AND e.project_id = ?2
              ORDER BY rank LIMIT ?3",
         )?;
         let rows = stmt.query_map(params![query, project_id, lim], |row| {
@@ -582,9 +582,9 @@ pub fn search_fts(
     if scope == "all" || scope == "snippets" {
         let mut stmt = conn.prepare(
             "SELECT s.id, s.title, COALESCE(s.tags_cache, '')
-             FROM snippets_fts f
-             JOIN snippets s ON s.rowid = f.rowid
-             WHERE f MATCH ?1 AND s.project_id = ?2
+             FROM snippets_fts
+             JOIN snippets s ON s.rowid = snippets_fts.rowid
+             WHERE snippets_fts MATCH ?1 AND s.project_id = ?2
              ORDER BY rank LIMIT ?3",
         )?;
         let rows = stmt.query_map(params![query, project_id, lim], |row| {
@@ -603,10 +603,10 @@ pub fn search_fts(
     if scope == "all" || scope == "chat" {
         let mut stmt = conn.prepare(
             "SELECT m.id, cs.title, substr(m.content, 1, 300)
-             FROM chat_messages_fts f
-             JOIN chat_messages m ON m.rowid = f.rowid
+             FROM chat_messages_fts
+             JOIN chat_messages m ON m.rowid = chat_messages_fts.rowid
              JOIN chat_sessions cs ON cs.id = m.session_id
-             WHERE f MATCH ?1 AND cs.project_id = ?2
+             WHERE chat_messages_fts MATCH ?1 AND cs.project_id = ?2
              ORDER BY rank LIMIT ?3",
         )?;
         let rows = stmt.query_map(params![query, project_id, lim], |row| {
