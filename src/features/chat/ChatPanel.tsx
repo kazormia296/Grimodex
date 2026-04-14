@@ -54,9 +54,7 @@ export function ChatPanel() {
   const contextLayers = useChatStore((s) => s.contextLayers);
   const detectedEntries = useChatStore((s) => s.detectedEntries);
   const alwaysEntries = useChatStore((s) => s.alwaysEntries);
-  const systemPrompt = useChatStore(
-    (s) => s.messages.find((m) => m.role === "system")?.content ?? "",
-  );
+  const systemPrompt = useChatStore((s) => s.lastSystemPrompt);
   const setActiveSceneId = useChatStore((s) => s.setActiveSceneId);
   const refreshContextLayers = useChatStore((s) => s.refreshContextLayers);
   const activeSessionId = useChatStore((s) => s.activeSessionId);
