@@ -1,4 +1,11 @@
-import { useState } from "react";
+import {
+  useState,
+  useRef,
+  useCallback,
+  useEffect,
+  type MouseEvent,
+} from "react";
+import { createPortal } from "react-dom";
 import { useTranslation } from "react-i18next";
 import { X, BookOpen, ChevronDown, ChevronUp, Pin, Undo2 } from "lucide-react";
 import type { CodexEntry } from "@/features/codex/api";
@@ -19,8 +26,12 @@ import {
 import { getTypeLabel } from "../utils/typeLabels";
 import { ContextPillGroup } from "./ContextPillGroup";
 import { useCodexHighlightStore } from "@/features/editor/codexHighlightStore";
+import { CodexEntryPopoverContent } from "@/features/codex/components/CodexEntryPopoverContent";
+import { useLayoutStore } from "@/features/layout/layoutStore";
+import { useCodexStore } from "@/features/codex/codexStore";
 
 const GROUP_THRESHOLD = 6;
+const TYPE_ORDER = ["character", "location", "item", "lore"];
 
 interface ContextBarProps {
   pinnedEntries: PinnedCodexEntryWithData[];
@@ -66,6 +77,43 @@ export function ContextBar({
   const [previewOpen, setPreviewOpen] = useState(false);
   const [creatorOpen, setCreatorOpen] = useState(false);
   const typeColorMap = useCodexHighlightStore((s) => s.typeColorMap);
+
+  // Codex エントリ hover ポップオーバー
+  const [hoveredEntry, setHoveredEntry] = useState<{
+    entry: CodexEntry;
+    rect: DOMRect;
+  } | null>(null);
+  const hideTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (hideTimerRef.current) clearTimeout(hideTimerRef.current);
+    };
+  }, []);
+
+  const handleEntryMouseEnter = useCallback(
+    (entry: CodexEntry, e: MouseEvent<HTMLElement>) => {
+      if (hideTimerRef.current) {
+        clearTimeout(hideTimerRef.current);
+        hideTimerRef.current = null;
+      }
+      const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+      setHoveredEntry({ entry, rect });
+    },
+    [],
+  );
+
+  const handleEntryMouseLeave = useCallback(() => {
+    hideTimerRef.current = setTimeout(() => {
+      setHoveredEntry(null);
+    }, 200);
+  }, []);
+
+  function handleOpenInCodex(entryId: string) {
+    setHoveredEntry(null);
+    useLayoutStore.getState().showPanel("codex");
+    useCodexStore.getState().requestSelectEntry(entryId);
+  }
 
   const allContextEntries = [
     ...pinnedEntries,
@@ -155,73 +203,133 @@ export function ContextBar({
 
         {/* ピル行 */}
         {!collapsed && (
-          <div className="flex flex-wrap items-center gap-1 px-4 pb-1.5">
-            {/* L1: Project (常に存在するなら表示) */}
-            {contextLayers.find((l) => l.layer === "L1" && l.used > 0) && (
-              <span
-                className="rounded bg-muted px-1.5 py-0.5 text-xs text-muted-foreground"
-                title={t("chat.context.projectInfo")}
-              >
-                Project
-              </span>
-            )}
-            {/* L3: Scene + トークン数 */}
-            {sceneTokens > 0 && (
-              <span
-                className="rounded bg-muted px-1.5 py-0.5 text-xs text-muted-foreground"
-                title={t("chat.context.sceneTokens", {
-                  count: sceneTokens.toLocaleString(),
-                })}
-              >
-                Scene: {sceneTokens.toLocaleString()}
-              </span>
-            )}
-            {/* Codex エントリ: グループ時は pinned + auto を統合 */}
-            {useGrouping
-              ? Array.from(groupMap.entries()).map(([type, group]) => (
-                  <ContextPillGroup
-                    key={type}
-                    type={type}
-                    label={getTypeLabel(type)}
-                    pinnedEntries={group.pinned}
-                    autoEntries={group.auto}
-                    onReturnToAuto={onReturnToAuto}
-                    onRemove={onRemove}
-                    onRemoveAuto={onRemoveAuto}
-                    onPin={onPin}
-                    resolvedColor={typeColorMap[type]}
-                  />
-                ))
-              : pinnedEntries.map((entry) => {
-                  const rc = typeColorMap[entry.type];
-                  const isManual = entry.pinSource === "manual";
-                  return (
-                    <span
-                      key={entry.id}
-                      className="inline-flex items-center gap-1 rounded-full bg-accent px-2 py-0.5 text-xs"
-                      style={
-                        rc
-                          ? { backgroundColor: rc.hl, color: rc.fg }
-                          : undefined
-                      }
-                    >
-                      {entry.name}
-                      {isManual && (
+          <div className="flex items-start px-4 pb-1.5">
+            {/* エントリピル（折り返し可） */}
+            <div className="flex min-w-0 flex-1 flex-wrap items-center gap-1">
+              {/* L1: Project (常に存在するなら表示) */}
+              {contextLayers.find((l) => l.layer === "L1" && l.used > 0) && (
+                <span
+                  className="rounded bg-muted px-1.5 py-0.5 text-xs text-muted-foreground"
+                  title={t("chat.context.projectInfo")}
+                >
+                  Project
+                </span>
+              )}
+              {/* L3: Scene + トークン数 */}
+              {sceneTokens > 0 && (
+                <span
+                  className="rounded bg-muted px-1.5 py-0.5 text-xs text-muted-foreground"
+                  title={t("chat.context.sceneTokens", {
+                    count: sceneTokens.toLocaleString(),
+                  })}
+                >
+                  Scene: {sceneTokens.toLocaleString()}
+                </span>
+              )}
+              {/* Codex エントリ: グループ時は pinned + auto を統合 */}
+              {useGrouping
+                ? Array.from(groupMap.entries())
+                    .sort(([a], [b]) => {
+                      const oa = TYPE_ORDER.indexOf(a);
+                      const ob = TYPE_ORDER.indexOf(b);
+                      return (
+                        (oa === -1 ? TYPE_ORDER.length : oa) -
+                        (ob === -1 ? TYPE_ORDER.length : ob)
+                      );
+                    })
+                    .map(([type, group]) => (
+                      <ContextPillGroup
+                        key={type}
+                        type={type}
+                        label={getTypeLabel(type)}
+                        pinnedEntries={group.pinned}
+                        autoEntries={group.auto}
+                        onReturnToAuto={onReturnToAuto}
+                        onRemove={onRemove}
+                        onRemoveAuto={onRemoveAuto}
+                        onPin={onPin}
+                        resolvedColor={typeColorMap[type]}
+                      />
+                    ))
+                : pinnedEntries.map((entry) => {
+                    const rc = typeColorMap[entry.type];
+                    const isManual = entry.pinSource === "manual";
+                    return (
+                      <span
+                        key={entry.id}
+                        className="inline-flex items-center gap-1 rounded-full bg-accent px-2 py-0.5 text-xs"
+                        style={
+                          rc
+                            ? { backgroundColor: rc.hl, color: rc.fg }
+                            : undefined
+                        }
+                        onMouseEnter={(e) => handleEntryMouseEnter(entry, e)}
+                        onMouseLeave={handleEntryMouseLeave}
+                      >
+                        {entry.name}
+                        {isManual && (
+                          <button
+                            type="button"
+                            onClick={() => onReturnToAuto(entry.id)}
+                            className="hover:text-foreground text-muted-foreground/70"
+                            aria-label={t("chat.context.returnToAuto", {
+                              name: entry.name,
+                            })}
+                          >
+                            <Undo2 className="h-3 w-3" />
+                          </button>
+                        )}
                         <button
                           type="button"
-                          onClick={() => onReturnToAuto(entry.id)}
-                          className="hover:text-foreground text-muted-foreground/70"
-                          aria-label={t("chat.context.returnToAuto", {
+                          onClick={() => onRemove(entry.id)}
+                          className="hover:text-destructive"
+                          aria-label={t("chat.context.unpinEntry", {
                             name: entry.name,
                           })}
                         >
-                          <Undo2 className="h-3 w-3" />
+                          <X className="h-3 w-3" />
                         </button>
-                      )}
+                      </span>
+                    );
+                  })}
+              {/* G15: auto entries (非グループ時のみ個別表示) */}
+              {!useGrouping &&
+                [...detectedEntries, ...alwaysEntries].map((entry) => {
+                  const rc = typeColorMap[entry.type];
+                  const isDetected = detectedEntries.includes(entry);
+                  return (
+                    <span
+                      key={entry.id}
+                      data-testid={isDetected ? "detected-pill" : "always-pill"}
+                      className="inline-flex items-center gap-1 rounded-full bg-accent/50 px-2 py-0.5 text-xs"
+                      style={
+                        rc
+                          ? {
+                              backgroundColor: rc.hl,
+                              color: rc.fg,
+                              opacity: 0.75,
+                            }
+                          : undefined
+                      }
+                      onMouseEnter={(e) => handleEntryMouseEnter(entry, e)}
+                      onMouseLeave={handleEntryMouseLeave}
+                    >
+                      {entry.name}
+                      <span className="text-muted-foreground/70">auto</span>
                       <button
                         type="button"
-                        onClick={() => onRemove(entry.id)}
-                        className="hover:text-destructive"
+                        onClick={() => onPin(entry.id)}
+                        className="hover:text-foreground text-muted-foreground/70"
+                        aria-label={t("chat.context.pinEntry", {
+                          name: entry.name,
+                        })}
+                      >
+                        <Pin className="h-3 w-3" />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => onRemoveAuto(entry.id)}
+                        className="hover:text-destructive text-muted-foreground/70"
                         aria-label={t("chat.context.unpinEntry", {
                           name: entry.name,
                         })}
@@ -231,85 +339,42 @@ export function ContextBar({
                     </span>
                   );
                 })}
-            {/* G15: auto entries (非グループ時のみ個別表示) */}
-            {!useGrouping &&
-              [...detectedEntries, ...alwaysEntries].map((entry) => {
-                const rc = typeColorMap[entry.type];
-                const isDetected = detectedEntries.includes(entry);
-                return (
-                  <span
-                    key={entry.id}
-                    data-testid={isDetected ? "detected-pill" : "always-pill"}
-                    className="inline-flex items-center gap-1 rounded-full bg-accent/50 px-2 py-0.5 text-xs"
-                    style={
-                      rc
-                        ? {
-                            backgroundColor: rc.hl,
-                            color: rc.fg,
-                            opacity: 0.75,
-                          }
-                        : undefined
-                    }
-                  >
-                    {entry.name}
-                    <span className="text-muted-foreground/70">auto</span>
-                    <button
-                      type="button"
-                      onClick={() => onPin(entry.id)}
-                      className="hover:text-foreground text-muted-foreground/70"
-                      aria-label={t("chat.context.pinEntry", {
-                        name: entry.name,
-                      })}
-                    >
-                      <Pin className="h-3 w-3" />
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => onRemoveAuto(entry.id)}
-                      className="hover:text-destructive text-muted-foreground/70"
-                      aria-label={t("chat.context.unpinEntry", {
-                        name: entry.name,
-                      })}
-                    >
-                      <X className="h-3 w-3" />
-                    </button>
-                  </span>
-                );
-              })}
-            {/* G16: ピン留め Snippet エントリ */}
-            {pinnedSnippets.map((snippet) => (
-              <span
-                key={snippet.id}
-                className="inline-flex items-center gap-1 rounded-full bg-purple-100 px-2 py-0.5 text-xs text-purple-800"
-              >
-                {snippet.title}
-                <button
-                  type="button"
-                  onClick={() => onRemove(snippet.id)}
-                  className="hover:text-destructive"
-                  aria-label={t("chat.context.unpinEntry", {
-                    name: snippet.title,
-                  })}
+              {/* G16: ピン留め Snippet エントリ */}
+              {pinnedSnippets.map((snippet) => (
+                <span
+                  key={snippet.id}
+                  className="inline-flex items-center gap-1 rounded-full bg-purple-100 px-2 py-0.5 text-xs text-purple-800"
                 >
-                  <X className="h-3 w-3" />
-                </button>
-              </span>
-            ))}
-            {/* ピン留めボタン */}
-            <button
-              type="button"
-              onClick={onOpenPinDialog}
-              className="inline-flex items-center gap-1 rounded-md border border-dashed border-border px-2 py-0.5 text-xs text-muted-foreground hover:bg-accent"
-              aria-label={t("chat.context.pinCodexSnippet")}
-            >
-              <BookOpen className="h-3 w-3" />
-              {t("chat.context.pin")}
-            </button>
-            {/* ✦ AI コンテキスト提案ボタン */}
-            <ContextCreatorButton
-              onClick={() => setCreatorOpen(true)}
-              disabled={!canUseCreator}
-            />
+                  {snippet.title}
+                  <button
+                    type="button"
+                    onClick={() => onRemove(snippet.id)}
+                    className="hover:text-destructive"
+                    aria-label={t("chat.context.unpinEntry", {
+                      name: snippet.title,
+                    })}
+                  >
+                    <X className="h-3 w-3" />
+                  </button>
+                </span>
+              ))}
+            </div>
+            {/* ピン留め・AIボタン（右端固定） */}
+            <div className="ml-1 flex shrink-0 items-center gap-1 py-0.5">
+              <button
+                type="button"
+                onClick={onOpenPinDialog}
+                className="inline-flex items-center gap-1 rounded-md border border-dashed border-border px-2 py-0.5 text-xs text-muted-foreground hover:bg-accent"
+                aria-label={t("chat.context.pinCodexSnippet")}
+              >
+                <BookOpen className="h-3 w-3" />
+                {t("chat.context.pin")}
+              </button>
+              <ContextCreatorButton
+                onClick={() => setCreatorOpen(true)}
+                disabled={!canUseCreator}
+              />
+            </div>
           </div>
         )}
 
@@ -331,6 +396,33 @@ export function ContextBar({
           onClose={() => setPreviewOpen(false)}
         />
       )}
+
+      {/* Codex エントリ hover ポップオーバー */}
+      {hoveredEntry &&
+        createPortal(
+          <div
+            className="fixed z-50 w-64 rounded-lg border border-border bg-popover p-3 shadow-md"
+            style={{
+              left: hoveredEntry.rect.left,
+              top: hoveredEntry.rect.bottom + 4,
+            }}
+            onMouseEnter={() => {
+              if (hideTimerRef.current) {
+                clearTimeout(hideTimerRef.current);
+                hideTimerRef.current = null;
+              }
+            }}
+            onMouseLeave={() => setHoveredEntry(null)}
+          >
+            <CodexEntryPopoverContent
+              entry={hoveredEntry.entry}
+              dotColor={typeColorMap[hoveredEntry.entry.type]?.fg ?? "#888888"}
+              typeLabel={getTypeLabel(hoveredEntry.entry.type)}
+              onOpenInCodex={() => handleOpenInCodex(hoveredEntry.entry.id)}
+            />
+          </div>,
+          document.body,
+        )}
     </>
   );
 }

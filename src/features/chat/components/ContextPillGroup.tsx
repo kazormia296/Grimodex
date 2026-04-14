@@ -1,9 +1,20 @@
-import { useState, useRef, useEffect } from "react";
+import {
+  useState,
+  useRef,
+  useEffect,
+  useCallback,
+  type MouseEvent,
+} from "react";
+import { createPortal } from "react-dom";
 import { X, Pin, Undo2 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import type { CodexEntry } from "@/features/codex/api";
 import type { PinnedCodexEntryWithData } from "../chatApi";
 import type { ResolvedCodexColor } from "@/lib/resolveCodexColors";
+import { CodexEntryPopoverContent } from "@/features/codex/components/CodexEntryPopoverContent";
+import { useLayoutStore } from "@/features/layout/layoutStore";
+import { useCodexStore } from "@/features/codex/codexStore";
+import { getTypeLabel } from "@/features/chat/utils/typeLabels";
 
 interface ContextPillGroupProps {
   type: string;
@@ -40,10 +51,52 @@ export function ContextPillGroup({
     ? { backgroundColor: resolvedColor.hl, color: resolvedColor.fg }
     : undefined;
 
+  // Codex エントリ hover ポップオーバー
+  const [hoveredEntry, setHoveredEntry] = useState<{
+    entry: CodexEntry;
+    rect: DOMRect;
+  } | null>(null);
+  const hideTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (hideTimerRef.current) clearTimeout(hideTimerRef.current);
+    };
+  }, []);
+
+  // ドロップダウンを閉じたらポップオーバーも閉じる
+  useEffect(() => {
+    if (!open) setHoveredEntry(null);
+  }, [open]);
+
+  const handleEntryMouseEnter = useCallback(
+    (entry: CodexEntry, e: MouseEvent<HTMLElement>) => {
+      if (hideTimerRef.current) {
+        clearTimeout(hideTimerRef.current);
+        hideTimerRef.current = null;
+      }
+      const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+      setHoveredEntry({ entry, rect });
+    },
+    [],
+  );
+
+  const handleEntryMouseLeave = useCallback(() => {
+    hideTimerRef.current = setTimeout(() => {
+      setHoveredEntry(null);
+    }, 200);
+  }, []);
+
+  function handleOpenInCodex(entryId: string) {
+    setHoveredEntry(null);
+    useLayoutStore.getState().showPanel("codex");
+    useCodexStore.getState().requestSelectEntry(entryId);
+  }
+
   // クリック外で閉じる
   useEffect(() => {
     if (!open) return;
-    function handleMouseDown(e: MouseEvent) {
+    function handleMouseDown(e: globalThis.MouseEvent) {
       if (!wrapperRef.current?.contains(e.target as Node)) {
         setOpen(false);
       }
@@ -83,6 +136,8 @@ export function ContextPillGroup({
               <div
                 key={entry.id}
                 className="flex w-full items-center justify-between gap-2 px-2 py-0.5 text-xs hover:bg-accent/50"
+                onMouseEnter={(e) => handleEntryMouseEnter(entry, e)}
+                onMouseLeave={handleEntryMouseLeave}
               >
                 <span
                   className="truncate font-medium"
@@ -121,6 +176,8 @@ export function ContextPillGroup({
             <div
               key={entry.id}
               className="flex w-full items-center justify-between gap-2 px-2 py-0.5 text-xs hover:bg-accent/50 opacity-75"
+              onMouseEnter={(e) => handleEntryMouseEnter(entry, e)}
+              onMouseLeave={handleEntryMouseLeave}
             >
               <span
                 className="truncate"
@@ -153,6 +210,33 @@ export function ContextPillGroup({
           ))}
         </div>
       )}
+
+      {/* Codex エントリ hover ポップオーバー（ドロップダウン右側に表示） */}
+      {hoveredEntry &&
+        createPortal(
+          <div
+            className="fixed z-[60] w-64 rounded-lg border border-border bg-popover p-3 shadow-md"
+            style={{
+              left: hoveredEntry.rect.right + 4,
+              top: hoveredEntry.rect.top,
+            }}
+            onMouseEnter={() => {
+              if (hideTimerRef.current) {
+                clearTimeout(hideTimerRef.current);
+                hideTimerRef.current = null;
+              }
+            }}
+            onMouseLeave={() => setHoveredEntry(null)}
+          >
+            <CodexEntryPopoverContent
+              entry={hoveredEntry.entry}
+              dotColor={resolvedColor?.fg ?? "#888888"}
+              typeLabel={getTypeLabel(hoveredEntry.entry.type)}
+              onOpenInCodex={() => handleOpenInCodex(hoveredEntry.entry.id)}
+            />
+          </div>,
+          document.body,
+        )}
     </div>
   );
 }
