@@ -16,6 +16,8 @@ interface ContextPillGroupProps {
   onReturnToAuto: (entryId: string) => void;
   /** コンテキストから完全除去 */
   onRemove: (entryId: string) => void;
+  /** autoエントリをコンテキストから即時除去 */
+  onRemoveAuto: (entryId: string) => void;
   onPin: (entryId: string) => Promise<void>;
   resolvedColor?: ResolvedCodexColor;
 }
@@ -26,6 +28,7 @@ export function ContextPillGroup({
   autoEntries,
   onReturnToAuto,
   onRemove,
+  onRemoveAuto,
   onPin,
   resolvedColor,
 }: ContextPillGroupProps) {
@@ -126,14 +129,26 @@ export function ContextPillGroup({
                 {entry.name}
                 <span className="ml-1 text-muted-foreground/70">auto</span>
               </span>
-              <button
-                type="button"
-                onClick={() => onPin(entry.id)}
-                className="shrink-0 hover:text-foreground text-muted-foreground/70"
-                aria-label={t("chat.context.pinEntry", { name: entry.name })}
-              >
-                <Pin className="h-3 w-3" />
-              </button>
+              <div className="flex shrink-0 items-center gap-0.5">
+                <button
+                  type="button"
+                  onClick={() => onPin(entry.id)}
+                  className="hover:text-foreground text-muted-foreground/70"
+                  aria-label={t("chat.context.pinEntry", { name: entry.name })}
+                >
+                  <Pin className="h-3 w-3" />
+                </button>
+                <button
+                  type="button"
+                  onClick={() => onRemoveAuto(entry.id)}
+                  className="hover:text-destructive text-muted-foreground/70"
+                  aria-label={t("chat.context.unpinEntry", {
+                    name: entry.name,
+                  })}
+                >
+                  <X className="h-3 w-3" />
+                </button>
+              </div>
             </div>
           ))}
         </div>

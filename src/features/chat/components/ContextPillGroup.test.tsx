@@ -54,6 +54,7 @@ const defaultProps = {
   autoEntries: [] as CodexEntry[],
   onReturnToAuto: vi.fn(),
   onRemove: vi.fn(),
+  onRemoveAuto: vi.fn(),
   onPin: vi.fn(),
 };
 

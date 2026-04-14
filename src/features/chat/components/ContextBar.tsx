@@ -34,6 +34,8 @@ interface ContextBarProps {
   onReturnToAuto: (entryId: string) => void;
   /** ピン解除してcontextから完全除去 */
   onRemove: (entryId: string) => void;
+  /** autoエントリをcontextから即時除去 */
+  onRemoveAuto: (entryId: string) => void;
   onPin: (entryId: string) => Promise<void>;
   onOpenPinDialog: () => void;
   contextTokenCount: number;
@@ -50,6 +52,7 @@ export function ContextBar({
   pinnedSnippets = [],
   onReturnToAuto,
   onRemove,
+  onRemoveAuto,
   onPin,
   onOpenPinDialog,
   contextTokenCount,
@@ -184,6 +187,7 @@ export function ContextBar({
                     autoEntries={group.auto}
                     onReturnToAuto={onReturnToAuto}
                     onRemove={onRemove}
+                    onRemoveAuto={onRemoveAuto}
                     onPin={onPin}
                     resolvedColor={typeColorMap[type]}
                   />
@@ -258,6 +262,16 @@ export function ContextBar({
                       })}
                     >
                       <Pin className="h-3 w-3" />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => onRemoveAuto(entry.id)}
+                      className="hover:text-destructive text-muted-foreground/70"
+                      aria-label={t("chat.context.unpinEntry", {
+                        name: entry.name,
+                      })}
+                    >
+                      <X className="h-3 w-3" />
                     </button>
                   </span>
                 );

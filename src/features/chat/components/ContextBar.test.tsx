@@ -52,6 +52,7 @@ function makePinnedEntry(
 const defaultProps = {
   onReturnToAuto: vi.fn(),
   onRemove: vi.fn(),
+  onRemoveAuto: vi.fn(),
   onPin: vi.fn(),
   onOpenPinDialog: vi.fn(),
   contextTokenCount: 0,

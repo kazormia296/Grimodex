@@ -179,21 +179,30 @@ export function ChatPanel() {
     [activeSessionId],
   );
 
-  // 手動ピンをautoに戻す: unpinのみ（次のコンテキスト再構築でautoに自然復帰）
+  // 手動ピンをautoに戻す: unpin後にコンテキスト再構築してautoリストへ即時反映
   const handleReturnToAuto = useCallback(
     async (entryId: string) => {
       await handleUnpin(entryId);
+      await refreshContextLayers();
     },
-    [handleUnpin],
+    [handleUnpin, refreshContextLayers],
   );
 
-  // コンテキストから完全除去: unpin + autoリストからも即時除去
+  // ピンエントリをコンテキストから完全除去: unpin + autoリストからも即時除去
   const handleRemoveFromContext = useCallback(
     async (entryId: string) => {
       await handleUnpin(entryId);
       removeEntryFromAuto(entryId);
     },
     [handleUnpin, removeEntryFromAuto],
+  );
+
+  // autoエントリをコンテキストから即時除去（DBへの書き込みなし）
+  const handleRemoveAuto = useCallback(
+    (entryId: string) => {
+      removeEntryFromAuto(entryId);
+    },
+    [removeEntryFromAuto],
   );
 
   const handleTogglePinChildren = useCallback(
@@ -431,6 +440,7 @@ export function ChatPanel() {
         alwaysEntries={alwaysEntries}
         onReturnToAuto={handleReturnToAuto}
         onRemove={handleRemoveFromContext}
+        onRemoveAuto={handleRemoveAuto}
         onPin={handlePin}
         onOpenPinDialog={() => setPinDialogOpen(true)}
         contextTokenCount={contextTokenCount}
