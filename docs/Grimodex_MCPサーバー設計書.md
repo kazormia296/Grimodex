@@ -284,6 +284,12 @@ pub fn open_db(workspace_path: &Path) -> Result<Connection> {
         "type": "string",
         "enum": ["outline", "draft", "complete", "revision", "final"],
         "description": "指定したステータスのシーンのみ取得"
+      },
+      "limit": {
+        "type": "integer",
+        "default": 20,
+        "maximum": 50,
+        "description": "最大取得シーン数（デフォルト20、上限50）"
       }
     },
     "required": []
@@ -837,11 +843,50 @@ Options:
     パネルを閉じて開き直す旨を返答メッセージに含める
 - DB の `busy_timeout` を 5000ms に設定し、`SQLITE_BUSY` をエラーとして返す
 
+### コンテンツサニタイズ (Stored XSS 防止)
+
+MCP サーバーという外部ライターの追加により、DB 内コンテンツを暗黙的に
+信頼できなくなる。Grimodex 本体は DB から読み取ったコンテンツを
+Tauri webview 内で描画するため、悪意ある HTML/JS が混入すると
+Stored XSS が成立する。
+
+**多層防御:**
+- **MCP サーバー側（書き込み時）**: Codex の `content`, `summary`, `notes`
+  フィールドに対し、書き込み前に HTML タグをストリップする。
+  Markdown として有効なテキストのみを受け付ける
+- **Grimodex 本体側（読み取り時）**: DB からの読み取り時にもサニタイズを行う。
+  外部ライターが存在する前提のセキュリティモデルに移行する
+  （本体側の対応は MCP とは別タスクとして実施）
+- `<script>`, `<iframe>`, `<object>`, `<embed>`, `on*` イベントハンドラ属性、
+  `javascript:` URI スキームを明示的にブロックする
+
+### FTS5 クエリ制限 (DoS 防止)
+
+`search` ツールはユーザー入力を FTS5 `MATCH` に渡す。
+パラメータ化クエリで SQL インジェクションは防げるが、FTS5 エンジン自体が
+独自構文（`AND`/`OR`/`NOT`、`*` ワイルドカード）を解釈するため、
+複雑なクエリが CPU 負荷を引き起こし、Grimodex 本体の DB パフォーマンスに
+悪影響を与える可能性がある。
+
+**対策:**
+- クエリ文字列の長さ制限: 最大 500 文字
+- ワイルドカード `*` の使用回数制限: 最大 3 個
+- `sqlite3_progress_handler` によるクエリタイムアウト: 3 秒
+- FTS5 構文エラーはユーザーフレンドリーなメッセージで返す
+
 ### 入力バリデーション
 
 - SQL インジェクション防止: パラメータ化クエリのみ使用（`db_execute` パターン踏襲）
-- パストラバーサル防止: `scene_id` は UUID 形式のみ受け付け
+- パストラバーサル防止:
+  - `scene_id` は UUID 形式のみ受け付け
+  - `title` ベースの検索は**必ず DB ルックアップ経由で UUID を解決**し、
+    ファイルパスへの直接結合は行わない
 - 入力サイズ制限: `content` フィールドは 1MB まで
+- Codex `aliases` バリデーション:
+  - 1エイリアスあたり最大 100 文字
+  - エイリアス数は最大 50 個
+  - 制御文字・NULL バイトを拒否
+  - FTS5 特殊構文文字（`*`, `"`, `NEAR` 等）はエスケープして格納
 
 ---
 
@@ -861,7 +906,7 @@ Options:
 
 ### Phase 2: 検索 + チャット
 
-1. FTS5 検索ツール `search` を実装
+1. FTS5 検索ツール `search` を実装（クエリ長制限・タイムアウト含む）
 2. チャット履歴ツール `list_chat_sessions`, `read_chat_history` を実装
 3. スニペット `list_snippets` を実装
 4. `get_attribution_report` を実装
@@ -869,10 +914,12 @@ Options:
 
 ### Phase 3: Codex 書き込み
 
-1. `create_codex_entry` を実装
-2. `update_codex_entry` を実装
-3. FTS5 インデックスの同期更新を実装
-4. 書き込み時の排他制御テスト
+1. コンテンツサニタイズ層を実装（HTML ストリップ、aliases バリデーション）
+2. `create_codex_entry` を実装
+3. `update_codex_entry` を実装
+4. FTS5 インデックスの同期更新を実装
+5. Stored XSS テスト（悪意ある HTML を書き込んで Grimodex 側で無害化されることを確認）
+6. 書き込み時の排他制御テスト
 
 ### Phase 4: シーン書き込み (v2)
 
