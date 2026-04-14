@@ -520,16 +520,21 @@ export async function listPinnedCodexEntries(
     .from(codexEntries)
     .where(inArray(codexEntries.id, ids));
 
+  const entryMap = new Map(entries.map((e) => [e.id, e]));
   const withChildrenMap = new Map(
     codexPinned.map((p) => [p.id, p.withChildren ?? false]),
   );
   const pinSourceMap = new Map(codexPinned.map((p) => [p.id, p.source]));
-  return entries.map((e) => ({
-    ...e,
-    withChildren: withChildrenMap.get(e.id) ?? false,
-    pinnedType: "codex" as const,
-    pinSource: pinSourceMap.get(e.id),
-  }));
+  // codexPinned の順序（ピンした順）を維持してソート
+  return codexPinned
+    .map((p) => entryMap.get(p.id))
+    .filter((e): e is (typeof entries)[0] => e !== undefined)
+    .map((e) => ({
+      ...e,
+      withChildren: withChildrenMap.get(e.id) ?? false,
+      pinnedType: "codex" as const,
+      pinSource: pinSourceMap.get(e.id),
+    }));
 }
 
 /** List pinned snippet entries (type="snippet") for a session. */
