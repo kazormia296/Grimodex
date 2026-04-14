@@ -984,7 +984,13 @@
   },
 
   "workspace": {
-    "invalidPath": "Workspace \"{{path}}\" does not exist or is invalid. Removed from the list."
+    "invalidPath": "Workspace \"{{path}}\" does not exist or is invalid. Removed from the list.",
+    "trustTitle": "Do You Trust This Workspace?",
+    "trustMessage": "This workspace was not created by you. It may contain content that could run malicious code.",
+    "trustPath": "Path: {{path}}",
+    "trustWarning": "Only open workspaces from sources you trust.",
+    "trustAndOpen": "Trust & Open",
+    "trustCancel": "Cancel"
   },
 
   "export": {

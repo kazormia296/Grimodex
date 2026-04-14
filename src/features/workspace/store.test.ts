@@ -16,6 +16,7 @@ function resetStore() {
     activeWorkspacePath: null,
     activeWorkspaceName: null,
     error: null,
+    pendingTrustPath: null,
   });
 }
 
@@ -49,8 +50,12 @@ describe("useWorkspaceStore", () => {
           lastActiveWorkspace: "D:\\Novels\\Test",
           theme: "system",
           showLauncherOnStartup: false,
+          // Pre-trust the path so migration is skipped
+          trustedWorkspaces: ["D:\\Novels\\Test"],
         })
-        // validate_workspace_path
+        // validate_workspace_path (initialize: lastActiveWorkspace check)
+        .mockResolvedValueOnce(true)
+        // validate_workspace_path (requestOpenWorkspace: existing check)
         .mockResolvedValueOnce(true)
         // open_workspace
         .mockResolvedValueOnce({ name: "Test" });
@@ -87,8 +92,12 @@ describe("useWorkspaceStore", () => {
           lastActiveWorkspace: "D:\\Novels\\Test",
           theme: "system",
           showLauncherOnStartup: false,
+          // Pre-trust the path so migration is skipped
+          trustedWorkspaces: ["D:\\Novels\\Test"],
         })
-        // validate_workspace_path
+        // validate_workspace_path (initialize: lastActiveWorkspace check)
+        .mockResolvedValueOnce(true)
+        // validate_workspace_path (requestOpenWorkspace: existing check)
         .mockResolvedValueOnce(true)
         // open_workspace fails
         .mockRejectedValueOnce(new Error("DB open failed"));

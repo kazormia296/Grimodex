@@ -24,6 +24,8 @@ export interface GlobalSettings {
   activeLayoutPresetId?: string | null;
   /** Named color theme (e.g. "dark-academia"). Undefined = default theme. */
   colorTheme?: string;
+  /** Workspace paths the user has explicitly trusted. */
+  trustedWorkspaces?: string[];
 }
 
 export type AppView = "loading" | "welcome" | "launcher" | "editor";
@@ -39,10 +41,14 @@ interface WorkspaceState {
   activeWorkspacePath: string | null;
   activeWorkspaceName: string | null;
   error: string | null;
+  pendingTrustPath: string | null;
 
   initialize: () => Promise<void>;
   openWorkspace: (path: string) => Promise<void>;
+  requestOpenWorkspace: (path: string) => Promise<void>;
   openRecentWorkspace: (path: string) => Promise<void>;
+  trustAndOpen: () => Promise<void>;
+  cancelTrust: () => void;
   updateGlobalSettings: (updates: Partial<GlobalSettings>) => Promise<void>;
   showLauncher: () => void;
   clearError: () => void;
@@ -54,11 +60,24 @@ export const useWorkspaceStore = create<WorkspaceState>()((set, get) => ({
   activeWorkspacePath: null,
   activeWorkspaceName: null,
   error: null,
+  pendingTrustPath: null,
 
   initialize: async () => {
     try {
-      const settings = await invoke<GlobalSettings>("get_global_settings");
+      let settings = await invoke<GlobalSettings>("get_global_settings");
       set({ globalSettings: settings });
+
+      // Migration: trust all existing recent workspaces for existing users
+      if (
+        settings.recentWorkspaces.length > 0 &&
+        (!settings.trustedWorkspaces || settings.trustedWorkspaces.length === 0)
+      ) {
+        const trusted = settings.recentWorkspaces.map((ws) => ws.path);
+        const migrated = { ...settings, trustedWorkspaces: trusted };
+        await invoke("save_global_settings", { settings: migrated });
+        settings = migrated;
+        set({ globalSettings: migrated });
+      }
 
       // No workspaces at all → welcome screen
       if (settings.recentWorkspaces.length === 0) {
@@ -78,8 +97,8 @@ export const useWorkspaceStore = create<WorkspaceState>()((set, get) => ({
           path: settings.lastActiveWorkspace,
         });
         if (valid) {
-          await get().openWorkspace(settings.lastActiveWorkspace);
-          // Defensive: if openWorkspace failed internally, don't stay on loading
+          await get().requestOpenWorkspace(settings.lastActiveWorkspace);
+          // Defensive: if requestOpenWorkspace failed internally, don't stay on loading
           if (get().view === "loading") {
             set({ view: "launcher" });
           }
@@ -123,6 +142,41 @@ export const useWorkspaceStore = create<WorkspaceState>()((set, get) => ({
     }
   },
 
+  async requestOpenWorkspace(path: string) {
+    const isExisting = await invoke<boolean>("validate_workspace_path", {
+      path,
+    });
+    if (!isExisting) {
+      // New workspace — auto-trust and open
+      await get().openWorkspace(path);
+      return;
+    }
+    // Existing workspace — check trust list
+    const settings = get().globalSettings;
+    const trusted = settings?.trustedWorkspaces ?? [];
+    if (trusted.includes(path)) {
+      await get().openWorkspace(path);
+    } else {
+      set({ pendingTrustPath: path });
+    }
+  },
+
+  async trustAndOpen() {
+    const path = get().pendingTrustPath;
+    if (!path) return;
+    const settings = get().globalSettings;
+    const trusted = settings?.trustedWorkspaces ?? [];
+    await get().updateGlobalSettings({
+      trustedWorkspaces: [...trusted, path],
+    });
+    set({ pendingTrustPath: null });
+    await get().openWorkspace(path);
+  },
+
+  cancelTrust() {
+    set({ pendingTrustPath: null });
+  },
+
   async openRecentWorkspace(path: string) {
     const isValid = await invoke<boolean>("validate_workspace_path", { path });
     if (!isValid) {
@@ -139,7 +193,7 @@ export const useWorkspaceStore = create<WorkspaceState>()((set, get) => ({
       });
       return;
     }
-    await get().openWorkspace(path);
+    await get().requestOpenWorkspace(path);
   },
 
   async updateGlobalSettings(updates: Partial<GlobalSettings>) {

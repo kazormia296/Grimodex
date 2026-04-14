@@ -7,7 +7,7 @@ import { GrimodexLogo } from "@/components/GrimodexLogo";
 
 export function WelcomeScreen() {
   const { t } = useTranslation();
-  const openWorkspace = useWorkspaceStore((s) => s.openWorkspace);
+  const requestOpenWorkspace = useWorkspaceStore((s) => s.requestOpenWorkspace);
   const error = useWorkspaceStore((s) => s.error);
   const clearError = useWorkspaceStore((s) => s.clearError);
   const [selectedPath, setSelectedPath] = useState<string | null>(null);
@@ -24,7 +24,7 @@ export function WelcomeScreen() {
   async function handleStart() {
     if (!selectedPath) return;
     setOpening(true);
-    await openWorkspace(selectedPath);
+    await requestOpenWorkspace(selectedPath);
     setOpening(false);
   }
 

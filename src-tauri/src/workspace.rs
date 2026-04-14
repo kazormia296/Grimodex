@@ -38,6 +38,10 @@ pub struct GlobalSettings {
     /// Named color theme (e.g. "dark-academia"). None = default theme.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub color_theme: Option<String>,
+    /// Workspace paths the user has explicitly trusted.
+    #[serde(default)]
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub trusted_workspaces: Vec<String>,
 }
 
 impl Default for GlobalSettings {
@@ -53,6 +57,7 @@ impl Default for GlobalSettings {
             layout_presets: None,
             active_layout_preset_id: None,
             color_theme: None,
+            trusted_workspaces: Vec::new(),
         }
     }
 }

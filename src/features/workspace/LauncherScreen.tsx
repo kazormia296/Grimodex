@@ -10,7 +10,7 @@ import { GrimodexLogo } from "@/components/GrimodexLogo";
 export function LauncherScreen() {
   const { t } = useTranslation();
   const globalSettings = useWorkspaceStore((s) => s.globalSettings);
-  const openWorkspace = useWorkspaceStore((s) => s.openWorkspace);
+  const requestOpenWorkspace = useWorkspaceStore((s) => s.requestOpenWorkspace);
   const openRecentWorkspace = useWorkspaceStore((s) => s.openRecentWorkspace);
   const error = useWorkspaceStore((s) => s.error);
   const clearError = useWorkspaceStore((s) => s.clearError);
@@ -30,7 +30,7 @@ export function LauncherScreen() {
     const path = await openFolderDialog();
     if (path) {
       setOpening(path);
-      await openWorkspace(path);
+      await requestOpenWorkspace(path);
       setOpening(null);
     }
   }

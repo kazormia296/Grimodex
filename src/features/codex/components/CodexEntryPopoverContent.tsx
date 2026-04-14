@@ -1,4 +1,5 @@
 import type { CodexEntry } from "@/features/codex/api";
+import { iconToDataUrl } from "../iconUtils";
 
 interface CodexEntryPopoverContentProps {
   entry: CodexEntry;
@@ -13,12 +14,13 @@ export function CodexEntryPopoverContent({
   typeLabel,
   onOpenInCodex,
 }: CodexEntryPopoverContentProps) {
+  const safeIcon = iconToDataUrl(entry.icon);
   return (
     <>
       <div className="mb-1.5 flex items-center gap-2">
-        {entry.icon ? (
+        {safeIcon ? (
           <img
-            src={entry.icon}
+            src={safeIcon}
             alt=""
             className="h-6 w-6 flex-shrink-0 rounded-sm object-cover"
           />

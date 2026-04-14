@@ -8,7 +8,7 @@ export function WorkspaceMenu() {
   const { t } = useTranslation();
   const activeWorkspaceName = useWorkspaceStore((s) => s.activeWorkspaceName);
   const globalSettings = useWorkspaceStore((s) => s.globalSettings);
-  const openWorkspace = useWorkspaceStore((s) => s.openWorkspace);
+  const requestOpenWorkspace = useWorkspaceStore((s) => s.requestOpenWorkspace);
   const openRecentWorkspace = useWorkspaceStore((s) => s.openRecentWorkspace);
   const showLauncher = useWorkspaceStore((s) => s.showLauncher);
   const activeWorkspacePath = useWorkspaceStore((s) => s.activeWorkspacePath);
@@ -37,7 +37,7 @@ export function WorkspaceMenu() {
     setIsOpen(false);
     const path = await openFolderDialog();
     if (path) {
-      await openWorkspace(path);
+      await requestOpenWorkspace(path);
     }
   }
 
