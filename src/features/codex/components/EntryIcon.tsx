@@ -1,10 +1,11 @@
 import { iconToDataUrl } from "../iconUtils";
+import { useCodexHighlightStore } from "@/features/editor/codexHighlightStore";
 
 const TYPE_COLOR_DEFAULTS: Record<string, string> = {
-  character: "#534AB7",
-  location: "#0F6E56",
-  item: "#BA7517",
-  lore: "#993C1D",
+  character: "#6B7ADB",
+  location: "#5BAD8F",
+  item: "#C27D3C",
+  lore: "#9B6BB5",
 };
 
 interface EntryIconProps {
@@ -14,6 +15,7 @@ interface EntryIconProps {
 }
 
 export function EntryIcon({ icon, entryType, size }: EntryIconProps) {
+  const typeColorMap = useCodexHighlightStore((s) => s.typeColorMap);
   const dataUrl = iconToDataUrl(icon);
 
   if (dataUrl) {
@@ -28,7 +30,8 @@ export function EntryIcon({ icon, entryType, size }: EntryIconProps) {
     );
   }
 
-  const bg = TYPE_COLOR_DEFAULTS[entryType] ?? "#888888";
+  const bg =
+    typeColorMap[entryType]?.fg ?? TYPE_COLOR_DEFAULTS[entryType] ?? "#888888";
   return (
     <div
       style={{

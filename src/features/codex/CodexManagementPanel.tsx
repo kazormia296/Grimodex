@@ -694,6 +694,60 @@ export function CodexManagementPanel({
     setDeleteConfirmId(id);
   }, []);
 
+  // S1: tag-filtered entries
+  const tagFilteredEntries = useMemo(() => {
+    if (selectedTags.size === 0) return entries;
+    return entries.filter((e) => {
+      const tags = parseTags(e.tagsCache).map((t) => t.name);
+      return [...selectedTags].some((tag) => tags.includes(tag));
+    });
+  }, [entries, selectedTags]);
+
+  // Sorted entries (client-side, only for non-category sorts)
+  const sortedEntries = useMemo(
+    () =>
+      sortOrder === "category"
+        ? tagFilteredEntries
+        : sortEntries(tagFilteredEntries, sortOrder, refCountMap),
+    [tagFilteredEntries, sortOrder, refCountMap],
+  );
+
+  // Flat entry list in visual order for keyboard navigation
+  const navigableEntries = useMemo(() => {
+    if (sortOrder !== "category") return sortedEntries;
+    // Category mode: reproduce the same order as CategoryGroupedList
+    const base =
+      searchQuery === "" && filterType === null && selectedTags.size === 0
+        ? entries
+        : tagFilteredEntries;
+    const byType = new Map<string, CodexEntry[]>();
+    for (const entry of base) {
+      if (!byType.has(entry.type)) byType.set(entry.type, []);
+      byType.get(entry.type)!.push(entry);
+    }
+    for (const grpEntries of byType.values()) {
+      grpEntries.sort((a, b) => a.name.localeCompare(b.name, "ja"));
+    }
+    const typeOrder = new Map(
+      codexTypes.map((ct, i) => [ct.slug, ct.sortOrder ?? i]),
+    );
+    return [...byType.entries()]
+      .sort(
+        ([aSlug], [bSlug]) =>
+          (typeOrder.get(aSlug) ?? 9999) - (typeOrder.get(bSlug) ?? 9999),
+      )
+      .flatMap(([, grpEntries]) => grpEntries);
+  }, [
+    sortOrder,
+    sortedEntries,
+    entries,
+    tagFilteredEntries,
+    searchQuery,
+    filterType,
+    selectedTags,
+    codexTypes,
+  ]);
+
   // Ctrl+K / Ctrl+F / ↑↓ / F2 / Delete shortcuts
   useEffect(() => {
     const handleKeyDown = (e: globalThis.KeyboardEvent) => {
@@ -711,17 +765,23 @@ export function CodexManagementPanel({
         return;
       }
       if (e.key === "ArrowUp" || e.key === "ArrowDown") {
-        const currentSorted =
-          sortOrder === "category" ? entries : sortEntries(entries, sortOrder);
-        if (currentSorted.length === 0) return;
+        // Don't intercept while editing text in an input/textarea/contenteditable
+        const ae = document.activeElement as HTMLElement | null;
+        if (
+          ae?.tagName === "INPUT" ||
+          ae?.tagName === "TEXTAREA" ||
+          ae?.contentEditable === "true"
+        )
+          return;
+        if (navigableEntries.length === 0) return;
         const idx = selectedEntry
-          ? currentSorted.findIndex((e) => e.id === selectedEntry.id)
+          ? navigableEntries.findIndex((e) => e.id === selectedEntry.id)
           : -1;
         const next =
           e.key === "ArrowDown"
-            ? Math.min(idx + 1, currentSorted.length - 1)
+            ? Math.min(idx + 1, navigableEntries.length - 1)
             : Math.max(idx - 1, 0);
-        handleSelectEntry(currentSorted[next]);
+        handleSelectEntry(navigableEntries[next]);
         e.preventDefault();
         return;
       }
@@ -744,7 +804,7 @@ export function CodexManagementPanel({
     };
     document.addEventListener("keydown", handleKeyDown);
     return () => document.removeEventListener("keydown", handleKeyDown);
-  }, [entries, selectedEntry, sortOrder, renamingEntryId, initiateDelete]);
+  }, [navigableEntries, selectedEntry, renamingEntryId, initiateDelete]);
 
   // Debounced search (300ms)
   const handleSearchChange = useCallback(
@@ -873,24 +933,6 @@ export function CodexManagementPanel({
       if (isStackMode) setShowDetail(true);
     },
     [isStackMode],
-  );
-
-  // S1: tag-filtered entries
-  const tagFilteredEntries = useMemo(() => {
-    if (selectedTags.size === 0) return entries;
-    return entries.filter((e) => {
-      const tags = parseTags(e.tagsCache).map((t) => t.name);
-      return [...selectedTags].some((tag) => tags.includes(tag));
-    });
-  }, [entries, selectedTags]);
-
-  // Sorted entries (client-side, only for non-category sorts)
-  const sortedEntries = useMemo(
-    () =>
-      sortOrder === "category"
-        ? tagFilteredEntries
-        : sortEntries(tagFilteredEntries, sortOrder, refCountMap),
-    [tagFilteredEntries, sortOrder, refCountMap],
   );
 
   // Build type label map from loaded types (fallback to i18n)
