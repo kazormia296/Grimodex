@@ -263,6 +263,7 @@ function AddForm({
           onChange={(e) => setLabel(e.target.value)}
           placeholder={t("settings.codex.labelName")}
           className="flex-1 rounded-md border border-input bg-background px-2 py-1.5 text-sm"
+          // eslint-disable-next-line jsx-a11y/no-autofocus
           autoFocus
         />
       </div>

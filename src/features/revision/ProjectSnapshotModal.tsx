@@ -247,6 +247,7 @@ export function ProjectSnapshotModal({
                 value={createName}
                 onChange={(e) => setCreateName(e.target.value)}
                 className="w-full rounded border border-border bg-background px-3 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-primary"
+                // eslint-disable-next-line jsx-a11y/no-autofocus
                 autoFocus
                 onKeyDown={(e) => {
                   if (e.key === "Enter") handleCreate();

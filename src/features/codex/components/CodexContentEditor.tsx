@@ -86,6 +86,7 @@ export function CodexContentEditor({
     } finally {
       isApplyingExternalUpdate.current = false;
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [externalContent]);
 
   // Subscribe to EditorPane updates and apply them to this mini-editor

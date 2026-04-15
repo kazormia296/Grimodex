@@ -72,6 +72,7 @@ function AddChildInput({
   return (
     <div className="mt-1">
       <input
+        // eslint-disable-next-line jsx-a11y/no-autofocus
         autoFocus
         type="text"
         value={query}

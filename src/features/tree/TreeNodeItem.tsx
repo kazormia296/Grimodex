@@ -349,6 +349,7 @@ export function TreeNodeItem({
               onKeyDown={handleKeyDown}
               onClick={(e) => e.stopPropagation()}
               className="w-full rounded border border-ring bg-background px-1 text-xs focus:outline-none"
+              // eslint-disable-next-line jsx-a11y/no-autofocus
               autoFocus
             />
           ) : (

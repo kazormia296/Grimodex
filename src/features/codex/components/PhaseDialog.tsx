@@ -106,6 +106,7 @@ export function PhaseDialog({
               onChange={(e) => setLabel(e.target.value)}
               className="w-full rounded-md border border-input bg-background px-2 py-1.5 text-sm"
               placeholder={t("phase.labelPlaceholder")}
+              // eslint-disable-next-line jsx-a11y/no-autofocus
               autoFocus
             />
           </div>

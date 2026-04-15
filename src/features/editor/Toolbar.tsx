@@ -634,6 +634,7 @@ export function Toolbar({
             onMouseDown={(e) => e.stopPropagation()}
           >
             <input
+              // eslint-disable-next-line jsx-a11y/no-autofocus
               autoFocus={!rubyFocusAnnotation}
               type="text"
               placeholder={t("editor.toolbar.rubyBase")}
@@ -646,6 +647,7 @@ export function Toolbar({
               className="w-20 rounded border border-border bg-background px-1.5 py-0.5 text-xs focus:outline-none"
             />
             <input
+              // eslint-disable-next-line jsx-a11y/no-autofocus
               autoFocus={rubyFocusAnnotation}
               type="text"
               placeholder={t("editor.toolbar.rubyAnnotation")}
@@ -685,6 +687,7 @@ export function Toolbar({
             onMouseDown={(e) => e.stopPropagation()}
           >
             <input
+              // eslint-disable-next-line jsx-a11y/no-autofocus
               autoFocus
               type="url"
               placeholder="https://..."

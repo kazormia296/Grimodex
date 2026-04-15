@@ -960,142 +960,6 @@ pub async fn send_chat_with_tools(
     }
 }
 
-#[allow(clippy::items_after_test_module)]
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::fs;
-    use std::path::PathBuf;
-
-    fn temp_path(name: &str) -> PathBuf {
-        std::env::temp_dir().join(format!("grimodex_ai_test_{name}"))
-    }
-
-    fn cleanup(path: &Path) {
-        fs::remove_file(path).ok();
-        if let Some(parent) = path.parent() {
-            fs::remove_dir(parent).ok();
-        }
-    }
-
-    #[test]
-    fn test_default_ai_settings() {
-        let settings = AiSettings::default();
-        assert_eq!(settings.provider, AiProvider::OpenRouter);
-        assert!(settings.model.is_empty());
-        assert_eq!(settings.ollama_endpoint, "http://localhost:11434");
-    }
-
-    #[test]
-    fn test_ai_settings_roundtrip() {
-        let dir = temp_path("settings_roundtrip");
-        let path = dir.join("ai-settings.json");
-        cleanup(&path);
-        fs::create_dir_all(&dir).ok();
-
-        let settings = AiSettings {
-            provider: AiProvider::OpenAI,
-            model: "gpt-4o".to_string(),
-            ollama_endpoint: "http://localhost:11434".to_string(),
-            thinking_enabled: true,
-        };
-
-        write_ai_settings(&path, &settings).expect("write");
-        let loaded = read_ai_settings(&path);
-
-        assert_eq!(loaded.provider, AiProvider::OpenAI);
-        assert_eq!(loaded.model, "gpt-4o");
-
-        cleanup(&path);
-        fs::remove_dir_all(&dir).ok();
-    }
-
-    #[test]
-    fn test_read_ai_settings_missing_returns_default() {
-        let path = temp_path("settings_missing").join("nonexistent.json");
-        let settings = read_ai_settings(&path);
-        assert_eq!(settings.provider, AiProvider::OpenRouter);
-    }
-
-    #[test]
-    fn test_read_ai_settings_invalid_json_returns_default() {
-        let dir = temp_path("settings_invalid");
-        let path = dir.join("ai-settings.json");
-        fs::create_dir_all(&dir).ok();
-        fs::write(&path, "not json").ok();
-
-        let settings = read_ai_settings(&path);
-        assert_eq!(settings.provider, AiProvider::OpenRouter);
-
-        cleanup(&path);
-        fs::remove_dir_all(&dir).ok();
-    }
-
-    #[test]
-    fn test_provider_base_urls() {
-        let endpoint = "http://localhost:11434";
-        assert_eq!(
-            AiProvider::OpenRouter.base_url(endpoint),
-            "https://openrouter.ai/api/v1"
-        );
-        assert_eq!(
-            AiProvider::OpenAI.base_url(endpoint),
-            "https://api.openai.com/v1"
-        );
-        assert_eq!(
-            AiProvider::Anthropic.base_url(endpoint),
-            "https://api.anthropic.com/v1"
-        );
-        assert_eq!(
-            AiProvider::Ollama.base_url(endpoint),
-            "http://localhost:11434/api"
-        );
-    }
-
-    #[test]
-    fn test_provider_openai_compat_base_url() {
-        let endpoint = "http://localhost:11434";
-        // Ollama uses /v1 for OpenAI-compatible endpoints
-        assert_eq!(
-            AiProvider::Ollama.openai_compat_base_url(endpoint),
-            "http://localhost:11434/v1"
-        );
-        // Other providers unchanged
-        assert_eq!(
-            AiProvider::OpenRouter.openai_compat_base_url(endpoint),
-            "https://openrouter.ai/api/v1"
-        );
-        assert_eq!(
-            AiProvider::OpenAI.openai_compat_base_url(endpoint),
-            "https://api.openai.com/v1"
-        );
-    }
-
-    #[test]
-    fn test_provider_display() {
-        assert_eq!(AiProvider::OpenRouter.to_string(), "openrouter");
-        assert_eq!(AiProvider::OpenAI.to_string(), "openai");
-        assert_eq!(AiProvider::Anthropic.to_string(), "anthropic");
-        assert_eq!(AiProvider::Ollama.to_string(), "ollama");
-    }
-
-    #[test]
-    fn test_provider_serde_roundtrip() {
-        let json = serde_json::to_string(&AiProvider::OpenRouter).expect("serialize");
-        assert_eq!(json, "\"openrouter\"");
-        let parsed: AiProvider = serde_json::from_str(&json).expect("deserialize");
-        assert_eq!(parsed, AiProvider::OpenRouter);
-    }
-
-    #[test]
-    fn test_ollama_endpoint_trailing_slash() {
-        assert_eq!(
-            AiProvider::Ollama.base_url("http://localhost:11434/"),
-            "http://localhost:11434/api"
-        );
-    }
-}
-
 // ---------------------------------------------------------------------------
 // G1: Streaming chat
 // ---------------------------------------------------------------------------
@@ -1393,5 +1257,140 @@ pub async fn send_chat_stream(
             );
             Ok(())
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use std::path::PathBuf;
+
+    fn temp_path(name: &str) -> PathBuf {
+        std::env::temp_dir().join(format!("grimodex_ai_test_{name}"))
+    }
+
+    fn cleanup(path: &Path) {
+        fs::remove_file(path).ok();
+        if let Some(parent) = path.parent() {
+            fs::remove_dir(parent).ok();
+        }
+    }
+
+    #[test]
+    fn test_default_ai_settings() {
+        let settings = AiSettings::default();
+        assert_eq!(settings.provider, AiProvider::OpenRouter);
+        assert!(settings.model.is_empty());
+        assert_eq!(settings.ollama_endpoint, "http://localhost:11434");
+    }
+
+    #[test]
+    fn test_ai_settings_roundtrip() {
+        let dir = temp_path("settings_roundtrip");
+        let path = dir.join("ai-settings.json");
+        cleanup(&path);
+        fs::create_dir_all(&dir).ok();
+
+        let settings = AiSettings {
+            provider: AiProvider::OpenAI,
+            model: "gpt-4o".to_string(),
+            ollama_endpoint: "http://localhost:11434".to_string(),
+            thinking_enabled: true,
+        };
+
+        write_ai_settings(&path, &settings).expect("write");
+        let loaded = read_ai_settings(&path);
+
+        assert_eq!(loaded.provider, AiProvider::OpenAI);
+        assert_eq!(loaded.model, "gpt-4o");
+
+        cleanup(&path);
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn test_read_ai_settings_missing_returns_default() {
+        let path = temp_path("settings_missing").join("nonexistent.json");
+        let settings = read_ai_settings(&path);
+        assert_eq!(settings.provider, AiProvider::OpenRouter);
+    }
+
+    #[test]
+    fn test_read_ai_settings_invalid_json_returns_default() {
+        let dir = temp_path("settings_invalid");
+        let path = dir.join("ai-settings.json");
+        fs::create_dir_all(&dir).ok();
+        fs::write(&path, "not json").ok();
+
+        let settings = read_ai_settings(&path);
+        assert_eq!(settings.provider, AiProvider::OpenRouter);
+
+        cleanup(&path);
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn test_provider_base_urls() {
+        let endpoint = "http://localhost:11434";
+        assert_eq!(
+            AiProvider::OpenRouter.base_url(endpoint),
+            "https://openrouter.ai/api/v1"
+        );
+        assert_eq!(
+            AiProvider::OpenAI.base_url(endpoint),
+            "https://api.openai.com/v1"
+        );
+        assert_eq!(
+            AiProvider::Anthropic.base_url(endpoint),
+            "https://api.anthropic.com/v1"
+        );
+        assert_eq!(
+            AiProvider::Ollama.base_url(endpoint),
+            "http://localhost:11434/api"
+        );
+    }
+
+    #[test]
+    fn test_provider_openai_compat_base_url() {
+        let endpoint = "http://localhost:11434";
+        // Ollama uses /v1 for OpenAI-compatible endpoints
+        assert_eq!(
+            AiProvider::Ollama.openai_compat_base_url(endpoint),
+            "http://localhost:11434/v1"
+        );
+        // Other providers unchanged
+        assert_eq!(
+            AiProvider::OpenRouter.openai_compat_base_url(endpoint),
+            "https://openrouter.ai/api/v1"
+        );
+        assert_eq!(
+            AiProvider::OpenAI.openai_compat_base_url(endpoint),
+            "https://api.openai.com/v1"
+        );
+    }
+
+    #[test]
+    fn test_provider_display() {
+        assert_eq!(AiProvider::OpenRouter.to_string(), "openrouter");
+        assert_eq!(AiProvider::OpenAI.to_string(), "openai");
+        assert_eq!(AiProvider::Anthropic.to_string(), "anthropic");
+        assert_eq!(AiProvider::Ollama.to_string(), "ollama");
+    }
+
+    #[test]
+    fn test_provider_serde_roundtrip() {
+        let json = serde_json::to_string(&AiProvider::OpenRouter).expect("serialize");
+        assert_eq!(json, "\"openrouter\"");
+        let parsed: AiProvider = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(parsed, AiProvider::OpenRouter);
+    }
+
+    #[test]
+    fn test_ollama_endpoint_trailing_slash() {
+        assert_eq!(
+            AiProvider::Ollama.base_url("http://localhost:11434/"),
+            "http://localhost:11434/api"
+        );
     }
 }

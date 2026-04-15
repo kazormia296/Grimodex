@@ -235,6 +235,7 @@ export function TagSelector({
                     value={newName}
                     onChange={(e) => setNewName(e.target.value)}
                     placeholder={t("codex.tagSelector.tagNamePlaceholder")}
+                    // eslint-disable-next-line jsx-a11y/no-autofocus
                     autoFocus
                     className="w-full rounded border border-input bg-background px-1.5 py-0.5 text-xs"
                     onKeyDown={(e) => {
