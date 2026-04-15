@@ -15,6 +15,7 @@ import {
   ResizableHandle,
 } from "@/components/ui/resizable";
 import { useCodexStore, type CodexSortOrder } from "./codexStore";
+import { sortEntries, CODEX_SORT_OPTIONS } from "./codexSort";
 import type { CodexEntry, CodexEntryType } from "./api";
 import type { CodexType } from "./typeApi";
 import { listCodexTypes, ensureBuiltinTypes } from "./typeApi";
@@ -525,37 +526,7 @@ function CategoryGroupedList({
 
 // --- Sort utility (for non-category sorts) ---
 
-function sortEntries(
-  entries: CodexEntry[],
-  order: CodexSortOrder,
-  refCountMap?: Map<string, number>,
-): CodexEntry[] {
-  const sorted = [...entries];
-  switch (order) {
-    case "name-asc":
-      return sorted.sort((a, b) => a.name.localeCompare(b.name, "ja"));
-    case "name-desc":
-      return sorted.sort((a, b) => b.name.localeCompare(a.name, "ja"));
-    case "updated":
-      return sorted.sort(
-        (a, b) =>
-          new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime(),
-      );
-    case "created":
-      return sorted.sort(
-        (a, b) =>
-          new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
-      );
-    case "most-referenced":
-      return sorted.sort((a, b) => {
-        const ac = refCountMap?.get(a.id) ?? 0;
-        const bc = refCountMap?.get(b.id) ?? 0;
-        return bc - ac;
-      });
-    default:
-      return sorted;
-  }
-}
+// sortEntries is imported from ./codexSort
 
 // --- Main Panel ---
 
@@ -569,14 +540,10 @@ export function CodexManagementPanel({
 }: CodexManagementPanelProps = {}) {
   const { t } = useTranslation();
 
-  const SORT_OPTIONS: { value: CodexSortOrder; label: string }[] = [
-    { value: "category", label: t("codex.sortCategory") },
-    { value: "name-asc", label: t("codex.sortNameAsc") },
-    { value: "name-desc", label: t("codex.sortNameDesc") },
-    { value: "updated", label: t("codex.sortUpdated") },
-    { value: "created", label: t("codex.sortCreated") },
-    { value: "most-referenced", label: t("codex.sortMostReferenced") },
-  ];
+  const SORT_OPTIONS = CODEX_SORT_OPTIONS.map((opt) => ({
+    ...opt,
+    label: t(opt.key),
+  }));
 
   const entries = useCodexStore((s) => s.entries);
   const filterType = useCodexStore((s) => s.filterType);

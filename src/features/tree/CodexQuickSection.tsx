@@ -1,22 +1,34 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useTranslation } from "react-i18next";
 import { Pin, PinOff, Plus } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useCodexHighlightStore } from "@/features/editor/codexHighlightStore";
 import { useCodexStore } from "@/features/codex/codexStore";
+import { sortEntries, sortEntriesByCategory } from "@/features/codex/codexSort";
 import { useLayoutStore } from "@/features/layout/layoutStore";
 import { useTreeStore } from "./treeStore";
 import { CodexQuickPopover } from "./CodexQuickPopover";
 import { CodexCommandPalette } from "@/features/codex/components/CodexCommandPalette";
 import { getTypeLabel } from "@/features/chat/utils/typeLabels";
+import { listCodexTypes, ensureBuiltinTypes } from "@/features/codex/typeApi";
 import type { CodexEntry } from "@/features/codex/api";
+import type { CodexType } from "@/features/codex/typeApi";
 
 export function CodexQuickSection() {
   const { t } = useTranslation();
   const matchedEntryIds = useCodexHighlightStore((s) => s.matchedEntryIds);
   const typeColorMap = useCodexHighlightStore((s) => s.typeColorMap);
   const entries = useCodexStore((s) => s.entries);
+  const sortOrder = useCodexStore((s) => s.sortOrder);
   const { pinnedCodexIds, togglePinnedCodex } = useTreeStore();
+  const [codexTypes, setCodexTypes] = useState<CodexType[]>([]);
+
+  useEffect(() => {
+    ensureBuiltinTypes("default-project")
+      .then(() => listCodexTypes("default-project"))
+      .then(setCodexTypes)
+      .catch(() => setCodexTypes([]));
+  }, []);
   const [hoveredEntry, setHoveredEntry] = useState<{
     entry: CodexEntry;
     rect: DOMRect;
@@ -27,12 +39,18 @@ export function CodexQuickSection() {
   const matchedIds = new Set(matchedEntryIds);
 
   // Combine auto-detected + pinned, deduplicated
-  const displayed = [
+  const combined = [
     ...entries.filter((e) => matchedIds.has(e.id)),
     ...entries.filter(
       (e) => pinnedCodexIds.includes(e.id) && !matchedIds.has(e.id),
     ),
   ];
+
+  // Apply sort — category uses type-group order matching CodexManagementPanel
+  const displayed =
+    sortOrder === "category"
+      ? sortEntriesByCategory(combined, codexTypes)
+      : sortEntries(combined, sortOrder);
 
   function handleEntryClick(entry: CodexEntry) {
     useLayoutStore.getState().showPanel("codex");
