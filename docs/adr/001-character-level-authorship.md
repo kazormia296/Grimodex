@@ -121,6 +121,19 @@ Grimodexにこのアプローチを適用できない理由:
 
 このため、帰属追跡に暗号署名による改竄防止は不要であり、ユーザーが自身の判断でsourceを手動上書きできる設計と矛盾しない。
 
+### 5.1. SynthID Text（電子透かし）を不採用とした理由
+
+SynthID Text（Google DeepMind）は、LLMの生成テキストに統計的な電子透かしを埋め込み、事後にAI生成か否かを検出する技術である（[github.com/google-deepmind/synthid-text](https://github.com/google-deepmind/synthid-text)）。トークン生成時にlogitsを操作し、擬似乱数関数（g-function）で選択確率をバイアスすることで、人間には知覚できない統計的パターンを埋め込む。
+
+Grimodexに採用しない理由:
+
+- **技術的に統合不可能**: SynthID Textはモデルの `generate()` パイプライン内部でlogitsを操作するlogits processorである。GrimodexはOpenRouter等のAPI経由でLLMを呼び出しており、モデルの推論パイプラインにアクセスできない。SynthID Textは生成済みテキストへの事後適用ができないため、APIクライアントであるGrimodexには組み込めない
+- **解決する問題が存在しない**: SynthID Textが答える問いは「このテキストはAI生成か？」という事後検出である。Grimodexは入力経路そのものを記録しており（Chat挿入 → `ai`、キーボード入力 → `human`）、事後にAI生成か否かを推定する必要がない
+- **C2PAと同じ用途不一致**: SynthID Textも第三者に対するAI生成テキストの検証を目的とする技術であり、§5で分析したC2PAと同じカテゴリに属する。Grimodexの帰属追跡はユーザー自身のための参考情報であり、第三者への証明を目的としない
+- **編集ワークフローとの非互換**: 透かしはパラフレーズや書き換えで劣化・消失する。ユーザーがAI生成テキストを日常的に編集・再構成するGrimodexのワークフローでは、透かしの信頼性を維持できない
+
+SynthID Textは「モデル側で生成時に透かしを仕込む」技術であり、「エディタ側で入力経路を記録する」Grimodexの帰属追跡とはレイヤーが根本的に異なる。
+
 ### 6. エクスポート
 
 Markdownエクスポート時にはAuthorshipMarkを除外し、クリーンなMarkdownを出力する。将来的にAuthorship情報を含むエクスポート形式が必要になった場合は、Grimodex独自のJSON形式を定義する（Agent Trace JSONとの互換性は追求しない）。
