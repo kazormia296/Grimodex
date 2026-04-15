@@ -187,7 +187,6 @@ export function LinearEditorView() {
       observer.disconnect();
       clearTimeout(timeout);
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // --- External navigation: scroll to scene ---

@@ -238,6 +238,7 @@ fn abort_chat_stream(abort_flag: tauri::State<'_, StreamAbortFlag>) -> Result<()
 // --- Streaming chat command ---
 
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 async fn send_chat_message_stream(
     ai_path: tauri::State<'_, AiSettingsPath>,
     abort_flag: tauri::State<'_, StreamAbortFlag>,

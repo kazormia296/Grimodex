@@ -670,7 +670,7 @@ export async function toggleStarMessage(
 }
 
 function toSummary(row: typeof chatSummaries.$inferSelect): ChatSummary {
-  let ids: string[] = [];
+  let ids: string[];
   try {
     ids = JSON.parse(row.sourceMessageIds) as string[];
   } catch {

@@ -335,6 +335,7 @@ pub async fn test_connection(
 
 /// Send a chat completion request with the given messages.
 /// Messages are tuples of (role, content). Supports "system", "user", "assistant" roles.
+#[allow(clippy::too_many_arguments)]
 pub async fn send_chat(
     provider: &AiProvider,
     model: &str,
@@ -717,6 +718,7 @@ fn apply_thinking_to_body(
 }
 
 /// Send a tool-aware chat request and return a structured response.
+#[allow(clippy::too_many_arguments)]
 pub async fn send_chat_with_tools(
     provider: &AiProvider,
     model: &str,
@@ -958,6 +960,7 @@ pub async fn send_chat_with_tools(
     }
 }
 
+#[allow(clippy::items_after_test_module)]
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1097,6 +1100,7 @@ mod tests {
 // G1: Streaming chat
 // ---------------------------------------------------------------------------
 
+#[allow(clippy::too_many_arguments)]
 pub async fn send_chat_stream(
     provider: &AiProvider,
     model: &str,
