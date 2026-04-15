@@ -207,19 +207,22 @@ async fn send_chat_message(
 ) -> Result<ai::ChatResponse, AppError> {
     let settings = ai::read_ai_settings(&ai_path.path);
     let api_key = resolve_api_key(&settings.provider)?;
-    let result = ai::send_chat(
-        &settings.provider,
-        &settings.model,
-        &api_key,
-        &settings.ollama_endpoint,
-        &messages
-            .iter()
-            .map(|m| (m.role.as_str(), m.content.as_str()))
-            .collect::<Vec<_>>(),
+    let params = ai::ChatParams {
+        provider: &settings.provider,
+        model: &settings.model,
+        api_key: &api_key,
+        ollama_endpoint: &settings.ollama_endpoint,
         thinking,
         effort,
         reasoning_enabled,
         reasoning_effort,
+    };
+    let result = ai::send_chat(
+        &params,
+        &messages
+            .iter()
+            .map(|m| (m.role.as_str(), m.content.as_str()))
+            .collect::<Vec<_>>(),
     )
     .await?;
     Ok(result)
@@ -257,20 +260,23 @@ async fn send_chat_message_stream(
     let settings = ai::read_ai_settings(&ai_path.path);
     let api_key = resolve_api_key(&settings.provider)?;
     let flag_clone = Arc::clone(&abort_flag.flag);
-
-    let result = ai::send_chat_stream(
-        &settings.provider,
-        &settings.model,
-        &api_key,
-        &settings.ollama_endpoint,
-        &messages
-            .iter()
-            .map(|m| (m.role.as_str(), m.content.as_str()))
-            .collect::<Vec<_>>(),
+    let params = ai::ChatParams {
+        provider: &settings.provider,
+        model: &settings.model,
+        api_key: &api_key,
+        ollama_endpoint: &settings.ollama_endpoint,
         thinking,
         effort,
         reasoning_enabled,
         reasoning_effort,
+    };
+
+    let result = ai::send_chat_stream(
+        &params,
+        &messages
+            .iter()
+            .map(|m| (m.role.as_str(), m.content.as_str()))
+            .collect::<Vec<_>>(),
         flag_clone,
         app_handle.clone(),
     )
@@ -302,19 +308,17 @@ async fn send_agent_message(
 ) -> Result<ai::ChatResponse, AppError> {
     let settings = ai::read_ai_settings(&ai_path.path);
     let api_key = resolve_api_key(&settings.provider)?;
-    let result = ai::send_chat_with_tools(
-        &settings.provider,
-        &settings.model,
-        &api_key,
-        &settings.ollama_endpoint,
-        &messages,
-        &tools,
+    let params = ai::ChatParams {
+        provider: &settings.provider,
+        model: &settings.model,
+        api_key: &api_key,
+        ollama_endpoint: &settings.ollama_endpoint,
         thinking,
         effort,
         reasoning_enabled,
         reasoning_effort,
-    )
-    .await?;
+    };
+    let result = ai::send_chat_with_tools(&params, &messages, &tools).await?;
     Ok(result)
 }
 

@@ -333,20 +333,28 @@ pub async fn test_connection(
     }
 }
 
+/// Parameters shared across all AI chat functions.
+pub struct ChatParams<'a> {
+    pub provider: &'a AiProvider,
+    pub model: &'a str,
+    pub api_key: &'a str,
+    pub ollama_endpoint: &'a str,
+    pub thinking: Option<ThinkingConfig>,
+    pub effort: Option<String>,
+    pub reasoning_enabled: Option<bool>,
+    pub reasoning_effort: Option<String>,
+}
+
 /// Send a chat completion request with the given messages.
 /// Messages are tuples of (role, content). Supports "system", "user", "assistant" roles.
-#[allow(clippy::too_many_arguments)]
 pub async fn send_chat(
-    provider: &AiProvider,
-    model: &str,
-    api_key: &str,
-    ollama_endpoint: &str,
+    params: &ChatParams<'_>,
     messages: &[(&str, &str)],
-    thinking: Option<ThinkingConfig>,
-    effort: Option<String>,
-    reasoning_enabled: Option<bool>,
-    reasoning_effort: Option<String>,
 ) -> anyhow::Result<ChatResponse> {
+    let provider = params.provider;
+    let model = params.model;
+    let api_key = params.api_key;
+    let ollama_endpoint = params.ollama_endpoint;
     let client = reqwest::Client::new();
 
     match provider {
@@ -374,7 +382,7 @@ pub async fn send_chat(
             if !system_content.is_empty() {
                 body["system"] = serde_json::Value::String(system_content);
             }
-            apply_thinking_to_body(&mut body, &thinking, &effort);
+            apply_thinking_to_body(&mut body, &params.thinking, &params.effort);
 
             let resp = client
                 .post(format!("{}/messages", provider.base_url(ollama_endpoint)))
@@ -402,7 +410,7 @@ pub async fn send_chat(
                 "messages": chat_messages,
             });
 
-            apply_reasoning_to_body(&mut body, provider, reasoning_enabled, &reasoning_effort);
+            apply_reasoning_to_body(&mut body, provider, params.reasoning_enabled, &params.reasoning_effort);
 
             let url = format!(
                 "{}/chat/completions",
@@ -718,19 +726,15 @@ fn apply_thinking_to_body(
 }
 
 /// Send a tool-aware chat request and return a structured response.
-#[allow(clippy::too_many_arguments)]
 pub async fn send_chat_with_tools(
-    provider: &AiProvider,
-    model: &str,
-    api_key: &str,
-    ollama_endpoint: &str,
+    params: &ChatParams<'_>,
     messages: &[AgentMessage],
     tools: &[AgentToolDef],
-    thinking: Option<ThinkingConfig>,
-    effort: Option<String>,
-    reasoning_enabled: Option<bool>,
-    reasoning_effort: Option<String>,
 ) -> anyhow::Result<ChatResponse> {
+    let provider = params.provider;
+    let model = params.model;
+    let api_key = params.api_key;
+    let ollama_endpoint = params.ollama_endpoint;
     let client = reqwest::Client::new();
 
     match provider {
@@ -835,7 +839,7 @@ pub async fn send_chat_with_tools(
                 body["system"] = serde_json::Value::String(system_content);
             }
             // thinking / effort パラメータを追加
-            apply_thinking_to_body(&mut body, &thinking, &effort);
+            apply_thinking_to_body(&mut body, &params.thinking, &params.effort);
 
             let mut req = client
                 .post(format!("{}/messages", provider.base_url(ollama_endpoint)))
@@ -843,7 +847,7 @@ pub async fn send_chat_with_tools(
                 .header("anthropic-version", "2023-06-01")
                 .header("content-type", "application/json");
             // interleaved thinking 用ベータヘッダー
-            if thinking.is_some() {
+            if params.thinking.is_some() {
                 req = req.header("anthropic-beta", "interleaved-thinking-2025-05-14");
             }
             let resp = req.json(&body).send().await?.error_for_status()?;
@@ -933,7 +937,7 @@ pub async fn send_chat_with_tools(
                 "tools": openai_tools
             });
 
-            apply_reasoning_to_body(&mut body, provider, reasoning_enabled, &reasoning_effort);
+            apply_reasoning_to_body(&mut body, provider, params.reasoning_enabled, &params.reasoning_effort);
 
             let url = format!(
                 "{}/chat/completions",
@@ -964,20 +968,16 @@ pub async fn send_chat_with_tools(
 // G1: Streaming chat
 // ---------------------------------------------------------------------------
 
-#[allow(clippy::too_many_arguments)]
 pub async fn send_chat_stream(
-    provider: &AiProvider,
-    model: &str,
-    api_key: &str,
-    ollama_endpoint: &str,
+    params: &ChatParams<'_>,
     messages: &[(&str, &str)],
-    thinking: Option<ThinkingConfig>,
-    effort: Option<String>,
-    reasoning_enabled: Option<bool>,
-    reasoning_effort: Option<String>,
     abort_flag: Arc<std::sync::atomic::AtomicBool>,
     app_handle: tauri::AppHandle,
 ) -> anyhow::Result<()> {
+    let provider = params.provider;
+    let model = params.model;
+    let api_key = params.api_key;
+    let ollama_endpoint = params.ollama_endpoint;
     use tauri::Emitter;
 
     let client = reqwest::Client::new();
@@ -1007,14 +1007,14 @@ pub async fn send_chat_stream(
             if !system_content.is_empty() {
                 body["system"] = serde_json::Value::String(system_content);
             }
-            apply_thinking_to_body(&mut body, &thinking, &effort);
+            apply_thinking_to_body(&mut body, &params.thinking, &params.effort);
 
             let mut req = client
                 .post(format!("{}/messages", provider.base_url(ollama_endpoint)))
                 .header("x-api-key", api_key)
                 .header("anthropic-version", "2023-06-01")
                 .header("content-type", "application/json");
-            if thinking.is_some() {
+            if params.thinking.is_some() {
                 req = req.header("anthropic-beta", "interleaved-thinking-2025-05-14");
             }
 
@@ -1129,7 +1129,7 @@ pub async fn send_chat_stream(
                 "stream": true,
             });
 
-            apply_reasoning_to_body(&mut body, provider, reasoning_enabled, &reasoning_effort);
+            apply_reasoning_to_body(&mut body, provider, params.reasoning_enabled, &params.reasoning_effort);
 
             let url = format!(
                 "{}/chat/completions",
