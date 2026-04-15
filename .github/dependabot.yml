@@ -17,6 +17,12 @@ updates:
           - "ai"
           - "@ai-sdk/*"
 
+  # GitHub Actions
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+
   # Cargo (Rust)
   - package-ecosystem: "cargo"
     directory: "/src-tauri"

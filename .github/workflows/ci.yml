@@ -29,6 +29,26 @@ jobs:
       - name: テスト
         run: npm test -- --run
 
+  security:
+    name: Security (audit / signatures)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - run: npm ci
+
+      - name: npm audit
+        run: npm audit --audit-level=critical
+
+      - name: パッケージ署名の検証
+        run: npm audit signatures
+        continue-on-error: true
+
   rust:
     name: Rust (check / clippy / test)
     runs-on: ubuntu-latest
