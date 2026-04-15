@@ -4,6 +4,10 @@
 
 EditorパネルはGrimodexの中核コンポーネント。TipTapベースのリッチテキストエディタで、小説の執筆・編集を行う。Center Dockに常駐し、Editor Groupモデル（レイアウト設計書で定義済み）により複数シーンのマルチタブ・スプリット編集が可能。
 
+2つの編集モードを持つ:
+- **通常モード**: 1タブ=1シーンの単独編集。スプリットビューで2シーンの同時編集も可能
+- **リニア編集モード**: プロジェクト内の全シーンを`sortOrder`順に縦に並べ、1つのスクロールビューで通し読み・通し書きが可能
+
 エディタは上から5つの領域で構成される: タブバー、ブレッドクラム、ツールバー、エディタキャンバス、ステータスバー。
 
 ---
@@ -87,7 +91,8 @@ EditorパネルはGrimodexの中核コンポーネント。TipTapベースのリ
 
 ### タブバー右端のアクション
 
-- **スプリットボタン**: アクティブシーンを右に分割（新しいEditor Groupを作成）
+- **リニアモードボタン（`ScrollText`アイコン）**: リニア編集モードのON/OFF。Primary Groupのみ表示。ONの場合はアクティブ背景色（`bg-accent`）で状態表示。詳細は「リニア編集モード」セクション参照
+- **スプリットボタン**: アクティブシーンを右に分割（新しいEditor Groupを作成）。リニアモード中は非表示
 - **Groupを閉じるボタン**: このEditor Group内の全タブを閉じてGroupを削除（最後のGroupでは非表示）
 
 ### タブの操作
@@ -142,6 +147,7 @@ Split mode時はキーボードフォーカスを持つグループ（`activeGro
 | アクティブタブ | プライマリ/セカンダリ各グループのアクティブタブID |
 | セカンダリグループ | スプリット時の第2グループのタブ一覧 |
 | フォーカスグループ | どちらのグループがキーボードフォーカスを持つか |
+| リニアモード | リニア編集モードのON/OFF |
 
 **保存タイミング:** タブ状態の変更のたびに 500ms デバウンスで自動保存。
 
@@ -623,6 +629,127 @@ Settings > Editor > Animations セクション:
 ```
 
 原稿用紙換算は日本語小説で特に重要な指標。
+
+---
+
+## リニア編集モード
+
+### 概要
+
+プロジェクト内の全シーンを`sortOrder`順に縦に並べ、1つのスクロールビューで連続編集できるモード。小説を通しで読み書きしたいときに使用する。タブバー右端の`ScrollText`アイコンでトグルする。
+
+```
+┌──────────────────────────────────────────────────────┐
+│ Tab bar                              [📜 Linear] [⋮] │
+├──────────────────────────────────────────────────────┤
+│ Breadcrumb (activeSceneIdに自動追従)                   │
+├──────────────────────────────────────────────────────┤
+│ Toolbar (フォーカス中のエディタに連動)                    │
+├──────────────────────────────────────────────────────┤
+│ ┌────────────────────────────────────────────────┐   │
+│ │  Scene 1: 塔の麓                                │   │
+│ │  ──────────────────────────────────────────────│   │
+│ │  エララは黒曜石の塔の前に立ち...                    │   │
+│ │                                     1,247 chars│   │
+│ ├────────────────────────────────────────────────┤   │
+│ │  ── divider ──────────────────────────────────│   │
+│ ├────────────────────────────────────────────────┤   │
+│ │  Scene 2: 塔の内部                              │   │
+│ │  ──────────────────────────────────────────────│   │
+│ │  扉を押し開けると、冷気が頬を撫でた...               │   │
+│ │                                       893 chars│   │
+│ ├────────────────────────────────────────────────┤   │
+│ │  ...（全シーンが続く）                             │   │
+│ └────────────────────────────────────────────────┘   │
+└──────────────────────────────────────────────────────┘
+```
+
+### 設計方針
+
+- **独立TipTapインスタンスを維持**: 1つの巨大ドキュメントに結合しない。各シーンが独立したTipTapエディタを持ち、保存・Undo・帰属追跡はシーン単位で動作する
+- **遅延マウント**: IntersectionObserverでビューポート近傍（上下200%）のシーンだけTipTapを生成。遠方のシーンはplaceholder divで高さを保持し、パフォーマンスを確保する
+- **既存カスケードを活用**: `treeStore.setActiveScene(id)` による Chat連携・CodexQuick更新は既存の仕組みがそのまま機能する
+- **Toolbarは共有**: フォーカス中のエディタに対して1つのToolbarが動作する（シーン数分のToolbarを並べない）
+
+### モード切替
+
+**リニアモード進入時:**
+- スプリットビュー（Secondary Group）が開いている場合は自動で閉じる
+- 切替前のアクティブシーンの位置まで自動スクロールする（コンテンツ読み込み完了後にResizeObserverで位置到達を検証）
+- タブバーは通常通り表示。タブクリック時は対象シーンにスクロール
+
+**リニアモード解除時:**
+- 通常の単独編集モードに戻る。アクティブシーンのタブが表示される
+
+### コンポーネント構成
+
+| コンポーネント | ファイル | 役割 |
+|-------------|--------|------|
+| `LinearEditorView` | `src/features/editor/LinearEditorView.tsx` | スクロールコンテナ + IntersectionObserver + 共有Toolbar/FindReplace/CodexPopover/EditorContextMenu |
+| `LinearSceneBlock` | `src/features/editor/LinearSceneBlock.tsx` | 各シーンの軽量エディタブロック（EditorPaneの簡略版） |
+| `linearEditorStore` | `src/features/editor/linearEditorStore.ts` | フォーカス中のエディタ/シーンID/スクロール要求を管理 |
+
+### LinearSceneBlock
+
+EditorPaneからシーン編集に必要なロジックのみを抽出した軽量コンポーネント。
+
+**含む機能:**
+- `useEditor` + `getEditorExtensions()` でTipTap初期化
+- `loadSceneContent()` / `saveSceneContent()` によるコンテンツ読み書き
+- `useAutoSave` による自動保存
+- `loadAuthorshipSpans()` / `saveAuthorshipSpans()` による帰属追跡
+- `useAttribution()` フック
+- `useCodexHighlight()` — アクティブシーンのみCodexQuickを更新（`skipMatchedIds`制御）
+- シーンタイトル表示（読み取り専用）
+- `ResizeObserver` による高さ測定 → 親に報告
+
+**含まない機能（LinearEditorViewが共有管理または対象外）:**
+- Toolbar, SynopsisHeader, FindReplaceBar, StatusBar
+- InlineAI palette/toolbar
+- CodexPopover, EditorContextMenu, AttributionOverrideMenu
+- タブ関連ロジック（openPreview, pinTab等）
+- VerticalPreview
+- Split-view同期（sceneContentStoreのbroadcast）
+
+### 遅延マウント
+
+2つのIntersectionObserverを使用する。
+
+**マウント判定用Observer:**
+- `rootMargin: "200% 0px"` — ビューポートの上下2倍の範囲にあるシーンをマウント
+- `isIntersecting` → TipTapエディタを生成、`!isIntersecting` → placeholderに戻す
+- 安定したDOM要素（`data-scene-id`付きの外側div）を監視し、mount/unmount切替時にObserverがDOM要素を見失わない設計
+
+**アクティブシーン検出用Observer:**
+- `rootMargin: "0px"`, `threshold: [0, 0.5, 1.0]`
+- 可視シーンのうち、スクロールコンテナ上端に最も近いシーンを検出
+- デバウンス100msで `treeStore.setActiveScene(id)` を呼び出し
+- `isScrollDetectionRef`フラグでスクロール検出と外部ナビゲーションを区別し、フィードバックループを防止
+
+### 既存機能の挙動
+
+| 機能 | リニアモードでの挙動 |
+|------|---------------------|
+| **Breadcrumb** | `activeSceneId` を監視しているので自動追従。変更不要 |
+| **Chat連携** | `treeStore.activeSceneId` → `chatStore.activeSceneId` の既存同期で動作 |
+| **CodexQuick** | アクティブシーンのエディタのみ `skipMatchedIds: false` で更新 |
+| **Find & Replace** | フォーカス中のエディタ単体に対して動作（シーン単位検索） |
+| **Split view** | リニアモード中は無効（トグル時にclose済み） |
+| **Auto-save** | 各LinearSceneBlockが独自の`useAutoSave`。アンマウント時にflush |
+| **タブ** | タブバーは通常通り表示。タブクリック → 対象シーンにスクロール |
+| **Scenesパネルクリック** | `treeStore.activeSceneId` 変更 → LinearEditorViewがスクロール |
+| **InlineAI** | 非対応（LinearSceneBlockに含まれない） |
+
+### 実装ファイル
+
+| ファイル | 変更内容 |
+|---------|---------|
+| `tabStore.ts` | `isLinearMode` state + `toggleLinearMode` action + 永続化 |
+| `linearEditorStore.ts` | focusedEditor, focusedSceneId, pendingScrollToId を管理 |
+| `LinearSceneBlock.tsx` | 各シーンの軽量エディタブロック |
+| `LinearEditorView.tsx` | スクロールコンテナ + IntersectionObserver + 共有UI |
+| `SceneEditor.tsx` | リニアモード時の条件分岐レンダリング |
+| `TabBar.tsx` | トグルボタン追加、リニアモード時にスプリットボタン非表示 |
 
 ---
 
