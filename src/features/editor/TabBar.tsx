@@ -1,6 +1,6 @@
 import { useRef, useState, useEffect } from "react";
 import { useTranslation } from "react-i18next";
-import { X, ChevronDown, Columns2 } from "lucide-react";
+import { X, ChevronDown, Columns2, ScrollText } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useTabStore } from "./tabStore";
 import { useTreeStore } from "@/features/tree/treeStore";
@@ -79,6 +79,7 @@ export function TabBar({ groupIndex = 0 }: TabBarProps) {
   const globalSceneOrder = usePhaseStore((s) => s.globalSceneOrder);
 
   const hasSecondaryGroup = useTabStore((s) => s.secondaryGroupOpen);
+  const isLinearMode = useTabStore((s) => s.isLinearMode);
   const isPrimary = groupIndex === 0;
   const tabs = isPrimary ? primaryTabs : secondaryTabs;
   const activeTabId = isPrimary ? primaryActiveTabId : secondaryActiveTabId;
@@ -398,8 +399,23 @@ export function TabBar({ groupIndex = 0 }: TabBarProps) {
         })}
       </div>
 
-      {/* Split dropdown button: primary group only, when no secondary group */}
-      {isPrimary && !hasSecondaryGroup && (
+      {/* Linear mode toggle: primary group only */}
+      {isPrimary && (
+        <button
+          type="button"
+          title={t("editor.tabBar.linearMode")}
+          onClick={() => useTabStore.getState().toggleLinearMode()}
+          className={cn(
+            "flex h-full flex-shrink-0 items-center border-l border-border px-2 text-muted-foreground hover:bg-accent hover:text-foreground",
+            isLinearMode && "bg-accent text-foreground",
+          )}
+        >
+          <ScrollText className="h-3.5 w-3.5" />
+        </button>
+      )}
+
+      {/* Split dropdown button: primary group only, when no secondary group and not in linear mode */}
+      {isPrimary && !hasSecondaryGroup && !isLinearMode && (
         <div
           ref={splitMenuRef}
           className="relative flex-shrink-0 border-l border-border"

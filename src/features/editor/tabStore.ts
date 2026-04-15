@@ -28,6 +28,7 @@ interface PersistedTabState {
   activeGroupIndex: GroupIndex;
   secondaryGroupOpen: boolean;
   splitDirection: "right" | "below";
+  isLinearMode: boolean;
 }
 
 interface TabState {
@@ -193,6 +194,13 @@ interface TabState {
   /** Read and clear the flag for the given group. Returns true if focus was requested. */
   consumeEditorFocusRequest: (group: GroupIndex) => boolean;
 
+  // ---- Linear mode ----
+
+  /** Whether the editor is in linear (multi-scene scroll) mode. */
+  isLinearMode: boolean;
+  /** Toggle linear mode on/off. Closes secondary group when entering. */
+  toggleLinearMode: () => void;
+
   // ---- Unsaved-changes tracking ----
 
   /** IDs of tabs that have unsaved content. Updated by EditorPane. */
@@ -233,9 +241,18 @@ export const useTabStore = create<TabState>()((set, get) => {
     secondaryGroupOpen: false,
     activeGroupIndex: 0,
     splitDirection: "right",
+    isLinearMode: false,
     isDraggingTab: false,
     setIsDraggingTab(v) {
       set({ isDraggingTab: v });
+    },
+    toggleLinearMode() {
+      const { isLinearMode, secondaryGroupOpen } = get();
+      if (!isLinearMode && secondaryGroupOpen) {
+        // Close split view before entering linear mode
+        get().closeSecondaryGroup();
+      }
+      set({ isLinearMode: !isLinearMode });
     },
     dirtyTabIds: new Set<string>(),
     requestEditorFocus(group: GroupIndex) {
@@ -705,6 +722,7 @@ export const useTabStore = create<TabState>()((set, get) => {
             secondaryGroupOpen: false,
             activeGroupIndex: 0,
             splitDirection: "right",
+            isLinearMode: false,
           });
           return;
         }
@@ -753,6 +771,7 @@ export const useTabStore = create<TabState>()((set, get) => {
           ? 0
           : (parsed.activeGroupIndex ?? 0);
         const splitDirection = parsed.splitDirection ?? "right";
+        const isLinearMode = parsed.isLinearMode ?? false;
 
         set({
           tabs,
@@ -762,6 +781,7 @@ export const useTabStore = create<TabState>()((set, get) => {
           secondaryGroupOpen,
           activeGroupIndex,
           splitDirection,
+          isLinearMode,
         });
       } catch {
         // Corrupted or missing — keep current state
@@ -778,6 +798,7 @@ export const useTabStore = create<TabState>()((set, get) => {
           secondaryGroupOpen,
           activeGroupIndex,
           splitDirection,
+          isLinearMode,
         } = get();
         const data: PersistedTabState = {
           tabs,
@@ -787,6 +808,7 @@ export const useTabStore = create<TabState>()((set, get) => {
           secondaryGroupOpen,
           activeGroupIndex,
           splitDirection,
+          isLinearMode,
         };
         await setSetting(TAB_STATE_KEY, JSON.stringify(data));
       } catch {
@@ -806,7 +828,8 @@ export const useTabStore = create<TabState>()((set, get) => {
           state.secondaryActiveTabId === prev.secondaryActiveTabId &&
           state.secondaryGroupOpen === prev.secondaryGroupOpen &&
           state.splitDirection === prev.splitDirection &&
-          state.activeGroupIndex === prev.activeGroupIndex
+          state.activeGroupIndex === prev.activeGroupIndex &&
+          state.isLinearMode === prev.isLinearMode
         ) {
           return;
         }

@@ -731,7 +731,8 @@
       "splitRight": "右に分割",
       "splitBelow": "下に分割",
       "closeGroup": "グループを閉じる",
-      "tabList": "タブ一覧"
+      "tabList": "タブ一覧",
+      "linearMode": "リニアモード"
     },
     "contextMenu": {
       "addToCodex": "コデックスに追加",

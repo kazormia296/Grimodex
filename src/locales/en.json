@@ -734,7 +734,8 @@
       "splitRight": "Split right",
       "splitBelow": "Split below",
       "closeGroup": "Close group",
-      "tabList": "Tab list"
+      "tabList": "Tab list",
+      "linearMode": "Linear mode"
     },
     "contextMenu": {
       "addToCodex": "Add to Codex",

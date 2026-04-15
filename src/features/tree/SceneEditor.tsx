@@ -5,6 +5,7 @@ import { TabBar } from "@/features/editor/TabBar";
 import { Breadcrumb } from "@/features/editor/Breadcrumb";
 import { EditorPane } from "@/features/editor/EditorPane";
 import { useTabStore } from "@/features/editor/tabStore";
+import { LinearEditorView } from "@/features/editor/LinearEditorView";
 import { RevisionHistoryModal } from "@/features/revision/RevisionHistoryModal";
 import { cn } from "@/lib/utils";
 import { DRAG_DATA_KEY, DRAG_GROUP_KEY } from "@/features/editor/TabBar";
@@ -145,6 +146,7 @@ function EdgeDropZones() {
  */
 export function SceneEditor() {
   const activeSceneId = useSceneStore((s) => s.activeSceneId);
+  const isLinearMode = useTabStore((s) => s.isLinearMode);
 
   const primaryActiveTabId = useTabStore((s) => s.activeTabId);
   const secondaryActiveTabId = useTabStore((s) => s.secondaryActiveTabId);
@@ -205,6 +207,22 @@ export function SceneEditor() {
     primaryTab,
     secondaryTab,
   ]);
+
+  // --- Linear mode: all scenes in a single scroll view ---
+  if (isLinearMode) {
+    return (
+      <div className="flex h-full w-full flex-col overflow-hidden">
+        <Breadcrumb />
+        <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
+          <TabBar groupIndex={0} />
+          <div className="relative flex flex-1 flex-col overflow-hidden">
+            <LinearEditorView />
+          </div>
+        </div>
+        <RevisionHistoryModal />
+      </div>
+    );
+  }
 
   const primarySceneId = primaryActiveTabId;
   const secondarySceneId = secondaryActiveTabId;
