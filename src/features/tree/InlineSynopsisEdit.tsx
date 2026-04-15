@@ -20,6 +20,13 @@ export function InlineSynopsisEdit({
   const [editText, setEditText] = useState(synopsis ?? "");
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Refs for unmount-flush (avoid stale closures in cleanup effect)
+  const editTextRef = useRef(editText);
+  const synopsisRef = useRef(synopsis);
+  const isEditingRef = useRef(isEditing);
+  editTextRef.current = editText;
+  synopsisRef.current = synopsis;
+  isEditingRef.current = isEditing;
 
   // Sync when synopsis changes externally while not editing
   useEffect(() => {
@@ -27,6 +34,23 @@ export function InlineSynopsisEdit({
       setEditText(synopsis ?? "");
     }
   }, [synopsis, isEditing]);
+
+  // Flush pending save on unmount (e.g. folder collapsed while editing)
+  useEffect(() => {
+    return () => {
+      if (saveTimer.current) {
+        clearTimeout(saveTimer.current);
+        saveTimer.current = null;
+      }
+      if (isEditingRef.current) {
+        const trimmed = editTextRef.current.trim();
+        const original = (synopsisRef.current ?? "").trim();
+        if (trimmed !== original) {
+          updateSynopsis(nodeId, trimmed).catch(() => {});
+        }
+      }
+    };
+  }, [nodeId, updateSynopsis]);
 
   const flushSave = useCallback(() => {
     if (saveTimer.current) {
