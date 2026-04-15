@@ -39,6 +39,7 @@ import { useLayoutStore } from "@/features/layout/layoutStore";
 import { TreeNodeItem, NodeIcon } from "./TreeNodeItem";
 import { StatusDot } from "./StatusDot";
 import { SynopsisArea } from "./SynopsisArea";
+import { InlineSynopsisEdit } from "./InlineSynopsisEdit";
 import type { TreeNodeData, NodeType } from "./treeStore";
 import { canHaveChildren } from "./treeStore";
 import type { DropIndicator } from "./TreeNodeItem";
@@ -163,7 +164,6 @@ function TreeRenderer({
   nodeTotals,
   orderedNodes,
 }: TreeRendererProps) {
-  const { t } = useTranslation();
   const ids = childMap[parentId ?? "root"] ?? [];
   const query = filterQuery.toLowerCase();
 
@@ -222,19 +222,11 @@ function TreeRenderer({
               />
             </TreeNodeItem>
             {viewMode === "outline" && node.nodeType === "scene" && visible && (
-              <li
-                className="list-none text-[11px] text-muted-foreground"
-                style={{
-                  paddingLeft: `${depth * 12 + 58}px`,
-                  paddingBottom: 4,
-                }}
-              >
-                {node.synopsis ?? (
-                  <span className="italic opacity-40">
-                    {t("scenes.noSynopsis")}
-                  </span>
-                )}
-              </li>
+              <InlineSynopsisEdit
+                nodeId={node.id}
+                synopsis={node.synopsis}
+                depth={depth}
+              />
             )}
           </Fragment>
         );
