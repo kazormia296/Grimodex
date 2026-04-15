@@ -66,8 +66,14 @@ export function CodexPopover({ editor }: { editor: Editor | null }) {
   }, []);
 
   useEffect(() => {
-    if (!editor || !editor.view?.dom) return;
-    const dom = editor.view.dom;
+    if (!editor || editor.isDestroyed) return;
+    let dom: HTMLElement;
+    try {
+      dom = editor.view.dom;
+    } catch {
+      // エディタがまだマウントされていない、または破棄済みの場合はスキップ
+      return;
+    }
     dom.addEventListener("mouseover", handleMouseOver);
     dom.addEventListener("mouseout", handleMouseOut);
     return () => {

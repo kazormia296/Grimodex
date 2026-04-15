@@ -18,6 +18,7 @@ import { getDocText } from "@/features/editor/RubyNode";
 import { shouldAutoDraftTransition } from "@/features/editor/autoStatusTransition";
 import { debugLog, errorDetail } from "@/lib/debugLog";
 import type { SceneStatus } from "@/features/tree/treeStore";
+import { useLinearEditorStore } from "./linearEditorStore";
 
 interface LinearSceneBlockProps {
   sceneId: string;
@@ -109,6 +110,13 @@ function MountedSceneBlock({
         role: "textbox",
         "aria-multiline": "true",
       },
+    },
+    onDestroy() {
+      // このシーンがフォーカスを持っていた場合、破棄時に参照をリセットする
+      const state = useLinearEditorStore.getState();
+      if (state.focusedSceneId === sceneId) {
+        state.setFocusedEditor(null, null);
+      }
     },
     onUpdate({ editor: e }) {
       if (isApplyingExternalUpdate.current) return;
