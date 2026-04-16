@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useCallback } from "react";
+import { useState, useRef, useEffect, useCallback, useMemo } from "react";
 import { useTranslation } from "react-i18next";
 import type { Editor } from "@tiptap/core";
 import { toast } from "sonner";
@@ -147,6 +147,38 @@ export function ChatPanel() {
   const pinnedIds = new Set(pinnedEntries.map((e) => e.id));
   const pinnedSnippetIds = new Set(pinnedSnippets.map((s) => s.id));
 
+  // 入力欄でリアルタイム検出されたCodexエントリID
+  const [inputDetectedIds, setInputDetectedIds] = useState<string[]>([]);
+  // ユーザーが × で明示却下したID（送信まで保持）
+  const [inputDismissedIds, setInputDismissedIds] = useState<Set<string>>(
+    new Set(),
+  );
+  const allCodexEntries = useCodexStore((s) => s.entries);
+
+  const handleDetectedEntries = useCallback((ids: string[]) => {
+    setInputDetectedIds(ids);
+  }, []);
+
+  // 入力欄検出エントリを chat_mention ピン済みとして扱う
+  // （DB未確定のインメモリ状態。送信時に P2-5 が DB に永続化する）
+  const inputPinnedEntries = useMemo(() => {
+    return inputDetectedIds
+      .filter((id) => !inputDismissedIds.has(id) && !pinnedIds.has(id))
+      .map((id) => allCodexEntries.find((e) => e.id === id))
+      .filter((e): e is (typeof allCodexEntries)[0] => e !== undefined)
+      .map((e) => ({
+        ...e,
+        withChildren: false,
+        pinnedType: "codex" as const,
+        pinSource: "chat_mention" as const,
+      }));
+  }, [inputDetectedIds, inputDismissedIds, allCodexEntries, pinnedIds]);
+
+  const inputPinnedIds = useMemo(
+    () => new Set(inputPinnedEntries.map((e) => e.id)),
+    [inputPinnedEntries],
+  );
+
   const handlePin = useCallback(
     async (entryId: string, type: "codex" | "snippet" = "codex") => {
       if (!activeSessionId) return;
@@ -207,6 +239,20 @@ export function ChatPanel() {
       removeEntryFromAuto(entryId);
     },
     [removeEntryFromAuto],
+  );
+
+  // ピン除去の統合ハンドラ:
+  // - 入力欄検出（インメモリ）ピン → 却下セットに追加（DB操作なし）
+  // - DB確定ピン → handleRemoveFromContext
+  const handleRemoveEntry = useCallback(
+    async (entryId: string) => {
+      if (inputPinnedIds.has(entryId)) {
+        setInputDismissedIds((prev) => new Set([...prev, entryId]));
+      } else {
+        await handleRemoveFromContext(entryId);
+      }
+    },
+    [inputPinnedIds, handleRemoveFromContext],
   );
 
   const handleTogglePinChildren = useCallback(
@@ -400,6 +446,8 @@ export function ChatPanel() {
     (markdown: string) => {
       const trimmed = markdown.trim();
       if (!trimmed || isStreaming) return;
+      // 送信時に却下セットをリセット（次のメッセージでは再検出可能にする）
+      setInputDismissedIds(new Set());
       sendMessage(trimmed);
     },
     [isStreaming, sendMessage],
@@ -441,12 +489,16 @@ export function ChatPanel() {
       />
 
       <ContextBar
-        pinnedEntries={pinnedEntries}
+        pinnedEntries={[...pinnedEntries, ...inputPinnedEntries]}
         pinnedSnippets={pinnedSnippets}
-        detectedEntries={isGlobalChat ? [] : detectedEntries}
-        alwaysEntries={alwaysEntries}
+        detectedEntries={
+          isGlobalChat
+            ? []
+            : detectedEntries.filter((e) => !inputPinnedIds.has(e.id))
+        }
+        alwaysEntries={alwaysEntries.filter((e) => !inputPinnedIds.has(e.id))}
         onReturnToAuto={handleReturnToAuto}
-        onRemove={handleRemoveFromContext}
+        onRemove={handleRemoveEntry}
         onRemoveAuto={handleRemoveAuto}
         onPin={handlePin}
         onOpenPinDialog={() => setPinDialogOpen(true)}
@@ -520,6 +572,7 @@ export function ChatPanel() {
         editorRef={chatEditorRef}
         isGlobalChat={isGlobalChat}
         onMentionPin={(id) => handlePin(id, "codex")}
+        onDetectedEntries={handleDetectedEntries}
       />
 
       <CodexExtractionDialog

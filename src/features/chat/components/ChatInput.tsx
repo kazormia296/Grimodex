@@ -24,6 +24,7 @@ interface ChatInputProps {
   editorRef?: MutableRefObject<Editor | null>;
   isGlobalChat?: boolean;
   onMentionPin?: (entryId: string) => void;
+  onDetectedEntries?: (entryIds: string[]) => void;
 }
 
 export function ChatInput({
@@ -32,6 +33,7 @@ export function ChatInput({
   editorRef,
   isGlobalChat = false,
   onMentionPin,
+  onDetectedEntries,
 }: ChatInputProps) {
   const { t } = useTranslation();
   const isStreaming = disabled ?? false;
@@ -143,6 +145,28 @@ export function ChatInput({
 
   // Codexハイライト有効化（チャット入力はCodexQuickに影響させない）
   useCodexHighlight(editor, { skipMatchedIds: true });
+
+  // codexHighlightResult トランザクションを監視して検出エントリIDを通知
+  useEffect(() => {
+    if (!editor || !onDetectedEntries) return;
+    const handler = ({
+      transaction,
+    }: {
+      transaction: { getMeta: (key: string) => unknown };
+    }) => {
+      const result = transaction.getMeta("codexHighlightResult") as
+        | Array<{ entryId: string }>
+        | undefined;
+      if (result !== undefined) {
+        const ids = [...new Set(result.map((m) => m.entryId))];
+        onDetectedEntries(ids);
+      }
+    };
+    editor.on("transaction", handler);
+    return () => {
+      editor.off("transaction", handler);
+    };
+  }, [editor, onDetectedEntries]);
 
   // エディタのテキスト有無をリアクティブに購読（disabled 制御に使用）
   const hasText = useEditorState({

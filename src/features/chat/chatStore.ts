@@ -974,10 +974,12 @@ export const useChatStore = create<ChatState>()((set, get) => ({
           }
         }
 
+        const effectiveSessionId = sessionIdForPersist ?? activeSessionId;
         let pinnedCodexEntries: import("./contextBuilder").PinnedCodexContext[] =
           [];
-        if (activeSessionId) {
-          const pinned = await chatApi.listPinnedCodexEntries(activeSessionId);
+        if (effectiveSessionId) {
+          const pinned =
+            await chatApi.listPinnedCodexEntries(effectiveSessionId);
           pinnedCodexEntries = pinned.map((e) => {
             const children = e.withChildren
               ? getChildrenFromArray(e.id, allEntries).map((c) => ({
@@ -1066,7 +1068,6 @@ export const useChatStore = create<ChatState>()((set, get) => ({
 
         // G16: fetch pinned snippets and build PinnedSnippetContext[]
         let pinnedSnippets: PinnedSnippetContext[] = [];
-        const effectiveSessionId = sessionIdForPersist ?? activeSessionId;
         if (effectiveSessionId) {
           try {
             const snippetItems =
@@ -1361,7 +1362,82 @@ export const useChatStore = create<ChatState>()((set, get) => ({
       get();
     const effectiveSceneId = isGlobalChat ? null : activeSceneId;
     if (!effectiveSceneId) {
-      set({ contextTokenCount: 0, contextLayers: [] });
+      // グローバルチャット: L1(project) + L4(pinned + always) のみ計算
+      try {
+        const [projectCtx, allEntries] = await Promise.all([
+          fetchProjectContext(activeProjectId),
+          listCodexEntries(),
+        ]);
+
+        const globalAlwaysEntries = allEntries.filter(
+          (e) => e.contextMode === "always",
+        );
+
+        let globalPinnedCodex: import("./contextBuilder").PinnedCodexContext[] =
+          [];
+        let globalPinnedSnippets: PinnedSnippetContext[] = [];
+        if (activeSessionId) {
+          const [pinned, snippetItems] = await Promise.all([
+            chatApi.listPinnedCodexEntries(activeSessionId),
+            listPinnedSnippetEntries(activeSessionId),
+          ]);
+          globalPinnedCodex = pinned.map((e) => {
+            const children = e.withChildren
+              ? getChildrenFromArray(e.id, allEntries).map((c) => ({
+                  id: c.id,
+                  type: c.type,
+                  name: c.name,
+                  summary: c.summary ?? "",
+                }))
+              : undefined;
+            return {
+              id: e.id,
+              type: e.type,
+              name: e.name,
+              summary: e.summary ?? "",
+              withChildren: e.withChildren,
+              children,
+            };
+          });
+          globalPinnedSnippets = snippetItems.map((s) => ({
+            id: s.id,
+            title: s.title,
+            content: extractPlainText(s.content) || s.title,
+          }));
+        }
+
+        const globalPinnedIdSet = new Set(globalPinnedCodex.map((e) => e.id));
+        const alwaysNotPinned = globalAlwaysEntries.filter(
+          (e) => !globalPinnedIdSet.has(e.id),
+        );
+        const globalCodexEntries: CodexContext[] = alwaysNotPinned.map((e) => ({
+          id: e.id,
+          type: e.type,
+          name: e.name,
+          summary: e.summary ?? "",
+        }));
+
+        const promptResult = buildSystemPrompt({
+          scene: { id: "", title: "", content: "" },
+          project: projectCtx ?? undefined,
+          codexEntries:
+            globalCodexEntries.length > 0 ? globalCodexEntries : undefined,
+          pinnedCodexEntries:
+            globalPinnedCodex.length > 0 ? globalPinnedCodex : undefined,
+          pinnedSnippets:
+            globalPinnedSnippets.length > 0 ? globalPinnedSnippets : undefined,
+        });
+
+        set({
+          contextTokenCount: promptResult.totalTokens,
+          contextLayers: promptResult.layers,
+          lastSystemPrompt: promptResult.prompt,
+          detectedEntries: [],
+          alwaysEntries: alwaysNotPinned,
+        });
+      } catch {
+        set({ contextTokenCount: 0, contextLayers: [] });
+      }
       return;
     }
     try {
