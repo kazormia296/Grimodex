@@ -222,6 +222,7 @@ export function IconCropDialog({
                   position: "absolute",
                   width: imgEl.naturalWidth * zoom,
                   height: imgEl.naturalHeight * zoom,
+                  maxWidth: "none",
                   left: imgLeft,
                   top: imgTop,
                   pointerEvents: "none",
