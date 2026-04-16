@@ -20,8 +20,9 @@ export interface ParsedCodexEntry {
   type: string;
   name: string;
   aliases: string[];
+  /** Raw body text from entry.md — converted to ProseMirror JSON and stored as codex content on import. */
   summary: string;
-  /** ProseMirror JSON string. Always "{}" — fields go to codexDetailValues. */
+  /** ProseMirror JSON string. Always "{}" in the parser — importApi converts summary to ProseMirror and writes it here. */
   content: string;
   /** Raw key-value fields from entry.md frontmatter, imported as custom detail values */
   fields?: Record<string, string>;

@@ -191,13 +191,12 @@ export async function importCodexEntries(
         type: e.type,
         name: e.name,
         aliases: JSON.stringify(e.aliases),
-        summary: e.summary || undefined,
         parentId: e.parentId,
       });
 
       try {
         await updateCodexEntry(e.id, {
-          content: e.content,
+          content: fieldValueToProseMirror(e.summary),
           icon: icon ?? null,
           contextMode: e.contextMode,
           // tagsCache is set authoritatively by setEntryTags below
