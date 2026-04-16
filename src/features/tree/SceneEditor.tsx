@@ -7,6 +7,7 @@ import { EditorPane } from "@/features/editor/EditorPane";
 import { useTabStore } from "@/features/editor/tabStore";
 import { LinearEditorView } from "@/features/editor/LinearEditorView";
 import { RevisionHistoryModal } from "@/features/revision/RevisionHistoryModal";
+import { AsciiSplash } from "@/features/editor/AsciiSplash";
 import { cn } from "@/lib/utils";
 import { DRAG_DATA_KEY, DRAG_GROUP_KEY } from "@/features/editor/TabBar";
 import type { GroupIndex } from "@/features/editor/tabStore";
@@ -18,12 +19,9 @@ interface DragPayload {
 
 function EmptyGroupPlaceholder({ groupIndex }: { groupIndex: GroupIndex }) {
   return (
-    <div
-      className="flex flex-1 cursor-default select-none items-center justify-center text-xs text-muted-foreground/50"
+    <AsciiSplash
       onClick={() => useTabStore.getState().setActiveGroup(groupIndex)}
-    >
-      エディタグループが空です
-    </div>
+    />
   );
 }
 
