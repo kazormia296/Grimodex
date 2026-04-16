@@ -2,7 +2,7 @@ import { useEffect, useRef } from "react";
 import { useTranslation } from "react-i18next";
 
 /**
- * Ghostty-style ASCII shader animation for the empty editor state.
+ * ASCII shader animation for the empty editor state.
  * Renders concentric wave ripples using cycling ASCII characters,
  * with a vignette fade and the app name overlaid in the center.
  */
