@@ -21,8 +21,10 @@ export interface ParsedCodexEntry {
   name: string;
   aliases: string[];
   summary: string;
-  /** ProseMirror JSON string. "{}" when no fields. */
+  /** ProseMirror JSON string. Always "{}" — fields go to codexDetailValues. */
   content: string;
+  /** Raw key-value fields from entry.md frontmatter, imported as custom detail values */
+  fields?: Record<string, string>;
   contextMode: "always" | "mentioned" | "hidden";
   /** JSON-serialised {name,color}[] for TagCacheItem compatibility */
   tagsCache: string;
@@ -146,7 +148,8 @@ function parseCodexEntries(files: Record<string, Uint8Array>): {
       const contextMode = resolveContextMode(attrs);
 
       let summary = "";
-      let content = "{}";
+      const content = "{}";
+      let rawFields: Record<string, string> | undefined;
 
       if (entryBytes) {
         const { frontmatter, body } = parseFrontmatter(strFromU8(entryBytes));
@@ -156,9 +159,14 @@ function parseCodexEntries(files: Record<string, Uint8Array>): {
             ? (frontmatter as Record<string, unknown>).fields
             : undefined;
         if (fields && typeof fields === "object" && fields !== null) {
-          const fieldMap = fields as Record<string, string>;
-          if (Object.keys(fieldMap).length > 0) {
-            content = buildProseMirrorFromFields(fieldMap);
+          const entries: Record<string, string> = {};
+          for (const [k, v] of Object.entries(
+            fields as Record<string, unknown>,
+          )) {
+            if (typeof v === "string") entries[k] = v;
+          }
+          if (Object.keys(entries).length > 0) {
+            rawFields = entries;
           }
         }
       }
@@ -178,6 +186,7 @@ function parseCodexEntries(files: Record<string, Uint8Array>): {
           ),
           thumbnail: thumbnailBytes,
           parentId: undefined,
+          fields: rawFields,
         },
         childNcIds: metadata.relationships?.nestedEntries ?? [],
       });
@@ -275,61 +284,6 @@ function parseFrontmatter(md: string): {
     // ignore YAML parse errors — treat as no frontmatter
   }
   return { frontmatter, body };
-}
-
-/**
- * Build a minimal ProseMirror JSON document from a Novelcrafter `fields` map.
- * Each field becomes a level-3 heading followed by paragraph nodes.
- */
-function buildProseMirrorFromFields(fields: Record<string, string>): string {
-  const content: {
-    type: string;
-    attrs?: Record<string, unknown>;
-    content?: unknown[];
-  }[] = [];
-
-  for (const [name, value] of Object.entries(fields)) {
-    if (typeof value !== "string") continue;
-
-    content.push({
-      type: "heading",
-      attrs: { level: 3 },
-      content: [makeTextNode(name)],
-    });
-
-    // Paragraph nodes — split value on blank lines
-    const lines = value.split("\n");
-    let paraLines: string[] = [];
-    for (const line of lines) {
-      if (line.trim() === "") {
-        if (paraLines.length > 0) {
-          content.push(makeParagraph(paraLines.join("\n")));
-          paraLines = [];
-        }
-      } else {
-        paraLines.push(line);
-      }
-    }
-    if (paraLines.length > 0) {
-      content.push(makeParagraph(paraLines.join("\n")));
-    }
-  }
-
-  return JSON.stringify({ type: "doc", content });
-}
-
-function makeTextNode(text: string) {
-  return { type: "text", text };
-}
-
-function makeParagraph(text: string) {
-  if (!text.trim()) {
-    return { type: "paragraph" };
-  }
-  return {
-    type: "paragraph",
-    content: [makeTextNode(text)],
-  };
 }
 
 function resolveContextMode(

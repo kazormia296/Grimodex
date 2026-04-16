@@ -242,16 +242,14 @@ describe("parseNovelcrafterZip", () => {
       );
     });
 
-    it("builds ProseMirror JSON content from fields", () => {
+    it("stores raw fields for custom detail import", () => {
       const { codexEntries } = parseNovelcrafterZip(zip);
-      const doc = JSON.parse(codexEntries[0].content);
-      expect(doc.type).toBe("doc");
-      expect(doc.content.length).toBeGreaterThan(0);
-      const headingTexts = doc.content
-        .filter((n: { type: string }) => n.type === "heading")
-        .map((n: { content: { text: string }[] }) => n.content[0].text);
-      expect(headingTexts).toContain("経歴");
-      expect(headingTexts).toContain("特技");
+      expect(codexEntries[0].fields).toEqual({
+        経歴: "幼少期は農村で育つ。\n\n20歳で都市へ移住。",
+        特技: "料理・剣術",
+      });
+      // content is always "{}" — fields go to codexDetailValues, not body editor
+      expect(codexEntries[0].content).toBe("{}");
     });
   });
 

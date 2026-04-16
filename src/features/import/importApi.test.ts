@@ -14,6 +14,22 @@ vi.mock("@/features/codex/iconUtils", () => ({
   resizeAndConvertToWebP: vi.fn(),
 }));
 
+vi.mock("@/features/codex/tagApi", () => ({
+  listCodexTags: vi.fn(),
+  createCodexTag: vi.fn(),
+  setEntryTags: vi.fn(),
+}));
+
+vi.mock("@/features/codex/detailApi", () => ({
+  listDefinitionsByType: vi.fn(),
+  createDefinition: vi.fn(),
+  upsertValue: vi.fn(),
+}));
+
+vi.mock("@/features/codex/typeApi", () => ({
+  ensureBuiltinTypes: vi.fn(),
+}));
+
 import {
   createCodexEntry,
   updateCodexEntry,
@@ -21,6 +37,17 @@ import {
 } from "@/features/codex/api";
 import { createSnippet } from "@/features/snippets/api";
 import { resizeAndConvertToWebP } from "@/features/codex/iconUtils";
+import {
+  listCodexTags,
+  createCodexTag,
+  setEntryTags,
+} from "@/features/codex/tagApi";
+import {
+  listDefinitionsByType,
+  createDefinition,
+  upsertValue,
+} from "@/features/codex/detailApi";
+import { ensureBuiltinTypes } from "@/features/codex/typeApi";
 import { importCodexEntries, importSnippets } from "./importApi";
 import type { ParsedCodexEntry, ParsedSnippet } from "./novelcrafterParser";
 
@@ -29,6 +56,13 @@ const mockUpdateCodexEntry = vi.mocked(updateCodexEntry);
 const mockDeleteCodexEntry = vi.mocked(deleteCodexEntry);
 const mockCreateSnippet = vi.mocked(createSnippet);
 const mockResizeAndConvertToWebP = vi.mocked(resizeAndConvertToWebP);
+const mockListCodexTags = vi.mocked(listCodexTags);
+const mockCreateCodexTag = vi.mocked(createCodexTag);
+const mockSetEntryTags = vi.mocked(setEntryTags);
+const mockListDefinitionsByType = vi.mocked(listDefinitionsByType);
+const mockCreateDefinition = vi.mocked(createDefinition);
+const mockUpsertValue = vi.mocked(upsertValue);
+const mockEnsureBuiltinTypes = vi.mocked(ensureBuiltinTypes);
 
 function makeEntry(
   overrides: Partial<ParsedCodexEntry> = {},
@@ -63,6 +97,30 @@ describe("importCodexEntries", () => {
     mockCreateCodexEntry.mockResolvedValue({} as never);
     mockUpdateCodexEntry.mockResolvedValue({} as never);
     mockDeleteCodexEntry.mockResolvedValue(undefined);
+    mockEnsureBuiltinTypes.mockResolvedValue(undefined);
+    mockListCodexTags.mockResolvedValue([]);
+    mockCreateCodexTag.mockResolvedValue({
+      id: "new-tag-id",
+      name: "",
+      color: null,
+      projectId: "default-project",
+      typeFilter: null,
+      createdAt: "",
+    } as never);
+    mockSetEntryTags.mockResolvedValue(undefined);
+    mockListDefinitionsByType.mockResolvedValue([]);
+    mockCreateDefinition.mockResolvedValue({
+      id: "new-def-id",
+      name: "",
+      typeSlug: "",
+      projectId: "default-project",
+      fieldType: "text",
+      fieldConfig: null,
+      sortOrder: 0,
+      includeInContext: 0,
+      createdAt: "",
+    } as never);
+    mockUpsertValue.mockResolvedValue({} as never);
   });
 
   it("成功時に imported カウントを返す", async () => {
@@ -196,6 +254,112 @@ describe("importCodexEntries", () => {
     const secondInsertedId = createCalls[1][0].id;
     expect(firstInsertedId).toBe("lore-parent-id");
     expect(secondInsertedId).toBe("char-child-id");
+  });
+
+  it("新規タグを codexTags に作成して setEntryTags で紐付ける", async () => {
+    mockCreateCodexTag.mockResolvedValueOnce({
+      id: "tag-abc",
+      name: "Main Character",
+      color: null,
+      projectId: "default-project",
+      typeFilter: null,
+      createdAt: "",
+    } as never);
+
+    const entry = makeEntry({
+      tagsCache: JSON.stringify([{ name: "Main Character", color: null }]),
+    });
+    await importCodexEntries([entry]);
+
+    // タグが存在しないので createCodexTag が呼ばれる
+    expect(mockCreateCodexTag).toHaveBeenCalledWith(
+      expect.objectContaining({
+        name: "Main Character",
+        projectId: "default-project",
+      }),
+    );
+    // setEntryTags でエントリに紐付け
+    expect(mockSetEntryTags).toHaveBeenCalledWith(entry.id, ["tag-abc"]);
+  });
+
+  it("既存タグは createCodexTag せず setEntryTags だけ呼ぶ", async () => {
+    mockListCodexTags.mockResolvedValue([
+      {
+        id: "existing-tag-id",
+        name: "既存タグ",
+        color: null,
+        projectId: "default-project",
+        typeFilter: null,
+        createdAt: "",
+      },
+    ] as never);
+
+    const entry = makeEntry({
+      tagsCache: JSON.stringify([{ name: "既存タグ", color: null }]),
+    });
+    await importCodexEntries([entry]);
+
+    expect(mockCreateCodexTag).not.toHaveBeenCalled();
+    expect(mockSetEntryTags).toHaveBeenCalledWith(entry.id, [
+      "existing-tag-id",
+    ]);
+  });
+
+  it("fields があれば詳細定義を作成して値を upsert する", async () => {
+    mockCreateDefinition.mockResolvedValueOnce({
+      id: "def-height",
+      name: "身長",
+      typeSlug: "character",
+      projectId: "default-project",
+      fieldType: "text",
+      fieldConfig: null,
+      sortOrder: 0,
+      includeInContext: 1,
+      createdAt: "",
+    } as never);
+
+    const entry = makeEntry({ fields: { 身長: "170cm" } });
+    await importCodexEntries([entry]);
+
+    expect(mockCreateDefinition).toHaveBeenCalledWith(
+      expect.objectContaining({
+        name: "身長",
+        typeSlug: "character",
+        fieldType: "text",
+        includeInContext: 1,
+      }),
+    );
+    expect(mockUpsertValue).toHaveBeenCalledWith(
+      entry.id,
+      "def-height",
+      expect.stringContaining("170cm"),
+    );
+  });
+
+  it("既存の詳細定義は再作成せず値のみ upsert する", async () => {
+    mockListDefinitionsByType.mockResolvedValue([
+      {
+        id: "existing-def-id",
+        name: "身長",
+        typeSlug: "character",
+        projectId: "default-project",
+        fieldType: "text",
+        fieldConfig: null,
+        sortOrder: 0,
+        includeInContext: 1,
+        createdAt: "",
+      },
+    ] as never);
+
+    const entry = makeEntry({ fields: { 身長: "170cm" } });
+    await importCodexEntries([entry]);
+
+    expect(mockCreateDefinition).not.toHaveBeenCalled();
+    expect(mockUpsertValue).toHaveBeenCalledWith(
+      entry.id,
+      "existing-def-id",
+      expect.stringContaining("170cm"),
+    );
   });
 });
 
