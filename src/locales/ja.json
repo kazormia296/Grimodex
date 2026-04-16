@@ -799,6 +799,9 @@
       "noteDescription": "このファイルはシーンではなくノートです",
       "codexEditing": "Codex エントリ編集中",
       "snippetEditing": "スニペット編集中"
+    },
+    "splash": {
+      "hint": "ツリーからシーンを選択して執筆を始めましょう"
     }
   },
 

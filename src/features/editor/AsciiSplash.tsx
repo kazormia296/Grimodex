@@ -1,4 +1,5 @@
 import { useEffect, useRef } from "react";
+import { useTranslation } from "react-i18next";
 
 /**
  * Ghostty-style ASCII shader animation for the empty editor state.
@@ -9,6 +10,7 @@ import { useEffect, useRef } from "react";
 const GRADIENT = " .·:∴+✦*⊹✧";
 
 export function AsciiSplash({ onClick }: { onClick?: () => void }) {
+  const { t } = useTranslation();
   const containerRef = useRef<HTMLDivElement>(null);
   const preRef = useRef<HTMLPreElement>(null);
   const rafRef = useRef(0);
@@ -106,30 +108,12 @@ export function AsciiSplash({ onClick }: { onClick?: () => void }) {
         aria-hidden="true"
       />
 
-      {/* Center overlay */}
+      {/* Center overlay — ASCII rendition of the SVG logo */}
       <div className="pointer-events-none z-10 flex flex-col items-center gap-3">
-        <pre
-          className="text-center font-mono text-[10px] leading-tight text-muted-foreground/25"
-          aria-hidden="true"
-        >
-          {BOOK_ART}
-        </pre>
-        <span className="text-sm font-extralight tracking-[0.35em] text-muted-foreground/40">
-          GRIMODEX
-        </span>
-        <span className="text-[10px] text-muted-foreground/30">
-          ツリーからシーンを選択して執筆を始めましょう
+        <span className="text-[20px] text-muted-foreground/30">
+          {t("editor.splash.hint")}
         </span>
       </div>
     </div>
   );
 }
-
-/** Small grimoire icon rendered in box-drawing characters */
-const BOOK_ART = `    ┌──────┬──────┐
-    │ ≋≋≋≋ │ ≋≋≋≋ │
-    │ ≋≋≋  │ ≋≋≋  │
-    │      │      │
-    │ ≋≋≋≋ │ ≋≋≋≋ │
-    │ ≋≋   │ ≋≋   │
-    └──────┴──────┘`;
