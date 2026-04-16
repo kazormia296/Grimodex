@@ -17,6 +17,7 @@ import { SnippetExtractionDialog } from "@/features/snippets/SnippetExtractionDi
 import { ContextBar } from "./components/ContextBar";
 import { PinCodexDialog } from "./components/PinCodexDialog";
 import { SessionsPanel } from "./components/SessionsPanel";
+import { CodexPopover } from "@/features/editor/CodexPopover";
 import * as chatApi from "./chatApi";
 import { useAiSettingsStore } from "./store";
 import { normalizeModelId } from "@/features/attribution/AuthorshipMark";
@@ -88,6 +89,9 @@ export function ChatPanel() {
 
   const [sessionsPanelOpen, setSessionsPanelOpen] = useState(false);
   const chatEditorRef = useRef<Editor | null>(null);
+  // メッセージリストコンテナの DOM 要素（Codex ポップオーバー用）
+  const [messagesContainerEl, setMessagesContainerEl] =
+    useState<HTMLElement | null>(null);
 
   // ツリーのシーン変更を chatStore に伝播
   useEffect(() => {
@@ -423,6 +427,9 @@ export function ChatPanel() {
 
   return (
     <div className="relative flex h-full flex-col bg-background">
+      {/* メッセージリスト内の Codex ハイライトポップオーバー（単一インスタンス） */}
+      <CodexPopover containerEl={messagesContainerEl} />
+
       <ChatPanelHeader
         sessionsPanelOpen={sessionsPanelOpen}
         setSessionsPanelOpen={setSessionsPanelOpen}
@@ -456,7 +463,7 @@ export function ChatPanel() {
             {t("chat.noMessages")}
           </p>
         ) : (
-          <div className="space-y-4">
+          <div className="space-y-4" ref={(el) => setMessagesContainerEl(el)}>
             {messages
               .filter((msg) => msg.role !== "system" && !msg.isSummarized)
               .map((msg) => (

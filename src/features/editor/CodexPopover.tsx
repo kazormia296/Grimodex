@@ -21,7 +21,13 @@ interface PopoverState {
   entryId: string | null;
 }
 
-export function CodexPopover({ editor }: { editor: Editor | null }) {
+interface CodexPopoverProps {
+  editor?: Editor | null;
+  /** DOM要素を直接渡す場合（editor不要のコンテナベースモード） */
+  containerEl?: HTMLElement | null;
+}
+
+export function CodexPopover({ editor, containerEl }: CodexPopoverProps) {
   const entries = useCodexStore((s) => s.entries);
   const typeColorMap = useCodexHighlightStore((s) => s.typeColorMap);
   const [popover, setPopover] = useState<PopoverState>({
@@ -66,22 +72,26 @@ export function CodexPopover({ editor }: { editor: Editor | null }) {
   }, []);
 
   useEffect(() => {
-    if (!editor || editor.isDestroyed) return;
-    let dom: HTMLElement;
-    try {
-      dom = editor.view.dom;
-    } catch {
-      // エディタがまだマウントされていない、または破棄済みの場合はスキップ
-      return;
+    let dom: HTMLElement | null = null;
+    if (containerEl) {
+      dom = containerEl;
+    } else if (editor && !editor.isDestroyed) {
+      try {
+        dom = editor.view.dom;
+      } catch {
+        // エディタがまだマウントされていない、または破棄済みの場合はスキップ
+        return;
+      }
     }
+    if (!dom) return;
     dom.addEventListener("mouseover", handleMouseOver);
     dom.addEventListener("mouseout", handleMouseOut);
     return () => {
-      dom.removeEventListener("mouseover", handleMouseOver);
-      dom.removeEventListener("mouseout", handleMouseOut);
+      dom!.removeEventListener("mouseover", handleMouseOver);
+      dom!.removeEventListener("mouseout", handleMouseOut);
       if (hideTimerRef.current) clearTimeout(hideTimerRef.current);
     };
-  }, [editor, handleMouseOver, handleMouseOut]);
+  }, [editor, containerEl, handleMouseOver, handleMouseOut]);
 
   if (!popover.visible || !popover.entryId) return null;
 

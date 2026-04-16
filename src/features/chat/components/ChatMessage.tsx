@@ -14,6 +14,7 @@ import { copyChatMessageWithAttribution } from "@/lib/clipboardAttribution";
 import { useEditorStore } from "@/features/editor/editorStore";
 import { useTextSelection } from "@/features/chat/hooks/useTextSelection";
 import { SelectionToolbar } from "./SelectionToolbar";
+import { useCodexMarkdownComponents } from "@/features/chat/hooks/useCodexMarkdownComponents";
 
 interface ParsedMetadata {
   tool_calls?: ToolCallRecord[];
@@ -105,6 +106,7 @@ export function ChatMessage({
     isAssistant && !isSummary ? parseThinkingBlocks(msg.metadata) : [];
 
   const containerRef = useRef<HTMLDivElement>(null);
+  const codexComponents = useCodexMarkdownComponents();
   const showGhostPreview = useEditorStore((s) => s.showGhostPreview);
   const clearGhostPreview = useEditorStore((s) => s.clearGhostPreview);
   const { selectionInfo } = useTextSelection(containerRef);
@@ -162,7 +164,10 @@ export function ChatMessage({
               </div>
             )}
             <div className="prose prose-sm max-w-none dark:prose-invert">
-              <ReactMarkdown remarkPlugins={[remarkGfm]}>
+              <ReactMarkdown
+                remarkPlugins={[remarkGfm]}
+                components={codexComponents}
+              >
                 {msg.content}
               </ReactMarkdown>
             </div>
@@ -221,7 +226,10 @@ export function ChatMessage({
         ) : isUser ? (
           <>
             <div className="prose prose-sm max-w-none dark:prose-invert prose-p:text-primary-foreground prose-strong:text-primary-foreground prose-em:text-primary-foreground prose-code:text-primary-foreground">
-              <ReactMarkdown remarkPlugins={[remarkGfm]}>
+              <ReactMarkdown
+                remarkPlugins={[remarkGfm]}
+                components={codexComponents}
+              >
                 {msg.content}
               </ReactMarkdown>
             </div>

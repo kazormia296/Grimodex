@@ -11,6 +11,7 @@ import { useSettingsStore } from "@/features/settings/settingsStore";
 import { getModelCapabilities } from "../agent/modelLimits";
 import { getChatInputExtensions } from "../extensions/chatInputExtensions";
 import { useCodexHighlight } from "@/features/editor/useCodexHighlight";
+import { CodexPopover } from "@/features/editor/CodexPopover";
 import type { MentionPopupState } from "../extensions/ChatMentionExtension";
 import type { CommandPopupState } from "../extensions/ChatSlashCommandExtension";
 import { MentionPopup } from "./MentionPopup";
@@ -275,6 +276,9 @@ export function ChatInput({
           clientRect={commandPopup.clientRect}
         />
       )}
+
+      {/* Codex ハイライトポップオーバー（入力エリア用） */}
+      <CodexPopover editor={editor} />
 
       {/* TipTap エディタ入力エリア */}
       <div className="flex gap-2">
