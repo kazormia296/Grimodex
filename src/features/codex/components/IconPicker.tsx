@@ -1,7 +1,7 @@
-import { useRef } from "react";
+import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { EntryIcon } from "./EntryIcon";
-import { resizeAndConvertToWebP } from "../iconUtils";
+import { IconCropDialog } from "./IconCropDialog";
 
 interface IconPickerProps {
   currentIcon?: string | null;
@@ -15,50 +15,35 @@ export function IconPicker({
   onIconChange,
 }: IconPickerProps) {
   const { t } = useTranslation();
-  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [isDialogOpen, setIsDialogOpen] = useState(false);
 
-  const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    const result = await resizeAndConvertToWebP(file);
-    onIconChange(result);
-    // Reset input so same file can be selected again
-    e.target.value = "";
+  const handleConfirm = (icon: string | null) => {
+    onIconChange(icon);
+    setIsDialogOpen(false);
   };
 
-  const hasIcon = currentIcon != null && currentIcon.startsWith("data:");
-
   return (
-    <div className="flex items-center gap-2">
-      <div className="relative">
-        <button
-          type="button"
-          onClick={() => fileInputRef.current?.click()}
-          className="group relative block rounded-full focus:outline-none focus:ring-2 focus:ring-primary"
-          title={t("codex.iconPicker.changeIcon")}
-        >
-          <EntryIcon icon={currentIcon} entryType={entryType} size={48} />
-          <span className="absolute inset-0 flex items-center justify-center rounded-full bg-black/40 text-[10px] text-white opacity-0 transition-opacity group-hover:opacity-100">
-            {t("codex.iconPicker.change")}
-          </span>
-        </button>
-        <input
-          ref={fileInputRef}
-          type="file"
-          accept="image/*"
-          className="hidden"
-          onChange={handleFileChange}
+    <>
+      <button
+        type="button"
+        onClick={() => setIsDialogOpen(true)}
+        className="group relative block rounded-full focus:outline-none focus:ring-2 focus:ring-primary"
+        title={t("codex.iconPicker.changeIcon")}
+      >
+        <EntryIcon icon={currentIcon} entryType={entryType} size={48} />
+        <span className="absolute inset-0 flex items-center justify-center rounded-full bg-black/40 text-[10px] text-white opacity-0 transition-opacity group-hover:opacity-100">
+          {t("codex.iconPicker.change")}
+        </span>
+      </button>
+
+      {isDialogOpen && (
+        <IconCropDialog
+          currentIcon={currentIcon ?? null}
+          entryType={entryType}
+          onConfirm={handleConfirm}
+          onClose={() => setIsDialogOpen(false)}
         />
-      </div>
-      {hasIcon && (
-        <button
-          type="button"
-          onClick={() => onIconChange(null)}
-          className="text-xs text-destructive hover:underline"
-        >
-          削除
-        </button>
       )}
-    </div>
+    </>
   );
 }

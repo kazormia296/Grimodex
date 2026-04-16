@@ -537,6 +537,11 @@
       "changeIcon": "アイコンを変更",
       "change": "変更"
     },
+    "iconCrop": {
+      "title": "アイコン設定",
+      "selectImage": "画像を選択",
+      "zoom": "拡大縮小"
+    },
     "references": {
       "searching": "検索中...",
       "checkOccurrences": "出現シーンを確認",

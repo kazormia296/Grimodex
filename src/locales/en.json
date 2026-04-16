@@ -537,6 +537,11 @@
       "changeIcon": "Change icon",
       "change": "Change"
     },
+    "iconCrop": {
+      "title": "Icon Settings",
+      "selectImage": "Select Image",
+      "zoom": "Zoom"
+    },
     "references": {
       "searching": "Searching...",
       "checkOccurrences": "Check occurrences",
