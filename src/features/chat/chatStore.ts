@@ -464,19 +464,20 @@ export const useChatStore = create<ChatState>()((set, get) => ({
           const codexEntries: CodexContext[] = mentioned.map((e) => {
             const fullEntry = allEntries.find((a) => a.id === e.id);
             if (!fullEntry)
-              return {
-                id: e.id,
-                type: e.type,
-                name: e.name,
-                summary: "",
-              };
+              return { id: e.id, type: e.type, name: e.name, summary: "" };
+            const summary = fullEntry.summary ?? "";
+            // G13: summary空ならcontent全文をフォールバック
+            const contentFallback = summary.trim()
+              ? undefined
+              : extractPlainText(fullEntry.content) || undefined;
             const preset = fullEntry.childrenBudget ?? "compact";
             if (preset === "none")
               return {
                 id: e.id,
                 type: e.type,
                 name: e.name,
-                summary: fullEntry.summary ?? "",
+                summary,
+                contentFallback,
               };
             const budget = computeChildrenTokenBudget(preset, L4_TOTAL_BUDGET);
             const descendants = getDescendantsBFS(fullEntry.id, allEntries);
@@ -486,14 +487,16 @@ export const useChatStore = create<ChatState>()((set, get) => ({
                   id: e.id,
                   type: e.type,
                   name: e.name,
-                  summary: fullEntry.summary ?? "",
+                  summary,
+                  contentFallback,
                   childrenContext,
                 }
               : {
                   id: e.id,
                   type: e.type,
                   name: e.name,
-                  summary: fullEntry.summary ?? "",
+                  summary,
+                  contentFallback,
                 };
           });
 
@@ -1475,18 +1478,35 @@ export const useChatStore = create<ChatState>()((set, get) => ({
       const L4_TOTAL_BUDGET = 60_000;
       const baseCodexEntries: CodexContext[] = rawCodexEntries.map((e) => {
         const fullEntry = allEntries.find((a) => a.id === e.id);
-        const summary = fullEntry?.summary ?? "";
         if (!fullEntry)
-          return { id: e.id, type: e.type, name: e.name, summary };
+          return { id: e.id, type: e.type, name: e.name, summary: "" };
+        const summary = fullEntry.summary ?? "";
+        // G13: summary空ならcontent全文をフォールバック
+        const contentFallback = summary.trim()
+          ? undefined
+          : extractPlainText(fullEntry.content) || undefined;
         const preset = fullEntry.childrenBudget ?? "compact";
         if (preset === "none")
-          return { id: e.id, type: e.type, name: e.name, summary };
+          return {
+            id: e.id,
+            type: e.type,
+            name: e.name,
+            summary,
+            contentFallback,
+          };
         const budget = computeChildrenTokenBudget(preset, L4_TOTAL_BUDGET);
         const descendants = getDescendantsBFS(fullEntry.id, allEntries);
         const childrenContext = buildChildrenContext(descendants, budget);
         return childrenContext
-          ? { id: e.id, type: e.type, name: e.name, summary, childrenContext }
-          : { id: e.id, type: e.type, name: e.name, summary };
+          ? {
+              id: e.id,
+              type: e.type,
+              name: e.name,
+              summary,
+              contentFallback,
+              childrenContext,
+            }
+          : { id: e.id, type: e.type, name: e.name, summary, contentFallback };
       });
 
       // G14: enrich with custom details
