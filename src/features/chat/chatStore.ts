@@ -282,6 +282,7 @@ async function fetchSceneContext(
     return {
       id: node.id,
       title: node.title,
+      synopsis: node.synopsis ?? undefined,
       content: prosemirrorToText(content ?? ""),
     };
   } catch {
@@ -515,6 +516,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
                 type: e.type,
                 name: e.name,
                 summary: e.summary ?? "",
+                fullContent: extractPlainText(e.content) || undefined,
                 withChildren: e.withChildren,
                 children,
               };
@@ -994,6 +996,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
               type: e.type,
               name: e.name,
               summary: e.summary ?? "",
+              fullContent: extractPlainText(e.content) || undefined,
               withChildren: e.withChildren,
               children,
             };
@@ -1395,6 +1398,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
               type: e.type,
               name: e.name,
               summary: e.summary ?? "",
+              fullContent: extractPlainText(e.content) || undefined,
               withChildren: e.withChildren,
               children,
             };
@@ -1509,6 +1513,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
             type: e.type,
             name: e.name,
             summary: e.summary ?? "",
+            fullContent: extractPlainText(e.content) || undefined,
             withChildren: e.withChildren,
             children,
           };

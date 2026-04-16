@@ -10,6 +10,7 @@ export interface SceneContext {
   id: string;
   title: string;
   content: string;
+  synopsis?: string;
 }
 
 export interface ProjectContext {
@@ -27,6 +28,7 @@ export interface CodexContext {
   name: string;
   summary: string;
   contentFallback?: string; // G13: plain text from content if summary is empty
+  fullContent?: string; // pinned entry: inject full content alongside summary
   childrenContext?: string; // pre-computed descendant summaries within budget
   customDetails?: Array<{ fieldName: string; value: string }>; // G14
   phaseLabel?: string; // フェーズラベル（フェーズ適用中のみ）
@@ -357,6 +359,9 @@ export function buildSystemPrompt(
     l3Text += `\n## 直前のシーン\nタイトル: ${input.previousScene.title}\n要約: ${input.previousScene.synopsis}`;
   }
   l3Text += `\n## 現在のシーン\nタイトル: ${input.scene.title}`;
+  if (input.scene.synopsis) {
+    l3Text += `\nあらすじ: ${input.scene.synopsis}`;
+  }
   if (input.scene.content) {
     l3Text += `\n\n### シーン本文\n${sanitizeSceneContent(input.scene.content)}`;
   }
@@ -413,6 +418,9 @@ export function buildSystemPrompt(
       }
       if (entry.childrenContext) {
         lines.push(entry.childrenContext);
+      }
+      if (entry.fullContent) {
+        lines.push(`  本文:\n${entry.fullContent}`);
       }
     }
     // G16: ピン留めSnippetをL4に注入
@@ -565,7 +573,11 @@ export function buildAgentSystemPrompt(
   }
 
   if (input.scene) {
-    parts.push(`\n## 現在のシーン\n` + `タイトル: ${input.scene.title}`);
+    let sceneSection = `\n## 現在のシーン\nタイトル: ${input.scene.title}`;
+    if (input.scene.synopsis) {
+      sceneSection += `\nあらすじ: ${input.scene.synopsis}`;
+    }
+    parts.push(sceneSection);
     if (input.scene.content) {
       parts.push(
         `\n### シーン本文\n${sanitizeSceneContent(input.scene.content)}`,
