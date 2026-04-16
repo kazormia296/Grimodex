@@ -3,6 +3,7 @@ import { useTranslation } from "react-i18next";
 import { openFolderDialog } from "@/lib/dialog";
 import { useWorkspaceStore } from "./store";
 import { ProjectSnapshotModal } from "@/features/revision/ProjectSnapshotModal";
+import { NovelcrafterImportDialog } from "@/features/import/NovelcrafterImportDialog";
 
 export function WorkspaceMenu() {
   const { t } = useTranslation();
@@ -15,6 +16,7 @@ export function WorkspaceMenu() {
 
   const [isOpen, setIsOpen] = useState(false);
   const [showSnapshotModal, setShowSnapshotModal] = useState(false);
+  const [showImportDialog, setShowImportDialog] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -124,6 +126,18 @@ export function WorkspaceMenu() {
             type="button"
             onClick={() => {
               setIsOpen(false);
+              setShowImportDialog(true);
+            }}
+            className="flex w-full items-center gap-2 px-3 py-1.5 text-sm hover:bg-accent hover:text-accent-foreground"
+          >
+            <span className="w-4" />
+            {t("workspaceMenu.importNovelcrafter")}
+          </button>
+
+          <button
+            type="button"
+            onClick={() => {
+              setIsOpen(false);
               setShowSnapshotModal(true);
             }}
             className="flex w-full items-center gap-2 px-3 py-1.5 text-sm hover:bg-accent hover:text-accent-foreground"
@@ -136,6 +150,10 @@ export function WorkspaceMenu() {
       <ProjectSnapshotModal
         open={showSnapshotModal}
         onClose={() => setShowSnapshotModal(false)}
+      />
+      <NovelcrafterImportDialog
+        open={showImportDialog}
+        onClose={() => setShowImportDialog(false)}
       />
     </div>
   );

@@ -36,7 +36,26 @@
     "newWorkspace": "New Workspace",
     "startScreen": "Start Screen",
     "projectSnapshot": "Project Snapshot…",
+    "importNovelcrafter": "Import from Novelcrafter…",
     "fallback": "Workspace"
+  },
+  "import": {
+    "dialogTitle": "Import from Novelcrafter",
+    "dropzone": "Drop a ZIP file here, or click to select",
+    "dropzoneAccept": ".zip",
+    "analyzing": "Analyzing…",
+    "preview": "Import preview",
+    "codexEntries": "Codex entries",
+    "snippets": "Snippets",
+    "importButton": "Import",
+    "importing": "Importing…",
+    "progressLabel": "{{done}} / {{total}} — {{name}}",
+    "success": "Import complete: {{codex}} codex entries, {{snippets}} snippets",
+    "errorTitle": "Some entries had errors",
+    "cancel": "Cancel",
+    "close": "Close",
+    "noFile": "No file selected",
+    "invalidZip": "Please select a valid ZIP file"
   },
 
   "app": {

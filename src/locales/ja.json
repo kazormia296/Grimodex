@@ -36,7 +36,26 @@
     "newWorkspace": "新規ワークスペース",
     "startScreen": "スタート画面",
     "projectSnapshot": "プロジェクトスナップショット…",
+    "importNovelcrafter": "Novelcrafterからインポート…",
     "fallback": "ワークスペース"
+  },
+  "import": {
+    "dialogTitle": "Novelcrafterからインポート",
+    "dropzone": "ZIPファイルをドロップ、またはクリックして選択",
+    "dropzoneAccept": ".zip",
+    "analyzing": "解析中…",
+    "preview": "インポート内容",
+    "codexEntries": "Codexエントリ",
+    "snippets": "スニペット",
+    "importButton": "インポート",
+    "importing": "インポート中…",
+    "progressLabel": "{{done}} / {{total}} — {{name}}",
+    "success": "インポート完了: Codex {{codex}}件、スニペット {{snippets}}件",
+    "errorTitle": "一部のエントリでエラーが発生しました",
+    "cancel": "キャンセル",
+    "close": "閉じる",
+    "noFile": "ファイルが選択されていません",
+    "invalidZip": "有効なZIPファイルを選択してください"
   },
 
   "app": {
