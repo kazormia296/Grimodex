@@ -51,6 +51,7 @@
     "importing": "Importing…",
     "progressLabel": "{{done}} / {{total}} — {{name}}",
     "success": "Import complete: {{codex}} codex entries, {{snippets}} snippets",
+    "doneSuccess": "All entries imported successfully.",
     "errorTitle": "Some entries had errors",
     "cancel": "Cancel",
     "close": "Close",

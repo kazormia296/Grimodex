@@ -257,15 +257,17 @@ function parseFrontmatter(md: string): {
   frontmatter: unknown;
   body: string;
 } {
-  if (!md.startsWith("---")) {
-    return { frontmatter: null, body: md };
+  // Normalize Windows line endings so parsing works regardless of export platform
+  const normalized = md.replace(/\r\n/g, "\n");
+  if (!normalized.startsWith("---")) {
+    return { frontmatter: null, body: normalized };
   }
-  const end = md.indexOf("\n---", 3);
+  const end = normalized.indexOf("\n---", 3);
   if (end === -1) {
     return { frontmatter: null, body: md };
   }
-  const yamlStr = md.slice(4, end); // skip opening "---\n"
-  const body = md.slice(end + 4).trimStart(); // skip closing "---\n"
+  const yamlStr = normalized.slice(4, end); // skip opening "---\n"
+  const body = normalized.slice(end + 4).trimStart(); // skip closing "---\n"
   let frontmatter: unknown = null;
   try {
     frontmatter = yaml.load(yamlStr);

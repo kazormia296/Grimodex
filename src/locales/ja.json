@@ -51,6 +51,7 @@
     "importing": "インポート中…",
     "progressLabel": "{{done}} / {{total}} — {{name}}",
     "success": "インポート完了: Codex {{codex}}件、スニペット {{snippets}}件",
+    "doneSuccess": "すべてのエントリのインポートが完了しました。",
     "errorTitle": "一部のエントリでエラーが発生しました",
     "cancel": "キャンセル",
     "close": "閉じる",

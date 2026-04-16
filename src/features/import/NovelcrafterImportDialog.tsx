@@ -1,4 +1,4 @@
-import { useState, useRef, useCallback } from "react";
+import { useState, useRef, useCallback, useEffect } from "react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import { Upload } from "lucide-react";
@@ -19,6 +19,7 @@ type Phase = "idle" | "analyzing" | "preview" | "importing" | "done";
 export function NovelcrafterImportDialog({ open, onClose }: Props) {
   const { t } = useTranslation();
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const dialogRef = useRef<HTMLDivElement>(null);
 
   const [phase, setPhase] = useState<Phase>("idle");
   const [parsed, setParsed] = useState<ParseResult | null>(null);
@@ -97,6 +98,12 @@ export function NovelcrafterImportDialog({ open, onClose }: Props) {
     onClose();
   }, [onClose]);
 
+  useEffect(() => {
+    if (open) {
+      dialogRef.current?.focus();
+    }
+  }, [open]);
+
   if (!open) return null;
 
   return (
@@ -104,8 +111,17 @@ export function NovelcrafterImportDialog({ open, onClose }: Props) {
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/50"
       onMouseDown={(e) => e.target === e.currentTarget && handleClose()}
     >
-      <div className="flex w-[480px] flex-col gap-4 rounded-lg border border-border bg-background p-6 shadow-xl">
-        <h2 className="text-base font-semibold">{t("import.dialogTitle")}</h2>
+      <div
+        ref={dialogRef}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="import-dialog-title"
+        tabIndex={-1}
+        className="flex w-[480px] flex-col gap-4 rounded-lg border border-border bg-background p-6 shadow-xl outline-none"
+      >
+        <h2 id="import-dialog-title" className="text-base font-semibold">
+          {t("import.dialogTitle")}
+        </h2>
 
         {/* Dropzone — shown in idle/preview */}
         {(phase === "idle" || phase === "preview") && (
@@ -178,7 +194,14 @@ export function NovelcrafterImportDialog({ open, onClose }: Props) {
           </div>
         )}
 
-        {/* Done */}
+        {/* Done — success */}
+        {phase === "done" && errors.length === 0 && (
+          <div className="rounded-md border border-border p-4 text-sm text-muted-foreground">
+            {t("import.doneSuccess")}
+          </div>
+        )}
+
+        {/* Done — errors */}
         {phase === "done" && errors.length > 0 && (
           <div className="max-h-40 overflow-y-auto rounded-md border border-destructive/50 bg-destructive/10 p-3 text-xs text-destructive">
             <p className="mb-1 font-medium">{t("import.errorTitle")}</p>

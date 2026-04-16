@@ -2,7 +2,11 @@
  * Bulk-import parsed Novelcrafter data into the Grimodex database.
  */
 
-import { createCodexEntry, updateCodexEntry } from "@/features/codex/api";
+import {
+  createCodexEntry,
+  updateCodexEntry,
+  deleteCodexEntry,
+} from "@/features/codex/api";
 import { createSnippet } from "@/features/snippets/api";
 import { resizeAndConvertToWebP } from "@/features/codex/iconUtils";
 import type { ParsedCodexEntry, ParsedSnippet } from "./novelcrafterParser";
@@ -13,12 +17,6 @@ export interface ImportProgress {
   total: number;
   done: number;
   currentName: string;
-}
-
-export interface ImportResult {
-  codexImported: number;
-  snippetsImported: number;
-  errors: string[];
 }
 
 /**
@@ -59,12 +57,22 @@ export async function importCodexEntries(
         parentId: e.parentId,
       });
 
-      await updateCodexEntry(e.id, {
-        content: e.content,
-        icon: icon ?? null,
-        contextMode: e.contextMode,
-        tagsCache: e.tagsCache,
-      });
+      try {
+        await updateCodexEntry(e.id, {
+          content: e.content,
+          icon: icon ?? null,
+          contextMode: e.contextMode,
+          tagsCache: e.tagsCache,
+        });
+      } catch (updateErr) {
+        // Roll back the created entry to avoid leaving partial data in the DB
+        try {
+          await deleteCodexEntry(e.id);
+        } catch {
+          // best-effort rollback
+        }
+        throw updateErr;
+      }
 
       imported++;
     } catch (err) {
