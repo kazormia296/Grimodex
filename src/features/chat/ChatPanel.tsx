@@ -59,6 +59,7 @@ export function ChatPanel() {
   const setActiveSceneId = useChatStore((s) => s.setActiveSceneId);
   const refreshContextLayers = useChatStore((s) => s.refreshContextLayers);
   const removeEntryFromAuto = useChatStore((s) => s.removeEntryFromAuto);
+  const setInputPinnedEntryIds = useChatStore((s) => s.setInputPinnedEntryIds);
   const activeSessionId = useChatStore((s) => s.activeSessionId);
   const agentProgress = useChatStore((s) => s.agentProgress);
   const loadSessions = useChatStore((s) => s.loadSessions);
@@ -178,6 +179,11 @@ export function ChatPanel() {
     () => new Set(inputPinnedEntries.map((e) => e.id)),
     [inputPinnedEntries],
   );
+
+  // G21: chatStore に inputPinnedEntryIds を同期して prompt preview / copy に反映
+  useEffect(() => {
+    setInputPinnedEntryIds(inputPinnedEntries.map((e) => e.id));
+  }, [inputPinnedEntries, setInputPinnedEntryIds]);
 
   const handlePin = useCallback(
     async (entryId: string, type: "codex" | "snippet" = "codex") => {

@@ -230,6 +230,10 @@ interface ChatState {
   detectedEntries: CodexEntry[];
   alwaysEntries: CodexEntry[];
 
+  // G21: input-typed entries detected by CodexHighlight (in-memory, pre-send)
+  inputPinnedEntryIds: string[];
+  setInputPinnedEntryIds: (ids: string[]) => void;
+
   // Session actions
   loadSessions: (nodeId?: string | null) => Promise<void>;
   selectSession: (sessionId: string | null) => Promise<void>;
@@ -327,6 +331,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
   lastSystemPrompt: "",
   detectedEntries: [],
   alwaysEntries: [],
+  inputPinnedEntryIds: [],
   agentMode: false,
   agentProgress: null,
   isGlobalChat: false,
@@ -337,6 +342,16 @@ export const useChatStore = create<ChatState>()((set, get) => ({
       detectedEntries: state.detectedEntries.filter((e) => e.id !== entryId),
       alwaysEntries: state.alwaysEntries.filter((e) => e.id !== entryId),
     }));
+  },
+
+  setInputPinnedEntryIds: (ids: string[]) => {
+    const { isStreaming, inputPinnedEntryIds } = get();
+    if (isStreaming) return;
+    const sorted = [...ids].sort();
+    const prev = [...inputPinnedEntryIds].sort();
+    if (sorted.join(",") === prev.join(",")) return;
+    set({ inputPinnedEntryIds: ids });
+    get().refreshContextLayers();
   },
 
   // --- Session management ---
@@ -524,6 +539,30 @@ export const useChatStore = create<ChatState>()((set, get) => ({
                 children,
               };
             });
+          }
+
+          // G21: include input-typed detected entries not yet pinned to DB
+          {
+            const dbPinnedIdSet = new Set(pinnedCodexEntries.map((e) => e.id));
+            const inputIds = get().inputPinnedEntryIds;
+            const extraPinned = inputIds
+              .filter((id) => !dbPinnedIdSet.has(id))
+              .flatMap((id) => {
+                const e = allEntries.find((a) => a.id === id);
+                if (!e) return [];
+                const ctx: import("./contextBuilder").PinnedCodexContext = {
+                  id: e.id,
+                  type: e.type,
+                  name: e.name,
+                  summary: e.summary ?? "",
+                  fullContent: extractPlainText(e.content) || undefined,
+                  withChildren: false,
+                };
+                return [ctx];
+              });
+            if (extraPinned.length > 0) {
+              pinnedCodexEntries = [...pinnedCodexEntries, ...extraPinned];
+            }
           }
 
           // G14: enrich with custom details
@@ -1414,8 +1453,31 @@ export const useChatStore = create<ChatState>()((set, get) => ({
         }
 
         const globalPinnedIdSet = new Set(globalPinnedCodex.map((e) => e.id));
+
+        // G21: include input-typed detected entries not yet pinned to DB
+        const inputIds = get().inputPinnedEntryIds;
+        const extraPinned = inputIds
+          .filter((id) => !globalPinnedIdSet.has(id))
+          .flatMap((id) => {
+            const e = allEntries.find((a) => a.id === id);
+            if (!e) return [];
+            const ctx: import("./contextBuilder").PinnedCodexContext = {
+              id: e.id,
+              type: e.type,
+              name: e.name,
+              summary: e.summary ?? "",
+              fullContent: extractPlainText(e.content) || undefined,
+              withChildren: false,
+            };
+            return [ctx];
+          });
+        const mergedGlobalPinnedCodex = [...globalPinnedCodex, ...extraPinned];
+        const mergedGlobalPinnedIdSet = new Set(
+          mergedGlobalPinnedCodex.map((e) => e.id),
+        );
+
         const alwaysNotPinned = globalAlwaysEntries.filter(
-          (e) => !globalPinnedIdSet.has(e.id),
+          (e) => !mergedGlobalPinnedIdSet.has(e.id),
         );
         const globalCodexEntries: CodexContext[] = alwaysNotPinned.map((e) => ({
           id: e.id,
@@ -1430,7 +1492,9 @@ export const useChatStore = create<ChatState>()((set, get) => ({
           codexEntries:
             globalCodexEntries.length > 0 ? globalCodexEntries : undefined,
           pinnedCodexEntries:
-            globalPinnedCodex.length > 0 ? globalPinnedCodex : undefined,
+            mergedGlobalPinnedCodex.length > 0
+              ? mergedGlobalPinnedCodex
+              : undefined,
           pinnedSnippets:
             globalPinnedSnippets.length > 0 ? globalPinnedSnippets : undefined,
         });
@@ -1616,6 +1680,30 @@ export const useChatStore = create<ChatState>()((set, get) => ({
         }
       } catch {
         // アクティブタブ取得失敗は無視
+      }
+
+      // G21: include input-typed detected entries not yet pinned to DB
+      {
+        const dbPinnedIdSet = new Set(pinnedCodexEntries.map((e) => e.id));
+        const inputIds = get().inputPinnedEntryIds;
+        const extraPinned = inputIds
+          .filter((id) => !dbPinnedIdSet.has(id))
+          .flatMap((id) => {
+            const e = allEntries.find((a) => a.id === id);
+            if (!e) return [];
+            const ctx: import("./contextBuilder").PinnedCodexContext = {
+              id: e.id,
+              type: e.type,
+              name: e.name,
+              summary: e.summary ?? "",
+              fullContent: extractPlainText(e.content) || undefined,
+              withChildren: false,
+            };
+            return [ctx];
+          });
+        if (extraPinned.length > 0) {
+          pinnedCodexEntries = [...pinnedCodexEntries, ...extraPinned];
+        }
       }
 
       const promptResult = buildSystemPrompt({

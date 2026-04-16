@@ -500,4 +500,26 @@ describe("useChatStore", () => {
       expect(useChatStore.getState().activeProjectId).toBe("proj-2");
     });
   });
+
+  // --- G21: inputPinnedEntryIds ---
+
+  describe("setInputPinnedEntryIds", () => {
+    it("stores IDs in state", () => {
+      useChatStore.getState().setInputPinnedEntryIds(["a", "b"]);
+      expect(useChatStore.getState().inputPinnedEntryIds).toEqual(["a", "b"]);
+    });
+
+    it("does not trigger refresh when IDs are unchanged", () => {
+      useChatStore.setState({ inputPinnedEntryIds: ["a", "b"] });
+      const spy = vi.spyOn(useChatStore.getState(), "refreshContextLayers");
+      useChatStore.getState().setInputPinnedEntryIds(["b", "a"]); // same IDs, different order
+      expect(spy).not.toHaveBeenCalled();
+    });
+
+    it("does not update when streaming", () => {
+      useChatStore.setState({ isStreaming: true, inputPinnedEntryIds: [] });
+      useChatStore.getState().setInputPinnedEntryIds(["x"]);
+      expect(useChatStore.getState().inputPinnedEntryIds).toEqual([]);
+    });
+  });
 });
