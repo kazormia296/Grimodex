@@ -168,6 +168,35 @@ describe("importCodexEntries", () => {
       total: 2,
     });
   });
+
+  it("子エントリより先に親エントリを insert する（カテゴリ跨ぎの親子関係）", async () => {
+    // キャラクター(child)がロア(parent)より先にリストに並んでいるケース
+    // → トポロジカルソートで parent が先に insert されることを確認
+    const parent = makeEntry({
+      id: "lore-parent-id",
+      ncId: "NC_LORE_001",
+      type: "lore",
+      name: "門兵部隊",
+      parentId: undefined,
+    });
+    const child = makeEntry({
+      id: "char-child-id",
+      ncId: "NC_CHAR_001",
+      type: "character",
+      name: "マルフーシャ",
+      parentId: "lore-parent-id",
+    });
+
+    // child が parent より前に並んでいる
+    await importCodexEntries([child, parent]);
+
+    const createCalls = mockCreateCodexEntry.mock.calls;
+    expect(createCalls).toHaveLength(2);
+    const firstInsertedId = createCalls[0][0].id;
+    const secondInsertedId = createCalls[1][0].id;
+    expect(firstInsertedId).toBe("lore-parent-id");
+    expect(secondInsertedId).toBe("char-child-id");
+  });
 });
 
 describe("importSnippets", () => {

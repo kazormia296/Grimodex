@@ -13,6 +13,35 @@ import type { ParsedCodexEntry, ParsedSnippet } from "./novelcrafterParser";
 
 const PROJECT_ID = "default-project";
 
+/**
+ * Topologically sort entries so that every parent appears before its children.
+ * Entries whose parentId refers to an entry outside the batch (already in DB)
+ * are treated as root-level and inserted in their original relative order.
+ */
+function topoSortEntries(entries: ParsedCodexEntry[]): ParsedCodexEntry[] {
+  const idSet = new Set(entries.map((e) => e.id));
+  const idToEntry = new Map(entries.map((e) => [e.id, e]));
+  const visited = new Set<string>();
+  const result: ParsedCodexEntry[] = [];
+
+  function visit(id: string): void {
+    if (visited.has(id)) return;
+    visited.add(id);
+    const entry = idToEntry.get(id);
+    if (!entry) return;
+    if (entry.parentId && idSet.has(entry.parentId)) {
+      visit(entry.parentId);
+    }
+    result.push(entry);
+  }
+
+  for (const entry of entries) {
+    visit(entry.id);
+  }
+
+  return result;
+}
+
 export interface ImportProgress {
   total: number;
   done: number;
@@ -30,9 +59,10 @@ export async function importCodexEntries(
   let imported = 0;
   const errors: string[] = [];
 
-  for (let i = 0; i < entries.length; i++) {
-    const e = entries[i];
-    onProgress?.({ total: entries.length, done: i, currentName: e.name });
+  const sorted = topoSortEntries(entries);
+  for (let i = 0; i < sorted.length; i++) {
+    const e = sorted[i];
+    onProgress?.({ total: sorted.length, done: i, currentName: e.name });
 
     try {
       let icon: string | undefined;
@@ -81,8 +111,8 @@ export async function importCodexEntries(
   }
 
   onProgress?.({
-    total: entries.length,
-    done: entries.length,
+    total: sorted.length,
+    done: sorted.length,
     currentName: "",
   });
   return { imported, errors };
