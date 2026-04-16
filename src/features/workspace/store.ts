@@ -147,8 +147,15 @@ export const useWorkspaceStore = create<WorkspaceState>()((set, get) => ({
       path,
     });
     if (!isExisting) {
-      // New workspace — auto-trust and open
+      // New workspace — open first (creates DB, updates recentWorkspaces)
       await get().openWorkspace(path);
+      // Add to trusted list so next launch skips the trust dialog
+      const currentTrusted = get().globalSettings?.trustedWorkspaces ?? [];
+      if (!currentTrusted.includes(path)) {
+        await get().updateGlobalSettings({
+          trustedWorkspaces: [...currentTrusted, path],
+        });
+      }
       return;
     }
     // Existing workspace — check trust list

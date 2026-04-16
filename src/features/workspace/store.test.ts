@@ -144,6 +144,74 @@ describe("useWorkspaceStore", () => {
     });
   });
 
+  describe("requestOpenWorkspace", () => {
+    it("auto-trusts a brand-new workspace so next launch skips the trust dialog", async () => {
+      useWorkspaceStore.setState({
+        globalSettings: {
+          recentWorkspaces: [],
+          lastActiveWorkspace: null,
+          theme: "system",
+          uiLanguage: "ja",
+          uiScale: 1,
+          showLauncherOnStartup: false,
+          trustedWorkspaces: [],
+        },
+      });
+
+      const newPath = "D:\\Novels\\NewProject";
+      mockInvoke
+        // validate_workspace_path → false (new workspace)
+        .mockResolvedValueOnce(false)
+        // open_workspace
+        .mockResolvedValueOnce({ name: "NewProject" })
+        // get_global_settings (re-read after open_workspace)
+        .mockResolvedValueOnce({
+          recentWorkspaces: [
+            { path: newPath, lastOpened: "2026-04-16T00:00:00Z" },
+          ],
+          lastActiveWorkspace: newPath,
+          theme: "system",
+          uiLanguage: "ja",
+          uiScale: 1,
+          showLauncherOnStartup: false,
+          trustedWorkspaces: [],
+        })
+        // save_global_settings (updateGlobalSettings)
+        .mockResolvedValueOnce(undefined);
+
+      await useWorkspaceStore.getState().requestOpenWorkspace(newPath);
+
+      const state = useWorkspaceStore.getState();
+      expect(state.view).toBe("editor");
+      expect(state.globalSettings?.trustedWorkspaces).toContain(newPath);
+    });
+
+    it("shows trust dialog for existing untrusted workspace", async () => {
+      useWorkspaceStore.setState({
+        globalSettings: {
+          recentWorkspaces: [],
+          lastActiveWorkspace: null,
+          theme: "system",
+          uiLanguage: "ja",
+          uiScale: 1,
+          showLauncherOnStartup: false,
+          trustedWorkspaces: [],
+        },
+      });
+
+      const untrustedPath = "D:\\Novels\\OtherProject";
+      mockInvoke
+        // validate_workspace_path → true (exists but not trusted)
+        .mockResolvedValueOnce(true);
+
+      await useWorkspaceStore.getState().requestOpenWorkspace(untrustedPath);
+
+      const state = useWorkspaceStore.getState();
+      expect(state.pendingTrustPath).toBe(untrustedPath);
+      expect(state.view).not.toBe("editor");
+    });
+  });
+
   describe("showLauncher", () => {
     it("switches view to launcher", () => {
       useWorkspaceStore.setState({ view: "editor" });
