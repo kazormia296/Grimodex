@@ -8,6 +8,7 @@ import {
   type ProjectContext,
   type CodexContext,
   type TrimInput,
+  type PinnedCodexContext,
 } from "./contextBuilder";
 
 describe("contextBuilder", () => {
@@ -256,6 +257,93 @@ describe("contextBuilder", () => {
         "**ボブ** (キャラクター): 普通のキャラクター",
       );
       expect(result.prompt).not.toContain("[");
+    });
+
+    it("viaで注入された子エントリがpinnedに昇格されたとき、summaryが重複しない", () => {
+      // 再現シナリオ: A (withChildren=true) がDBピン済み、B はAの子。
+      // BはG21 (inputPinned) で追加される。
+      // childrenContext に B のsummaryが含まれつつ、B もpinnedとして注入される場合、
+      // B のsummaryは1回だけ出力され、B のfullContentは保持されるべき。
+      const scene: SceneContext = {
+        id: "scene-1",
+        title: "テストシーン",
+        content: "本文",
+      };
+      const childB: PinnedCodexContext = {
+        id: "B",
+        type: "character",
+        name: "花子",
+        summary: "花子のsummary",
+        fullContent: "花子のfullContent",
+        withChildren: false,
+      };
+      // A はwithChildren=true で子にBを持つが、BはallPinnedIdSetに含まれるため
+      // childrenContext からは除外されている（修正後の正しい動作）
+      const entryA: PinnedCodexContext = {
+        id: "A",
+        type: "character",
+        name: "太郎",
+        summary: "太郎のsummary",
+        fullContent: "太郎のfullContent",
+        withChildren: true,
+        children: [], // Bはpinnedなのでchildrenから除外済み
+        // childrenContextにもBのsummaryは含まれない
+      };
+
+      const result = buildSystemPrompt({
+        scene,
+        pinnedCodexEntries: [entryA, childB],
+      });
+
+      // 花子のsummaryは1回だけ現れる
+      const summaryMatches = result.prompt.match(/花子のsummary/g);
+      expect(summaryMatches).toHaveLength(1);
+      // 花子のfullContentは存在する
+      expect(result.prompt).toContain("花子のfullContent");
+    });
+
+    it("withChildren親の子エントリが別のpinnedとして渡された場合、deduplicateByIdで重複を排除する", () => {
+      // chatStoreのbuildSceneContextPromptがallPinnedIdSetを使って子を除外した後の
+      // 正常な状態をbuildSystemPromptが正しく処理できることを検証する
+      const scene: SceneContext = {
+        id: "scene-1",
+        title: "テストシーン",
+        content: "本文",
+      };
+      // A.childrenにBが残っている（バグ状態を模倣）かつBがpinnedとしても存在する
+      const entryA: PinnedCodexContext = {
+        id: "A",
+        type: "character",
+        name: "太郎",
+        summary: "太郎のsummary",
+        withChildren: true,
+        children: [
+          {
+            id: "B",
+            type: "character",
+            name: "花子",
+            summary: "花子のsummary",
+          },
+        ],
+      };
+      const childB: PinnedCodexContext = {
+        id: "B",
+        type: "character",
+        name: "花子",
+        summary: "花子のsummary",
+        fullContent: "花子のfullContent",
+        withChildren: false,
+      };
+
+      const result = buildSystemPrompt({
+        scene,
+        pinnedCodexEntries: [entryA, childB],
+      });
+
+      // deduplicateByIdにより花子のエントリは1回（via側が優先されfullContentは失われる）
+      // このケースはchatStoreのallPinnedIdSet修正で防ぐべき状態
+      const nameMatches = result.prompt.match(/\*\*花子\*\*/g);
+      expect(nameMatches).toHaveLength(1);
     });
   });
 

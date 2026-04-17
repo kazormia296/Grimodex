@@ -448,15 +448,20 @@ async function buildSceneContextPrompt(opts: {
     };
   });
 
+  // Compute full pin set upfront (DB + G21 in-memory) to avoid duplicate injection
+  const pinnedFromDB = activeSessionId
+    ? await chatApi.listPinnedCodexEntries(activeSessionId)
+    : [];
+  const dbPinnedIdSet = new Set(pinnedFromDB.map((e) => e.id));
+  const g21Ids = inputPinnedEntryIds.filter((id) => !dbPinnedIdSet.has(id));
+  const allPinnedIdSet = new Set([...dbPinnedIdSet, ...g21Ids]);
+
   // Pinned codex entries (from DB — includes any just-auto-pinned entries)
-  let pinnedCodexEntries: import("./contextBuilder").PinnedCodexContext[] = [];
-  if (activeSessionId) {
-    const pinned = await chatApi.listPinnedCodexEntries(activeSessionId);
-    const pinnedIdSet = new Set(pinned.map((e) => e.id));
-    pinnedCodexEntries = pinned.map((e) => {
+  let pinnedCodexEntries: import("./contextBuilder").PinnedCodexContext[] =
+    pinnedFromDB.map((e) => {
       const children = e.withChildren
         ? getChildrenFromArray(e.id, allEntries)
-            .filter((c) => !pinnedIdSet.has(c.id))
+            .filter((c) => !allPinnedIdSet.has(c.id))
             .map((c) => ({
               id: c.id,
               type: c.type,
@@ -468,7 +473,7 @@ async function buildSceneContextPrompt(opts: {
         e,
         allEntries,
         L4_TOTAL_BUDGET,
-        pinnedIdSet,
+        allPinnedIdSet,
       );
       return {
         id: e.id,
@@ -481,13 +486,9 @@ async function buildSceneContextPrompt(opts: {
         ...(childrenCtx ? { childrenContext: childrenCtx } : {}),
       };
     });
-  }
 
   // G21: include input-typed detected entries not yet pinned to DB
   {
-    const dbPinnedIdSet = new Set(pinnedCodexEntries.map((e) => e.id));
-    const g21Ids = inputPinnedEntryIds.filter((id) => !dbPinnedIdSet.has(id));
-    const allG21PinnedIds = new Set([...dbPinnedIdSet, ...g21Ids]);
     const extraPinned = g21Ids.flatMap((id) => {
       const e = allEntries.find((a) => a.id === id);
       if (!e) return [];
@@ -495,7 +496,7 @@ async function buildSceneContextPrompt(opts: {
         e,
         allEntries,
         L4_TOTAL_BUDGET,
-        allG21PinnedIds,
+        allPinnedIdSet,
       );
       const ctx: import("./contextBuilder").PinnedCodexContext = {
         id: e.id,
