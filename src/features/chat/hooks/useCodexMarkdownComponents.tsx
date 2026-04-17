@@ -100,7 +100,6 @@ export function useCodexMarkdownComponents(): Components {
       return processNode(children, highlightText);
     }
 
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     return {
       p: ({ children }: { children: ReactNode }) => <p>{wrap(children)}</p>,
       li: ({ children }: { children: ReactNode }) => <li>{wrap(children)}</li>,

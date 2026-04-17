@@ -334,6 +334,301 @@ let _streamCleanup: (() => void) | null = null;
 // 50–200ms on long scenes, so we wait for typing to settle before recalculating.
 let _inputPinnedRefreshTimer: ReturnType<typeof setTimeout> | null = null;
 
+// ---------------------------------------------------------------------------
+// Shared scene context builder — used by both sendMessage and buildPromptForCopy
+// ---------------------------------------------------------------------------
+
+interface SceneContextPayload {
+  prompt: string;
+  totalTokens: number;
+  layers: LayerBreakdown[];
+  detectedEntries: CodexEntry[];
+  alwaysEntries: CodexEntry[];
+}
+
+async function buildSceneContextPrompt(opts: {
+  sceneCtx: SceneContext;
+  projectCtx: ProjectContext | null;
+  activeSessionId: string | null;
+  effectiveSceneId: string | null;
+  inputPinnedEntryIds: string[];
+  conversationMessages: ChatMessage[];
+  commandInstruction?: string;
+  prefetchedEntries?: CodexEntry[];
+}): Promise<SceneContextPayload> {
+  const {
+    sceneCtx,
+    projectCtx,
+    activeSessionId,
+    effectiveSceneId,
+    inputPinnedEntryIds,
+    conversationMessages,
+    commandInstruction,
+  } = opts;
+
+  const allEntries = opts.prefetchedEntries ?? (await listCodexEntries());
+
+  const chatModel = useAiSettingsStore.getState().settings?.model ?? "";
+  const { contextWindow } = getModelCapabilities(chatModel);
+  const budgets = allocateLayerBudgets(contextWindow);
+  const L4_TOTAL_BUDGET = budgets.l4;
+
+  // G12: context_mode filter
+  const detectableEntries = allEntries.filter(
+    (e) => e.contextMode !== "hidden" && e.contextMode !== "suppress",
+  );
+  const alwaysEntries = allEntries.filter((e) => e.contextMode === "always");
+
+  const mentioned = await findMentionedEntriesAsync(
+    sceneCtx.content,
+    detectableEntries,
+  );
+
+  const mentionedIds = new Set(mentioned.map((e) => e.id));
+  const alwaysNotMentioned = alwaysEntries.filter(
+    (e) => !mentionedIds.has(e.id),
+  );
+  const rawCodexEntries = [...mentioned, ...alwaysNotMentioned];
+
+  const buildCodexCtx = (e: CodexEntry): CodexContext => {
+    const summary = e.summary ?? "";
+    const contentFallback = summary.trim()
+      ? undefined
+      : extractPlainText(e.content) || undefined;
+    return { id: e.id, type: e.type, name: e.name, summary, contentFallback };
+  };
+
+  const baseCodexEntries: CodexContext[] = rawCodexEntries.map((e) => {
+    const full = allEntries.find((a) => a.id === e.id);
+    return full
+      ? buildCodexCtx(full)
+      : { id: e.id, type: e.type, name: e.name, summary: "" };
+  });
+
+  // Children context (subtree token budget)
+  const withChildrenCtx: CodexContext[] = baseCodexEntries.map((ctx) => {
+    const fullEntry = allEntries.find((e) => e.id === ctx.id);
+    if (!fullEntry) return ctx;
+    const preset = fullEntry.childrenBudget ?? "compact";
+    if (preset === "none") return ctx;
+    const budget = computeChildrenTokenBudget(preset, L4_TOTAL_BUDGET);
+    const descendants = getDescendantsBFS(fullEntry.id, allEntries);
+    const childrenContext = buildChildrenContext(descendants, budget);
+    return childrenContext ? { ...ctx, childrenContext } : ctx;
+  });
+
+  // G14: enrich with custom details
+  const enrichedCodexEntries = await enrichWithCustomDetails(
+    withChildrenCtx,
+    allEntries,
+  );
+
+  // Phase resolution
+  const rawFullEntries = rawCodexEntries
+    .map((e) => allEntries.find((a) => a.id === e.id))
+    .filter((e): e is CodexEntry => e !== undefined);
+  const { resolved: phaseResolved, phases: entryPhases } =
+    await resolveEntriesForContext(rawFullEntries, effectiveSceneId);
+
+  const codexEntries: CodexContext[] = enrichedCodexEntries.map((ctx) => {
+    const rs = phaseResolved.get(ctx.id);
+    if (!rs) return ctx;
+    const phases = entryPhases.get(ctx.id) ?? [];
+    const lastPhaseId = rs.appliedPhaseIds[rs.appliedPhaseIds.length - 1];
+    const lastPhase = lastPhaseId
+      ? phases.find((p) => p.id === lastPhaseId)
+      : undefined;
+    return {
+      ...ctx,
+      summary: rs.summary ?? ctx.summary,
+      ...(lastPhase ? { phaseLabel: lastPhase.label } : {}),
+    };
+  });
+
+  // Pinned codex entries (from DB — includes any just-auto-pinned entries)
+  let pinnedCodexEntries: import("./contextBuilder").PinnedCodexContext[] = [];
+  if (activeSessionId) {
+    const pinned = await chatApi.listPinnedCodexEntries(activeSessionId);
+    pinnedCodexEntries = pinned.map((e) => {
+      const children = e.withChildren
+        ? getChildrenFromArray(e.id, allEntries).map((c) => ({
+            id: c.id,
+            type: c.type,
+            name: c.name,
+            summary: c.summary ?? "",
+          }))
+        : undefined;
+      const childrenCtx = buildChildrenCtxForEntry(
+        e,
+        allEntries,
+        L4_TOTAL_BUDGET,
+      );
+      return {
+        id: e.id,
+        type: e.type,
+        name: e.name,
+        summary: e.summary ?? "",
+        fullContent: extractPlainText(e.content) || undefined,
+        withChildren: e.withChildren,
+        children,
+        ...(childrenCtx ? { childrenContext: childrenCtx } : {}),
+      };
+    });
+  }
+
+  // G21: include input-typed detected entries not yet pinned to DB
+  {
+    const dbPinnedIdSet = new Set(pinnedCodexEntries.map((e) => e.id));
+    const extraPinned = inputPinnedEntryIds
+      .filter((id) => !dbPinnedIdSet.has(id))
+      .flatMap((id) => {
+        const e = allEntries.find((a) => a.id === id);
+        if (!e) return [];
+        const childrenCtx = buildChildrenCtxForEntry(
+          e,
+          allEntries,
+          L4_TOTAL_BUDGET,
+        );
+        const ctx: import("./contextBuilder").PinnedCodexContext = {
+          id: e.id,
+          type: e.type,
+          name: e.name,
+          summary: e.summary ?? "",
+          fullContent: extractPlainText(e.content) || undefined,
+          withChildren: false,
+          ...(childrenCtx ? { childrenContext: childrenCtx } : {}),
+        };
+        return [ctx];
+      });
+    if (extraPinned.length > 0) {
+      pinnedCodexEntries = [...pinnedCodexEntries, ...extraPinned];
+    }
+  }
+
+  // G15: compute detectedEntries / alwaysEntries (excluding pinned) for caller
+  const pinnedIdSet = new Set(pinnedCodexEntries.map((e) => e.id));
+  const detectedNotPinned = mentioned
+    .filter((e) => !pinnedIdSet.has(e.id))
+    .map((e) => allEntries.find((a) => a.id === e.id))
+    .filter((e): e is CodexEntry => e !== undefined);
+  const alwaysNotPinned = alwaysEntries.filter(
+    (e) => !pinnedIdSet.has(e.id) && !mentionedIds.has(e.id),
+  );
+
+  // Story so far
+  const allNodes = useTreeStore.getState().nodes;
+  const storySoFar = buildStorySoFar(sceneCtx.id, allNodes, budgets.l2);
+
+  // G11: previousScene
+  const currentScene = allNodes.find((n) => n.id === sceneCtx.id);
+  const previousSceneNode = currentScene
+    ? allNodes
+        .filter(
+          (n) =>
+            n.nodeType === "scene" &&
+            n.id !== sceneCtx.id &&
+            n.sortOrder < currentScene.sortOrder &&
+            n.synopsis != null &&
+            n.synopsis.trim() !== "",
+        )
+        .sort((a, b) => b.sortOrder - a.sortOrder)[0]
+    : undefined;
+  const previousScene = previousSceneNode
+    ? {
+        title: previousSceneNode.title,
+        synopsis: previousSceneNode.synopsis as string,
+      }
+    : undefined;
+
+  // G16: pinned snippets
+  let pinnedSnippets: PinnedSnippetContext[] = [];
+  if (activeSessionId) {
+    try {
+      const snippetItems = await listPinnedSnippetEntries(activeSessionId);
+      pinnedSnippets = snippetItems.map((s) => ({
+        id: s.id,
+        title: s.title,
+        content: extractPlainText(s.content) || s.title,
+      }));
+    } catch {
+      // 取得失敗は無視
+    }
+  }
+
+  // G19: active tab content
+  let activeTabContent:
+    | { type: "codex" | "snippet"; title: string; content: string }
+    | undefined;
+  try {
+    const tabState = useTabStore.getState();
+    const activeTab = tabState.tabs.find(
+      (t) => t.nodeId === tabState.activeTabId,
+    );
+    if (activeTab?.contentType === "codex") {
+      const codexEntry = allEntries.find((e) => e.id === activeTab.nodeId);
+      if (codexEntry) {
+        activeTabContent = {
+          type: "codex",
+          title: codexEntry.name,
+          content:
+            extractPlainText(codexEntry.content) || codexEntry.summary || "",
+        };
+      }
+    } else if (activeTab?.contentType === "snippet") {
+      const snippet = await getSnippet(activeTab.nodeId).catch(() => undefined);
+      if (snippet) {
+        activeTabContent = {
+          type: "snippet",
+          title: snippet.title,
+          content: extractPlainText(snippet.content) || snippet.title,
+        };
+      }
+    }
+  } catch {
+    // 無視
+  }
+
+  // G17: conversation summary
+  let conversationSummary: string | undefined;
+  if (activeSessionId) {
+    try {
+      const summaries = await chatApi.listSummaries(activeSessionId);
+      if (summaries.length > 0) {
+        conversationSummary = summaries.map((s) => s.summary).join("\n\n");
+      }
+    } catch {
+      // 無視
+    }
+  }
+
+  const conversationTokens = conversationMessages
+    .filter((m) => m.role !== "system")
+    .reduce((sum, m) => sum + countTokens(m.content), 0);
+
+  const promptResult = buildSystemPrompt({
+    scene: sceneCtx,
+    project: projectCtx ?? undefined,
+    storySoFar: storySoFar || undefined,
+    previousScene,
+    codexEntries,
+    pinnedCodexEntries,
+    pinnedSnippets: pinnedSnippets.length > 0 ? pinnedSnippets : undefined,
+    activeTabContent,
+    commandInstruction,
+    conversationTokens,
+    contextWindow,
+    conversationSummary,
+  });
+
+  return {
+    prompt: promptResult.prompt,
+    totalTokens: promptResult.totalTokens,
+    layers: promptResult.layers,
+    detectedEntries: detectedNotPinned,
+    alwaysEntries: alwaysNotPinned,
+  };
+}
+
 export const useChatStore = create<ChatState>()((set, get) => ({
   sessions: [],
   activeSessionId: null,
@@ -463,6 +758,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
       isGlobalChat,
       agentMode,
       messages: prevMessages,
+      inputPinnedEntryIds,
     } = get();
     const effectiveSceneId = isGlobalChat ? null : activeSceneId;
 
@@ -492,130 +788,23 @@ export const useChatStore = create<ChatState>()((set, get) => ({
           });
           parts.push(`[system]\n${systemPrompt}`);
         } else if (sceneCtx) {
-          const allEntries = await listCodexEntries();
-          const mentioned = await findMentionedEntriesAsync(
-            sceneCtx.content,
-            allEntries,
-          );
-          const L4_TOTAL_BUDGET = 60_000;
-          const codexEntries: CodexContext[] = mentioned.map((e) => {
-            const fullEntry = allEntries.find((a) => a.id === e.id);
-            if (!fullEntry)
-              return { id: e.id, type: e.type, name: e.name, summary: "" };
-            const summary = fullEntry.summary ?? "";
-            // G13: summary空ならcontent全文をフォールバック
-            const contentFallback = summary.trim()
-              ? undefined
-              : extractPlainText(fullEntry.content) || undefined;
-            const preset = fullEntry.childrenBudget ?? "compact";
-            if (preset === "none")
-              return {
-                id: e.id,
-                type: e.type,
-                name: e.name,
-                summary,
-                contentFallback,
-              };
-            const budget = computeChildrenTokenBudget(preset, L4_TOTAL_BUDGET);
-            const descendants = getDescendantsBFS(fullEntry.id, allEntries);
-            const childrenContext = buildChildrenContext(descendants, budget);
-            return childrenContext
-              ? {
-                  id: e.id,
-                  type: e.type,
-                  name: e.name,
-                  summary,
-                  contentFallback,
-                  childrenContext,
-                }
-              : {
-                  id: e.id,
-                  type: e.type,
-                  name: e.name,
-                  summary,
-                  contentFallback,
-                };
-          });
-
-          let pinnedCodexEntries: import("./contextBuilder").PinnedCodexContext[] =
-            [];
-          if (activeSessionId) {
-            const pinned =
-              await chatApi.listPinnedCodexEntries(activeSessionId);
-            pinnedCodexEntries = pinned.map((e) => {
-              const children = e.withChildren
-                ? getChildrenFromArray(e.id, allEntries).map((c) => ({
-                    id: c.id,
-                    type: c.type,
-                    name: c.name,
-                    summary: c.summary ?? "",
-                  }))
-                : undefined;
-              const childrenCtx = buildChildrenCtxForEntry(
-                e,
-                allEntries,
-                L4_TOTAL_BUDGET,
-              );
-              return {
-                id: e.id,
-                type: e.type,
-                name: e.name,
-                summary: e.summary ?? "",
-                fullContent: extractPlainText(e.content) || undefined,
-                withChildren: e.withChildren,
-                children,
-                ...(childrenCtx ? { childrenContext: childrenCtx } : {}),
-              };
-            });
-          }
-
-          // G21: include input-typed detected entries not yet pinned to DB
-          {
-            const dbPinnedIdSet = new Set(pinnedCodexEntries.map((e) => e.id));
-            const inputIds = get().inputPinnedEntryIds;
-            const extraPinned = inputIds
-              .filter((id) => !dbPinnedIdSet.has(id))
-              .flatMap((id) => {
-                const e = allEntries.find((a) => a.id === id);
-                if (!e) return [];
-                const childrenCtx = buildChildrenCtxForEntry(
-                  e,
-                  allEntries,
-                  L4_TOTAL_BUDGET,
-                );
-                const ctx: import("./contextBuilder").PinnedCodexContext = {
-                  id: e.id,
-                  type: e.type,
-                  name: e.name,
-                  summary: e.summary ?? "",
-                  fullContent: extractPlainText(e.content) || undefined,
-                  withChildren: false,
-                  ...(childrenCtx ? { childrenContext: childrenCtx } : {}),
-                };
-                return [ctx];
-              });
-            if (extraPinned.length > 0) {
-              pinnedCodexEntries = [...pinnedCodexEntries, ...extraPinned];
-            }
-          }
-
-          // G14: enrich with custom details
-          const enrichedCodexEntries = await enrichWithCustomDetails(
-            codexEntries,
-            allEntries,
-          );
-
-          const storySoFar = buildStorySoFar(
-            sceneCtx.id,
-            allNodes,
-            storySoFarBudget,
-          );
-          const { prompt } = buildSystemPrompt({
-            scene: sceneCtx,
-            project: projectCtx ?? undefined,
-            storySoFar: storySoFar || undefined,
-            codexEntries: enrichedCodexEntries,
-            pinnedCodexEntries,
+          const conversationMessages: ChatMessage[] = [
+            ...prevMessages.filter((m) => !m.isSummarized),
+            {
+              id: "preview",
+              sessionId: activeSessionId ?? "",
+              role: "user",
+              content: userInput,
+              createdAt: new Date().toISOString(),
+            } as ChatMessage,
+          ];
+          const { prompt } = await buildSceneContextPrompt({
+            sceneCtx,
+            projectCtx,
+            activeSessionId,
+            effectiveSceneId,
+            inputPinnedEntryIds,
+            conversationMessages,
           });
           parts.push(`[system]\n${prompt}`);
         } else if (projectCtx) {
@@ -921,92 +1110,6 @@ export const useChatStore = create<ChatState>()((set, get) => ({
       if (sceneCtx) {
         const allEntries = await listCodexEntries();
 
-        // G12: context_mode フィルタ
-        // hidden → 除外, always → 無条件追加, mentioned → 検出時のみ, suppress → ピンのみ
-        const detectableEntries = allEntries.filter(
-          (e) => e.contextMode !== "hidden" && e.contextMode !== "suppress",
-        );
-        const alwaysEntries = allEntries.filter(
-          (e) => e.contextMode === "always",
-        );
-
-        const mentioned = await findMentionedEntriesAsync(
-          sceneCtx.content,
-          detectableEntries,
-        );
-
-        // Merge: always + mentioned (deduplicated)
-        const mentionedIds = new Set(mentioned.map((e) => e.id));
-        const alwaysNotMentioned = alwaysEntries.filter(
-          (e) => !mentionedIds.has(e.id),
-        );
-        const rawCodexEntries = [...mentioned, ...alwaysNotMentioned];
-
-        const buildCodexContext = (e: (typeof allEntries)[0]): CodexContext => {
-          const summary = e.summary ?? "";
-          // G13: summary空ならcontent全文をフォールバック
-          const contentFallback = summary.trim()
-            ? undefined
-            : extractPlainText(e.content) || undefined;
-          return {
-            id: e.id,
-            type: e.type,
-            name: e.name,
-            summary,
-            contentFallback,
-          };
-        };
-
-        const baseCodexEntries: CodexContext[] = rawCodexEntries.map((e) => {
-          const full = allEntries.find((a) => a.id === e.id);
-          return full
-            ? buildCodexContext(full)
-            : { id: e.id, type: e.type, name: e.name, summary: "" };
-        });
-
-        // Enrich with children context (subtree token budget)
-        // G8: use ratio-based budget from model contextWindow
-        const chatModel = useAiSettingsStore.getState().settings?.model ?? "";
-        const { contextWindow } = getModelCapabilities(chatModel);
-        const budgets = allocateLayerBudgets(contextWindow);
-        const L4_TOTAL_BUDGET = budgets.l4;
-        const withChildrenCtx: CodexContext[] = baseCodexEntries.map((ctx) => {
-          const fullEntry = allEntries.find((e) => e.id === ctx.id);
-          if (!fullEntry) return ctx;
-          const preset = fullEntry.childrenBudget ?? "compact";
-          if (preset === "none") return ctx;
-          const budget = computeChildrenTokenBudget(preset, L4_TOTAL_BUDGET);
-          const descendants = getDescendantsBFS(fullEntry.id, allEntries);
-          const childrenContext = buildChildrenContext(descendants, budget);
-          return childrenContext ? { ...ctx, childrenContext } : ctx;
-        });
-
-        // G14: enrich with custom details (includeInContext=1)
-        const enrichedCodexEntries: CodexContext[] =
-          await enrichWithCustomDetails(withChildrenCtx, allEntries);
-
-        // フェーズ解決: rawCodexEntriesに対応するfullEntryを取得しフェーズ適用
-        const rawFullEntries = rawCodexEntries
-          .map((e) => allEntries.find((a) => a.id === e.id))
-          .filter((e): e is CodexEntry => e !== undefined);
-        const { resolved: phaseResolved, phases: entryPhases } =
-          await resolveEntriesForContext(rawFullEntries, effectiveSceneId);
-
-        const codexEntries: CodexContext[] = enrichedCodexEntries.map((ctx) => {
-          const rs = phaseResolved.get(ctx.id);
-          if (!rs) return ctx;
-          const phases = entryPhases.get(ctx.id) ?? [];
-          const lastPhaseId = rs.appliedPhaseIds[rs.appliedPhaseIds.length - 1];
-          const lastPhase = lastPhaseId
-            ? phases.find((p) => p.id === lastPhaseId)
-            : undefined;
-          return {
-            ...ctx,
-            summary: rs.summary ?? ctx.summary,
-            ...(lastPhase ? { phaseLabel: lastPhase.label } : {}),
-          };
-        });
-
         // P2-5: チャットメッセージ内のCodex言及を検出し自動ピン留め
         if (sessionIdForPersist) {
           const chatMentioned = await findMentionedEntriesAsync(
@@ -1052,217 +1155,30 @@ export const useChatStore = create<ChatState>()((set, get) => ({
           }
         }
 
-        const effectiveSessionId = sessionIdForPersist ?? activeSessionId;
-        let pinnedCodexEntries: import("./contextBuilder").PinnedCodexContext[] =
-          [];
-        if (effectiveSessionId) {
-          const pinned =
-            await chatApi.listPinnedCodexEntries(effectiveSessionId);
-          pinnedCodexEntries = pinned.map((e) => {
-            const children = e.withChildren
-              ? getChildrenFromArray(e.id, allEntries).map((c) => ({
-                  id: c.id,
-                  type: c.type,
-                  name: c.name,
-                  summary: c.summary ?? "",
-                }))
-              : undefined;
-            const childrenCtx = buildChildrenCtxForEntry(
-              e,
-              allEntries,
-              L4_TOTAL_BUDGET,
-            );
-            return {
-              id: e.id,
-              type: e.type,
-              name: e.name,
-              summary: e.summary ?? "",
-              fullContent: extractPlainText(e.content) || undefined,
-              withChildren: e.withChildren,
-              children,
-              ...(childrenCtx ? { childrenContext: childrenCtx } : {}),
-            };
-          });
-        }
-
-        // G21: include input-typed detected entries not yet pinned to DB
-        {
-          const dbPinnedIdSet = new Set(pinnedCodexEntries.map((e) => e.id));
-          const inputIds = get().inputPinnedEntryIds;
-          const extraPinned = inputIds
-            .filter((id) => !dbPinnedIdSet.has(id))
-            .flatMap((id) => {
-              const e = allEntries.find((a) => a.id === id);
-              if (!e) return [];
-              const childrenCtx = buildChildrenCtxForEntry(
-                e,
-                allEntries,
-                L4_TOTAL_BUDGET,
-              );
-              const ctx: import("./contextBuilder").PinnedCodexContext = {
-                id: e.id,
-                type: e.type,
-                name: e.name,
-                summary: e.summary ?? "",
-                fullContent: extractPlainText(e.content) || undefined,
-                withChildren: false,
-                ...(childrenCtx ? { childrenContext: childrenCtx } : {}),
-              };
-              return [ctx];
-            });
-          if (extraPinned.length > 0) {
-            pinnedCodexEntries = [...pinnedCodexEntries, ...extraPinned];
-          }
-        }
-
-        // G15: update detectedEntries / alwaysEntries (excluding pinned)
-        {
-          const pinnedIdSet = new Set(pinnedCodexEntries.map((e) => e.id));
-          const mentionedNotPinned = mentioned
-            .filter((e) => !pinnedIdSet.has(e.id))
-            .map((e) => allEntries.find((a) => a.id === e.id))
-            .filter((e): e is CodexEntry => e !== undefined);
-          const alwaysNotPinned = alwaysEntries.filter(
-            (e) => !pinnedIdSet.has(e.id) && !mentionedIds.has(e.id),
-          );
-          set({
-            detectedEntries: mentionedNotPinned,
-            alwaysEntries: alwaysNotPinned,
-          });
-        }
-
-        // G8: ratio-based L2 budget from model contextWindow
-        const allNodes = useTreeStore.getState().nodes;
-        const storySoFarBudget = budgets.l2;
-        const storySoFar = buildStorySoFar(
-          sceneCtx.id,
-          allNodes,
-          storySoFarBudget,
-        );
-
-        // G11: 直前シーンのsynopsisを取得
-        const currentScene = allNodes.find((n) => n.id === sceneCtx.id);
-        const previousSceneNode = currentScene
-          ? allNodes
-              .filter(
-                (n) =>
-                  n.nodeType === "scene" &&
-                  n.id !== sceneCtx.id &&
-                  n.sortOrder < currentScene.sortOrder &&
-                  n.synopsis != null &&
-                  n.synopsis.trim() !== "",
-              )
-              .sort((a, b) => b.sortOrder - a.sortOrder)[0]
-          : undefined;
-        const previousScene = previousSceneNode
-          ? {
-              title: previousSceneNode.title,
-              synopsis: previousSceneNode.synopsis as string,
-            }
-          : undefined;
-
-        // G9: conversationTokens: system message を除いた会話履歴のトークン数
-        const conversationTokens = messagesForApi
-          .filter((m) => m.role !== "system")
-          .reduce((sum, m) => sum + countTokens(m.content), 0);
-
-        // G17: 会話要約を取得してL5に注入
-        let conversationSummary: string | undefined;
-        if (sessionIdForPersist) {
-          try {
-            const summaries = await chatApi.listSummaries(sessionIdForPersist);
-            if (summaries.length > 0) {
-              conversationSummary = summaries
-                .map((s) => s.summary)
-                .join("\n\n");
-            }
-          } catch {
-            // 要約取得失敗は無視
-          }
-        }
-
-        // G16: fetch pinned snippets and build PinnedSnippetContext[]
-        let pinnedSnippets: PinnedSnippetContext[] = [];
-        if (effectiveSessionId) {
-          try {
-            const snippetItems =
-              await listPinnedSnippetEntries(effectiveSessionId);
-            pinnedSnippets = snippetItems.map((s) => ({
-              id: s.id,
-              title: s.title,
-              content: extractPlainText(s.content) || s.title,
-            }));
-          } catch {
-            // 取得失敗は無視
-          }
-        }
-
-        // G19: アクティブタブのコンテンツをL3に注入
-        let activeTabContent:
-          | { type: "codex" | "snippet"; title: string; content: string }
-          | undefined;
-        try {
-          const tabState = useTabStore.getState();
-          const activeTab = tabState.tabs.find(
-            (t) => t.nodeId === tabState.activeTabId,
-          );
-          if (activeTab?.contentType === "codex") {
-            const codexEntry = allEntries.find(
-              (e) => e.id === activeTab.nodeId,
-            );
-            if (codexEntry) {
-              activeTabContent = {
-                type: "codex",
-                title: codexEntry.name,
-                content:
-                  extractPlainText(codexEntry.content) ||
-                  codexEntry.summary ||
-                  "",
-              };
-            }
-          } else if (activeTab?.contentType === "snippet") {
-            const snippet = await getSnippet(activeTab.nodeId).catch(
-              () => undefined,
-            );
-            if (snippet) {
-              activeTabContent = {
-                type: "snippet",
-                title: snippet.title,
-                content: extractPlainText(snippet.content) || snippet.title,
-              };
-            }
-          }
-        } catch {
-          // アクティブタブ取得失敗は無視
-        }
-
-        const promptResult = buildSystemPrompt({
-          scene: sceneCtx,
-          project: projectCtx ?? undefined,
-          storySoFar: storySoFar || undefined,
-          previousScene,
-          codexEntries,
-          pinnedCodexEntries,
-          pinnedSnippets:
-            pinnedSnippets.length > 0 ? pinnedSnippets : undefined,
-          activeTabContent,
+        const ctxResult = await buildSceneContextPrompt({
+          sceneCtx,
+          projectCtx,
+          activeSessionId: sessionIdForPersist ?? activeSessionId,
+          effectiveSceneId,
+          inputPinnedEntryIds: get().inputPinnedEntryIds,
+          conversationMessages: messagesForApi,
           commandInstruction,
-          conversationTokens,
-          contextWindow,
-          conversationSummary,
+          prefetchedEntries: allEntries,
         });
 
         set({
-          contextTokenCount: promptResult.totalTokens,
-          contextLayers: promptResult.layers,
-          lastSystemPrompt: promptResult.prompt,
+          contextTokenCount: ctxResult.totalTokens,
+          contextLayers: ctxResult.layers,
+          lastSystemPrompt: ctxResult.prompt,
+          detectedEntries: ctxResult.detectedEntries,
+          alwaysEntries: ctxResult.alwaysEntries,
         });
 
         const systemMsg: ChatMessage = {
           id: "system",
           sessionId,
           role: "system",
-          content: promptResult.prompt,
+          content: ctxResult.prompt,
           createdAt: new Date().toISOString(),
         };
         messagesForApi.unshift(systemMsg);
@@ -1601,220 +1517,21 @@ export const useChatStore = create<ChatState>()((set, get) => ({
       ]);
       if (!sceneCtx) return;
 
-      const allEntries = await listCodexEntries();
-
-      // G12: context_mode filter (same as sendMessage)
-      const detectableEntries = allEntries.filter(
-        (e) => e.contextMode !== "hidden" && e.contextMode !== "suppress",
-      );
-      const refreshAlwaysEntries = allEntries.filter(
-        (e) => e.contextMode === "always",
-      );
-
-      const mentioned = await findMentionedEntriesAsync(
-        sceneCtx.content,
-        detectableEntries,
-      );
-
-      const mentionedIds = new Set(mentioned.map((e) => e.id));
-      const alwaysNotMentioned = refreshAlwaysEntries.filter(
-        (e) => !mentionedIds.has(e.id),
-      );
-      const rawCodexEntries = [...mentioned, ...alwaysNotMentioned];
-
-      const L4_TOTAL_BUDGET = 60_000;
-      const baseCodexEntries: CodexContext[] = rawCodexEntries.map((e) => {
-        const fullEntry = allEntries.find((a) => a.id === e.id);
-        if (!fullEntry)
-          return { id: e.id, type: e.type, name: e.name, summary: "" };
-        const summary = fullEntry.summary ?? "";
-        // G13: summary空ならcontent全文をフォールバック
-        const contentFallback = summary.trim()
-          ? undefined
-          : extractPlainText(fullEntry.content) || undefined;
-        const preset = fullEntry.childrenBudget ?? "compact";
-        if (preset === "none")
-          return {
-            id: e.id,
-            type: e.type,
-            name: e.name,
-            summary,
-            contentFallback,
-          };
-        const budget = computeChildrenTokenBudget(preset, L4_TOTAL_BUDGET);
-        const descendants = getDescendantsBFS(fullEntry.id, allEntries);
-        const childrenContext = buildChildrenContext(descendants, budget);
-        return childrenContext
-          ? {
-              id: e.id,
-              type: e.type,
-              name: e.name,
-              summary,
-              contentFallback,
-              childrenContext,
-            }
-          : { id: e.id, type: e.type, name: e.name, summary, contentFallback };
+      const ctxResult = await buildSceneContextPrompt({
+        sceneCtx,
+        projectCtx,
+        activeSessionId,
+        effectiveSceneId,
+        inputPinnedEntryIds: get().inputPinnedEntryIds,
+        conversationMessages: get().messages.filter((m) => !m.isSummarized),
       });
 
-      // G14: enrich with custom details
-      const codexEntries = await enrichWithCustomDetails(
-        baseCodexEntries,
-        allEntries,
-      );
-
-      let pinnedCodexEntries: import("./contextBuilder").PinnedCodexContext[] =
-        [];
-      if (activeSessionId) {
-        const pinned = await chatApi.listPinnedCodexEntries(activeSessionId);
-        pinnedCodexEntries = pinned.map((e) => {
-          const children = e.withChildren
-            ? getChildrenFromArray(e.id, allEntries).map((c) => ({
-                id: c.id,
-                type: c.type,
-                name: c.name,
-                summary: c.summary ?? "",
-              }))
-            : undefined;
-          const childrenCtx = buildChildrenCtxForEntry(
-            e,
-            allEntries,
-            L4_TOTAL_BUDGET,
-          );
-          return {
-            id: e.id,
-            type: e.type,
-            name: e.name,
-            summary: e.summary ?? "",
-            fullContent: extractPlainText(e.content) || undefined,
-            withChildren: e.withChildren,
-            children,
-            ...(childrenCtx ? { childrenContext: childrenCtx } : {}),
-          };
-        });
-      }
-
-      // G15: update detectedEntries / alwaysEntries (excluding pinned)
-      {
-        const pinnedIdSet = new Set(pinnedCodexEntries.map((e) => e.id));
-        const mentionedNotPinned = mentioned
-          .filter((e) => !pinnedIdSet.has(e.id))
-          .map((e) => allEntries.find((a) => a.id === e.id))
-          .filter((e): e is CodexEntry => e !== undefined);
-        const alwaysNotPinned = refreshAlwaysEntries.filter(
-          (e) => !pinnedIdSet.has(e.id) && !mentionedIds.has(e.id),
-        );
-        set({
-          detectedEntries: mentionedNotPinned,
-          alwaysEntries: alwaysNotPinned,
-        });
-      }
-
-      const allNodes = useTreeStore.getState().nodes;
-      const l2Pct = useSettingsStore
-        .getState()
-        .getNumber("ai.contextBudget.l2", 10);
-      const storySoFar = buildStorySoFar(
-        sceneCtx.id,
-        allNodes,
-        Math.round((l2Pct / 100) * 200_000),
-      );
-
-      // G16: fetch pinned snippets for context display
-      let refreshPinnedSnippets: PinnedSnippetContext[] = [];
-      if (activeSessionId) {
-        try {
-          const snippetItems = await listPinnedSnippetEntries(activeSessionId);
-          refreshPinnedSnippets = snippetItems.map((s) => ({
-            id: s.id,
-            title: s.title,
-            content: extractPlainText(s.content) || s.title,
-          }));
-        } catch {
-          // 取得失敗は無視
-        }
-      }
-
-      // G19: アクティブタブのコンテンツをL3に注入
-      let refreshActiveTabContent:
-        | { type: "codex" | "snippet"; title: string; content: string }
-        | undefined;
-      try {
-        const tabState = useTabStore.getState();
-        const activeTab = tabState.tabs.find(
-          (t) => t.nodeId === tabState.activeTabId,
-        );
-        if (activeTab?.contentType === "codex") {
-          const codexEntry = allEntries.find((e) => e.id === activeTab.nodeId);
-          if (codexEntry) {
-            refreshActiveTabContent = {
-              type: "codex",
-              title: codexEntry.name,
-              content:
-                extractPlainText(codexEntry.content) ||
-                codexEntry.summary ||
-                "",
-            };
-          }
-        } else if (activeTab?.contentType === "snippet") {
-          const snippet = await getSnippet(activeTab.nodeId).catch(
-            () => undefined,
-          );
-          if (snippet) {
-            refreshActiveTabContent = {
-              type: "snippet",
-              title: snippet.title,
-              content: extractPlainText(snippet.content) || snippet.title,
-            };
-          }
-        }
-      } catch {
-        // アクティブタブ取得失敗は無視
-      }
-
-      // G21: include input-typed detected entries not yet pinned to DB
-      {
-        const dbPinnedIdSet = new Set(pinnedCodexEntries.map((e) => e.id));
-        const inputIds = get().inputPinnedEntryIds;
-        const extraPinned = inputIds
-          .filter((id) => !dbPinnedIdSet.has(id))
-          .flatMap((id) => {
-            const e = allEntries.find((a) => a.id === id);
-            if (!e) return [];
-            const childrenCtx = buildChildrenCtxForEntry(
-              e,
-              allEntries,
-              L4_TOTAL_BUDGET,
-            );
-            const ctx: import("./contextBuilder").PinnedCodexContext = {
-              id: e.id,
-              type: e.type,
-              name: e.name,
-              summary: e.summary ?? "",
-              fullContent: extractPlainText(e.content) || undefined,
-              withChildren: false,
-              ...(childrenCtx ? { childrenContext: childrenCtx } : {}),
-            };
-            return [ctx];
-          });
-        if (extraPinned.length > 0) {
-          pinnedCodexEntries = [...pinnedCodexEntries, ...extraPinned];
-        }
-      }
-
-      const promptResult = buildSystemPrompt({
-        scene: sceneCtx,
-        project: projectCtx ?? undefined,
-        storySoFar: storySoFar || undefined,
-        codexEntries,
-        pinnedCodexEntries,
-        pinnedSnippets:
-          refreshPinnedSnippets.length > 0 ? refreshPinnedSnippets : undefined,
-        activeTabContent: refreshActiveTabContent,
-      });
       set({
-        contextTokenCount: promptResult.totalTokens,
-        contextLayers: promptResult.layers,
-        lastSystemPrompt: promptResult.prompt,
+        contextTokenCount: ctxResult.totalTokens,
+        contextLayers: ctxResult.layers,
+        lastSystemPrompt: ctxResult.prompt,
+        detectedEntries: ctxResult.detectedEntries,
+        alwaysEntries: ctxResult.alwaysEntries,
       });
     } catch {
       // コンテキスト計算失敗は無視（送信時に再計算される）
