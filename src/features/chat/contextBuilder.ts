@@ -422,11 +422,11 @@ export function buildSystemPrompt(
           lines.push(`  - ${detail.fieldName}: ${detail.value}`);
         }
       }
-      if (entry.childrenContext) {
-        lines.push(entry.childrenContext);
-      }
       if (entry.fullContent) {
         lines.push(`  本文:\n${entry.fullContent}`);
+      }
+      if (entry.childrenContext) {
+        lines.push(entry.childrenContext);
       }
     }
     // G16: ピン留めSnippetをL4に注入
