@@ -210,6 +210,19 @@ async function enrichWithCustomDetails(
   });
 }
 
+// Helper: compute childrenContext for pinned/G21 entries based on childrenBudget
+function buildChildrenCtxForEntry(
+  entry: CodexEntry,
+  allEntries: CodexEntry[],
+  l4Budget: number,
+): string | undefined {
+  const preset = entry.childrenBudget ?? "compact";
+  if (preset === "none") return undefined;
+  const budget = computeChildrenTokenBudget(preset, l4Budget);
+  const descendants = getDescendantsBFS(entry.id, allEntries);
+  return buildChildrenContext(descendants, budget) || undefined;
+}
+
 interface ChatState {
   // Session management
   sessions: ChatSession[];
@@ -529,6 +542,11 @@ export const useChatStore = create<ChatState>()((set, get) => ({
                     summary: c.summary ?? "",
                   }))
                 : undefined;
+              const childrenCtx = buildChildrenCtxForEntry(
+                e,
+                allEntries,
+                L4_TOTAL_BUDGET,
+              );
               return {
                 id: e.id,
                 type: e.type,
@@ -537,6 +555,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
                 fullContent: extractPlainText(e.content) || undefined,
                 withChildren: e.withChildren,
                 children,
+                ...(childrenCtx ? { childrenContext: childrenCtx } : {}),
               };
             });
           }
@@ -550,6 +569,11 @@ export const useChatStore = create<ChatState>()((set, get) => ({
               .flatMap((id) => {
                 const e = allEntries.find((a) => a.id === id);
                 if (!e) return [];
+                const childrenCtx = buildChildrenCtxForEntry(
+                  e,
+                  allEntries,
+                  L4_TOTAL_BUDGET,
+                );
                 const ctx: import("./contextBuilder").PinnedCodexContext = {
                   id: e.id,
                   type: e.type,
@@ -557,6 +581,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
                   summary: e.summary ?? "",
                   fullContent: extractPlainText(e.content) || undefined,
                   withChildren: false,
+                  ...(childrenCtx ? { childrenContext: childrenCtx } : {}),
                 };
                 return [ctx];
               });
@@ -1033,6 +1058,11 @@ export const useChatStore = create<ChatState>()((set, get) => ({
                   summary: c.summary ?? "",
                 }))
               : undefined;
+            const childrenCtx = buildChildrenCtxForEntry(
+              e,
+              allEntries,
+              L4_TOTAL_BUDGET,
+            );
             return {
               id: e.id,
               type: e.type,
@@ -1041,6 +1071,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
               fullContent: extractPlainText(e.content) || undefined,
               withChildren: e.withChildren,
               children,
+              ...(childrenCtx ? { childrenContext: childrenCtx } : {}),
             };
           });
         }
@@ -1418,6 +1449,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
           (e) => e.contextMode === "always",
         );
 
+        const L4_TOTAL_BUDGET = 60_000;
         let globalPinnedCodex: import("./contextBuilder").PinnedCodexContext[] =
           [];
         let globalPinnedSnippets: PinnedSnippetContext[] = [];
@@ -1435,6 +1467,11 @@ export const useChatStore = create<ChatState>()((set, get) => ({
                   summary: c.summary ?? "",
                 }))
               : undefined;
+            const childrenCtx = buildChildrenCtxForEntry(
+              e,
+              allEntries,
+              L4_TOTAL_BUDGET,
+            );
             return {
               id: e.id,
               type: e.type,
@@ -1443,6 +1480,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
               fullContent: extractPlainText(e.content) || undefined,
               withChildren: e.withChildren,
               children,
+              ...(childrenCtx ? { childrenContext: childrenCtx } : {}),
             };
           });
           globalPinnedSnippets = snippetItems.map((s) => ({
@@ -1461,6 +1499,11 @@ export const useChatStore = create<ChatState>()((set, get) => ({
           .flatMap((id) => {
             const e = allEntries.find((a) => a.id === id);
             if (!e) return [];
+            const childrenCtx = buildChildrenCtxForEntry(
+              e,
+              allEntries,
+              L4_TOTAL_BUDGET,
+            );
             const ctx: import("./contextBuilder").PinnedCodexContext = {
               id: e.id,
               type: e.type,
@@ -1468,6 +1511,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
               summary: e.summary ?? "",
               fullContent: extractPlainText(e.content) || undefined,
               withChildren: false,
+              ...(childrenCtx ? { childrenContext: childrenCtx } : {}),
             };
             return [ctx];
           });
@@ -1592,6 +1636,11 @@ export const useChatStore = create<ChatState>()((set, get) => ({
                 summary: c.summary ?? "",
               }))
             : undefined;
+          const childrenCtx = buildChildrenCtxForEntry(
+            e,
+            allEntries,
+            L4_TOTAL_BUDGET,
+          );
           return {
             id: e.id,
             type: e.type,
@@ -1600,6 +1649,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
             fullContent: extractPlainText(e.content) || undefined,
             withChildren: e.withChildren,
             children,
+            ...(childrenCtx ? { childrenContext: childrenCtx } : {}),
           };
         });
       }
@@ -1691,6 +1741,11 @@ export const useChatStore = create<ChatState>()((set, get) => ({
           .flatMap((id) => {
             const e = allEntries.find((a) => a.id === id);
             if (!e) return [];
+            const childrenCtx = buildChildrenCtxForEntry(
+              e,
+              allEntries,
+              L4_TOTAL_BUDGET,
+            );
             const ctx: import("./contextBuilder").PinnedCodexContext = {
               id: e.id,
               type: e.type,
@@ -1698,6 +1753,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
               summary: e.summary ?? "",
               fullContent: extractPlainText(e.content) || undefined,
               withChildren: false,
+              ...(childrenCtx ? { childrenContext: childrenCtx } : {}),
             };
             return [ctx];
           });
