@@ -1030,6 +1030,37 @@ export const useChatStore = create<ChatState>()((set, get) => ({
                 }),
               },
             );
+
+            // セッションタイトル自動生成 (P1-2) — fire-and-forget
+            const isFirstAgentResponse =
+              prevMessages.filter((m) => m.role === "assistant").length === 0;
+            const currentSession = get().sessions.find(
+              (s) => s.id === sessionIdForPersist,
+            );
+            if (isFirstAgentResponse && currentSession?.titleManual === 0) {
+              const agentModel =
+                useAiSettingsStore.getState().settings?.model ?? "";
+              chatApi
+                .generateSessionTitle(content, lastMsg.content, agentModel)
+                .then(async (title) => {
+                  if (!title) {
+                    title = content.slice(0, 30);
+                  }
+                  await chatApi.updateSessionTitle(sessionIdForPersist, title);
+                  set((state) => ({
+                    sessions: state.sessions.map((s) =>
+                      s.id === sessionIdForPersist ? { ...s, title } : s,
+                    ),
+                  }));
+                })
+                .catch((e) => {
+                  debugLog.error(
+                    "ChatStore",
+                    "agent title generation",
+                    errorDetail(e),
+                  );
+                });
+            }
           }
         }
       } catch (e) {
