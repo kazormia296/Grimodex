@@ -1,10 +1,11 @@
 // @vitest-environment happy-dom
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect, vi, afterEach } from "vitest";
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { ContextBar } from "./ContextBar";
 import type { CodexEntry } from "@/features/codex/api";
 import type { PinnedCodexEntryWithData } from "../chatApi";
+import { useCodexStore } from "@/features/codex/codexStore";
 
 vi.mock("../chatStore", () => ({
   useChatStore: vi.fn(() => ""),
@@ -14,7 +15,16 @@ vi.mock("../contextCreatorApi", () => ({
   runContextCreator: vi.fn(() => Promise.resolve([])),
 }));
 
-function makeEntry(id: string, name: string, type = "character"): CodexEntry {
+afterEach(() => {
+  useCodexStore.setState({ entries: [] });
+});
+
+function makeEntry(
+  id: string,
+  name: string,
+  type = "character",
+  parentId: string | null = null,
+): CodexEntry {
   return {
     id,
     name,
@@ -25,7 +35,7 @@ function makeEntry(id: string, name: string, type = "character"): CodexEntry {
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
     projectId: "p1",
-    parentId: null,
+    parentId,
     childrenBudget: "medium",
     tagsCache: null,
     aliases: null,
@@ -40,10 +50,11 @@ function makePinnedEntry(
   id: string,
   name: string,
   type = "character",
+  withChildren = false,
 ): PinnedCodexEntryWithData {
   return {
     ...makeEntry(id, name, type),
-    withChildren: false,
+    withChildren,
     pinnedType: "codex",
     pinSource: "manual",
   };
@@ -133,5 +144,51 @@ describe("ContextBar グループ化", () => {
     render(<ContextBar {...defaultProps} pinnedEntries={entries} />);
     expect(screen.getByText(/キャラクター/)).toBeInTheDocument();
     expect(screen.queryByText(/場所/)).not.toBeInTheDocument();
+  });
+});
+
+describe("ContextBar 子エントリピル表示 (非グループモード)", () => {
+  it("withChildren=false のエントリは子エントリピルを表示しない", () => {
+    const parent = makePinnedEntry("p1", "親キャラ", "character", false);
+    useCodexStore.setState({
+      entries: [makeEntry("c1", "子キャラ", "character", "p1")],
+    });
+    render(<ContextBar {...defaultProps} pinnedEntries={[parent]} />);
+    expect(screen.getByText("親キャラ")).toBeInTheDocument();
+    expect(screen.queryByText("子キャラ")).not.toBeInTheDocument();
+  });
+
+  it("withChildren=true のエントリは子エントリピルを表示する", () => {
+    const parent = makePinnedEntry("p1", "親キャラ", "character", true);
+    useCodexStore.setState({
+      entries: [makeEntry("c1", "子キャラ", "character", "p1")],
+    });
+    render(<ContextBar {...defaultProps} pinnedEntries={[parent]} />);
+    expect(screen.getByText("親キャラ")).toBeInTheDocument();
+    expect(screen.getByText("子キャラ")).toBeInTheDocument();
+    expect(screen.getByText(/↑親キャラ/)).toBeInTheDocument();
+  });
+
+  it("withChildren=true でも子がいなければ子ピルは表示されない", () => {
+    const parent = makePinnedEntry("p1", "親キャラ", "character", true);
+    useCodexStore.setState({ entries: [] });
+    render(<ContextBar {...defaultProps} pinnedEntries={[parent]} />);
+    expect(screen.getByText("親キャラ")).toBeInTheDocument();
+    expect(screen.queryByText(/↑親キャラ/)).not.toBeInTheDocument();
+  });
+
+  it("chat_mention (input-detected) エントリは withChildren=true で子ピルを表示する", () => {
+    const parent: PinnedCodexEntryWithData = {
+      ...makeEntry("p1", "検出キャラ"),
+      withChildren: true,
+      pinnedType: "codex",
+      pinSource: "chat_mention",
+    };
+    useCodexStore.setState({
+      entries: [makeEntry("c1", "子キャラ", "character", "p1")],
+    });
+    render(<ContextBar {...defaultProps} pinnedEntries={[parent]} />);
+    expect(screen.getByText("検出キャラ")).toBeInTheDocument();
+    expect(screen.getByText("子キャラ")).toBeInTheDocument();
   });
 });

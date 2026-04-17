@@ -15,6 +15,7 @@ import { CodexEntryPopoverContent } from "@/features/codex/components/CodexEntry
 import { useLayoutStore } from "@/features/layout/layoutStore";
 import { useCodexStore } from "@/features/codex/codexStore";
 import { getTypeLabel } from "@/features/chat/utils/typeLabels";
+import { getChildrenFromArray } from "@/features/codex/childrenBudget";
 
 interface ContextPillGroupProps {
   type: string;
@@ -53,6 +54,8 @@ export function ContextPillGroup({
     : undefined;
 
   // Codex エントリ hover ポップオーバー
+  const allCodexEntries = useCodexStore((s) => s.entries);
+
   const [hoveredEntry, setHoveredEntry] = useState<{
     entry: CodexEntry;
     rect: DOMRect;
@@ -133,9 +136,12 @@ export function ContextPillGroup({
       {/* ポップオーバー: グループ内エントリを縦一覧 */}
       {open && (
         <div className="absolute left-0 top-full z-50 mt-1 w-48 rounded-md border border-border bg-popover py-1 shadow-md">
-          {pinnedEntries.map((entry) => {
+          {pinnedEntries.flatMap((entry) => {
             const isManual = entry.pinSource === "manual";
-            return (
+            const children = entry.withChildren
+              ? getChildrenFromArray(entry.id, allCodexEntries)
+              : [];
+            return [
               <div
                 key={entry.id}
                 className="flex w-full items-center justify-between gap-2 px-2 py-0.5 text-xs hover:bg-accent/50"
@@ -172,8 +178,20 @@ export function ContextPillGroup({
                     <X className="h-3 w-3" />
                   </button>
                 </div>
-              </div>
-            );
+              </div>,
+              ...children.map((child) => (
+                <div
+                  key={`${entry.id}-child-${child.id}`}
+                  className="flex w-full items-center gap-2 px-4 py-0.5 text-[10px] text-muted-foreground hover:bg-accent/30"
+                  title={`via ${entry.name}`}
+                  onMouseEnter={(e) => handleEntryMouseEnter(child, e)}
+                  onMouseLeave={handleEntryMouseLeave}
+                >
+                  <span className="truncate">{child.name}</span>
+                  <span className="shrink-0 opacity-60">↑{entry.name}</span>
+                </div>
+              )),
+            ];
           })}
           {autoEntries.map((entry) => (
             <div

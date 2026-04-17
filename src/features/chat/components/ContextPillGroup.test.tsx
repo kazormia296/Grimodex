@@ -1,10 +1,15 @@
 // @vitest-environment happy-dom
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect, vi, afterEach } from "vitest";
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { ContextPillGroup } from "./ContextPillGroup";
 import type { CodexEntry } from "@/features/codex/api";
 import type { PinnedCodexEntryWithData } from "../chatApi";
+import { useCodexStore } from "@/features/codex/codexStore";
+
+afterEach(() => {
+  useCodexStore.setState({ entries: [] });
+});
 
 function makeEntry(id: string, name: string, type = "character"): CodexEntry {
   return {
@@ -228,5 +233,80 @@ describe("ContextPillGroup", () => {
     await user.click(screen.getByRole("button", { name: /キャラクター/ }));
     await user.click(screen.getByRole("button", { name: /Liraをピン留め/ }));
     expect(onPin).toHaveBeenCalledWith("3");
+  });
+});
+
+describe("ContextPillGroup 子エントリ表示 (グループモード内)", () => {
+  function makeEntryFull(
+    id: string,
+    name: string,
+    parentId: string | null = null,
+  ): CodexEntry {
+    return {
+      id,
+      name,
+      type: "character",
+      summary: "",
+      content: "{}",
+      contextMode: "auto",
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      projectId: "p1",
+      parentId,
+      childrenBudget: "medium",
+      tagsCache: null,
+      aliases: null,
+      excludedAliases: null,
+      sourceChatMessageId: null,
+      notes: null,
+      icon: null,
+    };
+  }
+
+  it("withChildren=true の親エントリはポップオーバー内に子エントリ行を表示する", async () => {
+    const user = userEvent.setup();
+    useCodexStore.setState({
+      entries: [makeEntryFull("c1", "子キャラ", "p1")],
+    });
+    const parent: PinnedCodexEntryWithData = {
+      ...makeEntryFull("p1", "親キャラ"),
+      withChildren: true,
+      pinnedType: "codex",
+      pinSource: "chat_mention",
+    };
+    render(
+      <ContextPillGroup
+        {...defaultProps}
+        pinnedEntries={[parent]}
+        autoEntries={[]}
+      />,
+    );
+    await user.click(screen.getByRole("button", { name: /キャラクター/ }));
+    expect(screen.getByText("親キャラ")).toBeInTheDocument();
+    expect(screen.getByText("子キャラ")).toBeInTheDocument();
+    expect(screen.getByText(/↑親キャラ/)).toBeInTheDocument();
+  });
+
+  it("withChildren=false の親エントリはポップオーバー内に子エントリ行を表示しない", async () => {
+    const user = userEvent.setup();
+    useCodexStore.setState({
+      entries: [makeEntryFull("c1", "子キャラ", "p1")],
+    });
+    const parent: PinnedCodexEntryWithData = {
+      ...makeEntryFull("p1", "親キャラ"),
+      withChildren: false,
+      pinnedType: "codex",
+      pinSource: "manual",
+    };
+    render(
+      <ContextPillGroup
+        {...defaultProps}
+        pinnedEntries={[parent]}
+        autoEntries={[]}
+      />,
+    );
+    await user.click(screen.getByRole("button", { name: /キャラクター/ }));
+    expect(screen.getByText("親キャラ")).toBeInTheDocument();
+    expect(screen.queryByText("子キャラ")).not.toBeInTheDocument();
   });
 });

@@ -169,7 +169,8 @@ export function ChatPanel() {
       .filter((e): e is (typeof allCodexEntries)[0] => e !== undefined)
       .map((e) => ({
         ...e,
-        withChildren: false,
+        // UI-only flag: prompt uses the G21 block independently
+        withChildren: true,
         pinnedType: "codex" as const,
         pinSource: "chat_mention" as const,
       }));

@@ -26,6 +26,7 @@ import {
 import { getTypeLabel } from "../utils/typeLabels";
 import { ContextPillGroup } from "./ContextPillGroup";
 import { useCodexHighlightStore } from "@/features/editor/codexHighlightStore";
+import { getChildrenFromArray } from "@/features/codex/childrenBudget";
 import { CodexEntryPopoverContent } from "@/features/codex/components/CodexEntryPopoverContent";
 import { useLayoutStore } from "@/features/layout/layoutStore";
 import { useCodexStore } from "@/features/codex/codexStore";
@@ -77,6 +78,7 @@ export function ContextBar({
   const [previewOpen, setPreviewOpen] = useState(false);
   const [creatorOpen, setCreatorOpen] = useState(false);
   const typeColorMap = useCodexHighlightStore((s) => s.typeColorMap);
+  const allCodexEntries = useCodexStore((s) => s.entries);
 
   // Codex エントリ hover ポップオーバー
   const [hoveredEntry, setHoveredEntry] = useState<{
@@ -254,41 +256,59 @@ export function ContextBar({
                 : pinnedEntries.map((entry) => {
                     const rc = typeColorMap[entry.type];
                     const isManual = entry.pinSource === "manual";
+                    const children = entry.withChildren
+                      ? getChildrenFromArray(entry.id, allCodexEntries)
+                      : [];
                     return (
-                      <span
-                        key={entry.id}
-                        className="inline-flex items-center gap-1 rounded-full bg-accent px-2 py-0.5 text-xs"
-                        style={
-                          rc
-                            ? { backgroundColor: rc.hl, color: rc.fg }
-                            : undefined
-                        }
-                        onMouseEnter={(e) => handleEntryMouseEnter(entry, e)}
-                        onMouseLeave={handleEntryMouseLeave}
-                      >
-                        {entry.name}
-                        {isManual && (
+                      <span key={entry.id} className="contents">
+                        <span
+                          className="inline-flex items-center gap-1 rounded-full bg-accent px-2 py-0.5 text-xs"
+                          style={
+                            rc
+                              ? { backgroundColor: rc.hl, color: rc.fg }
+                              : undefined
+                          }
+                          onMouseEnter={(e) => handleEntryMouseEnter(entry, e)}
+                          onMouseLeave={handleEntryMouseLeave}
+                        >
+                          {entry.name}
+                          {isManual && (
+                            <button
+                              type="button"
+                              onClick={() => onReturnToAuto(entry.id)}
+                              className="hover:text-foreground text-muted-foreground/70"
+                              aria-label={t("chat.context.returnToAuto", {
+                                name: entry.name,
+                              })}
+                            >
+                              <Undo2 className="h-3 w-3" />
+                            </button>
+                          )}
                           <button
                             type="button"
-                            onClick={() => onReturnToAuto(entry.id)}
-                            className="hover:text-foreground text-muted-foreground/70"
-                            aria-label={t("chat.context.returnToAuto", {
+                            onClick={() => onRemove(entry.id)}
+                            className="hover:text-destructive"
+                            aria-label={t("chat.context.unpinEntry", {
                               name: entry.name,
                             })}
                           >
-                            <Undo2 className="h-3 w-3" />
+                            <X className="h-3 w-3" />
                           </button>
-                        )}
-                        <button
-                          type="button"
-                          onClick={() => onRemove(entry.id)}
-                          className="hover:text-destructive"
-                          aria-label={t("chat.context.unpinEntry", {
-                            name: entry.name,
-                          })}
-                        >
-                          <X className="h-3 w-3" />
-                        </button>
+                        </span>
+                        {children.map((child) => (
+                          <span
+                            key={`${entry.id}-child-${child.id}`}
+                            className="inline-flex items-center gap-1 rounded-full bg-accent/60 px-2 py-0.5 text-[10px] text-muted-foreground"
+                            title={`via ${entry.name}`}
+                            onMouseEnter={(e) =>
+                              handleEntryMouseEnter(child, e)
+                            }
+                            onMouseLeave={handleEntryMouseLeave}
+                          >
+                            {child.name}
+                            <span className="opacity-60">↑{entry.name}</span>
+                          </span>
+                        ))}
                       </span>
                     );
                   })}
