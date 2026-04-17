@@ -224,7 +224,7 @@ describe("ContextBar 子エントリピル表示 (非グループモード)", ()
     );
     expect(screen.getByText("子キャラ")).toBeInTheDocument();
     const dismissBtn = screen.getByRole("button", {
-      name: /子キャラ/,
+      name: /子キャラのピン留め解除/,
     });
     await user.click(dismissBtn);
     expect(onDismissViaChild).toHaveBeenCalledWith("c1");
