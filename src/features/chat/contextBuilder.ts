@@ -395,7 +395,9 @@ export function buildSystemPrompt(
 
   const pinnedIds = new Set((input.pinnedCodexEntries ?? []).map((e) => e.id));
   const allCodex = deduplicateById([
-    ...(input.codexEntries ?? []).filter((e) => !pinnedChildIds.has(e.id)),
+    ...(input.codexEntries ?? []).filter(
+      (e) => !pinnedChildIds.has(e.id) && !pinnedIds.has(e.id),
+    ),
     ...pinnedWithChildren,
   ]);
   let l4Text = "";
