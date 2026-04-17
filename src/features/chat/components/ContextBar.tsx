@@ -5,6 +5,8 @@ import {
   useEffect,
   type MouseEvent,
 } from "react";
+import { motion, AnimatePresence } from "motion/react";
+import { DURATIONS, EASINGS, useReducedMotion } from "@/lib/animation";
 import { createPortal } from "react-dom";
 import { useTranslation } from "react-i18next";
 import {
@@ -95,6 +97,7 @@ export function ContextBar({
   canUseCreator = false,
 }: ContextBarProps) {
   const { t } = useTranslation();
+  const reduced = useReducedMotion();
   const [collapsed, setCollapsed] = useState(false);
   const [previewOpen, setPreviewOpen] = useState(false);
   const [creatorOpen, setCreatorOpen] = useState(false);
@@ -290,76 +293,106 @@ export function ContextBar({
                 </span>
               )}
               {/* Codex エントリ: グループ時は pinned + via + auto を統合 */}
-              {useGrouping
-                ? Array.from(groupMap.entries())
-                    .sort(([a], [b]) => {
-                      const oa = TYPE_ORDER.indexOf(a);
-                      const ob = TYPE_ORDER.indexOf(b);
+              <AnimatePresence>
+                {useGrouping
+                  ? Array.from(groupMap.entries())
+                      .sort(([a], [b]) => {
+                        const oa = TYPE_ORDER.indexOf(a);
+                        const ob = TYPE_ORDER.indexOf(b);
+                        return (
+                          (oa === -1 ? TYPE_ORDER.length : oa) -
+                          (ob === -1 ? TYPE_ORDER.length : ob)
+                        );
+                      })
+                      .map(([type, group], i) => (
+                        <motion.div
+                          key={type}
+                          style={{ display: "inline-flex" }}
+                          initial={{ opacity: 0, scale: 0.85 }}
+                          animate={{ opacity: 1, scale: 1 }}
+                          exit={{ opacity: 0, scale: 0.85 }}
+                          transition={
+                            reduced
+                              ? { duration: 0 }
+                              : {
+                                  duration: DURATIONS.fast,
+                                  ease: EASINGS.easeOut,
+                                  delay: i * 0.03,
+                                }
+                          }
+                        >
+                          <ContextPillGroup
+                            type={type}
+                            label={getTypeLabel(type)}
+                            pinnedEntries={group.pinned}
+                            autoEntries={group.auto}
+                            viaEntries={group.via.map((vc) => ({
+                              child: vc.child,
+                              parentName: vc.viaParentName,
+                            }))}
+                            onReturnToAuto={onReturnToAuto}
+                            onRemove={onRemove}
+                            onRemoveAuto={onRemoveAuto}
+                            onPin={onPin}
+                            onDismissVia={onDismissViaChild}
+                            resolvedColor={typeColorMap[type]}
+                          />
+                        </motion.div>
+                      ))
+                  : pinnedEntries.map((entry, i) => {
+                      const rc = typeColorMap[entry.type];
+                      const isManual = entry.pinSource === "manual";
                       return (
-                        (oa === -1 ? TYPE_ORDER.length : oa) -
-                        (ob === -1 ? TYPE_ORDER.length : ob)
-                      );
-                    })
-                    .map(([type, group]) => (
-                      <ContextPillGroup
-                        key={type}
-                        type={type}
-                        label={getTypeLabel(type)}
-                        pinnedEntries={group.pinned}
-                        autoEntries={group.auto}
-                        viaEntries={group.via.map((vc) => ({
-                          child: vc.child,
-                          parentName: vc.viaParentName,
-                        }))}
-                        onReturnToAuto={onReturnToAuto}
-                        onRemove={onRemove}
-                        onRemoveAuto={onRemoveAuto}
-                        onPin={onPin}
-                        onDismissVia={onDismissViaChild}
-                        resolvedColor={typeColorMap[type]}
-                      />
-                    ))
-                : pinnedEntries.map((entry) => {
-                    const rc = typeColorMap[entry.type];
-                    const isManual = entry.pinSource === "manual";
-                    return (
-                      <span
-                        key={entry.id}
-                        className="inline-flex items-center gap-1 rounded-full bg-accent px-2 py-0.5 text-xs"
-                        style={
-                          rc
-                            ? { backgroundColor: rc.hl, color: rc.fg }
-                            : undefined
-                        }
-                        onMouseEnter={(e) => handleEntryMouseEnter(entry, e)}
-                        onMouseLeave={handleEntryMouseLeave}
-                      >
-                        {entry.name}
-                        {isManual && (
+                        <motion.span
+                          key={entry.id}
+                          className="inline-flex items-center gap-1 rounded-full bg-accent px-2 py-0.5 text-xs"
+                          initial={{ opacity: 0, scale: 0.85 }}
+                          animate={{ opacity: 1, scale: 1 }}
+                          exit={{ opacity: 0, scale: 0.85 }}
+                          transition={
+                            reduced
+                              ? { duration: 0 }
+                              : {
+                                  duration: DURATIONS.fast,
+                                  ease: EASINGS.easeOut,
+                                  delay: i * 0.03,
+                                }
+                          }
+                          style={
+                            rc
+                              ? { backgroundColor: rc.hl, color: rc.fg }
+                              : undefined
+                          }
+                          onMouseEnter={(e) => handleEntryMouseEnter(entry, e)}
+                          onMouseLeave={handleEntryMouseLeave}
+                        >
+                          {entry.name}
+                          {isManual && (
+                            <button
+                              type="button"
+                              onClick={() => onReturnToAuto(entry.id)}
+                              className="hover:text-foreground text-muted-foreground/70"
+                              aria-label={t("chat.context.returnToAuto", {
+                                name: entry.name,
+                              })}
+                            >
+                              <Undo2 className="h-3 w-3" />
+                            </button>
+                          )}
                           <button
                             type="button"
-                            onClick={() => onReturnToAuto(entry.id)}
-                            className="hover:text-foreground text-muted-foreground/70"
-                            aria-label={t("chat.context.returnToAuto", {
+                            onClick={() => onRemove(entry.id)}
+                            className="hover:text-destructive"
+                            aria-label={t("chat.context.unpinEntry", {
                               name: entry.name,
                             })}
                           >
-                            <Undo2 className="h-3 w-3" />
+                            <X className="h-3 w-3" />
                           </button>
-                        )}
-                        <button
-                          type="button"
-                          onClick={() => onRemove(entry.id)}
-                          className="hover:text-destructive"
-                          aria-label={t("chat.context.unpinEntry", {
-                            name: entry.name,
-                          })}
-                        >
-                          <X className="h-3 w-3" />
-                        </button>
-                      </span>
-                    );
-                  })}
+                        </motion.span>
+                      );
+                    })}
+              </AnimatePresence>
               {/* via子エントリ（非グループ時）: 通常ピルと同スタイル + via表示 */}
               {!useGrouping &&
                 viaChildren.map(({ child, viaParentId, viaParentName }) => {

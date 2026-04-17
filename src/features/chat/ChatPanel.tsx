@@ -1,5 +1,7 @@
 import { useState, useRef, useEffect, useCallback, useMemo } from "react";
 import { useTranslation } from "react-i18next";
+import { motion, AnimatePresence } from "motion/react";
+import { DURATIONS, EASINGS, useReducedMotion } from "@/lib/animation";
 import type { Editor } from "@tiptap/core";
 import { toast } from "sonner";
 import { useChatStore } from "./chatStore";
@@ -45,6 +47,7 @@ interface ContextMenuState {
 
 export function ChatPanel() {
   const { t } = useTranslation();
+  const reduced = useReducedMotion();
   const messages = useChatStore((s) => s.messages);
   const isStreaming = useChatStore((s) => s.isStreaming);
   const error = useChatStore((s) => s.error);
@@ -543,25 +546,38 @@ export function ChatPanel() {
           </p>
         ) : (
           <div className="space-y-4" ref={(el) => setMessagesContainerEl(el)}>
-            {messages
-              .filter((msg) => msg.role !== "system" && !msg.isSummarized)
-              .map((msg) => (
-                <ChatMessage
-                  key={msg.id}
-                  msg={msg}
-                  isStreaming={isStreaming}
-                  onInsert={insertFromChat}
-                  onExtractCodexQuick={handleExtractCodexQuick}
-                  onExtractCodexDetailed={handleExtractCodexDetailed}
-                  onSaveSnippetQuick={handleSaveSnippetQuick}
-                  onSaveSnippetDetailed={handleSaveSnippetDetailed}
-                  onEdit={handleEditMessage}
-                  onDelete={handleDeleteMessage}
-                  onRegenerate={handleRegenerate}
-                  onStar={handleStar}
-                  onContextMenu={handleContextMenu}
-                />
-              ))}
+            <AnimatePresence initial={false}>
+              {messages
+                .filter((msg) => msg.role !== "system" && !msg.isSummarized)
+                .map((msg) => (
+                  <motion.div
+                    key={msg.id}
+                    initial={{ opacity: 0, x: msg.role === "user" ? 8 : -8 }}
+                    animate={{ opacity: 1, x: 0 }}
+                    exit={{ opacity: 0 }}
+                    transition={
+                      reduced
+                        ? { duration: 0 }
+                        : { duration: DURATIONS.fast, ease: EASINGS.easeOut }
+                    }
+                  >
+                    <ChatMessage
+                      msg={msg}
+                      isStreaming={isStreaming}
+                      onInsert={insertFromChat}
+                      onExtractCodexQuick={handleExtractCodexQuick}
+                      onExtractCodexDetailed={handleExtractCodexDetailed}
+                      onSaveSnippetQuick={handleSaveSnippetQuick}
+                      onSaveSnippetDetailed={handleSaveSnippetDetailed}
+                      onEdit={handleEditMessage}
+                      onDelete={handleDeleteMessage}
+                      onRegenerate={handleRegenerate}
+                      onStar={handleStar}
+                      onContextMenu={handleContextMenu}
+                    />
+                  </motion.div>
+                ))}
+            </AnimatePresence>
             {isStreaming && (
               <div
                 data-testid="streaming-indicator"
