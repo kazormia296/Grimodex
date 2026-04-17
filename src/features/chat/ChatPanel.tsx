@@ -143,6 +143,7 @@ export function ChatPanel() {
     }
     chatApi.listPinnedCodexEntries(activeSessionId).then(setPinnedEntries);
     chatApi.listPinnedSnippetEntries(activeSessionId).then(setPinnedSnippets);
+    setDismissedViaChildIds(new Set());
   }, [activeSessionId]);
 
   const pinnedIds = new Set(pinnedEntries.map((e) => e.id));
@@ -152,6 +153,10 @@ export function ChatPanel() {
   const [inputDetectedIds, setInputDetectedIds] = useState<string[]>([]);
   // ユーザーが × で明示却下したID（送信まで保持）
   const [inputDismissedIds, setInputDismissedIds] = useState<Set<string>>(
+    new Set(),
+  );
+  // via表示の子エントリで × を押して一時非表示にしたID（セッション切替でリセット）
+  const [dismissedViaChildIds, setDismissedViaChildIds] = useState<Set<string>>(
     new Set(),
   );
   const allCodexEntries = useCodexStore((s) => s.entries);
@@ -261,6 +266,10 @@ export function ChatPanel() {
     },
     [inputPinnedIds, handleRemoveFromContext],
   );
+
+  const handleDismissViaChild = useCallback((childId: string) => {
+    setDismissedViaChildIds((prev) => new Set([...prev, childId]));
+  }, []);
 
   const handleTogglePinChildren = useCallback(
     async (entryId: string, withChildren: boolean) => {
@@ -508,6 +517,8 @@ export function ChatPanel() {
         onRemove={handleRemoveEntry}
         onRemoveAuto={handleRemoveAuto}
         onPin={handlePin}
+        onDismissViaChild={handleDismissViaChild}
+        dismissedViaChildIds={dismissedViaChildIds}
         onOpenPinDialog={() => setPinDialogOpen(true)}
         contextTokenCount={contextTokenCount}
         contextLayers={contextLayers}

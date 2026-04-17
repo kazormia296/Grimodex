@@ -158,7 +158,7 @@ describe("ContextBar 子エントリピル表示 (非グループモード)", ()
     expect(screen.queryByText("子キャラ")).not.toBeInTheDocument();
   });
 
-  it("withChildren=true のエントリは子エントリピルを表示する", () => {
+  it("withChildren=true のエントリは子エントリを通常ピルと同スタイルで via 表示する", () => {
     const parent = makePinnedEntry("p1", "親キャラ", "character", true);
     useCodexStore.setState({
       entries: [makeEntry("c1", "子キャラ", "character", "p1")],
@@ -166,7 +166,7 @@ describe("ContextBar 子エントリピル表示 (非グループモード)", ()
     render(<ContextBar {...defaultProps} pinnedEntries={[parent]} />);
     expect(screen.getByText("親キャラ")).toBeInTheDocument();
     expect(screen.getByText("子キャラ")).toBeInTheDocument();
-    expect(screen.getByText(/↑親キャラ/)).toBeInTheDocument();
+    expect(screen.getByText(/via 親キャラ/)).toBeInTheDocument();
   });
 
   it("withChildren=true でも子がいなければ子ピルは表示されない", () => {
@@ -174,10 +174,10 @@ describe("ContextBar 子エントリピル表示 (非グループモード)", ()
     useCodexStore.setState({ entries: [] });
     render(<ContextBar {...defaultProps} pinnedEntries={[parent]} />);
     expect(screen.getByText("親キャラ")).toBeInTheDocument();
-    expect(screen.queryByText(/↑親キャラ/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/via 親キャラ/)).not.toBeInTheDocument();
   });
 
-  it("chat_mention (input-detected) エントリは withChildren=true で子ピルを表示する", () => {
+  it("chat_mention (input-detected) エントリは withChildren=true で子ピルを via 表示する", () => {
     const parent: PinnedCodexEntryWithData = {
       ...makeEntry("p1", "検出キャラ"),
       withChildren: true,
@@ -190,5 +190,43 @@ describe("ContextBar 子エントリピル表示 (非グループモード)", ()
     render(<ContextBar {...defaultProps} pinnedEntries={[parent]} />);
     expect(screen.getByText("検出キャラ")).toBeInTheDocument();
     expect(screen.getByText("子キャラ")).toBeInTheDocument();
+    expect(screen.getByText(/via 検出キャラ/)).toBeInTheDocument();
+  });
+
+  it("子エントリが既に pinnedEntries に含まれる場合は via 表示しない（重複排除）", () => {
+    const parent = makePinnedEntry("p1", "親キャラ", "character", true);
+    const childAsPinned = makePinnedEntry("c1", "子キャラ", "character", false);
+    useCodexStore.setState({
+      entries: [makeEntry("c1", "子キャラ", "character", "p1")],
+    });
+    render(
+      <ContextBar {...defaultProps} pinnedEntries={[parent, childAsPinned]} />,
+    );
+    // 子キャラはピン済みとして表示されるが via ラベルは付かない
+    expect(screen.getAllByText("子キャラ")).toHaveLength(1);
+    expect(screen.queryByText(/via 親キャラ/)).not.toBeInTheDocument();
+  });
+
+  it("onDismissViaChild が渡された場合、via子エントリに X ボタンが表示される", async () => {
+    const { default: userEvent } = await import("@testing-library/user-event");
+    const user = userEvent.setup();
+    const onDismissViaChild = vi.fn();
+    const parent = makePinnedEntry("p1", "親キャラ", "character", true);
+    useCodexStore.setState({
+      entries: [makeEntry("c1", "子キャラ", "character", "p1")],
+    });
+    render(
+      <ContextBar
+        {...defaultProps}
+        pinnedEntries={[parent]}
+        onDismissViaChild={onDismissViaChild}
+      />,
+    );
+    expect(screen.getByText("子キャラ")).toBeInTheDocument();
+    const dismissBtn = screen.getByRole("button", {
+      name: /子キャラ/,
+    });
+    await user.click(dismissBtn);
+    expect(onDismissViaChild).toHaveBeenCalledWith("c1");
   });
 });

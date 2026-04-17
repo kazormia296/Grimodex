@@ -263,35 +263,31 @@ describe("ContextPillGroup 子エントリ表示 (グループモード内)", ()
     };
   }
 
-  it("withChildren=true の親エントリはポップオーバー内に子エントリ行を表示する", async () => {
+  it("viaEntries が渡された場合ポップオーバー内に via 表示で子エントリ行を表示する", async () => {
     const user = userEvent.setup();
-    useCodexStore.setState({
-      entries: [makeEntryFull("c1", "子キャラ", "p1")],
-    });
     const parent: PinnedCodexEntryWithData = {
       ...makeEntryFull("p1", "親キャラ"),
       withChildren: true,
       pinnedType: "codex",
       pinSource: "chat_mention",
     };
+    const child = makeEntryFull("c1", "子キャラ", "p1");
     render(
       <ContextPillGroup
         {...defaultProps}
         pinnedEntries={[parent]}
         autoEntries={[]}
+        viaEntries={[{ child, parentName: "親キャラ" }]}
       />,
     );
     await user.click(screen.getByRole("button", { name: /キャラクター/ }));
     expect(screen.getByText("親キャラ")).toBeInTheDocument();
     expect(screen.getByText("子キャラ")).toBeInTheDocument();
-    expect(screen.getByText(/↑親キャラ/)).toBeInTheDocument();
+    expect(screen.getByText(/via 親キャラ/)).toBeInTheDocument();
   });
 
-  it("withChildren=false の親エントリはポップオーバー内に子エントリ行を表示しない", async () => {
+  it("viaEntries が空の場合ポップオーバー内に子エントリ行を表示しない", async () => {
     const user = userEvent.setup();
-    useCodexStore.setState({
-      entries: [makeEntryFull("c1", "子キャラ", "p1")],
-    });
     const parent: PinnedCodexEntryWithData = {
       ...makeEntryFull("p1", "親キャラ"),
       withChildren: false,
@@ -308,5 +304,6 @@ describe("ContextPillGroup 子エントリ表示 (グループモード内)", ()
     await user.click(screen.getByRole("button", { name: /キャラクター/ }));
     expect(screen.getByText("親キャラ")).toBeInTheDocument();
     expect(screen.queryByText("子キャラ")).not.toBeInTheDocument();
+    expect(screen.queryByText(/via/)).not.toBeInTheDocument();
   });
 });

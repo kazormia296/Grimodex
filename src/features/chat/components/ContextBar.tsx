@@ -34,6 +34,12 @@ import { useCodexStore } from "@/features/codex/codexStore";
 const GROUP_THRESHOLD = 6;
 const TYPE_ORDER = ["character", "location", "item", "lore"];
 
+type ViaChild = {
+  child: CodexEntry;
+  viaParentId: string;
+  viaParentName: string;
+};
+
 interface ContextBarProps {
   pinnedEntries: PinnedCodexEntryWithData[];
   /** G15: auto-detected entries (excluding pinned) */
@@ -49,6 +55,9 @@ interface ContextBarProps {
   /** autoエントリをcontextから即時除去 */
   onRemoveAuto: (entryId: string) => void;
   onPin: (entryId: string) => Promise<void>;
+  /** via表示の子エントリを一時的に非表示にする */
+  onDismissViaChild?: (childId: string) => void;
+  dismissedViaChildIds?: Set<string>;
   onOpenPinDialog: () => void;
   contextTokenCount: number;
   contextLayers: LayerBreakdown[];
@@ -66,6 +75,8 @@ export function ContextBar({
   onRemove,
   onRemoveAuto,
   onPin,
+  onDismissViaChild,
+  dismissedViaChildIds,
   onOpenPinDialog,
   contextTokenCount,
   contextLayers,
@@ -79,6 +90,24 @@ export function ContextBar({
   const [creatorOpen, setCreatorOpen] = useState(false);
   const typeColorMap = useCodexHighlightStore((s) => s.typeColorMap);
   const allCodexEntries = useCodexStore((s) => s.entries);
+
+  // via表示の子エントリを計算（既に pinned/detected/always に含まれるものと dismissed は除外）
+  const alreadyShownIds = new Set([
+    ...pinnedEntries.map((e) => e.id),
+    ...detectedEntries.map((e) => e.id),
+    ...alwaysEntries.map((e) => e.id),
+  ]);
+  const dismissedSet = dismissedViaChildIds ?? new Set<string>();
+  const viaChildren: ViaChild[] = pinnedEntries.flatMap((entry) => {
+    if (!entry.withChildren) return [];
+    return getChildrenFromArray(entry.id, allCodexEntries)
+      .filter((c) => !alreadyShownIds.has(c.id) && !dismissedSet.has(c.id))
+      .map((c) => ({
+        child: c,
+        viaParentId: entry.id,
+        viaParentName: entry.name,
+      }));
+  });
 
   // Codex エントリ hover ポップオーバー
   const [hoveredEntry, setHoveredEntry] = useState<{
@@ -121,23 +150,37 @@ export function ContextBar({
     ...pinnedEntries,
     ...detectedEntries,
     ...alwaysEntries,
+    ...viaChildren.map((vc) => vc.child),
   ];
   const useGrouping =
     allContextEntries.length + pinnedSnippets.length > GROUP_THRESHOLD;
 
-  // type別グループマップ（pinned + auto を統合、pinned が先頭）
-  type MergedGroup = { pinned: PinnedCodexEntryWithData[]; auto: CodexEntry[] };
+  // type別グループマップ（pinned + via + auto を統合、pinned が先頭）
+  type MergedGroup = {
+    pinned: PinnedCodexEntryWithData[];
+    auto: CodexEntry[];
+    via: ViaChild[];
+  };
   const groupMap = new Map<string, MergedGroup>();
   if (useGrouping) {
     for (const entry of pinnedEntries) {
-      const g = groupMap.get(entry.type) ?? { pinned: [], auto: [] };
+      const g = groupMap.get(entry.type) ?? { pinned: [], auto: [], via: [] };
       g.pinned.push(entry);
       groupMap.set(entry.type, g);
     }
     for (const entry of [...detectedEntries, ...alwaysEntries]) {
-      const g = groupMap.get(entry.type) ?? { pinned: [], auto: [] };
+      const g = groupMap.get(entry.type) ?? { pinned: [], auto: [], via: [] };
       g.auto.push(entry);
       groupMap.set(entry.type, g);
+    }
+    for (const vc of viaChildren) {
+      const g = groupMap.get(vc.child.type) ?? {
+        pinned: [],
+        auto: [],
+        via: [],
+      };
+      g.via.push(vc);
+      groupMap.set(vc.child.type, g);
     }
   }
 
@@ -228,7 +271,7 @@ export function ContextBar({
                   Scene: {sceneTokens.toLocaleString()}
                 </span>
               )}
-              {/* Codex エントリ: グループ時は pinned + auto を統合 */}
+              {/* Codex エントリ: グループ時は pinned + via + auto を統合 */}
               {useGrouping
                 ? Array.from(groupMap.entries())
                     .sort(([a], [b]) => {
@@ -246,72 +289,94 @@ export function ContextBar({
                         label={getTypeLabel(type)}
                         pinnedEntries={group.pinned}
                         autoEntries={group.auto}
+                        viaEntries={group.via.map((vc) => ({
+                          child: vc.child,
+                          parentName: vc.viaParentName,
+                        }))}
                         onReturnToAuto={onReturnToAuto}
                         onRemove={onRemove}
                         onRemoveAuto={onRemoveAuto}
                         onPin={onPin}
+                        onDismissVia={onDismissViaChild}
                         resolvedColor={typeColorMap[type]}
                       />
                     ))
                 : pinnedEntries.map((entry) => {
                     const rc = typeColorMap[entry.type];
                     const isManual = entry.pinSource === "manual";
-                    const children = entry.withChildren
-                      ? getChildrenFromArray(entry.id, allCodexEntries)
-                      : [];
                     return (
-                      <span key={entry.id} className="contents">
-                        <span
-                          className="inline-flex items-center gap-1 rounded-full bg-accent px-2 py-0.5 text-xs"
-                          style={
-                            rc
-                              ? { backgroundColor: rc.hl, color: rc.fg }
-                              : undefined
-                          }
-                          onMouseEnter={(e) => handleEntryMouseEnter(entry, e)}
-                          onMouseLeave={handleEntryMouseLeave}
-                        >
-                          {entry.name}
-                          {isManual && (
-                            <button
-                              type="button"
-                              onClick={() => onReturnToAuto(entry.id)}
-                              className="hover:text-foreground text-muted-foreground/70"
-                              aria-label={t("chat.context.returnToAuto", {
-                                name: entry.name,
-                              })}
-                            >
-                              <Undo2 className="h-3 w-3" />
-                            </button>
-                          )}
+                      <span
+                        key={entry.id}
+                        className="inline-flex items-center gap-1 rounded-full bg-accent px-2 py-0.5 text-xs"
+                        style={
+                          rc
+                            ? { backgroundColor: rc.hl, color: rc.fg }
+                            : undefined
+                        }
+                        onMouseEnter={(e) => handleEntryMouseEnter(entry, e)}
+                        onMouseLeave={handleEntryMouseLeave}
+                      >
+                        {entry.name}
+                        {isManual && (
                           <button
                             type="button"
-                            onClick={() => onRemove(entry.id)}
-                            className="hover:text-destructive"
-                            aria-label={t("chat.context.unpinEntry", {
+                            onClick={() => onReturnToAuto(entry.id)}
+                            className="hover:text-foreground text-muted-foreground/70"
+                            aria-label={t("chat.context.returnToAuto", {
                               name: entry.name,
                             })}
                           >
-                            <X className="h-3 w-3" />
+                            <Undo2 className="h-3 w-3" />
                           </button>
-                        </span>
-                        {children.map((child) => (
-                          <span
-                            key={`${entry.id}-child-${child.id}`}
-                            className="inline-flex items-center gap-1 rounded-full bg-accent/60 px-2 py-0.5 text-[10px] text-muted-foreground"
-                            title={`via ${entry.name}`}
-                            onMouseEnter={(e) =>
-                              handleEntryMouseEnter(child, e)
-                            }
-                            onMouseLeave={handleEntryMouseLeave}
-                          >
-                            {child.name}
-                            <span className="opacity-60">↑{entry.name}</span>
-                          </span>
-                        ))}
+                        )}
+                        <button
+                          type="button"
+                          onClick={() => onRemove(entry.id)}
+                          className="hover:text-destructive"
+                          aria-label={t("chat.context.unpinEntry", {
+                            name: entry.name,
+                          })}
+                        >
+                          <X className="h-3 w-3" />
+                        </button>
                       </span>
                     );
                   })}
+              {/* via子エントリ（非グループ時）: 通常ピルと同スタイル + via表示 */}
+              {!useGrouping &&
+                viaChildren.map(({ child, viaParentId, viaParentName }) => {
+                  const rc = typeColorMap[child.type];
+                  return (
+                    <span
+                      key={`via-${viaParentId}-${child.id}`}
+                      className="inline-flex items-center gap-1 rounded-full bg-accent px-2 py-0.5 text-xs"
+                      style={
+                        rc
+                          ? { backgroundColor: rc.hl, color: rc.fg }
+                          : undefined
+                      }
+                      onMouseEnter={(e) => handleEntryMouseEnter(child, e)}
+                      onMouseLeave={handleEntryMouseLeave}
+                    >
+                      {child.name}
+                      <span className="text-muted-foreground/70">
+                        via {viaParentName}
+                      </span>
+                      {onDismissViaChild && (
+                        <button
+                          type="button"
+                          onClick={() => onDismissViaChild(child.id)}
+                          className="hover:text-destructive"
+                          aria-label={t("chat.context.unpinEntry", {
+                            name: child.name,
+                          })}
+                        >
+                          <X className="h-3 w-3" />
+                        </button>
+                      )}
+                    </span>
+                  );
+                })}
               {/* G15: auto entries (非グループ時のみ個別表示) */}
               {!useGrouping &&
                 [...detectedEntries, ...alwaysEntries].map((entry) => {
