@@ -44,6 +44,8 @@ import type { TreeNodeData, NodeType } from "./treeStore";
 import { canHaveChildren } from "./treeStore";
 import type { DropIndicator } from "./TreeNodeItem";
 import { AnimatedOverlay } from "@/components/ui/animated-overlay";
+import { motion, AnimatePresence } from "motion/react";
+import { DURATIONS, EASINGS, useReducedMotion } from "@/lib/animation";
 
 const DEFAULT_PROJECT_ID = "default-project";
 const BOTTOM_DROP_ZONE_ID = "drop-bottom-zone";
@@ -527,6 +529,7 @@ export function ScenesPanel() {
   } = useTreeStore();
 
   const { canUndo, canRedo } = useTreeHistoryStore();
+  const reduced = useReducedMotion();
 
   const filterRef = useRef<HTMLInputElement>(null);
   const treeRef = useRef<HTMLDivElement>(null);
@@ -1207,9 +1210,23 @@ export function ScenesPanel() {
         </div>
 
         {/* Synopsis area — hidden in Outline mode (synopsis is shown inline there) */}
-        {viewMode !== "outline" && activeNode?.nodeType === "scene" && (
-          <SynopsisArea nodeId={activeSceneId} />
-        )}
+        <AnimatePresence mode="wait">
+          {viewMode !== "outline" && activeNode?.nodeType === "scene" && (
+            <motion.div
+              key={activeSceneId}
+              initial={{ opacity: 0, y: 8 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: 8 }}
+              transition={
+                reduced
+                  ? { duration: 0 }
+                  : { duration: DURATIONS.fast, ease: EASINGS.easeOut }
+              }
+            >
+              <SynopsisArea nodeId={activeSceneId} />
+            </motion.div>
+          )}
+        </AnimatePresence>
 
         {rootContextMenu && (
           <RootContextMenu

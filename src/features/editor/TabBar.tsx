@@ -1,5 +1,7 @@
 import { useRef, useState, useEffect } from "react";
 import { useTranslation } from "react-i18next";
+import { motion, AnimatePresence } from "motion/react";
+import { DURATIONS, EASINGS, useReducedMotion } from "@/lib/animation";
 import { X, ChevronDown, Columns2, ScrollText } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useTabStore } from "./tabStore";
@@ -102,6 +104,7 @@ export function TabBar({ groupIndex = 0 }: TabBarProps) {
   // Split dropdown state (primary group only)
   const splitMenuRef = useRef<HTMLDivElement>(null);
   const [splitMenuOpen, setSplitMenuOpen] = useState(false);
+  const reduced = useReducedMotion();
 
   // Reset drag state on dragend (safety net for normal drops)
   useEffect(() => {
@@ -287,116 +290,133 @@ export function TabBar({ groupIndex = 0 }: TabBarProps) {
         }}
         onDrop={handleBarDrop}
       >
-        {tabs.map((tab) => {
-          const isCodex = tab.contentType === "codex";
-          const isSnippet = tab.contentType === "snippet";
-          const node =
-            isCodex || isSnippet
-              ? null
-              : nodes.find((n) => n.id === tab.nodeId);
-          const codexEntry = isCodex
-            ? codexEntries.find((e) => e.id === tab.nodeId)
-            : null;
-          const snippetEntry = isSnippet
-            ? snippetEntries.find((e) => e.id === tab.nodeId)
-            : null;
-          const isActive = tab.nodeId === activeTabId;
-          const title =
-            node?.title ?? codexEntry?.name ?? snippetEntry?.title ?? "…";
-          const phaseLabel = getTabPhaseLabel(
-            tab,
-            phasesByEntry,
-            globalSceneOrder,
-            activeSceneId,
-          );
-          const synced = isSyncedScene(tab.nodeId);
-          const isDropLeft =
-            dropTarget?.nodeId === tab.nodeId && dropTarget.side === "left";
-          const isDropRight =
-            dropTarget?.nodeId === tab.nodeId && dropTarget.side === "right";
+        <AnimatePresence initial={false}>
+          {tabs.map((tab) => {
+            const isCodex = tab.contentType === "codex";
+            const isSnippet = tab.contentType === "snippet";
+            const node =
+              isCodex || isSnippet
+                ? null
+                : nodes.find((n) => n.id === tab.nodeId);
+            const codexEntry = isCodex
+              ? codexEntries.find((e) => e.id === tab.nodeId)
+              : null;
+            const snippetEntry = isSnippet
+              ? snippetEntries.find((e) => e.id === tab.nodeId)
+              : null;
+            const isActive = tab.nodeId === activeTabId;
+            const title =
+              node?.title ?? codexEntry?.name ?? snippetEntry?.title ?? "…";
+            const phaseLabel = getTabPhaseLabel(
+              tab,
+              phasesByEntry,
+              globalSceneOrder,
+              activeSceneId,
+            );
+            const synced = isSyncedScene(tab.nodeId);
+            const isDropLeft =
+              dropTarget?.nodeId === tab.nodeId && dropTarget.side === "left";
+            const isDropRight =
+              dropTarget?.nodeId === tab.nodeId && dropTarget.side === "right";
 
-          return (
-            <div
-              key={tab.nodeId}
-              draggable
-              className={cn(
-                "group relative flex shrink-0 cursor-pointer items-center gap-1",
-                "border-r border-border px-3 py-1.5 text-xs",
-                "hover:bg-accent/50",
-                isActive
-                  ? "bg-background font-medium text-foreground"
-                  : "text-muted-foreground",
-                isActive &&
-                  "after:absolute after:bottom-0 after:left-0 after:right-0 after:h-0.5 after:bg-primary",
-              )}
-              style={{
-                borderLeft: isDropLeft
-                  ? "2px solid hsl(var(--primary))"
-                  : undefined,
-                borderRight: isDropRight
-                  ? "2px solid hsl(var(--primary))"
-                  : undefined,
-              }}
-              onClick={() => handleTabClick(tab.nodeId)}
-              onDoubleClick={() =>
-                handleTabDoubleClick(tab.nodeId, tab.isPreview)
-              }
-              onMouseDown={(e) => {
-                if (e.button === 1) {
-                  e.preventDefault();
-                  handleTabClose(e, tab.nodeId);
+            return (
+              <motion.div
+                key={tab.nodeId}
+                className="flex-shrink-0"
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                exit={{ opacity: 0, width: 0 }}
+                transition={
+                  reduced
+                    ? { duration: 0 }
+                    : { duration: DURATIONS.fast, ease: EASINGS.easeOut }
                 }
-              }}
-              onContextMenu={(e) => {
-                e.preventDefault();
-                setContextMenu({
-                  nodeId: tab.nodeId,
-                  x: e.clientX,
-                  y: e.clientY,
-                });
-              }}
-              onDragStart={(e) => handleDragStart(e, tab.nodeId)}
-              onDragOver={(e) => handleDragOver(e, tab.nodeId)}
-              onDragLeave={handleDragLeave}
-              onDrop={(e) => {
-                e.stopPropagation();
-                handleDrop(e, tab.nodeId);
-              }}
-            >
-              {synced && (
-                <span
-                  className="mr-0.5 h-1.5 w-1.5 flex-shrink-0 rounded-full bg-primary/70"
-                  title={t("editor.tabBar.syncedIndicator")}
-                />
-              )}
-              {node?.nodeType === "note" && (
-                <span className="mr-0.5 text-teal-500">📝</span>
-              )}
-              {isCodex && <span className="mr-0.5 text-purple-500">📖</span>}
-              <span
-                className={cn(
-                  "max-w-[120px] truncate",
-                  tab.isPreview && "italic",
-                )}
+                style={{ overflow: "hidden" }}
               >
-                {title}
-              </span>
-              {phaseLabel && (
-                <span className="ml-0.5 shrink-0 rounded bg-purple-500/15 px-1 py-0.5 text-[10px] text-purple-500">
-                  {phaseLabel}
-                </span>
-              )}
-              <button
-                type="button"
-                title={t("common.close")}
-                className="ml-1 rounded p-0.5 opacity-0 hover:bg-accent group-hover:opacity-100 active:scale-[0.97] transition-transform duration-75"
-                onClick={(e) => handleTabClose(e, tab.nodeId)}
-              >
-                <X className="h-3 w-3" />
-              </button>
-            </div>
-          );
-        })}
+                <div
+                  draggable
+                  className={cn(
+                    "group relative flex shrink-0 cursor-pointer items-center gap-1",
+                    "border-r border-border px-3 py-1.5 text-xs",
+                    "hover:bg-accent/50",
+                    isActive
+                      ? "bg-background font-medium text-foreground"
+                      : "text-muted-foreground",
+                    isActive &&
+                      "after:absolute after:bottom-0 after:left-0 after:right-0 after:h-0.5 after:bg-primary",
+                  )}
+                  style={{
+                    borderLeft: isDropLeft
+                      ? "2px solid hsl(var(--primary))"
+                      : undefined,
+                    borderRight: isDropRight
+                      ? "2px solid hsl(var(--primary))"
+                      : undefined,
+                  }}
+                  onClick={() => handleTabClick(tab.nodeId)}
+                  onDoubleClick={() =>
+                    handleTabDoubleClick(tab.nodeId, tab.isPreview)
+                  }
+                  onMouseDown={(e) => {
+                    if (e.button === 1) {
+                      e.preventDefault();
+                      handleTabClose(e, tab.nodeId);
+                    }
+                  }}
+                  onContextMenu={(e) => {
+                    e.preventDefault();
+                    setContextMenu({
+                      nodeId: tab.nodeId,
+                      x: e.clientX,
+                      y: e.clientY,
+                    });
+                  }}
+                  onDragStart={(e) => handleDragStart(e, tab.nodeId)}
+                  onDragOver={(e) => handleDragOver(e, tab.nodeId)}
+                  onDragLeave={handleDragLeave}
+                  onDrop={(e) => {
+                    e.stopPropagation();
+                    handleDrop(e, tab.nodeId);
+                  }}
+                >
+                  {synced && (
+                    <span
+                      className="mr-0.5 h-1.5 w-1.5 flex-shrink-0 rounded-full bg-primary/70"
+                      title={t("editor.tabBar.syncedIndicator")}
+                    />
+                  )}
+                  {node?.nodeType === "note" && (
+                    <span className="mr-0.5 text-teal-500">📝</span>
+                  )}
+                  {isCodex && (
+                    <span className="mr-0.5 text-purple-500">📖</span>
+                  )}
+                  <span
+                    className={cn(
+                      "max-w-[120px] truncate",
+                      tab.isPreview && "italic",
+                    )}
+                  >
+                    {title}
+                  </span>
+                  {phaseLabel && (
+                    <span className="ml-0.5 shrink-0 rounded bg-purple-500/15 px-1 py-0.5 text-[10px] text-purple-500">
+                      {phaseLabel}
+                    </span>
+                  )}
+                  <button
+                    type="button"
+                    title={t("common.close")}
+                    className="ml-1 rounded p-0.5 opacity-0 hover:bg-accent group-hover:opacity-100 active:scale-[0.97] transition-transform duration-75"
+                    onClick={(e) => handleTabClose(e, tab.nodeId)}
+                  >
+                    <X className="h-3 w-3" />
+                  </button>
+                </div>
+              </motion.div>
+            );
+          })}
+        </AnimatePresence>
       </div>
 
       {/* Linear mode toggle: primary group only */}
