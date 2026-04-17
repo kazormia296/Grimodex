@@ -1076,6 +1076,36 @@ export const useChatStore = create<ChatState>()((set, get) => ({
           });
         }
 
+        // G21: include input-typed detected entries not yet pinned to DB
+        {
+          const dbPinnedIdSet = new Set(pinnedCodexEntries.map((e) => e.id));
+          const inputIds = get().inputPinnedEntryIds;
+          const extraPinned = inputIds
+            .filter((id) => !dbPinnedIdSet.has(id))
+            .flatMap((id) => {
+              const e = allEntries.find((a) => a.id === id);
+              if (!e) return [];
+              const childrenCtx = buildChildrenCtxForEntry(
+                e,
+                allEntries,
+                L4_TOTAL_BUDGET,
+              );
+              const ctx: import("./contextBuilder").PinnedCodexContext = {
+                id: e.id,
+                type: e.type,
+                name: e.name,
+                summary: e.summary ?? "",
+                fullContent: extractPlainText(e.content) || undefined,
+                withChildren: false,
+                ...(childrenCtx ? { childrenContext: childrenCtx } : {}),
+              };
+              return [ctx];
+            });
+          if (extraPinned.length > 0) {
+            pinnedCodexEntries = [...pinnedCodexEntries, ...extraPinned];
+          }
+        }
+
         // G15: update detectedEntries / alwaysEntries (excluding pinned)
         {
           const pinnedIdSet = new Set(pinnedCodexEntries.map((e) => e.id));
