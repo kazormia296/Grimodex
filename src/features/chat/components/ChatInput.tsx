@@ -317,7 +317,7 @@ export function ChatInput({
             onClick={stopGeneration}
             aria-label={t("chat.stopAriaLabel")}
             title={t("chat.stopTitle")}
-            className="inline-flex items-center justify-center rounded-md bg-destructive px-3 py-2 text-destructive-foreground hover:bg-destructive/90"
+            className="inline-flex items-center justify-center rounded-md bg-destructive px-3 py-2 text-destructive-foreground hover:bg-destructive/90 active:scale-95 transition-transform duration-75"
           >
             <Square className="h-4 w-4" />
           </button>
@@ -329,7 +329,7 @@ export function ChatInput({
             disabled={!editor || !hasText}
             aria-label={t("chat.sendAriaLabel")}
             title={t("chat.sendTitle")}
-            className="inline-flex items-center justify-center rounded-md bg-primary px-3 py-2 text-primary-foreground hover:bg-primary/90 disabled:pointer-events-none disabled:opacity-50"
+            className="inline-flex items-center justify-center rounded-md bg-primary px-3 py-2 text-primary-foreground hover:bg-primary/90 disabled:pointer-events-none disabled:opacity-50 active:scale-95 transition-transform duration-75"
           >
             <Send className="h-4 w-4" />
           </button>
@@ -345,7 +345,7 @@ export function ChatInput({
             onClick={() => setOptionsOpen((v) => !v)}
             disabled={!canUseTools && !canThink}
             title={t("chat.aiOptions")}
-            className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-xs text-muted-foreground hover:bg-accent hover:text-foreground disabled:cursor-not-allowed disabled:opacity-40"
+            className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-xs text-muted-foreground hover:bg-accent hover:text-foreground disabled:cursor-not-allowed disabled:opacity-40 active:scale-[0.97] transition-transform duration-75"
           >
             <Wrench className="h-3 w-3" />
           </button>
@@ -394,7 +394,7 @@ export function ChatInput({
           <button
             type="button"
             onClick={handleOpenModelMenu}
-            className="flex items-center gap-0.5 rounded px-1.5 py-0.5 text-xs text-muted-foreground hover:bg-accent hover:text-foreground"
+            className="flex items-center gap-0.5 rounded px-1.5 py-0.5 text-xs text-muted-foreground hover:bg-accent hover:text-foreground active:scale-[0.97] transition-transform duration-75"
             title={t("chat.changeModel")}
           >
             <span className="max-w-[120px] truncate">{modelLabel}</span>

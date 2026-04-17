@@ -389,7 +389,7 @@ export function TabBar({ groupIndex = 0 }: TabBarProps) {
               <button
                 type="button"
                 title={t("common.close")}
-                className="ml-1 rounded p-0.5 opacity-0 hover:bg-accent group-hover:opacity-100"
+                className="ml-1 rounded p-0.5 opacity-0 hover:bg-accent group-hover:opacity-100 active:scale-[0.97] transition-transform duration-75"
                 onClick={(e) => handleTabClose(e, tab.nodeId)}
               >
                 <X className="h-3 w-3" />
@@ -406,7 +406,7 @@ export function TabBar({ groupIndex = 0 }: TabBarProps) {
           title={t("editor.tabBar.linearMode")}
           onClick={() => useTabStore.getState().toggleLinearMode()}
           className={cn(
-            "flex h-full flex-shrink-0 items-center border-l border-border px-2 text-muted-foreground hover:bg-accent hover:text-foreground",
+            "flex h-full flex-shrink-0 items-center border-l border-border px-2 text-muted-foreground hover:bg-accent hover:text-foreground active:scale-[0.97] transition-transform duration-75",
             isLinearMode && "bg-accent text-foreground",
           )}
         >
@@ -425,7 +425,7 @@ export function TabBar({ groupIndex = 0 }: TabBarProps) {
             title={t("editor.tabBar.split")}
             onClick={() => setSplitMenuOpen((v) => !v)}
             className={cn(
-              "flex h-full items-center px-2 text-muted-foreground hover:bg-accent hover:text-foreground",
+              "flex h-full items-center px-2 text-muted-foreground hover:bg-accent hover:text-foreground active:scale-[0.97] transition-transform duration-75",
               splitMenuOpen && "bg-accent text-foreground",
             )}
           >
@@ -464,7 +464,7 @@ export function TabBar({ groupIndex = 0 }: TabBarProps) {
           type="button"
           title={t("editor.tabBar.closeGroup")}
           onClick={() => useTabStore.getState().closeSecondaryGroup()}
-          className="flex h-full flex-shrink-0 items-center border-l border-border px-2 text-muted-foreground hover:bg-accent hover:text-foreground"
+          className="flex h-full flex-shrink-0 items-center border-l border-border px-2 text-muted-foreground hover:bg-accent hover:text-foreground active:scale-[0.97] transition-transform duration-75"
         >
           <X className="h-3.5 w-3.5" />
         </button>
@@ -481,7 +481,7 @@ export function TabBar({ groupIndex = 0 }: TabBarProps) {
             title={t("editor.tabBar.tabList")}
             onClick={() => setOverflowOpen((v) => !v)}
             className={cn(
-              "flex h-full items-center gap-0.5 px-2 py-1.5 text-xs text-muted-foreground hover:bg-accent hover:text-foreground",
+              "flex h-full items-center gap-0.5 px-2 py-1.5 text-xs text-muted-foreground hover:bg-accent hover:text-foreground active:scale-[0.97] transition-transform duration-75",
               overflowOpen && "bg-accent text-foreground",
             )}
           >

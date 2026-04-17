@@ -318,7 +318,7 @@ export function SnippetPanel() {
                   type="button"
                   data-testid="snippet-new-button"
                   onClick={() => void handleNew()}
-                  className="rounded p-1 text-muted-foreground hover:bg-accent hover:text-accent-foreground"
+                  className="rounded p-1 text-muted-foreground hover:bg-accent hover:text-accent-foreground active:scale-[0.97] transition-transform duration-75"
                   title={t("snippets.newSnippet")}
                 >
                   <Plus className="h-3.5 w-3.5" />
@@ -358,7 +358,7 @@ export function SnippetPanel() {
                   type="button"
                   data-testid={`snippet-filter-${opt.value}`}
                   onClick={() => setSourceFilter(opt.value)}
-                  className={`rounded-full px-2 py-0.5 text-[10px] font-medium transition-colors ${
+                  className={`rounded-full px-2 py-0.5 text-[10px] font-medium transition-colors active:scale-[0.97] transition-transform duration-75 ${
                     sourceFilter === opt.value
                       ? "bg-primary text-primary-foreground"
                       : "bg-muted text-muted-foreground hover:bg-accent"
@@ -479,7 +479,7 @@ export function SnippetPanel() {
                                     "human" as AuthorshipSource,
                                   );
                                 }}
-                                className="rounded p-0.5 text-muted-foreground opacity-0 hover:bg-accent hover:text-accent-foreground group-hover:opacity-100"
+                                className="rounded p-0.5 text-muted-foreground opacity-0 hover:bg-accent hover:text-accent-foreground group-hover:opacity-100 active:scale-[0.97] transition-transform duration-75"
                               >
                                 <Copy className="h-3 w-3" />
                               </button>
@@ -490,7 +490,7 @@ export function SnippetPanel() {
                                   e.stopPropagation();
                                   initiateDelete(snippet.id);
                                 }}
-                                className="rounded p-0.5 text-muted-foreground opacity-0 hover:bg-destructive/10 hover:text-destructive group-hover:opacity-100"
+                                className="rounded p-0.5 text-muted-foreground opacity-0 hover:bg-destructive/10 hover:text-destructive group-hover:opacity-100 active:scale-[0.97] transition-transform duration-75"
                               >
                                 <Trash2 className="h-3 w-3" />
                               </button>

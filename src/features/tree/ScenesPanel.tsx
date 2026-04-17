@@ -1084,7 +1084,7 @@ export function ScenesPanel() {
                 }
                 setShowCreateMenu((v) => !v);
               }}
-              className="flex h-6 w-6 items-center justify-center rounded text-muted-foreground hover:bg-accent hover:text-foreground"
+              className="flex h-6 w-6 items-center justify-center rounded text-muted-foreground hover:bg-accent hover:text-foreground active:scale-[0.97] transition-transform duration-75"
             >
               <Plus className="h-3.5 w-3.5" />
             </button>
@@ -1100,7 +1100,7 @@ export function ScenesPanel() {
                   .undo()
                   .catch(() => {})
               }
-              className="flex h-6 w-6 items-center justify-center rounded text-muted-foreground hover:bg-accent hover:text-foreground disabled:pointer-events-none disabled:opacity-30"
+              className="flex h-6 w-6 items-center justify-center rounded text-muted-foreground hover:bg-accent hover:text-foreground disabled:pointer-events-none disabled:opacity-30 active:scale-[0.97] transition-transform duration-75"
             >
               <Undo2 className="h-3.5 w-3.5" />
             </button>
@@ -1116,7 +1116,7 @@ export function ScenesPanel() {
                   .redo()
                   .catch(() => {})
               }
-              className="flex h-6 w-6 items-center justify-center rounded text-muted-foreground hover:bg-accent hover:text-foreground disabled:pointer-events-none disabled:opacity-30"
+              className="flex h-6 w-6 items-center justify-center rounded text-muted-foreground hover:bg-accent hover:text-foreground disabled:pointer-events-none disabled:opacity-30 active:scale-[0.97] transition-transform duration-75"
             >
               <Redo2 className="h-3.5 w-3.5" />
             </button>
@@ -1126,7 +1126,7 @@ export function ScenesPanel() {
               type="button"
               title={t("scenes.expandCollapse")}
               onClick={handleToggleAll}
-              className="flex h-6 w-6 items-center justify-center rounded text-muted-foreground hover:bg-accent hover:text-foreground"
+              className="flex h-6 w-6 items-center justify-center rounded text-muted-foreground hover:bg-accent hover:text-foreground active:scale-[0.97] transition-transform duration-75"
             >
               <ChevronsUpDown className="h-3.5 w-3.5" />
             </button>
@@ -1145,7 +1145,7 @@ export function ScenesPanel() {
                 setShowPanelMenu((v) => !v);
               }}
               className={cn(
-                "flex h-6 w-6 items-center justify-center rounded text-muted-foreground hover:bg-accent hover:text-foreground",
+                "flex h-6 w-6 items-center justify-center rounded text-muted-foreground hover:bg-accent hover:text-foreground active:scale-[0.97] transition-transform duration-75",
                 showPanelMenu && "bg-accent text-foreground",
               )}
             >
