@@ -13,6 +13,7 @@ const AI_IPC_TIMEOUT_MS = 300_000; // 5 minutes
 
 const SLOW_COMMANDS = new Set([
   "send_chat_message",
+  "send_chat_message_stream",
   "send_agent_message",
   "test_ai_connection",
   "list_ai_models",
