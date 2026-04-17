@@ -62,6 +62,7 @@ export function ChatPanel() {
   const removeEntryFromAuto = useChatStore((s) => s.removeEntryFromAuto);
   const setInputPinnedEntryIds = useChatStore((s) => s.setInputPinnedEntryIds);
   const activeSessionId = useChatStore((s) => s.activeSessionId);
+  const agentMode = useChatStore((s) => s.agentMode);
   const agentProgress = useChatStore((s) => s.agentProgress);
   const loadSessions = useChatStore((s) => s.loadSessions);
   const selectSession = useChatStore((s) => s.selectSession);
@@ -530,6 +531,7 @@ export function ChatPanel() {
         contextLayers={contextLayers}
         systemPrompt={systemPrompt}
         model={currentModel}
+        agentMode={agentMode}
         canUseCreator={false}
       />
 

@@ -7,7 +7,15 @@ import {
 } from "react";
 import { createPortal } from "react-dom";
 import { useTranslation } from "react-i18next";
-import { X, BookOpen, ChevronDown, ChevronUp, Pin, Undo2 } from "lucide-react";
+import {
+  X,
+  BookOpen,
+  ChevronDown,
+  ChevronUp,
+  Pin,
+  Undo2,
+  Bot,
+} from "lucide-react";
 import type { CodexEntry } from "@/features/codex/api";
 import type {
   PinnedCodexEntryWithData,
@@ -63,6 +71,7 @@ interface ContextBarProps {
   contextLayers: LayerBreakdown[];
   systemPrompt: string;
   model: string;
+  agentMode?: boolean;
   canUseCreator?: boolean;
 }
 
@@ -82,6 +91,7 @@ export function ContextBar({
   contextLayers,
   systemPrompt,
   model,
+  agentMode = false,
   canUseCreator = false,
 }: ContextBarProps) {
   const { t } = useTranslation();
@@ -216,7 +226,15 @@ export function ContextBar({
           onClick={() => setCollapsed((v) => !v)}
           className="flex w-full items-center justify-between px-4 py-1 text-xs text-muted-foreground hover:bg-muted/30"
         >
-          <span className="font-medium">Context</span>
+          <span className="flex items-center gap-1.5 font-medium">
+            Context
+            {agentMode && (
+              <span className="inline-flex items-center gap-0.5 rounded bg-violet-500/15 px-1.5 py-0.5 text-xs font-medium text-violet-600 dark:text-violet-400">
+                <Bot className="h-3 w-3" />
+                Agent
+              </span>
+            )}
+          </span>
           <div className="flex items-center gap-2">
             {contextTokenCount > 0 && (
               <div className="flex items-center gap-1">
