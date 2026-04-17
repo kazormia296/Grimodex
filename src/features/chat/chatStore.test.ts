@@ -15,6 +15,7 @@ vi.mock("./chatApi", () => ({
   updateSessionTitle: vi.fn(),
   generateSessionTitle: vi.fn(() => Promise.resolve(null)),
   listPinnedCodexEntries: vi.fn(() => Promise.resolve([])),
+  listPinnedSnippetEntries: vi.fn(() => Promise.resolve([])),
   pinCodexEntry: vi.fn(),
   unpinCodexEntry: vi.fn(),
 }));
@@ -585,6 +586,88 @@ describe("useChatStore", () => {
       useChatStore.setState({ isStreaming: true, inputPinnedEntryIds: [] });
       useChatStore.getState().setInputPinnedEntryIds(["x"]);
       expect(useChatStore.getState().inputPinnedEntryIds).toEqual([]);
+    });
+  });
+
+  // --- Regression: global chat pin + mention should not duplicate summary ---
+
+  describe("refreshContextLayers global chat pinned+mention dedup", () => {
+    it("excludes mentioned child from DB-pinned parent's children and childrenContext", async () => {
+      const { listCodexEntries } = await import("@/features/codex/api");
+      const mockListCodex = vi.mocked(listCodexEntries);
+      const mockListPinnedCodex = vi.mocked(chatApi.listPinnedCodexEntries);
+
+      const now = new Date().toISOString();
+      const parent = {
+        id: "A",
+        projectId: "proj-1",
+        parentId: null,
+        type: "character",
+        name: "親A",
+        aliases: null,
+        excludedAliases: null,
+        summary: "A-summary",
+        content: "{}",
+        icon: null,
+        tagsCache: null,
+        contextMode: "mentioned",
+        childrenBudget: "compact",
+        sourceChatMessageId: null,
+        notes: null,
+        createdAt: now,
+        updatedAt: now,
+      };
+      const childX = {
+        ...parent,
+        id: "X",
+        parentId: "A",
+        name: "子X",
+        summary: "X-summary",
+      };
+      const childY = {
+        ...parent,
+        id: "Y",
+        parentId: "A",
+        name: "子Y",
+        summary: "Y-summary",
+      };
+
+      mockListCodex.mockResolvedValue([parent, childX, childY]);
+      mockListPinnedCodex.mockResolvedValue([
+        {
+          ...parent,
+          withChildren: true,
+          pinnedType: "codex",
+          pinSource: "manual",
+        },
+      ]);
+
+      useChatStore.setState({
+        activeSceneId: "",
+        activeProjectId: "proj-1",
+        activeSessionId: "session-1",
+        isGlobalChat: true,
+        inputPinnedEntryIds: ["X"],
+      });
+
+      await useChatStore.getState().refreshContextLayers();
+
+      expect(mockBuildSystemPrompt).toHaveBeenCalled();
+      const args = mockBuildSystemPrompt.mock.calls.at(-1)?.[0];
+      const pinned = args?.pinnedCodexEntries ?? [];
+      const parentCtx = pinned.find((p) => p.id === "A");
+      const childCtx = pinned.find((p) => p.id === "X");
+
+      expect(parentCtx).toBeDefined();
+      expect(childCtx).toBeDefined();
+
+      // A の children 配列に X が含まれてはならない（G21 pin されているため重複防止）
+      expect(parentCtx?.children?.map((c) => c.id) ?? []).not.toContain("X");
+      // A の childrenContext にも X-summary が含まれてはならない
+      expect(parentCtx?.childrenContext ?? "").not.toContain("X-summary");
+      // Y は依然として children/childrenContext に含まれるべき
+      expect(parentCtx?.children?.map((c) => c.id) ?? []).toContain("Y");
+      expect(parentCtx?.childrenContext ?? "").toContain("Y-summary");
     });
   });
 });

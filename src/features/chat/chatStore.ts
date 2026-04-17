@@ -1473,24 +1473,33 @@ export const useChatStore = create<ChatState>()((set, get) => ({
         let globalPinnedCodex: import("./contextBuilder").PinnedCodexContext[] =
           [];
         let globalPinnedSnippets: PinnedSnippetContext[] = [];
+        // Compute full pin set upfront (DB + G21 in-memory) to avoid duplicate injection
+        const pinnedFromDB = activeSessionId
+          ? await chatApi.listPinnedCodexEntries(activeSessionId)
+          : [];
+        const dbPinnedIdSet = new Set(pinnedFromDB.map((e) => e.id));
+        const inputIds = get().inputPinnedEntryIds;
+        const g21Ids = inputIds.filter((id) => !dbPinnedIdSet.has(id));
+        const allPinnedIdSet = new Set([...dbPinnedIdSet, ...g21Ids]);
+
         if (activeSessionId) {
-          const [pinned, snippetItems] = await Promise.all([
-            chatApi.listPinnedCodexEntries(activeSessionId),
-            listPinnedSnippetEntries(activeSessionId),
-          ]);
-          globalPinnedCodex = pinned.map((e) => {
+          const snippetItems = await listPinnedSnippetEntries(activeSessionId);
+          globalPinnedCodex = pinnedFromDB.map((e) => {
             const children = e.withChildren
-              ? getChildrenFromArray(e.id, allEntries).map((c) => ({
-                  id: c.id,
-                  type: c.type,
-                  name: c.name,
-                  summary: c.summary ?? "",
-                }))
+              ? getChildrenFromArray(e.id, allEntries)
+                  .filter((c) => !allPinnedIdSet.has(c.id))
+                  .map((c) => ({
+                    id: c.id,
+                    type: c.type,
+                    name: c.name,
+                    summary: c.summary ?? "",
+                  }))
               : undefined;
             const childrenCtx = buildChildrenCtxForEntry(
               e,
               allEntries,
               L4_TOTAL_BUDGET,
+              allPinnedIdSet,
             );
             return {
               id: e.id,
@@ -1510,31 +1519,27 @@ export const useChatStore = create<ChatState>()((set, get) => ({
           }));
         }
 
-        const globalPinnedIdSet = new Set(globalPinnedCodex.map((e) => e.id));
-
         // G21: include input-typed detected entries not yet pinned to DB
-        const inputIds = get().inputPinnedEntryIds;
-        const extraPinned = inputIds
-          .filter((id) => !globalPinnedIdSet.has(id))
-          .flatMap((id) => {
-            const e = allEntries.find((a) => a.id === id);
-            if (!e) return [];
-            const childrenCtx = buildChildrenCtxForEntry(
-              e,
-              allEntries,
-              L4_TOTAL_BUDGET,
-            );
-            const ctx: import("./contextBuilder").PinnedCodexContext = {
-              id: e.id,
-              type: e.type,
-              name: e.name,
-              summary: e.summary ?? "",
-              fullContent: extractPlainText(e.content) || undefined,
-              withChildren: false,
-              ...(childrenCtx ? { childrenContext: childrenCtx } : {}),
-            };
-            return [ctx];
-          });
+        const extraPinned = g21Ids.flatMap((id) => {
+          const e = allEntries.find((a) => a.id === id);
+          if (!e) return [];
+          const childrenCtx = buildChildrenCtxForEntry(
+            e,
+            allEntries,
+            L4_TOTAL_BUDGET,
+            allPinnedIdSet,
+          );
+          const ctx: import("./contextBuilder").PinnedCodexContext = {
+            id: e.id,
+            type: e.type,
+            name: e.name,
+            summary: e.summary ?? "",
+            fullContent: extractPlainText(e.content) || undefined,
+            withChildren: false,
+            ...(childrenCtx ? { childrenContext: childrenCtx } : {}),
+          };
+          return [ctx];
+        });
         const mergedGlobalPinnedCodex = [...globalPinnedCodex, ...extraPinned];
         const mergedGlobalPinnedIdSet = new Set(
           mergedGlobalPinnedCodex.map((e) => e.id),
