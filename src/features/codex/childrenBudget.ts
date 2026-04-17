@@ -1,5 +1,6 @@
 import i18next from "@/lib/i18n";
 import { countTokens } from "@/features/chat/contextBuilder";
+import { extractPlainText } from "./prosemirrorTextExtractor";
 import type { CodexEntry } from "./api";
 
 export type ChildrenBudgetPreset = "none" | "compact" | "standard" | "generous";
@@ -75,7 +76,8 @@ export function buildChildrenContext(
   let usedTokens = 0;
 
   for (const child of descendants) {
-    const summary = child.summary?.trim();
+    const summary =
+      child.summary?.trim() || extractPlainText(child.content) || "";
     if (!summary) continue;
     const line = `  - ${child.name}: ${summary}`;
     const lineTokens = countTokens(line);

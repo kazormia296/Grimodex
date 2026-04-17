@@ -12,6 +12,17 @@ vi.mock("@/features/chat/contextBuilder", () => ({
   countTokens: (s: string) => s.length,
 }));
 
+vi.mock("./prosemirrorTextExtractor", () => ({
+  extractPlainText: (json: string) => {
+    try {
+      const doc = JSON.parse(json) as { text?: string };
+      return doc.text ?? "";
+    } catch {
+      return "";
+    }
+  },
+}));
+
 function makeEntry(
   id: string,
   parentId: string | null,
@@ -155,10 +166,19 @@ describe("buildChildrenContext", () => {
     expect(result).not.toContain("ChildB");
   });
 
-  it("skips entries without summaries", () => {
+  it("summaryもcontentも空のエントリはスキップする", () => {
     const noSummary = makeEntry("ns", "root", "NoSummary");
     const result = buildChildrenContext([noSummary, CHILD_A], 1000);
     expect(result).not.toContain("NoSummary");
+    expect(result).toContain("ChildA");
+  });
+
+  it("summaryが空でもcontentがあればcontentをフォールバックとして使用する", () => {
+    const contentOnly = makeEntry("co", "root", "ContentOnly");
+    contentOnly.content = JSON.stringify({ text: "content fallback text" });
+    const result = buildChildrenContext([contentOnly, CHILD_A], 1000);
+    expect(result).toContain("ContentOnly");
+    expect(result).toContain("content fallback text");
     expect(result).toContain("ChildA");
   });
 
