@@ -1,4 +1,6 @@
 import { useState, useRef, useCallback, useEffect } from "react";
+import { motion, AnimatePresence } from "motion/react";
+import { DURATIONS, EASINGS, useReducedMotion } from "@/lib/animation";
 import { useTranslation } from "react-i18next";
 import {
   ChevronRight,
@@ -142,6 +144,7 @@ export function TreeNodeItem({
   // Suppress rename/double-click while any drag is active
   const { active: dndActive } = useDndContext();
   const dragInProgress = dndActive !== null;
+  const reduced = useReducedMotion();
 
   // D&D: draggable
   const {
@@ -422,9 +425,22 @@ export function TreeNodeItem({
       </div>
 
       {/* Children */}
-      {isContainer && isExpanded && children && (
-        <ul className="list-none">{children}</ul>
-      )}
+      <AnimatePresence initial={false}>
+        {isContainer && isExpanded && children && (
+          <motion.ul
+            className="list-none overflow-hidden"
+            initial={{ height: 0, opacity: 0 }}
+            animate={{ height: "auto", opacity: 1 }}
+            exit={{ height: 0, opacity: 0 }}
+            transition={{
+              duration: reduced ? 0 : DURATIONS.normal,
+              ease: EASINGS.easeOut,
+            }}
+          >
+            {children}
+          </motion.ul>
+        )}
+      </AnimatePresence>
 
       {/* Context menu */}
       {contextMenu && (

@@ -43,6 +43,7 @@ import { InlineSynopsisEdit } from "./InlineSynopsisEdit";
 import type { TreeNodeData, NodeType } from "./treeStore";
 import { canHaveChildren } from "./treeStore";
 import type { DropIndicator } from "./TreeNodeItem";
+import { AnimatedOverlay } from "@/components/ui/animated-overlay";
 
 const DEFAULT_PROJECT_ID = "default-project";
 const BOTTOM_DROP_ZONE_ID = "drop-bottom-zone";
@@ -1219,9 +1220,14 @@ export function ScenesPanel() {
           />
         )}
 
-        {deleteConfirm && (
-          <div className="absolute inset-0 z-50 flex items-center justify-center bg-background/80">
-            <div className="rounded-lg border border-border bg-popover p-4 shadow-xl w-72">
+        <AnimatedOverlay
+          open={!!deleteConfirm}
+          onClose={() => setDeleteConfirm(null)}
+          backdropClassName="bg-background/80"
+          className="rounded-lg border border-border bg-popover p-4 shadow-xl w-72"
+        >
+          {deleteConfirm && (
+            <>
               <p className="text-sm font-medium mb-1">
                 {t("scenes.deleteConfirmTitle")}
               </p>
@@ -1265,9 +1271,9 @@ export function ScenesPanel() {
                   {t("common.deleteConfirm")}
                 </button>
               </div>
-            </div>
-          </div>
-        )}
+            </>
+          )}
+        </AnimatedOverlay>
       </div>
 
       {/* Drag overlay — portaled to body to escape dockview's transform context
