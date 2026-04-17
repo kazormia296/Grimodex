@@ -380,6 +380,16 @@ export function ContextBar({
                       <span className="text-muted-foreground/70">
                         via {viaParentName}
                       </span>
+                      <button
+                        type="button"
+                        onClick={() => onPin(child.id)}
+                        className="hover:text-foreground text-muted-foreground/70"
+                        aria-label={t("chat.context.pinEntry", {
+                          name: child.name,
+                        })}
+                      >
+                        <Pin className="h-3 w-3" />
+                      </button>
                       {onDismissViaChild && (
                         <button
                           type="button"

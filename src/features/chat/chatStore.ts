@@ -215,11 +215,14 @@ function buildChildrenCtxForEntry(
   entry: CodexEntry,
   allEntries: CodexEntry[],
   l4Budget: number,
+  excludeIds?: Set<string>,
 ): string | undefined {
   const preset = entry.childrenBudget ?? "compact";
   if (preset === "none") return undefined;
   const budget = computeChildrenTokenBudget(preset, l4Budget);
-  const descendants = getDescendantsBFS(entry.id, allEntries);
+  const descendants = getDescendantsBFS(entry.id, allEntries).filter(
+    (d) => !excludeIds?.has(d.id),
+  );
   return buildChildrenContext(descendants, budget) || undefined;
 }
 
@@ -449,19 +452,23 @@ async function buildSceneContextPrompt(opts: {
   let pinnedCodexEntries: import("./contextBuilder").PinnedCodexContext[] = [];
   if (activeSessionId) {
     const pinned = await chatApi.listPinnedCodexEntries(activeSessionId);
+    const pinnedIdSet = new Set(pinned.map((e) => e.id));
     pinnedCodexEntries = pinned.map((e) => {
       const children = e.withChildren
-        ? getChildrenFromArray(e.id, allEntries).map((c) => ({
-            id: c.id,
-            type: c.type,
-            name: c.name,
-            summary: c.summary ?? "",
-          }))
+        ? getChildrenFromArray(e.id, allEntries)
+            .filter((c) => !pinnedIdSet.has(c.id))
+            .map((c) => ({
+              id: c.id,
+              type: c.type,
+              name: c.name,
+              summary: c.summary ?? "",
+            }))
         : undefined;
       const childrenCtx = buildChildrenCtxForEntry(
         e,
         allEntries,
         L4_TOTAL_BUDGET,
+        pinnedIdSet,
       );
       return {
         id: e.id,
@@ -479,27 +486,28 @@ async function buildSceneContextPrompt(opts: {
   // G21: include input-typed detected entries not yet pinned to DB
   {
     const dbPinnedIdSet = new Set(pinnedCodexEntries.map((e) => e.id));
-    const extraPinned = inputPinnedEntryIds
-      .filter((id) => !dbPinnedIdSet.has(id))
-      .flatMap((id) => {
-        const e = allEntries.find((a) => a.id === id);
-        if (!e) return [];
-        const childrenCtx = buildChildrenCtxForEntry(
-          e,
-          allEntries,
-          L4_TOTAL_BUDGET,
-        );
-        const ctx: import("./contextBuilder").PinnedCodexContext = {
-          id: e.id,
-          type: e.type,
-          name: e.name,
-          summary: e.summary ?? "",
-          fullContent: extractPlainText(e.content) || undefined,
-          withChildren: false,
-          ...(childrenCtx ? { childrenContext: childrenCtx } : {}),
-        };
-        return [ctx];
-      });
+    const g21Ids = inputPinnedEntryIds.filter((id) => !dbPinnedIdSet.has(id));
+    const allG21PinnedIds = new Set([...dbPinnedIdSet, ...g21Ids]);
+    const extraPinned = g21Ids.flatMap((id) => {
+      const e = allEntries.find((a) => a.id === id);
+      if (!e) return [];
+      const childrenCtx = buildChildrenCtxForEntry(
+        e,
+        allEntries,
+        L4_TOTAL_BUDGET,
+        allG21PinnedIds,
+      );
+      const ctx: import("./contextBuilder").PinnedCodexContext = {
+        id: e.id,
+        type: e.type,
+        name: e.name,
+        summary: e.summary ?? "",
+        fullContent: extractPlainText(e.content) || undefined,
+        withChildren: false,
+        ...(childrenCtx ? { childrenContext: childrenCtx } : {}),
+      };
+      return [ctx];
+    });
     if (extraPinned.length > 0) {
       pinnedCodexEntries = [...pinnedCodexEntries, ...extraPinned];
     }

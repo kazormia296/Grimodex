@@ -211,8 +211,9 @@ export function ChatPanel() {
       ]);
       setPinnedEntries(updatedCodex);
       setPinnedSnippets(updatedSnippets);
+      await refreshContextLayers();
     },
-    [activeSessionId, removeEntryFromAuto],
+    [activeSessionId, removeEntryFromAuto, refreshContextLayers],
   );
 
   const handleUnpin = useCallback(

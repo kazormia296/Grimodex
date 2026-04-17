@@ -222,18 +222,30 @@ export function ContextPillGroup({
                       via {parentName}
                     </span>
                   </span>
-                  {onDismissVia && (
+                  <div className="flex shrink-0 items-center gap-0.5">
                     <button
                       type="button"
-                      onClick={() => onDismissVia(child.id)}
-                      className="hover:text-destructive shrink-0 text-muted-foreground"
-                      aria-label={t("chat.context.unpinEntry", {
+                      onClick={() => onPin(child.id)}
+                      className="hover:text-foreground text-muted-foreground/70"
+                      aria-label={t("chat.context.pinEntry", {
                         name: child.name,
                       })}
                     >
-                      <X className="h-3 w-3" />
+                      <Pin className="h-3 w-3" />
                     </button>
-                  )}
+                    {onDismissVia && (
+                      <button
+                        type="button"
+                        onClick={() => onDismissVia(child.id)}
+                        className="hover:text-destructive text-muted-foreground"
+                        aria-label={t("chat.context.unpinEntry", {
+                          name: child.name,
+                        })}
+                      >
+                        <X className="h-3 w-3" />
+                      </button>
+                    )}
+                  </div>
                 </div>
               ))}
               {autoEntries.map((entry) => (
