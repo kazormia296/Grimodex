@@ -1,6 +1,7 @@
 import { useState, useEffect } from "react";
 import { useTranslation } from "react-i18next";
 import type { CodexEntryType } from "./api";
+import { AnimatedOverlay } from "@/components/ui/animated-overlay";
 
 interface CodexExtractionFormData {
   type: CodexEntryType;
@@ -48,8 +49,6 @@ export function CodexExtractionDialog({
     }
   }, [open, initialContent]);
 
-  if (!open) return null;
-
   const handleSave = () => {
     if (!name.trim()) return;
     onSave({
@@ -62,93 +61,93 @@ export function CodexExtractionDialog({
   };
 
   return (
-    <div
-      data-testid="codex-extraction-dialog"
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/50"
+    <AnimatedOverlay
+      open={open}
+      onClose={onClose}
+      className="w-full max-w-lg rounded-lg border border-border bg-background p-6 shadow-xl"
+      testId="codex-extraction-dialog"
     >
-      <div className="w-full max-w-lg rounded-lg border border-border bg-background p-6 shadow-xl">
-        <h2 className="mb-4 text-lg font-semibold">
-          {t("codex.extraction.title")}
-        </h2>
+      <h2 className="mb-4 text-lg font-semibold">
+        {t("codex.extraction.title")}
+      </h2>
 
-        <div className="mb-3">
-          <label className="mb-1 block text-sm font-medium">
-            {t("codex.extraction.type")}
-          </label>
-          <select
-            data-testid="codex-type-select"
-            value={type}
-            onChange={(e) => setType(e.target.value as CodexEntryType)}
-            className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
-          >
-            {TYPE_OPTIONS.map((opt) => (
-              <option key={opt.value} value={opt.value}>
-                {opt.label}
-              </option>
-            ))}
-          </select>
-        </div>
-
-        <div className="mb-3">
-          <label className="mb-1 block text-sm font-medium">
-            {t("codex.extraction.name")}
-          </label>
-          <input
-            data-testid="codex-name-input"
-            type="text"
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-            placeholder={t("codex.extraction.namePlaceholder")}
-            className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
-          />
-        </div>
-
-        <div className="mb-3">
-          <label className="mb-1 block text-sm font-medium">
-            {t("codex.extraction.summary")}
-          </label>
-          <textarea
-            data-testid="codex-summary-textarea"
-            value={summary}
-            onChange={(e) => setSummary(e.target.value)}
-            rows={5}
-            className="w-full resize-none rounded-md border border-input bg-background px-3 py-2 text-sm"
-          />
-        </div>
-
-        <div className="mb-4">
-          <label className="mb-1 block text-sm font-medium">
-            {t("codex.extraction.tags")}
-          </label>
-          <input
-            data-testid="codex-tags-input"
-            type="text"
-            value={tags}
-            onChange={(e) => setTags(e.target.value)}
-            placeholder={t("codex.extraction.tagsPlaceholder")}
-            className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
-          />
-        </div>
-
-        <div className="flex justify-end gap-2">
-          <button
-            type="button"
-            data-testid="codex-cancel-button"
-            onClick={onClose}
-            className="rounded-md border border-border px-4 py-2 text-sm hover:bg-accent"
-          >
-            {t("common.cancel")}
-          </button>
-          <button
-            type="button"
-            data-testid="codex-save-button"
-            onClick={handleSave}
-            className="rounded-md bg-primary px-4 py-2 text-sm text-primary-foreground hover:bg-primary/90"
-          >
-            {t("common.save")}
-          </button>
-        </div>
+      <div className="mb-3">
+        <label className="mb-1 block text-sm font-medium">
+          {t("codex.extraction.type")}
+        </label>
+        <select
+          data-testid="codex-type-select"
+          value={type}
+          onChange={(e) => setType(e.target.value as CodexEntryType)}
+          className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+        >
+          {TYPE_OPTIONS.map((opt) => (
+            <option key={opt.value} value={opt.value}>
+              {opt.label}
+            </option>
+          ))}
+        </select>
       </div>
-    </div>
+
+      <div className="mb-3">
+        <label className="mb-1 block text-sm font-medium">
+          {t("codex.extraction.name")}
+        </label>
+        <input
+          data-testid="codex-name-input"
+          type="text"
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          placeholder={t("codex.extraction.namePlaceholder")}
+          className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+        />
+      </div>
+
+      <div className="mb-3">
+        <label className="mb-1 block text-sm font-medium">
+          {t("codex.extraction.summary")}
+        </label>
+        <textarea
+          data-testid="codex-summary-textarea"
+          value={summary}
+          onChange={(e) => setSummary(e.target.value)}
+          rows={5}
+          className="w-full resize-none rounded-md border border-input bg-background px-3 py-2 text-sm"
+        />
+      </div>
+
+      <div className="mb-4">
+        <label className="mb-1 block text-sm font-medium">
+          {t("codex.extraction.tags")}
+        </label>
+        <input
+          data-testid="codex-tags-input"
+          type="text"
+          value={tags}
+          onChange={(e) => setTags(e.target.value)}
+          placeholder={t("codex.extraction.tagsPlaceholder")}
+          className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+        />
+      </div>
+
+      <div className="flex justify-end gap-2">
+        <button
+          type="button"
+          data-testid="codex-cancel-button"
+          onClick={onClose}
+          className="rounded-md border border-border px-4 py-2 text-sm hover:bg-accent"
+        >
+          {t("common.cancel")}
+        </button>
+        <button
+          type="button"
+          data-testid="codex-save-button"
+          onClick={handleSave}
+          className="rounded-md bg-primary px-4 py-2 text-sm text-primary-foreground hover:bg-primary/90"
+        >
+          {t("common.save")}
+        </button>
+      </div>
+    </AnimatedOverlay>
   );
 }

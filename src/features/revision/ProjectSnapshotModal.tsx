@@ -1,4 +1,5 @@
 import { useState, useEffect } from "react";
+import { AnimatedOverlay } from "@/components/ui/animated-overlay";
 import { toast } from "sonner";
 import { useTranslation } from "react-i18next";
 import {
@@ -138,92 +139,86 @@ export function ProjectSnapshotModal({
     }
   }
 
-  if (!open) return null;
-
-  // Confirm restore dialog
-  if (confirmRestoreId) {
-    const snap = snapshots.find((s) => s.id === confirmRestoreId);
-    return (
-      <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center">
-        <div className="bg-background rounded-lg border border-border shadow-xl p-6 w-[440px] max-w-[95vw]">
-          <h2 className="text-base font-semibold mb-3">
-            {t("snapshot.restoreTitle")}
-          </h2>
-          <p className="text-sm text-muted-foreground mb-6">
-            {t("snapshot.restoreDesc", { name: snap?.name })}
-            <br />
-            {t("snapshot.restoreDescSub")}
-          </p>
-          <div className="flex justify-end gap-2">
-            <button
-              type="button"
-              className="px-3 py-1.5 text-sm rounded border border-border hover:bg-muted transition-colors"
-              onClick={() => setConfirmRestoreId(null)}
-              disabled={isRestoring}
-            >
-              {t("snapshot.cancel")}
-            </button>
-            <button
-              type="button"
-              className="px-3 py-1.5 text-sm rounded bg-primary text-primary-foreground hover:bg-primary/90 transition-colors disabled:opacity-50"
-              onClick={handleRestoreConfirm}
-              disabled={isRestoring}
-            >
-              {isRestoring
-                ? t("snapshot.restoring")
-                : t("snapshot.restoreConfirm")}
-            </button>
-          </div>
-        </div>
-      </div>
-    );
-  }
-
-  // Confirm delete dialog
-  if (confirmDeleteId) {
-    const snap = snapshots.find((s) => s.id === confirmDeleteId);
-    return (
-      <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center">
-        <div className="bg-background rounded-lg border border-border shadow-xl p-6 w-[440px] max-w-[95vw]">
-          <h2 className="text-base font-semibold mb-3">
-            {t("snapshot.deleteTitle")}
-          </h2>
-          <p className="text-sm text-muted-foreground mb-6">
-            {t("snapshot.deleteDesc", { name: snap?.name })}
-          </p>
-          <div className="flex justify-end gap-2">
-            <button
-              type="button"
-              className="px-3 py-1.5 text-sm rounded border border-border hover:bg-muted transition-colors"
-              onClick={() => setConfirmDeleteId(null)}
-              disabled={isDeleting}
-            >
-              {t("snapshot.cancel")}
-            </button>
-            <button
-              type="button"
-              className="px-3 py-1.5 text-sm rounded bg-destructive text-destructive-foreground hover:bg-destructive/90 transition-colors disabled:opacity-50"
-              onClick={handleDeleteConfirm}
-              disabled={isDeleting}
-            >
-              {isDeleting
-                ? t("snapshot.deleting")
-                : t("snapshot.deleteConfirm")}
-            </button>
-          </div>
-        </div>
-      </div>
-    );
-  }
+  const confirmRestoreSnap = confirmRestoreId
+    ? snapshots.find((s) => s.id === confirmRestoreId)
+    : null;
+  const confirmDeleteSnap = confirmDeleteId
+    ? snapshots.find((s) => s.id === confirmDeleteId)
+    : null;
 
   return (
-    <div
-      className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center"
-      onClick={(e) => {
-        if (e.target === e.currentTarget) onClose();
-      }}
-    >
-      <div className="bg-background rounded-lg border border-border shadow-xl w-[580px] max-w-[95vw] flex flex-col max-h-[80vh]">
+    <>
+      {open && !!confirmRestoreId && (
+        <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center">
+          <div className="bg-background rounded-lg border border-border shadow-xl p-6 w-[440px] max-w-[95vw]">
+            <h2 className="text-base font-semibold mb-3">
+              {t("snapshot.restoreTitle")}
+            </h2>
+            <p className="text-sm text-muted-foreground mb-6">
+              {t("snapshot.restoreDesc", { name: confirmRestoreSnap?.name })}
+              <br />
+              {t("snapshot.restoreDescSub")}
+            </p>
+            <div className="flex justify-end gap-2">
+              <button
+                type="button"
+                className="px-3 py-1.5 text-sm rounded border border-border hover:bg-muted transition-colors"
+                onClick={() => setConfirmRestoreId(null)}
+                disabled={isRestoring}
+              >
+                {t("snapshot.cancel")}
+              </button>
+              <button
+                type="button"
+                className="px-3 py-1.5 text-sm rounded bg-primary text-primary-foreground hover:bg-primary/90 transition-colors disabled:opacity-50"
+                onClick={handleRestoreConfirm}
+                disabled={isRestoring}
+              >
+                {isRestoring
+                  ? t("snapshot.restoring")
+                  : t("snapshot.restoreConfirm")}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+      {open && !!confirmDeleteId && (
+        <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center">
+          <div className="bg-background rounded-lg border border-border shadow-xl p-6 w-[440px] max-w-[95vw]">
+            <h2 className="text-base font-semibold mb-3">
+              {t("snapshot.deleteTitle")}
+            </h2>
+            <p className="text-sm text-muted-foreground mb-6">
+              {t("snapshot.deleteDesc", { name: confirmDeleteSnap?.name })}
+            </p>
+            <div className="flex justify-end gap-2">
+              <button
+                type="button"
+                className="px-3 py-1.5 text-sm rounded border border-border hover:bg-muted transition-colors"
+                onClick={() => setConfirmDeleteId(null)}
+                disabled={isDeleting}
+              >
+                {t("snapshot.cancel")}
+              </button>
+              <button
+                type="button"
+                className="px-3 py-1.5 text-sm rounded bg-destructive text-destructive-foreground hover:bg-destructive/90 transition-colors disabled:opacity-50"
+                onClick={handleDeleteConfirm}
+                disabled={isDeleting}
+              >
+                {isDeleting
+                  ? t("snapshot.deleting")
+                  : t("snapshot.deleteConfirm")}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+      <AnimatedOverlay
+        open={open && !confirmRestoreId && !confirmDeleteId}
+        onClose={onClose}
+        className="bg-background rounded-lg border border-border shadow-xl w-[580px] max-w-[95vw] flex flex-col max-h-[80vh]"
+      >
         {/* Header */}
         <div className="flex items-center justify-between px-4 py-3 border-b border-border flex-shrink-0">
           <h2 className="text-base font-semibold">{t("snapshot.title")}</h2>
@@ -369,7 +364,7 @@ export function ProjectSnapshotModal({
             </button>
           </div>
         </div>
-      </div>
-    </div>
+      </AnimatedOverlay>
+    </>
   );
 }

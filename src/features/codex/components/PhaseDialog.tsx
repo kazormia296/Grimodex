@@ -4,6 +4,7 @@ import { X } from "lucide-react";
 import type { CodexEntryPhase } from "../phaseApi";
 import { usePhaseStore } from "../phaseStore";
 import { SceneSelector } from "./SceneSelector";
+import { AnimatedOverlay } from "@/components/ui/animated-overlay";
 
 interface PhaseDialogProps {
   entryId: string;
@@ -77,8 +78,13 @@ export function PhaseDialog({
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
-      <div className="w-[420px] rounded-lg border border-border bg-background shadow-xl">
+    <AnimatedOverlay
+      open
+      onClose={onClose}
+      className="w-[420px] rounded-lg border border-border bg-background shadow-xl"
+      backdropClassName="bg-black/40"
+    >
+      <>
         {/* Header */}
         <div className="flex items-center justify-between border-b border-border px-4 py-3">
           <h3 className="text-sm font-semibold">
@@ -227,7 +233,7 @@ export function PhaseDialog({
             {isSubmitting ? t("phase.saving") : t("common.save")}
           </button>
         </div>
-      </div>
-    </div>
+      </>
+    </AnimatedOverlay>
   );
 }

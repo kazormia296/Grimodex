@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { AnimatedOverlay } from "@/components/ui/animated-overlay";
 import { useTranslation } from "react-i18next";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { useCodexStore } from "@/features/codex/codexStore";
@@ -195,83 +196,77 @@ export function PinCodexDialog({
     }
   }, [open, loadEntries, loadSnippets]);
 
-  if (!open) return null;
-
   return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/50"
-      onClick={onClose}
+    <AnimatedOverlay
+      open={open}
+      onClose={onClose}
+      className="max-h-[28rem] w-80 rounded-lg border border-border bg-background p-4 shadow-lg"
     >
-      <div
-        className="max-h-[28rem] w-80 rounded-lg border border-border bg-background p-4 shadow-lg"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <h3 className="mb-3 text-sm font-semibold">
-          {t("chat.context.pinEntries")}
-        </h3>
+      <h3 className="mb-3 text-sm font-semibold">
+        {t("chat.context.pinEntries")}
+      </h3>
 
-        {/* Tab selector */}
-        <div className="mb-3 flex rounded-md border border-border overflow-hidden">
-          <button
-            type="button"
-            onClick={() => setActiveTab("codex")}
-            className={`flex-1 px-3 py-1 text-xs font-medium transition-colors ${
-              activeTab === "codex"
-                ? "bg-primary text-primary-foreground"
-                : "bg-background text-muted-foreground hover:bg-accent"
-            }`}
-          >
-            Codex
-          </button>
-          <button
-            type="button"
-            onClick={() => setActiveTab("snippet")}
-            className={`flex-1 px-3 py-1 text-xs font-medium transition-colors ${
-              activeTab === "snippet"
-                ? "bg-primary text-primary-foreground"
-                : "bg-background text-muted-foreground hover:bg-accent"
-            }`}
-          >
-            Snippet
-          </button>
-        </div>
-
-        {activeTab === "codex" ? (
-          entries.length === 0 ? (
-            <p className="text-xs text-muted-foreground">
-              {t("chat.context.noCodexEntries")}
-            </p>
-          ) : (
-            <PinCodexVirtualList
-              entries={entries}
-              pinnedIds={pinnedIds}
-              withChildrenIds={withChildrenIds}
-              onPin={(id) => onPin(id, "codex")}
-              onUnpin={onUnpin}
-              onToggleChildren={onToggleChildren}
-            />
-          )
-        ) : snippetEntries.length === 0 ? (
-          <p className="text-xs text-muted-foreground">
-            {t("chat.context.noSnippets")}
-          </p>
-        ) : (
-          <PinSnippetVirtualList
-            snippets={snippetEntries}
-            pinnedSnippetIds={pinnedSnippetIds}
-            onPin={(id) => onPin(id, "snippet")}
-            onUnpin={onUnpin}
-          />
-        )}
-
+      {/* Tab selector */}
+      <div className="mb-3 flex rounded-md border border-border overflow-hidden">
         <button
           type="button"
-          onClick={onClose}
-          className="mt-3 w-full rounded-md bg-primary px-3 py-1.5 text-xs text-primary-foreground hover:bg-primary/90"
+          onClick={() => setActiveTab("codex")}
+          className={`flex-1 px-3 py-1 text-xs font-medium transition-colors ${
+            activeTab === "codex"
+              ? "bg-primary text-primary-foreground"
+              : "bg-background text-muted-foreground hover:bg-accent"
+          }`}
         >
-          {t("common.close")}
+          Codex
+        </button>
+        <button
+          type="button"
+          onClick={() => setActiveTab("snippet")}
+          className={`flex-1 px-3 py-1 text-xs font-medium transition-colors ${
+            activeTab === "snippet"
+              ? "bg-primary text-primary-foreground"
+              : "bg-background text-muted-foreground hover:bg-accent"
+          }`}
+        >
+          Snippet
         </button>
       </div>
-    </div>
+
+      {activeTab === "codex" ? (
+        entries.length === 0 ? (
+          <p className="text-xs text-muted-foreground">
+            {t("chat.context.noCodexEntries")}
+          </p>
+        ) : (
+          <PinCodexVirtualList
+            entries={entries}
+            pinnedIds={pinnedIds}
+            withChildrenIds={withChildrenIds}
+            onPin={(id) => onPin(id, "codex")}
+            onUnpin={onUnpin}
+            onToggleChildren={onToggleChildren}
+          />
+        )
+      ) : snippetEntries.length === 0 ? (
+        <p className="text-xs text-muted-foreground">
+          {t("chat.context.noSnippets")}
+        </p>
+      ) : (
+        <PinSnippetVirtualList
+          snippets={snippetEntries}
+          pinnedSnippetIds={pinnedSnippetIds}
+          onPin={(id) => onPin(id, "snippet")}
+          onUnpin={onUnpin}
+        />
+      )}
+
+      <button
+        type="button"
+        onClick={onClose}
+        className="mt-3 w-full rounded-md bg-primary px-3 py-1.5 text-xs text-primary-foreground hover:bg-primary/90"
+      >
+        {t("common.close")}
+      </button>
+    </AnimatedOverlay>
   );
 }

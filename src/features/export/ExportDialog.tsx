@@ -19,6 +19,7 @@ import { ExportSettingsPanel } from "./ExportSettingsPanel";
 import { generateExport } from "./exportEngine";
 import type { ExportSettings } from "./types";
 import { DEFAULT_EXPORT_SETTINGS, EXPORT_SETTING_KEYS } from "./types";
+import { AnimatedOverlay } from "@/components/ui/animated-overlay";
 
 const PROJECT_ID = "default-project";
 
@@ -146,7 +147,6 @@ export function ExportDialog({ open, onClose }: Props) {
   const [projectTitle, setProjectTitle] = useState("Untitled Project");
   const [projectLanguage, setProjectLanguage] = useState("ja");
 
-  const mouseDownOnBackdrop = useRef(false);
   const copyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // ダイアログが開いた時に状態を初期化
@@ -211,24 +211,12 @@ export function ExportDialog({ open, onClose }: Props) {
     [settingsStore],
   );
 
-  // Escape キーで閉じる
-  useEffect(() => {
-    if (!open) return;
-    function onKeyDown(e: KeyboardEvent) {
-      if (e.key === "Escape") onClose();
-    }
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
-  }, [open, onClose]);
-
   // クリーンアップ
   useEffect(() => {
     return () => {
       if (copyTimerRef.current) clearTimeout(copyTimerRef.current);
     };
   }, []);
-
-  if (!open) return null;
 
   // 統計情報
   const { sceneCount, charCount, totalScenes } = calcExportStats(
@@ -285,102 +273,85 @@ export function ExportDialog({ open, onClose }: Props) {
   }
 
   return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/50"
-      onMouseDown={(e) => {
-        mouseDownOnBackdrop.current = e.target === e.currentTarget;
-      }}
-      onClick={(e) => {
-        if (e.target === e.currentTarget && mouseDownOnBackdrop.current) {
-          onClose();
-        }
-      }}
+    <AnimatedOverlay
+      open={open}
+      onClose={onClose}
+      className="flex h-[780px] w-[1000px] min-h-[400px] min-w-[560px] max-h-[90vh] max-w-[90vw] resize flex-col overflow-hidden rounded-lg border border-border bg-background shadow-xl"
     >
-      <div
-        className="flex h-[780px] w-[1000px] min-h-[400px] min-w-[560px] max-h-[90vh] max-w-[90vw] resize flex-col overflow-hidden rounded-lg border border-border bg-background shadow-xl"
-        onClick={(e) => e.stopPropagation()}
-      >
-        {/* ヘッダー */}
-        <div className="flex flex-shrink-0 items-center justify-between border-b border-border px-4 py-2">
-          <h2 className="text-sm font-semibold text-foreground">
-            {t("export.dialog.title")}
-          </h2>
-          <button
-            type="button"
-            onClick={onClose}
-            className="rounded p-1 text-muted-foreground hover:bg-accent hover:text-accent-foreground"
-          >
-            <X className="h-4 w-4" />
-          </button>
+      {/* ヘッダー */}
+      <div className="flex flex-shrink-0 items-center justify-between border-b border-border px-4 py-2">
+        <h2 className="text-sm font-semibold text-foreground">
+          {t("export.dialog.title")}
+        </h2>
+        <button
+          type="button"
+          onClick={onClose}
+          className="rounded p-1 text-muted-foreground hover:bg-accent hover:text-accent-foreground"
+        >
+          <X className="h-4 w-4" />
+        </button>
+      </div>
+
+      {/* ボディ: 左ペイン + 右ペイン */}
+      <div className="flex flex-1 overflow-hidden">
+        {/* 左: シーン選択ツリー */}
+        <div className="w-1/2 min-w-[240px] overflow-hidden border-r border-border">
+          <ExportTree nodes={nodes} state={treeState} onChange={setTreeState} />
         </div>
 
-        {/* ボディ: 左ペイン + 右ペイン */}
-        <div className="flex flex-1 overflow-hidden">
-          {/* 左: シーン選択ツリー */}
-          <div className="w-1/2 min-w-[240px] overflow-hidden border-r border-border">
-            <ExportTree
-              nodes={nodes}
-              state={treeState}
-              onChange={setTreeState}
-            />
-          </div>
-
-          {/* 右: エクスポート設定 */}
-          <div className="min-w-[280px] flex-1 overflow-hidden">
-            <ExportSettingsPanel
-              settings={exportSettings}
-              onChange={handleSettingsChange}
-              nodes={nodes}
-              contentMap={contentMap}
-              checkedIds={treeState.checkedIds}
-            />
-          </div>
-        </div>
-
-        {/* フッター */}
-        <div className="flex flex-shrink-0 items-center gap-3 border-t border-border px-4 py-2">
-          <span className="text-xs text-muted-foreground">
-            {t("export.dialog.selectedScenes", { sceneCount, totalScenes })}
-          </span>
-          <span className="text-xs text-muted-foreground">
-            {t("export.dialog.approxChars", {
-              count: charCount.toLocaleString(),
-            })}
-          </span>
-          <div className="flex-1" />
-          {/* コピーボタン */}
-          <button
-            type="button"
-            onClick={handleCopy}
-            disabled={sceneCount === 0}
-            className="flex items-center gap-1.5 rounded border border-border px-3 py-1.5 text-xs hover:bg-accent disabled:cursor-not-allowed disabled:opacity-40"
-          >
-            {isCopied ? (
-              <>
-                <Check className="h-3.5 w-3.5 text-green-500" />
-                {t("export.dialog.copied")}
-              </>
-            ) : (
-              <>
-                <ClipboardCopy className="h-3.5 w-3.5" />
-                {t("export.dialog.copy")}
-              </>
-            )}
-          </button>
-          {/* エクスポートボタン */}
-          <button
-            type="button"
-            onClick={handleExport}
-            disabled={sceneCount === 0 || isExporting}
-            className="flex items-center gap-1.5 rounded bg-primary px-3 py-1.5 text-xs text-primary-foreground hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-40"
-          >
-            <Download className="h-3.5 w-3.5" />
-            {isExporting
-              ? t("export.dialog.saving")
-              : t("export.dialog.export")}
-          </button>
+        {/* 右: エクスポート設定 */}
+        <div className="min-w-[280px] flex-1 overflow-hidden">
+          <ExportSettingsPanel
+            settings={exportSettings}
+            onChange={handleSettingsChange}
+            nodes={nodes}
+            contentMap={contentMap}
+            checkedIds={treeState.checkedIds}
+          />
         </div>
       </div>
-    </div>
+
+      {/* フッター */}
+      <div className="flex flex-shrink-0 items-center gap-3 border-t border-border px-4 py-2">
+        <span className="text-xs text-muted-foreground">
+          {t("export.dialog.selectedScenes", { sceneCount, totalScenes })}
+        </span>
+        <span className="text-xs text-muted-foreground">
+          {t("export.dialog.approxChars", {
+            count: charCount.toLocaleString(),
+          })}
+        </span>
+        <div className="flex-1" />
+        {/* コピーボタン */}
+        <button
+          type="button"
+          onClick={handleCopy}
+          disabled={sceneCount === 0}
+          className="flex items-center gap-1.5 rounded border border-border px-3 py-1.5 text-xs hover:bg-accent disabled:cursor-not-allowed disabled:opacity-40"
+        >
+          {isCopied ? (
+            <>
+              <Check className="h-3.5 w-3.5 text-green-500" />
+              {t("export.dialog.copied")}
+            </>
+          ) : (
+            <>
+              <ClipboardCopy className="h-3.5 w-3.5" />
+              {t("export.dialog.copy")}
+            </>
+          )}
+        </button>
+        {/* エクスポートボタン */}
+        <button
+          type="button"
+          onClick={handleExport}
+          disabled={sceneCount === 0 || isExporting}
+          className="flex items-center gap-1.5 rounded bg-primary px-3 py-1.5 text-xs text-primary-foreground hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-40"
+        >
+          <Download className="h-3.5 w-3.5" />
+          {isExporting ? t("export.dialog.saving") : t("export.dialog.export")}
+        </button>
+      </div>
+    </AnimatedOverlay>
   );
 }

@@ -8,6 +8,7 @@ import { useCodexStore } from "@/features/codex/codexStore";
 import { useSnippetStore } from "@/features/snippets/snippetStore";
 import type { ParseResult } from "./novelcrafterParser";
 import type { ImportProgress } from "./importApi";
+import { AnimatedOverlay } from "@/components/ui/animated-overlay";
 
 interface Props {
   open: boolean;
@@ -104,12 +105,11 @@ export function NovelcrafterImportDialog({ open, onClose }: Props) {
     }
   }, [open]);
 
-  if (!open) return null;
-
   return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/50"
-      onMouseDown={(e) => e.target === e.currentTarget && handleClose()}
+    <AnimatedOverlay
+      open={open}
+      onClose={handleClose}
+      className="flex w-[480px] flex-col gap-4 rounded-lg border border-border bg-background p-6 shadow-xl outline-none"
     >
       <div
         ref={dialogRef}
@@ -117,7 +117,7 @@ export function NovelcrafterImportDialog({ open, onClose }: Props) {
         aria-modal="true"
         aria-labelledby="import-dialog-title"
         tabIndex={-1}
-        className="flex w-[480px] flex-col gap-4 rounded-lg border border-border bg-background p-6 shadow-xl outline-none"
+        className="contents"
       >
         <h2 id="import-dialog-title" className="text-base font-semibold">
           {t("import.dialogTitle")}
@@ -247,6 +247,6 @@ export function NovelcrafterImportDialog({ open, onClose }: Props) {
           )}
         </div>
       </div>
-    </div>
+    </AnimatedOverlay>
   );
 }

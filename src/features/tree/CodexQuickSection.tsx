@@ -9,6 +9,7 @@ import { useLayoutStore } from "@/features/layout/layoutStore";
 import { useTreeStore } from "./treeStore";
 import { CodexQuickPopover } from "./CodexQuickPopover";
 import { CodexCommandPalette } from "@/features/codex/components/CodexCommandPalette";
+import { AnimatePresence } from "motion/react";
 import { getTypeLabel } from "@/features/chat/utils/typeLabels";
 import { listCodexTypes, ensureBuiltinTypes } from "@/features/codex/typeApi";
 import type { CodexEntry } from "@/features/codex/api";
@@ -143,15 +144,17 @@ export function CodexQuickSection() {
       )}
 
       {/* Pin search palette */}
-      {showPinPalette && (
-        <CodexCommandPalette
-          onSelect={(entry) => {
-            togglePinnedCodex(entry.id);
-            setShowPinPalette(false);
-          }}
-          onClose={() => setShowPinPalette(false)}
-        />
-      )}
+      <AnimatePresence>
+        {showPinPalette && (
+          <CodexCommandPalette
+            onSelect={(entry) => {
+              togglePinnedCodex(entry.id);
+              setShowPinPalette(false);
+            }}
+            onClose={() => setShowPinPalette(false)}
+          />
+        )}
+      </AnimatePresence>
     </>
   );
 }

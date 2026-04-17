@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from "react";
+import { AnimatedOverlay } from "@/components/ui/animated-overlay";
 import { useTranslation } from "react-i18next";
 import { useEditor, EditorContent } from "@tiptap/react";
 import { toast } from "sonner";
@@ -408,68 +409,49 @@ export function RevisionHistoryModal() {
     closeHistory,
   ]);
 
-  // ---- Keyboard shortcut to close ----
-  useEffect(() => {
-    if (!isOpen) return;
-    function onKeyDown(e: KeyboardEvent) {
-      if (e.key === "Escape") closeHistory();
-    }
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
-  }, [isOpen, closeHistory]);
-
-  if (!isOpen) return null;
-
   const isCurrentVersionSelected = selectedRevisionId === null;
   const canRestore = !isCurrentVersionSelected && !!selectedContent;
 
-  // ---- Confirm dialog ----
-  if (confirmRestore && selectedRevisionMeta) {
-    return (
-      <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center">
-        <div className="bg-background rounded-lg border border-border shadow-xl p-6 w-[440px] max-w-[95vw]">
-          <h2 className="text-base font-semibold mb-3">
-            {t("revision.restoreTitle")}
-          </h2>
-          <p className="text-sm text-muted-foreground mb-6">
-            {formatTimestamp(selectedRevisionMeta.createdAt)}{" "}
-            {t("revision.restoreConfirmMsg")}
-            <br />
-            {t("revision.restoreNote")}
-          </p>
-          <div className="flex justify-end gap-2">
-            <button
-              type="button"
-              className="px-3 py-1.5 text-sm rounded border border-border hover:bg-muted transition-colors"
-              onClick={() => setConfirmRestore(false)}
-              disabled={isRestoring}
-            >
-              {t("common.cancel")}
-            </button>
-            <button
-              type="button"
-              className="px-3 py-1.5 text-sm rounded bg-primary text-primary-foreground hover:bg-primary/90 transition-colors disabled:opacity-50"
-              onClick={handleRestoreConfirm}
-              disabled={isRestoring}
-            >
-              {isRestoring
-                ? t("revision.restoring")
-                : t("revision.restoreAction")}
-            </button>
+  return (
+    <>
+      {isOpen && confirmRestore && selectedRevisionMeta && (
+        <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center">
+          <div className="bg-background rounded-lg border border-border shadow-xl p-6 w-[440px] max-w-[95vw]">
+            <h2 className="text-base font-semibold mb-3">
+              {t("revision.restoreTitle")}
+            </h2>
+            <p className="text-sm text-muted-foreground mb-6">
+              {formatTimestamp(selectedRevisionMeta.createdAt)}{" "}
+              {t("revision.restoreConfirmMsg")}
+              <br />
+              {t("revision.restoreNote")}
+            </p>
+            <div className="flex justify-end gap-2">
+              <button
+                type="button"
+                className="px-3 py-1.5 text-sm rounded border border-border hover:bg-muted transition-colors"
+                onClick={() => setConfirmRestore(false)}
+                disabled={isRestoring}
+              >
+                {t("common.cancel")}
+              </button>
+              <button
+                type="button"
+                className="px-3 py-1.5 text-sm rounded bg-primary text-primary-foreground hover:bg-primary/90 transition-colors disabled:opacity-50"
+                onClick={handleRestoreConfirm}
+                disabled={isRestoring}
+              >
+                {isRestoring
+                  ? t("revision.restoring")
+                  : t("revision.restoreAction")}
+              </button>
+            </div>
           </div>
         </div>
-      </div>
-    );
-  }
-
-  return (
-    <div
-      className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center"
-      onClick={(e) => {
-        if (e.target === e.currentTarget) closeHistory();
-      }}
-    >
-      <div
+      )}
+      <AnimatedOverlay
+        open={isOpen && !confirmRestore}
+        onClose={closeHistory}
         className={[
           "bg-background rounded-lg border border-border shadow-xl h-[70vh] flex flex-col",
           showDiff ? "w-[1200px] max-w-[98vw]" : "w-[900px] max-w-[95vw]",
@@ -593,7 +575,7 @@ export function RevisionHistoryModal() {
             {t("revision.restoreToThis")}
           </button>
         </div>
-      </div>
-    </div>
+      </AnimatedOverlay>
+    </>
   );
 }

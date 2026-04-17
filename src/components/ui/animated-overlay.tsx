@@ -6,7 +6,12 @@ import { DURATIONS, EASINGS, useReducedMotion } from "@/lib/animation";
 interface AnimatedOverlayProps {
   open: boolean;
   onClose: () => void;
+  /** Inner content wrapper className */
   className?: string;
+  /** Replaces the default backdrop color class (default: "bg-black/50") */
+  backdropClassName?: string;
+  /** data-testid forwarded to the inner content motion.div */
+  testId?: string;
   children: React.ReactNode;
 }
 
@@ -14,6 +19,8 @@ export function AnimatedOverlay({
   open,
   onClose,
   className,
+  backdropClassName = "bg-black/50",
+  testId,
   children,
 }: AnimatedOverlayProps) {
   const reduced = useReducedMotion();
@@ -32,7 +39,10 @@ export function AnimatedOverlay({
     <AnimatePresence>
       {open && (
         <motion.div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/50"
+          className={cn(
+            "fixed inset-0 z-50 flex items-center justify-center",
+            backdropClassName,
+          )}
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
           exit={{ opacity: 0 }}
@@ -47,6 +57,7 @@ export function AnimatedOverlay({
         >
           <motion.div
             className={cn(className)}
+            data-testid={testId}
             initial={{ opacity: 0, scale: 0.97 }}
             animate={{ opacity: 1, scale: 1 }}
             exit={{ opacity: 0, scale: 0.97 }}

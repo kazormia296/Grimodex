@@ -1,8 +1,10 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { useTranslation } from "react-i18next";
 import { Search } from "lucide-react";
+import { motion } from "motion/react";
 import type { CodexEntry } from "@/features/codex/api";
 import { getTypeLabel } from "@/features/chat/utils/typeLabels";
+import { DURATIONS, EASINGS, useReducedMotion } from "@/lib/animation";
 
 interface CodexCommandPaletteProps {
   onSelect: (entry: CodexEntry) => void;
@@ -19,6 +21,7 @@ export function CodexCommandPalette({
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<CodexEntry[]>([]);
   const inputRef = useRef<HTMLInputElement>(null);
+  const reduced = useReducedMotion();
 
   useEffect(() => {
     inputRef.current?.focus();
@@ -52,9 +55,16 @@ export function CodexCommandPalette({
       className="fixed inset-0 z-50 flex items-start justify-center pt-[20vh]"
       onClick={onClose}
     >
-      <div
+      <motion.div
         className="w-full max-w-md rounded-lg border border-border bg-background shadow-lg"
         onClick={(e) => e.stopPropagation()}
+        initial={{ opacity: 0, y: -4 }}
+        animate={{ opacity: 1, y: 0 }}
+        exit={{ opacity: 0, y: -4 }}
+        transition={{
+          duration: reduced ? 0 : DURATIONS.fast,
+          ease: EASINGS.easeOut,
+        }}
       >
         <div className="flex items-center border-b border-border px-3">
           <Search className="mr-2 h-4 w-4 text-muted-foreground" />
@@ -100,7 +110,7 @@ export function CodexCommandPalette({
             {t("codex.empty")}
           </p>
         )}
-      </div>
+      </motion.div>
     </div>
   );
 }

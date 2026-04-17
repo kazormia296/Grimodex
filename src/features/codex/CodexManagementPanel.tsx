@@ -28,6 +28,7 @@ import { EntryContextMenu } from "./components/EntryContextMenu";
 import { CategoryGroupHeader } from "./components/CategoryGroupHeader";
 import { TagFilterBar } from "./components/TagFilterBar";
 import { CodexCommandPalette } from "./components/CodexCommandPalette";
+import { AnimatePresence } from "motion/react";
 import { buildCrossReferenceReport } from "./crossReference";
 import * as chatApi from "@/features/chat/chatApi";
 import { useChatStore } from "@/features/chat/chatStore";
@@ -1100,13 +1101,15 @@ export function CodexManagementPanel({
       data-testid="codex-management-panel"
       className="flex h-full flex-col outline-none"
     >
-      {showCommandPalette && (
-        <CodexCommandPalette
-          onSelect={handleCommandSelect}
-          onClose={() => setShowCommandPalette(false)}
-          typeLabels={typeLabels}
-        />
-      )}
+      <AnimatePresence>
+        {showCommandPalette && (
+          <CodexCommandPalette
+            onSelect={handleCommandSelect}
+            onClose={() => setShowCommandPalette(false)}
+            typeLabels={typeLabels}
+          />
+        )}
+      </AnimatePresence>
 
       {isStackMode ? (
         <>

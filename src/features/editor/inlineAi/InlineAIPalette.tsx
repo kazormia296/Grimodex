@@ -1,9 +1,11 @@
 import { useEffect, useRef, useState } from "react";
 import type { Editor } from "@tiptap/react";
 import { useTranslation } from "react-i18next";
+import { motion, AnimatePresence } from "motion/react";
 import { cn } from "@/lib/utils";
 import { getInlineAiCommands } from "./inlineAiCommands";
 import type { InlineAiCommand } from "./inlineAiTypes";
+import { DURATIONS, EASINGS, useReducedMotion } from "@/lib/animation";
 
 interface InlineAIPaletteProps {
   editor: Editor;
@@ -31,6 +33,7 @@ export function InlineAIPalette({
     preselectedCommand ?? commands[0],
   );
   const inputRef = useRef<HTMLInputElement>(null);
+  const reduced = useReducedMotion();
 
   useEffect(() => {
     if (open) {
@@ -52,78 +55,92 @@ export function InlineAIPalette({
     return () => window.removeEventListener("keydown", handleKey, true);
   }, [open, onClose]);
 
-  if (!open) return null;
-
   function handleSubmit() {
     onSubmit(selectedCommand, prompt);
     onClose();
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-start justify-center pt-32">
-      {/* Backdrop */}
-      <div
-        className="absolute inset-0 bg-background/50 backdrop-blur-sm"
-        onClick={onClose}
-      />
-      <div className="relative w-full max-w-md rounded-lg border border-border bg-popover p-3 shadow-xl">
-        <div className="mb-2 flex items-center gap-1.5 text-xs text-muted-foreground">
-          <span className="font-medium text-foreground">Inline AI</span>
-          <span className="ml-auto opacity-60">Ctrl+Shift+Space</span>
-        </div>
-
-        {/* Command selector */}
-        <div className="mb-2 flex flex-wrap gap-1">
-          {commands.map((cmd) => (
-            <button
-              key={cmd.id}
-              type="button"
-              onClick={() => setSelectedCommand(cmd)}
-              className={cn(
-                "rounded px-1.5 py-0.5 text-xs",
-                selectedCommand.id === cmd.id
-                  ? "bg-primary text-primary-foreground"
-                  : "bg-muted text-muted-foreground hover:bg-accent hover:text-foreground",
-              )}
-            >
-              {cmd.label}
-            </button>
-          ))}
-        </div>
-
-        {/* Prompt input */}
-        <div className="flex gap-2">
-          <input
-            ref={inputRef}
-            type="text"
-            value={prompt}
-            onChange={(e) => setPrompt(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter" && !e.shiftKey) {
-                e.preventDefault();
-                handleSubmit();
-              }
-            }}
-            placeholder={
-              selectedCommand.needsArg && selectedCommand.argPlaceholder
-                ? selectedCommand.argPlaceholder
-                : t("inlineAi.additionalPrompt")
-            }
-            className="flex-1 rounded border border-border bg-background px-2 py-1.5 text-xs focus:outline-none focus:ring-1 focus:ring-ring"
+    <AnimatePresence>
+      {open && (
+        <motion.div
+          className="fixed inset-0 z-50 flex items-start justify-center pt-32"
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          exit={{ opacity: 0 }}
+          transition={{ duration: reduced ? 0 : DURATIONS.fast }}
+        >
+          {/* Backdrop */}
+          <div
+            className="absolute inset-0 bg-background/50 backdrop-blur-sm"
+            onClick={onClose}
           />
-          <button
-            type="button"
-            onClick={handleSubmit}
-            className="rounded bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground hover:bg-primary/90"
+          <motion.div
+            className="relative w-full max-w-md rounded-lg border border-border bg-popover p-3 shadow-xl"
+            initial={{ opacity: 0, y: -8 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -8 }}
+            transition={reduced ? { duration: 0 } : { ...EASINGS.spring }}
           >
-            ▶
-          </button>
-        </div>
+            <div className="mb-2 flex items-center gap-1.5 text-xs text-muted-foreground">
+              <span className="font-medium text-foreground">Inline AI</span>
+              <span className="ml-auto opacity-60">Ctrl+Shift+Space</span>
+            </div>
 
-        <div className="mt-1.5 text-xs text-muted-foreground opacity-60">
-          {selectedCommand.description}
-        </div>
-      </div>
-    </div>
+            {/* Command selector */}
+            <div className="mb-2 flex flex-wrap gap-1">
+              {commands.map((cmd) => (
+                <button
+                  key={cmd.id}
+                  type="button"
+                  onClick={() => setSelectedCommand(cmd)}
+                  className={cn(
+                    "rounded px-1.5 py-0.5 text-xs",
+                    selectedCommand.id === cmd.id
+                      ? "bg-primary text-primary-foreground"
+                      : "bg-muted text-muted-foreground hover:bg-accent hover:text-foreground",
+                  )}
+                >
+                  {cmd.label}
+                </button>
+              ))}
+            </div>
+
+            {/* Prompt input */}
+            <div className="flex gap-2">
+              <input
+                ref={inputRef}
+                type="text"
+                value={prompt}
+                onChange={(e) => setPrompt(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && !e.shiftKey) {
+                    e.preventDefault();
+                    handleSubmit();
+                  }
+                }}
+                placeholder={
+                  selectedCommand.needsArg && selectedCommand.argPlaceholder
+                    ? selectedCommand.argPlaceholder
+                    : t("inlineAi.additionalPrompt")
+                }
+                className="flex-1 rounded border border-border bg-background px-2 py-1.5 text-xs focus:outline-none focus:ring-1 focus:ring-ring"
+              />
+              <button
+                type="button"
+                onClick={handleSubmit}
+                className="rounded bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground hover:bg-primary/90"
+              >
+                ▶
+              </button>
+            </div>
+
+            <div className="mt-1.5 text-xs text-muted-foreground opacity-60">
+              {selectedCommand.description}
+            </div>
+          </motion.div>
+        </motion.div>
+      )}
+    </AnimatePresence>
   );
 }

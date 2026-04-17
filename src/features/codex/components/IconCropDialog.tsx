@@ -1,6 +1,7 @@
 import { useState, useRef, useCallback, useEffect } from "react";
 import { useTranslation } from "react-i18next";
 import { X, Upload } from "lucide-react";
+import { AnimatedOverlay } from "@/components/ui/animated-overlay";
 
 const PREVIEW_SIZE = 192; // diameter of preview circle (px)
 const OUTPUT_SIZE = 128; // final exported icon size (px)
@@ -182,8 +183,13 @@ export function IconCropDialog({
     imgEl != null ? HALF - centerY * imgEl.naturalHeight * zoom : 0;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
-      <div className="w-72 rounded-lg border border-border bg-background shadow-xl">
+    <AnimatedOverlay
+      open
+      onClose={onClose}
+      className="w-72 rounded-lg border border-border bg-background shadow-xl"
+      backdropClassName="bg-black/40"
+    >
+      <>
         {/* Header */}
         <div className="flex items-center justify-between border-b border-border px-4 py-3">
           <h3 className="text-sm font-semibold">{t("codex.iconCrop.title")}</h3>
@@ -311,7 +317,7 @@ export function IconCropDialog({
             </button>
           </div>
         </div>
-      </div>
-    </div>
+      </>
+    </AnimatedOverlay>
   );
 }

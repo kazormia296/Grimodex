@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from "react";
 import { useTranslation } from "react-i18next";
 import { X, Pencil, Trash2 } from "lucide-react";
+import { AnimatedOverlay } from "@/components/ui/animated-overlay";
 import type { CodexDetailDefinition } from "../detailApi";
 import {
   listDefinitionsByType,
@@ -306,115 +307,108 @@ export function ManageFieldsDialog({
 
   const maxSortOrder = Math.max(0, ...definitions.map((d) => d.sortOrder));
 
-  if (!open) return null;
-
   return (
     <>
-      <div
-        data-testid="manage-fields-dialog"
-        className="fixed inset-0 z-40 flex items-center justify-center bg-black/40"
-        onClick={onClose}
+      <AnimatedOverlay
+        open={open}
+        onClose={onClose}
+        className="flex max-h-[80vh] w-full max-w-md flex-col rounded-lg border border-border bg-background shadow-lg"
+        backdropClassName="bg-black/40"
+        testId="manage-fields-dialog"
       >
-        <div
-          className="flex max-h-[80vh] w-full max-w-md flex-col rounded-lg border border-border bg-background shadow-lg"
-          onClick={(e) => e.stopPropagation()}
-        >
-          {/* Header */}
-          <div className="flex items-center justify-between border-b border-border px-4 py-3">
-            <h3 className="text-sm font-semibold">
-              Manage fields: {typeLabel}
-            </h3>
-            <button
-              type="button"
-              data-testid="manage-fields-close-button"
-              onClick={onClose}
-              className="rounded p-1 text-muted-foreground hover:bg-accent"
-            >
-              <X className="h-4 w-4" />
-            </button>
-          </div>
-
-          {/* Body */}
-          <div className="flex-1 overflow-y-auto p-4 space-y-2">
-            {definitions.map((def) => (
-              <div key={def.id}>
-                <div
-                  data-testid={`manage-field-row-${def.id}`}
-                  className="flex items-center gap-2 rounded-md border border-border px-3 py-2"
-                >
-                  <span className="flex-1 text-sm">{def.name}</span>
-                  <span
-                    data-testid={`manage-field-type-${def.id}`}
-                    className="rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground"
-                  >
-                    {def.fieldType === "codex_reference"
-                      ? "codex_ref"
-                      : def.fieldType}
-                  </span>
-                  <button
-                    type="button"
-                    data-testid={`manage-field-edit-${def.id}`}
-                    onClick={() =>
-                      setEditingId(editingId === def.id ? null : def.id)
-                    }
-                    className="rounded p-1 text-muted-foreground hover:bg-accent"
-                    title={t("common.edit")}
-                  >
-                    <Pencil className="h-3 w-3" />
-                  </button>
-                  <button
-                    type="button"
-                    data-testid={`manage-field-delete-${def.id}`}
-                    onClick={() => setDeletingDef(def)}
-                    className="rounded p-1 text-destructive hover:bg-destructive/10"
-                    title={t("common.delete")}
-                  >
-                    <Trash2 className="h-3 w-3" />
-                  </button>
-                </div>
-
-                {editingId === def.id && (
-                  <EditForm
-                    definition={def}
-                    onSave={handleEditSave}
-                    onCancel={() => setEditingId(null)}
-                  />
-                )}
-              </div>
-            ))}
-
-            {showAddForm && (
-              <AddForm
-                projectId={projectId}
-                typeSlug={typeSlug}
-                maxSortOrder={maxSortOrder}
-                onSave={handleAddSave}
-                onCancel={() => setShowAddForm(false)}
-              />
-            )}
-          </div>
-
-          {/* Footer */}
-          <div className="flex items-center justify-between border-t border-border px-4 py-3">
-            <button
-              type="button"
-              data-testid="manage-fields-add-button"
-              onClick={() => setShowAddForm(true)}
-              className="flex items-center gap-1 rounded px-2 py-1 text-xs text-muted-foreground hover:bg-accent"
-            >
-              + Add field
-            </button>
-            <button
-              type="button"
-              data-testid="manage-fields-close-button-footer"
-              onClick={onClose}
-              className="rounded px-3 py-1 text-xs text-muted-foreground hover:bg-accent"
-            >
-              Close
-            </button>
-          </div>
+        {/* Header */}
+        <div className="flex items-center justify-between border-b border-border px-4 py-3">
+          <h3 className="text-sm font-semibold">Manage fields: {typeLabel}</h3>
+          <button
+            type="button"
+            data-testid="manage-fields-close-button"
+            onClick={onClose}
+            className="rounded p-1 text-muted-foreground hover:bg-accent"
+          >
+            <X className="h-4 w-4" />
+          </button>
         </div>
-      </div>
+
+        {/* Body */}
+        <div className="flex-1 overflow-y-auto p-4 space-y-2">
+          {definitions.map((def) => (
+            <div key={def.id}>
+              <div
+                data-testid={`manage-field-row-${def.id}`}
+                className="flex items-center gap-2 rounded-md border border-border px-3 py-2"
+              >
+                <span className="flex-1 text-sm">{def.name}</span>
+                <span
+                  data-testid={`manage-field-type-${def.id}`}
+                  className="rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground"
+                >
+                  {def.fieldType === "codex_reference"
+                    ? "codex_ref"
+                    : def.fieldType}
+                </span>
+                <button
+                  type="button"
+                  data-testid={`manage-field-edit-${def.id}`}
+                  onClick={() =>
+                    setEditingId(editingId === def.id ? null : def.id)
+                  }
+                  className="rounded p-1 text-muted-foreground hover:bg-accent"
+                  title={t("common.edit")}
+                >
+                  <Pencil className="h-3 w-3" />
+                </button>
+                <button
+                  type="button"
+                  data-testid={`manage-field-delete-${def.id}`}
+                  onClick={() => setDeletingDef(def)}
+                  className="rounded p-1 text-destructive hover:bg-destructive/10"
+                  title={t("common.delete")}
+                >
+                  <Trash2 className="h-3 w-3" />
+                </button>
+              </div>
+
+              {editingId === def.id && (
+                <EditForm
+                  definition={def}
+                  onSave={handleEditSave}
+                  onCancel={() => setEditingId(null)}
+                />
+              )}
+            </div>
+          ))}
+
+          {showAddForm && (
+            <AddForm
+              projectId={projectId}
+              typeSlug={typeSlug}
+              maxSortOrder={maxSortOrder}
+              onSave={handleAddSave}
+              onCancel={() => setShowAddForm(false)}
+            />
+          )}
+        </div>
+
+        {/* Footer */}
+        <div className="flex items-center justify-between border-t border-border px-4 py-3">
+          <button
+            type="button"
+            data-testid="manage-fields-add-button"
+            onClick={() => setShowAddForm(true)}
+            className="flex items-center gap-1 rounded px-2 py-1 text-xs text-muted-foreground hover:bg-accent"
+          >
+            + Add field
+          </button>
+          <button
+            type="button"
+            data-testid="manage-fields-close-button-footer"
+            onClick={onClose}
+            className="rounded px-3 py-1 text-xs text-muted-foreground hover:bg-accent"
+          >
+            Close
+          </button>
+        </div>
+      </AnimatedOverlay>
 
       {deletingDef && (
         <DeleteConfirmDialog
