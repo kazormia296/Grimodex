@@ -393,6 +393,7 @@ export function buildSystemPrompt(
     }
   }
 
+  const pinnedIds = new Set((input.pinnedCodexEntries ?? []).map((e) => e.id));
   const allCodex = deduplicateById([
     ...(input.codexEntries ?? []).filter((e) => !pinnedChildIds.has(e.id)),
     ...pinnedWithChildren,
@@ -417,7 +418,7 @@ export function buildSystemPrompt(
       lines.push(
         `- **${entry.name}**${phaseSuffix} (${label}): ${displaySummary}`,
       );
-      if (entry.customDetails?.length) {
+      if (pinnedIds.has(entry.id) && entry.customDetails?.length) {
         for (const detail of entry.customDetails) {
           lines.push(`  - ${detail.fieldName}: ${detail.value}`);
         }
