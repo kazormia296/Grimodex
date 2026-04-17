@@ -57,6 +57,7 @@ import { shouldAutoDraftTransition } from "@/features/editor/autoStatusTransitio
 import { shouldPromptSynopsis } from "@/features/editor/synopsisSuggestion";
 import { getDocText } from "@/features/editor/RubyNode";
 import { generateSynopsisFromContent } from "@/features/chat/chatApi";
+import { useChatStore } from "@/features/chat/chatStore";
 import { prosemirrorToText } from "@/lib/prosemirror";
 import { toast } from "sonner";
 import { debugLog, errorDetail } from "@/lib/debugLog";
@@ -249,6 +250,10 @@ export function EditorPane({
         .getState()
         .refreshAiRatio(id)
         .catch(() => {});
+      const chatState = useChatStore.getState();
+      if (chatState.activeSceneId === id) {
+        void chatState.refreshContextLayers();
+      }
     }
   }, [isCodexMode, isSnippetMode]);
 

@@ -128,6 +128,12 @@ export interface SystemPromptResult {
 
 const encoder = encodingForModel("gpt-4o");
 
+// Cache token counts to avoid redundant BPE encoding on the same text.
+// Especially effective for repeated refreshContextLayers calls when scene
+// content hasn't changed between typing events.
+const _tokenCache = new Map<string, number>();
+const _TOKEN_CACHE_MAX = 500;
+
 /**
  * TipTap HTMLからAuthorshipMarkのspanタグ（data-authorship属性）を除去する。
  * ルビ・傍点等のHTMLタグは保持する。
@@ -590,7 +596,14 @@ export function buildAgentSystemPrompt(
 
 export function countTokens(text: string): number {
   if (!text) return 0;
-  return encoder.encode(text).length;
+  const cached = _tokenCache.get(text);
+  if (cached !== undefined) return cached;
+  const result = encoder.encode(text).length;
+  if (_tokenCache.size >= _TOKEN_CACHE_MAX) {
+    _tokenCache.delete(_tokenCache.keys().next().value!);
+  }
+  _tokenCache.set(text, result);
+  return result;
 }
 
 export function buildStorySoFar(

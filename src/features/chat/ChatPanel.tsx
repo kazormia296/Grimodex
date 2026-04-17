@@ -23,6 +23,7 @@ import { useAiSettingsStore } from "./store";
 import { normalizeModelId } from "@/features/attribution/AuthorshipMark";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { copyWithAttribution } from "@/lib/clipboardAttribution";
+import { saveScene } from "@/features/editor/editorSaveRegistry";
 import type { ChatMessage as ChatMessageType } from "./chatTypes";
 import type { PinnedSnippetEntryWithData } from "./chatApi";
 
@@ -464,9 +465,14 @@ export function ChatPanel() {
       if (!trimmed || isStreaming) return;
       // 送信時に却下セットをリセット（次のメッセージでは再検出可能にする）
       setInputDismissedIds(new Set());
-      sendMessage(trimmed);
+      // Flush any pending editor save so sendMessage reads latest scene content from DB.
+      const flushAndSend = async () => {
+        if (chatSceneId) await saveScene(chatSceneId);
+        sendMessage(trimmed);
+      };
+      void flushAndSend();
     },
-    [isStreaming, sendMessage],
+    [isStreaming, sendMessage, chatSceneId],
   );
 
   const handleToggleGlobalChat = useCallback(() => {

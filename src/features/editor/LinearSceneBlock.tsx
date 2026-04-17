@@ -19,6 +19,7 @@ import { shouldAutoDraftTransition } from "@/features/editor/autoStatusTransitio
 import { debugLog, errorDetail } from "@/lib/debugLog";
 import type { SceneStatus } from "@/features/tree/treeStore";
 import { useLinearEditorStore } from "./linearEditorStore";
+import { useChatStore } from "@/features/chat/chatStore";
 
 interface LinearSceneBlockProps {
   sceneId: string;
@@ -87,6 +88,10 @@ function MountedSceneBlock({
       .getState()
       .refreshAiRatio(sceneId)
       .catch(() => {});
+    const chatState = useChatStore.getState();
+    if (chatState.activeSceneId === sceneId) {
+      void chatState.refreshContextLayers();
+    }
   }, [sceneId]);
 
   const saveFn = useCallback(async () => {

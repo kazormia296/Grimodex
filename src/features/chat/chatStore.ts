@@ -329,6 +329,10 @@ async function fetchProjectContext(
 
 // Module-level cleanup function for the active stream
 let _streamCleanup: (() => void) | null = null;
+// Debounce timer for refreshContextLayers when input-detected entry IDs change.
+// Token counting (js-tiktoken) is synchronous and can block the main thread for
+// 50–200ms on long scenes, so we wait for typing to settle before recalculating.
+let _inputPinnedRefreshTimer: ReturnType<typeof setTimeout> | null = null;
 
 export const useChatStore = create<ChatState>()((set, get) => ({
   sessions: [],
@@ -364,7 +368,12 @@ export const useChatStore = create<ChatState>()((set, get) => ({
     const prev = [...inputPinnedEntryIds].sort();
     if (sorted.join(",") === prev.join(",")) return;
     set({ inputPinnedEntryIds: ids });
-    get().refreshContextLayers();
+    if (_inputPinnedRefreshTimer !== null)
+      clearTimeout(_inputPinnedRefreshTimer);
+    _inputPinnedRefreshTimer = setTimeout(() => {
+      _inputPinnedRefreshTimer = null;
+      void get().refreshContextLayers();
+    }, 500);
   },
 
   // --- Session management ---
