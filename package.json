@@ -49,6 +49,7 @@
     "js-tiktoken": "^1.0.21",
     "js-yaml": "^4.1.1",
     "lucide-react": "^1.7.0",
+    "motion": "^12.38.0",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
     "react-i18next": "^17.0.2",

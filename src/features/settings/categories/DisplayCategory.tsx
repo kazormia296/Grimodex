@@ -137,6 +137,18 @@ export function DisplayCategory() {
         </SettingRow>
       </SettingSection>
 
+      <SettingSection title={t("settings.display.animations")}>
+        <SettingRow
+          label={t("settings.display.reduceMotion")}
+          description={t("settings.display.reduceMotionDesc")}
+        >
+          <SettingToggle
+            settingKey="display.reduceMotion"
+            defaultValue={false}
+          />
+        </SettingRow>
+      </SettingSection>
+
       <SettingSection title={t("settings.display.codexHighlight")}>
         <SettingRow label={t("settings.display.enableHighlight")}>
           <SettingToggle

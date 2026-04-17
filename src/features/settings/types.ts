@@ -62,6 +62,7 @@ export const DEFAULT_SETTINGS: Record<string, string> = {
   // Display (theme, uiLanguage, uiScale are in GlobalSettings)
   "display.showWordCount": "true",
   "display.showAiBadge": "false",
+  "display.reduceMotion": "false",
   "display.codexHighlight": "true",
   "display.codexHighlightStyle": "color-text",
   "display.attributionHighlightOpacity": "10",
