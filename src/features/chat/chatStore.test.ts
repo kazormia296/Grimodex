@@ -501,6 +501,71 @@ describe("useChatStore", () => {
     });
   });
 
+  // --- シーンなし時のシステムプロンプトフォールバック ---
+
+  describe("lastSystemPrompt fallback (no active scene)", () => {
+    it("sendMessage injects lastSystemPrompt as system message when no scene", async () => {
+      useChatStore.setState({
+        activeSceneId: "",
+        activeProjectId: null,
+        lastSystemPrompt: "フォールバックプロンプト",
+      });
+      mockStreamResponse("回答");
+
+      await useChatStore.getState().sendMessage("テスト");
+
+      const passedMessages = mockSendChatMessageStream.mock.calls[0][0];
+      expect(passedMessages[0].role).toBe("system");
+      expect(passedMessages[0].content).toBe("フォールバックプロンプト");
+    });
+
+    it("sendMessage sends no system message when lastSystemPrompt is empty", async () => {
+      useChatStore.setState({
+        activeSceneId: "",
+        activeProjectId: null,
+        lastSystemPrompt: "",
+      });
+      mockStreamResponse("回答");
+
+      await useChatStore.getState().sendMessage("テスト");
+
+      const passedMessages = mockSendChatMessageStream.mock.calls[0][0];
+      expect(passedMessages[0].role).toBe("user");
+    });
+
+    it("buildPromptForCopy uses lastSystemPrompt as fallback when no scene", async () => {
+      useChatStore.setState({
+        activeSceneId: "",
+        activeProjectId: null,
+        lastSystemPrompt: "フォールバックプロンプト",
+        messages: [],
+      });
+
+      const result = await useChatStore
+        .getState()
+        .buildPromptForCopy("ユーザー入力");
+
+      expect(result).toContain("[system]\nフォールバックプロンプト");
+      expect(result).toContain("[user]\nユーザー入力");
+    });
+
+    it("buildPromptForCopy omits system block when lastSystemPrompt is empty", async () => {
+      useChatStore.setState({
+        activeSceneId: "",
+        activeProjectId: null,
+        lastSystemPrompt: "",
+        messages: [],
+      });
+
+      const result = await useChatStore
+        .getState()
+        .buildPromptForCopy("ユーザー入力");
+
+      expect(result).not.toContain("[system]");
+      expect(result).toContain("[user]\nユーザー入力");
+    });
+  });
+
   // --- G21: inputPinnedEntryIds ---
 
   describe("setInputPinnedEntryIds", () => {

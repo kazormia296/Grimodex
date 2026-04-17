@@ -763,6 +763,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
     const effectiveSceneId = isGlobalChat ? null : activeSceneId;
 
     const parts: string[] = [];
+    let contextLoaded = false;
 
     try {
       const [sceneCtx, projectCtx] = await Promise.all([
@@ -815,9 +816,19 @@ export const useChatStore = create<ChatState>()((set, get) => ({
           });
           parts.push(`[system]\n${prompt}`);
         }
+        contextLoaded = true;
       }
-    } catch {
-      // コンテキスト取得失敗は無視してメッセージ履歴のみ出力
+    } catch (e) {
+      console.error("[buildPromptForCopy] context fetch failed:", e);
+    }
+
+    // シーン/プロジェクトコンテキストが取得できなかった場合は
+    // refreshContextLayers が計算済みの lastSystemPrompt をフォールバックとして使用
+    if (!contextLoaded) {
+      const fallback = get().lastSystemPrompt;
+      if (fallback) {
+        parts.push(`[system]\n${fallback}`);
+      }
     }
 
     // 会話履歴
@@ -1182,6 +1193,20 @@ export const useChatStore = create<ChatState>()((set, get) => ({
           createdAt: new Date().toISOString(),
         };
         messagesForApi.unshift(systemMsg);
+      } else {
+        // シーンコンテキストなし（グローバルチャットまたはシーン未選択）:
+        // refreshContextLayers が計算済みの lastSystemPrompt をシステムメッセージとして注入
+        const fallbackPrompt = get().lastSystemPrompt;
+        if (fallbackPrompt) {
+          const fallbackSystemMsg: ChatMessage = {
+            id: "system",
+            sessionId,
+            role: "system",
+            content: fallbackPrompt,
+            createdAt: new Date().toISOString(),
+          };
+          messagesForApi.unshift(fallbackSystemMsg);
+        }
       }
 
       const chatModel = useAiSettingsStore.getState().settings?.model ?? "";
