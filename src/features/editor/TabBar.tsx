@@ -327,7 +327,7 @@ export function TabBar({ groupIndex = 0 }: TabBarProps) {
                 animate={{ opacity: 1 }}
                 exit={{ opacity: 0, width: 0 }}
                 transition={
-                  reduced
+                  reduced || tab.isPreview
                     ? { duration: 0 }
                     : { duration: DURATIONS.fast, ease: EASINGS.easeOut }
                 }

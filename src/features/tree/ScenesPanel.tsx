@@ -43,7 +43,6 @@ import { InlineSynopsisEdit } from "./InlineSynopsisEdit";
 import type { TreeNodeData, NodeType } from "./treeStore";
 import { canHaveChildren } from "./treeStore";
 import type { DropIndicator } from "./TreeNodeItem";
-import { AnimatedOverlay } from "@/components/ui/animated-overlay";
 import { motion, AnimatePresence } from "motion/react";
 import { DURATIONS, EASINGS, useReducedMotion } from "@/lib/animation";
 
@@ -1213,7 +1212,7 @@ export function ScenesPanel() {
         <AnimatePresence mode="wait">
           {viewMode !== "outline" && activeNode?.nodeType === "scene" && (
             <motion.div
-              key={activeSceneId}
+              key="synopsis"
               initial={{ opacity: 0, y: 8 }}
               animate={{ opacity: 1, y: 0 }}
               exit={{ opacity: 0, y: 8 }}
@@ -1237,14 +1236,9 @@ export function ScenesPanel() {
           />
         )}
 
-        <AnimatedOverlay
-          open={!!deleteConfirm}
-          onClose={() => setDeleteConfirm(null)}
-          backdropClassName="bg-background/80"
-          className="rounded-lg border border-border bg-popover p-4 shadow-xl w-72"
-        >
-          {deleteConfirm && (
-            <>
+        {deleteConfirm && (
+          <div className="absolute inset-0 z-50 flex items-center justify-center bg-background/80">
+            <div className="rounded-lg border border-border bg-popover p-4 shadow-xl w-72">
               <p className="text-sm font-medium mb-1">
                 {t("scenes.deleteConfirmTitle")}
               </p>
@@ -1288,9 +1282,9 @@ export function ScenesPanel() {
                   {t("common.deleteConfirm")}
                 </button>
               </div>
-            </>
-          )}
-        </AnimatedOverlay>
+            </div>
+          </div>
+        )}
       </div>
 
       {/* Drag overlay — portaled to body to escape dockview's transform context
