@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect, useCallback, useMemo } from "react";
 import { useTranslation } from "react-i18next";
 import { motion, AnimatePresence } from "motion/react";
-import { DURATIONS, EASINGS, useReducedMotion } from "@/lib/animation";
+import { useReducedMotion } from "@/lib/animation";
 import type { Editor } from "@tiptap/core";
 import { toast } from "sonner";
 import { useChatStore } from "./chatStore";
@@ -552,13 +552,13 @@ export function ChatPanel() {
                 .map((msg) => (
                   <motion.div
                     key={msg.id}
-                    initial={{ opacity: 0, x: msg.role === "user" ? 8 : -8 }}
+                    initial={{ opacity: 0, x: msg.role === "user" ? 20 : -20 }}
                     animate={{ opacity: 1, x: 0 }}
                     exit={{ opacity: 0 }}
                     transition={
                       reduced
                         ? { duration: 0 }
-                        : { duration: DURATIONS.fast, ease: EASINGS.easeOut }
+                        : { type: "spring", stiffness: 260, damping: 22 }
                     }
                   >
                     <ChatMessage
