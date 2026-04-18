@@ -57,16 +57,9 @@ function computeCardStyle(
 
   if (stepKey === "layout") {
     const el = document.querySelector('[data-tour="panel-toggle-root"]');
-    if (el) {
-      const r = el.getBoundingClientRect();
-      // Card sits below-left of the PanelToggleDropdown (which opens rightward)
-      return {
-        position: "fixed",
-        left: Math.max(8, r.left - 400),
-        top: r.bottom + 8,
-      };
-    }
-    return { position: "fixed", left: 8, top: 56 };
+    const top = el ? el.getBoundingClientRect().bottom + 8 : 56;
+    // Place card far left so it doesn't overlap the right-side dropdown
+    return { position: "fixed", left: 8, top };
   }
 
   if (!panelId) {
@@ -100,6 +93,16 @@ function computeCardStyle(
   const region = PANEL_REGION_MAP[panelId as Exclude<PanelId, "editor">];
 
   if (region === "left") {
+    if (panelId === "codex") {
+      // Codex shares the left column with Scenes; the group rect may push the card
+      // off screen. Use a safe center-bottom position instead.
+      return {
+        position: "fixed",
+        left: "50%",
+        transform: "translateX(-50%)",
+        bottom: 64,
+      };
+    }
     // Card to the right of the left panel
     return {
       position: "fixed",
@@ -211,6 +214,22 @@ export function WelcomeDialog({ open, onClose }: WelcomeDialogProps) {
       showPanel("snippets");
     }
   }, [tourIndex, showPanel]);
+
+  // Pop animation on the tour card whenever the step changes
+  useEffect(() => {
+    if (tourIndex === null || isReducedMotion()) return;
+    const timer = setTimeout(() => {
+      const card = document.querySelector<HTMLElement>(
+        '[data-testid="tour-card"]',
+      );
+      if (!card) return;
+      gsap
+        .timeline()
+        .to(card, { scale: 1.03, duration: 0.12, ease: "power2.out" })
+        .to(card, { scale: 1.0, duration: 0.3, ease: "elastic.out(1, 0.5)" });
+    }, 180); // after framer-motion entrance finishes
+    return () => clearTimeout(timer);
+  }, [tourIndex]);
 
   // Layout step: open the PanelToggleDropdown and pulse-highlight it
   useEffect(() => {
