@@ -54,6 +54,7 @@ export const DEFAULT_SETTINGS: Record<string, string> = {
   "editor.inlineAiShortcut": "true",
   "editor.smoothCaret": "true",
   "editor.cursorBlink": "true",
+  "editor.targetCharCount": "0",
   "editor.characterFadeIn": "false",
   "editor.characterFadeOut": "false",
   "editor.disableAllAnimations": "false",

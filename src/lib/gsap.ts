@@ -1,7 +1,7 @@
 import { gsap } from "gsap";
 import { useSettingsStore } from "@/features/settings/settingsStore";
 
-function isReducedMotion(): boolean {
+export function isReducedMotion(): boolean {
   const osReduced =
     typeof window !== "undefined" &&
     window.matchMedia("(prefers-reduced-motion: reduce)").matches;

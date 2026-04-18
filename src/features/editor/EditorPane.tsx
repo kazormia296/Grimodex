@@ -29,6 +29,8 @@ import { useCursorOverlay } from "@/features/editor/useCursorOverlay";
 import { useCursorSettingsStore } from "@/features/editor/cursorSettingsStore";
 import { useEditorSettings } from "@/features/settings/hooks/useEditorSettings";
 import { useSettingsStore } from "@/features/settings/settingsStore";
+import { useSettingNumber } from "@/features/settings/useSettingControl";
+import { useCharCountMilestone } from "@/features/editor/useCharCountMilestone";
 import { AttributionOverrideMenu } from "@/features/attribution/AttributionOverrideMenu";
 import {
   saveAuthorshipSpans,
@@ -121,6 +123,12 @@ export function EditorPane({
   } | null>(null);
   const [charCount, setCharCount] = useState(0);
   const [, setWordCount] = useState(0);
+  const charCountRef = useRef<HTMLSpanElement>(null);
+  const { value: targetCharCount } = useSettingNumber(
+    "editor.targetCharCount",
+    0,
+  );
+  useCharCountMilestone(charCount, targetCharCount, charCountRef);
   const [isDirty, setIsDirty] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [statusPopoverOpen, setStatusPopoverOpen] = useState(false);
@@ -1075,8 +1083,17 @@ export function EditorPane({
               AI: {aiRatio}%
             </button>
           )}
-          <span data-testid="char-count" className="tabular-nums">
+          <span
+            ref={charCountRef}
+            data-testid="char-count"
+            className="tabular-nums"
+          >
             {charCount.toLocaleString()} chars
+            {targetCharCount > 0 && (
+              <span className="ml-1 text-muted-foreground">
+                / {targetCharCount.toLocaleString()}
+              </span>
+            )}
           </span>
           {isSaving ? (
             <span className="opacity-50">Saving...</span>

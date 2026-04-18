@@ -96,6 +96,9 @@ export function Toolbar({
     18,
   );
 
+  const { value: targetCharCount, setValue: setTargetCharCount } =
+    useSettingNumber("editor.targetCharCount", 0);
+
   const { showAttribution, toggleAttribution } = useAttributionStore();
   const {
     focusMode,
@@ -610,7 +613,21 @@ export function Toolbar({
               setOverflowOpen(false);
             }}
           />
-          <OverflowItem label={t("editor.toolbar.targetWordCount")} disabled />
+          <div className="flex items-center justify-between px-3 py-1 text-xs text-foreground">
+            <span>{t("editor.toolbar.targetWordCount")}</span>
+            <input
+              type="number"
+              min={0}
+              value={targetCharCount === 0 ? "" : targetCharCount}
+              placeholder="0"
+              onMouseDown={(e) => e.stopPropagation()}
+              onChange={(e) => {
+                const v = parseInt(e.target.value, 10);
+                setTargetCharCount(isNaN(v) || v < 0 ? 0 : v);
+              }}
+              className="ml-2 w-20 rounded border border-input bg-background px-1.5 py-0.5 text-right tabular-nums focus:outline-none focus:ring-1 focus:ring-ring"
+            />
+          </div>
           <OverflowItem
             label={t("editor.toolbar.verticalPreview")}
             onClick={() => {
