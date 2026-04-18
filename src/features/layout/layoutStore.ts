@@ -20,6 +20,77 @@ export type PanelId =
   | "attribution"
   | "codex-quick";
 
+/** MIME type used to transfer panel IDs during external drag operations */
+export const PANEL_DRAG_TYPE = "application/grimodex-panel-id";
+
+type InsertRule =
+  | {
+      panel: PanelId;
+      direction: "within" | "left" | "right" | "above" | "below";
+    }
+  | { panel: null; direction: "left" | "right" | "above" | "below" };
+
+/** Ordered anchor list for each panel — first matching anchor wins */
+const PANEL_INSERT_REGISTRY: Record<PanelId, InsertRule[]> = {
+  scenes: [
+    { panel: "codex", direction: "within" },
+    { panel: "codex-quick", direction: "within" },
+    { panel: null, direction: "left" },
+  ],
+  codex: [
+    { panel: "scenes", direction: "within" },
+    { panel: "codex-quick", direction: "within" },
+    { panel: null, direction: "left" },
+  ],
+  "codex-quick": [
+    { panel: "codex", direction: "within" },
+    { panel: "scenes", direction: "below" },
+    { panel: null, direction: "left" },
+  ],
+  chat: [
+    { panel: "chat-history", direction: "within" },
+    { panel: null, direction: "right" },
+  ],
+  "chat-history": [
+    { panel: "chat", direction: "within" },
+    { panel: null, direction: "right" },
+  ],
+  snippets: [
+    { panel: "attribution", direction: "within" },
+    { panel: "codex", direction: "within" },
+    { panel: null, direction: "below" },
+  ],
+  attribution: [
+    { panel: "snippets", direction: "within" },
+    { panel: "editor", direction: "below" },
+    { panel: null, direction: "below" },
+  ],
+  editor: [
+    { panel: "scenes", direction: "right" },
+    { panel: "codex", direction: "right" },
+    { panel: "codex-quick", direction: "right" },
+    { panel: null, direction: "right" },
+  ],
+};
+
+export type InsertPosition =
+  | { referencePanel: string; direction: string }
+  | { direction: string };
+
+/** Resolve the best-fit insert position for a panel using the ordered anchor registry */
+export function resolveInsertPosition(
+  api: Pick<DockviewApi, "getPanel">,
+  panelId: PanelId,
+): InsertPosition {
+  for (const rule of PANEL_INSERT_REGISTRY[panelId]) {
+    if (rule.panel === null) return { direction: rule.direction };
+    if (rule.panel !== panelId && api.getPanel(rule.panel)) {
+      return { referencePanel: rule.panel, direction: rule.direction };
+    }
+  }
+  return { direction: "right" };
+}
+
 /** Human-readable panel title resolved via i18n */
 export function getPanelTitle(id: PanelId): string {
   return i18next.t(`layout.panel.${id}`);
@@ -128,13 +199,8 @@ export const useLayoutStore = create<LayoutState>()((set, get) => ({
 
     const panel = api.getPanel(panelId);
     if (panel) {
-      if (panel.group?.activePanel === panel) {
-        api.removePanel(panel);
-      } else {
-        panel.api.setActive();
-      }
+      panel.api.setActive();
     } else {
-      // Panel doesn't exist — add it back with a reasonable position
       addPanelWithDefaults(api, panelId);
     }
   },
@@ -286,160 +352,16 @@ export const useLayoutStore = create<LayoutState>()((set, get) => ({
   },
 }));
 
-/**
- * Add a panel back to the layout at a sensible default position.
- */
 function addPanelWithDefaults(api: DockviewApi, panelId: PanelId) {
   const title = getPanelTitle(panelId);
-
-  // Try to group with a sibling panel, or fall back to a directional position
-  switch (panelId) {
-    case "codex-quick": {
-      // Default: below scenes; fall back to left side
-      const scenes = api.getPanel("scenes");
-      if (scenes) {
-        api.addPanel({
-          id: panelId,
-          component: panelId,
-          title,
-          position: { referencePanel: "scenes", direction: "below" },
-        });
-      } else {
-        api.addPanel({
-          id: panelId,
-          component: panelId,
-          title,
-          position: { direction: "left" },
-        });
-      }
-      break;
-    }
-    case "scenes":
-    case "codex": {
-      // Left group — find any sibling
-      const sibling = findFirstPanel(api, ["scenes", "codex"], panelId);
-      if (sibling) {
-        api.addPanel({
-          id: panelId,
-          component: panelId,
-          title,
-          position: { referencePanel: sibling, direction: "within" },
-        });
-      } else {
-        api.addPanel({
-          id: panelId,
-          component: panelId,
-          title,
-          position: { direction: "left" },
-        });
-      }
-      break;
-    }
-    case "chat-history": {
-      // Right group — group with chat if available
-      const chat = api.getPanel("chat");
-      if (chat) {
-        api.addPanel({
-          id: panelId,
-          component: panelId,
-          title,
-          position: { referencePanel: "chat", direction: "within" },
-        });
-      } else {
-        api.addPanel({
-          id: panelId,
-          component: panelId,
-          title,
-          position: { direction: "right" },
-        });
-      }
-      break;
-    }
-    case "chat": {
-      api.addPanel({
-        id: panelId,
-        component: panelId,
-        title,
-        position: { direction: "right" },
-      });
-      break;
-    }
-    case "snippets": {
-      const codex = api.getPanel("codex");
-      if (codex) {
-        api.addPanel({
-          id: panelId,
-          component: panelId,
-          title,
-          position: { referencePanel: "codex", direction: "within" },
-        });
-      } else {
-        api.addPanel({
-          id: panelId,
-          component: panelId,
-          title,
-          position: { direction: "below" },
-        });
-      }
-      break;
-    }
-    case "attribution": {
-      const editor = api.getPanel("editor");
-      if (editor) {
-        api.addPanel({
-          id: panelId,
-          component: panelId,
-          title,
-          position: { referencePanel: "editor", direction: "below" },
-        });
-      } else {
-        api.addPanel({
-          id: panelId,
-          component: panelId,
-          title,
-          position: { direction: "below" },
-        });
-      }
-      break;
-    }
-    case "editor": {
-      // Editor should always open in center — to the right of left-column
-      // panels (scenes/codex/codex-quick) if they exist
-      const leftRef = findFirstPanel(
-        api,
-        ["scenes", "codex", "codex-quick"],
-        panelId,
-      );
-      if (leftRef) {
-        api.addPanel({
-          id: panelId,
-          component: panelId,
-          title,
-          position: { referencePanel: leftRef, direction: "right" },
-          minimumWidth: 320,
-        });
-      } else {
-        api.addPanel({
-          id: panelId,
-          component: panelId,
-          title,
-          minimumWidth: 320,
-        });
-      }
-      break;
-    }
-  }
-}
-
-function findFirstPanel(
-  api: DockviewApi,
-  ids: PanelId[],
-  exclude: PanelId,
-): string | undefined {
-  for (const id of ids) {
-    if (id !== exclude && api.getPanel(id)) return id;
-  }
-  return undefined;
+  const position = resolveInsertPosition(api, panelId);
+  api.addPanel({
+    id: panelId,
+    component: panelId,
+    title,
+    position,
+    ...(panelId === "editor" ? { minimumWidth: 320 } : {}),
+  });
 }
 
 /* ── Persistence helpers ── */

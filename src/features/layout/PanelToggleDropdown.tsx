@@ -1,8 +1,15 @@
 import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { LayoutGrid, ChevronDown, Check, Lock, Unlock } from "lucide-react";
+import {
+  LayoutGrid,
+  ChevronDown,
+  Check,
+  Lock,
+  Unlock,
+  GripVertical,
+} from "lucide-react";
 import { cn } from "@/lib/utils";
-import { useLayoutStore, type PanelId } from "./layoutStore";
+import { useLayoutStore, type PanelId, PANEL_DRAG_TYPE } from "./layoutStore";
 import {
   TOGGLEABLE_PANELS,
   KEYBOARD_SHORTCUT_MAP,
@@ -147,9 +154,19 @@ export function PanelToggleDropdown() {
                   <button
                     key={panelId}
                     type="button"
+                    draggable={!visible}
                     onClick={() => togglePanel(panelId)}
+                    onDragStart={(e) => {
+                      e.dataTransfer.setData(PANEL_DRAG_TYPE, panelId);
+                      e.dataTransfer.effectAllowed = "copy";
+                      setIsOpen(false);
+                      setHoveredPanelId(null);
+                    }}
                     onMouseEnter={() => setHoveredPanelId(panelId)}
-                    className="flex w-full items-center gap-2 px-3 py-1.5 text-sm hover:bg-accent hover:text-accent-foreground"
+                    className={cn(
+                      "flex w-full items-center gap-2 px-3 py-1.5 text-sm hover:bg-accent hover:text-accent-foreground",
+                      !visible && "cursor-grab active:cursor-grabbing",
+                    )}
                   >
                     {/* Checkbox */}
                     <span
@@ -173,6 +190,11 @@ export function PanelToggleDropdown() {
                       <kbd className="rounded border border-border bg-muted px-1 py-0.5 font-mono text-[10px] text-muted-foreground">
                         {KEYBOARD_SHORTCUT_MAP[panelId]}
                       </kbd>
+                    )}
+
+                    {/* Drag handle — shown only for panels not yet in layout */}
+                    {!visible && (
+                      <GripVertical className="h-3.5 w-3.5 shrink-0 text-muted-foreground/40" />
                     )}
                   </button>
                 );

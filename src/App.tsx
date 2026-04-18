@@ -3,6 +3,7 @@ import { Toaster, toast } from "sonner";
 import {
   DockviewReact,
   type DockviewReadyEvent,
+  type DockviewDidDropEvent,
   type IDockviewPanelProps,
 } from "dockview-react";
 import "dockview-react/dist/styles/dockview.css";
@@ -22,6 +23,8 @@ import {
   useLayoutStore,
   clearSavedLayout,
   refreshPanelTitles,
+  getPanelTitle,
+  PANEL_DRAG_TYPE,
   type PanelId,
 } from "@/features/layout/layoutStore";
 import {
@@ -348,9 +351,39 @@ function EditorScreen() {
 
       // Load preset metadata (custom presets list + active ID)
       loadPresets();
+
+      // Accept external drags originating from the panel dropdown
+      api.onUnhandledDragOverEvent((e) => {
+        if (e.nativeEvent.dataTransfer?.types.includes(PANEL_DRAG_TYPE)) {
+          e.accept();
+        }
+      });
     },
     [setDockviewApi, loadLayout, loadPresets],
   );
+
+  const handlePanelDrop = useCallback((event: DockviewDidDropEvent) => {
+    const panelId = event.nativeEvent.dataTransfer?.getData(PANEL_DRAG_TYPE) as
+      | PanelId
+      | undefined;
+    if (!panelId) return;
+    if (event.api.getPanel(panelId)) return; // already in layout
+
+    const position = event.group
+      ? {
+          referencePanel: event.group.activePanel?.id ?? "",
+          direction: "within" as const,
+        }
+      : { direction: "right" as const };
+
+    event.api.addPanel({
+      id: panelId,
+      component: panelId,
+      title: getPanelTitle(panelId),
+      position,
+      ...(panelId === "editor" ? { minimumWidth: 320 } : {}),
+    });
+  }, []);
 
   // Keyboard shortcuts (Ctrl+Alt+*)
   const handleKeyDown = useCallback(
@@ -497,6 +530,7 @@ function EditorScreen() {
         <DockviewReact
           className="dockview-theme-dark flex-1"
           onReady={handleReady}
+          onDidDrop={handlePanelDrop}
           components={components}
           watermarkComponent={DockviewWatermark}
         />

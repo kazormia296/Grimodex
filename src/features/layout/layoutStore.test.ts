@@ -1,5 +1,10 @@
 import { describe, it, expect, beforeEach, vi, afterEach } from "vitest";
-import { useLayoutStore, clearSavedLayout } from "./layoutStore";
+import {
+  useLayoutStore,
+  clearSavedLayout,
+  resolveInsertPosition,
+} from "./layoutStore";
+import type { DockviewApi } from "dockview-react";
 
 vi.mock("@/lib/tauri", () => ({
   invoke: vi.fn(),
@@ -265,6 +270,140 @@ describe("useLayoutStore", () => {
           theme: "dark",
         }),
       });
+    });
+  });
+
+  describe("resolveInsertPosition", () => {
+    function makeApi(existing: string[]): Pick<DockviewApi, "getPanel"> {
+      return {
+        getPanel: vi
+          .fn()
+          .mockImplementation((id: string) =>
+            existing.includes(id) ? { id } : undefined,
+          ),
+      } as unknown as Pick<DockviewApi, "getPanel">;
+    }
+
+    it("returns fallback direction when no anchor panels exist for scenes", () => {
+      const api = makeApi([]);
+      expect(resolveInsertPosition(api as DockviewApi, "scenes")).toEqual({
+        direction: "left",
+      });
+    });
+
+    it("uses first available anchor for scenes (codex present)", () => {
+      const api = makeApi(["codex"]);
+      expect(resolveInsertPosition(api as DockviewApi, "scenes")).toEqual({
+        referencePanel: "codex",
+        direction: "within",
+      });
+    });
+
+    it("skips unavailable anchor and falls through to next for scenes", () => {
+      const api = makeApi(["codex-quick"]); // codex absent, codex-quick present
+      expect(resolveInsertPosition(api as DockviewApi, "scenes")).toEqual({
+        referencePanel: "codex-quick",
+        direction: "within",
+      });
+    });
+
+    it("places chat-history within chat when chat exists", () => {
+      const api = makeApi(["chat"]);
+      expect(resolveInsertPosition(api as DockviewApi, "chat-history")).toEqual(
+        {
+          referencePanel: "chat",
+          direction: "within",
+        },
+      );
+    });
+
+    it("falls back to right for chat-history when chat absent", () => {
+      const api = makeApi([]);
+      expect(resolveInsertPosition(api as DockviewApi, "chat-history")).toEqual(
+        {
+          direction: "right",
+        },
+      );
+    });
+
+    it("places codex-quick within codex when codex exists", () => {
+      const api = makeApi(["codex"]);
+      expect(resolveInsertPosition(api as DockviewApi, "codex-quick")).toEqual({
+        referencePanel: "codex",
+        direction: "within",
+      });
+    });
+
+    it("places editor to the right of scenes when scenes exists", () => {
+      const api = makeApi(["scenes"]);
+      expect(resolveInsertPosition(api as DockviewApi, "editor")).toEqual({
+        referencePanel: "scenes",
+        direction: "right",
+      });
+    });
+
+    it("places editor with right fallback when no left-column panels exist", () => {
+      const api = makeApi([]);
+      expect(resolveInsertPosition(api as DockviewApi, "editor")).toEqual({
+        direction: "right",
+      });
+    });
+  });
+
+  describe("togglePanel — focuses panel without removing it", () => {
+    it("calls setActive when panel is already visible and active", () => {
+      const mockSetActive = vi.fn();
+      const mockRemovePanel = vi.fn();
+      const mockPanel = {
+        api: { setActive: mockSetActive },
+        group: { activePanel: { id: "scenes" } },
+      };
+      const mockApi = {
+        getPanel: vi.fn().mockReturnValue(mockPanel),
+        removePanel: mockRemovePanel,
+        addPanel: vi.fn(),
+        onDidAddGroup: vi.fn(),
+        onDidLayoutChange: vi.fn(),
+      };
+      useLayoutStore.setState({ dockviewApi: mockApi as never });
+      useLayoutStore.getState().togglePanel("scenes");
+      expect(mockSetActive).toHaveBeenCalled();
+      expect(mockRemovePanel).not.toHaveBeenCalled();
+    });
+
+    it("calls setActive when panel exists but is not the active tab", () => {
+      const mockSetActive = vi.fn();
+      const mockRemovePanel = vi.fn();
+      const mockPanel = {
+        api: { setActive: mockSetActive },
+        group: { activePanel: { id: "codex" } }, // different active panel
+      };
+      const mockApi = {
+        getPanel: vi.fn().mockReturnValue(mockPanel),
+        removePanel: mockRemovePanel,
+        addPanel: vi.fn(),
+        onDidAddGroup: vi.fn(),
+        onDidLayoutChange: vi.fn(),
+      };
+      useLayoutStore.setState({ dockviewApi: mockApi as never });
+      useLayoutStore.getState().togglePanel("scenes");
+      expect(mockSetActive).toHaveBeenCalled();
+      expect(mockRemovePanel).not.toHaveBeenCalled();
+    });
+
+    it("adds panel with registry position when panel does not exist", () => {
+      const mockAddPanel = vi.fn();
+      const mockApi = {
+        getPanel: vi.fn().mockReturnValue(undefined),
+        addPanel: mockAddPanel,
+        onDidAddGroup: vi.fn(),
+        onDidLayoutChange: vi.fn(),
+      };
+      useLayoutStore.setState({ dockviewApi: mockApi as never });
+      useLayoutStore.getState().togglePanel("scenes");
+      expect(mockAddPanel).toHaveBeenCalledWith(
+        expect.objectContaining({ id: "scenes" }),
+      );
     });
   });
 });
