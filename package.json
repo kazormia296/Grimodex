@@ -13,7 +13,8 @@
     "lint:fix": "eslint src --fix",
     "tauri": "tauri",
     "generate:licenses": "tsx scripts/generate-licenses.ts",
-    "seed:sample-en": "python3 scripts/seed-sample-en.py"
+    "seed:sample-en": "python3 scripts/seed-sample-en.py",
+    "seed:sample-ja": "python3 scripts/seed-sample-ja.py"
   },
   "dependencies": {
     "@dnd-kit/core": "^6.3.1",
