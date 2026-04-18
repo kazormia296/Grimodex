@@ -5,6 +5,7 @@ import { useTranslation } from "react-i18next";
  * ASCII shader animation for the empty editor state.
  * Renders concentric wave ripples using cycling ASCII characters,
  * with a vignette fade and the app name overlaid in the center.
+ * Mouse cursor creates a local interference ripple in the wave field.
  */
 
 const GRADIENT = " .·:∴+✦*⊹✧";
@@ -14,11 +15,27 @@ export function AsciiSplash({ onClick }: { onClick?: () => void }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const preRef = useRef<HTMLPreElement>(null);
   const rafRef = useRef(0);
+  // Normalized mouse position in container (0..1), -5 when off-screen
+  const mouseRef = useRef({ x: -5, y: -5 });
 
   useEffect(() => {
     const container = containerRef.current;
     const pre = preRef.current;
     if (!container || !pre) return;
+
+    const handleMouseMove = (e: MouseEvent) => {
+      const { left, top, width, height } = container.getBoundingClientRect();
+      mouseRef.current = {
+        x: (e.clientX - left) / width,
+        y: (e.clientY - top) / height,
+      };
+    };
+    const handleMouseLeave = () => {
+      mouseRef.current = { x: -5, y: -5 };
+    };
+
+    container.addEventListener("mousemove", handleMouseMove);
+    container.addEventListener("mouseleave", handleMouseLeave);
 
     // Measure actual monospace character dimensions
     const probe = document.createElement("span");
@@ -59,6 +76,10 @@ export function AsciiSplash({ onClick }: { onClick?: () => void }) {
       const aspect = charW / charH;
       const glen = GRADIENT.length;
 
+      // Mouse in the same normalized coord space as nx/ny
+      const mnx = (mouseRef.current.x * cols - cx) / cx;
+      const mny = ((mouseRef.current.y * rows - cy) / cy) * aspect;
+
       let buf = "";
       for (let y = 0; y < rows; y++) {
         for (let x = 0; x < cols; x++) {
@@ -75,9 +96,15 @@ export function AsciiSplash({ onClick }: { onClick?: () => void }) {
           const raw = (w1 + w2 + w3) / 1.75; // ≈ −1..1
           const norm = raw * 0.5 + 0.5; // 0..1
 
+          // Mouse ripple: Gaussian-weighted interference pattern at cursor position
+          const dMouse = Math.hypot(nx - mnx, ny - mny);
+          const mouseRipple = Math.sin(dMouse * 12 - t * 2.5) * 0.5 + 0.5;
+          const mWeight = Math.exp(-dMouse * dMouse * 5); // tight Gaussian falloff
+
           // Circular vignette — strong fade towards edges
           const vig = Math.max(0, 1 - dist * 0.95);
-          const brightness = norm * vig * vig;
+          const brightness =
+            (norm + (mouseRipple - norm) * mWeight * 0.65) * vig * vig;
 
           const idx = Math.min(Math.floor(brightness * glen), glen - 1);
           buf += GRADIENT[idx];
@@ -92,6 +119,8 @@ export function AsciiSplash({ onClick }: { onClick?: () => void }) {
     return () => {
       cancelAnimationFrame(rafRef.current);
       ro.disconnect();
+      container.removeEventListener("mousemove", handleMouseMove);
+      container.removeEventListener("mouseleave", handleMouseLeave);
     };
   }, []);
 
