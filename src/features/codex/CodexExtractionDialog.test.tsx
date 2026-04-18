@@ -4,6 +4,16 @@ import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { CodexExtractionDialog } from "./CodexExtractionDialog";
 
+vi.mock("@gsap/react", () => ({
+  useGSAP: vi.fn(() => ({ contextSafe: (fn: unknown) => fn })),
+}));
+
+vi.mock("@/lib/gsap", () => ({
+  celebrationBurst: vi.fn(),
+}));
+
+import { celebrationBurst } from "@/lib/gsap";
+
 describe("CodexExtractionDialog", () => {
   const defaultProps = {
     open: true,
@@ -113,6 +123,27 @@ describe("CodexExtractionDialog", () => {
     await user.click(screen.getByTestId("codex-cancel-button"));
 
     expect(defaultProps.onClose).toHaveBeenCalled();
+  });
+
+  describe("celebrationBurst animation", () => {
+    it("calls celebrationBurst on heading when valid name is saved", async () => {
+      const user = userEvent.setup();
+      render(<CodexExtractionDialog {...defaultProps} />);
+
+      await user.type(screen.getByTestId("codex-name-input"), "テスト名");
+      await user.click(screen.getByTestId("codex-save-button"));
+
+      expect(celebrationBurst).toHaveBeenCalledTimes(1);
+    });
+
+    it("does not call celebrationBurst when name is empty", async () => {
+      const user = userEvent.setup();
+      render(<CodexExtractionDialog {...defaultProps} />);
+
+      await user.click(screen.getByTestId("codex-save-button"));
+
+      expect(celebrationBurst).not.toHaveBeenCalled();
+    });
   });
 
   it("resets form when opened with new content", () => {

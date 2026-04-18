@@ -4,6 +4,16 @@ import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { SnippetExtractionDialog } from "./SnippetExtractionDialog";
 
+vi.mock("@gsap/react", () => ({
+  useGSAP: vi.fn(() => ({ contextSafe: (fn: unknown) => fn })),
+}));
+
+vi.mock("@/lib/gsap", () => ({
+  celebrationBurst: vi.fn(),
+}));
+
+import { celebrationBurst } from "@/lib/gsap";
+
 describe("SnippetExtractionDialog", () => {
   const defaultProps = {
     open: true,
@@ -94,6 +104,24 @@ describe("SnippetExtractionDialog", () => {
 
     await waitFor(() => {
       expect(defaultProps.onClose).toHaveBeenCalled();
+    });
+  });
+
+  describe("celebrationBurst animation", () => {
+    it("calls celebrationBurst on heading when valid title is saved", async () => {
+      const user = userEvent.setup();
+      render(<SnippetExtractionDialog {...defaultProps} />);
+
+      await user.type(screen.getByTestId("snippet-title-input"), "タイトル");
+      await user.click(screen.getByTestId("snippet-save-button"));
+
+      await waitFor(() => expect(celebrationBurst).toHaveBeenCalledTimes(1));
+    });
+
+    it("does not call celebrationBurst when title is empty (button disabled)", () => {
+      render(<SnippetExtractionDialog {...defaultProps} />);
+      expect(screen.getByTestId("snippet-save-button")).toBeDisabled();
+      expect(celebrationBurst).not.toHaveBeenCalled();
     });
   });
 
