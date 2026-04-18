@@ -76,7 +76,7 @@ export function pulseHighlight(
   return gsap
     .timeline()
     .to(target, {
-      boxShadow: "0 0 0 24px rgba(99,102,241,0.25)",
+      boxShadow: "0 0 0 6px rgba(99,102,241,0.4)",
       duration: dur / 2,
       ease: "power2.out",
     })

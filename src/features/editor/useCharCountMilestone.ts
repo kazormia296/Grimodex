@@ -42,10 +42,14 @@ export function useCharCountMilestone(
         if (isReducedMotion() || !elementRef.current) return;
         pulseHighlight(elementRef.current);
         if (m === 1.0) {
+          const rect = elementRef.current.getBoundingClientRect();
           confetti({
             particleCount: 80,
             spread: 60,
-            origin: { y: 1 },
+            origin: {
+              x: (rect.left + rect.width / 2) / window.innerWidth,
+              y: rect.top / window.innerHeight,
+            },
           });
         }
         return; // fire at most one milestone per update
