@@ -38,7 +38,7 @@ const PANEL_INSERT_REGISTRY: Record<PanelId, InsertRule[]> = {
     { panel: null, direction: "left" },
   ],
   codex: [
-    { panel: "scenes", direction: "within" },
+    { panel: "snippets", direction: "within" },
     { panel: "codex-quick", direction: "within" },
     { panel: null, direction: "left" },
   ],
@@ -61,8 +61,8 @@ const PANEL_INSERT_REGISTRY: Record<PanelId, InsertRule[]> = {
     { panel: null, direction: "below" },
   ],
   attribution: [
-    { panel: "snippets", direction: "within" },
     { panel: "editor", direction: "below" },
+    { panel: "snippets", direction: "within" },
     { panel: null, direction: "below" },
   ],
   editor: [
