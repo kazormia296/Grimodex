@@ -15,7 +15,6 @@
     "deleteConfirmTitle": "Confirm Delete",
     "deleteConfirm": "Delete"
   },
-
   "welcome": {
     "description": "Choose a folder to save your manuscript.",
     "descriptionSub": "The database and manuscript files will be stored in this folder.",
@@ -23,14 +22,12 @@
     "start": "Get Started",
     "preparing": "Preparing…"
   },
-
   "launcher": {
     "recentWorkspaces": "Recent Workspaces",
     "noWorkspaces": "No workspaces",
     "openFolder": "Open Folder",
     "newWorkspace": "New Workspace"
   },
-
   "workspaceMenu": {
     "openOther": "Open Other Folder…",
     "newWorkspace": "New Workspace",
@@ -58,7 +55,6 @@
     "noFile": "No file selected",
     "invalidZip": "Please select a valid ZIP file"
   },
-
   "app": {
     "loading": "Loading…",
     "invalidLayout": "Saved layout was invalid and has been reset to default. ({{reason}})",
@@ -66,7 +62,6 @@
     "exportTitle": "Export (Ctrl+Shift+E)",
     "settingsTitle": "Settings (Ctrl+Alt+,)"
   },
-
   "settings": {
     "title": "Settings",
     "display": {
@@ -123,7 +118,7 @@
       "autoSaveFormat": "{{v}}s",
       "spellCheck": "Spell Check",
       "smartQuotes": "Smart Quotes",
-      "smartQuotesDesc": "Auto-convert \" → \u201C \u201D (not recommended for Japanese)",
+      "smartQuotesDesc": "Auto-convert \" → “ ” (not recommended for Japanese)",
       "smartDashes": "Smart Dashes",
       "smartDashesDesc": "Auto-convert -- → —",
       "inlineAi": "Inline AI",
@@ -283,7 +278,6 @@
       "showWelcomeTour": "Show Welcome Tour"
     }
   },
-
   "layout": {
     "watermark": {
       "panelsClosed": "Panels are closed",
@@ -321,7 +315,6 @@
       "resetDefault": "Reset to default"
     }
   },
-
   "chat": {
     "title": "AI Chat",
     "generating": "Generating…",
@@ -366,7 +359,6 @@
     "starUpdateFailed": "Failed to update star",
     "extractedToCodex": "Extracted to Codex",
     "copied": "Copied",
-    "copyFailed": "Copy failed",
     "noMessages": "No messages yet",
     "actions": {
       "unstar": "Remove star",
@@ -464,7 +456,6 @@
       "copy": "Copy"
     }
   },
-
   "codex": {
     "character": "Character",
     "location": "Location",
@@ -601,7 +592,6 @@
       "tagsPlaceholder": "Enter tags separated by commas"
     }
   },
-
   "snippets": {
     "sortRecent": "Newest",
     "sortOldest": "Oldest",
@@ -653,7 +643,6 @@
       "delete": "Delete"
     }
   },
-
   "tree": {
     "openInEditor": "Open in Editor",
     "openInSide": "Open in Side",
@@ -685,9 +674,10 @@
       "pinCodex": "Pin Codex entry"
     }
   },
-
   "chatCommands": {
-    "continue": { "description": "Generate continuation of the current scene" },
+    "continue": {
+      "description": "Generate continuation of the current scene"
+    },
     "describe": {
       "description": "Generate description of a subject",
       "argPlaceholder": "Subject"
@@ -696,15 +686,20 @@
       "description": "Generate character dialogue",
       "argPlaceholder": "Character name"
     },
-    "summarize": { "description": "Generate summary of the current scene" },
-    "brainstorm": { "description": "Brainstorm plot ideas" },
-    "rewrite": { "description": "Rewrite selected text" },
+    "summarize": {
+      "description": "Generate summary of the current scene"
+    },
+    "brainstorm": {
+      "description": "Brainstorm plot ideas"
+    },
+    "rewrite": {
+      "description": "Rewrite selected text"
+    },
     "translate": {
       "description": "Translate selected text",
       "argPlaceholder": "Language"
     }
   },
-
   "editor": {
     "placeholder": "Start writing here…",
     "toolbar": {
@@ -811,7 +806,6 @@
       "hint": "Select a scene from the tree to start writing"
     }
   },
-
   "inlineAi": {
     "generateFailed": "Generation failed",
     "additionalPrompt": "Additional instructions (optional)",
@@ -859,7 +853,6 @@
       }
     }
   },
-
   "keys": {
     "focusScenes": "Focus Scenes panel",
     "focusChat": "Focus Chat panel",
@@ -876,7 +869,6 @@
     "findReplace": "Find and Replace",
     "inlineAiPalette": "Inline AI Palette"
   },
-
   "attribution": {
     "report": "Attribution Report",
     "scene": "Scene",
@@ -898,7 +890,6 @@
     "humanPct": "{{pct}}% human",
     "charSuffix": "{{count}} chars"
   },
-
   "phase": {
     "editTitle": "Edit Phase",
     "addTitle": "Add Phase",
@@ -915,7 +906,6 @@
     "overrideRequired": "Select at least one field to override",
     "saving": "Saving..."
   },
-
   "snapshot": {
     "title": "Project Snapshot",
     "close": "Close",
@@ -947,7 +937,6 @@
     "restoreError": "Restore failed",
     "deleteError": "Delete failed"
   },
-
   "validation": {
     "invalidData": "Layout data is invalid",
     "missingGrid": "Missing grid field",
@@ -959,38 +948,31 @@
     "insufficientGroups": "Insufficient groups ({{count}})",
     "singleGroupDominates": "A single group occupies {{pct}}% of the viewport width"
   },
-
   "window": {
     "minimize": "Minimize",
     "restore": "Restore",
     "maximize": "Maximize",
     "close": "Close"
   },
-
   "error": {
     "unexpected": "An unexpected error occurred",
     "description": "Something went wrong. Please reload the application.",
     "details": "Details",
     "reload": "Reload"
   },
-
   "autoSave": {
     "failed": "Auto-save failed: {{reason}}"
   },
-
   "debugLog": {
     "logCopied": "Logs copied",
     "lineCopied": "Line copied"
   },
-
   "dialog": {
     "workspacePathPrompt": "Enter workspace path:"
   },
-
   "verticalPreview": {
     "title": "Vertical Preview"
   },
-
   "revision": {
     "loadFailed": "Failed to load revision",
     "manual": "Manual",
@@ -1015,7 +997,6 @@
     "noRevisions": "No saved revisions",
     "restoreToThis": "Restore to this point"
   },
-
   "workspace": {
     "invalidPath": "Workspace \"{{path}}\" does not exist or is invalid. Removed from the list.",
     "trustTitle": "Do You Trust This Workspace?",
@@ -1025,7 +1006,6 @@
     "trustAndOpen": "Trust & Open",
     "trustCancel": "Cancel"
   },
-
   "export": {
     "selectAll": "Select all",
     "collapse": "Collapse",
@@ -1082,7 +1062,6 @@
       "noScenesSelected": "(No scenes selected)"
     }
   },
-
   "scenes": {
     "sortManual": "Manual",
     "sortTitle": "By title",
@@ -1114,7 +1093,6 @@
     "deleteConfirmTitle": "Confirm Delete",
     "deleteConfirmBody": "{{count}} scenes have content or synopsis. Are you sure you want to delete?"
   },
-
   "integrity": {
     "check": "Check Integrity",
     "checking": "Checking…",
@@ -1142,10 +1120,9 @@
     "unused": "Unused",
     "crossRefSection": "Codex × Scene Cross-reference Report"
   },
-
   "onboarding": {
     "title": "Welcome to Grimodex",
-    "subtitle": "An integrated writing environment for crafting novels with AI. Here are the four key features.",
+    "subtitle": "An integrated writing environment for crafting novels with AI. Here are the six key features.",
     "getStarted": "Get Started",
     "steps": {
       "scenes": {
@@ -1163,6 +1140,14 @@
       "snippets": {
         "title": "Snippets",
         "desc": "Save important phrases and passages from AI conversations to reuse in your writing later."
+      },
+      "editor": {
+        "title": "Rich Text Editor",
+        "desc": "Write comfortably with a TipTap-based editor. Supports Markdown syntax and formatting, with each scene edited independently."
+      },
+      "layout": {
+        "title": "Layout",
+        "desc": "Freely customize panel visibility and size. Arrange your workspace to match your writing style."
       }
     }
   }

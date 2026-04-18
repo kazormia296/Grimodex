@@ -2,7 +2,14 @@ import { useRef } from "react";
 import { useTranslation } from "react-i18next";
 import { useGSAP } from "@gsap/react";
 import { gsap } from "gsap";
-import { Layers, MessageSquare, BookOpen, Scissors } from "lucide-react";
+import {
+  Layers,
+  MessageSquare,
+  BookOpen,
+  Scissors,
+  PenLine,
+  Layout,
+} from "lucide-react";
 import { AnimatedOverlay } from "@/components/ui/animated-overlay";
 import { isReducedMotion } from "@/lib/gsap";
 
@@ -11,6 +18,8 @@ const STEPS = [
   { key: "chat", Icon: MessageSquare },
   { key: "codex", Icon: BookOpen },
   { key: "snippets", Icon: Scissors },
+  { key: "editor", Icon: PenLine },
+  { key: "layout", Icon: Layout },
 ] as const;
 
 interface WelcomeDialogProps {

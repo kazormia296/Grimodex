@@ -15,7 +15,6 @@
     "deleteConfirmTitle": "削除の確認",
     "deleteConfirm": "削除する"
   },
-
   "welcome": {
     "description": "原稿の保存先フォルダを選んでください。",
     "descriptionSub": "このフォルダにデータベースと原稿ファイルが保存されます。",
@@ -23,14 +22,12 @@
     "start": "はじめる",
     "preparing": "準備中…"
   },
-
   "launcher": {
     "recentWorkspaces": "最近のワークスペース",
     "noWorkspaces": "ワークスペースがありません",
     "openFolder": "フォルダを開く",
     "newWorkspace": "新規作成"
   },
-
   "workspaceMenu": {
     "openOther": "他のフォルダを開く…",
     "newWorkspace": "新規ワークスペース",
@@ -58,7 +55,6 @@
     "noFile": "ファイルが選択されていません",
     "invalidZip": "有効なZIPファイルを選択してください"
   },
-
   "app": {
     "loading": "読み込み中…",
     "invalidLayout": "保存済みレイアウトが不正なため、デフォルトに戻しました。（{{reason}}）",
@@ -66,7 +62,6 @@
     "exportTitle": "エクスポート (Ctrl+Shift+E)",
     "settingsTitle": "設定 (Ctrl+Alt+,)"
   },
-
   "settings": {
     "title": "Settings",
     "display": {
@@ -123,7 +118,7 @@
       "autoSaveFormat": "{{v}}秒",
       "spellCheck": "スペルチェック",
       "smartQuotes": "スマートクォート",
-      "smartQuotesDesc": "\" → \u201C \u201D の自動変換（日本語ではOFF推奨）",
+      "smartQuotesDesc": "\" → “ ” の自動変換（日本語ではOFF推奨）",
       "smartDashes": "スマートダッシュ",
       "smartDashesDesc": "-- → — の自動変換",
       "inlineAi": "インライン AI",
@@ -283,7 +278,6 @@
       "showWelcomeTour": "ウェルカムツアーを表示"
     }
   },
-
   "layout": {
     "watermark": {
       "panelsClosed": "パネルが閉じられています",
@@ -321,7 +315,6 @@
       "resetDefault": "デフォルトに戻す"
     }
   },
-
   "chat": {
     "title": "AIチャット",
     "generating": "生成中…",
@@ -366,7 +359,6 @@
     "starUpdateFailed": "スターの更新に失敗しました",
     "extractedToCodex": "Codexに抽出しました",
     "copied": "コピーしました",
-    "copyFailed": "コピーに失敗しました",
     "noMessages": "メッセージはまだありません",
     "actions": {
       "unstar": "スターを外す",
@@ -464,7 +456,6 @@
       "copy": "コピー"
     }
   },
-
   "codex": {
     "character": "キャラクター",
     "location": "場所",
@@ -601,7 +592,6 @@
       "tagsPlaceholder": "タグをカンマ区切りで入力"
     }
   },
-
   "snippets": {
     "sortRecent": "新しい順",
     "sortOldest": "古い順",
@@ -653,7 +643,6 @@
       "delete": "削除"
     }
   },
-
   "tree": {
     "openInEditor": "Editorで開く",
     "openInSide": "サイドで開く",
@@ -685,23 +674,32 @@
       "pinCodex": "Codexをピン留め"
     }
   },
-
   "chatCommands": {
-    "continue": { "description": "現在のシーンの続きを生成" },
-    "describe": { "description": "対象の描写を生成", "argPlaceholder": "対象" },
+    "continue": {
+      "description": "現在のシーンの続きを生成"
+    },
+    "describe": {
+      "description": "対象の描写を生成",
+      "argPlaceholder": "対象"
+    },
     "dialogue": {
       "description": "キャラクターの台詞を生成",
       "argPlaceholder": "キャラ名"
     },
-    "summarize": { "description": "現在のシーンの要約を生成" },
-    "brainstorm": { "description": "プロットのブレインストーミング" },
-    "rewrite": { "description": "選択中テキストの書き直し" },
+    "summarize": {
+      "description": "現在のシーンの要約を生成"
+    },
+    "brainstorm": {
+      "description": "プロットのブレインストーミング"
+    },
+    "rewrite": {
+      "description": "選択中テキストの書き直し"
+    },
     "translate": {
       "description": "選択テキストを翻訳",
       "argPlaceholder": "言語"
     }
   },
-
   "editor": {
     "placeholder": "ここに書き始める…",
     "toolbar": {
@@ -808,7 +806,6 @@
       "hint": "ツリーからシーンを選択して執筆を始めましょう"
     }
   },
-
   "inlineAi": {
     "generateFailed": "生成に失敗しました",
     "additionalPrompt": "追加の指示（省略可）",
@@ -856,7 +853,6 @@
       }
     }
   },
-
   "keys": {
     "focusScenes": "Scenes パネルにフォーカス",
     "focusChat": "Chat パネルにフォーカス",
@@ -873,7 +869,6 @@
     "findReplace": "検索と置換",
     "inlineAiPalette": "インライン AI パレット"
   },
-
   "attribution": {
     "report": "帰属レポート",
     "scene": "シーン",
@@ -895,7 +890,6 @@
     "humanPct": "{{pct}}%人",
     "charSuffix": "{{count}}字"
   },
-
   "phase": {
     "editTitle": "フェーズを編集",
     "addTitle": "フェーズを追加",
@@ -912,7 +906,6 @@
     "overrideRequired": "少なくとも1つのフィールドを上書き対象に選択してください",
     "saving": "保存中..."
   },
-
   "snapshot": {
     "title": "プロジェクトスナップショット",
     "close": "閉じる",
@@ -944,7 +937,6 @@
     "restoreError": "復元に失敗しました",
     "deleteError": "削除に失敗しました"
   },
-
   "validation": {
     "invalidData": "レイアウトデータが不正です",
     "missingGrid": "grid フィールドがありません",
@@ -956,38 +948,31 @@
     "insufficientGroups": "グループ数が不足しています（{{count}}）",
     "singleGroupDominates": "単一グループが画面幅の {{pct}}% を占めています"
   },
-
   "window": {
     "minimize": "最小化",
     "restore": "元に戻す",
     "maximize": "最大化",
     "close": "閉じる"
   },
-
   "error": {
     "unexpected": "予期しないエラーが発生しました",
     "description": "アプリケーションで問題が発生しました。再読み込みしてください。",
     "details": "詳細",
     "reload": "再読み込み"
   },
-
   "autoSave": {
     "failed": "自動保存に失敗しました: {{reason}}"
   },
-
   "debugLog": {
     "logCopied": "ログをコピーしました",
     "lineCopied": "行をコピーしました"
   },
-
   "dialog": {
     "workspacePathPrompt": "ワークスペースのパスを入力してください:"
   },
-
   "verticalPreview": {
     "title": "縦書きプレビュー"
   },
-
   "revision": {
     "loadFailed": "リビジョンの読み込みに失敗しました",
     "manual": "手動",
@@ -1012,7 +997,6 @@
     "noRevisions": "保存済みのリビジョンはありません",
     "restoreToThis": "この時点に復元"
   },
-
   "workspace": {
     "invalidPath": "ワークスペース \"{{path}}\" は存在しないか無効です。一覧から削除しました。",
     "trustTitle": "このワークスペースを信頼しますか？",
@@ -1022,7 +1006,6 @@
     "trustAndOpen": "信頼して開く",
     "trustCancel": "キャンセル"
   },
-
   "export": {
     "selectAll": "全選択",
     "collapse": "折りたたむ",
@@ -1079,7 +1062,6 @@
       "noScenesSelected": "(シーンが選択されていません)"
     }
   },
-
   "scenes": {
     "sortManual": "手動",
     "sortTitle": "タイトル順",
@@ -1111,7 +1093,6 @@
     "deleteConfirmTitle": "削除の確認",
     "deleteConfirmBody": "{{count}}件のシーンに本文またはsynopsisがあります。削除してもよいですか？"
   },
-
   "integrity": {
     "check": "整合性チェック",
     "checking": "チェック中…",
@@ -1139,10 +1120,9 @@
     "unused": "未使用",
     "crossRefSection": "Codex × シーン 相互参照レポート"
   },
-
   "onboarding": {
     "title": "Grimodex へようこそ",
-    "subtitle": "AI と対話しながら小説を書くための統合執筆環境です。4つの主要機能をご紹介します。",
+    "subtitle": "AI と対話しながら小説を書くための統合執筆環境です。6つの主要機能をご紹介します。",
     "getStarted": "はじめましょう",
     "steps": {
       "scenes": {
@@ -1160,6 +1140,14 @@
       "snippets": {
         "title": "スニペット",
         "desc": "AI との会話の中から重要なフレーズや文章を保存。後から執筆に再利用できます。"
+      },
+      "editor": {
+        "title": "リッチテキストエディタ",
+        "desc": "TipTap ベースのエディタで快適に執筆。マークダウン記法や書式設定をシーンごとに独立して編集できます。"
+      },
+      "layout": {
+        "title": "レイアウト",
+        "desc": "パネルの表示・非表示やサイズを自由にカスタマイズ。執筆スタイルに合わせた画面構成が可能です。"
       }
     }
   }
