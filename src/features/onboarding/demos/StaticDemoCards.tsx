@@ -93,7 +93,7 @@ export function EditorDemoCard() {
   return (
     <div className="mt-3 rounded-lg border border-border bg-muted/30 p-2.5">
       <p className="mb-1.5 text-sm font-bold text-foreground">
-        第一章　夜明けの鐘
+        第一章{"　"}夜明けの鐘
       </p>
       <p className="text-xs leading-relaxed text-foreground">
         薄明の光が石畳を照らし出す頃、アリアは城壁の外れに立っていた。風は冷たく、
