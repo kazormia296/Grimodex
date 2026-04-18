@@ -1,6 +1,6 @@
-# This is AI Slop and makes AI Slop.
+# Grimodex
 
-# Yeah, Let's make AI Slop.
+AI統合デスクトップ小説執筆エディタ / AI-integrated desktop novel-writing editor.
 
 ---
 
@@ -64,4 +64,10 @@ cargo clippy --all-targets
 cargo test
 ```
 
-前提: Node.js、Rustツールチェイン、Tauriが要求するプラットフォーム依存物。コマンドは上記参照。`npm run tauri dev` でフルアプリ、`npm run dev` でフロントのみ、`npm test` でフロント側のVitest、Rust側は `src-tauri/` 内で `cargo check` / `cargo clippy` / `cargo test`。
+前提: Node.js、Rustツールチェイン、Tauriが要求するプラットフォーム依存物。`npm run tauri dev` でフルアプリ、`npm run dev` でフロントのみ、`npm test` でフロント側のVitest、Rust側は `src-tauri/` 内で `cargo check` / `cargo clippy` / `cargo test`。
+
+---
+
+## License / ライセンス
+
+[Elastic License 2.0](./LICENSE).
