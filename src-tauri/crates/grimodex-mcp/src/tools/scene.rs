@@ -135,4 +135,3 @@ pub async fn read_scenes_batch(
         json,
     )]))
 }
-

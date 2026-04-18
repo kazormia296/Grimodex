@@ -410,7 +410,12 @@ pub async fn send_chat(
                 "messages": chat_messages,
             });
 
-            apply_reasoning_to_body(&mut body, provider, params.reasoning_enabled, &params.reasoning_effort);
+            apply_reasoning_to_body(
+                &mut body,
+                provider,
+                params.reasoning_enabled,
+                &params.reasoning_effort,
+            );
 
             let url = format!(
                 "{}/chat/completions",
@@ -937,7 +942,12 @@ pub async fn send_chat_with_tools(
                 "tools": openai_tools
             });
 
-            apply_reasoning_to_body(&mut body, provider, params.reasoning_enabled, &params.reasoning_effort);
+            apply_reasoning_to_body(
+                &mut body,
+                provider,
+                params.reasoning_enabled,
+                &params.reasoning_effort,
+            );
 
             let url = format!(
                 "{}/chat/completions",
@@ -1129,7 +1139,12 @@ pub async fn send_chat_stream(
                 "stream": true,
             });
 
-            apply_reasoning_to_body(&mut body, provider, params.reasoning_enabled, &params.reasoning_effort);
+            apply_reasoning_to_body(
+                &mut body,
+                provider,
+                params.reasoning_enabled,
+                &params.reasoning_effort,
+            );
 
             let url = format!(
                 "{}/chat/completions",
