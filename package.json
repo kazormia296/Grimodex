@@ -2,7 +2,7 @@
   "name": "grimodex",
   "private": true,
   "license": "Elastic-2.0",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "type": "module",
   "scripts": {
     "dev": "vite",
