@@ -104,6 +104,39 @@ describe("useCharCountMilestone", () => {
     expect(confetti).not.toHaveBeenCalled();
   });
 
+  it("does not fire confetti when document loads with charCount already at target", () => {
+    const ref = makeRef();
+    const { rerender } = renderHook(
+      ({ count }: { count: number }) => useCharCountMilestone(count, 1000, ref),
+      { initialProps: { count: 0 } },
+    );
+    rerender({ count: 1000 });
+    expect(confetti).not.toHaveBeenCalled();
+    expect(pulseHighlight).not.toHaveBeenCalled();
+  });
+
+  it("does not fire when document loads above target", () => {
+    const ref = makeRef();
+    const { rerender } = renderHook(
+      ({ count }: { count: number }) => useCharCountMilestone(count, 1000, ref),
+      { initialProps: { count: 0 } },
+    );
+    rerender({ count: 1200 });
+    expect(confetti).not.toHaveBeenCalled();
+    expect(pulseHighlight).not.toHaveBeenCalled();
+  });
+
+  it("still fires confetti when user types up to target from below-target document", () => {
+    const ref = makeRef();
+    const { rerender } = renderHook(
+      ({ count }: { count: number }) => useCharCountMilestone(count, 1000, ref),
+      { initialProps: { count: 0 } },
+    );
+    rerender({ count: 990 }); // content loads below target (0.25/0.5/0.75 seeded)
+    rerender({ count: 1000 }); // user types to target
+    expect(confetti).toHaveBeenCalled();
+  });
+
   it("does nothing when element ref is null", () => {
     const ref = makeRef(null);
     const { rerender } = renderHook(

@@ -22,6 +22,9 @@ export function useCharCountMilestone(
 
   useEffect(() => {
     if (!initializedRef.current) {
+      // charCount starts as 0 (useState) and gets the real value after async load.
+      // Defer seeding until we have the real count to avoid false positives on open.
+      if (charCount === 0 && target > 0) return;
       initializedRef.current = true;
       // Seed already-passed milestones on mount to avoid false positives
       if (target > 0) {
