@@ -517,7 +517,7 @@ def seed(db_path: Path) -> None:
            VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
         (
             eleanor_id, project_id, "character", "Eleanor Ashveil",
-            json.dumps(["Nell", "the Archivist"]),
+            json.dumps(["Eleanor", "Eleanor Marin Ashveil", "Nell", "the Archivist"]),
             "A former royal archivist who discovers her bloodline makes her the last legitimate heir "
             "to the throne. Reluctant, methodical, and deeply skeptical of her own fitness to rule.",
             doc_nodes(
@@ -754,6 +754,71 @@ def seed(db_path: Path) -> None:
         "INSERT INTO codex_detail_values (id,entry_id,definition_id,value) VALUES (?,?,?,?)",
         (uid(), hollow_road_id, def_ids["location.Region"], "The Central Vale"),
     )
+
+    royal_archive_id = uid()
+    conn.execute(
+        """INSERT INTO codex_entries
+           (id,project_id,parent_id,type,name,aliases,summary,content,context_mode,children_budget,created_at,updated_at)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+        (
+            royal_archive_id, project_id, citadel_id, "location", "Royal Archive",
+            json.dumps(["the archive", "the Royal Archive", "the state archive"]),
+            "The state archive housed in the Citadel. Eleanor worked here for three years "
+            "cataloguing restricted materials before discovering the Undercroft. The lower "
+            "records are kept in a two-key annex that officially requires supervisor approval to access.",
+            doc_nodes(
+                para("The Royal Archive occupies the eastern wing of the Citadel's second floor. "
+                     "It holds state records going back four centuries: census rolls, succession "
+                     "charts, land grants, court proceedings, and the accumulated paperwork of "
+                     "seventeen Regent administrations."),
+                para("The lower annex — the restricted section — requires two keys to open. "
+                     "One is held by the chief archivist on duty. The second is held by a "
+                     "senior clerk of the Regent's office. Access is supposed to be logged. "
+                     "Eleanor's unauthorised copy of the second key is technically still in her pocket."),
+                para("The archive smells of iron filings and old wax. Eleanor has always "
+                     "found it calming. She is revising this opinion."),
+            ),
+            "mentioned", "compact", now, now,
+        ),
+    )
+    conn.execute(
+        "INSERT INTO codex_detail_values (id,entry_id,definition_id,value) VALUES (?,?,?,?)",
+        (uid(), royal_archive_id, def_ids["location.Region"], "Ironhaven"),
+    )
+
+    bloodlines_id = uid()
+    conn.execute(
+        """INSERT INTO codex_entries
+           (id,project_id,type,name,aliases,summary,content,context_mode,children_budget,created_at,updated_at)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+        (
+            bloodlines_id, project_id, "item", "BLOODLINES — RESTRICTED",
+            json.dumps(["BLOODLINES", "the bloodlines folder", "the genealogical folder"]),
+            "A restricted folder in the Royal Archive's lower annex. Contains a three-hundred-year "
+            "genealogical chart of the Ashveil bloodline, with annotations in five different hands "
+            "over three centuries — the most recent naming Eleanor Ashveil specifically.",
+            doc_nodes(
+                para("The folder is labeled BLOODLINES — RESTRICTED in plain block capitals. "
+                     "It has no additional markings, no seal, no indication of who authorised "
+                     "the restriction. Eleanor noticed it was always slightly out of alphabetical "
+                     "order, as if it had been pulled recently and replaced carelessly."),
+                para("Inside: one genealogical chart, folded three times, with annotations in "
+                     "five distinct hands spanning three centuries. The earliest hand belongs to "
+                     "the Sundering era. The most recent — no older than ten years — added "
+                     "Eleanor's name, her employer, and the notation 'Status: unaware.'"),
+                para("Someone has been tracking the Ashveil bloodline for three hundred years. "
+                     "Someone more recent has been tracking Eleanor specifically. "
+                     "The folder does not say who."),
+            ),
+            "mentioned", "compact", now, now,
+        ),
+    )
+    conn.execute(
+        "INSERT INTO codex_detail_values (id,entry_id,definition_id,value) VALUES (?,?,?,?)",
+        (uid(), bloodlines_id, def_ids["item.Status"], "Known"),
+    )
+    conn.execute("INSERT INTO codex_entry_tags (entry_id,tag_id) VALUES (?,?)",
+                 (bloodlines_id, tag_ids["political"]))
 
     # ---- Items ----
     crown_id = uid()
