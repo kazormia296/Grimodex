@@ -1149,6 +1149,9 @@
         "title": "Layout",
         "desc": "Freely customize panel visibility and size. Arrange your workspace to match your writing style."
       }
-    }
+    },
+    "startTour": "Start Tour",
+    "backToOverview": "← Overview",
+    "next": "Next"
   }
 }
