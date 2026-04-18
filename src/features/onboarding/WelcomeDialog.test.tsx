@@ -13,16 +13,32 @@ vi.mock("gsap", () => {
     to: vi.fn().mockReturnThis(),
     fromTo: vi.fn().mockReturnThis(),
   };
-  return { gsap: { timeline: vi.fn(() => mockTimeline) } };
+  const mockCtx = { revert: vi.fn() };
+  return {
+    gsap: {
+      timeline: vi.fn(() => mockTimeline),
+      context: vi.fn((fn: () => void) => {
+        fn();
+        return mockCtx;
+      }),
+      fromTo: vi.fn(),
+      to: vi.fn(),
+      from: vi.fn(),
+    },
+  };
 });
 
 vi.mock("@/lib/gsap", () => ({
   isReducedMotion: vi.fn(() => false),
 }));
 
-vi.mock("@/features/layout/PanelHighlightOverlay", () => ({
-  PanelHighlightOverlay: () => null,
-}));
+vi.mock("@/features/layout/PanelHighlightOverlay", async (importOriginal) => {
+  const actual =
+    await importOriginal<
+      typeof import("@/features/layout/PanelHighlightOverlay")
+    >();
+  return { ...actual, PanelHighlightOverlay: () => null };
+});
 
 vi.mock("motion/react", async (importOriginal) => {
   const actual = await importOriginal<typeof import("motion/react")>();

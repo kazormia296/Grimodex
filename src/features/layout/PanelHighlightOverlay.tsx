@@ -1,8 +1,11 @@
-import { useLayoutEffect, useState } from "react";
+import { useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import { useGSAP } from "@gsap/react";
+import { gsap } from "gsap";
 import { useLayoutStore, type PanelId } from "./layoutStore";
 import { PANEL_REGION_MAP, type PanelRegion } from "./panelRegions";
 import type { DockviewApi } from "dockview-react";
+import { isReducedMotion } from "@/lib/gsap";
 
 interface Rect {
   left: number;
@@ -11,36 +14,11 @@ interface Rect {
   height: number;
 }
 
-function getGroupRect(panelId: PanelId): Rect | null {
-  const api = useLayoutStore.getState().dockviewApi;
-  if (!api) return null;
-
-  const panel = api.getPanel(panelId);
-
-  // codex-quick: appears below the Scenes group in the left column.
-  // If it's tabbed into the Scenes group or not visible at all, derive its
-  // position from where the Scenes group ends rather than using the group rect.
-  if (panelId === "codex-quick") {
-    return estimateCodexQuickRect(api);
-  }
-
-  if (panel?.group?.element) {
-    const r = panel.group.element.getBoundingClientRect();
-    return { left: r.left, top: r.top, width: r.width, height: r.height };
-  }
-
-  // Panel not visible — estimate from region
-  if (panelId === "editor") return null;
-  const region = PANEL_REGION_MAP[panelId as Exclude<PanelId, "editor">];
-  return estimateRegionRect(region);
-}
-
 function estimateCodexQuickRect(api: DockviewApi): Rect | null {
   const container = document.querySelector(".dockview-theme-dark");
   if (!container) return null;
   const cr = container.getBoundingClientRect();
 
-  // If codex-quick has its own group below Scenes, use that group's rect
   const cqPanel = api.getPanel("codex-quick");
   const scenesPanel = api.getPanel("scenes");
   if (cqPanel?.group?.element && cqPanel.group !== scenesPanel?.group) {
@@ -48,7 +26,6 @@ function estimateCodexQuickRect(api: DockviewApi): Rect | null {
     return { left: r.left, top: r.top, width: r.width, height: r.height };
   }
 
-  // Estimate: below the Scenes group
   if (scenesPanel?.group?.element) {
     const sr = scenesPanel.group.element.getBoundingClientRect();
     const bottom = cr.bottom;
@@ -62,7 +39,6 @@ function estimateCodexQuickRect(api: DockviewApi): Rect | null {
     }
   }
 
-  // Fallback: lower half of the estimated left column
   return {
     left: cr.left,
     top: cr.top + cr.height * 0.5,
@@ -101,13 +77,35 @@ function estimateRegionRect(region: PanelRegion): Rect | null {
   }
 }
 
+export function getPanelRect(panelId: PanelId): Rect | null {
+  const api = useLayoutStore.getState().dockviewApi;
+  if (!api) return null;
+
+  if (panelId === "codex-quick") return estimateCodexQuickRect(api);
+
+  const panel = api.getPanel(panelId);
+  if (panel?.group?.element) {
+    const r = panel.group.element.getBoundingClientRect();
+    return { left: r.left, top: r.top, width: r.width, height: r.height };
+  }
+
+  if (panelId === "editor") return null;
+  const region = PANEL_REGION_MAP[panelId as Exclude<PanelId, "editor">];
+  return estimateRegionRect(region);
+}
+
 interface PanelHighlightOverlayProps {
   panelId: PanelId | null;
 }
 
+// Border color for the highlight ring
+const RING_COLOR = "oklch(0.55 0.22 264)";
+const GLOW_COLOR = "oklch(0.55 0.22 264 / 0.5)";
+
 export function PanelHighlightOverlay({ panelId }: PanelHighlightOverlayProps) {
   const [rect, setRect] = useState<Rect | null>(null);
   const [isExact, setIsExact] = useState(false);
+  const highlightRef = useRef<HTMLDivElement>(null);
 
   useLayoutEffect(() => {
     if (!panelId) {
@@ -123,12 +121,11 @@ export function PanelHighlightOverlay({ panelId }: PanelHighlightOverlayProps) {
       const panel = api?.getPanel(panelId);
       const exact = !!panel?.group?.element;
       setIsExact(exact);
-      setRect(getGroupRect(panelId));
+      setRect(getPanelRect(panelId));
     }
 
     measure();
 
-    // Track resizes
     const api = useLayoutStore.getState().dockviewApi;
     const panel = api?.getPanel(panelId);
     const target =
@@ -145,39 +142,53 @@ export function PanelHighlightOverlay({ panelId }: PanelHighlightOverlayProps) {
     };
   }, [panelId]);
 
+  // Pulsing opacity animation — restarts whenever rect changes (new step)
+  useGSAP(
+    () => {
+      if (!highlightRef.current || isReducedMotion()) return;
+      gsap.fromTo(
+        highlightRef.current,
+        { opacity: 1 },
+        {
+          opacity: 0.3,
+          duration: 0.9,
+          ease: "sine.inOut",
+          yoyo: true,
+          repeat: -1,
+        },
+      );
+    },
+    { dependencies: [rect] },
+  );
+
   if (!rect) return null;
 
-  const style: React.CSSProperties = {
-    position: "fixed",
-    left: rect.left,
-    top: rect.top,
-    width: rect.width,
-    height: rect.height,
-    pointerEvents: "none",
-    zIndex: 9999,
-    transition: "all 150ms ease",
-  };
-
   return createPortal(
-    <div style={style}>
-      {isExact ? (
-        <div
-          className="h-full w-full rounded"
-          style={{
-            background: "oklch(0.488 0.243 264 / 0.15)",
-            boxShadow: "inset 0 0 0 2px oklch(0.488 0.243 264 / 0.5)",
-          }}
-        />
-      ) : (
-        <div
-          className="h-full w-full rounded"
-          style={{
-            background: "oklch(0.488 0.243 264 / 0.08)",
-            boxShadow: "inset 0 0 0 2px oklch(0.488 0.243 264 / 0.3)",
-            borderStyle: "dashed",
-          }}
-        />
-      )}
+    <div
+      style={{
+        position: "fixed",
+        left: rect.left,
+        top: rect.top,
+        width: rect.width,
+        height: rect.height,
+        pointerEvents: "none",
+        zIndex: 9999,
+        transition:
+          "left 150ms ease, top 150ms ease, width 150ms ease, height 150ms ease",
+      }}
+    >
+      <div
+        ref={highlightRef}
+        className="h-full w-full"
+        style={{
+          borderRadius: 6,
+          border: isExact
+            ? `2.5px solid ${RING_COLOR}`
+            : `2px dashed ${RING_COLOR}`,
+          boxShadow: `0 0 18px 4px ${GLOW_COLOR}`,
+          background: "transparent",
+        }}
+      />
     </div>,
     document.body,
   );

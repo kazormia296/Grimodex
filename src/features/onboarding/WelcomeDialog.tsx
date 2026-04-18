@@ -1,4 +1,4 @@
-import { useRef, useState, useEffect } from "react";
+import { useRef, useState, useEffect, useLayoutEffect } from "react";
 import { createPortal } from "react-dom";
 import { useTranslation } from "react-i18next";
 import { useGSAP } from "@gsap/react";
@@ -17,10 +17,14 @@ import {
 import { motion, AnimatePresence } from "motion/react";
 import { AnimatedOverlay } from "@/components/ui/animated-overlay";
 import { isReducedMotion } from "@/lib/gsap";
-import { PanelHighlightOverlay } from "@/features/layout/PanelHighlightOverlay";
+import {
+  PanelHighlightOverlay,
+  getPanelRect,
+} from "@/features/layout/PanelHighlightOverlay";
+import { PANEL_REGION_MAP } from "@/features/layout/panelRegions";
+import { useLayoutStore } from "@/features/layout/layoutStore";
 import type { PanelId } from "@/features/layout/layoutStore";
 import { ChatDemoCard } from "./demos/ChatDemoCard";
-import { LayoutDemoCard } from "./demos/LayoutDemoCard";
 import {
   ScenesDemoCard,
   CodexDemoCard,
@@ -43,11 +47,114 @@ const STEPS: Step[] = [
   { key: "layout", Icon: Layout, panelId: null },
 ];
 
-function getCardPositionClass(key: string): string {
-  if (key === "chat") return "fixed bottom-16 left-6 z-[10000] w-full max-w-sm";
-  if (key === "snippets")
-    return "fixed top-20 left-1/2 z-[10000] w-full max-w-sm -translate-x-1/2";
-  return "fixed bottom-16 left-1/2 z-[10000] w-full max-w-sm -translate-x-1/2";
+/** Compute where to anchor the floating tour card relative to the active panel. */
+function computeCardStyle(
+  panelId: PanelId | null,
+  stepKey: string,
+): React.CSSProperties {
+  const W = window.innerWidth;
+  const H = window.innerHeight;
+
+  if (stepKey === "layout") {
+    const el = document.querySelector('[data-tour="panel-toggle-root"]');
+    if (el) {
+      const r = el.getBoundingClientRect();
+      // Card sits below-left of the PanelToggleDropdown (which opens rightward)
+      return {
+        position: "fixed",
+        left: Math.max(8, r.left - 400),
+        top: r.bottom + 8,
+      };
+    }
+    return { position: "fixed", left: 8, top: 56 };
+  }
+
+  if (!panelId) {
+    return {
+      position: "fixed",
+      bottom: 64,
+      left: "50%",
+      transform: "translateX(-50%)",
+    };
+  }
+
+  const rect = getPanelRect(panelId);
+  if (!rect) {
+    return {
+      position: "fixed",
+      bottom: 64,
+      left: "50%",
+      transform: "translateX(-50%)",
+    };
+  }
+
+  if (panelId === "editor") {
+    // Center-bottom of the editor panel
+    return {
+      position: "fixed",
+      left: Math.max(8, Math.min(rect.left + rect.width / 2 - 192, W - 392)),
+      bottom: H - (rect.top + rect.height) + 16,
+    };
+  }
+
+  const region = PANEL_REGION_MAP[panelId as Exclude<PanelId, "editor">];
+
+  if (region === "left") {
+    // Card to the right of the left panel
+    return {
+      position: "fixed",
+      left: rect.left + rect.width + 12,
+      top: Math.max(8, Math.min(rect.top + 8, H - 320)),
+    };
+  }
+
+  if (region === "right") {
+    // Card to the left of the right panel
+    return {
+      position: "fixed",
+      right: W - rect.left + 12,
+      top: Math.max(8, Math.min(rect.top + 8, H - 320)),
+    };
+  }
+
+  // center-bottom (snippets)
+  return {
+    position: "fixed",
+    left: Math.max(8, Math.min(rect.left + rect.width / 2 - 192, W - 392)),
+    bottom: H - rect.top + 8,
+  };
+}
+
+function useCardPlacement(
+  panelId: PanelId | null,
+  stepKey: string,
+): React.CSSProperties {
+  const [style, setStyle] = useState<React.CSSProperties>({
+    position: "fixed",
+    bottom: 64,
+    left: "50%",
+    transform: "translateX(-50%)",
+  });
+
+  useLayoutEffect(() => {
+    function compute() {
+      setStyle(computeCardStyle(panelId, stepKey));
+    }
+
+    compute();
+
+    const observer = new ResizeObserver(compute);
+    const container = document.querySelector(".dockview-theme-dark");
+    if (container) observer.observe(container);
+    window.addEventListener("resize", compute);
+
+    return () => {
+      observer.disconnect();
+      window.removeEventListener("resize", compute);
+    };
+  }, [panelId, stepKey]);
+
+  return style;
 }
 
 function TourDemo({ stepKey }: { stepKey: string }) {
@@ -62,8 +169,6 @@ function TourDemo({ stepKey }: { stepKey: string }) {
       return <SnippetsDemoCard />;
     case "editor":
       return <EditorDemoCard />;
-    case "layout":
-      return <LayoutDemoCard />;
     default:
       return null;
   }
@@ -80,11 +185,13 @@ export function WelcomeDialog({ open, onClose }: WelcomeDialogProps) {
   const subtitleRef = useRef<HTMLParagraphElement>(null);
   const stepsRef = useRef<HTMLDivElement>(null);
   const [tourIndex, setTourIndex] = useState<number | null>(null);
+  const { showPanel } = useLayoutStore();
 
   useEffect(() => {
     if (!open) setTourIndex(null);
   }, [open]);
 
+  // Keyboard navigation in tour mode
   useEffect(() => {
     if (tourIndex === null) return;
     const handler = (e: KeyboardEvent) => {
@@ -98,6 +205,45 @@ export function WelcomeDialog({ open, onClose }: WelcomeDialogProps) {
     return () => document.removeEventListener("keydown", handler);
   }, [tourIndex, onClose]);
 
+  // Auto-show snippets panel when that step is active
+  useEffect(() => {
+    if (tourIndex !== null && STEPS[tourIndex].key === "snippets") {
+      showPanel("snippets");
+    }
+  }, [tourIndex, showPanel]);
+
+  // Layout step: open the PanelToggleDropdown and pulse-highlight it
+  useEffect(() => {
+    if (tourIndex === null || STEPS[tourIndex].key !== "layout") return;
+
+    window.dispatchEvent(new CustomEvent("tour-open-panel-dropdown"));
+
+    const ctx = gsap.context(() => {
+      if (isReducedMotion()) return;
+      gsap.fromTo(
+        '[data-tour="panel-toggle-root"]',
+        {
+          boxShadow:
+            "0 0 0 0px oklch(0.55 0.22 264 / 0), 0 0 0px oklch(0.55 0.22 264 / 0)",
+        },
+        {
+          boxShadow:
+            "0 0 0 2px oklch(0.55 0.22 264 / 0.9), 0 0 14px oklch(0.55 0.22 264 / 0.45)",
+          duration: 0.8,
+          ease: "sine.inOut",
+          yoyo: true,
+          repeat: -1,
+        },
+      );
+    });
+
+    return () => {
+      ctx.revert();
+      window.dispatchEvent(new CustomEvent("tour-close-panel-dropdown"));
+    };
+  }, [tourIndex]);
+
+  // GSAP entrance animation for overview mode
   useGSAP(() => {
     if (!open || isReducedMotion() || tourIndex !== null) return;
 
@@ -132,23 +278,31 @@ export function WelcomeDialog({ open, onClose }: WelcomeDialogProps) {
   }, [open, tourIndex]);
 
   const reduced = isReducedMotion();
+  const currentStep = tourIndex !== null ? STEPS[tourIndex] : null;
+  const cardPlacement = useCardPlacement(
+    currentStep?.panelId ?? null,
+    currentStep?.key ?? "",
+  );
 
   return (
     <>
       {/* Tour mode: floating card + panel highlight */}
       {open && tourIndex !== null && (
         <>
-          <PanelHighlightOverlay panelId={STEPS[tourIndex].panelId} />
+          {currentStep?.panelId && (
+            <PanelHighlightOverlay panelId={currentStep.panelId} />
+          )}
           {createPortal(
             <AnimatePresence mode="wait">
               <motion.div
                 key={tourIndex}
                 data-testid="tour-card"
+                style={cardPlacement}
                 initial={reduced ? {} : { opacity: 0, y: 12 }}
                 animate={{ opacity: 1, y: 0 }}
                 exit={reduced ? {} : { opacity: 0, y: -8 }}
                 transition={{ duration: 0.18, ease: [0.16, 1, 0.3, 1] }}
-                className={`${getCardPositionClass(STEPS[tourIndex].key)} rounded-xl border border-border bg-background p-5 shadow-2xl`}
+                className="z-[10000] w-full max-w-sm rounded-xl border border-border bg-background p-5 shadow-2xl"
               >
                 <button
                   type="button"

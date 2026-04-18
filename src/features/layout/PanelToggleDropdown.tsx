@@ -39,6 +39,21 @@ export function PanelToggleDropdown() {
   const menuRef = useRef<HTMLDivElement>(null);
   useDockviewVersion();
 
+  // Tour integration — open/close via custom events
+  useEffect(() => {
+    const open = () => setIsOpen(true);
+    const close = () => {
+      setIsOpen(false);
+      setHoveredPanelId(null);
+    };
+    window.addEventListener("tour-open-panel-dropdown", open);
+    window.addEventListener("tour-close-panel-dropdown", close);
+    return () => {
+      window.removeEventListener("tour-open-panel-dropdown", open);
+      window.removeEventListener("tour-close-panel-dropdown", close);
+    };
+  }, []);
+
   const REGION_LABELS: Record<PanelRegion, string> = {
     left: t("layout.regionLeft"),
     right: t("layout.regionRight"),
@@ -90,7 +105,7 @@ export function PanelToggleDropdown() {
   }
 
   return (
-    <div ref={menuRef} className="relative">
+    <div ref={menuRef} className="relative" data-tour="panel-toggle-root">
       {/* Trigger button */}
       <button
         type="button"
