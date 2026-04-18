@@ -16,6 +16,38 @@ Grimodexは、AIチャットとナレッジ抽出を組み込んだデスクト�
 
 ---
 
+## Installation / インストール
+
+Download the installer for your platform from the [latest release](../../releases/latest).
+
+| Platform | File                  |
+| -------- | --------------------- |
+| Windows  | `.msi`                |
+| macOS    | `.dmg`                |
+| Linux    | `.AppImage` or `.deb` |
+
+No runtime required — just install and launch. An OpenRouter API key is needed to use AI chat.
+
+最新リリースのページからお使いのOSに合わせたインストーラーを取得してください。ランタイム不要です。AIチャットを使う場合はOpenRouter APIキーが必要です。
+
+---
+
+## Screenshots / スクリーンショット
+
+![Editor view — English workspace](docs/screenshots/screenshot-editor.png)
+_Editor, AI chat, and Codex side-by-side (English sample workspace)_
+
+![AI chat and snippet extraction](docs/screenshots/screenshot-chat-codex.png)
+_Extracting a snippet from AI chat; Codex character detail on the right_
+
+![Japanese workspace](docs/screenshots/screenshot-japanese.png)
+_日本語サンプルワークスペース（朱の記憶）— エディタ + AIチャット + Codex_
+
+![Codex entry open](docs/screenshots/screenshot-codex-open.png)
+_Codexエントリとノートを開いた状態 — AIチャットと並べて参照_
+
+---
+
 ## Features / 機能
 
 - **Chapter / scene editor** — Independent TipTap instance per scene, rich text with attribution tracking.
@@ -65,6 +97,16 @@ cargo test
 ```
 
 前提: Node.js、Rustツールチェイン、Tauriが要求するプラットフォーム依存物。`npm run tauri dev` でフルアプリ、`npm run dev` でフロントのみ、`npm test` でフロント側のVitest、Rust側は `src-tauri/` 内で `cargo check` / `cargo clippy` / `cargo test`。
+
+---
+
+## Contributing / コントリビューション
+
+This is a personal project and I'm not familiar with OSS workflows. I may not be able to review or merge pull requests in a timely manner — or at all. If you want to add features or make changes, forking is probably the way to go.
+
+Bug reports and feedback via issues are welcome, though response time isn't guaranteed.
+
+個人プロジェクトとして公開しているだけなので、PRのレビューやマージは基本的にできないと思ってください。機能を追加したい場合はフォークして自由に使ってもらえると助かります。バグ報告や感想などはイシューで気軽にどうぞ（返信が遅れる場合があります）。
 
 ---
 
