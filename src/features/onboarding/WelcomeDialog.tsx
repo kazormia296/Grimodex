@@ -19,6 +19,14 @@ import { AnimatedOverlay } from "@/components/ui/animated-overlay";
 import { isReducedMotion } from "@/lib/gsap";
 import { PanelHighlightOverlay } from "@/features/layout/PanelHighlightOverlay";
 import type { PanelId } from "@/features/layout/layoutStore";
+import { ChatDemoCard } from "./demos/ChatDemoCard";
+import { LayoutDemoCard } from "./demos/LayoutDemoCard";
+import {
+  ScenesDemoCard,
+  CodexDemoCard,
+  SnippetsDemoCard,
+  EditorDemoCard,
+} from "./demos/StaticDemoCards";
 
 type Step = {
   key: string;
@@ -34,6 +42,32 @@ const STEPS: Step[] = [
   { key: "editor", Icon: PenLine, panelId: "editor" },
   { key: "layout", Icon: Layout, panelId: null },
 ];
+
+function getCardPositionClass(key: string): string {
+  if (key === "chat") return "fixed bottom-16 left-6 z-[10000] w-full max-w-sm";
+  if (key === "snippets")
+    return "fixed top-20 left-1/2 z-[10000] w-full max-w-sm -translate-x-1/2";
+  return "fixed bottom-16 left-1/2 z-[10000] w-full max-w-sm -translate-x-1/2";
+}
+
+function TourDemo({ stepKey }: { stepKey: string }) {
+  switch (stepKey) {
+    case "scenes":
+      return <ScenesDemoCard />;
+    case "chat":
+      return <ChatDemoCard />;
+    case "codex":
+      return <CodexDemoCard />;
+    case "snippets":
+      return <SnippetsDemoCard />;
+    case "editor":
+      return <EditorDemoCard />;
+    case "layout":
+      return <LayoutDemoCard />;
+    default:
+      return null;
+  }
+}
 
 interface WelcomeDialogProps {
   open: boolean;
@@ -114,7 +148,7 @@ export function WelcomeDialog({ open, onClose }: WelcomeDialogProps) {
                 animate={{ opacity: 1, y: 0 }}
                 exit={reduced ? {} : { opacity: 0, y: -8 }}
                 transition={{ duration: 0.18, ease: [0.16, 1, 0.3, 1] }}
-                className="fixed bottom-16 left-1/2 z-[10000] w-full max-w-sm -translate-x-1/2 rounded-xl border border-border bg-background p-5 shadow-2xl"
+                className={`${getCardPositionClass(STEPS[tourIndex].key)} rounded-xl border border-border bg-background p-5 shadow-2xl`}
               >
                 <button
                   type="button"
@@ -128,24 +162,27 @@ export function WelcomeDialog({ open, onClose }: WelcomeDialogProps) {
                 {(() => {
                   const { key, Icon } = STEPS[tourIndex];
                   return (
-                    <div className="mb-4 flex items-start gap-3 pr-6">
-                      <div className="mt-0.5 shrink-0 rounded-lg bg-primary/10 p-2">
-                        <Icon className="h-5 w-5 text-primary" />
+                    <>
+                      <div className="mb-3 flex items-start gap-3 pr-6">
+                        <div className="mt-0.5 shrink-0 rounded-lg bg-primary/10 p-2">
+                          <Icon className="h-5 w-5 text-primary" />
+                        </div>
+                        <div>
+                          <p className="mb-1 text-sm font-semibold text-foreground">
+                            {t(`onboarding.steps.${key}.title`)}
+                          </p>
+                          <p className="text-xs leading-relaxed text-muted-foreground">
+                            {t(`onboarding.steps.${key}.desc`)}
+                          </p>
+                        </div>
                       </div>
-                      <div>
-                        <p className="mb-1 text-sm font-semibold text-foreground">
-                          {t(`onboarding.steps.${key}.title`)}
-                        </p>
-                        <p className="text-xs leading-relaxed text-muted-foreground">
-                          {t(`onboarding.steps.${key}.desc`)}
-                        </p>
-                      </div>
-                    </div>
+                      <TourDemo stepKey={key} />
+                    </>
                   );
                 })()}
 
                 {/* Step dots */}
-                <div className="mb-4 flex justify-center gap-1.5">
+                <div className="mb-4 mt-4 flex justify-center gap-1.5">
                   {STEPS.map((_, i) => (
                     <button
                       key={i}

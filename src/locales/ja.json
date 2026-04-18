@@ -1152,6 +1152,15 @@
     },
     "startTour": "ツアーを開始",
     "backToOverview": "← 一覧",
-    "next": "次へ"
+    "next": "次へ",
+    "demo": {
+      "chat": {
+        "placeholder": "メッセージを入力…",
+        "thinking": "考えています…"
+      },
+      "layout": {
+        "hint": "パネルの表示を切り替えてみましょう"
+      }
+    }
   }
 }

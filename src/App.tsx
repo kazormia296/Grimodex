@@ -238,6 +238,7 @@ function EditorScreen() {
   // Allow re-triggering from settings via custom event
   useEffect(() => {
     function onShowTour() {
+      setShowSettings(false);
       setShowWelcome(true);
     }
     window.addEventListener("show-welcome-tour", onShowTour);

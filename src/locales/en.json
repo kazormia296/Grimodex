@@ -1152,6 +1152,15 @@
     },
     "startTour": "Start Tour",
     "backToOverview": "← Overview",
-    "next": "Next"
+    "next": "Next",
+    "demo": {
+      "chat": {
+        "placeholder": "Type a message…",
+        "thinking": "Thinking…"
+      },
+      "layout": {
+        "hint": "Try toggling the panels below"
+      }
+    }
   }
 }
