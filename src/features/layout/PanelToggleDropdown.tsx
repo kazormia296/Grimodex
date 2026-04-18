@@ -159,6 +159,8 @@ export function PanelToggleDropdown() {
                     onDragStart={(e) => {
                       e.dataTransfer.setData(PANEL_DRAG_TYPE, panelId);
                       e.dataTransfer.effectAllowed = "copy";
+                    }}
+                    onDragEnd={() => {
                       setIsOpen(false);
                       setHoveredPanelId(null);
                     }}

@@ -199,7 +199,11 @@ export const useLayoutStore = create<LayoutState>()((set, get) => ({
 
     const panel = api.getPanel(panelId);
     if (panel) {
-      panel.api.setActive();
+      if (panel.group?.activePanel === panel) {
+        api.removePanel(panel);
+      } else {
+        panel.api.setActive();
+      }
     } else {
       addPanelWithDefaults(api, panelId);
     }

@@ -350,14 +350,15 @@ describe("useLayoutStore", () => {
     });
   });
 
-  describe("togglePanel — focuses panel without removing it", () => {
-    it("calls setActive when panel is already visible and active", () => {
+  describe("togglePanel", () => {
+    it("removes panel when it is the active tab", () => {
       const mockSetActive = vi.fn();
       const mockRemovePanel = vi.fn();
       const mockPanel = {
         api: { setActive: mockSetActive },
-        group: { activePanel: { id: "scenes" } },
+        group: { activePanel: null as unknown },
       };
+      mockPanel.group.activePanel = mockPanel; // panel is its own active
       const mockApi = {
         getPanel: vi.fn().mockReturnValue(mockPanel),
         removePanel: mockRemovePanel,
@@ -367,8 +368,8 @@ describe("useLayoutStore", () => {
       };
       useLayoutStore.setState({ dockviewApi: mockApi as never });
       useLayoutStore.getState().togglePanel("scenes");
-      expect(mockSetActive).toHaveBeenCalled();
-      expect(mockRemovePanel).not.toHaveBeenCalled();
+      expect(mockRemovePanel).toHaveBeenCalledWith(mockPanel);
+      expect(mockSetActive).not.toHaveBeenCalled();
     });
 
     it("calls setActive when panel exists but is not the active tab", () => {
@@ -376,7 +377,7 @@ describe("useLayoutStore", () => {
       const mockRemovePanel = vi.fn();
       const mockPanel = {
         api: { setActive: mockSetActive },
-        group: { activePanel: { id: "codex" } }, // different active panel
+        group: { activePanel: { id: "codex" } },
       };
       const mockApi = {
         getPanel: vi.fn().mockReturnValue(mockPanel),
