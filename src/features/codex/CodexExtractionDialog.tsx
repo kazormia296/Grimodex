@@ -1,7 +1,9 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useTranslation } from "react-i18next";
+import { useGSAP } from "@gsap/react";
 import type { CodexEntryType } from "./api";
 import { AnimatedOverlay } from "@/components/ui/animated-overlay";
+import { celebrationBurst } from "@/lib/gsap";
 
 interface CodexExtractionFormData {
   type: CodexEntryType;
@@ -32,6 +34,8 @@ export function CodexExtractionDialog({
   const [name, setName] = useState("");
   const [summary, setSummary] = useState(initialContent);
   const [tags, setTags] = useState("");
+  const headingRef = useRef<HTMLHeadingElement>(null);
+  const { contextSafe } = useGSAP();
 
   const TYPE_OPTIONS: { value: CodexEntryType; label: string }[] = [
     { value: "character", label: t("codex.character") },
@@ -49,8 +53,9 @@ export function CodexExtractionDialog({
     }
   }, [open, initialContent]);
 
-  const handleSave = () => {
+  const handleSave = contextSafe(() => {
     if (!name.trim()) return;
+    if (headingRef.current) celebrationBurst(headingRef.current);
     onSave({
       type,
       name: name.trim(),
@@ -58,7 +63,7 @@ export function CodexExtractionDialog({
       tags,
       sourceChatMessageId: messageId,
     });
-  };
+  });
 
   return (
     <AnimatedOverlay
@@ -67,7 +72,7 @@ export function CodexExtractionDialog({
       className="w-full max-w-lg rounded-lg border border-border bg-background p-6 shadow-xl"
       testId="codex-extraction-dialog"
     >
-      <h2 className="mb-4 text-lg font-semibold">
+      <h2 ref={headingRef} className="mb-4 text-lg font-semibold">
         {t("codex.extraction.title")}
       </h2>
 

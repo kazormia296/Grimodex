@@ -1,7 +1,9 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useTranslation } from "react-i18next";
+import { useGSAP } from "@gsap/react";
 import type { NewSnippet } from "./api";
 import { AnimatedOverlay } from "@/components/ui/animated-overlay";
+import { celebrationBurst } from "@/lib/gsap";
 
 interface SnippetExtractionDialogProps {
   open: boolean;
@@ -30,6 +32,8 @@ export function SnippetExtractionDialog({
   const [content, setContent] = useState(initialContent);
   const [tags, setTags] = useState("");
   const [isSaving, setIsSaving] = useState(false);
+  const headingRef = useRef<HTMLHeadingElement>(null);
+  const { contextSafe } = useGSAP();
 
   useEffect(() => {
     if (open) {
@@ -42,8 +46,9 @@ export function SnippetExtractionDialog({
 
   const canSave = title.trim().length > 0 && !isSaving;
 
-  const handleSave = async () => {
+  const handleSave = contextSafe(async () => {
     if (!canSave) return;
+    if (headingRef.current) celebrationBurst(headingRef.current);
     setIsSaving(true);
     await onSave({
       title: title.trim(),
@@ -63,7 +68,7 @@ export function SnippetExtractionDialog({
     });
     setIsSaving(false);
     onClose();
-  };
+  });
 
   return (
     <AnimatedOverlay
@@ -72,7 +77,10 @@ export function SnippetExtractionDialog({
       className="w-full max-w-md rounded-lg border border-border bg-background p-6 shadow-lg"
       testId="snippet-extraction-dialog"
     >
-      <h3 className="mb-4 text-sm font-semibold text-foreground">
+      <h3
+        ref={headingRef}
+        className="mb-4 text-sm font-semibold text-foreground"
+      >
         {t("snippets.extraction.title")}
       </h3>
 
