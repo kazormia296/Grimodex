@@ -26,6 +26,8 @@ export interface GlobalSettings {
   colorTheme?: string;
   /** Workspace paths the user has explicitly trusted. */
   trustedWorkspaces?: string[];
+  /** Whether the user has already seen the welcome tour. */
+  hasSeenWelcome?: boolean;
 }
 
 export type AppView = "loading" | "welcome" | "launcher" | "editor";

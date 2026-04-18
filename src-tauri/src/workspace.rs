@@ -42,6 +42,10 @@ pub struct GlobalSettings {
     #[serde(default)]
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub trusted_workspaces: Vec<String>,
+    /// Whether the user has already seen the welcome tour.
+    #[serde(default)]
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub has_seen_welcome: bool,
 }
 
 impl Default for GlobalSettings {
@@ -58,6 +62,7 @@ impl Default for GlobalSettings {
             active_layout_preset_id: None,
             color_theme: None,
             trusted_workspaces: Vec::new(),
+            has_seen_welcome: false,
         }
     }
 }

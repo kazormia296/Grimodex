@@ -279,7 +279,8 @@
       "searchPlaceholder": "Search {{count}} libraries…",
       "notFound": "No libraries found matching \"{{query}}\"",
       "full": "Full text",
-      "loadError": "Failed to load license info: {{message}}"
+      "loadError": "Failed to load license info: {{message}}",
+      "showWelcomeTour": "Show Welcome Tour"
     }
   },
 
@@ -1140,5 +1141,29 @@
     "mentionedScenes": "Mentioned Scenes",
     "unused": "Unused",
     "crossRefSection": "Codex × Scene Cross-reference Report"
+  },
+
+  "onboarding": {
+    "title": "Welcome to Grimodex",
+    "subtitle": "An integrated writing environment for crafting novels with AI. Here are the four key features.",
+    "getStarted": "Get Started",
+    "steps": {
+      "scenes": {
+        "title": "Scene Structure",
+        "desc": "Manage chapters, scenes, and notes in a tree view. Freely reorder them with drag & drop."
+      },
+      "chat": {
+        "title": "AI Chat",
+        "desc": "Each scene has its own AI conversation history. Use it for story consultation and writing assistance."
+      },
+      "codex": {
+        "title": "Codex",
+        "desc": "A knowledge base for characters, locations, and lore. Extract entries directly from AI conversations."
+      },
+      "snippets": {
+        "title": "Snippets",
+        "desc": "Save important phrases and passages from AI conversations to reuse in your writing later."
+      }
+    }
   }
 }

@@ -55,6 +55,7 @@ import { TitleBar } from "@/components/TitleBar";
 import { useTabStore } from "@/features/editor/tabStore";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { getProject } from "@/features/project/api";
+import { WelcomeDialog } from "@/features/onboarding/WelcomeDialog";
 
 /* ── Panel content components for dockview ── */
 
@@ -222,6 +223,26 @@ function EditorScreen() {
   const [settingsInitialCategory, setSettingsInitialCategory] =
     useState<SettingsCategory>("project");
   const [showExport, setShowExport] = useState(false);
+  const { globalSettings, updateGlobalSettings } = useWorkspaceStore();
+  const [showWelcome, setShowWelcome] = useState(
+    () => !globalSettings?.hasSeenWelcome,
+  );
+
+  const handleCloseWelcome = useCallback(async () => {
+    setShowWelcome(false);
+    if (!globalSettings?.hasSeenWelcome) {
+      await updateGlobalSettings({ hasSeenWelcome: true });
+    }
+  }, [globalSettings, updateGlobalSettings]);
+
+  // Allow re-triggering from settings via custom event
+  useEffect(() => {
+    function onShowTour() {
+      setShowWelcome(true);
+    }
+    window.addEventListener("show-welcome-tour", onShowTour);
+    return () => window.removeEventListener("show-welcome-tour", onShowTour);
+  }, []);
 
   // 執筆言語を <html lang> に反映（初期ロード時）
   useEffect(() => {
@@ -466,6 +487,10 @@ function EditorScreen() {
         initialCategory={settingsInitialCategory}
       />
       <ExportDialog open={showExport} onClose={() => setShowExport(false)} />
+      <WelcomeDialog
+        open={showWelcome}
+        onClose={() => void handleCloseWelcome()}
+      />
       <div className="flex flex-1 overflow-hidden">
         {/* Dockview layout */}
         <DockviewReact

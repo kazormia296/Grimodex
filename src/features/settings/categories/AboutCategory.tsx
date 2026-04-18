@@ -30,18 +30,29 @@ function AppInfoHeader() {
             </span>
           </div>
         </div>
-        <a
-          href={GITHUB_URL}
-          onClick={(e) => {
-            e.preventDefault();
-            void openUrl(GITHUB_URL);
-          }}
-          className="flex items-center gap-1.5 rounded-md border border-border px-2.5 py-1.5 text-xs text-muted-foreground hover:border-foreground/40 hover:text-foreground"
-        >
-          <GitBranch className="h-3.5 w-3.5" />
-          {t("settings.about.github")}
-          <ExternalLink className="h-3 w-3 opacity-60" />
-        </a>
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() =>
+              window.dispatchEvent(new CustomEvent("show-welcome-tour"))
+            }
+            className="flex items-center gap-1.5 rounded-md border border-border px-2.5 py-1.5 text-xs text-muted-foreground hover:border-foreground/40 hover:text-foreground"
+          >
+            {t("settings.about.showWelcomeTour")}
+          </button>
+          <a
+            href={GITHUB_URL}
+            onClick={(e) => {
+              e.preventDefault();
+              void openUrl(GITHUB_URL);
+            }}
+            className="flex items-center gap-1.5 rounded-md border border-border px-2.5 py-1.5 text-xs text-muted-foreground hover:border-foreground/40 hover:text-foreground"
+          >
+            <GitBranch className="h-3.5 w-3.5" />
+            {t("settings.about.github")}
+            <ExternalLink className="h-3 w-3 opacity-60" />
+          </a>
+        </div>
       </div>
     </div>
   );

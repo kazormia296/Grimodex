@@ -279,7 +279,8 @@
       "searchPlaceholder": "{{count}} 件のライブラリを検索…",
       "notFound": "「{{query}}」に一致するライブラリは見つかりません",
       "full": "全文",
-      "loadError": "ライセンス情報の読み込みに失敗しました: {{message}}"
+      "loadError": "ライセンス情報の読み込みに失敗しました: {{message}}",
+      "showWelcomeTour": "ウェルカムツアーを表示"
     }
   },
 
@@ -1137,5 +1138,29 @@
     "mentionedScenes": "言及シーン",
     "unused": "未使用",
     "crossRefSection": "Codex × シーン 相互参照レポート"
+  },
+
+  "onboarding": {
+    "title": "Grimodex へようこそ",
+    "subtitle": "AI と対話しながら小説を書くための統合執筆環境です。4つの主要機能をご紹介します。",
+    "getStarted": "はじめましょう",
+    "steps": {
+      "scenes": {
+        "title": "シーン構造",
+        "desc": "章・シーン・ノートをツリー形式で管理。ドラッグ＆ドロップで自由に並び替えられます。"
+      },
+      "chat": {
+        "title": "AI チャット",
+        "desc": "シーンごとに独立した会話履歴を持つ AI チャット。物語の相談や執筆補助に活用できます。"
+      },
+      "codex": {
+        "title": "Codex",
+        "desc": "キャラクター・場所・設定などの知識を蓄積するデータベース。AI との会話から直接抽出できます。"
+      },
+      "snippets": {
+        "title": "スニペット",
+        "desc": "AI との会話の中から重要なフレーズや文章を保存。後から執筆に再利用できます。"
+      }
+    }
   }
 }
