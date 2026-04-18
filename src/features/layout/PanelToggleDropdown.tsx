@@ -131,6 +131,7 @@ export function PanelToggleDropdown() {
       {/* Dropdown menu */}
       {isOpen && (
         <div
+          data-tour="panel-toggle-menu"
           className="absolute right-0 top-full z-50 mt-1 min-w-64 rounded-md border border-border bg-background py-1 shadow-lg"
           onMouseLeave={() => setHoveredPanelId(null)}
         >

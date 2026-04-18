@@ -47,6 +47,116 @@ const STEPS: Step[] = [
   { key: "layout", Icon: Layout, panelId: null },
 ];
 
+// ---------------------------------------------------------------------------
+// Focus blur overlay — blurs the whole screen except the highlighted region
+// ---------------------------------------------------------------------------
+
+function buildFocusClipPath(
+  rect: { left: number; top: number; width: number; height: number },
+  vw: number,
+  vh: number,
+): string {
+  const { left, top, width, height } = rect;
+  // evenodd: outer rect fills the screen; inner rect punches a transparent hole
+  return (
+    `path(evenodd, 'M 0 0 H ${vw} V ${vh} H 0 Z ` +
+    `M ${left} ${top} H ${left + width} V ${top + height} H ${left} Z')`
+  );
+}
+
+function TourFocusOverlay({
+  panelId,
+  stepKey,
+}: {
+  panelId: PanelId | null;
+  stepKey: string;
+}) {
+  const [focusRect, setFocusRect] = useState<{
+    left: number;
+    top: number;
+    width: number;
+    height: number;
+  } | null>(null);
+  const [vw, setVw] = useState(0);
+  const [vh, setVh] = useState(0);
+  const [visible, setVisible] = useState(false);
+
+  useLayoutEffect(() => {
+    // Defer opacity to trigger CSS transition after first paint
+    requestAnimationFrame(() => setVisible(true));
+
+    function measure() {
+      setVw(window.innerWidth);
+      setVh(window.innerHeight);
+
+      if (stepKey === "layout") {
+        const root = document.querySelector('[data-tour="panel-toggle-root"]');
+        const menu = document.querySelector('[data-tour="panel-toggle-menu"]');
+        if (root) {
+          const rr = root.getBoundingClientRect();
+          if (menu) {
+            const mr = menu.getBoundingClientRect();
+            setFocusRect({
+              left: Math.min(rr.left, mr.left) - 4,
+              top: rr.top - 4,
+              width:
+                Math.max(rr.right, mr.right) - Math.min(rr.left, mr.left) + 8,
+              height: mr.bottom - rr.top + 8,
+            });
+          } else {
+            setFocusRect({
+              left: rr.left - 4,
+              top: rr.top - 4,
+              width: rr.width + 8,
+              height: rr.height + 8,
+            });
+          }
+        }
+        return;
+      }
+
+      setFocusRect(panelId ? getPanelRect(panelId) : null);
+    }
+
+    measure();
+    // Re-measure after the dropdown has opened (layout step only)
+    const recheck =
+      stepKey === "layout" ? window.setTimeout(measure, 160) : null;
+
+    const observer = new ResizeObserver(measure);
+    const container = document.querySelector(".dockview-theme-dark");
+    if (container) observer.observe(container);
+    window.addEventListener("resize", measure);
+
+    return () => {
+      if (recheck !== null) window.clearTimeout(recheck);
+      observer.disconnect();
+      window.removeEventListener("resize", measure);
+    };
+  }, [panelId, stepKey]);
+
+  const clipPath =
+    focusRect && vw > 0 ? buildFocusClipPath(focusRect, vw, vh) : undefined;
+
+  return createPortal(
+    <div
+      style={{
+        position: "fixed",
+        inset: 0,
+        backdropFilter: "blur(4px)",
+        WebkitBackdropFilter: "blur(4px)",
+        background: "oklch(0 0 0 / 0.15)",
+        pointerEvents: "none",
+        zIndex: 9998,
+        clipPath,
+        opacity: visible ? 1 : 0,
+        transition: "opacity 0.35s ease, clip-path 0.2s ease",
+      }}
+    />,
+    document.body,
+  );
+}
+
 /** Compute where to anchor the floating tour card relative to the active panel. */
 function computeCardStyle(
   panelId: PanelId | null,
@@ -58,8 +168,8 @@ function computeCardStyle(
   if (stepKey === "layout") {
     const el = document.querySelector('[data-tour="panel-toggle-root"]');
     const top = el ? el.getBoundingClientRect().bottom + 8 : 56;
-    // Place card far left so it doesn't overlap the right-side dropdown
-    return { position: "fixed", left: 8, top };
+    // Position just left of the dropdown menu (min-w-64 = 256px + 8px gap = right:264)
+    return { position: "fixed", right: 264, top };
   }
 
   if (!panelId) {
@@ -305,9 +415,13 @@ export function WelcomeDialog({ open, onClose }: WelcomeDialogProps) {
 
   return (
     <>
-      {/* Tour mode: floating card + panel highlight */}
+      {/* Tour mode: floating card + panel highlight + focus blur */}
       {open && tourIndex !== null && (
         <>
+          <TourFocusOverlay
+            panelId={currentStep?.panelId ?? null}
+            stepKey={currentStep?.key ?? ""}
+          />
           {currentStep?.panelId && (
             <PanelHighlightOverlay panelId={currentStep.panelId} />
           )}
