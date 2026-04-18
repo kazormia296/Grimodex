@@ -146,13 +146,16 @@ export function createCodexHighlightPlugin(): Plugin {
           // ProseMirror's DOM reconciler to crash when content is inserted at
           // the shared boundary (null nextSibling in renderDescs). Clear all
           // decos in that case; asyncResult will rebuild them in ~150ms.
-          const decoList = oldDecos.find();
+          // Check after mapping: deletions between previously non-adjacent
+          // decos can pull them into adjacency.
+          const mapped = oldDecos.map(tr.mapping, tr.doc);
+          const decoList = mapped.find();
           for (let i = 0; i + 1 < decoList.length; i++) {
             if (decoList[i].to === decoList[i + 1].from) {
               return DecorationSet.empty;
             }
           }
-          return oldDecos.map(tr.mapping, tr.doc);
+          return mapped;
         }
 
         return oldDecos;
