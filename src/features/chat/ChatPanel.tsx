@@ -547,36 +547,52 @@ export function ChatPanel() {
         ) : (
           <div className="space-y-4" ref={(el) => setMessagesContainerEl(el)}>
             <AnimatePresence initial={false}>
-              {messages
-                .filter((msg) => msg.role !== "system" && !msg.isSummarized)
-                .map((msg) => (
-                  <motion.div
-                    key={msg.id}
-                    initial={{ opacity: 0, x: msg.role === "user" ? 20 : -20 }}
-                    animate={{ opacity: 1, x: 0 }}
-                    exit={{ opacity: 0 }}
-                    transition={
-                      reduced
-                        ? { duration: 0 }
-                        : { type: "spring", stiffness: 260, damping: 22 }
-                    }
-                  >
-                    <ChatMessage
-                      msg={msg}
-                      isStreaming={isStreaming}
-                      onInsert={insertFromChat}
-                      onExtractCodexQuick={handleExtractCodexQuick}
-                      onExtractCodexDetailed={handleExtractCodexDetailed}
-                      onSaveSnippetQuick={handleSaveSnippetQuick}
-                      onSaveSnippetDetailed={handleSaveSnippetDetailed}
-                      onEdit={handleEditMessage}
-                      onDelete={handleDeleteMessage}
-                      onRegenerate={handleRegenerate}
-                      onStar={handleStar}
-                      onContextMenu={handleContextMenu}
-                    />
-                  </motion.div>
-                ))}
+              {(() => {
+                const visible = messages.filter(
+                  (msg) => msg.role !== "system" && !msg.isSummarized,
+                );
+                // ストリーミング中の最後のassistantメッセージはコンテンツが空で
+                // 追加されるため、完了時にキーを変えてアニメーションを発火させる
+                const lastMsg = visible[visible.length - 1];
+                const streamingId =
+                  isStreaming && lastMsg?.role === "assistant"
+                    ? lastMsg.id
+                    : null;
+                return visible.map((msg) => {
+                  const isStreamingMsg = msg.id === streamingId;
+                  return (
+                    <motion.div
+                      key={isStreamingMsg ? `${msg.id}-streaming` : msg.id}
+                      initial={{
+                        opacity: 0,
+                        x: msg.role === "user" ? 20 : -20,
+                      }}
+                      animate={{ opacity: 1, x: 0 }}
+                      exit={{ opacity: 0 }}
+                      transition={
+                        reduced || isStreamingMsg
+                          ? { duration: 0 }
+                          : { type: "spring", stiffness: 260, damping: 22 }
+                      }
+                    >
+                      <ChatMessage
+                        msg={msg}
+                        isStreaming={isStreaming}
+                        onInsert={insertFromChat}
+                        onExtractCodexQuick={handleExtractCodexQuick}
+                        onExtractCodexDetailed={handleExtractCodexDetailed}
+                        onSaveSnippetQuick={handleSaveSnippetQuick}
+                        onSaveSnippetDetailed={handleSaveSnippetDetailed}
+                        onEdit={handleEditMessage}
+                        onDelete={handleDeleteMessage}
+                        onRegenerate={handleRegenerate}
+                        onStar={handleStar}
+                        onContextMenu={handleContextMenu}
+                      />
+                    </motion.div>
+                  );
+                });
+              })()}
             </AnimatePresence>
             {isStreaming && (
               <div
