@@ -169,7 +169,7 @@ function computeCardStyle(
     const el = document.querySelector('[data-tour="panel-toggle-root"]');
     const top = el ? el.getBoundingClientRect().bottom + 8 : 56;
     // Position just left of the dropdown menu (min-w-64 = 256px + 8px gap = right:264)
-    return { position: "fixed", right: 264, top };
+    return { position: "fixed", right: 500, top };
   }
 
   if (!panelId) {
@@ -318,11 +318,12 @@ export function WelcomeDialog({ open, onClose }: WelcomeDialogProps) {
     return () => document.removeEventListener("keydown", handler);
   }, [tourIndex, onClose]);
 
-  // Auto-show snippets panel when that step is active
+  // Auto-show panels that may be hidden when their step becomes active
   useEffect(() => {
-    if (tourIndex !== null && STEPS[tourIndex].key === "snippets") {
-      showPanel("snippets");
-    }
+    if (tourIndex === null) return;
+    const key = STEPS[tourIndex].key;
+    if (key === "snippets") showPanel("snippets");
+    if (key === "codex") showPanel("codex");
   }, [tourIndex, showPanel]);
 
   // Pop animation on the tour card whenever the step changes
