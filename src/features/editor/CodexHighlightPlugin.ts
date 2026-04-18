@@ -142,6 +142,16 @@ export function createCodexHighlightPlugin(): Plugin {
 
         // Doc changed or forced update → remap existing decoration positions
         if (tr.docChanged || tr.getMeta("codexHighlightUpdate") === true) {
+          // Adjacent inline decorations (deco[i].to === deco[i+1].from) cause
+          // ProseMirror's DOM reconciler to crash when content is inserted at
+          // the shared boundary (null nextSibling in renderDescs). Clear all
+          // decos in that case; asyncResult will rebuild them in ~150ms.
+          const decoList = oldDecos.find();
+          for (let i = 0; i + 1 < decoList.length; i++) {
+            if (decoList[i].to === decoList[i + 1].from) {
+              return DecorationSet.empty;
+            }
+          }
           return oldDecos.map(tr.mapping, tr.doc);
         }
 
