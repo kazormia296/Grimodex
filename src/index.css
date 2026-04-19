@@ -403,9 +403,9 @@
   z-index: 10;
   opacity: 1;
   transition:
-    left 80ms ease-out,
-    top 80ms ease-out,
-    height 80ms ease-out;
+    left 90ms cubic-bezier(0.22, 1.21, 0.36, 1),
+    top 90ms cubic-bezier(0.22, 1.21, 0.36, 1),
+    height 90ms cubic-bezier(0.22, 1.21, 0.36, 1);
 }
 
 .typewriter-cursor.blinking {
