@@ -21,6 +21,7 @@ describe("tabStore", () => {
         nodeId: "scene-1",
         isPreview: true,
         contentType: "scene",
+        animateIn: true,
       });
       expect(activeTabId).toBe("scene-1");
     });
@@ -34,6 +35,7 @@ describe("tabStore", () => {
         nodeId: "scene-2",
         isPreview: true,
         contentType: "scene",
+        animateIn: false,
       });
       expect(activeTabId).toBe("scene-2");
     });

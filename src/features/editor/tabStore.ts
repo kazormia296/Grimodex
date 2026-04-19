@@ -304,9 +304,11 @@ export const useTabStore = create<TabState>()((set, get) => {
       if (existing) {
         if (existing.isPreview) {
           set({
-            tabs: tabs.map((t) =>
-              t.nodeId === nodeId ? { ...t, isPreview: false } : t,
-            ),
+            tabs: tabs.map((t) => {
+              if (t.nodeId !== nodeId) return t;
+              const { animateIn: _a, ...rest } = t;
+              return { ...rest, isPreview: false };
+            }),
             activeTabId: nodeId,
             activeGroupIndex: 0,
           });
