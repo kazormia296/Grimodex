@@ -105,6 +105,8 @@ function VirtualizedEntryList({
   onRenameCommit,
   onRenameCancel,
   onStartRename,
+  scrollToEntryId,
+  onScrollComplete,
 }: {
   entries: CodexEntry[];
   isLoading: boolean;
@@ -121,6 +123,8 @@ function VirtualizedEntryList({
   onRenameCommit?: (id: string, name: string) => void;
   onRenameCancel?: () => void;
   onStartRename?: (id: string) => void;
+  scrollToEntryId?: string | null;
+  onScrollComplete?: () => void;
 }) {
   const { t } = useTranslation();
   const parentRef = useRef<HTMLDivElement>(null);
@@ -135,6 +139,16 @@ function VirtualizedEntryList({
     estimateSize: () => 52,
     overscan: 5,
   });
+
+  useEffect(() => {
+    if (!scrollToEntryId) return;
+    const idx = entries.findIndex((e) => e.id === scrollToEntryId);
+    if (idx !== -1) {
+      virtualizer.scrollToIndex(idx, { align: "start", behavior: "smooth" });
+    }
+    onScrollComplete?.();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [scrollToEntryId]);
 
   if (isLoading) {
     return (
@@ -354,6 +368,8 @@ function CategoryGroupedList({
   onRenameCommit,
   onRenameCancel,
   onStartRename,
+  scrollToEntryId,
+  onScrollComplete,
 }: {
   entries: CodexEntry[];
   isLoading: boolean;
@@ -369,8 +385,11 @@ function CategoryGroupedList({
   onRenameCommit?: (id: string, name: string) => void;
   onRenameCancel?: () => void;
   onStartRename?: (id: string) => void;
+  scrollToEntryId?: string | null;
+  onScrollComplete?: () => void;
 }) {
   const { t } = useTranslation();
+  const containerRef = useRef<HTMLDivElement>(null);
   const [contextMenu, setContextMenu] = useState<{
     entry: CodexEntry;
     x: number;
@@ -436,6 +455,36 @@ function CategoryGroupedList({
     [isExpanded],
   );
 
+  const pendingScrollRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    if (!scrollToEntryId) return;
+    const targetEntry = entries.find((e) => e.id === scrollToEntryId);
+    if (targetEntry) {
+      setExpandedGroups((prev) => {
+        if (prev[targetEntry.type] === false) {
+          return { ...prev, [targetEntry.type]: true };
+        }
+        return prev;
+      });
+    }
+    pendingScrollRef.current = scrollToEntryId;
+    onScrollComplete?.();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [scrollToEntryId]);
+
+  // After every render, execute pending scroll (retries after group expansion re-render)
+  useEffect(() => {
+    if (!pendingScrollRef.current) return;
+    const el = containerRef.current?.querySelector(
+      `[data-testid="codex-entry-${pendingScrollRef.current}"]`,
+    );
+    if (el) {
+      el.scrollIntoView({ behavior: "smooth", block: "nearest" });
+      pendingScrollRef.current = null;
+    }
+  });
+
   if (isLoading) {
     return (
       <p className="flex-1 p-3 text-center text-xs text-muted-foreground">
@@ -456,7 +505,7 @@ function CategoryGroupedList({
   }
 
   return (
-    <div className="flex-1 overflow-y-auto">
+    <div ref={containerRef} className="flex-1 overflow-y-auto">
       {groups.map((group) => (
         <div key={group.slug}>
           <CategoryGroupHeader
@@ -584,6 +633,8 @@ export function CodexManagementPanel({
   // S3: active chat session
   const activeSessionId = useChatStore((s) => s.activeSessionId);
 
+  const [scrollToEntryId, setScrollToEntryId] = useState<string | null>(null);
+
   const containerRef = useRef<HTMLDivElement>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
   const searchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -605,6 +656,7 @@ export function CodexManagementPanel({
     const entry = entries.find((e) => e.id === pendingEntryId);
     if (!entry) return; // wait for entries to load
     setSelectedEntry(entry);
+    setScrollToEntryId(pendingEntryId);
     if (isStackMode) setShowDetail(true);
     clearPendingEntry();
   }, [pendingEntryId, entries, isStackMode, clearPendingEntry]);
@@ -808,6 +860,7 @@ export function CodexManagementPanel({
     const entry = await create({ type: "character", name: "Untitled" });
     setDetailInitialTab("details");
     setSelectedEntry(entry);
+    setScrollToEntryId(entry.id);
     if (isStackMode) setShowDetail(true);
   }, [create, isStackMode]);
 
@@ -849,6 +902,7 @@ export function CodexManagementPanel({
       });
       setDetailInitialTab("details");
       setSelectedEntry(newEntry);
+      setScrollToEntryId(newEntry.id);
       if (isStackMode) setShowDetail(true);
     },
     [create, entries, isStackMode],
@@ -1053,6 +1107,8 @@ export function CodexManagementPanel({
     onRenameCommit: handleRenameCommit,
     onRenameCancel: () => setRenamingEntryId(null),
     onStartRename: (id: string) => setRenamingEntryId(id),
+    scrollToEntryId,
+    onScrollComplete: () => setScrollToEntryId(null),
   };
 
   // --- List panel content ---
