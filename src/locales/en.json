@@ -53,7 +53,18 @@
     "cancel": "Cancel",
     "close": "Close",
     "noFile": "No file selected",
-    "invalidZip": "Please select a valid ZIP file"
+    "invalidZip": "Please select a valid ZIP file",
+    "tagMappingTitle": "Tag → CodexType Mapping",
+    "tagMappingSubtitle": "Optionally map tags to CodexTypes. Tags without a mapping are kept as-is.",
+    "tagMappingNone": "No mapping",
+    "tagMappingNew": "Create new type",
+    "tagMappingExisting": "Existing: {{label}}",
+    "tagMappingSkip": "Skip",
+    "tagMappingNext": "Next",
+    "conflictTitle": "Type Conflicts",
+    "conflictSubtitle": "{{count}} entries have multiple type tags. Select which tag to use for each.",
+    "conflictBack": "Back",
+    "conflictImport": "Import"
   },
   "app": {
     "loading": "Loading…",

@@ -2,20 +2,65 @@ import { useState, useRef, useCallback, useEffect } from "react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import { Upload } from "lucide-react";
-import { parseNovelcrafterZip } from "./novelcrafterParser";
-import { importCodexEntries, importSnippets } from "./importApi";
+import { parseNovelcrafterZip, collectAllTagNames } from "./novelcrafterParser";
+import { importCodexEntries, importSnippets, PROJECT_ID } from "./importApi";
+import type { TagMappingAction, TagImportOptions } from "./importApi";
 import { useCodexStore } from "@/features/codex/codexStore";
 import { useSnippetStore } from "@/features/snippets/snippetStore";
 import type { ParseResult } from "./novelcrafterParser";
 import type { ImportProgress } from "./importApi";
 import { AnimatedOverlay } from "@/components/ui/animated-overlay";
+import { listCodexTypes } from "@/features/codex/typeApi";
+import type { CodexType } from "@/features/codex/typeApi";
+import { TagMappingSection } from "./TagMappingSection";
+import {
+  ConflictResolutionSection,
+  type EntryConflict,
+} from "./ConflictResolutionSection";
+import type { ParsedCodexEntry } from "./novelcrafterParser";
 
 interface Props {
   open: boolean;
   onClose: () => void;
 }
 
-type Phase = "idle" | "analyzing" | "preview" | "importing" | "done";
+type Phase =
+  | "idle"
+  | "analyzing"
+  | "preview"
+  | "tag-mapping"
+  | "conflict-resolution"
+  | "importing"
+  | "done";
+
+function computeConflicts(
+  entries: ParsedCodexEntry[],
+  tagTypeMap: Map<string, TagMappingAction>,
+): EntryConflict[] {
+  const result: EntryConflict[] = [];
+  for (const entry of entries) {
+    const tags = JSON.parse(entry.tagsCache) as {
+      name: string;
+      color: string | null;
+    }[];
+    const mapped = tags
+      .map((t) => t.name)
+      .filter(Boolean)
+      .filter((name) => {
+        const a = tagTypeMap.get(name);
+        return a && a.mode !== "none";
+      });
+    if (mapped.length > 1) {
+      result.push({
+        entryId: entry.id,
+        entryName: entry.name,
+        conflictingTags: mapped,
+        selectedTag: mapped[0],
+      });
+    }
+  }
+  return result;
+}
 
 export function NovelcrafterImportDialog({ open, onClose }: Props) {
   const { t } = useTranslation();
@@ -27,8 +72,27 @@ export function NovelcrafterImportDialog({ open, onClose }: Props) {
   const [progress, setProgress] = useState<ImportProgress | null>(null);
   const [errors, setErrors] = useState<string[]>([]);
 
+  const [existingTypes, setExistingTypes] = useState<CodexType[]>([]);
+  const [allTagNames, setAllTagNames] = useState<string[]>([]);
+  const [tagTypeConfigs, setTagTypeConfigs] = useState<
+    Map<string, TagMappingAction>
+  >(new Map());
+  const [conflicts, setConflicts] = useState<EntryConflict[]>([]);
+  const [conflictResolutions, setConflictResolutions] = useState<
+    Map<string, string>
+  >(new Map());
+
   const reloadCodex = useCodexStore((s) => s.loadEntries);
   const reloadSnippets = useSnippetStore((s) => s.loadEntries);
+
+  // Load existing types and compute tag names when parse result arrives
+  useEffect(() => {
+    if (!parsed) return;
+    const names = collectAllTagNames(parsed.codexEntries);
+    setAllTagNames(names);
+    setTagTypeConfigs(new Map(names.map((n) => [n, { mode: "none" }])));
+    void listCodexTypes(PROJECT_ID).then(setExistingTypes);
+  }, [parsed]);
 
   const handleFileChange = useCallback(
     async (file: File | null) => {
@@ -61,41 +125,92 @@ export function NovelcrafterImportDialog({ open, onClose }: Props) {
     [handleFileChange],
   );
 
-  const handleImport = useCallback(async () => {
+  const runImport = useCallback(
+    async (tagOptions?: TagImportOptions) => {
+      if (!parsed) return;
+      setPhase("importing");
+      setErrors([]);
+
+      const allErrors: string[] = [];
+
+      const { imported: codexImported, errors: codexErrors } =
+        await importCodexEntries(
+          parsed.codexEntries,
+          (p) => setProgress(p),
+          tagOptions,
+        );
+      allErrors.push(...codexErrors);
+
+      const { imported: snippetsImported, errors: snippetErrors } =
+        await importSnippets(parsed.snippets, (p) => setProgress(p));
+      allErrors.push(...snippetErrors);
+
+      setErrors(allErrors);
+      setPhase("done");
+
+      await reloadCodex();
+      await reloadSnippets();
+
+      toast.success(
+        t("import.success", {
+          codex: codexImported,
+          snippets: snippetsImported,
+        }),
+      );
+    },
+    [parsed, t, reloadCodex, reloadSnippets],
+  );
+
+  /** Called from preview "Import" button */
+  const handlePreviewImport = useCallback(() => {
     if (!parsed) return;
-    setPhase("importing");
-    setErrors([]);
+    if (allTagNames.length === 0) {
+      void runImport();
+    } else {
+      setPhase("tag-mapping");
+    }
+  }, [parsed, allTagNames.length, runImport]);
 
-    const allErrors: string[] = [];
+  /** Called from tag-mapping "Skip" */
+  const handleTagMappingSkip = useCallback(() => {
+    void runImport();
+  }, [runImport]);
 
-    const { imported: codexImported, errors: codexErrors } =
-      await importCodexEntries(parsed.codexEntries, (p) => setProgress(p));
-    allErrors.push(...codexErrors);
-
-    const { imported: snippetsImported, errors: snippetErrors } =
-      await importSnippets(parsed.snippets, (p) => setProgress(p));
-    allErrors.push(...snippetErrors);
-
-    setErrors(allErrors);
-    setPhase("done");
-
-    // Reload stores so the UI reflects the newly imported data
-    await reloadCodex();
-    await reloadSnippets();
-
-    toast.success(
-      t("import.success", {
-        codex: codexImported,
-        snippets: snippetsImported,
-      }),
+  /** Called from tag-mapping "Next" */
+  const handleTagMappingNext = useCallback(() => {
+    if (!parsed) return;
+    const foundConflicts = computeConflicts(
+      parsed.codexEntries,
+      tagTypeConfigs,
     );
-  }, [parsed, t, reloadCodex, reloadSnippets]);
+    if (foundConflicts.length > 0) {
+      setConflicts(foundConflicts);
+      setConflictResolutions(
+        new Map(foundConflicts.map((c) => [c.entryId, c.conflictingTags[0]])),
+      );
+      setPhase("conflict-resolution");
+    } else {
+      void runImport({
+        tagTypeMap: tagTypeConfigs,
+        conflictResolutions: new Map(),
+      });
+    }
+  }, [parsed, tagTypeConfigs, runImport]);
+
+  /** Called from conflict-resolution "Import" */
+  const handleConflictImport = useCallback(() => {
+    void runImport({ tagTypeMap: tagTypeConfigs, conflictResolutions });
+  }, [tagTypeConfigs, conflictResolutions, runImport]);
 
   const handleClose = useCallback(() => {
     setPhase("idle");
     setParsed(null);
     setProgress(null);
     setErrors([]);
+    setAllTagNames([]);
+    setTagTypeConfigs(new Map());
+    setConflicts([]);
+    setConflictResolutions(new Map());
     onClose();
   }, [onClose]);
 
@@ -109,7 +224,7 @@ export function NovelcrafterImportDialog({ open, onClose }: Props) {
     <AnimatedOverlay
       open={open}
       onClose={handleClose}
-      className="flex w-[480px] flex-col gap-4 rounded-lg border border-border bg-background p-6 shadow-xl outline-none"
+      className="flex w-[520px] flex-col gap-4 rounded-lg border border-border bg-background p-6 shadow-xl outline-none"
     >
       <div
         ref={dialogRef}
@@ -173,6 +288,37 @@ export function NovelcrafterImportDialog({ open, onClose }: Props) {
           </div>
         )}
 
+        {/* Tag mapping */}
+        {phase === "tag-mapping" && (
+          <TagMappingSection
+            allTagNames={allTagNames}
+            tagTypeConfigs={tagTypeConfigs}
+            existingTypes={existingTypes}
+            onConfigChange={(name, action) =>
+              setTagTypeConfigs((prev) => new Map(prev).set(name, action))
+            }
+            onSkip={handleTagMappingSkip}
+            onNext={handleTagMappingNext}
+          />
+        )}
+
+        {/* Conflict resolution */}
+        {phase === "conflict-resolution" && (
+          <ConflictResolutionSection
+            conflicts={conflicts}
+            conflictResolutions={conflictResolutions}
+            tagTypeConfigs={tagTypeConfigs}
+            existingTypes={existingTypes}
+            onResolutionChange={(entryId, tagName) =>
+              setConflictResolutions((prev) =>
+                new Map(prev).set(entryId, tagName),
+              )
+            }
+            onBack={() => setPhase("tag-mapping")}
+            onImport={handleConflictImport}
+          />
+        )}
+
         {/* Importing progress */}
         {phase === "importing" && progress && (
           <div className="space-y-2">
@@ -211,41 +357,48 @@ export function NovelcrafterImportDialog({ open, onClose }: Props) {
           </div>
         )}
 
-        {/* Buttons */}
-        <div className="flex justify-end gap-2">
-          {phase !== "importing" && phase !== "done" && (
-            <button
-              type="button"
-              onClick={handleClose}
-              className="rounded px-3 py-1.5 text-sm hover:bg-accent"
-            >
-              {t("import.cancel")}
-            </button>
+        {/* Buttons — only for phases not handled by sub-components */}
+        {phase !== "tag-mapping" &&
+          phase !== "conflict-resolution" &&
+          phase !== "importing" && (
+            <div className="flex justify-end gap-2">
+              {phase !== "done" && (
+                <button
+                  type="button"
+                  onClick={handleClose}
+                  className="rounded px-3 py-1.5 text-sm hover:bg-accent"
+                >
+                  {t("import.cancel")}
+                </button>
+              )}
+              {phase === "preview" && (
+                <button
+                  type="button"
+                  onClick={handlePreviewImport}
+                  className="rounded bg-primary px-3 py-1.5 text-sm text-primary-foreground hover:bg-primary/90"
+                >
+                  {t("import.importButton")}
+                </button>
+              )}
+              {phase === "done" && (
+                <button
+                  type="button"
+                  onClick={handleClose}
+                  className="rounded bg-primary px-3 py-1.5 text-sm text-primary-foreground hover:bg-primary/90"
+                >
+                  {t("import.close")}
+                </button>
+              )}
+            </div>
           )}
-          {phase === "preview" && (
-            <button
-              type="button"
-              onClick={() => void handleImport()}
-              className="rounded bg-primary px-3 py-1.5 text-sm text-primary-foreground hover:bg-primary/90"
-            >
-              {t("import.importButton")}
-            </button>
-          )}
-          {phase === "importing" && (
+
+        {phase === "importing" && (
+          <div className="flex justify-end">
             <span className="text-sm text-muted-foreground">
               {t("import.importing")}
             </span>
-          )}
-          {phase === "done" && (
-            <button
-              type="button"
-              onClick={handleClose}
-              className="rounded bg-primary px-3 py-1.5 text-sm text-primary-foreground hover:bg-primary/90"
-            >
-              {t("import.close")}
-            </button>
-          )}
-        </div>
+          </div>
+        )}
       </div>
     </AnimatedOverlay>
   );

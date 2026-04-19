@@ -19,15 +19,73 @@ import {
   createDefinition,
   upsertValue,
 } from "@/features/codex/detailApi";
-import { ensureBuiltinTypes } from "@/features/codex/typeApi";
+import {
+  ensureBuiltinTypes,
+  listCodexTypes,
+  createCodexType,
+} from "@/features/codex/typeApi";
 import type { ParsedCodexEntry, ParsedSnippet } from "./novelcrafterParser";
 
-const PROJECT_ID = "default-project";
+export const PROJECT_ID = "default-project";
+
+/**
+ * How a tag maps to a CodexType during import.
+ * - "none": tag is not used for type assignment
+ * - "new": a new CodexType is created using the tag name as label
+ * - "existing": the entry is assigned an existing CodexType by slug
+ */
+export type TagMappingAction =
+  | { mode: "none" }
+  | { mode: "new" }
+  | { mode: "existing"; typeSlug: string };
+
+export interface TagImportOptions {
+  /** Per-tag type assignment configuration */
+  tagTypeMap: Map<string, TagMappingAction>;
+  /** entryId → tag name to use when multiple mapped tags conflict */
+  conflictResolutions: Map<string, string>;
+}
 
 export interface ImportProgress {
   total: number;
   done: number;
   currentName: string;
+}
+
+/** Convert a tag name to a safe CodexType slug. */
+function tagNameToSlug(name: string): string {
+  const slug = name
+    .toLowerCase()
+    .replace(/[^\w\s]/g, "")
+    .replace(/\s+/g, "_")
+    .replace(/_{2,}/g, "_")
+    .replace(/^_|_$/g, "");
+  return slug || "custom_type";
+}
+
+/** Resolve the effective type slug for an entry, applying tag-based overrides. */
+function resolveEntryType(
+  entry: ParsedCodexEntry,
+  tagNameToTypeSlug: Map<string, string>,
+  conflictResolutions: Map<string, string>,
+): string {
+  const tags = JSON.parse(entry.tagsCache) as {
+    name: string;
+    color: string | null;
+  }[];
+  const mappedTags = tags
+    .map((t) => t.name)
+    .filter(Boolean)
+    .filter((name) => tagNameToTypeSlug.has(name));
+
+  if (mappedTags.length === 0) return entry.type;
+  if (mappedTags.length === 1) return tagNameToTypeSlug.get(mappedTags[0])!;
+
+  const selectedTag = conflictResolutions.get(entry.id);
+  if (selectedTag && tagNameToTypeSlug.has(selectedTag)) {
+    return tagNameToTypeSlug.get(selectedTag)!;
+  }
+  return tagNameToTypeSlug.get(mappedTags[0])!;
 }
 
 /**
@@ -93,10 +151,12 @@ function fieldValueToProseMirror(text: string): string {
  * Insert all parsed codex entries into the DB.
  * Thumbnails are resized/converted to WebP data URLs if present.
  * Tags and custom detail values are created/linked as needed.
+ * Pass tagOptions to override entry types based on tag mappings.
  */
 export async function importCodexEntries(
   entries: ParsedCodexEntry[],
   onProgress?: (p: ImportProgress) => void,
+  tagOptions?: TagImportOptions,
 ): Promise<{ imported: number; errors: string[] }> {
   let imported = 0;
   const errors: string[] = [];
@@ -105,6 +165,46 @@ export async function importCodexEntries(
 
   // ── Phase 0: ensure builtin types exist ───────────────────────────────────
   await ensureBuiltinTypes(PROJECT_ID);
+
+  // ── Phase 0.5: resolve tag→type mappings ─────────────────────────────────
+  const tagNameToTypeSlug = new Map<string, string>();
+  if (tagOptions && tagOptions.tagTypeMap.size > 0) {
+    const allTypes = await listCodexTypes(PROJECT_ID);
+    const existingSlugSet = new Set(allTypes.map((t) => t.slug));
+    const createdSlugs = new Set(existingSlugSet);
+
+    for (const [tagName, action] of tagOptions.tagTypeMap) {
+      if (action.mode === "none") continue;
+      if (action.mode === "existing") {
+        tagNameToTypeSlug.set(tagName, action.typeSlug);
+      } else {
+        // mode === "new"
+        const slug = tagNameToSlug(tagName);
+        if (createdSlugs.has(slug)) {
+          tagNameToTypeSlug.set(tagName, slug);
+        } else {
+          const newType = await createCodexType({
+            projectId: PROJECT_ID,
+            slug,
+            label: tagName,
+          });
+          tagNameToTypeSlug.set(tagName, newType.slug);
+          createdSlugs.add(slug);
+        }
+      }
+    }
+  }
+
+  // Pre-compute effective type for each entry
+  const resolvedTypeMap = new Map<string, string>();
+  const conflicts =
+    tagOptions?.conflictResolutions ?? new Map<string, string>();
+  for (const entry of sorted) {
+    resolvedTypeMap.set(
+      entry.id,
+      resolveEntryType(entry, tagNameToTypeSlug, conflicts),
+    );
+  }
 
   // ── Phase 1: resolve tags ─────────────────────────────────────────────────
   // Collect all unique tag names from the batch
@@ -135,7 +235,9 @@ export async function importCodexEntries(
   // ── Phase 2: resolve custom detail definitions ────────────────────────────
   // Map: typeSlug → Map<fieldName, definitionId>
   const typeDefMap = new Map<string, Map<string, string>>();
-  const typeSlugSet = new Set(sorted.map((e) => e.type));
+  const typeSlugSet = new Set(
+    sorted.map((e) => resolvedTypeMap.get(e.id) ?? e.type),
+  );
   for (const typeSlug of typeSlugSet) {
     const defs = await listDefinitionsByType(PROJECT_ID, typeSlug);
     typeDefMap.set(typeSlug, new Map(defs.map((d) => [d.name, d.id])));
@@ -148,21 +250,22 @@ export async function importCodexEntries(
   // Create missing definitions for fields that appear in this batch
   for (const entry of sorted) {
     if (!entry.fields) continue;
-    const defMap = typeDefMap.get(entry.type)!;
+    const effectiveType = resolvedTypeMap.get(entry.id) ?? entry.type;
+    const defMap = typeDefMap.get(effectiveType)!;
     for (const fieldName of Object.keys(entry.fields)) {
       if (!defMap.has(fieldName)) {
-        const sortOrder = typeNextSortOrder.get(entry.type) ?? 0;
+        const sortOrder = typeNextSortOrder.get(effectiveType) ?? 0;
         const def = await createDefinition({
           id: crypto.randomUUID(),
           projectId: PROJECT_ID,
-          typeSlug: entry.type,
+          typeSlug: effectiveType,
           name: fieldName,
           fieldType: "text",
           sortOrder,
           includeInContext: 1,
         });
         defMap.set(fieldName, def.id);
-        typeNextSortOrder.set(entry.type, sortOrder + 1);
+        typeNextSortOrder.set(effectiveType, sortOrder + 1);
       }
     }
   }
@@ -185,10 +288,12 @@ export async function importCodexEntries(
         }
       }
 
+      const effectiveType = resolvedTypeMap.get(e.id) ?? e.type;
+
       await createCodexEntry({
         id: e.id,
         projectId: PROJECT_ID,
-        type: e.type,
+        type: effectiveType,
         name: e.name,
         aliases: JSON.stringify(e.aliases),
         parentId: e.parentId,
@@ -215,7 +320,7 @@ export async function importCodexEntries(
 
         // Upsert custom detail values
         if (e.fields) {
-          const defMap = typeDefMap.get(e.type)!;
+          const defMap = typeDefMap.get(effectiveType)!;
           for (const [fieldName, value] of Object.entries(e.fields)) {
             const defId = defMap.get(fieldName);
             if (defId) {

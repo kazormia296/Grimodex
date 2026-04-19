@@ -51,6 +51,21 @@ export interface ParseResult {
   snippets: ParsedSnippet[];
 }
 
+/** Collect all unique tag names across parsed entries, sorted alphabetically. */
+export function collectAllTagNames(entries: ParsedCodexEntry[]): string[] {
+  const seen = new Set<string>();
+  for (const entry of entries) {
+    const tags = JSON.parse(entry.tagsCache) as {
+      name: string;
+      color: string | null;
+    }[];
+    for (const tag of tags) {
+      if (tag.name) seen.add(tag.name);
+    }
+  }
+  return [...seen].sort();
+}
+
 // ─────────────────────────────────────────────────────────────────
 // Novelcrafter → Grimodex type map
 // ─────────────────────────────────────────────────────────────────

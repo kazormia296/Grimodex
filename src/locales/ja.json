@@ -53,7 +53,18 @@
     "cancel": "キャンセル",
     "close": "閉じる",
     "noFile": "ファイルが選択されていません",
-    "invalidZip": "有効なZIPファイルを選択してください"
+    "invalidZip": "有効なZIPファイルを選択してください",
+    "tagMappingTitle": "タグ → CodexType マッピング",
+    "tagMappingSubtitle": "タグをCodexTypeとして使用する場合は設定してください。設定しないタグはそのまま残ります。",
+    "tagMappingNone": "使用しない",
+    "tagMappingNew": "新しいタイプとして作成",
+    "tagMappingExisting": "既存タイプ: {{label}}",
+    "tagMappingSkip": "スキップ",
+    "tagMappingNext": "次へ",
+    "conflictTitle": "タイプの競合",
+    "conflictSubtitle": "{{count}}件のエントリに複数のタイプタグが付いています。各エントリで使用するタグを選択してください。",
+    "conflictBack": "戻る",
+    "conflictImport": "インポート"
   },
   "app": {
     "loading": "読み込み中…",
