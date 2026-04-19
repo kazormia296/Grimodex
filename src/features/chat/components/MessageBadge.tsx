@@ -3,6 +3,8 @@ import { useTranslation } from "react-i18next";
 import { BookOpen, Bookmark, StopCircle } from "lucide-react";
 import { listCodexEntriesByMessageId } from "@/features/codex/api";
 import { listSnippetsByMessageId } from "@/features/snippets/api";
+import { useCodexStore } from "@/features/codex/codexStore";
+import { useSnippetStore } from "@/features/snippets/snippetStore";
 
 interface MessageBadgeProps {
   messageId: string;
@@ -18,6 +20,15 @@ export function MessageBadge({ messageId, stopped }: MessageBadgeProps) {
   const { t } = useTranslation();
   const [data, setData] = useState<BadgeData | null>(null);
 
+  // エントリのIDセットを監視して、作成・削除時のみバッジを再クエリする
+  // (内容変更時は ID が変わらないので不要なリクエリが発生しない)
+  const codexEntryIdKey = useCodexStore((s) =>
+    s.entries.map((e) => e.id).join(","),
+  );
+  const snippetEntryIdKey = useSnippetStore((s) =>
+    s.entries.map((e) => e.id).join(","),
+  );
+
   useEffect(() => {
     let cancelled = false;
     async function load() {
@@ -28,16 +39,18 @@ export function MessageBadge({ messageId, stopped }: MessageBadgeProps) {
       if (!cancelled) {
         const codexCount = codexEntries.length;
         const snippetCount = snippetEntries.length;
-        if (codexCount > 0 || snippetCount > 0) {
-          setData({ codexCount, snippetCount });
-        }
+        setData(
+          codexCount > 0 || snippetCount > 0
+            ? { codexCount, snippetCount }
+            : null,
+        );
       }
     }
-    load();
+    void load();
     return () => {
       cancelled = true;
     };
-  }, [messageId]);
+  }, [messageId, codexEntryIdKey, snippetEntryIdKey]);
 
   if (!data && !stopped) return null;
 
