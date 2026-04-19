@@ -11,17 +11,17 @@ Grimodexは、Novelcrafterに着想を得た、日本語小説作家向けのデ
 
 ### 1.1 技術スタック
 
-| レイヤー | 技術 |
-|---------|------|
-| デスクトップシェル | Tauri v2 |
-| フロントエンド | React 19 + TypeScript (strict) |
-| エディタ | TipTap (ProseMirror) |
-| 状態管理 | Zustand (グローバル) + Jotai (ローカル) |
-| UIコンポーネント | shadcn/ui |
-| AI統合 | Vercel AI SDK |
-| データベース | SQLite (WALモード) + FTS5 (trigram) |
-| ORM | Drizzle ORM |
-| ストレージ | SQLite（唯一の信頼できる情報源、ProseMirror JSON保存） + Markdownインポート/エクスポート |
+| レイヤー      | 技術                                                            |
+| --------- | ------------------------------------------------------------- |
+| デスクトップシェル | Tauri v2                                                      |
+| フロントエンド   | React 19 + TypeScript (strict)                                |
+| エディタ      | TipTap (ProseMirror)                                          |
+| 状態管理      | Zustand (グローバル) + Jotai (ローカル)                                |
+| UIコンポーネント | shadcn/ui                                                     |
+| AI統合      | Vercel AI SDK                                                 |
+| データベース    | SQLite (WALモード) + FTS5 (trigram)                              |
+| ORM       | Drizzle ORM                                                   |
+| ストレージ     | SQLite（唯一の信頼できる情報源、ProseMirror JSON保存） + Markdownインポート/エクスポート |
 
 ### 1.2 対象ユーザー
 

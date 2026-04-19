@@ -51,6 +51,8 @@ export function SnippetPanel() {
   const sortOrder = useSnippetStore((s) => s.sortOrder);
   const setSourceFilter = useSnippetStore((s) => s.setSourceFilter);
   const setSortOrder = useSnippetStore((s) => s.setSortOrder);
+  const pendingEntryId = useSnippetStore((s) => s.pendingEntryId);
+  const clearPendingEntry = useSnippetStore((s) => s.clearPendingEntry);
   const nodes = useTreeStore((s) => s.nodes);
   const setActiveScene = useTreeStore((s) => s.setActiveScene);
 
@@ -88,6 +90,15 @@ export function SnippetPanel() {
   useEffect(() => {
     setFocusedIndex(-1);
   }, [sourceFilter, sortOrder]);
+
+  // 外部からの requestSelectEntry(id) によるエントリ選択
+  useEffect(() => {
+    if (!pendingEntryId) return;
+    const snippet = entries.find((s) => s.id === pendingEntryId);
+    if (!snippet) return;
+    setSelectedSnippet(snippet);
+    clearPendingEntry();
+  }, [pendingEntryId, entries, clearPendingEntry]);
 
   const filteredEntries = useMemo(() => {
     let filtered = entries;

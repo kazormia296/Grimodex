@@ -19,11 +19,14 @@ interface SnippetState {
   isLoading: boolean;
   sourceFilter: SnippetSourceFilter;
   sortOrder: SnippetSortOrder;
+  pendingEntryId: string | null;
 
   loadEntries: () => Promise<void>;
   search: (query: string) => Promise<void>;
   setSourceFilter: (filter: SnippetSourceFilter) => void;
   setSortOrder: (order: SnippetSortOrder) => void;
+  requestSelectEntry: (id: string) => void;
+  clearPendingEntry: () => void;
   create: (
     data: Pick<NewSnippet, "title" | "content"> &
       Partial<
@@ -32,6 +35,7 @@ interface SnippetState {
           "tagsCache" | "sceneId" | "sourceChatMessageId" | "contentSource"
         >
       >,
+    options?: { silent?: boolean },
   ) => Promise<Snippet>;
   update: (
     id: string,
@@ -49,9 +53,12 @@ export const useSnippetStore = create<SnippetState>()((set, get) => ({
   isLoading: false,
   sourceFilter: "all",
   sortOrder: "recent",
+  pendingEntryId: null,
 
   setSourceFilter: (filter) => set({ sourceFilter: filter }),
   setSortOrder: (order) => set({ sortOrder: order }),
+  requestSelectEntry: (id) => set({ pendingEntryId: id }),
+  clearPendingEntry: () => set({ pendingEntryId: null }),
 
   loadEntries: async () => {
     set({ isLoading: true });
@@ -82,7 +89,7 @@ export const useSnippetStore = create<SnippetState>()((set, get) => ({
     }
   },
 
-  create: async (data) => {
+  create: async (data, options) => {
     try {
       const created = await snippetApi.createSnippet({
         id: crypto.randomUUID(),
@@ -102,7 +109,9 @@ export const useSnippetStore = create<SnippetState>()((set, get) => ({
           )
           .catch(() => {});
       }
-      toast.success(i18next.t("snippets.store.saved"));
+      if (!options?.silent) {
+        toast.success(i18next.t("snippets.store.saved"));
+      }
       return created;
     } catch (e) {
       toast.error(i18next.t("snippets.store.createFailed"));

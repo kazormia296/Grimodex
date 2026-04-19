@@ -1,3 +1,4 @@
+import { ExternalLink } from "lucide-react";
 import type { CodexEntry } from "@/features/codex/api";
 import { iconToDataUrl } from "../iconUtils";
 
@@ -46,10 +47,11 @@ export function CodexEntryPopoverContent({
       {onOpenInCodex && (
         <button
           type="button"
-          className="text-xs text-primary hover:underline"
+          className="mt-1 flex w-full items-center justify-center gap-1.5 rounded-md bg-primary/10 px-3 py-1.5 text-xs font-medium text-primary transition-colors hover:bg-primary/20 active:bg-primary/30"
           onClick={onOpenInCodex}
         >
-          Open in Codex →
+          <ExternalLink className="h-3 w-3 shrink-0" />
+          Open in Codex
         </button>
       )}
     </>

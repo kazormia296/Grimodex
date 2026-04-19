@@ -25,6 +25,7 @@ import { useAiSettingsStore } from "./store";
 import { normalizeModelId } from "@/features/attribution/AuthorshipMark";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { copyWithAttribution } from "@/lib/clipboardAttribution";
+import { useLayoutStore } from "@/features/layout/layoutStore";
 import { saveScene } from "@/features/editor/editorSaveRegistry";
 import type { ChatMessage as ChatMessageType } from "./chatTypes";
 import type { PinnedSnippetEntryWithData } from "./chatApi";
@@ -99,6 +100,8 @@ export function ChatPanel() {
   const [messagesContainerEl, setMessagesContainerEl] =
     useState<HTMLElement | null>(null);
 
+  const allCodexEntries = useCodexStore((s) => s.entries);
+
   // ツリーのシーン変更を chatStore に伝播
   useEffect(() => {
     setActiveSceneId(treeActiveSceneId);
@@ -129,7 +132,13 @@ export function ChatPanel() {
 
   useEffect(() => {
     refreshContextLayers();
-  }, [treeActiveSceneId, activeSessionId, isGlobalChat, refreshContextLayers]);
+  }, [
+    treeActiveSceneId,
+    activeSessionId,
+    isGlobalChat,
+    allCodexEntries,
+    refreshContextLayers,
+  ]);
 
   // Pinned codex entries
   const [pinnedEntries, setPinnedEntries] = useState<
@@ -164,8 +173,6 @@ export function ChatPanel() {
   const [dismissedViaChildIds, setDismissedViaChildIds] = useState<Set<string>>(
     new Set(),
   );
-  const allCodexEntries = useCodexStore((s) => s.entries);
-
   const handleDetectedEntries = useCallback((ids: string[]) => {
     setInputDetectedIds(ids);
   }, []);
@@ -327,8 +334,9 @@ export function ChatPanel() {
         await chatApi.updateMessageMetadata(messageId, {
           extractedCodex: [entry.id],
         });
+        useLayoutStore.getState().showPanel("codex");
+        useCodexStore.getState().requestSelectEntry(entry.id);
       }
-      toast.success(t("chat.extractedToCodex"));
     },
     [messages, createCodexEntry],
   );
@@ -366,15 +374,16 @@ export function ChatPanel() {
       const content = msg.content;
       const title =
         content.replace(/\n/g, " ").slice(0, 30).trimEnd() || "Untitled";
-      const snippet = await createSnippet({
-        title,
-        content,
-        sourceChatMessageId: messageId,
-      });
+      const snippet = await createSnippet(
+        { title, content, sourceChatMessageId: messageId },
+        { silent: true },
+      );
       if (snippet) {
         await chatApi.updateMessageMetadata(messageId, {
           extractedSnippets: [snippet.id],
         });
+        useLayoutStore.getState().showPanel("snippets");
+        useSnippetStore.getState().requestSelectEntry(snippet.id);
       }
     },
     [messages, createSnippet],
@@ -638,6 +647,10 @@ export function ChatPanel() {
             content: "",
             messageRole: "assistant",
           });
+          if (entry) {
+            useLayoutStore.getState().showPanel("codex");
+            useCodexStore.getState().requestSelectEntry(entry.id);
+          }
         }}
         onClose={() =>
           setExtractionDialog({
@@ -654,11 +667,15 @@ export function ChatPanel() {
         messageId={snippetDialog.messageId}
         messageRole={snippetDialog.messageRole}
         onSave={async (data) => {
-          const snippet = await createSnippet(data);
+          const snippet = await createSnippet(data, { silent: true });
           if (snippet && snippetDialog.messageId) {
             await chatApi.updateMessageMetadata(snippetDialog.messageId, {
               extractedSnippets: [snippet.id],
             });
+          }
+          if (snippet) {
+            useLayoutStore.getState().showPanel("snippets");
+            useSnippetStore.getState().requestSelectEntry(snippet.id);
           }
         }}
         onClose={() => setSnippetDialog((s) => ({ ...s, open: false }))}
