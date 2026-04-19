@@ -1,7 +1,7 @@
 import { useRef, useState, useEffect } from "react";
 import { useTranslation } from "react-i18next";
 import { motion, AnimatePresence } from "motion/react";
-import { DURATIONS, EASINGS, useReducedMotion } from "@/lib/animation";
+import { useReducedMotion } from "@/lib/animation";
 import { X, ChevronDown, Columns2, ScrollText } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useTabStore } from "./tabStore";
@@ -323,13 +323,26 @@ export function TabBar({ groupIndex = 0 }: TabBarProps) {
               <motion.div
                 key={tab.nodeId}
                 className="flex-shrink-0"
-                initial={{ opacity: 0 }}
-                animate={{ opacity: 1 }}
-                exit={{ opacity: 0, width: 0 }}
+                initial={
+                  !reduced && (!tab.isPreview || tab.animateIn)
+                    ? { opacity: 0, x: -8, scale: 0.92 }
+                    : false
+                }
+                animate={{ opacity: 1, x: 0, scale: 1 }}
+                exit={
+                  tab.isPreview || reduced
+                    ? {
+                        opacity: 0,
+                        width: 0,
+                        scale: 0.92,
+                        transition: { duration: 0 },
+                      }
+                    : { opacity: 0, width: 0, scale: 0.92 }
+                }
                 transition={
-                  reduced || tab.isPreview
+                  reduced
                     ? { duration: 0 }
-                    : { duration: DURATIONS.fast, ease: EASINGS.easeOut }
+                    : { type: "spring", damping: 22, stiffness: 380, mass: 0.7 }
                 }
                 style={{ overflow: "hidden" }}
               >

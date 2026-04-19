@@ -16,6 +16,9 @@ export interface TabEntry {
    *  - "<phase-id>"  → show/edit that phase's contentOverride
    */
   overridePhaseId?: string | null;
+  /** Preview tabs only: true when the tab is genuinely new (no prior preview existed).
+   *  false when replacing an existing preview tab → suppresses entrance animation. */
+  animateIn?: boolean;
 }
 
 export type GroupIndex = 0 | 1;
@@ -278,10 +281,16 @@ export const useTabStore = create<TabState>()((set, get) => {
       }
 
       const withoutPreview = tabs.filter((t) => !t.isPreview);
+      const hadPreview = withoutPreview.length < tabs.length;
       set({
         tabs: [
           ...withoutPreview,
-          { nodeId, isPreview: true, contentType: "scene" },
+          {
+            nodeId,
+            isPreview: true,
+            contentType: "scene",
+            animateIn: !hadPreview,
+          },
         ],
         activeTabId: nodeId,
         activeGroupIndex: 0,
