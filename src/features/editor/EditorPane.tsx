@@ -180,7 +180,7 @@ export function EditorPane({
   const [loadedPhaseId, setLoadedPhaseId] = useState<string | null>(null);
   const { shouldAutoRevision, recordAutoRevision } = useRevisionStore();
 
-  // Prevent feedback loop when applying external content sync
+  // Prevent feedback loop when applying external content sync.
   const isApplyingExternalUpdate = useRef(false);
 
   // Auto-draft: true when scene was empty at load time
@@ -639,6 +639,7 @@ export function EditorPane({
         try {
           editor.commands.setContent(
             content as Parameters<typeof editor.commands.setContent>[0],
+            { emitUpdate: false },
           );
         } finally {
           isApplyingExternalUpdate.current = false;
@@ -732,18 +733,20 @@ export function EditorPane({
           const rawContent = phaseContentOverride ?? entry?.content ?? null;
           const parsed =
             rawContent && rawContent !== "{}" ? JSON.parse(rawContent) : "";
-          editor!.commands.setContent(parsed);
+          editor!.commands.setContent(parsed, { emitUpdate: false });
         } else if (isSnippetMode) {
           // Load snippet content (HTML)
           const snippet = await getSnippet(nodeId);
           if (cancelled) return;
-          editor!.commands.setContent(snippet?.content || "");
+          editor!.commands.setContent(snippet?.content || "", {
+            emitUpdate: false,
+          });
         } else {
           // Load scene/note content (ProseMirror JSON)
           const content = await loadSceneContent(nodeId);
           if (cancelled) return;
           const parsed = content && content !== "{}" ? JSON.parse(content) : "";
-          editor!.commands.setContent(parsed);
+          editor!.commands.setContent(parsed, { emitUpdate: false });
         }
       } finally {
         isApplyingExternalUpdate.current = false;

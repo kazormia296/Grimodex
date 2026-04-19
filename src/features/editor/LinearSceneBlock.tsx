@@ -176,7 +176,7 @@ function MountedSceneBlock({
         const content = await loadSceneContent(sceneId);
         if (cancelled) return;
         const parsed = content && content !== "{}" ? JSON.parse(content) : "";
-        editor!.commands.setContent(parsed);
+        editor!.commands.setContent(parsed, { emitUpdate: false });
       } finally {
         isApplyingExternalUpdate.current = false;
       }
