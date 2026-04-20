@@ -20,6 +20,8 @@ import { SnippetCardBody } from "@/features/snippets/components/SnippetCardBody"
 import { getTypeLabel } from "../utils/typeLabels";
 import { sortEntries, CODEX_SORT_OPTIONS } from "@/features/codex/codexSort";
 import { TagFilterBar } from "@/features/codex/components/TagFilterBar";
+import type { CodexType } from "@/features/codex/typeApi";
+import { listCodexTypes, ensureBuiltinTypes } from "@/features/codex/typeApi";
 
 const DIALOG_CODEX_SORT_OPTIONS = CODEX_SORT_OPTIONS.filter(
   (o) => o.value !== "most-referenced",
@@ -205,11 +207,16 @@ export function PinCodexDialog({
   const setCodexSortOrder = useCodexStore((s) => s.setSort);
   const snippetEntries = useSnippetStore((s) => s.entries);
   const loadSnippets = useSnippetStore((s) => s.loadEntries);
+  const [codexTypes, setCodexTypes] = useState<CodexType[]>([]);
 
   useEffect(() => {
     if (open) {
       loadEntries();
       loadSnippets();
+      ensureBuiltinTypes("default-project")
+        .then(() => listCodexTypes("default-project"))
+        .then(setCodexTypes)
+        .catch(() => setCodexTypes([]));
     }
   }, [open, loadEntries, loadSnippets]);
 
@@ -244,10 +251,23 @@ export function PinCodexDialog({
       });
     }
     if (codexSortOrder === "category") {
-      return [...filtered].sort((a, b) => {
-        if (a.type !== b.type) return a.type.localeCompare(b.type);
-        return a.name.localeCompare(b.name, "ja");
-      });
+      const byType = new Map<string, CodexEntry[]>();
+      for (const entry of filtered) {
+        if (!byType.has(entry.type)) byType.set(entry.type, []);
+        byType.get(entry.type)!.push(entry);
+      }
+      for (const grp of byType.values()) {
+        grp.sort((a, b) => a.name.localeCompare(b.name, "ja"));
+      }
+      const typeOrder = new Map(
+        codexTypes.map((ct, i) => [ct.slug, ct.sortOrder ?? i]),
+      );
+      return [...byType.entries()]
+        .sort(
+          ([aSlug], [bSlug]) =>
+            (typeOrder.get(aSlug) ?? 9999) - (typeOrder.get(bSlug) ?? 9999),
+        )
+        .flatMap(([, grp]) => grp);
     }
     return sortEntries(filtered, codexSortOrder);
   }, [
@@ -256,6 +276,7 @@ export function PinCodexDialog({
     codexFilterType,
     codexSelectedTags,
     codexSortOrder,
+    codexTypes,
   ]);
 
   const filteredSnippetEntries = useMemo(() => {
