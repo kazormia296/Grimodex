@@ -17,7 +17,6 @@ import { AgentProgressBar } from "./components/AgentProgressBar";
 import { CodexExtractionDialog } from "@/features/codex/CodexExtractionDialog";
 import { SnippetExtractionDialog } from "@/features/snippets/SnippetExtractionDialog";
 import { ContextBar } from "./components/ContextBar";
-import { PinCodexDialog } from "./components/PinCodexDialog";
 import { SessionsPanel } from "./components/SessionsPanel";
 import { CodexPopover } from "@/features/editor/CodexPopover";
 import * as chatApi from "./chatApi";
@@ -147,7 +146,6 @@ export function ChatPanel() {
   const [pinnedSnippets, setPinnedSnippets] = useState<
     PinnedSnippetEntryWithData[]
   >([]);
-  const [pinDialogOpen, setPinDialogOpen] = useState(false);
 
   useEffect(() => {
     if (!activeSessionId) {
@@ -539,7 +537,10 @@ export function ChatPanel() {
         onPin={handlePin}
         onDismissViaChild={handleDismissViaChild}
         dismissedViaChildIds={dismissedViaChildIds}
-        onOpenPinDialog={() => setPinDialogOpen(true)}
+        pinnedSnippetIds={pinnedSnippetIds}
+        onPinEntry={handlePin}
+        onUnpinEntry={handleUnpin}
+        onTogglePinChildren={handleTogglePinChildren}
         contextTokenCount={contextTokenCount}
         contextLayers={contextLayers}
         systemPrompt={systemPrompt}
@@ -679,18 +680,6 @@ export function ChatPanel() {
           }
         }}
         onClose={() => setSnippetDialog((s) => ({ ...s, open: false }))}
-      />
-      <PinCodexDialog
-        open={pinDialogOpen}
-        pinnedIds={pinnedIds}
-        withChildrenIds={
-          new Set(pinnedEntries.filter((e) => e.withChildren).map((e) => e.id))
-        }
-        pinnedSnippetIds={pinnedSnippetIds}
-        onPin={handlePin}
-        onUnpin={handleUnpin}
-        onToggleChildren={handleTogglePinChildren}
-        onClose={() => setPinDialogOpen(false)}
       />
       {sessionsPanelOpen && (
         <SessionsPanel

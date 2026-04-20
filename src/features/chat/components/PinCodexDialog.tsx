@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { AnimatedOverlay } from "@/components/ui/animated-overlay";
+import { AnimatedPopover } from "@/components/ui/animated-popover";
 import { useTranslation } from "react-i18next";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { useCodexStore } from "@/features/codex/codexStore";
@@ -170,6 +170,7 @@ interface PinCodexDialogProps {
   onUnpin: (entryId: string) => void;
   onToggleChildren: (entryId: string, withChildren: boolean) => void;
   onClose: () => void;
+  containerRef?: React.RefObject<HTMLElement | null>;
 }
 
 export function PinCodexDialog({
@@ -181,6 +182,7 @@ export function PinCodexDialog({
   onUnpin,
   onToggleChildren,
   onClose,
+  containerRef,
 }: PinCodexDialogProps) {
   const { t } = useTranslation();
   const [activeTab, setActiveTab] = useState<"codex" | "snippet">("codex");
@@ -197,17 +199,18 @@ export function PinCodexDialog({
   }, [open, loadEntries, loadSnippets]);
 
   return (
-    <AnimatedOverlay
+    <AnimatedPopover
       open={open}
       onClose={onClose}
-      className="max-h-[28rem] w-80 rounded-lg border border-border bg-background p-4 shadow-lg"
+      containerRef={containerRef}
+      className="absolute right-0 top-full z-50 mt-1 w-80 rounded-lg border border-border bg-background p-4 shadow-lg"
     >
       <h3 className="mb-3 text-sm font-semibold">
         {t("chat.context.pinEntries")}
       </h3>
 
       {/* Tab selector */}
-      <div className="mb-3 flex rounded-md border border-border overflow-hidden">
+      <div className="mb-3 flex overflow-hidden rounded-md border border-border">
         <button
           type="button"
           onClick={() => setActiveTab("codex")}
@@ -259,14 +262,6 @@ export function PinCodexDialog({
           onUnpin={onUnpin}
         />
       )}
-
-      <button
-        type="button"
-        onClick={onClose}
-        className="mt-3 w-full rounded-md bg-primary px-3 py-1.5 text-xs text-primary-foreground hover:bg-primary/90"
-      >
-        {t("common.close")}
-      </button>
-    </AnimatedOverlay>
+    </AnimatedPopover>
   );
 }

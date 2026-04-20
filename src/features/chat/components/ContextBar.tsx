@@ -40,6 +40,7 @@ import { getChildrenFromArray } from "@/features/codex/childrenBudget";
 import { CodexEntryPopoverContent } from "@/features/codex/components/CodexEntryPopoverContent";
 import { useLayoutStore } from "@/features/layout/layoutStore";
 import { useCodexStore } from "@/features/codex/codexStore";
+import { PinCodexDialog } from "./PinCodexDialog";
 
 const GROUP_THRESHOLD = 6;
 const TYPE_ORDER = ["character", "location", "item", "lore"];
@@ -68,7 +69,10 @@ interface ContextBarProps {
   /** via表示の子エントリを一時的に非表示にする */
   onDismissViaChild?: (childId: string) => void;
   dismissedViaChildIds?: Set<string>;
-  onOpenPinDialog: () => void;
+  pinnedSnippetIds: Set<string>;
+  onPinEntry: (entryId: string, type?: "codex" | "snippet") => void;
+  onUnpinEntry: (entryId: string) => void;
+  onTogglePinChildren: (entryId: string, withChildren: boolean) => void;
   contextTokenCount: number;
   contextLayers: LayerBreakdown[];
   systemPrompt: string;
@@ -88,7 +92,10 @@ export function ContextBar({
   onPin,
   onDismissViaChild,
   dismissedViaChildIds,
-  onOpenPinDialog,
+  pinnedSnippetIds,
+  onPinEntry,
+  onUnpinEntry,
+  onTogglePinChildren,
   contextTokenCount,
   contextLayers,
   systemPrompt,
@@ -101,6 +108,8 @@ export function ContextBar({
   const [collapsed, setCollapsed] = useState(false);
   const [previewOpen, setPreviewOpen] = useState(false);
   const [creatorOpen, setCreatorOpen] = useState(false);
+  const [pinOpen, setPinOpen] = useState(false);
+  const pinContainerRef = useRef<HTMLDivElement>(null);
   const typeColorMap = useCodexHighlightStore((s) => s.typeColorMap);
   const allCodexEntries = useCodexStore((s) => s.entries);
 
@@ -507,15 +516,34 @@ export function ContextBar({
             </div>
             {/* ピン留め・AIボタン（右端固定） */}
             <div className="ml-1 flex shrink-0 items-center gap-1 py-0.5">
-              <button
-                type="button"
-                onClick={onOpenPinDialog}
-                className="inline-flex items-center gap-1 rounded-md border border-dashed border-border px-2 py-0.5 text-xs text-muted-foreground hover:bg-accent"
-                aria-label={t("chat.context.pinCodexSnippet")}
-              >
-                <BookOpen className="h-3 w-3" />
-                {t("chat.context.pin")}
-              </button>
+              <div ref={pinContainerRef} className="relative">
+                <button
+                  type="button"
+                  onClick={() => setPinOpen((v) => !v)}
+                  className="inline-flex items-center gap-1 rounded-md border border-dashed border-border px-2 py-0.5 text-xs text-muted-foreground hover:bg-accent"
+                  aria-label={t("chat.context.pinCodexSnippet")}
+                >
+                  <BookOpen className="h-3 w-3" />
+                  {t("chat.context.pin")}
+                </button>
+                <PinCodexDialog
+                  open={pinOpen}
+                  containerRef={pinContainerRef}
+                  pinnedIds={new Set(pinnedEntries.map((e) => e.id))}
+                  withChildrenIds={
+                    new Set(
+                      pinnedEntries
+                        .filter((e) => e.withChildren)
+                        .map((e) => e.id),
+                    )
+                  }
+                  pinnedSnippetIds={pinnedSnippetIds}
+                  onPin={onPinEntry}
+                  onUnpin={onUnpinEntry}
+                  onToggleChildren={onTogglePinChildren}
+                  onClose={() => setPinOpen(false)}
+                />
+              </div>
               <ContextCreatorButton
                 onClick={() => setCreatorOpen(true)}
                 disabled={!canUseCreator}
