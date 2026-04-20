@@ -114,18 +114,27 @@ chat_messages (1)
 
 ```sql
 CREATE TABLE projects (
-  id              TEXT PRIMARY KEY,
-  title           TEXT NOT NULL DEFAULT 'Untitled Project',
-  genre           TEXT,                    -- 'Fantasy'|'Sci-Fi'|'Mystery'|... or custom
-  pov             TEXT,                    -- 'First person'|'Third person limited'|...
-  tense           TEXT,                    -- 'Past tense'|'Present tense'
-  language        TEXT DEFAULT 'ja',       -- 作品の執筆言語
-  style_guide     TEXT,                    -- 文体ガイド（最大2,000文字）
-  ai_instructions TEXT,                    -- グローバルAI指示（最大4,000文字）
-  created_at      TEXT NOT NULL DEFAULT (datetime('now')),
-  updated_at      TEXT NOT NULL DEFAULT (datetime('now'))
+  id                    TEXT PRIMARY KEY,
+  title                 TEXT NOT NULL DEFAULT 'Untitled Project',
+  genre                 TEXT,                    -- 'Fantasy'|'Sci-Fi'|'Mystery'|... or custom
+  pov                   TEXT,                    -- 'First person'|'Third person limited'|...
+  tense                 TEXT,                    -- 'Past tense'|'Present tense'
+  language              TEXT DEFAULT 'ja',       -- 作品の執筆言語
+  style_guide           TEXT,                    -- 文体ガイド（最大2,000文字）
+  ai_instructions       TEXT,                    -- グローバルAI指示（最大4,000文字）
+  phase_resolution_mode TEXT NOT NULL DEFAULT 'reading'
+    CHECK(phase_resolution_mode IN ('auto', 'reading', 'story')),
+                                                 -- Phase解決に使う時間軸。'auto'=story_time_orderがあれば作中時間、なければ読者順 / 'reading'=常に読者順 / 'story'=作中時間（未設定Sceneは直前の値を継承）
+  created_at            TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at            TEXT NOT NULL DEFAULT (datetime('now'))
 );
 ```
+
+**`phase_resolution_mode` のデフォルト方針**:
+- **SQLデフォルト = `'reading'`**: 既存プロジェクトを再オープンした際に従来の挙動（読者順）が保たれるよう、後方互換を優先。マイグレーション適用時はすべての既存プロジェクトがこの値になる。
+- **アプリ層デフォルト = `'auto'`**: 新規プロジェクト作成時は `'auto'` を明示的に書き込む。作中時間を設定した瞬間から自動で story-time 解決に切り替わる、最もユーザーの直感に近い挙動。
+- **write-order は選択肢に含めない**: 執筆順（`created_at`順）は Phase 解決の軸として意味を持たない（後から書き足したシーンが過去のPhaseを書き換えてしまう）。`'reading'` / `'story'` の二択のみを軸として提供し、`'auto'` はその切り替えポリシー。
+- 詳細は [Timeline パネル設計書](./Grimodex_Timelineパネル設計書.md) および [Codex パネル設計書](./Grimodex_Codexパネル設計書.md) の Phase 解決アルゴリズム節を参照。
 
 ### tree_nodes
 
@@ -133,23 +142,35 @@ Folder/Scene/Noteの統一ツリー。Fractional Indexing（sort_order REAL）�
 
 ```sql
 CREATE TABLE tree_nodes (
-  id          TEXT PRIMARY KEY,
-  project_id  TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-  parent_id   TEXT REFERENCES tree_nodes(id) ON DELETE SET NULL,  -- NULL = Project直下
-  node_type   TEXT NOT NULL,        -- 'folder'|'scene'|'note'
-  title       TEXT NOT NULL DEFAULT 'Untitled',
-  synopsis    TEXT,                  -- Sceneのみ: シーン要約（プレーンテキスト）。storySoFarコンテキスト注入に使用
-  sort_order  REAL NOT NULL,        -- Fractional Indexing
-  status      TEXT DEFAULT 'outline', -- Sceneのみ: 'outline'|'draft'|'complete'|'revision'|'final'
-  content     TEXT NOT NULL DEFAULT '{}',  -- Scene/Note本文（ProseMirror JSON）
-  created_at  TEXT NOT NULL DEFAULT (datetime('now')),
-  updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
+  id                TEXT PRIMARY KEY,
+  project_id        TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  parent_id         TEXT REFERENCES tree_nodes(id) ON DELETE SET NULL,  -- NULL = Project直下
+  node_type         TEXT NOT NULL,        -- 'folder'|'scene'|'note'
+  title             TEXT NOT NULL DEFAULT 'Untitled',
+  synopsis          TEXT,                  -- Sceneのみ: シーン要約（プレーンテキスト）。storySoFarコンテキスト注入に使用
+  sort_order        REAL NOT NULL,        -- Fractional Indexing（reading-order = ツリーDFS順）
+  status            TEXT DEFAULT 'outline', -- Sceneのみ: 'outline'|'draft'|'complete'|'revision'|'final'
+  content           TEXT NOT NULL DEFAULT '{}',  -- Scene/Note本文（ProseMirror JSON）
+  story_time_order  INTEGER,               -- Sceneのみ: 作中時間の順序比較用整数（大小関係のみ意味を持つ）。NULL = 未設定
+  story_time_label  TEXT,                   -- Sceneのみ: 表示用ラベル（例: '帝国暦1024年3月', 'Day 3 morning'）。NULL = 未設定
+  created_at        TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at        TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
 CREATE INDEX idx_tree_parent ON tree_nodes(project_id, parent_id, sort_order);
+CREATE INDEX idx_tree_story_time ON tree_nodes(project_id, story_time_order)
+  WHERE story_time_order IS NOT NULL;
 ```
 
 Scene/Noteの本文は `content` カラムに直接格納する。
+
+**時間軸カラムの設計意図**:
+- `sort_order` は**reading-order（読者順）**を表現する。Fractional Indexing（REAL）で D&D 挿入時の再ソートを回避
+- `story_time_order` は**story-time（作中時間）**を表現する。整数で大小比較のみ行う。架空世界の暦・相対時間・SFの年号など柔軟に扱える
+- `story_time_label` は表示用で `story_time_order` から独立。同じ order でもラベルだけ自由に変更できるし、label だけ先に決めて order は後で設定する運用も可能
+- Folder/Note ノードでは `story_time_order` / `story_time_label` は未使用（Timeline パネルが葉 Scene のみ扱う）
+- `write-order（執筆順）`は `created_at` で表現される（専用カラムは不要）
+- 詳細は Timeline パネル設計書（`Grimodex_Timelineパネル設計書.md`）と Codex パネル設計書のフェーズシステム節を参照
 
 ### codex_types
 
@@ -858,3 +879,31 @@ v1〜v7のインクリメンタルマイグレーションを全て統合し、�
 - `codex_phase_detail_overrides`: サロゲートキー `id` 削除、複合PK `(phase_id, definition_id)` に変更
 - `authorship_spans.detail_value_id`: 設計書記載だが未実装だったカラムをスキーマに追加（エディタ連携は別タスク）
 - 全テーブルの ON DELETE アクション（CASCADE/SET NULL）を明示化
+
+---
+
+## Timelineパネル導入に伴う追加（2026-04-21）
+
+Timelineパネル設計書の策定に伴い、Phase解決で使う時間軸を「読者順」と「作中時間」に分離。既存スキーマに以下を追加。
+
+### 追加カラム / インデックス
+
+| テーブル | カラム | 型 | 用途 |
+|---------|-------|----|----|
+| `projects` | `phase_resolution_mode` | `TEXT NOT NULL DEFAULT 'reading' CHECK(... IN ('auto','reading','story'))` | Phase解決の軸を決めるプロジェクト単位の設定 |
+| `tree_nodes` | `story_time_order` | `INTEGER` | Scene の作中時間順序（比較専用整数、NULL=未設定） |
+| `tree_nodes` | `story_time_label` | `TEXT` | Scene の作中時間表示用ラベル（順序とは独立） |
+| `tree_nodes` | `idx_tree_story_time` | 部分インデックス | `(project_id, story_time_order) WHERE story_time_order IS NOT NULL` |
+
+### 設計上の不変条件
+
+- **Phase の anchor は `scene_id` のまま**。時間軸の違いは「同じアンカーを異なる順序で並べ替える」ことで表現する。アンカー自体の意味は変えない。
+- **write-order（`created_at`順）は Phase 解決に一切使わない**。後から書いたシーンが過去の Phase を書き換える挙動は意図と合わないため、明示的に禁止。
+- **`story_time_order` は整数比較のみ**。年月日・暦・相対時刻などはアプリ層が `story_time_label` にマッピング。DBは順序関係のみを保証する。
+- **`story_time_order` が NULL のシーン**は、`resolveCodexState` 側で「直前の story_time_order を継承」または「reading-order にフォールバック」する（モードにより挙動が異なる）。詳細は Codex パネル設計書を参照。
+
+### マイグレーション方針
+
+- SQLデフォルト `'reading'` により既存プロジェクトは従来通り読者順で解決される（後方互換）。
+- 新規プロジェクト作成時のアプリ層デフォルトは `'auto'` とし、作中時間を入力した瞬間から自動で story-time 解決に切り替わるようにする。
+- `story_time_order` / `story_time_label` は NULL 許容で追加するのみ。既存シーンへの一括設定は不要。
