@@ -22,7 +22,7 @@ import { sortEntries, CODEX_SORT_OPTIONS } from "@/features/codex/codexSort";
 import { TagFilterBar } from "@/features/codex/components/TagFilterBar";
 
 const DIALOG_CODEX_SORT_OPTIONS = CODEX_SORT_OPTIONS.filter(
-  (o) => o.value !== "category" && o.value !== "most-referenced",
+  (o) => o.value !== "most-referenced",
 );
 
 const SNIPPET_SOURCE_OPTIONS: { value: SnippetSourceFilter; key: string }[] = [
@@ -191,8 +191,6 @@ export function PinCodexDialog({
   const [codexSelectedTags, setCodexSelectedTags] = useState<Set<string>>(
     new Set(),
   );
-  const [codexSortOrder, setCodexSortOrder] =
-    useState<CodexSortOrder>("name-asc");
 
   // Snippet filter state
   const [snippetSearch, setSnippetSearch] = useState("");
@@ -203,6 +201,8 @@ export function PinCodexDialog({
 
   const entries = useCodexStore((s) => s.entries);
   const loadEntries = useCodexStore((s) => s.loadEntries);
+  const codexSortOrder = useCodexStore((s) => s.sortOrder);
+  const setCodexSortOrder = useCodexStore((s) => s.setSort);
   const snippetEntries = useSnippetStore((s) => s.entries);
   const loadSnippets = useSnippetStore((s) => s.loadEntries);
 
@@ -241,6 +241,12 @@ export function PinCodexDialog({
       filtered = filtered.filter((e) => {
         const tags = parseTags(e.tagsCache).map((tag) => tag.name);
         return [...codexSelectedTags].some((tag) => tags.includes(tag));
+      });
+    }
+    if (codexSortOrder === "category") {
+      return [...filtered].sort((a, b) => {
+        if (a.type !== b.type) return a.type.localeCompare(b.type);
+        return a.name.localeCompare(b.name, "ja");
       });
     }
     return sortEntries(filtered, codexSortOrder);
