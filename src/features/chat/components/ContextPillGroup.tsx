@@ -144,7 +144,7 @@ export function ContextPillGroup({
         type="button"
         onClick={handleToggle}
         aria-label={t("chat.context.group", { label })}
-        className="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs bg-accent"
+        className="inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded-full px-2 py-0.5 text-xs bg-accent"
         style={pillStyle}
       >
         <span>{label}</span>
@@ -160,6 +160,7 @@ export function ContextPillGroup({
         createPortal(
           <div
             ref={dropdownRef}
+            data-testid="group-popup"
             className="fixed z-[100] w-52 rounded-md border border-border bg-popover py-1 shadow-md"
             style={{ top: dropdownPos.top, left: dropdownPos.left }}
           >

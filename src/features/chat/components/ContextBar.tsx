@@ -3,6 +3,7 @@ import {
   useRef,
   useCallback,
   useEffect,
+  useLayoutEffect,
   type MouseEvent,
 } from "react";
 import { motion, AnimatePresence } from "motion/react";
@@ -42,8 +43,8 @@ import { useLayoutStore } from "@/features/layout/layoutStore";
 import { useCodexStore } from "@/features/codex/codexStore";
 import { PinCodexDialog } from "./PinCodexDialog";
 
-const GROUP_THRESHOLD = 6;
 const TYPE_ORDER = ["character", "location", "item", "lore"];
+const GROUP_THRESHOLD = 6; // DOM未マウント / テスト環境用フォールバック
 
 type ViaChild = {
   child: CodexEntry;
@@ -168,14 +169,47 @@ export function ContextBar({
     useCodexStore.getState().requestSelectEntry(entryId);
   }
 
-  const allContextEntries = [
-    ...pinnedEntries,
-    ...detectedEntries,
-    ...alwaysEntries,
-    ...viaChildren.map((vc) => vc.child),
-  ];
-  const useGrouping =
-    allContextEntries.length + pinnedSnippets.length > GROUP_THRESHOLD;
+  // 幅ベースのグルーピング判定
+  const pillsColumnRef = useRef<HTMLDivElement>(null);
+  const measureRef = useRef<HTMLDivElement>(null);
+  const [useGrouping, setUseGrouping] = useState(false);
+
+  const totalPillCount =
+    pinnedEntries.length +
+    detectedEntries.length +
+    alwaysEntries.length +
+    viaChildren.length +
+    pinnedSnippets.length;
+
+  const checkGrouping = useCallback(() => {
+    const col = pillsColumnRef.current;
+    const measure = measureRef.current;
+    if (!col || !measure || col.clientWidth === 0) {
+      // DOM未マウント / テスト環境: カウント閾値にフォールバック
+      setUseGrouping((prev) => {
+        const next = totalPillCount > GROUP_THRESHOLD;
+        return prev === next ? prev : next;
+      });
+      return;
+    }
+    // offsetWidth は max-content 幅で確実に計測できる（scrollWidth は overflow:visible で不安定）
+    const overflows = measure.offsetWidth > col.clientWidth;
+    setUseGrouping((prev) => (prev === overflows ? prev : overflows));
+  }, [totalPillCount]);
+
+  // レンダー後に毎回チェック（exit アニメーション中の要素も含めた幅を正確に測定）
+  useLayoutEffect(() => {
+    checkGrouping();
+  });
+
+  // パネル幅変化にも追従
+  useEffect(() => {
+    const el = pillsColumnRef.current;
+    if (!el) return;
+    const ro = new ResizeObserver(checkGrouping);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [checkGrouping]);
 
   // type別グループマップ（pinned + via + auto を統合、pinned が先頭）
   type MergedGroup = {
@@ -279,82 +313,153 @@ export function ContextBar({
         {/* ピル行 */}
         {!collapsed && (
           <div className="flex items-start px-4 pb-1.5">
-            {/* エントリピル（折り返し可） */}
-            <div className="flex min-w-0 flex-1 flex-wrap items-center gap-1">
-              {/* L1: Project (常に存在するなら表示) */}
-              {contextLayers.find((l) => l.layer === "L1" && l.used > 0) && (
-                <span
-                  className="rounded bg-muted px-1.5 py-0.5 text-xs text-muted-foreground"
-                  title={t("chat.context.projectInfo")}
-                >
-                  Project
-                </span>
-              )}
-              {/* L3: Scene + トークン数 */}
-              {sceneTokens > 0 && (
-                <span
-                  className="rounded bg-muted px-1.5 py-0.5 text-xs text-muted-foreground"
-                  title={t("chat.context.sceneTokens", {
-                    count: sceneTokens.toLocaleString(),
-                  })}
-                >
-                  Scene: {sceneTokens.toLocaleString()}
-                </span>
-              )}
-              {/* Codex エントリ: グループ時は pinned + via + auto を統合 */}
-              <AnimatePresence>
-                {useGrouping
-                  ? Array.from(groupMap.entries())
-                      .sort(([a], [b]) => {
-                        const oa = TYPE_ORDER.indexOf(a);
-                        const ob = TYPE_ORDER.indexOf(b);
-                        return (
-                          (oa === -1 ? TYPE_ORDER.length : oa) -
-                          (ob === -1 ? TYPE_ORDER.length : ob)
-                        );
-                      })
-                      .map(([type, group], i) => (
-                        <motion.div
-                          key={type}
-                          style={{ display: "inline-flex" }}
-                          initial={{ opacity: 0, scale: 0.85 }}
-                          animate={{ opacity: 1, scale: 1 }}
-                          exit={{ opacity: 0, scale: 0.85 }}
-                          transition={
-                            reduced
-                              ? { duration: 0 }
-                              : {
-                                  duration: DURATIONS.fast,
-                                  ease: EASINGS.easeOut,
-                                  delay: i * 0.03,
-                                }
-                          }
-                        >
-                          <ContextPillGroup
-                            type={type}
-                            label={getTypeLabel(type)}
-                            pinnedEntries={group.pinned}
-                            autoEntries={group.auto}
-                            viaEntries={group.via.map((vc) => ({
-                              child: vc.child,
-                              parentName: vc.viaParentName,
-                            }))}
-                            onReturnToAuto={onReturnToAuto}
-                            onRemove={onRemove}
-                            onRemoveAuto={onRemoveAuto}
-                            onPin={onPin}
-                            onDismissVia={onDismissViaChild}
-                            resolvedColor={typeColorMap[type]}
-                          />
-                        </motion.div>
-                      ))
-                  : pinnedEntries.map((entry, i) => {
+            {/* エントリピル: 外側は幅測定の基準のみ。内側コンテナで overflow-hidden + flex-nowrap */}
+            <div ref={pillsColumnRef} className="relative min-w-0 flex-1">
+              {/* 幅計測用: フラットモードの全ピルを非表示で描画して scrollWidth を測定 */}
+              {/* width: max-content で shrink-to-fit 制約を外し、offsetWidth = 全ピルの自然幅 にする */}
+              <div
+                ref={measureRef}
+                style={{ width: "max-content" }}
+                className="pointer-events-none invisible absolute left-0 top-0 flex flex-nowrap items-center gap-1 text-xs"
+                aria-hidden="true"
+              >
+                {contextLayers.find((l) => l.layer === "L1" && l.used > 0) && (
+                  <span className="px-1.5 py-0.5">Project</span>
+                )}
+                {sceneTokens > 0 && (
+                  <span className="px-1.5 py-0.5">
+                    Scene: {sceneTokens.toLocaleString()}
+                  </span>
+                )}
+                {pinnedEntries.map((e) => (
+                  <span
+                    key={e.id}
+                    className="inline-flex items-center gap-1 px-2 py-0.5"
+                  >
+                    {e.name}
+                    {e.pinSource === "manual" && (
+                      <span className="inline-block h-3 w-3" />
+                    )}
+                    <span className="inline-block h-3 w-3" />
+                  </span>
+                ))}
+                {viaChildren.map(({ child, viaParentName }) => (
+                  <span
+                    key={child.id}
+                    className="inline-flex items-center gap-1 px-2 py-0.5"
+                  >
+                    {child.name}
+                    <span>via {viaParentName}</span>
+                    <span className="inline-block h-3 w-3" />
+                    <span className="inline-block h-3 w-3" />
+                  </span>
+                ))}
+                {[...detectedEntries, ...alwaysEntries].map((e) => (
+                  <span
+                    key={e.id}
+                    className="inline-flex items-center gap-1 px-2 py-0.5"
+                  >
+                    {e.name}
+                    <span>auto</span>
+                    <span className="inline-block h-3 w-3" />
+                    <span className="inline-block h-3 w-3" />
+                  </span>
+                ))}
+                {pinnedSnippets.map((s) => (
+                  <span
+                    key={s.id}
+                    className="inline-flex items-center gap-1 px-2 py-0.5"
+                  >
+                    {s.title}
+                    <span className="inline-block h-3 w-3" />
+                  </span>
+                ))}
+              </div>
+              {/* 表示領域: flex-nowrap + 水平スクロール（スクロールバーは no-scrollbar で非表示） */}
+              {/* whitespace-nowrap がピル側に付いているので height は膨張しない */}
+              <div
+                data-testid="pills-visible"
+                className="no-scrollbar flex flex-nowrap items-center gap-1 overflow-x-auto overflow-y-hidden"
+              >
+                {/* L1: Project (常に存在するなら表示) */}
+                {contextLayers.find((l) => l.layer === "L1" && l.used > 0) && (
+                  <span
+                    className="shrink-0 whitespace-nowrap rounded bg-muted px-1.5 py-0.5 text-xs text-muted-foreground"
+                    title={t("chat.context.projectInfo")}
+                  >
+                    Project
+                  </span>
+                )}
+                {/* L3: Scene + トークン数 */}
+                {sceneTokens > 0 && (
+                  <span
+                    className="shrink-0 whitespace-nowrap rounded bg-muted px-1.5 py-0.5 text-xs text-muted-foreground"
+                    title={t("chat.context.sceneTokens", {
+                      count: sceneTokens.toLocaleString(),
+                    })}
+                  >
+                    Scene: {sceneTokens.toLocaleString()}
+                  </span>
+                )}
+                {/* グループモード: AnimatePresence なし → モード切り替え時に即 DOM 削除 */}
+                {/* exit アニメーション要素が溜まらないので height が膨張しない */}
+                {useGrouping &&
+                  Array.from(groupMap.entries())
+                    .sort(([a], [b]) => {
+                      const oa = TYPE_ORDER.indexOf(a);
+                      const ob = TYPE_ORDER.indexOf(b);
+                      return (
+                        (oa === -1 ? TYPE_ORDER.length : oa) -
+                        (ob === -1 ? TYPE_ORDER.length : ob)
+                      );
+                    })
+                    .map(([type, group], i) => (
+                      <motion.div
+                        key={type}
+                        className="shrink-0"
+                        style={{ display: "inline-flex" }}
+                        initial={{ opacity: 0, scale: 0.85 }}
+                        animate={{ opacity: 1, scale: 1 }}
+                        transition={
+                          reduced
+                            ? { duration: 0 }
+                            : {
+                                duration: DURATIONS.fast,
+                                ease: EASINGS.easeOut,
+                                delay: i * 0.03,
+                              }
+                        }
+                      >
+                        <ContextPillGroup
+                          type={type}
+                          label={getTypeLabel(type)}
+                          pinnedEntries={group.pinned}
+                          autoEntries={group.auto}
+                          viaEntries={group.via.map((vc) => ({
+                            child: vc.child,
+                            parentName: vc.viaParentName,
+                          }))}
+                          onReturnToAuto={onReturnToAuto}
+                          onRemove={onRemove}
+                          onRemoveAuto={onRemoveAuto}
+                          onPin={onPin}
+                          onDismissVia={onDismissViaChild}
+                          resolvedColor={typeColorMap[type]}
+                        />
+                      </motion.div>
+                    ))}
+                {/* 個別モード: AnimatePresence はピン追加/削除アニメーション専用 */}
+                {/* !useGrouping が false になった瞬間この AnimatePresence ごと消えるので */}
+                {/* exit アニメーション要素は DOM に残らない */}
+                {!useGrouping && (
+                  <AnimatePresence>
+                    {pinnedEntries.map((entry, i) => {
                       const rc = typeColorMap[entry.type];
                       const isManual = entry.pinSource === "manual";
                       return (
                         <motion.span
                           key={entry.id}
-                          className="inline-flex items-center gap-1 rounded-full bg-accent px-2 py-0.5 text-xs"
+                          className="inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded-full bg-accent px-2 py-0.5 text-xs"
                           initial={{ opacity: 0, scale: 0.85 }}
                           animate={{ opacity: 1, scale: 1 }}
                           exit={{ opacity: 0, scale: 0.85 }}
@@ -401,118 +506,123 @@ export function ContextBar({
                         </motion.span>
                       );
                     })}
-              </AnimatePresence>
-              {/* via子エントリ（非グループ時）: 通常ピルと同スタイル + via表示 */}
-              {!useGrouping &&
-                viaChildren.map(({ child, viaParentId, viaParentName }) => {
-                  const rc = typeColorMap[child.type];
-                  return (
-                    <span
-                      key={`via-${viaParentId}-${child.id}`}
-                      className="inline-flex items-center gap-1 rounded-full bg-accent px-2 py-0.5 text-xs"
-                      style={
-                        rc
-                          ? { backgroundColor: rc.hl, color: rc.fg }
-                          : undefined
-                      }
-                      onMouseEnter={(e) => handleEntryMouseEnter(child, e)}
-                      onMouseLeave={handleEntryMouseLeave}
-                    >
-                      {child.name}
-                      <span className="text-muted-foreground/70">
-                        via {viaParentName}
-                      </span>
-                      <button
-                        type="button"
-                        onClick={() => onPin(child.id)}
-                        className="hover:text-foreground text-muted-foreground/70"
-                        aria-label={t("chat.context.pinEntry", {
-                          name: child.name,
-                        })}
+                  </AnimatePresence>
+                )}
+                {/* via子エントリ（非グループ時）: 通常ピルと同スタイル + via表示 */}
+                {!useGrouping &&
+                  viaChildren.map(({ child, viaParentId, viaParentName }) => {
+                    const rc = typeColorMap[child.type];
+                    return (
+                      <span
+                        key={`via-${viaParentId}-${child.id}`}
+                        className="inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded-full bg-accent px-2 py-0.5 text-xs"
+                        style={
+                          rc
+                            ? { backgroundColor: rc.hl, color: rc.fg }
+                            : undefined
+                        }
+                        onMouseEnter={(e) => handleEntryMouseEnter(child, e)}
+                        onMouseLeave={handleEntryMouseLeave}
                       >
-                        <Pin className="h-3 w-3" />
-                      </button>
-                      {onDismissViaChild && (
+                        {child.name}
+                        <span className="text-muted-foreground/70">
+                          via {viaParentName}
+                        </span>
                         <button
                           type="button"
-                          onClick={() => onDismissViaChild(child.id)}
-                          className="hover:text-destructive"
-                          aria-label={t("chat.context.unpinEntry", {
+                          onClick={() => onPin(child.id)}
+                          className="hover:text-foreground text-muted-foreground/70"
+                          aria-label={t("chat.context.pinEntry", {
                             name: child.name,
+                          })}
+                        >
+                          <Pin className="h-3 w-3" />
+                        </button>
+                        {onDismissViaChild && (
+                          <button
+                            type="button"
+                            onClick={() => onDismissViaChild(child.id)}
+                            className="hover:text-destructive"
+                            aria-label={t("chat.context.unpinEntry", {
+                              name: child.name,
+                            })}
+                          >
+                            <X className="h-3 w-3" />
+                          </button>
+                        )}
+                      </span>
+                    );
+                  })}
+                {/* G15: auto entries (非グループ時のみ個別表示) */}
+                {!useGrouping &&
+                  [...detectedEntries, ...alwaysEntries].map((entry) => {
+                    const rc = typeColorMap[entry.type];
+                    const isDetected = detectedEntries.includes(entry);
+                    return (
+                      <span
+                        key={entry.id}
+                        data-testid={
+                          isDetected ? "detected-pill" : "always-pill"
+                        }
+                        className="inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded-full bg-accent/50 px-2 py-0.5 text-xs"
+                        style={
+                          rc
+                            ? {
+                                backgroundColor: rc.hl,
+                                color: rc.fg,
+                                opacity: 0.75,
+                              }
+                            : undefined
+                        }
+                        onMouseEnter={(e) => handleEntryMouseEnter(entry, e)}
+                        onMouseLeave={handleEntryMouseLeave}
+                      >
+                        {entry.name}
+                        <span className="text-muted-foreground/70">auto</span>
+                        <button
+                          type="button"
+                          onClick={() => onPin(entry.id)}
+                          className="hover:text-foreground text-muted-foreground/70"
+                          aria-label={t("chat.context.pinEntry", {
+                            name: entry.name,
+                          })}
+                        >
+                          <Pin className="h-3 w-3" />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => onRemoveAuto(entry.id)}
+                          className="hover:text-destructive text-muted-foreground/70"
+                          aria-label={t("chat.context.unpinEntry", {
+                            name: entry.name,
                           })}
                         >
                           <X className="h-3 w-3" />
                         </button>
-                      )}
-                    </span>
-                  );
-                })}
-              {/* G15: auto entries (非グループ時のみ個別表示) */}
-              {!useGrouping &&
-                [...detectedEntries, ...alwaysEntries].map((entry) => {
-                  const rc = typeColorMap[entry.type];
-                  const isDetected = detectedEntries.includes(entry);
-                  return (
-                    <span
-                      key={entry.id}
-                      data-testid={isDetected ? "detected-pill" : "always-pill"}
-                      className="inline-flex items-center gap-1 rounded-full bg-accent/50 px-2 py-0.5 text-xs"
-                      style={
-                        rc
-                          ? {
-                              backgroundColor: rc.hl,
-                              color: rc.fg,
-                              opacity: 0.75,
-                            }
-                          : undefined
-                      }
-                      onMouseEnter={(e) => handleEntryMouseEnter(entry, e)}
-                      onMouseLeave={handleEntryMouseLeave}
-                    >
-                      {entry.name}
-                      <span className="text-muted-foreground/70">auto</span>
-                      <button
-                        type="button"
-                        onClick={() => onPin(entry.id)}
-                        className="hover:text-foreground text-muted-foreground/70"
-                        aria-label={t("chat.context.pinEntry", {
-                          name: entry.name,
-                        })}
-                      >
-                        <Pin className="h-3 w-3" />
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => onRemoveAuto(entry.id)}
-                        className="hover:text-destructive text-muted-foreground/70"
-                        aria-label={t("chat.context.unpinEntry", {
-                          name: entry.name,
-                        })}
-                      >
-                        <X className="h-3 w-3" />
-                      </button>
-                    </span>
-                  );
-                })}
-              {/* G16: ピン留め Snippet エントリ */}
-              {pinnedSnippets.map((snippet) => (
-                <span
-                  key={snippet.id}
-                  className="inline-flex items-center gap-1 rounded-full bg-purple-100 px-2 py-0.5 text-xs text-purple-800"
-                >
-                  {snippet.title}
-                  <button
-                    type="button"
-                    onClick={() => onRemove(snippet.id)}
-                    className="hover:text-destructive"
-                    aria-label={t("chat.context.unpinEntry", {
-                      name: snippet.title,
-                    })}
+                      </span>
+                    );
+                  })}
+                {/* G16: ピン留め Snippet エントリ */}
+                {pinnedSnippets.map((snippet) => (
+                  <span
+                    key={snippet.id}
+                    className="inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded-full bg-purple-100 px-2 py-0.5 text-xs text-purple-800"
                   >
-                    <X className="h-3 w-3" />
-                  </button>
-                </span>
-              ))}
+                    {snippet.title}
+                    <button
+                      type="button"
+                      onClick={() => onRemove(snippet.id)}
+                      className="hover:text-destructive"
+                      aria-label={t("chat.context.unpinEntry", {
+                        name: snippet.title,
+                      })}
+                    >
+                      <X className="h-3 w-3" />
+                    </button>
+                  </span>
+                ))}
+              </div>
+              {/* /pills-visible */}
             </div>
             {/* ピン留め・AIボタン（右端固定） */}
             <div className="ml-1 flex shrink-0 items-center gap-1 py-0.5">
