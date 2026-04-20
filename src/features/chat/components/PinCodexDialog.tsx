@@ -1,15 +1,15 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { AnimatedPopover } from "@/components/ui/animated-popover";
 import { useTranslation } from "react-i18next";
-import { useVirtualizer } from "@tanstack/react-virtual";
 import { useCodexStore } from "@/features/codex/codexStore";
 import { useSnippetStore } from "@/features/snippets/snippetStore";
 import { getChildrenFromArray } from "@/features/codex/childrenBudget";
 import type { CodexEntry } from "@/features/codex/api";
 import type { Snippet } from "@/features/snippets/api";
-import { getTypeLabel } from "../utils/typeLabels";
+import { EntryCardBody } from "@/features/codex/components/EntryCard";
+import { SnippetCardBody } from "@/features/snippets/components/SnippetCardBody";
 
-function PinCodexVirtualList({
+function PinCodexList({
   entries,
   pinnedIds,
   withChildrenIds,
@@ -25,79 +25,48 @@ function PinCodexVirtualList({
   onToggleChildren: (id: string, withChildren: boolean) => void;
 }) {
   const { t } = useTranslation();
-  const parentRef = useRef<HTMLDivElement>(null);
-  const virtualizer = useVirtualizer({
-    count: entries.length,
-    getScrollElement: () => parentRef.current,
-    estimateSize: () => 48,
-    overscan: 5,
-  });
 
   return (
-    <div ref={parentRef} className="max-h-72 overflow-y-auto">
-      <div
-        style={{
-          height: `${virtualizer.getTotalSize()}px`,
-          width: "100%",
-          position: "relative",
-        }}
-      >
-        {virtualizer.getVirtualItems().map((virtualItem) => {
-          const entry = entries[virtualItem.index];
-          const isPinned = pinnedIds.has(entry.id);
-          const hasChildren =
-            getChildrenFromArray(entry.id, entries).length > 0;
-          const isWithChildren = withChildrenIds.has(entry.id);
+    <div className="max-h-72 overflow-y-auto">
+      {entries.map((entry) => {
+        const isPinned = pinnedIds.has(entry.id);
+        const hasChildren = getChildrenFromArray(entry.id, entries).length > 0;
+        const isWithChildren = withChildrenIds.has(entry.id);
 
-          return (
-            <div
-              key={entry.id}
-              style={{
-                position: "absolute",
-                top: 0,
-                left: 0,
-                width: "100%",
-                height: `${virtualItem.size}px`,
-                transform: `translateY(${virtualItem.start}px)`,
-              }}
-              className="flex flex-col justify-center rounded px-2 hover:bg-accent"
-            >
-              <label className="flex cursor-pointer items-center gap-2 text-sm">
+        return (
+          <div key={entry.id} className="border-b border-border last:border-0">
+            <label className="flex cursor-pointer items-start gap-2 rounded px-2 py-1.5 hover:bg-accent">
+              <input
+                type="checkbox"
+                checked={isPinned}
+                onChange={() =>
+                  isPinned ? onUnpin(entry.id) : onPin(entry.id)
+                }
+                className="mt-1 shrink-0 rounded"
+              />
+              <div className="min-w-0 flex-1">
+                <EntryCardBody entry={entry} />
+              </div>
+            </label>
+            {isPinned && hasChildren && (
+              <label className="ml-8 flex cursor-pointer items-center gap-1.5 px-2 pb-1.5 text-xs text-muted-foreground">
                 <input
                   type="checkbox"
-                  checked={isPinned}
-                  onChange={() =>
-                    isPinned ? onUnpin(entry.id) : onPin(entry.id)
-                  }
+                  checked={isWithChildren}
+                  onChange={(e) => onToggleChildren(entry.id, e.target.checked)}
                   className="rounded"
                 />
-                <span>{entry.name}</span>
-                <span className="ml-auto text-xs text-muted-foreground">
-                  {getTypeLabel(entry.type)}
-                </span>
+                {t("chat.context.includeChildren")}
               </label>
-              {isPinned && hasChildren && (
-                <label className="ml-5 flex cursor-pointer items-center gap-1.5 text-xs text-muted-foreground">
-                  <input
-                    type="checkbox"
-                    checked={isWithChildren}
-                    onChange={(e) =>
-                      onToggleChildren(entry.id, e.target.checked)
-                    }
-                    className="rounded"
-                  />
-                  {t("chat.context.includeChildren")}
-                </label>
-              )}
-            </div>
-          );
-        })}
-      </div>
+            )}
+          </div>
+        );
+      })}
     </div>
   );
 }
 
-function PinSnippetVirtualList({
+function PinSnippetList({
   snippets,
   pinnedSnippetIds,
   onPin,
@@ -108,55 +77,33 @@ function PinSnippetVirtualList({
   onPin: (id: string) => void;
   onUnpin: (id: string) => void;
 }) {
-  const parentRef = useRef<HTMLDivElement>(null);
-  const virtualizer = useVirtualizer({
-    count: snippets.length,
-    getScrollElement: () => parentRef.current,
-    estimateSize: () => 40,
-    overscan: 5,
-  });
-
   return (
-    <div ref={parentRef} className="max-h-72 overflow-y-auto">
-      <div
-        style={{
-          height: `${virtualizer.getTotalSize()}px`,
-          width: "100%",
-          position: "relative",
-        }}
-      >
-        {virtualizer.getVirtualItems().map((virtualItem) => {
-          const snippet = snippets[virtualItem.index];
-          const isPinned = pinnedSnippetIds.has(snippet.id);
+    <div className="max-h-72 overflow-y-auto">
+      {snippets.map((snippet) => {
+        const isPinned = pinnedSnippetIds.has(snippet.id);
 
-          return (
-            <div
-              key={snippet.id}
-              style={{
-                position: "absolute",
-                top: 0,
-                left: 0,
-                width: "100%",
-                height: `${virtualItem.size}px`,
-                transform: `translateY(${virtualItem.start}px)`,
-              }}
-              className="flex items-center rounded px-2 hover:bg-accent"
-            >
-              <label className="flex w-full cursor-pointer items-center gap-2 text-sm">
-                <input
-                  type="checkbox"
-                  checked={isPinned}
-                  onChange={() =>
-                    isPinned ? onUnpin(snippet.id) : onPin(snippet.id)
-                  }
-                  className="rounded"
-                />
-                <span className="truncate">{snippet.title}</span>
-              </label>
+        return (
+          <label
+            key={snippet.id}
+            className="flex cursor-pointer items-start gap-2 rounded border-b border-border px-2 py-1.5 last:border-0 hover:bg-accent"
+          >
+            <input
+              type="checkbox"
+              checked={isPinned}
+              onChange={() =>
+                isPinned ? onUnpin(snippet.id) : onPin(snippet.id)
+              }
+              className="mt-0.5 shrink-0 rounded"
+            />
+            <div className="min-w-0 flex-1">
+              <p className="truncate text-xs font-medium text-foreground">
+                {snippet.title}
+              </p>
+              <SnippetCardBody snippet={snippet} />
             </div>
-          );
-        })}
-      </div>
+          </label>
+        );
+      })}
     </div>
   );
 }
@@ -241,7 +188,7 @@ export function PinCodexDialog({
             {t("chat.context.noCodexEntries")}
           </p>
         ) : (
-          <PinCodexVirtualList
+          <PinCodexList
             entries={entries}
             pinnedIds={pinnedIds}
             withChildrenIds={withChildrenIds}
@@ -255,7 +202,7 @@ export function PinCodexDialog({
           {t("chat.context.noSnippets")}
         </p>
       ) : (
-        <PinSnippetVirtualList
+        <PinSnippetList
           snippets={snippetEntries}
           pinnedSnippetIds={pinnedSnippetIds}
           onPin={(id) => onPin(id, "snippet")}
