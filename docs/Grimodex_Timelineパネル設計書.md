@@ -188,7 +188,7 @@ Codex Phaseのアンカーシーンに対して、シーンノードの直下に
 
 | モード | ラベル内容 |
 |--------|----------|
-| Story-time | `story_time_label`（設定されていれば）or `T{story_time_order}`（数値） |
+| Story-time | `story_time_label`（設定されていれば）or `T{N}`（story-time順での通し番号、1始まり） |
 | Reading-order | `Ch.{番号}` または章フォルダー名 |
 | Write-order | 作成日（相対「2週間前」または絶対「2026/3/15」） |
 
@@ -225,7 +225,7 @@ Codex Phaseのアンカーシーンに対して、シーンノードの直下に
 │                     │
 │ Story-time          │
 │  label: [T101     ] │
-│  order: 101         │
+│  index: #45 / 132   │
 │                     │
 │ Created  2026/3/15  │
 │                     │
@@ -240,7 +240,9 @@ Codex Phaseのアンカーシーンに対して、シーンノードの直下に
 └─────────────────────┘
 ```
 
-- story-time ラベル・order をインライン編集可能（label変更は即保存、order変更はタイムライン再描画トリガー）
+- `label` のみインライン編集可能（変更は即保存）
+- 並び順の変更（`story_time_order` の更新）は**Timeline ビューポート上のドラッグが唯一の手段**。order キー自体は文字列 fractional indexing による opaque な値（後述）なので、数値での直接入力 UI は提供しない
+- 表示している `index: #45 / 132` は「story-time順での何番目か」を示す参考表示で編集不可
 - Anchored phases リストからCodex/Phase編集ダイアログへ遷移
 - パネル幅が狭い場合（Bottom Dockの高さ制約下）、インスペクターは畳まれてノード選択時にポップオーバーで表示
 
@@ -273,19 +275,26 @@ Editorがすでに該当シーンを固定タブで開いている場合は、�
 
 #### order の自動算出ルール
 
-ドロップ位置で前後のノードを検出し、その中央値を割り当てる:
+ドロップ位置で前後のノードを検出し、**文字列 fractional indexing**（npm `fractional-indexing` 互換アルゴリズム）で前後の間に入る新しいキーを生成する:
 
 ```
-前ノード order = 100, 後ノード order = 200
-→ 新 order = 150
+前ノード order = "a0",  後ノード order = "a1"
+→ 新 order  = "a0V"   （base62 で a0 < a0V < a1）
 ```
 
-- 先頭にドロップ: 先頭ノードの order - 10
-- 末尾にドロップ: 末尾ノードの order + 10
-- 前後が同じ order: 前 + 1
-- 隣接差が小さくなりすぎた場合（差 < 2）、全ノードの order を 10刻みに再整列（トースト通知）
+- 先頭にドロップ: `generateKeyBetween(null, firstKey)` （`Zz` のような先頭側キーが返る）
+- 末尾にドロップ: `generateKeyBetween(lastKey, null)`
+- Unscheduled→軸: ドロップ位置の前後キーから生成
+- 軸→Unscheduled: `story_time_order` を `NULL` にクリア。`story_time_label` は保持
 
-> 内部的には Fractional Indexing ではなく整数を使用。Phase resolution が整数比較で動くため、精度トラブルを避けて整数で管理。
+文字列 fractional indexing の特性:
+
+- キーは ASCII 文字列で **辞書順比較**（SQLite のデフォルト `COLLATE BINARY` でソート可能）
+- 中央キー生成は理論上**無限に**可能で、隣接差が縮んでも精度劣化しない
+- そのため**全件再整列は原則不要**（Scenes パネルの sort_order と同方式）
+- Phase resolution は `anchor_node_id` 経由でシーンを引いて文字列比較するだけなので、整数/REAL と同じ計算量で動く
+
+> 内部キーは opaque な文字列（例: `"a0"`, `"aMV"`, `"Zz"`）であり、ユーザー UI には表示しない。並び順を直接編集したいユーザーには、Timeline 上のドラッグまたは `story_time_label` の編集 + 周辺シーンのドラッグで対応してもらう。
 
 ### 範囲選択
 
@@ -357,6 +366,20 @@ Editorがすでに該当シーンを固定タブで開いている場合は、�
 - `auto`: シーンに story_time_order があれば story、なければ reading
 
 Timelineでstory-timeを編集すると、Phase resolution（特に `auto` モード時）の結果が変わる可能性があるため、**`story_time_order` 変更時は全Codex状態の再解決がトリガーされる**。Chat/Codex/Editorの表示に即時反映。
+
+#### 再解決のタイミング
+
+ドラッグ中は連続的に order が変動するため、毎フレーム再解決するとフレームレートが落ちる。以下の戦略を取る:
+
+| トリガー元 | 再解決タイミング |
+|----------|----------------|
+| ノードのドラッグ | `onPointerUp`（ドラッグ確定）時のみ。ドラッグ中はビューポート上の位置のみ楽観的に更新 |
+| インスペクターの order インライン編集 | フォーカスアウトまたは `Enter` 確定時のみ。タイプ中の中間値では再解決しない |
+| 軸モード切替 | 即時（再解決ではなく描画再計算のみ） |
+| `phase_resolution_mode` 設定変更 | 即時（Settings 経由のため低頻度） |
+| Codex Phase の追加/削除/再アンカー | 即時 |
+
+ドラッグ確定時の再解決でも複数 Codex エントリの解決計算が走るため、ワーカースレッドへのオフロード余地がある（Phase B以降で計測の上判断）。
 
 ### Phaseピンの位置
 
@@ -481,7 +504,7 @@ DBスキーマの正規版は統合DBスキーマ設計書（`Grimodex_統合DB�
 ### tree_nodes への追加カラム
 
 ```sql
-ALTER TABLE tree_nodes ADD COLUMN story_time_order INTEGER;
+ALTER TABLE tree_nodes ADD COLUMN story_time_order TEXT;
 ALTER TABLE tree_nodes ADD COLUMN story_time_label TEXT;
 
 CREATE INDEX idx_tree_story_time ON tree_nodes(project_id, story_time_order)
@@ -490,14 +513,16 @@ CREATE INDEX idx_tree_story_time ON tree_nodes(project_id, story_time_order)
 
 | カラム | 型 | 説明 |
 |--------|-----|------|
-| `story_time_order` | INTEGER NULL | 作中時間の順序比較用整数。大小関係のみ意味を持つ。Sceneノードのみ意味を持つ（Folder/Noteでは未使用） |
+| `story_time_order` | TEXT NULL | 作中時間の順序キー。**文字列 fractional indexing** によるソートキーで、辞書順比較のみ意味を持つ。Sceneノードのみ意味を持つ（Folder/Noteでは未使用） |
 | `story_time_label` | TEXT NULL | 表示用ラベル（例: `"帝国暦1024年3月"`, `"Day 3 morning"`）。order とは独立して編集可能 |
 
 **設計判断**:
 
-- 整数にしている理由: 架空世界の暦・相対時間・SFの年号など何でも入れられる柔軟性。比較が高速
+- **文字列 fractional indexing を採用**: Scenes パネルの `sort_order` と同じ方式に統一。理論上無限に中間挿入可能で、隣接差の精度劣化による全件再整列が不要。Timeline はドラッグ編集の頻度が高いため、再整列のリスクを排除する
+- SQLite の `COLLATE BINARY`（デフォルト）で辞書順ソートが効くため、特別なインデックス設定は不要
 - label と order を分離している理由: 同じ order でも表示は柔軟に変えたい。また label だけ設定して order は後で決める、というワークフローを許容
 - Sceneでのみ有効だが、カラム自体は `tree_nodes` に追加（テーブル分離するほどでもない）
+- ライブラリは npm `fractional-indexing`（または互換実装）を使用。Rust 側で生成する場面は当面なく、生成は TypeScript 側のドラッグハンドラで完結する
 
 ### projects への追加カラム
 
@@ -653,8 +678,9 @@ Timelineパネルのデフォルト位置はBottom Dock（非表示）。`Ctrl+A
 
 ### story_time_order の入力UX
 
-- 整数直接入力は著者にとって煩雑。「次のシーンは前の+10」のような相対入力は現実的か
-- プロジェクトカレンダー機能（例: 帝国暦定義 → ラベルからorder自動生成）は v3 以降の検討
+- order 自体は文字列 fractional indexing キーで直接入力 UI を提供しないため、ユーザーから見える編集経路は「Timelineビューポート上のドラッグ」と「`story_time_label` の編集」の二つのみ
+- 大量シーンの一括並び替え（例: 既存シーンを年代順に再ソート）にドラッグだけで対応するのは現実的か。一括ソート補助コマンド（「label の自然順でソート」「reading-order と同じ並びにリセット」など）が必要かどうかは v2 で再検討
+- プロジェクトカレンダー機能（例: 帝国暦定義 → ラベルから order 自動生成）は v3 以降の検討
 
 ### 並行ストーリーの表現
 

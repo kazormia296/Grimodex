@@ -478,7 +478,7 @@ CREATE TABLE tree_nodes (
   node_type   TEXT NOT NULL,        -- 'folder' | 'scene' | 'note'
   title       TEXT NOT NULL DEFAULT 'Untitled',
   synopsis    TEXT,                  -- Sceneのみ: シーン要約（プレーンテキスト）
-  sort_order  REAL NOT NULL,        -- 浮動小数点で挿入時の再ソートを回避
+  sort_order  TEXT NOT NULL,        -- 文字列 fractional indexing キー（辞書順比較）
   status      TEXT DEFAULT 'outline', -- Sceneのみ: 'outline'|'draft'|'complete'|'revision'|'final'
   content     TEXT NOT NULL DEFAULT '{}', -- Scene/Note本文（ProseMirror JSON）
   created_at  TEXT NOT NULL DEFAULT (datetime('now')),
@@ -490,15 +490,18 @@ CREATE INDEX idx_tree_parent ON tree_nodes(project_id, parent_id, sort_order);
 
 ### sort_order の戦略
 
-Fractional Indexing（浮動小数点ソート）を採用。
+**文字列 fractional indexing**（npm `fractional-indexing` 互換アルゴリズム）を採用。SQLite の `COLLATE BINARY`（デフォルト）で辞書順ソートが効く。
 
-- 初期ノード: 1.0, 2.0, 3.0, ...
-- ノードAとBの間に挿入: (A.sort_order + B.sort_order) / 2
-- 先頭に挿入: 最小値 - 1.0
-- 末尾に挿入: 最大値 + 1.0
-- 精度劣化が累積した場合（隣接ペア間の差が `1e-10` 未満）、兄弟ノードの sort_order を整数間隔（1.0, 2.0, 3.0, ...）に一括再割り当て
+- キーは ASCII 文字列（base62）。例: `"a0"`, `"aV"`, `"a0V"`
+- 初期ノード: `generateNKeysBetween(null, null, n)` で `["a0", "a1", "a2", ...]` を生成
+- ノードAとBの間に挿入: `generateKeyBetween(A.sort_order, B.sort_order)`
+- 先頭に挿入: `generateKeyBetween(null, firstKey)`
+- 末尾に挿入: `generateKeyBetween(lastKey, null)`
+- 中央キー生成は理論上**無限**に可能で、隣接差の精度劣化が原理的に発生しない
 
-リバランス処理はDrag & Drop完了後、閾値チェックを経て必要な場合のみ実行する。
+**再整列は原則不要**: 浮動小数点方式と異なり、精度劣化による全件リバランスは走らない。Drag & Drop 後は単一行 UPDATE で完結する。
+
+> 旧仕様（REAL `(A+B)/2` 方式）は精度劣化のリスクを抱えていたため、文字列方式に変更した。Timeline パネルの `story_time_order` も同方式に揃える。
 
 ### 階層制約の検証
 

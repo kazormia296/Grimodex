@@ -138,7 +138,7 @@ CREATE TABLE projects (
 
 ### tree_nodes
 
-Folder/Scene/Noteの統一ツリー。Fractional Indexing（sort_order REAL）で挿入時の再ソートを回避。
+Folder/Scene/Noteの統一ツリー。文字列 fractional indexing（`sort_order TEXT`）で挿入時の再ソートを回避。
 
 ```sql
 CREATE TABLE tree_nodes (
@@ -148,10 +148,10 @@ CREATE TABLE tree_nodes (
   node_type         TEXT NOT NULL,        -- 'folder'|'scene'|'note'
   title             TEXT NOT NULL DEFAULT 'Untitled',
   synopsis          TEXT,                  -- Sceneのみ: シーン要約（プレーンテキスト）。storySoFarコンテキスト注入に使用
-  sort_order        REAL NOT NULL,        -- Fractional Indexing（reading-order = ツリーDFS順）
+  sort_order        TEXT NOT NULL,        -- 文字列 fractional indexing キー（reading-order = ツリーDFS順）
   status            TEXT DEFAULT 'outline', -- Sceneのみ: 'outline'|'draft'|'complete'|'revision'|'final'
   content           TEXT NOT NULL DEFAULT '{}',  -- Scene/Note本文（ProseMirror JSON）
-  story_time_order  INTEGER,               -- Sceneのみ: 作中時間の順序比較用整数（大小関係のみ意味を持つ）。NULL = 未設定
+  story_time_order  TEXT,                  -- Sceneのみ: 文字列 fractional indexing キー（作中時間順、辞書順比較）。NULL = 未設定
   story_time_label  TEXT,                   -- Sceneのみ: 表示用ラベル（例: '帝国暦1024年3月', 'Day 3 morning'）。NULL = 未設定
   created_at        TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at        TEXT NOT NULL DEFAULT (datetime('now'))
@@ -165,8 +165,8 @@ CREATE INDEX idx_tree_story_time ON tree_nodes(project_id, story_time_order)
 Scene/Noteの本文は `content` カラムに直接格納する。
 
 **時間軸カラムの設計意図**:
-- `sort_order` は**reading-order（読者順）**を表現する。Fractional Indexing（REAL）で D&D 挿入時の再ソートを回避
-- `story_time_order` は**story-time（作中時間）**を表現する。整数で大小比較のみ行う。架空世界の暦・相対時間・SFの年号など柔軟に扱える
+- `sort_order` は**reading-order（読者順）**を表現する。文字列 fractional indexing（npm `fractional-indexing` 互換、base62 ASCII 文字列）で D&D 挿入時の再ソートを回避。SQLite の `COLLATE BINARY`（デフォルト）で辞書順ソートが効く
+- `story_time_order` は**story-time（作中時間）**を表現する。`sort_order` と同じ文字列 fractional indexing 方式。order キーは opaque な文字列で UI には露出させず、表示は `story_time_label` が担う
 - `story_time_label` は表示用で `story_time_order` から独立。同じ order でもラベルだけ自由に変更できるし、label だけ先に決めて order は後で設定する運用も可能
 - Folder/Note ノードでは `story_time_order` / `story_time_label` は未使用（Timeline パネルが葉 Scene のみ扱う）
 - `write-order（執筆順）`は `created_at` で表現される（専用カラムは不要）
@@ -891,7 +891,7 @@ Timelineパネル設計書の策定に伴い、Phase解決で使う時間軸を�
 | テーブル | カラム | 型 | 用途 |
 |---------|-------|----|----|
 | `projects` | `phase_resolution_mode` | `TEXT NOT NULL DEFAULT 'reading' CHECK(... IN ('auto','reading','story'))` | Phase解決の軸を決めるプロジェクト単位の設定 |
-| `tree_nodes` | `story_time_order` | `INTEGER` | Scene の作中時間順序（比較専用整数、NULL=未設定） |
+| `tree_nodes` | `story_time_order` | `TEXT` | Scene の作中時間順序キー（文字列 fractional indexing、辞書順比較、NULL=未設定） |
 | `tree_nodes` | `story_time_label` | `TEXT` | Scene の作中時間表示用ラベル（順序とは独立） |
 | `tree_nodes` | `idx_tree_story_time` | 部分インデックス | `(project_id, story_time_order) WHERE story_time_order IS NOT NULL` |
 
@@ -899,7 +899,8 @@ Timelineパネル設計書の策定に伴い、Phase解決で使う時間軸を�
 
 - **Phase の anchor は `scene_id` のまま**。時間軸の違いは「同じアンカーを異なる順序で並べ替える」ことで表現する。アンカー自体の意味は変えない。
 - **write-order（`created_at`順）は Phase 解決に一切使わない**。後から書いたシーンが過去の Phase を書き換える挙動は意図と合わないため、明示的に禁止。
-- **`story_time_order` は整数比較のみ**。年月日・暦・相対時刻などはアプリ層が `story_time_label` にマッピング。DBは順序関係のみを保証する。
+- **`story_time_order` は文字列辞書順比較のみ**。`sort_order` と同じ文字列 fractional indexing 方式（npm `fractional-indexing` 互換）。年月日・暦・相対時刻などはアプリ層が `story_time_label` にマッピング。DBは順序関係のみを保証する。
+- **`sort_order` も `story_time_order` も `tree_nodes` 内では同じ方式**。順序キーは UI に露出させず、ユーザーから見える編集経路は「Scenes/Timeline ビューポート上のドラッグ」と「`story_time_label` などの表示用フィールドの編集」のみとする。
 - **`story_time_order` が NULL のシーン**は、`resolveCodexState` 側で「直前の story_time_order を継承」または「reading-order にフォールバック」する（モードにより挙動が異なる）。詳細は Codex パネル設計書を参照。
 
 ### マイグレーション方針
@@ -907,3 +908,15 @@ Timelineパネル設計書の策定に伴い、Phase解決で使う時間軸を�
 - SQLデフォルト `'reading'` により既存プロジェクトは従来通り読者順で解決される（後方互換）。
 - 新規プロジェクト作成時のアプリ層デフォルトは `'auto'` とし、作中時間を入力した瞬間から自動で story-time 解決に切り替わるようにする。
 - `story_time_order` / `story_time_label` は NULL 許容で追加するのみ。既存シーンへの一括設定は不要。
+
+### `tree_nodes.sort_order` の REAL → TEXT 移行
+
+旧仕様では `sort_order` は REAL（浮動小数点 `(A+B)/2` 方式）だったが、Timeline パネル導入に合わせて文字列 fractional indexing に統一する。既存DBへのマイグレーション手順:
+
+1. `tree_nodes` を `(project_id, parent_id, sort_order)` で取り出して**現在の並び順を確定**させる
+2. 各兄弟グループに対して `generateNKeysBetween(null, null, n)` で新しい文字列キーを発番（`["a0","a1",...]`）
+3. SQLite は `ALTER TABLE ... ALTER COLUMN` をサポートしないため、**新カラム `sort_order_new TEXT` を追加 → 値書き戻し → 旧 `sort_order` を `DROP` → リネーム** の手順を取る
+4. 旧インデックス `idx_tree_parent` を再作成（型変更後）
+5. アプリ起動時に一度だけ実行し、完了フラグを `meta` テーブル等で記録
+
+**他テーブルの `sort_order` は据え置き**: `codex_types.sort_order` / `codex_detail_definitions.sort_order` は引き続き REAL 型を使う。これらは中間挿入頻度が低く（管理者が時々並べ替えるだけ）、精度劣化リスクは実害が薄いため、移行コストに見合わない。
