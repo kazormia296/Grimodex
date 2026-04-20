@@ -1,16 +1,47 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import { Search } from "lucide-react";
 import { AnimatedPopover } from "@/components/ui/animated-popover";
 import { useTranslation } from "react-i18next";
 import { useCodexStore } from "@/features/codex/codexStore";
+import type { CodexSortOrder } from "@/features/codex/codexStore";
 import { useSnippetStore } from "@/features/snippets/snippetStore";
+import type {
+  SnippetSourceFilter,
+  SnippetSortOrder,
+} from "@/features/snippets/snippetStore";
 import { getChildrenFromArray } from "@/features/codex/childrenBudget";
 import type { CodexEntry } from "@/features/codex/api";
 import type { Snippet } from "@/features/snippets/api";
-import { EntryCardBody } from "@/features/codex/components/EntryCard";
+import {
+  EntryCardBody,
+  parseTags,
+} from "@/features/codex/components/EntryCard";
 import { SnippetCardBody } from "@/features/snippets/components/SnippetCardBody";
+import { getTypeLabel } from "../utils/typeLabels";
+import { sortEntries, CODEX_SORT_OPTIONS } from "@/features/codex/codexSort";
+import { TagFilterBar } from "@/features/codex/components/TagFilterBar";
+
+const DIALOG_CODEX_SORT_OPTIONS = CODEX_SORT_OPTIONS.filter(
+  (o) => o.value !== "category" && o.value !== "most-referenced",
+);
+
+const SNIPPET_SOURCE_OPTIONS: { value: SnippetSourceFilter; key: string }[] = [
+  { value: "all", key: "snippets.filterAll" },
+  { value: "from-chat", key: "snippets.filterFromChat" },
+  { value: "from-editor", key: "snippets.filterFromEditor" },
+  { value: "manual", key: "snippets.filterManual" },
+];
+
+const SNIPPET_SORT_OPTIONS: { value: SnippetSortOrder; key: string }[] = [
+  { value: "recent", key: "snippets.sortRecent" },
+  { value: "oldest", key: "snippets.sortOldest" },
+  { value: "title-asc", key: "snippets.sortTitleAsc" },
+  { value: "most-used", key: "snippets.sortMostUsed" },
+];
 
 function PinCodexList({
   entries,
+  allEntries,
   pinnedIds,
   withChildrenIds,
   onPin,
@@ -18,6 +49,7 @@ function PinCodexList({
   onToggleChildren,
 }: {
   entries: CodexEntry[];
+  allEntries: CodexEntry[];
   pinnedIds: Set<string>;
   withChildrenIds: Set<string>;
   onPin: (id: string) => void;
@@ -26,11 +58,20 @@ function PinCodexList({
 }) {
   const { t } = useTranslation();
 
+  if (entries.length === 0) {
+    return (
+      <p className="py-4 text-center text-xs text-muted-foreground">
+        {t("codex.noResults")}
+      </p>
+    );
+  }
+
   return (
-    <div className="max-h-72 overflow-y-auto">
+    <div className="max-h-52 overflow-y-auto">
       {entries.map((entry) => {
         const isPinned = pinnedIds.has(entry.id);
-        const hasChildren = getChildrenFromArray(entry.id, entries).length > 0;
+        const hasChildren =
+          getChildrenFromArray(entry.id, allEntries).length > 0;
         const isWithChildren = withChildrenIds.has(entry.id);
 
         return (
@@ -77,8 +118,18 @@ function PinSnippetList({
   onPin: (id: string) => void;
   onUnpin: (id: string) => void;
 }) {
+  const { t } = useTranslation();
+
+  if (snippets.length === 0) {
+    return (
+      <p className="py-4 text-center text-xs text-muted-foreground">
+        {t("codex.noResults")}
+      </p>
+    );
+  }
+
   return (
-    <div className="max-h-72 overflow-y-auto">
+    <div className="max-h-52 overflow-y-auto">
       {snippets.map((snippet) => {
         const isPinned = pinnedSnippetIds.has(snippet.id);
 
@@ -133,6 +184,23 @@ export function PinCodexDialog({
 }: PinCodexDialogProps) {
   const { t } = useTranslation();
   const [activeTab, setActiveTab] = useState<"codex" | "snippet">("codex");
+
+  // Codex filter state
+  const [codexSearch, setCodexSearch] = useState("");
+  const [codexFilterType, setCodexFilterType] = useState<string | null>(null);
+  const [codexSelectedTags, setCodexSelectedTags] = useState<Set<string>>(
+    new Set(),
+  );
+  const [codexSortOrder, setCodexSortOrder] =
+    useState<CodexSortOrder>("name-asc");
+
+  // Snippet filter state
+  const [snippetSearch, setSnippetSearch] = useState("");
+  const [snippetSourceFilter, setSnippetSourceFilter] =
+    useState<SnippetSourceFilter>("all");
+  const [snippetSortOrder, setSnippetSortOrder] =
+    useState<SnippetSortOrder>("recent");
+
   const entries = useCodexStore((s) => s.entries);
   const loadEntries = useCodexStore((s) => s.loadEntries);
   const snippetEntries = useSnippetStore((s) => s.entries);
@@ -145,12 +213,88 @@ export function PinCodexDialog({
     }
   }, [open, loadEntries, loadSnippets]);
 
+  const allCodexTags = useMemo(() => {
+    const tagSet = new Set<string>();
+    for (const entry of entries) {
+      for (const tag of parseTags(entry.tagsCache)) {
+        tagSet.add(tag.name);
+      }
+    }
+    return [...tagSet].sort();
+  }, [entries]);
+
+  const uniqueCodexTypes = useMemo(
+    () => [...new Set(entries.map((e) => e.type))],
+    [entries],
+  );
+
+  const filteredCodexEntries = useMemo(() => {
+    let filtered = entries;
+    if (codexSearch) {
+      const q = codexSearch.toLowerCase();
+      filtered = filtered.filter((e) => e.name.toLowerCase().includes(q));
+    }
+    if (codexFilterType) {
+      filtered = filtered.filter((e) => e.type === codexFilterType);
+    }
+    if (codexSelectedTags.size > 0) {
+      filtered = filtered.filter((e) => {
+        const tags = parseTags(e.tagsCache).map((tag) => tag.name);
+        return [...codexSelectedTags].some((tag) => tags.includes(tag));
+      });
+    }
+    return sortEntries(filtered, codexSortOrder);
+  }, [
+    entries,
+    codexSearch,
+    codexFilterType,
+    codexSelectedTags,
+    codexSortOrder,
+  ]);
+
+  const filteredSnippetEntries = useMemo(() => {
+    let filtered = snippetEntries;
+    if (snippetSearch) {
+      const q = snippetSearch.toLowerCase();
+      filtered = filtered.filter((s) => s.title.toLowerCase().includes(q));
+    }
+    if (snippetSourceFilter === "from-chat") {
+      filtered = filtered.filter((s) => s.sourceChatMessageId != null);
+    } else if (snippetSourceFilter === "from-editor") {
+      filtered = filtered.filter(
+        (s) => s.sourceChatMessageId == null && s.sceneId != null,
+      );
+    } else if (snippetSourceFilter === "manual") {
+      filtered = filtered.filter(
+        (s) => s.sourceChatMessageId == null && s.sceneId == null,
+      );
+    }
+    switch (snippetSortOrder) {
+      case "recent":
+        return [...filtered].sort((a, b) =>
+          b.createdAt.localeCompare(a.createdAt),
+        );
+      case "oldest":
+        return [...filtered].sort((a, b) =>
+          a.createdAt.localeCompare(b.createdAt),
+        );
+      case "title-asc":
+        return [...filtered].sort((a, b) => a.title.localeCompare(b.title));
+      case "most-used":
+        return [...filtered].sort(
+          (a, b) => (b.usageCount ?? 0) - (a.usageCount ?? 0),
+        );
+      default:
+        return filtered;
+    }
+  }, [snippetEntries, snippetSearch, snippetSourceFilter, snippetSortOrder]);
+
   return (
     <AnimatedPopover
       open={open}
       onClose={onClose}
       containerRef={containerRef}
-      className="absolute right-0 top-full z-50 mt-1 w-80 rounded-lg border border-border bg-background p-4 shadow-lg"
+      className="absolute right-0 top-full z-50 mt-1 w-96 rounded-lg border border-border bg-background p-4 shadow-lg"
     >
       <h3 className="mb-3 text-sm font-semibold">
         {t("chat.context.pinEntries")}
@@ -188,26 +332,154 @@ export function PinCodexDialog({
             {t("chat.context.noCodexEntries")}
           </p>
         ) : (
-          <PinCodexList
-            entries={entries}
-            pinnedIds={pinnedIds}
-            withChildrenIds={withChildrenIds}
-            onPin={(id) => onPin(id, "codex")}
-            onUnpin={onUnpin}
-            onToggleChildren={onToggleChildren}
-          />
+          <>
+            {/* Search */}
+            <div className="relative mb-2">
+              <Search className="absolute left-2 top-1/2 h-3 w-3 -translate-y-1/2 text-muted-foreground" />
+              <input
+                type="text"
+                value={codexSearch}
+                onChange={(e) => setCodexSearch(e.target.value)}
+                placeholder={t("codex.searchPlaceholder")}
+                className="w-full rounded border border-input bg-background py-1 pl-6 pr-2 text-xs focus:outline-none focus:ring-1 focus:ring-ring"
+              />
+            </div>
+
+            {/* Type filter + sort */}
+            <div className="mb-2 flex items-center gap-1.5">
+              <div className="flex min-w-0 flex-1 flex-wrap gap-1">
+                <button
+                  type="button"
+                  onClick={() => setCodexFilterType(null)}
+                  className={`rounded-full px-2 py-0.5 text-[10px] font-medium transition-colors ${
+                    codexFilterType === null
+                      ? "bg-primary text-primary-foreground"
+                      : "bg-muted text-muted-foreground hover:bg-accent"
+                  }`}
+                >
+                  {t("codex.filterAll")}
+                </button>
+                {uniqueCodexTypes.map((type) => (
+                  <button
+                    key={type}
+                    type="button"
+                    onClick={() =>
+                      setCodexFilterType(codexFilterType === type ? null : type)
+                    }
+                    className={`rounded-full px-2 py-0.5 text-[10px] font-medium transition-colors ${
+                      codexFilterType === type
+                        ? "bg-primary text-primary-foreground"
+                        : "bg-muted text-muted-foreground hover:bg-accent"
+                    }`}
+                  >
+                    {getTypeLabel(type)}
+                  </button>
+                ))}
+              </div>
+              <select
+                value={codexSortOrder}
+                onChange={(e) =>
+                  setCodexSortOrder(e.target.value as CodexSortOrder)
+                }
+                title={t("codex.sortOrderTitle")}
+                className="shrink-0 rounded border border-input bg-background px-1 py-0.5 text-[10px] focus:outline-none focus:ring-1 focus:ring-ring"
+              >
+                {DIALOG_CODEX_SORT_OPTIONS.map((opt) => (
+                  <option key={opt.value} value={opt.value}>
+                    {t(opt.key)}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            {/* Tag filter */}
+            {allCodexTags.length > 0 && (
+              <div className="mb-2">
+                <TagFilterBar
+                  allTags={allCodexTags}
+                  selectedTags={codexSelectedTags}
+                  onToggle={(tag) =>
+                    setCodexSelectedTags((prev) => {
+                      const next = new Set(prev);
+                      next.has(tag) ? next.delete(tag) : next.add(tag);
+                      return next;
+                    })
+                  }
+                  onClear={() => setCodexSelectedTags(new Set())}
+                />
+              </div>
+            )}
+
+            <PinCodexList
+              entries={filteredCodexEntries}
+              allEntries={entries}
+              pinnedIds={pinnedIds}
+              withChildrenIds={withChildrenIds}
+              onPin={(id) => onPin(id, "codex")}
+              onUnpin={onUnpin}
+              onToggleChildren={onToggleChildren}
+            />
+          </>
         )
       ) : snippetEntries.length === 0 ? (
         <p className="text-xs text-muted-foreground">
           {t("chat.context.noSnippets")}
         </p>
       ) : (
-        <PinSnippetList
-          snippets={snippetEntries}
-          pinnedSnippetIds={pinnedSnippetIds}
-          onPin={(id) => onPin(id, "snippet")}
-          onUnpin={onUnpin}
-        />
+        <>
+          {/* Search */}
+          <div className="relative mb-2">
+            <Search className="absolute left-2 top-1/2 h-3 w-3 -translate-y-1/2 text-muted-foreground" />
+            <input
+              type="text"
+              value={snippetSearch}
+              onChange={(e) => setSnippetSearch(e.target.value)}
+              placeholder={t("snippets.searchPlaceholder")}
+              className="w-full rounded border border-input bg-background py-1 pl-6 pr-2 text-xs focus:outline-none focus:ring-1 focus:ring-ring"
+            />
+          </div>
+
+          {/* Source filter + sort */}
+          <div className="mb-2 flex items-center gap-1.5">
+            <div className="flex min-w-0 flex-1 flex-wrap gap-1">
+              {SNIPPET_SOURCE_OPTIONS.map((opt) => (
+                <button
+                  key={opt.value}
+                  type="button"
+                  onClick={() => setSnippetSourceFilter(opt.value)}
+                  className={`rounded-full px-2 py-0.5 text-[10px] font-medium transition-colors ${
+                    snippetSourceFilter === opt.value
+                      ? "bg-primary text-primary-foreground"
+                      : "bg-muted text-muted-foreground hover:bg-accent"
+                  }`}
+                >
+                  {t(opt.key)}
+                </button>
+              ))}
+            </div>
+            <select
+              value={snippetSortOrder}
+              onChange={(e) =>
+                setSnippetSortOrder(e.target.value as SnippetSortOrder)
+              }
+              title={t("snippets.sortOrder")}
+              className="shrink-0 rounded border border-input bg-background px-1 py-0.5 text-[10px] focus:outline-none focus:ring-1 focus:ring-ring"
+            >
+              {SNIPPET_SORT_OPTIONS.map((opt) => (
+                <option key={opt.value} value={opt.value}>
+                  {t(opt.key)}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          <PinSnippetList
+            snippets={filteredSnippetEntries}
+            pinnedSnippetIds={pinnedSnippetIds}
+            onPin={(id) => onPin(id, "snippet")}
+            onUnpin={onUnpin}
+          />
+        </>
       )}
     </AnimatedPopover>
   );
