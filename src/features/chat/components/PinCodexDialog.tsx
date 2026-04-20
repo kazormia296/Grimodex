@@ -210,14 +210,15 @@ export function PinCodexDialog({
   const [codexTypes, setCodexTypes] = useState<CodexType[]>([]);
 
   useEffect(() => {
-    if (open) {
-      loadEntries();
-      loadSnippets();
-      ensureBuiltinTypes("default-project")
-        .then(() => listCodexTypes("default-project"))
-        .then(setCodexTypes)
-        .catch(() => setCodexTypes([]));
-    }
+    if (!open) return;
+    // Only load when not yet in store — loadEntries sets isLoading:true which
+    // unmounts the CodexManagementPanel's virtualizer and resets its scroll.
+    if (useCodexStore.getState().entries.length === 0) loadEntries();
+    if (useSnippetStore.getState().entries.length === 0) loadSnippets();
+    ensureBuiltinTypes("default-project")
+      .then(() => listCodexTypes("default-project"))
+      .then(setCodexTypes)
+      .catch(() => setCodexTypes([]));
   }, [open, loadEntries, loadSnippets]);
 
   const allCodexTags = useMemo(() => {
