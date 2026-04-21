@@ -35,6 +35,14 @@ export function SynopsisHeader({ sceneId }: SynopsisHeaderProps) {
             {node.synopsis}
           </span>
         )}
+        {node.storyTimeLabel && (
+          <span
+            data-testid="story-time-label"
+            className="ml-auto shrink-0 rounded bg-muted px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground"
+          >
+            {node.storyTimeLabel}
+          </span>
+        )}
       </button>
       {!collapsed && (
         <div className="px-3 pb-2">
