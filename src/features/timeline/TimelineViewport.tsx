@@ -200,16 +200,39 @@ export function TimelineViewport({
         className={`block select-none${canDrag ? " cursor-default" : ""}`}
         aria-label={t("timeline.viewport", "タイムライン ビューポート")}
       >
-        {/* Main axis line (scheduled portion only) */}
+        {/* Main axis line */}
         <line
           x1={PAD_LEFT - DOT_R}
           y1={AXIS_Y}
-          x2={scheduledCount > 0 ? xOf(scheduledCount - 1) + DOT_R : PAD_LEFT}
+          x2={
+            scheduledCount > 0
+              ? xOf(scheduledCount - 1) + DOT_R
+              : totalWidth - PAD_RIGHT
+          }
           y2={AXIS_Y}
           stroke="currentColor"
-          strokeOpacity={0.2}
+          strokeOpacity={scheduledCount > 0 ? 0.2 : 0.1}
           strokeWidth={1}
+          strokeDasharray={scheduledCount === 0 ? "4 4" : undefined}
         />
+
+        {/* 軸が空のときのプレースホルダーヒント */}
+        {showUnscheduledZone && scheduledCount === 0 && (
+          <text
+            x={totalWidth / 2}
+            y={AXIS_Y - 12}
+            textAnchor="middle"
+            fontSize={10}
+            fill="currentColor"
+            fillOpacity={0.35}
+            className="pointer-events-none"
+          >
+            {t(
+              "timeline.emptyAxisHint",
+              "↑ シーンをここにドラッグして story-time を設定",
+            )}
+          </text>
+        )}
 
         {/* Unscheduled separator + drop zone (story-time モード中は常に表示) */}
         {showUnscheduledZone && (
@@ -244,7 +267,12 @@ export function TimelineViewport({
               fill="currentColor"
               fillOpacity={drag ? 0.7 : 0.4}
             >
-              {t("timeline.unscheduled", "Unscheduled")}
+              {scheduledCount === 0
+                ? t(
+                    "timeline.unscheduledAllHint",
+                    "Unscheduled — 上にドラッグして軸に配置",
+                  )
+                : t("timeline.unscheduled", "Unscheduled")}
             </text>
           </>
         )}
