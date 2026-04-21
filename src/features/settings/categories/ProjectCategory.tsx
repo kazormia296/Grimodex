@@ -59,6 +59,12 @@ export function ProjectCategory() {
     { value: "Present tense", label: t("settings.project.presentTense") },
   ];
 
+  const PHASE_RESOLUTION_OPTIONS = [
+    { value: "reading", label: t("settings.project.phaseResolutionReading") },
+    { value: "story", label: t("settings.project.phaseResolutionStory") },
+    { value: "auto", label: t("settings.project.phaseResolutionAuto") },
+  ];
+
   const FOLDER_NAMING_OPTIONS = [
     { value: "auto", label: t("settings.project.folderNamingAuto") },
     { value: "none", label: t("settings.project.folderNamingNone") },
@@ -134,6 +140,22 @@ export function ProjectCategory() {
             className="rounded-md border border-input bg-background px-2 py-1 text-sm focus:outline-none"
           >
             {LANGUAGE_OPTIONS.map((o) => (
+              <option key={o.value} value={o.value}>
+                {o.label}
+              </option>
+            ))}
+          </select>
+        </SettingRow>
+        <SettingRow
+          label={t("settings.project.phaseResolutionMode")}
+          description={t("settings.project.phaseResolutionModeDesc")}
+        >
+          <select
+            value={project.phaseResolutionMode}
+            onChange={(e) => updateField("phaseResolutionMode", e.target.value)}
+            className="rounded-md border border-input bg-background px-2 py-1 text-sm focus:outline-none"
+          >
+            {PHASE_RESOLUTION_OPTIONS.map((o) => (
               <option key={o.value} value={o.value}>
                 {o.label}
               </option>
