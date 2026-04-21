@@ -153,6 +153,15 @@ export function TimelinePanel() {
   useEffect(() => {
     function handleKeyDown(e: KeyboardEvent) {
       if (!e.ctrlKey && !e.metaKey) return;
+      // Don't steal shortcuts while a text input or TipTap editor is focused
+      const active = document.activeElement as HTMLElement | null;
+      if (
+        active &&
+        (active.tagName === "INPUT" ||
+          active.tagName === "TEXTAREA" ||
+          active.isContentEditable)
+      )
+        return;
       switch (e.key) {
         case "0":
           e.preventDefault();
@@ -199,8 +208,9 @@ export function TimelinePanel() {
         inspectorOpen={inspectorOpen}
         onToggleInspector={toggleInspector}
       />
-      <div ref={viewportRef} className="flex flex-1 overflow-hidden">
+      <div className="flex flex-1 overflow-hidden">
         <TimelineViewport
+          ref={viewportRef}
           scenes={scenes}
           weights={weights}
           phasePins={phasePins}

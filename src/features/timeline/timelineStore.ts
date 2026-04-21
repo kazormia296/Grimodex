@@ -73,25 +73,37 @@ export const useTimelineStore = create<TimelineState>((set) => ({
     }),
 }));
 
+function snapshotPersistent(
+  state: ReturnType<typeof useTimelineStore.getState>,
+): TimelineSettings {
+  return {
+    axisMode: state.axisMode,
+    spacingMode: state.spacingMode,
+    zoom: state.zoom,
+    scrollOffset: state.scrollOffset,
+    display: state.display,
+  };
+}
+
 let saveTimer: ReturnType<typeof setTimeout> | null = null;
+let prevPersistent = snapshotPersistent(useTimelineStore.getState());
 
 useTimelineStore.subscribe((state) => {
+  const next = snapshotPersistent(state);
+  if (JSON.stringify(next) === JSON.stringify(prevPersistent)) return;
+  prevPersistent = next;
+
   if (saveTimer !== null) clearTimeout(saveTimer);
   saveTimer = setTimeout(async () => {
     try {
       const current = await invoke<GlobalSettings>("get_global_settings");
-      const timeline: TimelineSettings = {
-        axisMode: state.axisMode,
-        spacingMode: state.spacingMode,
-        zoom: state.zoom,
-        scrollOffset: state.scrollOffset,
-        display: state.display,
-      };
       await invoke("save_global_settings", {
-        settings: { ...current, timeline },
+        settings: { ...current, timeline: next },
       });
-    } catch {
-      // Ignore save errors silently
+    } catch (e) {
+      if (import.meta.env.MODE !== "test") {
+        console.warn("[timeline] save failed:", e);
+      }
     }
   }, 500);
 });

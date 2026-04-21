@@ -46,6 +46,9 @@ pub struct GlobalSettings {
     #[serde(default)]
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub has_seen_welcome: bool,
+    /// Timeline panel settings (zoom, axis mode, scroll offset, etc.).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub timeline: Option<serde_json::Value>,
 }
 
 impl Default for GlobalSettings {
@@ -63,6 +66,7 @@ impl Default for GlobalSettings {
             color_theme: None,
             trusted_workspaces: Vec::new(),
             has_seen_welcome: false,
+            timeline: None,
         }
     }
 }
@@ -197,6 +201,46 @@ mod tests {
         assert_eq!(settings.theme, "system");
         assert!(!settings.show_launcher_on_startup);
         assert!(settings.last_active_workspace.is_none());
+    }
+
+    #[test]
+    fn test_global_settings_preserves_timeline_field() {
+        let dir = temp_dir("gs_timeline");
+        cleanup(&dir);
+        fs::create_dir_all(&dir).ok();
+        let path = dir.join("settings.json");
+
+        let timeline_json = serde_json::json!({
+            "axisMode": "story",
+            "spacingMode": "proportional",
+            "zoom": 2.0,
+            "scrollOffset": 120,
+            "display": {
+                "showTitles": false,
+                "showChapterNumbers": true,
+                "showPhasePins": true
+            }
+        });
+
+        let settings = GlobalSettings {
+            timeline: Some(timeline_json.clone()),
+            ..GlobalSettings::default()
+        };
+
+        write_global_settings(&path, &settings).expect("write");
+        let loaded = read_global_settings(&path);
+
+        assert!(
+            loaded.timeline.is_some(),
+            "timeline field must survive roundtrip"
+        );
+        let tl = loaded.timeline.unwrap();
+        assert_eq!(tl["axisMode"], "story");
+        assert_eq!(tl["zoom"], 2.0);
+        assert_eq!(tl["scrollOffset"], 120);
+        assert_eq!(tl["display"]["showPhasePins"], true);
+
+        cleanup(&dir);
     }
 
     #[test]
