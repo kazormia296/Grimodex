@@ -2,9 +2,15 @@ import { db } from "@/db/client";
 import {
   mapBoards,
   mapNodePositions,
+  mapEdges,
+  mapFrames,
   type MapBoard,
   type MapNodePosition,
   type NewMapNodePosition,
+  type MapEdge,
+  type NewMapEdge,
+  type MapFrame,
+  type NewMapFrame,
 } from "@/db/schema";
 import { eq, and, isNotNull } from "drizzle-orm";
 import type { NodeRefType } from "./types";
@@ -145,4 +151,120 @@ export async function updateNodePosition(
 
 export async function deleteNodePosition(id: string): Promise<void> {
   await db.delete(mapNodePositions).where(eq(mapNodePositions.id, id));
+}
+
+// ── User edges ─────────────────────────────────────────────────────────────
+
+export async function listUserEdges(boardId: string): Promise<MapEdge[]> {
+  return db.select().from(mapEdges).where(eq(mapEdges.boardId, boardId));
+}
+
+export async function createUserEdge(data: {
+  boardId: string;
+  fromPositionId: string;
+  toPositionId: string;
+  label?: string | null;
+  style?: NewMapEdge["style"];
+  color?: string;
+  direction?: NewMapEdge["direction"];
+}): Promise<MapEdge> {
+  const now = new Date().toISOString();
+  const id = crypto.randomUUID();
+  const insertData: NewMapEdge = {
+    id,
+    boardId: data.boardId,
+    fromPositionId: data.fromPositionId,
+    toPositionId: data.toPositionId,
+    label: data.label ?? null,
+    style: data.style ?? "solid",
+    color: data.color ?? "#000000",
+    direction: data.direction ?? "none",
+    createdAt: now,
+    updatedAt: now,
+  };
+  const inserted = await db.insert(mapEdges).values(insertData).returning();
+  return inserted[0];
+}
+
+export async function updateUserEdge(
+  id: string,
+  update: {
+    label?: string | null;
+    style?: NewMapEdge["style"];
+    color?: string;
+    direction?: NewMapEdge["direction"];
+  },
+): Promise<MapEdge | undefined> {
+  const now = new Date().toISOString();
+  const rows = await db
+    .update(mapEdges)
+    .set({ ...update, updatedAt: now })
+    .where(eq(mapEdges.id, id))
+    .returning();
+  return rows[0];
+}
+
+export async function deleteUserEdge(id: string): Promise<void> {
+  await db.delete(mapEdges).where(eq(mapEdges.id, id));
+}
+
+// ── Frames ─────────────────────────────────────────────────────────────────
+
+export async function listFrames(boardId: string): Promise<MapFrame[]> {
+  return db.select().from(mapFrames).where(eq(mapFrames.boardId, boardId));
+}
+
+export async function createFrame(data: {
+  boardId: string;
+  title?: string;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  background?: string;
+  borderColor?: string;
+}): Promise<MapFrame> {
+  const now = new Date().toISOString();
+  const id = crypto.randomUUID();
+  const insertData: NewMapFrame = {
+    id,
+    boardId: data.boardId,
+    title: data.title ?? "Frame",
+    x: data.x,
+    y: data.y,
+    width: data.width,
+    height: data.height,
+    background: data.background ?? "#f5f5f5",
+    borderColor: data.borderColor ?? "#cccccc",
+    zIndex: -1,
+    createdAt: now,
+    updatedAt: now,
+  };
+  const inserted = await db.insert(mapFrames).values(insertData).returning();
+  return inserted[0];
+}
+
+export async function updateFrame(
+  id: string,
+  update: {
+    title?: string;
+    x?: number;
+    y?: number;
+    width?: number;
+    height?: number;
+    background?: string;
+    borderColor?: string;
+  },
+): Promise<MapFrame | undefined> {
+  const now = new Date().toISOString();
+  const rows = await db
+    .update(mapFrames)
+    .set({ ...update, updatedAt: now })
+    .where(eq(mapFrames.id, id))
+    .returning();
+  return rows[0];
+}
+
+export async function deleteFrame(id: string): Promise<void> {
+  await db.delete(mapFrames).where(eq(mapFrames.id, id));
 }

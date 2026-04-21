@@ -31,6 +31,8 @@ export interface MapBoardRecord {
 export interface ShowFlags {
   scenes: boolean;
   codex: boolean;
+  notes: boolean;
+  ai: boolean;
   derivedEdges: boolean;
   userEdges: boolean;
   frames: boolean;
@@ -42,4 +44,16 @@ export interface MapPersistentState {
   show: ShowFlags;
   gridSnap: boolean;
   minimapVisible: boolean;
+  sceneDisplayByMode: Record<MapMode, SceneDisplayVariant>;
+  colorBy: ColorByAxis;
+  corkboardFeel: boolean;
+}
+
+// Auto-mode defaults: Free → card, others → compact
+export function resolveSceneVariant(
+  variant: SceneDisplayVariant,
+  mode: MapMode,
+): "compact" | "card" | "image" {
+  if (variant !== "auto") return variant;
+  return mode === "free" ? "card" : "compact";
 }
