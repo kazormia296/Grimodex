@@ -26,6 +26,7 @@ import {
 import { SceneNode } from "./nodes/SceneNode";
 import { CodexNode } from "./nodes/CodexNode";
 import { MapHeader } from "./MapHeader";
+import { MapPalette } from "./MapPalette";
 import type { MapNodePositionRecord } from "./types";
 
 const PROJECT_ID = "default-project";
@@ -222,7 +223,7 @@ function MapCanvasInner() {
   }, 300);
 
   return (
-    <div style={{ width: "100%", height: "100%" }}>
+    <div style={{ width: "100%", height: "100%", position: "relative" }}>
       <ReactFlow
         nodes={nodes}
         edges={edges}
@@ -242,6 +243,7 @@ function MapCanvasInner() {
           <MiniMap style={{ width: 120, height: 80 }} zoomable pannable />
         )}
       </ReactFlow>
+      <MapPalette />
     </div>
   );
 }
