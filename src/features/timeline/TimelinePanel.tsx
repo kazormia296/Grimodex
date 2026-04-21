@@ -1,15 +1,20 @@
-import { useCallback } from "react";
+import { useCallback, useMemo } from "react";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { useLayoutStore } from "@/features/layout/layoutStore";
 import { computeGlobalSceneOrder } from "@/features/codex/phaseResolver";
+import { usePhaseStore } from "@/features/codex/phaseStore";
+import { useCodexStore } from "@/features/codex/codexStore";
 import { useTimelineStore } from "./timelineStore";
 import { TimelineHeader } from "./TimelineHeader";
 import { TimelineViewport } from "./TimelineViewport";
+import type { PhasePinData } from "./TimelineViewport";
 
 export function TimelinePanel() {
   const nodes = useTreeStore((s) => s.nodes);
   const setActiveScene = useTreeStore((s) => s.setActiveScene);
   const selectNode = useTimelineStore((s) => s.selectNode);
+  const phasesByEntry = usePhaseStore((s) => s.phasesByEntry);
+  const entries = useCodexStore((s) => s.entries);
 
   // Build reading-order scene list (DFS, scenes only, sorted by sortOrder)
   const sceneOrder = computeGlobalSceneOrder(nodes);
@@ -20,6 +25,25 @@ export function TimelinePanel() {
       const ib = sceneOrder.get(b.id) ?? 0;
       return ia - ib;
     });
+
+  // Build phase pins from phaseStore + codexStore
+  const phasePins = useMemo<PhasePinData[]>(() => {
+    const entryMap = new Map(entries.map((e) => [e.id, e.name]));
+    const pins: PhasePinData[] = [];
+    for (const [entryId, phases] of Object.entries(phasesByEntry)) {
+      const entryName = entryMap.get(entryId) ?? entryId;
+      for (const phase of phases) {
+        if (phase.anchorNodeId) {
+          pins.push({
+            nodeId: phase.anchorNodeId,
+            label: phase.label,
+            entryName,
+          });
+        }
+      }
+    }
+    return pins;
+  }, [phasesByEntry, entries]);
 
   const handleSelectScene = useCallback(
     (id: string) => {
@@ -44,7 +68,11 @@ export function TimelinePanel() {
   return (
     <div className="flex h-full flex-col overflow-hidden">
       <TimelineHeader sceneCount={scenes.length} />
-      <TimelineViewport scenes={scenes} onSelectScene={handleSelectScene} />
+      <TimelineViewport
+        scenes={scenes}
+        phasePins={phasePins}
+        onSelectScene={handleSelectScene}
+      />
     </div>
   );
 }

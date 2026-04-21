@@ -1,4 +1,4 @@
-import { useRef, useCallback } from "react";
+import { useRef } from "react";
 import { useTranslation } from "react-i18next";
 import type { TreeNodeData } from "@/features/tree/treeStore";
 import { useTimelineStore } from "./timelineStore";
@@ -21,7 +21,7 @@ const STATUS_FILL: Record<string, string> = {
   final: "#60a5fa",
 };
 
-interface PhasePinData {
+export interface PhasePinData {
   nodeId: string;
   label: string;
   entryName: string;
@@ -45,7 +45,7 @@ export function TimelineViewport({
 
   const svgWidth = PAD_LEFT + scenes.length * STEP + PAD_RIGHT;
 
-  const xOf = useCallback((i: number) => PAD_LEFT + i * STEP, []);
+  const xOf = (i: number) => PAD_LEFT + i * STEP;
 
   const pinsByNode = new Map<string, PhasePinData[]>();
   for (const pin of phasePins) {
