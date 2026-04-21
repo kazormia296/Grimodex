@@ -323,7 +323,7 @@ export function TimelineViewport({
                   const locked =
                     Math.abs(drag.currentY - LANE_Y) < AXIS_LOCK_THRESHOLD;
                   const ghostX = drag.currentX;
-                  const ghostY = locked ? cy : drag.currentY;
+                  const ghostY = locked ? LANE_Y : drag.currentY;
                   return (
                     <line
                       x1={cx}
@@ -345,7 +345,7 @@ export function TimelineViewport({
                 cy={
                   drag?.nodeId === scene.id
                     ? Math.abs(drag.currentY - LANE_Y) < AXIS_LOCK_THRESHOLD
-                      ? cy
+                      ? LANE_Y
                       : drag.currentY
                     : cy
                 }
