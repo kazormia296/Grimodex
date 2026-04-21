@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useRef, useState, useEffect } from "react";
 import { useTranslation } from "react-i18next";
 import type { TreeNodeData } from "@/features/tree/treeStore";
 import { useTimelineStore } from "./timelineStore";
@@ -114,24 +114,15 @@ export function TimelineViewport({
     setDrag({ nodeId, startX: svgX, currentX: svgX, originIndex });
   }
 
-  function handleSvgMouseMove(e: React.MouseEvent<SVGSVGElement>) {
-    if (!drag) return;
-    const svgX =
-      e.clientX - (svgRef.current?.getBoundingClientRect().left ?? 0);
-    setDrag((d) => (d ? { ...d, currentX: svgX } : null));
-  }
-
-  function handleSvgMouseUp(e: React.MouseEvent<SVGSVGElement>) {
+  function commitDrop(clientX: number, clientY: number) {
     if (!drag || !onDropStoryTime) {
       setDrag(null);
       return;
     }
-    const svgX =
-      e.clientX - (svgRef.current?.getBoundingClientRect().left ?? 0);
+    const rect = svgRef.current?.getBoundingClientRect();
+    const svgX = clientX - (rect?.left ?? 0);
     const toUnscheduled =
-      hasUnscheduled &&
-      e.clientY - (svgRef.current?.getBoundingClientRect().top ?? 0) >
-        UNSCHEDULED_Y - 20;
+      hasUnscheduled && clientY - (rect?.top ?? 0) > UNSCHEDULED_Y - 20;
 
     if (toUnscheduled) {
       onDropStoryTime(drag.nodeId, null, null, true);
@@ -164,6 +155,32 @@ export function TimelineViewport({
     setDrag(null);
   }
 
+  // ドラッグ中はdocumentレベルでmousemove/mouseupを捕捉する。
+  // SVGの外にマウスが出てもドラッグが継続し、mouseupで正しくドロップされる。
+  useEffect(() => {
+    if (!drag) return;
+
+    function onMove(e: MouseEvent) {
+      const svgX =
+        e.clientX - (svgRef.current?.getBoundingClientRect().left ?? 0);
+      setDrag((d) => (d ? { ...d, currentX: svgX } : null));
+    }
+
+    function onUp(e: MouseEvent) {
+      commitDrop(e.clientX, e.clientY);
+    }
+
+    document.addEventListener("mousemove", onMove);
+    document.addEventListener("mouseup", onUp);
+    return () => {
+      document.removeEventListener("mousemove", onMove);
+      document.removeEventListener("mouseup", onUp);
+    };
+    // commitDrop は drag / scenes / scheduledCount に依存するが、
+    // drag が変わるたびに再登録されるため最新値を参照できる
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [drag]);
+
   if (scenes.length === 0) {
     return (
       <div className="flex flex-1 items-center justify-center text-sm text-muted-foreground">
@@ -180,9 +197,6 @@ export function TimelineViewport({
         height={svgHeight}
         className={`block select-none${canDrag ? " cursor-default" : ""}`}
         aria-label={t("timeline.viewport", "タイムライン ビューポート")}
-        onMouseMove={handleSvgMouseMove}
-        onMouseUp={handleSvgMouseUp}
-        onMouseLeave={() => setDrag(null)}
       >
         {/* Main axis line (scheduled portion only) */}
         <line
