@@ -2,8 +2,10 @@ import { useRef, useState, useEffect } from "react";
 import { useTranslation } from "react-i18next";
 import type { TreeNodeData } from "@/features/tree/treeStore";
 import { useTimelineStore } from "./timelineStore";
+import { computeAxisLabels } from "./timelineLabels";
 
 const DOT_R = 6;
+const LABEL_Y = 16;
 const LANE_Y = 60;
 const AXIS_Y = LANE_Y;
 const PHASE_PIN_Y = LANE_Y + 44;
@@ -66,6 +68,8 @@ export function TimelineViewport({
   const { t } = useTranslation();
   const selectedNodeIds = useTimelineStore((s) => s.selectedNodeIds);
   const display = useTimelineStore((s) => s.display);
+  const axisMode = useTimelineStore((s) => s.axisMode);
+  const zoom = useTimelineStore((s) => s.zoom);
   const svgRef = useRef<SVGSVGElement>(null);
   const [drag, setDrag] = useState<DragState | null>(null);
 
@@ -212,6 +216,25 @@ export function TimelineViewport({
         className={`block select-none${canDrag ? " cursor-default" : ""}`}
         aria-label={t("timeline.viewport", "タイムライン ビューポート")}
       >
+        {/* Axis tick labels */}
+        {computeAxisLabels(scenes.slice(0, scheduledCount), axisMode, zoom).map(
+          ({ index, label }) => (
+            <text
+              key={index}
+              data-testid="axis-label"
+              x={xOf(index)}
+              y={LABEL_Y}
+              textAnchor="middle"
+              fontSize={9}
+              fill="currentColor"
+              fillOpacity={0.45}
+              className="pointer-events-none select-none"
+            >
+              {label}
+            </text>
+          ),
+        )}
+
         {/* Main axis line */}
         <line
           x1={PAD_LEFT - DOT_R}
