@@ -24,13 +24,13 @@ export const CodexNode = memo(function CodexNode({
     <div
       style={{
         width: 200,
-        background: "var(--color-surface, #fff)",
-        border: `2px solid ${selected ? "var(--color-accent, #534AB7)" : "#ccc"}`,
+        background: "var(--card)",
+        border: `2px solid ${selected ? "#534AB7" : "var(--border)"}`,
         borderLeft: `4px solid ${borderColor}`,
         borderRadius: 6,
         padding: "6px 10px",
         boxShadow: selected
-          ? "0 0 0 2px var(--color-accent-muted, rgba(83,74,183,0.3))"
+          ? "0 0 0 2px rgba(83,74,183,0.3)"
           : "0 1px 3px rgba(0,0,0,0.12)",
         cursor: "default",
         userSelect: "none",
@@ -43,7 +43,7 @@ export const CodexNode = memo(function CodexNode({
       <div
         style={{
           fontWeight: 600,
-          color: "var(--color-text, #111)",
+          color: "var(--card-foreground)",
           overflow: "hidden",
           textOverflow: "ellipsis",
           whiteSpace: "nowrap",
@@ -55,7 +55,7 @@ export const CodexNode = memo(function CodexNode({
 
       <div
         style={{
-          color: "var(--color-text-muted, #888)",
+          color: "var(--muted-foreground)",
           fontSize: 11,
           marginBottom: summary ? 4 : 0,
         }}
@@ -66,7 +66,7 @@ export const CodexNode = memo(function CodexNode({
       {summary && (
         <div
           style={{
-            color: "var(--color-text, #333)",
+            color: "var(--card-foreground)",
             fontSize: 11,
           }}
         >

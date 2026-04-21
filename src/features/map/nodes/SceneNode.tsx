@@ -30,12 +30,12 @@ export const SceneNode = memo(function SceneNode({
     <div
       style={{
         width: 180,
-        background: "var(--color-surface, #fff)",
-        border: `2px solid ${selected ? "var(--color-accent, #534AB7)" : statusColor}`,
+        background: "var(--card)",
+        border: `2px solid ${selected ? "#534AB7" : statusColor}`,
         borderRadius: 6,
         padding: "6px 10px",
         boxShadow: selected
-          ? "0 0 0 2px var(--color-accent-muted, rgba(83,74,183,0.3))"
+          ? "0 0 0 2px rgba(83,74,183,0.3)"
           : "0 1px 3px rgba(0,0,0,0.12)",
         cursor: "default",
         userSelect: "none",
@@ -65,7 +65,7 @@ export const SceneNode = memo(function SceneNode({
         <span
           style={{
             fontWeight: 600,
-            color: "var(--color-text-muted, #888)",
+            color: "var(--muted-foreground)",
             fontSize: 11,
           }}
         >
@@ -76,7 +76,7 @@ export const SceneNode = memo(function SceneNode({
       <div
         style={{
           fontWeight: 500,
-          color: "var(--color-text, #111)",
+          color: "var(--card-foreground)",
           overflow: "hidden",
           textOverflow: "ellipsis",
           whiteSpace: "nowrap",
@@ -90,7 +90,7 @@ export const SceneNode = memo(function SceneNode({
         <div
           style={{
             marginTop: 4,
-            color: "var(--color-text-muted, #888)",
+            color: "var(--muted-foreground)",
             fontSize: 11,
           }}
         >

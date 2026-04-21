@@ -256,7 +256,7 @@ export function MapPanel() {
         flexDirection: "column",
         width: "100%",
         height: "100%",
-        background: "var(--color-canvas-bg, #f8f8f8)",
+        background: "var(--background)",
       }}
     >
       <MapHeader />

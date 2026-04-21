@@ -24,8 +24,9 @@ export function MapHeader() {
         alignItems: "center",
         gap: 8,
         padding: "4px 10px",
-        borderBottom: "1px solid var(--color-border, #e0e0e0)",
-        background: "var(--color-surface, #fff)",
+        borderBottom: "1px solid var(--border)",
+        background: "var(--sidebar-background)",
+        color: "var(--foreground)",
         flexShrink: 0,
         flexWrap: "wrap",
         fontSize: 12,
@@ -50,18 +51,14 @@ export function MapHeader() {
               padding: "2px 8px",
               borderRadius: 4,
               border: "1px solid",
-              borderColor:
-                mode === key
-                  ? "var(--color-accent, #534AB7)"
-                  : "var(--color-border, #ddd)",
-              background:
-                mode === key ? "var(--color-accent, #534AB7)" : "transparent",
+              borderColor: mode === key ? "#534AB7" : "var(--border)",
+              background: mode === key ? "#534AB7" : "transparent",
               color:
                 key === "free"
                   ? mode === key
                     ? "#fff"
-                    : "var(--color-text, #111)"
-                  : "var(--color-text-muted, #aaa)",
+                    : "var(--foreground)"
+                  : "var(--muted-foreground)",
               cursor: key === "free" ? "pointer" : "not-allowed",
               fontSize: 11,
               fontWeight: mode === key ? 600 : 400,
@@ -76,7 +73,7 @@ export function MapHeader() {
         style={{
           width: 1,
           height: 16,
-          background: "var(--color-border, #ddd)",
+          background: "var(--border)",
           margin: "0 4px",
         }}
       />
@@ -132,7 +129,7 @@ export function MapHeader() {
         style={{
           width: 1,
           height: 16,
-          background: "var(--color-border, #ddd)",
+          background: "var(--border)",
           margin: "0 4px",
         }}
       />
