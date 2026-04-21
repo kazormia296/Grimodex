@@ -294,6 +294,7 @@ Focus Codex panel                Ctrl+Alt+X
 Focus Snippets panel             Ctrl+Alt+N
 Focus Attribution panel          Ctrl+Alt+A
 Focus Chat History panel         Ctrl+Alt+H
+Focus Map panel                  Ctrl+Alt+M
 Open Settings                    Ctrl+Alt+,
 Command palette                  Ctrl+Shift+P
 Toggle Left Dock                 Ctrl+Alt+B

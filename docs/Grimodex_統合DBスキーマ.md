@@ -40,6 +40,11 @@ ORM: Drizzle ORM（sqlite-proxy）
 | `snippets_fts` | FTS5仮想 | Snippets | Snippetの全文検索 |
 | `chat_messages_fts` | FTS5仮想 | Chat History | チャットメッセージの全文検索 |
 | `tree_nodes_fts` | FTS5仮想 | Scenes | ツリーノードの全文検索 |
+| `map_boards` | 通常 | Map | Mapボード（v1は単一ボード固定） |
+| `map_node_positions` | 通常 | Map | ノードのボード上位置情報（Scene/Codex/Note/AIのポリモーフィック参照） |
+| `map_edges` | 通常 | Map | ユーザー描画エッジ |
+| `map_frames` | 通常 | Map | フレーム（グループ化矩形） |
+| `map_ai_nodes` | 通常 | Map | Map専用AIノード |
 
 ---
 
@@ -62,7 +67,9 @@ tree_nodes (1)
  ├──< chat_sessions (*)       node_id
  ├──< snippets (*)            scene_id
  ├──< codex_entry_phases (*)  anchor_node_id (nullable)
- └──< authorship_spans (*)    node_id (nullable)
+ ├──< authorship_spans (*)    node_id (nullable)
+ ├──> codex_entries (?)       pov_character_id (nullable, Phase C-2)
+ └──> codex_entries (?)       location_id (nullable, Phase C-2)
 
 codex_types (1)
  └──< codex_detail_definitions (*) type_slug (論理参照、FKなし)
@@ -102,6 +109,27 @@ chat_sessions (1)
 chat_messages (1)
  ├──< codex_entries (*)       source_chat_message_id
  └──< snippets (*)            source_chat_message_id
+
+map_boards (1)
+ ├──< map_node_positions (*)  board_id
+ ├──< map_edges (*)           board_id
+ ├──< map_frames (*)          board_id
+ └──< map_ai_nodes (*)        board_id
+
+map_node_positions (1)
+ └──< map_edges (*)           from_position_id / to_position_id
+
+tree_nodes (1)
+ └──< map_node_positions (*)  tree_node_id (nullable, scene or note)
+
+codex_entries (1)
+ └──< map_node_positions (*)  codex_entry_id (nullable)
+
+map_ai_nodes (1)
+ └──< map_node_positions (*)  ai_node_id (nullable)
+
+chat_sessions (1)
+ └──< map_ai_nodes (*)        session_id (nullable, ON DELETE SET NULL)
 ```
 
 ---
@@ -153,6 +181,11 @@ CREATE TABLE tree_nodes (
   content           TEXT NOT NULL DEFAULT '{}',  -- Scene/Note本文（ProseMirror JSON）
   story_time_order  TEXT,                  -- Sceneのみ: 文字列 fractional indexing キー（作中時間順、辞書順比較）。NULL = 未設定
   story_time_label  TEXT,                   -- Sceneのみ: 表示用ラベル（例: '帝国暦1024年3月', 'Day 3 morning'）。NULL = 未設定
+  -- 以下2カラムは Map Phase C-2 のマイグレーションで ALTER TABLE ADD COLUMN する
+  pov_character_id  TEXT REFERENCES codex_entries(id) ON DELETE SET NULL,
+                                            -- Sceneのみ: POVキャラクター（codex_entries.type='character'）。型整合性はアプリ層で保証
+  location_id       TEXT REFERENCES codex_entries(id) ON DELETE SET NULL,
+                                            -- Sceneのみ: 主要ロケーション（codex_entries.type='location'）。型整合性はアプリ層で保証
   created_at        TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at        TEXT NOT NULL DEFAULT (datetime('now'))
 );
@@ -160,6 +193,11 @@ CREATE TABLE tree_nodes (
 CREATE INDEX idx_tree_parent ON tree_nodes(project_id, parent_id, sort_order);
 CREATE INDEX idx_tree_story_time ON tree_nodes(project_id, story_time_order)
   WHERE story_time_order IS NOT NULL;
+-- 以下2インデックスは Map Phase C-2 のマイグレーションで追加
+CREATE INDEX idx_tree_pov ON tree_nodes(project_id, pov_character_id)
+  WHERE pov_character_id IS NOT NULL;
+CREATE INDEX idx_tree_location ON tree_nodes(project_id, location_id)
+  WHERE location_id IS NOT NULL;
 ```
 
 Scene/Noteの本文は `content` カラムに直接格納する。
@@ -170,6 +208,7 @@ Scene/Noteの本文は `content` カラムに直接格納する。
 - `story_time_label` は表示用で `story_time_order` から独立。同じ order でもラベルだけ自由に変更できるし、label だけ先に決めて order は後で設定する運用も可能
 - Folder/Note ノードでは `story_time_order` / `story_time_label` は未使用（Timeline パネルが葉 Scene のみ扱う）
 - `write-order（執筆順）`は `created_at` で表現される（専用カラムは不要）
+- `pov_character_id` / `location_id` は Map Phase C-2 で `ALTER TABLE ADD COLUMN` により追加される。SQLite の `codex_entries.type` が `'character'` / `'location'` であることはアプリ層で保証（FK の CHECK 制約は SQLite で cross-table 検証不可のため）
 - 詳細は Timeline パネル設計書（`Grimodex_Timelineパネル設計書.md`）と Codex パネル設計書のフェーズシステム節を参照
 
 ### codex_types
@@ -920,3 +959,151 @@ Timelineパネル設計書の策定に伴い、Phase解決で使う時間軸を�
 5. アプリ起動時に一度だけ実行し、完了フラグを `meta` テーブル等で記録
 
 **他テーブルの `sort_order` は据え置き**: `codex_types.sort_order` / `codex_detail_definitions.sort_order` は引き続き REAL 型を使う。これらは中間挿入頻度が低く（管理者が時々並べ替えるだけ）、精度劣化リスクは実害が薄いため、移行コストに見合わない。
+
+---
+
+## Mapパネル導入に伴う追加（2026-04-21）
+
+Mapパネル設計書の策定に伴い、以下の5テーブルを追加。詳細は [Mapパネル設計書](./Grimodex_Mapパネル設計書.md) を参照。
+
+### map_boards
+
+プロジェクトごとのMapボード。v1では単一ボード（`title = 'Main'`）を自動作成し、追加は禁止。
+
+```sql
+CREATE TABLE map_boards (
+  id          TEXT PRIMARY KEY,
+  project_id  TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  title       TEXT NOT NULL DEFAULT 'Main',
+  sort_order  REAL NOT NULL DEFAULT 0.0,
+  created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX idx_map_boards_project ON map_boards(project_id);
+```
+
+### map_node_positions
+
+ノードのボード上位置情報。ポリモーフィック参照（Scene/Note → `tree_node_id`、Codex → `codex_entry_id`、AI → `ai_node_id`）。
+
+```sql
+CREATE TABLE map_node_positions (
+  id              TEXT PRIMARY KEY,
+  board_id        TEXT NOT NULL REFERENCES map_boards(id) ON DELETE CASCADE,
+  node_ref_type   TEXT NOT NULL
+                    CHECK(node_ref_type IN ('scene', 'codex', 'note', 'ai')),
+  tree_node_id    TEXT REFERENCES tree_nodes(id) ON DELETE CASCADE,
+  codex_entry_id  TEXT REFERENCES codex_entries(id) ON DELETE CASCADE,
+  ai_node_id      TEXT REFERENCES map_ai_nodes(id) ON DELETE CASCADE,
+  x               REAL NOT NULL,
+  y               REAL NOT NULL,
+  pinned          INTEGER NOT NULL DEFAULT 0,  -- 1 if pinned in gravity modes
+  hidden          INTEGER NOT NULL DEFAULT 0,  -- 1 if hidden on this board
+  z_index         INTEGER NOT NULL DEFAULT 0,
+  created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at      TEXT NOT NULL DEFAULT (datetime('now')),
+  -- 1段目: 3つのFKのうちちょうど1つが non-null
+  CHECK (
+    (CASE WHEN tree_node_id IS NOT NULL THEN 1 ELSE 0 END +
+     CASE WHEN codex_entry_id IS NOT NULL THEN 1 ELSE 0 END +
+     CASE WHEN ai_node_id IS NOT NULL THEN 1 ELSE 0 END) = 1
+  ),
+  -- 2段目: node_ref_type と non-null FK カラムの対応を保証
+  CHECK (
+    (node_ref_type IN ('scene', 'note') AND tree_node_id   IS NOT NULL AND codex_entry_id IS NULL     AND ai_node_id IS NULL) OR
+    (node_ref_type = 'codex'            AND codex_entry_id IS NOT NULL AND tree_node_id   IS NULL     AND ai_node_id IS NULL) OR
+    (node_ref_type = 'ai'               AND ai_node_id     IS NOT NULL AND tree_node_id   IS NULL AND codex_entry_id IS NULL)
+  )
+);
+
+CREATE INDEX idx_map_pos_board ON map_node_positions(board_id);
+CREATE INDEX idx_map_pos_tree  ON map_node_positions(tree_node_id);
+CREATE INDEX idx_map_pos_codex ON map_node_positions(codex_entry_id);
+-- SQLite の NULL 意味論: NULLを含む複合UNIQUE INDEXでは一意性が保証されないため、タイプ別部分インデックスで分割
+CREATE UNIQUE INDEX idx_map_pos_uniq_scene ON map_node_positions(board_id, tree_node_id)
+  WHERE tree_node_id IS NOT NULL;
+CREATE UNIQUE INDEX idx_map_pos_uniq_codex ON map_node_positions(board_id, codex_entry_id)
+  WHERE codex_entry_id IS NOT NULL;
+CREATE UNIQUE INDEX idx_map_pos_uniq_ai    ON map_node_positions(board_id, ai_node_id)
+  WHERE ai_node_id IS NOT NULL;
+```
+
+**設計判断**:
+- `node_ref_type` と FK カラムの対応は2段CHECKで検証。ただし `node_ref_type='scene'` のとき `tree_nodes.node_type='scene'`（note行でない）であることは SQL では検証不可のため**アプリ層で担保する**
+- UNIQUE制約はタイプ別部分インデックスで実現（SQLite NULL 意味論対応）
+
+### map_edges
+
+ユーザー描画エッジ。参照先は `map_node_positions.id`（ボード跨ぎエッジを禁止）。
+
+```sql
+CREATE TABLE map_edges (
+  id                  TEXT PRIMARY KEY,
+  board_id            TEXT NOT NULL REFERENCES map_boards(id) ON DELETE CASCADE,
+  from_position_id    TEXT NOT NULL REFERENCES map_node_positions(id) ON DELETE CASCADE,
+  to_position_id      TEXT NOT NULL REFERENCES map_node_positions(id) ON DELETE CASCADE,
+  label               TEXT,
+  style               TEXT NOT NULL DEFAULT 'solid'
+                        CHECK(style IN ('solid', 'dashed', 'dotted')),
+  color               TEXT NOT NULL DEFAULT '#000000',
+  direction           TEXT NOT NULL DEFAULT 'none'
+                        CHECK(direction IN ('none', 'forward', 'bidirectional')),
+  created_at          TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at          TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX idx_map_edges_board ON map_edges(board_id);
+CREATE INDEX idx_map_edges_from  ON map_edges(from_position_id);
+CREATE INDEX idx_map_edges_to    ON map_edges(to_position_id);
+```
+
+### map_frames
+
+フレーム（グループ化矩形）。ノードとの親子関係はDBに持たず、位置の重なりで判定。
+
+```sql
+CREATE TABLE map_frames (
+  id            TEXT PRIMARY KEY,
+  board_id      TEXT NOT NULL REFERENCES map_boards(id) ON DELETE CASCADE,
+  title         TEXT NOT NULL DEFAULT 'Frame',
+  x             REAL NOT NULL,
+  y             REAL NOT NULL,
+  width         REAL NOT NULL,
+  height        REAL NOT NULL,
+  background    TEXT NOT NULL DEFAULT '#f5f5f5',
+  border_color  TEXT NOT NULL DEFAULT '#cccccc',
+  z_index       INTEGER NOT NULL DEFAULT -1,  -- デフォルトでノードの下
+  created_at    TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at    TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX idx_map_frames_board ON map_frames(board_id);
+```
+
+### map_ai_nodes
+
+Map専用AIノード。`session_id` は削除時 SET NULL（セッション削除後もノードは残るが、ダブルクリックは無効化される）。
+
+```sql
+CREATE TABLE map_ai_nodes (
+  id            TEXT PRIMARY KEY,
+  board_id      TEXT NOT NULL REFERENCES map_boards(id) ON DELETE CASCADE,
+  prompt        TEXT NOT NULL,
+  response      TEXT,
+  session_id    TEXT REFERENCES chat_sessions(id) ON DELETE SET NULL,
+  model         TEXT,
+  token_usage   INTEGER,
+  created_at    TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at    TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX idx_map_ai_board ON map_ai_nodes(board_id);
+```
+
+### 初期化・マイグレーション方針
+
+- プロジェクト作成時に `map_boards` へ `title = 'Main'` の行を1行シードする
+- v1 では追加ボードの作成を禁止（UIに追加ボタンを出さない）
+- v2 で複数ボード対応時に `map_boards` の `sort_order` インデックスと UI を追加
+- `global-settings.json` に保存していた `sceneDisplayByMode` / `colorBy` / `corkboardFeel` は v2 で `map_boards` テーブルへ移行予定
