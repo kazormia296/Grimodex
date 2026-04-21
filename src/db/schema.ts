@@ -21,7 +21,7 @@ export const projects = sqliteTable("projects", {
     enum: ["reading", "story", "auto"],
   })
     .notNull()
-    .default("reading"),
+    .default("auto"),
   createdAt: text("created_at")
     .notNull()
     .$defaultFn(() => new Date().toISOString()),
