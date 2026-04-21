@@ -27,10 +27,14 @@ export interface PhasePinData {
   entryName: string;
 }
 
+/** 軸から何px離れたらY軸ロックを解除するか */
+const AXIS_LOCK_THRESHOLD = 28;
+
 interface DragState {
   nodeId: string;
   startX: number;
   currentX: number;
+  currentY: number;
   originIndex: number;
 }
 
@@ -111,9 +115,16 @@ export function TimelineViewport({
   ) {
     if (!canDrag) return;
     e.preventDefault();
-    const svgX =
-      e.clientX - (svgRef.current?.getBoundingClientRect().left ?? 0);
-    setDrag({ nodeId, startX: svgX, currentX: svgX, originIndex });
+    const rect = svgRef.current?.getBoundingClientRect();
+    const svgX = e.clientX - (rect?.left ?? 0);
+    const svgY = e.clientY - (rect?.top ?? 0);
+    setDrag({
+      nodeId,
+      startX: svgX,
+      currentX: svgX,
+      currentY: svgY,
+      originIndex,
+    });
   }
 
   function commitDrop(clientX: number, clientY: number) {
@@ -163,9 +174,10 @@ export function TimelineViewport({
     if (!drag) return;
 
     function onMove(e: MouseEvent) {
-      const svgX =
-        e.clientX - (svgRef.current?.getBoundingClientRect().left ?? 0);
-      setDrag((d) => (d ? { ...d, currentX: svgX } : null));
+      const rect = svgRef.current?.getBoundingClientRect();
+      const svgX = e.clientX - (rect?.left ?? 0);
+      const svgY = e.clientY - (rect?.top ?? 0);
+      setDrag((d) => (d ? { ...d, currentX: svgX, currentY: svgY } : null));
     }
 
     function onUp(e: MouseEvent) {
@@ -305,25 +317,38 @@ export function TimelineViewport({
                 />
               )}
 
-              {/* Drag ghost line */}
-              {drag?.nodeId === scene.id && (
-                <line
-                  x1={cx}
-                  y1={cy}
-                  x2={drag.currentX}
-                  y2={cy}
-                  stroke="currentColor"
-                  strokeOpacity={0.35}
-                  strokeWidth={1}
-                  strokeDasharray="3 3"
-                  pointerEvents="none"
-                />
-              )}
+              {/* Drag ghost */}
+              {drag?.nodeId === scene.id &&
+                (() => {
+                  const locked =
+                    Math.abs(drag.currentY - LANE_Y) < AXIS_LOCK_THRESHOLD;
+                  const ghostX = drag.currentX;
+                  const ghostY = locked ? cy : drag.currentY;
+                  return (
+                    <line
+                      x1={cx}
+                      y1={cy}
+                      x2={ghostX}
+                      y2={ghostY}
+                      stroke="currentColor"
+                      strokeOpacity={0.35}
+                      strokeWidth={1}
+                      strokeDasharray="3 3"
+                      pointerEvents="none"
+                    />
+                  );
+                })()}
 
               {/* Scene dot */}
               <circle
                 cx={drag?.nodeId === scene.id ? drag.currentX : cx}
-                cy={cy}
+                cy={
+                  drag?.nodeId === scene.id
+                    ? Math.abs(drag.currentY - LANE_Y) < AXIS_LOCK_THRESHOLD
+                      ? cy
+                      : drag.currentY
+                    : cy
+                }
                 r={DOT_R}
                 fill={fill}
                 stroke={isSelected ? "white" : "transparent"}
