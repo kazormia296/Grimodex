@@ -107,3 +107,19 @@ useTimelineStore.subscribe((state) => {
     }
   }, 500);
 });
+
+/**
+ * Load persisted timeline settings and immediately sync prevPersistent,
+ * cancelling the spurious save-back IPC that loadFromSettings would otherwise schedule.
+ * Use this instead of calling loadFromSettings() directly.
+ */
+export function loadAndSyncTimelineSettings(
+  settings: Partial<TimelineSettings>,
+) {
+  useTimelineStore.getState().loadFromSettings(settings);
+  if (saveTimer !== null) {
+    clearTimeout(saveTimer);
+    saveTimer = null;
+  }
+  prevPersistent = snapshotPersistent(useTimelineStore.getState());
+}

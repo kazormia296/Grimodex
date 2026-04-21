@@ -244,6 +244,20 @@ export const TimelineViewport = forwardRef<HTMLDivElement, Props>(
       // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
 
+    const setContainerRef = useCallback(
+      (el: HTMLDivElement | null) => {
+        (
+          containerRef as React.MutableRefObject<HTMLDivElement | null>
+        ).current = el;
+        if (typeof forwardedRef === "function") forwardedRef(el);
+        else if (forwardedRef)
+          (
+            forwardedRef as React.MutableRefObject<HTMLDivElement | null>
+          ).current = el;
+      },
+      [forwardedRef],
+    );
+
     if (scenes.length === 0) {
       return (
         <div className="flex flex-1 items-center justify-center text-sm text-muted-foreground">
@@ -254,16 +268,7 @@ export const TimelineViewport = forwardRef<HTMLDivElement, Props>(
 
     return (
       <div
-        ref={(el) => {
-          (
-            containerRef as React.MutableRefObject<HTMLDivElement | null>
-          ).current = el;
-          if (typeof forwardedRef === "function") forwardedRef(el);
-          else if (forwardedRef)
-            (
-              forwardedRef as React.MutableRefObject<HTMLDivElement | null>
-            ).current = el;
-        }}
+        ref={setContainerRef}
         data-testid="timeline-scroll-container"
         className="flex-1 overflow-x-auto overflow-y-hidden"
         onScroll={handleScroll}

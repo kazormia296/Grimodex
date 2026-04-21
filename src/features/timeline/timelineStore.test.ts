@@ -1,6 +1,11 @@
-import { describe, it, expect, beforeEach } from "vitest";
-import { useTimelineStore } from "./timelineStore";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { useTimelineStore, loadAndSyncTimelineSettings } from "./timelineStore";
 import type { TimelineSettings } from "./timelineStore";
+import { invoke } from "@/lib/tauri";
+
+vi.mock("@/lib/tauri", () => ({
+  invoke: vi.fn(),
+}));
 
 function reset() {
   useTimelineStore.setState({
@@ -111,5 +116,81 @@ describe("timelineStore.loadFromSettings", () => {
       .getState()
       .loadFromSettings({ zoom: -1 } as TimelineSettings);
     expect(useTimelineStore.getState().zoom).toBe(0.25);
+  });
+});
+
+describe("timelineStore persistent subscriber", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    reset();
+    vi.clearAllTimers();
+    vi.mocked(invoke).mockResolvedValue({ recentWorkspaces: [], timeline: {} });
+    vi.clearAllMocks();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("inspectorOpen の変更では save IPC が発火しない", () => {
+    useTimelineStore.getState().toggleInspector();
+    vi.runAllTimers();
+    expect(invoke).not.toHaveBeenCalledWith(
+      "save_global_settings",
+      expect.anything(),
+    );
+  });
+
+  it("selectNode の変更では save IPC が発火しない", () => {
+    useTimelineStore.getState().selectNode("node-1");
+    vi.runAllTimers();
+    expect(invoke).not.toHaveBeenCalledWith(
+      "save_global_settings",
+      expect.anything(),
+    );
+  });
+
+  it("clearSelection の変更では save IPC が発火しない", () => {
+    useTimelineStore.setState({ selectedNodeIds: ["a"] });
+    vi.clearAllTimers();
+    vi.clearAllMocks();
+    useTimelineStore.getState().clearSelection();
+    vi.runAllTimers();
+    expect(invoke).not.toHaveBeenCalledWith(
+      "save_global_settings",
+      expect.anything(),
+    );
+  });
+
+  it("zoom 変更では save IPC が発火する", async () => {
+    useTimelineStore.getState().setZoom(2);
+    await vi.runAllTimersAsync();
+    expect(invoke).toHaveBeenCalledWith(
+      "save_global_settings",
+      expect.objectContaining({
+        settings: expect.objectContaining({
+          timeline: expect.objectContaining({ zoom: 2 }),
+        }),
+      }),
+    );
+  });
+
+  it("loadAndSyncTimelineSettings 直後は save IPC が発火しない", () => {
+    loadAndSyncTimelineSettings({
+      axisMode: "story",
+      spacingMode: "proportional",
+      zoom: 2,
+      scrollOffset: 100,
+      display: {
+        showTitles: false,
+        showChapterNumbers: false,
+        showPhasePins: true,
+      },
+    });
+    vi.runAllTimers();
+    expect(invoke).not.toHaveBeenCalledWith(
+      "save_global_settings",
+      expect.anything(),
+    );
   });
 });
