@@ -65,10 +65,12 @@ export function TimelineViewport({
   const svgRef = useRef<SVGSVGElement>(null);
   const [drag, setDrag] = useState<DragState | null>(null);
 
-  const hasUnscheduled =
-    unscheduledStartIndex !== undefined &&
-    unscheduledStartIndex < scenes.length;
-  const svgHeight = hasUnscheduled ? SVG_HEIGHT_BASE + 60 : SVG_HEIGHT_BASE;
+  // showUnscheduledZone: ドロップゾーンを表示するか
+  // story-time モード中は常に表示（全シーンが軸上でも Unscheduled に戻せるよう）
+  const showUnscheduledZone = unscheduledStartIndex !== undefined;
+  const svgHeight = showUnscheduledZone
+    ? SVG_HEIGHT_BASE + 60
+    : SVG_HEIGHT_BASE;
 
   // Compute x positions
   const scheduledCount = unscheduledStartIndex ?? scenes.length;
@@ -122,7 +124,7 @@ export function TimelineViewport({
     const rect = svgRef.current?.getBoundingClientRect();
     const svgX = clientX - (rect?.left ?? 0);
     const toUnscheduled =
-      hasUnscheduled && clientY - (rect?.top ?? 0) > UNSCHEDULED_Y - 20;
+      showUnscheduledZone && clientY - (rect?.top ?? 0) > UNSCHEDULED_Y - 20;
 
     if (toUnscheduled) {
       onDropStoryTime(drag.nodeId, null, null, true);
@@ -209,16 +211,29 @@ export function TimelineViewport({
           strokeWidth={1}
         />
 
-        {/* Unscheduled separator */}
-        {hasUnscheduled && (
+        {/* Unscheduled separator + drop zone (story-time モード中は常に表示) */}
+        {showUnscheduledZone && (
           <>
+            {/* ドラッグ中はゾーンをハイライト */}
+            {drag && (
+              <rect
+                x={PAD_LEFT - DOT_R}
+                y={UNSCHEDULED_Y - 20}
+                width={totalWidth - PAD_LEFT - PAD_RIGHT + DOT_R}
+                height={40}
+                fill="currentColor"
+                fillOpacity={0.05}
+                rx={4}
+                pointerEvents="none"
+              />
+            )}
             <line
               x1={PAD_LEFT - DOT_R}
               y1={UNSCHEDULED_Y - 16}
               x2={totalWidth - PAD_RIGHT}
               y2={UNSCHEDULED_Y - 16}
               stroke="currentColor"
-              strokeOpacity={0.12}
+              strokeOpacity={drag ? 0.35 : 0.12}
               strokeWidth={1}
               strokeDasharray="4 4"
             />
@@ -227,7 +242,7 @@ export function TimelineViewport({
               y={UNSCHEDULED_Y - 4}
               fontSize={9}
               fill="currentColor"
-              fillOpacity={0.4}
+              fillOpacity={drag ? 0.7 : 0.4}
             >
               {t("timeline.unscheduled", "Unscheduled")}
             </text>
