@@ -3,6 +3,8 @@ import i18next from "@/lib/i18n";
 import { invoke } from "@/lib/tauri";
 import { useSettingsStore } from "@/features/settings/settingsStore";
 import { useCursorSettingsStore } from "@/features/editor/cursorSettingsStore";
+import { useTimelineStore } from "@/features/timeline/timelineStore";
+import type { TimelineSettings } from "@/features/timeline/timelineStore";
 
 export interface RecentWorkspace {
   path: string;
@@ -28,6 +30,8 @@ export interface GlobalSettings {
   trustedWorkspaces?: string[];
   /** Whether the user has already seen the welcome tour. */
   hasSeenWelcome?: boolean;
+  /** Persisted timeline panel state */
+  timeline?: TimelineSettings;
 }
 
 export type AppView = "loading" | "welcome" | "launcher" | "editor";
@@ -133,6 +137,9 @@ export const useWorkspaceStore = create<WorkspaceState>()((set, get) => ({
       // Load persisted editor settings and apply to runtime stores
       await useSettingsStore.getState().loadAll();
       useCursorSettingsStore.getState().initFromSettings();
+      if (settings.timeline) {
+        useTimelineStore.getState().loadFromSettings(settings.timeline);
+      }
       // Optimize FTS indexes in background (fire-and-forget)
       invoke("fts_optimize").catch(() => {});
     } catch (e) {

@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import { useTimelineStore } from "./timelineStore";
+import type { TimelineSettings } from "./timelineStore";
 
 function reset() {
   useTimelineStore.setState({
@@ -65,5 +66,50 @@ describe("timelineStore", () => {
     expect(useTimelineStore.getState().inspectorOpen).toBe(false);
     useTimelineStore.getState().toggleInspector();
     expect(useTimelineStore.getState().inspectorOpen).toBe(true);
+  });
+});
+
+describe("timelineStore.loadFromSettings", () => {
+  beforeEach(reset);
+
+  it("全フィールドを正しく復元する", () => {
+    const s: TimelineSettings = {
+      axisMode: "story",
+      spacingMode: "proportional",
+      zoom: 2,
+      scrollOffset: 120,
+      display: {
+        showTitles: false,
+        showChapterNumbers: false,
+        showPhasePins: true,
+      },
+    };
+    useTimelineStore.getState().loadFromSettings(s);
+    const state = useTimelineStore.getState();
+    expect(state.axisMode).toBe("story");
+    expect(state.spacingMode).toBe("proportional");
+    expect(state.zoom).toBe(2);
+    expect(state.scrollOffset).toBe(120);
+    expect(state.display.showPhasePins).toBe(true);
+    expect(state.display.showTitles).toBe(false);
+  });
+
+  it("部分オブジェクトでもデフォルト値にフォールバックする", () => {
+    useTimelineStore.getState().loadFromSettings({} as TimelineSettings);
+    const state = useTimelineStore.getState();
+    expect(state.axisMode).toBe("reading");
+    expect(state.zoom).toBe(1);
+    expect(state.display.showTitles).toBe(true);
+  });
+
+  it("zoom は [0.25, 4] にクランプされる", () => {
+    useTimelineStore
+      .getState()
+      .loadFromSettings({ zoom: 99 } as TimelineSettings);
+    expect(useTimelineStore.getState().zoom).toBe(4);
+    useTimelineStore
+      .getState()
+      .loadFromSettings({ zoom: -1 } as TimelineSettings);
+    expect(useTimelineStore.getState().zoom).toBe(0.25);
   });
 });
