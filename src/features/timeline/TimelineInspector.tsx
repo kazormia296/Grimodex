@@ -1,0 +1,129 @@
+import { useState, useEffect } from "react";
+import { useTranslation } from "react-i18next";
+import { X } from "lucide-react";
+import type { TreeNodeData } from "@/features/tree/treeStore";
+import { usePhaseStore } from "@/features/codex/phaseStore";
+import { useCodexStore } from "@/features/codex/codexStore";
+import { useTimelineStore } from "./timelineStore";
+
+interface Props {
+  node: TreeNodeData;
+  onClose: () => void;
+  onUpdateStoryTimeLabel: (id: string, label: string) => void;
+}
+
+export function TimelineInspector({
+  node,
+  onClose,
+  onUpdateStoryTimeLabel,
+}: Props) {
+  const { t } = useTranslation();
+  const axisMode = useTimelineStore((s) => s.axisMode);
+  const phasesByEntry = usePhaseStore((s) => s.phasesByEntry);
+  const entries = useCodexStore((s) => s.entries);
+  const [labelDraft, setLabelDraft] = useState(node.storyTimeLabel ?? "");
+
+  useEffect(() => {
+    setLabelDraft(node.storyTimeLabel ?? "");
+  }, [node.id, node.storyTimeLabel]);
+
+  const anchoredPhases = entries.flatMap((entry) => {
+    const phases = phasesByEntry[entry.id] ?? [];
+    return phases
+      .filter((p) => p.anchorNodeId === node.id)
+      .map((p) => ({ entryName: entry.name, label: p.label }));
+  });
+
+  function commitLabel() {
+    if (labelDraft !== (node.storyTimeLabel ?? "")) {
+      onUpdateStoryTimeLabel(node.id, labelDraft);
+    }
+  }
+
+  return (
+    <div className="flex w-52 shrink-0 flex-col gap-2 overflow-y-auto border-l border-border bg-background px-3 py-2 text-xs">
+      {/* Header */}
+      <div className="flex items-center justify-between">
+        <span className="font-semibold text-foreground">{node.title}</span>
+        <button
+          onClick={onClose}
+          className="text-muted-foreground hover:text-foreground"
+          aria-label={t("timeline.inspector.close", "インスペクターを閉じる")}
+        >
+          <X size={12} />
+        </button>
+      </div>
+
+      {/* Status */}
+      <div className="flex items-center gap-1 text-muted-foreground">
+        <span>{t("timeline.inspector.status", "Status")}</span>
+        <span className="ml-auto font-medium text-foreground">
+          {node.status ?? "—"}
+        </span>
+      </div>
+
+      {/* Story-time fields (story-time axis only) */}
+      {axisMode === "story" && (
+        <div className="flex flex-col gap-1">
+          <label className="text-muted-foreground">
+            {t("timeline.inspector.storyTimeLabel", "Story-time label")}
+          </label>
+          <input
+            type="text"
+            value={labelDraft}
+            onChange={(e) => setLabelDraft(e.target.value)}
+            onBlur={commitLabel}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                commitLabel();
+                (e.target as HTMLInputElement).blur();
+              }
+            }}
+            placeholder="T1"
+            className="rounded border border-border bg-background px-1.5 py-0.5 text-xs focus:outline-none focus:ring-1 focus:ring-ring"
+          />
+          <span className="text-muted-foreground">
+            {node.storyTimeOrder
+              ? t("timeline.inspector.hasOrder", "配置済み")
+              : t("timeline.inspector.unscheduled", "Unscheduled")}
+          </span>
+        </div>
+      )}
+
+      {/* Synopsis */}
+      {node.synopsis && (
+        <div className="flex flex-col gap-0.5">
+          <span className="text-muted-foreground">
+            {t("timeline.inspector.synopsis", "Synopsis")}
+          </span>
+          <p className="text-foreground/80 leading-relaxed">{node.synopsis}</p>
+        </div>
+      )}
+
+      {/* Anchored phases */}
+      {anchoredPhases.length > 0 && (
+        <div className="flex flex-col gap-1">
+          <span className="text-muted-foreground">
+            {t("timeline.inspector.phases", "Phases anchored ({{n}})", {
+              n: anchoredPhases.length,
+            })}
+          </span>
+          {anchoredPhases.map((p, i) => (
+            <div key={i} className="flex items-center gap-1 text-foreground/80">
+              <span>⏱</span>
+              <span>
+                {p.entryName}: {p.label}
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Created at */}
+      <div className="mt-auto text-muted-foreground">
+        {t("timeline.inspector.created", "Created")}{" "}
+        {new Date(node.createdAt).toLocaleDateString()}
+      </div>
+    </div>
+  );
+}

@@ -11,9 +11,16 @@ const AXIS_LABELS: Record<AxisMode, string> = {
 interface Props {
   sceneCount: number;
   scheduledCount: number | null;
+  inspectorOpen: boolean;
+  onToggleInspector: () => void;
 }
 
-export function TimelineHeader({ sceneCount, scheduledCount }: Props) {
+export function TimelineHeader({
+  sceneCount,
+  scheduledCount,
+  inspectorOpen,
+  onToggleInspector,
+}: Props) {
   const { t } = useTranslation();
   const axisMode = useTimelineStore((s) => s.axisMode);
   const setAxisMode = useTimelineStore((s) => s.setAxisMode);
@@ -71,6 +78,13 @@ export function TimelineHeader({ sceneCount, scheduledCount }: Props) {
           title={t("timeline.togglePhasePins", "フェーズピン表示")}
         >
           ⏱
+        </button>
+        <button
+          onClick={onToggleInspector}
+          className={`rounded px-1.5 py-0.5 text-xs ${inspectorOpen ? "bg-accent text-accent-foreground" : "text-muted-foreground hover:bg-accent/50"}`}
+          title={t("timeline.toggleInspector", "インスペクター")}
+        >
+          ⋮
         </button>
       </div>
     </div>

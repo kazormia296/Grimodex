@@ -9,6 +9,7 @@ import { useCodexStore } from "@/features/codex/codexStore";
 import { useTimelineStore } from "./timelineStore";
 import { TimelineHeader } from "./TimelineHeader";
 import { TimelineViewport } from "./TimelineViewport";
+import { TimelineInspector } from "./TimelineInspector";
 import type { PhasePinData } from "./TimelineViewport";
 
 export function TimelinePanel() {
@@ -18,6 +19,9 @@ export function TimelinePanel() {
   const axisMode = useTimelineStore((s) => s.axisMode);
   const spacingMode = useTimelineStore((s) => s.spacingMode);
   const selectNode = useTimelineStore((s) => s.selectNode);
+  const selectedNodeIds = useTimelineStore((s) => s.selectedNodeIds);
+  const inspectorOpen = useTimelineStore((s) => s.inspectorOpen);
+  const toggleInspector = useTimelineStore((s) => s.toggleInspector);
   const phasesByEntry = usePhaseStore((s) => s.phasesByEntry);
   const entries = useCodexStore((s) => s.entries);
 
@@ -106,6 +110,22 @@ export function TimelinePanel() {
     [updateStoryTime],
   );
 
+  const selectedNode = useMemo(
+    () => nodes.find((n) => n.id === selectedNodeIds[0]) ?? null,
+    [nodes, selectedNodeIds],
+  );
+
+  const handleUpdateStoryTimeLabel = useCallback(
+    (id: string, label: string) => {
+      void updateStoryTime(
+        id,
+        nodes.find((n) => n.id === id)?.storyTimeOrder ?? null,
+        label,
+      );
+    },
+    [updateStoryTime, nodes],
+  );
+
   const handleSelectScene = useCallback(
     (id: string) => {
       selectNode(id);
@@ -140,19 +160,32 @@ export function TimelinePanel() {
       <TimelineHeader
         sceneCount={scenes.length}
         scheduledCount={scheduledCount}
+        inspectorOpen={inspectorOpen}
+        onToggleInspector={toggleInspector}
       />
-      <TimelineViewport
-        scenes={scenes}
-        weights={weights}
-        phasePins={phasePins}
-        unscheduledStartIndex={
-          axisMode === "story" && scheduledCount !== null
-            ? scheduledCount
-            : undefined
-        }
-        onDropStoryTime={axisMode === "story" ? handleDropStoryTime : undefined}
-        onSelectScene={handleSelectScene}
-      />
+      <div className="flex flex-1 overflow-hidden">
+        <TimelineViewport
+          scenes={scenes}
+          weights={weights}
+          phasePins={phasePins}
+          unscheduledStartIndex={
+            axisMode === "story" && scheduledCount !== null
+              ? scheduledCount
+              : undefined
+          }
+          onDropStoryTime={
+            axisMode === "story" ? handleDropStoryTime : undefined
+          }
+          onSelectScene={handleSelectScene}
+        />
+        {inspectorOpen && selectedNode && (
+          <TimelineInspector
+            node={selectedNode}
+            onClose={toggleInspector}
+            onUpdateStoryTimeLabel={handleUpdateStoryTimeLabel}
+          />
+        )}
+      </div>
     </div>
   );
 }
