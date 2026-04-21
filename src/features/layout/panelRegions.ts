@@ -15,6 +15,7 @@ export const PANEL_REGION_MAP: Record<
   snippets: "center-bottom",
   attribution: "center-bottom",
   timeline: "center-bottom",
+  map: "center-bottom",
 };
 
 /** Keyboard shortcut hints for each panel */
@@ -27,6 +28,7 @@ export const KEYBOARD_SHORTCUT_MAP: Partial<Record<PanelId, string>> = {
   attribution: "Ctrl+Alt+A",
   "codex-quick": "Ctrl+Alt+Q",
   timeline: "Ctrl+Alt+L",
+  map: "Ctrl+Alt+M",
 };
 
 /** Panels shown in the dropdown, grouped by region */
@@ -42,4 +44,5 @@ export const TOGGLEABLE_PANELS: Exclude<PanelId, "editor">[] = [
   "snippets",
   "attribution",
   "timeline",
+  "map",
 ];

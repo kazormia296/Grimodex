@@ -460,6 +460,119 @@ impl Database {
                   VALUES (new.id || '-lore', new.id, 'lore', '伝承', '#993C1D', 3, 1, 3.0, datetime('now'));
             END;
 
+            -- Map panel tables (map_ai_nodes first; map_node_positions references it)
+            CREATE TABLE IF NOT EXISTS map_ai_nodes (
+                id            TEXT PRIMARY KEY,
+                board_id      TEXT NOT NULL REFERENCES map_boards(id) ON DELETE CASCADE,
+                prompt        TEXT NOT NULL,
+                response      TEXT,
+                session_id    TEXT REFERENCES chat_sessions(id) ON DELETE SET NULL,
+                model         TEXT,
+                token_usage   INTEGER,
+                created_at    TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at    TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+            CREATE INDEX IF NOT EXISTS idx_map_ai_board
+                ON map_ai_nodes(board_id);
+
+            CREATE TABLE IF NOT EXISTS map_boards (
+                id          TEXT PRIMARY KEY,
+                project_id  TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                title       TEXT NOT NULL DEFAULT 'Main',
+                sort_order  REAL NOT NULL DEFAULT 0.0,
+                created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+            CREATE INDEX IF NOT EXISTS idx_map_boards_project
+                ON map_boards(project_id);
+
+            CREATE TABLE IF NOT EXISTS map_node_positions (
+                id              TEXT PRIMARY KEY,
+                board_id        TEXT NOT NULL REFERENCES map_boards(id) ON DELETE CASCADE,
+                node_ref_type   TEXT NOT NULL
+                                    CHECK(node_ref_type IN ('scene', 'codex', 'note', 'ai')),
+                tree_node_id    TEXT REFERENCES tree_nodes(id) ON DELETE CASCADE,
+                codex_entry_id  TEXT REFERENCES codex_entries(id) ON DELETE CASCADE,
+                ai_node_id      TEXT REFERENCES map_ai_nodes(id) ON DELETE CASCADE,
+                x               REAL NOT NULL,
+                y               REAL NOT NULL,
+                pinned          INTEGER NOT NULL DEFAULT 0,
+                hidden          INTEGER NOT NULL DEFAULT 0,
+                z_index         INTEGER NOT NULL DEFAULT 0,
+                created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at      TEXT NOT NULL DEFAULT (datetime('now')),
+                CHECK (
+                    (CASE WHEN tree_node_id IS NOT NULL THEN 1 ELSE 0 END +
+                     CASE WHEN codex_entry_id IS NOT NULL THEN 1 ELSE 0 END +
+                     CASE WHEN ai_node_id IS NOT NULL THEN 1 ELSE 0 END) = 1
+                ),
+                CHECK (
+                    (node_ref_type IN ('scene', 'note') AND tree_node_id   IS NOT NULL AND codex_entry_id IS NULL     AND ai_node_id IS NULL) OR
+                    (node_ref_type = 'codex'            AND codex_entry_id IS NOT NULL AND tree_node_id   IS NULL     AND ai_node_id IS NULL) OR
+                    (node_ref_type = 'ai'               AND ai_node_id     IS NOT NULL AND tree_node_id   IS NULL AND codex_entry_id IS NULL)
+                )
+            );
+            CREATE INDEX IF NOT EXISTS idx_map_pos_board
+                ON map_node_positions(board_id);
+            CREATE INDEX IF NOT EXISTS idx_map_pos_tree
+                ON map_node_positions(tree_node_id);
+            CREATE INDEX IF NOT EXISTS idx_map_pos_codex
+                ON map_node_positions(codex_entry_id);
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_map_pos_uniq_scene
+                ON map_node_positions(board_id, tree_node_id)
+                WHERE tree_node_id IS NOT NULL;
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_map_pos_uniq_codex
+                ON map_node_positions(board_id, codex_entry_id)
+                WHERE codex_entry_id IS NOT NULL;
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_map_pos_uniq_ai
+                ON map_node_positions(board_id, ai_node_id)
+                WHERE ai_node_id IS NOT NULL;
+
+            CREATE TABLE IF NOT EXISTS map_edges (
+                id                  TEXT PRIMARY KEY,
+                board_id            TEXT NOT NULL REFERENCES map_boards(id) ON DELETE CASCADE,
+                from_position_id    TEXT NOT NULL REFERENCES map_node_positions(id) ON DELETE CASCADE,
+                to_position_id      TEXT NOT NULL REFERENCES map_node_positions(id) ON DELETE CASCADE,
+                label               TEXT,
+                style               TEXT NOT NULL DEFAULT 'solid'
+                                        CHECK(style IN ('solid', 'dashed', 'dotted')),
+                color               TEXT NOT NULL DEFAULT '#000000',
+                direction           TEXT NOT NULL DEFAULT 'none'
+                                        CHECK(direction IN ('none', 'forward', 'bidirectional')),
+                created_at          TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at          TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+            CREATE INDEX IF NOT EXISTS idx_map_edges_board
+                ON map_edges(board_id);
+            CREATE INDEX IF NOT EXISTS idx_map_edges_from
+                ON map_edges(from_position_id);
+            CREATE INDEX IF NOT EXISTS idx_map_edges_to
+                ON map_edges(to_position_id);
+
+            CREATE TABLE IF NOT EXISTS map_frames (
+                id            TEXT PRIMARY KEY,
+                board_id      TEXT NOT NULL REFERENCES map_boards(id) ON DELETE CASCADE,
+                title         TEXT NOT NULL DEFAULT 'Frame',
+                x             REAL NOT NULL,
+                y             REAL NOT NULL,
+                width         REAL NOT NULL,
+                height        REAL NOT NULL,
+                background    TEXT NOT NULL DEFAULT '#f5f5f5',
+                border_color  TEXT NOT NULL DEFAULT '#cccccc',
+                z_index       INTEGER NOT NULL DEFAULT -1,
+                created_at    TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at    TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+            CREATE INDEX IF NOT EXISTS idx_map_frames_board
+                ON map_frames(board_id);
+
+            -- Seed a default Map board for every new project
+            CREATE TRIGGER IF NOT EXISTS seed_default_map_board
+            AFTER INSERT ON projects BEGIN
+                INSERT OR IGNORE INTO map_boards (id, project_id, title, sort_order, created_at, updated_at)
+                  VALUES (new.id || '-main-board', new.id, 'Main', 0.0, datetime('now'), datetime('now'));
+            END;
+
             -- Seed default project + folder node
             INSERT OR IGNORE INTO projects (id, title, language, created_at, updated_at)
               VALUES ('default-project', '無題のプロジェクト', 'ja', datetime('now'), datetime('now'));

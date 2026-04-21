@@ -317,7 +317,8 @@
       "attribution": "Attribution",
       "codex-quick": "Codex Quick",
       "stats": "Stats",
-      "timeline": "Timeline"
+      "timeline": "Timeline",
+      "map": "Map"
     },
     "preset": {
       "title": "Layout presets",

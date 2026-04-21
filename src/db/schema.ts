@@ -499,6 +499,151 @@ export const settings = sqliteTable("settings", {
   value: text("value").notNull(),
 });
 
+// Map panel tables
+
+export const mapBoards = sqliteTable(
+  "map_boards",
+  {
+    id: text("id").primaryKey(),
+    projectId: text("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    title: text("title").notNull().default("Main"),
+    sortOrder: real("sort_order").notNull().default(0.0),
+    createdAt: text("created_at")
+      .notNull()
+      .$defaultFn(() => new Date().toISOString()),
+    updatedAt: text("updated_at")
+      .notNull()
+      .$defaultFn(() => new Date().toISOString()),
+  },
+  (table) => [index("idx_map_boards_project").on(table.projectId)],
+);
+
+export const mapAiNodes = sqliteTable(
+  "map_ai_nodes",
+  {
+    id: text("id").primaryKey(),
+    boardId: text("board_id")
+      .notNull()
+      .references(() => mapBoards.id, { onDelete: "cascade" }),
+    prompt: text("prompt").notNull(),
+    response: text("response"),
+    sessionId: text("session_id").references(() => chatSessions.id, {
+      onDelete: "set null",
+    }),
+    model: text("model"),
+    tokenUsage: integer("token_usage"),
+    createdAt: text("created_at")
+      .notNull()
+      .$defaultFn(() => new Date().toISOString()),
+    updatedAt: text("updated_at")
+      .notNull()
+      .$defaultFn(() => new Date().toISOString()),
+  },
+  (table) => [index("idx_map_ai_board").on(table.boardId)],
+);
+
+export const mapNodePositions = sqliteTable(
+  "map_node_positions",
+  {
+    id: text("id").primaryKey(),
+    boardId: text("board_id")
+      .notNull()
+      .references(() => mapBoards.id, { onDelete: "cascade" }),
+    nodeRefType: text("node_ref_type", {
+      enum: ["scene", "codex", "note", "ai"],
+    }).notNull(),
+    treeNodeId: text("tree_node_id").references(() => treeNodes.id, {
+      onDelete: "cascade",
+    }),
+    codexEntryId: text("codex_entry_id").references(() => codexEntries.id, {
+      onDelete: "cascade",
+    }),
+    aiNodeId: text("ai_node_id").references(() => mapAiNodes.id, {
+      onDelete: "cascade",
+    }),
+    x: real("x").notNull(),
+    y: real("y").notNull(),
+    pinned: integer("pinned").notNull().default(0),
+    hidden: integer("hidden").notNull().default(0),
+    zIndex: integer("z_index").notNull().default(0),
+    createdAt: text("created_at")
+      .notNull()
+      .$defaultFn(() => new Date().toISOString()),
+    updatedAt: text("updated_at")
+      .notNull()
+      .$defaultFn(() => new Date().toISOString()),
+  },
+  (table) => [
+    index("idx_map_pos_board").on(table.boardId),
+    index("idx_map_pos_tree").on(table.treeNodeId),
+    index("idx_map_pos_codex").on(table.codexEntryId),
+  ],
+);
+
+export const mapEdges = sqliteTable(
+  "map_edges",
+  {
+    id: text("id").primaryKey(),
+    boardId: text("board_id")
+      .notNull()
+      .references(() => mapBoards.id, { onDelete: "cascade" }),
+    fromPositionId: text("from_position_id")
+      .notNull()
+      .references(() => mapNodePositions.id, { onDelete: "cascade" }),
+    toPositionId: text("to_position_id")
+      .notNull()
+      .references(() => mapNodePositions.id, { onDelete: "cascade" }),
+    label: text("label"),
+    style: text("style", { enum: ["solid", "dashed", "dotted"] })
+      .notNull()
+      .default("solid"),
+    color: text("color").notNull().default("#000000"),
+    direction: text("direction", {
+      enum: ["none", "forward", "bidirectional"],
+    })
+      .notNull()
+      .default("none"),
+    createdAt: text("created_at")
+      .notNull()
+      .$defaultFn(() => new Date().toISOString()),
+    updatedAt: text("updated_at")
+      .notNull()
+      .$defaultFn(() => new Date().toISOString()),
+  },
+  (table) => [
+    index("idx_map_edges_board").on(table.boardId),
+    index("idx_map_edges_from").on(table.fromPositionId),
+    index("idx_map_edges_to").on(table.toPositionId),
+  ],
+);
+
+export const mapFrames = sqliteTable(
+  "map_frames",
+  {
+    id: text("id").primaryKey(),
+    boardId: text("board_id")
+      .notNull()
+      .references(() => mapBoards.id, { onDelete: "cascade" }),
+    title: text("title").notNull().default("Frame"),
+    x: real("x").notNull(),
+    y: real("y").notNull(),
+    width: real("width").notNull(),
+    height: real("height").notNull(),
+    background: text("background").notNull().default("#f5f5f5"),
+    borderColor: text("border_color").notNull().default("#cccccc"),
+    zIndex: integer("z_index").notNull().default(-1),
+    createdAt: text("created_at")
+      .notNull()
+      .$defaultFn(() => new Date().toISOString()),
+    updatedAt: text("updated_at")
+      .notNull()
+      .$defaultFn(() => new Date().toISOString()),
+  },
+  (table) => [index("idx_map_frames_board").on(table.boardId)],
+);
+
 // Type exports
 export type AuthorshipSpan = typeof authorshipSpans.$inferSelect;
 export type NewAuthorshipSpan = typeof authorshipSpans.$inferInsert;
@@ -522,3 +667,14 @@ export type CodexPhaseDetailOverride =
   typeof codexPhaseDetailOverrides.$inferSelect;
 export type NewCodexPhaseDetailOverride =
   typeof codexPhaseDetailOverrides.$inferInsert;
+
+export type MapBoard = typeof mapBoards.$inferSelect;
+export type NewMapBoard = typeof mapBoards.$inferInsert;
+export type MapNodePosition = typeof mapNodePositions.$inferSelect;
+export type NewMapNodePosition = typeof mapNodePositions.$inferInsert;
+export type MapEdge = typeof mapEdges.$inferSelect;
+export type NewMapEdge = typeof mapEdges.$inferInsert;
+export type MapFrame = typeof mapFrames.$inferSelect;
+export type NewMapFrame = typeof mapFrames.$inferInsert;
+export type MapAiNode = typeof mapAiNodes.$inferSelect;
+export type NewMapAiNode = typeof mapAiNodes.$inferInsert;

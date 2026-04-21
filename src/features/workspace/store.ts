@@ -5,6 +5,7 @@ import { useSettingsStore } from "@/features/settings/settingsStore";
 import { useCursorSettingsStore } from "@/features/editor/cursorSettingsStore";
 import { loadAndSyncTimelineSettings } from "@/features/timeline/timelineStore";
 import type { TimelineSettings } from "@/features/timeline/timelineStore";
+import { useMapStore } from "@/features/map/mapStore";
 
 export interface RecentWorkspace {
   path: string;
@@ -32,6 +33,8 @@ export interface GlobalSettings {
   hasSeenWelcome?: boolean;
   /** Persisted timeline panel state */
   timeline?: TimelineSettings;
+  /** Persisted map panel state */
+  map?: unknown;
 }
 
 export type AppView = "loading" | "welcome" | "launcher" | "editor";
@@ -140,6 +143,7 @@ export const useWorkspaceStore = create<WorkspaceState>()((set, get) => ({
       if (settings.timeline) {
         loadAndSyncTimelineSettings(settings.timeline);
       }
+      useMapStore.getState().loadFromSettings(settings);
       // Optimize FTS indexes in background (fire-and-forget)
       invoke("fts_optimize").catch(() => {});
     } catch (e) {

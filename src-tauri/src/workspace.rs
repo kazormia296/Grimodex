@@ -49,6 +49,9 @@ pub struct GlobalSettings {
     /// Timeline panel settings (zoom, axis mode, scroll offset, etc.).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub timeline: Option<serde_json::Value>,
+    /// Map panel settings (mode, viewport, show flags, etc.).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub map: Option<serde_json::Value>,
 }
 
 impl Default for GlobalSettings {
@@ -67,6 +70,7 @@ impl Default for GlobalSettings {
             trusted_workspaces: Vec::new(),
             has_seen_welcome: false,
             timeline: None,
+            map: None,
         }
     }
 }
