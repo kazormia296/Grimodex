@@ -41,6 +41,7 @@ import { ChatPanel } from "@/features/chat/ChatPanel";
 import { ChatHistoryPanel } from "@/features/chat/ChatHistoryPanel";
 import { SnippetPanel } from "@/features/snippets/SnippetPanel";
 import { AttributionReport } from "@/features/attribution/AttributionReport";
+import { TimelinePanel } from "@/features/timeline/TimelinePanel";
 import { useState } from "react";
 import { Settings, FileOutput } from "lucide-react";
 import { ExportDialog } from "@/features/export/ExportDialog";
@@ -92,6 +93,10 @@ function AttributionContent(_props: IDockviewPanelProps) {
 
 function CodexQuickContent(_props: IDockviewPanelProps) {
   return <CodexQuickPanel />;
+}
+
+function TimelineContent(_props: IDockviewPanelProps) {
+  return <TimelinePanel />;
 }
 
 /* ── Default layout builder (delegates to builtin preset) ── */
@@ -270,6 +275,7 @@ function EditorScreen() {
       snippets: SnippetsContent,
       attribution: AttributionContent,
       "codex-quick": CodexQuickContent,
+      timeline: TimelineContent,
     }),
     [],
   );
@@ -405,6 +411,7 @@ function EditorScreen() {
         n: "snippets",
         a: "attribution",
         q: "codex-quick",
+        l: "timeline",
         ",": "settings",
       };
 

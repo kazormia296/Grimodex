@@ -18,7 +18,8 @@ export type PanelId =
   | "chat"
   | "snippets"
   | "attribution"
-  | "codex-quick";
+  | "codex-quick"
+  | "timeline";
 
 /** MIME type used to transfer panel IDs during external drag operations */
 export const PANEL_DRAG_TYPE = "application/grimodex-panel-id";
@@ -63,6 +64,12 @@ const PANEL_INSERT_REGISTRY: Record<PanelId, InsertRule[]> = {
   attribution: [
     { panel: "editor", direction: "below" },
     { panel: "snippets", direction: "within" },
+    { panel: null, direction: "below" },
+  ],
+  timeline: [
+    { panel: "snippets", direction: "within" },
+    { panel: "attribution", direction: "within" },
+    { panel: "editor", direction: "below" },
     { panel: null, direction: "below" },
   ],
   editor: [

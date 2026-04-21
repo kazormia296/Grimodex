@@ -311,7 +311,8 @@
       "snippets": "Snippets",
       "attribution": "Attribution",
       "codex-quick": "Codex Quick",
-      "stats": "Stats"
+      "stats": "Stats",
+      "timeline": "Timeline"
     },
     "preset": {
       "title": "Layout presets",
