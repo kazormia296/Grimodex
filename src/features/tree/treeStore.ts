@@ -839,6 +839,8 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
   async updateStoryTime(id, order, label) {
     const node = get().nodes.find((n) => n.id === id);
     if (!node) return;
+    const oldOrder = node.storyTimeOrder;
+    const oldLabel = node.storyTimeLabel;
     const patch: Parameters<typeof api.updateNode>[1] = {
       storyTimeOrder: order ?? undefined,
     };
@@ -855,6 +857,42 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
           : n,
       ),
     }));
+    usePhaseStore.getState().recomputeSceneOrder(get().nodes);
+    if (!useTreeHistoryStore.getState().isReplaying) {
+      useTreeHistoryStore.getState().push({
+        async undo() {
+          const undoPatch: Parameters<typeof api.updateNode>[1] = {
+            storyTimeOrder: oldOrder ?? undefined,
+            storyTimeLabel: oldLabel ?? undefined,
+          };
+          await api.updateNode(id, undoPatch);
+          set((state) => ({
+            nodes: state.nodes.map((n) =>
+              n.id === id
+                ? { ...n, storyTimeOrder: oldOrder, storyTimeLabel: oldLabel }
+                : n,
+            ),
+          }));
+          usePhaseStore.getState().recomputeSceneOrder(get().nodes);
+        },
+        async redo() {
+          await api.updateNode(id, patch);
+          set((state) => ({
+            nodes: state.nodes.map((n) =>
+              n.id === id
+                ? {
+                    ...n,
+                    storyTimeOrder: order,
+                    storyTimeLabel:
+                      label !== undefined ? label : n.storyTimeLabel,
+                  }
+                : n,
+            ),
+          }));
+          usePhaseStore.getState().recomputeSceneOrder(get().nodes);
+        },
+      });
+    }
   },
 
   // --- UI state ---
