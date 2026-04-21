@@ -14,9 +14,10 @@ export function computeFitZoom(
   sceneCount: number,
   containerWidth: number,
   baseStep: number,
-  _padding: number,
+  padding: number,
 ): number {
   if (sceneCount <= 0 || containerWidth <= 0) return ZOOM_MIN;
-  const raw = containerWidth / (sceneCount * baseStep);
+  const usable = Math.max(0, containerWidth - padding);
+  const raw = usable / (sceneCount * baseStep);
   return Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, raw));
 }

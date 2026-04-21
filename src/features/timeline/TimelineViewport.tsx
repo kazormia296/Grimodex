@@ -12,8 +12,8 @@ const AXIS_Y = LANE_Y;
 const PHASE_PIN_Y = LANE_Y + 44;
 const UNSCHEDULED_Y = LANE_Y + 90;
 const SVG_HEIGHT_BASE = 130;
-const PAD_LEFT = 48;
-const PAD_RIGHT = 32;
+export const PAD_LEFT = 48;
+export const PAD_RIGHT = 32;
 
 const STATUS_FILL: Record<string, string> = {
   outline: "var(--color-muted-foreground, #888)",
@@ -81,6 +81,9 @@ export const TimelineViewport = forwardRef<HTMLDivElement, Props>(
     const containerRef = useRef<HTMLDivElement>(null);
     const isRestoringRef = useRef(false);
     const [drag, setDrag] = useState<DragState | null>(null);
+    // Track when the scroll container element mounts/unmounts so the wheel
+    // listener effect re-runs even if scenes load after the first render.
+    const [containerEl, setContainerEl] = useState<HTMLDivElement | null>(null);
 
     const STEP = STEP_BASE * zoom;
 
@@ -230,25 +233,26 @@ export const TimelineViewport = forwardRef<HTMLDivElement, Props>(
     }, [setScrollOffset]);
 
     // Ctrl+wheel zoom — must use native listener with passive:false to call preventDefault.
+    // Depends on containerEl (not just []) so the listener re-attaches when scenes
+    // load after the first render and the container div appears for the first time.
     useEffect(() => {
-      const el = containerRef.current;
-      if (!el) return;
+      if (!containerEl) return;
       const onWheel = (e: WheelEvent) => {
         if (!e.ctrlKey) return;
         e.preventDefault();
         const factor = e.deltaY < 0 ? ZOOM_STEP : 1 / ZOOM_STEP;
         setZoom(useTimelineStore.getState().zoom * factor);
       };
-      el.addEventListener("wheel", onWheel, { passive: false });
-      return () => el.removeEventListener("wheel", onWheel);
-      // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, []);
+      containerEl.addEventListener("wheel", onWheel, { passive: false });
+      return () => containerEl.removeEventListener("wheel", onWheel);
+    }, [containerEl, setZoom]);
 
     const setContainerRef = useCallback(
       (el: HTMLDivElement | null) => {
         (
           containerRef as React.MutableRefObject<HTMLDivElement | null>
         ).current = el;
+        setContainerEl(el);
         if (typeof forwardedRef === "function") forwardedRef(el);
         else if (forwardedRef)
           (

@@ -9,7 +9,7 @@ import { useCodexStore } from "@/features/codex/codexStore";
 import { useTimelineStore } from "./timelineStore";
 import { computeFitZoom, ZOOM_STEP, STEP_BASE } from "./timelineZoom";
 import { TimelineHeader } from "./TimelineHeader";
-import { TimelineViewport } from "./TimelineViewport";
+import { TimelineViewport, PAD_LEFT, PAD_RIGHT } from "./TimelineViewport";
 import { TimelineInspector } from "./TimelineInspector";
 import type { PhasePinData } from "./TimelineViewport";
 
@@ -150,6 +150,15 @@ export function TimelinePanel() {
     [selectNode, setActiveScene],
   );
 
+  // For story-time: how many scenes have story_time_order set
+  const scheduledCount = useMemo(
+    () =>
+      axisMode === "story"
+        ? sceneNodes.filter((n) => n.storyTimeOrder !== null).length
+        : null,
+    [axisMode, sceneNodes],
+  );
+
   useEffect(() => {
     function handleKeyDown(e: KeyboardEvent) {
       if (!e.ctrlKey && !e.metaKey) return;
@@ -166,12 +175,20 @@ export function TimelinePanel() {
         case "0":
           e.preventDefault();
           if (viewportRef.current) {
+            // Proportional mode: SVG width = PAD_LEFT + visibleForWidth*STEP*2 + PAD_RIGHT
+            // Uniform mode:      SVG width = PAD_LEFT + scenes.length*STEP + PAD_RIGHT
+            const visibleForFit =
+              scheduledCount !== null
+                ? Math.max(scheduledCount, 1)
+                : scenes.length;
+            const baseCount =
+              weights != null ? visibleForFit * 2 : scenes.length;
             setZoom(
               computeFitZoom(
-                scenes.length,
+                baseCount,
                 viewportRef.current.clientWidth,
                 STEP_BASE,
-                0,
+                PAD_LEFT + PAD_RIGHT,
               ),
             );
           }
@@ -189,16 +206,7 @@ export function TimelinePanel() {
     }
     document.addEventListener("keydown", handleKeyDown);
     return () => document.removeEventListener("keydown", handleKeyDown);
-  }, [zoom, setZoom, scenes.length]);
-
-  // For story-time: how many scenes have story_time_order set
-  const scheduledCount = useMemo(
-    () =>
-      axisMode === "story"
-        ? sceneNodes.filter((n) => n.storyTimeOrder !== null).length
-        : null,
-    [axisMode, sceneNodes],
-  );
+  }, [zoom, setZoom, scenes.length, weights, scheduledCount]);
 
   return (
     <div className="flex h-full flex-col overflow-hidden">

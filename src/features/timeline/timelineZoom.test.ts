@@ -2,10 +2,10 @@ import { describe, it, expect } from "vitest";
 import { computeFitZoom, ZOOM_STEP, ZOOM_MIN, ZOOM_MAX } from "./timelineZoom";
 
 describe("computeFitZoom", () => {
-  it("シーン数 * STEP がコンテナ幅に収まるズームを返す", () => {
-    // 10シーン × STEP(96) = 960px、コンテナ幅480px → zoom=0.5
-    const zoom = computeFitZoom(10, 480, 96, 80);
-    expect(zoom).toBeCloseTo(0.5, 1);
+  it("パディングを除いた usable 幅でズームを計算する", () => {
+    // usable = 560 - 80 = 480px、10シーン × 96 = 960px → zoom = 480/960 = 0.5
+    const zoom = computeFitZoom(10, 560, 96, 80);
+    expect(zoom).toBeCloseTo(0.5, 2);
   });
 
   it("シーン数が0のときは ZOOM_MIN を返す", () => {
