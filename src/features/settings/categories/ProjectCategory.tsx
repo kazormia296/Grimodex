@@ -4,6 +4,8 @@ import { useSettingControl } from "../useSettingControl";
 import { SettingSection } from "../components/SettingSection";
 import { SettingRow } from "../components/SettingRow";
 import { SettingTextarea } from "../components/SettingTextarea";
+import { usePhaseStore } from "@/features/codex/phaseStore";
+import type { PhaseResolutionMode } from "@/features/codex/phaseResolver";
 
 const LANGUAGE_OPTIONS = [
   { value: "ja", label: "日本語" },
@@ -152,7 +154,11 @@ export function ProjectCategory() {
         >
           <select
             value={project.phaseResolutionMode}
-            onChange={(e) => updateField("phaseResolutionMode", e.target.value)}
+            onChange={(e) => {
+              const mode = e.target.value as PhaseResolutionMode;
+              updateField("phaseResolutionMode", mode);
+              usePhaseStore.getState().setResolutionMode(mode);
+            }}
             className="rounded-md border border-input bg-background px-2 py-1 text-sm focus:outline-none"
           >
             {PHASE_RESOLUTION_OPTIONS.map((o) => (

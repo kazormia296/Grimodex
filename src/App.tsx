@@ -59,6 +59,7 @@ import { TitleBar } from "@/components/TitleBar";
 import { useTabStore } from "@/features/editor/tabStore";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { getProject } from "@/features/project/api";
+import { usePhaseStore } from "@/features/codex/phaseStore";
 import { WelcomeDialog } from "@/features/onboarding/WelcomeDialog";
 
 /* ── Panel content components for dockview ── */
@@ -253,10 +254,13 @@ function EditorScreen() {
     return () => window.removeEventListener("show-welcome-tour", onShowTour);
   }, []);
 
-  // 執筆言語を <html lang> に反映（初期ロード時）
+  // 執筆言語を <html lang> に反映、Phase resolution mode を初期化
   useEffect(() => {
     getProject("default-project").then((p) => {
       if (p?.language) document.documentElement.lang = p.language;
+      if (p?.phaseResolutionMode) {
+        usePhaseStore.getState().setResolutionMode(p.phaseResolutionMode);
+      }
     });
   }, []);
   const { togglePanel, loadLayout, loadPresets, setDockviewApi } =

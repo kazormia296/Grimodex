@@ -66,6 +66,8 @@ describe("phaseStore", () => {
       detailOverrides: {},
       globalSceneOrder: new Map(),
       resolvedStates: {},
+      resolutionMode: "reading",
+      cachedNodes: [],
     });
   });
 
@@ -193,6 +195,94 @@ describe("phaseStore", () => {
       usePhaseStore.getState().recomputeSceneOrder([]);
 
       expect(usePhaseStore.getState().globalSceneOrder.size).toBe(0);
+    });
+
+    it("story モード時: storyTimeOrder 順でインデックスを割り当てる", () => {
+      usePhaseStore.getState().setResolutionMode("story");
+      const scene1 = {
+        ...mockScene,
+        id: "s1",
+        sortOrder: "a1",
+        storyTimeOrder: "a2",
+      };
+      const scene2 = {
+        ...mockScene,
+        id: "s2",
+        sortOrder: "a2",
+        storyTimeOrder: "a1",
+      };
+      usePhaseStore.getState().recomputeSceneOrder([scene1, scene2]);
+
+      expect(usePhaseStore.getState().globalSceneOrder.get("s2")).toBe(0);
+      expect(usePhaseStore.getState().globalSceneOrder.get("s1")).toBe(1);
+    });
+  });
+
+  describe("setResolutionMode", () => {
+    it("モードを変更してノードをキャッシュして再計算する", () => {
+      const scene1 = {
+        ...mockScene,
+        id: "s1",
+        sortOrder: "a1",
+        storyTimeOrder: "a2",
+      };
+      const scene2 = {
+        ...mockScene,
+        id: "s2",
+        sortOrder: "a2",
+        storyTimeOrder: "a1",
+      };
+      // まず reading モードでロード
+      usePhaseStore.getState().recomputeSceneOrder([scene1, scene2]);
+      expect(usePhaseStore.getState().globalSceneOrder.get("s1")).toBe(0); // reading order
+
+      // story モードに切り替え → キャッシュ済みノードで再計算
+      usePhaseStore.getState().setResolutionMode("story");
+      expect(usePhaseStore.getState().globalSceneOrder.get("s2")).toBe(0); // story order
+      expect(usePhaseStore.getState().globalSceneOrder.get("s1")).toBe(1);
+    });
+
+    it("モード変更後に recomputeSceneOrder を呼ぶと新モードで計算される", () => {
+      const scene1 = {
+        ...mockScene,
+        id: "s1",
+        sortOrder: "a1",
+        storyTimeOrder: "a2",
+      };
+      const scene2 = {
+        ...mockScene,
+        id: "s2",
+        sortOrder: "a2",
+        storyTimeOrder: "a1",
+      };
+      usePhaseStore.getState().setResolutionMode("story");
+      usePhaseStore.getState().recomputeSceneOrder([scene1, scene2]);
+
+      expect(usePhaseStore.getState().globalSceneOrder.get("s2")).toBe(0);
+    });
+
+    it("reading モードに戻すと reading-order が復元される", () => {
+      const scene1 = {
+        ...mockScene,
+        id: "s1",
+        sortOrder: "a1",
+        storyTimeOrder: "a2",
+      };
+      const scene2 = {
+        ...mockScene,
+        id: "s2",
+        sortOrder: "a2",
+        storyTimeOrder: "a1",
+      };
+      usePhaseStore.getState().recomputeSceneOrder([scene1, scene2]);
+      usePhaseStore.getState().setResolutionMode("story");
+      // story: s2=0, s1=1
+      expect(usePhaseStore.getState().globalSceneOrder.get("s2")).toBe(0);
+
+      usePhaseStore.getState().setResolutionMode("reading");
+      // reading: s1=0, s2=1
+      expect(usePhaseStore.getState().globalSceneOrder.get("s1")).toBe(0);
+      expect(usePhaseStore.getState().globalSceneOrder.get("s2")).toBe(1);
     });
   });
 
