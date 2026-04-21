@@ -1,8 +1,9 @@
-import { useRef, useState, useEffect } from "react";
+import { useRef, useState, useEffect, useCallback } from "react";
 import { useTranslation } from "react-i18next";
 import type { TreeNodeData } from "@/features/tree/treeStore";
 import { useTimelineStore } from "./timelineStore";
 import { computeAxisLabels } from "./timelineLabels";
+import { ZOOM_STEP, STEP_BASE } from "./timelineZoom";
 
 const DOT_R = 6;
 const LABEL_Y = 16;
@@ -11,7 +12,6 @@ const AXIS_Y = LANE_Y;
 const PHASE_PIN_Y = LANE_Y + 44;
 const UNSCHEDULED_Y = LANE_Y + 90;
 const SVG_HEIGHT_BASE = 130;
-const STEP = 96;
 const PAD_LEFT = 48;
 const PAD_RIGHT = 32;
 
@@ -70,8 +70,12 @@ export function TimelineViewport({
   const display = useTimelineStore((s) => s.display);
   const axisMode = useTimelineStore((s) => s.axisMode);
   const zoom = useTimelineStore((s) => s.zoom);
+  const setZoom = useTimelineStore((s) => s.setZoom);
   const svgRef = useRef<SVGSVGElement>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
   const [drag, setDrag] = useState<DragState | null>(null);
+
+  const STEP = STEP_BASE * zoom;
 
   // showUnscheduledZone: ドロップゾーンを表示するか
   // story-time モード中は常に表示（全シーンが軸上でも Unscheduled に戻せるよう）
@@ -199,6 +203,16 @@ export function TimelineViewport({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [drag]);
 
+  const handleWheel = useCallback(
+    (e: React.WheelEvent<HTMLDivElement>) => {
+      if (!e.ctrlKey) return;
+      e.preventDefault();
+      const factor = e.deltaY < 0 ? ZOOM_STEP : 1 / ZOOM_STEP;
+      setZoom(zoom * factor);
+    },
+    [zoom, setZoom],
+  );
+
   if (scenes.length === 0) {
     return (
       <div className="flex flex-1 items-center justify-center text-sm text-muted-foreground">
@@ -208,7 +222,12 @@ export function TimelineViewport({
   }
 
   return (
-    <div className="flex-1 overflow-x-auto overflow-y-hidden">
+    <div
+      ref={containerRef}
+      data-testid="timeline-scroll-container"
+      className="flex-1 overflow-x-auto overflow-y-hidden"
+      onWheel={handleWheel}
+    >
       <svg
         ref={svgRef}
         width={totalWidth}

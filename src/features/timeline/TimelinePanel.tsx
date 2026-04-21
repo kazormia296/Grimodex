@@ -1,4 +1,4 @@
-import { useCallback, useMemo } from "react";
+import { useCallback, useMemo, useEffect, useRef } from "react";
 import { generateKeyBetween } from "fractional-indexing";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { useLayoutStore } from "@/features/layout/layoutStore";
@@ -7,6 +7,7 @@ import { cmpKeys } from "@/features/tree/fractionalIndex";
 import { usePhaseStore } from "@/features/codex/phaseStore";
 import { useCodexStore } from "@/features/codex/codexStore";
 import { useTimelineStore } from "./timelineStore";
+import { computeFitZoom, ZOOM_STEP, STEP_BASE } from "./timelineZoom";
 import { TimelineHeader } from "./TimelineHeader";
 import { TimelineViewport } from "./TimelineViewport";
 import { TimelineInspector } from "./TimelineInspector";
@@ -22,6 +23,9 @@ export function TimelinePanel() {
   const selectedNodeIds = useTimelineStore((s) => s.selectedNodeIds);
   const inspectorOpen = useTimelineStore((s) => s.inspectorOpen);
   const toggleInspector = useTimelineStore((s) => s.toggleInspector);
+  const zoom = useTimelineStore((s) => s.zoom);
+  const setZoom = useTimelineStore((s) => s.setZoom);
+  const viewportRef = useRef<HTMLDivElement>(null);
   const phasesByEntry = usePhaseStore((s) => s.phasesByEntry);
   const entries = useCodexStore((s) => s.entries);
 
@@ -146,6 +150,38 @@ export function TimelinePanel() {
     [selectNode, setActiveScene],
   );
 
+  useEffect(() => {
+    function handleKeyDown(e: KeyboardEvent) {
+      if (!e.ctrlKey && !e.metaKey) return;
+      switch (e.key) {
+        case "0":
+          e.preventDefault();
+          if (viewportRef.current) {
+            setZoom(
+              computeFitZoom(
+                scenes.length,
+                viewportRef.current.clientWidth,
+                STEP_BASE,
+                0,
+              ),
+            );
+          }
+          break;
+        case "+":
+        case "=":
+          e.preventDefault();
+          setZoom(zoom * ZOOM_STEP);
+          break;
+        case "-":
+          e.preventDefault();
+          setZoom(zoom / ZOOM_STEP);
+          break;
+      }
+    }
+    document.addEventListener("keydown", handleKeyDown);
+    return () => document.removeEventListener("keydown", handleKeyDown);
+  }, [zoom, setZoom, scenes.length]);
+
   // For story-time: how many scenes have story_time_order set
   const scheduledCount = useMemo(
     () =>
@@ -163,7 +199,7 @@ export function TimelinePanel() {
         inspectorOpen={inspectorOpen}
         onToggleInspector={toggleInspector}
       />
-      <div className="flex flex-1 overflow-hidden">
+      <div ref={viewportRef} className="flex flex-1 overflow-hidden">
         <TimelineViewport
           scenes={scenes}
           weights={weights}
