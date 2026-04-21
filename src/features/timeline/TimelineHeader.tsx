@@ -1,6 +1,11 @@
 import { useTranslation } from "react-i18next";
 import { useTimelineStore } from "./timelineStore";
-import type { AxisMode } from "./timelineStore";
+import type { AxisMode, SpacingMode } from "./timelineStore";
+
+const SPACING_LABELS: Record<SpacingMode, string> = {
+  proportional: "Proportional",
+  uniform: "Uniform",
+};
 
 const AXIS_LABELS: Record<AxisMode, string> = {
   reading: "Reading-order",
@@ -24,6 +29,8 @@ export function TimelineHeader({
   const { t } = useTranslation();
   const axisMode = useTimelineStore((s) => s.axisMode);
   const setAxisMode = useTimelineStore((s) => s.setAxisMode);
+  const spacingMode = useTimelineStore((s) => s.spacingMode);
+  const setSpacingMode = useTimelineStore((s) => s.setSpacingMode);
   const display = useTimelineStore((s) => s.display);
   const toggleDisplay = useTimelineStore((s) => s.toggleDisplay);
 
@@ -41,6 +48,24 @@ export function TimelineHeader({
         aria-label={t("timeline.axisMode", "時間軸モード")}
       >
         {(Object.entries(AXIS_LABELS) as [AxisMode, string][]).map(
+          ([mode, label]) => (
+            <option key={mode} value={mode}>
+              {label}
+            </option>
+          ),
+        )}
+      </select>
+
+      {/* Spacing mode selector */}
+      <select
+        data-testid="spacing-mode-select"
+        value={spacingMode}
+        disabled={axisMode === "reading"}
+        onChange={(e) => setSpacingMode(e.target.value as SpacingMode)}
+        className="rounded border border-border bg-background px-1.5 py-0.5 text-xs focus:outline-none disabled:cursor-not-allowed disabled:opacity-50"
+        aria-label={t("timeline.spacingMode", "スペーシング")}
+      >
+        {(Object.entries(SPACING_LABELS) as [SpacingMode, string][]).map(
           ([mode, label]) => (
             <option key={mode} value={mode}>
               {label}
