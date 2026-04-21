@@ -136,24 +136,28 @@ export function TimelineViewport({
     if (toUnscheduled) {
       onDropStoryTime(drag.nodeId, null, null, true);
     } else {
-      // Find insertion position among scheduled scenes (excluding dragged node)
-      const scheduledScenes = scenes
+      // Preserve original scene index so xOf() returns the correct x position.
+      // Filtering first then using the filtered index causes xOf() to compute
+      // positions for wrong slots (off-by-one or more after the removed node).
+      const scheduledWithOrigin = scenes
         .slice(0, scheduledCount)
-        .filter((_, i) => scenes[i].id !== drag.nodeId);
-      let insertIdx = scheduledScenes.length;
-      for (let i = 0; i < scheduledScenes.length; i++) {
-        if (xOf(i) > svgX) {
+        .map((scene, origIdx) => ({ scene, origIdx }))
+        .filter(({ scene }) => scene.id !== drag.nodeId);
+
+      let insertIdx = scheduledWithOrigin.length;
+      for (let i = 0; i < scheduledWithOrigin.length; i++) {
+        if (xOf(scheduledWithOrigin[i].origIdx) > svgX) {
           insertIdx = i;
           break;
         }
       }
       const prevKey =
         insertIdx > 0
-          ? (scheduledScenes[insertIdx - 1].storyTimeOrder ?? null)
+          ? (scheduledWithOrigin[insertIdx - 1].scene.storyTimeOrder ?? null)
           : null;
       const nextKey =
-        insertIdx < scheduledScenes.length
-          ? (scheduledScenes[insertIdx].storyTimeOrder ?? null)
+        insertIdx < scheduledWithOrigin.length
+          ? (scheduledWithOrigin[insertIdx].scene.storyTimeOrder ?? null)
           : null;
       onDropStoryTime(drag.nodeId, prevKey, nextKey, false);
     }
