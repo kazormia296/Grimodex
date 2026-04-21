@@ -57,7 +57,13 @@ export async function updateNode(
   data: Partial<
     Pick<
       NewTreeNode,
-      "title" | "sortOrder" | "parentId" | "status" | "synopsis"
+      | "title"
+      | "sortOrder"
+      | "parentId"
+      | "status"
+      | "synopsis"
+      | "storyTimeOrder"
+      | "storyTimeLabel"
     >
   >,
 ): Promise<TreeNode | undefined> {

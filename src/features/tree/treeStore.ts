@@ -133,6 +133,12 @@ interface TreeState {
     afterId: string | null,
   ) => Promise<void>;
 
+  updateStoryTime: (
+    id: string,
+    order: string | null,
+    label?: string,
+  ) => Promise<void>;
+
   // Multi-selection
   selectNode: (id: string, extend: boolean) => void;
   rangeSelectNode: (id: string, orderedNodes: TreeNodeData[]) => void;
@@ -828,6 +834,27 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
         },
       });
     }
+  },
+
+  async updateStoryTime(id, order, label) {
+    const node = get().nodes.find((n) => n.id === id);
+    if (!node) return;
+    const patch: Parameters<typeof api.updateNode>[1] = {
+      storyTimeOrder: order ?? undefined,
+    };
+    if (label !== undefined) patch.storyTimeLabel = label;
+    await api.updateNode(id, patch);
+    set((state) => ({
+      nodes: state.nodes.map((n) =>
+        n.id === id
+          ? {
+              ...n,
+              storyTimeOrder: order,
+              storyTimeLabel: label !== undefined ? label : n.storyTimeLabel,
+            }
+          : n,
+      ),
+    }));
   },
 
   // --- UI state ---

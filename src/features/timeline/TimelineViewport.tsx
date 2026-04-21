@@ -1,4 +1,4 @@
-import { useRef } from "react";
+import { useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import type { TreeNodeData } from "@/features/tree/treeStore";
 import { useTimelineStore } from "./timelineStore";
@@ -27,6 +27,13 @@ export interface PhasePinData {
   entryName: string;
 }
 
+interface DragState {
+  nodeId: string;
+  startX: number;
+  currentX: number;
+  originIndex: number;
+}
+
 interface Props {
   scenes: TreeNodeData[];
   /** Normalized [0,1] x-positions for proportional spacing (null = uniform) */
@@ -34,6 +41,13 @@ interface Props {
   phasePins?: PhasePinData[];
   /** Index where scenes shift to the Unscheduled lane (story-time mode) */
   unscheduledStartIndex?: number;
+  /** Called when user drags a node to a new story-time position */
+  onDropStoryTime?: (
+    nodeId: string,
+    prevKey: string | null,
+    nextKey: string | null,
+    toUnscheduled: boolean,
+  ) => void;
   onSelectScene: (id: string) => void;
 }
 
@@ -42,12 +56,14 @@ export function TimelineViewport({
   weights = null,
   phasePins = [],
   unscheduledStartIndex,
+  onDropStoryTime,
   onSelectScene,
 }: Props) {
   const { t } = useTranslation();
   const selectedNodeIds = useTimelineStore((s) => s.selectedNodeIds);
   const display = useTimelineStore((s) => s.display);
   const svgRef = useRef<SVGSVGElement>(null);
+  const [drag, setDrag] = useState<DragState | null>(null);
 
   const hasUnscheduled =
     unscheduledStartIndex !== undefined &&
@@ -84,6 +100,66 @@ export function TimelineViewport({
     pinsByNode.set(pin.nodeId, list);
   }
 
+  const canDrag = !!onDropStoryTime;
+
+  function handleDotMouseDown(
+    e: React.MouseEvent<SVGCircleElement>,
+    nodeId: string,
+    originIndex: number,
+  ) {
+    if (!canDrag) return;
+    e.preventDefault();
+    const svgX =
+      e.clientX - (svgRef.current?.getBoundingClientRect().left ?? 0);
+    setDrag({ nodeId, startX: svgX, currentX: svgX, originIndex });
+  }
+
+  function handleSvgMouseMove(e: React.MouseEvent<SVGSVGElement>) {
+    if (!drag) return;
+    const svgX =
+      e.clientX - (svgRef.current?.getBoundingClientRect().left ?? 0);
+    setDrag((d) => (d ? { ...d, currentX: svgX } : null));
+  }
+
+  function handleSvgMouseUp(e: React.MouseEvent<SVGSVGElement>) {
+    if (!drag || !onDropStoryTime) {
+      setDrag(null);
+      return;
+    }
+    const svgX =
+      e.clientX - (svgRef.current?.getBoundingClientRect().left ?? 0);
+    const toUnscheduled =
+      hasUnscheduled &&
+      e.clientY - (svgRef.current?.getBoundingClientRect().top ?? 0) >
+        UNSCHEDULED_Y - 20;
+
+    if (toUnscheduled) {
+      onDropStoryTime(drag.nodeId, null, null, true);
+    } else {
+      // Find insertion position among scheduled scenes (excluding dragged node)
+      const scheduledScenes = scenes
+        .slice(0, scheduledCount)
+        .filter((_, i) => scenes[i].id !== drag.nodeId);
+      let insertIdx = scheduledScenes.length;
+      for (let i = 0; i < scheduledScenes.length; i++) {
+        if (xOf(i) > svgX) {
+          insertIdx = i;
+          break;
+        }
+      }
+      const prevKey =
+        insertIdx > 0
+          ? (scheduledScenes[insertIdx - 1].storyTimeOrder ?? null)
+          : null;
+      const nextKey =
+        insertIdx < scheduledScenes.length
+          ? (scheduledScenes[insertIdx].storyTimeOrder ?? null)
+          : null;
+      onDropStoryTime(drag.nodeId, prevKey, nextKey, false);
+    }
+    setDrag(null);
+  }
+
   if (scenes.length === 0) {
     return (
       <div className="flex flex-1 items-center justify-center text-sm text-muted-foreground">
@@ -98,8 +174,11 @@ export function TimelineViewport({
         ref={svgRef}
         width={totalWidth}
         height={svgHeight}
-        className="block select-none"
+        className={`block select-none${canDrag ? " cursor-default" : ""}`}
         aria-label={t("timeline.viewport", "タイムライン ビューポート")}
+        onMouseMove={handleSvgMouseMove}
+        onMouseUp={handleSvgMouseUp}
+        onMouseLeave={() => setDrag(null)}
       >
         {/* Main axis line (scheduled portion only) */}
         <line
@@ -165,16 +244,32 @@ export function TimelineViewport({
                 />
               )}
 
+              {/* Drag ghost line */}
+              {drag?.nodeId === scene.id && (
+                <line
+                  x1={cx}
+                  y1={cy}
+                  x2={drag.currentX}
+                  y2={cy}
+                  stroke="currentColor"
+                  strokeOpacity={0.35}
+                  strokeWidth={1}
+                  strokeDasharray="3 3"
+                  pointerEvents="none"
+                />
+              )}
+
               {/* Scene dot */}
               <circle
-                cx={cx}
+                cx={drag?.nodeId === scene.id ? drag.currentX : cx}
                 cy={cy}
                 r={DOT_R}
                 fill={fill}
                 stroke={isSelected ? "white" : "transparent"}
                 strokeWidth={2}
-                className="cursor-pointer"
+                className={canDrag ? "cursor-grab" : "cursor-pointer"}
                 onClick={() => onSelectScene(scene.id)}
+                onMouseDown={(e) => handleDotMouseDown(e, scene.id, i)}
               >
                 <title>{scene.title}</title>
               </circle>

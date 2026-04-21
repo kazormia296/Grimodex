@@ -1,4 +1,5 @@
 import { useCallback, useMemo } from "react";
+import { generateKeyBetween } from "fractional-indexing";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { useLayoutStore } from "@/features/layout/layoutStore";
 import { computeGlobalSceneOrder } from "@/features/codex/phaseResolver";
@@ -13,6 +14,7 @@ import type { PhasePinData } from "./TimelineViewport";
 export function TimelinePanel() {
   const nodes = useTreeStore((s) => s.nodes);
   const setActiveScene = useTreeStore((s) => s.setActiveScene);
+  const updateStoryTime = useTreeStore((s) => s.updateStoryTime);
   const axisMode = useTimelineStore((s) => s.axisMode);
   const spacingMode = useTimelineStore((s) => s.spacingMode);
   const selectNode = useTimelineStore((s) => s.selectNode);
@@ -87,6 +89,23 @@ export function TimelinePanel() {
     return pins;
   }, [phasesByEntry, entries]);
 
+  const handleDropStoryTime = useCallback(
+    (
+      nodeId: string,
+      prevKey: string | null,
+      nextKey: string | null,
+      toUnscheduled: boolean,
+    ) => {
+      if (toUnscheduled) {
+        void updateStoryTime(nodeId, null);
+        return;
+      }
+      const newKey = generateKeyBetween(prevKey, nextKey);
+      void updateStoryTime(nodeId, newKey);
+    },
+    [updateStoryTime],
+  );
+
   const handleSelectScene = useCallback(
     (id: string) => {
       selectNode(id);
@@ -131,6 +150,7 @@ export function TimelinePanel() {
             ? scheduledCount
             : undefined
         }
+        onDropStoryTime={axisMode === "story" ? handleDropStoryTime : undefined}
         onSelectScene={handleSelectScene}
       />
     </div>
