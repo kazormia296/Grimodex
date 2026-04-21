@@ -22,6 +22,9 @@ function makeNode(
     synopsis: null,
     sortOrder: "a0",
     status: null,
+    storyTimeOrder: null,
+    storyTimeLabel: null,
+    createdAt: "2024-01-01T00:00:00Z",
     ...overrides,
   };
 }

@@ -10,9 +10,10 @@ const AXIS_LABELS: Record<AxisMode, string> = {
 
 interface Props {
   sceneCount: number;
+  scheduledCount: number | null;
 }
 
-export function TimelineHeader({ sceneCount }: Props) {
+export function TimelineHeader({ sceneCount, scheduledCount }: Props) {
   const { t } = useTranslation();
   const axisMode = useTimelineStore((s) => s.axisMode);
   const setAxisMode = useTimelineStore((s) => s.setAxisMode);
@@ -41,10 +42,19 @@ export function TimelineHeader({ sceneCount }: Props) {
         )}
       </select>
 
-      {/* Scene count */}
-      <span className="text-muted-foreground">
-        {t("timeline.sceneCount", "{{count}} scenes", { count: sceneCount })}
-      </span>
+      {/* Coverage indicator: scheduled/total for story-time mode */}
+      {scheduledCount !== null ? (
+        <span className="text-muted-foreground">
+          {t("timeline.coverage", "📍{{scheduled}}/{{total}}", {
+            scheduled: scheduledCount,
+            total: sceneCount,
+          })}
+        </span>
+      ) : (
+        <span className="text-muted-foreground">
+          {t("timeline.sceneCount", "{{count}} scenes", { count: sceneCount })}
+        </span>
+      )}
 
       <div className="ml-auto flex items-center gap-1">
         {/* Display toggles */}

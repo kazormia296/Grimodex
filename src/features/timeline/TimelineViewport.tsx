@@ -5,10 +5,10 @@ import { useTimelineStore } from "./timelineStore";
 
 const DOT_R = 6;
 const LANE_Y = 60;
-const LABEL_Y = LANE_Y + 24;
 const AXIS_Y = LANE_Y;
 const PHASE_PIN_Y = LANE_Y + 44;
-const SVG_HEIGHT = 130;
+const UNSCHEDULED_Y = LANE_Y + 90;
+const SVG_HEIGHT_BASE = 130;
 const STEP = 96;
 const PAD_LEFT = 48;
 const PAD_RIGHT = 32;
@@ -29,13 +29,19 @@ export interface PhasePinData {
 
 interface Props {
   scenes: TreeNodeData[];
+  /** Normalized [0,1] x-positions for proportional spacing (null = uniform) */
+  weights?: number[] | null;
   phasePins?: PhasePinData[];
+  /** Index where scenes shift to the Unscheduled lane (story-time mode) */
+  unscheduledStartIndex?: number;
   onSelectScene: (id: string) => void;
 }
 
 export function TimelineViewport({
   scenes,
+  weights = null,
   phasePins = [],
+  unscheduledStartIndex,
   onSelectScene,
 }: Props) {
   const { t } = useTranslation();
@@ -43,9 +49,33 @@ export function TimelineViewport({
   const display = useTimelineStore((s) => s.display);
   const svgRef = useRef<SVGSVGElement>(null);
 
-  const svgWidth = PAD_LEFT + scenes.length * STEP + PAD_RIGHT;
+  const hasUnscheduled =
+    unscheduledStartIndex !== undefined &&
+    unscheduledStartIndex < scenes.length;
+  const svgHeight = hasUnscheduled ? SVG_HEIGHT_BASE + 60 : SVG_HEIGHT_BASE;
 
-  const xOf = (i: number) => PAD_LEFT + i * STEP;
+  // Compute x positions
+  const scheduledCount = unscheduledStartIndex ?? scenes.length;
+  const visibleForWidth = Math.max(scheduledCount, 1);
+  const totalWidth =
+    weights && weights.length > 0
+      ? PAD_LEFT + visibleForWidth * STEP * 2 + PAD_RIGHT
+      : PAD_LEFT + scenes.length * STEP + PAD_RIGHT;
+
+  function xOf(i: number): number {
+    if (i >= scheduledCount) {
+      // Unscheduled: place below in a separate lane at same x step
+      return PAD_LEFT + (i - scheduledCount) * STEP;
+    }
+    if (weights && weights.length > i) {
+      return PAD_LEFT + weights[i] * (visibleForWidth * STEP * 2);
+    }
+    return PAD_LEFT + i * STEP;
+  }
+
+  function yOf(i: number): number {
+    return i >= scheduledCount ? UNSCHEDULED_Y : LANE_Y;
+  }
 
   const pinsByNode = new Map<string, PhasePinData[]>();
   for (const pin of phasePins) {
@@ -66,38 +96,69 @@ export function TimelineViewport({
     <div className="flex-1 overflow-x-auto overflow-y-hidden">
       <svg
         ref={svgRef}
-        width={svgWidth}
-        height={SVG_HEIGHT}
+        width={totalWidth}
+        height={svgHeight}
         className="block select-none"
         aria-label={t("timeline.viewport", "タイムライン ビューポート")}
       >
-        {/* Axis line */}
+        {/* Main axis line (scheduled portion only) */}
         <line
           x1={PAD_LEFT - DOT_R}
           y1={AXIS_Y}
-          x2={xOf(scenes.length - 1) + DOT_R}
+          x2={scheduledCount > 0 ? xOf(scheduledCount - 1) + DOT_R : PAD_LEFT}
           y2={AXIS_Y}
           stroke="currentColor"
           strokeOpacity={0.2}
           strokeWidth={1}
         />
 
+        {/* Unscheduled separator */}
+        {hasUnscheduled && (
+          <>
+            <line
+              x1={PAD_LEFT - DOT_R}
+              y1={UNSCHEDULED_Y - 16}
+              x2={totalWidth - PAD_RIGHT}
+              y2={UNSCHEDULED_Y - 16}
+              stroke="currentColor"
+              strokeOpacity={0.12}
+              strokeWidth={1}
+              strokeDasharray="4 4"
+            />
+            <text
+              x={PAD_LEFT - DOT_R}
+              y={UNSCHEDULED_Y - 4}
+              fontSize={9}
+              fill="currentColor"
+              fillOpacity={0.4}
+            >
+              {t("timeline.unscheduled", "Unscheduled")}
+            </text>
+          </>
+        )}
+
         {scenes.map((scene, i) => {
           const cx = xOf(i);
+          const cy = yOf(i);
           const fill =
             STATUS_FILL[scene.status ?? "outline"] ?? STATUS_FILL.outline;
           const isSelected = selectedNodeIds.includes(scene.id);
           const pins = pinsByNode.get(scene.id) ?? [];
+          const isUnscheduled = i >= scheduledCount;
 
           return (
-            <g key={scene.id} data-node-id={scene.id}>
+            <g
+              key={scene.id}
+              data-node-id={scene.id}
+              opacity={isUnscheduled ? 0.55 : 1}
+            >
               {/* Vertical stem */}
               {(display.showTitles || display.showChapterNumbers) && (
                 <line
                   x1={cx}
-                  y1={LANE_Y + DOT_R}
+                  y1={cy + DOT_R}
                   x2={cx}
-                  y2={LABEL_Y - 4}
+                  y2={cy + 20}
                   stroke="currentColor"
                   strokeOpacity={0.15}
                   strokeWidth={1}
@@ -107,7 +168,7 @@ export function TimelineViewport({
               {/* Scene dot */}
               <circle
                 cx={cx}
-                cy={LANE_Y}
+                cy={cy}
                 r={DOT_R}
                 fill={fill}
                 stroke={isSelected ? "white" : "transparent"}
@@ -118,11 +179,28 @@ export function TimelineViewport({
                 <title>{scene.title}</title>
               </circle>
 
+              {/* Story-time label (scheduled scenes in story-time mode) */}
+              {display.showChapterNumbers &&
+                !isUnscheduled &&
+                scene.storyTimeLabel && (
+                  <text
+                    x={cx}
+                    y={cy - DOT_R - 4}
+                    textAnchor="middle"
+                    fontSize={9}
+                    fill="currentColor"
+                    fillOpacity={0.5}
+                    className="pointer-events-none"
+                  >
+                    {scene.storyTimeLabel}
+                  </text>
+                )}
+
               {/* Title label */}
               {display.showTitles && (
                 <text
                   x={cx}
-                  y={LABEL_Y + 12}
+                  y={cy + 28}
                   textAnchor="middle"
                   fontSize={10}
                   fill="currentColor"
@@ -136,24 +214,22 @@ export function TimelineViewport({
               )}
 
               {/* Phase pins */}
-              {display.showPhasePins && pins.length > 0 && (
-                <g>
-                  <text
-                    x={cx}
-                    y={PHASE_PIN_Y}
-                    textAnchor="middle"
-                    fontSize={10}
-                    fill="currentColor"
-                    fillOpacity={0.55}
-                  >
-                    {pins.length === 1
-                      ? `⏱ ${pins[0].entryName}`
-                      : `⏱×${pins.length}`}
-                    {pins.length === 1 && (
-                      <title>{`${pins[0].entryName}: ${pins[0].label}`}</title>
-                    )}
-                  </text>
-                </g>
+              {display.showPhasePins && pins.length > 0 && !isUnscheduled && (
+                <text
+                  x={cx}
+                  y={PHASE_PIN_Y}
+                  textAnchor="middle"
+                  fontSize={10}
+                  fill="currentColor"
+                  fillOpacity={0.55}
+                >
+                  {pins.length === 1
+                    ? `⏱ ${pins[0].entryName}`
+                    : `⏱×${pins.length}`}
+                  <title>
+                    {pins.map((p) => `${p.entryName}: ${p.label}`).join("\n")}
+                  </title>
+                </text>
               )}
             </g>
           );

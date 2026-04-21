@@ -33,6 +33,9 @@ export interface TreeNodeData {
   /** fractional-indexing 文字列キー（base62、辞書順比較） */
   sortOrder: string;
   status: string | null;
+  storyTimeOrder: string | null;
+  storyTimeLabel: string | null;
+  createdAt: string;
 }
 
 /** Returns true when a node type can hold children */
@@ -57,6 +60,9 @@ function toNodeData(n: ApiNode): TreeNodeData {
     synopsis: n.synopsis ?? null,
     sortOrder: n.sortOrder,
     status: n.status ?? null,
+    storyTimeOrder: n.storyTimeOrder ?? null,
+    storyTimeLabel: n.storyTimeLabel ?? null,
+    createdAt: n.createdAt,
   };
 }
 

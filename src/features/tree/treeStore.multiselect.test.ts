@@ -19,6 +19,12 @@ function resetStore() {
   });
 }
 
+const NODE_DEFAULTS = {
+  storyTimeOrder: null,
+  storyTimeLabel: null,
+  createdAt: "2024-01-01T00:00:00Z",
+} as const;
+
 const NODES = [
   {
     id: "scene-1",
@@ -29,6 +35,7 @@ const NODES = [
     synopsis: null,
     sortOrder: "a1",
     status: null,
+    ...NODE_DEFAULTS,
   },
   {
     id: "scene-2",
@@ -39,6 +46,7 @@ const NODES = [
     synopsis: null,
     sortOrder: "a2",
     status: null,
+    ...NODE_DEFAULTS,
   },
   {
     id: "scene-3",
@@ -49,6 +57,7 @@ const NODES = [
     synopsis: null,
     sortOrder: "a3",
     status: null,
+    ...NODE_DEFAULTS,
   },
   {
     id: "scene-4",
@@ -59,6 +68,7 @@ const NODES = [
     synopsis: null,
     sortOrder: "a4",
     status: null,
+    ...NODE_DEFAULTS,
   },
 ];
 

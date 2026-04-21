@@ -2,6 +2,12 @@ import { describe, it, expect } from "vitest";
 import { computeBreadcrumbPath } from "./Breadcrumb";
 import type { TreeNodeData } from "@/features/tree/treeStore";
 
+const NODE_DEFAULTS = {
+  storyTimeOrder: null,
+  storyTimeLabel: null,
+  createdAt: "2024-01-01T00:00:00Z",
+} as const;
+
 const NODES: TreeNodeData[] = [
   {
     id: "part-1",
@@ -12,6 +18,7 @@ const NODES: TreeNodeData[] = [
     synopsis: null,
     sortOrder: "a1",
     status: null,
+    ...NODE_DEFAULTS,
   },
   {
     id: "chapter-1",
@@ -22,6 +29,7 @@ const NODES: TreeNodeData[] = [
     synopsis: null,
     sortOrder: "a1",
     status: null,
+    ...NODE_DEFAULTS,
   },
   {
     id: "scene-1",
@@ -32,6 +40,7 @@ const NODES: TreeNodeData[] = [
     synopsis: null,
     sortOrder: "a1",
     status: null,
+    ...NODE_DEFAULTS,
   },
   {
     id: "chapter-2",
@@ -42,6 +51,7 @@ const NODES: TreeNodeData[] = [
     synopsis: null,
     sortOrder: "a2",
     status: null,
+    ...NODE_DEFAULTS,
   },
   {
     id: "scene-2",
@@ -52,6 +62,7 @@ const NODES: TreeNodeData[] = [
     synopsis: null,
     sortOrder: "a1",
     status: null,
+    ...NODE_DEFAULTS,
   },
   {
     id: "folder-1",
@@ -62,6 +73,7 @@ const NODES: TreeNodeData[] = [
     synopsis: null,
     sortOrder: "a3",
     status: null,
+    ...NODE_DEFAULTS,
   },
   {
     id: "sub-folder",
@@ -72,6 +84,7 @@ const NODES: TreeNodeData[] = [
     synopsis: null,
     sortOrder: "a1",
     status: null,
+    ...NODE_DEFAULTS,
   },
   {
     id: "note-1",
@@ -82,6 +95,7 @@ const NODES: TreeNodeData[] = [
     synopsis: null,
     sortOrder: "a1",
     status: null,
+    ...NODE_DEFAULTS,
   },
 ];
 
