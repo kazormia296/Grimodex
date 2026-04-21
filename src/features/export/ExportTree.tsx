@@ -2,6 +2,7 @@ import { useCallback } from "react";
 import { useTranslation } from "react-i18next";
 import { ChevronRight, ChevronDown, Folder } from "lucide-react";
 import type { TreeNodeData } from "@/features/tree/treeStore";
+import { cmpKeys } from "@/features/tree/fractionalIndex";
 
 // ────────────────────────────────────────────────────────────────────
 // 型
@@ -29,7 +30,7 @@ function getChildren(
 ): TreeNodeData[] {
   return nodes
     .filter((n) => n.parentId === parentId && n.nodeType !== "note")
-    .sort((a, b) => a.sortOrder - b.sortOrder);
+    .sort((a, b) => cmpKeys(a.sortOrder, b.sortOrder));
 }
 
 /** フォルダー配下の全チェック可能シーンIDを収集 */
@@ -270,7 +271,7 @@ export function ExportTree({ nodes, state, onChange }: Props) {
 
   const rootChildren = nodes
     .filter((n) => n.parentId === null && n.nodeType !== "note")
-    .sort((a, b) => a.sortOrder - b.sortOrder);
+    .sort((a, b) => cmpKeys(a.sortOrder, b.sortOrder));
 
   return (
     <div className="flex h-full flex-col overflow-hidden">

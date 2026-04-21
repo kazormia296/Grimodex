@@ -110,7 +110,7 @@ describe("treeNodes schema", () => {
       projectId: "proj-001",
       nodeType: "scene",
       title: "Opening Scene",
-      sortOrder: 0,
+      sortOrder: "a0",
       createdAt: "2025-01-01T00:00:00Z",
       updatedAt: "2025-01-01T00:00:00Z",
     });
@@ -135,7 +135,7 @@ describe("treeNodes schema", () => {
       parentId: "node-parent",
       nodeType: "chapter",
       title: "Chapter 1",
-      sortOrder: 1,
+      sortOrder: "a1",
       createdAt: "2025-01-01T00:00:00Z",
       updatedAt: "2025-01-01T00:00:00Z",
     });

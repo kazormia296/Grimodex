@@ -13,6 +13,7 @@ import {
   removePinnedCodex,
 } from "./codexQuickPinApi";
 import { usePhaseStore } from "@/features/codex/phaseStore";
+import { cmpKeys, generateKeyBetween, INITIAL_KEY } from "./fractionalIndex";
 
 export type NodeType = "folder" | "scene" | "note";
 export type SceneStatus =
@@ -29,7 +30,8 @@ export interface TreeNodeData {
   nodeType: NodeType;
   title: string;
   synopsis: string | null;
-  sortOrder: number;
+  /** fractional-indexing 文字列キー（base62、辞書順比較） */
+  sortOrder: string;
   status: string | null;
 }
 
@@ -42,7 +44,7 @@ export function canHaveChildren(type: NodeType): boolean {
 export interface SceneMeta {
   id: string;
   title: string;
-  sortOrder: number;
+  sortOrder: string;
 }
 
 function toNodeData(n: ApiNode): TreeNodeData {
@@ -61,7 +63,7 @@ function toNodeData(n: ApiNode): TreeNodeData {
 function computeScenes(nodes: TreeNodeData[]): SceneMeta[] {
   return nodes
     .filter((n) => n.nodeType === "scene")
-    .sort((a, b) => a.sortOrder - b.sortOrder)
+    .sort((a, b) => cmpKeys(a.sortOrder, b.sortOrder))
     .map((n) => ({ id: n.id, title: n.title, sortOrder: n.sortOrder }));
 }
 
@@ -161,27 +163,28 @@ export interface CreateNodeOpts {
 }
 
 /**
- * Compute next sort_order for inserting after `afterId` within the same parent.
- * Returns (afterOrder + nextOrder) / 2 for middle insert,
- * or (maxOrder + 1.0) for appending.
+ * Compute next sort_order key for inserting after `afterId` within the same parent.
+ * 文字列 fractional-indexing で afterId の次（または末尾）のキーを生成する。
  */
 function nextSortOrder(
   siblings: TreeNodeData[],
   afterId: string | null | undefined,
-): number {
-  const sorted = [...siblings].sort((a, b) => a.sortOrder - b.sortOrder);
+): string {
+  const sorted = [...siblings].sort((a, b) =>
+    cmpKeys(a.sortOrder, b.sortOrder),
+  );
   if (!afterId) {
-    // Append at end
     const last = sorted[sorted.length - 1];
-    return last ? last.sortOrder + 1.0 : 1.0;
+    return generateKeyBetween(last ? last.sortOrder : null, null);
   }
   const idx = sorted.findIndex((n) => n.id === afterId);
-  if (idx === -1)
-    return sorted.length > 0 ? sorted[sorted.length - 1].sortOrder + 1.0 : 1.0;
+  if (idx === -1) {
+    const last = sorted[sorted.length - 1];
+    return generateKeyBetween(last ? last.sortOrder : null, null);
+  }
   const after = sorted[idx];
   const next = sorted[idx + 1];
-  if (!next) return after.sortOrder + 1.0;
-  return (after.sortOrder + next.sortOrder) / 2;
+  return generateKeyBetween(after.sortOrder, next ? next.sortOrder : null);
 }
 
 /** Extract trailing integer from a title like "シーン 3" → 3, or null */
@@ -221,7 +224,7 @@ function computeNextNumber(
   // Siblings in insertion-order for boundary detection
   const siblings = allNodes
     .filter((n) => n.nodeType === nodeType && n.parentId === parentId)
-    .sort((a, b) => a.sortOrder - b.sortOrder);
+    .sort((a, b) => cmpKeys(a.sortOrder, b.sortOrder));
 
   let numBefore = 0;
   let numAfter = Infinity;
@@ -358,7 +361,7 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
             projectId,
             nodeType: "folder",
             title: "Part.1",
-            sortOrder: 1.0,
+            sortOrder: INITIAL_KEY,
           });
           raw = [...raw, ch];
         }
@@ -368,7 +371,7 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
           parentId: DEFAULT_CHAPTER_ID,
           nodeType: "scene",
           title: `${i18next.t("tree.defaultScene")} 1`,
-          sortOrder: 1.0,
+          sortOrder: INITIAL_KEY,
         });
         raw = [...raw, scene];
       }
@@ -861,30 +864,31 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
     if (!node) return;
     const siblings = nodes
       .filter((n) => n.parentId === newParentId && n.id !== id)
-      .sort((a, b) => a.sortOrder - b.sortOrder);
+      .sort((a, b) => cmpKeys(a.sortOrder, b.sortOrder));
 
     // afterId semantics:
     //   null      → insert before first sibling (prepend)
     //   undefined → append after last sibling
     //   string    → insert after the named sibling
-    let sortOrder: number;
+    let sortOrder: string;
     if (afterId === null) {
       const first = siblings[0];
-      sortOrder = first ? first.sortOrder - 1.0 : 1.0;
+      sortOrder = generateKeyBetween(null, first ? first.sortOrder : null);
     } else if (afterId === undefined) {
       const last = siblings[siblings.length - 1];
-      sortOrder = last ? last.sortOrder + 1.0 : 1.0;
+      sortOrder = generateKeyBetween(last ? last.sortOrder : null, null);
     } else {
       const idx = siblings.findIndex((n) => n.id === afterId);
       if (idx === -1) {
         const last = siblings[siblings.length - 1];
-        sortOrder = last ? last.sortOrder + 1.0 : 1.0;
+        sortOrder = generateKeyBetween(last ? last.sortOrder : null, null);
       } else {
         const after = siblings[idx];
         const next = siblings[idx + 1];
-        sortOrder = next
-          ? (after.sortOrder + next.sortOrder) / 2
-          : after.sortOrder + 1.0;
+        sortOrder = generateKeyBetween(
+          after.sortOrder,
+          next ? next.sortOrder : null,
+        );
       }
     }
 

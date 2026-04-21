@@ -51,7 +51,7 @@ const mockScene: TreeNodeData = {
   nodeType: "scene",
   title: "シーン 1",
   synopsis: null,
-  sortOrder: 1.0,
+  sortOrder: "a1",
   status: "draft",
 };
 

@@ -27,7 +27,7 @@ const NODES = [
     nodeType: "scene" as const,
     title: "Scene 1",
     synopsis: null,
-    sortOrder: 1,
+    sortOrder: "a1",
     status: null,
   },
   {
@@ -37,7 +37,7 @@ const NODES = [
     nodeType: "scene" as const,
     title: "Scene 2",
     synopsis: null,
-    sortOrder: 2,
+    sortOrder: "a2",
     status: null,
   },
   {
@@ -47,7 +47,7 @@ const NODES = [
     nodeType: "scene" as const,
     title: "Scene 3",
     synopsis: null,
-    sortOrder: 3,
+    sortOrder: "a3",
     status: null,
   },
   {
@@ -57,7 +57,7 @@ const NODES = [
     nodeType: "scene" as const,
     title: "Scene 4",
     synopsis: null,
-    sortOrder: 4,
+    sortOrder: "a4",
     status: null,
   },
 ];

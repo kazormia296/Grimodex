@@ -23,33 +23,39 @@ impl Database {
         let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("{e}"))?;
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS projects (
-                id              TEXT PRIMARY KEY,
-                title           TEXT NOT NULL DEFAULT 'Untitled Project',
-                genre           TEXT,
-                pov             TEXT,
-                tense           TEXT,
-                language        TEXT NOT NULL DEFAULT 'ja',
-                style_guide     TEXT,
-                ai_instructions TEXT,
-                created_at      TEXT NOT NULL DEFAULT (datetime('now')),
-                updated_at      TEXT NOT NULL DEFAULT (datetime('now'))
+                id                     TEXT PRIMARY KEY,
+                title                  TEXT NOT NULL DEFAULT 'Untitled Project',
+                genre                  TEXT,
+                pov                    TEXT,
+                tense                  TEXT,
+                language               TEXT NOT NULL DEFAULT 'ja',
+                style_guide            TEXT,
+                ai_instructions        TEXT,
+                phase_resolution_mode  TEXT NOT NULL DEFAULT 'reading'
+                                         CHECK(phase_resolution_mode IN ('reading', 'story', 'auto')),
+                created_at             TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at             TEXT NOT NULL DEFAULT (datetime('now'))
             );
 
             CREATE TABLE IF NOT EXISTS tree_nodes (
-                id          TEXT PRIMARY KEY,
-                project_id  TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-                parent_id   TEXT REFERENCES tree_nodes(id) ON DELETE SET NULL,
-                node_type   TEXT NOT NULL,
-                title       TEXT NOT NULL DEFAULT 'Untitled',
-                synopsis    TEXT,
-                sort_order  REAL NOT NULL DEFAULT 0.0,
-                status      TEXT DEFAULT 'outline',
-                content     TEXT NOT NULL DEFAULT '{}',
-                created_at  TEXT NOT NULL DEFAULT (datetime('now')),
-                updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
+                id                TEXT PRIMARY KEY,
+                project_id        TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                parent_id         TEXT REFERENCES tree_nodes(id) ON DELETE SET NULL,
+                node_type         TEXT NOT NULL,
+                title             TEXT NOT NULL DEFAULT 'Untitled',
+                synopsis          TEXT,
+                sort_order        TEXT NOT NULL DEFAULT 'a0',
+                story_time_order  TEXT,
+                story_time_label  TEXT,
+                status            TEXT DEFAULT 'outline',
+                content           TEXT NOT NULL DEFAULT '{}',
+                created_at        TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at        TEXT NOT NULL DEFAULT (datetime('now'))
             );
             CREATE INDEX IF NOT EXISTS idx_tree_parent
                 ON tree_nodes(project_id, parent_id, sort_order);
+            CREATE INDEX IF NOT EXISTS idx_tree_story_time
+                ON tree_nodes(project_id, story_time_order);
 
             CREATE TABLE IF NOT EXISTS codex_types (
                 id          TEXT PRIMARY KEY,
@@ -458,7 +464,7 @@ impl Database {
             INSERT OR IGNORE INTO projects (id, title, language, created_at, updated_at)
               VALUES ('default-project', '無題のプロジェクト', 'ja', datetime('now'), datetime('now'));
             INSERT OR IGNORE INTO tree_nodes (id, project_id, node_type, title, sort_order, created_at, updated_at)
-              VALUES ('default-chapter', 'default-project', 'folder', 'Part.1', 0.0, datetime('now'), datetime('now'));
+              VALUES ('default-chapter', 'default-project', 'folder', 'Part.1', 'a0', datetime('now'), datetime('now'));
 
             -- Fix legacy default folder name (e7af0e35)
             UPDATE tree_nodes SET title = 'Part.1'
@@ -786,7 +792,7 @@ mod tests {
                 Value::String("default-chapter".into()),
                 Value::String("scene".into()),
                 Value::String("Opening".into()),
-                Value::Number(serde_json::Number::from_f64(0.0).unwrap()),
+                Value::String("a0".into()),
                 Value::String("2025-01-01T00:00:00Z".into()),
                 Value::String("2025-01-01T00:00:00Z".into()),
             ],
@@ -849,7 +855,7 @@ mod tests {
                 Value::String("proj-del".into()),
                 Value::String("folder".into()),
                 Value::String("Ch1".into()),
-                Value::Number(serde_json::Number::from_f64(0.0).unwrap()),
+                Value::String("a0".into()),
                 Value::String("2025-01-01T00:00:00Z".into()),
                 Value::String("2025-01-01T00:00:00Z".into()),
             ],
@@ -865,7 +871,7 @@ mod tests {
                 Value::String("ch-del".into()),
                 Value::String("scene".into()),
                 Value::String("S1".into()),
-                Value::Number(serde_json::Number::from_f64(0.0).unwrap()),
+                Value::String("a1".into()),
                 Value::String("2025-01-01T00:00:00Z".into()),
                 Value::String("2025-01-01T00:00:00Z".into()),
             ],
@@ -1448,7 +1454,7 @@ mod tests {
         // Create scene node
         db.execute(
             "INSERT INTO tree_nodes (id, project_id, parent_id, node_type, title, sort_order, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))",
-            &[Value::String("sc1".into()), Value::String("default-project".into()), Value::String("default-chapter".into()), Value::String("scene".into()), Value::String("シーン1".into()), Value::Number(serde_json::Number::from_f64(0.0).unwrap())],
+            &[Value::String("sc1".into()), Value::String("default-project".into()), Value::String("default-chapter".into()), Value::String("scene".into()), Value::String("シーン1".into()), Value::String("a1".into())],
             "run",
         ).expect("insert scene node");
 
@@ -1613,7 +1619,7 @@ mod tests {
         // Create a scene node first
         db.execute(
             "INSERT INTO tree_nodes (id, project_id, parent_id, node_type, title, sort_order, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))",
-            &[Value::String("sc-attr".into()), Value::String("default-project".into()), Value::String("default-chapter".into()), Value::String("scene".into()), Value::String("S1".into()), Value::Number(serde_json::Number::from_f64(0.0).unwrap())],
+            &[Value::String("sc-attr".into()), Value::String("default-project".into()), Value::String("default-chapter".into()), Value::String("scene".into()), Value::String("S1".into()), Value::String("a1".into())],
             "run",
         ).expect("insert scene");
 
@@ -2102,7 +2108,7 @@ mod tests {
         // Insert a scene node
         db.execute(
             "INSERT INTO tree_nodes (id, project_id, node_type, title, sort_order, created_at, updated_at) VALUES (?, ?, ?, ?, ?, datetime('now'), datetime('now'))",
-            &[Value::String("scene-cv".into()), Value::String("default-project".into()), Value::String("scene".into()), Value::String("シーン".into()), Value::Number(serde_json::Number::from_f64(1.0).unwrap())],
+            &[Value::String("scene-cv".into()), Value::String("default-project".into()), Value::String("scene".into()), Value::String("シーン".into()), Value::String("a1".into())],
             "run",
         ).expect("insert scene");
 

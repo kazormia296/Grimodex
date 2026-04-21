@@ -1,4 +1,5 @@
 // @vitest-environment happy-dom
+import React from "react";
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -19,7 +20,7 @@ vi.mock("../contextCreatorApi", () => ({
 // 古い要素が DOM に残り続けるため、アニメーションなしで即時削除させる
 vi.mock("motion/react", async () => {
   const { createElement } = await import("react");
-  type P = Record<string, unknown> & { children?: unknown };
+  type P = Record<string, unknown> & { children?: React.ReactNode };
   const el =
     (tag: string) =>
     ({
@@ -33,7 +34,7 @@ vi.mock("motion/react", async () => {
       createElement(tag, rest, children);
   return {
     motion: { div: el("div"), span: el("span") },
-    AnimatePresence: ({ children }: { children: unknown }) => children,
+    AnimatePresence: ({ children }: { children: React.ReactNode }) => children,
     useReducedMotion: () => false,
   };
 });

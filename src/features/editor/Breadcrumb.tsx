@@ -5,6 +5,7 @@ import { cn } from "@/lib/utils";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { useTabStore } from "./tabStore";
 import type { TreeNodeData, NodeType } from "@/features/tree/treeStore";
+import { cmpKeys } from "@/features/tree/fractionalIndex";
 
 export interface BreadcrumbSegment {
   id: string;
@@ -128,7 +129,7 @@ export function Breadcrumb() {
         .filter(
           (n) => n.parentId === node.parentId && n.nodeType === node.nodeType,
         )
-        .sort((a, b) => a.sortOrder - b.sortOrder);
+        .sort((a, b) => cmpKeys(a.sortOrder, b.sortOrder));
     },
     [nodes, nodeMap],
   );

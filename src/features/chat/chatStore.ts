@@ -55,6 +55,7 @@ import type {
   AgentLoopProgress,
 } from "./agent/agentTypes";
 import { useTreeStore } from "@/features/tree/treeStore";
+import { cmpKeys } from "@/features/tree/fractionalIndex";
 import { loadSceneContent, getNode } from "@/features/tree/api";
 import { prosemirrorToText } from "@/lib/prosemirror";
 import { getProject } from "@/features/project/api";
@@ -536,11 +537,11 @@ async function buildSceneContextPrompt(opts: {
           (n) =>
             n.nodeType === "scene" &&
             n.id !== sceneCtx.id &&
-            n.sortOrder < currentScene.sortOrder &&
+            cmpKeys(n.sortOrder, currentScene.sortOrder) < 0 &&
             n.synopsis != null &&
             n.synopsis.trim() !== "",
         )
-        .sort((a, b) => b.sortOrder - a.sortOrder)[0]
+        .sort((a, b) => cmpKeys(b.sortOrder, a.sortOrder))[0]
     : undefined;
   const previousScene = previousSceneNode
     ? {

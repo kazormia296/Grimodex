@@ -9,6 +9,7 @@ import {
   treeNodes,
 } from "@/db/schema";
 import { eq, inArray } from "drizzle-orm";
+import { cmpKeys } from "@/features/tree/fractionalIndex";
 import { countTokens } from "../contextBuilder";
 import type { ToolResult } from "./agentTypes";
 
@@ -277,7 +278,7 @@ async function listChapters(): Promise<Omit<ToolResult, "toolCallId">> {
     .where(inArray(treeNodes.nodeType, ["part", "chapter", "scene"]));
 
   // Sort by sortOrder for consistent output
-  nodes.sort((a, b) => a.sortOrder - b.sortOrder);
+  nodes.sort((a, b) => cmpKeys(a.sortOrder, b.sortOrder));
 
   const content = nodes.map((n) => ({
     id: n.id,
@@ -466,7 +467,7 @@ async function getChapterSummaries(): Promise<Omit<ToolResult, "toolCallId">> {
     .from(treeNodes)
     .where(eq(treeNodes.nodeType, "chapter"));
 
-  chapters.sort((a, b) => a.sortOrder - b.sortOrder);
+  chapters.sort((a, b) => cmpKeys(a.sortOrder, b.sortOrder));
 
   const scenes = await db
     .select({
@@ -484,7 +485,7 @@ async function getChapterSummaries(): Promise<Omit<ToolResult, "toolCallId">> {
     title: ch.title,
     scenes: scenes
       .filter((s) => s.parentId === ch.id)
-      .sort((a, b) => a.sortOrder - b.sortOrder)
+      .sort((a, b) => cmpKeys(a.sortOrder, b.sortOrder))
       .map((s) => ({ id: s.id, title: s.title, synopsis: s.synopsis ?? "" }))
       .filter((s) => s.synopsis),
   }));

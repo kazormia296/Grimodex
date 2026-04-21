@@ -17,6 +17,11 @@ export const projects = sqliteTable("projects", {
   language: text("language").notNull().default("ja"),
   styleGuide: text("style_guide"),
   aiInstructions: text("ai_instructions"),
+  phaseResolutionMode: text("phase_resolution_mode", {
+    enum: ["reading", "story", "auto"],
+  })
+    .notNull()
+    .default("reading"),
   createdAt: text("created_at")
     .notNull()
     .$defaultFn(() => new Date().toISOString()),
@@ -39,7 +44,11 @@ export const treeNodes = sqliteTable(
     nodeType: text("node_type").notNull(), // 'folder' | 'scene' | 'note'
     title: text("title").notNull().default("Untitled"),
     synopsis: text("synopsis"), // Scene only: plain text summary for storySoFar context injection
-    sortOrder: real("sort_order").notNull().default(0.0),
+    // reading-order 用の fractional-indexing キー（base62、辞書順比較）
+    sortOrder: text("sort_order").notNull().default("a0"),
+    // story-time 用の fractional-indexing キー（null の場合は未指定）
+    storyTimeOrder: text("story_time_order"),
+    storyTimeLabel: text("story_time_label"),
     status: text("status").default("outline"), // 'outline' | 'draft' | 'complete' | 'revision' | 'final'
     content: text("content").notNull().default("{}"), // Scene/Note body (ProseMirror JSON)
     createdAt: text("created_at")
@@ -55,6 +64,7 @@ export const treeNodes = sqliteTable(
       table.parentId,
       table.sortOrder,
     ),
+    index("idx_tree_story_time").on(table.projectId, table.storyTimeOrder),
   ],
 );
 

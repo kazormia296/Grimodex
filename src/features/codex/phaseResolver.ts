@@ -1,5 +1,6 @@
 import type { TreeNodeData } from "@/features/tree/treeStore";
 import type { CodexEntryPhase, CodexPhaseDetailOverride } from "@/db/schema";
+import { cmpKeys } from "@/features/tree/fractionalIndex";
 
 export interface ResolvedCodexState {
   summary: string | null;
@@ -31,7 +32,7 @@ export function computeGlobalSceneOrder(
 
   // 各グループをsortOrder順でソート
   for (const children of childrenMap.values()) {
-    children.sort((a, b) => a.sortOrder - b.sortOrder);
+    children.sort((a, b) => cmpKeys(a.sortOrder, b.sortOrder));
   }
 
   let index = 0;
