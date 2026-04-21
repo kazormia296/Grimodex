@@ -1518,7 +1518,7 @@ DBスキーマの正規版は [統合DBスキーマ設計書](./Grimodex_統合D
 主要テーブル / カラム:
 - `codex_entry_phases`: Phase本体。`anchor_node_id` (Scene)、`label`、`summary_override` / `content_override` / `context_mode_override`。
 - `codex_phase_detail_overrides`: Phase内のカスタムフィールド上書き値。複合PK `(phase_id, definition_id)`。
-- `tree_nodes.story_time_order` (INTEGER NULL): Sceneの作中時間順序（比較専用整数）。
+- `tree_nodes.story_time_order` (TEXT NULL): Sceneの作中時間順序キー。`sort_order` と同じ **文字列 fractional indexing**（npm `fractional-indexing` 互換）で、SQLite の `COLLATE BINARY` による辞書順比較のみを使う。数値としての意味は持たない。
 - `tree_nodes.story_time_label` (TEXT NULL): Sceneの作中時間表示用ラベル。
 - `projects.phase_resolution_mode` (TEXT): `'auto' | 'reading' | 'story'`。SQLデフォルト `'reading'`、新規プロジェクトのアプリ層デフォルトは `'auto'`。
 - `authorship_spans.phase_id`: Phaseの content_override への帰属追跡用。
@@ -1543,8 +1543,8 @@ Phase 解決には「シーン A がシーン B より前か」を判定する�
 
 | 軸 | ソースカラム | 特性 |
 |----|------------|------|
-| 読者順 (reading-order) | `tree_nodes.sort_order` を DFS 展開したグローバル順 | 全 Scene に常に値が存在（欠損なし） |
-| 作中時間 (story-time) | `tree_nodes.story_time_order`（整数、比較のみ） | NULL 許容。未設定 Scene は「時間軸未宣言」 |
+| 読者順 (reading-order) | `tree_nodes.sort_order` を DFS 展開したグローバル順を Index 構築時に連番 `number` に投影 | 全 Scene に常に値が存在（欠損なし） |
+| 作中時間 (story-time) | `tree_nodes.story_time_order`（文字列 fractional indexing キー、辞書順比較） | NULL 許容。未設定 Scene は「時間軸未宣言」 |
 
 write-order（`created_at` 順）は**意図的に除外**する（Phase と時間軸の関係、前節参照）。
 
@@ -1556,15 +1556,16 @@ write-order（`created_at` 順）は**意図的に除外**する（Phase と時�
 type TimeAxis = 'reading' | 'story';
 type ResolutionMode = 'auto' | 'reading' | 'story';
 
-interface SceneTime {
-  axis: TimeAxis;
-  value: number;
-}
+// 読者順は Index 構築時に連番化した number、story-time は fractional-indexing の文字列キーを使う。
+// 軸ごとに値の型が異なるため、判別可能ユニオンにする。比較は `compareSceneTime` 経由で行う。
+type SceneTime =
+  | { axis: 'reading'; value: number }
+  | { axis: 'story'; value: string };
 
 interface SceneTimeIndex {
-  readingOrder: Map<string, number>;      // 全 Scene に存在
-  storyTimeOrder: Map<string, number>;    // story_time_order が設定されている Scene のみ
-  storyTimeInherited: Map<string, number>; // story モード時、未設定 Scene に直前の story-time を継承した表
+  readingOrder: Map<string, number>;       // 全 Scene に存在（DFS 展開時の連番）
+  storyTimeOrder: Map<string, string>;     // story_time_order が設定されている Scene のみ
+  storyTimeInherited: Map<string, string>; // story モード時、未設定 Scene に直前の story-time を継承した表
 }
 
 function getSceneTime(
@@ -1591,6 +1592,20 @@ function getSceneTime(
     }
   }
 }
+
+// 同一軸の SceneTime 同士の比較。軸が異なる値を渡した場合は呼び出し側のバグ。
+function compareSceneTime(a: SceneTime, b: SceneTime): number {
+  if (a.axis !== b.axis) {
+    throw new Error('compareSceneTime: axis mismatch');
+  }
+  if (a.axis === 'reading') {
+    return a.value - (b.value as number);
+  }
+  // story 軸: 文字列 fractional indexing キーの辞書順比較
+  const av = a.value;
+  const bv = b.value as string;
+  return av < bv ? -1 : av > bv ? 1 : 0;
+}
 ```
 
 #### `SceneTimeIndex` の構築
@@ -1598,15 +1613,15 @@ function getSceneTime(
 ```typescript
 function buildSceneTimeIndex(nodes: TreeNode[]): SceneTimeIndex {
   const readingOrder = new Map<string, number>();
-  const storyTimeOrder = new Map<string, number>();
-  const storyTimeInherited = new Map<string, number>();
+  const storyTimeOrder = new Map<string, string>();
+  const storyTimeInherited = new Map<string, string>();
 
-  // 1. 読者順: ツリーDFS
+  // 1. 読者順: ツリーDFS。sort_order も文字列 fractional indexing キーなので辞書順で比較する。
   let i = 0;
   const dfs = (parentId: string | null) => {
     const children = nodes
       .filter(n => n.parentId === parentId)
-      .sort((a, b) => a.sortOrder - b.sortOrder);
+      .sort((a, b) => (a.sortOrder < b.sortOrder ? -1 : a.sortOrder > b.sortOrder ? 1 : 0));
     for (const child of children) {
       if (child.nodeType === 'scene') {
         readingOrder.set(child.id, i++);
@@ -1620,7 +1635,7 @@ function buildSceneTimeIndex(nodes: TreeNode[]): SceneTimeIndex {
   dfs(null);
 
   // 2. 読者順に走査しつつ、直前の story_time_order を継承して inherited テーブルを作る
-  let lastStory: number | null = null;
+  let lastStory: string | null = null;
   const sortedByReading = [...readingOrder.entries()].sort((a, b) => a[1] - b[1]);
   for (const [sceneId] of sortedByReading) {
     const explicit = storyTimeOrder.get(sceneId);
@@ -1639,7 +1654,7 @@ function buildSceneTimeIndex(nodes: TreeNode[]): SceneTimeIndex {
 
 #### 軸不一致時のフォールバック（all-or-nothing）
 
-Phase アンカーシーンと currentScene で**軸が食い違う**ことがある（例: `mode=story` だがアンカーシーンに `story_time_order` が未設定で、かつ作品冒頭で継承元もない）。story-time の値と reading-order の値は別の数値空間にあるため混在ソートが意味を持たない。そのため**エントリ単位の all-or-nothing フォールバック**を採用する:
+Phase アンカーシーンと currentScene で**軸が食い違う**ことがある（例: `mode=story` だがアンカーシーンに `story_time_order` が未設定で、かつ作品冒頭で継承元もない）。story-time の値（文字列 fractional indexing キー）と reading-order の値（DFS 連番 number）は別の値空間にあり、型も異なるため混在ソートが意味を持たない。そのため**エントリ単位の all-or-nothing フォールバック**を採用する:
 
 - エントリ内の全 Phase のアンカーが currentScene と同じ軸で引けるなら、その軸で解決する
 - 1 つでも軸不一致があれば、そのエントリの **全 Phase を reading-order にフォールバック**して解決する（story-time 値と reading-order 値を混ぜない）
@@ -1689,7 +1704,7 @@ function resolveCodexState(
   // 3. 各フェーズのアンカーシーンも同じモードで引き、「現在シーンと軸が揃うか」を判定する。
   //    一つでも軸不一致があれば、このエントリは **エントリ単位で reading-order にフォールバック** して
   //    全フェーズをまとめて reading-order で解決する（all-or-nothing フォールバック）。
-  //    これは story-time 値と reading-order 値が別の数値空間のため、混在ソートが意味を持たないため。
+  //    これは story-time 値（文字列）と reading-order 値（数値）が別の値空間のため、混在ソートが意味を持たないため。
   const anchorTimes = phases.map(p => ({
     phase: p,
     time: getSceneTime(p.anchorNodeId, resolutionMode, sceneTimeIndex),
@@ -1698,34 +1713,35 @@ function resolveCodexState(
     x => x.time === null || x.time.axis !== currentTime.axis,
   );
 
-  // 4. 比較に使う値を決定（軸を揃える）
-  let currentValue: number;
-  const phaseValues: { phase: CodexEntryPhase; value: number }[] = [];
+  // 4. 比較に使う SceneTime を軸を揃えて作る。story 軸は文字列キー、reading 軸は数値。
+  let currentCompareTime: SceneTime;
+  const phaseCompareTimes: { phase: CodexEntryPhase; time: SceneTime }[] = [];
   if (hasAxisMismatch) {
     // エントリ単位で reading-order フォールバック
     const cR = sceneTimeIndex.readingOrder.get(currentSceneId);
     if (cR === undefined) return state;
-    currentValue = cR;
+    currentCompareTime = { axis: 'reading', value: cR };
     for (const { phase } of anchorTimes) {
       const v = sceneTimeIndex.readingOrder.get(phase.anchorNodeId);
-      if (v !== undefined) phaseValues.push({ phase, value: v });
+      if (v !== undefined) phaseCompareTimes.push({ phase, time: { axis: 'reading', value: v } });
       // reading-order も引けないフェーズは anchor 削除済みのためスキップ
     }
   } else {
-    currentValue = currentTime.value;
+    currentCompareTime = currentTime;
     for (const { phase, time } of anchorTimes) {
-      if (time !== null) phaseValues.push({ phase, value: time.value });
+      if (time !== null) phaseCompareTimes.push({ phase, time });
     }
   }
 
   // 5. 適用可能フェーズ（アンカー位置 ≤ 現在位置）をその軸の順序でソート。
+  //    比較は `compareSceneTime`（reading 軸は数値、story 軸は文字列 fractional indexing キーの辞書順）。
   //    tie-break は「アンカーシーンの reading-order → created_at」の順。
   //    これによりパラレルストーリー等で同じ story_time_order を持つ異なるシーンの
   //    Phase 同士でも決定的な順序になる。
-  const applicablePhases = phaseValues
-    .filter(x => x.value <= currentValue)
+  const applicablePhases = phaseCompareTimes
+    .filter(x => compareSceneTime(x.time, currentCompareTime) <= 0)
     .sort((a, b) => {
-      const diff = a.value - b.value;
+      const diff = compareSceneTime(a.time, b.time);
       if (diff !== 0) return diff;
       const ra = sceneTimeIndex.readingOrder.get(a.phase.anchorNodeId) ?? 0;
       const rb = sceneTimeIndex.readingOrder.get(b.phase.anchorNodeId) ?? 0;

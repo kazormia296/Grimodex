@@ -279,13 +279,15 @@ Editorがすでに該当シーンを固定タブで開いている場合は、�
 
 ```
 前ノード order = "a0",  後ノード order = "a1"
-→ 新 order  = "a0V"   （base62 で a0 < a0V < a1）
+→ 新 order = generateKeyBetween("a0", "a1")  // 例: "a0V" — 辞書順で "a0" < "a0V" < "a1"
 ```
 
-- 先頭にドロップ: `generateKeyBetween(null, firstKey)` （`Zz` のような先頭側キーが返る）
+- 先頭にドロップ: `generateKeyBetween(null, firstKey)` （先頭側の新キーが返る）
 - 末尾にドロップ: `generateKeyBetween(lastKey, null)`
 - Unscheduled→軸: ドロップ位置の前後キーから生成
 - 軸→Unscheduled: `story_time_order` を `NULL` にクリア。`story_time_label` は保持
+
+キーの具体的な文字セット・生成規則は `fractional-indexing` ライブラリに委譲する（Scenes パネルの `sort_order` と同一方式）。キーは opaque であり、上記の `"a0V"` はあくまで「辞書順で中間に入る何らかのキー」の説明用。
 
 文字列 fractional indexing の特性:
 
@@ -365,7 +367,13 @@ Editorがすでに該当シーンを固定タブで開いている場合は、�
 - `story`: story-time で適用（未設定シーンはreading-order フォールバック）
 - `auto`: シーンに story_time_order があれば story、なければ reading
 
-Timelineでstory-timeを編集すると、Phase resolution（特に `auto` モード時）の結果が変わる可能性があるため、**`story_time_order` 変更時は全Codex状態の再解決がトリガーされる**。Chat/Codex/Editorの表示に即時反映。
+Timelineでstory-timeを編集すると、Phase resolution（特に `auto` / `story` モード時）の結果が変わる可能性がある。再解決の実体は Codex パネル設計書「シーン順序の解決」節の `SceneTimeIndex` + `resolveCodexState` パイプラインで、Timeline のドラッグは以下のように波及する:
+
+1. `story_time_order` 変更 → `SceneTimeIndex.storyTimeOrder` / `storyTimeInherited` を再構築（`readingOrder` は不変）
+2. 再構築された Index に基づき、`phase_resolution_mode` が `auto` / `story` の場合のみ、Phaseを持つエントリ単位で `resolveCodexState` を再実行（`reading` モードでは実質ノーオペ）
+3. 再解決結果が Chat コンテキスト / Codex パネル表示 / Editor のホバーカードに即時反映
+
+`mode = 'reading'` 時は再解決がスキップされるため、Timeline のドラッグは描画更新のみで完結する。
 
 #### 再解決のタイミング
 
@@ -706,3 +714,30 @@ Timelineパネルのデフォルト位置はBottom Dock（非表示）。`Ctrl+A
 - SVG/PNG として画像エクスポート（プロット資料・打ち合わせ用）
 - エクスポート時の情報密度（タイトルのみ / フルSynopsis / Phaseピン含む）を選択可能に
 - v2以降の検討
+
+### Undo / Redo の粒度
+
+- ドラッグによる `story_time_order` 変更は、Scenes パネルの並び替えと同じ history スタックに載せるか、Timeline 独自のスタックを持つかを要決定
+- 単一の Undo で「order 変更 + 再解決の結果に依存する派生表示」を巻き戻す必要がある。order だけ戻して再解決タイミングがズレると Editor 上の Codex ホバー表示が一瞬古い状態になる
+- MVP では **Scenes と共通の history に統合**し、`SceneTimeIndex` 再計算 + 再解決を Undo/Redo のコミットフックとして走らせる案が有力。Phase B で実装方針を確定する
+
+### 大規模プロジェクトでのスケーラビリティ
+
+- MVP想定は数百シーン規模の自前 SVG 描画。長編（1000+ シーン）や POV レーン展開時のパフォーマンス戦略は未検討
+- 想定される対策:
+  - 画面外ノードのカリング（スクロール範囲 + バッファのみレンダリング）
+  - ドラッグ時のヒットテストを sweep line / bucket 方式に
+  - 再解決計算を Web Worker にオフロード（Codex エントリ数 × Phase 数が大きい場合）
+- Phase B で実測し、閾値（例: 500シーン超でカリング有効化）を数値で定める
+
+### キーボードナビゲーションと Unscheduled レーン
+
+- story-time 軸表示中に主軸とUnscheduledレーンの両方がある場合、`←`/`→` で両レーンを跨ぐかは未定義
+- 候補: `↓`/`↑` でレーン切替、`Tab` で次レーン先頭へジャンプ、または `←`/`→` を主軸内のみに制限し Unscheduled は独立選択にする
+- 実装時にアクセシビリティ（スクリーンリーダー向けの `aria-activedescendant` ハンドリング）と合わせて確定
+
+### アクセシビリティ（SVG 描画）
+
+- 自前 SVG で描画する都合上、screen reader 対応は別途設計が必要
+- 最低限: シーンノードに `role="button"` + `aria-label="{章番号} {タイトル} {ステータス}"`, 軸全体に `role="listbox"` 相当のラベル、Phaseピンに `aria-label="{エントリ名}: {フェーズラベル}"` を付与
+- キーボード操作時のフォーカスリング描画（SVG outline）も標準ブラウザ挙動から外れるため明示的に実装する必要あり
