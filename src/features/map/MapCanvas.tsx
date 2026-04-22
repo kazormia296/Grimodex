@@ -123,6 +123,14 @@ export function MapCanvas() {
   // their pre-drag positions.
   const groupDraggingRef = useRef<Set<string>>(new Set());
 
+  // IDs whose post-drop positions are being persisted to the DB (IPC in
+  // flight). Between drop and setPositions/setFrames committing the new
+  // coords, any unrelated dep change (concurrent drag, store write) can
+  // trigger useMapNodes to rebuild from stale positions/frames — causing a
+  // brief snap-back or all-nodes flicker. Preserving `prev.position` while
+  // the id is in this set keeps the node visually stable during the window.
+  const persistingRef = useRef<Set<string>>(new Set());
+
   // Spawn counter: resets when viewport changes (pan/zoom)
   const spawnRef = useRef<{
     vp: { x: number; y: number; zoom: number };
@@ -198,6 +206,7 @@ export function MapCanvas() {
     updateSynopsis,
     setActiveScene,
     groupDraggingRef,
+    persistingRef,
   });
 
   const edges = useMapEdges({
@@ -219,6 +228,7 @@ export function MapCanvas() {
       setFrames,
       setNodes,
       setUserEdges,
+      persistingRef,
     });
 
   const {

@@ -40,6 +40,7 @@ interface UseMapNodesInput {
   updateSynopsis: (id: string, synopsis: string) => Promise<void>;
   setActiveScene: (id: string) => void;
   groupDraggingRef: React.MutableRefObject<Set<string>>;
+  persistingRef: React.MutableRefObject<Set<string>>;
 }
 
 export function useMapNodes({
@@ -63,6 +64,7 @@ export function useMapNodes({
   updateSynopsis,
   setActiveScene,
   groupDraggingRef,
+  persistingRef,
 }: UseMapNodesInput) {
   useEffect(() => {
     if (!boardId) return;
@@ -293,21 +295,32 @@ export function useMapNodes({
       setNodes((prev) => {
         const prevMap = new Map(prev.map((n) => [n.id, n]));
         const groupDragging = groupDraggingRef.current;
+        const persisting = persistingRef.current;
         const merged = nextNodes.map((n) => {
           const p = prevMap.get(n.id);
           if (!p) return n;
+          // Always preserve React Flow's per-node runtime state: `measured`
+          // (from ResizeObserver), `selected`, `dragging`. Dropping these on
+          // every rebuild would make React Flow think sizes changed and
+          // re-emit `dim` events for every node — which feeds back through
+          // `persistFrameResize` → setFrames → rebuild, causing an infinite
+          // loop and visible full-canvas flicker.
+          const base = {
+            ...n,
+            selected: p.selected,
+            measured: p.measured,
+            dragging: p.dragging,
+          };
           if (p.dragging || groupDragging.has(n.id)) {
-            return {
-              ...n,
-              selected: p.selected,
-              position: p.position,
-              dragging: p.dragging,
-            };
+            return { ...base, position: p.position };
           }
-          if (p.selected) {
-            return { ...n, selected: true };
+          // Drop-to-persist window: nodes/frames state has the new coords
+          // (applyNodeChanges is synchronous) but positions/frames state is
+          // still mid-IPC. Preserve the live position to prevent snap-back.
+          if (persisting.has(n.id)) {
+            return { ...base, position: p.position };
           }
-          return n;
+          return base;
         });
         // Preserve any prev nodes still flagged as group-dragging that are
         // missing from nextNodes (e.g., upstream store churn briefly drops
