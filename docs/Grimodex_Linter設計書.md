@@ -136,9 +136,24 @@ pub struct Fix {
 }
 
 pub struct LintInput<'a> {
-    pub text: &'a str,           // UTF-8 文字列
+    pub blocks: &'a [LintBlock], // Lint 対象のブロック配列
     pub language: Language,
     pub scope: LintScope,        // Scene / Chapter / Project
+}
+
+pub struct LintBlock {
+    pub id: u32,                 // フロントの位置マップと対応
+    pub kind: BlockKind,
+    pub text: String,            // プレーンテキスト（UTF-8）
+    pub str_offset_start: u32,   // シーン全体テキスト内での開始 UTF-16 offset
+}
+
+pub enum BlockKind {
+    Paragraph,
+    Heading,
+    Blockquote,
+    ListItem,
+    TableCell,
 }
 
 pub enum LintScope {
@@ -167,6 +182,8 @@ pub trait LintRule: Send + Sync {
     fn default_severity(&self) -> Severity;
     fn supported_languages(&self) -> &'static [Language];
 
+    // 注: Result を返さない。ルールが失敗し得るのは構築時のみ。
+    // 不変条件: 返される Diagnostic.range は同一ブロック内に収まる。
     fn check(
         &self,
         input: &LintInput,
@@ -180,11 +197,29 @@ pub trait LintRule: Send + Sync {
 ```rust
 #[tauri::command]
 async fn lint_text(
-    text: String,           // UTF-8、エディタからシリアライズ済み
-    language: String,       // "ja" | "en"
+    blocks: Vec<LintBlock>,
+    language: String,            // "ja" | "en"
     scope: LintScope,
     config: LintConfig,
-) -> Result<Vec<Diagnostic>, LintError>;
+) -> Result<LintResponse, LintError>;
+
+pub struct LintResponse {
+    pub diagnostics: Vec<Diagnostic>,
+    pub warnings: Vec<RuleWarning>,  // 致命的ではない問題
+    pub computed_at: i64,             // epoch ms
+}
+
+pub struct RuleWarning {
+    pub rule_id: String,
+    pub kind: WarningKind,
+    pub message: String,
+}
+
+pub enum WarningKind {
+    Skipped,          // 設定やランタイム条件で実行を見送り
+    InvalidOption,    // ルールオプションが不正、デフォルトで継続
+    InitFailed,       // 構築失敗（ユーザー辞書の regex 不正等）
+}
 ```
 
 ---
@@ -258,6 +293,60 @@ editor.view.dispatch(
 - `text` ノード = そのまま
 - 装飾 mark は無視（textContent 相当）
 - 位置マップは `Map<number, ProseMirrorPos>` 形式で保持
+
+---
+
+## リッチコンテンツの扱い
+
+TipTap のドキュメントはパラグラフ以外に表・コードブロック・画像・ルビ等のリッチコンテンツを含む。Linter は**プレーンテキスト抽出後のブロック配列**を受け取り、ブロックごとに独立して判定する。
+
+### ノード種別の振り分け
+
+| ノード種別 | Lint 対象 | 備考 |
+|---|---|---|
+| `paragraph` | ✅ | 1 ブロック |
+| `heading` | ✅ | 1 ブロック |
+| `blockquote` | ✅ | 1 ブロック |
+| `bulletList` / `orderedList` の `listItem` | ✅ | item ごとに 1 ブロック |
+| `table` 内の `tableCell` | ✅ | cell ごとに独立したブロック |
+| `codeBlock` | ❌ スキップ | 散文ルール不適用（コード内は Lint しない） |
+| `image` | ❌ スキップ | `alt` / キャプションは Phase 2 で別ルールを検討 |
+| `horizontalRule` | ❌ スキップ | ブロック境界扱い |
+| `hardBreak` | 段落内改行として扱う | |
+| `ruby` | ✅ 基底テキストのみ | ふりがな部分（`rt`）は除外 |
+
+### ブロック境界をまたがない判定
+
+以下のルールは**ブロック境界をまたいだ判定をしない**:
+
+- `ja/sentence-ending-repeat`（同文末連続）
+- `ja/consecutive-punct`（連続句読点）
+- 同語近接反復（Phase 2）
+- 助詞「の」連続（Phase 2）
+
+Rust 側は `Vec<LintBlock>` として受け取るため、ルール実装は**自然にブロック内に閉じる**。制御文字による境界マーキングは誤爆リスクがあるため採用しない。
+
+### 位置マップへの統合
+
+位置マップの各区間にブロック情報を持たせる:
+
+```typescript
+type PosInterval = {
+  pmPosStart: number;
+  strOffsetStart: number;
+  length: number;
+  blockId: number;                                                  // 同一ブロックかの判定用
+  blockKind: 'paragraph' | 'heading' | 'blockquote' | 'listItem' | 'tableCell';
+};
+```
+
+`codeBlock` / `image` / `horizontalRule` は位置マップに含めない。これらのノードの ProseMirror 位置には Lint Decoration が一切描画されない。
+
+### Diagnostic の不変条件
+
+- `Diagnostic.range` は**常に同一ブロック内に収まる**
+- `Fix.range` も同様
+- この不変条件はゴールデンファイルテストで検証する
 
 ---
 
@@ -589,6 +678,99 @@ Editor 設計書で定義される「リニア編集モード」（プロジェ�
 
 ---
 
+## エラーハンドリング
+
+### LintError（致命的エラー）
+
+Lint 全体の実行失敗。`Result::Err` として返す。
+
+```rust
+#[derive(Debug, thiserror::Error, Serialize)]
+#[serde(tag = "type", content = "data")]
+pub enum LintError {
+    #[error("text too large: {actual} bytes (max: {max})")]
+    TextTooLarge { actual: usize, max: usize },
+
+    #[error("invalid language: {0}")]
+    InvalidLanguage(String),
+
+    #[error("config parse error: {path}: {reason}")]
+    InvalidConfig { path: String, reason: String },
+
+    #[error("internal error: {0}")]
+    Internal(String),
+}
+```
+
+### RuleWarning（非致命的な警告）
+
+個別ルールの劣化・スキップを `LintResponse.warnings` で返す。
+
+- `Skipped`: 設定やランタイム条件でルールを実行しなかった
+- `InvalidOption`: オプション値が不正、デフォルト値で継続
+- `InitFailed`: ルール構築失敗（ユーザー辞書の regex エラー等）、該当ルールのみ除外
+
+### ルール構築時のエラー処理
+
+`check()` は `Result` を返さない。失敗し得るのは**構築時**のみ:
+
+```rust
+pub fn build_ruleset(
+    config: &LintConfig,
+) -> (Vec<Box<dyn LintRule>>, Vec<RuleWarning>) {
+    // 各ルールのコンストラクタを走査
+    // 成功 → rules に追加
+    // 失敗 → warnings に積んでスキップ
+}
+```
+
+### Panic ポリシー（Phase 1）
+
+- **`catch_unwind` は使わない**。開発中の panic を隠さず、バグとして顕在化させる
+- `unwrap()` / `expect()` 禁止（プロジェクト規約準拠）
+- clippy で以下を denial:
+  - `clippy::unwrap_used`
+  - `clippy::expect_used`（例外的に許容する場合は `#[allow]` を明示）
+  - `clippy::panic`
+  - `clippy::indexing_slicing`（スライス記法を強制）
+- ゴールデンファイルテストで境界値（空文字、1 文字、巨大テキスト、CJK 境界、絵文字等）を網羅
+
+**Phase 2 以降の再評価**: lindera など外部クレートを導入した時点で panic リスクが増えるため、`catch_unwind` 導入を再検討する。
+
+### 入力バリデーション
+
+| シナリオ | 挙動 |
+|---|---|
+| テキスト合計 > **500KB**（UTF-8）| `LintError::TextTooLarge` |
+| 不正な `language` 文字列 | `LintError::InvalidLanguage` |
+| 空のブロック配列 | 通常動作（空の Diagnostic 配列を返す） |
+| 未知のルール ID を設定に含む | 黙って無視（前方互換性） |
+| ルールオプションの型不一致 | デフォルト値を使用、`InvalidOption` 警告を返す |
+
+**500KB の意味**: `LintBlock.text` の合計バイト数。TipTap JSON 全体や画像バイナリは含まれない。コードブロックや画像は Lint 対象外のため、この制限にも含まれない。実運用では到達困難な安全弁として機能。
+
+**ソフト警告 100KB**: 超えても Lint は実行するが、Linter パネルに「このシーンは大きくなっています」と表示。
+
+### Codex DB エラー（Phase 2 以降）
+
+Codex 連動ルールで DB 読み取りに失敗した場合:
+
+- **全体失敗にはしない**。他ルールは正常に実行
+- 該当ルールのみ `Skipped` 警告を返す
+- DB ロックなど一時的なエラーは次回 Lint サイクルで解消を期待
+
+### フロント側の UI 挙動
+
+| 応答 | UI |
+|---|---|
+| `Ok(LintResponse)` | Diagnostic を表示。`warnings` があれば Linter パネルの右上に小さなインジケータ |
+| `Err(TextTooLarge)` | トースト: 「このシーンは Lint できない大きさです」。Diagnostic は空に |
+| `Err(InvalidLanguage / InvalidConfig)` | devtools にログ、UI バナー: 「Linter 設定にエラー」 |
+| `Err(Internal)` | devtools にログ、UI バナー: 「Linter が一時的に利用できません」 |
+| いずれのエラー時も | **既存の Diagnostic を破棄**（stale 表示を避ける）。次の debounce サイクルで自動再試行 |
+
+---
+
 ## UI 表現
 
 ### エディタ内表示
@@ -735,6 +917,12 @@ src-tauri/src/lint/tests/fixtures/
 | debounce 入力 | `transaction.docChanged === true` のみ |
 | Fix 適用の再 Lint | debounce バイパスで即時実行 |
 | ステータスバー | 現在シーンのみ表示。プロジェクト全体集計は Linter パネルと「全章 Lint」のみ |
+| Rust への入力 | `Vec<LintBlock>`（プレーンテキスト化後のブロック配列） |
+| Lint 対象外ノード | `codeBlock` / `image` / `horizontalRule` |
+| Diagnostic 範囲 | 常に同一ブロック内（ブロック跨ぎなし） |
+| Panic ポリシー | `catch_unwind` なし。`unwrap`/`expect`/`panic!` は clippy で denial |
+| サイズ上限 | ハード 500KB（UTF-8、`LintBlock.text` 合計）、ソフト警告 100KB |
+| ルール警告 | `LintResponse.warnings` で非致命的問題を返す |
 | テスト | ゴールデンファイル形式を day 1 から |
 
 ---
