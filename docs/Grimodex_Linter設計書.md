@@ -782,12 +782,169 @@ Codex 連動ルールで DB 読み取りに失敗した場合:
 - **ホバー時**: ツールチップでメッセージ表示、修正候補があれば「[修正] [無視]」ボタン
 - **クリック時**: 修正候補ポップオーバー
 
-### Linter パネル（別途設計）
+### Linter パネル
 
-- 検出された Diagnostic の一覧
-- ルール ID / Severity でフィルタ
-- クリックでエディタの該当箇所にジャンプ
-- 「全て修正」「ルールごとに無視」アクション
+#### 配置とライフサイクル
+
+- **デフォルト配置**: Bottom Dock（VS Code Problems 相当）
+- 他パネル同様、Left/Right/Float へ移動可能。レイアウトプリセットで配置切替
+- パネルトグルドロップダウンに「Linter」として登録
+- 初期状態: **非表示**（ステータスバーのインジケータクリック、またはトグルから開く）
+
+#### レイアウト構成
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│ [Current │ Project]  [⚠ 3 ⓘ 7]   [🔍 _________]   [⋮]      │  ← ヘッダー
+├─────────────────────────────────────────────────────────────┤
+│ Filter: [✓ Error] [✓ Warning] [✓ Info]  Group: [Severity▼]  │  ← ツールバー
+├─────────────────────────────────────────────────────────────┤
+│ ▼ ⚠ Warning (3)                                             │
+│    📄 第1章 / シーン1                                        │
+│    ⚠ 一文が 120 文字を超えています  [Fix] [無視]             │
+│      「エララは塔の麓に…冷たい石肌を指でなぞりながら」        │
+│    ...                                                      │
+└─────────────────────────────────────────────────────────────┘
+```
+
+#### 表示モード
+
+ヘッダー左のセグメントコントロールで切替:
+
+| モード | 内容 |
+|---|---|
+| **Current** | 現在シーンの Diagnostic のみ。リアルタイム更新 |
+| **Project** | 「全章 Lint」実行後のプロジェクト全体結果 |
+
+#### ツールバー
+
+- **Severity フィルタ**: Error / Warning / Info の ON/OFF チェックボックス
+- **Group by**: `Severity` / `Rule` / `Scene`（Project モード時のみ）/ `None`。デフォルト: `Severity`
+- **検索ボックス**: **`rule_id` と `message` の両方に対する部分一致検索**
+- **右上メニュー (⋮)**: 全フィルタリセット / Linter 設定を開く
+
+#### エントリ表示
+
+- Severity アイコン（🔴 Error / ⚠ Warning / ⓘ Info）
+- メッセージ
+- 位置表示（Current モードではブロック番号のみ、Project モードではシーン名込み）
+- **該当箇所の抜粋**（範囲＋前後コンテキスト、該当箇所をハイライト）
+- **Fix ボタン**（自動修正が可能な場合のみ）
+- **無視ボタン**（右クリックメニューに集約してもよい）
+
+##### 長大な Diagnostic.range の抜粋
+
+`Diagnostic.range` の長さに応じて表示を切替:
+
+- **60 文字以下**: 範囲全体 + 前後コンテキスト（例: 前後 10 文字）
+- **60 文字超**: 前半 30 文字 `…` 後半 30 文字（`ja/sentence-length` など長文マッチ向け）
+
+#### クリック動作
+
+- **行クリック**: エディタで該当位置にジャンプ + 選択状態にする
+- **Fix ボタン**: その場で適用（エディタへ反映、debounce バイパスで再 Lint）
+- **右クリック**: コンテキストメニュー
+
+#### 右クリックメニュー
+
+- Fix を適用（可能な場合）
+- この箇所を永続的に無視
+- このルール (`ja/ellipsis-single`) を OFF にする
+- ルール詳細を設定で開く
+- メッセージをコピー
+
+#### 一括アクション（右上メニュー）
+
+- 表示中の Fixable を全適用（フィルタ・検索条件に一致するものだけ）
+- このルールの Fix を全適用（Group by Rule 時、グループヘッダにボタン）
+- 全章 Lint を実行 / キャンセル
+
+#### Fix 適用後のパネル状態
+
+- **選択解除**（次のエントリを自動選択はしない）
+- スクロールは**上部基準で維持**
+- Fix 済みの Diagnostic は自然に消える（再 Lint 結果で上書き）
+- エントリ ID 追跡はしない（複雑化の割にメリットが小さいため）
+
+#### 「全章 Lint」の進捗表示
+
+Project モードで実行時:
+
+```
+[Project モード]  Linting 15/30 scenes...  [Cancel]
+```
+
+- プログレスバーをヘッダーに表示
+- 完了済みシーンの Diagnostic から逐次追加表示（全完了を待たない）
+- キャンセル可能
+- 実行中も通常のエディタ操作は阻害しない（非同期進行）
+
+##### キャンセル時の部分結果
+
+- **部分結果を保持**。ヘッダーに `15/30 scenes (cancelled)` と表示
+- 再実行は**残りのみ再開**（未 Lint シーンだけを処理）
+- ユーザーが明示的に「最初からやり直す」を選べば全シーン再実行
+
+#### Empty state
+
+| 状態 | 表示 |
+|---|---|
+| Linter 無効 | アイコン + 「Linter が無効です」+ **[有効にする]** ボタン |
+| 現在シーンで問題なし | チェックマーク + 「問題は見つかりませんでした」 |
+| シーン未開封（Project モード） | 「全章 Lint を実行してください」+ **[実行]** ボタン |
+| Lint 実行中（初回） | スピナー + 「Lint 実行中...」 |
+| Lint エラー時 | 「Linter が一時的に利用できません」+ 詳細（折りたたみ） |
+
+#### 警告インジケータ
+
+ヘッダーに `LintResponse.warnings` の件数を⚠アイコンで表示。クリックでモーダル:
+
+```
+Linter warnings:
+  · [InitFailed] ja/user-terms: ユーザー辞書の正規表現が不正です
+  · [Skipped]    codex/name-consistency: Codex DB を一時的に読めませんでした
+```
+
+開発者向け情報として、ユーザーが「Linter が壊れている？」と感じた時の原因究明に使う。
+
+**Phase 1 の寿命管理**: 「直近の応答」の warnings のみ表示（一時的な警告が消えた時にアイコンが消える = 点滅のように見える可能性は許容）。Phase 2 で warnings log と重複除去を検討。
+
+#### 状態の永続化
+
+- パネルの表示/非表示、位置、サイズ → レイアウトシステム経由で自動永続化
+- フィルタ設定、Group by 選択 → `settings` テーブル（`lint.panel.ui`）
+- スクロール位置、展開状態 → メモリのみ（セッション限定）
+
+#### 永続無視リスト
+
+「この箇所を永続的に無視」を実現するための専用テーブル:
+
+```sql
+CREATE TABLE lint_ignored_diagnostics (
+  id              TEXT PRIMARY KEY,
+  rule_id         TEXT NOT NULL,
+  scene_id        TEXT NOT NULL,
+  text_snippet    TEXT NOT NULL,     -- Diagnostic.range のテキスト
+  context_before  TEXT NOT NULL,     -- 前 20 文字（生テキスト）
+  context_after   TEXT NOT NULL,     -- 後 20 文字（生テキスト）
+  created_at      INTEGER NOT NULL,
+  note            TEXT
+);
+
+CREATE INDEX idx_lint_ignored_scene ON lint_ignored_diagnostics(scene_id);
+```
+
+**同定ロジック**:
+
+```
+match = rule_id 一致
+      AND text_snippet 一致
+      AND (context_before 一致 OR context_after 一致)
+```
+
+**context をハッシュではなく生テキストで持つ理由**: 編集耐性を持たせつつ誤ヒットを防ぐため。単純な `text_snippet` 一致では「意図的な吃音表現『え、、』を無視」「同シーン内の誤字『です、、』も無視」の誤爆が発生する。前後文脈のどちらか一方が一致することを条件とすることで、同じ内容でも文脈が違えば別物として扱う。
+
+**古い無視エントリの扱い**: テキスト変更で context の両方が一致しなくなると、その無視エントリは効かなくなる。設定画面に「古い無視エントリ」として一覧表示し、手動で削除可能にする。
 
 ### ステータスバー
 
@@ -851,7 +1008,7 @@ src-tauri/src/lint/tests/fixtures/
 
 ### Phase 1（土台 + regex ルール）
 
-最初の PR に含める **4 点セット**:
+最初の PR に含める **4 点セット（エンジン側）**:
 
 1. `LintRule` trait + `Diagnostic` 型 + `LintContext` の設計
 2. ProseMirror ↔ 文字列オフセット変換層（ユニットテスト付き）
@@ -864,7 +1021,27 @@ src-tauri/src/lint/tests/fixtures/
 - TipTap Decoration による squiggly 表示
 - 設定パネルに最低限の ON/OFF UI
 
-**完了基準**: 上記ルールがエディタ上でリアルタイムに動作し、修正候補ボタンで適用できる。
+UI 側（Linter パネル）はサブフェーズに分けて実装:
+
+#### Phase 1a（最小動作）
+
+- Bottom Dock にパネル枠組みを配置、パネルトグルに登録
+- Current モードのエントリリスト（フラット表示）
+- クリックでエディタの該当位置にジャンプ
+- Fix ボタンで Fix 適用
+- 基本的な Empty state（Diagnostic なし／Lint 実行中）
+
+#### Phase 1b（体験向上）
+
+- Severity フィルタ（Error / Warning / Info）
+- Group by Severity / None
+- 検索ボックス（`rule_id` + `message` 部分一致）
+- 抜粋表示（60 文字超は前後 30 文字 + `…` 省略）
+- 警告インジケータ（⚠ アイコン + モーダル）
+- ステータスバーからパネルを開く
+- 全 Empty state の実装
+
+**完了基準**: Phase 1 ルールがエディタ上でリアルタイムに動作し、Linter パネルから一覧表示・ジャンプ・Fix 適用ができる。
 
 ### Phase 2（形態素解析 + Codex 連動）
 
@@ -874,10 +1051,22 @@ src-tauri/src/lint/tests/fixtures/
 - F群（Codex 連動）— 人名・固有名詞表記ゆれ、一人称、口調
 - 設定パネルの拡充（ルール詳細オプション、プロジェクト辞書）
 
+**Linter パネル側の拡張**:
+
+- **Project モード**と全章 Lint 進捗表示（キャンセル・部分結果保持・残り再開）
+- **Group by Rule / Scene**
+- **右クリックメニュー**（永続無視、ルール OFF、ルール詳細を開く）
+- **永続無視リスト**（`lint_ignored_diagnostics` テーブル + 同定ロジック実装）
+- **一括 Fix 適用**（フィルタ絞り込み対象、ルール単位）
+- **キーボード操作**（↑↓ / Enter でジャンプ / Cmd+. で Fix メニュー）
+- **エディタカーソル → パネル逆方向ハイライト**
+- **Codex 連動ルールの Diagnostic から Codex エントリへのリンク**
+
 **Phase 2 で検討すべきパフォーマンス課題**:
 
 - **Incremental lint**: 変更されたパラグラフだけ再 Lint し、それ以外の Diagnostic は維持する仕組み。形態素解析を入れると全文再 Lint は無視できないコストになる
 - **1 パス統合最適化**: Phase 1 時点で 14 個のルールが各々テキストを走査するため、同じテキストを複数回舐めている。形態素解析導入のタイミングで、**形態素列を共有キャッシュにし、全ルールが 1 パスで評価**するアーキテクチャへの再設計を検討
+- **警告インジケータの寿命管理**: warnings log と重複除去
 
 ### Phase 3（小説 craft）
 
@@ -885,6 +1074,7 @@ src-tauri/src/lint/tests/fixtures/
 - E群（フィルターワード、会話タグ単調さ）
 - 英語の Phase 2/3 ルール（passive voice, weasel words, dialogue tag）
 - **インライン Lint 無効化記法**（`<!-- lint-disable-next-line <rule-id> -->` 相当）— 固有名詞や意図的な表現を個別に除外できる
+- Linter パネルのフィルタプリセット保存
 
 ### 将来的検討（本設計のスコープ外）
 
@@ -923,6 +1113,13 @@ src-tauri/src/lint/tests/fixtures/
 | Panic ポリシー | `catch_unwind` なし。`unwrap`/`expect`/`panic!` は clippy で denial |
 | サイズ上限 | ハード 500KB（UTF-8、`LintBlock.text` 合計）、ソフト警告 100KB |
 | ルール警告 | `LintResponse.warnings` で非致命的問題を返す |
+| Linter パネル配置 | Bottom Dock デフォルト、初期非表示 |
+| Linter パネルモード | Current（Phase 1）/ Project（Phase 2） |
+| 検索ボックス対象 | `rule_id` + `message` の部分一致 |
+| 長文 Diagnostic の抜粋 | 60 文字超は「前半 30 + … + 後半 30」形式 |
+| Fix 適用後の選択状態 | 解除。スクロールは上部基準で維持 |
+| 全章 Lint キャンセル | 部分結果保持、残りのみ再開可能 |
+| 永続無視の同定 | `rule_id` + `text_snippet` + (`context_before` OR `context_after`) |
 | テスト | ゴールデンファイル形式を day 1 から |
 
 ---
