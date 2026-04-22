@@ -289,13 +289,23 @@ export function useMapNodes({
         ...aiRfNodes,
       ];
       setNodes((prev) => {
-        const selectedIds = new Set(
-          prev.filter((n) => n.selected).map((n) => n.id),
-        );
-        if (selectedIds.size === 0) return nextNodes;
-        return nextNodes.map((n) =>
-          selectedIds.has(n.id) ? { ...n, selected: true } : n,
-        );
+        const prevMap = new Map(prev.map((n) => [n.id, n]));
+        return nextNodes.map((n) => {
+          const p = prevMap.get(n.id);
+          if (!p) return n;
+          if (p.dragging) {
+            return {
+              ...n,
+              selected: p.selected,
+              position: p.position,
+              dragging: true,
+            };
+          }
+          if (p.selected) {
+            return { ...n, selected: true };
+          }
+          return n;
+        });
       });
     }
 

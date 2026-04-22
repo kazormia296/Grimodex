@@ -542,3 +542,19 @@
 .react-flow__node.with-mode-transition {
   transition: transform var(--map-mode-transition) cubic-bezier(0.16, 1, 0.3, 1);
 }
+
+/* Frame: enlarge NodeResizer hit areas for easier grabbing.
+   Edge lines extend inward from the edge (visible line stays at the border),
+   corner handles grow to 14x14. */
+.react-flow__node-frame .react-flow__resize-control.line.top,
+.react-flow__node-frame .react-flow__resize-control.line.bottom {
+  height: 12px;
+}
+.react-flow__node-frame .react-flow__resize-control.line.left,
+.react-flow__node-frame .react-flow__resize-control.line.right {
+  width: 12px;
+}
+.react-flow__node-frame .react-flow__resize-control.handle {
+  width: 14px;
+  height: 14px;
+}

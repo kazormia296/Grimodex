@@ -390,6 +390,7 @@ export function MapCanvas() {
             : ConnectionMode.Strict
         }
         nodesDraggable={paletteMode === "default" && !modeTransitionActive}
+        elevateNodesOnSelect={false}
       >
         <Background variant={BackgroundVariant.Dots} gap={24} size={1} />
         <Controls />
