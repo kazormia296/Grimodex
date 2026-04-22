@@ -282,9 +282,20 @@ function MapCanvasInner() {
         setForceLayoutRunning(true);
         setForceAlpha(1);
         const engine = new WorkerForceLayoutEngine();
+        // Annotate each scene with the codex entry IDs it mentions (for Jaccard grouping)
+        const themeMatcher = createCodexMatcher(visibleCodex);
+        const scenesWithTags = scenes.map((s) => {
+          const text = [s.title, s.synopsis].filter(Boolean).join(" ");
+          const tags = [...new Set(themeMatcher(text).map((m) => m.entryId))];
+          return { ...s, tags };
+        });
         computedPositions = await layoutForAsync(
           "theme",
-          { scenes, codexEntries: visibleCodex, positions: visiblePositions },
+          {
+            scenes: scenesWithTags,
+            codexEntries: visibleCodex,
+            positions: visiblePositions,
+          },
           engine,
           (alpha) => {
             if (!cancelled) setForceAlpha(alpha);

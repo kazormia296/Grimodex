@@ -1,6 +1,7 @@
 import type { LayoutInput, LayoutOutput } from "./types";
 import type { ForceLayoutEngine } from "./forceEngine";
 import type { ForceNode, ForceLink } from "./forceLayout.worker";
+import { parseTags } from "@/features/codex/components/EntryCard";
 
 export async function layoutTheme(
   input: LayoutInput,
@@ -13,11 +14,11 @@ export async function layoutTheme(
   const nodes: ForceNode[] = [
     ...scenes.map((s) => ({
       id: `scene:${s.id}`,
-      tags: [] as string[],
+      tags: s.tags ?? [],
     })),
     ...codexEntries.map((e) => ({
       id: `codex:${e.id}`,
-      tags: [] as string[],
+      tags: parseTags(e.tagsCache).map((t) => t.name),
     })),
   ];
 
