@@ -27,18 +27,14 @@ import { useSnippetStore } from "@/features/snippets/snippetStore";
 import { createCodexMatcher } from "@/features/codex/codexMatcher";
 import { useMapStore } from "./mapStore";
 import {
-  getOrCreateBoard,
-  listAllNodePositions,
   upsertNodePosition,
   setNodePinned,
   updateNodePosition,
-  listUserEdges,
   createUserEdge,
   deleteUserEdge,
-  listFrames,
   updateFrame,
   deleteFrame,
-  listAINodes,
+  listAllNodePositions,
 } from "./mapApi";
 import { SceneNode } from "./nodes/SceneNode";
 import { CodexNode } from "./nodes/CodexNode";
@@ -63,6 +59,7 @@ import { findPosByNodeId, buildUpsertArgs } from "./utils/nodeIdCodec";
 import { useMapExport } from "./hooks/useMapExport";
 import { useFrameDrawing } from "./hooks/useFrameDrawing";
 import { useMapKeyboard } from "./hooks/useMapKeyboard";
+import { useMapBoardData } from "./hooks/useMapBoardData";
 
 const PROJECT_ID = "default-project";
 
@@ -127,11 +124,18 @@ function MapCanvasInner() {
 
   const reducedMotion = useReducedMotion();
 
-  const [boardId, setBoardId] = useState<string | null>(null);
-  const [positions, setPositions] = useState<MapNodePositionRecord[]>([]);
-  const [userEdges, setUserEdges] = useState<MapEdge[]>([]);
-  const [frames, setFrames] = useState<MapFrame[]>([]);
-  const [aiNodes, setAiNodes] = useState<MapAiNode[]>([]);
+  const {
+    boardId,
+    positions,
+    setPositions,
+    userEdges,
+    setUserEdges,
+    frames,
+    setFrames,
+    aiNodes,
+    setAiNodes,
+  } = useMapBoardData(PROJECT_ID);
+
   const [nodes, setNodes] = useState<Node[]>([]);
   const [edges, setEdges] = useState<Edge[]>([]);
   const [paletteMode, setPaletteMode] = useState<PaletteMode>("default");
@@ -176,31 +180,6 @@ function MapCanvasInner() {
     handleFrameOverlayMove,
     handleFrameOverlayUp,
   } = useFrameDrawing(screenToFlowPosition, boardId, setFrames, setPaletteMode);
-
-  // Load board + positions + edges + frames on mount
-  useEffect(() => {
-    let cancelled = false;
-    async function load() {
-      const board = await getOrCreateBoard(PROJECT_ID);
-      if (cancelled) return;
-      setBoardId(board.id);
-      const [pos, ue, fr, ai] = await Promise.all([
-        listAllNodePositions(board.id),
-        listUserEdges(board.id),
-        listFrames(board.id),
-        listAINodes(board.id),
-      ]);
-      if (cancelled) return;
-      setPositions(pos as MapNodePositionRecord[]);
-      setUserEdges(ue);
-      setFrames(fr);
-      setAiNodes(ai);
-    }
-    load();
-    return () => {
-      cancelled = true;
-    };
-  }, []);
 
   // Load snippets for snippet-origin edges if not yet loaded
   useEffect(() => {
