@@ -33,6 +33,7 @@ import {
   getOrCreateBoard,
   listNodePositions,
   upsertNodePosition,
+  setNodePinned,
   listUserEdges,
   createUserEdge,
   deleteUserEdge,
@@ -51,6 +52,7 @@ import { MapSearch } from "./MapSearch";
 import type { MapNodePositionRecord } from "./types";
 import type { MapEdge, MapFrame } from "@/db/schema";
 import { layoutFor } from "./layouts";
+import { DURATIONS, useReducedMotion } from "@/lib/animation";
 
 const PROJECT_ID = "default-project";
 
@@ -114,6 +116,8 @@ function MapCanvasInner() {
 
   const { getViewport, screenToFlowPosition, fitView } = useReactFlow();
 
+  const reducedMotion = useReducedMotion();
+
   const [boardId, setBoardId] = useState<string | null>(null);
   const [positions, setPositions] = useState<MapNodePositionRecord[]>([]);
   const [userEdges, setUserEdges] = useState<MapEdge[]>([]);
@@ -121,7 +125,25 @@ function MapCanvasInner() {
   const [nodes, setNodes] = useState<Node[]>([]);
   const [edges, setEdges] = useState<Edge[]>([]);
   const [paletteMode, setPaletteMode] = useState<PaletteMode>("default");
+  const [modeTransitionActive, setModeTransitionActive] = useState(false);
   // searchOpen は mapStore.searchVisible で管理（MapHeaderから開くため）
+
+  // Trigger node transition when mode changes (skip on mount)
+  const isMountRef = useRef(true);
+  useEffect(() => {
+    if (isMountRef.current) {
+      isMountRef.current = false;
+      return;
+    }
+    if (reducedMotion) return;
+    setModeTransitionActive(true);
+    const TRANSITION_MS = DURATIONS.slow * 1000 + 50; // 350ms
+    const timer = setTimeout(
+      () => setModeTransitionActive(false),
+      TRANSITION_MS,
+    );
+    return () => clearTimeout(timer);
+  }, [mode, reducedMotion]);
 
   // Frame drawing state
   const frameDragStart = useRef<XYPosition | null>(null);
@@ -193,6 +215,10 @@ function MapCanvasInner() {
         }))
       : [];
 
+    const transitionClass = modeTransitionActive
+      ? "with-mode-transition"
+      : undefined;
+
     // Scene nodes
     const sceneNodes: Node[] = show.scenes
       ? scenes.map((n) => {
@@ -203,6 +229,7 @@ function MapCanvasInner() {
             id: key,
             type: "scene",
             position: pos,
+            className: transitionClass,
             draggable: mode === "free",
             zIndex: 0,
             data: {
@@ -236,6 +263,7 @@ function MapCanvasInner() {
             id: key,
             type: "codex",
             position: pos,
+            className: transitionClass,
             zIndex: 0,
             data: {
               name: e.name,
@@ -259,6 +287,7 @@ function MapCanvasInner() {
     colorBy,
     corkboardFeel,
     frames,
+    modeTransitionActive,
     updateNodeTitle,
     updateSynopsis,
     setActiveScene,
@@ -321,13 +350,17 @@ function MapCanvasInner() {
       if (!boardId) return;
       if (nodeId.startsWith("scene:")) {
         const treeNodeId = nodeId.slice("scene:".length);
-        const updated = await upsertNodePosition({
+        let updated = await upsertNodePosition({
           boardId,
           nodeRefType: "scene",
           treeNodeId,
           x,
           y,
         });
+        // Hybrid: dragging in non-free mode auto-pins the node
+        if (mode !== "free" && updated.pinned !== 1) {
+          updated = (await setNodePinned(updated.id, true)) ?? updated;
+        }
         setPositions((prev) => {
           const idx = prev.findIndex((p) => p.id === updated.id);
           if (idx >= 0) {
@@ -339,13 +372,16 @@ function MapCanvasInner() {
         });
       } else if (nodeId.startsWith("codex:")) {
         const codexEntryId = nodeId.slice("codex:".length);
-        const updated = await upsertNodePosition({
+        let updated = await upsertNodePosition({
           boardId,
           nodeRefType: "codex",
           codexEntryId,
           x,
           y,
         });
+        if (mode !== "free" && updated.pinned !== 1) {
+          updated = (await setNodePinned(updated.id, true)) ?? updated;
+        }
         setPositions((prev) => {
           const idx = prev.findIndex((p) => p.id === updated.id);
           if (idx >= 0) {
@@ -596,7 +632,9 @@ function MapCanvasInner() {
             ? ConnectionMode.Loose
             : ConnectionMode.Strict
         }
-        nodesDraggable={mode === "free" && paletteMode === "default"}
+        nodesDraggable={
+          mode === "free" && paletteMode === "default" && !modeTransitionActive
+        }
       >
         <Background variant={BackgroundVariant.Dots} gap={24} size={1} />
         <Controls />

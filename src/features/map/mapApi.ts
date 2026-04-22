@@ -149,6 +149,13 @@ export async function updateNodePosition(
   return rows[0];
 }
 
+export async function setNodePinned(
+  positionId: string,
+  pinned: boolean,
+): Promise<MapNodePosition | undefined> {
+  return updateNodePosition(positionId, { pinned: pinned ? 1 : 0 });
+}
+
 export async function deleteNodePosition(id: string): Promise<void> {
   await db.delete(mapNodePositions).where(eq(mapNodePositions.id, id));
 }

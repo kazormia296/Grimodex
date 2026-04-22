@@ -529,3 +529,11 @@
   float: left;
   height: 0;
 }
+
+/* Map panel: mode-switch position transition */
+:root {
+  --map-mode-transition: 300ms;
+}
+.react-flow__node.with-mode-transition {
+  transition: transform var(--map-mode-transition) cubic-bezier(0.16, 1, 0.3, 1);
+}

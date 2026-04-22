@@ -1,10 +1,11 @@
 import type { MapMode } from "../types";
 import type { LayoutInput, LayoutOutput } from "./types";
 import { layoutFree } from "./free";
+import { layoutTime } from "./time";
 
 export function layoutFor(mode: MapMode, input: LayoutInput): LayoutOutput {
-  // C1-A (time) / C2-T (theme) / C2-P (pov) / C2-L (place) will add branches here
-  const computed = layoutFree(input);
+  // C2-T (theme) / C2-P (pov) / C2-L (place) will add branches here
+  const computed = mode === "time" ? layoutTime(input) : layoutFree(input);
 
   // Hybrid: in non-free modes, pinned nodes override with their saved coordinates
   if (mode !== "free") {
