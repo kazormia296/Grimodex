@@ -1,12 +1,10 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useDebouncedCallback } from "@/lib/useDebounce";
+import { useEffect, useRef, useState } from "react";
 import {
   ReactFlow,
   Background,
   Controls,
   MiniMap,
   type Node,
-  type Connection,
   BackgroundVariant,
   useReactFlow,
   ReactFlowProvider,
@@ -18,7 +16,6 @@ import { useCodexStore } from "@/features/codex/codexStore";
 import { usePhaseStore } from "@/features/codex/phaseStore";
 import { useSnippetStore } from "@/features/snippets/snippetStore";
 import { useMapStore } from "./mapStore";
-import { upsertNodePosition, createUserEdge } from "./mapApi";
 import { SceneNode } from "./nodes/SceneNode";
 import { CodexNode } from "./nodes/CodexNode";
 import { FrameNode } from "./nodes/FrameNode";
@@ -30,11 +27,9 @@ import { MapHeader } from "./MapHeader";
 import { MapPalette } from "./MapPalette";
 import { MapSearch } from "./MapSearch";
 import { AINodeDialog } from "./AINodeDialog";
-import type { MapAiNode } from "@/db/schema";
 import { DURATIONS, useReducedMotion } from "@/lib/animation";
 import { AutoArrangeDialog } from "./AutoArrangeDialog";
 import { ForceLayoutProgress } from "./ForceLayoutProgress";
-import { buildUpsertArgs } from "./utils/nodeIdCodec";
 import { useMapExport } from "./hooks/useMapExport";
 import { useFrameDrawing } from "./hooks/useFrameDrawing";
 import { useMapKeyboard } from "./hooks/useMapKeyboard";
@@ -44,6 +39,7 @@ import { useMapNodes } from "./hooks/useMapNodes";
 import { useMapPositionPersistence } from "./hooks/useMapPositionPersistence";
 import { useMapContextMenu } from "./hooks/useMapContextMenu";
 import { useMapAutoArrange } from "./hooks/useMapAutoArrange";
+import { useMapCallbacks } from "./hooks/useMapCallbacks";
 
 const PROJECT_ID = "default-project";
 
@@ -209,46 +205,6 @@ function MapCanvasInner() {
     setUserEdges,
   });
 
-  // Handle new connection
-  const onConnect = useCallback(
-    async (connection: Connection) => {
-      if (!boardId || !connection.source || !connection.target) return;
-
-      const sourceArgs = buildUpsertArgs(boardId, connection.source);
-      const targetArgs = buildUpsertArgs(boardId, connection.target);
-      if (!sourceArgs || !targetArgs) return;
-
-      const [sourcePos, targetPos] = await Promise.all([
-        upsertNodePosition(sourceArgs),
-        upsertNodePosition(targetArgs),
-      ]);
-
-      const newEdge = await createUserEdge({
-        boardId,
-        fromPositionId: sourcePos.id,
-        toPositionId: targetPos.id,
-      });
-      setUserEdges((prev) => [...prev, newEdge]);
-    },
-    [boardId],
-  );
-
-  // Double-click to open node in its panel
-  const onNodeDoubleClick = useCallback(
-    (_event: React.MouseEvent, node: Node) => {
-      if (node.id.startsWith("scene:")) {
-        setActiveScene(node.id.slice("scene:".length));
-      } else if (node.id.startsWith("note:")) {
-        setActiveScene(node.id.slice("note:".length));
-      } else if (node.id.startsWith("codex:")) {
-        useCodexStore
-          .getState()
-          .requestSelectEntry(node.id.slice("codex:".length));
-      }
-    },
-    [setActiveScene],
-  );
-
   const {
     contextMenu,
     setContextMenu,
@@ -268,57 +224,29 @@ function MapCanvasInner() {
     setActiveScene,
   });
 
-  // AI node creation
-  const aiContextLines = useCallback((): string[] => {
-    const lines: string[] = [];
-    for (const n of nodes) {
-      if (n.type === "scene") {
-        const d = n.data as { title?: string };
-        if (d.title) lines.push(`Scene: ${d.title}`);
-      } else if (n.type === "codex") {
-        const d = n.data as { name?: string; type?: string };
-        if (d.name) lines.push(`${d.type ?? "Codex"}: ${d.name}`);
-      } else if (n.type === "note") {
-        const d = n.data as { title?: string };
-        if (d.title) lines.push(`Note: ${d.title}`);
-      } else if (n.type === "ai") {
-        const d = n.data as { prompt?: string };
-        if (d.prompt) lines.push(`AI: ${d.prompt.slice(0, 50)}`);
-      }
-    }
-    return lines;
-  }, [nodes]);
-
-  const handleAINodeCreated = useCallback(
-    (created: {
-      id: string;
-      prompt: string;
-      response: string;
-      sessionId: string | null;
-      position: { x: number; y: number };
-    }) => {
-      setShowAINodeDialog(false);
-      const newAiNode: MapAiNode = {
-        id: created.id,
-        boardId: boardId!,
-        prompt: created.prompt,
-        response: created.response,
-        sessionId: created.sessionId,
-        model: null,
-        tokenUsage: null,
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString(),
-      };
-      setAiNodes((prev) => [...prev, newAiNode]);
-    },
-    [boardId],
-  );
-
-  // Sync viewport to store (debounced)
-  const syncViewport = useDebouncedCallback(() => {
-    const vp = getViewport();
-    setViewport({ x: vp.x, y: vp.y, zoom: vp.zoom });
-  }, 300);
+  const {
+    onConnect,
+    onNodeDoubleClick,
+    aiContextLines,
+    handleAINodeCreated,
+    syncViewport,
+    focusNode,
+    visibleNodes,
+    nodesWithFocus,
+  } = useMapCallbacks({
+    boardId,
+    nodes,
+    edges,
+    focusedNodeId,
+    setUserEdges,
+    setAiNodes,
+    setShowAINodeDialog,
+    setActiveScene,
+    setSearchVisible,
+    getViewport,
+    setViewport,
+    fitView,
+  });
 
   const { onKeyDown } = useMapKeyboard({
     searchVisible,
@@ -335,36 +263,6 @@ function MapCanvasInner() {
     setFrameDraftRect,
     setFrameDraftScreenRect,
   });
-
-  // Focus node for search
-  const focusNode = useCallback(
-    (nodeId: string) => {
-      const node = nodes.find((n) => n.id === nodeId);
-      if (!node) return;
-      fitView({ nodes: [node], duration: 400, padding: 0.5 });
-      setSearchVisible(false);
-    },
-    [nodes, fitView, setSearchVisible],
-  );
-
-  const visibleNodes = useMemo(
-    () => nodes.filter((n) => n.type !== "frame"),
-    [nodes],
-  );
-
-  // Focus mode: dim non-connected nodes to 0.15 opacity
-  const nodesWithFocus = useMemo(() => {
-    if (!focusedNodeId) return nodes;
-    const connected = new Set<string>([focusedNodeId]);
-    for (const edge of edges) {
-      if (edge.source === focusedNodeId) connected.add(edge.target);
-      if (edge.target === focusedNodeId) connected.add(edge.source);
-    }
-    return nodes.map((n) => ({
-      ...n,
-      style: { ...n.style, opacity: connected.has(n.id) ? 1 : 0.15 },
-    }));
-  }, [nodes, edges, focusedNodeId]);
 
   const { executeAutoArrange } = useMapAutoArrange({
     boardId,
