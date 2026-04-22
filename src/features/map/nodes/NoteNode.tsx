@@ -24,8 +24,8 @@ export const NoteNode = memo(function NoteNode({ data, selected }: NodeProps) {
         style={{
           width: 180,
           minHeight: 72,
-          background: "#FEFCE8",
-          border: `2px solid ${selected ? "#534AB7" : "#E5D87A"}`,
+          background: "var(--note-bg)",
+          border: `2px solid ${selected ? "#534AB7" : "var(--note-border)"}`,
           borderRadius: 6,
           padding: "6px 10px",
           boxShadow: selected
@@ -49,7 +49,7 @@ export const NoteNode = memo(function NoteNode({ data, selected }: NodeProps) {
           <span
             style={{
               fontWeight: 600,
-              color: "#78716C",
+              color: "var(--muted-foreground)",
               overflow: "hidden",
               textOverflow: "ellipsis",
               whiteSpace: "nowrap",
@@ -63,7 +63,7 @@ export const NoteNode = memo(function NoteNode({ data, selected }: NodeProps) {
         {preview && (
           <div
             style={{
-              color: "#92918C",
+              color: "var(--muted-foreground)",
               fontSize: 11,
               overflow: "hidden",
               textOverflow: "ellipsis",

@@ -39,6 +39,9 @@
   --content-border: oklch(0.922 0 0);
   /* Attribution highlight blend amount (overridden by JS from display.attributionHighlightOpacity) */
   --attribution-pct: 20%;
+  /* Map note node */
+  --note-bg: #fefce8;
+  --note-border: #d4c84a;
 }
 
 .dark {
@@ -75,6 +78,8 @@
   --content-foreground-muted: oklch(0.708 0 0);
   --content-accent: oklch(0.985 0 0);
   --content-border: oklch(0.269 0 0);
+  --note-bg: #2c2a10;
+  --note-border: #6b6420;
 }
 
 @theme inline {

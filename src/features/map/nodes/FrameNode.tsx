@@ -38,15 +38,15 @@ export const FrameNode = memo(function FrameNode({
         isVisible={!!selected}
         minWidth={160}
         minHeight={120}
-        color={d.borderColor}
+        color="#534AB7"
       />
       <div
         style={{
           width: "100%",
           height: "100%",
-          border: `2px solid ${selected ? "#534AB7" : d.borderColor}`,
+          border: `2px dashed ${selected ? "#534AB7" : d.borderColor}`,
           borderRadius: 8,
-          background: d.background,
+          background: "transparent",
           display: "flex",
           flexDirection: "column",
           overflow: "hidden",
@@ -58,8 +58,7 @@ export const FrameNode = memo(function FrameNode({
           className="frame-drag-handle"
           style={{
             padding: "4px 10px",
-            background: d.borderColor + "44",
-            borderBottom: `1px solid ${d.borderColor}`,
+            background: "transparent",
             display: "flex",
             alignItems: "center",
             gap: 6,
