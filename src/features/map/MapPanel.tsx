@@ -15,7 +15,6 @@ import {
   BackgroundVariant,
   useReactFlow,
   ReactFlowProvider,
-  addEdge,
   ConnectionMode,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
@@ -60,6 +59,7 @@ import { useMapExport } from "./hooks/useMapExport";
 import { useFrameDrawing } from "./hooks/useFrameDrawing";
 import { useMapKeyboard } from "./hooks/useMapKeyboard";
 import { useMapBoardData } from "./hooks/useMapBoardData";
+import { useMapEdges } from "./hooks/useMapEdges";
 
 const PROJECT_ID = "default-project";
 
@@ -137,7 +137,6 @@ function MapCanvasInner() {
   } = useMapBoardData(PROJECT_ID);
 
   const [nodes, setNodes] = useState<Node[]>([]);
-  const [edges, setEdges] = useState<Edge[]>([]);
   const [paletteMode, setPaletteMode] = useState<PaletteMode>("default");
   const [showAINodeDialog, setShowAINodeDialog] = useState(false);
   const [modeTransitionActive, setModeTransitionActive] = useState(false);
@@ -458,148 +457,15 @@ function MapCanvasInner() {
     setActiveScene,
   ]);
 
-  // Build edges: derived + user
-  useEffect(() => {
-    const derived: Edge[] = [];
-
-    if (show.derivedEdges) {
-      // Codex parent-child edges
-      for (const e of codexEntries.filter((e) => e.parentId != null)) {
-        derived.push({
-          id: `derived:${e.id}->${e.parentId}`,
-          source: `codex:${e.parentId}`,
-          target: `codex:${e.id}`,
-          style: { stroke: "#999", strokeDasharray: "4 2" },
-          animated: false,
-          zIndex: 0,
-        });
-      }
-
-      // Phase anchor edges: codex → scene (entryのフェーズがシーンに紐付く)
-      const visibleSceneIds = new Set(
-        treeNodes.filter((n) => n.nodeType === "scene").map((n) => n.id),
-      );
-      const visibleCodexIds = new Set(codexEntries.map((e) => e.id));
-      for (const [entryId, phases] of Object.entries(phasesByEntry)) {
-        if (!visibleCodexIds.has(entryId)) continue;
-        for (const phase of phases) {
-          if (!phase.anchorNodeId) continue;
-          if (!visibleSceneIds.has(phase.anchorNodeId)) continue;
-          derived.push({
-            id: `phase-anchor:${phase.id}`,
-            source: `codex:${entryId}`,
-            target: `scene:${phase.anchorNodeId}`,
-            style: { stroke: "#D97706", strokeDasharray: "3 3", opacity: 0.7 },
-            animated: false,
-            zIndex: 0,
-            data: { label: phase.label },
-          });
-        }
-      }
-
-      // Build a single matcher for both scene-mention and snippet-origin
-      if (codexEntries.length > 0) {
-        const matcher = createCodexMatcher(codexEntries);
-
-        // Scene mention edges: scene → codex (シーンのsynopsisでCodex名が登場)
-        for (const scene of treeNodes.filter((n) => n.nodeType === "scene")) {
-          const text = [scene.title, scene.synopsis].filter(Boolean).join(" ");
-          if (!text) continue;
-          const seen = new Set<string>();
-          for (const m of matcher(text)) {
-            if (seen.has(m.entryId)) continue;
-            seen.add(m.entryId);
-            if (!visibleCodexIds.has(m.entryId)) continue;
-            derived.push({
-              id: `mention:${scene.id}->${m.entryId}`,
-              source: `scene:${scene.id}`,
-              target: `codex:${m.entryId}`,
-              style: {
-                stroke: "#0891B2",
-                strokeDasharray: "2 4",
-                opacity: 0.6,
-              },
-              animated: false,
-              zIndex: 0,
-            });
-          }
-        }
-
-        // Snippet origin edges: scene → codex (snippetのcontentでCodex名が登場)
-        for (const snippet of snippetEntries.filter((s) => s.sceneId)) {
-          const seenEdge = new Set<string>();
-          for (const m of matcher(snippet.content)) {
-            const key = `${snippet.sceneId}->${m.entryId}`;
-            if (seenEdge.has(key)) continue;
-            seenEdge.add(key);
-            if (!visibleCodexIds.has(m.entryId)) continue;
-            derived.push({
-              id: `snippet-origin:${key}`,
-              source: `scene:${snippet.sceneId!}`,
-              target: `codex:${m.entryId}`,
-              style: {
-                stroke: "#059669",
-                strokeDasharray: "1 4",
-                opacity: 0.5,
-              },
-              animated: false,
-              zIndex: 0,
-            });
-          }
-        }
-      }
-    }
-
-    const posToRfId = (
-      pos: MapNodePositionRecord | undefined,
-    ): string | null => {
-      if (!pos) return null;
-      if (pos.nodeRefType === "scene" && pos.treeNodeId)
-        return `scene:${pos.treeNodeId}`;
-      if (pos.nodeRefType === "note" && pos.treeNodeId)
-        return `note:${pos.treeNodeId}`;
-      if (pos.nodeRefType === "codex" && pos.codexEntryId)
-        return `codex:${pos.codexEntryId}`;
-      if (pos.nodeRefType === "ai" && pos.aiNodeId) return `ai:${pos.aiNodeId}`;
-      return null;
-    };
-
-    const user: Edge[] = show.userEdges
-      ? userEdges
-          .map((ue) => {
-            const fromPos = positions.find((p) => p.id === ue.fromPositionId);
-            const toPos = positions.find((p) => p.id === ue.toPositionId);
-            const sourceId = posToRfId(fromPos);
-            const targetId = posToRfId(toPos);
-            if (!sourceId || !targetId) return null;
-            return {
-              id: `user:${ue.id}`,
-              source: sourceId,
-              target: targetId,
-              type: "user",
-              zIndex: 1,
-              data: {
-                label: ue.label,
-                style: ue.style,
-                color: ue.color,
-                direction: ue.direction,
-              },
-            } as Edge;
-          })
-          .filter((e): e is Edge => e !== null)
-      : [];
-
-    setEdges([...derived, ...user]);
-  }, [
+  const edges = useMapEdges({
     codexEntries,
+    treeNodes,
+    snippetEntries,
+    phasesByEntry,
     userEdges,
     positions,
-    show.derivedEdges,
-    show.userEdges,
-    treeNodes,
-    phasesByEntry,
-    snippetEntries,
-  ]);
+    show,
+  });
 
   // Persist position changes (debounced)
   const persistPosition = useDebouncedCallback(
@@ -730,23 +596,18 @@ function MapCanvasInner() {
     [persistPosition, persistFrameResize],
   );
 
-  const onEdgesChange: OnEdgesChange = useCallback((changes) => {
-    setEdges((eds) => {
-      let result = [...eds];
+  const onEdgesChange: OnEdgesChange = useCallback(
+    (changes) => {
       for (const change of changes) {
-        if (change.type === "remove") {
-          const edgeId = change.id;
-          if (edgeId.startsWith("user:")) {
-            const dbId = edgeId.slice("user:".length);
-            deleteUserEdge(dbId).catch(() => {});
-            setUserEdges((prev) => prev.filter((e) => e.id !== dbId));
-          }
-          result = result.filter((e) => e.id !== edgeId);
+        if (change.type === "remove" && change.id.startsWith("user:")) {
+          const dbId = change.id.slice("user:".length);
+          deleteUserEdge(dbId).catch(() => {});
+          setUserEdges((prev) => prev.filter((e) => e.id !== dbId));
         }
       }
-      return result;
-    });
-  }, []);
+    },
+    [setUserEdges],
+  );
 
   // Handle new connection
   const onConnect = useCallback(
@@ -768,16 +629,6 @@ function MapCanvasInner() {
         toPositionId: targetPos.id,
       });
       setUserEdges((prev) => [...prev, newEdge]);
-
-      const rfEdge: Edge = {
-        id: `user:${newEdge.id}`,
-        source: connection.source,
-        target: connection.target,
-        type: "user",
-        zIndex: 1,
-        data: { label: null, style: "solid", color: "#555", direction: "none" },
-      };
-      setEdges((eds) => addEdge(rfEdge, eds));
     },
     [boardId],
   );
