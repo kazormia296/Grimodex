@@ -18,11 +18,7 @@ import { useCodexStore } from "@/features/codex/codexStore";
 import { usePhaseStore } from "@/features/codex/phaseStore";
 import { useSnippetStore } from "@/features/snippets/snippetStore";
 import { useMapStore } from "./mapStore";
-import {
-  upsertNodePosition,
-  createUserEdge,
-  listAllNodePositions,
-} from "./mapApi";
+import { upsertNodePosition, createUserEdge } from "./mapApi";
 import { SceneNode } from "./nodes/SceneNode";
 import { CodexNode } from "./nodes/CodexNode";
 import { FrameNode } from "./nodes/FrameNode";
@@ -34,10 +30,7 @@ import { MapHeader } from "./MapHeader";
 import { MapPalette } from "./MapPalette";
 import { MapSearch } from "./MapSearch";
 import { AINodeDialog } from "./AINodeDialog";
-import type { MapNodePositionRecord } from "./types";
 import type { MapAiNode } from "@/db/schema";
-import { WorkerForceLayoutEngine } from "./layouts/forceEngine";
-import { autoArrange, autoArrangeForceDirected } from "./layouts/autoArrange";
 import { DURATIONS, useReducedMotion } from "@/lib/animation";
 import { AutoArrangeDialog } from "./AutoArrangeDialog";
 import { ForceLayoutProgress } from "./ForceLayoutProgress";
@@ -50,6 +43,7 @@ import { useMapEdges } from "./hooks/useMapEdges";
 import { useMapNodes } from "./hooks/useMapNodes";
 import { useMapPositionPersistence } from "./hooks/useMapPositionPersistence";
 import { useMapContextMenu } from "./hooks/useMapContextMenu";
+import { useMapAutoArrange } from "./hooks/useMapAutoArrange";
 
 const PROJECT_ID = "default-project";
 
@@ -372,82 +366,19 @@ function MapCanvasInner() {
     }));
   }, [nodes, edges, focusedNodeId]);
 
-  // Execute confirmed auto-arrange
-  const executeAutoArrange = useCallback(async () => {
-    if (!pendingAutoArrange || !boardId) return;
-    const type = pendingAutoArrange;
-    setPendingAutoArrange(null);
-
-    const hiddenSceneIds = new Set(
-      positions
-        .filter((p) => p.hidden === 1 && p.treeNodeId)
-        .map((p) => p.treeNodeId!),
-    );
-    const hiddenCodexIds = new Set(
-      positions
-        .filter((p) => p.hidden === 1 && p.codexEntryId)
-        .map((p) => p.codexEntryId!),
-    );
-    const scenes = treeNodes.filter(
-      (n) => n.nodeType === "scene" && !hiddenSceneIds.has(n.id),
-    );
-    const visibleCodex = codexEntries.filter((e) => !hiddenCodexIds.has(e.id));
-    const pinnedIds = new Set(
-      positions
-        .filter((p) => p.pinned === 1 && p.treeNodeId)
-        .map((p) => p.treeNodeId!),
-    );
-
-    let newPositions;
-    if (type === "force-directed") {
-      setForceLayoutRunning(true);
-      setForceAlpha(1);
-      const engine = new WorkerForceLayoutEngine();
-      newPositions = await autoArrangeForceDirected(
-        { scenes, codexEntries: visibleCodex, positions },
-        engine,
-        pinnedIds,
-        (alpha) => setForceAlpha(alpha),
-      );
-      setForceLayoutRunning(false);
-    } else {
-      newPositions = autoArrange({
-        type,
-        allTreeNodes: treeNodes,
-        scenes,
-        positions,
-        variant,
-      });
-    }
-
-    await Promise.all(
-      Array.from(newPositions.entries()).map(([key, pos]) => {
-        if (key.startsWith("scene:")) {
-          return upsertNodePosition({
-            boardId,
-            nodeRefType: "scene",
-            treeNodeId: key.slice("scene:".length),
-            x: pos.x,
-            y: pos.y,
-          });
-        }
-        return Promise.resolve(undefined);
-      }),
-    );
-
-    const refreshed = await listAllNodePositions(boardId);
-    setPositions(refreshed as MapNodePositionRecord[]);
-    setMode("free");
-  }, [
-    pendingAutoArrange,
+  const { executeAutoArrange } = useMapAutoArrange({
     boardId,
+    pendingAutoArrange,
+    positions,
     treeNodes,
     codexEntries,
-    positions,
     variant,
+    setPositions,
+    setForceLayoutRunning,
+    setForceAlpha,
     setPendingAutoArrange,
     setMode,
-  ]);
+  });
 
   useMapExport(pendingExport, setPendingExport, getNodes, getEdges);
 
