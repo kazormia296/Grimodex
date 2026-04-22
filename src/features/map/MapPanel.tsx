@@ -50,6 +50,7 @@ import { MapPalette } from "./MapPalette";
 import { MapSearch } from "./MapSearch";
 import type { MapNodePositionRecord } from "./types";
 import type { MapEdge, MapFrame } from "@/db/schema";
+import { layoutFor } from "./layouts";
 
 const PROJECT_ID = "default-project";
 
@@ -158,11 +159,12 @@ function MapCanvasInner() {
   useEffect(() => {
     if (!boardId) return;
 
-    const posMap = new Map<string, MapNodePositionRecord>();
-    for (const p of positions) {
-      if (p.treeNodeId) posMap.set(`scene:${p.treeNodeId}`, p);
-      if (p.codexEntryId) posMap.set(`codex:${p.codexEntryId}`, p);
-    }
+    const scenes = treeNodes.filter((n) => n.nodeType === "scene");
+    const computedPositions = layoutFor(mode, {
+      scenes,
+      codexEntries,
+      positions,
+    });
 
     // Frame nodes rendered behind other nodes
     const frameNodes: Node[] = show.frames
@@ -193,59 +195,47 @@ function MapCanvasInner() {
 
     // Scene nodes
     const sceneNodes: Node[] = show.scenes
-      ? treeNodes
-          .filter((n) => n.nodeType === "scene")
-          .map((n, idx) => {
-            const key = `scene:${n.id}`;
-            const pos = posMap.get(key);
-            const rotation = corkboardFeel ? corkRotation(n.id) : 0;
-            return {
-              id: key,
-              type: "scene",
-              position: pos
-                ? { x: pos.x, y: pos.y }
-                : {
-                    x: (idx % 5) * 280 + 40,
-                    y: Math.floor(idx / 5) * 220 + 40,
-                  },
-              draggable: mode === "free",
-              zIndex: 0,
-              data: {
-                title: n.title,
-                synopsis: n.synopsis ?? null,
-                status: n.status ?? "outline",
-                wordCount: undefined,
-                variant,
-                colorBy,
-                corkboardFeel,
-                rotation,
-                onTitleChange: async (title: string) => {
-                  await updateNodeTitle(n.id, title);
-                },
-                onSynopsisChange: async (synopsis: string) => {
-                  await updateSynopsis(n.id, synopsis);
-                },
-                onOpen: () => {
-                  setActiveScene(n.id);
-                },
+      ? scenes.map((n) => {
+          const key = `scene:${n.id}`;
+          const pos = computedPositions.get(key) ?? { x: 0, y: 0 };
+          const rotation = corkboardFeel ? corkRotation(n.id) : 0;
+          return {
+            id: key,
+            type: "scene",
+            position: pos,
+            draggable: mode === "free",
+            zIndex: 0,
+            data: {
+              title: n.title,
+              synopsis: n.synopsis ?? null,
+              status: n.status ?? "outline",
+              wordCount: undefined,
+              variant,
+              colorBy,
+              corkboardFeel,
+              rotation,
+              onTitleChange: async (title: string) => {
+                await updateNodeTitle(n.id, title);
               },
-            };
-          })
+              onSynopsisChange: async (synopsis: string) => {
+                await updateSynopsis(n.id, synopsis);
+              },
+              onOpen: () => {
+                setActiveScene(n.id);
+              },
+            },
+          };
+        })
       : [];
 
     const codexNodes: Node[] = show.codex
-      ? codexEntries.map((e, idx) => {
+      ? codexEntries.map((e) => {
           const key = `codex:${e.id}`;
-          const pos = posMap.get(key);
+          const pos = computedPositions.get(key) ?? { x: 0, y: 0 };
           return {
             id: key,
             type: "codex",
-            position: pos
-              ? { x: pos.x, y: pos.y }
-              : {
-                  x: (idx % 4) * 240 + 40,
-                  y: Math.floor(idx / 4) * 120 + 600,
-                },
+            position: pos,
             zIndex: 0,
             data: {
               name: e.name,
