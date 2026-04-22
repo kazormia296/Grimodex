@@ -68,6 +68,7 @@ import { DURATIONS, useReducedMotion } from "@/lib/animation";
 import { AutoArrangeDialog } from "./AutoArrangeDialog";
 import { ForceLayoutProgress } from "./ForceLayoutProgress";
 import { buildMapSVG, svgToPngBlob, buildMapJSON } from "./mapExport";
+import { toast } from "sonner";
 
 const PROJECT_ID = "default-project";
 
@@ -574,21 +575,27 @@ function MapCanvasInner() {
       }
     }
 
+    const posToRfId = (
+      pos: MapNodePositionRecord | undefined,
+    ): string | null => {
+      if (!pos) return null;
+      if (pos.nodeRefType === "scene" && pos.treeNodeId)
+        return `scene:${pos.treeNodeId}`;
+      if (pos.nodeRefType === "note" && pos.treeNodeId)
+        return `note:${pos.treeNodeId}`;
+      if (pos.nodeRefType === "codex" && pos.codexEntryId)
+        return `codex:${pos.codexEntryId}`;
+      if (pos.nodeRefType === "ai" && pos.aiNodeId) return `ai:${pos.aiNodeId}`;
+      return null;
+    };
+
     const user: Edge[] = show.userEdges
       ? userEdges
           .map((ue) => {
             const fromPos = positions.find((p) => p.id === ue.fromPositionId);
             const toPos = positions.find((p) => p.id === ue.toPositionId);
-            const sourceId = fromPos?.treeNodeId
-              ? `scene:${fromPos.treeNodeId}`
-              : fromPos?.codexEntryId
-                ? `codex:${fromPos.codexEntryId}`
-                : null;
-            const targetId = toPos?.treeNodeId
-              ? `scene:${toPos.treeNodeId}`
-              : toPos?.codexEntryId
-                ? `codex:${toPos.codexEntryId}`
-                : null;
+            const sourceId = posToRfId(fromPos);
+            const targetId = posToRfId(toPos);
             if (!sourceId || !targetId) return null;
             return {
               id: `user:${ue.id}`,
@@ -771,26 +778,49 @@ function MapCanvasInner() {
     async (connection: Connection) => {
       if (!boardId || !connection.source || !connection.target) return;
 
-      const toPositionArgs = (rfId: string) =>
-        rfId.startsWith("scene:")
-          ? {
-              boardId,
-              nodeRefType: "scene" as const,
-              treeNodeId: rfId.slice("scene:".length),
-              x: 0,
-              y: 0,
-            }
-          : {
-              boardId,
-              nodeRefType: "codex" as const,
-              codexEntryId: rfId.slice("codex:".length),
-              x: 0,
-              y: 0,
-            };
+      const toPositionArgs = (rfId: string) => {
+        if (rfId.startsWith("scene:"))
+          return {
+            boardId,
+            nodeRefType: "scene" as const,
+            treeNodeId: rfId.slice("scene:".length),
+            x: 0,
+            y: 0,
+          };
+        if (rfId.startsWith("note:"))
+          return {
+            boardId,
+            nodeRefType: "note" as const,
+            treeNodeId: rfId.slice("note:".length),
+            x: 0,
+            y: 0,
+          };
+        if (rfId.startsWith("codex:"))
+          return {
+            boardId,
+            nodeRefType: "codex" as const,
+            codexEntryId: rfId.slice("codex:".length),
+            x: 0,
+            y: 0,
+          };
+        if (rfId.startsWith("ai:"))
+          return {
+            boardId,
+            nodeRefType: "ai" as const,
+            aiNodeId: rfId.slice("ai:".length),
+            x: 0,
+            y: 0,
+          };
+        return null;
+      };
+
+      const sourceArgs = toPositionArgs(connection.source);
+      const targetArgs = toPositionArgs(connection.target);
+      if (!sourceArgs || !targetArgs) return;
 
       const [sourcePos, targetPos] = await Promise.all([
-        upsertNodePosition(toPositionArgs(connection.source)),
-        upsertNodePosition(toPositionArgs(connection.target)),
+        upsertNodePosition(sourceArgs),
+        upsertNodePosition(targetArgs),
       ]);
 
       const newEdge = await createUserEdge({
@@ -824,17 +854,77 @@ function MapCanvasInner() {
     [setActiveScene],
   );
 
+  // Returns the position record for any node type by its React Flow ID
+  const findPosByNodeId = useCallback(
+    (nodeId: string) => {
+      if (nodeId.startsWith("scene:"))
+        return positions.find(
+          (p) =>
+            p.nodeRefType === "scene" &&
+            p.treeNodeId === nodeId.slice("scene:".length),
+        );
+      if (nodeId.startsWith("codex:"))
+        return positions.find(
+          (p) => p.codexEntryId === nodeId.slice("codex:".length),
+        );
+      if (nodeId.startsWith("note:"))
+        return positions.find(
+          (p) =>
+            p.nodeRefType === "note" &&
+            p.treeNodeId === nodeId.slice("note:".length),
+        );
+      if (nodeId.startsWith("ai:"))
+        return positions.find((p) => p.aiNodeId === nodeId.slice("ai:".length));
+      return undefined;
+    },
+    [positions],
+  );
+
+  // Returns upsert args for any node type (null for unknown types like frame)
+  const toUpsertArgs = useCallback(
+    (nodeId: string) => {
+      if (nodeId.startsWith("scene:"))
+        return {
+          boardId: boardId!,
+          nodeRefType: "scene" as const,
+          treeNodeId: nodeId.slice("scene:".length),
+          x: 0,
+          y: 0,
+        };
+      if (nodeId.startsWith("codex:"))
+        return {
+          boardId: boardId!,
+          nodeRefType: "codex" as const,
+          codexEntryId: nodeId.slice("codex:".length),
+          x: 0,
+          y: 0,
+        };
+      if (nodeId.startsWith("note:"))
+        return {
+          boardId: boardId!,
+          nodeRefType: "note" as const,
+          treeNodeId: nodeId.slice("note:".length),
+          x: 0,
+          y: 0,
+        };
+      if (nodeId.startsWith("ai:"))
+        return {
+          boardId: boardId!,
+          nodeRefType: "ai" as const,
+          aiNodeId: nodeId.slice("ai:".length),
+          x: 0,
+          y: 0,
+        };
+      return null;
+    },
+    [boardId],
+  );
+
   // Node context menu handler
   const onNodeContextMenu = useCallback(
     (event: React.MouseEvent, node: Node) => {
       event.preventDefault();
-      const pos = positions.find(
-        (p) =>
-          (node.id.startsWith("scene:") &&
-            p.treeNodeId === node.id.slice("scene:".length)) ||
-          (node.id.startsWith("codex:") &&
-            p.codexEntryId === node.id.slice("codex:".length)),
-      );
+      const pos = findPosByNodeId(node.id);
       setContextMenu({
         nodeId: node.id,
         screenPosition: { x: event.clientX, y: event.clientY },
@@ -842,18 +932,12 @@ function MapCanvasInner() {
         isScene: node.id.startsWith("scene:"),
       });
     },
-    [positions],
+    [positions, findPosByNodeId],
   );
 
   const handleContextMenuPin = useCallback(async () => {
     if (!contextMenu) return;
-    const pos = positions.find(
-      (p) =>
-        (contextMenu.nodeId.startsWith("scene:") &&
-          p.treeNodeId === contextMenu.nodeId.slice("scene:".length)) ||
-        (contextMenu.nodeId.startsWith("codex:") &&
-          p.codexEntryId === contextMenu.nodeId.slice("codex:".length)),
-    );
+    const pos = findPosByNodeId(contextMenu.nodeId);
     if (!pos) return;
     const updated = await setNodePinned(pos.id, true);
     if (updated) {
@@ -863,17 +947,11 @@ function MapCanvasInner() {
         ),
       );
     }
-  }, [contextMenu, positions]);
+  }, [contextMenu, findPosByNodeId]);
 
   const handleContextMenuUnpin = useCallback(async () => {
     if (!contextMenu) return;
-    const pos = positions.find(
-      (p) =>
-        (contextMenu.nodeId.startsWith("scene:") &&
-          p.treeNodeId === contextMenu.nodeId.slice("scene:".length)) ||
-        (contextMenu.nodeId.startsWith("codex:") &&
-          p.codexEntryId === contextMenu.nodeId.slice("codex:".length)),
-    );
+    const pos = findPosByNodeId(contextMenu.nodeId);
     if (!pos) return;
     const updated = await setNodePinned(pos.id, false);
     if (updated) {
@@ -883,18 +961,12 @@ function MapCanvasInner() {
         ),
       );
     }
-  }, [contextMenu, positions]);
+  }, [contextMenu, findPosByNodeId]);
 
   const handleContextMenuHide = useCallback(async () => {
     if (!contextMenu || !boardId) return;
     const nodeId = contextMenu.nodeId;
-    const pos = positions.find(
-      (p) =>
-        (nodeId.startsWith("scene:") &&
-          p.treeNodeId === nodeId.slice("scene:".length)) ||
-        (nodeId.startsWith("codex:") &&
-          p.codexEntryId === nodeId.slice("codex:".length)),
-    );
+    const pos = findPosByNodeId(nodeId);
     if (pos) {
       await updateNodePosition(pos.id, { hidden: 1 });
       setPositions((prev) =>
@@ -902,22 +974,16 @@ function MapCanvasInner() {
       );
     } else {
       // No position record yet — create one with hidden=1
-      const isScene = nodeId.startsWith("scene:");
-      const newPos = await upsertNodePosition({
-        boardId,
-        nodeRefType: isScene ? "scene" : "codex",
-        treeNodeId: isScene ? nodeId.slice("scene:".length) : null,
-        codexEntryId: !isScene ? nodeId.slice("codex:".length) : null,
-        x: 0,
-        y: 0,
-      });
+      const args = toUpsertArgs(nodeId);
+      if (!args) return;
+      const newPos = await upsertNodePosition(args);
       await updateNodePosition(newPos.id, { hidden: 1 });
       setPositions((prev) => [
         ...prev,
         { ...newPos, hidden: 1 } as MapNodePositionRecord,
       ]);
     }
-  }, [contextMenu, boardId, positions]);
+  }, [contextMenu, boardId, findPosByNodeId, toUpsertArgs]);
 
   const handleContextMenuOpen = useCallback(() => {
     if (!contextMenu) return;
@@ -1316,7 +1382,10 @@ function MapCanvasInner() {
       }
     }
 
-    doExport().catch(console.error);
+    doExport().catch((err) => {
+      console.error(err);
+      toast.error("エクスポートに失敗しました", { description: String(err) });
+    });
   }, [pendingExport, setPendingExport, getNodes, getEdges]);
 
   return (

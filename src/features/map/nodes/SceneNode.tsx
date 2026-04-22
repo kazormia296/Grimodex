@@ -332,12 +332,14 @@ function TitleEditor({
 }) {
   const [value, setValue] = useState(d.title);
   const inputRef = useRef<HTMLInputElement>(null);
+  const cancelledRef = useRef(false);
 
   useEffect(() => {
     inputRef.current?.focus();
   }, []);
 
   const commit = useCallback(() => {
+    if (cancelledRef.current) return;
     const trimmed = value.trim();
     onCommit(trimmed || d.title);
   }, [value, d.title, onCommit]);
@@ -369,6 +371,7 @@ function TitleEditor({
             }
             if (e.key === "Escape") {
               e.preventDefault();
+              cancelledRef.current = true;
               onCancel();
             }
           }}
@@ -429,6 +432,7 @@ function SynopsisEditor({
 }) {
   const [value, setValue] = useState(d.synopsis ?? "");
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const cancelledRef = useRef(false);
   const statusColor =
     STATUS_COLORS[d.status ?? "outline"] ?? STATUS_COLORS.outline;
   const statusCode = STATUS_CODES[d.status ?? "outline"] ?? "OU";
@@ -438,6 +442,7 @@ function SynopsisEditor({
   }, []);
 
   const commit = useCallback(() => {
+    if (cancelledRef.current) return;
     onCommit(value);
   }, [value, onCommit]);
 
@@ -528,6 +533,7 @@ function SynopsisEditor({
         onKeyDown={(e) => {
           if (e.key === "Escape") {
             e.preventDefault();
+            cancelledRef.current = true;
             onCancel();
           }
           if (e.key === "Enter" && e.ctrlKey) {

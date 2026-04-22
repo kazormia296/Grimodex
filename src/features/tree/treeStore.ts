@@ -930,7 +930,7 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
 
   async updatePovCharacter(id, codexEntryId) {
     await api.updateNode(id, {
-      povCharacterId: codexEntryId ?? undefined,
+      povCharacterId: codexEntryId,
     });
     set((state) => ({
       nodes: state.nodes.map((n) =>
@@ -941,7 +941,7 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
 
   async updateLocation(id, codexEntryId) {
     await api.updateNode(id, {
-      locationId: codexEntryId ?? undefined,
+      locationId: codexEntryId,
     });
     set((state) => ({
       nodes: state.nodes.map((n) =>

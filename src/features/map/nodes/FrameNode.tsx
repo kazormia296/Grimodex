@@ -19,9 +19,14 @@ export const FrameNode = memo(function FrameNode({
   const [editingTitle, setEditingTitle] = useState(false);
   const [titleValue, setTitleValue] = useState(d.title);
   const inputRef = useRef<HTMLInputElement>(null);
+  const cancelledRef = useRef(false);
 
   const commitTitle = useCallback(() => {
     setEditingTitle(false);
+    if (cancelledRef.current) {
+      cancelledRef.current = false;
+      return;
+    }
     const trimmed = titleValue.trim() || d.title;
     setTitleValue(trimmed);
     d.onTitleChange?.(trimmed);
@@ -79,6 +84,7 @@ export const FrameNode = memo(function FrameNode({
                 }
                 if (e.key === "Escape") {
                   e.preventDefault();
+                  cancelledRef.current = true;
                   setTitleValue(d.title);
                   setEditingTitle(false);
                 }
