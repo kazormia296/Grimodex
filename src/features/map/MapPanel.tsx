@@ -1,11 +1,4 @@
-import {
-  useCallback,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-  type KeyboardEvent,
-} from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ReactFlow,
   Background,
@@ -57,7 +50,7 @@ import { MapHeader } from "./MapHeader";
 import { MapPalette } from "./MapPalette";
 import { MapSearch } from "./MapSearch";
 import { AINodeDialog } from "./AINodeDialog";
-import type { MapMode, MapNodePositionRecord } from "./types";
+import type { MapNodePositionRecord } from "./types";
 import type { MapAiNode, MapEdge, MapFrame } from "@/db/schema";
 import { layoutFor, layoutForAsync } from "./layouts";
 import { WorkerForceLayoutEngine } from "./layouts/forceEngine";
@@ -68,6 +61,7 @@ import { ForceLayoutProgress } from "./ForceLayoutProgress";
 import { findPosByNodeId, buildUpsertArgs } from "./utils/nodeIdCodec";
 import { useMapExport } from "./hooks/useMapExport";
 import { useFrameDrawing } from "./hooks/useFrameDrawing";
+import { useMapKeyboard } from "./hooks/useMapKeyboard";
 
 const PROJECT_ID = "default-project";
 
@@ -84,8 +78,6 @@ const EDGE_TYPES = {
 };
 
 type PaletteMode = "default" | "frame" | "connect";
-
-const MODES_ORDER: MapMode[] = ["free", "time", "theme", "pov", "place"];
 
 // Debounce helper
 function useDebouncedCallback<T extends unknown[]>(
@@ -1023,71 +1015,21 @@ function MapCanvasInner() {
     setViewport({ x: vp.x, y: vp.y, zoom: vp.zoom });
   }, 300);
 
-  // Keyboard shortcuts
-  const onKeyDown = useCallback(
-    (e: KeyboardEvent<HTMLDivElement>) => {
-      const inInput =
-        e.target instanceof HTMLInputElement ||
-        e.target instanceof HTMLTextAreaElement;
-
-      if (e.key === "Escape") {
-        // Priority: frame drawing > search > focus > palette
-        if (frameDraftRect || frameDragStart.current) {
-          setFrameDraftRect(null);
-          setFrameDraftScreenRect(null);
-          frameDragStart.current = null;
-          frameDragStartScreen.current = null;
-        } else if (searchVisible) {
-          setSearchVisible(false);
-        } else if (focusedNodeId) {
-          setFocusedNode(null);
-        } else {
-          setPaletteMode("default");
-        }
-        return;
-      }
-
-      if ((e.ctrlKey || e.metaKey) && e.key === "f") {
-        e.preventDefault();
-        setSearchVisible(true);
-        return;
-      }
-
-      if (inInput) return;
-
-      // Mode switch: 1-5
-      if (!e.ctrlKey && !e.metaKey && !e.altKey) {
-        const modeIdx = parseInt(e.key, 10) - 1;
-        if (modeIdx >= 0 && modeIdx < MODES_ORDER.length) {
-          setMode(MODES_ORDER[modeIdx]);
-          return;
-        }
-      }
-
-      // Ctrl+G: toggle grid snap
-      if ((e.ctrlKey || e.metaKey) && e.key === "g") {
-        e.preventDefault();
-        setGridSnap(!gridSnap);
-        return;
-      }
-
-      // F: toggle frame drawing mode
-      if (e.key === "f" && !e.ctrlKey && !e.metaKey) {
-        setPaletteMode((m) => (m === "frame" ? "default" : "frame"));
-        return;
-      }
-    },
-    [
-      setSearchVisible,
-      setFocusedNode,
-      setMode,
-      setGridSnap,
-      gridSnap,
-      searchVisible,
-      focusedNodeId,
-      frameDraftRect,
-    ],
-  );
+  const { onKeyDown } = useMapKeyboard({
+    searchVisible,
+    setSearchVisible,
+    focusedNodeId,
+    setFocusedNode,
+    gridSnap,
+    setGridSnap,
+    setMode,
+    setPaletteMode,
+    frameDraftRect,
+    frameDragStart,
+    frameDragStartScreen,
+    setFrameDraftRect,
+    setFrameDraftScreenRect,
+  });
 
   // Focus node for search
   const focusNode = useCallback(
