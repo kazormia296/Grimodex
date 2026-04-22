@@ -28,6 +28,7 @@ import {
 import "@xyflow/react/dist/style.css";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { useCodexStore } from "@/features/codex/codexStore";
+import { useChatStore } from "@/features/chat/chatStore";
 import { useMapStore } from "./mapStore";
 import {
   getOrCreateBoard,
@@ -42,18 +43,21 @@ import {
   createFrame,
   updateFrame,
   deleteFrame,
+  listAINodes,
 } from "./mapApi";
 import { SceneNode } from "./nodes/SceneNode";
 import { CodexNode } from "./nodes/CodexNode";
 import { FrameNode } from "./nodes/FrameNode";
 import { NoteNode } from "./nodes/NoteNode";
+import { AINode } from "./nodes/AINode";
 import { NodeContextMenu } from "./NodeContextMenu";
 import { UserEdge } from "./edges/UserEdge";
 import { MapHeader } from "./MapHeader";
 import { MapPalette } from "./MapPalette";
 import { MapSearch } from "./MapSearch";
+import { AINodeDialog } from "./AINodeDialog";
 import type { MapNodePositionRecord } from "./types";
-import type { MapEdge, MapFrame } from "@/db/schema";
+import type { MapAiNode, MapEdge, MapFrame } from "@/db/schema";
 import { layoutFor, layoutForAsync } from "./layouts";
 import { WorkerForceLayoutEngine } from "./layouts/forceEngine";
 import { autoArrange, autoArrangeForceDirected } from "./layouts/autoArrange";
@@ -69,6 +73,7 @@ const NODE_TYPES = {
   codex: CodexNode,
   frame: FrameNode,
   note: NoteNode,
+  ai: AINode,
 };
 
 const EDGE_TYPES = {
@@ -138,9 +143,11 @@ function MapCanvasInner() {
   const [positions, setPositions] = useState<MapNodePositionRecord[]>([]);
   const [userEdges, setUserEdges] = useState<MapEdge[]>([]);
   const [frames, setFrames] = useState<MapFrame[]>([]);
+  const [aiNodes, setAiNodes] = useState<MapAiNode[]>([]);
   const [nodes, setNodes] = useState<Node[]>([]);
   const [edges, setEdges] = useState<Edge[]>([]);
   const [paletteMode, setPaletteMode] = useState<PaletteMode>("default");
+  const [showAINodeDialog, setShowAINodeDialog] = useState(false);
   const [modeTransitionActive, setModeTransitionActive] = useState(false);
   const [forceLayoutRunning, setForceLayoutRunning] = useState(false);
   const [forceAlpha, setForceAlpha] = useState(1);
@@ -185,15 +192,17 @@ function MapCanvasInner() {
       const board = await getOrCreateBoard(PROJECT_ID);
       if (cancelled) return;
       setBoardId(board.id);
-      const [pos, ue, fr] = await Promise.all([
+      const [pos, ue, fr, ai] = await Promise.all([
         listAllNodePositions(board.id),
         listUserEdges(board.id),
         listFrames(board.id),
+        listAINodes(board.id),
       ]);
       if (cancelled) return;
       setPositions(pos as MapNodePositionRecord[]);
       setUserEdges(ue);
       setFrames(fr);
+      setAiNodes(ai);
     }
     load();
     return () => {
@@ -370,7 +379,47 @@ function MapCanvasInner() {
           })
         : [];
 
-      setNodes([...frameNodes, ...sceneNodes, ...codexNodes, ...noteNodes]);
+      // AI nodes use stored position directly
+      const aiPosMap = new Map<string, { x: number; y: number }>();
+      for (const p of visiblePositions) {
+        if (p.aiNodeId) {
+          aiPosMap.set(`ai:${p.aiNodeId}`, { x: p.x, y: p.y });
+        }
+      }
+      const aiRfNodes: Node[] = show.ai
+        ? aiNodes.map((an, idx) => {
+            const key = `ai:${an.id}`;
+            return {
+              id: key,
+              type: "ai",
+              position: aiPosMap.get(key) ?? {
+                x: 400 + (idx % 4) * 260,
+                y: 800 + Math.floor(idx / 4) * 140,
+              },
+              className: transitionClass,
+              draggable: true,
+              zIndex: 0,
+              data: {
+                prompt: an.prompt,
+                response: an.response,
+                sessionId: an.sessionId,
+                onOpenChat: () => {
+                  if (an.sessionId) {
+                    useChatStore.getState().selectSession(an.sessionId);
+                  }
+                },
+              },
+            };
+          })
+        : [];
+
+      setNodes([
+        ...frameNodes,
+        ...sceneNodes,
+        ...codexNodes,
+        ...noteNodes,
+        ...aiRfNodes,
+      ]);
     }
 
     buildNodes();
@@ -383,6 +432,7 @@ function MapCanvasInner() {
     positions,
     treeNodes,
     codexEntries,
+    aiNodes,
     show,
     mode,
     variant,
@@ -499,6 +549,24 @@ function MapCanvasInner() {
           boardId,
           nodeRefType: "note",
           treeNodeId,
+          x,
+          y,
+        });
+        setPositions((prev) => {
+          const idx = prev.findIndex((p) => p.id === updated.id);
+          if (idx >= 0) {
+            const next = [...prev];
+            next[idx] = updated as MapNodePositionRecord;
+            return next;
+          }
+          return [...prev, updated as MapNodePositionRecord];
+        });
+      } else if (nodeId.startsWith("ai:")) {
+        const aiNodeId = nodeId.slice("ai:".length);
+        const updated = await upsertNodePosition({
+          boardId,
+          nodeRefType: "ai",
+          aiNodeId,
           x,
           y,
         });
@@ -733,6 +801,52 @@ function MapCanvasInner() {
     const sceneId = contextMenu.nodeId.slice("scene:".length);
     setActiveScene(sceneId);
   }, [contextMenu, setActiveScene]);
+
+  // AI node creation
+  const aiContextLines = useCallback((): string[] => {
+    const lines: string[] = [];
+    for (const n of nodes) {
+      if (n.type === "scene") {
+        const d = n.data as { title?: string };
+        if (d.title) lines.push(`Scene: ${d.title}`);
+      } else if (n.type === "codex") {
+        const d = n.data as { name?: string; type?: string };
+        if (d.name) lines.push(`${d.type ?? "Codex"}: ${d.name}`);
+      } else if (n.type === "note") {
+        const d = n.data as { title?: string };
+        if (d.title) lines.push(`Note: ${d.title}`);
+      } else if (n.type === "ai") {
+        const d = n.data as { prompt?: string };
+        if (d.prompt) lines.push(`AI: ${d.prompt.slice(0, 50)}`);
+      }
+    }
+    return lines;
+  }, [nodes]);
+
+  const handleAINodeCreated = useCallback(
+    (created: {
+      id: string;
+      prompt: string;
+      response: string;
+      sessionId: string | null;
+      position: { x: number; y: number };
+    }) => {
+      setShowAINodeDialog(false);
+      const newAiNode: MapAiNode = {
+        id: created.id,
+        boardId: boardId!,
+        prompt: created.prompt,
+        response: created.response,
+        sessionId: created.sessionId,
+        model: null,
+        tokenUsage: null,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      };
+      setAiNodes((prev) => [...prev, newAiNode]);
+    },
+    [boardId],
+  );
 
   // Sync viewport to store (debounced)
   const syncViewport = useDebouncedCallback(() => {
@@ -1083,7 +1197,24 @@ function MapCanvasInner() {
       <MapPalette
         paletteMode={paletteMode}
         onPaletteModeChange={setPaletteMode}
+        onCreateAI={() => setShowAINodeDialog(true)}
       />
+
+      {showAINodeDialog && boardId && (
+        <AINodeDialog
+          boardId={boardId}
+          contextLines={aiContextLines()}
+          spawnPosition={(() => {
+            const vp = getViewport();
+            return {
+              x: (-vp.x + window.innerWidth / 2) / vp.zoom,
+              y: (-vp.y + window.innerHeight / 2) / vp.zoom,
+            };
+          })()}
+          onCreated={handleAINodeCreated}
+          onCancel={() => setShowAINodeDialog(false)}
+        />
+      )}
     </div>
   );
 }

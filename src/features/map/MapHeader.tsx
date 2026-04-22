@@ -142,7 +142,11 @@ export function MapHeader() {
         checked={show.notes}
         onChange={(v) => setShow({ notes: v })}
       />
-      <DisabledCheckbox label="AI" tooltip="Phase D で対応予定" />
+      <ShowCheckbox
+        label="AI"
+        checked={show.ai}
+        onChange={(v) => setShow({ ai: v })}
+      />
 
       <Divider />
 
@@ -448,39 +452,6 @@ function ShowCheckbox({
         checked={checked}
         onChange={(e) => onChange(e.target.checked)}
         style={{ width: 12, height: 12, cursor: "pointer" }}
-      />
-      {label}
-    </label>
-  );
-}
-
-function DisabledCheckbox({
-  label,
-  tooltip,
-}: {
-  label: string;
-  tooltip: string;
-}) {
-  return (
-    <label
-      title={tooltip}
-      style={{
-        display: "flex",
-        alignItems: "center",
-        gap: 3,
-        cursor: "not-allowed",
-        fontSize: 11,
-        color: "var(--muted-foreground)",
-        opacity: 0.5,
-        userSelect: "none",
-      }}
-    >
-      <input
-        type="checkbox"
-        disabled
-        checked={false}
-        onChange={() => {}}
-        style={{ width: 12, height: 12, cursor: "not-allowed" }}
       />
       {label}
     </label>

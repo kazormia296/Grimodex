@@ -2,11 +2,13 @@ import { db } from "@/db/client";
 import {
   mapBoards,
   mapNodePositions,
+  mapAiNodes,
   mapEdges,
   mapFrames,
   type MapBoard,
   type MapNodePosition,
   type NewMapNodePosition,
+  type MapAiNode,
   type MapEdge,
   type NewMapEdge,
   type MapFrame,
@@ -73,6 +75,7 @@ export async function upsertNodePosition(data: {
   nodeRefType: NodeRefType;
   treeNodeId?: string | null;
   codexEntryId?: string | null;
+  aiNodeId?: string | null;
   x: number;
   y: number;
 }): Promise<MapNodePosition> {
@@ -106,6 +109,19 @@ export async function upsertNodePosition(data: {
       )
       .limit(1);
     existing = rows[0];
+  } else if (data.aiNodeId) {
+    const rows = await db
+      .select()
+      .from(mapNodePositions)
+      .where(
+        and(
+          eq(mapNodePositions.boardId, data.boardId),
+          isNotNull(mapNodePositions.aiNodeId),
+          eq(mapNodePositions.aiNodeId, data.aiNodeId),
+        ),
+      )
+      .limit(1);
+    existing = rows[0];
   }
 
   if (existing) {
@@ -124,7 +140,7 @@ export async function upsertNodePosition(data: {
     nodeRefType: data.nodeRefType,
     treeNodeId: data.treeNodeId ?? null,
     codexEntryId: data.codexEntryId ?? null,
-    aiNodeId: null,
+    aiNodeId: data.aiNodeId ?? null,
     x: data.x,
     y: data.y,
     pinned: 0,
@@ -138,6 +154,43 @@ export async function upsertNodePosition(data: {
     .values(insertData)
     .returning();
   return inserted[0];
+}
+
+// ── AI nodes ───────────────────────────────────────────────────────────────
+
+export async function createAINode(data: {
+  boardId: string;
+  prompt: string;
+  response: string;
+  sessionId: string | null;
+  model?: string | null;
+  tokenUsage?: number | null;
+}): Promise<MapAiNode> {
+  const now = new Date().toISOString();
+  const id = crypto.randomUUID();
+  const rows = await db
+    .insert(mapAiNodes)
+    .values({
+      id,
+      boardId: data.boardId,
+      prompt: data.prompt,
+      response: data.response,
+      sessionId: data.sessionId,
+      model: data.model ?? null,
+      tokenUsage: data.tokenUsage ?? null,
+      createdAt: now,
+      updatedAt: now,
+    })
+    .returning();
+  return rows[0];
+}
+
+export async function listAINodes(boardId: string): Promise<MapAiNode[]> {
+  return db.select().from(mapAiNodes).where(eq(mapAiNodes.boardId, boardId));
+}
+
+export async function deleteAINode(id: string): Promise<void> {
+  await db.delete(mapAiNodes).where(eq(mapAiNodes.id, id));
 }
 
 export async function updateNodePosition(

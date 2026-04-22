@@ -7,11 +7,13 @@ type PaletteMode = "default" | "frame" | "connect";
 interface MapPaletteProps {
   paletteMode: PaletteMode;
   onPaletteModeChange: (mode: PaletteMode) => void;
+  onCreateAI: () => void;
 }
 
 export function MapPalette({
   paletteMode,
   onPaletteModeChange,
+  onCreateAI,
 }: MapPaletteProps) {
   const createScene = useTreeStore((s) => s.createScene);
   const createNote = useTreeStore((s) => s.createNote);
@@ -97,7 +99,11 @@ export function MapPalette({
         onClick={handleAddNote}
         title="ノートを追加"
       />
-      <PaletteButton label="+ AI" disabled title="Phase D で対応予定" />
+      <PaletteButton
+        label="✨ AI"
+        onClick={onCreateAI}
+        title="AIノードを作成"
+      />
 
       {/* Mode indicator */}
       {paletteMode !== "default" && (
