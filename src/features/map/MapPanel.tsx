@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useDebouncedCallback } from "@/lib/useDebounce";
 import {
   ReactFlow,
   Background,
@@ -78,21 +79,6 @@ const EDGE_TYPES = {
 };
 
 type PaletteMode = "default" | "frame" | "connect";
-
-// Debounce helper
-function useDebouncedCallback<T extends unknown[]>(
-  fn: (...args: T) => void,
-  delay: number,
-) {
-  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  return useCallback(
-    (...args: T) => {
-      if (timer.current) clearTimeout(timer.current);
-      timer.current = setTimeout(() => fn(...args), delay);
-    },
-    [fn, delay],
-  );
-}
 
 // Deterministic rotation from node id for corkboard feel (±0.5deg)
 function corkRotation(id: string): number {
