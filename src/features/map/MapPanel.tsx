@@ -258,7 +258,7 @@ function MapCanvasInner() {
             type: "scene",
             position: pos,
             className: transitionClass,
-            draggable: mode === "free",
+            draggable: true,
             zIndex: 0,
             data: {
               title: n.title,
@@ -812,9 +812,7 @@ function MapCanvasInner() {
             ? ConnectionMode.Loose
             : ConnectionMode.Strict
         }
-        nodesDraggable={
-          mode === "free" && paletteMode === "default" && !modeTransitionActive
-        }
+        nodesDraggable={paletteMode === "default" && !modeTransitionActive}
       >
         <Background variant={BackgroundVariant.Dots} gap={24} size={1} />
         <Controls />
