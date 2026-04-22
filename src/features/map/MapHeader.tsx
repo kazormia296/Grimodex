@@ -1,5 +1,16 @@
+import { useState, useRef, useEffect } from "react";
 import { useMapStore } from "./mapStore";
 import type { MapMode, SceneDisplayVariant, ColorByAxis } from "./types";
+import type { AutoArrangeType } from "./layouts/autoArrange";
+
+const ARRANGE_ITEMS: {
+  type: AutoArrangeType;
+  label: string;
+  disabled?: boolean;
+}[] = [
+  { type: "reading-order", label: "Grid: 読み順" },
+  { type: "story-time", label: "Grid: 物語時間順" },
+];
 
 const MODES: { key: MapMode; label: string }[] = [
   { key: "free", label: "Free" },
@@ -34,8 +45,26 @@ export function MapHeader() {
   const corkboardFeel = useMapStore((s) => s.corkboardFeel);
   const setCorkboardFeel = useMapStore((s) => s.setCorkboardFeel);
   const setSearchVisible = useMapStore((s) => s.setSearchVisible);
+  const setPendingAutoArrange = useMapStore((s) => s.setPendingAutoArrange);
 
   const currentDisplay = sceneDisplayByMode[mode];
+
+  const [arrangeMenuOpen, setArrangeMenuOpen] = useState(false);
+  const arrangeMenuRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!arrangeMenuOpen) return;
+    function onMouseDown(e: MouseEvent) {
+      if (
+        arrangeMenuRef.current &&
+        !arrangeMenuRef.current.contains(e.target as Node)
+      ) {
+        setArrangeMenuOpen(false);
+      }
+    }
+    document.addEventListener("mousedown", onMouseDown);
+    return () => document.removeEventListener("mousedown", onMouseDown);
+  }, [arrangeMenuOpen]);
 
   return (
     <div
@@ -193,12 +222,111 @@ export function MapHeader() {
         onChange={setMinimapVisible}
       />
 
+      {/* Auto-arrange menu */}
+      <div
+        ref={arrangeMenuRef}
+        style={{ position: "relative", marginLeft: "auto" }}
+      >
+        <button
+          onClick={() => setArrangeMenuOpen((v) => !v)}
+          title="自動配置"
+          style={{
+            padding: "2px 8px",
+            borderRadius: 4,
+            border: "1px solid var(--border)",
+            background: "transparent",
+            color: "var(--foreground)",
+            cursor: "pointer",
+            fontSize: 11,
+          }}
+        >
+          ⋮
+        </button>
+        {arrangeMenuOpen && (
+          <div
+            style={{
+              position: "absolute",
+              top: "calc(100% + 4px)",
+              right: 0,
+              zIndex: 50,
+              minWidth: 180,
+              background: "var(--popover)",
+              border: "1px solid var(--border)",
+              borderRadius: 6,
+              boxShadow: "0 4px 12px rgba(0,0,0,0.15)",
+              padding: "4px 0",
+            }}
+          >
+            <div
+              style={{
+                padding: "4px 12px 2px",
+                fontSize: 10,
+                color: "var(--muted-foreground)",
+                textTransform: "uppercase",
+                letterSpacing: "0.05em",
+              }}
+            >
+              自動配置
+            </div>
+            {ARRANGE_ITEMS.map((item) => (
+              <button
+                key={item.type}
+                type="button"
+                onClick={() => {
+                  setArrangeMenuOpen(false);
+                  setPendingAutoArrange(item.type);
+                }}
+                style={{
+                  display: "block",
+                  width: "100%",
+                  padding: "5px 12px",
+                  textAlign: "left",
+                  fontSize: 12,
+                  background: "transparent",
+                  border: "none",
+                  color: "var(--foreground)",
+                  cursor: "pointer",
+                }}
+                onMouseEnter={(e) =>
+                  (e.currentTarget.style.background = "var(--accent)")
+                }
+                onMouseLeave={(e) =>
+                  (e.currentTarget.style.background = "transparent")
+                }
+              >
+                {item.label}
+              </button>
+            ))}
+            <div
+              style={{
+                borderTop: "1px solid var(--border)",
+                margin: "4px 0",
+              }}
+            />
+            {(["Grid: POV別", "Force-directed"] as const).map((label) => (
+              <div
+                key={label}
+                title="Phase C-2 で対応予定"
+                style={{
+                  padding: "5px 12px",
+                  fontSize: 12,
+                  color: "var(--muted-foreground)",
+                  cursor: "not-allowed",
+                  opacity: 0.5,
+                }}
+              >
+                {label}
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
       {/* Search button */}
       <button
         onClick={() => setSearchVisible(true)}
         title="ノードを検索 (Ctrl+F)"
         style={{
-          marginLeft: "auto",
           padding: "2px 8px",
           borderRadius: 4,
           border: "1px solid var(--border)",

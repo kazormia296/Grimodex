@@ -54,7 +54,9 @@ import { MapSearch } from "./MapSearch";
 import type { MapNodePositionRecord } from "./types";
 import type { MapEdge, MapFrame } from "@/db/schema";
 import { layoutFor } from "./layouts";
+import { autoArrange } from "./layouts/autoArrange";
 import { DURATIONS, useReducedMotion } from "@/lib/animation";
+import { AutoArrangeDialog } from "./AutoArrangeDialog";
 
 const PROJECT_ID = "default-project";
 
@@ -113,6 +115,8 @@ function MapCanvasInner() {
   const effectiveSceneVariant = useMapStore((s) => s.effectiveSceneVariant);
   const searchVisible = useMapStore((s) => s.searchVisible);
   const setSearchVisible = useMapStore((s) => s.setSearchVisible);
+  const pendingAutoArrange = useMapStore((s) => s.pendingAutoArrange);
+  const setPendingAutoArrange = useMapStore((s) => s.setPendingAutoArrange);
 
   const variant = effectiveSceneVariant(mode);
 
@@ -732,6 +736,55 @@ function MapCanvasInner() {
     [nodes],
   );
 
+  // Execute confirmed auto-arrange
+  const executeAutoArrange = useCallback(async () => {
+    if (!pendingAutoArrange || !boardId) return;
+    const type = pendingAutoArrange;
+    setPendingAutoArrange(null);
+
+    const hiddenSceneIds = new Set(
+      positions
+        .filter((p) => p.hidden === 1 && p.treeNodeId)
+        .map((p) => p.treeNodeId!),
+    );
+    const scenes = treeNodes.filter(
+      (n) => n.nodeType === "scene" && !hiddenSceneIds.has(n.id),
+    );
+
+    const newPositions = autoArrange({
+      type,
+      allTreeNodes: treeNodes,
+      scenes,
+      positions,
+      variant,
+    });
+
+    await Promise.all(
+      Array.from(newPositions.entries()).map(([key, pos]) => {
+        if (key.startsWith("scene:")) {
+          return upsertNodePosition({
+            boardId,
+            nodeRefType: "scene",
+            treeNodeId: key.slice("scene:".length),
+            x: pos.x,
+            y: pos.y,
+          });
+        }
+        return Promise.resolve(undefined);
+      }),
+    );
+
+    const refreshed = await listAllNodePositions(boardId);
+    setPositions(refreshed as MapNodePositionRecord[]);
+  }, [
+    pendingAutoArrange,
+    boardId,
+    treeNodes,
+    positions,
+    variant,
+    setPendingAutoArrange,
+  ]);
+
   return (
     <div
       style={{ width: "100%", height: "100%", position: "relative" }}
@@ -827,6 +880,14 @@ function MapCanvasInner() {
           onPin={handleContextMenuPin}
           onUnpin={handleContextMenuUnpin}
           onHide={handleContextMenuHide}
+        />
+      )}
+
+      {pendingAutoArrange && (
+        <AutoArrangeDialog
+          type={pendingAutoArrange}
+          onConfirm={executeAutoArrange}
+          onCancel={() => setPendingAutoArrange(null)}
         />
       )}
 

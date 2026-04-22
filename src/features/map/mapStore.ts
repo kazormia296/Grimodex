@@ -9,6 +9,7 @@ import type {
   ColorByAxis,
 } from "./types";
 import { resolveSceneVariant } from "./types";
+import type { AutoArrangeType } from "./layouts/autoArrange";
 
 const DEFAULT_SCENE_DISPLAY: Record<MapMode, SceneDisplayVariant> = {
   free: "auto",
@@ -29,6 +30,7 @@ interface MapState {
   corkboardFeel: boolean;
   // transient UI state (not persisted)
   searchVisible: boolean;
+  pendingAutoArrange: AutoArrangeType | null;
 
   setMode: (mode: MapMode) => void;
   setViewport: (viewport: { x: number; y: number; zoom: number }) => void;
@@ -39,6 +41,7 @@ interface MapState {
   setColorBy: (axis: ColorByAxis) => void;
   setCorkboardFeel: (v: boolean) => void;
   setSearchVisible: (v: boolean) => void;
+  setPendingAutoArrange: (type: AutoArrangeType | null) => void;
   effectiveSceneVariant: (mode: MapMode) => "compact" | "card" | "image";
   loadFromSettings: (settings: GlobalSettings) => void;
 }
@@ -63,6 +66,7 @@ export const useMapStore = create<MapState>((set, get) => ({
   colorBy: "none",
   corkboardFeel: false,
   searchVisible: false,
+  pendingAutoArrange: null,
 
   setMode: (mode) => set({ mode }),
   setViewport: (viewport) => set({ viewport }),
@@ -76,6 +80,7 @@ export const useMapStore = create<MapState>((set, get) => ({
   setColorBy: (axis) => set({ colorBy: axis }),
   setCorkboardFeel: (v) => set({ corkboardFeel: v }),
   setSearchVisible: (v) => set({ searchVisible: v }),
+  setPendingAutoArrange: (type) => set({ pendingAutoArrange: type }),
   effectiveSceneVariant: (mode) =>
     resolveSceneVariant(get().sceneDisplayByMode[mode], mode),
 
