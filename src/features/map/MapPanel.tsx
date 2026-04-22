@@ -23,7 +23,6 @@ import { useCodexStore } from "@/features/codex/codexStore";
 import { useChatStore } from "@/features/chat/chatStore";
 import { usePhaseStore } from "@/features/codex/phaseStore";
 import { useSnippetStore } from "@/features/snippets/snippetStore";
-import { createCodexMatcher } from "@/features/codex/codexMatcher";
 import { useMapStore } from "./mapStore";
 import {
   upsertNodePosition,
@@ -48,7 +47,6 @@ import { MapSearch } from "./MapSearch";
 import { AINodeDialog } from "./AINodeDialog";
 import type { MapNodePositionRecord } from "./types";
 import type { MapAiNode, MapEdge, MapFrame } from "@/db/schema";
-import { layoutFor, layoutForAsync } from "./layouts";
 import { WorkerForceLayoutEngine } from "./layouts/forceEngine";
 import { autoArrange, autoArrangeForceDirected } from "./layouts/autoArrange";
 import { DURATIONS, useReducedMotion } from "@/lib/animation";
@@ -60,6 +58,7 @@ import { useFrameDrawing } from "./hooks/useFrameDrawing";
 import { useMapKeyboard } from "./hooks/useMapKeyboard";
 import { useMapBoardData } from "./hooks/useMapBoardData";
 import { useMapEdges } from "./hooks/useMapEdges";
+import { useMapNodes } from "./hooks/useMapNodes";
 
 const PROJECT_ID = "default-project";
 
@@ -78,14 +77,6 @@ const EDGE_TYPES = {
 type PaletteMode = "default" | "frame" | "connect";
 
 // Deterministic rotation from node id for corkboard feel (±0.5deg)
-function corkRotation(id: string): number {
-  let hash = 0;
-  for (let i = 0; i < id.length; i++) {
-    hash = ((hash << 5) - hash + id.charCodeAt(i)) | 0;
-  }
-  return ((hash % 100) / 100) * 1.0 - 0.5;
-}
-
 // ── Main canvas (must be inside ReactFlowProvider) ────────────────────────
 
 function MapCanvasInner() {
@@ -199,263 +190,27 @@ function MapCanvasInner() {
     }
   }, [show.derivedEdges, codexEntries]);
 
-  // Build React Flow nodes: frames + scene nodes + codex nodes
-  useEffect(() => {
-    if (!boardId) return;
-    let cancelled = false;
-
-    async function buildNodes() {
-      // Derive visible/hidden sets from positions (hidden=1 persists across sessions)
-      const hiddenTreeNodeIds = new Set(
-        positions
-          .filter((p) => p.hidden === 1 && p.treeNodeId)
-          .map((p) => p.treeNodeId!),
-      );
-      const hiddenCodexIds = new Set(
-        positions
-          .filter((p) => p.hidden === 1 && p.codexEntryId)
-          .map((p) => p.codexEntryId!),
-      );
-      const visiblePositions = positions.filter((p) => p.hidden !== 1);
-
-      const scenes = treeNodes.filter(
-        (n) => n.nodeType === "scene" && !hiddenTreeNodeIds.has(n.id),
-      );
-      const notes = treeNodes.filter(
-        (n) => n.nodeType === "note" && !hiddenTreeNodeIds.has(n.id),
-      );
-      const visibleCodex = codexEntries.filter(
-        (e) => !hiddenCodexIds.has(e.id),
-      );
-
-      let computedPositions;
-      if (mode === "theme") {
-        setForceLayoutRunning(true);
-        setForceAlpha(1);
-        const engine = new WorkerForceLayoutEngine();
-        // Annotate each scene with the codex entry IDs it mentions (for Jaccard grouping)
-        const themeMatcher = createCodexMatcher(visibleCodex);
-        const scenesWithTags = scenes.map((s) => {
-          const text = [s.title, s.synopsis].filter(Boolean).join(" ");
-          const tags = [...new Set(themeMatcher(text).map((m) => m.entryId))];
-          return { ...s, tags };
-        });
-        computedPositions = await layoutForAsync(
-          "theme",
-          {
-            scenes: scenesWithTags,
-            codexEntries: visibleCodex,
-            positions: visiblePositions,
-          },
-          engine,
-          (alpha) => {
-            if (!cancelled) setForceAlpha(alpha);
-          },
-        );
-        if (cancelled) return;
-        setForceLayoutRunning(false);
-      } else {
-        computedPositions = layoutFor(mode, {
-          scenes,
-          codexEntries: visibleCodex,
-          positions: visiblePositions,
-        });
-      }
-      if (cancelled) return;
-
-      // Frame nodes rendered behind other nodes
-      const frameNodes: Node[] = show.frames
-        ? frames.map((f) => ({
-            id: `frame:${f.id}`,
-            type: "frame",
-            position: { x: f.x, y: f.y },
-            style: { width: f.width, height: f.height },
-            zIndex: -1,
-            dragHandle: ".frame-drag-handle",
-            data: {
-              title: f.title,
-              background: f.background,
-              borderColor: f.borderColor,
-              onTitleChange: async (title: string) => {
-                await updateFrame(f.id, { title });
-                setFrames((prev) =>
-                  prev.map((fr) => (fr.id === f.id ? { ...fr, title } : fr)),
-                );
-              },
-              onDelete: async () => {
-                await deleteFrame(f.id);
-                setFrames((prev) => prev.filter((fr) => fr.id !== f.id));
-              },
-            },
-          }))
-        : [];
-
-      const transitionClass = modeTransitionActive
-        ? "with-mode-transition"
-        : undefined;
-
-      // Build zIndex map from persisted positions
-      const zIndexMap = new Map<string, number>();
-      for (const p of visiblePositions) {
-        if (p.treeNodeId && p.nodeRefType === "scene")
-          zIndexMap.set(`scene:${p.treeNodeId}`, p.zIndex ?? 0);
-        else if (p.treeNodeId && p.nodeRefType === "note")
-          zIndexMap.set(`note:${p.treeNodeId}`, p.zIndex ?? 0);
-        else if (p.codexEntryId)
-          zIndexMap.set(`codex:${p.codexEntryId}`, p.zIndex ?? 0);
-        else if (p.aiNodeId) zIndexMap.set(`ai:${p.aiNodeId}`, p.zIndex ?? 0);
-      }
-
-      // Scene nodes
-      const sceneNodes: Node[] = show.scenes
-        ? scenes.map((n) => {
-            const key = `scene:${n.id}`;
-            const pos = computedPositions.get(key) ?? { x: 0, y: 0 };
-            const rotation = corkboardFeel ? corkRotation(n.id) : 0;
-            return {
-              id: key,
-              type: "scene",
-              position: pos,
-              className: transitionClass,
-              draggable: true,
-              zIndex: zIndexMap.get(key) ?? 0,
-              data: {
-                title: n.title,
-                synopsis: n.synopsis ?? null,
-                status: n.status ?? "outline",
-                wordCount: undefined,
-                variant,
-                colorBy,
-                corkboardFeel,
-                rotation,
-                onTitleChange: async (title: string) => {
-                  await updateNodeTitle(n.id, title);
-                },
-                onSynopsisChange: async (synopsis: string) => {
-                  await updateSynopsis(n.id, synopsis);
-                },
-                onOpen: () => {
-                  setActiveScene(n.id);
-                },
-              },
-            };
-          })
-        : [];
-
-      const codexNodes: Node[] = show.codex
-        ? visibleCodex.map((e) => {
-            const key = `codex:${e.id}`;
-            const pos = computedPositions.get(key) ?? { x: 0, y: 0 };
-            return {
-              id: key,
-              type: "codex",
-              position: pos,
-              className: transitionClass,
-              zIndex: zIndexMap.get(key) ?? 0,
-              data: {
-                name: e.name,
-                type: e.type,
-                summary: e.summary ?? "",
-                color: "#534AB7",
-              },
-            };
-          })
-        : [];
-
-      // Note nodes use stored position directly (not part of layout engine)
-      const notePosMap = new Map<string, { x: number; y: number }>();
-      for (const p of visiblePositions) {
-        if (p.treeNodeId && p.nodeRefType === "note") {
-          notePosMap.set(`note:${p.treeNodeId}`, { x: p.x, y: p.y });
-        }
-      }
-      const noteNodes: Node[] = show.notes
-        ? notes.map((n, idx) => {
-            const key = `note:${n.id}`;
-            return {
-              id: key,
-              type: "note",
-              position: notePosMap.get(key) ?? {
-                x: 200 + (idx % 5) * 200,
-                y: 600 + Math.floor(idx / 5) * 120,
-              },
-              className: transitionClass,
-              draggable: true,
-              zIndex: zIndexMap.get(key) ?? 0,
-              data: {
-                title: n.title,
-                content: n.synopsis ?? "",
-                onOpen: () => setActiveScene(n.id),
-              },
-            };
-          })
-        : [];
-
-      // AI nodes use stored position directly
-      const aiPosMap = new Map<string, { x: number; y: number }>();
-      for (const p of visiblePositions) {
-        if (p.aiNodeId) {
-          aiPosMap.set(`ai:${p.aiNodeId}`, { x: p.x, y: p.y });
-        }
-      }
-      const aiRfNodes: Node[] = show.ai
-        ? aiNodes.map((an, idx) => {
-            const key = `ai:${an.id}`;
-            return {
-              id: key,
-              type: "ai",
-              position: aiPosMap.get(key) ?? {
-                x: 400 + (idx % 4) * 260,
-                y: 800 + Math.floor(idx / 4) * 140,
-              },
-              className: transitionClass,
-              draggable: true,
-              zIndex: zIndexMap.get(key) ?? 0,
-              data: {
-                prompt: an.prompt,
-                response: an.response,
-                sessionId: an.sessionId,
-                onOpenChat: () => {
-                  if (an.sessionId) {
-                    useChatStore.getState().selectSession(an.sessionId);
-                  }
-                },
-              },
-            };
-          })
-        : [];
-
-      setNodes([
-        ...frameNodes,
-        ...sceneNodes,
-        ...codexNodes,
-        ...noteNodes,
-        ...aiRfNodes,
-      ]);
-    }
-
-    buildNodes();
-    return () => {
-      cancelled = true;
-      setForceLayoutRunning(false);
-    };
-  }, [
+  useMapNodes({
     boardId,
     positions,
     treeNodes,
     codexEntries,
     aiNodes,
+    frames,
     show,
     mode,
     variant,
     colorBy,
     corkboardFeel,
-    frames,
     modeTransitionActive,
+    setFrames,
+    setNodes,
+    setForceLayoutRunning,
+    setForceAlpha,
     updateNodeTitle,
     updateSynopsis,
     setActiveScene,
-  ]);
+  });
 
   const edges = useMapEdges({
     codexEntries,
