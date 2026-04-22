@@ -123,31 +123,32 @@ export function useMapNodes({
       }
       if (cancelled) return;
 
-      const frameNodes: Node[] = show.frames
-        ? frames.map((f) => ({
-            id: `frame:${f.id}`,
-            type: "frame",
-            position: { x: f.x, y: f.y },
-            style: { width: f.width, height: f.height },
-            zIndex: -1,
-            dragHandle: ".frame-drag-handle",
-            data: {
-              title: f.title,
-              background: f.background,
-              borderColor: f.borderColor,
-              onTitleChange: async (title: string) => {
-                await updateFrame(f.id, { title });
-                setFrames((prev) =>
-                  prev.map((fr) => (fr.id === f.id ? { ...fr, title } : fr)),
-                );
+      const frameNodes: Node[] =
+        show.frames && mode === "free"
+          ? frames.map((f) => ({
+              id: `frame:${f.id}`,
+              type: "frame",
+              position: { x: f.x, y: f.y },
+              style: { width: f.width, height: f.height },
+              zIndex: -1,
+              dragHandle: ".frame-drag-handle",
+              data: {
+                title: f.title,
+                background: f.background,
+                borderColor: f.borderColor,
+                onTitleChange: async (title: string) => {
+                  await updateFrame(f.id, { title });
+                  setFrames((prev) =>
+                    prev.map((fr) => (fr.id === f.id ? { ...fr, title } : fr)),
+                  );
+                },
+                onDelete: async () => {
+                  await deleteFrame(f.id);
+                  setFrames((prev) => prev.filter((fr) => fr.id !== f.id));
+                },
               },
-              onDelete: async () => {
-                await deleteFrame(f.id);
-                setFrames((prev) => prev.filter((fr) => fr.id !== f.id));
-              },
-            },
-          }))
-        : [];
+            }))
+          : [];
 
       const transitionClass = modeTransitionActive
         ? "with-mode-transition"
