@@ -365,17 +365,191 @@ editor.view.dispatch(
 
 ---
 
+## 設定の保存
+
+### 階層構造
+
+**2 層構成**:
+
+1. **組み込みデフォルト**（Rust コード内部、またはアプリ同梱 JSON）
+2. **プロジェクト上書き**（プロジェクト DB の `settings` テーブル）
+
+ユーザーグローバル層は**現状なし**。他 Settings カテゴリが将来グローバル層を追加する時に横断的に昇格する方針。シーン層も作らない（Phase 3 のインライン無効化記法でカバー）。
+
+### 保存先
+
+#### ルール設定本体
+
+プロジェクト DB の既存 `settings` テーブル（key-value, JSON value）に **1 キー `lint.config`** で JSON blob として格納。既存 Settings カテゴリ（Editor, Display 等）の規約に揃える。
+
+```typescript
+// settings テーブルの lint.config キーに入る JSON
+{
+  "enabled": true,
+  "languages": {
+    "ja": { "enabled": true },
+    "en": { "enabled": true }
+  },
+  "rules": {
+    "ja/ellipsis-single": { "enabled": true },
+    "ja/sentence-length": {
+      "enabled": true,
+      "severity": "warn",
+      "options": { "warnAt": 80, "errorAt": 120 }
+    },
+    "ja/halfwidth-fullwidth-mix": {
+      "enabled": true,
+      "options": { "policy": "ja-halfwidth-with-exceptions" }
+    },
+    "ja/quote-period": {
+      "enabled": true,
+      "options": { "policy": "strip" }
+    }
+    // ...
+  }
+}
+```
+
+保存はデバウンス 300ms（既存 Settings 規約）。起動時に 1 回ロードしてメモリに展開。
+
+#### 用語統一辞書
+
+専用テーブルを用意:
+
+```sql
+CREATE TABLE lint_term_dictionary (
+  id         TEXT PRIMARY KEY,
+  preferred  TEXT NOT NULL,           -- 推奨表記（例: "ウェブ"）
+  variants   TEXT NOT NULL,           -- JSON array: ["web", "Web", "ウエブ"]
+  severity   TEXT NOT NULL DEFAULT 'warn',
+  note       TEXT,                    -- メモ（"企画書で決まった表記" 等）
+  enabled    INTEGER NOT NULL DEFAULT 1,
+  sort_order INTEGER NOT NULL DEFAULT 0,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+```
+
+**JSON blob ではなくテーブルを採用する理由**:
+
+- 数百規模のエントリになり得るため、行単位で扱えた方が検索・編集・並び替えが楽
+- 将来的な CSV インポート／エクスポートが自然
+- Codex entries と並列的なライフサイクルで管理できる
+
+### Codex Alias との棲み分け
+
+| 対象 | 格納先 | 例 |
+|---|---|---|
+| 登場人物名・固有名詞の表記ゆれ | **Codex `entries.aliases`** | 「真琴」「Makoto」の揺れ |
+| 一般用語の表記ゆれ | **`lint_term_dictionary`** | 「ウェブ／Web」「1 人／一人」 |
+
+Lint 実行時は両方を参照する。Codex Alias は「エントリの正表記 + 別名」として人物・固有名詞専用、`lint_term_dictionary` は作品世界の知識と無関係な校正ルール専用。
+
+### 実効設定の計算
+
+```
+[組み込みデフォルト (Rust 内部)]
+          ↓ deep merge
+[プロジェクト設定 (lint.config)]
+          ↓
+[実効設定] → Linter エンジンに渡す
+```
+
+- プロジェクト設定に存在しないルールは組み込みデフォルトが適用される
+- 新ルールの追加でマイグレーション不要
+
+### 新ルール追加時のデフォルトポリシー
+
+**新規追加ルールは組み込みデフォルトで `enabled: false`** とする。安定版で動作が確認されたものを順次デフォルト ON へ昇格させる。
+
+**理由**: 既存プロジェクトを開いた時に突然大量の警告が出るのを防ぐ。執筆中の体験を阻害しないことが最優先。
+
+Phase 1 ルール群は「初回リリース」のため例外的に既定 ON（設計書冒頭の「既定 ON／OFF」表に従う）。
+
+### 設定のリセット機能
+
+Phase 1 から設定 UI に用意:
+
+- **全ルールをデフォルトに戻す**
+- **言語ごとにデフォルトに戻す**（「日本語ルールだけリセット」）
+- **個別ルールをデフォルトに戻す**（ルール行の右クリック or メニュー）
+
+---
+
 ## ルール設定 UI（概要）
 
 設定パネル（`Settings → Linter`）で以下を制御:
 
+- **Linter 全体の有効/無効**
 - **言語ごとの有効/無効**
 - **ルールごとの ON/OFF**
 - **ルールごとの Severity 上書き**
 - **ルール固有のオプション**（一文長の閾値、カギ括弧内句点の方針等）
-- **プロジェクト辞書**（カスタム表記統一辞書）
+- **用語統一辞書の編集**（`lint_term_dictionary` の CRUD）
+- **リセットボタン**（全体／言語／個別）
 
-設定はプロジェクト単位で保存（`project_settings.lint` テーブル想定）。
+---
+
+## Diagnostic の保持戦略
+
+### Phase 1: キャッシュなし（現在シーンのみ保持）
+
+Phase 1 のルールは regex のみで、実測コストは 5,000 文字 × 14 ルールでも **〜5ms**。予算 50ms に対して 10% 以下のため、**キャッシュを持たず、毎回再計算**する方針。
+
+```typescript
+// Zustand store
+type LintStore = {
+  currentSceneId: string | null;
+  diagnostics: Diagnostic[];         // 現在シーンの Diagnostic のみ
+  pendingRequestId: number;          // stale 応答破棄用の世代番号
+  isLinting: boolean;
+};
+```
+
+### ライフサイクル
+
+| イベント | 挙動 |
+|---|---|
+| シーン開封 | 即座に Lint 実行 → 結果表示 |
+| シーン編集 | `docChanged` なトランザクションのみを debounce 500ms で再 Lint |
+| Fix 適用 | **debounce をバイパス**して即座に再 Lint |
+| シーン切替 | 前シーンの Diagnostic を破棄、新シーンを即座に Lint |
+| 設定変更 | 現在シーンを即座に再 Lint |
+| アプリ終了 | 何もしない（state はメモリのみ） |
+
+### Stale 応答の破棄
+
+キャッシュはないが、**同一シーン内で複数の Lint 要求が並行する可能性**は残る（debounce 直後に Fix 適用で即時再 Lint が発火する等）。世代番号で新旧を区別:
+
+```typescript
+// Lint 要求発火時
+const requestId = ++pendingRequestId;
+const result = await invoke('lint_text', { ... });
+// 応答到着時、自分の requestId が最新でなければ破棄
+if (requestId !== pendingRequestId) return;
+setDiagnostics(result.diagnostics);
+```
+
+### TipTap トランザクションのフィルタ
+
+debounce 入力は **`transaction.docChanged === true` のみ**を使う。カーソル移動・選択変更では Lint を再実行しない。
+
+### プロジェクト全体の Diagnostic
+
+**ステータスバーや常時表示では扱わない**。以下のみで確認可能:
+
+- **Linter パネル**の「プロジェクト全体表示」モード（明示操作）
+- **明示コマンド「全章 Lint」**実行時
+
+→ 「警告ゼロに見えるが実は他シーンに 50 件」のような誤解を構造的に防ぐ。
+
+### Phase 2 への拡張方針
+
+- メモリキャッシュ（Scene ID → Diagnostic[]）の導入
+- textHash / configHash による整合性チェック（textHash は**フロント側で計算**）
+- Incremental lint（段落単位の差分更新）
+- LRU による上限管理（例: 30 シーン）
+- ステータスバーでのプロジェクト集計表示（集計ロジックが確定してから）
 
 ---
 
@@ -385,9 +559,11 @@ editor.view.dispatch(
 
 | トリガー | 範囲 | デバウンス |
 |---|---|---|
-| キーストローク | 現在シーンのみ | 500ms |
+| キーストローク（`docChanged` のみ） | 現在シーンのみ | 500ms |
 | シーン切替 | 移動先シーン全体 | なし（即時） |
 | 明示コマンド「全章 Lint」 | プロジェクト全体 | なし |
+| Fix 適用 | 現在シーン | **バイパス**（即時） |
+| 設定変更 | 現在シーン | なし（即時） |
 | 保存時 | 現在シーン | なし |
 
 ### リニア編集モードでの Lint スコープ
@@ -401,14 +577,15 @@ Editor 設計書で定義される「リニア編集モード」（プロジェ�
 
 ### パフォーマンス予算
 
-- 現在シーン Lint: **< 50ms** （シーン平均 5,000 文字想定）
+- 現在シーン Lint: **< 50ms** （シーン平均 5,000 文字想定、実測見込み 〜5ms）
 - 全章 Lint: **< 2s** （プロジェクト平均 30 シーン想定）
 - 形態素解析を使うルールは Phase 2 以降のため、Phase 1 はこの予算で余裕
 
 ### キャンセル
 
-- 新しい Lint 要求が来たら古い実行はキャンセル（フロント側で結果を破棄、Rust 側は到達時点まで実行して破棄）
-- Phase 1 では同期実行で十分（< 50ms）。Phase 2 で形態素解析を入れたら非同期化を検討
+- 新しい Lint 要求が来たら、古い応答は**世代番号で破棄**（フロント側）
+- Rust 側は到達時点まで実行して破棄（同期実行、Phase 1 では中断機構なし）
+- Phase 2 で形態素解析を入れたら、Rust 側でのキャンセル機構（`AbortHandle` 相当）を検討
 
 ---
 
@@ -432,7 +609,8 @@ Editor 設計書で定義される「リニア編集モード」（プロジェ�
 
 ### ステータスバー
 
-- 現在シーンの Diagnostic 数を表示（例: `⚠ 3  ⓘ 7`）
+- **現在シーンのみ**の Diagnostic 数を表示（例: `⚠ 3  ⓘ 7`）
+- プロジェクト全体の集計は表示しない（誤解防止）
 - クリックで Linter パネルを開く
 
 ---
@@ -548,6 +726,15 @@ src-tauri/src/lint/tests/fixtures/
 | 実行範囲 | 現在シーンのみ（debounce 500ms）+ 明示で全章 |
 | Codex 連動の判定 | 完全一致のみ。表記ゆれは Codex Alias で吸収 |
 | AI 連携 | Linter には組み込まない（確定論性を保つ） |
+| 設定階層 | 2層（組み込みデフォルト → プロジェクト上書き）。グローバル層は将来検討 |
+| ルール設定の保存 | `settings` テーブルに `lint.config` の 1 キー JSON blob |
+| 用語統一辞書の保存 | 専用テーブル `lint_term_dictionary` |
+| 新ルール追加時の既定 | `enabled: false`（既存プロジェクトの体験を阻害しない） |
+| Phase 1 の Diagnostic 保持 | キャッシュなし。現在シーンのみメモリ保持、毎回再計算 |
+| Stale 応答対策 | 世代番号（pendingRequestId）で古い応答を破棄 |
+| debounce 入力 | `transaction.docChanged === true` のみ |
+| Fix 適用の再 Lint | debounce バイパスで即時実行 |
+| ステータスバー | 現在シーンのみ表示。プロジェクト全体集計は Linter パネルと「全章 Lint」のみ |
 | テスト | ゴールデンファイル形式を day 1 から |
 
 ---
