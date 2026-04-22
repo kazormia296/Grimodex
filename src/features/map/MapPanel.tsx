@@ -29,6 +29,9 @@ import "@xyflow/react/dist/style.css";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { useCodexStore } from "@/features/codex/codexStore";
 import { useChatStore } from "@/features/chat/chatStore";
+import { usePhaseStore } from "@/features/codex/phaseStore";
+import { useSnippetStore } from "@/features/snippets/snippetStore";
+import { createCodexMatcher } from "@/features/codex/codexMatcher";
 import { useMapStore } from "./mapStore";
 import {
   getOrCreateBoard,
@@ -114,6 +117,9 @@ function MapCanvasInner() {
   const setActiveScene = useTreeStore((s) => s.setActiveScene);
   const updateNodeTitle = useTreeStore((s) => s.updateNodeTitle);
   const updateSynopsis = useTreeStore((s) => s.updateSynopsis);
+
+  const phasesByEntry = usePhaseStore((s) => s.phasesByEntry);
+  const snippetEntries = useSnippetStore((s) => s.entries);
 
   const mode = useMapStore((s) => s.mode);
   const show = useMapStore((s) => s.show);
@@ -209,6 +215,25 @@ function MapCanvasInner() {
       cancelled = true;
     };
   }, []);
+
+  // Load snippets for snippet-origin edges if not yet loaded
+  useEffect(() => {
+    if (snippetEntries.length === 0) {
+      void useSnippetStore.getState().loadEntries();
+    }
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Pre-load phases for all codex entries so phase-anchor edges can render
+  useEffect(() => {
+    if (!show.derivedEdges || codexEntries.length === 0) return;
+    const { loadPhasesForEntry, phasesByEntry: current } =
+      usePhaseStore.getState();
+    for (const entry of codexEntries) {
+      if (!(entry.id in current)) {
+        void loadPhasesForEntry(entry.id);
+      }
+    }
+  }, [show.derivedEdges, codexEntries]);
 
   // Build React Flow nodes: frames + scene nodes + codex nodes
   useEffect(() => {
@@ -459,18 +484,95 @@ function MapCanvasInner() {
 
   // Build edges: derived + user
   useEffect(() => {
-    const derived: Edge[] = show.derivedEdges
-      ? codexEntries
-          .filter((e) => e.parentId != null)
-          .map((e) => ({
-            id: `derived:${e.id}->${e.parentId}`,
-            source: `codex:${e.parentId}`,
-            target: `codex:${e.id}`,
-            style: { stroke: "#999", strokeDasharray: "4 2" },
+    const derived: Edge[] = [];
+
+    if (show.derivedEdges) {
+      // Codex parent-child edges
+      for (const e of codexEntries.filter((e) => e.parentId != null)) {
+        derived.push({
+          id: `derived:${e.id}->${e.parentId}`,
+          source: `codex:${e.parentId}`,
+          target: `codex:${e.id}`,
+          style: { stroke: "#999", strokeDasharray: "4 2" },
+          animated: false,
+          zIndex: 0,
+        });
+      }
+
+      // Phase anchor edges: codex → scene (entryのフェーズがシーンに紐付く)
+      const visibleSceneIds = new Set(
+        treeNodes.filter((n) => n.nodeType === "scene").map((n) => n.id),
+      );
+      const visibleCodexIds = new Set(codexEntries.map((e) => e.id));
+      for (const [entryId, phases] of Object.entries(phasesByEntry)) {
+        if (!visibleCodexIds.has(entryId)) continue;
+        for (const phase of phases) {
+          if (!phase.anchorNodeId) continue;
+          if (!visibleSceneIds.has(phase.anchorNodeId)) continue;
+          derived.push({
+            id: `phase-anchor:${phase.id}`,
+            source: `codex:${entryId}`,
+            target: `scene:${phase.anchorNodeId}`,
+            style: { stroke: "#D97706", strokeDasharray: "3 3", opacity: 0.7 },
             animated: false,
             zIndex: 0,
-          }))
-      : [];
+            data: { label: phase.label },
+          });
+        }
+      }
+
+      // Build a single matcher for both scene-mention and snippet-origin
+      if (codexEntries.length > 0) {
+        const matcher = createCodexMatcher(codexEntries);
+
+        // Scene mention edges: scene → codex (シーンのsynopsisでCodex名が登場)
+        for (const scene of treeNodes.filter((n) => n.nodeType === "scene")) {
+          const text = [scene.title, scene.synopsis].filter(Boolean).join(" ");
+          if (!text) continue;
+          const seen = new Set<string>();
+          for (const m of matcher(text)) {
+            if (seen.has(m.entryId)) continue;
+            seen.add(m.entryId);
+            if (!visibleCodexIds.has(m.entryId)) continue;
+            derived.push({
+              id: `mention:${scene.id}->${m.entryId}`,
+              source: `scene:${scene.id}`,
+              target: `codex:${m.entryId}`,
+              style: {
+                stroke: "#0891B2",
+                strokeDasharray: "2 4",
+                opacity: 0.6,
+              },
+              animated: false,
+              zIndex: 0,
+            });
+          }
+        }
+
+        // Snippet origin edges: scene → codex (snippetのcontentでCodex名が登場)
+        for (const snippet of snippetEntries.filter((s) => s.sceneId)) {
+          const seenEdge = new Set<string>();
+          for (const m of matcher(snippet.content)) {
+            const key = `${snippet.sceneId}->${m.entryId}`;
+            if (seenEdge.has(key)) continue;
+            seenEdge.add(key);
+            if (!visibleCodexIds.has(m.entryId)) continue;
+            derived.push({
+              id: `snippet-origin:${key}`,
+              source: `scene:${snippet.sceneId!}`,
+              target: `codex:${m.entryId}`,
+              style: {
+                stroke: "#059669",
+                strokeDasharray: "1 4",
+                opacity: 0.5,
+              },
+              animated: false,
+              zIndex: 0,
+            });
+          }
+        }
+      }
+    }
 
     const user: Edge[] = show.userEdges
       ? userEdges
@@ -506,7 +608,16 @@ function MapCanvasInner() {
       : [];
 
     setEdges([...derived, ...user]);
-  }, [codexEntries, userEdges, positions, show.derivedEdges, show.userEdges]);
+  }, [
+    codexEntries,
+    userEdges,
+    positions,
+    show.derivedEdges,
+    show.userEdges,
+    treeNodes,
+    phasesByEntry,
+    snippetEntries,
+  ]);
 
   // Persist position changes (debounced)
   const persistPosition = useDebouncedCallback(
