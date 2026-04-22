@@ -6,11 +6,14 @@ interface NodeContextMenuProps {
   screenPosition: { x: number; y: number };
   isPinned: boolean;
   isScene: boolean;
+  focusedNodeId: string | null;
   onClose: () => void;
   onOpen: () => void;
   onPin: () => void;
   onUnpin: () => void;
   onHide: () => void;
+  onFocus: () => void;
+  onExitFocus: () => void;
 }
 
 const MENU_WIDTH = 200;
@@ -20,7 +23,6 @@ const DISABLED_ITEMS = [
   "接続...",
   "前面へ移動",
   "背面へ移動",
-  "フォーカス",
 ];
 
 export function NodeContextMenu({
@@ -28,11 +30,14 @@ export function NodeContextMenu({
   screenPosition,
   isPinned,
   isScene,
+  focusedNodeId,
   onClose,
   onOpen,
   onPin,
   onUnpin,
   onHide,
+  onFocus,
+  onExitFocus,
 }: NodeContextMenuProps) {
   const menuRef = useRef<HTMLDivElement>(null);
 
@@ -119,6 +124,32 @@ export function NodeContextMenu({
         >
           このボードで非表示
         </button>
+
+        <div className="my-1 border-t border-border" />
+
+        {focusedNodeId ? (
+          <button
+            type="button"
+            className="px-3 py-1.5 text-sm text-left hover:bg-accent"
+            onClick={() => {
+              close();
+              onExitFocus();
+            }}
+          >
+            フォーカスを解除
+          </button>
+        ) : (
+          <button
+            type="button"
+            className="px-3 py-1.5 text-sm text-left hover:bg-accent"
+            onClick={() => {
+              close();
+              onFocus();
+            }}
+          >
+            フォーカス
+          </button>
+        )}
 
         <div className="my-1 border-t border-border" />
 

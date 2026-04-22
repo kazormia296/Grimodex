@@ -31,6 +31,8 @@ interface MapState {
   // transient UI state (not persisted)
   searchVisible: boolean;
   pendingAutoArrange: AutoArrangeType | null;
+  focusedNodeId: string | null;
+  pendingExport: "svg" | "png" | "json" | null;
 
   setMode: (mode: MapMode) => void;
   setViewport: (viewport: { x: number; y: number; zoom: number }) => void;
@@ -42,6 +44,8 @@ interface MapState {
   setCorkboardFeel: (v: boolean) => void;
   setSearchVisible: (v: boolean) => void;
   setPendingAutoArrange: (type: AutoArrangeType | null) => void;
+  setFocusedNode: (id: string | null) => void;
+  setPendingExport: (type: "svg" | "png" | "json" | null) => void;
   effectiveSceneVariant: (mode: MapMode) => "compact" | "card" | "image";
   loadFromSettings: (settings: GlobalSettings) => void;
 }
@@ -67,6 +71,8 @@ export const useMapStore = create<MapState>((set, get) => ({
   corkboardFeel: false,
   searchVisible: false,
   pendingAutoArrange: null,
+  focusedNodeId: null,
+  pendingExport: null,
 
   setMode: (mode) => {
     // C2-T hook: when switching to theme, set pendingForceLayout flag (no-op until C2-T)
@@ -84,6 +90,8 @@ export const useMapStore = create<MapState>((set, get) => ({
   setCorkboardFeel: (v) => set({ corkboardFeel: v }),
   setSearchVisible: (v) => set({ searchVisible: v }),
   setPendingAutoArrange: (type) => set({ pendingAutoArrange: type }),
+  setFocusedNode: (id) => set({ focusedNodeId: id }),
+  setPendingExport: (type) => set({ pendingExport: type }),
   effectiveSceneVariant: (mode) =>
     resolveSceneVariant(get().sceneDisplayByMode[mode], mode),
 

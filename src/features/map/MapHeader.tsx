@@ -46,6 +46,7 @@ export function MapHeader() {
   const setCorkboardFeel = useMapStore((s) => s.setCorkboardFeel);
   const setSearchVisible = useMapStore((s) => s.setSearchVisible);
   const setPendingAutoArrange = useMapStore((s) => s.setPendingAutoArrange);
+  const setPendingExport = useMapStore((s) => s.setPendingExport);
 
   const currentDisplay = sceneDisplayByMode[mode];
 
@@ -91,21 +92,14 @@ export function MapHeader() {
             key={key}
             onClick={() => setMode(key)}
             title={`${label} モード`}
-            disabled={false}
             style={{
               padding: "2px 8px",
               borderRadius: 4,
               border: "1px solid",
               borderColor: mode === key ? "#534AB7" : "var(--border)",
               background: mode === key ? "#534AB7" : "transparent",
-              color: ["theme", "pov", "place"].includes(key)
-                ? "var(--muted-foreground)"
-                : mode === key
-                  ? "#fff"
-                  : "var(--foreground)",
-              cursor: ["theme", "pov", "place"].includes(key)
-                ? "not-allowed"
-                : "pointer",
+              color: mode === key ? "#fff" : "var(--foreground)",
+              cursor: "pointer",
               fontSize: 11,
               fontWeight: mode === key ? 600 : 400,
             }}
@@ -143,8 +137,11 @@ export function MapHeader() {
         checked={show.frames}
         onChange={(v) => setShow({ frames: v })}
       />
-      {/* Phase D用グレーアウトチェックボックス */}
-      <DisabledCheckbox label="Notes" tooltip="Phase D で対応予定" />
+      <ShowCheckbox
+        label="Notes"
+        checked={show.notes}
+        onChange={(v) => setShow({ notes: v })}
+      />
       <DisabledCheckbox label="AI" tooltip="Phase D で対応予定" />
 
       <Divider />
@@ -312,6 +309,60 @@ export function MapHeader() {
                 onClick={() => {
                   setArrangeMenuOpen(false);
                   setPendingAutoArrange(item.type);
+                }}
+                style={{
+                  display: "block",
+                  width: "100%",
+                  padding: "5px 12px",
+                  textAlign: "left",
+                  fontSize: 12,
+                  background: "transparent",
+                  border: "none",
+                  color: "var(--foreground)",
+                  cursor: "pointer",
+                }}
+                onMouseEnter={(e) =>
+                  (e.currentTarget.style.background = "var(--accent)")
+                }
+                onMouseLeave={(e) =>
+                  (e.currentTarget.style.background = "transparent")
+                }
+              >
+                {item.label}
+              </button>
+            ))}
+
+            {/* Export section */}
+            <div
+              style={{
+                borderTop: "1px solid var(--border)",
+                margin: "4px 0",
+              }}
+            />
+            <div
+              style={{
+                padding: "4px 12px 2px",
+                fontSize: 10,
+                color: "var(--muted-foreground)",
+                textTransform: "uppercase",
+                letterSpacing: "0.05em",
+              }}
+            >
+              エクスポート
+            </div>
+            {(
+              [
+                { type: "svg", label: "SVG として保存" },
+                { type: "png", label: "PNG として保存" },
+                { type: "json", label: "JSON としてエクスポート" },
+              ] as const
+            ).map((item) => (
+              <button
+                key={item.type}
+                type="button"
+                onClick={() => {
+                  setArrangeMenuOpen(false);
+                  setPendingExport(item.type);
                 }}
                 style={{
                   display: "block",

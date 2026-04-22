@@ -121,6 +121,7 @@ interface TreeState {
   // Backward-compat API (used by ChatPanel, ExportAgentTraceButton, SceneEditor)
   loadScenes: (projectId: string, chapterId: string) => Promise<void>;
   createScene: () => Promise<void>;
+  createNote: () => Promise<void>;
   deleteScene: (id: string) => Promise<void>;
   renameScene: (id: string, title: string) => Promise<void>;
   setActiveScene: (id: string) => void;
@@ -462,6 +463,28 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
       parentId: chapterNode?.id ?? null,
       nodeType: "scene",
       title: `${i18next.t("tree.defaultScene")} ${siblings.filter((n) => n.nodeType === "scene").length + 1}`,
+      sortOrder,
+    });
+    const newNode = toNodeData(created);
+    set((state) => {
+      const nodes = [...state.nodes, newNode];
+      return { nodes, scenes: computeScenes(nodes) };
+    });
+  },
+
+  async createNote() {
+    const { projectId, nodes } = get();
+    const chapterNode = nodes.find((n) => n.id === DEFAULT_CHAPTER_ID);
+    const siblings = nodes.filter(
+      (n) => n.parentId === (chapterNode?.id ?? null),
+    );
+    const sortOrder = nextSortOrder(siblings, null);
+    const created = await api.createNode({
+      id: crypto.randomUUID(),
+      projectId,
+      parentId: chapterNode?.id ?? null,
+      nodeType: "note",
+      title: "新しいノート",
       sortOrder,
     });
     const newNode = toNodeData(created);

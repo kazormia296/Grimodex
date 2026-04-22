@@ -46,6 +46,7 @@ import {
 import { SceneNode } from "./nodes/SceneNode";
 import { CodexNode } from "./nodes/CodexNode";
 import { FrameNode } from "./nodes/FrameNode";
+import { NoteNode } from "./nodes/NoteNode";
 import { NodeContextMenu } from "./NodeContextMenu";
 import { UserEdge } from "./edges/UserEdge";
 import { MapHeader } from "./MapHeader";
@@ -59,6 +60,7 @@ import { autoArrange, autoArrangeForceDirected } from "./layouts/autoArrange";
 import { DURATIONS, useReducedMotion } from "@/lib/animation";
 import { AutoArrangeDialog } from "./AutoArrangeDialog";
 import { ForceLayoutProgress } from "./ForceLayoutProgress";
+import { buildMapSVG, svgToPngBlob, buildMapJSON } from "./mapExport";
 
 const PROJECT_ID = "default-project";
 
@@ -66,6 +68,7 @@ const NODE_TYPES = {
   scene: SceneNode,
   codex: CodexNode,
   frame: FrameNode,
+  note: NoteNode,
 };
 
 const EDGE_TYPES = {
@@ -119,10 +122,15 @@ function MapCanvasInner() {
   const setSearchVisible = useMapStore((s) => s.setSearchVisible);
   const pendingAutoArrange = useMapStore((s) => s.pendingAutoArrange);
   const setPendingAutoArrange = useMapStore((s) => s.setPendingAutoArrange);
+  const focusedNodeId = useMapStore((s) => s.focusedNodeId);
+  const setFocusedNode = useMapStore((s) => s.setFocusedNode);
+  const pendingExport = useMapStore((s) => s.pendingExport);
+  const setPendingExport = useMapStore((s) => s.setPendingExport);
 
   const variant = effectiveSceneVariant(mode);
 
-  const { getViewport, screenToFlowPosition, fitView } = useReactFlow();
+  const { getViewport, screenToFlowPosition, fitView, getNodes, getEdges } =
+    useReactFlow();
 
   const reducedMotion = useReducedMotion();
 
@@ -200,7 +208,7 @@ function MapCanvasInner() {
 
     async function buildNodes() {
       // Derive visible/hidden sets from positions (hidden=1 persists across sessions)
-      const hiddenSceneIds = new Set(
+      const hiddenTreeNodeIds = new Set(
         positions
           .filter((p) => p.hidden === 1 && p.treeNodeId)
           .map((p) => p.treeNodeId!),
@@ -213,7 +221,10 @@ function MapCanvasInner() {
       const visiblePositions = positions.filter((p) => p.hidden !== 1);
 
       const scenes = treeNodes.filter(
-        (n) => n.nodeType === "scene" && !hiddenSceneIds.has(n.id),
+        (n) => n.nodeType === "scene" && !hiddenTreeNodeIds.has(n.id),
+      );
+      const notes = treeNodes.filter(
+        (n) => n.nodeType === "note" && !hiddenTreeNodeIds.has(n.id),
       );
       const visibleCodex = codexEntries.filter(
         (e) => !hiddenCodexIds.has(e.id),
@@ -330,7 +341,36 @@ function MapCanvasInner() {
           })
         : [];
 
-      setNodes([...frameNodes, ...sceneNodes, ...codexNodes]);
+      // Note nodes use stored position directly (not part of layout engine)
+      const notePosMap = new Map<string, { x: number; y: number }>();
+      for (const p of visiblePositions) {
+        if (p.treeNodeId && p.nodeRefType === "note") {
+          notePosMap.set(`note:${p.treeNodeId}`, { x: p.x, y: p.y });
+        }
+      }
+      const noteNodes: Node[] = show.notes
+        ? notes.map((n, idx) => {
+            const key = `note:${n.id}`;
+            return {
+              id: key,
+              type: "note",
+              position: notePosMap.get(key) ?? {
+                x: 200 + (idx % 5) * 200,
+                y: 600 + Math.floor(idx / 5) * 120,
+              },
+              className: transitionClass,
+              draggable: true,
+              zIndex: 0,
+              data: {
+                title: n.title,
+                content: n.synopsis ?? "",
+                onOpen: () => setActiveScene(n.id),
+              },
+            };
+          })
+        : [];
+
+      setNodes([...frameNodes, ...sceneNodes, ...codexNodes, ...noteNodes]);
     }
 
     buildNodes();
@@ -444,6 +484,24 @@ function MapCanvasInner() {
         if (mode !== "free" && updated.pinned !== 1) {
           updated = (await setNodePinned(updated.id, true)) ?? updated;
         }
+        setPositions((prev) => {
+          const idx = prev.findIndex((p) => p.id === updated.id);
+          if (idx >= 0) {
+            const next = [...prev];
+            next[idx] = updated as MapNodePositionRecord;
+            return next;
+          }
+          return [...prev, updated as MapNodePositionRecord];
+        });
+      } else if (nodeId.startsWith("note:")) {
+        const treeNodeId = nodeId.slice("note:".length);
+        const updated = await upsertNodePosition({
+          boardId,
+          nodeRefType: "note",
+          treeNodeId,
+          x,
+          y,
+        });
         setPositions((prev) => {
           const idx = prev.findIndex((p) => p.id === updated.id);
           if (idx >= 0) {
@@ -736,6 +794,7 @@ function MapCanvasInner() {
         setSearchVisible(false);
         setFrameDraftRect(null);
         frameDragStart.current = null;
+        setFocusedNode(null);
       }
       if ((e.ctrlKey || e.metaKey) && e.key === "f") {
         e.preventDefault();
@@ -751,7 +810,7 @@ function MapCanvasInner() {
         setPaletteMode((m) => (m === "frame" ? "default" : "frame"));
       }
     },
-    [setSearchVisible],
+    [setSearchVisible, setFocusedNode],
   );
 
   // Focus node for search
@@ -769,6 +828,20 @@ function MapCanvasInner() {
     () => nodes.filter((n) => n.type !== "frame"),
     [nodes],
   );
+
+  // Focus mode: dim non-connected nodes to 0.15 opacity
+  const nodesWithFocus = useMemo(() => {
+    if (!focusedNodeId) return nodes;
+    const connected = new Set<string>([focusedNodeId]);
+    for (const edge of edges) {
+      if (edge.source === focusedNodeId) connected.add(edge.target);
+      if (edge.target === focusedNodeId) connected.add(edge.source);
+    }
+    return nodes.map((n) => ({
+      ...n,
+      style: { ...n.style, opacity: connected.has(n.id) ? 1 : 0.15 },
+    }));
+  }, [nodes, edges, focusedNodeId]);
 
   // Execute confirmed auto-arrange
   const executeAutoArrange = useCallback(async () => {
@@ -845,6 +918,59 @@ function MapCanvasInner() {
     setPendingAutoArrange,
   ]);
 
+  // Export handler
+  useEffect(() => {
+    if (!pendingExport) return;
+    const type = pendingExport;
+    setPendingExport(null);
+
+    async function doExport() {
+      const rfNodes = getNodes();
+      const rfEdges = getEdges();
+
+      if (type === "json") {
+        const { save } = await import("@tauri-apps/plugin-dialog");
+        const { writeTextFile } = await import("@tauri-apps/plugin-fs");
+        const path = await save({
+          defaultPath: "map.json",
+          filters: [{ name: "JSON", extensions: ["json"] }],
+        });
+        if (!path) return;
+        await writeTextFile(path, buildMapJSON(rfNodes, rfEdges));
+        return;
+      }
+
+      const svgContent = buildMapSVG(rfNodes, rfEdges);
+
+      if (type === "svg") {
+        const { save } = await import("@tauri-apps/plugin-dialog");
+        const { writeTextFile } = await import("@tauri-apps/plugin-fs");
+        const path = await save({
+          defaultPath: "map.svg",
+          filters: [{ name: "SVG", extensions: ["svg"] }],
+        });
+        if (!path) return;
+        await writeTextFile(path, svgContent);
+        return;
+      }
+
+      if (type === "png") {
+        const { save } = await import("@tauri-apps/plugin-dialog");
+        const { writeFile } = await import("@tauri-apps/plugin-fs");
+        const path = await save({
+          defaultPath: "map.png",
+          filters: [{ name: "PNG", extensions: ["png"] }],
+        });
+        if (!path) return;
+        const blob = await svgToPngBlob(svgContent);
+        const buf = await blob.arrayBuffer();
+        await writeFile(path, new Uint8Array(buf));
+      }
+    }
+
+    doExport().catch(console.error);
+  }, [pendingExport, setPendingExport, getNodes, getEdges]);
+
   return (
     <div
       style={{ width: "100%", height: "100%", position: "relative" }}
@@ -852,7 +978,7 @@ function MapCanvasInner() {
       tabIndex={0}
     >
       <ReactFlow
-        nodes={nodes}
+        nodes={nodesWithFocus}
         edges={edges}
         nodeTypes={NODE_TYPES}
         edgeTypes={EDGE_TYPES}
@@ -933,11 +1059,14 @@ function MapCanvasInner() {
           screenPosition={contextMenu.screenPosition}
           isPinned={contextMenu.isPinned}
           isScene={contextMenu.isScene}
+          focusedNodeId={focusedNodeId}
           onClose={() => setContextMenu(null)}
           onOpen={handleContextMenuOpen}
           onPin={handleContextMenuPin}
           onUnpin={handleContextMenuUnpin}
           onHide={handleContextMenuHide}
+          onFocus={() => setFocusedNode(contextMenu.nodeId)}
+          onExitFocus={() => setFocusedNode(null)}
         />
       )}
 

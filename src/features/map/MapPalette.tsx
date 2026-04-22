@@ -14,6 +14,7 @@ export function MapPalette({
   onPaletteModeChange,
 }: MapPaletteProps) {
   const createScene = useTreeStore((s) => s.createScene);
+  const createNote = useTreeStore((s) => s.createNote);
   const createCodexEntry = useCodexStore((s) => s.create);
 
   const handleAddScene = useCallback(async () => {
@@ -27,6 +28,10 @@ export function MapPalette({
       summary: "",
     });
   }, [createCodexEntry]);
+
+  const handleAddNote = useCallback(async () => {
+    await createNote();
+  }, [createNote]);
 
   const toggleMode = useCallback(
     (mode: PaletteMode) => {
@@ -87,7 +92,11 @@ export function MapPalette({
         }}
       />
 
-      <PaletteButton label="+ Note" disabled title="Phase D で対応予定" />
+      <PaletteButton
+        label="+ Note"
+        onClick={handleAddNote}
+        title="ノートを追加"
+      />
       <PaletteButton label="+ AI" disabled title="Phase D で対応予定" />
 
       {/* Mode indicator */}
