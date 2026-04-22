@@ -6,6 +6,8 @@ import type { ShowFlags, MapNodePositionRecord } from "../types";
 interface UseMapEdgesInput {
   codexEntries: {
     id: string;
+    name: string;
+    type: string;
     parentId?: string | null;
     tagsCache?: string | null;
   }[];

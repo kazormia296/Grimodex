@@ -6,7 +6,6 @@ import {
   Controls,
   MiniMap,
   type Node,
-  type Edge,
   type Connection,
   BackgroundVariant,
   useReactFlow,
@@ -16,14 +15,11 @@ import {
 import "@xyflow/react/dist/style.css";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { useCodexStore } from "@/features/codex/codexStore";
-import { useChatStore } from "@/features/chat/chatStore";
 import { usePhaseStore } from "@/features/codex/phaseStore";
 import { useSnippetStore } from "@/features/snippets/snippetStore";
 import { useMapStore } from "./mapStore";
 import {
   upsertNodePosition,
-  setNodePinned,
-  updateNodePosition,
   createUserEdge,
   listAllNodePositions,
 } from "./mapApi";
@@ -39,13 +35,13 @@ import { MapPalette } from "./MapPalette";
 import { MapSearch } from "./MapSearch";
 import { AINodeDialog } from "./AINodeDialog";
 import type { MapNodePositionRecord } from "./types";
-import type { MapAiNode, MapEdge, MapFrame } from "@/db/schema";
+import type { MapAiNode } from "@/db/schema";
 import { WorkerForceLayoutEngine } from "./layouts/forceEngine";
 import { autoArrange, autoArrangeForceDirected } from "./layouts/autoArrange";
 import { DURATIONS, useReducedMotion } from "@/lib/animation";
 import { AutoArrangeDialog } from "./AutoArrangeDialog";
 import { ForceLayoutProgress } from "./ForceLayoutProgress";
-import { findPosByNodeId, buildUpsertArgs } from "./utils/nodeIdCodec";
+import { buildUpsertArgs } from "./utils/nodeIdCodec";
 import { useMapExport } from "./hooks/useMapExport";
 import { useFrameDrawing } from "./hooks/useFrameDrawing";
 import { useMapKeyboard } from "./hooks/useMapKeyboard";
@@ -53,6 +49,7 @@ import { useMapBoardData } from "./hooks/useMapBoardData";
 import { useMapEdges } from "./hooks/useMapEdges";
 import { useMapNodes } from "./hooks/useMapNodes";
 import { useMapPositionPersistence } from "./hooks/useMapPositionPersistence";
+import { useMapContextMenu } from "./hooks/useMapContextMenu";
 
 const PROJECT_ID = "default-project";
 
@@ -127,14 +124,6 @@ function MapCanvasInner() {
   const [modeTransitionActive, setModeTransitionActive] = useState(false);
   const [forceLayoutRunning, setForceLayoutRunning] = useState(false);
   const [forceAlpha, setForceAlpha] = useState(1);
-  const [contextMenu, setContextMenu] = useState<{
-    nodeId: string;
-    screenPosition: { x: number; y: number };
-    isPinned: boolean;
-    isScene: boolean;
-    isHidden: boolean;
-  } | null>(null);
-  // searchOpen は mapStore.searchVisible で管理（MapHeaderから開くため）
 
   // Trigger node transition when mode changes (skip on mount)
   const isMountRef = useRef(true);
@@ -219,7 +208,6 @@ function MapCanvasInner() {
   const { onNodesChange, onEdgesChange } = useMapPositionPersistence({
     boardId,
     mode,
-    positions,
     nodes,
     setPositions,
     setFrames,
@@ -267,135 +255,24 @@ function MapCanvasInner() {
     [setActiveScene],
   );
 
-  // Node context menu handler
-  const onNodeContextMenu = useCallback(
-    (event: React.MouseEvent, node: Node) => {
-      event.preventDefault();
-      const pos = findPosByNodeId(positions, node.id);
-      setContextMenu({
-        nodeId: node.id,
-        screenPosition: { x: event.clientX, y: event.clientY },
-        isPinned: pos ? pos.pinned === 1 : false,
-        isScene: node.id.startsWith("scene:"),
-        isHidden: pos ? pos.hidden === 1 : false,
-      });
-    },
-    [positions],
-  );
-
-  const handleContextMenuPin = useCallback(async () => {
-    if (!contextMenu) return;
-    const pos = findPosByNodeId(positions, contextMenu.nodeId);
-    if (!pos) return;
-    const updated = await setNodePinned(pos.id, true);
-    if (updated) {
-      setPositions((prev) =>
-        prev.map((p) =>
-          p.id === updated.id ? (updated as MapNodePositionRecord) : p,
-        ),
-      );
-    }
-  }, [contextMenu, positions]);
-
-  const handleContextMenuUnpin = useCallback(async () => {
-    if (!contextMenu) return;
-    const pos = findPosByNodeId(positions, contextMenu.nodeId);
-    if (!pos) return;
-    const updated = await setNodePinned(pos.id, false);
-    if (updated) {
-      setPositions((prev) =>
-        prev.map((p) =>
-          p.id === updated.id ? (updated as MapNodePositionRecord) : p,
-        ),
-      );
-    }
-  }, [contextMenu, positions]);
-
-  const handleContextMenuHide = useCallback(async () => {
-    if (!contextMenu || !boardId) return;
-    const nodeId = contextMenu.nodeId;
-    const pos = findPosByNodeId(positions, nodeId);
-    if (pos) {
-      await updateNodePosition(pos.id, { hidden: 1 });
-      setPositions((prev) =>
-        prev.map((p) => (p.id === pos.id ? { ...p, hidden: 1 } : p)),
-      );
-    } else {
-      // No position record yet — create one with hidden=1
-      const args = buildUpsertArgs(boardId, nodeId);
-      if (!args) return;
-      const newPos = await upsertNodePosition(args);
-      await updateNodePosition(newPos.id, { hidden: 1 });
-      setPositions((prev) => [
-        ...prev,
-        { ...newPos, hidden: 1 } as MapNodePositionRecord,
-      ]);
-    }
-  }, [contextMenu, boardId, positions]);
-
-  const handleContextMenuShowHidden = useCallback(async () => {
-    if (!contextMenu) return;
-    const pos = findPosByNodeId(positions, contextMenu.nodeId);
-    if (!pos) return;
-    await updateNodePosition(pos.id, { hidden: 0 });
-    setPositions((prev) =>
-      prev.map((p) => (p.id === pos.id ? { ...p, hidden: 0 } : p)),
-    );
-  }, [contextMenu, positions]);
-
-  const handleContextMenuOpen = useCallback(() => {
-    if (!contextMenu) return;
-    const sceneId = contextMenu.nodeId.slice("scene:".length);
-    setActiveScene(sceneId);
-  }, [contextMenu, setActiveScene]);
-
-  // Helper: upsert position for any node type (returns existing or creates new)
-  const ensurePositionForNodeId = useCallback(
-    async (nodeId: string): Promise<MapNodePositionRecord | undefined> => {
-      if (!boardId) return undefined;
-      const existing = findPosByNodeId(positions, nodeId);
-      if (existing) return existing;
-      const rfNode = nodes.find((n) => n.id === nodeId);
-      const { x, y } = rfNode?.position ?? { x: 0, y: 0 };
-      const args = buildUpsertArgs(boardId, nodeId, x, y);
-      if (!args) return undefined;
-      const p = await upsertNodePosition(args);
-      return p as MapNodePositionRecord;
-    },
-    [boardId, positions, nodes],
-  );
-
-  const handleBringToFront = useCallback(async () => {
-    if (!contextMenu) return;
-    const maxZ = positions.reduce((m, p) => Math.max(m, p.zIndex ?? 0), 0);
-    const newZ = maxZ + 1;
-    const pos = await ensurePositionForNodeId(contextMenu.nodeId);
-    if (!pos) return;
-    const updated = await updateNodePosition(pos.id, { zIndex: newZ });
-    if (updated) {
-      setPositions((prev) =>
-        prev.map((p) =>
-          p.id === updated.id ? (updated as MapNodePositionRecord) : p,
-        ),
-      );
-    }
-  }, [contextMenu, positions, ensurePositionForNodeId]);
-
-  const handleSendToBack = useCallback(async () => {
-    if (!contextMenu) return;
-    const minZ = positions.reduce((m, p) => Math.min(m, p.zIndex ?? 0), 0);
-    const newZ = Math.max(0, minZ - 1);
-    const pos = await ensurePositionForNodeId(contextMenu.nodeId);
-    if (!pos) return;
-    const updated = await updateNodePosition(pos.id, { zIndex: newZ });
-    if (updated) {
-      setPositions((prev) =>
-        prev.map((p) =>
-          p.id === updated.id ? (updated as MapNodePositionRecord) : p,
-        ),
-      );
-    }
-  }, [contextMenu, positions, ensurePositionForNodeId]);
+  const {
+    contextMenu,
+    setContextMenu,
+    onNodeContextMenu,
+    handleContextMenuPin,
+    handleContextMenuUnpin,
+    handleContextMenuHide,
+    handleContextMenuShowHidden,
+    handleContextMenuOpen,
+    handleBringToFront,
+    handleSendToBack,
+  } = useMapContextMenu({
+    boardId,
+    positions,
+    nodes,
+    setPositions,
+    setActiveScene,
+  });
 
   // AI node creation
   const aiContextLines = useCallback((): string[] => {

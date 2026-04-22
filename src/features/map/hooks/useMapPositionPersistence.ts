@@ -19,7 +19,6 @@ import { useDebouncedCallback } from "@/lib/useDebounce";
 interface UseMapPositionPersistenceInput {
   boardId: string | null;
   mode: string;
-  positions: MapNodePositionRecord[];
   nodes: Node[];
   setPositions: React.Dispatch<React.SetStateAction<MapNodePositionRecord[]>>;
   setFrames: React.Dispatch<React.SetStateAction<MapFrame[]>>;
@@ -30,7 +29,6 @@ interface UseMapPositionPersistenceInput {
 export function useMapPositionPersistence({
   boardId,
   mode,
-  positions,
   nodes,
   setPositions,
   setFrames,
