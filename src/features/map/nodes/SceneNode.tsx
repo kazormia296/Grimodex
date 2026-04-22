@@ -323,12 +323,14 @@ function TitleEditor({
   borderColor,
   onCommit,
   onCancel,
+  onTab,
 }: {
   d: SceneNodeData;
   selected: boolean;
   borderColor: string;
   onCommit: (title: string) => void;
   onCancel: () => void;
+  onTab?: () => void;
 }) {
   const [value, setValue] = useState(d.title);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -368,6 +370,11 @@ function TitleEditor({
             if (e.key === "Enter") {
               e.preventDefault();
               commit();
+            }
+            if (e.key === "Tab") {
+              e.preventDefault();
+              commit();
+              onTab?.();
             }
             if (e.key === "Escape") {
               e.preventDefault();
@@ -433,6 +440,8 @@ function SynopsisEditor({
   const [value, setValue] = useState(d.synopsis ?? "");
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const cancelledRef = useRef(false);
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const valueRef = useRef(d.synopsis ?? "");
   const statusColor =
     STATUS_COLORS[d.status ?? "outline"] ?? STATUS_COLORS.outline;
   const statusCode = STATUS_CODES[d.status ?? "outline"] ?? "OU";
@@ -442,9 +451,26 @@ function SynopsisEditor({
   }, []);
 
   const commit = useCallback(() => {
+    if (debounceRef.current) {
+      clearTimeout(debounceRef.current);
+      debounceRef.current = null;
+    }
     if (cancelledRef.current) return;
-    onCommit(value);
-  }, [value, onCommit]);
+    onCommit(valueRef.current);
+  }, [onCommit]);
+
+  const handleChange = useCallback(
+    (e: React.ChangeEvent<HTMLTextAreaElement>) => {
+      const v = e.target.value;
+      setValue(v);
+      valueRef.current = v;
+      if (debounceRef.current) clearTimeout(debounceRef.current);
+      debounceRef.current = setTimeout(() => {
+        if (!cancelledRef.current) onCommit(v);
+      }, 2000);
+    },
+    [onCommit],
+  );
 
   return (
     <div
@@ -529,10 +555,11 @@ function SynopsisEditor({
       <textarea
         ref={textareaRef}
         value={value}
-        onChange={(e) => setValue(e.target.value)}
+        onChange={handleChange}
         onKeyDown={(e) => {
           if (e.key === "Escape") {
             e.preventDefault();
+            if (debounceRef.current) clearTimeout(debounceRef.current);
             cancelledRef.current = true;
             onCancel();
           }
@@ -643,6 +670,7 @@ export const SceneNode = memo(function SceneNode({
           borderColor={borderColor}
           onCommit={handleTitleCommit}
           onCancel={() => setEditMode("none")}
+          onTab={() => setEditMode("synopsis")}
         />
       )}
 

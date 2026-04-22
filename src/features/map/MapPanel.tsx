@@ -59,7 +59,7 @@ import { MapHeader } from "./MapHeader";
 import { MapPalette } from "./MapPalette";
 import { MapSearch } from "./MapSearch";
 import { AINodeDialog } from "./AINodeDialog";
-import type { MapNodePositionRecord } from "./types";
+import type { MapMode, MapNodePositionRecord } from "./types";
 import type { MapAiNode, MapEdge, MapFrame } from "@/db/schema";
 import { layoutFor, layoutForAsync } from "./layouts";
 import { WorkerForceLayoutEngine } from "./layouts/forceEngine";
@@ -85,6 +85,8 @@ const EDGE_TYPES = {
 };
 
 type PaletteMode = "default" | "frame" | "connect";
+
+const MODES_ORDER: MapMode[] = ["free", "time", "theme", "pov", "place"];
 
 // Debounce helper
 function useDebouncedCallback<T extends unknown[]>(
@@ -123,9 +125,11 @@ function MapCanvasInner() {
   const snippetEntries = useSnippetStore((s) => s.entries);
 
   const mode = useMapStore((s) => s.mode);
+  const setMode = useMapStore((s) => s.setMode);
   const show = useMapStore((s) => s.show);
   const minimapVisible = useMapStore((s) => s.minimapVisible);
   const gridSnap = useMapStore((s) => s.gridSnap);
+  const setGridSnap = useMapStore((s) => s.setGridSnap);
   const setViewport = useMapStore((s) => s.setViewport);
   const colorBy = useMapStore((s) => s.colorBy);
   const corkboardFeel = useMapStore((s) => s.corkboardFeel);
@@ -163,6 +167,7 @@ function MapCanvasInner() {
     screenPosition: { x: number; y: number };
     isPinned: boolean;
     isScene: boolean;
+    isHidden: boolean;
   } | null>(null);
   // searchOpen は mapStore.searchVisible で管理（MapHeaderから開くため）
 
@@ -185,7 +190,14 @@ function MapCanvasInner() {
 
   // Frame drawing state
   const frameDragStart = useRef<XYPosition | null>(null);
+  const frameDragStartScreen = useRef<{ x: number; y: number } | null>(null);
   const [frameDraftRect, setFrameDraftRect] = useState<{
+    x: number;
+    y: number;
+    w: number;
+    h: number;
+  } | null>(null);
+  const [frameDraftScreenRect, setFrameDraftScreenRect] = useState<{
     x: number;
     y: number;
     w: number;
@@ -843,12 +855,17 @@ function MapCanvasInner() {
     [boardId],
   );
 
-  // Double-click to open scene in editor
+  // Double-click to open node in its panel
   const onNodeDoubleClick = useCallback(
     (_event: React.MouseEvent, node: Node) => {
       if (node.id.startsWith("scene:")) {
-        const sceneId = node.id.slice("scene:".length);
-        setActiveScene(sceneId);
+        setActiveScene(node.id.slice("scene:".length));
+      } else if (node.id.startsWith("note:")) {
+        setActiveScene(node.id.slice("note:".length));
+      } else if (node.id.startsWith("codex:")) {
+        useCodexStore
+          .getState()
+          .requestSelectEntry(node.id.slice("codex:".length));
       }
     },
     [setActiveScene],
@@ -930,9 +947,10 @@ function MapCanvasInner() {
         screenPosition: { x: event.clientX, y: event.clientY },
         isPinned: pos ? pos.pinned === 1 : false,
         isScene: node.id.startsWith("scene:"),
+        isHidden: pos ? pos.hidden === 1 : false,
       });
     },
-    [positions, findPosByNodeId],
+    [findPosByNodeId],
   );
 
   const handleContextMenuPin = useCallback(async () => {
@@ -984,6 +1002,16 @@ function MapCanvasInner() {
       ]);
     }
   }, [contextMenu, boardId, findPosByNodeId, toUpsertArgs]);
+
+  const handleContextMenuShowHidden = useCallback(async () => {
+    if (!contextMenu) return;
+    const pos = findPosByNodeId(contextMenu.nodeId);
+    if (!pos) return;
+    await updateNodePosition(pos.id, { hidden: 0 });
+    setPositions((prev) =>
+      prev.map((p) => (p.id === pos.id ? { ...p, hidden: 0 } : p)),
+    );
+  }, [contextMenu, findPosByNodeId]);
 
   const handleContextMenuOpen = useCallback(() => {
     if (!contextMenu) return;
@@ -1160,14 +1188,24 @@ function MapCanvasInner() {
     (e: React.MouseEvent<HTMLDivElement>) => {
       const flowPos = screenToFlowPosition({ x: e.clientX, y: e.clientY });
       frameDragStart.current = flowPos;
+      frameDragStartScreen.current = {
+        x: e.nativeEvent.offsetX,
+        y: e.nativeEvent.offsetY,
+      };
       setFrameDraftRect({ x: flowPos.x, y: flowPos.y, w: 0, h: 0 });
+      setFrameDraftScreenRect({
+        x: e.nativeEvent.offsetX,
+        y: e.nativeEvent.offsetY,
+        w: 0,
+        h: 0,
+      });
     },
     [screenToFlowPosition],
   );
 
   const handleFrameOverlayMove = useCallback(
     (e: React.MouseEvent<HTMLDivElement>) => {
-      if (!frameDragStart.current) return;
+      if (!frameDragStart.current || !frameDragStartScreen.current) return;
       const flowPos = screenToFlowPosition({ x: e.clientX, y: e.clientY });
       const dx = flowPos.x - frameDragStart.current.x;
       const dy = flowPos.y - frameDragStart.current.y;
@@ -1177,6 +1215,14 @@ function MapCanvasInner() {
         w: Math.abs(dx),
         h: Math.abs(dy),
       });
+      const sx = e.nativeEvent.offsetX;
+      const sy = e.nativeEvent.offsetY;
+      setFrameDraftScreenRect({
+        x: Math.min(sx, frameDragStartScreen.current.x),
+        y: Math.min(sy, frameDragStartScreen.current.y),
+        w: Math.abs(sx - frameDragStartScreen.current.x),
+        h: Math.abs(sy - frameDragStartScreen.current.y),
+      });
     },
     [screenToFlowPosition],
   );
@@ -1185,7 +1231,9 @@ function MapCanvasInner() {
     if (!frameDragStart.current || !boardId) return;
     const rect = frameDraftRect;
     frameDragStart.current = null;
+    frameDragStartScreen.current = null;
     setFrameDraftRect(null);
+    setFrameDraftScreenRect(null);
     if (!rect || rect.w < 40 || rect.h < 40) return;
 
     const newFrame = await createFrame({
@@ -1203,28 +1251,67 @@ function MapCanvasInner() {
   // Keyboard shortcuts
   const onKeyDown = useCallback(
     (e: KeyboardEvent<HTMLDivElement>) => {
+      const inInput =
+        e.target instanceof HTMLInputElement ||
+        e.target instanceof HTMLTextAreaElement;
+
       if (e.key === "Escape") {
-        setPaletteMode("default");
-        setSearchVisible(false);
-        setFrameDraftRect(null);
-        frameDragStart.current = null;
-        setFocusedNode(null);
+        // Priority: frame drawing > search > focus > palette
+        if (frameDraftRect || frameDragStart.current) {
+          setFrameDraftRect(null);
+          setFrameDraftScreenRect(null);
+          frameDragStart.current = null;
+          frameDragStartScreen.current = null;
+        } else if (searchVisible) {
+          setSearchVisible(false);
+        } else if (focusedNodeId) {
+          setFocusedNode(null);
+        } else {
+          setPaletteMode("default");
+        }
+        return;
       }
+
       if ((e.ctrlKey || e.metaKey) && e.key === "f") {
         e.preventDefault();
         setSearchVisible(true);
+        return;
       }
-      if (
-        e.key === "f" &&
-        !e.ctrlKey &&
-        !e.metaKey &&
-        !(e.target instanceof HTMLInputElement) &&
-        !(e.target instanceof HTMLTextAreaElement)
-      ) {
+
+      if (inInput) return;
+
+      // Mode switch: 1-5
+      if (!e.ctrlKey && !e.metaKey && !e.altKey) {
+        const modeIdx = parseInt(e.key, 10) - 1;
+        if (modeIdx >= 0 && modeIdx < MODES_ORDER.length) {
+          setMode(MODES_ORDER[modeIdx]);
+          return;
+        }
+      }
+
+      // Ctrl+G: toggle grid snap
+      if ((e.ctrlKey || e.metaKey) && e.key === "g") {
+        e.preventDefault();
+        setGridSnap(!gridSnap);
+        return;
+      }
+
+      // F: toggle frame drawing mode
+      if (e.key === "f" && !e.ctrlKey && !e.metaKey) {
         setPaletteMode((m) => (m === "frame" ? "default" : "frame"));
+        return;
       }
     },
-    [setSearchVisible, setFocusedNode],
+    [
+      setSearchVisible,
+      setFocusedNode,
+      setMode,
+      setGridSnap,
+      gridSnap,
+      searchVisible,
+      focusedNodeId,
+      frameDraftRect,
+    ],
   );
 
   // Focus node for search
@@ -1322,6 +1409,7 @@ function MapCanvasInner() {
 
     const refreshed = await listAllNodePositions(boardId);
     setPositions(refreshed as MapNodePositionRecord[]);
+    setMode("free");
   }, [
     pendingAutoArrange,
     boardId,
@@ -1330,6 +1418,7 @@ function MapCanvasInner() {
     positions,
     variant,
     setPendingAutoArrange,
+    setMode,
   ]);
 
   // Export handler
@@ -1437,27 +1526,23 @@ function MapCanvasInner() {
           onMouseMove={handleFrameOverlayMove}
           onMouseUp={handleFrameOverlayUp}
         >
-          {frameDraftRect && frameDraftRect.w > 4 && frameDraftRect.h > 4 && (
-            <div
-              style={{
-                position: "absolute",
-                // frameDraftRect is in flow coords, but we render in screen space.
-                // For now use a simple % of the container as approximation;
-                // exact pixel mapping happens on commit via screenToFlowPosition.
-                border: "2px dashed #534AB7",
-                background: "rgba(83,74,183,0.06)",
-                borderRadius: 4,
-                pointerEvents: "none",
-                // Rough screen preview: can't perfectly align without flow→screen transform,
-                // but the visual hint is enough for UX purposes.
-                top: 0,
-                left: 0,
-                width: "100%",
-                height: "100%",
-                opacity: 0,
-              }}
-            />
-          )}
+          {frameDraftScreenRect &&
+            frameDraftScreenRect.w > 4 &&
+            frameDraftScreenRect.h > 4 && (
+              <div
+                style={{
+                  position: "absolute",
+                  left: frameDraftScreenRect.x,
+                  top: frameDraftScreenRect.y,
+                  width: frameDraftScreenRect.w,
+                  height: frameDraftScreenRect.h,
+                  border: "2px dashed #534AB7",
+                  background: "rgba(83,74,183,0.06)",
+                  borderRadius: 4,
+                  pointerEvents: "none",
+                }}
+              />
+            )}
         </div>
       )}
 
@@ -1476,12 +1561,14 @@ function MapCanvasInner() {
           screenPosition={contextMenu.screenPosition}
           isPinned={contextMenu.isPinned}
           isScene={contextMenu.isScene}
+          isHidden={contextMenu.isHidden}
           focusedNodeId={focusedNodeId}
           onClose={() => setContextMenu(null)}
           onOpen={handleContextMenuOpen}
           onPin={handleContextMenuPin}
           onUnpin={handleContextMenuUnpin}
           onHide={handleContextMenuHide}
+          onShowHidden={handleContextMenuShowHidden}
           onFocus={() => setFocusedNode(contextMenu.nodeId)}
           onExitFocus={() => setFocusedNode(null)}
           onBringToFront={handleBringToFront}

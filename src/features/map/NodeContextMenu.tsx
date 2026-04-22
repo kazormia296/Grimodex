@@ -6,12 +6,14 @@ interface NodeContextMenuProps {
   screenPosition: { x: number; y: number };
   isPinned: boolean;
   isScene: boolean;
+  isHidden: boolean;
   focusedNodeId: string | null;
   onClose: () => void;
   onOpen: () => void;
   onPin: () => void;
   onUnpin: () => void;
   onHide: () => void;
+  onShowHidden: () => void;
   onFocus: () => void;
   onExitFocus: () => void;
   onBringToFront: () => void;
@@ -25,12 +27,14 @@ export function NodeContextMenu({
   screenPosition,
   isPinned,
   isScene,
+  isHidden,
   focusedNodeId,
   onClose,
   onOpen,
   onPin,
   onUnpin,
   onHide,
+  onShowHidden,
   onFocus,
   onExitFocus,
   onBringToFront,
@@ -134,16 +138,29 @@ export function NodeContextMenu({
 
         <div className="my-1 border-t border-border" />
 
-        <button
-          type="button"
-          className="px-3 py-1.5 text-sm text-left hover:bg-accent text-destructive"
-          onClick={() => {
-            close();
-            onHide();
-          }}
-        >
-          このボードで非表示
-        </button>
+        {isHidden ? (
+          <button
+            type="button"
+            className="px-3 py-1.5 text-sm text-left hover:bg-accent"
+            onClick={() => {
+              close();
+              onShowHidden();
+            }}
+          >
+            このボードで再表示
+          </button>
+        ) : (
+          <button
+            type="button"
+            className="px-3 py-1.5 text-sm text-left hover:bg-accent text-destructive"
+            onClick={() => {
+              close();
+              onHide();
+            }}
+          >
+            このボードで非表示
+          </button>
+        )}
 
         <div className="my-1 border-t border-border" />
 
