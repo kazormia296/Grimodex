@@ -58,6 +58,16 @@ export async function listNodePositions(
     );
 }
 
+/** Returns all positions including hidden ones (needed for Hide feature). */
+export async function listAllNodePositions(
+  boardId: string,
+): Promise<MapNodePosition[]> {
+  return db
+    .select()
+    .from(mapNodePositions)
+    .where(eq(mapNodePositions.boardId, boardId));
+}
+
 export async function upsertNodePosition(data: {
   boardId: string;
   nodeRefType: NodeRefType;

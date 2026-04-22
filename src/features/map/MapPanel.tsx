@@ -31,9 +31,10 @@ import { useCodexStore } from "@/features/codex/codexStore";
 import { useMapStore } from "./mapStore";
 import {
   getOrCreateBoard,
-  listNodePositions,
+  listAllNodePositions,
   upsertNodePosition,
   setNodePinned,
+  updateNodePosition,
   listUserEdges,
   createUserEdge,
   deleteUserEdge,
@@ -45,6 +46,7 @@ import {
 import { SceneNode } from "./nodes/SceneNode";
 import { CodexNode } from "./nodes/CodexNode";
 import { FrameNode } from "./nodes/FrameNode";
+import { NodeContextMenu } from "./NodeContextMenu";
 import { UserEdge } from "./edges/UserEdge";
 import { MapHeader } from "./MapHeader";
 import { MapPalette } from "./MapPalette";
@@ -126,6 +128,12 @@ function MapCanvasInner() {
   const [edges, setEdges] = useState<Edge[]>([]);
   const [paletteMode, setPaletteMode] = useState<PaletteMode>("default");
   const [modeTransitionActive, setModeTransitionActive] = useState(false);
+  const [contextMenu, setContextMenu] = useState<{
+    nodeId: string;
+    screenPosition: { x: number; y: number };
+    isPinned: boolean;
+    isScene: boolean;
+  } | null>(null);
   // searchOpen は mapStore.searchVisible で管理（MapHeaderから開くため）
 
   // Trigger node transition when mode changes (skip on mount)
@@ -162,7 +170,7 @@ function MapCanvasInner() {
       if (cancelled) return;
       setBoardId(board.id);
       const [pos, ue, fr] = await Promise.all([
-        listNodePositions(board.id),
+        listAllNodePositions(board.id),
         listUserEdges(board.id),
         listFrames(board.id),
       ]);
@@ -181,11 +189,27 @@ function MapCanvasInner() {
   useEffect(() => {
     if (!boardId) return;
 
-    const scenes = treeNodes.filter((n) => n.nodeType === "scene");
+    // Derive visible/hidden sets from positions (hidden=1 persists across sessions)
+    const hiddenSceneIds = new Set(
+      positions
+        .filter((p) => p.hidden === 1 && p.treeNodeId)
+        .map((p) => p.treeNodeId!),
+    );
+    const hiddenCodexIds = new Set(
+      positions
+        .filter((p) => p.hidden === 1 && p.codexEntryId)
+        .map((p) => p.codexEntryId!),
+    );
+    const visiblePositions = positions.filter((p) => p.hidden !== 1);
+
+    const scenes = treeNodes.filter(
+      (n) => n.nodeType === "scene" && !hiddenSceneIds.has(n.id),
+    );
+    const visibleCodex = codexEntries.filter((e) => !hiddenCodexIds.has(e.id));
     const computedPositions = layoutFor(mode, {
       scenes,
-      codexEntries,
-      positions,
+      codexEntries: visibleCodex,
+      positions: visiblePositions,
     });
 
     // Frame nodes rendered behind other nodes
@@ -256,7 +280,7 @@ function MapCanvasInner() {
       : [];
 
     const codexNodes: Node[] = show.codex
-      ? codexEntries.map((e) => {
+      ? visibleCodex.map((e) => {
           const key = `codex:${e.id}`;
           const pos = computedPositions.get(key) ?? { x: 0, y: 0 };
           return {
@@ -513,6 +537,107 @@ function MapCanvasInner() {
     [setActiveScene],
   );
 
+  // Node context menu handler
+  const onNodeContextMenu = useCallback(
+    (event: React.MouseEvent, node: Node) => {
+      event.preventDefault();
+      const pos = positions.find(
+        (p) =>
+          (node.id.startsWith("scene:") &&
+            p.treeNodeId === node.id.slice("scene:".length)) ||
+          (node.id.startsWith("codex:") &&
+            p.codexEntryId === node.id.slice("codex:".length)),
+      );
+      setContextMenu({
+        nodeId: node.id,
+        screenPosition: { x: event.clientX, y: event.clientY },
+        isPinned: pos ? pos.pinned === 1 : false,
+        isScene: node.id.startsWith("scene:"),
+      });
+    },
+    [positions],
+  );
+
+  const handleContextMenuPin = useCallback(async () => {
+    if (!contextMenu) return;
+    const pos = positions.find(
+      (p) =>
+        (contextMenu.nodeId.startsWith("scene:") &&
+          p.treeNodeId === contextMenu.nodeId.slice("scene:".length)) ||
+        (contextMenu.nodeId.startsWith("codex:") &&
+          p.codexEntryId === contextMenu.nodeId.slice("codex:".length)),
+    );
+    if (!pos) return;
+    const updated = await setNodePinned(pos.id, true);
+    if (updated) {
+      setPositions((prev) =>
+        prev.map((p) =>
+          p.id === updated.id ? (updated as MapNodePositionRecord) : p,
+        ),
+      );
+    }
+  }, [contextMenu, positions]);
+
+  const handleContextMenuUnpin = useCallback(async () => {
+    if (!contextMenu) return;
+    const pos = positions.find(
+      (p) =>
+        (contextMenu.nodeId.startsWith("scene:") &&
+          p.treeNodeId === contextMenu.nodeId.slice("scene:".length)) ||
+        (contextMenu.nodeId.startsWith("codex:") &&
+          p.codexEntryId === contextMenu.nodeId.slice("codex:".length)),
+    );
+    if (!pos) return;
+    const updated = await setNodePinned(pos.id, false);
+    if (updated) {
+      setPositions((prev) =>
+        prev.map((p) =>
+          p.id === updated.id ? (updated as MapNodePositionRecord) : p,
+        ),
+      );
+    }
+  }, [contextMenu, positions]);
+
+  const handleContextMenuHide = useCallback(async () => {
+    if (!contextMenu || !boardId) return;
+    const nodeId = contextMenu.nodeId;
+    const pos = positions.find(
+      (p) =>
+        (nodeId.startsWith("scene:") &&
+          p.treeNodeId === nodeId.slice("scene:".length)) ||
+        (nodeId.startsWith("codex:") &&
+          p.codexEntryId === nodeId.slice("codex:".length)),
+    );
+    if (pos) {
+      await updateNodePosition(pos.id, { hidden: 1 });
+      setPositions((prev) =>
+        prev.map((p) => (p.id === pos.id ? { ...p, hidden: 1 } : p)),
+      );
+    } else {
+      // No position record yet — create one with hidden=1
+      const isScene = nodeId.startsWith("scene:");
+      const newPos = await upsertNodePosition({
+        boardId,
+        nodeRefType: isScene ? "scene" : "codex",
+        treeNodeId: isScene ? nodeId.slice("scene:".length) : null,
+        codexEntryId: !isScene ? nodeId.slice("codex:".length) : null,
+        x: 0,
+        y: 0,
+      });
+      await updateNodePosition(newPos.id, { hidden: 1 });
+      setPositions((prev) => [
+        ...prev,
+        { ...newPos, hidden: 1 } as MapNodePositionRecord,
+      ]);
+    }
+  }, [contextMenu, boardId, positions]);
+
+  const handleContextMenuOpen = useCallback(() => {
+    if (!contextMenu) return;
+    const sceneId = contextMenu.nodeId.slice("scene:".length);
+    setActiveScene(sceneId);
+  }, [contextMenu, setActiveScene]);
+
   // Sync viewport to store (debounced)
   const syncViewport = useDebouncedCallback(() => {
     const vp = getViewport();
@@ -622,6 +747,8 @@ function MapCanvasInner() {
         onEdgesChange={onEdgesChange}
         onConnect={onConnect}
         onNodeDoubleClick={onNodeDoubleClick}
+        onNodeContextMenu={onNodeContextMenu}
+        onPaneContextMenu={(e) => e.preventDefault()}
         onMoveEnd={syncViewport}
         snapToGrid={gridSnap}
         snapGrid={[16, 16]}
@@ -686,6 +813,20 @@ function MapCanvasInner() {
           nodes={visibleNodes}
           onFocus={focusNode}
           onClose={() => setSearchVisible(false)}
+        />
+      )}
+
+      {contextMenu && (
+        <NodeContextMenu
+          nodeId={contextMenu.nodeId}
+          screenPosition={contextMenu.screenPosition}
+          isPinned={contextMenu.isPinned}
+          isScene={contextMenu.isScene}
+          onClose={() => setContextMenu(null)}
+          onOpen={handleContextMenuOpen}
+          onPin={handleContextMenuPin}
+          onUnpin={handleContextMenuUnpin}
+          onHide={handleContextMenuHide}
         />
       )}
 
