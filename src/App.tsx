@@ -43,6 +43,7 @@ import { SnippetPanel } from "@/features/snippets/SnippetPanel";
 import { AttributionReport } from "@/features/attribution/AttributionReport";
 import { TimelinePanel } from "@/features/timeline/TimelinePanel";
 import { MapPanel } from "@/features/map/MapPanel";
+import { GlobalSearchDialog } from "@/features/search/GlobalSearchDialog";
 import { useState } from "react";
 import { Settings, FileOutput } from "lucide-react";
 import { ExportDialog } from "@/features/export/ExportDialog";
@@ -237,6 +238,7 @@ function EditorScreen() {
   const [settingsInitialCategory, setSettingsInitialCategory] =
     useState<SettingsCategory>("project");
   const [showExport, setShowExport] = useState(false);
+  const [showSearch, setShowSearch] = useState(false);
   const { globalSettings, updateGlobalSettings } = useWorkspaceStore();
   const [showWelcome, setShowWelcome] = useState(
     () => !globalSettings?.hasSeenWelcome,
@@ -411,6 +413,13 @@ function EditorScreen() {
         return;
       }
 
+      // Ctrl+Shift+F: 全文検索ダイアログ
+      if (e.ctrlKey && e.shiftKey && e.key.toLowerCase() === "f") {
+        e.preventDefault();
+        setShowSearch((v) => !v);
+        return;
+      }
+
       if (!e.ctrlKey || !e.altKey) return;
 
       const keyMap: Record<string, PanelId | "settings"> = {
@@ -539,6 +548,9 @@ function EditorScreen() {
         initialCategory={settingsInitialCategory}
       />
       <ExportDialog open={showExport} onClose={() => setShowExport(false)} />
+      {showSearch && (
+        <GlobalSearchDialog onClose={() => setShowSearch(false)} />
+      )}
       <WelcomeDialog
         open={showWelcome}
         onClose={() => void handleCloseWelcome()}

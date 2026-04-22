@@ -163,6 +163,19 @@ fn fts_rebuild(ws_state: tauri::State<'_, WorkspaceState>) -> Result<(), AppErro
     with_db(&ws_state, |db| db.fts_rebuild())
 }
 
+#[tauri::command]
+fn fts_search(
+    ws_state: tauri::State<'_, WorkspaceState>,
+    project_id: String,
+    query: String,
+    scope: String,
+    limit: u32,
+) -> Result<Vec<Value>, AppError> {
+    with_db(&ws_state, |db| {
+        db.search_fts(&project_id, &query, &scope, limit)
+    })
+}
+
 // --- Integrity commands ---
 
 #[tauri::command]
@@ -437,6 +450,7 @@ pub fn run() {
             send_agent_message,
             fts_optimize,
             fts_rebuild,
+            fts_search,
             integrity_check,
             repair_integrity,
             codex_matching::codex_rebuild_matcher,
