@@ -293,7 +293,7 @@ export function useMapNodes({
       setNodes((prev) => {
         const prevMap = new Map(prev.map((n) => [n.id, n]));
         const groupDragging = groupDraggingRef.current;
-        return nextNodes.map((n) => {
+        const merged = nextNodes.map((n) => {
           const p = prevMap.get(n.id);
           if (!p) return n;
           if (p.dragging || groupDragging.has(n.id)) {
@@ -309,6 +309,20 @@ export function useMapNodes({
           }
           return n;
         });
+        // Preserve any prev nodes still flagged as group-dragging that are
+        // missing from nextNodes (e.g., upstream store churn briefly drops
+        // them during a frame drag). They will be reconciled naturally on
+        // the next rebuild once the drag completes.
+        if (groupDragging.size > 0) {
+          const nextIds = new Set(nextNodes.map((n) => n.id));
+          for (const id of groupDragging) {
+            if (!nextIds.has(id)) {
+              const p = prevMap.get(id);
+              if (p) merged.push(p);
+            }
+          }
+        }
+        return merged;
       });
     }
 

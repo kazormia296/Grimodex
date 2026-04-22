@@ -214,7 +214,7 @@ export function MapCanvas() {
     useMapPositionPersistence({
       boardId,
       mode,
-      nodes,
+      getNodes,
       setPositions,
       setFrames,
       setNodes,

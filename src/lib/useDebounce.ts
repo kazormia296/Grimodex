@@ -1,10 +1,20 @@
-import { useCallback, useRef } from "react";
+import { useCallback, useEffect, useRef } from "react";
 
 export function useDebouncedCallback<T extends unknown[]>(
   fn: (...args: T) => void,
   delay: number,
 ) {
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (timer.current) {
+        clearTimeout(timer.current);
+        timer.current = null;
+      }
+    };
+  }, []);
+
   return useCallback(
     (...args: T) => {
       if (timer.current) clearTimeout(timer.current);
@@ -26,6 +36,15 @@ export function useKeyedDebouncedCallback<T extends unknown[]>(
   getKey: (...args: T) => string,
 ) {
   const timers = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
+
+  useEffect(() => {
+    const map = timers.current;
+    return () => {
+      for (const t of map.values()) clearTimeout(t);
+      map.clear();
+    };
+  }, []);
+
   return useCallback(
     (...args: T) => {
       const key = getKey(...args);
