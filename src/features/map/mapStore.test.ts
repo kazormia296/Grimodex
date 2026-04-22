@@ -47,6 +47,18 @@ describe("useMapStore", () => {
     expect(useMapStore.getState().mode).toBe("time");
   });
 
+  it('setMode("time") で time モードに切り替わる', () => {
+    useMapStore.getState().setMode("time");
+    expect(useMapStore.getState().mode).toBe("time");
+  });
+
+  it("setPendingAutoArrange でオートアレンジリクエストをセットできる", () => {
+    useMapStore.getState().setPendingAutoArrange("reading-order");
+    expect(useMapStore.getState().pendingAutoArrange).toBe("reading-order");
+    useMapStore.getState().setPendingAutoArrange(null);
+    expect(useMapStore.getState().pendingAutoArrange).toBeNull();
+  });
+
   it("setViewport でビューポートを更新できる", () => {
     useMapStore.getState().setViewport({ x: 100, y: 200, zoom: 1.5 });
     const { viewport } = useMapStore.getState();
