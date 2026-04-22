@@ -14,16 +14,11 @@ interface NodeContextMenuProps {
   onHide: () => void;
   onFocus: () => void;
   onExitFocus: () => void;
+  onBringToFront: () => void;
+  onSendToBack: () => void;
 }
 
 const MENU_WIDTH = 200;
-
-const DISABLED_ITEMS = [
-  "サイドグループで開く",
-  "接続...",
-  "前面へ移動",
-  "背面へ移動",
-];
 
 export function NodeContextMenu({
   nodeId: _nodeId,
@@ -38,6 +33,8 @@ export function NodeContextMenu({
   onHide,
   onFocus,
   onExitFocus,
+  onBringToFront,
+  onSendToBack,
 }: NodeContextMenuProps) {
   const menuRef = useRef<HTMLDivElement>(null);
 
@@ -62,7 +59,7 @@ export function NodeContextMenu({
   }, [close]);
 
   const x = Math.min(screenPosition.x, window.innerWidth - MENU_WIDTH - 8);
-  const y = Math.min(screenPosition.y, window.innerHeight - 240);
+  const y = Math.min(screenPosition.y, window.innerHeight - 280);
 
   return createPortal(
     <div
@@ -116,6 +113,29 @@ export function NodeContextMenu({
 
         <button
           type="button"
+          className="px-3 py-1.5 text-sm text-left hover:bg-accent"
+          onClick={() => {
+            close();
+            onBringToFront();
+          }}
+        >
+          前面へ移動
+        </button>
+        <button
+          type="button"
+          className="px-3 py-1.5 text-sm text-left hover:bg-accent"
+          onClick={() => {
+            close();
+            onSendToBack();
+          }}
+        >
+          背面へ移動
+        </button>
+
+        <div className="my-1 border-t border-border" />
+
+        <button
+          type="button"
           className="px-3 py-1.5 text-sm text-left hover:bg-accent text-destructive"
           onClick={() => {
             close();
@@ -153,11 +173,11 @@ export function NodeContextMenu({
 
         <div className="my-1 border-t border-border" />
 
-        {DISABLED_ITEMS.map((label) => (
+        {(["サイドグループで開く", "接続..."] as const).map((label) => (
           <div
             key={label}
             className="px-3 py-1.5 text-sm text-muted-foreground cursor-not-allowed"
-            title="Phase D で対応予定"
+            title="未実装"
           >
             {label}
           </div>

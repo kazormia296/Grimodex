@@ -294,6 +294,18 @@ function MapCanvasInner() {
         ? "with-mode-transition"
         : undefined;
 
+      // Build zIndex map from persisted positions
+      const zIndexMap = new Map<string, number>();
+      for (const p of visiblePositions) {
+        if (p.treeNodeId && p.nodeRefType === "scene")
+          zIndexMap.set(`scene:${p.treeNodeId}`, p.zIndex ?? 0);
+        else if (p.treeNodeId && p.nodeRefType === "note")
+          zIndexMap.set(`note:${p.treeNodeId}`, p.zIndex ?? 0);
+        else if (p.codexEntryId)
+          zIndexMap.set(`codex:${p.codexEntryId}`, p.zIndex ?? 0);
+        else if (p.aiNodeId) zIndexMap.set(`ai:${p.aiNodeId}`, p.zIndex ?? 0);
+      }
+
       // Scene nodes
       const sceneNodes: Node[] = show.scenes
         ? scenes.map((n) => {
@@ -306,7 +318,7 @@ function MapCanvasInner() {
               position: pos,
               className: transitionClass,
               draggable: true,
-              zIndex: 0,
+              zIndex: zIndexMap.get(key) ?? 0,
               data: {
                 title: n.title,
                 synopsis: n.synopsis ?? null,
@@ -339,7 +351,7 @@ function MapCanvasInner() {
               type: "codex",
               position: pos,
               className: transitionClass,
-              zIndex: 0,
+              zIndex: zIndexMap.get(key) ?? 0,
               data: {
                 name: e.name,
                 type: e.type,
@@ -369,7 +381,7 @@ function MapCanvasInner() {
               },
               className: transitionClass,
               draggable: true,
-              zIndex: 0,
+              zIndex: zIndexMap.get(key) ?? 0,
               data: {
                 title: n.title,
                 content: n.synopsis ?? "",
@@ -398,7 +410,7 @@ function MapCanvasInner() {
               },
               className: transitionClass,
               draggable: true,
-              zIndex: 0,
+              zIndex: zIndexMap.get(key) ?? 0,
               data: {
                 prompt: an.prompt,
                 response: an.response,
@@ -802,6 +814,117 @@ function MapCanvasInner() {
     setActiveScene(sceneId);
   }, [contextMenu, setActiveScene]);
 
+  // Helper: find DB position record for any node type
+  const findPositionForNodeId = useCallback(
+    (nodeId: string) => {
+      if (nodeId.startsWith("scene:"))
+        return positions.find(
+          (p) =>
+            p.treeNodeId === nodeId.slice("scene:".length) &&
+            p.nodeRefType === "scene",
+        );
+      if (nodeId.startsWith("codex:"))
+        return positions.find(
+          (p) => p.codexEntryId === nodeId.slice("codex:".length),
+        );
+      if (nodeId.startsWith("note:"))
+        return positions.find(
+          (p) =>
+            p.treeNodeId === nodeId.slice("note:".length) &&
+            p.nodeRefType === "note",
+        );
+      if (nodeId.startsWith("ai:"))
+        return positions.find((p) => p.aiNodeId === nodeId.slice("ai:".length));
+      return undefined;
+    },
+    [positions],
+  );
+
+  // Helper: upsert position for any node type (returns existing or creates new)
+  const ensurePositionForNodeId = useCallback(
+    async (nodeId: string): Promise<MapNodePositionRecord | undefined> => {
+      if (!boardId) return undefined;
+      const existing = findPositionForNodeId(nodeId);
+      if (existing) return existing;
+      const rfNode = nodes.find((n) => n.id === nodeId);
+      const { x, y } = rfNode?.position ?? { x: 0, y: 0 };
+      if (nodeId.startsWith("scene:")) {
+        const p = await upsertNodePosition({
+          boardId,
+          nodeRefType: "scene",
+          treeNodeId: nodeId.slice("scene:".length),
+          x,
+          y,
+        });
+        return p as MapNodePositionRecord;
+      }
+      if (nodeId.startsWith("codex:")) {
+        const p = await upsertNodePosition({
+          boardId,
+          nodeRefType: "codex",
+          codexEntryId: nodeId.slice("codex:".length),
+          x,
+          y,
+        });
+        return p as MapNodePositionRecord;
+      }
+      if (nodeId.startsWith("note:")) {
+        const p = await upsertNodePosition({
+          boardId,
+          nodeRefType: "note",
+          treeNodeId: nodeId.slice("note:".length),
+          x,
+          y,
+        });
+        return p as MapNodePositionRecord;
+      }
+      if (nodeId.startsWith("ai:")) {
+        const p = await upsertNodePosition({
+          boardId,
+          nodeRefType: "ai",
+          aiNodeId: nodeId.slice("ai:".length),
+          x,
+          y,
+        });
+        return p as MapNodePositionRecord;
+      }
+      return undefined;
+    },
+    [boardId, findPositionForNodeId, nodes],
+  );
+
+  const handleBringToFront = useCallback(async () => {
+    if (!contextMenu) return;
+    const maxZ = positions.reduce((m, p) => Math.max(m, p.zIndex ?? 0), 0);
+    const newZ = maxZ + 1;
+    const pos = await ensurePositionForNodeId(contextMenu.nodeId);
+    if (!pos) return;
+    const updated = await updateNodePosition(pos.id, { zIndex: newZ });
+    if (updated) {
+      setPositions((prev) =>
+        prev.map((p) =>
+          p.id === updated.id ? (updated as MapNodePositionRecord) : p,
+        ),
+      );
+    }
+  }, [contextMenu, positions, ensurePositionForNodeId]);
+
+  const handleSendToBack = useCallback(async () => {
+    if (!contextMenu) return;
+    const minZ = positions.reduce((m, p) => Math.min(m, p.zIndex ?? 0), 0);
+    const newZ = Math.max(0, minZ - 1);
+    const pos = await ensurePositionForNodeId(contextMenu.nodeId);
+    if (!pos) return;
+    const updated = await updateNodePosition(pos.id, { zIndex: newZ });
+    if (updated) {
+      setPositions((prev) =>
+        prev.map((p) =>
+          p.id === updated.id ? (updated as MapNodePositionRecord) : p,
+        ),
+      );
+    }
+  }, [contextMenu, positions, ensurePositionForNodeId]);
+
   // AI node creation
   const aiContextLines = useCallback((): string[] => {
     const lines: string[] = [];
@@ -1181,6 +1304,8 @@ function MapCanvasInner() {
           onHide={handleContextMenuHide}
           onFocus={() => setFocusedNode(contextMenu.nodeId)}
           onExitFocus={() => setFocusedNode(null)}
+          onBringToFront={handleBringToFront}
+          onSendToBack={handleSendToBack}
         />
       )}
 
