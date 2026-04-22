@@ -18,13 +18,19 @@ interface FrameDragState {
 interface UseFrameGroupDragInput {
   getNodes: () => Node[];
   setNodes: React.Dispatch<React.SetStateAction<Node[]>>;
-  persistPosition: (nodeId: string, x: number, y: number) => void;
+  persistPosition: (
+    nodeId: string,
+    x: number,
+    y: number,
+  ) => Promise<void> | void;
+  groupDraggingRef: React.MutableRefObject<Set<string>>;
 }
 
 export function useFrameGroupDrag({
   getNodes,
   setNodes,
   persistPosition,
+  groupDraggingRef,
 }: UseFrameGroupDragInput) {
   const stateRef = useRef<FrameDragState | null>(null);
 
@@ -57,8 +63,10 @@ export function useFrameGroupDrag({
         startFramePos: { x: fx, y: fy },
         contained,
       };
+
+      for (const c of contained) groupDraggingRef.current.add(c.id);
     },
-    [getNodes],
+    [getNodes, groupDraggingRef],
   );
 
   const onNodeDrag = useCallback(
@@ -92,12 +100,24 @@ export function useFrameGroupDrag({
         return;
 
       const currentNodes = getNodes();
+      const persists: Array<Promise<void> | void> = [];
       for (const c of state.contained) {
         const n = currentNodes.find((n) => n.id === c.id);
-        if (n) persistPosition(n.id, n.position.x, n.position.y);
+        if (n) {
+          persists.push(persistPosition(n.id, n.position.x, n.position.y));
+        }
       }
+
+      // Clear group-dragging marks only after all persists complete so any
+      // mid-flight rebuild of useMapNodes still preserves contained node
+      // positions until positions state has caught up.
+      const ids = state.contained.map((c) => c.id);
+      const clearMarks = () => {
+        for (const id of ids) groupDraggingRef.current.delete(id);
+      };
+      Promise.all(persists).then(clearMarks, clearMarks);
     },
-    [getNodes, persistPosition],
+    [getNodes, persistPosition, groupDraggingRef],
   );
 
   return { onNodeDragStart, onNodeDrag, onNodeDragStop };

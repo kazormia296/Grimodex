@@ -35,7 +35,12 @@ export function useMapPositionPersistence({
   setNodes,
   setUserEdges,
 }: UseMapPositionPersistenceInput) {
-  const persistPosition = useKeyedDebouncedCallback(
+  // persistPosition fires once per drag stop (per node). No debouncing here —
+  // debouncing would delay setPositions/setFrames and create a window where
+  // the `nodes` state (updated synchronously by applyNodeChanges) and the
+  // `positions`/`frames` state are out of sync, causing snap-back visuals
+  // when useMapNodes rebuilds from the stale positions.
+  const persistPosition = useCallback(
     async (nodeId: string, x: number, y: number) => {
       if (!boardId) return;
       if (nodeId.startsWith("scene:")) {
@@ -128,8 +133,7 @@ export function useMapPositionPersistence({
         );
       }
     },
-    500,
-    (nodeId) => nodeId,
+    [boardId, mode, nodes, setFrames, setPositions],
   );
 
   const persistFrameResize = useKeyedDebouncedCallback(

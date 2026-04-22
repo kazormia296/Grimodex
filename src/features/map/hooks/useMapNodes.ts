@@ -39,6 +39,7 @@ interface UseMapNodesInput {
   updateNodeTitle: (id: string, title: string) => Promise<void>;
   updateSynopsis: (id: string, synopsis: string) => Promise<void>;
   setActiveScene: (id: string) => void;
+  groupDraggingRef: React.MutableRefObject<Set<string>>;
 }
 
 export function useMapNodes({
@@ -61,6 +62,7 @@ export function useMapNodes({
   updateNodeTitle,
   updateSynopsis,
   setActiveScene,
+  groupDraggingRef,
 }: UseMapNodesInput) {
   useEffect(() => {
     if (!boardId) return;
@@ -290,15 +292,16 @@ export function useMapNodes({
       ];
       setNodes((prev) => {
         const prevMap = new Map(prev.map((n) => [n.id, n]));
+        const groupDragging = groupDraggingRef.current;
         return nextNodes.map((n) => {
           const p = prevMap.get(n.id);
           if (!p) return n;
-          if (p.dragging) {
+          if (p.dragging || groupDragging.has(n.id)) {
             return {
               ...n,
               selected: p.selected,
               position: p.position,
-              dragging: true,
+              dragging: p.dragging,
             };
           }
           if (p.selected) {

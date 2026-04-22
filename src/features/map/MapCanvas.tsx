@@ -117,6 +117,12 @@ export function MapCanvas() {
   const [forceLayoutRunning, setForceLayoutRunning] = useState(false);
   const [forceAlpha, setForceAlpha] = useState(1);
 
+  // IDs of nodes currently being moved as part of a frame group drag.
+  // Shared between useFrameGroupDrag (writer) and useMapNodes (reader) so
+  // that any rebuild of nodes mid-drag does not revert contained nodes to
+  // their pre-drag positions.
+  const groupDraggingRef = useRef<Set<string>>(new Set());
+
   // Spawn counter: resets when viewport changes (pan/zoom)
   const spawnRef = useRef<{
     vp: { x: number; y: number; zoom: number };
@@ -191,6 +197,7 @@ export function MapCanvas() {
     updateNodeTitle,
     updateSynopsis,
     setActiveScene,
+    groupDraggingRef,
   });
 
   const edges = useMapEdges({
@@ -277,6 +284,7 @@ export function MapCanvas() {
     getNodes,
     setNodes,
     persistPosition,
+    groupDraggingRef,
   });
 
   // Returns viewport-center position offset by spawn index (resets on pan/zoom)
