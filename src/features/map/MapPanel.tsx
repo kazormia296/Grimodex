@@ -53,10 +53,12 @@ import { MapPalette } from "./MapPalette";
 import { MapSearch } from "./MapSearch";
 import type { MapNodePositionRecord } from "./types";
 import type { MapEdge, MapFrame } from "@/db/schema";
-import { layoutFor } from "./layouts";
-import { autoArrange } from "./layouts/autoArrange";
+import { layoutFor, layoutForAsync } from "./layouts";
+import { WorkerForceLayoutEngine } from "./layouts/forceEngine";
+import { autoArrange, autoArrangeForceDirected } from "./layouts/autoArrange";
 import { DURATIONS, useReducedMotion } from "@/lib/animation";
 import { AutoArrangeDialog } from "./AutoArrangeDialog";
+import { ForceLayoutProgress } from "./ForceLayoutProgress";
 
 const PROJECT_ID = "default-project";
 
@@ -132,6 +134,8 @@ function MapCanvasInner() {
   const [edges, setEdges] = useState<Edge[]>([]);
   const [paletteMode, setPaletteMode] = useState<PaletteMode>("default");
   const [modeTransitionActive, setModeTransitionActive] = useState(false);
+  const [forceLayoutRunning, setForceLayoutRunning] = useState(false);
+  const [forceAlpha, setForceAlpha] = useState(1);
   const [contextMenu, setContextMenu] = useState<{
     nodeId: string;
     screenPosition: { x: number; y: number };
@@ -192,118 +196,148 @@ function MapCanvasInner() {
   // Build React Flow nodes: frames + scene nodes + codex nodes
   useEffect(() => {
     if (!boardId) return;
+    let cancelled = false;
 
-    // Derive visible/hidden sets from positions (hidden=1 persists across sessions)
-    const hiddenSceneIds = new Set(
-      positions
-        .filter((p) => p.hidden === 1 && p.treeNodeId)
-        .map((p) => p.treeNodeId!),
-    );
-    const hiddenCodexIds = new Set(
-      positions
-        .filter((p) => p.hidden === 1 && p.codexEntryId)
-        .map((p) => p.codexEntryId!),
-    );
-    const visiblePositions = positions.filter((p) => p.hidden !== 1);
+    async function buildNodes() {
+      // Derive visible/hidden sets from positions (hidden=1 persists across sessions)
+      const hiddenSceneIds = new Set(
+        positions
+          .filter((p) => p.hidden === 1 && p.treeNodeId)
+          .map((p) => p.treeNodeId!),
+      );
+      const hiddenCodexIds = new Set(
+        positions
+          .filter((p) => p.hidden === 1 && p.codexEntryId)
+          .map((p) => p.codexEntryId!),
+      );
+      const visiblePositions = positions.filter((p) => p.hidden !== 1);
 
-    const scenes = treeNodes.filter(
-      (n) => n.nodeType === "scene" && !hiddenSceneIds.has(n.id),
-    );
-    const visibleCodex = codexEntries.filter((e) => !hiddenCodexIds.has(e.id));
-    const computedPositions = layoutFor(mode, {
-      scenes,
-      codexEntries: visibleCodex,
-      positions: visiblePositions,
-    });
+      const scenes = treeNodes.filter(
+        (n) => n.nodeType === "scene" && !hiddenSceneIds.has(n.id),
+      );
+      const visibleCodex = codexEntries.filter(
+        (e) => !hiddenCodexIds.has(e.id),
+      );
 
-    // Frame nodes rendered behind other nodes
-    const frameNodes: Node[] = show.frames
-      ? frames.map((f) => ({
-          id: `frame:${f.id}`,
-          type: "frame",
-          position: { x: f.x, y: f.y },
-          style: { width: f.width, height: f.height },
-          zIndex: -1,
-          dragHandle: ".frame-drag-handle",
-          data: {
-            title: f.title,
-            background: f.background,
-            borderColor: f.borderColor,
-            onTitleChange: async (title: string) => {
-              await updateFrame(f.id, { title });
-              setFrames((prev) =>
-                prev.map((fr) => (fr.id === f.id ? { ...fr, title } : fr)),
-              );
-            },
-            onDelete: async () => {
-              await deleteFrame(f.id);
-              setFrames((prev) => prev.filter((fr) => fr.id !== f.id));
-            },
+      let computedPositions;
+      if (mode === "theme") {
+        setForceLayoutRunning(true);
+        setForceAlpha(1);
+        const engine = new WorkerForceLayoutEngine();
+        computedPositions = await layoutForAsync(
+          "theme",
+          { scenes, codexEntries: visibleCodex, positions: visiblePositions },
+          engine,
+          (alpha) => {
+            if (!cancelled) setForceAlpha(alpha);
           },
-        }))
-      : [];
+        );
+        if (cancelled) return;
+        setForceLayoutRunning(false);
+      } else {
+        computedPositions = layoutFor(mode, {
+          scenes,
+          codexEntries: visibleCodex,
+          positions: visiblePositions,
+        });
+      }
+      if (cancelled) return;
 
-    const transitionClass = modeTransitionActive
-      ? "with-mode-transition"
-      : undefined;
-
-    // Scene nodes
-    const sceneNodes: Node[] = show.scenes
-      ? scenes.map((n) => {
-          const key = `scene:${n.id}`;
-          const pos = computedPositions.get(key) ?? { x: 0, y: 0 };
-          const rotation = corkboardFeel ? corkRotation(n.id) : 0;
-          return {
-            id: key,
-            type: "scene",
-            position: pos,
-            className: transitionClass,
-            draggable: true,
-            zIndex: 0,
+      // Frame nodes rendered behind other nodes
+      const frameNodes: Node[] = show.frames
+        ? frames.map((f) => ({
+            id: `frame:${f.id}`,
+            type: "frame",
+            position: { x: f.x, y: f.y },
+            style: { width: f.width, height: f.height },
+            zIndex: -1,
+            dragHandle: ".frame-drag-handle",
             data: {
-              title: n.title,
-              synopsis: n.synopsis ?? null,
-              status: n.status ?? "outline",
-              wordCount: undefined,
-              variant,
-              colorBy,
-              corkboardFeel,
-              rotation,
+              title: f.title,
+              background: f.background,
+              borderColor: f.borderColor,
               onTitleChange: async (title: string) => {
-                await updateNodeTitle(n.id, title);
+                await updateFrame(f.id, { title });
+                setFrames((prev) =>
+                  prev.map((fr) => (fr.id === f.id ? { ...fr, title } : fr)),
+                );
               },
-              onSynopsisChange: async (synopsis: string) => {
-                await updateSynopsis(n.id, synopsis);
-              },
-              onOpen: () => {
-                setActiveScene(n.id);
+              onDelete: async () => {
+                await deleteFrame(f.id);
+                setFrames((prev) => prev.filter((fr) => fr.id !== f.id));
               },
             },
-          };
-        })
-      : [];
+          }))
+        : [];
 
-    const codexNodes: Node[] = show.codex
-      ? visibleCodex.map((e) => {
-          const key = `codex:${e.id}`;
-          const pos = computedPositions.get(key) ?? { x: 0, y: 0 };
-          return {
-            id: key,
-            type: "codex",
-            position: pos,
-            className: transitionClass,
-            zIndex: 0,
-            data: {
-              name: e.name,
-              type: e.type,
-              summary: e.summary ?? "",
-              color: "#534AB7",
-            },
-          };
-        })
-      : [];
+      const transitionClass = modeTransitionActive
+        ? "with-mode-transition"
+        : undefined;
 
-    setNodes([...frameNodes, ...sceneNodes, ...codexNodes]);
+      // Scene nodes
+      const sceneNodes: Node[] = show.scenes
+        ? scenes.map((n) => {
+            const key = `scene:${n.id}`;
+            const pos = computedPositions.get(key) ?? { x: 0, y: 0 };
+            const rotation = corkboardFeel ? corkRotation(n.id) : 0;
+            return {
+              id: key,
+              type: "scene",
+              position: pos,
+              className: transitionClass,
+              draggable: true,
+              zIndex: 0,
+              data: {
+                title: n.title,
+                synopsis: n.synopsis ?? null,
+                status: n.status ?? "outline",
+                wordCount: undefined,
+                variant,
+                colorBy,
+                corkboardFeel,
+                rotation,
+                onTitleChange: async (title: string) => {
+                  await updateNodeTitle(n.id, title);
+                },
+                onSynopsisChange: async (synopsis: string) => {
+                  await updateSynopsis(n.id, synopsis);
+                },
+                onOpen: () => {
+                  setActiveScene(n.id);
+                },
+              },
+            };
+          })
+        : [];
+
+      const codexNodes: Node[] = show.codex
+        ? visibleCodex.map((e) => {
+            const key = `codex:${e.id}`;
+            const pos = computedPositions.get(key) ?? { x: 0, y: 0 };
+            return {
+              id: key,
+              type: "codex",
+              position: pos,
+              className: transitionClass,
+              zIndex: 0,
+              data: {
+                name: e.name,
+                type: e.type,
+                summary: e.summary ?? "",
+                color: "#534AB7",
+              },
+            };
+          })
+        : [];
+
+      setNodes([...frameNodes, ...sceneNodes, ...codexNodes]);
+    }
+
+    buildNodes();
+    return () => {
+      cancelled = true;
+      setForceLayoutRunning(false);
+    };
   }, [
     boardId,
     positions,
@@ -747,17 +781,42 @@ function MapCanvasInner() {
         .filter((p) => p.hidden === 1 && p.treeNodeId)
         .map((p) => p.treeNodeId!),
     );
+    const hiddenCodexIds = new Set(
+      positions
+        .filter((p) => p.hidden === 1 && p.codexEntryId)
+        .map((p) => p.codexEntryId!),
+    );
     const scenes = treeNodes.filter(
       (n) => n.nodeType === "scene" && !hiddenSceneIds.has(n.id),
     );
+    const visibleCodex = codexEntries.filter((e) => !hiddenCodexIds.has(e.id));
+    const pinnedIds = new Set(
+      positions
+        .filter((p) => p.pinned === 1 && p.treeNodeId)
+        .map((p) => p.treeNodeId!),
+    );
 
-    const newPositions = autoArrange({
-      type,
-      allTreeNodes: treeNodes,
-      scenes,
-      positions,
-      variant,
-    });
+    let newPositions;
+    if (type === "force-directed") {
+      setForceLayoutRunning(true);
+      setForceAlpha(1);
+      const engine = new WorkerForceLayoutEngine();
+      newPositions = await autoArrangeForceDirected(
+        { scenes, codexEntries: visibleCodex, positions },
+        engine,
+        pinnedIds,
+        (alpha) => setForceAlpha(alpha),
+      );
+      setForceLayoutRunning(false);
+    } else {
+      newPositions = autoArrange({
+        type,
+        allTreeNodes: treeNodes,
+        scenes,
+        positions,
+        variant,
+      });
+    }
 
     await Promise.all(
       Array.from(newPositions.entries()).map(([key, pos]) => {
@@ -780,6 +839,7 @@ function MapCanvasInner() {
     pendingAutoArrange,
     boardId,
     treeNodes,
+    codexEntries,
     positions,
     variant,
     setPendingAutoArrange,
@@ -888,6 +948,8 @@ function MapCanvasInner() {
           onCancel={() => setPendingAutoArrange(null)}
         />
       )}
+
+      {forceLayoutRunning && <ForceLayoutProgress alpha={forceAlpha} />}
 
       <MapPalette
         paletteMode={paletteMode}

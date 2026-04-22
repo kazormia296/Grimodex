@@ -90,12 +90,8 @@ export function MapHeader() {
           <button
             key={key}
             onClick={() => setMode(key)}
-            title={
-              ["theme", "pov", "place"].includes(key)
-                ? `${label} モード（Phase C-2以降実装予定）`
-                : `${label} モード`
-            }
-            disabled={["theme", "pov", "place"].includes(key)}
+            title={`${label} モード`}
+            disabled={false}
             style={{
               padding: "2px 8px",
               borderRadius: 4,
@@ -304,20 +300,39 @@ export function MapHeader() {
                 margin: "4px 0",
               }}
             />
-            {(["Grid: POV別", "Force-directed"] as const).map((label) => (
-              <div
-                key={label}
-                title="Phase C-2 で対応予定"
-                style={{
-                  padding: "5px 12px",
-                  fontSize: 12,
-                  color: "var(--muted-foreground)",
-                  cursor: "not-allowed",
-                  opacity: 0.5,
+            {(
+              [
+                { type: "pov-order", label: "Grid: POV別" },
+                { type: "force-directed", label: "Force-directed" },
+              ] as const
+            ).map((item) => (
+              <button
+                key={item.type}
+                type="button"
+                onClick={() => {
+                  setArrangeMenuOpen(false);
+                  setPendingAutoArrange(item.type);
                 }}
+                style={{
+                  display: "block",
+                  width: "100%",
+                  padding: "5px 12px",
+                  textAlign: "left",
+                  fontSize: 12,
+                  background: "transparent",
+                  border: "none",
+                  color: "var(--foreground)",
+                  cursor: "pointer",
+                }}
+                onMouseEnter={(e) =>
+                  (e.currentTarget.style.background = "var(--accent)")
+                }
+                onMouseLeave={(e) =>
+                  (e.currentTarget.style.background = "transparent")
+                }
               >
-                {label}
-              </div>
+                {item.label}
+              </button>
             ))}
           </div>
         )}

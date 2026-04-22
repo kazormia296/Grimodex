@@ -64,6 +64,8 @@ export async function updateNode(
       | "synopsis"
       | "storyTimeOrder"
       | "storyTimeLabel"
+      | "povCharacterId"
+      | "locationId"
     >
   >,
 ): Promise<TreeNode | undefined> {

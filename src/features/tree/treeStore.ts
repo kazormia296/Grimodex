@@ -143,6 +143,12 @@ interface TreeState {
     label?: string,
   ) => Promise<void>;
 
+  updatePovCharacter: (
+    id: string,
+    codexEntryId: string | null,
+  ) => Promise<void>;
+  updateLocation: (id: string, codexEntryId: string | null) => Promise<void>;
+
   // Multi-selection
   selectNode: (id: string, extend: boolean) => void;
   rangeSelectNode: (id: string, orderedNodes: TreeNodeData[]) => void;
@@ -897,6 +903,28 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
         },
       });
     }
+  },
+
+  async updatePovCharacter(id, codexEntryId) {
+    await api.updateNode(id, {
+      povCharacterId: codexEntryId ?? undefined,
+    });
+    set((state) => ({
+      nodes: state.nodes.map((n) =>
+        n.id === id ? { ...n, povCharacterId: codexEntryId } : n,
+      ),
+    }));
+  },
+
+  async updateLocation(id, codexEntryId) {
+    await api.updateNode(id, {
+      locationId: codexEntryId ?? undefined,
+    });
+    set((state) => ({
+      nodes: state.nodes.map((n) =>
+        n.id === id ? { ...n, locationId: codexEntryId } : n,
+      ),
+    }));
   },
 
   // --- UI state ---

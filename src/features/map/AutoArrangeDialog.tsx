@@ -4,6 +4,8 @@ import type { AutoArrangeType } from "./layouts/autoArrange";
 const LABELS: Record<AutoArrangeType, string> = {
   "reading-order": "読み順でグリッド配置",
   "story-time": "物語時間順でグリッド配置",
+  "pov-order": "POV別グリッド配置",
+  "force-directed": "Force-directed 配置",
 };
 
 interface AutoArrangeDialogProps {
