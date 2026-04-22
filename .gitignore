@@ -5,6 +5,7 @@ dist/
 *.local
 .claude/settings.local.json
 docs/.claude/settings.local.json
+.claude/scheduled_tasks.lock
 .obsidian/
 .claude/worktrees/
 temp/
