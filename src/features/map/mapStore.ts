@@ -68,7 +68,10 @@ export const useMapStore = create<MapState>((set, get) => ({
   searchVisible: false,
   pendingAutoArrange: null,
 
-  setMode: (mode) => set({ mode }),
+  setMode: (mode) => {
+    // C2-T hook: when switching to theme, set pendingForceLayout flag (no-op until C2-T)
+    set({ mode });
+  },
   setViewport: (viewport) => set({ viewport }),
   setShow: (partial) => set((s) => ({ show: { ...s.show, ...partial } })),
   setGridSnap: (v) => set({ gridSnap: v }),

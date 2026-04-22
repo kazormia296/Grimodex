@@ -91,24 +91,25 @@ export function MapHeader() {
             key={key}
             onClick={() => setMode(key)}
             title={
-              key !== "free"
-                ? `${label} モード（Phase C以降実装予定）`
-                : "Free モード"
+              ["theme", "pov", "place"].includes(key)
+                ? `${label} モード（Phase C-2以降実装予定）`
+                : `${label} モード`
             }
-            disabled={key !== "free"}
+            disabled={["theme", "pov", "place"].includes(key)}
             style={{
               padding: "2px 8px",
               borderRadius: 4,
               border: "1px solid",
               borderColor: mode === key ? "#534AB7" : "var(--border)",
               background: mode === key ? "#534AB7" : "transparent",
-              color:
-                key === "free"
-                  ? mode === key
-                    ? "#fff"
-                    : "var(--foreground)"
-                  : "var(--muted-foreground)",
-              cursor: key === "free" ? "pointer" : "not-allowed",
+              color: ["theme", "pov", "place"].includes(key)
+                ? "var(--muted-foreground)"
+                : mode === key
+                  ? "#fff"
+                  : "var(--foreground)",
+              cursor: ["theme", "pov", "place"].includes(key)
+                ? "not-allowed"
+                : "pointer",
               fontSize: 11,
               fontWeight: mode === key ? 600 : 400,
             }}
