@@ -69,6 +69,7 @@ import { AutoArrangeDialog } from "./AutoArrangeDialog";
 import { ForceLayoutProgress } from "./ForceLayoutProgress";
 import { buildMapSVG, svgToPngBlob, buildMapJSON } from "./mapExport";
 import { toast } from "sonner";
+import { findPosByNodeId, buildUpsertArgs } from "./utils/nodeIdCodec";
 
 const PROJECT_ID = "default-project";
 
@@ -801,44 +802,8 @@ function MapCanvasInner() {
     async (connection: Connection) => {
       if (!boardId || !connection.source || !connection.target) return;
 
-      const toPositionArgs = (rfId: string) => {
-        if (rfId.startsWith("scene:"))
-          return {
-            boardId,
-            nodeRefType: "scene" as const,
-            treeNodeId: rfId.slice("scene:".length),
-            x: 0,
-            y: 0,
-          };
-        if (rfId.startsWith("note:"))
-          return {
-            boardId,
-            nodeRefType: "note" as const,
-            treeNodeId: rfId.slice("note:".length),
-            x: 0,
-            y: 0,
-          };
-        if (rfId.startsWith("codex:"))
-          return {
-            boardId,
-            nodeRefType: "codex" as const,
-            codexEntryId: rfId.slice("codex:".length),
-            x: 0,
-            y: 0,
-          };
-        if (rfId.startsWith("ai:"))
-          return {
-            boardId,
-            nodeRefType: "ai" as const,
-            aiNodeId: rfId.slice("ai:".length),
-            x: 0,
-            y: 0,
-          };
-        return null;
-      };
-
-      const sourceArgs = toPositionArgs(connection.source);
-      const targetArgs = toPositionArgs(connection.target);
+      const sourceArgs = buildUpsertArgs(boardId, connection.source);
+      const targetArgs = buildUpsertArgs(boardId, connection.target);
       if (!sourceArgs || !targetArgs) return;
 
       const [sourcePos, targetPos] = await Promise.all([
@@ -882,77 +847,11 @@ function MapCanvasInner() {
     [setActiveScene],
   );
 
-  // Returns the position record for any node type by its React Flow ID
-  const findPosByNodeId = useCallback(
-    (nodeId: string) => {
-      if (nodeId.startsWith("scene:"))
-        return positions.find(
-          (p) =>
-            p.nodeRefType === "scene" &&
-            p.treeNodeId === nodeId.slice("scene:".length),
-        );
-      if (nodeId.startsWith("codex:"))
-        return positions.find(
-          (p) => p.codexEntryId === nodeId.slice("codex:".length),
-        );
-      if (nodeId.startsWith("note:"))
-        return positions.find(
-          (p) =>
-            p.nodeRefType === "note" &&
-            p.treeNodeId === nodeId.slice("note:".length),
-        );
-      if (nodeId.startsWith("ai:"))
-        return positions.find((p) => p.aiNodeId === nodeId.slice("ai:".length));
-      return undefined;
-    },
-    [positions],
-  );
-
-  // Returns upsert args for any node type (null for unknown types like frame)
-  const toUpsertArgs = useCallback(
-    (nodeId: string) => {
-      if (nodeId.startsWith("scene:"))
-        return {
-          boardId: boardId!,
-          nodeRefType: "scene" as const,
-          treeNodeId: nodeId.slice("scene:".length),
-          x: 0,
-          y: 0,
-        };
-      if (nodeId.startsWith("codex:"))
-        return {
-          boardId: boardId!,
-          nodeRefType: "codex" as const,
-          codexEntryId: nodeId.slice("codex:".length),
-          x: 0,
-          y: 0,
-        };
-      if (nodeId.startsWith("note:"))
-        return {
-          boardId: boardId!,
-          nodeRefType: "note" as const,
-          treeNodeId: nodeId.slice("note:".length),
-          x: 0,
-          y: 0,
-        };
-      if (nodeId.startsWith("ai:"))
-        return {
-          boardId: boardId!,
-          nodeRefType: "ai" as const,
-          aiNodeId: nodeId.slice("ai:".length),
-          x: 0,
-          y: 0,
-        };
-      return null;
-    },
-    [boardId],
-  );
-
   // Node context menu handler
   const onNodeContextMenu = useCallback(
     (event: React.MouseEvent, node: Node) => {
       event.preventDefault();
-      const pos = findPosByNodeId(node.id);
+      const pos = findPosByNodeId(positions, node.id);
       setContextMenu({
         nodeId: node.id,
         screenPosition: { x: event.clientX, y: event.clientY },
@@ -961,12 +860,12 @@ function MapCanvasInner() {
         isHidden: pos ? pos.hidden === 1 : false,
       });
     },
-    [findPosByNodeId],
+    [positions],
   );
 
   const handleContextMenuPin = useCallback(async () => {
     if (!contextMenu) return;
-    const pos = findPosByNodeId(contextMenu.nodeId);
+    const pos = findPosByNodeId(positions, contextMenu.nodeId);
     if (!pos) return;
     const updated = await setNodePinned(pos.id, true);
     if (updated) {
@@ -976,11 +875,11 @@ function MapCanvasInner() {
         ),
       );
     }
-  }, [contextMenu, findPosByNodeId]);
+  }, [contextMenu, positions]);
 
   const handleContextMenuUnpin = useCallback(async () => {
     if (!contextMenu) return;
-    const pos = findPosByNodeId(contextMenu.nodeId);
+    const pos = findPosByNodeId(positions, contextMenu.nodeId);
     if (!pos) return;
     const updated = await setNodePinned(pos.id, false);
     if (updated) {
@@ -990,12 +889,12 @@ function MapCanvasInner() {
         ),
       );
     }
-  }, [contextMenu, findPosByNodeId]);
+  }, [contextMenu, positions]);
 
   const handleContextMenuHide = useCallback(async () => {
     if (!contextMenu || !boardId) return;
     const nodeId = contextMenu.nodeId;
-    const pos = findPosByNodeId(nodeId);
+    const pos = findPosByNodeId(positions, nodeId);
     if (pos) {
       await updateNodePosition(pos.id, { hidden: 1 });
       setPositions((prev) =>
@@ -1003,7 +902,7 @@ function MapCanvasInner() {
       );
     } else {
       // No position record yet — create one with hidden=1
-      const args = toUpsertArgs(nodeId);
+      const args = buildUpsertArgs(boardId, nodeId);
       if (!args) return;
       const newPos = await upsertNodePosition(args);
       await updateNodePosition(newPos.id, { hidden: 1 });
@@ -1012,17 +911,17 @@ function MapCanvasInner() {
         { ...newPos, hidden: 1 } as MapNodePositionRecord,
       ]);
     }
-  }, [contextMenu, boardId, findPosByNodeId, toUpsertArgs]);
+  }, [contextMenu, boardId, positions]);
 
   const handleContextMenuShowHidden = useCallback(async () => {
     if (!contextMenu) return;
-    const pos = findPosByNodeId(contextMenu.nodeId);
+    const pos = findPosByNodeId(positions, contextMenu.nodeId);
     if (!pos) return;
     await updateNodePosition(pos.id, { hidden: 0 });
     setPositions((prev) =>
       prev.map((p) => (p.id === pos.id ? { ...p, hidden: 0 } : p)),
     );
-  }, [contextMenu, findPosByNodeId]);
+  }, [contextMenu, positions]);
 
   const handleContextMenuOpen = useCallback(() => {
     if (!contextMenu) return;
@@ -1030,83 +929,20 @@ function MapCanvasInner() {
     setActiveScene(sceneId);
   }, [contextMenu, setActiveScene]);
 
-  // Helper: find DB position record for any node type
-  const findPositionForNodeId = useCallback(
-    (nodeId: string) => {
-      if (nodeId.startsWith("scene:"))
-        return positions.find(
-          (p) =>
-            p.treeNodeId === nodeId.slice("scene:".length) &&
-            p.nodeRefType === "scene",
-        );
-      if (nodeId.startsWith("codex:"))
-        return positions.find(
-          (p) => p.codexEntryId === nodeId.slice("codex:".length),
-        );
-      if (nodeId.startsWith("note:"))
-        return positions.find(
-          (p) =>
-            p.treeNodeId === nodeId.slice("note:".length) &&
-            p.nodeRefType === "note",
-        );
-      if (nodeId.startsWith("ai:"))
-        return positions.find((p) => p.aiNodeId === nodeId.slice("ai:".length));
-      return undefined;
-    },
-    [positions],
-  );
-
   // Helper: upsert position for any node type (returns existing or creates new)
   const ensurePositionForNodeId = useCallback(
     async (nodeId: string): Promise<MapNodePositionRecord | undefined> => {
       if (!boardId) return undefined;
-      const existing = findPositionForNodeId(nodeId);
+      const existing = findPosByNodeId(positions, nodeId);
       if (existing) return existing;
       const rfNode = nodes.find((n) => n.id === nodeId);
       const { x, y } = rfNode?.position ?? { x: 0, y: 0 };
-      if (nodeId.startsWith("scene:")) {
-        const p = await upsertNodePosition({
-          boardId,
-          nodeRefType: "scene",
-          treeNodeId: nodeId.slice("scene:".length),
-          x,
-          y,
-        });
-        return p as MapNodePositionRecord;
-      }
-      if (nodeId.startsWith("codex:")) {
-        const p = await upsertNodePosition({
-          boardId,
-          nodeRefType: "codex",
-          codexEntryId: nodeId.slice("codex:".length),
-          x,
-          y,
-        });
-        return p as MapNodePositionRecord;
-      }
-      if (nodeId.startsWith("note:")) {
-        const p = await upsertNodePosition({
-          boardId,
-          nodeRefType: "note",
-          treeNodeId: nodeId.slice("note:".length),
-          x,
-          y,
-        });
-        return p as MapNodePositionRecord;
-      }
-      if (nodeId.startsWith("ai:")) {
-        const p = await upsertNodePosition({
-          boardId,
-          nodeRefType: "ai",
-          aiNodeId: nodeId.slice("ai:".length),
-          x,
-          y,
-        });
-        return p as MapNodePositionRecord;
-      }
-      return undefined;
+      const args = buildUpsertArgs(boardId, nodeId, x, y);
+      if (!args) return undefined;
+      const p = await upsertNodePosition(args);
+      return p as MapNodePositionRecord;
     },
-    [boardId, findPositionForNodeId, nodes],
+    [boardId, positions, nodes],
   );
 
   const handleBringToFront = useCallback(async () => {
