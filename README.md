@@ -82,12 +82,12 @@ _Codexエントリとノートを開いた状態 — AIチャットと並べて�
 Prerequisites: Node.js, Rust toolchain, and the platform dependencies required by Tauri.
 
 ```sh
-npm install
-npm run tauri dev       # full app in dev
-npm run dev             # frontend only
-npm run tauri build     # production build
-npm test                # frontend tests (Vitest)
-npm run lint:fix
+pnpm install
+pnpm tauri dev          # full app in dev
+pnpm dev                # frontend only
+pnpm tauri build        # production build
+pnpm test               # frontend tests (Vitest)
+pnpm lint:fix
 npx tsc --noEmit        # type check
 
 cd src-tauri
@@ -96,7 +96,7 @@ cargo clippy --all-targets
 cargo test
 ```
 
-前提: Node.js、Rustツールチェイン、Tauriが要求するプラットフォーム依存物。`npm run tauri dev` でフルアプリ、`npm run dev` でフロントのみ、`npm test` でフロント側のVitest、Rust側は `src-tauri/` 内で `cargo check` / `cargo clippy` / `cargo test`。
+前提: Node.js、pnpm、Rustツールチェイン、Tauriが要求するプラットフォーム依存物。`pnpm tauri dev` でフルアプリ、`pnpm dev` でフロントのみ、`pnpm test` でフロント側のVitest、Rust側は `src-tauri/` 内で `cargo check` / `cargo clippy` / `cargo test`。
 
 ---
 

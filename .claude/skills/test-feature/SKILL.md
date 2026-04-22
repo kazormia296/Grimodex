@@ -14,7 +14,7 @@ argument-hint: [feature-or-file-path]
 2. 正常系・異常系・エッジケースをカバーするテストを作成
 3. テストファイルはソースと同階層に *.test.ts として配置
 4. Rustコードの場合は src-tauri 内に #[cfg(test)] モジュール
-5. `npm test` / `cargo test` を実行し、結果を報告
+5. `pnpm test` / `cargo test` を実行し、結果を報告
 6. 失敗がある場合、テストコードに問題がないか確認してから修正
 
 カバレッジの観点:

@@ -104,8 +104,8 @@ ENV PATH="/home/node/.cargo/bin:$PATH"
 ENV NPM_CONFIG_PREFIX=/usr/local/share/npm-global
 ENV PATH=$PATH:/usr/local/share/npm-global/bin
 
-# Install Tauri CLI globally
-RUN npm install -g @tauri-apps/cli
+# Install Tauri CLI and pnpm globally
+RUN npm install -g @tauri-apps/cli pnpm@10.33.0
 
 # Set the default shell to zsh rather than sh
 ENV SHELL=/bin/zsh

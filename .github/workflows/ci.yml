@@ -15,42 +15,46 @@ jobs:
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
+      - uses: pnpm/action-setup@f40ffcd9367d9f12939873eb1018b921a783ffaa # v4
+        with:
+          version: 10.33.0
+
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 20
-          cache: npm
+          cache: pnpm
 
-      - run: npm ci
+      - run: pnpm install --frozen-lockfile
 
       - name: 型チェック
-        run: npx tsc --noEmit
+        run: pnpm exec tsc --noEmit
 
       - name: Lint
-        run: npm run lint
+        run: pnpm lint
 
       - name: テスト
-        run: npm test -- --run
+        run: pnpm test --run
 
   security:
-    name: Security (audit / signatures)
+    name: Security (audit)
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
+      - uses: pnpm/action-setup@f40ffcd9367d9f12939873eb1018b921a783ffaa # v4
+        with:
+          version: 10.33.0
+
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 20
-          cache: npm
+          cache: pnpm
 
-      - run: npm ci
+      - run: pnpm install --frozen-lockfile
 
-      - name: npm audit
-        run: npm audit --audit-level=critical
-
-      - name: パッケージ署名の検証
-        run: npm audit signatures
-        continue-on-error: true
+      - name: pnpm audit
+        run: pnpm audit --audit-level critical
 
   rust:
     name: Rust (check / clippy / test)

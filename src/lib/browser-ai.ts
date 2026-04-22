@@ -1,7 +1,7 @@
 /**
  * Browser-mode AI client.
  * Mirrors src-tauri/src/ai.rs logic using fetch() via Vite dev proxy.
- * Only used when running without Tauri (npm run dev in browser).
+ * Only used when running without Tauri (pnpm dev in browser).
  */
 import type { AiModel, AiProvider } from "@/features/chat/types";
 import type {

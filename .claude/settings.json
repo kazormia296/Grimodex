@@ -2,9 +2,12 @@
   "$schema": "https://json.schemastore.org/claude-code-settings.json",
   "permissions": {
     "allow": [
-      "Bash(npm run lint:fix)",
-      "Bash(npm run test *)",
-      "Bash(npm test *)",
+      "Bash(pnpm lint:fix)",
+      "Bash(pnpm run lint:fix)",
+      "Bash(pnpm test *)",
+      "Bash(pnpm run test *)",
+      "Bash(pnpm exec *)",
+      "Bash(pnpm tauri *)",
       "Bash(npx tsc --noEmit)",
       "Bash(npx vitest *)",
       "Bash(cd src-tauri && cargo check)",
@@ -79,19 +82,23 @@
   "hooks": {
     "Stop": [
       {
-        "hooks": [{
-          "type": "command",
-          "command": "printf '\\a'"
-        }]
+        "hooks": [
+          {
+            "type": "command",
+            "command": "printf '\\a'"
+          }
+        ]
       }
     ],
     "Notification": [
       {
         "matcher": "permission_prompt",
-        "hooks": [{
-          "type": "command",
-          "command": "printf '\\a'"
-        }]
+        "hooks": [
+          {
+            "type": "command",
+            "command": "printf '\\a'"
+          }
+        ]
       }
     ],
     "PreToolUse": [
@@ -116,10 +123,12 @@
     "PostToolUse": [
       {
         "matcher": "Edit|MultiEdit|Write",
-        "hooks": [{
-          "type": "command",
-          "command": "f=$(cat | jq -r '.tool_input.file_path // \"\"'); if echo \"$f\" | grep -q '\\.rs$'; then (cd src-tauri && cargo fmt -- \"$f\" 2>/dev/null); elif echo \"$f\" | grep -qE '\\.(ts|tsx|css)$'; then npx prettier --write \"$f\" 2>/dev/null; fi; exit 0"
-        }]
+        "hooks": [
+          {
+            "type": "command",
+            "command": "f=$(cat | jq -r '.tool_input.file_path // \"\"'); if echo \"$f\" | grep -q '\\.rs$'; then (cd src-tauri && cargo fmt -- \"$f\" 2>/dev/null); elif echo \"$f\" | grep -qE '\\.(ts|tsx|css)$'; then npx prettier --write \"$f\" 2>/dev/null; fi; exit 0"
+          }
+        ]
       }
     ]
   }

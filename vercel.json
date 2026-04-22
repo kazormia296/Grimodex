@@ -2,7 +2,7 @@
   "git": {
     "deploymentEnabled": false
   },
-  "buildCommand": "npm run build",
+  "buildCommand": "pnpm build",
   "outputDirectory": "dist",
   "rewrites": [
     {

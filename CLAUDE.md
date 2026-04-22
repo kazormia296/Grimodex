@@ -8,12 +8,12 @@ AIチャットパネルとCodex/Snippet抽出機能を組み合わせた小説�
 
 ## コマンド
 
-- 開発サーバー: npm run tauri dev
-- フロントのみ: npm run dev
-- ビルド: npm run tauri build
-- テスト: npm test
-- テスト(単体): npm test -- --run [ファイルパス]
-- Lint: npm run lint:fix
+- 開発サーバー: pnpm tauri dev
+- フロントのみ: pnpm dev
+- ビルド: pnpm tauri build
+- テスト: pnpm test
+- テスト(単体): pnpm test --run [ファイルパス]
+- Lint: pnpm lint:fix
 - 型チェック: npx tsc --noEmit
 - Rustチェック: cd src-tauri && cargo check
 - Rust Lint: cd src-tauri && cargo clippy --all-targets
