@@ -59,7 +59,14 @@ export function useMapEdges({
   return useMemo(() => {
     const derived: Edge[] = [];
 
-    if (show.derivedEdges) {
+    const totalVisible = codexEntries.length + treeNodes.length;
+    if (show.derivedEdges && totalVisible > 200) {
+      console.warn(
+        `[Map] Derived edges auto-disabled: ${totalVisible} visible nodes exceed threshold of 200`,
+      );
+    }
+
+    if (show.derivedEdges && totalVisible <= 200) {
       // Codex parent-child edges
       for (const e of codexEntries.filter((e) => e.parentId != null)) {
         derived.push({

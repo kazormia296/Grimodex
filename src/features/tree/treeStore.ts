@@ -120,8 +120,8 @@ interface TreeState {
 
   // Backward-compat API (used by ChatPanel, ExportAgentTraceButton, SceneEditor)
   loadScenes: (projectId: string, chapterId: string) => Promise<void>;
-  createScene: () => Promise<void>;
-  createNote: () => Promise<void>;
+  createScene: () => Promise<string>;
+  createNote: () => Promise<string>;
   deleteScene: (id: string) => Promise<void>;
   renameScene: (id: string, title: string) => Promise<void>;
   setActiveScene: (id: string) => void;
@@ -470,6 +470,7 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
       const nodes = [...state.nodes, newNode];
       return { nodes, scenes: computeScenes(nodes) };
     });
+    return created.id;
   },
 
   async createNote() {
@@ -492,6 +493,7 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
       const nodes = [...state.nodes, newNode];
       return { nodes, scenes: computeScenes(nodes) };
     });
+    return created.id;
   },
 
   async deleteScene(id) {

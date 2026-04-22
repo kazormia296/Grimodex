@@ -1,6 +1,4 @@
 import { useCallback } from "react";
-import { useTreeStore } from "@/features/tree/treeStore";
-import { useCodexStore } from "@/features/codex/codexStore";
 
 type PaletteMode = "default" | "frame" | "connect";
 
@@ -8,33 +6,19 @@ interface MapPaletteProps {
   paletteMode: PaletteMode;
   onPaletteModeChange: (mode: PaletteMode) => void;
   onCreateAI: () => void;
+  onAddScene: () => void;
+  onAddCodex: () => void;
+  onAddNote: () => void;
 }
 
 export function MapPalette({
   paletteMode,
   onPaletteModeChange,
   onCreateAI,
+  onAddScene,
+  onAddCodex,
+  onAddNote,
 }: MapPaletteProps) {
-  const createScene = useTreeStore((s) => s.createScene);
-  const createNote = useTreeStore((s) => s.createNote);
-  const createCodexEntry = useCodexStore((s) => s.create);
-
-  const handleAddScene = useCallback(async () => {
-    await createScene();
-  }, [createScene]);
-
-  const handleAddCodex = useCallback(async () => {
-    await createCodexEntry({
-      name: "新しいエントリ",
-      type: "character",
-      summary: "",
-    });
-  }, [createCodexEntry]);
-
-  const handleAddNote = useCallback(async () => {
-    await createNote();
-  }, [createNote]);
-
   const toggleMode = useCallback(
     (mode: PaletteMode) => {
       onPaletteModeChange(paletteMode === mode ? "default" : mode);
@@ -60,8 +44,8 @@ export function MapPalette({
         alignItems: "center",
       }}
     >
-      <PaletteButton label="+ Scene" onClick={handleAddScene} />
-      <PaletteButton label="+ Codex" onClick={handleAddCodex} />
+      <PaletteButton label="+ Scene" onClick={onAddScene} />
+      <PaletteButton label="+ Codex" onClick={onAddCodex} />
 
       <div
         style={{
@@ -94,11 +78,7 @@ export function MapPalette({
         }}
       />
 
-      <PaletteButton
-        label="+ Note"
-        onClick={handleAddNote}
-        title="ノートを追加"
-      />
+      <PaletteButton label="+ Note" onClick={onAddNote} title="ノートを追加" />
       <PaletteButton
         label="✨ AI"
         onClick={onCreateAI}

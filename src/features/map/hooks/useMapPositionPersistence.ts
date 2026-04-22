@@ -175,5 +175,5 @@ export function useMapPositionPersistence({
     [setUserEdges],
   );
 
-  return { onNodesChange, onEdgesChange };
+  return { onNodesChange, onEdgesChange, persistPosition };
 }

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   ReactFlow,
   Background,
@@ -38,6 +38,9 @@ import { useMapPositionPersistence } from "./hooks/useMapPositionPersistence";
 import { useMapContextMenu } from "./hooks/useMapContextMenu";
 import { useMapAutoArrange } from "./hooks/useMapAutoArrange";
 import { useMapCallbacks } from "./hooks/useMapCallbacks";
+import { useFrameGroupDrag } from "./hooks/useFrameGroupDrag";
+import { upsertNodePosition } from "./mapApi";
+import type { MapNodePositionRecord } from "./types";
 
 const PROJECT_ID = "default-project";
 
@@ -62,6 +65,9 @@ export function MapCanvas() {
   const setActiveScene = useTreeStore((s) => s.setActiveScene);
   const updateNodeTitle = useTreeStore((s) => s.updateNodeTitle);
   const updateSynopsis = useTreeStore((s) => s.updateSynopsis);
+  const createScene = useTreeStore((s) => s.createScene);
+  const createNote = useTreeStore((s) => s.createNote);
+  const createCodexEntry = useCodexStore((s) => s.create);
 
   const phasesByEntry = usePhaseStore((s) => s.phasesByEntry);
   const snippetEntries = useSnippetStore((s) => s.entries);
@@ -110,6 +116,12 @@ export function MapCanvas() {
   const [modeTransitionActive, setModeTransitionActive] = useState(false);
   const [forceLayoutRunning, setForceLayoutRunning] = useState(false);
   const [forceAlpha, setForceAlpha] = useState(1);
+
+  // Spawn counter: resets when viewport changes (pan/zoom)
+  const spawnRef = useRef<{
+    vp: { x: number; y: number; zoom: number };
+    count: number;
+  } | null>(null);
 
   // Trigger node transition when mode changes (skip on mount)
   const isMountRef = useRef(true);
@@ -191,15 +203,16 @@ export function MapCanvas() {
     show,
   });
 
-  const { onNodesChange, onEdgesChange } = useMapPositionPersistence({
-    boardId,
-    mode,
-    nodes,
-    setPositions,
-    setFrames,
-    setNodes,
-    setUserEdges,
-  });
+  const { onNodesChange, onEdgesChange, persistPosition } =
+    useMapPositionPersistence({
+      boardId,
+      mode,
+      nodes,
+      setPositions,
+      setFrames,
+      setNodes,
+      setUserEdges,
+    });
 
   const {
     contextMenu,
@@ -260,6 +273,76 @@ export function MapCanvas() {
     setFrameDraftScreenRect,
   });
 
+  const { onNodeDragStart, onNodeDrag, onNodeDragStop } = useFrameGroupDrag({
+    getNodes,
+    setNodes,
+    persistPosition,
+  });
+
+  // Returns viewport-center position offset by spawn index (resets on pan/zoom)
+  const getSpawnPosition = useCallback(() => {
+    const vp = getViewport();
+    const cur = spawnRef.current;
+    if (
+      !cur ||
+      cur.vp.x !== vp.x ||
+      cur.vp.y !== vp.y ||
+      cur.vp.zoom !== vp.zoom
+    ) {
+      spawnRef.current = { vp: { x: vp.x, y: vp.y, zoom: vp.zoom }, count: 0 };
+    }
+    const idx = spawnRef.current!.count++;
+    const cx = (-vp.x + window.innerWidth / 2) / vp.zoom;
+    const cy = (-vp.y + window.innerHeight / 2) / vp.zoom;
+    return { x: cx + idx * 24, y: cy + idx * 24 };
+  }, [getViewport]);
+
+  const handleAddScene = useCallback(async () => {
+    if (!boardId) return;
+    const pos = getSpawnPosition();
+    const id = await createScene();
+    const record = await upsertNodePosition({
+      boardId,
+      nodeRefType: "scene",
+      treeNodeId: id,
+      x: pos.x,
+      y: pos.y,
+    });
+    setPositions((prev) => [...prev, record as MapNodePositionRecord]);
+  }, [boardId, createScene, getSpawnPosition, setPositions]);
+
+  const handleAddCodex = useCallback(async () => {
+    if (!boardId) return;
+    const pos = getSpawnPosition();
+    const entry = await createCodexEntry({
+      name: "新しいエントリ",
+      type: "character",
+      summary: "",
+    });
+    const record = await upsertNodePosition({
+      boardId,
+      nodeRefType: "codex",
+      codexEntryId: entry.id,
+      x: pos.x,
+      y: pos.y,
+    });
+    setPositions((prev) => [...prev, record as MapNodePositionRecord]);
+  }, [boardId, createCodexEntry, getSpawnPosition, setPositions]);
+
+  const handleAddNote = useCallback(async () => {
+    if (!boardId) return;
+    const pos = getSpawnPosition();
+    const id = await createNote();
+    const record = await upsertNodePosition({
+      boardId,
+      nodeRefType: "note",
+      treeNodeId: id,
+      x: pos.x,
+      y: pos.y,
+    });
+    setPositions((prev) => [...prev, record as MapNodePositionRecord]);
+  }, [boardId, createNote, getSpawnPosition, setPositions]);
+
   const { executeAutoArrange } = useMapAutoArrange({
     boardId,
     pendingAutoArrange,
@@ -290,6 +373,9 @@ export function MapCanvas() {
         onNodesChange={onNodesChange}
         onEdgesChange={onEdgesChange}
         onConnect={onConnect}
+        onNodeDragStart={onNodeDragStart}
+        onNodeDrag={onNodeDrag}
+        onNodeDragStop={onNodeDragStop}
         onNodeDoubleClick={onNodeDoubleClick}
         onNodeContextMenu={onNodeContextMenu}
         onPaneContextMenu={(e) => e.preventDefault()}
@@ -389,6 +475,9 @@ export function MapCanvas() {
         paletteMode={paletteMode}
         onPaletteModeChange={setPaletteMode}
         onCreateAI={() => setShowAINodeDialog(true)}
+        onAddScene={handleAddScene}
+        onAddCodex={handleAddCodex}
+        onAddNote={handleAddNote}
       />
 
       {showAINodeDialog && boardId && (
