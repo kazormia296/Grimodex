@@ -5,6 +5,7 @@ import type { LayoutInput } from "./types";
 function makeScene(
   id: string,
   storyTimeOrder: string | null,
+  povCharacterId: string | null = null,
 ): LayoutInput["scenes"][0] {
   return {
     id,
@@ -17,7 +18,7 @@ function makeScene(
     status: null,
     storyTimeOrder,
     storyTimeLabel: null,
-    povCharacterId: null,
+    povCharacterId,
     locationId: null,
     createdAt: "",
   };
@@ -82,6 +83,17 @@ describe("layoutTime", () => {
       scenes: [makeScene("s1", "a"), makeScene("s_u", null)],
     });
     expect(result.get("scene:s_u")!.y).toBe(440);
+  });
+
+  it("POV が設定されたシーンは POV 別レーンに配置される", () => {
+    const result = layoutTime({
+      ...EMPTY_INPUT,
+      scenes: [makeScene("s1", "a", "c1"), makeScene("s2", "b", "c2")],
+      codexEntries: [],
+    });
+    // c1 is lane 0 → Y = 200; c2 is lane 1 → Y = 440
+    expect(result.get("scene:s1")!.y).toBe(200);
+    expect(result.get("scene:s2")!.y).toBe(440);
   });
 
   it("codex エントリは scheduled シーンより上に配置される", () => {

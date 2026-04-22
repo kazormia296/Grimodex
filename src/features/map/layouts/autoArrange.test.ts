@@ -127,6 +127,32 @@ describe("autoArrange", () => {
     expect(result.get("scene:s1")!.x - result.get("scene:s0")!.x).toBe(280);
   });
 
+  it("pov-order: 同一 POV のシーンが同じ行グループに配置される", () => {
+    const scenes = [
+      makeScene("s1", "a", null, null),
+      makeScene("s2", "b", null, null),
+      makeScene("s3", "c", null, null),
+    ];
+    // Assign POV manually after creation
+    scenes[0].povCharacterId = "c1";
+    scenes[1].povCharacterId = "c1";
+    scenes[2].povCharacterId = "c2";
+
+    const result = autoArrange({
+      type: "pov-order",
+      allTreeNodes: scenes,
+      scenes,
+      positions: [],
+      variant: "compact",
+    });
+
+    // s1 and s2 share POV c1 → row 0; s3 has POV c2 → row 1
+    expect(result.get("scene:s1")!.y).toBe(result.get("scene:s2")!.y);
+    expect(result.get("scene:s3")!.y).toBeGreaterThan(
+      result.get("scene:s1")!.y,
+    );
+  });
+
   it("Card variant のセルは 320x240", () => {
     const scenes = [makeScene("s0", "a"), makeScene("s1", "b")];
     const result = autoArrange({

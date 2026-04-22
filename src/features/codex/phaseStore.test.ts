@@ -55,8 +55,8 @@ const mockScene: TreeNodeData = {
   status: "draft",
   storyTimeOrder: null,
   storyTimeLabel: null,
-    povCharacterId: null,
-    locationId: null,
+  povCharacterId: null,
+  locationId: null,
   createdAt: "2024-01-01T00:00:00Z",
 };
 

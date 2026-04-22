@@ -819,6 +819,32 @@ mod tests {
     }
 
     #[test]
+    fn test_migrate_creates_pov_location_columns() {
+        let db = test_db();
+        let cols = db
+            .execute("PRAGMA table_info('tree_nodes')", &[], "all")
+            .expect("pragma");
+        let names: Vec<String> = cols
+            .iter()
+            .filter_map(|row| {
+                if let Value::String(s) = &row["name"] {
+                    Some(s.clone())
+                } else {
+                    None
+                }
+            })
+            .collect();
+        assert!(
+            names.contains(&"pov_character_id".to_string()),
+            "pov_character_id column should exist"
+        );
+        assert!(
+            names.contains(&"location_id".to_string()),
+            "location_id column should exist"
+        );
+    }
+
+    #[test]
     fn test_seed_data() {
         let db = test_db();
         let projects = db
