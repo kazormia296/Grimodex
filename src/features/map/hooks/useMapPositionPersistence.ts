@@ -14,7 +14,7 @@ import {
 } from "../mapApi";
 import type { MapNodePositionRecord } from "../types";
 import type { MapEdge, MapFrame } from "@/db/schema";
-import { useDebouncedCallback } from "@/lib/useDebounce";
+import { useKeyedDebouncedCallback } from "@/lib/useDebounce";
 
 interface UseMapPositionPersistenceInput {
   boardId: string | null;
@@ -35,7 +35,7 @@ export function useMapPositionPersistence({
   setNodes,
   setUserEdges,
 }: UseMapPositionPersistenceInput) {
-  const persistPosition = useDebouncedCallback(
+  const persistPosition = useKeyedDebouncedCallback(
     async (nodeId: string, x: number, y: number) => {
       if (!boardId) return;
       if (nodeId.startsWith("scene:")) {
@@ -129,9 +129,10 @@ export function useMapPositionPersistence({
       }
     },
     500,
+    (nodeId) => nodeId,
   );
 
-  const persistFrameResize = useDebouncedCallback(
+  const persistFrameResize = useKeyedDebouncedCallback(
     async (nodeId: string, width: number, height: number) => {
       if (!nodeId.startsWith("frame:")) return;
       const frameId = nodeId.slice("frame:".length);
@@ -141,6 +142,7 @@ export function useMapPositionPersistence({
       );
     },
     500,
+    (nodeId) => nodeId,
   );
 
   const onNodesChange: OnNodesChange = useCallback(
