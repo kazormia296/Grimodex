@@ -47,6 +47,8 @@ impl Database {
                 sort_order        TEXT NOT NULL DEFAULT 'a0',
                 story_time_order  TEXT,
                 story_time_label  TEXT,
+                pov_character_id  TEXT REFERENCES codex_entries(id) ON DELETE SET NULL,
+                location_id       TEXT REFERENCES codex_entries(id) ON DELETE SET NULL,
                 status            TEXT DEFAULT 'outline',
                 content           TEXT NOT NULL DEFAULT '{}',
                 created_at        TEXT NOT NULL DEFAULT (datetime('now')),
@@ -56,6 +58,12 @@ impl Database {
                 ON tree_nodes(project_id, parent_id, sort_order);
             CREATE INDEX IF NOT EXISTS idx_tree_story_time
                 ON tree_nodes(project_id, story_time_order);
+            CREATE INDEX IF NOT EXISTS idx_tree_pov
+                ON tree_nodes(project_id, pov_character_id)
+                WHERE pov_character_id IS NOT NULL;
+            CREATE INDEX IF NOT EXISTS idx_tree_location
+                ON tree_nodes(project_id, location_id)
+                WHERE location_id IS NOT NULL;
 
             CREATE TABLE IF NOT EXISTS codex_types (
                 id          TEXT PRIMARY KEY,

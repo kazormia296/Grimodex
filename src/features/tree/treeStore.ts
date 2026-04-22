@@ -35,6 +35,8 @@ export interface TreeNodeData {
   status: string | null;
   storyTimeOrder: string | null;
   storyTimeLabel: string | null;
+  povCharacterId: string | null;
+  locationId: string | null;
   createdAt: string;
 }
 
@@ -62,6 +64,8 @@ function toNodeData(n: ApiNode): TreeNodeData {
     status: n.status ?? null,
     storyTimeOrder: n.storyTimeOrder ?? null,
     storyTimeLabel: n.storyTimeLabel ?? null,
+    povCharacterId: n.povCharacterId ?? null,
+    locationId: n.locationId ?? null,
     createdAt: n.createdAt,
   };
 }

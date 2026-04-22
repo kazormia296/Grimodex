@@ -49,6 +49,15 @@ export const treeNodes = sqliteTable(
     // story-time 用の fractional-indexing キー（null の場合は未指定）
     storyTimeOrder: text("story_time_order"),
     storyTimeLabel: text("story_time_label"),
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    povCharacterId: text("pov_character_id").references(
+      (): any => codexEntries.id,
+      { onDelete: "set null" },
+    ),
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    locationId: text("location_id").references((): any => codexEntries.id, {
+      onDelete: "set null",
+    }),
     status: text("status").default("outline"), // 'outline' | 'draft' | 'complete' | 'revision' | 'final'
     content: text("content").notNull().default("{}"), // Scene/Note body (ProseMirror JSON)
     createdAt: text("created_at")

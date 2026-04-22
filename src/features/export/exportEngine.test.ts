@@ -25,6 +25,8 @@ function makeFolder(
     status: null,
     storyTimeOrder: null,
     storyTimeLabel: null,
+    povCharacterId: null,
+    locationId: null,
     createdAt: "2024-01-01T00:00:00Z",
   };
 }
@@ -46,6 +48,8 @@ function makeScene(
     status: null,
     storyTimeOrder: null,
     storyTimeLabel: null,
+    povCharacterId: null,
+    locationId: null,
     createdAt: "2024-01-01T00:00:00Z",
   };
 }
@@ -62,6 +66,8 @@ function makeNote(id: string, parentId: string | null = null): TreeNodeData {
     status: null,
     storyTimeOrder: null,
     storyTimeLabel: null,
+    povCharacterId: null,
+    locationId: null,
     createdAt: "2024-01-01T00:00:00Z",
   };
 }

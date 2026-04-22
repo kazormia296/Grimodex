@@ -14,6 +14,8 @@ function makeScene(id: string): Parameters<typeof layoutFree>[0]["scenes"][0] {
     status: null,
     storyTimeOrder: null,
     storyTimeLabel: null,
+    povCharacterId: null,
+    locationId: null,
     createdAt: "",
   };
 }

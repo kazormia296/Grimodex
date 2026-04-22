@@ -19,6 +19,8 @@ function makeScene(
     status: null,
     storyTimeOrder,
     storyTimeLabel: null,
+    povCharacterId: null,
+    locationId: null,
     createdAt: "",
   };
 }

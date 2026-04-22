@@ -12,6 +12,8 @@ const NODE_DEFAULTS = {
   synopsis: null as string | null,
   storyTimeOrder: null as string | null,
   storyTimeLabel: null as string | null,
+  povCharacterId: null as string | null,
+  locationId: null as string | null,
   createdAt: "2024-01-01T00:00:00Z",
 };
 
