@@ -281,13 +281,22 @@ export function useMapNodes({
           })
         : [];
 
-      setNodes([
+      const nextNodes = [
         ...frameNodes,
         ...sceneNodes,
         ...codexNodes,
         ...noteNodes,
         ...aiRfNodes,
-      ]);
+      ];
+      setNodes((prev) => {
+        const selectedIds = new Set(
+          prev.filter((n) => n.selected).map((n) => n.id),
+        );
+        if (selectedIds.size === 0) return nextNodes;
+        return nextNodes.map((n) =>
+          selectedIds.has(n.id) ? { ...n, selected: true } : n,
+        );
+      });
     }
 
     buildNodes();
