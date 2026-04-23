@@ -145,6 +145,60 @@ pub struct LintInput<'a> {
     pub scope: LintScope,
 }
 
+/// Rule-selection payload for a disable directive.
+///
+/// Wire format is `Vec<String>`. Valid values:
+///   - `["*"]` → disable every rule (call this "All")
+///   - Non-empty array of rule IDs not containing `"*"` (call this "Ids")
+///
+/// Empty arrays and `"*"` mixed with other IDs are rejected at the
+/// engine boundary — the directive is skipped and a
+/// `RuleWarning::InvalidOption` is surfaced so the author sees why
+/// their disable had no effect.
+///
+/// Phase 3 design:
+/// > `"*"` を明示することで意図を型レベルで表現し、空配列は「不正値」として弾く
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct RuleSelector(pub Vec<String>);
+
+/// Parsed view of `RuleSelector` after validation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SelectorKind {
+    All,
+    Ids(Vec<String>),
+}
+
+impl RuleSelector {
+    pub fn validate(&self) -> Result<SelectorKind, String> {
+        if self.0.is_empty() {
+            return Err("rules must not be empty (use [\"*\"] for all)".into());
+        }
+        let has_wildcard = self.0.iter().any(|s| s == "*");
+        if has_wildcard && self.0.len() > 1 {
+            return Err("\"*\" must not be mixed with other rule IDs".into());
+        }
+        if has_wildcard {
+            Ok(SelectorKind::All)
+        } else {
+            Ok(SelectorKind::Ids(self.0.clone()))
+        }
+    }
+}
+
+/// One disable directive.
+///
+/// The engine treats every directive as a `(range, rules)` pair. The UI
+/// distinguishes "Span" (TipTap Mark) vs "Block" (node attribute) so
+/// users can reason about scope, but from Rust's perspective they're
+/// identical: the client has already resolved the block's full extent
+/// into a `Utf16Range` before sending it.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DisableDirective {
+    pub rules: RuleSelector,
+    pub range: Utf16Range,
+}
+
 /// Runtime context exposed to rules.
 ///
 /// Phase 2 adds an optional slice of per-block morpheme tokens. The

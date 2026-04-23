@@ -16,7 +16,9 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use grimodex_lint::{lint, BlockKind, Diagnostic, Language, LintBlock, LintConfig, LintScope};
+use grimodex_lint::{
+    lint, BlockKind, Diagnostic, DisableDirective, Language, LintBlock, LintConfig, LintScope,
+};
 
 fn fixtures_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -73,6 +75,14 @@ fn run_fixture(dir: &Path) -> Vec<Diagnostic> {
         Err(_) => LintConfig::default(),
     };
 
+    // Optional `disables.json` — a JSON array of `DisableDirective`.
+    // Used by disable-specific fixtures to exercise the filter path.
+    let disables: Vec<DisableDirective> = match fs::read_to_string(dir.join("disables.json")) {
+        Ok(raw) => serde_json::from_str(&raw)
+            .unwrap_or_else(|e| panic!("{}: parse disables.json: {e}", dir.display())),
+        Err(_) => Vec::new(),
+    };
+
     let blocks = vec![LintBlock {
         id: 0,
         kind: BlockKind::Paragraph,
@@ -86,6 +96,7 @@ fn run_fixture(dir: &Path) -> Vec<Diagnostic> {
             scene_id: "fixture".into(),
         },
         &config,
+        &disables,
     )
     .expect("lint run");
     resp.diagnostics
