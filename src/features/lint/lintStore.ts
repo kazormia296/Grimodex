@@ -37,6 +37,11 @@ interface LintState {
    * Kick off a lint run for the given scene. Earlier in-flight requests
    * for the same scene are superseded — the request id mechanism means
    * any stale response is dropped on arrival.
+   *
+   * Implements incremental lint: only blocks whose `kind + text` changed
+   * since the last run are sent to Rust. Cached relative-offset diagnostics
+   * are shifted by the block's current `str_offset_start` and merged with
+   * the fresh results.
    */
   runLint: (
     sceneId: string,
@@ -108,84 +113,234 @@ function applyIgnoreFilter(
     .filterDiagnostics(sceneId, diagnostics, sceneText);
 }
 
-export const useLintStore = create<LintState>()((set, get) => ({
-  currentSceneId: null,
-  rawDiagnostics: [],
-  diagnostics: [],
-  lastSceneText: "",
-  warnings: [],
-  pendingRequestId: 0,
-  isLinting: false,
-  lastErrorMessage: null,
-  cursorOffset: null,
+// ---------------------------------------------------------------------------
+// Incremental lint helpers
+// ---------------------------------------------------------------------------
 
-  setCursorOffset: (offset) => set({ cursorOffset: offset }),
+/**
+ * Cache key for one block. Captures content identity: same kind + same text
+ * means the same diagnostics (all current rules are block-internal).
+ */
+export function blockCacheKey(block: WireLintBlock): string {
+  return `${block.kind}\0${block.text}`;
+}
 
-  setCurrentScene: (sceneId) => {
-    set({
-      currentSceneId: sceneId,
-      rawDiagnostics: [],
-      diagnostics: [],
-      lastSceneText: "",
-      warnings: [],
-    });
-  },
+/**
+ * Convert a Diagnostic with scene-wide absolute ranges to one whose ranges
+ * are relative to `offset` (the block's `str_offset_start`). The returned
+ * value is stored in the cache.
+ */
+export function toRelative(d: Diagnostic, offset: number): Diagnostic {
+  return {
+    ...d,
+    range: { start: d.range.start - offset, end: d.range.end - offset },
+    fix: d.fix
+      ? {
+          ...d.fix,
+          range: {
+            start: d.fix.range.start - offset,
+            end: d.fix.range.end - offset,
+          },
+        }
+      : undefined,
+  };
+}
 
-  clear: () =>
-    set({
-      rawDiagnostics: [],
-      diagnostics: [],
-      lastSceneText: "",
-      warnings: [],
-      isLinting: false,
-      lastErrorMessage: null,
-    }),
+/**
+ * Inverse of `toRelative`: add `offset` back to produce scene-wide absolute
+ * ranges from the cached relative ones.
+ */
+export function toAbsolute(d: Diagnostic, offset: number): Diagnostic {
+  return {
+    ...d,
+    range: { start: d.range.start + offset, end: d.range.end + offset },
+    fix: d.fix
+      ? {
+          ...d.fix,
+          range: {
+            start: d.fix.range.start + offset,
+            end: d.fix.range.end + offset,
+          },
+        }
+      : undefined,
+  };
+}
 
-  reapplyIgnores: (sceneId) => {
-    const { rawDiagnostics, lastSceneText, currentSceneId } = get();
-    if (currentSceneId !== sceneId) return;
-    const filtered = applyIgnoreFilter(sceneId, rawDiagnostics, lastSceneText);
-    set({ diagnostics: filtered });
-  },
+// ---------------------------------------------------------------------------
+// Store
+// ---------------------------------------------------------------------------
 
-  runLint: async (sceneId, blocks, config, language, sceneText) => {
-    const requestId = get().pendingRequestId + 1;
-    set({
-      pendingRequestId: requestId,
-      isLinting: true,
-      currentSceneId: sceneId,
-    });
+export const useLintStore = create<LintState>()((set, get) => {
+  /**
+   * Block-level diagnostic cache — NOT tracked by Zustand (implementation
+   * detail, not UI state). Values are relative-offset Diagnostics so they
+   * survive block repositioning without a full cache bust.
+   *
+   * Key: blockCacheKey(block) = `kind\0text`
+   */
+  let blockDiagCache = new Map<string, Diagnostic[]>();
+  /**
+   * JSON snapshot of { config, language } from the last runLint call.
+   * When this changes the entire block cache is invalidated.
+   */
+  let lastConfigKey = "";
 
-    const scope: LintScope = { kind: "scene", scene_id: sceneId };
+  return {
+    currentSceneId: null,
+    rawDiagnostics: [],
+    diagnostics: [],
+    lastSceneText: "",
+    warnings: [],
+    pendingRequestId: 0,
+    isLinting: false,
+    lastErrorMessage: null,
+    cursorOffset: null,
 
-    try {
-      const resp = await invoke<LintResponse>("lint_text", {
-        blocks,
-        language,
-        scope,
-        config,
+    setCursorOffset: (offset) => set({ cursorOffset: offset }),
+
+    setCurrentScene: (sceneId) => {
+      blockDiagCache = new Map();
+      lastConfigKey = "";
+      set({
+        currentSceneId: sceneId,
+        rawDiagnostics: [],
+        diagnostics: [],
+        lastSceneText: "",
+        warnings: [],
       });
-      // Drop if a newer request has been issued in the meantime.
-      if (get().pendingRequestId !== requestId) return;
-      const filtered = applyIgnoreFilter(sceneId, resp.diagnostics, sceneText);
-      set((s) => ({
-        rawDiagnostics: resp.diagnostics,
-        diagnostics: filtered,
-        lastSceneText: sceneText,
-        warnings: mergeWarnings(s.warnings, resp.warnings),
-        isLinting: false,
-        lastErrorMessage: null,
-      }));
-    } catch (err) {
-      if (get().pendingRequestId !== requestId) return;
-      const message = formatLintError(err);
+    },
+
+    clear: () => {
+      blockDiagCache = new Map();
+      lastConfigKey = "";
       set({
         rawDiagnostics: [],
         diagnostics: [],
         lastSceneText: "",
+        warnings: [],
         isLinting: false,
-        lastErrorMessage: message,
+        lastErrorMessage: null,
       });
-    }
-  },
-}));
+    },
+
+    reapplyIgnores: (sceneId) => {
+      const { rawDiagnostics, lastSceneText, currentSceneId } = get();
+      if (currentSceneId !== sceneId) return;
+      const filtered = applyIgnoreFilter(
+        sceneId,
+        rawDiagnostics,
+        lastSceneText,
+      );
+      set({ diagnostics: filtered });
+    },
+
+    runLint: async (sceneId, blocks, config, language, sceneText) => {
+      const requestId = get().pendingRequestId + 1;
+
+      // Invalidate block cache when config or language changes.
+      const configKey = JSON.stringify({ config, language });
+      if (configKey !== lastConfigKey) {
+        blockDiagCache = new Map();
+        lastConfigKey = configKey;
+      }
+
+      set({
+        pendingRequestId: requestId,
+        isLinting: true,
+        currentSceneId: sceneId,
+      });
+
+      const scope: LintScope = { kind: "scene", scene_id: sceneId };
+
+      // Split blocks: hits come from cache, misses go to Rust.
+      const hitBlocks: WireLintBlock[] = [];
+      const missBlocks: WireLintBlock[] = [];
+      for (const block of blocks) {
+        if (blockDiagCache.has(blockCacheKey(block))) {
+          hitBlocks.push(block);
+        } else {
+          missBlocks.push(block);
+        }
+      }
+
+      try {
+        let freshDiagnostics: Diagnostic[] = [];
+        let freshWarnings: RuleWarning[] = [];
+
+        if (missBlocks.length > 0) {
+          const resp = await invoke<LintResponse>("lint_text", {
+            blocks: missBlocks,
+            language,
+            scope,
+            config,
+          });
+          // Drop if a newer request superseded this one.
+          if (get().pendingRequestId !== requestId) return;
+
+          freshWarnings = resp.warnings;
+
+          // Attribute each returned diagnostic to its source block by
+          // range interval, then cache as relative offsets.
+          for (const block of missBlocks) {
+            const blockEnd = block.str_offset_start + block.text.length;
+            const blockDiags = resp.diagnostics.filter(
+              (d) =>
+                d.range.start >= block.str_offset_start &&
+                d.range.start < blockEnd,
+            );
+            blockDiagCache.set(
+              blockCacheKey(block),
+              blockDiags.map((d) => toRelative(d, block.str_offset_start)),
+            );
+            freshDiagnostics.push(...blockDiags);
+          }
+        } else {
+          // All blocks were cache hits — no Rust call needed.
+          if (get().pendingRequestId !== requestId) return;
+        }
+
+        // Reconstruct absolute diagnostics from cache hits.
+        for (const block of hitBlocks) {
+          const cached = blockDiagCache.get(blockCacheKey(block)) ?? [];
+          freshDiagnostics.push(
+            ...cached.map((d) => toAbsolute(d, block.str_offset_start)),
+          );
+        }
+
+        // Restore deterministic ordering (Rust sorts within each run; we
+        // need to re-sort after merging hit and miss results).
+        freshDiagnostics.sort(
+          (a, b) => a.range.start - b.range.start || a.range.end - b.range.end,
+        );
+
+        const filtered = applyIgnoreFilter(
+          sceneId,
+          freshDiagnostics,
+          sceneText,
+        );
+        set((s) => ({
+          rawDiagnostics: freshDiagnostics,
+          diagnostics: filtered,
+          lastSceneText: sceneText,
+          warnings: mergeWarnings(s.warnings, freshWarnings),
+          isLinting: false,
+          lastErrorMessage: null,
+        }));
+      } catch (err) {
+        if (get().pendingRequestId !== requestId) return;
+        // Clear the block cache on error — stale entries could mask the root
+        // cause on the next successful run.
+        blockDiagCache = new Map();
+        lastConfigKey = "";
+        const message = formatLintError(err);
+        set({
+          rawDiagnostics: [],
+          diagnostics: [],
+          lastSceneText: "",
+          isLinting: false,
+          lastErrorMessage: message,
+        });
+      }
+    },
+  };
+});
