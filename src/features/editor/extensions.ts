@@ -20,6 +20,8 @@ import { FindReplaceExtension } from "@/features/editor/FindReplaceExtension";
 import { InlineAtomNavigationExtension } from "@/features/editor/InlineAtomNavigationExtension";
 import { SlashCommandExtension } from "@/features/editor/inlineAi/SlashCommandExtension";
 import { createLintDecorationPlugin } from "@/features/editor/LintDecorationPlugin";
+import { LintDisableMark } from "@/features/editor/LintDisableMark";
+import { LintDisableBlockAttrs } from "@/features/editor/LintDisableBlockAttrs";
 import i18next from "@/lib/i18n";
 import type { Extensions } from "@tiptap/core";
 
@@ -122,6 +124,8 @@ export function getEditorExtensions(): Extensions {
     InlineAtomNavigationExtension,
     SlashCommandExtension,
     LintDecorationExtension,
+    LintDisableMark,
+    LintDisableBlockAttrs,
   ];
 }
 

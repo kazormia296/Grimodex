@@ -88,8 +88,11 @@ function isDisabled(
   resolved: Array<{ kind: SelectorKind; range: Utf16Range }>,
 ): boolean {
   return resolved.some((r) => {
-    if (r.range.start > d.range.start || r.range.end < d.range.end)
-      return false;
+    // Mirror Rust's `Utf16Range::contains` directly — identical
+    // semantics to the engine filter path.
+    const contained =
+      r.range.start <= d.range.start && d.range.end <= r.range.end;
+    if (!contained) return false;
     if (r.kind.type === "all") return true;
     return r.kind.ids.some((id) => id === d.rule_id);
   });
