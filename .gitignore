@@ -9,3 +9,8 @@ docs/.claude/settings.local.json
 .obsidian/
 .claude/worktrees/
 temp/
+
+# Lindera UniDic 辞書のキャッシュ（~140MB）。
+# cargo build 時に LINDERA_DICTIONARIES_PATH でここを指す想定。
+# 詳細は src-tauri/crates/grimodex-lint/README を参照。
+lindera-cache/

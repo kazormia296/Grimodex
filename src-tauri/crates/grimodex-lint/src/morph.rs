@@ -13,7 +13,7 @@
 
 use std::sync::OnceLock;
 
-use lindera::dictionary::{load_dictionary_from_kind, DictionaryKind};
+use lindera::dictionary::{load_embedded_dictionary, DictionaryKind};
 use lindera::mode::Mode;
 use lindera::segmenter::Segmenter;
 use lindera::tokenizer::Tokenizer;
@@ -52,7 +52,7 @@ static TOKENIZER: OnceLock<Result<Tokenizer, String>> = OnceLock::new();
 /// error rather than `unwrap`.
 fn tokenizer() -> Result<&'static Tokenizer, &'static str> {
     let slot = TOKENIZER.get_or_init(|| {
-        let dict = load_dictionary_from_kind(DictionaryKind::UniDic)
+        let dict = load_embedded_dictionary(DictionaryKind::UniDic)
             .map_err(|e| format!("load UniDic dictionary: {e}"))?;
         let segmenter = Segmenter::new(Mode::Normal, dict, None);
         Ok(Tokenizer::new(segmenter))
@@ -94,7 +94,7 @@ pub fn tokenize_block(text: &str) -> Result<Vec<MorphToken>, String> {
         let pos_sub1 = detail_at(&details, 1);
         let lemma = detail_at(&details, UNIDIC_LEMMA_INDEX);
         out.push(MorphToken {
-            surface: t.text.to_string(),
+            surface: t.surface.to_string(),
             byte_start: t.byte_start,
             byte_end: t.byte_end,
             pos_major,

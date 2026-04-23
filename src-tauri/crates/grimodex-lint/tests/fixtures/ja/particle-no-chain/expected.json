@@ -1,0 +1,20 @@
+[
+  {
+    "rule_id": "ja/particle-no-chain",
+    "severity": "warning",
+    "message": "「の」が 3 回連続しています。言い換えを検討してください",
+    "range": {
+      "start": 0,
+      "end": 8
+    }
+  },
+  {
+    "rule_id": "ja/particle-no-chain",
+    "severity": "warning",
+    "message": "「の」が 4 回連続しています。言い換えを検討してください",
+    "range": {
+      "start": 17,
+      "end": 27
+    }
+  }
+]
