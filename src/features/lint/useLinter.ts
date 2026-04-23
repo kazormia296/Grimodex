@@ -10,6 +10,7 @@ import {
   buildLintDecorations,
 } from "@/features/editor/LintDecorationPlugin";
 import { useLintStore } from "./lintStore";
+import { useLintIgnoreStore } from "./lintIgnoreStore";
 import { useLintConfigStore } from "./lintConfigStore";
 import { resolveLintLanguage } from "./types";
 import type { LintConfig, WireLintBlock } from "./types";
@@ -26,10 +27,11 @@ export function runLintNow(
 ): Promise<void> {
   const map = buildOffsetMap(editor.state.doc);
   const blocks = toWire(map.blocks);
+  const sceneText = map.blocks.map((b) => b.text).join("\n");
   const config = configOverride ?? resolveEffectiveConfig();
   return useLintStore
     .getState()
-    .runLint(sceneId, blocks, config, resolveLintLanguage());
+    .runLint(sceneId, blocks, config, resolveLintLanguage(), sceneText);
 }
 
 /**
@@ -124,11 +126,30 @@ export function useLinter(editor: Editor | null, sceneId: string | null): void {
         }
         const map = buildOffsetMap(editor.state.doc);
         const blocks = toWire(map.blocks);
-        void runLint(sceneId, blocks, cfgStore.getWireConfig(), lang);
+        const sceneText = map.blocks.map((b) => b.text).join("\n");
+        void runLint(
+          sceneId,
+          blocks,
+          cfgStore.getWireConfig(),
+          lang,
+          sceneText,
+        );
       }, delay);
     }
 
     setCurrentScene(sceneId);
+
+    // Kick off loading persistent-ignore entries for this scene. When it
+    // resolves we re-apply the filter against the current rawDiagnostics.
+    void useLintIgnoreStore
+      .getState()
+      .loadScene(sceneId)
+      .then(() => {
+        useLintStore.getState().reapplyIgnores(sceneId);
+      })
+      .catch(() => {
+        /* ignore — load failures leave filter as no-op */
+      });
 
     // Listen to `transaction` instead of `update` — scene-switch loads
     // content via `setContent(..., { emitUpdate: false })`, which

@@ -574,6 +574,22 @@ impl Database {
             CREATE INDEX IF NOT EXISTS idx_map_frames_board
                 ON map_frames(board_id);
 
+            -- Lint persistent ignore list (Phase 2)
+            CREATE TABLE IF NOT EXISTS lint_ignored_diagnostics (
+                id              TEXT PRIMARY KEY,
+                rule_id         TEXT NOT NULL,
+                scene_id        TEXT NOT NULL REFERENCES tree_nodes(id) ON DELETE CASCADE,
+                text_snippet    TEXT NOT NULL,
+                context_before  TEXT NOT NULL,
+                context_after   TEXT NOT NULL,
+                note            TEXT,
+                created_at      INTEGER NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_lint_ignored_scene
+                ON lint_ignored_diagnostics(scene_id);
+            CREATE INDEX IF NOT EXISTS idx_lint_ignored_rule
+                ON lint_ignored_diagnostics(rule_id);
+
             -- Seed a default Map board for every new project
             CREATE TRIGGER IF NOT EXISTS seed_default_map_board
             AFTER INSERT ON projects BEGIN

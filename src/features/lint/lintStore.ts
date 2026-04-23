@@ -9,11 +9,17 @@ import type {
   RuleWarning,
   WireLintBlock,
 } from "./types";
+import { useLintIgnoreStore } from "./lintIgnoreStore";
 
 interface LintState {
   /** Scene id whose diagnostics are currently displayed. */
   currentSceneId: string | null;
+  /** Diagnostics produced by Rust, before applying the ignore filter. */
+  rawDiagnostics: Diagnostic[];
+  /** Diagnostics to display (raw minus persistent-ignore matches). */
   diagnostics: Diagnostic[];
+  /** Scene text that was linted — used to re-apply ignore matching. */
+  lastSceneText: string;
   warnings: RuleWarning[];
   /** Monotonic counter used to discard stale responses. */
   pendingRequestId: number;
@@ -31,7 +37,15 @@ interface LintState {
     blocks: WireLintBlock[],
     config: LintConfig,
     language: LintLanguage,
+    sceneText: string,
   ) => Promise<void>;
+
+  /**
+   * Re-run the ignore filter against the current raw diagnostics without
+   * going back to Rust. Call this after the ignore list for this scene
+   * changes (e.g. user added / removed an entry).
+   */
+  reapplyIgnores: (sceneId: string) => void;
 
   /** Reset state when a scene is closed or the linter is disabled. */
   clear: () => void;
@@ -60,27 +74,54 @@ function formatLintError(err: unknown): string {
   return String(err);
 }
 
+function applyIgnoreFilter(
+  sceneId: string,
+  diagnostics: Diagnostic[],
+  sceneText: string,
+): Diagnostic[] {
+  return useLintIgnoreStore
+    .getState()
+    .filterDiagnostics(sceneId, diagnostics, sceneText);
+}
+
 export const useLintStore = create<LintState>()((set, get) => ({
   currentSceneId: null,
+  rawDiagnostics: [],
   diagnostics: [],
+  lastSceneText: "",
   warnings: [],
   pendingRequestId: 0,
   isLinting: false,
   lastErrorMessage: null,
 
   setCurrentScene: (sceneId) => {
-    set({ currentSceneId: sceneId, diagnostics: [], warnings: [] });
+    set({
+      currentSceneId: sceneId,
+      rawDiagnostics: [],
+      diagnostics: [],
+      lastSceneText: "",
+      warnings: [],
+    });
   },
 
   clear: () =>
     set({
+      rawDiagnostics: [],
       diagnostics: [],
+      lastSceneText: "",
       warnings: [],
       isLinting: false,
       lastErrorMessage: null,
     }),
 
-  runLint: async (sceneId, blocks, config, language) => {
+  reapplyIgnores: (sceneId) => {
+    const { rawDiagnostics, lastSceneText, currentSceneId } = get();
+    if (currentSceneId !== sceneId) return;
+    const filtered = applyIgnoreFilter(sceneId, rawDiagnostics, lastSceneText);
+    set({ diagnostics: filtered });
+  },
+
+  runLint: async (sceneId, blocks, config, language, sceneText) => {
     const requestId = get().pendingRequestId + 1;
     set({
       pendingRequestId: requestId,
@@ -99,8 +140,11 @@ export const useLintStore = create<LintState>()((set, get) => ({
       });
       // Drop if a newer request has been issued in the meantime.
       if (get().pendingRequestId !== requestId) return;
+      const filtered = applyIgnoreFilter(sceneId, resp.diagnostics, sceneText);
       set({
-        diagnostics: resp.diagnostics,
+        rawDiagnostics: resp.diagnostics,
+        diagnostics: filtered,
+        lastSceneText: sceneText,
         warnings: resp.warnings,
         isLinting: false,
         lastErrorMessage: null,
@@ -109,7 +153,9 @@ export const useLintStore = create<LintState>()((set, get) => ({
       if (get().pendingRequestId !== requestId) return;
       const message = formatLintError(err);
       set({
+        rawDiagnostics: [],
         diagnostics: [],
+        lastSceneText: "",
         warnings: [],
         isLinting: false,
         lastErrorMessage: message,

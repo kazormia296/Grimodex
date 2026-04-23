@@ -653,6 +653,26 @@ export const mapFrames = sqliteTable(
   (table) => [index("idx_map_frames_board").on(table.boardId)],
 );
 
+export const lintIgnoredDiagnostics = sqliteTable(
+  "lint_ignored_diagnostics",
+  {
+    id: text("id").primaryKey(),
+    ruleId: text("rule_id").notNull(),
+    sceneId: text("scene_id")
+      .notNull()
+      .references(() => treeNodes.id, { onDelete: "cascade" }),
+    textSnippet: text("text_snippet").notNull(),
+    contextBefore: text("context_before").notNull(),
+    contextAfter: text("context_after").notNull(),
+    note: text("note"),
+    createdAt: integer("created_at").notNull(),
+  },
+  (table) => [
+    index("idx_lint_ignored_scene").on(table.sceneId),
+    index("idx_lint_ignored_rule").on(table.ruleId),
+  ],
+);
+
 // Type exports
 export type AuthorshipSpan = typeof authorshipSpans.$inferSelect;
 export type NewAuthorshipSpan = typeof authorshipSpans.$inferInsert;
@@ -687,3 +707,7 @@ export type MapFrame = typeof mapFrames.$inferSelect;
 export type NewMapFrame = typeof mapFrames.$inferInsert;
 export type MapAiNode = typeof mapAiNodes.$inferSelect;
 export type NewMapAiNode = typeof mapAiNodes.$inferInsert;
+
+export type LintIgnoredDiagnostic = typeof lintIgnoredDiagnostics.$inferSelect;
+export type NewLintIgnoredDiagnostic =
+  typeof lintIgnoredDiagnostics.$inferInsert;
