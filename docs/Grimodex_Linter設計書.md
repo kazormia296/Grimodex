@@ -9,7 +9,7 @@ Grimodex のテキスト Linter は、執筆中の文章に対して**確定論�
 ### 設計の柱
 
 1. **Rust ネイティブ実装**: Tauri アプリの軽量性を保ち、Codex DB との連携を直接的に
-2. **確定論的に保つ**: AI 連携は本機能から除外。判定が常に再現可能で説明可能
+2. **決定論的に保つ**: AI 連携は本機能から除外。判定が常に再現可能で説明可能
 3. **段階的なルール追加**: regex で済むものから始め、形態素解析・Codex 連動へ拡張
 4. **既存資産の活用**: textlint エコシステムから**辞書データのみ**を抽出して取り込む（ランタイムは取り込まない）
 
@@ -946,6 +946,177 @@ match = rule_id 一致
 
 **古い無視エントリの扱い**: テキスト変更で context の両方が一致しなくなると、その無視エントリは効かなくなる。設定画面に「古い無視エントリ」として一覧表示し、手動で削除可能にする。
 
+---
+
+## インライン無効化（Phase 3）
+
+TipTap ドキュメント内に埋め込む無効化指示。ユーザーは UI（ホバーボタン・右クリック・エディタメニュー）から挿入・解除する。
+
+### 永続無視リストとの違い
+
+| 仕組み | 同定方法 | 用途例 |
+|---|---|---|
+| **永続無視リスト**（Phase 2） | `(rule_id, text_snippet, context 前後)` 一致 | 「"ウェブ" は正式表記として使っている」→ シーン内全て無視 |
+| **インライン無効化**（Phase 3） | テキストに埋め込んだ directive の位置 | 「この会話文だけは意図的に『、、』を使っている」→ 該当 1 箇所のみ無視 |
+
+両者は残して併用。永続無視は「内容ベース」、インラインは「位置ベース」。
+
+### 格納方式: TipTap Mark + ブロック属性
+
+**Plain text コメント方式（`<!-- lint-disable -->`）は採用しない**。理由: 小説テキストにマークアップが混ざる／エクスポート時の除去漏れ事故リスク／執筆体験の違和感。
+
+#### インライン粒度（Mark）
+
+```typescript
+const LintDisableMark = Mark.create({
+  name: 'lintDisable',
+  inclusive: false,                  // 端での入力で Mark が拡張しないように
+  attrs: {
+    rules: { default: [] as string[] },  // 無効化するルール ID 配列（空 = 全ルール）
+  },
+  // copy/paste: TipTap デフォルトに従い Mark も一緒にコピー
+});
+```
+
+**`inclusive: false` の理由**: 執筆中に disable 範囲の端に文字を入力した時に、意図せず無効化範囲が広がるのを防ぐため。
+
+#### ブロック粒度（属性）
+
+Paragraph / Heading / Blockquote / ListItem / TableCell に属性を追加:
+
+```typescript
+{
+  lintDisable: string[] | null,  // このブロックで無効化するルール ID（空配列 = 全ルール）
+}
+```
+
+### 階層的な粒度と優先順位
+
+| 粒度 | 適用範囲 | 格納 |
+|---|---|---|
+| **Span（インライン）** | 選択範囲のみ | `lintDisable` Mark |
+| **Block** | 段落・見出し等のブロック全体 | ブロックの `lintDisable` 属性 |
+| **Scene** | シーン全体で特定ルール OFF | （Phase 4+） |
+| **Project** | プロジェクト全体 | 既存の `lint.config` |
+
+**合成ルール**: 同一位置に複数粒度の disable が重なる場合、**無効化されるルール ID の集合和（ユニオン）** が適用される。
+
+- 例: Span が `ja/ellipsis-single` を無効化、Block が `ja/dash-single` を無効化
+- Span の範囲内では **両方のルールが無効化**される
+
+**Block 無効化の範囲**: ブロックの textContent 全体に適用。内部に Span disable があればその範囲で Block ∪ Span のユニオンで無効化。
+
+### UI フロー
+
+1. **Diagnostic ホバー時のツールチップ**: 「この箇所でこのルールを無効化（インライン）」ボタン
+2. **Linter パネルの右クリック**: 「この箇所で無効化（インライン）」/「このブロックで無効化（ブロック）」
+3. **エディタ右クリックメニュー**: 選択範囲があれば「選択範囲でルールを無効化 → [サブメニューでルール選択]」
+4. **解除**: 無効化 span 上で右クリック →「無効化を解除」
+
+**ルール選択 UI**: デフォルトで「どのルールを無効化するか」のマルチセレクトを表示。「すべてのルール」は**明示的なチェックボックス**で選ぶ必要がある（誤操作で広範囲を無効化する事故を防ぐ）。
+
+### 視覚的表示
+
+- 無効化 Span: 薄いグレーの下線（既定）
+- **「全ルール無効化」の Span**: 通常より目立つ色（ただし警告色ではない）で区別表示
+- ガター（行頭）に小さなアイコン「この行に disable あり」
+- 設定で **表示 ON/OFF** 可能（執筆時に邪魔なら隠せる）
+
+### Rust 側への受け渡し
+
+位置マップ構築時に `lintDisable` Mark とブロック属性を walk して `DisableDirective` を収集:
+
+```rust
+pub struct LintInput<'a> {
+    pub blocks: &'a [LintBlock],
+    pub disables: &'a [DisableDirective],   // 追加
+    pub language: Language,
+    pub scope: LintScope,
+}
+
+pub struct DisableDirective {
+    pub range: Utf16Range,          // 無効化範囲（UTF-16、シーン全体座標）
+    pub rule_ids: Vec<String>,      // 対象ルール ID。空配列は「全ルール」
+    pub kind: DisableKind,
+}
+
+pub enum DisableKind {
+    Span,       // インライン
+    Block,      // ブロック全体
+}
+```
+
+### 位置マップ構築時の directive 抽出
+
+doc を walk する際、以下を同時に行う:
+
+1. TextNode → 位置マップ区間を追加
+2. `lintDisable` Mark 発見時 → `DisableDirective { kind: Span, range, rule_ids }` を収集
+3. ブロックノードの `lintDisable` 属性発見時 → `DisableDirective { kind: Block, range: ブロック全域, rule_ids }` を収集
+
+位置マップと `disables: DisableDirective[]` をセットで Rust 側に渡す。
+
+### Diagnostic フィルタ
+
+Lint エンジンは Diagnostic を**発行前にフィルタ**:
+
+```rust
+fn is_disabled(diag: &Diagnostic, disables: &[DisableDirective]) -> bool {
+    disables.iter().any(|d| {
+        d.range.contains(&diag.range)
+            && (d.rule_ids.is_empty() || d.rule_ids.contains(&diag.rule_id))
+    })
+}
+```
+
+発行前フィルタを採用することで、無効化された Diagnostic は Linter パネル・Decoration・警告インジケータのいずれにも現れない。
+
+### Fix 適用と Disable の相互作用
+
+Fix 適用時に `Fix.range` が disable Span と重なる場合:
+
+- **TipTap 標準挙動に従う（黙って実行）**
+- 文字置換により disable Mark の範囲は自動的に縮小／消滅する（TipTap の既定）
+- Fix 結果として **disable が完全消滅した場合、Linter パネルに通知**: 「Fix 適用により disable が削除されました」
+- 事前警告はしない（執筆体験を阻害しない）
+
+### エクスポート時の扱い
+
+- **テキストエクスポート**（.txt / .docx / .ePub / .md）: `lintDisable` Mark / ブロック属性は**完全に無視**してテキストのみ出力
+- **プロジェクト JSON スナップショット**: 保持
+- エクスポーター実装時の**必須テストケース**: 「disable 入りシーン → 出力に directive 情報が含まれない」
+
+実装順として **TipTap 拡張と同時にエクスポーター側の無視処理を実装**する（事故予防）。
+
+### 発見しやすさ（忘却対策）
+
+対策:
+- **Linter パネルに「Disables」タブ**（Phase 3）
+  - 現在シーン／プロジェクト全体の無効化一覧
+  - クリックで該当箇所へジャンプ
+  - そこから解除可能
+- ガターアイコンで常時視認可能（設定で OFF 可）
+- ステータスバーに無効化件数表示（任意）
+
+**Project モードの集約ロジック**: 開いたことのないシーンの disable も集計するため、プロジェクト DB に保存されたシーンコンテンツ（`tree_nodes.content` 等）を走査して `lintDisable` を抽出する処理が必要。Phase 3 のタスクに含める。
+
+### エッジケース
+
+| ケース | 挙動 |
+|---|---|
+| 無効化 Span が複数ブロックをまたぐ | **禁止**（TipTap Mark の仕様上、1 ブロック内に閉じる）。ブロック跨ぎが必要ならブロック disable を併用 |
+| 同一範囲に複数 directive | ルール ID のユニオンを適用 |
+| 空の Mark（テキストなし） | 無効化は発動しない |
+| 無効化箇所で Fix 適用 | Fix は出ない（Diagnostic 自体が出ないため） |
+| Undo/Redo | TipTap の標準 undo に乗る（Mark 操作は自然に undo される） |
+| Copy/Paste | Mark は一緒にコピーされる（TipTap デフォルト） |
+
+### Future（Phase 3 内の後半 or それ以降）
+
+- Disable の検索フィルタ（「全ての `ja/ellipsis-single` disable」）
+- Disable のバッチ削除（シーン単位）
+- AI 校正（将来機能）との責務分離 — Linter の disable は AI 校正を無効化しない（責務分離）
+
 ### ステータスバー
 
 - **現在シーンのみ**の Diagnostic 数を表示（例: `⚠ 3  ⓘ 7`）
@@ -1073,8 +1244,17 @@ UI 側（Linter パネル）はサブフェーズに分けて実装:
 - B群（文体・時制混在）
 - E群（フィルターワード、会話タグ単調さ）
 - 英語の Phase 2/3 ルール（passive voice, weasel words, dialogue tag）
-- **インライン Lint 無効化記法**（`<!-- lint-disable-next-line <rule-id> -->` 相当）— 固有名詞や意図的な表現を個別に除外できる
 - Linter パネルのフィルタプリセット保存
+
+**インライン無効化（推奨作業順）**:
+
+1. **TipTap Mark/Node 拡張**（`inclusive: false`、ブロック属性追加）
+2. **エクスポーター側の無視処理を同時実装**（事故予防のため先に潰す）
+3. 位置マップ構築時の directive 抽出
+4. Tauri Command `lint_text` に `disables` を追加、Rust 側フィルタ
+5. UI（Diagnostic ホバー、右クリック、エディタメニュー、「全ルール無効化」は明示チェックボックス）
+6. Linter パネル「Disables」タブ（Project モード集約含む）
+7. ゴールデンファイルテスト網羅（粒度ごと、Fix 相互作用、Undo/Redo、Copy/Paste）
 
 ### 将来的検討（本設計のスコープ外）
 
@@ -1120,6 +1300,11 @@ UI 側（Linter パネル）はサブフェーズに分けて実装:
 | Fix 適用後の選択状態 | 解除。スクロールは上部基準で維持 |
 | 全章 Lint キャンセル | 部分結果保持、残りのみ再開可能 |
 | 永続無視の同定 | `rule_id` + `text_snippet` + (`context_before` OR `context_after`) |
+| インライン無効化の格納 | TipTap `lintDisable` Mark（`inclusive: false`）+ ブロック属性。Plain text コメント方式は不採用 |
+| インライン無効化の粒度 | Span / Block（+ 将来 Scene）。重複時はルール ID のユニオン |
+| 「全ルール無効化」 | `rule_ids: []`。UI では明示的なチェックボックスで選択必須 |
+| Fix × Disable | TipTap 標準挙動（黙って実行）。disable 消失時は Linter パネルに通知 |
+| エクスポート | `lintDisable` Mark/ブロック属性は除去。テスト必須 |
 | テスト | ゴールデンファイル形式を day 1 から |
 
 ---
