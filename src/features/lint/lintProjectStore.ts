@@ -9,12 +9,23 @@
 import { create } from "zustand";
 import { useLintConfigStore } from "./lintConfigStore";
 import { resolveLintLanguage } from "./types";
-import type { Diagnostic } from "./types";
+import type { Diagnostic, Utf16Range } from "./types";
 import {
   scanProject,
   type ProjectScanProgress,
   type ScannedScene,
 } from "./projectScan";
+
+/**
+ * A deferred "open scene, then jump to this range" action. Written by
+ * the panel when the user clicks a project-mode diagnostic for a
+ * non-current scene; consumed by the editor after it finishes
+ * loading that scene's content.
+ */
+export interface PendingJump {
+  sceneId: string;
+  range: Utf16Range;
+}
 
 export type ScanPhase = "idle" | "running" | "done" | "cancelled" | "error";
 
@@ -34,6 +45,10 @@ interface LintProjectState {
   cancel: () => void;
   clear: () => void;
   replaceSceneDiagnostics: (sceneId: string, diagnostics: Diagnostic[]) => void;
+  /** Request a scene open + jump. Consumed once by useLinter. */
+  pendingJump: PendingJump | null;
+  requestJump: (jump: PendingJump) => void;
+  consumeJump: (sceneId: string) => PendingJump | null;
 }
 
 let activeController: AbortController | null = null;
@@ -47,6 +62,16 @@ export const useLintProjectStore = create<LintProjectState>()((set, get) => ({
   scenes: [],
   fatalError: null,
   completedAt: null,
+  pendingJump: null,
+
+  requestJump: (jump) => set({ pendingJump: jump }),
+
+  consumeJump: (sceneId) => {
+    const { pendingJump } = get();
+    if (!pendingJump || pendingJump.sceneId !== sceneId) return null;
+    set({ pendingJump: null });
+    return pendingJump;
+  },
 
   start: async (projectId) => {
     // If a scan is already running, ignore — user should cancel first.

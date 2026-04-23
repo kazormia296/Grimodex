@@ -4,6 +4,7 @@ import type { Editor } from "@tiptap/react";
 import {
   buildOffsetMap,
   pmPosToStrOffset,
+  strOffsetToPmPos,
   type LintBlock as OffsetLintBlock,
 } from "@/features/editor/offsetMap";
 import {
@@ -12,6 +13,7 @@ import {
 } from "@/features/editor/LintDecorationPlugin";
 import { useLintStore } from "./lintStore";
 import { useLintIgnoreStore } from "./lintIgnoreStore";
+import { useLintProjectStore } from "./lintProjectStore";
 import { useLintConfigStore } from "./lintConfigStore";
 import { resolveLintLanguage } from "./types";
 import type { LintCodexEntry, LintConfig, WireLintBlock } from "./types";
@@ -233,6 +235,8 @@ export function useLinter(editor: Editor | null, sceneId: string | null): void {
       // always debounce — but on scene switch the initial schedule(0)
       // below handles the immediate case.
       schedule(DEBOUNCE_MS);
+      // Pending project-mode jump, if any.
+      tryJump();
     };
     editor.on("transaction", onTransaction);
 
@@ -251,6 +255,44 @@ export function useLinter(editor: Editor | null, sceneId: string | null): void {
     // async content-loader (setContent in EditorPane) has a chance to
     // drop the new scene's JSON into the editor before we serialise.
     schedule(0);
+
+    // If a project-mode diagnostic click asked us to jump to this
+    // scene, defer until the EditorPane's async setContent fires.
+    // We watch for a single `create`-like transaction (docChanged +
+    // doc size > 2) and attempt the jump once. If the doc is already
+    // loaded, the first pending-jump check below succeeds immediately.
+    let jumpAttempted = false;
+    const tryJump = () => {
+      if (jumpAttempted || !editor || !sceneId) return false;
+      const jump = useLintProjectStore.getState().consumeJump(sceneId);
+      if (!jump) {
+        jumpAttempted = true; // nothing to do
+        return false;
+      }
+      const map = buildOffsetMap(editor.state.doc);
+      if (map.totalLength < jump.range.end) {
+        // Content not loaded yet — retry on next transaction.
+        useLintProjectStore.getState().requestJump(jump);
+        return false;
+      }
+      const from = strOffsetToPmPos(map, jump.range.start);
+      const to = strOffsetToPmPos(map, jump.range.end);
+      if (from == null || to == null) {
+        jumpAttempted = true;
+        return false;
+      }
+      editor
+        .chain()
+        .focus()
+        .setTextSelection({ from, to })
+        .scrollIntoView()
+        .run();
+      jumpAttempted = true;
+      return true;
+    };
+    // First attempt: content may already be loaded (e.g. switching
+    // back to a scene whose editor is still warm).
+    queueMicrotask(tryJump);
 
     // Re-run lint immediately when the effective config changes
     // (per design: "設定変更 → 現在シーンを即座に再 Lint").

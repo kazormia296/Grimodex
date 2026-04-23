@@ -186,10 +186,10 @@ export async function scanProject(
   opts: ProjectScanOptions,
 ): Promise<ProjectScanResult> {
   const results: ScannedScene[] = [];
-  let fatalError: string | null = null;
+  const fatalError: string | null = null;
 
   // Pull every node for the project, then narrow to scenes.
-  let allNodes;
+  let allNodes: Awaited<ReturnType<typeof listNodes>>;
   try {
     allNodes = await listNodes(opts.projectId);
   } catch (e) {
@@ -225,7 +225,7 @@ export async function scanProject(
       currentSceneTitle: node.title,
     });
 
-    let content = "";
+    let content: string;
     try {
       content = await loadSceneContent(node.id);
     } catch {

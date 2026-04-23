@@ -14,11 +14,18 @@ import {
 
 import { useEditorStore } from "@/features/editor/editorStore";
 import { buildOffsetMap, strOffsetToPmPos } from "@/features/editor/offsetMap";
+import { useTabStore } from "@/features/editor/tabStore";
 import type { Diagnostic, RuleWarning, Severity } from "./types";
 import { useLintStore } from "./lintStore";
 import { useLintIgnoreStore } from "./lintIgnoreStore";
 import { useLintConfigStore } from "./lintConfigStore";
+import { useLintProjectStore } from "./lintProjectStore";
+import type { ScannedScene } from "./projectScan";
 import { runLintNow } from "./useLinter";
+
+const DEFAULT_PROJECT_ID = "default-project";
+
+type PanelMode = "current" | "project";
 
 type GroupMode = "severity" | "rule" | "none";
 
@@ -164,7 +171,7 @@ function SeverityChip({
 }
 
 /**
- * Phase 2 Linter panel.
+ * Phase 2 Linter panel, Current mode (= 現在シーン).
  *
  * - Severity filter, search, group by severity/rule/none
  * - 右クリックメニュー: 永続無視 / ルール OFF / ルール詳細
@@ -172,7 +179,7 @@ function SeverityChip({
  * - エディタカーソル位置の Diagnostic を強調
  * - ヘッダに「全 Fix 適用」ボタン
  */
-export function LinterPanel() {
+function CurrentLinterView() {
   const editor = useEditorStore((s) => s.editor);
   const diagnostics = useLintStore((s) => s.diagnostics);
   const warnings = useLintStore((s) => s.warnings);
@@ -491,7 +498,7 @@ export function LinterPanel() {
   }
 
   return (
-    <div className="flex h-full flex-col" data-testid="lint-panel">
+    <div className="flex h-full flex-col">
       {header}
       <div className="flex-1 overflow-y-auto" ref={listRef} tabIndex={0}>
         {grouped.length === 0 ? (
@@ -803,5 +810,332 @@ function ContextMenu({
         キャンセル
       </button>
     </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// Top-level orchestrator: mode toggle + dispatch.
+// ─────────────────────────────────────────────────────────────────────
+
+/**
+ * Phase 2 Linter panel entry point. Owns the Current / Project mode
+ * toggle; each sub-view owns its own filters / selection / progress.
+ */
+export function LinterPanel() {
+  const [mode, setMode] = useState<PanelMode>("current");
+  return (
+    <div className="flex h-full flex-col" data-testid="lint-panel">
+      <ModeBar mode={mode} setMode={setMode} />
+      <div className="min-h-0 flex-1">
+        {mode === "current" ? <CurrentLinterView /> : <ProjectLinterView />}
+      </div>
+    </div>
+  );
+}
+
+function ModeBar({
+  mode,
+  setMode,
+}: {
+  mode: PanelMode;
+  setMode: (m: PanelMode) => void;
+}) {
+  return (
+    <div className="flex items-center gap-1 border-b border-border bg-muted/20 px-2 py-1 text-xs">
+      <button
+        type="button"
+        onClick={() => setMode("current")}
+        className={`rounded px-2 py-0.5 ${
+          mode === "current"
+            ? "bg-primary text-primary-foreground"
+            : "text-muted-foreground hover:bg-accent"
+        }`}
+      >
+        現在シーン
+      </button>
+      <button
+        type="button"
+        onClick={() => setMode("project")}
+        className={`rounded px-2 py-0.5 ${
+          mode === "project"
+            ? "bg-primary text-primary-foreground"
+            : "text-muted-foreground hover:bg-accent"
+        }`}
+      >
+        プロジェクト
+      </button>
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// Project mode
+// ─────────────────────────────────────────────────────────────────────
+
+/**
+ * All-scenes view. Controls the scan (start/cancel) and renders
+ * results grouped by scene. Clicking a diagnostic opens the owning
+ * scene and jumps to the range via the pending-jump mechanism.
+ */
+function ProjectLinterView() {
+  const phase = useLintProjectStore((s) => s.phase);
+  const completed = useLintProjectStore((s) => s.completed);
+  const total = useLintProjectStore((s) => s.total);
+  const currentTitle = useLintProjectStore((s) => s.currentSceneTitle);
+  const scenes = useLintProjectStore((s) => s.scenes);
+  const fatalError = useLintProjectStore((s) => s.fatalError);
+  const start = useLintProjectStore((s) => s.start);
+  const cancel = useLintProjectStore((s) => s.cancel);
+  const requestJump = useLintProjectStore((s) => s.requestJump);
+  const openPinned = useTabStore((s) => s.openPinned);
+
+  const [severityFilter, setSeverityFilter] = useState<SeverityFilter>({
+    error: true,
+    warning: true,
+    info: true,
+  });
+  const [query, setQuery] = useState("");
+  const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
+
+  const counts = useMemo(() => {
+    const c = { error: 0, warning: 0, info: 0 };
+    for (const scene of scenes) {
+      for (const d of scene.diagnostics) c[d.severity] += 1;
+    }
+    return c;
+  }, [scenes]);
+
+  const filteredScenes = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    return scenes
+      .map((scene) => ({
+        ...scene,
+        diagnostics: scene.diagnostics.filter((d) => {
+          if (!severityFilter[d.severity]) return false;
+          if (q.length > 0) {
+            const hay = `${d.rule_id} ${d.message}`.toLowerCase();
+            if (!hay.includes(q)) return false;
+          }
+          return true;
+        }),
+      }))
+      .filter((scene) => scene.diagnostics.length > 0);
+  }, [scenes, severityFilter, query]);
+
+  const onStart = useCallback(() => {
+    void start(DEFAULT_PROJECT_ID);
+  }, [start]);
+
+  const onJump = useCallback(
+    (scene: ScannedScene, d: Diagnostic) => {
+      // Stash the target range so useLinter applies it after the
+      // editor finishes loading the scene's content.
+      requestJump({ sceneId: scene.sceneId, range: d.range });
+      openPinned(scene.sceneId);
+    },
+    [requestJump, openPinned],
+  );
+
+  const isRunning = phase === "running";
+  const progressPct = total > 0 ? Math.round((completed / total) * 100) : 0;
+
+  return (
+    <div className="flex h-full flex-col">
+      <div className="flex flex-col gap-1 border-b border-border bg-muted/30 px-2 py-1.5">
+        <div className="flex items-center gap-2">
+          <SeverityChip
+            label="🔴"
+            active={severityFilter.error}
+            count={counts.error}
+            colorClass="text-red-600"
+            onToggle={() =>
+              setSeverityFilter({
+                ...severityFilter,
+                error: !severityFilter.error,
+              })
+            }
+          />
+          <SeverityChip
+            label="⚠"
+            active={severityFilter.warning}
+            count={counts.warning}
+            colorClass="text-amber-600"
+            onToggle={() =>
+              setSeverityFilter({
+                ...severityFilter,
+                warning: !severityFilter.warning,
+              })
+            }
+          />
+          <SeverityChip
+            label="ⓘ"
+            active={severityFilter.info}
+            count={counts.info}
+            colorClass="text-blue-600"
+            onToggle={() =>
+              setSeverityFilter({
+                ...severityFilter,
+                info: !severityFilter.info,
+              })
+            }
+          />
+          <div className="flex-1" />
+          {isRunning ? (
+            <button
+              type="button"
+              onClick={cancel}
+              className="flex h-6 items-center gap-1 rounded border border-border bg-background px-1.5 text-xs hover:bg-accent"
+            >
+              キャンセル
+            </button>
+          ) : (
+            <button
+              type="button"
+              onClick={onStart}
+              className="flex h-6 items-center gap-1 rounded border border-primary bg-primary px-2 text-xs text-primary-foreground hover:opacity-90"
+            >
+              全章 Lint
+            </button>
+          )}
+        </div>
+        <div className="flex items-center gap-2">
+          <div className="flex items-center gap-1 rounded border border-border bg-background px-1.5">
+            <Search className="h-3.5 w-3.5 text-muted-foreground" />
+            <input
+              type="text"
+              placeholder="rule_id / message で絞り込み"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              className="h-6 w-full bg-transparent text-xs outline-none"
+            />
+            {query && (
+              <button
+                type="button"
+                onClick={() => setQuery("")}
+                className="text-muted-foreground hover:text-foreground"
+              >
+                <X className="h-3.5 w-3.5" />
+              </button>
+            )}
+          </div>
+        </div>
+        {isRunning && (
+          <div className="flex flex-col gap-0.5">
+            <div className="flex items-center justify-between text-xs text-muted-foreground">
+              <span className="truncate">
+                {currentTitle ?? "シーン一覧を取得中..."}
+              </span>
+              <span>
+                {completed}/{total}
+              </span>
+            </div>
+            <div className="h-1 w-full overflow-hidden rounded bg-muted">
+              <div
+                className="h-full bg-primary transition-all"
+                style={{ width: `${progressPct}%` }}
+              />
+            </div>
+          </div>
+        )}
+        {phase === "cancelled" && (
+          <p className="text-xs text-amber-600">
+            キャンセルされました（部分結果を表示中）
+          </p>
+        )}
+        {phase === "error" && fatalError && (
+          <p className="text-xs text-red-600">{fatalError}</p>
+        )}
+      </div>
+
+      <div className="flex-1 overflow-y-auto">
+        {phase === "idle" && scenes.length === 0 ? (
+          <div className="flex h-full flex-col items-center justify-center gap-2 p-4 text-sm text-muted-foreground">
+            <p>「全章 Lint」を押すとプロジェクト全シーンを走査します</p>
+          </div>
+        ) : filteredScenes.length === 0 ? (
+          <div className="flex h-full flex-col items-center justify-center gap-2 p-4 text-sm text-muted-foreground">
+            {phase === "running" ? (
+              <p>Lint 実行中...</p>
+            ) : (
+              <p>該当する項目はありません</p>
+            )}
+          </div>
+        ) : (
+          filteredScenes.map((scene) => {
+            const key = `scene:${scene.sceneId}`;
+            const isCollapsed = collapsed[key] ?? false;
+            return (
+              <div key={key}>
+                <button
+                  type="button"
+                  onClick={() =>
+                    setCollapsed((prev) => ({ ...prev, [key]: !isCollapsed }))
+                  }
+                  className="flex w-full items-center gap-1 border-b border-border bg-muted/50 px-2 py-1 text-left text-xs font-semibold hover:bg-accent/50"
+                >
+                  {isCollapsed ? (
+                    <ChevronRight className="h-3.5 w-3.5" />
+                  ) : (
+                    <ChevronDown className="h-3.5 w-3.5" />
+                  )}
+                  <span className="truncate">{scene.sceneTitle}</span>
+                  <span className="ml-auto text-muted-foreground">
+                    ({scene.diagnostics.length})
+                  </span>
+                </button>
+                {!isCollapsed && (
+                  <ul className="flex flex-col divide-y divide-border">
+                    {scene.diagnostics.map((d, idx) => (
+                      <ProjectDiagnosticRow
+                        key={`${d.rule_id}-${d.range.start}-${d.range.end}-${idx}`}
+                        d={d}
+                        sceneText={scene.sceneText}
+                        onJump={() => onJump(scene, d)}
+                      />
+                    ))}
+                  </ul>
+                )}
+              </div>
+            );
+          })
+        )}
+      </div>
+    </div>
+  );
+}
+
+function ProjectDiagnosticRow({
+  d,
+  sceneText,
+  onJump,
+}: {
+  d: Diagnostic;
+  sceneText: string;
+  onJump: () => void;
+}) {
+  const { before, hit, after } = extractExcerpt(sceneText, d);
+  return (
+    <li className="flex items-start gap-2 px-3 py-2 hover:bg-accent/40">
+      <button
+        type="button"
+        className="flex flex-1 items-start gap-2 text-left"
+        onClick={onJump}
+      >
+        <span className="mt-0.5 shrink-0">
+          <SeverityIcon severity={d.severity} />
+        </span>
+        <div className="flex min-w-0 flex-col gap-0.5">
+          <span className="text-sm">{d.message}</span>
+          <span className="text-xs text-muted-foreground">{d.rule_id}</span>
+          {(before || hit || after) && (
+            <span className="truncate font-mono text-xs text-muted-foreground">
+              {before}
+              <mark className="bg-amber-500/20 px-0.5">{hit}</mark>
+              {after}
+            </span>
+          )}
+        </div>
+      </button>
+    </li>
   );
 }
