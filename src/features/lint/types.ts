@@ -7,6 +7,21 @@
 
 export type Severity = "error" | "warning" | "info";
 
+export type LintLanguage = "ja" | "en";
+
+/**
+ * Resolve the current project's language into a Lint-supported language
+ * code. Reads `document.documentElement.lang` (populated by the app
+ * bootstrap from `project.language`). Anything not recognised defaults
+ * to Japanese — the app's primary target language.
+ */
+export function resolveLintLanguage(): LintLanguage {
+  if (typeof document === "undefined") return "ja";
+  const raw = document.documentElement.lang.toLowerCase();
+  if (raw.startsWith("en")) return "en";
+  return "ja";
+}
+
 export interface Utf16Range {
   start: number;
   end: number;

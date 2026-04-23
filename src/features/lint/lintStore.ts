@@ -3,6 +3,7 @@ import { invoke } from "@/lib/tauri";
 import type {
   Diagnostic,
   LintConfig,
+  LintLanguage,
   LintResponse,
   LintScope,
   RuleWarning,
@@ -29,6 +30,7 @@ interface LintState {
     sceneId: string,
     blocks: WireLintBlock[],
     config: LintConfig,
+    language: LintLanguage,
   ) => Promise<void>;
 
   /** Reset state when a scene is closed or the linter is disabled. */
@@ -78,7 +80,7 @@ export const useLintStore = create<LintState>()((set, get) => ({
       lastErrorMessage: null,
     }),
 
-  runLint: async (sceneId, blocks, config) => {
+  runLint: async (sceneId, blocks, config, language) => {
     const requestId = get().pendingRequestId + 1;
     set({
       pendingRequestId: requestId,
@@ -91,7 +93,7 @@ export const useLintStore = create<LintState>()((set, get) => ({
     try {
       const resp = await invoke<LintResponse>("lint_text", {
         blocks,
-        language: "ja",
+        language,
         scope,
         config,
       });

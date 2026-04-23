@@ -40,4 +40,6 @@ futures = "0.3"
 tokio = { version = "1", features = ["macros"] }
 aho-corasick = "1"
 grimodex-lint = { path = "crates/grimodex-lint" }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 

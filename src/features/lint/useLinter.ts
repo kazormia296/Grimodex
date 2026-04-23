@@ -10,6 +10,7 @@ import {
   buildLintDecorations,
 } from "@/features/editor/LintDecorationPlugin";
 import { useLintStore } from "./lintStore";
+import { resolveLintLanguage } from "./types";
 import type { LintConfig, WireLintBlock } from "./types";
 
 /**
@@ -24,7 +25,9 @@ export function runLintNow(
 ): Promise<void> {
   const map = buildOffsetMap(editor.state.doc);
   const blocks = toWire(map.blocks);
-  return useLintStore.getState().runLint(sceneId, blocks, config);
+  return useLintStore
+    .getState()
+    .runLint(sceneId, blocks, config, resolveLintLanguage());
 }
 
 const DEBOUNCE_MS = 500;
@@ -88,7 +91,7 @@ export function useLinter(editor: Editor | null, sceneId: string | null): void {
         const map = buildOffsetMap(editor.state.doc);
         const blocks = toWire(map.blocks);
         const config: LintConfig = {};
-        void runLint(sceneId, blocks, config);
+        void runLint(sceneId, blocks, config, resolveLintLanguage());
       }, delay);
     }
 

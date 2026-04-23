@@ -413,6 +413,16 @@ async fn test_ai_connection(
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // `tracing` subscriber for the Tauri app (covers grimodex-lint too).
+    // Level is controlled by RUST_LOG; defaults to `info` for our crates.
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| {
+                tracing_subscriber::EnvFilter::new("warn,grimodex_lib=info,grimodex_lint=info")
+            }),
+        )
+        .try_init();
+
     tauri::Builder::default()
         .plugin(tauri_plugin_window_state::Builder::default().build())
         .plugin(tauri_plugin_dialog::init())

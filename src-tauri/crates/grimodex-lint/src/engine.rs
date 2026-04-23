@@ -34,6 +34,11 @@ pub fn lint(
 ) -> Result<LintResponse, LintError> {
     let total_bytes: usize = blocks.iter().map(|b| b.text.len()).sum();
     if total_bytes > MAX_INPUT_BYTES {
+        tracing::warn!(
+            actual = total_bytes,
+            max = MAX_INPUT_BYTES,
+            "lint request rejected: text too large"
+        );
         return Err(LintError::TextTooLarge {
             actual: total_bytes,
             max: MAX_INPUT_BYTES,
@@ -74,6 +79,12 @@ pub fn lint(
 
     // Keep the warnings list deterministic too for fixture comparison.
     warnings.sort_by(|a, b| a.rule_id.cmp(&b.rule_id));
+
+    if !warnings.is_empty() {
+        for w in &warnings {
+            tracing::warn!(rule_id = %w.rule_id, ?w.kind, message = %w.message, "lint rule warning");
+        }
+    }
 
     Ok(LintResponse {
         diagnostics,
