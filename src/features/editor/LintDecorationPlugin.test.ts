@@ -76,6 +76,29 @@ describe("LintDecorationPlugin", () => {
     expect(decoAny.type.attrs.class).toContain("lint-deco--error");
   });
 
+  it("clears on whole-doc replacement (setContent)", () => {
+    // Seed a state with a decoration.
+    let state = docState("ああ、、いい");
+    state = state.apply(
+      state.tr.setMeta(lintDecorationKey, {
+        type: "lintDecoration/set",
+        diagnostics: [diag("ja/consecutive-punct", "error", 2, 4)],
+      }),
+    );
+    expect(getDecoSet(state).find()).toHaveLength(1);
+
+    // Replace the entire document (mimics TipTap setContent).
+    const newDoc = schema.nodes.doc.create({}, [
+      schema.nodes.paragraph.create({}, [schema.text("codex entry text")]),
+    ]);
+    const tr = state.tr.replaceWith(0, state.doc.content.size, newDoc.content);
+    state = state.apply(tr);
+
+    // Decoration must be gone: mapping through a whole-doc replacement
+    // would otherwise place stale underlines on unrelated content.
+    expect(getDecoSet(state).find()).toHaveLength(0);
+  });
+
   it("clears on empty payload", () => {
     let state = docState("hello");
     state = state.apply(

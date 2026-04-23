@@ -89,6 +89,19 @@ export function useLinter(editor: Editor | null, sceneId: string | null): void {
   // Debounced lint driver.
   useEffect(() => {
     if (!editor) return;
+
+    // Explicitly clear any stale decorations from the editor before the
+    // new scene's content is loaded. TipTap re-uses one editor instance
+    // across tab switches, so Decorations left over from the previous
+    // scene would otherwise map through the setContent transaction and
+    // appear on the wrong document.
+    editor.view.dispatch(
+      editor.state.tr.setMeta(lintDecorationKey, {
+        type: "lintDecoration/set",
+        diagnostics: [],
+      }),
+    );
+
     if (!sceneId) {
       // Non-scene tab (codex / snippet) — drop any leftover diagnostics
       // so the panel doesn't keep showing the previous scene's results.
@@ -116,18 +129,36 @@ export function useLinter(editor: Editor | null, sceneId: string | null): void {
     }
 
     setCurrentScene(sceneId);
-    // Run immediately on mount / scene switch (bypass debounce).
-    schedule(0);
 
-    const onUpdate = ({
+    // Listen to `transaction` instead of `update` — scene-switch loads
+    // content via `setContent(..., { emitUpdate: false })`, which
+    // suppresses `update` but not the underlying PM transaction. Without
+    // this, returning to a scene after visiting a non-scene tab never
+    // triggers a re-lint because the content-reload transaction goes
+    // unobserved.
+    const onTransaction = ({
       transaction,
     }: {
-      transaction: { docChanged: boolean };
+      transaction: { docChanged: boolean; getMeta: (k: string) => unknown };
     }) => {
       if (!transaction.docChanged) return;
+      // The lint decoration plugin dispatches meta-only transactions
+      // that set docChanged=false, so we don't loop here — but a defensive
+      // check against our own meta guarantees it.
+      if (transaction.getMeta("lintDecoration/set")) return;
+      // `0` for bulk content reloads (scene switch) so the user sees
+      // fresh decorations immediately; `DEBOUNCE_MS` for keyboard input.
+      // We can't tell the two apart from the transaction alone, so we
+      // always debounce — but on scene switch the initial schedule(0)
+      // below handles the immediate case.
       schedule(DEBOUNCE_MS);
     };
-    editor.on("update", onUpdate);
+    editor.on("transaction", onTransaction);
+
+    // Run immediately on mount / scene switch. Microtask-delayed so the
+    // async content-loader (setContent in EditorPane) has a chance to
+    // drop the new scene's JSON into the editor before we serialise.
+    schedule(0);
 
     // Re-run lint immediately when the effective config changes
     // (per design: "設定変更 → 現在シーンを即座に再 Lint").
@@ -136,7 +167,7 @@ export function useLinter(editor: Editor | null, sceneId: string | null): void {
     });
 
     return () => {
-      editor.off("update", onUpdate);
+      editor.off("transaction", onTransaction);
       unsubscribeConfig();
       if (timerRef.current) clearTimeout(timerRef.current);
     };

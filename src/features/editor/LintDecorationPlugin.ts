@@ -54,6 +54,25 @@ export function buildLintDecorations(
   return DecorationSet.create(doc, decos);
 }
 
+/**
+ * True when the transaction contains at least one step that replaces the
+ * entire document contents (positions 0..docSize). Such transactions
+ * indicate a `setContent` — tab-switch reloads use this pattern — and
+ * mapping Lint decorations through them produces garbage, so we clear
+ * instead.
+ */
+function isWholeDocReplacement(
+  tr: { steps: readonly unknown[] },
+  oldDocSize: number,
+): boolean {
+  if (tr.steps.length === 0) return false;
+  for (const step of tr.steps) {
+    const s = step as { from?: number; to?: number };
+    if (s.from === 0 && s.to === oldDocSize) return true;
+  }
+  return false;
+}
+
 function severityRank(s: Severity): number {
   switch (s) {
     case "error":
@@ -91,7 +110,7 @@ export function createLintDecorationPlugin(): Plugin {
       init() {
         return DecorationSet.empty;
       },
-      apply(tr, oldDecos, _oldState, newState) {
+      apply(tr, oldDecos, oldState, newState) {
         const meta = tr.getMeta(lintDecorationKey) as
           | { type: string; diagnostics?: Diagnostic[] }
           | undefined;
@@ -99,8 +118,16 @@ export function createLintDecorationPlugin(): Plugin {
           return buildLintDecorations(newState.doc, meta.diagnostics ?? []);
         }
         if (tr.docChanged) {
-          // Cheap-first: map existing decorations. Callers will refresh
-          // with new diagnostics after the debounce anyway.
+          // Detect whole-doc replacements (TipTap `setContent` used when
+          // a tab switches scenes). Carrying decorations through the
+          // mapping in that case leaves zombie decorations visible on
+          // the next document's content, which is visually wrong.
+          if (isWholeDocReplacement(tr, oldState.doc.content.size)) {
+            return DecorationSet.empty;
+          }
+          // Small edits (typing, paste): map decorations through the
+          // transaction so they stay put until the next lint debounce
+          // refreshes them.
           return oldDecos.map(tr.mapping, tr.doc);
         }
         return oldDecos;
