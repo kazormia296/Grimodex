@@ -2,6 +2,7 @@ import { create } from "zustand";
 import { invoke } from "@/lib/tauri";
 import type {
   Diagnostic,
+  DisableDirective,
   LintConfig,
   LintLanguage,
   LintResponse,
@@ -49,6 +50,7 @@ interface LintState {
     config: LintConfig,
     language: LintLanguage,
     sceneText: string,
+    disables: DisableDirective[],
   ) => Promise<void>;
 
   /**
@@ -234,11 +236,24 @@ export const useLintStore = create<LintState>()((set, get) => {
       set({ diagnostics: filtered });
     },
 
-    runLint: async (sceneId, blocks, config, language, sceneText) => {
+    runLint: async (sceneId, blocks, config, language, sceneText, disables) => {
       const requestId = get().pendingRequestId + 1;
 
-      // Invalidate block cache when config or language changes.
-      const configKey = JSON.stringify({ config, language });
+      // Invalidate block cache when config, language, or disables change.
+      // `disables` is sorted before serialisation so insertion order
+      // doesn't cause spurious busts: two runs with the same directives
+      // in a different order must map to the same key.
+      const sortedDisables = [...disables].sort((a, b) => {
+        if (a.range.start !== b.range.start)
+          return a.range.start - b.range.start;
+        if (a.range.end !== b.range.end) return a.range.end - b.range.end;
+        return a.rules.join(",").localeCompare(b.rules.join(","));
+      });
+      const configKey = JSON.stringify({
+        config,
+        language,
+        disables: sortedDisables,
+      });
       if (configKey !== lastConfigKey) {
         blockDiagCache = new Map();
         lastConfigKey = configKey;
@@ -273,6 +288,7 @@ export const useLintStore = create<LintState>()((set, get) => {
             language,
             scope,
             config,
+            disables,
           });
           // Drop if a newer request superseded this one.
           if (get().pendingRequestId !== requestId) return;

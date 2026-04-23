@@ -245,11 +245,15 @@ export async function scanProject(
     };
     const scope: LintScope = { kind: "scene", scene_id: node.id };
     try {
+      // Phase 3 Commit E wires inline-disable directives extracted from
+      // each scene's JSON. For now ship an empty array — behaviour
+      // unchanged.
       const resp = await invoke<LintResponse>("lint_text", {
         blocks,
         language: opts.language,
         scope,
         config,
+        disables: [],
       });
       const scanned: ScannedScene = {
         sceneId: node.id,
