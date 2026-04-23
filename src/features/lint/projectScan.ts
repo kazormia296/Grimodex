@@ -41,10 +41,43 @@ const BLOCK_KIND_BY_PM_TYPE: Record<string, BlockKind | undefined> = {
 /** PM node types that should not contribute blocks at all. */
 const SKIP_PM_TYPES = new Set(["codeBlock", "image", "horizontalRule"]);
 
+interface PmMark {
+  type?: string;
+  attrs?: Record<string, unknown>;
+}
+
 interface PmNode {
   type?: string;
   text?: string;
   content?: PmNode[];
+  marks?: PmMark[];
+  attrs?: Record<string, unknown>;
+}
+
+/**
+ * Scene-wide disable directive extracted from ProseMirror JSON.
+ * Same shape as `DisableDirective` on the wire — the two are
+ * intentionally identical so `buildBlocksFromJson` can feed the
+ * `lint_text` payload directly.
+ */
+interface JsonDisable {
+  rules: string[];
+  range: { start: number; end: number };
+}
+
+function sanitiseRules(raw: unknown): string[] | null {
+  if (!Array.isArray(raw)) return null;
+  if (raw.length === 0) return null;
+  if (!raw.every((s) => typeof s === "string")) return null;
+  return raw as string[];
+}
+
+function sameRules(a: string[], b: string[]): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    if (a[i] !== b[i]) return false;
+  }
+  return true;
 }
 
 /**
@@ -56,16 +89,19 @@ interface PmNode {
 export function buildBlocksFromJson(jsonText: string): {
   blocks: WireLintBlock[];
   sceneText: string;
+  disables: JsonDisable[];
 } {
-  if (!jsonText || !jsonText.trim()) return { blocks: [], sceneText: "" };
+  if (!jsonText || !jsonText.trim())
+    return { blocks: [], sceneText: "", disables: [] };
   let doc: PmNode;
   try {
     doc = JSON.parse(jsonText);
   } catch {
-    return { blocks: [], sceneText: "" };
+    return { blocks: [], sceneText: "", disables: [] };
   }
 
   const blocks: WireLintBlock[] = [];
+  const disables: JsonDisable[] = [];
   // Scene-wide UTF-16 cursor. Blocks are joined by "\n" separators, so
   // we advance by 1 between blocks (matching offsetMap.ts semantics).
   let cursor = 0;
@@ -75,6 +111,88 @@ export function buildBlocksFromJson(jsonText: string): {
     if (node.text) return node.text;
     if (!node.content) return "";
     return node.content.map(textOf).join("");
+  }
+
+  function findLintDisableRules(node: PmNode): string[] | null {
+    if (!node.marks) return null;
+    for (const m of node.marks) {
+      if (m.type !== "lintDisable") continue;
+      return sanitiseRules(m.attrs?.rules);
+    }
+    return null;
+  }
+
+  /**
+   * Walk a leaf block's children to surface `lintDisable` Mark runs.
+   * Adjacent text segments that share the same `rules` set are merged
+   * into one directive — same algorithm as `offsetMap.ts` so both
+   * paths produce identical output for identical docs.
+   */
+  function collectInlineDisables(node: PmNode, blockStart: number) {
+    let inBlockOffset = 0;
+    let currentRun: {
+      rules: string[];
+      start: number;
+      end: number;
+    } | null = null;
+
+    const flush = () => {
+      if (currentRun) {
+        disables.push({
+          rules: currentRun.rules,
+          range: { start: currentRun.start, end: currentRun.end },
+        });
+        currentRun = null;
+      }
+    };
+
+    const walk = (n: PmNode) => {
+      if (!n.type) return;
+      if (n.type === "ruby") {
+        flush();
+        const base = (n.attrs?.base as string | undefined) ?? "";
+        inBlockOffset += utf16Length(base);
+        return;
+      }
+      if (n.type === "hardBreak") {
+        flush();
+        inBlockOffset += 1;
+        return;
+      }
+      if (n.text !== undefined) {
+        const len = utf16Length(n.text);
+        if (len > 0) {
+          const sceneStart = blockStart + inBlockOffset;
+          const sceneEnd = sceneStart + len;
+          const markRules = findLintDisableRules(n);
+          if (markRules) {
+            if (
+              currentRun &&
+              currentRun.end === sceneStart &&
+              sameRules(currentRun.rules, markRules)
+            ) {
+              currentRun.end = sceneEnd;
+            } else {
+              flush();
+              currentRun = {
+                rules: markRules,
+                start: sceneStart,
+                end: sceneEnd,
+              };
+            }
+          } else {
+            flush();
+          }
+          inBlockOffset += len;
+        }
+        return;
+      }
+      // Non-text inline / container — recurse.
+      n.content?.forEach(walk);
+    };
+
+    node.content?.forEach(walk);
+    flush();
   }
 
   function visit(node: PmNode) {
@@ -102,6 +220,17 @@ export function buildBlocksFromJson(jsonText: string): {
         text,
         str_offset_start: startOffset,
       });
+      collectInlineDisables(node, startOffset);
+      const blockDisabled = sanitiseRules(node.attrs?.lintDisabled);
+      if (blockDisabled && text.length > 0) {
+        disables.push({
+          rules: blockDisabled,
+          range: {
+            start: startOffset,
+            end: startOffset + utf16Length(text),
+          },
+        });
+      }
       cursor = startOffset + utf16Length(text);
       return;
     }
@@ -112,7 +241,7 @@ export function buildBlocksFromJson(jsonText: string): {
   doc.content?.forEach(visit);
 
   const sceneText = blocks.map((b) => b.text).join("\n");
-  return { blocks, sceneText };
+  return { blocks, sceneText, disables };
 }
 
 function utf16Length(s: string): number {
@@ -234,7 +363,7 @@ export async function scanProject(
       completed += 1;
       continue;
     }
-    const { blocks, sceneText } = buildBlocksFromJson(content);
+    const { blocks, sceneText, disables } = buildBlocksFromJson(content);
     if (blocks.length === 0) {
       completed += 1;
       continue;
@@ -245,15 +374,12 @@ export async function scanProject(
     };
     const scope: LintScope = { kind: "scene", scene_id: node.id };
     try {
-      // Phase 3 Commit E wires inline-disable directives extracted from
-      // each scene's JSON. For now ship an empty array — behaviour
-      // unchanged.
       const resp = await invoke<LintResponse>("lint_text", {
         blocks,
         language: opts.language,
         scope,
         config,
-        disables: [],
+        disables,
       });
       const scanned: ScannedScene = {
         sceneId: node.id,

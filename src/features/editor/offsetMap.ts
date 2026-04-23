@@ -48,9 +48,25 @@ export interface PosInterval {
   blockKind: LintBlockKind;
 }
 
+/**
+ * One disable directive extracted from the doc. Shape matches the wire
+ * format sent to Rust (`DisableDirective`). Mark-based inline spans and
+ * block-level `lintDisabled` attributes both land in this list — Rust
+ * doesn't care which UI control produced them.
+ */
+export interface OffsetMapDisable {
+  rules: string[];
+  range: { start: number; end: number };
+}
+
 export interface SceneOffsetMap {
   blocks: LintBlock[];
   intervals: PosInterval[];
+  /**
+   * Disable directives collected during the same doc walk. The list is
+   * unsorted; consumers that need stable order sort before hashing.
+   */
+  disables: OffsetMapDisable[];
   /** Total UTF-16 length of the scene-wide text (sum of block texts + separators). */
   totalLength: number;
 }
@@ -71,6 +87,7 @@ const SKIP_NODE_TYPES = new Set(["codeBlock", "image", "horizontalRule"]);
 export function buildOffsetMap(doc: ProseMirrorNode): SceneOffsetMap {
   const blocks: LintBlock[] = [];
   const intervals: PosInterval[] = [];
+  const disables: OffsetMapDisable[] = [];
 
   // Running scene-wide UTF-16 offset. Blocks are joined by "\n", so between
   // two blocks we advance by 1 additional unit.
@@ -129,6 +146,7 @@ export function buildOffsetMap(doc: ProseMirrorNode): SceneOffsetMap {
         blockStart,
         textParts,
         intervals,
+        disables,
       );
 
       const blockText = textParts.join("");
@@ -139,6 +157,20 @@ export function buildOffsetMap(doc: ProseMirrorNode): SceneOffsetMap {
         strOffsetStart: blockStart,
       });
       sceneCursor = blockStart + utf16Length(blockText);
+
+      // Block-level disable from node attribute. Emit only when the
+      // block has non-empty text — a block with `lintDisabled` on an
+      // empty paragraph has nothing to silence.
+      const blockDisabled = sanitiseRules(node.attrs.lintDisabled);
+      if (blockDisabled && blockText.length > 0) {
+        disables.push({
+          rules: blockDisabled,
+          range: {
+            start: blockStart,
+            end: blockStart + utf16Length(blockText),
+          },
+        });
+      }
       return;
     }
 
@@ -152,7 +184,7 @@ export function buildOffsetMap(doc: ProseMirrorNode): SceneOffsetMap {
     visit(child, offset);
   });
 
-  return { blocks, intervals, totalLength: sceneCursor };
+  return { blocks, intervals, disables, totalLength: sceneCursor };
 }
 
 function collectLeafBlock(
@@ -163,14 +195,52 @@ function collectLeafBlock(
   blockStart: number,
   textParts: string[],
   intervals: PosInterval[],
+  disables: OffsetMapDisable[],
 ) {
   // Running UTF-16 offset inside this block.
   let inBlockOffset = 0;
+  // Accumulator for inline `lintDisable` Mark runs. Adjacent text nodes
+  // that carry the same `rules` set are merged into one directive so a
+  // diagnostic straddling the boundary between two text segments still
+  // gets silenced.
+  let currentRun: {
+    rules: string[];
+    start: number;
+    end: number;
+  } | null = null;
+
+  const flushRun = () => {
+    if (currentRun) {
+      disables.push({
+        rules: currentRun.rules,
+        range: { start: currentRun.start, end: currentRun.end },
+      });
+      currentRun = null;
+    }
+  };
+
+  const extendOrStart = (
+    rules: string[],
+    sceneStart: number,
+    sceneEnd: number,
+  ) => {
+    if (
+      currentRun &&
+      currentRun.end === sceneStart &&
+      sameRules(currentRun.rules, rules)
+    ) {
+      currentRun.end = sceneEnd;
+    } else {
+      flushRun();
+      currentRun = { rules, start: sceneStart, end: sceneEnd };
+    }
+  };
 
   node.descendants((child, posWithinParent) => {
     if (child.type.name === "ruby") {
       const base = (child.attrs.base as string | undefined) ?? "";
       if (base.length === 0) return false;
+      flushRun();
       // Atom node — the whole base maps to the atom's PM position. Use
       // one interval for the full base text.
       intervals.push({
@@ -186,6 +256,7 @@ function collectLeafBlock(
     }
 
     if (child.type.name === "hardBreak") {
+      flushRun();
       // hardBreak serialises to \n in plain text.
       intervals.push({
         pmPosStart: blockPos + 1 + posWithinParent,
@@ -211,13 +282,55 @@ function collectLeafBlock(
           blockKind,
         });
         textParts.push(text);
+        const sceneStart = blockStart + inBlockOffset;
+        const sceneEnd = sceneStart + len;
+        const markRules = findLintDisableRules(child);
+        if (markRules) {
+          extendOrStart(markRules, sceneStart, sceneEnd);
+        } else {
+          flushRun();
+        }
         inBlockOffset += len;
+      } else {
+        flushRun();
       }
       return false;
     }
     // continue descending
     return undefined;
   });
+
+  flushRun();
+}
+
+function findLintDisableRules(textNode: ProseMirrorNode): string[] | null {
+  for (const mark of textNode.marks) {
+    if (mark.type.name !== "lintDisable") continue;
+    return sanitiseRules(mark.attrs.rules);
+  }
+  return null;
+}
+
+/**
+ * Normalise a rules input (from TipTap attrs) into a non-empty
+ * `string[]`. Returns `null` when the input is not a valid selector
+ * payload — the caller drops the directive in that case, matching the
+ * engine's behaviour where invalid selectors are skipped with a
+ * warning.
+ */
+function sanitiseRules(raw: unknown): string[] | null {
+  if (!Array.isArray(raw)) return null;
+  if (raw.length === 0) return null;
+  if (!raw.every((s) => typeof s === "string")) return null;
+  return raw as string[];
+}
+
+function sameRules(a: string[], b: string[]): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    if (a[i] !== b[i]) return false;
+  }
+  return true;
 }
 
 function utf16Length(s: string): number {

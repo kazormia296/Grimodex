@@ -44,7 +44,14 @@ export async function runLintNow(
   }
   return useLintStore
     .getState()
-    .runLint(sceneId, blocks, config, resolveLintLanguage(), sceneText, []);
+    .runLint(
+      sceneId,
+      blocks,
+      config,
+      resolveLintLanguage(),
+      sceneText,
+      map.disables,
+    );
 }
 
 /**
@@ -195,10 +202,7 @@ export function useLinter(editor: Editor | null, sceneId: string | null): void {
           const codex_entries = await fetchCodexEntriesForLint();
           (wire as LintConfig).codex_entries = codex_entries;
         }
-        // Phase 3 Commit D wires real inline-disable directives here.
-        // Until then we ship an empty array so the backend filter is a
-        // no-op and existing behaviour stays identical.
-        void runLint(sceneId, blocks, wire, lang, sceneText, []);
+        void runLint(sceneId, blocks, wire, lang, sceneText, map.disables);
       }, delay);
     }
 

@@ -7,15 +7,117 @@ function pm(content: unknown[]): string {
 
 describe("buildBlocksFromJson", () => {
   it("empty or invalid input returns no blocks", () => {
-    expect(buildBlocksFromJson("")).toEqual({ blocks: [], sceneText: "" });
+    expect(buildBlocksFromJson("")).toEqual({
+      blocks: [],
+      sceneText: "",
+      disables: [],
+    });
     expect(buildBlocksFromJson("not-json")).toEqual({
       blocks: [],
       sceneText: "",
+      disables: [],
     });
     expect(buildBlocksFromJson(pm([]))).toEqual({
       blocks: [],
       sceneText: "",
+      disables: [],
     });
+  });
+
+  it("extracts block-level lintDisabled attribute as a directive", () => {
+    const json = pm([
+      {
+        type: "paragraph",
+        attrs: { lintDisabled: ["ja/ellipsis-single"] },
+        content: [{ type: "text", text: "hello" }],
+      },
+    ]);
+    const { disables } = buildBlocksFromJson(json);
+    expect(disables).toEqual([
+      { rules: ["ja/ellipsis-single"], range: { start: 0, end: 5 } },
+    ]);
+  });
+
+  it("ignores block-level lintDisabled when block text is empty", () => {
+    const json = pm([
+      {
+        type: "paragraph",
+        attrs: { lintDisabled: ["*"] },
+        content: [],
+      },
+    ]);
+    const { disables } = buildBlocksFromJson(json);
+    expect(disables).toEqual([]);
+  });
+
+  it("extracts inline lintDisable mark as a directive", () => {
+    const json = pm([
+      {
+        type: "paragraph",
+        content: [
+          { type: "text", text: "pre " },
+          {
+            type: "text",
+            text: "silenced",
+            marks: [
+              { type: "lintDisable", attrs: { rules: ["ja/dash-single"] } },
+            ],
+          },
+          { type: "text", text: " post" },
+        ],
+      },
+    ]);
+    const { disables } = buildBlocksFromJson(json);
+    expect(disables).toEqual([
+      { rules: ["ja/dash-single"], range: { start: 4, end: 12 } },
+    ]);
+  });
+
+  it("merges adjacent lintDisable marks with matching rules", () => {
+    const json = pm([
+      {
+        type: "paragraph",
+        content: [
+          {
+            type: "text",
+            text: "foo",
+            marks: [{ type: "lintDisable", attrs: { rules: ["*"] } }],
+          },
+          {
+            type: "text",
+            text: "bar",
+            marks: [{ type: "lintDisable", attrs: { rules: ["*"] } }],
+          },
+        ],
+      },
+    ]);
+    const { disables } = buildBlocksFromJson(json);
+    expect(disables).toEqual([{ rules: ["*"], range: { start: 0, end: 6 } }]);
+  });
+
+  it("keeps adjacent lintDisable marks separate when rules differ", () => {
+    const json = pm([
+      {
+        type: "paragraph",
+        content: [
+          {
+            type: "text",
+            text: "foo",
+            marks: [{ type: "lintDisable", attrs: { rules: ["ja/a"] } }],
+          },
+          {
+            type: "text",
+            text: "bar",
+            marks: [{ type: "lintDisable", attrs: { rules: ["ja/b"] } }],
+          },
+        ],
+      },
+    ]);
+    const { disables } = buildBlocksFromJson(json);
+    expect(disables).toEqual([
+      { rules: ["ja/a"], range: { start: 0, end: 3 } },
+      { rules: ["ja/b"], range: { start: 3, end: 6 } },
+    ]);
   });
 
   it("extracts a single paragraph", () => {
