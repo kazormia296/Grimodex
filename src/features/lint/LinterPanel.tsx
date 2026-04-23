@@ -4,6 +4,7 @@ import {
   AlertTriangle,
   ChevronDown,
   ChevronRight,
+  Download,
   EyeOff,
   Info,
   PowerOff,
@@ -21,6 +22,7 @@ import { useLintIgnoreStore } from "./lintIgnoreStore";
 import { useLintConfigStore } from "./lintConfigStore";
 import { useLintProjectStore } from "./lintProjectStore";
 import type { ScannedScene } from "./projectScan";
+import { extensionFor, renderReport, type ReportFormat } from "./lintReport";
 import { runLintNow } from "./useLinter";
 
 const DEFAULT_PROJECT_ID = "default-project";
@@ -896,6 +898,7 @@ function ProjectLinterView() {
   });
   const [query, setQuery] = useState("");
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
+  const [exportOpen, setExportOpen] = useState(false);
 
   const counts = useMemo(() => {
     const c = { error: 0, warning: 0, info: 0 };
@@ -980,6 +983,17 @@ function ProjectLinterView() {
             }
           />
           <div className="flex-1" />
+          {!isRunning && scenes.length > 0 && (
+            <button
+              type="button"
+              onClick={() => setExportOpen(true)}
+              title="レポートを書き出し"
+              className="flex h-6 items-center gap-1 rounded border border-border bg-background px-1.5 text-xs hover:bg-accent"
+            >
+              <Download className="h-3.5 w-3.5" />
+              Export
+            </button>
+          )}
           {isRunning ? (
             <button
               type="button"
@@ -1100,6 +1114,12 @@ function ProjectLinterView() {
           })
         )}
       </div>
+      {exportOpen && (
+        <ExportReportDialog
+          scenes={scenes}
+          onClose={() => setExportOpen(false)}
+        />
+      )}
     </div>
   );
 }
@@ -1137,5 +1157,122 @@ function ProjectDiagnosticRow({
         </div>
       </button>
     </li>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// Export dialog
+// ─────────────────────────────────────────────────────────────────────
+
+function ExportReportDialog({
+  scenes,
+  onClose,
+}: {
+  scenes: ScannedScene[];
+  onClose: () => void;
+}) {
+  const [format, setFormat] = useState<ReportFormat>("markdown");
+  const [includeExcerpt, setIncludeExcerpt] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const save = useCallback(async () => {
+    setSaving(true);
+    setError(null);
+    try {
+      const content = renderReport(format, scenes, { includeExcerpt });
+      const ext = extensionFor(format);
+      // Lazy-load Tauri dialog / fs — consistent with other export
+      // flows in the app and keeps the main bundle light for browser-
+      // mock test runs.
+      const { save: saveDialog } = await import("@tauri-apps/plugin-dialog");
+      const { writeTextFile } = await import("@tauri-apps/plugin-fs");
+      const path = await saveDialog({
+        defaultPath: `lint-report.${ext}`,
+        filters: [{ name: format.toUpperCase(), extensions: [ext] }],
+      });
+      if (!path) {
+        setSaving(false);
+        return;
+      }
+      await writeTextFile(path, content);
+      setSaving(false);
+      onClose();
+    } catch (e) {
+      setError(String(e));
+      setSaving(false);
+    }
+  }, [format, includeExcerpt, scenes, onClose]);
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40"
+      onClick={onClose}
+    >
+      <div
+        className="w-[min(420px,90vw)] rounded border border-border bg-background p-4 text-sm shadow-lg"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="mb-3 flex items-center justify-between">
+          <h3 className="font-semibold">Lint レポートを書き出し</h3>
+          <button
+            type="button"
+            onClick={onClose}
+            className="rounded p-1 hover:bg-accent"
+          >
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+        <div className="mb-3 flex flex-col gap-2">
+          <label className="flex items-center gap-2 text-xs">
+            形式
+            <select
+              value={format}
+              onChange={(e) => setFormat(e.target.value as ReportFormat)}
+              className="h-7 flex-1 rounded border border-border bg-background px-1 text-xs"
+            >
+              <option value="markdown">Markdown (.md)</option>
+              <option value="csv">CSV (.csv)</option>
+              <option value="json">JSON (.json)</option>
+            </select>
+          </label>
+          <label className="flex items-center gap-2 text-xs">
+            <input
+              type="checkbox"
+              checked={includeExcerpt}
+              onChange={(e) => setIncludeExcerpt(e.target.checked)}
+            />
+            本文抜粋を含める
+          </label>
+          <p className="text-xs text-muted-foreground">
+            出力対象: {scenes.length} シーン ({" "}
+            {scenes.reduce((a, s) => a + s.diagnostics.length, 0)} 指摘 )
+          </p>
+          {error && (
+            <p className="rounded border border-red-500/30 bg-red-500/10 p-2 text-xs text-red-600">
+              {error}
+            </p>
+          )}
+        </div>
+        <div className="flex items-center justify-end gap-2">
+          <button
+            type="button"
+            onClick={onClose}
+            className="h-7 rounded border border-border bg-background px-3 text-xs hover:bg-accent"
+          >
+            キャンセル
+          </button>
+          <button
+            type="button"
+            disabled={saving}
+            onClick={save}
+            className="flex h-7 items-center gap-1 rounded border border-primary bg-primary px-3 text-xs text-primary-foreground hover:opacity-90 disabled:opacity-50"
+          >
+            <Download className="h-3.5 w-3.5" />
+            {saving ? "保存中..." : "保存"}
+          </button>
+        </div>
+      </div>
+    </div>
   );
 }
