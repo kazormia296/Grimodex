@@ -90,6 +90,21 @@ export function DisablesView() {
   const [otherScenes, setOtherScenes] = useState<SceneDisables[]>([]);
   const [loading, setLoading] = useState(true);
 
+  // Bump on every editor transaction so the live current-scene view
+  // refreshes whenever the user adds / removes a disable Mark or a
+  // block attribute. Can't rely on `rawDiagnostics` — lint runs are
+  // debounced 500ms, and a user who adds a disable in an already-
+  // clean scene wouldn't see the list update until the next lint.
+  const [docVersion, setDocVersion] = useState(0);
+  useEffect(() => {
+    if (!editor) return;
+    const onTx = () => setDocVersion((v) => v + 1);
+    editor.on("update", onTx);
+    return () => {
+      editor.off("update", onTx);
+    };
+  }, [editor]);
+
   // Current-scene disables come from the live editor — immediate & fresh.
   const currentScene: SceneDisables | null = useMemo(() => {
     if (!editor || !currentSceneId) return null;
@@ -101,10 +116,10 @@ export function DisablesView() {
       sceneText,
       disables: map.disables,
     };
-    // buildOffsetMap returns a new shape on every call — depend on the
-    // diagnostics list as a cheap proxy for doc change frequency.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [editor, currentSceneId, useLintStore((s) => s.rawDiagnostics)]);
+    // `docVersion` is the doc-change signal — eslint-no-unused isn't
+    // worth silencing via a `void` call because we genuinely need
+    // the memo to re-run on every transaction.
+  }, [editor, currentSceneId, docVersion]);
 
   // Other scenes: walk the stored JSON. The design doc explicitly
   // requires this — disables in scenes the user hasn't opened still
