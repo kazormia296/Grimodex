@@ -1,0 +1,19 @@
+[
+  {
+    "rule_id": "en/double-space",
+    "severity": "warning",
+    "message": "Use a single space after a period",
+    "range": {
+      "start": 15,
+      "end": 18
+    },
+    "fix": {
+      "label": "Collapse to single space",
+      "replacement": ". ",
+      "range": {
+        "start": 15,
+        "end": 18
+      }
+    }
+  }
+]

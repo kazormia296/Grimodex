@@ -54,6 +54,17 @@ fn run_fixture(dir: &Path) -> Vec<Diagnostic> {
     // change offsets.
     let text = input.strip_suffix('\n').unwrap_or(&input).to_string();
 
+    // Language is derived from the first path component under `fixtures/`
+    // — `en/*` uses English, everything else defaults to Japanese.
+    let language = if dir
+        .components()
+        .any(|c| c.as_os_str() == std::ffi::OsStr::new("en"))
+    {
+        Language::English
+    } else {
+        Language::Japanese
+    };
+
     let blocks = vec![LintBlock {
         id: 0,
         kind: BlockKind::Paragraph,
@@ -62,7 +73,7 @@ fn run_fixture(dir: &Path) -> Vec<Diagnostic> {
     }];
     let resp = lint(
         &blocks,
-        Language::Japanese,
+        language,
         LintScope::Scene {
             scene_id: "fixture".into(),
         },

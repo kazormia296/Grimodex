@@ -1,0 +1,19 @@
+[
+  {
+    "rule_id": "en/ellipsis",
+    "severity": "info",
+    "message": "Use the ellipsis character (…)",
+    "range": {
+      "start": 9,
+      "end": 12
+    },
+    "fix": {
+      "label": "Replace with …",
+      "replacement": "…",
+      "range": {
+        "start": 9,
+        "end": 12
+      }
+    }
+  }
+]

@@ -1,5 +1,6 @@
 //! All built-in lint rules, grouped by language.
 
+pub mod en;
 pub mod ja;
 
 use crate::rule::{Language, LintRule, RuleWarning};
@@ -25,7 +26,10 @@ pub fn build_ruleset(language: Language) -> (Vec<Box<dyn LintRule>>, Vec<RuleWar
             rules.push(Box::new(ja::sentence_length::SentenceLengthRule));
         }
         Language::English => {
-            // Phase 1 EN rules plugged in below in the EN pass.
+            rules.push(Box::new(en::double_space::DoubleSpaceRule));
+            rules.push(Box::new(en::ellipsis::EllipsisRule));
+            rules.push(Box::new(en::em_dash::EmDashRule));
+            rules.push(Box::new(en::straight_quotes::StraightQuotesRule));
         }
     }
 

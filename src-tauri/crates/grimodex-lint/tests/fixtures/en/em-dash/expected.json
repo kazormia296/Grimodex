@@ -1,0 +1,19 @@
+[
+  {
+    "rule_id": "en/em-dash",
+    "severity": "info",
+    "message": "Consider an em dash (—) instead of a spaced hyphen",
+    "range": {
+      "start": 10,
+      "end": 15
+    },
+    "fix": {
+      "label": "Replace with em dash",
+      "replacement": "d—a",
+      "range": {
+        "start": 10,
+        "end": 15
+      }
+    }
+  }
+]
