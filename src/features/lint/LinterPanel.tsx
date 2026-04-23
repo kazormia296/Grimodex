@@ -37,6 +37,19 @@ type GroupMode = "severity" | "rule" | "none";
 
 type ProjectGroupMode = "scene" | "rule" | "severity";
 
+/**
+ * Stable key for a Project-mode row. Shared between the keyboard-nav
+ * `flatRows` derivation and the render loop so selection highlighting
+ * stays in sync with the currently focused row.
+ */
+function projectRowKey(
+  scene: ScannedScene,
+  d: Diagnostic,
+  idx: number,
+): string {
+  return `${scene.sceneId}|${d.rule_id}|${d.range.start}|${d.range.end}|${idx}`;
+}
+
 function SeverityIcon({ severity }: { severity: Severity }) {
   switch (severity) {
     case "error":
@@ -919,6 +932,8 @@ function ProjectLinterView() {
     scene: ScannedScene;
     d: Diagnostic;
   } | null>(null);
+  const [selectedKey, setSelectedKey] = useState<string | null>(null);
+  const listRef = useRef<HTMLDivElement | null>(null);
 
   const counts = useMemo(() => {
     const c = { error: 0, warning: 0, info: 0 };
@@ -1077,6 +1092,90 @@ function ProjectLinterView() {
     [editor, currentSceneId, requestJump, openPinned],
   );
 
+  /**
+   * Fix can only run when the diagnostic's scene is the active editor —
+   * loading a scene behind the user's back to apply a fix would be
+   * surprising. Cross-scene Fix intentionally no-ops (user must jump
+   * first, then press Cmd+.).
+   */
+  const applyFix = useCallback(
+    (scene: ScannedScene, d: Diagnostic) => {
+      if (!editor || !d.fix) return;
+      if (currentSceneId !== scene.sceneId) return;
+      const map = buildOffsetMap(editor.state.doc);
+      const from = strOffsetToPmPos(map, d.fix.range.start);
+      const to = strOffsetToPmPos(map, d.fix.range.end);
+      if (from == null || to == null) return;
+      editor
+        .chain()
+        .focus()
+        .insertContentAt({ from, to }, d.fix.replacement)
+        .run();
+      void runLintNow(editor, scene.sceneId);
+    },
+    [editor, currentSceneId],
+  );
+
+  /**
+   * Flat, visible list in render order — basis for keyboard navigation.
+   * Items collapsed by their group are skipped so ↑↓ never lands on
+   * hidden rows.
+   */
+  const flatRows = useMemo(() => {
+    const out: Array<{ key: string; scene: ScannedScene; d: Diagnostic }> = [];
+    for (const group of grouped) {
+      if (collapsed[group.key]) continue;
+      group.items.forEach(({ scene, d }, idx) => {
+        out.push({ key: projectRowKey(scene, d, idx), scene, d });
+      });
+    }
+    return out;
+  }, [grouped, collapsed]);
+
+  // Keyboard: ↑↓ Enter Cmd/Ctrl+.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const active = document.activeElement as HTMLElement | null;
+      if (
+        active &&
+        (active.tagName === "INPUT" ||
+          active.tagName === "TEXTAREA" ||
+          active.isContentEditable)
+      ) {
+        return;
+      }
+      if (!listRef.current) return;
+      const root = listRef.current;
+      if (!root.contains(active) && active !== document.body) return;
+      if (flatRows.length === 0) return;
+
+      const curIdx = flatRows.findIndex((r) => r.key === selectedKey);
+      if (e.key === "ArrowDown") {
+        e.preventDefault();
+        const next = curIdx < 0 ? 0 : Math.min(curIdx + 1, flatRows.length - 1);
+        setSelectedKey(flatRows[next].key);
+      } else if (e.key === "ArrowUp") {
+        e.preventDefault();
+        const next = curIdx < 0 ? 0 : Math.max(curIdx - 1, 0);
+        setSelectedKey(flatRows[next].key);
+      } else if (e.key === "Enter") {
+        const row = flatRows[curIdx];
+        if (row) {
+          e.preventDefault();
+          onJump(row.scene, row.d);
+        }
+      } else if ((e.metaKey || e.ctrlKey) && e.key === ".") {
+        const row = flatRows[curIdx];
+        if (row && row.d.fix) {
+          e.preventDefault();
+          applyFix(row.scene, row.d);
+        }
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [flatRows, selectedKey, onJump, applyFix]);
+
   const isRunning = phase === "running";
   const progressPct = total > 0 ? Math.round((completed / total) * 100) : 0;
 
@@ -1208,7 +1307,7 @@ function ProjectLinterView() {
         )}
       </div>
 
-      <div className="flex-1 overflow-y-auto">
+      <div className="flex-1 overflow-y-auto" ref={listRef} tabIndex={0}>
         {phase === "idle" && scenes.length === 0 ? (
           <div className="flex h-full flex-col items-center justify-center gap-2 p-4 text-sm text-muted-foreground">
             <p>「全章 Lint」を押すとプロジェクト全シーンを走査します</p>
@@ -1246,24 +1345,35 @@ function ProjectLinterView() {
                 </button>
                 {!isCollapsed && (
                   <ul className="flex flex-col divide-y divide-border">
-                    {group.items.map(({ scene, d }, idx) => (
-                      <ProjectDiagnosticRow
-                        key={`${scene.sceneId}-${d.rule_id}-${d.range.start}-${d.range.end}-${idx}`}
-                        d={d}
-                        sceneText={scene.sceneText}
-                        sceneTitle={showSceneTitle ? scene.sceneTitle : null}
-                        onJump={() => onJump(scene, d)}
-                        onContextMenu={(e) => {
-                          e.preventDefault();
-                          setMenu({
-                            x: e.clientX,
-                            y: e.clientY,
-                            scene,
-                            d,
-                          });
-                        }}
-                      />
-                    ))}
+                    {group.items.map(({ scene, d }, idx) => {
+                      const rowKey = projectRowKey(scene, d, idx);
+                      return (
+                        <ProjectDiagnosticRow
+                          key={rowKey}
+                          rowKey={rowKey}
+                          d={d}
+                          sceneText={scene.sceneText}
+                          sceneTitle={showSceneTitle ? scene.sceneTitle : null}
+                          selected={selectedKey === rowKey}
+                          onSelect={setSelectedKey}
+                          onJump={() => onJump(scene, d)}
+                          onFix={d.fix ? () => applyFix(scene, d) : undefined}
+                          canFix={
+                            Boolean(d.fix) && currentSceneId === scene.sceneId
+                          }
+                          onContextMenu={(e) => {
+                            e.preventDefault();
+                            setMenu({
+                              x: e.clientX,
+                              y: e.clientY,
+                              scene,
+                              d,
+                            });
+                            setSelectedKey(rowKey);
+                          }}
+                        />
+                      );
+                    })}
                   </ul>
                 )}
               </div>
@@ -1301,12 +1411,18 @@ function ProjectLinterView() {
 }
 
 function ProjectDiagnosticRow({
+  rowKey,
   d,
   sceneText,
   sceneTitle,
+  selected,
+  canFix,
+  onSelect,
   onJump,
+  onFix,
   onContextMenu,
 }: {
+  rowKey: string;
   d: Diagnostic;
   sceneText: string;
   /**
@@ -1315,14 +1431,31 @@ function ProjectDiagnosticRow({
    * modes flatten across scenes).
    */
   sceneTitle: string | null;
+  selected: boolean;
+  /**
+   * Fix is only enabled when the target scene is the active editor
+   * scene — cross-scene Fix would require loading the scene, which is
+   * surprising UX. The button still renders so users see that a Fix
+   * exists, but it's disabled.
+   */
+  canFix: boolean;
+  onSelect: (key: string) => void;
   onJump: () => void;
+  onFix?: () => void;
   onContextMenu: (e: React.MouseEvent) => void;
 }) {
   const { before, hit, after } = extractExcerpt(sceneText, d);
+  const liClasses = [
+    "flex items-start gap-2 px-3 py-2 hover:bg-accent/40",
+    selected ? "bg-accent/70" : "",
+  ]
+    .filter(Boolean)
+    .join(" ");
   return (
     <li
-      className="flex items-start gap-2 px-3 py-2 hover:bg-accent/40"
+      className={liClasses}
       onContextMenu={onContextMenu}
+      onMouseDown={() => onSelect(rowKey)}
     >
       <button
         type="button"
@@ -1352,6 +1485,18 @@ function ProjectDiagnosticRow({
           )}
         </div>
       </button>
+      {d.fix && (
+        <button
+          type="button"
+          title={canFix ? d.fix.label : "Fix はシーンを開いてから適用できます"}
+          onClick={() => onFix?.()}
+          disabled={!canFix}
+          className="flex shrink-0 items-center gap-1 rounded px-2 py-1 text-xs text-muted-foreground hover:bg-accent hover:text-foreground disabled:cursor-not-allowed disabled:opacity-40"
+        >
+          <Wrench className="h-3.5 w-3.5" />
+          Fix
+        </button>
+      )}
     </li>
   );
 }
