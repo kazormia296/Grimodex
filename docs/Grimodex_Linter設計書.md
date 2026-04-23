@@ -181,19 +181,19 @@ pub struct Diagnostic {
     pub rule_id: String,         // "ja/ellipsis"
     pub severity: Severity,
     pub message: String,         // ユーザー向けメッセージ
-    pub range: Utf16Range,       // UTF-16 コードユニット単位
+    pub range: Utf16Range,       // **シーン全体の UTF-16 オフセット基準**
     pub fix: Option<Fix>,        // 自動修正候補（あれば）
 }
 
 pub struct Utf16Range {
-    pub start: u32,
+    pub start: u32,              // シーン全体テキスト内の UTF-16 コードユニット位置
     pub end: u32,
 }
 
 pub struct Fix {
     pub label: String,           // "「……」に置き換える"
     pub replacement: String,     // 挿入する文字列
-    pub range: Utf16Range,       // 置換範囲（Diagnostic.range を包含）
+    pub range: Utf16Range,       // 置換範囲（Diagnostic.range を包含、シーン全体基準）
 }
 
 pub struct LintInput<'a> {
@@ -224,8 +224,10 @@ pub enum LintScope {
 }
 
 pub struct LintContext<'a> {
-    pub codex: &'a CodexReader,  // Codex DB 読み取り用（Phase 2 以降）
     pub config: &'a LintConfig,
+    // Phase 2 以降で追加: pub codex: &'a CodexReader,
+    // Phase 1 の grimodex-lint crate は Codex DB に依存しない
+    // （F群ルール導入時にフィールドと CodexReader 型を同時追加）
 }
 
 pub struct LintConfig {
@@ -242,6 +244,21 @@ pub trait LintRule: Send + Sync {
     fn id(&self) -> &'static str;
     fn default_severity(&self) -> Severity;
     fn supported_languages(&self) -> &'static [Language];
+
+    /// 適用可能なブロック種別。エンジン側でこの配列に含まれない BlockKind の
+    /// ブロックは自動スキップする。デフォルトは全ブロック種別（codeBlock は
+    /// そもそも LintBlock に含まれないため影響なし）。
+    /// 例: sentence-length / sentence-ending-repeat は Paragraph / Blockquote
+    ///     に絞り、Heading / ListItem / TableCell では評価しない。
+    fn supported_block_kinds(&self) -> &'static [BlockKind] {
+        &[
+            BlockKind::Paragraph,
+            BlockKind::Heading,
+            BlockKind::Blockquote,
+            BlockKind::ListItem,
+            BlockKind::TableCell,
+        ]
+    }
 
     // 注: Result を返さない。ルールが失敗し得るのは構築時のみ。
     // 不変条件: 返される Diagnostic.range は同一ブロック内に収まる。
@@ -267,7 +284,9 @@ async fn lint_text(
 pub struct LintResponse {
     pub diagnostics: Vec<Diagnostic>,
     pub warnings: Vec<RuleWarning>,  // 致命的ではない問題
-    pub computed_at: i64,             // epoch ms
+    pub computed_at: i64,             // epoch ms。Phase 2 のメモリキャッシュで
+                                      // textHash/configHash と併せて整合性判定に使用。
+                                      // Phase 1 は UI には出さず、デバッグログにのみ記録
 }
 
 pub struct RuleWarning {
@@ -300,10 +319,14 @@ pub enum WarningKind {
 1. **Rust → フロント返却時は UTF-16 コードユニット単位**に統一
    - Rust 側で UTF-8 バイトオフセット→UTF-16 オフセットへ変換
    - フロント側ではそのまま `string.substring(start, end)` で扱える
-2. **フロントでエディタ→文字列変換時に「位置マップ」を保持**
+2. **返却される `Diagnostic.range` / `Fix.range` は常にシーン全体テキスト基準**
+   - Rust 側はブロック内ローカルで検出したオフセットに `LintBlock.str_offset_start` を加算してから返す
+   - フロント側の位置マップ（下記）もシーン全体 UTF-16 基準で構築されるため、逆引きが追加変換なしで成立する
+   - ブロック跨ぎ禁止（407 行の不変条件）はシーン全体基準でもそのまま成立（range が `str_offset_start` + `block.text.utf16_len()` の区間内に収まる）
+3. **フロントでエディタ→文字列変換時に「位置マップ」を保持**
    - シリアライズ時に区間テーブルを構築（下記参照）
    - Diagnostic 受け取り時にこのテーブルで ProseMirror 位置に逆引き
-3. **変換層は最初の PR でユニットテストを充実**
+4. **変換層は最初の PR でユニットテストを充実**
    - CJK、絵文字（サロゲートペア）、改行、ノード境界（hardBreak、paragraph）の境界ケース
 
 ### 位置マップの構築方針
@@ -431,12 +454,25 @@ type PosInterval = {
 
 - **下線表示**: 重なる Diagnostic のうち**最重度の Severity**（Error > Warning > Info）の色で下線。重ね描画はしない（視覚的ノイズを避ける）
 - **ホバー時**: 該当範囲に重なる**全 Diagnostic を縦に並べて表示**。ルール ID とメッセージを各行に
-- **Fix 適用**: 一度に 1 つの Fix のみ適用可能。他 Fix と範囲が重なる場合、UI 上で「先に他の警告を確認してください」と無効化
+- **Fix 適用**: 一度に 1 つの Fix のみ適用可能。他 Fix と範囲が重なる場合（**判定は `Fix.range` 同士の区間重なり**で行う。`Diagnostic.range` 同士ではない — Fix は Diagnostic を包含するため `Fix.range` 同士で見るほうが厳しく安全）、UI 上で「先に他の警告を確認してください」と無効化
 - **Fix 適用後**: 位置マップを再構築し、残った Diagnostic の範囲を再計算（Rust 側に再度 Lint 要求）
 
 ---
 
 ## ルール詳細
+
+### ルール ID の予約 prefix
+
+ルール ID は `{prefix}/{rule-name}` 形式。以下の prefix を Phase 1 時点で**予約**し、新 prefix 追加はアーキテクチャ判断を経る:
+
+| Prefix | 用途 | Phase |
+|---|---|---|
+| `ja/` | 日本語固有ルール | Phase 1 |
+| `en/` | 英語固有ルール | Phase 1 |
+| `project/` | 言語横断、プロジェクト設定依存（用語辞書等） | Phase 1 |
+| `codex/` | Codex 連動（F群） | Phase 2 |
+
+**将来候補（予約のみ）**: `craft/`（小説 craft、E群）、`style/`（文体ガイド）、`user/`（ユーザー定義ルール、プラグイン相当）。新 prefix は設計書への追記を伴う。
 
 ### Severity と既定 ON/OFF の方針
 
@@ -462,10 +498,10 @@ type PosInterval = {
 | `ja/dash-single` | `—` 単体 → `——` | error | ✅ |
 | `ja/consecutive-punct` | `、、` `。。` の連続 | error | ✅（1つに圧縮） |
 | `ja/halfwidth-kana` | `ｱｲｳ` 等の半角カナ | error | ✅（全角化） |
-| `ja/quote-period` | `「〜だ。」` の末尾句点（プロジェクト設定で方針切替） | info | ✅ |
+| `ja/quote-period` | カギ括弧内末尾句点の有無（プロジェクト設定で `strip`/`require`/`preserve`） | info | ✅（`preserve` 時を除く） |
 | `ja/sentence-length` | 一文 80 文字超で warn、120 で error | warn / error | × |
 | `ja/sentence-ending-repeat` | 「〜た。」「〜だ。」等が 3 文連続（括弧内は除外） | info | × |
-| `ja/halfwidth-fullwidth-mix` | 全半角英数字の混在（プロジェクトで規則を設定） | warn | ✅ |
+| `ja/halfwidth-fullwidth-mix` | 全半角英数字の混在（プロジェクトで規則を設定、Phase 1 は `all-halfwidth` / `all-fullwidth` / `off` のみ） | warn | ✅ |
 
 **Phase 1 から除外したルール**:
 
@@ -475,19 +511,33 @@ type PosInterval = {
 
 #### `ja/quote-period`（カギ括弧内末尾句点）
 
-- 設定値: `"strip" | "keep"`
+- 設定値: `"strip" | "require" | "preserve"`
 - **デフォルト: `strip`**（`「〜だ。」` → `「〜だ」`。日本の小説出版で多数派）
+
+各ポリシーの**検出対象と Fix**:
+
+| ポリシー | 検出 | Fix |
+|---|---|---|
+| `"strip"`（デフォルト） | `「〜。」` のように**句点ありで閉じるカギ括弧** | 句点を削除 → `「〜」` |
+| `"require"` | `「〜」` のように**句点なしで閉じるカギ括弧**（末尾が句読点以外の文字） | 句点を付与 → `「〜。」` |
+| `"preserve"` | 検出しない（既存の表記をそのまま保つ） | — |
+
+`"preserve"` は「既存の原稿を Lint の Fix で機械的に統一したくない」ケース向け。`"require"` は一部の出版社ガイドラインや戯曲・脚本向けの規則。
 
 #### `ja/halfwidth-fullwidth-mix`（全半角英数字の混在）
 
 プロジェクト設定で以下から選択:
 
-| 値 | 規則 |
-|---|---|
-| `"all-halfwidth"` | 英数字はすべて半角 |
-| **`"ja-halfwidth-with-exceptions"`（デフォルト）** | 日本語文中の英数字は半角。ただし 1 桁の数字・単位記号（%、℃ 等）は全角 |
-| `"all-fullwidth"` | 英数字はすべて全角（縦書き作品向け） |
-| `"off"` | ルール適用しない |
+| 値 | 規則 | Phase |
+|---|---|---|
+| **`"all-halfwidth"`（Phase 1 デフォルト）** | 英数字はすべて半角 | Phase 1 |
+| `"all-fullwidth"` | 英数字はすべて全角（縦書き作品向け） | Phase 1 |
+| `"off"` | ルール適用しない | Phase 1 |
+| `"ja-halfwidth-with-exceptions"` | 日本語文中の英数字は半角。ただし 1 桁の数字・単位記号（%、℃ 等）は全角 | **Phase 2** |
+
+**Phase 2 送りの理由**: `ja-halfwidth-with-exceptions` は「`2024年` と `1年` で桁数により半角/全角が分岐」「`%`/`℃` などの単位記号の文脈判定」など、regex のみでは誤検知が多くなる。形態素解析を導入する Phase 2 で単語境界・数詞を正しく認識してから解禁する。
+
+Phase 1 のデフォルト `all-halfwidth` は**日本語横書き小説で最も一般的な規則**で、誤検知リスクが最小。縦書き作品を書く場合は `all-fullwidth` に切り替える。
 
 #### `ja/sentence-ending-repeat`（同文末連続）
 
@@ -535,6 +585,7 @@ type PosInterval = {
 ```typescript
 // settings テーブルの lint.config キーに入る JSON
 {
+  "schemaVersion": 1,            // 構造変更時にインクリメント。マイグレーションのキー
   "enabled": true,
   "languages": {
     "ja": { "enabled": true },
@@ -549,7 +600,7 @@ type PosInterval = {
     },
     "ja/halfwidth-fullwidth-mix": {
       "enabled": true,
-      "options": { "policy": "ja-halfwidth-with-exceptions" }
+      "options": { "policy": "all-halfwidth" }
     },
     "ja/quote-period": {
       "enabled": true,
@@ -607,6 +658,31 @@ Lint 実行時は両方を参照する。Codex Alias は「エントリの正表
 
 - プロジェクト設定に存在しないルールは組み込みデフォルトが適用される
 - 新ルールの追加でマイグレーション不要
+
+### schemaVersion とマイグレーション戦略
+
+**前方互換性の原則**（未知のキーを黙って無視）に加え、**構造そのものが変わる場合は `schemaVersion` をインクリメント**し、起動時に一度だけマイグレーション関数を走らせる:
+
+```
+[ロード時]
+  json = settings.get("lint.config")
+  while json.schemaVersion < CURRENT_SCHEMA_VERSION:
+    json = migrate_v{json.schemaVersion}_to_v{json.schemaVersion + 1}(json)
+  json を settings に書き戻し（デバウンス後）
+```
+
+**バージョンアップが必要なケース**:
+
+- ルールオプションのキー名変更（例: `policy` → `variant`）
+- `options` の値の型変更（文字列 → オブジェクト等）
+- 設定階層の再編（`languages` / `rules` の構造変更）
+
+**バージョンアップ不要なケース**（前方互換で吸収）:
+
+- 新ルールの追加（未知ルール ID は黙って無視、デフォルト適用）
+- 既存ルールへの新オプション追加（欠落時はデフォルト値を適用）
+
+`schemaVersion` 省略時は `1` として扱う（既存データの後方互換）。
 
 ### 新ルール追加時のデフォルトポリシー
 
@@ -693,6 +769,9 @@ Phase 1 から設定 UI に用意:
 - **variants はリテラル扱い**。保存時に regex エスケープした上で内部で正規表現化
 - **大文字小文字は完全一致**。`web` と `Web` は別 variant として登録する運用（表記ゆれを明示する方が日本語文書で自然）
 - **英字 variant は自動で `\b` 境界を付与**（`web` → `\bweb\b`）。`webhook` 等の誤検知を防ぐ
+  - **判定条件**: variant の**全文字が `[A-Za-z0-9_]` のみ**の場合に限り自動付与
+  - 記号・スペース・日本語文字が 1 文字でも含まれる場合は `\b` を付けない（`a.b` のような variant で `.` 境界による想定外マッチを防ぐため）
+  - 記号混在の境界制御が必要なユーザーは、variant 側で明示的に境界文字を書く（例: `" web "` のように前後にスペースを含める）
 - **日本語 variant は境界なし**（Phase 1 は形態素解析なしで単語境界を決められないため）。誤検知リスクはユーザーが `note` に注意書きで残す運用
 
 #### Severity の扱い
@@ -807,9 +886,27 @@ Editor 設計書で定義される「リニア編集モード」（プロジェ�
 
 ### パフォーマンス予算
 
-- 現在シーン Lint: **< 50ms** （シーン平均 5,000 文字想定、実測見込み 〜5ms）
-- 全章 Lint: **< 2s** （プロジェクト平均 30 シーン想定）
-- 形態素解析を使うルールは Phase 2 以降のため、Phase 1 はこの予算で余裕
+**現在シーン Lint 全体: < 50ms**（シーン平均 5,000 文字想定）。層別の内訳:
+
+| 層 | 予算 | 備考 |
+|---|---|---|
+| Rust エンジン実行 | < 20ms | 5,000 文字 × 14 ルールで実測見込み〜5ms、余裕あり |
+| Tauri IPC 往復（JSON シリアライズ含む） | < 5ms | `LintBlock[]` と `Diagnostic[]` の往復 |
+| フロント位置マップ逆引き + Decoration 生成 | < 25ms | Diagnostic 件数に比例、100 件超で再評価 |
+
+**全章 Lint: < 2s** （プロジェクト平均 30 シーン想定、非同期進行で UI 阻害なし）
+
+**ソフト警告サイズ（100KB = 約 50,000 文字）での測定目標**:
+
+| 層 | 目標 |
+|---|---|
+| Rust エンジン実行 | < 200ms |
+| フロント位置マップ逆引き + Decoration 生成 | < 150ms |
+| 全体 | < 500ms |
+
+100KB シーンは「書きすぎ」の警告対象だが Lint は実行するため、**Phase 1 の CI に 100KB fixture のベンチマークを含め、リグレッション検知**する。超過時は warnings チャネルに `Skipped` を流して部分実行にフォールバックする仕組みを Phase 2 で検討。
+
+形態素解析を使うルールは Phase 2 以降のため、Phase 1 はこの予算で余裕。
 
 ### キャンセル
 
@@ -908,7 +1005,7 @@ Codex 連動ルールで DB 読み取りに失敗した場合:
 | `Err(TextTooLarge)` | トースト: 「このシーンは Lint できない大きさです」。Diagnostic は空に |
 | `Err(InvalidLanguage / InvalidConfig)` | devtools にログ、UI バナー: 「Linter 設定にエラー」 |
 | `Err(Internal)` | devtools にログ、UI バナー: 「Linter が一時的に利用できません」 |
-| いずれのエラー時も | **既存の Diagnostic を破棄**（stale 表示を避ける）。次の debounce サイクルで自動再試行 |
+| いずれのエラー時も | **既存の Diagnostic を破棄**（stale 表示を避ける）。再試行トリガは以下の 3 つ: ①次の `docChanged` トランザクション（debounce 500ms）、②設定変更（即時）、③シーン切替（即時）。編集停止中に勝手には再試行しない（無限ループ防止）。手動再実行はパネル右上メニュー「全章 Lint を実行」を流用するか、将来「現在シーンを再 Lint」を追加 |
 
 ---
 
@@ -1053,7 +1150,7 @@ Linter warnings:
 #### 状態の永続化
 
 - パネルの表示/非表示、位置、サイズ → レイアウトシステム経由で自動永続化
-- フィルタ設定、Group by 選択 → `settings` テーブル（`lint.panel.ui`）
+- フィルタ設定、Group by 選択 → `settings` テーブル（`lint.panel.ui`）※ユーザー好みに近い性質のため、将来グローバル層が導入された時点で**昇格候補**。現状はプロジェクトごとに独立（他 Settings と足並みを揃えるため）
 - スクロール位置、展開状態 → メモリのみ（セッション限定）
 
 #### 永続無視リスト
@@ -1064,7 +1161,7 @@ Linter warnings:
 CREATE TABLE lint_ignored_diagnostics (
   id              TEXT PRIMARY KEY,
   rule_id         TEXT NOT NULL,
-  scene_id        TEXT NOT NULL,
+  scene_id        TEXT NOT NULL REFERENCES tree_nodes(id) ON DELETE CASCADE,
   text_snippet    TEXT NOT NULL,     -- Diagnostic.range のテキスト
   context_before  TEXT NOT NULL,     -- 前 20 文字（生テキスト）
   context_after   TEXT NOT NULL,     -- 後 20 文字（生テキスト）
@@ -1086,6 +1183,19 @@ match = rule_id 一致
 **context をハッシュではなく生テキストで持つ理由**: 編集耐性を持たせつつ誤ヒットを防ぐため。単純な `text_snippet` 一致では「意図的な吃音表現『え、、』を無視」「同シーン内の誤字『です、、』も無視」の誤爆が発生する。前後文脈のどちらか一方が一致することを条件とすることで、同じ内容でも文脈が違えば別物として扱う。
 
 **古い無視エントリの扱い**: テキスト変更で context の両方が一致しなくなると、その無視エントリは効かなくなる。設定画面に「古い無視エントリ」として一覧表示し、手動で削除可能にする。
+
+#### シーン分割・統合・削除時の追従
+
+`lint_ignored_diagnostics` は `scene_id` で引くため、シーン操作時に以下の方針で明示的に追従する:
+
+| 操作 | 挙動 |
+|---|---|
+| **シーン分割**（1 シーンを 2 シーンに分ける） | 分割点の前後で生成される 2 つの新 scene_id それぞれに、既存の無視エントリを**両方に複製**。Lint 実行時の context 一致判定でどちらに残るか自然に決まる |
+| **シーン統合**（2 シーンを結合） | 両方の scene_id 配下の無視エントリを結合先 scene_id に**移動**（scene_id を UPDATE） |
+| **シーン削除** | 上記テーブル定義の `ON DELETE CASCADE` で自動削除。統計用 `lint_action_log` 側は履歴として残すため scene_id を nullable にして `ON DELETE SET NULL` |
+| **シーンのプロジェクト間移動**（将来機能） | 未決。Phase 4 以降で再検討 |
+
+**scene_id が変わった時に古いエントリが残ることへの防御**: 分割/統合処理を実装する前の過渡期では、設定画面の「古い無視エントリ」一覧が**孤児エントリのクリーンアップ入口**としても機能する（scene_id が存在しない / context 両方不一致のエントリをまとめて表示）。
 
 ---
 
@@ -1109,11 +1219,16 @@ TipTap ドキュメント内に埋め込む無効化指示。ユーザーは UI�
 #### インライン粒度（Mark）
 
 ```typescript
+// 「全ルール無効化」は空配列ではなく sentinel 文字列 "*" を採用。
+// 空配列（[]）は誤って送出されやすく、「指定なし = 全無効化」と解釈されると事故になる。
+// "*" を明示することで意図を型レベルで表現し、空配列は「不正値」として弾く。
+type RuleSelector = string[];  // 非空配列（["ja/ellipsis-single", ...]）または ["*"]
+
 const LintDisableMark = Mark.create({
   name: 'lintDisable',
-  inclusive: false,                  // 端での入力で Mark が拡張しないように
+  inclusive: false,                     // 端での入力で Mark が拡張しないように
   attrs: {
-    rules: { default: [] as string[] },  // 無効化するルール ID 配列（空 = 全ルール）
+    rules: { default: ['*'] as RuleSelector },  // 無効化するルール ID 配列、["*"] = 全ルール
   },
   // copy/paste: TipTap デフォルトに従い Mark も一緒にコピー
 });
@@ -1121,13 +1236,19 @@ const LintDisableMark = Mark.create({
 
 **`inclusive: false` の理由**: 執筆中に disable 範囲の端に文字を入力した時に、意図せず無効化範囲が広がるのを防ぐため。
 
+**sentinel `"*"` の扱い**:
+
+- serde / TypeScript 境界でのバリデーション: `rules` が空配列の場合は `InvalidOption` として扱い、該当 directive を無視（「全ルール無効化のつもりで空配列を送ってしまった」事故からの防御）
+- `rules: ["*", "ja/ellipsis-single"]` のような混在は**禁止**（保存時バリデーションで弾く）
+- 他ルール ID との衝突防止のため、`*` を含むルール ID は予約不可
+
 #### ブロック粒度（属性）
 
 Paragraph / Heading / Blockquote / ListItem / TableCell に属性を追加:
 
 ```typescript
 {
-  lintDisable: string[] | null,  // このブロックで無効化するルール ID（空配列 = 全ルール）
+  lintDisable: RuleSelector | null,  // null = 無効化なし、["*"] = 全ルール、非空配列 = 指定ルール
 }
 ```
 
@@ -1144,6 +1265,7 @@ Paragraph / Heading / Blockquote / ListItem / TableCell に属性を追加:
 
 - 例: Span が `ja/ellipsis-single` を無効化、Block が `ja/dash-single` を無効化
 - Span の範囲内では **両方のルールが無効化**される
+- いずれか一方でも `RuleSelector::All`（`["*"]`）なら、その範囲は**全ルール無効化**として扱う（ユニオンの吸収元）
 
 **Block 無効化の範囲**: ブロックの textContent 全体に適用。内部に Span disable があればその範囲で Block ∪ Span のユニオンで無効化。
 
@@ -1155,6 +1277,19 @@ Paragraph / Heading / Blockquote / ListItem / TableCell に属性を追加:
 4. **解除**: 無効化 span 上で右クリック →「無効化を解除」
 
 **ルール選択 UI**: デフォルトで「どのルールを無効化するか」のマルチセレクトを表示。「すべてのルール」は**明示的なチェックボックス**で選ぶ必要がある（誤操作で広範囲を無効化する事故を防ぐ）。
+
+#### 複数ブロック選択時の挙動
+
+選択範囲が**複数ブロックにまたがる**場合、Span（Mark）はブロック境界を越えられないため、以下の挙動を取る:
+
+1. **自動変換ダイアログ**: 「選択範囲が複数のブロックにまたがっています。以下のいずれかを選んでください:」
+   - **(A) ブロック単位で無効化**（デフォルト選択）: 含まれる各ブロックに `lintDisable` 属性を付与
+   - **(B) ブロックごとに個別の Span を作成**: 各ブロック内の該当範囲に個別の Span Mark を挿入
+   - **(C) キャンセル**
+2. ダイアログは「今後表示しない + 常に A にする」の設定を記憶可能（プロジェクト設定 `lint.inline-disable.multi-block-policy`: `"ask"` / `"block"` / `"span"`）
+3. 選択範囲が**ブロック全体をきっちり覆う**場合（例: 段落の先頭から末尾まで）は自動的に A を選ぶ（ダイアログ省略）
+
+Block と Span の混在を防ぐため、**(A) と (B) は同時適用しない**（ユーザーが明示的に選ぶ）。
 
 ### 視覚的表示
 
@@ -1177,9 +1312,16 @@ pub struct LintInput<'a> {
 
 pub struct DisableDirective {
     pub range: Utf16Range,          // 無効化範囲（UTF-16、シーン全体座標）
-    pub rule_ids: Vec<String>,      // 対象ルール ID。空配列は「全ルール」
+    pub rules: RuleSelector,        // ["*"] = 全ルール、非空配列 = 指定ルール ID
     pub kind: DisableKind,
 }
+
+pub enum RuleSelector {
+    All,                            // serde では ["*"] にシリアライズ
+    Ids(Vec<String>),               // 非空のルール ID 配列
+}
+// 注: 空配列 [] は無効値。serde カスタム deserializer で弾いて
+//     Err に倒す（InvalidOption として上流で RuleWarning に変換）。
 
 pub enum DisableKind {
     Span,       // インライン
@@ -1192,8 +1334,8 @@ pub enum DisableKind {
 doc を walk する際、以下を同時に行う:
 
 1. TextNode → 位置マップ区間を追加
-2. `lintDisable` Mark 発見時 → `DisableDirective { kind: Span, range, rule_ids }` を収集
-3. ブロックノードの `lintDisable` 属性発見時 → `DisableDirective { kind: Block, range: ブロック全域, rule_ids }` を収集
+2. `lintDisable` Mark 発見時 → `DisableDirective { kind: Span, range, rules }` を収集（`rules` は `RuleSelector`）
+3. ブロックノードの `lintDisable` 属性発見時 → `DisableDirective { kind: Block, range: ブロック全域, rules }` を収集
 
 位置マップと `disables: DisableDirective[]` をセットで Rust 側に渡す。
 
@@ -1204,8 +1346,13 @@ Lint エンジンは Diagnostic を**発行前にフィルタ**:
 ```rust
 fn is_disabled(diag: &Diagnostic, disables: &[DisableDirective]) -> bool {
     disables.iter().any(|d| {
-        d.range.contains(&diag.range)
-            && (d.rule_ids.is_empty() || d.rule_ids.contains(&diag.rule_id))
+        if !d.range.contains(&diag.range) {
+            return false;
+        }
+        match &d.rules {
+            RuleSelector::All => true,
+            RuleSelector::Ids(ids) => ids.iter().any(|id| id == &diag.rule_id),
+        }
     })
 }
 ```
@@ -1246,7 +1393,9 @@ Fix 適用時に `Fix.range` が disable Span と重なる場合:
 | ケース | 挙動 |
 |---|---|
 | 無効化 Span が複数ブロックをまたぐ | **禁止**（TipTap Mark の仕様上、1 ブロック内に閉じる）。ブロック跨ぎが必要ならブロック disable を併用 |
-| 同一範囲に複数 directive | ルール ID のユニオンを適用 |
+| 同一範囲に複数 directive | ルール ID のユニオンを適用（いずれかが `RuleSelector::All` なら全ルール無効化） |
+| `rules` が空配列 `[]` | 不正値として `RuleWarning::InvalidOption` を発行し、該当 directive を無視 |
+| `rules` に `"*"` と他 ID が混在 | 同上（不正値） |
 | 空の Mark（テキストなし） | 無効化は発動しない |
 | 無効化箇所で Fix 適用 | Fix は出ない（Diagnostic 自体が出ないため） |
 | Undo/Redo | TipTap の標準 undo に乗る（Mark 操作は自然に undo される） |
@@ -1274,7 +1423,7 @@ Fix 適用時に `Fix.range` が disable Span と重なる場合:
 |---|---|
 | 通常モード（タブ） | アクティブなタブのシーン |
 | リニア編集モード | **カーソル位置のシーン**（「リニア編集モードでの Lint スコープ」節と整合） |
-| スプリットビュー | **フォーカス中のエディタグループのカーソル位置シーン** |
+| スプリットビュー（将来実装時） | **フォーカス中のエディタグループのカーソル位置シーン** |
 | フォーカスが Editor 外（サイドパネル等）にある間 | **直前の値を維持** |
 
 #### 更新タイミング
@@ -1341,6 +1490,19 @@ MCP は Content Dir の **Markdown ファイル**を読む前提（MCP 設計書
 - Lint 実行時は **Markdown → `LintBlock[]` 変換**（見出し/段落/コードブロック等で分解）
 - `codeBlock` / `image` は既存方針通り Lint 対象外
 - Ruby `{漢字|かんじ}` / emphasisDots `《《text》》` の扱いは Tauri 側（ProseMirror ベース）と MCP 側（Markdown ベース）で処理経路が異なるため、同一結果になる保証は **Phase 2 の Markdown パーサ決定時にゴールデンファイルで検証**する
+
+### 座標変換の責務分担
+
+`grimodex-lint` crate は **常にシーン全体の UTF-16 オフセット**で `Diagnostic.range` を返す（Tauri/MCP 共通）。MCP 公開形への変換は **`grimodex-mcp` 側の責務**:
+
+1. Markdown を読み込む時点で `grimodex-mcp` が**行番号マップ**（UTF-16 offset → (line, column)）を構築
+2. `grimodex-mcp` が `LintBlock[]` を作る際、各 `LintBlock.str_offset_start` もシーン全体の UTF-16 offset で設定
+3. `grimodex-lint::lint()` を呼び出し、`Vec<Diagnostic>` を取得
+4. `grimodex-mcp` 側で各 Diagnostic の `range.start` を行番号マップで (line, column) に変換して MCP 公開形を組み立てる
+
+`grimodex-lint` 自体は line/column を一切知らない（UTF-16 offset のみを扱う）。これにより Tauri 本体（ProseMirror 位置系）と MCP（Markdown 行列系）の両方が同じ crate を共有できる。
+
+**Phase 1 で凍結する公開型**: `line` (1-origin 整数), `column` (0-origin UTF-16), `length` (UTF-16)。**MCP コマンドの実装は v2 だが、型定義は Phase 1 で確定**させて後方互換を保つ（Phase 2 以降で break するのを避けるため）。
 
 ### Diagnostic の返却形式
 
@@ -1485,7 +1647,7 @@ CREATE TABLE lint_action_log (
   id          INTEGER PRIMARY KEY AUTOINCREMENT,
   rule_id     TEXT NOT NULL,
   action      TEXT NOT NULL,        -- 'detected' / 'fixed' / 'ignored_once' / 'ignored_persistent_set' / 'ignored_persistent_unset' / 'disabled_inline'
-  scene_id    TEXT,
+  scene_id    TEXT REFERENCES tree_nodes(id) ON DELETE SET NULL,  -- シーン削除時も履歴は残す
   occurred_at INTEGER NOT NULL
 );
 ```
@@ -1600,6 +1762,15 @@ src-tauri/src/lint/tests/fixtures/
 - 期待値を変更する場合は明示的に再生成
 - `cargo test` で全 fixture を回帰チェック
 
+#### 期待値の再生成運用
+
+- **再生成コマンド**: `UPDATE_EXPECT=1 cargo test -p grimodex-lint`
+  - 環境変数 ON でテストハーネスが `expected.json` を実際の出力で上書き
+  - OFF のとき（デフォルト）は差分検出で失敗させる
+- `input.txt` と `expected.json` の両方を **PR で必ず目視レビュー**する（無意識に期待値が書き換わるのを防ぐ）
+- ハーネス実装時に **`.gitignore` されないこと**を CI で検証する（`expected.json` が ignore されていると再生成が可視化されない）
+- 実装クレート: `insta` クレートの採用も検討可。採用した場合は環境変数ではなく `cargo insta review` で承認フローを回す
+
 ### ユニットテスト
 
 - **オフセット変換層**: CJK、絵文字、改行、ノード境界の境界値テスト（最初の PR で必須）
@@ -1710,18 +1881,23 @@ UI 側（Linter パネル）はサブフェーズに分けて実装:
 | 辞書取り込み | textlint 系から抽出してリポジトリにコミット、`include_str!` |
 | ビルド | 純 Rust。CI に Node 不要 |
 | 位置インデックス | UTF-16 コードユニット単位で Rust → JS に返却 |
+| `Diagnostic.range` / `Fix.range` 基準 | **シーン全体テキスト基準の UTF-16 オフセット**（ブロック内ローカルではない） |
 | ProseMirror 連携 | フロント側で位置マップを保持して変換 |
 | Phase 1 ルール | 日本語 9、英語 4（すべて regex、`ja/particle-no-chain` は Phase 2 へ） |
+| `ja/halfwidth-fullwidth-mix` | Phase 1 は `all-halfwidth`（デフォルト）/ `all-fullwidth` / `off` のみ。`ja-halfwidth-with-exceptions` は形態素解析導入の Phase 2 で解禁 |
+| `ja/quote-period` の方針 | `strip`（デフォルト）/ `require`（句点付与）/ `preserve`（検出しない）の 3 択 |
 | 既定 ON | 記号・約物すべて + 一文長 |
 | 実行範囲 | 現在シーンのみ（debounce 500ms）+ 明示で全章 |
 | Codex 連動の判定 | 完全一致のみ。表記ゆれは Codex Alias で吸収 |
 | AI 連携 | Linter には組み込まない（確定論性を保つ） |
 | 設定階層 | 2層（組み込みデフォルト → プロジェクト上書き）。グローバル層は将来検討 |
 | ルール設定の保存 | `settings` テーブルに `lint.config` の 1 キー JSON blob |
+| `lint.config` のバージョン管理 | `schemaVersion` フィールドを Phase 1 から持ち、構造変更時にマイグレーション関数を走らせる |
+| ルール ID prefix 予約 | `ja/` / `en/` / `project/`（Phase 1）+ `codex/`（Phase 2）。将来候補 `craft/` `style/` `user/` |
 | 用語統一辞書の保存 | 専用テーブル `lint_term_dictionary` |
 | 用語辞書 Rule ID | `project/term-consistency`（`project/` prefix を新設、言語横断） |
 | 用語辞書 UI | Settings `Linter → 用語辞書` サブタブ、テーブル編集、エントリ単位 Severity（warn/info）と ON/OFF |
-| 用語辞書マッチング | variants はリテラル扱い + 英字自動 `\b` 境界 + 大文字小文字完全一致 |
+| 用語辞書マッチング | variants はリテラル扱い + 英字自動 `\b` 境界（**全文字が `[A-Za-z0-9_]` の場合のみ付与**） + 大文字小文字完全一致 |
 | 用語辞書 Severity | エントリ単位の値を優先、ルール設定 UI 側は disabled |
 | Codex Alias 衝突 | Codex 先勝ち、辞書側は `RuleWarning` + 辞書タブの警告アイコンで2系統通知 |
 | 新ルール追加時の既定 | `enabled: false`（既存プロジェクトの体験を阻害しない） |
@@ -1743,9 +1919,11 @@ UI 側（Linter パネル）はサブフェーズに分けて実装:
 | Fix 適用後の選択状態 | 解除。スクロールは上部基準で維持 |
 | 全章 Lint キャンセル | 部分結果保持、残りのみ再開可能 |
 | 永続無視の同定 | `rule_id` + `text_snippet` + (`context_before` OR `context_after`) |
+| 永続無視と シーン操作の整合 | `scene_id` は `tree_nodes(id)` への FK（`ON DELETE CASCADE`）。分割時は両シーンに複製、統合時は結合先に UPDATE |
+| `lint_action_log` の FK | `scene_id` は `tree_nodes(id)` への FK（`ON DELETE SET NULL`、履歴保持） |
 | インライン無効化の格納 | TipTap `lintDisable` Mark（`inclusive: false`）+ ブロック属性。Plain text コメント方式は不採用 |
-| インライン無効化の粒度 | Span / Block（+ 将来 Scene）。重複時はルール ID のユニオン |
-| 「全ルール無効化」 | `rule_ids: []`。UI では明示的なチェックボックスで選択必須 |
+| インライン無効化の粒度 | Span / Block（+ 将来 Scene）。重複時はルール ID のユニオン。複数ブロック選択時はダイアログで A/B/C を選択 |
+| 「全ルール無効化」 | `RuleSelector::All`（`["*"]`）を採用。空配列 `[]` は不正値として `InvalidOption`。UI では明示的なチェックボックスで選択必須 |
 | Fix × Disable | TipTap 標準挙動（黙って実行）。disable 消失時は Linter パネルに通知 |
 | エクスポート（原稿） | `lintDisable` Mark/ブロック属性は除去。テスト必須 |
 | Lint レポートのエクスポート | Phase 2 実装。CSV / Markdown / JSON の 3 形式。対象はプロジェクト全体 or フィルタ結果。本文抜粋非含有オプションあり |
@@ -1753,11 +1931,14 @@ UI 側（Linter パネル）はサブフェーズに分けて実装:
 | MCP Linter コマンド | `list_lint_diagnostics` / `run_lint` / `list_lint_rules` を MCP v2 で公開。`apply_lint_fix` は MCP v4 以降 |
 | MCP Diagnostic 返却形 | line（1-origin）+ column / length（UTF-16 コードユニット、LSP 準拠）。ProseMirror オフセットは返さない |
 | MCP Lint Resources | 未決（MCP v2 着手時に lazy / eager / content hash メモ化を再検討） |
+| MCP 座標変換の責務 | `grimodex-lint` は UTF-16 offset のみ扱う。Markdown 行列変換は `grimodex-mcp` が担当。**line/column/length の公開型は Phase 1 で凍結** |
+| パフォーマンス予算の層別 | Rust エンジン < 20ms / IPC < 5ms / フロント逆引き・Decoration < 25ms（5,000 文字時）。100KB ソフト警告サイズ時は全体 < 500ms を目標 |
 | 外部テレメトリー送信 | **実装しない**（本設計書のスコープ外、未発表原稿のプライバシー優先） |
 | 執筆傾向ログ `lint_action_log` | Phase 2 で書き込み開始、Phase 3 で統計 UI。**イベント履歴**として `lint_ignored_diagnostics`（状態）と役割分離 |
 | デバッグログ基盤 | `tracing` + `tracing-appender` を Phase 1 で導入。Tauri/MCP は別プロセスのため `lint-tauri-*.log` / `lint-mcp-*.log` にファイル分離 |
 | ログ内の本文 | 原則 `[redacted]`。`--verbose-lint` + `debug` レベル時のみ `text_snippet` を含める |
-| テスト | ゴールデンファイル形式を day 1 から |
+| テスト | ゴールデンファイル形式を day 1 から。期待値再生成は `UPDATE_EXPECT=1 cargo test` 相当 |
+| LintRule の対象ブロック制御 | `supported_block_kinds` をデフォルト実装付きで trait に持たせ、エンジン側で自動スキップ（Heading で sentence-length を走らせない等） |
 
 ---
 
