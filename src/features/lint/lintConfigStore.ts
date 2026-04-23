@@ -193,7 +193,10 @@ export const useLintConfigStore = create<LintConfigState>()((set, get) => ({
   resetRule: (ruleId) => {
     const user = get().userLayer;
     if (!user.rules || !(ruleId in user.rules)) return;
-    const { [ruleId]: _removed, ...rest } = user.rules;
+    const rest: Record<string, RuleConfig> = {};
+    for (const [k, v] of Object.entries(user.rules)) {
+      if (k !== ruleId) rest[k] = v;
+    }
     const next: Partial<LintFullConfig> = { ...user, rules: rest };
     set({ userLayer: next });
     persist(next);

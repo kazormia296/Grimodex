@@ -10,6 +10,7 @@ import {
   testConnection,
   sendChatWithTools,
 } from "@/lib/browser-ai";
+import { lintTextBrowser } from "@/lib/browser-lint";
 import type {
   AgentMessagePayload,
   AgentToolDefinition,
@@ -440,6 +441,10 @@ export async function createBrowserMock(): Promise<BrowserMock> {
         return (await handleSendChatMessage(args)) as T;
       case "send_agent_message":
         return (await handleSendAgentMessage(args)) as T;
+      case "lint_text":
+        return lintTextBrowser(
+          args as unknown as Parameters<typeof lintTextBrowser>[0],
+        ) as T;
       default:
         throw new Error(`[browser-mock] Unknown Tauri command: ${cmd}`);
     }
