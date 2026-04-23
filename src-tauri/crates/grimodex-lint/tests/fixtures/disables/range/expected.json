@@ -1,0 +1,19 @@
+[
+  {
+    "rule_id": "ja/consecutive-punct",
+    "severity": "error",
+    "message": "連続する「。」は1つにまとめてください",
+    "range": {
+      "start": 3,
+      "end": 5
+    },
+    "fix": {
+      "label": "「。」に置き換える",
+      "replacement": "。",
+      "range": {
+        "start": 3,
+        "end": 5
+      }
+    }
+  }
+]
