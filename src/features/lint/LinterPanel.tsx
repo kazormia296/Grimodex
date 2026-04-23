@@ -35,6 +35,8 @@ type PanelMode = "current" | "project";
 
 type GroupMode = "severity" | "rule" | "none";
 
+type ProjectGroupMode = "scene" | "rule" | "severity";
+
 function SeverityIcon({ severity }: { severity: Severity }) {
   switch (severity) {
     case "error":
@@ -895,16 +897,28 @@ function ProjectLinterView() {
   const start = useLintProjectStore((s) => s.start);
   const cancel = useLintProjectStore((s) => s.cancel);
   const requestJump = useLintProjectStore((s) => s.requestJump);
+  const replaceSceneDiagnostics = useLintProjectStore(
+    (s) => s.replaceSceneDiagnostics,
+  );
   const openPinned = useTabStore((s) => s.openPinned);
+  const addIgnore = useLintIgnoreStore((s) => s.addIgnore);
+  const setRule = useLintConfigStore((s) => s.setRule);
 
   const [severityFilter, setSeverityFilter] = useState<SeverityFilter>({
     error: true,
     warning: true,
     info: true,
   });
+  const [groupMode, setGroupMode] = useState<ProjectGroupMode>("scene");
   const [query, setQuery] = useState("");
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
   const [exportOpen, setExportOpen] = useState(false);
+  const [menu, setMenu] = useState<{
+    x: number;
+    y: number;
+    scene: ScannedScene;
+    d: Diagnostic;
+  } | null>(null);
 
   const counts = useMemo(() => {
     const c = { error: 0, warning: 0, info: 0 };
@@ -931,9 +945,108 @@ function ProjectLinterView() {
       .filter((scene) => scene.diagnostics.length > 0);
   }, [scenes, severityFilter, query]);
 
+  /**
+   * Grouped rendering plan. Scene mode preserves the original scene-by-
+   * scene layout; Rule / Severity modes flatten every diagnostic and
+   * regroup, carrying each diagnostic's source scene so jump and
+   * context-menu actions keep working.
+   */
+  const grouped = useMemo(() => {
+    type Item = { scene: ScannedScene; d: Diagnostic };
+    if (groupMode === "scene") {
+      return filteredScenes.map((scene) => ({
+        key: `scene:${scene.sceneId}`,
+        label: `${scene.sceneTitle} (${scene.diagnostics.length})`,
+        items: scene.diagnostics.map((d) => ({ scene, d }) as Item),
+      }));
+    }
+    const flat: Item[] = [];
+    for (const scene of filteredScenes) {
+      for (const d of scene.diagnostics) flat.push({ scene, d });
+    }
+    if (groupMode === "rule") {
+      const buckets = new Map<string, Item[]>();
+      for (const item of flat) {
+        const arr = buckets.get(item.d.rule_id) ?? [];
+        arr.push(item);
+        buckets.set(item.d.rule_id, arr);
+      }
+      return [...buckets.entries()]
+        .sort(([a], [b]) => a.localeCompare(b))
+        .map(([ruleId, items]) => ({
+          key: `rule:${ruleId}`,
+          label: `${ruleId} (${items.length})`,
+          items,
+        }));
+    }
+    const order: Severity[] = ["error", "warning", "info"];
+    const buckets: Record<Severity, Item[]> = {
+      error: [],
+      warning: [],
+      info: [],
+    };
+    for (const item of flat) buckets[item.d.severity].push(item);
+    const labels: Record<Severity, string> = {
+      error: "Error",
+      warning: "Warning",
+      info: "Info",
+    };
+    return order
+      .filter((s) => buckets[s].length > 0)
+      .map((s) => ({
+        key: `sev:${s}`,
+        label: `${labels[s]} (${buckets[s].length})`,
+        items: buckets[s],
+      }));
+  }, [filteredScenes, groupMode]);
+
   const onStart = useCallback(() => {
     void start(DEFAULT_PROJECT_ID);
   }, [start]);
+
+  const onIgnore = useCallback(
+    async (scene: ScannedScene, d: Diagnostic) => {
+      try {
+        await addIgnore(scene.sceneId, d, scene.sceneText);
+        // Re-apply the ignore filter against the *raw* store diagnostics,
+        // not `scene.diagnostics` (which is the severity/query-filtered
+        // closure snapshot). Writing the filtered-subset back would
+        // silently drop diagnostics the user had temporarily hidden.
+        const raw = useLintProjectStore
+          .getState()
+          .scenes.find((s) => s.sceneId === scene.sceneId);
+        if (!raw) return;
+        const filtered = useLintIgnoreStore
+          .getState()
+          .filterDiagnostics(raw.sceneId, raw.diagnostics, raw.sceneText);
+        replaceSceneDiagnostics(raw.sceneId, filtered);
+      } catch (err) {
+        console.error("addIgnore failed", err);
+      }
+    },
+    [addIgnore, replaceSceneDiagnostics],
+  );
+
+  const onDisableRule = useCallback(
+    (d: Diagnostic) => {
+      setRule(d.rule_id, { enabled: false });
+    },
+    [setRule],
+  );
+
+  useEffect(() => {
+    if (!menu) return;
+    const close = () => setMenu(null);
+    const onEsc = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setMenu(null);
+    };
+    window.addEventListener("click", close);
+    window.addEventListener("keydown", onEsc);
+    return () => {
+      window.removeEventListener("click", close);
+      window.removeEventListener("keydown", onEsc);
+    };
+  }, [menu]);
 
   const onJump = useCallback(
     (scene: ScannedScene, d: Diagnostic) => {
@@ -1057,6 +1170,15 @@ function ProjectLinterView() {
               </button>
             )}
           </div>
+          <select
+            value={groupMode}
+            onChange={(e) => setGroupMode(e.target.value as ProjectGroupMode)}
+            className="h-6 rounded border border-border bg-background px-1 text-xs"
+          >
+            <option value="scene">Group: Scene</option>
+            <option value="rule">Group: Rule</option>
+            <option value="severity">Group: Severity</option>
+          </select>
         </div>
         {isRunning && (
           <div className="flex flex-col gap-0.5">
@@ -1091,7 +1213,7 @@ function ProjectLinterView() {
           <div className="flex h-full flex-col items-center justify-center gap-2 p-4 text-sm text-muted-foreground">
             <p>「全章 Lint」を押すとプロジェクト全シーンを走査します</p>
           </div>
-        ) : filteredScenes.length === 0 ? (
+        ) : grouped.length === 0 ? (
           <div className="flex h-full flex-col items-center justify-center gap-2 p-4 text-sm text-muted-foreground">
             {phase === "running" ? (
               <p>Lint 実行中...</p>
@@ -1100,15 +1222,18 @@ function ProjectLinterView() {
             )}
           </div>
         ) : (
-          filteredScenes.map((scene) => {
-            const key = `scene:${scene.sceneId}`;
-            const isCollapsed = collapsed[key] ?? false;
+          grouped.map((group) => {
+            const isCollapsed = collapsed[group.key] ?? false;
+            const showSceneTitle = groupMode !== "scene";
             return (
-              <div key={key}>
+              <div key={group.key}>
                 <button
                   type="button"
                   onClick={() =>
-                    setCollapsed((prev) => ({ ...prev, [key]: !isCollapsed }))
+                    setCollapsed((prev) => ({
+                      ...prev,
+                      [group.key]: !isCollapsed,
+                    }))
                   }
                   className="flex w-full items-center gap-1 border-b border-border bg-muted/50 px-2 py-1 text-left text-xs font-semibold hover:bg-accent/50"
                 >
@@ -1117,19 +1242,26 @@ function ProjectLinterView() {
                   ) : (
                     <ChevronDown className="h-3.5 w-3.5" />
                   )}
-                  <span className="truncate">{scene.sceneTitle}</span>
-                  <span className="ml-auto text-muted-foreground">
-                    ({scene.diagnostics.length})
-                  </span>
+                  <span className="truncate">{group.label}</span>
                 </button>
                 {!isCollapsed && (
                   <ul className="flex flex-col divide-y divide-border">
-                    {scene.diagnostics.map((d, idx) => (
+                    {group.items.map(({ scene, d }, idx) => (
                       <ProjectDiagnosticRow
-                        key={`${d.rule_id}-${d.range.start}-${d.range.end}-${idx}`}
+                        key={`${scene.sceneId}-${d.rule_id}-${d.range.start}-${d.range.end}-${idx}`}
                         d={d}
                         sceneText={scene.sceneText}
+                        sceneTitle={showSceneTitle ? scene.sceneTitle : null}
                         onJump={() => onJump(scene, d)}
+                        onContextMenu={(e) => {
+                          e.preventDefault();
+                          setMenu({
+                            x: e.clientX,
+                            y: e.clientY,
+                            scene,
+                            d,
+                          });
+                        }}
                       />
                     ))}
                   </ul>
@@ -1139,6 +1271,22 @@ function ProjectLinterView() {
           })
         )}
       </div>
+      {menu && (
+        <ContextMenu
+          x={menu.x}
+          y={menu.y}
+          d={menu.d}
+          onIgnore={() => {
+            void onIgnore(menu.scene, menu.d);
+            setMenu(null);
+          }}
+          onDisableRule={() => {
+            onDisableRule(menu.d);
+            setMenu(null);
+          }}
+          onClose={() => setMenu(null)}
+        />
+      )}
       {exportOpen && (
         <ExportReportDialog
           // Export the *visible* (filtered) view — what the user sees
@@ -1155,15 +1303,27 @@ function ProjectLinterView() {
 function ProjectDiagnosticRow({
   d,
   sceneText,
+  sceneTitle,
   onJump,
+  onContextMenu,
 }: {
   d: Diagnostic;
   sceneText: string;
+  /**
+   * When non-null, shows the owning scene title under the message —
+   * useful when the outer group no longer carries it (Rule / Severity
+   * modes flatten across scenes).
+   */
+  sceneTitle: string | null;
   onJump: () => void;
+  onContextMenu: (e: React.MouseEvent) => void;
 }) {
   const { before, hit, after } = extractExcerpt(sceneText, d);
   return (
-    <li className="flex items-start gap-2 px-3 py-2 hover:bg-accent/40">
+    <li
+      className="flex items-start gap-2 px-3 py-2 hover:bg-accent/40"
+      onContextMenu={onContextMenu}
+    >
       <button
         type="button"
         className="flex flex-1 items-start gap-2 text-left"
@@ -1174,7 +1334,15 @@ function ProjectDiagnosticRow({
         </span>
         <div className="flex min-w-0 flex-col gap-0.5">
           <span className="text-sm">{d.message}</span>
-          <span className="text-xs text-muted-foreground">{d.rule_id}</span>
+          <span className="text-xs text-muted-foreground">
+            {d.rule_id}
+            {sceneTitle && (
+              <>
+                <span className="mx-1">·</span>
+                <span className="italic">{sceneTitle}</span>
+              </>
+            )}
+          </span>
           {(before || hit || after) && (
             <span className="truncate font-mono text-xs text-muted-foreground">
               {before}

@@ -289,6 +289,9 @@ function RuleOptions({
         >
           <option value="all-halfwidth">all-halfwidth（英数字は半角）</option>
           <option value="all-fullwidth">all-fullwidth（英数字は全角）</option>
+          <option value="ja-halfwidth-with-exceptions">
+            ja-halfwidth-with-exceptions（日本語文中は半角、1桁数字は全角）
+          </option>
           <option value="off">off</option>
         </select>
       </div>
