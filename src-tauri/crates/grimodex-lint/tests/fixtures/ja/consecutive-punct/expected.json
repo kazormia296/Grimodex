@@ -1,0 +1,53 @@
+[
+  {
+    "rule_id": "ja/consecutive-punct",
+    "severity": "error",
+    "message": "連続する「、」は1つにまとめてください",
+    "range": {
+      "start": 9,
+      "end": 11
+    },
+    "fix": {
+      "label": "「、」に置き換える",
+      "replacement": "、",
+      "range": {
+        "start": 9,
+        "end": 11
+      }
+    }
+  },
+  {
+    "rule_id": "ja/consecutive-punct",
+    "severity": "error",
+    "message": "連続する「。」は1つにまとめてください",
+    "range": {
+      "start": 31,
+      "end": 34
+    },
+    "fix": {
+      "label": "「。」に置き換える",
+      "replacement": "。",
+      "range": {
+        "start": 31,
+        "end": 34
+      }
+    }
+  },
+  {
+    "rule_id": "ja/consecutive-punct",
+    "severity": "error",
+    "message": "連続する「、」は1つにまとめてください",
+    "range": {
+      "start": 43,
+      "end": 46
+    },
+    "fix": {
+      "label": "「、」に置き換える",
+      "replacement": "、",
+      "range": {
+        "start": 43,
+        "end": 46
+      }
+    }
+  }
+]

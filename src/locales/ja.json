@@ -318,7 +318,8 @@
       "codex-quick": "Codex Quick",
       "stats": "統計",
       "timeline": "タイムライン",
-      "map": "マップ"
+      "map": "マップ",
+      "linter": "Linter"
     },
     "preset": {
       "title": "レイアウトプリセット",

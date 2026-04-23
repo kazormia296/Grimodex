@@ -58,6 +58,7 @@ import { useSceneContentStore } from "@/features/editor/sceneContentStore";
 import { shouldAutoDraftTransition } from "@/features/editor/autoStatusTransition";
 import { shouldPromptSynopsis } from "@/features/editor/synopsisSuggestion";
 import { getDocText } from "@/features/editor/RubyNode";
+import { useLinter } from "@/features/lint/useLinter";
 import { generateSynopsisFromContent } from "@/features/chat/chatApi";
 import { useChatStore } from "@/features/chat/chatStore";
 import { prosemirrorToText } from "@/lib/prosemirror";
@@ -489,6 +490,11 @@ export function EditorPane({
     setGlobalEditor(editor);
     return () => setGlobalEditor(null);
   }, [editor, setGlobalEditor, groupIndex]);
+
+  // Linter — scene-only, primary group only.
+  const lintSceneId =
+    groupIndex === 0 && !isCodexMode && !isSnippetMode ? nodeId : null;
+  useLinter(editor, lintSceneId);
 
   // Ctrl+S / Ctrl+F / Ctrl+H / Ctrl+Shift+H key handlers
   const handleManualSave = useCallback(async () => {

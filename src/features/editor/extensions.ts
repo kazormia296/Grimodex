@@ -19,6 +19,7 @@ import { SceneBreakNode } from "@/features/editor/SceneBreakNode";
 import { FindReplaceExtension } from "@/features/editor/FindReplaceExtension";
 import { InlineAtomNavigationExtension } from "@/features/editor/InlineAtomNavigationExtension";
 import { SlashCommandExtension } from "@/features/editor/inlineAi/SlashCommandExtension";
+import { createLintDecorationPlugin } from "@/features/editor/LintDecorationPlugin";
 import i18next from "@/lib/i18n";
 import type { Extensions } from "@tiptap/core";
 
@@ -65,6 +66,13 @@ const ParagraphWithEmptyLineSupport = Paragraph.extend({
  * This extension adds the shortcuts that match what the toolbar labels
  * display, so both sets of keys work.
  */
+const LintDecorationExtension = Extension.create({
+  name: "lintDecoration",
+  addProseMirrorPlugins() {
+    return [createLintDecorationPlugin()];
+  },
+});
+
 const ToolbarShortcutsExtension = Extension.create({
   name: "toolbarShortcuts",
 
@@ -113,6 +121,7 @@ export function getEditorExtensions(): Extensions {
     FindReplaceExtension,
     InlineAtomNavigationExtension,
     SlashCommandExtension,
+    LintDecorationExtension,
   ];
 }
 

@@ -318,7 +318,8 @@
       "codex-quick": "Codex Quick",
       "stats": "Stats",
       "timeline": "Timeline",
-      "map": "Map"
+      "map": "Map",
+      "linter": "Linter"
     },
     "preset": {
       "title": "Layout presets",

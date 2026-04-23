@@ -379,6 +379,25 @@ async fn list_ai_models(
     Ok(models)
 }
 
+/// Deterministic text linter entry point (see `grimodex_lint::lint`).
+///
+/// Accepts the pre-serialised `LintBlock[]` from the frontend position map
+/// and returns diagnostics in scene-wide UTF-16 offsets.
+#[tauri::command]
+fn lint_text(
+    blocks: Vec<grimodex_lint::LintBlock>,
+    language: String,
+    scope: grimodex_lint::LintScope,
+    config: grimodex_lint::LintConfig,
+) -> Result<grimodex_lint::LintResponse, grimodex_lint::LintError> {
+    let lang = match language.as_str() {
+        "ja" => grimodex_lint::Language::Japanese,
+        "en" => grimodex_lint::Language::English,
+        other => return Err(grimodex_lint::LintError::InvalidLanguage(other.to_string())),
+    };
+    grimodex_lint::lint(&blocks, lang, scope, &config)
+}
+
 #[tauri::command]
 async fn test_ai_connection(
     ai_path: tauri::State<'_, AiSettingsPath>,
@@ -454,7 +473,8 @@ pub fn run() {
             integrity_check,
             repair_integrity,
             codex_matching::codex_rebuild_matcher,
-            codex_matching::codex_match_text
+            codex_matching::codex_match_text,
+            lint_text
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

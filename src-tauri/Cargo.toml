@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/grimodex-mcp"]
+members = ["crates/grimodex-mcp", "crates/grimodex-lint"]
 
 [package]
 name = "grimodex"
@@ -39,4 +39,5 @@ reqwest = { version = "0.13", features = ["json", "stream"] }
 futures = "0.3"
 tokio = { version = "1", features = ["macros"] }
 aho-corasick = "1"
+grimodex-lint = { path = "crates/grimodex-lint" }
 

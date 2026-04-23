@@ -1,0 +1,11 @@
+[
+  {
+    "rule_id": "ja/sentence-length",
+    "severity": "warning",
+    "message": "一文が 80 文字を超えています（99 文字）",
+    "range": {
+      "start": 12,
+      "end": 111
+    }
+  }
+]

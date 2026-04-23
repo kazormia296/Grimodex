@@ -43,6 +43,7 @@ import { SnippetPanel } from "@/features/snippets/SnippetPanel";
 import { AttributionReport } from "@/features/attribution/AttributionReport";
 import { TimelinePanel } from "@/features/timeline/TimelinePanel";
 import { MapPanel } from "@/features/map/MapPanel";
+import { LinterPanel } from "@/features/lint/LinterPanel";
 import { GlobalSearchDialog } from "@/features/search/GlobalSearchDialog";
 import { useState } from "react";
 import { Settings, FileOutput } from "lucide-react";
@@ -104,6 +105,10 @@ function TimelineContent(_props: IDockviewPanelProps) {
 
 function MapContent(_props: IDockviewPanelProps) {
   return <MapPanel />;
+}
+
+function LinterContent(_props: IDockviewPanelProps) {
+  return <LinterPanel />;
 }
 
 /* ── Default layout builder (delegates to builtin preset) ── */
@@ -288,6 +293,7 @@ function EditorScreen() {
       "codex-quick": CodexQuickContent,
       timeline: TimelineContent,
       map: MapContent,
+      linter: LinterContent,
     }),
     [],
   );
@@ -432,6 +438,7 @@ function EditorScreen() {
         q: "codex-quick",
         l: "timeline",
         m: "map",
+        t: "linter",
         ",": "settings",
       };
 

@@ -1599,6 +1599,7 @@ dependencies = [
  "anyhow",
  "chrono",
  "futures",
+ "grimodex-lint",
  "keyring",
  "reqwest",
  "rusqlite",
@@ -1613,6 +1614,16 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "uuid",
+]
+
+[[package]]
+name = "grimodex-lint"
+version = "0.1.0"
+dependencies = [
+ "regex",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
 ]
 
 [[package]]

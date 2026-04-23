@@ -364,6 +364,24 @@
   opacity: 0.7;
 }
 
+/* Lint diagnostic decorations (squiggly underlines) */
+.lint-deco {
+  text-decoration-line: underline;
+  text-decoration-style: wavy;
+  text-decoration-skip-ink: none;
+  text-underline-offset: 3px;
+  cursor: help;
+}
+.lint-deco--error {
+  text-decoration-color: #ef4444;
+}
+.lint-deco--warning {
+  text-decoration-color: #f59e0b;
+}
+.lint-deco--info {
+  text-decoration-color: #3b82f6;
+}
+
 /* Vertical writing preview (Task 5.2) */
 .vertical-preview {
   writing-mode: vertical-rl;

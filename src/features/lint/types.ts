@@ -1,0 +1,82 @@
+/**
+ * Shared type definitions for the Grimodex Linter.
+ *
+ * These mirror the Rust types exposed by the `grimodex-lint` crate. The
+ * Rust side emits snake_case JSON (serde default), so we match that here.
+ */
+
+export type Severity = "error" | "warning" | "info";
+
+export interface Utf16Range {
+  start: number;
+  end: number;
+}
+
+export interface Fix {
+  label: string;
+  replacement: string;
+  range: Utf16Range;
+}
+
+export interface Diagnostic {
+  rule_id: string;
+  severity: Severity;
+  message: string;
+  range: Utf16Range;
+  fix?: Fix;
+}
+
+export type WarningKind = "skipped" | "invalidOption" | "initFailed";
+
+export interface RuleWarning {
+  rule_id: string;
+  kind: WarningKind;
+  message: string;
+}
+
+export interface LintResponse {
+  diagnostics: Diagnostic[];
+  warnings: RuleWarning[];
+  computed_at: number;
+}
+
+export type LintErrorKind =
+  | "TextTooLarge"
+  | "InvalidLanguage"
+  | "InvalidConfig"
+  | "Internal";
+
+export interface LintError {
+  type: LintErrorKind;
+  data?: unknown;
+}
+
+export type BlockKind =
+  | "paragraph"
+  | "heading"
+  | "blockquote"
+  | "listItem"
+  | "tableCell";
+
+/** Wire shape for a single block sent to `lint_text`. */
+export interface WireLintBlock {
+  id: number;
+  kind: BlockKind;
+  text: string;
+  str_offset_start: number;
+}
+
+export type LintScope =
+  | { kind: "scene"; scene_id: string }
+  | { kind: "chapter"; chapter_id: string }
+  | { kind: "project" };
+
+export interface RuleConfig {
+  enabled?: boolean;
+  severity?: Severity;
+  options?: Record<string, unknown>;
+}
+
+export interface LintConfig {
+  rules?: Record<string, RuleConfig>;
+}
