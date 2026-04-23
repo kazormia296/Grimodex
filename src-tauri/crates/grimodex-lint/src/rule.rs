@@ -100,10 +100,36 @@ fn default_true() -> bool {
     true
 }
 
+/// One Codex entry surfaced to the Linter.
+///
+/// Used by F-group rules (`codex/*`) to detect in-text usage of
+/// non-canonical variants. The Lint engine does not know about the
+/// Codex database — the frontend is expected to serialise the subset
+/// of entries relevant to the current scene/project and attach it to
+/// `LintConfig.codex_entries` on every lint request.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CodexEntry {
+    /// Primary key — carried back in Diagnostic metadata for linking
+    /// back to the entry in the UI (future work).
+    pub entry_id: String,
+    /// The preferred written form. Diagnostics suggest rewriting
+    /// non-canonical matches to this value.
+    pub canonical: String,
+    /// Alternative spellings / aliases known to the author. Matches on
+    /// any of these (excluding the canonical) trigger a Diagnostic.
+    #[serde(default)]
+    pub aliases: Vec<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct LintConfig {
     #[serde(default)]
     pub rules: HashMap<String, RuleConfig>,
+    /// Codex entries available for F-group (codex/*) rule matching.
+    /// Empty list is equivalent to "no Codex data" — F-group rules
+    /// become no-ops.
+    #[serde(default)]
+    pub codex_entries: Vec<CodexEntry>,
 }
 
 impl LintConfig {

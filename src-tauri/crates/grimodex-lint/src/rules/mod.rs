@@ -1,5 +1,6 @@
-//! All built-in lint rules, grouped by language.
+//! All built-in lint rules, grouped by language / theme.
 
+pub mod codex;
 pub mod en;
 pub mod ja;
 
@@ -32,12 +33,16 @@ pub fn build_ruleset(language: Language) -> (Vec<Box<dyn LintRule>>, Vec<RuleWar
             ));
             rules.push(Box::new(ja::sentence_length::SentenceLengthRule));
             rules.push(Box::new(ja::word_repetition::WordRepetitionRule));
+            // Codex-linked rules are language-agnostic but registered
+            // here so they run on Japanese scenes by default.
+            rules.push(Box::new(codex::name_inconsistency::NameInconsistencyRule));
         }
         Language::English => {
             rules.push(Box::new(en::double_space::DoubleSpaceRule));
             rules.push(Box::new(en::ellipsis::EllipsisRule));
             rules.push(Box::new(en::em_dash::EmDashRule));
             rules.push(Box::new(en::straight_quotes::StraightQuotesRule));
+            rules.push(Box::new(codex::name_inconsistency::NameInconsistencyRule));
         }
     }
 

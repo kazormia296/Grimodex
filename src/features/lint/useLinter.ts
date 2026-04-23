@@ -14,14 +14,15 @@ import { useLintStore } from "./lintStore";
 import { useLintIgnoreStore } from "./lintIgnoreStore";
 import { useLintConfigStore } from "./lintConfigStore";
 import { resolveLintLanguage } from "./types";
-import type { LintConfig, WireLintBlock } from "./types";
+import type { LintCodexEntry, LintConfig, WireLintBlock } from "./types";
+import { listCodexEntries } from "@/features/codex/api";
 
 /**
  * Imperative trigger used when an action must bypass the normal debounce
  * — e.g. right after applying a Fix. Callable from anywhere since the
  * linter state lives in a Zustand store.
  */
-export function runLintNow(
+export async function runLintNow(
   editor: Editor,
   sceneId: string,
   configOverride?: LintConfig,
@@ -30,6 +31,15 @@ export function runLintNow(
   const blocks = toWire(map.blocks);
   const sceneText = map.blocks.map((b) => b.text).join("\n");
   const config = configOverride ?? resolveEffectiveConfig();
+  // Mirror the debounced path: attach Codex entries when the
+  // name-inconsistency rule is enabled.
+  if (!configOverride) {
+    const eff = useLintConfigStore.getState().getEffective();
+    const codexRule = eff.rules["codex/name-inconsistency"];
+    if (codexRule && codexRule.enabled !== false) {
+      (config as LintConfig).codex_entries = await fetchCodexEntriesForLint();
+    }
+  }
   return useLintStore
     .getState()
     .runLint(sceneId, blocks, config, resolveLintLanguage(), sceneText);
@@ -39,11 +49,57 @@ export function runLintNow(
  * Pull the effective Lint config from the config store and trim it to
  * the shape Rust's `lint_text` accepts. Returns an empty config if the
  * store has not finished loading yet (first-render safety).
+ *
+ * Codex entries are attached separately by the caller when the
+ * `codex/name-inconsistency` rule is enabled (see `fetchCodexEntries`).
  */
 function resolveEffectiveConfig(): LintConfig {
   const store = useLintConfigStore.getState();
   if (!store.isLoaded) return {};
   return store.getWireConfig();
+}
+
+/**
+ * Load Codex entries from the project DB and flatten into the wire
+ * shape expected by Rust. Returns `[]` when the rule is disabled or
+ * nothing is loaded — cheap no-op for the engine either way.
+ *
+ * Failures (e.g. DB closed during shutdown) return `[]` silently;
+ * losing Codex data for a single lint pass is preferable to crashing
+ * the pipeline.
+ */
+async function fetchCodexEntriesForLint(): Promise<LintCodexEntry[]> {
+  try {
+    const rows = await listCodexEntries();
+    const out: LintCodexEntry[] = [];
+    for (const r of rows) {
+      if (!r.name || !r.name.trim()) continue;
+      let aliases: string[] = [];
+      if (r.aliases) {
+        try {
+          const parsed = JSON.parse(r.aliases);
+          if (Array.isArray(parsed)) {
+            aliases = parsed.filter(
+              (x): x is string => typeof x === "string" && x.length > 0,
+            );
+          }
+        } catch {
+          // Stored JSON corruption — skip this entry's aliases only.
+        }
+      }
+      // Include the canonical itself as a no-op alias position; the
+      // Rust rule filters out matches equal to canonical. This lets
+      // the engine build a single matcher without extra bookkeeping.
+      out.push({
+        entry_id: r.id,
+        canonical: r.name,
+        aliases,
+      });
+    }
+    return out;
+  } catch {
+    return [];
+  }
 }
 
 const DEBOUNCE_MS = 500;
@@ -115,7 +171,7 @@ export function useLinter(editor: Editor | null, sceneId: string | null): void {
 
     function schedule(delay: number) {
       if (timerRef.current) clearTimeout(timerRef.current);
-      timerRef.current = setTimeout(() => {
+      timerRef.current = setTimeout(async () => {
         if (!editor || !sceneId) return;
         const cfgStore = useLintConfigStore.getState();
         const lang = resolveLintLanguage();
@@ -128,13 +184,16 @@ export function useLinter(editor: Editor | null, sceneId: string | null): void {
         const map = buildOffsetMap(editor.state.doc);
         const blocks = toWire(map.blocks);
         const sceneText = map.blocks.map((b) => b.text).join("\n");
-        void runLint(
-          sceneId,
-          blocks,
-          cfgStore.getWireConfig(),
-          lang,
-          sceneText,
-        );
+        const wire = cfgStore.getWireConfig();
+        // Fetch Codex entries only if a Codex-linked rule is enabled —
+        // keeps the hot path free of a DB hit when users aren't using
+        // F-group rules.
+        const codexRule = effective.rules["codex/name-inconsistency"];
+        if (codexRule && codexRule.enabled !== false) {
+          const codex_entries = await fetchCodexEntriesForLint();
+          (wire as LintConfig).codex_entries = codex_entries;
+        }
+        void runLint(sceneId, blocks, wire, lang, sceneText);
       }, delay);
     }
 

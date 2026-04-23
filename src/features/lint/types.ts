@@ -92,6 +92,17 @@ export interface RuleConfig {
   options?: Record<string, unknown>;
 }
 
+/**
+ * Codex entry subset passed to the Linter for F-group rules (codex/*).
+ * Sent on every lint request alongside the rules config.
+ */
+export interface LintCodexEntry {
+  entry_id: string;
+  canonical: string;
+  aliases: string[];
+}
+
 export interface LintConfig {
   rules?: Record<string, RuleConfig>;
+  codex_entries?: LintCodexEntry[];
 }
