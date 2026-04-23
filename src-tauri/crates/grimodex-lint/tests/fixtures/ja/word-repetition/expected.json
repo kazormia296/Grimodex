@@ -1,0 +1,29 @@
+[
+  {
+    "rule_id": "ja/sentence-ending-repeat",
+    "severity": "info",
+    "message": "同じ文末（「た。」）の文が 3 つ続いています",
+    "range": {
+      "start": 0,
+      "end": 58
+    }
+  },
+  {
+    "rule_id": "ja/word-repetition",
+    "severity": "info",
+    "message": "「振り返る」が近距離で繰り返されています（直前出現から 2 文字）",
+    "range": {
+      "start": 16,
+      "end": 20
+    }
+  },
+  {
+    "rule_id": "ja/word-repetition",
+    "severity": "info",
+    "message": "「走る」が近距離で繰り返されています（直前出現から 21 文字）",
+    "range": {
+      "start": 29,
+      "end": 31
+    }
+  }
+]

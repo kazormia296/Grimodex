@@ -62,6 +62,10 @@ export const BUILTIN_DEFAULT_CONFIG: LintFullConfig = {
       enabled: false,
       options: { threshold: 3 },
     },
+    "ja/word-repetition": {
+      enabled: false,
+      options: { distance_chars: 50, min_length: 2 },
+    },
     "en/straight-quotes": { enabled: true },
     "en/em-dash": { enabled: true },
     "en/ellipsis": { enabled: true },

@@ -7,3 +7,4 @@ pub mod particle_no_chain;
 pub mod quote_period;
 pub mod sentence_ending_repeat;
 pub mod sentence_length;
+pub mod word_repetition;
