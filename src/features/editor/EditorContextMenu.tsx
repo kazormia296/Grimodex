@@ -7,6 +7,10 @@ import { useCodexStore } from "@/features/codex/codexStore";
 import { useSnippetStore } from "@/features/snippets/snippetStore";
 import { useSceneStore } from "@/features/tree/store";
 import { useLayoutStore } from "@/features/layout/layoutStore";
+import {
+  LintDisablePicker,
+  selectionFromEditor,
+} from "@/features/lint/LintDisablePicker";
 
 interface Position {
   x: number;
@@ -29,6 +33,7 @@ export function EditorContextMenu({
   const { t } = useTranslation();
   const [pos, setPos] = useState<Position | null>(null);
   const [selectedText, setSelectedText] = useState("");
+  const [lintDisableOpen, setLintDisableOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
 
   const activeSceneId = useSceneStore((s) => s.activeSceneId);
@@ -107,7 +112,26 @@ export function EditorContextMenu({
     });
   };
 
-  if (!pos) return null;
+  const handleLintDisable = () => {
+    close();
+    setLintDisableOpen(true);
+  };
+
+  const lintPickerSelection =
+    lintDisableOpen && editor ? selectionFromEditor(editor) : null;
+
+  if (!pos && !lintDisableOpen) return null;
+
+  if (!pos) {
+    // Menu already closed, picker still open.
+    return lintPickerSelection && editor ? (
+      <LintDisablePicker
+        editor={editor}
+        selection={lintPickerSelection}
+        onClose={() => setLintDisableOpen(false)}
+      />
+    ) : null;
+  }
 
   // Adjust position to stay within viewport
   const menuWidth = 220;
@@ -139,6 +163,14 @@ export function EditorContextMenu({
           onClick={handleSaveAsSnippet}
         >
           {t("editor.contextMenu.saveAsSnippet")}
+        </button>
+        <div className="my-1 border-t border-border" />
+        <button
+          type="button"
+          className="px-3 py-1.5 text-sm text-left hover:bg-accent"
+          onClick={handleLintDisable}
+        >
+          選択範囲で Lint ルールを無効化
         </button>
       </div>
     </div>,
