@@ -34,6 +34,23 @@
     }
   },
   {
+    "rule_id": "ja/quote-period",
+    "severity": "info",
+    "message": "カギ括弧内末尾の句点を削除してください",
+    "range": {
+      "start": 33,
+      "end": 34
+    },
+    "fix": {
+      "label": "句点を削除",
+      "replacement": "",
+      "range": {
+        "start": 33,
+        "end": 34
+      }
+    }
+  },
+  {
     "rule_id": "ja/consecutive-punct",
     "severity": "error",
     "message": "連続する「、」は1つにまとめてください",

@@ -1,0 +1,19 @@
+[
+  {
+    "rule_id": "ja/halfwidth-fullwidth-mix",
+    "severity": "warning",
+    "message": "英数字は半角で統一してください",
+    "range": {
+      "start": 0,
+      "end": 4
+    },
+    "fix": {
+      "label": "「2024」に置き換える",
+      "replacement": "2024",
+      "range": {
+        "start": 0,
+        "end": 4
+      }
+    }
+  }
+]

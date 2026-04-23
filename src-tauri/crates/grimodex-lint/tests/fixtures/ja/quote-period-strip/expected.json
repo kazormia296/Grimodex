@@ -1,0 +1,19 @@
+[
+  {
+    "rule_id": "ja/quote-period",
+    "severity": "info",
+    "message": "カギ括弧内末尾の句点を削除してください",
+    "range": {
+      "start": 6,
+      "end": 7
+    },
+    "fix": {
+      "label": "句点を削除",
+      "replacement": "",
+      "range": {
+        "start": 6,
+        "end": 7
+      }
+    }
+  }
+]

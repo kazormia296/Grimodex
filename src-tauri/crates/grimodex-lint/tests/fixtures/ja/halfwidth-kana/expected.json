@@ -1,0 +1,36 @@
+[
+  {
+    "rule_id": "ja/halfwidth-kana",
+    "severity": "error",
+    "message": "半角カナは全角にしてください",
+    "range": {
+      "start": 0,
+      "end": 8
+    },
+    "fix": {
+      "label": "「コーヒーカップ」に置き換える",
+      "replacement": "コーヒーカップ",
+      "range": {
+        "start": 0,
+        "end": 8
+      }
+    }
+  },
+  {
+    "rule_id": "ja/halfwidth-kana",
+    "severity": "error",
+    "message": "半角カナは全角にしてください",
+    "range": {
+      "start": 12,
+      "end": 15
+    },
+    "fix": {
+      "label": "「パン」に置き換える",
+      "replacement": "パン",
+      "range": {
+        "start": 12,
+        "end": 15
+      }
+    }
+  }
+]

@@ -1,0 +1,11 @@
+[
+  {
+    "rule_id": "ja/sentence-ending-repeat",
+    "severity": "info",
+    "message": "同じ文末（「た。」）の文が 3 つ続いています",
+    "range": {
+      "start": 0,
+      "end": 19
+    }
+  }
+]

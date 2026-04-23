@@ -15,10 +15,17 @@ pub fn build_ruleset(language: Language) -> (Vec<Box<dyn LintRule>>, Vec<RuleWar
     match language {
         Language::Japanese => {
             rules.push(Box::new(ja::consecutive_punct::ConsecutivePunctRule));
+            rules.push(Box::new(ja::dash::DashSingleRule));
+            rules.push(Box::new(ja::ellipsis::EllipsisSingleRule));
+            rules.push(Box::new(ja::ellipsis::EllipsisOddRule));
+            rules.push(Box::new(ja::halfwidth_fullwidth_mix::HalfwidthFullwidthMixRule));
+            rules.push(Box::new(ja::halfwidth_kana::HalfwidthKanaRule));
+            rules.push(Box::new(ja::quote_period::QuotePeriodRule));
+            rules.push(Box::new(ja::sentence_ending_repeat::SentenceEndingRepeatRule));
             rules.push(Box::new(ja::sentence_length::SentenceLengthRule));
         }
         Language::English => {
-            // Phase 1 EN rules will plug in here in a later slice.
+            // Phase 1 EN rules plugged in below in the EN pass.
         }
     }
 
