@@ -574,8 +574,88 @@ Phase 1 から設定 UI に用意:
 - **ルールごとの ON/OFF**
 - **ルールごとの Severity 上書き**
 - **ルール固有のオプション**（一文長の閾値、カギ括弧内句点の方針等）
-- **用語統一辞書の編集**（`lint_term_dictionary` の CRUD）
+- **用語統一辞書の編集**（`lint_term_dictionary` の CRUD、詳細は後述「用語辞書 UI」）
 - **リセットボタン**（全体／言語／個別）
+
+---
+
+## 用語辞書 UI
+
+`lint_term_dictionary` の編集 UI。配置と動作を定義する。
+
+### 配置
+
+- Settings パネルの **`Linter → 用語辞書` サブタブ**に配置
+- 独立パネル化や Linter パネル内タブ化はしない（用語辞書は「設定の一種」で編集頻度が低く、ルール設定との近接性を優先）
+- 辞書が 1,000 行を超えるようなプロジェクトが出てきたら独立パネルへの昇格を Phase 2 以降で検討
+
+### レイアウト
+
+```
+┌─ 用語辞書 ──────────────────────────────────┐
+│ [＋ 追加]  [⭳ CSV インポート]  [⭱ エクスポート]│
+│ 検索: [________]   並び: 推奨表記 ▼          │
+├────────────────────────────────────────────┤
+│ # │ 推奨表記 │ 許容しない表記       │ Sev │ ✓  │
+│ 1 │ ウェブ   │ web, Web, ウエブ     │ warn│ ON │
+│ 2 │ 一人     │ 1人, ひとり         │ info│ ON │
+│ 3 │ サーバー │ サーバ              │ warn│ OFF│
+│ ...                                         │
+├────────────────────────────────────────────┤
+│ 選択中: 「ウェブ」                           │
+│ メモ: 企画書 §3.2 で決定                     │
+│ [削除] [複製]                               │
+└────────────────────────────────────────────┘
+```
+
+- 1 行 1 エントリのテーブル編集（Excel 的操作感）
+- `variants` は UI 上カンマ区切り表示・編集。内部格納は JSON 配列
+- Severity は **warn / info のみ**（`error` は用語レベルでは強すぎる）
+- 各行に **ON/OFF チェックボックス**（特定エントリだけ一時的に黙らせる）
+- 並び替え: 推奨表記、更新日、Severity、`sort_order`（手動並び）
+
+### CSV インポート / エクスポート（Phase 2 以降）
+
+- フォーマット: `preferred,variants,severity,note,enabled`（`variants` は `|` 区切り）
+- 用途: textlint-rule-prh YAML からの移行、複数プロジェクト間の辞書共有、編集者への校正ルール共有
+- Phase 1 では UI のボタンは用意するが `[未実装]` 状態とする
+
+### Lint 実行との接続
+
+- **Rule ID**: **`project/term-consistency`**（言語横断のため `ja/` `en/` `codex/` と並ぶ `project/` prefix を新設）
+- 単一ルールとして、`lint_term_dictionary` の `enabled = true` な全エントリを内部で OR 結合して評価
+- **Quick Fix**: variants → preferred への置換を常に提供
+- **メッセージ形式**: `「web」→「ウェブ」に統一（企画書 §3.2）`（`note` があれば括弧で補足）
+
+#### マッチングのセマンティクス
+
+- **variants はリテラル扱い**。保存時に regex エスケープした上で内部で正規表現化
+- **大文字小文字は完全一致**。`web` と `Web` は別 variant として登録する運用（表記ゆれを明示する方が日本語文書で自然）
+- **英字 variant は自動で `\b` 境界を付与**（`web` → `\bweb\b`）。`webhook` 等の誤検知を防ぐ
+- **日本語 variant は境界なし**（Phase 1 は形態素解析なしで単語境界を決められないため）。誤検知リスクはユーザーが `note` に注意書きで残す運用
+
+#### Severity の扱い
+
+- 実効 Severity は**エントリ単位の値をそのまま使う**（ルール単位の Severity 上書きは無効）
+- ルール設定 UI では `project/term-consistency` の Severity 欄を **disabled** 化し、「エントリごとに設定」のツールチップを表示
+- ルール全体の ON/OFF だけはルール設定 UI で制御可能（全エントリを一括無効化する経路として残す）
+
+### Codex Alias との衝突
+
+- **検知**: 辞書編集時および Lint 実行時に、variants と Codex entries の `aliases` を突き合わせる
+- **優先順位**: **Codex Alias が先勝ち**（人名判定の一貫性優先）、衝突した辞書エントリは Lint 実行時にスキップ
+- **通知経路（2 系統）**:
+  1. 辞書タブ内の行に**警告アイコン**。ホバーで `Codex「真琴」の alias と衝突、Codex 側が優先されます`
+  2. `RuleWarning` チャネルに `[Skipped] project/term-consistency: "ウェブ" は Codex "..." の alias と衝突` を流し、Linter パネルヘッダの ⚠ アイコンでも気づけるようにする
+
+### バリデーション（保存時）
+
+| 条件 | 挙動 |
+|---|---|
+| 同じ variant が複数エントリに登録 | エラー表示、保存ブロック |
+| `preferred == variant` のエントリ | variant 側から自動除去（警告トースト） |
+| `variants` が空 | 保存不可 |
+| `variants` が regex メタ文字を含む | 自動エスケープ（ユーザー通知なし、内部処理） |
 
 ---
 
@@ -1119,9 +1199,305 @@ Fix 適用時に `Fix.range` が disable Span と重なる場合:
 
 ### ステータスバー
 
-- **現在シーンのみ**の Diagnostic 数を表示（例: `⚠ 3  ⓘ 7`）
+#### 表示形式
+
+- **現在シーンのみ**の Diagnostic 数を表示。Error / Warning / Info の 3 区分を並列表示し、**ゼロの区分は非表示**（例: Error 0 件なら `⚠ 3  ⓘ 7`）
+- 全件ゼロ（問題なし）の場合は `✓` アイコン 1 つ。Linter パネル Empty state「問題は見つかりませんでした」と整合
+- Linter 無効時は**何も表示しない**（無効と「問題なし」を区別）
 - プロジェクト全体の集計は表示しない（誤解防止）
 - クリックで Linter パネルを開く
+
+#### 「現在シーン」の定義
+
+| モード | 現在シーン |
+|---|---|
+| 通常モード（タブ） | アクティブなタブのシーン |
+| リニア編集モード | **カーソル位置のシーン**（「リニア編集モードでの Lint スコープ」節と整合） |
+| スプリットビュー | **フォーカス中のエディタグループのカーソル位置シーン** |
+| フォーカスが Editor 外（サイドパネル等）にある間 | **直前の値を維持** |
+
+#### 更新タイミング
+
+- Lint 完了イベントに同期して即更新
+- 実行中（pending）は前回値を**グレーアウト表示**で維持（ちらつき防止）
+- シーン切替／リニアモードでカーソルがシーン境界をまたいだ場合 → 一旦 `…` 表示、新シーンの Lint 完了で確定
+
+#### 失敗時の表示
+
+`LintError` と `RuleWarning` で表示場所を分離:
+
+| 状態 | 表示場所 | 表示 |
+|---|---|---|
+| `LintError`（致命的: Lint が完走しなかった） | **ステータスバー** | `⚠︎ Lint失敗`（クリックでパネルを開き詳細表示）。古い数値は出さない |
+| `RuleWarning`（部分失敗: 一部ルールが無効化された） | **Linter パネルのヘッダー** | `⚠ N件` アイコン（既存仕様） |
+| Lint 実行中の初回（前回値なし） | ステータスバー | `…` |
+
+エラーから復帰したら通常の数値表示に自動で戻る。
+
+#### トグル（Phase 1 では置かない）
+
+Linter の全体 ON/OFF はステータスバーには置かず、設定パネル経由のみ。ステータスバーのクリック動作は「パネルを開く」の 1 アクションに限定する。
+
+---
+
+## MCP サーバー連携
+
+Grimodex の MCP サーバー（`docs/Grimodex_MCPサーバー設計書.md` 参照、スタンドアロン Rust バイナリ `grimodex-mcp`）から Linter 結果を参照可能にする。主用途は外部 AI（Claude Desktop 等）にプロジェクトの原稿と Diagnostic を同時に提示し、修正提案を得ること。
+
+### Crate 構成（Phase 1 で決定）
+
+MCP サーバーは Tauri とは別プロセスのスタンドアロンバイナリのため、Linter コアを**共有ライブラリ crate**として切り出す必要がある:
+
+```
+src-tauri/
+├── Cargo.toml          ← workspace root
+├── src/                ← Tauri アプリ本体（grimodex-lint に依存）
+├── crates/
+│   ├── grimodex-lint/  ← 新設、Linter コアロジック + 辞書（include_str!）
+│   └── grimodex-mcp/   ← MCP 設計書の既存計画、grimodex-lint に依存
+```
+
+- 取り込み辞書（textlint 系、ipadic/unidic）は `grimodex-lint` に配置
+- Tauri 本体・MCP・CLI（将来）すべてが同一の Lint 実装を共有
+
+**Phase 1 で crate 分離を済ませる理由**: 後から分離するより Phase 1 の最初の PR で構造を固める方が安い。
+
+### 公開コマンド
+
+MCP 命名規約 `verb_noun` + ドメイン名詞 `lint` を付ける形で統一（既存 `list_codex_entries` の慣例に準拠）:
+
+| コマンド | 読/書 | MCP Phase | 概要 |
+|---|---|---|---|
+| `list_lint_diagnostics` | R | **v2** | シーン単位 or プロジェクト全体の Diagnostic 一覧 |
+| `run_lint` | R | **v2** | Lint を実行して結果を返す（副作用なし） |
+| `list_lint_rules` | R | **v2** | 有効なルールとその設定の一覧 |
+| `apply_lint_fix` | W | **v4 以降** | Quick Fix 適用（シーン書き込みを伴うため MCP の `write_scene` と同時期） |
+
+### 入力コンテンツの扱い
+
+MCP は Content Dir の **Markdown ファイル**を読む前提（MCP 設計書 line 773-777）:
+
+- Lint 実行時は **Markdown → `LintBlock[]` 変換**（見出し/段落/コードブロック等で分解）
+- `codeBlock` / `image` は既存方針通り Lint 対象外
+- Ruby `{漢字|かんじ}` / emphasisDots `《《text》》` の扱いは Tauri 側（ProseMirror ベース）と MCP 側（Markdown ベース）で処理経路が異なるため、同一結果になる保証は **Phase 2 の Markdown パーサ決定時にゴールデンファイルで検証**する
+
+### Diagnostic の返却形式
+
+Tauri 向けの UTF-16 ProseMirror オフセットは MCP では無意味。**別形式で返す**:
+
+```typescript
+// MCP 返却形
+{
+  rule_id: "ja/sentence-length",
+  severity: "warn",
+  scene_id: "uuid",
+  scene_title: "The tower",
+  line: 23,          // Markdown ファイル内の行番号（1-origin）
+  column: 5,         // UTF-16 コードユニット（LSP 慣例、内部表現と一致）
+  length: 120,       // UTF-16 コードユニット単位
+  message: "一文が 120 文字を超えています",
+  text_snippet: "扉の前に立った...",
+  fixes: [...]
+}
+```
+
+- `column` / `length` は **UTF-16 コードユニット**で統一（LSP 仕様準拠、Tauri 側内部表現と一致、変換コスト最小）
+- Diagnostic 型は内部形式と公開形式で分ける（同じソースから出力時に分岐）
+- `apply_lint_fix`（将来）では `line / column / length` を受け取り Fix を適用
+
+### MCP Resources（未決、MCP v2 着手時に再判断）
+
+`grimodex://lint/diagnostics` のような Resource を出すかは **MCP v2 着手時に再検討**。検討時の論点:
+
+- Lazy 方式（読み込み時に Lint 実行）: 連続アクセスで計算コストが重い
+- Eager 方式（事前計算して保存）: キャッシュ保存先とトリガーが未決
+- 候補: Content hash ベースの簡易メモ化（`--workspace` 直下の一時ファイル or メモリのみ）
+
+Phase 2 着手時点で MCP サーバー設計書側と同時に最終決定する。
+
+### 書き込み制限との整合
+
+MCP 設計書の `--readonly` フラグに従う:
+
+- `--readonly`: `list_lint_diagnostics` / `run_lint` / `list_lint_rules` のみ（Lint 実行は副作用なしのため許可）
+- フルモード: `apply_lint_fix` を追加
+
+### Phase 配分
+
+| MCP Phase | Linter 要素 |
+|---|---|
+| MCP v1 | Linter 連携なし |
+| **MCP v2** | Linter 読み取り系（`list_lint_diagnostics` / `run_lint` / `list_lint_rules`） + Resources（未決） |
+| MCP v3 | Linter 連携なし（Codex 書き込みと独立） |
+| **MCP v4 以降** | `apply_lint_fix`（シーン書き込みが可能になる前提） |
+
+Linter 本体の Phase と MCP の Phase は独立に進むため、タイミングは両設計書を見比べて都度決める。
+
+---
+
+## Lint レポートのエクスポート（Phase 2）
+
+校正作業、編集者との共有、ベータ読者へのフィードバック依頼、ルール精度測定のための出力機能。
+
+### 対象
+
+- **プロジェクト全体**: 「全章 Lint」実行結果の全 Diagnostic（主用途）
+- **フィルタ結果のみ**: Linter パネルで絞り込んだ現在の一覧（調査・ルール別集計用途）
+- 現在シーンのみは対象外（その場で見れば済むため）
+
+### フォーマット
+
+| フォーマット | 用途 | 内容 |
+|---|---|---|
+| **CSV** | Excel / Google Sheets で編集者と共有 | `scene_id, scene_title, rule_id, severity, line, col, text_snippet, message, fix_suggestion` |
+| **Markdown** | GitHub Issue / Notion 貼り付け、レポート化 | シーン別にグルーピング、Severity アイコン、該当箇所の引用ブロック |
+| **JSON** | 他ツール連携、スクリプト処理、ルール精度測定の生データ | `LintResponse` をそのまま（または軽量化した形で） |
+
+#### Markdown フォーマット例
+
+````markdown
+# Lint レポート: プロジェクト「XXX」
+生成日時: 2026-04-23 10:15
+対象: 全章 Lint / プロジェクト全体
+総 Diagnostic 数: 42（Error 1 / Warning 15 / Info 26）
+
+---
+
+## Part 1 / Chapter 1 / The tower
+
+### ⚠ `ja/sentence-length` (L23)
+> 扉の前に立ったエララは、手を伸ばしかけて止まった、指先が震えていたからだ…
+
+一文が 120 文字を超えています（設定: 80 文字）
+
+### ⓘ `ja/quote-period` (L45)
+> 「本当に行くのか。」
+
+カギ括弧内末尾の句点。
+````
+
+### 起動口
+
+- **Linter パネル右上メニュー → `エクスポート...`**
+- ダイアログで「対象（全体 / フィルタ結果）」「フォーマット」を選択 → ファイル保存ダイアログ
+- Phase 1 時点では UI にメニュー項目を置き、`[Phase 2]` でグレーアウト表示してもよい
+
+### Phase 配分
+
+- **Phase 1**: 実装しない（全章 Lint の結果が永続化されていないため）
+- **Phase 2**: 全章 Lint の結果が構造化保持されるタイミングで正式実装
+- **Phase 3**: 編集者からのフィードバックを Diagnostic に紐付ける等の双方向連携は対象外（別機能として検討）
+
+### セキュリティ / プライバシー
+
+- エクスポートには**本文の抜粋**が含まれる（未発表原稿の取り扱いに注意）
+- デフォルトの `text_snippet` は前後 30 文字（Linter パネル抜粋と同ルール）
+- **「本文抜粋を含めない」オプション**を用意（`rule_id` + 位置情報のみの軽量出力）
+
+---
+
+## テレメトリー / デバッグログ
+
+個人執筆ツールという性格上、**外部送信機能は一切持たない**。目的ごとに3分類した上で、開発者向け収集（A）は実装せず、ユーザー価値がある B / C のみ実装する。
+
+### 分類と方針
+
+| 目的 | 対象 | 実装 |
+|---|---|---|
+| **A. ルール精度の改善**（開発者向け） | 検出数 / Fix 採用率 / 無視率の集計 | **実装しない** |
+| **B. ユーザー自身の執筆傾向把握** | 「自分はどのルールを無視しがちか」 | Phase 2〜3 |
+| **C. クラッシュ / エラー診断** | Panic / LintError / RuleWarning | Phase 1 から |
+
+**A を実装しない根拠**: Grimodex は未発表原稿を扱うツールで、**外部送信はユーザーの信頼を損なう**。代替手段は:
+- 開発者が自分のプロジェクトで C のログを `debug` レベルで回す
+- ゴールデンファイル fixture の拡充で精度改善
+- ベータテスターからの手動フィードバック
+
+**Phase 1 時点では「A 目的のために追加実装するものはない」**（ゴールデンファイル + 手動テストで代替）。将来 A への要求が再燃した際の根拠としてここに明記する。
+
+### B: 執筆傾向の記録（Phase 2〜3）
+
+#### テーブル設計
+
+```sql
+CREATE TABLE lint_action_log (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  rule_id     TEXT NOT NULL,
+  action      TEXT NOT NULL,        -- 'detected' / 'fixed' / 'ignored_once' / 'ignored_persistent_set' / 'ignored_persistent_unset' / 'disabled_inline'
+  scene_id    TEXT,
+  occurred_at INTEGER NOT NULL
+);
+```
+
+#### `lint_ignored_diagnostics` との役割分離（重要）
+
+| テーブル | 役割 | 用途 |
+|---|---|---|
+| `lint_ignored_diagnostics` | **現在の状態**（どの Diagnostic が今無視中か） | Lint 実行時のフィルタ、永続無視リスト表示 |
+| `lint_action_log` | **イベント履歴**（いつ何をしたか） | 執筆傾向の統計可視化のみ |
+
+「今無視されているか」のクエリ源は常に `lint_ignored_diagnostics`。`lint_action_log` は集計用の append-only ログで、状態管理の源泉にはしない。無視追加は `ignored_persistent_set`、解除は `ignored_persistent_unset` の2イベントを別々に記録する。
+
+#### 可視化
+
+- Linter パネル内「統計」タブ（Phase 3）
+- 例: 「あなたは `ja/quote-period` を 80% 無視しています → OFF にしますか？」のセルフチューニング提案
+
+#### サイズ管理
+
+- 90 日で自動削除、または最大 10,000 行 FIFO
+- プロジェクトサイズに直結しないよう DB 肥大化を防ぐ
+
+### C: デバッグログ（Phase 1 から）
+
+#### バックエンド
+
+- クレート: **`tracing` + `tracing-subscriber`**（既存のアプリログ基盤は未整備のため、Linter と共に導入）
+- ローテーション: `tracing-appender` で日次ローテーション
+- 格納先: `~/.grimodex/logs/`
+
+#### プロセス別ファイル分離
+
+Tauri 本体と MCP サーバーは別プロセスでファイルロックが衝突するため、**ログファイルを分離**する:
+
+| プロセス | ファイル名 |
+|---|---|
+| Tauri 本体 | `lint-tauri-YYYY-MM-DD.log` |
+| `grimodex-mcp` | `lint-mcp-YYYY-MM-DD.log` |
+
+両者は `grimodex-lint` crate を共有するが、ログ subscriber の初期化はそれぞれのバイナリ側で行う（crate 自体は `tracing` マクロを呼ぶだけ）。
+
+#### レベルと記録内容
+
+| レベル | 記録する事象 | デフォルト |
+|---|---|---|
+| `error` | `LintError`、辞書ロード失敗、Panic | 常時 ON |
+| `warn` | `RuleWarning`、500KB 超過、衝突検知 | 常時 ON |
+| `info` | Lint 実行の開始・終了、処理時間、件数サマリ | Phase 2 以降 ON |
+| `debug` | ルール個別の実行時間、Fix 適用イベント | 開発者モードのみ |
+| `trace` | 位置マップ構築詳細、Diagnostic raw データ | 開発者モードのみ |
+
+- 開発者モード: `--verbose-lint` 起動フラグ または設定での切替
+
+#### プライバシー
+
+- **本文は原則ログに残さない**。Diagnostic の `text_snippet` は `[redacted]` 化
+- 例外: `--verbose-lint` + `debug` レベル時のみ、開発診断のため snippet をログに含める
+- ログエクスポート UI を用意する場合は「本文が含まれる可能性があります」の警告を必須表示
+
+### D: 外部送信（スコープ外）
+
+- Grimodex からテレメトリー / クラッシュレポートを外部サーバーに送信する機能は**本設計書のスコープ外**
+- 必要になったら Sentry 等の導入を独立の設計書で議論
+- 個別ログ共有はユーザーが手動でファイルをエクスポートする形のみ
+
+### Phase 配分まとめ
+
+| Phase | C（ログ） | B（執筆傾向） |
+|---|---|---|
+| Phase 1 | `error` / `warn` レベル、`tracing` 導入、Tauri/MCP 別ファイル | 実装なし |
+| Phase 2 | `info` 追加、`lint_action_log` 書き込み開始 | ログ記録のみ（UI なし） |
+| Phase 3 | `debug` / `trace` + 開発者モード | 統計 UI（Linter パネル統計タブ） |
 
 ---
 
@@ -1179,12 +1555,13 @@ src-tauri/src/lint/tests/fixtures/
 
 ### Phase 1（土台 + regex ルール）
 
-最初の PR に含める **4 点セット（エンジン側）**:
+最初の PR に含める **5 点セット（エンジン側）**:
 
-1. `LintRule` trait + `Diagnostic` 型 + `LintContext` の設計
-2. ProseMirror ↔ 文字列オフセット変換層（ユニットテスト付き）
-3. ゴールデンファイル形式のテストハーネス
-4. Phase 1 ルール群（日英、regex のみ）
+1. **Cargo ワークスペース化 + `src-tauri/crates/grimodex-lint/` crate 分離**（MCP 連携を見据えた構造、後から分離すると手戻りが大きい）
+2. `LintRule` trait + `Diagnostic` 型 + `LintContext` の設計
+3. ProseMirror ↔ 文字列オフセット変換層（ユニットテスト付き）
+4. ゴールデンファイル形式のテストハーネス
+5. Phase 1 ルール群（日英、regex のみ）
 
 加えて:
 
@@ -1281,12 +1658,17 @@ UI 側（Linter パネル）はサブフェーズに分けて実装:
 | 設定階層 | 2層（組み込みデフォルト → プロジェクト上書き）。グローバル層は将来検討 |
 | ルール設定の保存 | `settings` テーブルに `lint.config` の 1 キー JSON blob |
 | 用語統一辞書の保存 | 専用テーブル `lint_term_dictionary` |
+| 用語辞書 Rule ID | `project/term-consistency`（`project/` prefix を新設、言語横断） |
+| 用語辞書 UI | Settings `Linter → 用語辞書` サブタブ、テーブル編集、エントリ単位 Severity（warn/info）と ON/OFF |
+| 用語辞書マッチング | variants はリテラル扱い + 英字自動 `\b` 境界 + 大文字小文字完全一致 |
+| 用語辞書 Severity | エントリ単位の値を優先、ルール設定 UI 側は disabled |
+| Codex Alias 衝突 | Codex 先勝ち、辞書側は `RuleWarning` + 辞書タブの警告アイコンで2系統通知 |
 | 新ルール追加時の既定 | `enabled: false`（既存プロジェクトの体験を阻害しない） |
 | Phase 1 の Diagnostic 保持 | キャッシュなし。現在シーンのみメモリ保持、毎回再計算 |
 | Stale 応答対策 | 世代番号（pendingRequestId）で古い応答を破棄 |
 | debounce 入力 | `transaction.docChanged === true` のみ |
 | Fix 適用の再 Lint | debounce バイパスで即時実行 |
-| ステータスバー | 現在シーンのみ表示。プロジェクト全体集計は Linter パネルと「全章 Lint」のみ |
+| ステータスバー | 現在シーンの Error/Warning/Info 3 区分表示（ゼロ非表示、全件ゼロは `✓`）。リニアモードはカーソル位置シーン、スプリットはフォーカス側。`LintError` は `⚠︎ Lint失敗` 表示で古い値は残さない。Phase 1 ではトグル非搭載 |
 | Rust への入力 | `Vec<LintBlock>`（プレーンテキスト化後のブロック配列） |
 | Lint 対象外ノード | `codeBlock` / `image` / `horizontalRule` |
 | Diagnostic 範囲 | 常に同一ブロック内（ブロック跨ぎなし） |
@@ -1304,7 +1686,16 @@ UI 側（Linter パネル）はサブフェーズに分けて実装:
 | インライン無効化の粒度 | Span / Block（+ 将来 Scene）。重複時はルール ID のユニオン |
 | 「全ルール無効化」 | `rule_ids: []`。UI では明示的なチェックボックスで選択必須 |
 | Fix × Disable | TipTap 標準挙動（黙って実行）。disable 消失時は Linter パネルに通知 |
-| エクスポート | `lintDisable` Mark/ブロック属性は除去。テスト必須 |
+| エクスポート（原稿） | `lintDisable` Mark/ブロック属性は除去。テスト必須 |
+| Lint レポートのエクスポート | Phase 2 実装。CSV / Markdown / JSON の 3 形式。対象はプロジェクト全体 or フィルタ結果。本文抜粋非含有オプションあり |
+| Linter の crate 構成 | Phase 1 で `src-tauri/crates/grimodex-lint/` に分離。Tauri 本体・MCP サーバーから共有依存 |
+| MCP Linter コマンド | `list_lint_diagnostics` / `run_lint` / `list_lint_rules` を MCP v2 で公開。`apply_lint_fix` は MCP v4 以降 |
+| MCP Diagnostic 返却形 | line（1-origin）+ column / length（UTF-16 コードユニット、LSP 準拠）。ProseMirror オフセットは返さない |
+| MCP Lint Resources | 未決（MCP v2 着手時に lazy / eager / content hash メモ化を再検討） |
+| 外部テレメトリー送信 | **実装しない**（本設計書のスコープ外、未発表原稿のプライバシー優先） |
+| 執筆傾向ログ `lint_action_log` | Phase 2 で書き込み開始、Phase 3 で統計 UI。**イベント履歴**として `lint_ignored_diagnostics`（状態）と役割分離 |
+| デバッグログ基盤 | `tracing` + `tracing-appender` を Phase 1 で導入。Tauri/MCP は別プロセスのため `lint-tauri-*.log` / `lint-mcp-*.log` にファイル分離 |
+| ログ内の本文 | 原則 `[redacted]`。`--verbose-lint` + `debug` レベル時のみ `text_snippet` を含める |
 | テスト | ゴールデンファイル形式を day 1 から |
 
 ---
