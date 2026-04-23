@@ -1,10 +1,12 @@
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   AlertCircle,
   AlertTriangle,
   ChevronDown,
   ChevronRight,
+  EyeOff,
   Info,
+  PowerOff,
   Search,
   Wrench,
   X,
@@ -14,9 +16,11 @@ import { useEditorStore } from "@/features/editor/editorStore";
 import { buildOffsetMap, strOffsetToPmPos } from "@/features/editor/offsetMap";
 import type { Diagnostic, RuleWarning, Severity } from "./types";
 import { useLintStore } from "./lintStore";
+import { useLintIgnoreStore } from "./lintIgnoreStore";
+import { useLintConfigStore } from "./lintConfigStore";
 import { runLintNow } from "./useLinter";
 
-type GroupMode = "severity" | "none";
+type GroupMode = "severity" | "rule" | "none";
 
 function SeverityIcon({ severity }: { severity: Severity }) {
   switch (severity) {
@@ -36,11 +40,6 @@ function SeverityIcon({ severity }: { severity: Severity }) {
   }
 }
 
-/**
- * Build a "{前} {Diagnostic span} {後}" excerpt from the scene text.
- * Short spans get ±10 chars context; spans longer than 60 chars are
- * rendered as "前半30 … 後半30" without surrounding context.
- */
 function extractExcerpt(
   sceneText: string,
   d: Diagnostic,
@@ -51,11 +50,7 @@ function extractExcerpt(
   if (hit.length > 60) {
     const first = hit.slice(0, 30);
     const last = hit.slice(-30);
-    return {
-      before: "",
-      hit: `${first}…${last}`,
-      after: "",
-    };
+    return { before: "", hit: `${first}…${last}`, after: "" };
   }
   const CTX = 10;
   const beforeStart = Math.max(0, start - CTX);
@@ -69,6 +64,10 @@ interface SeverityFilter {
   error: boolean;
   warning: boolean;
   info: boolean;
+}
+
+function diagnosticKey(d: Diagnostic, idx: number) {
+  return `${d.rule_id}:${d.range.start}:${d.range.end}:${idx}`;
 }
 
 function WarningsBadge({ warnings }: { warnings: RuleWarning[] }) {
@@ -149,13 +148,13 @@ function SeverityChip({
 }
 
 /**
- * Phase 1a + 1b Linter panel.
+ * Phase 2 Linter panel.
  *
- * - Severity フィルタ (Error / Warning / Info)
- * - Group by Severity / None
- * - 検索ボックス (rule_id + message 部分一致)
- * - 60 文字超の Diagnostic 抜粋は「前半30…後半30」形式
- * - RuleWarning はヘッダーのバッジ+モーダルで可視化
+ * - Severity filter, search, group by severity/rule/none
+ * - 右クリックメニュー: 永続無視 / ルール OFF / ルール詳細
+ * - キーボード操作: ↑↓ で選択、Enter でジャンプ、Cmd/Ctrl+. で Fix
+ * - エディタカーソル位置の Diagnostic を強調
+ * - ヘッダに「全 Fix 適用」ボタン
  */
 export function LinterPanel() {
   const editor = useEditorStore((s) => s.editor);
@@ -164,6 +163,10 @@ export function LinterPanel() {
   const isLinting = useLintStore((s) => s.isLinting);
   const lastErrorMessage = useLintStore((s) => s.lastErrorMessage);
   const currentSceneId = useLintStore((s) => s.currentSceneId);
+  const cursorOffset = useLintStore((s) => s.cursorOffset);
+  const setRule = useLintConfigStore((s) => s.setRule);
+  const addIgnore = useLintIgnoreStore((s) => s.addIgnore);
+  const reapplyIgnores = useLintStore((s) => s.reapplyIgnores);
 
   const [severityFilter, setSeverityFilter] = useState<SeverityFilter>({
     error: true,
@@ -173,6 +176,13 @@ export function LinterPanel() {
   const [groupMode, setGroupMode] = useState<GroupMode>("severity");
   const [query, setQuery] = useState("");
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
+  const [selectedKey, setSelectedKey] = useState<string | null>(null);
+  const [menu, setMenu] = useState<{
+    x: number;
+    y: number;
+    d: Diagnostic;
+  } | null>(null);
+  const listRef = useRef<HTMLDivElement | null>(null);
 
   const counts = useMemo(() => {
     const c = { error: 0, warning: 0, info: 0 };
@@ -180,13 +190,9 @@ export function LinterPanel() {
     return c;
   }, [diagnostics]);
 
-  // Pre-compute scene text once per diagnostics update for excerpt
-  // rendering. Editor content is live, so we read from editor.state.doc
-  // via offsetMap.
   const sceneText = useMemo(() => {
     if (!editor) return "";
     const map = buildOffsetMap(editor.state.doc);
-    // Concatenate block texts with the "\n" separator used by the map.
     return map.blocks.map((b) => b.text).join("\n");
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [editor, diagnostics]);
@@ -206,6 +212,21 @@ export function LinterPanel() {
   const grouped = useMemo(() => {
     if (groupMode === "none") {
       return [{ key: "all", label: null as string | null, items: filtered }];
+    }
+    if (groupMode === "rule") {
+      const buckets = new Map<string, Diagnostic[]>();
+      for (const d of filtered) {
+        const arr = buckets.get(d.rule_id) ?? [];
+        arr.push(d);
+        buckets.set(d.rule_id, arr);
+      }
+      return [...buckets.entries()]
+        .sort(([a], [b]) => a.localeCompare(b))
+        .map(([ruleId, items]) => ({
+          key: `rule:${ruleId}`,
+          label: `${ruleId} (${items.length})`,
+          items,
+        }));
     }
     const order: Severity[] = ["error", "warning", "info"];
     const buckets: Record<Severity, Diagnostic[]> = {
@@ -227,6 +248,30 @@ export function LinterPanel() {
         items: buckets[s],
       }));
   }, [filtered, groupMode]);
+
+  /** Flat, visible list in render order — basis for keyboard nav. */
+  const flatRows = useMemo(() => {
+    const out: Array<{ key: string; d: Diagnostic }> = [];
+    for (const group of grouped) {
+      if (collapsed[group.key]) continue;
+      group.items.forEach((d, idx) =>
+        out.push({ key: diagnosticKey(d, idx), d }),
+      );
+    }
+    return out;
+  }, [grouped, collapsed]);
+
+  /** Diagnostics whose range contains the editor cursor. */
+  const cursorActiveKeys = useMemo(() => {
+    if (cursorOffset == null) return new Set<string>();
+    const keys = new Set<string>();
+    filtered.forEach((d, idx) => {
+      if (cursorOffset >= d.range.start && cursorOffset <= d.range.end) {
+        keys.add(diagnosticKey(d, idx));
+      }
+    });
+    return keys;
+  }, [filtered, cursorOffset]);
 
   const jumpTo = useCallback(
     (d: Diagnostic) => {
@@ -264,21 +309,135 @@ export function LinterPanel() {
     [editor, currentSceneId],
   );
 
-  // ── Render ──
+  /**
+   * Apply every fix in the currently-filtered list in one pass.
+   * Sort descending by range.start so earlier offsets don't shift
+   * under later ones. Uses a single chained transaction per the
+   * TipTap API.
+   */
+  const applyAllFixes = useCallback(() => {
+    if (!editor) return;
+    const withFix = filtered.filter((d) => d.fix);
+    if (withFix.length === 0) return;
+    const map = buildOffsetMap(editor.state.doc);
+    const sorted = [...withFix].sort(
+      (a, b) => b.fix!.range.start - a.fix!.range.start,
+    );
+    let chain = editor.chain().focus();
+    for (const d of sorted) {
+      const from = strOffsetToPmPos(map, d.fix!.range.start);
+      const to = strOffsetToPmPos(map, d.fix!.range.end);
+      if (from == null || to == null) continue;
+      chain = chain.insertContentAt({ from, to }, d.fix!.replacement);
+    }
+    chain.run();
+    if (currentSceneId) void runLintNow(editor, currentSceneId);
+  }, [editor, filtered, currentSceneId]);
+
+  const fixableCount = useMemo(
+    () => filtered.filter((d) => d.fix).length,
+    [filtered],
+  );
+
+  const onIgnore = useCallback(
+    async (d: Diagnostic) => {
+      if (!currentSceneId) return;
+      try {
+        await addIgnore(currentSceneId, d, sceneText);
+        reapplyIgnores(currentSceneId);
+      } catch (err) {
+        console.error("addIgnore failed", err);
+      }
+    },
+    [addIgnore, currentSceneId, reapplyIgnores, sceneText],
+  );
+
+  const onDisableRule = useCallback(
+    (d: Diagnostic) => {
+      setRule(d.rule_id, { enabled: false });
+    },
+    [setRule],
+  );
+
+  // Keyboard: ↑↓ Enter Cmd/Ctrl+.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const active = document.activeElement as HTMLElement | null;
+      // Stay out of the way when typing in the search box / editor.
+      if (
+        active &&
+        (active.tagName === "INPUT" ||
+          active.tagName === "TEXTAREA" ||
+          active.isContentEditable)
+      ) {
+        return;
+      }
+      if (!listRef.current) return;
+      const root = listRef.current;
+      if (!root.contains(active) && active !== document.body) return;
+      if (flatRows.length === 0) return;
+
+      const curIdx = flatRows.findIndex((r) => r.key === selectedKey);
+      if (e.key === "ArrowDown") {
+        e.preventDefault();
+        const next = curIdx < 0 ? 0 : Math.min(curIdx + 1, flatRows.length - 1);
+        setSelectedKey(flatRows[next].key);
+      } else if (e.key === "ArrowUp") {
+        e.preventDefault();
+        const next = curIdx < 0 ? 0 : Math.max(curIdx - 1, 0);
+        setSelectedKey(flatRows[next].key);
+      } else if (e.key === "Enter") {
+        const row = flatRows[curIdx];
+        if (row) {
+          e.preventDefault();
+          jumpTo(row.d);
+        }
+      } else if ((e.metaKey || e.ctrlKey) && e.key === ".") {
+        const row = flatRows[curIdx];
+        if (row && row.d.fix) {
+          e.preventDefault();
+          applyFix(row.d);
+        }
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [flatRows, selectedKey, jumpTo, applyFix]);
+
+  // Close context menu on outside click / Escape.
+  useEffect(() => {
+    if (!menu) return;
+    const close = () => setMenu(null);
+    const onEsc = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setMenu(null);
+    };
+    window.addEventListener("click", close);
+    window.addEventListener("keydown", onEsc);
+    return () => {
+      window.removeEventListener("click", close);
+      window.removeEventListener("keydown", onEsc);
+    };
+  }, [menu]);
+
+  const header = (
+    <PanelHeader
+      counts={counts}
+      severityFilter={severityFilter}
+      setSeverityFilter={setSeverityFilter}
+      groupMode={groupMode}
+      setGroupMode={setGroupMode}
+      query={query}
+      setQuery={setQuery}
+      warnings={warnings}
+      fixableCount={fixableCount}
+      onApplyAll={applyAllFixes}
+    />
+  );
 
   if (lastErrorMessage) {
     return (
       <div className="flex h-full flex-col">
-        <PanelHeader
-          counts={counts}
-          severityFilter={severityFilter}
-          setSeverityFilter={setSeverityFilter}
-          groupMode={groupMode}
-          setGroupMode={setGroupMode}
-          query={query}
-          setQuery={setQuery}
-          warnings={warnings}
-        />
+        {header}
         <div className="flex flex-1 flex-col items-center justify-center gap-2 p-4 text-sm text-muted-foreground">
           <AlertCircle className="h-5 w-5 text-red-500" />
           <p>Linter が一時的に利用できません</p>
@@ -291,16 +450,7 @@ export function LinterPanel() {
   if (diagnostics.length === 0) {
     return (
       <div className="flex h-full flex-col">
-        <PanelHeader
-          counts={counts}
-          severityFilter={severityFilter}
-          setSeverityFilter={setSeverityFilter}
-          groupMode={groupMode}
-          setGroupMode={setGroupMode}
-          query={query}
-          setQuery={setQuery}
-          warnings={warnings}
-        />
+        {header}
         <div className="flex flex-1 flex-col items-center justify-center gap-2 p-4 text-sm text-muted-foreground">
           {isLinting ? (
             <p>Lint 実行中...</p>
@@ -314,17 +464,8 @@ export function LinterPanel() {
 
   return (
     <div className="flex h-full flex-col" data-testid="lint-panel">
-      <PanelHeader
-        counts={counts}
-        severityFilter={severityFilter}
-        setSeverityFilter={setSeverityFilter}
-        groupMode={groupMode}
-        setGroupMode={setGroupMode}
-        query={query}
-        setQuery={setQuery}
-        warnings={warnings}
-      />
-      <div className="flex-1 overflow-y-auto">
+      {header}
+      <div className="flex-1 overflow-y-auto" ref={listRef} tabIndex={0}>
         {grouped.length === 0 ? (
           <p className="p-4 text-sm text-muted-foreground">
             該当する項目はありません
@@ -355,15 +496,27 @@ export function LinterPanel() {
                 )}
                 {!isCollapsed && (
                   <ul className="flex flex-col divide-y divide-border">
-                    {group.items.map((d, idx) => (
-                      <DiagnosticRow
-                        key={`${d.rule_id}-${d.range.start}-${d.range.end}-${idx}`}
-                        d={d}
-                        sceneText={sceneText}
-                        onJump={jumpTo}
-                        onFix={applyFix}
-                      />
-                    ))}
+                    {group.items.map((d, idx) => {
+                      const key = diagnosticKey(d, idx);
+                      return (
+                        <DiagnosticRow
+                          key={key}
+                          rowKey={key}
+                          d={d}
+                          sceneText={sceneText}
+                          selected={selectedKey === key}
+                          cursorActive={cursorActiveKeys.has(key)}
+                          onSelect={setSelectedKey}
+                          onJump={jumpTo}
+                          onFix={applyFix}
+                          onContextMenu={(e) => {
+                            e.preventDefault();
+                            setMenu({ x: e.clientX, y: e.clientY, d });
+                            setSelectedKey(key);
+                          }}
+                        />
+                      );
+                    })}
                   </ul>
                 )}
               </div>
@@ -371,6 +524,22 @@ export function LinterPanel() {
           })
         )}
       </div>
+      {menu && (
+        <ContextMenu
+          x={menu.x}
+          y={menu.y}
+          d={menu.d}
+          onIgnore={() => {
+            void onIgnore(menu.d);
+            setMenu(null);
+          }}
+          onDisableRule={() => {
+            onDisableRule(menu.d);
+            setMenu(null);
+          }}
+          onClose={() => setMenu(null)}
+        />
+      )}
     </div>
   );
 }
@@ -384,6 +553,8 @@ function PanelHeader(props: {
   query: string;
   setQuery: (q: string) => void;
   warnings: RuleWarning[];
+  fixableCount: number;
+  onApplyAll: () => void;
 }) {
   const {
     counts,
@@ -394,6 +565,8 @@ function PanelHeader(props: {
     query,
     setQuery,
     warnings,
+    fixableCount,
+    onApplyAll,
   } = props;
   return (
     <div className="flex flex-col gap-1 border-b border-border bg-muted/30 px-2 py-1.5">
@@ -435,6 +608,16 @@ function PanelHeader(props: {
           }
         />
         <div className="flex-1" />
+        {fixableCount > 0 && (
+          <button
+            type="button"
+            onClick={onApplyAll}
+            title="フィルタ結果の Fix を一括適用"
+            className="flex h-6 items-center gap-1 rounded border border-border bg-background px-1.5 text-xs hover:bg-accent"
+          >
+            <Wrench className="h-3.5 w-3.5" /> 全 Fix ({fixableCount})
+          </button>
+        )}
         <WarningsBadge warnings={warnings} />
       </div>
       <div className="flex items-center gap-2">
@@ -463,6 +646,7 @@ function PanelHeader(props: {
           className="h-6 rounded border border-border bg-background px-1 text-xs"
         >
           <option value="severity">Group: Severity</option>
+          <option value="rule">Group: Rule</option>
           <option value="none">Group: なし</option>
         </select>
       </div>
@@ -471,19 +655,40 @@ function PanelHeader(props: {
 }
 
 function DiagnosticRow({
+  rowKey,
   d,
   sceneText,
+  selected,
+  cursorActive,
+  onSelect,
   onJump,
   onFix,
+  onContextMenu,
 }: {
+  rowKey: string;
   d: Diagnostic;
   sceneText: string;
+  selected: boolean;
+  cursorActive: boolean;
+  onSelect: (key: string) => void;
   onJump: (d: Diagnostic) => void;
   onFix: (d: Diagnostic) => void;
+  onContextMenu: (e: React.MouseEvent) => void;
 }) {
   const { before, hit, after } = extractExcerpt(sceneText, d);
+  const liClasses = [
+    "flex items-start gap-2 px-3 py-2 hover:bg-accent/40",
+    selected ? "bg-accent/70" : "",
+    cursorActive ? "border-l-2 border-l-sky-500" : "",
+  ]
+    .filter(Boolean)
+    .join(" ");
   return (
-    <li className="flex items-start gap-2 px-3 py-2 hover:bg-accent/40">
+    <li
+      className={liClasses}
+      onContextMenu={onContextMenu}
+      onMouseDown={() => onSelect(rowKey)}
+    >
       <button
         type="button"
         className="flex flex-1 items-start gap-2 text-left"
@@ -516,5 +721,59 @@ function DiagnosticRow({
         </button>
       )}
     </li>
+  );
+}
+
+function ContextMenu({
+  x,
+  y,
+  d,
+  onIgnore,
+  onDisableRule,
+  onClose,
+}: {
+  x: number;
+  y: number;
+  d: Diagnostic;
+  onIgnore: () => void;
+  onDisableRule: () => void;
+  onClose: () => void;
+}) {
+  // Clamp to viewport — a naive offset is fine at this scale.
+  const style: React.CSSProperties = {
+    position: "fixed",
+    left: Math.min(x, window.innerWidth - 240),
+    top: Math.min(y, window.innerHeight - 140),
+    zIndex: 60,
+  };
+  return (
+    <div
+      style={style}
+      onClick={(e) => e.stopPropagation()}
+      className="min-w-[220px] rounded border border-border bg-background py-1 text-sm shadow-lg"
+    >
+      <button
+        type="button"
+        onClick={onIgnore}
+        className="flex w-full items-center gap-2 px-3 py-1.5 text-left hover:bg-accent"
+      >
+        <EyeOff className="h-4 w-4" /> この箇所を永続無視
+      </button>
+      <button
+        type="button"
+        onClick={onDisableRule}
+        className="flex w-full items-center gap-2 px-3 py-1.5 text-left hover:bg-accent"
+      >
+        <PowerOff className="h-4 w-4" /> ルール「{d.rule_id}」を無効化
+      </button>
+      <div className="my-1 border-t border-border" />
+      <button
+        type="button"
+        onClick={onClose}
+        className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-muted-foreground hover:bg-accent"
+      >
+        キャンセル
+      </button>
+    </div>
   );
 }

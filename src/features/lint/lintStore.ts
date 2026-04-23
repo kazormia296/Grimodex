@@ -26,6 +26,12 @@ interface LintState {
   isLinting: boolean;
   /** Last error message shown in the panel (for fatal LintError cases). */
   lastErrorMessage: string | null;
+  /**
+   * Scene-wide UTF-16 offset of the editor cursor (null if unknown or
+   * the cursor is outside any lintable block). Drives reverse highlight.
+   */
+  cursorOffset: number | null;
+  setCursorOffset: (offset: number | null) => void;
 
   /**
    * Kick off a lint run for the given scene. Earlier in-flight requests
@@ -93,6 +99,9 @@ export const useLintStore = create<LintState>()((set, get) => ({
   pendingRequestId: 0,
   isLinting: false,
   lastErrorMessage: null,
+  cursorOffset: null,
+
+  setCursorOffset: (offset) => set({ cursorOffset: offset }),
 
   setCurrentScene: (sceneId) => {
     set({

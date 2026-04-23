@@ -3,6 +3,7 @@ import type { Editor } from "@tiptap/react";
 
 import {
   buildOffsetMap,
+  pmPosToStrOffset,
   type LintBlock as OffsetLintBlock,
 } from "@/features/editor/offsetMap";
 import {
@@ -176,6 +177,17 @@ export function useLinter(editor: Editor | null, sceneId: string | null): void {
     };
     editor.on("transaction", onTransaction);
 
+    // Track cursor position → scene offset for reverse highlight.
+    const onSelectionUpdate = () => {
+      if (!editor) return;
+      const map = buildOffsetMap(editor.state.doc);
+      const head = editor.state.selection.head;
+      const off = pmPosToStrOffset(map, head);
+      useLintStore.getState().setCursorOffset(off);
+    };
+    editor.on("selectionUpdate", onSelectionUpdate);
+    onSelectionUpdate();
+
     // Run immediately on mount / scene switch. Microtask-delayed so the
     // async content-loader (setContent in EditorPane) has a chance to
     // drop the new scene's JSON into the editor before we serialise.
@@ -189,6 +201,7 @@ export function useLinter(editor: Editor | null, sceneId: string | null): void {
 
     return () => {
       editor.off("transaction", onTransaction);
+      editor.off("selectionUpdate", onSelectionUpdate);
       unsubscribeConfig();
       if (timerRef.current) clearTimeout(timerRef.current);
     };

@@ -231,6 +231,34 @@ function utf16Length(s: string): number {
  * or outside the scene range — callers should clamp to the nearest block
  * boundary if that happens.
  */
+/**
+ * Inverse of `strOffsetToPmPos`: ProseMirror position → scene-wide UTF-16
+ * offset. Returns `null` if `pmPos` is not inside any mapped interval (i.e.
+ * on a node boundary or in a skipped block).
+ */
+export function pmPosToStrOffset(
+  map: SceneOffsetMap,
+  pmPos: number,
+): number | null {
+  // Intervals are sorted by pmPosStart. Binary search.
+  if (map.intervals.length === 0) return null;
+  let lo = 0;
+  let hi = map.intervals.length - 1;
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1;
+    const it = map.intervals[mid];
+    if (pmPos < it.pmPosStart) {
+      hi = mid - 1;
+    } else if (pmPos > it.pmPosStart + it.length) {
+      lo = mid + 1;
+    } else {
+      const local = pmPos - it.pmPosStart;
+      return it.strOffsetStart + local;
+    }
+  }
+  return null;
+}
+
 export function strOffsetToPmPos(
   map: SceneOffsetMap,
   offset: number,
