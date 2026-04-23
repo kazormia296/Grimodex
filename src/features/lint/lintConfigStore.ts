@@ -66,6 +66,10 @@ export const BUILTIN_DEFAULT_CONFIG: LintFullConfig = {
       enabled: false,
       options: { distance_chars: 50, min_length: 2 },
     },
+    "ja/kanji-hiragana-chain": {
+      enabled: false,
+      options: { kanji_threshold: 6, hiragana_threshold: 20 },
+    },
     "en/straight-quotes": { enabled: true },
     "en/em-dash": { enabled: true },
     "en/ellipsis": { enabled: true },
