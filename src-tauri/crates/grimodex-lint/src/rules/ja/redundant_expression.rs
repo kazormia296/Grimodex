@@ -79,10 +79,12 @@ impl LintRule for RedundantExpressionRule {
     }
 
     fn requires_morphology(&self) -> bool {
-        // Surface patterns only in Phase 2 MVP, but we want the cache in
-        // place so morphology-aware extensions can land without a
-        // separate enable flag.
-        true
+        // Phase 2 MVP は surface regex のみで解決。形態素キャッシュは
+        // 使わないので false を返す（この rule だけ有効な場合に
+        // lindera 初期化コストを発生させない）。形態素情報を使う
+        // パターン（例: サ変動詞限定の fix）を追加するタイミングで
+        // true に変える。
+        false
     }
 
     fn supported_block_kinds(&self) -> &'static [BlockKind] {

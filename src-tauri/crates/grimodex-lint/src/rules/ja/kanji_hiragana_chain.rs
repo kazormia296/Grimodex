@@ -289,16 +289,25 @@ mod tests {
     }
 
     #[test]
-    fn exempts_proper_noun_kanji_run() {
-        // 固有名詞 1 語に含まれる漢字連続は警告しない。
-        // UniDic が本当に 1 固有名詞として認識するかに依存するが、
-        // 仮に分割されても別の判定系のため test 名と挙動を一致させる。
+    fn exempts_proper_noun_kanji_run_when_single_token() {
+        // UniDic v2.1.2 は「東京」を単一の固有名詞トークンとして返す。
+        // 2 文字なので閾値 6 未満で検出対象外 → そもそも漢字連続警告は
+        // 発火しない。この test は 固有名詞の exemption ロジックを間接
+        // 的にだけ通す（run が空を返すことを確認する）。
+        let ds = run("東京で食事をした。");
+        assert!(ds.is_empty(), "{ds:?}");
+    }
+
+    #[test]
+    fn flags_kanji_run_spanning_multiple_tokens() {
+        // 「東京国際空港」は UniDic では複数トークン（東京 / 国際 / 空港）
+        // に分割される。enclosed_by_proper_noun はどの 1 トークンにも
+        // 完全包含されないため exemption が効かず、6 漢字連続として
+        // 警告する。これが現状の仕様。1 つの固有名詞として登録されている
+        // ケース（カスタム辞書など）の exemption は実装済みだが、素の
+        // UniDic では実用されない点を test で固定しておく。
         let ds = run("東京国際空港は静かだ。");
-        // 6 文字以上の漢字連続だが、「東京国際空港」全体が固有名詞として
-        // まとまれば警告なし。分割される場合は diag が出る（その場合は
-        // UniDic の挙動であって rule 側のバグではない）。
-        // ここは「出ないこと」だけを厳しく要求せず、挙動を観察する。
-        // → 固有名詞として認識されない場合もあるため、アサーションは緩め。
-        let _ = ds;
+        assert_eq!(ds.len(), 1, "{ds:?}");
+        assert!(ds[0].message.contains("漢字"));
     }
 }

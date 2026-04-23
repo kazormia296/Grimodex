@@ -63,6 +63,16 @@ fn run_fixture(dir: &Path) -> Vec<Diagnostic> {
         Language::Japanese
     };
 
+    // Per-fixture config override: `config.json` is loaded as a full
+    // `LintConfig` if present. Missing / empty → `LintConfig::default()`.
+    // Needed for rules whose behaviour depends on non-default inputs
+    // (e.g. `codex/name-inconsistency` needs `codex_entries`).
+    let config = match fs::read_to_string(dir.join("config.json")) {
+        Ok(raw) => serde_json::from_str::<LintConfig>(&raw)
+            .unwrap_or_else(|e| panic!("{}: parse config.json: {e}", dir.display())),
+        Err(_) => LintConfig::default(),
+    };
+
     let blocks = vec![LintBlock {
         id: 0,
         kind: BlockKind::Paragraph,
@@ -75,7 +85,7 @@ fn run_fixture(dir: &Path) -> Vec<Diagnostic> {
         LintScope::Scene {
             scene_id: "fixture".into(),
         },
-        &LintConfig::default(),
+        &config,
     )
     .expect("lint run");
     resp.diagnostics

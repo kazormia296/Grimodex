@@ -139,9 +139,12 @@ impl LintRule for WordRepetitionRule {
             };
 
             // last_seen[lemma] = (utf16 offset of end of last occurrence).
-            // Using a small owned-string map keeps the implementation
-            // straight forward and avoids lifetime puzzles with &str from
-            // tokens we also iterate.
+            // Only the *most recent* position is kept, not the full
+            // history. Consequence: in "X...X...X" where each adjacent
+            // pair is within `distance_chars` but X1↔X3 is not, the
+            // rule emits 2 diagnostics (X2 vs X1, X3 vs X2), never one
+            // for "X3 vs X1". That's the intended behaviour — flagging
+            // the nearest duplicate is typically what the writer wants.
             let mut last_seen: std::collections::HashMap<String, u32> =
                 std::collections::HashMap::new();
 

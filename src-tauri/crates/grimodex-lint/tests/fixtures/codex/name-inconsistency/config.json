@@ -1,0 +1,13 @@
+{
+  "rules": {
+    "ja/sentence-ending-repeat": { "enabled": false },
+    "ja/word-repetition": { "enabled": false }
+  },
+  "codex_entries": [
+    {
+      "entry_id": "char-makoto",
+      "canonical": "真琴",
+      "aliases": ["マコト", "Makoto"]
+    }
+  ]
+}
