@@ -15,6 +15,67 @@ Grimodex のテキスト Linter は、執筆中の文章に対して**確定論�
 
 ---
 
+## PostEffects との境界とクロスリファレンス
+
+本 Linter は決定論ベース。LLM を用いた事後分析は [`Grimodex_PostEffects設計書.md`](Grimodex_PostEffects設計書.md) に分離する。同一の本文上で両者が並走するため、以下の境界を固定する。**本セクションが両者の境界の正本**。PostEffects 設計書側には要点のみ書き、詳細はここを参照する。
+
+### 責務の線引き
+
+| 観点 | Linter（本書） | PostEffects |
+|---|---|---|
+| 判定の性質 | 決定論・再現可能 | LLM・非決定論 |
+| Codex 連動 | **表記の一致**（F群、完全一致） | **事実の整合**（整合性チェック、意味的） |
+| 粒度 | span / block | span / scene / folder / project |
+| 本文への反映 | Fix による置換（ユーザー操作） | しない（オーバーレイのみ） |
+
+Codex 基点で「真琴/Makoto の表記ゆれ」は Linter、「Codex: 目=青 vs 本文: 緑」は PostEffects。同じ Codex エントリが両機能で別角度から検出されるのは許容（責務が異なる情報源として並記する）。
+
+### 装飾の重なり規則
+
+同一 span に Linter の squiggly と PostEffect の `pe-annotation-*` decoration が重なる場合:
+
+- **描画レイヤ**: Linter squiggly を**下**、PostEffect decoration を**上**に重ねる（Linter は形式的で常時更新、PostEffect は run 単位で粗いため、ユーザーが気づくべき優先度で上に置く）
+- **ホバー**: 両方のツールチップを**縦に連結**して表示（Linter 所見 → PostEffect 所見の順）
+- **クリック**: 最も手前の要素を優先（PostEffect のスレッド UI 優先）
+- **Fix ボタン**: Linter Fix のみに表示（PostEffect は本文を書き換えない）
+
+### Fix 適用と PostEffect annotation の相互作用
+
+`Fix.range` が PostEffect の `AnnotationMark` と重なる場合:
+
+- TipTap 標準挙動で Mark は自動追従・縮小・消滅する（`lintDisable` Mark の扱いと同じ）
+- Fix 適用後のシーン保存時に `savePostEffectAnnotations` が `range_start/end` と `text_snapshot` を再同期する（既存パイプラインに乗る）
+- Fix によって **AnnotationMark が完全消滅した場合**、Linter パネルに通知: 「Fix 適用により {N} 件の注釈が削除されました」（`lintDisable` 消失通知と同じ UI で統一）
+- 事前警告はしない（執筆体験を阻害しない原則）
+
+### エクスポート時のマーク除去
+
+本文エクスポート時は **Linter の `lintDisable` Mark / ブロック属性 + PostEffect の `AnnotationMark`** を**両方とも除去**する。エクスポーター実装時の必須テストケース:
+
+- disable 入りシーン → 出力に directive 情報が含まれない
+- PostEffect annotation 入りシーン → 出力に annotation span が含まれない
+
+両除去はエクスポーターの同一パスで行う（Mark を無視する filter を共有）。
+
+### 位置オフセット層の共有
+
+「位置オフセットの取り扱い」セクションで定義する UTF-16 位置マップ（区間テーブル + 二分探索）は **Linter / PostEffect の両機能で共通のユーティリティ**として実装する。
+
+- 配置: `src/features/editor/offsetMap.ts`（仮、両機能を実装する時点で正式名を決定）
+- 両機能がこのモジュールを import し、位置マップの再構築トリガ（`transaction.docChanged`）も共有
+- PostEffects の「位置追跡の権威性 — ライブマークが真実、DB はフォールバック」（PostEffects 設計書 §方針決定事項 3）とも整合
+
+### 状態管理の独立性（現状）
+
+「無視/解決」系の状態は現状独立:
+
+- Linter: `lint_ignored_diagnostics`（永続無視）+ `lintDisable` Mark + `lint_action_log`
+- PostEffects: `post_effect_annotations.status`（open / resolved / dismissed）
+
+将来「本文上の全アノテーションを横断管理したい」要求が顕在化した場合に統合を検討する（Phase 4 以降）。現時点では独立のまま運用し、UI レベルでの相互ジャンプ（Linter パネル ↔ PostEffect パネル）のみを追うべき課題とする。
+
+---
+
 ## アーキテクチャ
 
 ### 全体構成

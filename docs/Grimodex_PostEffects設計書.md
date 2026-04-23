@@ -29,6 +29,45 @@ Linter 系（形式的ルールベース）は対象外。本書は「非決定�
 
 ---
 
+## Linter との境界とクロスリファレンス
+
+決定論ベースの検出は [`Grimodex_Linter設計書.md`](Grimodex_Linter設計書.md) が担う。同一の本文上で両者が並走するため境界整理が必要だが、**両者の境界の正本は Linter 設計書「PostEffects との境界とクロスリファレンス」セクション**。本書では PostEffects 側の受け取り方のみ要点化する。
+
+### 責務の線引き
+
+- PostEffects は **LLM ベースの意味的検出**（事実の矛盾、伏線、テーマ、読者反応、構造診断）
+- 決定論的な表記・文体ルールは Linter 側。本書では扱わない
+- 同じ Codex エントリが両機能で別角度から検出されるのは許容（表記ゆれは Linter、事実矛盾は PostEffect）
+
+### AnnotationMark と Linter 装飾の共存
+
+- Decoration クラス名 `pe-annotation-*`（本書 §既存基盤の再利用）と Linter squiggly は名前空間が独立
+- 描画レイヤ・ホバー統合・クリック優先度は Linter 設計書の「装飾の重なり規則」に従う
+
+### 位置追跡の共有
+
+- 本書 §方針決定事項 3（ライブ Mark が真実、DB はフォールバック）は Linter 側の UTF-16 位置マップ実装と整合する前提
+- 位置オフセット変換ユーティリティ（`src/features/editor/offsetMap.ts` 仮）は Linter と共有。PostEffects 単独では再実装しない
+
+### Fix による Annotation の消失通知
+
+- Linter Fix によって AnnotationMark が完全消滅した場合、Linter パネルに消失通知が表示される（詳細は Linter 設計書「Fix 適用と PostEffect annotation の相互作用」）
+- PostEffect 側の `post_effect_annotations.range_start/end` と `text_snapshot` は scene 保存時に `savePostEffectAnnotations` で自動再同期される
+- PostEffects 側の UI では消失を追加通知しない（Linter パネルで一元化）
+
+### エクスポート時の挙動
+
+- 本文エクスポート時は **`AnnotationMark` を除去**（Linter の `lintDisable` と同じ除去パスで処理）
+- エクスポーター実装時の必須テストケース: 「PostEffect annotation 入りシーン → 出力に annotation span が含まれない」
+- 「本文を書き換えない」設計原則（本書 §設計原則 2）はエディタ内の話。エクスポート後のテキストファイルには annotation を残さない
+
+### 状態管理の独立性
+
+- PostEffects の `status`（open / resolved / dismissed）と Linter の `lint_ignored_diagnostics` は現状独立
+- 将来の統合可否は Phase 4 以降で判断（Linter 設計書側と歩調を合わせる）
+
+---
+
 ## データモデル
 
 ### 全体構造
