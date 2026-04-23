@@ -13,6 +13,11 @@
  */
 
 import type { Node as ProseMirrorNode } from "@tiptap/pm/model";
+import {
+  InlineDisableAccumulator,
+  sanitiseRules,
+  type LintDisableRange,
+} from "@/features/lint/lintDisableWalker";
 
 export type LintBlockKind =
   | "paragraph"
@@ -49,15 +54,12 @@ export interface PosInterval {
 }
 
 /**
- * One disable directive extracted from the doc. Shape matches the wire
- * format sent to Rust (`DisableDirective`). Mark-based inline spans and
- * block-level `lintDisabled` attributes both land in this list — Rust
- * doesn't care which UI control produced them.
+ * Disable directives collected during the same doc walk. The shape
+ * matches the wire format sent to Rust (`DisableDirective`). Mark-based
+ * inline spans and block-level `lintDisabled` attributes both land in
+ * this list — Rust doesn't care which UI control produced them.
  */
-export interface OffsetMapDisable {
-  rules: string[];
-  range: { start: number; end: number };
-}
+export type OffsetMapDisable = LintDisableRange;
 
 export interface SceneOffsetMap {
   blocks: LintBlock[];
@@ -128,11 +130,29 @@ export function buildOffsetMap(doc: ProseMirrorNode): SceneOffsetMap {
         // blocks handle their own offsets. Resetting `blocks.length > 0`
         // is awkward, so track the not-yet-committed state.
         if (blocks.length > 0) sceneCursor -= 1;
-        // Recurse into children (they will emit their own blocks).
+        nextBlockId -= 1; // reclaim unused id
+        const firstInnerIdx = blocks.length;
         node.forEach((child, offset) => {
           visit(child, pos + 1 + offset);
         });
-        nextBlockId -= 1; // reclaim unused id
+        // Passthrough block may itself carry `lintDisabled`. Cover
+        // every inner leaf block that was emitted during the recursion
+        // with a single directive. Without this, "disable this whole
+        // listItem" via the outer node attribute would silently drop.
+        const blockDisabled = sanitiseRules(node.attrs.lintDisabled);
+        if (blockDisabled && blocks.length > firstInnerIdx) {
+          const firstInner = blocks[firstInnerIdx];
+          const lastInner = blocks[blocks.length - 1];
+          const rangeStart = firstInner.strOffsetStart;
+          const rangeEnd =
+            lastInner.strOffsetStart + utf16Length(lastInner.text);
+          if (rangeEnd > rangeStart) {
+            disables.push({
+              rules: blockDisabled,
+              range: { start: rangeStart, end: rangeEnd },
+            });
+          }
+        }
         return;
       }
 
@@ -199,48 +219,13 @@ function collectLeafBlock(
 ) {
   // Running UTF-16 offset inside this block.
   let inBlockOffset = 0;
-  // Accumulator for inline `lintDisable` Mark runs. Adjacent text nodes
-  // that carry the same `rules` set are merged into one directive so a
-  // diagnostic straddling the boundary between two text segments still
-  // gets silenced.
-  let currentRun: {
-    rules: string[];
-    start: number;
-    end: number;
-  } | null = null;
-
-  const flushRun = () => {
-    if (currentRun) {
-      disables.push({
-        rules: currentRun.rules,
-        range: { start: currentRun.start, end: currentRun.end },
-      });
-      currentRun = null;
-    }
-  };
-
-  const extendOrStart = (
-    rules: string[],
-    sceneStart: number,
-    sceneEnd: number,
-  ) => {
-    if (
-      currentRun &&
-      currentRun.end === sceneStart &&
-      sameRules(currentRun.rules, rules)
-    ) {
-      currentRun.end = sceneEnd;
-    } else {
-      flushRun();
-      currentRun = { rules, start: sceneStart, end: sceneEnd };
-    }
-  };
+  const acc = new InlineDisableAccumulator((d) => disables.push(d));
 
   node.descendants((child, posWithinParent) => {
     if (child.type.name === "ruby") {
       const base = (child.attrs.base as string | undefined) ?? "";
       if (base.length === 0) return false;
-      flushRun();
+      acc.flush();
       // Atom node — the whole base maps to the atom's PM position. Use
       // one interval for the full base text.
       intervals.push({
@@ -256,7 +241,7 @@ function collectLeafBlock(
     }
 
     if (child.type.name === "hardBreak") {
-      flushRun();
+      acc.flush();
       // hardBreak serialises to \n in plain text.
       intervals.push({
         pmPosStart: blockPos + 1 + posWithinParent,
@@ -284,15 +269,10 @@ function collectLeafBlock(
         textParts.push(text);
         const sceneStart = blockStart + inBlockOffset;
         const sceneEnd = sceneStart + len;
-        const markRules = findLintDisableRules(child);
-        if (markRules) {
-          extendOrStart(markRules, sceneStart, sceneEnd);
-        } else {
-          flushRun();
-        }
+        acc.push(sceneStart, sceneEnd, findLintDisableRules(child));
         inBlockOffset += len;
       } else {
-        flushRun();
+        acc.flush();
       }
       return false;
     }
@@ -300,7 +280,7 @@ function collectLeafBlock(
     return undefined;
   });
 
-  flushRun();
+  acc.flush();
 }
 
 function findLintDisableRules(textNode: ProseMirrorNode): string[] | null {
@@ -309,28 +289,6 @@ function findLintDisableRules(textNode: ProseMirrorNode): string[] | null {
     return sanitiseRules(mark.attrs.rules);
   }
   return null;
-}
-
-/**
- * Normalise a rules input (from TipTap attrs) into a non-empty
- * `string[]`. Returns `null` when the input is not a valid selector
- * payload — the caller drops the directive in that case, matching the
- * engine's behaviour where invalid selectors are skipped with a
- * warning.
- */
-function sanitiseRules(raw: unknown): string[] | null {
-  if (!Array.isArray(raw)) return null;
-  if (raw.length === 0) return null;
-  if (!raw.every((s) => typeof s === "string")) return null;
-  return raw as string[];
-}
-
-function sameRules(a: string[], b: string[]): boolean {
-  if (a.length !== b.length) return false;
-  for (let i = 0; i < a.length; i++) {
-    if (a[i] !== b[i]) return false;
-  }
-  return true;
 }
 
 function utf16Length(s: string): number {

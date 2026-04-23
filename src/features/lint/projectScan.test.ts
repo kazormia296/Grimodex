@@ -95,6 +95,28 @@ describe("buildBlocksFromJson", () => {
     expect(disables).toEqual([{ rules: ["*"], range: { start: 0, end: 6 } }]);
   });
 
+  it("passthrough block (listItem) with lintDisabled covers inner paragraphs", () => {
+    // listItem itself emits no block of its own — the inner paragraph
+    // carries the text. The disable attr on the listItem should still
+    // cover that whole inner paragraph.
+    const json = pm([
+      {
+        type: "listItem",
+        attrs: { lintDisabled: ["ja/dash-single"] },
+        content: [
+          {
+            type: "paragraph",
+            content: [{ type: "text", text: "hello" }],
+          },
+        ],
+      },
+    ]);
+    const { disables } = buildBlocksFromJson(json);
+    expect(disables).toEqual([
+      { rules: ["ja/dash-single"], range: { start: 0, end: 5 } },
+    ]);
+  });
+
   it("keeps adjacent lintDisable marks separate when rules differ", () => {
     const json = pm([
       {

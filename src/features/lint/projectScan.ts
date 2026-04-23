@@ -28,6 +28,11 @@ import type {
   RuleWarning,
   WireLintBlock,
 } from "./types";
+import {
+  InlineDisableAccumulator,
+  sanitiseRules,
+  type LintDisableRange,
+} from "./lintDisableWalker";
 
 /** Block kinds exposed to Rust (mirrors BLOCK_KIND_MAP in offsetMap.ts). */
 const BLOCK_KIND_BY_PM_TYPE: Record<string, BlockKind | undefined> = {
@@ -60,25 +65,7 @@ interface PmNode {
  * intentionally identical so `buildBlocksFromJson` can feed the
  * `lint_text` payload directly.
  */
-interface JsonDisable {
-  rules: string[];
-  range: { start: number; end: number };
-}
-
-function sanitiseRules(raw: unknown): string[] | null {
-  if (!Array.isArray(raw)) return null;
-  if (raw.length === 0) return null;
-  if (!raw.every((s) => typeof s === "string")) return null;
-  return raw as string[];
-}
-
-function sameRules(a: string[], b: string[]): boolean {
-  if (a.length !== b.length) return false;
-  for (let i = 0; i < a.length; i++) {
-    if (a[i] !== b[i]) return false;
-  }
-  return true;
-}
+type JsonDisable = LintDisableRange;
 
 /**
  * Walk a ProseMirror JSON doc and build a LintBlock array compatible
@@ -123,39 +110,25 @@ export function buildBlocksFromJson(jsonText: string): {
   }
 
   /**
-   * Walk a leaf block's children to surface `lintDisable` Mark runs.
-   * Adjacent text segments that share the same `rules` set are merged
-   * into one directive — same algorithm as `offsetMap.ts` so both
-   * paths produce identical output for identical docs.
+   * Walk a leaf block's children to surface `lintDisable` Mark runs,
+   * feeding the shared accumulator that `offsetMap.ts` also uses.
+   * Same output shape for the same document so both paths produce
+   * identical directive lists.
    */
   function collectInlineDisables(node: PmNode, blockStart: number) {
     let inBlockOffset = 0;
-    let currentRun: {
-      rules: string[];
-      start: number;
-      end: number;
-    } | null = null;
-
-    const flush = () => {
-      if (currentRun) {
-        disables.push({
-          rules: currentRun.rules,
-          range: { start: currentRun.start, end: currentRun.end },
-        });
-        currentRun = null;
-      }
-    };
+    const acc = new InlineDisableAccumulator((d) => disables.push(d));
 
     const walk = (n: PmNode) => {
       if (!n.type) return;
       if (n.type === "ruby") {
-        flush();
+        acc.flush();
         const base = (n.attrs?.base as string | undefined) ?? "";
         inBlockOffset += utf16Length(base);
         return;
       }
       if (n.type === "hardBreak") {
-        flush();
+        acc.flush();
         inBlockOffset += 1;
         return;
       }
@@ -164,25 +137,7 @@ export function buildBlocksFromJson(jsonText: string): {
         if (len > 0) {
           const sceneStart = blockStart + inBlockOffset;
           const sceneEnd = sceneStart + len;
-          const markRules = findLintDisableRules(n);
-          if (markRules) {
-            if (
-              currentRun &&
-              currentRun.end === sceneStart &&
-              sameRules(currentRun.rules, markRules)
-            ) {
-              currentRun.end = sceneEnd;
-            } else {
-              flush();
-              currentRun = {
-                rules: markRules,
-                start: sceneStart,
-                end: sceneEnd,
-              };
-            }
-          } else {
-            flush();
-          }
+          acc.push(sceneStart, sceneEnd, findLintDisableRules(n));
           inBlockOffset += len;
         }
         return;
@@ -192,7 +147,7 @@ export function buildBlocksFromJson(jsonText: string): {
     };
 
     node.content?.forEach(walk);
-    flush();
+    acc.flush();
   }
 
   function visit(node: PmNode) {
@@ -208,7 +163,26 @@ export function buildBlocksFromJson(jsonText: string): {
         node.content?.some((c) => c.type && BLOCK_KIND_BY_PM_TYPE[c.type]) ??
         false;
       if (hasNested) {
+        // Passthrough block may itself carry `lintDisabled` — cover
+        // every inner leaf block that gets emitted during recursion
+        // with one directive so "disable this whole list item"
+        // actually silences the contained paragraphs.
+        const firstInnerIdx = blocks.length;
         node.content?.forEach(visit);
+        const blockDisabled = sanitiseRules(node.attrs?.lintDisabled);
+        if (blockDisabled && blocks.length > firstInnerIdx) {
+          const firstInner = blocks[firstInnerIdx];
+          const lastInner = blocks[blocks.length - 1];
+          const rangeStart = firstInner.str_offset_start;
+          const rangeEnd =
+            lastInner.str_offset_start + utf16Length(lastInner.text);
+          if (rangeEnd > rangeStart) {
+            disables.push({
+              rules: blockDisabled,
+              range: { start: rangeStart, end: rangeEnd },
+            });
+          }
+        }
         return;
       }
       if (blocks.length > 0) cursor += 1; // separator
