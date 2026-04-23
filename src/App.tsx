@@ -44,6 +44,7 @@ import { AttributionReport } from "@/features/attribution/AttributionReport";
 import { TimelinePanel } from "@/features/timeline/TimelinePanel";
 import { MapPanel } from "@/features/map/MapPanel";
 import { LinterPanel } from "@/features/lint/LinterPanel";
+import { StatusBarIndicator } from "@/features/lint/StatusBarIndicator";
 import { GlobalSearchDialog } from "@/features/search/GlobalSearchDialog";
 import { useState } from "react";
 import { Settings, FileOutput } from "lucide-react";
@@ -572,6 +573,10 @@ function EditorScreen() {
           watermarkComponent={DockviewWatermark}
         />
       </div>
+      <footer className="flex flex-shrink-0 items-center gap-2 border-t border-border bg-muted/40 px-2 py-0.5">
+        <StatusBarIndicator />
+        <div className="flex-1" />
+      </footer>
     </main>
   );
 }
