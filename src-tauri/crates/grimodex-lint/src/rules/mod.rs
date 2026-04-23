@@ -26,6 +26,7 @@ pub fn build_ruleset(language: Language) -> (Vec<Box<dyn LintRule>>, Vec<RuleWar
             rules.push(Box::new(ja::kanji_hiragana_chain::KanjiHiraganaChainRule));
             rules.push(Box::new(ja::particle_no_chain::ParticleNoChainRule));
             rules.push(Box::new(ja::quote_period::QuotePeriodRule));
+            rules.push(Box::new(ja::redundant_expression::RedundantExpressionRule));
             rules.push(Box::new(
                 ja::sentence_ending_repeat::SentenceEndingRepeatRule,
             ));

@@ -1,0 +1,29 @@
+[
+  {
+    "rule_id": "ja/redundant-expression",
+    "severity": "info",
+    "message": "[koto-ga-dekiru] 冗長表現: 「〜ことができる」は「〜できる」と短く書けることが多いです",
+    "range": {
+      "start": 14,
+      "end": 20
+    }
+  },
+  {
+    "rule_id": "ja/redundant-expression",
+    "severity": "info",
+    "message": "[to-iu-koto] 冗長表現: 「〜ということ」は省略できる場合が多いです",
+    "range": {
+      "start": 24,
+      "end": 29
+    }
+  },
+  {
+    "rule_id": "ja/redundant-expression",
+    "severity": "info",
+    "message": "[koto-ni-naru] 冗長表現: 「〜ことになる」は直接的な表現を検討してください",
+    "range": {
+      "start": 43,
+      "end": 48
+    }
+  }
+]
