@@ -281,18 +281,35 @@ export const useLintStore = create<LintState>()((set, get) => {
 
           // Attribute each returned diagnostic to its source block by
           // range interval, then cache as relative offsets.
+          const attributedIndices = new Set<number>();
           for (const block of missBlocks) {
             const blockEnd = block.str_offset_start + block.text.length;
-            const blockDiags = resp.diagnostics.filter(
-              (d) =>
+            const blockDiags = resp.diagnostics.filter((d, i) => {
+              if (
                 d.range.start >= block.str_offset_start &&
-                d.range.start < blockEnd,
-            );
+                d.range.start < blockEnd
+              ) {
+                attributedIndices.add(i);
+                return true;
+              }
+              return false;
+            });
             blockDiagCache.set(
               blockCacheKey(block),
               blockDiags.map((d) => toRelative(d, block.str_offset_start)),
             );
             freshDiagnostics.push(...blockDiags);
+          }
+          if (import.meta.env.DEV) {
+            const orphans = resp.diagnostics.filter(
+              (_, i) => !attributedIndices.has(i),
+            );
+            if (orphans.length > 0) {
+              console.warn(
+                "[lint] orphan diagnostics (cross-block rule?)",
+                orphans,
+              );
+            }
           }
         } else {
           // All blocks were cache hits — no Rust call needed.
@@ -310,7 +327,10 @@ export const useLintStore = create<LintState>()((set, get) => {
         // Restore deterministic ordering (Rust sorts within each run; we
         // need to re-sort after merging hit and miss results).
         freshDiagnostics.sort(
-          (a, b) => a.range.start - b.range.start || a.range.end - b.range.end,
+          (a, b) =>
+            a.range.start - b.range.start ||
+            a.range.end - b.range.end ||
+            a.rule_id.localeCompare(b.rule_id),
         );
 
         const filtered = applyIgnoreFilter(
