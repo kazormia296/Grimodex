@@ -140,6 +140,10 @@ export const useWorkspaceStore = create<WorkspaceState>()((set, get) => ({
       // Load persisted editor settings and apply to runtime stores
       await useSettingsStore.getState().loadAll();
       useCursorSettingsStore.getState().initFromSettings();
+      // Lint config depends on settings being loaded first.
+      const { useLintConfigStore } =
+        await import("@/features/lint/lintConfigStore");
+      useLintConfigStore.getState().load();
       if (settings.timeline) {
         loadAndSyncTimelineSettings(settings.timeline);
       }

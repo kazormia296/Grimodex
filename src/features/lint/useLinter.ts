@@ -10,6 +10,7 @@ import {
   buildLintDecorations,
 } from "@/features/editor/LintDecorationPlugin";
 import { useLintStore } from "./lintStore";
+import { useLintConfigStore } from "./lintConfigStore";
 import { resolveLintLanguage } from "./types";
 import type { LintConfig, WireLintBlock } from "./types";
 
@@ -21,13 +22,25 @@ import type { LintConfig, WireLintBlock } from "./types";
 export function runLintNow(
   editor: Editor,
   sceneId: string,
-  config: LintConfig = {},
+  configOverride?: LintConfig,
 ): Promise<void> {
   const map = buildOffsetMap(editor.state.doc);
   const blocks = toWire(map.blocks);
+  const config = configOverride ?? resolveEffectiveConfig();
   return useLintStore
     .getState()
     .runLint(sceneId, blocks, config, resolveLintLanguage());
+}
+
+/**
+ * Pull the effective Lint config from the config store and trim it to
+ * the shape Rust's `lint_text` accepts. Returns an empty config if the
+ * store has not finished loading yet (first-render safety).
+ */
+function resolveEffectiveConfig(): LintConfig {
+  const store = useLintConfigStore.getState();
+  if (!store.isLoaded) return {};
+  return store.getWireConfig();
 }
 
 const DEBOUNCE_MS = 500;
@@ -88,10 +101,17 @@ export function useLinter(editor: Editor | null, sceneId: string | null): void {
       if (timerRef.current) clearTimeout(timerRef.current);
       timerRef.current = setTimeout(() => {
         if (!editor || !sceneId) return;
+        const cfgStore = useLintConfigStore.getState();
+        const lang = resolveLintLanguage();
+        const effective = cfgStore.getEffective();
+        // Respect Linter-wide and per-language toggles.
+        if (!effective.enabled || !effective.languages[lang]?.enabled) {
+          useLintStore.getState().clear();
+          return;
+        }
         const map = buildOffsetMap(editor.state.doc);
         const blocks = toWire(map.blocks);
-        const config: LintConfig = {};
-        void runLint(sceneId, blocks, config, resolveLintLanguage());
+        void runLint(sceneId, blocks, cfgStore.getWireConfig(), lang);
       }, delay);
     }
 
@@ -108,8 +128,16 @@ export function useLinter(editor: Editor | null, sceneId: string | null): void {
       schedule(DEBOUNCE_MS);
     };
     editor.on("update", onUpdate);
+
+    // Re-run lint immediately when the effective config changes
+    // (per design: "設定変更 → 現在シーンを即座に再 Lint").
+    const unsubscribeConfig = useLintConfigStore.subscribe(() => {
+      schedule(0);
+    });
+
     return () => {
       editor.off("update", onUpdate);
+      unsubscribeConfig();
       if (timerRef.current) clearTimeout(timerRef.current);
     };
   }, [editor, sceneId, runLint, setCurrentScene]);

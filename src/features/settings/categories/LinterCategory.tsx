@@ -1,0 +1,278 @@
+import { useMemo } from "react";
+import { RotateCcw } from "lucide-react";
+
+import {
+  useLintConfigStore,
+  BUILTIN_DEFAULT_CONFIG,
+} from "@/features/lint/lintConfigStore";
+import type { LintLanguage, Severity } from "@/features/lint/types";
+
+/**
+ * Settings UI for the Linter.
+ *
+ * Exposes:
+ * - Linter-wide enable toggle
+ * - Per-language enable toggle
+ * - Per-rule enable toggle + severity override
+ * - Rule-specific options (ja/sentence-length thresholds,
+ *   ja/quote-period policy, ja/halfwidth-fullwidth-mix policy)
+ * - Reset buttons (全体 / 言語 / 個別ルール)
+ *
+ * Changes flow through `useLintConfigStore` which debounces writes to
+ * the `settings.lint.config` JSON blob; the live Linter picks up
+ * changes via its subscription and re-lints immediately.
+ */
+export function LinterCategory() {
+  const effective = useLintConfigStore((s) => s.getEffective());
+  const setLinterEnabled = useLintConfigStore((s) => s.setLinterEnabled);
+  const setLanguageEnabled = useLintConfigStore((s) => s.setLanguageEnabled);
+  const setRule = useLintConfigStore((s) => s.setRule);
+  const resetRule = useLintConfigStore((s) => s.resetRule);
+  const resetLanguage = useLintConfigStore((s) => s.resetLanguage);
+  const resetAll = useLintConfigStore((s) => s.resetAll);
+
+  const groupedRules = useMemo(() => {
+    const groups: Record<LintLanguage, string[]> = { ja: [], en: [] };
+    for (const id of Object.keys(effective.rules).sort()) {
+      if (id.startsWith("ja/")) groups.ja.push(id);
+      else if (id.startsWith("en/")) groups.en.push(id);
+    }
+    return groups;
+  }, [effective.rules]);
+
+  return (
+    <div className="flex flex-col gap-6 p-6 text-sm">
+      <section>
+        <h3 className="mb-3 text-base font-semibold">Linter</h3>
+        <label className="flex items-center gap-2">
+          <input
+            type="checkbox"
+            checked={effective.enabled}
+            onChange={(e) => setLinterEnabled(e.target.checked)}
+          />
+          Linter を有効にする
+        </label>
+        <button
+          type="button"
+          onClick={() => {
+            if (
+              window.confirm(
+                "Linter 設定をすべてデフォルトに戻します。よろしいですか？",
+              )
+            ) {
+              resetAll();
+            }
+          }}
+          className="mt-2 flex items-center gap-1 rounded border border-border px-2 py-1 text-xs hover:bg-accent"
+        >
+          <RotateCcw className="h-3.5 w-3.5" /> 全ルールをデフォルトに戻す
+        </button>
+      </section>
+
+      {(["ja", "en"] as const).map((lang) => (
+        <section key={lang} className="flex flex-col gap-3">
+          <div className="flex items-center justify-between border-b border-border pb-1">
+            <h4 className="font-semibold">
+              {lang === "ja" ? "日本語ルール" : "英語ルール"}
+            </h4>
+            <div className="flex items-center gap-2">
+              <label className="flex items-center gap-1 text-xs">
+                <input
+                  type="checkbox"
+                  checked={effective.languages[lang].enabled}
+                  onChange={(e) => setLanguageEnabled(lang, e.target.checked)}
+                />
+                言語全体を有効
+              </label>
+              <button
+                type="button"
+                onClick={() => resetLanguage(lang)}
+                className="rounded border border-border px-1.5 py-0.5 text-xs hover:bg-accent"
+                title={`${lang === "ja" ? "日本語" : "英語"}のルールをデフォルトに戻す`}
+              >
+                <RotateCcw className="h-3 w-3" />
+              </button>
+            </div>
+          </div>
+          <div className="flex flex-col divide-y divide-border rounded border border-border">
+            {groupedRules[lang].map((ruleId) => (
+              <RuleRow
+                key={ruleId}
+                ruleId={ruleId}
+                disabledByLanguage={!effective.languages[lang].enabled}
+                onSetRule={setRule}
+                onResetRule={resetRule}
+              />
+            ))}
+          </div>
+        </section>
+      ))}
+    </div>
+  );
+}
+
+const SEVERITY_OPTIONS: Array<{ value: Severity | "default"; label: string }> =
+  [
+    { value: "default", label: "既定" },
+    { value: "error", label: "Error" },
+    { value: "warning", label: "Warning" },
+    { value: "info", label: "Info" },
+  ];
+
+function RuleRow({
+  ruleId,
+  disabledByLanguage,
+  onSetRule,
+  onResetRule,
+}: {
+  ruleId: string;
+  disabledByLanguage: boolean;
+  onSetRule: (ruleId: string, patch: Record<string, unknown>) => void;
+  onResetRule: (ruleId: string) => void;
+}) {
+  const rule = useLintConfigStore((s) => s.getEffective().rules[ruleId]);
+  if (!rule) return null;
+
+  const enabled = rule.enabled ?? true;
+  const severity = rule.severity ?? "default";
+  const builtinDefault = BUILTIN_DEFAULT_CONFIG.rules[ruleId];
+
+  return (
+    <div className="flex flex-col gap-1 px-3 py-2">
+      <div className="flex items-center gap-2">
+        <label className="flex flex-1 items-center gap-2">
+          <input
+            type="checkbox"
+            checked={enabled}
+            disabled={disabledByLanguage}
+            onChange={(e) => onSetRule(ruleId, { enabled: e.target.checked })}
+          />
+          <code className="text-xs">{ruleId}</code>
+          {builtinDefault?.enabled === false && (
+            <span className="rounded bg-muted px-1 py-0.5 text-[10px] uppercase text-muted-foreground">
+              default off
+            </span>
+          )}
+        </label>
+        <select
+          value={severity}
+          disabled={disabledByLanguage || !enabled}
+          onChange={(e) => {
+            const v = e.target.value;
+            if (v === "default") onSetRule(ruleId, { severity: undefined });
+            else onSetRule(ruleId, { severity: v as Severity });
+          }}
+          className="h-6 rounded border border-border bg-background px-1 text-xs disabled:opacity-50"
+        >
+          {SEVERITY_OPTIONS.map((o) => (
+            <option key={o.value} value={o.value}>
+              {o.label}
+            </option>
+          ))}
+        </select>
+        <button
+          type="button"
+          onClick={() => onResetRule(ruleId)}
+          className="rounded border border-border p-1 text-xs hover:bg-accent"
+          title="このルールをデフォルトに戻す"
+        >
+          <RotateCcw className="h-3 w-3" />
+        </button>
+      </div>
+      <RuleOptions ruleId={ruleId} rule={rule} onSetRule={onSetRule} />
+    </div>
+  );
+}
+
+function RuleOptions({
+  ruleId,
+  rule,
+  onSetRule,
+}: {
+  ruleId: string;
+  rule: { options?: Record<string, unknown> };
+  onSetRule: (ruleId: string, patch: Record<string, unknown>) => void;
+}) {
+  const options = rule.options ?? {};
+
+  if (ruleId === "ja/sentence-length") {
+    const warnAt = Number(options.warnAt ?? 80);
+    const errorAt = Number(options.errorAt ?? 120);
+    return (
+      <div className="flex items-center gap-3 pl-6 text-xs text-muted-foreground">
+        <label className="flex items-center gap-1">
+          Warn
+          <input
+            type="number"
+            min={1}
+            max={999}
+            value={warnAt}
+            onChange={(e) =>
+              onSetRule(ruleId, { options: { warnAt: Number(e.target.value) } })
+            }
+            className="h-6 w-14 rounded border border-border bg-background px-1 text-right"
+          />
+          文字
+        </label>
+        <label className="flex items-center gap-1">
+          Error
+          <input
+            type="number"
+            min={1}
+            max={999}
+            value={errorAt}
+            onChange={(e) =>
+              onSetRule(ruleId, {
+                options: { errorAt: Number(e.target.value) },
+              })
+            }
+            className="h-6 w-14 rounded border border-border bg-background px-1 text-right"
+          />
+          文字
+        </label>
+      </div>
+    );
+  }
+
+  if (ruleId === "ja/quote-period") {
+    const policy = (options.policy as string) ?? "strip";
+    return (
+      <div className="flex items-center gap-2 pl-6 text-xs text-muted-foreground">
+        方針
+        <select
+          value={policy}
+          onChange={(e) =>
+            onSetRule(ruleId, { options: { policy: e.target.value } })
+          }
+          className="h-6 rounded border border-border bg-background px-1"
+        >
+          <option value="strip">strip（句点を削除）</option>
+          <option value="require">require（句点を付与）</option>
+          <option value="preserve">preserve（検出しない）</option>
+        </select>
+      </div>
+    );
+  }
+
+  if (ruleId === "ja/halfwidth-fullwidth-mix") {
+    const policy = (options.policy as string) ?? "all-halfwidth";
+    return (
+      <div className="flex items-center gap-2 pl-6 text-xs text-muted-foreground">
+        方針
+        <select
+          value={policy}
+          onChange={(e) =>
+            onSetRule(ruleId, { options: { policy: e.target.value } })
+          }
+          className="h-6 rounded border border-border bg-background px-1"
+        >
+          <option value="all-halfwidth">all-halfwidth（英数字は半角）</option>
+          <option value="all-fullwidth">all-fullwidth（英数字は全角）</option>
+          <option value="off">off</option>
+        </select>
+      </div>
+    );
+  }
+
+  return null;
+}

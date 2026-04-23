@@ -6,6 +6,7 @@ import {
   Keyboard,
   Database,
   BookOpen,
+  CheckSquare,
   Info,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
@@ -18,6 +19,7 @@ export type SettingsCategory =
   | "keys"
   | "data"
   | "codex"
+  | "linter"
   | "about";
 
 export interface CategoryDef {
@@ -34,6 +36,7 @@ export const SETTINGS_CATEGORIES: CategoryDef[] = [
   { id: "keys", label: "Keys", Icon: Keyboard },
   { id: "data", label: "Data", Icon: Database },
   { id: "codex", label: "Codex", Icon: BookOpen },
+  { id: "linter", label: "Linter", Icon: CheckSquare },
   { id: "about", label: "About", Icon: Info },
 ];
 
