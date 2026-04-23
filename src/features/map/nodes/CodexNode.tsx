@@ -1,12 +1,16 @@
 import { memo } from "react";
 import { Handle, Position } from "@xyflow/react";
 import type { NodeProps } from "@xyflow/react";
+import { parseTags } from "@/features/codex/components/EntryCard";
+import { TagPill } from "@/features/codex/components/TagPill";
 
 export interface CodexNodeData {
   name: string;
   type: string;
   summary?: string;
   color?: string;
+  tagsCache?: string | null;
+  colorBy?: "none" | "status";
   [key: string]: unknown;
 }
 
@@ -15,18 +19,25 @@ export const CodexNode = memo(function CodexNode({
   selected,
 }: NodeProps) {
   const d = data as CodexNodeData;
-  const borderColor = d.color ?? "#888";
+  // colorBy=none disables the intrinsic type accent stripe for visual calm.
+  const borderColor =
+    d.colorBy === "none" ? "transparent" : (d.color ?? "#888");
   const summary = d.summary
     ? d.summary.slice(0, 40) + (d.summary.length > 40 ? "…" : "")
     : "";
+  const tags = parseTags(d.tagsCache);
 
   return (
     <div
       style={{
+        position: "relative",
         width: 200,
         background: "var(--card)",
         border: `2px solid ${selected ? "#534AB7" : "var(--border)"}`,
-        borderLeft: `4px solid ${borderColor}`,
+        borderLeft:
+          d.colorBy === "none"
+            ? `2px solid ${selected ? "#534AB7" : "var(--border)"}`
+            : `4px solid ${borderColor}`,
         borderRadius: 6,
         padding: "6px 10px",
         boxShadow: selected
@@ -38,7 +49,10 @@ export const CodexNode = memo(function CodexNode({
         lineHeight: 1.4,
       }}
     >
-      <Handle type="target" position={Position.Left} style={{ opacity: 0 }} />
+      <Handle type="target" position={Position.Left} className="map-handle" />
+      <span className="map-edit-indicator" aria-hidden>
+        ✎
+      </span>
 
       <div
         style={{
@@ -74,7 +88,39 @@ export const CodexNode = memo(function CodexNode({
         </div>
       )}
 
-      <Handle type="source" position={Position.Right} style={{ opacity: 0 }} />
+      {tags.length > 0 && (
+        <div
+          style={{
+            display: "flex",
+            gap: 3,
+            marginTop: 4,
+            flexWrap: "wrap",
+            alignItems: "center",
+          }}
+        >
+          {tags.slice(0, 3).map((tag) => (
+            <TagPill
+              key={tag.name}
+              name={tag.name}
+              color={tag.color}
+              size="sm"
+            />
+          ))}
+          {tags.length > 3 && (
+            <span
+              style={{
+                fontSize: 10,
+                color: "var(--muted-foreground)",
+                padding: "0 4px",
+              }}
+            >
+              +{tags.length - 3}
+            </span>
+          )}
+        </div>
+      )}
+
+      <Handle type="source" position={Position.Right} className="map-handle" />
     </div>
   );
 });

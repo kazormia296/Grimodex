@@ -219,6 +219,8 @@ export function useMapNodes({
                 type: e.type,
                 summary: e.summary ?? "",
                 color: "#534AB7",
+                tagsCache: e.tagsCache ?? null,
+                colorBy,
               },
             };
           })

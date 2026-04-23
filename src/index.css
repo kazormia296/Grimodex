@@ -39,9 +39,9 @@
   --content-border: oklch(0.922 0 0);
   /* Attribution highlight blend amount (overridden by JS from display.attributionHighlightOpacity) */
   --attribution-pct: 20%;
-  /* Map note node */
-  --note-bg: #fefce8;
-  --note-border: #d4c84a;
+  /* Map note node — tinted with the app's brand accent (#534AB7). */
+  --note-bg: #eeebfa;
+  --note-border: #8b7fd4;
 }
 
 .dark {
@@ -78,8 +78,8 @@
   --content-foreground-muted: oklch(0.708 0 0);
   --content-accent: oklch(0.985 0 0);
   --content-border: oklch(0.269 0 0);
-  --note-bg: #2c2a10;
-  --note-border: #6b6420;
+  --note-bg: #2a2540;
+  --note-border: #7a6bc4;
 }
 
 @theme inline {
@@ -575,4 +575,157 @@
 .react-flow__node-frame .react-flow__resize-control.handle {
   width: 14px;
   height: 14px;
+}
+
+/* Map corkboard feel: layered radial-gradient SVG texture that sits behind
+   the React Flow viewport. Warm beige tones suggest cork/pinboard without
+   requiring an image asset. Light/dark adapt via opacity + hue shift. */
+.map-corkboard .react-flow {
+  background-color: #e8dcc0;
+  background-image:
+    radial-gradient(
+      circle at 20% 30%,
+      rgba(139, 92, 44, 0.18) 0 2px,
+      transparent 3px
+    ),
+    radial-gradient(
+      circle at 70% 65%,
+      rgba(139, 92, 44, 0.14) 0 2px,
+      transparent 3px
+    ),
+    radial-gradient(
+      circle at 45% 85%,
+      rgba(120, 75, 35, 0.12) 0 1.5px,
+      transparent 3px
+    ),
+    radial-gradient(
+      circle at 85% 15%,
+      rgba(160, 110, 60, 0.16) 0 1.5px,
+      transparent 3px
+    );
+  background-size:
+    120px 120px,
+    150px 150px,
+    90px 90px,
+    110px 110px;
+}
+.dark .map-corkboard .react-flow {
+  background-color: #3a2d1c;
+  background-image:
+    radial-gradient(
+      circle at 20% 30%,
+      rgba(200, 150, 90, 0.18) 0 2px,
+      transparent 3px
+    ),
+    radial-gradient(
+      circle at 70% 65%,
+      rgba(200, 150, 90, 0.12) 0 2px,
+      transparent 3px
+    ),
+    radial-gradient(
+      circle at 45% 85%,
+      rgba(180, 130, 70, 0.1) 0 1.5px,
+      transparent 3px
+    ),
+    radial-gradient(
+      circle at 85% 15%,
+      rgba(220, 170, 110, 0.14) 0 1.5px,
+      transparent 3px
+    );
+  background-size:
+    120px 120px,
+    150px 150px,
+    90px 90px,
+    110px 110px;
+}
+
+/* Hover edit-affordance indicator (✎). Fades in after 500ms hover.
+   Nodes render a child with class "map-edit-indicator" near the top-right. */
+.map-edit-indicator {
+  position: absolute;
+  top: 4px;
+  right: 6px;
+  font-size: 11px;
+  color: var(--muted-foreground);
+  opacity: 0;
+  transition: opacity 120ms ease-out 500ms;
+  pointer-events: none;
+  user-select: none;
+}
+.react-flow__node:hover .map-edit-indicator {
+  opacity: 0.7;
+}
+
+/* Map node connection handles.
+   Hidden by default, revealed on node hover OR when connect mode is active.
+   Hit area extends slightly beyond the visual dot for easier grabbing. */
+.react-flow__handle.map-handle {
+  width: 10px;
+  height: 10px;
+  background: var(--primary);
+  border: 2px solid var(--background);
+  opacity: 0;
+  transition: opacity 120ms ease-out;
+}
+.react-flow__handle.map-handle::before {
+  content: "";
+  position: absolute;
+  inset: -6px;
+}
+.react-flow__node:hover .react-flow__handle.map-handle,
+.react-flow__handle.map-handle.connectingfrom,
+.react-flow__handle.map-handle.connectingto,
+.map-connect-mode .react-flow__handle.map-handle {
+  opacity: 1;
+}
+
+/* React Flow Controls / MiniMap: theme-aware colors */
+.react-flow__controls {
+  background: var(--background);
+  border: 1px solid var(--border);
+  box-shadow: 0 2px 6px rgb(0 0 0 / 0.08);
+  border-radius: calc(var(--radius) - 4px);
+  overflow: hidden;
+}
+.react-flow__controls-button {
+  background: var(--background);
+  color: var(--foreground);
+  border: none;
+  border-bottom: 1px solid var(--border);
+  fill: var(--foreground);
+}
+.react-flow__controls-button:last-child {
+  border-bottom: none;
+}
+.react-flow__controls-button:hover {
+  background: var(--accent);
+  color: var(--accent-foreground);
+  fill: var(--accent-foreground);
+}
+.react-flow__controls-button svg {
+  fill: currentColor;
+}
+
+.react-flow__minimap {
+  background: var(--background);
+  border: 1px solid var(--border);
+  border-radius: calc(var(--radius) - 4px);
+}
+.react-flow__minimap-mask {
+  fill: color-mix(in oklch, var(--foreground) 10%, transparent);
+  stroke: var(--border);
+  stroke-width: 1;
+}
+.react-flow__minimap-node {
+  fill: var(--muted-foreground);
+  stroke: var(--border);
+}
+
+/* Attribution link inside React Flow */
+.react-flow__attribution {
+  background: color-mix(in oklch, var(--background) 70%, transparent);
+  color: var(--muted-foreground);
+}
+.react-flow__attribution a {
+  color: var(--muted-foreground);
 }

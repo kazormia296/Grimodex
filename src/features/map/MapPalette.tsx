@@ -46,28 +46,18 @@ export function MapPalette({
     >
       <PaletteButton label="+ Scene" onClick={onAddScene} />
       <PaletteButton label="+ Codex" onClick={onAddCodex} />
-
-      <div
-        style={{
-          width: 1,
-          height: 20,
-          background: "var(--border)",
-          margin: "0 2px",
-        }}
+      <PaletteButton label="+ Note" onClick={onAddNote} title="ノートを追加" />
+      <PaletteButton
+        label="✨ AI"
+        onClick={onCreateAI}
+        title="AIノードを作成"
       />
-
       <PaletteButton
         label="+ Frame"
         active={paletteMode === "frame"}
         onClick={() => toggleMode("frame")}
         title="フレームを描画 (F)"
       />
-      <PaletteButton
-        label="⌥ Connect"
-        active={paletteMode === "connect"}
-        onClick={() => toggleMode("connect")}
-        title="エッジを接続 (Alt)"
-      />
 
       <div
         style={{
@@ -78,11 +68,11 @@ export function MapPalette({
         }}
       />
 
-      <PaletteButton label="+ Note" onClick={onAddNote} title="ノートを追加" />
       <PaletteButton
-        label="✨ AI"
-        onClick={onCreateAI}
-        title="AIノードを作成"
+        label="⌥ Connect"
+        active={paletteMode === "connect"}
+        onClick={() => toggleMode("connect")}
+        title="エッジを接続 (Alt)"
       />
 
       {/* Mode indicator */}

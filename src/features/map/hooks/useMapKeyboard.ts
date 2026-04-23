@@ -26,6 +26,7 @@ export function useMapKeyboard(opts: {
   frameDragStartScreen: MutableRefObject<Vec2 | null>;
   setFrameDraftRect: (rect: Rect | null) => void;
   setFrameDraftScreenRect: (rect: Rect | null) => void;
+  onDeleteSelected: () => void;
 }) {
   const {
     searchVisible,
@@ -41,6 +42,7 @@ export function useMapKeyboard(opts: {
     frameDragStartScreen,
     setFrameDraftRect,
     setFrameDraftScreenRect,
+    onDeleteSelected,
   } = opts;
 
   const onKeyDown = useCallback(
@@ -73,6 +75,13 @@ export function useMapKeyboard(opts: {
       }
 
       if (inInput) return;
+
+      // Delete / Backspace: remove selected nodes (hide from board) and edges
+      if (e.key === "Delete" || e.key === "Backspace") {
+        e.preventDefault();
+        onDeleteSelected();
+        return;
+      }
 
       // Mode switch: 1-5
       if (!e.ctrlKey && !e.metaKey && !e.altKey) {
@@ -110,6 +119,7 @@ export function useMapKeyboard(opts: {
       frameDragStartScreen,
       setFrameDraftRect,
       setFrameDraftScreenRect,
+      onDeleteSelected,
     ],
   );
 

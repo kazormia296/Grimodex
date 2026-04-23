@@ -14,8 +14,11 @@ export const NoteNode = memo(function NoteNode({ data, selected }: NodeProps) {
   const preview = (d.content ?? "").trim().slice(0, 40);
 
   return (
-    <div>
-      <Handle type="target" position={Position.Left} style={{ opacity: 0 }} />
+    <div style={{ position: "relative" }}>
+      <Handle type="target" position={Position.Left} className="map-handle" />
+      <span className="map-edit-indicator" aria-hidden>
+        ✎
+      </span>
       <div
         onDoubleClick={(e) => {
           e.stopPropagation();
@@ -76,7 +79,7 @@ export const NoteNode = memo(function NoteNode({ data, selected }: NodeProps) {
           </div>
         )}
       </div>
-      <Handle type="source" position={Position.Right} style={{ opacity: 0 }} />
+      <Handle type="source" position={Position.Right} className="map-handle" />
     </div>
   );
 });

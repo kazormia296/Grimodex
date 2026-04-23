@@ -148,79 +148,7 @@ export function MapHeader() {
         onChange={(v) => setShow({ ai: v })}
       />
 
-      <Divider />
-
-      {/* Scene display dropdown */}
-      <label
-        style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 11 }}
-      >
-        <span style={{ color: "var(--muted-foreground)" }}>Display:</span>
-        <select
-          value={currentDisplay}
-          onChange={(e) =>
-            setSceneDisplayForMode(mode, e.target.value as SceneDisplayVariant)
-          }
-          style={{
-            fontSize: 11,
-            border: "1px solid var(--border)",
-            borderRadius: 3,
-            background: "var(--background)",
-            color: "var(--foreground)",
-            padding: "1px 2px",
-            cursor: "pointer",
-          }}
-        >
-          {SCENE_DISPLAY_OPTIONS.map(({ value, label }) => (
-            <option key={value} value={value}>
-              {label}
-            </option>
-          ))}
-        </select>
-      </label>
-
-      {/* Color by dropdown */}
-      <label
-        style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 11 }}
-      >
-        <span style={{ color: "var(--muted-foreground)" }}>Color:</span>
-        <select
-          value={colorBy}
-          onChange={(e) => setColorBy(e.target.value as ColorByAxis)}
-          style={{
-            fontSize: 11,
-            border: "1px solid var(--border)",
-            borderRadius: 3,
-            background: "var(--background)",
-            color: "var(--foreground)",
-            padding: "1px 2px",
-            cursor: "pointer",
-          }}
-        >
-          {COLOR_BY_OPTIONS.map(({ value, label }) => (
-            <option key={value} value={value}>
-              {label}
-            </option>
-          ))}
-        </select>
-      </label>
-
-      <Divider />
-
-      {/* Corkboard feel */}
-      <ShowCheckbox
-        label="🪵 Cork"
-        checked={corkboardFeel}
-        onChange={setCorkboardFeel}
-      />
-
-      {/* Minimap */}
-      <ShowCheckbox
-        label="Minimap"
-        checked={minimapVisible}
-        onChange={setMinimapVisible}
-      />
-
-      {/* Auto-arrange menu */}
+      {/* ⋮ menu (auto-arrange / display / export) */}
       <div
         ref={arrangeMenuRef}
         style={{ position: "relative", marginLeft: "auto" }}
@@ -255,17 +183,64 @@ export function MapHeader() {
               padding: "4px 0",
             }}
           >
+            {/* Display section */}
+            <SectionLabel>表示</SectionLabel>
+            <MenuRow
+              label="Scene display"
+              control={
+                <select
+                  value={currentDisplay}
+                  onChange={(e) =>
+                    setSceneDisplayForMode(
+                      mode,
+                      e.target.value as SceneDisplayVariant,
+                    )
+                  }
+                  style={menuSelectStyle}
+                >
+                  {SCENE_DISPLAY_OPTIONS.map(({ value, label }) => (
+                    <option key={value} value={value}>
+                      {label}
+                    </option>
+                  ))}
+                </select>
+              }
+            />
+            <MenuRow
+              label="Color by"
+              control={
+                <select
+                  value={colorBy}
+                  onChange={(e) => setColorBy(e.target.value as ColorByAxis)}
+                  style={menuSelectStyle}
+                >
+                  {COLOR_BY_OPTIONS.map(({ value, label }) => (
+                    <option key={value} value={value}>
+                      {label}
+                    </option>
+                  ))}
+                </select>
+              }
+            />
+            <MenuToggle
+              label="🪵 Corkboard feel"
+              checked={corkboardFeel}
+              onChange={setCorkboardFeel}
+            />
+            <MenuToggle
+              label="Minimap"
+              checked={minimapVisible}
+              onChange={setMinimapVisible}
+            />
+
             <div
               style={{
-                padding: "4px 12px 2px",
-                fontSize: 10,
-                color: "var(--muted-foreground)",
-                textTransform: "uppercase",
-                letterSpacing: "0.05em",
+                borderTop: "1px solid var(--border)",
+                margin: "4px 0",
               }}
-            >
-              自動配置
-            </div>
+            />
+
+            <SectionLabel>自動配置</SectionLabel>
             {ARRANGE_ITEMS.map((item) => (
               <button
                 key={item.type}
@@ -343,17 +318,7 @@ export function MapHeader() {
                 margin: "4px 0",
               }}
             />
-            <div
-              style={{
-                padding: "4px 12px 2px",
-                fontSize: 10,
-                color: "var(--muted-foreground)",
-                textTransform: "uppercase",
-                letterSpacing: "0.05em",
-              }}
-            >
-              エクスポート
-            </div>
+            <SectionLabel>エクスポート</SectionLabel>
             {(
               [
                 { type: "svg", label: "SVG として保存" },
@@ -424,6 +389,91 @@ function Divider() {
         flexShrink: 0,
       }}
     />
+  );
+}
+
+function SectionLabel({ children }: { children: React.ReactNode }) {
+  return (
+    <div
+      style={{
+        padding: "4px 12px 2px",
+        fontSize: 10,
+        color: "var(--muted-foreground)",
+        textTransform: "uppercase",
+        letterSpacing: "0.05em",
+      }}
+    >
+      {children}
+    </div>
+  );
+}
+
+const menuSelectStyle: React.CSSProperties = {
+  fontSize: 11,
+  border: "1px solid var(--border)",
+  borderRadius: 3,
+  background: "var(--background)",
+  color: "var(--foreground)",
+  padding: "1px 4px",
+  cursor: "pointer",
+};
+
+function MenuRow({
+  label,
+  control,
+}: {
+  label: string;
+  control: React.ReactNode;
+}) {
+  return (
+    <div
+      style={{
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "space-between",
+        padding: "4px 12px",
+        fontSize: 12,
+        color: "var(--foreground)",
+        gap: 8,
+      }}
+    >
+      <span>{label}</span>
+      {control}
+    </div>
+  );
+}
+
+function MenuToggle({
+  label,
+  checked,
+  onChange,
+}: {
+  label: string;
+  checked: boolean;
+  onChange: (v: boolean) => void;
+}) {
+  return (
+    <label
+      style={{
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "space-between",
+        padding: "4px 12px",
+        fontSize: 12,
+        color: "var(--foreground)",
+        gap: 8,
+        cursor: "pointer",
+        userSelect: "none",
+      }}
+    >
+      <span>{label}</span>
+      <input
+        type="checkbox"
+        checked={checked}
+        onChange={(e) => onChange(e.target.checked)}
+        style={{ cursor: "pointer" }}
+      />
+    </label>
   );
 }
 

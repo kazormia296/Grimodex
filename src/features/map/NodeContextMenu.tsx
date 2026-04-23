@@ -44,9 +44,12 @@ export function NodeContextMenu({
 
   const close = useCallback(() => onClose(), [onClose]);
 
-  // Close on outside click or Escape
+  // Close on outside click or Escape.
+  // Use capture phase so React Flow's internal stopPropagation on pointer/mouse
+  // events cannot swallow the dismissal (React Flow captures pointerdown for
+  // drag/selection and can prevent our bubble-phase listener from firing).
   useEffect(() => {
-    function onMouseDown(e: MouseEvent) {
+    function onPointerDown(e: PointerEvent | MouseEvent) {
       if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
         close();
       }
@@ -54,10 +57,14 @@ export function NodeContextMenu({
     function onKeyDown(e: KeyboardEvent) {
       if (e.key === "Escape") close();
     }
-    document.addEventListener("mousedown", onMouseDown);
+    document.addEventListener("pointerdown", onPointerDown, true);
+    document.addEventListener("mousedown", onPointerDown, true);
+    document.addEventListener("contextmenu", onPointerDown, true);
     document.addEventListener("keydown", onKeyDown);
     return () => {
-      document.removeEventListener("mousedown", onMouseDown);
+      document.removeEventListener("pointerdown", onPointerDown, true);
+      document.removeEventListener("mousedown", onPointerDown, true);
+      document.removeEventListener("contextmenu", onPointerDown, true);
       document.removeEventListener("keydown", onKeyDown);
     };
   }, [close]);
@@ -152,13 +159,14 @@ export function NodeContextMenu({
         ) : (
           <button
             type="button"
-            className="px-3 py-1.5 text-sm text-left hover:bg-accent text-destructive"
+            className="flex items-center justify-between px-3 py-1.5 text-sm text-left hover:bg-accent text-destructive"
             onClick={() => {
               close();
               onHide();
             }}
           >
-            このボードで非表示
+            <span>このボードで非表示</span>
+            <span className="ml-4 text-xs text-muted-foreground">Del</span>
           </button>
         )}
 

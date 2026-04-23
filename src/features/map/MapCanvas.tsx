@@ -39,7 +39,13 @@ import { useMapContextMenu } from "./hooks/useMapContextMenu";
 import { useMapAutoArrange } from "./hooks/useMapAutoArrange";
 import { useMapCallbacks } from "./hooks/useMapCallbacks";
 import { useFrameGroupDrag } from "./hooks/useFrameGroupDrag";
-import { upsertNodePosition } from "./mapApi";
+import {
+  upsertNodePosition,
+  updateNodePosition,
+  deleteUserEdge,
+  deleteFrame,
+} from "./mapApi";
+import { findPosByNodeId, buildUpsertArgs } from "./utils/nodeIdCodec";
 import type { MapNodePositionRecord } from "./types";
 
 const PROJECT_ID = "default-project";
@@ -274,6 +280,59 @@ export function MapCanvas() {
     fitView,
   });
 
+  // Hide selected nodes (from this board) and delete selected user edges.
+  // Hiding is preferred over deleting the underlying entity so the scene/codex
+  // remains accessible via other panels — aligns with map design doc (1032).
+  const onDeleteSelected = useCallback(async () => {
+    if (!boardId) return;
+    const selectedNodes = getNodes().filter((n) => n.selected);
+    const selectedEdges = getEdges().filter((e) => e.selected);
+
+    for (const edge of selectedEdges) {
+      if (!edge.id.startsWith("user:")) continue;
+      const userEdgeId = edge.id.slice("user:".length);
+      await deleteUserEdge(userEdgeId);
+      setUserEdges((prev) => prev.filter((u) => u.id !== userEdgeId));
+    }
+
+    for (const node of selectedNodes) {
+      // Frames live in their own table — delete outright rather than hiding
+      // (frames have no "hidden" semantic; they're cheap decorations).
+      if (node.id.startsWith("frame:") || node.type === "frame") {
+        const frameId = node.id.startsWith("frame:")
+          ? node.id.slice("frame:".length)
+          : node.id;
+        await deleteFrame(frameId);
+        setFrames((prev) => prev.filter((f) => f.id !== frameId));
+        continue;
+      }
+      const existing = findPosByNodeId(positions, node.id);
+      if (existing) {
+        await updateNodePosition(existing.id, { hidden: 1 });
+        setPositions((prev) =>
+          prev.map((p) => (p.id === existing.id ? { ...p, hidden: 1 } : p)),
+        );
+      } else {
+        const args = buildUpsertArgs(boardId, node.id);
+        if (!args) continue;
+        const newPos = await upsertNodePosition(args);
+        await updateNodePosition(newPos.id, { hidden: 1 });
+        setPositions((prev) => [
+          ...prev,
+          { ...newPos, hidden: 1 } as MapNodePositionRecord,
+        ]);
+      }
+    }
+  }, [
+    boardId,
+    getNodes,
+    getEdges,
+    positions,
+    setPositions,
+    setUserEdges,
+    setFrames,
+  ]);
+
   const { onKeyDown } = useMapKeyboard({
     searchVisible,
     setSearchVisible,
@@ -288,6 +347,7 @@ export function MapCanvas() {
     frameDragStartScreen,
     setFrameDraftRect,
     setFrameDraftScreenRect,
+    onDeleteSelected,
   });
 
   const { onNodeDragStart, onNodeDrag, onNodeDragStop } = useFrameGroupDrag({
@@ -379,6 +439,7 @@ export function MapCanvas() {
 
   return (
     <div
+      className={corkboardFeel ? "map-corkboard" : undefined}
       style={{ width: "100%", height: "100%", position: "relative" }}
       onKeyDown={onKeyDown}
       tabIndex={0}
@@ -402,15 +463,19 @@ export function MapCanvas() {
         snapGrid={[16, 16]}
         fitView
         proOptions={{ hideAttribution: true }}
-        connectionMode={
-          paletteMode === "connect"
-            ? ConnectionMode.Loose
-            : ConnectionMode.Strict
-        }
+        connectionMode={ConnectionMode.Loose}
         nodesDraggable={paletteMode === "default" && !modeTransitionActive}
+        className={paletteMode === "connect" ? "map-connect-mode" : undefined}
         elevateNodesOnSelect={false}
       >
-        <Background variant={BackgroundVariant.Dots} gap={24} size={1} />
+        <Background
+          variant={
+            corkboardFeel ? BackgroundVariant.Lines : BackgroundVariant.Dots
+          }
+          gap={corkboardFeel ? 40 : 24}
+          size={1}
+          color={corkboardFeel ? "rgba(139,92,44,0.12)" : undefined}
+        />
         <Controls />
         {minimapVisible && (
           <MiniMap style={{ width: 120, height: 80 }} zoomable pannable />

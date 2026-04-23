@@ -645,8 +645,11 @@ export const SceneNode = memo(function SceneNode({
   }, [d]);
 
   return (
-    <div style={rotationStyle}>
-      <Handle type="target" position={Position.Left} style={{ opacity: 0 }} />
+    <div style={{ ...rotationStyle, position: "relative" }}>
+      <Handle type="target" position={Position.Left} className="map-handle" />
+      <span className="map-edit-indicator" aria-hidden>
+        ✎
+      </span>
 
       {d.variant === "compact" && (
         <CompactScene d={d} selected={!!selected} borderColor={borderColor} />
@@ -684,7 +687,7 @@ export const SceneNode = memo(function SceneNode({
         />
       )}
 
-      <Handle type="source" position={Position.Right} style={{ opacity: 0 }} />
+      <Handle type="source" position={Position.Right} className="map-handle" />
     </div>
   );
 });

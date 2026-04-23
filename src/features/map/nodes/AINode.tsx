@@ -17,8 +17,11 @@ export const AINode = memo(function AINode({ data, selected }: NodeProps) {
   const hasSession = !!d.sessionId;
 
   return (
-    <div>
-      <Handle type="target" position={Position.Left} style={{ opacity: 0 }} />
+    <div style={{ position: "relative" }}>
+      <Handle type="target" position={Position.Left} className="map-handle" />
+      <span className="map-edit-indicator" aria-hidden>
+        ✎
+      </span>
       <div
         onDoubleClick={(e) => {
           e.stopPropagation();
@@ -98,7 +101,7 @@ export const AINode = memo(function AINode({ data, selected }: NodeProps) {
           </div>
         )}
       </div>
-      <Handle type="source" position={Position.Right} style={{ opacity: 0 }} />
+      <Handle type="source" position={Position.Right} className="map-handle" />
     </div>
   );
 });
