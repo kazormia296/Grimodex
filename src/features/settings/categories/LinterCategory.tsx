@@ -295,5 +295,111 @@ function RuleOptions({
     );
   }
 
+  if (ruleId === "ja/particle-no-chain") {
+    const threshold = Number(options.threshold ?? 3);
+    return (
+      <div className="flex items-center gap-2 pl-6 text-xs text-muted-foreground">
+        <label className="flex items-center gap-1">
+          連続「の」が
+          <input
+            type="number"
+            min={2}
+            max={10}
+            value={threshold}
+            onChange={(e) =>
+              onSetRule(ruleId, {
+                options: { threshold: Number(e.target.value) },
+              })
+            }
+            className="h-6 w-12 rounded border border-border bg-background px-1 text-right"
+          />
+          個以上で検出
+        </label>
+      </div>
+    );
+  }
+
+  if (ruleId === "ja/word-repetition") {
+    const distanceChars = Number(options.distance_chars ?? 50);
+    const minLength = Number(options.min_length ?? 2);
+    return (
+      <div className="flex items-center gap-3 pl-6 text-xs text-muted-foreground flex-wrap">
+        <label className="flex items-center gap-1">
+          検出ウィンドウ
+          <input
+            type="number"
+            min={10}
+            max={500}
+            value={distanceChars}
+            onChange={(e) =>
+              onSetRule(ruleId, {
+                options: { distance_chars: Number(e.target.value) },
+              })
+            }
+            className="h-6 w-16 rounded border border-border bg-background px-1 text-right"
+          />
+          文字
+        </label>
+        <label className="flex items-center gap-1">
+          最小語長
+          <input
+            type="number"
+            min={1}
+            max={20}
+            value={minLength}
+            onChange={(e) =>
+              onSetRule(ruleId, {
+                options: { min_length: Number(e.target.value) },
+              })
+            }
+            className="h-6 w-12 rounded border border-border bg-background px-1 text-right"
+          />
+          文字
+        </label>
+      </div>
+    );
+  }
+
+  if (ruleId === "ja/kanji-hiragana-chain") {
+    const kanjiThreshold = Number(options.kanji_threshold ?? 6);
+    const hiraganaThreshold = Number(options.hiragana_threshold ?? 20);
+    return (
+      <div className="flex items-center gap-3 pl-6 text-xs text-muted-foreground flex-wrap">
+        <label className="flex items-center gap-1">
+          漢字連続
+          <input
+            type="number"
+            min={2}
+            max={30}
+            value={kanjiThreshold}
+            onChange={(e) =>
+              onSetRule(ruleId, {
+                options: { kanji_threshold: Number(e.target.value) },
+              })
+            }
+            className="h-6 w-12 rounded border border-border bg-background px-1 text-right"
+          />
+          文字以上
+        </label>
+        <label className="flex items-center gap-1">
+          ひらがな連続
+          <input
+            type="number"
+            min={5}
+            max={100}
+            value={hiraganaThreshold}
+            onChange={(e) =>
+              onSetRule(ruleId, {
+                options: { hiragana_threshold: Number(e.target.value) },
+              })
+            }
+            className="h-6 w-12 rounded border border-border bg-background px-1 text-right"
+          />
+          文字以上
+        </label>
+      </div>
+    );
+  }
+
   return null;
 }
