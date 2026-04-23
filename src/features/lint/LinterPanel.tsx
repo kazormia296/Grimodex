@@ -25,6 +25,10 @@ import type { ScannedScene } from "./projectScan";
 import { extensionFor, renderReport, type ReportFormat } from "./lintReport";
 import { runLintNow } from "./useLinter";
 
+// TODO(multi-project): replace with the active project id from a
+// ProjectStore once the app supports more than one project. Mirrors the
+// same assumption in ScenesPanel.tsx / ExportDialog.tsx — these should
+// all update together.
 const DEFAULT_PROJECT_ID = "default-project";
 
 type PanelMode = "current" | "project";
@@ -880,6 +884,8 @@ function ModeBar({
  * scene and jumps to the range via the pending-jump mechanism.
  */
 function ProjectLinterView() {
+  const editor = useEditorStore((s) => s.editor);
+  const currentSceneId = useLintStore((s) => s.currentSceneId);
   const phase = useLintProjectStore((s) => s.phase);
   const completed = useLintProjectStore((s) => s.completed);
   const total = useLintProjectStore((s) => s.total);
@@ -931,12 +937,31 @@ function ProjectLinterView() {
 
   const onJump = useCallback(
     (scene: ScannedScene, d: Diagnostic) => {
-      // Stash the target range so useLinter applies it after the
-      // editor finishes loading the scene's content.
+      // If the target scene is already the active one, the editor is
+      // live — jump inline. Otherwise stash the range for useLinter to
+      // consume once EditorPane re-mounts the content.
+      if (
+        editor &&
+        currentSceneId === scene.sceneId &&
+        editor.state.doc.content.size > 0
+      ) {
+        const map = buildOffsetMap(editor.state.doc);
+        const from = strOffsetToPmPos(map, d.range.start);
+        const to = strOffsetToPmPos(map, d.range.end);
+        if (from != null && to != null) {
+          editor
+            .chain()
+            .focus()
+            .setTextSelection({ from, to })
+            .scrollIntoView()
+            .run();
+          return;
+        }
+      }
       requestJump({ sceneId: scene.sceneId, range: d.range });
       openPinned(scene.sceneId);
     },
-    [requestJump, openPinned],
+    [editor, currentSceneId, requestJump, openPinned],
   );
 
   const isRunning = phase === "running";
@@ -1116,7 +1141,10 @@ function ProjectLinterView() {
       </div>
       {exportOpen && (
         <ExportReportDialog
-          scenes={scenes}
+          // Export the *visible* (filtered) view — what the user sees
+          // in the panel is what they get in the file. Unfiltered
+          // export would surprise a user who narrowed by severity.
+          scenes={filteredScenes}
           onClose={() => setExportOpen(false)}
         />
       )}
