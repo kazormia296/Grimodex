@@ -1,9 +1,20 @@
 // @vitest-environment happy-dom
-import { describe, it, expect } from "vitest";
+import { afterEach, describe, it, expect } from "vitest";
 import { Editor } from "@tiptap/core";
 import StarterKit from "@tiptap/starter-kit";
 
 import { LintDisableMark } from "./LintDisableMark";
+
+// Editor instances schedule DOM-observer callbacks via setTimeout. If we
+// don't destroy them explicitly, those callbacks fire after happy-dom
+// has torn down `document`, surfacing an unhandled ReferenceError. Track
+// created editors and clean up in afterEach.
+const editors: Editor[] = [];
+
+afterEach(() => {
+  for (const ed of editors) ed.destroy();
+  editors.length = 0;
+});
 
 /**
  * Empirical check of what happens to a `lintDisable` Mark when a
@@ -14,10 +25,12 @@ import { LintDisableMark } from "./LintDisableMark";
  * or needs a zero-width Mark sweeper (Mark survives as empty).
  */
 function createEditor() {
-  return new Editor({
+  const ed = new Editor({
     extensions: [StarterKit, LintDisableMark],
     content: "",
   });
+  editors.push(ed);
+  return ed;
 }
 
 function markCount(editor: Editor): number {
