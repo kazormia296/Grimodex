@@ -1,28 +1,49 @@
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import { RotateCcw } from "lucide-react";
 
 import {
   useLintConfigStore,
   BUILTIN_DEFAULT_CONFIG,
 } from "@/features/lint/lintConfigStore";
+import { LinterIgnoreListTab } from "@/features/lint/LinterIgnoreListTab";
+import { cn } from "@/lib/utils";
 import type { LintLanguage, Severity } from "@/features/lint/types";
 
-/**
- * Settings UI for the Linter.
- *
- * Exposes:
- * - Linter-wide enable toggle
- * - Per-language enable toggle
- * - Per-rule enable toggle + severity override
- * - Rule-specific options (ja/sentence-length thresholds,
- *   ja/quote-period policy, ja/halfwidth-fullwidth-mix policy)
- * - Reset buttons (全体 / 言語 / 個別ルール)
- *
- * Changes flow through `useLintConfigStore` which debounces writes to
- * the `settings.lint.config` JSON blob; the live Linter picks up
- * changes via its subscription and re-lints immediately.
- */
+type Tab = "rules" | "ignores";
+
 export function LinterCategory() {
+  const [activeTab, setActiveTab] = useState<Tab>("rules");
+
+  return (
+    <div className="flex flex-col h-full">
+      <div className="flex gap-0 border-b border-border px-4 pt-3">
+        {(
+          [
+            { id: "rules", label: "ルール設定" },
+            { id: "ignores", label: "無視リスト" },
+          ] as const
+        ).map(({ id, label }) => (
+          <button
+            key={id}
+            type="button"
+            onClick={() => setActiveTab(id)}
+            className={cn(
+              "px-3 py-1.5 text-sm border-b-2 -mb-px transition-colors",
+              activeTab === id
+                ? "border-foreground text-foreground font-medium"
+                : "border-transparent text-muted-foreground hover:text-foreground",
+            )}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+      {activeTab === "rules" ? <LinterRulesTab /> : <LinterIgnoreListTab />}
+    </div>
+  );
+}
+
+function LinterRulesTab() {
   const effective = useLintConfigStore((s) => s.getEffective());
   const setLinterEnabled = useLintConfigStore((s) => s.setLinterEnabled);
   const setLanguageEnabled = useLintConfigStore((s) => s.setLanguageEnabled);
