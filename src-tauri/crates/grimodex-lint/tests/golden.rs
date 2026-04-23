@@ -16,9 +16,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use grimodex_lint::{
-    lint, BlockKind, Diagnostic, Language, LintBlock, LintConfig, LintScope,
-};
+use grimodex_lint::{lint, BlockKind, Diagnostic, Language, LintBlock, LintConfig, LintScope};
 
 fn fixtures_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))

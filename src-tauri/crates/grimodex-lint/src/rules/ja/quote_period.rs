@@ -85,12 +85,10 @@ impl LintRule for QuotePeriodRule {
                             continue;
                         }
                         // Range: the lone trailing 。 right before 」.
-                        let period_start_byte =
-                            close_byte.saturating_sub('。'.len_utf8());
-                        let start = block.str_offset_start
-                            + utf8_to_utf16(&block.text, period_start_byte);
-                        let end = block.str_offset_start
-                            + utf8_to_utf16(&block.text, close_byte);
+                        let period_start_byte = close_byte.saturating_sub('。'.len_utf8());
+                        let start =
+                            block.str_offset_start + utf8_to_utf16(&block.text, period_start_byte);
+                        let end = block.str_offset_start + utf8_to_utf16(&block.text, close_byte);
                         let range = Utf16Range { start, end };
                         out.push(Diagnostic {
                             rule_id: self.id().to_string(),
@@ -120,8 +118,7 @@ impl LintRule for QuotePeriodRule {
                         if matches!(last, Some('、')) {
                             continue;
                         }
-                        let start = block.str_offset_start
-                            + utf8_to_utf16(&block.text, close_byte);
+                        let start = block.str_offset_start + utf8_to_utf16(&block.text, close_byte);
                         let end = start; // zero-width insertion point
                         let range = Utf16Range { start, end };
                         // Fix range is the same zero-width point —
@@ -182,7 +179,10 @@ mod tests {
                 scene_id: "t".into(),
             },
         };
-        let ctx = LintContext { config: &cfg };
+        let ctx = LintContext {
+            config: &cfg,
+            block_tokens: None,
+        };
         QuotePeriodRule.check(&input, &ctx)
     }
 

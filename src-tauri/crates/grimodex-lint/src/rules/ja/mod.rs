@@ -3,6 +3,7 @@ pub mod dash;
 pub mod ellipsis;
 pub mod halfwidth_fullwidth_mix;
 pub mod halfwidth_kana;
+pub mod particle_no_chain;
 pub mod quote_period;
 pub mod sentence_ending_repeat;
 pub mod sentence_length;

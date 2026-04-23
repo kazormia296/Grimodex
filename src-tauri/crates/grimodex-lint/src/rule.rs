@@ -119,9 +119,17 @@ pub struct LintInput<'a> {
     pub scope: LintScope,
 }
 
-/// Runtime context exposed to rules. Phase 1 only carries the effective config.
+/// Runtime context exposed to rules.
+///
+/// Phase 2 adds an optional slice of per-block morpheme tokens. The
+/// engine populates this only when at least one enabled rule declares
+/// `requires_morphology()` — so the cost is paid once per request and
+/// amortised across every morphology rule.
 pub struct LintContext<'a> {
     pub config: &'a LintConfig,
+    /// Tokenised blocks, index-aligned with `LintInput.blocks`. `None`
+    /// means no enabled rule needed morphology for this request.
+    pub block_tokens: Option<&'a [Vec<crate::morph::MorphToken>]>,
 }
 
 /// Non-fatal warning kinds emitted alongside the Diagnostic list.
@@ -145,6 +153,14 @@ pub trait LintRule: Send + Sync {
     fn id(&self) -> &'static str;
     fn default_severity(&self) -> Severity;
     fn supported_languages(&self) -> &'static [Language];
+
+    /// Whether this rule needs the per-block morpheme cache from
+    /// `LintContext.block_tokens`. The engine tokenises every block
+    /// exactly once per request if any enabled rule returns `true`.
+    /// Default: `false` (regex-only rules).
+    fn requires_morphology(&self) -> bool {
+        false
+    }
 
     /// Block kinds this rule applies to. The engine skips any block whose
     /// kind is not in this list. Default: all five block kinds.

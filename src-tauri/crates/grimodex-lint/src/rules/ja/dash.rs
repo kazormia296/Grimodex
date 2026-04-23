@@ -91,7 +91,10 @@ mod tests {
                 scene_id: "t".into(),
             },
         };
-        let ctx = LintContext { config: &cfg };
+        let ctx = LintContext {
+            config: &cfg,
+            block_tokens: None,
+        };
         DashSingleRule.check(&input, &ctx)
     }
 

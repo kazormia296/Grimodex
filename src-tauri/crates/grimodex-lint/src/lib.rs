@@ -13,6 +13,7 @@
 
 pub mod engine;
 pub mod error;
+pub mod morph;
 pub mod offset;
 pub mod rule;
 pub mod rules;

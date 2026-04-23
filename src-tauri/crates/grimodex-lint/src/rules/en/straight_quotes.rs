@@ -95,7 +95,10 @@ mod tests {
                 scene_id: "t".into(),
             },
         };
-        let ctx = LintContext { config: &cfg };
+        let ctx = LintContext {
+            config: &cfg,
+            block_tokens: None,
+        };
         StraightQuotesRule.check(&input, &ctx)
     }
 
@@ -103,7 +106,10 @@ mod tests {
     fn flags_straight_pair() {
         let ds = run(r#"He said "hello" loudly."#);
         assert_eq!(ds.len(), 1);
-        assert_eq!(ds[0].fix.as_ref().unwrap().replacement, "\u{201C}hello\u{201D}");
+        assert_eq!(
+            ds[0].fix.as_ref().unwrap().replacement,
+            "\u{201C}hello\u{201D}"
+        );
     }
 
     #[test]

@@ -166,7 +166,10 @@ mod tests {
                 scene_id: "t".into(),
             },
         };
-        let ctx = LintContext { config: &cfg };
+        let ctx = LintContext {
+            config: &cfg,
+            block_tokens: None,
+        };
         EllipsisSingleRule.check(&input, &ctx)
     }
 
@@ -185,7 +188,10 @@ mod tests {
                 scene_id: "t".into(),
             },
         };
-        let ctx = LintContext { config: &cfg };
+        let ctx = LintContext {
+            config: &cfg,
+            block_tokens: None,
+        };
         EllipsisOddRule.check(&input, &ctx)
     }
 

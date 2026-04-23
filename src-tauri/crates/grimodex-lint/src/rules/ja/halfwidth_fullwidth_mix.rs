@@ -29,8 +29,10 @@ fn re_half() -> &'static Regex {
 
 fn re_full() -> &'static Regex {
     #[allow(clippy::expect_used)]
-    RE_FULL
-        .get_or_init(|| Regex::new(r"[\u{FF10}-\u{FF19}\u{FF21}-\u{FF3A}\u{FF41}-\u{FF5A}]+").expect("static regex must compile"))
+    RE_FULL.get_or_init(|| {
+        Regex::new(r"[\u{FF10}-\u{FF19}\u{FF21}-\u{FF3A}\u{FF41}-\u{FF5A}]+")
+            .expect("static regex must compile")
+    })
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -172,7 +174,10 @@ mod tests {
                 scene_id: "t".into(),
             },
         };
-        let ctx = LintContext { config: &cfg };
+        let ctx = LintContext {
+            config: &cfg,
+            block_tokens: None,
+        };
         HalfwidthFullwidthMixRule.check(&input, &ctx)
     }
 

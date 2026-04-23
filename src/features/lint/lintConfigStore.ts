@@ -55,6 +55,13 @@ export const BUILTIN_DEFAULT_CONFIG: LintFullConfig = {
       options: { warnAt: 80, errorAt: 120 },
     },
     "ja/sentence-ending-repeat": { enabled: false },
+    // Phase 2: morphology-dependent rule. Default OFF per
+    // 「新ルール追加時の既定」policy — 既存プロジェクトの体験を
+    // 阻害しないよう、安定確認後にデフォルト ON へ昇格させる。
+    "ja/particle-no-chain": {
+      enabled: false,
+      options: { threshold: 3 },
+    },
     "en/straight-quotes": { enabled: true },
     "en/em-dash": { enabled: true },
     "en/ellipsis": { enabled: true },

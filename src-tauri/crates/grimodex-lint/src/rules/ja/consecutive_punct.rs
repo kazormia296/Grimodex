@@ -115,7 +115,10 @@ mod tests {
                 scene_id: "t".into(),
             },
         };
-        let ctx = LintContext { config: &cfg };
+        let ctx = LintContext {
+            config: &cfg,
+            block_tokens: None,
+        };
         ConsecutivePunctRule.check(&input, &ctx)
     }
 
@@ -163,7 +166,10 @@ mod tests {
                 scene_id: "t".into(),
             },
         };
-        let ctx = LintContext { config: &cfg };
+        let ctx = LintContext {
+            config: &cfg,
+            block_tokens: None,
+        };
         let ds = ConsecutivePunctRule.check(&input, &ctx);
         assert_eq!(ds.len(), 1);
         assert_eq!(

@@ -4,8 +4,10 @@
 use serde::{Deserialize, Serialize};
 
 use crate::error::LintError;
+use crate::morph::tokenize_blocks;
 use crate::rule::{
     Diagnostic, Language, LintBlock, LintConfig, LintContext, LintInput, LintScope, RuleWarning,
+    WarningKind,
 };
 use crate::rules::build_ruleset;
 
@@ -46,7 +48,35 @@ pub fn lint(
     }
 
     let (rules, mut warnings) = build_ruleset(language);
-    let ctx = LintContext { config };
+
+    // Decide whether to run the tokenizer. Filter out rules that don't
+    // apply to this language / are disabled so we don't tokenise blocks
+    // for a feature the user has turned off.
+    let needs_morph = rules.iter().any(|r| {
+        let enabled = config.rule(r.id()).map(|r| r.enabled).unwrap_or(true);
+        enabled && r.supported_languages().contains(&language) && r.requires_morphology()
+    });
+    let block_tokens = if needs_morph {
+        match tokenize_blocks(blocks) {
+            Ok(v) => Some(v),
+            Err(msg) => {
+                tracing::warn!(error = %msg, "morphological analysis failed; morphology rules skipped");
+                warnings.push(RuleWarning {
+                    rule_id: "core/morphology".to_string(),
+                    kind: WarningKind::InitFailed,
+                    message: msg,
+                });
+                None
+            }
+        }
+    } else {
+        None
+    };
+
+    let ctx = LintContext {
+        config,
+        block_tokens: block_tokens.as_deref(),
+    };
     let input = LintInput {
         blocks,
         language,
@@ -62,6 +92,11 @@ pub fn lint(
             continue;
         }
         if !rule.supported_languages().contains(&language) {
+            continue;
+        }
+        // Morphology-dependent rules are silently skipped when tokenisation
+        // failed — the warning above tells the user why.
+        if rule.requires_morphology() && ctx.block_tokens.is_none() {
             continue;
         }
         let produced = rule.check(&input, &ctx);
