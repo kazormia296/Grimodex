@@ -66,8 +66,24 @@ interface SeverityFilter {
   info: boolean;
 }
 
-function diagnosticKey(d: Diagnostic, idx: number) {
-  return `${d.rule_id}:${d.range.start}:${d.range.end}:${idx}`;
+/**
+ * Render-invariant key for a Diagnostic.
+ *
+ * Multiple rules can land on the exact same span, so `rule_id` is part
+ * of the key. Identical (rule_id, range) tuples from a single rule are
+ * rare but legal — callers disambiguate with a running index supplied
+ * by `buildDiagnosticKeys`.
+ */
+function buildDiagnosticKeys(list: Diagnostic[]): Map<Diagnostic, string> {
+  const counts = new Map<string, number>();
+  const out = new Map<Diagnostic, string>();
+  for (const d of list) {
+    const base = `${d.rule_id}:${d.range.start}:${d.range.end}`;
+    const n = counts.get(base) ?? 0;
+    out.set(d, `${base}:${n}`);
+    counts.set(base, n + 1);
+  }
+  return out;
 }
 
 function WarningsBadge({ warnings }: { warnings: RuleWarning[] }) {
@@ -249,29 +265,41 @@ export function LinterPanel() {
       }));
   }, [filtered, groupMode]);
 
+  /**
+   * Single source of truth: Diagnostic → stable key. Derived from
+   * `filtered` so every consumer (flatRows, cursorActiveKeys, the row
+   * renderer) agrees regardless of group ordering.
+   */
+  const keyByDiagnostic = useMemo(
+    () => buildDiagnosticKeys(filtered),
+    [filtered],
+  );
+
   /** Flat, visible list in render order — basis for keyboard nav. */
   const flatRows = useMemo(() => {
     const out: Array<{ key: string; d: Diagnostic }> = [];
     for (const group of grouped) {
       if (collapsed[group.key]) continue;
-      group.items.forEach((d, idx) =>
-        out.push({ key: diagnosticKey(d, idx), d }),
-      );
+      for (const d of group.items) {
+        const k = keyByDiagnostic.get(d);
+        if (k) out.push({ key: k, d });
+      }
     }
     return out;
-  }, [grouped, collapsed]);
+  }, [grouped, collapsed, keyByDiagnostic]);
 
   /** Diagnostics whose range contains the editor cursor. */
   const cursorActiveKeys = useMemo(() => {
     if (cursorOffset == null) return new Set<string>();
     const keys = new Set<string>();
-    filtered.forEach((d, idx) => {
+    for (const d of filtered) {
       if (cursorOffset >= d.range.start && cursorOffset <= d.range.end) {
-        keys.add(diagnosticKey(d, idx));
+        const k = keyByDiagnostic.get(d);
+        if (k) keys.add(k);
       }
-    });
+    }
     return keys;
-  }, [filtered, cursorOffset]);
+  }, [filtered, cursorOffset, keyByDiagnostic]);
 
   const jumpTo = useCallback(
     (d: Diagnostic) => {
@@ -496,8 +524,8 @@ export function LinterPanel() {
                 )}
                 {!isCollapsed && (
                   <ul className="flex flex-col divide-y divide-border">
-                    {group.items.map((d, idx) => {
-                      const key = diagnosticKey(d, idx);
+                    {group.items.map((d) => {
+                      const key = keyByDiagnostic.get(d) ?? "";
                       return (
                         <DiagnosticRow
                           key={key}
