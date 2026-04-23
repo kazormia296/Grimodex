@@ -69,6 +69,21 @@ interface LintIgnoreState {
     note?: string,
   ) => Promise<LintIgnoreEntry>;
   deleteIgnore: (id: string) => Promise<void>;
+  /**
+   * Copy all ignore entries from one scene to another.
+   * Used during scene-split: call for each of the two new scene IDs
+   * before the old scene is deleted.
+   */
+  copyIgnoresToScene: (fromSceneId: string, toSceneId: string) => Promise<void>;
+  /**
+   * Move all ignore entries from one or more scenes to a target scene.
+   * Used during scene-merge: call with both source scene IDs before
+   * the source scenes are deleted.
+   */
+  moveIgnoresToScene: (
+    fromSceneIds: string[],
+    toSceneId: string,
+  ) => Promise<void>;
   /** Filter a diagnostic list, dropping ones matched by stored ignores. */
   filterDiagnostics: (
     sceneId: string,
@@ -175,6 +190,71 @@ export const useLintIgnoreStore = create<LintIgnoreState>()((set, get) => ({
       for (const [k, arr] of Object.entries(s.bySceneId)) {
         next[k] = arr.filter((e) => e.id !== id);
       }
+      return { bySceneId: next };
+    });
+  },
+
+  copyIgnoresToScene: async (fromSceneId, toSceneId) => {
+    // Resolve source entries: prefer cache, fall back to DB load.
+    let source = get().bySceneId[fromSceneId];
+    if (!source) {
+      await get().loadScene(fromSceneId);
+      source = get().bySceneId[fromSceneId] ?? [];
+    }
+    if (source.length === 0) return;
+    const copies: LintIgnoreEntry[] = source.map((e) => ({
+      ...e,
+      id: crypto.randomUUID(),
+      scene_id: toSceneId,
+      created_at: Date.now(),
+    }));
+    // Batch insert via individual executions (db_execute handles one at a time).
+    for (const c of copies) {
+      await dbExec(
+        `INSERT INTO lint_ignored_diagnostics
+           (id, rule_id, scene_id, text_snippet, context_before, context_after, note, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          c.id,
+          c.rule_id,
+          c.scene_id,
+          c.text_snippet,
+          c.context_before,
+          c.context_after,
+          c.note,
+          c.created_at,
+        ],
+        "run",
+      );
+    }
+    set((s) => ({
+      bySceneId: {
+        ...s.bySceneId,
+        [toSceneId]: [...copies, ...(s.bySceneId[toSceneId] ?? [])],
+      },
+    }));
+  },
+
+  moveIgnoresToScene: async (fromSceneIds, toSceneId) => {
+    if (fromSceneIds.length === 0) return;
+    const placeholders = fromSceneIds.map(() => "?").join(", ");
+    await dbExec(
+      `UPDATE lint_ignored_diagnostics SET scene_id = ? WHERE scene_id IN (${placeholders})`,
+      [toSceneId, ...fromSceneIds],
+      "run",
+    );
+    set((s) => {
+      const movedEntries: LintIgnoreEntry[] = [];
+      const next: Record<string, LintIgnoreEntry[]> = {};
+      for (const [k, arr] of Object.entries(s.bySceneId)) {
+        if (fromSceneIds.includes(k)) {
+          movedEntries.push(...arr.map((e) => ({ ...e, scene_id: toSceneId })));
+          next[k] = [];
+        } else {
+          next[k] = arr;
+        }
+      }
+      next[toSceneId] = [...movedEntries, ...(next[toSceneId] ?? [])];
       return { bySceneId: next };
     });
   },
