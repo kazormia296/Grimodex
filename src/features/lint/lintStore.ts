@@ -59,6 +59,24 @@ interface LintState {
 }
 
 /**
+ * Merge incoming warnings into the existing log, deduplicating by
+ * `rule_id + kind`. Incoming entries overwrite existing ones with the same
+ * key so the message stays fresh, but entries absent from `incoming` are
+ * kept — persistent conditions (e.g. UniDic InitFailed) must not blink away
+ * on a lint cycle that happens to produce no warning.
+ */
+function mergeWarnings(
+  existing: RuleWarning[],
+  incoming: RuleWarning[],
+): RuleWarning[] {
+  const map = new Map(existing.map((w) => [`${w.rule_id}:${w.kind}`, w]));
+  for (const w of incoming) {
+    map.set(`${w.rule_id}:${w.kind}`, w);
+  }
+  return Array.from(map.values());
+}
+
+/**
  * Rust `LintError` arrives as `{ type, data }`. `String({...})` would just
  * print "[object Object]", so we format it explicitly for the panel.
  */
@@ -150,14 +168,14 @@ export const useLintStore = create<LintState>()((set, get) => ({
       // Drop if a newer request has been issued in the meantime.
       if (get().pendingRequestId !== requestId) return;
       const filtered = applyIgnoreFilter(sceneId, resp.diagnostics, sceneText);
-      set({
+      set((s) => ({
         rawDiagnostics: resp.diagnostics,
         diagnostics: filtered,
         lastSceneText: sceneText,
-        warnings: resp.warnings,
+        warnings: mergeWarnings(s.warnings, resp.warnings),
         isLinting: false,
         lastErrorMessage: null,
-      });
+      }));
     } catch (err) {
       if (get().pendingRequestId !== requestId) return;
       const message = formatLintError(err);
@@ -165,7 +183,6 @@ export const useLintStore = create<LintState>()((set, get) => ({
         rawDiagnostics: [],
         diagnostics: [],
         lastSceneText: "",
-        warnings: [],
         isLinting: false,
         lastErrorMessage: message,
       });
