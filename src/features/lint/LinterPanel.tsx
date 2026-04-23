@@ -25,6 +25,7 @@ import {
   LintDisablePicker,
   selectionFromPmPositions,
 } from "./LintDisablePicker";
+import { DisablesView } from "./LintDisablesView";
 import type { ScannedScene } from "./projectScan";
 import { extensionFor, renderReport, type ReportFormat } from "./lintReport";
 import { runLintNow } from "./useLinter";
@@ -35,7 +36,7 @@ import { runLintNow } from "./useLinter";
 // all update together.
 const DEFAULT_PROJECT_ID = "default-project";
 
-type PanelMode = "current" | "project";
+type PanelMode = "current" | "project" | "disables";
 
 type GroupMode = "severity" | "rule" | "none";
 
@@ -899,7 +900,13 @@ export function LinterPanel() {
     <div className="flex h-full flex-col" data-testid="lint-panel">
       <ModeBar mode={mode} setMode={setMode} />
       <div className="min-h-0 flex-1">
-        {mode === "current" ? <CurrentLinterView /> : <ProjectLinterView />}
+        {mode === "current" ? (
+          <CurrentLinterView />
+        ) : mode === "project" ? (
+          <ProjectLinterView />
+        ) : (
+          <DisablesView />
+        )}
       </div>
     </div>
   );
@@ -935,6 +942,17 @@ function ModeBar({
         }`}
       >
         プロジェクト
+      </button>
+      <button
+        type="button"
+        onClick={() => setMode("disables")}
+        className={`rounded px-2 py-0.5 ${
+          mode === "disables"
+            ? "bg-primary text-primary-foreground"
+            : "text-muted-foreground hover:bg-accent"
+        }`}
+      >
+        Disables
       </button>
     </div>
   );
