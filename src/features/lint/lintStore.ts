@@ -65,7 +65,7 @@ interface LintState {
  * kept — persistent conditions (e.g. UniDic InitFailed) must not blink away
  * on a lint cycle that happens to produce no warning.
  */
-function mergeWarnings(
+export function mergeWarnings(
   existing: RuleWarning[],
   incoming: RuleWarning[],
 ): RuleWarning[] {
