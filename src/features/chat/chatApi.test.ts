@@ -95,7 +95,6 @@ describe("chatApi - session/message persistence", () => {
         title: "会話1",
         titleManual: 0,
         model: "openrouter/anthropic/claude-sonnet-4.6",
-        pinnedCodex: "[]",
         createdAt: "2025-01-01T00:00:00Z",
         updatedAt: "2025-01-01T00:00:00Z",
       };
@@ -123,7 +122,6 @@ describe("chatApi - session/message persistence", () => {
         title: "プロジェクト会話",
         titleManual: 0,
         model: "openrouter/anthropic/claude-sonnet-4.6",
-        pinnedCodex: "[]",
         createdAt: "2025-01-01T00:00:00Z",
         updatedAt: "2025-01-01T00:00:00Z",
       };
@@ -146,7 +144,6 @@ describe("chatApi - session/message persistence", () => {
         title: "新しい会話",
         titleManual: 0,
         model: "openrouter/anthropic/claude-sonnet-4.6",
-        pinnedCodex: "[]",
         createdAt: "2025-01-01T00:00:00Z",
         updatedAt: "2025-01-01T00:00:00Z",
       };
@@ -168,7 +165,6 @@ describe("chatApi - session/message persistence", () => {
         title: "フリー会話",
         titleManual: 0,
         model: "openrouter/anthropic/claude-sonnet-4.6",
-        pinnedCodex: "[]",
         createdAt: "2025-01-01T00:00:00Z",
         updatedAt: "2025-01-01T00:00:00Z",
       };

@@ -211,12 +211,37 @@ impl Database {
                 title        TEXT NOT NULL DEFAULT 'New session',
                 title_manual INTEGER NOT NULL DEFAULT 0,
                 model        TEXT NOT NULL DEFAULT 'openrouter/anthropic/claude-sonnet-4.6',
-                pinned_codex TEXT,
                 created_at   TEXT NOT NULL DEFAULT (datetime('now')),
                 updated_at   TEXT NOT NULL DEFAULT (datetime('now'))
             );
             CREATE INDEX IF NOT EXISTS idx_chat_sessions_node
                 ON chat_sessions(project_id, node_id);
+
+            -- Normalized pin table: one row per pinned codex entry / snippet
+            -- per session. Replaces the former chat_sessions.pinned_codex
+            -- JSON blob so FK cascades remove stale refs automatically.
+            CREATE TABLE IF NOT EXISTS chat_session_pinned_codex (
+                id              TEXT PRIMARY KEY,
+                session_id      TEXT NOT NULL REFERENCES chat_sessions(id) ON DELETE CASCADE,
+                codex_entry_id  TEXT REFERENCES codex_entries(id) ON DELETE CASCADE,
+                snippet_id      TEXT REFERENCES snippets(id) ON DELETE CASCADE,
+                with_children   INTEGER NOT NULL DEFAULT 0,
+                pin_source      TEXT NOT NULL DEFAULT 'manual'
+                                  CHECK(pin_source IN ('manual','chat_mention')),
+                created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+                CHECK (
+                    (CASE WHEN codex_entry_id IS NOT NULL THEN 1 ELSE 0 END +
+                     CASE WHEN snippet_id     IS NOT NULL THEN 1 ELSE 0 END) = 1
+                )
+            );
+            CREATE INDEX IF NOT EXISTS idx_chat_pin_session
+                ON chat_session_pinned_codex(session_id, created_at);
+            CREATE UNIQUE INDEX IF NOT EXISTS uq_chat_pin_codex
+                ON chat_session_pinned_codex(session_id, codex_entry_id)
+                WHERE codex_entry_id IS NOT NULL;
+            CREATE UNIQUE INDEX IF NOT EXISTS uq_chat_pin_snippet
+                ON chat_session_pinned_codex(session_id, snippet_id)
+                WHERE snippet_id IS NOT NULL;
 
             CREATE TABLE IF NOT EXISTS chat_messages (
                 id          TEXT PRIMARY KEY,
@@ -236,15 +261,24 @@ impl Database {
                 ON chat_messages(session_id, created_at);
 
             CREATE TABLE IF NOT EXISTS chat_summaries (
-                id                 TEXT PRIMARY KEY,
-                session_id         TEXT NOT NULL REFERENCES chat_sessions(id) ON DELETE CASCADE,
-                summary            TEXT NOT NULL,
-                source_message_ids TEXT NOT NULL,
-                token_count        INTEGER,
-                created_at         TEXT NOT NULL DEFAULT (datetime('now'))
+                id          TEXT PRIMARY KEY,
+                session_id  TEXT NOT NULL REFERENCES chat_sessions(id) ON DELETE CASCADE,
+                summary     TEXT NOT NULL,
+                token_count INTEGER,
+                created_at  TEXT NOT NULL DEFAULT (datetime('now'))
             );
             CREATE INDEX IF NOT EXISTS idx_chat_summaries_session
                 ON chat_summaries(session_id, created_at);
+
+            -- Set of messages summarized by each chat_summaries row.
+            -- Replaces chat_summaries.source_message_ids JSON array.
+            CREATE TABLE IF NOT EXISTS chat_summary_messages (
+                summary_id TEXT NOT NULL REFERENCES chat_summaries(id) ON DELETE CASCADE,
+                message_id TEXT NOT NULL REFERENCES chat_messages(id) ON DELETE CASCADE,
+                PRIMARY KEY (summary_id, message_id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_chat_summary_messages_msg
+                ON chat_summary_messages(message_id);
 
             CREATE TABLE IF NOT EXISTS codex_entry_phases (
                 id                    TEXT PRIMARY KEY,

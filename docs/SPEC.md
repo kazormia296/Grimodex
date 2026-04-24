@@ -249,10 +249,10 @@ CREATE TABLE chat_sessions (
   title         TEXT NOT NULL DEFAULT '',
   title_manual  INTEGER NOT NULL DEFAULT 0,
   model         TEXT,
-  pinned_codex  TEXT DEFAULT '[]',  -- JSON配列: [{id, source: 'manual'|'chat_mention'}]
   created_at    TEXT NOT NULL,
   updated_at    TEXT NOT NULL
 );
+-- ピン留めは chat_session_pinned_codex テーブルに正規化（詳細は統合DBスキーマ参照）
 
 CREATE TABLE chat_messages (
   id          TEXT PRIMARY KEY,

@@ -41,7 +41,6 @@ function toSession(row: typeof chatSessions.$inferSelect): ChatSession {
     title: row.title,
     titleManual: row.titleManual,
     model: row.model,
-    pinnedCodex: row.pinnedCodex,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
   };

@@ -15,7 +15,6 @@ function makeSession(
     title: "Session",
     titleManual: 0,
     model: "claude",
-    pinnedCodex: null,
     createdAt: "2024-01-01T00:00:00Z",
     updatedAt: "2024-01-01T00:00:00Z",
     msgCount: 0,

@@ -148,7 +148,6 @@ const session1: ChatSession = {
   title: "会話1",
   titleManual: 0,
   model: "openrouter/anthropic/claude-sonnet-4.6",
-  pinnedCodex: "[]",
   createdAt: "2025-01-01T00:00:00Z",
   updatedAt: "2025-01-01T00:00:00Z",
 };
@@ -160,7 +159,6 @@ const session2: ChatSession = {
   title: "会話2",
   titleManual: 0,
   model: "openrouter/anthropic/claude-sonnet-4.6",
-  pinnedCodex: "[]",
   createdAt: "2025-01-01T00:01:00Z",
   updatedAt: "2025-01-01T00:01:00Z",
 };

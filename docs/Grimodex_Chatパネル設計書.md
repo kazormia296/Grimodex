@@ -306,7 +306,7 @@ AIメッセージ内のテキストを選択すると、選択範囲の近くに
 
 **@メンション補完**: 
  - `@` 入力でCodexエントリの補完候補をポップオーバーリスト表示。選択するとエントリ名が挿入され、自動ピン留めの対象になる。`context_mode = hidden` のエントリは候補に表示しない
- - **インメモリピン（送信前の仮ピン）**: @ メンションで挿入されたエントリは、メッセージを送信する前からインメモリで一時的にピン留め扱いされる。DB の `chat_sessions.pinned_codex` への書き込みは送信確定時まで行われず、コンテキストバーには「仮ピン」としてピルが即座に表示される。ユーザーが送信前に入力欄から当該メンションを消した場合は仮ピンも解除される（DB に痕跡を残さない）。送信確定時点で入力欄に残っている仮ピンのみが `source: 'chat_mention'` として永続化される
+ - **インメモリピン（送信前の仮ピン）**: @ メンションで挿入されたエントリは、メッセージを送信する前からインメモリで一時的にピン留め扱いされる。DB の `chat_session_pinned_codex` テーブルへの書き込みは送信確定時まで行われず、コンテキストバーには「仮ピン」としてピルが即座に表示される。ユーザーが送信前に入力欄から当該メンションを消した場合は仮ピンも解除される（DB に痕跡を残さない）。送信確定時点で入力欄に残っている仮ピンのみが `source: 'chat_mention'` として永続化される
 
 **/ コマンド**:
 - `/` を入力するとコマンド一覧を表示
@@ -799,7 +799,7 @@ thinking ブロックのストリーミングは以下のイベント順序で�
 ```sql
 CREATE TABLE chat_sessions (
   id          TEXT PRIMARY KEY,
-  project_id  TEXT NOT NULL REFERENCES projects(id),
+  project_id  TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
   node_id     TEXT REFERENCES tree_nodes(id) ON DELETE SET NULL,
                                   -- tree_nodes.id を参照する汎用スキーマ。
                                   -- シーンに限らず Folder/Scene を問わず任意の tree_nodes に紐付け可能。
@@ -808,10 +808,12 @@ CREATE TABLE chat_sessions (
   title       TEXT NOT NULL DEFAULT 'New session',
   title_manual INTEGER NOT NULL DEFAULT 0,  -- 1の場合、自動タイトル再生成を抑制
   model       TEXT NOT NULL DEFAULT 'openrouter/anthropic/claude-sonnet-4.6',
-  pinned_codex TEXT,            -- JSON array of {id, source} objects. source: 'manual' | 'chat_mention'
   created_at  TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
 );
+
+-- ピン留めは正規化されて chat_session_pinned_codex テーブルに分離。
+-- 詳細は `Grimodex_統合DBスキーマ.md` を参照。
 
 CREATE TABLE chat_messages (
   id             TEXT PRIMARY KEY,
@@ -832,13 +834,15 @@ CREATE TABLE chat_messages (
 );
 
 CREATE TABLE chat_summaries (
-  id                   TEXT PRIMARY KEY,
-  session_id           TEXT NOT NULL REFERENCES chat_sessions(id) ON DELETE CASCADE,
-  summary              TEXT NOT NULL,        -- runSummarization が生成した会話要約本文
-  source_message_ids   TEXT NOT NULL,        -- JSON array: 要約元となった chat_messages.id のリスト
-  token_count          INTEGER NOT NULL,     -- 要約本文の推定トークン数（Layer 5 予算計算に使用）
-  created_at           TEXT NOT NULL DEFAULT (datetime('now'))
+  id          TEXT PRIMARY KEY,
+  session_id  TEXT NOT NULL REFERENCES chat_sessions(id) ON DELETE CASCADE,
+  summary     TEXT NOT NULL,        -- runSummarization が生成した会話要約本文
+  token_count INTEGER NOT NULL,     -- 要約本文の推定トークン数（Layer 5 予算計算に使用）
+  created_at  TEXT NOT NULL DEFAULT (datetime('now'))
 );
+
+-- 要約のソースメッセージ集合は chat_summary_messages テーブルに正規化。
+-- 詳細は `Grimodex_統合DBスキーマ.md` を参照。
 
 CREATE INDEX idx_chat_sessions_node ON chat_sessions(project_id, node_id);
 CREATE INDEX idx_chat_messages_session ON chat_messages(session_id, created_at);

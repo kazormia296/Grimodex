@@ -440,7 +440,6 @@ describe("chatSessions schema", () => {
     expect(columns).toContain("title");
     expect(columns).toContain("titleManual");
     expect(columns).toContain("model");
-    expect(columns).toContain("pinnedCodex");
     expect(columns).toContain("createdAt");
     expect(columns).toContain("updatedAt");
   });

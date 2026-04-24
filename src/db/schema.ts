@@ -318,7 +318,6 @@ export const chatSessions = sqliteTable(
     model: text("model")
       .notNull()
       .default("openrouter/anthropic/claude-sonnet-4.6"),
-    pinnedCodex: text("pinned_codex"), // JSON {id, source}[]
     createdAt: text("created_at")
       .notNull()
       .$defaultFn(() => new Date().toISOString()),
@@ -364,7 +363,6 @@ export const chatSummaries = sqliteTable(
       .notNull()
       .references(() => chatSessions.id, { onDelete: "cascade" }),
     summary: text("summary").notNull(),
-    sourceMessageIds: text("source_message_ids").notNull(), // JSON string[]
     tokenCount: integer("token_count"),
     createdAt: text("created_at")
       .notNull()
@@ -372,6 +370,56 @@ export const chatSummaries = sqliteTable(
   },
   (table) => [
     index("idx_chat_summaries_session").on(table.sessionId, table.createdAt),
+  ],
+);
+
+// Source messages referenced by each chat summary. Replaces the former
+// chat_summaries.source_message_ids JSON array with a proper FK set so
+// deleting a message cannot leave a dangling reference.
+export const chatSummaryMessages = sqliteTable(
+  "chat_summary_messages",
+  {
+    summaryId: text("summary_id")
+      .notNull()
+      .references(() => chatSummaries.id, { onDelete: "cascade" }),
+    messageId: text("message_id")
+      .notNull()
+      .references(() => chatMessages.id, { onDelete: "cascade" }),
+  },
+  (table) => [
+    primaryKey({ columns: [table.summaryId, table.messageId] }),
+    index("idx_chat_summary_messages_msg").on(table.messageId),
+  ],
+);
+
+// Pinned codex / snippet entries per chat session. Replaces the former
+// chat_sessions.pinned_codex JSON blob with a proper FK table. Exactly one
+// of codex_entry_id / snippet_id must be non-null (enforced in SQL).
+export const chatSessionPinnedCodex = sqliteTable(
+  "chat_session_pinned_codex",
+  {
+    id: text("id").primaryKey(),
+    sessionId: text("session_id")
+      .notNull()
+      .references(() => chatSessions.id, { onDelete: "cascade" }),
+    codexEntryId: text("codex_entry_id").references(() => codexEntries.id, {
+      onDelete: "cascade",
+    }),
+    snippetId: text("snippet_id").references(() => snippets.id, {
+      onDelete: "cascade",
+    }),
+    withChildren: integer("with_children").notNull().default(0),
+    pinSource: text("pin_source", { enum: ["manual", "chat_mention"] })
+      .notNull()
+      .default("manual"),
+    createdAt: text("created_at")
+      .notNull()
+      .$defaultFn(() => new Date().toISOString()),
+  },
+  (table) => [
+    index("idx_chat_pin_session").on(table.sessionId, table.createdAt),
+    uniqueIndex("uq_chat_pin_codex").on(table.sessionId, table.codexEntryId),
+    uniqueIndex("uq_chat_pin_snippet").on(table.sessionId, table.snippetId),
   ],
 );
 

@@ -29,8 +29,10 @@ ORM: Drizzle ORM（sqlite-proxy）
 | `snippets` | 通常 | Snippets | 再利用テキスト断片 |
 | `snippet_entry_tags` | 通常 | Snippets | Snippet↔タグの多対多リレーション |
 | `chat_sessions` | 通常 | Chat | チャットセッション（シーン or プロジェクトスコープ） |
+| `chat_session_pinned_codex` | 通常 | Chat | セッションごとのピン留め Codex/Snippet |
 | `chat_messages` | 通常 | Chat | チャットメッセージ |
 | `chat_summaries` | 通常 | Chat | プログレッシブ要約 |
+| `chat_summary_messages` | 通常 | Chat | 要約のソースメッセージ集合 |
 | `content_versions` | 通常 | Editor | コンテンツのリビジョン履歴 |
 | `project_snapshots` | 通常 | Editor | プロジェクト全体のプロジェクトスナップショット |
 | `project_snapshot_entries` | 通常 | Editor | プロジェクトスナップショットとリビジョンの紐付け |
@@ -103,12 +105,17 @@ codex_detail_values (1)
  └──< authorship_spans (*)    detail_value_id (nullable)
 
 chat_sessions (1)
- ├──< chat_messages (*)       session_id (ON DELETE CASCADE)
- └──< chat_summaries (*)      session_id (ON DELETE CASCADE)
+ ├──< chat_messages (*)              session_id (ON DELETE CASCADE)
+ ├──< chat_summaries (*)             session_id (ON DELETE CASCADE)
+ └──< chat_session_pinned_codex (*)  session_id (ON DELETE CASCADE)
+
+chat_summaries (1)
+ └──< chat_summary_messages (*) summary_id (ON DELETE CASCADE)
 
 chat_messages (1)
- ├──< codex_entries (*)       source_chat_message_id
- └──< snippets (*)            source_chat_message_id
+ ├──< codex_entries (*)          source_chat_message_id
+ ├──< snippets (*)               source_chat_message_id
+ └──< chat_summary_messages (*)  message_id (ON DELETE CASCADE)
 
 map_boards (1)
  ├──< map_node_positions (*)  board_id
@@ -434,13 +441,44 @@ CREATE TABLE chat_sessions (
   title         TEXT NOT NULL DEFAULT 'New session',
   title_manual  INTEGER NOT NULL DEFAULT 0,        -- 1: 手動リネーム済み、自動再生成を抑制
   model         TEXT NOT NULL DEFAULT 'openrouter/anthropic/claude-sonnet-4.6',
-  pinned_codex  TEXT,           -- JSON array of {id, source} objects. source: 'manual' | 'chat_mention'
   created_at    TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at    TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
 CREATE INDEX idx_chat_sessions_node ON chat_sessions(project_id, node_id);
 ```
+
+### chat_session_pinned_codex
+
+セッションごとのピン留めされたCodexエントリ・Snippet。旧 `chat_sessions.pinned_codex` JSON カラムの正規化版で、FK により削除時の整合性を保証。並び順はピン追加時刻（`created_at` ASC）。
+
+```sql
+CREATE TABLE chat_session_pinned_codex (
+  id             TEXT PRIMARY KEY,
+  session_id     TEXT NOT NULL REFERENCES chat_sessions(id) ON DELETE CASCADE,
+  codex_entry_id TEXT REFERENCES codex_entries(id) ON DELETE CASCADE,
+  snippet_id     TEXT REFERENCES snippets(id) ON DELETE CASCADE,
+  with_children  INTEGER NOT NULL DEFAULT 0,
+  pin_source     TEXT NOT NULL DEFAULT 'manual'
+                   CHECK(pin_source IN ('manual','chat_mention')),
+  created_at     TEXT NOT NULL DEFAULT (datetime('now')),
+  -- codex_entry_id と snippet_id のいずれか1つのみNOT NULL
+  CHECK (
+    (CASE WHEN codex_entry_id IS NOT NULL THEN 1 ELSE 0 END +
+     CASE WHEN snippet_id     IS NOT NULL THEN 1 ELSE 0 END) = 1
+  )
+);
+
+CREATE INDEX idx_chat_pin_session ON chat_session_pinned_codex(session_id, created_at);
+CREATE UNIQUE INDEX uq_chat_pin_codex ON chat_session_pinned_codex(session_id, codex_entry_id)
+  WHERE codex_entry_id IS NOT NULL;
+CREATE UNIQUE INDEX uq_chat_pin_snippet ON chat_session_pinned_codex(session_id, snippet_id)
+  WHERE snippet_id IS NOT NULL;
+```
+
+`pin_source`:
+- `'manual'` — 「+」ボタン、ピルプレビューのPin等のユーザー明示操作
+- `'chat_mention'` — チャット入力欄で @ メンションされて送信された時の自動ピン
 
 ### chat_messages
 
@@ -523,15 +561,28 @@ CREATE INDEX idx_codex_quick_pins_created ON codex_quick_pins(created_at);
 
 ```sql
 CREATE TABLE chat_summaries (
-  id                  TEXT PRIMARY KEY,
-  session_id          TEXT NOT NULL REFERENCES chat_sessions(id) ON DELETE CASCADE,
-  summary             TEXT NOT NULL,
-  source_message_ids  TEXT NOT NULL,        -- JSON string[]: 要約元メッセージIDの配列
-  token_count         INTEGER,             -- 要約テキストの推定トークン数
-  created_at          TEXT NOT NULL DEFAULT (datetime('now'))
+  id          TEXT PRIMARY KEY,
+  session_id  TEXT NOT NULL REFERENCES chat_sessions(id) ON DELETE CASCADE,
+  summary     TEXT NOT NULL,
+  token_count INTEGER,             -- 要約テキストの推定トークン数
+  created_at  TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
 CREATE INDEX idx_chat_summaries_session ON chat_summaries(session_id, created_at);
+```
+
+### chat_summary_messages
+
+プログレッシブ要約のソースメッセージ集合。旧 `chat_summaries.source_message_ids` JSON 配列の正規化版。FK により `chat_messages` 削除時にリンクも自動削除される。
+
+```sql
+CREATE TABLE chat_summary_messages (
+  summary_id TEXT NOT NULL REFERENCES chat_summaries(id) ON DELETE CASCADE,
+  message_id TEXT NOT NULL REFERENCES chat_messages(id) ON DELETE CASCADE,
+  PRIMARY KEY (summary_id, message_id)
+);
+
+CREATE INDEX idx_chat_summary_messages_msg ON chat_summary_messages(message_id);
 ```
 
 ### snippet_entry_tags
@@ -862,8 +913,6 @@ SQLiteにはネイティブJSON型がないため、TEXT カラムにJSON文字�
 | `codex_tags.type_filter` | `string[] \| null` | `["character", "lore"]` または `null`（全タイプ） |
 | `codex_detail_definitions.field_config` | `object` | `{"multiline":true}`, `{"options":["人間","エルフ"]}`, `{"allowedTypes":["faction"]}` |
 | `snippets.tags_cache` | `{name: string, color: string}[]` | `[{"name":"dialogue","color":"#ff6b6b"}]`（snippet_entry_tagsの非正規化キャッシュ） |
-| `chat_sessions.pinned_codex` | `{id: string, source: 'manual' \| 'chat_mention'}[]` | `[{"id":"codex-id-1","source":"manual"},{"id":"codex-id-2","source":"chat_mention"}]` |
-| `chat_summaries.source_message_ids` | `string[]` | `["msg-001", "msg-002", "msg-003"]` |
 | `chat_messages.metadata` | `object` | `{"extractedCodex":["id1"],"extractedSnippets":["id2"]}` |
 | `settings.value` | `any` | `"16"`, `"system"`, `"true"` |
 
@@ -1037,6 +1086,15 @@ Timelineパネル設計書の策定に伴い、Phase解決で使う時間軸を�
 ### テーブル命名のリネーム
 
 - `codex_relation_dismissed` → `codex_dismissed_relations`（他テーブルの複数形・形容詞＋名詞の命名規則に合わせる）
+
+### JSON カラムの正規化
+
+旧 JSON 埋め込みカラムをリレーションテーブルに分離し、FK による整合性を担保:
+
+| 旧カラム | 新テーブル | 効果 |
+|---------|----------|------|
+| `chat_sessions.pinned_codex` | `chat_session_pinned_codex` | codex/snippet 削除時にピンも自動削除、重複ピンは UNIQUE で防止 |
+| `chat_summaries.source_message_ids` | `chat_summary_messages` | message 削除時にリンクも自動削除、要約→メッセージの逆引きが SQL で可能 |
 
 ---
 

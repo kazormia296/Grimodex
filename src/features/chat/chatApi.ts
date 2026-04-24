@@ -4,10 +4,21 @@ import {
   chatSessions,
   chatMessages,
   chatSummaries,
+  chatSummaryMessages,
+  chatSessionPinnedCodex,
   codexEntries,
   snippets,
 } from "@/db/schema";
-import { eq, desc, inArray, isNull, gte, and } from "drizzle-orm";
+import {
+  eq,
+  desc,
+  asc,
+  inArray,
+  isNull,
+  isNotNull,
+  gte,
+  and,
+} from "drizzle-orm";
 import type {
   ChatSession,
   ChatMessage,
@@ -15,10 +26,6 @@ import type {
   MessageRole,
 } from "./chatTypes";
 import type { CodexEntry } from "@/features/codex/api";
-import {
-  normalizePinnedCodex,
-  type PinnedCodexEntry,
-} from "./pinnedCodexTypes";
 import { sanitizeSceneContent } from "./contextBuilder";
 
 // --- AI message sending (existing) ---
@@ -299,7 +306,6 @@ function toSession(row: typeof chatSessions.$inferSelect): ChatSession {
     title: row.title,
     titleManual: row.titleManual,
     model: row.model,
-    pinnedCodex: row.pinnedCodex,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
   };
@@ -470,18 +476,7 @@ export async function updateSessionTitle(
     .where(eq(chatSessions.id, id));
 }
 
-// --- Pinned Codex entries (now stored as JSON in chat_sessions.pinned_codex) ---
-
-function safeParsePinnedCodex(raw: string | null): PinnedCodexEntry[] {
-  if (!raw) return [];
-  try {
-    const parsed: unknown = JSON.parse(raw);
-    return normalizePinnedCodex(parsed);
-  } catch {
-    // corrupted JSON — treat as empty
-  }
-  return [];
-}
+// --- Pinned Codex entries (normalized: chat_session_pinned_codex table) ---
 
 export type PinnedCodexEntryWithData = CodexEntry & {
   withChildren: boolean;
@@ -501,68 +496,82 @@ export interface PinnedSnippetEntryWithData {
 export async function listPinnedCodexEntries(
   sessionId: string,
 ): Promise<PinnedCodexEntryWithData[]> {
-  const rows = await db
-    .select({ pinnedCodex: chatSessions.pinnedCodex })
-    .from(chatSessions)
-    .where(eq(chatSessions.id, sessionId));
-  if (!rows[0]) return [];
+  const codexPinRows = await db
+    .select({
+      codexEntryId: chatSessionPinnedCodex.codexEntryId,
+      withChildren: chatSessionPinnedCodex.withChildren,
+      pinSource: chatSessionPinnedCodex.pinSource,
+    })
+    .from(chatSessionPinnedCodex)
+    .where(
+      and(
+        eq(chatSessionPinnedCodex.sessionId, sessionId),
+        isNotNull(chatSessionPinnedCodex.codexEntryId),
+      ),
+    )
+    .orderBy(asc(chatSessionPinnedCodex.createdAt));
 
-  const pinned = safeParsePinnedCodex(rows[0].pinnedCodex);
-  if (pinned.length === 0) return [];
+  if (codexPinRows.length === 0) return [];
 
-  // Only fetch codex-type entries from codexEntries table
-  const codexPinned = pinned.filter((p) => p.type !== "snippet");
-  if (codexPinned.length === 0) return [];
-
-  const ids = codexPinned.map((p) => p.id);
+  const ids = codexPinRows
+    .map((r) => r.codexEntryId)
+    .filter((id): id is string => id !== null);
   const entries = await db
     .select()
     .from(codexEntries)
     .where(inArray(codexEntries.id, ids));
-
   const entryMap = new Map(entries.map((e) => [e.id, e]));
-  const withChildrenMap = new Map(
-    codexPinned.map((p) => [p.id, p.withChildren ?? false]),
-  );
-  const pinSourceMap = new Map(codexPinned.map((p) => [p.id, p.source]));
-  // codexPinned の順序（ピンした順）を維持してソート
-  return codexPinned
-    .map((p) => entryMap.get(p.id))
-    .filter((e): e is (typeof entries)[0] => e !== undefined)
-    .map((e) => ({
-      ...e,
-      withChildren: withChildrenMap.get(e.id) ?? false,
-      pinnedType: "codex" as const,
-      pinSource: pinSourceMap.get(e.id),
-    }));
+
+  return codexPinRows
+    .map((r) => {
+      if (r.codexEntryId === null) return null;
+      const entry = entryMap.get(r.codexEntryId);
+      if (!entry) return null;
+      return {
+        ...entry,
+        withChildren: r.withChildren === 1,
+        pinnedType: "codex" as const,
+        pinSource: r.pinSource,
+      };
+    })
+    .filter((e): e is NonNullable<typeof e> => e !== null);
 }
 
-/** List pinned snippet entries (type="snippet") for a session. */
+/** List pinned snippet entries for a session. */
 export async function listPinnedSnippetEntries(
   sessionId: string,
 ): Promise<PinnedSnippetEntryWithData[]> {
-  const rows = await db
-    .select({ pinnedCodex: chatSessions.pinnedCodex })
-    .from(chatSessions)
-    .where(eq(chatSessions.id, sessionId));
-  if (!rows[0]) return [];
+  const pinRows = await db
+    .select({ snippetId: chatSessionPinnedCodex.snippetId })
+    .from(chatSessionPinnedCodex)
+    .where(
+      and(
+        eq(chatSessionPinnedCodex.sessionId, sessionId),
+        isNotNull(chatSessionPinnedCodex.snippetId),
+      ),
+    )
+    .orderBy(asc(chatSessionPinnedCodex.createdAt));
 
-  const pinned = safeParsePinnedCodex(rows[0].pinnedCodex);
-  const snippetPinned = pinned.filter((p) => p.type === "snippet");
-  if (snippetPinned.length === 0) return [];
+  const ids = pinRows
+    .map((r) => r.snippetId)
+    .filter((id): id is string => id !== null);
+  if (ids.length === 0) return [];
 
-  const ids = snippetPinned.map((p) => p.id);
   const entries = await db
     .select()
     .from(snippets)
     .where(inArray(snippets.id, ids));
+  const entryMap = new Map(entries.map((e) => [e.id, e]));
 
-  return entries.map((e) => ({
-    id: e.id,
-    title: e.title,
-    content: e.content,
-    pinnedType: "snippet" as const,
-  }));
+  return ids
+    .map((id) => entryMap.get(id))
+    .filter((e): e is NonNullable<typeof e> => e !== undefined)
+    .map((e) => ({
+      id: e.id,
+      title: e.title,
+      content: e.content,
+      pinnedType: "snippet" as const,
+    }));
 }
 
 export async function pinCodexEntry(
@@ -572,20 +581,25 @@ export async function pinCodexEntry(
   source: "manual" | "chat_mention" = "manual",
   type: "codex" | "snippet" = "codex",
 ): Promise<void> {
-  const rows = await db
-    .select({ pinnedCodex: chatSessions.pinnedCodex })
-    .from(chatSessions)
-    .where(eq(chatSessions.id, sessionId));
-  if (!rows[0]) return;
-
-  const pinned = safeParsePinnedCodex(rows[0].pinnedCodex);
-  if (!pinned.some((p) => p.id === entryId)) {
-    pinned.push({ id: entryId, type, withChildren, source });
-    await db
-      .update(chatSessions)
-      .set({ pinnedCodex: JSON.stringify(pinned) })
-      .where(eq(chatSessions.id, sessionId));
-  }
+  const values =
+    type === "snippet"
+      ? {
+          id: crypto.randomUUID(),
+          sessionId,
+          snippetId: entryId,
+          codexEntryId: null,
+          withChildren: withChildren ? 1 : 0,
+          pinSource: source,
+        }
+      : {
+          id: crypto.randomUUID(),
+          sessionId,
+          codexEntryId: entryId,
+          snippetId: null,
+          withChildren: withChildren ? 1 : 0,
+          pinSource: source,
+        };
+  await db.insert(chatSessionPinnedCodex).values(values).onConflictDoNothing();
 }
 
 export async function togglePinChildren(
@@ -593,43 +607,43 @@ export async function togglePinChildren(
   entryId: string,
   withChildren: boolean,
 ): Promise<void> {
-  const rows = await db
-    .select({ pinnedCodex: chatSessions.pinnedCodex })
-    .from(chatSessions)
-    .where(eq(chatSessions.id, sessionId));
-  if (!rows[0]) return;
-
-  const pinned = safeParsePinnedCodex(rows[0].pinnedCodex);
-  const updated = pinned.map((p) =>
-    p.id === entryId ? { ...p, withChildren } : p,
-  );
   await db
-    .update(chatSessions)
-    .set({ pinnedCodex: JSON.stringify(updated) })
-    .where(eq(chatSessions.id, sessionId));
+    .update(chatSessionPinnedCodex)
+    .set({ withChildren: withChildren ? 1 : 0 })
+    .where(
+      and(
+        eq(chatSessionPinnedCodex.sessionId, sessionId),
+        eq(chatSessionPinnedCodex.codexEntryId, entryId),
+      ),
+    );
 }
 
 export async function unpinCodexEntry(
   sessionId: string,
   entryId: string,
 ): Promise<void> {
-  const rows = await db
-    .select({ pinnedCodex: chatSessions.pinnedCodex })
-    .from(chatSessions)
-    .where(eq(chatSessions.id, sessionId));
-  if (!rows[0]) return;
-
-  const pinned = safeParsePinnedCodex(rows[0].pinnedCodex);
-  const filtered = pinned.filter((p) => p.id !== entryId);
+  // Try codex first, then snippet — id is unique per kind per session
   await db
-    .update(chatSessions)
-    .set({ pinnedCodex: JSON.stringify(filtered) })
-    .where(eq(chatSessions.id, sessionId));
+    .delete(chatSessionPinnedCodex)
+    .where(
+      and(
+        eq(chatSessionPinnedCodex.sessionId, sessionId),
+        eq(chatSessionPinnedCodex.codexEntryId, entryId),
+      ),
+    );
+  await db
+    .delete(chatSessionPinnedCodex)
+    .where(
+      and(
+        eq(chatSessionPinnedCodex.sessionId, sessionId),
+        eq(chatSessionPinnedCodex.snippetId, entryId),
+      ),
+    );
 }
 
 /**
  * G20: Unpin entries matching the given IDs and source filter.
- * Only entries whose `source` matches `sourceFilter` are removed.
+ * Only entries whose pin_source matches `sourceFilter` are removed.
  */
 export async function unpinCodexEntriesByIds(
   sessionId: string,
@@ -637,22 +651,15 @@ export async function unpinCodexEntriesByIds(
   sourceFilter: "chat_mention",
 ): Promise<void> {
   if (entryIds.length === 0) return;
-  const rows = await db
-    .select({ pinnedCodex: chatSessions.pinnedCodex })
-    .from(chatSessions)
-    .where(eq(chatSessions.id, sessionId));
-  if (!rows[0]) return;
-
-  const pinned = safeParsePinnedCodex(rows[0].pinnedCodex);
-  const idSet = new Set(entryIds);
-  const filtered = pinned.filter(
-    (p) => !(idSet.has(p.id) && p.source === sourceFilter),
-  );
-  if (filtered.length === pinned.length) return; // nothing changed
   await db
-    .update(chatSessions)
-    .set({ pinnedCodex: JSON.stringify(filtered) })
-    .where(eq(chatSessions.id, sessionId));
+    .delete(chatSessionPinnedCodex)
+    .where(
+      and(
+        eq(chatSessionPinnedCodex.sessionId, sessionId),
+        eq(chatSessionPinnedCodex.pinSource, sourceFilter),
+        inArray(chatSessionPinnedCodex.codexEntryId, entryIds),
+      ),
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -669,18 +676,18 @@ export async function toggleStarMessage(
     .where(eq(chatMessages.id, messageId));
 }
 
-function toSummary(row: typeof chatSummaries.$inferSelect): ChatSummary {
-  let ids: string[];
-  try {
-    ids = JSON.parse(row.sourceMessageIds) as string[];
-  } catch {
-    ids = [];
-  }
+async function buildSummary(
+  row: typeof chatSummaries.$inferSelect,
+): Promise<ChatSummary> {
+  const messageRows = await db
+    .select({ messageId: chatSummaryMessages.messageId })
+    .from(chatSummaryMessages)
+    .where(eq(chatSummaryMessages.summaryId, row.id));
   return {
     id: row.id,
     sessionId: row.sessionId,
     summary: row.summary,
-    sourceMessageIds: ids,
+    sourceMessageIds: messageRows.map((r) => r.messageId),
     tokenCount: row.tokenCount,
     createdAt: row.createdAt,
   };
@@ -692,7 +699,32 @@ export async function listSummaries(sessionId: string): Promise<ChatSummary[]> {
     .from(chatSummaries)
     .where(eq(chatSummaries.sessionId, sessionId))
     .orderBy(chatSummaries.createdAt);
-  return rows.map(toSummary);
+  if (rows.length === 0) return [];
+
+  const summaryIds = rows.map((r) => r.id);
+  const linkRows = await db
+    .select({
+      summaryId: chatSummaryMessages.summaryId,
+      messageId: chatSummaryMessages.messageId,
+    })
+    .from(chatSummaryMessages)
+    .where(inArray(chatSummaryMessages.summaryId, summaryIds));
+
+  const idsBySummary = new Map<string, string[]>();
+  for (const link of linkRows) {
+    const list = idsBySummary.get(link.summaryId) ?? [];
+    list.push(link.messageId);
+    idsBySummary.set(link.summaryId, list);
+  }
+
+  return rows.map((row) => ({
+    id: row.id,
+    sessionId: row.sessionId,
+    summary: row.summary,
+    sourceMessageIds: idsBySummary.get(row.id) ?? [],
+    tokenCount: row.tokenCount,
+    createdAt: row.createdAt,
+  }));
 }
 
 export async function addSummary(
@@ -709,12 +741,26 @@ export async function addSummary(
       id,
       sessionId,
       summary,
-      sourceMessageIds: JSON.stringify(sourceMessageIds),
       tokenCount: tokenCount ?? null,
       createdAt: now,
     })
     .returning();
-  return toSummary(rows[0]);
+  if (sourceMessageIds.length > 0) {
+    try {
+      await db.insert(chatSummaryMessages).values(
+        sourceMessageIds.map((messageId) => ({
+          summaryId: id,
+          messageId,
+        })),
+      );
+    } catch (err) {
+      // sqlite-proxy does not expose transactions; compensate by deleting
+      // the orphaned summary so the invariant summary-has-sources holds.
+      await db.delete(chatSummaries).where(eq(chatSummaries.id, id));
+      throw err;
+    }
+  }
+  return buildSummary(rows[0]);
 }
 
 export async function markMessagesSummarized(
