@@ -18,7 +18,7 @@ ORM: Drizzle ORM（sqlite-proxy）
 | `tree_nodes` | 通常 | Scenes | Folder/Scene/Note の統一ツリー |
 | `codex_types` | 通常 | Codex | Codexエントリタイプ定義（ビルトイン+カスタム） |
 | `codex_entries` | 通常 | Codex | 世界設定エントリ |
-| `codex_relation_dismissed` | 通常 | Codex | リレーション提案のDismiss記録 |
+| `codex_dismissed_relations` | 通常 | Codex | リレーション提案のDismiss記録 |
 | `codex_tags` | 通常 | Codex | 構造化タグ定義（タイプ関連付け付き） |
 | `codex_entry_tags` | 通常 | Codex | エントリ↔タグの多対多リレーション |
 | `codex_detail_definitions` | 通常 | Codex | カスタムディテール定義（タイプごと） |
@@ -76,7 +76,7 @@ codex_types (1)
 
 codex_entries (1)
  ├──< codex_entries (*)       parent_id (自己参照、リレーション)
- ├──< codex_relation_dismissed (*) entry_id, dismissed_id
+ ├──< codex_dismissed_relations (*) entry_id, dismissed_id
  ├──< codex_entry_tags (*)    entry_id
  ├──< codex_detail_values (*) entry_id
  ├──< codex_entry_phases (*)  entry_id
@@ -304,12 +304,12 @@ children_budget の動作:
 - 手動ピン（Pin with children）は予算を無視する
 - 詳細はCodexパネル設計書「サブツリートークン予算」セクション参照
 
-### codex_relation_dismissed
+### codex_dismissed_relations
 
 Codex Content内の言及からのリレーション提案をDismissした記録。
 
 ```sql
-CREATE TABLE codex_relation_dismissed (
+CREATE TABLE codex_dismissed_relations (
   entry_id     TEXT NOT NULL REFERENCES codex_entries(id) ON DELETE CASCADE,
   dismissed_id TEXT NOT NULL REFERENCES codex_entries(id) ON DELETE CASCADE,
   PRIMARY KEY (entry_id, dismissed_id)

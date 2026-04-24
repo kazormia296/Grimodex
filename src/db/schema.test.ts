@@ -18,7 +18,7 @@ import {
   projectSnapshots,
   projectSnapshotEntries,
   settings,
-  codexRelationDismissed,
+  codexDismissedRelations,
 } from "./schema";
 import * as schema from "./schema";
 
@@ -611,15 +611,15 @@ describe("settings schema", () => {
   });
 });
 
-describe("codexRelationDismissed schema", () => {
+describe("codexDismissedRelations schema", () => {
   it("has the correct table name", () => {
-    expect(getTableName(codexRelationDismissed)).toBe(
-      "codex_relation_dismissed",
+    expect(getTableName(codexDismissedRelations)).toBe(
+      "codex_dismissed_relations",
     );
   });
 
   it("has all required columns", () => {
-    const columns = Object.keys(codexRelationDismissed);
+    const columns = Object.keys(codexDismissedRelations);
     expect(columns).toContain("entryId");
     expect(columns).toContain("dismissedId");
   });

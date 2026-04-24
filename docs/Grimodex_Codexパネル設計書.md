@@ -591,7 +591,7 @@ Codexエントリ間の親子関係を管理するセクション。詳細は「
 - Content内で言及されているが、まだリレーションが設定されていないCodexエントリの一覧
 - 検出は `findMentionedEntriesAsync` ユーティリティが担当し、Codex マッチングパイプライン（Rust/JS いずれの Aho-Corasick 経路でも）が検出した mention id 集合から既存リレーション・自エントリ・Dismiss 済みを差し引いた候補を返す
 - 各候補の右に [+ Add] ボタン。クリックで子リレーションとして確定
-- Content変更時に自動更新。Dismiss した候補は `codex_relation_dismissed` テーブルに永続保存され、以後 `findMentionedEntriesAsync` の結果から恒久的に除外される（ユーザーが明示的に undo するまで再提案されない）
+- Content変更時に自動更新。Dismiss した候補は `codex_dismissed_relations` テーブルに永続保存され、以後 `findMentionedEntriesAsync` の結果から恒久的に除外される（ユーザーが明示的に undo するまで再提案されない）
 
 ---
 
@@ -837,7 +837,7 @@ DBスキーマの正規版は統合DBスキーマ設計書（`Grimodex_統合DB�
 - `codex_entries`: エントリ本体（`context_mode`、`tags_cache`、`notes`、`children_budget` カラム含む）
 - `codex_tags` / `codex_entry_tags`: 構造化タグ（多対多）
 - `codex_detail_definitions` / `codex_detail_values`: カスタムディテール
-- `codex_relation_dismissed`: リレーション提案のDismiss記録
+- `codex_dismissed_relations`: リレーション提案のDismiss記録
 - `codex_entry_phases`: フェーズ（経時的変化。アンカーシーン + フィールド上書き）
 - `codex_phase_detail_overrides`: フェーズ内のカスタムフィールド上書き値。エントリ × フェーズ × フィールド（definition）の粒度で個別 override を保持する（Summary / Content / 各カスタムディテールをそれぞれ別レコードで管理）
 - `codex_quick_pins`: CodexQuick パネルでの手動ピン留めを永続化するテーブル。自動検出結果とは独立して、ユーザーが明示的に Quick に固定したエントリを保持する。スキーマの詳細は [Codex Quick パネル設計書](./Grimodex_CodexQuickパネル設計書.md) を参照
@@ -856,7 +856,7 @@ Codex 系の Tauri Command 呼び出しは責務別に 5 つのフロントエ�
 |-----------|------|--------------|
 | `tagApi` | `codex_tags` / `codex_entry_tags` | タグ作成、リネーム、エントリへの付与/解除、`type_filter` 管理 |
 | `phaseApi` | `codex_entry_phases` / `codex_phase_detail_overrides` | フェーズ CRUD、アンカー付け替え、フィールド override の上書き/解除 |
-| `relationApi` | `codex_entries.parent_id` / `codex_relation_dismissed` | 親子設定、循環検出、Suggested の検出・Dismiss |
+| `relationApi` | `codex_entries.parent_id` / `codex_dismissed_relations` | 親子設定、循環検出、Suggested の検出・Dismiss |
 | `detailApi` | `codex_detail_definitions` / `codex_detail_values` | カスタムフィールド定義 CRUD、値の読み書き、型変更時の扱い |
 | `typeApi` | `codex_types` | ビルトイン保証（`ensureBuiltinTypes`）、カスタムタイプ CRUD、`sort_order` 並び替え |
 
@@ -1485,7 +1485,7 @@ Suggested: (from Content)
 
 - ○（白丸）で確定済みリレーション（●）と視覚的に区別
 - [+ Add] で子リレーションとして確定
-- [×] でDismiss（非表示にする。`codex_relation_dismissed` テーブルに記録）
+- [×] でDismiss（非表示にする。`codex_dismissed_relations` テーブルに記録）
 - Content変更時に自動再計算
 
 ### 自動リレーションを採用しない理由
@@ -1501,7 +1501,7 @@ Content内で言及されたエントリを自動的にリレーションにす�
 ### Dismiss永続化
 
 ```sql
-CREATE TABLE codex_relation_dismissed (
+CREATE TABLE codex_dismissed_relations (
   entry_id     TEXT NOT NULL REFERENCES codex_entries(id) ON DELETE CASCADE,
   dismissed_id TEXT NOT NULL REFERENCES codex_entries(id) ON DELETE CASCADE,
   PRIMARY KEY (entry_id, dismissed_id)

@@ -1,5 +1,5 @@
 import { db } from "@/db/client";
-import { codexRelationDismissed, codexEntries } from "@/db/schema";
+import { codexDismissedRelations, codexEntries } from "@/db/schema";
 import { eq, and } from "drizzle-orm";
 
 /**
@@ -9,9 +9,9 @@ export async function listDismissedRelationIds(
   entryId: string,
 ): Promise<string[]> {
   const rows = await db
-    .select({ dismissedId: codexRelationDismissed.dismissedId })
-    .from(codexRelationDismissed)
-    .where(eq(codexRelationDismissed.entryId, entryId));
+    .select({ dismissedId: codexDismissedRelations.dismissedId })
+    .from(codexDismissedRelations)
+    .where(eq(codexDismissedRelations.entryId, entryId));
   return rows.map((r) => r.dismissedId);
 }
 
@@ -24,7 +24,7 @@ export async function dismissRelation(
   dismissedId: string,
 ): Promise<void> {
   await db
-    .insert(codexRelationDismissed)
+    .insert(codexDismissedRelations)
     .values({ entryId, dismissedId })
     .onConflictDoNothing();
 }
@@ -37,11 +37,11 @@ export async function undismissRelation(
   dismissedId: string,
 ): Promise<void> {
   await db
-    .delete(codexRelationDismissed)
+    .delete(codexDismissedRelations)
     .where(
       and(
-        eq(codexRelationDismissed.entryId, entryId),
-        eq(codexRelationDismissed.dismissedId, dismissedId),
+        eq(codexDismissedRelations.entryId, entryId),
+        eq(codexDismissedRelations.dismissedId, dismissedId),
       ),
     );
 }

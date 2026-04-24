@@ -117,7 +117,7 @@ impl Database {
                 entry_id TEXT PRIMARY KEY REFERENCES codex_entries(id) ON DELETE CASCADE
             );
 
-            CREATE TABLE IF NOT EXISTS codex_relation_dismissed (
+            CREATE TABLE IF NOT EXISTS codex_dismissed_relations (
                 entry_id     TEXT NOT NULL REFERENCES codex_entries(id) ON DELETE CASCADE,
                 dismissed_id TEXT NOT NULL REFERENCES codex_entries(id) ON DELETE CASCADE,
                 PRIMARY KEY (entry_id, dismissed_id)
@@ -1004,7 +1004,7 @@ mod tests {
             "projects",
             "tree_nodes",
             "codex_entries",
-            "codex_relation_dismissed",
+            "codex_dismissed_relations",
             "snippets",
             "chat_sessions",
             "chat_messages",

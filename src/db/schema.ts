@@ -142,8 +142,8 @@ export const codexEntries = sqliteTable(
   ],
 );
 
-export const codexRelationDismissed = sqliteTable(
-  "codex_relation_dismissed",
+export const codexDismissedRelations = sqliteTable(
+  "codex_dismissed_relations",
   {
     entryId: text("entry_id")
       .notNull()

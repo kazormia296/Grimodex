@@ -388,7 +388,7 @@ Codexエントリは `parent_id` による自己参照で親子関係を表現�
 
 - 親エントリの下に子エントリをぶら下げる（例: 「カゾルミア帝国」→「帝国軍」→「第三師団」）
 - コンテキスト注入時: 親エントリがマッチした場合、depth 1 の子エントリの summary を自動追加
-- `codex_relation_dismissed` テーブル: システムが提案したリレーションをユーザーが却下した記録を保持（同じ提案を繰り返さない）
+- `codex_dismissed_relations` テーブル: システムが提案したリレーションをユーザーが却下した記録を保持（同じ提案を繰り返さない）
 - MVP UI: エントリごとのリレーション一覧（追加/削除）。グラフ可視化はpost-MVP。
 
 ### 5.4 チャットからの抽出
@@ -521,7 +521,7 @@ Jotai atoms（ローカル）:
 | `tree_nodes` | 通常 | Part/Chapter/Scene/Folder/Note の統一ツリー（fractional indexing） |
 | `codex_types` | 通常 | Codexエントリタイプ定義（ビルトイン4種 + カスタム） |
 | `codex_entries` | 通常 | 世界設定エントリ（context_mode、aliases、excluded_aliases 含む） |
-| `codex_relation_dismissed` | 通常 | リレーション提案のDismiss記録 |
+| `codex_dismissed_relations` | 通常 | リレーション提案のDismiss記録 |
 | `codex_tags` | 通常 | 構造化タグ定義（タイプ関連付け付き） |
 | `codex_entry_tags` | 通常 | エントリ↔タグの多対多リレーション |
 | `codex_detail_definitions` | 通常 | カスタムディテール定義（タイプごと） |

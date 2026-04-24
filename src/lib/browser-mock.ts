@@ -59,7 +59,7 @@ const SCHEMA_DDL = `
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
   );
-  CREATE TABLE IF NOT EXISTS codex_relation_dismissed (
+  CREATE TABLE IF NOT EXISTS codex_dismissed_relations (
     entry_id TEXT NOT NULL REFERENCES codex_entries(id) ON DELETE CASCADE,
     dismissed_id TEXT NOT NULL REFERENCES codex_entries(id) ON DELETE CASCADE,
     PRIMARY KEY (entry_id, dismissed_id)
