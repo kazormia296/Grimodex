@@ -382,9 +382,23 @@ impl Database {
                 PRIMARY KEY (snapshot_id, version_id)
             );
 
-            CREATE TABLE IF NOT EXISTS settings (
+            -- App-wide key-value store (shared across projects). All current
+            -- setting keys (editor/display/ai/keys/data/revision/tree/export)
+            -- live here since they're user preferences, not project metadata.
+            CREATE TABLE IF NOT EXISTS app_settings (
                 key   TEXT PRIMARY KEY,
                 value TEXT NOT NULL
+            );
+
+            -- Project-scoped key-value store. Reserved for future keys that
+            -- need per-project overrides (e.g. project-specific naming rules).
+            -- Currently unused by the app, but the table exists so adding a
+            -- project-scoped key later does not require a schema change.
+            CREATE TABLE IF NOT EXISTS project_settings (
+                project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                key        TEXT NOT NULL,
+                value      TEXT NOT NULL,
+                PRIMARY KEY (project_id, key)
             );
 
             -- FTS5 full-text search indexes (trigram tokenizer for Japanese)
@@ -1053,7 +1067,8 @@ mod tests {
             "chat_sessions",
             "chat_messages",
             "authorship_spans",
-            "settings",
+            "app_settings",
+            "project_settings",
         ];
         for table in &expected_tables {
             let rows = db
@@ -1558,7 +1573,7 @@ mod tests {
         let db = test_db();
 
         db.execute(
-            "INSERT INTO settings (key, value) VALUES (?, ?)",
+            "INSERT INTO app_settings (key, value) VALUES (?, ?)",
             &[
                 Value::String("editor.fontSize".into()),
                 Value::String("16".into()),
@@ -1569,7 +1584,7 @@ mod tests {
 
         let rows = db
             .execute(
-                "SELECT value FROM settings WHERE key = ?",
+                "SELECT value FROM app_settings WHERE key = ?",
                 &[Value::String("editor.fontSize".into())],
                 "get",
             )
@@ -1577,7 +1592,7 @@ mod tests {
         assert_eq!(rows[0]["value"], Value::String("16".into()));
 
         db.execute(
-            "INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)",
+            "INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)",
             &[
                 Value::String("editor.fontSize".into()),
                 Value::String("18".into()),
@@ -1588,7 +1603,7 @@ mod tests {
 
         let rows = db
             .execute(
-                "SELECT value FROM settings WHERE key = ?",
+                "SELECT value FROM app_settings WHERE key = ?",
                 &[Value::String("editor.fontSize".into())],
                 "get",
             )

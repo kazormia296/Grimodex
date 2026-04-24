@@ -100,7 +100,7 @@ Scenesパネルでの新規ノード作成時の自動命名を設定する。
 | ノート命名プレフィックス | テキスト入力 | `ノート`（i18next フォールバック） | 空にするとタイトルなしで作成。未設定時は `uiLanguage` に追従 |
 | 採番スコープ | ドロップダウン | プロジェクト全体（一意） | `project`: プロジェクト全体で連番。`folder`: フォルダー内でのみ連番 |
 
-設定キー（`settings` テーブル）:
+設定キー（`app_settings` テーブル）:
 
 | キー | デフォルト値 |
 |------|-------------|
@@ -213,7 +213,7 @@ Response reserve        [ 5%  ▼] (min: 2,000)
 | 各レイヤーのfloor | 表示のみ | 固定値 | 最小トークン数。小コンテキストモデルでの最低保証 |
 
 - 合計が100%を超える場合はバリデーションエラーを表示し保存不可
-- 変更はプロジェクト単位で保存（`settings` テーブル、キー: `ai.contextBudget.*`）
+- 変更はプロジェクト単位で保存（`app_settings` テーブル、キー: `ai.contextBudget.*`）
 - Chat設計書のプロンプトプレビューモーダルで実際の配分結果を確認可能
 
 ---
@@ -333,7 +333,7 @@ Inline AI palette                Ctrl+Space
 
 ### 永続化
 
-カスタムキーバインドは `project.db` の `settings` テーブルにJSON形式で保存。
+カスタムキーバインドは `project.db` の `app_settings` テーブルにJSON形式で保存。
 
 ---
 
@@ -452,7 +452,7 @@ CREATE TABLE codex_types (
 );
 ```
 
-タイプ一覧は `typeApi`（Zustand ストア）経由で購読・更新する。Settings の Codex カテゴリは `typeApi` を薄くラップした UI として動作し、`settings` テーブルには保存しない。
+タイプ一覧は `typeApi`（Zustand ストア）経由で購読・更新する。Settings の Codex カテゴリは `typeApi` を薄くラップした UI として動作し、`app_settings` テーブルには保存しない。
 
 ---
 
@@ -498,7 +498,7 @@ Linter rules
 
 ### 設定の保存先
 
-Linter 設定は `settings` テーブルではなく専用の `lintConfigStore`（Zustand + 永続化レイヤー）で管理する。無視リストは SQLite のテーブル `lint_ignores` に保存され、シーン・スニペットの CRUD と整合を取る。詳細は Linter 設計書に委譲。
+Linter 設定は `app_settings` テーブルではなく専用の `lintConfigStore`（Zustand + 永続化レイヤー）で管理する。無視リストは SQLite のテーブル `lint_ignores` に保存され、シーン・スニペットの CRUD と整合を取る。詳細は Linter 設計書に委譲。
 
 ---
 
@@ -539,7 +539,7 @@ UI の外観など「どのプロジェクトを開いても同じであって�
 
 #### プロジェクト固有設定
 
-上記以外の項目はすべて `settings` テーブル（Drizzle ORM 経由）に 300ms debounce で保存する。プロジェクトを開き直すと当該プロジェクトの `project.db` から読み戻される。
+上記以外の項目はすべて `app_settings` テーブル（Drizzle ORM 経由）に 300ms debounce で保存する。プロジェクトを開き直すと当該プロジェクトの `project.db` から読み戻される。
 
 #### カテゴリ独自ストア
 
@@ -548,38 +548,38 @@ UI の外観など「どのプロジェクトを開いても同じであって�
 | カテゴリ | 委譲先 | 備考 |
 |---------|-------|------|
 | Codex types | `typeApi`（Zustand） + `codex_types` テーブル | ビルトイン／カスタムタイプの CRUD |
-| Linter (ルール + 無視リスト) | `lintConfigStore` + `lint_ignores` テーブル | `settings` テーブルには保存しない |
+| Linter (ルール + 無視リスト) | `lintConfigStore` + `lint_ignores` テーブル | `app_settings` テーブルには保存しない |
 | AI (APIキー) | Tauri keyring | OS 標準のセキュアストレージ |
-| AI (モデル選択 / 拡張思考 / ホワイトリスト等) | `chat/store` + `settings` テーブル | Chat パネルと共有 |
+| AI (モデル選択 / 拡張思考 / ホワイトリスト等) | `chat/store` + `app_settings` テーブル | Chat パネルと共有 |
 
 #### 保存先サマリ
 
 | 設定カテゴリ | 保存先 | 理由 |
 |-------------|--------|------|
 | Project (メタ情報) | `projects` テーブル | プロジェクト固有 |
-| Project (ネーミング / Phase resolution) | `settings` テーブル | プロジェクト固有 |
+| Project (ネーミング / Phase resolution) | `app_settings` テーブル | プロジェクト固有 |
 | AI (APIキー) | Tauri keyring | セキュリティ |
-| AI (モデル・予算・thinking等) | `chat/store` + `settings` テーブル | プロジェクト固有 |
-| Editor | `settings` テーブル | プロジェクト固有 |
+| AI (モデル・予算・thinking等) | `chat/store` + `app_settings` テーブル | プロジェクト固有 |
+| Editor | `app_settings` テーブル | プロジェクト固有 |
 | Display (theme / uiLanguage / uiScale / reduceMotion) | `global-settings.json` | グローバル |
-| Display (Codex highlight / Attribution opacity 等) | `settings` テーブル | プロジェクト固有 |
-| Keys | `settings` テーブル | プロジェクト固有 |
-| Data (バックアップ / リビジョン / エクスポート) | `settings` テーブル | プロジェクト固有 |
+| Display (Codex highlight / Attribution opacity 等) | `app_settings` テーブル | プロジェクト固有 |
+| Keys | `app_settings` テーブル | プロジェクト固有 |
+| Data (バックアップ / リビジョン / エクスポート) | `app_settings` テーブル | プロジェクト固有 |
 | Codex (types) | `codex_types` テーブル（`typeApi` 経由） | プロジェクト固有 |
-| Linter (ルール) | `lintConfigStore` → `settings` テーブル | プロジェクト固有 |
+| Linter (ルール) | `lintConfigStore` → `app_settings` テーブル | プロジェクト固有 |
 | Linter (無視リスト) | `lint_ignores` テーブル | プロジェクト固有 |
 | About | 表示のみ（`welcome.seen` のみグローバル） | — |
 
-### settingsテーブル
+### app_settings テーブル
 
 ```sql
-CREATE TABLE settings (
+CREATE TABLE app_settings (
   key   TEXT PRIMARY KEY,
   value TEXT NOT NULL  -- JSON value
 );
 ```
 
-シンプルなKey-Valueストア。各設定項目は `editor.fontSize`、`display.theme`、`ai.defaultChatModel` のようなドット区切りのキーで保存。
+アプリ全体のKey-Valueストア。各設定項目は `editor.fontSize`、`display.theme`、`ai.defaultChatModel` のようなドット区切りのキーで保存。`project_settings` テーブルも併存するが、現在のすべてのキーはアプリ全体のプリファレンスのため `app_settings` 側に格納される（詳細は統合DBスキーマ参照）。
 
 ```typescript
 // 使用例

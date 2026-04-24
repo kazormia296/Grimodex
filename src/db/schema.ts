@@ -585,10 +585,26 @@ export const codexPhaseDetailOverrides = sqliteTable(
   ],
 );
 
-export const settings = sqliteTable("settings", {
+// App-wide key-value store (shared across projects). All current setting keys
+// (editor/display/ai/keys/data/revision/tree/export) live here since they are
+// user preferences, not project metadata.
+export const appSettings = sqliteTable("app_settings", {
   key: text("key").primaryKey(),
   value: text("value").notNull(),
 });
+
+// Project-scoped key-value store. Reserved for future per-project overrides.
+export const projectSettings = sqliteTable(
+  "project_settings",
+  {
+    projectId: text("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    key: text("key").notNull(),
+    value: text("value").notNull(),
+  },
+  (table) => [primaryKey({ columns: [table.projectId, table.key] })],
+);
 
 // Map panel tables
 

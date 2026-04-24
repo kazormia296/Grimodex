@@ -694,7 +694,7 @@ VS Code + JetBrains ハイブリッドのDock/Float/Tab/Splitモデルを採用:
 
 > 詳細は [`Grimodex_Settingsパネル設計書.md`](Grimodex_Settingsパネル設計書.md) を参照。
 
-設定は `settings` テーブルにドット記法のKey-Valueで保存する。APIキーのみOS keyringに保存。
+設定は `app_settings` テーブルにドット記法のKey-Valueで保存する（プロジェクト跨ぎで共有）。APIキーのみOS keyringに保存。
 
 **主要設定項目:**
 

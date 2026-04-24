@@ -17,7 +17,8 @@ import {
   contentVersions,
   projectSnapshots,
   projectSnapshotEntries,
-  settings,
+  appSettings,
+  projectSettings,
   codexDismissedRelations,
 } from "./schema";
 import * as schema from "./schema";
@@ -598,13 +599,26 @@ describe("authorshipSpans schema", () => {
   });
 });
 
-describe("settings schema", () => {
+describe("appSettings schema", () => {
   it("has the correct table name", () => {
-    expect(getTableName(settings)).toBe("settings");
+    expect(getTableName(appSettings)).toBe("app_settings");
   });
 
   it("has all required columns", () => {
-    const columns = Object.keys(settings);
+    const columns = Object.keys(appSettings);
+    expect(columns).toContain("key");
+    expect(columns).toContain("value");
+  });
+});
+
+describe("projectSettings schema", () => {
+  it("has the correct table name", () => {
+    expect(getTableName(projectSettings)).toBe("project_settings");
+  });
+
+  it("has all required columns", () => {
+    const columns = Object.keys(projectSettings);
+    expect(columns).toContain("projectId");
     expect(columns).toContain("key");
     expect(columns).toContain("value");
   });
@@ -911,6 +925,7 @@ describe("cross-table relationships", () => {
     expect(getTableName(projectSnapshotEntries)).toBe(
       "project_snapshot_entries",
     );
-    expect(getTableName(settings)).toBe("settings");
+    expect(getTableName(appSettings)).toBe("app_settings");
+    expect(getTableName(projectSettings)).toBe("project_settings");
   });
 });

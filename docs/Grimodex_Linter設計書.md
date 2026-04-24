@@ -582,7 +582,7 @@ Phase 1 のデフォルト `all-halfwidth` は**日本語横書き小説で最�
 **2 層構成**:
 
 1. **組み込みデフォルト**（Rust コード内部、またはアプリ同梱 JSON）
-2. **プロジェクト上書き**（プロジェクト DB の `settings` テーブル）
+2. **プロジェクト上書き**（プロジェクト DB の `app_settings` テーブル）
 
 ユーザーグローバル層は**現状なし**。他 Settings カテゴリが将来グローバル層を追加する時に横断的に昇格する方針。シーン層も作らない（Phase 3 のインライン無効化記法でカバー）。
 
@@ -590,10 +590,10 @@ Phase 1 のデフォルト `all-halfwidth` は**日本語横書き小説で最�
 
 #### ルール設定本体
 
-プロジェクト DB の既存 `settings` テーブル（key-value, JSON value）に **1 キー `lint.config`** で JSON blob として格納。既存 Settings カテゴリ（Editor, Display 等）の規約に揃える。
+プロジェクト DB の既存 `app_settings` テーブル（key-value, JSON value）に **1 キー `lint.config`** で JSON blob として格納。既存 Settings カテゴリ（Editor, Display 等）の規約に揃える。
 
 ```typescript
-// settings テーブルの lint.config キーに入る JSON
+// app_settings テーブルの lint.config キーに入る JSON
 {
   "schemaVersion": 1,            // 構造変更時にインクリメント。マイグレーションのキー
   "enabled": true,
@@ -1166,7 +1166,7 @@ Linter warnings:
 #### 状態の永続化
 
 - パネルの表示/非表示、位置、サイズ → レイアウトシステム経由で自動永続化
-- フィルタ設定、Group by 選択 → `settings` テーブル（`lint.panel.ui`）※ユーザー好みに近い性質のため、将来グローバル層が導入された時点で**昇格候補**。現状はプロジェクトごとに独立（他 Settings と足並みを揃えるため）
+- フィルタ設定、Group by 選択 → `app_settings` テーブル（`lint.panel.ui`）※ユーザー好みに近い性質のため、将来グローバル層が導入された時点で**昇格候補**。現状はプロジェクトごとに独立（他 Settings と足並みを揃えるため）
 - スクロール位置、展開状態 → メモリのみ（セッション限定）
 
 #### 永続無視リスト
@@ -1923,7 +1923,7 @@ UI 側（Linter パネル）はサブフェーズに分けて実装:
 | Codex 連動の判定 | 完全一致のみ。表記ゆれは Codex Alias で吸収 |
 | AI 連携 | Linter には組み込まない（確定論性を保つ） |
 | 設定階層 | 2層（組み込みデフォルト → プロジェクト上書き）。グローバル層は将来検討 |
-| ルール設定の保存 | `settings` テーブルに `lint.config` の 1 キー JSON blob |
+| ルール設定の保存 | `app_settings` テーブルに `lint.config` の 1 キー JSON blob |
 | `lint.config` のバージョン管理 | `schemaVersion` フィールドを Phase 1 から持ち、構造変更時にマイグレーション関数を走らせる |
 | ルール ID prefix 予約 | `ja/` / `en/` / `project/`（Phase 1）+ `codex/`（Phase 2）。将来候補 `craft/` `style/` `user/` |
 | 用語統一辞書の保存 | 専用テーブル `lint_term_dictionary` |

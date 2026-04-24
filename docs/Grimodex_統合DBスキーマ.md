@@ -37,7 +37,8 @@ ORM: Drizzle ORM（sqlite-proxy）
 | `project_snapshots` | 通常 | Editor | プロジェクト全体のプロジェクトスナップショット |
 | `project_snapshot_entries` | 通常 | Editor | プロジェクトスナップショットとリビジョンの紐付け |
 | `authorship_spans` | 通常 | Editor | AI帰属追跡スパン |
-| `settings` | 通常 | Settings | Key-Value設定ストア |
+| `app_settings` | 通常 | Settings | アプリ全体のKey-Value設定ストア |
+| `project_settings` | 通常 | Settings | プロジェクトごとのKey-Value設定ストア（将来拡張用） |
 | `codex_fts` | FTS5仮想 | Codex | Codexエントリの全文検索 |
 | `snippets_fts` | FTS5仮想 | Snippets | Snippetの全文検索 |
 | `chat_messages_fts` | FTS5仮想 | Chat History | チャットメッセージの全文検索 |
@@ -62,7 +63,7 @@ projects (1)
  ├──< snippets (*)            project_id
  ├──< chat_sessions (*)       project_id
  ├──< project_snapshots (*)   project_id
- └──< settings (*)            (key prefix で暗黙的に紐づく)
+ └──< project_settings (*)    project_id
 
 tree_nodes (1)
  ├──< tree_nodes (*)          parent_id (自己参照、ツリー構造)
@@ -645,16 +646,31 @@ CREATE INDEX idx_phase_detail_overrides_phase ON codex_phase_detail_overrides(ph
 
 > **PKの設計判断:** サロゲートキー `id` は不要。`(phase_id, definition_id)` の複合主キーが自然キーであり、このテーブルを参照する外部キーは存在しない。
 
-### settings
+### app_settings
 
-アプリケーション設定のKey-Valueストア。
+アプリ全体のKey-Valueストア（プロジェクト跨ぎで共有）。エディタの表示設定、キーバインド、バックアップ設定、AIモデル選択など、ユーザー単位のプリファレンスを保存する。
 
 ```sql
-CREATE TABLE settings (
+CREATE TABLE app_settings (
   key   TEXT PRIMARY KEY,       -- ドット区切り: 'editor.fontSize', 'display.theme'
   value TEXT NOT NULL            -- JSON value
 );
 ```
+
+### project_settings
+
+プロジェクトごとのKey-Valueストア。将来的な per-project オーバーライドの受け皿として予約されており、現時点ではアプリから書き込まれていない。プロジェクト削除時に CASCADE で連鎖削除される。
+
+```sql
+CREATE TABLE project_settings (
+  project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  key        TEXT NOT NULL,
+  value      TEXT NOT NULL,
+  PRIMARY KEY (project_id, key)
+);
+```
+
+> **使い分け:** 現在 `DEFAULT_SETTINGS` 内のキーはすべてユーザー単位のプリファレンス（表示・機能オプション）なので `app_settings` に格納される。プロジェクト固有のメタデータ（ジャンル、POV、スタイルガイド等）は既に `projects` テーブルのカラムとして持つため、`project_settings` はまだ empty-ready 状態。将来 `tree.numberingScope` など「プロジェクトごとに変わりうる設定」が出てきたらこちらに移す。
 
 ---
 
@@ -920,7 +936,8 @@ SQLiteにはネイティブJSON型がないため、TEXT カラムにJSON文字�
 | `codex_detail_definitions.field_config` | `object` | `{"multiline":true}`, `{"options":["人間","エルフ"]}`, `{"allowedTypes":["faction"]}` |
 | `snippets.tags_cache` | `{name: string, color: string}[]` | `[{"name":"dialogue","color":"#ff6b6b"}]`（snippet_entry_tagsの非正規化キャッシュ） |
 | `chat_messages.metadata` | `object` | `{"extractedCodex":["id1"],"extractedSnippets":["id2"]}` |
-| `settings.value` | `any` | `"16"`, `"system"`, `"true"` |
+| `app_settings.value` | `any` | `"16"`, `"system"`, `"true"` |
+| `project_settings.value` | `any` | `"16"`, `"system"`, `"true"` |
 
 SQLite 3.38+の `json()` / `json_extract()` 関数でクエリ内でのJSON操作が可能。ただしDrizzle ORM経由のアプリケーション層でのパース/シリアライズを基本とする。
 
@@ -1101,6 +1118,17 @@ Timelineパネル設計書の策定に伴い、Phase解決で使う時間軸を�
 |---------|----------|------|
 | `chat_sessions.pinned_codex` | `chat_session_pinned_codex` | codex/snippet 削除時にピンも自動削除、重複ピンは UNIQUE で防止 |
 | `chat_summaries.source_message_ids` | `chat_summary_messages` | message 削除時にリンクも自動削除、要約→メッセージの逆引きが SQL で可能 |
+
+### settings テーブル分離
+
+旧 `settings` テーブルを `app_settings` / `project_settings` の2テーブルに分離:
+
+| 旧 | 新 | スコープ |
+|----|-----|---------|
+| `settings` | `app_settings` | アプリ全体（既存キーはすべてここに移行） |
+| — | `project_settings(project_id, key, value)` | プロジェクト別（現時点では未使用、将来拡張用） |
+
+現状のキー（editor/display/ai/keys/data/revision/tree/export）はすべてユーザープリファレンスで app-level のため `app_settings` 行き。プロジェクト固有メタデータは既に `projects` テーブルの専用カラム（genre、style_guide 等）で管理されているため、`project_settings` は「empty-ready」状態で用意。
 
 ### 複合 FK による Codex タイプ参照整合性
 

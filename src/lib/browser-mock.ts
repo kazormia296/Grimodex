@@ -122,9 +122,15 @@ const SCHEMA_DDL = `
     tag_id TEXT NOT NULL REFERENCES codex_tags(id) ON DELETE CASCADE,
     PRIMARY KEY (entry_id, tag_id)
   );
-  CREATE TABLE IF NOT EXISTS settings (
+  CREATE TABLE IF NOT EXISTS app_settings (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS project_settings (
+    project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    key TEXT NOT NULL,
+    value TEXT NOT NULL,
+    PRIMARY KEY (project_id, key)
   );
   CREATE TABLE IF NOT EXISTS codex_types (
     id TEXT PRIMARY KEY,
