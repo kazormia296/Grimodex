@@ -240,12 +240,13 @@ Noteの場合:
 
 | ボタン | 動作 | 状態 |
 |--------|------|------|
+| Aa | フォントサイズ調整 | ポップオーバーで本文フォントサイズを即時変更。値は Settings の `editor.fontSize` に直結し、全タブ・全 Group に即時反映される |
 | Attr | Attribution表示トグル | ON: AI帰属マーカー表示、OFF: 非表示 |
 | Cmt | コメント表示トグル | ON: コメント付きテキストの波線下線+ホバーポップオーバー表示、OFF: 非表示（コメントデータは保持） |
 | Focus | フォーカスモードトグル | ON: 現在の段落以外を半透明化 |
 | TW | タイプライターモードトグル | ON: カーソル行を常に垂直中央に固定 |
 
-これら4つは独立したトグルで、組み合わせ可能。
+Attr / Cmt / Focus / TW の 4 つは独立したトグルで、組み合わせ可能。Aa はトグルではなくポップオーバー入口。
 
 #### オーバーフローメニュー（⋮）
 
@@ -357,6 +358,7 @@ Noteの場合:
 | CharacterCount | 文字数・単語数カウント |
 | Typography | スマートクォート等の自動変換 |
 | Focus | フォーカスクラスの付与（FocusDim Decorationの基盤） |
+| Table / TableRow / TableHeader / TableCell | 表組の編集。公式 Table 一式を登録しておき、Markdown インポートやペースト経由の表復元に対応する。Toolbar には露出せず、内部的に挿入・編集できる状態に留める |
 
 #### サードパーティ拡張
 
@@ -398,21 +400,29 @@ Mark.create({
   name: 'authorship',
   addAttributes() {
     return {
-      source: { default: 'unknown' },    // 'human' | 'ai' | 'unknown'
-      model: { default: null },            // 'claude-sonnet-4.6' etc.
-      timestamp: { default: null },        // ISO 8601
-      chatMessageId: { default: null },    // 抽出元チャットメッセージへの参照
+      source: { default: 'unknown' },       // 'human' | 'ai' | 'unknown'
+      model: { default: null },              // 'claude-sonnet-4.6' etc.
+      timestamp: { default: null },          // ISO 8601
+      chatMessageId: { default: null },      // 抽出元チャットメッセージへの参照
+      traceId: { default: null },            // Agent Trace v0.1.0 の trace ID（AI生成の再現性トラッキング用）
+      toolName: { default: null },           // 生成に使用したツール識別子（'chat-insert' / 'inline-ai' / 'snippet' など）
+      toolVersion: { default: null },        // ツール側のバージョン（スキーマ変更に備えた互換判定用）
+      manualOverride: { default: false },    // ユーザーが AttributionOverrideMenu で手動変更したスパンかどうか
+      originalLength: { default: null },     // 付与時点のスパン長。後続編集による縮退度の推定に使用
     }
   },
 })
 ```
+
+`traceId` / `toolName` / `toolVersion` は Agent Trace v0.1.0 連携のための拡張属性で、AI による生成の出処をスパン単位で追跡する目的を持つ。`manualOverride` と `originalLength` は AttributionOverrideMenu によるユーザー上書き、および AiEditedPlugin による human 化の挙動と合わせて帰属の変遷を追える状態を保つ。
 
 付与ルール:
 - キーボード入力 → `{ source: 'human' }`
 - AIチャットからの「挿入」→ `{ source: 'ai', model, chatMessageId }`（エージェントが既存humanテキストを取得・再構成して提示した場合も、原文とAI生成部分の実態的な帰属の判別がつかないため `ai` とする）
 - インラインAIでAccept → `{ source: 'ai', model }`
 - SnippetのD&D挿入 → 元Snippetのsourceを継承
-- `ai` マーク付きテキストの編集 → **`ai` のまま変わらない**（人間が手を入れても元のsourceを維持）
+- `ai` / `unknown` スパン内にユーザーが文字を挿入 → **挿入テキストのみ human 化**される（AiEditedPlugin の挙動。後述「AiEditedPlugin」参照）。既存スパンはスプリットされつつ元の属性を維持する
+- `ai` / `unknown` スパン内のテキストを削除しただけの場合 → 残存部分は元の `source` を維持する
 - **アプリ内ペースト** → 元テキストのAuthorshipMarkを継承（後述「クリップボードのAuthorship伝搬」参照）
 - **外部ペースト**（AuthorshipMark情報なし）、マイグレーション前のテキスト、AuthorshipMark未付与のテキスト → `{ source: 'unknown' }`
 
@@ -460,6 +470,35 @@ Mark.create({
 - Markdownエクスポート時にはコメントを除外（クリーンなMarkdown）
 - Find & Replaceの検索対象にはならない（コメントは本文ではない）
 
+#### その他のカスタム拡張
+
+本文編集体験を整える補助的な拡張。いずれも StarterKit + 上記カスタムノード／マークの挙動を補強する目的を持つ。
+
+**ParagraphWithEmptyLineSupport**
+
+- StarterKit の Paragraph を置き換える形で読み込み、空段落を `<p></p>` として HTML / ProseMirror JSON 双方に保持する
+- Markdown ラウンドトリップ（エクスポート → インポート）で空行が潰れる問題を防ぐためのもので、Markdown シリアライズ時には空段落を改行のみの行として出力する
+- 通常の入力フローには影響しない（空 Enter が連続した場合のみ差分が発生する）
+
+**InlineAtomNavigationExtension**
+
+- `Ctrl+Home` / `Ctrl+End` でドキュメント先頭 / 末尾へのジャンプを提供する
+- Ruby のような inline-block な atom ノードを跨ぐとき、ProseMirror 既定のカーソル移動が不正な位置に吸着することがあるため、atom ノードを安全にスキップするように再実装する
+- 選択範囲を保持した拡張（Shift 併用）は ProseMirror 既定の挙動に任せる
+
+**ToolbarShortcutsExtension**
+
+- StarterKit 既定の `Mod-Shift-s`（Strike）と `Mod-Alt-1` / `Mod-Alt-2` / `Mod-Alt-3`（Heading）に加えて、設計書のショートカット表通り `Mod-Shift-x`（Strike）と `Mod-1` / `Mod-2` / `Mod-3`（Heading 1/2/3）を別名バインドとして登録する
+- 既定のバインドは撤去せず、両方のショートカットで同じコマンドが発火する
+- Ruby / EmphasisDots / Comment のショートカットは各カスタムマーク側で定義し、本拡張は StarterKit のフォーマット系のみを対象とする
+
+**SlashCommandExtension**
+
+- エディタの **行頭または空行でのみ** `/` を入力するとインライン AI コマンドサジェスト（Slash メニュー）を起動する
+- サジェスト候補: `continue` / `describe` / `dialogue` / `summarize` / `brainstorm` / `rewrite` / `translate`
+- 行中での `/` 入力や、コードブロック / URL 内では発火しない（フォーマット入力として扱う）
+- 選択後は既存のインライン AI パレットへ委譲し、以降の diff 表示 / Accept / Reject フローはインライン AI 側の仕様に従う（「インラインAIコマンド」セクション参照）
+
 #### クリップボードのAuthorship伝搬
 
 アプリ内のテキストコピー時にAuthorshipMarkをクリップボードに保持し、ペースト時に復元する。
@@ -467,11 +506,28 @@ Mark.create({
 **コピー元**: エディタ本文（Scene/Note/Codex/Snippet）、AIチャットメッセージ、Codexミニエディタ、Snippetミニエディタ
 
 **仕組み**:
-- コピー時にTipTapのクリップボードシリアライザを拡張し、通常の `text/plain` と `text/html` に加えてカスタムMIMEタイプ `application/x-grimodex-authorship` にAuthorshipMarkのJSONを付与する
+- コピー時にTipTapのクリップボードシリアライザを拡張し、通常の `text/plain` と `text/html` に加えてカスタムMIMEタイプ `application/x-grimodex-authorship`（マーカーは `data-grimodex-source`）にAuthorshipMarkのJSONを付与する
 - ペースト時に `application/x-grimodex-authorship` が存在すればAuthorshipMarkを復元し、存在しなければ `{ source: 'unknown' }` を付与する
 - AIチャットメッセージのコピー（「Copy」ボタンまたはテキスト選択コピー）時はメッセージ全体に `{ source: 'ai', model, chatMessageId }` を付与する
 
 **例**: エディタで「人間が書いた文」と「AIが生成した文」を含むテキストをコピーし、別のシーンにペーストした場合、各範囲の `source` がそれぞれ `human` と `ai` として正しく復元される
+
+**ペースト handler の 3 系統分岐**
+
+ペーストイベントの処理は、クリップボード内の情報源に応じて 3 つに分岐する。いずれの系統でも、結果のスパンが `ai` / `unknown` の場合は AiEditedPlugin の対象になるため、プログラム的挿入を示す `programmaticInsert` meta をトランザクションに立てて誤検知を防ぐ。
+
+- **Case 1: Grimodex 固有コピー**（`application/x-grimodex-authorship` / `data-grimodex-source` を含む）
+  - 保存された AuthorshipMark をそのまま復元してペーストする
+  - `programmaticInsert` meta を立てて AiEditedPlugin が human 化しないようにする
+  - `ai` / `unknown` スパンのペースト結果もそのままの `source` で保持される
+
+- **Case 2: ProseMirror 内部コピー**（`data-pm-slice` を含むが Grimodex 固有 MIME を含まない）
+  - ProseMirror が既定で提供する slice を `replaceSelection` に直接渡す
+  - `programmaticInsert` meta を立てて AiEditedPlugin の誤検知を避ける
+  - **注記**: TipTap 本体のペーストバグ回避として用意しているパスで、TipTap upstream PR がマージされた時点で Case 2 の分岐は撤去し、Case 1 / Case 3 の 2 系統に統合する予定
+
+- **Case 3: 外部テキスト**（平文のみ、Grimodex / ProseMirror いずれのマーカーも持たない）
+  - プレーンテキストとして挿入し、範囲全体に `{ source: 'unknown' }` を付与する
 
 #### AuthorshipMark のスパン操作ルール
 
@@ -484,6 +540,29 @@ Mark.create({
 **削除（Delete）:** スパンの一部を削除した場合、残存部分は元のマーク属性を維持する。スパン全体が削除された場合、マークも消滅する。
 
 Markdownエクスポート時には `tiptap-markdown` を使用し、AuthorshipMarkを除外したクリーンなMarkdownを出力する。
+
+#### AiEditedPlugin（ai / unknown スパンの human 化）
+
+ProseMirror プラグインとして実装され、`ai` または `unknown` スパンの内部にユーザーがキーボード入力でテキストを挿入した場合、**挿入されたテキスト範囲からのみ AuthorshipMark を剥がす**ことで human として扱い直す。既存スパンは挿入位置でスプリットされ、前後の範囲は元の `source` / `model` / `traceId` 等の属性を維持する。
+
+副作用を避けるためのオプトアウト機構として、`programmaticInsert` meta を立てたトランザクションには一切作用しない。以下の挿入経路ではこの meta が立つ:
+
+- クリップボードのペースト復元（Grimodex 固有 MIME の AuthorshipMark 情報を持つペースト）
+- Snippet の D&D / 挿入によるスパン復元
+- インライン AI / Chat Insert の Accept によるスパン付与
+- Undo / Redo の再生（属性復元を阻害しないため）
+
+これにより、AuthorshipMark を積極的に「付け直す」系の動作と「ユーザー入力で human 化する」系の動作を同一プラグインで両立する。
+
+#### AttributionOverrideMenu（手動オーバーライド）
+
+エディタ上で選択範囲を右クリックするとコンテキストメニューに「Attribution を変更」項目が表示され、`human` / `ai` / `unknown` の 3 値に手動で切り替えられる。変更時は:
+
+- 選択範囲に対応するスパンの `source` を書き換え
+- `manualOverride: true` を付与
+- `timestamp` は変更時刻に更新（`model` 等は変更前の値を保持）
+
+`manualOverride: true` のスパンは Attribution パネルやレポートで「手動上書き」としてマーク表示される想定で、本 Editor パネル側では通常の `source` と同じハイライト色を使う。
 
 #### Pure Decorations（文書構造に影響しない装飾）
 
@@ -514,6 +593,13 @@ Markdownエクスポート時には `tiptap-markdown` を使用し、AuthorshipM
 - ツールバーの「Focus」トグルがON時のみ表示
 - 現在カーソルがあるブロック（段落/見出し/リスト等）以外のブロックに `opacity: 0.3` を適用
 - カーソル移動に追従
+
+**LintDecorationPlugin**
+- Linter 設計書で定義される Lint ルール違反を、本文中に波線デコレーションで可視化する ProseMirror プラグイン
+- 色・波線スタイルは重要度（severity）に応じて切り替わる。ホバー時にルール名・違反内容・修正候補を示すツールチップ / 右サイドの Lint パネルと同期する（詳細な UI は Linter 設計書を参照）
+- 本プラグインは **Scene タブかつ Primary Group** でのみ適用される。具体的な適用条件は `groupIndex === 0 && !isCodexMode && !isSnippetMode` を満たすエディタインスタンスに限る。Secondary Group / Codex タブ / Snippet タブ / Note タブでは Lint 下線は描画しない
+- 適用対象外のエディタでも Lint 検査自体はバックグラウンドで走る余地を残すが、本 Editor パネルからは視覚フィードバックを提供しない
+- ルール定義、severity 分類、修正提案、オートフィックスの仕様は Linter 設計書（`Grimodex_Linter設計書.md`）を正とする
 
 ### エディタキャンバスのスタイル
 
@@ -1109,7 +1195,8 @@ Acceptした直後に再度 `/` や `Ctrl+Shift+Space` を押せば、前の生�
 - CSS `writing-mode: vertical-rl` を適用したリードオンリービュー
 - エディタの変更にリアルタイム追従
 - ルビは縦書きでも正しく表示
-- エディタでカーソルがある行に対応する位置をハイライト（読書位置の同期）
+- 本体実装としては StarterKit ベースのエディタに `writing-mode: vertical-rl` を適用した薄いビューを想定する（カスタム拡張は最小限で、AuthorshipMark 等の装飾は横書きエディタ側に委ねる）
+- **カーソル行ハイライトの同期はこの設計書では規定しない**。リードオンリー側で保持すべき同期状態・ハイライト表現は今後別途定義する余地を残す
 
 ---
 
@@ -1124,7 +1211,14 @@ Acceptした直後に再度 `/` や `Ctrl+Shift+Space` を押せば、前の生�
 
 ### 保存先
 
-本文コンテンツはDBの `tree_nodes.content` カラムに保存する。
+本文コンテンツの保存先はタブの種類によって異なる。
+
+| タブ種類 | 保存先 | 備考 |
+|---------|-------|------|
+| Scene / Note | `tree_nodes.content` カラム | タブ種別ごとの差異は後述の表を参照 |
+| Codex（通常） | `codex_entries.content` カラム | Codex エントリの本文 |
+| Codex（Dynamic Phase プレビュー中） | `codex_phase_detail_overrides.contentOverride` カラム | 後述「Codex Dynamic Phases の Phase override」参照 |
+| Snippet | `snippets.content` カラム | Snippet の本文 |
 
 ### 保存内容
 
@@ -1132,7 +1226,7 @@ Acceptした直後に再度 `/` や `Ctrl+Shift+Space` を押せば、前の生�
 - ロスレス保存: AuthorshipMark等のカスタムMarkもそのまま保持され、変換コストなし
 - `tiptap-markdown` はMarkdownインポート/エクスポート時のみ使用（自動保存には関与しない）
 - AuthorshipMarkのデータはSQLiteの `authorship_spans` テーブルに別途永続化
-- Codex/Snippetタブの場合は `node_id` の代わりに `codex_entry_id` または `snippet_id` を使用
+- Codex/Snippetタブの場合は `node_id` の代わりに `codex_entry_id` または `snippet_id` を使用（Codex のフェーズオーバーライドは `codex_phase_detail_overrides` 側で保持）
 - 正規スキーマは統合DBスキーマ設計書（`Grimodex_統合DBスキーマ.md`）の `authorship_spans` を参照
 
 ### Undo/Redo
@@ -1148,6 +1242,35 @@ AuthorshipMarkはProseMirror/TipTapのMark機構によりドキュメント状�
 例:
 - AI生成テキストをAccept後にUndo → テキストとともに `{source: 'ai'}` マークも除去される
 - Redo → テキストとマークが復元される
+
+### Codex Dynamic Phases の Phase override
+
+Codex タブで Editor を開いている状態で、Codex 側の Dynamic Phase 機能により特定フェーズをプレビュー中の場合、本文の保存先がフェーズ固有のオーバーライドレコードに切り替わる。
+
+- プレビュー中のフェーズがあるとき: 本文は `codex_phase_detail_overrides.contentOverride`（該当 `codex_entry_id` + `phase_id` をキーとするレコード）に保存される
+- フェーズ非プレビュー時: 通常どおり `codex_entries.content` に保存される
+- 別のフェーズに切り替えると、Editor は当該フェーズ用の `contentOverride` を読み込んで再描画する（= 同じ Codex エントリであってもフェーズごとに異なる本文が表示される）
+- フェーズ専用の overrides が存在しない場合はベース `content` をフォールバックとして表示し、編集時に初めて override レコードを生成する運用を想定する
+- Phase 一覧の定義・切替 UI・オーバーライドのライフサイクルは Codex パネル設計書側の記載を正とし、本 Editor パネル側は「どこに書き込むか」を切り替える役割に限定する
+
+### sceneContentStore によるスプリット間同期
+
+同じシーンを複数の Editor Group（スプリット）や Codex ミニエディタで同時に開いている場合、片側の編集がもう片側へリアルタイムに反映される。
+
+- 各エディタインスタンスは中央の `sceneContentStore` を購読し、自身の変更をストア経由で他インスタンスにブロードキャストする
+- 反映は双方向で、両側での同時入力にも対応する（最後に届いた変更が勝つシンプルな last-writer-wins）
+- Codex 詳細画面のミニエディタと Editor パネルの Codex タブも同じストアを共有するため、ミニエディタで編集した内容はフルエディタ側に即時反映され、逆も成り立つ
+- ストア経由の差分適用は `programmaticInsert` meta を立てたトランザクションで行い、AiEditedPlugin の誤検知（他 Group の入力を自分の human 入力と誤認する）を避ける
+- 保存（自動保存・手動保存）はいずれか 1 インスタンスが担えばよく、重複 IO を避けるため「最後にアクティブだったインスタンス」を primary とするなどの調整を行う
+
+### タブ切替時の状態保存
+
+タブを切り替えるときにフォーカスやスクロールを奪わないよう、シーンごとのエディタ状態を lazy に保存・復元する。
+
+- 切替前タブのカーソル位置（ProseMirror selection）とスクロールオフセットを `savedEditorStateRef` に保存する
+- 再表示時は、保存済みの状態があればカーソル位置・スクロールを復元する
+- 復元時にエディタにフォーカスを強制しない（ユーザーが別パネルを操作している場合にフォーカスを奪わないため）
+- 当該シーンの DOM インスタンスが破棄されている場合でも、次回マウント時に保存状態を適用する
 
 ---
 
@@ -1166,7 +1289,8 @@ AuthorshipMarkはProseMirror/TipTapのMark機構によりドキュメント状�
 | ステータス（Draft等） | あり | なし | なし | なし |
 | エディタ上部バナー | なし | 「This note is not included in export」 | 「Editing Codex entry — {type}: {name}」 | 「Editing Snippet」 |
 | Chat Layer 3 連携 | シーン全文 | シーン全文（Note自体） | Codex content全文 | Snippet content全文 |
-| 保存先 | `tree_nodes.content` カラム | `tree_nodes.content` カラム | `codex_entries.content` カラム | `snippets.content` カラム |
+| 保存先 | `tree_nodes.content` カラム | `tree_nodes.content` カラム | `codex_entries.content` カラム（Phase プレビュー中は `codex_phase_detail_overrides.contentOverride`） | `snippets.content` カラム |
+| Lint 下線（LintDecorationPlugin） | Primary Group のみ Yes（Secondary Group は No） | No | No | No |
 
 ---
 
@@ -1184,6 +1308,10 @@ AuthorshipMarkはProseMirror/TipTapのMark機構によりドキュメント状�
 | `Ctrl+.` | 傍点（圏点）のトグル |
 | `Ctrl+Shift+M` | 選択範囲にコメントを追加 |
 | `Ctrl+S` | 手動保存（自動保存があるが、安心感のため） |
+| `Ctrl+B` / `Ctrl+I` / `Ctrl+U` | 太字 / 斜体 / 下線のトグル |
+| `Ctrl+Shift+X` | 取り消し線のトグル（ToolbarShortcutsExtension による別名。StarterKit 既定の `Ctrl+Shift+S` も引き続き有効） |
+| `Ctrl+1` / `Ctrl+2` / `Ctrl+3` | Heading 1 / 2 / 3（ToolbarShortcutsExtension による別名。StarterKit 既定の `Ctrl+Alt+1/2/3` も引き続き有効） |
+| `Ctrl+Home` / `Ctrl+End` | ドキュメント先頭 / 末尾へジャンプ（InlineAtomNavigationExtension。Ruby など atom ノードを安全に跨ぐ） |
 | `Ctrl+Enter`（Scenesパネルから） | 新しいEditor Groupにシーンを開く |
 | `Ctrl+Shift+Space` | インラインAIパレットを開く |
 | `/`（行頭/空行） | インラインAIコマンドオートコンプリート |
@@ -1238,3 +1366,15 @@ Editor Groupモデル、タブ操作、スプリット、同期編集の仕様�
 ### Scenesパネル設計書
 
 プレビュー/固定タブの定義、シーンの開き方（シングルクリック/ダブルクリック/Ctrl+Enter）はScenesパネル設計書の記載を正とする。
+
+### Linter 設計書
+
+LintDecorationPlugin が参照する Lint ルール定義、severity 分類、オートフィックス、ルールごとの無効化 UI、Lint レポート（CSV / MD / JSON）の仕様は Linter 設計書（`Grimodex_Linter設計書.md`）の記載を正とする。本 Editor パネル設計書は「エディタ本文に波線デコレーションとして可視化する」 表示レイヤの挙動と、Primary Group の Scene タブに限定する適用条件のみを規定する。
+
+### Attributionパネル設計書
+
+AuthorshipMark の拡張属性（`traceId` / `toolName` / `toolVersion` / `manualOverride` / `originalLength`）および AttributionOverrideMenu による手動オーバーライドの扱いは、Attribution パネル設計書 / Agent Trace v0.1.0 仕様の記載を正とする。本 Editor パネル設計書ではスパンの付与・剥離・分割・マージを担う ProseMirror 側の挙動と、エディタ上の UI（右クリックメニュー、AttributionHighlight 描画）のみを規定する。
+
+### Codexパネル設計書
+
+Codex Dynamic Phases のフェーズ定義、フェーズ切替 UI、`codex_phase_detail_overrides` のライフサイクルは Codex パネル設計書 / Codex 設計書の記載を正とする。本 Editor パネル設計書では「Codex タブ編集時、プレビュー中フェーズがあるなら保存先を `codex_phase_detail_overrides.contentOverride` に切り替える」という書き込み側の振る舞いのみを規定する。また Codex ミニエディタとフルエディタ間の双方向同期は `sceneContentStore` 経由で実装する。
