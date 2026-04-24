@@ -21,6 +21,7 @@ pub mod rules;
 pub use engine::{lint, LintResponse, MAX_INPUT_BYTES};
 pub use error::LintError;
 pub use rule::{
-    BlockKind, CodexEntry, Diagnostic, Fix, Language, LintBlock, LintConfig, LintContext,
-    LintInput, LintRule, LintScope, RuleConfig, RuleWarning, Severity, Utf16Range, WarningKind,
+    BlockKind, CodexEntry, Diagnostic, DisableDirective, Fix, Language, LintBlock, LintConfig,
+    LintContext, LintInput, LintRule, LintScope, RuleConfig, RuleSelector, RuleWarning,
+    SelectorKind, Severity, Utf16Range, WarningKind,
 };

@@ -6,8 +6,8 @@ use serde::{Deserialize, Serialize};
 use crate::error::LintError;
 use crate::morph::tokenize_blocks;
 use crate::rule::{
-    Diagnostic, Language, LintBlock, LintConfig, LintContext, LintInput, LintScope, RuleWarning,
-    WarningKind,
+    Diagnostic, DisableDirective, Language, LintBlock, LintConfig, LintContext, LintInput,
+    LintScope, RuleWarning, SelectorKind, Utf16Range, WarningKind,
 };
 use crate::rules::build_ruleset;
 
@@ -33,6 +33,7 @@ pub fn lint(
     language: Language,
     scope: LintScope,
     config: &LintConfig,
+    disables: &[DisableDirective],
 ) -> Result<LintResponse, LintError> {
     let total_bytes: usize = blocks.iter().map(|b| b.text.len()).sum();
     if total_bytes > MAX_INPUT_BYTES {
@@ -48,6 +49,11 @@ pub fn lint(
     }
 
     let (rules, mut warnings) = build_ruleset(language);
+
+    // Resolve incoming directives. Invalid ones are dropped with a
+    // warning so the author knows their directive had no effect — the
+    // lint run itself still succeeds.
+    let resolved_disables = resolve_disables(disables, &mut warnings);
 
     // Decide whether to run the tokenizer. Filter out rules that don't
     // apply to this language / are disabled so we don't tokenise blocks
@@ -100,7 +106,14 @@ pub fn lint(
             continue;
         }
         let produced = rule.check(&input, &ctx);
-        diagnostics.extend(produced);
+        // Discard diagnostics shadowed by a matching disable directive.
+        // Design: directives run **pre-emit**, so disabled diagnostics
+        // never reach the Linter panel, editor decoration or status bar.
+        for d in produced {
+            if !is_disabled(&d, &resolved_disables) {
+                diagnostics.push(d);
+            }
+        }
     }
 
     // Deterministic ordering: by (range.start, range.end, rule_id).
@@ -128,6 +141,49 @@ pub fn lint(
     })
 }
 
+/// Internal struct holding a validated disable directive paired with
+/// its target range. Produced once per request and reused by
+/// `is_disabled` for every diagnostic.
+struct ResolvedDirective {
+    kind: SelectorKind,
+    range: Utf16Range,
+}
+
+fn resolve_disables(
+    disables: &[DisableDirective],
+    warnings: &mut Vec<RuleWarning>,
+) -> Vec<ResolvedDirective> {
+    let mut out = Vec::with_capacity(disables.len());
+    for d in disables {
+        match d.rules.validate() {
+            Ok(kind) => out.push(ResolvedDirective {
+                kind,
+                range: d.range,
+            }),
+            Err(reason) => {
+                warnings.push(RuleWarning {
+                    rule_id: "core/disables".to_string(),
+                    kind: WarningKind::InvalidOption,
+                    message: reason,
+                });
+            }
+        }
+    }
+    out
+}
+
+fn is_disabled(diag: &Diagnostic, resolved: &[ResolvedDirective]) -> bool {
+    resolved.iter().any(|d| {
+        if !d.range.contains(&diag.range) {
+            return false;
+        }
+        match &d.kind {
+            SelectorKind::All => true,
+            SelectorKind::Ids(ids) => ids.iter().any(|id| id == &diag.rule_id),
+        }
+    })
+}
+
 fn now_millis() -> i64 {
     use std::time::{SystemTime, UNIX_EPOCH};
     SystemTime::now()
@@ -147,6 +203,14 @@ mod tests {
     use super::*;
     use crate::rule::BlockKind;
 
+    use crate::rule::{DisableDirective, RuleSelector};
+
+    fn scene_scope() -> LintScope {
+        LintScope::Scene {
+            scene_id: "x".into(),
+        }
+    }
+
     #[test]
     fn rejects_oversize_input() {
         let big = "a".repeat(MAX_INPUT_BYTES + 1);
@@ -159,10 +223,9 @@ mod tests {
         let err = lint(
             &blocks,
             Language::Japanese,
-            LintScope::Scene {
-                scene_id: "x".into(),
-            },
+            scene_scope(),
             &LintConfig::default(),
+            &[],
         )
         .unwrap_err();
         match err {
@@ -176,10 +239,9 @@ mod tests {
         let r = lint(
             &[],
             Language::Japanese,
-            LintScope::Scene {
-                scene_id: "x".into(),
-            },
+            scene_scope(),
             &LintConfig::default(),
+            &[],
         )
         .expect("ok");
         assert!(r.diagnostics.is_empty());
@@ -202,15 +264,7 @@ mod tests {
             text: "、、".into(),
             str_offset_start: 0,
         }];
-        let r = lint(
-            &blocks,
-            Language::Japanese,
-            LintScope::Scene {
-                scene_id: "x".into(),
-            },
-            &cfg,
-        )
-        .expect("ok");
+        let r = lint(&blocks, Language::Japanese, scene_scope(), &cfg, &[]).expect("ok");
         assert!(r.diagnostics.is_empty());
     }
 
@@ -225,13 +279,129 @@ mod tests {
         let r = lint(
             &blocks,
             Language::Japanese,
-            LintScope::Scene {
-                scene_id: "x".into(),
-            },
+            scene_scope(),
             &LintConfig::default(),
+            &[],
         )
         .expect("ok");
         assert_eq!(r.diagnostics.len(), 2);
         assert!(r.diagnostics[0].range.start < r.diagnostics[1].range.start);
+    }
+
+    // ── disable directive filtering ─────────────────────────────────
+
+    #[test]
+    fn disable_all_silences_matching_range() {
+        let blocks = [LintBlock {
+            id: 0,
+            kind: BlockKind::Paragraph,
+            text: "。。あ、、".into(),
+            str_offset_start: 0,
+        }];
+        // Range 0..6 covers both "。。" (0..2) and "、、" (3..5) diagnostics.
+        let disables = [DisableDirective {
+            rules: RuleSelector(vec!["*".into()]),
+            range: Utf16Range { start: 0, end: 6 },
+        }];
+        let r = lint(
+            &blocks,
+            Language::Japanese,
+            scene_scope(),
+            &LintConfig::default(),
+            &disables,
+        )
+        .expect("ok");
+        assert!(r.diagnostics.is_empty(), "{:?}", r.diagnostics);
+    }
+
+    #[test]
+    fn disable_specific_rule_leaves_others() {
+        let blocks = [LintBlock {
+            id: 0,
+            kind: BlockKind::Paragraph,
+            text: "。。あ、、".into(),
+            str_offset_start: 0,
+        }];
+        // Disable only the first run ("。。" at 0..2) for its specific rule.
+        let disables = [DisableDirective {
+            rules: RuleSelector(vec!["ja/consecutive-punct".into()]),
+            range: Utf16Range { start: 0, end: 2 },
+        }];
+        let r = lint(
+            &blocks,
+            Language::Japanese,
+            scene_scope(),
+            &LintConfig::default(),
+            &disables,
+        )
+        .expect("ok");
+        // The "、、" diagnostic remains because its range is outside the
+        // directive.
+        assert_eq!(r.diagnostics.len(), 1);
+        assert_eq!(r.diagnostics[0].range.start, 3);
+    }
+
+    #[test]
+    fn disable_range_must_contain_diagnostic_fully() {
+        let blocks = [LintBlock {
+            id: 0,
+            kind: BlockKind::Paragraph,
+            text: "。。あ、、".into(),
+            str_offset_start: 0,
+        }];
+        // Range 0..1 only covers half of the "。。" diagnostic (which is
+        // 0..2) — containment fails, diagnostic should still fire.
+        let disables = [DisableDirective {
+            rules: RuleSelector(vec!["*".into()]),
+            range: Utf16Range { start: 0, end: 1 },
+        }];
+        let r = lint(
+            &blocks,
+            Language::Japanese,
+            scene_scope(),
+            &LintConfig::default(),
+            &disables,
+        )
+        .expect("ok");
+        assert_eq!(r.diagnostics.len(), 2);
+    }
+
+    #[test]
+    fn invalid_selector_surfaces_warning_and_is_skipped() {
+        let blocks = [LintBlock {
+            id: 0,
+            kind: BlockKind::Paragraph,
+            text: "。。".into(),
+            str_offset_start: 0,
+        }];
+        let disables = [
+            // Invalid: empty
+            DisableDirective {
+                rules: RuleSelector(vec![]),
+                range: Utf16Range { start: 0, end: 2 },
+            },
+            // Invalid: "*" mixed with another id
+            DisableDirective {
+                rules: RuleSelector(vec!["*".into(), "ja/consecutive-punct".into()]),
+                range: Utf16Range { start: 0, end: 2 },
+            },
+        ];
+        let r = lint(
+            &blocks,
+            Language::Japanese,
+            scene_scope(),
+            &LintConfig::default(),
+            &disables,
+        )
+        .expect("ok");
+        // Both directives skipped → diagnostic still fires.
+        assert_eq!(r.diagnostics.len(), 1);
+        // Both invalidities surfaced as separate warnings.
+        let disable_warns = r
+            .warnings
+            .iter()
+            .filter(|w| w.rule_id == "core/disables")
+            .count();
+        assert_eq!(disable_warns, 2);
     }
 }

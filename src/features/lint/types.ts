@@ -86,6 +86,31 @@ export type LintScope =
   | { kind: "chapter"; chapter_id: string }
   | { kind: "project" };
 
+/**
+ * Rule selector on the wire. Valid values:
+ *   - `["*"]` → disable every rule
+ *   - Non-empty array of rule IDs, not containing `"*"`
+ *
+ * Empty arrays and `"*"` mixed with other IDs are rejected by Rust with
+ * a `core/disables` InvalidOption warning; the directive itself is
+ * ignored. Keep the client honest by constructing only valid selectors
+ * — the sentinel `["*"]` vs. explicit rule IDs is how authors reason
+ * about scope at the UI layer.
+ */
+export type RuleSelector = string[];
+
+/**
+ * One inline disable directive sent to Rust as part of `lint_text`.
+ *
+ * Block vs Span distinction is a UI concern — the wire carries only a
+ * (range, rules) tuple. The range is always scene-wide UTF-16, same
+ * convention as every other range in this module.
+ */
+export interface DisableDirective {
+  rules: RuleSelector;
+  range: Utf16Range;
+}
+
 export interface RuleConfig {
   enabled?: boolean;
   severity?: Severity;

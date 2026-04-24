@@ -28,6 +28,11 @@ import type {
   RuleWarning,
   WireLintBlock,
 } from "./types";
+import {
+  InlineDisableAccumulator,
+  sanitiseRules,
+  type LintDisableRange,
+} from "./lintDisableWalker";
 
 /** Block kinds exposed to Rust (mirrors BLOCK_KIND_MAP in offsetMap.ts). */
 const BLOCK_KIND_BY_PM_TYPE: Record<string, BlockKind | undefined> = {
@@ -41,11 +46,26 @@ const BLOCK_KIND_BY_PM_TYPE: Record<string, BlockKind | undefined> = {
 /** PM node types that should not contribute blocks at all. */
 const SKIP_PM_TYPES = new Set(["codeBlock", "image", "horizontalRule"]);
 
+interface PmMark {
+  type?: string;
+  attrs?: Record<string, unknown>;
+}
+
 interface PmNode {
   type?: string;
   text?: string;
   content?: PmNode[];
+  marks?: PmMark[];
+  attrs?: Record<string, unknown>;
 }
+
+/**
+ * Scene-wide disable directive extracted from ProseMirror JSON.
+ * Same shape as `DisableDirective` on the wire — the two are
+ * intentionally identical so `buildBlocksFromJson` can feed the
+ * `lint_text` payload directly.
+ */
+type JsonDisable = LintDisableRange;
 
 /**
  * Walk a ProseMirror JSON doc and build a LintBlock array compatible
@@ -56,16 +76,19 @@ interface PmNode {
 export function buildBlocksFromJson(jsonText: string): {
   blocks: WireLintBlock[];
   sceneText: string;
+  disables: JsonDisable[];
 } {
-  if (!jsonText || !jsonText.trim()) return { blocks: [], sceneText: "" };
+  if (!jsonText || !jsonText.trim())
+    return { blocks: [], sceneText: "", disables: [] };
   let doc: PmNode;
   try {
     doc = JSON.parse(jsonText);
   } catch {
-    return { blocks: [], sceneText: "" };
+    return { blocks: [], sceneText: "", disables: [] };
   }
 
   const blocks: WireLintBlock[] = [];
+  const disables: JsonDisable[] = [];
   // Scene-wide UTF-16 cursor. Blocks are joined by "\n" separators, so
   // we advance by 1 between blocks (matching offsetMap.ts semantics).
   let cursor = 0;
@@ -75,6 +98,56 @@ export function buildBlocksFromJson(jsonText: string): {
     if (node.text) return node.text;
     if (!node.content) return "";
     return node.content.map(textOf).join("");
+  }
+
+  function findLintDisableRules(node: PmNode): string[] | null {
+    if (!node.marks) return null;
+    for (const m of node.marks) {
+      if (m.type !== "lintDisable") continue;
+      return sanitiseRules(m.attrs?.rules);
+    }
+    return null;
+  }
+
+  /**
+   * Walk a leaf block's children to surface `lintDisable` Mark runs,
+   * feeding the shared accumulator that `offsetMap.ts` also uses.
+   * Same output shape for the same document so both paths produce
+   * identical directive lists.
+   */
+  function collectInlineDisables(node: PmNode, blockStart: number) {
+    let inBlockOffset = 0;
+    const acc = new InlineDisableAccumulator((d) => disables.push(d));
+
+    const walk = (n: PmNode) => {
+      if (!n.type) return;
+      if (n.type === "ruby") {
+        acc.flush();
+        const base = (n.attrs?.base as string | undefined) ?? "";
+        inBlockOffset += utf16Length(base);
+        return;
+      }
+      if (n.type === "hardBreak") {
+        acc.flush();
+        inBlockOffset += 1;
+        return;
+      }
+      if (n.text !== undefined) {
+        const len = utf16Length(n.text);
+        if (len > 0) {
+          const sceneStart = blockStart + inBlockOffset;
+          const sceneEnd = sceneStart + len;
+          acc.push(sceneStart, sceneEnd, findLintDisableRules(n));
+          inBlockOffset += len;
+        }
+        return;
+      }
+      // Non-text inline / container — recurse.
+      n.content?.forEach(walk);
+    };
+
+    node.content?.forEach(walk);
+    acc.flush();
   }
 
   function visit(node: PmNode) {
@@ -90,7 +163,26 @@ export function buildBlocksFromJson(jsonText: string): {
         node.content?.some((c) => c.type && BLOCK_KIND_BY_PM_TYPE[c.type]) ??
         false;
       if (hasNested) {
+        // Passthrough block may itself carry `lintDisabled` — cover
+        // every inner leaf block that gets emitted during recursion
+        // with one directive so "disable this whole list item"
+        // actually silences the contained paragraphs.
+        const firstInnerIdx = blocks.length;
         node.content?.forEach(visit);
+        const blockDisabled = sanitiseRules(node.attrs?.lintDisabled);
+        if (blockDisabled && blocks.length > firstInnerIdx) {
+          const firstInner = blocks[firstInnerIdx];
+          const lastInner = blocks[blocks.length - 1];
+          const rangeStart = firstInner.str_offset_start;
+          const rangeEnd =
+            lastInner.str_offset_start + utf16Length(lastInner.text);
+          if (rangeEnd > rangeStart) {
+            disables.push({
+              rules: blockDisabled,
+              range: { start: rangeStart, end: rangeEnd },
+            });
+          }
+        }
         return;
       }
       if (blocks.length > 0) cursor += 1; // separator
@@ -102,6 +194,17 @@ export function buildBlocksFromJson(jsonText: string): {
         text,
         str_offset_start: startOffset,
       });
+      collectInlineDisables(node, startOffset);
+      const blockDisabled = sanitiseRules(node.attrs?.lintDisabled);
+      if (blockDisabled && text.length > 0) {
+        disables.push({
+          rules: blockDisabled,
+          range: {
+            start: startOffset,
+            end: startOffset + utf16Length(text),
+          },
+        });
+      }
       cursor = startOffset + utf16Length(text);
       return;
     }
@@ -112,7 +215,7 @@ export function buildBlocksFromJson(jsonText: string): {
   doc.content?.forEach(visit);
 
   const sceneText = blocks.map((b) => b.text).join("\n");
-  return { blocks, sceneText };
+  return { blocks, sceneText, disables };
 }
 
 function utf16Length(s: string): number {
@@ -234,7 +337,7 @@ export async function scanProject(
       completed += 1;
       continue;
     }
-    const { blocks, sceneText } = buildBlocksFromJson(content);
+    const { blocks, sceneText, disables } = buildBlocksFromJson(content);
     if (blocks.length === 0) {
       completed += 1;
       continue;
@@ -250,6 +353,7 @@ export async function scanProject(
         language: opts.language,
         scope,
         config,
+        disables,
       });
       const scanned: ScannedScene = {
         sceneId: node.id,

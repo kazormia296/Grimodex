@@ -13,6 +13,11 @@
  */
 
 import type { Node as ProseMirrorNode } from "@tiptap/pm/model";
+import {
+  InlineDisableAccumulator,
+  sanitiseRules,
+  type LintDisableRange,
+} from "@/features/lint/lintDisableWalker";
 
 export type LintBlockKind =
   | "paragraph"
@@ -48,9 +53,22 @@ export interface PosInterval {
   blockKind: LintBlockKind;
 }
 
+/**
+ * Disable directives collected during the same doc walk. The shape
+ * matches the wire format sent to Rust (`DisableDirective`). Mark-based
+ * inline spans and block-level `lintDisabled` attributes both land in
+ * this list — Rust doesn't care which UI control produced them.
+ */
+export type OffsetMapDisable = LintDisableRange;
+
 export interface SceneOffsetMap {
   blocks: LintBlock[];
   intervals: PosInterval[];
+  /**
+   * Disable directives collected during the same doc walk. The list is
+   * unsorted; consumers that need stable order sort before hashing.
+   */
+  disables: OffsetMapDisable[];
   /** Total UTF-16 length of the scene-wide text (sum of block texts + separators). */
   totalLength: number;
 }
@@ -71,6 +89,7 @@ const SKIP_NODE_TYPES = new Set(["codeBlock", "image", "horizontalRule"]);
 export function buildOffsetMap(doc: ProseMirrorNode): SceneOffsetMap {
   const blocks: LintBlock[] = [];
   const intervals: PosInterval[] = [];
+  const disables: OffsetMapDisable[] = [];
 
   // Running scene-wide UTF-16 offset. Blocks are joined by "\n", so between
   // two blocks we advance by 1 additional unit.
@@ -111,11 +130,29 @@ export function buildOffsetMap(doc: ProseMirrorNode): SceneOffsetMap {
         // blocks handle their own offsets. Resetting `blocks.length > 0`
         // is awkward, so track the not-yet-committed state.
         if (blocks.length > 0) sceneCursor -= 1;
-        // Recurse into children (they will emit their own blocks).
+        nextBlockId -= 1; // reclaim unused id
+        const firstInnerIdx = blocks.length;
         node.forEach((child, offset) => {
           visit(child, pos + 1 + offset);
         });
-        nextBlockId -= 1; // reclaim unused id
+        // Passthrough block may itself carry `lintDisabled`. Cover
+        // every inner leaf block that was emitted during the recursion
+        // with a single directive. Without this, "disable this whole
+        // listItem" via the outer node attribute would silently drop.
+        const blockDisabled = sanitiseRules(node.attrs.lintDisabled);
+        if (blockDisabled && blocks.length > firstInnerIdx) {
+          const firstInner = blocks[firstInnerIdx];
+          const lastInner = blocks[blocks.length - 1];
+          const rangeStart = firstInner.strOffsetStart;
+          const rangeEnd =
+            lastInner.strOffsetStart + utf16Length(lastInner.text);
+          if (rangeEnd > rangeStart) {
+            disables.push({
+              rules: blockDisabled,
+              range: { start: rangeStart, end: rangeEnd },
+            });
+          }
+        }
         return;
       }
 
@@ -129,6 +166,7 @@ export function buildOffsetMap(doc: ProseMirrorNode): SceneOffsetMap {
         blockStart,
         textParts,
         intervals,
+        disables,
       );
 
       const blockText = textParts.join("");
@@ -139,6 +177,20 @@ export function buildOffsetMap(doc: ProseMirrorNode): SceneOffsetMap {
         strOffsetStart: blockStart,
       });
       sceneCursor = blockStart + utf16Length(blockText);
+
+      // Block-level disable from node attribute. Emit only when the
+      // block has non-empty text — a block with `lintDisabled` on an
+      // empty paragraph has nothing to silence.
+      const blockDisabled = sanitiseRules(node.attrs.lintDisabled);
+      if (blockDisabled && blockText.length > 0) {
+        disables.push({
+          rules: blockDisabled,
+          range: {
+            start: blockStart,
+            end: blockStart + utf16Length(blockText),
+          },
+        });
+      }
       return;
     }
 
@@ -152,7 +204,7 @@ export function buildOffsetMap(doc: ProseMirrorNode): SceneOffsetMap {
     visit(child, offset);
   });
 
-  return { blocks, intervals, totalLength: sceneCursor };
+  return { blocks, intervals, disables, totalLength: sceneCursor };
 }
 
 function collectLeafBlock(
@@ -163,14 +215,17 @@ function collectLeafBlock(
   blockStart: number,
   textParts: string[],
   intervals: PosInterval[],
+  disables: OffsetMapDisable[],
 ) {
   // Running UTF-16 offset inside this block.
   let inBlockOffset = 0;
+  const acc = new InlineDisableAccumulator((d) => disables.push(d));
 
   node.descendants((child, posWithinParent) => {
     if (child.type.name === "ruby") {
       const base = (child.attrs.base as string | undefined) ?? "";
       if (base.length === 0) return false;
+      acc.flush();
       // Atom node — the whole base maps to the atom's PM position. Use
       // one interval for the full base text.
       intervals.push({
@@ -186,6 +241,7 @@ function collectLeafBlock(
     }
 
     if (child.type.name === "hardBreak") {
+      acc.flush();
       // hardBreak serialises to \n in plain text.
       intervals.push({
         pmPosStart: blockPos + 1 + posWithinParent,
@@ -211,13 +267,28 @@ function collectLeafBlock(
           blockKind,
         });
         textParts.push(text);
+        const sceneStart = blockStart + inBlockOffset;
+        const sceneEnd = sceneStart + len;
+        acc.push(sceneStart, sceneEnd, findLintDisableRules(child));
         inBlockOffset += len;
+      } else {
+        acc.flush();
       }
       return false;
     }
     // continue descending
     return undefined;
   });
+
+  acc.flush();
+}
+
+function findLintDisableRules(textNode: ProseMirrorNode): string[] | null {
+  for (const mark of textNode.marks) {
+    if (mark.type.name !== "lintDisable") continue;
+    return sanitiseRules(mark.attrs.rules);
+  }
+  return null;
 }
 
 function utf16Length(s: string): number {

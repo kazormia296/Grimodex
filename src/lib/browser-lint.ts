@@ -48,16 +48,61 @@ interface Diagnostic {
   fix?: Fix;
 }
 
+interface RuleWarning {
+  rule_id: string;
+  kind: "skipped" | "invalidOption" | "initFailed";
+  message: string;
+}
+
+interface DisableDirective {
+  rules: string[];
+  range: Utf16Range;
+}
+
 interface LintResponse {
   diagnostics: Diagnostic[];
-  warnings: never[];
+  warnings: RuleWarning[];
   computed_at: number;
+}
+
+type SelectorKind = { type: "all" } | { type: "ids"; ids: string[] };
+
+/**
+ * Mirror the Rust-side validation so the browser mock filters
+ * disabled diagnostics with identical semantics.
+ */
+function validateSelector(rules: string[]): SelectorKind | string {
+  if (rules.length === 0) {
+    return 'rules must not be empty (use ["*"] for all)';
+  }
+  const hasWildcard = rules.includes("*");
+  if (hasWildcard && rules.length > 1) {
+    return '"*" must not be mixed with other rule IDs';
+  }
+  if (hasWildcard) return { type: "all" };
+  return { type: "ids", ids: rules };
+}
+
+function isDisabled(
+  d: Diagnostic,
+  resolved: Array<{ kind: SelectorKind; range: Utf16Range }>,
+): boolean {
+  return resolved.some((r) => {
+    // Mirror Rust's `Utf16Range::contains` directly — identical
+    // semantics to the engine filter path.
+    const contained =
+      r.range.start <= d.range.start && d.range.end <= r.range.end;
+    if (!contained) return false;
+    if (r.kind.type === "all") return true;
+    return r.kind.ids.some((id) => id === d.rule_id);
+  });
 }
 
 export function lintTextBrowser(args: {
   blocks: WireLintBlock[];
   language: "ja" | "en";
   config: WireConfig;
+  disables?: DisableDirective[];
 }): LintResponse {
   const diagnostics: Diagnostic[] = [];
   const rules = args.config.rules ?? {};
@@ -233,15 +278,36 @@ export function lintTextBrowser(args: {
     }
   }
 
-  diagnostics.sort((a, b) => {
+  // Resolve incoming disable directives (mock the Rust engine's
+  // pre-emit filter). Invalid selectors are skipped with a warning so
+  // the UI surfaces the same `core/disables` InvalidOption it would
+  // see against real Rust.
+  const warnings: RuleWarning[] = [];
+  const resolved: Array<{ kind: SelectorKind; range: Utf16Range }> = [];
+  for (const d of args.disables ?? []) {
+    const kind = validateSelector(d.rules);
+    if (typeof kind === "string") {
+      warnings.push({
+        rule_id: "core/disables",
+        kind: "invalidOption",
+        message: kind,
+      });
+      continue;
+    }
+    resolved.push({ kind, range: d.range });
+  }
+
+  const filtered = diagnostics.filter((d) => !isDisabled(d, resolved));
+
+  filtered.sort((a, b) => {
     if (a.range.start !== b.range.start) return a.range.start - b.range.start;
     if (a.range.end !== b.range.end) return a.range.end - b.range.end;
     return a.rule_id.localeCompare(b.rule_id);
   });
 
   return {
-    diagnostics,
-    warnings: [],
+    diagnostics: filtered,
+    warnings,
     computed_at: Date.now(),
   };
 }

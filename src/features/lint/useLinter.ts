@@ -44,7 +44,14 @@ export async function runLintNow(
   }
   return useLintStore
     .getState()
-    .runLint(sceneId, blocks, config, resolveLintLanguage(), sceneText);
+    .runLint(
+      sceneId,
+      blocks,
+      config,
+      resolveLintLanguage(),
+      sceneText,
+      map.disables,
+    );
 }
 
 /**
@@ -195,7 +202,7 @@ export function useLinter(editor: Editor | null, sceneId: string | null): void {
           const codex_entries = await fetchCodexEntriesForLint();
           (wire as LintConfig).codex_entries = codex_entries;
         }
-        void runLint(sceneId, blocks, wire, lang, sceneText);
+        void runLint(sceneId, blocks, wire, lang, sceneText, map.disables);
       }, delay);
     }
 

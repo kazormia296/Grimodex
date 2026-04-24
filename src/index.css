@@ -382,6 +382,39 @@
   text-decoration-color: #3b82f6;
 }
 
+/* Inline `lintDisable` Mark — regular disable (listed rule IDs) gets a
+ * light grey underline; `["*"]` (all rules silenced) gets a slightly
+ * more prominent colour to make broad suppression visible to the
+ * author. Neither uses warning-red — disable is intentional user
+ * action, not an issue. */
+.lint-disable {
+  text-decoration-line: underline;
+  text-decoration-style: dotted;
+  text-decoration-color: #9ca3af;
+  text-underline-offset: 3px;
+  text-decoration-skip-ink: none;
+}
+.lint-disable--all {
+  text-decoration-color: #6b7280;
+}
+.dark .lint-disable {
+  text-decoration-color: #6b7280;
+}
+.dark .lint-disable--all {
+  text-decoration-color: #9ca3af;
+}
+
+/* Block-level disable marker — a subtle left border on the block.
+ * Uses same colour as the inline `--all` variant so the author reads
+ * them as one family. */
+.tiptap [data-lint-disabled] {
+  border-left: 2px solid #9ca3af;
+  padding-left: 0.5em;
+}
+.dark .tiptap [data-lint-disabled] {
+  border-left-color: #6b7280;
+}
+
 /* Vertical writing preview (Task 5.2) */
 .vertical-preview {
   writing-mode: vertical-rl;

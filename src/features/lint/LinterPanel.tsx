@@ -21,6 +21,11 @@ import { useLintStore } from "./lintStore";
 import { useLintIgnoreStore } from "./lintIgnoreStore";
 import { useLintConfigStore } from "./lintConfigStore";
 import { useLintProjectStore } from "./lintProjectStore";
+import {
+  LintDisablePicker,
+  selectionFromPmPositions,
+} from "./LintDisablePicker";
+import { DisablesView } from "./LintDisablesView";
 import type { ScannedScene } from "./projectScan";
 import { extensionFor, renderReport, type ReportFormat } from "./lintReport";
 import { runLintNow } from "./useLinter";
@@ -31,7 +36,7 @@ import { runLintNow } from "./useLinter";
 // all update together.
 const DEFAULT_PROJECT_ID = "default-project";
 
-type PanelMode = "current" | "project";
+type PanelMode = "current" | "project" | "disables";
 
 type GroupMode = "severity" | "rule" | "none";
 
@@ -226,6 +231,9 @@ function CurrentLinterView() {
     y: number;
     d: Diagnostic;
   } | null>(null);
+  const [inlineDisableFor, setInlineDisableFor] = useState<Diagnostic | null>(
+    null,
+  );
   const listRef = useRef<HTMLDivElement | null>(null);
 
   const counts = useMemo(() => {
@@ -593,7 +601,35 @@ function CurrentLinterView() {
             onDisableRule(menu.d);
             setMenu(null);
           }}
+          onInlineDisable={
+            editor
+              ? () => {
+                  setInlineDisableFor(menu.d);
+                  setMenu(null);
+                }
+              : undefined
+          }
           onClose={() => setMenu(null)}
+        />
+      )}
+      {inlineDisableFor && editor && (
+        <LintDisablePicker
+          editor={editor}
+          selection={(() => {
+            // The Diagnostic range is scene-wide UTF-16; translate
+            // into PM positions so the picker operates on a PM
+            // selection. If the range straddles a block separator
+            // the picker will show the multi-block policy picker.
+            const map = buildOffsetMap(editor.state.doc);
+            const from = strOffsetToPmPos(map, inlineDisableFor.range.start);
+            const to = strOffsetToPmPos(map, inlineDisableFor.range.end);
+            if (from == null || to == null) {
+              return { from: 0, to: 0, multiBlock: false };
+            }
+            return selectionFromPmPositions(editor, from, to);
+          })()}
+          initialRules={[inlineDisableFor.rule_id]}
+          onClose={() => setInlineDisableFor(null)}
         />
       )}
     </div>
@@ -786,6 +822,7 @@ function ContextMenu({
   d,
   onIgnore,
   onDisableRule,
+  onInlineDisable,
   onClose,
 }: {
   x: number;
@@ -793,6 +830,12 @@ function ContextMenu({
   d: Diagnostic;
   onIgnore: () => void;
   onDisableRule: () => void;
+  /**
+   * Open the inline disable picker with this diagnostic's rule and
+   * range preselected. `undefined` hides the entry — used in Project
+   * mode where the target scene may not be loaded in the editor.
+   */
+  onInlineDisable?: () => void;
   onClose: () => void;
 }) {
   // Clamp to viewport — a naive offset is fine at this scale.
@@ -815,12 +858,21 @@ function ContextMenu({
       >
         <EyeOff className="h-4 w-4" /> この箇所を永続無視
       </button>
+      {onInlineDisable && (
+        <button
+          type="button"
+          onClick={onInlineDisable}
+          className="flex w-full items-center gap-2 px-3 py-1.5 text-left hover:bg-accent"
+        >
+          <PowerOff className="h-4 w-4" /> この箇所で無効化（インライン）
+        </button>
+      )}
       <button
         type="button"
         onClick={onDisableRule}
         className="flex w-full items-center gap-2 px-3 py-1.5 text-left hover:bg-accent"
       >
-        <PowerOff className="h-4 w-4" /> ルール「{d.rule_id}」を無効化
+        <PowerOff className="h-4 w-4" /> ルール「{d.rule_id}」全体を無効化
       </button>
       <div className="my-1 border-t border-border" />
       <button
@@ -848,7 +900,13 @@ export function LinterPanel() {
     <div className="flex h-full flex-col" data-testid="lint-panel">
       <ModeBar mode={mode} setMode={setMode} />
       <div className="min-h-0 flex-1">
-        {mode === "current" ? <CurrentLinterView /> : <ProjectLinterView />}
+        {mode === "current" ? (
+          <CurrentLinterView />
+        ) : mode === "project" ? (
+          <ProjectLinterView />
+        ) : (
+          <DisablesView />
+        )}
       </div>
     </div>
   );
@@ -884,6 +942,17 @@ function ModeBar({
         }`}
       >
         プロジェクト
+      </button>
+      <button
+        type="button"
+        onClick={() => setMode("disables")}
+        className={`rounded px-2 py-0.5 ${
+          mode === "disables"
+            ? "bg-primary text-primary-foreground"
+            : "text-muted-foreground hover:bg-accent"
+        }`}
+      >
+        Disables
       </button>
     </div>
   );
