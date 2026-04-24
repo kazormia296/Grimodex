@@ -3,6 +3,10 @@ import { useInlineAiStore } from "./inlineAiStore";
 
 interface InlineAIToolbarProps {
   onAccept: () => void;
+  /**
+   * status === "generating" のときはストリーミング中止、
+   * status === "diffShown" のときは diff を取り消して元状態に戻す。
+   */
   onReject: () => void;
   onRetry: () => void;
 }

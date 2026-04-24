@@ -11,6 +11,9 @@ import { loadSceneContent, saveSceneContent } from "@/features/tree/api";
 import { getCodexEntry, updateCodexEntry } from "@/features/codex/api";
 import { usePhaseStore } from "@/features/codex/phaseStore";
 import { useCodexStore } from "@/features/codex/codexStore";
+import { useCodexHighlightStore } from "@/features/editor/codexHighlightStore";
+import { useWorkspaceStore } from "@/features/workspace/store";
+import { buildInlineAiContext } from "@/features/editor/inlineAi/inlineAiContext";
 import { getSnippet, updateSnippet } from "@/features/snippets/api";
 import { useSnippetStore } from "@/features/snippets/snippetStore";
 import { useAutoSave } from "@/hooks/useAutoSave";
@@ -48,6 +51,8 @@ import {
 import { useInlineAiDiff } from "@/features/editor/inlineAi/useInlineAiDiff";
 import { InlineAIPalette } from "@/features/editor/inlineAi/InlineAIPalette";
 import { InlineAIToolbar } from "@/features/editor/inlineAi/InlineAIToolbar";
+import { SlashCommandPopup } from "@/features/editor/inlineAi/SlashCommandPopup";
+import { useInlineAiStore } from "@/features/editor/inlineAi/inlineAiStore";
 import type { InlineAiCommand } from "@/features/editor/inlineAi/inlineAiTypes";
 import { useTabStore } from "@/features/editor/tabStore";
 import {
@@ -417,6 +422,10 @@ export function EditorPane({
     },
     onUpdate({ editor: e }) {
       if (isApplyingExternalUpdate.current) return;
+      // インライン AI の生成中・diff 表示中はオートセーブを止める。
+      // Accept/Reject が呼ばれて idle に戻った時点で reset + dispatch によって
+      // 再度 onUpdate が走り、その時に通常の schedule が実行される。
+      if (useInlineAiStore.getState().status !== "idle") return;
       schedule();
       setIsDirtyRef.current(true);
       const text = getDocText(e.state.doc);
@@ -608,7 +617,9 @@ export function EditorPane({
     });
     return () => cancelAnimationFrame(raf);
   }, [typewriterMode, editor, nodeId]);
-  const { generate, accept, reject, retry } = useInlineAiDiff(editor);
+  const { generate, accept, reject, rejectOrAbort, retry } =
+    useInlineAiDiff(editor);
+  void reject;
 
   useCursorOverlay(editor);
   useAttribution(editor);
@@ -620,10 +631,27 @@ export function EditorPane({
       const cmd = (e as CustomEvent).detail?.command as
         | InlineAiCommand
         | undefined;
-      if (cmd) {
+      if (!cmd) return;
+      // 引数不要なコマンドは即時 generate を叩き、フロー状態を維持する。
+      // 引数必要なコマンドは従来通りパレットを開き、引数入力フォームに委譲。
+      if (cmd.needsArg) {
         setPalettePreselect(cmd);
         setPaletteOpen(true);
+        return;
       }
+      const node = useTreeStore.getState().nodes.find((n) => n.id === nodeId);
+      const projectTitle =
+        useWorkspaceStore.getState().activeWorkspaceName ?? "";
+      const matchedCodexIds = useCodexHighlightStore.getState().matchedEntryIds;
+      const codexEntries = useCodexStore.getState().entries;
+      const context = buildInlineAiContext({
+        editor,
+        projectTitle,
+        sceneTitle: node?.title ?? "",
+        matchedCodexIds,
+        codexEntries,
+      });
+      generate(cmd, context);
     }
     editor.view.dom.addEventListener("inlineai:slash-command", onSlashCommand);
     return () =>
@@ -1142,22 +1170,29 @@ export function EditorPane({
             const node = useTreeStore
               .getState()
               .nodes.find((n) => n.id === nodeId);
-            const sceneText = editor.getText();
-            const { from, to } = editor.state.selection;
-            const selectedText =
-              from !== to ? editor.state.doc.textBetween(from, to) : undefined;
-            generate(command, {
-              projectTitle: node?.title ?? "",
+            const projectTitle =
+              useWorkspaceStore.getState().activeWorkspaceName ?? "";
+            const matchedCodexIds =
+              useCodexHighlightStore.getState().matchedEntryIds;
+            const codexEntries = useCodexStore.getState().entries;
+            const context = buildInlineAiContext({
+              editor,
+              projectTitle,
               sceneTitle: node?.title ?? "",
-              sceneText,
-              codexSummaries: "",
-              selectedText,
+              matchedCodexIds,
+              codexEntries,
               arg: prompt || undefined,
             });
+            generate(command, context);
           }}
         />
       )}
-      <InlineAIToolbar onAccept={accept} onReject={reject} onRetry={retry} />
+      <InlineAIToolbar
+        onAccept={accept}
+        onReject={rejectOrAbort}
+        onRetry={retry}
+      />
+      <SlashCommandPopup />
     </div>
   );
 }

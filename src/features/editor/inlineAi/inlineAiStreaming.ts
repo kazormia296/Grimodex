@@ -1,0 +1,78 @@
+import { invoke } from "@/lib/tauri";
+import { listen } from "@tauri-apps/api/event";
+
+interface StreamChunkPayload {
+  delta: string;
+  block_type: "text" | "thinking";
+}
+
+interface StreamDonePayload {
+  stop_reason: string;
+  input_tokens: number | null;
+  output_tokens: number | null;
+}
+
+interface StreamErrorPayload {
+  message: string;
+}
+
+export interface InlineAiStreamCallbacks {
+  onTextDelta: (delta: string) => void;
+  onDone: (info: {
+    stopReason: string;
+    inputTokens: number | null;
+    outputTokens: number | null;
+  }) => void;
+  onError: (message: string) => void;
+}
+
+/**
+ * Inline-AI 専用のストリーミング呼び出し。Chat 側と完全に分離された
+ * `inline-ai:stream-*` イベントを listen するので、両者が同時に走っても
+ * 混線しない。戻り値はイベントリスナ解除用クリーンアップ関数。
+ */
+export async function sendInlineAiStream(
+  messages: { role: string; content: string }[],
+  callbacks: InlineAiStreamCallbacks,
+): Promise<() => void> {
+  const unlisteners = await Promise.all([
+    listen<StreamChunkPayload>("inline-ai:stream-chunk", (event) => {
+      // thinking ブロックはインライン AI では無視（設計書上、扱わない）
+      if (event.payload.block_type === "text") {
+        callbacks.onTextDelta(event.payload.delta);
+      }
+    }),
+    listen<StreamDonePayload>("inline-ai:stream-done", (event) => {
+      callbacks.onDone({
+        stopReason: event.payload.stop_reason,
+        inputTokens: event.payload.input_tokens,
+        outputTokens: event.payload.output_tokens,
+      });
+    }),
+    listen<StreamErrorPayload>("inline-ai:stream-error", (event) => {
+      callbacks.onError(event.payload.message);
+    }),
+  ]);
+
+  const cleanup = () => {
+    unlisteners.forEach((u) => u());
+  };
+
+  invoke<void>("send_inline_ai_stream", {
+    messages,
+    thinking: null,
+    effort: null,
+    reasoningEnabled: null,
+    reasoningEffort: null,
+  }).catch((e: unknown) => {
+    const msg = e instanceof Error ? e.message : String(e);
+    callbacks.onError(msg);
+  });
+
+  return cleanup;
+}
+
+/** 進行中のインライン AI ストリームを中止する。 */
+export async function abortInlineAiStream(): Promise<void> {
+  await invoke<void>("abort_inline_ai_stream");
+}

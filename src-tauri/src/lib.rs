@@ -13,8 +13,15 @@ use std::sync::{Arc, Mutex};
 use tauri::Manager;
 use workspace::GlobalSettings;
 
-/// AtomicBool flag to request aborting an in-progress stream.
+/// AtomicBool flag to request aborting an in-progress chat stream.
 struct StreamAbortFlag {
+    flag: Arc<std::sync::atomic::AtomicBool>,
+}
+
+/// AtomicBool flag to request aborting an in-progress inline-AI stream.
+/// Kept separate from `StreamAbortFlag` so that aborting one does not affect the other
+/// when Chat and inline AI are streaming simultaneously.
+struct InlineAiAbortFlag {
     flag: Arc<std::sync::atomic::AtomicBool>,
 }
 
@@ -298,6 +305,7 @@ async fn send_chat_message_stream(
             .collect::<Vec<_>>(),
         flag_clone,
         app_handle.clone(),
+        "chat",
     )
     .await;
 
@@ -305,6 +313,70 @@ async fn send_chat_message_stream(
         use tauri::Emitter;
         let _ = app_handle.emit(
             "chat:stream-error",
+            serde_json::json!({ "message": e.to_string() }),
+        );
+        return Err(AppError::Anyhow(e));
+    }
+
+    Ok(())
+}
+
+// --- Inline AI streaming commands ---
+
+#[tauri::command]
+fn abort_inline_ai_stream(abort_flag: tauri::State<'_, InlineAiAbortFlag>) -> Result<(), AppError> {
+    abort_flag
+        .flag
+        .store(true, std::sync::atomic::Ordering::Relaxed);
+    Ok(())
+}
+
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+async fn send_inline_ai_stream(
+    ai_path: tauri::State<'_, AiSettingsPath>,
+    abort_flag: tauri::State<'_, InlineAiAbortFlag>,
+    app_handle: tauri::AppHandle,
+    messages: Vec<ChatMessagePayload>,
+    thinking: Option<ai::ThinkingConfig>,
+    effort: Option<String>,
+    reasoning_enabled: Option<bool>,
+    reasoning_effort: Option<String>,
+) -> Result<(), AppError> {
+    abort_flag
+        .flag
+        .store(false, std::sync::atomic::Ordering::Relaxed);
+
+    let settings = ai::read_ai_settings(&ai_path.path);
+    let api_key = resolve_api_key(&settings.provider)?;
+    let flag_clone = Arc::clone(&abort_flag.flag);
+    let params = ai::ChatParams {
+        provider: &settings.provider,
+        model: &settings.model,
+        api_key: &api_key,
+        ollama_endpoint: &settings.ollama_endpoint,
+        thinking,
+        effort,
+        reasoning_enabled,
+        reasoning_effort,
+    };
+
+    let result = ai::send_chat_stream(
+        &params,
+        &messages
+            .iter()
+            .map(|m| (m.role.as_str(), m.content.as_str()))
+            .collect::<Vec<_>>(),
+        flag_clone,
+        app_handle.clone(),
+        "inline-ai",
+    )
+    .await;
+
+    if let Err(e) = result {
+        use tauri::Emitter;
+        let _ = app_handle.emit(
+            "inline-ai:stream-error",
             serde_json::json!({ "message": e.to_string() }),
         );
         return Err(AppError::Anyhow(e));
@@ -465,6 +537,11 @@ pub fn run() {
                 flag: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             });
 
+            // Inline AI abort flag (separate from chat's flag)
+            app.manage(InlineAiAbortFlag {
+                flag: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            });
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -483,6 +560,8 @@ pub fn run() {
             send_chat_message,
             send_chat_message_stream,
             abort_chat_stream,
+            send_inline_ai_stream,
+            abort_inline_ai_stream,
             send_agent_message,
             fts_optimize,
             fts_rebuild,

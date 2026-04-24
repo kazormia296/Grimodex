@@ -33,21 +33,25 @@ export function createInlineAIDiffPlugin(): Plugin {
 
         const decos: Decoration[] = [];
         const { generatedRange, originalRange, mode } = aiState;
+        const docSize = newState.doc.content.size;
+
+        // 置換モードでは元テキストを残したまま末尾に生成テキストを挿入する
+        // 方式に変わったため、originalRange の範囲にも strike-through 装飾を
+        // 付ける。Accept で元テキストを削除、Reject で生成テキストを削除する。
+        if (mode === "replace" && originalRange) {
+          const { from, to } = originalRange;
+          if (from < to && to <= docSize) {
+            decos.push(Decoration.inline(from, to, { class: "diff-remove" }));
+          }
+        }
 
         // Highlight generated text (insert or replace new text)
         if (generatedRange) {
           const { from, to } = generatedRange;
-          if (from < to && to <= newState.doc.content.size) {
+          if (from < to && to <= docSize) {
             decos.push(Decoration.inline(from, to, { class: "diff-add" }));
           }
         }
-
-        // In replace mode, also show original text as struck-through.
-        // After insertion the original text has been removed, so we only
-        // show the green highlight on the newly inserted text.
-        // The original range is used during the diff-shown phase for Reject.
-        void originalRange;
-        void mode;
 
         return DecorationSet.create(newState.doc, decos);
       },
@@ -56,6 +60,20 @@ export function createInlineAIDiffPlugin(): Plugin {
       decorations(state) {
         return inlineAiDiffKey.getState(state);
       },
+    },
+    /**
+     * ストリーミング中はユーザー由来の入力を握りつぶす。
+     * - `inlineAiInsert` meta を付けた chunk 挿入は通す
+     * - `addToHistory:false` 付きのプログラマティックな tr は通す
+     * - `docChanged === false`（選択変更等）は通す（クリック操作は邪魔しない）
+     */
+    filterTransaction(tr) {
+      const aiState = useInlineAiStore.getState();
+      if (aiState.status !== "generating") return true;
+      if (!tr.docChanged) return true;
+      if (tr.getMeta("inlineAiInsert") === true) return true;
+      if (tr.getMeta("addToHistory") === false) return true;
+      return false;
     },
   });
 }

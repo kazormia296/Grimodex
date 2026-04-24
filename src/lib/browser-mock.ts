@@ -445,6 +445,13 @@ export async function createBrowserMock(): Promise<BrowserMock> {
         return (await handleTestAiConnection(args)) as T;
       case "send_chat_message":
         return (await handleSendChatMessage(args)) as T;
+      case "send_inline_ai_stream":
+        // ブラウザモックではストリーミング未対応（Tauri イベントエミッタがないため）。
+        // 設計書に合わせ、呼び出しをエラー扱いせずに no-op で完了させ、
+        // Rust 側と同様に送信イベントは発火しない状態とする。
+        return undefined as T;
+      case "abort_inline_ai_stream":
+        return undefined as T;
       case "send_agent_message":
         return (await handleSendAgentMessage(args)) as T;
       case "lint_text":
