@@ -18,6 +18,7 @@ import {
   isNotNull,
   gte,
   and,
+  or,
 } from "drizzle-orm";
 import type {
   ChatSession,
@@ -602,41 +603,49 @@ export async function pinCodexEntry(
   await db.insert(chatSessionPinnedCodex).values(values).onConflictDoNothing();
 }
 
+/**
+ * Codex 専用: pinned codex entry の withChildren フラグを切り替える。
+ * snippet にはツリー子孫の概念がないため、`codexEntryId` のみを対象にする。
+ */
 export async function togglePinChildren(
   sessionId: string,
-  entryId: string,
+  codexEntryId: string,
   withChildren: boolean,
 ): Promise<void> {
-  await db
+  const result = await db
     .update(chatSessionPinnedCodex)
     .set({ withChildren: withChildren ? 1 : 0 })
     .where(
       and(
         eq(chatSessionPinnedCodex.sessionId, sessionId),
-        eq(chatSessionPinnedCodex.codexEntryId, entryId),
+        eq(chatSessionPinnedCodex.codexEntryId, codexEntryId),
       ),
+    )
+    .returning({ id: chatSessionPinnedCodex.id });
+  if (result.length === 0) {
+    // No pin row matched — most likely the caller passed a snippet id by
+    // mistake. Surface it instead of failing silently.
+    console.warn(
+      `togglePinChildren: no pinned codex entry matched (session=${sessionId}, codexEntryId=${codexEntryId})`,
     );
+  }
 }
 
 export async function unpinCodexEntry(
   sessionId: string,
   entryId: string,
 ): Promise<void> {
-  // Try codex first, then snippet — id is unique per kind per session
+  // entryId may refer to either a codex entry or a snippet — match both columns
+  // in a single statement (only one will hit due to the polymorphic CHECK).
   await db
     .delete(chatSessionPinnedCodex)
     .where(
       and(
         eq(chatSessionPinnedCodex.sessionId, sessionId),
-        eq(chatSessionPinnedCodex.codexEntryId, entryId),
-      ),
-    );
-  await db
-    .delete(chatSessionPinnedCodex)
-    .where(
-      and(
-        eq(chatSessionPinnedCodex.sessionId, sessionId),
-        eq(chatSessionPinnedCodex.snippetId, entryId),
+        or(
+          eq(chatSessionPinnedCodex.codexEntryId, entryId),
+          eq(chatSessionPinnedCodex.snippetId, entryId),
+        ),
       ),
     );
 }
@@ -733,6 +742,10 @@ export async function addSummary(
   sourceMessageIds: string[],
   tokenCount?: number,
 ): Promise<ChatSummary> {
+  // Invariant: a summary always references at least one source message.
+  if (sourceMessageIds.length === 0) {
+    throw new Error("addSummary requires at least one sourceMessageId");
+  }
   const id = crypto.randomUUID();
   const now = new Date().toISOString();
   const rows = await db
@@ -745,20 +758,27 @@ export async function addSummary(
       createdAt: now,
     })
     .returning();
-  if (sourceMessageIds.length > 0) {
+  try {
+    await db.insert(chatSummaryMessages).values(
+      sourceMessageIds.map((messageId) => ({
+        summaryId: id,
+        messageId,
+      })),
+    );
+  } catch (err) {
+    // sqlite-proxy does not expose transactions; compensate by deleting the
+    // orphaned summary so the invariant summary-has-sources holds. If the
+    // compensation itself fails we still re-throw the original error but log
+    // the leak so it surfaces in dev consoles.
     try {
-      await db.insert(chatSummaryMessages).values(
-        sourceMessageIds.map((messageId) => ({
-          summaryId: id,
-          messageId,
-        })),
-      );
-    } catch (err) {
-      // sqlite-proxy does not expose transactions; compensate by deleting
-      // the orphaned summary so the invariant summary-has-sources holds.
       await db.delete(chatSummaries).where(eq(chatSummaries.id, id));
-      throw err;
+    } catch (cleanupErr) {
+      console.error(
+        `addSummary: failed to roll back orphan summary ${id}`,
+        cleanupErr,
+      );
     }
+    throw err;
   }
   return buildSummary(rows[0]);
 }
