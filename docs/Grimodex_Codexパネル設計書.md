@@ -4,7 +4,9 @@
 
 Codexパネルはプロジェクトの世界設定データベース。キャラクター、場所、アイテム、伝承の4カテゴリのエントリを管理する。左にエントリ一覧（マスター）、右に詳細編集画面（ディテール）のスプリットビュー。エントリはEditorやChatから作成され、エディタ本文中のCodexハイライトやChatのコンテキスト注入で活用される。各エントリはフェーズシステムにより物語の進行に伴う経時的変化を管理でき、AIコンテキスト注入にはシーンに応じた適切な状態が反映される。
 
-デフォルト位置: Left Dock（非表示）。Scenesとタブ切り替えで共存。
+本設計書で「Codex パネル」と呼ぶ実装は `CodexManagementPanel` コンポーネントを指す。歴史的経緯で `CodexPanel.tsx` という旧実装も残っているが、ルーティング/dockview 登録からは参照されておらず、実体として使われていない。
+
+デフォルト位置: Left Dock（非表示）。Scenes パネル近傍に独立した dockview パネルとして配置される（Scenes とタブ共有ではない）。CodexQuick（後述）も Scenes 付近に独立したパネルとして配置され、三者を同じ Dock 内で並べるのが既定のレイアウト。
 
 ---
 
@@ -272,11 +274,20 @@ Codexパネルはプロジェクトの世界設定データベース。キャラ
 ```
 
 - 現在のエディタのアクティブシーンに連動して自動選択（状態解決アルゴリズムに基づく）
-- ドロップダウンで手動切り替え可能（プレビュー用）
+- ドロップダウンで手動切り替え可能（**Phase プレビューモード**）
 - 「Base」「Phase名 (シーン名)」のリスト表示
 - フェーズが0個のエントリでは非表示
 - フェーズで上書きされたフィールドは左ボーダー（アクセントカラー）で強調し、Base値を薄い文字でインライン表示
 - フィールド右の「×」でそのフィールドの上書きを解除（Baseに戻す）
+
+**Phase プレビューモード**:
+
+Details タブのフェーズセレクターで特定のフェーズを選択すると、状態解決の結果（後述「状態解決アルゴリズム」節参照）として得られる `previewPhaseId + resolvedState` を用いて、**該当フェーズまでを適用した読み取り専用のプレビュー**が Details タブ全体にかかる。Summary / Content / カスタムディテールそれぞれ、そのフェーズまでに適用された override 値を表示する。
+
+- プレビュー中はタブ上部に「Previewing: {フェーズラベル}」バッジを表示
+- 各フィールドは通常の編集アフォーダンス（入力欄のフォーカスリング等）を無効化し、読み取り専用になる
+- Base 状態に戻す操作（セレクターで「Base」を選ぶ）でプレビューは解除され、現在シーンに応じた自動選択状態に戻る
+- プレビューはあくまで表示のみで、DB には書き込まない。編集したい場合は一度 Base に戻すか、フェーズ編集ダイアログを使う
 
 **Content フィールドのフェーズ対応**:
 
@@ -562,24 +573,25 @@ Codexエントリ間の親子関係を管理するセクション。詳細は「
 - ×で子リレーション解除
 - [+ Add child] でCodexエントリ検索UIを表示し、子を追加
 
-**Context injection（コンテキスト注入設定）**:
-- Children セクション下部にドロップダウンで表示
+**Context injection（コンテキスト注入設定）— ChildrenBudgetSelector**:
+- Children セクション下部に `ChildrenBudgetSelector` コンポーネントとして表示（4 プリセットのセグメント/ドロップダウン UI）
 - このエントリが注入対象になった場合に、子孫エントリのsummaryを自動注入するトークン上限を設定
 - 予算はLayer 4予算に対する比率で指定。モデルのコンテキスト上限に応じて実トークン数が自動スケールする
-- プリセット選択肢:
+- プリセット選択肢（`codex_entries.childrenBudget` カラムに保存）:
   | 選択肢 | Layer 4比率 | 説明 |
   |--------|-----------|------|
-  | None | 0% | 子孫を注入しない |
-  | Compact (default) | 15% | 子が少ないエントリ向け |
-  | Standard | 30% | 中規模の子ツリー向け |
-  | Generous | 50% | 大きな組織・派閥向け |
-- デフォルト: Compact (15%)
+  | None (`none`) | 0% | 子孫を注入しない |
+  | Few / Compact (`few`、default) | 15% | 子が少ないエントリ向け |
+  | Many / Standard (`many`) | 30% | 中規模の子ツリー向け |
+  | All / Generous (`all`) | 50% | 大きな組織・派閥向け |
+- デフォルト: `few` (15%)
 - 子エントリが0個の場合はこのセクションを非表示
 
 **Suggested（提案）**:
 - Content内で言及されているが、まだリレーションが設定されていないCodexエントリの一覧
+- 検出は `findMentionedEntriesAsync` ユーティリティが担当し、Codex マッチングパイプライン（Rust/JS いずれの Aho-Corasick 経路でも）が検出した mention id 集合から既存リレーション・自エントリ・Dismiss 済みを差し引いた候補を返す
 - 各候補の右に [+ Add] ボタン。クリックで子リレーションとして確定
-- Content変更時に自動更新。Dismissした候補は再表示しない
+- Content変更時に自動更新。Dismiss した候補は `codex_relation_dismissed` テーブルに永続保存され、以後 `findMentionedEntriesAsync` の結果から恒久的に除外される（ユーザーが明示的に undo するまで再提案されない）
 
 ---
 
@@ -821,19 +833,34 @@ MyNovel.novel/
 DBスキーマの正規版は統合DBスキーマ設計書（`Grimodex_統合DBスキーマ.md`）を参照。以下は概要のみ記載。
 
 主要テーブル:
-- `codex_types`: タイプ定義（ビルトイン4種 + カスタム）
-- `codex_entries`: エントリ本体（`context_mode`、`tags_cache`、`notes` カラム含む）
+- `codex_types`: タイプ定義（ビルトイン4種 + カスタム）。ビルトイン 4 種（character/location/item/lore）はプロジェクト作成時および起動時に `ensureBuiltinTypes` で確実に存在することが保証される
+- `codex_entries`: エントリ本体（`context_mode`、`tags_cache`、`notes`、`children_budget` カラム含む）
 - `codex_tags` / `codex_entry_tags`: 構造化タグ（多対多）
 - `codex_detail_definitions` / `codex_detail_values`: カスタムディテール
 - `codex_relation_dismissed`: リレーション提案のDismiss記録
 - `codex_entry_phases`: フェーズ（経時的変化。アンカーシーン + フィールド上書き）
-- `codex_phase_detail_overrides`: フェーズ内のカスタムフィールド上書き値
-- `codex_fts`: FTS5仮想テーブル（name + aliases + summary + tags_cache）
+- `codex_phase_detail_overrides`: フェーズ内のカスタムフィールド上書き値。エントリ × フェーズ × フィールド（definition）の粒度で個別 override を保持する（Summary / Content / 各カスタムディテールをそれぞれ別レコードで管理）
+- `codex_quick_pins`: CodexQuick パネルでの手動ピン留めを永続化するテーブル。自動検出結果とは独立して、ユーザーが明示的に Quick に固定したエントリを保持する。スキーマの詳細は [Codex Quick パネル設計書](./Grimodex_CodexQuickパネル設計書.md) を参照
+- `codex_fts`: FTS5仮想テーブル（name + aliases + summary + tags_cache）。Codex マッチングパイプラインや検索バー、CodexCommandPalette の高速検索バックエンドとして利用する
 
 FTS5テーブルはname + aliases + summary + tags_cacheを検索対象にする。contentもDBに格納されているためFTS5に追加可能だが、MVPではname + aliases + summary + tags_cacheの検索で十分と判断。
 
 `authorship_spans` テーブルにフェーズ用カラムを追加:
 - `phase_id TEXT REFERENCES codex_entry_phases(id) ON DELETE CASCADE`: フェーズの content_override に対する帰属追跡用。`codex_entry_id` が non-null かつ `phase_id` が non-null の場合はフェーズ content_override のスパン。`codex_entry_id` が non-null かつ `phase_id` が null の場合は Base content のスパン。
+
+### API モジュール分割
+
+Codex 系の Tauri Command 呼び出しは責務別に 5 つのフロントエンド API モジュールに分割する。いずれも Zustand ストアからのみ呼び出し、コンポーネントは直接触らない:
+
+| モジュール | 対象 | 主なコマンド群 |
+|-----------|------|--------------|
+| `tagApi` | `codex_tags` / `codex_entry_tags` | タグ作成、リネーム、エントリへの付与/解除、`type_filter` 管理 |
+| `phaseApi` | `codex_entry_phases` / `codex_phase_detail_overrides` | フェーズ CRUD、アンカー付け替え、フィールド override の上書き/解除 |
+| `relationApi` | `codex_entries.parent_id` / `codex_relation_dismissed` | 親子設定、循環検出、Suggested の検出・Dismiss |
+| `detailApi` | `codex_detail_definitions` / `codex_detail_values` | カスタムフィールド定義 CRUD、値の読み書き、型変更時の扱い |
+| `typeApi` | `codex_types` | ビルトイン保証（`ensureBuiltinTypes`）、カスタムタイプ CRUD、`sort_order` 並び替え |
+
+この分割により、1 パネル内の Tauri 呼び出しが単一の巨大モジュールに集中するのを避け、テスト・モック・変更影響範囲をドメイン単位で閉じ込める。
 
 ---
 
@@ -1162,7 +1189,12 @@ JavaScriptで利用可能なAho-Corasick実装:
 | `@nicolo-ribaudo/aho-corasick` | ~3KB | Yes | Babel開発者作、Unicode-safe |
 | Rust実装 (Tauri Command経由) | 0KB (JS側) | Yes | `aho-corasick` crate。最高速だがIPC往復コストあり |
 
-推奨: MVPではJS実装を使用。パフォーマンスが問題になった場合にRust実装に移行（インターフェースは同じ）。
+フロントエンドには **JS 実装と Rust 実装の 2 系統を併存** させる。
+
+- `codexMatcher.ts`: JS 側 Aho-Corasick 実装。ビルド直後や小規模プロジェクトでの即応、テスト容易性、プラットフォーム非依存性のため常に利用可能
+- `rustMatcher.ts`: Tauri Command 経由で Rust 側 `aho-corasick` crate を呼び出す高速実装。長編・多エントリ環境で JS 実装より桁違いに速く、FTS5 仮想テーブル `codex_fts` と組み合わせて全文検索／マッチングを一括で処理する
+
+どちらを使うかはストア側で切り替え可能にし、どちらの経路でも同一のマッチ結果インターフェース（`CodexDecoration[]`）を返すことでパイプライン後段（Step 3・Step 4）を共通化する。FTS5 `codex_fts` はマッチング結果の裏付けや、検索バー・CodexCommandPalette での候補絞り込みに併用する。
 
 ### パフォーマンス見積もり
 
@@ -1200,6 +1232,14 @@ function getExcludedPatterns(currentEntryId: string): string[] {
   return [entry.name, ...(entry.aliases ?? [])];
 }
 ```
+
+### Editor / Chat からの逆引き制約
+
+Codex マッチング結果は Editor と Chat の両方に供給されるが、以下の制約を守る:
+
+- **自エントリ除外ルール**: Codex パネル内で特定エントリの Content や text カスタムディテールを編集している間、**そのエントリ自身のハイライト**は出さない（前節「自エントリの除外」）。Content に自分の名前が書かれていても、執筆中の自己参照として無視する。
+- **Split mode の非アクティブグループ除外**: Editor が複数シーンを Split 表示しているとき、Codex ハイライトや Chat 送信時のコンテキスト検出は**アクティブグループのシーン**に対してのみ適用する。非アクティブ側の本文変更でハイライトや Chat 注入が誤爆しないよう、マッチング対象を明示的にフィルタする。
+- **Chat 入力欄は CodexQuick 検出に影響させない**: Chat パネルの入力欄で下書き中のテキストは、本文シーンと同じ Aho-Corasick 走査を通っても **CodexQuick セクションの自動検出に寄与させない**。具体的には、CodexQuick 側マッチャを呼ぶ際に Chat 入力欄由来のマッチ id 集合を `skipMatchedIds` として渡し、Quick の表示対象から除外する。Chat 側のコンテキスト注入には通常どおり利用する。
 
 ### パフォーマンス
 
@@ -1517,7 +1557,7 @@ DBスキーマの正規版は [統合DBスキーマ設計書](./Grimodex_統合D
 
 主要テーブル / カラム:
 - `codex_entry_phases`: Phase本体。`anchor_node_id` (Scene)、`label`、`summary_override` / `content_override` / `context_mode_override`。
-- `codex_phase_detail_overrides`: Phase内のカスタムフィールド上書き値。複合PK `(phase_id, definition_id)`。
+- `codex_phase_detail_overrides`: Phase 内のフィールド単位 override。複合 PK `(phase_id, definition_id)`。**粒度はエントリ × フェーズ × フィールドで、Summary / Content / 各カスタムディテールをそれぞれ独立に override できる**（ある Phase で Summary だけ上書きする、別 Phase では Content とカスタムフィールド A だけ上書きする、といった構成が可能）。未上書きフィールドは直前の Phase もしくは Base の値を継承する。
 - `tree_nodes.story_time_order` (TEXT NULL): Sceneの作中時間順序キー。`sort_order` と同じ **文字列 fractional indexing**（npm `fractional-indexing` 互換）で、SQLite の `COLLATE BINARY` による辞書順比較のみを使う。数値としての意味は持たない。
 - `tree_nodes.story_time_label` (TEXT NULL): Sceneの作中時間表示用ラベル。
 - `projects.phase_resolution_mode` (TEXT): `'auto' | 'reading' | 'story'`。SQLデフォルト `'reading'`、新規プロジェクトのアプリ層デフォルトは `'auto'`。
@@ -1665,6 +1705,22 @@ Phase アンカーシーンと currentScene で**軸が食い違う**ことが�
 **キャッシュ戦略**: `SceneTimeIndex` はツリー構造変更時（ノード追加/削除/移動）または `story_time_order` 変更時に再計算。Zustand ストアに保持。`phase_resolution_mode` の変更は Index 自体の再計算を伴わない（どの Map を引くかが変わるだけ）。
 
 ### 状態解決アルゴリズム
+
+#### フェーズ解決パイプライン（2 段構成）
+
+フェーズ解決は `phaseResolver` モジュール内で 2 段のパイプラインとして実装される:
+
+1. **`phaseResolver.computeSceneTimeIndex(nodes)`**: ツリー構造と `tree_nodes.story_time_order` から `SceneTimeIndex`（`readingOrder` / `storyTimeOrder` / `storyTimeInherited`）を構築する。ツリー変更・`story_time_order` 変更のときだけ再計算し、Zustand ストアにキャッシュする。
+2. **`resolveCodexState(entry, phases, phaseDetails, baseDetails, currentSceneId, sceneTimeIndex, resolutionMode)`**: 構築済み Index と現在シーンから `ResolvedCodexState`（summary / content / contextMode / detailValues + activePhaseId / label）を返す。`projects.phase_resolution_mode`（`reading` / `story` / `auto`）を尊重して軸を選択し、必要なら all-or-nothing で reading-order にフォールバックする。
+
+呼び出し元:
+
+- **Editor**: エディタ本文中の CodexHighlight ポップオーバーや Chat 連携時に、アクティブシーンに応じた解決結果を使う
+- **Chat（シーンスコープ / プロジェクトスコープ）**: Layer 4 のコンテキスト注入でフェーズ解決後の summary / content を使う
+- **Codex パネル Details タブ**: フェーズインジケーターの自動選択および Phase プレビューモードで `resolvedState` を参照
+- **Timeline パネル**: 各エントリの Phase 軌跡表示と、アクティブシーンでの activePhase 強調
+
+`resolveCodexState` は override された詳細値（summary / content / カスタムディテール）を個別に取得できるため、UI 側では「Base と何が違うか」をフィールド単位で表示できる（Details タブのフェーズインジケーターに利用）。
 
 ```typescript
 interface ResolvedCodexState {
@@ -2049,29 +2105,48 @@ CodexHighlightのポップオーバーもフェーズ解決済み状態を表示
 | ショートカット | 動作 |
 |-------------|------|
 | `Ctrl+Alt+X` | Codexパネルにフォーカス/トグル（レイアウト設計書で定義済み） |
+| `Ctrl+Alt+Q` | CodexQuick パネルにフォーカス/トグル（独立 dockview パネル、Scenes 近傍に配置） |
+| `Ctrl+K` | `CodexCommandPalette` を開く。全エントリを高速検索し、選択してエンターで `requestSelectEntry` による Codex 遷移、または付随アクション（Pin to Chat / Find in scenes 等）を実行できるコマンドパレット UI |
 | `Ctrl+F`（パネルフォーカス時） | 検索バーにフォーカス |
 | `↑` / `↓` | エントリリスト内のフォーカス移動 |
 | `Enter` | 選択エントリの詳細画面を開く / 詳細画面にフォーカス |
-| `Escape` | 検索クリア / 詳細画面からリストにフォーカスを戻す |
+| `Escape` | 検索クリア / 詳細画面からリストにフォーカスを戻す / CodexCommandPalette を閉じる |
 | `F2` | 選択エントリの名前をインライン編集 |
 | `Del` | 選択エントリを削除（確認ダイアログ） |
+
+`CodexCommandPalette` は `codex_fts` による全文検索と `rustMatcher` / `codexMatcher` のスコアリングを組み合わせ、大量エントリでも即応する。コマンドパレット内で選択したエントリへの遷移は、他パネルからの遷移と同様に `requestSelectEntry` を経由する。
 
 ---
 
 ## 他パネルとの連携
 
+### Codex 遷移 API（`requestSelectEntry`）
+
+他パネルから Codex パネルに遷移して特定エントリを選択する動線は、`codexStore.requestSelectEntry(entryId)`（内部的には `codexStore.pendingEntryId` のセット）を経由する統一 API で扱う。フローは次のとおり:
+
+1. 呼び出し側（CodexQuick / Chat のメンション / Editor のハイライトポップオーバー / Mentions タブのシーンリンクなど）が `requestSelectEntry(entryId)` を呼ぶ
+2. 必要に応じて dockview 側で Codex パネルを開く / 前面化する
+3. `CodexManagementPanel` がマウント or 前面化すると effect で `pendingEntryId` を拾い、該当エントリを選択 → 詳細画面に遷移し、エントリリスト内で仮想スクロールを該当行にスクロールさせる
+4. 処理後 `pendingEntryId` はクリアされる
+
+この仕組みにより、呼び出し側は「Codex パネルが現在マウントされているかどうか」を気にせず遷移要求を発行できる。
+
 ### ← Editor
 
-- Editorのコンテキストメニュー「Add to Codex」→ 即時エントリ作成 → Codexパネルの詳細画面が開く
-- EditorのCodexハイライトポップオーバー「Open in Codex →」→ Codexパネルで該当エントリの詳細を表示
+- Editorのコンテキストメニュー「Add to Codex」→ 即時エントリ作成 → `requestSelectEntry` で Codexパネルの詳細画面が開く
+- EditorのCodexハイライトポップオーバー「Open in Codex →」→ `requestSelectEntry` 経由で該当エントリの詳細を表示
 
 ### ← Scenes（Codex Quick）
 
-- Codex Quickセクションのエントリクリック → Codexパネルで詳細を表示
+- CodexQuick は Scenes 配下のセクションではなく、**独立した dockview パネル**として Scenes パネル近傍に配置される。`Ctrl+Alt+Q` でトグル表示/フォーカスが可能（キーボードショートカット節参照）
+- CodexQuick の各エントリ行では、名前ドット、type ラベル、summary プレビューを含む **エントリホバーポップオーバー**（`CodexEntryPopoverContent` コンポーネント）を表示する。ホバー遅延や配置規約は TooltipProvider の共通設定に従う
+- CodexQuick セクションのエントリクリック → `requestSelectEntry` 経由で Codex パネルに遷移し、詳細を表示
+- CodexQuick の並び順・ピン留めは `codex_quick_pins` テーブルに永続化されており、セッションをまたいで保持される
 
 ### ← Chat
 
-- Chatの「Codex」ボタン → エントリ即時作成（`source_chat_message_id` 付き）
+- Chatの「Codex」ボタン → エントリ即時作成（`source_chat_message_id` 付き）→ `requestSelectEntry` で詳細画面を開く
+- Chat メッセージ内で Codex エントリがハイライトされた部分をクリック → `requestSelectEntry` で Codex パネルに遷移
 
 ### → Editor
 
@@ -2112,6 +2187,15 @@ CodexHighlightのポップオーバーもフェーズ解決済み状態を表示
 
 Left Dockのデフォルト幅（200px）ではスタックモードになるため、Codexパネルを開いた直後はリスト表示。エントリを選択すると詳細に遷移し、戻るボタンでリストに復帰する動線が基本になる。スプリットで使いたいユーザーはCodexパネルをRight DockやBottom Dockに移動するか、フローティングで広く開く。
 
+### レイアウト切り替えの実装
+
+`CodexManagementPanel` は以下でモードを決定する:
+
+- **初期判定**: 親から渡される `initialStackMode` プロパティ（呼び出し側がその時点のパネル幅から事前に決めた値）を初回レンダリングに反映する。これによりマウント直後にスプリット → スタックの一瞬のチラつきが発生しない
+- **動的追従**: マウント後は `ResizeObserver` でパネルコンテナの幅を監視し、幅が 400px を越境した瞬間にスタック ⇔ スプリットを切り替える。ドラッグリサイズや dockview の移動に追従する
+
+スタックへ遷移した際は、現在選択中のエントリがあれば詳細ビューを残し「← Back」でリスト復帰、なければリスト表示を維持する。
+
 ---
 
 ## 既存設計書との整合
@@ -2138,7 +2222,16 @@ Codex QuickセクションはZustandストアの `sceneCodexMatches` を共有�
 
 ### 概要
 
-ビルトイン4タイプ（Character, Location, Item, Lore）に加え、プロジェクト単位でカスタムタイプを追加可能。Settings内のCodexセクションで管理する。
+タイプは `codex_types` テーブルで管理され、追加・編集・削除が可能。ビルトイン 4 タイプ（`character` / `location` / `item` / `lore`）に加え、プロジェクト単位でカスタムタイプを追加できる。
+
+ビルトイン 4 種はプロジェクト作成時および Codex パネル初期化時に `ensureBuiltinTypes` が呼ばれ、欠損していれば既定値で復元される。これにより誤削除・スキーマ移行後も必ず 4 種が存在することが保証される。
+
+管理 UI は 2 箇所から開ける:
+
+- **Settings > Codex カテゴリ**: プロジェクト全体の Codex 設定と並んでタイプ管理 UI が表示される
+- **フィルタタブの管理 UI**: Codex パネル C. フィルタタブ領域のコンテキストメニューや末尾の「Manage types…」エントリから、フィルタタブと同じ場所でタイプ管理を開ける
+
+いずれも同じ編集ダイアログ（`typeApi` 経由）を開く。
 
 ### Settings内のUI
 

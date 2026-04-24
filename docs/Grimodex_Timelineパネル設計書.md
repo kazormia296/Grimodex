@@ -88,8 +88,10 @@ Export
 | モード | ノード位置の決定元 | 編集可否 |
 |--------|------------------|---------|
 | **Story-time** | `tree_nodes.story_time_order`。未設定シーンはフォールバック（後述） | ドラッグで編集可 |
-| **Reading-order** | ツリーのDFS順序（Scenesパネルと同じグローバル順序） | 編集不可（Scenesパネルで編集） |
+| **Reading-order** | ツリーのDFS順序（Scenesパネルと同じグローバル順序）。`computeGlobalSceneOrder`（`treeStore` 側の関数）で Part / Chapter / Scene の入れ子を線形化して生成 | 編集不可（Scenesパネルで編集） |
 | **Write-order** | `tree_nodes.created_at` 昇順 | 編集不可（創造時刻） |
+
+> Reading-order の線形化は `treeStore` が既に提供している `computeGlobalSceneOrder` を Timeline でも再利用する。Timeline が独自に DFS を再実装しないことで、Scenes パネルと完全に同じ順序が保証される。
 
 ### スペーシングモード
 
@@ -100,6 +102,26 @@ Export
 
 - Reading-orderでは常にUniform（意味がないため）
 - Story-time/Write-orderではProportionalがデフォルト、手動でUniform切替可能
+
+#### 軸別 Proportional の計算元
+
+| 軸 | Proportional の距離基準 |
+|----|----------------------|
+| Story | scheduled 件数に対する均等配分（`story_time_order` キー間隔の実距離ではなく、配置済みノード数で按分） |
+| Write | `tree_nodes.created_at` の時間差に比例して配置 |
+| Reading | 適用されない（常に Uniform） |
+
+#### 軸モード変更時のスペーシング自動切替
+
+軸モードを変更したタイミングで `spacingMode` が以下のように自動的に切り替わる:
+
+| 新しい軸 | 自動セットされる spacing |
+|---------|----------------------|
+| Reading | `uniform` |
+| Story | `proportional` |
+| Write | `proportional` |
+
+ユーザーが軸モード変更後に手動で切り替えた場合は、その選択がその軸で保持される（再度軸を切り替えると再び自動初期化が走る）。
 
 ### フィルタ
 
@@ -154,11 +176,30 @@ Export
 
 ### Unscheduledレーン
 
-story-timeモードで `story_time_order = NULL` のシーンが存在する場合、ビューポート下部に区切り線付きで「Unscheduled」レーンが表示される。
+story-timeモードでは `story_time_order = NULL` のシーンが存在するかに関わらず、**Unscheduled レーンは常時表示**される。scheduled 件数が 0 でも、全シーンが scheduled であってもレーン自体は描画し続けることで、ドロップ先としての発見性と一貫性を確保する。
 
 - 未設定シーンは reading-order に従って左から並ぶ
 - ドラッグでメイン軸上に持っていくと、ドロップ位置の story_time_order が自動割り当てされ、Unscheduledから抜ける
 - 件数が多い場合はレーンが横スクロール可能
+
+#### ドラッグ中のハイライト
+
+ドラッグ中は Unscheduled レーンがドロップ候補としてビジュアルフィードバックされる:
+
+- レーン全体の `fillOpacity` を `0.05` まで上げて薄く塗る
+- メイン軸と Unscheduled レーンを分ける separator を強調表示する
+
+これによりメイン軸 ↔ Unscheduled の往復ドラッグが視覚的に明瞭になる。
+
+#### 軸吸着ヒューリスティック（`AXIS_LOCK_THRESHOLD`）
+
+ドラッグ中のポインタ Y 座標が**メイン軸から 28px 以内**にある間は「軸上ドラッグ」としてロックされ、Unscheduled レーンへは落ちない。この 28px を超えて下方向へ外れた瞬間に Unscheduled レーンへの移動候補として扱う。
+
+- 定数名: `AXIS_LOCK_THRESHOLD`（px）
+- ロック中はメイン軸の再配置プレビューのみが動き、Unscheduled レーンのハイライトは出ない
+- しきい値を跨いだ時点でプレビューが Unscheduled 側に切り替わる
+
+これにより「軸上の並び替えのつもりが誤って Unscheduled に落ちる」事故を抑止する。
 
 ### Phaseピン
 
@@ -182,6 +223,10 @@ Codex Phaseのアンカーシーンに対して、シーンノードの直下に
 - クリック: Codexパネルを開き、該当エントリのTimelineタブに遷移
 - 1つのシーンに大量のPhaseがアンカーされる場合はピンを積み重ねず、まとめ表示（`⏱×12`）に
 
+#### 集約表示のツールチップ
+
+同一シーンに複数 Phase がアンカーされている場合は、個別ピンを並べずに **`⏱×N`** のバッジ 1 つに集約する。ホバー時は SVG の `<title>` 要素を使い、全 Phase を改行区切りのテキストで列挙する（`{エントリ名}: {フェーズラベル}` を Phase 件数分）。よりリッチな UI が必要になれば後続のポップオーバー実装に差し替える余地を残しつつ、MVP では `<title>` ベースで必要十分とする。
+
 ### 時間軸ラベル
 
 軸モードに応じて表示が変わる。
@@ -193,6 +238,30 @@ Codex Phaseのアンカーシーンに対して、シーンノードの直下に
 | Write-order | 作成日（相対「2週間前」または絶対「2026/3/15」） |
 
 ラベル間引き: ノード密度が高い場合は5〜10ノードおきに表示。ズームで増減。
+
+#### ラベル間引きの刻み切替
+
+実装は `timelineLabels.ts` にまとめる。**ノード密度 × zoom** から、軸ラベルの表示刻みを以下の中から選択する:
+
+| 密度バンド | 刻み |
+|-----------|------|
+| 低密度 / 高ズーム | 1（全ノードにラベル） |
+| 中密度 | 3 |
+| 高密度 | 5 |
+| 超高密度 / 低ズーム | 10 |
+
+密度と zoom のしきい値は `timelineLabels.ts` 内で調整する。story/reading/write いずれの軸でも同じロジックを使い、軸ごとのラベルソース（`story_time_label` / `Ch.N` / `created_at` フォーマット）を渡す形で共通化する。
+
+### 空状態 UI
+
+シーン数が 0、または軸上 scheduled 件数が 0 のときの表示:
+
+| 状態 | 表示 |
+|------|------|
+| プロジェクトにシーンが 0 件 | ビューポート中央に「シーンがありません」プレースホルダーを表示 |
+| 軸上（メイン軸）に配置されているシーンが 0 件（story モードで全シーンが unscheduled など） | 軸上に「↑ シーンをここにドラッグして story-time を設定」というヒントを表示 |
+
+どちらもドロップターゲットとしての機能は維持し、Unscheduled レーンからのドラッグでそのまま scheduled 状態に移行できる。
 
 ### 感情曲線（実験的）
 
@@ -246,6 +315,15 @@ Codex Phaseのアンカーシーンに対して、シーンノードの直下に
 - Anchored phases リストからCodex/Phase編集ダイアログへ遷移
 - パネル幅が狭い場合（Bottom Dockの高さ制約下）、インスペクターは畳まれてノード選択時にポップオーバーで表示
 
+#### Story-time ラベルのインライン編集
+
+Inspector 上の `story_time_label` フィールドは、クリックで `<input>` に変わるインライン編集 UI を提供する:
+
+- `Enter` キー押下 または blur（フォーカスアウト）で確定 → `tree_nodes.story_time_label` を更新
+- ラベルをすべて消して確定した場合は `story_time_label` を `NULL` に戻す（`""` ではなく `NULL` で保存）
+- `Escape` で編集キャンセル（元の値に戻る）
+- 編集中に軸モードやフィルタが変わっても編集状態は維持する
+
 ---
 
 ## インタラクション
@@ -272,6 +350,19 @@ Editorがすでに該当シーンを固定タブで開いている場合は、�
 | ノードを左にドラッグ | story_time_order が減少（前の時間へ） |
 | Unscheduledレーンからメイン軸にドラッグ | ドロップ位置に応じた order を自動割り当て |
 | メイン軸からUnscheduledレーンにドラッグ | order を NULL にクリア（ラベルは保持、後述） |
+
+#### fractional indexing を使ったドラッグ編集フロー
+
+1. `onPointerDown` で対象ノードを掴み、ドラッグ中は楽観的に位置を更新
+2. `AXIS_LOCK_THRESHOLD`（28px）でメイン軸 / Unscheduled を判定
+3. `onPointerUp` で前後ノードの `story_time_order` キー（`prevKey`, `nextKey`）を確定
+4. `fractional-indexing` の `generateKeyBetween(prevKey, nextKey)` で新しい order キーを生成
+   - 先頭ドロップ: `generateKeyBetween(null, firstKey)`
+   - 末尾ドロップ: `generateKeyBetween(lastKey, null)`
+   - Unscheduled ドロップ: キー生成をスキップし `NULL` を書き込む
+5. `treeStore.updateStoryTime(nodeId, { order, label })` に委譲（DB 書き込み・再レイアウト・`SceneTimeIndex` 再構築・Phase 再解決は store 側で一本化）
+
+複数選択ノードの一括ドラッグ（将来拡張）では、選択内の相対順序を維持したまま、最初のノードから順に `generateKeyBetween` を連続呼び出しして**連続した中間キー**を発行する。
 
 #### order の自動算出ルール
 
@@ -348,6 +439,43 @@ Editorがすでに該当シーンを固定タブで開いている場合は、�
 | `Ctrl++` / `Ctrl+-` | 段階的ズーム |
 
 ズームレベルは Timeline パネルごとに独立して永続化（`global-settings.json`）。
+
+#### ズーム範囲クランプ
+
+`timelineStore` 側で **zoom 値は `0.25` 〜 `4.0` の範囲にクランプ**する。以下の全入力経路で共通のクランプを通す:
+
+- `Ctrl+0`（Fit）: Fit 計算後の倍率をクランプしてから適用
+- `Ctrl++` / `Ctrl+-`: 段階的ズーム後にクランプ
+- `Ctrl+wheel`: wheel delta を zoom に反映後にクランプ
+
+範囲外への入力は端でサチュレートする（エラー表示はしない）。
+
+#### スクロール位置の復元と save-back 抑止
+
+`TimelineViewport` はマウント時に `timelineStore` に保存されている `scrollOffset` を読み、ビューポートをその位置にスクロールさせる。復元フロー中に走る `scroll` イベントが store へエコーバックされないよう、`isRestoringRef`（`useRef<boolean>`）で抑止する:
+
+1. マウント時に `isRestoringRef.current = true`
+2. `scrollLeft = scrollOffset` をセット
+3. 次フレーム（または `scroll` イベントが落ち着いたあと）で `isRestoringRef.current = false`
+4. `onScroll` ハンドラは `isRestoringRef.current === true` の間は `scrollOffset` を更新しない
+
+これで「復元 → onScroll → 保存」という無限ループ・位置ズレを防ぐ。
+
+#### `containerEl` ベースの wheel listener 再登録
+
+シーンが遅延ロードされるとビューポートのコンテナ DOM がアンマウント／再マウントされることがあり、`useEffect(() => ..., [])` の一度きり登録では `Ctrl+wheel` ズームが効かなくなる。これを避けるため、コンテナ要素は `ref` ではなく **`useState<HTMLElement | null>` で保持（`containerEl`）** し、`containerEl` を依存に持つ effect で wheel listener を再登録する:
+
+```ts
+const [containerEl, setContainerEl] = useState<HTMLElement | null>(null);
+// <div ref={setContainerEl} />
+useEffect(() => {
+  if (!containerEl) return;
+  containerEl.addEventListener('wheel', handleWheel, { passive: false });
+  return () => containerEl.removeEventListener('wheel', handleWheel);
+}, [containerEl, handleWheel]);
+```
+
+これにより、シーンの遅延ロード後に再マウントされた新しいコンテナへも自動的に listener が貼り直される。
 
 ---
 
@@ -476,15 +604,21 @@ Phaseは `anchor_node_id` でシーンに紐づく。Timelineパネル上では:
 | フィールド | 型 | 説明 |
 |-----------|-----|------|
 | `axisMode` | `'story' \| 'reading' \| 'write'` | 現在の軸モード |
-| `spacingMode` | `'proportional' \| 'uniform'` | スペーシング |
-| `zoom` | `number` | ズーム倍率（1.0 が Fit） |
-| `scrollOffset` | `number` | 水平スクロール位置（px） |
-| `selectedNodeIds` | `Set<string>` | 選択中のノードID |
+| `spacingMode` | `'proportional' \| 'uniform'` | スペーシング。軸モード変更時に Reading→`uniform` / Story・Write→`proportional` で自動初期化 |
+| `zoom` | `number` | ズーム倍率（1.0 が Fit）。`0.25` 〜 `4.0` にクランプ |
+| `scrollOffset` | `number` | 水平スクロール位置（px）。復元中は `isRestoringRef` で save-back を抑止 |
+| `selectedNodeIds` | `string[]` | 選択中のノードID（配列。`Set<string>` ではない） |
 | `filter` | `{ povId?: string, locationId?: string, hasPhases: boolean, status?: SceneStatus[] }` | フィルタ状態 |
 | `inspectorOpen` | `boolean` | インスペクター開閉 |
-| `display` | `{ titles: boolean, chapterNumbers: boolean, phasePins: boolean, emotion: boolean, grid: boolean }` | 表示設定 |
+| `display` | `{ showTitles: boolean, showChapterNumbers: boolean, showPhasePins: boolean }` | 表示設定（フラットキー） |
 
 永続化: `axisMode` / `spacingMode` / `zoom` / `scrollOffset` / `display` は `global-settings.json` の `timeline` セクションに保存。`selectedNodeIds` / `filter` は永続化しない（セッション限定）。
+
+#### store 型に関する注記
+
+- `selectedNodeIds` は **`string[]`** で保持する（初期設計では `Set<string>` だったが、React の再レンダー契約と Zustand の浅い比較との相性のため配列に確定）。重複排除・包含判定は配列ユーティリティで行う
+- `display` は **フラットキー**（`showTitles` / `showChapterNumbers` / `showPhasePins`）で、階層構造（`display.titles` のようなネスト）は取らない
+- `display.grid` / `display.emotion` はパネルメニューの項目として設計上存在するが、**MVP 範囲外**のため `display` 型には含めない。パネルメニューの対応項目はプレースホルダー扱い
 
 ### 派生データ
 
@@ -515,9 +649,11 @@ DBスキーマの正規版は統合DBスキーマ設計書（`Grimodex_統合DB�
 ALTER TABLE tree_nodes ADD COLUMN story_time_order TEXT;
 ALTER TABLE tree_nodes ADD COLUMN story_time_label TEXT;
 
-CREATE INDEX idx_tree_story_time ON tree_nodes(project_id, story_time_order)
-  WHERE story_time_order IS NOT NULL;
+-- 通常インデックスのみ（部分インデックスは使わない）
+CREATE INDEX idx_tree_story_time ON tree_nodes(project_id, story_time_order);
 ```
+
+> **インデックス方針**: `story_time_order IS NULL` を除外する部分インデックスは**採用しない**。NULL を含む通常インデックスで十分な selectivity が得られ、Unscheduled レーン表示のための「project 内の `story_time_order = NULL` 件数」クエリもこのインデックスで賄える。Drizzle でのマイグレーション定義もシンプルになるため、通常インデックス 1 本に統一する。
 
 | カラム | 型 | 説明 |
 |--------|-----|------|
@@ -623,6 +759,8 @@ ALTER TABLE tree_nodes ADD COLUMN emotion_score REAL;
 
 Timelineパネルのデフォルト位置はBottom Dock（非表示）。`Ctrl+Alt+L` でフォーカス/トグル。`TOGGLEABLE_PANELS` に `timeline` を追加。`PANEL_REGION_MAP` で `"center-bottom"` に配置。
 
+具体的な登録先は **`src/features/layout/panelRegions.ts`** で、`timeline` を `center-bottom` リージョンに登録する。パネルトグル用ショートカット `Ctrl+Alt+L` は同ファイルのトグル定義から参照される。
+
 ### Scenesパネル設計書
 
 - Reading-orderの編集責務は Scenesパネルに残る（ツリーのD&D）
@@ -634,6 +772,10 @@ Timelineパネルのデフォルト位置はBottom Dock（非表示）。`Ctrl+A
 - CodexパネルのPhaseタブのミニタイムラインは、本パネルの圧縮版として振る舞う
 - 「Open in Timeline panel ↗」ボタンで遷移
 - Phase作成/編集/削除がTimelineに即時反映
+- Timeline の軸順変更（`story_time_order` のドラッグ編集）は、Codex Phase の解決インデックスに波及する
+  - `projects.phase_resolution_mode = 'reading'` のとき: Codex 側は Scenes ツリーの読み順（`computeGlobalSceneOrder`）を参照するため、Timeline のドラッグは描画のみで Codex には影響しない
+  - `'story'` / `'auto'` のとき: `story_time_order` の変化が `SceneTimeIndex` を介して Codex Phase 解決に反映される
+- この関係は Codex Phase 設計書「シーン順序の解決」節と同一の契約であり、Timeline と Codex の双方が `SceneTimeIndex` を唯一のソース・オブ・トゥルースとして共有する
 
 ### Editorパネル設計書
 
@@ -643,6 +785,24 @@ Timelineパネルのデフォルト位置はBottom Dock（非表示）。`Ctrl+A
 ### 統合DBスキーマ
 
 上記「DBスキーマの追加・変更」セクションを統合DBスキーマ設計書の `tree_nodes` / `projects` 定義に反映する必要がある。
+
+### Scenesパネル（参照関係の整理）
+
+- Scenes ツリーの線形化関数 `computeGlobalSceneOrder`（`treeStore`）を Timeline の Reading-order 軸が再利用する
+- Timeline が独自順序を実装しないことで、Scenes と Timeline の表示が常に一致する
+- Scenes 側で Part/Chapter のツリーを再構成した場合は `computeGlobalSceneOrder` の返り値が変わり、Timeline の Reading 軸に自動的に反映される
+
+### Map パネル（将来）
+
+- POV / Location フィルタ（`tree_nodes.pov_character_id` / `location_id`）は Timeline と Map パネルで共通の情報源
+- Timeline の「Map へジャンプ」動線は未設計だが、共通の Codex エントリを参照できる前提で Phase D で検討
+
+### i18n の注記
+
+- Header の **axis ラベル**（Story-time / Reading-order / Write-order）と **spacing ラベル**（Proportional / Uniform）は、現時点で英語ハードコード
+- その他のラベル（パネルメニュー項目、コンテキストメニュー項目、空状態プレースホルダー等）は `t(...)` 経由で翻訳リソースを参照する
+- このハードコード / `t(...)` のギャップは、**将来の i18n 整理フェーズでまとめて翻訳キー化**して揃える方針
+- 当面は日本語 UI 上でも axis / spacing ラベルのみ英語が残ることを許容する
 
 ---
 
