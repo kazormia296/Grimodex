@@ -169,6 +169,7 @@ mod tests {
         let ctx = LintContext {
             config: &cfg,
             block_tokens: None,
+            term_dictionary: &[],
         };
         EllipsisSingleRule.check(&input, &ctx)
     }
@@ -191,6 +192,7 @@ mod tests {
         let ctx = LintContext {
             config: &cfg,
             block_tokens: None,
+            term_dictionary: &[],
         };
         EllipsisOddRule.check(&input, &ctx)
     }

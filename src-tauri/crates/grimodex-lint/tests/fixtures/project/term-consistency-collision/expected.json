@@ -1,0 +1,28 @@
+[
+  {
+    "rule_id": "codex/name-inconsistency",
+    "severity": "warning",
+    "message": "Codex 表記ゆれ: 「マコト」→ 「真琴」（別名が使われています）",
+    "range": {
+      "start": 3,
+      "end": 6
+    }
+  },
+  {
+    "rule_id": "project/term-consistency",
+    "severity": "warning",
+    "message": "「web」→「ウェブ」に統一",
+    "range": {
+      "start": 12,
+      "end": 15
+    },
+    "fix": {
+      "label": "「ウェブ」に置換",
+      "replacement": "ウェブ",
+      "range": {
+        "start": 12,
+        "end": 15
+      }
+    }
+  }
+]

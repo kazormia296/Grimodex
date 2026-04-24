@@ -6,10 +6,11 @@ import {
   BUILTIN_DEFAULT_CONFIG,
 } from "@/features/lint/lintConfigStore";
 import { LinterIgnoreListTab } from "@/features/lint/LinterIgnoreListTab";
+import { TermDictionaryTab } from "@/features/lint/TermDictionaryTab";
 import { cn } from "@/lib/utils";
-import type { LintLanguage, Severity } from "@/features/lint/types";
+import type { Severity } from "@/features/lint/types";
 
-type Tab = "rules" | "ignores";
+type Tab = "rules" | "terms" | "ignores";
 
 export function LinterCategory() {
   const [activeTab, setActiveTab] = useState<Tab>("rules");
@@ -20,6 +21,7 @@ export function LinterCategory() {
         {(
           [
             { id: "rules", label: "ルール設定" },
+            { id: "terms", label: "用語辞書" },
             { id: "ignores", label: "無視リスト" },
           ] as const
         ).map(({ id, label }) => (
@@ -38,7 +40,9 @@ export function LinterCategory() {
           </button>
         ))}
       </div>
-      {activeTab === "rules" ? <LinterRulesTab /> : <LinterIgnoreListTab />}
+      {activeTab === "rules" && <LinterRulesTab />}
+      {activeTab === "terms" && <TermDictionaryTab />}
+      {activeTab === "ignores" && <LinterIgnoreListTab />}
     </div>
   );
 }
@@ -53,10 +57,20 @@ function LinterRulesTab() {
   const resetAll = useLintConfigStore((s) => s.resetAll);
 
   const groupedRules = useMemo(() => {
-    const groups: Record<LintLanguage, string[]> = { ja: [], en: [] };
+    // `project/` and `codex/` are language-neutral but Settings groups
+    // them with Japanese rules by default — same as the Rust engine's
+    // rules/mod.rs registration order.
+    const groups: Record<"ja" | "en" | "project" | "codex", string[]> = {
+      ja: [],
+      en: [],
+      project: [],
+      codex: [],
+    };
     for (const id of Object.keys(effective.rules).sort()) {
       if (id.startsWith("ja/")) groups.ja.push(id);
       else if (id.startsWith("en/")) groups.en.push(id);
+      else if (id.startsWith("project/")) groups.project.push(id);
+      else if (id.startsWith("codex/")) groups.codex.push(id);
     }
     return groups;
   }, [effective.rules]);
@@ -128,6 +142,31 @@ function LinterRulesTab() {
           </div>
         </section>
       ))}
+
+      {(["project", "codex"] as const).map((group) => {
+        const rules = groupedRules[group];
+        if (rules.length === 0) return null;
+        return (
+          <section key={group} className="flex flex-col gap-3">
+            <div className="flex items-center justify-between border-b border-border pb-1">
+              <h4 className="font-semibold">
+                {group === "project" ? "プロジェクト連動" : "Codex 連動"}
+              </h4>
+            </div>
+            <div className="flex flex-col divide-y divide-border rounded border border-border">
+              {rules.map((ruleId) => (
+                <RuleRow
+                  key={ruleId}
+                  ruleId={ruleId}
+                  disabledByLanguage={false}
+                  onSetRule={setRule}
+                  onResetRule={resetRule}
+                />
+              ))}
+            </div>
+          </section>
+        );
+      })}
     </div>
   );
 }
@@ -157,6 +196,10 @@ function RuleRow({
   const enabled = rule.enabled ?? true;
   const severity = rule.severity ?? "default";
   const builtinDefault = BUILTIN_DEFAULT_CONFIG.rules[ruleId];
+  // `project/term-consistency` uses per-entry severity; rule-level
+  // severity would be meaningless and could drift from what the
+  // dictionary surfaces, so we lock the dropdown.
+  const severityDisabled = ruleId === "project/term-consistency";
 
   return (
     <div className="flex flex-col gap-1 px-3 py-2">
@@ -177,7 +220,8 @@ function RuleRow({
         </label>
         <select
           value={severity}
-          disabled={disabledByLanguage || !enabled}
+          disabled={disabledByLanguage || !enabled || severityDisabled}
+          title={severityDisabled ? "エントリごとに設定" : undefined}
           onChange={(e) => {
             const v = e.target.value;
             if (v === "default") onSetRule(ruleId, { severity: undefined });

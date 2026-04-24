@@ -217,6 +217,7 @@ mod tests {
         let ctx = LintContext {
             config: &cfg,
             block_tokens: Some(&tokens),
+            term_dictionary: &[],
         };
         let input = LintInput {
             blocks: &blocks,

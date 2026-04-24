@@ -590,6 +590,27 @@ impl Database {
             CREATE INDEX IF NOT EXISTS idx_lint_ignored_rule
                 ON lint_ignored_diagnostics(rule_id);
 
+            -- Project-scoped term dictionary driving project/term-consistency.
+            -- variants is JSON array of strings; severity is 'warning' | 'info'.
+            -- No SQL-level UNIQUE on preferred so duplicate display rows are
+            -- allowed (variants are what matter); the CRUD layer enforces
+            -- no-duplicate-variant across the table.
+            CREATE TABLE IF NOT EXISTS lint_term_dictionary (
+                id         TEXT PRIMARY KEY,
+                preferred  TEXT NOT NULL,
+                variants   TEXT NOT NULL,
+                severity   TEXT NOT NULL DEFAULT 'warning',
+                note       TEXT,
+                enabled    INTEGER NOT NULL DEFAULT 1,
+                sort_order INTEGER NOT NULL DEFAULT 0,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_lint_term_dict_preferred
+                ON lint_term_dictionary(preferred);
+            CREATE INDEX IF NOT EXISTS idx_lint_term_dict_sort
+                ON lint_term_dictionary(sort_order);
+
             -- Lint event history (Phase 2-3 writes; schema only for now).
             -- Append-only event log for self-tuning suggestions like
             -- 'you ignore ja/quote-period 80% of the time → turn it off?'.

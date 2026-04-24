@@ -1,0 +1,70 @@
+[
+  {
+    "rule_id": "project/term-consistency",
+    "severity": "warning",
+    "message": "「Web」→「ウェブ」に統一（企画書 §3.2）",
+    "range": {
+      "start": 0,
+      "end": 3
+    },
+    "fix": {
+      "label": "「ウェブ」に置換",
+      "replacement": "ウェブ",
+      "range": {
+        "start": 0,
+        "end": 3
+      }
+    }
+  },
+  {
+    "rule_id": "project/term-consistency",
+    "severity": "warning",
+    "message": "「web」→「ウェブ」に統一（企画書 §3.2）",
+    "range": {
+      "start": 6,
+      "end": 9
+    },
+    "fix": {
+      "label": "「ウェブ」に置換",
+      "replacement": "ウェブ",
+      "range": {
+        "start": 6,
+        "end": 9
+      }
+    }
+  },
+  {
+    "rule_id": "project/term-consistency",
+    "severity": "warning",
+    "message": "「ウエブ」→「ウェブ」に統一（企画書 §3.2）",
+    "range": {
+      "start": 15,
+      "end": 18
+    },
+    "fix": {
+      "label": "「ウェブ」に置換",
+      "replacement": "ウェブ",
+      "range": {
+        "start": 15,
+        "end": 18
+      }
+    }
+  },
+  {
+    "rule_id": "project/term-consistency",
+    "severity": "info",
+    "message": "「1人」→「一人」に統一",
+    "range": {
+      "start": 46,
+      "end": 48
+    },
+    "fix": {
+      "label": "「一人」に置換",
+      "replacement": "一人",
+      "range": {
+        "start": 46,
+        "end": 48
+      }
+    }
+  }
+]

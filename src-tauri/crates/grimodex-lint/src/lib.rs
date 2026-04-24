@@ -23,5 +23,5 @@ pub use error::LintError;
 pub use rule::{
     BlockKind, CodexEntry, Diagnostic, DisableDirective, Fix, Language, LintBlock, LintConfig,
     LintContext, LintInput, LintRule, LintScope, RuleConfig, RuleSelector, RuleWarning,
-    SelectorKind, Severity, Utf16Range, WarningKind,
+    SelectorKind, Severity, TermEntry, Utf16Range, WarningKind,
 };

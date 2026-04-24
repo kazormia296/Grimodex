@@ -98,6 +98,7 @@ mod tests {
         let ctx = LintContext {
             config: &cfg,
             block_tokens: None,
+            term_dictionary: &[],
         };
         EmDashRule.check(&input, &ctx)
     }

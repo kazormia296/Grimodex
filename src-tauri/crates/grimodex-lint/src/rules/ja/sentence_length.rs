@@ -201,6 +201,7 @@ mod tests {
         let ctx = LintContext {
             config: &cfg,
             block_tokens: None,
+            term_dictionary: &[],
         };
         SentenceLengthRule.check(&input, &ctx)
     }

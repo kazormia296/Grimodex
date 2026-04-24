@@ -127,7 +127,21 @@ export interface LintCodexEntry {
   aliases: string[];
 }
 
+/**
+ * One row of the project term dictionary on the wire. Mirrors the
+ * Rust `TermEntry` struct exactly (snake_case serde defaults).
+ */
+export interface LintTermEntry {
+  id: string;
+  preferred: string;
+  variants: string[];
+  severity: Severity;
+  note?: string | null;
+  enabled: boolean;
+}
+
 export interface LintConfig {
   rules?: Record<string, RuleConfig>;
   codex_entries?: LintCodexEntry[];
+  term_dictionary?: LintTermEntry[];
 }

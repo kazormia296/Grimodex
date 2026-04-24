@@ -94,6 +94,7 @@ mod tests {
         let ctx = LintContext {
             config: &cfg,
             block_tokens: None,
+            term_dictionary: &[],
         };
         DashSingleRule.check(&input, &ctx)
     }

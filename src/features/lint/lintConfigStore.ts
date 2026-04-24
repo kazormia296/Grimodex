@@ -89,6 +89,13 @@ export const BUILTIN_DEFAULT_CONFIG: LintFullConfig = {
     },
     "ja/redundant-expression": { enabled: false },
     "codex/name-inconsistency": { enabled: false },
+    // Phase 1: default OFF because a freshly-created project has an
+    // empty dictionary — enabling it wouldn't surface anything anyway,
+    // and turning it on is part of the user's explicit opt-in when
+    // they add their first term. Severity is ignored here (per-entry
+    // severity takes precedence); the flag only gates the rule as a
+    // whole.
+    "project/term-consistency": { enabled: false },
     "en/straight-quotes": { enabled: true },
     "en/em-dash": { enabled: true },
     "en/ellipsis": { enabled: true },
@@ -149,6 +156,50 @@ function persist(userLayer: Partial<LintFullConfig>) {
   useSettingsStore.getState().set(SETTINGS_KEY, JSON.stringify(stripped));
 }
 
+/**
+ * Cache for `getEffective()` keyed by `userLayer` identity. React 19's
+ * `useSyncExternalStore` re-invokes the selector during every render to
+ * verify snapshot consistency; returning a fresh object tree each call
+ * trips "Maximum update depth exceeded" on any component that subscribes
+ * via `(s) => s.getEffective()`. Memoising on `userLayer` identity keeps
+ * the snapshot stable between state transitions — `set({ userLayer })`
+ * replaces the reference and naturally invalidates the cache.
+ */
+let effectiveCache: {
+  userLayer: Partial<LintFullConfig> | null;
+  value: LintFullConfig;
+} | null = null;
+
+function computeEffective(userLayer: Partial<LintFullConfig>): LintFullConfig {
+  if (effectiveCache && effectiveCache.userLayer === userLayer) {
+    return effectiveCache.value;
+  }
+  const value: LintFullConfig = {
+    schemaVersion: LINT_CONFIG_SCHEMA_VERSION,
+    enabled: userLayer.enabled ?? BUILTIN_DEFAULT_CONFIG.enabled,
+    languages: {
+      ja: {
+        enabled:
+          userLayer.languages?.ja?.enabled ??
+          BUILTIN_DEFAULT_CONFIG.languages.ja.enabled,
+      },
+      en: {
+        enabled:
+          userLayer.languages?.en?.enabled ??
+          BUILTIN_DEFAULT_CONFIG.languages.en.enabled,
+      },
+    },
+    rules: mergeRules(userLayer.rules),
+    inlineDisable: {
+      multiBlockPolicy:
+        userLayer.inlineDisable?.multiBlockPolicy ??
+        BUILTIN_DEFAULT_CONFIG.inlineDisable.multiBlockPolicy,
+    },
+  };
+  effectiveCache = { userLayer, value };
+  return value;
+}
+
 export const useLintConfigStore = create<LintConfigState>()((set, get) => ({
   userLayer: {},
   isLoaded: false,
@@ -159,31 +210,7 @@ export const useLintConfigStore = create<LintConfigState>()((set, get) => ({
     set({ userLayer: parseUserLayer(raw), isLoaded: true });
   },
 
-  getEffective: () => {
-    const user = get().userLayer;
-    return {
-      schemaVersion: LINT_CONFIG_SCHEMA_VERSION,
-      enabled: user.enabled ?? BUILTIN_DEFAULT_CONFIG.enabled,
-      languages: {
-        ja: {
-          enabled:
-            user.languages?.ja?.enabled ??
-            BUILTIN_DEFAULT_CONFIG.languages.ja.enabled,
-        },
-        en: {
-          enabled:
-            user.languages?.en?.enabled ??
-            BUILTIN_DEFAULT_CONFIG.languages.en.enabled,
-        },
-      },
-      rules: mergeRules(user.rules),
-      inlineDisable: {
-        multiBlockPolicy:
-          user.inlineDisable?.multiBlockPolicy ??
-          BUILTIN_DEFAULT_CONFIG.inlineDisable.multiBlockPolicy,
-      },
-    };
-  },
+  getEffective: () => computeEffective(get().userLayer),
 
   getWireConfig: () => {
     const eff = get().getEffective();

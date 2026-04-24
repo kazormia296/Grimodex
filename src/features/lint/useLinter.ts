@@ -18,6 +18,7 @@ import { useLintConfigStore } from "./lintConfigStore";
 import { resolveLintLanguage } from "./types";
 import type { LintCodexEntry, LintConfig, WireLintBlock } from "./types";
 import { listCodexEntries } from "@/features/codex/api";
+import { useTermDictionaryStore } from "./termDictionaryStore";
 
 /**
  * Imperative trigger used when an action must bypass the normal debounce
@@ -40,6 +41,11 @@ export async function runLintNow(
     const codexRule = eff.rules["codex/name-inconsistency"];
     if (codexRule && codexRule.enabled !== false) {
       (config as LintConfig).codex_entries = await fetchCodexEntriesForLint();
+    }
+    const termRule = eff.rules["project/term-consistency"];
+    if (termRule && termRule.enabled !== false) {
+      (config as LintConfig).term_dictionary =
+        await fetchTermDictionaryForLint();
     }
   }
   return useLintStore
@@ -109,6 +115,23 @@ async function fetchCodexEntriesForLint(): Promise<LintCodexEntry[]> {
   } catch {
     return [];
   }
+}
+
+/**
+ * Load the project term dictionary, lazily initialising the store if
+ * the Settings tab has not been opened yet. Shape is already wire-
+ * ready so the hot path just assigns it onto the lint config.
+ */
+async function fetchTermDictionaryForLint() {
+  const store = useTermDictionaryStore.getState();
+  if (!store.isLoaded) {
+    try {
+      await store.load();
+    } catch {
+      return [];
+    }
+  }
+  return useTermDictionaryStore.getState().toWire();
 }
 
 const DEBOUNCE_MS = 500;
@@ -201,6 +224,11 @@ export function useLinter(editor: Editor | null, sceneId: string | null): void {
         if (codexRule && codexRule.enabled !== false) {
           const codex_entries = await fetchCodexEntriesForLint();
           (wire as LintConfig).codex_entries = codex_entries;
+        }
+        const termRule = effective.rules["project/term-consistency"];
+        if (termRule && termRule.enabled !== false) {
+          (wire as LintConfig).term_dictionary =
+            await fetchTermDictionaryForLint();
         }
         void runLint(sceneId, blocks, wire, lang, sceneText, map.disables);
       }, delay);

@@ -175,6 +175,7 @@ mod tests {
         LintConfig {
             rules: Default::default(),
             codex_entries: entries,
+            term_dictionary: Vec::new(),
         }
     }
 
@@ -188,6 +189,7 @@ mod tests {
         let ctx = LintContext {
             config: cfg,
             block_tokens: None,
+            term_dictionary: &[],
         };
         let input = LintInput {
             blocks: &blocks,

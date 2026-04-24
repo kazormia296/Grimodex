@@ -319,7 +319,7 @@ export const useLintStore = create<LintState>()((set, get) => {
       }
 
       try {
-        let freshDiagnostics: Diagnostic[] = [];
+        const freshDiagnostics: Diagnostic[] = [];
         let freshWarnings: RuleWarning[] = [];
 
         if (missBlocks.length > 0) {

@@ -118,6 +118,7 @@ mod tests {
         let ctx = LintContext {
             config: &cfg,
             block_tokens: None,
+            term_dictionary: &[],
         };
         ConsecutivePunctRule.check(&input, &ctx)
     }
@@ -169,6 +170,7 @@ mod tests {
         let ctx = LintContext {
             config: &cfg,
             block_tokens: None,
+            term_dictionary: &[],
         };
         let ds = ConsecutivePunctRule.check(&input, &ctx);
         assert_eq!(ds.len(), 1);

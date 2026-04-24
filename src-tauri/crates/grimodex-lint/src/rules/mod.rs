@@ -3,6 +3,7 @@
 pub mod codex;
 pub mod en;
 pub mod ja;
+pub mod project;
 
 use crate::rule::{Language, LintRule, RuleWarning};
 
@@ -36,6 +37,7 @@ pub fn build_ruleset(language: Language) -> (Vec<Box<dyn LintRule>>, Vec<RuleWar
             // Codex-linked rules are language-agnostic but registered
             // here so they run on Japanese scenes by default.
             rules.push(Box::new(codex::name_inconsistency::NameInconsistencyRule));
+            rules.push(Box::new(project::term_consistency::TermConsistencyRule));
         }
         Language::English => {
             rules.push(Box::new(en::double_space::DoubleSpaceRule));
@@ -43,6 +45,7 @@ pub fn build_ruleset(language: Language) -> (Vec<Box<dyn LintRule>>, Vec<RuleWar
             rules.push(Box::new(en::em_dash::EmDashRule));
             rules.push(Box::new(en::straight_quotes::StraightQuotesRule));
             rules.push(Box::new(codex::name_inconsistency::NameInconsistencyRule));
+            rules.push(Box::new(project::term_consistency::TermConsistencyRule));
         }
     }
 

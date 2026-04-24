@@ -673,6 +673,30 @@ export const lintIgnoredDiagnostics = sqliteTable(
   ],
 );
 
+// Project-scoped term dictionary for `project/term-consistency`.
+// variants is JSON-encoded `string[]`; the CRUD layer deduplicates and
+// regex-escapes before emitting the wire payload to the Rust engine.
+// severity is constrained to 'warning' | 'info' in the app layer; the
+// DB enforces no such check so the column stays forward-compatible.
+export const lintTermDictionary = sqliteTable(
+  "lint_term_dictionary",
+  {
+    id: text("id").primaryKey(),
+    preferred: text("preferred").notNull(),
+    variants: text("variants").notNull(),
+    severity: text("severity").notNull().default("warning"),
+    note: text("note"),
+    enabled: integer("enabled", { mode: "boolean" }).notNull().default(true),
+    sortOrder: integer("sort_order").notNull().default(0),
+    createdAt: integer("created_at").notNull(),
+    updatedAt: integer("updated_at").notNull(),
+  },
+  (table) => [
+    index("idx_lint_term_dict_preferred").on(table.preferred),
+    index("idx_lint_term_dict_sort").on(table.sortOrder),
+  ],
+);
+
 // Append-only event log for self-tuning Linter behaviour. Schema is
 // added in Phase 1 so Phase 2/3 writers and the eventual statistics tab
 // can land without a migration. `sceneId` becomes NULL when a scene is
@@ -741,3 +765,6 @@ export type NewMapAiNode = typeof mapAiNodes.$inferInsert;
 export type LintIgnoredDiagnostic = typeof lintIgnoredDiagnostics.$inferSelect;
 export type NewLintIgnoredDiagnostic =
   typeof lintIgnoredDiagnostics.$inferInsert;
+
+export type LintTermDictionaryRow = typeof lintTermDictionary.$inferSelect;
+export type NewLintTermDictionaryRow = typeof lintTermDictionary.$inferInsert;

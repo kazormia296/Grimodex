@@ -7,7 +7,7 @@ use crate::error::LintError;
 use crate::morph::tokenize_blocks;
 use crate::rule::{
     Diagnostic, DisableDirective, Language, LintBlock, LintConfig, LintContext, LintInput,
-    LintScope, RuleWarning, SelectorKind, Utf16Range, WarningKind,
+    LintScope, RuleWarning, SelectorKind, TermEntry, Utf16Range, WarningKind,
 };
 use crate::rules::build_ruleset;
 
@@ -79,9 +79,16 @@ pub fn lint(
         None
     };
 
+    // Filter the term dictionary against Codex aliases. Codex wins:
+    // colliding entries are dropped and surfaced as
+    // `RuleWarning::Skipped` so authors see why their dictionary entry
+    // has no effect (design §「Codex Alias との衝突」).
+    let term_dictionary = resolve_term_dictionary(&config.term_dictionary, config, &mut warnings);
+
     let ctx = LintContext {
         config,
         block_tokens: block_tokens.as_deref(),
+        term_dictionary: &term_dictionary,
     };
     let input = LintInput {
         blocks,
@@ -168,6 +175,66 @@ fn resolve_disables(
                 });
             }
         }
+    }
+    out
+}
+
+/// Build the effective term-dictionary list for one lint pass.
+///
+/// Skips disabled rows, deduplicates by `id`, and filters out any entry
+/// whose variants collide with a Codex alias. Emits
+/// `RuleWarning::Skipped` for every dropped entry so the author can tell
+/// their dictionary row is being shadowed.
+fn resolve_term_dictionary(
+    entries: &[TermEntry],
+    config: &LintConfig,
+    warnings: &mut Vec<RuleWarning>,
+) -> Vec<TermEntry> {
+    use std::collections::HashSet;
+    // Per 設計書 §「Codex Alias との衝突」, variants are matched only
+    // against Codex entries' `aliases` (not their canonical form).
+    // Canonical names don't carry the "alias" semantics that this rule
+    // is meant to defer to.
+    let mut codex_aliases: HashSet<&str> = HashSet::new();
+    for entry in &config.codex_entries {
+        for alias in &entry.aliases {
+            if alias.is_empty() || alias == &entry.canonical {
+                continue;
+            }
+            codex_aliases.insert(alias.as_str());
+        }
+    }
+    let mut out = Vec::with_capacity(entries.len());
+    // Consolidated preferred-list for the (up to one) warning we emit
+    // per run. Multiple Skipped warnings with the same (rule_id, kind)
+    // are deduplicated by the frontend mergeWarnings, so we send one.
+    let mut skipped: Vec<String> = Vec::new();
+    for entry in entries {
+        if !entry.enabled {
+            continue;
+        }
+        if entry.variants.is_empty() {
+            continue;
+        }
+        let collide = entry
+            .variants
+            .iter()
+            .any(|v| codex_aliases.contains(v.as_str()));
+        if collide {
+            skipped.push(format!("「{}」", entry.preferred));
+            continue;
+        }
+        out.push(entry.clone());
+    }
+    if !skipped.is_empty() {
+        warnings.push(RuleWarning {
+            rule_id: "project/term-consistency".to_string(),
+            kind: WarningKind::Skipped,
+            message: format!(
+                "{} の variants が Codex alias と衝突、Codex 側が優先されます",
+                skipped.join(", ")
+            ),
+        });
     }
     out
 }

@@ -150,7 +150,8 @@ mod tests {
         let cfg = LintConfig::default();
         let ctx = LintContext {
             config: &cfg,
-            block_tokens: None, // this rule is surface-only for now
+            block_tokens: None,
+            term_dictionary: &[], // this rule is surface-only for now
         };
         let input = LintInput {
             blocks: &blocks,

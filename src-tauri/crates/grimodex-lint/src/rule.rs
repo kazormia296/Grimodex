@@ -121,6 +121,36 @@ pub struct CodexEntry {
     pub aliases: Vec<String>,
 }
 
+/// One entry of the project-level term dictionary.
+///
+/// Used by `project/term-consistency`. Unlike Codex entries, these are
+/// pure prescriptive style rules (e.g. "use 『ウェブ』, not 『Web』") with
+/// **entry-level severity** that takes precedence over the usual
+/// rule-level override.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TermEntry {
+    /// Stable identifier used to link diagnostics back to the dictionary
+    /// row in the Settings UI.
+    pub id: String,
+    /// Canonical / preferred written form.
+    pub preferred: String,
+    /// Spellings that should trigger a warning. Matched literally
+    /// (regex-escaped at build time). ASCII-word variants receive an
+    /// automatic `\b` boundary so `web` does not match inside `webhook`.
+    #[serde(default)]
+    pub variants: Vec<String>,
+    /// Per-entry severity (design: warn or info only — entry-level
+    /// severity beats the rule-level override).
+    pub severity: Severity,
+    /// Optional free-form note surfaced in Diagnostic messages.
+    #[serde(default)]
+    pub note: Option<String>,
+    /// Whether the row contributes to the compiled matcher. Disabled
+    /// rows are skipped before collision detection.
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct LintConfig {
     #[serde(default)]
@@ -130,6 +160,12 @@ pub struct LintConfig {
     /// become no-ops.
     #[serde(default)]
     pub codex_entries: Vec<CodexEntry>,
+    /// Project term dictionary entries for `project/term-consistency`.
+    /// The engine filters out entries whose variants collide with a
+    /// Codex alias (Codex wins) before invoking the rule, so the rule
+    /// never sees a colliding entry.
+    #[serde(default)]
+    pub term_dictionary: Vec<TermEntry>,
 }
 
 impl LintConfig {
@@ -210,6 +246,11 @@ pub struct LintContext<'a> {
     /// Tokenised blocks, index-aligned with `LintInput.blocks`. `None`
     /// means no enabled rule needed morphology for this request.
     pub block_tokens: Option<&'a [Vec<crate::morph::MorphToken>]>,
+    /// Collision-filtered term dictionary (Codex-aliased entries
+    /// already dropped and surfaced via `RuleWarning::Skipped`). The
+    /// engine constructs this once per request so `project/*` rules
+    /// don't have to re-run the check.
+    pub term_dictionary: &'a [TermEntry],
 }
 
 /// Non-fatal warning kinds emitted alongside the Diagnostic list.
