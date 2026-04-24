@@ -415,6 +415,41 @@
   border-left-color: #6b7280;
 }
 
+/* Gutter dot — small circle pinned to the inline-start edge of any
+ * block that has a disable Mark or attribute. Width:0 keeps it from
+ * pushing text; absolute positioning paints it just outside the block.
+ * `--all` variant uses a slightly stronger fill to flag the broader
+ * suppression. */
+.lint-disable-gutter {
+  display: inline-block;
+  width: 0;
+  height: 0;
+  position: relative;
+  vertical-align: top;
+  pointer-events: auto;
+}
+.lint-disable-gutter::before {
+  content: "";
+  position: absolute;
+  left: -0.85em;
+  top: 0.45em;
+  width: 0.45em;
+  height: 0.45em;
+  border-radius: 50%;
+  background-color: #9ca3af;
+  opacity: 0.65;
+}
+.lint-disable-gutter--all::before {
+  background-color: #6b7280;
+  opacity: 0.85;
+}
+.dark .lint-disable-gutter::before {
+  background-color: #6b7280;
+}
+.dark .lint-disable-gutter--all::before {
+  background-color: #9ca3af;
+}
+
 /* Vertical writing preview (Task 5.2) */
 .vertical-preview {
   writing-mode: vertical-rl;

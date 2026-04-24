@@ -20,6 +20,7 @@ import { FindReplaceExtension } from "@/features/editor/FindReplaceExtension";
 import { InlineAtomNavigationExtension } from "@/features/editor/InlineAtomNavigationExtension";
 import { SlashCommandExtension } from "@/features/editor/inlineAi/SlashCommandExtension";
 import { createLintDecorationPlugin } from "@/features/editor/LintDecorationPlugin";
+import { createLintDisableGutterPlugin } from "@/features/editor/LintDisableGutterPlugin";
 import { LintDisableMark } from "@/features/editor/LintDisableMark";
 import { LintDisableBlockAttrs } from "@/features/editor/LintDisableBlockAttrs";
 import i18next from "@/lib/i18n";
@@ -75,6 +76,13 @@ const LintDecorationExtension = Extension.create({
   },
 });
 
+const LintDisableGutterExtension = Extension.create({
+  name: "lintDisableGutter",
+  addProseMirrorPlugins() {
+    return [createLintDisableGutterPlugin()];
+  },
+});
+
 const ToolbarShortcutsExtension = Extension.create({
   name: "toolbarShortcuts",
 
@@ -126,6 +134,7 @@ export function getEditorExtensions(): Extensions {
     LintDecorationExtension,
     LintDisableMark,
     LintDisableBlockAttrs,
+    LintDisableGutterExtension,
   ];
 }
 

@@ -1,6 +1,7 @@
 mod ai;
 mod codex_matching;
 mod database;
+mod lint_logging;
 mod workspace;
 
 use codex_matching::CodexMatcherState;
@@ -16,6 +17,11 @@ use workspace::GlobalSettings;
 struct StreamAbortFlag {
     flag: Arc<std::sync::atomic::AtomicBool>,
 }
+
+/// Holds the `tracing-appender` worker guard so the non-blocking writer
+/// keeps draining for the lifetime of the Tauri app. Dropping this
+/// flushes pending log lines synchronously.
+struct LogGuard(#[allow(dead_code)] tracing_appender::non_blocking::WorkerGuard);
 
 #[derive(Debug, thiserror::Error)]
 enum AppError {
@@ -415,17 +421,16 @@ async fn test_ai_connection(
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    // `tracing` subscriber for the Tauri app (covers grimodex-lint too).
-    // Level is controlled by RUST_LOG; defaults to `info` for our crates.
-    let _ = tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| {
-                tracing_subscriber::EnvFilter::new("warn,grimodex_lib=info,grimodex_lint=info")
-            }),
-        )
-        .try_init();
+    // Daily-rotating file log under `~/.grimodex/logs/lint-tauri-*.log`
+    // plus stderr. The guard must outlive `tauri::Builder::run` so file
+    // writes are flushed; stash it on the manager state.
+    let log_guard = lint_logging::init_tauri_logging();
 
-    tauri::Builder::default()
+    let mut builder = tauri::Builder::default();
+    if let Some(guard) = log_guard {
+        builder = builder.manage(LogGuard(guard));
+    }
+    builder
         .plugin(tauri_plugin_window_state::Builder::default().build())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())

@@ -673,6 +673,36 @@ export const lintIgnoredDiagnostics = sqliteTable(
   ],
 );
 
+// Append-only event log for self-tuning Linter behaviour. Schema is
+// added in Phase 1 so Phase 2/3 writers and the eventual statistics tab
+// can land without a migration. `sceneId` becomes NULL when a scene is
+// deleted so the historical record survives content cleanup.
+export const lintActionLog = sqliteTable(
+  "lint_action_log",
+  {
+    id: integer("id").primaryKey({ autoIncrement: true }),
+    ruleId: text("rule_id").notNull(),
+    action: text("action", {
+      enum: [
+        "detected",
+        "fixed",
+        "ignored_once",
+        "ignored_persistent_set",
+        "ignored_persistent_unset",
+        "disabled_inline",
+      ],
+    }).notNull(),
+    sceneId: text("scene_id").references(() => treeNodes.id, {
+      onDelete: "set null",
+    }),
+    occurredAt: integer("occurred_at").notNull(),
+  },
+  (table) => [
+    index("idx_lint_action_log_rule").on(table.ruleId),
+    index("idx_lint_action_log_occurred").on(table.occurredAt),
+  ],
+);
+
 // Type exports
 export type AuthorshipSpan = typeof authorshipSpans.$inferSelect;
 export type NewAuthorshipSpan = typeof authorshipSpans.$inferInsert;

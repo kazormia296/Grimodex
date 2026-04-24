@@ -3,6 +3,7 @@ import { createPortal } from "react-dom";
 import type { Editor } from "@tiptap/core";
 
 import { useLintConfigStore } from "./lintConfigStore";
+import type { MultiBlockDisablePolicy } from "./lintConfigStore";
 
 interface SelectionInfo {
   from: number;
@@ -87,6 +88,9 @@ export function LintDisablePicker({
   onClose,
 }: LintDisablePickerProps) {
   const effective = useLintConfigStore((s) => s.getEffective());
+  const setMultiBlockPolicy = useLintConfigStore((s) => s.setMultiBlockPolicy);
+  const persistedPolicy: MultiBlockDisablePolicy =
+    effective.inlineDisable.multiBlockPolicy;
 
   const availableRules = useMemo(() => {
     return Object.keys(effective.rules)
@@ -104,7 +108,12 @@ export function LintDisablePicker({
         : [];
     return new Set(initial);
   });
-  const [policy, setPolicy] = useState<MultiBlockPolicy>("block");
+  // When the user has persisted "always block" / "always span", honour
+  // it as the dialog default (still editable for one-off overrides).
+  const [policy, setPolicy] = useState<MultiBlockPolicy>(() =>
+    persistedPolicy === "span" ? "span" : "block",
+  );
+  const [rememberPolicy, setRememberPolicy] = useState(false);
 
   // ESC closes without applying.
   useEffect(() => {
@@ -118,6 +127,12 @@ export function LintDisablePicker({
   const onApply = () => {
     const rules = isAll ? ["*"] : Array.from(picked);
     if (rules.length === 0) return;
+    if (selection.multiBlock && rememberPolicy) {
+      // Persist the chosen path so future multi-block selections skip
+      // this question (the dialog itself stays open for rule selection
+      // — only the A/B sub-section disappears next time).
+      setMultiBlockPolicy(policy);
+    }
     applyDisable(editor, selection, rules, policy);
     onClose();
   };
@@ -186,7 +201,7 @@ export function LintDisablePicker({
             </div>
           )}
 
-          {selection.multiBlock && (
+          {selection.multiBlock && persistedPolicy === "ask" && (
             <div className="border-t border-border pt-2 flex flex-col gap-2">
               <div className="text-xs font-medium text-amber-700 dark:text-amber-400">
                 選択範囲が複数のブロックをまたいでいます
@@ -223,6 +238,34 @@ export function LintDisablePicker({
                   </span>
                 </span>
               </label>
+              <label className="flex items-center gap-2 text-xs mt-1 pt-1 border-t border-border/40 text-muted-foreground">
+                <input
+                  type="checkbox"
+                  checked={rememberPolicy}
+                  onChange={(e) => setRememberPolicy(e.target.checked)}
+                />
+                今後は確認せず常にこの方式で適用
+              </label>
+            </div>
+          )}
+          {selection.multiBlock && persistedPolicy !== "ask" && (
+            <div className="border-t border-border pt-2 text-xs text-muted-foreground flex items-center justify-between gap-2">
+              <span>
+                複数ブロック選択時の方式:{" "}
+                <strong>
+                  {persistedPolicy === "block"
+                    ? "ブロック単位"
+                    : "ブロックごとに Span"}
+                </strong>
+              </span>
+              <button
+                type="button"
+                onClick={() => setMultiBlockPolicy("ask")}
+                className="rounded border border-border px-1.5 py-0.5 text-xs hover:bg-accent"
+                title="次回から確認ダイアログを表示する"
+              >
+                毎回確認に戻す
+              </button>
             </div>
           )}
         </div>

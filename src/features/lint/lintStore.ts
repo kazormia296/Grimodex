@@ -12,6 +12,21 @@ import type {
 } from "./types";
 import { useLintIgnoreStore } from "./lintIgnoreStore";
 
+/**
+ * One-off informational message pushed into the panel from UI actions
+ * (currently: Fix-applied-and-removed-a-disable). Distinct from
+ * `RuleWarning` because the schema for those is owned by Rust and bumping
+ * it would require an engine round-trip for a pure-UI signal.
+ *
+ * Lifetime is "until next runLint clears it" — design says "本文への
+ * 反映を執筆体験を阻害しない原則"、so we don't leave it lingering forever.
+ */
+export interface LintNotification {
+  id: string;
+  message: string;
+  timestamp: number;
+}
+
 interface LintState {
   /** Scene id whose diagnostics are currently displayed. */
   currentSceneId: string | null;
@@ -22,6 +37,8 @@ interface LintState {
   /** Scene text that was linted — used to re-apply ignore matching. */
   lastSceneText: string;
   warnings: RuleWarning[];
+  /** Transient UI notifications (e.g. Fix removed N disable Marks). */
+  notifications: LintNotification[];
   /** Monotonic counter used to discard stale responses. */
   pendingRequestId: number;
   isLinting: boolean;
@@ -59,6 +76,11 @@ interface LintState {
    * changes (e.g. user added / removed an entry).
    */
   reapplyIgnores: (sceneId: string) => void;
+
+  /** Push a transient UI notification (auto-cleared on next runLint). */
+  pushNotification: (message: string) => void;
+  /** Dismiss a single notification by id. */
+  dismissNotification: (id: string) => void;
 
   /** Reset state when a scene is closed or the linter is disabled. */
   clear: () => void;
@@ -193,12 +215,28 @@ export const useLintStore = create<LintState>()((set, get) => {
     diagnostics: [],
     lastSceneText: "",
     warnings: [],
+    notifications: [],
     pendingRequestId: 0,
     isLinting: false,
     lastErrorMessage: null,
     cursorOffset: null,
 
     setCursorOffset: (offset) => set({ cursorOffset: offset }),
+
+    pushNotification: (message) => {
+      const notification: LintNotification = {
+        id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+        message,
+        timestamp: Date.now(),
+      };
+      set((s) => ({ notifications: [...s.notifications, notification] }));
+    },
+
+    dismissNotification: (id) => {
+      set((s) => ({
+        notifications: s.notifications.filter((n) => n.id !== id),
+      }));
+    },
 
     setCurrentScene: (sceneId) => {
       blockDiagCache = new Map();
@@ -209,6 +247,7 @@ export const useLintStore = create<LintState>()((set, get) => {
         diagnostics: [],
         lastSceneText: "",
         warnings: [],
+        notifications: [],
       });
     },
 
@@ -220,6 +259,7 @@ export const useLintStore = create<LintState>()((set, get) => {
         diagnostics: [],
         lastSceneText: "",
         warnings: [],
+        notifications: [],
         isLinting: false,
         lastErrorMessage: null,
       });

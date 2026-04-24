@@ -14,11 +14,28 @@ export interface LangConfig {
   enabled: boolean;
 }
 
+/**
+ * Behaviour when the inline-disable picker sees a multi-block selection.
+ *
+ * - `ask` (default): prompt the user every time
+ * - `block`: silently use the block-attribute path (option A)
+ * - `span`: silently fall back to per-block Span marks (option B)
+ *
+ * Persisted at `lint.config.inlineDisable.multiBlockPolicy` so the
+ * preference survives reloads (design doc §「複数ブロック選択時の挙動」).
+ */
+export type MultiBlockDisablePolicy = "ask" | "block" | "span";
+
+export interface InlineDisableConfig {
+  multiBlockPolicy: MultiBlockDisablePolicy;
+}
+
 export interface LintFullConfig {
   schemaVersion: number;
   enabled: boolean;
   languages: Record<LintLanguage, LangConfig>;
   rules: Record<string, RuleConfig>;
+  inlineDisable: InlineDisableConfig;
 }
 
 /**
@@ -77,6 +94,7 @@ export const BUILTIN_DEFAULT_CONFIG: LintFullConfig = {
     "en/ellipsis": { enabled: true },
     "en/double-space": { enabled: true },
   },
+  inlineDisable: { multiBlockPolicy: "ask" },
 };
 
 const SETTINGS_KEY = "lint.config";
@@ -101,6 +119,7 @@ interface LintConfigState {
   setLinterEnabled: (enabled: boolean) => void;
   setLanguageEnabled: (lang: LintLanguage, enabled: boolean) => void;
   setRule: (ruleId: string, patch: Partial<RuleConfig>) => void;
+  setMultiBlockPolicy: (policy: MultiBlockDisablePolicy) => void;
   resetRule: (ruleId: string) => void;
   resetLanguage: (lang: LintLanguage) => void;
   resetAll: () => void;
@@ -158,6 +177,11 @@ export const useLintConfigStore = create<LintConfigState>()((set, get) => ({
         },
       },
       rules: mergeRules(user.rules),
+      inlineDisable: {
+        multiBlockPolicy:
+          user.inlineDisable?.multiBlockPolicy ??
+          BUILTIN_DEFAULT_CONFIG.inlineDisable.multiBlockPolicy,
+      },
     };
   },
 
@@ -202,6 +226,16 @@ export const useLintConfigStore = create<LintConfigState>()((set, get) => ({
     const next: Partial<LintFullConfig> = {
       ...user,
       rules: { ...(user.rules ?? {}), [ruleId]: nextRule },
+    };
+    set({ userLayer: next });
+    persist(next);
+  },
+
+  setMultiBlockPolicy: (policy) => {
+    const user = get().userLayer;
+    const next: Partial<LintFullConfig> = {
+      ...user,
+      inlineDisable: { multiBlockPolicy: policy },
     };
     set({ userLayer: next });
     persist(next);

@@ -590,6 +590,24 @@ impl Database {
             CREATE INDEX IF NOT EXISTS idx_lint_ignored_rule
                 ON lint_ignored_diagnostics(rule_id);
 
+            -- Lint event history (Phase 2-3 writes; schema only for now).
+            -- Append-only event log for self-tuning suggestions like
+            -- 'you ignore ja/quote-period 80% of the time → turn it off?'.
+            -- `scene_id` uses ON DELETE SET NULL (vs CASCADE on the
+            -- ignore table) so deleting a scene preserves the historical
+            -- record while breaking the FK link.
+            CREATE TABLE IF NOT EXISTS lint_action_log (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                rule_id     TEXT NOT NULL,
+                action      TEXT NOT NULL,
+                scene_id    TEXT REFERENCES tree_nodes(id) ON DELETE SET NULL,
+                occurred_at INTEGER NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_lint_action_log_rule
+                ON lint_action_log(rule_id);
+            CREATE INDEX IF NOT EXISTS idx_lint_action_log_occurred
+                ON lint_action_log(occurred_at);
+
             -- Seed a default Map board for every new project
             CREATE TRIGGER IF NOT EXISTS seed_default_map_board
             AFTER INSERT ON projects BEGIN

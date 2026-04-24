@@ -236,7 +236,7 @@ pub struct LintConfig {
 
 pub struct RuleConfig {
     pub enabled: bool,
-    pub severity_override: Option<Severity>,
+    pub severity: Option<Severity>,            // None = ルールのデフォルト Severity を使用
     pub options: serde_json::Value,  // ルール固有のオプション
 }
 
@@ -274,12 +274,15 @@ pub trait LintRule: Send + Sync {
 
 ```rust
 #[tauri::command]
-async fn lint_text(
+fn lint_text(
     blocks: Vec<LintBlock>,
     language: String,            // "ja" | "en"
     scope: LintScope,
     config: LintConfig,
+    disables: Option<Vec<DisableDirective>>,  // Phase 3 で追加。Some(vec![]) でも None でも実質同じ
 ) -> Result<LintResponse, LintError>;
+// 注: lint は CPU バウンドのため `async fn` は採用しない（Tokio に乗せる必要なし）。
+//     Phase 3 で追加した `disables` は、フロントが Phase 1 期間に渡さないことを許容するため Optional。
 
 pub struct LintResponse {
     pub diagnostics: Vec<Diagnostic>,
@@ -533,9 +536,16 @@ type PosInterval = {
 | **`"all-halfwidth"`（Phase 1 デフォルト）** | 英数字はすべて半角 | Phase 1 |
 | `"all-fullwidth"` | 英数字はすべて全角（縦書き作品向け） | Phase 1 |
 | `"off"` | ルール適用しない | Phase 1 |
-| `"ja-halfwidth-with-exceptions"` | 日本語文中の英数字は半角。ただし 1 桁の数字・単位記号（%、℃ 等）は全角 | **Phase 2** |
+| `"ja-halfwidth-with-exceptions"` | 1 桁の数字のみ「日本語コンテキスト隣接時に全角」のヒューリスティック判定 | Phase 1（隣接文字判定）／ 単位記号は将来別ルールへ |
 
-**Phase 2 送りの理由**: `ja-halfwidth-with-exceptions` は「`2024年` と `1年` で桁数により半角/全角が分岐」「`%`/`℃` などの単位記号の文脈判定」など、regex のみでは誤検知が多くなる。形態素解析を導入する Phase 2 で単語境界・数詞を正しく認識してから解禁する。
+**`ja-halfwidth-with-exceptions` の判定方針**: 形態素解析を待たず、**隣接 1 文字に日本語スクリプトが現れるか**だけで「日本語コンテキスト」を判定する軽量ヒューリスティック。
+
+- 1 桁の全角数字が日本語コンテキストにある場合（`１年`）は許容
+- 1 桁の半角数字が日本語コンテキストにある場合（`1年`）は全角への Fix を提案
+- 多桁の連続（`２０２４`）は AllHalfwidth と同じく半角を提案
+- `%`/`℃` などの**単位記号は本ルールのスコープ外**。要望が出た時点で専用の単位幅ルールを別途設計する（同一ルール内で文脈推定を増やすより責務を分けた方が安全）
+
+**設計判断**: 当初は形態素解析（Phase 2）を待つ予定だったが、実装段階で「隣接文字 1 文字での日本語判定」で十分実用的とわかったため Phase 1 に前倒しした。誤検知が問題になった場合は形態素解析利用に切り替える余地がある。
 
 Phase 1 のデフォルト `all-halfwidth` は**日本語横書き小説で最も一般的な規則**で、誤検知リスクが最小。縦書き作品を書く場合は `all-fullwidth` に切り替える。
 
@@ -1145,7 +1155,13 @@ Linter warnings:
 
 開発者向け情報として、ユーザーが「Linter が壊れている？」と感じた時の原因究明に使う。
 
-**Phase 1 の寿命管理**: 「直近の応答」の warnings のみ表示（一時的な警告が消えた時にアイコンが消える = 点滅のように見える可能性は許容）。Phase 2 で warnings log と重複除去を検討。
+**Phase 1 の寿命管理**: `(rule_id, kind)` キーで warnings をマージ保持する。
+
+- 同キーの新しい warning が来たらメッセージを上書き（最新の文言を反映）
+- 今サイクルに含まれない既存 warning は**そのまま残す**
+- 永続条件（例: UniDic InitFailed）が「たまたま warning を出さなかったサイクル」で消えてしまう（チラつき）のを防ぐ
+
+→ 当初は「直近の応答のみ表示」案だったが、UniDic 初期化失敗のような永続条件が cycle ごとに消えるのは UX 上の事故になるため、マージ方式を採用した。Phase 2 で warnings log と古いエントリの自動失効ロジックを検討する。
 
 #### 状態の永続化
 
@@ -1303,12 +1319,17 @@ Block と Span の混在を防ぐため、**(A) と (B) は同時適用しない
 位置マップ構築時に `lintDisable` Mark とブロック属性を walk して `DisableDirective` を収集:
 
 ```rust
-pub struct LintInput<'a> {
-    pub blocks: &'a [LintBlock],
-    pub disables: &'a [DisableDirective],   // 追加
-    pub language: Language,
-    pub scope: LintScope,
-}
+// LintInput には disables を含めない。理由は責務分離:
+//   - 個別 LintRule は disable を意識せず Diagnostic を発行
+//   - エンジン (`engine::lint`) が発行後に `is_disabled` でフィルタ
+// したがって disables はエンジンの引数として独立して渡す。
+pub fn lint(
+    blocks: &[LintBlock],
+    language: Language,
+    scope: LintScope,
+    config: &LintConfig,
+    disables: &[DisableDirective],
+) -> Result<LintResponse, LintError>;
 
 pub struct DisableDirective {
     pub range: Utf16Range,          // 無効化範囲（UTF-16、シーン全体座標）
@@ -1558,7 +1579,7 @@ Linter 本体の Phase と MCP の Phase は独立に進むため、タイミン
 
 ---
 
-## Lint レポートのエクスポート（Phase 2）
+## Lint レポートのエクスポート（Phase 1 で先行実装）
 
 校正作業、編集者との共有、ベータ読者へのフィードバック依頼、ルール精度測定のための出力機能。
 
@@ -1607,8 +1628,8 @@ Linter 本体の Phase と MCP の Phase は独立に進むため、タイミン
 
 ### Phase 配分
 
-- **Phase 1**: 実装しない（全章 Lint の結果が永続化されていないため）
-- **Phase 2**: 全章 Lint の結果が構造化保持されるタイミングで正式実装
+- **Phase 1**: ✅ 実装済み（`src/features/lint/lintReport.ts`）。CSV / Markdown / JSON 3 形式 + `includeExcerpt` オプション。当初は Phase 2 送りの予定だったが、Project スキャナと一緒に先行実装した
+- **Phase 2**: 全章 Lint 結果のキャッシュ／メモ化最適化、ダイアログ UI（フォーマット選択など）の磨き込み
 - **Phase 3**: 編集者からのフィードバックを Diagnostic に紐付ける等の双方向連携は対象外（別機能として検討）
 
 ### セキュリティ / プライバシー
@@ -1823,6 +1844,17 @@ UI 側（Linter パネル）はサブフェーズに分けて実装:
 
 **完了基準**: Phase 1 ルールがエディタ上でリアルタイムに動作し、Linter パネルから一覧表示・ジャンプ・Fix 適用ができる。
 
+#### Phase 2 から Phase 1 へ前倒しした項目（記録）
+
+実装着手後に「先に入れたほうが手戻りが少ない」と判断して前倒しした項目を明示する。次フェーズで再着手する際、ここに重複タスクが入らないように。
+
+- **永続無視テーブル `lint_ignored_diagnostics` + 同定ロジック + 専用タブ UI** — Phase 2 のパネル拡張群から前倒し
+- **形態素解析依存ルール 5 個（既定 OFF で同梱）** — `ja/particle-no-chain`, `ja/redundant-expression`, `ja/word-repetition`, `ja/kanji-hiragana-chain`, `codex/name-inconsistency`。lindera + UniDic 同梱と 1 パス形態素キャッシュも合わせて Phase 1 で着地
+- **Incremental lint（ブロック単位の差分キャッシュ）** — `lintStore.ts` 内で実装
+- **Lint レポートエクスポート（CSV / Markdown / JSON）** — 上述「Lint レポートのエクスポート」節
+- **Project スキャナ（disable も含む）** — `projectScan.ts` で集約、Project モードで利用
+- **`ja/halfwidth-fullwidth-mix` の `ja-halfwidth-with-exceptions` ポリシー** — 隣接文字ヒューリスティックで Phase 1 から有効（形態素解析は不要と判明）
+
 ### Phase 2（形態素解析 + Codex 連動）
 
 - lindera 導入（辞書サイズで ipadic / unidic を再判断）
@@ -1884,7 +1916,7 @@ UI 側（Linter パネル）はサブフェーズに分けて実装:
 | `Diagnostic.range` / `Fix.range` 基準 | **シーン全体テキスト基準の UTF-16 オフセット**（ブロック内ローカルではない） |
 | ProseMirror 連携 | フロント側で位置マップを保持して変換 |
 | Phase 1 ルール | 日本語 9、英語 4（すべて regex、`ja/particle-no-chain` は Phase 2 へ） |
-| `ja/halfwidth-fullwidth-mix` | Phase 1 は `all-halfwidth`（デフォルト）/ `all-fullwidth` / `off` のみ。`ja-halfwidth-with-exceptions` は形態素解析導入の Phase 2 で解禁 |
+| `ja/halfwidth-fullwidth-mix` | Phase 1 で全 4 ポリシー対応（`all-halfwidth`（デフォルト）/ `all-fullwidth` / `ja-halfwidth-with-exceptions` / `off`）。`with-exceptions` は隣接 1 文字での日本語コンテキスト判定で形態素解析不要 |
 | `ja/quote-period` の方針 | `strip`（デフォルト）/ `require`（句点付与）/ `preserve`（検出しない）の 3 択 |
 | 既定 ON | 記号・約物すべて + 一文長 |
 | 実行範囲 | 現在シーンのみ（debounce 500ms）+ 明示で全章 |
@@ -1926,7 +1958,7 @@ UI 側（Linter パネル）はサブフェーズに分けて実装:
 | 「全ルール無効化」 | `RuleSelector::All`（`["*"]`）を採用。空配列 `[]` は不正値として `InvalidOption`。UI では明示的なチェックボックスで選択必須 |
 | Fix × Disable | TipTap 標準挙動（黙って実行）。disable 消失時は Linter パネルに通知 |
 | エクスポート（原稿） | `lintDisable` Mark/ブロック属性は除去。テスト必須 |
-| Lint レポートのエクスポート | Phase 2 実装。CSV / Markdown / JSON の 3 形式。対象はプロジェクト全体 or フィルタ結果。本文抜粋非含有オプションあり |
+| Lint レポートのエクスポート | Phase 1 で先行実装（`src/features/lint/lintReport.ts`）。CSV / Markdown / JSON の 3 形式。対象はプロジェクト全体 or フィルタ結果。本文抜粋非含有オプション (`includeExcerpt`) あり |
 | Linter の crate 構成 | Phase 1 で `src-tauri/crates/grimodex-lint/` に分離。Tauri 本体・MCP サーバーから共有依存 |
 | MCP Linter コマンド | `list_lint_diagnostics` / `run_lint` / `list_lint_rules` を MCP v2 で公開。`apply_lint_fix` は MCP v4 以降 |
 | MCP Diagnostic 返却形 | line（1-origin）+ column / length（UTF-16 コードユニット、LSP 準拠）。ProseMirror オフセットは返さない |

@@ -42,4 +42,6 @@ aho-corasick = "1"
 grimodex-lint = { path = "crates/grimodex-lint" }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tracing-appender = "0.2"
+dirs = "5"
 

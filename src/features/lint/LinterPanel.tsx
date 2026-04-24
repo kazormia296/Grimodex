@@ -119,6 +119,33 @@ function buildDiagnosticKeys(list: Diagnostic[]): Map<Diagnostic, string> {
   return out;
 }
 
+function NotificationsList() {
+  const notifications = useLintStore((s) => s.notifications);
+  const dismiss = useLintStore((s) => s.dismissNotification);
+  if (notifications.length === 0) return null;
+  return (
+    <div className="flex items-center gap-1">
+      {notifications.map((n) => (
+        <div
+          key={n.id}
+          className="flex h-6 items-center gap-1 rounded border border-blue-500/50 bg-blue-500/10 px-1.5 text-xs text-blue-700 dark:text-blue-300"
+          title={n.message}
+        >
+          <span className="max-w-[280px] truncate">{n.message}</span>
+          <button
+            type="button"
+            onClick={() => dismiss(n.id)}
+            className="rounded p-0.5 hover:bg-blue-500/20"
+            aria-label="通知を閉じる"
+          >
+            <X className="h-3 w-3" />
+          </button>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function WarningsBadge({ warnings }: { warnings: RuleWarning[] }) {
   const [open, setOpen] = useState(false);
   if (warnings.length === 0) return null;
@@ -216,6 +243,7 @@ function CurrentLinterView() {
   const setRule = useLintConfigStore((s) => s.setRule);
   const addIgnore = useLintIgnoreStore((s) => s.addIgnore);
   const reapplyIgnores = useLintStore((s) => s.reapplyIgnores);
+  const pushNotification = useLintStore((s) => s.pushNotification);
 
   const [severityFilter, setSeverityFilter] = useState<SeverityFilter>({
     error: true,
@@ -357,20 +385,32 @@ function CurrentLinterView() {
   const applyFix = useCallback(
     (d: Diagnostic) => {
       if (!editor || !d.fix) return;
-      const map = buildOffsetMap(editor.state.doc);
-      const from = strOffsetToPmPos(map, d.fix.range.start);
-      const to = strOffsetToPmPos(map, d.fix.range.end);
+      const before = buildOffsetMap(editor.state.doc);
+      const from = strOffsetToPmPos(before, d.fix.range.start);
+      const to = strOffsetToPmPos(before, d.fix.range.end);
       if (from == null || to == null) return;
+      const beforeDisableCount = before.disables.length;
       editor
         .chain()
         .focus()
         .insertContentAt({ from, to }, d.fix.replacement)
         .run();
+      // Per design doc: "Fix 結果として disable が完全消滅した場合、
+      // Linter パネルに通知". Compare directive counts pre/post — if
+      // any disappeared, surface a single notification (not per-mark).
+      const afterDisableCount = buildOffsetMap(editor.state.doc).disables
+        .length;
+      const removed = beforeDisableCount - afterDisableCount;
+      if (removed > 0) {
+        pushNotification(
+          `Fix 適用により ${removed} 件の Lint 無効化が削除されました`,
+        );
+      }
       if (currentSceneId) {
         void runLintNow(editor, currentSceneId);
       }
     },
-    [editor, currentSceneId],
+    [editor, currentSceneId, pushNotification],
   );
 
   /**
@@ -384,6 +424,7 @@ function CurrentLinterView() {
     const withFix = filtered.filter((d) => d.fix);
     if (withFix.length === 0) return;
     const map = buildOffsetMap(editor.state.doc);
+    const beforeDisableCount = map.disables.length;
     const sorted = [...withFix].sort(
       (a, b) => b.fix!.range.start - a.fix!.range.start,
     );
@@ -395,8 +436,15 @@ function CurrentLinterView() {
       chain = chain.insertContentAt({ from, to }, d.fix!.replacement);
     }
     chain.run();
+    const afterDisableCount = buildOffsetMap(editor.state.doc).disables.length;
+    const removed = beforeDisableCount - afterDisableCount;
+    if (removed > 0) {
+      pushNotification(
+        `一括 Fix 適用により ${removed} 件の Lint 無効化が削除されました`,
+      );
+    }
     if (currentSceneId) void runLintNow(editor, currentSceneId);
-  }, [editor, filtered, currentSceneId]);
+  }, [editor, filtered, currentSceneId, pushNotification]);
 
   const fixableCount = useMemo(
     () => filtered.filter((d) => d.fix).length,
@@ -711,6 +759,7 @@ function PanelHeader(props: {
           </button>
         )}
         <WarningsBadge warnings={warnings} />
+        <NotificationsList />
       </div>
       <div className="flex items-center gap-2">
         <div className="flex items-center gap-1 rounded border border-border bg-background px-1.5">
@@ -1167,11 +1216,13 @@ function ProjectLinterView() {
    * surprising. Cross-scene Fix intentionally no-ops (user must jump
    * first, then press Cmd+.).
    */
+  const projectPushNotification = useLintStore((s) => s.pushNotification);
   const applyFix = useCallback(
     (scene: ScannedScene, d: Diagnostic) => {
       if (!editor || !d.fix) return;
       if (currentSceneId !== scene.sceneId) return;
       const map = buildOffsetMap(editor.state.doc);
+      const beforeDisableCount = map.disables.length;
       const from = strOffsetToPmPos(map, d.fix.range.start);
       const to = strOffsetToPmPos(map, d.fix.range.end);
       if (from == null || to == null) return;
@@ -1180,9 +1231,17 @@ function ProjectLinterView() {
         .focus()
         .insertContentAt({ from, to }, d.fix.replacement)
         .run();
+      const afterDisableCount = buildOffsetMap(editor.state.doc).disables
+        .length;
+      const removed = beforeDisableCount - afterDisableCount;
+      if (removed > 0) {
+        projectPushNotification(
+          `Fix 適用により ${removed} 件の Lint 無効化が削除されました`,
+        );
+      }
       void runLintNow(editor, scene.sceneId);
     },
-    [editor, currentSceneId],
+    [editor, currentSceneId, projectPushNotification],
   );
 
   /**
