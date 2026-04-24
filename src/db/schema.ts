@@ -39,9 +39,9 @@ export const treeNodes = sqliteTable(
       .references(() => projects.id, { onDelete: "cascade" }),
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     parentId: text("parent_id").references((): any => treeNodes.id, {
-      onDelete: "set null",
+      onDelete: "cascade",
     }),
-    nodeType: text("node_type").notNull(), // 'folder' | 'scene' | 'note'
+    nodeType: text("node_type").notNull(), // CHECK('folder' | 'scene' | 'note') enforced in SQL
     title: text("title").notNull().default("Untitled"),
     synopsis: text("synopsis"), // Scene only: plain text summary for storySoFar context injection
     // reading-order 用の fractional-indexing キー（base62、辞書順比較）
@@ -124,6 +124,7 @@ export const codexEntries = sqliteTable(
     childrenBudget: text("children_budget").notNull().default("compact"), // 'none' | 'compact' | 'standard' | 'generous'
     sourceChatMessageId: text("source_chat_message_id").references(
       () => chatMessages.id,
+      { onDelete: "set null" },
     ),
     notes: text("notes"), // Private notes (ProseMirror JSON) – never injected into AI context
     createdAt: text("created_at")
@@ -137,6 +138,7 @@ export const codexEntries = sqliteTable(
     index("idx_codex_project").on(table.projectId, table.type),
     index("idx_codex_name").on(table.projectId, table.name),
     index("idx_codex_parent").on(table.parentId),
+    index("idx_codex_entries_src_msg").on(table.sourceChatMessageId),
   ],
 );
 
@@ -261,6 +263,7 @@ export const snippets = sqliteTable(
     }),
     sourceChatMessageId: text("source_chat_message_id").references(
       () => chatMessages.id,
+      { onDelete: "set null" },
     ),
     usageCount: integer("usage_count").notNull().default(0),
     createdAt: text("created_at")
@@ -272,6 +275,8 @@ export const snippets = sqliteTable(
   },
   (table) => [
     index("idx_snippets_project").on(table.projectId, table.createdAt),
+    index("idx_snippets_scene").on(table.sceneId),
+    index("idx_snippets_src_msg").on(table.sourceChatMessageId),
   ],
 );
 
@@ -378,6 +383,7 @@ export const authorshipSpans = sqliteTable(
     }), // nullable: Snippet
     detailValueId: text("detail_value_id").references(
       () => codexDetailValues.id,
+      { onDelete: "cascade" },
     ), // nullable: Detail value
     fromPos: integer("from_pos").notNull(),
     toPos: integer("to_pos").notNull(),
@@ -390,14 +396,15 @@ export const authorshipSpans = sqliteTable(
       (): any => codexEntryPhases.id,
       { onDelete: "cascade" },
     ),
-    // CHECK: exactly one of nodeId/codexEntryId/snippetId must be non-null (enforced in SQL)
-    // detailValueId is an optional orthogonal FK (not part of ownership CHECK)
+    // SQL CHECK: exactly one of nodeId/codexEntryId/snippetId/detailValueId is NOT NULL.
+    // phaseId is orthogonal but requires codexEntryId to be set (enforced in SQL).
   },
   (table) => [
     index("idx_authorship_node").on(table.nodeId, table.source),
     index("idx_authorship_codex").on(table.codexEntryId, table.source),
     index("idx_authorship_snippet").on(table.snippetId, table.source),
     index("idx_authorship_detail").on(table.detailValueId),
+    index("idx_authorship_phase").on(table.phaseId),
   ],
 );
 
@@ -442,6 +449,10 @@ export const projectSnapshots = sqliteTable(
       .$defaultFn(() => new Date().toISOString()),
   },
   (table) => [
+    uniqueIndex("uq_project_snapshots_project_name").on(
+      table.projectId,
+      table.name,
+    ),
     index("idx_project_snapshots").on(table.projectId, table.createdAt),
   ],
 );
@@ -452,9 +463,10 @@ export const projectSnapshotEntries = sqliteTable(
     snapshotId: text("snapshot_id")
       .notNull()
       .references(() => projectSnapshots.id, { onDelete: "cascade" }),
+    // ON DELETE RESTRICT in SQL: pruning cannot remove a version referenced by a snapshot.
     versionId: text("version_id")
       .notNull()
-      .references(() => contentVersions.id),
+      .references(() => contentVersions.id, { onDelete: "restrict" }),
   },
   (table) => [primaryKey({ columns: [table.snapshotId, table.versionId] })],
 );

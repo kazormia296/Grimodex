@@ -40,8 +40,8 @@ impl Database {
             CREATE TABLE IF NOT EXISTS tree_nodes (
                 id                TEXT PRIMARY KEY,
                 project_id        TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-                parent_id         TEXT REFERENCES tree_nodes(id) ON DELETE SET NULL,
-                node_type         TEXT NOT NULL,
+                parent_id         TEXT REFERENCES tree_nodes(id) ON DELETE CASCADE,
+                node_type         TEXT NOT NULL CHECK(node_type IN ('folder','scene','note')),
                 title             TEXT NOT NULL DEFAULT 'Untitled',
                 synopsis          TEXT,
                 sort_order        TEXT NOT NULL DEFAULT 'a0',
@@ -49,7 +49,8 @@ impl Database {
                 story_time_label  TEXT,
                 pov_character_id  TEXT REFERENCES codex_entries(id) ON DELETE SET NULL,
                 location_id       TEXT REFERENCES codex_entries(id) ON DELETE SET NULL,
-                status            TEXT DEFAULT 'outline',
+                status            TEXT DEFAULT 'outline'
+                                    CHECK(status IS NULL OR status IN ('outline','draft','complete','revision','final')),
                 content           TEXT NOT NULL DEFAULT '{}',
                 created_at        TEXT NOT NULL DEFAULT (datetime('now')),
                 updated_at        TEXT NOT NULL DEFAULT (datetime('now'))
@@ -97,7 +98,7 @@ impl Database {
                                           CHECK(context_mode IN ('always', 'mentioned', 'suppress', 'hidden')),
                 children_budget         TEXT NOT NULL DEFAULT 'compact'
                                           CHECK(children_budget IN ('none', 'compact', 'standard', 'generous')),
-                source_chat_message_id  TEXT REFERENCES chat_messages(id),
+                source_chat_message_id  TEXT REFERENCES chat_messages(id) ON DELETE SET NULL,
                 notes                   TEXT,
                 created_at              TEXT NOT NULL DEFAULT (datetime('now')),
                 updated_at              TEXT NOT NULL DEFAULT (datetime('now'))
@@ -108,6 +109,9 @@ impl Database {
                 ON codex_entries(project_id, name);
             CREATE INDEX IF NOT EXISTS idx_codex_parent
                 ON codex_entries(parent_id);
+            CREATE INDEX IF NOT EXISTS idx_codex_entries_src_msg
+                ON codex_entries(source_chat_message_id)
+                WHERE source_chat_message_id IS NOT NULL;
 
             CREATE TABLE IF NOT EXISTS codex_quick_pins (
                 entry_id TEXT PRIMARY KEY REFERENCES codex_entries(id) ON DELETE CASCADE
@@ -173,15 +177,21 @@ impl Database {
                 title                   TEXT NOT NULL DEFAULT 'Untitled',
                 content                 TEXT NOT NULL DEFAULT '{}',
                 tags_cache              TEXT,
-                content_source          TEXT,
+                content_source          TEXT CHECK(content_source IS NULL OR content_source IN ('human','ai')),
                 scene_id                TEXT REFERENCES tree_nodes(id) ON DELETE SET NULL,
-                source_chat_message_id  TEXT REFERENCES chat_messages(id),
+                source_chat_message_id  TEXT REFERENCES chat_messages(id) ON DELETE SET NULL,
                 usage_count             INTEGER NOT NULL DEFAULT 0,
                 created_at              TEXT NOT NULL DEFAULT (datetime('now')),
                 updated_at              TEXT NOT NULL DEFAULT (datetime('now'))
             );
             CREATE INDEX IF NOT EXISTS idx_snippets_project
                 ON snippets(project_id, created_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_snippets_scene
+                ON snippets(scene_id)
+                WHERE scene_id IS NOT NULL;
+            CREATE INDEX IF NOT EXISTS idx_snippets_src_msg
+                ON snippets(source_chat_message_id)
+                WHERE source_chat_message_id IS NOT NULL;
 
             CREATE TABLE IF NOT EXISTS snippet_entry_tags (
                 snippet_id TEXT NOT NULL REFERENCES snippets(id) ON DELETE CASCADE,
@@ -194,7 +204,7 @@ impl Database {
             CREATE TABLE IF NOT EXISTS chat_sessions (
                 id           TEXT PRIMARY KEY,
                 project_id   TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-                node_id      TEXT REFERENCES tree_nodes(id) ON DELETE SET NULL,
+                node_id      TEXT REFERENCES tree_nodes(id) ON DELETE SET NULL, -- chat history survives scene deletion
                 title        TEXT NOT NULL DEFAULT 'New session',
                 title_manual INTEGER NOT NULL DEFAULT 0,
                 model        TEXT NOT NULL DEFAULT 'openrouter/anthropic/claude-sonnet-4.6',
@@ -240,7 +250,9 @@ impl Database {
                 label                 TEXT NOT NULL DEFAULT '',
                 summary_override      TEXT,
                 content_override      TEXT,
-                context_mode_override TEXT,
+                context_mode_override TEXT
+                                        CHECK(context_mode_override IS NULL OR
+                                              context_mode_override IN ('always','mentioned','suppress','hidden')),
                 created_at            TEXT NOT NULL DEFAULT (datetime('now')),
                 updated_at            TEXT NOT NULL DEFAULT (datetime('now'))
             );
@@ -263,7 +275,7 @@ impl Database {
                 node_id         TEXT REFERENCES tree_nodes(id) ON DELETE CASCADE,
                 codex_entry_id  TEXT REFERENCES codex_entries(id) ON DELETE CASCADE,
                 snippet_id      TEXT REFERENCES snippets(id) ON DELETE CASCADE,
-                detail_value_id TEXT REFERENCES codex_detail_values(id),
+                detail_value_id TEXT REFERENCES codex_detail_values(id) ON DELETE CASCADE,
                 from_pos        INTEGER NOT NULL,
                 to_pos          INTEGER NOT NULL,
                 source          TEXT NOT NULL CHECK(source IN ('human','ai','unknown')),
@@ -271,11 +283,15 @@ impl Database {
                 timestamp       TEXT,
                 chat_msg_id     TEXT,
                 phase_id        TEXT REFERENCES codex_entry_phases(id) ON DELETE CASCADE,
+                -- Exactly one owning document
                 CHECK (
-                    (node_id IS NOT NULL AND codex_entry_id IS NULL AND snippet_id IS NULL) OR
-                    (node_id IS NULL AND codex_entry_id IS NOT NULL AND snippet_id IS NULL) OR
-                    (node_id IS NULL AND codex_entry_id IS NULL AND snippet_id IS NOT NULL)
-                )
+                    (CASE WHEN node_id         IS NOT NULL THEN 1 ELSE 0 END +
+                     CASE WHEN codex_entry_id  IS NOT NULL THEN 1 ELSE 0 END +
+                     CASE WHEN snippet_id      IS NOT NULL THEN 1 ELSE 0 END +
+                     CASE WHEN detail_value_id IS NOT NULL THEN 1 ELSE 0 END) = 1
+                ),
+                -- phase_id (authorship in phase contentOverride) requires codex_entry_id
+                CHECK (phase_id IS NULL OR codex_entry_id IS NOT NULL)
             );
             CREATE INDEX IF NOT EXISTS idx_authorship_node
                 ON authorship_spans(node_id, source);
@@ -285,6 +301,9 @@ impl Database {
                 ON authorship_spans(snippet_id, source);
             CREATE INDEX IF NOT EXISTS idx_authorship_detail
                 ON authorship_spans(detail_value_id);
+            CREATE INDEX IF NOT EXISTS idx_authorship_phase
+                ON authorship_spans(phase_id)
+                WHERE phase_id IS NOT NULL;
 
             CREATE TABLE IF NOT EXISTS content_versions (
                 id             TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
@@ -304,14 +323,18 @@ impl Database {
                 project_id  TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
                 name        TEXT NOT NULL,
                 description TEXT,
-                created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+                created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+                UNIQUE(project_id, name)
             );
             CREATE INDEX IF NOT EXISTS idx_project_snapshots
                 ON project_snapshots(project_id, created_at DESC);
 
+            -- version_id uses ON DELETE RESTRICT so pruning logic cannot
+            -- silently strip a version that is referenced by a snapshot;
+            -- the snapshot feature relies on blocking such deletes.
             CREATE TABLE IF NOT EXISTS project_snapshot_entries (
                 snapshot_id TEXT NOT NULL REFERENCES project_snapshots(id) ON DELETE CASCADE,
-                version_id  TEXT NOT NULL REFERENCES content_versions(id),
+                version_id  TEXT NOT NULL REFERENCES content_versions(id) ON DELETE RESTRICT,
                 PRIMARY KEY (snapshot_id, version_id)
             );
 
@@ -417,24 +440,8 @@ impl Database {
                 VALUES (new.rowid, COALESCE(new.title, ''), COALESCE(new.content, ''));
             END;
 
-            -- Triggers to nullify orphaned references on deletion
-            CREATE TRIGGER IF NOT EXISTS nullify_codex_source_on_msg_delete
-            AFTER DELETE ON chat_messages BEGIN
-                UPDATE codex_entries SET source_chat_message_id = NULL
-                WHERE source_chat_message_id = old.id;
-            END;
-
-            CREATE TRIGGER IF NOT EXISTS nullify_snippet_source_on_msg_delete
-            AFTER DELETE ON chat_messages BEGIN
-                UPDATE snippets SET source_chat_message_id = NULL
-                WHERE source_chat_message_id = old.id;
-            END;
-
-            CREATE TRIGGER IF NOT EXISTS nullify_snippet_scene_on_node_delete
-            AFTER DELETE ON tree_nodes BEGIN
-                UPDATE snippets SET scene_id = NULL
-                WHERE scene_id = old.id;
-            END;
+            -- (Nullify-on-delete behavior for source_chat_message_id / scene_id
+            --  is now enforced by FK ON DELETE SET NULL; explicit triggers removed.)
 
             -- Triggers to cascade-delete content_versions for polymorphic entity_id
             CREATE TRIGGER IF NOT EXISTS delete_cv_on_tree_node_delete

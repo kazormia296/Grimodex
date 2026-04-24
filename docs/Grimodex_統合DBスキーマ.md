@@ -172,12 +172,13 @@ Folder/Scene/Noteの統一ツリー。文字列 fractional indexing（`sort_orde
 CREATE TABLE tree_nodes (
   id                TEXT PRIMARY KEY,
   project_id        TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-  parent_id         TEXT REFERENCES tree_nodes(id) ON DELETE SET NULL,  -- NULL = Project直下
-  node_type         TEXT NOT NULL,        -- 'folder'|'scene'|'note'
+  parent_id         TEXT REFERENCES tree_nodes(id) ON DELETE CASCADE,    -- NULL = Project直下。フォルダ削除で配下ノードも連鎖削除
+  node_type         TEXT NOT NULL CHECK(node_type IN ('folder','scene','note')),
   title             TEXT NOT NULL DEFAULT 'Untitled',
   synopsis          TEXT,                  -- Sceneのみ: シーン要約（プレーンテキスト）。storySoFarコンテキスト注入に使用
   sort_order        TEXT NOT NULL,        -- 文字列 fractional indexing キー（reading-order = ツリーDFS順）
-  status            TEXT DEFAULT 'outline', -- Sceneのみ: 'outline'|'draft'|'complete'|'revision'|'final'
+  status            TEXT DEFAULT 'outline' -- Sceneのみ
+                      CHECK(status IS NULL OR status IN ('outline','draft','complete','revision','final')),
   content           TEXT NOT NULL DEFAULT '{}',  -- Scene/Note本文（ProseMirror JSON）
   story_time_order  TEXT,                  -- Sceneのみ: 文字列 fractional indexing キー（作中時間順、辞書順比較）。NULL = 未設定
   story_time_label  TEXT,                   -- Sceneのみ: 表示用ラベル（例: '帝国暦1024年3月', 'Day 3 morning'）。NULL = 未設定
@@ -267,7 +268,7 @@ CREATE TABLE codex_entries (
                             CHECK(context_mode IN ('always', 'mentioned', 'suppress', 'hidden')),
   children_budget         TEXT NOT NULL DEFAULT 'compact'       -- サブツリートークン予算プリセット
                             CHECK(children_budget IN ('none', 'compact', 'standard', 'generous')),
-  source_chat_message_id  TEXT REFERENCES chat_messages(id),   -- 抽出元チャット（nullable）
+  source_chat_message_id  TEXT REFERENCES chat_messages(id) ON DELETE SET NULL,   -- 抽出元チャット（nullable）
   notes                   TEXT,            -- プライベートメモ（ProseMirror JSON）。AIコンテキストには注入されない
   created_at              TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at              TEXT NOT NULL DEFAULT (datetime('now'))
@@ -276,6 +277,8 @@ CREATE TABLE codex_entries (
 CREATE INDEX idx_codex_project ON codex_entries(project_id, type);
 CREATE INDEX idx_codex_name    ON codex_entries(project_id, name);
 CREATE INDEX idx_codex_parent  ON codex_entries(parent_id);
+CREATE INDEX idx_codex_entries_src_msg ON codex_entries(source_chat_message_id)
+  WHERE source_chat_message_id IS NOT NULL;
 ```
 
 > **`type` カラムのバリデーション:** `codex_types` テーブルとのFKは設定しない（`codex_types` は複合主キー `(project_id, slug)` であり、`type` カラムは `slug` のみを保持するため）。代わりにDrizzle ORMのカスタムバリデーションでinsert/update時に `(project_id, type)` の組み合わせが `codex_types` に存在することをアプリ層で検証する。
@@ -405,14 +408,16 @@ CREATE TABLE snippets (
   content                 TEXT NOT NULL DEFAULT '{}',  -- ProseMirror JSON
   tags_cache              TEXT,            -- 非正規化キャッシュ: JSON {name, color}[] from snippet_entry_tags
   scene_id                TEXT REFERENCES tree_nodes(id) ON DELETE SET NULL,      -- 作成元シーン（nullable）
-  source_chat_message_id  TEXT REFERENCES chat_messages(id),   -- 抽出元チャット（nullable）
+  source_chat_message_id  TEXT REFERENCES chat_messages(id) ON DELETE SET NULL,   -- 抽出元チャット（nullable）
   usage_count             INTEGER NOT NULL DEFAULT 0,
-  content_source          TEXT,            -- 'human'|'ai' — テキストの帰属ソース
+  content_source          TEXT CHECK(content_source IS NULL OR content_source IN ('human','ai')),  -- テキストの帰属ソース
   created_at              TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at              TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
 CREATE INDEX idx_snippets_project ON snippets(project_id, created_at DESC);
+CREATE INDEX idx_snippets_scene   ON snippets(scene_id) WHERE scene_id IS NOT NULL;
+CREATE INDEX idx_snippets_src_msg ON snippets(source_chat_message_id) WHERE source_chat_message_id IS NOT NULL;
 ```
 
 > **`tags` カラムの廃止:** 初期設計ではSnippetのタグを `TEXT` JSON配列で保持していたが、Codexと共通のタグプール（`codex_tags`）を使う要件が発生したため、`snippet_entry_tags` リレーションテーブルに移行。`tags_cache` はFTS5トリガー用の非正規化キャッシュとして残す。
@@ -424,8 +429,8 @@ CREATE INDEX idx_snippets_project ON snippets(project_id, created_at DESC);
 ```sql
 CREATE TABLE chat_sessions (
   id            TEXT PRIMARY KEY,
-  project_id    TEXT NOT NULL REFERENCES projects(id),
-  node_id       TEXT REFERENCES tree_nodes(id),   -- NULLの場合はプロジェクトスコープ
+  project_id    TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  node_id       TEXT REFERENCES tree_nodes(id) ON DELETE SET NULL,   -- NULLの場合はプロジェクトスコープ。シーン削除後もセッション履歴は残す
   title         TEXT NOT NULL DEFAULT 'New session',
   title_manual  INTEGER NOT NULL DEFAULT 0,        -- 1: 手動リネーム済み、自動再生成を抑制
   model         TEXT NOT NULL DEFAULT 'openrouter/anthropic/claude-sonnet-4.6',
@@ -479,19 +484,22 @@ CREATE TABLE authorship_spans (
   timestamp       TEXT,                -- ISO 8601
   chat_msg_id     TEXT,                -- 抽出元チャットメッセージID（nullable）
   phase_id        TEXT REFERENCES codex_entry_phases(id) ON DELETE CASCADE,  -- フェーズcontentOverride帰属追跡用（nullable）
-  -- node_id, codex_entry_id, snippet_id, detail_value_id のいずれか1つのみNOT NULL
+  -- node_id, codex_entry_id, snippet_id, detail_value_id のいずれか1つのみNOT NULL（所有文書）
   CHECK (
     (CASE WHEN node_id IS NOT NULL THEN 1 ELSE 0 END +
      CASE WHEN codex_entry_id IS NOT NULL THEN 1 ELSE 0 END +
      CASE WHEN snippet_id IS NOT NULL THEN 1 ELSE 0 END +
      CASE WHEN detail_value_id IS NOT NULL THEN 1 ELSE 0 END) = 1
-  )
+  ),
+  -- phase_id（フェーズ contentOverride 編集時）は codex_entry_id とセットで必須
+  CHECK (phase_id IS NULL OR codex_entry_id IS NOT NULL)
 );
 
 CREATE INDEX idx_authorship_node ON authorship_spans(node_id, source);
 CREATE INDEX idx_authorship_codex ON authorship_spans(codex_entry_id, source);
 CREATE INDEX idx_authorship_snippet ON authorship_spans(snippet_id, source);
-CREATE INDEX idx_authorship_detail ON authorship_spans(detail_value_id, source);
+CREATE INDEX idx_authorship_detail ON authorship_spans(detail_value_id);
+CREATE INDEX idx_authorship_phase ON authorship_spans(phase_id) WHERE phase_id IS NOT NULL;
 ```
 
 ### codex_quick_pins
@@ -547,7 +555,9 @@ CREATE TABLE codex_entry_phases (
   label                 TEXT NOT NULL DEFAULT '',      -- フェーズ名（表示用）
   summary_override      TEXT,            -- ベースsummaryのオーバーライド
   content_override      TEXT,            -- ベースcontentのオーバーライド（ProseMirror JSON）
-  context_mode_override TEXT,            -- ベースcontext_modeのオーバーライド
+  context_mode_override TEXT            -- ベースcontext_modeのオーバーライド
+                          CHECK(context_mode_override IS NULL OR
+                                context_mode_override IN ('always','mentioned','suppress','hidden')),
   created_at            TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at            TEXT NOT NULL DEFAULT (datetime('now'))
 );
@@ -797,7 +807,8 @@ CREATE TABLE project_snapshots (
   project_id  TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
   name        TEXT NOT NULL,
   description TEXT,
-  created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+  created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+  UNIQUE(project_id, name)
 );
 
 CREATE INDEX idx_project_snapshots ON project_snapshots(project_id, created_at DESC);
@@ -810,7 +821,8 @@ CREATE INDEX idx_project_snapshots ON project_snapshots(project_id, created_at D
 ```sql
 CREATE TABLE project_snapshot_entries (
   snapshot_id TEXT NOT NULL REFERENCES project_snapshots(id) ON DELETE CASCADE,
-  version_id  TEXT NOT NULL REFERENCES content_versions(id),
+  -- ON DELETE RESTRICT: プルーニングはスナップショット参照中のバージョンを削除できない
+  version_id  TEXT NOT NULL REFERENCES content_versions(id) ON DELETE RESTRICT,
   PRIMARY KEY (snapshot_id, version_id)
 );
 ```
@@ -959,6 +971,55 @@ Timelineパネル設計書の策定に伴い、Phase解決で使う時間軸を�
 5. アプリ起動時に一度だけ実行し、完了フラグを `meta` テーブル等で記録
 
 **他テーブルの `sort_order` は据え置き**: `codex_types.sort_order` / `codex_detail_definitions.sort_order` は引き続き REAL 型を使う。これらは中間挿入頻度が低く（管理者が時々並べ替えるだけ）、精度劣化リスクは実害が薄いため、移行コストに見合わない。
+
+---
+
+## 設計レビュー反映（2026-04-24）
+
+未リリース段階の設計レビューで検出された整合性問題を解消。`database.rs` / `schema.ts` / 本設計書を同期。
+
+### ON DELETE アクション明示（整合性系）
+
+| テーブル | カラム | 変更前 | 変更後 | 理由 |
+|---------|-------|-------|-------|-----|
+| `tree_nodes` | `parent_id` | SET NULL | **CASCADE** | フォルダ削除時に配下シーンが root に浮上する挙動を禁止 |
+| `codex_entries` | `source_chat_message_id` | 未指定 | **SET NULL** | FK で履行、従来のトリガーは削除 |
+| `snippets` | `source_chat_message_id` | 未指定 | **SET NULL** | 同上 |
+| `project_snapshot_entries` | `version_id` | 未指定 | **RESTRICT** | スナップショット参照中のバージョンをプルーニングが削除できないよう明示 |
+| `authorship_spans` | `detail_value_id` | 未指定 | **CASCADE** | 他の所有カラムと揃える |
+
+### CHECK 制約追加（値の型安全性）
+
+| テーブル | カラム | 許容値 |
+|---------|-------|-------|
+| `tree_nodes` | `node_type` | `'folder' \| 'scene' \| 'note'` |
+| `tree_nodes` | `status` | `NULL \| 'outline' \| 'draft' \| 'complete' \| 'revision' \| 'final'` |
+| `snippets` | `content_source` | `NULL \| 'human' \| 'ai'` |
+| `codex_entry_phases` | `context_mode_override` | `NULL \| 'always' \| 'mentioned' \| 'suppress' \| 'hidden'` |
+
+### `authorship_spans` CHECK 修正
+
+- 所有カラム排他 CHECK に `detail_value_id` を追加して **4-way 排他**に統一（従来は 3-way）
+- `phase_id` は `codex_entry_id` がセットされているときのみ許容する CHECK を追加
+
+### UNIQUE 制約追加
+
+- `project_snapshots(project_id, name)` — 同名スナップショットを禁止
+
+### インデックス追加（FK 逆引き用）
+
+- `idx_codex_entries_src_msg` on `codex_entries(source_chat_message_id)` ※部分
+- `idx_snippets_scene` on `snippets(scene_id)` ※部分
+- `idx_snippets_src_msg` on `snippets(source_chat_message_id)` ※部分
+- `idx_authorship_phase` on `authorship_spans(phase_id)` ※部分
+
+### トリガー削除
+
+`source_chat_message_id` / `scene_id` の nullify-on-delete を実現していた以下トリガーは、FK の `ON DELETE SET NULL` で代替できるため削除:
+
+- `nullify_codex_source_on_msg_delete`
+- `nullify_snippet_source_on_msg_delete`
+- `nullify_snippet_scene_on_node_delete`
 
 ---
 
