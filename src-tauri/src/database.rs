@@ -101,7 +101,11 @@ impl Database {
                 source_chat_message_id  TEXT REFERENCES chat_messages(id) ON DELETE SET NULL,
                 notes                   TEXT,
                 created_at              TEXT NOT NULL DEFAULT (datetime('now')),
-                updated_at              TEXT NOT NULL DEFAULT (datetime('now'))
+                updated_at              TEXT NOT NULL DEFAULT (datetime('now')),
+                -- Composite FK: (project_id, type) must reference a row in codex_types.
+                -- RESTRICT prevents type deletion while entries exist; CASCADE propagates slug renames.
+                FOREIGN KEY (project_id, type) REFERENCES codex_types(project_id, slug)
+                  ON UPDATE CASCADE ON DELETE RESTRICT
             );
             CREATE INDEX IF NOT EXISTS idx_codex_project
                 ON codex_entries(project_id, type);
@@ -157,7 +161,10 @@ impl Database {
                 sort_order        REAL NOT NULL DEFAULT 0.0,
                 include_in_context INTEGER NOT NULL DEFAULT 0,
                 created_at        TEXT NOT NULL DEFAULT (datetime('now')),
-                UNIQUE(project_id, type_slug, name)
+                UNIQUE(project_id, type_slug, name),
+                -- Composite FK: (project_id, type_slug) must reference a row in codex_types.
+                FOREIGN KEY (project_id, type_slug) REFERENCES codex_types(project_id, slug)
+                  ON UPDATE CASCADE ON DELETE RESTRICT
             );
             CREATE INDEX IF NOT EXISTS idx_codex_detail_defs
                 ON codex_detail_definitions(project_id, type_slug, sort_order);

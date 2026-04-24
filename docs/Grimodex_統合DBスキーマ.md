@@ -278,7 +278,10 @@ CREATE TABLE codex_entries (
   source_chat_message_id  TEXT REFERENCES chat_messages(id) ON DELETE SET NULL,   -- 抽出元チャット（nullable）
   notes                   TEXT,            -- プライベートメモ（ProseMirror JSON）。AIコンテキストには注入されない
   created_at              TEXT NOT NULL DEFAULT (datetime('now')),
-  updated_at              TEXT NOT NULL DEFAULT (datetime('now'))
+  updated_at              TEXT NOT NULL DEFAULT (datetime('now')),
+  -- 複合FK: (project_id, type) は codex_types(project_id, slug) を参照
+  FOREIGN KEY (project_id, type) REFERENCES codex_types(project_id, slug)
+    ON UPDATE CASCADE ON DELETE RESTRICT
 );
 
 CREATE INDEX idx_codex_project ON codex_entries(project_id, type);
@@ -288,7 +291,7 @@ CREATE INDEX idx_codex_entries_src_msg ON codex_entries(source_chat_message_id)
   WHERE source_chat_message_id IS NOT NULL;
 ```
 
-> **`type` カラムのバリデーション:** `codex_types` テーブルとのFKは設定しない（`codex_types` は複合主キー `(project_id, slug)` であり、`type` カラムは `slug` のみを保持するため）。代わりにDrizzle ORMのカスタムバリデーションでinsert/update時に `(project_id, type)` の組み合わせが `codex_types` に存在することをアプリ層で検証する。
+> **`type` カラムの参照整合性:** 複合FK `(project_id, type) → codex_types(project_id, slug)` により、存在しない slug への参照は SQL レベルで拒否される。`codex_types` のスラッグ変更は `ON UPDATE CASCADE` で子テーブルに伝播し、参照中のタイプ削除は `RESTRICT` で防止される（アプリ層のビルトイン保護とは独立に DB が整合性を守る）。
 
 context_mode の動作:
 
@@ -371,7 +374,10 @@ CREATE TABLE codex_detail_definitions (
   sort_order        REAL NOT NULL DEFAULT 0.0,
   include_in_context INTEGER NOT NULL DEFAULT 0,  -- 1: AIコンテキストに含める
   created_at        TEXT NOT NULL DEFAULT (datetime('now')),
-  UNIQUE(project_id, type_slug, name)
+  UNIQUE(project_id, type_slug, name),
+  -- 複合FK: (project_id, type_slug) は codex_types(project_id, slug) を参照
+  FOREIGN KEY (project_id, type_slug) REFERENCES codex_types(project_id, slug)
+    ON UPDATE CASCADE ON DELETE RESTRICT
 );
 
 CREATE INDEX idx_codex_detail_defs
@@ -1095,6 +1101,20 @@ Timelineパネル設計書の策定に伴い、Phase解決で使う時間軸を�
 |---------|----------|------|
 | `chat_sessions.pinned_codex` | `chat_session_pinned_codex` | codex/snippet 削除時にピンも自動削除、重複ピンは UNIQUE で防止 |
 | `chat_summaries.source_message_ids` | `chat_summary_messages` | message 削除時にリンクも自動削除、要約→メッセージの逆引きが SQL で可能 |
+
+### 複合 FK による Codex タイプ参照整合性
+
+従来「論理 FK（アプリ層検証）」としていた以下2箇所に複合 FK を追加し、DB レベルで整合性を保証:
+
+| テーブル | カラム | 参照先 | 挙動 |
+|---------|-------|-------|------|
+| `codex_entries` | `(project_id, type)` | `codex_types(project_id, slug)` | `ON UPDATE CASCADE` / `ON DELETE RESTRICT` |
+| `codex_detail_definitions` | `(project_id, type_slug)` | `codex_types(project_id, slug)` | `ON UPDATE CASCADE` / `ON DELETE RESTRICT` |
+
+- 存在しないスラッグへの参照を SQL が拒否
+- タイプのスラッグ変更時は子テーブルに伝播
+- タイプ削除は参照がある場合 RESTRICT で防止（builtin 保護とは独立）
+- アプリコードは変更なし（`type` / `type_slug` カラム名・型ともに据え置き）
 
 ---
 

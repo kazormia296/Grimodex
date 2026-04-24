@@ -4,6 +4,7 @@ import {
   integer,
   real,
   primaryKey,
+  foreignKey,
   index,
   uniqueIndex,
 } from "drizzle-orm/sqlite-core";
@@ -112,7 +113,7 @@ export const codexEntries = sqliteTable(
     parentId: text("parent_id").references((): any => codexEntries.id, {
       onDelete: "set null",
     }),
-    type: text("type").notNull().default("character"), // FK (project_id, type) → codex_types(project_id, slug) validated at app layer
+    type: text("type").notNull().default("character"), // Composite FK → codex_types(project_id, slug), see foreignKey below
     name: text("name").notNull().default("Untitled"),
     aliases: text("aliases"), // JSON string[]
     excludedAliases: text("excluded_aliases"), // JSON string[]
@@ -139,6 +140,13 @@ export const codexEntries = sqliteTable(
     index("idx_codex_name").on(table.projectId, table.name),
     index("idx_codex_parent").on(table.parentId),
     index("idx_codex_entries_src_msg").on(table.sourceChatMessageId),
+    foreignKey({
+      columns: [table.projectId, table.type],
+      foreignColumns: [codexTypes.projectId, codexTypes.slug],
+      name: "codex_entries_type_fkey",
+    })
+      .onUpdate("cascade")
+      .onDelete("restrict"),
   ],
 );
 
@@ -208,7 +216,7 @@ export const codexDetailDefinitions = sqliteTable(
     projectId: text("project_id")
       .notNull()
       .references(() => projects.id, { onDelete: "cascade" }),
-    typeSlug: text("type_slug").notNull(), // logical ref to codex_types.slug
+    typeSlug: text("type_slug").notNull(), // Composite FK → codex_types(project_id, slug), see foreignKey below
     name: text("name").notNull(),
     fieldType: text("field_type").notNull().default("text"), // CHECK('text' | 'dropdown' | 'codex_reference')
     fieldConfig: text("field_config"), // JSON
@@ -229,6 +237,13 @@ export const codexDetailDefinitions = sqliteTable(
       table.typeSlug,
       table.sortOrder,
     ),
+    foreignKey({
+      columns: [table.projectId, table.typeSlug],
+      foreignColumns: [codexTypes.projectId, codexTypes.slug],
+      name: "codex_detail_defs_type_fkey",
+    })
+      .onUpdate("cascade")
+      .onDelete("restrict"),
   ],
 );
 
