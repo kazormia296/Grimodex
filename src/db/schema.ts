@@ -155,11 +155,18 @@ export const codexDismissedRelations = sqliteTable(
   (table) => [primaryKey({ columns: [table.entryId, table.dismissedId] })],
 );
 
-export const codexQuickPins = sqliteTable("codex_quick_pins", {
-  entryId: text("entry_id")
-    .primaryKey()
-    .references(() => codexEntries.id, { onDelete: "cascade" }),
-});
+export const codexQuickPins = sqliteTable(
+  "codex_quick_pins",
+  {
+    entryId: text("entry_id")
+      .primaryKey()
+      .references(() => codexEntries.id, { onDelete: "cascade" }),
+    createdAt: text("created_at")
+      .notNull()
+      .$defaultFn(() => new Date().toISOString()),
+  },
+  (table) => [index("idx_codex_quick_pins_created").on(table.createdAt)],
+);
 
 export const codexTags = sqliteTable(
   "codex_tags",

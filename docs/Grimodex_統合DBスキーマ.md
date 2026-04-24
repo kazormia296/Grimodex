@@ -508,9 +508,14 @@ Codexエントリのクイックピン永続化。サイドバーに常時表示
 
 ```sql
 CREATE TABLE codex_quick_pins (
-  entry_id TEXT PRIMARY KEY REFERENCES codex_entries(id) ON DELETE CASCADE
+  entry_id   TEXT PRIMARY KEY REFERENCES codex_entries(id) ON DELETE CASCADE,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
+
+CREATE INDEX idx_codex_quick_pins_created ON codex_quick_pins(created_at);
 ```
+
+`created_at` により `listPinnedCodexIds` の並び順がピン追加時刻の昇順で安定化される。
 
 ### chat_summaries
 
@@ -1020,6 +1025,18 @@ Timelineパネル設計書の策定に伴い、Phase解決で使う時間軸を�
 - `nullify_codex_source_on_msg_delete`
 - `nullify_snippet_source_on_msg_delete`
 - `nullify_snippet_scene_on_node_delete`
+
+### 並び順関連（部分対応）
+
+| テーブル | 対応 | 理由 |
+|---------|------|------|
+| `codex_quick_pins` | `created_at` カラム追加、`listPinnedCodexIds` を昇順 ORDER BY | ピン順序の未定義問題を解決 |
+| `codex_entries` | **据え置き** | `parent_id` は構造的ツリーではなく「リレーション」。UI 側で名前/更新日時/カテゴリ等のソートオプションで扱うため、DB 側 `sort_order` は不要 |
+| `codex_entry_phases` | **据え置き** | 既に `created_at` で ORDER BY しているため安定 |
+
+### テーブル命名のリネーム
+
+- `codex_relation_dismissed` → `codex_dismissed_relations`（他テーブルの複数形・形容詞＋名詞の命名規則に合わせる）
 
 ---
 

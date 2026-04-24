@@ -114,8 +114,11 @@ impl Database {
                 WHERE source_chat_message_id IS NOT NULL;
 
             CREATE TABLE IF NOT EXISTS codex_quick_pins (
-                entry_id TEXT PRIMARY KEY REFERENCES codex_entries(id) ON DELETE CASCADE
+                entry_id   TEXT PRIMARY KEY REFERENCES codex_entries(id) ON DELETE CASCADE,
+                created_at TEXT NOT NULL DEFAULT (datetime('now'))
             );
+            CREATE INDEX IF NOT EXISTS idx_codex_quick_pins_created
+                ON codex_quick_pins(created_at);
 
             CREATE TABLE IF NOT EXISTS codex_dismissed_relations (
                 entry_id     TEXT NOT NULL REFERENCES codex_entries(id) ON DELETE CASCADE,
