@@ -126,14 +126,6 @@ export function AttributionProjectView() {
     }
   }
 
-  if (isLoading) {
-    return (
-      <p className="text-xs text-muted-foreground animate-pulse">
-        {t("common.loading")}
-      </p>
-    );
-  }
-
   if (chapters.length === 0) {
     return (
       <p className="text-xs text-muted-foreground">{t("chat.noScenes")}</p>
@@ -155,7 +147,7 @@ export function AttributionProjectView() {
           className="flex items-center gap-1 rounded px-2 py-0.5 text-xs text-muted-foreground hover:bg-accent disabled:opacity-50"
           title={t("attribution.refresh")}
         >
-          <RefreshCw className="h-3 w-3" />
+          <RefreshCw className={`h-3 w-3 ${isLoading ? "animate-spin" : ""}`} />
           {t("attribution.refresh")}
         </button>
       </div>
@@ -284,7 +276,7 @@ export function AttributionProjectView() {
                         onClick={() => handleRowClick(id)}
                       >
                         <td className="pl-6 pr-2 py-0.5 text-muted-foreground">
-                          <span className="truncate block max-w-[120px]">
+                          <span className="truncate block max-w-[160px]">
                             {title}
                           </span>
                         </td>
@@ -307,7 +299,7 @@ export function AttributionProjectView() {
                                 <span className="tabular-nums text-muted-foreground w-7 text-right shrink-0">
                                   {aiP}%
                                 </span>
-                                <div className="w-10 shrink-0">
+                                <div className="w-16 shrink-0">
                                   <BreakdownBar
                                     human={humanV}
                                     ai={st.ai}
