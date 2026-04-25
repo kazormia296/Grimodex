@@ -246,46 +246,47 @@ export function ForeshadowMarkPopover({ editor }: Props) {
             ))}
           </div>
 
-          {/* Create new */}
-          {!showNewForm ? (
-            <button
-              type="button"
-              onClick={() => setShowNewForm(true)}
-              className="flex w-full items-center gap-1 border-t border-border px-3 py-1.5 text-xs text-muted-foreground hover:bg-accent"
-            >
-              <span className="text-primary">+</span>
-              {t("foreshadow.popover.createNew", "新規伏線を作成して追加")}
-            </button>
-          ) : (
-            <div className="flex items-center gap-1 border-t border-border px-2 py-1.5">
-              <input
-                ref={newTitleRef}
-                type="text"
-                value={newTitle}
-                onChange={(e) => setNewTitle(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") {
-                    e.preventDefault();
-                    void handleCreateAndLink();
-                  }
-                  if (e.key === "Escape") setShowNewForm(false);
-                }}
-                placeholder={t(
-                  "foreshadow.create.titlePlaceholder",
-                  "タイトル…",
-                )}
-                className="min-w-0 flex-1 bg-transparent text-xs outline-none placeholder:text-muted-foreground"
-              />
+          {/* Create new — hidden in payoff-unanchored mode (linking only) */}
+          {mode !== "payoff-unanchored" &&
+            (!showNewForm ? (
               <button
                 type="button"
-                onClick={() => void handleCreateAndLink()}
-                disabled={!newTitle.trim()}
-                className="shrink-0 rounded px-2 py-0.5 text-xs bg-primary text-primary-foreground hover:opacity-90 disabled:opacity-40"
+                onClick={() => setShowNewForm(true)}
+                className="flex w-full items-center gap-1 border-t border-border px-3 py-1.5 text-xs text-muted-foreground hover:bg-accent"
               >
-                {t("common.save", "保存")}
+                <span className="text-primary">+</span>
+                {t("foreshadow.popover.createNew", "新規伏線を作成して追加")}
               </button>
-            </div>
-          )}
+            ) : (
+              <div className="flex items-center gap-1 border-t border-border px-2 py-1.5">
+                <input
+                  ref={newTitleRef}
+                  type="text"
+                  value={newTitle}
+                  onChange={(e) => setNewTitle(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") {
+                      e.preventDefault();
+                      void handleCreateAndLink();
+                    }
+                    if (e.key === "Escape") setShowNewForm(false);
+                  }}
+                  placeholder={t(
+                    "foreshadow.create.titlePlaceholder",
+                    "タイトル…",
+                  )}
+                  className="min-w-0 flex-1 bg-transparent text-xs outline-none placeholder:text-muted-foreground"
+                />
+                <button
+                  type="button"
+                  onClick={() => void handleCreateAndLink()}
+                  disabled={!newTitle.trim()}
+                  className="shrink-0 rounded px-2 py-0.5 text-xs bg-primary text-primary-foreground hover:opacity-90 disabled:opacity-40"
+                >
+                  {t("common.save", "保存")}
+                </button>
+              </div>
+            ))}
         </>
       )}
     </div>,
