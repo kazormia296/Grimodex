@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import React, { useState, useEffect, useCallback } from "react";
 import { useTranslation } from "react-i18next";
 import {
   ChevronRight,
@@ -87,7 +87,7 @@ export function AttributionProjectView() {
       .then((map) => setStatsMap(map))
       .catch(console.error)
       .finally(() => setIsLoading(false));
-    // sceneIds is derived from sceneIdsKey for stable dependency
+    // sceneIds is derived from sceneIdsKey for a stable string dependency
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sceneIdsKey]);
 
@@ -140,30 +140,19 @@ export function AttributionProjectView() {
     );
   }
 
-  const ColHeader = ({ col, label }: { col: SortColumn; label: string }) => (
-    <button
-      type="button"
-      onClick={() => handleSortCol(col)}
-      className="flex items-center gap-0.5 hover:text-foreground transition-colors"
-      title={
-        sortCol === col && sortDir === "asc"
-          ? t("attribution.sortDesc")
-          : t("attribution.sortAsc")
-      }
-    >
-      {label}
-      <SortIcon col={col} active={sortCol} dir={sortDir} />
-    </button>
-  );
+  const thClass =
+    "px-2 py-1 text-left font-normal text-muted-foreground whitespace-nowrap";
+  const numThClass = `${thClass} text-right`;
 
   return (
     <div className="space-y-1">
-      {/* Refresh button */}
+      {/* Refresh */}
       <div className="flex justify-end">
         <button
           type="button"
           onClick={load}
-          className="flex items-center gap-1 rounded px-2 py-0.5 text-xs text-muted-foreground hover:bg-accent"
+          disabled={isLoading}
+          className="flex items-center gap-1 rounded px-2 py-0.5 text-xs text-muted-foreground hover:bg-accent disabled:opacity-50"
           title={t("attribution.refresh")}
         >
           <RefreshCw className="h-3 w-3" />
@@ -171,149 +160,181 @@ export function AttributionProjectView() {
         </button>
       </div>
 
-      {/* Table header */}
-      <div className="grid grid-cols-[1fr_auto_auto_auto_auto_auto] gap-x-2 px-2 py-1 text-xs text-muted-foreground border-b border-border">
-        <ColHeader col="scene" label={t("attribution.columnScene")} />
-        <ColHeader col="total" label={t("attribution.columnTotal")} />
-        <ColHeader col="human" label={t("attribution.columnHuman")} />
-        <ColHeader col="ai" label={t("attribution.columnAi")} />
-        <ColHeader col="unknown" label={t("attribution.columnUnknown")} />
-        <ColHeader col="aiPct" label={t("attribution.columnAiPct")} />
-      </div>
+      <table className="w-full text-xs border-collapse">
+        <thead>
+          <tr className="border-b border-border">
+            {(
+              [
+                ["scene", thClass],
+                ["total", numThClass],
+                ["human", numThClass],
+                ["ai", numThClass],
+                ["unknown", numThClass],
+                ["aiPct", numThClass],
+              ] as [SortColumn, string][]
+            ).map(([col, cls]) => (
+              <th key={col} className={cls}>
+                <button
+                  type="button"
+                  onClick={() => handleSortCol(col)}
+                  className="inline-flex items-center gap-0.5 hover:text-foreground transition-colors"
+                  title={
+                    sortCol === col && sortDir === "asc"
+                      ? t("attribution.sortDesc")
+                      : t("attribution.sortAsc")
+                  }
+                >
+                  {t(
+                    `attribution.column${col.charAt(0).toUpperCase()}${col.slice(1)}`,
+                  )}
+                  <SortIcon col={col} active={sortCol} dir={sortDir} />
+                </button>
+              </th>
+            ))}
+          </tr>
+        </thead>
 
-      {chapters.map((chapter) => {
-        const rawScenes = scenesByChapter[chapter.id] ?? [];
-        const isCollapsed = collapsedChapters.has(chapter.id);
+        <tbody>
+          {chapters.map((chapter) => {
+            const rawScenes = scenesByChapter[chapter.id] ?? [];
+            const isCollapsed = collapsedChapters.has(chapter.id);
 
-        const chapterStats = rawScenes.reduce(
-          (acc, s) => {
-            const st = statsMap[s.id];
-            if (!st) return acc;
-            return {
-              human: acc.human + st.human + st.unmarked,
-              ai: acc.ai + st.ai,
-              unknown: acc.unknown + st.unknown,
-              total: acc.total + st.total,
-            };
-          },
-          { human: 0, ai: 0, unknown: 0, total: 0 },
-        );
+            const chapterStats = rawScenes.reduce(
+              (acc, s) => {
+                const st = statsMap[s.id];
+                if (!st) return acc;
+                return {
+                  human: acc.human + st.human + st.unmarked,
+                  ai: acc.ai + st.ai,
+                  unknown: acc.unknown + st.unknown,
+                  total: acc.total + st.total,
+                };
+              },
+              { human: 0, ai: 0, unknown: 0, total: 0 },
+            );
 
-        const aiPct =
-          chapterStats.total > 0
-            ? Math.round((chapterStats.ai / chapterStats.total) * 100)
-            : 0;
+            const aiPct =
+              chapterStats.total > 0
+                ? Math.round((chapterStats.ai / chapterStats.total) * 100)
+                : 0;
 
-        // Sort scenes
-        const scenes: SceneRow[] = rawScenes.map((s) => ({
-          id: s.id,
-          title: s.title,
-          stats: statsMap[s.id] ?? null,
-        }));
+            const scenes: SceneRow[] = rawScenes.map((s) => ({
+              id: s.id,
+              title: s.title,
+              stats: statsMap[s.id] ?? null,
+            }));
 
-        if (sortCol !== "scene") {
-          scenes.sort((a, b) => {
-            const va = getSceneValue(a.stats, sortCol);
-            const vb = getSceneValue(b.stats, sortCol);
-            return sortDir === "asc" ? va - vb : vb - va;
-          });
-        } else if (sortDir === "desc") {
-          scenes.reverse();
-        }
+            if (sortCol !== "scene") {
+              scenes.sort((a, b) => {
+                const va = getSceneValue(a.stats, sortCol);
+                const vb = getSceneValue(b.stats, sortCol);
+                return sortDir === "asc" ? va - vb : vb - va;
+              });
+            } else if (sortDir === "desc") {
+              scenes.reverse();
+            }
 
-        return (
-          <div key={chapter.id}>
-            {/* Chapter row */}
-            <button
-              type="button"
-              onClick={() => toggleChapter(chapter.id)}
-              className="grid grid-cols-[1fr_auto_auto_auto_auto_auto] gap-x-2 w-full items-center rounded px-2 py-1 text-xs font-medium hover:bg-accent/50"
-            >
-              <span className="flex items-center gap-1 text-left">
-                {isCollapsed ? (
-                  <ChevronRight className="h-3 w-3 shrink-0" />
-                ) : (
-                  <ChevronDown className="h-3 w-3 shrink-0" />
-                )}
-                <span className="truncate">{chapter.title}</span>
-              </span>
-              <span className="tabular-nums text-right text-muted-foreground">
-                {chapterStats.total}
-              </span>
-              <span className="tabular-nums text-right text-muted-foreground">
-                {chapterStats.human}
-              </span>
-              <span className="tabular-nums text-right text-muted-foreground">
-                {chapterStats.ai}
-              </span>
-              <span className="tabular-nums text-right text-muted-foreground">
-                {chapterStats.unknown}
-              </span>
-              <span className="tabular-nums text-right text-muted-foreground">
-                {aiPct}%
-              </span>
-            </button>
-
-            {!isCollapsed && (
-              <div className="ml-4 space-y-0.5">
-                {scenes.map(({ id, title, stats: st }) => {
-                  const aiP =
-                    st && st.total > 0
-                      ? Math.round((st.ai / st.total) * 100)
-                      : 0;
-                  const humanV = st ? st.human + st.unmarked : 0;
-                  return (
-                    <button
-                      key={id}
-                      type="button"
-                      onClick={() => handleRowClick(id)}
-                      className="grid grid-cols-[1fr_auto_auto_auto_auto_minmax(60px,auto)] gap-x-2 w-full items-center rounded px-2 py-0.5 text-xs hover:bg-accent/40 cursor-pointer"
-                    >
-                      <span className="truncate text-left text-muted-foreground">
-                        {title}
-                      </span>
-                      {st ? (
-                        <>
-                          <span className="tabular-nums text-right text-muted-foreground">
-                            {st.total}
-                          </span>
-                          <span className="tabular-nums text-right text-muted-foreground">
-                            {humanV}
-                          </span>
-                          <span className="tabular-nums text-right text-muted-foreground">
-                            {st.ai}
-                          </span>
-                          <span className="tabular-nums text-right text-muted-foreground">
-                            {st.unknown}
-                          </span>
-                          <div className="flex items-center gap-1">
-                            <span className="tabular-nums text-right text-muted-foreground w-8">
-                              {aiP}%
-                            </span>
-                            <div className="flex-1">
-                              <BreakdownBar
-                                human={humanV}
-                                ai={st.ai}
-                                unknown={st.unknown}
-                                total={st.total}
-                                height={6}
-                              />
-                            </div>
-                          </div>
-                        </>
+            return (
+              <React.Fragment key={chapter.id}>
+                {/* Chapter row */}
+                <tr
+                  key={chapter.id}
+                  className="hover:bg-accent/50 cursor-pointer font-medium"
+                  onClick={() => toggleChapter(chapter.id)}
+                >
+                  <td className="px-2 py-1">
+                    <span className="flex items-center gap-1">
+                      {isCollapsed ? (
+                        <ChevronRight className="h-3 w-3 shrink-0" />
                       ) : (
-                        <span className="col-span-5 text-muted-foreground/40 text-right">
-                          —
-                        </span>
+                        <ChevronDown className="h-3 w-3 shrink-0" />
                       )}
-                    </button>
-                  );
-                })}
-              </div>
-            )}
-          </div>
-        );
-      })}
+                      <span className="truncate">{chapter.title}</span>
+                    </span>
+                  </td>
+                  <td className="px-2 py-1 text-right tabular-nums text-muted-foreground">
+                    {chapterStats.total}
+                  </td>
+                  <td className="px-2 py-1 text-right tabular-nums text-muted-foreground">
+                    {chapterStats.human}
+                  </td>
+                  <td className="px-2 py-1 text-right tabular-nums text-muted-foreground">
+                    {chapterStats.ai}
+                  </td>
+                  <td className="px-2 py-1 text-right tabular-nums text-muted-foreground">
+                    {chapterStats.unknown}
+                  </td>
+                  <td className="px-2 py-1 text-right tabular-nums text-muted-foreground">
+                    {aiPct}%
+                  </td>
+                </tr>
+
+                {/* Scene rows */}
+                {!isCollapsed &&
+                  scenes.map(({ id, title, stats: st }) => {
+                    const aiP =
+                      st && st.total > 0
+                        ? Math.round((st.ai / st.total) * 100)
+                        : 0;
+                    const humanV = st ? st.human + st.unmarked : 0;
+                    return (
+                      <tr
+                        key={id}
+                        className="hover:bg-accent/40 cursor-pointer"
+                        onClick={() => handleRowClick(id)}
+                      >
+                        <td className="pl-6 pr-2 py-0.5 text-muted-foreground">
+                          <span className="truncate block max-w-[120px]">
+                            {title}
+                          </span>
+                        </td>
+                        {st ? (
+                          <>
+                            <td className="px-2 py-0.5 text-right tabular-nums text-muted-foreground">
+                              {st.total}
+                            </td>
+                            <td className="px-2 py-0.5 text-right tabular-nums text-muted-foreground">
+                              {humanV}
+                            </td>
+                            <td className="px-2 py-0.5 text-right tabular-nums text-muted-foreground">
+                              {st.ai}
+                            </td>
+                            <td className="px-2 py-0.5 text-right tabular-nums text-muted-foreground">
+                              {st.unknown}
+                            </td>
+                            <td className="px-2 py-0.5">
+                              <div className="flex items-center gap-1">
+                                <span className="tabular-nums text-muted-foreground w-7 text-right shrink-0">
+                                  {aiP}%
+                                </span>
+                                <div className="w-10 shrink-0">
+                                  <BreakdownBar
+                                    human={humanV}
+                                    ai={st.ai}
+                                    unknown={st.unknown}
+                                    total={st.total}
+                                    height={6}
+                                  />
+                                </div>
+                              </div>
+                            </td>
+                          </>
+                        ) : (
+                          <td
+                            colSpan={5}
+                            className="px-2 py-0.5 text-right text-muted-foreground/40"
+                          >
+                            —
+                          </td>
+                        )}
+                      </tr>
+                    );
+                  })}
+              </React.Fragment>
+            );
+          })}
+        </tbody>
+      </table>
     </div>
   );
 }
