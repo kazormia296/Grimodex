@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { Plus } from "lucide-react";
+import { Plus, Trash2 } from "lucide-react";
 import { useForeshadowStore } from "./foreshadowStore";
 import { CreateForeshadowDialog } from "./CreateForeshadowDialog";
 import type { DerivedLabel } from "./types";
@@ -18,8 +18,9 @@ const LABEL_STYLE: Record<DerivedLabel, string> = {
 
 export function ForeshadowPanel() {
   const { t } = useTranslation();
-  const { items, isLoading, load, create } = useForeshadowStore();
+  const { items, isLoading, load, create, remove } = useForeshadowStore();
   const [dialogOpen, setDialogOpen] = useState(false);
+  const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
 
   useEffect(() => {
     void load(PROJECT_ID);
@@ -74,7 +75,7 @@ export function ForeshadowPanel() {
             <div
               key={item.id}
               data-testid="foreshadow-item"
-              className="flex items-start gap-2 border-b border-border/50 px-3 py-2 hover:bg-accent/50"
+              className="group flex items-start gap-2 border-b border-border/50 px-3 py-2 hover:bg-accent/50"
             >
               <div className="min-w-0 flex-1">
                 <p className="truncate text-xs font-medium text-foreground">
@@ -86,11 +87,49 @@ export function ForeshadowPanel() {
                   </p>
                 )}
               </div>
-              <span
-                className={`shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium ${LABEL_STYLE[item.label]}`}
-              >
-                {t(`foreshadow.label.${item.label}`)}
-              </span>
+
+              {deleteConfirmId === item.id ? (
+                <div className="flex shrink-0 items-center gap-1">
+                  <span className="text-[10px] text-destructive">
+                    {t("common.confirmDelete", "削除?")}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setDeleteConfirmId(null);
+                      void remove(item.id);
+                    }}
+                    className="rounded px-1 py-0.5 text-[10px] text-destructive hover:bg-destructive/10"
+                    aria-label={t("common.confirm", "確認")}
+                  >
+                    ✓
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setDeleteConfirmId(null)}
+                    className="rounded px-1 py-0.5 text-[10px] text-muted-foreground hover:bg-accent"
+                    aria-label={t("common.cancel", "キャンセル")}
+                  >
+                    ✗
+                  </button>
+                </div>
+              ) : (
+                <div className="flex shrink-0 items-center gap-1.5">
+                  <span
+                    className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${LABEL_STYLE[item.label]}`}
+                  >
+                    {t(`foreshadow.label.${item.label}`)}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setDeleteConfirmId(item.id)}
+                    className="rounded p-0.5 text-muted-foreground opacity-0 transition-opacity hover:bg-accent hover:text-destructive group-hover:opacity-100"
+                    aria-label={t("common.delete", "削除")}
+                  >
+                    <Trash2 className="h-3 w-3" />
+                  </button>
+                </div>
+              )}
             </div>
           ))}
       </div>
