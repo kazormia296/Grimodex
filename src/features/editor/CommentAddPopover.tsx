@@ -96,7 +96,7 @@ export function CommentAddPopover({ editor }: Props) {
       document.removeEventListener("keydown", onKey);
       document.removeEventListener("mousedown", onMouseDown);
     };
-  });
+  }, [open]);
 
   if (!open || !pos) return null;
 

@@ -23,9 +23,6 @@ interface Props {
  */
 export function CommentHoverPopover({ editor, containerRef }: Props) {
   const showComments = useCursorSettingsStore((s) => s.showComments);
-  const setCommentPickerOpen = useCursorSettingsStore(
-    (s) => s.setCommentPickerOpen,
-  );
   const [target, setTarget] = useState<CommentTarget | null>(null);
   const [editing, setEditing] = useState(false);
   const [editText, setEditText] = useState("");
@@ -70,7 +67,11 @@ export function CommentHoverPopover({ editor, containerRef }: Props) {
     }
 
     container.addEventListener("mouseover", onMouseOver);
-    return () => container.removeEventListener("mouseover", onMouseOver);
+    container.addEventListener("mouseleave", scheduleHide);
+    return () => {
+      container.removeEventListener("mouseover", onMouseOver);
+      container.removeEventListener("mouseleave", scheduleHide);
+    };
   }, [containerRef, showComments, scheduleHide, clearHideTimer]);
 
   // Hide on showComments toggle off
@@ -186,16 +187,6 @@ export function CommentHoverPopover({ editor, containerRef }: Props) {
               onClick={handleDelete}
             >
               削除
-            </button>
-            <button
-              type="button"
-              className="rounded border border-border px-2 py-1 text-xs hover:bg-accent"
-              onClick={() => {
-                setTarget(null);
-                setCommentPickerOpen(true);
-              }}
-            >
-              置換
             </button>
           </div>
         </div>
