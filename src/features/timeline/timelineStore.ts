@@ -17,6 +17,9 @@ export interface TimelineSettings {
   };
 }
 
+/** 最後に単一選択したノードの id (rangeSelectTo の基準点) */
+let lastSingleSelectId: string | null = null;
+
 const DEFAULT_DISPLAY: TimelineSettings["display"] = {
   showTitles: true,
   showChapterNumbers: true,
@@ -31,18 +34,23 @@ interface TimelineState {
   selectedNodeIds: string[];
   inspectorOpen: boolean;
   display: TimelineSettings["display"];
+  /** F2 ラベル編集ターゲット。インスペクターが読んで input にフォーカスする */
+  pendingEditNodeId: string | null;
   setAxisMode: (mode: AxisMode) => void;
   setSpacingMode: (mode: SpacingMode) => void;
   setZoom: (zoom: number) => void;
   setScrollOffset: (offset: number) => void;
   selectNode: (id: string) => void;
+  toggleSelect: (id: string) => void;
+  rangeSelectTo: (id: string, orderedIds: string[]) => void;
   clearSelection: () => void;
   toggleInspector: () => void;
   toggleDisplay: (key: keyof TimelineState["display"]) => void;
+  setPendingEditNodeId: (id: string | null) => void;
   loadFromSettings: (settings: Partial<TimelineSettings>) => void;
 }
 
-export const useTimelineStore = create<TimelineState>((set) => ({
+export const useTimelineStore = create<TimelineState>((set, get) => ({
   axisMode: "reading",
   spacingMode: "uniform",
   zoom: 1,
@@ -50,6 +58,7 @@ export const useTimelineStore = create<TimelineState>((set) => ({
   selectedNodeIds: [],
   inspectorOpen: false,
   display: { ...DEFAULT_DISPLAY },
+  pendingEditNodeId: null,
   setAxisMode: (mode) =>
     set({
       axisMode: mode,
@@ -58,11 +67,39 @@ export const useTimelineStore = create<TimelineState>((set) => ({
   setSpacingMode: (spacingMode) => set({ spacingMode }),
   setZoom: (zoom) => set({ zoom: Math.max(0.25, Math.min(4, zoom)) }),
   setScrollOffset: (scrollOffset) => set({ scrollOffset }),
-  selectNode: (id) => set({ selectedNodeIds: [id] }),
-  clearSelection: () => set({ selectedNodeIds: [] }),
+  selectNode: (id) => {
+    lastSingleSelectId = id;
+    set({ selectedNodeIds: [id] });
+  },
+  toggleSelect: (id) =>
+    set((s) => ({
+      selectedNodeIds: s.selectedNodeIds.includes(id)
+        ? s.selectedNodeIds.filter((x) => x !== id)
+        : [...s.selectedNodeIds, id],
+    })),
+  rangeSelectTo: (id, orderedIds) => {
+    // Prefer the last explicitly single-selected node as anchor;
+    // fall back to the first currently selected node.
+    const anchor =
+      lastSingleSelectId ?? get().selectedNodeIds[0] ?? orderedIds[0];
+    const anchorIdx = orderedIds.indexOf(anchor);
+    const targetIdx = orderedIds.indexOf(id);
+    if (anchorIdx === -1 || targetIdx === -1) {
+      set({ selectedNodeIds: [id] });
+      return;
+    }
+    const lo = Math.min(anchorIdx, targetIdx);
+    const hi = Math.max(anchorIdx, targetIdx);
+    set({ selectedNodeIds: orderedIds.slice(lo, hi + 1) });
+  },
+  clearSelection: () => {
+    lastSingleSelectId = null;
+    set({ selectedNodeIds: [] });
+  },
   toggleInspector: () => set((s) => ({ inspectorOpen: !s.inspectorOpen })),
   toggleDisplay: (key) =>
     set((s) => ({ display: { ...s.display, [key]: !s.display[key] } })),
+  setPendingEditNodeId: (id) => set({ pendingEditNodeId: id }),
   loadFromSettings: (settings) =>
     set({
       axisMode: settings.axisMode ?? "reading",

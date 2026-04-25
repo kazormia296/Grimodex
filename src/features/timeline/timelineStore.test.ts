@@ -72,6 +72,44 @@ describe("timelineStore", () => {
     useTimelineStore.getState().toggleInspector();
     expect(useTimelineStore.getState().inspectorOpen).toBe(true);
   });
+
+  it("toggleSelect 未選択 → 追加", () => {
+    useTimelineStore.getState().toggleSelect("a");
+    expect(useTimelineStore.getState().selectedNodeIds).toEqual(["a"]);
+  });
+
+  it("toggleSelect 選択済み → 除外", () => {
+    useTimelineStore.setState({ selectedNodeIds: ["a", "b"] });
+    useTimelineStore.getState().toggleSelect("a");
+    expect(useTimelineStore.getState().selectedNodeIds).toEqual(["b"]);
+  });
+
+  it("rangeSelectTo が lastSingleSelectId から対象 id まで選択する", () => {
+    useTimelineStore.setState({ selectedNodeIds: ["b"] });
+    useTimelineStore.getState().rangeSelectTo("d", ["a", "b", "c", "d", "e"]);
+    const ids = useTimelineStore.getState().selectedNodeIds;
+    expect(ids).toContain("b");
+    expect(ids).toContain("c");
+    expect(ids).toContain("d");
+    expect(ids).not.toContain("a");
+    expect(ids).not.toContain("e");
+  });
+
+  it("rangeSelectTo: 選択なし → 先頭から指定ノードまで", () => {
+    useTimelineStore.getState().rangeSelectTo("c", ["a", "b", "c", "d"]);
+    const ids = useTimelineStore.getState().selectedNodeIds;
+    expect(ids).toContain("a");
+    expect(ids).toContain("b");
+    expect(ids).toContain("c");
+    expect(ids).not.toContain("d");
+  });
+
+  it("setPendingEditNodeId でラベル編集ターゲットを設定できる", () => {
+    useTimelineStore.getState().setPendingEditNodeId("node-42");
+    expect(useTimelineStore.getState().pendingEditNodeId).toBe("node-42");
+    useTimelineStore.getState().setPendingEditNodeId(null);
+    expect(useTimelineStore.getState().pendingEditNodeId).toBeNull();
+  });
 });
 
 describe("timelineStore.loadFromSettings", () => {
