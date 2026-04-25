@@ -26,6 +26,10 @@ def ts() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+def ts_ms() -> int:
+    return int(datetime.now(timezone.utc).timestamp() * 1000)
+
+
 def uid() -> str:
     return str(uuid.uuid4())
 
@@ -1104,13 +1108,13 @@ def seed(db_path: Path) -> None:
     )
     conn.execute(
         """INSERT INTO tree_nodes
-           (id,project_id,parent_id,node_type,title,synopsis,sort_order,status,content,created_at,updated_at)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+           (id,project_id,parent_id,node_type,title,synopsis,sort_order,story_time_order,story_time_label,status,content,created_at,updated_at)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
         (
             scene1_id, project_id, part1_id, "scene", "一章：廃社",
             "雨の夜、朱音は十年ぶりに故郷の廃社へ帰る。"
             "祭壇には十年前に置いてきた朱紐がそのまま残っていた。触れた瞬間、見知らぬ記憶が流れ込んでくる。",
-            "a0", "draft", scene1_content, now, now,
+            "a0", "a1", "十年後・秋", "draft", scene1_content, now, now,
         ),
     )
 
@@ -1128,12 +1132,38 @@ def seed(db_path: Path) -> None:
     )
     conn.execute(
         """INSERT INTO tree_nodes
-           (id,project_id,parent_id,node_type,title,synopsis,sort_order,status,content,created_at,updated_at)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+           (id,project_id,parent_id,node_type,title,synopsis,sort_order,story_time_order,story_time_label,status,content,created_at,updated_at)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
         (
             scene2_id, project_id, part1_id, "scene", "二章：封じ文",
             "廃社で朱紐とともに封じ文を見つける。「帰れ」と書かれた文には、朱縄の儀の手順と、読めない一行。",
-            "a1", "outline", scene2_content, now, now,
+            "a1", "a2", "十年後・翌朝", "outline", scene2_content, now, now,
+        ),
+    )
+
+    # 回想シーン：読み順は a2（第三話）だが物語時系列では a0（最古）
+    # Timeline デバッグ用：読み順 ≠ 時系列順の逆転を確認できる
+    scene_flashback_id = uid()
+    scene_flashback_content = doc_nodes(
+        para("【回想：十年前・夏】"),
+        para("社が燃えていた。"),
+        para("朱音は拝殿の前に立っていた。何が起きたか、まだわかっていなかった。"
+             "炎は本殿を包み、杉の木に燃え移り、夜の山を赤く染めていた。"),
+        para("「離れろ」という声がした。誰の声か、朱音は今も思い出せない。"),
+        para("朱音は走った。朱紐を手に、ただ走った。"),
+        para("振り返ったとき、本殿の屋根が落ちた。"),
+        para("あの夜、社の中に何がいたか。朱音は見た。見たはずだ。"
+             "だが今は、炎の色と熱と、誰かの叫び声しか残っていない。"),
+    )
+    conn.execute(
+        """INSERT INTO tree_nodes
+           (id,project_id,parent_id,node_type,title,synopsis,sort_order,story_time_order,story_time_label,status,content,created_at,updated_at)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+        (
+            scene_flashback_id, project_id, part1_id, "scene", "回想：十年前の夜",
+            "十年前の夏の夜、廃社が燃えた。朱音はその場にいた。"
+            "炎の中に何かがいた——だが記憶は断片しか残っていない。",
+            "a2", "a0", "十年前・夏の夜", "outline", scene_flashback_content, now, now,
         ),
     )
 
@@ -1157,12 +1187,12 @@ def seed(db_path: Path) -> None:
     )
     conn.execute(
         """INSERT INTO tree_nodes
-           (id,project_id,parent_id,node_type,title,synopsis,sort_order,status,content,created_at,updated_at)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+           (id,project_id,parent_id,node_type,title,synopsis,sort_order,story_time_order,story_time_label,status,content,created_at,updated_at)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
         (
             scene3_id, project_id, part2_id, "scene", "三章：都の夜",
             "都に戻った朱音のもとに陰陽師・冬弥が現れる。彼はなぜか朱音が桐野へ行ったことを知っていた。",
-            "a0", "outline", scene3_content, now, now,
+            "a0", "a3", "十年後・帰京後", "outline", scene3_content, now, now,
         ),
     )
 
@@ -1276,6 +1306,138 @@ def seed(db_path: Path) -> None:
         conn.execute(
             "INSERT INTO chat_messages (id,session_id,role,content,created_at) VALUES (?,?,?,?,?)",
             (uid(), session_id, role, content, now),
+        )
+
+    # ---- マップ ----
+    # seed_default_map_board トリガーで自動生成済みのボードを使用
+    board_id = f"{project_id}-main-board"
+
+    def map_pos_scene(tree_node_id: str, x: float, y: float) -> str:
+        pid = uid()
+        conn.execute(
+            """INSERT INTO map_node_positions
+               (id,board_id,node_ref_type,tree_node_id,x,y,created_at,updated_at)
+               VALUES (?,?,?,?,?,?,?,?)""",
+            (pid, board_id, "scene", tree_node_id, x, y, now, now),
+        )
+        return pid
+
+    def map_pos_codex(codex_entry_id: str, x: float, y: float) -> str:
+        pid = uid()
+        conn.execute(
+            """INSERT INTO map_node_positions
+               (id,board_id,node_ref_type,codex_entry_id,x,y,created_at,updated_at)
+               VALUES (?,?,?,?,?,?,?,?)""",
+            (pid, board_id, "codex", codex_entry_id, x, y, now, now),
+        )
+        return pid
+
+    def map_edge(from_pos_id: str, to_pos_id: str, label=None,
+                 style="solid", color="#888888", direction="none") -> None:
+        conn.execute(
+            """INSERT INTO map_edges
+               (id,board_id,from_position_id,to_position_id,label,style,color,direction,created_at,updated_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?)""",
+            (uid(), board_id, from_pos_id, to_pos_id, label, style, color, direction, now, now),
+        )
+
+    # ノード配置：キャラ列（x≈120）/ 場所・アイテム列（x≈420）/ シーン列（x≈720）
+    pos_akane       = map_pos_codex(akane_id,          120.0,  100.0)
+    pos_otowa       = map_pos_codex(otowa_id,           120.0,  320.0)
+    pos_fuuya       = map_pos_codex(fuuya_id,           120.0,  540.0)
+    pos_shuki       = map_pos_codex(shuki_id,           120.0,  760.0)
+    pos_haisha      = map_pos_codex(haisha_id,          420.0,  200.0)
+    pos_akahimo     = map_pos_codex(akahimo_id,         420.0,  440.0)
+    pos_kirino      = map_pos_codex(kirino_id,          420.0,  680.0)
+    pos_s_flashback = map_pos_scene(scene_flashback_id, 720.0, -100.0)
+    pos_s1          = map_pos_scene(scene1_id,          720.0,  140.0)
+    pos_s2          = map_pos_scene(scene2_id,          720.0,  360.0)
+    pos_s3          = map_pos_scene(scene3_id,          720.0,  580.0)
+
+    # エッジ：関係性
+    map_edge(pos_akane,       pos_haisha,        label="帰還",     style="solid",  color="#534AB7", direction="forward")
+    map_edge(pos_akane,       pos_akahimo,       label="所持",     style="solid",  color="#534AB7", direction="forward")
+    map_edge(pos_akane,       pos_otowa,         label="幼なじみ", style="dashed", color="#5B8CDD")
+    map_edge(pos_akane,       pos_fuuya,         label="因縁",     style="dashed", color="#993C1D")
+    map_edge(pos_shuki,       pos_haisha,        label="出現跡",   style="dotted", color="#CC3333")
+    map_edge(pos_haisha,      pos_kirino,        label="所在",     style="solid",  color="#0F6E56", direction="forward")
+    map_edge(pos_s_flashback, pos_haisha,        label="十年前",   style="dotted", color="#BA7517")
+    map_edge(pos_s1,          pos_haisha,        label="舞台",     style="solid",  color="#888888")
+    map_edge(pos_s2,          pos_haisha,        label="舞台",     style="solid",  color="#888888")
+
+    # フレーム：第一部のシーン群をまとめる
+    conn.execute(
+        """INSERT INTO map_frames
+           (id,board_id,title,x,y,width,height,background,border_color,z_index,created_at,updated_at)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+        (uid(), board_id, "第一部：帰還",
+         620.0, -210.0, 280.0, 690.0,
+         "#f0f0ff", "#8080cc", -1, now, now),
+    )
+
+    # ---- Lint用語辞書 ----
+    now_ms = ts_ms()
+    for i, (preferred, variants, severity, note) in enumerate([
+        ("朱紐",
+         ["赤い紐", "朱の紐", "封じ紐"],
+         "warning",
+         "本作の固有名詞。意図して一般名詞として使う場合は無視してよい"),
+        ("廃社",
+         ["廃神社", "廃宮", "社跡"],
+         "warning",
+         "桐野の社の略称として統一する"),
+        ("陰陽寮",
+         ["陰陽院", "術師の寮", "呪術機関"],
+         "warning",
+         "機関の正式名称"),
+        ("記録所",
+         ["記録院", "書庫", "文書所"],
+         "info",
+         "朱音の職場の名称"),
+        ("朱縄の儀",
+         ["封じの儀", "封縛の儀"],
+         "info",
+         "儀式の正式名称。「儀」単体での略称は許容"),
+    ]):
+        conn.execute(
+            """INSERT INTO lint_term_dictionary
+               (id,preferred,variants,severity,note,enabled,sort_order,created_at,updated_at)
+               VALUES (?,?,?,?,?,1,?,?,?)""",
+            (uid(), preferred, json.dumps(variants, ensure_ascii=False),
+             severity, note, i, now_ms, now_ms),
+        )
+
+    # ---- Lint永続無視サンプル（ja/sentence-length の意図的な長文） ----
+    long_sentence = (
+        "廃社は思っていたより小さかった。記憶の中では鬱蒼とした杉に囲まれた大きな建物だったが、"
+        "今目の前にあるのは、半ば崩れかけた本殿の残骸と、かろうじて形を保った拝殿だけだ。"
+    )
+    conn.execute(
+        """INSERT INTO lint_ignored_diagnostics
+           (id,rule_id,scene_id,text_snippet,context_before,context_after,note,created_at)
+           VALUES (?,?,?,?,?,?,?,?)""",
+        (
+            uid(), "ja/sentence-length", scene1_id,
+            long_sentence,
+            "朱音は鳥居の手前で立ち止まった。十年ぶりだった。",
+            "「廃墟だな」",
+            "情景描写の長文は意図的",
+            now_ms,
+        ),
+    )
+
+    # ---- Lintアクションログ ----
+    for rule_id, action, sid in [
+        ("project/term-consistency", "detected",              scene1_id),
+        ("project/term-consistency", "fixed",                 scene1_id),
+        ("ja/quote-period",          "detected",              scene1_id),
+        ("ja/quote-period",          "ignored_once",          scene1_id),
+        ("ja/word-repetition",       "detected",              scene2_id),
+        ("ja/sentence-length",       "ignored_persistent_set", scene1_id),
+    ]:
+        conn.execute(
+            "INSERT INTO lint_action_log (rule_id,action,scene_id,occurred_at) VALUES (?,?,?,?)",
+            (rule_id, action, sid, now_ms),
         )
 
     conn.commit()
