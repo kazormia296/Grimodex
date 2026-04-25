@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useTranslation } from "react-i18next";
 import { X } from "lucide-react";
 import type { TreeNodeData } from "@/features/tree/treeStore";
@@ -19,13 +19,24 @@ export function TimelineInspector({
 }: Props) {
   const { t } = useTranslation();
   const axisMode = useTimelineStore((s) => s.axisMode);
+  const pendingEditNodeId = useTimelineStore((s) => s.pendingEditNodeId);
+  const setPendingEditNodeId = useTimelineStore((s) => s.setPendingEditNodeId);
   const phasesByEntry = usePhaseStore((s) => s.phasesByEntry);
   const entries = useCodexStore((s) => s.entries);
   const [labelDraft, setLabelDraft] = useState(node.storyTimeLabel ?? "");
+  const labelInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     setLabelDraft(node.storyTimeLabel ?? "");
   }, [node.id, node.storyTimeLabel]);
+
+  useEffect(() => {
+    if (pendingEditNodeId === node.id && labelInputRef.current) {
+      labelInputRef.current.focus();
+      labelInputRef.current.select();
+      setPendingEditNodeId(null);
+    }
+  }, [pendingEditNodeId, node.id, setPendingEditNodeId]);
 
   const anchoredPhases = entries.flatMap((entry) => {
     const phases = phasesByEntry[entry.id] ?? [];
@@ -69,6 +80,7 @@ export function TimelineInspector({
             {t("timeline.inspector.storyTimeLabel", "Story-time label")}
           </label>
           <input
+            ref={labelInputRef}
             type="text"
             value={labelDraft}
             onChange={(e) => setLabelDraft(e.target.value)}

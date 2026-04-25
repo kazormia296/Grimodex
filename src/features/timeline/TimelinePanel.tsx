@@ -25,6 +25,12 @@ export function TimelinePanel() {
   const toggleInspector = useTimelineStore((s) => s.toggleInspector);
   const zoom = useTimelineStore((s) => s.zoom);
   const setZoom = useTimelineStore((s) => s.setZoom);
+  const clearSelection = useTimelineStore((s) => s.clearSelection);
+  const setAxisMode = useTimelineStore((s) => s.setAxisMode);
+  const setPendingEditNodeId = useTimelineStore((s) => s.setPendingEditNodeId);
+  const rangeSelectTo = useTimelineStore((s) => s.rangeSelectTo);
+  const deleteNode = useTreeStore((s) => s.deleteNode);
+  const containerRef = useRef<HTMLDivElement>(null);
   const viewportRef = useRef<HTMLDivElement>(null);
   const phasesByEntry = usePhaseStore((s) => s.phasesByEntry);
   const entries = useCodexStore((s) => s.entries);
@@ -160,6 +166,117 @@ export function TimelinePanel() {
   );
 
   useEffect(() => {
+    function handlePlainKeyDown(e: KeyboardEvent) {
+      if (e.ctrlKey || e.metaKey || e.altKey) return;
+      if (e.shiftKey && e.key !== "ArrowRight" && e.key !== "ArrowLeft") return;
+      if (!containerRef.current?.contains(document.activeElement)) return;
+      const active = document.activeElement as HTMLElement | null;
+      if (
+        active &&
+        (active.tagName === "INPUT" ||
+          active.tagName === "TEXTAREA" ||
+          active.isContentEditable)
+      )
+        return;
+
+      switch (e.key) {
+        case "Escape":
+          e.preventDefault();
+          clearSelection();
+          break;
+        case "1":
+          e.preventDefault();
+          setAxisMode("reading");
+          break;
+        case "2":
+          e.preventDefault();
+          setAxisMode("story");
+          break;
+        case "3":
+          e.preventDefault();
+          setAxisMode("write");
+          break;
+        case "Delete": {
+          const { selectedNodeIds: ids } = useTimelineStore.getState();
+          if (ids.length > 0) {
+            e.preventDefault();
+            void deleteNode(ids[0]);
+          }
+          break;
+        }
+        case "F2": {
+          const {
+            axisMode: curMode,
+            selectedNodeIds: ids,
+            inspectorOpen: isOpen,
+          } = useTimelineStore.getState();
+          if (curMode === "story" && ids.length > 0) {
+            e.preventDefault();
+            setPendingEditNodeId(ids[0]);
+            if (!isOpen) toggleInspector();
+          }
+          break;
+        }
+        case "ArrowRight": {
+          const { selectedNodeIds: ids } = useTimelineStore.getState();
+          e.preventDefault();
+          if (ids.length === 0 && scenes.length > 0) {
+            selectNode(scenes[0].id);
+            break;
+          }
+          const refId = ids[ids.length - 1];
+          const idx = scenes.findIndex((s) => s.id === refId);
+          if (idx !== -1 && idx < scenes.length - 1) {
+            const nextId = scenes[idx + 1].id;
+            if (e.shiftKey) {
+              rangeSelectTo(
+                nextId,
+                scenes.map((s) => s.id),
+              );
+            } else {
+              selectNode(nextId);
+            }
+          }
+          break;
+        }
+        case "ArrowLeft": {
+          const { selectedNodeIds: ids } = useTimelineStore.getState();
+          e.preventDefault();
+          if (ids.length === 0 && scenes.length > 0) {
+            selectNode(scenes[scenes.length - 1].id);
+            break;
+          }
+          const refId = ids[0];
+          const idx = scenes.findIndex((s) => s.id === refId);
+          if (idx > 0) {
+            const prevId = scenes[idx - 1].id;
+            if (e.shiftKey) {
+              rangeSelectTo(
+                prevId,
+                scenes.map((s) => s.id),
+              );
+            } else {
+              selectNode(prevId);
+            }
+          }
+          break;
+        }
+      }
+    }
+    document.addEventListener("keydown", handlePlainKeyDown);
+    return () => document.removeEventListener("keydown", handlePlainKeyDown);
+  }, [
+    scenes,
+    clearSelection,
+    setAxisMode,
+    deleteNode,
+    selectNode,
+    setPendingEditNodeId,
+    rangeSelectTo,
+    toggleInspector,
+  ]);
+
+  useEffect(() => {
     function handleKeyDown(e: KeyboardEvent) {
       if (!e.ctrlKey && !e.metaKey) return;
       // Don't steal shortcuts while a text input or TipTap editor is focused
@@ -209,7 +326,12 @@ export function TimelinePanel() {
   }, [zoom, setZoom, scenes.length, weights, scheduledCount]);
 
   return (
-    <div className="flex h-full flex-col overflow-hidden">
+    <div
+      ref={containerRef}
+      tabIndex={-1}
+      data-testid="timeline-panel"
+      className="flex h-full flex-col overflow-hidden"
+    >
       <TimelineHeader
         sceneCount={scenes.length}
         scheduledCount={scheduledCount}

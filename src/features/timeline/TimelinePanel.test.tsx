@@ -1,10 +1,14 @@
 // @vitest-environment happy-dom
-import { describe, it, expect, beforeEach, vi } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { render, act } from "@testing-library/react";
 import { TimelinePanel } from "./TimelinePanel";
 import { useTimelineStore } from "./timelineStore";
+import { useTreeStore } from "@/features/tree/treeStore";
+import type { TreeNodeData } from "@/features/tree/treeStore";
 
 vi.mock("@/lib/tauri", () => ({ invoke: vi.fn() }));
+
+const mockDeleteNode = vi.fn();
 
 vi.mock("@/features/tree/treeStore", () => ({
   useTreeStore: vi.fn((sel: (s: unknown) => unknown) =>
@@ -12,6 +16,7 @@ vi.mock("@/features/tree/treeStore", () => ({
       nodes: [],
       setActiveScene: vi.fn(),
       updateStoryTime: vi.fn(),
+      deleteNode: mockDeleteNode,
     }),
   ),
 }));
@@ -49,6 +54,7 @@ function resetStore() {
     scrollOffset: 0,
     selectedNodeIds: [],
     inspectorOpen: false,
+    pendingEditNodeId: null,
     display: {
       showTitles: true,
       showChapterNumbers: true,
@@ -137,5 +143,299 @@ describe("TimelinePanel – isContentEditable keydown ガード (#5)", () => {
     });
 
     expect(useTimelineStore.getState().zoom).toBeGreaterThan(1);
+  });
+});
+
+describe("TimelinePanel – plain-key shortcuts (#3)", () => {
+  beforeEach(() => {
+    resetStore();
+    vi.clearAllMocks();
+  });
+
+  it("panel focused → Escape clears selection", () => {
+    useTimelineStore.setState({ selectedNodeIds: ["s1"] });
+    const { getByTestId } = render(<TimelinePanel />);
+    act(() => {
+      getByTestId("timeline-panel").focus();
+    });
+    act(() => {
+      document.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Escape", bubbles: true }),
+      );
+    });
+    expect(useTimelineStore.getState().selectedNodeIds).toEqual([]);
+  });
+
+  it("panel not focused → Escape does NOT clear selection", () => {
+    useTimelineStore.setState({ selectedNodeIds: ["s1"] });
+    render(<TimelinePanel />);
+    const outside = document.createElement("div");
+    outside.setAttribute("tabindex", "-1");
+    document.body.appendChild(outside);
+    act(() => {
+      outside.focus();
+    });
+    act(() => {
+      document.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Escape", bubbles: true }),
+      );
+    });
+    expect(useTimelineStore.getState().selectedNodeIds).toEqual(["s1"]);
+    document.body.removeChild(outside);
+  });
+
+  it("panel focused → '1' sets axisMode to reading", () => {
+    useTimelineStore.setState({
+      axisMode: "story",
+      spacingMode: "proportional",
+    });
+    const { getByTestId } = render(<TimelinePanel />);
+    act(() => {
+      getByTestId("timeline-panel").focus();
+    });
+    act(() => {
+      document.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "1", bubbles: true }),
+      );
+    });
+    expect(useTimelineStore.getState().axisMode).toBe("reading");
+  });
+
+  it("panel focused → '2' sets axisMode to story", () => {
+    const { getByTestId } = render(<TimelinePanel />);
+    act(() => {
+      getByTestId("timeline-panel").focus();
+    });
+    act(() => {
+      document.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "2", bubbles: true }),
+      );
+    });
+    expect(useTimelineStore.getState().axisMode).toBe("story");
+  });
+
+  it("panel focused → '3' sets axisMode to write", () => {
+    const { getByTestId } = render(<TimelinePanel />);
+    act(() => {
+      getByTestId("timeline-panel").focus();
+    });
+    act(() => {
+      document.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "3", bubbles: true }),
+      );
+    });
+    expect(useTimelineStore.getState().axisMode).toBe("write");
+  });
+
+  it("panel focused + selected → Delete calls deleteNode with first selected id", () => {
+    useTimelineStore.setState({ selectedNodeIds: ["scene-x"] });
+    const { getByTestId } = render(<TimelinePanel />);
+    act(() => {
+      getByTestId("timeline-panel").focus();
+    });
+    act(() => {
+      document.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Delete", bubbles: true }),
+      );
+    });
+    expect(mockDeleteNode).toHaveBeenCalledWith("scene-x");
+  });
+
+  it("panel focused + story mode + selected → F2 sets pendingEditNodeId and opens inspector", () => {
+    useTimelineStore.setState({
+      axisMode: "story",
+      selectedNodeIds: ["scene-x"],
+      inspectorOpen: false,
+    });
+    const { getByTestId } = render(<TimelinePanel />);
+    act(() => {
+      getByTestId("timeline-panel").focus();
+    });
+    act(() => {
+      document.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "F2", bubbles: true }),
+      );
+    });
+    expect(useTimelineStore.getState().pendingEditNodeId).toBe("scene-x");
+    expect(useTimelineStore.getState().inspectorOpen).toBe(true);
+  });
+
+  it("panel focused + reading mode → F2 does nothing", () => {
+    useTimelineStore.setState({
+      axisMode: "reading",
+      selectedNodeIds: ["scene-x"],
+    });
+    const { getByTestId } = render(<TimelinePanel />);
+    act(() => {
+      getByTestId("timeline-panel").focus();
+    });
+    act(() => {
+      document.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "F2", bubbles: true }),
+      );
+    });
+    expect(useTimelineStore.getState().pendingEditNodeId).toBeNull();
+  });
+
+  it("INPUT inside panel focused → '2' does NOT change axisMode", () => {
+    const { getByTestId } = render(<TimelinePanel />);
+    const panel = getByTestId("timeline-panel");
+    const input = document.createElement("input");
+    panel.appendChild(input);
+    act(() => {
+      input.focus();
+    });
+    act(() => {
+      document.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "2", bubbles: true }),
+      );
+    });
+    expect(useTimelineStore.getState().axisMode).toBe("reading");
+    panel.removeChild(input);
+  });
+});
+
+const mockSceneNodes: TreeNodeData[] = [
+  {
+    id: "s1",
+    projectId: "p",
+    parentId: null,
+    nodeType: "scene",
+    title: "Scene 1",
+    synopsis: null,
+    sortOrder: "a0",
+    status: "draft",
+    storyTimeOrder: null,
+    storyTimeLabel: null,
+    povCharacterId: null,
+    locationId: null,
+    createdAt: "2024-01-01T00:00:00Z",
+  },
+  {
+    id: "s2",
+    projectId: "p",
+    parentId: null,
+    nodeType: "scene",
+    title: "Scene 2",
+    synopsis: null,
+    sortOrder: "a1",
+    status: "draft",
+    storyTimeOrder: null,
+    storyTimeLabel: null,
+    povCharacterId: null,
+    locationId: null,
+    createdAt: "2024-01-02T00:00:00Z",
+  },
+  {
+    id: "s3",
+    projectId: "p",
+    parentId: null,
+    nodeType: "scene",
+    title: "Scene 3",
+    synopsis: null,
+    sortOrder: "a2",
+    status: "draft",
+    storyTimeOrder: null,
+    storyTimeLabel: null,
+    povCharacterId: null,
+    locationId: null,
+    createdAt: "2024-01-03T00:00:00Z",
+  },
+];
+
+function mockTreeWith(nodes: TreeNodeData[]) {
+  vi.mocked(useTreeStore).mockImplementation((sel) =>
+    (sel as (s: unknown) => unknown)({
+      nodes,
+      setActiveScene: vi.fn(),
+      updateStoryTime: vi.fn(),
+      deleteNode: mockDeleteNode,
+    }),
+  );
+}
+
+describe("TimelinePanel – arrow key navigation (#3)", () => {
+  beforeEach(() => {
+    resetStore();
+    vi.clearAllMocks();
+    mockTreeWith(mockSceneNodes);
+  });
+
+  afterEach(() => {
+    mockTreeWith([]);
+  });
+
+  it("ArrowRight advances selection", () => {
+    useTimelineStore.setState({ selectedNodeIds: ["s1"] });
+    const { getByTestId } = render(<TimelinePanel />);
+    act(() => {
+      getByTestId("timeline-panel").focus();
+    });
+    act(() => {
+      document.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }),
+      );
+    });
+    expect(useTimelineStore.getState().selectedNodeIds).toEqual(["s2"]);
+  });
+
+  it("ArrowLeft retreats selection", () => {
+    useTimelineStore.setState({ selectedNodeIds: ["s2"] });
+    const { getByTestId } = render(<TimelinePanel />);
+    act(() => {
+      getByTestId("timeline-panel").focus();
+    });
+    act(() => {
+      document.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "ArrowLeft", bubbles: true }),
+      );
+    });
+    expect(useTimelineStore.getState().selectedNodeIds).toEqual(["s1"]);
+  });
+
+  it("ArrowRight with no selection selects first scene", () => {
+    const { getByTestId } = render(<TimelinePanel />);
+    act(() => {
+      getByTestId("timeline-panel").focus();
+    });
+    act(() => {
+      document.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }),
+      );
+    });
+    expect(useTimelineStore.getState().selectedNodeIds).toEqual(["s1"]);
+  });
+
+  it("ArrowLeft with no selection selects last scene", () => {
+    const { getByTestId } = render(<TimelinePanel />);
+    act(() => {
+      getByTestId("timeline-panel").focus();
+    });
+    act(() => {
+      document.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "ArrowLeft", bubbles: true }),
+      );
+    });
+    expect(useTimelineStore.getState().selectedNodeIds).toEqual(["s3"]);
+  });
+
+  it("Shift+ArrowRight extends selection range", () => {
+    useTimelineStore.getState().selectNode("s1");
+    const { getByTestId } = render(<TimelinePanel />);
+    act(() => {
+      getByTestId("timeline-panel").focus();
+    });
+    act(() => {
+      document.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          key: "ArrowRight",
+          shiftKey: true,
+          bubbles: true,
+        }),
+      );
+    });
+    const ids = useTimelineStore.getState().selectedNodeIds;
+    expect(ids).toContain("s1");
+    expect(ids).toContain("s2");
   });
 });

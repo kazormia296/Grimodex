@@ -107,3 +107,68 @@ describe("TimelineViewport – ref callback stability (Bug 2)", () => {
     expect(externalRef.current).not.toBeNull();
   });
 });
+
+describe("TimelineViewport – Ctrl/Shift click selection (#4)", () => {
+  const scene1: TreeNodeData = { ...mockScene, id: "s1", title: "Scene 1" };
+  const scene2: TreeNodeData = { ...mockScene, id: "s2", title: "Scene 2" };
+  const scene3: TreeNodeData = { ...mockScene, id: "s3", title: "Scene 3" };
+
+  beforeEach(() => {
+    resetStore();
+  });
+
+  it("plain click → calls onSelectScene (single select)", () => {
+    const onSelectScene = vi.fn();
+    const { container } = render(
+      <TimelineViewport
+        scenes={[scene1, scene2]}
+        onSelectScene={onSelectScene}
+      />,
+    );
+    const circle = container.querySelector('[data-node-id="s1"] circle');
+    fireEvent.click(circle!);
+    expect(onSelectScene).toHaveBeenCalledWith("s1");
+  });
+
+  it("Ctrl+click → toggleSelect (adds), does NOT call onSelectScene", () => {
+    const onSelectScene = vi.fn();
+    const { container } = render(
+      <TimelineViewport
+        scenes={[scene1, scene2]}
+        onSelectScene={onSelectScene}
+      />,
+    );
+    const circle = container.querySelector('[data-node-id="s1"] circle');
+    fireEvent.click(circle!, { ctrlKey: true });
+    expect(useTimelineStore.getState().selectedNodeIds).toContain("s1");
+    expect(onSelectScene).not.toHaveBeenCalled();
+  });
+
+  it("Ctrl+click on already-selected → toggleSelect (removes)", () => {
+    useTimelineStore.setState({ selectedNodeIds: ["s1"] });
+    const { container } = render(
+      <TimelineViewport scenes={[scene1, scene2]} onSelectScene={vi.fn()} />,
+    );
+    const circle = container.querySelector('[data-node-id="s1"] circle');
+    fireEvent.click(circle!, { ctrlKey: true });
+    expect(useTimelineStore.getState().selectedNodeIds).not.toContain("s1");
+  });
+
+  it("Shift+click → rangeSelectTo, does NOT call onSelectScene", () => {
+    useTimelineStore.getState().selectNode("s1");
+    const onSelectScene = vi.fn();
+    const { container } = render(
+      <TimelineViewport
+        scenes={[scene1, scene2, scene3]}
+        onSelectScene={onSelectScene}
+      />,
+    );
+    const circle3 = container.querySelector('[data-node-id="s3"] circle');
+    fireEvent.click(circle3!, { shiftKey: true });
+    const ids = useTimelineStore.getState().selectedNodeIds;
+    expect(ids).toContain("s1");
+    expect(ids).toContain("s2");
+    expect(ids).toContain("s3");
+    expect(onSelectScene).not.toHaveBeenCalled();
+  });
+});

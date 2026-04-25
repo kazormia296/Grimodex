@@ -78,6 +78,8 @@ export const TimelineViewport = forwardRef<HTMLDivElement, Props>(
   ) {
     const { t } = useTranslation();
     const selectedNodeIds = useTimelineStore((s) => s.selectedNodeIds);
+    const toggleSelect = useTimelineStore((s) => s.toggleSelect);
+    const rangeSelectTo = useTimelineStore((s) => s.rangeSelectTo);
     const display = useTimelineStore((s) => s.display);
     const axisMode = useTimelineStore((s) => s.axisMode);
     const zoom = useTimelineStore((s) => s.zoom);
@@ -466,7 +468,18 @@ export const TimelineViewport = forwardRef<HTMLDivElement, Props>(
                     stroke={isSelected ? "white" : "transparent"}
                     strokeWidth={2}
                     className={canDrag ? "cursor-grab" : "cursor-pointer"}
-                    onClick={() => onSelectScene(scene.id)}
+                    onClick={(e) => {
+                      if (e.shiftKey) {
+                        rangeSelectTo(
+                          scene.id,
+                          scenes.map((sc) => sc.id),
+                        );
+                      } else if (e.ctrlKey || e.metaKey) {
+                        toggleSelect(scene.id);
+                      } else {
+                        onSelectScene(scene.id);
+                      }
+                    }}
                     onMouseDown={(e) => handleDotMouseDown(e, scene.id, i)}
                     onContextMenu={(e) => handleDotContextMenu(e, scene)}
                   >
