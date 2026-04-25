@@ -67,11 +67,7 @@ export function CommentHoverPopover({ editor, containerRef }: Props) {
     }
 
     container.addEventListener("mouseover", onMouseOver);
-    container.addEventListener("mouseleave", scheduleHide);
-    return () => {
-      container.removeEventListener("mouseover", onMouseOver);
-      container.removeEventListener("mouseleave", scheduleHide);
-    };
+    return () => container.removeEventListener("mouseover", onMouseOver);
   }, [containerRef, showComments, scheduleHide, clearHideTimer]);
 
   // Hide on showComments toggle off
