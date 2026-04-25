@@ -289,6 +289,10 @@ interface ChatState {
   _editingOldContent: string | null;
   /** autoリストから特定エントリを即時除去（ピン直後のBug#1修正用） */
   removeEntryFromAuto: (entryId: string) => void;
+
+  /** C: エディタの「チャットで調べる」が pre-fill するテキスト（consumed-once） */
+  pendingLookupText: string | null;
+  setPendingLookupText: (text: string | null) => void;
 }
 
 async function fetchSceneContext(
@@ -658,6 +662,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
   agentProgress: null,
   isGlobalChat: false,
   _editingOldContent: null,
+  pendingLookupText: null,
 
   removeEntryFromAuto: (entryId: string) => {
     set((state) => ({
@@ -680,6 +685,8 @@ export const useChatStore = create<ChatState>()((set, get) => ({
       void get().refreshContextLayers();
     }, 500);
   },
+
+  setPendingLookupText: (text) => set({ pendingLookupText: text }),
 
   // --- Session management ---
 
