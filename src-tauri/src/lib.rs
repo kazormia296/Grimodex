@@ -164,6 +164,17 @@ fn db_execute(
     })
 }
 
+#[tauri::command]
+fn db_execute_batch(
+    ws_state: tauri::State<'_, WorkspaceState>,
+    statements: Vec<database::BatchStatement>,
+) -> Result<QueryResult, AppError> {
+    with_db(&ws_state, |db| {
+        let rows = db.execute_batch_tx(&statements)?;
+        Ok(QueryResult { rows })
+    })
+}
+
 // --- FTS commands ---
 
 #[tauri::command]
@@ -550,6 +561,7 @@ pub fn run() {
             validate_workspace_path,
             open_workspace,
             db_execute,
+            db_execute_batch,
             get_ai_settings,
             save_ai_settings,
             save_api_key,

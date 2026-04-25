@@ -3,6 +3,13 @@ use serde_json::Value;
 use std::path::Path;
 use std::sync::Mutex;
 
+#[derive(serde::Deserialize)]
+pub struct BatchStatement {
+    pub sql: String,
+    pub params: Vec<Value>,
+    pub method: String,
+}
+
 pub struct Database {
     conn: Mutex<Connection>,
 }
@@ -712,7 +719,155 @@ impl Database {
               WHERE id = 'default-chapter' AND title = '第1章';",
         )?;
 
+        // Foreshadow register tables (added post-initial schema)
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS foreshadows (
+                id               TEXT PRIMARY KEY,
+                project_id       TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                title            TEXT NOT NULL,
+                intent           TEXT,
+                notes            TEXT,
+                payoff_scene_id  TEXT REFERENCES tree_nodes(id) ON DELETE SET NULL,
+                payoff_from_pos  INTEGER,
+                payoff_to_pos    INTEGER,
+                payoff_confirmed INTEGER NOT NULL DEFAULT 0,
+                abandoned        INTEGER NOT NULL DEFAULT 0,
+                created_at       INTEGER NOT NULL,
+                updated_at       INTEGER NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_foreshadows_project
+                ON foreshadows(project_id);
+            CREATE INDEX IF NOT EXISTS idx_foreshadows_payoff_scene
+                ON foreshadows(payoff_scene_id);
+
+            CREATE TABLE IF NOT EXISTS foreshadow_setups (
+                id                 TEXT PRIMARY KEY,
+                foreshadow_id      TEXT NOT NULL REFERENCES foreshadows(id) ON DELETE CASCADE,
+                scene_id           TEXT NOT NULL REFERENCES tree_nodes(id) ON DELETE CASCADE,
+                from_pos           INTEGER NOT NULL,
+                to_pos             INTEGER NOT NULL,
+                kind               TEXT NOT NULL,
+                strength           TEXT,
+                ai_strength        TEXT,
+                ai_reasoning       TEXT,
+                attribution        TEXT NOT NULL DEFAULT 'human',
+                ai_rationale       TEXT,
+                last_evaluated_at  INTEGER,
+                is_orphan          INTEGER NOT NULL DEFAULT 0,
+                created_at         INTEGER NOT NULL,
+                updated_at         INTEGER NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_fs_setup_fid
+                ON foreshadow_setups(foreshadow_id);
+            CREATE INDEX IF NOT EXISTS idx_fs_setup_scene
+                ON foreshadow_setups(scene_id);
+            CREATE INDEX IF NOT EXISTS idx_fs_setup_orphan
+                ON foreshadow_setups(is_orphan);
+
+            CREATE TABLE IF NOT EXISTS foreshadow_codex_links (
+                foreshadow_id   TEXT NOT NULL REFERENCES foreshadows(id) ON DELETE CASCADE,
+                codex_entry_id  TEXT NOT NULL REFERENCES codex_entries(id) ON DELETE CASCADE,
+                PRIMARY KEY (foreshadow_id, codex_entry_id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_fs_codex_codex
+                ON foreshadow_codex_links(codex_entry_id);",
+        )?;
+
         Ok(())
+    }
+
+    /// Execute a list of SQL statements in a single transaction.
+    /// Each item is `{ sql, params, method }`. Returns last statement's rows.
+    /// Used when drizzle-proxy does not expose transactions natively.
+    pub fn execute_batch_tx(
+        &self,
+        statements: &[BatchStatement],
+    ) -> anyhow::Result<Vec<serde_json::Map<String, Value>>> {
+        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("{e}"))?;
+        conn.execute_batch("BEGIN")?;
+        let mut last_rows = Vec::new();
+        let result = (|| -> anyhow::Result<_> {
+            for stmt in statements {
+                last_rows = Self::execute_with_conn(&conn, &stmt.sql, &stmt.params, &stmt.method)?;
+            }
+            Ok(last_rows)
+        })();
+        match result {
+            Ok(rows) => {
+                conn.execute_batch("COMMIT")?;
+                Ok(rows)
+            }
+            Err(e) => {
+                let _ = conn.execute_batch("ROLLBACK");
+                Err(e)
+            }
+        }
+    }
+
+    fn execute_with_conn(
+        conn: &Connection,
+        sql: &str,
+        params: &[Value],
+        method: &str,
+    ) -> anyhow::Result<Vec<serde_json::Map<String, Value>>> {
+        let native_params: Vec<Box<dyn rusqlite::types::ToSql>> = params
+            .iter()
+            .map(|v| -> Box<dyn rusqlite::types::ToSql> {
+                match v {
+                    Value::Null => Box::new(Option::<String>::None),
+                    Value::Bool(b) => Box::new(*b),
+                    Value::Number(n) => {
+                        if let Some(i) = n.as_i64() {
+                            Box::new(i)
+                        } else {
+                            Box::new(n.as_f64().unwrap_or(0.0))
+                        }
+                    }
+                    Value::String(s) => Box::new(s.clone()),
+                    _ => Box::new(v.to_string()),
+                }
+            })
+            .collect();
+        let param_refs: Vec<&dyn rusqlite::types::ToSql> =
+            native_params.iter().map(|p| p.as_ref()).collect();
+
+        if method == "run" {
+            conn.execute(sql, params_from_iter(param_refs.iter()))?;
+            return Ok(vec![]);
+        }
+
+        let mut stmt = conn.prepare(sql)?;
+        let column_names: Vec<String> = stmt.column_names().iter().map(|s| s.to_string()).collect();
+        let rows = stmt.query_map(params_from_iter(param_refs.iter()), |row| {
+            let mut map = serde_json::Map::new();
+            for (i, col_name) in column_names.iter().enumerate() {
+                let val: Value = match row.get_ref(i) {
+                    Ok(rusqlite::types::ValueRef::Null) => Value::Null,
+                    Ok(rusqlite::types::ValueRef::Integer(n)) => Value::Number(n.into()),
+                    Ok(rusqlite::types::ValueRef::Real(f)) => {
+                        Value::Number(serde_json::Number::from_f64(f).unwrap_or_else(|| 0.into()))
+                    }
+                    Ok(rusqlite::types::ValueRef::Text(s)) => {
+                        Value::String(String::from_utf8_lossy(s).to_string())
+                    }
+                    Ok(rusqlite::types::ValueRef::Blob(b)) => {
+                        Value::String(format!("[blob {} bytes]", b.len()))
+                    }
+                    Err(_) => Value::Null,
+                };
+                map.insert(col_name.clone(), val);
+            }
+            Ok(map)
+        })?;
+
+        let mut result = Vec::new();
+        for row in rows {
+            result.push(row?);
+        }
+        if method == "get" {
+            return Ok(result.into_iter().take(1).collect());
+        }
+        Ok(result)
     }
 
     pub fn execute(
@@ -1069,6 +1224,9 @@ mod tests {
             "authorship_spans",
             "app_settings",
             "project_settings",
+            "foreshadows",
+            "foreshadow_setups",
+            "foreshadow_codex_links",
         ];
         for table in &expected_tables {
             let rows = db

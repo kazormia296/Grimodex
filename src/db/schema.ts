@@ -825,6 +825,97 @@ export const lintActionLog = sqliteTable(
   ],
 );
 
+// --- Foreshadow Register ---
+
+export const foreshadows = sqliteTable(
+  "foreshadows",
+  {
+    id: text("id").primaryKey(),
+    projectId: text("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    title: text("title").notNull(),
+    intent: text("intent"),
+    notes: text("notes"),
+
+    // Payoff anchor (inline, 1:1)
+    payoffSceneId: text("payoff_scene_id").references(() => treeNodes.id, {
+      onDelete: "set null",
+    }),
+    payoffFromPos: integer("payoff_from_pos"),
+    payoffToPos: integer("payoff_to_pos"),
+
+    // State axes
+    payoffConfirmed: integer("payoff_confirmed", { mode: "boolean" })
+      .notNull()
+      .default(false),
+    abandoned: integer("abandoned", { mode: "boolean" })
+      .notNull()
+      .default(false),
+
+    createdAt: integer("created_at", { mode: "timestamp" }).notNull(),
+    updatedAt: integer("updated_at", { mode: "timestamp" }).notNull(),
+  },
+  (t) => [
+    index("idx_foreshadows_project").on(t.projectId),
+    index("idx_foreshadows_payoff_scene").on(t.payoffSceneId),
+  ],
+);
+
+export const foreshadowSetups = sqliteTable(
+  "foreshadow_setups",
+  {
+    id: text("id").primaryKey(),
+    foreshadowId: text("foreshadow_id")
+      .notNull()
+      .references(() => foreshadows.id, { onDelete: "cascade" }),
+
+    // Anchor
+    sceneId: text("scene_id")
+      .notNull()
+      .references(() => treeNodes.id, { onDelete: "cascade" }),
+    fromPos: integer("from_pos").notNull(),
+    toPos: integer("to_pos").notNull(),
+
+    // Metadata
+    kind: text("kind").notNull(), // 'designated_existing' | 'inserted_new' | 'rewritten'
+    strength: text("strength"), // 'subtle' | 'moderate' | 'overt' | null
+    aiStrength: text("ai_strength"),
+    aiReasoning: text("ai_reasoning"),
+    attribution: text("attribution").notNull().default("human"),
+    aiRationale: text("ai_rationale"),
+    lastEvaluatedAt: integer("last_evaluated_at", { mode: "timestamp" }),
+
+    isOrphan: integer("is_orphan", { mode: "boolean" })
+      .notNull()
+      .default(false),
+
+    createdAt: integer("created_at", { mode: "timestamp" }).notNull(),
+    updatedAt: integer("updated_at", { mode: "timestamp" }).notNull(),
+  },
+  (t) => [
+    index("idx_fs_setup_fid").on(t.foreshadowId),
+    index("idx_fs_setup_scene").on(t.sceneId),
+    index("idx_fs_setup_orphan").on(t.isOrphan),
+  ],
+);
+
+export const foreshadowCodexLinks = sqliteTable(
+  "foreshadow_codex_links",
+  {
+    foreshadowId: text("foreshadow_id")
+      .notNull()
+      .references(() => foreshadows.id, { onDelete: "cascade" }),
+    codexEntryId: text("codex_entry_id")
+      .notNull()
+      .references(() => codexEntries.id, { onDelete: "cascade" }),
+  },
+  (t) => [
+    primaryKey({ columns: [t.foreshadowId, t.codexEntryId] }),
+    index("idx_fs_codex_codex").on(t.codexEntryId),
+  ],
+);
+
 // Type exports
 export type AuthorshipSpan = typeof authorshipSpans.$inferSelect;
 export type NewAuthorshipSpan = typeof authorshipSpans.$inferInsert;
@@ -866,3 +957,10 @@ export type NewLintIgnoredDiagnostic =
 
 export type LintTermDictionaryRow = typeof lintTermDictionary.$inferSelect;
 export type NewLintTermDictionaryRow = typeof lintTermDictionary.$inferInsert;
+
+export type Foreshadow = typeof foreshadows.$inferSelect;
+export type NewForeshadow = typeof foreshadows.$inferInsert;
+export type ForeshadowSetup = typeof foreshadowSetups.$inferSelect;
+export type NewForeshadowSetup = typeof foreshadowSetups.$inferInsert;
+export type ForeshadowCodexLink = typeof foreshadowCodexLinks.$inferSelect;
+export type NewForeshadowCodexLink = typeof foreshadowCodexLinks.$inferInsert;
