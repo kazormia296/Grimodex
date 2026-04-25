@@ -7,6 +7,8 @@ interface CodexEntryPopoverContentProps {
   dotColor: string;
   typeLabel: string;
   onOpenInCodex?: () => void;
+  phaseLabel?: string;
+  resolvedSummary?: string | null;
 }
 
 export function CodexEntryPopoverContent({
@@ -14,6 +16,8 @@ export function CodexEntryPopoverContent({
   dotColor,
   typeLabel,
   onOpenInCodex,
+  phaseLabel,
+  resolvedSummary,
 }: CodexEntryPopoverContentProps) {
   const safeIcon = iconToDataUrl(entry.icon);
   return (
@@ -39,9 +43,14 @@ export function CodexEntryPopoverContent({
           {typeLabel}
         </span>
       </div>
-      {entry.summary && (
+      {phaseLabel && (
+        <span className="mb-1.5 inline-block rounded-full bg-primary/10 px-2 py-0.5 text-[10px] font-medium text-primary">
+          {phaseLabel}
+        </span>
+      )}
+      {(resolvedSummary ?? entry.summary) && (
         <p className="mb-2 line-clamp-3 text-xs text-muted-foreground">
-          {entry.summary}
+          {resolvedSummary ?? entry.summary}
         </p>
       )}
       {onOpenInCodex && (

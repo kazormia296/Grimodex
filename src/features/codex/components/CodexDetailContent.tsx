@@ -1,6 +1,10 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import i18next from "i18next";
-import { Trash2, ArrowLeft } from "lucide-react";
+import { Trash2, ArrowLeft, Clock } from "lucide-react";
+import { useRevisionStore } from "@/features/revision/revisionStore";
+import { createRevision, pruneRevisions } from "@/features/revision/api";
+import { useSettingsStore } from "@/features/settings/settingsStore";
+import { debugLog, errorDetail } from "@/lib/debugLog";
 import { TagSelector } from "./TagSelector";
 import { db } from "@/db/client";
 import { chatMessages, chatSessions } from "@/db/schema";
@@ -79,6 +83,7 @@ export function CodexDetailContent({
   initialTab = "details",
 }: CodexDetailContentProps) {
   const update = useCodexStore((s) => s.update);
+  const { shouldAutoRevision, recordAutoRevision } = useRevisionStore();
 
   const [activeTab, setActiveTab] = useState(initialTab);
   const [type, setType] = useState<CodexEntryType>(
@@ -185,8 +190,38 @@ export function CodexDetailContent({
   // Auto-save: content (2 second debounce)
   const { schedule: scheduleContentSave } = useAutoSave(
     useCallback(async () => {
-      await update(entry.id, { content: contentRef.current });
-    }, [entry.id, update]),
+      const content = contentRef.current;
+      await update(entry.id, { content });
+      try {
+        const intervalMs =
+          useSettingsStore.getState().getNumber("revision.autoInterval", 5) *
+          60 *
+          1000;
+        if (shouldAutoRevision(entry.id, intervalMs)) {
+          const rev = await createRevision({
+            entityType: "codex_entry",
+            entityId: entry.id,
+            content,
+            snapshotType: "auto",
+          });
+          if (rev) {
+            recordAutoRevision(entry.id);
+            const keepCount = useSettingsStore
+              .getState()
+              .getNumber("revision.keepCount", 50);
+            pruneRevisions("codex_entry", entry.id, keepCount).catch(
+              console.error,
+            );
+          }
+        }
+      } catch (e) {
+        debugLog.warn(
+          "AutoSave",
+          "revision failed (content saved)",
+          errorDetail(e),
+        );
+      }
+    }, [entry.id, update, shouldAutoRevision, recordAutoRevision]),
     2000,
   );
 
@@ -268,6 +303,19 @@ export function CodexDetailContent({
             {i18next.t("codex.editEntry")}
           </h3>
         </div>
+        <button
+          type="button"
+          data-testid="codex-detail-history"
+          onClick={() =>
+            useRevisionStore
+              .getState()
+              .openHistory("codex_entry", entry.id, contentRef.current)
+          }
+          className="rounded p-1.5 text-muted-foreground hover:bg-accent hover:text-accent-foreground"
+          title={i18next.t("editor.status.revisionHistory", "Revision History")}
+        >
+          <Clock className="h-3.5 w-3.5" />
+        </button>
         <button
           type="button"
           data-testid="codex-detail-delete"

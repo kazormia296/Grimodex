@@ -3,12 +3,17 @@ import { useTranslation } from "react-i18next";
 import {
   Save,
   Copy,
+  Clock,
   Trash2,
   MessageSquare,
   ExternalLink,
   FileText,
   TextCursorInput,
 } from "lucide-react";
+import { useRevisionStore } from "@/features/revision/revisionStore";
+import { createRevision, pruneRevisions } from "@/features/revision/api";
+import { useSettingsStore } from "@/features/settings/settingsStore";
+import { debugLog, errorDetail } from "@/lib/debugLog";
 import { toast } from "sonner";
 import { useEditor, EditorContent } from "@tiptap/react";
 import StarterKit from "@tiptap/starter-kit";
@@ -46,6 +51,7 @@ export function SnippetDetailContent({
   const setActiveScene = useTreeStore((s) => s.setActiveScene);
   const insertFromSnippet = useEditorStore((s) => s.insertFromSnippet);
   const incrementUsageCount = useSnippetStore((s) => s.incrementUsageCount);
+  const { shouldAutoRevision, recordAutoRevision } = useRevisionStore();
 
   const [title, setTitle] = useState(snippet.title);
   const [selectedTags, setSelectedTags] = useState<CodexTag[]>([]);
@@ -87,20 +93,61 @@ export function SnippetDetailContent({
   function scheduleAutoSave() {
     const snippetId = snippet.id;
     if (autoSaveTimerRef.current) clearTimeout(autoSaveTimerRef.current);
-    autoSaveTimerRef.current = setTimeout(() => {
+    autoSaveTimerRef.current = setTimeout(async () => {
       const content = editor?.getHTML() ?? snippet.content;
       onSave(snippetId, {
         title: titleRef.current.trim() || snippet.title,
         content,
       });
+      try {
+        const intervalMs =
+          useSettingsStore.getState().getNumber("revision.autoInterval", 5) *
+          60 *
+          1000;
+        if (shouldAutoRevision(snippetId, intervalMs)) {
+          const rev = await createRevision({
+            entityType: "snippet",
+            entityId: snippetId,
+            content,
+            snapshotType: "auto",
+          });
+          if (rev) {
+            recordAutoRevision(snippetId);
+            const keepCount = useSettingsStore
+              .getState()
+              .getNumber("revision.keepCount", 50);
+            pruneRevisions("snippet", snippetId, keepCount).catch(
+              console.error,
+            );
+          }
+        }
+      } catch (e) {
+        debugLog.warn(
+          "AutoSave",
+          "revision failed (content saved)",
+          errorDetail(e),
+        );
+      }
     }, 2000);
   }
 
-  const handleSave = useCallback(() => {
+  const handleSave = useCallback(async () => {
     if (autoSaveTimerRef.current) clearTimeout(autoSaveTimerRef.current);
     if (!title.trim()) return;
     const content = editor?.getHTML() ?? snippet.content;
     onSave(snippet.id, { title: title.trim(), content });
+    const rev = await createRevision({
+      entityType: "snippet",
+      entityId: snippet.id,
+      content,
+      snapshotType: "manual",
+    });
+    if (rev) {
+      const keepCount = useSettingsStore
+        .getState()
+        .getNumber("revision.keepCount", 50);
+      pruneRevisions("snippet", snippet.id, keepCount).catch(console.error);
+    }
   }, [title, editor, snippet, onSave]);
 
   function handleInsertAtCursor() {
@@ -130,7 +177,7 @@ export function SnippetDetailContent({
           <button
             type="button"
             data-testid="snippet-save-button"
-            onClick={handleSave}
+            onClick={() => void handleSave()}
             className="rounded p-1.5 text-muted-foreground hover:bg-accent hover:text-accent-foreground"
             title={t("common.save")}
           >
@@ -170,6 +217,20 @@ export function SnippetDetailContent({
               <FileText className="h-3.5 w-3.5" />
             </button>
           )}
+          <button
+            type="button"
+            data-testid="snippet-detail-history"
+            onClick={() => {
+              const content = editor?.getHTML() ?? snippet.content;
+              useRevisionStore
+                .getState()
+                .openHistory("snippet", snippet.id, content);
+            }}
+            className="rounded p-1.5 text-muted-foreground hover:bg-accent hover:text-accent-foreground"
+            title={t("editor.status.revisionHistory", "Revision History")}
+          >
+            <Clock className="h-3.5 w-3.5" />
+          </button>
           <button
             type="button"
             data-testid="snippet-detail-delete"
