@@ -618,7 +618,9 @@
       "empty": "No foreshadows yet",
       "filterEmpty": "No foreshadows match the filter",
       "clearFilter": "Clear filter",
-      "newButton": "New"
+      "newButton": "New",
+      "toggle": "Expand/collapse",
+      "setupsEmpty": "No setups"
     },
     "create": {
       "heading": "Create Foreshadow",
@@ -646,6 +648,15 @@
     },
     "hoverPopover": {
       "removeMark": "Remove mark"
+    },
+    "setup": {
+      "orphan": "Orphan",
+      "discard": "Discard",
+      "kind": {
+        "designated_existing": "Designated",
+        "inserted_new": "Inserted",
+        "rewritten": "Rewritten"
+      }
     }
   },
   "snippets": {

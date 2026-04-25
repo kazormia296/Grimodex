@@ -618,7 +618,9 @@
       "empty": "伏線はありません",
       "filterEmpty": "該当する伏線はありません",
       "clearFilter": "フィルタをクリア",
-      "newButton": "新規作成"
+      "newButton": "新規作成",
+      "toggle": "展開/折り畳み",
+      "setupsEmpty": "Setup なし"
     },
     "create": {
       "heading": "伏線を新規作成",
@@ -646,6 +648,15 @@
     },
     "hoverPopover": {
       "removeMark": "マークを外す"
+    },
+    "setup": {
+      "orphan": "孤立",
+      "discard": "破棄",
+      "kind": {
+        "designated_existing": "指名済",
+        "inserted_new": "新規挿入",
+        "rewritten": "書き直し"
+      }
     }
   },
   "snippets": {

@@ -5,19 +5,34 @@ import { inArray } from "drizzle-orm";
 import { db } from "@/db/client";
 import { foreshadowSetups } from "@/db/schema";
 import { debugLog, errorDetail, rootCause } from "@/lib/debugLog";
-import { listForeshadows, createForeshadow, deleteForeshadow } from "./api";
+import {
+  listForeshadows,
+  createForeshadow,
+  deleteForeshadow,
+  listSetups,
+  deleteSetup,
+} from "./api";
 import { deriveLabel } from "./deriveLabel";
-import type { ForeshadowRow, ForeshadowWithLabel } from "./types";
+import type {
+  ForeshadowRow,
+  ForeshadowSetupRow,
+  ForeshadowWithLabel,
+} from "./types";
 
 interface ForeshadowState {
   items: ForeshadowWithLabel[];
   isLoading: boolean;
+
+  /** Setup rows keyed by foreshadowId; populated on demand. */
+  setupsByForeshadowId: Record<string, ForeshadowSetupRow[]>;
 
   load: (projectId: string) => Promise<void>;
   create: (
     data: Pick<ForeshadowRow, "projectId" | "title" | "intent">,
   ) => Promise<ForeshadowWithLabel>;
   remove: (id: string) => Promise<void>;
+  loadSetups: (foreshadowId: string) => Promise<void>;
+  removeSetup: (setupId: string, foreshadowId: string) => Promise<void>;
 }
 
 async function buildWithLabels(
@@ -52,6 +67,7 @@ async function buildWithLabels(
 export const useForeshadowStore = create<ForeshadowState>()((set, _get) => ({
   items: [],
   isLoading: false,
+  setupsByForeshadowId: {},
 
   load: async (projectId) => {
     set({ isLoading: true });
@@ -120,6 +136,51 @@ export const useForeshadowStore = create<ForeshadowState>()((set, _get) => ({
       debugLog.error(
         "ForeshadowStore",
         `remove: ${rootCause(e)}`,
+        errorDetail(e),
+      );
+    }
+  },
+
+  loadSetups: async (foreshadowId) => {
+    try {
+      const rows = await listSetups(foreshadowId);
+      set((s) => ({
+        setupsByForeshadowId: {
+          ...s.setupsByForeshadowId,
+          [foreshadowId]: rows,
+        },
+      }));
+    } catch (e) {
+      debugLog.error(
+        "ForeshadowStore",
+        `loadSetups: ${rootCause(e)}`,
+        errorDetail(e),
+      );
+    }
+  },
+
+  removeSetup: async (setupId, foreshadowId) => {
+    try {
+      await deleteSetup(setupId);
+      set((s) => {
+        const current = s.setupsByForeshadowId[foreshadowId] ?? [];
+        return {
+          setupsByForeshadowId: {
+            ...s.setupsByForeshadowId,
+            [foreshadowId]: current.filter((r) => r.id !== setupId),
+          },
+        };
+      });
+    } catch (e) {
+      toast.error(
+        i18next.t(
+          "foreshadow.store.deleteSetupFailed",
+          "Setupの削除に失敗しました",
+        ),
+      );
+      debugLog.error(
+        "ForeshadowStore",
+        `removeSetup: ${rootCause(e)}`,
         errorDetail(e),
       );
     }

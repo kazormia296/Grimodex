@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { Plus, Trash2, X } from "lucide-react";
+import { ChevronDown, ChevronRight, Plus, Trash2, X } from "lucide-react";
 import { useForeshadowStore } from "./foreshadowStore";
 import { CreateForeshadowDialog } from "./CreateForeshadowDialog";
 import type { DerivedLabel } from "./types";
@@ -27,9 +27,28 @@ const LABEL_STYLE: Record<DerivedLabel, string> = {
 
 export function ForeshadowPanel() {
   const { t } = useTranslation();
-  const { items, isLoading, load, create, remove } = useForeshadowStore();
+  const {
+    items,
+    isLoading,
+    load,
+    create,
+    remove,
+    setupsByForeshadowId,
+    loadSetups,
+    removeSetup,
+  } = useForeshadowStore();
   const [dialogOpen, setDialogOpen] = useState(false);
   const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
+  const [expandedId, setExpandedId] = useState<string | null>(null);
+
+  const handleExpand = (id: string) => {
+    if (expandedId === id) {
+      setExpandedId(null);
+      return;
+    }
+    setExpandedId(id);
+    void loadSetups(id);
+  };
   const [activeFilters, setActiveFilters] = useState<Set<DerivedLabel>>(
     () => new Set(),
   );
@@ -141,62 +160,118 @@ export function ForeshadowPanel() {
 
         {!isLoading &&
           visibleItems.map((item) => (
-            <div
-              key={item.id}
-              data-testid="foreshadow-item"
-              className="group flex items-start gap-2 border-b border-border/50 px-3 py-2 hover:bg-accent/50"
-            >
-              <div className="min-w-0 flex-1">
-                <p className="truncate text-xs font-medium text-foreground">
-                  {item.title}
-                </p>
-                {item.intent && (
-                  <p className="mt-0.5 truncate text-xs text-muted-foreground">
-                    {item.intent}
+            <div key={item.id} className="border-b border-border/50">
+              {/* Item row */}
+              <div
+                data-testid="foreshadow-item"
+                className="group flex items-start gap-2 px-3 py-2 hover:bg-accent/50"
+              >
+                <button
+                  type="button"
+                  data-testid={`foreshadow-expand-${item.id}`}
+                  onClick={() => handleExpand(item.id)}
+                  className="mt-0.5 shrink-0 text-muted-foreground hover:text-foreground"
+                  aria-label={t("foreshadow.panel.toggle", "展開/折り畳み")}
+                >
+                  {expandedId === item.id ? (
+                    <ChevronDown className="h-3 w-3" />
+                  ) : (
+                    <ChevronRight className="h-3 w-3" />
+                  )}
+                </button>
+
+                <div className="min-w-0 flex-1">
+                  <p className="truncate text-xs font-medium text-foreground">
+                    {item.title}
                   </p>
+                  {item.intent && (
+                    <p className="mt-0.5 truncate text-xs text-muted-foreground">
+                      {item.intent}
+                    </p>
+                  )}
+                </div>
+
+                {deleteConfirmId === item.id ? (
+                  <div className="flex shrink-0 items-center gap-1">
+                    <span className="text-[10px] text-destructive">
+                      {t("common.confirmDelete", "削除?")}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setDeleteConfirmId(null);
+                        void remove(item.id);
+                      }}
+                      className="rounded px-1 py-0.5 text-[10px] text-destructive hover:bg-destructive/10"
+                      aria-label={t("common.confirm", "確認")}
+                    >
+                      ✓
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setDeleteConfirmId(null)}
+                      className="rounded px-1 py-0.5 text-[10px] text-muted-foreground hover:bg-accent"
+                      aria-label={t("common.cancel", "キャンセル")}
+                    >
+                      ✗
+                    </button>
+                  </div>
+                ) : (
+                  <div className="flex shrink-0 items-center gap-1.5">
+                    <span
+                      className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${LABEL_STYLE[item.label]}`}
+                    >
+                      {t(`foreshadow.label.${item.label}`)}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => setDeleteConfirmId(item.id)}
+                      className="rounded p-0.5 text-muted-foreground opacity-0 transition-opacity hover:bg-accent hover:text-destructive group-hover:opacity-100"
+                      aria-label={t("common.delete", "削除")}
+                    >
+                      <Trash2 className="h-3 w-3" />
+                    </button>
+                  </div>
                 )}
               </div>
 
-              {deleteConfirmId === item.id ? (
-                <div className="flex shrink-0 items-center gap-1">
-                  <span className="text-[10px] text-destructive">
-                    {t("common.confirmDelete", "削除?")}
-                  </span>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setDeleteConfirmId(null);
-                      void remove(item.id);
-                    }}
-                    className="rounded px-1 py-0.5 text-[10px] text-destructive hover:bg-destructive/10"
-                    aria-label={t("common.confirm", "確認")}
-                  >
-                    ✓
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setDeleteConfirmId(null)}
-                    className="rounded px-1 py-0.5 text-[10px] text-muted-foreground hover:bg-accent"
-                    aria-label={t("common.cancel", "キャンセル")}
-                  >
-                    ✗
-                  </button>
-                </div>
-              ) : (
-                <div className="flex shrink-0 items-center gap-1.5">
-                  <span
-                    className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${LABEL_STYLE[item.label]}`}
-                  >
-                    {t(`foreshadow.label.${item.label}`)}
-                  </span>
-                  <button
-                    type="button"
-                    onClick={() => setDeleteConfirmId(item.id)}
-                    className="rounded p-0.5 text-muted-foreground opacity-0 transition-opacity hover:bg-accent hover:text-destructive group-hover:opacity-100"
-                    aria-label={t("common.delete", "削除")}
-                  >
-                    <Trash2 className="h-3 w-3" />
-                  </button>
+              {/* Setup list (shown when expanded) */}
+              {expandedId === item.id && (
+                <div className="border-t border-border/30 bg-muted/30 pl-6 pr-3">
+                  {!setupsByForeshadowId[item.id] ? (
+                    <p className="py-2 text-[10px] text-muted-foreground">…</p>
+                  ) : setupsByForeshadowId[item.id].length === 0 ? (
+                    <p className="py-2 text-[10px] text-muted-foreground">
+                      {t("foreshadow.panel.setupsEmpty", "Setup なし")}
+                    </p>
+                  ) : (
+                    setupsByForeshadowId[item.id].map((setup) => (
+                      <div
+                        key={setup.id}
+                        data-testid={`foreshadow-setup-${setup.id}`}
+                        className="flex items-center gap-1.5 py-1"
+                      >
+                        <span className="text-[10px] text-muted-foreground">
+                          {t(`foreshadow.setup.kind.${setup.kind}`)}
+                        </span>
+                        {setup.isOrphan && (
+                          <span className="rounded bg-orange-500/15 px-1 py-0.5 text-[10px] font-medium text-orange-600 dark:text-orange-400">
+                            {t("foreshadow.setup.orphan", "孤立")}
+                          </span>
+                        )}
+                        {setup.isOrphan && (
+                          <button
+                            type="button"
+                            data-testid={`foreshadow-setup-discard-${setup.id}`}
+                            onClick={() => void removeSetup(setup.id, item.id)}
+                            className="ml-auto rounded px-1.5 py-0.5 text-[10px] text-destructive hover:bg-destructive/10"
+                          >
+                            {t("foreshadow.setup.discard", "破棄")}
+                          </button>
+                        )}
+                      </div>
+                    ))
+                  )}
                 </div>
               )}
             </div>
