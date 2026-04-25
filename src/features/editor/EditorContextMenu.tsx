@@ -15,6 +15,7 @@ import { sanitiseRules } from "@/features/lint/lintDisableWalker";
 import { useAttributionStore } from "@/features/attribution/attributionStore";
 import type { AuthorshipSource } from "@/features/attribution/AuthorshipMark";
 import { useChatStore } from "@/features/chat/chatStore";
+import { useCursorSettingsStore } from "@/features/editor/cursorSettingsStore";
 
 interface Position {
   x: number;
@@ -168,6 +169,11 @@ export function EditorContextMenu({
     setPendingLookupText(selectedText);
   };
 
+  const handleAddComment = () => {
+    close();
+    useCursorSettingsStore.getState().setCommentPickerOpen(true);
+  };
+
   const handleInsertSceneBreak = () => {
     close();
     editor?.chain().focus().insertSceneBreak().run();
@@ -306,6 +312,13 @@ export function EditorContextMenu({
               onClick={handleLookUpInChat}
             >
               {t("editor.contextMenu.lookUpInChat")}
+            </button>
+            <button
+              type="button"
+              className="px-3 py-1.5 text-sm text-left hover:bg-accent"
+              onClick={handleAddComment}
+            >
+              {t("editor.contextMenu.addComment")}
             </button>
           </>
         )}

@@ -793,6 +793,7 @@
       "addToCodex": "Add to Codex",
       "saveAsSnippet": "Save as Snippet",
       "lookUpInChat": "Look Up in Chat",
+      "addComment": "Add Comment",
       "lintDisable": "Disable Lint Rules for Selection",
       "lintUnsetSpan": "Remove Lint Disable (Span)",
       "lintUnsetBlock": "Remove Lint Disable (Block)",
