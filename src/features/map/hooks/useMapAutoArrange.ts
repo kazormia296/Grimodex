@@ -95,6 +95,15 @@ export function useMapAutoArrange({
             y: pos.y,
           });
         }
+        if (key.startsWith("codex:")) {
+          return upsertNodePosition({
+            boardId,
+            nodeRefType: "codex",
+            codexEntryId: key.slice("codex:".length),
+            x: pos.x,
+            y: pos.y,
+          });
+        }
         return Promise.resolve(undefined);
       }),
     );

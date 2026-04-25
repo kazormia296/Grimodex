@@ -44,6 +44,7 @@ import {
   updateNodePosition,
   deleteUserEdge,
   deleteFrame,
+  setNodePinned,
 } from "./mapApi";
 import { findPosByNodeId, buildUpsertArgs } from "./utils/nodeIdCodec";
 import type { MapNodePositionRecord } from "./types";
@@ -99,8 +100,16 @@ export function MapCanvas() {
 
   const variant = effectiveSceneVariant(mode);
 
-  const { getViewport, screenToFlowPosition, fitView, getNodes, getEdges } =
-    useReactFlow();
+  const {
+    getViewport,
+    screenToFlowPosition,
+    fitView,
+    getNodes,
+    getEdges,
+    zoomIn,
+    zoomOut,
+    zoomTo,
+  } = useReactFlow();
 
   const reducedMotion = useReducedMotion();
 
@@ -269,6 +278,8 @@ export function MapCanvas() {
     boardId,
     nodes,
     edges,
+    userEdges,
+    positions,
     focusedNodeId,
     setUserEdges,
     setAiNodes,
@@ -333,6 +344,32 @@ export function MapCanvas() {
     setFrames,
   ]);
 
+  const selectAll = useCallback(() => {
+    setNodes((prev) =>
+      prev.map((n) => (n.type === "frame" ? n : { ...n, selected: true })),
+    );
+  }, [setNodes]);
+
+  const onPinToggle = useCallback(async () => {
+    if (!boardId) return;
+    const selected = getNodes().filter((n) => n.selected && n.type !== "frame");
+    await Promise.all(
+      selected.map(async (n) => {
+        const pos = findPosByNodeId(positions, n.id);
+        if (!pos) return;
+        const isPinned = pos.pinned === 1;
+        const updated = await setNodePinned(pos.id, !isPinned);
+        if (updated) {
+          setPositions((prev) =>
+            prev.map((p) =>
+              p.id === updated.id ? (updated as MapNodePositionRecord) : p,
+            ),
+          );
+        }
+      }),
+    );
+  }, [boardId, getNodes, positions, setPositions]);
+
   const { onKeyDown } = useMapKeyboard({
     searchVisible,
     setSearchVisible,
@@ -348,6 +385,12 @@ export function MapCanvas() {
     setFrameDraftRect,
     setFrameDraftScreenRect,
     onDeleteSelected,
+    fitView: () => fitView({ duration: 400 }),
+    zoomIn: () => zoomIn({ duration: 200 }),
+    zoomOut: () => zoomOut({ duration: 200 }),
+    zoomReset: () => zoomTo(1, { duration: 200 }),
+    selectAll,
+    onPinToggle,
   });
 
   const { onNodeDragStart, onNodeDrag, onNodeDragStop } = useFrameGroupDrag({

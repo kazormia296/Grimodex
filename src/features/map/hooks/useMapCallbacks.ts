@@ -5,11 +5,15 @@ import { useCodexStore } from "@/features/codex/codexStore";
 import { upsertNodePosition, createUserEdge } from "../mapApi";
 import { buildUpsertArgs } from "../utils/nodeIdCodec";
 import type { MapAiNode, MapEdge } from "@/db/schema";
+import type { MapNodePositionRecord } from "../types";
+import { buildFocusNeighbors } from "./focusNeighbors";
 
 interface UseMapCallbacksInput {
   boardId: string | null;
   nodes: Node[];
   edges: Edge[];
+  userEdges: MapEdge[];
+  positions: MapNodePositionRecord[];
   focusedNodeId: string | null;
   setUserEdges: React.Dispatch<React.SetStateAction<MapEdge[]>>;
   setAiNodes: React.Dispatch<React.SetStateAction<MapAiNode[]>>;
@@ -29,6 +33,8 @@ export function useMapCallbacks({
   boardId,
   nodes,
   edges,
+  userEdges,
+  positions,
   focusedNodeId,
   setUserEdges,
   setAiNodes,
@@ -141,16 +147,17 @@ export function useMapCallbacks({
 
   const nodesWithFocus = useMemo(() => {
     if (!focusedNodeId) return nodes;
-    const connected = new Set<string>([focusedNodeId]);
-    for (const edge of edges) {
-      if (edge.source === focusedNodeId) connected.add(edge.target);
-      if (edge.target === focusedNodeId) connected.add(edge.source);
-    }
+    const connected = buildFocusNeighbors(
+      focusedNodeId,
+      edges,
+      userEdges,
+      positions,
+    );
     return nodes.map((n) => ({
       ...n,
       style: { ...n.style, opacity: connected.has(n.id) ? 1 : 0.15 },
     }));
-  }, [nodes, edges, focusedNodeId]);
+  }, [nodes, edges, userEdges, positions, focusedNodeId]);
 
   return {
     onConnect,

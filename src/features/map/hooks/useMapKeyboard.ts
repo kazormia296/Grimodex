@@ -27,6 +27,12 @@ export function useMapKeyboard(opts: {
   setFrameDraftRect: (rect: Rect | null) => void;
   setFrameDraftScreenRect: (rect: Rect | null) => void;
   onDeleteSelected: () => void;
+  fitView: () => void;
+  zoomIn: () => void;
+  zoomOut: () => void;
+  zoomReset: () => void;
+  selectAll: () => void;
+  onPinToggle: () => void;
 }) {
   const {
     searchVisible,
@@ -43,6 +49,12 @@ export function useMapKeyboard(opts: {
     setFrameDraftRect,
     setFrameDraftScreenRect,
     onDeleteSelected,
+    fitView,
+    zoomIn,
+    zoomOut,
+    zoomReset,
+    selectAll,
+    onPinToggle,
   } = opts;
 
   const onKeyDown = useCallback(
@@ -83,6 +95,58 @@ export function useMapKeyboard(opts: {
         return;
       }
 
+      // E / Alt: connect mode
+      if (e.key === "e") {
+        setPaletteMode("connect");
+        return;
+      }
+      if (e.key === "Alt") {
+        setPaletteMode("connect");
+        return;
+      }
+
+      // Ctrl+0: fit view
+      if ((e.ctrlKey || e.metaKey) && e.key === "0") {
+        e.preventDefault();
+        fitView();
+        return;
+      }
+
+      // Ctrl+= / Ctrl++: zoom in
+      if ((e.ctrlKey || e.metaKey) && (e.key === "=" || e.key === "+")) {
+        e.preventDefault();
+        zoomIn();
+        return;
+      }
+
+      // Ctrl+-: zoom out
+      if ((e.ctrlKey || e.metaKey) && e.key === "-") {
+        e.preventDefault();
+        zoomOut();
+        return;
+      }
+
+      // Ctrl+1: zoom reset
+      if ((e.ctrlKey || e.metaKey) && e.key === "1") {
+        e.preventDefault();
+        zoomReset();
+        return;
+      }
+
+      // Ctrl+A: select all
+      if ((e.ctrlKey || e.metaKey) && e.key === "a") {
+        e.preventDefault();
+        selectAll();
+        return;
+      }
+
+      // Ctrl+P: pin toggle
+      if ((e.ctrlKey || e.metaKey) && e.key === "p") {
+        e.preventDefault();
+        onPinToggle();
+        return;
+      }
+
       // Mode switch: 1-5
       if (!e.ctrlKey && !e.metaKey && !e.altKey) {
         const modeIdx = parseInt(e.key, 10) - 1;
@@ -120,6 +184,12 @@ export function useMapKeyboard(opts: {
       setFrameDraftRect,
       setFrameDraftScreenRect,
       onDeleteSelected,
+      fitView,
+      zoomIn,
+      zoomOut,
+      zoomReset,
+      selectAll,
+      onPinToggle,
     ],
   );
 
