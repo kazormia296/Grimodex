@@ -221,8 +221,10 @@ export function TimelinePanel() {
             inspectorOpen: isOpen,
           } = useTimelineStore.getState();
           if (curMode === "story" && ids.length > 0) {
+            const targetId = ids[0];
+            if (!nodes.some((n) => n.id === targetId)) break;
             e.preventDefault();
-            setPendingEditNodeId(ids[0]);
+            setPendingEditNodeId(targetId);
             if (!isOpen) toggleInspector();
           }
           break;
@@ -276,6 +278,7 @@ export function TimelinePanel() {
     document.addEventListener("keydown", handlePlainKeyDown);
     return () => document.removeEventListener("keydown", handlePlainKeyDown);
   }, [
+    nodes,
     scenes,
     clearSelection,
     setAxisMode,

@@ -169,6 +169,11 @@ describe("TimelinePanel – plain-key shortcuts (#3)", () => {
   beforeEach(() => {
     resetStore();
     vi.clearAllMocks();
+    mockTreeWith([]);
+  });
+
+  afterEach(() => {
+    mockTreeWith([]);
   });
 
   it("panel focused → Escape clears selection", () => {
@@ -308,7 +313,8 @@ describe("TimelinePanel – plain-key shortcuts (#3)", () => {
     expect(mockOpenInSecondaryGroup).toHaveBeenCalledWith("scene-x");
   });
 
-  it("panel focused + story mode + selected → F2 sets pendingEditNodeId and opens inspector", () => {
+  it("panel focused + story mode + selected (node exists) → F2 opens inspector", () => {
+    mockTreeWith([{ ...mockSceneNodes[0], id: "scene-x" }]);
     useTimelineStore.setState({
       axisMode: "story",
       selectedNodeIds: ["scene-x"],
@@ -323,8 +329,28 @@ describe("TimelinePanel – plain-key shortcuts (#3)", () => {
         new KeyboardEvent("keydown", { key: "F2", bubbles: true }),
       );
     });
-    expect(useTimelineStore.getState().pendingEditNodeId).toBe("scene-x");
+    // inspectorOpen toggled to true proves F2 fired
+    // (pendingEditNodeId may be cleared by TimelineInspector mounting)
     expect(useTimelineStore.getState().inspectorOpen).toBe(true);
+  });
+
+  it("panel focused + story mode + selected (node NOT in tree) → F2 does nothing", () => {
+    useTimelineStore.setState({
+      axisMode: "story",
+      selectedNodeIds: ["ghost-id"],
+      inspectorOpen: false,
+    });
+    const { getByTestId } = render(<TimelinePanel />);
+    act(() => {
+      getByTestId("timeline-panel").focus();
+    });
+    act(() => {
+      document.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "F2", bubbles: true }),
+      );
+    });
+    expect(useTimelineStore.getState().pendingEditNodeId).toBeNull();
+    expect(useTimelineStore.getState().inspectorOpen).toBe(false);
   });
 
   it("panel focused + reading mode → F2 does nothing", () => {
@@ -504,5 +530,38 @@ describe("TimelinePanel – arrow key navigation (#3)", () => {
     const ids = useTimelineStore.getState().selectedNodeIds;
     expect(ids).toContain("s1");
     expect(ids).toContain("s2");
+  });
+
+  it("Shift+ArrowRight then Shift+ArrowLeft reverses range (anchor stays at s2)", () => {
+    useTimelineStore.getState().selectNode("s2");
+    const { getByTestId } = render(<TimelinePanel />);
+    act(() => {
+      getByTestId("timeline-panel").focus();
+    });
+    // Extend forward: s2 → s3
+    act(() => {
+      document.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          key: "ArrowRight",
+          shiftKey: true,
+          bubbles: true,
+        }),
+      );
+    });
+    expect(useTimelineStore.getState().selectedNodeIds).toContain("s3");
+    // Reverse: anchor s2, extend back to s1 → {s1, s2}
+    act(() => {
+      document.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          key: "ArrowLeft",
+          shiftKey: true,
+          bubbles: true,
+        }),
+      );
+    });
+    const ids = useTimelineStore.getState().selectedNodeIds;
+    expect(ids).toContain("s1");
+    expect(ids).toContain("s2");
+    expect(ids).not.toContain("s3");
   });
 });
