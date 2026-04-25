@@ -460,30 +460,18 @@ export function MapCanvas() {
       const d = edge.data as {
         style?: "solid" | "dashed" | "dotted";
         color?: string;
-        direction?: "none" | "forward" | "bidirectional";
       };
       setEdgeContextMenu({
         edgeId: edge.id.slice("user:".length),
         screenPosition: { x: e.clientX, y: e.clientY },
         style: d.style ?? "solid",
-        color: d.color ?? "#555",
-        direction: d.direction ?? "none",
+        color: d.color ?? "#555555",
       });
     },
     [],
   );
 
-  const onEdgeDoubleClick = useCallback(
-    (_e: React.MouseEvent, edge: { id: string }) => {
-      if (!edge.id.startsWith("user:")) return;
-      // Double-click on edge path: same as label double-click — trigger via data callback
-      // UserEdge handles label-area double-click internally; path double-click
-      // falls through here. For now, open context menu as a fallback UX.
-    },
-    [],
-  );
-
-  const { onKeyDown } = useMapKeyboard({
+  const { onKeyDown, onKeyUp } = useMapKeyboard({
     searchVisible,
     setSearchVisible,
     focusedNodeId,
@@ -598,6 +586,7 @@ export function MapCanvas() {
       className={corkboardFeel ? "map-corkboard" : undefined}
       style={{ width: "100%", height: "100%", position: "relative" }}
       onKeyDown={onKeyDown}
+      onKeyUp={onKeyUp}
       tabIndex={0}
     >
       <ReactFlow
@@ -613,7 +602,6 @@ export function MapCanvas() {
         onNodeDragStop={onNodeDragStop}
         onNodeDoubleClick={onNodeDoubleClick}
         onNodeContextMenu={onNodeContextMenu}
-        onEdgeDoubleClick={onEdgeDoubleClick}
         onEdgeContextMenu={onEdgeContextMenu}
         onPaneContextMenu={(e) => e.preventDefault()}
         onMoveEnd={syncViewport}
@@ -737,9 +725,9 @@ export function MapCanvas() {
                 ),
               );
           }}
-          onDirectionChange={async (direction) => {
+          onColorChange={async (color) => {
             const updated = await updateUserEdge(edgeContextMenu.edgeId, {
-              direction,
+              color,
             });
             if (updated)
               setUserEdges((prev) =>

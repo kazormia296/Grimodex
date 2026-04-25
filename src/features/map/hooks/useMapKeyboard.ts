@@ -1,5 +1,6 @@
 import {
   useCallback,
+  useRef,
   type MutableRefObject,
   type KeyboardEvent,
   type Dispatch,
@@ -57,6 +58,8 @@ export function useMapKeyboard(opts: {
     onPinToggle,
   } = opts;
 
+  const altConnectRef = useRef(false);
+
   const onKeyDown = useCallback(
     (e: KeyboardEvent<HTMLDivElement>) => {
       const inInput =
@@ -100,8 +103,9 @@ export function useMapKeyboard(opts: {
         setPaletteMode("connect");
         return;
       }
-      // Alt alone: connect mode; keyup to exit is handled in MapCanvas via onKeyUp
+      // Alt held: enter connect mode; released via onKeyUp below
       if (e.key === "Alt" && !e.ctrlKey && !e.metaKey) {
+        altConnectRef.current = true;
         setPaletteMode("connect");
         return;
       }
@@ -194,5 +198,15 @@ export function useMapKeyboard(opts: {
     ],
   );
 
-  return { onKeyDown };
+  const onKeyUp = useCallback(
+    (e: KeyboardEvent<HTMLDivElement>) => {
+      if (e.key === "Alt" && altConnectRef.current) {
+        altConnectRef.current = false;
+        setPaletteMode("default");
+      }
+    },
+    [setPaletteMode],
+  );
+
+  return { onKeyDown, onKeyUp };
 }

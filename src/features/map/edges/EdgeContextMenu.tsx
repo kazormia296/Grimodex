@@ -6,25 +6,34 @@ export interface EdgeContextMenuState {
   screenPosition: { x: number; y: number };
   style: "solid" | "dashed" | "dotted";
   color: string;
-  direction: "none" | "forward" | "bidirectional";
 }
 
 interface EdgeContextMenuProps extends EdgeContextMenuState {
   onClose: () => void;
   onStyleChange: (style: "solid" | "dashed" | "dotted") => void;
-  onDirectionChange: (dir: "none" | "forward" | "bidirectional") => void;
+  onColorChange: (color: string) => void;
   onDelete: () => void;
 }
 
-const MENU_WIDTH = 180;
+const MENU_WIDTH = 200;
+
+const COLOR_PRESETS = [
+  { value: "#555555", label: "グレー" },
+  { value: "#ef4444", label: "赤" },
+  { value: "#f97316", label: "オレンジ" },
+  { value: "#eab308", label: "黄" },
+  { value: "#22c55e", label: "緑" },
+  { value: "#3b82f6", label: "青" },
+  { value: "#a855f7", label: "紫" },
+] as const;
 
 export function EdgeContextMenu({
   screenPosition,
   style,
-  direction,
+  color,
   onClose,
   onStyleChange,
-  onDirectionChange,
+  onColorChange,
   onDelete,
 }: EdgeContextMenuProps) {
   const menuRef = useRef<HTMLDivElement>(null);
@@ -50,7 +59,7 @@ export function EdgeContextMenu({
   }, [close]);
 
   const x = Math.min(screenPosition.x, window.innerWidth - MENU_WIDTH - 8);
-  const y = Math.min(screenPosition.y, window.innerHeight - 220);
+  const y = Math.min(screenPosition.y, window.innerHeight - 240);
 
   return createPortal(
     <div
@@ -82,27 +91,29 @@ export function EdgeContextMenu({
 
         <div className="my-1 border-t border-border" />
         <div className="px-3 py-1 text-xs text-muted-foreground font-medium">
-          方向
+          色変更
         </div>
-        {(
-          [
-            ["none", "なし"],
-            ["forward", "→"],
-            ["bidirectional", "↔"],
-          ] as const
-        ).map(([d, label]) => (
-          <button
-            key={d}
-            type="button"
-            className={`px-3 py-1.5 text-sm text-left hover:bg-accent ${direction === d ? "font-semibold" : ""}`}
-            onClick={() => {
-              onDirectionChange(d);
-              close();
-            }}
-          >
-            {label}
-          </button>
-        ))}
+        <div className="px-3 py-2 flex gap-2 flex-wrap">
+          {COLOR_PRESETS.map((c) => (
+            <button
+              key={c.value}
+              type="button"
+              title={c.label}
+              className="rounded-full border-2 transition-transform hover:scale-110"
+              style={{
+                width: 20,
+                height: 20,
+                background: c.value,
+                borderColor:
+                  color === c.value ? "var(--foreground)" : "transparent",
+              }}
+              onClick={() => {
+                onColorChange(c.value);
+                close();
+              }}
+            />
+          ))}
+        </div>
 
         <div className="my-1 border-t border-border" />
         <button

@@ -57,7 +57,11 @@ function renderKeyboard(
     ...overrides,
   };
   const { result } = renderHook(() => useMapKeyboard(mocks));
-  return { onKeyDown: result.current.onKeyDown, mocks };
+  return {
+    onKeyDown: result.current.onKeyDown,
+    onKeyUp: result.current.onKeyUp,
+    mocks,
+  };
 }
 
 describe("useMapKeyboard — 新規ショートカット", () => {
@@ -71,6 +75,19 @@ describe("useMapKeyboard — 新規ショートカット", () => {
     const { onKeyDown, mocks } = renderKeyboard();
     act(() => onKeyDown(makeKeyEvent("Alt")));
     expect(mocks.setPaletteMode).toHaveBeenCalledWith("connect");
+  });
+
+  it("Alt キーを離すと default モードに戻る", () => {
+    const { onKeyDown, onKeyUp, mocks } = renderKeyboard();
+    act(() => onKeyDown(makeKeyEvent("Alt")));
+    act(() => onKeyUp(makeKeyEvent("Alt")));
+    expect(mocks.setPaletteMode).toHaveBeenLastCalledWith("default");
+  });
+
+  it("Alt を押さずに Alt keyup しても setPaletteMode を呼ばない", () => {
+    const { onKeyUp, mocks } = renderKeyboard();
+    act(() => onKeyUp(makeKeyEvent("Alt")));
+    expect(mocks.setPaletteMode).not.toHaveBeenCalled();
   });
 
   it("Ctrl+0 で fitView が呼ばれる", () => {
