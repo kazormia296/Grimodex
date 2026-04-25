@@ -160,21 +160,39 @@ export function MapCanvas() {
   } | null>(null);
 
   // Trigger node transition when mode changes (skip on mount)
+  const TRANSITION_MS = DURATIONS.slow * 1000 + 50; // 350ms
+
+  // Non-theme modes: start transition immediately on mode change.
   const isMountRef = useRef(true);
   useEffect(() => {
     if (isMountRef.current) {
       isMountRef.current = false;
       return;
     }
-    if (reducedMotion) return;
+    if (reducedMotion || mode === "theme") return;
     setModeTransitionActive(true);
-    const TRANSITION_MS = DURATIONS.slow * 1000 + 50; // 350ms
     const timer = setTimeout(
       () => setModeTransitionActive(false),
       TRANSITION_MS,
     );
     return () => clearTimeout(timer);
-  }, [mode, reducedMotion]);
+  }, [mode, reducedMotion, TRANSITION_MS]);
+
+  // Theme mode: start transition only after force layout finishes.
+  const prevForceRunningRef = useRef(false);
+  useEffect(() => {
+    const prev = prevForceRunningRef.current;
+    prevForceRunningRef.current = forceLayoutRunning;
+    if (reducedMotion || mode !== "theme") return;
+    if (prev && !forceLayoutRunning) {
+      setModeTransitionActive(true);
+      const timer = setTimeout(
+        () => setModeTransitionActive(false),
+        TRANSITION_MS,
+      );
+      return () => clearTimeout(timer);
+    }
+  }, [forceLayoutRunning, mode, reducedMotion, TRANSITION_MS]);
 
   const {
     frameDragStart,
