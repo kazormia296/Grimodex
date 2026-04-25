@@ -785,8 +785,18 @@
       "linearMode": "リニアモード"
     },
     "contextMenu": {
+      "cut": "カット",
+      "copy": "コピー",
+      "paste": "貼り付け",
+      "selectAll": "すべて選択",
+      "insertSceneBreak": "シーンブレークを挿入",
       "addToCodex": "コデックスに追加",
-      "saveAsSnippet": "スニペットとして保存"
+      "saveAsSnippet": "スニペットとして保存",
+      "lookUpInChat": "チャットで調べる",
+      "lintDisable": "選択範囲で Lint ルールを無効化",
+      "lintUnsetSpan": "Lint 無効化を解除（Span）",
+      "lintUnsetBlock": "Lint 無効化を解除（ブロック）",
+      "lintUnsetBoth": "Lint 無効化を解除（Span + ブロック）"
     },
     "find": {
       "placeholder": "検索…",

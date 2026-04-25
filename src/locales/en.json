@@ -785,8 +785,18 @@
       "linearMode": "Linear mode"
     },
     "contextMenu": {
+      "cut": "Cut",
+      "copy": "Copy",
+      "paste": "Paste",
+      "selectAll": "Select All",
+      "insertSceneBreak": "Insert Scene Break",
       "addToCodex": "Add to Codex",
-      "saveAsSnippet": "Save as Snippet"
+      "saveAsSnippet": "Save as Snippet",
+      "lookUpInChat": "Look Up in Chat",
+      "lintDisable": "Disable Lint Rules for Selection",
+      "lintUnsetSpan": "Remove Lint Disable (Span)",
+      "lintUnsetBlock": "Remove Lint Disable (Block)",
+      "lintUnsetBoth": "Remove Lint Disable (Span + Block)"
     },
     "find": {
       "placeholder": "Search…",

@@ -14,6 +14,7 @@ import {
 import { sanitiseRules } from "@/features/lint/lintDisableWalker";
 import { useAttributionStore } from "@/features/attribution/attributionStore";
 import type { AuthorshipSource } from "@/features/attribution/AuthorshipMark";
+import { useChatStore } from "@/features/chat/chatStore";
 
 interface Position {
   x: number;
@@ -54,6 +55,7 @@ export function EditorContextMenu({
   const codexCreate = useCodexStore((s) => s.create);
   const snippetCreate = useSnippetStore((s) => s.create);
   const showAttribution = useAttributionStore((s) => s.showAttribution);
+  const setPendingLookupText = useChatStore((s) => s.setPendingLookupText);
 
   const close = useCallback(() => {
     setPos(null);
@@ -140,6 +142,37 @@ export function EditorContextMenu({
     unsetDisableAtSelection(editor);
   };
 
+  const handleCut = () => {
+    close();
+    document.execCommand("cut");
+  };
+
+  const handleCopy = () => {
+    close();
+    document.execCommand("copy");
+  };
+
+  const handlePaste = () => {
+    close();
+    document.execCommand("paste");
+  };
+
+  const handleSelectAll = () => {
+    close();
+    editor?.commands.selectAll();
+  };
+
+  const handleLookUpInChat = () => {
+    close();
+    useLayoutStore.getState().showPanel("chat");
+    setPendingLookupText(selectedText);
+  };
+
+  const handleInsertSceneBreak = () => {
+    close();
+    editor?.chain().focus().insertSceneBreak().run();
+  };
+
   const handleAttributionOverride = (newSource: AuthorshipSource) => {
     close();
     if (!editor) return;
@@ -197,14 +230,62 @@ export function EditorContextMenu({
       onMouseDown={(e) => e.stopPropagation()}
     >
       <div className="flex flex-col py-1">
+        {/* Selection preview */}
         {selectedText.trim().length > 0 && (
           <div className="px-3 py-1 text-xs text-muted-foreground truncate border-b border-border mb-1">
             「{selectedText.slice(0, 30)}
             {selectedText.length > 30 ? "…" : ""}」
           </div>
         )}
+
+        {/* Clipboard */}
+        {canSetDisable && (
+          <button
+            type="button"
+            className="px-3 py-1.5 text-sm text-left hover:bg-accent"
+            onClick={handleCut}
+          >
+            {t("editor.contextMenu.cut")}
+          </button>
+        )}
+        {canSetDisable && (
+          <button
+            type="button"
+            className="px-3 py-1.5 text-sm text-left hover:bg-accent"
+            onClick={handleCopy}
+          >
+            {t("editor.contextMenu.copy")}
+          </button>
+        )}
+        <button
+          type="button"
+          className="px-3 py-1.5 text-sm text-left hover:bg-accent"
+          onClick={handlePaste}
+        >
+          {t("editor.contextMenu.paste")}
+        </button>
+        <button
+          type="button"
+          className="px-3 py-1.5 text-sm text-left hover:bg-accent"
+          onClick={handleSelectAll}
+        >
+          {t("editor.contextMenu.selectAll")}
+        </button>
+
+        {/* Insert */}
+        <div className="my-1 border-t border-border" />
+        <button
+          type="button"
+          className="px-3 py-1.5 text-sm text-left hover:bg-accent"
+          onClick={handleInsertSceneBreak}
+        >
+          {t("editor.contextMenu.insertSceneBreak")}
+        </button>
+
+        {/* Selection actions */}
         {canSetDisable && (
           <>
+            <div className="my-1 border-t border-border" />
             <button
               type="button"
               className="px-3 py-1.5 text-sm text-left hover:bg-accent"
@@ -219,32 +300,44 @@ export function EditorContextMenu({
             >
               {t("editor.contextMenu.saveAsSnippet")}
             </button>
-            <div className="my-1 border-t border-border" />
             <button
               type="button"
               className="px-3 py-1.5 text-sm text-left hover:bg-accent"
-              onClick={handleLintDisable}
+              onClick={handleLookUpInChat}
             >
-              選択範囲で Lint ルールを無効化
+              {t("editor.contextMenu.lookUpInChat")}
             </button>
           </>
+        )}
+
+        {/* Lint */}
+        {(canSetDisable || canUnsetDisable) && (
+          <div className="my-1 border-t border-border" />
+        )}
+        {canSetDisable && (
+          <button
+            type="button"
+            className="px-3 py-1.5 text-sm text-left hover:bg-accent"
+            onClick={handleLintDisable}
+          >
+            {t("editor.contextMenu.lintDisable")}
+          </button>
         )}
         {canUnsetDisable && (
-          <>
-            {canSetDisable && <div className="my-1 border-t border-border" />}
-            <button
-              type="button"
-              className="px-3 py-1.5 text-sm text-left hover:bg-accent text-amber-700 dark:text-amber-400"
-              onClick={handleLintUnset}
-            >
-              {disableState.hasMark && disableState.hasBlockAttr
-                ? "Lint 無効化を解除（Span + ブロック）"
-                : disableState.hasMark
-                  ? "Lint 無効化を解除（Span）"
-                  : "Lint 無効化を解除（ブロック）"}
-            </button>
-          </>
+          <button
+            type="button"
+            className="px-3 py-1.5 text-sm text-left hover:bg-accent text-amber-700 dark:text-amber-400"
+            onClick={handleLintUnset}
+          >
+            {disableState.hasMark && disableState.hasBlockAttr
+              ? t("editor.contextMenu.lintUnsetBoth")
+              : disableState.hasMark
+                ? t("editor.contextMenu.lintUnsetSpan")
+                : t("editor.contextMenu.lintUnsetBlock")}
+          </button>
         )}
+
+        {/* Attribution override */}
         {canOverrideAttribution && (
           <div data-testid="attribution-override-menu">
             <div className="my-1 border-t border-border" />
