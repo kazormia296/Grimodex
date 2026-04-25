@@ -80,8 +80,19 @@ export async function saveForeshadowAnchors(
   sceneId: string,
   doc: ProseMirrorNode,
 ): Promise<void> {
-  const setups = extractSetupAnchors(sceneId, doc);
-  const payoffs = extractPayoffAnchors(sceneId, doc);
+  // FK sweep: filter out marks whose foreshadowId no longer exists in DB.
+  // Prevents FK constraint violation when a foreshadow is deleted while marks remain in doc.
+  const validIds = new Set(
+    (await db.select({ id: foreshadows.id }).from(foreshadows)).map(
+      (r) => r.id,
+    ),
+  );
+  const setups = extractSetupAnchors(sceneId, doc).filter((s) =>
+    validIds.has(s.foreshadowId),
+  );
+  const payoffs = extractPayoffAnchors(sceneId, doc).filter((p) =>
+    validIds.has(p.foreshadowId),
+  );
 
   // Collect UPSERT statements for setup anchors
   type Statement = { sql: string; params: unknown[]; method: string };
