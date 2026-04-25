@@ -25,6 +25,9 @@ import { LintDisableMark } from "@/features/editor/LintDisableMark";
 import { LintDisableBlockAttrs } from "@/features/editor/LintDisableBlockAttrs";
 import { CommentMark } from "@/features/editor/CommentMark";
 import { createCommentDecorationPlugin } from "@/features/editor/CommentDecorationPlugin";
+import { ForeshadowSetupMark } from "@/features/foreshadow/marks/ForeshadowSetupMark";
+import { ForeshadowPayoffMark } from "@/features/foreshadow/marks/ForeshadowPayoffMark";
+import { ForeshadowPasteRule } from "@/features/foreshadow/marks/foreshadowPasteRule";
 export { COMMENT_REBUILD_META } from "@/features/editor/CommentDecorationPlugin";
 import { useCursorSettingsStore } from "@/features/editor/cursorSettingsStore";
 import i18next from "@/lib/i18n";
@@ -155,6 +158,9 @@ export function getEditorExtensions(): Extensions {
     LintDisableGutterExtension,
     CommentMark,
     CommentDecorationExtension,
+    ForeshadowSetupMark,
+    ForeshadowPayoffMark,
+    ForeshadowPasteRule,
   ];
 }
 
