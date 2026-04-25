@@ -632,6 +632,9 @@
       "needs_strengthening": "Needs Strengthening",
       "orphan_payoff": "Orphan",
       "abandoned": "Abandoned"
+    },
+    "hoverPopover": {
+      "removeMark": "Remove mark"
     }
   },
   "snippets": {

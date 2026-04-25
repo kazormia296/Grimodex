@@ -632,6 +632,9 @@
       "needs_strengthening": "強化推奨",
       "orphan_payoff": "孤立",
       "abandoned": "放棄"
+    },
+    "hoverPopover": {
+      "removeMark": "マークを外す"
     }
   },
   "snippets": {

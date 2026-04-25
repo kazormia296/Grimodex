@@ -49,6 +49,7 @@ import { EditorContextMenu } from "@/features/editor/EditorContextMenu";
 import { CommentAddPopover } from "@/features/editor/CommentAddPopover";
 import { CommentHoverPopover } from "@/features/editor/CommentHoverPopover";
 import { ForeshadowMarkPopover } from "@/features/foreshadow/ForeshadowMarkPopover";
+import { ForeshadowMarkHoverPopover } from "@/features/foreshadow/ForeshadowMarkHoverPopover";
 import { FindReplaceBar } from "@/features/editor/FindReplaceBar";
 import { useFocusMode } from "@/features/editor/useFocusMode";
 import {
@@ -1098,6 +1099,10 @@ export function EditorPane({
           <CodexPopover editor={editor} />
           <CommentAddPopover editor={editor} />
           <ForeshadowMarkPopover editor={editor} />
+          <ForeshadowMarkHoverPopover
+            editor={editor}
+            containerRef={editorContainerRef}
+          />
           <CommentHoverPopover
             editor={editor}
             containerRef={editorContainerRef}
