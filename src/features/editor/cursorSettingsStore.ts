@@ -17,9 +17,11 @@ interface CursorSettingsState {
   foreshadowPickerOpen: boolean;
   setForeshadowPickerOpen: (open: boolean) => void;
   /** Mode to open the foreshadow picker in (null = show mode selector). */
-  foreshadowPickerInitialMode: "setup" | "payoff" | null;
+  foreshadowPickerInitialMode: "setup" | "payoff" | "payoff-unanchored" | null;
   /** Open the foreshadow picker directly in the specified mode. */
-  openForeshadowPicker: (mode: "setup" | "payoff" | null) => void;
+  openForeshadowPicker: (
+    mode: "setup" | "payoff" | "payoff-unanchored" | null,
+  ) => void;
   /** Sync runtime state from persisted settings (call after loadAll). */
   initFromSettings: () => void;
 }

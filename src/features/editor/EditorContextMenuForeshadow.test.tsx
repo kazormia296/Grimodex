@@ -110,3 +110,67 @@ describe("EditorContextMenu - 伏線を要請", () => {
     expect(state.foreshadowPickerInitialMode).toBe("payoff");
   });
 });
+
+describe("EditorContextMenu - 伏線として登録", () => {
+  afterEach(() => {
+    useCursorSettingsStore.setState({
+      foreshadowPickerOpen: false,
+      foreshadowPickerInitialMode: null,
+    });
+  });
+
+  it("選択がある場合に「伏線として登録」が表示される", async () => {
+    const editor = makeEditor("サンプルテキスト");
+    const { getByTestId } = render(<Wrapper editor={editor} />);
+    fireEvent.contextMenu(getByTestId("container"), {
+      clientX: 100,
+      clientY: 100,
+    });
+    expect(await screen.findByText("伏線として登録")).toBeInTheDocument();
+  });
+
+  it("「伏線として登録」クリックで initialMode='setup' になる", async () => {
+    const editor = makeEditor("サンプルテキスト");
+    const { getByTestId } = render(<Wrapper editor={editor} />);
+    fireEvent.contextMenu(getByTestId("container"), {
+      clientX: 100,
+      clientY: 100,
+    });
+    fireEvent.click(await screen.findByText("伏線として登録"));
+    const state = useCursorSettingsStore.getState();
+    expect(state.foreshadowPickerOpen).toBe(true);
+    expect(state.foreshadowPickerInitialMode).toBe("setup");
+  });
+});
+
+describe("EditorContextMenu - 回収先として指名", () => {
+  afterEach(() => {
+    useCursorSettingsStore.setState({
+      foreshadowPickerOpen: false,
+      foreshadowPickerInitialMode: null,
+    });
+  });
+
+  it("選択がある場合に「回収先として指名」が表示される", async () => {
+    const editor = makeEditor("サンプルテキスト");
+    const { getByTestId } = render(<Wrapper editor={editor} />);
+    fireEvent.contextMenu(getByTestId("container"), {
+      clientX: 100,
+      clientY: 100,
+    });
+    expect(await screen.findByText("回収先として指名")).toBeInTheDocument();
+  });
+
+  it("「回収先として指名」クリックで initialMode='payoff-unanchored' になる", async () => {
+    const editor = makeEditor("サンプルテキスト");
+    const { getByTestId } = render(<Wrapper editor={editor} />);
+    fireEvent.contextMenu(getByTestId("container"), {
+      clientX: 100,
+      clientY: 100,
+    });
+    fireEvent.click(await screen.findByText("回収先として指名"));
+    const state = useCursorSettingsStore.getState();
+    expect(state.foreshadowPickerOpen).toBe(true);
+    expect(state.foreshadowPickerInitialMode).toBe("payoff-unanchored");
+  });
+});

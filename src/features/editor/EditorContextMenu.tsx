@@ -182,6 +182,16 @@ export function EditorContextMenu({
     openForeshadowPicker("payoff");
   };
 
+  const handleRegisterForeshadow = () => {
+    close();
+    openForeshadowPicker("setup");
+  };
+
+  const handleDesignatePayoff = () => {
+    close();
+    openForeshadowPicker("payoff-unanchored");
+  };
+
   const handleInsertSceneBreak = () => {
     close();
     editor?.chain().focus().insertSceneBreak().run();
@@ -334,6 +344,20 @@ export function EditorContextMenu({
               onClick={handleRequestForeshadow}
             >
               {t("editor.contextMenu.requestForeshadow")}
+            </button>
+            <button
+              type="button"
+              className="px-3 py-1.5 text-sm text-left hover:bg-accent"
+              onClick={handleRegisterForeshadow}
+            >
+              {t("editor.contextMenu.registerForeshadow")}
+            </button>
+            <button
+              type="button"
+              className="px-3 py-1.5 text-sm text-left hover:bg-accent"
+              onClick={handleDesignatePayoff}
+            >
+              {t("editor.contextMenu.designatePayoff")}
             </button>
           </>
         )}

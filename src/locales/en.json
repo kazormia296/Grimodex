@@ -633,6 +633,15 @@
       "orphan_payoff": "Orphan",
       "abandoned": "Abandoned"
     },
+    "popover": {
+      "heading": "Foreshadow Mark",
+      "setupHeading": "Select Setup Target",
+      "payoffHeading": "Select Payoff Target",
+      "designateHeading": "Designate as Payoff",
+      "searchPlaceholder": "Search…",
+      "noResults": "No results",
+      "createNew": "Create new foreshadow"
+    },
     "hoverPopover": {
       "removeMark": "Remove mark"
     }
@@ -821,6 +830,8 @@
       "lookUpInChat": "Look Up in Chat",
       "addComment": "Add Comment",
       "requestForeshadow": "Plant Foreshadow",
+      "registerForeshadow": "Register as Setup",
+      "designatePayoff": "Designate as Payoff",
       "lintDisable": "Disable Lint Rules for Selection",
       "lintUnsetSpan": "Remove Lint Disable (Span)",
       "lintUnsetBlock": "Remove Lint Disable (Block)",

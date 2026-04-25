@@ -633,6 +633,15 @@
       "orphan_payoff": "孤立",
       "abandoned": "放棄"
     },
+    "popover": {
+      "heading": "伏線マーク",
+      "setupHeading": "Setup 対象を選択",
+      "payoffHeading": "Payoff 対象を選択",
+      "designateHeading": "回収先として指名",
+      "searchPlaceholder": "検索…",
+      "noResults": "見つかりません",
+      "createNew": "新規伏線を作成して追加"
+    },
     "hoverPopover": {
       "removeMark": "マークを外す"
     }
@@ -821,6 +830,8 @@
       "lookUpInChat": "チャットで調べる",
       "addComment": "コメントを追加",
       "requestForeshadow": "伏線を要請",
+      "registerForeshadow": "伏線として登録",
+      "designatePayoff": "回収先として指名",
       "lintDisable": "選択範囲で Lint ルールを無効化",
       "lintUnsetSpan": "Lint 無効化を解除（Span）",
       "lintUnsetBlock": "Lint 無効化を解除（ブロック）",

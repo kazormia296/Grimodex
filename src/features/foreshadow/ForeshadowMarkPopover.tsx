@@ -7,7 +7,7 @@ import { useForeshadowStore } from "./foreshadowStore";
 
 const PROJECT_ID = "default-project";
 
-type MarkMode = "setup" | "payoff";
+type MarkMode = "setup" | "payoff" | "payoff-unanchored";
 
 interface SavedRange {
   from: number;
@@ -106,7 +106,8 @@ export function ForeshadowMarkPopover({ editor }: Props) {
 
   const handleItemClick = (foreshadowId: string) => {
     if (mode === "setup") applySetupMark(foreshadowId);
-    else if (mode === "payoff") applyPayoffMark(foreshadowId);
+    else if (mode === "payoff" || mode === "payoff-unanchored")
+      applyPayoffMark(foreshadowId);
   };
 
   const handleCreateAndLink = async () => {
@@ -144,9 +145,12 @@ export function ForeshadowMarkPopover({ editor }: Props) {
   const x = Math.min(pos.x, window.innerWidth - popoverWidth - 8);
   const y = Math.min(pos.y, window.innerHeight - 240);
 
-  const filtered = items.filter((item) =>
-    item.title.toLowerCase().includes(search.toLowerCase()),
-  );
+  const filtered = items.filter((item) => {
+    if (!item.title.toLowerCase().includes(search.toLowerCase())) return false;
+    if (mode === "payoff-unanchored")
+      return item.label === "planned" || item.label === "seeded";
+    return true;
+  });
 
   return createPortal(
     <div
@@ -163,7 +167,9 @@ export function ForeshadowMarkPopover({ editor }: Props) {
             ? t("foreshadow.popover.heading", "伏線マーク")
             : mode === "setup"
               ? t("foreshadow.popover.setupHeading", "Setup 対象を選択")
-              : t("foreshadow.popover.payoffHeading", "Payoff 対象を選択")}
+              : mode === "payoff-unanchored"
+                ? t("foreshadow.popover.designateHeading", "回収先として指名")
+                : t("foreshadow.popover.payoffHeading", "Payoff 対象を選択")}
         </span>
         {mode !== null && (
           <button
