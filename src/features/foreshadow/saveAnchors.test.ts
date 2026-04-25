@@ -5,14 +5,23 @@ import StarterKit from "@tiptap/starter-kit";
 import { ForeshadowSetupMark } from "./marks/ForeshadowSetupMark";
 import { ForeshadowPayoffMark } from "./marks/ForeshadowPayoffMark";
 
-// Mock the db module
+// vi.mock() is hoisted — use vi.hoisted() so the refs are available in the factory
+const { mockFrom, mockInvoke } = vi.hoisted(() => ({
+  mockFrom: vi.fn(),
+  mockInvoke: vi.fn().mockResolvedValue(undefined),
+}));
+
 vi.mock("@/db/client", () => ({
   db: {
-    select: vi.fn(),
+    select: vi.fn(() => ({ from: mockFrom })),
     insert: vi.fn(),
     delete: vi.fn(),
     update: vi.fn(),
   },
+}));
+
+vi.mock("@tauri-apps/api/core", () => ({
+  invoke: mockInvoke,
 }));
 
 vi.mock("drizzle-orm", async (importOriginal) => {
@@ -20,7 +29,11 @@ vi.mock("drizzle-orm", async (importOriginal) => {
   return { ...actual };
 });
 
-import { extractSetupAnchors, extractPayoffAnchors } from "./saveAnchors";
+import {
+  extractSetupAnchors,
+  extractPayoffAnchors,
+  saveForeshadowAnchors,
+} from "./saveAnchors";
 
 function createTestEditor(content = "<p>テスト</p>") {
   return new Editor({
@@ -135,6 +148,93 @@ describe("extractPayoffAnchors", () => {
     expect(result[0].sceneId).toBe("scene-1");
     expect(result[0].fromPos).toBeGreaterThanOrEqual(1);
     expect(result[0].toPos).toBeGreaterThan(result[0].fromPos);
+    editor.destroy();
+  });
+});
+
+// ── saveForeshadowAnchors — FK sweep ─────────────────────────────────
+
+describe("saveForeshadowAnchors FK sweep", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockInvoke.mockResolvedValue(undefined);
+  });
+
+  function addSetupMark(
+    editor: Editor,
+    from: number,
+    to: number,
+    setupId: string,
+    foreshadowId: string,
+  ) {
+    editor
+      .chain()
+      .focus()
+      .command(({ tr }) => {
+        const markType = editor.schema.marks["foreshadowSetup"];
+        tr.addMark(from, to, markType.create({ setupId, foreshadowId }));
+        return true;
+      })
+      .run();
+  }
+
+  it("includes setup mark for existing foreshadow in batch", async () => {
+    // Only f-valid exists in the DB
+    mockFrom.mockResolvedValue([{ id: "f-valid" }]);
+
+    const editor = createTestEditor("<p>前振り</p>");
+    addSetupMark(editor, 1, 3, "s-1", "f-valid");
+
+    await saveForeshadowAnchors("scene-1", editor.state.doc);
+
+    expect(mockInvoke).toHaveBeenCalledOnce();
+    const { statements } = mockInvoke.mock.calls[0][1] as {
+      statements: { params: unknown[] }[];
+    };
+    // At least one statement should contain the setup id "s-1"
+    const hasSetup = statements.some((s) => s.params.includes("s-1"));
+    expect(hasSetup).toBe(true);
+    editor.destroy();
+  });
+
+  it("filters out setup mark for deleted foreshadow — no UPSERT with that id in batch", async () => {
+    // f-deleted is NOT in the DB
+    mockFrom.mockResolvedValue([{ id: "f-other" }]);
+
+    const editor = createTestEditor("<p>前振り</p>");
+    addSetupMark(editor, 1, 3, "s-deleted", "f-deleted");
+
+    await saveForeshadowAnchors("scene-1", editor.state.doc);
+
+    expect(mockInvoke).toHaveBeenCalledOnce();
+    const { statements } = mockInvoke.mock.calls[0][1] as {
+      statements: { params: unknown[] }[];
+    };
+    // No UPSERT params should reference the deleted setup/foreshadow
+    const hasDeleted = statements.some(
+      (s) => s.params.includes("s-deleted") || s.params.includes("f-deleted"),
+    );
+    expect(hasDeleted).toBe(false);
+    editor.destroy();
+  });
+
+  it("mixed marks: only valid foreshadow's setup appears in UPSERT", async () => {
+    // Only f-valid exists
+    mockFrom.mockResolvedValue([{ id: "f-valid" }]);
+
+    const editor = createTestEditor("<p>テキストAテキストB</p>");
+    addSetupMark(editor, 1, 4, "s-valid", "f-valid");
+    addSetupMark(editor, 5, 8, "s-gone", "f-gone");
+
+    await saveForeshadowAnchors("scene-1", editor.state.doc);
+
+    const { statements } = mockInvoke.mock.calls[0][1] as {
+      statements: { params: unknown[] }[];
+    };
+    const hasValid = statements.some((s) => s.params.includes("s-valid"));
+    const hasGone = statements.some((s) => s.params.includes("s-gone"));
+    expect(hasValid).toBe(true);
+    expect(hasGone).toBe(false);
     editor.destroy();
   });
 });
