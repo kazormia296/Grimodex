@@ -1,4 +1,4 @@
-import { memo } from "react";
+import { memo, useState, useRef, useEffect, useCallback } from "react";
 import {
   BaseEdge,
   EdgeLabelRenderer,
@@ -11,6 +11,7 @@ export interface UserEdgeData {
   style?: "solid" | "dashed" | "dotted";
   color?: string;
   direction?: "none" | "forward" | "bidirectional";
+  onLabelSave?: (label: string | null) => void;
   [key: string]: unknown;
 }
 
@@ -29,6 +30,28 @@ export const UserEdge = memo(function UserEdge({
   const color = d.color ?? "#555";
   const edgeStyle = d.style ?? "solid";
   const direction = d.direction ?? "none";
+
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState("");
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  const startEdit = useCallback(() => {
+    setDraft(d.label ?? "");
+    setEditing(true);
+  }, [d.label]);
+
+  const commitEdit = useCallback(() => {
+    setEditing(false);
+    const trimmed = draft.trim();
+    d.onLabelSave?.(trimmed === "" ? null : trimmed);
+  }, [draft, d]);
+
+  useEffect(() => {
+    if (editing) {
+      inputRef.current?.focus();
+      inputRef.current?.select();
+    }
+  }, [editing]);
 
   const [edgePath, labelX, labelY] = getBezierPath({
     sourceX,
@@ -90,28 +113,63 @@ export const UserEdge = memo(function UserEdge({
         markerStart={markerStart}
       />
 
-      {d.label && (
-        <EdgeLabelRenderer>
-          <div
-            style={{
-              position: "absolute",
-              transform: `translate(-50%, -50%) translate(${labelX}px,${labelY}px)`,
-              background: "var(--background)",
-              border: `1px solid ${color}`,
-              borderRadius: 4,
-              padding: "1px 6px",
-              fontSize: 11,
-              color: "var(--foreground)",
-              pointerEvents: "all",
-              cursor: "default",
-              userSelect: "none",
-            }}
-            className="nodrag nopan"
-          >
-            {d.label}
-          </div>
-        </EdgeLabelRenderer>
-      )}
+      <EdgeLabelRenderer>
+        <div
+          style={{
+            position: "absolute",
+            transform: `translate(-50%, -50%) translate(${labelX}px,${labelY}px)`,
+            pointerEvents: "all",
+          }}
+          className="nodrag nopan"
+          onDoubleClick={(e) => {
+            e.stopPropagation();
+            startEdit();
+          }}
+        >
+          {editing ? (
+            <input
+              ref={inputRef}
+              value={draft}
+              onChange={(e) => setDraft(e.target.value)}
+              onBlur={commitEdit}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") commitEdit();
+                if (e.key === "Escape") setEditing(false);
+                e.stopPropagation();
+              }}
+              style={{
+                fontSize: 11,
+                padding: "1px 6px",
+                borderRadius: 4,
+                border: `1px solid ${color}`,
+                background: "var(--background)",
+                color: "var(--foreground)",
+                outline: "none",
+                minWidth: 60,
+                maxWidth: 160,
+              }}
+            />
+          ) : d.label ? (
+            <div
+              style={{
+                background: "var(--background)",
+                border: `1px solid ${color}`,
+                borderRadius: 4,
+                padding: "1px 6px",
+                fontSize: 11,
+                color: "var(--foreground)",
+                cursor: "default",
+                userSelect: "none",
+              }}
+            >
+              {d.label}
+            </div>
+          ) : (
+            // Invisible hit-area so edge-midpoint double-click always works
+            <div style={{ width: 24, height: 16, cursor: "text" }} />
+          )}
+        </div>
+      </EdgeLabelRenderer>
     </>
   );
 });

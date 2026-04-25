@@ -33,6 +33,7 @@ interface UseMapEdgesInput {
   }[];
   positions: MapNodePositionRecord[];
   show: ShowFlags;
+  onUserEdgeLabelSave?: (edgeId: string, label: string | null) => void;
 }
 
 function posToRfId(pos: MapNodePositionRecord | undefined): string | null {
@@ -55,6 +56,7 @@ export function useMapEdges({
   userEdges,
   positions,
   show,
+  onUserEdgeLabelSave,
 }: UseMapEdgesInput): Edge[] {
   return useMemo(() => {
     const derived: Edge[] = [];
@@ -172,6 +174,9 @@ export function useMapEdges({
                 style: ue.style,
                 color: ue.color,
                 direction: ue.direction,
+                onLabelSave: onUserEdgeLabelSave
+                  ? (label: string | null) => onUserEdgeLabelSave(ue.id, label)
+                  : undefined,
               },
             } as Edge;
           })
@@ -188,5 +193,6 @@ export function useMapEdges({
     positions,
     show.derivedEdges,
     show.userEdges,
+    onUserEdgeLabelSave,
   ]);
 }

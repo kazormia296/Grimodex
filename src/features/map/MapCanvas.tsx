@@ -28,6 +28,10 @@ import { AINodeDialog } from "./AINodeDialog";
 import { DURATIONS, useReducedMotion } from "@/lib/animation";
 import { AutoArrangeDialog } from "./AutoArrangeDialog";
 import { NodeDeleteDialog } from "./NodeDeleteDialog";
+import {
+  EdgeContextMenu,
+  type EdgeContextMenuState,
+} from "./edges/EdgeContextMenu";
 import { ForceLayoutProgress } from "./ForceLayoutProgress";
 import { useMapExport } from "./hooks/useMapExport";
 import { useFrameDrawing } from "./hooks/useFrameDrawing";
@@ -44,6 +48,7 @@ import {
   upsertNodePosition,
   updateNodePosition,
   deleteUserEdge,
+  updateUserEdge,
   deleteFrame,
   deleteAINode,
   setNodePinned,
@@ -135,6 +140,8 @@ export function MapCanvas() {
   const [deleteDialogNodes, setDeleteDialogNodes] = useState<Node[] | null>(
     null,
   );
+  const [edgeContextMenu, setEdgeContextMenu] =
+    useState<EdgeContextMenuState | null>(null);
   const [modeTransitionActive, setModeTransitionActive] = useState(false);
   const [forceLayoutRunning, setForceLayoutRunning] = useState(false);
   const [forceAlpha, setForceAlpha] = useState(1);
@@ -249,6 +256,18 @@ export function MapCanvas() {
     persistingRef,
   });
 
+  const handleUserEdgeLabelSave = useCallback(
+    async (edgeId: string, label: string | null) => {
+      const updated = await updateUserEdge(edgeId, { label });
+      if (updated) {
+        setUserEdges((prev) =>
+          prev.map((u) => (u.id === edgeId ? updated : u)),
+        );
+      }
+    },
+    [setUserEdges],
+  );
+
   const edges = useMapEdges({
     codexEntries,
     treeNodes,
@@ -257,6 +276,7 @@ export function MapCanvas() {
     userEdges,
     positions,
     show,
+    onUserEdgeLabelSave: handleUserEdgeLabelSave,
   });
 
   const { onNodesChange, onEdgesChange, persistPosition } =
@@ -433,6 +453,36 @@ export function MapCanvas() {
     );
   }, [boardId, getNodes, positions, setPositions]);
 
+  const onEdgeContextMenu = useCallback(
+    (e: React.MouseEvent, edge: { id: string; data?: unknown }) => {
+      if (!edge.id.startsWith("user:")) return;
+      e.preventDefault();
+      const d = edge.data as {
+        style?: "solid" | "dashed" | "dotted";
+        color?: string;
+        direction?: "none" | "forward" | "bidirectional";
+      };
+      setEdgeContextMenu({
+        edgeId: edge.id.slice("user:".length),
+        screenPosition: { x: e.clientX, y: e.clientY },
+        style: d.style ?? "solid",
+        color: d.color ?? "#555",
+        direction: d.direction ?? "none",
+      });
+    },
+    [],
+  );
+
+  const onEdgeDoubleClick = useCallback(
+    (_e: React.MouseEvent, edge: { id: string }) => {
+      if (!edge.id.startsWith("user:")) return;
+      // Double-click on edge path: same as label double-click — trigger via data callback
+      // UserEdge handles label-area double-click internally; path double-click
+      // falls through here. For now, open context menu as a fallback UX.
+    },
+    [],
+  );
+
   const { onKeyDown } = useMapKeyboard({
     searchVisible,
     setSearchVisible,
@@ -563,6 +613,8 @@ export function MapCanvas() {
         onNodeDragStop={onNodeDragStop}
         onNodeDoubleClick={onNodeDoubleClick}
         onNodeContextMenu={onNodeContextMenu}
+        onEdgeDoubleClick={onEdgeDoubleClick}
+        onEdgeContextMenu={onEdgeContextMenu}
         onPaneContextMenu={(e) => e.preventDefault()}
         onMoveEnd={syncViewport}
         snapToGrid={gridSnap}
@@ -669,6 +721,41 @@ export function MapCanvas() {
         onAddCodex={handleAddCodex}
         onAddNote={handleAddNote}
       />
+
+      {edgeContextMenu && (
+        <EdgeContextMenu
+          {...edgeContextMenu}
+          onClose={() => setEdgeContextMenu(null)}
+          onStyleChange={async (style) => {
+            const updated = await updateUserEdge(edgeContextMenu.edgeId, {
+              style,
+            });
+            if (updated)
+              setUserEdges((prev) =>
+                prev.map((u) =>
+                  u.id === edgeContextMenu.edgeId ? updated : u,
+                ),
+              );
+          }}
+          onDirectionChange={async (direction) => {
+            const updated = await updateUserEdge(edgeContextMenu.edgeId, {
+              direction,
+            });
+            if (updated)
+              setUserEdges((prev) =>
+                prev.map((u) =>
+                  u.id === edgeContextMenu.edgeId ? updated : u,
+                ),
+              );
+          }}
+          onDelete={async () => {
+            await deleteUserEdge(edgeContextMenu.edgeId);
+            setUserEdges((prev) =>
+              prev.filter((u) => u.id !== edgeContextMenu.edgeId),
+            );
+          }}
+        />
+      )}
 
       {deleteDialogNodes && deleteDialogNodes.length > 0 && (
         <NodeDeleteDialog
