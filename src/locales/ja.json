@@ -616,6 +616,8 @@
     "panel": {
       "title": "伏線",
       "empty": "伏線はありません",
+      "filterEmpty": "該当する伏線はありません",
+      "clearFilter": "フィルタをクリア",
       "newButton": "新規作成"
     },
     "create": {

@@ -616,6 +616,8 @@
     "panel": {
       "title": "Foreshadow",
       "empty": "No foreshadows yet",
+      "filterEmpty": "No foreshadows match the filter",
+      "clearFilter": "Clear filter",
       "newButton": "New"
     },
     "create": {

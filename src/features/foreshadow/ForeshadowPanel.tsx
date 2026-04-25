@@ -1,11 +1,20 @@
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { Plus, Trash2 } from "lucide-react";
+import { Plus, Trash2, X } from "lucide-react";
 import { useForeshadowStore } from "./foreshadowStore";
 import { CreateForeshadowDialog } from "./CreateForeshadowDialog";
 import type { DerivedLabel } from "./types";
 
 const PROJECT_ID = "default-project";
+
+const LABEL_ORDER: DerivedLabel[] = [
+  "planned",
+  "seeded",
+  "needs_strengthening",
+  "paid",
+  "orphan_payoff",
+  "abandoned",
+];
 
 const LABEL_STYLE: Record<DerivedLabel, string> = {
   planned: "bg-muted text-muted-foreground",
@@ -21,6 +30,28 @@ export function ForeshadowPanel() {
   const { items, isLoading, load, create, remove } = useForeshadowStore();
   const [dialogOpen, setDialogOpen] = useState(false);
   const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
+  const [activeFilters, setActiveFilters] = useState<Set<DerivedLabel>>(
+    () => new Set(),
+  );
+
+  const toggleFilter = (label: DerivedLabel) => {
+    setActiveFilters((prev) => {
+      const next = new Set(prev);
+      if (next.has(label)) {
+        next.delete(label);
+      } else {
+        next.add(label);
+      }
+      return next;
+    });
+  };
+
+  const visibleItems =
+    activeFilters.size === 0
+      ? items
+      : items.filter((item) => activeFilters.has(item.label));
+
+  const usedLabels = new Set(items.map((item) => item.label));
 
   useEffect(() => {
     void load(PROJECT_ID);
@@ -59,6 +90,38 @@ export function ForeshadowPanel() {
         </button>
       </div>
 
+      {/* Label filter bar — only shown when items exist */}
+      {items.length > 0 && (
+        <div className="flex flex-wrap items-center gap-1 border-b border-border px-2 py-1.5">
+          {LABEL_ORDER.filter((label) => usedLabels.has(label)).map((label) => (
+            <button
+              key={label}
+              type="button"
+              data-testid={`foreshadow-filter-${label}`}
+              onClick={() => toggleFilter(label)}
+              className={`rounded-full px-2 py-0.5 text-[10px] font-medium transition-colors ${
+                activeFilters.has(label)
+                  ? "opacity-100 ring-1 ring-current " + LABEL_STYLE[label]
+                  : "opacity-60 hover:opacity-90 " + LABEL_STYLE[label]
+              }`}
+            >
+              {t(`foreshadow.label.${label}`)}
+            </button>
+          ))}
+          {activeFilters.size > 0 && (
+            <button
+              type="button"
+              data-testid="foreshadow-filter-clear"
+              onClick={() => setActiveFilters(new Set())}
+              className="ml-auto rounded p-0.5 text-muted-foreground hover:bg-accent"
+              aria-label={t("foreshadow.panel.clearFilter", "フィルタをクリア")}
+            >
+              <X className="h-3 w-3" />
+            </button>
+          )}
+        </div>
+      )}
+
       <div className="flex-1 overflow-y-auto">
         {isLoading && (
           <p className="px-3 py-4 text-xs text-muted-foreground">…</p>
@@ -70,8 +133,14 @@ export function ForeshadowPanel() {
           </p>
         )}
 
+        {!isLoading && items.length > 0 && visibleItems.length === 0 && (
+          <p className="px-3 py-4 text-xs text-muted-foreground">
+            {t("foreshadow.panel.filterEmpty", "該当なし")}
+          </p>
+        )}
+
         {!isLoading &&
-          items.map((item) => (
+          visibleItems.map((item) => (
             <div
               key={item.id}
               data-testid="foreshadow-item"
