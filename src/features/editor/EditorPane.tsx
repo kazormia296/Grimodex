@@ -34,7 +34,6 @@ import { useEditorSettings } from "@/features/settings/hooks/useEditorSettings";
 import { useSettingsStore } from "@/features/settings/settingsStore";
 import { useSettingNumber } from "@/features/settings/useSettingControl";
 import { useCharCountMilestone } from "@/features/editor/useCharCountMilestone";
-import { AttributionOverrideMenu } from "@/features/attribution/AttributionOverrideMenu";
 import {
   saveAuthorshipSpans,
   loadAuthorshipSpans,
@@ -1059,7 +1058,6 @@ export function EditorPane({
           )}
           <EditorContent editor={editor} />
           <CodexPopover editor={editor} />
-          <AttributionOverrideMenu editor={editor} />
           <EditorContextMenu
             editor={editor}
             containerRef={editorContainerRef}

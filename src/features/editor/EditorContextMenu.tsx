@@ -12,6 +12,8 @@ import {
   selectionFromEditor,
 } from "@/features/lint/LintDisablePicker";
 import { sanitiseRules } from "@/features/lint/lintDisableWalker";
+import { useAttributionStore } from "@/features/attribution/attributionStore";
+import type { AuthorshipSource } from "@/features/attribution/AuthorshipMark";
 
 interface Position {
   x: number;
@@ -46,9 +48,12 @@ export function EditorContextMenu({
   }>({ hasMark: false, hasBlockAttr: false });
   const menuRef = useRef<HTMLDivElement>(null);
 
+  const [hasAuthorship, setHasAuthorship] = useState(false);
+
   const activeSceneId = useSceneStore((s) => s.activeSceneId);
   const codexCreate = useCodexStore((s) => s.create);
   const snippetCreate = useSnippetStore((s) => s.create);
+  const showAttribution = useAttributionStore((s) => s.showAttribution);
 
   const close = useCallback(() => {
     setPos(null);
@@ -61,26 +66,19 @@ export function EditorContextMenu({
 
     function onContextMenu(e: MouseEvent) {
       if (!editor) return;
+      e.preventDefault();
+
       const sel = editor.state.selection;
       const text = sel.empty
         ? ""
         : editor.state.doc.textBetween(sel.from, sel.to, " ");
 
       const disableSnapshot = detectDisableAtSelection(editor);
+      const authorshipSnapshot = detectAuthorshipAtSelection(editor);
 
-      // Show menu when there's a real selection OR when the cursor sits
-      // inside an existing disable directive (right-click-to-unset).
-      if (
-        !text.trim() &&
-        !disableSnapshot.hasMark &&
-        !disableSnapshot.hasBlockAttr
-      ) {
-        return;
-      }
-
-      e.preventDefault();
       setSelectedText(text);
       setDisableState(disableSnapshot);
+      setHasAuthorship(authorshipSnapshot);
       setPos({ x: e.clientX, y: e.clientY });
     }
 
@@ -142,10 +140,33 @@ export function EditorContextMenu({
     unsetDisableAtSelection(editor);
   };
 
+  const handleAttributionOverride = (newSource: AuthorshipSource) => {
+    close();
+    if (!editor) return;
+    const { from, to } = editor.state.selection;
+    const authorshipType = editor.schema.marks["authorship"];
+    if (!authorshipType) return;
+    const mark = authorshipType.create({
+      source: newSource,
+      manualOverride: true,
+      timestamp: new Date().toISOString(),
+    });
+    editor
+      .chain()
+      .focus()
+      .command(({ tr }) => {
+        tr.addMark(from, to, mark);
+        return true;
+      })
+      .run();
+  };
+
   // Hide the "選択範囲で Lint ルールを無効化" entry when there is no
   // real text selection (cursor-only right-click meant to unset).
   const canSetDisable = selectedText.trim().length > 0;
   const canUnsetDisable = disableState.hasMark || disableState.hasBlockAttr;
+  const canOverrideAttribution =
+    showAttribution && hasAuthorship && selectedText.trim().length > 0;
 
   const lintPickerSelection =
     lintDisableOpen && editor ? selectionFromEditor(editor) : null;
@@ -223,6 +244,37 @@ export function EditorContextMenu({
                   : "Lint 無効化を解除（ブロック）"}
             </button>
           </>
+        )}
+        {canOverrideAttribution && (
+          <div data-testid="attribution-override-menu">
+            <div className="my-1 border-t border-border" />
+            <div className="px-3 py-1 text-xs font-semibold text-muted-foreground">
+              {t("attribution.changeAttribution")}
+            </div>
+            {(
+              [
+                {
+                  value: "human" as AuthorshipSource,
+                  label: t("attribution.human"),
+                },
+                { value: "ai" as AuthorshipSource, label: t("attribution.ai") },
+                {
+                  value: "unknown" as AuthorshipSource,
+                  label: t("attribution.unknown"),
+                },
+              ] as const
+            ).map((opt) => (
+              <button
+                key={opt.value}
+                type="button"
+                data-testid={`override-${opt.value}`}
+                className="flex w-full items-center px-3 py-1.5 text-sm text-left hover:bg-accent"
+                onClick={() => handleAttributionOverride(opt.value)}
+              >
+                {opt.label}
+              </button>
+            ))}
+          </div>
         )}
       </div>
     </div>,
@@ -349,4 +401,19 @@ function unsetDisableAtSelection(editor: Editor): void {
   });
 
   editor.view.dispatch(tr);
+}
+
+function detectAuthorshipAtSelection(editor: Editor): boolean {
+  const { state } = editor;
+  const { from, to } = state.selection;
+  if (from === to) return false;
+  let found = false;
+  state.doc.nodesBetween(from, to, (node) => {
+    if (found) return false;
+    if (node.isText && node.marks.some((m) => m.type.name === "authorship")) {
+      found = true;
+    }
+    return true;
+  });
+  return found;
 }
