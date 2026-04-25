@@ -39,6 +39,11 @@ import {
   loadAuthorshipSpans,
   spansToMarkData,
 } from "@/features/attribution/api";
+import {
+  saveForeshadowAnchors,
+  loadForeshadowAnchors,
+  clearAllForeshadowMarks,
+} from "@/features/foreshadow/saveAnchors";
 import { VerticalPreview } from "@/features/editor/VerticalPreview";
 import { EditorContextMenu } from "@/features/editor/EditorContextMenu";
 import { CommentAddPopover } from "@/features/editor/CommentAddPopover";
@@ -261,6 +266,7 @@ export function EditorPane({
     } else {
       await saveSceneContent(id, JSON.stringify(ed.getJSON()));
       await saveAuthorshipSpans(id, ed.state.doc);
+      await saveForeshadowAnchors(id, ed.state.doc);
       useTreeStore
         .getState()
         .refreshAiRatio(id)
@@ -826,6 +832,35 @@ export function EditorPane({
             } finally {
               isApplyingExternalUpdate.current = false;
             }
+          }
+        }
+      }
+
+      // Load and apply foreshadow anchors
+      if (!isCodexMode && !isSnippetMode) {
+        const foreshadowMarks = await loadForeshadowAnchors(nodeId);
+        if (!cancelled && foreshadowMarks.length > 0 && editor) {
+          isApplyingExternalUpdate.current = true;
+          try {
+            editor
+              .chain()
+              .command(({ tr }) => {
+                tr.setMeta("programmaticInsert", true);
+                clearAllForeshadowMarks(tr.doc, (fn) => fn(tr));
+                const schema = tr.doc.type.schema;
+                for (const { from, to, markName, attrs } of foreshadowMarks) {
+                  const markType = schema.marks[markName];
+                  if (!markType) continue;
+                  const docSize = tr.doc.content.size;
+                  const cf = Math.min(from, docSize);
+                  const ct = Math.min(to, docSize);
+                  if (cf < ct) tr.addMark(cf, ct, markType.create(attrs));
+                }
+                return true;
+              })
+              .run();
+          } finally {
+            isApplyingExternalUpdate.current = false;
           }
         }
       }
