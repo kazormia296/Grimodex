@@ -786,6 +786,7 @@
       "fontSize": "Font size",
       "attribution": "Attribution",
       "comments": "Comments (not implemented)",
+      "foreshadowMarks": "Show foreshadow marks",
       "focusMode": "Focus mode",
       "typewriterMode": "Typewriter mode",
       "moreOptions": "More options",

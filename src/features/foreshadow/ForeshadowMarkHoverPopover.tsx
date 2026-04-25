@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, useCallback } from "react";
 import { createPortal } from "react-dom";
 import { useTranslation } from "react-i18next";
 import type { Editor } from "@tiptap/react";
+import { useCursorSettingsStore } from "@/features/editor/cursorSettingsStore";
 import { useForeshadowStore } from "./foreshadowStore";
 
 type MarkKind = "setup" | "payoff";
@@ -22,6 +23,9 @@ interface Props {
 
 export function ForeshadowMarkHoverPopover({ editor, containerRef }: Props) {
   const { t } = useTranslation();
+  const showForeshadowMarks = useCursorSettingsStore(
+    (s) => s.showForeshadowMarks,
+  );
   const [target, setTarget] = useState<MarkTarget | null>(null);
   const popoverRef = useRef<HTMLDivElement>(null);
   const hideTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -38,9 +42,17 @@ export function ForeshadowMarkHoverPopover({ editor, containerRef }: Props) {
     hideTimer.current = setTimeout(() => setTarget(null), 200);
   }, [clearHideTimer]);
 
+  // Hide popover when marks are toggled off
+  useEffect(() => {
+    if (!showForeshadowMarks) {
+      clearHideTimer();
+      setTarget(null);
+    }
+  }, [showForeshadowMarks, clearHideTimer]);
+
   useEffect(() => {
     const container = containerRef.current;
-    if (!container) return;
+    if (!container || !showForeshadowMarks) return;
 
     function onMouseOver(e: MouseEvent) {
       const el = e.target as Element;

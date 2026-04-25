@@ -108,6 +108,8 @@ export function Toolbar({
     toggleTypewriterMode,
     showComments,
     toggleShowComments,
+    showForeshadowMarks,
+    toggleShowForeshadowMarks,
   } = useCursorSettingsStore();
 
   // Force re-render when editor selection/state changes so isActive() is accurate
@@ -463,6 +465,13 @@ export function Toolbar({
             }}
           >
             Cmt
+          </ToolbarButton>
+          <ToolbarButton
+            label={t("editor.toolbar.foreshadowMarks")}
+            active={showForeshadowMarks}
+            onClick={toggleShowForeshadowMarks}
+          >
+            Fs
           </ToolbarButton>
           <ToolbarButton
             label={t("editor.toolbar.focusMode")}

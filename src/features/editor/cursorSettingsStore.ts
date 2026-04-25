@@ -10,6 +10,8 @@ interface CursorSettingsState {
   toggleTypewriterMode: () => void;
   showComments: boolean;
   toggleShowComments: () => void;
+  showForeshadowMarks: boolean;
+  toggleShowForeshadowMarks: () => void;
   /** Whether the "add comment" input popover is open. */
   commentPickerOpen: boolean;
   setCommentPickerOpen: (open: boolean) => void;
@@ -53,6 +55,10 @@ export const useCursorSettingsStore = create<CursorSettingsState>()((set) => ({
 
   showComments: false,
   toggleShowComments: () => set((s) => ({ showComments: !s.showComments })),
+
+  showForeshadowMarks: false,
+  toggleShowForeshadowMarks: () =>
+    set((s) => ({ showForeshadowMarks: !s.showForeshadowMarks })),
 
   commentPickerOpen: false,
   setCommentPickerOpen: (open) => set({ commentPickerOpen: open }),

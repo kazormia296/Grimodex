@@ -382,6 +382,25 @@
   text-decoration-color: #3b82f6;
 }
 
+/* ForeshadowMarks — visible only when showForeshadowMarks is ON */
+[data-show-foreshadow-marks="true"] [data-foreshadow-setup] {
+  text-decoration-line: underline;
+  text-decoration-style: solid;
+  text-decoration-color: #60a5fa; /* blue-400 */
+  text-decoration-skip-ink: none;
+  text-underline-offset: 3px;
+  cursor: help;
+}
+
+[data-show-foreshadow-marks="true"] [data-foreshadow-payoff] {
+  text-decoration-line: underline;
+  text-decoration-style: solid;
+  text-decoration-color: #4ade80; /* green-400 */
+  text-decoration-skip-ink: none;
+  text-underline-offset: 3px;
+  cursor: help;
+}
+
 /* CommentMark decoration — amber wavy underline when showComments is ON */
 .comment-deco {
   text-decoration-line: underline;

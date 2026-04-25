@@ -600,6 +600,9 @@ export function EditorPane({
   );
   useFocusMode(editor);
   const typewriterMode = useCursorSettingsStore((s) => s.typewriterMode);
+  const showForeshadowMarks = useCursorSettingsStore(
+    (s) => s.showForeshadowMarks,
+  );
   useTypewriterScroll(editor, typewriterMode, editorContainerRef);
 
   // When typewriter mode is toggled (on or off), scroll immediately to center
@@ -1023,6 +1026,7 @@ export function EditorPane({
       />
       <div
         ref={editorContainerRef}
+        data-show-foreshadow-marks={showForeshadowMarks ? "true" : "false"}
         className={`flex-1 overflow-auto bg-content-background text-content-foreground-secondary p-4${typewriterMode ? " typewriter-padding" : ""}${filterSource ? ` attribution-filter-${filterSource}` : ""}`}
         onClick={(e) => {
           // Focus editor when clicking on the padding/background area
