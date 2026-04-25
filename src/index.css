@@ -382,6 +382,16 @@
   text-decoration-color: #3b82f6;
 }
 
+/* CommentMark decoration — amber wavy underline when showComments is ON */
+.comment-deco {
+  text-decoration-line: underline;
+  text-decoration-style: wavy;
+  text-decoration-color: #f59e0b;
+  text-decoration-skip-ink: none;
+  text-underline-offset: 3px;
+  cursor: help;
+}
+
 /* Inline `lintDisable` Mark — regular disable (listed rule IDs) gets a
  * light grey underline; `["*"]` (all rules silenced) gets a slightly
  * more prominent colour to make broad suppression visible to the

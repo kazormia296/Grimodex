@@ -10,6 +10,9 @@ interface CursorSettingsState {
   toggleTypewriterMode: () => void;
   showComments: boolean;
   toggleShowComments: () => void;
+  /** Whether the "add comment" input popover is open. */
+  commentPickerOpen: boolean;
+  setCommentPickerOpen: (open: boolean) => void;
   /** Sync runtime state from persisted settings (call after loadAll). */
   initFromSettings: () => void;
 }
@@ -41,6 +44,9 @@ export const useCursorSettingsStore = create<CursorSettingsState>()((set) => ({
 
   showComments: false,
   toggleShowComments: () => set((s) => ({ showComments: !s.showComments })),
+
+  commentPickerOpen: false,
+  setCommentPickerOpen: (open) => set({ commentPickerOpen: open }),
 
   initFromSettings: () => {
     const s = useSettingsStore.getState();

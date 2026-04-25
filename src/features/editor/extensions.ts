@@ -23,6 +23,10 @@ import { createLintDecorationPlugin } from "@/features/editor/LintDecorationPlug
 import { createLintDisableGutterPlugin } from "@/features/editor/LintDisableGutterPlugin";
 import { LintDisableMark } from "@/features/editor/LintDisableMark";
 import { LintDisableBlockAttrs } from "@/features/editor/LintDisableBlockAttrs";
+import { CommentMark } from "@/features/editor/CommentMark";
+import { createCommentDecorationPlugin } from "@/features/editor/CommentDecorationPlugin";
+export { COMMENT_REBUILD_META } from "@/features/editor/CommentDecorationPlugin";
+import { useCursorSettingsStore } from "@/features/editor/cursorSettingsStore";
 import i18next from "@/lib/i18n";
 import type { Extensions } from "@tiptap/core";
 
@@ -83,6 +87,13 @@ const LintDisableGutterExtension = Extension.create({
   },
 });
 
+const CommentDecorationExtension = Extension.create({
+  name: "commentDecoration",
+  addProseMirrorPlugins() {
+    return [createCommentDecorationPlugin()];
+  },
+});
+
 const ToolbarShortcutsExtension = Extension.create({
   name: "toolbarShortcuts",
 
@@ -92,6 +103,13 @@ const ToolbarShortcutsExtension = Extension.create({
       "Mod-1": () => this.editor.commands.toggleHeading({ level: 1 }),
       "Mod-2": () => this.editor.commands.toggleHeading({ level: 2 }),
       "Mod-3": () => this.editor.commands.toggleHeading({ level: 3 }),
+      // Ctrl+Shift+M — add inline comment to selection
+      "Mod-Shift-m": () => {
+        const { from, to } = this.editor.state.selection;
+        if (from === to) return false;
+        useCursorSettingsStore.getState().setCommentPickerOpen(true);
+        return true;
+      },
     };
   },
 });
@@ -135,6 +153,8 @@ export function getEditorExtensions(): Extensions {
     LintDisableMark,
     LintDisableBlockAttrs,
     LintDisableGutterExtension,
+    CommentMark,
+    CommentDecorationExtension,
   ];
 }
 
