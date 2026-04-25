@@ -112,12 +112,17 @@ export function ForeshadowMarkPopover({ editor }: Props) {
 
   const handleCreateAndLink = async () => {
     if (!newTitle.trim()) return;
-    const item = await create({
-      projectId: PROJECT_ID,
-      title: newTitle.trim(),
-      intent: null,
-    });
-    handleItemClick(item.id);
+    try {
+      const item = await create({
+        projectId: PROJECT_ID,
+        title: newTitle.trim(),
+        intent: null,
+      });
+      handleItemClick(item.id);
+    } catch {
+      // store already surfaced a toast — close the popover so the user isn't trapped
+      close();
+    }
   };
 
   // ESC / outside-click

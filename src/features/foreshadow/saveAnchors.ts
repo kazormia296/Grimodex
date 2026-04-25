@@ -157,7 +157,6 @@ export async function saveForeshadowAnchors(
  * This prevents stale marks (e.g. from copy-paste or crashes) from persisting.
  */
 export function clearAllForeshadowMarks(
-  doc: ProseMirrorNode,
   applyTr: (fn: (tr: import("@tiptap/pm/state").Transaction) => void) => void,
 ): void {
   applyTr((tr) => {
@@ -168,7 +167,6 @@ export function clearAllForeshadowMarks(
     if (setupType) tr.removeMark(1, docSize - 1, setupType);
     if (payoffType) tr.removeMark(1, docSize - 1, payoffType);
   });
-  void doc;
 }
 
 // ── Load helpers (DB read → mark data) ───────────────────────────

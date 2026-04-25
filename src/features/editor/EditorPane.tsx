@@ -721,6 +721,10 @@ export function EditorPane({
       cancel();
       saveSceneIdRef.current = nodeId;
 
+      // Hold the external-update guard for the entire scene-switch sequence
+      // (setContent + authorship load + foreshadow load). Releasing it earlier
+      // lets a fast typist trigger autosave while marks are mid-load, which
+      // would persist a doc with no setup marks and orphan every setup row.
       isApplyingExternalUpdate.current = true;
       try {
         if (isCodexMode) {
@@ -794,27 +798,22 @@ export function EditorPane({
           const parsed = content && content !== "{}" ? JSON.parse(content) : "";
           editor!.commands.setContent(parsed, { emitUpdate: false });
         }
-      } finally {
-        isApplyingExternalUpdate.current = false;
-      }
 
-      const text = getDocText(editor!.state.doc);
-      const count = text.length;
-      setCharCount(count);
-      setWordCount(text.trim() === "" ? 0 : text.trim().split(/\s+/).length);
-      setIsDirty(false);
-      wasEmptyRef.current = count === 0;
+        const text = getDocText(editor!.state.doc);
+        const count = text.length;
+        setCharCount(count);
+        setWordCount(text.trim() === "" ? 0 : text.trim().split(/\s+/).length);
+        setIsDirty(false);
+        wasEmptyRef.current = count === 0;
 
-      if (!isCodexMode && !isSnippetMode) {
-        useTreeStore.getState().setCharCount(nodeId, count);
+        if (!isCodexMode && !isSnippetMode) {
+          useTreeStore.getState().setCharCount(nodeId, count);
 
-        const spans = await loadAuthorshipSpans(nodeId);
-        if (!cancelled && spans.length > 0) {
-          const markData = spansToMarkData(spans);
-          const authorshipType = editor!.schema.marks["authorship"];
-          if (authorshipType) {
-            isApplyingExternalUpdate.current = true;
-            try {
+          const spans = await loadAuthorshipSpans(nodeId);
+          if (!cancelled && spans.length > 0) {
+            const markData = spansToMarkData(spans);
+            const authorshipType = editor!.schema.marks["authorship"];
+            if (authorshipType) {
               editor!
                 .chain()
                 .command(({ tr }) => {
@@ -834,24 +833,17 @@ export function EditorPane({
                   return true;
                 })
                 .run();
-            } finally {
-              isApplyingExternalUpdate.current = false;
             }
           }
-        }
-      }
 
-      // Load and apply foreshadow anchors
-      if (!isCodexMode && !isSnippetMode) {
-        const foreshadowMarks = await loadForeshadowAnchors(nodeId);
-        if (!cancelled && foreshadowMarks.length > 0 && editor) {
-          isApplyingExternalUpdate.current = true;
-          try {
+          // Load and apply foreshadow anchors
+          const foreshadowMarks = await loadForeshadowAnchors(nodeId);
+          if (!cancelled && foreshadowMarks.length > 0 && editor) {
             editor
               .chain()
               .command(({ tr }) => {
                 tr.setMeta("programmaticInsert", true);
-                clearAllForeshadowMarks(tr.doc, (fn) => fn(tr));
+                clearAllForeshadowMarks((fn) => fn(tr));
                 const schema = tr.doc.type.schema;
                 for (const { from, to, markName, attrs } of foreshadowMarks) {
                   const markType = schema.marks[markName];
@@ -864,10 +856,10 @@ export function EditorPane({
                 return true;
               })
               .run();
-          } finally {
-            isApplyingExternalUpdate.current = false;
           }
         }
+      } finally {
+        isApplyingExternalUpdate.current = false;
       }
 
       // Reset scroll to top after scene load; saved state will be restored below.
