@@ -59,11 +59,12 @@ export function ForeshadowMarkPopover({ editor }: Props) {
   }, [open, editor, setOpen]);
 
   useEffect(() => {
-    if (mode !== null) {
-      if (!isLoading) load(PROJECT_ID);
-      setTimeout(() => searchRef.current?.focus(), 0);
+    if (mode === null) return;
+    if (!useForeshadowStore.getState().isLoading) {
+      void load(PROJECT_ID);
     }
-  }, [mode, isLoading, load]);
+    setTimeout(() => searchRef.current?.focus(), 0);
+  }, [mode, load]);
 
   useEffect(() => {
     if (showNewForm) {
@@ -104,14 +105,12 @@ export function ForeshadowMarkPopover({ editor }: Props) {
 
   const handleCreateAndLink = async () => {
     if (!newTitle.trim()) return;
-    await create({
+    const item = await create({
       projectId: PROJECT_ID,
       title: newTitle.trim(),
       intent: null,
     });
-    const latest = useForeshadowStore.getState().items[0];
-    if (latest) handleItemClick(latest.id);
-    else close();
+    handleItemClick(item.id);
   };
 
   // ESC / outside-click

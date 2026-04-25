@@ -16,7 +16,7 @@ interface ForeshadowState {
   load: (projectId: string) => Promise<void>;
   create: (
     data: Pick<ForeshadowRow, "projectId" | "title" | "intent">,
-  ) => Promise<void>;
+  ) => Promise<ForeshadowWithLabel>;
   remove: (id: string) => Promise<void>;
 }
 
@@ -95,6 +95,7 @@ export const useForeshadowStore = create<ForeshadowState>()((set, _get) => ({
         label: "planned",
       };
       set((s) => ({ items: [item, ...s.items] }));
+      return item;
     } catch (e) {
       toast.error(
         i18next.t("foreshadow.store.createFailed", "伏線の作成に失敗しました"),
