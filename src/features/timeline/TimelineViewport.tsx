@@ -4,6 +4,7 @@ import type { TreeNodeData } from "@/features/tree/treeStore";
 import { useTimelineStore } from "./timelineStore";
 import { computeAxisLabels } from "./timelineLabels";
 import { ZOOM_STEP, STEP_BASE } from "./timelineZoom";
+import { TimelineContextMenu } from "./TimelineContextMenu";
 
 const DOT_R = 6;
 const LABEL_Y = 16;
@@ -38,6 +39,12 @@ interface DragState {
   currentX: number;
   currentY: number;
   originIndex: number;
+}
+
+interface ContextMenuState {
+  node: TreeNodeData;
+  x: number;
+  y: number;
 }
 
 interface Props {
@@ -81,6 +88,9 @@ export const TimelineViewport = forwardRef<HTMLDivElement, Props>(
     const containerRef = useRef<HTMLDivElement>(null);
     const isRestoringRef = useRef(false);
     const [drag, setDrag] = useState<DragState | null>(null);
+    const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(
+      null,
+    );
     // Track when the scroll container element mounts/unmounts so the wheel
     // listener effect re-runs even if scenes load after the first render.
     const [containerEl, setContainerEl] = useState<HTMLDivElement | null>(null);
@@ -143,6 +153,14 @@ export const TimelineViewport = forwardRef<HTMLDivElement, Props>(
         currentY: svgY,
         originIndex,
       });
+    }
+
+    function handleDotContextMenu(
+      e: React.MouseEvent<SVGCircleElement>,
+      scene: TreeNodeData,
+    ) {
+      e.preventDefault();
+      setContextMenu({ node: scene, x: e.clientX, y: e.clientY });
     }
 
     function commitDrop(clientX: number, clientY: number) {
@@ -271,245 +289,262 @@ export const TimelineViewport = forwardRef<HTMLDivElement, Props>(
     }
 
     return (
-      <div
-        ref={setContainerRef}
-        data-testid="timeline-scroll-container"
-        className="flex-1 overflow-x-auto overflow-y-hidden"
-        onScroll={handleScroll}
-      >
-        <svg
-          ref={svgRef}
-          width={totalWidth}
-          height={svgHeight}
-          className={`block select-none${canDrag ? " cursor-default" : ""}`}
-          aria-label={t("timeline.viewport", "タイムライン ビューポート")}
+      <>
+        <div
+          ref={setContainerRef}
+          data-testid="timeline-scroll-container"
+          className="flex-1 overflow-x-auto overflow-y-hidden"
+          onScroll={handleScroll}
         >
-          {/* Axis tick labels */}
-          {computeAxisLabels(
-            scenes.slice(0, scheduledCount),
-            axisMode,
-            zoom,
-          ).map(({ index, label }) => (
-            <text
-              key={index}
-              data-testid="axis-label"
-              x={xOf(index)}
-              y={LABEL_Y}
-              textAnchor="middle"
-              fontSize={9}
-              fill="currentColor"
-              fillOpacity={0.45}
-              className="pointer-events-none select-none"
-            >
-              {label}
-            </text>
-          ))}
-
-          {/* Main axis line */}
-          <line
-            x1={PAD_LEFT - DOT_R}
-            y1={AXIS_Y}
-            x2={
-              scheduledCount > 0
-                ? xOf(scheduledCount - 1) + DOT_R
-                : totalWidth - PAD_RIGHT
-            }
-            y2={AXIS_Y}
-            stroke="currentColor"
-            strokeOpacity={scheduledCount > 0 ? 0.2 : 0.1}
-            strokeWidth={1}
-            strokeDasharray={scheduledCount === 0 ? "4 4" : undefined}
-          />
-
-          {/* 軸が空のときのプレースホルダーヒント */}
-          {showUnscheduledZone && scheduledCount === 0 && (
-            <text
-              x={totalWidth / 2}
-              y={AXIS_Y - 12}
-              textAnchor="middle"
-              fontSize={10}
-              fill="currentColor"
-              fillOpacity={0.35}
-              className="pointer-events-none"
-            >
-              {t(
-                "timeline.emptyAxisHint",
-                "↑ シーンをここにドラッグして story-time を設定",
-              )}
-            </text>
-          )}
-
-          {/* Unscheduled separator + drop zone (story-time モード中は常に表示) */}
-          {showUnscheduledZone && (
-            <>
-              {/* ドラッグ中はゾーンをハイライト */}
-              {drag && (
-                <rect
-                  x={PAD_LEFT - DOT_R}
-                  y={UNSCHEDULED_Y - 20}
-                  width={totalWidth - PAD_LEFT - PAD_RIGHT + DOT_R}
-                  height={40}
-                  fill="currentColor"
-                  fillOpacity={0.05}
-                  rx={4}
-                  pointerEvents="none"
-                />
-              )}
-              <line
-                x1={PAD_LEFT - DOT_R}
-                y1={UNSCHEDULED_Y - 16}
-                x2={totalWidth - PAD_RIGHT}
-                y2={UNSCHEDULED_Y - 16}
-                stroke="currentColor"
-                strokeOpacity={drag ? 0.35 : 0.12}
-                strokeWidth={1}
-                strokeDasharray="4 4"
-              />
+          <svg
+            ref={svgRef}
+            width={totalWidth}
+            height={svgHeight}
+            className={`block select-none${canDrag ? " cursor-default" : ""}`}
+            aria-label={t("timeline.viewport", "タイムライン ビューポート")}
+          >
+            {/* Axis tick labels */}
+            {computeAxisLabels(
+              scenes.slice(0, scheduledCount),
+              axisMode,
+              zoom,
+            ).map(({ index, label }) => (
               <text
-                x={PAD_LEFT - DOT_R}
-                y={UNSCHEDULED_Y - 4}
+                key={index}
+                data-testid="axis-label"
+                x={xOf(index)}
+                y={LABEL_Y}
+                textAnchor="middle"
                 fontSize={9}
                 fill="currentColor"
-                fillOpacity={drag ? 0.7 : 0.4}
+                fillOpacity={0.45}
+                className="pointer-events-none select-none"
               >
-                {scheduledCount === 0
-                  ? t(
-                      "timeline.unscheduledAllHint",
-                      "Unscheduled — 上にドラッグして軸に配置",
-                    )
-                  : t("timeline.unscheduled", "Unscheduled")}
+                {label}
               </text>
-            </>
-          )}
+            ))}
 
-          {scenes.map((scene, i) => {
-            const cx = xOf(i);
-            const cy = yOf(i);
-            const fill =
-              STATUS_FILL[scene.status ?? "outline"] ?? STATUS_FILL.outline;
-            const isSelected = selectedNodeIds.includes(scene.id);
-            const pins = pinsByNode.get(scene.id) ?? [];
-            const isUnscheduled = i >= scheduledCount;
+            {/* Main axis line */}
+            <line
+              x1={PAD_LEFT - DOT_R}
+              y1={AXIS_Y}
+              x2={
+                scheduledCount > 0
+                  ? xOf(scheduledCount - 1) + DOT_R
+                  : totalWidth - PAD_RIGHT
+              }
+              y2={AXIS_Y}
+              stroke="currentColor"
+              strokeOpacity={scheduledCount > 0 ? 0.2 : 0.1}
+              strokeWidth={1}
+              strokeDasharray={scheduledCount === 0 ? "4 4" : undefined}
+            />
 
-            return (
-              <g
-                key={scene.id}
-                data-node-id={scene.id}
-                opacity={isUnscheduled ? 0.55 : 1}
+            {/* 軸が空のときのプレースホルダーヒント */}
+            {showUnscheduledZone && scheduledCount === 0 && (
+              <text
+                x={totalWidth / 2}
+                y={AXIS_Y - 12}
+                textAnchor="middle"
+                fontSize={10}
+                fill="currentColor"
+                fillOpacity={0.35}
+                className="pointer-events-none"
               >
-                {/* Vertical stem */}
-                {(display.showTitles || display.showChapterNumbers) && (
-                  <line
-                    x1={cx}
-                    y1={cy + DOT_R}
-                    x2={cx}
-                    y2={cy + 20}
-                    stroke="currentColor"
-                    strokeOpacity={0.15}
-                    strokeWidth={1}
+                {t(
+                  "timeline.emptyAxisHint",
+                  "↑ シーンをここにドラッグして story-time を設定",
+                )}
+              </text>
+            )}
+
+            {/* Unscheduled separator + drop zone (story-time モード中は常に表示) */}
+            {showUnscheduledZone && (
+              <>
+                {/* ドラッグ中はゾーンをハイライト */}
+                {drag && (
+                  <rect
+                    x={PAD_LEFT - DOT_R}
+                    y={UNSCHEDULED_Y - 20}
+                    width={totalWidth - PAD_LEFT - PAD_RIGHT + DOT_R}
+                    height={40}
+                    fill="currentColor"
+                    fillOpacity={0.05}
+                    rx={4}
+                    pointerEvents="none"
                   />
                 )}
-
-                {/* Drag ghost */}
-                {drag?.nodeId === scene.id &&
-                  (() => {
-                    const locked =
-                      Math.abs(drag.currentY - LANE_Y) < AXIS_LOCK_THRESHOLD;
-                    const ghostX = drag.currentX;
-                    const ghostY = locked ? LANE_Y : drag.currentY;
-                    return (
-                      <line
-                        x1={cx}
-                        y1={cy}
-                        x2={ghostX}
-                        y2={ghostY}
-                        stroke="currentColor"
-                        strokeOpacity={0.35}
-                        strokeWidth={1}
-                        strokeDasharray="3 3"
-                        pointerEvents="none"
-                      />
-                    );
-                  })()}
-
-                {/* Scene dot */}
-                <circle
-                  cx={drag?.nodeId === scene.id ? drag.currentX : cx}
-                  cy={
-                    drag?.nodeId === scene.id
-                      ? Math.abs(drag.currentY - LANE_Y) < AXIS_LOCK_THRESHOLD
-                        ? LANE_Y
-                        : drag.currentY
-                      : cy
-                  }
-                  r={DOT_R}
-                  fill={fill}
-                  stroke={isSelected ? "white" : "transparent"}
-                  strokeWidth={2}
-                  className={canDrag ? "cursor-grab" : "cursor-pointer"}
-                  onClick={() => onSelectScene(scene.id)}
-                  onMouseDown={(e) => handleDotMouseDown(e, scene.id, i)}
+                <line
+                  x1={PAD_LEFT - DOT_R}
+                  y1={UNSCHEDULED_Y - 16}
+                  x2={totalWidth - PAD_RIGHT}
+                  y2={UNSCHEDULED_Y - 16}
+                  stroke="currentColor"
+                  strokeOpacity={drag ? 0.35 : 0.12}
+                  strokeWidth={1}
+                  strokeDasharray="4 4"
+                />
+                <text
+                  x={PAD_LEFT - DOT_R}
+                  y={UNSCHEDULED_Y - 4}
+                  fontSize={9}
+                  fill="currentColor"
+                  fillOpacity={drag ? 0.7 : 0.4}
                 >
-                  <title>{scene.title}</title>
-                </circle>
+                  {scheduledCount === 0
+                    ? t(
+                        "timeline.unscheduledAllHint",
+                        "Unscheduled — 上にドラッグして軸に配置",
+                      )
+                    : t("timeline.unscheduled", "Unscheduled")}
+                </text>
+              </>
+            )}
 
-                {/* Story-time label (scheduled scenes in story-time mode) */}
-                {display.showChapterNumbers &&
-                  !isUnscheduled &&
-                  scene.storyTimeLabel && (
+            {scenes.map((scene, i) => {
+              const cx = xOf(i);
+              const cy = yOf(i);
+              const fill =
+                STATUS_FILL[scene.status ?? "outline"] ?? STATUS_FILL.outline;
+              const isSelected = selectedNodeIds.includes(scene.id);
+              const pins = pinsByNode.get(scene.id) ?? [];
+              const isUnscheduled = i >= scheduledCount;
+
+              return (
+                <g
+                  key={scene.id}
+                  data-node-id={scene.id}
+                  opacity={isUnscheduled ? 0.55 : 1}
+                >
+                  {/* Vertical stem */}
+                  {(display.showTitles || display.showChapterNumbers) && (
+                    <line
+                      x1={cx}
+                      y1={cy + DOT_R}
+                      x2={cx}
+                      y2={cy + 20}
+                      stroke="currentColor"
+                      strokeOpacity={0.15}
+                      strokeWidth={1}
+                    />
+                  )}
+
+                  {/* Drag ghost */}
+                  {drag?.nodeId === scene.id &&
+                    (() => {
+                      const locked =
+                        Math.abs(drag.currentY - LANE_Y) < AXIS_LOCK_THRESHOLD;
+                      const ghostX = drag.currentX;
+                      const ghostY = locked ? LANE_Y : drag.currentY;
+                      return (
+                        <line
+                          x1={cx}
+                          y1={cy}
+                          x2={ghostX}
+                          y2={ghostY}
+                          stroke="currentColor"
+                          strokeOpacity={0.35}
+                          strokeWidth={1}
+                          strokeDasharray="3 3"
+                          pointerEvents="none"
+                        />
+                      );
+                    })()}
+
+                  {/* Scene dot */}
+                  <circle
+                    cx={drag?.nodeId === scene.id ? drag.currentX : cx}
+                    cy={
+                      drag?.nodeId === scene.id
+                        ? Math.abs(drag.currentY - LANE_Y) < AXIS_LOCK_THRESHOLD
+                          ? LANE_Y
+                          : drag.currentY
+                        : cy
+                    }
+                    r={DOT_R}
+                    fill={fill}
+                    stroke={isSelected ? "white" : "transparent"}
+                    strokeWidth={2}
+                    className={canDrag ? "cursor-grab" : "cursor-pointer"}
+                    onClick={() => onSelectScene(scene.id)}
+                    onMouseDown={(e) => handleDotMouseDown(e, scene.id, i)}
+                    onContextMenu={(e) => handleDotContextMenu(e, scene)}
+                  >
+                    <title>{scene.title}</title>
+                  </circle>
+
+                  {/* Story-time label (scheduled scenes in story-time mode) */}
+                  {display.showChapterNumbers &&
+                    !isUnscheduled &&
+                    scene.storyTimeLabel && (
+                      <text
+                        x={cx}
+                        y={cy - DOT_R - 4}
+                        textAnchor="middle"
+                        fontSize={9}
+                        fill="currentColor"
+                        fillOpacity={0.5}
+                        className="pointer-events-none"
+                      >
+                        {scene.storyTimeLabel}
+                      </text>
+                    )}
+
+                  {/* Title label */}
+                  {display.showTitles && (
                     <text
                       x={cx}
-                      y={cy - DOT_R - 4}
+                      y={cy + 28}
                       textAnchor="middle"
-                      fontSize={9}
+                      fontSize={10}
                       fill="currentColor"
-                      fillOpacity={0.5}
+                      fillOpacity={0.7}
                       className="pointer-events-none"
                     >
-                      {scene.storyTimeLabel}
+                      {scene.title.length > 8
+                        ? scene.title.slice(0, 7) + "…"
+                        : scene.title}
                     </text>
                   )}
 
-                {/* Title label */}
-                {display.showTitles && (
-                  <text
-                    x={cx}
-                    y={cy + 28}
-                    textAnchor="middle"
-                    fontSize={10}
-                    fill="currentColor"
-                    fillOpacity={0.7}
-                    className="pointer-events-none"
-                  >
-                    {scene.title.length > 8
-                      ? scene.title.slice(0, 7) + "…"
-                      : scene.title}
-                  </text>
-                )}
+                  {/* Phase pins */}
+                  {display.showPhasePins &&
+                    pins.length > 0 &&
+                    !isUnscheduled && (
+                      <text
+                        x={cx}
+                        y={PHASE_PIN_Y}
+                        textAnchor="middle"
+                        fontSize={10}
+                        fill="currentColor"
+                        fillOpacity={0.55}
+                      >
+                        {pins.length === 1
+                          ? `⏱ ${pins[0].entryName}`
+                          : `⏱×${pins.length}`}
+                        <title>
+                          {pins
+                            .map((p) => `${p.entryName}: ${p.label}`)
+                            .join("\n")}
+                        </title>
+                      </text>
+                    )}
+                </g>
+              );
+            })}
+          </svg>
+        </div>
 
-                {/* Phase pins */}
-                {display.showPhasePins && pins.length > 0 && !isUnscheduled && (
-                  <text
-                    x={cx}
-                    y={PHASE_PIN_Y}
-                    textAnchor="middle"
-                    fontSize={10}
-                    fill="currentColor"
-                    fillOpacity={0.55}
-                  >
-                    {pins.length === 1
-                      ? `⏱ ${pins[0].entryName}`
-                      : `⏱×${pins.length}`}
-                    <title>
-                      {pins.map((p) => `${p.entryName}: ${p.label}`).join("\n")}
-                    </title>
-                  </text>
-                )}
-              </g>
-            );
-          })}
-        </svg>
-      </div>
+        {contextMenu && (
+          <TimelineContextMenu
+            node={contextMenu.node}
+            x={contextMenu.x}
+            y={contextMenu.y}
+            onClose={() => setContextMenu(null)}
+            axisMode={axisMode}
+          />
+        )}
+      </>
     );
   },
 );
