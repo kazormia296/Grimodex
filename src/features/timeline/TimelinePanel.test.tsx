@@ -9,6 +9,25 @@ import type { TreeNodeData } from "@/features/tree/treeStore";
 vi.mock("@/lib/tauri", () => ({ invoke: vi.fn() }));
 
 const mockDeleteNode = vi.fn();
+const mockOpenPinned = vi.fn();
+const mockOpenInSecondaryGroup = vi.fn();
+
+vi.mock("@/features/editor/tabStore", () => ({
+  useTabStore: Object.assign(
+    vi.fn((sel: (s: unknown) => unknown) =>
+      sel({
+        openPinned: mockOpenPinned,
+        openInSecondaryGroup: mockOpenInSecondaryGroup,
+      }),
+    ),
+    {
+      getState: () => ({
+        openPinned: mockOpenPinned,
+        openInSecondaryGroup: mockOpenInSecondaryGroup,
+      }),
+    },
+  ),
+}));
 
 vi.mock("@/features/tree/treeStore", () => ({
   useTreeStore: vi.fn((sel: (s: unknown) => unknown) =>
@@ -239,6 +258,54 @@ describe("TimelinePanel – plain-key shortcuts (#3)", () => {
       );
     });
     expect(mockDeleteNode).toHaveBeenCalledWith("scene-x");
+  });
+
+  it("panel focused + multiple selected → Delete calls deleteNode for each id", () => {
+    useTimelineStore.setState({ selectedNodeIds: ["s1", "s2"] });
+    const { getByTestId } = render(<TimelinePanel />);
+    act(() => {
+      getByTestId("timeline-panel").focus();
+    });
+    act(() => {
+      document.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Delete", bubbles: true }),
+      );
+    });
+    expect(mockDeleteNode).toHaveBeenCalledWith("s1");
+    expect(mockDeleteNode).toHaveBeenCalledWith("s2");
+    expect(mockDeleteNode).toHaveBeenCalledTimes(2);
+  });
+
+  it("panel focused + selected → Enter calls openPinned", () => {
+    useTimelineStore.setState({ selectedNodeIds: ["scene-x"] });
+    const { getByTestId } = render(<TimelinePanel />);
+    act(() => {
+      getByTestId("timeline-panel").focus();
+    });
+    act(() => {
+      document.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Enter", bubbles: true }),
+      );
+    });
+    expect(mockOpenPinned).toHaveBeenCalledWith("scene-x");
+  });
+
+  it("panel focused + selected + Ctrl+Enter → calls openInSecondaryGroup", () => {
+    useTimelineStore.setState({ selectedNodeIds: ["scene-x"] });
+    const { getByTestId } = render(<TimelinePanel />);
+    act(() => {
+      getByTestId("timeline-panel").focus();
+    });
+    act(() => {
+      document.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          key: "Enter",
+          ctrlKey: true,
+          bubbles: true,
+        }),
+      );
+    });
+    expect(mockOpenInSecondaryGroup).toHaveBeenCalledWith("scene-x");
   });
 
   it("panel focused + story mode + selected → F2 sets pendingEditNodeId and opens inspector", () => {

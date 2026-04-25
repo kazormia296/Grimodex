@@ -57,8 +57,8 @@ export function TimelineContextMenu({ node, x, y, onClose, axisMode }: Props) {
 
   const style: React.CSSProperties = {
     position: "fixed",
-    left: Math.min(x, window.innerWidth - 220),
-    top: Math.min(y, window.innerHeight - 320),
+    left: Math.max(0, Math.min(x, window.innerWidth - 220)),
+    top: Math.max(0, Math.min(y, window.innerHeight - 320)),
     zIndex: 9999,
   };
 

@@ -7,6 +7,7 @@ import { cmpKeys } from "@/features/tree/fractionalIndex";
 import { usePhaseStore } from "@/features/codex/phaseStore";
 import { useCodexStore } from "@/features/codex/codexStore";
 import { useTimelineStore } from "./timelineStore";
+import { useTabStore } from "@/features/editor/tabStore";
 import { computeFitZoom, ZOOM_STEP, STEP_BASE } from "./timelineZoom";
 import { TimelineHeader } from "./TimelineHeader";
 import { TimelineViewport, PAD_LEFT, PAD_RIGHT } from "./TimelineViewport";
@@ -200,7 +201,16 @@ export function TimelinePanel() {
           const { selectedNodeIds: ids } = useTimelineStore.getState();
           if (ids.length > 0) {
             e.preventDefault();
-            void deleteNode(ids[0]);
+            for (const id of [...ids]) void deleteNode(id);
+          }
+          break;
+        }
+        case "Enter": {
+          const { selectedNodeIds: ids } = useTimelineStore.getState();
+          if (ids.length > 0) {
+            e.preventDefault();
+            useTabStore.getState().openPinned(ids[0]);
+            setActiveScene(ids[0]);
           }
           break;
         }
@@ -271,6 +281,7 @@ export function TimelinePanel() {
     setAxisMode,
     deleteNode,
     selectNode,
+    setActiveScene,
     setPendingEditNodeId,
     rangeSelectTo,
     toggleInspector,
@@ -289,6 +300,16 @@ export function TimelinePanel() {
       )
         return;
       switch (e.key) {
+        case "Enter": {
+          if (!containerRef.current?.contains(document.activeElement)) break;
+          const { selectedNodeIds: ids } = useTimelineStore.getState();
+          if (ids.length > 0) {
+            e.preventDefault();
+            useTabStore.getState().openInSecondaryGroup(ids[0]);
+            setActiveScene(ids[0]);
+          }
+          break;
+        }
         case "0":
           e.preventDefault();
           if (viewportRef.current) {
@@ -323,7 +344,7 @@ export function TimelinePanel() {
     }
     document.addEventListener("keydown", handleKeyDown);
     return () => document.removeEventListener("keydown", handleKeyDown);
-  }, [zoom, setZoom, scenes.length, weights, scheduledCount]);
+  }, [zoom, setZoom, scenes.length, weights, scheduledCount, setActiveScene]);
 
   return (
     <div
