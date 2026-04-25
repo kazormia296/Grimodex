@@ -72,6 +72,7 @@ export function TabBar({ groupIndex = 0 }: TabBarProps) {
   const secondaryTabs = useTabStore((s) => s.secondaryTabs);
   const secondaryActiveTabId = useTabStore((s) => s.secondaryActiveTabId);
   const isSyncedScene = useTabStore((s) => s.isSyncedScene);
+  const dirtyTabIds = useTabStore((s) => s.dirtyTabIds);
 
   const nodes = useTreeStore((s) => s.nodes);
   const activeSceneId = useTreeStore((s) => s.activeSceneId);
@@ -314,6 +315,7 @@ export function TabBar({ groupIndex = 0 }: TabBarProps) {
               activeSceneId,
             );
             const synced = isSyncedScene(tab.nodeId);
+            const isDirty = dirtyTabIds.has(tab.nodeId);
             const isDropLeft =
               dropTarget?.nodeId === tab.nodeId && dropTarget.side === "left";
             const isDropRight =
@@ -420,10 +422,22 @@ export function TabBar({ groupIndex = 0 }: TabBarProps) {
                   <button
                     type="button"
                     title={t("common.close")}
-                    className="ml-1 rounded p-0.5 opacity-0 hover:bg-accent group-hover:opacity-100 active:scale-[0.97] transition-transform duration-75"
+                    className={cn(
+                      "ml-1 rounded p-0.5 hover:bg-accent active:scale-[0.97] transition-transform duration-75",
+                      isDirty
+                        ? "opacity-100"
+                        : "opacity-0 group-hover:opacity-100",
+                    )}
                     onClick={(e) => handleTabClose(e, tab.nodeId)}
                   >
-                    <X className="h-3 w-3" />
+                    {isDirty ? (
+                      <>
+                        <span className="block h-2 w-2 rounded-full bg-current group-hover:hidden" />
+                        <X className="hidden h-3 w-3 group-hover:block" />
+                      </>
+                    ) : (
+                      <X className="h-3 w-3" />
+                    )}
                   </button>
                 </div>
               </motion.div>
