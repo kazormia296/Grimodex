@@ -20,38 +20,6 @@ interface Props {
   containerRef: React.RefObject<HTMLElement | null>;
 }
 
-function findMarkRange(
-  editor: Editor,
-  kind: MarkKind,
-  foreshadowId: string,
-  setupId?: string,
-): { from: number; to: number } | null {
-  let from = -1;
-  let to = -1;
-
-  editor.state.doc.descendants((node, pos) => {
-    if (!node.isText) return;
-    const mark = node.marks.find((m) => {
-      if (kind === "setup") {
-        return (
-          m.type.name === "foreshadowSetup" &&
-          m.attrs.foreshadowId === foreshadowId &&
-          (!setupId || m.attrs.setupId === setupId)
-        );
-      }
-      return (
-        m.type.name === "foreshadowPayoff" &&
-        m.attrs.foreshadowId === foreshadowId
-      );
-    });
-    if (!mark) return;
-    if (from === -1) from = pos;
-    to = pos + node.nodeSize;
-  });
-
-  return from === -1 ? null : { from, to };
-}
-
 export function ForeshadowMarkHoverPopover({ editor, containerRef }: Props) {
   const { t } = useTranslation();
   const [target, setTarget] = useState<MarkTarget | null>(null);
@@ -114,21 +82,43 @@ export function ForeshadowMarkHoverPopover({ editor, containerRef }: Props) {
     }
 
     container.addEventListener("mouseover", onMouseOver);
-    return () => container.removeEventListener("mouseover", onMouseOver);
+    container.addEventListener("mouseleave", scheduleHide);
+    return () => {
+      container.removeEventListener("mouseover", onMouseOver);
+      container.removeEventListener("mouseleave", scheduleHide);
+      clearHideTimer();
+    };
   }, [containerRef, scheduleHide, clearHideTimer]);
 
   const handleRemove = useCallback(() => {
     if (!editor || !target) return;
-    const range = findMarkRange(
-      editor,
-      target.kind,
-      target.foreshadowId,
-      target.setupId,
-    );
-    if (!range) return;
     const markName =
       target.kind === "setup" ? "foreshadowSetup" : "foreshadowPayoff";
-    editor.chain().setTextSelection(range).unsetMark(markName).run();
+    const markType = editor.schema.marks[markName];
+    if (!markType) return;
+    const { tr } = editor.state;
+    let removed = false;
+    editor.state.doc.descendants((node, pos) => {
+      if (!node.isText) return;
+      const hasMark = node.marks.some((m) => {
+        if (target.kind === "setup") {
+          return (
+            m.type.name === "foreshadowSetup" &&
+            m.attrs.foreshadowId === target.foreshadowId &&
+            (!target.setupId || m.attrs.setupId === target.setupId)
+          );
+        }
+        return (
+          m.type.name === "foreshadowPayoff" &&
+          m.attrs.foreshadowId === target.foreshadowId
+        );
+      });
+      if (hasMark) {
+        tr.removeMark(pos, pos + node.nodeSize, markType);
+        removed = true;
+      }
+    });
+    if (removed) editor.view.dispatch(tr);
     setTarget(null);
   }, [editor, target]);
 

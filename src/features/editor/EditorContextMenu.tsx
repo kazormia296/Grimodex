@@ -57,6 +57,9 @@ export function EditorContextMenu({
   const snippetCreate = useSnippetStore((s) => s.create);
   const showAttribution = useAttributionStore((s) => s.showAttribution);
   const setPendingLookupText = useChatStore((s) => s.setPendingLookupText);
+  const openForeshadowPicker = useCursorSettingsStore(
+    (s) => s.openForeshadowPicker,
+  );
 
   const close = useCallback(() => {
     setPos(null);
@@ -172,6 +175,11 @@ export function EditorContextMenu({
   const handleAddComment = () => {
     close();
     useCursorSettingsStore.getState().setCommentPickerOpen(true);
+  };
+
+  const handleRequestForeshadow = () => {
+    close();
+    openForeshadowPicker("payoff");
   };
 
   const handleInsertSceneBreak = () => {
@@ -319,6 +327,13 @@ export function EditorContextMenu({
               onClick={handleAddComment}
             >
               {t("editor.contextMenu.addComment")}
+            </button>
+            <button
+              type="button"
+              className="px-3 py-1.5 text-sm text-left hover:bg-accent"
+              onClick={handleRequestForeshadow}
+            >
+              {t("editor.contextMenu.requestForeshadow")}
             </button>
           </>
         )}

@@ -56,6 +56,12 @@ export function ForeshadowMarkPopover({ editor }: Props) {
     const coords = editor.view.coordsAtPos(to);
     setPos({ x: coords.left, y: coords.bottom + 6 });
     setSavedRange({ from, to });
+
+    const initialMode =
+      useCursorSettingsStore.getState().foreshadowPickerInitialMode;
+    if (initialMode !== null) {
+      setMode(initialMode);
+    }
   }, [open, editor, setOpen]);
 
   useEffect(() => {

@@ -16,6 +16,10 @@ interface CursorSettingsState {
   /** Whether the foreshadow mark picker is open. */
   foreshadowPickerOpen: boolean;
   setForeshadowPickerOpen: (open: boolean) => void;
+  /** Mode to open the foreshadow picker in (null = show mode selector). */
+  foreshadowPickerInitialMode: "setup" | "payoff" | null;
+  /** Open the foreshadow picker directly in the specified mode. */
+  openForeshadowPicker: (mode: "setup" | "payoff" | null) => void;
   /** Sync runtime state from persisted settings (call after loadAll). */
   initFromSettings: () => void;
 }
@@ -52,7 +56,12 @@ export const useCursorSettingsStore = create<CursorSettingsState>()((set) => ({
   setCommentPickerOpen: (open) => set({ commentPickerOpen: open }),
 
   foreshadowPickerOpen: false,
-  setForeshadowPickerOpen: (open) => set({ foreshadowPickerOpen: open }),
+  setForeshadowPickerOpen: (open) =>
+    set({ foreshadowPickerOpen: open, foreshadowPickerInitialMode: null }),
+
+  foreshadowPickerInitialMode: null,
+  openForeshadowPicker: (mode) =>
+    set({ foreshadowPickerOpen: true, foreshadowPickerInitialMode: mode }),
 
   initFromSettings: () => {
     const s = useSettingsStore.getState();

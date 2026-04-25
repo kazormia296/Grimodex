@@ -820,6 +820,7 @@
       "saveAsSnippet": "スニペットとして保存",
       "lookUpInChat": "チャットで調べる",
       "addComment": "コメントを追加",
+      "requestForeshadow": "伏線を要請",
       "lintDisable": "選択範囲で Lint ルールを無効化",
       "lintUnsetSpan": "Lint 無効化を解除（Span）",
       "lintUnsetBlock": "Lint 無効化を解除（ブロック）",
