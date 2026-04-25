@@ -16,6 +16,8 @@ interface EdgeContextMenuProps extends EdgeContextMenuState {
 }
 
 const MENU_WIDTH = 200;
+// 3 line-style items + 2 section headers + color row + 2 dividers + delete
+const MENU_HEIGHT = 260;
 
 const COLOR_PRESETS = [
   { value: "#555555", label: "グレー" },
@@ -49,17 +51,21 @@ export function EdgeContextMenu({
       if (e.key === "Escape") close();
     }
     document.addEventListener("pointerdown", onPointerDown, true);
-    document.addEventListener("mousedown", onPointerDown, true);
     document.addEventListener("keydown", onKeyDown);
     return () => {
       document.removeEventListener("pointerdown", onPointerDown, true);
-      document.removeEventListener("mousedown", onPointerDown, true);
       document.removeEventListener("keydown", onKeyDown);
     };
   }, [close]);
 
-  const x = Math.min(screenPosition.x, window.innerWidth - MENU_WIDTH - 8);
-  const y = Math.min(screenPosition.y, window.innerHeight - 240);
+  const x = Math.max(
+    8,
+    Math.min(screenPosition.x, window.innerWidth - MENU_WIDTH - 8),
+  );
+  const y = Math.max(
+    8,
+    Math.min(screenPosition.y, window.innerHeight - MENU_HEIGHT - 8),
+  );
 
   return createPortal(
     <div

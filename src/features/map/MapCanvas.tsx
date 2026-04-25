@@ -60,6 +60,25 @@ import type { MapNodePositionRecord } from "./types";
 
 const PROJECT_ID = "default-project";
 
+/** Pure classification used by onDeleteSelected — exported for tests. */
+export function partitionDeletableNodes(nodes: Node[]) {
+  const frameNodes = nodes.filter(
+    (n) => n.type === "frame" || n.id.startsWith("frame:"),
+  );
+  const entityNodes = nodes.filter(
+    (n) =>
+      n.id.startsWith("scene:") ||
+      n.id.startsWith("note:") ||
+      n.id.startsWith("codex:"),
+  );
+  const aiNodes = nodes.filter((n) => n.id.startsWith("ai:"));
+  // AI nodes join the dialog only when entity nodes are also present so the
+  // user can cancel without partial data loss.
+  const showDialog = entityNodes.length > 0 ? [...entityNodes, ...aiNodes] : [];
+  const immediateAI = entityNodes.length === 0 ? aiNodes : [];
+  return { frameNodes, showDialog, immediateAI };
+}
+
 const NODE_TYPES = {
   scene: SceneNode,
   codex: CodexNode,
@@ -145,6 +164,10 @@ export function MapCanvas() {
   const [modeTransitionActive, setModeTransitionActive] = useState(false);
   const [forceLayoutRunning, setForceLayoutRunning] = useState(false);
   const [forceAlpha, setForceAlpha] = useState(1);
+
+  // Always-current positions ref so async callbacks never close over stale state.
+  const positionsRef = useRef(positions);
+  positionsRef.current = positions;
 
   // IDs of nodes currently being moved as part of a frame group drag.
   // Shared between useFrameGroupDrag (writer) and useMapNodes (reader) so
@@ -340,7 +363,7 @@ export function MapCanvas() {
     async (nodesToHide: Node[]) => {
       if (!boardId) return;
       for (const node of nodesToHide) {
-        const existing = findPosByNodeId(positions, node.id);
+        const existing = findPosByNodeId(positionsRef.current, node.id);
         if (existing) {
           await updateNodePosition(existing.id, { hidden: 1 });
           setPositions((prev) =>
@@ -358,7 +381,7 @@ export function MapCanvas() {
         }
       }
     },
-    [boardId, positions, setPositions],
+    [boardId, setPositions],
   );
 
   const deleteEntityNodes = useCallback(
@@ -375,13 +398,13 @@ export function MapCanvas() {
           await deleteAINode(aiId);
           setAiNodes((prev) => prev.filter((a) => a.id !== aiId));
         }
-        const pos = findPosByNodeId(positions, node.id);
+        const pos = findPosByNodeId(positionsRef.current, node.id);
         if (pos) {
           setPositions((prev) => prev.filter((p) => p.id !== pos.id));
         }
       }
     },
-    [positions, setPositions, setAiNodes],
+    [setPositions, setAiNodes],
   );
 
   const onDeleteSelected = useCallback(async () => {
@@ -396,34 +419,23 @@ export function MapCanvas() {
       setUserEdges((prev) => prev.filter((u) => u.id !== userEdgeId));
     }
 
-    // Frames and AI nodes: immediate delete (no dialog)
-    const immediateNodes = selectedNodes.filter(
-      (n) =>
-        n.type === "frame" ||
-        n.id.startsWith("frame:") ||
-        n.id.startsWith("ai:"),
-    );
-    for (const node of immediateNodes) {
-      if (node.id.startsWith("frame:") || node.type === "frame") {
-        const frameId = node.id.startsWith("frame:")
-          ? node.id.slice("frame:".length)
-          : node.id;
-        await deleteFrame(frameId);
-        setFrames((prev) => prev.filter((f) => f.id !== frameId));
-      } else if (node.id.startsWith("ai:")) {
-        await deleteEntityNodes([node]);
-      }
+    const { frameNodes, showDialog, immediateAI } =
+      partitionDeletableNodes(selectedNodes);
+
+    for (const node of frameNodes) {
+      const frameId = node.id.startsWith("frame:")
+        ? node.id.slice("frame:".length)
+        : node.id;
+      await deleteFrame(frameId);
+      setFrames((prev) => prev.filter((f) => f.id !== frameId));
     }
 
-    // Scene/Note/Codex: show dialog
-    const dialogNodes = selectedNodes.filter(
-      (n) =>
-        n.id.startsWith("scene:") ||
-        n.id.startsWith("note:") ||
-        n.id.startsWith("codex:"),
-    );
-    if (dialogNodes.length > 0) {
-      setDeleteDialogNodes(dialogNodes);
+    if (showDialog.length > 0) {
+      setDeleteDialogNodes(showDialog);
+    } else {
+      for (const node of immediateAI) {
+        await deleteEntityNodes([node]);
+      }
     }
   }, [boardId, getNodes, getEdges, setUserEdges, setFrames, deleteEntityNodes]);
 
@@ -438,7 +450,7 @@ export function MapCanvas() {
     const selected = getNodes().filter((n) => n.selected && n.type !== "frame");
     await Promise.all(
       selected.map(async (n) => {
-        const pos = findPosByNodeId(positions, n.id);
+        const pos = findPosByNodeId(positionsRef.current, n.id);
         if (!pos) return;
         const isPinned = pos.pinned === 1;
         const updated = await setNodePinned(pos.id, !isPinned);
@@ -451,7 +463,7 @@ export function MapCanvas() {
         }
       }),
     );
-  }, [boardId, getNodes, positions, setPositions]);
+  }, [boardId, getNodes, setPositions]);
 
   const onEdgeContextMenu = useCallback(
     (e: React.MouseEvent, edge: { id: string; data?: unknown }) => {

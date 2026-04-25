@@ -132,6 +132,24 @@ describe("useMapKeyboard — 新規ショートカット", () => {
     expect(mocks.onPinToggle).toHaveBeenCalledOnce();
   });
 
+  it("Ctrl+E は connect モードに入らない", () => {
+    const { onKeyDown, mocks } = renderKeyboard();
+    act(() => onKeyDown(makeKeyEvent("e", { ctrlKey: true })));
+    expect(mocks.setPaletteMode).not.toHaveBeenCalledWith("connect");
+  });
+
+  it("Meta+E は connect モードに入らない", () => {
+    const { onKeyDown, mocks } = renderKeyboard();
+    act(() => onKeyDown(makeKeyEvent("e", { metaKey: true })));
+    expect(mocks.setPaletteMode).not.toHaveBeenCalledWith("connect");
+  });
+
+  it("Alt+E は connect モードに入らない (Alt 単体のみ有効)", () => {
+    const { onKeyDown, mocks } = renderKeyboard();
+    act(() => onKeyDown(makeKeyEvent("e", { altKey: true })));
+    expect(mocks.setPaletteMode).not.toHaveBeenCalledWith("connect");
+  });
+
   it("既存: 1キーで Free モード切替", () => {
     const { onKeyDown, mocks } = renderKeyboard();
     act(() => onKeyDown(makeKeyEvent("1")));

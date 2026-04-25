@@ -26,12 +26,13 @@ export function NodeDeleteDialog({
         alignItems: "center",
         justifyContent: "center",
       }}
-      onClick={onCancel}
+      onMouseDown={(e) => {
+        if (e.target === e.currentTarget) onCancel();
+      }}
     >
       <div
         className="bg-popover border border-border rounded-lg shadow-xl p-6"
         style={{ minWidth: 360, maxWidth: 440 }}
-        onClick={(e) => e.stopPropagation()}
       >
         <h3
           style={{ fontSize: 15, fontWeight: 600, marginBottom: 8 }}

@@ -34,6 +34,8 @@ export const UserEdge = memo(function UserEdge({
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState("");
   const inputRef = useRef<HTMLInputElement>(null);
+  const onLabelSaveRef = useRef(d.onLabelSave);
+  onLabelSaveRef.current = d.onLabelSave;
 
   const startEdit = useCallback(() => {
     setDraft(d.label ?? "");
@@ -43,8 +45,8 @@ export const UserEdge = memo(function UserEdge({
   const commitEdit = useCallback(() => {
     setEditing(false);
     const trimmed = draft.trim();
-    d.onLabelSave?.(trimmed === "" ? null : trimmed);
-  }, [draft, d]);
+    onLabelSaveRef.current?.(trimmed === "" ? null : trimmed);
+  }, [draft]);
 
   useEffect(() => {
     if (editing) {
@@ -135,7 +137,8 @@ export const UserEdge = memo(function UserEdge({
               onKeyDown={(e) => {
                 if (e.key === "Enter") commitEdit();
                 if (e.key === "Escape") setEditing(false);
-                e.stopPropagation();
+                // Stop all keys except Tab to prevent canvas shortcuts (e.g. 'e' for connect mode)
+                if (e.key !== "Tab") e.stopPropagation();
               }}
               style={{
                 fontSize: 11,

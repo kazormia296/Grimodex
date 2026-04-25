@@ -1,0 +1,95 @@
+// @vitest-environment happy-dom
+import { describe, it, expect, vi, beforeEach } from "vitest";
+import { render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { UserEdge } from "./UserEdge";
+import type { EdgeProps } from "@xyflow/react";
+
+vi.mock("@xyflow/react", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@xyflow/react")>();
+  return {
+    ...actual,
+    BaseEdge: () => null,
+    EdgeLabelRenderer: ({ children }: { children: React.ReactNode }) => (
+      <>{children}</>
+    ),
+    getBezierPath: () => ["M0,0", 50, 50],
+  };
+});
+
+function makeProps(
+  overrides: Partial<EdgeProps> & { data?: Record<string, unknown> } = {},
+): EdgeProps {
+  return {
+    id: "user:e1",
+    sourceX: 0,
+    sourceY: 0,
+    targetX: 100,
+    targetY: 100,
+    sourcePosition: "right" as import("@xyflow/react").Position,
+    targetPosition: "left" as import("@xyflow/react").Position,
+    selected: false,
+    source: "a",
+    target: "b",
+    data: {},
+    ...overrides,
+  } as EdgeProps;
+}
+
+describe("UserEdge — ラベル編集", () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it("ラベルなしのとき hit-area div が表示される", () => {
+    const { container } = render(<UserEdge {...makeProps()} />);
+    const hitArea = container.querySelector('[style*="cursor: text"]');
+    expect(hitArea).toBeTruthy();
+  });
+
+  it("ラベルありのとき label テキストが表示される", () => {
+    render(<UserEdge {...makeProps({ data: { label: "テスト" } })} />);
+    expect(screen.getByText("テスト")).toBeTruthy();
+  });
+
+  it("ダブルクリックで入力欄が表示される", async () => {
+    render(<UserEdge {...makeProps({ data: { label: "既存" } })} />);
+    await userEvent.dblClick(screen.getByText("既存"));
+    expect(screen.getByRole("textbox")).toBeTruthy();
+  });
+
+  it("Enter で onLabelSave が呼ばれ編集終了", async () => {
+    const onLabelSave = vi.fn();
+    render(
+      <UserEdge {...makeProps({ data: { label: "既存", onLabelSave } })} />,
+    );
+    await userEvent.dblClick(screen.getByText("既存"));
+    const input = screen.getByRole("textbox");
+    await userEvent.clear(input);
+    await userEvent.type(input, "新しい");
+    await userEvent.keyboard("{Enter}");
+    expect(onLabelSave).toHaveBeenCalledWith("新しい");
+    expect(screen.queryByRole("textbox")).toBeNull();
+  });
+
+  it("空文字で確定すると null が渡される", async () => {
+    const onLabelSave = vi.fn();
+    render(
+      <UserEdge {...makeProps({ data: { label: "既存", onLabelSave } })} />,
+    );
+    await userEvent.dblClick(screen.getByText("既存"));
+    const input = screen.getByRole("textbox");
+    await userEvent.clear(input);
+    await userEvent.keyboard("{Enter}");
+    expect(onLabelSave).toHaveBeenCalledWith(null);
+  });
+
+  it("Escape で onLabelSave を呼ばずに編集キャンセル", async () => {
+    const onLabelSave = vi.fn();
+    render(
+      <UserEdge {...makeProps({ data: { label: "既存", onLabelSave } })} />,
+    );
+    await userEvent.dblClick(screen.getByText("既存"));
+    await userEvent.keyboard("{Escape}");
+    expect(onLabelSave).not.toHaveBeenCalled();
+    expect(screen.queryByRole("textbox")).toBeNull();
+  });
+});
