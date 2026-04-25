@@ -319,7 +319,8 @@
       "stats": "統計",
       "timeline": "タイムライン",
       "map": "マップ",
-      "linter": "Linter"
+      "linter": "Linter",
+      "foreshadow": "伏線"
     },
     "preset": {
       "title": "レイアウトプリセット",
@@ -609,6 +610,28 @@
       "summary": "概要",
       "tags": "タグ",
       "tagsPlaceholder": "タグをカンマ区切りで入力"
+    }
+  },
+  "foreshadow": {
+    "panel": {
+      "title": "伏線",
+      "empty": "伏線はありません",
+      "newButton": "新規作成"
+    },
+    "create": {
+      "heading": "伏線を新規作成",
+      "titleLabel": "タイトル",
+      "titlePlaceholder": "例: ○○の正体",
+      "intentLabel": "意図（任意）",
+      "intentPlaceholder": "回収シーンのイメージなど"
+    },
+    "label": {
+      "planned": "計画中",
+      "seeded": "設置済",
+      "paid": "回収済",
+      "needs_strengthening": "強化推奨",
+      "orphan_payoff": "孤立",
+      "abandoned": "放棄"
     }
   },
   "snippets": {

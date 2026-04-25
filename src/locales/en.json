@@ -319,7 +319,8 @@
       "stats": "Stats",
       "timeline": "Timeline",
       "map": "Map",
-      "linter": "Linter"
+      "linter": "Linter",
+      "foreshadow": "Foreshadow"
     },
     "preset": {
       "title": "Layout presets",
@@ -609,6 +610,28 @@
       "summary": "Summary",
       "tags": "Tags",
       "tagsPlaceholder": "Enter tags separated by commas"
+    }
+  },
+  "foreshadow": {
+    "panel": {
+      "title": "Foreshadow",
+      "empty": "No foreshadows yet",
+      "newButton": "New"
+    },
+    "create": {
+      "heading": "Create Foreshadow",
+      "titleLabel": "Title",
+      "titlePlaceholder": "e.g. The truth about X",
+      "intentLabel": "Intent (optional)",
+      "intentPlaceholder": "Planned payoff scene, notes, etc."
+    },
+    "label": {
+      "planned": "Planned",
+      "seeded": "Seeded",
+      "paid": "Paid",
+      "needs_strengthening": "Needs Strengthening",
+      "orphan_payoff": "Orphan",
+      "abandoned": "Abandoned"
     }
   },
   "snippets": {

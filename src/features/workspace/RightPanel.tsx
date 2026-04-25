@@ -1,12 +1,19 @@
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
-import { MessageSquare, BookOpen, Bookmark, BarChart3 } from "lucide-react";
+import {
+  MessageSquare,
+  BookOpen,
+  Bookmark,
+  BarChart3,
+  Layers,
+} from "lucide-react";
 import { ChatPanel } from "@/features/chat/ChatPanel";
 import { CodexManagementPanel } from "@/features/codex/CodexManagementPanel";
 import { SnippetPanel } from "@/features/snippets/SnippetPanel";
 import { AttributionReport } from "@/features/attribution/AttributionReport";
+import { ForeshadowPanel } from "@/features/foreshadow/ForeshadowPanel";
 
-type TabId = "chat" | "codex" | "snippets" | "stats";
+type TabId = "chat" | "codex" | "snippets" | "stats" | "foreshadow";
 
 interface Tab {
   id: TabId;
@@ -35,6 +42,11 @@ export function RightPanel() {
       label: t("layout.panel.stats"),
       icon: <BarChart3 className="h-3.5 w-3.5" />,
     },
+    {
+      id: "foreshadow",
+      label: t("layout.panel.foreshadow"),
+      icon: <Layers className="h-3.5 w-3.5" />,
+    },
   ];
 
   return (
@@ -62,6 +74,7 @@ export function RightPanel() {
         {activeTab === "codex" && <CodexManagementPanel />}
         {activeTab === "snippets" && <SnippetPanel />}
         {activeTab === "stats" && <AttributionReport />}
+        {activeTab === "foreshadow" && <ForeshadowPanel />}
       </div>
     </div>
   );
