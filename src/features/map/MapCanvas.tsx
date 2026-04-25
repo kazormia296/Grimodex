@@ -27,6 +27,7 @@ import { MapSearch } from "./MapSearch";
 import { AINodeDialog } from "./AINodeDialog";
 import { DURATIONS, useReducedMotion } from "@/lib/animation";
 import { AutoArrangeDialog } from "./AutoArrangeDialog";
+import { NodeDeleteDialog } from "./NodeDeleteDialog";
 import { ForceLayoutProgress } from "./ForceLayoutProgress";
 import { useMapExport } from "./hooks/useMapExport";
 import { useFrameDrawing } from "./hooks/useFrameDrawing";
@@ -44,8 +45,11 @@ import {
   updateNodePosition,
   deleteUserEdge,
   deleteFrame,
+  deleteAINode,
   setNodePinned,
 } from "./mapApi";
+import { deleteNode as deleteTreeNode } from "@/features/tree/api";
+import { deleteCodexEntry } from "@/features/codex/api";
 import { findPosByNodeId, buildUpsertArgs } from "./utils/nodeIdCodec";
 import type { MapNodePositionRecord } from "./types";
 
@@ -128,6 +132,9 @@ export function MapCanvas() {
   const [nodes, setNodes] = useState<Node[]>([]);
   const [paletteMode, setPaletteMode] = useState<PaletteMode>("default");
   const [showAINodeDialog, setShowAINodeDialog] = useState(false);
+  const [deleteDialogNodes, setDeleteDialogNodes] = useState<Node[] | null>(
+    null,
+  );
   const [modeTransitionActive, setModeTransitionActive] = useState(false);
   const [forceLayoutRunning, setForceLayoutRunning] = useState(false);
   const [forceAlpha, setForceAlpha] = useState(1);
@@ -291,9 +298,54 @@ export function MapCanvas() {
     fitView,
   });
 
-  // Hide selected nodes (from this board) and delete selected user edges.
-  // Hiding is preferred over deleting the underlying entity so the scene/codex
-  // remains accessible via other panels — aligns with map design doc (1032).
+  const hideNodes = useCallback(
+    async (nodesToHide: Node[]) => {
+      if (!boardId) return;
+      for (const node of nodesToHide) {
+        const existing = findPosByNodeId(positions, node.id);
+        if (existing) {
+          await updateNodePosition(existing.id, { hidden: 1 });
+          setPositions((prev) =>
+            prev.map((p) => (p.id === existing.id ? { ...p, hidden: 1 } : p)),
+          );
+        } else {
+          const args = buildUpsertArgs(boardId, node.id);
+          if (!args) continue;
+          const newPos = await upsertNodePosition(args);
+          await updateNodePosition(newPos.id, { hidden: 1 });
+          setPositions((prev) => [
+            ...prev,
+            { ...newPos, hidden: 1 } as MapNodePositionRecord,
+          ]);
+        }
+      }
+    },
+    [boardId, positions, setPositions],
+  );
+
+  const deleteEntityNodes = useCallback(
+    async (nodesToDelete: Node[]) => {
+      for (const node of nodesToDelete) {
+        if (node.id.startsWith("scene:")) {
+          await deleteTreeNode(node.id.slice("scene:".length));
+        } else if (node.id.startsWith("note:")) {
+          await deleteTreeNode(node.id.slice("note:".length));
+        } else if (node.id.startsWith("codex:")) {
+          await deleteCodexEntry(node.id.slice("codex:".length));
+        } else if (node.id.startsWith("ai:")) {
+          const aiId = node.id.slice("ai:".length);
+          await deleteAINode(aiId);
+          setAiNodes((prev) => prev.filter((a) => a.id !== aiId));
+        }
+        const pos = findPosByNodeId(positions, node.id);
+        if (pos) {
+          setPositions((prev) => prev.filter((p) => p.id !== pos.id));
+        }
+      }
+    },
+    [positions, setPositions, setAiNodes],
+  );
+
   const onDeleteSelected = useCallback(async () => {
     if (!boardId) return;
     const selectedNodes = getNodes().filter((n) => n.selected);
@@ -306,43 +358,36 @@ export function MapCanvas() {
       setUserEdges((prev) => prev.filter((u) => u.id !== userEdgeId));
     }
 
-    for (const node of selectedNodes) {
-      // Frames live in their own table — delete outright rather than hiding
-      // (frames have no "hidden" semantic; they're cheap decorations).
+    // Frames and AI nodes: immediate delete (no dialog)
+    const immediateNodes = selectedNodes.filter(
+      (n) =>
+        n.type === "frame" ||
+        n.id.startsWith("frame:") ||
+        n.id.startsWith("ai:"),
+    );
+    for (const node of immediateNodes) {
       if (node.id.startsWith("frame:") || node.type === "frame") {
         const frameId = node.id.startsWith("frame:")
           ? node.id.slice("frame:".length)
           : node.id;
         await deleteFrame(frameId);
         setFrames((prev) => prev.filter((f) => f.id !== frameId));
-        continue;
-      }
-      const existing = findPosByNodeId(positions, node.id);
-      if (existing) {
-        await updateNodePosition(existing.id, { hidden: 1 });
-        setPositions((prev) =>
-          prev.map((p) => (p.id === existing.id ? { ...p, hidden: 1 } : p)),
-        );
-      } else {
-        const args = buildUpsertArgs(boardId, node.id);
-        if (!args) continue;
-        const newPos = await upsertNodePosition(args);
-        await updateNodePosition(newPos.id, { hidden: 1 });
-        setPositions((prev) => [
-          ...prev,
-          { ...newPos, hidden: 1 } as MapNodePositionRecord,
-        ]);
+      } else if (node.id.startsWith("ai:")) {
+        await deleteEntityNodes([node]);
       }
     }
-  }, [
-    boardId,
-    getNodes,
-    getEdges,
-    positions,
-    setPositions,
-    setUserEdges,
-    setFrames,
-  ]);
+
+    // Scene/Note/Codex: show dialog
+    const dialogNodes = selectedNodes.filter(
+      (n) =>
+        n.id.startsWith("scene:") ||
+        n.id.startsWith("note:") ||
+        n.id.startsWith("codex:"),
+    );
+    if (dialogNodes.length > 0) {
+      setDeleteDialogNodes(dialogNodes);
+    }
+  }, [boardId, getNodes, getEdges, setUserEdges, setFrames, deleteEntityNodes]);
 
   const selectAll = useCallback(() => {
     setNodes((prev) =>
@@ -606,6 +651,21 @@ export function MapCanvas() {
         onAddCodex={handleAddCodex}
         onAddNote={handleAddNote}
       />
+
+      {deleteDialogNodes && deleteDialogNodes.length > 0 && (
+        <NodeDeleteDialog
+          count={deleteDialogNodes.length}
+          onHide={async () => {
+            await hideNodes(deleteDialogNodes);
+            setDeleteDialogNodes(null);
+          }}
+          onDelete={async () => {
+            await deleteEntityNodes(deleteDialogNodes);
+            setDeleteDialogNodes(null);
+          }}
+          onCancel={() => setDeleteDialogNodes(null)}
+        />
+      )}
 
       {showAINodeDialog && boardId && (
         <AINodeDialog

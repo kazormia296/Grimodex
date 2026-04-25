@@ -95,12 +95,13 @@ export function useMapKeyboard(opts: {
         return;
       }
 
-      // E / Alt: connect mode
-      if (e.key === "e") {
+      // E: connect mode (standalone key only)
+      if (e.key === "e" && !e.ctrlKey && !e.metaKey && !e.altKey) {
         setPaletteMode("connect");
         return;
       }
-      if (e.key === "Alt") {
+      // Alt alone: connect mode; keyup to exit is handled in MapCanvas via onKeyUp
+      if (e.key === "Alt" && !e.ctrlKey && !e.metaKey) {
         setPaletteMode("connect");
         return;
       }
