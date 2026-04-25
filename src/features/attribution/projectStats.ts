@@ -46,9 +46,10 @@ export async function loadProjectAttributionStats(
         break;
       case "ai":
         result[id].ai += len;
-        if (span.model) {
-          result[id].modelBreakdown[span.model] =
-            (result[id].modelBreakdown[span.model] ?? 0) + len;
+        {
+          const model = span.model || "__unknown_model__";
+          result[id].modelBreakdown[model] =
+            (result[id].modelBreakdown[model] ?? 0) + len;
         }
         break;
       case "unknown":

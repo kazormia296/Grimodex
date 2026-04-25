@@ -922,7 +922,17 @@
     "exportTrace": "帰属エクスポート",
     "aiPctChars": "AI: {{pct}}% ({{count}}字)",
     "humanPct": "{{pct}}%人",
-    "charSuffix": "{{count}}字"
+    "charSuffix": "{{count}}字",
+    "unknownModel": "不明モデル",
+    "refresh": "更新",
+    "sortAsc": "昇順",
+    "sortDesc": "降順",
+    "columnScene": "シーン",
+    "columnTotal": "合計",
+    "columnHuman": "人間",
+    "columnAi": "AI",
+    "columnUnknown": "不明",
+    "columnAiPct": "AI%"
   },
   "phase": {
     "editTitle": "フェーズを編集",

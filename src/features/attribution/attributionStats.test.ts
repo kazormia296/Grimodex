@@ -125,4 +125,63 @@ describe("computeAttributionStats", () => {
     expect(stats.unknown).toBe(6);
     editor.destroy();
   });
+
+  it("groups AI text with null model under '__unknown_model__' key", () => {
+    const editor = createTestEditor();
+    editor
+      .chain()
+      .focus()
+      .insertContent([
+        {
+          type: "text",
+          text: "AI無モデル",
+          marks: [
+            {
+              type: "authorship",
+              attrs: { source: "ai", model: null, timestamp: "t" },
+            },
+          ],
+        },
+        {
+          type: "text",
+          text: "AI有モデル",
+          marks: [
+            {
+              type: "authorship",
+              attrs: { source: "ai", model: "gpt-4o", timestamp: "t" },
+            },
+          ],
+        },
+      ])
+      .run();
+
+    const stats = computeAttributionStats(editor.state.doc);
+    expect(stats.modelBreakdown["__unknown_model__"]).toBe(6); // "AI無モデル" = 6 chars
+    expect(stats.modelBreakdown["gpt-4o"]).toBe(6); // "AI有モデル" = 6 chars
+    editor.destroy();
+  });
+
+  it("groups AI text with empty-string model under '__unknown_model__'", () => {
+    const editor = createTestEditor();
+    editor
+      .chain()
+      .focus()
+      .insertContent([
+        {
+          type: "text",
+          text: "空モデル",
+          marks: [
+            {
+              type: "authorship",
+              attrs: { source: "ai", model: "", timestamp: "t" },
+            },
+          ],
+        },
+      ])
+      .run();
+
+    const stats = computeAttributionStats(editor.state.doc);
+    expect(stats.modelBreakdown["__unknown_model__"]).toBe(4);
+    editor.destroy();
+  });
 });

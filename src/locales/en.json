@@ -922,7 +922,17 @@
     "exportTrace": "Export attribution",
     "aiPctChars": "AI: {{pct}}% ({{count}} chars)",
     "humanPct": "{{pct}}% human",
-    "charSuffix": "{{count}} chars"
+    "charSuffix": "{{count}} chars",
+    "unknownModel": "Unknown model",
+    "refresh": "Refresh",
+    "sortAsc": "Ascending",
+    "sortDesc": "Descending",
+    "columnScene": "Scene",
+    "columnTotal": "Total",
+    "columnHuman": "Human",
+    "columnAi": "AI",
+    "columnUnknown": "Unknown",
+    "columnAiPct": "AI%"
   },
   "phase": {
     "editTitle": "Edit Phase",
