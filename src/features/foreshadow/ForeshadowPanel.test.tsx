@@ -198,18 +198,18 @@ describe("ForeshadowPanel - オーファン Setup UI", () => {
     expect(mockLoadSetups).toHaveBeenCalledWith("2");
   });
 
-  it("展開時にキャッシュ済みの Setup 一覧が表示される", async () => {
+  it("展開時に孤立 Setup のみ表示され、アクティブ Setup は表示されない", async () => {
     render(<ForeshadowPanel />);
 
     fireEvent.click(screen.getByTestId("foreshadow-expand-2"));
 
     await waitFor(() => {
       expect(
-        screen.getByTestId("foreshadow-setup-s-active"),
-      ).toBeInTheDocument();
-      expect(
         screen.getByTestId("foreshadow-setup-s-orphan"),
       ).toBeInTheDocument();
+      expect(
+        screen.queryByTestId("foreshadow-setup-s-active"),
+      ).not.toBeInTheDocument();
     });
   });
 
@@ -225,7 +225,7 @@ describe("ForeshadowPanel - オーファン Setup UI", () => {
     });
   });
 
-  it("孤立 Setup には破棄ボタンがあり、アクティブ Setup にはない", async () => {
+  it("孤立 Setup には破棄ボタンがある", async () => {
     render(<ForeshadowPanel />);
 
     fireEvent.click(screen.getByTestId("foreshadow-expand-2"));
@@ -234,9 +234,6 @@ describe("ForeshadowPanel - オーファン Setup UI", () => {
       expect(
         screen.getByTestId("foreshadow-setup-discard-s-orphan"),
       ).toBeInTheDocument();
-      expect(
-        screen.queryByTestId("foreshadow-setup-discard-s-active"),
-      ).not.toBeInTheDocument();
     });
   });
 
@@ -261,13 +258,13 @@ describe("ForeshadowPanel - オーファン Setup UI", () => {
     fireEvent.click(screen.getByTestId("foreshadow-expand-2"));
     await waitFor(() => {
       expect(
-        screen.getByTestId("foreshadow-setup-s-active"),
+        screen.getByTestId("foreshadow-setup-s-orphan"),
       ).toBeInTheDocument();
     });
 
     fireEvent.click(screen.getByTestId("foreshadow-expand-2"));
     expect(
-      screen.queryByTestId("foreshadow-setup-s-active"),
+      screen.queryByTestId("foreshadow-setup-s-orphan"),
     ).not.toBeInTheDocument();
   });
 });

@@ -100,7 +100,7 @@ export function ForeshadowMarkHoverPopover({ editor, containerRef }: Props) {
       container.removeEventListener("mouseleave", scheduleHide);
       clearHideTimer();
     };
-  }, [containerRef, scheduleHide, clearHideTimer]);
+  }, [containerRef, scheduleHide, clearHideTimer, showForeshadowMarks]);
 
   const handleRemove = useCallback(() => {
     if (!editor || !target) return;

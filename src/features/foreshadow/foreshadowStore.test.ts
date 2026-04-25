@@ -51,6 +51,8 @@ vi.mock("./api", () => ({
   listForeshadows: vi.fn(),
   createForeshadow: vi.fn(),
   deleteForeshadow: vi.fn(),
+  listSetups: vi.fn(),
+  deleteSetup: vi.fn(),
 }));
 
 vi.mock("@/db/client", () => ({
@@ -76,12 +78,20 @@ vi.mock("@/lib/debugLog", () => ({
   rootCause: vi.fn((e: unknown) => String(e)),
 }));
 
-import { listForeshadows, createForeshadow, deleteForeshadow } from "./api";
+import {
+  listForeshadows,
+  createForeshadow,
+  deleteForeshadow,
+  listSetups,
+  deleteSetup,
+} from "./api";
 import { db } from "@/db/client";
 
 const mockListForeshadows = vi.mocked(listForeshadows);
 const mockCreateForeshadow = vi.mocked(createForeshadow);
 const mockDeleteForeshadow = vi.mocked(deleteForeshadow);
+const mockListSetups = vi.mocked(listSetups);
+const mockDeleteSetup = vi.mocked(deleteSetup);
 const mockDb = db as unknown as {
   select: ReturnType<typeof vi.fn>;
   from: ReturnType<typeof vi.fn>;
@@ -301,6 +311,104 @@ describe("foreshadowStore", () => {
       await useForeshadowStore.getState().remove("f-1");
 
       expect(useForeshadowStore.getState().items).toHaveLength(1);
+    });
+  });
+
+  // ── loadSetups ────────────────────────────────────────────────────
+
+  describe("loadSetups", () => {
+    it("populates setupsByForeshadowId for the given id", async () => {
+      const setup = makeSetup({ id: "s-1", foreshadowId: "f-1" });
+      mockListSetups.mockResolvedValue([setup]);
+
+      await useForeshadowStore.getState().loadSetups("f-1");
+
+      expect(useForeshadowStore.getState().setupsByForeshadowId["f-1"]).toEqual(
+        [setup],
+      );
+    });
+
+    it("stores empty array when no setups exist", async () => {
+      mockListSetups.mockResolvedValue([]);
+
+      await useForeshadowStore.getState().loadSetups("f-1");
+
+      expect(useForeshadowStore.getState().setupsByForeshadowId["f-1"]).toEqual(
+        [],
+      );
+    });
+
+    it("does not affect other foreshadow entries", async () => {
+      const setupA = makeSetup({ id: "s-a", foreshadowId: "f-a" });
+      useForeshadowStore.setState({
+        setupsByForeshadowId: { "f-a": [setupA] },
+      });
+      mockListSetups.mockResolvedValue([]);
+
+      await useForeshadowStore.getState().loadSetups("f-b");
+
+      expect(useForeshadowStore.getState().setupsByForeshadowId["f-a"]).toEqual(
+        [setupA],
+      );
+    });
+
+    it("silently swallows API errors without modifying state", async () => {
+      mockListSetups.mockRejectedValue(new Error("DB error"));
+      useForeshadowStore.setState({ setupsByForeshadowId: {} });
+
+      await useForeshadowStore.getState().loadSetups("f-1");
+
+      expect(
+        useForeshadowStore.getState().setupsByForeshadowId["f-1"],
+      ).toBeUndefined();
+    });
+  });
+
+  // ── removeSetup ───────────────────────────────────────────────────
+
+  describe("removeSetup", () => {
+    it("removes the setup row from setupsByForeshadowId", async () => {
+      const s1 = makeSetup({ id: "s-1", foreshadowId: "f-1" });
+      const s2 = makeSetup({ id: "s-2", foreshadowId: "f-1" });
+      mockDeleteSetup.mockResolvedValue(undefined);
+      useForeshadowStore.setState({
+        setupsByForeshadowId: { "f-1": [s1, s2] },
+      });
+
+      await useForeshadowStore.getState().removeSetup("s-1", "f-1");
+
+      expect(useForeshadowStore.getState().setupsByForeshadowId["f-1"]).toEqual(
+        [s2],
+      );
+    });
+
+    it("keeps other foreshadow entries untouched", async () => {
+      const sa = makeSetup({ id: "s-a", foreshadowId: "f-a" });
+      const sb = makeSetup({ id: "s-b", foreshadowId: "f-b" });
+      mockDeleteSetup.mockResolvedValue(undefined);
+      useForeshadowStore.setState({
+        setupsByForeshadowId: { "f-a": [sa], "f-b": [sb] },
+      });
+
+      await useForeshadowStore.getState().removeSetup("s-b", "f-b");
+
+      expect(useForeshadowStore.getState().setupsByForeshadowId["f-a"]).toEqual(
+        [sa],
+      );
+    });
+
+    it("keeps state unchanged on API failure", async () => {
+      const s1 = makeSetup({ id: "s-1", foreshadowId: "f-1" });
+      mockDeleteSetup.mockRejectedValue(new Error("DB error"));
+      useForeshadowStore.setState({
+        setupsByForeshadowId: { "f-1": [s1] },
+      });
+
+      await useForeshadowStore.getState().removeSetup("s-1", "f-1");
+
+      expect(useForeshadowStore.getState().setupsByForeshadowId["f-1"]).toEqual(
+        [s1],
+      );
     });
   });
 });

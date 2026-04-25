@@ -235,31 +235,31 @@ export function ForeshadowPanel() {
                 )}
               </div>
 
-              {/* Setup list (shown when expanded) */}
+              {/* Orphan setup list (shown when expanded) */}
               {expandedId === item.id && (
                 <div className="border-t border-border/30 bg-muted/30 pl-6 pr-3">
                   {!setupsByForeshadowId[item.id] ? (
                     <p className="py-2 text-[10px] text-muted-foreground">…</p>
-                  ) : setupsByForeshadowId[item.id].length === 0 ? (
+                  ) : setupsByForeshadowId[item.id].filter((s) => s.isOrphan)
+                      .length === 0 ? (
                     <p className="py-2 text-[10px] text-muted-foreground">
                       {t("foreshadow.panel.setupsEmpty", "Setup なし")}
                     </p>
                   ) : (
-                    setupsByForeshadowId[item.id].map((setup) => (
-                      <div
-                        key={setup.id}
-                        data-testid={`foreshadow-setup-${setup.id}`}
-                        className="flex items-center gap-1.5 py-1"
-                      >
-                        <span className="text-[10px] text-muted-foreground">
-                          {t(`foreshadow.setup.kind.${setup.kind}`)}
-                        </span>
-                        {setup.isOrphan && (
+                    setupsByForeshadowId[item.id]
+                      .filter((s) => s.isOrphan)
+                      .map((setup) => (
+                        <div
+                          key={setup.id}
+                          data-testid={`foreshadow-setup-${setup.id}`}
+                          className="flex items-center gap-1.5 py-1"
+                        >
+                          <span className="text-[10px] text-muted-foreground">
+                            {t(`foreshadow.setup.kind.${setup.kind}`)}
+                          </span>
                           <span className="rounded bg-orange-500/15 px-1 py-0.5 text-[10px] font-medium text-orange-600 dark:text-orange-400">
                             {t("foreshadow.setup.orphan", "孤立")}
                           </span>
-                        )}
-                        {setup.isOrphan && (
                           <button
                             type="button"
                             data-testid={`foreshadow-setup-discard-${setup.id}`}
@@ -268,9 +268,8 @@ export function ForeshadowPanel() {
                           >
                             {t("foreshadow.setup.discard", "破棄")}
                           </button>
-                        )}
-                      </div>
-                    ))
+                        </div>
+                      ))
                   )}
                 </div>
               )}
