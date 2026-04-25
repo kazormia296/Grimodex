@@ -113,6 +113,13 @@ const ToolbarShortcutsExtension = Extension.create({
         useCursorSettingsStore.getState().setCommentPickerOpen(true);
         return true;
       },
+      // Ctrl+Shift+F — open foreshadow mark picker for selection
+      "Mod-Shift-f": () => {
+        const { from, to } = this.editor.state.selection;
+        if (from === to) return false;
+        useCursorSettingsStore.getState().setForeshadowPickerOpen(true);
+        return true;
+      },
     };
   },
 });

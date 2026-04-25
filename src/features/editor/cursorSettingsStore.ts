@@ -13,6 +13,9 @@ interface CursorSettingsState {
   /** Whether the "add comment" input popover is open. */
   commentPickerOpen: boolean;
   setCommentPickerOpen: (open: boolean) => void;
+  /** Whether the foreshadow mark picker is open. */
+  foreshadowPickerOpen: boolean;
+  setForeshadowPickerOpen: (open: boolean) => void;
   /** Sync runtime state from persisted settings (call after loadAll). */
   initFromSettings: () => void;
 }
@@ -47,6 +50,9 @@ export const useCursorSettingsStore = create<CursorSettingsState>()((set) => ({
 
   commentPickerOpen: false,
   setCommentPickerOpen: (open) => set({ commentPickerOpen: open }),
+
+  foreshadowPickerOpen: false,
+  setForeshadowPickerOpen: (open) => set({ foreshadowPickerOpen: open }),
 
   initFromSettings: () => {
     const s = useSettingsStore.getState();
