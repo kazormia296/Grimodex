@@ -4,7 +4,7 @@ import { ChevronDown, ChevronRight, Loader2, Sparkles } from "lucide-react";
 import { useSceneStore } from "@/features/tree/store";
 import { useForeshadowStore } from "./foreshadowStore";
 import { CreateForeshadowDialog } from "./CreateForeshadowDialog";
-import { auditChapter, getChapterForeshadowStats } from "./api";
+import { getChapterForeshadowStats } from "./api";
 import type { AuditCandidate, ChapterForeshadowStats } from "./types";
 
 const PROJECT_ID = "default-project";
@@ -12,7 +12,8 @@ const PROJECT_ID = "default-project";
 export function ForeshadowChapterTab() {
   const { t } = useTranslation();
   const { nodes } = useSceneStore();
-  const { items } = useForeshadowStore();
+  const { auditingChapterIds, auditResults, auditChapter } =
+    useForeshadowStore();
 
   const chapters = nodes.filter((n) => n.nodeType === "folder" && !n.parentId);
 
@@ -22,10 +23,6 @@ export function ForeshadowChapterTab() {
   const [stats, setStats] = useState<Record<string, ChapterForeshadowStats>>(
     {},
   );
-  const [auditResults, setAuditResults] = useState<
-    Record<string, AuditCandidate[]>
-  >({});
-  const [auditing, setAuditing] = useState<Set<string>>(new Set());
   const [dialogOpen, setDialogOpen] = useState(false);
   const [dialogInitial, setDialogInitial] = useState<{
     title: string;
@@ -41,39 +38,6 @@ export function ForeshadowChapterTab() {
     if (!stats[chapterId]) {
       const s = await getChapterForeshadowStats(chapterId);
       setStats((prev) => ({ ...prev, [chapterId]: s }));
-    }
-  };
-
-  const handleAudit = async (chapterId: string) => {
-    if (auditing.has(chapterId)) return;
-    setAuditing((prev) => new Set(prev).add(chapterId));
-    try {
-      const sceneNodes = nodes
-        .filter((n) => n.nodeType === "scene" && n.parentId === chapterId)
-        .sort((a, b) => (a.sortOrder < b.sortOrder ? -1 : 1));
-
-      const candidates = await auditChapter({
-        chapterId,
-        scenes: sceneNodes.map((n, i) => ({
-          sceneId: n.id,
-          title: n.title,
-          bodyText: "",
-          orderIndex: i,
-        })),
-        existingForeshadows: items.map((f) => ({
-          id: f.id,
-          title: f.title,
-          intent: f.intent,
-        })),
-        relatedCodex: [],
-      });
-      setAuditResults((prev) => ({ ...prev, [chapterId]: candidates }));
-    } finally {
-      setAuditing((prev) => {
-        const next = new Set(prev);
-        next.delete(chapterId);
-        return next;
-      });
     }
   };
 
@@ -98,7 +62,7 @@ export function ForeshadowChapterTab() {
       {chapters.map((chapter) => {
         const isExpanded = expandedChapterId === chapter.id;
         const chapterStats = stats[chapter.id];
-        const isAuditing = auditing.has(chapter.id);
+        const isAuditing = auditingChapterIds.has(chapter.id);
         const results = auditResults[chapter.id] ?? [];
 
         return (
@@ -132,7 +96,7 @@ export function ForeshadowChapterTab() {
                 type="button"
                 data-testid={`foreshadow-chapter-audit-${chapter.id}`}
                 disabled={isAuditing}
-                onClick={() => void handleAudit(chapter.id)}
+                onClick={() => void auditChapter(chapter.id)}
                 className="flex shrink-0 items-center gap-0.5 rounded px-1.5 py-0.5 text-[10px] text-muted-foreground hover:bg-accent hover:text-foreground disabled:opacity-50"
               >
                 {isAuditing ? (

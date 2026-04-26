@@ -220,6 +220,7 @@ export function ForeshadowPanel() {
     proposeSetups,
     proposingForForeshadowIds,
     proposeResults,
+    adoptProposedSetup,
   } = useForeshadowStore();
   const [dialogOpen, setDialogOpen] = useState(false);
   const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
@@ -546,6 +547,19 @@ export function ForeshadowPanel() {
                                 <pre className="mt-0.5 whitespace-pre-wrap text-foreground/70">
                                   {candidate.suggestedText}
                                 </pre>
+                              )}
+                              {candidate.kind === "designated_existing" && (
+                                <div className="mt-1">
+                                  <button
+                                    type="button"
+                                    onClick={() =>
+                                      void adoptProposedSetup(item.id, idx)
+                                    }
+                                    className="rounded px-1.5 py-0.5 text-[10px] text-blue-600 hover:bg-blue-500/10 dark:text-blue-400"
+                                  >
+                                    {t("foreshadow.panel.adoptSetup", "採用")}
+                                  </button>
+                                </div>
                               )}
                             </div>
                           ),

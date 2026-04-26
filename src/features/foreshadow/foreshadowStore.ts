@@ -16,11 +16,14 @@ import {
   updateSetup,
   evaluateSetupStrength,
   proposePastSetups,
+  createForeshadowSetup,
+  auditChapter as auditChapterApi,
 } from "./api";
 import { loadSceneContent } from "@/features/tree/api";
 import { prosemirrorToText } from "@/lib/prosemirror";
 import type { ProposedSetup } from "./api";
 import { safeParseAiEvaluation } from "./types";
+import type { AuditCandidate } from "./types";
 import { deriveLabel } from "./deriveLabel";
 import { useEditorStore } from "@/features/editor/editorStore";
 import { useSceneStore } from "@/features/tree/store";
@@ -58,9 +61,15 @@ interface ForeshadowState {
   proposeResults: Record<string, ProposedSetup[]>;
   proposingForForeshadowIds: Set<string>;
   proposeSetups: (foreshadowId: string) => Promise<void>;
+  adoptProposedSetup: (
+    foreshadowId: string,
+    candidateIdx: number,
+  ) => Promise<void>;
 
   /** Phase 3: chapter audit */
   auditingChapterIds: Set<string>;
+  auditResults: Record<string, AuditCandidate[]>;
+  auditChapter: (chapterId: string) => Promise<void>;
 }
 
 async function buildWithLabels(
@@ -103,6 +112,7 @@ export const useForeshadowStore = create<ForeshadowState>()((set, get) => ({
   proposeResults: {},
   proposingForForeshadowIds: new Set<string>(),
   auditingChapterIds: new Set<string>(),
+  auditResults: {},
 
   load: async (projectId) => {
     set({ isLoading: true });
@@ -559,6 +569,104 @@ export const useForeshadowStore = create<ForeshadowState>()((set, get) => ({
         const next = new Set(s.proposingForForeshadowIds);
         next.delete(foreshadowId);
         return { proposingForForeshadowIds: next };
+      });
+    }
+  },
+
+  adoptProposedSetup: async (foreshadowId, candidateIdx) => {
+    const candidates = get().proposeResults[foreshadowId] ?? [];
+    const candidate = candidates[candidateIdx];
+    if (!candidate) return;
+
+    try {
+      await createForeshadowSetup({
+        id: crypto.randomUUID(),
+        foreshadowId,
+        sceneId: candidate.sceneId,
+        fromPos: candidate.fromPosHint ?? 0,
+        toPos: candidate.toPosHint ?? 0,
+        kind: "designated_existing",
+        strength: candidate.predictedStrength,
+        aiStrength: candidate.predictedStrength,
+        aiReasoning: null,
+        attribution: "ai",
+        aiRationale: candidate.rationale,
+        lastEvaluatedAt: null,
+        isOrphan: false,
+      });
+
+      await get().loadSetups(foreshadowId);
+
+      set((s) => ({
+        proposeResults: {
+          ...s.proposeResults,
+          [foreshadowId]: (s.proposeResults[foreshadowId] ?? []).filter(
+            (_, i) => i !== candidateIdx,
+          ),
+        },
+      }));
+    } catch (e) {
+      toast.error(
+        i18next.t("foreshadow.store.adoptFailed", "採用に失敗しました"),
+      );
+      debugLog.error(
+        "ForeshadowStore",
+        `adoptProposedSetup: ${rootCause(e)}`,
+        errorDetail(e),
+      );
+    }
+  },
+
+  auditChapter: async (chapterId) => {
+    if (get().auditingChapterIds.has(chapterId)) return;
+
+    set((s) => ({
+      auditingChapterIds: new Set([...s.auditingChapterIds, chapterId]),
+    }));
+
+    try {
+      const nodes = useSceneStore.getState().nodes;
+      const sceneNodes = nodes
+        .filter((n) => n.nodeType === "scene" && n.parentId === chapterId)
+        .sort((a, b) => (a.sortOrder < b.sortOrder ? -1 : 1));
+
+      const scenes = await Promise.all(
+        sceneNodes.map(async (n, i) => {
+          const content = await loadSceneContent(n.id);
+          const bodyText = prosemirrorToText(content);
+          return { sceneId: n.id, title: n.title, bodyText, orderIndex: i };
+        }),
+      );
+
+      const { items } = get();
+      const candidates = await auditChapterApi({
+        chapterId,
+        scenes,
+        existingForeshadows: items.map((f) => ({
+          id: f.id,
+          title: f.title,
+          intent: f.intent,
+        })),
+        relatedCodex: [],
+      });
+
+      set((s) => ({
+        auditResults: { ...s.auditResults, [chapterId]: candidates },
+      }));
+    } catch (e) {
+      toast.error(
+        i18next.t("foreshadow.store.auditFailed", "監査に失敗しました"),
+      );
+      debugLog.error(
+        "ForeshadowStore",
+        `auditChapter: ${rootCause(e)}`,
+        errorDetail(e),
+      );
+    } finally {
+      set((s) => {
+        const next = new Set(s.auditingChapterIds);
+        next.delete(chapterId);
+        return { auditingChapterIds: next };
       });
     }
   },

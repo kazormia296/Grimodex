@@ -82,12 +82,21 @@ vi.mock("./foreshadowStore", () => {
     proposingForForeshadowIds: new Set<string>(),
     auditingChapterIds: new Set<string>(),
     proposeResults: {},
+    adoptProposedSetup: vi.fn(),
+    auditResults: {},
+    auditChapter: vi.fn(),
   };
   return { useForeshadowStore: () => state };
 });
 
 vi.mock("./CreateForeshadowDialog", () => ({
   CreateForeshadowDialog: () => null,
+}));
+
+vi.mock("./ForeshadowChapterTab", () => ({
+  ForeshadowChapterTab: () => (
+    <div data-testid="foreshadow-chapter-tab-content-inner" />
+  ),
 }));
 
 vi.mock("@/features/tree/store", () => ({
