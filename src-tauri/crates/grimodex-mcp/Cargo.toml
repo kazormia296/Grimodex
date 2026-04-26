@@ -8,7 +8,7 @@ name = "grimodex-mcp"
 path = "src/main.rs"
 
 [dependencies]
-rmcp = { version = "1.4", features = ["server", "transport-io", "macros"] }
+rmcp = { version = "1.5", features = ["server", "transport-io", "macros"] }
 schemars = "1"
 rusqlite = { version = "0.39", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
