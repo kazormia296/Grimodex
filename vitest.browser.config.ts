@@ -9,6 +9,9 @@ const alias = { "@": path.resolve(__dirname, "./src") };
 export default defineConfig({
   plugins: [react()],
   resolve: { alias },
+  optimizeDeps: {
+    include: ["@tanstack/react-virtual"],
+  },
   test: {
     name: "browser",
     globals: true,

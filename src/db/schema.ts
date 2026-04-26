@@ -52,6 +52,7 @@ export const treeNodes = sqliteTable(
     storyTimeLabel: text("story_time_label"),
 
     povCharacterId: text("pov_character_id").references(
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       (): any => codexEntries.id,
       { onDelete: "set null" },
     ),

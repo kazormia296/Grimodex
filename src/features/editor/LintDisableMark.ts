@@ -61,7 +61,7 @@ export const LintDisableMark = Mark.create({
     // a slightly more prominent color when the Mark silences every
     // rule (`["*"]`). CSS classes are resolved in the editor stylesheet.
     const rulesRaw = HTMLAttributes["data-lint-disable"];
-    let isAll = true;
+    let isAll: boolean;
     try {
       const parsed = typeof rulesRaw === "string" ? JSON.parse(rulesRaw) : null;
       isAll = Array.isArray(parsed) && parsed.length === 1 && parsed[0] === "*";

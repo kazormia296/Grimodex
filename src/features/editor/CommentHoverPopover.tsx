@@ -27,7 +27,12 @@ export function CommentHoverPopover({ editor, containerRef }: Props) {
   const [editing, setEditing] = useState(false);
   const [editText, setEditText] = useState("");
   const popoverRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
   const hideTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    if (editing) inputRef.current?.focus();
+  }, [editing]);
 
   const clearHideTimer = useCallback(() => {
     if (hideTimer.current !== null) {
@@ -127,7 +132,7 @@ export function CommentHoverPopover({ editor, containerRef }: Props) {
       {editing ? (
         <div className="flex flex-col gap-2 p-3">
           <input
-            autoFocus
+            ref={inputRef}
             type="text"
             value={editText}
             onChange={(e) => setEditText(e.target.value)}
