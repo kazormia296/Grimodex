@@ -33,7 +33,50 @@ jobs:
         run: pnpm lint
 
       - name: テスト
-        run: pnpm test --run
+        run: pnpm test:node --run
+
+  browser:
+    name: Browser (Vitest browser + Storybook)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - uses: pnpm/action-setup@f40ffcd9367d9f12939873eb1018b921a783ffaa # v4
+        with:
+          version: 10.33.0
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Playwright バージョン取得
+        id: pw
+        run: echo "version=$(pnpm exec playwright --version | awk '{print $2}')" >> "$GITHUB_OUTPUT"
+
+      - name: Chromium バイナリキャッシュ
+        id: pw-cache
+        uses: actions/cache@0c907a75c2c80ebcb7f088228285e798b750cf8f # v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}-chromium
+
+      - name: Playwright Chromium + システム依存をインストール
+        if: steps.pw-cache.outputs.cache-hit != 'true'
+        run: pnpm exec playwright install --with-deps chromium
+
+      - name: システム依存のみインストール (キャッシュヒット時)
+        if: steps.pw-cache.outputs.cache-hit == 'true'
+        run: pnpm exec playwright install-deps chromium
+
+      - name: ブラウザテスト
+        run: pnpm test:browser --run
+
+      - name: Storybook テスト
+        run: pnpm test:storybook --run
 
   security:
     name: Security (audit)
