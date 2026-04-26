@@ -10,6 +10,10 @@
     "build": "tsc && vite build",
     "preview": "vite preview",
     "test": "vitest",
+    "test:node": "vitest --project=node",
+    "test:browser": "vitest --project=browser",
+    "storybook": "storybook dev -p 6006",
+    "storybook:build": "storybook build",
     "lint": "eslint src",
     "lint:fix": "eslint src --fix",
     "tauri": "tauri",
@@ -81,6 +85,8 @@
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
+    "@storybook/addon-vitest": "10.3.5",
+    "@storybook/react-vite": "10.3.5",
     "@tailwindcss/vite": "^4.2.2",
     "@tauri-apps/cli": "^2",
     "@testing-library/jest-dom": "^6.9.1",
@@ -92,6 +98,8 @@
     "@types/react-dom": "^19.1.6",
     "@types/sql.js": "^1.4.11",
     "@vitejs/plugin-react": "^6.0.1",
+    "@vitest/browser": "4.1.5",
+    "@vitest/browser-playwright": "4.1.5",
     "eslint": "^10.1.0",
     "eslint-config-prettier": "^10.1.8",
     "eslint-plugin-jsx-a11y": "^6.10.2",
@@ -99,13 +107,15 @@
     "eslint-plugin-react-hooks": "^7.0.1",
     "happy-dom": "^20.8.9",
     "jsdom": "^29.0.1",
+    "playwright": "^1.59.1",
     "prettier": "^3.8.1",
     "sql.js": "^1.14.1",
+    "storybook": "10.3.5",
     "tailwindcss": "^4.2.2",
     "tsx": "^4.21.0",
     "typescript": "~5.8.3",
     "typescript-eslint": "^8.58.0",
     "vite": "^8.0.6",
-    "vitest": "^4.1.2"
+    "vitest": "^4.1.5"
   }
 }
