@@ -131,6 +131,21 @@ describe("auditChapter", () => {
     expect(prompt).toContain("scene-1");
   });
 
+  it("does not call AI when all scenes have empty bodyText", async () => {
+    const req: ChapterAuditRequest = {
+      ...BASE_REQ,
+      scenes: [
+        { sceneId: "s-1", title: "空1", bodyText: "", orderIndex: 1 },
+        { sceneId: "s-2", title: "空2", bodyText: "   ", orderIndex: 2 },
+      ],
+    };
+
+    const result = await auditChapter(req);
+
+    expect(mockSendChatMessageWithThinking).not.toHaveBeenCalled();
+    expect(result).toEqual([]);
+  });
+
   it("includes similarToExistingForeshadowId in output when present", async () => {
     mockSendChatMessageWithThinking.mockResolvedValue({
       text: JSON.stringify({

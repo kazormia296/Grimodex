@@ -584,13 +584,23 @@ export const useForeshadowStore = create<ForeshadowState>()((set, get) => ({
     const candidate = candidates[candidateIdx];
     if (!candidate) return;
 
+    if (candidate.fromPosHint == null || candidate.toPosHint == null) {
+      toast.error(
+        i18next.t(
+          "foreshadow.store.adoptNoPosition",
+          "AI が位置情報を返しませんでした。シーンを開いて手動で設定してください",
+        ),
+      );
+      return;
+    }
+
     try {
       await createForeshadowSetup({
         id: crypto.randomUUID(),
         foreshadowId,
         sceneId: candidate.sceneId,
-        fromPos: candidate.fromPosHint ?? 0,
-        toPos: candidate.toPosHint ?? 0,
+        fromPos: candidate.fromPosHint,
+        toPos: candidate.toPosHint,
         kind: "designated_existing",
         strength: candidate.predictedStrength,
         aiStrength: candidate.predictedStrength,
