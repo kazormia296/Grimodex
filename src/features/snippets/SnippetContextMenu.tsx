@@ -18,6 +18,8 @@ import { useForeshadowStore } from "@/features/foreshadow/foreshadowStore";
 import type { Snippet } from "./api";
 import { useSnippetStore } from "./snippetStore";
 
+const PROJECT_ID = "default-project";
+
 interface SnippetContextMenuProps {
   snippet: Snippet;
   x: number;
@@ -119,7 +121,7 @@ export function SnippetContextMenu({
     intent: string | null;
   }) {
     await createForeshadow({
-      projectId: "default-project",
+      projectId: PROJECT_ID,
       title: data.title,
       intent: data.intent,
     });
@@ -133,7 +135,7 @@ export function SnippetContextMenu({
     return (
       <CreateForeshadowDialog
         open={true}
-        projectId="default-project"
+        projectId={PROJECT_ID}
         initialTitle={snippet.title.slice(0, 60)}
         initialIntent={snippet.content.slice(0, 200)}
         onSave={handleSaveForeshadow}
