@@ -70,7 +70,7 @@ async function buildWithLabels(
   });
 }
 
-export const useForeshadowStore = create<ForeshadowState>()((set, _get) => ({
+export const useForeshadowStore = create<ForeshadowState>()((set, get) => ({
   items: [],
   isLoading: false,
   setupsByForeshadowId: {},
@@ -222,7 +222,7 @@ export const useForeshadowStore = create<ForeshadowState>()((set, _get) => ({
         toPos: to,
       });
 
-      const setups = _get().setupsByForeshadowId[foreshadowId] ?? [];
+      const setups = get().setupsByForeshadowId[foreshadowId] ?? [];
       const nextSetups = setups.map((s) =>
         s.id === setupId
           ? {
@@ -323,7 +323,7 @@ export const useForeshadowStore = create<ForeshadowState>()((set, _get) => ({
         })
         .run();
 
-      const setups = _get().setupsByForeshadowId[foreshadowId] ?? [];
+      const setups = get().setupsByForeshadowId[foreshadowId] ?? [];
       const nextSetups = setups
         .filter((s) => s.id !== setupId)
         .concat([{ ...inserted, fromPos: from, toPos: to, isOrphan: false }]);

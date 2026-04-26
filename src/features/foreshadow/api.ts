@@ -67,8 +67,11 @@ function normalizeSetupRow(raw: unknown): ForeshadowSetupRow {
     sceneId: String(row.sceneId ?? row.scene_id ?? ""),
     fromPos: Number(row.fromPos ?? row.from_pos ?? 0),
     toPos: Number(row.toPos ?? row.to_pos ?? 0),
-    kind: String(row.kind ?? "designated_existing") as ForeshadowSetupRow["kind"],
-    strength: (row.strength as ForeshadowSetupRow["strength"] | undefined) ?? null,
+    kind: String(
+      row.kind ?? "designated_existing",
+    ) as ForeshadowSetupRow["kind"],
+    strength:
+      (row.strength as ForeshadowSetupRow["strength"] | undefined) ?? null,
     aiStrength:
       (row.aiStrength as ForeshadowSetupRow["aiStrength"] | undefined) ??
       (row.ai_strength as ForeshadowSetupRow["aiStrength"] | undefined) ??
@@ -179,7 +182,8 @@ export async function updateForeshadow(
     if (patch.payoffFromPos !== undefined) {
       tauriPatch.payoffFromPos = patch.payoffFromPos;
     }
-    if (patch.payoffToPos !== undefined) tauriPatch.payoffToPos = patch.payoffToPos;
+    if (patch.payoffToPos !== undefined)
+      tauriPatch.payoffToPos = patch.payoffToPos;
     if (patch.payoffConfirmed !== undefined) {
       tauriPatch.payoffConfirmed = patch.payoffConfirmed;
     }
@@ -225,10 +229,9 @@ export async function listSetups(
   foreshadowId: string,
 ): Promise<ForeshadowSetupRow[]> {
   if (isTauriRuntime()) {
-    const detail = await invoke<{ setups: unknown[] }>(
-      "foreshadow_get",
-      { id: foreshadowId },
-    );
+    const detail = await invoke<{ setups: unknown[] }>("foreshadow_get", {
+      id: foreshadowId,
+    });
     return (detail.setups ?? []).map(normalizeSetupRow);
   }
 

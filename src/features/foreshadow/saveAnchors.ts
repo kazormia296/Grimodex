@@ -117,10 +117,12 @@ export async function saveForeshadowAnchors(
         fromPos: p.fromPos,
         toPos: p.toPos,
       })),
+      docContentSize: doc.content.size,
     });
     return;
   }
 
+  // dev-only browser fallback (used by `pnpm dev`; not transactional)
   const now = new Date();
 
   for (const s of setups) {

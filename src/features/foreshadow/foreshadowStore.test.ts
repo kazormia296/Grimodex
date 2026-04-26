@@ -53,6 +53,16 @@ vi.mock("./api", () => ({
   deleteForeshadow: vi.fn(),
   listSetups: vi.fn(),
   deleteSetup: vi.fn(),
+  reanchorOrphanSetup: vi.fn(),
+  reinsertOrphanSetup: vi.fn(),
+}));
+
+vi.mock("@/features/editor/editorStore", () => ({
+  useEditorStore: { getState: vi.fn() },
+}));
+
+vi.mock("@/features/tree/store", () => ({
+  useSceneStore: { getState: vi.fn() },
 }));
 
 vi.mock("@/db/client", () => ({
@@ -84,19 +94,39 @@ import {
   deleteForeshadow,
   listSetups,
   deleteSetup,
+  reanchorOrphanSetup,
+  reinsertOrphanSetup,
 } from "./api";
 import { db } from "@/db/client";
+import { useEditorStore } from "@/features/editor/editorStore";
+import { useSceneStore } from "@/features/tree/store";
 
 const mockListForeshadows = vi.mocked(listForeshadows);
 const mockCreateForeshadow = vi.mocked(createForeshadow);
 const mockDeleteForeshadow = vi.mocked(deleteForeshadow);
 const mockListSetups = vi.mocked(listSetups);
 const mockDeleteSetup = vi.mocked(deleteSetup);
+const mockReanchorOrphanSetup = vi.mocked(reanchorOrphanSetup);
+const mockReinsertOrphanSetup = vi.mocked(reinsertOrphanSetup);
+const mockUseEditorStore = vi.mocked(useEditorStore);
+const mockUseSceneStore = vi.mocked(useSceneStore);
 const mockDb = db as unknown as {
   select: ReturnType<typeof vi.fn>;
   from: ReturnType<typeof vi.fn>;
   where: ReturnType<typeof vi.fn>;
 };
+
+function makeEditorChainMock() {
+  const run = vi.fn();
+  const setMark = vi.fn(() => ({ run }));
+  const setTextSelection = vi.fn(() => ({ setMark }));
+  return {
+    chain: vi.fn(() => ({ setTextSelection })),
+    state: { selection: { from: 10, to: 20 } },
+    _run: run,
+    _setMark: setMark,
+  };
+}
 
 // Helper to set up db.select().from().where() chain return value
 function mockDbSetups(setups: ForeshadowSetupRow[]) {
@@ -409,6 +439,250 @@ describe("foreshadowStore", () => {
       expect(useForeshadowStore.getState().setupsByForeshadowId["f-1"]).toEqual(
         [s1],
       );
+    });
+  });
+
+  // ── reanchorSetup ─────────────────────────────────────────────────
+
+  describe("reanchorSetup", () => {
+    it("shows toast and returns if no editor open", async () => {
+      const { toast } = await import("sonner");
+      mockUseEditorStore.getState.mockReturnValue({ editor: null } as never);
+      mockUseSceneStore.getState.mockReturnValue({
+        activeSceneId: "scene-1",
+      } as never);
+
+      await useForeshadowStore.getState().reanchorSetup("s-1", "f-1");
+
+      expect(toast.error).toHaveBeenCalled();
+      expect(mockReanchorOrphanSetup).not.toHaveBeenCalled();
+    });
+
+    it("shows toast and returns if selection is empty (from === to)", async () => {
+      const { toast } = await import("sonner");
+      const editor = makeEditorChainMock();
+      (
+        editor as never as {
+          state: { selection: { from: number; to: number } };
+        }
+      ).state = { selection: { from: 5, to: 5 } };
+      mockUseEditorStore.getState.mockReturnValue({ editor } as never);
+      mockUseSceneStore.getState.mockReturnValue({
+        activeSceneId: "scene-1",
+      } as never);
+
+      await useForeshadowStore.getState().reanchorSetup("s-1", "f-1");
+
+      expect(toast.error).toHaveBeenCalled();
+      expect(mockReanchorOrphanSetup).not.toHaveBeenCalled();
+    });
+
+    it("calls reanchorOrphanSetup with correct anchor and updates state", async () => {
+      const orphanSetup = makeSetup({
+        id: "s-1",
+        foreshadowId: "f-1",
+        isOrphan: true,
+        sceneId: "old-scene",
+      });
+      const editor = makeEditorChainMock();
+      mockUseEditorStore.getState.mockReturnValue({ editor } as never);
+      mockUseSceneStore.getState.mockReturnValue({
+        activeSceneId: "scene-new",
+      } as never);
+      mockReanchorOrphanSetup.mockResolvedValue(undefined);
+      useForeshadowStore.setState({
+        items: [{ ...makeRow({ id: "f-1" }), label: "planned", setupCount: 0 }],
+        setupsByForeshadowId: { "f-1": [orphanSetup] },
+      });
+
+      await useForeshadowStore.getState().reanchorSetup("s-1", "f-1");
+
+      expect(mockReanchorOrphanSetup).toHaveBeenCalledWith("s-1", {
+        sceneId: "scene-new",
+        fromPos: 10,
+        toPos: 20,
+      });
+      const setups = useForeshadowStore.getState().setupsByForeshadowId["f-1"];
+      const updated = setups?.find((s) => s.id === "s-1");
+      expect(updated?.isOrphan).toBe(false);
+      expect(updated?.sceneId).toBe("scene-new");
+    });
+
+    it("calls editor.chain setMark after successful reanchor", async () => {
+      const orphanSetup = makeSetup({
+        id: "s-1",
+        foreshadowId: "f-1",
+        isOrphan: true,
+      });
+      const editor = makeEditorChainMock();
+      mockUseEditorStore.getState.mockReturnValue({ editor } as never);
+      mockUseSceneStore.getState.mockReturnValue({
+        activeSceneId: "sc-1",
+      } as never);
+      mockReanchorOrphanSetup.mockResolvedValue(undefined);
+      useForeshadowStore.setState({
+        items: [{ ...makeRow({ id: "f-1" }), label: "planned", setupCount: 0 }],
+        setupsByForeshadowId: { "f-1": [orphanSetup] },
+      });
+
+      await useForeshadowStore.getState().reanchorSetup("s-1", "f-1");
+
+      expect(editor.chain).toHaveBeenCalled();
+      expect(editor._setMark).toHaveBeenCalledWith("foreshadowSetup", {
+        setupId: "s-1",
+        foreshadowId: "f-1",
+      });
+      expect(editor._run).toHaveBeenCalled();
+    });
+
+    it("shows toast and keeps state on API failure", async () => {
+      const { toast } = await import("sonner");
+      const orphanSetup = makeSetup({
+        id: "s-1",
+        foreshadowId: "f-1",
+        isOrphan: true,
+      });
+      const editor = makeEditorChainMock();
+      mockUseEditorStore.getState.mockReturnValue({ editor } as never);
+      mockUseSceneStore.getState.mockReturnValue({
+        activeSceneId: "sc-1",
+      } as never);
+      mockReanchorOrphanSetup.mockRejectedValue(new Error("Tauri error"));
+      useForeshadowStore.setState({
+        setupsByForeshadowId: { "f-1": [orphanSetup] },
+      });
+
+      await useForeshadowStore.getState().reanchorSetup("s-1", "f-1");
+
+      expect(toast.error).toHaveBeenCalled();
+      expect(
+        useForeshadowStore.getState().setupsByForeshadowId["f-1"]?.[0]
+          ?.isOrphan,
+      ).toBe(true);
+    });
+  });
+
+  // ── reinsertSetup ─────────────────────────────────────────────────
+
+  describe("reinsertSetup", () => {
+    it("shows toast and returns if no editor open", async () => {
+      const { toast } = await import("sonner");
+      mockUseEditorStore.getState.mockReturnValue({ editor: null } as never);
+      mockUseSceneStore.getState.mockReturnValue({
+        activeSceneId: "sc-1",
+      } as never);
+
+      await useForeshadowStore.getState().reinsertSetup("s-1", "f-1");
+
+      expect(toast.error).toHaveBeenCalled();
+      expect(mockReinsertOrphanSetup).not.toHaveBeenCalled();
+    });
+
+    it("shows toast and returns if selection is empty", async () => {
+      const { toast } = await import("sonner");
+      const editor = makeEditorChainMock();
+      (
+        editor as never as {
+          state: { selection: { from: number; to: number } };
+        }
+      ).state = { selection: { from: 3, to: 3 } };
+      mockUseEditorStore.getState.mockReturnValue({ editor } as never);
+      mockUseSceneStore.getState.mockReturnValue({
+        activeSceneId: "sc-1",
+      } as never);
+
+      await useForeshadowStore.getState().reinsertSetup("s-1", "f-1");
+
+      expect(toast.error).toHaveBeenCalled();
+      expect(mockReinsertOrphanSetup).not.toHaveBeenCalled();
+    });
+
+    it("calls reinsertOrphanSetup and replaces orphan with new setup in state", async () => {
+      const orphanSetup = makeSetup({
+        id: "s-old",
+        foreshadowId: "f-1",
+        isOrphan: true,
+      });
+      const newSetup = makeSetup({
+        id: "s-new",
+        foreshadowId: "f-1",
+        isOrphan: false,
+        sceneId: "sc-1",
+        fromPos: 10,
+        toPos: 20,
+      });
+      const editor = makeEditorChainMock();
+      mockUseEditorStore.getState.mockReturnValue({ editor } as never);
+      mockUseSceneStore.getState.mockReturnValue({
+        activeSceneId: "sc-1",
+      } as never);
+      mockReinsertOrphanSetup.mockResolvedValue(newSetup);
+      useForeshadowStore.setState({
+        items: [{ ...makeRow({ id: "f-1" }), label: "planned", setupCount: 0 }],
+        setupsByForeshadowId: { "f-1": [orphanSetup] },
+      });
+
+      await useForeshadowStore.getState().reinsertSetup("s-old", "f-1");
+
+      const setups = useForeshadowStore.getState().setupsByForeshadowId["f-1"];
+      expect(setups?.some((s) => s.id === "s-old")).toBe(false);
+      expect(setups?.some((s) => s.id === "s-new")).toBe(true);
+    });
+
+    it("calls editor.chain setMark with new id after successful reinsert", async () => {
+      const orphanSetup = makeSetup({
+        id: "s-old",
+        foreshadowId: "f-1",
+        isOrphan: true,
+      });
+      const newSetup = makeSetup({
+        id: "s-new",
+        foreshadowId: "f-1",
+        isOrphan: false,
+      });
+      const editor = makeEditorChainMock();
+      mockUseEditorStore.getState.mockReturnValue({ editor } as never);
+      mockUseSceneStore.getState.mockReturnValue({
+        activeSceneId: "sc-1",
+      } as never);
+      mockReinsertOrphanSetup.mockResolvedValue(newSetup);
+      useForeshadowStore.setState({
+        items: [{ ...makeRow({ id: "f-1" }), label: "planned", setupCount: 0 }],
+        setupsByForeshadowId: { "f-1": [orphanSetup] },
+      });
+
+      await useForeshadowStore.getState().reinsertSetup("s-old", "f-1");
+
+      expect(editor._setMark).toHaveBeenCalledWith("foreshadowSetup", {
+        setupId: "s-new",
+        foreshadowId: "f-1",
+      });
+      expect(editor._run).toHaveBeenCalled();
+    });
+
+    it("shows toast and keeps state on API failure", async () => {
+      const { toast } = await import("sonner");
+      const orphanSetup = makeSetup({
+        id: "s-old",
+        foreshadowId: "f-1",
+        isOrphan: true,
+      });
+      const editor = makeEditorChainMock();
+      mockUseEditorStore.getState.mockReturnValue({ editor } as never);
+      mockUseSceneStore.getState.mockReturnValue({
+        activeSceneId: "sc-1",
+      } as never);
+      mockReinsertOrphanSetup.mockRejectedValue(new Error("Tauri error"));
+      useForeshadowStore.setState({
+        setupsByForeshadowId: { "f-1": [orphanSetup] },
+      });
+
+      await useForeshadowStore.getState().reinsertSetup("s-old", "f-1");
+
+      expect(toast.error).toHaveBeenCalled();
+      expect(
+        useForeshadowStore.getState().setupsByForeshadowId["f-1"]?.[0]?.id,
+      ).toBe("s-old");
     });
   });
 });

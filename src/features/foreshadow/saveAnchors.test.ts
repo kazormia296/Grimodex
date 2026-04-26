@@ -234,4 +234,18 @@ describe("saveForeshadowAnchors FK sweep", () => {
     expect(hasGone).toBe(false);
     editor.destroy();
   });
+
+  it("passes docContentSize matching doc.content.size to invoke", async () => {
+    mockFrom.mockResolvedValue([{ id: "f-valid" }]);
+
+    const editor = createTestEditor("<p>前振りテキスト</p>");
+    addSetupMark(editor, 1, 3, "s-1", "f-valid");
+    const expectedSize = editor.state.doc.content.size;
+
+    await saveForeshadowAnchors("scene-1", editor.state.doc);
+
+    const payload = mockInvoke.mock.calls[0][1] as { docContentSize: number };
+    expect(payload.docContentSize).toBe(expectedSize);
+    editor.destroy();
+  });
 });
