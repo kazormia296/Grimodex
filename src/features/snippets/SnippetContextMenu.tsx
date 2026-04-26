@@ -1,11 +1,20 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { Copy, FilePlus, Pencil, TextCursorInput, Trash2 } from "lucide-react";
+import {
+  Bookmark,
+  Copy,
+  FilePlus,
+  Pencil,
+  TextCursorInput,
+  Trash2,
+} from "lucide-react";
 import { toast } from "sonner";
 import { copyWithAttribution } from "@/lib/clipboardAttribution";
 import type { AuthorshipSource } from "@/features/attribution/AuthorshipMark";
 import { useEditorStore } from "@/features/editor/editorStore";
 import { useTreeStore } from "@/features/tree/treeStore";
+import { CreateForeshadowDialog } from "@/features/foreshadow/CreateForeshadowDialog";
+import { useForeshadowStore } from "@/features/foreshadow/foreshadowStore";
 import type { Snippet } from "./api";
 import { useSnippetStore } from "./snippetStore";
 
@@ -31,6 +40,8 @@ export function SnippetContextMenu({
   const create = useSnippetStore((s) => s.create);
   const incrementUsageCount = useSnippetStore((s) => s.incrementUsageCount);
   const setActiveScene = useTreeStore((s) => s.setActiveScene);
+  const createForeshadow = useForeshadowStore((s) => s.create);
+  const [foreshadowDialogOpen, setForeshadowDialogOpen] = useState(false);
 
   useEffect(() => {
     const handlePointerDown = (e: PointerEvent) => {
@@ -97,6 +108,38 @@ export function SnippetContextMenu({
   function handleDelete() {
     onDelete(snippet.id);
     onClose();
+  }
+
+  function handleOpenForeshadowDialog() {
+    setForeshadowDialogOpen(true);
+  }
+
+  async function handleSaveForeshadow(data: {
+    title: string;
+    intent: string | null;
+  }) {
+    await createForeshadow({
+      projectId: "default-project",
+      title: data.title,
+      intent: data.intent,
+    });
+    toast.success(
+      t("foreshadow.store.createSuccess", "伏線として登録しました"),
+    );
+    onClose();
+  }
+
+  if (foreshadowDialogOpen) {
+    return (
+      <CreateForeshadowDialog
+        open={true}
+        projectId="default-project"
+        initialTitle={snippet.title.slice(0, 60)}
+        initialIntent={snippet.content.slice(0, 200)}
+        onSave={handleSaveForeshadow}
+        onClose={() => setForeshadowDialogOpen(false)}
+      />
+    );
   }
 
   return (
@@ -166,6 +209,16 @@ export function SnippetContextMenu({
             {t("snippets.contextMenu.goToScene")}
           </button>
         )}
+
+        <button
+          type="button"
+          data-testid="snippet-context-register-foreshadow"
+          onClick={handleOpenForeshadowDialog}
+          className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm hover:bg-accent"
+        >
+          <Bookmark className="h-3.5 w-3.5 text-muted-foreground" />
+          {t("snippets.contextMenu.registerAsForeshadow")}
+        </button>
 
         <div className="my-1 border-t border-border" />
 

@@ -24,6 +24,7 @@ import { TrackingTab } from "./TrackingTab";
 import { MentionsTab } from "./MentionsTab";
 import { ResearchTab } from "./ResearchTab";
 import { TimelineTab } from "./TimelineTab";
+import { ForeshadowTab } from "./ForeshadowTab";
 
 function getTypeOptions(): { value: CodexEntryType; label: string }[] {
   return [
@@ -65,6 +66,11 @@ function getTabs() {
       id: "timeline",
       label: i18next.t("codex.tab.timeline"),
       testId: "detail-tab-timeline",
+    },
+    {
+      id: "foreshadow",
+      label: i18next.t("codex.tab.foreshadow"),
+      testId: "detail-tab-foreshadow",
     },
   ];
 }
@@ -445,6 +451,9 @@ export function CodexDetailContent({
           />
         )}
         {activeTab === "timeline" && <TimelineTab entry={entry} />}
+        {activeTab === "foreshadow" && (
+          <ForeshadowTab codexEntryId={entry.id} />
+        )}
       </div>
     </div>
   );

@@ -13,7 +13,10 @@ import {
   deleteSetup,
   reanchorOrphanSetup,
   reinsertOrphanSetup,
+  updateSetup,
+  evaluateSetupStrength,
 } from "./api";
+import { safeParseAiEvaluation } from "./types";
 import { deriveLabel } from "./deriveLabel";
 import { useEditorStore } from "@/features/editor/editorStore";
 import { useSceneStore } from "@/features/tree/store";
@@ -39,6 +42,13 @@ interface ForeshadowState {
   removeSetup: (setupId: string, foreshadowId: string) => Promise<void>;
   reanchorSetup: (setupId: string, foreshadowId: string) => Promise<void>;
   reinsertSetup: (setupId: string, foreshadowId: string) => Promise<void>;
+  evaluateSetup: (
+    setupId: string,
+    foreshadowId: string,
+    setupExcerpt: string,
+    foreshadowIntent: string,
+  ) => Promise<void>;
+  evaluatingSetupIds: Set<string>;
 }
 
 async function buildWithLabels(
@@ -58,7 +68,10 @@ async function buildWithLabels(
   for (const s of setups) {
     if (s.isOrphan) continue;
     countMap.set(s.foreshadowId, (countMap.get(s.foreshadowId) ?? 0) + 1);
-    if (s.strength === "subtle" || s.aiStrength === "subtle") {
+    const evaluation = safeParseAiEvaluation(s.aiReasoning);
+    const effectiveStrength =
+      s.strength ?? evaluation?.careful?.strength ?? s.aiStrength;
+    if (effectiveStrength === "subtle") {
       weakMap.set(s.foreshadowId, true);
     }
   }
@@ -74,6 +87,7 @@ export const useForeshadowStore = create<ForeshadowState>()((set, get) => ({
   items: [],
   isLoading: false,
   setupsByForeshadowId: {},
+  evaluatingSetupIds: new Set<string>(),
 
   load: async (projectId) => {
     set({ isLoading: true });
@@ -251,9 +265,11 @@ export const useForeshadowStore = create<ForeshadowState>()((set, get) => ({
       set((s) => {
         const activeSetups = nextSetups.filter((x) => !x.isOrphan);
         const activeCount = activeSetups.length;
-        const anyWeak = activeSetups.some(
-          (x) => x.strength === "subtle" || x.aiStrength === "subtle",
-        );
+        const anyWeak = activeSetups.some((x) => {
+          const ev = safeParseAiEvaluation(x.aiReasoning);
+          const eff = x.strength ?? ev?.careful?.strength ?? x.aiStrength;
+          return eff === "subtle";
+        });
         return {
           setupsByForeshadowId: {
             ...s.setupsByForeshadowId,
@@ -331,9 +347,11 @@ export const useForeshadowStore = create<ForeshadowState>()((set, get) => ({
       set((s) => {
         const activeSetups = nextSetups.filter((x) => !x.isOrphan);
         const activeCount = activeSetups.length;
-        const anyWeak = activeSetups.some(
-          (x) => x.strength === "subtle" || x.aiStrength === "subtle",
-        );
+        const anyWeak = activeSetups.some((x) => {
+          const ev = safeParseAiEvaluation(x.aiReasoning);
+          const eff = x.strength ?? ev?.careful?.strength ?? x.aiStrength;
+          return eff === "subtle";
+        });
         return {
           setupsByForeshadowId: {
             ...s.setupsByForeshadowId,
@@ -362,6 +380,94 @@ export const useForeshadowStore = create<ForeshadowState>()((set, get) => ({
         `reinsertSetup: ${rootCause(e)}`,
         errorDetail(e),
       );
+    }
+  },
+
+  evaluateSetup: async (
+    setupId,
+    foreshadowId,
+    setupExcerpt,
+    foreshadowIntent,
+  ) => {
+    set((s) => ({
+      evaluatingSetupIds: new Set([...s.evaluatingSetupIds, setupId]),
+    }));
+    try {
+      const evaluation = await evaluateSetupStrength({
+        setupId,
+        setupExcerpt,
+        foreshadowIntent,
+      });
+      if (!evaluation) {
+        toast.error(
+          i18next.t(
+            "foreshadow.store.evaluateFailed",
+            "AI評価の取得に失敗しました",
+          ),
+        );
+        return;
+      }
+
+      await updateSetup(setupId, {
+        aiStrength: evaluation.careful.strength,
+        aiReasoning: JSON.stringify(evaluation),
+        lastEvaluatedAt: new Date(),
+      });
+
+      set((s) => {
+        const current = s.setupsByForeshadowId[foreshadowId] ?? [];
+        const nextSetups = current.map((row) =>
+          row.id === setupId
+            ? {
+                ...row,
+                aiStrength: evaluation.careful.strength,
+                aiReasoning: JSON.stringify(evaluation),
+                lastEvaluatedAt: new Date(),
+                updatedAt: new Date(),
+              }
+            : row,
+        );
+        const activeSetups = nextSetups.filter((x) => !x.isOrphan);
+        const activeCount = activeSetups.length;
+        const anyWeak = activeSetups.some((x) => {
+          const ev = safeParseAiEvaluation(x.aiReasoning);
+          const eff = x.strength ?? ev?.careful?.strength ?? x.aiStrength;
+          return eff === "subtle";
+        });
+        return {
+          setupsByForeshadowId: {
+            ...s.setupsByForeshadowId,
+            [foreshadowId]: nextSetups,
+          },
+          items: s.items.map((item) =>
+            item.id === foreshadowId
+              ? {
+                  ...item,
+                  setupCount: activeCount,
+                  label: deriveLabel(item, activeCount, anyWeak),
+                }
+              : item,
+          ),
+        };
+      });
+    } catch (e) {
+      toast.error(
+        i18next.t(
+          "foreshadow.store.evaluateFailed",
+          "AI評価の取得に失敗しました",
+        ),
+      );
+      debugLog.error(
+        "ForeshadowStore",
+        `evaluateSetup: ${rootCause(e)}`,
+        errorDetail(e),
+      );
+    } finally {
+      set((s) => {
+        const next = new Set(s.evaluatingSetupIds);
+        next.delete(setupId);
+        return { evaluatingSetupIds: next };
+      });
     }
   },
 }));

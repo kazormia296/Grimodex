@@ -580,7 +580,8 @@
       "tracking": "トラッキング",
       "mentions": "言及",
       "research": "リサーチ",
-      "timeline": "タイムライン"
+      "timeline": "タイムライン",
+      "foreshadow": "伏線"
     },
     "phaseIndicator": {
       "preview": "プレビュー",
@@ -657,6 +658,22 @@
         "inserted_new": "新規挿入",
         "rewritten": "書き直し"
       }
+    },
+    "store": {
+      "evaluateFailed": "AI評価の取得に失敗しました",
+      "createSuccess": "伏線として登録しました"
+    },
+    "codexTab": {
+      "empty": "リンクされた伏線はありません"
+    },
+    "evaluate": {
+      "button": "AI評価",
+      "stale": "未評価または陳腐化",
+      "persona": {
+        "careful": "精読者",
+        "casual": "普通",
+        "skim": "流し読み"
+      }
     }
   },
   "snippets": {
@@ -711,7 +728,8 @@
       "edit": "編集",
       "duplicate": "複製",
       "goToScene": "シーンへ移動",
-      "delete": "削除"
+      "delete": "削除",
+      "registerAsForeshadow": "伏線として登録"
     }
   },
   "tree": {

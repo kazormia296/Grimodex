@@ -124,6 +124,8 @@ vi.mock("./foreshadowStore", () => {
     removeSetup: mockRemoveSetup,
     reanchorSetup: mockReanchorSetup,
     reinsertSetup: mockReinsertSetup,
+    evaluateSetup: vi.fn(),
+    evaluatingSetupIds: new Set<string>(),
   };
   return { useForeshadowStore: () => state };
 });
@@ -214,7 +216,7 @@ describe("ForeshadowPanel - オーファン Setup UI", () => {
     expect(mockLoadSetups).toHaveBeenCalledWith("2");
   });
 
-  it("展開時に孤立 Setup のみ表示され、アクティブ Setup は表示されない", async () => {
+  it("展開時にアクティブ Setup と孤立 Setup の両方が表示される", async () => {
     render(<ForeshadowPanel />);
 
     fireEvent.click(screen.getByTestId("foreshadow-expand-2"));
@@ -224,8 +226,8 @@ describe("ForeshadowPanel - オーファン Setup UI", () => {
         screen.getByTestId("foreshadow-setup-s-orphan"),
       ).toBeInTheDocument();
       expect(
-        screen.queryByTestId("foreshadow-setup-s-active"),
-      ).not.toBeInTheDocument();
+        screen.getByTestId("foreshadow-setup-s-active"),
+      ).toBeInTheDocument();
     });
   });
 

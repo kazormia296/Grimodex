@@ -4,6 +4,52 @@ export type ForeshadowKind =
   | "inserted_new"
   | "rewritten";
 export type ForeshadowAttribution = "human" | "ai";
+export type ForeshadowPersona = "careful" | "casual" | "skim";
+
+export interface PersonaEvaluation {
+  strength: ForeshadowStrength;
+  reasoning: string;
+}
+
+export interface AiEvaluation {
+  careful: PersonaEvaluation;
+  casual: PersonaEvaluation;
+  skim: PersonaEvaluation;
+}
+
+const VALID_STRENGTHS = new Set<string>(["subtle", "moderate", "overt"]);
+
+function isPersonaEvaluation(v: unknown): v is PersonaEvaluation {
+  if (!v || typeof v !== "object") return false;
+  const o = v as Record<string, unknown>;
+  return (
+    typeof o.strength === "string" &&
+    VALID_STRENGTHS.has(o.strength) &&
+    typeof o.reasoning === "string"
+  );
+}
+
+/** aiReasoning カラムを AiEvaluation として解析する。Phase 1 の平文や不正 JSON は null を返す。 */
+export function safeParseAiEvaluation(
+  json: string | null,
+): AiEvaluation | null {
+  if (!json) return null;
+  try {
+    const parsed = JSON.parse(json) as unknown;
+    if (!parsed || typeof parsed !== "object") return null;
+    const o = parsed as Record<string, unknown>;
+    if (
+      isPersonaEvaluation(o.careful) &&
+      isPersonaEvaluation(o.casual) &&
+      isPersonaEvaluation(o.skim)
+    ) {
+      return { careful: o.careful, casual: o.casual, skim: o.skim };
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
 
 export type DerivedLabel =
   | "planned"
@@ -37,6 +83,7 @@ export interface ForeshadowSetupRow {
   kind: ForeshadowKind;
   strength: ForeshadowStrength | null;
   aiStrength: ForeshadowStrength | null;
+  /** Phase 2 以降は AiEvaluation の JSON 文字列 */
   aiReasoning: string | null;
   attribution: ForeshadowAttribution;
   aiRationale: string | null;
@@ -44,6 +91,8 @@ export interface ForeshadowSetupRow {
   isOrphan: boolean;
   createdAt: Date;
   updatedAt: Date;
+  /** UI 表示用：ロード時に treeNodes.updatedAt から付与。永続化しない。 */
+  sceneUpdatedAt?: string;
 }
 
 export interface ForeshadowWithLabel extends ForeshadowRow {

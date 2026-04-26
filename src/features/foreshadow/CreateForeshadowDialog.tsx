@@ -7,6 +7,8 @@ interface CreateForeshadowDialogProps {
   projectId: string;
   onSave: (data: { title: string; intent: string | null }) => Promise<void>;
   onClose: () => void;
+  initialTitle?: string;
+  initialIntent?: string;
 }
 
 export function CreateForeshadowDialog({
@@ -14,18 +16,22 @@ export function CreateForeshadowDialog({
   projectId: _projectId,
   onSave,
   onClose,
+  initialTitle = "",
+  initialIntent = "",
 }: CreateForeshadowDialogProps) {
   const { t } = useTranslation();
-  const [title, setTitle] = useState("");
-  const [intent, setIntent] = useState("");
+  const [title, setTitle] = useState(initialTitle);
+  const [intent, setIntent] = useState(initialIntent);
   const [isSaving, setIsSaving] = useState(false);
 
   useEffect(() => {
     if (open) {
-      setTitle("");
-      setIntent("");
+      setTitle(initialTitle);
+      setIntent(initialIntent);
       setIsSaving(false);
     }
+    // initialTitle/initialIntent はダイアログ開時のスナップショットとして使う
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
 
   const canSave = title.trim().length > 0 && !isSaving;

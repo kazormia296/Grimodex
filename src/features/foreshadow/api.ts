@@ -5,10 +5,18 @@ import {
   foreshadows,
   foreshadowSetups,
   foreshadowCodexLinks,
+  treeNodes,
 } from "@/db/schema";
-import { eq, and } from "drizzle-orm";
+import { eq, and, inArray } from "drizzle-orm";
 import type { NewForeshadow, NewForeshadowSetup } from "@/db/schema";
-import type { ForeshadowRow, ForeshadowSetupRow } from "./types";
+import type {
+  ForeshadowRow,
+  ForeshadowSetupRow,
+  AiEvaluation,
+  ForeshadowWithLabel,
+} from "./types";
+import { safeParseAiEvaluation } from "./types";
+import { deriveLabel } from "./deriveLabel";
 
 function isTauriRuntime(): boolean {
   return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
@@ -235,12 +243,19 @@ export async function listSetups(
     return (detail.setups ?? []).map(normalizeSetupRow);
   }
 
-  return db
-    .select()
+  const rows = await db
+    .select({
+      setup: foreshadowSetups,
+      sceneUpdatedAt: treeNodes.updatedAt,
+    })
     .from(foreshadowSetups)
-    .where(eq(foreshadowSetups.foreshadowId, foreshadowId)) as Promise<
-    ForeshadowSetupRow[]
-  >;
+    .leftJoin(treeNodes, eq(foreshadowSetups.sceneId, treeNodes.id))
+    .where(eq(foreshadowSetups.foreshadowId, foreshadowId));
+
+  return rows.map(({ setup, sceneUpdatedAt }) => ({
+    ...(setup as ForeshadowSetupRow),
+    sceneUpdatedAt: sceneUpdatedAt ?? undefined,
+  }));
 }
 
 export async function updateSetup(
@@ -248,7 +263,7 @@ export async function updateSetup(
   patch: Partial<
     Pick<
       ForeshadowSetupRow,
-      "strength" | "aiStrength" | "aiReasoning" | "isOrphan"
+      "strength" | "aiStrength" | "aiReasoning" | "isOrphan" | "lastEvaluatedAt"
     >
   >,
 ): Promise<void> {
@@ -392,6 +407,51 @@ export async function removeCodexLink(
     );
 }
 
+/** Codex エントリに紐付いた伏線を、派生ラベル付きで返す。 */
+export async function listForeshadowsByCodexEntry(
+  codexEntryId: string,
+): Promise<ForeshadowWithLabel[]> {
+  const links = await db
+    .select({ foreshadowId: foreshadowCodexLinks.foreshadowId })
+    .from(foreshadowCodexLinks)
+    .where(eq(foreshadowCodexLinks.codexEntryId, codexEntryId));
+
+  if (links.length === 0) return [];
+
+  const fids = links.map((l) => l.foreshadowId);
+  const rows = await db
+    .select()
+    .from(foreshadows)
+    .where(inArray(foreshadows.id, fids));
+
+  const setups = await db
+    .select()
+    .from(foreshadowSetups)
+    .where(inArray(foreshadowSetups.foreshadowId, fids));
+
+  const countMap = new Map<string, number>();
+  const weakMap = new Map<string, boolean>();
+  for (const s of setups) {
+    if (s.isOrphan) continue;
+    countMap.set(s.foreshadowId, (countMap.get(s.foreshadowId) ?? 0) + 1);
+    const evaluation = safeParseAiEvaluation(s.aiReasoning as string | null);
+    const effectiveStrength =
+      (s.strength as string | null) ??
+      evaluation?.careful?.strength ??
+      (s.aiStrength as string | null);
+    if (effectiveStrength === "subtle") {
+      weakMap.set(s.foreshadowId, true);
+    }
+  }
+
+  return rows.map((r) => {
+    const row = r as ForeshadowRow;
+    const setupCount = countMap.get(row.id) ?? 0;
+    const anyWeak = weakMap.get(row.id) ?? false;
+    return { ...row, setupCount, label: deriveLabel(row, setupCount, anyWeak) };
+  });
+}
+
 // ── AI propose stub ───────────────────────────────────────────────
 
 export interface ProposedSetup {
@@ -476,6 +536,12 @@ export async function proposePastSetups(
     "あなたは小説編集アシスタントです。",
     "回収シーンを成立させるために、過去シーンに置く setup 候補を提案してください。",
     "必ず JSON のみを返してください（前置き・解説禁止）。",
+    "",
+    "【ルール】",
+    '- 既存テキストに適切な箇所がある場合は kind="designated_existing" とし、existingExcerpt（該当テキスト抜粋）とfromPosHint/toPosHint（概算位置）を含めること。',
+    '- 既存テキストに適切な箇所がない場合は kind="inserted_new" とし、suggestedInsertionPoint（「○○の段落の後」等）とsuggestedText（挿入推奨文）を必ず含めること。',
+    "- 両方の kind を混在させて提案してよい。",
+    "",
     "JSON 形式:",
     '{"candidates":[{"sceneId":"...","kind":"designated_existing|inserted_new","existingExcerpt":"...","fromPosHint":1,"toPosHint":2,"suggestedInsertionPoint":"...","suggestedText":"...","rationale":"...","predictedStrength":"subtle|moderate|overt"}]}',
     "",
@@ -502,5 +568,54 @@ export async function proposePastSetups(
     return parsed.candidates.filter(isValidCandidate);
   } catch {
     return [];
+  }
+}
+
+// ── AI 強度評価 ───────────────────────────────────────────────────
+
+export interface EvaluateStrengthRequest {
+  setupId: string;
+  setupExcerpt: string;
+  foreshadowIntent: string;
+}
+
+export async function evaluateSetupStrength(
+  req: EvaluateStrengthRequest,
+): Promise<AiEvaluation | null> {
+  const prompt = [
+    "あなたは小説編集アシスタントです。",
+    "以下の「伏線テキスト」が、異なる読者ペルソナにとってどれほど伏線として気づかれるかを評価してください。",
+    "payoff（回収シーン）の内容は渡しません。読者の初読視点で評価してください。",
+    "",
+    "【ペルソナ定義】",
+    "- careful（精読者）: テキストを丁寧に読み、細かい描写も見逃さない読者",
+    "- casual（普通の読者）: 標準的なペースで読み、印象に残る描写は覚えている読者",
+    "- skim（流し読み）: ストーリーの大筋を追うだけで細部を読み飛ばす読者",
+    "",
+    "【強度の定義】",
+    "- subtle: そのペルソナには伏線として気づかれにくい（自然に溶け込んでいる）",
+    "- moderate: 気づく読者も気づかない読者もいる中程度の強さ",
+    "- overt: そのペルソナには伏線だと明確に分かる（読者が意識する）",
+    "",
+    "必ず JSON のみを返してください（前置き・解説禁止）。",
+    'JSON形式: {"careful":{"strength":"subtle|moderate|overt","reasoning":"..."},"casual":{"strength":"...","reasoning":"..."},"skim":{"strength":"...","reasoning":"..."}}',
+    "",
+    `【伏線の意図】${req.foreshadowIntent}`,
+    "",
+    `【伏線テキスト】\n${req.setupExcerpt}`,
+  ].join("\n");
+
+  const response = await sendChatMessageWithThinking([
+    { role: "user", content: prompt },
+  ]);
+
+  const jsonText = extractJsonObject(response.text);
+  if (!jsonText) return null;
+
+  try {
+    const raw = JSON.parse(jsonText) as unknown;
+    return safeParseAiEvaluation(JSON.stringify(raw));
+  } catch {
+    return null;
   }
 }
