@@ -11,8 +11,12 @@ import {
   deleteForeshadow,
   listSetups,
   deleteSetup,
+  reanchorOrphanSetup,
+  reinsertOrphanSetup,
 } from "./api";
 import { deriveLabel } from "./deriveLabel";
+import { useEditorStore } from "@/features/editor/editorStore";
+import { useSceneStore } from "@/features/tree/store";
 import type {
   ForeshadowRow,
   ForeshadowSetupRow,
@@ -33,6 +37,8 @@ interface ForeshadowState {
   remove: (id: string) => Promise<void>;
   loadSetups: (foreshadowId: string) => Promise<void>;
   removeSetup: (setupId: string, foreshadowId: string) => Promise<void>;
+  reanchorSetup: (setupId: string, foreshadowId: string) => Promise<void>;
+  reinsertSetup: (setupId: string, foreshadowId: string) => Promise<void>;
 }
 
 async function buildWithLabels(
@@ -181,6 +187,179 @@ export const useForeshadowStore = create<ForeshadowState>()((set, _get) => ({
       debugLog.error(
         "ForeshadowStore",
         `removeSetup: ${rootCause(e)}`,
+        errorDetail(e),
+      );
+    }
+  },
+
+  reanchorSetup: async (setupId, foreshadowId) => {
+    const editor = useEditorStore.getState().editor;
+    const activeSceneId = useSceneStore.getState().activeSceneId;
+    if (!editor || !activeSceneId) {
+      toast.error(
+        i18next.t(
+          "foreshadow.store.reanchorNoEditor",
+          "再アンカーするには編集中のシーンを開いてください",
+        ),
+      );
+      return;
+    }
+    const { from, to } = editor.state.selection;
+    if (from === to) {
+      toast.error(
+        i18next.t(
+          "foreshadow.store.reanchorNoSelection",
+          "再アンカーする範囲を選択してください",
+        ),
+      );
+      return;
+    }
+
+    try {
+      await reanchorOrphanSetup(setupId, {
+        sceneId: activeSceneId,
+        fromPos: from,
+        toPos: to,
+      });
+
+      const setups = _get().setupsByForeshadowId[foreshadowId] ?? [];
+      const nextSetups = setups.map((s) =>
+        s.id === setupId
+          ? {
+              ...s,
+              sceneId: activeSceneId,
+              fromPos: from,
+              toPos: to,
+              isOrphan: false,
+              updatedAt: new Date(),
+            }
+          : s,
+      );
+
+      const resolved = nextSetups.find((s) => s.id === setupId);
+      if (resolved) {
+        editor
+          .chain()
+          .setTextSelection({ from, to })
+          .setMark("foreshadowSetup", {
+            setupId: resolved.id,
+            foreshadowId: resolved.foreshadowId,
+          })
+          .run();
+      }
+
+      set((s) => {
+        const activeSetups = nextSetups.filter((x) => !x.isOrphan);
+        const activeCount = activeSetups.length;
+        const anyWeak = activeSetups.some(
+          (x) => x.strength === "subtle" || x.aiStrength === "subtle",
+        );
+        return {
+          setupsByForeshadowId: {
+            ...s.setupsByForeshadowId,
+            [foreshadowId]: nextSetups,
+          },
+          items: s.items.map((item) =>
+            item.id === foreshadowId
+              ? {
+                  ...item,
+                  setupCount: activeCount,
+                  label: deriveLabel(item, activeCount, anyWeak),
+                }
+              : item,
+          ),
+        };
+      });
+    } catch (e) {
+      toast.error(
+        i18next.t(
+          "foreshadow.store.reanchorFailed",
+          "Setupの再アンカーに失敗しました",
+        ),
+      );
+      debugLog.error(
+        "ForeshadowStore",
+        `reanchorSetup: ${rootCause(e)}`,
+        errorDetail(e),
+      );
+    }
+  },
+
+  reinsertSetup: async (setupId, foreshadowId) => {
+    const editor = useEditorStore.getState().editor;
+    const activeSceneId = useSceneStore.getState().activeSceneId;
+    if (!editor || !activeSceneId) {
+      toast.error(
+        i18next.t(
+          "foreshadow.store.reinsertNoEditor",
+          "再挿入するには編集中のシーンを開いてください",
+        ),
+      );
+      return;
+    }
+    const { from, to } = editor.state.selection;
+    if (from === to) {
+      toast.error(
+        i18next.t(
+          "foreshadow.store.reinsertNoSelection",
+          "再挿入する範囲を選択してください",
+        ),
+      );
+      return;
+    }
+
+    try {
+      const inserted = await reinsertOrphanSetup(setupId, {
+        sceneId: activeSceneId,
+        fromPos: from,
+        toPos: to,
+      });
+      editor
+        .chain()
+        .setTextSelection({ from, to })
+        .setMark("foreshadowSetup", {
+          setupId: inserted.id,
+          foreshadowId: inserted.foreshadowId,
+        })
+        .run();
+
+      const setups = _get().setupsByForeshadowId[foreshadowId] ?? [];
+      const nextSetups = setups
+        .filter((s) => s.id !== setupId)
+        .concat([{ ...inserted, fromPos: from, toPos: to, isOrphan: false }]);
+
+      set((s) => {
+        const activeSetups = nextSetups.filter((x) => !x.isOrphan);
+        const activeCount = activeSetups.length;
+        const anyWeak = activeSetups.some(
+          (x) => x.strength === "subtle" || x.aiStrength === "subtle",
+        );
+        return {
+          setupsByForeshadowId: {
+            ...s.setupsByForeshadowId,
+            [foreshadowId]: nextSetups,
+          },
+          items: s.items.map((item) =>
+            item.id === foreshadowId
+              ? {
+                  ...item,
+                  setupCount: activeCount,
+                  label: deriveLabel(item, activeCount, anyWeak),
+                }
+              : item,
+          ),
+        };
+      });
+    } catch (e) {
+      toast.error(
+        i18next.t(
+          "foreshadow.store.reinsertFailed",
+          "Setupの再挿入に失敗しました",
+        ),
+      );
+      debugLog.error(
+        "ForeshadowStore",
+        `reinsertSetup: ${rootCause(e)}`,
         errorDetail(e),
       );
     }

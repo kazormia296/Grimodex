@@ -153,7 +153,7 @@ export function ForeshadowMarkPopover({ editor }: Props) {
   const filtered = items.filter((item) => {
     if (!item.title.toLowerCase().includes(search.toLowerCase())) return false;
     if (mode === "payoff-unanchored")
-      return item.label === "planned" || item.label === "seeded";
+      return item.payoffSceneId === null && !item.abandoned;
     return true;
   });
 

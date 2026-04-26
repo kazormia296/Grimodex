@@ -2,12 +2,23 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 
-const { mockLoad, mockRemove, mockLoadSetups, mockRemoveSetup, ITEMS, SETUPS } =
+const {
+  mockLoad,
+  mockRemove,
+  mockLoadSetups,
+  mockRemoveSetup,
+  mockReanchorSetup,
+  mockReinsertSetup,
+  ITEMS,
+  SETUPS,
+} =
   vi.hoisted(() => {
     const mockLoad = vi.fn().mockResolvedValue(undefined);
     const mockRemove = vi.fn().mockResolvedValue(undefined);
     const mockLoadSetups = vi.fn().mockResolvedValue(undefined);
     const mockRemoveSetup = vi.fn().mockResolvedValue(undefined);
+    const mockReanchorSetup = vi.fn().mockResolvedValue(undefined);
+    const mockReinsertSetup = vi.fn().mockResolvedValue(undefined);
 
     const ITEMS = [
       {
@@ -95,6 +106,8 @@ const { mockLoad, mockRemove, mockLoadSetups, mockRemoveSetup, ITEMS, SETUPS } =
       mockRemove,
       mockLoadSetups,
       mockRemoveSetup,
+      mockReanchorSetup,
+      mockReinsertSetup,
       ITEMS,
       SETUPS,
     };
@@ -110,6 +123,8 @@ vi.mock("./foreshadowStore", () => {
     setupsByForeshadowId: SETUPS,
     loadSetups: mockLoadSetups,
     removeSetup: mockRemoveSetup,
+    reanchorSetup: mockReanchorSetup,
+    reinsertSetup: mockReinsertSetup,
   };
   return { useForeshadowStore: () => state };
 });
@@ -188,6 +203,8 @@ describe("ForeshadowPanel - オーファン Setup UI", () => {
   beforeEach(() => {
     mockLoadSetups.mockClear();
     mockRemoveSetup.mockClear();
+    mockReanchorSetup.mockClear();
+    mockReinsertSetup.mockClear();
   });
 
   it("アイテムをクリックすると展開され loadSetups が呼ばれる", async () => {
@@ -237,6 +254,21 @@ describe("ForeshadowPanel - オーファン Setup UI", () => {
     });
   });
 
+  it("孤立 Setup には再アンカー / 再挿入ボタンがある", async () => {
+    render(<ForeshadowPanel />);
+
+    fireEvent.click(screen.getByTestId("foreshadow-expand-2"));
+
+    await waitFor(() => {
+      expect(
+        screen.getByTestId("foreshadow-setup-reanchor-s-orphan"),
+      ).toBeInTheDocument();
+      expect(
+        screen.getByTestId("foreshadow-setup-reinsert-s-orphan"),
+      ).toBeInTheDocument();
+    });
+  });
+
   it("破棄ボタンをクリックすると removeSetup が呼ばれる", async () => {
     render(<ForeshadowPanel />);
 
@@ -250,6 +282,36 @@ describe("ForeshadowPanel - オーファン Setup UI", () => {
 
     fireEvent.click(screen.getByTestId("foreshadow-setup-discard-s-orphan"));
     expect(mockRemoveSetup).toHaveBeenCalledWith("s-orphan", "2");
+  });
+
+  it("再アンカーボタンをクリックすると reanchorSetup が呼ばれる", async () => {
+    render(<ForeshadowPanel />);
+
+    fireEvent.click(screen.getByTestId("foreshadow-expand-2"));
+
+    await waitFor(() => {
+      expect(
+        screen.getByTestId("foreshadow-setup-reanchor-s-orphan"),
+      ).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByTestId("foreshadow-setup-reanchor-s-orphan"));
+    expect(mockReanchorSetup).toHaveBeenCalledWith("s-orphan", "2");
+  });
+
+  it("再挿入ボタンをクリックすると reinsertSetup が呼ばれる", async () => {
+    render(<ForeshadowPanel />);
+
+    fireEvent.click(screen.getByTestId("foreshadow-expand-2"));
+
+    await waitFor(() => {
+      expect(
+        screen.getByTestId("foreshadow-setup-reinsert-s-orphan"),
+      ).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByTestId("foreshadow-setup-reinsert-s-orphan"));
+    expect(mockReinsertSetup).toHaveBeenCalledWith("s-orphan", "2");
   });
 
   it("再クリックで折り畳まれる", async () => {

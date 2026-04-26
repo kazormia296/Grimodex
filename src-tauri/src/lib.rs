@@ -47,6 +47,119 @@ struct QueryResult {
     rows: Vec<serde_json::Map<String, Value>>,
 }
 
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ForeshadowCreatePayload {
+    project_id: String,
+    title: String,
+    intent: Option<String>,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ForeshadowPatch {
+    title: Option<String>,
+    intent: Option<String>,
+    notes: Option<String>,
+    payoff_scene_id: Option<String>,
+    payoff_from_pos: Option<i64>,
+    payoff_to_pos: Option<i64>,
+    payoff_confirmed: Option<bool>,
+    abandoned: Option<bool>,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ForeshadowFilter {
+    label: Option<String>,
+    include_abandoned: Option<bool>,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct OrphanResolvePayload {
+    setup_id: String,
+    action: String,
+    scene_id: Option<String>,
+    from_pos: Option<i64>,
+    to_pos: Option<i64>,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SetupAnchorInput {
+    id: String,
+    foreshadow_id: String,
+    scene_id: String,
+    from_pos: i64,
+    to_pos: i64,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PayoffAnchorInput {
+    foreshadow_id: String,
+    scene_id: String,
+    from_pos: i64,
+    to_pos: i64,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AnchorMarkOutput {
+    from: i64,
+    to: i64,
+    mark_name: String,
+    attrs: Value,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ForeshadowProposeRequest {
+    intent: String,
+    payoff_scene_id: String,
+    payoff_excerpt: String,
+    past_scenes: Vec<ForeshadowProposeScene>,
+    related_codex: Vec<ForeshadowProposeCodex>,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ForeshadowProposeScene {
+    scene_id: String,
+    title: String,
+    excerpt: String,
+    order_index: i64,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ForeshadowProposeCodex {
+    id: String,
+    name: String,
+    summary: String,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct ForeshadowProposedSetup {
+    scene_id: String,
+    kind: String,
+    existing_excerpt: Option<String>,
+    from_pos_hint: Option<i64>,
+    to_pos_hint: Option<i64>,
+    suggested_insertion_point: Option<String>,
+    suggested_text: Option<String>,
+    rationale: String,
+    predicted_strength: String,
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ForeshadowProposeResponse {
+    candidates: Vec<ForeshadowProposedSetup>,
+}
+
 /// Holds the currently-open workspace's DB.
 /// Wrapped in Option so it can be None before a workspace is opened.
 struct ActiveWorkspace {
@@ -173,6 +286,571 @@ fn db_execute_batch(
         let rows = db.execute_batch_tx(&statements)?;
         Ok(QueryResult { rows })
     })
+}
+
+// --- Foreshadow commands ---
+
+#[tauri::command]
+fn foreshadow_create(
+    ws_state: tauri::State<'_, WorkspaceState>,
+    payload: ForeshadowCreatePayload,
+) -> Result<Value, AppError> {
+    with_db(&ws_state, |db| {
+        let now = chrono::Utc::now().timestamp_millis();
+        let id = uuid::Uuid::new_v4().to_string();
+        db.execute(
+            "INSERT INTO foreshadows
+             (id, project_id, title, intent, notes, payoff_scene_id, payoff_from_pos, payoff_to_pos, payoff_confirmed, abandoned, created_at, updated_at)
+             VALUES (?, ?, ?, ?, NULL, NULL, NULL, NULL, 0, 0, ?, ?)",
+            &[
+                Value::String(id.clone()),
+                Value::String(payload.project_id),
+                Value::String(payload.title),
+                payload.intent.map(Value::String).unwrap_or(Value::Null),
+                Value::Number(now.into()),
+                Value::Number(now.into()),
+            ],
+            "run",
+        )?;
+        let rows = db.execute(
+            "SELECT * FROM foreshadows WHERE id = ?",
+            &[Value::String(id)],
+            "get",
+        )?;
+        Ok(rows.first().cloned().map(Value::Object).unwrap_or(Value::Null))
+    })
+}
+
+#[tauri::command]
+fn foreshadow_update(
+    ws_state: tauri::State<'_, WorkspaceState>,
+    id: String,
+    patch: ForeshadowPatch,
+) -> Result<Value, AppError> {
+    with_db(&ws_state, |db| {
+        let now = chrono::Utc::now().timestamp_millis();
+        db.execute(
+            "UPDATE foreshadows
+             SET title = COALESCE(?, title),
+                 intent = COALESCE(?, intent),
+                 notes = COALESCE(?, notes),
+                 payoff_scene_id = COALESCE(?, payoff_scene_id),
+                 payoff_from_pos = COALESCE(?, payoff_from_pos),
+                 payoff_to_pos = COALESCE(?, payoff_to_pos),
+                 payoff_confirmed = COALESCE(?, payoff_confirmed),
+                 abandoned = COALESCE(?, abandoned),
+                 updated_at = ?
+             WHERE id = ?",
+            &[
+                patch.title.map(Value::String).unwrap_or(Value::Null),
+                patch.intent.map(Value::String).unwrap_or(Value::Null),
+                patch.notes.map(Value::String).unwrap_or(Value::Null),
+                patch
+                    .payoff_scene_id
+                    .map(Value::String)
+                    .unwrap_or(Value::Null),
+                patch
+                    .payoff_from_pos
+                    .map(|v| Value::Number(v.into()))
+                    .unwrap_or(Value::Null),
+                patch
+                    .payoff_to_pos
+                    .map(|v| Value::Number(v.into()))
+                    .unwrap_or(Value::Null),
+                patch
+                    .payoff_confirmed
+                    .map(Value::Bool)
+                    .unwrap_or(Value::Null),
+                patch
+                    .abandoned
+                    .map(Value::Bool)
+                    .unwrap_or(Value::Null),
+                Value::Number(now.into()),
+                Value::String(id.clone()),
+            ],
+            "run",
+        )?;
+        let rows = db.execute(
+            "SELECT * FROM foreshadows WHERE id = ?",
+            &[Value::String(id)],
+            "get",
+        )?;
+        Ok(rows.first().cloned().map(Value::Object).unwrap_or(Value::Null))
+    })
+}
+
+#[tauri::command]
+fn foreshadow_delete(ws_state: tauri::State<'_, WorkspaceState>, id: String) -> Result<(), AppError> {
+    with_db(&ws_state, |db| {
+        db.execute(
+            "DELETE FROM foreshadows WHERE id = ?",
+            &[Value::String(id)],
+            "run",
+        )?;
+        Ok(())
+    })
+}
+
+#[tauri::command]
+fn foreshadow_list(
+    ws_state: tauri::State<'_, WorkspaceState>,
+    project_id: String,
+    filter: Option<ForeshadowFilter>,
+) -> Result<Vec<Value>, AppError> {
+    with_db(&ws_state, |db| {
+        let include_abandoned = filter
+            .as_ref()
+            .and_then(|f| f.include_abandoned)
+            .unwrap_or(true);
+        let rows = if include_abandoned {
+            db.execute(
+                "SELECT * FROM foreshadows WHERE project_id = ? ORDER BY updated_at DESC",
+                &[Value::String(project_id)],
+                "all",
+            )?
+        } else {
+            db.execute(
+                "SELECT * FROM foreshadows WHERE project_id = ? AND abandoned = 0 ORDER BY updated_at DESC",
+                &[Value::String(project_id)],
+                "all",
+            )?
+        };
+
+        let label_filter = filter.and_then(|f| f.label);
+        let mut values: Vec<Value> = rows.into_iter().map(Value::Object).collect();
+        if let Some(label) = label_filter {
+            values.retain(|row| {
+                let obj = match row {
+                    Value::Object(obj) => obj,
+                    _ => return false,
+                };
+                let payoff_confirmed = obj
+                    .get("payoff_confirmed")
+                    .and_then(|v| v.as_i64())
+                    .unwrap_or(0)
+                    == 1;
+                let abandoned = obj.get("abandoned").and_then(|v| v.as_i64()).unwrap_or(0) == 1;
+                match label.as_str() {
+                    "abandoned" => abandoned,
+                    "paid" => !abandoned && payoff_confirmed,
+                    "planned" => !abandoned && !payoff_confirmed,
+                    _ => true,
+                }
+            });
+        }
+        Ok(values)
+    })
+}
+
+#[tauri::command]
+fn foreshadow_get(ws_state: tauri::State<'_, WorkspaceState>, id: String) -> Result<Value, AppError> {
+    with_db(&ws_state, |db| {
+        let foreshadow_rows = db.execute(
+            "SELECT * FROM foreshadows WHERE id = ?",
+            &[Value::String(id.clone())],
+            "get",
+        )?;
+        let setup_rows = db.execute(
+            "SELECT * FROM foreshadow_setups WHERE foreshadow_id = ? ORDER BY created_at ASC",
+            &[Value::String(id)],
+            "all",
+        )?;
+        let mut detail = serde_json::Map::new();
+        detail.insert(
+            "foreshadow".to_string(),
+            foreshadow_rows
+                .first()
+                .cloned()
+                .map(Value::Object)
+                .unwrap_or(Value::Null),
+        );
+        detail.insert(
+            "setups".to_string(),
+            Value::Array(setup_rows.into_iter().map(Value::Object).collect()),
+        );
+        Ok(Value::Object(detail))
+    })
+}
+
+#[tauri::command]
+fn foreshadow_link_codex(
+    ws_state: tauri::State<'_, WorkspaceState>,
+    foreshadow_id: String,
+    codex_id: String,
+) -> Result<(), AppError> {
+    with_db(&ws_state, |db| {
+        db.execute(
+            "INSERT OR IGNORE INTO foreshadow_codex_links (foreshadow_id, codex_entry_id) VALUES (?, ?)",
+            &[Value::String(foreshadow_id), Value::String(codex_id)],
+            "run",
+        )?;
+        Ok(())
+    })
+}
+
+#[tauri::command]
+fn foreshadow_unlink_codex(
+    ws_state: tauri::State<'_, WorkspaceState>,
+    foreshadow_id: String,
+    codex_id: String,
+) -> Result<(), AppError> {
+    with_db(&ws_state, |db| {
+        db.execute(
+            "DELETE FROM foreshadow_codex_links WHERE foreshadow_id = ? AND codex_entry_id = ?",
+            &[Value::String(foreshadow_id), Value::String(codex_id)],
+            "run",
+        )?;
+        Ok(())
+    })
+}
+
+#[tauri::command]
+fn foreshadow_set_setup_strength(
+    ws_state: tauri::State<'_, WorkspaceState>,
+    setup_id: String,
+    strength: Option<String>,
+) -> Result<(), AppError> {
+    with_db(&ws_state, |db| {
+        let now = chrono::Utc::now().timestamp_millis();
+        db.execute(
+            "UPDATE foreshadow_setups SET strength = ?, updated_at = ? WHERE id = ?",
+            &[
+                strength.map(Value::String).unwrap_or(Value::Null),
+                Value::Number(now.into()),
+                Value::String(setup_id),
+            ],
+            "run",
+        )?;
+        Ok(())
+    })
+}
+
+#[tauri::command]
+fn foreshadow_resolve_orphan(
+    ws_state: tauri::State<'_, WorkspaceState>,
+    payload: OrphanResolvePayload,
+) -> Result<Option<String>, AppError> {
+    with_db(&ws_state, |db| {
+        let now = chrono::Utc::now().timestamp_millis();
+        match payload.action.as_str() {
+            "reanchor" => {
+                db.execute(
+                    "UPDATE foreshadow_setups
+                     SET scene_id = ?, from_pos = ?, to_pos = ?, is_orphan = 0, updated_at = ?
+                     WHERE id = ?",
+                    &[
+                        payload.scene_id.map(Value::String).unwrap_or(Value::Null),
+                        payload
+                            .from_pos
+                            .map(|v| Value::Number(v.into()))
+                            .unwrap_or(Value::Null),
+                        payload
+                            .to_pos
+                            .map(|v| Value::Number(v.into()))
+                            .unwrap_or(Value::Null),
+                        Value::Number(now.into()),
+                        Value::String(payload.setup_id),
+                    ],
+                    "run",
+                )?;
+                Ok(None)
+            }
+            "delete" => {
+                db.execute(
+                    "DELETE FROM foreshadow_setups WHERE id = ?",
+                    &[Value::String(payload.setup_id)],
+                    "run",
+                )?;
+                Ok(None)
+            }
+            "reinsert" => {
+                let rows = db.execute(
+                    "SELECT foreshadow_id, strength, ai_strength, ai_reasoning, attribution, ai_rationale, last_evaluated_at
+                     FROM foreshadow_setups WHERE id = ?",
+                    &[Value::String(payload.setup_id.clone())],
+                    "get",
+                )?;
+                let Some(existing) = rows.first() else {
+                    return Ok(None);
+                };
+                let new_id = uuid::Uuid::new_v4().to_string();
+                db.execute(
+                    "INSERT INTO foreshadow_setups
+                     (id, foreshadow_id, scene_id, from_pos, to_pos, kind, strength, ai_strength, ai_reasoning, attribution, ai_rationale, last_evaluated_at, is_orphan, created_at, updated_at)
+                     VALUES (?, ?, ?, ?, ?, 'inserted_new', ?, ?, ?, ?, ?, ?, 0, ?, ?)",
+                    &[
+                        Value::String(new_id.clone()),
+                        existing.get("foreshadow_id").cloned().unwrap_or(Value::Null),
+                        payload.scene_id.map(Value::String).unwrap_or(Value::Null),
+                        payload
+                            .from_pos
+                            .map(|v| Value::Number(v.into()))
+                            .unwrap_or(Value::Null),
+                        payload
+                            .to_pos
+                            .map(|v| Value::Number(v.into()))
+                            .unwrap_or(Value::Null),
+                        existing.get("strength").cloned().unwrap_or(Value::Null),
+                        existing.get("ai_strength").cloned().unwrap_or(Value::Null),
+                        existing.get("ai_reasoning").cloned().unwrap_or(Value::Null),
+                        existing.get("attribution").cloned().unwrap_or(Value::String("human".to_string())),
+                        existing.get("ai_rationale").cloned().unwrap_or(Value::Null),
+                        existing
+                            .get("last_evaluated_at")
+                            .cloned()
+                            .unwrap_or(Value::Null),
+                        Value::Number(now.into()),
+                        Value::Number(now.into()),
+                    ],
+                    "run",
+                )?;
+                db.execute(
+                    "DELETE FROM foreshadow_setups WHERE id = ?",
+                    &[Value::String(payload.setup_id)],
+                    "run",
+                )?;
+                Ok(Some(new_id))
+            }
+            _ => Ok(None),
+        }
+    })
+}
+
+#[tauri::command]
+fn foreshadow_save_anchors_for_scene(
+    ws_state: tauri::State<'_, WorkspaceState>,
+    scene_id: String,
+    setups: Vec<SetupAnchorInput>,
+    payoffs: Vec<PayoffAnchorInput>,
+) -> Result<(), AppError> {
+    with_db(&ws_state, |db| {
+        let now = chrono::Utc::now().timestamp_millis();
+        let mut statements: Vec<database::BatchStatement> = Vec::new();
+
+        for s in &setups {
+            statements.push(database::BatchStatement {
+                sql: "INSERT INTO foreshadow_setups
+                      (id, foreshadow_id, scene_id, from_pos, to_pos, kind, attribution, is_orphan, created_at, updated_at)
+                      VALUES (?, ?, ?, ?, ?, 'designated_existing', 'human', 0, ?, ?)
+                      ON CONFLICT(id) DO UPDATE SET
+                        from_pos   = excluded.from_pos,
+                        to_pos     = excluded.to_pos,
+                        is_orphan  = 0,
+                        updated_at = excluded.updated_at"
+                    .to_string(),
+                params: vec![
+                    Value::String(s.id.clone()),
+                    Value::String(s.foreshadow_id.clone()),
+                    Value::String(s.scene_id.clone()),
+                    Value::Number(s.from_pos.into()),
+                    Value::Number(s.to_pos.into()),
+                    Value::Number(now.into()),
+                    Value::Number(now.into()),
+                ],
+                method: "run".to_string(),
+            });
+        }
+
+        for p in &payoffs {
+            statements.push(database::BatchStatement {
+                sql: "UPDATE foreshadows
+                      SET payoff_scene_id = ?, payoff_from_pos = ?, payoff_to_pos = ?, updated_at = ?
+                      WHERE id = ?"
+                    .to_string(),
+                params: vec![
+                    Value::String(p.scene_id.clone()),
+                    Value::Number(p.from_pos.into()),
+                    Value::Number(p.to_pos.into()),
+                    Value::Number(now.into()),
+                    Value::String(p.foreshadow_id.clone()),
+                ],
+                method: "run".to_string(),
+            });
+        }
+
+        if setups.is_empty() {
+            statements.push(database::BatchStatement {
+                sql: "UPDATE foreshadow_setups SET is_orphan = 1, updated_at = ? WHERE scene_id = ?"
+                    .to_string(),
+                params: vec![Value::Number(now.into()), Value::String(scene_id.clone())],
+                method: "run".to_string(),
+            });
+        } else {
+            let placeholders = std::iter::repeat_n("?", setups.len())
+                .collect::<Vec<_>>()
+                .join(", ");
+            let mut params = vec![Value::Number(now.into()), Value::String(scene_id.clone())];
+            params.extend(setups.iter().map(|s| Value::String(s.id.clone())));
+            statements.push(database::BatchStatement {
+                sql: format!(
+                    "UPDATE foreshadow_setups
+                     SET is_orphan = 1, updated_at = ?
+                     WHERE scene_id = ? AND id NOT IN ({placeholders})"
+                ),
+                params,
+                method: "run".to_string(),
+            });
+        }
+
+        if !statements.is_empty() {
+            db.execute_batch_tx(&statements)?;
+        }
+        Ok(())
+    })
+}
+
+#[tauri::command]
+fn foreshadow_load_anchors_for_scene(
+    ws_state: tauri::State<'_, WorkspaceState>,
+    scene_id: String,
+) -> Result<Vec<AnchorMarkOutput>, AppError> {
+    with_db(&ws_state, |db| {
+        let setup_rows = db.execute(
+            "SELECT id, foreshadow_id, from_pos, to_pos
+             FROM foreshadow_setups
+             WHERE scene_id = ? AND is_orphan = 0",
+            &[Value::String(scene_id.clone())],
+            "all",
+        )?;
+        let payoff_rows = db.execute(
+            "SELECT id, payoff_from_pos, payoff_to_pos
+             FROM foreshadows
+             WHERE payoff_scene_id = ?",
+            &[Value::String(scene_id)],
+            "all",
+        )?;
+
+        let mut out = Vec::new();
+        for row in setup_rows {
+            let from = row.get("from_pos").and_then(|v| v.as_i64()).unwrap_or(0);
+            let to = row.get("to_pos").and_then(|v| v.as_i64()).unwrap_or(0);
+            let setup_id = row
+                .get("id")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string();
+            let foreshadow_id = row
+                .get("foreshadow_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string();
+            out.push(AnchorMarkOutput {
+                from,
+                to,
+                mark_name: "foreshadowSetup".to_string(),
+                attrs: serde_json::json!({ "setupId": setup_id, "foreshadowId": foreshadow_id }),
+            });
+        }
+        for row in payoff_rows {
+            let from = row
+                .get("payoff_from_pos")
+                .and_then(|v| v.as_i64())
+                .unwrap_or(0);
+            let to = row
+                .get("payoff_to_pos")
+                .and_then(|v| v.as_i64())
+                .unwrap_or(0);
+            if from <= 0 || to <= 0 {
+                continue;
+            }
+            let foreshadow_id = row
+                .get("id")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string();
+            out.push(AnchorMarkOutput {
+                from,
+                to,
+                mark_name: "foreshadowPayoff".to_string(),
+                attrs: serde_json::json!({ "foreshadowId": foreshadow_id }),
+            });
+        }
+        Ok(out)
+    })
+}
+
+#[tauri::command]
+async fn foreshadow_propose_past_setups(
+    ai_path: tauri::State<'_, AiSettingsPath>,
+    req: ForeshadowProposeRequest,
+) -> Result<ForeshadowProposeResponse, AppError> {
+    let scene_summary = req
+        .past_scenes
+        .iter()
+        .take(30)
+        .map(|scene| {
+            format!(
+                "- sceneId={}, title={}, order={}\n  excerpt: {}",
+                scene.scene_id, scene.title, scene.order_index, scene.excerpt
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    let codex_summary = req
+        .related_codex
+        .iter()
+        .take(20)
+        .map(|entry| format!("- {} ({}): {}", entry.name, entry.id, entry.summary))
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    let prompt = [
+        "あなたは小説編集アシスタントです。",
+        "回収シーンを成立させるために、過去シーンに置く setup 候補を提案してください。",
+        "必ず JSON のみを返してください（前置き・解説禁止）。",
+        "JSON 形式:",
+        "{\"candidates\":[{\"sceneId\":\"...\",\"kind\":\"designated_existing|inserted_new\",\"existingExcerpt\":\"...\",\"fromPosHint\":1,\"toPosHint\":2,\"suggestedInsertionPoint\":\"...\",\"suggestedText\":\"...\",\"rationale\":\"...\",\"predictedStrength\":\"subtle|moderate|overt\"}]}",
+        "",
+        &format!("intent: {}", req.intent),
+        &format!("payoffSceneId: {}", req.payoff_scene_id),
+        &format!("payoffExcerpt: {}", req.payoff_excerpt),
+        "",
+        "[pastScenes]",
+        if scene_summary.is_empty() { "(none)" } else { &scene_summary },
+        "",
+        "[relatedCodex]",
+        if codex_summary.is_empty() { "(none)" } else { &codex_summary },
+    ]
+    .join("\n");
+
+    let settings = ai::read_ai_settings(&ai_path.path);
+    let api_key = resolve_api_key(&settings.provider)?;
+    let params = ai::ChatParams {
+        provider: &settings.provider,
+        model: &settings.model,
+        api_key: &api_key,
+        ollama_endpoint: &settings.ollama_endpoint,
+        thinking: None,
+        effort: None,
+        reasoning_enabled: None,
+        reasoning_effort: None,
+    };
+    let response = ai::send_chat(&params, &[("user", prompt.as_str())]).await?;
+    let text = response
+        .blocks
+        .iter()
+        .filter_map(|b| match b {
+            ai::ResponseBlock::Text { content } => Some(content.as_str()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    let parsed = serde_json::from_str::<ForeshadowProposeResponse>(&text)
+        .ok()
+        .or_else(|| {
+            let start = text.find('{')?;
+            let end = text.rfind('}')?;
+            if end <= start {
+                return None;
+            }
+            serde_json::from_str::<ForeshadowProposeResponse>(&text[start..=end]).ok()
+        })
+        .unwrap_or(ForeshadowProposeResponse {
+            candidates: Vec::new(),
+        });
+
+    Ok(parsed)
 }
 
 // --- FTS commands ---
@@ -575,6 +1253,18 @@ pub fn run() {
             send_inline_ai_stream,
             abort_inline_ai_stream,
             send_agent_message,
+            foreshadow_create,
+            foreshadow_update,
+            foreshadow_delete,
+            foreshadow_list,
+            foreshadow_get,
+            foreshadow_link_codex,
+            foreshadow_unlink_codex,
+            foreshadow_set_setup_strength,
+            foreshadow_resolve_orphan,
+            foreshadow_save_anchors_for_scene,
+            foreshadow_load_anchors_for_scene,
+            foreshadow_propose_past_setups,
             fts_optimize,
             fts_rebuild,
             fts_search,

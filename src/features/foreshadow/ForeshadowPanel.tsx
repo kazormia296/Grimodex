@@ -36,6 +36,8 @@ export function ForeshadowPanel() {
     setupsByForeshadowId,
     loadSetups,
     removeSetup,
+    reanchorSetup,
+    reinsertSetup,
   } = useForeshadowStore();
   const [dialogOpen, setDialogOpen] = useState(false);
   const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
@@ -262,9 +264,29 @@ export function ForeshadowPanel() {
                           </span>
                           <button
                             type="button"
+                            data-testid={`foreshadow-setup-reanchor-${setup.id}`}
+                            onClick={() =>
+                              void reanchorSetup(setup.id, item.id)
+                            }
+                            className="rounded px-1.5 py-0.5 text-[10px] text-blue-600 hover:bg-blue-500/10 dark:text-blue-400"
+                          >
+                            {t("foreshadow.setup.reanchor", "再アンカー")}
+                          </button>
+                          <button
+                            type="button"
+                            data-testid={`foreshadow-setup-reinsert-${setup.id}`}
+                            onClick={() =>
+                              void reinsertSetup(setup.id, item.id)
+                            }
+                            className="rounded px-1.5 py-0.5 text-[10px] text-emerald-600 hover:bg-emerald-500/10 dark:text-emerald-400"
+                          >
+                            {t("foreshadow.setup.reinsert", "再挿入")}
+                          </button>
+                          <button
+                            type="button"
                             data-testid={`foreshadow-setup-discard-${setup.id}`}
                             onClick={() => void removeSetup(setup.id, item.id)}
-                            className="ml-auto rounded px-1.5 py-0.5 text-[10px] text-destructive hover:bg-destructive/10"
+                            className="rounded px-1.5 py-0.5 text-[10px] text-destructive hover:bg-destructive/10"
                           >
                             {t("foreshadow.setup.discard", "破棄")}
                           </button>

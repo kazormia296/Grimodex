@@ -1,7 +1,6 @@
-import { invoke } from "@tauri-apps/api/core";
+import { invoke } from "@/lib/tauri";
 import { db } from "@/db/client";
-import { foreshadows, foreshadowSetups } from "@/db/schema";
-import { eq } from "drizzle-orm";
+import { foreshadows } from "@/db/schema";
 import type { Node as ProseMirrorNode } from "@tiptap/pm/model";
 
 // Shape returned by extract helpers (subset of NewForeshadowSetup)
@@ -94,61 +93,22 @@ export async function saveForeshadowAnchors(
     validIds.has(p.foreshadowId),
   );
 
-  // Collect UPSERT statements for setup anchors
-  type Statement = { sql: string; params: unknown[]; method: string };
-  const statements: Statement[] = [];
-
-  const now = Date.now();
-
-  for (const s of setups) {
-    // UPSERT: insert or update positions only (preserve metadata like strength)
-    statements.push({
-      sql: `INSERT INTO foreshadow_setups
-              (id, foreshadow_id, scene_id, from_pos, to_pos, kind, attribution, is_orphan, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, 'designated_existing', 'human', 0, ?, ?)
-            ON CONFLICT(id) DO UPDATE SET
-              from_pos   = excluded.from_pos,
-              to_pos     = excluded.to_pos,
-              is_orphan  = 0,
-              updated_at = excluded.updated_at`,
-      params: [s.id, s.foreshadowId, s.sceneId, s.fromPos, s.toPos, now, now],
-      method: "run",
-    });
-  }
-
-  // Update payoff anchor positions on foreshadows rows
-  for (const p of payoffs) {
-    statements.push({
-      sql: `UPDATE foreshadows
-            SET payoff_scene_id = ?, payoff_from_pos = ?, payoff_to_pos = ?, updated_at = ?
-            WHERE id = ?`,
-      params: [p.sceneId, p.fromPos, p.toPos, now, p.foreshadowId],
-      method: "run",
-    });
-  }
-
-  // Mark setups in this scene that are no longer anchored as orphans
-  const currentSetupIds = setups.map((s) => s.id);
-  if (currentSetupIds.length > 0) {
-    const placeholders = currentSetupIds.map(() => "?").join(", ");
-    statements.push({
-      sql: `UPDATE foreshadow_setups
-            SET is_orphan = 1, updated_at = ?
-            WHERE scene_id = ? AND id NOT IN (${placeholders})`,
-      params: [now, sceneId, ...currentSetupIds],
-      method: "run",
-    });
-  } else {
-    statements.push({
-      sql: `UPDATE foreshadow_setups SET is_orphan = 1, updated_at = ? WHERE scene_id = ?`,
-      params: [now, sceneId],
-      method: "run",
-    });
-  }
-
-  if (statements.length === 0) return;
-
-  await invoke("db_execute_batch", { statements });
+  await invoke("foreshadow_save_anchors_for_scene", {
+    sceneId,
+    setups: setups.map((s) => ({
+      id: s.id,
+      foreshadowId: s.foreshadowId,
+      sceneId: s.sceneId,
+      fromPos: s.fromPos,
+      toPos: s.toPos,
+    })),
+    payoffs: payoffs.map((p) => ({
+      foreshadowId: p.foreshadowId,
+      sceneId: p.sceneId,
+      fromPos: p.fromPos,
+      toPos: p.toPos,
+    })),
+  });
 }
 
 /**
@@ -181,39 +141,7 @@ export interface MarkApplication {
 export async function loadForeshadowAnchors(
   sceneId: string,
 ): Promise<MarkApplication[]> {
-  const result: MarkApplication[] = [];
-
-  // Load setup anchors
-  const setups = await db
-    .select()
-    .from(foreshadowSetups)
-    .where(eq(foreshadowSetups.sceneId, sceneId));
-
-  for (const s of setups) {
-    if (s.isOrphan) continue;
-    result.push({
-      from: s.fromPos,
-      to: s.toPos,
-      markName: "foreshadowSetup",
-      attrs: { setupId: s.id, foreshadowId: s.foreshadowId },
-    });
-  }
-
-  // Load payoff anchors (inline on foreshadows table)
-  const payoffs = await db
-    .select()
-    .from(foreshadows)
-    .where(eq(foreshadows.payoffSceneId, sceneId));
-
-  for (const f of payoffs) {
-    if (f.payoffFromPos == null || f.payoffToPos == null) continue;
-    result.push({
-      from: f.payoffFromPos,
-      to: f.payoffToPos,
-      markName: "foreshadowPayoff",
-      attrs: { foreshadowId: f.id },
-    });
-  }
-
-  return result;
+  return invoke<MarkApplication[]>("foreshadow_load_anchors_for_scene", {
+    sceneId,
+  });
 }

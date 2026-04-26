@@ -20,7 +20,7 @@ vi.mock("@/db/client", () => ({
   },
 }));
 
-vi.mock("@tauri-apps/api/core", () => ({
+vi.mock("@/lib/tauri", () => ({
   invoke: mockInvoke,
 }));
 
@@ -188,12 +188,10 @@ describe("saveForeshadowAnchors FK sweep", () => {
     await saveForeshadowAnchors("scene-1", editor.state.doc);
 
     expect(mockInvoke).toHaveBeenCalledOnce();
-    const { statements } = mockInvoke.mock.calls[0][1] as {
-      statements: { params: unknown[] }[];
+    const payload = mockInvoke.mock.calls[0][1] as {
+      setups: Array<{ id: string }>;
     };
-    // At least one statement should contain the setup id "s-1"
-    const hasSetup = statements.some((s) => s.params.includes("s-1"));
-    expect(hasSetup).toBe(true);
+    expect(payload.setups.some((s) => s.id === "s-1")).toBe(true);
     editor.destroy();
   });
 
@@ -207,12 +205,11 @@ describe("saveForeshadowAnchors FK sweep", () => {
     await saveForeshadowAnchors("scene-1", editor.state.doc);
 
     expect(mockInvoke).toHaveBeenCalledOnce();
-    const { statements } = mockInvoke.mock.calls[0][1] as {
-      statements: { params: unknown[] }[];
+    const payload = mockInvoke.mock.calls[0][1] as {
+      setups: Array<{ id: string; foreshadowId: string }>;
     };
-    // No UPSERT params should reference the deleted setup/foreshadow
-    const hasDeleted = statements.some(
-      (s) => s.params.includes("s-deleted") || s.params.includes("f-deleted"),
+    const hasDeleted = payload.setups.some(
+      (s) => s.id === "s-deleted" || s.foreshadowId === "f-deleted",
     );
     expect(hasDeleted).toBe(false);
     editor.destroy();
@@ -228,11 +225,11 @@ describe("saveForeshadowAnchors FK sweep", () => {
 
     await saveForeshadowAnchors("scene-1", editor.state.doc);
 
-    const { statements } = mockInvoke.mock.calls[0][1] as {
-      statements: { params: unknown[] }[];
+    const payload = mockInvoke.mock.calls[0][1] as {
+      setups: Array<{ id: string }>;
     };
-    const hasValid = statements.some((s) => s.params.includes("s-valid"));
-    const hasGone = statements.some((s) => s.params.includes("s-gone"));
+    const hasValid = payload.setups.some((s) => s.id === "s-valid");
+    const hasGone = payload.setups.some((s) => s.id === "s-gone");
     expect(hasValid).toBe(true);
     expect(hasGone).toBe(false);
     editor.destroy();
