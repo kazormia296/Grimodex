@@ -1194,25 +1194,39 @@ src/features/foreshadow/
 ├── saveAnchors.test.ts
 ├── foreshadowStore.ts                     # Zustand store（伏線パネル UI 状態 + AI アクション）
 ├── foreshadowStore.test.ts
-├── foreshadowStore.adoptInsertedNew.test.ts  # Phase 3: adoptInsertedNewSetup テスト
+├── foreshadowStore.adoptProposedSetup.test.ts  # Phase 3: adoptProposedSetup テスト
+├── foreshadowStore.adoptInsertedNew.test.ts    # Phase 3: adoptInsertedNewSetup テスト
 ├── ForeshadowPanel.tsx                    # メインパネル（一覧タブ + 章別監査タブ切替）
 ├── ForeshadowPanel.test.tsx               # Phase 1/2 テスト
 ├── ForeshadowPanel.phase3.test.tsx        # Phase 3 テスト（タブ切替 / Setup 提案ボタン）
+├── ForeshadowPanel.stories.tsx            # Storybook
 ├── ForeshadowChapterTab.tsx               # 章別監査ダッシュボード（Phase 3）
 ├── ForeshadowMarkPopover.tsx              # setup mark 右クリックポップオーバー
 ├── ForeshadowMarkPopover.test.tsx
 ├── ForeshadowMarkHoverPopover.tsx         # hover 表示
 ├── CreateForeshadowDialog.tsx             # 伏線作成ダイアログ（initialTitle / initialIntent プリフィル対応）
+├── types.test.ts                          # safeParseAiEvaluation 等の型ユーティリティテスト
 ├── api.tauri.test.ts                      # Tauri ブランチ unit テスト
 ├── api.proposePastSetups.test.ts          # proposePastSetups unit テスト
-└── api.auditChapter.test.ts               # auditChapter unit テスト（Phase 3）
+├── api.auditChapter.test.ts               # auditChapter unit テスト（Phase 3）
+├── api.getChapterForeshadowStats.test.ts  # getChapterForeshadowStats unit テスト（Phase 3）
+└── marks/
+    ├── ForeshadowSetupMark.ts             # Setup Mark 定義（setupId / foreshadowId attrs）
+    ├── ForeshadowPayoffMark.ts            # Payoff Mark 定義（foreshadowId attr）
+    ├── foreshadowPasteRule.ts             # transformPasted で foreshadow 系 mark を strip
+    └── ForeshadowMarks.test.ts            # mark + paste rule のテスト
 
 src-tauri/src/lib.rs                       # foreshadow 関連 Tauri コマンドを lib.rs に直書き
                                            # （foreshadow_create / foreshadow_update / foreshadow_delete /
-                                           #   foreshadow_list / foreshadow_get / foreshadow_save_anchors_for_scene /
-                                           #   foreshadow_load_anchors_for_scene / foreshadow_resolve_orphan /
-                                           #   foreshadow_propose_past_setups / foreshadow_evaluate_setup_strength /
+                                           #   foreshadow_list / foreshadow_get /
+                                           #   foreshadow_link_codex / foreshadow_unlink_codex /
+                                           #   foreshadow_set_setup_strength / foreshadow_resolve_orphan /
+                                           #   foreshadow_save_anchors_for_scene / foreshadow_load_anchors_for_scene /
+                                           #   foreshadow_propose_past_setups /
                                            #   foreshadow_setup_create_ai（Phase 3）/ foreshadow_audit_chapter（Phase 3））
+                                           # ※ evaluateSetupStrength / getChapterForeshadowStats は
+                                           #    Rust IPC を持たず src/features/foreshadow/api.ts に純 TS で実装
+                                           #    （前者は sendChatMessageWithThinking 直呼び、後者は DB 集計のみ）
 
 drizzle/migrations/
 └── XXXX_add_foreshadow_tables.sql         # Phase 1 migration（追加 migration なし）
@@ -1241,3 +1255,4 @@ drizzle/migrations/
   - IPC surface に `foreshadow_setup_create_ai` / `foreshadow_audit_chapter` を追加。
   - `ForeshadowMarkPopover` の `payoff-unanchored` フィルタをラベルホワイトリスト（`planned` / `seeded`）に修正（Phase 2 残バグ）。
   - 実装ファイル配置を実際のファイル構成に合わせて更新。deferred decisions に Phase 3 完了分と残課題を反映。
+- 2026-04-27: 実装と設計書の差分修正。`evaluateSetupStrength` / `getChapterForeshadowStats` は実装上 Rust IPC を持たず `src/features/foreshadow/api.ts` の純 TS 実装である旨を実装ファイル配置セクションに追記（旧表記の `foreshadow_evaluate_setup_strength` を削除）。実装ファイル配置の TS ツリーを実態に合わせて補完: `marks/` サブディレクトリ（ForeshadowSetupMark / ForeshadowPayoffMark / foreshadowPasteRule + テスト）、`foreshadowStore.adoptProposedSetup.test.ts`、`ForeshadowPanel.stories.tsx`、`types.test.ts`、`api.getChapterForeshadowStats.test.ts` を追記。
