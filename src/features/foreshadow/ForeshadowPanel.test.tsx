@@ -11,107 +11,106 @@ const {
   mockReinsertSetup,
   ITEMS,
   SETUPS,
-} =
-  vi.hoisted(() => {
-    const mockLoad = vi.fn().mockResolvedValue(undefined);
-    const mockRemove = vi.fn().mockResolvedValue(undefined);
-    const mockLoadSetups = vi.fn().mockResolvedValue(undefined);
-    const mockRemoveSetup = vi.fn().mockResolvedValue(undefined);
-    const mockReanchorSetup = vi.fn().mockResolvedValue(undefined);
-    const mockReinsertSetup = vi.fn().mockResolvedValue(undefined);
+} = vi.hoisted(() => {
+  const mockLoad = vi.fn().mockResolvedValue(undefined);
+  const mockRemove = vi.fn().mockResolvedValue(undefined);
+  const mockLoadSetups = vi.fn().mockResolvedValue(undefined);
+  const mockRemoveSetup = vi.fn().mockResolvedValue(undefined);
+  const mockReanchorSetup = vi.fn().mockResolvedValue(undefined);
+  const mockReinsertSetup = vi.fn().mockResolvedValue(undefined);
 
-    const ITEMS = [
-      {
-        id: "1",
-        title: "計画中アイテム",
-        label: "planned",
-        intent: null,
-        setupCount: 0,
-      },
-      {
-        id: "2",
-        title: "設置済みアイテム",
-        label: "seeded",
-        intent: null,
-        setupCount: 1,
-      },
-      {
-        id: "3",
-        title: "回収済みアイテム",
-        label: "paid",
-        intent: null,
-        setupCount: 1,
-      },
-      {
-        id: "4",
-        title: "強化推奨アイテム",
-        label: "needs_strengthening",
-        intent: null,
-        setupCount: 1,
-      },
-      {
-        id: "5",
-        title: "孤立アイテム",
-        label: "orphan_payoff",
-        intent: null,
-        setupCount: 0,
-      },
-      {
-        id: "6",
-        title: "放棄アイテム",
-        label: "abandoned",
-        intent: null,
-        setupCount: 0,
-      },
-    ];
+  const ITEMS = [
+    {
+      id: "1",
+      title: "計画中アイテム",
+      label: "planned",
+      intent: null,
+      setupCount: 0,
+    },
+    {
+      id: "2",
+      title: "設置済みアイテム",
+      label: "seeded",
+      intent: null,
+      setupCount: 1,
+    },
+    {
+      id: "3",
+      title: "回収済みアイテム",
+      label: "paid",
+      intent: null,
+      setupCount: 1,
+    },
+    {
+      id: "4",
+      title: "強化推奨アイテム",
+      label: "needs_strengthening",
+      intent: null,
+      setupCount: 1,
+    },
+    {
+      id: "5",
+      title: "孤立アイテム",
+      label: "orphan_payoff",
+      intent: null,
+      setupCount: 0,
+    },
+    {
+      id: "6",
+      title: "放棄アイテム",
+      label: "abandoned",
+      intent: null,
+      setupCount: 0,
+    },
+  ];
 
-    // item "2" has one active setup and one orphan setup
-    const SETUPS: Record<string, object[]> = {
-      "2": [
-        {
-          id: "s-active",
-          foreshadowId: "2",
-          sceneId: "scene-1",
-          kind: "designated_existing",
-          strength: "moderate",
-          aiStrength: null,
-          aiReasoning: null,
-          attribution: "human",
-          aiRationale: null,
-          lastEvaluatedAt: null,
-          isOrphan: false,
-          createdAt: new Date(),
-          updatedAt: new Date(),
-        },
-        {
-          id: "s-orphan",
-          foreshadowId: "2",
-          sceneId: "scene-2",
-          kind: "inserted_new",
-          strength: null,
-          aiStrength: null,
-          aiReasoning: null,
-          attribution: "human",
-          aiRationale: null,
-          lastEvaluatedAt: null,
-          isOrphan: true,
-          createdAt: new Date(),
-          updatedAt: new Date(),
-        },
-      ],
-    };
+  // item "2" has one active setup and one orphan setup
+  const SETUPS: Record<string, object[]> = {
+    "2": [
+      {
+        id: "s-active",
+        foreshadowId: "2",
+        sceneId: "scene-1",
+        kind: "designated_existing",
+        strength: "moderate",
+        aiStrength: null,
+        aiReasoning: null,
+        attribution: "human",
+        aiRationale: null,
+        lastEvaluatedAt: null,
+        isOrphan: false,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      },
+      {
+        id: "s-orphan",
+        foreshadowId: "2",
+        sceneId: "scene-2",
+        kind: "inserted_new",
+        strength: null,
+        aiStrength: null,
+        aiReasoning: null,
+        attribution: "human",
+        aiRationale: null,
+        lastEvaluatedAt: null,
+        isOrphan: true,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      },
+    ],
+  };
 
-    return {
-      mockLoad,
-      mockRemove,
-      mockLoadSetups,
-      mockRemoveSetup,
-      mockReanchorSetup,
-      mockReinsertSetup,
-      ITEMS,
-      SETUPS,
-    };
-  });
+  return {
+    mockLoad,
+    mockRemove,
+    mockLoadSetups,
+    mockRemoveSetup,
+    mockReanchorSetup,
+    mockReinsertSetup,
+    ITEMS,
+    SETUPS,
+  };
+});
 
 vi.mock("./foreshadowStore", () => {
   const state = {

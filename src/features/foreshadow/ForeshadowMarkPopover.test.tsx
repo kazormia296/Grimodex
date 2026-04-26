@@ -185,7 +185,9 @@ describe("ForeshadowMarkPopover - payoff-unanchored フィルタ", () => {
     });
 
     expect(screen.queryByText("回収済みの伏線")).not.toBeInTheDocument();
-    expect(screen.queryByText("播種済みだが回収先あり")).not.toBeInTheDocument();
+    expect(
+      screen.queryByText("播種済みだが回収先あり"),
+    ).not.toBeInTheDocument();
     expect(screen.queryByText("強化が必要な伏線")).not.toBeInTheDocument();
     expect(screen.queryByText("孤立した回収")).not.toBeInTheDocument();
     expect(screen.queryByText("放棄された伏線")).not.toBeInTheDocument();
