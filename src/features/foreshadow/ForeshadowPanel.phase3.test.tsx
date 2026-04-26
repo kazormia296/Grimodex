@@ -83,6 +83,7 @@ vi.mock("./foreshadowStore", () => {
     auditingChapterIds: new Set<string>(),
     proposeResults: {},
     adoptProposedSetup: vi.fn(),
+    adoptInsertedNewSetup: vi.fn(),
     auditResults: {},
     auditChapter: vi.fn(),
   };

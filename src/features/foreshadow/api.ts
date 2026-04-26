@@ -227,6 +227,27 @@ export async function deleteForeshadow(id: string): Promise<void> {
 export async function createForeshadowSetup(
   data: Omit<NewForeshadowSetup, "createdAt" | "updatedAt">,
 ): Promise<ForeshadowSetupRow> {
+  if (isTauriRuntime()) {
+    await invoke("foreshadow_setup_create_ai", {
+      id: data.id,
+      foreshadowId: data.foreshadowId,
+      sceneId: data.sceneId,
+      fromPos: data.fromPos,
+      toPos: data.toPos,
+      kind: data.kind ?? "designated_existing",
+      strength: data.strength ?? null,
+      aiStrength: data.aiStrength ?? null,
+      attribution: data.attribution ?? "human",
+      aiRationale: data.aiRationale ?? null,
+    });
+    const now = new Date();
+    return {
+      ...data,
+      createdAt: now,
+      updatedAt: now,
+      sceneUpdatedAt: undefined,
+    } as ForeshadowSetupRow;
+  }
   const now = new Date();
   const row: NewForeshadowSetup = { ...data, createdAt: now, updatedAt: now };
   await db.insert(foreshadowSetups).values(row);

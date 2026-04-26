@@ -19,8 +19,10 @@ import {
   createForeshadowSetup,
   auditChapter as auditChapterApi,
 } from "./api";
-import { loadSceneContent } from "@/features/tree/api";
+import { loadSceneContent, saveSceneContent } from "@/features/tree/api";
 import { prosemirrorToText } from "@/lib/prosemirror";
+import { saveForeshadowAnchors } from "./saveAnchors";
+import { createRevision } from "@/features/revision/api";
 import type { ProposedSetup } from "./api";
 import { safeParseAiEvaluation } from "./types";
 import type { AuditCandidate } from "./types";
@@ -62,6 +64,10 @@ interface ForeshadowState {
   proposingForForeshadowIds: Set<string>;
   proposeSetups: (foreshadowId: string) => Promise<void>;
   adoptProposedSetup: (
+    foreshadowId: string,
+    candidateIdx: number,
+  ) => Promise<void>;
+  adoptInsertedNewSetup: (
     foreshadowId: string,
     candidateIdx: number,
   ) => Promise<void>;
@@ -612,6 +618,103 @@ export const useForeshadowStore = create<ForeshadowState>()((set, get) => ({
       debugLog.error(
         "ForeshadowStore",
         `adoptProposedSetup: ${rootCause(e)}`,
+        errorDetail(e),
+      );
+    }
+  },
+
+  adoptInsertedNewSetup: async (foreshadowId, candidateIdx) => {
+    const editor = useEditorStore.getState().editor;
+    const activeSceneId = useSceneStore.getState().activeSceneId;
+
+    const candidate = get().proposeResults[foreshadowId]?.[candidateIdx];
+    if (!candidate || candidate.kind !== "inserted_new") return;
+
+    if (!editor || !activeSceneId) {
+      toast.error(
+        i18next.t(
+          "foreshadow.store.adoptNoEditor",
+          "採用するには対象シーンを開いてください",
+        ),
+      );
+      return;
+    }
+
+    if (activeSceneId !== candidate.sceneId) {
+      toast.error(
+        i18next.t(
+          "foreshadow.store.adoptWrongScene",
+          "候補のシーンを開いてから採用してください",
+        ),
+      );
+      return;
+    }
+
+    const suggestedText = candidate.suggestedText ?? "";
+    if (!suggestedText) return;
+
+    const setupId = crypto.randomUUID();
+    const { from } = editor.state.selection;
+
+    try {
+      // Pre-create DB record with AI metadata before inserting text.
+      // The saveForeshadowAnchors UPSERT will only update fromPos/toPos — metadata is preserved.
+      await createForeshadowSetup({
+        id: setupId,
+        foreshadowId,
+        sceneId: activeSceneId,
+        fromPos: from,
+        toPos: from + suggestedText.length,
+        kind: "inserted_new",
+        strength: candidate.predictedStrength,
+        aiStrength: candidate.predictedStrength,
+        aiReasoning: null,
+        attribution: "ai",
+        aiRationale: candidate.rationale,
+        lastEvaluatedAt: null,
+        isOrphan: false,
+      });
+
+      // Insert text and apply foreshadowSetup mark in the editor
+      editor
+        .chain()
+        .insertContentAt(from, suggestedText)
+        .setTextSelection({ from, to: from + suggestedText.length })
+        .setMark("foreshadowSetup", { setupId, foreshadowId })
+        .run();
+
+      // Sync mark positions to DB (UPSERT preserves AI metadata)
+      await saveForeshadowAnchors(activeSceneId, editor.state.doc);
+
+      // Persist scene content and record a revision
+      const contentJson = JSON.stringify(editor.getJSON());
+      await saveSceneContent(activeSceneId, contentJson);
+      await createRevision({
+        entityType: "scene",
+        entityId: activeSceneId,
+        content: contentJson,
+        snapshotType: "auto",
+      });
+
+      await get().loadSetups(foreshadowId);
+
+      set((s) => ({
+        proposeResults: {
+          ...s.proposeResults,
+          [foreshadowId]: (s.proposeResults[foreshadowId] ?? []).filter(
+            (_, i) => i !== candidateIdx,
+          ),
+        },
+      }));
+
+      toast.success(i18next.t("foreshadow.store.adoptDone", "採用しました"));
+    } catch (e) {
+      toast.error(
+        i18next.t("foreshadow.store.adoptFailed", "採用に失敗しました"),
+      );
+      debugLog.error(
+        "ForeshadowStore",
+        `adoptInsertedNewSetup: ${rootCause(e)}`,
         errorDetail(e),
       );
     }

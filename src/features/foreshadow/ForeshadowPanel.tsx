@@ -221,6 +221,7 @@ export function ForeshadowPanel() {
     proposingForForeshadowIds,
     proposeResults,
     adoptProposedSetup,
+    adoptInsertedNewSetup,
   } = useForeshadowStore();
   const [dialogOpen, setDialogOpen] = useState(false);
   const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
@@ -558,6 +559,22 @@ export function ForeshadowPanel() {
                                     className="rounded px-1.5 py-0.5 text-[10px] text-blue-600 hover:bg-blue-500/10 dark:text-blue-400"
                                   >
                                     {t("foreshadow.panel.adoptSetup", "採用")}
+                                  </button>
+                                </div>
+                              )}
+                              {candidate.kind === "inserted_new" && (
+                                <div className="mt-1">
+                                  <button
+                                    type="button"
+                                    onClick={() =>
+                                      void adoptInsertedNewSetup(item.id, idx)
+                                    }
+                                    className="rounded px-1.5 py-0.5 text-[10px] text-emerald-600 hover:bg-emerald-500/10 dark:text-emerald-400"
+                                  >
+                                    {t(
+                                      "foreshadow.panel.adoptInsertNew",
+                                      "挿入して採用",
+                                    )}
                                   </button>
                                 </div>
                               )}

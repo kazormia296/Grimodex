@@ -622,6 +622,52 @@ fn foreshadow_set_setup_strength(
     })
 }
 
+#[tauri::command]
+fn foreshadow_setup_create_ai(
+    ws_state: tauri::State<'_, WorkspaceState>,
+    id: String,
+    foreshadow_id: String,
+    scene_id: String,
+    from_pos: i64,
+    to_pos: i64,
+    kind: String,
+    strength: Option<String>,
+    ai_strength: Option<String>,
+    attribution: String,
+    ai_rationale: Option<String>,
+) -> Result<(), AppError> {
+    with_db(&ws_state, |db| {
+        let now = chrono::Utc::now().timestamp_millis();
+        db.execute(
+            "INSERT INTO foreshadow_setups
+             (id, foreshadow_id, scene_id, from_pos, to_pos, kind, strength, ai_strength,
+              attribution, ai_rationale, is_orphan, created_at, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
+             ON CONFLICT(id) DO UPDATE SET
+               from_pos   = excluded.from_pos,
+               to_pos     = excluded.to_pos,
+               is_orphan  = 0,
+               updated_at = excluded.updated_at",
+            &[
+                Value::String(id),
+                Value::String(foreshadow_id),
+                Value::String(scene_id),
+                Value::Number(from_pos.into()),
+                Value::Number(to_pos.into()),
+                Value::String(kind),
+                strength.map(Value::String).unwrap_or(Value::Null),
+                ai_strength.map(Value::String).unwrap_or(Value::Null),
+                Value::String(attribution),
+                ai_rationale.map(Value::String).unwrap_or(Value::Null),
+                Value::Number(now.into()),
+                Value::Number(now.into()),
+            ],
+            "run",
+        )?;
+        Ok(())
+    })
+}
+
 fn resolve_orphan_impl(
     db: &database::Database,
     payload: OrphanResolvePayload,
@@ -1541,6 +1587,7 @@ pub fn run() {
             foreshadow_unlink_codex,
             foreshadow_set_setup_strength,
             foreshadow_resolve_orphan,
+            foreshadow_setup_create_ai,
             foreshadow_save_anchors_for_scene,
             foreshadow_load_anchors_for_scene,
             foreshadow_propose_past_setups,
