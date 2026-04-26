@@ -17,6 +17,7 @@ import {
   listForeshadows,
   listSetups,
   proposePastSetups,
+  updateForeshadow,
   type ProposeRequest,
 } from "./api";
 
@@ -140,5 +141,26 @@ describe("foreshadow api tauri mapping", () => {
     const result = await proposePastSetups(req);
     expect(result).toHaveLength(1);
     expect(result[0].sceneId).toBe("scene-1");
+  });
+
+  it("preserves omitted fields and explicit null in update payload", async () => {
+    mockInvoke.mockResolvedValue(undefined);
+
+    await updateForeshadow("f1", {
+      title: "更新タイトル",
+      payoffSceneId: null,
+      payoffFromPos: null,
+      payoffToPos: null,
+    });
+
+    expect(mockInvoke).toHaveBeenCalledWith("foreshadow_update", {
+      id: "f1",
+      patch: {
+        title: "更新タイトル",
+        payoffSceneId: null,
+        payoffFromPos: null,
+        payoffToPos: null,
+      },
+    });
   });
 });

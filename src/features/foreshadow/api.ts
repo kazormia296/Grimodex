@@ -169,18 +169,25 @@ export async function updateForeshadow(
   >,
 ): Promise<void> {
   if (isTauriRuntime()) {
+    const tauriPatch: Record<string, unknown> = {};
+    if (patch.title !== undefined) tauriPatch.title = patch.title;
+    if (patch.intent !== undefined) tauriPatch.intent = patch.intent;
+    if (patch.notes !== undefined) tauriPatch.notes = patch.notes;
+    if (patch.payoffSceneId !== undefined) {
+      tauriPatch.payoffSceneId = patch.payoffSceneId;
+    }
+    if (patch.payoffFromPos !== undefined) {
+      tauriPatch.payoffFromPos = patch.payoffFromPos;
+    }
+    if (patch.payoffToPos !== undefined) tauriPatch.payoffToPos = patch.payoffToPos;
+    if (patch.payoffConfirmed !== undefined) {
+      tauriPatch.payoffConfirmed = patch.payoffConfirmed;
+    }
+    if (patch.abandoned !== undefined) tauriPatch.abandoned = patch.abandoned;
+
     await invoke("foreshadow_update", {
       id,
-      patch: {
-        title: patch.title ?? null,
-        intent: patch.intent ?? null,
-        notes: patch.notes ?? null,
-        payoffSceneId: patch.payoffSceneId ?? null,
-        payoffFromPos: patch.payoffFromPos ?? null,
-        payoffToPos: patch.payoffToPos ?? null,
-        payoffConfirmed: patch.payoffConfirmed ?? null,
-        abandoned: patch.abandoned ?? null,
-      },
+      patch: tauriPatch,
     });
     return;
   }

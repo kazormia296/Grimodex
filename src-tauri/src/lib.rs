@@ -59,11 +59,11 @@ struct ForeshadowCreatePayload {
 #[serde(rename_all = "camelCase")]
 struct ForeshadowPatch {
     title: Option<String>,
-    intent: Option<String>,
-    notes: Option<String>,
-    payoff_scene_id: Option<String>,
-    payoff_from_pos: Option<i64>,
-    payoff_to_pos: Option<i64>,
+    intent: Option<Option<String>>,
+    notes: Option<Option<String>>,
+    payoff_scene_id: Option<Option<String>>,
+    payoff_from_pos: Option<Option<i64>>,
+    payoff_to_pos: Option<Option<i64>>,
     payoff_confirmed: Option<bool>,
     abandoned: Option<bool>,
 }
@@ -329,45 +329,67 @@ fn foreshadow_update(
 ) -> Result<Value, AppError> {
     with_db(&ws_state, |db| {
         let now = chrono::Utc::now().timestamp_millis();
+        let mut sets: Vec<&str> = Vec::new();
+        let mut params: Vec<Value> = Vec::new();
+
+        if let Some(title) = patch.title {
+            sets.push("title = ?");
+            params.push(Value::String(title));
+        }
+        if let Some(intent) = patch.intent {
+            sets.push("intent = ?");
+            params.push(intent.map(Value::String).unwrap_or(Value::Null));
+        }
+        if let Some(notes) = patch.notes {
+            sets.push("notes = ?");
+            params.push(notes.map(Value::String).unwrap_or(Value::Null));
+        }
+        if let Some(payoff_scene_id) = patch.payoff_scene_id {
+            sets.push("payoff_scene_id = ?");
+            params.push(payoff_scene_id.map(Value::String).unwrap_or(Value::Null));
+        }
+        if let Some(payoff_from_pos) = patch.payoff_from_pos {
+            sets.push("payoff_from_pos = ?");
+            params.push(
+                payoff_from_pos
+                    .map(|v| Value::Number(v.into()))
+                    .unwrap_or(Value::Null),
+            );
+        }
+        if let Some(payoff_to_pos) = patch.payoff_to_pos {
+            sets.push("payoff_to_pos = ?");
+            params.push(
+                payoff_to_pos
+                    .map(|v| Value::Number(v.into()))
+                    .unwrap_or(Value::Null),
+            );
+        }
+        if let Some(payoff_confirmed) = patch.payoff_confirmed {
+            sets.push("payoff_confirmed = ?");
+            params.push(Value::Bool(payoff_confirmed));
+        }
+        if let Some(abandoned) = patch.abandoned {
+            sets.push("abandoned = ?");
+            params.push(Value::Bool(abandoned));
+        }
+
+        if sets.is_empty() {
+            let rows = db.execute(
+                "SELECT * FROM foreshadows WHERE id = ?",
+                &[Value::String(id)],
+                "get",
+            )?;
+            return Ok(rows.first().cloned().map(Value::Object).unwrap_or(Value::Null));
+        }
+
+        sets.push("updated_at = ?");
+        params.push(Value::Number(now.into()));
+        params.push(Value::String(id.clone()));
+
+        let sql = format!("UPDATE foreshadows SET {} WHERE id = ?", sets.join(", "));
         db.execute(
-            "UPDATE foreshadows
-             SET title = COALESCE(?, title),
-                 intent = COALESCE(?, intent),
-                 notes = COALESCE(?, notes),
-                 payoff_scene_id = COALESCE(?, payoff_scene_id),
-                 payoff_from_pos = COALESCE(?, payoff_from_pos),
-                 payoff_to_pos = COALESCE(?, payoff_to_pos),
-                 payoff_confirmed = COALESCE(?, payoff_confirmed),
-                 abandoned = COALESCE(?, abandoned),
-                 updated_at = ?
-             WHERE id = ?",
-            &[
-                patch.title.map(Value::String).unwrap_or(Value::Null),
-                patch.intent.map(Value::String).unwrap_or(Value::Null),
-                patch.notes.map(Value::String).unwrap_or(Value::Null),
-                patch
-                    .payoff_scene_id
-                    .map(Value::String)
-                    .unwrap_or(Value::Null),
-                patch
-                    .payoff_from_pos
-                    .map(|v| Value::Number(v.into()))
-                    .unwrap_or(Value::Null),
-                patch
-                    .payoff_to_pos
-                    .map(|v| Value::Number(v.into()))
-                    .unwrap_or(Value::Null),
-                patch
-                    .payoff_confirmed
-                    .map(Value::Bool)
-                    .unwrap_or(Value::Null),
-                patch
-                    .abandoned
-                    .map(Value::Bool)
-                    .unwrap_or(Value::Null),
-                Value::Number(now.into()),
-                Value::String(id.clone()),
-            ],
+            &sql,
+            &params,
             "run",
         )?;
         let rows = db.execute(

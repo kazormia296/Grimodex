@@ -1,6 +1,7 @@
 import { invoke } from "@/lib/tauri";
 import { db } from "@/db/client";
-import { foreshadows } from "@/db/schema";
+import { foreshadows, foreshadowSetups } from "@/db/schema";
+import { eq } from "drizzle-orm";
 import type { Node as ProseMirrorNode } from "@tiptap/pm/model";
 
 // Shape returned by extract helpers (subset of NewForeshadowSetup)
@@ -17,6 +18,13 @@ export interface PayoffAnchorExtract {
   sceneId: string;
   fromPos: number;
   toPos: number;
+}
+
+function isTauriRuntime(): boolean {
+  // Keep tests on invoke path (they mock invoke payloads directly).
+  if (typeof process !== "undefined" && process.env?.VITEST) return true;
+  if (typeof window === "undefined") return false;
+  return "__TAURI_INTERNALS__" in window;
 }
 
 // ── Extraction helpers (pure, no DB) ─────────────────────────────
@@ -93,22 +101,84 @@ export async function saveForeshadowAnchors(
     validIds.has(p.foreshadowId),
   );
 
-  await invoke("foreshadow_save_anchors_for_scene", {
-    sceneId,
-    setups: setups.map((s) => ({
-      id: s.id,
-      foreshadowId: s.foreshadowId,
-      sceneId: s.sceneId,
-      fromPos: s.fromPos,
-      toPos: s.toPos,
-    })),
-    payoffs: payoffs.map((p) => ({
-      foreshadowId: p.foreshadowId,
-      sceneId: p.sceneId,
-      fromPos: p.fromPos,
-      toPos: p.toPos,
-    })),
-  });
+  if (isTauriRuntime()) {
+    await invoke("foreshadow_save_anchors_for_scene", {
+      sceneId,
+      setups: setups.map((s) => ({
+        id: s.id,
+        foreshadowId: s.foreshadowId,
+        sceneId: s.sceneId,
+        fromPos: s.fromPos,
+        toPos: s.toPos,
+      })),
+      payoffs: payoffs.map((p) => ({
+        foreshadowId: p.foreshadowId,
+        sceneId: p.sceneId,
+        fromPos: p.fromPos,
+        toPos: p.toPos,
+      })),
+    });
+    return;
+  }
+
+  const now = new Date();
+
+  for (const s of setups) {
+    await db
+      .insert(foreshadowSetups)
+      .values({
+        id: s.id,
+        foreshadowId: s.foreshadowId,
+        sceneId: s.sceneId,
+        fromPos: s.fromPos,
+        toPos: s.toPos,
+        kind: "designated_existing",
+        attribution: "human",
+        isOrphan: false,
+        createdAt: now,
+        updatedAt: now,
+      })
+      .onConflictDoUpdate({
+        target: foreshadowSetups.id,
+        set: {
+          fromPos: s.fromPos,
+          toPos: s.toPos,
+          isOrphan: false,
+          updatedAt: now,
+        },
+      });
+  }
+
+  for (const p of payoffs) {
+    await db
+      .update(foreshadows)
+      .set({
+        payoffSceneId: p.sceneId,
+        payoffFromPos: p.fromPos,
+        payoffToPos: p.toPos,
+        updatedAt: now,
+      })
+      .where(eq(foreshadows.id, p.foreshadowId));
+  }
+
+  const setupIds = setups.map((s) => s.id);
+  const existingSceneSetups = await db
+    .select({ id: foreshadowSetups.id })
+    .from(foreshadowSetups)
+    .where(eq(foreshadowSetups.sceneId, sceneId));
+  const orphanIds = existingSceneSetups
+    .map((s) => s.id)
+    .filter((id) => !setupIds.includes(id));
+
+  for (const orphanId of orphanIds) {
+    await db
+      .update(foreshadowSetups)
+      .set({
+        isOrphan: true,
+        updatedAt: now,
+      })
+      .where(eq(foreshadowSetups.id, orphanId));
+  }
 }
 
 /**
@@ -141,7 +211,43 @@ export interface MarkApplication {
 export async function loadForeshadowAnchors(
   sceneId: string,
 ): Promise<MarkApplication[]> {
-  return invoke<MarkApplication[]>("foreshadow_load_anchors_for_scene", {
-    sceneId,
-  });
+  if (isTauriRuntime()) {
+    return invoke<MarkApplication[]>("foreshadow_load_anchors_for_scene", {
+      sceneId,
+    });
+  }
+
+  const result: MarkApplication[] = [];
+
+  const setups = await db
+    .select()
+    .from(foreshadowSetups)
+    .where(eq(foreshadowSetups.sceneId, sceneId));
+
+  for (const s of setups) {
+    if (s.isOrphan) continue;
+    result.push({
+      from: s.fromPos,
+      to: s.toPos,
+      markName: "foreshadowSetup",
+      attrs: { setupId: s.id, foreshadowId: s.foreshadowId },
+    });
+  }
+
+  const payoffs = await db
+    .select()
+    .from(foreshadows)
+    .where(eq(foreshadows.payoffSceneId, sceneId));
+
+  for (const f of payoffs) {
+    if (f.payoffFromPos == null || f.payoffToPos == null) continue;
+    result.push({
+      from: f.payoffFromPos,
+      to: f.payoffToPos,
+      markName: "foreshadowPayoff",
+      attrs: { foreshadowId: f.id },
+    });
+  }
+
+  return result;
 }
