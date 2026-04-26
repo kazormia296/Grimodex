@@ -24,7 +24,7 @@ import {
 describe("foreshadow api tauri mapping", () => {
   beforeEach(() => {
     mockInvoke.mockReset();
-    (globalThis as { window?: Record<string, unknown> }).window = {
+    (globalThis as unknown as { window?: Record<string, unknown> }).window = {
       __TAURI_INTERNALS__: {},
     };
   });

@@ -11,6 +11,7 @@ import {
 } from "lucide-react";
 import { useForeshadowStore } from "./foreshadowStore";
 import { CreateForeshadowDialog } from "./CreateForeshadowDialog";
+import { ForeshadowChapterTab } from "./ForeshadowChapterTab";
 import { isSetupEvaluationStale } from "./staleness";
 import { safeParseAiEvaluation } from "./types";
 import type { DerivedLabel, ForeshadowSetupRow } from "./types";
@@ -199,6 +200,8 @@ function SetupRow({
   );
 }
 
+type PanelTab = "list" | "chapter";
+
 export function ForeshadowPanel() {
   const { t } = useTranslation();
   const {
@@ -214,10 +217,14 @@ export function ForeshadowPanel() {
     reinsertSetup,
     evaluateSetup,
     evaluatingSetupIds,
+    proposeSetups,
+    proposingForForeshadowIds,
+    proposeResults,
   } = useForeshadowStore();
   const [dialogOpen, setDialogOpen] = useState(false);
   const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
   const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [activeTab, setActiveTab] = useState<PanelTab>("list");
 
   const handleExpand = (id: string) => {
     if (expandedId === id) {
@@ -287,8 +294,46 @@ export function ForeshadowPanel() {
         </button>
       </div>
 
-      {/* Label filter bar — only shown when items exist */}
-      {items.length > 0 && (
+      {/* Tab switcher */}
+      <div className="flex border-b border-border">
+        <button
+          type="button"
+          data-testid="foreshadow-tab-list"
+          onClick={() => setActiveTab("list")}
+          className={`flex-1 py-1.5 text-[11px] font-medium transition-colors ${
+            activeTab === "list"
+              ? "border-b-2 border-foreground text-foreground"
+              : "text-muted-foreground hover:text-foreground"
+          }`}
+        >
+          {t("foreshadow.panel.tabList", "一覧")}
+        </button>
+        <button
+          type="button"
+          data-testid="foreshadow-tab-chapter"
+          onClick={() => setActiveTab("chapter")}
+          className={`flex-1 py-1.5 text-[11px] font-medium transition-colors ${
+            activeTab === "chapter"
+              ? "border-b-2 border-foreground text-foreground"
+              : "text-muted-foreground hover:text-foreground"
+          }`}
+        >
+          {t("foreshadow.panel.tabChapter", "章別監査")}
+        </button>
+      </div>
+
+      {/* Chapter audit tab */}
+      {activeTab === "chapter" && (
+        <div
+          data-testid="foreshadow-chapter-tab-content"
+          className="flex-1 overflow-y-auto"
+        >
+          <ForeshadowChapterTab />
+        </div>
+      )}
+
+      {/* Label filter bar — only shown when items exist and on list tab */}
+      {activeTab === "list" && items.length > 0 && (
         <div className="flex flex-wrap items-center gap-1 border-b border-border px-2 py-1.5">
           {LABEL_ORDER.filter((label) => usedLabels.has(label)).map((label) => (
             <button
@@ -319,134 +364,200 @@ export function ForeshadowPanel() {
         </div>
       )}
 
-      <div className="flex-1 overflow-y-auto">
-        {isLoading && (
-          <p className="px-3 py-4 text-xs text-muted-foreground">…</p>
-        )}
+      {activeTab === "list" && (
+        <div className="flex-1 overflow-y-auto">
+          {isLoading && (
+            <p className="px-3 py-4 text-xs text-muted-foreground">…</p>
+          )}
 
-        {!isLoading && items.length === 0 && (
-          <p className="px-3 py-4 text-xs text-muted-foreground">
-            {t("foreshadow.panel.empty")}
-          </p>
-        )}
+          {!isLoading && items.length === 0 && (
+            <p className="px-3 py-4 text-xs text-muted-foreground">
+              {t("foreshadow.panel.empty")}
+            </p>
+          )}
 
-        {!isLoading && items.length > 0 && visibleItems.length === 0 && (
-          <p className="px-3 py-4 text-xs text-muted-foreground">
-            {t("foreshadow.panel.filterEmpty", "該当なし")}
-          </p>
-        )}
+          {!isLoading && items.length > 0 && visibleItems.length === 0 && (
+            <p className="px-3 py-4 text-xs text-muted-foreground">
+              {t("foreshadow.panel.filterEmpty", "該当なし")}
+            </p>
+          )}
 
-        {!isLoading &&
-          visibleItems.map((item) => (
-            <div key={item.id} className="border-b border-border/50">
-              {/* Item row */}
-              <div
-                data-testid="foreshadow-item"
-                className="group flex items-start gap-2 px-3 py-2 hover:bg-accent/50"
-              >
-                <button
-                  type="button"
-                  data-testid={`foreshadow-expand-${item.id}`}
-                  onClick={() => handleExpand(item.id)}
-                  className="mt-0.5 shrink-0 text-muted-foreground hover:text-foreground"
-                  aria-label={t("foreshadow.panel.toggle", "展開/折り畳み")}
+          {!isLoading &&
+            visibleItems.map((item) => (
+              <div key={item.id} className="border-b border-border/50">
+                {/* Item row */}
+                <div
+                  data-testid="foreshadow-item"
+                  className="group flex items-start gap-2 px-3 py-2 hover:bg-accent/50"
                 >
-                  {expandedId === item.id ? (
-                    <ChevronDown className="h-3 w-3" />
-                  ) : (
-                    <ChevronRight className="h-3 w-3" />
-                  )}
-                </button>
+                  <button
+                    type="button"
+                    data-testid={`foreshadow-expand-${item.id}`}
+                    onClick={() => handleExpand(item.id)}
+                    className="mt-0.5 shrink-0 text-muted-foreground hover:text-foreground"
+                    aria-label={t("foreshadow.panel.toggle", "展開/折り畳み")}
+                  >
+                    {expandedId === item.id ? (
+                      <ChevronDown className="h-3 w-3" />
+                    ) : (
+                      <ChevronRight className="h-3 w-3" />
+                    )}
+                  </button>
 
-                <div className="min-w-0 flex-1">
-                  <p className="truncate text-xs font-medium text-foreground">
-                    {item.title}
-                  </p>
-                  {item.intent && (
-                    <p className="mt-0.5 truncate text-xs text-muted-foreground">
-                      {item.intent}
+                  <div className="min-w-0 flex-1">
+                    <p className="truncate text-xs font-medium text-foreground">
+                      {item.title}
                     </p>
+                    {item.intent && (
+                      <p className="mt-0.5 truncate text-xs text-muted-foreground">
+                        {item.intent}
+                      </p>
+                    )}
+                  </div>
+
+                  {deleteConfirmId === item.id ? (
+                    <div className="flex shrink-0 items-center gap-1">
+                      <span className="text-[10px] text-destructive">
+                        {t("common.confirmDelete", "削除?")}
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setDeleteConfirmId(null);
+                          void remove(item.id);
+                        }}
+                        className="rounded px-1 py-0.5 text-[10px] text-destructive hover:bg-destructive/10"
+                        aria-label={t("common.confirm", "確認")}
+                      >
+                        ✓
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setDeleteConfirmId(null)}
+                        className="rounded px-1 py-0.5 text-[10px] text-muted-foreground hover:bg-accent"
+                        aria-label={t("common.cancel", "キャンセル")}
+                      >
+                        ✗
+                      </button>
+                    </div>
+                  ) : (
+                    <div className="flex shrink-0 items-center gap-1.5">
+                      <span
+                        className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${LABEL_STYLE[item.label]}`}
+                      >
+                        {t(`foreshadow.label.${item.label}`)}
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => setDeleteConfirmId(item.id)}
+                        className="rounded p-0.5 text-muted-foreground opacity-0 transition-opacity hover:bg-accent hover:text-destructive group-hover:opacity-100"
+                        aria-label={t("common.delete", "削除")}
+                      >
+                        <Trash2 className="h-3 w-3" />
+                      </button>
+                    </div>
                   )}
                 </div>
 
-                {deleteConfirmId === item.id ? (
-                  <div className="flex shrink-0 items-center gap-1">
-                    <span className="text-[10px] text-destructive">
-                      {t("common.confirmDelete", "削除?")}
-                    </span>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setDeleteConfirmId(null);
-                        void remove(item.id);
-                      }}
-                      className="rounded px-1 py-0.5 text-[10px] text-destructive hover:bg-destructive/10"
-                      aria-label={t("common.confirm", "確認")}
-                    >
-                      ✓
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setDeleteConfirmId(null)}
-                      className="rounded px-1 py-0.5 text-[10px] text-muted-foreground hover:bg-accent"
-                      aria-label={t("common.cancel", "キャンセル")}
-                    >
-                      ✗
-                    </button>
-                  </div>
-                ) : (
-                  <div className="flex shrink-0 items-center gap-1.5">
-                    <span
-                      className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${LABEL_STYLE[item.label]}`}
-                    >
-                      {t(`foreshadow.label.${item.label}`)}
-                    </span>
-                    <button
-                      type="button"
-                      onClick={() => setDeleteConfirmId(item.id)}
-                      className="rounded p-0.5 text-muted-foreground opacity-0 transition-opacity hover:bg-accent hover:text-destructive group-hover:opacity-100"
-                      aria-label={t("common.delete", "削除")}
-                    >
-                      <Trash2 className="h-3 w-3" />
-                    </button>
+                {/* Setup list (shown when expanded) */}
+                {expandedId === item.id && (
+                  <div className="border-t border-border/30 bg-muted/30 pl-6 pr-3">
+                    {!setupsByForeshadowId[item.id] ? (
+                      <p className="py-2 text-[10px] text-muted-foreground">
+                        …
+                      </p>
+                    ) : setupsByForeshadowId[item.id].length === 0 ? (
+                      <p className="py-2 text-[10px] text-muted-foreground">
+                        {t("foreshadow.panel.setupsEmpty", "Setup なし")}
+                      </p>
+                    ) : (
+                      setupsByForeshadowId[item.id].map((setup) => (
+                        <SetupRow
+                          key={setup.id}
+                          setup={setup}
+                          evaluatingSetupIds={evaluatingSetupIds}
+                          onEvaluate={(s) =>
+                            void evaluateSetup(
+                              s.id,
+                              item.id,
+                              "",
+                              item.intent ?? "",
+                            )
+                          }
+                          onReanchor={() =>
+                            void reanchorSetup(setup.id, item.id)
+                          }
+                          onReinsert={() =>
+                            void reinsertSetup(setup.id, item.id)
+                          }
+                          onDiscard={() => void removeSetup(setup.id, item.id)}
+                        />
+                      ))
+                    )}
+
+                    {/* Setup を提案ボタン：payoff anchor があり未確定の場合のみ表示 */}
+                    {item.payoffSceneId && !item.payoffConfirmed && (
+                      <div className="py-1.5">
+                        <button
+                          type="button"
+                          data-testid={`foreshadow-propose-setups-${item.id}`}
+                          disabled={proposingForForeshadowIds.has(item.id)}
+                          onClick={() => void proposeSetups(item.id)}
+                          className="flex items-center gap-1 rounded px-2 py-0.5 text-[10px] text-muted-foreground hover:bg-accent hover:text-foreground disabled:opacity-50"
+                        >
+                          {proposingForForeshadowIds.has(item.id) ? (
+                            <Loader2 className="h-3 w-3 animate-spin" />
+                          ) : (
+                            <Sparkles className="h-3 w-3" />
+                          )}
+                          {t("foreshadow.panel.proposeSetups", "Setup を提案")}
+                        </button>
+
+                        {/* 提案結果 */}
+                        {(proposeResults[item.id] ?? []).map(
+                          (candidate, idx) => (
+                            <div
+                              key={idx}
+                              className="mt-1 rounded border border-border/60 bg-background p-1.5 text-[10px]"
+                            >
+                              <div className="flex items-center gap-1">
+                                <span className="rounded bg-muted px-1 py-0.5 font-mono">
+                                  {candidate.kind}
+                                </span>
+                                <span
+                                  className={
+                                    STRENGTH_STYLE[
+                                      candidate.predictedStrength
+                                    ] ?? ""
+                                  }
+                                >
+                                  {candidate.predictedStrength}
+                                </span>
+                              </div>
+                              <p className="mt-0.5 text-muted-foreground">
+                                {candidate.rationale}
+                              </p>
+                              {candidate.existingExcerpt && (
+                                <p className="mt-0.5 italic text-foreground/70">
+                                  「{candidate.existingExcerpt}」
+                                </p>
+                              )}
+                              {candidate.suggestedText && (
+                                <pre className="mt-0.5 whitespace-pre-wrap text-foreground/70">
+                                  {candidate.suggestedText}
+                                </pre>
+                              )}
+                            </div>
+                          ),
+                        )}
+                      </div>
+                    )}
                   </div>
                 )}
               </div>
-
-              {/* Setup list (shown when expanded) */}
-              {expandedId === item.id && (
-                <div className="border-t border-border/30 bg-muted/30 pl-6 pr-3">
-                  {!setupsByForeshadowId[item.id] ? (
-                    <p className="py-2 text-[10px] text-muted-foreground">…</p>
-                  ) : setupsByForeshadowId[item.id].length === 0 ? (
-                    <p className="py-2 text-[10px] text-muted-foreground">
-                      {t("foreshadow.panel.setupsEmpty", "Setup なし")}
-                    </p>
-                  ) : (
-                    setupsByForeshadowId[item.id].map((setup) => (
-                      <SetupRow
-                        key={setup.id}
-                        setup={setup}
-                        evaluatingSetupIds={evaluatingSetupIds}
-                        onEvaluate={(s) =>
-                          void evaluateSetup(
-                            s.id,
-                            item.id,
-                            "",
-                            item.intent ?? "",
-                          )
-                        }
-                        onReanchor={() => void reanchorSetup(setup.id, item.id)}
-                        onReinsert={() => void reinsertSetup(setup.id, item.id)}
-                        onDiscard={() => void removeSetup(setup.id, item.id)}
-                      />
-                    ))
-                  )}
-                </div>
-              )}
-            </div>
-          ))}
-      </div>
+            ))}
+        </div>
+      )}
 
       <CreateForeshadowDialog
         open={dialogOpen}

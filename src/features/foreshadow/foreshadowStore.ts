@@ -15,7 +15,11 @@ import {
   reinsertOrphanSetup,
   updateSetup,
   evaluateSetupStrength,
+  proposePastSetups,
 } from "./api";
+import { loadSceneContent } from "@/features/tree/api";
+import { prosemirrorToText } from "@/lib/prosemirror";
+import type { ProposedSetup } from "./api";
 import { safeParseAiEvaluation } from "./types";
 import { deriveLabel } from "./deriveLabel";
 import { useEditorStore } from "@/features/editor/editorStore";
@@ -49,6 +53,14 @@ interface ForeshadowState {
     foreshadowIntent: string,
   ) => Promise<void>;
   evaluatingSetupIds: Set<string>;
+
+  /** Phase 3: propose setups from AI */
+  proposeResults: Record<string, ProposedSetup[]>;
+  proposingForForeshadowIds: Set<string>;
+  proposeSetups: (foreshadowId: string) => Promise<void>;
+
+  /** Phase 3: chapter audit */
+  auditingChapterIds: Set<string>;
 }
 
 async function buildWithLabels(
@@ -88,6 +100,9 @@ export const useForeshadowStore = create<ForeshadowState>()((set, get) => ({
   isLoading: false,
   setupsByForeshadowId: {},
   evaluatingSetupIds: new Set<string>(),
+  proposeResults: {},
+  proposingForForeshadowIds: new Set<string>(),
+  auditingChapterIds: new Set<string>(),
 
   load: async (projectId) => {
     set({ isLoading: true });
@@ -467,6 +482,83 @@ export const useForeshadowStore = create<ForeshadowState>()((set, get) => ({
         const next = new Set(s.evaluatingSetupIds);
         next.delete(setupId);
         return { evaluatingSetupIds: next };
+      });
+    }
+  },
+
+  proposeSetups: async (foreshadowId) => {
+    const foreshadow = get().items.find((i) => i.id === foreshadowId);
+    if (!foreshadow?.payoffSceneId) {
+      toast.error(
+        i18next.t(
+          "foreshadow.store.proposeNoPayoff",
+          "Setup を提案するには回収シーンを先に設定してください",
+        ),
+      );
+      return;
+    }
+
+    set((s) => ({
+      proposingForForeshadowIds: new Set([
+        ...s.proposingForForeshadowIds,
+        foreshadowId,
+      ]),
+    }));
+
+    try {
+      const nodes = useSceneStore.getState().nodes;
+      const payoffNode = nodes.find((n) => n.id === foreshadow.payoffSceneId);
+      const sceneNodes = nodes.filter(
+        (n) =>
+          n.nodeType === "scene" &&
+          n.id !== foreshadow.payoffSceneId &&
+          (payoffNode ? n.sortOrder < payoffNode.sortOrder : true),
+      );
+
+      const pastScenes = await Promise.all(
+        sceneNodes.slice(0, 30).map(async (n, idx) => {
+          const content = await loadSceneContent(n.id);
+          const bodyText = prosemirrorToText(content);
+          return {
+            sceneId: n.id,
+            title: n.title,
+            excerpt: bodyText.slice(0, 3000),
+            orderIndex: idx + 1,
+          };
+        }),
+      );
+
+      const payoffContent = await loadSceneContent(foreshadow.payoffSceneId);
+      const payoffText = prosemirrorToText(payoffContent);
+
+      const results = await proposePastSetups({
+        intent: foreshadow.intent ?? foreshadow.title,
+        payoffSceneId: foreshadow.payoffSceneId,
+        payoffExcerpt: payoffText.slice(0, 1000),
+        pastScenes,
+        relatedCodex: [],
+      });
+
+      set((s) => ({
+        proposeResults: { ...s.proposeResults, [foreshadowId]: results },
+      }));
+    } catch (e) {
+      toast.error(
+        i18next.t(
+          "foreshadow.store.proposeFailed",
+          "Setup 提案の取得に失敗しました",
+        ),
+      );
+      debugLog.error(
+        "ForeshadowStore",
+        `proposeSetups: ${rootCause(e)}`,
+        errorDetail(e),
+      );
+    } finally {
+      set((s) => {
+        const next = new Set(s.proposingForForeshadowIds);
+        next.delete(foreshadowId);
+        return { proposingForForeshadowIds: next };
       });
     }
   },

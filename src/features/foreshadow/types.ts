@@ -99,3 +99,46 @@ export interface ForeshadowWithLabel extends ForeshadowRow {
   label: DerivedLabel;
   setupCount: number;
 }
+
+// ── AI 監査パス ───────────────────────────────────────────────────
+
+export interface ChapterAuditRequest {
+  chapterId: string;
+  scenes: Array<{
+    sceneId: string;
+    title: string;
+    bodyText: string;
+    orderIndex: number;
+  }>;
+  existingForeshadows: Array<{
+    id: string;
+    title: string;
+    intent: string | null;
+  }>;
+  relatedCodex: Array<{
+    id: string;
+    name: string;
+    summary: string;
+  }>;
+}
+
+export interface AuditCandidate {
+  suggestedTitle: string;
+  suggestedIntent: string;
+  evidenceSceneId: string;
+  evidenceExcerpt: string;
+  rationale: string;
+  confidence: "low" | "medium" | "high";
+  similarToExistingForeshadowId?: string;
+}
+
+// ── 章別統計 ──────────────────────────────────────────────────────
+
+export interface ChapterForeshadowStats {
+  chapterId: string;
+  totalScenes: number;
+  scenesWithBody: number;
+  byLabel: Partial<Record<DerivedLabel, number>>;
+  orphanCount: number;
+  needsStrengtheningCount: number;
+}

@@ -160,6 +160,61 @@ struct ForeshadowProposeResponse {
     candidates: Vec<ForeshadowProposedSetup>,
 }
 
+// ── AI 監査パス 型定義 ────────────────────────────────────────────
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ForeshadowAuditScene {
+    scene_id: String,
+    title: String,
+    body_text: String,
+    order_index: i64,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ForeshadowAuditExistingForeshadow {
+    id: String,
+    title: String,
+    intent: Option<String>,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ForeshadowAuditCodex {
+    id: String,
+    name: String,
+    summary: String,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ForeshadowAuditRequest {
+    chapter_id: String,
+    scenes: Vec<ForeshadowAuditScene>,
+    existing_foreshadows: Vec<ForeshadowAuditExistingForeshadow>,
+    related_codex: Vec<ForeshadowAuditCodex>,
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ForeshadowAuditCandidate {
+    suggested_title: String,
+    suggested_intent: String,
+    evidence_scene_id: String,
+    evidence_excerpt: String,
+    rationale: String,
+    confidence: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    similar_to_existing_foreshadow_id: Option<String>,
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ForeshadowAuditResponse {
+    candidates: Vec<ForeshadowAuditCandidate>,
+}
+
 /// Holds the currently-open workspace's DB.
 /// Wrapped in Option so it can be None before a workspace is opened.
 struct ActiveWorkspace {
@@ -949,6 +1004,134 @@ async fn foreshadow_propose_past_setups(
     Ok(parsed)
 }
 
+#[tauri::command]
+async fn foreshadow_audit_chapter(
+    ai_path: tauri::State<'_, AiSettingsPath>,
+    req: ForeshadowAuditRequest,
+) -> Result<ForeshadowAuditResponse, AppError> {
+    let non_empty_scenes: Vec<&ForeshadowAuditScene> = req
+        .scenes
+        .iter()
+        .filter(|s| !s.body_text.trim().is_empty())
+        .collect();
+
+    if non_empty_scenes.is_empty() {
+        return Ok(ForeshadowAuditResponse {
+            candidates: Vec::new(),
+        });
+    }
+
+    let scene_texts = non_empty_scenes
+        .iter()
+        .map(|s| {
+            format!(
+                "--- sceneId={}, title={}, order={} ---\n{}",
+                s.scene_id, s.title, s.order_index, s.body_text
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n\n");
+
+    let existing_list = if req.existing_foreshadows.is_empty() {
+        "(なし)".to_string()
+    } else {
+        req.existing_foreshadows
+            .iter()
+            .map(|f| {
+                format!(
+                    "- id={}, title={}, intent={}",
+                    f.id,
+                    f.title,
+                    f.intent.as_deref().unwrap_or("(未設定)")
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+
+    let codex_list = if req.related_codex.is_empty() {
+        "(なし)".to_string()
+    } else {
+        req.related_codex
+            .iter()
+            .map(|e| format!("- {} ({}): {}", e.name, e.id, e.summary))
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+
+    let _ = req.chapter_id; // used for context, not in prompt directly
+
+    let prompt = [
+        "あなたは小説編集アシスタントです。",
+        "以下の章のシーン本文を読み、登録漏れの伏線候補を抽出してください。",
+        "必ず JSON のみを返してください（前置き・解説禁止）。",
+        "",
+        "【ルール】",
+        "- 本文に実際に書かれている描写・言及のみを根拠とする（推測・捏造禁止）",
+        "- 「さりげない描写」「具体的なディテール」「繰り返される言及」「不自然な強調」を優先的に拾う",
+        "- 既存伏線リストと意味が近い候補は similarToExistingForeshadowId にそのIDを入れる",
+        "- confidence: 確信できない場合は low、中程度は medium、明らかな場合のみ high",
+        "- 確信できない候補は提案しない（偽陽性を避ける）",
+        "- 各候補に evidenceSceneId と evidenceExcerpt（本文からの直接引用、20〜80字）が必須",
+        "",
+        "{\"candidates\":[{\"suggestedTitle\":\"...\",\"suggestedIntent\":\"...\",\"evidenceSceneId\":\"...\",\"evidenceExcerpt\":\"...\",\"rationale\":\"...\",\"confidence\":\"low|medium|high\",\"similarToExistingForeshadowId\":\"(省略可)\"}]}",
+        "",
+        "[既存登録済み伏線（除外リスト）]",
+        &existing_list,
+        "",
+        "[関連Codex]",
+        &codex_list,
+        "",
+        "[シーン本文]",
+        &scene_texts,
+    ]
+    .join("\n");
+
+    let settings = ai::read_ai_settings(&ai_path.path);
+    let api_key = resolve_api_key(&settings.provider)?;
+    let params = ai::ChatParams {
+        provider: &settings.provider,
+        model: &settings.model,
+        api_key: &api_key,
+        ollama_endpoint: &settings.ollama_endpoint,
+        thinking: None,
+        effort: None,
+        reasoning_enabled: None,
+        reasoning_effort: None,
+    };
+    let response = ai::send_chat(&params, &[("user", prompt.as_str())]).await?;
+    let text = response
+        .blocks
+        .iter()
+        .filter_map(|b| match b {
+            ai::ResponseBlock::Text { content } => Some(content.as_str()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    let mut parsed = serde_json::from_str::<ForeshadowAuditResponse>(&text)
+        .ok()
+        .or_else(|| {
+            let start = text.find('{')?;
+            let end = text.rfind('}')?;
+            if end <= start {
+                return None;
+            }
+            serde_json::from_str::<ForeshadowAuditResponse>(&text[start..=end]).ok()
+        })
+        .unwrap_or(ForeshadowAuditResponse {
+            candidates: Vec::new(),
+        });
+
+    // confidence 値のバリデーション
+    parsed
+        .candidates
+        .retain(|c| matches!(c.confidence.as_str(), "low" | "medium" | "high"));
+
+    Ok(parsed)
+}
+
 // --- FTS commands ---
 
 #[tauri::command]
@@ -1361,6 +1544,7 @@ pub fn run() {
             foreshadow_save_anchors_for_scene,
             foreshadow_load_anchors_for_scene,
             foreshadow_propose_past_setups,
+            foreshadow_audit_chapter,
             fts_optimize,
             fts_rebuild,
             fts_search,
@@ -1548,7 +1732,10 @@ mod tests {
             to_pos: Some(20),
         };
         let result = resolve_orphan_impl(&db, payload);
-        assert!(result.is_err(), "reanchor with missing scene_id should error");
+        assert!(
+            result.is_err(),
+            "reanchor with missing scene_id should error"
+        );
     }
 
     #[test]

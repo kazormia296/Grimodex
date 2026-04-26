@@ -14,6 +14,10 @@ import type {
   ForeshadowSetupRow,
   AiEvaluation,
   ForeshadowWithLabel,
+  ChapterAuditRequest,
+  AuditCandidate,
+  ChapterForeshadowStats,
+  DerivedLabel,
 } from "./types";
 import { safeParseAiEvaluation } from "./types";
 import { deriveLabel } from "./deriveLabel";
@@ -618,4 +622,223 @@ export async function evaluateSetupStrength(
   } catch {
     return null;
   }
+}
+
+// ── AI 監査パス ───────────────────────────────────────────────────
+
+export type { ChapterAuditRequest, AuditCandidate, ChapterForeshadowStats };
+
+interface AuditResponse {
+  candidates: AuditCandidate[];
+}
+
+function isValidAuditCandidate(c: unknown): c is AuditCandidate {
+  const o = c as Partial<AuditCandidate>;
+  return (
+    typeof o.suggestedTitle === "string" &&
+    typeof o.suggestedIntent === "string" &&
+    typeof o.evidenceSceneId === "string" &&
+    typeof o.evidenceExcerpt === "string" &&
+    typeof o.rationale === "string" &&
+    (o.confidence === "low" ||
+      o.confidence === "medium" ||
+      o.confidence === "high")
+  );
+}
+
+export async function auditChapter(
+  req: ChapterAuditRequest,
+): Promise<AuditCandidate[]> {
+  if (isTauriRuntime()) {
+    const res = await invoke<{ candidates: AuditCandidate[] }>(
+      "foreshadow_audit_chapter",
+      {
+        req,
+      },
+    );
+    if (!Array.isArray(res?.candidates)) return [];
+    return res.candidates.filter(isValidAuditCandidate);
+  }
+
+  const nonEmptyScenes = req.scenes.filter((s) => s.bodyText.trim().length > 0);
+  if (nonEmptyScenes.length === 0) return [];
+
+  const sceneTexts = nonEmptyScenes
+    .map(
+      (s) =>
+        `--- sceneId=${s.sceneId}, title=${s.title}, order=${s.orderIndex} ---\n${s.bodyText}`,
+    )
+    .join("\n\n");
+
+  const existingList =
+    req.existingForeshadows.length > 0
+      ? req.existingForeshadows
+          .map(
+            (f) =>
+              `- id=${f.id}, title=${f.title}, intent=${f.intent ?? "(未設定)"}`,
+          )
+          .join("\n")
+      : "(なし)";
+
+  const codexList =
+    req.relatedCodex.length > 0
+      ? req.relatedCodex.map((e) => `- ${e.name}: ${e.summary}`).join("\n")
+      : "(なし)";
+
+  const prompt = [
+    "あなたは小説編集アシスタントです。",
+    "以下の章のシーン本文を読み、登録漏れの伏線候補を抽出してください。",
+    "必ず JSON のみを返してください（前置き・解説禁止）。",
+    "",
+    "【ルール】",
+    "- 本文に実際に書かれている描写・言及のみを根拠とする（推測・捏造禁止）",
+    "- 「さりげない描写」「具体的なディテール」「繰り返される言及」「不自然な強調」を優先的に拾う",
+    "- 既存伏線リストと意味が近い候補は similarToExistingForeshadowId にそのIDを入れる",
+    "- confidence: 確信できない場合は low、中程度は medium、明らかな場合のみ high",
+    "- 確信できない候補は提案しない（偽陽性を避ける）",
+    "- 各候補に evidenceSceneId と evidenceExcerpt（本文からの直接引用、20〜80字）が必須",
+    "",
+    'JSON形式: {"candidates":[{"suggestedTitle":"...","suggestedIntent":"...","evidenceSceneId":"...","evidenceExcerpt":"...","rationale":"...","confidence":"low|medium|high","similarToExistingForeshadowId":"(省略可)"}]}',
+    "",
+    "[既存登録済み伏線（除外リスト）]",
+    existingList,
+    "",
+    "[関連Codex]",
+    codexList,
+    "",
+    "[シーン本文]",
+    sceneTexts,
+  ].join("\n");
+
+  const response = await sendChatMessageWithThinking([
+    { role: "user", content: prompt },
+  ]);
+  const jsonText = extractJsonObject(response.text);
+  if (!jsonText) return [];
+
+  try {
+    const parsed = JSON.parse(jsonText) as AuditResponse;
+    if (!Array.isArray(parsed.candidates)) return [];
+    return parsed.candidates.filter(isValidAuditCandidate);
+  } catch {
+    return [];
+  }
+}
+
+// ── 章別統計 ──────────────────────────────────────────────────────
+
+export async function getChapterForeshadowStats(
+  chapterId: string,
+): Promise<ChapterForeshadowStats> {
+  // 章配下のシーンを取得
+  const scenes = await db
+    .select({
+      id: treeNodes.id,
+      content: treeNodes.content,
+    })
+    .from(treeNodes)
+    .where(
+      and(eq(treeNodes.parentId, chapterId), eq(treeNodes.nodeType, "scene")),
+    );
+
+  const sceneIds = scenes.map((s) => s.id);
+  const scenesWithBody = scenes.filter((s) => {
+    try {
+      const doc = JSON.parse(s.content) as { content?: unknown[] };
+      return Array.isArray(doc.content) && doc.content.length > 0;
+    } catch {
+      return false;
+    }
+  }).length;
+
+  if (sceneIds.length === 0) {
+    return {
+      chapterId,
+      totalScenes: 0,
+      scenesWithBody: 0,
+      byLabel: {},
+      orphanCount: 0,
+      needsStrengtheningCount: 0,
+    };
+  }
+
+  // 配下シーンに関連する foreshadow を取得（setup 経由）
+  const setups = await db
+    .select()
+    .from(foreshadowSetups)
+    .where(inArray(foreshadowSetups.sceneId, sceneIds));
+
+  // payoff が配下シーンにある foreshadow も取得
+  const payoffForeshadows = await db
+    .select()
+    .from(foreshadows)
+    .where(inArray(foreshadows.payoffSceneId, sceneIds));
+
+  // 関連 foreshadow ID を集める
+  const relatedFids = new Set<string>([
+    ...setups.map((s) => s.foreshadowId),
+    ...payoffForeshadows.map((f) => f.id),
+  ]);
+
+  if (relatedFids.size === 0) {
+    return {
+      chapterId,
+      totalScenes: scenes.length,
+      scenesWithBody,
+      byLabel: {},
+      orphanCount: 0,
+      needsStrengtheningCount: 0,
+    };
+  }
+
+  // foreshadow 本体を取得して派生ラベルを計算
+  const fRows = await db
+    .select()
+    .from(foreshadows)
+    .where(inArray(foreshadows.id, Array.from(relatedFids)));
+
+  const allSetups = await db
+    .select()
+    .from(foreshadowSetups)
+    .where(inArray(foreshadowSetups.foreshadowId, Array.from(relatedFids)));
+
+  const countMap = new Map<string, number>();
+  const weakMap = new Map<string, boolean>();
+  for (const s of allSetups) {
+    if (s.isOrphan) {
+      continue;
+    }
+    countMap.set(s.foreshadowId, (countMap.get(s.foreshadowId) ?? 0) + 1);
+    const evaluation = safeParseAiEvaluation(s.aiReasoning as string | null);
+    const effectiveStrength =
+      (s.strength as string | null) ??
+      evaluation?.careful?.strength ??
+      (s.aiStrength as string | null);
+    if (effectiveStrength === "subtle") {
+      weakMap.set(s.foreshadowId, true);
+    }
+  }
+
+  const byLabel: Partial<Record<DerivedLabel, number>> = {};
+  let orphanCount = 0;
+  let needsStrengtheningCount = 0;
+
+  for (const r of fRows) {
+    const row = r as ForeshadowRow;
+    const setupCount = countMap.get(row.id) ?? 0;
+    const anyWeak = weakMap.get(row.id) ?? false;
+    const label = deriveLabel(row, setupCount, anyWeak);
+    byLabel[label] = (byLabel[label] ?? 0) + 1;
+    if (label === "orphan_payoff") orphanCount++;
+    if (label === "needs_strengthening") needsStrengtheningCount++;
+  }
+
+  return {
+    chapterId,
+    totalScenes: scenes.length,
+    scenesWithBody,
+    byLabel,
+    orphanCount,
+    needsStrengtheningCount,
+  };
 }
