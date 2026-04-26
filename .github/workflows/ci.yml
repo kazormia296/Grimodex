@@ -53,10 +53,6 @@ jobs:
 
       - run: pnpm install --frozen-lockfile
 
-      - name: Playwright バージョン取得
-        id: pw
-        run: echo "version=$(pnpm exec playwright --version | awk '{print $2}')" >> "$GITHUB_OUTPUT"
-
       - name: Chromium バイナリキャッシュ
         id: pw-cache
         uses: actions/cache@0c907a75c2c80ebcb7f088228285e798b750cf8f # v4
