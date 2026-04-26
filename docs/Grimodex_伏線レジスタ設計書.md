@@ -1071,7 +1071,7 @@ drizzle/migrations/
 
 - **Grimodex_Editorパネル設計書.md**: AuthorshipMark 機構（雛形として流用）
 - **Grimodex_Attributionパネル設計書.md**: authorship_spans の保存パターン（対比対象）
-- **Grimodex_Codexパネル設計書.md**: Codex 詳細タブ統合先
+- **Grimodex_Codexパネル設計書.md**: Codex 詳細タブ統合先。同設計書の「スパン単位セマンティックリンク」とは排他関係で、setup→payoff の回収構造を持つ叙述トリック・信頼できない語り手系のユースケースは本レジスタで吸収する（純 disambiguation はセマンティックリンク側）
 - **Grimodex_Snippetsパネル設計書.md**: Phase 2 の chat 抽出経路統合先
 - **Grimodex_リビジョン履歴設計書.md**: Phase 3 の Revision 統合先
 - **Grimodex_統合DBスキーマ.md**: スキーマ追加時に更新必要
