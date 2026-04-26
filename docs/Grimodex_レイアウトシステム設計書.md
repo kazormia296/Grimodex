@@ -57,6 +57,7 @@ Left/Right DockはTop/Bottom間で縦分割（ゾーン内スプリット）が�
 | Chat History | 全シーン横断のチャットセッション検索・閲覧 |
 | Snippets | 再利用可能なテキスト断片。Chat/Editorから保存、D&Dでエディタに挿入 |
 | Attribution | AI帰属統計ダッシュボード。シーン/チャプター/プロジェクト単位の集計、モデル別使用状況 |
+| Map | シーン・Codexの2D無限キャンバス可視化。Free/Time/Theme/POV/Placeの5レイアウトモード |
 | Settings | プロジェクト/AI/エディタ/表示/キーバインド/データ管理。常にフローティング |
 
 すべてのパネル（Settings以外）は任意のドックゾーンに移動可能。SettingsはEditorとは性質が異なるため、常にフローティング専用とする。各プリセットでの配置は `layoutPresets.ts` のビルダー関数を参照。
@@ -136,6 +137,7 @@ Left/Right DockはTop/Bottom間で縦分割（ゾーン内スプリット）が�
 │ 下部                         │
 │ [ ] Snippets      Ctrl+Alt+N │
 │ [ ] 帰属          Ctrl+Alt+A │
+│ [ ] Map           Ctrl+Alt+M │
 └──────────────────────────────┘
 ```
 
@@ -400,6 +402,7 @@ OS AppDataディレクトリ内の `global-settings.json` に保存する。レ�
 | `Ctrl+Alt+X` | Codexパネルにフォーカス/トグル |
 | `Ctrl+Alt+N` | Snippetsパネルにフォーカス/トグル |
 | `Ctrl+Alt+A` | Attributionパネルにフォーカス/トグル |
+| `Ctrl+Alt+M` | Mapパネルにフォーカス/トグル |
 | `Ctrl+Alt+,` | Settings を開く |
 
 ### ショートカットのカスタマイズ

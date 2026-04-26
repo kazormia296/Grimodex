@@ -1,0 +1,19 @@
+[
+  {
+    "rule_id": "en/straight-quotes",
+    "severity": "warning",
+    "message": "Use curly quotes “…” in prose",
+    "range": {
+      "start": 9,
+      "end": 16
+    },
+    "fix": {
+      "label": "Replace with curly quotes",
+      "replacement": "“hello”",
+      "range": {
+        "start": 9,
+        "end": 16
+      }
+    }
+  }
+]

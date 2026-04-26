@@ -4,8 +4,9 @@ import type { CodexEntry } from "./api";
 import * as phaseApi from "./phaseApi";
 import type { CodexEntryPhase, CodexPhaseDetailOverride } from "./phaseApi";
 import {
-  computeGlobalSceneOrder,
+  computeSceneTimeIndex,
   resolveCodexState,
+  type PhaseResolutionMode,
   type ResolvedCodexState,
 } from "./phaseResolver";
 
@@ -14,6 +15,8 @@ interface PhaseState {
   detailOverrides: Record<string, CodexPhaseDetailOverride[]>; // phaseId → overrides
   globalSceneOrder: Map<string, number>;
   resolvedStates: Record<string, ResolvedCodexState>; // entryId → resolved (キャッシュ)
+  resolutionMode: PhaseResolutionMode;
+  cachedNodes: TreeNodeData[];
 
   loadPhasesForEntry(entryId: string): Promise<void>;
   createPhase(data: {
@@ -45,6 +48,7 @@ interface PhaseState {
   ): Promise<void>;
   deleteDetailOverride(phaseId: string, definitionId: string): Promise<void>;
   recomputeSceneOrder(nodes: TreeNodeData[]): void;
+  setResolutionMode(mode: PhaseResolutionMode): void;
   resolveForScene(
     entries: CodexEntry[],
     baseDetails: Map<string, Map<string, string | null>>,
@@ -58,6 +62,8 @@ export const usePhaseStore = create<PhaseState>()((set, get) => ({
   detailOverrides: {},
   globalSceneOrder: new Map(),
   resolvedStates: {},
+  resolutionMode: "reading",
+  cachedNodes: [],
 
   async loadPhasesForEntry(entryId) {
     let phases: CodexEntryPhase[];
@@ -176,7 +182,13 @@ export const usePhaseStore = create<PhaseState>()((set, get) => ({
   },
 
   recomputeSceneOrder(nodes) {
-    const order = computeGlobalSceneOrder(nodes);
+    const order = computeSceneTimeIndex(nodes, get().resolutionMode);
+    set({ globalSceneOrder: order, cachedNodes: nodes });
+  },
+
+  setResolutionMode(mode) {
+    set({ resolutionMode: mode });
+    const order = computeSceneTimeIndex(get().cachedNodes, mode);
     set({ globalSceneOrder: order });
   },
 

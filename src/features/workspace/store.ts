@@ -3,6 +3,9 @@ import i18next from "@/lib/i18n";
 import { invoke } from "@/lib/tauri";
 import { useSettingsStore } from "@/features/settings/settingsStore";
 import { useCursorSettingsStore } from "@/features/editor/cursorSettingsStore";
+import { loadAndSyncTimelineSettings } from "@/features/timeline/timelineStore";
+import type { TimelineSettings } from "@/features/timeline/timelineStore";
+import { useMapStore } from "@/features/map/mapStore";
 
 export interface RecentWorkspace {
   path: string;
@@ -28,6 +31,10 @@ export interface GlobalSettings {
   trustedWorkspaces?: string[];
   /** Whether the user has already seen the welcome tour. */
   hasSeenWelcome?: boolean;
+  /** Persisted timeline panel state */
+  timeline?: TimelineSettings;
+  /** Persisted map panel state */
+  map?: unknown;
 }
 
 export type AppView = "loading" | "welcome" | "launcher" | "editor";
@@ -133,6 +140,14 @@ export const useWorkspaceStore = create<WorkspaceState>()((set, get) => ({
       // Load persisted editor settings and apply to runtime stores
       await useSettingsStore.getState().loadAll();
       useCursorSettingsStore.getState().initFromSettings();
+      // Lint config depends on settings being loaded first.
+      const { useLintConfigStore } =
+        await import("@/features/lint/lintConfigStore");
+      useLintConfigStore.getState().load();
+      if (settings.timeline) {
+        loadAndSyncTimelineSettings(settings.timeline);
+      }
+      useMapStore.getState().loadFromSettings(settings);
       // Optimize FTS indexes in background (fire-and-forget)
       invoke("fts_optimize").catch(() => {});
     } catch (e) {

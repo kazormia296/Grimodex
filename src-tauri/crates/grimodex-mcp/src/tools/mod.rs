@@ -1,5 +1,6 @@
 pub mod chat;
 pub mod codex;
+pub mod lint;
 pub mod project;
 pub mod scene;
 pub mod search;

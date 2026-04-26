@@ -10,6 +10,7 @@ import {
   testConnection,
   sendChatWithTools,
 } from "@/lib/browser-ai";
+import { lintTextBrowser } from "@/lib/browser-lint";
 import type {
   AgentMessagePayload,
   AgentToolDefinition,
@@ -25,6 +26,7 @@ const SCHEMA_DDL = `
     language TEXT NOT NULL DEFAULT 'ja',
     style_guide TEXT,
     ai_instructions TEXT,
+    phase_resolution_mode TEXT NOT NULL DEFAULT 'reading' CHECK(phase_resolution_mode IN ('reading', 'story', 'auto')),
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
   );
@@ -35,7 +37,9 @@ const SCHEMA_DDL = `
     node_type TEXT NOT NULL,
     title TEXT NOT NULL DEFAULT 'Untitled',
     synopsis TEXT,
-    sort_order REAL NOT NULL DEFAULT 0.0,
+    sort_order TEXT NOT NULL DEFAULT 'a0',
+    story_time_order TEXT,
+    story_time_label TEXT,
     status TEXT DEFAULT 'outline',
     content TEXT NOT NULL DEFAULT '{}',
     created_at TEXT NOT NULL,
@@ -55,7 +59,7 @@ const SCHEMA_DDL = `
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
   );
-  CREATE TABLE IF NOT EXISTS codex_relation_dismissed (
+  CREATE TABLE IF NOT EXISTS codex_dismissed_relations (
     entry_id TEXT NOT NULL REFERENCES codex_entries(id) ON DELETE CASCADE,
     dismissed_id TEXT NOT NULL REFERENCES codex_entries(id) ON DELETE CASCADE,
     PRIMARY KEY (entry_id, dismissed_id)
@@ -118,9 +122,15 @@ const SCHEMA_DDL = `
     tag_id TEXT NOT NULL REFERENCES codex_tags(id) ON DELETE CASCADE,
     PRIMARY KEY (entry_id, tag_id)
   );
-  CREATE TABLE IF NOT EXISTS settings (
+  CREATE TABLE IF NOT EXISTS app_settings (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS project_settings (
+    project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    key TEXT NOT NULL,
+    value TEXT NOT NULL,
+    PRIMARY KEY (project_id, key)
   );
   CREATE TABLE IF NOT EXISTS codex_types (
     id TEXT PRIMARY KEY,
@@ -174,7 +184,7 @@ export async function createBrowserMock(): Promise<BrowserMock> {
     [now, now],
   );
   db.run(
-    "INSERT OR IGNORE INTO tree_nodes (id, project_id, node_type, title, sort_order, created_at, updated_at) VALUES ('default-chapter', 'default-project', 'folder', 'Part.1', 0.0, ?, ?)",
+    "INSERT OR IGNORE INTO tree_nodes (id, project_id, node_type, title, sort_order, created_at, updated_at) VALUES ('default-chapter', 'default-project', 'folder', 'Part.1', 'a0', ?, ?)",
     [now, now],
   );
 
@@ -435,8 +445,19 @@ export async function createBrowserMock(): Promise<BrowserMock> {
         return (await handleTestAiConnection(args)) as T;
       case "send_chat_message":
         return (await handleSendChatMessage(args)) as T;
+      case "send_inline_ai_stream":
+        // ブラウザモックではストリーミング未対応（Tauri イベントエミッタがないため）。
+        // 設計書に合わせ、呼び出しをエラー扱いせずに no-op で完了させ、
+        // Rust 側と同様に送信イベントは発火しない状態とする。
+        return undefined as T;
+      case "abort_inline_ai_stream":
+        return undefined as T;
       case "send_agent_message":
         return (await handleSendAgentMessage(args)) as T;
+      case "lint_text":
+        return lintTextBrowser(
+          args as unknown as Parameters<typeof lintTextBrowser>[0],
+        ) as T;
       default:
         throw new Error(`[browser-mock] Unknown Tauri command: ${cmd}`);
     }

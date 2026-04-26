@@ -11,6 +11,9 @@ import { loadSceneContent, saveSceneContent } from "@/features/tree/api";
 import { getCodexEntry, updateCodexEntry } from "@/features/codex/api";
 import { usePhaseStore } from "@/features/codex/phaseStore";
 import { useCodexStore } from "@/features/codex/codexStore";
+import { useCodexHighlightStore } from "@/features/editor/codexHighlightStore";
+import { useWorkspaceStore } from "@/features/workspace/store";
+import { buildInlineAiContext } from "@/features/editor/inlineAi/inlineAiContext";
 import { getSnippet, updateSnippet } from "@/features/snippets/api";
 import { useSnippetStore } from "@/features/snippets/snippetStore";
 import { useAutoSave } from "@/hooks/useAutoSave";
@@ -31,14 +34,22 @@ import { useEditorSettings } from "@/features/settings/hooks/useEditorSettings";
 import { useSettingsStore } from "@/features/settings/settingsStore";
 import { useSettingNumber } from "@/features/settings/useSettingControl";
 import { useCharCountMilestone } from "@/features/editor/useCharCountMilestone";
-import { AttributionOverrideMenu } from "@/features/attribution/AttributionOverrideMenu";
 import {
   saveAuthorshipSpans,
   loadAuthorshipSpans,
   spansToMarkData,
 } from "@/features/attribution/api";
+import {
+  saveForeshadowAnchors,
+  loadForeshadowAnchors,
+  clearAllForeshadowMarks,
+} from "@/features/foreshadow/saveAnchors";
 import { VerticalPreview } from "@/features/editor/VerticalPreview";
 import { EditorContextMenu } from "@/features/editor/EditorContextMenu";
+import { CommentAddPopover } from "@/features/editor/CommentAddPopover";
+import { CommentHoverPopover } from "@/features/editor/CommentHoverPopover";
+import { ForeshadowMarkPopover } from "@/features/foreshadow/ForeshadowMarkPopover";
+import { ForeshadowMarkHoverPopover } from "@/features/foreshadow/ForeshadowMarkHoverPopover";
 import { FindReplaceBar } from "@/features/editor/FindReplaceBar";
 import { useFocusMode } from "@/features/editor/useFocusMode";
 import {
@@ -48,6 +59,8 @@ import {
 import { useInlineAiDiff } from "@/features/editor/inlineAi/useInlineAiDiff";
 import { InlineAIPalette } from "@/features/editor/inlineAi/InlineAIPalette";
 import { InlineAIToolbar } from "@/features/editor/inlineAi/InlineAIToolbar";
+import { SlashCommandPopup } from "@/features/editor/inlineAi/SlashCommandPopup";
+import { useInlineAiStore } from "@/features/editor/inlineAi/inlineAiStore";
 import type { InlineAiCommand } from "@/features/editor/inlineAi/inlineAiTypes";
 import { useTabStore } from "@/features/editor/tabStore";
 import {
@@ -58,6 +71,7 @@ import { useSceneContentStore } from "@/features/editor/sceneContentStore";
 import { shouldAutoDraftTransition } from "@/features/editor/autoStatusTransition";
 import { shouldPromptSynopsis } from "@/features/editor/synopsisSuggestion";
 import { getDocText } from "@/features/editor/RubyNode";
+import { useLinter } from "@/features/lint/useLinter";
 import { generateSynopsisFromContent } from "@/features/chat/chatApi";
 import { useChatStore } from "@/features/chat/chatStore";
 import { prosemirrorToText } from "@/lib/prosemirror";
@@ -254,6 +268,7 @@ export function EditorPane({
     } else {
       await saveSceneContent(id, JSON.stringify(ed.getJSON()));
       await saveAuthorshipSpans(id, ed.state.doc);
+      await saveForeshadowAnchors(id, ed.state.doc);
       useTreeStore
         .getState()
         .refreshAiRatio(id)
@@ -416,6 +431,10 @@ export function EditorPane({
     },
     onUpdate({ editor: e }) {
       if (isApplyingExternalUpdate.current) return;
+      // インライン AI の生成中・diff 表示中はオートセーブを止める。
+      // Accept/Reject が呼ばれて idle に戻った時点で reset + dispatch によって
+      // 再度 onUpdate が走り、その時に通常の schedule が実行される。
+      if (useInlineAiStore.getState().status !== "idle") return;
       schedule();
       setIsDirtyRef.current(true);
       const text = getDocText(e.state.doc);
@@ -489,6 +508,11 @@ export function EditorPane({
     setGlobalEditor(editor);
     return () => setGlobalEditor(null);
   }, [editor, setGlobalEditor, groupIndex]);
+
+  // Linter — scene-only, primary group only.
+  const lintSceneId =
+    groupIndex === 0 && !isCodexMode && !isSnippetMode ? nodeId : null;
+  useLinter(editor, lintSceneId);
 
   // Ctrl+S / Ctrl+F / Ctrl+H / Ctrl+Shift+H key handlers
   const handleManualSave = useCallback(async () => {
@@ -576,6 +600,9 @@ export function EditorPane({
   );
   useFocusMode(editor);
   const typewriterMode = useCursorSettingsStore((s) => s.typewriterMode);
+  const showForeshadowMarks = useCursorSettingsStore(
+    (s) => s.showForeshadowMarks,
+  );
   useTypewriterScroll(editor, typewriterMode, editorContainerRef);
 
   // When typewriter mode is toggled (on or off), scroll immediately to center
@@ -602,7 +629,9 @@ export function EditorPane({
     });
     return () => cancelAnimationFrame(raf);
   }, [typewriterMode, editor, nodeId]);
-  const { generate, accept, reject, retry } = useInlineAiDiff(editor);
+  const { generate, accept, reject, rejectOrAbort, retry } =
+    useInlineAiDiff(editor);
+  void reject;
 
   useCursorOverlay(editor);
   useAttribution(editor);
@@ -614,10 +643,27 @@ export function EditorPane({
       const cmd = (e as CustomEvent).detail?.command as
         | InlineAiCommand
         | undefined;
-      if (cmd) {
+      if (!cmd) return;
+      // 引数不要なコマンドは即時 generate を叩き、フロー状態を維持する。
+      // 引数必要なコマンドは従来通りパレットを開き、引数入力フォームに委譲。
+      if (cmd.needsArg) {
         setPalettePreselect(cmd);
         setPaletteOpen(true);
+        return;
       }
+      const node = useTreeStore.getState().nodes.find((n) => n.id === nodeId);
+      const projectTitle =
+        useWorkspaceStore.getState().activeWorkspaceName ?? "";
+      const matchedCodexIds = useCodexHighlightStore.getState().matchedEntryIds;
+      const codexEntries = useCodexStore.getState().entries;
+      const context = buildInlineAiContext({
+        editor,
+        projectTitle,
+        sceneTitle: node?.title ?? "",
+        matchedCodexIds,
+        codexEntries,
+      });
+      generate(cmd, context);
     }
     editor.view.dom.addEventListener("inlineai:slash-command", onSlashCommand);
     return () =>
@@ -675,6 +721,10 @@ export function EditorPane({
       cancel();
       saveSceneIdRef.current = nodeId;
 
+      // Hold the external-update guard for the entire scene-switch sequence
+      // (setContent + authorship load + foreshadow load). Releasing it earlier
+      // lets a fast typist trigger autosave while marks are mid-load, which
+      // would persist a doc with no setup marks and orphan every setup row.
       isApplyingExternalUpdate.current = true;
       try {
         if (isCodexMode) {
@@ -748,27 +798,22 @@ export function EditorPane({
           const parsed = content && content !== "{}" ? JSON.parse(content) : "";
           editor!.commands.setContent(parsed, { emitUpdate: false });
         }
-      } finally {
-        isApplyingExternalUpdate.current = false;
-      }
 
-      const text = getDocText(editor!.state.doc);
-      const count = text.length;
-      setCharCount(count);
-      setWordCount(text.trim() === "" ? 0 : text.trim().split(/\s+/).length);
-      setIsDirty(false);
-      wasEmptyRef.current = count === 0;
+        const text = getDocText(editor!.state.doc);
+        const count = text.length;
+        setCharCount(count);
+        setWordCount(text.trim() === "" ? 0 : text.trim().split(/\s+/).length);
+        setIsDirty(false);
+        wasEmptyRef.current = count === 0;
 
-      if (!isCodexMode && !isSnippetMode) {
-        useTreeStore.getState().setCharCount(nodeId, count);
+        if (!isCodexMode && !isSnippetMode) {
+          useTreeStore.getState().setCharCount(nodeId, count);
 
-        const spans = await loadAuthorshipSpans(nodeId);
-        if (!cancelled && spans.length > 0) {
-          const markData = spansToMarkData(spans);
-          const authorshipType = editor!.schema.marks["authorship"];
-          if (authorshipType) {
-            isApplyingExternalUpdate.current = true;
-            try {
+          const spans = await loadAuthorshipSpans(nodeId);
+          if (!cancelled && spans.length > 0) {
+            const markData = spansToMarkData(spans);
+            const authorshipType = editor!.schema.marks["authorship"];
+            if (authorshipType) {
               editor!
                 .chain()
                 .command(({ tr }) => {
@@ -788,11 +833,33 @@ export function EditorPane({
                   return true;
                 })
                 .run();
-            } finally {
-              isApplyingExternalUpdate.current = false;
             }
           }
+
+          // Load and apply foreshadow anchors
+          const foreshadowMarks = await loadForeshadowAnchors(nodeId);
+          if (!cancelled && foreshadowMarks.length > 0 && editor) {
+            editor
+              .chain()
+              .command(({ tr }) => {
+                tr.setMeta("programmaticInsert", true);
+                clearAllForeshadowMarks((fn) => fn(tr));
+                const schema = tr.doc.type.schema;
+                for (const { from, to, markName, attrs } of foreshadowMarks) {
+                  const markType = schema.marks[markName];
+                  if (!markType) continue;
+                  const docSize = tr.doc.content.size;
+                  const cf = Math.min(from, docSize);
+                  const ct = Math.min(to, docSize);
+                  if (cf < ct) tr.addMark(cf, ct, markType.create(attrs));
+                }
+                return true;
+              })
+              .run();
+          }
         }
+      } finally {
+        isApplyingExternalUpdate.current = false;
       }
 
       // Reset scroll to top after scene load; saved state will be restored below.
@@ -951,6 +1018,7 @@ export function EditorPane({
       />
       <div
         ref={editorContainerRef}
+        data-show-foreshadow-marks={showForeshadowMarks ? "true" : "false"}
         className={`flex-1 overflow-auto bg-content-background text-content-foreground-secondary p-4${typewriterMode ? " typewriter-padding" : ""}${filterSource ? ` attribution-filter-${filterSource}` : ""}`}
         onClick={(e) => {
           // Focus editor when clicking on the padding/background area
@@ -1025,7 +1093,16 @@ export function EditorPane({
           )}
           <EditorContent editor={editor} />
           <CodexPopover editor={editor} />
-          <AttributionOverrideMenu editor={editor} />
+          <CommentAddPopover editor={editor} />
+          <ForeshadowMarkPopover editor={editor} />
+          <ForeshadowMarkHoverPopover
+            editor={editor}
+            containerRef={editorContainerRef}
+          />
+          <CommentHoverPopover
+            editor={editor}
+            containerRef={editorContainerRef}
+          />
           <EditorContextMenu
             editor={editor}
             containerRef={editorContainerRef}
@@ -1136,22 +1213,29 @@ export function EditorPane({
             const node = useTreeStore
               .getState()
               .nodes.find((n) => n.id === nodeId);
-            const sceneText = editor.getText();
-            const { from, to } = editor.state.selection;
-            const selectedText =
-              from !== to ? editor.state.doc.textBetween(from, to) : undefined;
-            generate(command, {
-              projectTitle: node?.title ?? "",
+            const projectTitle =
+              useWorkspaceStore.getState().activeWorkspaceName ?? "";
+            const matchedCodexIds =
+              useCodexHighlightStore.getState().matchedEntryIds;
+            const codexEntries = useCodexStore.getState().entries;
+            const context = buildInlineAiContext({
+              editor,
+              projectTitle,
               sceneTitle: node?.title ?? "",
-              sceneText,
-              codexSummaries: "",
-              selectedText,
+              matchedCodexIds,
+              codexEntries,
               arg: prompt || undefined,
             });
+            generate(command, context);
           }}
         />
       )}
-      <InlineAIToolbar onAccept={accept} onReject={reject} onRetry={retry} />
+      <InlineAIToolbar
+        onAccept={accept}
+        onReject={rejectOrAbort}
+        onRetry={retry}
+      />
+      <SlashCommandPopup />
     </div>
   );
 }

@@ -55,7 +55,8 @@
     "source=grimodex-claude-config-${devcontainerId},target=/home/node/.claude,type=volume",
     "source=grimodex-cargo-registry-${devcontainerId},target=/home/node/.cargo/registry,type=volume",
     "source=grimodex-cargo-git-${devcontainerId},target=/home/node/.cargo/git,type=volume",
-    "source=grimodex-target-${devcontainerId},target=/workspace/src-tauri/target,type=volume"
+    "source=grimodex-target-${devcontainerId},target=/workspace/src-tauri/target,type=volume",
+    "source=grimodex-node-modules-${devcontainerId},target=/workspace/node_modules,type=volume"
   ],
   "containerEnv": {
     "NODE_OPTIONS": "--max-old-space-size=4096",
@@ -66,7 +67,7 @@
   },
   "workspaceMount": "source=${localWorkspaceFolder},target=/workspace,type=bind,consistency=delegated",
   "workspaceFolder": "/workspace",
-  "postCreateCommand": "sudo chown -R node:node /home/node/.cargo /workspace/src-tauri/target && npm install",
+  "postCreateCommand": "sudo chown -R node:node /home/node/.cargo /workspace/src-tauri/target /workspace/node_modules && pnpm install",
   "postStartCommand": "sudo /usr/local/bin/init-firewall.sh",
   "waitFor": "postStartCommand"
 }

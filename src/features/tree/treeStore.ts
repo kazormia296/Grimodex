@@ -13,6 +13,7 @@ import {
   removePinnedCodex,
 } from "./codexQuickPinApi";
 import { usePhaseStore } from "@/features/codex/phaseStore";
+import { cmpKeys, generateKeyBetween, INITIAL_KEY } from "./fractionalIndex";
 
 export type NodeType = "folder" | "scene" | "note";
 export type SceneStatus =
@@ -29,8 +30,14 @@ export interface TreeNodeData {
   nodeType: NodeType;
   title: string;
   synopsis: string | null;
-  sortOrder: number;
+  /** fractional-indexing 文字列キー（base62、辞書順比較） */
+  sortOrder: string;
   status: string | null;
+  storyTimeOrder: string | null;
+  storyTimeLabel: string | null;
+  povCharacterId: string | null;
+  locationId: string | null;
+  createdAt: string;
 }
 
 /** Returns true when a node type can hold children */
@@ -42,7 +49,7 @@ export function canHaveChildren(type: NodeType): boolean {
 export interface SceneMeta {
   id: string;
   title: string;
-  sortOrder: number;
+  sortOrder: string;
 }
 
 function toNodeData(n: ApiNode): TreeNodeData {
@@ -55,13 +62,18 @@ function toNodeData(n: ApiNode): TreeNodeData {
     synopsis: n.synopsis ?? null,
     sortOrder: n.sortOrder,
     status: n.status ?? null,
+    storyTimeOrder: n.storyTimeOrder ?? null,
+    storyTimeLabel: n.storyTimeLabel ?? null,
+    povCharacterId: n.povCharacterId ?? null,
+    locationId: n.locationId ?? null,
+    createdAt: n.createdAt,
   };
 }
 
 function computeScenes(nodes: TreeNodeData[]): SceneMeta[] {
   return nodes
     .filter((n) => n.nodeType === "scene")
-    .sort((a, b) => a.sortOrder - b.sortOrder)
+    .sort((a, b) => cmpKeys(a.sortOrder, b.sortOrder))
     .map((n) => ({ id: n.id, title: n.title, sortOrder: n.sortOrder }));
 }
 
@@ -108,7 +120,8 @@ interface TreeState {
 
   // Backward-compat API (used by ChatPanel, ExportAgentTraceButton, SceneEditor)
   loadScenes: (projectId: string, chapterId: string) => Promise<void>;
-  createScene: () => Promise<void>;
+  createScene: () => Promise<string>;
+  createNote: () => Promise<string>;
   deleteScene: (id: string) => Promise<void>;
   renameScene: (id: string, title: string) => Promise<void>;
   setActiveScene: (id: string) => void;
@@ -124,6 +137,18 @@ interface TreeState {
     newParentId: string | null,
     afterId: string | null,
   ) => Promise<void>;
+
+  updateStoryTime: (
+    id: string,
+    order: string | null,
+    label?: string,
+  ) => Promise<void>;
+
+  updatePovCharacter: (
+    id: string,
+    codexEntryId: string | null,
+  ) => Promise<void>;
+  updateLocation: (id: string, codexEntryId: string | null) => Promise<void>;
 
   // Multi-selection
   selectNode: (id: string, extend: boolean) => void;
@@ -161,27 +186,28 @@ export interface CreateNodeOpts {
 }
 
 /**
- * Compute next sort_order for inserting after `afterId` within the same parent.
- * Returns (afterOrder + nextOrder) / 2 for middle insert,
- * or (maxOrder + 1.0) for appending.
+ * Compute next sort_order key for inserting after `afterId` within the same parent.
+ * 文字列 fractional-indexing で afterId の次（または末尾）のキーを生成する。
  */
 function nextSortOrder(
   siblings: TreeNodeData[],
   afterId: string | null | undefined,
-): number {
-  const sorted = [...siblings].sort((a, b) => a.sortOrder - b.sortOrder);
+): string {
+  const sorted = [...siblings].sort((a, b) =>
+    cmpKeys(a.sortOrder, b.sortOrder),
+  );
   if (!afterId) {
-    // Append at end
     const last = sorted[sorted.length - 1];
-    return last ? last.sortOrder + 1.0 : 1.0;
+    return generateKeyBetween(last ? last.sortOrder : null, null);
   }
   const idx = sorted.findIndex((n) => n.id === afterId);
-  if (idx === -1)
-    return sorted.length > 0 ? sorted[sorted.length - 1].sortOrder + 1.0 : 1.0;
+  if (idx === -1) {
+    const last = sorted[sorted.length - 1];
+    return generateKeyBetween(last ? last.sortOrder : null, null);
+  }
   const after = sorted[idx];
   const next = sorted[idx + 1];
-  if (!next) return after.sortOrder + 1.0;
-  return (after.sortOrder + next.sortOrder) / 2;
+  return generateKeyBetween(after.sortOrder, next ? next.sortOrder : null);
 }
 
 /** Extract trailing integer from a title like "シーン 3" → 3, or null */
@@ -221,7 +247,7 @@ function computeNextNumber(
   // Siblings in insertion-order for boundary detection
   const siblings = allNodes
     .filter((n) => n.nodeType === nodeType && n.parentId === parentId)
-    .sort((a, b) => a.sortOrder - b.sortOrder);
+    .sort((a, b) => cmpKeys(a.sortOrder, b.sortOrder));
 
   let numBefore = 0;
   let numAfter = Infinity;
@@ -358,7 +384,7 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
             projectId,
             nodeType: "folder",
             title: "Part.1",
-            sortOrder: 1.0,
+            sortOrder: INITIAL_KEY,
           });
           raw = [...raw, ch];
         }
@@ -368,7 +394,7 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
           parentId: DEFAULT_CHAPTER_ID,
           nodeType: "scene",
           title: `${i18next.t("tree.defaultScene")} 1`,
-          sortOrder: 1.0,
+          sortOrder: INITIAL_KEY,
         });
         raw = [...raw, scene];
       }
@@ -444,6 +470,30 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
       const nodes = [...state.nodes, newNode];
       return { nodes, scenes: computeScenes(nodes) };
     });
+    return created.id;
+  },
+
+  async createNote() {
+    const { projectId, nodes } = get();
+    const chapterNode = nodes.find((n) => n.id === DEFAULT_CHAPTER_ID);
+    const siblings = nodes.filter(
+      (n) => n.parentId === (chapterNode?.id ?? null),
+    );
+    const sortOrder = nextSortOrder(siblings, null);
+    const created = await api.createNode({
+      id: crypto.randomUUID(),
+      projectId,
+      parentId: chapterNode?.id ?? null,
+      nodeType: "note",
+      title: "新しいノート",
+      sortOrder,
+    });
+    const newNode = toNodeData(created);
+    set((state) => {
+      const nodes = [...state.nodes, newNode];
+      return { nodes, scenes: computeScenes(nodes) };
+    });
+    return created.id;
   },
 
   async deleteScene(id) {
@@ -821,6 +871,87 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
     }
   },
 
+  async updateStoryTime(id, order, label) {
+    const node = get().nodes.find((n) => n.id === id);
+    if (!node) return;
+    const oldOrder = node.storyTimeOrder;
+    const oldLabel = node.storyTimeLabel;
+    const patch: Parameters<typeof api.updateNode>[1] = {
+      storyTimeOrder: order ?? undefined,
+    };
+    if (label !== undefined) patch.storyTimeLabel = label;
+    await api.updateNode(id, patch);
+    set((state) => ({
+      nodes: state.nodes.map((n) =>
+        n.id === id
+          ? {
+              ...n,
+              storyTimeOrder: order,
+              storyTimeLabel: label !== undefined ? label : n.storyTimeLabel,
+            }
+          : n,
+      ),
+    }));
+    usePhaseStore.getState().recomputeSceneOrder(get().nodes);
+    if (!useTreeHistoryStore.getState().isReplaying) {
+      useTreeHistoryStore.getState().push({
+        async undo() {
+          const undoPatch: Parameters<typeof api.updateNode>[1] = {
+            storyTimeOrder: oldOrder ?? undefined,
+            storyTimeLabel: oldLabel ?? undefined,
+          };
+          await api.updateNode(id, undoPatch);
+          set((state) => ({
+            nodes: state.nodes.map((n) =>
+              n.id === id
+                ? { ...n, storyTimeOrder: oldOrder, storyTimeLabel: oldLabel }
+                : n,
+            ),
+          }));
+          usePhaseStore.getState().recomputeSceneOrder(get().nodes);
+        },
+        async redo() {
+          await api.updateNode(id, patch);
+          set((state) => ({
+            nodes: state.nodes.map((n) =>
+              n.id === id
+                ? {
+                    ...n,
+                    storyTimeOrder: order,
+                    storyTimeLabel:
+                      label !== undefined ? label : n.storyTimeLabel,
+                  }
+                : n,
+            ),
+          }));
+          usePhaseStore.getState().recomputeSceneOrder(get().nodes);
+        },
+      });
+    }
+  },
+
+  async updatePovCharacter(id, codexEntryId) {
+    await api.updateNode(id, {
+      povCharacterId: codexEntryId,
+    });
+    set((state) => ({
+      nodes: state.nodes.map((n) =>
+        n.id === id ? { ...n, povCharacterId: codexEntryId } : n,
+      ),
+    }));
+  },
+
+  async updateLocation(id, codexEntryId) {
+    await api.updateNode(id, {
+      locationId: codexEntryId,
+    });
+    set((state) => ({
+      nodes: state.nodes.map((n) =>
+        n.id === id ? { ...n, locationId: codexEntryId } : n,
+      ),
+    }));
+  },
+
   // --- UI state ---
   toggleExpand(id) {
     set((state) => ({
@@ -861,30 +992,31 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
     if (!node) return;
     const siblings = nodes
       .filter((n) => n.parentId === newParentId && n.id !== id)
-      .sort((a, b) => a.sortOrder - b.sortOrder);
+      .sort((a, b) => cmpKeys(a.sortOrder, b.sortOrder));
 
     // afterId semantics:
     //   null      → insert before first sibling (prepend)
     //   undefined → append after last sibling
     //   string    → insert after the named sibling
-    let sortOrder: number;
+    let sortOrder: string;
     if (afterId === null) {
       const first = siblings[0];
-      sortOrder = first ? first.sortOrder - 1.0 : 1.0;
+      sortOrder = generateKeyBetween(null, first ? first.sortOrder : null);
     } else if (afterId === undefined) {
       const last = siblings[siblings.length - 1];
-      sortOrder = last ? last.sortOrder + 1.0 : 1.0;
+      sortOrder = generateKeyBetween(last ? last.sortOrder : null, null);
     } else {
       const idx = siblings.findIndex((n) => n.id === afterId);
       if (idx === -1) {
         const last = siblings[siblings.length - 1];
-        sortOrder = last ? last.sortOrder + 1.0 : 1.0;
+        sortOrder = generateKeyBetween(last ? last.sortOrder : null, null);
       } else {
         const after = siblings[idx];
         const next = siblings[idx + 1];
-        sortOrder = next
-          ? (after.sortOrder + next.sortOrder) / 2
-          : after.sortOrder + 1.0;
+        sortOrder = generateKeyBetween(
+          after.sortOrder,
+          next ? next.sortOrder : null,
+        );
       }
     }
 

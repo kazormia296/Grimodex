@@ -139,7 +139,7 @@ Node.create({
 | `@tiptap/extension-focus` | フォーカスクラス付与 | FocusDim デコレーションの前提 |
 
 **実装手順**:
-1. `npm install` で各パッケージ追加
+1. `pnpm install` で各パッケージ追加
 2. `extensions.ts` の配列に追加
 3. Toolbar にボタン追加（Underline, Link）
 4. 既存テストのリグレッション確認
@@ -577,7 +577,7 @@ App.tsx
 ### 5.1 技術選定
 
 **ライブラリ**: `diff-match-patch`（Google 製、MIT ライセンス）
-- `npm install diff-match-patch @types/diff-match-patch`
+- `pnpm add diff-match-patch @types/diff-match-patch`
 - 軽量（~50KB）、純テキスト diff に特化
 
 ### 5.2 データフロー

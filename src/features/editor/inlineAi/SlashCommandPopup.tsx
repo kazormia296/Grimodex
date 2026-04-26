@@ -1,71 +1,87 @@
 import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { cn } from "@/lib/utils";
-import { filterCommands } from "./inlineAiCommands";
 import type { InlineAiCommand } from "./inlineAiTypes";
-
-interface SlashCommandPopupProps {
-  query: string;
-  position: { top: number; left: number };
-  onSelect: (command: InlineAiCommand) => void;
-  onClose: () => void;
-}
+import { useSlashCommandStore } from "./slashCommandStore";
 
 /**
- * Autocomplete dropdown rendered when user types "/" at line start.
- * Receives filtered commands from parent; handles keyboard navigation internally.
+ * `/` 入力時に表示されるインライン AI コマンドのオートコンプリート。
+ * 位置・items・選択確定コールバックは `useSlashCommandStore` から取得し、
+ * Extension からの状態更新に追従する。キーボード操作は Suggestion プラグインの
+ * `onKeyDown` → store.keyHandler 経由でエディタから転送される。
  */
-export function SlashCommandPopup({
-  query,
-  position,
-  onSelect,
-  onClose,
-}: SlashCommandPopupProps) {
+export function SlashCommandPopup() {
   const { t } = useTranslation();
-  const items = filterCommands(query);
+  const isOpen = useSlashCommandStore((s) => s.isOpen);
+  const items = useSlashCommandStore((s) => s.items);
+  const rect = useSlashCommandStore((s) => s.rect);
+  const commandFn = useSlashCommandStore((s) => s.commandFn);
+  const setKeyHandler = useSlashCommandStore((s) => s.setKeyHandler);
+  const close = useSlashCommandStore((s) => s.close);
+
   const [selectedIndex, setSelectedIndex] = useState(0);
   const ref = useRef<HTMLDivElement>(null);
+  const selectedRef = useRef(selectedIndex);
+  const itemsRef = useRef(items);
+  const commandFnRef = useRef(commandFn);
+  selectedRef.current = selectedIndex;
+  itemsRef.current = items;
+  commandFnRef.current = commandFn;
 
-  // Reset selection when items change
+  // items が変わるたび選択インデックスを先頭に戻す
   useEffect(() => {
     setSelectedIndex(0);
-  }, [query]);
+  }, [items]);
 
+  const handleSelect = (cmd: InlineAiCommand) => {
+    commandFnRef.current?.(cmd);
+  };
+
+  // Suggestion 経由のキーボード操作を処理する
   useEffect(() => {
-    function handleKey(e: KeyboardEvent) {
+    if (!isOpen) return;
+    const handler = (e: KeyboardEvent): boolean => {
+      const current = itemsRef.current;
+      if (current.length === 0) return false;
       if (e.key === "ArrowDown") {
-        e.preventDefault();
-        setSelectedIndex((i) => Math.min(i + 1, items.length - 1));
-      } else if (e.key === "ArrowUp") {
-        e.preventDefault();
-        setSelectedIndex((i) => Math.max(i - 1, 0));
-      } else if (e.key === "Enter") {
-        e.preventDefault();
-        if (items[selectedIndex]) onSelect(items[selectedIndex]);
-      } else if (e.key === "Escape") {
-        e.preventDefault();
-        onClose();
+        setSelectedIndex((i) => (i + 1) % current.length);
+        return true;
       }
-    }
-    window.addEventListener("keydown", handleKey, true);
-    return () => window.removeEventListener("keydown", handleKey, true);
-  }, [items, selectedIndex, onSelect, onClose]);
+      if (e.key === "ArrowUp") {
+        setSelectedIndex((i) => (i - 1 + current.length) % current.length);
+        return true;
+      }
+      if (e.key === "Enter") {
+        const item = current[selectedRef.current];
+        if (item) handleSelect(item);
+        return true;
+      }
+      if (e.key === "Escape") {
+        close();
+        return true;
+      }
+      return false;
+    };
+    setKeyHandler(handler);
+    return () => setKeyHandler(null);
+  }, [isOpen, setKeyHandler, close]);
 
-  // Close on outside click
+  // ポップアップ外クリックで閉じる
   useEffect(() => {
+    if (!isOpen) return;
     function handleMouseDown(e: MouseEvent) {
-      if (!ref.current?.contains(e.target as Node)) onClose();
+      if (!ref.current?.contains(e.target as Node)) close();
     }
     document.addEventListener("mousedown", handleMouseDown);
     return () => document.removeEventListener("mousedown", handleMouseDown);
-  }, [onClose]);
+  }, [isOpen, close]);
 
-  if (items.length === 0) return null;
+  if (!isOpen || items.length === 0 || !rect) return null;
 
   return (
     <div
       ref={ref}
-      style={{ top: position.top, left: position.left }}
+      style={{ top: rect.bottom + 4, left: rect.left }}
       className="fixed z-50 min-w-[220px] rounded-md border border-border bg-popover py-1 shadow-lg"
     >
       {items.map((cmd, i) => (
@@ -79,7 +95,7 @@ export function SlashCommandPopup({
               : "text-foreground hover:bg-accent/50",
           )}
           onMouseEnter={() => setSelectedIndex(i)}
-          onClick={() => onSelect(cmd)}
+          onClick={() => handleSelect(cmd)}
         >
           <span className="text-xs font-medium">/{cmd.id}</span>
           <span className="text-xs text-muted-foreground">

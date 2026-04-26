@@ -43,7 +43,7 @@ git clone <repository-url>
 
 1. VS Code でクローンしたフォルダを開く
 2. コマンドパレット（`Ctrl+Shift+P`）→ **Dev Containers: Reopen in Container**
-3. 初回ビルドには数分かかります（Rustツールチェーン + npm依存のインストール）
+3. 初回ビルドには数分かかります（Rustツールチェーン + pnpm依存のインストール）
 
 ### 4. 起動確認
 
@@ -56,7 +56,7 @@ timeout 3 bash -c 'echo > /dev/tcp/host.docker.internal/6000' \
   || echo "NG: X11 unreachable"
 
 # Tauriアプリを起動（初回はRustコンパイルに数分かかる）
-npm run tauri dev
+pnpm tauri dev
 ```
 
 アプリウィンドウが表示されれば環境構築完了です。
@@ -67,12 +67,12 @@ npm run tauri dev
 
 | コマンド | 説明 |
 |---------|------|
-| `npm run tauri dev` | Tauri開発サーバー起動（フロント + Rust） |
-| `npm run dev` | フロントエンドのみ起動（Vite） |
-| `npm run tauri build` | リリースビルド |
-| `npm test` | テスト実行（Vitest） |
-| `npm test -- --run <path>` | 単体テスト実行 |
-| `npm run lint:fix` | ESLint自動修正 |
+| `pnpm tauri dev` | Tauri開発サーバー起動（フロント + Rust） |
+| `pnpm dev` | フロントエンドのみ起動（Vite） |
+| `pnpm tauri build` | リリースビルド |
+| `pnpm test` | テスト実行（Vitest） |
+| `pnpm test --run <path>` | 単体テスト実行 |
+| `pnpm lint:fix` | ESLint自動修正 |
 | `npx tsc --noEmit` | TypeScript型チェック |
 | `cd src-tauri && cargo check` | Rustコンパイルチェック |
 | `cd src-tauri && cargo clippy --all-targets` | Rust Lint |

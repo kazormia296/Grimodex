@@ -2,6 +2,7 @@ import { useState, useCallback, useMemo } from "react";
 import { useTranslation } from "react-i18next";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { useSceneStore } from "@/features/tree/store";
+import { cmpKeys } from "@/features/tree/fractionalIndex";
 import { loadSceneContent } from "@/features/tree/api";
 import { prosemirrorToText } from "@/lib/prosemirror";
 import { generateSynopsisFromContent } from "@/features/chat/chatApi";
@@ -34,7 +35,7 @@ export function StorySoFarCoverage() {
             (n) =>
               n.nodeType === "scene" &&
               n.id !== activeSceneId &&
-              n.sortOrder < currentScene.sortOrder,
+              cmpKeys(n.sortOrder, currentScene.sortOrder) < 0,
           )
         : [],
     [nodes, activeSceneId, currentScene],

@@ -3,6 +3,7 @@ import type { TreeNodeData } from "@/features/tree/treeStore";
 import type { CodexEntryPhase, CodexPhaseDetailOverride } from "@/db/schema";
 import {
   computeGlobalSceneOrder,
+  computeSceneTimeIndex,
   formatTimelineContext,
   resolveCodexState,
 } from "./phaseResolver";
@@ -20,8 +21,13 @@ function makeNode(
     nodeType: "scene",
     title: overrides.id,
     synopsis: null,
-    sortOrder: 0,
+    sortOrder: "a0",
     status: null,
+    storyTimeOrder: null,
+    storyTimeLabel: null,
+    povCharacterId: null,
+    locationId: null,
+    createdAt: "2024-01-01T00:00:00Z",
     ...overrides,
   };
 }
@@ -74,9 +80,9 @@ describe("computeGlobalSceneOrder", () => {
 
   it("シーンのみ3つ（フォルダなし）→ sortOrder順で0,1,2", () => {
     const nodes = [
-      makeNode({ id: "s1", nodeType: "scene", sortOrder: 1 }),
-      makeNode({ id: "s2", nodeType: "scene", sortOrder: 3 }),
-      makeNode({ id: "s3", nodeType: "scene", sortOrder: 2 }),
+      makeNode({ id: "s1", nodeType: "scene", sortOrder: "a1" }),
+      makeNode({ id: "s2", nodeType: "scene", sortOrder: "a3" }),
+      makeNode({ id: "s3", nodeType: "scene", sortOrder: "a2" }),
     ];
     const result = computeGlobalSceneOrder(nodes);
     expect(result.get("s1")).toBe(0);
@@ -88,20 +94,20 @@ describe("computeGlobalSceneOrder", () => {
     // folder(sortOrder=0) → s1(sortOrder=0), s2(sortOrder=1)
     // s3(sortOrder=1, root)
     const nodes = [
-      makeNode({ id: "folder1", nodeType: "folder", sortOrder: 0 }),
+      makeNode({ id: "folder1", nodeType: "folder", sortOrder: "a0" }),
       makeNode({
         id: "s1",
         nodeType: "scene",
         parentId: "folder1",
-        sortOrder: 0,
+        sortOrder: "a0",
       }),
       makeNode({
         id: "s2",
         nodeType: "scene",
         parentId: "folder1",
-        sortOrder: 1,
+        sortOrder: "a1",
       }),
-      makeNode({ id: "s3", nodeType: "scene", sortOrder: 1 }),
+      makeNode({ id: "s3", nodeType: "scene", sortOrder: "a1" }),
     ];
     const result = computeGlobalSceneOrder(nodes);
     // DFS: folder1 → s1(0), s2(1), then root s3(2)
@@ -114,9 +120,9 @@ describe("computeGlobalSceneOrder", () => {
 
   it("ノートノードはスキップされる", () => {
     const nodes = [
-      makeNode({ id: "s1", nodeType: "scene", sortOrder: 0 }),
-      makeNode({ id: "note1", nodeType: "note", sortOrder: 1 }),
-      makeNode({ id: "s2", nodeType: "scene", sortOrder: 2 }),
+      makeNode({ id: "s1", nodeType: "scene", sortOrder: "a0" }),
+      makeNode({ id: "note1", nodeType: "note", sortOrder: "a1" }),
+      makeNode({ id: "s2", nodeType: "scene", sortOrder: "a2" }),
     ];
     const result = computeGlobalSceneOrder(nodes);
     expect(result.has("note1")).toBe(false);
@@ -131,31 +137,31 @@ describe("computeGlobalSceneOrder", () => {
     // folder1a: s2(0)
     // folder2: s3(0)
     const nodes = [
-      makeNode({ id: "folder1", nodeType: "folder", sortOrder: 0 }),
-      makeNode({ id: "folder2", nodeType: "folder", sortOrder: 1 }),
+      makeNode({ id: "folder1", nodeType: "folder", sortOrder: "a0" }),
+      makeNode({ id: "folder2", nodeType: "folder", sortOrder: "a1" }),
       makeNode({
         id: "s1",
         nodeType: "scene",
         parentId: "folder1",
-        sortOrder: 0,
+        sortOrder: "a0",
       }),
       makeNode({
         id: "folder1a",
         nodeType: "folder",
         parentId: "folder1",
-        sortOrder: 1,
+        sortOrder: "a1",
       }),
       makeNode({
         id: "s2",
         nodeType: "scene",
         parentId: "folder1a",
-        sortOrder: 0,
+        sortOrder: "a0",
       }),
       makeNode({
         id: "s3",
         nodeType: "scene",
         parentId: "folder2",
-        sortOrder: 0,
+        sortOrder: "a0",
       }),
     ];
     const result = computeGlobalSceneOrder(nodes);
@@ -562,5 +568,141 @@ describe("formatTimelineContext", () => {
     expect(lines[2]).toBe("");
     expect(lines[3]).toBe("## 変遷");
     expect(lines[4]).toBe("- [成長] @ 第2話: 成長後");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// computeSceneTimeIndex
+// ---------------------------------------------------------------------------
+
+describe("computeSceneTimeIndex", () => {
+  it("reading モード → computeGlobalSceneOrder と同一の結果", () => {
+    const nodes = [
+      makeNode({ id: "s1", nodeType: "scene", sortOrder: "a1" }),
+      makeNode({ id: "s2", nodeType: "scene", sortOrder: "a2" }),
+    ];
+    const expected = computeGlobalSceneOrder(nodes);
+    const result = computeSceneTimeIndex(nodes, "reading");
+    expect(result).toEqual(expected);
+  });
+
+  it("story モード: storyTimeOrder 順でインデックスを割り当てる", () => {
+    // s2 は story-time が早い、s1 は遅い
+    const nodes = [
+      makeNode({
+        id: "s1",
+        nodeType: "scene",
+        sortOrder: "a1",
+        storyTimeOrder: "a2",
+      }),
+      makeNode({
+        id: "s2",
+        nodeType: "scene",
+        sortOrder: "a2",
+        storyTimeOrder: "a1",
+      }),
+    ];
+    const result = computeSceneTimeIndex(nodes, "story");
+    expect(result.get("s2")).toBe(0); // storyTimeOrder="a1" が先
+    expect(result.get("s1")).toBe(1); // storyTimeOrder="a2" が後
+  });
+
+  it("story モード: storyTimeOrder=null のシーンは末尾にreading-order順で並ぶ", () => {
+    const nodes = [
+      makeNode({
+        id: "s1",
+        nodeType: "scene",
+        sortOrder: "a1",
+        storyTimeOrder: "a1",
+      }),
+      makeNode({
+        id: "unscheduled1",
+        nodeType: "scene",
+        sortOrder: "a2",
+        storyTimeOrder: null,
+      }),
+      makeNode({
+        id: "unscheduled2",
+        nodeType: "scene",
+        sortOrder: "a3",
+        storyTimeOrder: null,
+      }),
+    ];
+    const result = computeSceneTimeIndex(nodes, "story");
+    expect(result.get("s1")).toBe(0); // scheduled first
+    expect(result.get("unscheduled1")).toBe(1); // reading-order: sortOrder="a2"
+    expect(result.get("unscheduled2")).toBe(2); // reading-order: sortOrder="a3"
+  });
+
+  it("story モード: スケジュール済みが全くない場合はreading-orderと同一", () => {
+    const nodes = [
+      makeNode({ id: "s1", nodeType: "scene", sortOrder: "a1" }),
+      makeNode({ id: "s2", nodeType: "scene", sortOrder: "a2" }),
+    ];
+    const result = computeSceneTimeIndex(nodes, "story");
+    expect(result.get("s1")).toBe(0);
+    expect(result.get("s2")).toBe(1);
+  });
+
+  it("auto モード: story モードと同一の結果", () => {
+    const nodes = [
+      makeNode({
+        id: "s1",
+        nodeType: "scene",
+        sortOrder: "a1",
+        storyTimeOrder: "a2",
+      }),
+      makeNode({
+        id: "s2",
+        nodeType: "scene",
+        sortOrder: "a2",
+        storyTimeOrder: "a1",
+      }),
+      makeNode({
+        id: "s3",
+        nodeType: "scene",
+        sortOrder: "a3",
+        storyTimeOrder: null,
+      }),
+    ];
+    const storyResult = computeSceneTimeIndex(nodes, "story");
+    const autoResult = computeSceneTimeIndex(nodes, "auto");
+    expect(autoResult).toEqual(storyResult);
+  });
+
+  it("story モード: フォルダ構造内でもstoryTimeOrder順が優先される", () => {
+    const nodes = [
+      makeNode({ id: "folder1", nodeType: "folder", sortOrder: "a1" }),
+      makeNode({
+        id: "s1",
+        nodeType: "scene",
+        parentId: "folder1",
+        sortOrder: "a1",
+        storyTimeOrder: "a3", // story-time は3番目
+      }),
+      makeNode({
+        id: "s2",
+        nodeType: "scene",
+        parentId: "folder1",
+        sortOrder: "a2",
+        storyTimeOrder: "a1", // story-time は1番目
+      }),
+      makeNode({
+        id: "s3",
+        nodeType: "scene",
+        sortOrder: "a2",
+        storyTimeOrder: "a2", // story-time は2番目
+      }),
+    ];
+    const result = computeSceneTimeIndex(nodes, "story");
+    expect(result.get("s2")).toBe(0);
+    expect(result.get("s3")).toBe(1);
+    expect(result.get("s1")).toBe(2);
+    expect(result.has("folder1")).toBe(false);
+  });
+
+  it("story モード: 空配列 → 空Map", () => {
+    const result = computeSceneTimeIndex([], "story");
+    expect(result.size).toBe(0);
   });
 });

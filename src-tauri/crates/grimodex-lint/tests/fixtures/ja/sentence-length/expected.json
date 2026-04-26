@@ -1,0 +1,20 @@
+[
+  {
+    "rule_id": "ja/word-repetition",
+    "severity": "info",
+    "message": "「短い」が近距離で繰り返されています（直前出現から 7 文字）",
+    "range": {
+      "start": 9,
+      "end": 11
+    }
+  },
+  {
+    "rule_id": "ja/sentence-length",
+    "severity": "warning",
+    "message": "一文が 80 文字を超えています（99 文字）",
+    "range": {
+      "start": 12,
+      "end": 111
+    }
+  }
+]

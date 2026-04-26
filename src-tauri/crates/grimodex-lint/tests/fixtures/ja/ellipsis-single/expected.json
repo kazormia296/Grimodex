@@ -1,0 +1,19 @@
+[
+  {
+    "rule_id": "ja/ellipsis-single",
+    "severity": "error",
+    "message": "三点リーダーは 2 つ組で使います",
+    "range": {
+      "start": 2,
+      "end": 3
+    },
+    "fix": {
+      "label": "「……」に置き換える",
+      "replacement": "……",
+      "range": {
+        "start": 2,
+        "end": 3
+      }
+    }
+  }
+]

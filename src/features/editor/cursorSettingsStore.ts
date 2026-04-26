@@ -10,6 +10,20 @@ interface CursorSettingsState {
   toggleTypewriterMode: () => void;
   showComments: boolean;
   toggleShowComments: () => void;
+  showForeshadowMarks: boolean;
+  toggleShowForeshadowMarks: () => void;
+  /** Whether the "add comment" input popover is open. */
+  commentPickerOpen: boolean;
+  setCommentPickerOpen: (open: boolean) => void;
+  /** Whether the foreshadow mark picker is open. */
+  foreshadowPickerOpen: boolean;
+  setForeshadowPickerOpen: (open: boolean) => void;
+  /** Mode to open the foreshadow picker in (null = show mode selector). */
+  foreshadowPickerInitialMode: "setup" | "payoff" | "payoff-unanchored" | null;
+  /** Open the foreshadow picker directly in the specified mode. */
+  openForeshadowPicker: (
+    mode: "setup" | "payoff" | "payoff-unanchored" | null,
+  ) => void;
   /** Sync runtime state from persisted settings (call after loadAll). */
   initFromSettings: () => void;
 }
@@ -41,6 +55,21 @@ export const useCursorSettingsStore = create<CursorSettingsState>()((set) => ({
 
   showComments: false,
   toggleShowComments: () => set((s) => ({ showComments: !s.showComments })),
+
+  showForeshadowMarks: false,
+  toggleShowForeshadowMarks: () =>
+    set((s) => ({ showForeshadowMarks: !s.showForeshadowMarks })),
+
+  commentPickerOpen: false,
+  setCommentPickerOpen: (open) => set({ commentPickerOpen: open }),
+
+  foreshadowPickerOpen: false,
+  setForeshadowPickerOpen: (open) =>
+    set({ foreshadowPickerOpen: open, foreshadowPickerInitialMode: null }),
+
+  foreshadowPickerInitialMode: null,
+  openForeshadowPicker: (mode) =>
+    set({ foreshadowPickerOpen: true, foreshadowPickerInitialMode: mode }),
 
   initFromSettings: () => {
     const s = useSettingsStore.getState();

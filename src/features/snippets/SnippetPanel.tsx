@@ -11,6 +11,7 @@ import { useSnippetStore } from "./snippetStore";
 import type { SnippetSourceFilter, SnippetSortOrder } from "./snippetStore";
 import { SnippetDetailContent } from "./SnippetDetailContent";
 import { SnippetContextMenu } from "./SnippetContextMenu";
+import { SnippetCardBody } from "./components/SnippetCardBody";
 import { useTabStore } from "@/features/editor/tabStore";
 import { useEditorStore } from "@/features/editor/editorStore";
 import { useTreeStore } from "@/features/tree/treeStore";
@@ -507,36 +508,19 @@ export function SnippetPanel() {
                               </button>
                             </div>
                           </div>
-                          <p className="mt-1 line-clamp-2 text-xs text-muted-foreground">
-                            {snippet.content}
-                          </p>
-                          {/* Source badge + char count + scene name */}
-                          <div className="mt-1 flex flex-wrap items-center gap-1.5">
-                            {snippet.contentSource === "ai" ? (
-                              <span className="rounded-full bg-purple-500/20 px-1.5 py-0.5 text-[10px] text-purple-400">
-                                AI
-                              </span>
-                            ) : snippet.contentSource === "human" ? (
-                              <span className="rounded-full bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">
-                                Human
-                              </span>
-                            ) : null}
-                            <span className="text-[10px] text-muted-foreground">
-                              {snippet.content.length} chars
-                            </span>
-                            {sceneName && (
-                              <button
-                                type="button"
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  setActiveScene(snippet.sceneId!);
-                                }}
-                                className="text-[10px] text-muted-foreground underline hover:text-foreground"
-                              >
-                                {sceneName}
-                              </button>
-                            )}
-                          </div>
+                          <SnippetCardBody snippet={snippet} />
+                          {sceneName && (
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setActiveScene(snippet.sceneId!);
+                              }}
+                              className="mt-1 block text-[10px] text-muted-foreground underline hover:text-foreground"
+                            >
+                              {sceneName}
+                            </button>
+                          )}
                           {snippet.tagsCache && (
                             <div className="mt-1 flex flex-wrap gap-1">
                               {(

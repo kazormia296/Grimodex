@@ -55,6 +55,7 @@ import type {
   AgentLoopProgress,
 } from "./agent/agentTypes";
 import { useTreeStore } from "@/features/tree/treeStore";
+import { cmpKeys } from "@/features/tree/fractionalIndex";
 import { loadSceneContent, getNode } from "@/features/tree/api";
 import { prosemirrorToText } from "@/lib/prosemirror";
 import { getProject } from "@/features/project/api";
@@ -288,6 +289,10 @@ interface ChatState {
   _editingOldContent: string | null;
   /** autoリストから特定エントリを即時除去（ピン直後のBug#1修正用） */
   removeEntryFromAuto: (entryId: string) => void;
+
+  /** C: エディタの「チャットで調べる」が pre-fill するテキスト（consumed-once） */
+  pendingLookupText: string | null;
+  setPendingLookupText: (text: string | null) => void;
 }
 
 async function fetchSceneContext(
@@ -536,11 +541,11 @@ async function buildSceneContextPrompt(opts: {
           (n) =>
             n.nodeType === "scene" &&
             n.id !== sceneCtx.id &&
-            n.sortOrder < currentScene.sortOrder &&
+            cmpKeys(n.sortOrder, currentScene.sortOrder) < 0 &&
             n.synopsis != null &&
             n.synopsis.trim() !== "",
         )
-        .sort((a, b) => b.sortOrder - a.sortOrder)[0]
+        .sort((a, b) => cmpKeys(b.sortOrder, a.sortOrder))[0]
     : undefined;
   const previousScene = previousSceneNode
     ? {
@@ -657,6 +662,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
   agentProgress: null,
   isGlobalChat: false,
   _editingOldContent: null,
+  pendingLookupText: null,
 
   removeEntryFromAuto: (entryId: string) => {
     set((state) => ({
@@ -679,6 +685,8 @@ export const useChatStore = create<ChatState>()((set, get) => ({
       void get().refreshContextLayers();
     }, 500);
   },
+
+  setPendingLookupText: (text) => set({ pendingLookupText: text }),
 
   // --- Session management ---
 

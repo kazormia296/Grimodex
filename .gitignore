@@ -1,9 +1,17 @@
 node_modules/
+.pnpm-store/
 dist/
 .env
 *.local
 .claude/settings.local.json
 docs/.claude/settings.local.json
+.claude/scheduled_tasks.lock
 .obsidian/
 .claude/worktrees/
 temp/
+.cache/
+
+# Lindera UniDic 辞書のキャッシュ（~140MB）。
+# cargo build 時に LINDERA_DICTIONARIES_PATH でここを指す想定。
+# 詳細は src-tauri/crates/grimodex-lint/README を参照。
+lindera-cache/

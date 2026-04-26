@@ -65,7 +65,7 @@ ChatパネルはGrimodexのコア体験を担うAI対話パネル。現在のシ
 - 同じシーンに戻れば、前回のセッションがそのまま復帰する
 - シーンインジケーターのクリックで、エディタのアクティブシーンとは異なるシーンを手動選択することもできる
 
-**Codex/Snippetタブの場合**: Editorのアクティブタブがcodex/Snippetタブの場合、ヘッダーのシーンインジケーターは「Codex: {エントリ名}」または「Snippet: {title}」に切り替わる。Layer 3にはシーン本文の代わりにCodex/Snippetのcontent全文を注入する（L3の枠を流用）。L2（storySoFar）は省略。セッションはプロジェクトスコープ（`node_id = NULL`）として扱う
+**Codex/Snippetタブの場合（G19 アクティブタブ content 注入）**: Editor のアクティブタブが Codex または Snippet タブの場合、ヘッダーのシーンインジケーターは「Codex: {エントリ名}」または「Snippet: {title}」に切り替わる。このときシステムプロンプトの Layer 3 にはシーン本文の代わりに **そのアクティブタブが指す Codex エントリ／Snippet の content 全文** をそのまま注入する（L3 の予算枠を流用）。L2（storySoFar）は省略。セッションはプロジェクトスコープ（`node_id = NULL`）として扱う。これにより「今編集中の Codex / Snippet について AI と壁打ちする」ユースケースで、シーン本文ではなく編集対象エントリが主コンテキストになる
 
 ---
 
@@ -90,7 +90,9 @@ LLMに送信されるコンテキスト情報をユーザーに可視化する�
 
 ### グループ化表示
 
-Codex + Snippetのピル合計が **6個を超えた場合**、個別ピル表示からグループ化表示に自動的に切り替わる。
+Codex + Snippet のピル合計が コンテキストバーの横幅に収まらずオーバーフローした場合、個別ピル表示からグループ化表示に自動的に切り替わる。判定は ResizeObserver で DOM 実幅と各ピルの実寸を測定して行い、実際にはみ出すピル数が 1 個でも発生した時点でグループ化に遷移する。
+
+**フォールバック**: 初回レンダリング時など DOM が未マウントで実寸が測定できない場合は、「ピル合計が 6 個を超えたらグループ化」という閾値ベースの判定を一時的に用いる。マウント完了後は DOM 実幅ベースの判定が上書きする。
 
 **通常表示**（6個以下）:
 ```
@@ -118,7 +120,10 @@ Codex + Snippetのピル合計が **6個を超えた場合**、個別ピル表�
 ### ピン留め
 
 - コンテキストバー末尾の「📌ピン留め」ボタンで、CodexエントリまたはSnippetを手動ピン留め
-- **✦ AI コンテキストクリエイター**: 「+」ボタンの隣に配置。AIがTool Useでプロジェクトデータを検索し、コンテキストに追加すべきエントリを提案する。詳細はAIエージェント設計書（`Grimodex_AIエージェント設計書.md`）の「コンテキストクリエイター」セクション参照。Tool Useが出来ないモデルでは非活性マウスカーソル🚫。
+- **✦ AI コンテキストクリエイター（Context Creator）**: 「+」ボタンの隣に配置。AI が Tool Use でプロジェクトデータを能動的に探索し、現在のシーン／セッションに関連する Codex エントリや Snippet をコンテキスト候補として提案する
+  - 利用ツールは `search_codex` / `list_codex_by_type` / `search_codex_by_tags` / `search_snippets` の 4 種に絞った専用サブセット（Agent mode の 10 ツールとは別定義。読み取り・探索寄りのツールのみ）
+  - 実行本体は `runContextCreator`。Agent mode と同じループ基盤上で動くが、最終出力は自然言語応答ではなく「提案エントリ ID のリスト」で、ユーザーの確認後に手動ピン留めとして `pinned_codex` に追加される
+  - UI は 🛠️ オプションや Settings からの公開を前提に実装基盤のみ用意しており、現時点ではボタンを無効化状態で提示する（公開保留）。Tool Use が出来ないモデルでは非活性マウスカーソル🚫
 - ポップオーバーの検索UIでエントリを選択（Codex/Snippetをタブまたはフィルタで切り替え）
 - **`context_mode = hidden` のエントリはピン留め候補に表示しない**
 - **`context_mode = suppress` のエントリはミュート表示 + ツールチップ（「ピン留めでAIコンテキストに含まれます」）**
@@ -198,26 +203,29 @@ AIメッセージ内のテキストを選択すると、選択範囲の近くに
 
 これにより、メッセージ全体ではなく一部分だけを挿入・抽出できる。テキスト選択コピー（`Ctrl+C`）時も同様に `application/x-grimodex-authorship` を付与する。
 
-### Codex抽出（即時作成）
+### Codex抽出
 
-「Codex」ボタン押下時、ダイアログを経由せず即座にCodexエントリを作成する。
-抽出モードはChatパネルのヘッダーまたは設定でトグル切り替え可能:
+「Codex」ボタン押下時の抽出フローは 2 系統。AIメッセージ下部のアクションボタン「Codex」クリックで **Quick 抽出** が走り、オーバーフローメニュー（⋮）の「Codex (詳細抽出...)」または右クリック「Add to Codex (Detailed)」で **Detailed 抽出** に切り替わる。
 
-**AI抽出モード（デフォルト）:**
-- 軽量モデル（haiku等）でメッセージ内容を解析し、以下を自動提案して即時作成:
-  - Name: メッセージ内容から抽出
-  - Type: character / location / item / lore を自動判定
-  - Content: メッセージ全文、またはテキスト選択範囲
-  - Tags: 内容から自動生成
-- 作成後、トースト通知「Added to Codex: {name}」（クリックでCodexパネルへ遷移）
+**Quick 抽出（デフォルト、ダイアログを経由しない即時作成）:**
+- Type: 常に `lore` 固定（AI 判定を行わない）
+- Name: 空白（Codex パネルで後から編集）
+- Summary: メッセージ全文（またはテキスト選択範囲）をそのまま `summary` に格納
+- Content: 空白
+- Tags: なし
+- 作成後、トースト通知「Added to Codex」（クリックでCodexパネルへ遷移）
+- 速度優先。まず素早く退避しておき、整形はCodex側で後回しにするユースケース向け
 
-**通常抽出モード:**
-- Content以外のフィールドを空白のまま即時作成:
-  - Name: 空白（Codexパネルで後から編集）
-  - Type: なし
-  - Content: メッセージ全文、またはテキスト選択範囲（未加工）
-  - Tags: なし
-- 作成後、トースト通知「Added to Codex (unnamed)」（クリックでCodexパネルへ遷移）
+**Detailed 抽出（`SnippetExtractionDialog` ベース）:**
+- AIメッセージ（またはテキスト選択範囲）を入力として、専用ダイアログ `SnippetExtractionDialog` を開く
+- ダイアログ内で軽量モデル（haiku等）がメッセージ内容を解析し、以下をプレビュー表示:
+  - Name: メッセージ内容から抽出した候補
+  - Type: character / location / item / lore / カスタム type の自動判定候補
+  - Summary / Content: 要約と本文の分離候補
+  - Tags: 内容から自動生成した候補
+- ユーザーはダイアログ上で各フィールドを編集してから確定。キャンセルも可能
+- 確定後、トースト通知「Added to Codex: {name}」（クリックでCodexパネルへ遷移）
+- Snippet 抽出の `SnippetExtractionDialog` と同じ UI 基盤を共有し、出力先（Codex / Snippet）のみスイッチする
 
 **共通:**
 - 保存後、元メッセージに「Codex抽出済み」バッジ表示
@@ -282,16 +290,23 @@ AIメッセージ内のテキストを選択すると、選択範囲の近くに
 - プレースホルダー: 「Ask about this scene...」(プロジェクトスコープ時は「Ask about this project...」)
 - **CodexHighlight対応**: エディタ本文と同じCodexHighlight Pure Decorationを適用。入力中にCodexエントリ名がハイライトされ、チャット言及による自動ピン留めの対象が視覚的に確認できる
 - @ボタン/ /ボタン : 後述の特殊入力のポップオーバー表示
-- 🛠️ボタン: AIのオプションをポップオーバーリスト表示。全て対応モデルのみ活性化。対応機能が一つもない場合はこのボタン自体非活性マウスカーソル🚫(コンテキストバーのAIボタンと同じ)。
-	- **🔧 エージェントモードトグル**: Tool Useを有効化し、LLMがプロジェクトデータを能動的に検索・取得できるモードに切り替える。詳細はAIエージェント設計書（`Grimodex_AIエージェント設計書.md`）参照
-	- 💡Thinkingトグル : AdaptiveThinkingを有効化
-	- 🌐RAGトグル : インターネット検索によるRAGを有効化(コントロールだけ用意して、常にdisable、非活性。中身は未実装、そのうち実装する)
+- 🛠️ボタン: AIのオプションをポップオーバーリスト表示。全て対応モデルのみ活性化。対応機能が一つもない場合はこのボタン自体非活性マウスカーソル🚫(コンテキストバーのAIボタンと同じ)。ポップオーバー内の各トグル状態は `ai_settings` テーブルに永続化され、セッション・再起動をまたいで保持される。
+	- **🔧 Agent mode トグル（スタンドアロン実行モード）**: Tool Use を有効化し、LLM がプロジェクトデータを能動的に検索・取得できるモードに切り替える。ON にすると送信時に `runAgentLoop` が起動し、LLM のツール呼び出しをループ実行する:
+		- **利用可能ツール（10 種）**: `search_codex` / `list_codex_by_type` / `get_codex_entry` / `list_codex_tags` / `search_codex_by_tags` / `list_chapters` / `get_scene` / `search_scenes` / `search_snippets` / `get_chapter_summaries`
+		- **呼び出し上限**: 1 ターンあたり最大 10 回のツール呼び出し。これを超えた場合はループ打ち切りで最終応答生成に遷移
+		- **トークン予算制御**: ツール結果の累計トークンが予算を超えそうになった時点で追加ツール呼び出しを抑止し、既取得の結果のみで応答を合成する
+		- **進捗 UI**: ループの状態（現在何番目のツールを呼んでいるか／累計ツール呼び出し回数／推定残予算）を `AgentProgressBar` コンポーネントでメッセージリスト上部に可視化する
+		- 詳細は AI エージェント設計書（`Grimodex_AIエージェント設計書.md`）参照
+	- **💡 Thinking トグル（拡張思考）**: AdaptiveThinking または budget_tokens 方式の拡張思考を有効化する。状態は `ai_settings.thinkingEnabled` に永続化される。対応モデルでは adaptive（Opus/Sonnet 4.6）と budget_tokens（旧世代 Opus/Sonnet 4.5 等）の両方式を自動選択し、display は `summarized` を既定、Synopsis 等軽量タスクでは `omitted` を使う。マルチターン会話では thinking ブロックの `signature` を `chat_messages.metadata` に保存し、次ターンに完全なブロックを返送する（後述「拡張思考」セクション参照）。
+		- **パラメータ二系統**: Anthropic 直接／adaptive 方式のモデルには `effort`（`low` / `medium` / `high` / `max`）を送る。OpenRouter 系推論モデル（o1、o3、DeepSeek-R1 等）には `reasoningEffort` を送る。Grimodex はモデル能力に応じて送出先を振り分け、ユーザーは同じトグル + effort レベルから操作する
+	- **🌐 RAG トグル**: インターネット検索による RAG のプレースホルダー。UI は 🛠️ オプション内に常設するが、現時点では常に disable・非活性で、中身は将来実装枠として予約する
 - **送信時のテキスト変換**: 送信時にTipTapのHTML→Markdownに変換してLLMに渡す
 
 ### 特殊入力
 
 **@メンション補完**: 
  - `@` 入力でCodexエントリの補完候補をポップオーバーリスト表示。選択するとエントリ名が挿入され、自動ピン留めの対象になる。`context_mode = hidden` のエントリは候補に表示しない
+ - **インメモリピン（送信前の仮ピン）**: @ メンションで挿入されたエントリは、メッセージを送信する前からインメモリで一時的にピン留め扱いされる。DB の `chat_session_pinned_codex` テーブルへの書き込みは送信確定時まで行われず、コンテキストバーには「仮ピン」としてピルが即座に表示される。ユーザーが送信前に入力欄から当該メンションを消した場合は仮ピンも解除される（DB に痕跡を残さない）。送信確定時点で入力欄に残っている仮ピンのみが `source: 'chat_mention'` として永続化される
 
 **/ コマンド**:
 - `/` を入力するとコマンド一覧を表示
@@ -320,6 +335,7 @@ AIメッセージ内のテキストを選択すると、選択範囲の近くに
 
 - テキストが入力されている場合: ▶（Send）ボタンが有効化
 - ストリーミング中: ■（Stop）ボタンに変化
+- **右クリックでプロンプト全文コピー**: ▶（Send）ボタンを右クリックするとショートカットメニューが開き、`buildPromptForCopy` が構築した完全なシステムプロンプト（Layer 1〜4）＋ 会話履歴（Layer 5）をクリップボードへコピーする。実際に次ターンへ送信される内容と一致し、プロンプトのデバッグ・共有・外部モデルでの再現確認に使用する
 
 ---
 
@@ -373,12 +389,12 @@ AIメッセージ内のテキストを選択すると、選択範囲の近くに
 5. UIに反映（Chatパネルヘッダー、セッション一覧、Chat Historyパネル）
 
 **フォールバック**:
-- LLM要約が失敗した場合（API エラー、タイムアウト等）→ 最初のユーザーメッセージの先頭30文字を切り詰めて使用
-- Ollamaなどオフライン環境でサマリーモデルが利用不可の場合も同様にフォールバック
+- LLM 要約が失敗した場合（API エラー、タイムアウト、レート制限、Ollama などオフライン環境でサマリーモデルが利用不可な場合等）→ 最初のユーザー発話の先頭を切り詰めて使用する発話ベースフォールバックを適用
+- フォールバック経路で設定されたタイトルは `title_manual=0` のまま保持し、次回条件が整ったタイミングで自動生成をリトライする対象に残す
 
 **手動リネーム**:
-- 自動生成されたタイトルはいつでも手動でリネーム可能
-- 手動リネーム後はフラグを立て、自動再生成を抑制する（`chat_sessions.title_manual` = true）
+- 自動生成またはフォールバックで設定されたタイトルはいつでも手動でリネーム可能
+- ユーザーが手動リネームすると `chat_sessions.title_manual` に 1 を立て、以後の自動再生成・フォールバック再上書きを抑制する
 
 ### プロジェクトスコープのセッション
 
@@ -443,13 +459,15 @@ LLM APIのシステムプロンプトに以下の5レイヤーを階層的に注
 
 **Layer 5: Conversation history**
 - 現在のセッションのメッセージ履歴
-- **Progressive summarization**: 以下の2段階トリガーで古いメッセージ群をLLMで要約し「会話要約」として先頭に保持する。直近の会話は原文を維持
+- **Progressive summarization（G17）**: 以下の2段階トリガーで古いメッセージ群をLLMで要約し「会話要約」として先頭に保持する。直近の会話は原文を維持
   - **予防的圧縮**: 4往復を超え、かつLayer 5予算の80%を消費している場合 → 次のターンでオーバーフローしないよう早めに圧縮
   - **緊急圧縮**: Layer 5予算を超過した場合（往復数問わず、最低3往復経過後）→ 即時圧縮でAPIエラーを回避
   - 最低往復数（3往復）未満では圧縮しない（1〜2往復の要約は意味をなさないため）
-- ユーザーが「重要」マーク（⭐）を付けたメッセージは要約対象から除外し、原文を保持する
+  - 判定ロジックは `shouldSummarize`、要約実行は `runSummarization` として分離。ターン開始時のコンテキスト構築で `shouldSummarize` が真を返した場合に `runSummarization` が裏で走り、完了後に新しい要約を先頭へ差し込んだ再計算済みコンテキストで LLM 呼び出しを行う
+- **⭐ スター機能**: ユーザーは任意のメッセージに「重要」マーク（⭐）を付与できる（`chat_messages.is_starred` に永続化）。スター付きメッセージは `runSummarization` の入力から除外され、原文のまま Layer 5 に保持される。要約対象から明示的に守りたい宣言やキャラクター設定などを固定するために使用する
+- **要約の永続化**: 生成された要約は `chat_summaries` 専用テーブルに保存される（スキーマは後述 DB 章参照）。同一セッションで複数世代の要約を保持し、新規要約は直前世代の要約を「既要約済みメッセージ群」として含める形で累積させる。要約に取り込まれたメッセージは `chat_messages.is_summarized = 1` が立ち、次回の `shouldSummarize` 判定から除外される
 - 要約生成にはSettingsのサマリー用モデルを使用（Synopsis自動生成と同じモデル）
-- フォールバック: 要約生成に失敗した場合は従来のFIFO切り詰めを適用
+- フォールバック: 要約生成に失敗した場合は従来のFIFO切り詰めを適用（`is_summarized` は更新しない）
 - 予算配分: コンテキストの ~20%
 
 #### 検討済み・不採用のコンテキスト注入モード
@@ -781,31 +799,54 @@ thinking ブロックのストリーミングは以下のイベント順序で�
 ```sql
 CREATE TABLE chat_sessions (
   id          TEXT PRIMARY KEY,
-  project_id  TEXT NOT NULL REFERENCES projects(id),
-  node_id     TEXT REFERENCES tree_nodes(id),  -- NULLの場合はプロジェクトスコープ
+  project_id  TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  node_id     TEXT REFERENCES tree_nodes(id) ON DELETE SET NULL,
+                                  -- tree_nodes.id を参照する汎用スキーマ。
+                                  -- シーンに限らず Folder/Scene を問わず任意の tree_nodes に紐付け可能。
+                                  -- NULL はプロジェクトスコープ。参照先ノードが削除された場合は SET NULL で
+                                  -- プロジェクトスコープのセッションへ降格しセッション自体は失わない
   title       TEXT NOT NULL DEFAULT 'New session',
   title_manual INTEGER NOT NULL DEFAULT 0,  -- 1の場合、自動タイトル再生成を抑制
   model       TEXT NOT NULL DEFAULT 'openrouter/anthropic/claude-sonnet-4.6',
-  pinned_codex TEXT,            -- JSON array of {id, source} objects. source: 'manual' | 'chat_mention'
   created_at  TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
+-- ピン留めは正規化されて chat_session_pinned_codex テーブルに分離。
+-- 詳細は `Grimodex_統合DBスキーマ.md` を参照。
+
 CREATE TABLE chat_messages (
+  id             TEXT PRIMARY KEY,
+  session_id     TEXT NOT NULL REFERENCES chat_sessions(id) ON DELETE CASCADE,
+  role           TEXT NOT NULL,     -- 'user' | 'assistant' | 'system'
+  content        TEXT NOT NULL,
+  model          TEXT,              -- assistant メッセージのみ: 使用モデル
+  tokens_in      INTEGER,           -- 入力トークン数
+  tokens_out     INTEGER,           -- 出力トークン数
+  duration_ms    INTEGER,           -- 生成時間（ミリ秒）
+  metadata       TEXT,              -- JSON: { extractedCodex: [...], extractedSnippets: [...],
+                                   --         thinkingBlocks: [{thinking, signature}] }
+  is_starred     INTEGER NOT NULL DEFAULT 0,  -- ⭐スター付きメッセージ。1 の場合 Progressive Summarization の
+                                              -- 要約対象から除外され、原文のまま Layer 5 に保持される
+  is_summarized  INTEGER NOT NULL DEFAULT 0,  -- 1 の場合、このメッセージは既に chat_summaries のいずれかに
+                                              -- 取り込み済み。次回の shouldSummarize 判定からは除外される
+  created_at     TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE chat_summaries (
   id          TEXT PRIMARY KEY,
   session_id  TEXT NOT NULL REFERENCES chat_sessions(id) ON DELETE CASCADE,
-  role        TEXT NOT NULL,     -- 'user' | 'assistant' | 'system'
-  content     TEXT NOT NULL,
-  model       TEXT,              -- assistant メッセージのみ: 使用モデル
-  tokens_in   INTEGER,           -- 入力トークン数
-  tokens_out  INTEGER,           -- 出力トークン数
-  duration_ms INTEGER,           -- 生成時間（ミリ秒）
-  metadata    TEXT,              -- JSON: { extractedCodex: [...], extractedSnippets: [...] }
+  summary     TEXT NOT NULL,        -- runSummarization が生成した会話要約本文
+  token_count INTEGER NOT NULL,     -- 要約本文の推定トークン数（Layer 5 予算計算に使用）
   created_at  TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
+-- 要約のソースメッセージ集合は chat_summary_messages テーブルに正規化。
+-- 詳細は `Grimodex_統合DBスキーマ.md` を参照。
+
 CREATE INDEX idx_chat_sessions_node ON chat_sessions(project_id, node_id);
 CREATE INDEX idx_chat_messages_session ON chat_messages(session_id, created_at);
+CREATE INDEX idx_chat_summaries_session ON chat_summaries(session_id, created_at);
 ```
 
 ### 抽出バッジの管理
@@ -878,13 +919,17 @@ Note: EditorにはインラインAIコマンド機能がある（`/` またはCt
 
 ### API呼び出しエラー
 
-| エラー種別 | 表示 | 動作 |
-|-----------|------|------|
-| ネットワークエラー | システムメッセージ「Connection failed」| 自動リトライ（3回、指数バックオフ） |
-| 認証エラー (401) | システムメッセージ「Invalid API key」| Settings画面へのリンク表示 |
-| レート制限 (429) | システムメッセージ「Rate limited. Retry in {N}s」| 表示されたN秒後に自動リトライ |
-| コンテキスト超過 | システムメッセージ「Context too long」| Layer 2/5を自動トリムして再送信 |
-| 一般エラー (5xx) | システムメッセージ「Server error」| 手動リトライボタン表示 |
+API からの例外はまず `classifyError` が次の 5 カテゴリへ分類し、カテゴリに応じて表示と復旧アクションを切り替える:
+
+| カテゴリ (`classifyError`) | 代表的な発生源 | 表示 | 動作・アクションリンク |
+|-----------|------|------|------|
+| `auth` | 401 Unauthorized、API キー未設定、キー失効 | システムメッセージ「Invalid API key」 | 「Settings を開く」リンク（API キー設定画面へ遷移） |
+| `rate_limit` | 429 Too Many Requests | システムメッセージ「Rate limited. Retry in 10s」| **10 秒後に自動再試行**。再試行中も「今すぐ再試行 / キャンセル」リンクを表示 |
+| `network` | TCP 切断、DNS 失敗、fetch 例外 | システムメッセージ「Connection failed」 | 自動リトライ（3 回、指数バックオフ）＋「手動で再試行」リンク |
+| `context_length` | コンテキスト超過エラー（プロバイダ別メッセージを正規化） | システムメッセージ「Context too long」 | Layer 2/5 を自動トリムして再送信。併せて「プロンプトプレビューを開く」リンク |
+| `unknown` | 上記に該当しない 5xx、SDK 例外、パース失敗 | システムメッセージ「Server error」 | 「手動で再試行」リンク ＋ エラー詳細のコピー機能 |
+
+`classifyError` はプロバイダ別の SDK エラーを上記の安定したカテゴリ名に正規化し、UI／テレメトリ／再試行ロジックが一貫して参照できるようにする。
 
 ### ストリーミング中断
 

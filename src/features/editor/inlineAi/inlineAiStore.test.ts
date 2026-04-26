@@ -20,6 +20,7 @@ describe("useInlineAiStore", () => {
       originalRange: null,
       originalText: "",
       insertPos: 5,
+      abortController: new AbortController(),
     });
     expect(useInlineAiStore.getState().status).toBe("generating");
     expect(useInlineAiStore.getState().activeCommandId).toBe("continue");
@@ -33,6 +34,7 @@ describe("useInlineAiStore", () => {
       originalRange: null,
       originalText: "",
       insertPos: 0,
+      abortController: new AbortController(),
     });
     useInlineAiStore.getState().appendChunk("Hello");
     useInlineAiStore.getState().appendChunk(", world");
@@ -46,6 +48,7 @@ describe("useInlineAiStore", () => {
       originalRange: RANGE,
       originalText: "old text",
       insertPos: null,
+      abortController: new AbortController(),
     });
     useInlineAiStore.getState().finishGeneration("claude-sonnet-4-6");
     const state = useInlineAiStore.getState();
@@ -60,6 +63,7 @@ describe("useInlineAiStore", () => {
       originalRange: null,
       originalText: "",
       insertPos: 0,
+      abortController: new AbortController(),
     });
     useInlineAiStore.getState().setError("AI error");
     expect(useInlineAiStore.getState().status).toBe("error");
@@ -73,6 +77,7 @@ describe("useInlineAiStore", () => {
       originalRange: null,
       originalText: "",
       insertPos: 0,
+      abortController: new AbortController(),
     });
     useInlineAiStore.getState().reset();
     expect(useInlineAiStore.getState().status).toBe("idle");
@@ -86,11 +91,33 @@ describe("useInlineAiStore", () => {
       originalRange: RANGE,
       originalText: "selected text",
       insertPos: null,
+      abortController: new AbortController(),
     });
     const state = useInlineAiStore.getState();
     expect(state.originalRange).toEqual(RANGE);
     expect(state.originalText).toBe("selected text");
     expect(state.mode).toBe("replace");
+  });
+
+  it("abortGeneration keeps received text and transitions to diffShown", () => {
+    const ac = new AbortController();
+    useInlineAiStore.getState().startGeneration({
+      commandId: "continue",
+      mode: "insert",
+      originalRange: null,
+      originalText: "",
+      insertPos: 0,
+      abortController: ac,
+    });
+    useInlineAiStore.getState().appendChunk("partial");
+    useInlineAiStore.getState().abortGeneration("claude-sonnet-4-6");
+
+    const state = useInlineAiStore.getState();
+    expect(state.status).toBe("diffShown");
+    expect(state.generatedText).toBe("partial");
+    expect(state.model).toBe("claude-sonnet-4-6");
+    expect(state.abortController).toBeNull();
+    expect(ac.signal.aborted).toBe(true);
   });
 
   it("can set generated range after insertion", () => {
@@ -100,6 +127,7 @@ describe("useInlineAiStore", () => {
       originalRange: null,
       originalText: "",
       insertPos: 0,
+      abortController: new AbortController(),
     });
     useInlineAiStore.getState().setGeneratedRange({ from: 0, to: 50 });
     expect(useInlineAiStore.getState().generatedRange).toEqual({

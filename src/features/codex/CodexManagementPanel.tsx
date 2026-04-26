@@ -21,9 +21,8 @@ import type { CodexType } from "./typeApi";
 import { listCodexTypes, ensureBuiltinTypes } from "./typeApi";
 import { getTypeLabel } from "@/features/chat/utils/typeLabels";
 import { useCodexHighlightStore } from "@/features/editor/codexHighlightStore";
-import { EntryIcon } from "./components/EntryIcon";
-import { TagPill } from "./components/TagPill";
 import { CodexDetailContent } from "./components/CodexDetailContent";
+import { EntryCard, parseTags } from "./components/EntryCard";
 import { EntryContextMenu } from "./components/EntryContextMenu";
 import { CategoryGroupHeader } from "./components/CategoryGroupHeader";
 import { TagFilterBar } from "./components/TagFilterBar";
@@ -41,51 +40,6 @@ const FALLBACK_TYPE_COLORS: Record<string, string> = {
   item: "#C27D3C",
   lore: "#9B6BB5",
 };
-
-// --- Search highlight helper ---
-
-function HighlightedName({
-  name,
-  query,
-}: {
-  name: string;
-  query: string;
-}): React.ReactElement {
-  if (!query) return <>{name}</>;
-  const lower = name.toLowerCase();
-  const lowerQ = query.toLowerCase();
-  const idx = lower.indexOf(lowerQ);
-  if (idx === -1) return <>{name}</>;
-  return (
-    <>
-      {name.slice(0, idx)}
-      <mark className="bg-yellow-200/60 dark:bg-yellow-500/30 rounded px-0.5">
-        {name.slice(idx, idx + query.length)}
-      </mark>
-      {name.slice(idx + query.length)}
-    </>
-  );
-}
-
-// --- Tag cache parser ---
-
-type TagCacheItem = { name: string; color: string | null };
-
-function parseTags(tagsCache: string | null | undefined): TagCacheItem[] {
-  if (!tagsCache) return [];
-  try {
-    const parsed = JSON.parse(tagsCache) as unknown;
-    if (!Array.isArray(parsed) || parsed.length === 0) return [];
-    // New format: {name, color}[]
-    if (typeof parsed[0] === "object" && parsed[0] !== null) {
-      return parsed as TagCacheItem[];
-    }
-    // Old format: string[] (backward compat)
-    return (parsed as string[]).map((name) => ({ name, color: null }));
-  } catch {
-    return [];
-  }
-}
 
 // --- Virtualized Entry List (for non-category sorts) ---
 
@@ -105,6 +59,8 @@ function VirtualizedEntryList({
   onRenameCommit,
   onRenameCancel,
   onStartRename,
+  scrollToEntryId,
+  onScrollComplete,
 }: {
   entries: CodexEntry[];
   isLoading: boolean;
@@ -121,6 +77,8 @@ function VirtualizedEntryList({
   onRenameCommit?: (id: string, name: string) => void;
   onRenameCancel?: () => void;
   onStartRename?: (id: string) => void;
+  scrollToEntryId?: string | null;
+  onScrollComplete?: () => void;
 }) {
   const { t } = useTranslation();
   const parentRef = useRef<HTMLDivElement>(null);
@@ -135,6 +93,16 @@ function VirtualizedEntryList({
     estimateSize: () => 52,
     overscan: 5,
   });
+
+  useEffect(() => {
+    if (!scrollToEntryId) return;
+    const idx = entries.findIndex((e) => e.id === scrollToEntryId);
+    if (idx !== -1) {
+      virtualizer.scrollToIndex(idx, { align: "start", behavior: "smooth" });
+    }
+    onScrollComplete?.();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [scrollToEntryId]);
 
   if (isLoading) {
     return (
@@ -236,107 +204,6 @@ function VirtualizedEntryList({
   );
 }
 
-// --- Entry Card (shared between flat and grouped list) ---
-
-function EntryCard({
-  entry,
-  isSelected,
-  onSelect,
-  onContextMenu,
-  searchQuery = "",
-  isRenaming = false,
-  onRenameCommit,
-  onRenameCancel,
-}: {
-  entry: CodexEntry;
-  isSelected: boolean;
-  onSelect: () => void;
-  onContextMenu: (e: React.MouseEvent) => void;
-  searchQuery?: string;
-  isRenaming?: boolean;
-  onRenameCommit?: (id: string, name: string) => void;
-  onRenameCancel?: () => void;
-}) {
-  const cachedTags = parseTags(entry.tagsCache);
-  const [renameValue, setRenameValue] = useState(entry.name);
-
-  // Reset when rename starts
-  useEffect(() => {
-    if (isRenaming) setRenameValue(entry.name);
-  }, [isRenaming, entry.name]);
-
-  if (isRenaming) {
-    return (
-      <div className="border-b border-border px-3 py-2">
-        <input
-          // eslint-disable-next-line jsx-a11y/no-autofocus
-          autoFocus
-          type="text"
-          value={renameValue}
-          onChange={(e) => setRenameValue(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter") {
-              e.preventDefault();
-              onRenameCommit?.(entry.id, renameValue.trim() || entry.name);
-            } else if (e.key === "Escape") {
-              onRenameCancel?.();
-            }
-          }}
-          onBlur={() =>
-            onRenameCommit?.(entry.id, renameValue.trim() || entry.name)
-          }
-          className="w-full rounded border border-input bg-background px-2 py-0.5 text-sm outline-none focus:ring-1 focus:ring-ring"
-        />
-      </div>
-    );
-  }
-
-  return (
-    <div className="border-b border-border">
-      <button
-        type="button"
-        data-testid={`codex-entry-${entry.id}`}
-        onClick={onSelect}
-        onContextMenu={onContextMenu}
-        className={`w-full px-3 py-2 text-left hover:bg-accent ${isSelected ? "bg-accent" : ""}`}
-      >
-        <div className="flex items-center gap-2 overflow-hidden">
-          <EntryIcon
-            icon={entry.icon as string | null}
-            entryType={entry.type}
-            size={28}
-          />
-          <span className="min-w-0 flex-1 truncate text-sm font-medium">
-            <HighlightedName name={entry.name} query={searchQuery} />
-          </span>
-          {cachedTags.length > 0 && (
-            <div className="flex shrink-0 items-center gap-0.5">
-              {cachedTags.slice(0, 2).map((tag) => (
-                <TagPill
-                  key={tag.name}
-                  name={tag.name}
-                  color={tag.color}
-                  size="sm"
-                />
-              ))}
-              {cachedTags.length > 2 && (
-                <span className="rounded-full bg-muted px-1 py-0.5 text-[10px] text-muted-foreground">
-                  +{cachedTags.length - 2}
-                </span>
-              )}
-            </div>
-          )}
-        </div>
-        {entry.summary && (
-          <p className="mt-0.5 truncate text-xs text-muted-foreground">
-            {entry.summary}
-          </p>
-        )}
-      </button>
-    </div>
-  );
-}
-
 // --- Category Grouped List ---
 
 function CategoryGroupedList({
@@ -354,6 +221,8 @@ function CategoryGroupedList({
   onRenameCommit,
   onRenameCancel,
   onStartRename,
+  scrollToEntryId,
+  onScrollComplete,
 }: {
   entries: CodexEntry[];
   isLoading: boolean;
@@ -369,8 +238,11 @@ function CategoryGroupedList({
   onRenameCommit?: (id: string, name: string) => void;
   onRenameCancel?: () => void;
   onStartRename?: (id: string) => void;
+  scrollToEntryId?: string | null;
+  onScrollComplete?: () => void;
 }) {
   const { t } = useTranslation();
+  const containerRef = useRef<HTMLDivElement>(null);
   const [contextMenu, setContextMenu] = useState<{
     entry: CodexEntry;
     x: number;
@@ -436,6 +308,36 @@ function CategoryGroupedList({
     [isExpanded],
   );
 
+  const pendingScrollRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    if (!scrollToEntryId) return;
+    const targetEntry = entries.find((e) => e.id === scrollToEntryId);
+    if (targetEntry) {
+      setExpandedGroups((prev) => {
+        if (prev[targetEntry.type] === false) {
+          return { ...prev, [targetEntry.type]: true };
+        }
+        return prev;
+      });
+    }
+    pendingScrollRef.current = scrollToEntryId;
+    onScrollComplete?.();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [scrollToEntryId]);
+
+  // After every render, execute pending scroll (retries after group expansion re-render)
+  useEffect(() => {
+    if (!pendingScrollRef.current) return;
+    const el = containerRef.current?.querySelector(
+      `[data-testid="codex-entry-${pendingScrollRef.current}"]`,
+    );
+    if (el) {
+      el.scrollIntoView({ behavior: "smooth", block: "nearest" });
+      pendingScrollRef.current = null;
+    }
+  });
+
   if (isLoading) {
     return (
       <p className="flex-1 p-3 text-center text-xs text-muted-foreground">
@@ -456,7 +358,7 @@ function CategoryGroupedList({
   }
 
   return (
-    <div className="flex-1 overflow-y-auto">
+    <div ref={containerRef} className="flex-1 overflow-y-auto">
       {groups.map((group) => (
         <div key={group.slug}>
           <CategoryGroupHeader
@@ -584,6 +486,8 @@ export function CodexManagementPanel({
   // S3: active chat session
   const activeSessionId = useChatStore((s) => s.activeSessionId);
 
+  const [scrollToEntryId, setScrollToEntryId] = useState<string | null>(null);
+
   const containerRef = useRef<HTMLDivElement>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
   const searchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -605,6 +509,7 @@ export function CodexManagementPanel({
     const entry = entries.find((e) => e.id === pendingEntryId);
     if (!entry) return; // wait for entries to load
     setSelectedEntry(entry);
+    setScrollToEntryId(pendingEntryId);
     if (isStackMode) setShowDetail(true);
     clearPendingEntry();
   }, [pendingEntryId, entries, isStackMode, clearPendingEntry]);
@@ -808,6 +713,7 @@ export function CodexManagementPanel({
     const entry = await create({ type: "character", name: "Untitled" });
     setDetailInitialTab("details");
     setSelectedEntry(entry);
+    setScrollToEntryId(entry.id);
     if (isStackMode) setShowDetail(true);
   }, [create, isStackMode]);
 
@@ -849,6 +755,7 @@ export function CodexManagementPanel({
       });
       setDetailInitialTab("details");
       setSelectedEntry(newEntry);
+      setScrollToEntryId(newEntry.id);
       if (isStackMode) setShowDetail(true);
     },
     [create, entries, isStackMode],
@@ -1053,6 +960,8 @@ export function CodexManagementPanel({
     onRenameCommit: handleRenameCommit,
     onRenameCancel: () => setRenamingEntryId(null),
     onStartRename: (id: string) => setRenamingEntryId(id),
+    scrollToEntryId,
+    onScrollComplete: () => setScrollToEntryId(null),
   };
 
   // --- List panel content ---

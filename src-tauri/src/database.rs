@@ -3,6 +3,13 @@ use serde_json::Value;
 use std::path::Path;
 use std::sync::Mutex;
 
+#[derive(serde::Deserialize)]
+pub struct BatchStatement {
+    pub sql: String,
+    pub params: Vec<Value>,
+    pub method: String,
+}
+
 pub struct Database {
     conn: Mutex<Connection>,
 }
@@ -23,33 +30,48 @@ impl Database {
         let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("{e}"))?;
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS projects (
-                id              TEXT PRIMARY KEY,
-                title           TEXT NOT NULL DEFAULT 'Untitled Project',
-                genre           TEXT,
-                pov             TEXT,
-                tense           TEXT,
-                language        TEXT NOT NULL DEFAULT 'ja',
-                style_guide     TEXT,
-                ai_instructions TEXT,
-                created_at      TEXT NOT NULL DEFAULT (datetime('now')),
-                updated_at      TEXT NOT NULL DEFAULT (datetime('now'))
+                id                     TEXT PRIMARY KEY,
+                title                  TEXT NOT NULL DEFAULT 'Untitled Project',
+                genre                  TEXT,
+                pov                    TEXT,
+                tense                  TEXT,
+                language               TEXT NOT NULL DEFAULT 'ja',
+                style_guide            TEXT,
+                ai_instructions        TEXT,
+                phase_resolution_mode  TEXT NOT NULL DEFAULT 'reading'
+                                         CHECK(phase_resolution_mode IN ('reading', 'story', 'auto')),
+                created_at             TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at             TEXT NOT NULL DEFAULT (datetime('now'))
             );
 
             CREATE TABLE IF NOT EXISTS tree_nodes (
-                id          TEXT PRIMARY KEY,
-                project_id  TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-                parent_id   TEXT REFERENCES tree_nodes(id) ON DELETE SET NULL,
-                node_type   TEXT NOT NULL,
-                title       TEXT NOT NULL DEFAULT 'Untitled',
-                synopsis    TEXT,
-                sort_order  REAL NOT NULL DEFAULT 0.0,
-                status      TEXT DEFAULT 'outline',
-                content     TEXT NOT NULL DEFAULT '{}',
-                created_at  TEXT NOT NULL DEFAULT (datetime('now')),
-                updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
+                id                TEXT PRIMARY KEY,
+                project_id        TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                parent_id         TEXT REFERENCES tree_nodes(id) ON DELETE CASCADE,
+                node_type         TEXT NOT NULL CHECK(node_type IN ('folder','scene','note')),
+                title             TEXT NOT NULL DEFAULT 'Untitled',
+                synopsis          TEXT,
+                sort_order        TEXT NOT NULL DEFAULT 'a0',
+                story_time_order  TEXT,
+                story_time_label  TEXT,
+                pov_character_id  TEXT REFERENCES codex_entries(id) ON DELETE SET NULL,
+                location_id       TEXT REFERENCES codex_entries(id) ON DELETE SET NULL,
+                status            TEXT DEFAULT 'outline'
+                                    CHECK(status IS NULL OR status IN ('outline','draft','complete','revision','final')),
+                content           TEXT NOT NULL DEFAULT '{}',
+                created_at        TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at        TEXT NOT NULL DEFAULT (datetime('now'))
             );
             CREATE INDEX IF NOT EXISTS idx_tree_parent
                 ON tree_nodes(project_id, parent_id, sort_order);
+            CREATE INDEX IF NOT EXISTS idx_tree_story_time
+                ON tree_nodes(project_id, story_time_order);
+            CREATE INDEX IF NOT EXISTS idx_tree_pov
+                ON tree_nodes(project_id, pov_character_id)
+                WHERE pov_character_id IS NOT NULL;
+            CREATE INDEX IF NOT EXISTS idx_tree_location
+                ON tree_nodes(project_id, location_id)
+                WHERE location_id IS NOT NULL;
 
             CREATE TABLE IF NOT EXISTS codex_types (
                 id          TEXT PRIMARY KEY,
@@ -83,10 +105,14 @@ impl Database {
                                           CHECK(context_mode IN ('always', 'mentioned', 'suppress', 'hidden')),
                 children_budget         TEXT NOT NULL DEFAULT 'compact'
                                           CHECK(children_budget IN ('none', 'compact', 'standard', 'generous')),
-                source_chat_message_id  TEXT REFERENCES chat_messages(id),
+                source_chat_message_id  TEXT REFERENCES chat_messages(id) ON DELETE SET NULL,
                 notes                   TEXT,
                 created_at              TEXT NOT NULL DEFAULT (datetime('now')),
-                updated_at              TEXT NOT NULL DEFAULT (datetime('now'))
+                updated_at              TEXT NOT NULL DEFAULT (datetime('now')),
+                -- Composite FK: (project_id, type) must reference a row in codex_types.
+                -- RESTRICT prevents type deletion while entries exist; CASCADE propagates slug renames.
+                FOREIGN KEY (project_id, type) REFERENCES codex_types(project_id, slug)
+                  ON UPDATE CASCADE ON DELETE RESTRICT
             );
             CREATE INDEX IF NOT EXISTS idx_codex_project
                 ON codex_entries(project_id, type);
@@ -94,12 +120,18 @@ impl Database {
                 ON codex_entries(project_id, name);
             CREATE INDEX IF NOT EXISTS idx_codex_parent
                 ON codex_entries(parent_id);
+            CREATE INDEX IF NOT EXISTS idx_codex_entries_src_msg
+                ON codex_entries(source_chat_message_id)
+                WHERE source_chat_message_id IS NOT NULL;
 
             CREATE TABLE IF NOT EXISTS codex_quick_pins (
-                entry_id TEXT PRIMARY KEY REFERENCES codex_entries(id) ON DELETE CASCADE
+                entry_id   TEXT PRIMARY KEY REFERENCES codex_entries(id) ON DELETE CASCADE,
+                created_at TEXT NOT NULL DEFAULT (datetime('now'))
             );
+            CREATE INDEX IF NOT EXISTS idx_codex_quick_pins_created
+                ON codex_quick_pins(created_at);
 
-            CREATE TABLE IF NOT EXISTS codex_relation_dismissed (
+            CREATE TABLE IF NOT EXISTS codex_dismissed_relations (
                 entry_id     TEXT NOT NULL REFERENCES codex_entries(id) ON DELETE CASCADE,
                 dismissed_id TEXT NOT NULL REFERENCES codex_entries(id) ON DELETE CASCADE,
                 PRIMARY KEY (entry_id, dismissed_id)
@@ -136,7 +168,10 @@ impl Database {
                 sort_order        REAL NOT NULL DEFAULT 0.0,
                 include_in_context INTEGER NOT NULL DEFAULT 0,
                 created_at        TEXT NOT NULL DEFAULT (datetime('now')),
-                UNIQUE(project_id, type_slug, name)
+                UNIQUE(project_id, type_slug, name),
+                -- Composite FK: (project_id, type_slug) must reference a row in codex_types.
+                FOREIGN KEY (project_id, type_slug) REFERENCES codex_types(project_id, slug)
+                  ON UPDATE CASCADE ON DELETE RESTRICT
             );
             CREATE INDEX IF NOT EXISTS idx_codex_detail_defs
                 ON codex_detail_definitions(project_id, type_slug, sort_order);
@@ -159,15 +194,21 @@ impl Database {
                 title                   TEXT NOT NULL DEFAULT 'Untitled',
                 content                 TEXT NOT NULL DEFAULT '{}',
                 tags_cache              TEXT,
-                content_source          TEXT,
+                content_source          TEXT CHECK(content_source IS NULL OR content_source IN ('human','ai')),
                 scene_id                TEXT REFERENCES tree_nodes(id) ON DELETE SET NULL,
-                source_chat_message_id  TEXT REFERENCES chat_messages(id),
+                source_chat_message_id  TEXT REFERENCES chat_messages(id) ON DELETE SET NULL,
                 usage_count             INTEGER NOT NULL DEFAULT 0,
                 created_at              TEXT NOT NULL DEFAULT (datetime('now')),
                 updated_at              TEXT NOT NULL DEFAULT (datetime('now'))
             );
             CREATE INDEX IF NOT EXISTS idx_snippets_project
                 ON snippets(project_id, created_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_snippets_scene
+                ON snippets(scene_id)
+                WHERE scene_id IS NOT NULL;
+            CREATE INDEX IF NOT EXISTS idx_snippets_src_msg
+                ON snippets(source_chat_message_id)
+                WHERE source_chat_message_id IS NOT NULL;
 
             CREATE TABLE IF NOT EXISTS snippet_entry_tags (
                 snippet_id TEXT NOT NULL REFERENCES snippets(id) ON DELETE CASCADE,
@@ -180,16 +221,41 @@ impl Database {
             CREATE TABLE IF NOT EXISTS chat_sessions (
                 id           TEXT PRIMARY KEY,
                 project_id   TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-                node_id      TEXT REFERENCES tree_nodes(id) ON DELETE SET NULL,
+                node_id      TEXT REFERENCES tree_nodes(id) ON DELETE SET NULL, -- chat history survives scene deletion
                 title        TEXT NOT NULL DEFAULT 'New session',
                 title_manual INTEGER NOT NULL DEFAULT 0,
                 model        TEXT NOT NULL DEFAULT 'openrouter/anthropic/claude-sonnet-4.6',
-                pinned_codex TEXT,
                 created_at   TEXT NOT NULL DEFAULT (datetime('now')),
                 updated_at   TEXT NOT NULL DEFAULT (datetime('now'))
             );
             CREATE INDEX IF NOT EXISTS idx_chat_sessions_node
                 ON chat_sessions(project_id, node_id);
+
+            -- Normalized pin table: one row per pinned codex entry / snippet
+            -- per session. Replaces the former chat_sessions.pinned_codex
+            -- JSON blob so FK cascades remove stale refs automatically.
+            CREATE TABLE IF NOT EXISTS chat_session_pinned_codex (
+                id              TEXT PRIMARY KEY,
+                session_id      TEXT NOT NULL REFERENCES chat_sessions(id) ON DELETE CASCADE,
+                codex_entry_id  TEXT REFERENCES codex_entries(id) ON DELETE CASCADE,
+                snippet_id      TEXT REFERENCES snippets(id) ON DELETE CASCADE,
+                with_children   INTEGER NOT NULL DEFAULT 0,
+                pin_source      TEXT NOT NULL DEFAULT 'manual'
+                                  CHECK(pin_source IN ('manual','chat_mention')),
+                created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+                CHECK (
+                    (CASE WHEN codex_entry_id IS NOT NULL THEN 1 ELSE 0 END +
+                     CASE WHEN snippet_id     IS NOT NULL THEN 1 ELSE 0 END) = 1
+                )
+            );
+            CREATE INDEX IF NOT EXISTS idx_chat_pin_session
+                ON chat_session_pinned_codex(session_id, created_at);
+            CREATE UNIQUE INDEX IF NOT EXISTS uq_chat_pin_codex
+                ON chat_session_pinned_codex(session_id, codex_entry_id)
+                WHERE codex_entry_id IS NOT NULL;
+            CREATE UNIQUE INDEX IF NOT EXISTS uq_chat_pin_snippet
+                ON chat_session_pinned_codex(session_id, snippet_id)
+                WHERE snippet_id IS NOT NULL;
 
             CREATE TABLE IF NOT EXISTS chat_messages (
                 id          TEXT PRIMARY KEY,
@@ -209,15 +275,24 @@ impl Database {
                 ON chat_messages(session_id, created_at);
 
             CREATE TABLE IF NOT EXISTS chat_summaries (
-                id                 TEXT PRIMARY KEY,
-                session_id         TEXT NOT NULL REFERENCES chat_sessions(id) ON DELETE CASCADE,
-                summary            TEXT NOT NULL,
-                source_message_ids TEXT NOT NULL,
-                token_count        INTEGER,
-                created_at         TEXT NOT NULL DEFAULT (datetime('now'))
+                id          TEXT PRIMARY KEY,
+                session_id  TEXT NOT NULL REFERENCES chat_sessions(id) ON DELETE CASCADE,
+                summary     TEXT NOT NULL,
+                token_count INTEGER,
+                created_at  TEXT NOT NULL DEFAULT (datetime('now'))
             );
             CREATE INDEX IF NOT EXISTS idx_chat_summaries_session
                 ON chat_summaries(session_id, created_at);
+
+            -- Set of messages summarized by each chat_summaries row.
+            -- Replaces chat_summaries.source_message_ids JSON array.
+            CREATE TABLE IF NOT EXISTS chat_summary_messages (
+                summary_id TEXT NOT NULL REFERENCES chat_summaries(id) ON DELETE CASCADE,
+                message_id TEXT NOT NULL REFERENCES chat_messages(id) ON DELETE CASCADE,
+                PRIMARY KEY (summary_id, message_id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_chat_summary_messages_msg
+                ON chat_summary_messages(message_id);
 
             CREATE TABLE IF NOT EXISTS codex_entry_phases (
                 id                    TEXT PRIMARY KEY,
@@ -226,7 +301,9 @@ impl Database {
                 label                 TEXT NOT NULL DEFAULT '',
                 summary_override      TEXT,
                 content_override      TEXT,
-                context_mode_override TEXT,
+                context_mode_override TEXT
+                                        CHECK(context_mode_override IS NULL OR
+                                              context_mode_override IN ('always','mentioned','suppress','hidden')),
                 created_at            TEXT NOT NULL DEFAULT (datetime('now')),
                 updated_at            TEXT NOT NULL DEFAULT (datetime('now'))
             );
@@ -249,7 +326,7 @@ impl Database {
                 node_id         TEXT REFERENCES tree_nodes(id) ON DELETE CASCADE,
                 codex_entry_id  TEXT REFERENCES codex_entries(id) ON DELETE CASCADE,
                 snippet_id      TEXT REFERENCES snippets(id) ON DELETE CASCADE,
-                detail_value_id TEXT REFERENCES codex_detail_values(id),
+                detail_value_id TEXT REFERENCES codex_detail_values(id) ON DELETE CASCADE,
                 from_pos        INTEGER NOT NULL,
                 to_pos          INTEGER NOT NULL,
                 source          TEXT NOT NULL CHECK(source IN ('human','ai','unknown')),
@@ -257,11 +334,15 @@ impl Database {
                 timestamp       TEXT,
                 chat_msg_id     TEXT,
                 phase_id        TEXT REFERENCES codex_entry_phases(id) ON DELETE CASCADE,
+                -- Exactly one owning document
                 CHECK (
-                    (node_id IS NOT NULL AND codex_entry_id IS NULL AND snippet_id IS NULL) OR
-                    (node_id IS NULL AND codex_entry_id IS NOT NULL AND snippet_id IS NULL) OR
-                    (node_id IS NULL AND codex_entry_id IS NULL AND snippet_id IS NOT NULL)
-                )
+                    (CASE WHEN node_id         IS NOT NULL THEN 1 ELSE 0 END +
+                     CASE WHEN codex_entry_id  IS NOT NULL THEN 1 ELSE 0 END +
+                     CASE WHEN snippet_id      IS NOT NULL THEN 1 ELSE 0 END +
+                     CASE WHEN detail_value_id IS NOT NULL THEN 1 ELSE 0 END) = 1
+                ),
+                -- phase_id (authorship in phase contentOverride) requires codex_entry_id
+                CHECK (phase_id IS NULL OR codex_entry_id IS NOT NULL)
             );
             CREATE INDEX IF NOT EXISTS idx_authorship_node
                 ON authorship_spans(node_id, source);
@@ -271,6 +352,9 @@ impl Database {
                 ON authorship_spans(snippet_id, source);
             CREATE INDEX IF NOT EXISTS idx_authorship_detail
                 ON authorship_spans(detail_value_id);
+            CREATE INDEX IF NOT EXISTS idx_authorship_phase
+                ON authorship_spans(phase_id)
+                WHERE phase_id IS NOT NULL;
 
             CREATE TABLE IF NOT EXISTS content_versions (
                 id             TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
@@ -290,20 +374,38 @@ impl Database {
                 project_id  TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
                 name        TEXT NOT NULL,
                 description TEXT,
-                created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+                created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+                UNIQUE(project_id, name)
             );
             CREATE INDEX IF NOT EXISTS idx_project_snapshots
                 ON project_snapshots(project_id, created_at DESC);
 
+            -- version_id uses ON DELETE RESTRICT so pruning logic cannot
+            -- silently strip a version that is referenced by a snapshot;
+            -- the snapshot feature relies on blocking such deletes.
             CREATE TABLE IF NOT EXISTS project_snapshot_entries (
                 snapshot_id TEXT NOT NULL REFERENCES project_snapshots(id) ON DELETE CASCADE,
-                version_id  TEXT NOT NULL REFERENCES content_versions(id),
+                version_id  TEXT NOT NULL REFERENCES content_versions(id) ON DELETE RESTRICT,
                 PRIMARY KEY (snapshot_id, version_id)
             );
 
-            CREATE TABLE IF NOT EXISTS settings (
+            -- App-wide key-value store (shared across projects). All current
+            -- setting keys (editor/display/ai/keys/data/revision/tree/export)
+            -- live here since they're user preferences, not project metadata.
+            CREATE TABLE IF NOT EXISTS app_settings (
                 key   TEXT PRIMARY KEY,
                 value TEXT NOT NULL
+            );
+
+            -- Project-scoped key-value store. Reserved for future keys that
+            -- need per-project overrides (e.g. project-specific naming rules).
+            -- Currently unused by the app, but the table exists so adding a
+            -- project-scoped key later does not require a schema change.
+            CREATE TABLE IF NOT EXISTS project_settings (
+                project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                key        TEXT NOT NULL,
+                value      TEXT NOT NULL,
+                PRIMARY KEY (project_id, key)
             );
 
             -- FTS5 full-text search indexes (trigram tokenizer for Japanese)
@@ -403,24 +505,8 @@ impl Database {
                 VALUES (new.rowid, COALESCE(new.title, ''), COALESCE(new.content, ''));
             END;
 
-            -- Triggers to nullify orphaned references on deletion
-            CREATE TRIGGER IF NOT EXISTS nullify_codex_source_on_msg_delete
-            AFTER DELETE ON chat_messages BEGIN
-                UPDATE codex_entries SET source_chat_message_id = NULL
-                WHERE source_chat_message_id = old.id;
-            END;
-
-            CREATE TRIGGER IF NOT EXISTS nullify_snippet_source_on_msg_delete
-            AFTER DELETE ON chat_messages BEGIN
-                UPDATE snippets SET source_chat_message_id = NULL
-                WHERE source_chat_message_id = old.id;
-            END;
-
-            CREATE TRIGGER IF NOT EXISTS nullify_snippet_scene_on_node_delete
-            AFTER DELETE ON tree_nodes BEGIN
-                UPDATE snippets SET scene_id = NULL
-                WHERE scene_id = old.id;
-            END;
+            -- (Nullify-on-delete behavior for source_chat_message_id / scene_id
+            --  is now enforced by FK ON DELETE SET NULL; explicit triggers removed.)
 
             -- Triggers to cascade-delete content_versions for polymorphic entity_id
             CREATE TRIGGER IF NOT EXISTS delete_cv_on_tree_node_delete
@@ -454,18 +540,334 @@ impl Database {
                   VALUES (new.id || '-lore', new.id, 'lore', '伝承', '#993C1D', 3, 1, 3.0, datetime('now'));
             END;
 
+            -- Map panel tables (map_ai_nodes first; map_node_positions references it)
+            CREATE TABLE IF NOT EXISTS map_ai_nodes (
+                id            TEXT PRIMARY KEY,
+                board_id      TEXT NOT NULL REFERENCES map_boards(id) ON DELETE CASCADE,
+                prompt        TEXT NOT NULL,
+                response      TEXT,
+                session_id    TEXT REFERENCES chat_sessions(id) ON DELETE SET NULL,
+                model         TEXT,
+                token_usage   INTEGER,
+                created_at    TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at    TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+            CREATE INDEX IF NOT EXISTS idx_map_ai_board
+                ON map_ai_nodes(board_id);
+
+            CREATE TABLE IF NOT EXISTS map_boards (
+                id          TEXT PRIMARY KEY,
+                project_id  TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                title       TEXT NOT NULL DEFAULT 'Main',
+                sort_order  REAL NOT NULL DEFAULT 0.0,
+                created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+            CREATE INDEX IF NOT EXISTS idx_map_boards_project
+                ON map_boards(project_id);
+
+            CREATE TABLE IF NOT EXISTS map_node_positions (
+                id              TEXT PRIMARY KEY,
+                board_id        TEXT NOT NULL REFERENCES map_boards(id) ON DELETE CASCADE,
+                node_ref_type   TEXT NOT NULL
+                                    CHECK(node_ref_type IN ('scene', 'codex', 'note', 'ai')),
+                tree_node_id    TEXT REFERENCES tree_nodes(id) ON DELETE CASCADE,
+                codex_entry_id  TEXT REFERENCES codex_entries(id) ON DELETE CASCADE,
+                ai_node_id      TEXT REFERENCES map_ai_nodes(id) ON DELETE CASCADE,
+                x               REAL NOT NULL,
+                y               REAL NOT NULL,
+                pinned          INTEGER NOT NULL DEFAULT 0,
+                hidden          INTEGER NOT NULL DEFAULT 0,
+                z_index         INTEGER NOT NULL DEFAULT 0,
+                created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at      TEXT NOT NULL DEFAULT (datetime('now')),
+                CHECK (
+                    (CASE WHEN tree_node_id IS NOT NULL THEN 1 ELSE 0 END +
+                     CASE WHEN codex_entry_id IS NOT NULL THEN 1 ELSE 0 END +
+                     CASE WHEN ai_node_id IS NOT NULL THEN 1 ELSE 0 END) = 1
+                ),
+                CHECK (
+                    (node_ref_type IN ('scene', 'note') AND tree_node_id   IS NOT NULL AND codex_entry_id IS NULL     AND ai_node_id IS NULL) OR
+                    (node_ref_type = 'codex'            AND codex_entry_id IS NOT NULL AND tree_node_id   IS NULL     AND ai_node_id IS NULL) OR
+                    (node_ref_type = 'ai'               AND ai_node_id     IS NOT NULL AND tree_node_id   IS NULL AND codex_entry_id IS NULL)
+                )
+            );
+            CREATE INDEX IF NOT EXISTS idx_map_pos_board
+                ON map_node_positions(board_id);
+            CREATE INDEX IF NOT EXISTS idx_map_pos_tree
+                ON map_node_positions(tree_node_id);
+            CREATE INDEX IF NOT EXISTS idx_map_pos_codex
+                ON map_node_positions(codex_entry_id);
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_map_pos_uniq_scene
+                ON map_node_positions(board_id, tree_node_id)
+                WHERE tree_node_id IS NOT NULL;
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_map_pos_uniq_codex
+                ON map_node_positions(board_id, codex_entry_id)
+                WHERE codex_entry_id IS NOT NULL;
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_map_pos_uniq_ai
+                ON map_node_positions(board_id, ai_node_id)
+                WHERE ai_node_id IS NOT NULL;
+
+            CREATE TABLE IF NOT EXISTS map_edges (
+                id                  TEXT PRIMARY KEY,
+                board_id            TEXT NOT NULL REFERENCES map_boards(id) ON DELETE CASCADE,
+                from_position_id    TEXT NOT NULL REFERENCES map_node_positions(id) ON DELETE CASCADE,
+                to_position_id      TEXT NOT NULL REFERENCES map_node_positions(id) ON DELETE CASCADE,
+                label               TEXT,
+                style               TEXT NOT NULL DEFAULT 'solid'
+                                        CHECK(style IN ('solid', 'dashed', 'dotted')),
+                color               TEXT NOT NULL DEFAULT '#000000',
+                direction           TEXT NOT NULL DEFAULT 'none'
+                                        CHECK(direction IN ('none', 'forward', 'bidirectional')),
+                created_at          TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at          TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+            CREATE INDEX IF NOT EXISTS idx_map_edges_board
+                ON map_edges(board_id);
+            CREATE INDEX IF NOT EXISTS idx_map_edges_from
+                ON map_edges(from_position_id);
+            CREATE INDEX IF NOT EXISTS idx_map_edges_to
+                ON map_edges(to_position_id);
+
+            CREATE TABLE IF NOT EXISTS map_frames (
+                id            TEXT PRIMARY KEY,
+                board_id      TEXT NOT NULL REFERENCES map_boards(id) ON DELETE CASCADE,
+                title         TEXT NOT NULL DEFAULT 'Frame',
+                x             REAL NOT NULL,
+                y             REAL NOT NULL,
+                width         REAL NOT NULL,
+                height        REAL NOT NULL,
+                background    TEXT NOT NULL DEFAULT '#f5f5f5',
+                border_color  TEXT NOT NULL DEFAULT '#cccccc',
+                z_index       INTEGER NOT NULL DEFAULT -1,
+                created_at    TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at    TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+            CREATE INDEX IF NOT EXISTS idx_map_frames_board
+                ON map_frames(board_id);
+
+            -- Lint persistent ignore list (Phase 2)
+            CREATE TABLE IF NOT EXISTS lint_ignored_diagnostics (
+                id              TEXT PRIMARY KEY,
+                rule_id         TEXT NOT NULL,
+                scene_id        TEXT NOT NULL REFERENCES tree_nodes(id) ON DELETE CASCADE,
+                text_snippet    TEXT NOT NULL,
+                context_before  TEXT NOT NULL,
+                context_after   TEXT NOT NULL,
+                note            TEXT,
+                created_at      INTEGER NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_lint_ignored_scene
+                ON lint_ignored_diagnostics(scene_id);
+            CREATE INDEX IF NOT EXISTS idx_lint_ignored_rule
+                ON lint_ignored_diagnostics(rule_id);
+
+            -- Project-scoped term dictionary driving project/term-consistency.
+            -- variants is JSON array of strings; severity is 'warning' | 'info'.
+            -- No SQL-level UNIQUE on preferred so duplicate display rows are
+            -- allowed (variants are what matter); the CRUD layer enforces
+            -- no-duplicate-variant across the table.
+            CREATE TABLE IF NOT EXISTS lint_term_dictionary (
+                id         TEXT PRIMARY KEY,
+                preferred  TEXT NOT NULL,
+                variants   TEXT NOT NULL,
+                severity   TEXT NOT NULL DEFAULT 'warning',
+                note       TEXT,
+                enabled    INTEGER NOT NULL DEFAULT 1,
+                sort_order INTEGER NOT NULL DEFAULT 0,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_lint_term_dict_preferred
+                ON lint_term_dictionary(preferred);
+            CREATE INDEX IF NOT EXISTS idx_lint_term_dict_sort
+                ON lint_term_dictionary(sort_order);
+
+            -- Lint event history (Phase 2-3 writes; schema only for now).
+            -- Append-only event log for self-tuning suggestions like
+            -- 'you ignore ja/quote-period 80% of the time → turn it off?'.
+            -- `scene_id` uses ON DELETE SET NULL (vs CASCADE on the
+            -- ignore table) so deleting a scene preserves the historical
+            -- record while breaking the FK link.
+            CREATE TABLE IF NOT EXISTS lint_action_log (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                rule_id     TEXT NOT NULL,
+                action      TEXT NOT NULL,
+                scene_id    TEXT REFERENCES tree_nodes(id) ON DELETE SET NULL,
+                occurred_at INTEGER NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_lint_action_log_rule
+                ON lint_action_log(rule_id);
+            CREATE INDEX IF NOT EXISTS idx_lint_action_log_occurred
+                ON lint_action_log(occurred_at);
+
+            -- Seed a default Map board for every new project
+            CREATE TRIGGER IF NOT EXISTS seed_default_map_board
+            AFTER INSERT ON projects BEGIN
+                INSERT OR IGNORE INTO map_boards (id, project_id, title, sort_order, created_at, updated_at)
+                  VALUES (new.id || '-main-board', new.id, 'Main', 0.0, datetime('now'), datetime('now'));
+            END;
+
             -- Seed default project + folder node
             INSERT OR IGNORE INTO projects (id, title, language, created_at, updated_at)
               VALUES ('default-project', '無題のプロジェクト', 'ja', datetime('now'), datetime('now'));
             INSERT OR IGNORE INTO tree_nodes (id, project_id, node_type, title, sort_order, created_at, updated_at)
-              VALUES ('default-chapter', 'default-project', 'folder', 'Part.1', 0.0, datetime('now'), datetime('now'));
+              VALUES ('default-chapter', 'default-project', 'folder', 'Part.1', 'a0', datetime('now'), datetime('now'));
 
             -- Fix legacy default folder name (e7af0e35)
             UPDATE tree_nodes SET title = 'Part.1'
               WHERE id = 'default-chapter' AND title = '第1章';",
         )?;
 
+        // Foreshadow register tables (added post-initial schema)
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS foreshadows (
+                id               TEXT PRIMARY KEY,
+                project_id       TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                title            TEXT NOT NULL,
+                intent           TEXT,
+                notes            TEXT,
+                payoff_scene_id  TEXT REFERENCES tree_nodes(id) ON DELETE SET NULL,
+                payoff_from_pos  INTEGER,
+                payoff_to_pos    INTEGER,
+                payoff_confirmed INTEGER NOT NULL DEFAULT 0,
+                abandoned        INTEGER NOT NULL DEFAULT 0,
+                created_at       INTEGER NOT NULL,
+                updated_at       INTEGER NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_foreshadows_project
+                ON foreshadows(project_id);
+            CREATE INDEX IF NOT EXISTS idx_foreshadows_payoff_scene
+                ON foreshadows(payoff_scene_id);
+
+            CREATE TABLE IF NOT EXISTS foreshadow_setups (
+                id                 TEXT PRIMARY KEY,
+                foreshadow_id      TEXT NOT NULL REFERENCES foreshadows(id) ON DELETE CASCADE,
+                scene_id           TEXT NOT NULL REFERENCES tree_nodes(id) ON DELETE CASCADE,
+                from_pos           INTEGER NOT NULL,
+                to_pos             INTEGER NOT NULL,
+                kind               TEXT NOT NULL,
+                strength           TEXT,
+                ai_strength        TEXT,
+                ai_reasoning       TEXT,
+                attribution        TEXT NOT NULL DEFAULT 'human',
+                ai_rationale       TEXT,
+                last_evaluated_at  INTEGER,
+                is_orphan          INTEGER NOT NULL DEFAULT 0,
+                created_at         INTEGER NOT NULL,
+                updated_at         INTEGER NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_fs_setup_fid
+                ON foreshadow_setups(foreshadow_id);
+            CREATE INDEX IF NOT EXISTS idx_fs_setup_scene
+                ON foreshadow_setups(scene_id);
+            CREATE INDEX IF NOT EXISTS idx_fs_setup_orphan
+                ON foreshadow_setups(is_orphan);
+
+            CREATE TABLE IF NOT EXISTS foreshadow_codex_links (
+                foreshadow_id   TEXT NOT NULL REFERENCES foreshadows(id) ON DELETE CASCADE,
+                codex_entry_id  TEXT NOT NULL REFERENCES codex_entries(id) ON DELETE CASCADE,
+                PRIMARY KEY (foreshadow_id, codex_entry_id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_fs_codex_codex
+                ON foreshadow_codex_links(codex_entry_id);",
+        )?;
+
         Ok(())
+    }
+
+    /// Execute a list of SQL statements in a single transaction.
+    /// Each item is `{ sql, params, method }`. Returns last statement's rows.
+    /// Used when drizzle-proxy does not expose transactions natively.
+    pub fn execute_batch_tx(
+        &self,
+        statements: &[BatchStatement],
+    ) -> anyhow::Result<Vec<serde_json::Map<String, Value>>> {
+        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("{e}"))?;
+        conn.execute_batch("BEGIN")?;
+        let mut last_rows = Vec::new();
+        let result = (|| -> anyhow::Result<_> {
+            for stmt in statements {
+                last_rows = Self::execute_with_conn(&conn, &stmt.sql, &stmt.params, &stmt.method)?;
+            }
+            Ok(last_rows)
+        })();
+        match result {
+            Ok(rows) => {
+                conn.execute_batch("COMMIT")?;
+                Ok(rows)
+            }
+            Err(e) => {
+                let _ = conn.execute_batch("ROLLBACK");
+                Err(e)
+            }
+        }
+    }
+
+    fn execute_with_conn(
+        conn: &Connection,
+        sql: &str,
+        params: &[Value],
+        method: &str,
+    ) -> anyhow::Result<Vec<serde_json::Map<String, Value>>> {
+        let native_params: Vec<Box<dyn rusqlite::types::ToSql>> = params
+            .iter()
+            .map(|v| -> Box<dyn rusqlite::types::ToSql> {
+                match v {
+                    Value::Null => Box::new(Option::<String>::None),
+                    Value::Bool(b) => Box::new(*b),
+                    Value::Number(n) => {
+                        if let Some(i) = n.as_i64() {
+                            Box::new(i)
+                        } else {
+                            Box::new(n.as_f64().unwrap_or(0.0))
+                        }
+                    }
+                    Value::String(s) => Box::new(s.clone()),
+                    _ => Box::new(v.to_string()),
+                }
+            })
+            .collect();
+        let param_refs: Vec<&dyn rusqlite::types::ToSql> =
+            native_params.iter().map(|p| p.as_ref()).collect();
+
+        if method == "run" {
+            conn.execute(sql, params_from_iter(param_refs.iter()))?;
+            return Ok(vec![]);
+        }
+
+        let mut stmt = conn.prepare(sql)?;
+        let column_names: Vec<String> = stmt.column_names().iter().map(|s| s.to_string()).collect();
+        let rows = stmt.query_map(params_from_iter(param_refs.iter()), |row| {
+            let mut map = serde_json::Map::new();
+            for (i, col_name) in column_names.iter().enumerate() {
+                let val: Value = match row.get_ref(i) {
+                    Ok(rusqlite::types::ValueRef::Null) => Value::Null,
+                    Ok(rusqlite::types::ValueRef::Integer(n)) => Value::Number(n.into()),
+                    Ok(rusqlite::types::ValueRef::Real(f)) => {
+                        Value::Number(serde_json::Number::from_f64(f).unwrap_or_else(|| 0.into()))
+                    }
+                    Ok(rusqlite::types::ValueRef::Text(s)) => {
+                        Value::String(String::from_utf8_lossy(s).to_string())
+                    }
+                    Ok(rusqlite::types::ValueRef::Blob(b)) => {
+                        Value::String(format!("[blob {} bytes]", b.len()))
+                    }
+                    Err(_) => Value::Null,
+                };
+                map.insert(col_name.clone(), val);
+            }
+            Ok(map)
+        })?;
+
+        let mut result = Vec::new();
+        for row in rows {
+            result.push(row?);
+        }
+        if method == "get" {
+            return Ok(result.into_iter().take(1).collect());
+        }
+        Ok(result)
     }
 
     pub fn execute(
@@ -621,6 +1023,170 @@ impl Database {
         Ok(())
     }
 
+    /// Full-text search across scenes, codex, and snippets.
+    /// `scope`: "all" | "scenes" | "codex" | "snippets"
+    /// Returns up to `limit` results (capped at 50).
+    pub fn search_fts(
+        &self,
+        project_id: &str,
+        query: &str,
+        scope: &str,
+        limit: u32,
+    ) -> anyhow::Result<Vec<serde_json::Value>> {
+        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("{e}"))?;
+        let mut results: Vec<serde_json::Value> = Vec::new();
+        let lim = limit.min(50) as i64;
+
+        // FTS5 trigram requires ≥3 chars; fall back to LIKE for shorter queries.
+        let use_like = query.chars().count() < 3;
+        let like_pattern = format!("%{query}%");
+
+        if scope == "all" || scope == "scenes" {
+            if use_like {
+                let mut stmt = conn.prepare(
+                    "SELECT id, title, COALESCE(synopsis, '')
+                     FROM tree_nodes
+                     WHERE project_id = ?1 AND node_type = 'scene'
+                       AND (title LIKE ?2 OR content LIKE ?2)
+                     LIMIT ?3",
+                )?;
+                let rows = stmt.query_map(
+                    params_from_iter([project_id, like_pattern.as_str(), &lim.to_string()]),
+                    |row| {
+                        Ok(serde_json::json!({
+                            "sourceType": "scene",
+                            "id": row.get::<_, String>(0)?,
+                            "title": row.get::<_, String>(1)?,
+                            "excerpt": row.get::<_, String>(2)?,
+                        }))
+                    },
+                )?;
+                for r in rows {
+                    results.push(r?);
+                }
+            } else {
+                let mut stmt = conn.prepare(
+                    "SELECT tn.id, tn.title, COALESCE(tn.synopsis, '')
+                     FROM tree_nodes_fts
+                     JOIN tree_nodes tn ON tn.rowid = tree_nodes_fts.rowid
+                     WHERE tree_nodes_fts MATCH ?1 AND tn.project_id = ?2 AND tn.node_type = 'scene'
+                     ORDER BY rank LIMIT ?3",
+                )?;
+                let rows = stmt.query_map(
+                    params_from_iter([query, project_id, &lim.to_string()]),
+                    |row| {
+                        Ok(serde_json::json!({
+                            "sourceType": "scene",
+                            "id": row.get::<_, String>(0)?,
+                            "title": row.get::<_, String>(1)?,
+                            "excerpt": row.get::<_, String>(2)?,
+                        }))
+                    },
+                )?;
+                for r in rows {
+                    results.push(r?);
+                }
+            }
+        }
+
+        if scope == "all" || scope == "codex" {
+            if use_like {
+                let mut stmt = conn.prepare(
+                    "SELECT id, name, COALESCE(summary, '')
+                     FROM codex_entries
+                     WHERE project_id = ?1
+                       AND (name LIKE ?2 OR aliases LIKE ?2 OR summary LIKE ?2)
+                     LIMIT ?3",
+                )?;
+                let rows = stmt.query_map(
+                    params_from_iter([project_id, like_pattern.as_str(), &lim.to_string()]),
+                    |row| {
+                        Ok(serde_json::json!({
+                            "sourceType": "codex",
+                            "id": row.get::<_, String>(0)?,
+                            "title": row.get::<_, String>(1)?,
+                            "excerpt": row.get::<_, String>(2)?,
+                        }))
+                    },
+                )?;
+                for r in rows {
+                    results.push(r?);
+                }
+            } else {
+                let mut stmt = conn.prepare(
+                    "SELECT e.id, e.name, COALESCE(e.summary, '')
+                     FROM codex_fts
+                     JOIN codex_entries e ON e.rowid = codex_fts.rowid
+                     WHERE codex_fts MATCH ?1 AND e.project_id = ?2
+                     ORDER BY rank LIMIT ?3",
+                )?;
+                let rows = stmt.query_map(
+                    params_from_iter([query, project_id, &lim.to_string()]),
+                    |row| {
+                        Ok(serde_json::json!({
+                            "sourceType": "codex",
+                            "id": row.get::<_, String>(0)?,
+                            "title": row.get::<_, String>(1)?,
+                            "excerpt": row.get::<_, String>(2)?,
+                        }))
+                    },
+                )?;
+                for r in rows {
+                    results.push(r?);
+                }
+            }
+        }
+
+        if scope == "all" || scope == "snippets" {
+            if use_like {
+                let mut stmt = conn.prepare(
+                    "SELECT id, title, COALESCE(tags_cache, '')
+                     FROM snippets
+                     WHERE project_id = ?1 AND (title LIKE ?2 OR content LIKE ?2)
+                     LIMIT ?3",
+                )?;
+                let rows = stmt.query_map(
+                    params_from_iter([project_id, like_pattern.as_str(), &lim.to_string()]),
+                    |row| {
+                        Ok(serde_json::json!({
+                            "sourceType": "snippet",
+                            "id": row.get::<_, String>(0)?,
+                            "title": row.get::<_, String>(1)?,
+                            "excerpt": row.get::<_, String>(2)?,
+                        }))
+                    },
+                )?;
+                for r in rows {
+                    results.push(r?);
+                }
+            } else {
+                let mut stmt = conn.prepare(
+                    "SELECT s.id, s.title, COALESCE(s.tags_cache, '')
+                     FROM snippets_fts
+                     JOIN snippets s ON s.rowid = snippets_fts.rowid
+                     WHERE snippets_fts MATCH ?1 AND s.project_id = ?2
+                     ORDER BY rank LIMIT ?3",
+                )?;
+                let rows = stmt.query_map(
+                    params_from_iter([query, project_id, &lim.to_string()]),
+                    |row| {
+                        Ok(serde_json::json!({
+                            "sourceType": "snippet",
+                            "id": row.get::<_, String>(0)?,
+                            "title": row.get::<_, String>(1)?,
+                            "excerpt": row.get::<_, String>(2)?,
+                        }))
+                    },
+                )?;
+                for r in rows {
+                    results.push(r?);
+                }
+            }
+        }
+
+        Ok(results)
+    }
+
     /// Drop and rebuild all FTS5 indexes from scratch.
     pub fn fts_rebuild(&self) -> anyhow::Result<()> {
         let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("{e}"))?;
@@ -651,12 +1217,16 @@ mod tests {
             "projects",
             "tree_nodes",
             "codex_entries",
-            "codex_relation_dismissed",
+            "codex_dismissed_relations",
             "snippets",
             "chat_sessions",
             "chat_messages",
             "authorship_spans",
-            "settings",
+            "app_settings",
+            "project_settings",
+            "foreshadows",
+            "foreshadow_setups",
+            "foreshadow_codex_links",
         ];
         for table in &expected_tables {
             let rows = db
@@ -689,6 +1259,32 @@ mod tests {
                 .expect("query");
             assert_eq!(rows.len(), 1, "FTS table '{}' should exist", table);
         }
+    }
+
+    #[test]
+    fn test_migrate_creates_pov_location_columns() {
+        let db = test_db();
+        let cols = db
+            .execute("PRAGMA table_info('tree_nodes')", &[], "all")
+            .expect("pragma");
+        let names: Vec<String> = cols
+            .iter()
+            .filter_map(|row| {
+                if let Value::String(s) = &row["name"] {
+                    Some(s.clone())
+                } else {
+                    None
+                }
+            })
+            .collect();
+        assert!(
+            names.contains(&"pov_character_id".to_string()),
+            "pov_character_id column should exist"
+        );
+        assert!(
+            names.contains(&"location_id".to_string()),
+            "location_id column should exist"
+        );
     }
 
     #[test]
@@ -786,7 +1382,7 @@ mod tests {
                 Value::String("default-chapter".into()),
                 Value::String("scene".into()),
                 Value::String("Opening".into()),
-                Value::Number(serde_json::Number::from_f64(0.0).unwrap()),
+                Value::String("a0".into()),
                 Value::String("2025-01-01T00:00:00Z".into()),
                 Value::String("2025-01-01T00:00:00Z".into()),
             ],
@@ -849,7 +1445,7 @@ mod tests {
                 Value::String("proj-del".into()),
                 Value::String("folder".into()),
                 Value::String("Ch1".into()),
-                Value::Number(serde_json::Number::from_f64(0.0).unwrap()),
+                Value::String("a0".into()),
                 Value::String("2025-01-01T00:00:00Z".into()),
                 Value::String("2025-01-01T00:00:00Z".into()),
             ],
@@ -865,7 +1461,7 @@ mod tests {
                 Value::String("ch-del".into()),
                 Value::String("scene".into()),
                 Value::String("S1".into()),
-                Value::Number(serde_json::Number::from_f64(0.0).unwrap()),
+                Value::String("a1".into()),
                 Value::String("2025-01-01T00:00:00Z".into()),
                 Value::String("2025-01-01T00:00:00Z".into()),
             ],
@@ -1135,7 +1731,7 @@ mod tests {
         let db = test_db();
 
         db.execute(
-            "INSERT INTO settings (key, value) VALUES (?, ?)",
+            "INSERT INTO app_settings (key, value) VALUES (?, ?)",
             &[
                 Value::String("editor.fontSize".into()),
                 Value::String("16".into()),
@@ -1146,7 +1742,7 @@ mod tests {
 
         let rows = db
             .execute(
-                "SELECT value FROM settings WHERE key = ?",
+                "SELECT value FROM app_settings WHERE key = ?",
                 &[Value::String("editor.fontSize".into())],
                 "get",
             )
@@ -1154,7 +1750,7 @@ mod tests {
         assert_eq!(rows[0]["value"], Value::String("16".into()));
 
         db.execute(
-            "INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)",
+            "INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)",
             &[
                 Value::String("editor.fontSize".into()),
                 Value::String("18".into()),
@@ -1165,7 +1761,7 @@ mod tests {
 
         let rows = db
             .execute(
-                "SELECT value FROM settings WHERE key = ?",
+                "SELECT value FROM app_settings WHERE key = ?",
                 &[Value::String("editor.fontSize".into())],
                 "get",
             )
@@ -1448,7 +2044,7 @@ mod tests {
         // Create scene node
         db.execute(
             "INSERT INTO tree_nodes (id, project_id, parent_id, node_type, title, sort_order, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))",
-            &[Value::String("sc1".into()), Value::String("default-project".into()), Value::String("default-chapter".into()), Value::String("scene".into()), Value::String("シーン1".into()), Value::Number(serde_json::Number::from_f64(0.0).unwrap())],
+            &[Value::String("sc1".into()), Value::String("default-project".into()), Value::String("default-chapter".into()), Value::String("scene".into()), Value::String("シーン1".into()), Value::String("a1".into())],
             "run",
         ).expect("insert scene node");
 
@@ -1613,7 +2209,7 @@ mod tests {
         // Create a scene node first
         db.execute(
             "INSERT INTO tree_nodes (id, project_id, parent_id, node_type, title, sort_order, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))",
-            &[Value::String("sc-attr".into()), Value::String("default-project".into()), Value::String("default-chapter".into()), Value::String("scene".into()), Value::String("S1".into()), Value::Number(serde_json::Number::from_f64(0.0).unwrap())],
+            &[Value::String("sc-attr".into()), Value::String("default-project".into()), Value::String("default-chapter".into()), Value::String("scene".into()), Value::String("S1".into()), Value::String("a1".into())],
             "run",
         ).expect("insert scene");
 
@@ -1676,9 +2272,9 @@ mod tests {
     }
 
     #[test]
-    fn test_codex_detail_definitions_allows_any_type_slug() {
-        // Per schema spec: type_slug is a logical reference to codex_types.slug (no FK).
-        // Validation is enforced at the application layer, not the DB layer.
+    fn test_codex_detail_definitions_rejects_unknown_type_slug() {
+        // 複合FK (project_id, type_slug) → codex_types(project_id, slug) により、
+        // codex_types に存在しない type_slug への INSERT は DB 層で拒否される。
         let db = test_db();
 
         let result = db.execute(
@@ -1694,15 +2290,15 @@ mod tests {
             "run",
         );
         assert!(
-            result.is_ok(),
-            "DB should allow any type_slug; app layer validates"
+            result.is_err(),
+            "Composite FK should reject unknown type_slug"
         );
     }
 
     #[test]
-    fn test_codex_entries_allows_any_type() {
-        // Per schema spec: type is a logical reference to codex_types.slug (no FK).
-        // Validation is enforced at the application layer, not the DB layer.
+    fn test_codex_entries_rejects_unknown_type() {
+        // 複合FK (project_id, type) → codex_types(project_id, slug) により、
+        // codex_types に存在しない type への INSERT は DB 層で拒否される。
         let db = test_db();
 
         let result = db.execute(
@@ -1717,10 +2313,7 @@ mod tests {
             ],
             "run",
         );
-        assert!(
-            result.is_ok(),
-            "DB should allow any type; app layer validates"
-        );
+        assert!(result.is_err(), "Composite FK should reject unknown type");
     }
 
     // --- BUG 3: field_type CHECK constraint ---
@@ -2102,7 +2695,7 @@ mod tests {
         // Insert a scene node
         db.execute(
             "INSERT INTO tree_nodes (id, project_id, node_type, title, sort_order, created_at, updated_at) VALUES (?, ?, ?, ?, ?, datetime('now'), datetime('now'))",
-            &[Value::String("scene-cv".into()), Value::String("default-project".into()), Value::String("scene".into()), Value::String("シーン".into()), Value::Number(serde_json::Number::from_f64(1.0).unwrap())],
+            &[Value::String("scene-cv".into()), Value::String("default-project".into()), Value::String("scene".into()), Value::String("シーン".into()), Value::String("a1".into())],
             "run",
         ).expect("insert scene");
 

@@ -12,7 +12,7 @@ function makeFolder(
   id: string,
   title: string,
   parentId: string | null = null,
-  sortOrder = 0,
+  sortOrder = "a0",
 ): TreeNodeData {
   return {
     id,
@@ -23,6 +23,11 @@ function makeFolder(
     synopsis: null,
     sortOrder,
     status: null,
+    storyTimeOrder: null,
+    storyTimeLabel: null,
+    povCharacterId: null,
+    locationId: null,
+    createdAt: "2024-01-01T00:00:00Z",
   };
 }
 
@@ -30,7 +35,7 @@ function makeScene(
   id: string,
   title: string,
   parentId: string | null = null,
-  sortOrder = 0,
+  sortOrder = "a0",
 ): TreeNodeData {
   return {
     id,
@@ -41,6 +46,11 @@ function makeScene(
     synopsis: null,
     sortOrder,
     status: null,
+    storyTimeOrder: null,
+    storyTimeLabel: null,
+    povCharacterId: null,
+    locationId: null,
+    createdAt: "2024-01-01T00:00:00Z",
   };
 }
 
@@ -52,8 +62,13 @@ function makeNote(id: string, parentId: string | null = null): TreeNodeData {
     nodeType: "note",
     title: "note",
     synopsis: null,
-    sortOrder: 0,
+    sortOrder: "a0",
     status: null,
+    storyTimeOrder: null,
+    storyTimeLabel: null,
+    povCharacterId: null,
+    locationId: null,
+    createdAt: "2024-01-01T00:00:00Z",
   };
 }
 
@@ -157,9 +172,9 @@ describe("generateExport - folder headings (plaintext)", () => {
   });
 
   it("深さ1: □ 記号", () => {
-    const f1 = makeFolder("f1", "第一部", null, 0);
-    const f2 = makeFolder("f2", "第1章", "f1", 0);
-    const s1 = makeScene("s1", "シーン1", "f2", 0);
+    const f1 = makeFolder("f1", "第一部", null, "a0");
+    const f2 = makeFolder("f2", "第1章", "f1", "a0");
+    const s1 = makeScene("s1", "シーン1", "f2", "a0");
     const result = generateExport({
       nodes: [f1, f2, s1],
       contentMap: { s1: doc(para("本文")) },
@@ -174,10 +189,10 @@ describe("generateExport - folder headings (plaintext)", () => {
   });
 
   it("深さ2: ◇ 記号", () => {
-    const f1 = makeFolder("f1", "第一部", null, 0);
-    const f2 = makeFolder("f2", "第1章", "f1", 0);
-    const f3 = makeFolder("f3", "セクション", "f2", 0);
-    const s1 = makeScene("s1", "シーン1", "f3", 0);
+    const f1 = makeFolder("f1", "第一部", null, "a0");
+    const f2 = makeFolder("f2", "第1章", "f1", "a0");
+    const f3 = makeFolder("f3", "セクション", "f2", "a0");
+    const s1 = makeScene("s1", "シーン1", "f3", "a0");
     const result = generateExport({
       nodes: [f1, f2, f3, s1],
       contentMap: { s1: doc(para("本文")) },
@@ -191,11 +206,11 @@ describe("generateExport - folder headings (plaintext)", () => {
   });
 
   it("深さ3以深: ・ 記号", () => {
-    const f1 = makeFolder("f1", "L1", null, 0);
-    const f2 = makeFolder("f2", "L2", "f1", 0);
-    const f3 = makeFolder("f3", "L3", "f2", 0);
-    const f4 = makeFolder("f4", "L4", "f3", 0);
-    const s1 = makeScene("s1", "シーン1", "f4", 0);
+    const f1 = makeFolder("f1", "L1", null, "a0");
+    const f2 = makeFolder("f2", "L2", "f1", "a0");
+    const f3 = makeFolder("f3", "L3", "f2", "a0");
+    const f4 = makeFolder("f4", "L4", "f3", "a0");
+    const s1 = makeScene("s1", "シーン1", "f4", "a0");
     const result = generateExport({
       nodes: [f1, f2, f3, f4, s1],
       contentMap: { s1: doc(para("本文")) },
@@ -209,10 +224,10 @@ describe("generateExport - folder headings (plaintext)", () => {
   });
 
   it("brackets スタイル: 【】〈〉「」", () => {
-    const f1 = makeFolder("f1", "第一部", null, 0);
-    const f2 = makeFolder("f2", "第1章", "f1", 0);
-    const f3 = makeFolder("f3", "セクション", "f2", 0);
-    const s1 = makeScene("s1", "シーン1", "f3", 0);
+    const f1 = makeFolder("f1", "第一部", null, "a0");
+    const f2 = makeFolder("f2", "第1章", "f1", "a0");
+    const f3 = makeFolder("f3", "セクション", "f2", "a0");
+    const s1 = makeScene("s1", "シーン1", "f3", "a0");
     const result = generateExport({
       nodes: [f1, f2, f3, s1],
       contentMap: { s1: doc(para("本文")) },
@@ -270,9 +285,9 @@ describe("generateExport - folder headings (markdown)", () => {
   });
 
   it("深さ1: ## 見出し", () => {
-    const f1 = makeFolder("f1", "第一部", null, 0);
-    const f2 = makeFolder("f2", "第1章", "f1", 0);
-    const s1 = makeScene("s1", "シーン1", "f2", 0);
+    const f1 = makeFolder("f1", "第一部", null, "a0");
+    const f2 = makeFolder("f2", "第1章", "f1", "a0");
+    const s1 = makeScene("s1", "シーン1", "f2", "a0");
     const result = generateExport({
       nodes: [f1, f2, s1],
       contentMap: { s1: doc(para("本文")) },
@@ -298,9 +313,9 @@ describe("generateExport - folder headings (html)", () => {
   });
 
   it("深さ1: <h2>", () => {
-    const f1 = makeFolder("f1", "第一部", null, 0);
-    const f2 = makeFolder("f2", "第1章", "f1", 0);
-    const s1 = makeScene("s1", "シーン1", "f2", 0);
+    const f1 = makeFolder("f1", "第一部", null, "a0");
+    const f2 = makeFolder("f2", "第1章", "f1", "a0");
+    const s1 = makeScene("s1", "シーン1", "f2", "a0");
     const result = generateExport({
       nodes: [f1, f2, s1],
       contentMap: { s1: doc(para("本文")) },
@@ -334,8 +349,8 @@ describe("generateExport - folder headings (html)", () => {
 
 describe("generateExport - scene dividers", () => {
   const f1 = makeFolder("f1", "第一部");
-  const s1 = makeScene("s1", "シーン1", "f1", 0);
-  const s2 = makeScene("s2", "シーン2", "f1", 1);
+  const s1 = makeScene("s1", "シーン1", "f1", "a0");
+  const s2 = makeScene("s2", "シーン2", "f1", "a1");
   const nodes = [f1, s1, s2];
   const contentMap = {
     s1: doc(para("シーン1本文")),
@@ -409,8 +424,8 @@ describe("generateExport - scene dividers", () => {
 
   it("フォルダー見出しを挟む場合、シーン区切りを省略", () => {
     // f1のs1、f2のs2 — フォルダー見出しが間に入る
-    const f2 = makeFolder("f2", "第二部", null, 1);
-    const s2b = makeScene("s2b", "シーン2", "f2", 0);
+    const f2 = makeFolder("f2", "第二部", null, "a1");
+    const s2b = makeScene("s2b", "シーン2", "f2", "a0");
     const result = generateExport({
       nodes: [f1, s1, f2, s2b],
       contentMap: {
@@ -480,9 +495,9 @@ describe("generateExport - scene titles", () => {
 
   it("heading (markdown): フォルダー最深+1レベル", () => {
     // フォルダー深さ1(##) → シーンは ### レベル
-    const f1 = makeFolder("f1", "第一部", null, 0);
-    const f2 = makeFolder("f2", "第1章", "f1", 0);
-    const s1 = makeScene("s1", "塔の麓", "f2", 0);
+    const f1 = makeFolder("f1", "第一部", null, "a0");
+    const f2 = makeFolder("f2", "第1章", "f1", "a0");
+    const s1 = makeScene("s1", "塔の麓", "f2", "a0");
     const result = generateExport({
       nodes: [f1, f2, s1],
       contentMap: { s1: doc(para("本文")) },
@@ -756,8 +771,8 @@ describe("generateExport - scene break node", () => {
 
 describe("generateExport - sort order", () => {
   it("sortOrderに従ってシーンを並べる", () => {
-    const s1 = makeScene("s1", "シーン1", null, 1);
-    const s2 = makeScene("s2", "シーン2", null, 0); // sortOrder小さい → 先
+    const s1 = makeScene("s1", "シーン1", null, "a1");
+    const s2 = makeScene("s2", "シーン2", null, "a0"); // sortOrder小さい → 先
     const result = generateExport({
       nodes: [s1, s2],
       contentMap: {

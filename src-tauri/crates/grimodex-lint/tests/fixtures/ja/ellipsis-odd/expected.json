@@ -1,0 +1,19 @@
+[
+  {
+    "rule_id": "ja/ellipsis-odd",
+    "severity": "warning",
+    "message": "三点リーダーが 3 つです（偶数個にしてください）",
+    "range": {
+      "start": 8,
+      "end": 11
+    },
+    "fix": {
+      "label": "「……」に置き換える",
+      "replacement": "……",
+      "range": {
+        "start": 8,
+        "end": 11
+      }
+    }
+  }
+]

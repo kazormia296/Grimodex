@@ -44,6 +44,8 @@ export function ChatInput({
   const messages = useChatStore((s) => s.messages);
   const editUserMessage = useChatStore((s) => s.editUserMessage);
   const setAgentMode = useChatStore((s) => s.setAgentMode);
+  const pendingLookupText = useChatStore((s) => s.pendingLookupText);
+  const setPendingLookupText = useChatStore((s) => s.setPendingLookupText);
 
   const aiSettings = useAiSettingsStore((s) => s.settings);
   const saveSettings = useAiSettingsStore((s) => s.saveSettings);
@@ -142,6 +144,14 @@ export function ChatInput({
       }
     };
   }, [editor, messages, editUserMessage]);
+
+  // C: エディタ「チャットで調べる」から渡されたテキストを入力欄に pre-fill
+  useEffect(() => {
+    if (!editor || !pendingLookupText) return;
+    editor.commands.setContent(pendingLookupText);
+    editor.commands.focus("end");
+    setPendingLookupText(null);
+  }, [editor, pendingLookupText, setPendingLookupText]);
 
   // Codexハイライト有効化（チャット入力はCodexQuickに影響させない）
   useCodexHighlight(editor, { skipMatchedIds: true });

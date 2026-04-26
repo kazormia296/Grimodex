@@ -191,6 +191,11 @@
       "tense": "Tense",
       "language": "Writing Language",
       "unselected": "Not selected",
+      "phaseResolutionMode": "Phase resolution mode",
+      "phaseResolutionModeDesc": "Which time axis determines the order of Codex phase application",
+      "phaseResolutionReading": "Reading-order",
+      "phaseResolutionStory": "Story-time",
+      "phaseResolutionAuto": "Auto",
       "firstPerson": "First person",
       "thirdLimited": "Third person limited",
       "thirdOmniscient": "Third person omniscient",
@@ -311,7 +316,11 @@
       "snippets": "Snippets",
       "attribution": "Attribution",
       "codex-quick": "Codex Quick",
-      "stats": "Stats"
+      "stats": "Stats",
+      "timeline": "Timeline",
+      "map": "Map",
+      "linter": "Linter",
+      "foreshadow": "Foreshadow"
     },
     "preset": {
       "title": "Layout presets",
@@ -603,12 +612,63 @@
       "tagsPlaceholder": "Enter tags separated by commas"
     }
   },
+  "foreshadow": {
+    "panel": {
+      "title": "Foreshadow",
+      "empty": "No foreshadows yet",
+      "filterEmpty": "No foreshadows match the filter",
+      "clearFilter": "Clear filter",
+      "newButton": "New",
+      "toggle": "Expand/collapse",
+      "setupsEmpty": "No setups"
+    },
+    "create": {
+      "heading": "Create Foreshadow",
+      "titleLabel": "Title",
+      "titlePlaceholder": "e.g. The truth about X",
+      "intentLabel": "Intent (optional)",
+      "intentPlaceholder": "Planned payoff scene, notes, etc."
+    },
+    "label": {
+      "planned": "Planned",
+      "seeded": "Seeded",
+      "paid": "Paid",
+      "needs_strengthening": "Needs Strengthening",
+      "orphan_payoff": "Orphan",
+      "abandoned": "Abandoned"
+    },
+    "popover": {
+      "heading": "Foreshadow Mark",
+      "setupHeading": "Select Setup Target",
+      "payoffHeading": "Select Payoff Target",
+      "designateHeading": "Designate as Payoff",
+      "searchPlaceholder": "Search…",
+      "noResults": "No results",
+      "createNew": "Create new foreshadow"
+    },
+    "hoverPopover": {
+      "removeMark": "Remove mark"
+    },
+    "setup": {
+      "orphan": "Orphan",
+      "discard": "Discard",
+      "kind": {
+        "designated_existing": "Designated",
+        "inserted_new": "Inserted",
+        "rewritten": "Rewritten"
+      }
+    }
+  },
   "snippets": {
     "sortRecent": "Newest",
     "sortOldest": "Oldest",
     "sortTitleAsc": "By title",
     "clipboard": "Clipboard",
     "sortMostUsed": "Most used",
+    "filterAll": "All",
+    "filterFromChat": "Chat",
+    "filterFromEditor": "Editor",
+    "filterManual": "Manual",
     "newSnippet": "New Snippet",
     "searchPlaceholder": "Search snippets…",
     "sortOrder": "Sort order",
@@ -737,6 +797,7 @@
       "fontSize": "Font size",
       "attribution": "Attribution",
       "comments": "Comments (not implemented)",
+      "foreshadowMarks": "Show foreshadow marks",
       "focusMode": "Focus mode",
       "typewriterMode": "Typewriter mode",
       "moreOptions": "More options",
@@ -773,8 +834,22 @@
       "linearMode": "Linear mode"
     },
     "contextMenu": {
+      "cut": "Cut",
+      "copy": "Copy",
+      "paste": "Paste",
+      "selectAll": "Select All",
+      "insertSceneBreak": "Insert Scene Break",
       "addToCodex": "Add to Codex",
-      "saveAsSnippet": "Save as Snippet"
+      "saveAsSnippet": "Save as Snippet",
+      "lookUpInChat": "Look Up in Chat",
+      "addComment": "Add Comment",
+      "requestForeshadow": "Plant Foreshadow",
+      "registerForeshadow": "Register as Setup",
+      "designatePayoff": "Designate as Payoff",
+      "lintDisable": "Disable Lint Rules for Selection",
+      "lintUnsetSpan": "Remove Lint Disable (Span)",
+      "lintUnsetBlock": "Remove Lint Disable (Block)",
+      "lintUnsetBoth": "Remove Lint Disable (Span + Block)"
     },
     "find": {
       "placeholder": "Search…",
@@ -899,7 +974,17 @@
     "exportTrace": "Export attribution",
     "aiPctChars": "AI: {{pct}}% ({{count}} chars)",
     "humanPct": "{{pct}}% human",
-    "charSuffix": "{{count}} chars"
+    "charSuffix": "{{count}} chars",
+    "unknownModel": "Unknown model",
+    "refresh": "Refresh",
+    "sortAsc": "Ascending",
+    "sortDesc": "Descending",
+    "columnScene": "Scene",
+    "columnTotal": "Total",
+    "columnHuman": "Human",
+    "columnAi": "AI",
+    "columnUnknown": "Unknown",
+    "columnAiPct": "AI%"
   },
   "phase": {
     "editTitle": "Edit Phase",

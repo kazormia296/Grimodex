@@ -4,9 +4,9 @@
 
 Attributionパネルはプロジェクト内のAI帰属統計を可視化するダッシュボード。エディタ本文中の「誰が書いたか」（Human / AI / Unknown）の割合をシーン・チャプター・プロジェクト単位で集計し、AI活用度の把握や公開時のAI使用率開示に使う。
 
-デフォルト位置: Bottom Dock（非表示）。Snippetsとタブ切り替えで共存。
+デフォルト位置: Right Panel の "stats" タブ、もしくは Bottom Dock（レイアウト設計書依存）。いずれの配置でも同一の集計・表示仕様を共有し、Snippets や他ステータスパネルとタブ切り替えで共存する。
 
-データソース: Editorパネル設計書で定義されたAuthorshipMark（TipTapカスタムMark）および `authorship_spans` テーブル。
+データソース: Editorパネル設計書で定義されたAuthorshipMark（TipTapカスタムMark）および `authorship_spans` テーブル。シーン本文に限らず、Codex 本文・Snippet 本文・カスタムディテール値・フェーズ固有本文といった ProseMirror で編集される全コンテンツを対象とする。
 
 ---
 
@@ -215,6 +215,58 @@ GROUP BY node_id, source, model;
 
 500シーン x 平均20スパン/シーン = 10,000行。GROUP BYクエリは数ms以内。
 
+### AuthorshipMark 属性
+
+Attribution 集計の前提となる AuthorshipMark は以下の属性を持つ。基本 4 属性（`source` / `timestamp` / `model` / `chatMessageId`）に加え、エージェント連携・ユーザー操作の追跡用拡張属性を含む。
+
+| 属性 | 型 | 用途 |
+|------|----|------|
+| `source` | `'human' \| 'ai' \| 'unknown'` | 帰属種別 |
+| `timestamp` | ISO8601 文字列 | マーク付与時刻 |
+| `model` | string \| null | 生成モデル名（AI のみ） |
+| `chatMessageId` | string \| null | 生成元チャットメッセージ |
+| `traceId` | string \| null | Agent Trace v0.1.0 連携用のトレース ID |
+| `toolName` | string \| null | エージェント経由書き込み時のツール名 |
+| `toolVersion` | string \| null | 同ツールのバージョン |
+| `manualOverride` | boolean | `AttributionOverrideMenu` による手動変更フラグ |
+| `originalLength` | number \| null | 原文文字数（AI 編集後の差分追跡用） |
+
+> **命名規約**: DB カラムは `chat_msg_id` のようにスネークケースで保持するが、Mark 属性名はキャメルケース（`chatMessageId`）を使用する。相互変換は API レイヤの責務とする。
+
+### `authorship_spans` の対象エンティティ
+
+`authorship_spans` は `node_id`（シーン ProseMirror ノード ID）に加え、以下の参照カラムを持ち、シーン本文以外の編集対象にも帰属を記録できる。
+
+- `codex_entry_id`: Codex エントリ本文
+- `snippet_id`: Snippet 本文
+- `detail_value_id`: カスタムディテール値
+- `phase_id`: フェーズ固有本文
+
+いずれの参照カラムも NULL 許容で、1 レコードにつき排他的に 1 つだけが非 NULL となる。Attribution パネルの集計は、スコープに応じてこれら参照カラムも対象に含める。
+
+### AiEditedPlugin
+
+AI / Unknown スパン内にユーザーが文字を挿入した場合、挿入されたテキスト部分のマークを剥がし自動的に human 化する ProseMirror プラグイン。
+
+- 対象はあくまで「新規挿入されたテキストレンジ」のみで、前後の既存 AI マークは保持する
+- `programmaticInsert` meta を立てたトランザクション（貼り付け復元、Snippet 挿入、履歴リストア等）には作用しない
+- 手動オーバーライド（`manualOverride: true`）が付与されたマークは剥がさない
+
+### AttributionOverrideMenu
+
+エディタ上で選択範囲を右クリックして表示されるコンテキストメニュー。選択範囲の `source` を手動で `human` / `ai` / `unknown` のいずれかに書き換える。
+
+- オーバーライド後のマークには `manualOverride: true` が付与され、後続の `AiEditedPlugin` や自動判定ロジックでは上書きされない
+- 既存の timestamp / model / chatMessageId は維持（ただし source が human に変更された場合は model を NULL に置き換える）
+
+### Codex / Snippet エディタでの初期マーク付与
+
+Codex / Snippet のミニエディタで AI 由来コンテンツを開いた際、保存済みの `authorship_spans`（`codex_entry_id` / `snippet_id` 参照）から `applyInitialMarks` が一括でマークを復元する。ミニエディタ上でも通常エディタと同等の AttributionHighlight・Attribution 集計が機能する。
+
+### `unmarked` テキストの扱い
+
+AuthorshipStats は内部的に `human` / `ai` / `unknown` に加え `unmarked`（マーク無し = 旧データ / マイグレーション前のテキスト）を区別する。UI 表示上は `unmarked` を `human` にマージして扱う（Summary カード・ブレークダウンバー・Per-scene テーブルの全てで Human に加算）。内部区別はデバッグ表示や将来的な再マイグレーション処理で利用する。
+
 ---
 
 ## エディタとの連動
@@ -279,6 +331,8 @@ Generated: 2026-04-01
 
 **CSV形式**: シーン別テーブルをCSVで出力。BIツールやスプレッドシートでの分析用。
 
+**Agent Trace v0.1.0 形式**: MIME タイプ `application/vnd.agent-trace.record+json` で AI 由来スパンを機械可読なトレースレコードとして書き出す。各レコードには `traceId` / `toolName` / `toolVersion` / `model` / `chatMessageId` の他、原文・現在本文の SHA-256 を表す `contentHash` を含め、外部監査ツールや AI 利用開示パイプラインへ入力できる。MD / CSV レポートと並列のエクスポート手段として提供。
+
 エクスポートはTauriのファイルダイアログで保存先を選択。
 
 ---
@@ -311,6 +365,12 @@ Generated: 2026-04-01
 - プロジェクトスコープのチャプターグルーピングはScenesパネルのツリー構造（Part / Chapter / Scene）を反映
 - ツリー構造が変更された場合、プロジェクトビューも動的に更新
 
+### → Scenes（AI 比率バッジ）
+
+- Scenes パネルの各シーンノードに、そのシーンの AI 帰属割合を小さなピルバッジで表示する
+- バッジのデータソースは Attribution と同じ `authorship_spans` テーブルで、バッチ API `loadBatchAiRatio(sceneIds: string[])` により全シーンを 1 リクエストで取得する（N+1 を避けパフォーマンスを確保）
+- シーン本文の自動保存完了時、および Attribution パネルの再集計完了時にバッジのキャッシュを無効化する
+
 ### → Chat History（間接的）
 
 - AIテキストにはchatMessageIdが記録されているため、将来的にはAttributionパネルからAIテキストの生成元チャットセッションに逆引きナビゲートする機能を追加可能（MVP後）
@@ -325,8 +385,8 @@ AuthorshipMark（source: human/ai/unknown, model, timestamp, chatMessageId）の
 
 ### レイアウト設計書
 
-Attributionパネルのデフォルト位置はBottom Dock（非表示）。`Ctrl+Alt+A` でフォーカス/トグル。
+Attributionパネルの配置は Right Panel の "stats" タブをデフォルトとし、Bottom Dock 配置も許容する（レイアウト設計書の配置ルールを正とする）。`Ctrl+Alt+A` でフォーカス/トグル。
 
 ### Scenesパネル設計書
 
-Sceneノードの「AI帰属バッジ」（ツリー上のピル表示）はScenesパネルのUI要素だが、そのデータソースはAttributionの集計と同じ `authorship_spans` テーブル。計算ロジックは共有できる。
+Sceneノードの「AI比率バッジ」（ツリー上のピル表示）はScenesパネルのUI要素だが、そのデータソースはAttributionの集計と同じ `authorship_spans` テーブル。取得 API は `loadBatchAiRatio` を共用し、集計ロジック・キャッシュ無効化タイミングも Attribution パネルと統一する。

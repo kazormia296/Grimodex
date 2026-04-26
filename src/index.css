@@ -39,6 +39,9 @@
   --content-border: oklch(0.922 0 0);
   /* Attribution highlight blend amount (overridden by JS from display.attributionHighlightOpacity) */
   --attribution-pct: 20%;
+  /* Map note node — tinted with the app's brand accent (#534AB7). */
+  --note-bg: #eeebfa;
+  --note-border: #8b7fd4;
 }
 
 .dark {
@@ -75,6 +78,8 @@
   --content-foreground-muted: oklch(0.708 0 0);
   --content-accent: oklch(0.985 0 0);
   --content-border: oklch(0.269 0 0);
+  --note-bg: #2a2540;
+  --note-border: #7a6bc4;
 }
 
 @theme inline {
@@ -359,6 +364,121 @@
   opacity: 0.7;
 }
 
+/* Lint diagnostic decorations (squiggly underlines) */
+.lint-deco {
+  text-decoration-line: underline;
+  text-decoration-style: wavy;
+  text-decoration-skip-ink: none;
+  text-underline-offset: 3px;
+  cursor: help;
+}
+.lint-deco--error {
+  text-decoration-color: #ef4444;
+}
+.lint-deco--warning {
+  text-decoration-color: #f59e0b;
+}
+.lint-deco--info {
+  text-decoration-color: #3b82f6;
+}
+
+/* ForeshadowMarks — visible only when showForeshadowMarks is ON */
+[data-show-foreshadow-marks="true"] [data-foreshadow-setup] {
+  text-decoration-line: underline;
+  text-decoration-style: solid;
+  text-decoration-color: #60a5fa; /* blue-400 */
+  text-decoration-skip-ink: none;
+  text-underline-offset: 3px;
+  cursor: help;
+}
+
+[data-show-foreshadow-marks="true"] [data-foreshadow-payoff] {
+  text-decoration-line: underline;
+  text-decoration-style: solid;
+  text-decoration-color: #4ade80; /* green-400 */
+  text-decoration-skip-ink: none;
+  text-underline-offset: 3px;
+  cursor: help;
+}
+
+/* CommentMark decoration — amber wavy underline when showComments is ON */
+.comment-deco {
+  text-decoration-line: underline;
+  text-decoration-style: wavy;
+  text-decoration-color: #f59e0b;
+  text-decoration-skip-ink: none;
+  text-underline-offset: 3px;
+  cursor: help;
+}
+
+/* Inline `lintDisable` Mark — regular disable (listed rule IDs) gets a
+ * light grey underline; `["*"]` (all rules silenced) gets a slightly
+ * more prominent colour to make broad suppression visible to the
+ * author. Neither uses warning-red — disable is intentional user
+ * action, not an issue. */
+.lint-disable {
+  text-decoration-line: underline;
+  text-decoration-style: dotted;
+  text-decoration-color: #9ca3af;
+  text-underline-offset: 3px;
+  text-decoration-skip-ink: none;
+}
+.lint-disable--all {
+  text-decoration-color: #6b7280;
+}
+.dark .lint-disable {
+  text-decoration-color: #6b7280;
+}
+.dark .lint-disable--all {
+  text-decoration-color: #9ca3af;
+}
+
+/* Block-level disable marker — a subtle left border on the block.
+ * Uses same colour as the inline `--all` variant so the author reads
+ * them as one family. */
+.tiptap [data-lint-disabled] {
+  border-left: 2px solid #9ca3af;
+  padding-left: 0.5em;
+}
+.dark .tiptap [data-lint-disabled] {
+  border-left-color: #6b7280;
+}
+
+/* Gutter dot — small circle pinned to the inline-start edge of any
+ * block that has a disable Mark or attribute. Width:0 keeps it from
+ * pushing text; absolute positioning paints it just outside the block.
+ * `--all` variant uses a slightly stronger fill to flag the broader
+ * suppression. */
+.lint-disable-gutter {
+  display: inline-block;
+  width: 0;
+  height: 0;
+  position: relative;
+  vertical-align: top;
+  pointer-events: auto;
+}
+.lint-disable-gutter::before {
+  content: "";
+  position: absolute;
+  left: -0.85em;
+  top: 0.45em;
+  width: 0.45em;
+  height: 0.45em;
+  border-radius: 50%;
+  background-color: #9ca3af;
+  opacity: 0.65;
+}
+.lint-disable-gutter--all::before {
+  background-color: #6b7280;
+  opacity: 0.85;
+}
+.dark .lint-disable-gutter::before {
+  background-color: #6b7280;
+}
+.dark .lint-disable-gutter--all::before {
+  background-color: #9ca3af;
+}
+
 /* Vertical writing preview (Task 5.2) */
 .vertical-preview {
   writing-mode: vertical-rl;
@@ -403,9 +523,9 @@
   z-index: 10;
   opacity: 1;
   transition:
-    left 90ms cubic-bezier(0.22, 1.21, 0.36, 1),
-    top 90ms cubic-bezier(0.22, 1.21, 0.36, 1),
-    height 90ms cubic-bezier(0.22, 1.21, 0.36, 1);
+    left 80ms cubic-bezier(0.22, 1, 0.36, 1),
+    top 80ms cubic-bezier(0.22, 1, 0.36, 1),
+    height 80ms cubic-bezier(0.22, 1, 0.36, 1);
 }
 
 .typewriter-cursor.blinking {
@@ -528,4 +648,181 @@
   pointer-events: none;
   float: left;
   height: 0;
+}
+
+/* Map panel: mode-switch position transition */
+:root {
+  --map-mode-transition: 300ms;
+}
+.react-flow__node.with-mode-transition {
+  transition: transform var(--map-mode-transition) cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+/* Frame: enlarge NodeResizer hit areas for easier grabbing.
+   Edge lines extend inward from the edge (visible line stays at the border),
+   corner handles grow to 14x14. */
+.react-flow__node-frame .react-flow__resize-control.line.top,
+.react-flow__node-frame .react-flow__resize-control.line.bottom {
+  height: 12px;
+}
+.react-flow__node-frame .react-flow__resize-control.line.left,
+.react-flow__node-frame .react-flow__resize-control.line.right {
+  width: 12px;
+}
+.react-flow__node-frame .react-flow__resize-control.handle {
+  width: 14px;
+  height: 14px;
+}
+
+/* Map corkboard feel: layered radial-gradient SVG texture that sits behind
+   the React Flow viewport. Warm beige tones suggest cork/pinboard without
+   requiring an image asset. Light/dark adapt via opacity + hue shift. */
+.map-corkboard .react-flow {
+  background-color: #e8dcc0;
+  background-image:
+    radial-gradient(
+      circle at 20% 30%,
+      rgba(139, 92, 44, 0.18) 0 2px,
+      transparent 3px
+    ),
+    radial-gradient(
+      circle at 70% 65%,
+      rgba(139, 92, 44, 0.14) 0 2px,
+      transparent 3px
+    ),
+    radial-gradient(
+      circle at 45% 85%,
+      rgba(120, 75, 35, 0.12) 0 1.5px,
+      transparent 3px
+    ),
+    radial-gradient(
+      circle at 85% 15%,
+      rgba(160, 110, 60, 0.16) 0 1.5px,
+      transparent 3px
+    );
+  background-size:
+    120px 120px,
+    150px 150px,
+    90px 90px,
+    110px 110px;
+}
+.dark .map-corkboard .react-flow {
+  background-color: #3a2d1c;
+  background-image:
+    radial-gradient(
+      circle at 20% 30%,
+      rgba(200, 150, 90, 0.18) 0 2px,
+      transparent 3px
+    ),
+    radial-gradient(
+      circle at 70% 65%,
+      rgba(200, 150, 90, 0.12) 0 2px,
+      transparent 3px
+    ),
+    radial-gradient(
+      circle at 45% 85%,
+      rgba(180, 130, 70, 0.1) 0 1.5px,
+      transparent 3px
+    ),
+    radial-gradient(
+      circle at 85% 15%,
+      rgba(220, 170, 110, 0.14) 0 1.5px,
+      transparent 3px
+    );
+  background-size:
+    120px 120px,
+    150px 150px,
+    90px 90px,
+    110px 110px;
+}
+
+/* Hover edit-affordance indicator (✎). Fades in after 500ms hover.
+   Nodes render a child with class "map-edit-indicator" near the top-right. */
+.map-edit-indicator {
+  position: absolute;
+  top: 4px;
+  right: 6px;
+  font-size: 11px;
+  color: var(--muted-foreground);
+  opacity: 0;
+  transition: opacity 120ms ease-out 500ms;
+  pointer-events: none;
+  user-select: none;
+}
+.react-flow__node:hover .map-edit-indicator {
+  opacity: 0.7;
+}
+
+/* Map node connection handles.
+   Hidden by default, revealed on node hover OR when connect mode is active.
+   Hit area extends slightly beyond the visual dot for easier grabbing. */
+.react-flow__handle.map-handle {
+  width: 10px;
+  height: 10px;
+  background: var(--primary);
+  border: 2px solid var(--background);
+  opacity: 0;
+  transition: opacity 120ms ease-out;
+}
+.react-flow__handle.map-handle::before {
+  content: "";
+  position: absolute;
+  inset: -6px;
+}
+.react-flow__node:hover .react-flow__handle.map-handle,
+.react-flow__handle.map-handle.connectingfrom,
+.react-flow__handle.map-handle.connectingto,
+.map-connect-mode .react-flow__handle.map-handle {
+  opacity: 1;
+}
+
+/* React Flow Controls / MiniMap: theme-aware colors */
+.react-flow__controls {
+  background: var(--background);
+  border: 1px solid var(--border);
+  box-shadow: 0 2px 6px rgb(0 0 0 / 0.08);
+  border-radius: calc(var(--radius) - 4px);
+  overflow: hidden;
+}
+.react-flow__controls-button {
+  background: var(--background);
+  color: var(--foreground);
+  border: none;
+  border-bottom: 1px solid var(--border);
+  fill: var(--foreground);
+}
+.react-flow__controls-button:last-child {
+  border-bottom: none;
+}
+.react-flow__controls-button:hover {
+  background: var(--accent);
+  color: var(--accent-foreground);
+  fill: var(--accent-foreground);
+}
+.react-flow__controls-button svg {
+  fill: currentColor;
+}
+
+.react-flow__minimap {
+  background: var(--background);
+  border: 1px solid var(--border);
+  border-radius: calc(var(--radius) - 4px);
+}
+.react-flow__minimap-mask {
+  fill: color-mix(in oklch, var(--foreground) 10%, transparent);
+  stroke: var(--border);
+  stroke-width: 1;
+}
+.react-flow__minimap-node {
+  fill: var(--muted-foreground);
+  stroke: var(--border);
+}
+
+/* Attribution link inside React Flow */
+.react-flow__attribution {
+  background: color-mix(in oklch, var(--background) 70%, transparent);
+  color: var(--muted-foreground);
+}
+.react-flow__attribution a {
+  color: var(--muted-foreground);
 }

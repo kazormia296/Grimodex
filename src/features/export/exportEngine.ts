@@ -6,6 +6,7 @@
  */
 
 import type { TreeNodeData } from "@/features/tree/treeStore";
+import { cmpKeys } from "@/features/tree/fractionalIndex";
 import type { ExportSettings, RubyStyle, EmphasisDotsStyle } from "./types";
 import { defaultRubyStyle, defaultEmphasisDotsStyle } from "./types";
 
@@ -47,7 +48,7 @@ function buildBlocks(
 ): ExportBlock[] {
   const children = nodes
     .filter((n) => n.parentId === parentId)
-    .sort((a, b) => a.sortOrder - b.sortOrder);
+    .sort((a, b) => cmpKeys(a.sortOrder, b.sortOrder));
 
   const result: ExportBlock[] = [];
   for (const node of children) {

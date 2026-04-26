@@ -1,0 +1,12 @@
+pub mod consecutive_punct;
+pub mod dash;
+pub mod ellipsis;
+pub mod halfwidth_fullwidth_mix;
+pub mod halfwidth_kana;
+pub mod kanji_hiragana_chain;
+pub mod particle_no_chain;
+pub mod quote_period;
+pub mod redundant_expression;
+pub mod sentence_ending_repeat;
+pub mod sentence_length;
+pub mod word_repetition;

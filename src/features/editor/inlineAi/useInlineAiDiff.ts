@@ -9,20 +9,20 @@ import {
 import { generateInlineAi } from "./inlineAiApi";
 import type { InlineAiCommand, InlineAiContext } from "./inlineAiTypes";
 
+const DEFAULT_MODEL = "claude-sonnet-4-6";
+
 /**
  * Manages the full Inline AI lifecycle:
  * - Plugin registration
- * - Text generation + streaming insertion
- * - Accept / Reject / Retry
+ * - Streaming text generation + chunk insertion (history-less)
+ * - Accept / Reject / Retry / Abort
  */
 export function useInlineAiDiff(editor: Editor | null) {
-  // Keep a ref to the last command+context for Retry
   const lastCallRef = useRef<{
     command: InlineAiCommand;
     context: InlineAiContext;
   } | null>(null);
 
-  // Register diff decoration plugin
   useEffect(() => {
     if (!editor) return;
     const existing = editor.view.state.plugins.find(
@@ -42,6 +42,23 @@ export function useInlineAiDiff(editor: Editor | null) {
     ed.view.dispatch(tr);
   }, []);
 
+  /**
+   * 生成中のチャンクを履歴に残さない形で挿入する。
+   * `addToHistory:false` によって Undo スタックを汚染せず、Accept 時の
+   * 1トランザクションのみが Undo 1 ステップになる。
+   */
+  const insertChunkHistoryLess = useCallback(
+    (ed: Editor, pos: number, chunk: string) => {
+      const { tr } = ed.state;
+      tr.insertText(chunk, pos);
+      tr.setMeta("addToHistory", false);
+      tr.setMeta("inlineAiInsert", true);
+      tr.setMeta("programmaticInsert", true);
+      ed.view.dispatch(tr);
+    },
+    [],
+  );
+
   const generate = useCallback(
     async (command: InlineAiCommand, context: InlineAiContext) => {
       if (!editor) return;
@@ -55,44 +72,60 @@ export function useInlineAiDiff(editor: Editor | null) {
       const originalRange = isReplace ? { from, to } : null;
       const insertPos = isReplace ? null : from;
 
+      const abortController = new AbortController();
       useInlineAiStore.getState().startGeneration({
         commandId: command.id,
         mode: isReplace ? "replace" : "insert",
         originalRange,
         originalText,
         insertPos,
+        abortController,
       });
 
-      // In replace mode, delete selected text first
-      if (isReplace) {
-        editor.chain().focus().deleteRange({ from, to }).run();
-      }
-
       try {
-        const cursorFrom = editor.state.selection.from;
-        const insertedFrom = cursorFrom;
-        let insertedTo = cursorFrom;
+        // 置換モードでは元テキストを残したまま選択末尾の直後に生成テキストを
+        // 挿入していく。こうすることで設計書1089-1100 の「元=赤取消 / 新=緑」
+        // 同時表示が可能になる。Accept 時に元テキストを一括削除＋authorship
+        // 付与を1トランザクションで行い、Undo は1ステップで戻せる。
+        // 挿入モードでは従来通り選択位置（= 選択なしなら caret 位置）に挿入。
+        const insertedFrom = isReplace ? (originalRange?.to ?? from) : from;
+        let insertedTo = insertedFrom;
 
-        await generateInlineAi(command, context, (chunk) => {
-          useInlineAiStore.getState().appendChunk(chunk);
-          // Insert chunk at current cursor position
-          editor
-            .chain()
-            .focus()
-            .insertContentAt(insertedTo, chunk, {
-              updateSelection: false,
-            })
-            .run();
-          insertedTo = insertedTo + chunk.length;
-        });
+        const result = await generateInlineAi(
+          command,
+          context,
+          (chunk) => {
+            // Abort 後に遅れて届いた chunk を受け取って挿入してしまう race を
+            // 防ぐ。store の status が generating 以外になっていれば破棄する。
+            if (useInlineAiStore.getState().status !== "generating") return;
+            useInlineAiStore.getState().appendChunk(chunk);
+            insertChunkHistoryLess(editor, insertedTo, chunk);
+            insertedTo += chunk.length;
+            useInlineAiStore
+              .getState()
+              .setGeneratedRange({ from: insertedFrom, to: insertedTo });
+          },
+          abortController.signal,
+        );
 
-        useInlineAiStore.getState().setGeneratedRange({
-          from: insertedFrom,
-          to: insertedTo,
-        });
-        useInlineAiStore.getState().finishGeneration("claude-sonnet-4-6");
-        dispatchDiffUpdate(editor);
+        // Toolbar からの早押し abort が先に店じまいを終えているケースは
+        // ここで再遷移させない（reset 後だった場合に idle → diffShown と
+        // 戻してしまうのを防ぐ）。
+        if (useInlineAiStore.getState().status === "generating") {
+          useInlineAiStore.getState().setGeneratedRange({
+            from: insertedFrom,
+            to: insertedTo,
+          });
+          if (result.stopReason === "stopped") {
+            useInlineAiStore.getState().abortGeneration(result.model);
+          } else {
+            useInlineAiStore.getState().finishGeneration(result.model);
+          }
+          dispatchDiffUpdate(editor);
+        }
       } catch (err) {
+        // AbortController.abort() 起因のキャンセルは generateInlineAi 内部で
+        // onDone("stopped") に化けるため、ここには来ない想定。通信エラー等のみ。
         const msg =
           err instanceof Error
             ? err.message
@@ -100,26 +133,60 @@ export function useInlineAiDiff(editor: Editor | null) {
         useInlineAiStore.getState().setError(msg);
       }
     },
-    [editor, dispatchDiffUpdate],
+    [editor, dispatchDiffUpdate, insertChunkHistoryLess],
   );
 
   const accept = useCallback(() => {
     if (!editor) return;
-    const { generatedRange, model } = useInlineAiStore.getState();
+    const state = useInlineAiStore.getState();
+    const { generatedRange, originalRange, mode, model } = state;
+    const authorshipType = editor.schema.marks["authorship"];
+
+    // 先に store を idle に戻す。これによって後続の実編集トランザクションが
+    // filterTransaction を素通りし、通常の onUpdate 経路に乗ってオートセーブが
+    // 再開する。装飾（diff-add/diff-remove）も status=idle で消える。
+    useInlineAiStore.getState().reset();
+    dispatchDiffUpdate(editor);
+
     if (generatedRange) {
-      const { from, to } = generatedRange;
-      const authorshipType = editor.schema.marks["authorship"];
-      if (authorshipType && from < to) {
+      const { from: gFrom, to: gTo } = generatedRange;
+
+      if (mode === "replace" && originalRange) {
+        // 元テキスト削除 → 新テキストへの authorship 付与 を1トランザクションで。
+        // 元テキストを消すと生成テキストの doc 位置が左に shift するので、
+        // addMark の範囲は shift 後の座標で計算する。
+        const shift = originalRange.to - originalRange.from;
+        const newFrom = gFrom - shift;
+        const newTo = gTo - shift;
+        editor
+          .chain()
+          .focus()
+          .command(({ tr }) => {
+            tr.delete(originalRange.from, originalRange.to);
+            if (authorshipType && newFrom < newTo) {
+              tr.addMark(
+                newFrom,
+                newTo,
+                authorshipType.create({
+                  source: "ai",
+                  model: model ?? DEFAULT_MODEL,
+                }),
+              );
+            }
+            return true;
+          })
+          .run();
+      } else if (authorshipType && gFrom < gTo) {
         editor
           .chain()
           .focus()
           .command(({ tr }) => {
             tr.addMark(
-              from,
-              to,
+              gFrom,
+              gTo,
               authorshipType.create({
                 source: "ai",
-                model: model ?? undefined,
+                model: model ?? DEFAULT_MODEL,
               }),
             );
             return true;
@@ -127,33 +194,46 @@ export function useInlineAiDiff(editor: Editor | null) {
           .run();
       }
     }
-    useInlineAiStore.getState().reset();
-    dispatchDiffUpdate(editor);
   }, [editor, dispatchDiffUpdate]);
 
   const reject = useCallback(() => {
     if (!editor) return;
-    const { generatedRange, originalText, mode } = useInlineAiStore.getState();
+    const { generatedRange } = useInlineAiStore.getState();
+
+    // accept と同じく、先に idle に戻してから削除トランザクションを発行する。
+    useInlineAiStore.getState().reset();
+    dispatchDiffUpdate(editor);
 
     if (generatedRange) {
       const { from, to } = generatedRange;
-      // Remove generated text and restore original if replace mode
-      editor.chain().focus().deleteRange({ from, to }).run();
-      if (mode === "replace" && originalText) {
-        editor.chain().focus().insertContentAt(from, originalText).run();
+      if (from < to) {
+        editor.chain().focus().deleteRange({ from, to }).run();
       }
     }
-    useInlineAiStore.getState().reset();
-    dispatchDiffUpdate(editor);
   }, [editor, dispatchDiffUpdate]);
+
+  /**
+   * ストリーミング中 Escape 時に呼ばれる想定。
+   * - status === generating → ストリーム中止（受信済みテキストは保持して diffShown）
+   * - status === diffShown → reject と同じ挙動
+   */
+  const rejectOrAbort = useCallback(() => {
+    if (!editor) return;
+    const status = useInlineAiStore.getState().status;
+    if (status === "generating") {
+      useInlineAiStore.getState().abortGeneration(DEFAULT_MODEL);
+      dispatchDiffUpdate(editor);
+    } else {
+      reject();
+    }
+  }, [editor, dispatchDiffUpdate, reject]);
 
   const retry = useCallback(async () => {
     if (!lastCallRef.current) return;
     reject();
     const { command, context } = lastCallRef.current;
-    // Small delay to let reject settle before re-generating
     setTimeout(() => generate(command, context), 50);
   }, [generate, reject]);
 
-  return { generate, accept, reject, retry };
+  return { generate, accept, reject, rejectOrAbort, retry };
 }

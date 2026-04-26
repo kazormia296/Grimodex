@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { useTreeStore } from "@/features/tree/treeStore";
+import { cmpKeys } from "@/features/tree/fractionalIndex";
 import { useLinearEditorStore } from "./linearEditorStore";
 import { LinearSceneBlock } from "./LinearSceneBlock";
 import { Toolbar } from "@/features/editor/Toolbar";
@@ -38,7 +39,7 @@ export function LinearEditorView() {
     () =>
       nodes
         .filter((n) => n.nodeType === "scene")
-        .sort((a, b) => a.sortOrder - b.sortOrder),
+        .sort((a, b) => cmpKeys(a.sortOrder, b.sortOrder)),
     [nodes],
   );
 

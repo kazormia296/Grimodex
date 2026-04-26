@@ -17,7 +17,7 @@ argument-hint: [bug-description-or-error-message]
 4. 修正を実装する
 5. 既存テストが通過することを確認する
 6. 再発防止のためのテストを追加する
-7. `npm test` + `cargo test` で全テスト通過を確認
+7. `pnpm test` + `cargo test` で全テスト通過を確認
 8. 変更をコミットする
 
 **推測で修正しない。原因を特定してから修正すること。**

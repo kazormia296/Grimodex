@@ -4,7 +4,9 @@
 
 Codexパネルはプロジェクトの世界設定データベース。キャラクター、場所、アイテム、伝承の4カテゴリのエントリを管理する。左にエントリ一覧（マスター）、右に詳細編集画面（ディテール）のスプリットビュー。エントリはEditorやChatから作成され、エディタ本文中のCodexハイライトやChatのコンテキスト注入で活用される。各エントリはフェーズシステムにより物語の進行に伴う経時的変化を管理でき、AIコンテキスト注入にはシーンに応じた適切な状態が反映される。
 
-デフォルト位置: Left Dock（非表示）。Scenesとタブ切り替えで共存。
+本設計書で「Codex パネル」と呼ぶ実装は `CodexManagementPanel` コンポーネントを指す。歴史的経緯で `CodexPanel.tsx` という旧実装も残っているが、ルーティング/dockview 登録からは参照されておらず、実体として使われていない。
+
+デフォルト位置: Left Dock（非表示）。Scenes パネル近傍に独立した dockview パネルとして配置される（Scenes とタブ共有ではない）。CodexQuick（後述）も Scenes 付近に独立したパネルとして配置され、三者を同じ Dock 内で並べるのが既定のレイアウト。
 
 ---
 
@@ -272,11 +274,20 @@ Codexパネルはプロジェクトの世界設定データベース。キャラ
 ```
 
 - 現在のエディタのアクティブシーンに連動して自動選択（状態解決アルゴリズムに基づく）
-- ドロップダウンで手動切り替え可能（プレビュー用）
+- ドロップダウンで手動切り替え可能（**Phase プレビューモード**）
 - 「Base」「Phase名 (シーン名)」のリスト表示
 - フェーズが0個のエントリでは非表示
 - フェーズで上書きされたフィールドは左ボーダー（アクセントカラー）で強調し、Base値を薄い文字でインライン表示
 - フィールド右の「×」でそのフィールドの上書きを解除（Baseに戻す）
+
+**Phase プレビューモード**:
+
+Details タブのフェーズセレクターで特定のフェーズを選択すると、状態解決の結果（後述「状態解決アルゴリズム」節参照）として得られる `previewPhaseId + resolvedState` を用いて、**該当フェーズまでを適用した読み取り専用のプレビュー**が Details タブ全体にかかる。Summary / Content / カスタムディテールそれぞれ、そのフェーズまでに適用された override 値を表示する。
+
+- プレビュー中はタブ上部に「Previewing: {フェーズラベル}」バッジを表示
+- 各フィールドは通常の編集アフォーダンス（入力欄のフォーカスリング等）を無効化し、読み取り専用になる
+- Base 状態に戻す操作（セレクターで「Base」を選ぶ）でプレビューは解除され、現在シーンに応じた自動選択状態に戻る
+- プレビューはあくまで表示のみで、DB には書き込まない。編集したい場合は一度 Base に戻すか、フェーズ編集ダイアログを使う
 
 **Content フィールドのフェーズ対応**:
 
@@ -562,24 +573,25 @@ Codexエントリ間の親子関係を管理するセクション。詳細は「
 - ×で子リレーション解除
 - [+ Add child] でCodexエントリ検索UIを表示し、子を追加
 
-**Context injection（コンテキスト注入設定）**:
-- Children セクション下部にドロップダウンで表示
+**Context injection（コンテキスト注入設定）— ChildrenBudgetSelector**:
+- Children セクション下部に `ChildrenBudgetSelector` コンポーネントとして表示（4 プリセットのセグメント/ドロップダウン UI）
 - このエントリが注入対象になった場合に、子孫エントリのsummaryを自動注入するトークン上限を設定
 - 予算はLayer 4予算に対する比率で指定。モデルのコンテキスト上限に応じて実トークン数が自動スケールする
-- プリセット選択肢:
+- プリセット選択肢（`codex_entries.childrenBudget` カラムに保存）:
   | 選択肢 | Layer 4比率 | 説明 |
   |--------|-----------|------|
-  | None | 0% | 子孫を注入しない |
-  | Compact (default) | 15% | 子が少ないエントリ向け |
-  | Standard | 30% | 中規模の子ツリー向け |
-  | Generous | 50% | 大きな組織・派閥向け |
-- デフォルト: Compact (15%)
+  | None (`none`) | 0% | 子孫を注入しない |
+  | Few / Compact (`few`、default) | 15% | 子が少ないエントリ向け |
+  | Many / Standard (`many`) | 30% | 中規模の子ツリー向け |
+  | All / Generous (`all`) | 50% | 大きな組織・派閥向け |
+- デフォルト: `few` (15%)
 - 子エントリが0個の場合はこのセクションを非表示
 
 **Suggested（提案）**:
 - Content内で言及されているが、まだリレーションが設定されていないCodexエントリの一覧
+- 検出は `findMentionedEntriesAsync` ユーティリティが担当し、Codex マッチングパイプライン（Rust/JS いずれの Aho-Corasick 経路でも）が検出した mention id 集合から既存リレーション・自エントリ・Dismiss 済みを差し引いた候補を返す
 - 各候補の右に [+ Add] ボタン。クリックで子リレーションとして確定
-- Content変更時に自動更新。Dismissした候補は再表示しない
+- Content変更時に自動更新。Dismiss した候補は `codex_dismissed_relations` テーブルに永続保存され、以後 `findMentionedEntriesAsync` の結果から恒久的に除外される（ユーザーが明示的に undo するまで再提案されない）
 
 ---
 
@@ -821,19 +833,34 @@ MyNovel.novel/
 DBスキーマの正規版は統合DBスキーマ設計書（`Grimodex_統合DBスキーマ.md`）を参照。以下は概要のみ記載。
 
 主要テーブル:
-- `codex_types`: タイプ定義（ビルトイン4種 + カスタム）
-- `codex_entries`: エントリ本体（`context_mode`、`tags_cache`、`notes` カラム含む）
+- `codex_types`: タイプ定義（ビルトイン4種 + カスタム）。ビルトイン 4 種（character/location/item/lore）はプロジェクト作成時および起動時に `ensureBuiltinTypes` で確実に存在することが保証される
+- `codex_entries`: エントリ本体（`context_mode`、`tags_cache`、`notes`、`children_budget` カラム含む）
 - `codex_tags` / `codex_entry_tags`: 構造化タグ（多対多）
 - `codex_detail_definitions` / `codex_detail_values`: カスタムディテール
-- `codex_relation_dismissed`: リレーション提案のDismiss記録
+- `codex_dismissed_relations`: リレーション提案のDismiss記録
 - `codex_entry_phases`: フェーズ（経時的変化。アンカーシーン + フィールド上書き）
-- `codex_phase_detail_overrides`: フェーズ内のカスタムフィールド上書き値
-- `codex_fts`: FTS5仮想テーブル（name + aliases + summary + tags_cache）
+- `codex_phase_detail_overrides`: フェーズ内のカスタムフィールド上書き値。エントリ × フェーズ × フィールド（definition）の粒度で個別 override を保持する（Summary / Content / 各カスタムディテールをそれぞれ別レコードで管理）
+- `codex_quick_pins`: CodexQuick パネルでの手動ピン留めを永続化するテーブル。自動検出結果とは独立して、ユーザーが明示的に Quick に固定したエントリを保持する。スキーマの詳細は [Codex Quick パネル設計書](./Grimodex_CodexQuickパネル設計書.md) を参照
+- `codex_fts`: FTS5仮想テーブル（name + aliases + summary + tags_cache）。Codex マッチングパイプラインや検索バー、CodexCommandPalette の高速検索バックエンドとして利用する
 
 FTS5テーブルはname + aliases + summary + tags_cacheを検索対象にする。contentもDBに格納されているためFTS5に追加可能だが、MVPではname + aliases + summary + tags_cacheの検索で十分と判断。
 
 `authorship_spans` テーブルにフェーズ用カラムを追加:
 - `phase_id TEXT REFERENCES codex_entry_phases(id) ON DELETE CASCADE`: フェーズの content_override に対する帰属追跡用。`codex_entry_id` が non-null かつ `phase_id` が non-null の場合はフェーズ content_override のスパン。`codex_entry_id` が non-null かつ `phase_id` が null の場合は Base content のスパン。
+
+### API モジュール分割
+
+Codex 系の Tauri Command 呼び出しは責務別に 5 つのフロントエンド API モジュールに分割する。いずれも Zustand ストアからのみ呼び出し、コンポーネントは直接触らない:
+
+| モジュール | 対象 | 主なコマンド群 |
+|-----------|------|--------------|
+| `tagApi` | `codex_tags` / `codex_entry_tags` | タグ作成、リネーム、エントリへの付与/解除、`type_filter` 管理 |
+| `phaseApi` | `codex_entry_phases` / `codex_phase_detail_overrides` | フェーズ CRUD、アンカー付け替え、フィールド override の上書き/解除 |
+| `relationApi` | `codex_entries.parent_id` / `codex_dismissed_relations` | 親子設定、循環検出、Suggested の検出・Dismiss |
+| `detailApi` | `codex_detail_definitions` / `codex_detail_values` | カスタムフィールド定義 CRUD、値の読み書き、型変更時の扱い |
+| `typeApi` | `codex_types` | ビルトイン保証（`ensureBuiltinTypes`）、カスタムタイプ CRUD、`sort_order` 並び替え |
+
+この分割により、1 パネル内の Tauri 呼び出しが単一の巨大モジュールに集中するのを避け、テスト・モック・変更影響範囲をドメイン単位で閉じ込める。
 
 ---
 
@@ -1162,7 +1189,12 @@ JavaScriptで利用可能なAho-Corasick実装:
 | `@nicolo-ribaudo/aho-corasick` | ~3KB | Yes | Babel開発者作、Unicode-safe |
 | Rust実装 (Tauri Command経由) | 0KB (JS側) | Yes | `aho-corasick` crate。最高速だがIPC往復コストあり |
 
-推奨: MVPではJS実装を使用。パフォーマンスが問題になった場合にRust実装に移行（インターフェースは同じ）。
+フロントエンドには **JS 実装と Rust 実装の 2 系統を併存** させる。
+
+- `codexMatcher.ts`: JS 側 Aho-Corasick 実装。ビルド直後や小規模プロジェクトでの即応、テスト容易性、プラットフォーム非依存性のため常に利用可能
+- `rustMatcher.ts`: Tauri Command 経由で Rust 側 `aho-corasick` crate を呼び出す高速実装。長編・多エントリ環境で JS 実装より桁違いに速く、FTS5 仮想テーブル `codex_fts` と組み合わせて全文検索／マッチングを一括で処理する
+
+どちらを使うかはストア側で切り替え可能にし、どちらの経路でも同一のマッチ結果インターフェース（`CodexDecoration[]`）を返すことでパイプライン後段（Step 3・Step 4）を共通化する。FTS5 `codex_fts` はマッチング結果の裏付けや、検索バー・CodexCommandPalette での候補絞り込みに併用する。
 
 ### パフォーマンス見積もり
 
@@ -1200,6 +1232,14 @@ function getExcludedPatterns(currentEntryId: string): string[] {
   return [entry.name, ...(entry.aliases ?? [])];
 }
 ```
+
+### Editor / Chat からの逆引き制約
+
+Codex マッチング結果は Editor と Chat の両方に供給されるが、以下の制約を守る:
+
+- **自エントリ除外ルール**: Codex パネル内で特定エントリの Content や text カスタムディテールを編集している間、**そのエントリ自身のハイライト**は出さない（前節「自エントリの除外」）。Content に自分の名前が書かれていても、執筆中の自己参照として無視する。
+- **Split mode の非アクティブグループ除外**: Editor が複数シーンを Split 表示しているとき、Codex ハイライトや Chat 送信時のコンテキスト検出は**アクティブグループのシーン**に対してのみ適用する。非アクティブ側の本文変更でハイライトや Chat 注入が誤爆しないよう、マッチング対象を明示的にフィルタする。
+- **Chat 入力欄は CodexQuick 検出に影響させない**: Chat パネルの入力欄で下書き中のテキストは、本文シーンと同じ Aho-Corasick 走査を通っても **CodexQuick セクションの自動検出に寄与させない**。具体的には、CodexQuick 側マッチャを呼ぶ際に Chat 入力欄由来のマッチ id 集合を `skipMatchedIds` として渡し、Quick の表示対象から除外する。Chat 側のコンテキスト注入には通常どおり利用する。
 
 ### パフォーマンス
 
@@ -1445,7 +1485,7 @@ Suggested: (from Content)
 
 - ○（白丸）で確定済みリレーション（●）と視覚的に区別
 - [+ Add] で子リレーションとして確定
-- [×] でDismiss（非表示にする。`codex_relation_dismissed` テーブルに記録）
+- [×] でDismiss（非表示にする。`codex_dismissed_relations` テーブルに記録）
 - Content変更時に自動再計算
 
 ### 自動リレーションを採用しない理由
@@ -1461,7 +1501,7 @@ Content内で言及されたエントリを自動的にリレーションにす�
 ### Dismiss永続化
 
 ```sql
-CREATE TABLE codex_relation_dismissed (
+CREATE TABLE codex_dismissed_relations (
   entry_id     TEXT NOT NULL REFERENCES codex_entries(id) ON DELETE CASCADE,
   dismissed_id TEXT NOT NULL REFERENCES codex_entries(id) ON DELETE CASCADE,
   PRIMARY KEY (entry_id, dismissed_id)
@@ -1513,69 +1553,174 @@ Elara (character)
 
 ### DBスキーマ
 
-```sql
-CREATE TABLE codex_entry_phases (
-  id                    TEXT PRIMARY KEY,
-  entry_id              TEXT NOT NULL REFERENCES codex_entries(id) ON DELETE CASCADE,
-  anchor_node_id        TEXT REFERENCES tree_nodes(id) ON DELETE SET NULL,
-  label                 TEXT NOT NULL DEFAULT '',
-  summary_override      TEXT,
-  content_override      TEXT,
-  context_mode_override TEXT,
-  created_at            TEXT NOT NULL DEFAULT (datetime('now')),
-  updated_at            TEXT NOT NULL DEFAULT (datetime('now'))
-);
+DBスキーマの正規版は [統合DBスキーマ設計書](./Grimodex_統合DBスキーマ.md) を参照。Phase 関連テーブルと関連カラムの要点のみ記載。
 
-CREATE INDEX idx_codex_phases_entry ON codex_entry_phases(entry_id);
-CREATE INDEX idx_codex_phases_anchor ON codex_entry_phases(anchor_node_id);
+主要テーブル / カラム:
+- `codex_entry_phases`: Phase本体。`anchor_node_id` (Scene)、`label`、`summary_override` / `content_override` / `context_mode_override`。
+- `codex_phase_detail_overrides`: Phase 内のフィールド単位 override。複合 PK `(phase_id, definition_id)`。**粒度はエントリ × フェーズ × フィールドで、Summary / Content / 各カスタムディテールをそれぞれ独立に override できる**（ある Phase で Summary だけ上書きする、別 Phase では Content とカスタムフィールド A だけ上書きする、といった構成が可能）。未上書きフィールドは直前の Phase もしくは Base の値を継承する。
+- `tree_nodes.story_time_order` (TEXT NULL): Sceneの作中時間順序キー。`sort_order` と同じ **文字列 fractional indexing**（npm `fractional-indexing` 互換）で、SQLite の `COLLATE BINARY` による辞書順比較のみを使う。数値としての意味は持たない。
+- `tree_nodes.story_time_label` (TEXT NULL): Sceneの作中時間表示用ラベル。
+- `projects.phase_resolution_mode` (TEXT): `'auto' | 'reading' | 'story'`。SQLデフォルト `'reading'`、新規プロジェクトのアプリ層デフォルトは `'auto'`。
+- `authorship_spans.phase_id`: Phaseの content_override への帰属追跡用。
 
-CREATE TABLE codex_phase_detail_overrides (
-  id            TEXT PRIMARY KEY,
-  phase_id      TEXT NOT NULL REFERENCES codex_entry_phases(id) ON DELETE CASCADE,
-  definition_id TEXT NOT NULL REFERENCES codex_detail_definitions(id) ON DELETE CASCADE,
-  value         TEXT,
-  UNIQUE(phase_id, definition_id)
-);
-```
+上書きセマンティクス:
+- `summary_override`: NULL = 変更なし（前のフェーズ/Baseを継承）。空文字 = summaryを空にクリア。
+- `content_override`: NULL = 変更なし。ProseMirror JSON形式。
+- `context_mode_override`: NULL = 変更なし。値は `always` / `mentioned` / `suppress` / `hidden`。
+- `anchor_node_id`: `ON DELETE SET NULL` — アンカーシーン削除時はNULLになり、Phaseは無効化（UIで警告表示）。
 
-- `summary_override`: NULL = 変更なし（前のフェーズ/Baseを継承）。空文字 = summaryを空にクリア
-- `content_override`: NULL = 変更なし。ProseMirror JSON形式
-- `context_mode_override`: NULL = 変更なし。値は `always` / `mentioned` / `suppress` / `hidden`
-- `anchor_node_id`: `ON DELETE SET NULL` — アンカーシーン削除時はNULLになり、フェーズは無効化（UIで警告表示）
+**Phase と時間軸の関係（設計不変条件）**:
+- **Phase の anchor は常に Scene**。「作中時間」への切り替えは、アンカーを書き換えるのではなく、同じアンカーを異なる軸で並べ替えることで行う。
+- **Phase 解決で使う時間軸は 2 つのみ**: 読者順（`tree_nodes.sort_order` の DFS 展開）、作中時間（`tree_nodes.story_time_order`）。
+- **write-order（`created_at` 順）は Phase 解決に使わない**。後から書いたシーンが過去の Phase を書き換えてしまうため意図と合わず、UI 選択肢にも出さない。
+- Phase・Scene・Beat・時間軸の関係の全体像は [Timeline パネル設計書](./Grimodex_Timelineパネル設計書.md) を参照。
 
 ### シーン順序の解決（タイムライン計算）
 
-`tree_nodes` はツリー構造（Part → Chapter → Scene）のため、「シーンAがシーンBより前か」を判定するにはグローバル順序が必要。ツリーをDFS（深さ優先）で走査し、各シーンにグローバルインデックスを割り当てる。
+Phase 解決には「シーン A がシーン B より前か」を判定するグローバル順序が必要だが、`tree_nodes` はツリー構造（Folder/Scene の再帰ツリー）であり、かつ 2 本の時間軸（読者順 / 作中時間）を持つ。どちらの軸で並べるかは `projects.phase_resolution_mode` が決める。
+
+#### 2 つの時間軸
+
+| 軸 | ソースカラム | 特性 |
+|----|------------|------|
+| 読者順 (reading-order) | `tree_nodes.sort_order` を DFS 展開したグローバル順を Index 構築時に連番 `number` に投影 | 全 Scene に常に値が存在（欠損なし） |
+| 作中時間 (story-time) | `tree_nodes.story_time_order`（文字列 fractional indexing キー、辞書順比較） | NULL 許容。未設定 Scene は「時間軸未宣言」 |
+
+write-order（`created_at` 順）は**意図的に除外**する（Phase と時間軸の関係、前節参照）。
+
+#### `getSceneTime(sceneId, mode)`
+
+各 Scene を「軸 + 値」の組に写像する関数。値は同じ軸同士でのみ比較する（数値そのものではなく、軸付きの値として扱う）。
 
 ```typescript
-/**
- * ツリーをDFS走査し、グローバルなシーン順序を計算する。
- * Part → Chapter → Scene の順序で、各階層内はsort_orderでソート。
- */
-function computeGlobalSceneOrder(nodes: TreeNode[]): Map<string, number> {
-  const orderMap = new Map<string, number>();
-  let index = 0;
+type TimeAxis = 'reading' | 'story';
+type ResolutionMode = 'auto' | 'reading' | 'story';
 
-  function traverse(parentId: string | null) {
-    const children = nodes
-      .filter(n => n.parentId === parentId)
-      .sort((a, b) => a.sortOrder - b.sortOrder);
-    for (const child of children) {
-      if (child.nodeType === 'scene') {
-        orderMap.set(child.id, index++);
-      }
-      traverse(child.id);
+// 読者順は Index 構築時に連番化した number、story-time は fractional-indexing の文字列キーを使う。
+// 軸ごとに値の型が異なるため、判別可能ユニオンにする。比較は `compareSceneTime` 経由で行う。
+type SceneTime =
+  | { axis: 'reading'; value: number }
+  | { axis: 'story'; value: string };
+
+interface SceneTimeIndex {
+  readingOrder: Map<string, number>;       // 全 Scene に存在（DFS 展開時の連番）
+  storyTimeOrder: Map<string, string>;     // story_time_order が設定されている Scene のみ
+  storyTimeInherited: Map<string, string>; // story モード時、未設定 Scene に直前の story-time を継承した表
+}
+
+function getSceneTime(
+  sceneId: string,
+  mode: ResolutionMode,
+  index: SceneTimeIndex,
+): SceneTime | null {
+  switch (mode) {
+    case 'reading': {
+      const v = index.readingOrder.get(sceneId);
+      return v === undefined ? null : { axis: 'reading', value: v };
+    }
+    case 'story': {
+      // 未設定 Scene は直前の story_time_order を継承（inherited テーブル参照）
+      const v = index.storyTimeInherited.get(sceneId);
+      return v === undefined ? null : { axis: 'story', value: v };
+    }
+    case 'auto': {
+      // 自 Scene に story_time_order があれば story 軸、なければ reading 軸にフォールバック
+      const s = index.storyTimeOrder.get(sceneId);
+      if (s !== undefined) return { axis: 'story', value: s };
+      const r = index.readingOrder.get(sceneId);
+      return r === undefined ? null : { axis: 'reading', value: r };
     }
   }
+}
 
-  traverse(null);
-  return orderMap;
+// 同一軸の SceneTime 同士の比較。軸が異なる値を渡した場合は呼び出し側のバグ。
+function compareSceneTime(a: SceneTime, b: SceneTime): number {
+  if (a.axis !== b.axis) {
+    throw new Error('compareSceneTime: axis mismatch');
+  }
+  if (a.axis === 'reading') {
+    return a.value - (b.value as number);
+  }
+  // story 軸: 文字列 fractional indexing キーの辞書順比較
+  const av = a.value;
+  const bv = b.value as string;
+  return av < bv ? -1 : av > bv ? 1 : 0;
 }
 ```
 
-**キャッシュ戦略**: グローバル順序はツリー構造変更時（ノード追加/削除/移動）のみ再計算。Zustandストアに保持。
+#### `SceneTimeIndex` の構築
+
+```typescript
+function buildSceneTimeIndex(nodes: TreeNode[]): SceneTimeIndex {
+  const readingOrder = new Map<string, number>();
+  const storyTimeOrder = new Map<string, string>();
+  const storyTimeInherited = new Map<string, string>();
+
+  // 1. 読者順: ツリーDFS。sort_order も文字列 fractional indexing キーなので辞書順で比較する。
+  let i = 0;
+  const dfs = (parentId: string | null) => {
+    const children = nodes
+      .filter(n => n.parentId === parentId)
+      .sort((a, b) => (a.sortOrder < b.sortOrder ? -1 : a.sortOrder > b.sortOrder ? 1 : 0));
+    for (const child of children) {
+      if (child.nodeType === 'scene') {
+        readingOrder.set(child.id, i++);
+        if (child.storyTimeOrder !== null) {
+          storyTimeOrder.set(child.id, child.storyTimeOrder);
+        }
+      }
+      dfs(child.id);
+    }
+  };
+  dfs(null);
+
+  // 2. 読者順に走査しつつ、直前の story_time_order を継承して inherited テーブルを作る
+  let lastStory: string | null = null;
+  const sortedByReading = [...readingOrder.entries()].sort((a, b) => a[1] - b[1]);
+  for (const [sceneId] of sortedByReading) {
+    const explicit = storyTimeOrder.get(sceneId);
+    if (explicit !== undefined) {
+      lastStory = explicit;
+    }
+    if (lastStory !== null) {
+      storyTimeInherited.set(sceneId, lastStory);
+    }
+    // lastStory がまだ null（作品冒頭の未設定シーン）は inherited に入れない → story モードで解決不可と扱う
+  }
+
+  return { readingOrder, storyTimeOrder, storyTimeInherited };
+}
+```
+
+#### 軸不一致時のフォールバック（all-or-nothing）
+
+Phase アンカーシーンと currentScene で**軸が食い違う**ことがある（例: `mode=story` だがアンカーシーンに `story_time_order` が未設定で、かつ作品冒頭で継承元もない）。story-time の値（文字列 fractional indexing キー）と reading-order の値（DFS 連番 number）は別の値空間にあり、型も異なるため混在ソートが意味を持たない。そのため**エントリ単位の all-or-nothing フォールバック**を採用する:
+
+- エントリ内の全 Phase のアンカーが currentScene と同じ軸で引けるなら、その軸で解決する
+- 1 つでも軸不一致があれば、そのエントリの **全 Phase を reading-order にフォールバック**して解決する（story-time 値と reading-order 値を混ぜない）
+- reading-order すら引けない Phase（anchor 削除済み）は単にスキップする
+
+これにより「story モード時でも、story_time_order が未設定のシーンをまたぐ Phase があれば、そのエントリは読者順に沿って解決される」という安全側の挙動になる。フォールバックの粒度は **Phase 単位ではなくエントリ単位**である点に注意。
+
+**キャッシュ戦略**: `SceneTimeIndex` はツリー構造変更時（ノード追加/削除/移動）または `story_time_order` 変更時に再計算。Zustand ストアに保持。`phase_resolution_mode` の変更は Index 自体の再計算を伴わない（どの Map を引くかが変わるだけ）。
 
 ### 状態解決アルゴリズム
+
+#### フェーズ解決パイプライン（2 段構成）
+
+フェーズ解決は `phaseResolver` モジュール内で 2 段のパイプラインとして実装される:
+
+1. **`phaseResolver.computeSceneTimeIndex(nodes)`**: ツリー構造と `tree_nodes.story_time_order` から `SceneTimeIndex`（`readingOrder` / `storyTimeOrder` / `storyTimeInherited`）を構築する。ツリー変更・`story_time_order` 変更のときだけ再計算し、Zustand ストアにキャッシュする。
+2. **`resolveCodexState(entry, phases, phaseDetails, baseDetails, currentSceneId, sceneTimeIndex, resolutionMode)`**: 構築済み Index と現在シーンから `ResolvedCodexState`（summary / content / contextMode / detailValues + activePhaseId / label）を返す。`projects.phase_resolution_mode`（`reading` / `story` / `auto`）を尊重して軸を選択し、必要なら all-or-nothing で reading-order にフォールバックする。
+
+呼び出し元:
+
+- **Editor**: エディタ本文中の CodexHighlight ポップオーバーや Chat 連携時に、アクティブシーンに応じた解決結果を使う
+- **Chat（シーンスコープ / プロジェクトスコープ）**: Layer 4 のコンテキスト注入でフェーズ解決後の summary / content を使う
+- **Codex パネル Details タブ**: フェーズインジケーターの自動選択および Phase プレビューモードで `resolvedState` を参照
+- **Timeline パネル**: 各エントリの Phase 軌跡表示と、アクティブシーンでの activePhase 強調
+
+`resolveCodexState` は override された詳細値（summary / content / カスタムディテール）を個別に取得できるため、UI 側では「Base と何が違うか」をフィールド単位で表示できる（Details タブのフェーズインジケーターに利用）。
 
 ```typescript
 interface ResolvedCodexState {
@@ -1593,7 +1738,8 @@ function resolveCodexState(
   phaseDetails: Map<string, PhaseDetailOverride[]>,  // phaseId → overrides
   baseDetails: Map<string, string>,                   // definitionId → value
   currentSceneId: string | null,
-  sceneOrder: Map<string, number>,
+  sceneTimeIndex: SceneTimeIndex,
+  resolutionMode: ResolutionMode,                     // projects.phase_resolution_mode
 ): ResolvedCodexState {
   // 1. Base state
   const state: ResolvedCodexState = {
@@ -1607,22 +1753,60 @@ function resolveCodexState(
 
   if (!currentSceneId) return state;
 
-  const currentOrder = sceneOrder.get(currentSceneId);
-  if (currentOrder === undefined) return state;
+  // 2. 現在シーンの時間軸上の位置を決定
+  const currentTime = getSceneTime(currentSceneId, resolutionMode, sceneTimeIndex);
+  if (currentTime === null) return state;
 
-  // 2. 適用可能フェーズをシーン順でソート
-  const applicablePhases = phases
-    .filter(p => {
-      const anchorOrder = sceneOrder.get(p.anchorNodeId);
-      return anchorOrder !== undefined && anchorOrder <= currentOrder;
-    })
+  // 3. 各フェーズのアンカーシーンも同じモードで引き、「現在シーンと軸が揃うか」を判定する。
+  //    一つでも軸不一致があれば、このエントリは **エントリ単位で reading-order にフォールバック** して
+  //    全フェーズをまとめて reading-order で解決する（all-or-nothing フォールバック）。
+  //    これは story-time 値（文字列）と reading-order 値（数値）が別の値空間のため、混在ソートが意味を持たないため。
+  const anchorTimes = phases.map(p => ({
+    phase: p,
+    time: getSceneTime(p.anchorNodeId, resolutionMode, sceneTimeIndex),
+  }));
+  const hasAxisMismatch = anchorTimes.some(
+    x => x.time === null || x.time.axis !== currentTime.axis,
+  );
+
+  // 4. 比較に使う SceneTime を軸を揃えて作る。story 軸は文字列キー、reading 軸は数値。
+  let currentCompareTime: SceneTime;
+  const phaseCompareTimes: { phase: CodexEntryPhase; time: SceneTime }[] = [];
+  if (hasAxisMismatch) {
+    // エントリ単位で reading-order フォールバック
+    const cR = sceneTimeIndex.readingOrder.get(currentSceneId);
+    if (cR === undefined) return state;
+    currentCompareTime = { axis: 'reading', value: cR };
+    for (const { phase } of anchorTimes) {
+      const v = sceneTimeIndex.readingOrder.get(phase.anchorNodeId);
+      if (v !== undefined) phaseCompareTimes.push({ phase, time: { axis: 'reading', value: v } });
+      // reading-order も引けないフェーズは anchor 削除済みのためスキップ
+    }
+  } else {
+    currentCompareTime = currentTime;
+    for (const { phase, time } of anchorTimes) {
+      if (time !== null) phaseCompareTimes.push({ phase, time });
+    }
+  }
+
+  // 5. 適用可能フェーズ（アンカー位置 ≤ 現在位置）をその軸の順序でソート。
+  //    比較は `compareSceneTime`（reading 軸は数値、story 軸は文字列 fractional indexing キーの辞書順）。
+  //    tie-break は「アンカーシーンの reading-order → created_at」の順。
+  //    これによりパラレルストーリー等で同じ story_time_order を持つ異なるシーンの
+  //    Phase 同士でも決定的な順序になる。
+  const applicablePhases = phaseCompareTimes
+    .filter(x => compareSceneTime(x.time, currentCompareTime) <= 0)
     .sort((a, b) => {
-      const orderA = sceneOrder.get(a.anchorNodeId)!;
-      const orderB = sceneOrder.get(b.anchorNodeId)!;
-      return orderA - orderB;
-    });
+      const diff = compareSceneTime(a.time, b.time);
+      if (diff !== 0) return diff;
+      const ra = sceneTimeIndex.readingOrder.get(a.phase.anchorNodeId) ?? 0;
+      const rb = sceneTimeIndex.readingOrder.get(b.phase.anchorNodeId) ?? 0;
+      if (ra !== rb) return ra - rb;
+      return a.phase.createdAt.localeCompare(b.phase.createdAt);
+    })
+    .map(x => x.phase);
 
-  // 3. フェーズを順に適用（上書きがあるフィールドのみ）
+  // 6. フェーズを順に適用（上書きがあるフィールドのみ）
   for (const phase of applicablePhases) {
     if (phase.summaryOverride !== null) {
       state.summary = phase.summaryOverride;
@@ -1644,6 +1828,16 @@ function resolveCodexState(
   return state;
 }
 ```
+
+**軸切り替え・不一致時の挙動まとめ**:
+
+| ケース | 挙動 |
+|-------|------|
+| `mode = 'reading'` | 常に `sort_order` の DFS 展開で比較。`story_time_order` は参照しない |
+| `mode = 'story'`、全 Scene に story_time_order が設定済み | 作中時間で比較。パラレルストーリー等で同値の Scene は reading-order がタイブレイクに入る（同値 Scene 間で Phase 順序がぶれないよう、tie-break は `anchor_scene` の reading-order → `created_at` の順） |
+| `mode = 'story'`、一部 Scene が未設定 | 未設定 Scene は直前の `story_time_order` を継承（冒頭の未設定連続領域のみ `storyTimeInherited` に入らない）。Phase のどれか 1 つでも軸不一致（null or reading）になれば、**そのエントリの全 Phase を reading-order で解決**（all-or-nothing フォールバック） |
+| `mode = 'auto'` | Scene 単位で軸を決める（自 Scene の `story_time_order` が設定済みなら story、なければ reading）。エントリ内で軸が混在する場合は **エントリ単位で reading-order に all-or-nothing フォールバック**（story-time 値と reading-order 値を混ぜない） |
+| フラッシュバック Phase | `story_time_order` を過去値で設定すれば、作中時間上は過去に適用される。読者が該当シーンを読むまでは UI 上 Inactive 表示（Timeline パネル側で表現） |
 
 ### Content上書きの仕様
 
@@ -1697,6 +1891,8 @@ function resolveCodexState(
 │                                                 │
 │ Label:        [追放後                       ]   │
 │ Anchor scene: [Ch.8 Sc.3 "追放される日"   ▾]   │
+│               ⏱ story-time: 帝国暦1024年3月     │
+│               📖 reading-order: #47             │
 │                                                 │
 │ ─── Override fields ───                         │
 │                                                 │
@@ -1715,6 +1911,8 @@ function resolveCodexState(
 │                                                 │
 │ [ ] Context mode                                │
 │                                                 │
+│ Resolution: auto（作中時間で解決）              │
+│                                                 │
 │                         [Cancel]  [Save]        │
 └─────────────────────────────────────────────────┘
 ```
@@ -1722,7 +1920,9 @@ function resolveCodexState(
 | 要素 | 説明 |
 |------|------|
 | Label | フェーズのラベル（例: 「追放後」「覚醒後」）。必須 |
-| Anchor scene | フェーズの開始シーン。ツリーセレクターで選択（Part > Chapter > Scene の階層表示）。必須 |
+| Anchor scene | フェーズの開始シーン。ツリーセレクターで選択（Folder > ... > Scene の階層表示）。必須 |
+| Story-time / Reading-order 行 | Anchor scene を選ぶと、そのシーンの `story_time_label`（設定されていれば）と読者順インデックスを表示。作中時間が未設定の場合は「⏱ story-time: —（未設定）」と明示し、story モード時は「→ reading-order で解決されます」と注記 |
+| Resolution 行 | プロジェクトの `phase_resolution_mode` と、その軸で現在どう解決されるかを表示（読み取り専用、プロジェクト設定へのリンク付き） |
 | Override fields | チェックボックスで上書き対象フィールドを選択。チェックなし = 前のフェーズ/Baseから継承 |
 
 - Summary: テキスト入力欄（チェック時に表示）
@@ -1839,8 +2039,10 @@ CodexHighlightのポップオーバーもフェーズ解決済み状態を表示
 |---------|-----------|
 | フェーズの追加/削除/編集 | 該当エントリのフェーズ解決済み状態を再計算 → コンテキスト再構築、ポップオーバー更新 |
 | アクティブシーンの切り替え | 全エントリのフェーズ解決済み状態を再計算（キャッシュ活用で高速化） |
-| ツリー構造の変更（シーン移動/追加/削除） | グローバルシーン順序を再計算 → 全エントリのフェーズ解決を再実行 |
-| フェーズのアンカーシーン変更 | グローバル順序は再計算不要。該当エントリのフェーズ解決のみ |
+| ツリー構造の変更（シーン移動/追加/削除） | `SceneTimeIndex`（`readingOrder` および `storyTimeInherited`）を再計算 → 全エントリのフェーズ解決を再実行 |
+| `tree_nodes.story_time_order` の変更 | `SceneTimeIndex.storyTimeOrder` と `storyTimeInherited` を再計算（`readingOrder` は不変） → 全エントリのフェーズ解決を再実行（`mode ≠ 'reading'` の場合のみ実質影響あり） |
+| `projects.phase_resolution_mode` の変更 | `SceneTimeIndex` 自体は不変。どの Map を引くかが変わるのみ。全エントリのフェーズ解決のみ再実行 |
+| フェーズのアンカーシーン変更 | Index 再計算は不要。該当エントリのフェーズ解決のみ |
 
 ### エッジケース
 
@@ -1866,7 +2068,15 @@ CodexHighlightのポップオーバーもフェーズ解決済み状態を表示
 
 #### 複数フェーズが同一シーンにアンカー
 
-同一エントリ内で複数のフェーズが同じシーンにアンカーされている場合、`created_at` の昇順で適用する。UIのTimelineタブでは同一シーンのフェーズが連続して表示される。
+同一エントリ内で複数のフェーズが同じシーンにアンカーされている場合、時間軸上の位置が完全一致するため tie-break のみで順序が決まる。アンカーが同一なら reading-order も一致するので、最終的に `created_at` の昇順で適用される。UI の Timeline タブでは同一シーンのフェーズが連続して表示される。
+
+#### 異なるシーンが同じ story_time_order を持つ（パラレル・同時刻）
+
+パラレルストーリーや同時進行のシーンでは、複数 Scene が同じ `story_time_order` を持つことがあり、それらにアンカーされた Phase は時間軸上で同値となる。この場合はアンカーシーンの reading-order（＝読者が先に読む側）を優先してソートする。作者が読者視点での前後を意図していなければ両シーンに別の `story_time_order` を振れば良い。
+
+#### フラッシュバック Phase
+
+`story_time_order` を過去値で設定した Scene にアンカーされた Phase は、作中時間上は過去に適用される。`mode = 'story'` または `'auto'` では、読者がそのシーンを読むより前のシーン時点でも状態が遡及的に適用される。読者順を重視する章では `mode = 'reading'` に切り替えるか、プロジェクト単位で `'reading'` を維持する運用とする。
 
 ### パフォーマンス
 
@@ -1882,8 +2092,9 @@ CodexHighlightのポップオーバーもフェーズ解決済み状態を表示
 | tags上書き | フェーズごとにタグ変更 | 低 |
 | フェーズ間diff表示 | 2つのフェーズの差分をハイライト表示 | 中 |
 | AIフェーズ提案 | チャットの会話からフェーズを自動提案 | 中 |
-| タイムラインビュー | 全エントリの全フェーズを横断的に表示する専用ビュー | 高 |
 | フェーズテンプレート | 「戦争開始」で複数エントリの一括フェーズ作成 | 低 |
+
+> 全エントリの全フェーズを横断表示するタイムラインビューは、Codex パネル側ではなく **Timeline パネル**で提供する。詳細は [Timeline パネル設計書](./Grimodex_Timelineパネル設計書.md) を参照。
 
 ---
 
@@ -1894,29 +2105,48 @@ CodexHighlightのポップオーバーもフェーズ解決済み状態を表示
 | ショートカット | 動作 |
 |-------------|------|
 | `Ctrl+Alt+X` | Codexパネルにフォーカス/トグル（レイアウト設計書で定義済み） |
+| `Ctrl+Alt+Q` | CodexQuick パネルにフォーカス/トグル（独立 dockview パネル、Scenes 近傍に配置） |
+| `Ctrl+K` | `CodexCommandPalette` を開く。全エントリを高速検索し、選択してエンターで `requestSelectEntry` による Codex 遷移、または付随アクション（Pin to Chat / Find in scenes 等）を実行できるコマンドパレット UI |
 | `Ctrl+F`（パネルフォーカス時） | 検索バーにフォーカス |
 | `↑` / `↓` | エントリリスト内のフォーカス移動 |
 | `Enter` | 選択エントリの詳細画面を開く / 詳細画面にフォーカス |
-| `Escape` | 検索クリア / 詳細画面からリストにフォーカスを戻す |
+| `Escape` | 検索クリア / 詳細画面からリストにフォーカスを戻す / CodexCommandPalette を閉じる |
 | `F2` | 選択エントリの名前をインライン編集 |
 | `Del` | 選択エントリを削除（確認ダイアログ） |
+
+`CodexCommandPalette` は `codex_fts` による全文検索と `rustMatcher` / `codexMatcher` のスコアリングを組み合わせ、大量エントリでも即応する。コマンドパレット内で選択したエントリへの遷移は、他パネルからの遷移と同様に `requestSelectEntry` を経由する。
 
 ---
 
 ## 他パネルとの連携
 
+### Codex 遷移 API（`requestSelectEntry`）
+
+他パネルから Codex パネルに遷移して特定エントリを選択する動線は、`codexStore.requestSelectEntry(entryId)`（内部的には `codexStore.pendingEntryId` のセット）を経由する統一 API で扱う。フローは次のとおり:
+
+1. 呼び出し側（CodexQuick / Chat のメンション / Editor のハイライトポップオーバー / Mentions タブのシーンリンクなど）が `requestSelectEntry(entryId)` を呼ぶ
+2. 必要に応じて dockview 側で Codex パネルを開く / 前面化する
+3. `CodexManagementPanel` がマウント or 前面化すると effect で `pendingEntryId` を拾い、該当エントリを選択 → 詳細画面に遷移し、エントリリスト内で仮想スクロールを該当行にスクロールさせる
+4. 処理後 `pendingEntryId` はクリアされる
+
+この仕組みにより、呼び出し側は「Codex パネルが現在マウントされているかどうか」を気にせず遷移要求を発行できる。
+
 ### ← Editor
 
-- Editorのコンテキストメニュー「Add to Codex」→ 即時エントリ作成 → Codexパネルの詳細画面が開く
-- EditorのCodexハイライトポップオーバー「Open in Codex →」→ Codexパネルで該当エントリの詳細を表示
+- Editorのコンテキストメニュー「Add to Codex」→ 即時エントリ作成 → `requestSelectEntry` で Codexパネルの詳細画面が開く
+- EditorのCodexハイライトポップオーバー「Open in Codex →」→ `requestSelectEntry` 経由で該当エントリの詳細を表示
 
 ### ← Scenes（Codex Quick）
 
-- Codex Quickセクションのエントリクリック → Codexパネルで詳細を表示
+- CodexQuick は Scenes 配下のセクションではなく、**独立した dockview パネル**として Scenes パネル近傍に配置される。`Ctrl+Alt+Q` でトグル表示/フォーカスが可能（キーボードショートカット節参照）
+- CodexQuick の各エントリ行では、名前ドット、type ラベル、summary プレビューを含む **エントリホバーポップオーバー**（`CodexEntryPopoverContent` コンポーネント）を表示する。ホバー遅延や配置規約は TooltipProvider の共通設定に従う
+- CodexQuick セクションのエントリクリック → `requestSelectEntry` 経由で Codex パネルに遷移し、詳細を表示
+- CodexQuick の並び順・ピン留めは `codex_quick_pins` テーブルに永続化されており、セッションをまたいで保持される
 
 ### ← Chat
 
-- Chatの「Codex」ボタン → エントリ即時作成（`source_chat_message_id` 付き）
+- Chatの「Codex」ボタン → エントリ即時作成（`source_chat_message_id` 付き）→ `requestSelectEntry` で詳細画面を開く
+- Chat メッセージ内で Codex エントリがハイライトされた部分をクリック → `requestSelectEntry` で Codex パネルに遷移
 
 ### → Editor
 
@@ -1957,6 +2187,15 @@ CodexHighlightのポップオーバーもフェーズ解決済み状態を表示
 
 Left Dockのデフォルト幅（200px）ではスタックモードになるため、Codexパネルを開いた直後はリスト表示。エントリを選択すると詳細に遷移し、戻るボタンでリストに復帰する動線が基本になる。スプリットで使いたいユーザーはCodexパネルをRight DockやBottom Dockに移動するか、フローティングで広く開く。
 
+### レイアウト切り替えの実装
+
+`CodexManagementPanel` は以下でモードを決定する:
+
+- **初期判定**: 親から渡される `initialStackMode` プロパティ（呼び出し側がその時点のパネル幅から事前に決めた値）を初回レンダリングに反映する。これによりマウント直後にスプリット → スタックの一瞬のチラつきが発生しない
+- **動的追従**: マウント後は `ResizeObserver` でパネルコンテナの幅を監視し、幅が 400px を越境した瞬間にスタック ⇔ スプリットを切り替える。ドラッグリサイズや dockview の移動に追従する
+
+スタックへ遷移した際は、現在選択中のエントリがあれば詳細ビューを残し「← Back」でリスト復帰、なければリスト表示を維持する。
+
 ---
 
 ## 既存設計書との整合
@@ -1983,7 +2222,16 @@ Codex QuickセクションはZustandストアの `sceneCodexMatches` を共有�
 
 ### 概要
 
-ビルトイン4タイプ（Character, Location, Item, Lore）に加え、プロジェクト単位でカスタムタイプを追加可能。Settings内のCodexセクションで管理する。
+タイプは `codex_types` テーブルで管理され、追加・編集・削除が可能。ビルトイン 4 タイプ（`character` / `location` / `item` / `lore`）に加え、プロジェクト単位でカスタムタイプを追加できる。
+
+ビルトイン 4 種はプロジェクト作成時および Codex パネル初期化時に `ensureBuiltinTypes` が呼ばれ、欠損していれば既定値で復元される。これにより誤削除・スキーマ移行後も必ず 4 種が存在することが保証される。
+
+管理 UI は 2 箇所から開ける:
+
+- **Settings > Codex カテゴリ**: プロジェクト全体の Codex 設定と並んでタイプ管理 UI が表示される
+- **フィルタタブの管理 UI**: Codex パネル C. フィルタタブ領域のコンテキストメニューや末尾の「Manage types…」エントリから、フィルタタブと同じ場所でタイプ管理を開ける
+
+いずれも同じ編集ダイアログ（`typeApi` 経由）を開く。
 
 ### Settings内のUI
 

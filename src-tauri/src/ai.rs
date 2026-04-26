@@ -983,12 +983,16 @@ pub async fn send_chat_stream(
     messages: &[(&str, &str)],
     abort_flag: Arc<std::sync::atomic::AtomicBool>,
     app_handle: tauri::AppHandle,
+    event_prefix: &str,
 ) -> anyhow::Result<()> {
     let provider = params.provider;
     let model = params.model;
     let api_key = params.api_key;
     let ollama_endpoint = params.ollama_endpoint;
     use tauri::Emitter;
+
+    let chunk_event = format!("{}:stream-chunk", event_prefix);
+    let done_event = format!("{}:stream-done", event_prefix);
 
     let client = reqwest::Client::new();
 
@@ -1085,7 +1089,7 @@ pub async fn send_chat_stream(
                                     };
                                     if !delta_text.is_empty() {
                                         let _ = app_handle.emit(
-                                            "chat:stream-chunk",
+                                            &chunk_event,
                                             serde_json::json!({
                                                 "delta": delta_text,
                                                 "block_type": current_block_type
@@ -1116,7 +1120,7 @@ pub async fn send_chat_stream(
             }
 
             let _ = app_handle.emit(
-                "chat:stream-done",
+                &done_event,
                 serde_json::json!({
                     "stop_reason": stop_reason,
                     "input_tokens": input_tokens,
@@ -1224,7 +1228,7 @@ pub async fn send_chat_stream(
                             if let Some(thinking_text) = delta["thinking"].as_str() {
                                 if !thinking_text.is_empty() {
                                     let _ = app_handle.emit(
-                                        "chat:stream-chunk",
+                                        &chunk_event,
                                         serde_json::json!({
                                             "delta": thinking_text,
                                             "block_type": "thinking"
@@ -1237,7 +1241,7 @@ pub async fn send_chat_stream(
                             if let Some(reasoning) = delta["reasoning_content"].as_str() {
                                 if !reasoning.is_empty() {
                                     let _ = app_handle.emit(
-                                        "chat:stream-chunk",
+                                        &chunk_event,
                                         serde_json::json!({
                                             "delta": reasoning,
                                             "block_type": "thinking"
@@ -1249,7 +1253,7 @@ pub async fn send_chat_stream(
                             if let Some(content) = delta["content"].as_str() {
                                 if !content.is_empty() {
                                     let _ = app_handle.emit(
-                                        "chat:stream-chunk",
+                                        &chunk_event,
                                         serde_json::json!({
                                             "delta": content,
                                             "block_type": "text"
@@ -1263,7 +1267,7 @@ pub async fn send_chat_stream(
             }
 
             let _ = app_handle.emit(
-                "chat:stream-done",
+                &done_event,
                 serde_json::json!({
                     "stop_reason": stop_reason,
                     "input_tokens": input_tokens,

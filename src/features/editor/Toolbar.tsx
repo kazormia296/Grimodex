@@ -5,6 +5,7 @@ import { useTranslation } from "react-i18next";
 import { cn } from "@/lib/utils";
 import { useAttributionStore } from "@/features/attribution/attributionStore";
 import { useCursorSettingsStore } from "@/features/editor/cursorSettingsStore";
+import { COMMENT_REBUILD_META } from "@/features/editor/CommentDecorationPlugin";
 import { useSettingNumber } from "@/features/settings/useSettingControl";
 
 function ToolbarButton({
@@ -107,6 +108,8 @@ export function Toolbar({
     toggleTypewriterMode,
     showComments,
     toggleShowComments,
+    showForeshadowMarks,
+    toggleShowForeshadowMarks,
   } = useCursorSettingsStore();
 
   // Force re-render when editor selection/state changes so isActive() is accurate
@@ -454,10 +457,21 @@ export function Toolbar({
           <ToolbarButton
             label={t("editor.toolbar.comments")}
             active={showComments}
-            onClick={toggleShowComments}
-            disabled
+            onClick={() => {
+              toggleShowComments();
+              editor.view.dispatch(
+                editor.state.tr.setMeta(COMMENT_REBUILD_META, true),
+              );
+            }}
           >
             Cmt
+          </ToolbarButton>
+          <ToolbarButton
+            label={t("editor.toolbar.foreshadowMarks")}
+            active={showForeshadowMarks}
+            onClick={toggleShowForeshadowMarks}
+          >
+            Fs
           </ToolbarButton>
           <ToolbarButton
             label={t("editor.toolbar.focusMode")}

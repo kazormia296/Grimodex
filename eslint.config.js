@@ -20,7 +20,7 @@ export default tseslint.config(
       "jsx-a11y/no-autofocus": "error",
       "@typescript-eslint/no-unused-vars": [
         "error",
-        { argsIgnorePattern: "^_" },
+        { argsIgnorePattern: "^_", varsIgnorePattern: "^_" },
       ],
     },
   },

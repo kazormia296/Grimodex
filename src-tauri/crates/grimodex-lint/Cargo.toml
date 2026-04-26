@@ -1,0 +1,24 @@
+[package]
+name = "grimodex-lint"
+version = "0.1.0"
+edition = "2021"
+license = "Elastic-2.0"
+description = "Grimodex deterministic text linter core"
+
+[lib]
+name = "grimodex_lint"
+path = "src/lib.rs"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1" }
+thiserror = "2"
+regex = "1"
+tracing = "0.1"
+# UniDic 形態素解析（Phase 2）。`embed-unidic` で辞書を最終バイナリに
+# include_bytes! 埋め込み → 実行時の外部リソース参照なし。
+# 配布サイズへの影響 ≈ +200〜250MB。
+lindera = { version = "3.0.5", features = ["embed-unidic"] }
+
+[dev-dependencies]
+serde_json = { version = "1", features = ["preserve_order"] }

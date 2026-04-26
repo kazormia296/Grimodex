@@ -38,8 +38,10 @@ export function computeAttributionStats(
         break;
       case "ai":
         stats.ai += len;
-        if (mark.attrs.model) {
-          const model = mark.attrs.model as string;
+        {
+          const model =
+            (mark.attrs.model as string | null | undefined) ||
+            "__unknown_model__";
           stats.modelBreakdown[model] =
             (stats.modelBreakdown[model] ?? 0) + len;
         }

@@ -33,6 +33,7 @@ import type {
 } from "@dnd-kit/core";
 import { cn } from "@/lib/utils";
 import { useTreeStore } from "./treeStore";
+import { cmpKeys } from "./fractionalIndex";
 import { useTreeHistoryStore } from "./treeHistoryStore";
 import { useTabStore } from "@/features/editor/tabStore";
 import { useLayoutStore } from "@/features/layout/layoutStore";
@@ -595,7 +596,7 @@ export function ScenesPanel() {
     for (const n of nodes) nm[n.id] = n;
 
     // Base order: always sort by sortOrder first
-    let sorted = [...nodes].sort((a, b) => a.sortOrder - b.sortOrder);
+    let sorted = [...nodes].sort((a, b) => cmpKeys(a.sortOrder, b.sortOrder));
 
     // Apply sortMode to leaf nodes within each parent
     if (sortMode !== "manual") {
@@ -604,7 +605,7 @@ export function ScenesPanel() {
         const aIsLeaf = a.nodeType === "scene" || a.nodeType === "note";
         const bIsLeaf = b.nodeType === "scene" || b.nodeType === "note";
         if (!aIsLeaf || !bIsLeaf || a.parentId !== b.parentId) {
-          return a.sortOrder - b.sortOrder;
+          return cmpKeys(a.sortOrder, b.sortOrder);
         }
         if (sortMode === "title") {
           return a.title.localeCompare(b.title, "ja");
@@ -976,7 +977,9 @@ export function ScenesPanel() {
         const selectedNodes = selectedIds
           .map((id) => nodeMap[id])
           .filter(Boolean)
-          .sort((a, b) => a!.sortOrder - b!.sortOrder) as TreeNodeData[];
+          .sort((a, b) =>
+            cmpKeys(a!.sortOrder, b!.sortOrder),
+          ) as TreeNodeData[];
         let prevAfterId = afterId;
         for (const selNode of selectedNodes) {
           moveNode(selNode.id, newParentId, prevAfterId).catch(() => {});

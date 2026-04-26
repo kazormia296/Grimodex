@@ -1,16 +1,49 @@
-import { useEffect, useRef, useState } from "react";
-import { AnimatedOverlay } from "@/components/ui/animated-overlay";
+import { useEffect, useMemo, useState } from "react";
+import { Search } from "lucide-react";
+import { AnimatedPopover } from "@/components/ui/animated-popover";
 import { useTranslation } from "react-i18next";
-import { useVirtualizer } from "@tanstack/react-virtual";
 import { useCodexStore } from "@/features/codex/codexStore";
+import type { CodexSortOrder } from "@/features/codex/codexStore";
 import { useSnippetStore } from "@/features/snippets/snippetStore";
+import type {
+  SnippetSourceFilter,
+  SnippetSortOrder,
+} from "@/features/snippets/snippetStore";
 import { getChildrenFromArray } from "@/features/codex/childrenBudget";
 import type { CodexEntry } from "@/features/codex/api";
 import type { Snippet } from "@/features/snippets/api";
+import {
+  EntryCardBody,
+  parseTags,
+} from "@/features/codex/components/EntryCard";
+import { SnippetCardBody } from "@/features/snippets/components/SnippetCardBody";
 import { getTypeLabel } from "../utils/typeLabels";
+import { sortEntries, CODEX_SORT_OPTIONS } from "@/features/codex/codexSort";
+import { TagFilterBar } from "@/features/codex/components/TagFilterBar";
+import type { CodexType } from "@/features/codex/typeApi";
+import { listCodexTypes, ensureBuiltinTypes } from "@/features/codex/typeApi";
 
-function PinCodexVirtualList({
+const DIALOG_CODEX_SORT_OPTIONS = CODEX_SORT_OPTIONS.filter(
+  (o) => o.value !== "most-referenced",
+);
+
+const SNIPPET_SOURCE_OPTIONS: { value: SnippetSourceFilter; key: string }[] = [
+  { value: "all", key: "snippets.filterAll" },
+  { value: "from-chat", key: "snippets.filterFromChat" },
+  { value: "from-editor", key: "snippets.filterFromEditor" },
+  { value: "manual", key: "snippets.filterManual" },
+];
+
+const SNIPPET_SORT_OPTIONS: { value: SnippetSortOrder; key: string }[] = [
+  { value: "recent", key: "snippets.sortRecent" },
+  { value: "oldest", key: "snippets.sortOldest" },
+  { value: "title-asc", key: "snippets.sortTitleAsc" },
+  { value: "most-used", key: "snippets.sortMostUsed" },
+];
+
+function PinCodexList({
   entries,
+  allEntries,
   pinnedIds,
   withChildrenIds,
   onPin,
@@ -18,6 +51,7 @@ function PinCodexVirtualList({
   onToggleChildren,
 }: {
   entries: CodexEntry[];
+  allEntries: CodexEntry[];
   pinnedIds: Set<string>;
   withChildrenIds: Set<string>;
   onPin: (id: string) => void;
@@ -25,79 +59,57 @@ function PinCodexVirtualList({
   onToggleChildren: (id: string, withChildren: boolean) => void;
 }) {
   const { t } = useTranslation();
-  const parentRef = useRef<HTMLDivElement>(null);
-  const virtualizer = useVirtualizer({
-    count: entries.length,
-    getScrollElement: () => parentRef.current,
-    estimateSize: () => 48,
-    overscan: 5,
-  });
+
+  if (entries.length === 0) {
+    return (
+      <p className="py-4 text-center text-xs text-muted-foreground">
+        {t("codex.noResults")}
+      </p>
+    );
+  }
 
   return (
-    <div ref={parentRef} className="max-h-72 overflow-y-auto">
-      <div
-        style={{
-          height: `${virtualizer.getTotalSize()}px`,
-          width: "100%",
-          position: "relative",
-        }}
-      >
-        {virtualizer.getVirtualItems().map((virtualItem) => {
-          const entry = entries[virtualItem.index];
-          const isPinned = pinnedIds.has(entry.id);
-          const hasChildren =
-            getChildrenFromArray(entry.id, entries).length > 0;
-          const isWithChildren = withChildrenIds.has(entry.id);
+    <div className="max-h-52 overflow-y-auto">
+      {entries.map((entry) => {
+        const isPinned = pinnedIds.has(entry.id);
+        const hasChildren =
+          getChildrenFromArray(entry.id, allEntries).length > 0;
+        const isWithChildren = withChildrenIds.has(entry.id);
 
-          return (
-            <div
-              key={entry.id}
-              style={{
-                position: "absolute",
-                top: 0,
-                left: 0,
-                width: "100%",
-                height: `${virtualItem.size}px`,
-                transform: `translateY(${virtualItem.start}px)`,
-              }}
-              className="flex flex-col justify-center rounded px-2 hover:bg-accent"
-            >
-              <label className="flex cursor-pointer items-center gap-2 text-sm">
+        return (
+          <div key={entry.id} className="border-b border-border last:border-0">
+            <label className="flex cursor-pointer items-start gap-2 rounded px-2 py-1.5 hover:bg-accent">
+              <input
+                type="checkbox"
+                checked={isPinned}
+                onChange={() =>
+                  isPinned ? onUnpin(entry.id) : onPin(entry.id)
+                }
+                className="mt-1 shrink-0 rounded"
+              />
+              <div className="min-w-0 flex-1">
+                <EntryCardBody entry={entry} />
+              </div>
+            </label>
+            {isPinned && hasChildren && (
+              <label className="ml-8 flex cursor-pointer items-center gap-1.5 px-2 pb-1.5 text-xs text-muted-foreground">
                 <input
                   type="checkbox"
-                  checked={isPinned}
-                  onChange={() =>
-                    isPinned ? onUnpin(entry.id) : onPin(entry.id)
-                  }
+                  checked={isWithChildren}
+                  onChange={(e) => onToggleChildren(entry.id, e.target.checked)}
                   className="rounded"
                 />
-                <span>{entry.name}</span>
-                <span className="ml-auto text-xs text-muted-foreground">
-                  {getTypeLabel(entry.type)}
-                </span>
+                {t("chat.context.includeChildren")}
               </label>
-              {isPinned && hasChildren && (
-                <label className="ml-5 flex cursor-pointer items-center gap-1.5 text-xs text-muted-foreground">
-                  <input
-                    type="checkbox"
-                    checked={isWithChildren}
-                    onChange={(e) =>
-                      onToggleChildren(entry.id, e.target.checked)
-                    }
-                    className="rounded"
-                  />
-                  {t("chat.context.includeChildren")}
-                </label>
-              )}
-            </div>
-          );
-        })}
-      </div>
+            )}
+          </div>
+        );
+      })}
     </div>
   );
 }
 
-function PinSnippetVirtualList({
+function PinSnippetList({
   snippets,
   pinnedSnippetIds,
   onPin,
@@ -108,55 +120,43 @@ function PinSnippetVirtualList({
   onPin: (id: string) => void;
   onUnpin: (id: string) => void;
 }) {
-  const parentRef = useRef<HTMLDivElement>(null);
-  const virtualizer = useVirtualizer({
-    count: snippets.length,
-    getScrollElement: () => parentRef.current,
-    estimateSize: () => 40,
-    overscan: 5,
-  });
+  const { t } = useTranslation();
+
+  if (snippets.length === 0) {
+    return (
+      <p className="py-4 text-center text-xs text-muted-foreground">
+        {t("codex.noResults")}
+      </p>
+    );
+  }
 
   return (
-    <div ref={parentRef} className="max-h-72 overflow-y-auto">
-      <div
-        style={{
-          height: `${virtualizer.getTotalSize()}px`,
-          width: "100%",
-          position: "relative",
-        }}
-      >
-        {virtualizer.getVirtualItems().map((virtualItem) => {
-          const snippet = snippets[virtualItem.index];
-          const isPinned = pinnedSnippetIds.has(snippet.id);
+    <div className="max-h-52 overflow-y-auto">
+      {snippets.map((snippet) => {
+        const isPinned = pinnedSnippetIds.has(snippet.id);
 
-          return (
-            <div
-              key={snippet.id}
-              style={{
-                position: "absolute",
-                top: 0,
-                left: 0,
-                width: "100%",
-                height: `${virtualItem.size}px`,
-                transform: `translateY(${virtualItem.start}px)`,
-              }}
-              className="flex items-center rounded px-2 hover:bg-accent"
-            >
-              <label className="flex w-full cursor-pointer items-center gap-2 text-sm">
-                <input
-                  type="checkbox"
-                  checked={isPinned}
-                  onChange={() =>
-                    isPinned ? onUnpin(snippet.id) : onPin(snippet.id)
-                  }
-                  className="rounded"
-                />
-                <span className="truncate">{snippet.title}</span>
-              </label>
+        return (
+          <label
+            key={snippet.id}
+            className="flex cursor-pointer items-start gap-2 rounded border-b border-border px-2 py-1.5 last:border-0 hover:bg-accent"
+          >
+            <input
+              type="checkbox"
+              checked={isPinned}
+              onChange={() =>
+                isPinned ? onUnpin(snippet.id) : onPin(snippet.id)
+              }
+              className="mt-0.5 shrink-0 rounded"
+            />
+            <div className="min-w-0 flex-1">
+              <p className="truncate text-xs font-medium text-foreground">
+                {snippet.title}
+              </p>
+              <SnippetCardBody snippet={snippet} />
             </div>
-          );
-        })}
-      </div>
+          </label>
+        );
+      })}
     </div>
   );
 }
@@ -170,6 +170,7 @@ interface PinCodexDialogProps {
   onUnpin: (entryId: string) => void;
   onToggleChildren: (entryId: string, withChildren: boolean) => void;
   onClose: () => void;
+  containerRef?: React.RefObject<HTMLElement | null>;
 }
 
 export function PinCodexDialog({
@@ -181,33 +182,154 @@ export function PinCodexDialog({
   onUnpin,
   onToggleChildren,
   onClose,
+  containerRef,
 }: PinCodexDialogProps) {
   const { t } = useTranslation();
   const [activeTab, setActiveTab] = useState<"codex" | "snippet">("codex");
+
+  // Codex filter state
+  const [codexSearch, setCodexSearch] = useState("");
+  const [codexFilterType, setCodexFilterType] = useState<string | null>(null);
+  const [codexSelectedTags, setCodexSelectedTags] = useState<Set<string>>(
+    new Set(),
+  );
+
+  // Snippet filter state
+  const [snippetSearch, setSnippetSearch] = useState("");
+  const [snippetSourceFilter, setSnippetSourceFilter] =
+    useState<SnippetSourceFilter>("all");
+  const [snippetSortOrder, setSnippetSortOrder] =
+    useState<SnippetSortOrder>("recent");
+
   const entries = useCodexStore((s) => s.entries);
   const loadEntries = useCodexStore((s) => s.loadEntries);
+  const codexSortOrder = useCodexStore((s) => s.sortOrder);
+  const setCodexSortOrder = useCodexStore((s) => s.setSort);
   const snippetEntries = useSnippetStore((s) => s.entries);
   const loadSnippets = useSnippetStore((s) => s.loadEntries);
+  const [codexTypes, setCodexTypes] = useState<CodexType[]>([]);
 
   useEffect(() => {
-    if (open) {
-      loadEntries();
-      loadSnippets();
-    }
+    if (!open) return;
+    // Only load when not yet in store — loadEntries sets isLoading:true which
+    // unmounts the CodexManagementPanel's virtualizer and resets its scroll.
+    if (useCodexStore.getState().entries.length === 0) loadEntries();
+    if (useSnippetStore.getState().entries.length === 0) loadSnippets();
+    ensureBuiltinTypes("default-project")
+      .then(() => listCodexTypes("default-project"))
+      .then(setCodexTypes)
+      .catch(() => setCodexTypes([]));
   }, [open, loadEntries, loadSnippets]);
 
+  const allCodexTags = useMemo(() => {
+    const tagSet = new Set<string>();
+    for (const entry of entries) {
+      for (const tag of parseTags(entry.tagsCache)) {
+        tagSet.add(tag.name);
+      }
+    }
+    return [...tagSet].sort();
+  }, [entries]);
+
+  const uniqueCodexTypes = useMemo(
+    () => [...new Set(entries.map((e) => e.type))],
+    [entries],
+  );
+
+  const filteredCodexEntries = useMemo(() => {
+    let filtered = entries;
+    if (codexSearch) {
+      const q = codexSearch.toLowerCase();
+      filtered = filtered.filter((e) => e.name.toLowerCase().includes(q));
+    }
+    if (codexFilterType) {
+      filtered = filtered.filter((e) => e.type === codexFilterType);
+    }
+    if (codexSelectedTags.size > 0) {
+      filtered = filtered.filter((e) => {
+        const tags = parseTags(e.tagsCache).map((tag) => tag.name);
+        return [...codexSelectedTags].some((tag) => tags.includes(tag));
+      });
+    }
+    if (codexSortOrder === "category") {
+      const byType = new Map<string, CodexEntry[]>();
+      for (const entry of filtered) {
+        if (!byType.has(entry.type)) byType.set(entry.type, []);
+        byType.get(entry.type)!.push(entry);
+      }
+      for (const grp of byType.values()) {
+        grp.sort((a, b) => a.name.localeCompare(b.name, "ja"));
+      }
+      const typeOrder = new Map(
+        codexTypes.map((ct, i) => [ct.slug, ct.sortOrder ?? i]),
+      );
+      return [...byType.entries()]
+        .sort(
+          ([aSlug], [bSlug]) =>
+            (typeOrder.get(aSlug) ?? 9999) - (typeOrder.get(bSlug) ?? 9999),
+        )
+        .flatMap(([, grp]) => grp);
+    }
+    return sortEntries(filtered, codexSortOrder);
+  }, [
+    entries,
+    codexSearch,
+    codexFilterType,
+    codexSelectedTags,
+    codexSortOrder,
+    codexTypes,
+  ]);
+
+  const filteredSnippetEntries = useMemo(() => {
+    let filtered = snippetEntries;
+    if (snippetSearch) {
+      const q = snippetSearch.toLowerCase();
+      filtered = filtered.filter((s) => s.title.toLowerCase().includes(q));
+    }
+    if (snippetSourceFilter === "from-chat") {
+      filtered = filtered.filter((s) => s.sourceChatMessageId != null);
+    } else if (snippetSourceFilter === "from-editor") {
+      filtered = filtered.filter(
+        (s) => s.sourceChatMessageId == null && s.sceneId != null,
+      );
+    } else if (snippetSourceFilter === "manual") {
+      filtered = filtered.filter(
+        (s) => s.sourceChatMessageId == null && s.sceneId == null,
+      );
+    }
+    switch (snippetSortOrder) {
+      case "recent":
+        return [...filtered].sort((a, b) =>
+          b.createdAt.localeCompare(a.createdAt),
+        );
+      case "oldest":
+        return [...filtered].sort((a, b) =>
+          a.createdAt.localeCompare(b.createdAt),
+        );
+      case "title-asc":
+        return [...filtered].sort((a, b) => a.title.localeCompare(b.title));
+      case "most-used":
+        return [...filtered].sort(
+          (a, b) => (b.usageCount ?? 0) - (a.usageCount ?? 0),
+        );
+      default:
+        return filtered;
+    }
+  }, [snippetEntries, snippetSearch, snippetSourceFilter, snippetSortOrder]);
+
   return (
-    <AnimatedOverlay
+    <AnimatedPopover
       open={open}
       onClose={onClose}
-      className="max-h-[28rem] w-80 rounded-lg border border-border bg-background p-4 shadow-lg"
+      containerRef={containerRef}
+      className="absolute right-0 top-full z-50 mt-1 w-96 rounded-lg border border-border bg-background p-4 shadow-lg"
     >
       <h3 className="mb-3 text-sm font-semibold">
         {t("chat.context.pinEntries")}
       </h3>
 
       {/* Tab selector */}
-      <div className="mb-3 flex rounded-md border border-border overflow-hidden">
+      <div className="mb-3 flex overflow-hidden rounded-md border border-border">
         <button
           type="button"
           onClick={() => setActiveTab("codex")}
@@ -238,35 +360,156 @@ export function PinCodexDialog({
             {t("chat.context.noCodexEntries")}
           </p>
         ) : (
-          <PinCodexVirtualList
-            entries={entries}
-            pinnedIds={pinnedIds}
-            withChildrenIds={withChildrenIds}
-            onPin={(id) => onPin(id, "codex")}
-            onUnpin={onUnpin}
-            onToggleChildren={onToggleChildren}
-          />
+          <>
+            {/* Search */}
+            <div className="relative mb-2">
+              <Search className="absolute left-2 top-1/2 h-3 w-3 -translate-y-1/2 text-muted-foreground" />
+              <input
+                type="text"
+                value={codexSearch}
+                onChange={(e) => setCodexSearch(e.target.value)}
+                placeholder={t("codex.searchPlaceholder")}
+                className="w-full rounded border border-input bg-background py-1 pl-6 pr-2 text-xs focus:outline-none focus:ring-1 focus:ring-ring"
+              />
+            </div>
+
+            {/* Type filter + sort */}
+            <div className="mb-2 flex items-center gap-1.5">
+              <div className="flex min-w-0 flex-1 flex-wrap gap-1">
+                <button
+                  type="button"
+                  onClick={() => setCodexFilterType(null)}
+                  className={`rounded-full px-2 py-0.5 text-[10px] font-medium transition-colors ${
+                    codexFilterType === null
+                      ? "bg-primary text-primary-foreground"
+                      : "bg-muted text-muted-foreground hover:bg-accent"
+                  }`}
+                >
+                  {t("codex.filterAll")}
+                </button>
+                {uniqueCodexTypes.map((type) => (
+                  <button
+                    key={type}
+                    type="button"
+                    onClick={() =>
+                      setCodexFilterType(codexFilterType === type ? null : type)
+                    }
+                    className={`rounded-full px-2 py-0.5 text-[10px] font-medium transition-colors ${
+                      codexFilterType === type
+                        ? "bg-primary text-primary-foreground"
+                        : "bg-muted text-muted-foreground hover:bg-accent"
+                    }`}
+                  >
+                    {getTypeLabel(type)}
+                  </button>
+                ))}
+              </div>
+              <select
+                value={codexSortOrder}
+                onChange={(e) =>
+                  setCodexSortOrder(e.target.value as CodexSortOrder)
+                }
+                title={t("codex.sortOrderTitle")}
+                className="shrink-0 rounded border border-input bg-background px-1 py-0.5 text-[10px] focus:outline-none focus:ring-1 focus:ring-ring"
+              >
+                {DIALOG_CODEX_SORT_OPTIONS.map((opt) => (
+                  <option key={opt.value} value={opt.value}>
+                    {t(opt.key)}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            {/* Tag filter */}
+            {allCodexTags.length > 0 && (
+              <div className="mb-2">
+                <TagFilterBar
+                  allTags={allCodexTags}
+                  selectedTags={codexSelectedTags}
+                  onToggle={(tag) =>
+                    setCodexSelectedTags((prev) => {
+                      const next = new Set(prev);
+                      if (next.has(tag)) next.delete(tag);
+                      else next.add(tag);
+                      return next;
+                    })
+                  }
+                  onClear={() => setCodexSelectedTags(new Set())}
+                />
+              </div>
+            )}
+
+            <PinCodexList
+              entries={filteredCodexEntries}
+              allEntries={entries}
+              pinnedIds={pinnedIds}
+              withChildrenIds={withChildrenIds}
+              onPin={(id) => onPin(id, "codex")}
+              onUnpin={onUnpin}
+              onToggleChildren={onToggleChildren}
+            />
+          </>
         )
       ) : snippetEntries.length === 0 ? (
         <p className="text-xs text-muted-foreground">
           {t("chat.context.noSnippets")}
         </p>
       ) : (
-        <PinSnippetVirtualList
-          snippets={snippetEntries}
-          pinnedSnippetIds={pinnedSnippetIds}
-          onPin={(id) => onPin(id, "snippet")}
-          onUnpin={onUnpin}
-        />
-      )}
+        <>
+          {/* Search */}
+          <div className="relative mb-2">
+            <Search className="absolute left-2 top-1/2 h-3 w-3 -translate-y-1/2 text-muted-foreground" />
+            <input
+              type="text"
+              value={snippetSearch}
+              onChange={(e) => setSnippetSearch(e.target.value)}
+              placeholder={t("snippets.searchPlaceholder")}
+              className="w-full rounded border border-input bg-background py-1 pl-6 pr-2 text-xs focus:outline-none focus:ring-1 focus:ring-ring"
+            />
+          </div>
 
-      <button
-        type="button"
-        onClick={onClose}
-        className="mt-3 w-full rounded-md bg-primary px-3 py-1.5 text-xs text-primary-foreground hover:bg-primary/90"
-      >
-        {t("common.close")}
-      </button>
-    </AnimatedOverlay>
+          {/* Source filter + sort */}
+          <div className="mb-2 flex items-center gap-1.5">
+            <div className="flex min-w-0 flex-1 flex-wrap gap-1">
+              {SNIPPET_SOURCE_OPTIONS.map((opt) => (
+                <button
+                  key={opt.value}
+                  type="button"
+                  onClick={() => setSnippetSourceFilter(opt.value)}
+                  className={`rounded-full px-2 py-0.5 text-[10px] font-medium transition-colors ${
+                    snippetSourceFilter === opt.value
+                      ? "bg-primary text-primary-foreground"
+                      : "bg-muted text-muted-foreground hover:bg-accent"
+                  }`}
+                >
+                  {t(opt.key)}
+                </button>
+              ))}
+            </div>
+            <select
+              value={snippetSortOrder}
+              onChange={(e) =>
+                setSnippetSortOrder(e.target.value as SnippetSortOrder)
+              }
+              title={t("snippets.sortOrder")}
+              className="shrink-0 rounded border border-input bg-background px-1 py-0.5 text-[10px] focus:outline-none focus:ring-1 focus:ring-ring"
+            >
+              {SNIPPET_SORT_OPTIONS.map((opt) => (
+                <option key={opt.value} value={opt.value}>
+                  {t(opt.key)}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          <PinSnippetList
+            snippets={filteredSnippetEntries}
+            pinnedSnippetIds={pinnedSnippetIds}
+            onPin={(id) => onPin(id, "snippet")}
+            onUnpin={onUnpin}
+          />
+        </>
+      )}
+    </AnimatedPopover>
   );
 }

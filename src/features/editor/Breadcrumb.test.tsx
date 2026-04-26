@@ -2,6 +2,14 @@ import { describe, it, expect } from "vitest";
 import { computeBreadcrumbPath } from "./Breadcrumb";
 import type { TreeNodeData } from "@/features/tree/treeStore";
 
+const NODE_DEFAULTS = {
+  storyTimeOrder: null,
+  storyTimeLabel: null,
+  povCharacterId: null,
+  locationId: null,
+  createdAt: "2024-01-01T00:00:00Z",
+} as const;
+
 const NODES: TreeNodeData[] = [
   {
     id: "part-1",
@@ -10,8 +18,9 @@ const NODES: TreeNodeData[] = [
     nodeType: "folder",
     title: "第一部",
     synopsis: null,
-    sortOrder: 1,
+    sortOrder: "a1",
     status: null,
+    ...NODE_DEFAULTS,
   },
   {
     id: "chapter-1",
@@ -20,8 +29,9 @@ const NODES: TreeNodeData[] = [
     nodeType: "folder",
     title: "第1章",
     synopsis: null,
-    sortOrder: 1,
+    sortOrder: "a1",
     status: null,
+    ...NODE_DEFAULTS,
   },
   {
     id: "scene-1",
@@ -30,8 +40,9 @@ const NODES: TreeNodeData[] = [
     nodeType: "scene",
     title: "塔の麓",
     synopsis: null,
-    sortOrder: 1,
+    sortOrder: "a1",
     status: null,
+    ...NODE_DEFAULTS,
   },
   {
     id: "chapter-2",
@@ -40,8 +51,9 @@ const NODES: TreeNodeData[] = [
     nodeType: "folder",
     title: "第2章",
     synopsis: null,
-    sortOrder: 2,
+    sortOrder: "a2",
     status: null,
+    ...NODE_DEFAULTS,
   },
   {
     id: "scene-2",
@@ -50,8 +62,9 @@ const NODES: TreeNodeData[] = [
     nodeType: "scene",
     title: "市場にて",
     synopsis: null,
-    sortOrder: 1,
+    sortOrder: "a1",
     status: null,
+    ...NODE_DEFAULTS,
   },
   {
     id: "folder-1",
@@ -60,8 +73,9 @@ const NODES: TreeNodeData[] = [
     nodeType: "folder",
     title: "資料",
     synopsis: null,
-    sortOrder: 3,
+    sortOrder: "a3",
     status: null,
+    ...NODE_DEFAULTS,
   },
   {
     id: "sub-folder",
@@ -70,8 +84,9 @@ const NODES: TreeNodeData[] = [
     nodeType: "folder",
     title: "キャラクター設定",
     synopsis: null,
-    sortOrder: 1,
+    sortOrder: "a1",
     status: null,
+    ...NODE_DEFAULTS,
   },
   {
     id: "note-1",
@@ -80,8 +95,9 @@ const NODES: TreeNodeData[] = [
     nodeType: "note",
     title: "エララ設定",
     synopsis: null,
-    sortOrder: 1,
+    sortOrder: "a1",
     status: null,
+    ...NODE_DEFAULTS,
   },
 ];
 

@@ -191,6 +191,11 @@
       "tense": "時制",
       "language": "執筆言語",
       "unselected": "未選択",
+      "phaseResolutionMode": "フェーズ解決モード",
+      "phaseResolutionModeDesc": "Codexフェーズの適用順序をどの時間軸で決めるか",
+      "phaseResolutionReading": "読者順 (Reading-order)",
+      "phaseResolutionStory": "作中時間順 (Story-time)",
+      "phaseResolutionAuto": "自動 (Auto)",
       "firstPerson": "一人称",
       "thirdLimited": "三人称限定",
       "thirdOmniscient": "三人称全知",
@@ -311,7 +316,11 @@
       "snippets": "Snippets",
       "attribution": "帰属",
       "codex-quick": "Codex Quick",
-      "stats": "統計"
+      "stats": "統計",
+      "timeline": "タイムライン",
+      "map": "マップ",
+      "linter": "Linter",
+      "foreshadow": "伏線"
     },
     "preset": {
       "title": "レイアウトプリセット",
@@ -603,12 +612,63 @@
       "tagsPlaceholder": "タグをカンマ区切りで入力"
     }
   },
+  "foreshadow": {
+    "panel": {
+      "title": "伏線",
+      "empty": "伏線はありません",
+      "filterEmpty": "該当する伏線はありません",
+      "clearFilter": "フィルタをクリア",
+      "newButton": "新規作成",
+      "toggle": "展開/折り畳み",
+      "setupsEmpty": "Setup なし"
+    },
+    "create": {
+      "heading": "伏線を新規作成",
+      "titleLabel": "タイトル",
+      "titlePlaceholder": "例: ○○の正体",
+      "intentLabel": "意図（任意）",
+      "intentPlaceholder": "回収シーンのイメージなど"
+    },
+    "label": {
+      "planned": "計画中",
+      "seeded": "設置済",
+      "paid": "回収済",
+      "needs_strengthening": "強化推奨",
+      "orphan_payoff": "孤立",
+      "abandoned": "放棄"
+    },
+    "popover": {
+      "heading": "伏線マーク",
+      "setupHeading": "Setup 対象を選択",
+      "payoffHeading": "Payoff 対象を選択",
+      "designateHeading": "回収先として指名",
+      "searchPlaceholder": "検索…",
+      "noResults": "見つかりません",
+      "createNew": "新規伏線を作成して追加"
+    },
+    "hoverPopover": {
+      "removeMark": "マークを外す"
+    },
+    "setup": {
+      "orphan": "孤立",
+      "discard": "破棄",
+      "kind": {
+        "designated_existing": "指名済",
+        "inserted_new": "新規挿入",
+        "rewritten": "書き直し"
+      }
+    }
+  },
   "snippets": {
     "sortRecent": "新しい順",
     "sortOldest": "古い順",
     "sortTitleAsc": "タイトル順",
     "clipboard": "クリップボード",
     "sortMostUsed": "使用回数順",
+    "filterAll": "すべて",
+    "filterFromChat": "チャット",
+    "filterFromEditor": "エディタ",
+    "filterManual": "手動",
     "newSnippet": "新規スニペット",
     "searchPlaceholder": "Snippetを検索…",
     "sortOrder": "ソート順",
@@ -737,6 +797,7 @@
       "fontSize": "文字サイズ",
       "attribution": "帰属表示",
       "comments": "コメント表示（未実装）",
+      "foreshadowMarks": "伏線マーク表示",
       "focusMode": "フォーカスモード",
       "typewriterMode": "タイプライターモード",
       "moreOptions": "その他のオプション",
@@ -773,8 +834,22 @@
       "linearMode": "リニアモード"
     },
     "contextMenu": {
+      "cut": "カット",
+      "copy": "コピー",
+      "paste": "貼り付け",
+      "selectAll": "すべて選択",
+      "insertSceneBreak": "シーンブレークを挿入",
       "addToCodex": "コデックスに追加",
-      "saveAsSnippet": "スニペットとして保存"
+      "saveAsSnippet": "スニペットとして保存",
+      "lookUpInChat": "チャットで調べる",
+      "addComment": "コメントを追加",
+      "requestForeshadow": "伏線を要請",
+      "registerForeshadow": "伏線として登録",
+      "designatePayoff": "回収先として指名",
+      "lintDisable": "選択範囲で Lint ルールを無効化",
+      "lintUnsetSpan": "Lint 無効化を解除（Span）",
+      "lintUnsetBlock": "Lint 無効化を解除（ブロック）",
+      "lintUnsetBoth": "Lint 無効化を解除（Span + ブロック）"
     },
     "find": {
       "placeholder": "検索…",
@@ -899,7 +974,17 @@
     "exportTrace": "帰属エクスポート",
     "aiPctChars": "AI: {{pct}}% ({{count}}字)",
     "humanPct": "{{pct}}%人",
-    "charSuffix": "{{count}}字"
+    "charSuffix": "{{count}}字",
+    "unknownModel": "不明モデル",
+    "refresh": "更新",
+    "sortAsc": "昇順",
+    "sortDesc": "降順",
+    "columnScene": "シーン",
+    "columnTotal": "合計",
+    "columnHuman": "人間",
+    "columnAi": "AI",
+    "columnUnknown": "不明",
+    "columnAiPct": "AI%"
   },
   "phase": {
     "editTitle": "フェーズを編集",

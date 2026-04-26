@@ -4,6 +4,8 @@ import { useSettingControl } from "../useSettingControl";
 import { SettingSection } from "../components/SettingSection";
 import { SettingRow } from "../components/SettingRow";
 import { SettingTextarea } from "../components/SettingTextarea";
+import { usePhaseStore } from "@/features/codex/phaseStore";
+import type { PhaseResolutionMode } from "@/features/codex/phaseResolver";
 
 const LANGUAGE_OPTIONS = [
   { value: "ja", label: "日本語" },
@@ -57,6 +59,12 @@ export function ProjectCategory() {
     { value: "", label: t("settings.project.unselected") },
     { value: "Past tense", label: t("settings.project.pastTense") },
     { value: "Present tense", label: t("settings.project.presentTense") },
+  ];
+
+  const PHASE_RESOLUTION_OPTIONS = [
+    { value: "reading", label: t("settings.project.phaseResolutionReading") },
+    { value: "story", label: t("settings.project.phaseResolutionStory") },
+    { value: "auto", label: t("settings.project.phaseResolutionAuto") },
   ];
 
   const FOLDER_NAMING_OPTIONS = [
@@ -134,6 +142,26 @@ export function ProjectCategory() {
             className="rounded-md border border-input bg-background px-2 py-1 text-sm focus:outline-none"
           >
             {LANGUAGE_OPTIONS.map((o) => (
+              <option key={o.value} value={o.value}>
+                {o.label}
+              </option>
+            ))}
+          </select>
+        </SettingRow>
+        <SettingRow
+          label={t("settings.project.phaseResolutionMode")}
+          description={t("settings.project.phaseResolutionModeDesc")}
+        >
+          <select
+            value={project.phaseResolutionMode}
+            onChange={(e) => {
+              const mode = e.target.value as PhaseResolutionMode;
+              updateField("phaseResolutionMode", mode);
+              usePhaseStore.getState().setResolutionMode(mode);
+            }}
+            className="rounded-md border border-input bg-background px-2 py-1 text-sm focus:outline-none"
+          >
+            {PHASE_RESOLUTION_OPTIONS.map((o) => (
               <option key={o.value} value={o.value}>
                 {o.label}
               </option>

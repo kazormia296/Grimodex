@@ -1,5 +1,8 @@
 import type { TreeNodeData } from "@/features/tree/treeStore";
 import type { CodexEntryPhase, CodexPhaseDetailOverride } from "@/db/schema";
+import { cmpKeys } from "@/features/tree/fractionalIndex";
+
+export type PhaseResolutionMode = "reading" | "story" | "auto";
 
 export interface ResolvedCodexState {
   summary: string | null;
@@ -31,7 +34,7 @@ export function computeGlobalSceneOrder(
 
   // 各グループをsortOrder順でソート
   for (const children of childrenMap.values()) {
-    children.sort((a, b) => a.sortOrder - b.sortOrder);
+    children.sort((a, b) => cmpKeys(a.sortOrder, b.sortOrder));
   }
 
   let index = 0;
@@ -52,6 +55,41 @@ export function computeGlobalSceneOrder(
   }
 
   dfs(null);
+  return result;
+}
+
+/**
+ * phase_resolution_mode に応じたシーンインデックスを計算する。
+ * - reading: DFS順（reading-order）
+ * - story / auto: storyTimeOrder順。未設定シーンはreading-order末尾に追加
+ */
+export function computeSceneTimeIndex(
+  nodes: TreeNodeData[],
+  mode: PhaseResolutionMode,
+): Map<string, number> {
+  if (mode === "reading") {
+    return computeGlobalSceneOrder(nodes);
+  }
+
+  // story / auto: scheduled scenes sorted by storyTimeOrder, then unscheduled in reading-order
+  const readingOrder = computeGlobalSceneOrder(nodes);
+  const scenes = nodes.filter((n) => n.nodeType === "scene");
+
+  const scheduled = scenes.filter((s) => s.storyTimeOrder !== null);
+  const unscheduled = scenes.filter((s) => s.storyTimeOrder === null);
+
+  scheduled.sort((a, b) => cmpKeys(a.storyTimeOrder!, b.storyTimeOrder!));
+  unscheduled.sort(
+    (a, b) =>
+      (readingOrder.get(a.id) ?? Infinity) -
+      (readingOrder.get(b.id) ?? Infinity),
+  );
+
+  const result = new Map<string, number>();
+  let index = 0;
+  for (const scene of [...scheduled, ...unscheduled]) {
+    result.set(scene.id, index++);
+  }
   return result;
 }
 

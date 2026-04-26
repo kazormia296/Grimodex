@@ -1,6 +1,7 @@
 import { encodingForModel } from "js-tiktoken";
 import i18next from "@/lib/i18n";
 import type { TreeNodeData } from "@/features/tree/treeStore";
+import { cmpKeys } from "@/features/tree/fractionalIndex";
 import {
   formatTimelineContext,
   type ResolvedCodexState,
@@ -624,11 +625,11 @@ export function buildStorySoFar(
       (n) =>
         n.nodeType === "scene" &&
         n.id !== currentSceneId &&
-        n.sortOrder < currentScene.sortOrder &&
+        cmpKeys(n.sortOrder, currentScene.sortOrder) < 0 &&
         n.synopsis != null &&
         n.synopsis.trim() !== "",
     )
-    .sort((a, b) => a.sortOrder - b.sortOrder);
+    .sort((a, b) => cmpKeys(a.sortOrder, b.sortOrder));
 
   if (precedingScenes.length === 0) return "";
 

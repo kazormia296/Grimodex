@@ -147,6 +147,16 @@ export async function updateCodexType(
 }
 
 export async function deleteCodexType(id: string): Promise<void> {
+  // Defense-in-depth: the UI hides delete for builtins, but a programmatic
+  // call should still be rejected. Composite FK already blocks deletion when
+  // entries reference the type, but does not protect builtin slugs themselves.
+  const rows = await db
+    .select({ isBuiltin: codexTypes.isBuiltin })
+    .from(codexTypes)
+    .where(eq(codexTypes.id, id));
+  if (rows[0]?.isBuiltin === 1) {
+    throw new Error("Cannot delete a builtin codex type");
+  }
   await db.delete(codexTypes).where(eq(codexTypes.id, id));
 }
 

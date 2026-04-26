@@ -6,12 +6,15 @@ import { computeAttributionStats } from "./attributionStats";
 import { useAttributionStore } from "./attributionStore";
 import { ExportAgentTraceButton } from "./ExportAgentTraceButton";
 import { AttributionProjectView } from "./AttributionProjectView";
+import { BreakdownBar } from "./BreakdownBar";
 import {
   exportAttributionMarkdown,
   exportAttributionCsv,
   downloadTextFile,
 } from "./exportReport";
 import type { FilterSource } from "./attributionStore";
+
+const UNKNOWN_MODEL_KEY = "__unknown_model__";
 
 interface StatBarProps {
   label: string;
@@ -152,6 +155,13 @@ export function AttributionReport() {
             onFilter={setFilterSource}
           />
 
+          <BreakdownBar
+            human={stats.human + stats.unmarked}
+            ai={stats.ai}
+            unknown={stats.unknown}
+            total={stats.total}
+          />
+
           {Object.keys(stats.modelBreakdown).length > 0 && (
             <div className="mt-1">
               <p className="mb-1 text-xs font-medium text-muted-foreground">
@@ -160,13 +170,17 @@ export function AttributionReport() {
               {Object.entries(stats.modelBreakdown).map(([model, count]) => {
                 const pct =
                   stats.ai > 0 ? Math.round((count / stats.ai) * 100) : 0;
+                const label =
+                  model === UNKNOWN_MODEL_KEY
+                    ? t("attribution.unknownModel")
+                    : model;
                 return (
                   <div key={model} className="flex items-center gap-2 text-xs">
                     <span
                       className="flex-1 truncate text-muted-foreground"
-                      title={model}
+                      title={label}
                     >
-                      {model}
+                      {label}
                     </span>
                     <span className="tabular-nums text-muted-foreground">
                       {t("attribution.charCount", { count, pct })}

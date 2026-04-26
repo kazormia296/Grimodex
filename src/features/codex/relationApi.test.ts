@@ -15,55 +15,55 @@ function createQueryCapture() {
 }
 
 describe("relationApi query generation", () => {
-  it("listDismissedRelationIds queries codex_relation_dismissed by entry_id", async () => {
+  it("listDismissedRelationIds queries codex_dismissed_relations by entry_id", async () => {
     const { db, queries } = createQueryCapture();
-    const { codexRelationDismissed } = schema;
+    const { codexDismissedRelations } = schema;
     const { eq } = await import("drizzle-orm");
 
     await db
-      .select({ dismissedId: codexRelationDismissed.dismissedId })
-      .from(codexRelationDismissed)
-      .where(eq(codexRelationDismissed.entryId, "entry-1"));
+      .select({ dismissedId: codexDismissedRelations.dismissedId })
+      .from(codexDismissedRelations)
+      .where(eq(codexDismissedRelations.entryId, "entry-1"));
 
     expect(queries).toHaveLength(1);
-    expect(queries[0].sql).toContain("codex_relation_dismissed");
+    expect(queries[0].sql).toContain("codex_dismissed_relations");
     expect(queries[0].sql).toContain("dismissed_id");
     expect(queries[0].params).toContain("entry-1");
   });
 
-  it("dismissRelation inserts into codex_relation_dismissed", async () => {
+  it("dismissRelation inserts into codex_dismissed_relations", async () => {
     const { db, queries } = createQueryCapture();
-    const { codexRelationDismissed } = schema;
+    const { codexDismissedRelations } = schema;
 
     await db
-      .insert(codexRelationDismissed)
+      .insert(codexDismissedRelations)
       .values({ entryId: "entry-1", dismissedId: "entry-2" })
       .onConflictDoNothing();
 
     expect(queries).toHaveLength(1);
     expect(queries[0].sql).toContain("insert");
-    expect(queries[0].sql).toContain("codex_relation_dismissed");
+    expect(queries[0].sql).toContain("codex_dismissed_relations");
     expect(queries[0].params).toContain("entry-1");
     expect(queries[0].params).toContain("entry-2");
   });
 
   it("undismissRelation deletes by both entryId and dismissedId", async () => {
     const { db, queries } = createQueryCapture();
-    const { codexRelationDismissed } = schema;
+    const { codexDismissedRelations } = schema;
     const { eq, and } = await import("drizzle-orm");
 
     await db
-      .delete(codexRelationDismissed)
+      .delete(codexDismissedRelations)
       .where(
         and(
-          eq(codexRelationDismissed.entryId, "entry-1"),
-          eq(codexRelationDismissed.dismissedId, "entry-2"),
+          eq(codexDismissedRelations.entryId, "entry-1"),
+          eq(codexDismissedRelations.dismissedId, "entry-2"),
         ),
       );
 
     expect(queries).toHaveLength(1);
     expect(queries[0].sql).toContain("delete");
-    expect(queries[0].sql).toContain("codex_relation_dismissed");
+    expect(queries[0].sql).toContain("codex_dismissed_relations");
     expect(queries[0].params).toContain("entry-1");
     expect(queries[0].params).toContain("entry-2");
   });

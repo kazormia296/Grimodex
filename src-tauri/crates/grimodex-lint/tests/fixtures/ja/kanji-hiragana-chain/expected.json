@@ -1,0 +1,20 @@
+[
+  {
+    "rule_id": "ja/kanji-hiragana-chain",
+    "severity": "info",
+    "message": "漢字が 10 文字連続しています。読みにくい可能性があります",
+    "range": {
+      "start": 0,
+      "end": 10
+    }
+  },
+  {
+    "rule_id": "ja/kanji-hiragana-chain",
+    "severity": "info",
+    "message": "平仮名が 24 文字連続しています。漢字と仮名のバランスを検討してください",
+    "range": {
+      "start": 17,
+      "end": 41
+    }
+  }
+]

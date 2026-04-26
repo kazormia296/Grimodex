@@ -11,8 +11,8 @@ import {
 beforeEach(async () => {
   // Clean up settings between tests
   const { db } = await import("@/db/client");
-  const { settings } = await import("@/db/schema");
-  await db.delete(settings);
+  const { appSettings } = await import("@/db/schema");
+  await db.delete(appSettings);
 });
 
 describe("settings api", () => {

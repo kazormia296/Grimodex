@@ -19,6 +19,17 @@ import { SceneBreakNode } from "@/features/editor/SceneBreakNode";
 import { FindReplaceExtension } from "@/features/editor/FindReplaceExtension";
 import { InlineAtomNavigationExtension } from "@/features/editor/InlineAtomNavigationExtension";
 import { SlashCommandExtension } from "@/features/editor/inlineAi/SlashCommandExtension";
+import { createLintDecorationPlugin } from "@/features/editor/LintDecorationPlugin";
+import { createLintDisableGutterPlugin } from "@/features/editor/LintDisableGutterPlugin";
+import { LintDisableMark } from "@/features/editor/LintDisableMark";
+import { LintDisableBlockAttrs } from "@/features/editor/LintDisableBlockAttrs";
+import { CommentMark } from "@/features/editor/CommentMark";
+import { createCommentDecorationPlugin } from "@/features/editor/CommentDecorationPlugin";
+import { ForeshadowSetupMark } from "@/features/foreshadow/marks/ForeshadowSetupMark";
+import { ForeshadowPayoffMark } from "@/features/foreshadow/marks/ForeshadowPayoffMark";
+import { ForeshadowPasteRule } from "@/features/foreshadow/marks/foreshadowPasteRule";
+export { COMMENT_REBUILD_META } from "@/features/editor/CommentDecorationPlugin";
+import { useCursorSettingsStore } from "@/features/editor/cursorSettingsStore";
 import i18next from "@/lib/i18n";
 import type { Extensions } from "@tiptap/core";
 
@@ -65,6 +76,27 @@ const ParagraphWithEmptyLineSupport = Paragraph.extend({
  * This extension adds the shortcuts that match what the toolbar labels
  * display, so both sets of keys work.
  */
+const LintDecorationExtension = Extension.create({
+  name: "lintDecoration",
+  addProseMirrorPlugins() {
+    return [createLintDecorationPlugin()];
+  },
+});
+
+const LintDisableGutterExtension = Extension.create({
+  name: "lintDisableGutter",
+  addProseMirrorPlugins() {
+    return [createLintDisableGutterPlugin()];
+  },
+});
+
+const CommentDecorationExtension = Extension.create({
+  name: "commentDecoration",
+  addProseMirrorPlugins() {
+    return [createCommentDecorationPlugin()];
+  },
+});
+
 const ToolbarShortcutsExtension = Extension.create({
   name: "toolbarShortcuts",
 
@@ -74,6 +106,20 @@ const ToolbarShortcutsExtension = Extension.create({
       "Mod-1": () => this.editor.commands.toggleHeading({ level: 1 }),
       "Mod-2": () => this.editor.commands.toggleHeading({ level: 2 }),
       "Mod-3": () => this.editor.commands.toggleHeading({ level: 3 }),
+      // Ctrl+Shift+M — add inline comment to selection
+      "Mod-Shift-m": () => {
+        const { from, to } = this.editor.state.selection;
+        if (from === to) return false;
+        useCursorSettingsStore.getState().setCommentPickerOpen(true);
+        return true;
+      },
+      // Ctrl+Shift+F — open foreshadow mark picker for selection
+      "Mod-Shift-f": () => {
+        const { from, to } = this.editor.state.selection;
+        if (from === to) return false;
+        useCursorSettingsStore.getState().setForeshadowPickerOpen(true);
+        return true;
+      },
     };
   },
 });
@@ -113,6 +159,15 @@ export function getEditorExtensions(): Extensions {
     FindReplaceExtension,
     InlineAtomNavigationExtension,
     SlashCommandExtension,
+    LintDecorationExtension,
+    LintDisableMark,
+    LintDisableBlockAttrs,
+    LintDisableGutterExtension,
+    CommentMark,
+    CommentDecorationExtension,
+    ForeshadowSetupMark,
+    ForeshadowPayoffMark,
+    ForeshadowPasteRule,
   ];
 }
 

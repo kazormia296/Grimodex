@@ -4,6 +4,7 @@ import {
   integer,
   real,
   primaryKey,
+  foreignKey,
   index,
   uniqueIndex,
 } from "drizzle-orm/sqlite-core";
@@ -17,6 +18,11 @@ export const projects = sqliteTable("projects", {
   language: text("language").notNull().default("ja"),
   styleGuide: text("style_guide"),
   aiInstructions: text("ai_instructions"),
+  phaseResolutionMode: text("phase_resolution_mode", {
+    enum: ["reading", "story", "auto"],
+  })
+    .notNull()
+    .default("auto"),
   createdAt: text("created_at")
     .notNull()
     .$defaultFn(() => new Date().toISOString()),
@@ -34,12 +40,26 @@ export const treeNodes = sqliteTable(
       .references(() => projects.id, { onDelete: "cascade" }),
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     parentId: text("parent_id").references((): any => treeNodes.id, {
-      onDelete: "set null",
+      onDelete: "cascade",
     }),
-    nodeType: text("node_type").notNull(), // 'folder' | 'scene' | 'note'
+    nodeType: text("node_type").notNull(), // CHECK('folder' | 'scene' | 'note') enforced in SQL
     title: text("title").notNull().default("Untitled"),
     synopsis: text("synopsis"), // Scene only: plain text summary for storySoFar context injection
-    sortOrder: real("sort_order").notNull().default(0.0),
+    // reading-order 用の fractional-indexing キー（base62、辞書順比較）
+    sortOrder: text("sort_order").notNull().default("a0"),
+    // story-time 用の fractional-indexing キー（null の場合は未指定）
+    storyTimeOrder: text("story_time_order"),
+    storyTimeLabel: text("story_time_label"),
+
+    povCharacterId: text("pov_character_id").references(
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (): any => codexEntries.id,
+      { onDelete: "set null" },
+    ),
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    locationId: text("location_id").references((): any => codexEntries.id, {
+      onDelete: "set null",
+    }),
     status: text("status").default("outline"), // 'outline' | 'draft' | 'complete' | 'revision' | 'final'
     content: text("content").notNull().default("{}"), // Scene/Note body (ProseMirror JSON)
     createdAt: text("created_at")
@@ -55,6 +75,7 @@ export const treeNodes = sqliteTable(
       table.parentId,
       table.sortOrder,
     ),
+    index("idx_tree_story_time").on(table.projectId, table.storyTimeOrder),
   ],
 );
 
@@ -93,7 +114,7 @@ export const codexEntries = sqliteTable(
     parentId: text("parent_id").references((): any => codexEntries.id, {
       onDelete: "set null",
     }),
-    type: text("type").notNull().default("character"), // FK (project_id, type) → codex_types(project_id, slug) validated at app layer
+    type: text("type").notNull().default("character"), // Composite FK → codex_types(project_id, slug), see foreignKey below
     name: text("name").notNull().default("Untitled"),
     aliases: text("aliases"), // JSON string[]
     excludedAliases: text("excluded_aliases"), // JSON string[]
@@ -105,6 +126,7 @@ export const codexEntries = sqliteTable(
     childrenBudget: text("children_budget").notNull().default("compact"), // 'none' | 'compact' | 'standard' | 'generous'
     sourceChatMessageId: text("source_chat_message_id").references(
       () => chatMessages.id,
+      { onDelete: "set null" },
     ),
     notes: text("notes"), // Private notes (ProseMirror JSON) – never injected into AI context
     createdAt: text("created_at")
@@ -118,11 +140,19 @@ export const codexEntries = sqliteTable(
     index("idx_codex_project").on(table.projectId, table.type),
     index("idx_codex_name").on(table.projectId, table.name),
     index("idx_codex_parent").on(table.parentId),
+    index("idx_codex_entries_src_msg").on(table.sourceChatMessageId),
+    foreignKey({
+      columns: [table.projectId, table.type],
+      foreignColumns: [codexTypes.projectId, codexTypes.slug],
+      name: "codex_entries_type_fkey",
+    })
+      .onUpdate("cascade")
+      .onDelete("restrict"),
   ],
 );
 
-export const codexRelationDismissed = sqliteTable(
-  "codex_relation_dismissed",
+export const codexDismissedRelations = sqliteTable(
+  "codex_dismissed_relations",
   {
     entryId: text("entry_id")
       .notNull()
@@ -134,11 +164,18 @@ export const codexRelationDismissed = sqliteTable(
   (table) => [primaryKey({ columns: [table.entryId, table.dismissedId] })],
 );
 
-export const codexQuickPins = sqliteTable("codex_quick_pins", {
-  entryId: text("entry_id")
-    .primaryKey()
-    .references(() => codexEntries.id, { onDelete: "cascade" }),
-});
+export const codexQuickPins = sqliteTable(
+  "codex_quick_pins",
+  {
+    entryId: text("entry_id")
+      .primaryKey()
+      .references(() => codexEntries.id, { onDelete: "cascade" }),
+    createdAt: text("created_at")
+      .notNull()
+      .$defaultFn(() => new Date().toISOString()),
+  },
+  (table) => [index("idx_codex_quick_pins_created").on(table.createdAt)],
+);
 
 export const codexTags = sqliteTable(
   "codex_tags",
@@ -180,7 +217,7 @@ export const codexDetailDefinitions = sqliteTable(
     projectId: text("project_id")
       .notNull()
       .references(() => projects.id, { onDelete: "cascade" }),
-    typeSlug: text("type_slug").notNull(), // logical ref to codex_types.slug
+    typeSlug: text("type_slug").notNull(), // Composite FK → codex_types(project_id, slug), see foreignKey below
     name: text("name").notNull(),
     fieldType: text("field_type").notNull().default("text"), // CHECK('text' | 'dropdown' | 'codex_reference')
     fieldConfig: text("field_config"), // JSON
@@ -201,6 +238,13 @@ export const codexDetailDefinitions = sqliteTable(
       table.typeSlug,
       table.sortOrder,
     ),
+    foreignKey({
+      columns: [table.projectId, table.typeSlug],
+      foreignColumns: [codexTypes.projectId, codexTypes.slug],
+      name: "codex_detail_defs_type_fkey",
+    })
+      .onUpdate("cascade")
+      .onDelete("restrict"),
   ],
 );
 
@@ -242,6 +286,7 @@ export const snippets = sqliteTable(
     }),
     sourceChatMessageId: text("source_chat_message_id").references(
       () => chatMessages.id,
+      { onDelete: "set null" },
     ),
     usageCount: integer("usage_count").notNull().default(0),
     createdAt: text("created_at")
@@ -253,6 +298,8 @@ export const snippets = sqliteTable(
   },
   (table) => [
     index("idx_snippets_project").on(table.projectId, table.createdAt),
+    index("idx_snippets_scene").on(table.sceneId),
+    index("idx_snippets_src_msg").on(table.sourceChatMessageId),
   ],
 );
 
@@ -287,7 +334,6 @@ export const chatSessions = sqliteTable(
     model: text("model")
       .notNull()
       .default("openrouter/anthropic/claude-sonnet-4.6"),
-    pinnedCodex: text("pinned_codex"), // JSON {id, source}[]
     createdAt: text("created_at")
       .notNull()
       .$defaultFn(() => new Date().toISOString()),
@@ -333,7 +379,6 @@ export const chatSummaries = sqliteTable(
       .notNull()
       .references(() => chatSessions.id, { onDelete: "cascade" }),
     summary: text("summary").notNull(),
-    sourceMessageIds: text("source_message_ids").notNull(), // JSON string[]
     tokenCount: integer("token_count"),
     createdAt: text("created_at")
       .notNull()
@@ -341,6 +386,56 @@ export const chatSummaries = sqliteTable(
   },
   (table) => [
     index("idx_chat_summaries_session").on(table.sessionId, table.createdAt),
+  ],
+);
+
+// Source messages referenced by each chat summary. Replaces the former
+// chat_summaries.source_message_ids JSON array with a proper FK set so
+// deleting a message cannot leave a dangling reference.
+export const chatSummaryMessages = sqliteTable(
+  "chat_summary_messages",
+  {
+    summaryId: text("summary_id")
+      .notNull()
+      .references(() => chatSummaries.id, { onDelete: "cascade" }),
+    messageId: text("message_id")
+      .notNull()
+      .references(() => chatMessages.id, { onDelete: "cascade" }),
+  },
+  (table) => [
+    primaryKey({ columns: [table.summaryId, table.messageId] }),
+    index("idx_chat_summary_messages_msg").on(table.messageId),
+  ],
+);
+
+// Pinned codex / snippet entries per chat session. Replaces the former
+// chat_sessions.pinned_codex JSON blob with a proper FK table. Exactly one
+// of codex_entry_id / snippet_id must be non-null (enforced in SQL).
+export const chatSessionPinnedCodex = sqliteTable(
+  "chat_session_pinned_codex",
+  {
+    id: text("id").primaryKey(),
+    sessionId: text("session_id")
+      .notNull()
+      .references(() => chatSessions.id, { onDelete: "cascade" }),
+    codexEntryId: text("codex_entry_id").references(() => codexEntries.id, {
+      onDelete: "cascade",
+    }),
+    snippetId: text("snippet_id").references(() => snippets.id, {
+      onDelete: "cascade",
+    }),
+    withChildren: integer("with_children").notNull().default(0),
+    pinSource: text("pin_source", { enum: ["manual", "chat_mention"] })
+      .notNull()
+      .default("manual"),
+    createdAt: text("created_at")
+      .notNull()
+      .$defaultFn(() => new Date().toISOString()),
+  },
+  (table) => [
+    index("idx_chat_pin_session").on(table.sessionId, table.createdAt),
+    uniqueIndex("uq_chat_pin_codex").on(table.sessionId, table.codexEntryId),
+    uniqueIndex("uq_chat_pin_snippet").on(table.sessionId, table.snippetId),
   ],
 );
 
@@ -359,6 +454,7 @@ export const authorshipSpans = sqliteTable(
     }), // nullable: Snippet
     detailValueId: text("detail_value_id").references(
       () => codexDetailValues.id,
+      { onDelete: "cascade" },
     ), // nullable: Detail value
     fromPos: integer("from_pos").notNull(),
     toPos: integer("to_pos").notNull(),
@@ -371,14 +467,15 @@ export const authorshipSpans = sqliteTable(
       (): any => codexEntryPhases.id,
       { onDelete: "cascade" },
     ),
-    // CHECK: exactly one of nodeId/codexEntryId/snippetId must be non-null (enforced in SQL)
-    // detailValueId is an optional orthogonal FK (not part of ownership CHECK)
+    // SQL CHECK: exactly one of nodeId/codexEntryId/snippetId/detailValueId is NOT NULL.
+    // phaseId is orthogonal but requires codexEntryId to be set (enforced in SQL).
   },
   (table) => [
     index("idx_authorship_node").on(table.nodeId, table.source),
     index("idx_authorship_codex").on(table.codexEntryId, table.source),
     index("idx_authorship_snippet").on(table.snippetId, table.source),
     index("idx_authorship_detail").on(table.detailValueId),
+    index("idx_authorship_phase").on(table.phaseId),
   ],
 );
 
@@ -423,6 +520,10 @@ export const projectSnapshots = sqliteTable(
       .$defaultFn(() => new Date().toISOString()),
   },
   (table) => [
+    uniqueIndex("uq_project_snapshots_project_name").on(
+      table.projectId,
+      table.name,
+    ),
     index("idx_project_snapshots").on(table.projectId, table.createdAt),
   ],
 );
@@ -433,9 +534,10 @@ export const projectSnapshotEntries = sqliteTable(
     snapshotId: text("snapshot_id")
       .notNull()
       .references(() => projectSnapshots.id, { onDelete: "cascade" }),
+    // ON DELETE RESTRICT in SQL: pruning cannot remove a version referenced by a snapshot.
     versionId: text("version_id")
       .notNull()
-      .references(() => contentVersions.id),
+      .references(() => contentVersions.id, { onDelete: "restrict" }),
   },
   (table) => [primaryKey({ columns: [table.snapshotId, table.versionId] })],
 );
@@ -484,10 +586,336 @@ export const codexPhaseDetailOverrides = sqliteTable(
   ],
 );
 
-export const settings = sqliteTable("settings", {
+// App-wide key-value store (shared across projects). All current setting keys
+// (editor/display/ai/keys/data/revision/tree/export) live here since they are
+// user preferences, not project metadata.
+export const appSettings = sqliteTable("app_settings", {
   key: text("key").primaryKey(),
   value: text("value").notNull(),
 });
+
+// Project-scoped key-value store. Reserved for future per-project overrides.
+export const projectSettings = sqliteTable(
+  "project_settings",
+  {
+    projectId: text("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    key: text("key").notNull(),
+    value: text("value").notNull(),
+  },
+  (table) => [primaryKey({ columns: [table.projectId, table.key] })],
+);
+
+// Map panel tables
+
+export const mapBoards = sqliteTable(
+  "map_boards",
+  {
+    id: text("id").primaryKey(),
+    projectId: text("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    title: text("title").notNull().default("Main"),
+    sortOrder: real("sort_order").notNull().default(0.0),
+    createdAt: text("created_at")
+      .notNull()
+      .$defaultFn(() => new Date().toISOString()),
+    updatedAt: text("updated_at")
+      .notNull()
+      .$defaultFn(() => new Date().toISOString()),
+  },
+  (table) => [index("idx_map_boards_project").on(table.projectId)],
+);
+
+export const mapAiNodes = sqliteTable(
+  "map_ai_nodes",
+  {
+    id: text("id").primaryKey(),
+    boardId: text("board_id")
+      .notNull()
+      .references(() => mapBoards.id, { onDelete: "cascade" }),
+    prompt: text("prompt").notNull(),
+    response: text("response"),
+    sessionId: text("session_id").references(() => chatSessions.id, {
+      onDelete: "set null",
+    }),
+    model: text("model"),
+    tokenUsage: integer("token_usage"),
+    createdAt: text("created_at")
+      .notNull()
+      .$defaultFn(() => new Date().toISOString()),
+    updatedAt: text("updated_at")
+      .notNull()
+      .$defaultFn(() => new Date().toISOString()),
+  },
+  (table) => [index("idx_map_ai_board").on(table.boardId)],
+);
+
+export const mapNodePositions = sqliteTable(
+  "map_node_positions",
+  {
+    id: text("id").primaryKey(),
+    boardId: text("board_id")
+      .notNull()
+      .references(() => mapBoards.id, { onDelete: "cascade" }),
+    nodeRefType: text("node_ref_type", {
+      enum: ["scene", "codex", "note", "ai"],
+    }).notNull(),
+    treeNodeId: text("tree_node_id").references(() => treeNodes.id, {
+      onDelete: "cascade",
+    }),
+    codexEntryId: text("codex_entry_id").references(() => codexEntries.id, {
+      onDelete: "cascade",
+    }),
+    aiNodeId: text("ai_node_id").references(() => mapAiNodes.id, {
+      onDelete: "cascade",
+    }),
+    x: real("x").notNull(),
+    y: real("y").notNull(),
+    pinned: integer("pinned").notNull().default(0),
+    hidden: integer("hidden").notNull().default(0),
+    zIndex: integer("z_index").notNull().default(0),
+    createdAt: text("created_at")
+      .notNull()
+      .$defaultFn(() => new Date().toISOString()),
+    updatedAt: text("updated_at")
+      .notNull()
+      .$defaultFn(() => new Date().toISOString()),
+  },
+  (table) => [
+    index("idx_map_pos_board").on(table.boardId),
+    index("idx_map_pos_tree").on(table.treeNodeId),
+    index("idx_map_pos_codex").on(table.codexEntryId),
+  ],
+);
+
+export const mapEdges = sqliteTable(
+  "map_edges",
+  {
+    id: text("id").primaryKey(),
+    boardId: text("board_id")
+      .notNull()
+      .references(() => mapBoards.id, { onDelete: "cascade" }),
+    fromPositionId: text("from_position_id")
+      .notNull()
+      .references(() => mapNodePositions.id, { onDelete: "cascade" }),
+    toPositionId: text("to_position_id")
+      .notNull()
+      .references(() => mapNodePositions.id, { onDelete: "cascade" }),
+    label: text("label"),
+    style: text("style", { enum: ["solid", "dashed", "dotted"] })
+      .notNull()
+      .default("solid"),
+    color: text("color").notNull().default("#000000"),
+    direction: text("direction", {
+      enum: ["none", "forward", "bidirectional"],
+    })
+      .notNull()
+      .default("none"),
+    createdAt: text("created_at")
+      .notNull()
+      .$defaultFn(() => new Date().toISOString()),
+    updatedAt: text("updated_at")
+      .notNull()
+      .$defaultFn(() => new Date().toISOString()),
+  },
+  (table) => [
+    index("idx_map_edges_board").on(table.boardId),
+    index("idx_map_edges_from").on(table.fromPositionId),
+    index("idx_map_edges_to").on(table.toPositionId),
+  ],
+);
+
+export const mapFrames = sqliteTable(
+  "map_frames",
+  {
+    id: text("id").primaryKey(),
+    boardId: text("board_id")
+      .notNull()
+      .references(() => mapBoards.id, { onDelete: "cascade" }),
+    title: text("title").notNull().default("Frame"),
+    x: real("x").notNull(),
+    y: real("y").notNull(),
+    width: real("width").notNull(),
+    height: real("height").notNull(),
+    background: text("background").notNull().default("#f5f5f5"),
+    borderColor: text("border_color").notNull().default("#cccccc"),
+    zIndex: integer("z_index").notNull().default(-1),
+    createdAt: text("created_at")
+      .notNull()
+      .$defaultFn(() => new Date().toISOString()),
+    updatedAt: text("updated_at")
+      .notNull()
+      .$defaultFn(() => new Date().toISOString()),
+  },
+  (table) => [index("idx_map_frames_board").on(table.boardId)],
+);
+
+export const lintIgnoredDiagnostics = sqliteTable(
+  "lint_ignored_diagnostics",
+  {
+    id: text("id").primaryKey(),
+    ruleId: text("rule_id").notNull(),
+    sceneId: text("scene_id")
+      .notNull()
+      .references(() => treeNodes.id, { onDelete: "cascade" }),
+    textSnippet: text("text_snippet").notNull(),
+    contextBefore: text("context_before").notNull(),
+    contextAfter: text("context_after").notNull(),
+    note: text("note"),
+    createdAt: integer("created_at").notNull(),
+  },
+  (table) => [
+    index("idx_lint_ignored_scene").on(table.sceneId),
+    index("idx_lint_ignored_rule").on(table.ruleId),
+  ],
+);
+
+// Project-scoped term dictionary for `project/term-consistency`.
+// variants is JSON-encoded `string[]`; the CRUD layer deduplicates and
+// regex-escapes before emitting the wire payload to the Rust engine.
+// severity is constrained to 'warning' | 'info' in the app layer; the
+// DB enforces no such check so the column stays forward-compatible.
+export const lintTermDictionary = sqliteTable(
+  "lint_term_dictionary",
+  {
+    id: text("id").primaryKey(),
+    preferred: text("preferred").notNull(),
+    variants: text("variants").notNull(),
+    severity: text("severity").notNull().default("warning"),
+    note: text("note"),
+    enabled: integer("enabled", { mode: "boolean" }).notNull().default(true),
+    sortOrder: integer("sort_order").notNull().default(0),
+    createdAt: integer("created_at").notNull(),
+    updatedAt: integer("updated_at").notNull(),
+  },
+  (table) => [
+    index("idx_lint_term_dict_preferred").on(table.preferred),
+    index("idx_lint_term_dict_sort").on(table.sortOrder),
+  ],
+);
+
+// Append-only event log for self-tuning Linter behaviour. Schema is
+// added in Phase 1 so Phase 2/3 writers and the eventual statistics tab
+// can land without a migration. `sceneId` becomes NULL when a scene is
+// deleted so the historical record survives content cleanup.
+export const lintActionLog = sqliteTable(
+  "lint_action_log",
+  {
+    id: integer("id").primaryKey({ autoIncrement: true }),
+    ruleId: text("rule_id").notNull(),
+    action: text("action", {
+      enum: [
+        "detected",
+        "fixed",
+        "ignored_once",
+        "ignored_persistent_set",
+        "ignored_persistent_unset",
+        "disabled_inline",
+      ],
+    }).notNull(),
+    sceneId: text("scene_id").references(() => treeNodes.id, {
+      onDelete: "set null",
+    }),
+    occurredAt: integer("occurred_at").notNull(),
+  },
+  (table) => [
+    index("idx_lint_action_log_rule").on(table.ruleId),
+    index("idx_lint_action_log_occurred").on(table.occurredAt),
+  ],
+);
+
+// --- Foreshadow Register ---
+
+export const foreshadows = sqliteTable(
+  "foreshadows",
+  {
+    id: text("id").primaryKey(),
+    projectId: text("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    title: text("title").notNull(),
+    intent: text("intent"),
+    notes: text("notes"),
+
+    // Payoff anchor (inline, 1:1)
+    payoffSceneId: text("payoff_scene_id").references(() => treeNodes.id, {
+      onDelete: "set null",
+    }),
+    payoffFromPos: integer("payoff_from_pos"),
+    payoffToPos: integer("payoff_to_pos"),
+
+    // State axes
+    payoffConfirmed: integer("payoff_confirmed", { mode: "boolean" })
+      .notNull()
+      .default(false),
+    abandoned: integer("abandoned", { mode: "boolean" })
+      .notNull()
+      .default(false),
+
+    createdAt: integer("created_at", { mode: "timestamp" }).notNull(),
+    updatedAt: integer("updated_at", { mode: "timestamp" }).notNull(),
+  },
+  (t) => [
+    index("idx_foreshadows_project").on(t.projectId),
+    index("idx_foreshadows_payoff_scene").on(t.payoffSceneId),
+  ],
+);
+
+export const foreshadowSetups = sqliteTable(
+  "foreshadow_setups",
+  {
+    id: text("id").primaryKey(),
+    foreshadowId: text("foreshadow_id")
+      .notNull()
+      .references(() => foreshadows.id, { onDelete: "cascade" }),
+
+    // Anchor
+    sceneId: text("scene_id")
+      .notNull()
+      .references(() => treeNodes.id, { onDelete: "cascade" }),
+    fromPos: integer("from_pos").notNull(),
+    toPos: integer("to_pos").notNull(),
+
+    // Metadata
+    kind: text("kind").notNull(), // 'designated_existing' | 'inserted_new' | 'rewritten'
+    strength: text("strength"), // 'subtle' | 'moderate' | 'overt' | null
+    aiStrength: text("ai_strength"),
+    aiReasoning: text("ai_reasoning"),
+    attribution: text("attribution").notNull().default("human"),
+    aiRationale: text("ai_rationale"),
+    lastEvaluatedAt: integer("last_evaluated_at", { mode: "timestamp" }),
+
+    isOrphan: integer("is_orphan", { mode: "boolean" })
+      .notNull()
+      .default(false),
+
+    createdAt: integer("created_at", { mode: "timestamp" }).notNull(),
+    updatedAt: integer("updated_at", { mode: "timestamp" }).notNull(),
+  },
+  (t) => [
+    index("idx_fs_setup_fid").on(t.foreshadowId),
+    index("idx_fs_setup_scene").on(t.sceneId),
+    index("idx_fs_setup_orphan").on(t.isOrphan),
+  ],
+);
+
+export const foreshadowCodexLinks = sqliteTable(
+  "foreshadow_codex_links",
+  {
+    foreshadowId: text("foreshadow_id")
+      .notNull()
+      .references(() => foreshadows.id, { onDelete: "cascade" }),
+    codexEntryId: text("codex_entry_id")
+      .notNull()
+      .references(() => codexEntries.id, { onDelete: "cascade" }),
+  },
+  (t) => [
+    primaryKey({ columns: [t.foreshadowId, t.codexEntryId] }),
+    index("idx_fs_codex_codex").on(t.codexEntryId),
+  ],
+);
 
 // Type exports
 export type AuthorshipSpan = typeof authorshipSpans.$inferSelect;
@@ -512,3 +940,28 @@ export type CodexPhaseDetailOverride =
   typeof codexPhaseDetailOverrides.$inferSelect;
 export type NewCodexPhaseDetailOverride =
   typeof codexPhaseDetailOverrides.$inferInsert;
+
+export type MapBoard = typeof mapBoards.$inferSelect;
+export type NewMapBoard = typeof mapBoards.$inferInsert;
+export type MapNodePosition = typeof mapNodePositions.$inferSelect;
+export type NewMapNodePosition = typeof mapNodePositions.$inferInsert;
+export type MapEdge = typeof mapEdges.$inferSelect;
+export type NewMapEdge = typeof mapEdges.$inferInsert;
+export type MapFrame = typeof mapFrames.$inferSelect;
+export type NewMapFrame = typeof mapFrames.$inferInsert;
+export type MapAiNode = typeof mapAiNodes.$inferSelect;
+export type NewMapAiNode = typeof mapAiNodes.$inferInsert;
+
+export type LintIgnoredDiagnostic = typeof lintIgnoredDiagnostics.$inferSelect;
+export type NewLintIgnoredDiagnostic =
+  typeof lintIgnoredDiagnostics.$inferInsert;
+
+export type LintTermDictionaryRow = typeof lintTermDictionary.$inferSelect;
+export type NewLintTermDictionaryRow = typeof lintTermDictionary.$inferInsert;
+
+export type Foreshadow = typeof foreshadows.$inferSelect;
+export type NewForeshadow = typeof foreshadows.$inferInsert;
+export type ForeshadowSetup = typeof foreshadowSetups.$inferSelect;
+export type NewForeshadowSetup = typeof foreshadowSetups.$inferInsert;
+export type ForeshadowCodexLink = typeof foreshadowCodexLinks.$inferSelect;
+export type NewForeshadowCodexLink = typeof foreshadowCodexLinks.$inferInsert;

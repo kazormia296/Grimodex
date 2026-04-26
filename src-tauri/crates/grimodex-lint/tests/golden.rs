@@ -1,0 +1,157 @@
+//! Golden-file regression harness.
+//!
+//! Discovers fixtures under `tests/fixtures/<category>/<rule-name>/`, reads
+//! `input.txt` as a single Paragraph block, runs the full lint pipeline,
+//! and compares the resulting `Vec<Diagnostic>` against `expected.json`.
+//!
+//! Set `UPDATE_EXPECT=1` to rewrite `expected.json` from the current output.
+
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::indexing_slicing
+)]
+
+use std::fs;
+use std::path::{Path, PathBuf};
+
+use grimodex_lint::{
+    lint, BlockKind, Diagnostic, DisableDirective, Language, LintBlock, LintConfig, LintScope,
+};
+
+fn fixtures_root() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("fixtures")
+}
+
+fn discover_fixtures() -> Vec<PathBuf> {
+    let root = fixtures_root();
+    if !root.exists() {
+        return Vec::new();
+    }
+    let mut out = Vec::new();
+    for cat in fs::read_dir(&root).expect("read fixtures root") {
+        let cat = cat.expect("dir entry").path();
+        if !cat.is_dir() {
+            continue;
+        }
+        for rule_dir in fs::read_dir(&cat).expect("read category dir") {
+            let rule_dir = rule_dir.expect("dir entry").path();
+            if rule_dir.is_dir() && rule_dir.join("input.txt").exists() {
+                out.push(rule_dir);
+            }
+        }
+    }
+    out.sort();
+    out
+}
+
+fn run_fixture(dir: &Path) -> Vec<Diagnostic> {
+    let input = fs::read_to_string(dir.join("input.txt")).expect("read input.txt");
+    // Strip a single trailing newline so editors that auto-append one don't
+    // change offsets.
+    let text = input.strip_suffix('\n').unwrap_or(&input).to_string();
+
+    // Language is derived from the first path component under `fixtures/`
+    // — `en/*` uses English, everything else defaults to Japanese.
+    let language = if dir
+        .components()
+        .any(|c| c.as_os_str() == std::ffi::OsStr::new("en"))
+    {
+        Language::English
+    } else {
+        Language::Japanese
+    };
+
+    // Per-fixture config override: `config.json` is loaded as a full
+    // `LintConfig` if present. Missing / empty → `LintConfig::default()`.
+    // Needed for rules whose behaviour depends on non-default inputs
+    // (e.g. `codex/name-inconsistency` needs `codex_entries`).
+    let config = match fs::read_to_string(dir.join("config.json")) {
+        Ok(raw) => serde_json::from_str::<LintConfig>(&raw)
+            .unwrap_or_else(|e| panic!("{}: parse config.json: {e}", dir.display())),
+        Err(_) => LintConfig::default(),
+    };
+
+    // Optional `disables.json` — a JSON array of `DisableDirective`.
+    // Used by disable-specific fixtures to exercise the filter path.
+    let disables: Vec<DisableDirective> = match fs::read_to_string(dir.join("disables.json")) {
+        Ok(raw) => serde_json::from_str(&raw)
+            .unwrap_or_else(|e| panic!("{}: parse disables.json: {e}", dir.display())),
+        Err(_) => Vec::new(),
+    };
+
+    let blocks = vec![LintBlock {
+        id: 0,
+        kind: BlockKind::Paragraph,
+        text,
+        str_offset_start: 0,
+    }];
+    let resp = lint(
+        &blocks,
+        language,
+        LintScope::Scene {
+            scene_id: "fixture".into(),
+        },
+        &config,
+        &disables,
+    )
+    .expect("lint run");
+    resp.diagnostics
+}
+
+fn canonical_json(diagnostics: &[Diagnostic]) -> String {
+    let pretty = serde_json::to_string_pretty(diagnostics).expect("serialize diagnostics");
+    format!("{}\n", pretty)
+}
+
+#[test]
+fn golden_fixtures() {
+    let update = std::env::var("UPDATE_EXPECT")
+        .map(|v| v == "1")
+        .unwrap_or(false);
+
+    let fixtures = discover_fixtures();
+    if fixtures.is_empty() {
+        eprintln!("no fixtures discovered under {}", fixtures_root().display());
+        return;
+    }
+
+    let mut failures = Vec::new();
+    for dir in &fixtures {
+        let diagnostics = run_fixture(dir);
+        let got = canonical_json(&diagnostics);
+        let expected_path = dir.join("expected.json");
+
+        if update {
+            fs::write(&expected_path, &got).expect("write expected.json");
+            continue;
+        }
+
+        let expected = match fs::read_to_string(&expected_path) {
+            Ok(s) => s,
+            Err(_) => {
+                failures.push(format!(
+                    "{}: expected.json missing (run with UPDATE_EXPECT=1 to create)",
+                    dir.display()
+                ));
+                continue;
+            }
+        };
+
+        if expected != got {
+            failures.push(format!(
+                "{}: diagnostics did not match expected.json\n--- expected\n{}\n--- got\n{}",
+                dir.display(),
+                expected,
+                got
+            ));
+        }
+    }
+
+    if !failures.is_empty() {
+        panic!("golden fixtures failed:\n{}", failures.join("\n\n"));
+    }
+}

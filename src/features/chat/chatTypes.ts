@@ -31,7 +31,6 @@ export interface ChatSession {
   title: string;
   titleManual: number;
   model: string;
-  pinnedCodex: string | null; // JSON string[]
   createdAt: string;
   updatedAt: string;
 }

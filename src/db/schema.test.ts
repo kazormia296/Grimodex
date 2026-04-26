@@ -17,8 +17,9 @@ import {
   contentVersions,
   projectSnapshots,
   projectSnapshotEntries,
-  settings,
-  codexRelationDismissed,
+  appSettings,
+  projectSettings,
+  codexDismissedRelations,
 } from "./schema";
 import * as schema from "./schema";
 
@@ -110,7 +111,7 @@ describe("treeNodes schema", () => {
       projectId: "proj-001",
       nodeType: "scene",
       title: "Opening Scene",
-      sortOrder: 0,
+      sortOrder: "a0",
       createdAt: "2025-01-01T00:00:00Z",
       updatedAt: "2025-01-01T00:00:00Z",
     });
@@ -135,7 +136,7 @@ describe("treeNodes schema", () => {
       parentId: "node-parent",
       nodeType: "chapter",
       title: "Chapter 1",
-      sortOrder: 1,
+      sortOrder: "a1",
       createdAt: "2025-01-01T00:00:00Z",
       updatedAt: "2025-01-01T00:00:00Z",
     });
@@ -440,7 +441,6 @@ describe("chatSessions schema", () => {
     expect(columns).toContain("title");
     expect(columns).toContain("titleManual");
     expect(columns).toContain("model");
-    expect(columns).toContain("pinnedCodex");
     expect(columns).toContain("createdAt");
     expect(columns).toContain("updatedAt");
   });
@@ -599,27 +599,40 @@ describe("authorshipSpans schema", () => {
   });
 });
 
-describe("settings schema", () => {
+describe("appSettings schema", () => {
   it("has the correct table name", () => {
-    expect(getTableName(settings)).toBe("settings");
+    expect(getTableName(appSettings)).toBe("app_settings");
   });
 
   it("has all required columns", () => {
-    const columns = Object.keys(settings);
+    const columns = Object.keys(appSettings);
     expect(columns).toContain("key");
     expect(columns).toContain("value");
   });
 });
 
-describe("codexRelationDismissed schema", () => {
+describe("projectSettings schema", () => {
   it("has the correct table name", () => {
-    expect(getTableName(codexRelationDismissed)).toBe(
-      "codex_relation_dismissed",
+    expect(getTableName(projectSettings)).toBe("project_settings");
+  });
+
+  it("has all required columns", () => {
+    const columns = Object.keys(projectSettings);
+    expect(columns).toContain("projectId");
+    expect(columns).toContain("key");
+    expect(columns).toContain("value");
+  });
+});
+
+describe("codexDismissedRelations schema", () => {
+  it("has the correct table name", () => {
+    expect(getTableName(codexDismissedRelations)).toBe(
+      "codex_dismissed_relations",
     );
   });
 
   it("has all required columns", () => {
-    const columns = Object.keys(codexRelationDismissed);
+    const columns = Object.keys(codexDismissedRelations);
     expect(columns).toContain("entryId");
     expect(columns).toContain("dismissedId");
   });
@@ -912,6 +925,7 @@ describe("cross-table relationships", () => {
     expect(getTableName(projectSnapshotEntries)).toBe(
       "project_snapshot_entries",
     );
-    expect(getTableName(settings)).toBe("settings");
+    expect(getTableName(appSettings)).toBe("app_settings");
+    expect(getTableName(projectSettings)).toBe("project_settings");
   });
 });

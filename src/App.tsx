@@ -41,6 +41,11 @@ import { ChatPanel } from "@/features/chat/ChatPanel";
 import { ChatHistoryPanel } from "@/features/chat/ChatHistoryPanel";
 import { SnippetPanel } from "@/features/snippets/SnippetPanel";
 import { AttributionReport } from "@/features/attribution/AttributionReport";
+import { TimelinePanel } from "@/features/timeline/TimelinePanel";
+import { MapPanel } from "@/features/map/MapPanel";
+import { LinterPanel } from "@/features/lint/LinterPanel";
+import { StatusBarIndicator } from "@/features/lint/StatusBarIndicator";
+import { GlobalSearchDialog } from "@/features/search/GlobalSearchDialog";
 import { useState } from "react";
 import { Settings, FileOutput } from "lucide-react";
 import { ExportDialog } from "@/features/export/ExportDialog";
@@ -58,6 +63,7 @@ import { TitleBar } from "@/components/TitleBar";
 import { useTabStore } from "@/features/editor/tabStore";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { getProject } from "@/features/project/api";
+import { usePhaseStore } from "@/features/codex/phaseStore";
 import { WelcomeDialog } from "@/features/onboarding/WelcomeDialog";
 
 /* ── Panel content components for dockview ── */
@@ -92,6 +98,18 @@ function AttributionContent(_props: IDockviewPanelProps) {
 
 function CodexQuickContent(_props: IDockviewPanelProps) {
   return <CodexQuickPanel />;
+}
+
+function TimelineContent(_props: IDockviewPanelProps) {
+  return <TimelinePanel />;
+}
+
+function MapContent(_props: IDockviewPanelProps) {
+  return <MapPanel />;
+}
+
+function LinterContent(_props: IDockviewPanelProps) {
+  return <LinterPanel />;
 }
 
 /* ── Default layout builder (delegates to builtin preset) ── */
@@ -226,6 +244,7 @@ function EditorScreen() {
   const [settingsInitialCategory, setSettingsInitialCategory] =
     useState<SettingsCategory>("project");
   const [showExport, setShowExport] = useState(false);
+  const [showSearch, setShowSearch] = useState(false);
   const { globalSettings, updateGlobalSettings } = useWorkspaceStore();
   const [showWelcome, setShowWelcome] = useState(
     () => !globalSettings?.hasSeenWelcome,
@@ -248,10 +267,13 @@ function EditorScreen() {
     return () => window.removeEventListener("show-welcome-tour", onShowTour);
   }, []);
 
-  // 執筆言語を <html lang> に反映（初期ロード時）
+  // 執筆言語を <html lang> に反映、Phase resolution mode を初期化
   useEffect(() => {
     getProject("default-project").then((p) => {
       if (p?.language) document.documentElement.lang = p.language;
+      if (p?.phaseResolutionMode) {
+        usePhaseStore.getState().setResolutionMode(p.phaseResolutionMode);
+      }
     });
   }, []);
   const { togglePanel, loadLayout, loadPresets, setDockviewApi } =
@@ -270,6 +292,9 @@ function EditorScreen() {
       snippets: SnippetsContent,
       attribution: AttributionContent,
       "codex-quick": CodexQuickContent,
+      timeline: TimelineContent,
+      map: MapContent,
+      linter: LinterContent,
     }),
     [],
   );
@@ -395,6 +420,13 @@ function EditorScreen() {
         return;
       }
 
+      // Ctrl+Shift+F: 全文検索ダイアログ
+      if (e.ctrlKey && e.shiftKey && e.key.toLowerCase() === "f") {
+        e.preventDefault();
+        setShowSearch((v) => !v);
+        return;
+      }
+
       if (!e.ctrlKey || !e.altKey) return;
 
       const keyMap: Record<string, PanelId | "settings"> = {
@@ -405,6 +437,9 @@ function EditorScreen() {
         n: "snippets",
         a: "attribution",
         q: "codex-quick",
+        l: "timeline",
+        m: "map",
+        t: "linter",
         ",": "settings",
       };
 
@@ -521,6 +556,9 @@ function EditorScreen() {
         initialCategory={settingsInitialCategory}
       />
       <ExportDialog open={showExport} onClose={() => setShowExport(false)} />
+      {showSearch && (
+        <GlobalSearchDialog onClose={() => setShowSearch(false)} />
+      )}
       <WelcomeDialog
         open={showWelcome}
         onClose={() => void handleCloseWelcome()}
@@ -535,6 +573,10 @@ function EditorScreen() {
           watermarkComponent={DockviewWatermark}
         />
       </div>
+      <footer className="flex flex-shrink-0 items-center gap-2 border-t border-border bg-muted/40 px-2 py-0.5">
+        <StatusBarIndicator />
+        <div className="flex-1" />
+      </footer>
     </main>
   );
 }

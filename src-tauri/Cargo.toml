@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/grimodex-mcp"]
+members = ["crates/grimodex-mcp", "crates/grimodex-lint"]
 
 [package]
 name = "grimodex"
@@ -24,6 +24,7 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 tauri = { version = "2", features = [] }
 tauri-plugin-dialog = "2"
+tauri-plugin-fs = "2"
 tauri-plugin-opener = "2"
 tauri-plugin-window-state = "2"
 serde = { version = "1", features = ["derive"] }
@@ -38,4 +39,9 @@ reqwest = { version = "0.13", features = ["json", "stream"] }
 futures = "0.3"
 tokio = { version = "1", features = ["macros"] }
 aho-corasick = "1"
+grimodex-lint = { path = "crates/grimodex-lint" }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tracing-appender = "0.2"
+dirs = "5"
 

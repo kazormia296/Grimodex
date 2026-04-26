@@ -19,6 +19,14 @@ function resetStore() {
   });
 }
 
+const NODE_DEFAULTS = {
+  storyTimeOrder: null,
+  storyTimeLabel: null,
+  povCharacterId: null,
+  locationId: null,
+  createdAt: "2024-01-01T00:00:00Z",
+} as const;
+
 const NODES = [
   {
     id: "scene-1",
@@ -27,8 +35,9 @@ const NODES = [
     nodeType: "scene" as const,
     title: "Scene 1",
     synopsis: null,
-    sortOrder: 1,
+    sortOrder: "a1",
     status: null,
+    ...NODE_DEFAULTS,
   },
   {
     id: "scene-2",
@@ -37,8 +46,9 @@ const NODES = [
     nodeType: "scene" as const,
     title: "Scene 2",
     synopsis: null,
-    sortOrder: 2,
+    sortOrder: "a2",
     status: null,
+    ...NODE_DEFAULTS,
   },
   {
     id: "scene-3",
@@ -47,8 +57,9 @@ const NODES = [
     nodeType: "scene" as const,
     title: "Scene 3",
     synopsis: null,
-    sortOrder: 3,
+    sortOrder: "a3",
     status: null,
+    ...NODE_DEFAULTS,
   },
   {
     id: "scene-4",
@@ -57,8 +68,9 @@ const NODES = [
     nodeType: "scene" as const,
     title: "Scene 4",
     synopsis: null,
-    sortOrder: 4,
+    sortOrder: "a4",
     status: null,
+    ...NODE_DEFAULTS,
   },
 ];
 

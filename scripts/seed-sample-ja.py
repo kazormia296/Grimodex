@@ -26,6 +26,10 @@ def ts() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+def ts_ms() -> int:
+    return int(datetime.now(timezone.utc).timestamp() * 1000)
+
+
 def uid() -> str:
     return str(uuid.uuid4())
 
@@ -50,6 +54,7 @@ def doc_nodes(*nodes) -> str:
 
 # ---------------------------------------------------------------------------
 # スキーマ（src-tauri/src/database.rs の migrate() に同期）
+# INSERT OR IGNORE のデータ初期化行は含めない（seed()で担う）
 # ---------------------------------------------------------------------------
 
 SCHEMA_SQL = """
@@ -57,33 +62,48 @@ PRAGMA journal_mode=WAL;
 PRAGMA foreign_keys=ON;
 
 CREATE TABLE IF NOT EXISTS projects (
-    id              TEXT PRIMARY KEY,
-    title           TEXT NOT NULL DEFAULT 'Untitled Project',
-    genre           TEXT,
-    pov             TEXT,
-    tense           TEXT,
-    language        TEXT NOT NULL DEFAULT 'ja',
-    style_guide     TEXT,
-    ai_instructions TEXT,
-    created_at      TEXT NOT NULL DEFAULT (datetime('now')),
-    updated_at      TEXT NOT NULL DEFAULT (datetime('now'))
+    id                     TEXT PRIMARY KEY,
+    title                  TEXT NOT NULL DEFAULT 'Untitled Project',
+    genre                  TEXT,
+    pov                    TEXT,
+    tense                  TEXT,
+    language               TEXT NOT NULL DEFAULT 'ja',
+    style_guide            TEXT,
+    ai_instructions        TEXT,
+    phase_resolution_mode  TEXT NOT NULL DEFAULT 'reading'
+                             CHECK(phase_resolution_mode IN ('reading', 'story', 'auto')),
+    created_at             TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at             TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
 CREATE TABLE IF NOT EXISTS tree_nodes (
-    id          TEXT PRIMARY KEY,
-    project_id  TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-    parent_id   TEXT REFERENCES tree_nodes(id) ON DELETE SET NULL,
-    node_type   TEXT NOT NULL,
-    title       TEXT NOT NULL DEFAULT 'Untitled',
-    synopsis    TEXT,
-    sort_order  REAL NOT NULL DEFAULT 0.0,
-    status      TEXT DEFAULT 'outline',
-    content     TEXT NOT NULL DEFAULT '{}',
-    created_at  TEXT NOT NULL DEFAULT (datetime('now')),
-    updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
+    id                TEXT PRIMARY KEY,
+    project_id        TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    parent_id         TEXT REFERENCES tree_nodes(id) ON DELETE CASCADE,
+    node_type         TEXT NOT NULL CHECK(node_type IN ('folder','scene','note')),
+    title             TEXT NOT NULL DEFAULT 'Untitled',
+    synopsis          TEXT,
+    sort_order        TEXT NOT NULL DEFAULT 'a0',
+    story_time_order  TEXT,
+    story_time_label  TEXT,
+    pov_character_id  TEXT REFERENCES codex_entries(id) ON DELETE SET NULL,
+    location_id       TEXT REFERENCES codex_entries(id) ON DELETE SET NULL,
+    status            TEXT DEFAULT 'outline'
+                        CHECK(status IS NULL OR status IN ('outline','draft','complete','revision','final')),
+    content           TEXT NOT NULL DEFAULT '{}',
+    created_at        TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at        TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_tree_parent
     ON tree_nodes(project_id, parent_id, sort_order);
+CREATE INDEX IF NOT EXISTS idx_tree_story_time
+    ON tree_nodes(project_id, story_time_order);
+CREATE INDEX IF NOT EXISTS idx_tree_pov
+    ON tree_nodes(project_id, pov_character_id)
+    WHERE pov_character_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_tree_location
+    ON tree_nodes(project_id, location_id)
+    WHERE location_id IS NOT NULL;
 
 CREATE TABLE IF NOT EXISTS codex_types (
     id            TEXT PRIMARY KEY,
@@ -113,23 +133,31 @@ CREATE TABLE IF NOT EXISTS codex_entries (
     icon                    TEXT,
     tags_cache              TEXT,
     context_mode            TEXT NOT NULL DEFAULT 'mentioned'
-                              CHECK(context_mode IN ('always','mentioned','suppress','hidden')),
+                              CHECK(context_mode IN ('always', 'mentioned', 'suppress', 'hidden')),
     children_budget         TEXT NOT NULL DEFAULT 'compact'
-                              CHECK(children_budget IN ('none','compact','standard','generous')),
-    source_chat_message_id  TEXT REFERENCES chat_messages(id),
+                              CHECK(children_budget IN ('none', 'compact', 'standard', 'generous')),
+    source_chat_message_id  TEXT REFERENCES chat_messages(id) ON DELETE SET NULL,
     notes                   TEXT,
     created_at              TEXT NOT NULL DEFAULT (datetime('now')),
-    updated_at              TEXT NOT NULL DEFAULT (datetime('now'))
+    updated_at              TEXT NOT NULL DEFAULT (datetime('now')),
+    FOREIGN KEY (project_id, type) REFERENCES codex_types(project_id, slug)
+      ON UPDATE CASCADE ON DELETE RESTRICT
 );
 CREATE INDEX IF NOT EXISTS idx_codex_project ON codex_entries(project_id, type);
 CREATE INDEX IF NOT EXISTS idx_codex_name    ON codex_entries(project_id, name);
 CREATE INDEX IF NOT EXISTS idx_codex_parent  ON codex_entries(parent_id);
+CREATE INDEX IF NOT EXISTS idx_codex_entries_src_msg
+    ON codex_entries(source_chat_message_id)
+    WHERE source_chat_message_id IS NOT NULL;
 
 CREATE TABLE IF NOT EXISTS codex_quick_pins (
-    entry_id TEXT PRIMARY KEY REFERENCES codex_entries(id) ON DELETE CASCADE
+    entry_id   TEXT PRIMARY KEY REFERENCES codex_entries(id) ON DELETE CASCADE,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
+CREATE INDEX IF NOT EXISTS idx_codex_quick_pins_created
+    ON codex_quick_pins(created_at);
 
-CREATE TABLE IF NOT EXISTS codex_relation_dismissed (
+CREATE TABLE IF NOT EXISTS codex_dismissed_relations (
     entry_id     TEXT NOT NULL REFERENCES codex_entries(id) ON DELETE CASCADE,
     dismissed_id TEXT NOT NULL REFERENCES codex_entries(id) ON DELETE CASCADE,
     PRIMARY KEY (entry_id, dismissed_id)
@@ -159,12 +187,14 @@ CREATE TABLE IF NOT EXISTS codex_detail_definitions (
     type_slug          TEXT NOT NULL,
     name               TEXT NOT NULL,
     field_type         TEXT NOT NULL DEFAULT 'text'
-                         CHECK(field_type IN ('text','dropdown','codex_reference')),
+                         CHECK(field_type IN ('text', 'dropdown', 'codex_reference')),
     field_config       TEXT,
     sort_order         REAL NOT NULL DEFAULT 0.0,
     include_in_context INTEGER NOT NULL DEFAULT 0,
     created_at         TEXT NOT NULL DEFAULT (datetime('now')),
-    UNIQUE(project_id, type_slug, name)
+    UNIQUE(project_id, type_slug, name),
+    FOREIGN KEY (project_id, type_slug) REFERENCES codex_types(project_id, slug)
+      ON UPDATE CASCADE ON DELETE RESTRICT
 );
 CREATE INDEX IF NOT EXISTS idx_codex_detail_defs
     ON codex_detail_definitions(project_id, type_slug, sort_order);
@@ -185,14 +215,20 @@ CREATE TABLE IF NOT EXISTS snippets (
     title                   TEXT NOT NULL DEFAULT 'Untitled',
     content                 TEXT NOT NULL DEFAULT '{}',
     tags_cache              TEXT,
-    content_source          TEXT,
+    content_source          TEXT CHECK(content_source IS NULL OR content_source IN ('human','ai')),
     scene_id                TEXT REFERENCES tree_nodes(id) ON DELETE SET NULL,
-    source_chat_message_id  TEXT REFERENCES chat_messages(id),
+    source_chat_message_id  TEXT REFERENCES chat_messages(id) ON DELETE SET NULL,
     usage_count             INTEGER NOT NULL DEFAULT 0,
     created_at              TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at              TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_snippets_project ON snippets(project_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_snippets_scene
+    ON snippets(scene_id)
+    WHERE scene_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_snippets_src_msg
+    ON snippets(source_chat_message_id)
+    WHERE source_chat_message_id IS NOT NULL;
 
 CREATE TABLE IF NOT EXISTS snippet_entry_tags (
     snippet_id TEXT NOT NULL REFERENCES snippets(id) ON DELETE CASCADE,
@@ -208,11 +244,33 @@ CREATE TABLE IF NOT EXISTS chat_sessions (
     title        TEXT NOT NULL DEFAULT 'New session',
     title_manual INTEGER NOT NULL DEFAULT 0,
     model        TEXT NOT NULL DEFAULT 'openrouter/anthropic/claude-sonnet-4.6',
-    pinned_codex TEXT,
     created_at   TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at   TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_chat_sessions_node ON chat_sessions(project_id, node_id);
+
+CREATE TABLE IF NOT EXISTS chat_session_pinned_codex (
+    id              TEXT PRIMARY KEY,
+    session_id      TEXT NOT NULL REFERENCES chat_sessions(id) ON DELETE CASCADE,
+    codex_entry_id  TEXT REFERENCES codex_entries(id) ON DELETE CASCADE,
+    snippet_id      TEXT REFERENCES snippets(id) ON DELETE CASCADE,
+    with_children   INTEGER NOT NULL DEFAULT 0,
+    pin_source      TEXT NOT NULL DEFAULT 'manual'
+                      CHECK(pin_source IN ('manual','chat_mention')),
+    created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+    CHECK (
+        (CASE WHEN codex_entry_id IS NOT NULL THEN 1 ELSE 0 END +
+         CASE WHEN snippet_id     IS NOT NULL THEN 1 ELSE 0 END) = 1
+    )
+);
+CREATE INDEX IF NOT EXISTS idx_chat_pin_session
+    ON chat_session_pinned_codex(session_id, created_at);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_chat_pin_codex
+    ON chat_session_pinned_codex(session_id, codex_entry_id)
+    WHERE codex_entry_id IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS uq_chat_pin_snippet
+    ON chat_session_pinned_codex(session_id, snippet_id)
+    WHERE snippet_id IS NOT NULL;
 
 CREATE TABLE IF NOT EXISTS chat_messages (
     id            TEXT PRIMARY KEY,
@@ -231,14 +289,21 @@ CREATE TABLE IF NOT EXISTS chat_messages (
 CREATE INDEX IF NOT EXISTS idx_chat_messages_session ON chat_messages(session_id, created_at);
 
 CREATE TABLE IF NOT EXISTS chat_summaries (
-    id                 TEXT PRIMARY KEY,
-    session_id         TEXT NOT NULL REFERENCES chat_sessions(id) ON DELETE CASCADE,
-    summary            TEXT NOT NULL,
-    source_message_ids TEXT NOT NULL,
-    token_count        INTEGER,
-    created_at         TEXT NOT NULL DEFAULT (datetime('now'))
+    id          TEXT PRIMARY KEY,
+    session_id  TEXT NOT NULL REFERENCES chat_sessions(id) ON DELETE CASCADE,
+    summary     TEXT NOT NULL,
+    token_count INTEGER,
+    created_at  TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_chat_summaries_session ON chat_summaries(session_id, created_at);
+
+CREATE TABLE IF NOT EXISTS chat_summary_messages (
+    summary_id TEXT NOT NULL REFERENCES chat_summaries(id) ON DELETE CASCADE,
+    message_id TEXT NOT NULL REFERENCES chat_messages(id) ON DELETE CASCADE,
+    PRIMARY KEY (summary_id, message_id)
+);
+CREATE INDEX IF NOT EXISTS idx_chat_summary_messages_msg
+    ON chat_summary_messages(message_id);
 
 CREATE TABLE IF NOT EXISTS codex_entry_phases (
     id                    TEXT PRIMARY KEY,
@@ -247,7 +312,9 @@ CREATE TABLE IF NOT EXISTS codex_entry_phases (
     label                 TEXT NOT NULL DEFAULT '',
     summary_override      TEXT,
     content_override      TEXT,
-    context_mode_override TEXT,
+    context_mode_override TEXT
+                            CHECK(context_mode_override IS NULL OR
+                                  context_mode_override IN ('always','mentioned','suppress','hidden')),
     created_at            TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at            TEXT NOT NULL DEFAULT (datetime('now'))
 );
@@ -267,7 +334,7 @@ CREATE TABLE IF NOT EXISTS authorship_spans (
     node_id         TEXT REFERENCES tree_nodes(id) ON DELETE CASCADE,
     codex_entry_id  TEXT REFERENCES codex_entries(id) ON DELETE CASCADE,
     snippet_id      TEXT REFERENCES snippets(id) ON DELETE CASCADE,
-    detail_value_id TEXT REFERENCES codex_detail_values(id),
+    detail_value_id TEXT REFERENCES codex_detail_values(id) ON DELETE CASCADE,
     from_pos        INTEGER NOT NULL,
     to_pos          INTEGER NOT NULL,
     source          TEXT NOT NULL CHECK(source IN ('human','ai','unknown')),
@@ -276,15 +343,20 @@ CREATE TABLE IF NOT EXISTS authorship_spans (
     chat_msg_id     TEXT,
     phase_id        TEXT REFERENCES codex_entry_phases(id) ON DELETE CASCADE,
     CHECK (
-        (node_id IS NOT NULL AND codex_entry_id IS NULL AND snippet_id IS NULL) OR
-        (node_id IS NULL AND codex_entry_id IS NOT NULL AND snippet_id IS NULL) OR
-        (node_id IS NULL AND codex_entry_id IS NULL AND snippet_id IS NOT NULL)
-    )
+        (CASE WHEN node_id         IS NOT NULL THEN 1 ELSE 0 END +
+         CASE WHEN codex_entry_id  IS NOT NULL THEN 1 ELSE 0 END +
+         CASE WHEN snippet_id      IS NOT NULL THEN 1 ELSE 0 END +
+         CASE WHEN detail_value_id IS NOT NULL THEN 1 ELSE 0 END) = 1
+    ),
+    CHECK (phase_id IS NULL OR codex_entry_id IS NOT NULL)
 );
 CREATE INDEX IF NOT EXISTS idx_authorship_node    ON authorship_spans(node_id, source);
 CREATE INDEX IF NOT EXISTS idx_authorship_codex   ON authorship_spans(codex_entry_id, source);
 CREATE INDEX IF NOT EXISTS idx_authorship_snippet ON authorship_spans(snippet_id, source);
 CREATE INDEX IF NOT EXISTS idx_authorship_detail  ON authorship_spans(detail_value_id);
+CREATE INDEX IF NOT EXISTS idx_authorship_phase
+    ON authorship_spans(phase_id)
+    WHERE phase_id IS NOT NULL;
 
 CREATE TABLE IF NOT EXISTS content_versions (
     id             TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
@@ -303,21 +375,162 @@ CREATE TABLE IF NOT EXISTS project_snapshots (
     project_id  TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
     name        TEXT NOT NULL,
     description TEXT,
-    created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+    created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE(project_id, name)
 );
 CREATE INDEX IF NOT EXISTS idx_project_snapshots ON project_snapshots(project_id, created_at DESC);
 
 CREATE TABLE IF NOT EXISTS project_snapshot_entries (
     snapshot_id TEXT NOT NULL REFERENCES project_snapshots(id) ON DELETE CASCADE,
-    version_id  TEXT NOT NULL REFERENCES content_versions(id),
+    version_id  TEXT NOT NULL REFERENCES content_versions(id) ON DELETE RESTRICT,
     PRIMARY KEY (snapshot_id, version_id)
 );
 
-CREATE TABLE IF NOT EXISTS settings (
+CREATE TABLE IF NOT EXISTS app_settings (
     key   TEXT PRIMARY KEY,
     value TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS project_settings (
+    project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    key        TEXT NOT NULL,
+    value      TEXT NOT NULL,
+    PRIMARY KEY (project_id, key)
+);
+
+-- Map panel tables
+CREATE TABLE IF NOT EXISTS map_ai_nodes (
+    id          TEXT PRIMARY KEY,
+    board_id    TEXT NOT NULL REFERENCES map_boards(id) ON DELETE CASCADE,
+    prompt      TEXT NOT NULL,
+    response    TEXT,
+    session_id  TEXT REFERENCES chat_sessions(id) ON DELETE SET NULL,
+    model       TEXT,
+    token_usage INTEGER,
+    created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_map_ai_board ON map_ai_nodes(board_id);
+
+CREATE TABLE IF NOT EXISTS map_boards (
+    id          TEXT PRIMARY KEY,
+    project_id  TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    title       TEXT NOT NULL DEFAULT 'Main',
+    sort_order  REAL NOT NULL DEFAULT 0.0,
+    created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_map_boards_project ON map_boards(project_id);
+
+CREATE TABLE IF NOT EXISTS map_node_positions (
+    id              TEXT PRIMARY KEY,
+    board_id        TEXT NOT NULL REFERENCES map_boards(id) ON DELETE CASCADE,
+    node_ref_type   TEXT NOT NULL CHECK(node_ref_type IN ('scene', 'codex', 'note', 'ai')),
+    tree_node_id    TEXT REFERENCES tree_nodes(id) ON DELETE CASCADE,
+    codex_entry_id  TEXT REFERENCES codex_entries(id) ON DELETE CASCADE,
+    ai_node_id      TEXT REFERENCES map_ai_nodes(id) ON DELETE CASCADE,
+    x               REAL NOT NULL,
+    y               REAL NOT NULL,
+    pinned          INTEGER NOT NULL DEFAULT 0,
+    hidden          INTEGER NOT NULL DEFAULT 0,
+    z_index         INTEGER NOT NULL DEFAULT 0,
+    created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at      TEXT NOT NULL DEFAULT (datetime('now')),
+    CHECK (
+        (CASE WHEN tree_node_id    IS NOT NULL THEN 1 ELSE 0 END +
+         CASE WHEN codex_entry_id  IS NOT NULL THEN 1 ELSE 0 END +
+         CASE WHEN ai_node_id      IS NOT NULL THEN 1 ELSE 0 END) = 1
+    ),
+    CHECK (
+        (node_ref_type IN ('scene', 'note') AND tree_node_id   IS NOT NULL AND codex_entry_id IS NULL     AND ai_node_id IS NULL) OR
+        (node_ref_type = 'codex'            AND codex_entry_id IS NOT NULL AND tree_node_id   IS NULL     AND ai_node_id IS NULL) OR
+        (node_ref_type = 'ai'               AND ai_node_id     IS NOT NULL AND tree_node_id   IS NULL AND codex_entry_id IS NULL)
+    )
+);
+CREATE INDEX IF NOT EXISTS idx_map_pos_board  ON map_node_positions(board_id);
+CREATE INDEX IF NOT EXISTS idx_map_pos_tree   ON map_node_positions(tree_node_id);
+CREATE INDEX IF NOT EXISTS idx_map_pos_codex  ON map_node_positions(codex_entry_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_map_pos_uniq_scene
+    ON map_node_positions(board_id, tree_node_id)
+    WHERE tree_node_id IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_map_pos_uniq_codex
+    ON map_node_positions(board_id, codex_entry_id)
+    WHERE codex_entry_id IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_map_pos_uniq_ai
+    ON map_node_positions(board_id, ai_node_id)
+    WHERE ai_node_id IS NOT NULL;
+
+CREATE TABLE IF NOT EXISTS map_edges (
+    id                TEXT PRIMARY KEY,
+    board_id          TEXT NOT NULL REFERENCES map_boards(id) ON DELETE CASCADE,
+    from_position_id  TEXT NOT NULL REFERENCES map_node_positions(id) ON DELETE CASCADE,
+    to_position_id    TEXT NOT NULL REFERENCES map_node_positions(id) ON DELETE CASCADE,
+    label             TEXT,
+    style             TEXT NOT NULL DEFAULT 'solid' CHECK(style IN ('solid', 'dashed', 'dotted')),
+    color             TEXT NOT NULL DEFAULT '#000000',
+    direction         TEXT NOT NULL DEFAULT 'none' CHECK(direction IN ('none', 'forward', 'bidirectional')),
+    created_at        TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at        TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_map_edges_board ON map_edges(board_id);
+CREATE INDEX IF NOT EXISTS idx_map_edges_from  ON map_edges(from_position_id);
+CREATE INDEX IF NOT EXISTS idx_map_edges_to    ON map_edges(to_position_id);
+
+CREATE TABLE IF NOT EXISTS map_frames (
+    id            TEXT PRIMARY KEY,
+    board_id      TEXT NOT NULL REFERENCES map_boards(id) ON DELETE CASCADE,
+    title         TEXT NOT NULL DEFAULT 'Frame',
+    x             REAL NOT NULL,
+    y             REAL NOT NULL,
+    width         REAL NOT NULL,
+    height        REAL NOT NULL,
+    background    TEXT NOT NULL DEFAULT '#f5f5f5',
+    border_color  TEXT NOT NULL DEFAULT '#cccccc',
+    z_index       INTEGER NOT NULL DEFAULT -1,
+    created_at    TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at    TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_map_frames_board ON map_frames(board_id);
+
+-- Lint tables
+CREATE TABLE IF NOT EXISTS lint_ignored_diagnostics (
+    id              TEXT PRIMARY KEY,
+    rule_id         TEXT NOT NULL,
+    scene_id        TEXT NOT NULL REFERENCES tree_nodes(id) ON DELETE CASCADE,
+    text_snippet    TEXT NOT NULL,
+    context_before  TEXT NOT NULL,
+    context_after   TEXT NOT NULL,
+    note            TEXT,
+    created_at      INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_lint_ignored_scene ON lint_ignored_diagnostics(scene_id);
+CREATE INDEX IF NOT EXISTS idx_lint_ignored_rule  ON lint_ignored_diagnostics(rule_id);
+
+CREATE TABLE IF NOT EXISTS lint_term_dictionary (
+    id         TEXT PRIMARY KEY,
+    preferred  TEXT NOT NULL,
+    variants   TEXT NOT NULL,
+    severity   TEXT NOT NULL DEFAULT 'warning',
+    note       TEXT,
+    enabled    INTEGER NOT NULL DEFAULT 1,
+    sort_order INTEGER NOT NULL DEFAULT 0,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_lint_term_dict_preferred ON lint_term_dictionary(preferred);
+CREATE INDEX IF NOT EXISTS idx_lint_term_dict_sort      ON lint_term_dictionary(sort_order);
+
+CREATE TABLE IF NOT EXISTS lint_action_log (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    rule_id     TEXT NOT NULL,
+    action      TEXT NOT NULL,
+    scene_id    TEXT REFERENCES tree_nodes(id) ON DELETE SET NULL,
+    occurred_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_lint_action_log_rule     ON lint_action_log(rule_id);
+CREATE INDEX IF NOT EXISTS idx_lint_action_log_occurred ON lint_action_log(occurred_at);
+
+-- FTS5 全文検索インデックス
 CREATE VIRTUAL TABLE IF NOT EXISTS codex_fts USING fts5(
     name, aliases, summary, tags_cache,
     content=codex_entries, content_rowid=rowid,
@@ -359,34 +572,34 @@ END;
 
 CREATE TRIGGER IF NOT EXISTS snippets_fts_ai AFTER INSERT ON snippets BEGIN
     INSERT INTO snippets_fts(rowid, title, content, tags_cache)
-    VALUES (new.rowid, COALESCE(new.title,''), COALESCE(new.content,''), COALESCE(new.tags_cache,''));
+    VALUES (new.rowid, new.title, new.content, COALESCE(new.tags_cache,''));
 END;
 CREATE TRIGGER IF NOT EXISTS snippets_fts_ad AFTER DELETE ON snippets BEGIN
     INSERT INTO snippets_fts(snippets_fts, rowid, title, content, tags_cache)
-    VALUES ('delete', old.rowid, COALESCE(old.title,''), COALESCE(old.content,''), COALESCE(old.tags_cache,''));
+    VALUES ('delete', old.rowid, old.title, old.content, COALESCE(old.tags_cache,''));
 END;
 CREATE TRIGGER IF NOT EXISTS snippets_fts_au AFTER UPDATE ON snippets
   WHEN old.title IS NOT new.title OR old.content IS NOT new.content OR old.tags_cache IS NOT new.tags_cache
 BEGIN
     INSERT INTO snippets_fts(snippets_fts, rowid, title, content, tags_cache)
-    VALUES ('delete', old.rowid, COALESCE(old.title,''), COALESCE(old.content,''), COALESCE(old.tags_cache,''));
+    VALUES ('delete', old.rowid, old.title, old.content, COALESCE(old.tags_cache,''));
     INSERT INTO snippets_fts(rowid, title, content, tags_cache)
-    VALUES (new.rowid, COALESCE(new.title,''), COALESCE(new.content,''), COALESCE(new.tags_cache,''));
+    VALUES (new.rowid, new.title, new.content, COALESCE(new.tags_cache,''));
 END;
 
 CREATE TRIGGER IF NOT EXISTS chat_messages_fts_ai AFTER INSERT ON chat_messages BEGIN
-    INSERT INTO chat_messages_fts(rowid, content) VALUES (new.rowid, COALESCE(new.content,''));
+    INSERT INTO chat_messages_fts(rowid, content) VALUES (new.rowid, new.content);
 END;
 CREATE TRIGGER IF NOT EXISTS chat_messages_fts_ad AFTER DELETE ON chat_messages BEGIN
     INSERT INTO chat_messages_fts(chat_messages_fts, rowid, content)
-    VALUES ('delete', old.rowid, COALESCE(old.content,''));
+    VALUES ('delete', old.rowid, old.content);
 END;
 CREATE TRIGGER IF NOT EXISTS chat_messages_fts_au AFTER UPDATE ON chat_messages
   WHEN old.content IS NOT new.content
 BEGIN
     INSERT INTO chat_messages_fts(chat_messages_fts, rowid, content)
-    VALUES ('delete', old.rowid, COALESCE(old.content,''));
-    INSERT INTO chat_messages_fts(rowid, content) VALUES (new.rowid, COALESCE(new.content,''));
+    VALUES ('delete', old.rowid, old.content);
+    INSERT INTO chat_messages_fts(rowid, content) VALUES (new.rowid, new.content);
 END;
 
 CREATE TRIGGER IF NOT EXISTS tree_nodes_fts_ai AFTER INSERT ON tree_nodes BEGIN
@@ -405,6 +618,44 @@ BEGIN
     INSERT INTO tree_nodes_fts(rowid, title, content)
     VALUES (new.rowid, COALESCE(new.title,''), COALESCE(new.content,''));
 END;
+
+CREATE TRIGGER IF NOT EXISTS delete_cv_on_tree_node_delete
+AFTER DELETE ON tree_nodes BEGIN
+    DELETE FROM content_versions
+    WHERE entity_type IN ('scene', 'note') AND entity_id = old.id;
+END;
+
+CREATE TRIGGER IF NOT EXISTS delete_cv_on_codex_entry_delete
+AFTER DELETE ON codex_entries BEGIN
+    DELETE FROM content_versions
+    WHERE entity_type = 'codex_entry' AND entity_id = old.id;
+END;
+
+CREATE TRIGGER IF NOT EXISTS delete_cv_on_snippet_delete
+AFTER DELETE ON snippets BEGIN
+    DELETE FROM content_versions
+    WHERE entity_type = 'snippet' AND entity_id = old.id;
+END;
+
+-- プロジェクト作成時にビルトインCodexタイプを自動生成
+CREATE TRIGGER IF NOT EXISTS seed_builtin_codex_types
+AFTER INSERT ON projects BEGIN
+    INSERT OR IGNORE INTO codex_types (id, project_id, slug, label, color, palette_index, is_builtin, sort_order, created_at)
+      VALUES (new.id || '-character', new.id, 'character', 'キャラクター', '#534AB7', 0, 1, 0.0, datetime('now'));
+    INSERT OR IGNORE INTO codex_types (id, project_id, slug, label, color, palette_index, is_builtin, sort_order, created_at)
+      VALUES (new.id || '-location', new.id, 'location', '場所', '#0F6E56', 1, 1, 1.0, datetime('now'));
+    INSERT OR IGNORE INTO codex_types (id, project_id, slug, label, color, palette_index, is_builtin, sort_order, created_at)
+      VALUES (new.id || '-item', new.id, 'item', 'アイテム', '#BA7517', 2, 1, 2.0, datetime('now'));
+    INSERT OR IGNORE INTO codex_types (id, project_id, slug, label, color, palette_index, is_builtin, sort_order, created_at)
+      VALUES (new.id || '-lore', new.id, 'lore', '伝承', '#993C1D', 3, 1, 3.0, datetime('now'));
+END;
+
+-- プロジェクト作成時にデフォルトMapボードを自動生成
+CREATE TRIGGER IF NOT EXISTS seed_default_map_board
+AFTER INSERT ON projects BEGIN
+    INSERT OR IGNORE INTO map_boards (id, project_id, title, sort_order, created_at, updated_at)
+      VALUES (new.id || '-main-board', new.id, 'Main', 0.0, datetime('now'), datetime('now'));
+END;
 """
 
 
@@ -418,10 +669,13 @@ def seed(db_path: Path) -> None:
     now = ts()
 
     # ---- プロジェクト ----
+    # INSERT後に seed_builtin_codex_types / seed_default_map_board トリガーが発火し、
+    # codex_types と map_boards が自動生成される
     project_id = "default-project"
     conn.execute(
-        """INSERT INTO projects (id,title,genre,pov,tense,language,style_guide,ai_instructions,created_at,updated_at)
-           VALUES (?,?,?,?,?,?,?,?,?,?)""",
+        """INSERT INTO projects
+           (id,title,genre,pov,tense,language,style_guide,ai_instructions,phase_resolution_mode,created_at,updated_at)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
         (
             project_id,
             "朱の記憶",
@@ -433,25 +687,18 @@ def seed(db_path: Path) -> None:
             "和語と漢語のバランスに注意し、過剰な修飾を避ける。会話は登場人物の性格を映す鏡にする。",
             "和風ダークファンタジーの執筆補助をしてください。設定の一貫性と登場人物の動機を重視し、"
             "シーンを展開するときは朱音の内面と周囲の空気感を両立させてください。",
+            "reading",
             now, now,
         ),
     )
 
-    # ---- Codexタイプ（Rustミグレーションのトリガーと同じラベル・色） ----
-    type_ids: dict[str, str] = {}
-    for slug, label, color, palette_idx, sort_order in [
-        ("character", "キャラクター", "#534AB7", 0, 0.0),
-        ("location",  "場所",         "#0F6E56", 1, 1.0),
-        ("item",      "アイテム",     "#BA7517", 2, 2.0),
-        ("lore",      "伝承",         "#993C1D", 3, 3.0),
-    ]:
-        tid = uid()
-        type_ids[slug] = tid
-        conn.execute(
-            """INSERT INTO codex_types (id,project_id,slug,label,color,palette_index,is_builtin,sort_order,created_at)
-               VALUES (?,?,?,?,?,?,1,?,?)""",
-            (tid, project_id, slug, label, color, palette_idx, sort_order, now),
-        )
+    # ---- Codexタイプ ID（seed_builtin_codex_types トリガーが自動生成済み） ----
+    type_ids: dict[str, str] = {
+        "character": f"{project_id}-character",
+        "location":  f"{project_id}-location",
+        "item":      f"{project_id}-item",
+        "lore":      f"{project_id}-lore",
+    }
 
     # ---- Codexディテール定義 ----
     def_ids: dict[str, str] = {}
@@ -513,7 +760,7 @@ def seed(db_path: Path) -> None:
             "always", "standard", now, now,
         ),
     )
-    conn.execute("INSERT INTO codex_quick_pins (entry_id) VALUES (?)", (akane_id,))
+    conn.execute("INSERT INTO codex_quick_pins (entry_id,created_at) VALUES (?,?)", (akane_id, now))
     conn.execute("INSERT INTO codex_entry_tags (entry_id,tag_id) VALUES (?,?)",
                  (akane_id, tag_ids["主人公"]))
     conn.execute("INSERT INTO codex_entry_tags (entry_id,tag_id) VALUES (?,?)",
@@ -590,7 +837,7 @@ def seed(db_path: Path) -> None:
             "INSERT INTO codex_detail_values (id,entry_id,definition_id,value) VALUES (?,?,?,?)",
             (uid(), shuki_id, def_ids[key], val),
         )
-    conn.execute("INSERT INTO codex_quick_pins (entry_id) VALUES (?)", (shuki_id,))
+    conn.execute("INSERT INTO codex_quick_pins (entry_id,created_at) VALUES (?,?)", (shuki_id, now))
 
     otowa_id = uid()
     conn.execute(
@@ -718,7 +965,7 @@ def seed(db_path: Path) -> None:
             "always", "standard", now, now,
         ),
     )
-    conn.execute("INSERT INTO codex_quick_pins (entry_id) VALUES (?)", (haisha_id,))
+    conn.execute("INSERT INTO codex_quick_pins (entry_id,created_at) VALUES (?,?)", (haisha_id, now))
 
     # ---- アイテム ----
     akahimo_id = uid()
@@ -744,7 +991,7 @@ def seed(db_path: Path) -> None:
     )
     conn.execute("INSERT INTO codex_entry_tags (entry_id,tag_id) VALUES (?,?)",
                  (akahimo_id, tag_ids["呪術"]))
-    conn.execute("INSERT INTO codex_quick_pins (entry_id) VALUES (?)", (akahimo_id,))
+    conn.execute("INSERT INTO codex_quick_pins (entry_id,created_at) VALUES (?,?)", (akahimo_id, now))
     conn.execute(
         "INSERT INTO codex_detail_values (id,entry_id,definition_id,value) VALUES (?,?,?,?)",
         (uid(), akahimo_id, def_ids["item.状態"], "現存"),
@@ -802,7 +1049,7 @@ def seed(db_path: Path) -> None:
     )
     conn.execute("INSERT INTO codex_entry_tags (entry_id,tag_id) VALUES (?,?)",
                  (akanawa_id, tag_ids["呪術"]))
-    conn.execute("INSERT INTO codex_quick_pins (entry_id) VALUES (?)", (akanawa_id,))
+    conn.execute("INSERT INTO codex_quick_pins (entry_id,created_at) VALUES (?,?)", (akanawa_id, now))
 
     kioku_mon_id = uid()
     conn.execute(
@@ -831,11 +1078,12 @@ def seed(db_path: Path) -> None:
                  (kioku_mon_id, tag_ids["鬼"]))
 
     # ---- ツリー ----
+    # sort_order は fractional-indexing 形式（TEXT）
     part1_id = uid()
     conn.execute(
         """INSERT INTO tree_nodes (id,project_id,parent_id,node_type,title,sort_order,content,created_at,updated_at)
            VALUES (?,?,NULL,?,?,?,?,?,?)""",
-        (part1_id, project_id, "folder", "第一部：帰還", 1.0,
+        (part1_id, project_id, "folder", "第一部：帰還", "a0",
          json.dumps({"type": "doc", "content": []}), now, now),
     )
 
@@ -860,13 +1108,13 @@ def seed(db_path: Path) -> None:
     )
     conn.execute(
         """INSERT INTO tree_nodes
-           (id,project_id,parent_id,node_type,title,synopsis,sort_order,status,content,created_at,updated_at)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+           (id,project_id,parent_id,node_type,title,synopsis,sort_order,story_time_order,story_time_label,status,content,created_at,updated_at)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
         (
             scene1_id, project_id, part1_id, "scene", "一章：廃社",
             "雨の夜、朱音は十年ぶりに故郷の廃社へ帰る。"
             "祭壇には十年前に置いてきた朱紐がそのまま残っていた。触れた瞬間、見知らぬ記憶が流れ込んでくる。",
-            1.0, "draft", scene1_content, now, now,
+            "a0", "a1", "十年後・秋", "draft", scene1_content, now, now,
         ),
     )
 
@@ -884,12 +1132,38 @@ def seed(db_path: Path) -> None:
     )
     conn.execute(
         """INSERT INTO tree_nodes
-           (id,project_id,parent_id,node_type,title,synopsis,sort_order,status,content,created_at,updated_at)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+           (id,project_id,parent_id,node_type,title,synopsis,sort_order,story_time_order,story_time_label,status,content,created_at,updated_at)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
         (
             scene2_id, project_id, part1_id, "scene", "二章：封じ文",
             "廃社で朱紐とともに封じ文を見つける。「帰れ」と書かれた文には、朱縄の儀の手順と、読めない一行。",
-            2.0, "outline", scene2_content, now, now,
+            "a1", "a2", "十年後・翌朝", "outline", scene2_content, now, now,
+        ),
+    )
+
+    # 回想シーン：読み順は a2（第三話）だが物語時系列では a0（最古）
+    # Timeline デバッグ用：読み順 ≠ 時系列順の逆転を確認できる
+    scene_flashback_id = uid()
+    scene_flashback_content = doc_nodes(
+        para("【回想：十年前・夏】"),
+        para("社が燃えていた。"),
+        para("朱音は拝殿の前に立っていた。何が起きたか、まだわかっていなかった。"
+             "炎は本殿を包み、杉の木に燃え移り、夜の山を赤く染めていた。"),
+        para("「離れろ」という声がした。誰の声か、朱音は今も思い出せない。"),
+        para("朱音は走った。朱紐を手に、ただ走った。"),
+        para("振り返ったとき、本殿の屋根が落ちた。"),
+        para("あの夜、社の中に何がいたか。朱音は見た。見たはずだ。"
+             "だが今は、炎の色と熱と、誰かの叫び声しか残っていない。"),
+    )
+    conn.execute(
+        """INSERT INTO tree_nodes
+           (id,project_id,parent_id,node_type,title,synopsis,sort_order,story_time_order,story_time_label,status,content,created_at,updated_at)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+        (
+            scene_flashback_id, project_id, part1_id, "scene", "回想：十年前の夜",
+            "十年前の夏の夜、廃社が燃えた。朱音はその場にいた。"
+            "炎の中に何かがいた——だが記憶は断片しか残っていない。",
+            "a2", "a0", "十年前・夏の夜", "outline", scene_flashback_content, now, now,
         ),
     )
 
@@ -897,7 +1171,7 @@ def seed(db_path: Path) -> None:
     conn.execute(
         """INSERT INTO tree_nodes (id,project_id,parent_id,node_type,title,sort_order,content,created_at,updated_at)
            VALUES (?,?,NULL,?,?,?,?,?,?)""",
-        (part2_id, project_id, "folder", "第二部：朱の道", 2.0,
+        (part2_id, project_id, "folder", "第二部：朱の道", "a1",
          json.dumps({"type": "doc", "content": []}), now, now),
     )
 
@@ -913,21 +1187,21 @@ def seed(db_path: Path) -> None:
     )
     conn.execute(
         """INSERT INTO tree_nodes
-           (id,project_id,parent_id,node_type,title,synopsis,sort_order,status,content,created_at,updated_at)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+           (id,project_id,parent_id,node_type,title,synopsis,sort_order,story_time_order,story_time_label,status,content,created_at,updated_at)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
         (
             scene3_id, project_id, part2_id, "scene", "三章：都の夜",
             "都に戻った朱音のもとに陰陽師・冬弥が現れる。彼はなぜか朱音が桐野へ行ったことを知っていた。",
-            1.0, "outline", scene3_content, now, now,
+            "a0", "a3", "十年後・帰京後", "outline", scene3_content, now, now,
         ),
     )
 
-    # Notes フォルダ（'default-chapter' IDでRustマイグレーションの重複挿入を防ぐ）
+    # 覚書フォルダ（'default-chapter' IDでRustマイグレーションとの重複を防ぐ）
     notes_folder_id = "default-chapter"
     conn.execute(
         """INSERT INTO tree_nodes (id,project_id,parent_id,node_type,title,sort_order,content,created_at,updated_at)
            VALUES (?,?,NULL,?,?,?,?,?,?)""",
-        (notes_folder_id, project_id, "folder", "覚書", 99.0,
+        (notes_folder_id, project_id, "folder", "覚書", "z0",
          json.dumps({"type": "doc", "content": []}), now, now),
     )
 
@@ -953,7 +1227,7 @@ def seed(db_path: Path) -> None:
            VALUES (?,?,?,?,?,?,?,?,?,?)""",
         (
             research_note_id, project_id, notes_folder_id, "note", "調査メモ",
-            1.0, "outline", research_content, now, now,
+            "a0", "outline", research_content, now, now,
         ),
     )
 
@@ -1032,6 +1306,138 @@ def seed(db_path: Path) -> None:
         conn.execute(
             "INSERT INTO chat_messages (id,session_id,role,content,created_at) VALUES (?,?,?,?,?)",
             (uid(), session_id, role, content, now),
+        )
+
+    # ---- マップ ----
+    # seed_default_map_board トリガーで自動生成済みのボードを使用
+    board_id = f"{project_id}-main-board"
+
+    def map_pos_scene(tree_node_id: str, x: float, y: float) -> str:
+        pid = uid()
+        conn.execute(
+            """INSERT INTO map_node_positions
+               (id,board_id,node_ref_type,tree_node_id,x,y,created_at,updated_at)
+               VALUES (?,?,?,?,?,?,?,?)""",
+            (pid, board_id, "scene", tree_node_id, x, y, now, now),
+        )
+        return pid
+
+    def map_pos_codex(codex_entry_id: str, x: float, y: float) -> str:
+        pid = uid()
+        conn.execute(
+            """INSERT INTO map_node_positions
+               (id,board_id,node_ref_type,codex_entry_id,x,y,created_at,updated_at)
+               VALUES (?,?,?,?,?,?,?,?)""",
+            (pid, board_id, "codex", codex_entry_id, x, y, now, now),
+        )
+        return pid
+
+    def map_edge(from_pos_id: str, to_pos_id: str, label=None,
+                 style="solid", color="#888888", direction="none") -> None:
+        conn.execute(
+            """INSERT INTO map_edges
+               (id,board_id,from_position_id,to_position_id,label,style,color,direction,created_at,updated_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?)""",
+            (uid(), board_id, from_pos_id, to_pos_id, label, style, color, direction, now, now),
+        )
+
+    # ノード配置：キャラ列（x≈120）/ 場所・アイテム列（x≈420）/ シーン列（x≈720）
+    pos_akane       = map_pos_codex(akane_id,          120.0,  100.0)
+    pos_otowa       = map_pos_codex(otowa_id,           120.0,  320.0)
+    pos_fuuya       = map_pos_codex(fuuya_id,           120.0,  540.0)
+    pos_shuki       = map_pos_codex(shuki_id,           120.0,  760.0)
+    pos_haisha      = map_pos_codex(haisha_id,          420.0,  200.0)
+    pos_akahimo     = map_pos_codex(akahimo_id,         420.0,  440.0)
+    pos_kirino      = map_pos_codex(kirino_id,          420.0,  680.0)
+    pos_s_flashback = map_pos_scene(scene_flashback_id, 720.0, -100.0)
+    pos_s1          = map_pos_scene(scene1_id,          720.0,  140.0)
+    pos_s2          = map_pos_scene(scene2_id,          720.0,  360.0)
+    pos_s3          = map_pos_scene(scene3_id,          720.0,  580.0)
+
+    # エッジ：関係性
+    map_edge(pos_akane,       pos_haisha,        label="帰還",     style="solid",  color="#534AB7", direction="forward")
+    map_edge(pos_akane,       pos_akahimo,       label="所持",     style="solid",  color="#534AB7", direction="forward")
+    map_edge(pos_akane,       pos_otowa,         label="幼なじみ", style="dashed", color="#5B8CDD")
+    map_edge(pos_akane,       pos_fuuya,         label="因縁",     style="dashed", color="#993C1D")
+    map_edge(pos_shuki,       pos_haisha,        label="出現跡",   style="dotted", color="#CC3333")
+    map_edge(pos_haisha,      pos_kirino,        label="所在",     style="solid",  color="#0F6E56", direction="forward")
+    map_edge(pos_s_flashback, pos_haisha,        label="十年前",   style="dotted", color="#BA7517")
+    map_edge(pos_s1,          pos_haisha,        label="舞台",     style="solid",  color="#888888")
+    map_edge(pos_s2,          pos_haisha,        label="舞台",     style="solid",  color="#888888")
+
+    # フレーム：第一部のシーン群をまとめる
+    conn.execute(
+        """INSERT INTO map_frames
+           (id,board_id,title,x,y,width,height,background,border_color,z_index,created_at,updated_at)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+        (uid(), board_id, "第一部：帰還",
+         620.0, -210.0, 280.0, 690.0,
+         "#f0f0ff", "#8080cc", -1, now, now),
+    )
+
+    # ---- Lint用語辞書 ----
+    now_ms = ts_ms()
+    for i, (preferred, variants, severity, note) in enumerate([
+        ("朱紐",
+         ["赤い紐", "朱の紐", "封じ紐"],
+         "warning",
+         "本作の固有名詞。意図して一般名詞として使う場合は無視してよい"),
+        ("廃社",
+         ["廃神社", "廃宮", "社跡"],
+         "warning",
+         "桐野の社の略称として統一する"),
+        ("陰陽寮",
+         ["陰陽院", "術師の寮", "呪術機関"],
+         "warning",
+         "機関の正式名称"),
+        ("記録所",
+         ["記録院", "書庫", "文書所"],
+         "info",
+         "朱音の職場の名称"),
+        ("朱縄の儀",
+         ["封じの儀", "封縛の儀"],
+         "info",
+         "儀式の正式名称。「儀」単体での略称は許容"),
+    ]):
+        conn.execute(
+            """INSERT INTO lint_term_dictionary
+               (id,preferred,variants,severity,note,enabled,sort_order,created_at,updated_at)
+               VALUES (?,?,?,?,?,1,?,?,?)""",
+            (uid(), preferred, json.dumps(variants, ensure_ascii=False),
+             severity, note, i, now_ms, now_ms),
+        )
+
+    # ---- Lint永続無視サンプル（ja/sentence-length の意図的な長文） ----
+    long_sentence = (
+        "廃社は思っていたより小さかった。記憶の中では鬱蒼とした杉に囲まれた大きな建物だったが、"
+        "今目の前にあるのは、半ば崩れかけた本殿の残骸と、かろうじて形を保った拝殿だけだ。"
+    )
+    conn.execute(
+        """INSERT INTO lint_ignored_diagnostics
+           (id,rule_id,scene_id,text_snippet,context_before,context_after,note,created_at)
+           VALUES (?,?,?,?,?,?,?,?)""",
+        (
+            uid(), "ja/sentence-length", scene1_id,
+            long_sentence,
+            "朱音は鳥居の手前で立ち止まった。十年ぶりだった。",
+            "「廃墟だな」",
+            "情景描写の長文は意図的",
+            now_ms,
+        ),
+    )
+
+    # ---- Lintアクションログ ----
+    for rule_id, action, sid in [
+        ("project/term-consistency", "detected",              scene1_id),
+        ("project/term-consistency", "fixed",                 scene1_id),
+        ("ja/quote-period",          "detected",              scene1_id),
+        ("ja/quote-period",          "ignored_once",          scene1_id),
+        ("ja/word-repetition",       "detected",              scene2_id),
+        ("ja/sentence-length",       "ignored_persistent_set", scene1_id),
+    ]:
+        conn.execute(
+            "INSERT INTO lint_action_log (rule_id,action,scene_id,occurred_at) VALUES (?,?,?,?)",
+            (rule_id, action, sid, now_ms),
         )
 
     conn.commit()

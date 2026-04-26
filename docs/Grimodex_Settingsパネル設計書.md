@@ -21,6 +21,9 @@ Settingsパネルはプロジェクト設定、AI設定、エディタ設定、�
 │   Display│  Genre:  [Fantasy             ▼]         │
 │   Keys   │  POV:    [Third person limited ▼]        │
 │   Data   │                                          │
+│   Codex  │                                          │
+│   Linter │                                          │
+│   About  │                                          │
 │          │  Style guide:                            │
 │          │  ┌──────────────────────────────────┐    │
 │          │  │ Write in literary Japanese.      │    │
@@ -44,12 +47,15 @@ Settingsパネルはプロジェクト設定、AI設定、エディタ設定、�
 
 | カテゴリ | 内容 |
 |---------|------|
-| Project | プロジェクトのメタ情報、文体ガイド、AI指示 |
-| AI | APIキー管理、プロバイダ設定、モデル選択 |
-| Editor | フォント、行間、タイプライターモード等 |
-| Display | テーマ、UI言語、Attribution表示、Codexハイライト |
+| Project | プロジェクトのメタ情報、文体ガイド、AI指示、Phase解決モード、ネーミングルール |
+| AI | APIキー管理、プロバイダ設定、モデル選択、モデルホワイトリスト、拡張思考、コンテキスト予算配分 |
+| Editor | フォント、行間、タイプライターモード、単語・行頭禁則、インラインAI等 |
+| Display | テーマ、UI言語、UIスケール、reduceMotion、Attribution表示、Codexハイライト |
 | Keys | キーボードショートカットのカスタマイズ |
-| Data | バックアップ、エクスポート、プロジェクトの保存場所 |
+| Data | バックアップ、リビジョン、エクスポート詳細設定、プロジェクトの保存場所 |
+| Codex | ビルトイン／ユーザー定義 Codex タイプの管理とパレット色割り当て |
+| Linter | Phase 1 / Phase 2 ルールの ON/OFF と重要度、スニペット単位の無視リスト管理 |
+| About | アプリバージョン、GitHub リンク、Welcome Tour 再表示、THIRD_PARTY_LICENSES 一覧 |
 
 ---
 
@@ -66,6 +72,7 @@ Settingsパネルはプロジェクト設定、AI設定、エディタ設定、�
 | POV | ドロップダウン | 未選択 | First person / Third person limited / Third person omniscient / Second person |
 | Tense | ドロップダウン | 未選択 | Past tense / Present tense |
 | Language | ドロップダウン | 日本語 | 作品の執筆言語。AIへの指示言語にも影響 |
+| Phase resolution mode | セグメント | reading | Codex Phase（登場時期）の解決モード。`reading`: 読者視点での初出順。`story`: 物語内時系列順。キー: `phaseResolutionMode` |
 
 ### Style guide（文体ガイド）
 
@@ -89,11 +96,11 @@ Scenesパネルでの新規ノード作成時の自動命名を設定する。
 | フィールド | UI要素 | デフォルト | 詳細 |
 |-----------|--------|-----------|------|
 | フォルダー命名 | ドロップダウン | 自動（Part / Chapter / フォルダー） | `auto`: 階層深さで自動判別。`none`: 常に「フォルダー」 |
-| シーン命名プレフィックス | テキスト入力 | `シーン` | 空にするとタイトルなしで作成。例: `シーン` → `シーン 1`, `シーン 2` |
-| ノート命名プレフィックス | テキスト入力 | `ノート` | 空にするとタイトルなしで作成 |
+| シーン命名プレフィックス | テキスト入力 | `シーン`（i18next フォールバック） | 空にするとタイトルなしで作成。例: `シーン` → `シーン 1`, `シーン 2`。未設定時は `uiLanguage` に追従（ja=`シーン` / en=`Scene` / zh=`场景` / ko=`장면`） |
+| ノート命名プレフィックス | テキスト入力 | `ノート`（i18next フォールバック） | 空にするとタイトルなしで作成。未設定時は `uiLanguage` に追従 |
 | 採番スコープ | ドロップダウン | プロジェクト全体（一意） | `project`: プロジェクト全体で連番。`folder`: フォルダー内でのみ連番 |
 
-設定キー（`settings` テーブル）:
+設定キー（`app_settings` テーブル）:
 
 | キー | デフォルト値 |
 |------|-------------|
@@ -169,6 +176,8 @@ APIキーの保存先: Tauri keyring（OS標準のセキュアストレージ）
 | Default chat model | ドロップダウン | 設定済みプロバイダのモデル一覧から選択。Chatパネル新規セッションのデフォルト |
 | Default inline AI model | ドロップダウン | EditorのインラインAIで使うデフォルトモデル。Chat modelと同じにも別にもできる |
 | Session title model | ドロップダウン | セッションタイトル自動生成に使う軽量モデル。デフォルト: 同プロバイダの最安モデル |
+| Model whitelist | チェックボックスリスト | プロバイダのモデル一覧から、Chat / インラインAIモデルセレクタに表示するモデルを絞り込む。未設定時は全モデル表示。キー: `ai.modelWhitelist` |
+| Extended thinking (default) | トグル | OFF | 新規Chatセッションでの拡張思考のデフォルトON/OFF。キー: `ai.thinkingEnabled`。モデルが未対応の場合は自動的に無効 |
 
 モデル一覧の取得:
 - OpenRouter: API経由で動的取得（`/api/v1/models`）
@@ -181,7 +190,7 @@ APIキーの保存先: Tauri keyring（OS標準のセキュアストレージ）
 
 ### コンテキスト予算配分
 
-各レイヤーのコンテキスト予算比率をカスタマイズできる。比率はモデルのコンテキストウィンドウに対する割合で指定し、モデルサイズに応じて自動スケールする。
+各レイヤーのコンテキスト予算比率をカスタマイズできる。比率はモデルのコンテキストウィンドウに対する割合で指定し、モデルサイズに応じて自動スケールする。UI はスライダーで L1〜L5 + Response reserve を調整する形式。
 
 ```
 Context budget allocation
@@ -204,7 +213,7 @@ Response reserve        [ 5%  ▼] (min: 2,000)
 | 各レイヤーのfloor | 表示のみ | 固定値 | 最小トークン数。小コンテキストモデルでの最低保証 |
 
 - 合計が100%を超える場合はバリデーションエラーを表示し保存不可
-- 変更はプロジェクト単位で保存（`settings` テーブル、キー: `ai.contextBudget.*`）
+- 変更はプロジェクト単位で保存（`app_settings` テーブル、キー: `ai.contextBudget.*`）
 - Chat設計書のプロンプトプレビューモーダルで実際の配分結果を確認可能
 
 ---
@@ -218,10 +227,10 @@ Response reserve        [ 5%  ▼] (min: 2,000)
 | フィールド | UI要素 | 選択肢 | デフォルト |
 |-----------|--------|--------|-----------|
 | Font family | ドロップダウン | システムフォント一覧 + カスタムフォント指定 | 游明朝 / Noto Serif JP |
-| Font size | スライダー + 数値 | 14px - 24px (1px刻み) | 16px |
-| Line height | スライダー + 数値 | 1.2 - 3.0 (0.1刻み) | 1.8 |
-| Max content width | スライダー + 数値 | 480px - 960px (40px刻み) | 680px |
-| Paragraph spacing | スライダー + 数値 | 0px - 24px (2px刻み) | 12px |
+| Font size | スライダー + 数値 | 14px - 24px (1px刻み) | 18px |
+| Line height | スライダー + 数値 | 1.2 - 3.0 (0.1刻み) | 2.0 |
+| Max content width | スライダー + 数値 | 480px - 960px (40px刻み) | 720px |
+| Paragraph spacing | スライダー + 数値 | 0px - 24px (2px刻み) | 8px |
 
 ### 編集体験
 
@@ -229,9 +238,13 @@ Response reserve        [ 5%  ▼] (min: 2,000)
 |-----------|--------|-----------|------|
 | Typewriter mode | トグル | OFF | カーソル行を常にキャンバス中央に固定 |
 | Auto-save delay | スライダー | 2秒 | 0.5秒 - 10秒の範囲 |
-| Spell check | トグル | ON | ブラウザ内蔵スペルチェック |
+| Spell check | トグル | OFF | ブラウザ内蔵スペルチェック。日本語中心の執筆で誤検知が多いため既定OFF |
 | Smart quotes | トグル | OFF | 「"」→「"」"」の自動変換。日本語ではOFF推奨 |
 | Smart dashes | トグル | OFF | 「--」→「—」の自動変換 |
+| Word break | セグメント | normal | CSS `word-break` 相当の挙動を切り替える。`normal` / `keep-all` / `break-all`。キー: `editor.wordBreak` |
+| Line break | セグメント | strict | 日本語行頭禁則の強度。`loose` / `normal` / `strict`。CSS `line-break` に対応。キー: `editor.lineBreak` |
+
+> Focus mode（特定段落以外を薄く表示）と target character count（目標文字数表示）は `Settings` の型定義にフィールドとして存在するが、UI としての露出は現時点で保留（未設計）。
 
 ### インラインAI
 
@@ -246,8 +259,8 @@ Response reserve        [ 5%  ▼] (min: 2,000)
 |-----------|--------|-----------|------|
 | Smooth caret | トグル | ON | カーソル移動時にスムーズにスライド |
 | Cursor blink | トグル | ON | 滑らかなフェード点滅（ブラウザデフォルトの硬い点滅を置き換え） |
-| Character fade-in | トグル | ON | 入力時に文字がふわっと現れる |
-| Character fade-out | トグル | ON | 削除時に文字がすっと消える |
+| Character fade-in | トグル | OFF | 入力時に文字がふわっと現れる |
+| Character fade-out | トグル | OFF | 削除時に文字がすっと消える |
 | Disable all animations | トグル | OFF | 上記4つを一括OFF |
 
 ---
@@ -267,8 +280,9 @@ UIの外観全般を設定する。
 
 | フィールド | UI要素 | デフォルト | 詳細 |
 |-----------|--------|-----------|------|
-| UI language | ドロップダウン | 日本語 | 日本語 / English。UI要素の表示言語 |
-| UI scale | スライダー | 100% | 80% - 150%。ウィンドウ全体のズーム |
+| UI language | ドロップダウン | 日本語 | 日本語 (ja) / English (en) / 中文 (zh) / 한국어 (ko) の 4 言語。UI要素の表示言語。i18next リソースと連動しネーミングルールのフォールバックにも影響 |
+| UI scale | スライダー | 100% | 80% - 150%（10%刻み）。ウィンドウ全体のズーム。`uiScale` はグローバル設定 |
+| Reduce motion | トグル | OFF | アニメーションを抑制し Framer Motion / GSAP の遷移を最小化。OS の `prefers-reduced-motion` とも連動。キー: `reduceMotion` |
 | Show word count in Scenes | トグル | ON | Scenesパネルのツリーに文字数を表示 |
 | Show AI badge in Scenes | トグル | OFF | ScenesパネルのツリーにAI帰属バッジを表示 |
 | Codex highlight | トグル | ON | エディタ本文中のCodexハイライトを有効/無効 |
@@ -294,6 +308,7 @@ Focus Codex panel                Ctrl+Alt+X
 Focus Snippets panel             Ctrl+Alt+N
 Focus Attribution panel          Ctrl+Alt+A
 Focus Chat History panel         Ctrl+Alt+H
+Focus Map panel                  Ctrl+Alt+M
 Open Settings                    Ctrl+Alt+,
 Command palette                  Ctrl+Shift+P
 Toggle Left Dock                 Ctrl+Alt+B
@@ -318,7 +333,7 @@ Inline AI palette                Ctrl+Space
 
 ### 永続化
 
-カスタムキーバインドは `project.db` の `settings` テーブルにJSON形式で保存。
+カスタムキーバインドは `project.db` の `app_settings` テーブルにJSON形式で保存。
 
 ---
 
@@ -350,6 +365,15 @@ Inline AI palette                Ctrl+Space
 
 バックアップ形式: プロジェクトフォルダ全体（`content/` + `codex/` + `snippets/` + `project.db`）をZIPアーカイブ。ファイル名: `{project_title}_{YYYYMMDD_HHmmss}.zip`
 
+### リビジョン
+
+シーン単位の自動リビジョン（スナップショット）に関する設定。
+
+| フィールド | UI要素 | デフォルト | 詳細 |
+|-----------|--------|-----------|------|
+| Auto interval | ドロップダウン + 数値 | 10分 | 自動でリビジョンを作成する間隔。`0` で自動作成を無効化。キー: `revision.autoInterval` |
+| Keep count | 数値入力 | 50 | シーンあたりの保持リビジョン数の上限。超過分は古い順に削除。キー: `revision.keepCount` |
+
 ### エクスポート
 
 | ボタン | 動作 |
@@ -360,6 +384,17 @@ Inline AI palette                Ctrl+Space
 | Export Attribution report | Attributionパネルのレポートをエクスポート（Markdown or CSV） |
 
 エクスポートはTauriのファイルダイアログで保存先を選択。
+
+#### エクスポート詳細設定
+
+エクスポートダイアログの既定値を Settings 側から管理する。詳細な挙動はエクスポートダイアログ設計書に委譲。
+
+| フィールド | UI要素 | デフォルト | 詳細 |
+|-----------|--------|-----------|------|
+| Format | セグメント | md | 出力フォーマット。`md` / `txt` / `html`。キー: `export.format` |
+| Folder heading | セグメント | h1 | フォルダー名を見出し化する際のレベル。`none` / `h1` / `h2` / `h3`。キー: `export.folderHeading` |
+| Scene divider | テキスト入力 | `\n\n---\n\n` | シーン間の区切り文字。空文字で区切りなし。キー: `export.sceneDivider` |
+| Ruby style | セグメント | html | ルビ記法の出力形式。`html`（`<ruby>`タグ） / `markdown`（`{漢字|かんじ}` 形式） / `plain`（ルビを落とす）。キー: `export.rubyStyle` |
 
 ### データ管理
 
@@ -373,34 +408,178 @@ Inline AI palette                Ctrl+Space
 
 ---
 
+## Codex カテゴリ
+
+Codex のエントリ種別（タイプ）を管理する。ビルトインタイプ（Character / Place / Item / Event の 4 種）に加えて、ユーザー定義のカスタムタイプを追加・編集・削除できる。
+
+### 一覧 UI
+
+```
+Codex types
+──────────────────────────────────────
+  Built-in                    [編集可: ラベル/色のみ]
+  ●  Character   #7F77DD    [Edit]
+  ●  Place       #5FB98A    [Edit]
+  ●  Item        #E0A94C    [Edit]
+  ●  Event       #C76A8F    [Edit]
+
+  Custom
+  ●  Faction     #5A7FD8    [Edit] [Delete]
+  ●  Artifact    #9E6BCF    [Edit] [Delete]
+
+  [+ Add custom type]
+──────────────────────────────────────
+```
+
+| 要素 | 詳細 |
+|------|------|
+| Swatch | パレット色のプレビュー。クリックで swatch picker を開き、プリセット 16 色 + カスタム HEX から選択 |
+| Label | タイプの表示名。Codex パネル・フィルタ・バッジに使用 |
+| Key | 内部識別子（英小文字 + ハイフン）。ビルトインは固定、カスタム作成時に自動生成 |
+| Delete | カスタムタイプのみ削除可。既存エントリが存在する場合は確認ダイアログで移動先タイプを指定 |
+
+### DB スキーマ
+
+```sql
+CREATE TABLE codex_types (
+  key         TEXT PRIMARY KEY,
+  label       TEXT NOT NULL,
+  color       TEXT NOT NULL,  -- HEX (#RRGGBB)
+  builtin     INTEGER NOT NULL DEFAULT 0,
+  sort_order  INTEGER NOT NULL DEFAULT 0,
+  created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
+);
+```
+
+タイプ一覧は `typeApi`（Zustand ストア）経由で購読・更新する。Settings の Codex カテゴリは `typeApi` を薄くラップした UI として動作し、`app_settings` テーブルには保存しない。
+
+---
+
+## Linter カテゴリ
+
+本文・スニペットに対する Lint ルールの設定と、プロジェクト固有の無視リストを管理する。UI は 2 タブ構成。
+
+### タブ 1: ルール設定
+
+Phase 1（基本ルール）および Phase 2（拡張ルール）の各ルールについて、ON/OFF と重要度（`info` / `warn` / `error`）を個別に切り替える。
+
+```
+Linter rules
+──────────────────────────────────────
+[Phase 1]  [Phase 2]
+
+☑  rule/duplicate-paragraph    [warn  ▼]
+☑  rule/long-sentence          [info  ▼]
+☐  rule/mixed-quote-style      [warn  ▼]
+...
+```
+
+- ルールカテゴリ（Phase）ごとにサブタブで切り替え
+- ON/OFF はチェックボックス、重要度はドロップダウン
+- ルールごとの説明文と「例を見る」リンク
+- 「Reset to defaults」ボタンで Phase ごとに初期値へ戻す
+
+### タブ 2: 無視リスト
+
+プロジェクト内で「このスニペットについてはこのルールを無視する」という個別例外を管理する画面。
+
+| 列 | 内容 |
+|----|------|
+| Rule | 無視対象のルール ID |
+| Scope | 対象のシーン／スニペット（シーンタイトル + スニペット抜粋） |
+| Added | 登録日時 |
+| Note | ユーザーコメント（任意） |
+| 操作 | 行選択 → [Delete] で削除 |
+
+- 検索バーでルール名／シーン名／本文で横断検索
+- 複数選択削除に対応
+- シーン分割・統合時にも追従できるよう、無視エントリの `snippet_id` / `scene_id` を付け替える追従 API を介して更新される
+
+### 設定の保存先
+
+Linter 設定は `app_settings` テーブルではなく専用の `lintConfigStore`（Zustand + 永続化レイヤー）で管理する。無視リストは SQLite のテーブル `lint_ignores` に保存され、シーン・スニペットの CRUD と整合を取る。詳細は Linter 設計書に委譲。
+
+---
+
+## About カテゴリ
+
+アプリに関するメタ情報とサポートリンクを表示する。設定項目ではなく情報表示が主体。
+
+| 要素 | 詳細 |
+|------|------|
+| App version | `package.json` と `tauri.conf.json` から取得したバージョン番号（例: `Grimodex 0.12.3`）。クリックでコミットハッシュをトグル表示 |
+| GitHub | リポジトリへの外部リンク。`shell.open` で OS デフォルトブラウザで開く |
+| Welcome Tour | [Show again] ボタンで初回起動時の Welcome Tour を再表示する（内部フラグ `welcome.seen` をリセット） |
+| Third-party licenses | npm / cargo それぞれの `THIRD_PARTY_LICENSES` 一覧をスクロール可能なビューで表示。検索バー付き |
+
+---
+
 ## 設定の保存
 
 ### 即時保存
 
-全ての設定変更は即座に保存される（「Save」ボタンは不要）。UIが変更されるたびにデバウンス300msで保存。
+全ての設定変更は即座に保存される（「Save」ボタンは不要）。UI が変更されるたびにデバウンス 300ms で保存。`SettingsDialog` を閉じた瞬間には `flushPending` を呼び、保留中の変更を即時 flush してからダイアログを閉じる。
 
-### 保存先
+### 永続化の二層構造
+
+Grimodex の設定はワークスペース（起動中の Grimodex プロセス全体）単位で共有されるべき項目と、プロジェクトごとに個別管理すべき項目に分かれる。
+
+#### グローバル設定（ワークスペース越しに残る）
+
+UI の外観など「どのプロジェクトを開いても同じであってほしい」項目は `useWorkspaceStore.globalSettings` 経由で読み書きし、アプリデータディレクトリの `global-settings.json` に保存する。プロジェクトを切り替えても値が維持される。
+
+代表的なグローバル設定項目:
+
+- `theme` / `colorTheme`（テーマとアクセントカラー）
+- `uiLanguage`（UI 表示言語）
+- `uiScale`（UI スケール）
+- `reduceMotion`
+- Welcome Tour の既読フラグなど About カテゴリ関連
+
+#### プロジェクト固有設定
+
+上記以外の項目はすべて `app_settings` テーブル（Drizzle ORM 経由）に 300ms debounce で保存する。プロジェクトを開き直すと当該プロジェクトの `project.db` から読み戻される。
+
+#### カテゴリ独自ストア
+
+一部のカテゴリは専用ストア／テーブルへ委譲し、Settings UI はそのファサードとして振る舞う:
+
+| カテゴリ | 委譲先 | 備考 |
+|---------|-------|------|
+| Codex types | `typeApi`（Zustand） + `codex_types` テーブル | ビルトイン／カスタムタイプの CRUD |
+| Linter (ルール + 無視リスト) | `lintConfigStore` + `lint_ignores` テーブル | `app_settings` テーブルには保存しない |
+| AI (APIキー) | Tauri keyring | OS 標準のセキュアストレージ |
+| AI (モデル選択 / 拡張思考 / ホワイトリスト等) | `chat/store` + `app_settings` テーブル | Chat パネルと共有 |
+
+#### 保存先サマリ
 
 | 設定カテゴリ | 保存先 | 理由 |
 |-------------|--------|------|
-| Project | `projects` テーブル | プロジェクト固有の情報 |
+| Project (メタ情報) | `projects` テーブル | プロジェクト固有 |
+| Project (ネーミング / Phase resolution) | `app_settings` テーブル | プロジェクト固有 |
 | AI (APIキー) | Tauri keyring | セキュリティ |
-| AI (モデル選択等) | `settings` テーブル | プロジェクト固有 |
-| Editor | `settings` テーブル | プロジェクト固有（将来グローバル設定も検討） |
-| Display | `settings` テーブル | プロジェクト固有 |
-| Keys | `settings` テーブル | プロジェクト固有 |
-| Data (バックアップ) | `settings` テーブル | プロジェクト固有 |
+| AI (モデル・予算・thinking等) | `chat/store` + `app_settings` テーブル | プロジェクト固有 |
+| Editor | `app_settings` テーブル | プロジェクト固有 |
+| Display (theme / uiLanguage / uiScale / reduceMotion) | `global-settings.json` | グローバル |
+| Display (Codex highlight / Attribution opacity 等) | `app_settings` テーブル | プロジェクト固有 |
+| Keys | `app_settings` テーブル | プロジェクト固有 |
+| Data (バックアップ / リビジョン / エクスポート) | `app_settings` テーブル | プロジェクト固有 |
+| Codex (types) | `codex_types` テーブル（`typeApi` 経由） | プロジェクト固有 |
+| Linter (ルール) | `lintConfigStore` → `app_settings` テーブル | プロジェクト固有 |
+| Linter (無視リスト) | `lint_ignores` テーブル | プロジェクト固有 |
+| About | 表示のみ（`welcome.seen` のみグローバル） | — |
 
-### settingsテーブル
+### app_settings テーブル
 
 ```sql
-CREATE TABLE settings (
+CREATE TABLE app_settings (
   key   TEXT PRIMARY KEY,
   value TEXT NOT NULL  -- JSON value
 );
 ```
 
-シンプルなKey-Valueストア。各設定項目は `editor.fontSize`、`display.theme`、`ai.defaultChatModel` のようなドット区切りのキーで保存。
+アプリ全体のKey-Valueストア。各設定項目は `editor.fontSize`、`display.theme`、`ai.defaultChatModel` のようなドット区切りのキーで保存。`project_settings` テーブルも併存するが、現在のすべてのキーはアプリ全体のプリファレンスのため `app_settings` 側に格納される（詳細は統合DBスキーマ参照）。
 
 ```typescript
 // 使用例

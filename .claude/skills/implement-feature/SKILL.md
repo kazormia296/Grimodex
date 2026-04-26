@@ -25,9 +25,9 @@ argument-hint: [feature-description]
 6. **実装中にテストファイルを変更しない**
 
 ## Phase 4: 検証
-7. `npm test` で全テスト通過を確認
+7. `pnpm test` で全テスト通過を確認
 8. `npx tsc --noEmit` で型チェック通過を確認
-9. `npm run lint:fix` でLint修正
+9. `pnpm lint:fix` でLint修正
 10. Rust変更がある場合 `cd src-tauri && cargo check && cargo test`
 11. 変更をコミットする
 

@@ -62,11 +62,22 @@ vi.mock("@/features/codex/api", () => ({
 import { EditorContextMenu } from "./EditorContextMenu";
 
 function makeEditor(text: string): Editor {
+  // Minimal stub: enough for the menu to render and the disable-detector
+  // to early-out as "no marks / no block attrs". The detector calls
+  // `nodesBetween`, `resolve`, and `isActive`; making them no-ops keeps
+  // the test focused on the codex-add behaviour without pulling in a
+  // full ProseMirror state.
   return {
     state: {
       selection: { empty: false, from: 0, to: text.length },
-      doc: { textBetween: () => text },
+      doc: {
+        textBetween: () => text,
+        nodesBetween: () => undefined,
+        resolve: () => ({ marks: () => [] }),
+        content: { size: text.length },
+      },
     },
+    isActive: () => false,
   } as unknown as Editor;
 }
 

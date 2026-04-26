@@ -8,12 +8,12 @@ AIチャットパネルとCodex/Snippet抽出機能を組み合わせた小説�
 
 ## コマンド
 
-- 開発サーバー: npm run tauri dev
-- フロントのみ: npm run dev
-- ビルド: npm run tauri build
-- テスト: npm test
-- テスト(単体): npm test -- --run [ファイルパス]
-- Lint: npm run lint:fix
+- 開発サーバー: pnpm tauri dev
+- フロントのみ: pnpm dev
+- ビルド: pnpm tauri build
+- テスト: pnpm test
+- テスト(単体): pnpm test --run [ファイルパス]
+- Lint: pnpm lint:fix
 - 型チェック: npx tsc --noEmit
 - Rustチェック: cd src-tauri && cargo check
 - Rust Lint: cd src-tauri && cargo clippy --all-targets
@@ -29,6 +29,7 @@ AIチャットパネルとCodex/Snippet抽出機能を組み合わせた小説�
 - テスト: Vitest、ソースと同階層に \*.test.ts
 - コンポーネント: 1ファイル1コンポーネント、200行超えたら分割
 - Rust: unwrap()禁止、thiserror/anyhow使用（詳細は src-tauri/CLAUDE.md）
+- アニメ: duration/easing は `src/lib/animation.ts` の `DURATIONS`/`EASINGS`/`VARIANTS` 経由（べた書き禁止、詳細は /polish-motion）
 - React/TS詳細は src/CLAUDE.md を参照
 
 ## アーキテクチャ原則
@@ -50,6 +51,7 @@ AIチャットパネルとCodex/Snippet抽出機能を組み合わせた小説�
 | 「テスト」                  | /test-feature      | テスト作成・実行 |
 | 「デバッグ」「修正」        | /debug-issue       | デバッグフロー   |
 | 「Tauriコマンド」「invoke」 | /add-tauri-command | IPC一括追加      |
+| 「アニメ」「トランジション」「動き」「磨いて」 | /polish-motion | UIモーション規律 |
 
 ## サブエージェント委譲
 

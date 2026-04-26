@@ -1,6 +1,7 @@
 mod ai;
 mod codex_matching;
 mod database;
+mod lint_logging;
 mod workspace;
 
 use codex_matching::CodexMatcherState;
@@ -12,10 +13,22 @@ use std::sync::{Arc, Mutex};
 use tauri::Manager;
 use workspace::GlobalSettings;
 
-/// AtomicBool flag to request aborting an in-progress stream.
+/// AtomicBool flag to request aborting an in-progress chat stream.
 struct StreamAbortFlag {
     flag: Arc<std::sync::atomic::AtomicBool>,
 }
+
+/// AtomicBool flag to request aborting an in-progress inline-AI stream.
+/// Kept separate from `StreamAbortFlag` so that aborting one does not affect the other
+/// when Chat and inline AI are streaming simultaneously.
+struct InlineAiAbortFlag {
+    flag: Arc<std::sync::atomic::AtomicBool>,
+}
+
+/// Holds the `tracing-appender` worker guard so the non-blocking writer
+/// keeps draining for the lifetime of the Tauri app. Dropping this
+/// flushes pending log lines synchronously.
+struct LogGuard(#[allow(dead_code)] tracing_appender::non_blocking::WorkerGuard);
 
 #[derive(Debug, thiserror::Error)]
 enum AppError {
@@ -151,6 +164,17 @@ fn db_execute(
     })
 }
 
+#[tauri::command]
+fn db_execute_batch(
+    ws_state: tauri::State<'_, WorkspaceState>,
+    statements: Vec<database::BatchStatement>,
+) -> Result<QueryResult, AppError> {
+    with_db(&ws_state, |db| {
+        let rows = db.execute_batch_tx(&statements)?;
+        Ok(QueryResult { rows })
+    })
+}
+
 // --- FTS commands ---
 
 #[tauri::command]
@@ -161,6 +185,19 @@ fn fts_optimize(ws_state: tauri::State<'_, WorkspaceState>) -> Result<(), AppErr
 #[tauri::command]
 fn fts_rebuild(ws_state: tauri::State<'_, WorkspaceState>) -> Result<(), AppError> {
     with_db(&ws_state, |db| db.fts_rebuild())
+}
+
+#[tauri::command]
+fn fts_search(
+    ws_state: tauri::State<'_, WorkspaceState>,
+    project_id: String,
+    query: String,
+    scope: String,
+    limit: u32,
+) -> Result<Vec<Value>, AppError> {
+    with_db(&ws_state, |db| {
+        db.search_fts(&project_id, &query, &scope, limit)
+    })
 }
 
 // --- Integrity commands ---
@@ -279,6 +316,7 @@ async fn send_chat_message_stream(
             .collect::<Vec<_>>(),
         flag_clone,
         app_handle.clone(),
+        "chat",
     )
     .await;
 
@@ -286,6 +324,70 @@ async fn send_chat_message_stream(
         use tauri::Emitter;
         let _ = app_handle.emit(
             "chat:stream-error",
+            serde_json::json!({ "message": e.to_string() }),
+        );
+        return Err(AppError::Anyhow(e));
+    }
+
+    Ok(())
+}
+
+// --- Inline AI streaming commands ---
+
+#[tauri::command]
+fn abort_inline_ai_stream(abort_flag: tauri::State<'_, InlineAiAbortFlag>) -> Result<(), AppError> {
+    abort_flag
+        .flag
+        .store(true, std::sync::atomic::Ordering::Relaxed);
+    Ok(())
+}
+
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+async fn send_inline_ai_stream(
+    ai_path: tauri::State<'_, AiSettingsPath>,
+    abort_flag: tauri::State<'_, InlineAiAbortFlag>,
+    app_handle: tauri::AppHandle,
+    messages: Vec<ChatMessagePayload>,
+    thinking: Option<ai::ThinkingConfig>,
+    effort: Option<String>,
+    reasoning_enabled: Option<bool>,
+    reasoning_effort: Option<String>,
+) -> Result<(), AppError> {
+    abort_flag
+        .flag
+        .store(false, std::sync::atomic::Ordering::Relaxed);
+
+    let settings = ai::read_ai_settings(&ai_path.path);
+    let api_key = resolve_api_key(&settings.provider)?;
+    let flag_clone = Arc::clone(&abort_flag.flag);
+    let params = ai::ChatParams {
+        provider: &settings.provider,
+        model: &settings.model,
+        api_key: &api_key,
+        ollama_endpoint: &settings.ollama_endpoint,
+        thinking,
+        effort,
+        reasoning_enabled,
+        reasoning_effort,
+    };
+
+    let result = ai::send_chat_stream(
+        &params,
+        &messages
+            .iter()
+            .map(|m| (m.role.as_str(), m.content.as_str()))
+            .collect::<Vec<_>>(),
+        flag_clone,
+        app_handle.clone(),
+        "inline-ai",
+    )
+    .await;
+
+    if let Err(e) = result {
+        use tauri::Emitter;
+        let _ = app_handle.emit(
+            "inline-ai:stream-error",
             serde_json::json!({ "message": e.to_string() }),
         );
         return Err(AppError::Anyhow(e));
@@ -366,6 +468,27 @@ async fn list_ai_models(
     Ok(models)
 }
 
+/// Deterministic text linter entry point (see `grimodex_lint::lint`).
+///
+/// Accepts the pre-serialised `LintBlock[]` from the frontend position map
+/// and returns diagnostics in scene-wide UTF-16 offsets.
+#[tauri::command]
+fn lint_text(
+    blocks: Vec<grimodex_lint::LintBlock>,
+    language: String,
+    scope: grimodex_lint::LintScope,
+    config: grimodex_lint::LintConfig,
+    disables: Option<Vec<grimodex_lint::DisableDirective>>,
+) -> Result<grimodex_lint::LintResponse, grimodex_lint::LintError> {
+    let lang = match language.as_str() {
+        "ja" => grimodex_lint::Language::Japanese,
+        "en" => grimodex_lint::Language::English,
+        other => return Err(grimodex_lint::LintError::InvalidLanguage(other.to_string())),
+    };
+    let disables = disables.unwrap_or_default();
+    grimodex_lint::lint(&blocks, lang, scope, &config, &disables)
+}
+
 #[tauri::command]
 async fn test_ai_connection(
     ai_path: tauri::State<'_, AiSettingsPath>,
@@ -381,9 +504,19 @@ async fn test_ai_connection(
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
+    // Daily-rotating file log under `~/.grimodex/logs/lint-tauri-*.log`
+    // plus stderr. The guard must outlive `tauri::Builder::run` so file
+    // writes are flushed; stash it on the manager state.
+    let log_guard = lint_logging::init_tauri_logging();
+
+    let mut builder = tauri::Builder::default();
+    if let Some(guard) = log_guard {
+        builder = builder.manage(LogGuard(guard));
+    }
+    builder
         .plugin(tauri_plugin_window_state::Builder::default().build())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_opener::init())
         .setup(|app| {
             let app_dir = app
@@ -415,6 +548,11 @@ pub fn run() {
                 flag: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             });
 
+            // Inline AI abort flag (separate from chat's flag)
+            app.manage(InlineAiAbortFlag {
+                flag: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            });
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -423,6 +561,7 @@ pub fn run() {
             validate_workspace_path,
             open_workspace,
             db_execute,
+            db_execute_batch,
             get_ai_settings,
             save_ai_settings,
             save_api_key,
@@ -433,13 +572,17 @@ pub fn run() {
             send_chat_message,
             send_chat_message_stream,
             abort_chat_stream,
+            send_inline_ai_stream,
+            abort_inline_ai_stream,
             send_agent_message,
             fts_optimize,
             fts_rebuild,
+            fts_search,
             integrity_check,
             repair_integrity,
             codex_matching::codex_rebuild_matcher,
-            codex_matching::codex_match_text
+            codex_matching::codex_match_text,
+            lint_text
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

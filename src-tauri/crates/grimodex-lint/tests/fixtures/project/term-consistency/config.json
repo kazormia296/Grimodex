@@ -1,0 +1,24 @@
+{
+  "rules": {
+    "ja/sentence-length": { "enabled": false },
+    "ja/sentence-ending-repeat": { "enabled": false },
+    "ja/word-repetition": { "enabled": false }
+  },
+  "term_dictionary": [
+    {
+      "id": "t1",
+      "preferred": "ウェブ",
+      "variants": ["Web", "web", "ウエブ"],
+      "severity": "warning",
+      "note": "企画書 §3.2",
+      "enabled": true
+    },
+    {
+      "id": "t2",
+      "preferred": "一人",
+      "variants": ["1人"],
+      "severity": "info",
+      "enabled": true
+    }
+  ]
+}
