@@ -139,8 +139,8 @@ foreshadowSetups = sqliteTable("foreshadow_setups", {
   // 固有メタ
   kind: text("kind").notNull(),                          // 'designated_existing' | 'inserted_new' | 'rewritten'
   strength: text("strength"),                            // 'subtle' | 'moderate' | 'overt' | null（作者判定）
-  aiStrength: text("ai_strength"),                       // 同上だが AI 評価。Phase 1 から確保
-  aiReasoning: text("ai_reasoning"),                     // AI 評価の理由文
+  aiStrength: text("ai_strength"),                       // 同上だが AI 評価（careful ペルソナの代表値）。Phase 1 から確保
+  aiReasoning: text("ai_reasoning"),                     // Phase 1: 平文。Phase 2 以降: AiEvaluation JSON（下記参照）
   attribution: text("attribution").notNull().default("human"),  // 'human' | 'ai'
   aiRationale: text("ai_rationale"),                     // AI が候補提案した時の理由
   lastEvaluatedAt: integer("last_evaluated_at", { mode: "timestamp" }),
@@ -164,6 +164,38 @@ foreshadowCodexLinks = sqliteTable("foreshadow_codex_links", {
   index("idx_fs_codex_codex").on(t.codexEntryId),
 ]);
 ```
+
+### `aiReasoning` の Phase 2 JSON フォーマット（後方互換）
+
+Phase 2 以降、`aiReasoning` は読者ペルソナ別の評価を JSON で格納する：
+
+```ts
+// src/features/foreshadow/types.ts
+export interface PersonaEvaluation {
+  strength: "subtle" | "moderate" | "overt";
+  reasoning: string;
+}
+
+export interface AiEvaluation {
+  careful: PersonaEvaluation;   // 精読者（anyWeak 判定に使用する代表ペルソナ）
+  casual: PersonaEvaluation;    // 普通の読者
+  skim: PersonaEvaluation;      // 流し読み
+}
+```
+
+`aiStrength` カラムは `careful.strength` を代表値として保存する。後方互換のため、Phase 1 の平文文字列や不正 JSON は `safeParseAiEvaluation()` が `null` を返してフォールバックする（migration 追加なし）。
+
+`anyWeak` ロールアップ（`needs_strengthening` ラベルへの昇格条件）：
+
+```ts
+// Phase 1: s.strength === "subtle" || s.aiStrength === "subtle"
+// Phase 2: careful.strength === "subtle" のみ（casual/skim は昇格条件に使わない）
+const evaluation = safeParseAiEvaluation(s.aiReasoning);
+const effectiveStrength = s.strength ?? evaluation?.careful?.strength ?? s.aiStrength;
+if (effectiveStrength === "subtle") anyWeak = true;
+```
+
+---
 
 ### `strength` と `ai_strength` を分離する理由
 
@@ -534,6 +566,97 @@ type ProposeResponse = {
 
 ---
 
+## AI 連携（Phase 2）
+
+### `evaluateSetupStrength`：読者ペルソナ別強度評価
+
+Phase 2 で実装した手動トリガの強度評価。setup テキストを 3 種の読者ペルソナ視点から評価し、伏線としての気づかれやすさを判定する。
+
+**設計上の制約**: payoff 本文は**渡さない**。理由：読者は payoff を読んでいない段階で setup を読む。payoff 本文を AI に渡すと「伏線として回収される」という知識を持った評価になり、naive reader simulation として不正確になる。
+
+**入力**
+
+```ts
+type EvaluateStrengthRequest = {
+  setupId: string;
+  setupExcerpt: string;        // setup テキスト前後 500 字
+  foreshadowIntent: string;    // foreshadow.intent（評価の参照軸）
+};
+```
+
+**プロンプト設計（3ペルソナ）**
+
+```
+ペルソナ定義:
+- careful（精読者）: 一語一句に注意を払い、伏線を積極的に探しながら読む
+- casual（普通の読者）: 普通のペースで読む、自然に目に入る要素に気づく
+- skim（流し読み）: 大まかな流れだけを追い、細部は流す
+
+評価軸（strength）:
+- subtle: そのペルソナでは伏線として気づかれない可能性が高い
+- moderate: 気づく読者と気づかない読者が半々程度
+- overt: そのペルソナには明らかに伏線とわかる
+```
+
+**出力（`AiEvaluation` JSON）**
+
+```ts
+{
+  careful:  { strength: "subtle"|"moderate"|"overt", reasoning: string },
+  casual:   { strength: "subtle"|"moderate"|"overt", reasoning: string },
+  skim:     { strength: "subtle"|"moderate"|"overt", reasoning: string },
+}
+```
+
+**保存先**
+
+```ts
+updateSetup(setupId, {
+  aiStrength: evaluation.careful.strength,  // careful を代表値として保存
+  aiReasoning: JSON.stringify(evaluation),  // AiEvaluation 全体を JSON 化
+  lastEvaluatedAt: new Date(),
+});
+```
+
+**コスト管理（Phase 2）**
+
+- 手動トリガのみ（自動再評価しない）
+- 評価中は `evaluatingSetupIds: Set<string>` でボタンを disabled + spinner 表示（二重送信防止）
+- quota / rate-limit は Phase 3 で実装
+
+### `proposePastSetups`（Phase 2 改善点）
+
+Phase 1 の `propose_past_setups` プロンプトに `inserted_new` 用の指示を追加：
+
+```
+既存テキストに適切な箇所がない場合は kind="inserted_new" とし、
+suggestedInsertionPoint（「○○の段落の後」等の自然言語ヒント）と
+suggestedText（挿入推奨文）を必ず含めること。
+```
+
+**⚠ UI エントリポイント未実装（Phase 3 候補）**
+
+Phase 2 時点では `proposePastSetups` を呼び出す UI が存在しない。`inserted_new` 候補の `suggestedText` 表示 UI も未実装。ProposeRequest には `payoffSceneId` / `payoffExcerpt` / `pastScenes` が必要で、現在の `CreateForeshadowDialog`（新規作成フォーム）の文脈では揃えられないため。
+
+Phase 3 での実装先候補: `ForeshadowPanel` の展開セクションに「Setup を提案」ボタンを追加し、結果をインライン表示する。`inserted_new` 候補には `suggestedText` を `<pre>` で表示し「この文を挿入」ボタンで Setup 作成する。
+
+### Staleness 判定（Phase 2 実装済み）
+
+```ts
+// src/features/foreshadow/staleness.ts
+export function isSetupEvaluationStale(
+  setup: ForeshadowSetupRow,
+  sceneUpdatedAt: string,  // treeNodes.updatedAt（ISO 文字列）
+): boolean {
+  if (!setup.lastEvaluatedAt) return true;
+  return new Date(sceneUpdatedAt) > setup.lastEvaluatedAt;
+}
+```
+
+`sceneUpdatedAt` は `listSetups()` 時に `treeNodes` を LEFT JOIN して取得し、`ForeshadowSetupRow.sceneUpdatedAt?: string` として付与する（非永続フィールド、DB には保存しない）。UI では黄色 dot でインジケートする。
+
+---
+
 ## IPC surface（Tauri Commands）
 
 ```rust
@@ -764,15 +887,31 @@ Phase 1 デフォルトは執筆モード。
 - orphan setup が伏線パネルに表示され、再アンカー / 削除できる
 - 派生ラベル（planned / seeded / paid / orphan_payoff / abandoned）が正しく計算される
 
-### Phase 2
+### Phase 2（2026-04-26 完了）
 
-- 新規挿入提案（`propose_past_setups` 拡張または別 IPC）
-- 強度評価機能（手動トリガ、`ai_strength` + 読者ペルソナ 3 人）
-- 強度の staleness 判定（依存シーン更新時刻ベース）
-- `needs_strengthening` ラベル
-- Codex 詳細「伏線」タブ
-- Snippet からの伏線抽出経路
-- コスト管理（quota / debounce）
+**実装済み**
+
+- 強度評価機能（手動トリガ、3 ペルソナ: careful / casual / skim）
+  - `evaluateSetupStrength()` API + `evaluateSetup` store アクション
+  - ForeshadowPanel にペルソナ別結果の折りたたみ表示・AI 評価ボタン
+  - 評価中 spinner（二重送信防止）
+- Staleness 判定（`isSetupEvaluationStale`）+ 黄色 dot インジケータ
+  - `listSetups()` で treeNodes を LEFT JOIN して `sceneUpdatedAt` を取得
+- `anyWeak` 判定の精緻化（careful.strength === "subtle" のみで昇格）
+- `aiReasoning` の JSON 拡張（`AiEvaluation` 型、後方互換）
+- Codex 詳細「伏線」タブ（`ForeshadowTab.tsx`、`foreshadow_codex_links` 経由）
+- Snippet コンテキストメニューから「伏線として登録」エントリ追加
+  - `CreateForeshadowDialog` を `initialTitle` / `initialIntent` 付きで起動
+- `proposePastSetups` プロンプトに `inserted_new` 用の指示を強化
+- コスト管理（手動トリガのみ・二重送信防止）
+
+**Phase 2 の残課題（Phase 3 候補）**
+
+- `proposePastSetups` の UI エントリポイント未実装（API のみ存在）
+- `inserted_new` 候補の `suggestedText` 表示 UI 未実装
+  - 詳細は「AI 連携（Phase 2）」の `proposePastSetups` 節を参照
+- `ForeshadowMarkPopover.test.tsx` の既存失敗 1 件（Phase 2 非関連）
+- quota / rate-limit（Phase 3 で実装）
 
 ### Phase 3
 
@@ -789,9 +928,10 @@ Phase 1 デフォルトは執筆モード。
 | 項目 | 判断 | 再検討タイミング |
 |---|---|---|
 | `load_bearing` の独立軸採用 | Phase 1 では持たない | Phase 3 着手時に Phase 1〜2 の実利用データから実証判断 |
-| 読者ペルソナの数と種類 | 3 人（careful / casual / skim）で開始 | Phase 2 実装後にコスト・有用性レビュー |
-| `ai_strength` の staleness 依存追跡 | `lastEvaluatedAt` のみで開始 | Phase 2 で依存シーン更新時刻判定を追加 |
+| 読者ペルソナの数と種類 | 3 人（careful / casual / skim）で開始 | **Phase 2 で実装済み**。コスト・有用性は Phase 3 着手時にレビュー |
+| `ai_strength` の staleness 依存追跡 | `lastEvaluatedAt` のみで開始 | **Phase 2 で `sceneUpdatedAt` JOIN による判定を実装済み** |
 | Mark 表示のデフォルト | 執筆モード（非表示） | ユーザ設定で切替、好み判明したら既定変更検討 |
+| `proposePastSetups` UI エントリポイント | Phase 2 でプロンプト強化のみ実装。UI は未実装 | Phase 3 で `ForeshadowPanel` 展開セクションに「Setup を提案」ボタンを追加。`inserted_new` 候補には `suggestedText` をインライン表示する |
 
 ---
 
@@ -941,3 +1081,4 @@ drizzle/migrations/
 ## 改訂履歴
 
 - 2026-04-25: 初版作成。Phase 1 設計確定、Phase 2/3 概要、deferred decisions 明示。
+- 2026-04-26: Phase 2 実装完了に伴う更新。`aiReasoning` JSON フォーマット（AiEvaluation）、`evaluateSetupStrength`、staleness 判定、`anyWeak` 精緻化、Codex タブ、Snippet 入口を追記。`proposePastSetups` UI 未実装を deferred decisions に追加。
