@@ -239,6 +239,10 @@ export async function createForeshadowSetup(
       aiStrength: data.aiStrength ?? null,
       attribution: data.attribution ?? "human",
       aiRationale: data.aiRationale ?? null,
+      aiReasoning: data.aiReasoning ?? null,
+      lastEvaluatedAt: data.lastEvaluatedAt
+        ? data.lastEvaluatedAt.getTime()
+        : null,
     });
     const now = new Date();
     return {

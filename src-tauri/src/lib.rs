@@ -635,14 +635,16 @@ fn foreshadow_setup_create_ai(
     ai_strength: Option<String>,
     attribution: String,
     ai_rationale: Option<String>,
+    ai_reasoning: Option<String>,
+    last_evaluated_at: Option<i64>,
 ) -> Result<(), AppError> {
     with_db(&ws_state, |db| {
         let now = chrono::Utc::now().timestamp_millis();
         db.execute(
             "INSERT INTO foreshadow_setups
              (id, foreshadow_id, scene_id, from_pos, to_pos, kind, strength, ai_strength,
-              attribution, ai_rationale, is_orphan, created_at, updated_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
+              attribution, ai_rationale, ai_reasoning, last_evaluated_at, is_orphan, created_at, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
              ON CONFLICT(id) DO UPDATE SET
                from_pos   = excluded.from_pos,
                to_pos     = excluded.to_pos,
@@ -659,6 +661,8 @@ fn foreshadow_setup_create_ai(
                 ai_strength.map(Value::String).unwrap_or(Value::Null),
                 Value::String(attribution),
                 ai_rationale.map(Value::String).unwrap_or(Value::Null),
+                ai_reasoning.map(Value::String).unwrap_or(Value::Null),
+                last_evaluated_at.map(|v| Value::Number(v.into())).unwrap_or(Value::Null),
                 Value::Number(now.into()),
                 Value::Number(now.into()),
             ],

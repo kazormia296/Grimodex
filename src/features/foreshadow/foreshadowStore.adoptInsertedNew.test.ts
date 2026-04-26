@@ -146,6 +146,14 @@ describe("adoptInsertedNewSetup", () => {
     );
   });
 
+  it("saveSceneContent が createRevision より先に呼ばれる", async () => {
+    await useForeshadowStore.getState().adoptInsertedNewSetup("f-1", 0);
+
+    const saveOrder = mockSaveSceneContent.mock.invocationCallOrder[0];
+    const revisionOrder = mockCreateRevision.mock.invocationCallOrder[0];
+    expect(saveOrder).toBeLessThan(revisionOrder);
+  });
+
   it("createRevision を 1 回だけ呼ぶ", async () => {
     await useForeshadowStore.getState().adoptInsertedNewSetup("f-1", 0);
 
