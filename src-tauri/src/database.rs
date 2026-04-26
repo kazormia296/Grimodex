@@ -2272,9 +2272,9 @@ mod tests {
     }
 
     #[test]
-    fn test_codex_detail_definitions_allows_any_type_slug() {
-        // Per schema spec: type_slug is a logical reference to codex_types.slug (no FK).
-        // Validation is enforced at the application layer, not the DB layer.
+    fn test_codex_detail_definitions_rejects_unknown_type_slug() {
+        // 複合FK (project_id, type_slug) → codex_types(project_id, slug) により、
+        // codex_types に存在しない type_slug への INSERT は DB 層で拒否される。
         let db = test_db();
 
         let result = db.execute(
@@ -2290,15 +2290,15 @@ mod tests {
             "run",
         );
         assert!(
-            result.is_ok(),
-            "DB should allow any type_slug; app layer validates"
+            result.is_err(),
+            "Composite FK should reject unknown type_slug"
         );
     }
 
     #[test]
-    fn test_codex_entries_allows_any_type() {
-        // Per schema spec: type is a logical reference to codex_types.slug (no FK).
-        // Validation is enforced at the application layer, not the DB layer.
+    fn test_codex_entries_rejects_unknown_type() {
+        // 複合FK (project_id, type) → codex_types(project_id, slug) により、
+        // codex_types に存在しない type への INSERT は DB 層で拒否される。
         let db = test_db();
 
         let result = db.execute(
@@ -2313,10 +2313,7 @@ mod tests {
             ],
             "run",
         );
-        assert!(
-            result.is_ok(),
-            "DB should allow any type; app layer validates"
-        );
+        assert!(result.is_err(), "Composite FK should reject unknown type");
     }
 
     // --- BUG 3: field_type CHECK constraint ---
