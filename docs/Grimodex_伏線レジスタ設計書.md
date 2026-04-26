@@ -640,6 +640,94 @@ Phase 2 時点では `proposePastSetups` を呼び出す UI が存在しない�
 
 Phase 3 での実装先候補: `ForeshadowPanel` の展開セクションに「Setup を提案」ボタンを追加し、結果をインライン表示する。`inserted_new` 候補には `suggestedText` を `<pre>` で表示し「この文を挿入」ボタンで Setup 作成する。
 
+---
+
+## AI 連携（Phase 3）
+
+### `auditChapter`：章単位の登録漏れ監査
+
+手動トリガで章配下のシーン本文を AI に渡し、未登録の伏線候補を提示する。
+
+**設計上の重要な選択**: synopsis（粗い要約）ではなく**本文そのもの**を AI に渡す。理由：伏線の本質は「さりげない描写」「具体的なディテール」にあり、synopsis ではこれらが落ちるため。トークン爆発は「章単位」というスコープ制約で自然に抑える（手動トリガ前提なのでバースト的なコストを許容）。
+
+**入力**
+
+```ts
+interface ChapterAuditRequest {
+  chapterId: string;
+  scenes: Array<{
+    sceneId: string;
+    title: string;
+    bodyText: string;  // フル本文（prosemirrorToText で平文変換済み）
+    orderIndex: number;
+  }>;
+  existingForeshadows: Array<{ id: string; title: string; intent: string | null }>;  // 除外リスト
+  relatedCodex: Array<{ id: string; name: string; summary: string }>;
+}
+```
+
+空シーン（bodyText 空文字）は送信前に除外。章全体が空の場合は即時 `[]` を返す。
+
+**出力**
+
+```ts
+interface AuditCandidate {
+  suggestedTitle: string;
+  suggestedIntent: string;
+  evidenceSceneId: string;
+  evidenceExcerpt: string;        // 本文からの直接引用（20〜80字）
+  rationale: string;
+  confidence: "low" | "medium" | "high";
+  similarToExistingForeshadowId?: string;  // 既存伏線に近い場合
+}
+```
+
+**プロンプト方針**
+
+- `existingForeshadows` を除外リストとして明示（被り防止）
+- confidence バイアス低め（「確信できない候補は提案しない」）
+- 各候補に `evidenceExcerpt`（本文直接引用）必須 → UI で引用表示
+
+**採用フロー**
+
+`AuditCandidate` → 「伏線として登録」ボタン → `CreateForeshadowDialog` を `initialTitle` / `initialIntent` プリフィル付きで起動（既存 Phase 2 の props を流用）。
+
+**ランタイム分岐**
+
+- Tauri: `foreshadow_audit_chapter` IPC（Rust 側でプロンプト生成 + OpenRouter 呼び出し）
+- ブラウザ: JS 側で `sendChatMessageWithThinking` を直接呼び出し（同一プロンプト）
+
+**二重送信防止**
+
+`auditingChapterIds: Set<string>` を foreshadowStore で管理。コンポーネント unmount をまたいで有効（ローカル state ではなく store）。
+
+### `getChapterForeshadowStats`：章別集計（AI なし）
+
+章配下の setup / payoff を DB 集計し統計情報を返す。AI 不使用のため軽量。章展開時に呼ぶ。
+
+```ts
+interface ChapterForeshadowStats {
+  chapterId: string;
+  totalScenes: number;
+  scenesWithBody: number;          // bodyText が空でないシーン数
+  byLabel: Partial<Record<DerivedLabel, number>>;
+  orphanCount: number;
+  needsStrengtheningCount: number;
+}
+```
+
+### `adoptInsertedNewSetup`：AI 提案テキスト挿入 + Revision 記録（Phase 3 / D）
+
+`proposePastSetups` が返した `inserted_new` 候補を採用するフロー。setup DB レコードの先行作成 → テキスト挿入 → UPSERT 保存 → revision 記録、の 5 ステップ。
+
+**UPSERT 保全の仕組み**
+
+`saveForeshadowAnchors` の ON CONFLICT 節は `fromPos / toPos / isOrphan / updatedAt` のみを更新する。そのため手順 1 で `foreshadow_setup_create_ai` に書き込んだ `kind / attribution / aiRationale / strength / aiReasoning` は手順 3 の UPSERT で上書きされない。これにより「AI が提案した挿入文として記録が保たれる」ことが保証される。
+
+**revision の重複防止**
+
+`createRevision` は content 同一時のスキップが内部実装済み。加えて `adoptInsertedNewSetup` は 1 採用フローにつき 1 回だけ呼ぶ（`saveSceneContent` の完了を await してから呼ぶ）。
+
 ### Staleness 判定（Phase 2 実装済み）
 
 ```ts
@@ -702,6 +790,22 @@ foreshadow_set_setup_strength(setup_id: String, strength: Option<Strength>) -> R
 #[tauri::command]
 foreshadow_resolve_orphan(setup_id: String, action: OrphanAction) -> Result<()>
 // action: 'reanchor' | 'delete' | 'reinsert'
+
+// ── Phase 3 追加 ──────────────────────────────────────────────────
+
+#[tauri::command]
+foreshadow_setup_create_ai(
+    id, foreshadow_id, scene_id, from_pos, to_pos, kind,
+    strength, ai_strength, attribution, ai_rationale,
+    ai_reasoning, last_evaluated_at
+) -> Result<()>
+// AI メタデータ付き INSERT。ON CONFLICT(id) は fromPos/toPos/isOrphan/updatedAt のみ更新。
+// ai_rationale / strength / kind / attribution / ai_reasoning は保持される。
+
+#[tauri::command]
+async foreshadow_audit_chapter(req: ForeshadowAuditRequest) -> Result<ForeshadowAuditResponse>
+// 章配下シーン本文を AI に渡し AuditCandidate[] を返す。
+// 空シーン事前除外。章全体が空なら candidates: [] を即時返す。
 ```
 
 ---
@@ -913,13 +1017,57 @@ Phase 1 デフォルトは執筆モード。
 - `ForeshadowMarkPopover.test.tsx` の既存失敗 1 件（Phase 2 非関連）
 - quota / rate-limit（Phase 3 で実装）
 
-### Phase 3
+### Phase 3（2026-04-26 完了）
 
-- AI 監査パス（登録漏れ検出）
-- 章末監査ダッシュボード
-- `load_bearing` 軸（除去テスト、empirical に独立軸採用を判断）
-- Revision 統合（setup 挿入を revision として記録）
-- 統計・俯瞰ビュー
+**実装済み（スコープ A + B + C + D）**
+
+- **A. Phase 2 残課題の解消**
+  - `proposePastSetups` UI: ForeshadowPanel の伏線展開セクションに「Setup を提案」ボタンを追加
+    - payoff anchor がある伏線にのみ表示（`payoffSceneId != null`）
+    - 提案結果をインライン表示（kind バッジ / rationale / predictedStrength）
+    - `designated_existing` 候補 → 「採用」ボタン（`adoptProposedSetup`）
+    - `inserted_new` 候補 → `suggestedText` 表示 + 「挿入して採用」ボタン（`adoptInsertedNewSetup`）
+  - `ForeshadowMarkPopover` の `payoff-unanchored` フィルタ修正: flag ベース→ラベルホワイトリスト（`planned` / `seeded`）
+  - 二重送信防止: `proposingForForeshadowIds: Set<string>` を store に追加（`evaluatingSetupIds` パターン踏襲）
+
+- **B. AI 監査パス（`auditChapter`）**
+  - 章配下の全シーン本文を AI に渡し、登録漏れ伏線候補を JSON で取得
+  - 入力: `ChapterAuditRequest`（chapterId / scenes / existingForeshadows / relatedCodex）
+  - 出力: `AuditCandidate[]`（suggestedTitle / suggestedIntent / evidenceSceneId / evidenceExcerpt / rationale / confidence）
+  - 空シーン（bodyText 空文字）は事前除外
+  - `existingForeshadows` を除外リストとして明示し被り防止
+  - confidence バイアス低め（`low` → 折りたたみ表示推奨）
+  - Tauri ランタイム: `foreshadow_audit_chapter` Rust IPC 経由 / ブラウザ: JS 直接呼び出し
+
+- **C. 章別監査ダッシュボード（`ForeshadowChapterTab`）**
+  - ForeshadowPanel にタブ切替「一覧」「章別監査」を追加
+  - 章ツリー（folder nodeType）を縦に列挙。クリックで章展開 + stats ロード
+  - stats バッジ: `scenesWithBody/totalScenes` を表示（`getChapterForeshadowStats` で DB 集計）
+  - 章ヘッダ右に「AI 監査」ボタン → `auditChapter` 呼び出し
+  - 監査結果の候補カード（confidence 色バッジ / evidenceExcerpt 引用表示）
+  - 「伏線として登録」ボタン → `CreateForeshadowDialog` を `initialTitle` / `initialIntent` プリフィル付きで起動
+  - 二重送信防止: `auditingChapterIds: Set<string>` を store で管理（コンポーネント unmount 跨ぎで有効）
+
+- **D. Revision 統合（`adoptInsertedNewSetup`）**
+  - `inserted_new` 候補採用時のフルフロー（store アクション）:
+    1. `createForeshadowSetup`（Tauri: `foreshadow_setup_create_ai`）で DB レコードを事前作成
+       - `kind: "inserted_new"`, `attribution: "ai"`, `aiRationale`, `strength`, `aiReasoning`, `lastEvaluatedAt` をプリセット
+    2. `editor.chain().insertContentAt(...).setTextSelection(...).setMark("foreshadowSetup", ...).run()` でテキスト挿入 + mark 付与
+    3. `saveForeshadowAnchors(sceneId, editor.state.doc)` — ON CONFLICT は fromPos/toPos/isOrphan/updatedAt のみ更新。手順 1 で書き込んだ AI メタ（kind / attribution / aiRationale / strength）は保持される
+    4. `saveSceneContent(sceneId, contentJson)`
+    5. `createRevision({ entityType: "scene", entityId: sceneId, snapshotType: "auto" })` を **1 回だけ** 呼ぶ
+    6. setups をリロード、`proposeResults` から採用済み候補を除去
+  - 採用後の `proposeResults` からの除去は `designated_existing` 採用（`adoptProposedSetup`）と同一パターン
+
+- **新規 Tauri コマンド**
+  - `foreshadow_setup_create_ai`: AI メタデータ付き INSERT（ON CONFLICT はアンカーのみ更新）。`ai_reasoning` / `last_evaluated_at` も含む
+  - `foreshadow_audit_chapter`: 章監査 AI パス（Rust 側プロンプト生成 + OpenRouter 呼び出し）
+
+**Phase 3 の残課題・見送り**
+
+- `load_bearing` 軸（除去テスト前提、empirical データ未充足のため E スコープとして見送り）
+- quota / rate-limit（Phase 3 計画には含まれていたが未実装。AI 呼び出しは手動トリガのみで暫定許容）
+- `fromPosHint` が null の `designated_existing` 採用時は position=0 にフォールバック。toast エラーへの変更は post-Phase 3 ポリッシュ候補
 
 ---
 
@@ -931,7 +1079,9 @@ Phase 1 デフォルトは執筆モード。
 | 読者ペルソナの数と種類 | 3 人（careful / casual / skim）で開始 | **Phase 2 で実装済み**。コスト・有用性は Phase 3 着手時にレビュー |
 | `ai_strength` の staleness 依存追跡 | `lastEvaluatedAt` のみで開始 | **Phase 2 で `sceneUpdatedAt` JOIN による判定を実装済み** |
 | Mark 表示のデフォルト | 執筆モード（非表示） | ユーザ設定で切替、好み判明したら既定変更検討 |
-| `proposePastSetups` UI エントリポイント | Phase 2 でプロンプト強化のみ実装。UI は未実装 | Phase 3 で `ForeshadowPanel` 展開セクションに「Setup を提案」ボタンを追加。`inserted_new` 候補には `suggestedText` をインライン表示する |
+| `proposePastSetups` UI エントリポイント | **Phase 3 で実装済み**。「Setup を提案」ボタン、候補インライン表示、`designated_existing` 採用 / `inserted_new` 「挿入して採用」フルフロー | — |
+| `fromPosHint` null 時の `designated_existing` 採用 | `fromPosHint ?? 0` フォールバック（position=0 になる）。toast エラーへの変更は post-Phase 3 | Phase 4 or ポリッシュ時に対応 |
+| quota / rate-limit | Phase 3 計画には含まれていたが未実装。手動トリガのみで暫定許容 | Phase 4 以降で対応 |
 
 ---
 
@@ -1034,35 +1184,38 @@ Phase 1 デフォルトは執筆モード。
 
 ```
 src/features/foreshadow/
-├── api.ts                        # Tauri command wrapper
-├── types.ts                      # ForeshadowFilter, DerivedLabel, etc.
-├── deriveLabel.ts                # 派生ラベル計算関数
+├── api.ts                                 # Tauri command wrapper + AI 連携（proposePastSetups / evaluateSetupStrength / auditChapter / getChapterForeshadowStats）
+├── types.ts                               # ForeshadowFilter, DerivedLabel, AiEvaluation, ChapterAuditRequest, AuditCandidate, ChapterForeshadowStats, etc.
+├── deriveLabel.ts                         # 派生ラベル計算関数
 ├── deriveLabel.test.ts
-├── marks/
-│   ├── ForeshadowSetupMark.ts
-│   ├── ForeshadowPayoffMark.ts
-│   └── pasteRule.ts              # コピペ strip
-├── persistence/
-│   ├── saveAnchors.ts            # save logic（FK sweep + UPSERT + orphan）
-│   ├── saveAnchors.test.ts
-│   ├── loadAnchors.ts            # load logic
-│   └── applyInitialMarks.ts
-├── ai/
-│   ├── proposePastSetups.ts      # AI 候補生成のクライアント側ラッパ
-│   └── prompts.ts                # プロンプトテンプレート
-├── ui/
-│   ├── ForeshadowPanel.tsx       # メインパネル
-│   ├── RequestForeshadowDialog.tsx # 主入口ダイアログ
-│   ├── ForeshadowDetailDialog.tsx # 詳細表示
-│   ├── OrphanSetupItem.tsx       # orphan UI
-│   └── DerivedLabelBadge.tsx
-└── store.ts                      # Zustand store（伏線パネル UI 状態）
+├── staleness.ts                           # isSetupEvaluationStale（Phase 2）
+├── staleness.test.ts
+├── saveAnchors.ts                         # save logic（FK sweep + UPSERT + orphan）
+├── saveAnchors.test.ts
+├── foreshadowStore.ts                     # Zustand store（伏線パネル UI 状態 + AI アクション）
+├── foreshadowStore.test.ts
+├── foreshadowStore.adoptInsertedNew.test.ts  # Phase 3: adoptInsertedNewSetup テスト
+├── ForeshadowPanel.tsx                    # メインパネル（一覧タブ + 章別監査タブ切替）
+├── ForeshadowPanel.test.tsx               # Phase 1/2 テスト
+├── ForeshadowPanel.phase3.test.tsx        # Phase 3 テスト（タブ切替 / Setup 提案ボタン）
+├── ForeshadowChapterTab.tsx               # 章別監査ダッシュボード（Phase 3）
+├── ForeshadowMarkPopover.tsx              # setup mark 右クリックポップオーバー
+├── ForeshadowMarkPopover.test.tsx
+├── ForeshadowMarkHoverPopover.tsx         # hover 表示
+├── CreateForeshadowDialog.tsx             # 伏線作成ダイアログ（initialTitle / initialIntent プリフィル対応）
+├── api.tauri.test.ts                      # Tauri ブランチ unit テスト
+├── api.proposePastSetups.test.ts          # proposePastSetups unit テスト
+└── api.auditChapter.test.ts               # auditChapter unit テスト（Phase 3）
 
-src-tauri/src/commands/
-└── foreshadow.rs                 # Tauri command 実装
+src-tauri/src/lib.rs                       # foreshadow 関連 Tauri コマンドを lib.rs に直書き
+                                           # （foreshadow_create / foreshadow_update / foreshadow_delete /
+                                           #   foreshadow_list / foreshadow_get / foreshadow_save_anchors_for_scene /
+                                           #   foreshadow_load_anchors_for_scene / foreshadow_resolve_orphan /
+                                           #   foreshadow_propose_past_setups / foreshadow_evaluate_setup_strength /
+                                           #   foreshadow_setup_create_ai（Phase 3）/ foreshadow_audit_chapter（Phase 3））
 
 drizzle/migrations/
-└── XXXX_add_foreshadow_tables.sql
+└── XXXX_add_foreshadow_tables.sql         # Phase 1 migration（追加 migration なし）
 ```
 
 ---
@@ -1082,3 +1235,9 @@ drizzle/migrations/
 
 - 2026-04-25: 初版作成。Phase 1 設計確定、Phase 2/3 概要、deferred decisions 明示。
 - 2026-04-26: Phase 2 実装完了に伴う更新。`aiReasoning` JSON フォーマット（AiEvaluation）、`evaluateSetupStrength`、staleness 判定、`anyWeak` 精緻化、Codex タブ、Snippet 入口を追記。`proposePastSetups` UI 未実装を deferred decisions に追加。
+- 2026-04-26: Phase 3 実装完了に伴う更新（同日）。スコープ A+B+C+D を実装、E（load_bearing 軸）は見送り。
+  - AI 連携（Phase 3）セクション追加: `auditChapter`（章監査）/ `getChapterForeshadowStats`（DB 集計）/ `adoptInsertedNewSetup`（挿入 + revision 統合）の設計詳細。
+  - 当初計画では AI 入力に synopsis を使う想定だったが、「伏線特有のさりげない描写を synopsis では拾えない」理由により**本文そのもの**を送る方式に変更。トークン爆発はスコープ制約（章単位 / 手動トリガ）で抑える。
+  - IPC surface に `foreshadow_setup_create_ai` / `foreshadow_audit_chapter` を追加。
+  - `ForeshadowMarkPopover` の `payoff-unanchored` フィルタをラベルホワイトリスト（`planned` / `seeded`）に修正（Phase 2 残バグ）。
+  - 実装ファイル配置を実際のファイル構成に合わせて更新。deferred decisions に Phase 3 完了分と残課題を反映。
