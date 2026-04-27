@@ -21,7 +21,8 @@ export type PanelId =
   | "codex-quick"
   | "timeline"
   | "map"
-  | "linter";
+  | "linter"
+  | "foreshadow";
 
 /** MIME type used to transfer panel IDs during external drag operations */
 export const PANEL_DRAG_TYPE = "application/grimodex-panel-id";
@@ -80,6 +81,13 @@ const PANEL_INSERT_REGISTRY: Record<PanelId, InsertRule[]> = {
     { panel: null, direction: "below" },
   ],
   linter: [
+    { panel: "attribution", direction: "within" },
+    { panel: "snippets", direction: "within" },
+    { panel: "editor", direction: "below" },
+    { panel: null, direction: "below" },
+  ],
+  foreshadow: [
+    { panel: "timeline", direction: "within" },
     { panel: "attribution", direction: "within" },
     { panel: "snippets", direction: "within" },
     { panel: "editor", direction: "below" },

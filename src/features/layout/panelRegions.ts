@@ -17,6 +17,7 @@ export const PANEL_REGION_MAP: Record<
   timeline: "center-bottom",
   map: "center-bottom",
   linter: "center-bottom",
+  foreshadow: "center-bottom",
 };
 
 /** Keyboard shortcut hints for each panel */
@@ -31,6 +32,7 @@ export const KEYBOARD_SHORTCUT_MAP: Partial<Record<PanelId, string>> = {
   timeline: "Ctrl+Alt+L",
   map: "Ctrl+Alt+M",
   linter: "Ctrl+Alt+T",
+  foreshadow: "Ctrl+Alt+F",
 };
 
 /** Panels shown in the dropdown, grouped by region */
@@ -48,4 +50,5 @@ export const TOGGLEABLE_PANELS: Exclude<PanelId, "editor">[] = [
   "timeline",
   "map",
   "linter",
+  "foreshadow",
 ];

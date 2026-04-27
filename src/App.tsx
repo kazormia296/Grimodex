@@ -44,6 +44,7 @@ import { AttributionReport } from "@/features/attribution/AttributionReport";
 import { TimelinePanel } from "@/features/timeline/TimelinePanel";
 import { MapPanel } from "@/features/map/MapPanel";
 import { LinterPanel } from "@/features/lint/LinterPanel";
+import { ForeshadowPanel } from "@/features/foreshadow/ForeshadowPanel";
 import { StatusBarIndicator } from "@/features/lint/StatusBarIndicator";
 import { GlobalSearchDialog } from "@/features/search/GlobalSearchDialog";
 import { useState } from "react";
@@ -110,6 +111,10 @@ function MapContent(_props: IDockviewPanelProps) {
 
 function LinterContent(_props: IDockviewPanelProps) {
   return <LinterPanel />;
+}
+
+function ForeshadowContent(_props: IDockviewPanelProps) {
+  return <ForeshadowPanel />;
 }
 
 /* ── Default layout builder (delegates to builtin preset) ── */
@@ -295,6 +300,7 @@ function EditorScreen() {
       timeline: TimelineContent,
       map: MapContent,
       linter: LinterContent,
+      foreshadow: ForeshadowContent,
     }),
     [],
   );
@@ -440,6 +446,7 @@ function EditorScreen() {
         l: "timeline",
         m: "map",
         t: "linter",
+        f: "foreshadow",
         ",": "settings",
       };
 
