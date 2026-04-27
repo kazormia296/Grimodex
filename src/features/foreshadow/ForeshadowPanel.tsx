@@ -145,20 +145,20 @@ function SetupRow({
 
       {/* Per-persona evaluation details */}
       {evaluation && showPersonas && (
-        <div className="mt-1 space-y-0.5 rounded bg-muted/50 px-2 py-1">
+        <div className="mt-1 space-y-1 rounded bg-muted/50 px-2 py-1.5">
           {PERSONA_KEYS.map((persona) => {
             const peval = evaluation[persona];
             return (
               <div key={persona} className="flex items-start gap-1.5">
-                <span className="w-10 shrink-0 text-[10px] text-muted-foreground">
+                <span className="w-12 shrink-0 text-xs text-muted-foreground">
                   {t(`foreshadow.evaluate.persona.${persona}`, persona)}
                 </span>
                 <span
-                  className={`shrink-0 text-[10px] font-medium ${STRENGTH_STYLE[peval.strength] ?? ""}`}
+                  className={`shrink-0 text-xs font-medium ${STRENGTH_STYLE[peval.strength] ?? ""}`}
                 >
                   {t(`foreshadow.strength.${peval.strength}`, peval.strength)}
                 </span>
-                <span className="text-[10px] text-muted-foreground">
+                <span className="text-xs leading-snug text-muted-foreground">
                   {peval.reasoning}
                 </span>
               </div>
