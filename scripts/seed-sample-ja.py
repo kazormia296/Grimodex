@@ -52,6 +52,57 @@ def doc_nodes(*nodes) -> str:
     return json.dumps({"type": "doc", "content": list(nodes)})
 
 
+# 伏線マーク付きの段落構築ヘルパー。
+# segments は str（プレーンテキスト）または (key, text, mark_dict) の3要素タプル。
+# 構築時に ProseMirror の絶対位置（fromPos/toPos）を spans 辞書に記録する。
+class _DocBuilder:
+    def __init__(self) -> None:
+        self.pos = 0  # トップレベル位置カーソル
+        self.content: list[dict] = []
+        self.spans: dict[str, tuple[int, int]] = {}
+
+    def para(self, *segments) -> "_DocBuilder":
+        if not segments:
+            self.content.append({"type": "paragraph"})
+            self.pos += 2
+            return self
+        text_pos = self.pos + 1  # paragraph 開きノード分 +1
+        children: list[dict] = []
+        text_len = 0
+        for seg in segments:
+            if isinstance(seg, str):
+                children.append({"type": "text", "text": seg})
+                text_pos += len(seg)
+                text_len += len(seg)
+            else:
+                key, body, mark = seg
+                node = {"type": "text", "text": body, "marks": [mark]}
+                self.spans[key] = (text_pos, text_pos + len(body))
+                text_pos += len(body)
+                text_len += len(body)
+                children.append(node)
+        self.content.append({"type": "paragraph", "content": children})
+        self.pos += 2 + text_len
+        return self
+
+    def to_json(self) -> str:
+        return json.dumps({"type": "doc", "content": self.content})
+
+
+def setup_mark(setup_id: str, foreshadow_id: str) -> dict:
+    return {
+        "type": "foreshadowSetup",
+        "attrs": {"setupId": setup_id, "foreshadowId": foreshadow_id},
+    }
+
+
+def payoff_mark(foreshadow_id: str) -> dict:
+    return {
+        "type": "foreshadowPayoff",
+        "attrs": {"foreshadowId": foreshadow_id},
+    }
+
+
 # ---------------------------------------------------------------------------
 # スキーマ（src-tauri/src/database.rs の migrate() に同期）
 # INSERT OR IGNORE のデータ初期化行は含めない（seed()で担う）
@@ -529,6 +580,58 @@ CREATE TABLE IF NOT EXISTS lint_action_log (
 );
 CREATE INDEX IF NOT EXISTS idx_lint_action_log_rule     ON lint_action_log(rule_id);
 CREATE INDEX IF NOT EXISTS idx_lint_action_log_occurred ON lint_action_log(occurred_at);
+
+-- 伏線レジスタ
+CREATE TABLE IF NOT EXISTS foreshadows (
+    id               TEXT PRIMARY KEY,
+    project_id       TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    title            TEXT NOT NULL,
+    intent           TEXT,
+    notes            TEXT,
+    payoff_scene_id  TEXT REFERENCES tree_nodes(id) ON DELETE SET NULL,
+    payoff_from_pos  INTEGER,
+    payoff_to_pos    INTEGER,
+    payoff_confirmed INTEGER NOT NULL DEFAULT 0,
+    abandoned        INTEGER NOT NULL DEFAULT 0,
+    created_at       INTEGER NOT NULL,
+    updated_at       INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_foreshadows_project
+    ON foreshadows(project_id);
+CREATE INDEX IF NOT EXISTS idx_foreshadows_payoff_scene
+    ON foreshadows(payoff_scene_id);
+
+CREATE TABLE IF NOT EXISTS foreshadow_setups (
+    id                 TEXT PRIMARY KEY,
+    foreshadow_id      TEXT NOT NULL REFERENCES foreshadows(id) ON DELETE CASCADE,
+    scene_id           TEXT NOT NULL REFERENCES tree_nodes(id) ON DELETE CASCADE,
+    from_pos           INTEGER NOT NULL,
+    to_pos             INTEGER NOT NULL,
+    kind               TEXT NOT NULL,
+    strength           TEXT,
+    ai_strength        TEXT,
+    ai_reasoning       TEXT,
+    attribution        TEXT NOT NULL DEFAULT 'human',
+    ai_rationale       TEXT,
+    last_evaluated_at  INTEGER,
+    is_orphan          INTEGER NOT NULL DEFAULT 0,
+    created_at         INTEGER NOT NULL,
+    updated_at         INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_fs_setup_fid
+    ON foreshadow_setups(foreshadow_id);
+CREATE INDEX IF NOT EXISTS idx_fs_setup_scene
+    ON foreshadow_setups(scene_id);
+CREATE INDEX IF NOT EXISTS idx_fs_setup_orphan
+    ON foreshadow_setups(is_orphan);
+
+CREATE TABLE IF NOT EXISTS foreshadow_codex_links (
+    foreshadow_id   TEXT NOT NULL REFERENCES foreshadows(id) ON DELETE CASCADE,
+    codex_entry_id  TEXT NOT NULL REFERENCES codex_entries(id) ON DELETE CASCADE,
+    PRIMARY KEY (foreshadow_id, codex_entry_id)
+);
+CREATE INDEX IF NOT EXISTS idx_fs_codex_codex
+    ON foreshadow_codex_links(codex_entry_id);
 
 -- FTS5 全文検索インデックス
 CREATE VIRTUAL TABLE IF NOT EXISTS codex_fts USING fts5(
@@ -1087,25 +1190,55 @@ def seed(db_path: Path) -> None:
          json.dumps({"type": "doc", "content": []}), now, now),
     )
 
+    # 伏線レジスタ用 ID をシーン本文構築前に確定
+    fs_himo_id = uid()        # 朱紐の温もり
+    fs_kioku_id = uid()       # 他人の記憶
+    fs_jouro_id = uid()       # 廃社の侵入者
+    fs_voice_id = uid()       # 忘れられた声
+    fs_letter_id = uid()      # 封じ文の差出人（planned, setup未配置）
+    fs_fuuya_id = uid()       # 冬弥の二重の顔（planned, setup未配置）
+    fs_abandoned_id = uid()   # 杉林の足跡（abandoned）
+
+    setup_himo_id = uid()
+    setup_kioku_id = uid()
+    setup_jouro_id = uid()
+    setup_voice_id = uid()
+
     scene1_id = uid()
-    scene1_content = doc_nodes(
-        para("雨の匂いがした。土と腐葉土と、かすかな煙の残滓。"),
-        para("朱音は鳥居の手前で立ち止まった。十年ぶりだった。"),
-        para("廃社は思っていたより小さかった。記憶の中では鬱蒼とした杉に囲まれた大きな建物だったが、"
-             "今目の前にあるのは、半ば崩れかけた本殿の残骸と、かろうじて形を保った拝殿だけだ。"),
-        para("「廃墟だな」"),
-        para("誰かに言うつもりではなかった。ただ口をついて出た。"),
-        para("拝殿の扉は施錠されていなかった。錠前はあったが、錠前ごと落ちていた。朱音は錠前を拾い上げ、"
-             "しばらく眺めてから、元の場所に置いた。今更、役に立たない。"),
-        para("中に入ると、床板が鳴った。一歩ごとに。"),
-        para("祭壇の前に、何かが置いてあった。"),
-        para("赤い紐だった。"),
-        para("朱音は動けなかった。十年前にここを出るとき、朱紐を祭壇に置いてきた。"
-             "誰かが持ち出さず、ずっとここに置いたままにしていたのだ。あるいは、戻ってきたのか。"),
-        para("ゆっくりと手を伸ばした。朱紐は乾いていた。雨ざらしのはずなのに、濡れていなかった。"),
-        para("指が触れた瞬間、記憶が来た。"),
-        para("それは朱音自身の記憶ではなかった。"),
+    scene1_builder = _DocBuilder()
+    scene1_builder.para("雨の匂いがした。土と腐葉土と、かすかな煙の残滓。")
+    scene1_builder.para("朱音は鳥居の手前で立ち止まった。十年ぶりだった。")
+    scene1_builder.para(
+        "廃社は思っていたより小さかった。記憶の中では鬱蒼とした杉に囲まれた大きな建物だったが、"
+        "今目の前にあるのは、半ば崩れかけた本殿の残骸と、かろうじて形を保った拝殿だけだ。"
     )
+    scene1_builder.para("「廃墟だな」")
+    scene1_builder.para("誰かに言うつもりではなかった。ただ口をついて出た。")
+    scene1_builder.para(
+        "拝殿の扉は施錠されていなかった。錠前はあったが、",
+        ("setup_jouro", "錠前ごと落ちていた",
+         setup_mark(setup_jouro_id, fs_jouro_id)),
+        "。朱音は錠前を拾い上げ、しばらく眺めてから、元の場所に置いた。今更、役に立たない。",
+    )
+    scene1_builder.para("中に入ると、床板が鳴った。一歩ごとに。")
+    scene1_builder.para("祭壇の前に、何かが置いてあった。")
+    scene1_builder.para("赤い紐だった。")
+    scene1_builder.para(
+        "朱音は動けなかった。十年前にここを出るとき、朱紐を祭壇に置いてきた。"
+        "誰かが持ち出さず、ずっとここに置いたままにしていたのだ。あるいは、戻ってきたのか。"
+    )
+    scene1_builder.para(
+        "ゆっくりと手を伸ばした。",
+        ("setup_himo", "朱紐は乾いていた。雨ざらしのはずなのに、濡れていなかった。",
+         setup_mark(setup_himo_id, fs_himo_id)),
+    )
+    scene1_builder.para("指が触れた瞬間、記憶が来た。")
+    scene1_builder.para(
+        ("setup_kioku", "それは朱音自身の記憶ではなかった。",
+         setup_mark(setup_kioku_id, fs_kioku_id)),
+    )
+    scene1_content = scene1_builder.to_json()
+    scene1_spans = scene1_builder.spans
     conn.execute(
         """INSERT INTO tree_nodes
            (id,project_id,parent_id,node_type,title,synopsis,sort_order,story_time_order,story_time_label,status,content,created_at,updated_at)
@@ -1144,17 +1277,27 @@ def seed(db_path: Path) -> None:
     # 回想シーン：読み順は a2（第三話）だが物語時系列では a0（最古）
     # Timeline デバッグ用：読み順 ≠ 時系列順の逆転を確認できる
     scene_flashback_id = uid()
-    scene_flashback_content = doc_nodes(
-        para("【回想：十年前・夏】"),
-        para("社が燃えていた。"),
-        para("朱音は拝殿の前に立っていた。何が起きたか、まだわかっていなかった。"
-             "炎は本殿を包み、杉の木に燃え移り、夜の山を赤く染めていた。"),
-        para("「離れろ」という声がした。誰の声か、朱音は今も思い出せない。"),
-        para("朱音は走った。朱紐を手に、ただ走った。"),
-        para("振り返ったとき、本殿の屋根が落ちた。"),
-        para("あの夜、社の中に何がいたか。朱音は見た。見たはずだ。"
-             "だが今は、炎の色と熱と、誰かの叫び声しか残っていない。"),
+    flashback_builder = _DocBuilder()
+    flashback_builder.para("【回想：十年前・夏】")
+    flashback_builder.para("社が燃えていた。")
+    flashback_builder.para(
+        "朱音は拝殿の前に立っていた。何が起きたか、まだわかっていなかった。"
+        "炎は本殿を包み、杉の木に燃え移り、夜の山を赤く染めていた。"
     )
+    flashback_builder.para(
+        "「離れろ」という声がした。誰の声か、朱音は今も思い出せない。"
+    )
+    flashback_builder.para("朱音は走った。朱紐を手に、ただ走った。")
+    flashback_builder.para("振り返ったとき、本殿の屋根が落ちた。")
+    flashback_builder.para(
+        "あの夜、社の中に何がいたか。朱音は見た。見たはずだ。"
+        "だが今は、炎の色と熱と、",
+        ("setup_voice", "誰かの叫び声",
+         setup_mark(setup_voice_id, fs_voice_id)),
+        "しか残っていない。",
+    )
+    scene_flashback_content = flashback_builder.to_json()
+    scene_flashback_spans = flashback_builder.spans
     conn.execute(
         """INSERT INTO tree_nodes
            (id,project_id,parent_id,node_type,title,synopsis,sort_order,story_time_order,story_time_label,status,content,created_at,updated_at)
@@ -1166,6 +1309,44 @@ def seed(db_path: Path) -> None:
             "a2", "a0", "十年前・夏の夜", "outline", scene_flashback_content, now, now,
         ),
     )
+
+    # 間章：fs_jouro_id（廃社の侵入者）を payoff 確定にするための短いシーン。
+    # 一章で setup した「錠前ごと落ちていた」侵入の痕跡を、月夜の再訪で確定させる。
+    scene_payoff_id = uid()
+    payoff_builder = _DocBuilder()
+    payoff_builder.para("月が出ていた。朱音はもう一度、拝殿に戻った。")
+    payoff_builder.para(
+        "祭壇の脇、最初に来たときには気づかなかった場所に、何かが落ちていた。"
+        "身を屈めて拾い上げる。古い札の残骸だった。表に薄く朱が残っている。"
+    )
+    payoff_builder.para(
+        "それは十年前、朱音の母が祭壇に下げていた札だった。"
+        "火事の前から結ばれていたもので、誰も触れていないはずだった。"
+    )
+    payoff_builder.para(
+        "朱音は札を握ったまま、扉の方を振り返った。",
+        ("payoff_jouro",
+         "錠前ごと落としたのも、この札を解いたのも、同じ手だった",
+         payoff_mark(fs_jouro_id)),
+        "。",
+    )
+    payoff_builder.para(
+        "誰かが廃社に出入りしている。十年前の火事のあと、ずっと。"
+    )
+    scene_payoff_content = payoff_builder.to_json()
+    scene_payoff_spans = payoff_builder.spans
+    conn.execute(
+        """INSERT INTO tree_nodes
+           (id,project_id,parent_id,node_type,title,synopsis,sort_order,story_time_order,story_time_label,status,content,created_at,updated_at)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+        (
+            scene_payoff_id, project_id, part1_id, "scene", "間章：祭壇の傷",
+            "月夜の拝殿で、朱音は十年前から動かされていなかったはずの札の残骸を見つける。"
+            "錠前と同じ手が、これも外していた。",
+            "a3", "a3", "十年後・夜半", "draft", scene_payoff_content, now, now,
+        ),
+    )
+    payoff_jouro_from, payoff_jouro_to = scene_payoff_spans["payoff_jouro"]
 
     part2_id = uid()
     conn.execute(
@@ -1230,6 +1411,110 @@ def seed(db_path: Path) -> None:
             "a0", "outline", research_content, now, now,
         ),
     )
+
+    # ---- 伏線レジスタ ----
+    fs_now_ms = ts_ms()
+
+    # foreshadow 行
+    # payoff_scene_id + payoff_confirmed=1 + setupCount>=1 → "paid"
+    # payoff_scene_id + payoff_confirmed=1 + setupCount=0  → "orphan_payoff"
+    # abandoned=1 → "abandoned"
+    # それ以外は setup の strength で seeded / needs_strengthening / planned に分岐
+    foreshadow_rows = [
+        # (id, title, intent, notes,
+        #  payoff_scene_id, payoff_from_pos, payoff_to_pos,
+        #  payoff_confirmed, abandoned)
+        (fs_himo_id, "朱紐の温もり",
+         "十年経っても朱紐が乾いたままだった事実を、後の章で「朱紐が朱音を待っていた／意思を持つ」設定の伏線として回収する。",
+         "scene1 で朱音が触れた瞬間に温かさを感じる描写を強める案あり。",
+         None, None, None, 0, 0),
+        (fs_kioku_id, "他人の記憶",
+         "朱紐に触れた瞬間に流れ込む「誰かの恐怖の記憶」が、十年前の儀式の生き残り（朱音の母？）の残留意識であることを後に明かす。",
+         "現状はサブテキストとして弱め。setup を強化するか追加 setup を入れるか検討中。",
+         None, None, None, 0, 0),
+        (fs_jouro_id, "廃社の侵入者",
+         "拝殿の錠前が落ちていた事実は、十年前の事件以降に朱鬼（あるいは別の誰か）が廃社へ出入りしている証拠として機能させる。",
+         "間章「祭壇の傷」で札の残骸とリンクさせて payoff 確定。",
+         scene_payoff_id, payoff_jouro_from, payoff_jouro_to, 1, 0),
+        (fs_voice_id, "忘れられた声",
+         "回想の「叫び声」の主が冬弥であったことを、第二部のクライマックスで明かす。朱音が思い出せない理由は朱鬼の記憶喰いの副作用。",
+         "声の正体は冬弥／朱音の母／朱鬼自身の三択で揺れている。",
+         None, None, None, 0, 0),
+        (fs_letter_id, "封じ文の差出人",
+         "祭壇の朱紐の下に置かれていた封じ文を書いたのが誰か。最有力候補は冬弥だが、朱音の母の遺書である可能性も残す。",
+         "差出人が確定するまで setup を配置しない（先に決めてから書く方針）。",
+         None, None, None, 0, 0),
+        (fs_fuuya_id, "冬弥の二重の顔",
+         "冬弥が陰陽寮の公式業務の裏で朱鬼を独自追跡していること、および十年前の火事への関与を、三章で示唆する。",
+         "三章を payoff 想定シーンとして仮置き。setup は二章執筆中に逆算して埋める予定。",
+         scene3_id, None, None, 1, 0),
+        (fs_abandoned_id, "杉林の足跡",
+         "廃社周辺の杉林に残された足跡から朱鬼の気配を辿る案。最終的に「朱鬼は足跡を残さない」設定と矛盾するため棄却。",
+         "代替として「空気の歪み」描写に置換済み（codex 廃社の本文参照）。",
+         None, None, None, 0, 1),
+    ]
+    for (fid, title, intent, notes_text, payoff_scene,
+         payoff_from, payoff_to, payoff_conf, abandoned) in foreshadow_rows:
+        conn.execute(
+            """INSERT INTO foreshadows
+               (id,project_id,title,intent,notes,payoff_scene_id,
+                payoff_from_pos,payoff_to_pos,payoff_confirmed,abandoned,
+                created_at,updated_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (fid, project_id, title, intent, notes_text, payoff_scene,
+             payoff_from, payoff_to, payoff_conf, abandoned,
+             fs_now_ms, fs_now_ms),
+        )
+
+    # foreshadow_setups（marks のあるシーン本文と位置を一致させる）
+    setup_rows = [
+        # (id, foreshadow_id, scene_id, span_dict, span_key, kind,
+        #  strength, ai_strength, ai_reasoning, attribution, ai_rationale)
+        (setup_himo_id, fs_himo_id, scene1_id, scene1_spans, "setup_himo",
+         "designated_existing", "moderate", None, None, "human", None),
+        (setup_kioku_id, fs_kioku_id, scene1_id, scene1_spans, "setup_kioku",
+         "designated_existing", "subtle", None, None, "human", None),
+        (setup_jouro_id, fs_jouro_id, scene1_id, scene1_spans, "setup_jouro",
+         "designated_existing", "moderate", None, None, "human", None),
+        (setup_voice_id, fs_voice_id, scene_flashback_id, scene_flashback_spans,
+         "setup_voice", "designated_existing", "overt", None, None, "human", None),
+    ]
+    for (sid, fid, scene_id, span_dict, span_key, kind,
+         strength, ai_strength, ai_reasoning, attribution,
+         ai_rationale) in setup_rows:
+        from_pos, to_pos = span_dict[span_key]
+        conn.execute(
+            """INSERT INTO foreshadow_setups
+               (id,foreshadow_id,scene_id,from_pos,to_pos,kind,
+                strength,ai_strength,ai_reasoning,attribution,ai_rationale,
+                last_evaluated_at,is_orphan,created_at,updated_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (sid, fid, scene_id, from_pos, to_pos, kind,
+             strength, ai_strength, ai_reasoning, attribution, ai_rationale,
+             None, 0, fs_now_ms, fs_now_ms),
+        )
+
+    # foreshadow_codex_links（伏線と関連 Codex を紐付け）
+    for fid, codex_id in [
+        (fs_himo_id, akahimo_id),
+        (fs_himo_id, akane_id),
+        (fs_kioku_id, akahimo_id),
+        (fs_kioku_id, akane_id),
+        (fs_jouro_id, haisha_id),
+        (fs_jouro_id, shuki_id),
+        (fs_voice_id, fuuya_id),
+        (fs_voice_id, akane_id),
+        (fs_letter_id, fuujibumi_id),
+        (fs_letter_id, akanawa_id),
+        (fs_fuuya_id, fuuya_id),
+        (fs_fuuya_id, shuki_id),
+        (fs_abandoned_id, haisha_id),
+    ]:
+        conn.execute(
+            """INSERT INTO foreshadow_codex_links
+               (foreshadow_id,codex_entry_id) VALUES (?,?)""",
+            (fid, codex_id),
+        )
 
     # ---- スニペット ----
     snippet1_id = uid()
