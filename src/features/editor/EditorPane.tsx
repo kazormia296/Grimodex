@@ -72,6 +72,7 @@ import { shouldAutoDraftTransition } from "@/features/editor/autoStatusTransitio
 import { shouldPromptSynopsis } from "@/features/editor/synopsisSuggestion";
 import { getDocText } from "@/features/editor/RubyNode";
 import { useLinter } from "@/features/lint/useLinter";
+import { useForeshadowJump } from "@/features/foreshadow/useForeshadowJump";
 import { generateSynopsisFromContent } from "@/features/chat/chatApi";
 import { useChatStore } from "@/features/chat/chatStore";
 import { prosemirrorToText } from "@/lib/prosemirror";
@@ -513,6 +514,7 @@ export function EditorPane({
   const lintSceneId =
     groupIndex === 0 && !isCodexMode && !isSnippetMode ? nodeId : null;
   useLinter(editor, lintSceneId);
+  useForeshadowJump(editor, lintSceneId);
 
   // Ctrl+S / Ctrl+F / Ctrl+H / Ctrl+Shift+H key handlers
   const handleManualSave = useCallback(async () => {

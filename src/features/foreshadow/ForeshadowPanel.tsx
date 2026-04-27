@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
+  ArrowRight,
   ChevronDown,
   ChevronRight,
   Loader2,
@@ -9,7 +10,11 @@ import {
   Trash2,
   X,
 } from "lucide-react";
+import { useTreeStore } from "@/features/tree/treeStore";
+import { useLayoutStore } from "@/features/layout/layoutStore";
+import { useEditorStore } from "@/features/editor/editorStore";
 import { useForeshadowStore } from "./foreshadowStore";
+import { useForeshadowNavStore } from "./foreshadowNavStore";
 import { CreateForeshadowDialog } from "./CreateForeshadowDialog";
 import { ForeshadowChapterTab } from "./ForeshadowChapterTab";
 import { isSetupEvaluationStale } from "./staleness";
@@ -51,6 +56,7 @@ interface SetupRowProps {
   onReanchor: () => void;
   onReinsert: () => void;
   onDiscard: () => void;
+  onJump: () => void;
 }
 
 function SetupRow({
@@ -60,6 +66,7 @@ function SetupRow({
   onReanchor,
   onReinsert,
   onDiscard,
+  onJump,
 }: SetupRowProps) {
   const { t } = useTranslation();
   const [showPersonas, setShowPersonas] = useState(false);
@@ -110,13 +117,26 @@ function SetupRow({
           />
         )}
 
+        {/* Jump to setup in editor — orphan setups have re-anchor instead */}
+        {!setup.isOrphan && (
+          <button
+            type="button"
+            data-testid={`foreshadow-setup-jump-${setup.id}`}
+            onClick={onJump}
+            className="ml-auto flex items-center gap-0.5 rounded px-1.5 py-0.5 text-[10px] text-muted-foreground hover:bg-accent hover:text-foreground"
+            title={t("foreshadow.setup.jump", "Setup へ移動")}
+          >
+            <ArrowRight className="h-2.5 w-2.5" />
+          </button>
+        )}
+
         {/* AI evaluate button */}
         <button
           type="button"
           data-testid={`foreshadow-setup-evaluate-${setup.id}`}
           onClick={() => onEvaluate(setup)}
           disabled={isEvaluating}
-          className="ml-auto flex items-center gap-0.5 rounded px-1.5 py-0.5 text-[10px] text-muted-foreground hover:bg-accent hover:text-foreground disabled:pointer-events-none disabled:opacity-50"
+          className={`${setup.isOrphan ? "ml-auto " : ""}flex items-center gap-0.5 rounded px-1.5 py-0.5 text-[10px] text-muted-foreground hover:bg-accent hover:text-foreground disabled:pointer-events-none disabled:opacity-50`}
           title={t("foreshadow.evaluate.button", "AI評価")}
         >
           {isEvaluating ? (
@@ -227,6 +247,31 @@ export function ForeshadowPanel() {
   const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<PanelTab>("list");
+
+  const jumpToAnchor = (sceneId: string, fromPos: number, toPos: number) => {
+    const editor = useEditorStore.getState().editor;
+    const activeSceneId = useTreeStore.getState().activeSceneId;
+    // 同一シーンなら直接 chain で飛ばす（フリッカー回避）。
+    if (editor && activeSceneId === sceneId) {
+      const docSize = editor.state.doc.content.size;
+      if (toPos <= docSize) {
+        editor
+          .chain()
+          .focus()
+          .setTextSelection({ from: fromPos, to: toPos })
+          .scrollIntoView()
+          .run();
+      } else {
+        editor.chain().focus().scrollIntoView().run();
+      }
+      useLayoutStore.getState().showPanel("editor");
+      return;
+    }
+    // 別シーン: pendingJump を仕込んでからシーンを切り替える。
+    useForeshadowNavStore.getState().requestJump({ sceneId, fromPos, toPos });
+    useTreeStore.getState().setActiveScene(sceneId);
+    useLayoutStore.getState().showPanel("editor");
+  };
 
   const handleExpand = (id: string) => {
     if (expandedId === id) {
@@ -444,6 +489,32 @@ export function ForeshadowPanel() {
                     </div>
                   ) : (
                     <div className="flex shrink-0 items-center gap-1.5">
+                      {item.payoffSceneId &&
+                        item.payoffFromPos != null &&
+                        item.payoffToPos != null && (
+                          <button
+                            type="button"
+                            data-testid={`foreshadow-payoff-jump-${item.id}`}
+                            onClick={() =>
+                              jumpToAnchor(
+                                item.payoffSceneId!,
+                                item.payoffFromPos!,
+                                item.payoffToPos!,
+                              )
+                            }
+                            className="rounded p-0.5 text-muted-foreground hover:bg-accent hover:text-foreground"
+                            title={t(
+                              "foreshadow.panel.jumpPayoff",
+                              "Payoff へ移動",
+                            )}
+                            aria-label={t(
+                              "foreshadow.panel.jumpPayoff",
+                              "Payoff へ移動",
+                            )}
+                          >
+                            <ArrowRight className="h-3 w-3" />
+                          </button>
+                        )}
                       <span
                         className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${LABEL_STYLE[item.label]}`}
                       >
@@ -493,6 +564,13 @@ export function ForeshadowPanel() {
                             void reinsertSetup(setup.id, item.id)
                           }
                           onDiscard={() => void removeSetup(setup.id, item.id)}
+                          onJump={() =>
+                            jumpToAnchor(
+                              setup.sceneId,
+                              setup.fromPos,
+                              setup.toPos,
+                            )
+                          }
                         />
                       ))
                     )}
