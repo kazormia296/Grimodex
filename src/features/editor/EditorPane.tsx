@@ -72,7 +72,7 @@ import { shouldAutoDraftTransition } from "@/features/editor/autoStatusTransitio
 import { shouldPromptSynopsis } from "@/features/editor/synopsisSuggestion";
 import { getDocText } from "@/features/editor/RubyNode";
 import { useLinter } from "@/features/lint/useLinter";
-import { useForeshadowJump } from "@/features/foreshadow/useForeshadowJump";
+import { useForeshadowNavStore } from "@/features/foreshadow/foreshadowNavStore";
 import { generateSynopsisFromContent } from "@/features/chat/chatApi";
 import { useChatStore } from "@/features/chat/chatStore";
 import { prosemirrorToText } from "@/lib/prosemirror";
@@ -514,7 +514,37 @@ export function EditorPane({
   const lintSceneId =
     groupIndex === 0 && !isCodexMode && !isSnippetMode ? nodeId : null;
   useLinter(editor, lintSceneId);
-  useForeshadowJump(editor, lintSceneId);
+
+  // 同シーン内の伏線ジャンプ要求を処理する。
+  // クロスシーンは switchScene の consumeJump に任せる（タイミング統一のため）。
+  useEffect(() => {
+    if (!editor || !lintSceneId) return;
+    const unsubscribe = useForeshadowNavStore.subscribe((state, prev) => {
+      const jump = state.pendingJump;
+      if (!jump || jump === prev.pendingJump) return;
+      if (jump.sceneId !== lintSceneId) return;
+      // シーンが未ロードの間は無視（switchScene が後で消費する）。
+      if (prevSceneIdRef.current !== lintSceneId) return;
+      const consumed = useForeshadowNavStore
+        .getState()
+        .consumeJump(lintSceneId);
+      if (!consumed) return;
+      // saved cursor の遅延復元が残っているとフォーカス時に上書きされるためクリア。
+      pendingCursorRestoreRef.current = null;
+      const docSize = editor.state.doc.content.size;
+      if (consumed.toPos > docSize) {
+        editor.chain().focus().scrollIntoView().run();
+        return;
+      }
+      editor
+        .chain()
+        .focus()
+        .setTextSelection({ from: consumed.fromPos, to: consumed.toPos })
+        .scrollIntoView()
+        .run();
+    });
+    return unsubscribe;
+  }, [editor, lintSceneId]);
 
   // Ctrl+S / Ctrl+F / Ctrl+H / Ctrl+Shift+H key handlers
   const handleManualSave = useCallback(async () => {
@@ -881,32 +911,54 @@ export function EditorPane({
       // state is never applied if this new switch doesn't produce saved data.
       pendingCursorRestoreRef.current = null;
 
-      // Restore cursor/scroll state if this node was previously visited.
-      const saved = savedEditorStateRef.current.get(nodeId);
-      if (saved && !cancelled) {
-        if (focusNow) {
-          // Tab click: focus the editor and restore cursor/scroll immediately.
-          requestAnimationFrame(() => {
-            if (cancelled) return;
-            const ed = editorRef.current;
-            if (ed) {
-              const docSize = ed.state.doc.content.size;
-              const from = Math.min(saved.from, Math.max(0, docSize - 1));
-              const to = Math.min(saved.to, Math.max(0, docSize - 1));
-              ed.chain().focus().setTextSelection({ from, to }).run();
-            }
-            if (editorContainerRef.current) {
-              editorContainerRef.current.scrollTop = saved.scrollTop;
-            }
-          });
-        } else {
-          // Scenes-panel navigation: defer restore until the editor is focused
-          // so keyboard navigation in the panel is not interrupted.
-          pendingCursorRestoreRef.current = {
-            from: saved.from,
-            to: saved.to,
-            scrollTop: saved.scrollTop,
-          };
+      // 伏線パネルからのジャンプ要求は saved cursor 復元より優先する。
+      const fJump = useForeshadowNavStore.getState().consumeJump(nodeId);
+      if (fJump && !cancelled) {
+        requestAnimationFrame(() => {
+          if (cancelled) return;
+          const ed = editorRef.current;
+          if (!ed) return;
+          const docSize = ed.state.doc.content.size;
+          if (fJump.toPos > docSize) {
+            ed.chain().focus().scrollIntoView().run();
+            return;
+          }
+          const from = Math.min(fJump.fromPos, Math.max(0, docSize - 1));
+          const to = Math.min(fJump.toPos, Math.max(0, docSize - 1));
+          ed.chain()
+            .focus()
+            .setTextSelection({ from, to })
+            .scrollIntoView()
+            .run();
+        });
+      } else {
+        // Restore cursor/scroll state if this node was previously visited.
+        const saved = savedEditorStateRef.current.get(nodeId);
+        if (saved && !cancelled) {
+          if (focusNow) {
+            // Tab click: focus the editor and restore cursor/scroll immediately.
+            requestAnimationFrame(() => {
+              if (cancelled) return;
+              const ed = editorRef.current;
+              if (ed) {
+                const docSize = ed.state.doc.content.size;
+                const from = Math.min(saved.from, Math.max(0, docSize - 1));
+                const to = Math.min(saved.to, Math.max(0, docSize - 1));
+                ed.chain().focus().setTextSelection({ from, to }).run();
+              }
+              if (editorContainerRef.current) {
+                editorContainerRef.current.scrollTop = saved.scrollTop;
+              }
+            });
+          } else {
+            // Scenes-panel navigation: defer restore until the editor is focused
+            // so keyboard navigation in the panel is not interrupted.
+            pendingCursorRestoreRef.current = {
+              from: saved.from,
+              to: saved.to,
+              scrollTop: saved.scrollTop,
+            };
+          }
         }
       }
     }

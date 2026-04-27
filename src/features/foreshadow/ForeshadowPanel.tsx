@@ -12,7 +12,6 @@ import {
 } from "lucide-react";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { useLayoutStore } from "@/features/layout/layoutStore";
-import { useEditorStore } from "@/features/editor/editorStore";
 import { useForeshadowStore } from "./foreshadowStore";
 import { useForeshadowNavStore } from "./foreshadowNavStore";
 import { CreateForeshadowDialog } from "./CreateForeshadowDialog";
@@ -249,25 +248,9 @@ export function ForeshadowPanel() {
   const [activeTab, setActiveTab] = useState<PanelTab>("list");
 
   const jumpToAnchor = (sceneId: string, fromPos: number, toPos: number) => {
-    const editor = useEditorStore.getState().editor;
-    const activeSceneId = useTreeStore.getState().activeSceneId;
-    // 同一シーンなら直接 chain で飛ばす（フリッカー回避）。
-    if (editor && activeSceneId === sceneId) {
-      const docSize = editor.state.doc.content.size;
-      if (toPos <= docSize) {
-        editor
-          .chain()
-          .focus()
-          .setTextSelection({ from: fromPos, to: toPos })
-          .scrollIntoView()
-          .run();
-      } else {
-        editor.chain().focus().scrollIntoView().run();
-      }
-      useLayoutStore.getState().showPanel("editor");
-      return;
-    }
-    // 別シーン: pendingJump を仕込んでからシーンを切り替える。
+    // 同シーン・別シーンとも EditorPane が一元的に処理する。
+    // 先に pendingJump を立ててから setActiveScene と showPanel を呼ぶことで、
+    // 別シーンでも switchScene が consumeJump できる順序を保証する。
     useForeshadowNavStore.getState().requestJump({ sceneId, fromPos, toPos });
     useTreeStore.getState().setActiveScene(sceneId);
     useLayoutStore.getState().showPanel("editor");
