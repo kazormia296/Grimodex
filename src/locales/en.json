@@ -636,9 +636,18 @@
       "planned": "Planned",
       "seeded": "Seeded",
       "paid": "Paid",
+      "critical_weak": "Critical · Weak",
       "needs_strengthening": "Needs Strengthening",
       "orphan_payoff": "Orphan",
       "abandoned": "Abandoned"
+    },
+    "loadBearing": {
+      "sectionLabel": "Load-bearing",
+      "help": "Would removing this break the story? critical/supporting/optional",
+      "critical": "Critical",
+      "supporting": "Supporting",
+      "optional": "Optional",
+      "unset": "— Unset"
     },
     "popover": {
       "heading": "Foreshadow Mark",

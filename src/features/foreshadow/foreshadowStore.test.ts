@@ -16,6 +16,7 @@ function makeRow(overrides: Partial<ForeshadowRow> = {}): ForeshadowRow {
     payoffToPos: null,
     payoffConfirmed: false,
     abandoned: false,
+    loadBearing: null,
     createdAt: new Date("2024-01-01"),
     updatedAt: new Date("2024-01-01"),
     ...overrides,
@@ -289,6 +290,7 @@ describe("foreshadowStore", () => {
         projectId: "proj-1",
         title: "白鯨の前兆",
         intent: null,
+        loadBearing: null,
       });
 
       expect(result.id).toBe("f-1");
@@ -304,9 +306,12 @@ describe("foreshadowStore", () => {
       mockCreateForeshadow.mockRejectedValue(new Error("DB error"));
 
       await expect(
-        useForeshadowStore
-          .getState()
-          .create({ projectId: "proj-1", title: "失敗", intent: null }),
+        useForeshadowStore.getState().create({
+          projectId: "proj-1",
+          title: "失敗",
+          intent: null,
+          loadBearing: null,
+        }),
       ).rejects.toThrow("DB error");
 
       expect(useForeshadowStore.getState().items).toEqual([]);

@@ -119,11 +119,15 @@ export function SnippetContextMenu({
   async function handleSaveForeshadow(data: {
     title: string;
     intent: string | null;
+    loadBearing:
+      | import("@/features/foreshadow/types").ForeshadowLoadBearing
+      | null;
   }) {
     await createForeshadow({
       projectId: PROJECT_ID,
       title: data.title,
       intent: data.intent,
+      loadBearing: data.loadBearing,
     });
     toast.success(
       t("foreshadow.store.createSuccess", "伏線として登録しました"),

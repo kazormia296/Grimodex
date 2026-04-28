@@ -636,9 +636,18 @@
       "planned": "計画中",
       "seeded": "設置済",
       "paid": "回収済",
+      "critical_weak": "強化必須",
       "needs_strengthening": "強化推奨",
       "orphan_payoff": "孤立",
       "abandoned": "放棄"
+    },
+    "loadBearing": {
+      "sectionLabel": "重要度（load-bearing）",
+      "help": "外したら作品が崩れるか。critical/supporting/optional",
+      "critical": "critical（外せない）",
+      "supporting": "supporting（補助）",
+      "optional": "optional（任意）",
+      "unset": "— 未設定"
     },
     "popover": {
       "heading": "伏線マーク",

@@ -56,6 +56,7 @@ function makeForeshadowRow(
     payoffToPos: null,
     payoffConfirmed: false,
     abandoned: false,
+    loadBearing: null,
     createdAt: new Date("2024-01-01"),
     updatedAt: new Date("2024-01-01"),
     ...overrides,

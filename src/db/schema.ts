@@ -854,6 +854,9 @@ export const foreshadows = sqliteTable(
       .notNull()
       .default(false),
 
+    // Phase 6: load_bearing 軸（critical / supporting / optional / null）
+    loadBearing: text("load_bearing"),
+
     createdAt: integer("created_at", { mode: "timestamp" }).notNull(),
     updatedAt: integer("updated_at", { mode: "timestamp" }).notNull(),
   },

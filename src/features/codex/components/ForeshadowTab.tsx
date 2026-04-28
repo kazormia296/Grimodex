@@ -7,6 +7,7 @@ const LABEL_STYLE: Record<string, string> = {
   planned: "bg-muted text-muted-foreground",
   seeded: "bg-blue-500/15 text-blue-600 dark:text-blue-400",
   paid: "bg-green-500/15 text-green-600 dark:text-green-400",
+  critical_weak: "bg-red-500/15 text-red-600 dark:text-red-400",
   needs_strengthening: "bg-yellow-500/15 text-yellow-600 dark:text-yellow-400",
   orphan_payoff: "bg-orange-500/15 text-orange-600 dark:text-orange-400",
   abandoned: "bg-muted text-muted-foreground/50",

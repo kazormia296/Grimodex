@@ -15,7 +15,7 @@ import { listCodexEntries } from "@/features/codex/api";
 import type { CodexEntry } from "@/features/codex/api";
 
 type LinkedCodexEntry = { id: string; name: string };
-import type { ForeshadowWithLabel } from "./types";
+import type { ForeshadowLoadBearing, ForeshadowWithLabel } from "./types";
 
 interface EditForeshadowDialogProps {
   open: boolean;
@@ -36,6 +36,9 @@ export function EditForeshadowDialog({
   const [notes, setNotes] = useState("");
   const [payoffConfirmed, setPayoffConfirmed] = useState(false);
   const [abandoned, setAbandoned] = useState(false);
+  const [loadBearing, setLoadBearing] = useState<ForeshadowLoadBearing | null>(
+    null,
+  );
   const [showUnsetConfirm, setShowUnsetConfirm] = useState(false);
   const [willUnsetAnchor, setWillUnsetAnchor] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
@@ -64,6 +67,7 @@ export function EditForeshadowDialog({
       setNotes(item.notes ?? "");
       setPayoffConfirmed(item.payoffConfirmed);
       setAbandoned(item.abandoned);
+      setLoadBearing(item.loadBearing ?? null);
       setShowUnsetConfirm(false);
       setWillUnsetAnchor(false);
       setIsSaving(false);
@@ -121,6 +125,8 @@ export function EditForeshadowDialog({
       if (payoffConfirmed !== item.payoffConfirmed)
         patch.payoffConfirmed = payoffConfirmed;
       if (abandoned !== item.abandoned) patch.abandoned = abandoned;
+      if (loadBearing !== (item.loadBearing ?? null))
+        patch.loadBearing = loadBearing;
 
       if (willUnsetAnchor) {
         patch.payoffSceneId = null;
@@ -259,6 +265,33 @@ export function EditForeshadowDialog({
             rows={3}
             className="w-full resize-none rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-ring"
           />
+        </div>
+
+        {/* 重要度（load-bearing）*/}
+        <div>
+          <label className="mb-1 block text-xs text-muted-foreground">
+            {t("foreshadow.loadBearing.sectionLabel")}
+          </label>
+          <select
+            data-testid="edit-foreshadow-load-bearing"
+            value={loadBearing ?? ""}
+            onChange={(e) =>
+              setLoadBearing((e.target.value as ForeshadowLoadBearing) || null)
+            }
+            title={t("foreshadow.loadBearing.help")}
+            className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-ring"
+          >
+            <option value="">{t("foreshadow.loadBearing.unset")}</option>
+            <option value="critical">
+              {t("foreshadow.loadBearing.critical")}
+            </option>
+            <option value="supporting">
+              {t("foreshadow.loadBearing.supporting")}
+            </option>
+            <option value="optional">
+              {t("foreshadow.loadBearing.optional")}
+            </option>
+          </select>
         </div>
 
         {/* ライフサイクル */}

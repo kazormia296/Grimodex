@@ -1,11 +1,16 @@
 import { useState, useEffect } from "react";
 import { useTranslation } from "react-i18next";
 import { AnimatedOverlay } from "@/components/ui/animated-overlay";
+import type { ForeshadowLoadBearing } from "./types";
 
 interface CreateForeshadowDialogProps {
   open: boolean;
   projectId: string;
-  onSave: (data: { title: string; intent: string | null }) => Promise<void>;
+  onSave: (data: {
+    title: string;
+    intent: string | null;
+    loadBearing: ForeshadowLoadBearing | null;
+  }) => Promise<void>;
   onClose: () => void;
   initialTitle?: string;
   initialIntent?: string;
@@ -22,12 +27,16 @@ export function CreateForeshadowDialog({
   const { t } = useTranslation();
   const [title, setTitle] = useState(initialTitle);
   const [intent, setIntent] = useState(initialIntent);
+  const [loadBearing, setLoadBearing] = useState<ForeshadowLoadBearing | null>(
+    null,
+  );
   const [isSaving, setIsSaving] = useState(false);
 
   useEffect(() => {
     if (open) {
       setTitle(initialTitle);
       setIntent(initialIntent);
+      setLoadBearing(null);
       setIsSaving(false);
     }
     // initialTitle/initialIntent はダイアログ開時のスナップショットとして使う
@@ -40,7 +49,11 @@ export function CreateForeshadowDialog({
     if (!canSave) return;
     setIsSaving(true);
     try {
-      await onSave({ title: title.trim(), intent: intent.trim() || null });
+      await onSave({
+        title: title.trim(),
+        intent: intent.trim() || null,
+        loadBearing,
+      });
       onClose();
     } finally {
       setIsSaving(false);
@@ -90,6 +103,32 @@ export function CreateForeshadowDialog({
             rows={3}
             className="w-full resize-none rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-ring"
           />
+        </div>
+
+        <div>
+          <label className="mb-1 block text-xs text-muted-foreground">
+            {t("foreshadow.loadBearing.sectionLabel")}
+          </label>
+          <select
+            data-testid="foreshadow-load-bearing"
+            value={loadBearing ?? ""}
+            onChange={(e) =>
+              setLoadBearing((e.target.value as ForeshadowLoadBearing) || null)
+            }
+            title={t("foreshadow.loadBearing.help")}
+            className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-ring"
+          >
+            <option value="">{t("foreshadow.loadBearing.unset")}</option>
+            <option value="critical">
+              {t("foreshadow.loadBearing.critical")}
+            </option>
+            <option value="supporting">
+              {t("foreshadow.loadBearing.supporting")}
+            </option>
+            <option value="optional">
+              {t("foreshadow.loadBearing.optional")}
+            </option>
+          </select>
         </div>
       </div>
 

@@ -48,7 +48,7 @@ interface ForeshadowState {
 
   load: (projectId: string) => Promise<void>;
   create: (
-    data: Pick<ForeshadowRow, "projectId" | "title" | "intent">,
+    data: Pick<ForeshadowRow, "projectId" | "title" | "intent" | "loadBearing">,
   ) => Promise<ForeshadowWithLabel>;
   update: (
     id: string,
@@ -164,6 +164,7 @@ export const useForeshadowStore = create<ForeshadowState>()((set, get) => ({
         payoffToPos: null,
         payoffConfirmed: false,
         abandoned: false,
+        loadBearing: data.loadBearing ?? null,
       });
       const item: ForeshadowWithLabel = {
         ...row,

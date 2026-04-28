@@ -15,6 +15,7 @@ import type {
   ForeshadowRow,
   ForeshadowSetupRow,
   ForeshadowStrength,
+  ForeshadowLoadBearing,
   AiEvaluation,
   ForeshadowWithLabel,
   ChapterAuditRequest,
@@ -69,6 +70,11 @@ function normalizeForeshadowRow(raw: unknown): ForeshadowRow {
       null,
     payoffConfirmed: toBool(row.payoffConfirmed ?? row.payoff_confirmed),
     abandoned: toBool(row.abandoned),
+    loadBearing:
+      ((row.loadBearing ?? row.load_bearing) as
+        | ForeshadowLoadBearing
+        | null
+        | undefined) ?? null,
     createdAt: toDate(row.createdAt ?? row.created_at),
     updatedAt: toDate(row.updatedAt ?? row.updated_at),
   };
@@ -122,6 +128,7 @@ export async function createForeshadow(
         projectId: data.projectId,
         title: data.title,
         intent: data.intent ?? null,
+        loadBearing: data.loadBearing ?? null,
       },
     });
     return normalizeForeshadowRow(created);
@@ -180,6 +187,7 @@ export async function updateForeshadow(
       | "notes"
       | "payoffConfirmed"
       | "abandoned"
+      | "loadBearing"
       | "payoffSceneId"
       | "payoffFromPos"
       | "payoffToPos"
@@ -203,6 +211,8 @@ export async function updateForeshadow(
       tauriPatch.payoffConfirmed = patch.payoffConfirmed;
     }
     if (patch.abandoned !== undefined) tauriPatch.abandoned = patch.abandoned;
+    if (patch.loadBearing !== undefined)
+      tauriPatch.loadBearing = patch.loadBearing;
 
     await invoke("foreshadow_update", {
       id,

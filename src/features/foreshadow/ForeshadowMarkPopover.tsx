@@ -117,6 +117,7 @@ export function ForeshadowMarkPopover({ editor }: Props) {
         projectId: PROJECT_ID,
         title: newTitle.trim(),
         intent: null,
+        loadBearing: null,
       });
       handleItemClick(item.id);
     } catch {

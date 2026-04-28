@@ -53,6 +53,7 @@ struct ForeshadowCreatePayload {
     project_id: String,
     title: String,
     intent: Option<String>,
+    load_bearing: Option<String>,
 }
 
 #[derive(serde::Deserialize)]
@@ -66,6 +67,7 @@ struct ForeshadowPatch {
     payoff_to_pos: Option<Option<i64>>,
     payoff_confirmed: Option<bool>,
     abandoned: Option<bool>,
+    load_bearing: Option<Option<String>>,
 }
 
 #[derive(serde::Deserialize)]
@@ -355,13 +357,14 @@ fn foreshadow_create(
         let id = uuid::Uuid::new_v4().to_string();
         db.execute(
             "INSERT INTO foreshadows
-             (id, project_id, title, intent, notes, payoff_scene_id, payoff_from_pos, payoff_to_pos, payoff_confirmed, abandoned, created_at, updated_at)
-             VALUES (?, ?, ?, ?, NULL, NULL, NULL, NULL, 0, 0, ?, ?)",
+             (id, project_id, title, intent, notes, payoff_scene_id, payoff_from_pos, payoff_to_pos, payoff_confirmed, abandoned, load_bearing, created_at, updated_at)
+             VALUES (?, ?, ?, ?, NULL, NULL, NULL, NULL, 0, 0, ?, ?, ?)",
             &[
                 Value::String(id.clone()),
                 Value::String(payload.project_id),
                 Value::String(payload.title),
                 payload.intent.map(Value::String).unwrap_or(Value::Null),
+                payload.load_bearing.map(Value::String).unwrap_or(Value::Null),
                 Value::Number(now.into()),
                 Value::Number(now.into()),
             ],
@@ -428,6 +431,10 @@ fn foreshadow_update_impl(
     if let Some(abandoned) = patch.abandoned {
         sets.push("abandoned = ?");
         params.push(Value::Bool(abandoned));
+    }
+    if let Some(load_bearing) = patch.load_bearing {
+        sets.push("load_bearing = ?");
+        params.push(load_bearing.map(Value::String).unwrap_or(Value::Null));
     }
 
     if sets.is_empty() {
@@ -1730,6 +1737,7 @@ mod tests {
             payoff_to_pos: None,
             payoff_confirmed: None,
             abandoned: None,
+            load_bearing: None,
         };
         let result = foreshadow_update_impl(&db, fid.clone(), patch).unwrap();
         assert_eq!(result["id"], Value::String(fid));
@@ -1750,6 +1758,7 @@ mod tests {
             payoff_to_pos: None,
             payoff_confirmed: None,
             abandoned: None,
+            load_bearing: None,
         };
         let result = foreshadow_update_impl(&db, fid.clone(), patch).unwrap();
         assert_eq!(result["title"], Value::String("新タイトル".to_string()));
@@ -1771,6 +1780,7 @@ mod tests {
             payoff_to_pos: None,
             payoff_confirmed: None,
             abandoned: None,
+            load_bearing: None,
         };
         foreshadow_update_impl(&db, fid.clone(), set_patch).unwrap();
 
@@ -1784,6 +1794,7 @@ mod tests {
             payoff_to_pos: None,
             payoff_confirmed: None,
             abandoned: None,
+            load_bearing: None,
         };
         let result = foreshadow_update_impl(&db, fid.clone(), clear_patch).unwrap();
         assert_eq!(result["intent"], Value::Null);
