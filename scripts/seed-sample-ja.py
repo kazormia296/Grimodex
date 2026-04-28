@@ -593,6 +593,7 @@ CREATE TABLE IF NOT EXISTS foreshadows (
     payoff_to_pos    INTEGER,
     payoff_confirmed INTEGER NOT NULL DEFAULT 0,
     abandoned        INTEGER NOT NULL DEFAULT 0,
+    load_bearing     TEXT,
     created_at       INTEGER NOT NULL,
     updated_at       INTEGER NOT NULL
 );
@@ -1198,11 +1199,18 @@ def seed(db_path: Path) -> None:
     fs_letter_id = uid()      # 封じ文の差出人（planned, setup未配置）
     fs_fuuya_id = uid()       # 冬弥の二重の顔（planned, setup未配置）
     fs_abandoned_id = uid()   # 杉林の足跡（abandoned）
+    # デバッグ用追加サンプル（Phase 6 ラベル網羅 + AI評価 + orphan + multi-setup）
+    fs_inkyou_id = uid()      # 印形の歪み（supporting × subtle → needs_strengthening）
+    fs_kazaguruma_id = uid()  # 風車の音（optional × subtle → seeded、警告サイレンス）
 
     setup_himo_id = uid()
     setup_kioku_id = uid()
     setup_jouro_id = uid()
     setup_voice_id = uid()
+    setup_inkyou_a_id = uid()       # subtle, human
+    setup_inkyou_b_id = uid()       # moderate, AI 評価入り
+    setup_inkyou_orphan_id = uid()  # is_orphan=1（再アンカー UI デバッグ）
+    setup_kazaguruma_id = uid()     # subtle, human
 
     scene1_id = uid()
     scene1_builder = _DocBuilder()
@@ -1236,6 +1244,25 @@ def seed(db_path: Path) -> None:
     scene1_builder.para(
         ("setup_kioku", "それは朱音自身の記憶ではなかった。",
          setup_mark(setup_kioku_id, fs_kioku_id)),
+    )
+    # 余韻の段落群（Phase 6 ラベル網羅 + AI 評価 / multi-setup デバッグ用の伏線埋め込み）
+    scene1_builder.para(
+        "息を吐いて手を引いた。朱紐を握り直すとき、",
+        ("setup_inkyou_a", "結び目の印形が以前と少し違っている",
+         setup_mark(setup_inkyou_a_id, fs_inkyou_id)),
+        "ように感じた。",
+    )
+    scene1_builder.para(
+        "目を凝らせば、",
+        ("setup_inkyou_b", "印は二重に重なっていて、どちらが本物の朱縄式かは判別できなかった",
+         setup_mark(setup_inkyou_b_id, fs_inkyou_id)),
+        "。",
+    )
+    scene1_builder.para(
+        "風が吹いて、軒先で",
+        ("setup_kazaguruma", "十年前にはなかったはずの風車",
+         setup_mark(setup_kazaguruma_id, fs_kazaguruma_id)),
+        "が小さく鳴った。",
     )
     scene1_content = scene1_builder.to_json()
     scene1_spans = scene1_builder.spans
@@ -1423,66 +1450,125 @@ def seed(db_path: Path) -> None:
     foreshadow_rows = [
         # (id, title, intent, notes,
         #  payoff_scene_id, payoff_from_pos, payoff_to_pos,
-        #  payoff_confirmed, abandoned)
+        #  payoff_confirmed, abandoned, load_bearing)
+        # load_bearing: critical / supporting / optional / None
+        #   critical × 弱setup → critical_weak（赤警告）
+        #   optional × 弱setup → seeded（警告なし）
+        #   None/supporting × 弱setup → needs_strengthening（既存挙動）
         (fs_himo_id, "朱紐の温もり",
          "十年経っても朱紐が乾いたままだった事実を、後の章で「朱紐が朱音を待っていた／意思を持つ」設定の伏線として回収する。",
          "scene1 で朱音が触れた瞬間に温かさを感じる描写を強める案あり。",
-         None, None, None, 0, 0),
+         None, None, None, 0, 0, "critical"),
         (fs_kioku_id, "他人の記憶",
          "朱紐に触れた瞬間に流れ込む「誰かの恐怖の記憶」が、十年前の儀式の生き残り（朱音の母？）の残留意識であることを後に明かす。",
          "現状はサブテキストとして弱め。setup を強化するか追加 setup を入れるか検討中。",
-         None, None, None, 0, 0),
+         None, None, None, 0, 0, "critical"),
         (fs_jouro_id, "廃社の侵入者",
          "拝殿の錠前が落ちていた事実は、十年前の事件以降に朱鬼（あるいは別の誰か）が廃社へ出入りしている証拠として機能させる。",
          "間章「祭壇の傷」で札の残骸とリンクさせて payoff 確定。",
-         scene_payoff_id, payoff_jouro_from, payoff_jouro_to, 1, 0),
+         scene_payoff_id, payoff_jouro_from, payoff_jouro_to, 1, 0, "supporting"),
         (fs_voice_id, "忘れられた声",
          "回想の「叫び声」の主が冬弥であったことを、第二部のクライマックスで明かす。朱音が思い出せない理由は朱鬼の記憶喰いの副作用。",
          "声の正体は冬弥／朱音の母／朱鬼自身の三択で揺れている。",
-         None, None, None, 0, 0),
+         None, None, None, 0, 0, "critical"),
         (fs_letter_id, "封じ文の差出人",
          "祭壇の朱紐の下に置かれていた封じ文を書いたのが誰か。最有力候補は冬弥だが、朱音の母の遺書である可能性も残す。",
          "差出人が確定するまで setup を配置しない（先に決めてから書く方針）。",
-         None, None, None, 0, 0),
+         None, None, None, 0, 0, None),
         (fs_fuuya_id, "冬弥の二重の顔",
          "冬弥が陰陽寮の公式業務の裏で朱鬼を独自追跡していること、および十年前の火事への関与を、三章で示唆する。",
          "三章を payoff 想定シーンとして仮置き。setup は二章執筆中に逆算して埋める予定。",
-         scene3_id, None, None, 1, 0),
+         scene3_id, None, None, 1, 0, "supporting"),
         (fs_abandoned_id, "杉林の足跡",
          "廃社周辺の杉林に残された足跡から朱鬼の気配を辿る案。最終的に「朱鬼は足跡を残さない」設定と矛盾するため棄却。",
          "代替として「空気の歪み」描写に置換済み（codex 廃社の本文参照）。",
-         None, None, None, 0, 1),
+         None, None, None, 0, 1, "optional"),
+        # ── デバッグ用サンプル ─────────────────────────────────────────
+        (fs_inkyou_id, "印形の歪み",
+         "朱紐の結び目の印形が二重になっている事実から、誰かが朱縄式を独自に書き換えていることを後段で明かす。冬弥または朱鬼のいずれかが介入した証拠として機能させる。",
+         "[デバッグ用] supporting × subtle で needs_strengthening を再現する基準ケース。"
+         "setup_inkyou_a (subtle/human), setup_inkyou_b (moderate/AI評価) の二段 setup と、"
+         "is_orphan=1 の orphan setup を含む（再アンカー UI 確認用）。",
+         None, None, None, 0, 0, "supporting"),
+        (fs_kazaguruma_id, "風車の音",
+         "廃社の軒先の風車が誰かの手で設置されたものだと示唆し、静かな見守り役（音羽の祖父？）の存在を遠回しに伝える。回収時期未定。",
+         "[デバッグ用] optional × subtle のサイレンス確認用。anyWeak でも警告は出ず seeded ラベルが選ばれる。",
+         None, None, None, 0, 0, "optional"),
     ]
     for (fid, title, intent, notes_text, payoff_scene,
-         payoff_from, payoff_to, payoff_conf, abandoned) in foreshadow_rows:
+         payoff_from, payoff_to, payoff_conf, abandoned,
+         load_bearing) in foreshadow_rows:
         conn.execute(
             """INSERT INTO foreshadows
                (id,project_id,title,intent,notes,payoff_scene_id,
                 payoff_from_pos,payoff_to_pos,payoff_confirmed,abandoned,
-                created_at,updated_at)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+                load_bearing,created_at,updated_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (fid, project_id, title, intent, notes_text, payoff_scene,
              payoff_from, payoff_to, payoff_conf, abandoned,
-             fs_now_ms, fs_now_ms),
+             load_bearing, fs_now_ms, fs_now_ms),
         )
 
     # foreshadow_setups（marks のあるシーン本文と位置を一致させる）
+    # AI 評価入り setup 用の aiReasoning JSON（careful/casual/skim 三段の persona 評価）
+    inkyou_b_ai_reasoning = json.dumps({
+        "careful": {
+            "strength": "moderate",
+            "reasoning": "印形の二重重ねという具体的な描写があり、観察力のある読者なら「朱縄式が改変されている」可能性に気付く。後段の伏線として機能する手がかり。",
+        },
+        "casual": {
+            "strength": "subtle",
+            "reasoning": "結び目の印形という細部は、流し読みでは見落とされやすい。気付けるかは読者の集中度次第。",
+        },
+        "skim": {
+            "strength": "subtle",
+            "reasoning": "情景描写の一部として埋め込まれており、急いで読むと意識から抜ける。",
+        },
+    }, ensure_ascii=False)
+
     setup_rows = [
         # (id, foreshadow_id, scene_id, span_dict, span_key, kind,
-        #  strength, ai_strength, ai_reasoning, attribution, ai_rationale)
+        #  strength, ai_strength, ai_reasoning, attribution, ai_rationale,
+        #  last_evaluated_at, is_orphan, from_pos_override, to_pos_override)
+        # span_key が None のときは from_pos_override / to_pos_override を使う（orphan 用）
         (setup_himo_id, fs_himo_id, scene1_id, scene1_spans, "setup_himo",
-         "designated_existing", "moderate", None, None, "human", None),
+         "designated_existing", "moderate", None, None, "human", None,
+         None, 0, None, None),
         (setup_kioku_id, fs_kioku_id, scene1_id, scene1_spans, "setup_kioku",
-         "designated_existing", "subtle", None, None, "human", None),
+         "designated_existing", "subtle", None, None, "human", None,
+         None, 0, None, None),
         (setup_jouro_id, fs_jouro_id, scene1_id, scene1_spans, "setup_jouro",
-         "designated_existing", "moderate", None, None, "human", None),
+         "designated_existing", "moderate", None, None, "human", None,
+         None, 0, None, None),
         (setup_voice_id, fs_voice_id, scene_flashback_id, scene_flashback_spans,
-         "setup_voice", "designated_existing", "overt", None, None, "human", None),
+         "setup_voice", "designated_existing", "overt", None, None, "human", None,
+         None, 0, None, None),
+        # 印形の歪み: subtle / human
+        (setup_inkyou_a_id, fs_inkyou_id, scene1_id, scene1_spans, "setup_inkyou_a",
+         "designated_existing", "subtle", None, None, "human", None,
+         None, 0, None, None),
+        # 印形の歪み: AI 評価入り（strength=null + aiStrength + aiReasoning JSON, attribution=ai）
+        (setup_inkyou_b_id, fs_inkyou_id, scene1_id, scene1_spans, "setup_inkyou_b",
+         "designated_existing", None, "moderate", inkyou_b_ai_reasoning, "ai",
+         "印形の二重重ねは具体的な視覚情報。観察力のある読者には機能する。",
+         fs_now_ms, 0, None, None),
+        # 印形の歪み: orphan setup（スパンに mark は無く、DB 行のみ。再アンカー UI 用）
+        (setup_inkyou_orphan_id, fs_inkyou_id, scene1_id, None, None,
+         "designated_existing", "subtle", None, None, "human", None,
+         None, 1, 1, 8),
+        # 風車の音: subtle / human
+        (setup_kazaguruma_id, fs_kazaguruma_id, scene1_id, scene1_spans, "setup_kazaguruma",
+         "designated_existing", "subtle", None, None, "human", None,
+         None, 0, None, None),
     ]
     for (sid, fid, scene_id, span_dict, span_key, kind,
          strength, ai_strength, ai_reasoning, attribution,
-         ai_rationale) in setup_rows:
-        from_pos, to_pos = span_dict[span_key]
+         ai_rationale, last_evaluated_at, is_orphan,
+         from_pos_override, to_pos_override) in setup_rows:
+        if span_key is not None:
+            from_pos, to_pos = span_dict[span_key]
+        else:
+            from_pos, to_pos = from_pos_override, to_pos_override
         conn.execute(
             """INSERT INTO foreshadow_setups
                (id,foreshadow_id,scene_id,from_pos,to_pos,kind,
@@ -1491,7 +1577,7 @@ def seed(db_path: Path) -> None:
                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (sid, fid, scene_id, from_pos, to_pos, kind,
              strength, ai_strength, ai_reasoning, attribution, ai_rationale,
-             None, 0, fs_now_ms, fs_now_ms),
+             last_evaluated_at, is_orphan, fs_now_ms, fs_now_ms),
         )
 
     # foreshadow_codex_links（伏線と関連 Codex を紐付け）
@@ -1509,6 +1595,10 @@ def seed(db_path: Path) -> None:
         (fs_fuuya_id, fuuya_id),
         (fs_fuuya_id, shuki_id),
         (fs_abandoned_id, haisha_id),
+        # デバッグ用伏線の Codex リンク
+        (fs_inkyou_id, akanawa_id),
+        (fs_inkyou_id, akahimo_id),
+        (fs_kazaguruma_id, haisha_id),
     ]:
         conn.execute(
             """INSERT INTO foreshadow_codex_links
