@@ -602,6 +602,24 @@ fn foreshadow_unlink_codex(
 }
 
 #[tauri::command]
+fn foreshadow_list_linked_codex(
+    ws_state: tauri::State<'_, WorkspaceState>,
+    foreshadow_id: String,
+) -> Result<Vec<Value>, AppError> {
+    with_db(&ws_state, |db| {
+        let rows = db.execute(
+            "SELECT ce.* FROM codex_entries ce \
+             JOIN foreshadow_codex_links fcl ON ce.id = fcl.codex_entry_id \
+             WHERE fcl.foreshadow_id = ? \
+             ORDER BY ce.name ASC",
+            &[Value::String(foreshadow_id)],
+            "all",
+        )?;
+        Ok(rows.into_iter().map(Value::Object).collect())
+    })
+}
+
+#[tauri::command]
 fn foreshadow_set_setup_strength(
     ws_state: tauri::State<'_, WorkspaceState>,
     setup_id: String,
@@ -1589,6 +1607,7 @@ pub fn run() {
             foreshadow_get,
             foreshadow_link_codex,
             foreshadow_unlink_codex,
+            foreshadow_list_linked_codex,
             foreshadow_set_setup_strength,
             foreshadow_resolve_orphan,
             foreshadow_setup_create_ai,

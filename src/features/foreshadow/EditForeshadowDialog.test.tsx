@@ -2,8 +2,28 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 
-const { mockUpdate } = vi.hoisted(() => ({
+const {
+  mockUpdate,
+  mockAddCodexLink,
+  mockRemoveCodexLink,
+  mockListCodexEntriesByForeshadow,
+  mockListCodexEntries,
+} = vi.hoisted(() => ({
   mockUpdate: vi.fn().mockResolvedValue(undefined),
+  mockAddCodexLink: vi.fn().mockResolvedValue(undefined),
+  mockRemoveCodexLink: vi.fn().mockResolvedValue(undefined),
+  mockListCodexEntriesByForeshadow: vi.fn().mockResolvedValue([]),
+  mockListCodexEntries: vi.fn().mockResolvedValue([]),
+}));
+
+vi.mock("./api", () => ({
+  addCodexLink: mockAddCodexLink,
+  removeCodexLink: mockRemoveCodexLink,
+  listCodexEntriesByForeshadow: mockListCodexEntriesByForeshadow,
+}));
+
+vi.mock("@/features/codex/api", () => ({
+  listCodexEntries: mockListCodexEntries,
 }));
 
 vi.mock("./foreshadowStore", () => ({
@@ -60,9 +80,35 @@ function makeItem(
   };
 }
 
+function makeCodexEntry(id: string, name: string) {
+  return {
+    id,
+    projectId: "p-1",
+    parentId: null,
+    type: "character",
+    name,
+    aliases: null,
+    excludedAliases: null,
+    summary: null,
+    content: "{}",
+    icon: null,
+    tagsCache: null,
+    contextMode: "mentioned",
+    childrenBudget: "compact",
+    sourceChatMessageId: null,
+    notes: null,
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  };
+}
+
 describe("EditForeshadowDialog", () => {
   beforeEach(() => {
     mockUpdate.mockClear();
+    mockAddCodexLink.mockClear();
+    mockRemoveCodexLink.mockClear();
+    mockListCodexEntriesByForeshadow.mockResolvedValue([]);
+    mockListCodexEntries.mockResolvedValue([]);
   });
 
   it("open=false のとき何も表示しない", () => {
@@ -250,6 +296,127 @@ describe("EditForeshadowDialog", () => {
       fireEvent.click(screen.getByTestId("edit-foreshadow-unset-anchor"));
       fireEvent.click(screen.getByTestId("edit-foreshadow-unset-confirm"));
       expect(cb.disabled).toBe(true);
+    });
+  });
+
+  describe("Codex リンク編集", () => {
+    it("open 時に既存リンクを表示する", async () => {
+      const linked = makeCodexEntry("c-1", "人物A");
+      mockListCodexEntriesByForeshadow.mockResolvedValue([linked]);
+      render(
+        <EditForeshadowDialog
+          open={true}
+          item={makeItem()}
+          onClose={vi.fn()}
+        />,
+      );
+      await waitFor(() =>
+        expect(screen.getByText("人物A")).toBeInTheDocument(),
+      );
+    });
+
+    it("× で既存リンクを削除マーク → Save で removeCodexLink を呼ぶ", async () => {
+      const linked = makeCodexEntry("c-1", "人物A");
+      mockListCodexEntriesByForeshadow.mockResolvedValue([linked]);
+      const onClose = vi.fn();
+      render(
+        <EditForeshadowDialog
+          open={true}
+          item={makeItem()}
+          onClose={onClose}
+        />,
+      );
+      await waitFor(() =>
+        expect(
+          screen.getByTestId("edit-foreshadow-unlink-codex-c-1"),
+        ).toBeInTheDocument(),
+      );
+      fireEvent.click(screen.getByTestId("edit-foreshadow-unlink-codex-c-1"));
+      fireEvent.click(screen.getByTestId("edit-foreshadow-save"));
+      await waitFor(() => expect(onClose).toHaveBeenCalled());
+      expect(mockRemoveCodexLink).toHaveBeenCalledWith("f-1", "c-1");
+      expect(mockUpdate).not.toHaveBeenCalled();
+    });
+
+    it("検索から新規追加 → Save で addCodexLink を呼ぶ", async () => {
+      const entry = makeCodexEntry("c-2", "場所B");
+      mockListCodexEntries.mockResolvedValue([entry]);
+      const onClose = vi.fn();
+      render(
+        <EditForeshadowDialog
+          open={true}
+          item={makeItem()}
+          onClose={onClose}
+        />,
+      );
+      await waitFor(() =>
+        expect(
+          screen.getByTestId("edit-foreshadow-add-codex"),
+        ).toBeInTheDocument(),
+      );
+      fireEvent.click(screen.getByTestId("edit-foreshadow-add-codex"));
+      await waitFor(() =>
+        expect(
+          screen.getByTestId("edit-foreshadow-codex-search"),
+        ).toBeInTheDocument(),
+      );
+      fireEvent.click(screen.getByTestId("edit-foreshadow-codex-option-c-2"));
+      fireEvent.click(screen.getByTestId("edit-foreshadow-save"));
+      await waitFor(() => expect(onClose).toHaveBeenCalled());
+      expect(mockAddCodexLink).toHaveBeenCalledWith("f-1", "c-2");
+      expect(mockUpdate).not.toHaveBeenCalled();
+    });
+
+    it("Cancel 時は addCodexLink / removeCodexLink を呼ばない", async () => {
+      const linked = makeCodexEntry("c-1", "人物A");
+      mockListCodexEntriesByForeshadow.mockResolvedValue([linked]);
+      const onClose = vi.fn();
+      render(
+        <EditForeshadowDialog
+          open={true}
+          item={makeItem()}
+          onClose={onClose}
+        />,
+      );
+      await waitFor(() =>
+        expect(
+          screen.getByTestId("edit-foreshadow-unlink-codex-c-1"),
+        ).toBeInTheDocument(),
+      );
+      fireEvent.click(screen.getByTestId("edit-foreshadow-unlink-codex-c-1"));
+      fireEvent.click(screen.getByTestId("edit-foreshadow-cancel"));
+      expect(onClose).toHaveBeenCalled();
+      expect(mockAddCodexLink).not.toHaveBeenCalled();
+      expect(mockRemoveCodexLink).not.toHaveBeenCalled();
+    });
+
+    it("patch 空 + Codex リンクのみ変更でも Save が完了する", async () => {
+      const entry = makeCodexEntry("c-3", "アイテムC");
+      mockListCodexEntries.mockResolvedValue([entry]);
+      const onClose = vi.fn();
+      render(
+        <EditForeshadowDialog
+          open={true}
+          item={makeItem()}
+          onClose={onClose}
+        />,
+      );
+      await waitFor(() =>
+        expect(
+          screen.getByTestId("edit-foreshadow-add-codex"),
+        ).toBeInTheDocument(),
+      );
+      fireEvent.click(screen.getByTestId("edit-foreshadow-add-codex"));
+      await waitFor(() =>
+        expect(
+          screen.getByTestId("edit-foreshadow-codex-option-c-3"),
+        ).toBeInTheDocument(),
+      );
+      fireEvent.click(screen.getByTestId("edit-foreshadow-codex-option-c-3"));
+      fireEvent.click(screen.getByTestId("edit-foreshadow-save"));
+      await waitFor(() => expect(onClose).toHaveBeenCalled());
+      expect(mockUpdate).not.toHaveBeenCalled();
+      expect(mockAddCodexLink).toHaveBeenCalledWith("f-1", "c-3");
     });
   });
 });

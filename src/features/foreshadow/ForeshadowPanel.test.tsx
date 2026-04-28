@@ -9,6 +9,7 @@ const {
   mockRemoveSetup,
   mockReanchorSetup,
   mockReinsertSetup,
+  mockSetSetupStrength,
   ITEMS,
   SETUPS,
 } = vi.hoisted(() => {
@@ -18,6 +19,7 @@ const {
   const mockRemoveSetup = vi.fn().mockResolvedValue(undefined);
   const mockReanchorSetup = vi.fn().mockResolvedValue(undefined);
   const mockReinsertSetup = vi.fn().mockResolvedValue(undefined);
+  const mockSetSetupStrength = vi.fn().mockResolvedValue(undefined);
 
   const ITEMS = [
     {
@@ -107,6 +109,7 @@ const {
     mockRemoveSetup,
     mockReanchorSetup,
     mockReinsertSetup,
+    mockSetSetupStrength,
     ITEMS,
     SETUPS,
   };
@@ -129,6 +132,10 @@ vi.mock("./foreshadowStore", () => {
   };
   return { useForeshadowStore: () => state };
 });
+
+vi.mock("./api", () => ({
+  setSetupStrength: mockSetSetupStrength,
+}));
 
 vi.mock("./CreateForeshadowDialog", () => ({
   CreateForeshadowDialog: () => null,
@@ -329,5 +336,53 @@ describe("ForeshadowPanel - オーファン Setup UI", () => {
     expect(
       screen.queryByTestId("foreshadow-setup-s-orphan"),
     ).not.toBeInTheDocument();
+  });
+});
+
+// ── strength セレクタ ─────────────────────────────────────────────────
+
+describe("ForeshadowPanel - strength セレクタ", () => {
+  beforeEach(() => {
+    mockLoadSetups.mockClear();
+    mockSetSetupStrength.mockClear();
+  });
+
+  it("strength 変更で setSetupStrength が呼ばれ loadSetups がリフレッシュする", async () => {
+    render(<ForeshadowPanel />);
+
+    fireEvent.click(screen.getByTestId("foreshadow-expand-2"));
+    await waitFor(() =>
+      expect(
+        screen.getByTestId("foreshadow-setup-strength-s-active"),
+      ).toBeInTheDocument(),
+    );
+
+    fireEvent.change(screen.getByTestId("foreshadow-setup-strength-s-active"), {
+      target: { value: "overt" },
+    });
+
+    await waitFor(() =>
+      expect(mockSetSetupStrength).toHaveBeenCalledWith("s-active", "overt"),
+    );
+    await waitFor(() => expect(mockLoadSetups).toHaveBeenCalledWith("2"));
+  });
+
+  it("空文字選択で setSetupStrength(id, null) が呼ばれる", async () => {
+    render(<ForeshadowPanel />);
+
+    fireEvent.click(screen.getByTestId("foreshadow-expand-2"));
+    await waitFor(() =>
+      expect(
+        screen.getByTestId("foreshadow-setup-strength-s-active"),
+      ).toBeInTheDocument(),
+    );
+
+    fireEvent.change(screen.getByTestId("foreshadow-setup-strength-s-active"), {
+      target: { value: "" },
+    });
+
+    await waitFor(() =>
+      expect(mockSetSetupStrength).toHaveBeenCalledWith("s-active", null),
+    );
   });
 });

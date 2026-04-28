@@ -666,6 +666,12 @@
       "createSuccess": "伏線として登録しました",
       "updateFailed": "伏線の更新に失敗しました"
     },
+    "strength": {
+      "subtle": "控えめ",
+      "moderate": "普通",
+      "overt": "明確",
+      "unset": "strength 未設定"
+    },
     "edit": {
       "heading": "伏線を編集",
       "notesLabel": "メモ",
@@ -677,7 +683,10 @@
       "payoffAnchorSection": "Payoff anchor",
       "payoffAnchorNone": "未設定",
       "unsetAnchor": "Payoff anchor を解除",
-      "unsetAnchorConfirm": "解除すると既存の Payoff mark も削除されます。解除しますか？"
+      "unsetAnchorConfirm": "解除すると既存の Payoff mark も削除されます。解除しますか？",
+      "linkedCodexSection": "関連 Codex",
+      "addCodex": "+ Codex を追加",
+      "codexSearchPlaceholder": "Codex を検索…"
     },
     "codexTab": {
       "empty": "リンクされた伏線はありません"

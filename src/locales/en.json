@@ -666,6 +666,12 @@
       "createSuccess": "Registered as foreshadow",
       "updateFailed": "Failed to update foreshadow"
     },
+    "strength": {
+      "subtle": "Subtle",
+      "moderate": "Moderate",
+      "overt": "Overt",
+      "unset": "Strength not set"
+    },
     "edit": {
       "heading": "Edit Foreshadow",
       "notesLabel": "Notes",
@@ -677,7 +683,10 @@
       "payoffAnchorSection": "Payoff anchor",
       "payoffAnchorNone": "Not set",
       "unsetAnchor": "Remove payoff anchor",
-      "unsetAnchorConfirm": "This will also remove the Payoff mark from the editor. Remove anchor?"
+      "unsetAnchorConfirm": "This will also remove the Payoff mark from the editor. Remove anchor?",
+      "linkedCodexSection": "Linked Codex",
+      "addCodex": "+ Add Codex",
+      "codexSearchPlaceholder": "Search Codex…"
     },
     "codexTab": {
       "empty": "No linked foreshadows"

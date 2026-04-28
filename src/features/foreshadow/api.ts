@@ -5,13 +5,16 @@ import {
   foreshadows,
   foreshadowSetups,
   foreshadowCodexLinks,
+  codexEntries,
   treeNodes,
 } from "@/db/schema";
 import { eq, and, inArray } from "drizzle-orm";
 import type { NewForeshadow, NewForeshadowSetup } from "@/db/schema";
+import type { CodexEntry } from "@/features/codex/api";
 import type {
   ForeshadowRow,
   ForeshadowSetupRow,
+  ForeshadowStrength,
   AiEvaluation,
   ForeshadowWithLabel,
   ChapterAuditRequest,
@@ -434,6 +437,42 @@ export async function removeCodexLink(
         eq(foreshadowCodexLinks.codexEntryId, codexEntryId),
       ),
     );
+}
+
+/** 伏線に紐付いた Codex エントリを返す。 */
+export async function listCodexEntriesByForeshadow(
+  foreshadowId: string,
+): Promise<CodexEntry[]> {
+  if (isTauriRuntime()) {
+    return invoke<CodexEntry[]>("foreshadow_list_linked_codex", {
+      foreshadowId,
+    });
+  }
+
+  const links = await db
+    .select({ codexEntryId: foreshadowCodexLinks.codexEntryId })
+    .from(foreshadowCodexLinks)
+    .where(eq(foreshadowCodexLinks.foreshadowId, foreshadowId));
+
+  if (links.length === 0) return [];
+
+  const ids = links.map((l) => l.codexEntryId);
+  return db.select().from(codexEntries).where(inArray(codexEntries.id, ids));
+}
+
+export async function setSetupStrength(
+  setupId: string,
+  strength: ForeshadowStrength | null,
+): Promise<void> {
+  if (isTauriRuntime()) {
+    await invoke("foreshadow_set_setup_strength", { setupId, strength });
+    return;
+  }
+
+  await db
+    .update(foreshadowSetups)
+    .set({ strength })
+    .where(eq(foreshadowSetups.id, setupId));
 }
 
 /** Codex エントリに紐付いた伏線を、派生ラベル付きで返す。 */

@@ -1,11 +1,18 @@
 import { useState, useEffect } from "react";
 import { useTranslation } from "react-i18next";
-import { ArrowRight } from "lucide-react";
+import { ArrowRight, X } from "lucide-react";
 import { AnimatedOverlay } from "@/components/ui/animated-overlay";
 import { useForeshadowStore } from "./foreshadowStore";
 import { useForeshadowNavStore } from "./foreshadowNavStore";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { useLayoutStore } from "@/features/layout/layoutStore";
+import {
+  addCodexLink,
+  removeCodexLink,
+  listCodexEntriesByForeshadow,
+} from "./api";
+import { listCodexEntries } from "@/features/codex/api";
+import type { CodexEntry } from "@/features/codex/api";
 import type { ForeshadowWithLabel } from "./types";
 
 interface EditForeshadowDialogProps {
@@ -31,6 +38,19 @@ export function EditForeshadowDialog({
   const [willUnsetAnchor, setWillUnsetAnchor] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
 
+  // Codex link state
+  const [initialLinkedIds, setInitialLinkedIds] = useState<Set<string>>(
+    new Set(),
+  );
+  const [linkedEntries, setLinkedEntries] = useState<Map<string, CodexEntry>>(
+    new Map(),
+  );
+  const [linksToAdd, setLinksToAdd] = useState<Set<string>>(new Set());
+  const [linksToRemove, setLinksToRemove] = useState<Set<string>>(new Set());
+  const [allCodexEntries, setAllCodexEntries] = useState<CodexEntry[]>([]);
+  const [codexSearch, setCodexSearch] = useState("");
+  const [showCodexSearch, setShowCodexSearch] = useState(false);
+
   useEffect(() => {
     if (open && item) {
       setTitle(item.title);
@@ -41,6 +61,18 @@ export function EditForeshadowDialog({
       setShowUnsetConfirm(false);
       setWillUnsetAnchor(false);
       setIsSaving(false);
+      setLinksToAdd(new Set());
+      setLinksToRemove(new Set());
+      setCodexSearch("");
+      setShowCodexSearch(false);
+
+      void listCodexEntriesByForeshadow(item.id).then((entries) => {
+        const m = new Map(entries.map((e) => [e.id, e]));
+        setInitialLinkedIds(new Set(m.keys()));
+        setLinkedEntries(m);
+      });
+
+      void listCodexEntries().then(setAllCodexEntries);
     }
     // item.id をキーにしてスナップショットを取る
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -91,14 +123,60 @@ export function EditForeshadowDialog({
         patch.payoffConfirmed = false;
       }
 
-      if (Object.keys(patch).length > 0) {
-        await update(item.id, patch, item.projectId);
-      }
+      const hasPatch = Object.keys(patch).length > 0;
+      if (hasPatch) await update(item.id, patch, item.projectId);
+      for (const id of linksToAdd) await addCodexLink(item.id, id);
+      for (const id of linksToRemove) await removeCodexLink(item.id, id);
       onClose();
     } finally {
       setIsSaving(false);
     }
   };
+
+  // 現在表示すべき Codex セット: (initial ∪ toAdd) − toRemove
+  const visibleLinkedIds = new Set([...initialLinkedIds, ...linksToAdd]);
+  for (const id of linksToRemove) visibleLinkedIds.delete(id);
+
+  const handleAddCodexLink = (entry: CodexEntry) => {
+    if (visibleLinkedIds.has(entry.id)) return;
+    if (initialLinkedIds.has(entry.id)) {
+      setLinksToRemove((prev) => {
+        const s = new Set(prev);
+        s.delete(entry.id);
+        return s;
+      });
+    } else {
+      setLinksToAdd((prev) => new Set([...prev, entry.id]));
+    }
+    setLinkedEntries((prev) => new Map([...prev, [entry.id, entry]]));
+    setCodexSearch("");
+    setShowCodexSearch(false);
+  };
+
+  const handleRemoveCodexLink = (id: string) => {
+    if (initialLinkedIds.has(id)) {
+      setLinksToRemove((prev) => new Set([...prev, id]));
+    } else {
+      setLinksToAdd((prev) => {
+        const s = new Set(prev);
+        s.delete(id);
+        return s;
+      });
+    }
+  };
+
+  const filteredCodexSuggestions = allCodexEntries.filter((e) => {
+    if (visibleLinkedIds.has(e.id)) return false;
+    const q = codexSearch.toLowerCase();
+    if (!q) return true;
+    if (e.name.toLowerCase().includes(q)) return true;
+    try {
+      const aliases = e.aliases ? (JSON.parse(e.aliases) as string[]) : [];
+      return aliases.some((a) => a.toLowerCase().includes(q));
+    } catch {
+      return false;
+    }
+  });
 
   const handleJumpToPayoff = () => {
     if (
@@ -288,6 +366,85 @@ export function EditForeshadowDialog({
             <span className="text-xs text-muted-foreground">
               {t("foreshadow.edit.payoffAnchorNone")}
             </span>
+          )}
+        </div>
+
+        {/* 関連 Codex */}
+        <div className="border-t border-border/50 pt-3">
+          <p className="mb-2 text-xs font-medium text-muted-foreground">
+            {t("foreshadow.edit.linkedCodexSection", "関連 Codex")}
+          </p>
+          <div className="flex flex-wrap gap-1.5">
+            {[...visibleLinkedIds].map((id) => {
+              const entry = linkedEntries.get(id);
+              if (!entry) return null;
+              return (
+                <span
+                  key={id}
+                  className="flex items-center gap-1 rounded-full bg-muted px-2 py-0.5 text-[11px]"
+                >
+                  {entry.name}
+                  <button
+                    type="button"
+                    data-testid={`edit-foreshadow-unlink-codex-${id}`}
+                    onClick={() => handleRemoveCodexLink(id)}
+                    className="rounded-full p-0.5 hover:bg-accent"
+                    aria-label={t("common.remove", "削除")}
+                  >
+                    <X className="h-2.5 w-2.5" />
+                  </button>
+                </span>
+              );
+            })}
+            {!showCodexSearch && (
+              <button
+                type="button"
+                data-testid="edit-foreshadow-add-codex"
+                onClick={() => setShowCodexSearch(true)}
+                className="rounded-full border border-dashed border-border px-2 py-0.5 text-[11px] text-muted-foreground hover:bg-accent"
+              >
+                {t("foreshadow.edit.addCodex", "+ Codex を追加")}
+              </button>
+            )}
+          </div>
+
+          {showCodexSearch && (
+            <div className="mt-1.5">
+              <input
+                data-testid="edit-foreshadow-codex-search"
+                type="text"
+                autoFocus
+                value={codexSearch}
+                onChange={(e) => setCodexSearch(e.target.value)}
+                placeholder={t(
+                  "foreshadow.edit.codexSearchPlaceholder",
+                  "Codex を検索…",
+                )}
+                className="w-full rounded-md border border-input bg-background px-2 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-ring"
+                onKeyDown={(e) => {
+                  if (e.key === "Escape") {
+                    setShowCodexSearch(false);
+                    setCodexSearch("");
+                  }
+                }}
+              />
+              {filteredCodexSuggestions.length > 0 && (
+                <ul className="mt-1 max-h-36 overflow-y-auto rounded-md border border-border bg-background shadow-sm">
+                  {filteredCodexSuggestions.map((entry) => (
+                    <li key={entry.id}>
+                      <button
+                        type="button"
+                        data-testid={`edit-foreshadow-codex-option-${entry.id}`}
+                        onClick={() => handleAddCodexLink(entry)}
+                        className="w-full px-2 py-1 text-left text-xs hover:bg-accent"
+                      >
+                        {entry.name}
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
           )}
         </div>
       </div>

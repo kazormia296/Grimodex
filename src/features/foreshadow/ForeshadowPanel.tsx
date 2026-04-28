@@ -20,9 +20,11 @@ import { EditForeshadowDialog } from "./EditForeshadowDialog";
 import { ForeshadowChapterTab } from "./ForeshadowChapterTab";
 import { isSetupEvaluationStale } from "./staleness";
 import { safeParseAiEvaluation } from "./types";
+import { setSetupStrength } from "./api";
 import type {
   DerivedLabel,
   ForeshadowSetupRow,
+  ForeshadowStrength,
   ForeshadowWithLabel,
 } from "./types";
 
@@ -54,6 +56,13 @@ const STRENGTH_STYLE: Record<string, string> = {
 
 const PERSONA_KEYS = ["careful", "casual", "skim"] as const;
 
+const STRENGTH_VALUES: (ForeshadowStrength | null)[] = [
+  "subtle",
+  "moderate",
+  "overt",
+  null,
+];
+
 interface SetupRowProps {
   setup: ForeshadowSetupRow;
   evaluatingSetupIds: Set<string>;
@@ -62,6 +71,7 @@ interface SetupRowProps {
   onReinsert: () => void;
   onDiscard: () => void;
   onJump: () => void;
+  onStrengthChange: (strength: ForeshadowStrength | null) => void;
 }
 
 function SetupRow({
@@ -72,6 +82,7 @@ function SetupRow({
   onReinsert,
   onDiscard,
   onJump,
+  onStrengthChange,
 }: SetupRowProps) {
   const { t } = useTranslation();
   const [showPersonas, setShowPersonas] = useState(false);
@@ -96,15 +107,26 @@ function SetupRow({
           </span>
         )}
 
-        {/* strength badges */}
-        {setup.strength && (
-          <span
-            className={`text-[10px] font-medium ${STRENGTH_STYLE[setup.strength] ?? ""}`}
-            title={t("foreshadow.evaluate.authorStrength", "作者評価")}
-          >
-            {t(`foreshadow.strength.${setup.strength}`, setup.strength)}
-          </span>
-        )}
+        {/* strength selector (author) */}
+        <select
+          data-testid={`foreshadow-setup-strength-${setup.id}`}
+          value={setup.strength ?? ""}
+          onChange={(e) => {
+            const val = e.target.value as ForeshadowStrength | "";
+            onStrengthChange(val === "" ? null : val);
+          }}
+          title={t("foreshadow.evaluate.authorStrength", "作者評価")}
+          className={`cursor-pointer rounded border-0 bg-transparent p-0 text-[10px] font-medium focus:outline-none focus:ring-1 focus:ring-ring ${setup.strength ? (STRENGTH_STYLE[setup.strength] ?? "") : "text-muted-foreground/50"}`}
+        >
+          <option value="">
+            {t("foreshadow.strength.unset", "strength 未設定")}
+          </option>
+          {STRENGTH_VALUES.filter(Boolean).map((v) => (
+            <option key={v} value={v!}>
+              {t(`foreshadow.strength.${v!}`, v!)}
+            </option>
+          ))}
+        </select>
         {setup.aiStrength && (
           <span
             className={`text-[10px] ${STRENGTH_STYLE[setup.aiStrength] ?? ""} opacity-70`}
@@ -599,6 +621,11 @@ export function ForeshadowPanel() {
                               setup.sceneId,
                               setup.fromPos,
                               setup.toPos,
+                            )
+                          }
+                          onStrengthChange={(strength) =>
+                            void setSetupStrength(setup.id, strength).then(
+                              () => void loadSetups(item.id),
                             )
                           }
                         />
