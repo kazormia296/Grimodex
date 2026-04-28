@@ -732,6 +732,7 @@ impl Database {
                 payoff_to_pos    INTEGER,
                 payoff_confirmed INTEGER NOT NULL DEFAULT 0,
                 abandoned        INTEGER NOT NULL DEFAULT 0,
+                load_bearing     TEXT,
                 created_at       INTEGER NOT NULL,
                 updated_at       INTEGER NOT NULL
             );

@@ -347,40 +347,59 @@ fn db_execute_batch(
 
 // --- Foreshadow commands ---
 
+/// `load_bearing` 列に許される値。`deriveLabel.ts` の判定軸と一致。
+/// 不明値は `deriveLabel` で silently `needs_strengthening` に落ちるため、
+/// データ整合性確保のため Rust 境界で厳格に弾く。
+fn validate_load_bearing(value: Option<&str>) -> anyhow::Result<()> {
+    match value {
+        None | Some("critical") | Some("supporting") | Some("optional") => Ok(()),
+        Some(other) => Err(anyhow::anyhow!(
+            "invalid load_bearing value: {:?} (expected one of: critical, supporting, optional, null)",
+            other
+        )),
+    }
+}
+
+fn foreshadow_create_impl(
+    db: &database::Database,
+    payload: ForeshadowCreatePayload,
+) -> anyhow::Result<Value> {
+    validate_load_bearing(payload.load_bearing.as_deref())?;
+    let now = chrono::Utc::now().timestamp_millis();
+    let id = uuid::Uuid::new_v4().to_string();
+    db.execute(
+        "INSERT INTO foreshadows
+         (id, project_id, title, intent, notes, payoff_scene_id, payoff_from_pos, payoff_to_pos, payoff_confirmed, abandoned, load_bearing, created_at, updated_at)
+         VALUES (?, ?, ?, ?, NULL, NULL, NULL, NULL, 0, 0, ?, ?, ?)",
+        &[
+            Value::String(id.clone()),
+            Value::String(payload.project_id),
+            Value::String(payload.title),
+            payload.intent.map(Value::String).unwrap_or(Value::Null),
+            payload.load_bearing.map(Value::String).unwrap_or(Value::Null),
+            Value::Number(now.into()),
+            Value::Number(now.into()),
+        ],
+        "run",
+    )?;
+    let rows = db.execute(
+        "SELECT * FROM foreshadows WHERE id = ?",
+        &[Value::String(id)],
+        "get",
+    )?;
+    Ok(rows
+        .first()
+        .cloned()
+        .map(Value::Object)
+        .unwrap_or(Value::Null))
+}
+
 #[tauri::command]
 fn foreshadow_create(
     ws_state: tauri::State<'_, WorkspaceState>,
     payload: ForeshadowCreatePayload,
 ) -> Result<Value, AppError> {
-    with_db(&ws_state, |db| {
-        let now = chrono::Utc::now().timestamp_millis();
-        let id = uuid::Uuid::new_v4().to_string();
-        db.execute(
-            "INSERT INTO foreshadows
-             (id, project_id, title, intent, notes, payoff_scene_id, payoff_from_pos, payoff_to_pos, payoff_confirmed, abandoned, load_bearing, created_at, updated_at)
-             VALUES (?, ?, ?, ?, NULL, NULL, NULL, NULL, 0, 0, ?, ?, ?)",
-            &[
-                Value::String(id.clone()),
-                Value::String(payload.project_id),
-                Value::String(payload.title),
-                payload.intent.map(Value::String).unwrap_or(Value::Null),
-                payload.load_bearing.map(Value::String).unwrap_or(Value::Null),
-                Value::Number(now.into()),
-                Value::Number(now.into()),
-            ],
-            "run",
-        )?;
-        let rows = db.execute(
-            "SELECT * FROM foreshadows WHERE id = ?",
-            &[Value::String(id)],
-            "get",
-        )?;
-        Ok(rows
-            .first()
-            .cloned()
-            .map(Value::Object)
-            .unwrap_or(Value::Null))
-    })
+    with_db(&ws_state, |db| foreshadow_create_impl(db, payload))
 }
 
 fn foreshadow_update_impl(
@@ -388,6 +407,9 @@ fn foreshadow_update_impl(
     id: String,
     patch: ForeshadowPatch,
 ) -> anyhow::Result<Value> {
+    if let Some(ref lb) = patch.load_bearing {
+        validate_load_bearing(lb.as_deref())?;
+    }
     let now = chrono::Utc::now().timestamp_millis();
     let mut sets: Vec<&str> = Vec::new();
     let mut params: Vec<Value> = Vec::new();
@@ -1798,6 +1820,153 @@ mod tests {
         };
         let result = foreshadow_update_impl(&db, fid.clone(), clear_patch).unwrap();
         assert_eq!(result["intent"], Value::Null);
+    }
+
+    // ── load_bearing 軸（Phase 6） ─────────────────────────────────────
+
+    #[test]
+    fn validate_load_bearing_accepts_known_values_and_null() {
+        assert!(validate_load_bearing(None).is_ok());
+        assert!(validate_load_bearing(Some("critical")).is_ok());
+        assert!(validate_load_bearing(Some("supporting")).is_ok());
+        assert!(validate_load_bearing(Some("optional")).is_ok());
+    }
+
+    #[test]
+    fn validate_load_bearing_rejects_unknown_values() {
+        assert!(validate_load_bearing(Some("")).is_err());
+        assert!(validate_load_bearing(Some("Critical")).is_err());
+        assert!(validate_load_bearing(Some("required")).is_err());
+        assert!(validate_load_bearing(Some("'; DROP TABLE foreshadows --")).is_err());
+    }
+
+    #[test]
+    fn create_impl_persists_load_bearing() {
+        let db = test_db();
+        let proj = insert_project(&db);
+        let payload = ForeshadowCreatePayload {
+            project_id: proj,
+            title: "T".to_string(),
+            intent: None,
+            load_bearing: Some("critical".to_string()),
+        };
+        let row = foreshadow_create_impl(&db, payload).unwrap();
+        assert_eq!(row["load_bearing"], Value::String("critical".to_string()));
+    }
+
+    #[test]
+    fn create_impl_rejects_invalid_load_bearing() {
+        let db = test_db();
+        let proj = insert_project(&db);
+        let payload = ForeshadowCreatePayload {
+            project_id: proj.clone(),
+            title: "T".to_string(),
+            intent: None,
+            load_bearing: Some("required".to_string()),
+        };
+        let result = foreshadow_create_impl(&db, payload);
+        assert!(result.is_err(), "invalid load_bearing should reject");
+
+        // バリデーション後の副作用が無いこと（INSERT が実行されていない）を確認
+        let rows = db
+            .execute(
+                "SELECT COUNT(*) AS n FROM foreshadows WHERE project_id = ?",
+                &[Value::String(proj)],
+                "all",
+            )
+            .unwrap();
+        assert_eq!(rows[0]["n"], Value::Number(0.into()));
+    }
+
+    #[test]
+    fn update_impl_sets_load_bearing() {
+        let db = test_db();
+        let proj = insert_project(&db);
+        let fid = insert_foreshadow(&db, &proj);
+
+        let patch = ForeshadowPatch {
+            title: None,
+            intent: None,
+            notes: None,
+            payoff_scene_id: None,
+            payoff_from_pos: None,
+            payoff_to_pos: None,
+            payoff_confirmed: None,
+            abandoned: None,
+            load_bearing: Some(Some("supporting".to_string())),
+        };
+        let result = foreshadow_update_impl(&db, fid, patch).unwrap();
+        assert_eq!(
+            result["load_bearing"],
+            Value::String("supporting".to_string())
+        );
+    }
+
+    #[test]
+    fn update_impl_clears_load_bearing_with_some_none() {
+        let db = test_db();
+        let proj = insert_project(&db);
+        let fid = insert_foreshadow(&db, &proj);
+
+        // まず critical にセット
+        let set_patch = ForeshadowPatch {
+            title: None,
+            intent: None,
+            notes: None,
+            payoff_scene_id: None,
+            payoff_from_pos: None,
+            payoff_to_pos: None,
+            payoff_confirmed: None,
+            abandoned: None,
+            load_bearing: Some(Some("critical".to_string())),
+        };
+        foreshadow_update_impl(&db, fid.clone(), set_patch).unwrap();
+
+        // Some(None) で NULL クリア
+        let clear_patch = ForeshadowPatch {
+            title: None,
+            intent: None,
+            notes: None,
+            payoff_scene_id: None,
+            payoff_from_pos: None,
+            payoff_to_pos: None,
+            payoff_confirmed: None,
+            abandoned: None,
+            load_bearing: Some(None),
+        };
+        let result = foreshadow_update_impl(&db, fid, clear_patch).unwrap();
+        assert_eq!(result["load_bearing"], Value::Null);
+    }
+
+    #[test]
+    fn update_impl_rejects_invalid_load_bearing() {
+        let db = test_db();
+        let proj = insert_project(&db);
+        let fid = insert_foreshadow(&db, &proj);
+
+        let patch = ForeshadowPatch {
+            title: Some("should not apply".to_string()),
+            intent: None,
+            notes: None,
+            payoff_scene_id: None,
+            payoff_from_pos: None,
+            payoff_to_pos: None,
+            payoff_confirmed: None,
+            abandoned: None,
+            load_bearing: Some(Some("bogus".to_string())),
+        };
+        let result = foreshadow_update_impl(&db, fid.clone(), patch);
+        assert!(result.is_err(), "invalid load_bearing should reject");
+
+        // 同 patch 内の他フィールドも反映されていないことを確認（早期 return）
+        let rows = db
+            .execute(
+                "SELECT title FROM foreshadows WHERE id = ?",
+                &[Value::String(fid)],
+                "get",
+            )
+            .unwrap();
+        assert_eq!(rows[0]["title"], Value::String("Test".to_string()));
     }
 
     // ── resolve_orphan_impl ───────────────────────────────────────────
