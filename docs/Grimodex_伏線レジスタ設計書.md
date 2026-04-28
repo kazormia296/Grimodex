@@ -931,7 +931,7 @@ WHERE payoff_scene_id IS NULL AND abandoned = false
 └──────────────────────────────────────────┘
 ```
 
-行クリックで詳細ダイアログ：setup 一覧、強度、AI 評価、関連 codex、payoff anchor 状態。
+行展開（chevron）で setup 一覧・強度・AI 評価をインライン表示する形に進化（Phase 2）。Foreshadow 本体メタデータ（title / intent / notes / payoffConfirmed / abandoned / payoff anchor 解除）の編集経路は **`EditForeshadowDialog`**（Phase 4）で提供する。詳細はフェージング → Phase 4 を参照。
 
 ### 副入口：Codex 詳細
 
@@ -1069,6 +1069,87 @@ Phase 1 デフォルトは執筆モード。
 - quota / rate-limit（Phase 3 計画には含まれていたが未実装。AI 呼び出しは手動トリガのみで暫定許容）
 - `fromPosHint` が null の `designated_existing` 採用時は position=0 にフォールバック。toast エラーへの変更は post-Phase 3 ポリッシュ候補
 
+### Phase 4（伏線本体メタデータ編集 / ライフサイクル UI）
+
+**動機**
+
+Phase 1〜3 は伏線の **作成 / setup 操作 / AI 評価 / 章監査** に注力した結果、伏線本体（`foreshadows` 行）のメタデータを後から編集する経路が **完全に欠落**している。
+
+| フィールド | DB / IPC | UI 経路 |
+|---|---|---|
+| `title` | `foreshadow_update` 対応済 | **欠落**（作成時のみ） |
+| `intent` | 同上 | **欠落**（作成時のみ） |
+| `notes` | 同上 | **欠落**（一度も UI 露出していない） |
+| `payoffConfirmed` | 同上 | **欠落**（label 計算で読むのみ） |
+| `abandoned` | 同上 | **欠落**（フィルタ表示のみ） |
+| payoff anchor 解除 | 同上（payoffSceneId / payoffFromPos / payoffToPos を null で update） | **欠落**（line 900「明示的に anchor を削除 → 入口③で再指名」を支える UI が無い） |
+
+**スコープ**
+
+- 伏線パネルの各行に「編集」ボタン（Pencil アイコン、Trash2 と並べる）
+- `EditForeshadowDialog` を新設（`CreateForeshadowDialog` とは統合せず分離）
+- 既存 `foreshadow_update` Tauri command をそのまま使用（**IPC 追加なし**）
+- 関連 Codex 編集 / Setup の作者 strength 編集は Phase 5+ に切り出す
+
+**EditForeshadowDialog レイアウト**
+
+```
+┌────────────────────────────────────────────┐
+│ 伏線を編集                                  │
+├────────────────────────────────────────────┤
+│ タイトル:     [_____________________]       │
+│ 回収意図:     [_____________________]       │
+│               (何を回収したいか)            │
+│ メモ:         [_____________________]       │
+│               [_____________________]       │
+│                                            │
+│ ─ ライフサイクル ──                        │
+│ [ ] 払い出し成立として確定                  │
+│       ※ payoff anchor 必須               │
+│ [ ] 破棄                                   │
+│                                            │
+│ ─ Payoff anchor ──                        │
+│ シーン: ch.12 / scene 3   [→ジャンプ]      │
+│ [Payoff anchor を解除]                     │
+│                                            │
+│             [キャンセル]  [保存]            │
+└────────────────────────────────────────────┘
+```
+
+`title` / `intent` / `notes` / `payoffConfirmed` / `abandoned` の差分のみを `updateForeshadow(id, patch)` に渡す。`payoffConfirmed` は payoff anchor 未設定時にディスエーブル + ヘルプ文表示。
+
+**Payoff anchor 解除のセマンティクス**
+
+「Payoff anchor を解除」は **2 段階処理**：
+
+1. **DB 更新**: `updateForeshadow(id, { payoffSceneId: null, payoffFromPos: null, payoffToPos: null, payoffConfirmed: false })`
+2. **Open editor の mark sweep**: 該当シーンが現在 open であれば、その editor の `ForeshadowPayoffMark`（`foreshadowId === id`）を `unsetForeshadowPayoffMarksByForeshadowIds([id])` で除去
+
+設計判断：open でないシーンの mark は次回ロード時に「DB に anchor が無い → mark 適用しない」で自動的に消える（ロードロジックは DB → mark の方向のみで再構成するため）。明示 sweep は **現在 open しているシーンの不整合だけ**を解決すればよい。これは Foreshadow 削除時の sweep ロジック（line 373-382）と同じ思想。
+
+**保存後の処理**
+
+- `useForeshadowStore.load(projectId)` を呼んで panel をリフレッシュ
+- ダイアログを閉じる
+- toast 不要（変更は panel に即時反映されるため可視）
+
+**lifecycle トグルの確認モーダル**
+
+- `abandoned` / `payoffConfirmed` のトグルは **確認モーダルなし**。誤操作は再トグルで取消可能（state の対称性を信頼）
+- payoff anchor 解除のみ確認モーダル（mark の物理削除を伴うため）
+
+**Phase 4 完了の定義**
+
+- 伏線パネルから既存伏線の title / intent / notes を後付け編集できる
+- 「破棄」「払い出し成立」を作者が UI から明示できる
+- payoff anchor を解除して入口③（「回収先として指名」）から再指名できる
+- 編集後 panel が即座に更新される
+
+**Phase 4 の見送り（Phase 5+ 候補）**
+
+- 関連 Codex リンクの編集 UI（line 835 / 865 の入口①②モックには記載があるが現在 Create dialog にも未実装）
+- Setup の作者 strength 編集（現状 `null` 固定で、AI strength のみ表示）
+
 ---
 
 ## Deferred decisions
@@ -1205,6 +1286,8 @@ src/features/foreshadow/
 ├── ForeshadowMarkPopover.test.tsx
 ├── ForeshadowMarkHoverPopover.tsx         # hover 表示
 ├── CreateForeshadowDialog.tsx             # 伏線作成ダイアログ（initialTitle / initialIntent プリフィル対応）
+├── EditForeshadowDialog.tsx               # 伏線編集ダイアログ（Phase 4: title/intent/notes/payoffConfirmed/abandoned + anchor 解除）
+├── EditForeshadowDialog.test.tsx          # Phase 4: 編集パッチ送信 / anchor 解除 / lifecycle トグルのテスト
 ├── types.test.ts                          # safeParseAiEvaluation 等の型ユーティリティテスト
 ├── api.tauri.test.ts                      # Tauri ブランチ unit テスト
 ├── api.proposePastSetups.test.ts          # proposePastSetups unit テスト
@@ -1255,4 +1338,5 @@ drizzle/migrations/
   - IPC surface に `foreshadow_setup_create_ai` / `foreshadow_audit_chapter` を追加。
   - `ForeshadowMarkPopover` の `payoff-unanchored` フィルタをラベルホワイトリスト（`planned` / `seeded`）に修正（Phase 2 残バグ）。
   - 実装ファイル配置を実際のファイル構成に合わせて更新。deferred decisions に Phase 3 完了分と残課題を反映。
+- 2026-04-28: Phase 4 セクション追加（伏線本体メタデータ編集 / ライフサイクル UI）。`EditForeshadowDialog` の設計を策定: title / intent / notes / payoffConfirmed / abandoned の編集経路と payoff anchor 解除フロー（DB 更新 + open editor の mark sweep 2 段階）を確定。**IPC 追加なし**で既存 `foreshadow_update` を流用。副入口：伏線パネルの記述を Phase 2/3 の inline 展開に合わせて更新し、編集ダイアログへの参照を追加。実装ファイル配置に `EditForeshadowDialog.tsx` / `.test.tsx` を追加。関連 Codex 編集と Setup 作者 strength 編集は Phase 5+ として切り出し。
 - 2026-04-27: 実装と設計書の差分修正。`evaluateSetupStrength` / `getChapterForeshadowStats` は実装上 Rust IPC を持たず `src/features/foreshadow/api.ts` の純 TS 実装である旨を実装ファイル配置セクションに追記（旧表記の `foreshadow_evaluate_setup_strength` を削除）。実装ファイル配置の TS ツリーを実態に合わせて補完: `marks/` サブディレクトリ（ForeshadowSetupMark / ForeshadowPayoffMark / foreshadowPasteRule + テスト）、`foreshadowStore.adoptProposedSetup.test.ts`、`ForeshadowPanel.stories.tsx`、`types.test.ts`、`api.getChapterForeshadowStats.test.ts` を追記。
