@@ -1277,13 +1277,112 @@ onClose();
 - Codex 検索の type 別フィルタ（Phase 1 規模では文字列マッチで足りる）
 - 開いている Codex 詳細タブ（`ForeshadowTab.tsx`）の逆方向同期：伏線側から Codex リンクを add/remove した瞬間、開いている Codex タブは stale になる。次回タブ open 時に再フェッチされるため許容（グローバルイベント発火や store 購読は導入しない）
 
+### Phase 6（`load_bearing` 軸の導入）
+
+**動機**
+
+Phase 1 設計（line 210-212）で deferred とした「load_bearing（critical / supporting / optional）」軸を実証導入する。建築用語の "load-bearing wall（耐力壁）" の比喩で、**「その伏線を作品から外したら物語が崩れるか」を測る軸**。既存の `strength` とは独立した役割を持つ：
+
+| 軸 | 主体 | 測るもの | 値 |
+|---|---|---|---|
+| `strength` | 読者主観 | 気づかれやすさ | subtle / moderate / overt |
+| `load_bearing` | 作者主観 | 構造的重要度 | critical / supporting / optional |
+
+Phase 1〜5 を経て、現行の `needs_strengthening` ラベルが「気づかれにくい伏線すべて」に発火する設計のため、本質的に optional な伏線にもノイズ警告を出す傾向が観察された。`load_bearing` を分離することで、「critical かつ subtle」のみを赤警告（`critical_weak`）として強調し、`optional` を選んだ伏線は警告対象から外せるようになる。
+
+**スコープ**
+
+A. **`foreshadows.load_bearing` カラム追加**
+- 値: `"critical" | "supporting" | "optional" | null`（nullable text）
+- **DB migration スクリプトは作成しない**（開発段階のため Drizzle schema 更新のみで運用、既存データは null で初期化される再構築前提）
+  - `drizzle-kit generate` で migration ファイルが自動生成された場合は**適用せず削除**する（本格運用フェーズで初めて migration として確定させる）
+- `types.ts` に `ForeshadowLoadBearing` 型を追加（`ForeshadowStrength` と並列）
+- `api.ts` の `mapRow` / `update` patch 受付に `loadBearing` を追加（snake_case `load_bearing` の正規化フォールバックを忘れずに）
+
+B. **派生ラベル `critical_weak` を新設、`needs_strengthening` の発火条件を変更**
+
+`deriveLabel` を以下のロジックに変更（**案①：保守的、既存伏線の挙動を維持**）：
+
+```ts
+function deriveLabel(f: Foreshadow, setupCount: number, anyWeak: boolean): DerivedLabel {
+  if (f.abandoned) return "abandoned";
+  if (setupCount === 0 && f.payoffConfirmed) return "orphan_payoff";
+  if (setupCount === 0) return "planned";
+  if (f.payoffConfirmed) return "paid";
+  if (anyWeak) {
+    if (f.loadBearing === "critical") return "critical_weak";    // 赤警告
+    if (f.loadBearing === "optional") return "seeded";           // 警告なし
+    return "needs_strengthening";                                  // null / supporting → 既存挙動
+  }
+  return "seeded";
+}
+```
+
+**判定マトリクス**：
+
+|  | `optional × weak` | `null × weak`（既存伏線） | `critical × weak` | `supporting × weak` |
+|---|---|---|---|---|
+| 結果ラベル | `seeded`（警告なし） | `needs_strengthening`（黄） | `critical_weak`（赤） | `needs_strengthening`（黄） |
+
+**設計判断（案①を採る理由）**：
+- 既存伏線（`load_bearing === null`）の警告挙動が Phase 5 までと完全一致するため**移行が無痛**
+- `optional` を**明示的に選んだ**ものだけ警告から外れる、という意図の明示性が保たれる
+- 案②（null も警告なし）は導入時に既存伏線の警告が一斉に消えて作者を混乱させる
+- 案③（optional でも警告）は本 Phase の動機（ノイズ削減）を打ち消す
+
+**ラベル色 / フィルタ pill**：
+- `critical_weak`: 赤系（既存 `needs_strengthening` の黄/橙より強い警告色、tailwind の `red-500/15` 系統）
+- `DerivedLabel` 型に `"critical_weak"` を追加
+- フィルタ pill リストにも `critical_weak` を追加（順序：`needs_strengthening` の直前）
+- `DerivedLabel` 型・i18n キー・派生ラベルの色定義マップ・派生ラベル算定の全箇所を一括更新（実装時は `grep` で `DerivedLabel` の参照を全網羅し、`switch` 文の網羅性チェック抜けを防ぐ）
+
+**ForeshadowMarkPopover への影響**：
+Phase 3 で `payoff-unanchored` フィルタを「planned / seeded のホワイトリスト」に修正した（line 1030）。`critical_weak` は `seeded` と同じ「Setup 存在 + payoff 未確定」状態だが、強化必要な伏線は popover からは隠す方が筋なので**ホワイトリストに含めない**（現状の `needs_strengthening` 除外と同じ扱い）。
+
+C. **`EditForeshadowDialog` に `load_bearing` セレクタを追加**
+- title / intent / notes と並ぶ位置にネイティブ `<select>`（Phase 5 の strength セレクタと同じ実装パターン）
+- 値: critical / supporting / optional / —（未設定 = null）
+- 全フィールド差分パッチに乗せる（既存 `patch` Object に `loadBearing` キー追加）
+- 警告 hover で短い説明（「外したら作品が崩れるか。critical/supporting/optional」）を `<select title="...">` で表示
+
+D. **`CreateForeshadowDialog` にも `load_bearing` セレクタを追加**
+- 単一 `<select>` なので Phase 5 の Codex M:N と違い実装コストが低い
+- Create 欠落 → Edit で後付け、というパターン（Phase 4 で再生産していた）を**再生産しない**
+- 入口①〜③のすべての作成系ダイアログ（`CreateForeshadowDialog` を共通利用）に追加
+- デフォルト値: null（未設定）
+
+E. **i18n 追加**
+- `foreshadow.loadBearing.{critical,supporting,optional,unset}` を ja/en に追加
+- `foreshadow.label.critical_weak` を ja/en に追加
+
+**設計判断（AI 連携を Phase 6 スコープ外とする理由）**
+
+`evaluateSetupStrength` のプロンプトに `load_bearing` を入力として渡す案は実装コストは低い（プロンプト 1〜2 行追加）が、生成結果の質が本当に改善するかは**実証データが必要**で、Phase 6 着手時点では検証手段がない。フィールド追加 + 編集 UI + 派生ラベル算定までを Phase 6 で完結させ、AI プロンプト統合は Phase 7+ に温存する（Phase 6 運用後に「critical 伏線の評価が雑」のような観察データが揃った時点で追加）。
+
+**Phase 6 完了の定義**
+
+- `foreshadows.loadBearing` を Edit/Create dialog の双方から編集できる
+- 既存伏線（loadBearing === null）の警告挙動が Phase 5 と完全一致する
+- 作者が `optional` を明示的に選ぶと weak 警告から外れる
+- 作者が `critical` を選ぶと weak 時に `critical_weak` 赤警告が出る
+- フィルタ pill から `critical_weak` のみを抽出表示できる
+- ForeshadowMarkPopover の表示が Phase 5 と同じ（`critical_weak` は除外）
+
+**Phase 6 の見送り（Phase 7+ 候補）**
+
+- AI 連携（`evaluateSetupStrength` / `auditChapter` のプロンプトに load_bearing を渡す。質改善の実証データが必要）
+- AI による load_bearing の自動推論（critical 提案）
+- DB migration スクリプトの作成（本格運用時に必要、開発段階では再構築前提）
+- パネル UX 強化（ソート・検索・一括破棄。Phase 6 候補 D 案、別 Phase に切り出し）
+- AI コスト・品質ハードニング（quota / rate-limit。Phase 6 候補 B 案、別 Phase に切り出し）
+
 ---
 
 ## Deferred decisions
 
 | 項目 | 判断 | 再検討タイミング |
 |---|---|---|
-| `load_bearing` の独立軸採用 | Phase 1 では持たない | Phase 3 着手時に Phase 1〜2 の実利用データから実証判断 |
+| `load_bearing` の独立軸採用 | **Phase 6 で実装予定**。critical / supporting / optional / null の 4 値、`critical × weak` のみ赤警告 `critical_weak` ラベル、null は既存挙動（`needs_strengthening`）維持の保守的ルール（案①） | — |
 | 読者ペルソナの数と種類 | 3 人（careful / casual / skim）で開始 | **Phase 2 で実装済み**。コスト・有用性は Phase 3 着手時にレビュー |
 | `ai_strength` の staleness 依存追跡 | `lastEvaluatedAt` のみで開始 | **Phase 2 で `sceneUpdatedAt` JOIN による判定を実装済み** |
 | Mark 表示のデフォルト | 執筆モード（非表示） | ユーザ設定で切替、好み判明したら既定変更検討 |
@@ -1468,4 +1567,5 @@ drizzle/migrations/
   - 実装ファイル配置を実際のファイル構成に合わせて更新。deferred decisions に Phase 3 完了分と残課題を反映。
 - 2026-04-28: Phase 4 セクション追加（伏線本体メタデータ編集 / ライフサイクル UI）。`EditForeshadowDialog` の設計を策定: title / intent / notes / payoffConfirmed / abandoned の編集経路と payoff anchor 解除フロー（DB 更新 + open editor の mark sweep 2 段階）を確定。**IPC 追加なし**で既存 `foreshadow_update` を流用。副入口：伏線パネルの記述を Phase 2/3 の inline 展開に合わせて更新し、編集ダイアログへの参照を追加。実装ファイル配置に `EditForeshadowDialog.tsx` / `.test.tsx` を追加。関連 Codex 編集と Setup 作者 strength 編集は Phase 5+ として切り出し。
 - 2026-04-28: Phase 5 セクション追加（関連 Codex リンク編集 + Setup 作者 strength 編集）。Phase 4 で見送った 2 件をまとめて埋める設計。Codex リンクは `EditForeshadowDialog` に「全フィールド差分パッチ」モデルで統合（`linksToAdd` / `linksToRemove` 2 Set を Save 時に一括適用、Cancel セマンティクスを保持）。Setup 作者 strength は `SetupRow` の inline ドロップダウンで即時反映。読み取り IPC `foreshadow_list_linked_codex` を 1 件追加（`ForeshadowWithLabel` への M:N JOIN 注入を避けるため）。TS wrapper `setSetupStrength` / `listCodexEntriesByForeshadow` を `api.ts` に追加。新規コンポーネントファイルは作らず既存ファイルへの追記で完結。
+- 2026-04-28: Phase 6 セクション追加（`load_bearing` 軸の導入）。Phase 1 から繰り越されてきた最大の deferred decision を解消。`foreshadows.load_bearing` カラム追加（critical / supporting / optional / null）+ 派生ラベル `critical_weak` 新設で「critical かつ subtle」のみを赤警告化、`optional` 明示時は警告対象外、null（既存伏線）は既存挙動維持の保守的ルール（案①）を採用。`EditForeshadowDialog` と `CreateForeshadowDialog` の双方に `<select>` を追加し、Phase 4/5 で再生産していた「Create 欠落 → Edit で後付け」パターンを排除。**DB migration スクリプトは作らず**（開発段階のため Drizzle schema 更新のみ、再構築前提）、AI プロンプト連携は実証データ待ちで Phase 7+ に温存。Deferred decisions の `load_bearing` 行を「Phase 6 で実装予定」に更新。
 - 2026-04-27: 実装と設計書の差分修正。`evaluateSetupStrength` / `getChapterForeshadowStats` は実装上 Rust IPC を持たず `src/features/foreshadow/api.ts` の純 TS 実装である旨を実装ファイル配置セクションに追記（旧表記の `foreshadow_evaluate_setup_strength` を削除）。実装ファイル配置の TS ツリーを実態に合わせて補完: `marks/` サブディレクトリ（ForeshadowSetupMark / ForeshadowPayoffMark / foreshadowPasteRule + テスト）、`foreshadowStore.adoptProposedSetup.test.ts`、`ForeshadowPanel.stories.tsx`、`types.test.ts`、`api.getChapterForeshadowStats.test.ts` を追記。
