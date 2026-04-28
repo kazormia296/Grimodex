@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useTranslation } from "react-i18next";
 import { ArrowRight, X } from "lucide-react";
 import { AnimatedOverlay } from "@/components/ui/animated-overlay";
@@ -13,6 +13,8 @@ import {
 } from "./api";
 import { listCodexEntries } from "@/features/codex/api";
 import type { CodexEntry } from "@/features/codex/api";
+
+type LinkedCodexEntry = { id: string; name: string };
 import type { ForeshadowWithLabel } from "./types";
 
 interface EditForeshadowDialogProps {
@@ -42,14 +44,18 @@ export function EditForeshadowDialog({
   const [initialLinkedIds, setInitialLinkedIds] = useState<Set<string>>(
     new Set(),
   );
-  const [linkedEntries, setLinkedEntries] = useState<Map<string, CodexEntry>>(
-    new Map(),
-  );
+  const [linkedEntries, setLinkedEntries] = useState<
+    Map<string, LinkedCodexEntry>
+  >(new Map());
   const [linksToAdd, setLinksToAdd] = useState<Set<string>>(new Set());
   const [linksToRemove, setLinksToRemove] = useState<Set<string>>(new Set());
   const [allCodexEntries, setAllCodexEntries] = useState<CodexEntry[]>([]);
   const [codexSearch, setCodexSearch] = useState("");
   const [showCodexSearch, setShowCodexSearch] = useState(false);
+  const codexSearchRef = useRef<HTMLInputElement>(null);
+  useEffect(() => {
+    if (showCodexSearch) codexSearchRef.current?.focus();
+  }, [showCodexSearch]);
 
   useEffect(() => {
     if (open && item) {
@@ -137,7 +143,7 @@ export function EditForeshadowDialog({
   const visibleLinkedIds = new Set([...initialLinkedIds, ...linksToAdd]);
   for (const id of linksToRemove) visibleLinkedIds.delete(id);
 
-  const handleAddCodexLink = (entry: CodexEntry) => {
+  const handleAddCodexLink = (entry: LinkedCodexEntry) => {
     if (visibleLinkedIds.has(entry.id)) return;
     if (initialLinkedIds.has(entry.id)) {
       setLinksToRemove((prev) => {
@@ -411,9 +417,9 @@ export function EditForeshadowDialog({
           {showCodexSearch && (
             <div className="mt-1.5">
               <input
+                ref={codexSearchRef}
                 data-testid="edit-foreshadow-codex-search"
                 type="text"
-                autoFocus
                 value={codexSearch}
                 onChange={(e) => setCodexSearch(e.target.value)}
                 placeholder={t(

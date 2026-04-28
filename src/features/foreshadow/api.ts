@@ -439,12 +439,14 @@ export async function removeCodexLink(
     );
 }
 
-/** 伏線に紐付いた Codex エントリを返す。 */
+type LinkedCodexEntry = Pick<CodexEntry, "id" | "name">;
+
+/** 伏線に紐付いた Codex エントリを返す。id/name のみ保証。 */
 export async function listCodexEntriesByForeshadow(
   foreshadowId: string,
-): Promise<CodexEntry[]> {
+): Promise<LinkedCodexEntry[]> {
   if (isTauriRuntime()) {
-    return invoke<CodexEntry[]>("foreshadow_list_linked_codex", {
+    return invoke<LinkedCodexEntry[]>("foreshadow_list_linked_codex", {
       foreshadowId,
     });
   }
@@ -457,7 +459,10 @@ export async function listCodexEntriesByForeshadow(
   if (links.length === 0) return [];
 
   const ids = links.map((l) => l.codexEntryId);
-  return db.select().from(codexEntries).where(inArray(codexEntries.id, ids));
+  return db
+    .select({ id: codexEntries.id, name: codexEntries.name })
+    .from(codexEntries)
+    .where(inArray(codexEntries.id, ids));
 }
 
 export async function setSetupStrength(
