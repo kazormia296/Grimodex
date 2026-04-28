@@ -14,6 +14,11 @@ interface ForeshadowNavState {
   pendingJump: PendingForeshadowJump | null;
   requestJump: (jump: PendingForeshadowJump) => void;
   consumeJump: (sceneId: string) => PendingForeshadowJump | null;
+
+  /** エディタのホバーポップオーバーからパネル行にジャンプする要求。 */
+  pendingPanelHighlight: string | null;
+  requestPanelHighlight: (foreshadowId: string) => void;
+  consumePanelHighlight: () => string | null;
 }
 
 export const useForeshadowNavStore = create<ForeshadowNavState>()(
@@ -25,6 +30,16 @@ export const useForeshadowNavStore = create<ForeshadowNavState>()(
       if (!pendingJump || pendingJump.sceneId !== sceneId) return null;
       set({ pendingJump: null });
       return pendingJump;
+    },
+
+    pendingPanelHighlight: null,
+    requestPanelHighlight: (foreshadowId) =>
+      set({ pendingPanelHighlight: foreshadowId }),
+    consumePanelHighlight: () => {
+      const { pendingPanelHighlight } = get();
+      if (!pendingPanelHighlight) return null;
+      set({ pendingPanelHighlight: null });
+      return pendingPanelHighlight;
     },
   }),
 );

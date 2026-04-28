@@ -1,9 +1,14 @@
 import { useEffect, useRef, useState, useCallback } from "react";
 import { createPortal } from "react-dom";
 import { useTranslation } from "react-i18next";
+import { ExternalLink } from "lucide-react";
 import type { Editor } from "@tiptap/react";
 import { useCursorSettingsStore } from "@/features/editor/cursorSettingsStore";
+import { useLayoutStore } from "@/features/layout/layoutStore";
 import { useForeshadowStore } from "./foreshadowStore";
+import { useForeshadowNavStore } from "./foreshadowNavStore";
+
+const POPOVER_SELECTOR = "[data-foreshadow-hover-popover]";
 
 type MarkKind = "setup" | "payoff";
 
@@ -27,7 +32,6 @@ export function ForeshadowMarkHoverPopover({ editor, containerRef }: Props) {
     (s) => s.showForeshadowMarks,
   );
   const [target, setTarget] = useState<MarkTarget | null>(null);
-  const popoverRef = useRef<HTMLDivElement>(null);
   const hideTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const clearHideTimer = useCallback(() => {
@@ -38,11 +42,13 @@ export function ForeshadowMarkHoverPopover({ editor, containerRef }: Props) {
   }, []);
 
   const scheduleHide = useCallback(() => {
-    clearHideTimer();
+    if (hideTimer.current !== null) {
+      clearTimeout(hideTimer.current);
+      hideTimer.current = null;
+    }
     hideTimer.current = setTimeout(() => setTarget(null), 200);
-  }, [clearHideTimer]);
+  }, []);
 
-  // Hide popover when marks are toggled off
   useEffect(() => {
     if (!showForeshadowMarks) {
       clearHideTimer();
@@ -50,21 +56,15 @@ export function ForeshadowMarkHoverPopover({ editor, containerRef }: Props) {
     }
   }, [showForeshadowMarks, clearHideTimer]);
 
-  useEffect(() => {
-    const container = containerRef.current;
-    if (!container || !showForeshadowMarks) return;
-
-    function onMouseOver(e: MouseEvent) {
+  const handleMouseOver = useCallback(
+    (e: MouseEvent) => {
       const el = e.target as Element;
       const setup = el.closest("[data-foreshadow-setup]") as HTMLElement | null;
       const payoff = el.closest(
         "[data-foreshadow-payoff]",
       ) as HTMLElement | null;
+      if (!setup && !payoff) return;
 
-      if (!setup && !payoff) {
-        scheduleHide();
-        return;
-      }
       clearHideTimer();
 
       const kind: MarkKind = setup ? "setup" : "payoff";
@@ -91,16 +91,45 @@ export function ForeshadowMarkHoverPopover({ editor, containerRef }: Props) {
         x: rect.left,
         y: rect.bottom + 4,
       });
-    }
+    },
+    [clearHideTimer],
+  );
 
-    container.addEventListener("mouseover", onMouseOver);
-    container.addEventListener("mouseleave", scheduleHide);
+  // mouseout + relatedTarget でマーク→ポップオーバー移動時の誤隠しを防ぐ（Codex と同パターン）
+  const handleMouseOut = useCallback(
+    (e: MouseEvent) => {
+      const el = e.target as HTMLElement;
+      const fromMark =
+        el.closest("[data-foreshadow-setup]") ||
+        el.closest("[data-foreshadow-payoff]");
+      if (!fromMark) return;
+
+      const relatedTarget = e.relatedTarget as HTMLElement | null;
+      if (relatedTarget?.closest?.(POPOVER_SELECTOR)) return;
+
+      scheduleHide();
+    },
+    [scheduleHide],
+  );
+
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container || !showForeshadowMarks) return;
+
+    container.addEventListener("mouseover", handleMouseOver);
+    container.addEventListener("mouseout", handleMouseOut);
     return () => {
-      container.removeEventListener("mouseover", onMouseOver);
-      container.removeEventListener("mouseleave", scheduleHide);
+      container.removeEventListener("mouseover", handleMouseOver);
+      container.removeEventListener("mouseout", handleMouseOut);
       clearHideTimer();
     };
-  }, [containerRef, scheduleHide, clearHideTimer, showForeshadowMarks]);
+  }, [
+    containerRef,
+    handleMouseOver,
+    handleMouseOut,
+    clearHideTimer,
+    showForeshadowMarks,
+  ]);
 
   const handleRemove = useCallback(() => {
     if (!editor || !target) return;
@@ -134,6 +163,13 @@ export function ForeshadowMarkHoverPopover({ editor, containerRef }: Props) {
     setTarget(null);
   }, [editor, target]);
 
+  const handleJumpToPanel = useCallback(() => {
+    if (!target) return;
+    useForeshadowNavStore.getState().requestPanelHighlight(target.foreshadowId);
+    useLayoutStore.getState().showPanel("foreshadow");
+    setTarget(null);
+  }, [target]);
+
   if (!target) return null;
 
   const popoverWidth = 200;
@@ -142,7 +178,7 @@ export function ForeshadowMarkHoverPopover({ editor, containerRef }: Props) {
 
   return createPortal(
     <div
-      ref={popoverRef}
+      data-foreshadow-hover-popover=""
       className="fixed z-50 rounded-md border border-border bg-popover shadow-md"
       style={{ left: x, top: y, width: popoverWidth }}
       onMouseEnter={clearHideTimer}
@@ -165,6 +201,14 @@ export function ForeshadowMarkHoverPopover({ editor, containerRef }: Props) {
             {target.title}
           </span>
         </div>
+        <button
+          type="button"
+          onClick={handleJumpToPanel}
+          className="mb-1.5 flex w-full items-center gap-1 rounded border border-border px-2 py-1 text-xs text-muted-foreground hover:bg-accent hover:text-foreground"
+        >
+          <ExternalLink className="h-3 w-3 shrink-0" />
+          {t("foreshadow.hoverPopover.jumpToPanel", "パネルで表示")}
+        </button>
         <button
           type="button"
           onClick={handleRemove}

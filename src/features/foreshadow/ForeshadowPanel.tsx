@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
   ArrowRight,
@@ -246,6 +246,28 @@ export function ForeshadowPanel() {
   const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<PanelTab>("list");
+  const [highlightedId, setHighlightedId] = useState<string | null>(null);
+  const itemRefs = useRef<Record<string, HTMLDivElement | null>>({});
+
+  // エディタのホバーポップオーバーからのパネルハイライト要求を処理する
+  useEffect(() => {
+    return useForeshadowNavStore.subscribe((state) => {
+      const id = state.pendingPanelHighlight;
+      if (!id) return;
+      useForeshadowNavStore.getState().consumePanelHighlight();
+      setActiveTab("list");
+      setExpandedId(id);
+      void loadSetups(id);
+      setHighlightedId(id);
+      setTimeout(() => {
+        itemRefs.current[id]?.scrollIntoView({
+          block: "nearest",
+          behavior: "smooth",
+        });
+      }, 50);
+      setTimeout(() => setHighlightedId(null), 1500);
+    });
+  }, [loadSetups]);
 
   const jumpToAnchor = (sceneId: string, fromPos: number, toPos: number) => {
     // 同シーン・別シーンとも EditorPane が一元的に処理する。
@@ -414,7 +436,15 @@ export function ForeshadowPanel() {
 
           {!isLoading &&
             visibleItems.map((item) => (
-              <div key={item.id} className="border-b border-border/50">
+              <div
+                key={item.id}
+                ref={(el) => {
+                  itemRefs.current[item.id] = el;
+                }}
+                className={`border-b border-border/50 transition-colors duration-300 ${
+                  highlightedId === item.id ? "bg-primary/10" : ""
+                }`}
+              >
                 {/* Item row */}
                 <div
                   data-testid="foreshadow-item"
