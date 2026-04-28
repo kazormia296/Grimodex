@@ -1145,10 +1145,137 @@ Phase 1〜3 は伏線の **作成 / setup 操作 / AI 評価 / 章監査** に�
 - payoff anchor を解除して入口③（「回収先として指名」）から再指名できる
 - 編集後 panel が即座に更新される
 
-**Phase 4 の見送り（Phase 5+ 候補）**
+**Phase 4 の見送り（Phase 5 で対応）**
 
 - 関連 Codex リンクの編集 UI（line 835 / 865 の入口①②モックには記載があるが現在 Create dialog にも未実装）
 - Setup の作者 strength 編集（現状 `null` 固定で、AI strength のみ表示）
+
+### Phase 5（関連 Codex リンク編集 + Setup 作者 strength 編集）
+
+**動機**
+
+Phase 4 で見送った 2 件をまとめて埋める。両者とも Tauri IPC とテーブルは Phase 1 から存在し、UI のみが欠落している。Setup 作者 strength の編集は Phase 1 設計（line 882）で「伏線パネルからの後付け編集で代替し、Phase 2 でダイアログにも追加する」と予告されたが、Phase 1〜4 では伏線パネル側の編集 UI も実装されていなかった。Phase 5 はこの積み残しの遅延実装も兼ねる。
+
+| 項目 | DB | 既存 IPC | TS wrapper | UI |
+|---|---|---|---|---|
+| `foreshadow_codex_links` (M:N) | ✓ | `foreshadow_link_codex` / `foreshadow_unlink_codex` | `addCodexLink` / `removeCodexLink` 既存（未使用） | **欠落** |
+| `foreshadow_setups.strength` | ✓ | `foreshadow_set_setup_strength` | **未実装** | **欠落** |
+
+**スコープ**
+
+- 関連 Codex 編集 → `EditForeshadowDialog` に新セクションを追記（**`CreateForeshadowDialog` には追加しない**）
+- Setup 作者 strength 編集 → `ForeshadowPanel` の `SetupRow` に inline UI を追記
+- TS wrapper を `api.ts` に 2 つ追加: `setSetupStrength(setupId, strength)` / `listCodexEntriesByForeshadow(foreshadowId)`
+- 新規コンポーネントファイルは作らない（既存ファイルへの追記のみ）
+
+**Phase 4 との違い: 読み取り IPC を 1 件追加**
+
+Phase 4 は「IPC 追加なし」を原則としたが、Phase 5 では `foreshadow_list_linked_codex(foreshadow_id) -> Vec<CodexEntry>` を 1 件追加する。理由：
+
+- Codex リンクの一覧は Edit dialog を開いた時のみ必要で、`ForeshadowWithLabel` に M:N JOIN を組み込むと panel ロードのたびに不要な JOIN が走る
+- 既存 `listForeshadowsByCodexEntry`（Codex タブ用）は逆方向の問い合わせで、双方向で持つのが自然
+- Phase 4 の「IPC 追加なし」は Phase 4 限定の指針であり、Phase 全体の不変条件ではない
+
+**A: 関連 Codex リンク編集**
+
+`EditForeshadowDialog` 末尾に Payoff anchor セクションと並ぶ形で追加：
+
+```
+┌─ 関連 Codex ─────────────────────────────────┐
+│  [人物A ×] [場所B ×] [+ Codex を追加]         │
+│  ─── 追加検索 ───                             │
+│  [_________________________]                  │
+│  (incremental search で候補絞り込み)          │
+└────────────────────────────────────────────────┘
+```
+
+**保存モデル**: Phase 4 の「全フィールド差分パッチ」に揃える（**即時反映しない**）。
+
+ダイアログ内 state：
+
+```ts
+// open 時に listCodexEntriesByForeshadow(foreshadowId) でロード
+const [initialLinkedIds, setInitialLinkedIds] = useState<Set<string>>(new Set());
+const [linksToAdd, setLinksToAdd] = useState<Set<string>>(new Set());
+const [linksToRemove, setLinksToRemove] = useState<Set<string>>(new Set());
+```
+
+UI 操作の整合：
+
+- × 押下: `initialLinkedIds` にあれば `linksToRemove` に追加、`linksToAdd` にあれば `linksToAdd` から除去
+- 追加: `initialLinkedIds` から外れていれば `linksToAdd` に追加、`linksToRemove` にあれば `linksToRemove` から除去
+- 表示順: `(initialLinkedIds ∪ linksToAdd) − linksToRemove`
+
+Save 時：
+
+```ts
+// Phase 4 の updateForeshadow() に続けて:
+for (const id of linksToAdd) await addCodexLink(foreshadowId, id);
+for (const id of linksToRemove) await removeCodexLink(foreshadowId, id);
+```
+
+**設計判断（即時反映しない理由）**：Edit dialog 全体が「Cancel で何もなかったことに」セマンティクスを保つため。即時反映にすると、Cancel 押下後も Codex リンクだけ DB に残って Save の意味が壊れる。`linksToAdd` / `linksToRemove` の 2 Set は M:N でも実装コストが極めて低く、保存モデル統一の利点が勝る。
+
+**Save 実行条件の修正**（Phase 4 からの差分）：
+
+Phase 4 の `handleSave` は `Object.keys(patch).length > 0` のときのみ `updateForeshadow` を呼ぶ実装だが、Phase 5 では「patch 空 + Codex リンクだけ変更」というケースが発生する。Save 実行条件を拡張する：
+
+```ts
+const hasPatch = Object.keys(patch).length > 0;
+if (hasPatch) await update(item.id, patch, item.projectId);
+for (const id of linksToAdd) await addCodexLink(item.id, id);
+for (const id of linksToRemove) await removeCodexLink(item.id, id);
+onClose();
+```
+
+これを忘れると Codex 単独編集 → Save が無反応になるため、実装時の必須条件として明記する。Codex リンク変更単独では panel 表示は変わらない（リンクは dialog 内でのみ表示）ため、`useForeshadowStore.load()` 呼び出しは Phase 4 の `update()` 内に既に組み込まれた経路で十分。
+
+**Codex 検索 UX**
+
+「+ Codex を追加」押下で incremental search 用テキスト入力欄を露出。既存の `listCodexEntries()` をそのまま呼んで全件取得 → クライアント側で `name` / `aliases` の部分一致でフィルタ。
+
+**現状確認（projectId スコープ）**：`listCodexEntries(type?: CodexEntryType)` は projectId フィルタを取らず、`codex_entries` テーブル全件を返す。Phase 1 は単一プロジェクト前提で `PROJECT_ID = "default-project"` 固定運用のため許容するが、複数プロジェクト対応時に projectId スコープ追加が必要になる（**Phase 6+ 対応**、本 Phase ではスコープ外）。Phase 1 のデータ規模では全件取得＋クライアントフィルタで十分（Codex 数千件超で問題が出たら後段で type フィルタ等を追加）。
+
+**B: Setup 作者 strength 編集**
+
+`SetupRow` の strength バッジをクリック可能にし、クリックで小さなメニューを表示：
+
+```
+[moderate ▼]
+  ├─ subtle
+  ├─ moderate ✓
+  ├─ overt
+  └─ — (未設定)
+```
+
+選択で即時 `setSetupStrength(setupId, value)`。
+
+**未設定（`strength === null`）時の表示**：プレースホルダー的な薄いアウトラインバッジ（「strength 未設定」）。クリックで同メニュー。
+
+**設計判断（即時反映する理由）**：
+
+- 単一値（4 値の enum + null）で誤操作リスクが低い
+- 同行に並ぶ「AI 評価」ボタン（既に即時実行）と操作モデルが揃う
+- 伏線パネル inline は Phase 4 dialog とは別の文脈で、保存モデルの一貫性は dialog 内で完結すれば足りる
+
+**保存後の処理**
+
+- A: ダイアログ Save 後 `useForeshadowStore.load(projectId)` で panel リフレッシュ（Phase 4 既存動作にリンク書き込みが追加で乗るだけ）
+- B: 即時反映後 `loadSetups(foreshadowId)` で当該 foreshadow の setup 一覧をリフレッシュ → `needs_strengthening` ラベルへの即時昇格を反映
+
+**Phase 5 完了の定義**
+
+- 編集ダイアログから関連 Codex を追加/削除できる（Save で確定、Cancel で破棄）
+- 伏線パネルから Setup の作者 strength を編集できる（即時反映）
+- 操作後 panel が即座に更新される
+- Phase 4 の Cancel セマンティクスを破壊しない
+
+**Phase 5 の見送り（Phase 6+ 候補）**
+
+- `CreateForeshadowDialog` への Codex リンク統合（line 835 / 865 のモック踏襲）
+- Setup の `kind` 編集（kind は本質的に作成時メタで、変更したい場面が薄い）
+- Codex 検索の type 別フィルタ（Phase 1 規模では文字列マッチで足りる）
+- 開いている Codex 詳細タブ（`ForeshadowTab.tsx`）の逆方向同期：伏線側から Codex リンクを add/remove した瞬間、開いている Codex タブは stale になる。次回タブ open 時に再フェッチされるため許容（グローバルイベント発火や store 購読は導入しない）
 
 ---
 
@@ -1286,8 +1413,8 @@ src/features/foreshadow/
 ├── ForeshadowMarkPopover.test.tsx
 ├── ForeshadowMarkHoverPopover.tsx         # hover 表示
 ├── CreateForeshadowDialog.tsx             # 伏線作成ダイアログ（initialTitle / initialIntent プリフィル対応）
-├── EditForeshadowDialog.tsx               # 伏線編集ダイアログ（Phase 4: title/intent/notes/payoffConfirmed/abandoned + anchor 解除）
-├── EditForeshadowDialog.test.tsx          # Phase 4: 編集パッチ送信 / anchor 解除 / lifecycle トグルのテスト
+├── EditForeshadowDialog.tsx               # 伏線編集ダイアログ（Phase 4: title/intent/notes/payoffConfirmed/abandoned + anchor 解除 / Phase 5: Codex リンク編集）
+├── EditForeshadowDialog.test.tsx          # Phase 4: 編集パッチ送信 / anchor 解除 / lifecycle トグル / Phase 5: Codex リンク差分適用のテスト
 ├── types.test.ts                          # safeParseAiEvaluation 等の型ユーティリティテスト
 ├── api.tauri.test.ts                      # Tauri ブランチ unit テスト
 ├── api.proposePastSetups.test.ts          # proposePastSetups unit テスト
@@ -1303,6 +1430,7 @@ src-tauri/src/lib.rs                       # foreshadow 関連 Tauri コマン�
                                            # （foreshadow_create / foreshadow_update / foreshadow_delete /
                                            #   foreshadow_list / foreshadow_get /
                                            #   foreshadow_link_codex / foreshadow_unlink_codex /
+                                           #   foreshadow_list_linked_codex（Phase 5）/
                                            #   foreshadow_set_setup_strength / foreshadow_resolve_orphan /
                                            #   foreshadow_save_anchors_for_scene / foreshadow_load_anchors_for_scene /
                                            #   foreshadow_propose_past_setups /
@@ -1339,4 +1467,5 @@ drizzle/migrations/
   - `ForeshadowMarkPopover` の `payoff-unanchored` フィルタをラベルホワイトリスト（`planned` / `seeded`）に修正（Phase 2 残バグ）。
   - 実装ファイル配置を実際のファイル構成に合わせて更新。deferred decisions に Phase 3 完了分と残課題を反映。
 - 2026-04-28: Phase 4 セクション追加（伏線本体メタデータ編集 / ライフサイクル UI）。`EditForeshadowDialog` の設計を策定: title / intent / notes / payoffConfirmed / abandoned の編集経路と payoff anchor 解除フロー（DB 更新 + open editor の mark sweep 2 段階）を確定。**IPC 追加なし**で既存 `foreshadow_update` を流用。副入口：伏線パネルの記述を Phase 2/3 の inline 展開に合わせて更新し、編集ダイアログへの参照を追加。実装ファイル配置に `EditForeshadowDialog.tsx` / `.test.tsx` を追加。関連 Codex 編集と Setup 作者 strength 編集は Phase 5+ として切り出し。
+- 2026-04-28: Phase 5 セクション追加（関連 Codex リンク編集 + Setup 作者 strength 編集）。Phase 4 で見送った 2 件をまとめて埋める設計。Codex リンクは `EditForeshadowDialog` に「全フィールド差分パッチ」モデルで統合（`linksToAdd` / `linksToRemove` 2 Set を Save 時に一括適用、Cancel セマンティクスを保持）。Setup 作者 strength は `SetupRow` の inline ドロップダウンで即時反映。読み取り IPC `foreshadow_list_linked_codex` を 1 件追加（`ForeshadowWithLabel` への M:N JOIN 注入を避けるため）。TS wrapper `setSetupStrength` / `listCodexEntriesByForeshadow` を `api.ts` に追加。新規コンポーネントファイルは作らず既存ファイルへの追記で完結。
 - 2026-04-27: 実装と設計書の差分修正。`evaluateSetupStrength` / `getChapterForeshadowStats` は実装上 Rust IPC を持たず `src/features/foreshadow/api.ts` の純 TS 実装である旨を実装ファイル配置セクションに追記（旧表記の `foreshadow_evaluate_setup_strength` を削除）。実装ファイル配置の TS ツリーを実態に合わせて補完: `marks/` サブディレクトリ（ForeshadowSetupMark / ForeshadowPayoffMark / foreshadowPasteRule + テスト）、`foreshadowStore.adoptProposedSetup.test.ts`、`ForeshadowPanel.stories.tsx`、`types.test.ts`、`api.getChapterForeshadowStats.test.ts` を追記。
