@@ -621,7 +621,9 @@
       "clearFilter": "Clear filter",
       "newButton": "New",
       "toggle": "Expand/collapse",
-      "setupsEmpty": "No setups"
+      "setupsEmpty": "No setups",
+      "editButton": "Edit",
+      "jumpPayoff": "Jump to Payoff"
     },
     "create": {
       "heading": "Create Foreshadow",
@@ -661,7 +663,21 @@
     },
     "store": {
       "evaluateFailed": "Failed to get AI evaluation",
-      "createSuccess": "Registered as foreshadow"
+      "createSuccess": "Registered as foreshadow",
+      "updateFailed": "Failed to update foreshadow"
+    },
+    "edit": {
+      "heading": "Edit Foreshadow",
+      "notesLabel": "Notes",
+      "notesPlaceholder": "Free text",
+      "lifecycleSection": "Lifecycle",
+      "confirmPayoff": "Confirm payoff as resolved",
+      "confirmDisabled": "Payoff anchor required",
+      "abandonedLabel": "Abandoned",
+      "payoffAnchorSection": "Payoff anchor",
+      "payoffAnchorNone": "Not set",
+      "unsetAnchor": "Remove payoff anchor",
+      "unsetAnchorConfirm": "This will also remove the Payoff mark from the editor. Remove anchor?"
     },
     "codexTab": {
       "empty": "No linked foreshadows"

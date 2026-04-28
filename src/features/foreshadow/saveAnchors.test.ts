@@ -33,6 +33,7 @@ import {
   extractSetupAnchors,
   extractPayoffAnchors,
   saveForeshadowAnchors,
+  unsetForeshadowPayoffMarksByForeshadowIds,
 } from "./saveAnchors";
 
 function createTestEditor(content = "<p>テスト</p>") {
@@ -246,6 +247,146 @@ describe("saveForeshadowAnchors FK sweep", () => {
 
     const payload = mockInvoke.mock.calls[0][1] as { docContentSize: number };
     expect(payload.docContentSize).toBe(expectedSize);
+    editor.destroy();
+  });
+});
+
+// ── unsetForeshadowPayoffMarksByForeshadowIds ─────────────────────
+
+describe("unsetForeshadowPayoffMarksByForeshadowIds", () => {
+  function addPayoffMark(
+    editor: Editor,
+    from: number,
+    to: number,
+    foreshadowId: string,
+  ) {
+    editor.view.dispatch(
+      editor.state.tr.addMark(
+        from,
+        to,
+        editor.schema.marks["foreshadowPayoff"].create({ foreshadowId }),
+      ),
+    );
+  }
+
+  it("removes payoff marks for the specified foreshadowId", () => {
+    const editor = createTestEditor("<p>ABCDE</p>");
+    addPayoffMark(editor, 1, 3, "f-target");
+
+    unsetForeshadowPayoffMarksByForeshadowIds(
+      (fn) => {
+        const tr = editor.state.tr;
+        fn(tr);
+        editor.view.dispatch(tr);
+      },
+      ["f-target"],
+    );
+
+    const payoffType = editor.schema.marks["foreshadowPayoff"];
+    let hasPayoff = false;
+    editor.state.doc.descendants((node) => {
+      if (node.isText && node.marks.some((m) => m.type === payoffType)) {
+        hasPayoff = true;
+      }
+    });
+    expect(hasPayoff).toBe(false);
+    editor.destroy();
+  });
+
+  it("does not remove marks for other foreshadowIds", () => {
+    const editor = createTestEditor("<p>ABCDE</p>");
+    addPayoffMark(editor, 1, 3, "f-other");
+
+    unsetForeshadowPayoffMarksByForeshadowIds(
+      (fn) => {
+        const tr = editor.state.tr;
+        fn(tr);
+        editor.view.dispatch(tr);
+      },
+      ["f-target"],
+    );
+
+    const payoffType = editor.schema.marks["foreshadowPayoff"];
+    let hasPayoff = false;
+    editor.state.doc.descendants((node) => {
+      if (node.isText && node.marks.some((m) => m.type === payoffType)) {
+        hasPayoff = true;
+      }
+    });
+    expect(hasPayoff).toBe(true);
+    editor.destroy();
+  });
+
+  it("does not remove setup marks", () => {
+    const editor = createTestEditor("<p>ABCDE</p>");
+    editor.view.dispatch(
+      editor.state.tr.addMark(
+        1,
+        3,
+        editor.schema.marks["foreshadowSetup"].create({
+          setupId: "s-1",
+          foreshadowId: "f-target",
+        }),
+      ),
+    );
+
+    unsetForeshadowPayoffMarksByForeshadowIds(
+      (fn) => {
+        const tr = editor.state.tr;
+        fn(tr);
+        editor.view.dispatch(tr);
+      },
+      ["f-target"],
+    );
+
+    const setupType = editor.schema.marks["foreshadowSetup"];
+    let hasSetup = false;
+    editor.state.doc.descendants((node) => {
+      if (node.isText && node.marks.some((m) => m.type === setupType)) {
+        hasSetup = true;
+      }
+    });
+    expect(hasSetup).toBe(true);
+    editor.destroy();
+  });
+
+  it("is a no-op when no matching marks exist", () => {
+    const editor = createTestEditor("<p>ABCDE</p>");
+    const stateBefore = editor.state.doc.toString();
+
+    expect(() => {
+      unsetForeshadowPayoffMarksByForeshadowIds(
+        (fn) => {
+          const tr = editor.state.tr;
+          fn(tr);
+          editor.view.dispatch(tr);
+        },
+        ["f-target"],
+      );
+    }).not.toThrow();
+
+    expect(editor.state.doc.toString()).toBe(stateBefore);
+    editor.destroy();
+  });
+
+  it("is a no-op for empty id array", () => {
+    const editor = createTestEditor("<p>ABCDE</p>");
+    addPayoffMark(editor, 1, 3, "f-target");
+
+    unsetForeshadowPayoffMarksByForeshadowIds((fn) => {
+      const tr = editor.state.tr;
+      fn(tr);
+      editor.view.dispatch(tr);
+    }, []);
+
+    const payoffType = editor.schema.marks["foreshadowPayoff"];
+    let hasPayoff = false;
+    editor.state.doc.descendants((node) => {
+      if (node.isText && node.marks.some((m) => m.type === payoffType)) {
+        hasPayoff = true;
+      }
+    });
+    expect(hasPayoff).toBe(true);
     editor.destroy();
   });
 });

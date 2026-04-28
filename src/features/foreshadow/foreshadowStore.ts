@@ -9,6 +9,7 @@ import {
   listForeshadows,
   createForeshadow,
   deleteForeshadow,
+  updateForeshadow,
   listSetups,
   deleteSetup,
   reanchorOrphanSetup,
@@ -21,7 +22,10 @@ import {
 } from "./api";
 import { loadSceneContent, saveSceneContent } from "@/features/tree/api";
 import { prosemirrorToText } from "@/lib/prosemirror";
-import { saveForeshadowAnchors } from "./saveAnchors";
+import {
+  saveForeshadowAnchors,
+  unsetForeshadowPayoffMarksByForeshadowIds,
+} from "./saveAnchors";
 import { createRevision } from "@/features/revision/api";
 import type { ProposedSetup } from "./api";
 import { safeParseAiEvaluation } from "./types";
@@ -46,6 +50,11 @@ interface ForeshadowState {
   create: (
     data: Pick<ForeshadowRow, "projectId" | "title" | "intent">,
   ) => Promise<ForeshadowWithLabel>;
+  update: (
+    id: string,
+    patch: Parameters<typeof updateForeshadow>[1],
+    projectId: string,
+  ) => Promise<void>;
   remove: (id: string) => Promise<void>;
   loadSetups: (foreshadowId: string) => Promise<void>;
   removeSetup: (setupId: string, foreshadowId: string) => Promise<void>;
@@ -173,6 +182,40 @@ export const useForeshadowStore = create<ForeshadowState>()((set, get) => ({
         errorDetail(e),
       );
       throw e;
+    }
+  },
+
+  update: async (id, patch, projectId) => {
+    try {
+      await updateForeshadow(id, patch);
+
+      if (patch.payoffSceneId === null) {
+        const editor = useEditorStore.getState().editor;
+        const activeSceneId = useSceneStore.getState().activeSceneId;
+        if (editor && activeSceneId) {
+          unsetForeshadowPayoffMarksByForeshadowIds(
+            (fn) => {
+              const tr = editor.state.tr;
+              fn(tr);
+              editor.view.dispatch(tr);
+            },
+            [id],
+          );
+          const contentJson = JSON.stringify(editor.getJSON());
+          await saveSceneContent(activeSceneId, contentJson);
+        }
+      }
+
+      await get().load(projectId);
+    } catch (e) {
+      toast.error(
+        i18next.t("foreshadow.store.updateFailed", "伏線の更新に失敗しました"),
+      );
+      debugLog.error(
+        "ForeshadowStore",
+        `update: ${rootCause(e)}`,
+        errorDetail(e),
+      );
     }
   },
 

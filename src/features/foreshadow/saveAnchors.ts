@@ -201,6 +201,33 @@ export function clearAllForeshadowMarks(
   });
 }
 
+/**
+ * Remove foreshadowPayoff marks whose foreshadowId is in the given set.
+ * Used when a payoff anchor is released on a currently-open scene.
+ */
+export function unsetForeshadowPayoffMarksByForeshadowIds(
+  applyTr: (fn: (tr: import("@tiptap/pm/state").Transaction) => void) => void,
+  foreshadowIds: string[],
+): void {
+  if (foreshadowIds.length === 0) return;
+  const idSet = new Set(foreshadowIds);
+  applyTr((tr) => {
+    const payoffType = tr.doc.type.schema.marks["foreshadowPayoff"];
+    if (!payoffType) return;
+    const toRemove: { from: number; to: number }[] = [];
+    tr.doc.descendants((node, pos) => {
+      if (!node.isText) return;
+      const mark = node.marks.find((m) => m.type === payoffType);
+      if (mark && idSet.has(mark.attrs.foreshadowId as string)) {
+        toRemove.push({ from: pos, to: pos + node.nodeSize });
+      }
+    });
+    for (const { from, to } of toRemove) {
+      tr.removeMark(from, to, payoffType);
+    }
+  });
+}
+
 // ── Load helpers (DB read → mark data) ───────────────────────────
 
 export interface MarkApplication {

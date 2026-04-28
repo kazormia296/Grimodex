@@ -5,6 +5,7 @@ import {
   ChevronDown,
   ChevronRight,
   Loader2,
+  Pencil,
   Plus,
   Sparkles,
   Trash2,
@@ -15,10 +16,15 @@ import { useLayoutStore } from "@/features/layout/layoutStore";
 import { useForeshadowStore } from "./foreshadowStore";
 import { useForeshadowNavStore } from "./foreshadowNavStore";
 import { CreateForeshadowDialog } from "./CreateForeshadowDialog";
+import { EditForeshadowDialog } from "./EditForeshadowDialog";
 import { ForeshadowChapterTab } from "./ForeshadowChapterTab";
 import { isSetupEvaluationStale } from "./staleness";
 import { safeParseAiEvaluation } from "./types";
-import type { DerivedLabel, ForeshadowSetupRow } from "./types";
+import type {
+  DerivedLabel,
+  ForeshadowSetupRow,
+  ForeshadowWithLabel,
+} from "./types";
 
 const PROJECT_ID = "default-project";
 
@@ -243,6 +249,9 @@ export function ForeshadowPanel() {
     adoptInsertedNewSetup,
   } = useForeshadowStore();
   const [dialogOpen, setDialogOpen] = useState(false);
+  const [editingItem, setEditingItem] = useState<ForeshadowWithLabel | null>(
+    null,
+  );
   const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<PanelTab>("list");
@@ -535,6 +544,14 @@ export function ForeshadowPanel() {
                       </span>
                       <button
                         type="button"
+                        onClick={() => setEditingItem(item)}
+                        className="rounded p-0.5 text-muted-foreground opacity-0 transition-opacity hover:bg-accent hover:text-foreground group-hover:opacity-100"
+                        aria-label={t("foreshadow.panel.editButton", "編集")}
+                      >
+                        <Pencil className="h-3 w-3" />
+                      </button>
+                      <button
+                        type="button"
                         onClick={() => setDeleteConfirmId(item.id)}
                         className="rounded p-0.5 text-muted-foreground opacity-0 transition-opacity hover:bg-accent hover:text-destructive group-hover:opacity-100"
                         aria-label={t("common.delete", "削除")}
@@ -686,6 +703,11 @@ export function ForeshadowPanel() {
         projectId={PROJECT_ID}
         onSave={handleCreate}
         onClose={() => setDialogOpen(false)}
+      />
+      <EditForeshadowDialog
+        open={!!editingItem}
+        item={editingItem}
+        onClose={() => setEditingItem(null)}
       />
     </div>
   );
