@@ -14,6 +14,7 @@ function makeForeshadow(overrides: Partial<ForeshadowRow> = {}): ForeshadowRow {
     payoffToPos: null,
     payoffConfirmed: false,
     abandoned: false,
+    loadBearing: null,
     createdAt: new Date(),
     updatedAt: new Date(),
     ...overrides,
@@ -59,5 +60,33 @@ describe("deriveLabel", () => {
   it("paid takes priority over needs_strengthening (payoffConfirmed)", () => {
     const f = makeForeshadow({ payoffConfirmed: true });
     expect(deriveLabel(f, 1, true)).toBe("paid");
+  });
+
+  // Phase 6: load_bearing 軸
+  describe("load_bearing × anyWeak 判定マトリクス（案①）", () => {
+    it("critical × weak → critical_weak（赤警告）", () => {
+      const f = makeForeshadow({ loadBearing: "critical" });
+      expect(deriveLabel(f, 1, true)).toBe("critical_weak");
+    });
+
+    it("null × weak → needs_strengthening（既存挙動維持・回帰防止）", () => {
+      const f = makeForeshadow({ loadBearing: null });
+      expect(deriveLabel(f, 1, true)).toBe("needs_strengthening");
+    });
+
+    it("supporting × weak → needs_strengthening（黄警告）", () => {
+      const f = makeForeshadow({ loadBearing: "supporting" });
+      expect(deriveLabel(f, 1, true)).toBe("needs_strengthening");
+    });
+
+    it("optional × weak → seeded（警告なし）", () => {
+      const f = makeForeshadow({ loadBearing: "optional" });
+      expect(deriveLabel(f, 1, true)).toBe("seeded");
+    });
+
+    it("critical × !weak → seeded（強度問題なし）", () => {
+      const f = makeForeshadow({ loadBearing: "critical" });
+      expect(deriveLabel(f, 1, false)).toBe("seeded");
+    });
   });
 });

@@ -1,4 +1,5 @@
 export type ForeshadowStrength = "subtle" | "moderate" | "overt";
+export type ForeshadowLoadBearing = "critical" | "supporting" | "optional";
 export type ForeshadowKind =
   | "designated_existing"
   | "inserted_new"
@@ -55,6 +56,7 @@ export type DerivedLabel =
   | "planned"
   | "seeded"
   | "paid"
+  | "critical_weak"
   | "needs_strengthening"
   | "orphan_payoff"
   | "abandoned";
@@ -70,6 +72,7 @@ export interface ForeshadowRow {
   payoffToPos: number | null;
   payoffConfirmed: boolean;
   abandoned: boolean;
+  loadBearing: ForeshadowLoadBearing | null;
   createdAt: Date;
   updatedAt: Date;
 }
