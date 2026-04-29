@@ -60,13 +60,17 @@ class _DocBuilder:
         self.pos = 0  # トップレベル位置カーソル
         self.content: list[dict] = []
         self.spans: dict[str, tuple[int, int]] = {}
+        # 段落ごとのテキスト範囲（authorship_spans 用に段落単位で参照したいケース向け）
+        self.paras: list[tuple[int, int]] = []
 
     def para(self, *segments) -> "_DocBuilder":
         if not segments:
             self.content.append({"type": "paragraph"})
+            self.paras.append((self.pos + 1, self.pos + 1))
             self.pos += 2
             return self
         text_pos = self.pos + 1  # paragraph 開きノード分 +1
+        text_start = text_pos
         children: list[dict] = []
         text_len = 0
         for seg in segments:
@@ -82,6 +86,7 @@ class _DocBuilder:
                 text_len += len(body)
                 children.append(node)
         self.content.append({"type": "paragraph", "content": children})
+        self.paras.append((text_start, text_start + text_len))
         self.pos += 2 + text_len
         return self
 
@@ -1268,13 +1273,15 @@ def seed(db_path: Path) -> None:
     scene1_spans = scene1_builder.spans
     conn.execute(
         """INSERT INTO tree_nodes
-           (id,project_id,parent_id,node_type,title,synopsis,sort_order,story_time_order,story_time_label,status,content,created_at,updated_at)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+           (id,project_id,parent_id,node_type,title,synopsis,sort_order,story_time_order,story_time_label,
+            pov_character_id,location_id,status,content,created_at,updated_at)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
         (
             scene1_id, project_id, part1_id, "scene", "一章：廃社",
             "雨の夜、朱音は十年ぶりに故郷の廃社へ帰る。"
             "祭壇には十年前に置いてきた朱紐がそのまま残っていた。触れた瞬間、見知らぬ記憶が流れ込んでくる。",
-            "a0", "a1", "十年後・秋", "draft", scene1_content, now, now,
+            "a0", "a1", "十年後・秋",
+            akane_id, haisha_id, "draft", scene1_content, now, now,
         ),
     )
 
@@ -1292,12 +1299,14 @@ def seed(db_path: Path) -> None:
     )
     conn.execute(
         """INSERT INTO tree_nodes
-           (id,project_id,parent_id,node_type,title,synopsis,sort_order,story_time_order,story_time_label,status,content,created_at,updated_at)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+           (id,project_id,parent_id,node_type,title,synopsis,sort_order,story_time_order,story_time_label,
+            pov_character_id,location_id,status,content,created_at,updated_at)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
         (
             scene2_id, project_id, part1_id, "scene", "二章：封じ文",
             "廃社で朱紐とともに封じ文を見つける。「帰れ」と書かれた文には、朱縄の儀の手順と、読めない一行。",
-            "a1", "a2", "十年後・翌朝", "outline", scene2_content, now, now,
+            "a1", "a2", "十年後・翌朝",
+            akane_id, haisha_id, "outline", scene2_content, now, now,
         ),
     )
 
@@ -1327,13 +1336,15 @@ def seed(db_path: Path) -> None:
     scene_flashback_spans = flashback_builder.spans
     conn.execute(
         """INSERT INTO tree_nodes
-           (id,project_id,parent_id,node_type,title,synopsis,sort_order,story_time_order,story_time_label,status,content,created_at,updated_at)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+           (id,project_id,parent_id,node_type,title,synopsis,sort_order,story_time_order,story_time_label,
+            pov_character_id,location_id,status,content,created_at,updated_at)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
         (
             scene_flashback_id, project_id, part1_id, "scene", "回想：十年前の夜",
             "十年前の夏の夜、廃社が燃えた。朱音はその場にいた。"
             "炎の中に何かがいた——だが記憶は断片しか残っていない。",
-            "a2", "a0", "十年前・夏の夜", "outline", scene_flashback_content, now, now,
+            "a2", "a0", "十年前・夏の夜",
+            akane_id, haisha_id, "outline", scene_flashback_content, now, now,
         ),
     )
 
@@ -1364,13 +1375,15 @@ def seed(db_path: Path) -> None:
     scene_payoff_spans = payoff_builder.spans
     conn.execute(
         """INSERT INTO tree_nodes
-           (id,project_id,parent_id,node_type,title,synopsis,sort_order,story_time_order,story_time_label,status,content,created_at,updated_at)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+           (id,project_id,parent_id,node_type,title,synopsis,sort_order,story_time_order,story_time_label,
+            pov_character_id,location_id,status,content,created_at,updated_at)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
         (
             scene_payoff_id, project_id, part1_id, "scene", "間章：祭壇の傷",
             "月夜の拝殿で、朱音は十年前から動かされていなかったはずの札の残骸を見つける。"
             "錠前と同じ手が、これも外していた。",
-            "a3", "a3", "十年後・夜半", "draft", scene_payoff_content, now, now,
+            "a3", "a3", "十年後・夜半",
+            akane_id, haisha_id, "draft", scene_payoff_content, now, now,
         ),
     )
     payoff_jouro_from, payoff_jouro_to = scene_payoff_spans["payoff_jouro"]
@@ -1395,12 +1408,14 @@ def seed(db_path: Path) -> None:
     )
     conn.execute(
         """INSERT INTO tree_nodes
-           (id,project_id,parent_id,node_type,title,synopsis,sort_order,story_time_order,story_time_label,status,content,created_at,updated_at)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+           (id,project_id,parent_id,node_type,title,synopsis,sort_order,story_time_order,story_time_label,
+            pov_character_id,location_id,status,content,created_at,updated_at)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
         (
             scene3_id, project_id, part2_id, "scene", "三章：都の夜",
             "都に戻った朱音のもとに陰陽師・冬弥が現れる。彼はなぜか朱音が桐野へ行ったことを知っていた。",
-            "a0", "a3", "十年後・帰京後", "outline", scene3_content, now, now,
+            "a0", "a3", "十年後・帰京後",
+            akane_id, miyako_id, "outline", scene3_content, now, now,
         ),
     )
 
@@ -1658,29 +1673,52 @@ def seed(db_path: Path) -> None:
             now, now,
         ),
     )
-    for role, content in [
+    chat_msg_ids: list[str] = []
+    chat_messages_seed = [
         ("user",
          "一章の冒頭を書いたのですが、朱音の語り口がまだ定まっていません。"
          "彼女は感情を抑える人間なので、地の文でも感情が直接出てこないようにしたいです。"
-         "「廃社に戻って怖かった」ではなく、行動や描写でそれを示す書き方の例を一段落書いてもらえますか？"),
+         "「廃社に戻って怖かった」ではなく、行動や描写でそれを示す書き方の例を一段落書いてもらえますか？",
+         False, True),
         ("assistant",
          "こういう方向はいかがでしょう。\n\n"
          "鳥居をくぐるとき、朱音は一度だけ足を止めた。止まった理由を自分では説明できなかった。"
          "草の匂いがした。杉の木が揺れた。それだけのことで、先に進めなくなった。"
          "彼女は三つ数えてから、また歩き始めた。\n\n"
          "感情の名前（「怖い」「不安」）を出さずに、「三つ数えてから」という行動で"
-         "内面の動揺を示す方法です。朱音が自分を律する人間だという性格も同時に出せます。"),
+         "内面の動揺を示す方法です。朱音が自分を律する人間だという性格も同時に出せます。",
+         True, True),
         ("user",
          "「三つ数えてから」いいですね。引き継ぎます。"
-         "この段落をスニペットとして保存したいです。"),
+         "この段落をスニペットとして保存したいです。",
+         False, True),
         ("assistant",
          "了解しました。「朱音の律し方」あたりのタイトルで保存するのが使いやすいと思います。"
          "朱音が感情的に圧迫されたときに毎回この癖が出るようにすると、"
-         "読者に彼女の状態のバロメーターとして機能するようになります。"),
-    ]:
+         "読者に彼女の状態のバロメーターとして機能するようになります。",
+         False, True),
+        # 要約後に続いている最近のやり取り（is_summarized=0、最後の assistant は star 済み）
+        ("user",
+         "ところで、朱音が朱紐に触れる場面の温度感をもう少し具体化したいです。"
+         "「乾いていた」だけだとさらりと流れてしまう気がして。",
+         False, False),
+        ("assistant",
+         "案を二つ。\n\n"
+         "①触感の比喩を一つ足す：「乾いていた。冬の竈の余熱のように、鈍い温度が指先に残った」。\n"
+         "②朱音側の身体反応を一行入れる：「指が震えた。寒さからではなかった」。\n\n"
+         "①は朱紐の側、②は朱音の側に焦点が寄ります。お話の重心がどちらにあるかで選び分けてください。",
+         True, False),
+    ]
+    for role, content, is_starred, is_summarized in chat_messages_seed:
+        mid = uid()
+        chat_msg_ids.append(mid)
         conn.execute(
-            "INSERT INTO chat_messages (id,session_id,role,content,created_at) VALUES (?,?,?,?,?)",
-            (uid(), session_id, role, content, now),
+            "INSERT INTO chat_messages (id,session_id,role,content,is_starred,is_summarized,created_at)"
+            " VALUES (?,?,?,?,?,?,?)",
+            (mid, session_id, role, content,
+             1 if is_starred else 0,
+             1 if is_summarized else 0,
+             now),
         )
 
     # ---- マップ ----
@@ -1813,6 +1851,480 @@ def seed(db_path: Path) -> None:
         conn.execute(
             "INSERT INTO lint_action_log (rule_id,action,scene_id,occurred_at) VALUES (?,?,?,?)",
             (rule_id, action, sid, now_ms),
+        )
+
+    # ================================================================
+    # デバッグ用追加データ（authorship / phase / version / chat / map 等）
+    # ================================================================
+
+    # ---- 既存 codex / snippet を補強（excluded_aliases / notes / source_chat_message_id） ----
+    conn.execute(
+        "UPDATE codex_entries SET excluded_aliases=?, notes=?, source_chat_message_id=? WHERE id=?",
+        (
+            json.dumps(["朱（あけ）", "音"], ensure_ascii=False),
+            "「朱」を単独で固有名詞として使う場合は除外。\n"
+            "「音」は他のキャラ（音羽）の短縮と衝突するため除外。",
+            chat_msg_ids[1],
+            akane_id,
+        ),
+    )
+    conn.execute(
+        "UPDATE snippets SET source_chat_message_id=? WHERE id=?",
+        (chat_msg_ids[1], snippet1_id),
+    )
+
+    # ---- codex_dismissed_relations ----
+    conn.execute(
+        "INSERT INTO codex_dismissed_relations (entry_id, dismissed_id) VALUES (?, ?)",
+        (akane_id, fuuya_id),
+    )
+
+    # ---- context_mode / children_budget の全バリアント網羅 ----
+    suppress_lore_id = uid()
+    conn.execute(
+        """INSERT INTO codex_entries
+           (id,project_id,type,name,aliases,summary,content,context_mode,children_budget,created_at,updated_at)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+        (
+            suppress_lore_id, project_id, "lore", "禁忌の名",
+            json.dumps(["きんきのな", "禁忌の名"], ensure_ascii=False),
+            "口にすると朱鬼の注意を引くとされる古い名。"
+            "[デバッグ用] context_mode=suppress を付けて AI コンテキストへの混入を抑制する典型例。",
+            doc_nodes(
+                para("作中で読者にだけ匂わせる固有名詞群。"
+                     "AI に提示するとプロットの先回り提案を誘発するため、context_mode=suppress で常時封印する。"),
+            ),
+            "suppress", "compact", now, now,
+        ),
+    )
+
+    hidden_char_id = uid()
+    conn.execute(
+        """INSERT INTO codex_entries
+           (id,project_id,type,name,aliases,summary,content,context_mode,children_budget,created_at,updated_at)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+        (
+            hidden_char_id, project_id, "character", "朱音の母（故人）",
+            json.dumps(["朱音の母", "母", "亡き母"], ensure_ascii=False),
+            "[ネタバレ・デバッグ用] 十年前の儀の真の主導者。"
+            "context_mode=hidden で UI に出すが AI には絶対送らない設定の確認用。",
+            doc_nodes(
+                para("プロットの最終ピース。第三部以降で開示する想定。"
+                     "context_mode=hidden で AI には決して見せない。"),
+            ),
+            "hidden", "compact", now, now,
+        ),
+    )
+
+    none_budget_loc_id = uid()
+    conn.execute(
+        """INSERT INTO codex_entries
+           (id,project_id,type,name,aliases,summary,content,context_mode,children_budget,created_at,updated_at)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+        (
+            none_budget_loc_id, project_id, "location", "都・北の大路",
+            json.dumps(["北の大路", "大路"], ensure_ascii=False),
+            "朝廷の建物が並ぶ通り。[デバッグ用] children_budget=none を確認するためのサンプル。",
+            doc_nodes(
+                para("舞台に名前は出るが、シーンの中心にはしない。"
+                     "children_budget=none で子要素の AI 露出を完全に切る確認用。"),
+            ),
+            "mentioned", "none", now, now,
+        ),
+    )
+
+    generous_budget_lore_id = uid()
+    conn.execute(
+        """INSERT INTO codex_entries
+           (id,project_id,type,name,aliases,summary,content,context_mode,children_budget,created_at,updated_at)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+        (
+            generous_budget_lore_id, project_id, "lore", "朱音の一族",
+            json.dumps(["朱音の一族", "朱紐使い", "紅の一族"], ensure_ascii=False),
+            "作中で繰り返し参照する基幹設定。"
+            "[デバッグ用] children_budget=generous で子要素を多めに渡す動作確認に使う。",
+            doc_nodes(
+                para("一族にまつわる伝承・系譜・儀式が複数あり、いずれも本筋に絡む。"
+                     "context 配信時は子要素を寛容に許可する。"),
+            ),
+            "mentioned", "generous", now, now,
+        ),
+    )
+
+    # ---- candidate payoff（payoff_confirmed=0 + payoff_scene_id 設定済み） ----
+    fs_candidate_id = uid()
+    conn.execute(
+        """INSERT INTO foreshadows
+           (id,project_id,title,intent,notes,payoff_scene_id,
+            payoff_from_pos,payoff_to_pos,payoff_confirmed,abandoned,
+            load_bearing,created_at,updated_at)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+        (
+            fs_candidate_id, project_id,
+            "饅頭の包み紙",
+            "音羽が差し出す饅頭の包み紙が朱音の母の家紋であることを後段で気付かせる。"
+            "[デバッグ用] payoff_confirmed=0 で payoff_scene_id 設定済みの「候補状態」を再現。",
+            "二章のビート3で初登場予定。setup を後付けする計画。",
+            scene2_id, None, None, 0, 0, "supporting",
+            fs_now_ms, fs_now_ms,
+        ),
+    )
+    conn.execute(
+        "INSERT INTO foreshadow_codex_links (foreshadow_id, codex_entry_id) VALUES (?, ?)",
+        (fs_candidate_id, otowa_id),
+    )
+
+    # ---- codex_entry_phases / codex_phase_detail_overrides ----
+    akane_phase_pre = uid()
+    conn.execute(
+        """INSERT INTO codex_entry_phases
+           (id,entry_id,anchor_node_id,label,summary_override,content_override,context_mode_override,created_at,updated_at)
+           VALUES (?,?,?,?,?,?,?,?,?)""",
+        (
+            akane_phase_pre, akane_id, None, "帰還前（都での十年）",
+            "都の記録師として静かに暮らしていた頃の朱音。朱紐を封印し、自分の力に触れないように生きている。",
+            None, "mentioned", now, now,
+        ),
+    )
+    akane_phase_post = uid()
+    akane_phase_post_content = doc_nodes(
+        para("帰還後の朱音は、感情を抑える癖がより強くなる。動揺するときほど無表情になる。"),
+        para("朱紐との接触をきっかけに、他人の記憶が時折流れ込んでくるようになっている。"),
+    )
+    conn.execute(
+        """INSERT INTO codex_entry_phases
+           (id,entry_id,anchor_node_id,label,summary_override,content_override,context_mode_override,created_at,updated_at)
+           VALUES (?,?,?,?,?,?,?,?,?)""",
+        (
+            akane_phase_post, akane_id, scene1_id, "帰還後（廃社で朱紐に再会）",
+            "廃社で朱紐に触れて以降の朱音。封じていた力が再び動き始め、十年前の記憶と向き合う段階に入る。",
+            akane_phase_post_content, "always", now, now,
+        ),
+    )
+    conn.execute(
+        "INSERT INTO codex_phase_detail_overrides (phase_id, definition_id, value) VALUES (?, ?, ?)",
+        (
+            akane_phase_post, def_ids["character.動機"],
+            "朱鬼を封じる。十年前に置き去りにした責任を取ること。",
+        ),
+    )
+
+    fuuya_phase = uid()
+    conn.execute(
+        """INSERT INTO codex_entry_phases
+           (id,entry_id,anchor_node_id,label,summary_override,content_override,context_mode_override,created_at,updated_at)
+           VALUES (?,?,?,?,?,?,?,?,?)""",
+        (
+            fuuya_phase, fuuya_id, scene3_id, "三章以降（朱音と再接触）",
+            "朱音が都に戻ったことを察知し、独自に行動を始めた段階。",
+            None, None, now, now,
+        ),
+    )
+
+    # ---- authorship_spans ----
+    # ProseMirror ドキュメント JSON から各段落のテキスト範囲を抽出
+    def _doc_para_ranges(doc_json: str) -> list[tuple[int, int]]:
+        doc = json.loads(doc_json)
+        pos = 0
+        ranges: list[tuple[int, int]] = []
+        for node in doc.get("content", []):
+            if node.get("type") == "paragraph":
+                text_start = pos + 1
+                text_len = sum(len(c.get("text", "")) for c in node.get("content", []))
+                ranges.append((text_start, text_start + text_len))
+                pos += 2 + text_len
+            else:
+                pos += 2
+        return ranges
+
+    # scene1: 段落単位で human / ai / unknown を混在
+    scene1_attribution_plan = [
+        # (paragraph_index, source, model, chat_msg_id)
+        (0,  "human",   None, None),
+        (1,  "human",   None, None),
+        (2,  "human",   None, None),
+        (3,  "ai",      "anthropic/claude-sonnet-4.6", chat_msg_ids[1]),
+        (4,  "ai",      "anthropic/claude-sonnet-4.6", chat_msg_ids[1]),
+        (5,  "human",   None, None),
+        (10, "ai",      "anthropic/claude-sonnet-4.6", chat_msg_ids[5]),
+        (11, "ai",      "anthropic/claude-sonnet-4.6", chat_msg_ids[5]),
+        (12, "human",   None, None),
+        (13, "unknown", None, None),
+        (14, "unknown", None, None),
+        (15, "human",   None, None),
+    ]
+    for idx, source, model, msg_id in scene1_attribution_plan:
+        if idx >= len(scene1_builder.paras):
+            continue
+        fp, tp = scene1_builder.paras[idx]
+        if fp >= tp:
+            continue
+        conn.execute(
+            """INSERT INTO authorship_spans
+               (id,node_id,from_pos,to_pos,source,model,timestamp,chat_msg_id)
+               VALUES (?,?,?,?,?,?,?,?)""",
+            (uid(), scene1_id, fp, tp, source, model, now, msg_id),
+        )
+
+    def _attribute_doc(owner_col: str, owner_id: str, content_text: str,
+                       source: str, model: str | None, msg_id: str | None,
+                       phase_col_id: str | None = None) -> None:
+        for fp, tp in _doc_para_ranges(content_text):
+            if fp >= tp:
+                continue
+            if phase_col_id is None:
+                conn.execute(
+                    f"INSERT INTO authorship_spans "
+                    f"(id,{owner_col},from_pos,to_pos,source,model,timestamp,chat_msg_id) "
+                    f"VALUES (?,?,?,?,?,?,?,?)",
+                    (uid(), owner_id, fp, tp, source, model, now, msg_id),
+                )
+            else:
+                conn.execute(
+                    f"INSERT INTO authorship_spans "
+                    f"(id,{owner_col},phase_id,from_pos,to_pos,source,model,timestamp,chat_msg_id) "
+                    f"VALUES (?,?,?,?,?,?,?,?,?)",
+                    (uid(), owner_id, phase_col_id, fp, tp, source, model, now, msg_id),
+                )
+
+    snip1_content_row = conn.execute(
+        "SELECT content FROM snippets WHERE id=?", (snippet1_id,)
+    ).fetchone()
+    _attribute_doc("snippet_id", snippet1_id, snip1_content_row[0],
+                   "human", None, chat_msg_ids[1])
+    snip2_content_row = conn.execute(
+        "SELECT content FROM snippets WHERE id=?", (snippet2_id,)
+    ).fetchone()
+    _attribute_doc("snippet_id", snippet2_id, snip2_content_row[0],
+                   "ai", "anthropic/claude-sonnet-4.6", None)
+
+    akane_doc_row = conn.execute(
+        "SELECT content FROM codex_entries WHERE id=?", (akane_id,)
+    ).fetchone()
+    _attribute_doc("codex_entry_id", akane_id, akane_doc_row[0], "human", None, None)
+
+    # 朱音 codex の「動機」detail_value を AI 由来としてマーク
+    motive_row = conn.execute(
+        "SELECT id, value FROM codex_detail_values WHERE entry_id=? AND definition_id=?",
+        (akane_id, def_ids["character.動機"]),
+    ).fetchone()
+    if motive_row is not None:
+        motive_id, motive_val = motive_row
+        conn.execute(
+            """INSERT INTO authorship_spans
+               (id,detail_value_id,from_pos,to_pos,source,model,timestamp,chat_msg_id)
+               VALUES (?,?,?,?,?,?,?,?)""",
+            (uid(), motive_id, 0, len(motive_val or ""),
+             "ai", "anthropic/claude-sonnet-4.6", now, chat_msg_ids[1]),
+        )
+
+    # phase の content_override 内の AI 編集スパン（phase_id + codex_entry_id 両方必要）
+    _attribute_doc("codex_entry_id", akane_id, akane_phase_post_content,
+                   "ai", "anthropic/claude-sonnet-4.6", chat_msg_ids[5],
+                   phase_col_id=akane_phase_post)
+
+    # ---- content_versions / project_snapshots ----
+    scene1_v1_id = uid()
+    conn.execute(
+        """INSERT INTO content_versions
+           (id,entity_type,entity_id,content,version_number,snapshot_type,created_at)
+           VALUES (?,?,?,?,?,?,?)""",
+        (scene1_v1_id, "scene", scene1_id,
+         doc_nodes(
+             para("【初稿】"),
+             para("朱音は鳥居の前で立ち止まった。十年ぶりだった。"),
+             para("廃社は思っていたより小さかった。"),
+         ),
+         1, "auto", now),
+    )
+    scene1_v2_id = uid()
+    conn.execute(
+        """INSERT INTO content_versions
+           (id,entity_type,entity_id,content,version_number,snapshot_type,created_at)
+           VALUES (?,?,?,?,?,?,?)""",
+        (scene1_v2_id, "scene", scene1_id,
+         doc_nodes(
+             para("雨の匂いがした。"),
+             para("朱音は鳥居の手前で立ち止まった。十年ぶりだった。"),
+             para("廃社は思っていたより小さかった。記憶の中では大きな建物だったが、目の前には残骸だけがある。"),
+             para("拝殿の扉は錠前ごと落ちていた。"),
+         ),
+         2, "auto", now),
+    )
+    scene1_v3_id = uid()
+    conn.execute(
+        """INSERT INTO content_versions
+           (id,entity_type,entity_id,content,version_number,snapshot_type,created_at)
+           VALUES (?,?,?,?,?,?,?)""",
+        (scene1_v3_id, "scene", scene1_id,
+         doc_nodes(
+             para("雨の匂いがした。土と腐葉土と、かすかな煙の残滓。"),
+             para("朱音は鳥居の手前で立ち止まった。十年ぶりだった。"),
+             para("拝殿の扉は施錠されていなかった。錠前はあったが、錠前ごと落ちていた。"),
+             para("祭壇の前に、赤い紐があった。"),
+         ),
+         3, "manual", now),
+    )
+
+    akane_v1_id = uid()
+    conn.execute(
+        """INSERT INTO content_versions
+           (id,entity_type,entity_id,content,version_number,snapshot_type,created_at)
+           VALUES (?,?,?,?,?,?,?)""",
+        (akane_v1_id, "codex_entry", akane_id,
+         doc_nodes(
+             para("朱音は二十代後半。都の記録所に勤めて十年。"),
+             para("朱紐使いの一族の末裔。だが今はそれを忘れたふりをして生きている。"),
+         ),
+         1, "auto", now),
+    )
+
+    snapshot_id = uid()
+    conn.execute(
+        """INSERT INTO project_snapshots (id, project_id, name, description, created_at)
+           VALUES (?,?,?,?,?)""",
+        (snapshot_id, project_id, "第一部・初稿チェックポイント",
+         "第一部の初稿が一通り揃ったタイミングのスナップショット。", now),
+    )
+    for vid in (scene1_v3_id, akane_v1_id):
+        conn.execute(
+            "INSERT INTO project_snapshot_entries (snapshot_id, version_id) VALUES (?, ?)",
+            (snapshot_id, vid),
+        )
+
+    # ---- chat_summaries / chat_summary_messages ----
+    summary_id = uid()
+    conn.execute(
+        """INSERT INTO chat_summaries (id, session_id, summary, token_count, created_at)
+           VALUES (?,?,?,?,?)""",
+        (summary_id, session_id,
+         "朱音の語り口（感情を抑え、行動と所作で内面を示す）について議論。"
+         "AI が「三つ数えてから」という所作モチーフを提案し、朱音の状態のバロメーターとして使う方針で合意。",
+         220, now),
+    )
+    for mid in chat_msg_ids[:4]:
+        conn.execute(
+            "INSERT INTO chat_summary_messages (summary_id, message_id) VALUES (?, ?)",
+            (summary_id, mid),
+        )
+
+    # ---- chat_session_pinned_codex ----
+    conn.execute(
+        """INSERT INTO chat_session_pinned_codex
+           (id,session_id,codex_entry_id,snippet_id,with_children,pin_source,created_at)
+           VALUES (?,?,?,NULL,?,?,?)""",
+        (uid(), session_id, akane_id, 1, "manual", now),
+    )
+    conn.execute(
+        """INSERT INTO chat_session_pinned_codex
+           (id,session_id,codex_entry_id,snippet_id,with_children,pin_source,created_at)
+           VALUES (?,?,NULL,?,?,?,?)""",
+        (uid(), session_id, snippet1_id, 0, "chat_mention", now),
+    )
+
+    # ---- 追加チャットセッション（空セッション・別シーン紐付け） ----
+    empty_session_id = uid()
+    conn.execute(
+        """INSERT INTO chat_sessions (id,project_id,node_id,title,title_manual,model,created_at,updated_at)
+           VALUES (?,?,?,?,?,?,?,?)""",
+        (empty_session_id, project_id, scene2_id, "新しい会話", 0,
+         "openrouter/anthropic/claude-sonnet-4.6", now, now),
+    )
+
+    flashback_session_id = uid()
+    conn.execute(
+        """INSERT INTO chat_sessions (id,project_id,node_id,title,title_manual,model,created_at,updated_at)
+           VALUES (?,?,?,?,?,?,?,?)""",
+        (flashback_session_id, project_id, scene_flashback_id,
+         "回想シーンの叫び声の主候補", 1,
+         "openrouter/anthropic/claude-sonnet-4.6", now, now),
+    )
+    for role, text in [
+        ("user", "回想で「離れろ」と叫ぶのは誰がいいでしょうか。冬弥/母/朱鬼の三択で揺れています。"),
+        ("assistant",
+         "三択それぞれに違うテーマが立ちます。\n"
+         "・冬弥：『助けたが助けきれなかった』後悔。第二部の主軸になる。\n"
+         "・母  ：『最後に守ろうとした』記憶。情緒に寄る。\n"
+         "・朱鬼：『記憶を喰う前の警告』。設定のフックが太くなる。\n"
+         "迷うなら、いったん冬弥で書いて、二章執筆中の手応えで判断するのが現実的です。"),
+    ]:
+        conn.execute(
+            "INSERT INTO chat_messages (id,session_id,role,content,created_at) VALUES (?,?,?,?,?)",
+            (uid(), flashback_session_id, role, text, now),
+        )
+
+    # ---- map_ai_nodes と 2 つ目の map board ----
+    ai_node_id = uid()
+    conn.execute(
+        """INSERT INTO map_ai_nodes
+           (id,board_id,prompt,response,session_id,model,token_usage,created_at,updated_at)
+           VALUES (?,?,?,?,?,?,?,?,?)""",
+        (ai_node_id, board_id,
+         "朱音と冬弥の最初の対峙シーンで、二人のどちらが先に口を開くべき？",
+         "朱音から先に口を開かせると緊張の主導権が朱音に渡る。"
+         "冬弥から先に口を開かせると朱音の沈黙が読者に重みを持つ。"
+         "朱音を『言わない人』として描くなら後者が効く。",
+         session_id, "anthropic/claude-sonnet-4.6", 412, now, now),
+    )
+    pos_ai_id = uid()
+    conn.execute(
+        """INSERT INTO map_node_positions
+           (id,board_id,node_ref_type,ai_node_id,x,y,created_at,updated_at)
+           VALUES (?,?,?,?,?,?,?,?)""",
+        (pos_ai_id, board_id, "ai", ai_node_id, 920.0, 580.0, now, now),
+    )
+    map_edge(pos_ai_id, pos_s3, label="検討", style="dashed", color="#999999")
+
+    board2_id = uid()
+    conn.execute(
+        """INSERT INTO map_boards (id, project_id, title, sort_order, created_at, updated_at)
+           VALUES (?,?,?,?,?,?)""",
+        (board2_id, project_id, "タイムライン視覚化", 1.0, now, now),
+    )
+    for sid_, y in [
+        (scene_flashback_id, 0.0),
+        (scene1_id, 200.0),
+        (scene_payoff_id, 400.0),
+        (scene2_id, 600.0),
+        (scene3_id, 800.0),
+    ]:
+        conn.execute(
+            """INSERT INTO map_node_positions
+               (id,board_id,node_ref_type,tree_node_id,x,y,created_at,updated_at)
+               VALUES (?,?,?,?,?,?,?,?)""",
+            (uid(), board2_id, "scene", sid_, 200.0, y, now, now),
+        )
+    conn.execute(
+        """INSERT INTO map_frames
+           (id,board_id,title,x,y,width,height,background,border_color,z_index,created_at,updated_at)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+        (uid(), board2_id, "物語時系列（読み順とは独立）",
+         100.0, -60.0, 280.0, 980.0,
+         "#fff8f0", "#ccaa88", -1, now, now),
+    )
+
+    # ---- status バリアント網羅用の追加シーン ----
+    for title, syn, status_, sort, story in [
+        ("番外：朱紐の起源（complete）",
+         "朱紐がどこから来たかを書いた短い章。完成済みフラグの確認用。",
+         "complete", "z1", "前史"),
+        ("番外：陰陽寮の地下（revision）",
+         "陰陽寮の封書庫を初めて描く章。改稿待ち。",
+         "revision", "z2", "十年後・初冬"),
+        ("番外：燃えた夜の祝詞（final）",
+         "回想で母が唱えていた祝詞の全文。校了済み。",
+         "final", "z3", "十年前・夏の夜"),
+    ]:
+        sid = uid()
+        conn.execute(
+            """INSERT INTO tree_nodes
+               (id,project_id,parent_id,node_type,title,synopsis,sort_order,story_time_order,story_time_label,
+                pov_character_id,location_id,status,content,created_at,updated_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (sid, project_id, notes_folder_id, "scene", title, syn, sort, sort, story,
+             akane_id, None, status_,
+             doc_nodes(para(f"【{status_} ステータス確認用のサンプル本文】")),
+             now, now),
         )
 
     conn.commit()
