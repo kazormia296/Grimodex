@@ -49,7 +49,7 @@ def heading(level: int, text: str) -> dict:
 
 
 def doc_nodes(*nodes) -> str:
-    return json.dumps({"type": "doc", "content": list(nodes)})
+    return json.dumps({"type": "doc", "content": list(nodes)}, ensure_ascii=False)
 
 
 # 伏線マーク付きの段落構築ヘルパー。
@@ -91,7 +91,7 @@ class _DocBuilder:
         return self
 
     def to_json(self) -> str:
-        return json.dumps({"type": "doc", "content": self.content})
+        return json.dumps({"type": "doc", "content": self.content}, ensure_ascii=False)
 
 
 def setup_mark(setup_id: str, foreshadow_id: str) -> dict:
@@ -814,12 +814,12 @@ def seed(db_path: Path) -> None:
     for type_slug, name, field_type, field_config, sort_order, include in [
         ("character", "役割",   "text",     None, 1.0, 1),
         ("character", "立場",   "dropdown",
-         json.dumps({"options": ["主人公", "敵対者", "協力者", "中立"]}),
+         json.dumps({"options": ["主人公", "敵対者", "協力者", "中立"]}, ensure_ascii=False),
          2.0, 1),
         ("character", "動機",   "text",     None, 3.0, 0),
         ("location",  "地域",   "text",     None, 1.0, 1),
         ("item",      "状態",   "dropdown",
-         json.dumps({"options": ["現存", "紛失", "封印中", "破壊済"]}),
+         json.dumps({"options": ["現存", "紛失", "封印中", "破壊済"]}, ensure_ascii=False),
          1.0, 1),
     ]:
         did = uid()
@@ -855,7 +855,7 @@ def seed(db_path: Path) -> None:
            VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
         (
             akane_id, project_id, "character", "朱音",
-            json.dumps(["あかね", "朱音", "朱紐使い", "紅の娘"]),
+            json.dumps(["あかね", "朱音", "朱紐使い", "紅の娘"], ensure_ascii=False),
             "朱紐を操る一族の最後の生き残り。十年間、都で記録師として生きてきた。"
             "故郷の廃社が燃えたという知らせを受け、十年ぶりに桐野へ帰る。",
             doc_nodes(
@@ -888,7 +888,7 @@ def seed(db_path: Path) -> None:
            VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
         (
             fuuya_id, project_id, "character", "冬弥",
-            json.dumps(["ふゆや", "冬弥", "冬の陰陽師", "陰陽寮の術師"]),
+            json.dumps(["ふゆや", "冬弥", "冬の陰陽師", "陰陽寮の術師"], ensure_ascii=False),
             "陰陽寮に属する術師。表向きは官僚だが、朱鬼の動向を独自に追っている。"
             "朱音の一族とは十年前から因縁がある。",
             doc_nodes(
@@ -920,7 +920,7 @@ def seed(db_path: Path) -> None:
            VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
         (
             shuki_id, project_id, "character", "朱鬼",
-            json.dumps(["しゅき", "朱鬼", "記憶喰い", "赤い影", "あの鬼"]),
+            json.dumps(["しゅき", "朱鬼", "記憶喰い", "赤い影", "あの鬼"], ensure_ascii=False),
             "人の記憶を喰らい、その人物に成り代わる鬼。十年前の廃社の火事に関わっている。"
             "現在の居場所は不明。",
             doc_nodes(
@@ -955,7 +955,7 @@ def seed(db_path: Path) -> None:
            VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
         (
             otowa_id, project_id, "character", "音羽",
-            json.dumps(["おとわ", "音羽", "音羽の娘", "薬師の音羽"]),
+            json.dumps(["おとわ", "音羽", "音羽の娘", "薬師の音羽"], ensure_ascii=False),
             "朱音の幼なじみ。今は桐野で薬師をしている。"
             "十年間、朱音が帰ってくるのを待っていた。待っていたことを本人は認めない。",
             doc_nodes(
@@ -984,7 +984,7 @@ def seed(db_path: Path) -> None:
            VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
         (
             miyako_id, project_id, "location", "都",
-            json.dumps(["みやこ", "都", "帝都", "京"]),
+            json.dumps(["みやこ", "都", "帝都", "京"], ensure_ascii=False),
             "陰陽寮と朝廷がある政治の中心。表向きは平穏だが、朱鬼の影が近づいている。"
             "朱音が十年間暮らした場所。",
             doc_nodes(
@@ -1010,7 +1010,7 @@ def seed(db_path: Path) -> None:
            VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
         (
             onmyoryo_id, project_id, miyako_id, "location", "陰陽寮",
-            json.dumps(["おんみょうりょう", "陰陽寮", "寮", "術師の寮"]),
+            json.dumps(["おんみょうりょう", "陰陽寮", "寮", "術師の寮"], ensure_ascii=False),
             "都にある官営の呪術機関。朱鬼に関する記録を秘密裏に保管している。"
             "冬弥の職場。",
             doc_nodes(
@@ -1035,7 +1035,7 @@ def seed(db_path: Path) -> None:
            VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
         (
             kirino_id, project_id, "location", "桐野",
-            json.dumps(["きりの", "桐野", "朱音の故郷", "山の村"]),
+            json.dumps(["きりの", "桐野", "朱音の故郷", "山の村"], ensure_ascii=False),
             "朱音の故郷の山村。廃社がある。十年前の火事以来、村の人口は減り続けている。",
             doc_nodes(
                 para("桐野は都から三日の山道を行った先にある、小さな村だ。杉の木が多く、"
@@ -1060,7 +1060,7 @@ def seed(db_path: Path) -> None:
            VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
         (
             haisha_id, project_id, kirino_id, "location", "桐野の廃社",
-            json.dumps(["廃社", "はいしゃ", "桐野の社", "朱音の廃社", "拝殿", "社"]),
+            json.dumps(["廃社", "はいしゃ", "桐野の社", "朱音の廃社", "拝殿", "社"], ensure_ascii=False),
             "朱音の一族が代々守ってきた山中の社。十年前の火事で本殿が焼け、今は誰も参拝しない。"
             "祭壇には朱音が置いていった朱紐が残っていた。",
             doc_nodes(
@@ -1084,7 +1084,7 @@ def seed(db_path: Path) -> None:
            VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
         (
             akahimo_id, project_id, "item", "朱紐",
-            json.dumps(["あかひも", "朱紐", "朱の紐", "封じ紐", "赤い紐"]),
+            json.dumps(["あかひも", "朱紐", "朱の紐", "封じ紐", "赤い紐"], ensure_ascii=False),
             "朱音の一族が代々受け継いできた赤い紐。鬼を縛り、記憶を封じる力がある。"
             "朱音が十年前に廃社の祭壇に置いていったもの。",
             doc_nodes(
@@ -1113,7 +1113,7 @@ def seed(db_path: Path) -> None:
            VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
         (
             fuujibumi_id, project_id, "item", "封じ文",
-            json.dumps(["ふうじぶみ", "封じ文", "封書", "あの文"]),
+            json.dumps(["ふうじぶみ", "封じ文", "封書", "あの文"], ensure_ascii=False),
             "廃社の祭壇で朱音が見つけた封書。朱音の名と、朱縄の儀に関わる指示が書かれている。"
             "差出人は不明。",
             doc_nodes(
@@ -1142,7 +1142,7 @@ def seed(db_path: Path) -> None:
            VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
         (
             akanawa_id, project_id, "lore", "朱縄の儀",
-            json.dumps(["あかなわのぎ", "朱縄の儀", "封じの儀", "儀式"]),
+            json.dumps(["あかなわのぎ", "朱縄の儀", "封じの儀", "儀式"], ensure_ascii=False),
             "朱音の一族が百年以上行ってきた鬼封じの儀式。朱紐を使い、鬼の記憶ごと封じ込める。"
             "最後の完全な儀は十年前に失敗した。",
             doc_nodes(
@@ -1167,7 +1167,7 @@ def seed(db_path: Path) -> None:
            VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
         (
             kioku_mon_id, project_id, "lore", "記憶の門",
-            json.dumps(["きおくのもん", "記憶の門", "門", "赤い門"]),
+            json.dumps(["きおくのもん", "記憶の門", "門", "赤い門"], ensure_ascii=False),
             "朱鬼が記憶を喰うとき開く、目に見えない入口。一度開くと朱縄がなければ閉じられない。"
             "開いたままの門は、周囲の人間の記憶を少しずつ侵食する。",
             doc_nodes(
@@ -1193,7 +1193,7 @@ def seed(db_path: Path) -> None:
         """INSERT INTO tree_nodes (id,project_id,parent_id,node_type,title,sort_order,content,created_at,updated_at)
            VALUES (?,?,NULL,?,?,?,?,?,?)""",
         (part1_id, project_id, "folder", "第一部：帰還", "a0",
-         json.dumps({"type": "doc", "content": []}), now, now),
+         json.dumps({"type": "doc", "content": []}, ensure_ascii=False), now, now),
     )
 
     # 伏線レジスタ用 ID をシーン本文構築前に確定
@@ -1393,7 +1393,7 @@ def seed(db_path: Path) -> None:
         """INSERT INTO tree_nodes (id,project_id,parent_id,node_type,title,sort_order,content,created_at,updated_at)
            VALUES (?,?,NULL,?,?,?,?,?,?)""",
         (part2_id, project_id, "folder", "第二部：朱の道", "a1",
-         json.dumps({"type": "doc", "content": []}), now, now),
+         json.dumps({"type": "doc", "content": []}, ensure_ascii=False), now, now),
     )
 
     scene3_id = uid()
@@ -1425,7 +1425,7 @@ def seed(db_path: Path) -> None:
         """INSERT INTO tree_nodes (id,project_id,parent_id,node_type,title,sort_order,content,created_at,updated_at)
            VALUES (?,?,NULL,?,?,?,?,?,?)""",
         (notes_folder_id, project_id, "folder", "覚書", "z0",
-         json.dumps({"type": "doc", "content": []}), now, now),
+         json.dumps({"type": "doc", "content": []}, ensure_ascii=False), now, now),
     )
 
     research_note_id = uid()
@@ -2350,7 +2350,7 @@ def main() -> None:
     meta_dir = output_dir / ".grimodex"
     meta_dir.mkdir(exist_ok=True)
     (meta_dir / "workspace.json").write_text(
-        json.dumps({"id": str(uuid.uuid4()), "created_at": ts()}, indent=2)
+        json.dumps({"id": str(uuid.uuid4()), "created_at": ts()}, indent=2, ensure_ascii=False)
     )
 
     db_path = output_dir / "grimodex.db"
