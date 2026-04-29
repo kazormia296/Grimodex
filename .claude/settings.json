@@ -45,10 +45,20 @@
       "Bash(git push -f *)",
       "Bash(git push --force *)",
       "Bash(git reset --hard *)",
+      "Bash(git reset --hard)",
       "Bash(git checkout .)",
+      "Bash(git checkout -- *)",
+      "Bash(git restore *)",
+      "Bash(git apply *)",
+      "Bash(git apply)",
+      "Bash(git am *)",
+      "Bash(git am)",
       "Bash(git clean -f *)",
       "Bash(git clean -fd *)",
       "Bash(git clean -fdx *)",
+      "Bash(sed -i *)",
+      "Bash(perl -i *)",
+      "Bash(patch *)",
       "Bash(git add .)",
       "Bash(git add -A*)",
       "Bash(npm publish *)",
@@ -116,6 +126,10 @@
           {
             "type": "command",
             "command": "${CLAUDE_PROJECT_DIR}/.claude/hooks/block-push-to-main.sh"
+          },
+          {
+            "type": "command",
+            "command": "${CLAUDE_PROJECT_DIR}/.claude/hooks/block-sensitive-bash-writes.sh"
           }
         ]
       }
