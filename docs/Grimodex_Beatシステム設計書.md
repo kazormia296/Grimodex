@@ -194,6 +194,7 @@ Subplot 専用タイプは追加せず、既存の `lore` タイプ + `#subplot`
 | ノード自体の削除 | `appendTransaction` で消失を検出。リンク Beat 側の操作は不要（ノードが無いこと自体が「生成 prose 不在」を意味する） |
 | 境界跨ぎ削除（外側からの段落結合等） | `defining: true` により結合が抑止される。ユーザーが意図して block を解体した場合は unwrap として扱い、AuthorshipMark は維持 |
 | Beat ノードと `generatedProseBlock` の間に他ノード挿入 | 両者は離れるが、`beatId` のリンクは保たれる。`Regenerate` 時は doc を走査して beatId 一致の block を見つける |
+| ブロック内の最後の段落を Backspace で削除 | `content: 'block+'` の制約により、最後の child を消すとブロック自体が PM によって自動削除される。`appendTransaction` は「ノード自体の削除」と同じパスでこのケースを検出する |
 
 **`Regenerate` の挙動:**
 
@@ -399,8 +400,8 @@ Unplaced beat には `Generate` ボタンを表示しない（本文中の位置
    - **追加**: この beat の POV（`attrs.pov` がセットされていればそれ、null ならシーン POV を継承）。AI に「この beat は X の視点で書く」と明示
    - **追加（条件付き）**: 自分より後ろの Placed beat および全ての Unplaced beat を「予定されているビート」として注入（Settings で切替可能、default: ON）
 3. Vercel AI SDK でストリーミング生成
-4. Beat ノードの**直後**に空の `generatedProseBlock`（`beatId = sceneBeat.attrs.id`）を挿入
-5. ストリーミングで届くテキストを `generatedProseBlock` 内に追記しつつ、各 text node に **AuthorshipMark='ai'** を自動付与（既存機構）
+4. Beat ノードの**直後**に `generatedProseBlock`（`beatId = sceneBeat.attrs.id`、内部に空の段落1個）を挿入。schema は `content: 'block+'` のため子ゼロのブロックは許可されない（PM の schema validation で reject される）。`defining: true` の境界保護を維持するため、空状態を `block*` に緩めるのではなく **必ず初期段落1個を持たせて挿入** する
+5. ストリーミングで届くテキストを上記初期段落に追記しつつ、各 text node に **AuthorshipMark='ai'** を自動付与（既存機構）。段落跨ぎが必要になったら通常の paragraph split で次段落をブロック内に追加
 6. ブロックの存在自体が「生成済み」を表すため、Beat ノード側のフラグ更新は不要
 
 ### 生成失敗時の挙動
@@ -532,6 +533,7 @@ Unplaced beat には `Generate` ボタンを表示しない（本文中の位置
 - [ ] TipTap カスタムノード `generatedProseBlock` の実装（`group: 'block'`、`content: 'block+'`、`defining: true`、`attrs`: `beatId` / `modified`）
 - [ ] `appendTransaction`: `generatedProseBlock` 内の編集を検出して `modified=true` に倒す
 - [ ] **Codex メンション拡張を SceneEditor に登録**: `ChatMentionExtension` と同等のメンション拡張（または共通化したもの）を SceneEditor の Extensions リストに追加。`sceneBeat` ノードは `inline*` content のため、Mention（`group: 'inline'`）はそのまま動作する想定だが、Phase A の最初に挿入動作を検証すること
+- [ ] **Mention Extension の suggestion provider 戦略**: Chat input / SceneEditor 本文 / Unplaced beat editor の3か所で同一の Mention Node を共有する一方、suggestion 候補のソース（pinned codex の優先度、検索範囲、自動 trigger）は文脈で異なる可能性がある。Phase A は「3か所すべて Chat と同一の suggestion provider を流用」で進め、provider のプラガブル化は Phase B 以降に分離する。Phase A 着手時に Chat の `ChatMentionExtension` の suggestion provider が他文脈で問題なく動くかを最初に検証
 - [ ] Beat の角括弧記法ハイライト（Decoration、視覚的強調のみ）
 - [ ] paste ハンドラ: シーン内 ID 重複検出と再採番、対応 beat 不在の `generatedProseBlock` を unwrap（中身の段落と AuthorshipMark は維持）
 
@@ -554,7 +556,8 @@ Unplaced beat には `Generate` ボタンを表示しない（本文中の位置
 
 **D&D による状態遷移:**
 - [ ] Unplaced → Placed: フロントで `unplaced_beats_doc` から要素を pop、本文 EditorView に `sceneBeat` を挿入する PM transaction を発行、両者を1リクエストでバックエンドに保存（@dnd-kit + ProseMirror Bridge）
-- [ ] Placed → Unplaced: 逆方向。本文から `sceneBeat`（および隣接 `generatedProseBlock` があれば）を抽出し、Unplaced 側に push。`generatedProseBlock` の中身は本文中にそのまま残す or Unplaced 側に運ぶ — 暫定方針：**本文中に prose を残し、Beat だけ Unplaced へ戻す**（`generatedProseBlock` は `appendTransaction` で beatId 不在を検出して unwrap）
+- [ ] Placed → Unplaced: 逆方向。**本文の `sceneBeat` ノードのみ**を抽出して Unplaced 側に push（attrs と inline content だけを `unplaced_beats_doc` の新規エントリに変換）。隣接していた `generatedProseBlock` は **本文中にそのまま残す**が、`beatId` 参照先の sceneBeat は本文から消えるため、`appendTransaction` で beatId 不在を検出して `generatedProseBlock` を unwrap（中身の段落と AuthorshipMark は維持される）
+- [ ] **v1 制限の明文化**: 一度 Unplaced へ戻した beat を再度 Placed に戻しても、unwrap 済みの旧生成段落と再 Placed beat の連結は復元されない（unwrap で `beatId` リンクが切れるため）。次に Regenerate を押すと「対応 `generatedProseBlock` 不在 → Beat 直後に新規挿入」となり、旧生成段落は本文中に通常段落として残ったまま新しい生成 prose が並ぶ。これは `Convert to text` に類似する**片道変換**として扱う。Phase A の UX 仕様に明記し、Unplace ボタン押下時の確認トーストにも反映する
 
 **保存ペイロード（フロント側で計算してバックエンドに送る）:**
 - [ ] `tree_nodes.content`（本文 PM JSON）
