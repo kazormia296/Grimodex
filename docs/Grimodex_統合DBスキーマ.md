@@ -48,6 +48,8 @@ ORM: Drizzle ORM（sqlite-proxy）
 | `map_edges` | 通常 | Map | ユーザー描画エッジ |
 | `map_frames` | 通常 | Map | フレーム（グループ化矩形） |
 | `map_ai_nodes` | 通常 | Map | Map専用AIノード |
+| `scene_codex_pins` | 通常 | Matrix / Grid | シーン × Codex の明示的リレーション（Pin to scene、Add scene with codex の保存先） |
+| `scene_codex_mentions` | 通常 | Matrix | シーン × Codex の言及スキャンキャッシュ（source 別: body/beat/relation、role 別: mentioned/actor/target/pov） |
 
 ---
 
@@ -195,6 +197,9 @@ CREATE TABLE tree_nodes (
                                             -- Sceneのみ: POVキャラクター（codex_entries.type='character'）。型整合性はアプリ層で保証
   location_id       TEXT REFERENCES codex_entries(id) ON DELETE SET NULL,
                                             -- Sceneのみ: 主要ロケーション（codex_entries.type='location'）。型整合性はアプリ層で保証
+  unplaced_beat_preview TEXT,               -- Sceneのみ: TipTap ドキュメント先頭の unplacedBeats コンテナ
+                                            -- から抽出した先頭3 beat の冒頭40文字を JSON 配列で保持。
+                                            -- Grid パネルカード描画に使用。シーン保存時に自動更新（Grid 設計書参照）
   created_at        TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at        TEXT NOT NULL DEFAULT (datetime('now'))
 );
@@ -1291,3 +1296,77 @@ CREATE INDEX idx_map_ai_board ON map_ai_nodes(board_id);
 - v1 では追加ボードの作成を禁止（UIに追加ボタンを出さない）
 - v2 で複数ボード対応時に `map_boards` の `sort_order` インデックスと UI を追加
 - `global-settings.json` に保存していた `sceneDisplayByMode` / `colorBy` / `corkboardFeel` は v2 で `map_boards` テーブルへ移行予定
+
+---
+
+## Matrix / Grid パネル導入に伴う追加（2026-04-30）
+
+Matrix（シーン × Codex のクロス表）と Grid（Chapter 単位のカード列ビュー）の Phase A 実装に伴い、以下のテーブル / カラムを追加する。詳細は [Matrix パネル設計書](./Grimodex_Matrixパネル設計書.md) と [Grid パネル設計書](./Grimodex_Gridパネル設計書.md) を参照。
+
+### scene_codex_pins
+
+シーン × Codex の**明示的リレーション**。Matrix の「Pin to scene」「Add scene to chapter (with this codex)」、Grid のカード Codex チップの保存先。Codex Quick の project-wide pin（既存 `codex_quick_pins`）とは別物。
+
+```sql
+CREATE TABLE scene_codex_pins (
+  scene_id        TEXT NOT NULL REFERENCES tree_nodes(id) ON DELETE CASCADE,
+  codex_entry_id  TEXT NOT NULL REFERENCES codex_entries(id) ON DELETE CASCADE,
+  created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+  PRIMARY KEY (scene_id, codex_entry_id)
+);
+
+CREATE INDEX idx_scene_codex_pins_by_scene ON scene_codex_pins(scene_id);
+CREATE INDEX idx_scene_codex_pins_by_codex ON scene_codex_pins(codex_entry_id);
+```
+
+このテーブルは下記 `scene_codex_mentions` キャッシュの `source = 'relation'` 行の一次ソースになる（同期更新）。
+
+### scene_codex_mentions
+
+シーン × Codex の**言及スキャンキャッシュ**。Matrix が表示時に毎回全走査するのを避けるための永続化キャッシュ。`source` カラムで根拠を区別し、`role` カラムで Beat メンション役割（Phase B 以降で値を埋める）を保持する。
+
+```sql
+CREATE TABLE scene_codex_mentions (
+  scene_id         TEXT NOT NULL REFERENCES tree_nodes(id) ON DELETE CASCADE,
+  codex_entry_id   TEXT NOT NULL REFERENCES codex_entries(id) ON DELETE CASCADE,
+  mention_count    INTEGER NOT NULL DEFAULT 0,
+  last_scanned_at  TEXT NOT NULL DEFAULT (datetime('now')),
+  source           TEXT NOT NULL,                      -- 'body' | 'beat' | 'relation'
+  role             TEXT NOT NULL DEFAULT 'mentioned',  -- 'mentioned' | 'actor' | 'target' | 'pov'
+  PRIMARY KEY (scene_id, codex_entry_id, source, role)
+);
+
+CREATE INDEX idx_scene_codex_mentions_by_scene ON scene_codex_mentions(scene_id);
+CREATE INDEX idx_scene_codex_mentions_by_codex ON scene_codex_mentions(codex_entry_id);
+```
+
+更新タイミング：
+
+- **シーン保存時**: 該当シーン行を全 Codex に対して再計算（既存の保存パイプラインに hook）
+- **Codex エントリ追加 / rename / alias 変更**: 全シーンに対して該当列を非同期スキャン
+- **Codex エントリ削除**: `ON DELETE CASCADE` で自動削除
+- **scene_codex_pins 変更**: 該当ペアの `source = 'relation'` 行を同期更新
+
+### tree_nodes.unplaced_beat_preview（カラム追加）
+
+Grid のカードに表示する Unplaced beat 冒頭3件のキャッシュ。Beat システム設計書 Phase A の `unplacedBeats` ノード保存時に、シーン保存パイプラインがバックエンドで抽出して書き込む。値が NULL のシーンは表示時に lazy 計算してキャッシュに書き戻す。
+
+```sql
+ALTER TABLE tree_nodes ADD COLUMN unplaced_beat_preview TEXT;
+-- 値の形式: '["雨の夜、廃社の前で立ち止まる朱音","祭壇に置かれた朱紐","..."]'
+-- NULL or '[]' なら Grid カードに beat 行は描画しない
+```
+
+### Beat システム設計書との関係
+
+Beat ノード自体（`sceneBeat` / `unplacedBeats`）は **TipTap ProseMirror JSON 内のカスタムノード**として `tree_nodes.content` に保存される。**専用テーブルは作らない**。生成統計（プロンプトトークン数、モデル名）の永続化が必要になった場合のみ、将来 `scene_beats` テーブルを別途追加する余地を残す（v1 では実装しない、Beat システム設計書 Phase E 参照）。
+
+### Subplot のスキーマ変更は不要
+
+Subplot は Codex の `lore` タイプ + `#subplot` タグで運用するため、新規テーブル / カラムは不要。`codex_tags` / `codex_entry_tags` の既存仕組みをそのまま使う。Settings の `subplotTagName`（global-settings.json）でタグ名のカスタマイズに対応する。
+
+### 初期化・マイグレーション方針
+
+- 既存プロジェクトには `unplaced_beat_preview` を `NULL` で追加（次回シーン保存時に自動更新）
+- `scene_codex_pins` / `scene_codex_mentions` は空のテーブルとして作成（既存データ移行は不要）
+- Matrix / Grid を最初に開いたとき、未スキャンシーンを検出すると進捗バナーを出してバックグラウンドスキャンする

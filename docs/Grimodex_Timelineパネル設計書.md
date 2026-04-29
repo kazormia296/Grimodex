@@ -901,3 +901,11 @@ Timelineパネルのデフォルト位置はBottom Dock（非表示）。`Ctrl+A
 - 自前 SVG で描画する都合上、screen reader 対応は別途設計が必要
 - 最低限: シーンノードに `role="button"` + `aria-label="{章番号} {タイトル} {ステータス}"`, 軸全体に `role="listbox"` 相当のラベル、Phaseピンに `aria-label="{エントリ名}: {フェーズラベル}"` を付与
 - キーボード操作時のフォーカスリング描画（SVG outline）も標準ブラウザ挙動から外れるため明示的に実装する必要あり
+
+---
+
+## Matrix パネル連携
+
+[Matrix パネル](./Grimodex_Matrixパネル設計書.md) の Sort モード「Story-time order」は、Timeline の `tree_nodes.story_time_order`（文字列 fractional indexing キー）をそのまま参照する。Timeline で時系列を編集すると Matrix の Sort 順も即座に反映される（同じカラムを参照するため別途同期処理は不要）。
+
+Timeline と Matrix は「story-time order」の管理元を Timeline に集約し、Matrix は読み取り専用で利用する。Matrix 上から story-time の編集はできない（Timeline / Map で編集する）。

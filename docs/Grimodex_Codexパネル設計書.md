@@ -2336,3 +2336,48 @@ Mentionsタブの「Manuscript」セクションに、手動タグ由来の関�
 - 視覚的表現: CodexHighlight（自動検出）との区別が必要。スタイルの差別化方針は要検討
 - AIコンテキスト注入: セマンティックリンクが付与された範囲とCodexエントリの対応をどの粒度でAIに伝えるか要検討
 - ネタバレ漏洩リスクは伏線レジスタ側で扱う（叙述トリック系がそちらに移管されたため、セマンティックリンク単体では原則発生しない）
+
+---
+
+## Beat システム / Matrix / Grid との連携
+
+### Subplot の運用（lore + #subplot タグ）
+
+Subplot は専用 Codex タイプを作らず、既存の `lore` タイプ + `#subplot` タグで運用する。詳細は [Beat システム設計書](./Grimodex_Beatシステム設計書.md) と [Matrix パネル設計書](./Grimodex_Matrixパネル設計書.md) を参照。
+
+- subplot として扱う `lore` エントリには `#subplot` タグを付与（既存の `codex_tags` / `codex_entry_tags` をそのまま使用）
+- Matrix の Subplot Show モードはこのタグでフィルタした `lore` エントリを列に表示
+- subplot の進行段階は Codex Dynamic Phases で表現できる（既存機構）
+- タグ名は Settings の `subplotTagName`（global-settings.json）でカスタマイズ可（default: `subplot`）
+
+### Codex メンションの Beat 内利用
+
+Beat システム設計書 Phase A で、Codex メンション拡張（既存の `ChatMentionExtension` と同等のもの）が SceneEditor に登録される。これにより `sceneBeat` ノード内で `@キャラ名` のオートコンプリートが動作する。
+
+Phase B で **role 修飾子** が追加される：
+
+- `@キャラ名:actor` — このシーン beat で能動側として関与
+- `@キャラ名:target` — このシーン beat で受動側として関与
+- `@キャラ名` — default `mentioned`
+
+役割は Mention ノードの `attrs.role` で保存され、Matrix の Role-aware 表示モードで利用される。
+
+### Codex Quick の言及スキャン結果を Matrix と共有
+
+`findMentionedEntriesAsync`（Rust/JS の Aho-Corasick パイプライン）の結果は、Phase A で新規追加される `scene_codex_mentions` キャッシュテーブルに永続化される。
+
+- Codex Quick は従来通り「現在開いているシーン1つ」のスキャンで稼働（メモリ計算）
+- Matrix は永続化キャッシュを参照し、表示時の全走査を回避
+- 同じ Rust マッチャーをラッピングする共通レイヤから両者を呼ぶ（重複実装を避ける）
+- Codex 名/alias の変更や Codex エントリの追加/削除時、`scene_codex_mentions` をバックグラウンドで再構築する
+
+### `scene_codex_pins` との関係
+
+シーン × Codex の**明示的リレーション**は新規 `scene_codex_pins` テーブルに保存される（Pin to scene、Add scene to chapter with codex、Grid のカード Codex チップの保存先）。Codex Quick の project-wide pin（既存 `codex_quick_pins`）とは別物：
+
+| テーブル | スコープ | 用途 |
+|---------|---------|------|
+| `codex_quick_pins` | プロジェクト全体 | Codex Quick で「常に表示」したいエントリ |
+| `scene_codex_pins` | シーン単位 | Matrix / Grid で「このシーンに紐付ける」明示リレーション |
+
+Codex エントリ削除時は両テーブルとも `ON DELETE CASCADE` で自動削除される。

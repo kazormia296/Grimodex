@@ -978,3 +978,50 @@ Codex Quickセクションのデータソース（`sceneCodexMatches`）は、Ch
 ### Chat Historyパネル設計書
 
 Chatパネルのヘッダーにある「Sessions」サイドシートは**当該シーンのセッション一覧に限定**し、素早いセッション切り替えに使う。プロジェクト全体の横断検索はChat Historyパネルが担う。Chat Historyからセッションをクリックすると、Chatパネルがそのセッションに切り替わる。
+
+---
+
+## Beat システム連携
+
+### Beat 生成のコンテキスト構築
+
+[Beat システム設計書](./Grimodex_Beatシステム設計書.md) の Placed beat 生成は、本 Chat パネル設計書のコンテキスト構築機構（L1〜L5）を**部分流用**する。Chat の通常メッセージ送信とは別のコードパスとして実装する：
+
+| Layer | Chat 通常送信 | Beat 生成 |
+|-------|-------------|-----------|
+| L1 Project info | ✅ 含む | ✅ 含む |
+| L2 storySoFar（前シーンの Synopsis 群） | ✅ 含む | ✅ 含む |
+| L3 現シーン本文 | ✅ 含む | ✅ **beat 位置までの内容のみ** |
+| L4 Codex（メンション + 自動検出） | ✅ 含む | ✅ 含む |
+| L5 チャット履歴 | ✅ 含む | ❌ **含まない** |
+| Beat instructions | — | ✅ **末尾追加** |
+| Beat POV（`attrs.pov` または継承シーン POV） | — | ✅ **追加（Phase A から）** |
+| 後続 beat 予告（Pending beats） | — | ✅ **条件付き追加（Settings、default ON）** |
+
+L1〜L4 の構築ロジックは共通モジュール（既存）から呼び、Beat 専用の追加情報を上から積む形にする。これにより Chat 側の改修とは独立して Beat 生成が動く。
+
+### Beat 生成の出力
+
+- Vercel AI SDK でストリーミング生成
+- 生成された prose は Beat ノードの直後に挿入（Editor の TipTap 操作）
+- 生成 prose には Attribution マーカーが自動付与される（既存機構）
+- Beat ノードに `generated = true` をセット、`generatedRange` を記録
+
+### Beat の AI 自動 role 推定（Phase C）
+
+Beat 生成完了後、生成された prose を AI が読み、beat 内の各 `@mention` の role（`actor` / `target` / `mentioned`）を推定する機能を Phase C で導入する。実装フローは伏線レジスタ「AI 候補生成」と同型：
+
+- 推定リクエストは Chat 通常送信とは別の専用エンドポイント（コンテキスト軽量、prose 全文 + beat instructions のみ）
+- 推定結果は beat ヘッダーにバッジ提案として表示
+- ユーザーが accept すると Mention `attrs.role` が更新される
+
+---
+
+## ピン留め追加ポップオーバーの共有化
+
+コンテキストバー末尾の「📌ピン留め」ボタンが開く Codex/Snippet タブ式検索ポップオーバー（本ドキュメントの「コンテキストバー」「手動ピン留め」セクション参照）は、[Grid パネル](./Grimodex_Gridパネル設計書.md) の Scene カード「`+ Codex`」ボタンからも再利用される。両者で同じコンポーネントを使う：
+
+- Chat: 選択 → `chat_session_pinned_codex` に追加
+- Grid: 選択 → `scene_codex_pins` に追加
+
+呼び出し側で「保存先」のコールバックを差し替える形で共通化する（コンポーネント自体は検索 UI のみを担い、保存先は知らない）。リファクタリングは Grid パネル Phase A で実施する。

@@ -470,3 +470,29 @@ Settings の Data カテゴリにあった「Export as Markdown」「Export as p
 - **エクスポートプリセット**: 「青空文庫形式」「入稿用テキスト」等のプリセットを用意し、複数の設定を一括で適用
 - **Synopsis付きエクスポート**: アウトライン確認用に各シーンのSynopsisをシーン先頭に挿入するオプション
 - **一括コマンドパレット対応**: `Ctrl+Shift+P` →「Export all scenes as Markdown」等で設定ダイアログを経由せず即時エクスポート
+
+---
+
+## Beat ブロックの Export 時挙動
+
+[Beat システム設計書](./Grimodex_Beatシステム設計書.md) で導入される `sceneBeat` および `unplacedBeats` ノードは、**Markdown export 時に完全除去**される。残るのは生成された prose と通常の段落のみ。
+
+### 除去される内容
+
+- `unplacedBeats` コンテナ（ドキュメント先頭、Editor キャンバス外で表示されているもの）の全内容
+- 本文中の `sceneBeat` ノード本体（生成された prose は残る）
+- Beat 内の角括弧記法（`[slow down]`, `[expand the dialogue]` 等）
+- Beat 内の `@codex_name:role` メンション（角括弧記法と同じく執筆プロセスのメタデータ）
+
+### 除去する理由
+
+- Beat は執筆プロセスのメタデータであり、読者向けの本文ではない
+- 角括弧記法 `[slow down]` などが本文に混入すると意味不明になる
+- Novelcrafter 等他ツールへの export 互換性を保つ
+
+### v2 で検討する保持オプション
+
+- **コメント形式で保持**: Beat 内容を Markdown のコメント `<!-- beat: ... -->` として埋め込むオプション。再 import 時の復元手段として
+- **Beat 専用エクスポート**: Beat 一覧だけを別ファイルとして出力（プロット文書の生成）
+
+v1 では完全除去のみを実装する。

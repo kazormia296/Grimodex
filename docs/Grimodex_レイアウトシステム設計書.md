@@ -58,6 +58,8 @@ Left/Right DockはTop/Bottom間で縦分割（ゾーン内スプリット）が�
 | Snippets | 再利用可能なテキスト断片。Chat/Editorから保存、D&Dでエディタに挿入 |
 | Attribution | AI帰属統計ダッシュボード。シーン/チャプター/プロジェクト単位の集計、モデル別使用状況 |
 | Map | シーン・Codexの2D無限キャンバス可視化。Free/Time/Theme/POV/Placeの5レイアウトモード |
+| Matrix | シーン × Codex のクロス表。登場分布の俯瞰、不在検出、Beat 追加プロッティング起点。デフォルトBottom Dock（非表示） |
+| Grid | Chapter ごとに Scene カードを縦に積む作業ビュー。Synopsis インライン編集、D&Dで章間移動。デフォルトBottom Dock（非表示） |
 | Settings | プロジェクト/AI/エディタ/表示/キーバインド/データ管理。常にフローティング |
 
 すべてのパネル（Settings以外）は任意のドックゾーンに移動可能。SettingsはEditorとは性質が異なるため、常にフローティング専用とする。各プリセットでの配置は `layoutPresets.ts` のビルダー関数を参照。
@@ -138,6 +140,8 @@ Left/Right DockはTop/Bottom間で縦分割（ゾーン内スプリット）が�
 │ [ ] Snippets      Ctrl+Alt+N │
 │ [ ] 帰属          Ctrl+Alt+A │
 │ [ ] Map           Ctrl+Alt+M │
+│ [ ] Matrix        Ctrl+Alt+T │
+│ [ ] Grid          Ctrl+Alt+G │
 └──────────────────────────────┘
 ```
 
@@ -403,6 +407,8 @@ OS AppDataディレクトリ内の `global-settings.json` に保存する。レ�
 | `Ctrl+Alt+N` | Snippetsパネルにフォーカス/トグル |
 | `Ctrl+Alt+A` | Attributionパネルにフォーカス/トグル |
 | `Ctrl+Alt+M` | Mapパネルにフォーカス/トグル |
+| `Ctrl+Alt+T` | Matrixパネルにフォーカス/トグル |
+| `Ctrl+Alt+G` | Gridパネルにフォーカス/トグル |
 | `Ctrl+Alt+,` | Settings を開く |
 
 ### ショートカットのカスタマイズ

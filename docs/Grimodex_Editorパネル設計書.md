@@ -696,6 +696,7 @@ Settings > Editor > Animations セクション:
 | 表示項目 | 詳細 |
 |---------|------|
 | `AI: {割合}%` | AI帰属割合。Attr表示ON時のみ表示。クリックでAttributionパネルを開く |
+| `Beats: {総数} ({生成済}件 generated)` | Placed beat の総数と生成済み件数（Beat 設計書 Phase A）。Beat が0個の場合は非表示。クリックで Beats セクションをスクロール表示 |
 | 文字数 | `{文字数} chars`。目標設定時はミニプログレスバーも表示。クリックで詳細統計ポップオーバー（文字数、単語数、原稿用紙枚数、推定読了時間） |
 | 保存状態 | `Saved` / `Saving...` / `Unsaved`。Unsavedはアンバー色で警告 |
 | History | `Clock` アイコンボタン。クリックでリビジョン履歴モーダルを開く（`Ctrl+Shift+H` と同等） |
@@ -1378,3 +1379,85 @@ AuthorshipMark の拡張属性（`traceId` / `toolName` / `toolVersion` / `manua
 ### Codexパネル設計書
 
 Codex Dynamic Phases のフェーズ定義、フェーズ切替 UI、`codex_phase_detail_overrides` のライフサイクルは Codex パネル設計書 / Codex 設計書の記載を正とする。本 Editor パネル設計書では「Codex タブ編集時、プレビュー中フェーズがあるなら保存先を `codex_phase_detail_overrides.contentOverride` に切り替える」という書き込み側の振る舞いのみを規定する。また Codex ミニエディタとフルエディタ間の双方向同期は `sceneContentStore` 経由で実装する。
+
+---
+
+## Beat システム（Beat 設計書 Phase A 連携）
+
+Beat システムの導入に伴い、Editor キャンバスと上部ヘッダーに以下を追加する。詳細は [Beat システム設計書](./Grimodex_Beatシステム設計書.md)。
+
+### TipTap カスタムノード
+
+- **`sceneBeat`**: 本文中の Placed beat。`group: 'block'`、`content: 'inline*'`。`attrs`: `id` / `placed` / `order` / `collapsed` / `generated` / `generatedRange` / `beatType` / `pov`
+- **`unplacedBeats`**: ドキュメント先頭に固定されるコンテナ。`isolating: true`、Editor キャンバスからは描画除外され、Synopsis 隣の Beats セクションでレンダリング
+- 既存シーンには `appendTransaction` で空の `unplacedBeats` を自動挿入（マイグレーション）
+
+### Codex メンション拡張の SceneEditor 登録
+
+既存の `ChatMentionExtension`（`src/features/chat/extensions/ChatMentionExtension.ts`）と同等のメンション拡張を SceneEditor の Extensions リストに追加する。`sceneBeat` の `inline*` content 内で `@キャラ名` のオートコンプリートが動作する。Phase B で role 修飾子（`@name:actor` / `@name:target`）を Mention `attrs.role` で表現する。
+
+### Beats セクション（Synopsis 隣）
+
+`SynopsisHeader.tsx` と同じ親 div の兄弟要素として `BeatsHeader.tsx` を新規追加（既存 Synopsis セクションは独立 DOM のため衝突しない）。
+
+- Unplaced beat の一覧表示・追加・編集・並べ替え
+- Placed beat の一覧表示（本文位置への参照）
+- D&D による Unplaced ↔ Placed の状態遷移
+- `+ Beat` ボタン
+
+### Placed beat の本文中表示
+
+- ヘッダーバー: 折りたたみトグル `[▼]/[▶]`、`[⚡Generate]`（未生成時のみ）、`[⋮]` メニュー、`POV: 花子` チップ（シーン POV と異なる場合のみ）
+- 折りたたみ時はヘッダーと冒頭文だけ表示
+- 左ボーダーで Attribution と区別（Beat: 黄色系、Attribution: 紫系）
+- 生成中はストリーミング表示（prose が下に追記されていく）
+
+### `[⋮]` メニュー（Placed beat）
+
+`Regenerate` / `Generate alternative` / `Edit beat` / `Convert to text` / `Unplace` / `Delete beat only` / `Delete beat and prose`
+
+### `/` コマンド
+
+本文中で `/` を押すとコマンドメニューが開き、`Scene beat` / `Continue writing`（= 即時生成つき beat） を選択可能。`Ctrl+Shift+B` ショートカットも提供。
+
+### ツールバー
+
+ツールバーに Beat 挿入ボタンを追加（既存ボタングループの末尾）。ショートカットと同等の動作。
+
+### ステータスバー
+
+「E. ステータスバー」セクションの右側統計情報テーブルに `Beats: {総数} ({生成済}件 generated)` 行が追加される（このセクションの上で追記済み）。
+
+### Focus mode と リニア編集モード
+
+- Focus mode: Beat を非表示にするオプションを追加（Settings 連携）
+- リニア編集モード: Settings で「通常表示 / 折りたたみ / 非表示」を切替可能（default は「折りたたみ」）
+
+### Export 時の挙動
+
+Markdown export で `sceneBeat` / `unplacedBeats` ノードは**完全除去**される（読者向け本文に Beat が混入するのを防ぐ）。詳細はエクスポートダイアログ設計書参照。
+
+---
+
+## Synopsis インライン編集の共有コンポーネント化
+
+Synopsis は Editor 上部の C-4 セクション・Scenes パネルの Outline モード・Grid パネルのカードの3箇所でインライン編集される。挙動の不一致を防ぐため、`<InlineSynopsisEditor>`（`src/features/editor/InlineSynopsisEditor.tsx`）を新規作成し、3パネルから共通利用する。
+
+挙動仕様（共有コンポーネントが提供する単一の振る舞い）：
+
+- textarea ベースのインライン編集
+- `Enter` で確定（保存）、`Shift+Enter` で改行、`Esc` でキャンセル
+- フォーカスを失う（外側クリック）と確定保存
+- IME 入力中の `Enter` は確定しない（`compositionend` 後に有効化）
+- 保存失敗時はトースト通知し、編集状態を維持
+
+C-4 セクションの既存 textarea 実装は本コンポーネントに置換する（同等機能のため UX 後退なし）。
+
+---
+
+## Grid パネルとの接続
+
+[Grid パネル設計書](./Grimodex_Gridパネル設計書.md) のカードタイトルクリックで Editor が起動する。経路：
+
+- Grid のカードタイトル → 既存のタブモデル（プレビュータブ昇格ロジック）に従って Scene を開く
+- Editor 側で Synopsis や本文を変更すると、Grid のカード（`tree_nodes.synopsis` / `tree_nodes.unplaced_beat_preview` 経由）も即座に更新される

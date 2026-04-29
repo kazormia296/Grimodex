@@ -644,3 +644,106 @@ AIプロバイダ設定（BYOK）のUI詳細はSettingsのAIカテゴリで定�
 ### Editorパネル設計書
 
 エディタのフォントサイズ（14-24px）、行間（1.2-3.0）、タイプライターモードはEditor設計書で言及されており、具体的な設定UIがSettingsのEditorカテゴリ。インラインAIの有効/無効設定もここで管理。
+
+---
+
+## Beat / Matrix / Grid 関連設定（追加項目）
+
+[Beat システム設計書](./Grimodex_Beatシステム設計書.md) / [Matrix パネル設計書](./Grimodex_Matrixパネル設計書.md) / [Grid パネル設計書](./Grimodex_Gridパネル設計書.md) の導入に伴い、Settings の以下のカテゴリに項目を追加する。
+
+### Editor カテゴリ
+
+| 項目 | 値 | 既定 | 説明 |
+|------|-----|------|------|
+| Beat 表示モード（リニア編集モード時） | `通常 / 折りたたみ / 非表示` | `折りたたみ` | リニア編集モードでの Beat ブロックの扱い |
+| Focus mode で Beat を非表示にする | boolean | true | Focus mode 時の Beat 非表示トグル |
+| 文字数カウントに Beat 内テキストを含める | boolean | false | 執筆統計の文字数集計対象 |
+| 全文検索で Beat 内テキストを対象にする | boolean | true | 検索範囲設定 |
+
+### AI カテゴリ
+
+| 項目 | 値 | 既定 | 説明 |
+|------|-----|------|------|
+| Beat type デフォルトプロンプト | テキストエディタ（type ごと） | （ハードコード値） | `summary` / `guided` / `dialogue` / `setting` / `micro` ごとに編集可（Beat 設計書 Phase B 以降） |
+| Beat 生成時に予定 beat を AI コンテキストに注入 | boolean | true | Layer 3 への "Pending beats for this scene" セクション注入トグル |
+
+### プロジェクト カテゴリ
+
+| 項目 | 値 | 既定 | 保存先 | 説明 |
+|------|-----|------|------|------|
+| Subplot 識別タグ名 | string | `subplot` | `project_settings` | Codex の `lore` タイプを subplot として扱う際のタグ名（Codex 設計書連携）。プロジェクトごとに異なる慣習を採用できるため、global ではなく project スコープで保存する |
+
+### スキーマ追加
+
+設定の保存先はスコープに応じて分かれる：
+
+- **`global-settings.json`**（アプリ全体）: editor / ai / matrix / grid 設定
+- **`project_settings` テーブル**（プロジェクト単位）: プロジェクトごとに変えうる設定
+
+#### `global-settings.json` への追加
+
+```json
+{
+  "editor": {
+    "beatDisplayInLinearMode": "collapsed",
+    "hideBeatsInFocusMode": true,
+    "includeBeatsInCharCount": false,
+    "includeBeatsInFullTextSearch": true
+  },
+  "ai": {
+    "beatTypePrompts": {
+      "free": null,
+      "summary": "...",
+      "guided": "...",
+      "dialogue": "...",
+      "setting": "...",
+      "micro": "..."
+    },
+    "injectPendingBeatsInGeneration": true
+  },
+  "matrix": {
+    "showMode": "codex-all",
+    "sortMode": "reading",
+    "displayMode": "dot",
+    "groupCodexByType": true,
+    "hiddenColumnIds": [],
+    "pinnedColumnIds": [],
+    "collapsedTypeSections": [],
+    "tagFilter": {
+      "codex-all": [],
+      "codex-characters": [],
+      "codex-locations": [],
+      "codex-items": [],
+      "codex-lore": [],
+      "pov": [],
+      "location": [],
+      "subplot": []
+    },
+    "customSets": [],
+    "activeCustomSetId": null
+  },
+  "grid": {
+    "containerId": null,
+    "compactCards": false,
+    "showSynopsis": true,
+    "showBeats": true,
+    "showCodex": true,
+    "showLabel": true,
+    "filter": {
+      "emptyOnly": false,
+      "hideCompleted": false,
+      "codexFilter": []
+    }
+  }
+}
+```
+
+`matrix` と `grid` セクションは Settings UI から直接編集する項目ではなく、各パネルで自動保存される（パネル設計書側でフィールドを定義）。Settings UI から編集するのは Editor / AI / プロジェクト カテゴリの項目のみ。
+
+#### `project_settings` テーブルへの追加（プロジェクト単位）
+
+| key | value 型 | 既定 | 説明 |
+|-----|---------|------|------|
+| `subplotTagName` | string | `subplot` | Codex `lore` タイプを subplot として識別するタグ名 |
+
+プロジェクト依存設定は global ではなく `project_settings` テーブル（既存）に書き込む。プロジェクトごとに異なる慣習（例: `subplot` / `sub-plot` / `プロット`）を採用できる。

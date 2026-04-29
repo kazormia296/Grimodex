@@ -635,3 +635,30 @@ Scenes パネルは Grimodex のデータ骨格（`tree_nodes`）を管理する
 | **Attribution パネル** | Scene ノードに表示する AI 比率バッジは `loadBatchAiRatio` 経由で取得し、`display.showAiBadge` で切替 | [`Grimodex_Attributionパネル設計書.md`] |
 | **Chat パネル** | storySoFar カバレッジピルのデータソース（読み順 + Synopsis 充填率）を提供。Synopsis 自動提案トーストもステータス遷移イベント経由で連携 | [`Grimodex_Chatパネル設計書.md`] |
 | **Editor パネル** | アクティブシーン同期、プレビュー／固定タブ、`outline → draft` 自動遷移の起点 | [`Grimodex_Editorパネル設計書.md`] |
+| **Grid パネル** | 同じ `tree_nodes` を共有。Scenes は**ツリー構造の管理**、Grid は**カード並べ作業**で役割分担 | [`Grimodex_Gridパネル設計書.md`] |
+| **Matrix パネル** | 同じ `tree_nodes` を共有。Matrix の行は Scenes ツリーの階層を再描画したもの | [`Grimodex_Matrixパネル設計書.md`] |
+
+---
+
+## Beat / Matrix / Grid 連携で導入される変更
+
+### scene_codex_pins テーブル
+
+Phase A で **`scene_codex_pins` テーブル**（シーン × Codex の明示的リレーション）が新規追加される。Matrix の「Pin to scene」「Add scene to chapter (with this codex)」、Grid のカード Codex チップの保存先。詳細は [統合DBスキーマ](./Grimodex_統合DBスキーマ.md) と [Matrix パネル設計書](./Grimodex_Matrixパネル設計書.md)。
+
+Scenes パネル側からの直接編集 UI はないが、Scene 削除時に `ON DELETE CASCADE` で自動的に紐付き行も削除される。
+
+### tree_nodes.unplaced_beat_preview カラム
+
+Phase A で **`tree_nodes.unplaced_beat_preview` カラム**（Beat 冒頭のキャッシュ）が追加される。Grid パネルのカード描画で利用される。シーン保存時にバックエンドが TipTap docJson から `unplacedBeats` の先頭 beat 冒頭を抽出して書き込む。Scenes パネルでは編集対象としない（読み取りもしない）。
+
+### Outline モードの Synopsis インライン編集
+
+既存の Outline モードの Synopsis インライン編集（Tree モードのツールチップ反映含む）は、Beat / Grid 設計書で導入される **`<InlineSynopsisEditor>` 共有コンポーネント**（`src/features/editor/InlineSynopsisEditor.tsx`）に置換する。Scenes / Editor / Grid の3パネルで挙動が統一される：
+
+- `Enter` で確定、`Shift+Enter` で改行、`Esc` でキャンセル
+- フォーカス喪失で確定保存
+- IME 入力中の `Enter` は確定しない
+- 保存失敗時はトースト通知し、編集状態を維持
+
+既存実装の置換は Grid パネル Phase A で実施する（同等機能のため UX 後退なし）。
