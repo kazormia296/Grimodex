@@ -5,7 +5,6 @@ import { useRevisionStore } from "@/features/revision/revisionStore";
 import { createRevision, pruneRevisions } from "@/features/revision/api";
 import { useSettingsStore } from "@/features/settings/settingsStore";
 import { debugLog, errorDetail } from "@/lib/debugLog";
-import { TagSelector } from "./TagSelector";
 import { db } from "@/db/client";
 import { chatMessages, chatSessions } from "@/db/schema";
 import { eq } from "drizzle-orm";
@@ -16,7 +15,7 @@ import type { ChildrenBudgetPreset } from "../childrenBudget";
 import { listEntryTags } from "../tagApi";
 import type { CodexTag } from "../tagApi";
 import type { CodexContextMode } from "@/db/schema";
-import { IconPicker } from "./IconPicker";
+import { CodexEntryHeader } from "./CodexEntryHeader";
 import { DetailTabs } from "./DetailTabs";
 import { DetailsTab } from "./DetailsTab";
 import { RelationsTab } from "./RelationsTab";
@@ -25,15 +24,6 @@ import { MentionsTab } from "./MentionsTab";
 import { ResearchTab } from "./ResearchTab";
 import { TimelineTab } from "./TimelineTab";
 import { ForeshadowTab } from "./ForeshadowTab";
-
-function getTypeOptions(): { value: CodexEntryType; label: string }[] {
-  return [
-    { value: "character", label: i18next.t("codex.character") },
-    { value: "location", label: i18next.t("codex.location") },
-    { value: "item", label: i18next.t("codex.item") },
-    { value: "lore", label: i18next.t("codex.lore") },
-  ];
-}
 
 function getTabs() {
   return [
@@ -289,136 +279,92 @@ export function CodexDetailContent({
     void update(entry.id, { childrenBudget: preset });
   };
 
+  const leadingAction = onBack ? (
+    <button
+      type="button"
+      data-testid="codex-back-button"
+      onClick={onBack}
+      className="rounded p-1.5 text-muted-foreground hover:bg-accent"
+      title={i18next.t("codex.detail.back")}
+    >
+      <ArrowLeft className="h-3.5 w-3.5" />
+    </button>
+  ) : null;
+
+  const topActions = (
+    <>
+      <button
+        type="button"
+        data-testid="codex-detail-history"
+        onClick={() =>
+          useRevisionStore
+            .getState()
+            .openHistory("codex_entry", entry.id, contentRef.current)
+        }
+        className="rounded p-1.5 text-muted-foreground hover:bg-accent hover:text-accent-foreground"
+        title={i18next.t("editor.status.revisionHistory", "Revision History")}
+      >
+        <Clock className="h-3.5 w-3.5" />
+      </button>
+      <button
+        type="button"
+        data-testid="codex-detail-delete"
+        onClick={() => onDelete(entry.id)}
+        className="rounded p-1.5 text-destructive hover:bg-destructive/10"
+        title={i18next.t("common.delete")}
+      >
+        <Trash2 className="h-3.5 w-3.5" />
+      </button>
+    </>
+  );
+
   return (
     <div data-testid="codex-detail-content" className="flex h-full flex-col">
-      {/* Top bar */}
-      <div className="flex shrink-0 items-center justify-between border-b border-border px-3 py-2">
-        <div className="flex items-center gap-1">
-          {onBack && (
-            <button
-              type="button"
-              data-testid="codex-back-button"
-              onClick={onBack}
-              className="rounded p-1.5 text-muted-foreground hover:bg-accent"
-              title={i18next.t("codex.detail.back")}
-            >
-              <ArrowLeft className="h-3.5 w-3.5" />
-            </button>
-          )}
-          <h3 className="text-sm font-semibold">
-            {i18next.t("codex.editEntry")}
-          </h3>
-        </div>
-        <button
-          type="button"
-          data-testid="codex-detail-history"
-          onClick={() =>
-            useRevisionStore
-              .getState()
-              .openHistory("codex_entry", entry.id, contentRef.current)
-          }
-          className="rounded p-1.5 text-muted-foreground hover:bg-accent hover:text-accent-foreground"
-          title={i18next.t("editor.status.revisionHistory", "Revision History")}
-        >
-          <Clock className="h-3.5 w-3.5" />
-        </button>
-        <button
-          type="button"
-          data-testid="codex-detail-delete"
-          onClick={() => onDelete(entry.id)}
-          className="rounded p-1.5 text-destructive hover:bg-destructive/10"
-          title={i18next.t("common.delete")}
-        >
-          <Trash2 className="h-3.5 w-3.5" />
-        </button>
-      </div>
-
-      {/* Header: Icon + Name + Type (always visible, above tabs) */}
-      <div className="shrink-0 border-b border-border px-3 py-2">
-        <div className="flex items-start gap-2">
-          <IconPicker
-            currentIcon={icon}
-            entryType={type}
-            onIconChange={(newIcon) => {
-              setIcon(newIcon);
-              void update(entry.id, { icon: newIcon as never });
-            }}
-          />
-          <div className="flex-1 space-y-2">
-            <div>
-              <label className="mb-1 block text-xs font-medium">
-                {i18next.t("codex.nameLabel")}
-              </label>
-              <input
-                data-testid="codex-detail-name"
-                type="text"
-                value={name}
-                onChange={(e) => setName(e.target.value)}
-                onBlur={() => void handleNameBlur()}
-                className="w-full rounded-md border border-input bg-background px-2 py-1.5 text-sm"
-              />
-            </div>
-            <div>
-              <label className="mb-1 block text-xs font-medium">
-                {i18next.t("codex.typeLabel")}
-              </label>
-              <select
-                data-testid="codex-detail-type"
-                value={type}
-                onChange={(e) =>
-                  void handleTypeChange(e.target.value as CodexEntryType)
-                }
-                className="w-full rounded-md border border-input bg-background px-2 py-1.5 text-sm"
-              >
-                {getTypeOptions().map((opt) => (
-                  <option key={opt.value} value={opt.value}>
-                    {opt.label}
-                  </option>
-                ))}
-              </select>
-            </div>
-          </div>
-        </div>
-
-        {/* Tags (always visible in header) */}
-        <div data-testid="codex-detail-tags" className="mt-2">
-          <TagSelector
-            entryId={entry.id}
-            entryType={type}
-            selectedTags={selectedTags}
-            onTagsChange={(tags) => {
-              // アルファベット順に揃えてリストとの表示順を一致させる
-              const sorted = [...tags].sort((a, b) =>
-                a.name.localeCompare(b.name),
-              );
-              setSelectedTags(sorted);
-              // tagsCache をストアに同期（{name,color}[] 形式）
-              void update(entry.id, {
-                tagsCache: JSON.stringify(
-                  sorted.map((t) => ({ name: t.name, color: t.color })),
-                ),
-              });
-            }}
-            maxVisible={3}
-          />
-        </div>
-      </div>
+      <CodexEntryHeader
+        entry={entry}
+        name={name}
+        type={type}
+        icon={icon}
+        aliases={aliases}
+        selectedTags={selectedTags}
+        onNameChange={setName}
+        onNameCommit={() => void handleNameBlur()}
+        onTypeChange={(newType) => void handleTypeChange(newType)}
+        onIconChange={(newIcon) => {
+          setIcon(newIcon);
+          void update(entry.id, { icon: newIcon as never });
+        }}
+        onAliasesChange={(a) => void handleAliasesChange(a)}
+        onTagsChange={(tags) => {
+          // アルファベット順に揃えてリストとの表示順を一致させる
+          const sorted = [...tags].sort((a, b) => a.name.localeCompare(b.name));
+          setSelectedTags(sorted);
+          // tagsCache をストアに同期（{name,color}[] 形式）
+          void update(entry.id, {
+            tagsCache: JSON.stringify(
+              sorted.map((t) => ({ name: t.name, color: t.color })),
+            ),
+          });
+        }}
+        leadingAction={leadingAction}
+        topActions={topActions}
+      />
 
       {/* Tab bar */}
-      <DetailTabs
-        tabs={getTabs()}
-        activeTab={activeTab}
-        onTabChange={setActiveTab}
-      />
+      <div className="mt-[22px] px-7">
+        <DetailTabs
+          tabs={getTabs()}
+          activeTab={activeTab}
+          onTabChange={setActiveTab}
+        />
+      </div>
 
       {/* Tab content */}
       <div className="flex-1 overflow-y-auto px-3 py-3">
         {activeTab === "details" && (
           <DetailsTab
             entry={entry}
-            aliases={aliases}
             summary={summary}
-            onAliasesChange={(a) => void handleAliasesChange(a)}
             onSummaryChange={handleSummaryChange}
             onContentChange={handleContentChange}
             onExternalSync={(content) => {

@@ -3,7 +3,6 @@ import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import { ChevronDown, ChevronRight, ExternalLink, Wand2 } from "lucide-react";
 import type { CodexEntry } from "../api";
-import { AliasesField } from "./AliasesField";
 import { CodexContentEditor } from "./CodexContentEditor";
 import { DetailsSection } from "./DetailsSection";
 import { PhaseIndicator } from "./PhaseIndicator";
@@ -17,9 +16,7 @@ import { useAutoSave } from "@/hooks/useAutoSave";
 
 interface DetailsTabProps {
   entry: CodexEntry;
-  aliases: string[];
   summary: string;
-  onAliasesChange: (aliases: string[]) => void;
   onSummaryChange: (value: string) => void;
   onContentChange: (content: string) => void;
   onExternalSync?: (content: string) => void;
@@ -27,9 +24,7 @@ interface DetailsTabProps {
 
 export function DetailsTab({
   entry,
-  aliases,
   summary,
-  onAliasesChange,
   onSummaryChange,
   onContentChange,
   onExternalSync,
@@ -219,12 +214,6 @@ export function DetailsTab({
         entry={entry}
         previewPhaseId={previewPhaseId}
         onPreviewChange={setPreviewPhaseId}
-      />
-      {/* Aliases */}
-      <AliasesField
-        label="Aliases"
-        aliases={aliases}
-        onChange={onAliasesChange}
       />
 
       {/* Summary */}
