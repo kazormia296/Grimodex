@@ -49,7 +49,7 @@ ORM: Drizzle ORM（sqlite-proxy）
 | `map_frames` | 通常 | Map | フレーム（グループ化矩形） |
 | `map_ai_nodes` | 通常 | Map | Map専用AIノード |
 | `scene_codex_pins` | 通常 | Matrix / Grid | シーン × Codex の明示的リレーション（Pin to scene、Add scene with codex の保存先） |
-| `scene_codex_mentions` | 通常 | Matrix | シーン × Codex の言及スキャンキャッシュ（source 別: body/beat/relation、role 別: mentioned/actor/target/pov） |
+| `scene_codex_mentions` | 通常 | Matrix | シーン × Codex の言及スキャンキャッシュ（source 別: body/beat/relation、role: mentioned/actor/target。POV はこのテーブルに含めない） |
 
 ---
 
@@ -197,9 +197,18 @@ CREATE TABLE tree_nodes (
                                             -- Sceneのみ: POVキャラクター（codex_entries.type='character'）。型整合性はアプリ層で保証
   location_id       TEXT REFERENCES codex_entries(id) ON DELETE SET NULL,
                                             -- Sceneのみ: 主要ロケーション（codex_entries.type='location'）。型整合性はアプリ層で保証
-  unplaced_beat_preview TEXT,               -- Sceneのみ: TipTap ドキュメント先頭の unplacedBeats コンテナ
-                                            -- から抽出した先頭3 beat の冒頭40文字を JSON 配列で保持。
-                                            -- Grid パネルカード描画に使用。シーン保存時に自動更新（Grid 設計書参照）
+  unplaced_beats_doc TEXT NOT NULL DEFAULT '[]',
+                                            -- Sceneのみ: Unplaced beat の保存先（ProseMirror JSON 配列）。
+                                            -- 各要素は { id, beatType, pov, collapsed, content } 形式。
+                                            -- 本文 (content カラム) とは独立した別データとして扱う（Beat 設計書参照）
+  unplaced_beat_preview TEXT,               -- Sceneのみ: unplaced_beats_doc から抽出した
+                                            -- 先頭3 beat の冒頭40文字を JSON 配列で保持。
+                                            -- Grid パネルカード描画に使用。シーン保存時にフロントが値を同梱
+                                            -- （バックエンドは保存するだけ、Grid 設計書参照）
+  char_count        INTEGER NOT NULL DEFAULT 0,
+                                            -- Sceneのみ: 本文 (content カラム) の文字数キャッシュ。
+                                            -- シーン保存時にフロントが CharacterCount 拡張の値を同梱。
+                                            -- Grid パネルのステータスバー集計に使用
   created_at        TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at        TEXT NOT NULL DEFAULT (datetime('now'))
 );
@@ -1332,8 +1341,8 @@ CREATE TABLE scene_codex_mentions (
   mention_count    INTEGER NOT NULL DEFAULT 0,
   last_scanned_at  TEXT NOT NULL DEFAULT (datetime('now')),
   source           TEXT NOT NULL,                      -- 'body' | 'beat' | 'relation'
-  role             TEXT NOT NULL DEFAULT 'mentioned',  -- 'mentioned' | 'actor' | 'target' | 'pov'
-  PRIMARY KEY (scene_id, codex_entry_id, source, role)
+  role             TEXT NOT NULL DEFAULT 'mentioned',  -- 'mentioned' | 'actor' | 'target'
+  PRIMARY KEY (scene_id, codex_entry_id, source)
 );
 
 CREATE INDEX idx_scene_codex_mentions_by_scene ON scene_codex_mentions(scene_id);
@@ -1343,13 +1352,35 @@ CREATE INDEX idx_scene_codex_mentions_by_codex ON scene_codex_mentions(codex_ent
 更新タイミング：
 
 - **シーン保存時**: 該当シーン行を全 Codex に対して再計算（既存の保存パイプラインに hook）
-- **Codex エントリ追加 / rename / alias 変更**: 全シーンに対して該当列を非同期スキャン
+- **Codex エントリ追加 / rename / alias 変更**: **該当 Codex 1件のパターンだけ**を対象として全シーンを非同期スキャン。他 Codex の行は触らない
 - **Codex エントリ削除**: `ON DELETE CASCADE` で自動削除
 - **scene_codex_pins 変更**: 該当ペアの `source = 'relation'` 行を同期更新
 
+部分再スキャンの理論的限界（rename 後パターンが他 Codex と最長一致で衝突する稀なケース）は、Settings → Data → "Codex 言及キャッシュを再構築" ボタン（Phase A から提供）で全 Codex × 全シーンの完全再スキャンを手動実行できる。詳細は Matrix 設計書参照。
+
+`role` カラムの値域は `'mentioned' | 'actor' | 'target'`（POV は含めない）。`source='body'` / `'relation'` の行は常に `'mentioned'` 固定で、`source='beat'` の行のみ Phase B で actor/target が入る（同一シーン × 同一 Codex の複数 beat に役割が分かれる場合は優先順位 actor > target > mentioned で最強値を保持）。POV はこのテーブルには含めず、シーン POV は `tree_nodes.pov_character_id` を直接参照、Beat POV（Phase B+）は本文 docJson から導出する。
+
+### tree_nodes.unplaced_beats_doc（カラム追加）
+
+Unplaced beat の保存先。本文 (`tree_nodes.content`) とは独立した別カラムとして扱う。ProseMirror JSON 配列形式：
+
+```sql
+ALTER TABLE tree_nodes ADD COLUMN unplaced_beats_doc TEXT NOT NULL DEFAULT '[]';
+-- 値の形式: [
+--   { "id": "u1", "beatType": "free", "pov": null, "collapsed": false, "content": [/* PM inline */] },
+--   { "id": "u2", "beatType": "setting", "pov": null, "collapsed": false, "content": [...] }
+-- ]
+```
+
+設計判断は Beat 設計書「Placed beat は TipTap ノード、Unplaced beat は別カラム」セクション参照。要点：
+
+- Unplaced は本文中の位置を持たないため、本文 PM ドキュメント内に置く必然性が無い
+- ProseMirror で「ドキュメント内に存在するが Editor キャンバスから描画除外」を実現すると selection / D&D / Undo の挙動が複雑化するため、カラム分離して独立 TipTap editor で素直に書く
+- 同じ `tree_nodes` 行内のカラムなので、本文と Unplaced の保存単位は変わらない（既存の保存パイプラインを1フィールド拡張するだけ）
+
 ### tree_nodes.unplaced_beat_preview（カラム追加）
 
-Grid のカードに表示する Unplaced beat 冒頭3件のキャッシュ。Beat システム設計書 Phase A の `unplacedBeats` ノード保存時に、シーン保存パイプラインがバックエンドで抽出して書き込む。値が NULL のシーンは表示時に lazy 計算してキャッシュに書き戻す。
+Grid のカードに表示する Unplaced beat 冒頭3件のキャッシュ。シーン保存時にフロント側が `unplaced_beats_doc` から抽出して値を同梱し、バックエンドはそのまま保存する（中身を解釈しない）。値が NULL のシーンはカードの beat 行を描画しない。
 
 ```sql
 ALTER TABLE tree_nodes ADD COLUMN unplaced_beat_preview TEXT;
@@ -1357,9 +1388,23 @@ ALTER TABLE tree_nodes ADD COLUMN unplaced_beat_preview TEXT;
 -- NULL or '[]' なら Grid カードに beat 行は描画しない
 ```
 
+抽出責任をフロント側に置く理由は Grid 設計書参照（schema drift 防止 / 単一フロント前提 / 整合性破綻が致命的でない）。lazy 再計算は v1 では実装しない（次回保存時に自然に埋まる）。
+
+### tree_nodes.char_count（カラム追加）
+
+Grid のステータスバー集計（合計文字数）に使うキャッシュ。シーン保存時にフロント側が CharacterCount 拡張の値を同梱する：
+
+```sql
+ALTER TABLE tree_nodes ADD COLUMN char_count INTEGER NOT NULL DEFAULT 0;
+```
+
+ライブ表示は `Σ persisted_char_count - persisted[active_scene] + live_count(active_editor)` で組む（アクティブシーン以外は保存時の値で十分）。
+
 ### Beat システム設計書との関係
 
-Beat ノード自体（`sceneBeat` / `unplacedBeats`）は **TipTap ProseMirror JSON 内のカスタムノード**として `tree_nodes.content` に保存される。**専用テーブルは作らない**。生成統計（プロンプトトークン数、モデル名）の永続化が必要になった場合のみ、将来 `scene_beats` テーブルを別途追加する余地を残す（v1 では実装しない、Beat システム設計書 Phase E 参照）。
+Placed beat は **TipTap ProseMirror JSON 内のカスタムノード**（`sceneBeat` / `generatedProseBlock`）として `tree_nodes.content` に保存される。Unplaced beat は **`tree_nodes.unplaced_beats_doc` カラム**に保存される（上記）。**専用テーブルは作らない**。生成統計（プロンプトトークン数、モデル名）の永続化が必要になった場合のみ、将来 `scene_beats` テーブルを別途追加する余地を残す（v1 では実装しない、Beat システム設計書 Phase E 参照）。
+
+`generatedProseBlock` ノードは生成 prose を beat ID（`beatId` attr）と紐付けてラップする block-level node。AuthorshipMark（inline mark）と直交するレイヤーで動作するため干渉しない。詳細は Beat 設計書「AuthorshipMark との関係」参照。
 
 ### Subplot のスキーマ変更は不要
 
@@ -1367,6 +1412,8 @@ Subplot は Codex の `lore` タイプ + `#subplot` タグで運用するため�
 
 ### 初期化・マイグレーション方針
 
-- 既存プロジェクトには `unplaced_beat_preview` を `NULL` で追加（次回シーン保存時に自動更新）
+- 既存プロジェクトには `unplaced_beats_doc` を `'[]'`、`unplaced_beat_preview` を `NULL`、`char_count` を `0` で追加
+- `unplaced_beats_doc` / `unplaced_beat_preview` / `char_count` は次回シーン保存時にフロントが正しい値を同梱して埋める
 - `scene_codex_pins` / `scene_codex_mentions` は空のテーブルとして作成（既存データ移行は不要）
-- Matrix / Grid を最初に開いたとき、未スキャンシーンを検出すると進捗バナーを出してバックグラウンドスキャンする
+- Matrix を最初に開いたとき、未スキャンシーンを検出すると進捗バナーを出してバックグラウンドスキャンする
+- Beat / Matrix / Grid 関連のカラム追加・テーブル新規作成は **1本の Drizzle migration ファイル** にまとめる（Phase A 着手時に同時投入、機能横断のため分割しない）

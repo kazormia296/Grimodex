@@ -1388,9 +1388,19 @@ Beat システムの導入に伴い、Editor キャンバスと上部ヘッダ�
 
 ### TipTap カスタムノード
 
-- **`sceneBeat`**: 本文中の Placed beat。`group: 'block'`、`content: 'inline*'`。`attrs`: `id` / `placed` / `order` / `collapsed` / `generated` / `generatedRange` / `beatType` / `pov`
-- **`unplacedBeats`**: ドキュメント先頭に固定されるコンテナ。`isolating: true`、Editor キャンバスからは描画除外され、Synopsis 隣の Beats セクションでレンダリング
-- 既存シーンには `appendTransaction` で空の `unplacedBeats` を自動挿入（マイグレーション）
+- **`sceneBeat`**: 本文中の Placed beat。`group: 'block'`、`content: 'inline*'`。`attrs`: `id` / `collapsed` / `beatType` / `pov`
+- **`generatedProseBlock`**: Beat の生成 prose を包むブロック。`group: 'block'`、`content: 'block+'`、`defining: true`、`attrs`: `beatId` / `modified`。Regenerate / Delete-with-prose の操作対象範囲を identify し、生成範囲管理を ProseMirror のノード構造に委ねる
+- Unplaced beat は本文 EditorView の TipTap ノードでは**ない**。`tree_nodes.unplaced_beats_doc` カラムに別保存され、Synopsis 隣の Beats セクションで独立 TipTap editor として描画される（Beat 設計書「Placed beat は TipTap ノード、Unplaced beat は別カラム」参照）
+- 既存シーンへのマイグレーションは不要（`unplaced_beats_doc` がカラム DEFAULT `'[]'` で追加されるだけ）
+
+### AuthorshipMark との共存
+
+`generatedProseBlock`（block-level node、beat 単位の生成範囲）と `AuthorshipMark`（`src/features/attribution/AuthorshipMark.ts`、inline mark、文字単位の起源）は別レイヤーで共存し干渉しない：
+
+- 生成段落の text node には AuthorshipMark='ai' が付き、ブロック自体は `generatedProseBlock` で囲まれる
+- ユーザーがブロック内で手で書き加えると、新規 text には AuthorshipMark='human' が付き、ブロック側は `appendTransaction` で `modified=true` に倒れる
+- paste 先で対応 beat 不在の `generatedProseBlock` は unwrap（中身の段落と AuthorshipMark は維持）
+- CSS は AuthorshipMark の Decoration（紫系）・Beat ヘッダ（黄色系）・`generatedProseBlock` 左ボーダー（控えめなグレー）の3層を視覚的に分離
 
 ### Codex メンション拡張の SceneEditor 登録
 
@@ -1407,10 +1417,10 @@ Beat システムの導入に伴い、Editor キャンバスと上部ヘッダ�
 
 ### Placed beat の本文中表示
 
-- ヘッダーバー: 折りたたみトグル `[▼]/[▶]`、`[⚡Generate]`（未生成時のみ）、`[⋮]` メニュー、`POV: 花子` チップ（シーン POV と異なる場合のみ）
+- ヘッダーバー: 折りたたみトグル `[▼]/[▶]`、`[⚡Generate]`（対応 `generatedProseBlock` 不在時のみ）、`[⋮]` メニュー、`POV: 花子` チップ（シーン POV と異なる場合のみ）
 - 折りたたみ時はヘッダーと冒頭文だけ表示
-- 左ボーダーで Attribution と区別（Beat: 黄色系、Attribution: 紫系）
-- 生成中はストリーミング表示（prose が下に追記されていく）
+- 左ボーダーで Attribution / 生成 prose ブロックと区別（Beat ヘッダ: 黄色系、Attribution: 紫系、`generatedProseBlock`: 控えめなグレー）
+- 生成中はストリーミング表示（Beat 直後の `generatedProseBlock` 内に prose が追記されていく）
 
 ### `[⋮]` メニュー（Placed beat）
 
@@ -1435,7 +1445,7 @@ Beat システムの導入に伴い、Editor キャンバスと上部ヘッダ�
 
 ### Export 時の挙動
 
-Markdown export で `sceneBeat` / `unplacedBeats` ノードは**完全除去**される（読者向け本文に Beat が混入するのを防ぐ）。詳細はエクスポートダイアログ設計書参照。
+Markdown export で本文の `sceneBeat` ノードは**完全除去**、`generatedProseBlock` は **unwrap**（中身の段落だけ残す）。Unplaced beat は本文外（`unplaced_beats_doc` カラム）に保存されるため Export 対象に含まれない。詳細はエクスポートダイアログ設計書参照。
 
 ---
 

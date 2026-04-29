@@ -401,6 +401,7 @@ Inline AI palette                Ctrl+Space
 | ボタン | 動作 |
 |--------|------|
 | Rebuild FTS indexes | FTS5仮想テーブルを再構築（検索が壊れた場合のリカバリ） |
+| Rebuild Codex mention cache | `scene_codex_mentions` を全 Codex × 全シーンで完全再スキャン（進捗バー付き）。Codex rename 時の部分再スキャンが Aho-Corasick の最長一致衝突で取りこぼした場合の逃げ道。詳細は Matrix 設計書参照 |
 | Compact database | SQLiteの VACUUM を実行（データベースサイズ最適化） |
 | Clear chat history | 全チャットセッション・メッセージを削除（確認ダイアログ。Codex/Snippetの抽出済みデータは残る） |
 | Delete project | プロジェクト全体を削除（最終確認ダイアログ。テキスト入力での確認を要求） |

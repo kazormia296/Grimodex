@@ -1003,9 +1003,9 @@ L1〜L4 の構築ロジックは共通モジュール（既存）から呼び、
 ### Beat 生成の出力
 
 - Vercel AI SDK でストリーミング生成
-- 生成された prose は Beat ノードの直後に挿入（Editor の TipTap 操作）
-- 生成 prose には Attribution マーカーが自動付与される（既存機構）
-- Beat ノードに `generated = true` をセット、`generatedRange` を記録
+- Beat ノードの直後に空の `generatedProseBlock`（`beatId = sceneBeat.attrs.id`）を挿入し、内部にストリーミング text を流す（Editor の TipTap 操作）
+- 各 text node に AuthorshipMark='ai' が自動付与される（既存機構）。`generatedProseBlock` は inline mark の AuthorshipMark と別レイヤーで動作するため干渉しない
+- 生成済みかどうかと範囲は `generatedProseBlock` の存在自体が表すため、Beat ノード側のフラグ更新は不要
 
 ### Beat の AI 自動 role 推定（Phase C）
 

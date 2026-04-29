@@ -648,9 +648,15 @@ Phase A で **`scene_codex_pins` テーブル**（シーン × Codex の明示�
 
 Scenes パネル側からの直接編集 UI はないが、Scene 削除時に `ON DELETE CASCADE` で自動的に紐付き行も削除される。
 
-### tree_nodes.unplaced_beat_preview カラム
+### tree_nodes の新規カラム
 
-Phase A で **`tree_nodes.unplaced_beat_preview` カラム**（Beat 冒頭のキャッシュ）が追加される。Grid パネルのカード描画で利用される。シーン保存時にバックエンドが TipTap docJson から `unplacedBeats` の先頭 beat 冒頭を抽出して書き込む。Scenes パネルでは編集対象としない（読み取りもしない）。
+Phase A で同じ migration ファイルに以下の3カラムが追加される：
+
+- **`tree_nodes.unplaced_beats_doc TEXT NOT NULL DEFAULT '[]'`**: Unplaced beat の保存先（ProseMirror JSON 配列、Beat 設計書参照）。本文 (`content` カラム) とは独立した別データ
+- **`tree_nodes.unplaced_beat_preview TEXT`**: `unplaced_beats_doc` から抽出した先頭3件 × 40文字のプレビューキャッシュ。Grid パネルのカード描画で利用
+- **`tree_nodes.char_count INTEGER NOT NULL DEFAULT 0`**: 本文文字数キャッシュ。Grid パネルのステータスバー集計で利用
+
+シーン保存時、フロント側が `unplaced_beat_preview` と `char_count` の値を保存ペイロードに同梱する（バックエンドは保存するだけ、中身を解釈しない）。Scenes パネルではこれらのカラムを編集対象としない（読み取りもしない）。
 
 ### Outline モードの Synopsis インライン編集
 

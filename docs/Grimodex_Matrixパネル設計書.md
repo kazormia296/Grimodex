@@ -139,7 +139,7 @@ Show モードで選ばれた列候補に対し、Codex タグで二段目の絞
 | `Codex (locations)` | location タイプのみ | 同上 |
 | `Codex (items)` | item タイプのみ | 同上 |
 | `Codex (lore)` | lore タイプのみ | 同上 |
-| `POV` | character タイプの Codex エントリ | シーンの `povCharacterId`（1行につき1セルだけ ●、未設定なら空行）。**Phase A 時点ではシーン POV のみ。Phase B 以降は Beat の `pov` オーバーライドも反映**（シーン POV と異なる beat-pov があれば、そのキャラ列にも ★ を付与し、シーン POV キャラ列の ● は維持） |
+| `POV` | character タイプの Codex エントリ | シーンの `tree_nodes.pov_character_id` を直接 JOIN（1行につき1セルだけ ●、未設定なら空行）。**Phase A 時点ではシーン POV のみ。Phase B 以降は本文 docJson を走査して `sceneBeat.attrs.pov` のオーバーライドも反映**（シーン POV と異なる beat-pov があれば、そのキャラ列にも ★ を付与し、シーン POV キャラ列の ● は維持） |
 | `Location` | location タイプの Codex エントリ | シーンの `locationId`（同上） |
 | `Subplot` | `#subplot` タグ付きの `lore` エントリ | subplot の進行密度（言及スキャン結果ベース） |
 | `Custom` | **ユーザーが手動で追加した任意 Codex エントリの集合**（タイプ・タグ問わず） | 言及/関連の有無 |
@@ -318,7 +318,7 @@ Matrix の最大の付加価値のひとつ。Editor を開かずにプロッテ
 
 ### 保存先
 
-追加された beat は該当シーンの TipTap ドキュメント内、`unplacedBeats` コンテナの末尾（`order` を最大値+1）に保存される。詳細は Beat システム設計書参照。
+追加された beat は該当シーンの `tree_nodes.unplaced_beats_doc` 配列の末尾に push される。詳細は Beat システム設計書参照。
 
 ### 連続入力モード（v2）
 
@@ -454,24 +454,39 @@ CREATE TABLE scene_codex_mentions (
   mention_count INTEGER NOT NULL DEFAULT 0,
   last_scanned_at TEXT NOT NULL DEFAULT (datetime('now')),
   source TEXT NOT NULL,                          -- 'body' | 'beat' | 'relation'
-  role TEXT NOT NULL DEFAULT 'mentioned',        -- 'mentioned' | 'actor' | 'target' | 'pov'
-  PRIMARY KEY (scene_id, codex_entry_id, source, role)
+  role TEXT NOT NULL DEFAULT 'mentioned',        -- 'mentioned' | 'actor' | 'target'
+  PRIMARY KEY (scene_id, codex_entry_id, source)
 );
 CREATE INDEX scene_codex_mentions_by_scene ON scene_codex_mentions(scene_id);
 CREATE INDEX scene_codex_mentions_by_codex ON scene_codex_mentions(codex_entry_id);
 ```
 
-`source` はセル背景色の根拠区別（本文言及 / Beat メンション / Codex リレーション）に使う。`role` は Phase B で導入する Codex メンション role 修飾子（Beat 設計書参照）と Beat POV オーバーライド (`pov`) を保持する。1シーン × 1 Codex でも、根拠 × 役割の組み合わせで複数行になる。
+`source` はセル背景色の根拠区別（本文言及 / Beat メンション / Codex リレーション）に使う。1シーン × 1 Codex でも、根拠ごとに最大3行（`source='body'/'beat'/'relation'`）まで持てる。
 
-`role` カラムは **Phase A から DDL に含めて空（`mentioned`）のまま運用**する。Phase B で role 修飾子を導入するときに値を埋める実装を追加するだけで、追加マイグレーションは不要にする。
+`role` は Phase B で導入する Codex メンション role 修飾子（Beat 設計書参照）を保持し、`source='beat'` の行のみ意味を持つ：
+
+- `source='body'`: 本文テキストは actor/target を語らないので常に `'mentioned'`
+- `source='relation'`: 明示リレーションは役割を持たないので常に `'mentioned'`
+- `source='beat'`: 1シーン内の複数 beat に同じ Codex が異なる role で登場した場合、優先順位 `actor > target > mentioned` の **最強値**を1行に保持（Matrix の Role-aware 表示は1行参照で完結する）
+
+`role` カラムは **Phase A から DDL に含めて全行 `'mentioned'` のまま運用**する。Phase B で role 修飾子を導入するときに `source='beat'` 行の値を埋める実装を追加するだけで、PK 変更や追加マイグレーションは不要。
+
+**POV はこのテーブルに含めない**。POV は「言及」ではなくメタデータのため `scene_codex_mentions` の責務範囲外：
+
+- シーン POV: `tree_nodes.pov_character_id` を Matrix 描画時に直接 JOIN
+- Beat POV（Phase B 以降の `sceneBeat.attrs.pov`）: 必要になった時点で本文 docJson を走査して導出。導出コストが問題化したら別途小さい cache テーブル `scene_beat_pov_cache` を追加する余地を残す
 
 ### 更新タイミング
 
 - **シーン保存時**: 該当シーン行を全 Codex に対して再計算（既存の保存パイプラインに hook）
-- **Codex エントリ追加**: 全シーンに対して該当列を非同期スキャン（バックグラウンドジョブ、キュー実装）
+- **Codex エントリ追加**: 該当 Codex 1件のパターンだけを対象として全シーンを非同期スキャン（バックグラウンドジョブ、キュー実装）。他 Codex の行は触らない
 - **Codex エントリ削除**: キャッシュから該当列を `ON DELETE CASCADE` で自動削除
-- **Codex 名/alias 変更**: 全シーンに対して再スキャン（バックグラウンドジョブ）
+- **Codex 名/alias 変更**: **該当 Codex 1件のパターンだけ**を対象として全シーンを非同期スキャンし、その Codex 列の `source='body'` 行のみ更新する。他 Codex の行は触らない
 - **Codex リレーション変更**: 該当ペアの `source = 'relation'` 行を更新
+
+#### 部分再スキャンの理論的限界と逃げ道
+
+「該当 Codex 列のみ再スキャン」は Aho-Corasick の最長一致挙動により、稀に他 Codex のマッチを巻き込む可能性がある（rename 後の新パターンが他 Codex の名前と接頭/接尾で衝突する場合など）。実用上の頻度は低いが、整合性が疑われたときの逃げ道として **Settings → Data → "Codex 言及キャッシュを再構築"** ボタンを Phase A から提供し、全 Codex × 全シーンの完全再スキャンをユーザーが手動で叩けるようにする（進捗バー付き）。
 
 ### 不採用の戦略
 
@@ -534,9 +549,10 @@ CREATE INDEX scene_codex_mentions_by_codex ON scene_codex_mentions(codex_entry_i
 依存: Codex 言及スキャナ、Scenes ツリー、Timeline の story-time order、Beat システム設計書 Phase A の Unplaced beat 機構
 
 - [ ] **`scene_codex_pins` テーブルの新規追加**（Drizzle migration）— 明示リレーションの一次ソース。Grid のカード Codex チップもこれを参照
-- [ ] **`scene_codex_mentions` キャッシュテーブルの新規追加**（Drizzle migration）
+- [ ] **`scene_codex_mentions` キャッシュテーブルの新規追加**（Drizzle migration、PK は `(scene_id, codex_entry_id, source)`、`role` カラムは Phase A 時点で全行 `'mentioned'`）
 - [ ] シーン保存時のキャッシュ更新フック（既存の保存パイプラインに統合）
-- [ ] Codex 追加・削除・rename 時のキャッシュ再構築バックグラウンドジョブ
+- [ ] Codex 追加・削除・rename 時のキャッシュ部分再構築バックグラウンドジョブ（該当 Codex 列のみ再スキャン）
+- [ ] **Settings → Data → "Codex 言及キャッシュを再構築" ボタン**（全 Codex × 全シーン再スキャン、進捗バー付き、衝突疑い時の逃げ道として）
 - [ ] 新規パネル `MatrixPanel` の実装（feature-based ディレクトリ `src/features/matrix/`）
 - [ ] Codex モード（default）
 - [ ] 行: シーン階層、列: Codex（タイプ別グループ）
@@ -561,8 +577,8 @@ CREATE INDEX scene_codex_mentions_by_codex ON scene_codex_mentions(codex_entry_i
 - [ ] Custom モード: 複数プリセットの保存・切替・rename・削除
 - [ ] Display モード: `count` / `heatmap` / `pov-color`
 - [ ] **Display モード `role-aware`**（Beat 設計書 Phase B の role 修飾子と連動、actor 太枠 / target 細枠 / mentioned 薄 ● / POV ★）
-- [ ] **POV モードに Beat レベル POV オーバーライドを反映**（beat の `attrs.pov` がシーン POV と異なれば該当キャラ列に ★ を追加）
-- [ ] `scene_codex_mentions` キャッシュへの role 情報の追加（Phase A スキーマに `role` カラムを最初から入れて空のまま運用、Phase B で値を埋める）
+- [ ] **POV モードに Beat レベル POV オーバーライドを反映**（本文 docJson を走査して `sceneBeat.attrs.pov` がシーン POV と異なれば該当キャラ列に ★ を追加。`scene_codex_mentions` には POV を入れない方針のため docJson 走査または別途 cache テーブルで対応）
+- [ ] `scene_codex_mentions` の `role` カラム（`source='beat'` 行）に actor/target/mentioned の最強値を書き込む実装（Phase A スキーマで `role` カラムは既に存在、PK 変更不要）
 - [ ] Display モード（`dot` / `count` / `heatmap` / `pov-color`）
 - [ ] フィルタ・絞り込み（空セル非表示、未編集のみ）
 - [ ] Codex 列の折りたたみ・並べ替え・ピン留め
@@ -634,7 +650,7 @@ CREATE INDEX scene_codex_mentions_by_codex ON scene_codex_mentions(codex_entry_i
 | `Grimodex_Codexパネル設計書.md` | Codex Quick の言及スキャン結果を Matrix と共有する記述、`#subplot` タグ運用 |
 | `Grimodex_Mapパネル設計書.md` | Matrix との関係（言及スキャン結果の共有、クロスナビゲーション） |
 | `Grimodex_Timelineパネル設計書.md` | Matrix の Sort で story-time order を共有する記述 |
-| `Grimodex_Settingsパネル設計書.md` | `matrix.*` 設定項目の追加 |
+| `Grimodex_Settingsパネル設計書.md` | `matrix.*` 設定項目の追加、Data カテゴリに "Rebuild Codex mention cache" ボタン追加 |
 | `Grimodex_統合DBスキーマ.md` | `scene_codex_mentions` キャッシュテーブルを新規追加（既存スキーマには存在しないことを確認済み） |
 
 ---

@@ -175,9 +175,9 @@ Help
 | 領域 | 内容 | データソース |
 |------|------|--------|
 | ヘッダ | Scene 名 + 編集 ✏ + `[⋮]` メニュー | `tree_nodes.title` |
-| 本体（上段） | Synopsis（あれば）または Unplaced beat の最初の3件の冒頭文 | `tree_nodes.synopsis` / TipTap の `unplacedBeats` ノード内 |
+| 本体（上段） | Synopsis（あれば）または Unplaced beat の最初の3件の冒頭文 | `tree_nodes.synopsis` / `tree_nodes.unplaced_beat_preview`（保存時にフロントが事前抽出したプレビュー、Beat 設計書 / 後述「Beat 冒頭の取得戦略」参照） |
 | 本体（中段） | Codex チップ（最大5件、`×` で削除可、`+ Codex` で追加） | `scene_codex_pins` |
-| フッタ | Label / 文字数 / Status | （Label は Phase B、`tree_nodes.status` は Scenes パネル設計書既定） |
+| フッタ | Label / 文字数 / Status | （Label は Phase B、`tree_nodes.status` は Scenes パネル設計書既定、文字数は `tree_nodes.char_count`） |
 
 #### Synopsis vs Beat 冒頭の優先順位
 
@@ -277,7 +277,7 @@ Synopsis は **Scenes パネル（Outline モード）／ Editor 上部の Synop
 
 ### Beat システムとの接続
 
-- カード本体の bullet 表示は Unplaced beat の冒頭文を読み出している（TipTap ドキュメント内 `unplacedBeats` コンテナ）
+- カード本体の bullet 表示は Unplaced beat の冒頭文を読み出している（`tree_nodes.unplaced_beat_preview` キャッシュ、シーン保存時にフロントが `unplaced_beats_doc` から事前抽出）
 - Beat の追加・編集・削除は Editor で行う（Grid 上では編集しない、表示のみ）
 - カードの `[⋮]` メニューに「Add unplaced beat...」を追加することは可能（Phase B 検討）
 
@@ -296,19 +296,19 @@ Grid は新規テーブルを持たない。表示内容はすべて既存テー
 | Chapter 列 | `tree_nodes` の folder ノード（current container の直接の子） |
 | Scene カード | `tree_nodes` の scene ノード（folder 列の子、または Loose） |
 | Synopsis | `tree_nodes.synopsis` |
-| Beat 冒頭 | TipTap ドキュメント JSON 内の `unplacedBeats` ノード（後述「Beat 冒頭の取得戦略」参照） |
+| Beat 冒頭 | `tree_nodes.unplaced_beat_preview` キャッシュ（後述「Beat 冒頭の取得戦略」参照） |
 | Codex チップ | `scene_codex_pins` |
 | Label | （Phase B、Label 機能が追加されたら対応） |
 | Status | `tree_nodes.status`（Scenes パネル設計書既定） |
-| 文字数 | `tree_nodes.char_count` キャッシュカラム（保存時に更新） |
+| 文字数 | `tree_nodes.char_count` キャッシュカラム（Beat 設計書 Phase A で追加、シーン保存時にフロントが値を同梱） |
 
 ### Beat 冒頭の取得戦略
 
-Grid は**最大数十シーン分の docJson を同時に表示する**ため、カード描画のたびに各 Scene の TipTap docJson 全体をパースして `unplacedBeats` を抽出するのは高コスト（docJson は最大数百KB）。以下の二段戦略を採る：
+Grid は**最大数十シーン分**を同時に表示するため、カード描画のたびに各 Scene の `unplaced_beats_doc` 全体をパースして先頭 beat を取り出すのも避けたい（数十シーン × 数 KB の JSON パース）。**保存時にフロント側がプレビュー文字列を計算して同梱**するシンプルな方針を採る：
 
-**1. `tree_nodes.unplaced_beat_preview` キャッシュカラムを追加（Phase A）**
+**`tree_nodes.unplaced_beat_preview` キャッシュカラム（Phase A）**
 
-シーン保存時にバックエンドが `unplacedBeats` コンテナの先頭3 beat の冒頭40文字を抽出し、JSON 配列としてキャッシュする：
+シーン保存時、フロントが `unplaced_beats_doc`（Beat 設計書参照）の先頭3 beat の冒頭40文字を抽出し、保存ペイロードに `unplacedBeatPreview` フィールドとして同梱する。バックエンドはその値を `tree_nodes.unplaced_beat_preview` に保存するだけ（中身は解釈しない）：
 
 ```sql
 ALTER TABLE tree_nodes ADD COLUMN unplaced_beat_preview TEXT;
@@ -316,11 +316,15 @@ ALTER TABLE tree_nodes ADD COLUMN unplaced_beat_preview TEXT;
 -- 値が NULL or '[]' なら表示しない
 ```
 
-更新タイミングは Beat システム設計書 Phase A のシーン保存パイプラインに hook（Synopsis キャッシュと同じ層）。
+**抽出責任をフロント側に置く理由:**
 
-**2. キャッシュミス時のフォールバック（Phase A）**
+- `unplaced_beats_doc` の構造（ProseMirror JSON fragment）を定義しているのは TipTap 側（フロント）。schema 変更があれば必ずフロントから始まるので、バックエンドに同じ JSON 構造の知識を二重に持たせると drift が起きる
+- 保存パイプラインは既に `tree_nodes.content` をフロントが投げているので、フィールドを1つ増やすだけ
+- プレビューは表示用で、整合性が崩れても Grid のカード表示が最大40文字×3件ズレるだけ（データ破損にはならない）
 
-`unplaced_beat_preview` が NULL のシーン（マイグレーション直後など）は、表示時に lazy にバックエンド側で計算してキャッシュに書き戻す。Grid 描画自体はキャッシュ NULL のまま「（計算中…）」で進める。
+**マイグレーション後の挙動:**
+
+`unplaced_beat_preview` は Phase A 時点で `NULL` から始まる。次回そのシーンが保存されたタイミングで自然に埋まる。**ユーザーが触らないシーンはずっと NULL のまま**だが、そのシーンは Beat も持たないことが多く、プレビュー表示が空なのは正解（カード描画は問題なく動く）。lazy 再計算は v1 では不要、必要になれば v2 で検討。
 
 ### ユーザー設定の永続化
 
@@ -350,10 +354,10 @@ ALTER TABLE tree_nodes ADD COLUMN unplaced_beat_preview TEXT;
 
 ### Phase A: Grid MVP
 
-依存: Scenes パネル、Codex リレーション、Editor の Synopsis 機構、Beat システム設計書 Phase A の `unplacedBeats`（読み出しのみ）
+依存: Scenes パネル、Codex リレーション、Editor の Synopsis 機構、Beat システム設計書 Phase A の `unplaced_beats_doc` カラム（読み出しのみ）と `unplaced_beat_preview` キャッシュ
 
-- [ ] **`tree_nodes.unplaced_beat_preview` カラムを追加**（Drizzle migration）
-- [ ] シーン保存時に `unplaced_beat_preview` を更新するバックエンドフック
+- [ ] **`tree_nodes.unplaced_beat_preview` カラムを追加**（Drizzle migration、Beat 設計書の `unplaced_beats_doc` / `char_count` と同 migration ファイルにまとめる）
+- [ ] シーン保存時にフロント側が `unplaced_beats_doc` から先頭3件×40文字を抽出して保存ペイロードに同梱（バックエンドは値を保存するだけ、解釈しない）
 - [ ] **`<InlineSynopsisEditor>` 共有コンポーネントを新規作成**（`src/features/editor/InlineSynopsisEditor.tsx`）。Scenes Outline モードと Editor Synopsis セクションも同コンポーネントに切り替え（既存実装の置換）
 - [ ] **Codex 追加ポップオーバーの再利用設定**: Chat パネルの「📌ピン留め追加ポップオーバー」を共有可能なコンポーネントとしてリファクタ（必要なら）、Grid から呼び出し可能にする
 - [ ] 新規パネル `GridPanel` の実装（`src/features/grid/`）

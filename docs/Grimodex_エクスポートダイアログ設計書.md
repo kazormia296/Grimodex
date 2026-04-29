@@ -475,14 +475,15 @@ Settings の Data カテゴリにあった「Export as Markdown」「Export as p
 
 ## Beat ブロックの Export 時挙動
 
-[Beat システム設計書](./Grimodex_Beatシステム設計書.md) で導入される `sceneBeat` および `unplacedBeats` ノードは、**Markdown export 時に完全除去**される。残るのは生成された prose と通常の段落のみ。
+[Beat システム設計書](./Grimodex_Beatシステム設計書.md) で導入される本文中の `sceneBeat` ノードは **Markdown export 時に完全除去**、`generatedProseBlock` は **unwrap**（中身の段落だけ残す）。Unplaced beat は本文外の `tree_nodes.unplaced_beats_doc` カラムに保存されるため Export 対象には含まれない（自然に除外される）。残るのは生成された prose と通常の段落のみ。
 
 ### 除去される内容
 
-- `unplacedBeats` コンテナ（ドキュメント先頭、Editor キャンバス外で表示されているもの）の全内容
-- 本文中の `sceneBeat` ノード本体（生成された prose は残る）
+- 本文中の `sceneBeat` ノード本体（生成された prose は `generatedProseBlock` の unwrap によって残る）
+- `generatedProseBlock` のラッパーは剥がし、中身の段落のみ残す（AuthorshipMark は export ロジックに従い別途処理）
 - Beat 内の角括弧記法（`[slow down]`, `[expand the dialogue]` 等）
 - Beat 内の `@codex_name:role` メンション（角括弧記法と同じく執筆プロセスのメタデータ）
+- Unplaced beat（`unplaced_beats_doc` カラム）は読み取らない
 
 ### 除去する理由
 
