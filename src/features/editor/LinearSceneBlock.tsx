@@ -87,7 +87,13 @@ function MountedSceneBlock({
     await saveSceneContent(sceneId, JSON.stringify(ed.getJSON()));
     await saveAuthorshipSpans(sceneId, ed.state.doc);
     upsertSceneBeatMentions(sceneId, extractBeatMentions(ed.state.doc)).catch(
-      () => {},
+      (e) => {
+        debugLog.error(
+          "LinearSceneBlock",
+          "upsertSceneBeatMentions failed",
+          errorDetail(e),
+        );
+      },
     );
     useTreeStore
       .getState()
