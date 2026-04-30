@@ -807,7 +807,9 @@
       "generateFromBeats": "ビートからSynopsisを生成",
       "generatingFromBeats": "Synopsisを生成中…",
       "generatedFromBeats": "ビートからSynopsisを生成しました",
-      "generateFromBeatsFailed": "Synopsis生成に失敗しました"
+      "generateFromBeatsFailed": "Synopsis生成に失敗しました",
+      "overwriteConfirm": "既存のSynopsisを上書きしますか？",
+      "overwrite": "上書き"
     },
     "quickSection": {
       "unpin": "ピン留め解除",

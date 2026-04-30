@@ -210,4 +210,28 @@ describe("generateSynopsisFromBeats", () => {
     await promise;
     editor.destroy();
   });
+
+  it("空のAIレスポンスは onError を呼び updateSynopsis を呼ばない", async () => {
+    const editor = createEditorWithBeats([
+      { id: "b1", instructions: "ビート" },
+    ]);
+    const onError = vi.fn();
+
+    const promise = generateSynopsisFromBeats(editor, "scene-1", { onError });
+    await Promise.resolve();
+
+    // 空のチャンクを送ってから done
+    emit("inline-ai:stream-chunk", { delta: "   ", block_type: "text" });
+    emit("inline-ai:stream-done", {
+      stop_reason: "end_turn",
+      input_tokens: 0,
+      output_tokens: 0,
+    });
+
+    await promise;
+
+    expect(updateSynopsisMock).not.toHaveBeenCalled();
+    expect(onError).toHaveBeenCalledOnce();
+    editor.destroy();
+  });
 });

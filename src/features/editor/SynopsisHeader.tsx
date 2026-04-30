@@ -1,6 +1,7 @@
 import { useState, useCallback } from "react";
 import { ChevronDown, ChevronRight, Sparkles } from "lucide-react";
 import type { Editor } from "@tiptap/core";
+import { toast } from "sonner";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { SynopsisArea } from "@/features/tree/SynopsisArea";
 import { useCodexStore } from "@/features/codex/codexStore";
@@ -50,6 +51,7 @@ export function SynopsisHeader({ sceneId, editor }: SynopsisHeaderProps) {
   const { t } = useTranslation();
   const [collapsed, setCollapsed] = useState(false);
   const [isGenerating, setIsGenerating] = useState(false);
+  const [confirmOverwrite, setConfirmOverwrite] = useState(false);
   const nodes = useTreeStore((s) => s.nodes);
   const updatePovCharacter = useTreeStore((s) => s.updatePovCharacter);
   const updateLocation = useTreeStore((s) => s.updateLocation);
@@ -74,14 +76,31 @@ export function SynopsisHeader({ sceneId, editor }: SynopsisHeaderProps) {
       })()
     : false;
 
-  const handleGenerateFromBeats = useCallback(() => {
+  const doGenerateFromBeats = useCallback(() => {
     if (!editor) return;
+    setConfirmOverwrite(false);
     setIsGenerating(true);
     generateSynopsisFromBeats(editor, sceneId, {
-      onDone: () => setIsGenerating(false),
-      onError: () => setIsGenerating(false),
+      onDone: () => {
+        setIsGenerating(false);
+        toast.success(t("editor.synopsis.generatedFromBeats"));
+      },
+      onError: (msg) => {
+        setIsGenerating(false);
+        toast.error(msg);
+      },
     });
-  }, [editor, sceneId]);
+  }, [editor, sceneId, t]);
+
+  const handleGenerateFromBeats = useCallback(() => {
+    if (!editor) return;
+    if (node?.synopsis?.trim()) {
+      setConfirmOverwrite(true);
+      if (collapsed) setCollapsed(false);
+    } else {
+      doGenerateFromBeats();
+    }
+  }, [editor, node, collapsed, doGenerateFromBeats]);
 
   if (!node || node.nodeType !== "scene") return null;
 
@@ -128,6 +147,27 @@ export function SynopsisHeader({ sceneId, editor }: SynopsisHeaderProps) {
       </div>
       {!collapsed && (
         <div className="px-3 pb-2">
+          {confirmOverwrite && (
+            <div className="mb-2 flex items-center gap-2 rounded border border-border bg-muted/40 px-2 py-1.5 text-xs">
+              <span className="flex-1 text-muted-foreground">
+                {t("editor.synopsis.overwriteConfirm")}
+              </span>
+              <button
+                type="button"
+                onClick={doGenerateFromBeats}
+                className="rounded bg-primary px-2 py-0.5 text-xs text-primary-foreground"
+              >
+                {t("editor.synopsis.overwrite")}
+              </button>
+              <button
+                type="button"
+                onClick={() => setConfirmOverwrite(false)}
+                className="rounded px-2 py-0.5 text-xs text-muted-foreground hover:bg-accent"
+              >
+                {t("common.cancel")}
+              </button>
+            </div>
+          )}
           {isGenerating && (
             <p className="mb-1 text-[10px] italic text-muted-foreground/70">
               {t("editor.synopsis.generatingFromBeats")}

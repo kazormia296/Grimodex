@@ -61,6 +61,11 @@ export async function generateSynopsisFromBeats(
       },
       onDone: () => {
         const synopsis = buffer.join("").trim();
+        if (!synopsis) {
+          callbacks?.onError?.("AIが空のレスポンスを返しました");
+          resolve();
+          return;
+        }
         useTreeStore
           .getState()
           .updateSynopsis(sceneId, synopsis)

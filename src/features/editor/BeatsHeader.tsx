@@ -2,6 +2,7 @@ import { useCallback, useState } from "react";
 import type { UnplacedBeat } from "@/features/editor/beat/unplacedBeatsStore";
 import { ChevronDown, ChevronRight, Plus, Sparkles } from "lucide-react";
 import type { Editor } from "@tiptap/core";
+import { toast } from "sonner";
 import { useDroppable } from "@dnd-kit/core";
 import { useUnplacedBeatsStore } from "@/features/editor/beat/unplacedBeatsStore";
 import { useTreeStore } from "@/features/tree/treeStore";
@@ -73,7 +74,10 @@ export function BeatsHeader({
     if (collapsed) setCollapsed(false);
     generateBeatsFromSynopsis(sceneId, {
       onDone: () => setIsGenerating(false),
-      onError: () => setIsGenerating(false),
+      onError: (msg) => {
+        setIsGenerating(false);
+        toast.error(msg);
+      },
     });
   }, [sceneId, collapsed]);
 

@@ -16,10 +16,20 @@ interface RawBeat {
   instructions?: unknown;
 }
 
+function extractJsonString(raw: string): string {
+  // Strip markdown code fences: ```json ... ``` or ``` ... ```
+  const fenceMatch = raw.match(/```(?:json)?\s*([\s\S]*?)```/);
+  if (fenceMatch) return fenceMatch[1].trim();
+  // Extract first {...} block in case of leading prose
+  const braceMatch = raw.match(/\{[\s\S]*\}/);
+  if (braceMatch) return braceMatch[0];
+  return raw;
+}
+
 function parseBeatJson(raw: string): RawBeat[] | null {
   let parsed: unknown;
   try {
-    parsed = JSON.parse(raw);
+    parsed = JSON.parse(extractJsonString(raw));
   } catch {
     return null;
   }

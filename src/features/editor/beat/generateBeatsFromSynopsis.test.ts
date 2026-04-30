@@ -212,4 +212,50 @@ describe("generateBeatsFromSynopsis", () => {
     });
     await promise;
   });
+
+  it("markdown フェンスで囲まれた JSON も正しくパースできる", async () => {
+    const onDone = vi.fn();
+
+    const promise = generateBeatsFromSynopsis("scene-1", { onDone });
+    await Promise.resolve();
+
+    const fencedJson = "```json\n" + validJson + "\n```";
+    emit("inline-ai:stream-chunk", {
+      delta: fencedJson,
+      block_type: "text",
+    });
+    emit("inline-ai:stream-done", {
+      stop_reason: "end_turn",
+      input_tokens: 0,
+      output_tokens: 0,
+    });
+
+    await promise;
+
+    expect(addBeatMock).toHaveBeenCalledTimes(2);
+    expect(onDone).toHaveBeenCalledOnce();
+  });
+
+  it("前置きテキスト付きの JSON もブレース抽出でパースできる", async () => {
+    const onDone = vi.fn();
+
+    const promise = generateBeatsFromSynopsis("scene-1", { onDone });
+    await Promise.resolve();
+
+    const withPreamble = "以下が提案です:\n" + validJson;
+    emit("inline-ai:stream-chunk", {
+      delta: withPreamble,
+      block_type: "text",
+    });
+    emit("inline-ai:stream-done", {
+      stop_reason: "end_turn",
+      input_tokens: 0,
+      output_tokens: 0,
+    });
+
+    await promise;
+
+    expect(addBeatMock).toHaveBeenCalledTimes(2);
+    expect(onDone).toHaveBeenCalledOnce();
+  });
 });
