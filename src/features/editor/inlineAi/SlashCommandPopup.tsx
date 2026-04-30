@@ -103,7 +103,14 @@ export function SlashCommandPopup() {
           onClick={() => handleSelect(cmd)}
         >
           <span className="text-xs font-medium">/{cmd.id}</span>
-          <span className="text-xs text-muted-foreground">
+          <span
+            className={cn(
+              "text-xs",
+              i === selectedIndex
+                ? "text-primary-foreground/80"
+                : "text-muted-foreground",
+            )}
+          >
             {t(`inlineAi.commands.${cmd.id}.desc`)}
           </span>
         </button>
