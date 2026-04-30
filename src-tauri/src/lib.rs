@@ -669,6 +669,7 @@ fn foreshadow_set_setup_strength(
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 #[tauri::command]
 fn foreshadow_setup_create_ai(
     ws_state: tauri::State<'_, WorkspaceState>,
