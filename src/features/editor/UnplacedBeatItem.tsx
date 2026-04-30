@@ -1,6 +1,7 @@
 import { useRef, useState, useCallback } from "react";
 import { useEditor, EditorContent } from "@tiptap/react";
 import { MoreVertical } from "lucide-react";
+import { useTranslation } from "react-i18next";
 import { useDraggable } from "@dnd-kit/core";
 import { AnimatedDropdown } from "@/components/ui/animated-dropdown";
 import { useUnplacedBeatsStore } from "@/features/editor/beat/unplacedBeatsStore";
@@ -8,6 +9,7 @@ import { createUnplacedBeatExtensions } from "@/features/editor/beat/createUnpla
 import { placeBeatAtEnd } from "@/features/editor/beat/beatOperations";
 import { generateBeatOnce } from "@/features/editor/beat/generateBeatOnce";
 import type { UnplacedBeat } from "@/features/editor/beat/unplacedBeatsStore";
+import { BEAT_TYPES } from "@/features/editor/SceneBeatNode";
 import type { CodexMentionPopupState } from "@/features/codex/CodexMentionExtension";
 import type { Editor as TiptapEditor } from "@tiptap/core";
 
@@ -24,8 +26,11 @@ export function UnplacedBeatItem({
   mainEditor,
   setMentionPopup,
 }: UnplacedBeatItemProps) {
+  const { t } = useTranslation();
   const [menuOpen, setMenuOpen] = useState(false);
   const menuContainerRef = useRef<HTMLDivElement>(null);
+  const [typeMenuOpen, setTypeMenuOpen] = useState(false);
+  const typeMenuRef = useRef<HTMLDivElement>(null);
 
   const updateBeat = useUnplacedBeatsStore((s) => s.updateBeat);
   const removeBeat = useUnplacedBeatsStore((s) => s.removeBeat);
@@ -97,6 +102,44 @@ export function UnplacedBeatItem({
       className={`group flex items-start gap-1 rounded px-1 py-0.5 hover:bg-muted/40 ${isDragging ? "opacity-50" : ""}`}
       data-beat-id={beat.id}
     >
+      {/* Beat type chip */}
+      <div ref={typeMenuRef} className="relative mt-0.5 flex-shrink-0">
+        <button
+          type="button"
+          data-testid={`unplaced-beat-type-chip-${beat.id}`}
+          data-beat-type={beat.beatType}
+          onClick={() => setTypeMenuOpen((v) => !v)}
+          className="rounded bg-muted px-1 py-0.5 text-[10px] uppercase tracking-wide hover:bg-muted/80"
+        >
+          {t(`editor.beat.types.${beat.beatType}`, beat.beatType)}
+        </button>
+        <AnimatedDropdown
+          open={typeMenuOpen}
+          onClose={() => setTypeMenuOpen(false)}
+          containerRef={typeMenuRef}
+          className="absolute left-0 top-5 z-50 min-w-[110px] rounded-md border border-border bg-popover py-1 shadow-md"
+        >
+          <ul role="menu" className="text-xs">
+            {BEAT_TYPES.map((bt) => (
+              <li key={bt}>
+                <button
+                  type="button"
+                  role="menuitem"
+                  data-testid={`unplaced-beat-type-option-${beat.id}-${bt}`}
+                  onClick={() => {
+                    updateBeat(sceneId, beat.id, { beatType: bt });
+                    setTypeMenuOpen(false);
+                  }}
+                  className={`block w-full px-3 py-1.5 text-left uppercase tracking-wide hover:bg-primary hover:text-primary-foreground ${bt === beat.beatType ? "font-medium" : ""}`}
+                >
+                  {t(`editor.beat.types.${bt}`, bt)}
+                </button>
+              </li>
+            ))}
+          </ul>
+        </AnimatedDropdown>
+      </div>
+
       {/* Drag handle */}
       <div
         ref={setDragRef}

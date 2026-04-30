@@ -92,7 +92,40 @@ describe("SceneBeatNodeView", () => {
       expect(screen.getByText("Beat")).toBeTruthy();
     });
     const chip = screen.getByTestId("beat-type-chip");
-    expect(chip.textContent).toBe("dialogue");
+    expect(chip.getAttribute("data-beat-type")).toBe("dialogue");
+  });
+
+  it("beat type chip opens dropdown and selecting a type calls updateAttributes", async () => {
+    let editorRef: Editor | null = null;
+    render(
+      <HostEditor
+        attrs={{ beatType: "free" }}
+        expose={(e) => (editorRef = e)}
+      />,
+    );
+    await waitFor(() => screen.getByText("Beat"));
+
+    const chip = screen.getByTestId("beat-type-chip");
+    await act(async () => {
+      await userEvent.click(chip);
+    });
+
+    // dropdown items should appear
+    const dialogueOption = await screen.findByTestId(
+      "beat-type-option-dialogue",
+    );
+    await act(async () => {
+      await userEvent.click(dialogueOption);
+    });
+
+    await waitFor(() => {
+      let beatType: string | null = null;
+      editorRef!.state.doc.descendants((node) => {
+        if (node.type.name === "sceneBeat")
+          beatType = node.attrs.beatType as string;
+      });
+      expect(beatType).toBe("dialogue");
+    });
   });
 
   it("shows POV chip only when pov attr is set", async () => {
