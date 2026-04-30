@@ -852,6 +852,7 @@
       "povInherit": "シーン継承（オーバーライドなし）",
       "menuItems": {
         "convertToText": "通常の段落に変換",
+        "clearBeat": "ビートのコンテンツをクリア",
         "deleteBeatOnly": "ビートのみ削除（生成文は残す）",
         "deleteBeatAndProse": "ビートと生成文を削除",
         "regenerate": "再生成",

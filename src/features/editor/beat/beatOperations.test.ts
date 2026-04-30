@@ -12,6 +12,7 @@ import {
   findGeneratedBlockForBeat,
 } from "./insertBeatStream";
 import {
+  clearBeatContent,
   convertBeatToText,
   deleteBeatAndProse,
   deleteBeatOnly,
@@ -315,6 +316,55 @@ describe("placeBeatAtEnd", () => {
     });
     expect(beatType).toBe("dialogue");
     expect(pov).toBe("char-1");
+    editor.destroy();
+  });
+});
+
+describe("clearBeatContent", () => {
+  it("生成済みブロックを含む beat の直後コンテンツをすべて削除する", () => {
+    const editor = createEditor();
+    insertBeat(editor, "b1");
+    ensureGeneratedBlock(editor, "b1");
+    appendBeatChunk(editor, "b1", "生成テキスト", {
+      model: "test",
+      traceId: "t1",
+    });
+
+    const ok = clearBeatContent(editor, "b1");
+    expect(ok).toBe(true);
+
+    expect(findBeatById(editor, "b1")).not.toBeNull();
+    expect(editor.getText()).not.toContain("生成テキスト");
+    editor.destroy();
+  });
+
+  it("次の beat の手前まで削除し次 beat は残す", () => {
+    const editor = createEditor();
+    insertBeat(editor, "b1");
+    ensureGeneratedBlock(editor, "b1");
+    appendBeatChunk(editor, "b1", "テキスト1", {
+      model: "test",
+      traceId: "t1",
+    });
+    insertBeat(editor, "b2");
+    ensureGeneratedBlock(editor, "b2");
+    appendBeatChunk(editor, "b2", "テキスト2", {
+      model: "test",
+      traceId: "t2",
+    });
+
+    clearBeatContent(editor, "b1");
+
+    expect(findBeatById(editor, "b1")).not.toBeNull();
+    expect(findBeatById(editor, "b2")).not.toBeNull();
+    expect(editor.getText()).not.toContain("テキスト1");
+    expect(editor.getText()).toContain("テキスト2");
+    editor.destroy();
+  });
+
+  it("beat が存在しない場合は false を返す", () => {
+    const editor = createEditor();
+    expect(clearBeatContent(editor, "ghost")).toBe(false);
     editor.destroy();
   });
 });

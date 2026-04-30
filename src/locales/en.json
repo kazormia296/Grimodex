@@ -852,6 +852,7 @@
       "povInherit": "Inherit from scene (no override)",
       "menuItems": {
         "convertToText": "Convert to text",
+        "clearBeat": "Clear beat content",
         "deleteBeatOnly": "Delete beat only (keep prose)",
         "deleteBeatAndProse": "Delete beat and prose",
         "regenerate": "Regenerate",

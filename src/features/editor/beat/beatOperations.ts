@@ -88,6 +88,41 @@ export function replaceBeatBlock(editor: Editor, beatId: string): boolean {
 }
 
 /**
+ * Delete all content between this beat and the next sceneBeat (or doc end).
+ * The beat node itself is preserved; only the prose/generated content after it
+ * is removed. Returns false if the beat is not found or there is nothing to clear.
+ */
+export function clearBeatContent(editor: Editor, beatId: string): boolean {
+  const beat = findBeatById(editor, beatId);
+  if (!beat) return false;
+
+  const from = beat.beatPos + beat.beatSize;
+  const docSize = editor.state.doc.content.size;
+
+  let nextBeatPos: number | null = null;
+  editor.state.doc.descendants((node, pos) => {
+    if (
+      node.type.name === "sceneBeat" &&
+      node.attrs.id !== beatId &&
+      pos >= from &&
+      nextBeatPos === null
+    ) {
+      nextBeatPos = pos;
+      return false;
+    }
+    return true;
+  });
+
+  const to = nextBeatPos ?? docSize;
+  if (from >= to) return false;
+
+  const { tr } = editor.state;
+  tr.delete(from, to);
+  editor.view.dispatch(tr);
+  return true;
+}
+
+/**
  * Insert an Unplaced beat as a sceneBeat node at the end of the document,
  * then remove it from the unplacedBeatsStore.
  *

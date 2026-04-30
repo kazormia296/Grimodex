@@ -13,9 +13,11 @@ import { useCodexStore } from "@/features/codex/codexStore";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { AnimatedDropdown } from "@/components/ui/animated-dropdown";
 import type { BeatType } from "./SceneBeatNode";
+import { BEAT_TYPES } from "./SceneBeatNode";
 import { useSceneBeatEditorContext } from "./beat/SceneBeatEditorContext";
 import { useBeatGeneration } from "./beat/useBeatGeneration";
 import {
+  clearBeatContent,
   convertBeatToText,
   deleteBeatAndProse,
   deleteBeatOnly,
@@ -66,6 +68,8 @@ export function SceneBeatNodeView({
   const menuContainerRef = useRef<HTMLDivElement>(null);
   const [povMenuOpen, setPovMenuOpen] = useState(false);
   const povMenuRef = useRef<HTMLDivElement>(null);
+  const [typeMenuOpen, setTypeMenuOpen] = useState(false);
+  const typeMenuRef = useRef<HTMLDivElement>(null);
 
   const runMenuAction = (fn: () => void) => {
     setMenuOpen(false);
@@ -125,12 +129,42 @@ export function SceneBeatNodeView({
           )}
         </button>
         <span className="font-medium">{t("editor.beat.label")}</span>
-        <span
-          data-testid="beat-type-chip"
-          className="rounded bg-muted px-1 py-0.5 text-[10px] uppercase tracking-wide"
-        >
-          {beatType}
-        </span>
+        <div ref={typeMenuRef} className="relative">
+          <button
+            type="button"
+            data-testid="beat-type-chip"
+            data-beat-type={beatType}
+            onClick={() => setTypeMenuOpen((v) => !v)}
+            className="rounded bg-muted px-1 py-0.5 text-[10px] uppercase tracking-wide hover:bg-muted/80"
+          >
+            {t(`editor.beat.types.${beatType}`, beatType)}
+          </button>
+          <AnimatedDropdown
+            open={typeMenuOpen}
+            onClose={() => setTypeMenuOpen(false)}
+            containerRef={typeMenuRef}
+            className="absolute left-0 top-6 z-50 min-w-[120px] rounded-md border border-border bg-popover py-1 shadow-md"
+          >
+            <ul role="menu" className="text-xs">
+              {BEAT_TYPES.map((bt) => (
+                <li key={bt}>
+                  <button
+                    type="button"
+                    role="menuitem"
+                    data-testid={`beat-type-option-${bt}`}
+                    onClick={() => {
+                      updateAttributes({ beatType: bt });
+                      setTypeMenuOpen(false);
+                    }}
+                    className={`block w-full px-3 py-1.5 text-left uppercase tracking-wide hover:bg-primary hover:text-primary-foreground ${bt === beatType ? "font-medium" : ""}`}
+                  >
+                    {t(`editor.beat.types.${bt}`, bt)}
+                  </button>
+                </li>
+              ))}
+            </ul>
+          </AnimatedDropdown>
+        </div>
         <div ref={povMenuRef} className="relative">
           <button
             type="button"
@@ -254,6 +288,21 @@ export function SceneBeatNodeView({
                   className="block w-full px-3 py-1.5 text-left hover:bg-primary hover:text-primary-foreground disabled:opacity-50"
                 >
                   {t("editor.beat.menuItems.unplace")}
+                </button>
+              </li>
+              <li>
+                <button
+                  type="button"
+                  role="menuitem"
+                  data-testid="beat-menu-clear"
+                  onClick={() =>
+                    runMenuAction(() => {
+                      if (editor && beatId) clearBeatContent(editor, beatId);
+                    })
+                  }
+                  className="block w-full px-3 py-1.5 text-left hover:bg-primary hover:text-primary-foreground"
+                >
+                  {t("editor.beat.menuItems.clearBeat")}
                 </button>
               </li>
               <li>
