@@ -2,6 +2,14 @@ import { Node, mergeAttributes } from "@tiptap/core";
 import { Plugin } from "@tiptap/pm/state";
 
 /**
+ * Transaction meta key set by Beat generation code (initial insert / streaming
+ * chunk / Regenerate). When present, appendTransaction below treats the change
+ * as AI-authored and does NOT flip `modified` to true. Any other change inside
+ * a generatedProseBlock is treated as user editing.
+ */
+export const BEAT_STREAM_META = "beatStreamOp" as const;
+
+/**
  * GeneratedProseBlockNode — Beat の生成 prose を包むブロック。
  * `content: 'block+'` + `defining: true` により、外側からの段落結合に対して
  * 境界が保護される（境界跨ぎ削除で結合されない）。
@@ -53,8 +61,9 @@ export const GeneratedProseBlockNode = Node.create({
 
   /**
    * ユーザーがブロック内で編集した瞬間に modified=true へ倒す。
-   * Regenerate を押した直後はストリーミング中も `modified=false` を維持したいので
-   * AuthorshipMark='ai' を持つ text のみが追加される transaction はスキップする。
+   * Beat 生成コードが発行する transaction は `BEAT_STREAM_META` を立てて
+   * 区別する（初期挿入・ストリーミングチャンク・Regenerate すべてこの経路）。
+   * meta が立っている transaction では modified を変えない。
    */
   addProseMirrorPlugins() {
     return [
@@ -70,36 +79,10 @@ export const GeneratedProseBlockNode = Node.create({
           });
           if (blocks.length === 0) return null;
 
-          // Skip if every change in this transaction is purely AI-authored text
-          // (i.e. streaming insert path). Anything else inside a block flips modified.
-          const aiOnlyChange = transactions.every((tr) =>
-            tr.steps.every((step) => {
-              const json = step.toJSON() as {
-                stepType?: string;
-                slice?: {
-                  content?: Array<{
-                    type?: string;
-                    marks?: Array<{
-                      type?: string;
-                      attrs?: { source?: string };
-                    }>;
-                  }>;
-                };
-              };
-              if (
-                json.stepType !== "replace" &&
-                json.stepType !== "replaceAround"
-              ) {
-                return false;
-              }
-              const content = json.slice?.content ?? [];
-              if (content.length === 0) return true; // pure deletion → not AI-only
-              return content.every((node) =>
-                (node.marks ?? []).some(
-                  (m) => m.type === "authorship" && m.attrs?.source === "ai",
-                ),
-              );
-            }),
+          // Streaming / regenerate paths tag every transaction with
+          // BEAT_STREAM_META. If the whole batch is tagged, it's AI-only.
+          const aiOnlyChange = transactions.every(
+            (tr) => tr.getMeta(BEAT_STREAM_META) === true,
           );
 
           // Find blocks whose content was touched by this transaction.

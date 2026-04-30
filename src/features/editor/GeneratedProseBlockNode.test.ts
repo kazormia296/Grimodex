@@ -3,7 +3,10 @@ import { describe, it, expect } from "vitest";
 import { Editor } from "@tiptap/core";
 import StarterKit from "@tiptap/starter-kit";
 import { AuthorshipMark } from "@/features/attribution/AuthorshipMark";
-import { GeneratedProseBlockNode } from "./GeneratedProseBlockNode";
+import {
+  GeneratedProseBlockNode,
+  BEAT_STREAM_META,
+} from "./GeneratedProseBlockNode";
 
 function createTestEditor(content = "") {
   return new Editor({
@@ -62,28 +65,82 @@ describe("GeneratedProseBlockNode", () => {
     editor.destroy();
   });
 
-  it("does NOT flip modified when AI-authored text is streamed in", () => {
+  it("does NOT flip modified when transaction is tagged BEAT_STREAM_META", () => {
     const editor = createTestEditor(
       '<div data-type="generated-prose-block" data-beat-id="b1"><p></p></div>',
     );
     const before = findBlock(editor);
     expect(before?.modified).toBe(false);
 
+    // Stream a chunk: text insert via tagged transaction (mirrors what
+    // insertBeatStream will do).
     const insertPos = (before?.pos ?? 0) + 1 + 1;
-    editor.commands.insertContentAt(insertPos, [
-      {
-        type: "text",
-        text: "ドロシーは",
-        marks: [
-          {
-            type: "authorship",
-            attrs: { source: "ai", model: "claude", traceId: "t1" },
-          },
-        ],
-      },
-    ]);
+    const { tr } = editor.state;
+    tr.setMeta(BEAT_STREAM_META, true);
+    tr.insertText("ドロシーは", insertPos);
+    editor.view.dispatch(tr);
 
     const after = findBlock(editor);
+    expect(after?.modified).toBe(false);
+    editor.destroy();
+  });
+
+  it("does NOT flip modified for a paragraph split during streaming", () => {
+    // Streaming may need to insert a new paragraph inside the block when a
+    // chunk crosses a paragraph boundary. Tagged transaction must skip.
+    const editor = createTestEditor(
+      '<div data-type="generated-prose-block" data-beat-id="b1"><p>first</p></div>',
+    );
+    const before = findBlock(editor);
+    expect(before?.modified).toBe(false);
+
+    // Insert a brand-new paragraph at end of block via tagged tx.
+    const blockNode = editor.state.doc.nodeAt(before!.pos);
+    const blockEnd = before!.pos + 1 + (blockNode?.content.size ?? 0);
+    const { tr } = editor.state;
+    tr.setMeta(BEAT_STREAM_META, true);
+    tr.insert(
+      blockEnd,
+      editor.schema.nodes["paragraph"].createChecked(
+        null,
+        editor.schema.text("second"),
+      ),
+    );
+    editor.view.dispatch(tr);
+
+    const after = findBlock(editor);
+    expect(after?.modified).toBe(false);
+    editor.destroy();
+  });
+
+  it("does NOT flip modified for Regenerate (replaceWith of the whole block)", () => {
+    const editor = createTestEditor(
+      '<div data-type="generated-prose-block" data-beat-id="b1"><p>old prose</p></div>',
+    );
+    const before = findBlock(editor);
+    expect(before?.modified).toBe(false);
+
+    // Build a fresh block with the same beatId and AI-marked text.
+    const blockType = editor.schema.nodes["generatedProseBlock"];
+    const replacement = blockType.createChecked(
+      { beatId: "b1", modified: false },
+      editor.schema.nodes["paragraph"].createChecked(
+        null,
+        editor.schema.text("new prose"),
+      ),
+    );
+    const blockNode = editor.state.doc.nodeAt(before!.pos);
+    const { tr } = editor.state;
+    tr.setMeta(BEAT_STREAM_META, true);
+    tr.replaceWith(
+      before!.pos,
+      before!.pos + (blockNode?.nodeSize ?? 0),
+      replacement,
+    );
+    editor.view.dispatch(tr);
+
+    const after = findBlock(editor);
+    expect(after).not.toBeNull();
     expect(after?.modified).toBe(false);
     editor.destroy();
   });

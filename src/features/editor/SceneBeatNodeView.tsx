@@ -1,29 +1,50 @@
-import { ChevronDown, ChevronRight, MoreVertical, Zap } from "lucide-react";
+import {
+  ChevronDown,
+  ChevronRight,
+  Loader2,
+  MoreVertical,
+  Zap,
+} from "lucide-react";
 import { NodeViewContent, NodeViewWrapper } from "@tiptap/react";
 import type { ReactNodeViewProps } from "@tiptap/react";
 import { useTranslation } from "react-i18next";
 import type { BeatType } from "./SceneBeatNode";
+import { useSceneBeatEditorContext } from "./beat/SceneBeatEditorContext";
+import { useBeatGeneration } from "./beat/useBeatGeneration";
 
 /**
- * React NodeView for sceneBeat (Slice 3b-i: 表示と折りたたみのみ).
- * - Generate ボタンは disabled。Slice 3b-ii で配線する。
- * - ⋮ メニューは placeholder。Slice 3c で操作メニューを実装する。
- * - POV のキャラ名解決は Slice 3c（codex 連携）。当面は id をそのまま表示。
+ * React NodeView for sceneBeat.
+ * - Generate ボタン: Slice 3b-ii で配線済 (sceneId が context から取れる場合のみ enable)
+ * - ⋮ メニュー: placeholder (Slice 3c で操作メニュー)
+ * - POV チップ: id 表示 (Slice 3c で codex 名解決)
  */
 export function SceneBeatNodeView({
   node,
+  editor,
   updateAttributes,
 }: ReactNodeViewProps) {
   const { t } = useTranslation();
   const collapsed = !!node.attrs.collapsed;
   const beatType = (node.attrs.beatType ?? "free") as BeatType;
   const pov = (node.attrs.pov ?? null) as string | null;
+  const beatId = (node.attrs.id ?? null) as string | null;
+
+  const ctx = useSceneBeatEditorContext();
+  const sceneId = ctx?.sceneId ?? null;
+  const { state, generate } = useBeatGeneration(editor, beatId ?? "", sceneId);
+  const generating = state.status === "generating";
+  const generateDisabled = !beatId || !sceneId || generating;
+  const generateTooltip = !sceneId
+    ? t("editor.beat.generateDisabledHint")
+    : generating
+      ? t("editor.beat.generating")
+      : t("editor.beat.generate");
 
   return (
     <NodeViewWrapper
       as="div"
       data-type="scene-beat"
-      data-beat-id={node.attrs.id ?? undefined}
+      data-beat-id={beatId ?? undefined}
       data-collapsed={collapsed ? "true" : undefined}
       className="my-2 rounded-md border-l-4 border-yellow-400/70 bg-yellow-50/40 dark:bg-yellow-900/10"
     >
@@ -65,12 +86,22 @@ export function SceneBeatNodeView({
         <button
           type="button"
           data-testid="beat-generate-btn"
-          disabled
+          disabled={generateDisabled}
+          onClick={generate}
           aria-label={t("editor.beat.generate")}
-          title={t("editor.beat.generateDisabledHint")}
-          className="ml-auto inline-flex items-center gap-1 rounded border border-border bg-background px-1.5 py-0.5 text-[10px] opacity-50"
+          title={generateTooltip}
+          className={`ml-auto inline-flex items-center gap-1 rounded border border-border bg-background px-1.5 py-0.5 text-[10px] ${
+            generateDisabled ? "opacity-50" : "hover:bg-muted"
+          }`}
         >
-          <Zap className="h-3 w-3" />
+          {generating ? (
+            <Loader2
+              data-testid="beat-generating-spinner"
+              className="h-3 w-3 animate-spin"
+            />
+          ) : (
+            <Zap className="h-3 w-3" />
+          )}
           {t("editor.beat.generate")}
         </button>
         <button
@@ -83,6 +114,15 @@ export function SceneBeatNodeView({
           <MoreVertical className="h-3 w-3" />
         </button>
       </header>
+      {state.status === "error" && state.error && (
+        <div
+          contentEditable={false}
+          data-testid="beat-error"
+          className="border-t border-red-200/50 bg-red-50/30 px-2 py-1 text-xs text-red-700 dark:bg-red-900/10 dark:text-red-300"
+        >
+          {state.error}
+        </div>
+      )}
       {collapsed ? (
         <div
           // Even when collapsed, content must remain mounted so PM keeps the

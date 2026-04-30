@@ -7,13 +7,16 @@ import StarterKit from "@tiptap/starter-kit";
 import { useEffect } from "react";
 import type { Editor } from "@tiptap/core";
 import { SceneBeatNode } from "./SceneBeatNode";
+import { SceneBeatEditorContextProvider } from "./beat/SceneBeatEditorContext";
 
 function HostEditor({
   attrs,
   expose,
+  sceneId,
 }: {
   attrs: Record<string, unknown>;
   expose?: (editor: Editor) => void;
+  sceneId?: string;
 }) {
   const editor = useEditor({
     extensions: [StarterKit, SceneBeatNode],
@@ -40,7 +43,13 @@ function HostEditor({
     expose?.(editor);
   }, [editor, attrs, expose]);
 
-  return <EditorContent editor={editor} data-testid="editor" />;
+  const content = <EditorContent editor={editor} data-testid="editor" />;
+  if (!sceneId) return content;
+  return (
+    <SceneBeatEditorContextProvider value={{ sceneId }}>
+      {content}
+    </SceneBeatEditorContextProvider>
+  );
 }
 
 describe("SceneBeatNodeView", () => {
@@ -65,11 +74,18 @@ describe("SceneBeatNodeView", () => {
     expect(povChip.textContent).toContain("char-9");
   });
 
-  it("Generate button is disabled in 3b-i", async () => {
+  it("Generate button is disabled when no SceneBeatEditorContext provider wraps the editor", async () => {
     render(<HostEditor attrs={{}} />);
     await waitFor(() => screen.getByText("Beat"));
     const btn = screen.getByTestId("beat-generate-btn") as HTMLButtonElement;
     expect(btn.disabled).toBe(true);
+  });
+
+  it("Generate button is enabled when sceneId context is provided", async () => {
+    render(<HostEditor attrs={{}} sceneId="scene-1" />);
+    await waitFor(() => screen.getByText("Beat"));
+    const btn = screen.getByTestId("beat-generate-btn") as HTMLButtonElement;
+    expect(btn.disabled).toBe(false);
   });
 
   it("toggling the chevron updates collapsed attr", async () => {

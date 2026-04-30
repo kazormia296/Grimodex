@@ -837,7 +837,8 @@
       "collapse": "Collapse",
       "expand": "Expand",
       "generate": "Generate",
-      "generateDisabledHint": "Generation coming soon",
+      "generating": "Generating…",
+      "generateDisabledHint": "Scene context unavailable",
       "menu": "Beat menu",
       "povPrefix": "POV:"
     },

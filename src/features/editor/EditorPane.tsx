@@ -3,6 +3,7 @@ import { useTranslation } from "react-i18next";
 import { Clock } from "lucide-react";
 import { useEditor, EditorContent } from "@tiptap/react";
 import { getEditorExtensions } from "@/features/editor/extensions";
+import { SceneBeatEditorContextProvider } from "@/features/editor/beat/SceneBeatEditorContext";
 import { Toolbar } from "@/features/editor/Toolbar";
 import type { ToolbarActions } from "@/features/editor/Toolbar";
 import { SynopsisHeader } from "@/features/editor/SynopsisHeader";
@@ -1152,7 +1153,9 @@ export function EditorPane({
               )}
             </div>
           )}
-          <EditorContent editor={editor} />
+          <SceneBeatEditorContextProvider value={{ sceneId: nodeId }}>
+            <EditorContent editor={editor} />
+          </SceneBeatEditorContextProvider>
           <CodexPopover editor={editor} />
           <CommentAddPopover editor={editor} />
           <ForeshadowMarkPopover editor={editor} />

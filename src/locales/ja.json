@@ -837,7 +837,8 @@
       "collapse": "折りたたむ",
       "expand": "展開する",
       "generate": "生成",
-      "generateDisabledHint": "生成は近日対応",
+      "generating": "生成中…",
+      "generateDisabledHint": "シーン情報が取得できません",
       "menu": "ビートメニュー",
       "povPrefix": "POV:"
     },
