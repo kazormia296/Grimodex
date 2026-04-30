@@ -676,6 +676,13 @@ export function EditorPane({
         | InlineAiCommand
         | undefined;
       if (!cmd) return;
+      // Beat system: structural inserts skip the AI pipeline entirely.
+      if (cmd.kind === "insert-node") {
+        if (cmd.id === "sceneBeat") {
+          editor.chain().focus().insertSceneBeat().run();
+        }
+        return;
+      }
       // 引数不要なコマンドは即時 generate を叩き、フロー状態を維持する。
       // 引数必要なコマンドは従来通りパレットを開き、引数入力フォームに委譲。
       if (cmd.needsArg) {

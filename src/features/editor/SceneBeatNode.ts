@@ -1,4 +1,4 @@
-import { Node, mergeAttributes } from "@tiptap/core";
+import { Node, mergeAttributes, type RawCommands } from "@tiptap/core";
 
 export type BeatType =
   | "free"
@@ -83,4 +83,43 @@ export const SceneBeatNode = Node.create({
       0,
     ];
   },
+
+  addCommands() {
+    return {
+      insertSceneBeat:
+        (
+          attrs?: Partial<{
+            id: string;
+            beatType: BeatType;
+            pov: string | null;
+          }>,
+        ) =>
+        ({ commands }) => {
+          const id = attrs?.id ?? crypto.randomUUID();
+          return commands.insertContent({
+            type: this.name,
+            attrs: {
+              id,
+              beatType: attrs?.beatType ?? "free",
+              pov: attrs?.pov ?? null,
+              collapsed: false,
+            },
+          });
+        },
+    } as Partial<RawCommands>;
+  },
 });
+
+declare module "@tiptap/core" {
+  interface Commands<ReturnType> {
+    sceneBeat: {
+      insertSceneBeat: (
+        attrs?: Partial<{
+          id: string;
+          beatType: BeatType;
+          pov: string | null;
+        }>,
+      ) => ReturnType;
+    };
+  }
+}

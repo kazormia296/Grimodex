@@ -995,6 +995,10 @@
         "label": "Custom",
         "desc": "Enter a free-form instruction",
         "placeholder": "Enter instruction…"
+      },
+      "sceneBeat": {
+        "label": "Scene beat",
+        "desc": "Insert a beat (local prompt for AI generation)"
       }
     }
   },

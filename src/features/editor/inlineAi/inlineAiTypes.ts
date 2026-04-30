@@ -10,6 +10,11 @@ export interface InlineAiCommand {
   /** Whether the command requires an extra argument (e.g. target name, tone) */
   needsArg?: boolean;
   argPlaceholder?: string;
+  /**
+   * 'ai' (default): goes through generate() and inserts/replaces text.
+   * 'insert-node': pure structural insertion (e.g. Scene beat); skips AI pipeline.
+   */
+  kind?: "ai" | "insert-node";
 }
 
 export interface InlineAiContext {

@@ -995,6 +995,10 @@
         "label": "カスタム",
         "desc": "自由な指示を入力",
         "placeholder": "指示を入力…"
+      },
+      "sceneBeat": {
+        "label": "Scene beat",
+        "desc": "AI 生成用のビート（局所プロンプト）を挿入"
       }
     }
   },

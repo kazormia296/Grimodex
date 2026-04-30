@@ -6,6 +6,7 @@ interface InlineAiCommandDef {
   mode: "insert" | "replace";
   needsSelection: boolean;
   needsArg?: boolean;
+  kind?: "ai" | "insert-node";
 }
 
 const COMMAND_DEFS: InlineAiCommandDef[] = [
@@ -18,6 +19,13 @@ const COMMAND_DEFS: InlineAiCommandDef[] = [
   { id: "tone", mode: "replace", needsSelection: true, needsArg: true },
   { id: "translate", mode: "replace", needsSelection: true, needsArg: true },
   { id: "custom", mode: "insert", needsSelection: false, needsArg: true },
+  // Beat system (Phase A): structural insertion, no AI generation here.
+  {
+    id: "sceneBeat",
+    mode: "insert",
+    needsSelection: false,
+    kind: "insert-node",
+  },
 ];
 
 export function getInlineAiCommands(): InlineAiCommand[] {
