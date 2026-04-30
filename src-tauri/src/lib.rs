@@ -1408,6 +1408,7 @@ async fn send_inline_ai_stream(
     effort: Option<String>,
     reasoning_enabled: Option<bool>,
     reasoning_effort: Option<String>,
+    model: Option<String>,
 ) -> Result<(), AppError> {
     abort_flag
         .flag
@@ -1416,9 +1417,13 @@ async fn send_inline_ai_stream(
     let settings = ai::read_ai_settings(&ai_path.path);
     let api_key = resolve_api_key(&settings.provider)?;
     let flag_clone = Arc::clone(&abort_flag.flag);
+    let resolved_model = model
+        .as_deref()
+        .filter(|m| !m.is_empty())
+        .unwrap_or(&settings.model);
     let params = ai::ChatParams {
         provider: &settings.provider,
-        model: &settings.model,
+        model: resolved_model,
         api_key: &api_key,
         ollama_endpoint: &settings.ollama_endpoint,
         thinking,

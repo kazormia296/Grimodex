@@ -35,6 +35,7 @@ export async function generateBeatOnce(
 
   const beatType = (beatNode.attrs.beatType ?? "free") as BeatType;
   const beatPov = (beatNode.attrs.pov ?? null) as string | null;
+  const beatModel = (beatNode.attrs.model as string | null) ?? null;
 
   const node = useTreeStore.getState().nodes.find((n) => n.id === sceneId);
   const projectTitle = useWorkspaceStore.getState().activeWorkspaceName ?? "";
@@ -71,27 +72,31 @@ export async function generateBeatOnce(
   let orphaned = false;
 
   try {
-    stopStream = await sendInlineAiStream(messages, {
-      onTextDelta: (delta) => {
-        if (orphaned) return;
-        const ok = appendBeatChunk(editor, beatId, delta, {
-          model: DEFAULT_MODEL,
-          traceId,
-        });
-        if (!ok) {
-          orphaned = true;
-          stopStream?.();
+    stopStream = await sendInlineAiStream(
+      messages,
+      {
+        onTextDelta: (delta) => {
+          if (orphaned) return;
+          const ok = appendBeatChunk(editor, beatId, delta, {
+            model: beatModel ?? DEFAULT_MODEL,
+            traceId,
+          });
+          if (!ok) {
+            orphaned = true;
+            stopStream?.();
+            stopStream = null;
+          }
+        },
+        onDone: () => {
           stopStream = null;
-        }
+        },
+        onError: (message) => {
+          stopStream = null;
+          toast.error(message);
+        },
       },
-      onDone: () => {
-        stopStream = null;
-      },
-      onError: (message) => {
-        stopStream = null;
-        toast.error(message);
-      },
-    });
+      beatModel ? { model: beatModel } : undefined,
+    );
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     toast.error(msg);

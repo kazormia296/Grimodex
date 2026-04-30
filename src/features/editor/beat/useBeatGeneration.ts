@@ -130,43 +130,50 @@ export function useBeatGeneration(
     cleanupRef.current?.();
     cleanupRef.current = null;
 
+    const beatModel = (beatNode.attrs.model as string | null) ?? null;
+    const resolvedModel = beatModel || null;
+
     const traceId = crypto.randomUUID();
     inFlightRef.current = true;
     setState({ status: "generating", error: null, cleanup: null });
     let orphaned = false;
 
     try {
-      const cleanup = await sendInlineAiStream(messages, {
-        onTextDelta: (delta) => {
-          if (orphaned) return;
-          // appendBeatChunk re-locates the block by beatId on every call,
-          // so upstream edits don't drift the insertion point. If the block
-          // (or its beat) has been deleted mid-stream, it returns false and
-          // we stop applying further chunks.
-          const ok = appendBeatChunk(editor, beatId, delta, {
-            model: DEFAULT_MODEL,
-            traceId,
-          });
-          if (!ok) {
-            orphaned = true;
-            releaseCleanup();
-            setState({
-              status: "error",
-              error: "Beat was removed during generation",
-              cleanup: null,
+      const cleanup = await sendInlineAiStream(
+        messages,
+        {
+          onTextDelta: (delta) => {
+            if (orphaned) return;
+            // appendBeatChunk re-locates the block by beatId on every call,
+            // so upstream edits don't drift the insertion point. If the block
+            // (or its beat) has been deleted mid-stream, it returns false and
+            // we stop applying further chunks.
+            const ok = appendBeatChunk(editor, beatId, delta, {
+              model: resolvedModel ?? DEFAULT_MODEL,
+              traceId,
             });
-          }
+            if (!ok) {
+              orphaned = true;
+              releaseCleanup();
+              setState({
+                status: "error",
+                error: "Beat was removed during generation",
+                cleanup: null,
+              });
+            }
+          },
+          onDone: () => {
+            if (orphaned) return;
+            releaseCleanup();
+            setState({ status: "idle", error: null, cleanup: null });
+          },
+          onError: (message) => {
+            releaseCleanup();
+            setState({ status: "error", error: message, cleanup: null });
+          },
         },
-        onDone: () => {
-          if (orphaned) return;
-          releaseCleanup();
-          setState({ status: "idle", error: null, cleanup: null });
-        },
-        onError: (message) => {
-          releaseCleanup();
-          setState({ status: "error", error: message, cleanup: null });
-        },
-      });
+        resolvedModel ? { model: resolvedModel } : undefined,
+      );
       cleanupRef.current = cleanup;
       // If onDone fired between sendInlineAiStream resolving and us assigning
       // the cleanup ref above, it would have set cleanupRef to null already

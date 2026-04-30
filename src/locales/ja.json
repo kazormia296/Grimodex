@@ -858,6 +858,7 @@
         "regenerate": "再生成",
         "unplace": "Unplaced に戻す"
       },
+      "modelInherit": "モデルを継承",
       "regenerateConfirm": "生成済みの文章を破棄して再生成しますか？",
       "unplaceToast": "ビートを Unplaced に移動しました（v1: 旧生成段落は文書内に残ります）",
       "typeLabel": "ビートタイプ",

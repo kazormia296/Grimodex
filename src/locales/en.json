@@ -858,6 +858,7 @@
         "regenerate": "Regenerate",
         "unplace": "Move to Unplaced"
       },
+      "modelInherit": "Inherit model",
       "regenerateConfirm": "Discard generated prose and regenerate?",
       "unplaceToast": "Beat moved to Unplaced (v1: existing prose stays in document)",
       "typeLabel": "Beat type",

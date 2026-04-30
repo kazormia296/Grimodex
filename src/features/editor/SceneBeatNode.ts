@@ -68,6 +68,12 @@ export const SceneBeatNode = Node.create({
         parseHTML: (element) => element.getAttribute("data-pov") || null,
         renderHTML: (attrs) => (attrs.pov ? { "data-pov": attrs.pov } : {}),
       },
+      model: {
+        default: null as string | null,
+        parseHTML: (element) => element.getAttribute("data-beat-model") || null,
+        renderHTML: (attrs) =>
+          attrs.model ? { "data-beat-model": attrs.model } : {},
+      },
     };
   },
 

@@ -1,4 +1,5 @@
-import { useRef, useState, useMemo } from "react";
+import { useRef, useState, useMemo, useCallback } from "react";
+import { useSettingsStore } from "@/features/settings/settingsStore";
 import {
   ChevronDown,
   ChevronRight,
@@ -37,6 +38,7 @@ export function SceneBeatNodeView({
   const beatType = (node.attrs.beatType ?? "free") as BeatType;
   const povId = (node.attrs.pov ?? null) as string | null;
   const beatId = (node.attrs.id ?? null) as string | null;
+  const beatModel = (node.attrs.model as string | null) ?? null;
 
   const ctx = useSceneBeatEditorContext();
   const sceneId = ctx?.sceneId ?? null;
@@ -64,12 +66,32 @@ export function SceneBeatNodeView({
       ? t("editor.beat.generating")
       : t("editor.beat.generate");
 
+  const modelWhitelistRaw = useSettingsStore((s) => s.get("ai.modelWhitelist"));
+  const availableModels = useMemo<string[]>(() => {
+    try {
+      const list: string[] = JSON.parse(modelWhitelistRaw || "[]");
+      return list;
+    } catch {
+      return [];
+    }
+  }, [modelWhitelistRaw]);
+
+  const handleModelSelect = useCallback(
+    (model: string | null) => {
+      updateAttributes({ model });
+      setModelMenuOpen(false);
+    },
+    [updateAttributes],
+  );
+
   const [menuOpen, setMenuOpen] = useState(false);
   const menuContainerRef = useRef<HTMLDivElement>(null);
   const [povMenuOpen, setPovMenuOpen] = useState(false);
   const povMenuRef = useRef<HTMLDivElement>(null);
   const [typeMenuOpen, setTypeMenuOpen] = useState(false);
   const typeMenuRef = useRef<HTMLDivElement>(null);
+  const [modelMenuOpen, setModelMenuOpen] = useState(false);
+  const modelMenuRef = useRef<HTMLDivElement>(null);
 
   const runMenuAction = (fn: () => void) => {
     setMenuOpen(false);
@@ -225,28 +247,7 @@ export function SceneBeatNodeView({
             </ul>
           </AnimatedDropdown>
         </div>
-        <button
-          type="button"
-          data-testid="beat-generate-btn"
-          disabled={generateDisabled}
-          onClick={generate}
-          aria-label={t("editor.beat.generate")}
-          title={generateTooltip}
-          className={`ml-auto inline-flex items-center gap-1 rounded border border-border bg-background px-1.5 py-0.5 text-[10px] ${
-            generateDisabled ? "opacity-50" : "hover:bg-muted"
-          }`}
-        >
-          {generating ? (
-            <Loader2
-              data-testid="beat-generating-spinner"
-              className="h-3 w-3 animate-spin"
-            />
-          ) : (
-            <Zap className="h-3 w-3" />
-          )}
-          {t("editor.beat.generate")}
-        </button>
-        <div ref={menuContainerRef} className="relative">
+        <div ref={menuContainerRef} className="relative ml-auto">
           <button
             type="button"
             data-testid="beat-menu-btn"
@@ -377,6 +378,77 @@ export function SceneBeatNodeView({
           as="div"
           className="px-2 py-1 text-sm leading-relaxed focus:outline-none"
         />
+      )}
+      {!collapsed && (
+        <footer
+          contentEditable={false}
+          className="flex select-none items-center gap-1.5 border-t border-yellow-200/50 px-2 py-1 text-xs text-muted-foreground dark:border-yellow-800/30"
+        >
+          <div ref={modelMenuRef} className="relative">
+            <button
+              type="button"
+              data-testid="beat-model-btn"
+              onClick={() => setModelMenuOpen((v) => !v)}
+              className="rounded px-1 py-0.5 text-[10px] text-muted-foreground/70 hover:bg-muted"
+            >
+              {beatModel ?? t("editor.beat.modelInherit")}
+            </button>
+            <AnimatedDropdown
+              open={modelMenuOpen}
+              onClose={() => setModelMenuOpen(false)}
+              containerRef={modelMenuRef}
+              className="absolute bottom-6 left-0 z-50 min-w-[160px] rounded-md border border-border bg-popover py-1 shadow-md"
+            >
+              <ul role="menu" className="text-xs">
+                <li>
+                  <button
+                    type="button"
+                    role="menuitem"
+                    data-testid="beat-model-inherit"
+                    onClick={() => handleModelSelect(null)}
+                    className={`block w-full px-3 py-1.5 text-left hover:bg-primary hover:text-primary-foreground ${beatModel === null ? "font-medium" : ""}`}
+                  >
+                    {t("editor.beat.modelInherit")}
+                  </button>
+                </li>
+                {availableModels.map((m) => (
+                  <li key={m}>
+                    <button
+                      type="button"
+                      role="menuitem"
+                      data-testid={`beat-model-option-${m}`}
+                      onClick={() => handleModelSelect(m)}
+                      className={`block w-full px-3 py-1.5 text-left hover:bg-primary hover:text-primary-foreground ${m === beatModel ? "font-medium" : ""}`}
+                    >
+                      {m}
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            </AnimatedDropdown>
+          </div>
+          <button
+            type="button"
+            data-testid="beat-generate-btn"
+            disabled={generateDisabled}
+            onClick={generate}
+            aria-label={t("editor.beat.generate")}
+            title={generateTooltip}
+            className={`ml-auto inline-flex items-center gap-1 rounded border border-border bg-background px-1.5 py-0.5 text-[10px] ${
+              generateDisabled ? "opacity-50" : "hover:bg-muted"
+            }`}
+          >
+            {generating ? (
+              <Loader2
+                data-testid="beat-generating-spinner"
+                className="h-3 w-3 animate-spin"
+              />
+            ) : (
+              <Zap className="h-3 w-3" />
+            )}
+            {t("editor.beat.generate")}
+          </button>
+        </footer>
       )}
     </NodeViewWrapper>
   );
