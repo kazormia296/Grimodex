@@ -554,7 +554,7 @@ Unplaced beat には `Generate` ボタンを表示しない（本文中の位置
 - [x] Placed beat の一覧表示（`PlacedBeatList.tsx`、本文 EditorView を読み取って `sceneBeat` ノードへの参照を生成）
 - [x] `+ Beat` で Unplaced beat 追加（`unplaced_beats_doc` 配列末尾に新規エントリを push）
 - [x] Unplaced beat の `[⋮]` メニュー（Edit / Place at end / Duplicate / Delete）
-- [ ] Unplaced beat の「Place at end of document and generate」（Place at end のみ実装済み。"and generate" は Phase B）
+- [x] Unplaced beat の「Place at end of document and generate」（`generateBeatOnce.ts` で hook 外の fire-and-forget 生成を実装）
 
 **D&D による状態遷移:**
 - [x] Unplaced → Placed: @dnd-kit でドラッグハンドルを実装。エディタ領域へドロップで `placeBeatAtEnd` を呼び出し、自動保存で DB に反映（`EditorPane` の `DndContext` + `useDroppable`）
@@ -572,8 +572,7 @@ Unplaced beat には `Generate` ボタンを表示しない（本文中の位置
 
 **Phase A 既知の制限・v1 仕様:**
 - Unplace した beat を再度 Placed に戻しても、unwrap 済みの旧生成段落との連結は復元されない（片道変換）
-- Placed → Unplaced の D&D は未実装（メニューボタンで代替）
-- `Place at end and generate` の「generate」部分は未実装（Phase B）
+- Placed → Unplaced の D&D は未実装（メニューボタンで代替、Phase B）
 - Placed beat の並び替え D&D は未実装（Phase B）
 
 依存: Editor、Chat のコンテキスト構築機構、Attribution、Codex メンション、@dnd-kit

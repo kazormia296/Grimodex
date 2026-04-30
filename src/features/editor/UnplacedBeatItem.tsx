@@ -6,6 +6,7 @@ import { AnimatedDropdown } from "@/components/ui/animated-dropdown";
 import { useUnplacedBeatsStore } from "@/features/editor/beat/unplacedBeatsStore";
 import { createUnplacedBeatExtensions } from "@/features/editor/beat/createUnplacedBeatExtensions";
 import { placeBeatAtEnd } from "@/features/editor/beat/beatOperations";
+import { generateBeatOnce } from "@/features/editor/beat/generateBeatOnce";
 import type { UnplacedBeat } from "@/features/editor/beat/unplacedBeatsStore";
 import type { CodexMentionPopupState } from "@/features/codex/CodexMentionExtension";
 import type { Editor as TiptapEditor } from "@tiptap/core";
@@ -62,6 +63,13 @@ export function UnplacedBeatItem({
   const handlePlaceAtEnd = useCallback(() => {
     if (mainEditor) placeBeatAtEnd(mainEditor, sceneId, beat);
     setMenuOpen(false);
+  }, [mainEditor, sceneId, beat]);
+
+  const handlePlaceAtEndAndGenerate = useCallback(() => {
+    setMenuOpen(false);
+    if (!mainEditor) return;
+    placeBeatAtEnd(mainEditor, sceneId, beat);
+    void generateBeatOnce(mainEditor, beat.id, sceneId);
   }, [mainEditor, sceneId, beat]);
 
   const handleDuplicate = useCallback(() => {
@@ -152,6 +160,18 @@ export function UnplacedBeatItem({
                 className="block w-full px-3 py-1.5 text-left hover:bg-primary hover:text-primary-foreground disabled:opacity-50"
               >
                 Place at end of document
+              </button>
+            </li>
+            <li>
+              <button
+                type="button"
+                role="menuitem"
+                data-testid={`beat-menu-place-and-generate-${beat.id}`}
+                disabled={!mainEditor}
+                onClick={handlePlaceAtEndAndGenerate}
+                className="block w-full px-3 py-1.5 text-left hover:bg-primary hover:text-primary-foreground disabled:opacity-50"
+              >
+                Place at end and generate
               </button>
             </li>
             <li>

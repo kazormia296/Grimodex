@@ -227,6 +227,7 @@ export function EditorPane({
   const handleBeatDragEnd = useCallback((event: DragEndEvent) => {
     setDraggingBeat(null);
     const { active, over } = event;
+    // editor is declared ~200 lines below; read via ref at event time to avoid ordering issues
     const ed = editorRef.current;
     if (over?.id === "beat-editor-drop-zone" && ed) {
       const beat = active.data.current?.beat as UnplacedBeat | undefined;

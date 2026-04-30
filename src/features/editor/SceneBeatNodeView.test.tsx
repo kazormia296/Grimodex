@@ -316,5 +316,18 @@ describe("SceneBeatNodeView", () => {
       await waitFor(() => screen.getByText("Beat"));
       expect(screen.getByTestId("beat-pov-chip")).toBeTruthy();
     });
+
+    it("beat POV がシーン POV と一致する場合はチップを非表示", async () => {
+      // scene POV = char-1, beat POV = char-1 → same → chip hidden
+      useTreeStore.setState((s) => ({
+        ...s,
+        nodes: s.nodes.map((n) =>
+          n.id === "scene-1" ? { ...n, povCharacterId: "char-1" } : n,
+        ),
+      }));
+      render(<HostEditor attrs={{ pov: "char-1" }} sceneId="scene-1" />);
+      await waitFor(() => screen.getByText("Beat"));
+      expect(screen.queryByTestId("beat-pov-chip")).toBeNull();
+    });
   });
 });
