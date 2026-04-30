@@ -1,0 +1,146 @@
+import { useRef, useState, useCallback } from "react";
+import { useEditor, EditorContent } from "@tiptap/react";
+import { MoreVertical } from "lucide-react";
+import { AnimatedDropdown } from "@/components/ui/animated-dropdown";
+import { useUnplacedBeatsStore } from "@/features/editor/beat/unplacedBeatsStore";
+import { createUnplacedBeatExtensions } from "@/features/editor/beat/createUnplacedBeatExtensions";
+import type { UnplacedBeat } from "@/features/editor/beat/unplacedBeatsStore";
+import type { CodexMentionPopupState } from "@/features/codex/CodexMentionExtension";
+
+interface UnplacedBeatItemProps {
+  sceneId: string;
+  beat: UnplacedBeat;
+  setMentionPopup: (state: CodexMentionPopupState | null) => void;
+}
+
+export function UnplacedBeatItem({
+  sceneId,
+  beat,
+  setMentionPopup,
+}: UnplacedBeatItemProps) {
+  const [menuOpen, setMenuOpen] = useState(false);
+  const menuContainerRef = useRef<HTMLDivElement>(null);
+
+  const updateBeat = useUnplacedBeatsStore((s) => s.updateBeat);
+  const removeBeat = useUnplacedBeatsStore((s) => s.removeBeat);
+  const addBeat = useUnplacedBeatsStore((s) => s.addBeat);
+
+  const handleUpdate = useCallback(
+    ({
+      editor: ed,
+    }: {
+      editor: {
+        state: {
+          doc: { firstChild: { content: { toJSON: () => unknown[] } } | null };
+        };
+      };
+    }) => {
+      const firstChild = ed.state.doc.firstChild;
+      const content = firstChild ? firstChild.content.toJSON() : [];
+      updateBeat(sceneId, beat.id, {
+        content: content as UnplacedBeat["content"],
+      });
+    },
+    [sceneId, beat.id, updateBeat],
+  );
+
+  const extensions = createUnplacedBeatExtensions(setMentionPopup);
+
+  const editor = useEditor({
+    extensions,
+    content: beat.content.length
+      ? { type: "doc", content: [{ type: "paragraph", content: beat.content }] }
+      : { type: "doc", content: [{ type: "paragraph" }] },
+    onUpdate: handleUpdate,
+  });
+
+  const handleDuplicate = useCallback(() => {
+    addBeat(sceneId, { ...beat, id: crypto.randomUUID() });
+    setMenuOpen(false);
+  }, [addBeat, beat, sceneId]);
+
+  const handleDelete = useCallback(() => {
+    removeBeat(sceneId, beat.id);
+    setMenuOpen(false);
+  }, [removeBeat, sceneId, beat.id]);
+
+  return (
+    <div
+      className="group flex items-start gap-1 rounded px-1 py-0.5 hover:bg-muted/40"
+      data-beat-id={beat.id}
+    >
+      {/* Drag handle placeholder (Slice 9 で D&D 実装) */}
+      <div className="mt-1 h-3 w-2 cursor-grab opacity-30 group-hover:opacity-70">
+        <svg viewBox="0 0 8 12" fill="currentColor" className="h-3 w-2">
+          <circle cx="2" cy="2" r="1" />
+          <circle cx="6" cy="2" r="1" />
+          <circle cx="2" cy="6" r="1" />
+          <circle cx="6" cy="6" r="1" />
+          <circle cx="2" cy="10" r="1" />
+          <circle cx="6" cy="10" r="1" />
+        </svg>
+      </div>
+
+      <div className="min-w-0 flex-1">
+        <EditorContent
+          editor={editor}
+          className="beat-inline-editor text-xs leading-relaxed text-foreground [&_.ProseMirror]:min-h-[1.5em] [&_.ProseMirror]:outline-none"
+        />
+      </div>
+
+      <div ref={menuContainerRef} className="relative flex-shrink-0">
+        <button
+          type="button"
+          data-testid={`beat-item-menu-${beat.id}`}
+          onClick={() => setMenuOpen((v) => !v)}
+          className="rounded p-0.5 opacity-0 hover:bg-muted group-hover:opacity-100"
+        >
+          <MoreVertical className="h-3 w-3" />
+        </button>
+        <AnimatedDropdown
+          open={menuOpen}
+          onClose={() => setMenuOpen(false)}
+          containerRef={menuContainerRef}
+          className="absolute right-0 top-5 z-50 min-w-[160px] rounded-md border border-border bg-popover py-1 shadow-md"
+        >
+          <ul role="menu" className="text-xs">
+            <li>
+              <button
+                type="button"
+                role="menuitem"
+                onClick={() => {
+                  editor?.commands.focus();
+                  setMenuOpen(false);
+                }}
+                className="block w-full px-3 py-1.5 text-left hover:bg-primary hover:text-primary-foreground"
+              >
+                Edit
+              </button>
+            </li>
+            <li>
+              <button
+                type="button"
+                role="menuitem"
+                onClick={handleDuplicate}
+                className="block w-full px-3 py-1.5 text-left hover:bg-primary hover:text-primary-foreground"
+              >
+                Duplicate
+              </button>
+            </li>
+            <li>
+              <button
+                type="button"
+                role="menuitem"
+                data-testid={`beat-menu-delete-${beat.id}`}
+                onClick={handleDelete}
+                className="block w-full px-3 py-1.5 text-left text-red-600 hover:bg-primary hover:text-primary-foreground dark:text-red-400"
+              >
+                Delete
+              </button>
+            </li>
+          </ul>
+        </AnimatedDropdown>
+      </div>
+    </div>
+  );
+}

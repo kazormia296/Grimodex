@@ -8,6 +8,7 @@ import { SceneBeatEditorContextProvider } from "@/features/editor/beat/SceneBeat
 import { Toolbar } from "@/features/editor/Toolbar";
 import type { ToolbarActions } from "@/features/editor/Toolbar";
 import { SynopsisHeader } from "@/features/editor/SynopsisHeader";
+import { BeatsHeader } from "@/features/editor/BeatsHeader";
 import { useTreeStore } from "@/features/tree/treeStore";
 import {
   loadSceneContent,
@@ -1127,6 +1128,13 @@ export function EditorPane({
         </div>
       )}
       {!isCodexMode && !isSnippetMode && <SynopsisHeader sceneId={nodeId} />}
+      {!isCodexMode && !isSnippetMode && (
+        <BeatsHeader
+          sceneId={nodeId}
+          editor={editor}
+          setMentionPopup={setMentionPopupState}
+        />
+      )}
       <FindReplaceBar
         editor={editor}
         open={findOpen}
