@@ -59,6 +59,8 @@ impl Database {
                 status            TEXT DEFAULT 'outline'
                                     CHECK(status IS NULL OR status IN ('outline','draft','complete','revision','final')),
                 content           TEXT NOT NULL DEFAULT '{}',
+                unplaced_beats_doc TEXT NOT NULL DEFAULT '[]',
+                char_count        INTEGER NOT NULL DEFAULT 0,
                 created_at        TEXT NOT NULL DEFAULT (datetime('now')),
                 updated_at        TEXT NOT NULL DEFAULT (datetime('now'))
             );
@@ -774,6 +776,45 @@ impl Database {
                 ON foreshadow_codex_links(codex_entry_id);",
         )?;
 
+        // Beat system (Phase A) — additive columns on tree_nodes.
+        // Existing DBs miss these because CREATE TABLE IF NOT EXISTS won't add columns.
+        Self::add_column_if_missing(
+            &conn,
+            "tree_nodes",
+            "unplaced_beats_doc",
+            "TEXT NOT NULL DEFAULT '[]'",
+        )?;
+        Self::add_column_if_missing(
+            &conn,
+            "tree_nodes",
+            "char_count",
+            "INTEGER NOT NULL DEFAULT 0",
+        )?;
+
+        Ok(())
+    }
+
+    /// Add a column to an existing table if it does not already exist.
+    /// `column_def` is the SQL fragment after the column name, e.g. `"TEXT NOT NULL DEFAULT '[]'"`.
+    /// Use for additive schema changes — SQLite ALTER TABLE only supports a narrow subset, so
+    /// renames / type changes still require the table-rebuild dance.
+    fn add_column_if_missing(
+        conn: &Connection,
+        table: &str,
+        column: &str,
+        column_def: &str,
+    ) -> anyhow::Result<()> {
+        let existing: Vec<String> = conn
+            .prepare(&format!("PRAGMA table_info({table})"))?
+            .query_map([], |row| row.get::<_, String>("name"))?
+            .collect::<Result<_, _>>()?;
+        if existing.iter().any(|n| n == column) {
+            return Ok(());
+        }
+        // table/column come from compile-time literals at every call site; not user input.
+        conn.execute_batch(&format!(
+            "ALTER TABLE {table} ADD COLUMN {column} {column_def};"
+        ))?;
         Ok(())
     }
 
@@ -1260,6 +1301,67 @@ mod tests {
                 .expect("query");
             assert_eq!(rows.len(), 1, "FTS table '{}' should exist", table);
         }
+    }
+
+    #[test]
+    fn test_migrate_creates_beat_columns() {
+        let db = test_db();
+        let cols = db
+            .execute("PRAGMA table_info('tree_nodes')", &[], "all")
+            .expect("pragma");
+        let names: Vec<String> = cols
+            .iter()
+            .filter_map(|row| {
+                if let Value::String(s) = &row["name"] {
+                    Some(s.clone())
+                } else {
+                    None
+                }
+            })
+            .collect();
+        assert!(
+            names.contains(&"unplaced_beats_doc".to_string()),
+            "unplaced_beats_doc column should exist"
+        );
+        assert!(
+            names.contains(&"char_count".to_string()),
+            "char_count column should exist"
+        );
+    }
+
+    #[test]
+    fn test_add_column_if_missing_adds_then_skips() {
+        // Direct test of the helper: legacy table → add column → existing rows
+        // get the default → second call is a no-op.
+        let db = Database::new(Path::new(":memory:")).expect("open");
+        {
+            let conn = db.conn.lock().expect("lock");
+            conn.execute_batch(
+                "CREATE TABLE legacy (id TEXT PRIMARY KEY);
+                 INSERT INTO legacy (id) VALUES ('row1');",
+            )
+            .expect("seed");
+
+            Database::add_column_if_missing(&conn, "legacy", "new_col", "INTEGER NOT NULL DEFAULT 7")
+                .expect("first add");
+            // Idempotency: a second call must be a no-op (no error, no duplicate column).
+            Database::add_column_if_missing(&conn, "legacy", "new_col", "INTEGER NOT NULL DEFAULT 7")
+                .expect("second add is noop");
+        }
+
+        let cols = db
+            .execute("PRAGMA table_info('legacy')", &[], "all")
+            .expect("pragma");
+        let new_col_count = cols
+            .iter()
+            .filter(|row| row["name"] == Value::String("new_col".into()))
+            .count();
+        assert_eq!(new_col_count, 1, "column should appear exactly once");
+
+        let rows = db
+            .execute("SELECT new_col FROM legacy WHERE id='row1'", &[], "all")
+            .expect("select");
+        assert_eq!(rows[0]["new_col"], Value::from(7));
     }
 
     #[test]

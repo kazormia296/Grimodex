@@ -107,6 +107,7 @@ Subplot 専用タイプは追加せず、既存の `lore` タイプ + `#subplot`
 
 ```typescript
 // scene-beat ノード（Placed beat。Unplaced は本文ノードに含まれない）
+// 実装では `defining: true` を付与（前後の段落と意図せず結合されないように）。
 {
   name: 'sceneBeat',
   group: 'block',

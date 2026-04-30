@@ -16,6 +16,8 @@ import { AuthorshipMark } from "@/features/attribution/AuthorshipMark";
 import { RubyNode } from "@/features/editor/RubyNode";
 import { EmphasisDotsMark } from "@/features/editor/EmphasisDotsMark";
 import { SceneBreakNode } from "@/features/editor/SceneBreakNode";
+import { SceneBeatNode } from "@/features/editor/SceneBeatNode";
+import { GeneratedProseBlockNode } from "@/features/editor/GeneratedProseBlockNode";
 import { FindReplaceExtension } from "@/features/editor/FindReplaceExtension";
 import { InlineAtomNavigationExtension } from "@/features/editor/InlineAtomNavigationExtension";
 import { SlashCommandExtension } from "@/features/editor/inlineAi/SlashCommandExtension";
@@ -156,6 +158,8 @@ export function getEditorExtensions(): Extensions {
     EmphasisDotsMark,
     RubyNode,
     SceneBreakNode,
+    SceneBeatNode,
+    GeneratedProseBlockNode,
     FindReplaceExtension,
     InlineAtomNavigationExtension,
     SlashCommandExtension,

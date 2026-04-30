@@ -62,6 +62,11 @@ export const treeNodes = sqliteTable(
     }),
     status: text("status").default("outline"), // 'outline' | 'draft' | 'complete' | 'revision' | 'final'
     content: text("content").notNull().default("{}"), // Scene/Note body (ProseMirror JSON)
+    // Unplaced beats (Beat system Phase A): JSON array of { id, beatType, pov, collapsed, content }.
+    // Placed beats live inside `content` as sceneBeat nodes.
+    unplacedBeatsDoc: text("unplaced_beats_doc").notNull().default("[]"),
+    // Body char count cache; frontend computes via CharacterCount on save.
+    charCount: integer("char_count").notNull().default(0),
     createdAt: text("created_at")
       .notNull()
       .$defaultFn(() => new Date().toISOString()),

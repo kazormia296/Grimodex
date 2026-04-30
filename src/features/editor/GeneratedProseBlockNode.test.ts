@@ -1,0 +1,102 @@
+// @vitest-environment happy-dom
+import { describe, it, expect } from "vitest";
+import { Editor } from "@tiptap/core";
+import StarterKit from "@tiptap/starter-kit";
+import { AuthorshipMark } from "@/features/attribution/AuthorshipMark";
+import { GeneratedProseBlockNode } from "./GeneratedProseBlockNode";
+
+function createTestEditor(content = "") {
+  return new Editor({
+    extensions: [StarterKit, AuthorshipMark, GeneratedProseBlockNode],
+    content,
+  });
+}
+
+type BlockInfo = { pos: number; modified: boolean };
+
+function findBlock(editor: Editor): BlockInfo | null {
+  const hits: BlockInfo[] = [];
+  editor.state.doc.descendants((node, pos) => {
+    if (node.type.name === "generatedProseBlock") {
+      hits.push({ pos, modified: !!node.attrs.modified });
+    }
+  });
+  return hits[0] ?? null;
+}
+
+describe("GeneratedProseBlockNode", () => {
+  it("registers as a defining block with block+ content", () => {
+    const editor = createTestEditor();
+    const nodeType = editor.schema.nodes["generatedProseBlock"];
+    expect(nodeType).toBeDefined();
+    expect(nodeType.isBlock).toBe(true);
+    expect(nodeType.spec.content).toBe("block+");
+    expect(nodeType.spec.defining).toBe(true);
+    editor.destroy();
+  });
+
+  it("schema rejects an empty block (must contain at least one block child)", () => {
+    const editor = createTestEditor();
+    const blockType = editor.schema.nodes["generatedProseBlock"];
+    expect(() =>
+      blockType.createChecked({ beatId: "b1", modified: false }),
+    ).toThrow();
+    editor.destroy();
+  });
+
+  it("flips modified=true when user edits inside the block", () => {
+    const editor = createTestEditor(
+      '<div data-type="generated-prose-block" data-beat-id="b1"><p>初期テキスト</p></div>',
+    );
+    const before = findBlock(editor);
+    expect(before?.modified).toBe(false);
+
+    // Insert plain text inside the block (no AI authorship → counts as user edit).
+    const para = editor.state.doc.firstChild?.firstChild;
+    expect(para?.type.name).toBe("paragraph");
+    const insertPos = (before?.pos ?? 0) + 1 + 1; // into block → into paragraph
+    editor.commands.insertContentAt(insertPos, " 追記");
+
+    const after = findBlock(editor);
+    expect(after?.modified).toBe(true);
+    editor.destroy();
+  });
+
+  it("does NOT flip modified when AI-authored text is streamed in", () => {
+    const editor = createTestEditor(
+      '<div data-type="generated-prose-block" data-beat-id="b1"><p></p></div>',
+    );
+    const before = findBlock(editor);
+    expect(before?.modified).toBe(false);
+
+    const insertPos = (before?.pos ?? 0) + 1 + 1;
+    editor.commands.insertContentAt(insertPos, [
+      {
+        type: "text",
+        text: "ドロシーは",
+        marks: [
+          {
+            type: "authorship",
+            attrs: { source: "ai", model: "claude", traceId: "t1" },
+          },
+        ],
+      },
+    ]);
+
+    const after = findBlock(editor);
+    expect(after?.modified).toBe(false);
+    editor.destroy();
+  });
+
+  it("auto-deletes the block when its last child paragraph is removed", () => {
+    const editor = createTestEditor(
+      '<div data-type="generated-prose-block" data-beat-id="b1"><p>only paragraph</p></div>',
+    );
+    expect(findBlock(editor)).not.toBeNull();
+
+    // Replace the entire doc — simulates the "block self-deletes" path.
+    editor.commands.clearContent();
+    expect(findBlock(editor)).toBeNull();
+    editor.destroy();
+  });
+});
