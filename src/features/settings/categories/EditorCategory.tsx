@@ -55,6 +55,15 @@ export function EditorCategory() {
     false,
   );
 
+  const LINEAR_BEAT_DISPLAY_OPTIONS = [
+    { value: "normal", label: t("settings.editor.linearBeatDisplayNormal") },
+    {
+      value: "collapsed",
+      label: t("settings.editor.linearBeatDisplayCollapsed"),
+    },
+    { value: "hidden", label: t("settings.editor.linearBeatDisplayHidden") },
+  ];
+
   function handleDisableAll(v: boolean) {
     setDisableAll(v);
     if (v) {
@@ -188,6 +197,28 @@ export function EditorCategory() {
           <SettingToggle
             settingKey="editor.inlineAiShortcut"
             defaultValue={true}
+          />
+        </SettingRow>
+      </SettingSection>
+
+      <SettingSection title={t("settings.editor.beats")}>
+        <SettingRow
+          label={t("settings.editor.focusModeHideBeats")}
+          description={t("settings.editor.focusModeHideBeatsDesc")}
+        >
+          <SettingToggle
+            settingKey="editor.focusModeHideBeats"
+            defaultValue={false}
+          />
+        </SettingRow>
+        <SettingRow
+          label={t("settings.editor.linearBeatDisplay")}
+          description={t("settings.editor.linearBeatDisplayDesc")}
+        >
+          <SettingDropdown
+            settingKey="editor.linearBeatDisplay"
+            options={LINEAR_BEAT_DISPLAY_OPTIONS}
+            defaultValue="collapsed"
           />
         </SettingRow>
       </SettingSection>

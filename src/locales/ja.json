@@ -141,7 +141,15 @@
       "smoothCaret": "スムーズカーソル",
       "cursorBlink": "カーソル点滅",
       "fadeIn": "文字フェードイン",
-      "fadeOut": "文字フェードアウト"
+      "fadeOut": "文字フェードアウト",
+      "beats": "ビート",
+      "focusModeHideBeats": "フォーカスモード時にビートを非表示",
+      "focusModeHideBeatsDesc": "フォーカスモード有効時にビートブロックを非表示にする",
+      "linearBeatDisplay": "リニアビート表示",
+      "linearBeatDisplayDesc": "リニア編集モードでのビートの表示方法",
+      "linearBeatDisplayNormal": "通常",
+      "linearBeatDisplayCollapsed": "折りたたむ",
+      "linearBeatDisplayHidden": "非表示"
     },
     "ai": {
       "provider": "プロバイダー",
@@ -850,7 +858,16 @@
         "unplace": "Unplaced に戻す"
       },
       "regenerateConfirm": "生成済みの文章を破棄して再生成しますか？",
-      "unplaceToast": "ビートを Unplaced に移動しました（v1: 旧生成段落は文書内に残ります）"
+      "unplaceToast": "ビートを Unplaced に移動しました（v1: 旧生成段落は文書内に残ります）",
+      "typeLabel": "ビートタイプ",
+      "types": {
+        "free": "フリー",
+        "summary": "サマリー",
+        "guided": "ガイド",
+        "dialogue": "ダイアログ",
+        "setting": "セッティング",
+        "micro": "マイクロ"
+      }
     },
     "toolbar": {
       "bold": "太字 (Ctrl+B)",

@@ -141,7 +141,15 @@
       "smoothCaret": "Smooth caret",
       "cursorBlink": "Cursor blink",
       "fadeIn": "Character fade-in",
-      "fadeOut": "Character fade-out"
+      "fadeOut": "Character fade-out",
+      "beats": "Beats",
+      "focusModeHideBeats": "Hide beats in Focus Mode",
+      "focusModeHideBeatsDesc": "Hide beat blocks when Focus Mode is active",
+      "linearBeatDisplay": "Linear beat display",
+      "linearBeatDisplayDesc": "How beats are shown in Linear edit mode",
+      "linearBeatDisplayNormal": "Normal",
+      "linearBeatDisplayCollapsed": "Collapsed",
+      "linearBeatDisplayHidden": "Hidden"
     },
     "ai": {
       "provider": "Provider",
@@ -850,7 +858,16 @@
         "unplace": "Move to Unplaced"
       },
       "regenerateConfirm": "Discard generated prose and regenerate?",
-      "unplaceToast": "Beat moved to Unplaced (v1: existing prose stays in document)"
+      "unplaceToast": "Beat moved to Unplaced (v1: existing prose stays in document)",
+      "typeLabel": "Beat type",
+      "types": {
+        "free": "Free",
+        "summary": "Summary",
+        "guided": "Guided",
+        "dialogue": "Dialogue",
+        "setting": "Setting",
+        "micro": "Micro"
+      }
     },
     "toolbar": {
       "bold": "Bold (Ctrl+B)",
