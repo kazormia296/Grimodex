@@ -1,6 +1,7 @@
 import { useRef, useState, useCallback } from "react";
 import { useEditor, EditorContent } from "@tiptap/react";
 import { MoreVertical } from "lucide-react";
+import { useDraggable } from "@dnd-kit/core";
 import { AnimatedDropdown } from "@/components/ui/animated-dropdown";
 import { useUnplacedBeatsStore } from "@/features/editor/beat/unplacedBeatsStore";
 import { createUnplacedBeatExtensions } from "@/features/editor/beat/createUnplacedBeatExtensions";
@@ -73,13 +74,28 @@ export function UnplacedBeatItem({
     setMenuOpen(false);
   }, [removeBeat, sceneId, beat.id]);
 
+  const {
+    attributes,
+    listeners,
+    setNodeRef: setDragRef,
+    isDragging,
+  } = useDraggable({
+    id: beat.id,
+    data: { beat, sceneId },
+  });
+
   return (
     <div
-      className="group flex items-start gap-1 rounded px-1 py-0.5 hover:bg-muted/40"
+      className={`group flex items-start gap-1 rounded px-1 py-0.5 hover:bg-muted/40 ${isDragging ? "opacity-50" : ""}`}
       data-beat-id={beat.id}
     >
-      {/* Drag handle placeholder (Slice 9 で D&D 実装) */}
-      <div className="mt-1 h-3 w-2 cursor-grab opacity-30 group-hover:opacity-70">
+      {/* Drag handle */}
+      <div
+        ref={setDragRef}
+        className="mt-1 h-3 w-2 cursor-grab opacity-30 group-hover:opacity-70"
+        {...attributes}
+        {...listeners}
+      >
         <svg viewBox="0 0 8 12" fill="currentColor" className="h-3 w-2">
           <circle cx="2" cy="2" r="1" />
           <circle cx="6" cy="2" r="1" />

@@ -94,6 +94,17 @@ import { debugLog, errorDetail } from "@/lib/debugLog";
 import i18next from "i18next";
 import type { SceneStatus } from "@/features/tree/treeStore";
 import type { GroupIndex, TabContentType } from "@/features/editor/tabStore";
+import {
+  DndContext,
+  DragOverlay,
+  PointerSensor,
+  useSensor,
+  useSensors,
+  useDroppable,
+} from "@dnd-kit/core";
+import type { DragEndEvent, DragStartEvent } from "@dnd-kit/core";
+import { placeBeatAtEnd } from "@/features/editor/beat/beatOperations";
+import type { UnplacedBeat } from "@/features/editor/beat/unplacedBeatsStore";
 
 function getStatusLabels(): Record<SceneStatus, string> {
   return {
@@ -189,6 +200,42 @@ export function EditorPane({
   const paneRef = useRef<HTMLDivElement>(null);
   const editorContainerRef = useRef<HTMLDivElement>(null);
   const toolbarActionsRef = useRef<ToolbarActions | null>(null);
+  const [draggingBeat, setDraggingBeat] = useState<UnplacedBeat | null>(null);
+
+  const beatSensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 6 } }),
+  );
+  const { setNodeRef: setEditorDropRef } = useDroppable({
+    id: "beat-editor-drop-zone",
+  });
+  const setEditorContainerRef = useCallback(
+    (el: HTMLDivElement | null) => {
+      (
+        editorContainerRef as React.MutableRefObject<HTMLDivElement | null>
+      ).current = el;
+      setEditorDropRef(el);
+    },
+    [setEditorDropRef],
+  );
+
+  const handleBeatDragStart = useCallback((event: DragStartEvent) => {
+    setDraggingBeat(
+      (event.active.data.current?.beat as UnplacedBeat | undefined) ?? null,
+    );
+  }, []);
+
+  const handleBeatDragEnd = useCallback((event: DragEndEvent) => {
+    setDraggingBeat(null);
+    const { active, over } = event;
+    const ed = editorRef.current;
+    if (over?.id === "beat-editor-drop-zone" && ed) {
+      const beat = active.data.current?.beat as UnplacedBeat | undefined;
+      const dragSceneId = active.data.current?.sceneId as string | undefined;
+      if (beat && dragSceneId) {
+        placeBeatAtEnd(ed, dragSceneId, beat);
+      }
+    }
+  }, []);
   const [titleEditing, setTitleEditing] = useState(false);
   const [titleDraft, setTitleDraft] = useState("");
   const [findOpen, setFindOpen] = useState(false);
@@ -1128,114 +1175,130 @@ export function EditorPane({
         </div>
       )}
       {!isCodexMode && !isSnippetMode && <SynopsisHeader sceneId={nodeId} />}
-      {!isCodexMode && !isSnippetMode && (
-        <BeatsHeader
-          sceneId={nodeId}
-          editor={editor}
-          setMentionPopup={setMentionPopupState}
-        />
-      )}
-      <FindReplaceBar
-        editor={editor}
-        open={findOpen}
-        showReplace={findShowReplace}
-        onClose={() => setFindOpen(false)}
-      />
-      <div
-        ref={editorContainerRef}
-        data-show-foreshadow-marks={showForeshadowMarks ? "true" : "false"}
-        className={`flex-1 overflow-auto bg-content-background text-content-foreground-secondary p-4${typewriterMode ? " typewriter-padding" : ""}${filterSource ? ` attribution-filter-${filterSource}` : ""}`}
-        onClick={(e) => {
-          // Focus editor when clicking on the padding/background area
-          if (e.target === e.currentTarget) {
-            editor?.commands.focus();
-          }
-        }}
+      <DndContext
+        sensors={beatSensors}
+        onDragStart={handleBeatDragStart}
+        onDragEnd={handleBeatDragEnd}
       >
+        {!isCodexMode && !isSnippetMode && (
+          <BeatsHeader
+            sceneId={nodeId}
+            editor={editor}
+            setMentionPopup={setMentionPopupState}
+          />
+        )}
+        <FindReplaceBar
+          editor={editor}
+          open={findOpen}
+          showReplace={findShowReplace}
+          onClose={() => setFindOpen(false)}
+        />
         <div
-          style={{
-            fontFamily: editorSettings.fontFamily,
-            fontSize: `${editorSettings.fontSize}px`,
-            lineHeight: editorSettings.lineHeight,
-            maxWidth: `${editorSettings.maxContentWidth}px`,
-            margin: "0 auto",
-            wordBreak:
-              editorSettings.wordBreak as React.CSSProperties["wordBreak"],
-            lineBreak:
-              editorSettings.lineBreak as React.CSSProperties["lineBreak"],
+          ref={setEditorContainerRef}
+          data-show-foreshadow-marks={showForeshadowMarks ? "true" : "false"}
+          className={`flex-1 overflow-auto bg-content-background text-content-foreground-secondary p-4${typewriterMode ? " typewriter-padding" : ""}${filterSource ? ` attribution-filter-${filterSource}` : ""}`}
+          onClick={(e) => {
+            // Focus editor when clicking on the padding/background area
+            if (e.target === e.currentTarget) {
+              editor?.commands.focus();
+            }
           }}
         >
-          {editorTitle && (
-            <div
-              className="mb-6 border-b border-border/40 pb-4"
-              style={{
-                fontSize: `${Math.round(editorSettings.fontSize * 1.6)}px`,
-              }}
-            >
-              {titleEditing ? (
-                <input
-                  // eslint-disable-next-line jsx-a11y/no-autofocus
-                  autoFocus
-                  type="text"
-                  value={titleDraft}
-                  onChange={(e) => setTitleDraft(e.target.value)}
-                  onBlur={handleTitleSave}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter") {
-                      e.preventDefault();
-                      handleTitleSave();
-                    } else if (e.key === "Escape") {
-                      e.preventDefault();
-                      handleTitleCancel();
-                    }
-                  }}
-                  className="w-full bg-transparent font-semibold text-content-foreground/60 outline-none placeholder:text-content-foreground/30"
-                  style={{ fontFamily: "inherit", fontSize: "inherit" }}
-                />
-              ) : (
-                <div
-                  role="button"
-                  tabIndex={0}
-                  onClick={handleTitleEditStart}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter" || e.key === "F2")
-                      handleTitleEditStart();
-                  }}
-                  className="cursor-text select-none font-semibold text-content-foreground/60 hover:text-content-foreground/80"
-                >
-                  {editorTitle}
-                </div>
-              )}
-              {loadedPhaseLabel && (
-                <div
-                  className="mt-1 text-sm font-normal text-purple-500/70"
-                  style={{ fontSize: `${editorSettings.fontSize}px` }}
-                >
-                  [{loadedPhaseLabel}]
-                </div>
-              )}
+          <div
+            style={{
+              fontFamily: editorSettings.fontFamily,
+              fontSize: `${editorSettings.fontSize}px`,
+              lineHeight: editorSettings.lineHeight,
+              maxWidth: `${editorSettings.maxContentWidth}px`,
+              margin: "0 auto",
+              wordBreak:
+                editorSettings.wordBreak as React.CSSProperties["wordBreak"],
+              lineBreak:
+                editorSettings.lineBreak as React.CSSProperties["lineBreak"],
+            }}
+          >
+            {editorTitle && (
+              <div
+                className="mb-6 border-b border-border/40 pb-4"
+                style={{
+                  fontSize: `${Math.round(editorSettings.fontSize * 1.6)}px`,
+                }}
+              >
+                {titleEditing ? (
+                  <input
+                    // eslint-disable-next-line jsx-a11y/no-autofocus
+                    autoFocus
+                    type="text"
+                    value={titleDraft}
+                    onChange={(e) => setTitleDraft(e.target.value)}
+                    onBlur={handleTitleSave}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") {
+                        e.preventDefault();
+                        handleTitleSave();
+                      } else if (e.key === "Escape") {
+                        e.preventDefault();
+                        handleTitleCancel();
+                      }
+                    }}
+                    className="w-full bg-transparent font-semibold text-content-foreground/60 outline-none placeholder:text-content-foreground/30"
+                    style={{ fontFamily: "inherit", fontSize: "inherit" }}
+                  />
+                ) : (
+                  <div
+                    role="button"
+                    tabIndex={0}
+                    onClick={handleTitleEditStart}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" || e.key === "F2")
+                        handleTitleEditStart();
+                    }}
+                    className="cursor-text select-none font-semibold text-content-foreground/60 hover:text-content-foreground/80"
+                  >
+                    {editorTitle}
+                  </div>
+                )}
+                {loadedPhaseLabel && (
+                  <div
+                    className="mt-1 text-sm font-normal text-purple-500/70"
+                    style={{ fontSize: `${editorSettings.fontSize}px` }}
+                  >
+                    [{loadedPhaseLabel}]
+                  </div>
+                )}
+              </div>
+            )}
+            <SceneBeatEditorContextProvider value={{ sceneId: nodeId }}>
+              <EditorContent editor={editor} />
+            </SceneBeatEditorContextProvider>
+            <CodexPopover editor={editor} />
+            <CommentAddPopover editor={editor} />
+            <ForeshadowMarkPopover editor={editor} />
+            <ForeshadowMarkHoverPopover
+              editor={editor}
+              containerRef={editorContainerRef}
+            />
+            <CommentHoverPopover
+              editor={editor}
+              containerRef={editorContainerRef}
+            />
+            <EditorContextMenu
+              editor={editor}
+              containerRef={editorContainerRef}
+            />
+          </div>
+        </div>
+        <DragOverlay dropAnimation={null}>
+          {draggingBeat && (
+            <div className="rounded border border-border bg-popover px-2 py-1 text-xs shadow-md opacity-90">
+              {draggingBeat.content
+                .map((c) => ("text" in c ? String(c.text ?? "") : ""))
+                .join("")
+                .slice(0, 40) || "Beat"}
             </div>
           )}
-          <SceneBeatEditorContextProvider value={{ sceneId: nodeId }}>
-            <EditorContent editor={editor} />
-          </SceneBeatEditorContextProvider>
-          <CodexPopover editor={editor} />
-          <CommentAddPopover editor={editor} />
-          <ForeshadowMarkPopover editor={editor} />
-          <ForeshadowMarkHoverPopover
-            editor={editor}
-            containerRef={editorContainerRef}
-          />
-          <CommentHoverPopover
-            editor={editor}
-            containerRef={editorContainerRef}
-          />
-          <EditorContextMenu
-            editor={editor}
-            containerRef={editorContainerRef}
-          />
-        </div>
-      </div>
+        </DragOverlay>
+      </DndContext>
       <div className="flex flex-shrink-0 items-center justify-between border-t border-border px-3 py-1 text-xs text-muted-foreground">
         {/* Left: status badge */}
         <div className="relative flex min-w-0 items-center">
