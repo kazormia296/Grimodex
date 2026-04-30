@@ -568,10 +568,9 @@ export function AiCategory() {
                 max={95}
                 step={5}
                 value={Math.round(
-                  parseFloat(
-                    settingsStore.get(
-                      "beat.roleInferenceConfidenceThreshold",
-                    ) || "0.7",
+                  settingsStore.getNumber(
+                    "beat.roleInferenceConfidenceThreshold",
+                    0.7,
                   ) * 100,
                 )}
                 onChange={(e) =>
@@ -584,10 +583,9 @@ export function AiCategory() {
               />
               <span className="w-10 text-right text-xs tabular-nums">
                 {Math.round(
-                  parseFloat(
-                    settingsStore.get(
-                      "beat.roleInferenceConfidenceThreshold",
-                    ) || "0.7",
+                  settingsStore.getNumber(
+                    "beat.roleInferenceConfidenceThreshold",
+                    0.7,
                   ) * 100,
                 )}
                 %

@@ -27,13 +27,49 @@ function isValidRole(value: unknown): value is MentionRole {
   return value === "actor" || value === "target" || value === "mentioned";
 }
 
+/**
+ * Extract the first balanced JSON object from arbitrary text.
+ *
+ * AI レスポンスが `Sure! {...}` のような前置きを含むケースのため、最初の `{`
+ * から括弧バランスを追いかけて対応する `}` までを切り出す。文字列リテラル中の
+ * `{` `}` はカウントしないようにエスケープも考慮する。説明文中に複数の `{...}`
+ * が現れる場合は **最初の balanced object** を返す（呼び出し側はそれを期待し
+ * ている: 単に `lastIndexOf("}")` で切ると入れ子オブジェクトを含むレスポンス
+ * で誤切断が起こる）。
+ */
 function extractJsonObject(text: string): string | null {
   const trimmed = text.trim();
   if (!trimmed) return null;
   const start = trimmed.indexOf("{");
-  const end = trimmed.lastIndexOf("}");
-  if (start < 0 || end <= start) return null;
-  return trimmed.slice(start, end + 1);
+  if (start < 0) return null;
+
+  let depth = 0;
+  let inString = false;
+  let escape = false;
+
+  for (let i = start; i < trimmed.length; i++) {
+    const ch = trimmed[i];
+    if (escape) {
+      escape = false;
+      continue;
+    }
+    if (ch === "\\") {
+      if (inString) escape = true;
+      continue;
+    }
+    if (ch === '"') {
+      inString = !inString;
+      continue;
+    }
+    if (inString) continue;
+    if (ch === "{") {
+      depth++;
+    } else if (ch === "}") {
+      depth--;
+      if (depth === 0) return trimmed.slice(start, i + 1);
+    }
+  }
+  return null;
 }
 
 function buildPrompt(input: RoleInferenceInput): string {

@@ -130,4 +130,49 @@ describe("inferMentionRoles", () => {
     expect(result).toHaveLength(1);
     expect(result[0].role).toBe("actor");
   });
+
+  it("説明文中に別の {} が混じっても最初の balanced object を抽出する", async () => {
+    // 旧実装は最初の `{` から最後の `}` まで切るので、説明文中に `{...}` が
+    // 含まれると不正な連結 JSON になり parse が落ちていた。
+    mockSend.mockResolvedValue(
+      makeResult(
+        'Note: ignore objects like {"foo":"bar"}.\nResult: {"results":[{"codexId":"c1","role":"actor","confidence":0.9}]}',
+      ),
+    );
+    const result = await inferMentionRoles({
+      beatInstructions: "test",
+      generatedProse: "test",
+      mentions: BASE_MENTIONS,
+    });
+    expect(result).toHaveLength(0); // 最初の {"foo":"bar"} には results がないので空
+  });
+
+  it("results に入れ子オブジェクト（item 内に {}）が含まれても全体を切り出せる", async () => {
+    mockSend.mockResolvedValue(
+      makeResult(
+        '{"results":[{"codexId":"c1","role":"actor","confidence":0.9,"meta":{"src":"x"}}]}',
+      ),
+    );
+    const result = await inferMentionRoles({
+      beatInstructions: "test",
+      generatedProse: "test",
+      mentions: BASE_MENTIONS,
+    });
+    expect(result).toHaveLength(1);
+    expect(result[0].codexId).toBe("c1");
+  });
+
+  it("文字列リテラル中の `{` `}` を括弧バランスとしてカウントしない", async () => {
+    mockSend.mockResolvedValue(
+      makeResult(
+        '{"results":[{"codexId":"c1","role":"actor","confidence":0.9,"note":"contains } and { chars"}]}',
+      ),
+    );
+    const result = await inferMentionRoles({
+      beatInstructions: "test",
+      generatedProse: "test",
+      mentions: BASE_MENTIONS,
+    });
+    expect(result).toHaveLength(1);
+  });
 });

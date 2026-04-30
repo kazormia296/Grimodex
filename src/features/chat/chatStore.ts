@@ -623,13 +623,22 @@ async function buildSceneContextPrompt(opts: {
     .reduce((sum, m) => sum + countTokens(m.content), 0);
 
   // C-3: Build "pending beats" section if injection is enabled.
+  // contentJson が undefined/空/JSON parse 失敗のいずれでも、Unplaced beat の
+  // ヒントだけは落とさず注入する（旧 HTML 形式 scene 等のフォールバック）。
   const injectBeats = useSettingsStore
     .getState()
     .getBoolean("beat.injectIntoContext", true);
   let pendingBeatsSection: string | undefined;
-  if (injectBeats && sceneCtx.contentJson) {
+  if (injectBeats) {
+    let docJson: unknown = null;
+    if (sceneCtx.contentJson) {
+      try {
+        docJson = JSON.parse(sceneCtx.contentJson);
+      } catch {
+        docJson = null;
+      }
+    }
     try {
-      const docJson = JSON.parse(sceneCtx.contentJson) as unknown;
       const unplacedBeats = useUnplacedBeatsStore
         .getState()
         .getBeats(sceneCtx.id);
@@ -641,20 +650,7 @@ async function buildSceneContextPrompt(opts: {
         currentBeatId: null,
       });
     } catch {
-      // PM-JSON parse failure (old HTML format etc.) → Unplaced only fallback
-      try {
-        const unplacedBeats = useUnplacedBeatsStore
-          .getState()
-          .getBeats(sceneCtx.id);
-        pendingBeatsSection = buildPendingBeatsSection({
-          sceneDocJson: null,
-          unplacedBeats,
-          resolveCharacterName: () => null,
-          currentBeatId: null,
-        });
-      } catch {
-        // 無視
-      }
+      // 無視
     }
   }
 

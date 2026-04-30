@@ -28,7 +28,6 @@ export function applyRoleSuggestion(
 
   if (!updated) return false;
 
-  tr.setMeta("addToHistory", true);
   editor.view.dispatch(tr);
   return true;
 }

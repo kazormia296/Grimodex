@@ -3,7 +3,17 @@ import type { BeatType } from "@/features/editor/SceneBeatNode";
 
 export interface PlacedBeatInfo {
   beatId: string;
-  /** Doc position of the sceneBeat node start (0-indexed). */
+  /**
+   * Position of the sceneBeat node.
+   *
+   * - `listPlacedBeats(doc)` (live PM doc 経由): PM の正確な doc position。
+   *   PM トランザクションに渡しても安全。
+   * - `listPlacedBeatsFromJson(json)` (JSON 経由): schema を持たないので
+   *   `measureJsonNodeSize` による粗い近似値。**PM 操作には使わないこと**
+   *   （atom/leaf のサイズ規則が schema 依存で本来の `node.nodeSize` と
+   *   ずれる可能性があり、トランザクションを発行すると doc 破損する恐れ）。
+   *   表示・順序付け用途に限る。
+   */
   beatPos: number;
   /** 1-origin sequential index in doc order. */
   index: number;
@@ -35,6 +45,16 @@ function isBeatType(value: unknown): value is BeatType {
   return typeof value === "string" && valid.includes(value);
 }
 
+/**
+ * PM の `node.nodeSize` 規則を JSON 上で粗く近似する。
+ *
+ * 本来 `nodeSize` は schema 依存（leaf/atom/inline=1, block=2+content.size,
+ * text=text.length）だが、ここでは schema を持たないので block 風 = 2 + 子サイズ、
+ * leaf 風 = 1、text = 文字数 で近似する。
+ *
+ * **注意**: この値は `listPlacedBeatsFromJson` の `beatPos` 計算にしか使わず、
+ * 結果は表示・順序付け用途に限る（PM トランザクションには渡さない）。
+ */
 function measureJsonNodeSize(node: JsonNode): number {
   if (node.type === "text") return node.text?.length ?? 1;
   if (!node.content || node.content.length === 0) return 1;

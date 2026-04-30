@@ -90,14 +90,15 @@ export function SceneBeatNodeView({
     if (showActionBar && isModified) setShowActionBar(false);
   }, [showActionBar, isModified]);
 
-  // C-7: Clear role suggestions when beat unmounts (beat deleted or scene unloaded)
-  const clearBeatSuggestions = useRoleSuggestionsStore((s) => s.clearBeat);
+  // C-7: Clear role suggestions when beat unmounts (beat deleted or scene unloaded).
+  // Use getState() instead of subscribing — clearBeat is a stable action and
+  // we don't want zustand selector identity changes to retrigger this effect.
   useEffect(() => {
     const id = beatId;
     return () => {
-      if (id) clearBeatSuggestions(id);
+      if (id) useRoleSuggestionsStore.getState().clearBeat(id);
     };
-  }, [beatId, clearBeatSuggestions]);
+  }, [beatId]);
 
   const generateTooltip = !sceneId
     ? t("editor.beat.generateDisabledHint")

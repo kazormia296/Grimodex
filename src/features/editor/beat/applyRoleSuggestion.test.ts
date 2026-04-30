@@ -1,4 +1,9 @@
+// @vitest-environment happy-dom
 import { describe, it, expect } from "vitest";
+import { Editor } from "@tiptap/core";
+import StarterKit from "@tiptap/starter-kit";
+import Mention from "@tiptap/extension-mention";
+import { SceneBeatNode } from "@/features/editor/SceneBeatNode";
 import { applyRoleSuggestion } from "./applyRoleSuggestion";
 
 // Minimal editor mock that simulates ProseMirror doc traversal and dispatch
@@ -162,6 +167,59 @@ describe("applyRoleSuggestion", () => {
     expect(trMocks).toHaveLength(2);
     expect(trMocks[0].attrs.role).toBe("target");
     expect(trMocks[1].attrs.role).toBe("target");
+  });
+
+  it("ライブ PM editor 上で setNodeMarkup が role attr を実際に更新する", () => {
+    // 上のモックは descendants の signature を再現するだけで、PM の
+    // setNodeMarkup が attrs を本当に書き換えるかは検証していない。
+    // 実 Editor 上で end-to-end に attr 更新が反映されることを確認する。
+    const MentionWithRole = Mention.extend({
+      addAttributes() {
+        return {
+          ...this.parent?.(),
+          role: { default: "mentioned" },
+        };
+      },
+    });
+
+    const editor = new Editor({
+      extensions: [StarterKit, SceneBeatNode, MentionWithRole],
+      content: {
+        type: "doc",
+        content: [
+          {
+            type: "sceneBeat",
+            attrs: {
+              id: "b1",
+              beatType: "free",
+              pov: null,
+              collapsed: false,
+            },
+            content: [
+              { type: "text", text: "alpha " },
+              {
+                type: "mention",
+                attrs: { id: "c1", label: "花子", role: "mentioned" },
+              },
+              { type: "text", text: " beta" },
+            ],
+          },
+        ],
+      },
+    });
+
+    const ok = applyRoleSuggestion(editor, "b1", "c1", "actor");
+    expect(ok).toBe(true);
+
+    let foundRole: string | null = null;
+    editor.state.doc.descendants((node) => {
+      if (node.type.name === "mention" && node.attrs.id === "c1") {
+        foundRole = node.attrs.role as string;
+      }
+      return true;
+    });
+    expect(foundRole).toBe("actor");
+    editor.destroy();
   });
 
   it("parent が null のノードは無視する", () => {

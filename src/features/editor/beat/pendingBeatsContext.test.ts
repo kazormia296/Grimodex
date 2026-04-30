@@ -202,6 +202,42 @@ describe("buildPendingBeatsSection", () => {
     expect(result).toContain("setting");
   });
 
+  it("currentBeatId が最後の Placed (b5) のとき後続 Placed は空 + Unplaced のみ", () => {
+    // 境界: slice(N+1) が空配列を返すケース
+    const doc = makeDocJson(
+      makeSceneBeatJson("b1", "ビート1"),
+      makeSceneBeatJson("b2", "ビート2"),
+      makeSceneBeatJson("b3", "ビート3"),
+      makeSceneBeatJson("b4", "ビート4"),
+      makeSceneBeatJson("b5", "ビート5"),
+    );
+    const result = buildPendingBeatsSection({
+      sceneDocJson: doc,
+      unplacedBeats: [makeUnplaced("u1", "未配置だけ残る")],
+      resolveCharacterName: noResolver,
+      currentBeatId: "b5",
+    });
+    expect(result).not.toContain("Placed");
+    expect(result).not.toContain("ビート1");
+    expect(result).not.toContain("ビート5");
+    expect(result).toContain("Unplaced");
+    expect(result).toContain("未配置だけ残る");
+  });
+
+  it("currentBeatId が最後の Placed (b5) で Unplaced もないとき空文字を返す", () => {
+    const doc = makeDocJson(
+      makeSceneBeatJson("b1", "ビート1"),
+      makeSceneBeatJson("b5", "ビート5"),
+    );
+    const result = buildPendingBeatsSection({
+      sceneDocJson: doc,
+      unplacedBeats: [],
+      resolveCharacterName: noResolver,
+      currentBeatId: "b5",
+    });
+    expect(result).toBe("");
+  });
+
   it("currentBeatId が存在しない beat id のとき全 Placed を含む", () => {
     const doc = makeDocJson(
       makeSceneBeatJson("b1", "ビート1"),

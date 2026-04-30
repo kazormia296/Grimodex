@@ -31,10 +31,11 @@ async function runRoleInference(
   if (!settings.getBoolean("beat.inferRoles", true)) return;
 
   // Get the generated prose for this beat.
+  // 生成ブロックが消えた瞬間（ユーザーが手動で削除等）に推論をスキップする
+  // ガード: nodeAt が null を返す場合は block 情報が stale。
   const block = findGeneratedBlockForBeat(editor, beatId);
   if (!block) return;
-  const blockNode = editor.state.doc.nodeAt(block.blockPos);
-  if (!blockNode) return;
+  if (!editor.state.doc.nodeAt(block.blockPos)) return;
   const generatedProse = editor.state.doc.textBetween(
     block.blockPos,
     block.blockPos + block.blockSize,
@@ -90,6 +91,14 @@ async function runRoleInference(
       status: "pending",
     };
   });
+
+  // Re-check immediately before writing to the store. Between the orphan
+  // check above and here, an entries.map() / closure setup runs synchronously
+  // — but the AI request itself is async, so by now `clearBeat` from the
+  // SceneBeatNodeView unmount cleanup may already have wiped this beat's
+  // suggestions. Without this second check the store would be re-populated
+  // with stale entries pointing at a deleted beat.
+  if (!findBeatById(editor, beatId)) return;
 
   useRoleSuggestionsStore.getState().setSuggestions(beatId, entries);
 }
