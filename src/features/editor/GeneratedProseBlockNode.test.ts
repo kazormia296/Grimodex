@@ -3,14 +3,30 @@ import { describe, it, expect } from "vitest";
 import { Editor } from "@tiptap/core";
 import StarterKit from "@tiptap/starter-kit";
 import { AuthorshipMark } from "@/features/attribution/AuthorshipMark";
+import { SceneBeatNode } from "./SceneBeatNode";
 import {
   GeneratedProseBlockNode,
   BEAT_STREAM_META,
 } from "./GeneratedProseBlockNode";
 
+/**
+ * Fixture: scene beat with matching beatId, then the generated block, so the
+ * orphan-unwrap logic in appendTransaction doesn't kick in.
+ */
+function fixture(blockHtml: string) {
+  return (
+    '<div data-type="scene-beat" data-beat-id="b1">beat text</div>' + blockHtml
+  );
+}
+
 function createTestEditor(content = "") {
   return new Editor({
-    extensions: [StarterKit, AuthorshipMark, GeneratedProseBlockNode],
+    extensions: [
+      StarterKit,
+      AuthorshipMark,
+      SceneBeatNode,
+      GeneratedProseBlockNode,
+    ],
     content,
   });
 }
@@ -49,14 +65,16 @@ describe("GeneratedProseBlockNode", () => {
 
   it("flips modified=true when user edits inside the block", () => {
     const editor = createTestEditor(
-      '<div data-type="generated-prose-block" data-beat-id="b1"><p>初期テキスト</p></div>',
+      fixture(
+        '<div data-type="generated-prose-block" data-beat-id="b1"><p>初期テキスト</p></div>',
+      ),
     );
     const before = findBlock(editor);
     expect(before?.modified).toBe(false);
 
     // Insert plain text inside the block (no AI authorship → counts as user edit).
-    const para = editor.state.doc.firstChild?.firstChild;
-    expect(para?.type.name).toBe("paragraph");
+    const blockNode = editor.state.doc.nodeAt(before!.pos);
+    expect(blockNode?.firstChild?.type.name).toBe("paragraph");
     const insertPos = (before?.pos ?? 0) + 1 + 1; // into block → into paragraph
     editor.commands.insertContentAt(insertPos, " 追記");
 
@@ -67,7 +85,9 @@ describe("GeneratedProseBlockNode", () => {
 
   it("does NOT flip modified when transaction is tagged BEAT_STREAM_META", () => {
     const editor = createTestEditor(
-      '<div data-type="generated-prose-block" data-beat-id="b1"><p></p></div>',
+      fixture(
+        '<div data-type="generated-prose-block" data-beat-id="b1"><p></p></div>',
+      ),
     );
     const before = findBlock(editor);
     expect(before?.modified).toBe(false);
@@ -89,7 +109,9 @@ describe("GeneratedProseBlockNode", () => {
     // Streaming may need to insert a new paragraph inside the block when a
     // chunk crosses a paragraph boundary. Tagged transaction must skip.
     const editor = createTestEditor(
-      '<div data-type="generated-prose-block" data-beat-id="b1"><p>first</p></div>',
+      fixture(
+        '<div data-type="generated-prose-block" data-beat-id="b1"><p>first</p></div>',
+      ),
     );
     const before = findBlock(editor);
     expect(before?.modified).toBe(false);
@@ -115,7 +137,9 @@ describe("GeneratedProseBlockNode", () => {
 
   it("does NOT flip modified for Regenerate (replaceWith of the whole block)", () => {
     const editor = createTestEditor(
-      '<div data-type="generated-prose-block" data-beat-id="b1"><p>old prose</p></div>',
+      fixture(
+        '<div data-type="generated-prose-block" data-beat-id="b1"><p>old prose</p></div>',
+      ),
     );
     const before = findBlock(editor);
     expect(before?.modified).toBe(false);
@@ -147,7 +171,9 @@ describe("GeneratedProseBlockNode", () => {
 
   it("auto-deletes the block when its last child paragraph is removed", () => {
     const editor = createTestEditor(
-      '<div data-type="generated-prose-block" data-beat-id="b1"><p>only paragraph</p></div>',
+      fixture(
+        '<div data-type="generated-prose-block" data-beat-id="b1"><p>only paragraph</p></div>',
+      ),
     );
     expect(findBlock(editor)).not.toBeNull();
 

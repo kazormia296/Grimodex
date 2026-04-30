@@ -1,13 +1,41 @@
 // @vitest-environment happy-dom
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, beforeEach } from "vitest";
 import { render, screen, waitFor, act } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useEditor, EditorContent } from "@tiptap/react";
 import StarterKit from "@tiptap/starter-kit";
 import { useEffect } from "react";
 import type { Editor } from "@tiptap/core";
+import { useCodexStore } from "@/features/codex/codexStore";
+import type { CodexEntry } from "@/features/codex/api";
 import { SceneBeatNode } from "./SceneBeatNode";
+import { GeneratedProseBlockNode } from "./GeneratedProseBlockNode";
 import { SceneBeatEditorContextProvider } from "./beat/SceneBeatEditorContext";
+
+function makeCodex(partial: Partial<CodexEntry>): CodexEntry {
+  return {
+    id: partial.id ?? "x",
+    projectId: "p1",
+    parentId: null,
+    type: "character",
+    name: partial.name ?? "Untitled",
+    aliases: [],
+    excludedAliases: [],
+    summary: null,
+    content: { type: "doc", content: [] },
+    icon: null,
+    tagsCache: null,
+    contextMode: "mentioned",
+    childrenBudget: "compact",
+    sourceChatMessageId: null,
+    notes: null,
+    phaseResolutionMode: "reading",
+    aiInstructions: null,
+    createdAt: "2026-01-01",
+    updatedAt: "2026-01-01",
+    ...partial,
+  } as CodexEntry;
+}
 
 function HostEditor({
   attrs,
@@ -19,7 +47,7 @@ function HostEditor({
   sceneId?: string;
 }) {
   const editor = useEditor({
-    extensions: [StarterKit, SceneBeatNode],
+    extensions: [StarterKit, SceneBeatNode, GeneratedProseBlockNode],
     content: "<p></p>",
   });
 
@@ -53,6 +81,10 @@ function HostEditor({
 }
 
 describe("SceneBeatNodeView", () => {
+  beforeEach(() => {
+    useCodexStore.setState({ entries: [] });
+  });
+
   it("renders the header with label and beat type chip", async () => {
     render(<HostEditor attrs={{ beatType: "dialogue" }} />);
     await waitFor(() => {
@@ -71,7 +103,19 @@ describe("SceneBeatNodeView", () => {
     render(<HostEditor attrs={{ pov: "char-9" }} />);
     await waitFor(() => screen.getByText("Beat"));
     const povChip = screen.getByTestId("beat-pov-chip");
+    // No matching codex entry → falls back to id.
     expect(povChip.textContent).toContain("char-9");
+  });
+
+  it("resolves POV id to the codex character name when present", async () => {
+    useCodexStore.setState({
+      entries: [makeCodex({ id: "char-9", name: "朱音" })],
+    });
+    render(<HostEditor attrs={{ pov: "char-9" }} />);
+    await waitFor(() => screen.getByText("Beat"));
+    const povChip = screen.getByTestId("beat-pov-chip");
+    expect(povChip.textContent).toContain("朱音");
+    expect(povChip.textContent).not.toContain("char-9");
   });
 
   it("Generate button is disabled when no SceneBeatEditorContext provider wraps the editor", async () => {
@@ -113,5 +157,49 @@ describe("SceneBeatNodeView", () => {
       if (node.type.name === "sceneBeat") collapsed = !!node.attrs.collapsed;
     });
     expect(collapsed).toBe(true);
+  });
+
+  it("⋮ menu opens and Delete-beat-and-prose removes the beat", async () => {
+    let editorRef: Editor | null = null;
+    render(<HostEditor attrs={{}} expose={(e) => (editorRef = e)} />);
+    await waitFor(() => screen.getByText("Beat"));
+
+    await act(async () => {
+      await userEvent.click(screen.getByTestId("beat-menu-btn"));
+    });
+
+    const deleteAllBtn = await screen.findByTestId(
+      "beat-menu-delete-with-prose",
+    );
+    await act(async () => {
+      await userEvent.click(deleteAllBtn);
+    });
+
+    let beatCount = 0;
+    editorRef!.state.doc.descendants((node) => {
+      if (node.type.name === "sceneBeat") beatCount += 1;
+    });
+    expect(beatCount).toBe(0);
+  });
+
+  it("Convert-to-text replaces the beat with a paragraph", async () => {
+    let editorRef: Editor | null = null;
+    render(<HostEditor attrs={{}} expose={(e) => (editorRef = e)} />);
+    await waitFor(() => screen.getByText("Beat"));
+
+    await act(async () => {
+      await userEvent.click(screen.getByTestId("beat-menu-btn"));
+    });
+    const convertBtn = await screen.findByTestId("beat-menu-convert-to-text");
+    await act(async () => {
+      await userEvent.click(convertBtn);
+    });
+
+    let beatCount = 0;
+    editorRef!.state.doc.descendants((node) => {
+      if (node.type.name === "sceneBeat") beatCount += 1;
+    });
+    expect(beatCount).toBe(0);
+    expect(editorRef!.getText()).toContain("ビート本文");
   });
 });

@@ -840,7 +840,12 @@
       "generating": "Generating…",
       "generateDisabledHint": "Scene context unavailable",
       "menu": "Beat menu",
-      "povPrefix": "POV:"
+      "povPrefix": "POV:",
+      "menuItems": {
+        "convertToText": "Convert to text",
+        "deleteBeatOnly": "Delete beat only (keep prose)",
+        "deleteBeatAndProse": "Delete beat and prose"
+      }
     },
     "toolbar": {
       "bold": "Bold (Ctrl+B)",

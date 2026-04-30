@@ -840,7 +840,12 @@
       "generating": "生成中…",
       "generateDisabledHint": "シーン情報が取得できません",
       "menu": "ビートメニュー",
-      "povPrefix": "POV:"
+      "povPrefix": "POV:",
+      "menuItems": {
+        "convertToText": "通常の段落に変換",
+        "deleteBeatOnly": "ビートのみ削除（生成文は残す）",
+        "deleteBeatAndProse": "ビートと生成文を削除"
+      }
     },
     "toolbar": {
       "bold": "太字 (Ctrl+B)",

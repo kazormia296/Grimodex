@@ -1,3 +1,4 @@
+import { useRef, useState } from "react";
 import {
   ChevronDown,
   ChevronRight,
@@ -8,16 +9,17 @@ import {
 import { NodeViewContent, NodeViewWrapper } from "@tiptap/react";
 import type { ReactNodeViewProps } from "@tiptap/react";
 import { useTranslation } from "react-i18next";
+import { useCodexStore } from "@/features/codex/codexStore";
+import { AnimatedDropdown } from "@/components/ui/animated-dropdown";
 import type { BeatType } from "./SceneBeatNode";
 import { useSceneBeatEditorContext } from "./beat/SceneBeatEditorContext";
 import { useBeatGeneration } from "./beat/useBeatGeneration";
+import {
+  convertBeatToText,
+  deleteBeatAndProse,
+  deleteBeatOnly,
+} from "./beat/beatOperations";
 
-/**
- * React NodeView for sceneBeat.
- * - Generate ボタン: Slice 3b-ii で配線済 (sceneId が context から取れる場合のみ enable)
- * - ⋮ メニュー: placeholder (Slice 3c で操作メニュー)
- * - POV チップ: id 表示 (Slice 3c で codex 名解決)
- */
 export function SceneBeatNodeView({
   node,
   editor,
@@ -26,8 +28,13 @@ export function SceneBeatNodeView({
   const { t } = useTranslation();
   const collapsed = !!node.attrs.collapsed;
   const beatType = (node.attrs.beatType ?? "free") as BeatType;
-  const pov = (node.attrs.pov ?? null) as string | null;
+  const povId = (node.attrs.pov ?? null) as string | null;
   const beatId = (node.attrs.id ?? null) as string | null;
+
+  // Resolve POV id → codex character name (Slice 3c-i).
+  const povName = useCodexStore((s) =>
+    povId ? (s.entries.find((e) => e.id === povId)?.name ?? null) : null,
+  );
 
   const ctx = useSceneBeatEditorContext();
   const sceneId = ctx?.sceneId ?? null;
@@ -39,6 +46,14 @@ export function SceneBeatNodeView({
     : generating
       ? t("editor.beat.generating")
       : t("editor.beat.generate");
+
+  const [menuOpen, setMenuOpen] = useState(false);
+  const menuContainerRef = useRef<HTMLDivElement>(null);
+
+  const runMenuAction = (fn: () => void) => {
+    setMenuOpen(false);
+    fn();
+  };
 
   return (
     <NodeViewWrapper
@@ -75,12 +90,12 @@ export function SceneBeatNodeView({
         >
           {beatType}
         </span>
-        {pov && (
+        {povId && (
           <span
             data-testid="beat-pov-chip"
             className="rounded bg-muted px-1 py-0.5 text-[10px]"
           >
-            {t("editor.beat.povPrefix")} {pov}
+            {t("editor.beat.povPrefix")} {povName ?? povId}
           </span>
         )}
         <button
@@ -104,15 +119,74 @@ export function SceneBeatNodeView({
           )}
           {t("editor.beat.generate")}
         </button>
-        <button
-          type="button"
-          data-testid="beat-menu-btn"
-          aria-label={t("editor.beat.menu")}
-          disabled
-          className="rounded p-0.5 opacity-50"
-        >
-          <MoreVertical className="h-3 w-3" />
-        </button>
+        <div ref={menuContainerRef} className="relative">
+          <button
+            type="button"
+            data-testid="beat-menu-btn"
+            aria-label={t("editor.beat.menu")}
+            aria-haspopup="menu"
+            aria-expanded={menuOpen}
+            onClick={() => setMenuOpen((v) => !v)}
+            disabled={!beatId || !editor}
+            className="rounded p-0.5 hover:bg-muted disabled:opacity-50"
+          >
+            <MoreVertical className="h-3 w-3" />
+          </button>
+          <AnimatedDropdown
+            open={menuOpen}
+            onClose={() => setMenuOpen(false)}
+            containerRef={menuContainerRef}
+            className="absolute right-0 top-6 z-50 min-w-[180px] rounded-md border border-border bg-popover py-1 shadow-md"
+          >
+            <ul role="menu" className="text-xs">
+              <li>
+                <button
+                  type="button"
+                  role="menuitem"
+                  data-testid="beat-menu-convert-to-text"
+                  onClick={() =>
+                    runMenuAction(() => {
+                      if (editor && beatId) convertBeatToText(editor, beatId);
+                    })
+                  }
+                  className="block w-full px-3 py-1.5 text-left hover:bg-accent"
+                >
+                  {t("editor.beat.menuItems.convertToText")}
+                </button>
+              </li>
+              <li>
+                <button
+                  type="button"
+                  role="menuitem"
+                  data-testid="beat-menu-delete-only"
+                  onClick={() =>
+                    runMenuAction(() => {
+                      if (editor && beatId) deleteBeatOnly(editor, beatId);
+                    })
+                  }
+                  className="block w-full px-3 py-1.5 text-left hover:bg-accent"
+                >
+                  {t("editor.beat.menuItems.deleteBeatOnly")}
+                </button>
+              </li>
+              <li>
+                <button
+                  type="button"
+                  role="menuitem"
+                  data-testid="beat-menu-delete-with-prose"
+                  onClick={() =>
+                    runMenuAction(() => {
+                      if (editor && beatId) deleteBeatAndProse(editor, beatId);
+                    })
+                  }
+                  className="block w-full px-3 py-1.5 text-left text-red-600 hover:bg-accent dark:text-red-400"
+                >
+                  {t("editor.beat.menuItems.deleteBeatAndProse")}
+                </button>
+              </li>
+            </ul>
+          </AnimatedDropdown>
+        </div>
       </header>
       {state.status === "error" && state.error && (
         <div

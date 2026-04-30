@@ -101,15 +101,40 @@ export const GeneratedProseBlockNode = Node.create({
             if (b.beatId) oldByBeatId.set(b.beatId, b);
           }
 
+          // Collect beat ids still in the doc — used to detect orphaned blocks
+          // (block whose linked beat has been deleted, e.g. via "Delete beat
+          // only" or Unplace). These must be unwrapped per spec.
+          const beatIdsInDoc = new Set<string>();
+          newState.doc.descendants((node) => {
+            if (node.type.name === "sceneBeat" && node.attrs.id) {
+              beatIdsInDoc.add(node.attrs.id as string);
+            }
+          });
+
           // Streaming / regenerate paths tag every transaction with
           // BEAT_STREAM_META. If the whole batch is tagged, it's AI-only.
           const aiOnlyChange = transactions.every(
             (tr) => tr.getMeta(BEAT_STREAM_META) === true,
           );
 
+          // Pass 1: identify orphan blocks to unwrap. Only unwrap blocks that
+          // existed in oldState too — never unwrap a freshly-inserted block
+          // before its beat is hooked up.
+          const orphans: BlockEntry[] = [];
+          for (const block of newBlocks) {
+            if (!block.beatId) continue;
+            if (beatIdsInDoc.has(block.beatId)) continue;
+            if (!oldByBeatId.has(block.beatId)) continue;
+            orphans.push(block);
+          }
+
+          // Pass 2: identify blocks whose content actually changed (→ flip
+          // modified=true). Skip blocks slated for unwrap.
+          const orphanPositions = new Set(orphans.map((o) => o.pos));
           const touched = new Set<number>();
           for (const block of newBlocks) {
             if (block.modified) continue;
+            if (orphanPositions.has(block.pos)) continue;
             const prior = block.beatId
               ? oldByBeatId.get(block.beatId)
               : undefined;
@@ -118,15 +143,31 @@ export const GeneratedProseBlockNode = Node.create({
             if (prior && prior.content.eq(block.content)) continue;
             touched.add(block.pos);
           }
-          if (touched.size === 0) return null;
-          if (aiOnlyChange) return null;
+
+          const willFlip = !aiOnlyChange && touched.size > 0;
+          if (orphans.length === 0 && !willFlip) return null;
 
           const tr = newState.tr;
-          for (const pos of touched) {
-            const node = newState.doc.nodeAt(pos);
+
+          // Unwrap orphans bottom-up so earlier positions stay valid.
+          for (const orphan of [...orphans].sort((a, b) => b.pos - a.pos)) {
+            const node = newState.doc.nodeAt(orphan.pos);
             if (!node) continue;
-            tr.setNodeAttribute(pos, "modified", true);
+            tr.replaceWith(
+              orphan.pos,
+              orphan.pos + node.nodeSize,
+              node.content,
+            );
           }
+
+          if (willFlip) {
+            for (const pos of touched) {
+              const node = newState.doc.nodeAt(pos);
+              if (!node) continue;
+              tr.setNodeAttribute(pos, "modified", true);
+            }
+          }
+
           return tr.steps.length > 0 ? tr : null;
         },
       }),
