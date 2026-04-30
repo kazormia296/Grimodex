@@ -1038,6 +1038,13 @@
         "label": "Scene beat",
         "desc": "AI 生成用のビート（局所プロンプト）を挿入"
       }
+    },
+    "mention": {
+      "role": {
+        "mentioned": "言及",
+        "actor": "行動者",
+        "target": "対象"
+      }
     }
   },
   "keys": {

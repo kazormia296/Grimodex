@@ -1038,6 +1038,13 @@
         "label": "Scene beat",
         "desc": "Insert a beat (local prompt for AI generation)"
       }
+    },
+    "mention": {
+      "role": {
+        "mentioned": "Mentioned",
+        "actor": "Actor",
+        "target": "Target"
+      }
     }
   },
   "keys": {

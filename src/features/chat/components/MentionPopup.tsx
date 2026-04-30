@@ -1,6 +1,7 @@
 import { useEffect, useRef } from "react";
 import { useTranslation } from "react-i18next";
 import type { CodexEntry } from "@/features/codex/api";
+import type { MentionRole } from "@/features/codex/CodexMentionExtension";
 import { getTypeLabel } from "../utils/typeLabels";
 
 interface MentionPopupProps {
@@ -9,7 +10,14 @@ interface MentionPopupProps {
   onSelect: (entry: CodexEntry) => void;
   onChangeIndex: (index: number) => void;
   clientRect: (() => DOMRect | null) | null | undefined;
+  onSelectWithRole?: (entry: CodexEntry, role: MentionRole) => void;
 }
+
+const ROLES: { value: MentionRole; label: string }[] = [
+  { value: "mentioned", label: "M" },
+  { value: "actor", label: "A" },
+  { value: "target", label: "T" },
+];
 
 export function MentionPopup({
   items,
@@ -17,6 +25,7 @@ export function MentionPopup({
   onSelect,
   onChangeIndex,
   clientRect,
+  onSelectWithRole,
 }: MentionPopupProps) {
   const { t } = useTranslation();
   const listRef = useRef<HTMLUListElement>(null);
@@ -69,7 +78,6 @@ export function MentionPopup({
           key={entry.id}
           role="option"
           aria-selected={i === selectedIndex}
-          onClick={() => onSelect(entry)}
           className={[
             "flex cursor-pointer items-center gap-2 px-3 py-1.5 text-xs",
             i === selectedIndex
@@ -78,24 +86,53 @@ export function MentionPopup({
           ].join(" ")}
         >
           <span
-            className={
-              i === selectedIndex
-                ? "rounded bg-primary-foreground/20 px-1 py-0.5 text-xs"
-                : "rounded bg-muted px-1 py-0.5 text-xs text-muted-foreground"
-            }
+            onClick={() => onSelect(entry)}
+            className="flex min-w-0 flex-1 items-center gap-2"
           >
-            {getTypeLabel(entry.type)}
-          </span>
-          <span className="font-medium">{entry.name}</span>
-          {entry.summary && (
             <span
               className={
                 i === selectedIndex
-                  ? "ml-auto max-w-[120px] truncate text-primary-foreground/80"
-                  : "ml-auto max-w-[120px] truncate text-muted-foreground"
+                  ? "rounded bg-primary-foreground/20 px-1 py-0.5 text-xs"
+                  : "rounded bg-muted px-1 py-0.5 text-xs text-muted-foreground"
               }
             >
-              {entry.summary}
+              {getTypeLabel(entry.type)}
+            </span>
+            <span className="font-medium">{entry.name}</span>
+            {entry.summary && (
+              <span
+                className={
+                  i === selectedIndex
+                    ? "ml-auto max-w-[120px] truncate text-primary-foreground/80"
+                    : "ml-auto max-w-[120px] truncate text-muted-foreground"
+                }
+              >
+                {entry.summary}
+              </span>
+            )}
+          </span>
+          {onSelectWithRole && (
+            <span className="ml-auto flex shrink-0 gap-0.5">
+              {ROLES.map(({ value, label }) => (
+                <button
+                  key={value}
+                  type="button"
+                  data-testid={`mention-role-chip-${value}`}
+                  title={t(`editor.mention.role.${value}`)}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onSelectWithRole(entry, value);
+                  }}
+                  className={[
+                    "rounded px-1 py-0.5 text-[10px] font-medium",
+                    i === selectedIndex
+                      ? "bg-primary-foreground/20 hover:bg-primary-foreground/40"
+                      : "bg-muted hover:bg-muted/70 text-muted-foreground",
+                  ].join(" ")}
+                >
+                  {label}
+                </button>
+              ))}
             </span>
           )}
         </li>

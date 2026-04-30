@@ -16,11 +16,15 @@ import {
   saveSceneContent,
 } from "@/features/tree/api";
 import { countSceneBodyChars } from "@/features/editor/charCountForBody";
+import { countBeats } from "@/features/editor/beat/countBeats";
 import { extractUnplacedBeatPreview } from "@/features/editor/beat/unplacedBeatPreview";
 import { useUnplacedBeatsStore } from "@/features/editor/beat/unplacedBeatsStore";
 import { getCodexEntry, updateCodexEntry } from "@/features/codex/api";
 import type { CodexEntry } from "@/features/codex/api";
-import type { CodexMentionPopupState } from "@/features/codex/CodexMentionExtension";
+import type {
+  CodexMentionPopupState,
+  MentionRole,
+} from "@/features/codex/CodexMentionExtension";
 import { MentionPopup } from "@/features/chat/components/MentionPopup";
 import { usePhaseStore } from "@/features/codex/phaseStore";
 import { useCodexStore } from "@/features/codex/codexStore";
@@ -162,6 +166,8 @@ export function EditorPane({
   } | null>(null);
   const [charCount, setCharCount] = useState(0);
   const [, setWordCount] = useState(0);
+  const [beatTotal, setBeatTotal] = useState(0);
+  const [beatGenerated, setBeatGenerated] = useState(0);
   const charCountRef = useRef<HTMLSpanElement>(null);
   const { value: targetCharCount } = useSettingNumber(
     "editor.targetCharCount",
@@ -521,6 +527,9 @@ export function EditorPane({
       const count = text.length;
       setCharCount(count);
       setWordCount(text.trim() === "" ? 0 : text.trim().split(/\s+/).length);
+      const bc = countBeats(e.state.doc);
+      setBeatTotal(bc.total);
+      setBeatGenerated(bc.generated);
       const sid = saveSceneIdRef.current;
       if (sid) {
         // Auto-promote preview tab to pinned when user starts editing
@@ -711,9 +720,11 @@ export function EditorPane({
   );
   useFocusMode(editor);
   const typewriterMode = useCursorSettingsStore((s) => s.typewriterMode);
+  const focusMode = useCursorSettingsStore((s) => s.focusMode);
   const showForeshadowMarks = useCursorSettingsStore(
     (s) => s.showForeshadowMarks,
   );
+  const focusModeHideBeats = editorSettings.focusModeHideBeats;
   useTypewriterScroll(editor, typewriterMode, editorContainerRef);
 
   // When typewriter mode is toggled (on or off), scroll immediately to center
@@ -939,6 +950,9 @@ export function EditorPane({
         const count = text.length;
         setCharCount(count);
         setWordCount(text.trim() === "" ? 0 : text.trim().split(/\s+/).length);
+        const bc = countBeats(editor!.state.doc);
+        setBeatTotal(bc.total);
+        setBeatGenerated(bc.generated);
         setIsDirty(false);
         wasEmptyRef.current = count === 0;
 
@@ -1127,6 +1141,14 @@ export function EditorPane({
     [mentionPopup],
   );
 
+  const handleMentionSelectWithRole = useCallback(
+    (entry: CodexEntry, role: MentionRole) => {
+      mentionPopup?.command?.(entry, role);
+      setMentionPopupState(null);
+    },
+    [mentionPopup],
+  );
+
   return (
     <div ref={paneRef} className="flex flex-1 flex-col overflow-hidden">
       <Toolbar
@@ -1197,6 +1219,9 @@ export function EditorPane({
         <div
           ref={setEditorContainerRef}
           data-show-foreshadow-marks={showForeshadowMarks ? "true" : "false"}
+          data-focus-hide-beats={
+            focusModeHideBeats && focusMode ? "true" : undefined
+          }
           className={`flex-1 overflow-auto bg-content-background text-content-foreground-secondary p-4${typewriterMode ? " typewriter-padding" : ""}${filterSource ? ` attribution-filter-${filterSource}` : ""}`}
           onClick={(e) => {
             // Focus editor when clicking on the padding/background area
@@ -1354,6 +1379,15 @@ export function EditorPane({
               AI: {aiRatio}%
             </button>
           )}
+          {beatTotal > 0 && (
+            <span
+              data-testid="beat-stats"
+              className="tabular-nums text-muted-foreground"
+            >
+              Beats: {beatTotal}
+              {beatGenerated > 0 && ` (${beatGenerated} generated)`}
+            </span>
+          )}
           <span
             ref={charCountRef}
             data-testid="char-count"
@@ -1435,6 +1469,7 @@ export function EditorPane({
             onSelect={handleMentionSelect}
             onChangeIndex={setMentionIndex}
             clientRect={mentionPopup.clientRect}
+            onSelectWithRole={handleMentionSelectWithRole}
           />,
           document.body,
         )}

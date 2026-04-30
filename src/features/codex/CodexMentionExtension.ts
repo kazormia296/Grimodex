@@ -25,7 +25,7 @@ export interface CodexMentionPopupState {
   items: CodexEntry[];
   selectedIndex: number;
   clientRect: (() => DOMRect | null) | null | undefined;
-  command: ((entry: CodexEntry) => void) | null;
+  command: ((entry: CodexEntry, role?: MentionRole) => void) | null;
 }
 
 /**
@@ -72,8 +72,12 @@ export function createCodexMentionExtension(
               items: props.items,
               selectedIndex: 0,
               clientRect: props.clientRect,
-              command: (entry: CodexEntry) =>
-                props.command({ id: entry.id, label: entry.name }),
+              command: (entry: CodexEntry, role: MentionRole = "mentioned") =>
+                props.command({
+                  id: entry.id,
+                  label: entry.name,
+                  role,
+                }),
             });
           },
           onUpdate(props: SuggestionProps<CodexEntry>) {
@@ -81,8 +85,12 @@ export function createCodexMentionExtension(
               items: props.items,
               selectedIndex: 0,
               clientRect: props.clientRect,
-              command: (entry: CodexEntry) =>
-                props.command({ id: entry.id, label: entry.name }),
+              command: (entry: CodexEntry, role: MentionRole = "mentioned") =>
+                props.command({
+                  id: entry.id,
+                  label: entry.name,
+                  role,
+                }),
             });
           },
           onKeyDown({ event }: { event: KeyboardEvent }) {
