@@ -88,6 +88,38 @@ export function replaceBeatBlock(editor: Editor, beatId: string): boolean {
 }
 
 /**
+ * Insert an Unplaced beat as a sceneBeat node at the end of the document,
+ * then remove it from the unplacedBeatsStore.
+ *
+ * Returns true always (insertContentAt is a fire-and-forget command).
+ */
+export function placeBeatAtEnd(
+  editor: Editor,
+  sceneId: string,
+  beat: {
+    id: string;
+    beatType: BeatType;
+    pov: string | null;
+    collapsed: boolean;
+    content: { type?: string; text?: string; [key: string]: unknown }[];
+  },
+): boolean {
+  const beatJSON = {
+    type: "sceneBeat",
+    attrs: {
+      id: beat.id,
+      beatType: beat.beatType,
+      pov: beat.pov,
+      collapsed: false,
+    },
+    content: beat.content.length ? beat.content : undefined,
+  };
+  editor.commands.insertContentAt(editor.state.doc.content.size, beatJSON);
+  useUnplacedBeatsStore.getState().removeBeat(sceneId, beat.id);
+  return true;
+}
+
+/**
  * Move a Placed beat back to the Unplaced list.
  * The sceneBeat node is removed from the doc; its linked generatedProseBlock
  * (if any) stays in the doc and is unwrapped to normal paragraphs by the

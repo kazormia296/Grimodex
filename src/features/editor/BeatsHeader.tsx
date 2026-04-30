@@ -114,6 +114,7 @@ export function BeatsHeader({
                     <UnplacedBeatItem
                       sceneId={sceneId}
                       beat={beat}
+                      mainEditor={editor}
                       setMentionPopup={setMentionPopup}
                     />
                   </li>

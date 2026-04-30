@@ -249,6 +249,76 @@ describe("replaceBeatBlock", () => {
   });
 });
 
+describe("placeBeatAtEnd", () => {
+  it("Unplaced beat をドキュメント末尾に挿入しストアから削除する", async () => {
+    const { useUnplacedBeatsStore } = await import("./unplacedBeatsStore");
+    useUnplacedBeatsStore.setState({ sceneBeats: {} });
+
+    const { placeBeatAtEnd } = await import("./beatOperations");
+
+    const editor = createEditor();
+    // Unplaced beat をストアに追加
+    useUnplacedBeatsStore.getState().addBeat("scene1", {
+      id: "u1",
+      beatType: "free",
+      pov: null,
+      collapsed: false,
+      content: [{ type: "text", text: "ドラゴンが現れる" }],
+    });
+    expect(useUnplacedBeatsStore.getState().getBeats("scene1")).toHaveLength(1);
+
+    const result = placeBeatAtEnd(editor, "scene1", {
+      id: "u1",
+      beatType: "free",
+      pov: null,
+      collapsed: false,
+      content: [{ type: "text", text: "ドラゴンが現れる" }],
+    });
+    expect(result).toBe(true);
+
+    // beat が doc に挿入されている
+    const { beats } = countBlocksAndBeats(editor);
+    expect(beats).toBe(1);
+
+    // ストアから削除されている
+    expect(useUnplacedBeatsStore.getState().getBeats("scene1")).toHaveLength(0);
+
+    // beat の attrs が保持されている
+    let placedId: string | null = null;
+    editor.state.doc.descendants((node) => {
+      if (node.type.name === "sceneBeat") placedId = node.attrs.id as string;
+    });
+    expect(placedId).toBe("u1");
+
+    editor.destroy();
+  });
+
+  it("pov と beatType が保持される", async () => {
+    const { placeBeatAtEnd } = await import("./beatOperations");
+    const editor = createEditor();
+
+    placeBeatAtEnd(editor, "scene1", {
+      id: "u2",
+      beatType: "dialogue",
+      pov: "char-1",
+      collapsed: false,
+      content: [],
+    });
+
+    let beatType: string | null = null;
+    let pov: string | null = null;
+    editor.state.doc.descendants((node) => {
+      if (node.type.name === "sceneBeat") {
+        beatType = node.attrs.beatType as string;
+        pov = node.attrs.pov as string;
+      }
+    });
+    expect(beatType).toBe("dialogue");
+    expect(pov).toBe("char-1");
+    editor.destroy();
+  });
+});
+
 describe("unplaceBeat", () => {
   it("beat をドキュメントから削除し Unplaced ストアに追加する", async () => {
     const { useUnplacedBeatsStore } = await import("./unplacedBeatsStore");

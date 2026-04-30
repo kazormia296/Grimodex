@@ -4,18 +4,22 @@ import { MoreVertical } from "lucide-react";
 import { AnimatedDropdown } from "@/components/ui/animated-dropdown";
 import { useUnplacedBeatsStore } from "@/features/editor/beat/unplacedBeatsStore";
 import { createUnplacedBeatExtensions } from "@/features/editor/beat/createUnplacedBeatExtensions";
+import { placeBeatAtEnd } from "@/features/editor/beat/beatOperations";
 import type { UnplacedBeat } from "@/features/editor/beat/unplacedBeatsStore";
 import type { CodexMentionPopupState } from "@/features/codex/CodexMentionExtension";
+import type { Editor as TiptapEditor } from "@tiptap/core";
 
 interface UnplacedBeatItemProps {
   sceneId: string;
   beat: UnplacedBeat;
+  mainEditor: TiptapEditor | null;
   setMentionPopup: (state: CodexMentionPopupState | null) => void;
 }
 
 export function UnplacedBeatItem({
   sceneId,
   beat,
+  mainEditor,
   setMentionPopup,
 }: UnplacedBeatItemProps) {
   const [menuOpen, setMenuOpen] = useState(false);
@@ -53,6 +57,11 @@ export function UnplacedBeatItem({
       : { type: "doc", content: [{ type: "paragraph" }] },
     onUpdate: handleUpdate,
   });
+
+  const handlePlaceAtEnd = useCallback(() => {
+    if (mainEditor) placeBeatAtEnd(mainEditor, sceneId, beat);
+    setMenuOpen(false);
+  }, [mainEditor, sceneId, beat]);
 
   const handleDuplicate = useCallback(() => {
     addBeat(sceneId, { ...beat, id: crypto.randomUUID() });
@@ -115,6 +124,18 @@ export function UnplacedBeatItem({
                 className="block w-full px-3 py-1.5 text-left hover:bg-primary hover:text-primary-foreground"
               >
                 Edit
+              </button>
+            </li>
+            <li>
+              <button
+                type="button"
+                role="menuitem"
+                data-testid={`beat-menu-place-at-end-${beat.id}`}
+                disabled={!mainEditor}
+                onClick={handlePlaceAtEnd}
+                className="block w-full px-3 py-1.5 text-left hover:bg-primary hover:text-primary-foreground disabled:opacity-50"
+              >
+                Place at end of document
               </button>
             </li>
             <li>
