@@ -879,7 +879,9 @@
         "dialogue": "ダイアログ",
         "setting": "セッティング",
         "micro": "マイクロ"
-      }
+      },
+      "generateFromSynopsis": "SynopsisからBeatsを提案",
+      "generatingFromSynopsis": "Beatsを生成中…"
     },
     "toolbar": {
       "bold": "太字 (Ctrl+B)",

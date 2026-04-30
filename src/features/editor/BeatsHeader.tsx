@@ -1,11 +1,14 @@
 import { useCallback, useState } from "react";
 import type { UnplacedBeat } from "@/features/editor/beat/unplacedBeatsStore";
-import { ChevronDown, ChevronRight, Plus } from "lucide-react";
+import { ChevronDown, ChevronRight, Plus, Sparkles } from "lucide-react";
 import type { Editor } from "@tiptap/core";
 import { useDroppable } from "@dnd-kit/core";
 import { useUnplacedBeatsStore } from "@/features/editor/beat/unplacedBeatsStore";
+import { useTreeStore } from "@/features/tree/treeStore";
 import { UnplacedBeatItem } from "@/features/editor/UnplacedBeatItem";
 import { PlacedBeatList } from "@/features/editor/PlacedBeatList";
+import { generateBeatsFromSynopsis } from "@/features/editor/beat/generateBeatsFromSynopsis";
+import { useTranslation } from "react-i18next";
 import type { CodexMentionPopupState } from "@/features/codex/CodexMentionExtension";
 
 interface BeatsHeaderProps {
@@ -35,6 +38,7 @@ export function BeatsHeader({
   editor,
   setMentionPopup,
 }: BeatsHeaderProps) {
+  const { t } = useTranslation();
   const beats = useUnplacedBeatsStore(
     (s) => s.sceneBeats[sceneId] ?? EMPTY_BEATS,
   );
@@ -42,10 +46,16 @@ export function BeatsHeader({
 
   const placedCount = countPlacedBeats(editor);
 
+  const synopsis = useTreeStore(
+    (s) => s.nodes.find((n) => n.id === sceneId)?.synopsis ?? "",
+  );
+  const hasSynopsis = synopsis.trim().length > 0;
+
   const { setNodeRef: setUnplacedDropRef, isOver: isOverUnplaced } =
     useDroppable({ id: "unplaced-drop-zone" });
 
   const [collapsed, setCollapsed] = useState(true);
+  const [isGenerating, setIsGenerating] = useState(false);
 
   const handleAddBeat = useCallback(() => {
     addBeat(sceneId, {
@@ -57,6 +67,15 @@ export function BeatsHeader({
     });
     if (collapsed) setCollapsed(false);
   }, [addBeat, sceneId, collapsed]);
+
+  const handleGenerateFromSynopsis = useCallback(() => {
+    setIsGenerating(true);
+    if (collapsed) setCollapsed(false);
+    generateBeatsFromSynopsis(sceneId, {
+      onDone: () => setIsGenerating(false),
+      onError: () => setIsGenerating(false),
+    });
+  }, [sceneId, collapsed]);
 
   const badge = [
     beats.length > 0 ? `${beats.length} unplaced` : null,
@@ -94,6 +113,18 @@ export function BeatsHeader({
             </span>
           )}
         </button>
+        {hasSynopsis && (
+          <button
+            type="button"
+            data-testid="beats-generate-from-synopsis"
+            onClick={handleGenerateFromSynopsis}
+            disabled={isGenerating}
+            title={t("editor.beat.generateFromSynopsis")}
+            className="rounded p-0.5 hover:bg-muted disabled:opacity-50"
+          >
+            <Sparkles className="h-3 w-3 text-muted-foreground" />
+          </button>
+        )}
         <button
           type="button"
           data-testid="beats-add-button"
@@ -107,6 +138,11 @@ export function BeatsHeader({
 
       {!collapsed && (
         <div className="px-2 pb-2">
+          {isGenerating && (
+            <p className="mb-1 text-[10px] italic text-muted-foreground/70">
+              {t("editor.beat.generatingFromSynopsis")}
+            </p>
+          )}
           <div
             ref={setUnplacedDropRef}
             data-testid="beats-unplaced-drop-zone"
