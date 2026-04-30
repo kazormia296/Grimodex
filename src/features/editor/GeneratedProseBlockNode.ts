@@ -71,13 +71,35 @@ export const GeneratedProseBlockNode = Node.create({
         appendTransaction: (transactions, oldState, newState) => {
           if (!transactions.some((tr) => tr.docChanged)) return null;
 
-          const blocks: Array<{ pos: number; modified: boolean }> = [];
-          newState.doc.descendants((node, pos) => {
-            if (node.type.name === "generatedProseBlock") {
-              blocks.push({ pos, modified: !!node.attrs.modified });
-            }
-          });
-          if (blocks.length === 0) return null;
+          // Match blocks by beatId (their stable identity) rather than by
+          // doc position — upstream edits shift positions even when block
+          // content is unchanged.
+          type BlockEntry = {
+            pos: number;
+            content: import("@tiptap/pm/model").Fragment;
+            modified: boolean;
+            beatId: string | null;
+          };
+          const collect = (state: typeof newState): BlockEntry[] => {
+            const out: BlockEntry[] = [];
+            state.doc.descendants((node, pos) => {
+              if (node.type.name === "generatedProseBlock") {
+                out.push({
+                  pos,
+                  content: node.content,
+                  modified: !!node.attrs.modified,
+                  beatId: (node.attrs.beatId as string) ?? null,
+                });
+              }
+            });
+            return out;
+          };
+          const newBlocks = collect(newState);
+          if (newBlocks.length === 0) return null;
+          const oldByBeatId = new Map<string, BlockEntry>();
+          for (const b of collect(oldState)) {
+            if (b.beatId) oldByBeatId.set(b.beatId, b);
+          }
 
           // Streaming / regenerate paths tag every transaction with
           // BEAT_STREAM_META. If the whole batch is tagged, it's AI-only.
@@ -85,15 +107,16 @@ export const GeneratedProseBlockNode = Node.create({
             (tr) => tr.getMeta(BEAT_STREAM_META) === true,
           );
 
-          // Find blocks whose content was touched by this transaction.
           const touched = new Set<number>();
-          for (const { pos, modified } of blocks) {
-            if (modified) continue;
-            const node = newState.doc.nodeAt(pos);
-            if (!node) continue;
-            const oldNode = oldState.doc.nodeAt(pos);
-            if (oldNode && oldNode.eq(node)) continue;
-            touched.add(pos);
+          for (const block of newBlocks) {
+            if (block.modified) continue;
+            const prior = block.beatId
+              ? oldByBeatId.get(block.beatId)
+              : undefined;
+            // Same beatId + same content → block didn't really change
+            // (likely just shifted by an upstream edit).
+            if (prior && prior.content.eq(block.content)) continue;
+            touched.add(block.pos);
           }
           if (touched.size === 0) return null;
           if (aiOnlyChange) return null;

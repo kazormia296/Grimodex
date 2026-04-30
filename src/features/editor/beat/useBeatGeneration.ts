@@ -7,8 +7,8 @@ import { useCodexStore } from "@/features/codex/codexStore";
 import { buildBeatMessages, type BeatPromptInput } from "./beatPromptBuilder";
 import {
   appendBeatChunk,
+  ensureGeneratedBlock,
   findBeatById,
-  startBeatStream,
 } from "./insertBeatStream";
 import type { BeatType } from "@/features/editor/SceneBeatNode";
 
@@ -98,22 +98,35 @@ export function useBeatGeneration(
     };
     const messages = buildBeatMessages(promptInput);
 
-    const cursor = startBeatStream(editor, beatId);
-    if (!cursor) return;
+    if (!ensureGeneratedBlock(editor, beatId)) return;
 
     const traceId = crypto.randomUUID();
     setState({ status: "generating", error: null, cleanup: null });
+    let orphaned = false;
 
     try {
       const cleanup = await sendInlineAiStream(messages, {
         onTextDelta: (delta) => {
-          // Bail out if state was reset (e.g. component unmounted mid-stream).
-          appendBeatChunk(editor, cursor, delta, {
+          if (orphaned) return;
+          // appendBeatChunk re-locates the block by beatId on every call,
+          // so upstream edits don't drift the insertion point. If the block
+          // (or its beat) has been deleted mid-stream, it returns false and
+          // we stop applying further chunks.
+          const ok = appendBeatChunk(editor, beatId, delta, {
             model: DEFAULT_MODEL,
             traceId,
           });
+          if (!ok) {
+            orphaned = true;
+            setState({
+              status: "error",
+              error: "Beat was removed during generation",
+              cleanup: null,
+            });
+          }
         },
         onDone: () => {
+          if (orphaned) return;
           setState({ status: "idle", error: null, cleanup: null });
         },
         onError: (message) => {

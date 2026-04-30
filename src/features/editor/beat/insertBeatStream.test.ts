@@ -10,7 +10,6 @@ import {
   ensureGeneratedBlock,
   findBeatById,
   findGeneratedBlockForBeat,
-  startBeatStream,
 } from "./insertBeatStream";
 
 function createEditor(content = "") {
@@ -111,25 +110,21 @@ describe("ensureGeneratedBlock", () => {
 });
 
 describe("appendBeatChunk", () => {
-  it("inserts AI-marked text into the open block and advances the cursor", () => {
+  it("inserts AI-marked text into the linked block and returns true", () => {
     const editor = createEditor();
     insertBeat(editor, "b1");
-    const cursor = startBeatStream(editor, "b1");
-    expect(cursor).not.toBeNull();
+    ensureGeneratedBlock(editor, "b1");
 
-    const startedAt = cursor!.insertAt;
-    appendBeatChunk(editor, cursor!, "ドロシーは", {
+    const ok = appendBeatChunk(editor, "b1", "ドロシーは", {
       model: "claude",
       traceId: "t1",
     });
-    expect(cursor!.insertAt).toBe(startedAt + "ドロシーは".length);
+    expect(ok).toBe(true);
 
     const block = findGeneratedBlockForBeat(editor, "b1");
     const blockNode = editor.state.doc.nodeAt(block!.blockPos);
-    const text = blockNode!.textContent;
-    expect(text).toBe("ドロシーは");
+    expect(blockNode!.textContent).toBe("ドロシーは");
 
-    // Verify AuthorshipMark='ai' applied to inserted text.
     let aiTextCount = 0;
     blockNode!.descendants((node) => {
       if (node.isText) {
@@ -140,8 +135,6 @@ describe("appendBeatChunk", () => {
       }
     });
     expect(aiTextCount).toBe("ドロシーは".length);
-
-    // The block must NOT be marked modified after AI-tagged inserts.
     expect(blockNode?.attrs.modified).toBe(false);
     editor.destroy();
   });
@@ -149,8 +142,8 @@ describe("appendBeatChunk", () => {
   it("creates a new paragraph inside the block on \\n", () => {
     const editor = createEditor();
     insertBeat(editor, "b1");
-    const cursor = startBeatStream(editor, "b1");
-    appendBeatChunk(editor, cursor!, "first\nsecond", {
+    ensureGeneratedBlock(editor, "b1");
+    appendBeatChunk(editor, "b1", "first\nsecond", {
       model: "claude",
       traceId: "t1",
     });
@@ -167,21 +160,75 @@ describe("appendBeatChunk", () => {
   it("appends across multiple chunks accumulating into the same paragraph", () => {
     const editor = createEditor();
     insertBeat(editor, "b1");
-    const cursor = startBeatStream(editor, "b1");
-    appendBeatChunk(editor, cursor!, "Hello, ", {
+    ensureGeneratedBlock(editor, "b1");
+    appendBeatChunk(editor, "b1", "Hello, ", {
       model: "claude",
       traceId: "t1",
     });
-    appendBeatChunk(editor, cursor!, "world.", {
-      model: "claude",
-      traceId: "t1",
-    });
+    appendBeatChunk(editor, "b1", "world.", { model: "claude", traceId: "t1" });
 
     const block = findGeneratedBlockForBeat(editor, "b1");
     const blockNode = editor.state.doc.nodeAt(block!.blockPos);
     expect(blockNode?.textContent).toBe("Hello, world.");
     expect(blockNode?.childCount).toBe(1);
     expect(blockNode?.attrs.modified).toBe(false);
+    editor.destroy();
+  });
+
+  it("re-locates the block on every call, surviving an upstream edit between chunks", () => {
+    // Drift case: user types into the leading paragraph between chunks.
+    const editor = createEditor("<p>opener</p>");
+    insertBeat(editor, "b1");
+    ensureGeneratedBlock(editor, "b1");
+    appendBeatChunk(editor, "b1", "first ", { model: "claude", traceId: "t1" });
+
+    // Insert plain text near the start of the doc (position 1 is inside <p>opener</p>).
+    editor.commands.insertContentAt(1, "X");
+
+    appendBeatChunk(editor, "b1", "second", { model: "claude", traceId: "t1" });
+
+    const block = findGeneratedBlockForBeat(editor, "b1");
+    const blockNode = editor.state.doc.nodeAt(block!.blockPos);
+    // Both chunks should land in the block, regardless of the upstream edit.
+    expect(blockNode?.textContent).toBe("first second");
+    expect(blockNode?.attrs.modified).toBe(false);
+    editor.destroy();
+  });
+
+  it("returns false when the linked block has been removed (orphan stream)", () => {
+    const editor = createEditor();
+    insertBeat(editor, "b1");
+    ensureGeneratedBlock(editor, "b1");
+    appendBeatChunk(editor, "b1", "first", { model: "claude", traceId: "t1" });
+
+    // Simulate the beat (and its linked block) being deleted mid-stream.
+    editor.commands.clearContent();
+
+    const ok = appendBeatChunk(editor, "b1", "second", {
+      model: "claude",
+      traceId: "t1",
+    });
+    expect(ok).toBe(false);
+    editor.destroy();
+  });
+
+  it("returns false when only the beat is deleted but the block lingers", () => {
+    // Edge case: user removes the beat node directly. findGeneratedBlockForBeat
+    // requires the beat to be the immediate previous sibling, so this orphans.
+    const editor = createEditor();
+    insertBeat(editor, "b1");
+    ensureGeneratedBlock(editor, "b1");
+
+    const beat = findBeatById(editor, "b1");
+    const tr = editor.state.tr;
+    tr.delete(beat!.beatPos, beat!.beatPos + beat!.beatSize);
+    editor.view.dispatch(tr);
+
+    const ok = appendBeatChunk(editor, "b1", "x", {
+      model: "claude",
+      traceId: "t1",
+    });
+    expect(ok).toBe(false);
     editor.destroy();
   });
 });
