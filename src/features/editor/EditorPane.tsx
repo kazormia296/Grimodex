@@ -7,8 +7,6 @@ import { getEditorExtensions } from "@/features/editor/extensions";
 import { SceneBeatEditorContextProvider } from "@/features/editor/beat/SceneBeatEditorContext";
 import { Toolbar } from "@/features/editor/Toolbar";
 import type { ToolbarActions } from "@/features/editor/Toolbar";
-import { SynopsisHeader } from "@/features/editor/SynopsisHeader";
-import { BeatsHeader } from "@/features/editor/BeatsHeader";
 import { SceneMetaPanel } from "@/features/editor/SceneMetaPanel";
 import { useTreeStore } from "@/features/tree/treeStore";
 import {
@@ -1214,16 +1212,6 @@ export function EditorPane({
       >
         <div className="flex min-h-0 flex-1 overflow-hidden">
           <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
-            {!isCodexMode && !isSnippetMode && (
-              <SynopsisHeader sceneId={nodeId} />
-            )}
-            {!isCodexMode && !isSnippetMode && (
-              <BeatsHeader
-                sceneId={nodeId}
-                editor={editor}
-                setMentionPopup={setMentionPopupState}
-              />
-            )}
             <FindReplaceBar
               editor={editor}
               open={findOpen}
@@ -1332,7 +1320,11 @@ export function EditorPane({
             </div>
           </div>
           {!isCodexMode && !isSnippetMode && (
-            <SceneMetaPanel sceneId={nodeId} />
+            <SceneMetaPanel
+              sceneId={nodeId}
+              editor={editor}
+              setMentionPopup={setMentionPopupState}
+            />
           )}
         </div>
         <DragOverlay dropAnimation={null}>

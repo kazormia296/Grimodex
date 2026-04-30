@@ -2,6 +2,7 @@
 import { describe, it, expect, vi } from "vitest";
 import { render, screen } from "@testing-library/react";
 import { SceneMetaPanel } from "./SceneMetaPanel";
+import type { Editor } from "@tiptap/core";
 
 vi.mock("@/features/tree/treeStore", () => ({
   useTreeStore: vi.fn((sel: (s: unknown) => unknown) =>
@@ -9,15 +10,53 @@ vi.mock("@/features/tree/treeStore", () => ({
   ),
 }));
 
-describe("SceneMetaPanel (B-9 shell)", () => {
+vi.mock("@/features/editor/SynopsisHeader", () => ({
+  SynopsisHeader: ({ sceneId }: { sceneId: string }) => (
+    <div data-testid="synopsis-header" data-scene-id={sceneId} />
+  ),
+}));
+
+vi.mock("@/features/editor/BeatsHeader", () => ({
+  BeatsHeader: ({ sceneId }: { sceneId: string }) => (
+    <div data-testid="beats-header" data-scene-id={sceneId} />
+  ),
+}));
+
+const mockEditor = null as unknown as Editor;
+
+describe("SceneMetaPanel (B-10)", () => {
   it("renders the panel container", () => {
-    render(<SceneMetaPanel sceneId="scene-1" />);
+    render(
+      <SceneMetaPanel
+        sceneId="scene-1"
+        editor={mockEditor}
+        setMentionPopup={() => {}}
+      />,
+    );
     expect(screen.getByTestId("scene-meta-panel")).toBeTruthy();
   });
 
-  it("exposes a data-testid for layout verification", () => {
-    const { container } = render(<SceneMetaPanel sceneId="scene-1" />);
-    const panel = container.querySelector("[data-testid='scene-meta-panel']");
-    expect(panel).not.toBeNull();
+  it("renders SynopsisHeader with correct sceneId", () => {
+    render(
+      <SceneMetaPanel
+        sceneId="scene-1"
+        editor={mockEditor}
+        setMentionPopup={() => {}}
+      />,
+    );
+    const header = screen.getByTestId("synopsis-header");
+    expect(header.getAttribute("data-scene-id")).toBe("scene-1");
+  });
+
+  it("renders BeatsHeader with correct sceneId", () => {
+    render(
+      <SceneMetaPanel
+        sceneId="scene-1"
+        editor={mockEditor}
+        setMentionPopup={() => {}}
+      />,
+    );
+    const header = screen.getByTestId("beats-header");
+    expect(header.getAttribute("data-scene-id")).toBe("scene-1");
   });
 });
