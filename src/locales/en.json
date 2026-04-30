@@ -844,8 +844,12 @@
       "menuItems": {
         "convertToText": "Convert to text",
         "deleteBeatOnly": "Delete beat only (keep prose)",
-        "deleteBeatAndProse": "Delete beat and prose"
-      }
+        "deleteBeatAndProse": "Delete beat and prose",
+        "regenerate": "Regenerate",
+        "unplace": "Move to Unplaced"
+      },
+      "regenerateConfirm": "Discard generated prose and regenerate?",
+      "unplaceToast": "Beat moved to Unplaced (v1: existing prose stays in document)"
     },
     "toolbar": {
       "bold": "Bold (Ctrl+B)",

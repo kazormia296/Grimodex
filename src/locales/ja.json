@@ -844,8 +844,12 @@
       "menuItems": {
         "convertToText": "通常の段落に変換",
         "deleteBeatOnly": "ビートのみ削除（生成文は残す）",
-        "deleteBeatAndProse": "ビートと生成文を削除"
-      }
+        "deleteBeatAndProse": "ビートと生成文を削除",
+        "regenerate": "再生成",
+        "unplace": "Unplaced に戻す"
+      },
+      "regenerateConfirm": "生成済みの文章を破棄して再生成しますか？",
+      "unplaceToast": "ビートを Unplaced に移動しました（v1: 旧生成段落は文書内に残ります）"
     },
     "toolbar": {
       "bold": "太字 (Ctrl+B)",

@@ -5,7 +5,7 @@ import type { Node as PMNode } from "@tiptap/pm/model";
 
 export const BRACKET_CLASS = "beat-bracket-instruction";
 
-const BRACKET_RE = /\[[^\[\]]+?\]/g;
+const BRACKET_RE = /\[[^\][\]]+?\]/g;
 
 const bracketDecoKey = new PluginKey<DecorationSet>("bracketInstruction");
 

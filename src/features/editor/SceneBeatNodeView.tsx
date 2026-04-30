@@ -18,7 +18,11 @@ import {
   convertBeatToText,
   deleteBeatAndProse,
   deleteBeatOnly,
+  replaceBeatBlock,
+  unplaceBeat,
 } from "./beat/beatOperations";
+import { findGeneratedBlockForBeat } from "./beat/insertBeatStream";
+import { toast } from "sonner";
 
 export function SceneBeatNodeView({
   node,
@@ -53,6 +57,30 @@ export function SceneBeatNodeView({
   const runMenuAction = (fn: () => void) => {
     setMenuOpen(false);
     fn();
+  };
+
+  const handleRegenerate = () => {
+    runMenuAction(() => {
+      if (!editor || !beatId) return;
+      const block = findGeneratedBlockForBeat(editor, beatId);
+      if (block) {
+        const blockNode = editor.state.doc.nodeAt(block.blockPos);
+        const isModified = blockNode?.attrs.modified === true;
+        if (isModified && !window.confirm(t("editor.beat.regenerateConfirm"))) {
+          return;
+        }
+        replaceBeatBlock(editor, beatId);
+      }
+      void generate();
+    });
+  };
+
+  const handleUnplace = () => {
+    runMenuAction(() => {
+      if (!editor || !beatId || !sceneId) return;
+      unplaceBeat(editor, beatId, sceneId);
+      toast.info(t("editor.beat.unplaceToast"));
+    });
   };
 
   return (
@@ -139,6 +167,30 @@ export function SceneBeatNodeView({
             className="absolute right-0 top-6 z-50 min-w-[180px] rounded-md border border-border bg-popover py-1 shadow-md"
           >
             <ul role="menu" className="text-xs">
+              <li>
+                <button
+                  type="button"
+                  role="menuitem"
+                  data-testid="beat-menu-regenerate"
+                  disabled={generateDisabled}
+                  onClick={handleRegenerate}
+                  className="block w-full px-3 py-1.5 text-left hover:bg-primary hover:text-primary-foreground disabled:opacity-50"
+                >
+                  {t("editor.beat.menuItems.regenerate")}
+                </button>
+              </li>
+              <li>
+                <button
+                  type="button"
+                  role="menuitem"
+                  data-testid="beat-menu-unplace"
+                  disabled={!sceneId}
+                  onClick={handleUnplace}
+                  className="block w-full px-3 py-1.5 text-left hover:bg-primary hover:text-primary-foreground disabled:opacity-50"
+                >
+                  {t("editor.beat.menuItems.unplace")}
+                </button>
+              </li>
               <li>
                 <button
                   type="button"

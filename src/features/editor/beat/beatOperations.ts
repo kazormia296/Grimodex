@@ -1,5 +1,8 @@
 import type { Editor } from "@tiptap/core";
+import { BEAT_STREAM_META } from "@/features/editor/GeneratedProseBlockNode";
 import { findBeatById, findGeneratedBlockForBeat } from "./insertBeatStream";
+import { useUnplacedBeatsStore } from "./unplacedBeatsStore";
+import type { BeatType } from "@/features/editor/SceneBeatNode";
 
 /**
  * Delete only the sceneBeat node. The linked generatedProseBlock (if any)
@@ -56,6 +59,64 @@ export function convertBeatToText(editor: Editor, beatId: string): boolean {
   const para = paragraphType.create(null, beatNode.content);
   const { tr } = editor.state;
   tr.replaceWith(beat.beatPos, beat.beatPos + beat.beatSize, para);
+  editor.view.dispatch(tr);
+  return true;
+}
+
+/**
+ * Replace the linked generatedProseBlock with a fresh empty block.
+ * Uses BEAT_STREAM_META so appendTransaction does not flip modified=true.
+ * The caller should then invoke generate() to stream new content.
+ */
+export function replaceBeatBlock(editor: Editor, beatId: string): boolean {
+  const block = findGeneratedBlockForBeat(editor, beatId);
+  if (!block) return false;
+
+  const blockType = editor.schema.nodes["generatedProseBlock"];
+  const paraType = editor.schema.nodes["paragraph"];
+  if (!blockType || !paraType) return false;
+
+  const emptyBlock = blockType.create(
+    { beatId, modified: false },
+    paraType.create(),
+  );
+  const { tr } = editor.state;
+  tr.setMeta(BEAT_STREAM_META, true);
+  tr.replaceWith(block.blockPos, block.blockPos + block.blockSize, emptyBlock);
+  editor.view.dispatch(tr);
+  return true;
+}
+
+/**
+ * Move a Placed beat back to the Unplaced list.
+ * The sceneBeat node is removed from the doc; its linked generatedProseBlock
+ * (if any) stays in the doc and is unwrapped to normal paragraphs by the
+ * existing appendTransaction in GeneratedProseBlockNode.
+ */
+export function unplaceBeat(
+  editor: Editor,
+  beatId: string,
+  sceneId: string,
+): boolean {
+  const beat = findBeatById(editor, beatId);
+  if (!beat) return false;
+  const beatNode = editor.state.doc.nodeAt(beat.beatPos);
+  if (!beatNode) return false;
+
+  useUnplacedBeatsStore.getState().addBeat(sceneId, {
+    id: beatId,
+    beatType: (beatNode.attrs.beatType ?? "free") as BeatType,
+    pov: (beatNode.attrs.pov ?? null) as string | null,
+    collapsed: false,
+    content: beatNode.content.toJSON() as {
+      type?: string;
+      text?: string;
+      [key: string]: unknown;
+    }[],
+  });
+
+  const { tr } = editor.state;
+  tr.delete(beat.beatPos, beat.beatPos + beat.beatSize);
   editor.view.dispatch(tr);
   return true;
 }

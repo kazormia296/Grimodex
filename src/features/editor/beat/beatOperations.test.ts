@@ -15,6 +15,8 @@ import {
   convertBeatToText,
   deleteBeatAndProse,
   deleteBeatOnly,
+  replaceBeatBlock,
+  unplaceBeat,
 } from "./beatOperations";
 
 function createEditor(content = "") {
@@ -196,6 +198,80 @@ describe("orphan-block unwrap (appendTransaction)", () => {
     insertBeat(editor, "b1");
     ensureGeneratedBlock(editor, "b1");
     expect(findGeneratedBlockForBeat(editor, "b1")).not.toBeNull();
+    editor.destroy();
+  });
+});
+
+describe("replaceBeatBlock", () => {
+  it("既存の generatedProseBlock を空ブロックに差し替える", () => {
+    const editor = createEditor();
+    insertBeat(editor, "b1");
+    ensureGeneratedBlock(editor, "b1");
+    appendBeatChunk(editor, "b1", "生成テキスト", {
+      model: "test",
+      traceId: "t1",
+    });
+    expect(editor.getText()).toContain("生成テキスト");
+
+    const result = replaceBeatBlock(editor, "b1");
+    expect(result).toBe(true);
+    // 生成テキストが消えている
+    expect(editor.getText()).not.toContain("生成テキスト");
+    // ブロックは残っている
+    expect(findGeneratedBlockForBeat(editor, "b1")).not.toBeNull();
+  });
+
+  it("generatedProseBlock がない場合は false を返す", () => {
+    const editor = createEditor();
+    insertBeat(editor, "b1");
+    expect(replaceBeatBlock(editor, "b1")).toBe(false);
+    editor.destroy();
+  });
+
+  it("差し替え後のブロックは modified=false", () => {
+    const editor = createEditor();
+    insertBeat(editor, "b1");
+    ensureGeneratedBlock(editor, "b1");
+
+    replaceBeatBlock(editor, "b1");
+
+    let modified: boolean | null = null;
+    editor.state.doc.descendants((node) => {
+      if (
+        node.type.name === "generatedProseBlock" &&
+        node.attrs.beatId === "b1"
+      ) {
+        modified = node.attrs.modified as boolean;
+      }
+    });
+    expect(modified).toBe(false);
+    editor.destroy();
+  });
+});
+
+describe("unplaceBeat", () => {
+  it("beat をドキュメントから削除し Unplaced ストアに追加する", async () => {
+    const { useUnplacedBeatsStore } = await import("./unplacedBeatsStore");
+    useUnplacedBeatsStore.setState({ sceneBeats: {} });
+
+    const editor = createEditor();
+    insertBeat(editor, "b1");
+    expect(countBlocksAndBeats(editor).beats).toBe(1);
+
+    const result = unplaceBeat(editor, "b1", "scene1");
+    expect(result).toBe(true);
+    expect(countBlocksAndBeats(editor).beats).toBe(0);
+
+    const stored = useUnplacedBeatsStore.getState().getBeats("scene1");
+    expect(stored).toHaveLength(1);
+    expect(stored[0].id).toBe("b1");
+    editor.destroy();
+  });
+
+  it("存在しない beatId に対しては false を返す", async () => {
+    const editor = createEditor();
+    const result = unplaceBeat(editor, "ghost", "scene1");
+    expect(result).toBe(false);
     editor.destroy();
   });
 });
