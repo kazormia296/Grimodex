@@ -9,9 +9,14 @@ import { Toolbar } from "@/features/editor/Toolbar";
 import type { ToolbarActions } from "@/features/editor/Toolbar";
 import { SynopsisHeader } from "@/features/editor/SynopsisHeader";
 import { useTreeStore } from "@/features/tree/treeStore";
-import { loadSceneContent, saveSceneContent } from "@/features/tree/api";
+import {
+  loadSceneContent,
+  loadSceneFull,
+  saveSceneContent,
+} from "@/features/tree/api";
 import { countSceneBodyChars } from "@/features/editor/charCountForBody";
 import { extractUnplacedBeatPreview } from "@/features/editor/beat/unplacedBeatPreview";
+import { useUnplacedBeatsStore } from "@/features/editor/beat/unplacedBeatsStore";
 import { getCodexEntry, updateCodexEntry } from "@/features/codex/api";
 import type { CodexEntry } from "@/features/codex/api";
 import type { CodexMentionPopupState } from "@/features/codex/CodexMentionExtension";
@@ -279,9 +284,9 @@ export function EditorPane({
     } else {
       const doc = ed.state.doc;
       const charCount = countSceneBodyChars(doc);
-      // Slice 2 で unplacedBeatsStore が実装されたら unplacedBeatsDoc を差し込む
-      const unplacedBeatsDoc = "[]";
-      const unplacedBeatPreview = extractUnplacedBeatPreview([]);
+      const beats = useUnplacedBeatsStore.getState().getBeats(id);
+      const unplacedBeatsDoc = JSON.stringify(beats);
+      const unplacedBeatPreview = extractUnplacedBeatPreview(beats);
       await saveSceneContent(id, {
         content: JSON.stringify(ed.getJSON()),
         unplacedBeatsDoc,
@@ -758,6 +763,18 @@ export function EditorPane({
     return unsubscribe;
   }, [nodeId, groupIndex, editor]);
 
+  // Subscribe to unplaced beats changes → mark dirty and schedule save
+  useEffect(() => {
+    if (!nodeId || isCodexMode || isSnippetMode) return;
+    const unsubscribe = useUnplacedBeatsStore
+      .getState()
+      .subscribe(nodeId, () => {
+        schedule();
+        setIsDirtyRef.current(true);
+      });
+    return unsubscribe;
+  }, [nodeId, isCodexMode, isSnippetMode]);
+
   // Load content when nodeId changes
   useEffect(() => {
     if (!editor || !nodeId) return;
@@ -856,11 +873,17 @@ export function EditorPane({
             emitUpdate: false,
           });
         } else {
-          // Load scene/note content (ProseMirror JSON)
-          const content = await loadSceneContent(nodeId);
+          // Load scene/note content + unplaced beats in one query
+          const { content, unplacedBeatsDoc } = await loadSceneFull(nodeId);
           if (cancelled) return;
           const parsed = content && content !== "{}" ? JSON.parse(content) : "";
           editor!.commands.setContent(parsed, { emitUpdate: false });
+          try {
+            const beats = JSON.parse(unplacedBeatsDoc);
+            useUnplacedBeatsStore.getState().setBeats(nodeId, beats, "load");
+          } catch {
+            useUnplacedBeatsStore.getState().setBeats(nodeId, [], "load");
+          }
         }
 
         const text = getDocText(editor!.state.doc);
