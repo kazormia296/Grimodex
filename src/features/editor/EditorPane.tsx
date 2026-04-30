@@ -10,6 +10,8 @@ import type { ToolbarActions } from "@/features/editor/Toolbar";
 import { SynopsisHeader } from "@/features/editor/SynopsisHeader";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { loadSceneContent, saveSceneContent } from "@/features/tree/api";
+import { countSceneBodyChars } from "@/features/editor/charCountForBody";
+import { extractUnplacedBeatPreview } from "@/features/editor/beat/unplacedBeatPreview";
 import { getCodexEntry, updateCodexEntry } from "@/features/codex/api";
 import type { CodexEntry } from "@/features/codex/api";
 import type { CodexMentionPopupState } from "@/features/codex/CodexMentionExtension";
@@ -275,7 +277,17 @@ export function EditorPane({
       await updateSnippet(id, { content });
       useSnippetStore.getState().update(id, { content });
     } else {
-      await saveSceneContent(id, JSON.stringify(ed.getJSON()));
+      const doc = ed.state.doc;
+      const charCount = countSceneBodyChars(doc);
+      // Slice 2 で unplacedBeatsStore が実装されたら unplacedBeatsDoc を差し込む
+      const unplacedBeatsDoc = "[]";
+      const unplacedBeatPreview = extractUnplacedBeatPreview([]);
+      await saveSceneContent(id, {
+        content: JSON.stringify(ed.getJSON()),
+        unplacedBeatsDoc,
+        charCount,
+        unplacedBeatPreview: unplacedBeatPreview || null,
+      });
       await saveAuthorshipSpans(id, ed.state.doc);
       await saveForeshadowAnchors(id, ed.state.doc);
       useTreeStore

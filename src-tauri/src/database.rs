@@ -790,6 +790,7 @@ impl Database {
             "char_count",
             "INTEGER NOT NULL DEFAULT 0",
         )?;
+        Self::add_column_if_missing(&conn, "tree_nodes", "unplaced_beat_preview", "TEXT")?;
 
         Ok(())
     }
@@ -1342,11 +1343,21 @@ mod tests {
             )
             .expect("seed");
 
-            Database::add_column_if_missing(&conn, "legacy", "new_col", "INTEGER NOT NULL DEFAULT 7")
-                .expect("first add");
+            Database::add_column_if_missing(
+                &conn,
+                "legacy",
+                "new_col",
+                "INTEGER NOT NULL DEFAULT 7",
+            )
+            .expect("first add");
             // Idempotency: a second call must be a no-op (no error, no duplicate column).
-            Database::add_column_if_missing(&conn, "legacy", "new_col", "INTEGER NOT NULL DEFAULT 7")
-                .expect("second add is noop");
+            Database::add_column_if_missing(
+                &conn,
+                "legacy",
+                "new_col",
+                "INTEGER NOT NULL DEFAULT 7",
+            )
+            .expect("second add is noop");
         }
 
         let cols = db

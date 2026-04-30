@@ -67,6 +67,8 @@ export const treeNodes = sqliteTable(
     unplacedBeatsDoc: text("unplaced_beats_doc").notNull().default("[]"),
     // Body char count cache; frontend computes via CharacterCount on save.
     charCount: integer("char_count").notNull().default(0),
+    // Preview text for Grid display: first 3 unplaced beats × 40 chars, newline-separated.
+    unplacedBeatPreview: text("unplaced_beat_preview"),
     createdAt: text("created_at")
       .notNull()
       .$defaultFn(() => new Date().toISOString()),

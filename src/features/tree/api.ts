@@ -83,15 +83,39 @@ export async function deleteNode(id: string): Promise<void> {
 
 // --- Scene content operations ---
 
-/** Save ProseMirror JSON content for a scene to the DB. */
+export interface SaveScenePayload {
+  content: string;
+  unplacedBeatsDoc?: string;
+  charCount?: number;
+  unplacedBeatPreview?: string | null;
+}
+
+/**
+ * Save scene content to the DB.
+ * Accepts either a plain JSON string (legacy callers) or a full payload object.
+ */
 export async function saveSceneContent(
   sceneId: string,
-  contentJson: string,
+  payloadOrContent: string | SaveScenePayload,
 ): Promise<void> {
+  const payload: SaveScenePayload =
+    typeof payloadOrContent === "string"
+      ? { content: payloadOrContent }
+      : payloadOrContent;
+
   await db
     .update(treeNodes)
     .set({
-      content: contentJson,
+      content: payload.content,
+      ...(payload.unplacedBeatsDoc !== undefined && {
+        unplacedBeatsDoc: payload.unplacedBeatsDoc,
+      }),
+      ...(payload.charCount !== undefined && {
+        charCount: payload.charCount,
+      }),
+      ...(payload.unplacedBeatPreview !== undefined && {
+        unplacedBeatPreview: payload.unplacedBeatPreview,
+      }),
       updatedAt: new Date().toISOString(),
     })
     .where(eq(treeNodes.id, sceneId));
@@ -104,4 +128,21 @@ export async function loadSceneContent(sceneId: string): Promise<string> {
     .from(treeNodes)
     .where(eq(treeNodes.id, sceneId));
   return rows[0]?.content ?? "";
+}
+
+/** Load scene content + unplaced beats doc in one query. */
+export async function loadSceneFull(
+  sceneId: string,
+): Promise<{ content: string; unplacedBeatsDoc: string }> {
+  const rows = await db
+    .select({
+      content: treeNodes.content,
+      unplacedBeatsDoc: treeNodes.unplacedBeatsDoc,
+    })
+    .from(treeNodes)
+    .where(eq(treeNodes.id, sceneId));
+  return {
+    content: rows[0]?.content ?? "",
+    unplacedBeatsDoc: rows[0]?.unplacedBeatsDoc ?? "[]",
+  };
 }
