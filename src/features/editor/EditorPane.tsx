@@ -733,6 +733,15 @@ export function EditorPane({
     (s) => s.showForeshadowMarks,
   );
   const focusModeHideBeats = editorSettings.focusModeHideBeats;
+  const sceneMetaPanelOpen = editorSettings.sceneMetaPanelOpen;
+  const isPanelVisible =
+    sceneMetaPanelOpen && !focusMode && !isCodexMode && !isSnippetMode;
+  const handleTogglePanel = useCallback(() => {
+    useSettingsStore
+      .getState()
+      .set("editor.sceneMetaPanelOpen", String(!sceneMetaPanelOpen));
+  }, [sceneMetaPanelOpen]);
+
   useTypewriterScroll(editor, typewriterMode, editorContainerRef);
 
   // When typewriter mode is toggled (on or off), scroll immediately to center
@@ -1167,6 +1176,8 @@ export function EditorPane({
         }}
         onVerticalPreview={() => setVerticalPreviewOpen(true)}
         actionsRef={toolbarActionsRef}
+        panelOpen={sceneMetaPanelOpen}
+        onTogglePanel={handleTogglePanel}
       />
       {isNote && (
         <div className="flex items-center gap-1.5 border-b border-amber-500/30 bg-amber-500/10 px-3 py-1 text-xs text-amber-600 dark:text-amber-400">
@@ -1319,7 +1330,7 @@ export function EditorPane({
               </div>
             </div>
           </div>
-          {!isCodexMode && !isSnippetMode && (
+          {isPanelVisible && (
             <SceneMetaPanel
               sceneId={nodeId}
               editor={editor}

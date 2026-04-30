@@ -57,6 +57,8 @@ interface ToolbarProps {
   onFindReplace: () => void;
   onVerticalPreview: () => void;
   actionsRef?: React.RefObject<ToolbarActions | null>;
+  panelOpen?: boolean;
+  onTogglePanel?: () => void;
 }
 
 export function Toolbar({
@@ -64,6 +66,8 @@ export function Toolbar({
   onFindReplace,
   onVerticalPreview,
   actionsRef,
+  panelOpen,
+  onTogglePanel,
 }: ToolbarProps) {
   const [rubyOpen, setRubyOpen] = useState(false);
   const [rubyBase, setRubyBase] = useState("");
@@ -487,6 +491,15 @@ export function Toolbar({
           >
             TW
           </ToolbarButton>
+          {onTogglePanel !== undefined && (
+            <ToolbarButton
+              label={t("editor.toolbar.sceneMetaPanel")}
+              active={panelOpen ?? false}
+              onClick={onTogglePanel}
+            >
+              ▶
+            </ToolbarButton>
+          )}
           <Sep />
           <div ref={overflowBtnRef}>
             <ToolbarButton

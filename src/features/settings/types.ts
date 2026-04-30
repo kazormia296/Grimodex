@@ -63,6 +63,9 @@ export const DEFAULT_SETTINGS: Record<string, string> = {
   "editor.disableAllAnimations": "false",
   "editor.wordBreak": "normal",
   "editor.lineBreak": "strict",
+  "editor.focusModeHideBeats": "false",
+  "editor.sceneMetaPanelOpen": "true",
+  "editor.linearBeatDisplay": "collapsed",
   // Display (theme, uiLanguage, uiScale are in GlobalSettings)
   "display.showWordCount": "true",
   "display.showAiBadge": "false",

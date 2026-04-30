@@ -897,6 +897,7 @@
       "foreshadowMarks": "Show foreshadow marks",
       "focusMode": "Focus mode",
       "typewriterMode": "Typewriter mode",
+      "sceneMetaPanel": "Scene info panel",
       "moreOptions": "More options",
       "findReplace": "Find and replace",
       "targetWordCount": "Target word count...",

@@ -21,6 +21,9 @@ export interface EditorSettings {
   disableAllAnimations: boolean;
   wordBreak: string;
   lineBreak: string;
+  focusModeHideBeats: boolean;
+  linearBeatDisplay: "normal" | "collapsed" | "hidden";
+  sceneMetaPanelOpen: boolean;
 }
 
 export function useEditorSettings(): EditorSettings {
@@ -49,5 +52,11 @@ export function useEditorSettings(): EditorSettings {
     ),
     wordBreak: store.get("editor.wordBreak", "normal"),
     lineBreak: store.get("editor.lineBreak", "strict"),
+    focusModeHideBeats: store.getBoolean("editor.focusModeHideBeats", false),
+    linearBeatDisplay: store.get("editor.linearBeatDisplay", "collapsed") as
+      | "normal"
+      | "collapsed"
+      | "hidden",
+    sceneMetaPanelOpen: store.getBoolean("editor.sceneMetaPanelOpen", true),
   };
 }
