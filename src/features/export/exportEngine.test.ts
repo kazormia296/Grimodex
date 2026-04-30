@@ -787,3 +787,88 @@ describe("generateExport - sort order", () => {
     expect(idx1).toBeLessThan(idx2);
   });
 });
+
+// ────────────────────────────────────────────────────────────────────
+// Beat ノードの Export 挙動
+// ────────────────────────────────────────────────────────────────────
+
+function sceneBeat(id: string, ...texts: string[]): object {
+  return {
+    type: "sceneBeat",
+    attrs: { id, beatType: "free", pov: null, collapsed: false },
+    content: texts.map((t) => ({ type: "text", text: t })),
+  };
+}
+
+function generatedProseBlock(beatId: string, ...paras: object[]): object {
+  return {
+    type: "generatedProseBlock",
+    attrs: { beatId, modified: false },
+    content: paras,
+  };
+}
+
+describe("generateExport - Beat ノード", () => {
+  it("sceneBeat ノードは export 出力に含まれない", () => {
+    const s1 = makeScene("s1", "シーン1");
+    const result = generateExport({
+      nodes: [s1],
+      contentMap: {
+        s1: doc(sceneBeat("b1", "[slow down]", "ここで何か起こる")),
+      },
+      checkedIds: new Set(["s1"]),
+      settings: settings(),
+    });
+    expect(result).toBe("");
+    expect(result).not.toContain("slow down");
+    expect(result).not.toContain("ここで何か起こる");
+  });
+
+  it("generatedProseBlock は中身の段落だけが出力される（unwrap）", () => {
+    const s1 = makeScene("s1", "シーン1");
+    const result = generateExport({
+      nodes: [s1],
+      contentMap: {
+        s1: doc(generatedProseBlock("b1", para("生成されたprose文章"))),
+      },
+      checkedIds: new Set(["s1"]),
+      settings: settings(),
+    });
+    expect(result).toBe("生成されたprose文章\n");
+  });
+
+  it("Beat + generatedProseBlock + 通常段落が混在する場合", () => {
+    const s1 = makeScene("s1", "シーン1");
+    const result = generateExport({
+      nodes: [s1],
+      contentMap: {
+        s1: doc(
+          para("冒頭の通常文"),
+          sceneBeat("b1", "ビート指示テキスト"),
+          generatedProseBlock("b1", para("AI生成prose")),
+          para("通常の続き"),
+        ),
+      },
+      checkedIds: new Set(["s1"]),
+      settings: settings(),
+    });
+    expect(result).not.toContain("ビート指示テキスト");
+    expect(result).toContain("冒頭の通常文");
+    expect(result).toContain("AI生成prose");
+    expect(result).toContain("通常の続き");
+  });
+
+  it("generatedProseBlock が複数段落を含む場合、各段落が独立して出力される", () => {
+    const s1 = makeScene("s1", "シーン1");
+    const result = generateExport({
+      nodes: [s1],
+      contentMap: {
+        s1: doc(generatedProseBlock("b1", para("一段落目"), para("二段落目"))),
+      },
+      checkedIds: new Set(["s1"]),
+      settings: settings(),
+    });
+    expect(result).toContain("一段落目");
+    expect(result).toContain("二段落目");
+  });
+});

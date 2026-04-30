@@ -187,6 +187,14 @@ function renderNode(node: PMNode, ctx: RenderCtx): string {
         ctx.resolvedRuby,
       );
 
+    case "sceneBeat":
+      // Beat はプロンプトメタデータ — Export 時は完全除去
+      return "";
+
+    case "generatedProseBlock":
+      // 生成 prose は中身の段落だけを残す（unwrap）
+      return (node.content ?? []).map((c) => renderNode(c, ctx)).join("");
+
     case "sceneBreak":
       return renderSceneBreak(ctx.settings);
 
@@ -416,7 +424,8 @@ export function generateExport(input: GenerateExportInput): string {
   let result = parts.join("");
 
   // 末尾に改行を1つ付加（すでに content が \n で終わる場合はそのまま）
-  if (!result.endsWith("\n")) {
+  // result が空（Beat のみのシーンなど）のときは何もしない
+  if (result && !result.endsWith("\n")) {
     result += "\n";
   }
 
