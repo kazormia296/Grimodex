@@ -96,8 +96,8 @@ export function SlashCommandPopup() {
           className={cn(
             "flex w-full flex-col px-3 py-1.5 text-left",
             i === selectedIndex
-              ? "bg-accent text-foreground"
-              : "text-foreground hover:bg-accent/50",
+              ? "bg-primary text-primary-foreground"
+              : "text-foreground hover:bg-accent",
           )}
           onMouseEnter={() => setSelectedIndex(i)}
           onClick={() => handleSelect(cmd)}

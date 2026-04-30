@@ -72,15 +72,29 @@ export function MentionPopup({
           onClick={() => onSelect(entry)}
           className={[
             "flex cursor-pointer items-center gap-2 px-3 py-1.5 text-xs",
-            i === selectedIndex ? "bg-accent" : "hover:bg-accent/60",
+            i === selectedIndex
+              ? "bg-primary text-primary-foreground"
+              : "hover:bg-accent",
           ].join(" ")}
         >
-          <span className="rounded bg-muted px-1 py-0.5 text-xs text-muted-foreground">
+          <span
+            className={
+              i === selectedIndex
+                ? "rounded bg-primary-foreground/20 px-1 py-0.5 text-xs"
+                : "rounded bg-muted px-1 py-0.5 text-xs text-muted-foreground"
+            }
+          >
             {getTypeLabel(entry.type)}
           </span>
           <span className="font-medium">{entry.name}</span>
           {entry.summary && (
-            <span className="ml-auto max-w-[120px] truncate text-muted-foreground">
+            <span
+              className={
+                i === selectedIndex
+                  ? "ml-auto max-w-[120px] truncate text-primary-foreground/80"
+                  : "ml-auto max-w-[120px] truncate text-muted-foreground"
+              }
+            >
               {entry.summary}
             </span>
           )}

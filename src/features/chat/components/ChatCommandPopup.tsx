@@ -66,11 +66,21 @@ export function ChatCommandPopup({
           onClick={() => onSelect(cmd)}
           className={[
             "flex cursor-pointer flex-col px-3 py-1.5 text-xs",
-            i === selectedIndex ? "bg-accent" : "hover:bg-accent/60",
+            i === selectedIndex
+              ? "bg-primary text-primary-foreground"
+              : "hover:bg-accent",
           ].join(" ")}
         >
           <span className="font-medium">{cmd.label}</span>
-          <span className="text-muted-foreground">{cmd.description}</span>
+          <span
+            className={
+              i === selectedIndex
+                ? "text-primary-foreground/80"
+                : "text-muted-foreground"
+            }
+          >
+            {cmd.description}
+          </span>
         </li>
       ))}
     </ul>

@@ -149,7 +149,7 @@ export function SceneBeatNodeView({
                       if (editor && beatId) convertBeatToText(editor, beatId);
                     })
                   }
-                  className="block w-full px-3 py-1.5 text-left hover:bg-accent"
+                  className="block w-full px-3 py-1.5 text-left hover:bg-primary hover:text-primary-foreground"
                 >
                   {t("editor.beat.menuItems.convertToText")}
                 </button>
@@ -164,7 +164,7 @@ export function SceneBeatNodeView({
                       if (editor && beatId) deleteBeatOnly(editor, beatId);
                     })
                   }
-                  className="block w-full px-3 py-1.5 text-left hover:bg-accent"
+                  className="block w-full px-3 py-1.5 text-left hover:bg-primary hover:text-primary-foreground"
                 >
                   {t("editor.beat.menuItems.deleteBeatOnly")}
                 </button>
@@ -179,7 +179,7 @@ export function SceneBeatNodeView({
                       if (editor && beatId) deleteBeatAndProse(editor, beatId);
                     })
                   }
-                  className="block w-full px-3 py-1.5 text-left text-red-600 hover:bg-accent dark:text-red-400"
+                  className="block w-full px-3 py-1.5 text-left text-red-600 hover:bg-primary hover:text-primary-foreground dark:text-red-400"
                 >
                   {t("editor.beat.menuItems.deleteBeatAndProse")}
                 </button>

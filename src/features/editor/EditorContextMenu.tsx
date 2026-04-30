@@ -266,7 +266,7 @@ export function EditorContextMenu({
         {canSetDisable && (
           <button
             type="button"
-            className="px-3 py-1.5 text-sm text-left hover:bg-accent"
+            className="px-3 py-1.5 text-sm text-left hover:bg-primary hover:text-primary-foreground"
             onClick={handleCut}
           >
             {t("editor.contextMenu.cut")}
@@ -275,7 +275,7 @@ export function EditorContextMenu({
         {canSetDisable && (
           <button
             type="button"
-            className="px-3 py-1.5 text-sm text-left hover:bg-accent"
+            className="px-3 py-1.5 text-sm text-left hover:bg-primary hover:text-primary-foreground"
             onClick={handleCopy}
           >
             {t("editor.contextMenu.copy")}
@@ -283,14 +283,14 @@ export function EditorContextMenu({
         )}
         <button
           type="button"
-          className="px-3 py-1.5 text-sm text-left hover:bg-accent"
+          className="px-3 py-1.5 text-sm text-left hover:bg-primary hover:text-primary-foreground"
           onClick={handlePaste}
         >
           {t("editor.contextMenu.paste")}
         </button>
         <button
           type="button"
-          className="px-3 py-1.5 text-sm text-left hover:bg-accent"
+          className="px-3 py-1.5 text-sm text-left hover:bg-primary hover:text-primary-foreground"
           onClick={handleSelectAll}
         >
           {t("editor.contextMenu.selectAll")}
@@ -300,7 +300,7 @@ export function EditorContextMenu({
         <div className="my-1 border-t border-border" />
         <button
           type="button"
-          className="px-3 py-1.5 text-sm text-left hover:bg-accent"
+          className="px-3 py-1.5 text-sm text-left hover:bg-primary hover:text-primary-foreground"
           onClick={handleInsertSceneBreak}
         >
           {t("editor.contextMenu.insertSceneBreak")}
@@ -312,49 +312,49 @@ export function EditorContextMenu({
             <div className="my-1 border-t border-border" />
             <button
               type="button"
-              className="px-3 py-1.5 text-sm text-left hover:bg-accent"
+              className="px-3 py-1.5 text-sm text-left hover:bg-primary hover:text-primary-foreground"
               onClick={handleAddToCodex}
             >
               {t("editor.contextMenu.addToCodex")}
             </button>
             <button
               type="button"
-              className="px-3 py-1.5 text-sm text-left hover:bg-accent"
+              className="px-3 py-1.5 text-sm text-left hover:bg-primary hover:text-primary-foreground"
               onClick={handleSaveAsSnippet}
             >
               {t("editor.contextMenu.saveAsSnippet")}
             </button>
             <button
               type="button"
-              className="px-3 py-1.5 text-sm text-left hover:bg-accent"
+              className="px-3 py-1.5 text-sm text-left hover:bg-primary hover:text-primary-foreground"
               onClick={handleLookUpInChat}
             >
               {t("editor.contextMenu.lookUpInChat")}
             </button>
             <button
               type="button"
-              className="px-3 py-1.5 text-sm text-left hover:bg-accent"
+              className="px-3 py-1.5 text-sm text-left hover:bg-primary hover:text-primary-foreground"
               onClick={handleAddComment}
             >
               {t("editor.contextMenu.addComment")}
             </button>
             <button
               type="button"
-              className="px-3 py-1.5 text-sm text-left hover:bg-accent"
+              className="px-3 py-1.5 text-sm text-left hover:bg-primary hover:text-primary-foreground"
               onClick={handleRequestForeshadow}
             >
               {t("editor.contextMenu.requestForeshadow")}
             </button>
             <button
               type="button"
-              className="px-3 py-1.5 text-sm text-left hover:bg-accent"
+              className="px-3 py-1.5 text-sm text-left hover:bg-primary hover:text-primary-foreground"
               onClick={handleRegisterForeshadow}
             >
               {t("editor.contextMenu.registerForeshadow")}
             </button>
             <button
               type="button"
-              className="px-3 py-1.5 text-sm text-left hover:bg-accent"
+              className="px-3 py-1.5 text-sm text-left hover:bg-primary hover:text-primary-foreground"
               onClick={handleDesignatePayoff}
             >
               {t("editor.contextMenu.designatePayoff")}
@@ -369,7 +369,7 @@ export function EditorContextMenu({
         {canSetDisable && (
           <button
             type="button"
-            className="px-3 py-1.5 text-sm text-left hover:bg-accent"
+            className="px-3 py-1.5 text-sm text-left hover:bg-primary hover:text-primary-foreground"
             onClick={handleLintDisable}
           >
             {t("editor.contextMenu.lintDisable")}
@@ -378,7 +378,7 @@ export function EditorContextMenu({
         {canUnsetDisable && (
           <button
             type="button"
-            className="px-3 py-1.5 text-sm text-left hover:bg-accent text-amber-700 dark:text-amber-400"
+            className="px-3 py-1.5 text-sm text-left hover:bg-primary hover:text-primary-foreground text-amber-700 dark:text-amber-400"
             onClick={handleLintUnset}
           >
             {disableState.hasMark && disableState.hasBlockAttr
@@ -413,7 +413,7 @@ export function EditorContextMenu({
                 key={opt.value}
                 type="button"
                 data-testid={`override-${opt.value}`}
-                className="flex w-full items-center px-3 py-1.5 text-sm text-left hover:bg-accent"
+                className="flex w-full items-center px-3 py-1.5 text-sm text-left hover:bg-primary hover:text-primary-foreground"
                 onClick={() => handleAttributionOverride(opt.value)}
               >
                 {opt.label}

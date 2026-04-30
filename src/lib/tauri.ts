@@ -15,6 +15,8 @@ const SLOW_COMMANDS = new Set([
   "send_chat_message",
   "send_chat_message_stream",
   "send_agent_message",
+  "send_inline_ai_stream",
+  "abort_inline_ai_stream",
   "test_ai_connection",
   "list_ai_models",
 ]);
