@@ -859,6 +859,9 @@
         "unplace": "Move to Unplaced"
       },
       "modelInherit": "Inherit model",
+      "actionBarKeep": "Keep",
+      "actionBarRetry": "Retry",
+      "actionBarDiscard": "Discard",
       "regenerateConfirm": "Discard generated prose and regenerate?",
       "unplaceToast": "Beat moved to Unplaced (v1: existing prose stays in document)",
       "typeLabel": "Beat type",

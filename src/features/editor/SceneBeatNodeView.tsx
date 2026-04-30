@@ -1,4 +1,4 @@
-import { useRef, useState, useMemo, useCallback } from "react";
+import { useRef, useState, useMemo, useCallback, useEffect } from "react";
 import { useSettingsStore } from "@/features/settings/settingsStore";
 import {
   ChevronDown,
@@ -60,6 +60,30 @@ export function SceneBeatNodeView({
   const { state, generate } = useBeatGeneration(editor, beatId ?? "", sceneId);
   const generating = state.status === "generating";
   const generateDisabled = !beatId || !sceneId || generating;
+
+  const [showActionBar, setShowActionBar] = useState(false);
+  const prevStatusRef = useRef(state.status);
+  useEffect(() => {
+    if (prevStatusRef.current === "generating" && state.status === "idle") {
+      setShowActionBar(true);
+    }
+    if (state.status === "generating" || state.status === "error") {
+      setShowActionBar(false);
+    }
+    prevStatusRef.current = state.status;
+  }, [state.status]);
+
+  // Auto-dismiss when user edits generated prose
+  const generatedBlock =
+    editor && beatId ? findGeneratedBlockForBeat(editor, beatId) : null;
+  const isModified = generatedBlock
+    ? (editor?.state.doc.nodeAt(generatedBlock.blockPos)?.attrs.modified as
+        | boolean
+        | undefined) === true
+    : false;
+  useEffect(() => {
+    if (showActionBar && isModified) setShowActionBar(false);
+  }, [showActionBar, isModified]);
   const generateTooltip = !sceneId
     ? t("editor.beat.generateDisabledHint")
     : generating
@@ -112,6 +136,19 @@ export function SceneBeatNodeView({
       }
       void generate();
     });
+  };
+
+  const handleActionBarRetry = () => {
+    setShowActionBar(false);
+    if (!editor || !beatId) return;
+    replaceBeatBlock(editor, beatId);
+    void generate();
+  };
+
+  const handleActionBarDiscard = () => {
+    setShowActionBar(false);
+    if (!editor || !beatId) return;
+    clearBeatContent(editor, beatId);
   };
 
   const handleUnplace = () => {
@@ -378,6 +415,41 @@ export function SceneBeatNodeView({
           as="div"
           className="px-2 py-1 text-sm leading-relaxed focus:outline-none"
         />
+      )}
+      {!collapsed && showActionBar && (
+        <div
+          contentEditable={false}
+          data-testid="beat-action-bar"
+          className="flex select-none items-center gap-1 border-t border-yellow-200/50 bg-yellow-50/60 px-2 py-1 text-xs dark:bg-yellow-900/15 dark:border-yellow-800/30"
+        >
+          <span className="mr-1 text-muted-foreground/60">
+            {t("editor.beat.generating")}
+          </span>
+          <button
+            type="button"
+            data-testid="beat-action-keep"
+            onClick={() => setShowActionBar(false)}
+            className="rounded border border-border bg-background px-2 py-0.5 hover:bg-muted"
+          >
+            {t("editor.beat.actionBarKeep")}
+          </button>
+          <button
+            type="button"
+            data-testid="beat-action-retry"
+            onClick={handleActionBarRetry}
+            className="rounded border border-border bg-background px-2 py-0.5 hover:bg-muted"
+          >
+            {t("editor.beat.actionBarRetry")}
+          </button>
+          <button
+            type="button"
+            data-testid="beat-action-discard"
+            onClick={handleActionBarDiscard}
+            className="rounded border border-red-200 bg-background px-2 py-0.5 text-red-600 hover:bg-red-50 dark:border-red-800/50 dark:text-red-400"
+          >
+            {t("editor.beat.actionBarDiscard")}
+          </button>
+        </div>
       )}
       {!collapsed && (
         <footer
