@@ -189,7 +189,22 @@
       "modelWhitelist": "チャットに表示するモデル",
       "modelWhitelistDesc": "チェックしたモデルのみチャットパネルに表示します。未選択の場合はすべてのモデルを表示します。",
       "modelWhitelistSearch": "モデルを検索…",
-      "modelWhitelistNoResults": "該当するモデルがありません"
+      "modelWhitelistNoResults": "該当するモデルがありません",
+      "beat": {
+        "title": "Beat AI 連携",
+        "injectIntoContext": {
+          "label": "Beat を AI コンテキストに注入",
+          "description": "Beat 生成時・チャット時に「予定ビート」を AI に渡し、シーン全体の整合性を高めます"
+        },
+        "inferRoles": {
+          "label": "生成後に role を AI 推定",
+          "description": "Beat 生成完了後、prose を分析して @mention の役割（actor / target）を自動提案します"
+        },
+        "confidenceThreshold": {
+          "label": "推定信頼度しきい値",
+          "description": "この値以上の信頼度の提案のみ表示します"
+        }
+      }
     },
     "project": {
       "basic": "基本情報",
@@ -883,7 +898,13 @@
         "micro": "マイクロ"
       },
       "generateFromSynopsis": "SynopsisからBeatsを提案",
-      "generatingFromSynopsis": "Beatsを生成中…"
+      "generatingFromSynopsis": "Beatsを生成中…",
+      "roleSuggestion": {
+        "badgeTooltip": "{{name}} を {{role}} に変更する提案（信頼度 {{pct}}%）",
+        "prompt": "「{{name}}」を {{role}} に変更しますか？",
+        "accept": "適用",
+        "reject": "却下"
+      }
     },
     "toolbar": {
       "bold": "太字 (Ctrl+B)",

@@ -189,7 +189,22 @@
       "modelWhitelist": "Models shown in chat",
       "modelWhitelistDesc": "Only checked models appear in the chat panel. Leave all unchecked to show every model.",
       "modelWhitelistSearch": "Search models…",
-      "modelWhitelistNoResults": "No models match your search"
+      "modelWhitelistNoResults": "No models match your search",
+      "beat": {
+        "title": "Beat AI Integration",
+        "injectIntoContext": {
+          "label": "Inject beats into AI context",
+          "description": "Pass pending beats to the AI during generation and chat to improve scene coherence"
+        },
+        "inferRoles": {
+          "label": "Auto-infer roles after generation",
+          "description": "After beat generation, analyze the prose and suggest actor/target roles for @mentions"
+        },
+        "confidenceThreshold": {
+          "label": "Inference confidence threshold",
+          "description": "Only show suggestions above this confidence level"
+        }
+      }
     },
     "project": {
       "basic": "Basic Info",
@@ -872,6 +887,12 @@
         "dialogue": "Dialogue",
         "setting": "Setting",
         "micro": "Micro"
+      },
+      "roleSuggestion": {
+        "badgeTooltip": "Suggest changing {{name}} to {{role}} ({{pct}}% confidence)",
+        "prompt": "Change \"{{name}}\" to {{role}}?",
+        "accept": "Apply",
+        "reject": "Dismiss"
       }
     },
     "toolbar": {

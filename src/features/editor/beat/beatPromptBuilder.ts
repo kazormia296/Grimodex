@@ -17,6 +17,11 @@ export interface BeatPromptInput {
    * happens at the call site (NodeView reads codex to map id → name).
    */
   povName: string | null;
+  /**
+   * Pre-rendered "pending beats" section string (C-1: buildPendingBeatsSection).
+   * Empty string or undefined → omitted from prompt.
+   */
+  pendingBeatsSection?: string;
 }
 
 /**
@@ -57,6 +62,12 @@ export function buildBeatUserPrompt(input: BeatPromptInput): string {
   const sections: string[] = [];
   if (input.sceneTextSoFar.trim().length > 0) {
     sections.push(`## このビート直前までのシーン本文\n${input.sceneTextSoFar}`);
+  }
+  if (
+    input.pendingBeatsSection &&
+    input.pendingBeatsSection.trim().length > 0
+  ) {
+    sections.push(input.pendingBeatsSection.trim());
   }
   sections.push(`## ビート指示\n${input.instructions}`);
   sections.push(

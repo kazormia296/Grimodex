@@ -2,6 +2,7 @@ import type { Editor } from "@tiptap/core";
 import { BEAT_STREAM_META } from "@/features/editor/GeneratedProseBlockNode";
 import { findBeatById, findGeneratedBlockForBeat } from "./insertBeatStream";
 import { useUnplacedBeatsStore } from "./unplacedBeatsStore";
+import { useRoleSuggestionsStore } from "./roleSuggestionsStore";
 import type { BeatType } from "@/features/editor/SceneBeatNode";
 
 /**
@@ -17,6 +18,7 @@ export function deleteBeatOnly(editor: Editor, beatId: string): boolean {
   const { tr } = editor.state;
   tr.delete(beat.beatPos, beat.beatPos + beat.beatSize);
   editor.view.dispatch(tr);
+  useRoleSuggestionsStore.getState().clearBeat(beatId);
   return true;
 }
 
@@ -38,6 +40,7 @@ export function deleteBeatAndProse(editor: Editor, beatId: string): boolean {
     : beat.beatPos + beat.beatSize;
   tr.delete(from, to);
   editor.view.dispatch(tr);
+  useRoleSuggestionsStore.getState().clearBeat(beatId);
   return true;
 }
 
@@ -84,6 +87,7 @@ export function replaceBeatBlock(editor: Editor, beatId: string): boolean {
   tr.setMeta(BEAT_STREAM_META, true);
   tr.replaceWith(block.blockPos, block.blockPos + block.blockSize, emptyBlock);
   editor.view.dispatch(tr);
+  useRoleSuggestionsStore.getState().clearBeat(beatId);
   return true;
 }
 

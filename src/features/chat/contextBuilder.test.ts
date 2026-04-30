@@ -621,4 +621,42 @@ describe("contextBuilder", () => {
       expect(total).toBeGreaterThan(0);
     });
   });
+
+  describe("buildSystemPrompt — pendingBeatsSection (C-3)", () => {
+    const scene: SceneContext = {
+      id: "s1",
+      title: "テストシーン",
+      content: "本文テキスト",
+      synopsis: "あらすじ文",
+    };
+
+    it("pendingBeatsSection が Synopsis 後・本文前に挿入される", () => {
+      const section = "## このシーンの予定ビート\n- [Placed #1 / free] ビート";
+      const result = buildSystemPrompt({ scene, pendingBeatsSection: section });
+      const synopsisIdx = result.prompt.indexOf("あらすじ文");
+      const sectionIdx = result.prompt.indexOf("予定ビート");
+      const bodyIdx = result.prompt.indexOf("本文テキスト");
+      expect(synopsisIdx).toBeGreaterThanOrEqual(0);
+      expect(sectionIdx).toBeGreaterThan(synopsisIdx);
+      expect(bodyIdx).toBeGreaterThan(sectionIdx);
+    });
+
+    it("pendingBeatsSection が undefined または空文字のとき出力に変化なし", () => {
+      const withUndefined = buildSystemPrompt({ scene });
+      const withEmpty = buildSystemPrompt({ scene, pendingBeatsSection: "" });
+      expect(withUndefined.prompt).toBe(withEmpty.prompt);
+      expect(withUndefined.prompt).not.toContain("予定ビート");
+    });
+
+    it("excludeLayers = ['L3'] のとき pendingBeatsSection も除去される", () => {
+      const section = "## このシーンの予定ビート\n- [Placed #1 / free] ビート";
+      const result = buildSystemPrompt({
+        scene,
+        pendingBeatsSection: section,
+        excludeLayers: ["L3"],
+      });
+      expect(result.prompt).not.toContain("予定ビート");
+      expect(result.prompt).not.toContain("本文テキスト");
+    });
+  });
 });

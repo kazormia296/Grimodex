@@ -6,6 +6,7 @@ import type { AiProvider } from "@/features/chat/types";
 import { getModelCapabilities } from "@/features/chat/agent/modelLimits";
 import { SettingSection } from "../components/SettingSection";
 import { SettingRow } from "../components/SettingRow";
+import { SettingToggle } from "../components/SettingToggle";
 import { useSettingsStore } from "../settingsStore";
 
 const PROVIDER_LABELS: Record<AiProvider, string> = {
@@ -535,6 +536,64 @@ export function AiCategory() {
           >
             {t("settings.ai.resetBudget")}
           </button>
+        </div>
+      </SettingSection>
+
+      {/* Beat AI integration (Phase C) */}
+      <SettingSection title={t("settings.ai.beat.title")}>
+        <div className="space-y-3">
+          <SettingRow
+            label={t("settings.ai.beat.injectIntoContext.label")}
+            description={t("settings.ai.beat.injectIntoContext.description")}
+          >
+            <SettingToggle
+              settingKey="beat.injectIntoContext"
+              defaultValue={true}
+            />
+          </SettingRow>
+          <SettingRow
+            label={t("settings.ai.beat.inferRoles.label")}
+            description={t("settings.ai.beat.inferRoles.description")}
+          >
+            <SettingToggle settingKey="beat.inferRoles" defaultValue={true} />
+          </SettingRow>
+          <SettingRow
+            label={t("settings.ai.beat.confidenceThreshold.label")}
+            description={t("settings.ai.beat.confidenceThreshold.description")}
+          >
+            <div className="flex items-center gap-3">
+              <input
+                type="range"
+                min={50}
+                max={95}
+                step={5}
+                value={Math.round(
+                  parseFloat(
+                    settingsStore.get(
+                      "beat.roleInferenceConfidenceThreshold",
+                    ) || "0.7",
+                  ) * 100,
+                )}
+                onChange={(e) =>
+                  settingsStore.set(
+                    "beat.roleInferenceConfidenceThreshold",
+                    String(parseInt(e.target.value) / 100),
+                  )
+                }
+                className="h-1.5 w-24 cursor-pointer appearance-none rounded-full bg-muted accent-primary"
+              />
+              <span className="w-10 text-right text-xs tabular-nums">
+                {Math.round(
+                  parseFloat(
+                    settingsStore.get(
+                      "beat.roleInferenceConfidenceThreshold",
+                    ) || "0.7",
+                  ) * 100,
+                )}
+                %
+              </span>
+            </div>
+          </SettingRow>
         </div>
       </SettingSection>
     </div>

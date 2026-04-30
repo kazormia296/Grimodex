@@ -11,6 +11,8 @@ export interface SceneContext {
   id: string;
   title: string;
   content: string;
+  /** Raw ProseMirror JSON string (DB value). Used to extract Placed beats for context injection. */
+  contentJson?: string;
   synopsis?: string;
 }
 
@@ -88,6 +90,8 @@ export interface BuildSystemPromptInput {
     title: string;
     content: string; // plain text
   };
+  /** C-3: 「予定ビート」セクション文字列（buildPendingBeatsSection の結果）。Synopsis 後・本文前に注入。 */
+  pendingBeatsSection?: string;
 }
 
 export interface LayerBudgets {
@@ -368,6 +372,13 @@ export function buildSystemPrompt(
   l3Text += `\n## 現在のシーン\nタイトル: ${input.scene.title}`;
   if (input.scene.synopsis) {
     l3Text += `\nあらすじ: ${input.scene.synopsis}`;
+  }
+  // C-3: 「予定ビート」セクションを Synopsis 後・本文前に注入
+  if (
+    input.pendingBeatsSection &&
+    input.pendingBeatsSection.trim().length > 0
+  ) {
+    l3Text += `\n${input.pendingBeatsSection.trim()}`;
   }
   if (input.scene.content) {
     l3Text += `\n\n### シーン本文\n${sanitizeSceneContent(input.scene.content)}`;

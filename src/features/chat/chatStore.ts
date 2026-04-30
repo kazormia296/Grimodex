@@ -91,6 +91,8 @@ import { useTabStore } from "@/features/editor/tabStore";
 import { getSnippet } from "@/features/snippets/api";
 import { listPinnedSnippetEntries } from "./chatApi";
 import type { PinnedSnippetContext } from "./contextBuilder";
+import { useUnplacedBeatsStore } from "@/features/editor/beat/unplacedBeatsStore";
+import { buildPendingBeatsSection } from "@/features/editor/beat/pendingBeatsContext";
 
 // フェーズ解決ヘルパー: エントリ配列に対してフェーズを一括解決する
 async function resolveEntriesForContext(
@@ -309,6 +311,7 @@ async function fetchSceneContext(
       title: node.title,
       synopsis: node.synopsis ?? undefined,
       content: prosemirrorToText(content ?? ""),
+      contentJson: content ?? undefined,
     };
   } catch {
     return null;
@@ -619,6 +622,42 @@ async function buildSceneContextPrompt(opts: {
     .filter((m) => m.role !== "system")
     .reduce((sum, m) => sum + countTokens(m.content), 0);
 
+  // C-3: Build "pending beats" section if injection is enabled.
+  const injectBeats = useSettingsStore
+    .getState()
+    .getBoolean("beat.injectIntoContext", true);
+  let pendingBeatsSection: string | undefined;
+  if (injectBeats && sceneCtx.contentJson) {
+    try {
+      const docJson = JSON.parse(sceneCtx.contentJson) as unknown;
+      const unplacedBeats = useUnplacedBeatsStore
+        .getState()
+        .getBeats(sceneCtx.id);
+      pendingBeatsSection = buildPendingBeatsSection({
+        sceneDocJson: docJson,
+        unplacedBeats,
+        resolveCharacterName: (id) =>
+          allEntries.find((e) => e.id === id)?.name ?? null,
+        currentBeatId: null,
+      });
+    } catch {
+      // PM-JSON parse failure (old HTML format etc.) → Unplaced only fallback
+      try {
+        const unplacedBeats = useUnplacedBeatsStore
+          .getState()
+          .getBeats(sceneCtx.id);
+        pendingBeatsSection = buildPendingBeatsSection({
+          sceneDocJson: null,
+          unplacedBeats,
+          resolveCharacterName: () => null,
+          currentBeatId: null,
+        });
+      } catch {
+        // 無視
+      }
+    }
+  }
+
   const promptResult = buildSystemPrompt({
     scene: sceneCtx,
     project: projectCtx ?? undefined,
@@ -632,6 +671,7 @@ async function buildSceneContextPrompt(opts: {
     conversationTokens,
     contextWindow,
     conversationSummary,
+    pendingBeatsSection,
   });
 
   return {

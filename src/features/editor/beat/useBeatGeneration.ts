@@ -4,15 +4,93 @@ import { sendInlineAiStream } from "@/features/editor/inlineAi/inlineAiStreaming
 import { useTreeStore } from "@/features/tree/treeStore";
 import { useWorkspaceStore } from "@/features/workspace/store";
 import { useCodexStore } from "@/features/codex/codexStore";
+import { useSettingsStore } from "@/features/settings/settingsStore";
 import { buildBeatMessages, type BeatPromptInput } from "./beatPromptBuilder";
 import {
   appendBeatChunk,
   ensureGeneratedBlock,
   findBeatById,
+  findGeneratedBlockForBeat,
 } from "./insertBeatStream";
 import type { BeatType } from "@/features/editor/SceneBeatNode";
+import { useUnplacedBeatsStore } from "./unplacedBeatsStore";
+import { buildPendingBeatsSection } from "./pendingBeatsContext";
+import { inferMentionRoles } from "./inferMentionRoles";
+import { extractBeatMentions } from "./extractBeatMentions";
+import { useRoleSuggestionsStore } from "./roleSuggestionsStore";
+import type { RoleSuggestionEntry } from "./roleSuggestionsStore";
 
 const DEFAULT_MODEL = "claude-sonnet-4-6";
+
+async function runRoleInference(
+  editor: Editor,
+  beatId: string,
+  instructions: string,
+): Promise<void> {
+  const settings = useSettingsStore.getState();
+  if (!settings.getBoolean("beat.inferRoles", true)) return;
+
+  // Get the generated prose for this beat.
+  const block = findGeneratedBlockForBeat(editor, beatId);
+  if (!block) return;
+  const blockNode = editor.state.doc.nodeAt(block.blockPos);
+  if (!blockNode) return;
+  const generatedProse = editor.state.doc.textBetween(
+    block.blockPos,
+    block.blockPos + block.blockSize,
+    "\n",
+    " ",
+  );
+  if (!generatedProse.trim()) return;
+
+  // Extract @mentions from this beat.
+  const allMentions = extractBeatMentions(editor.state.doc);
+  const beatMentions = allMentions.filter((m) => m.beatId === beatId);
+  if (beatMentions.length === 0) return;
+
+  // Resolve character names from codex.
+  const codexEntries = useCodexStore.getState().entries;
+  const mentions = beatMentions.map((m) => ({
+    codexId: m.codexId,
+    name: codexEntries.find((e) => e.id === m.codexId)?.name ?? m.codexId,
+    currentRole: m.role,
+  }));
+
+  const suggestions = await inferMentionRoles({
+    beatInstructions: instructions,
+    generatedProse,
+    mentions,
+  });
+
+  // Apply confidence threshold and exclude same-role suggestions.
+  const threshold = settings.getNumber(
+    "beat.roleInferenceConfidenceThreshold",
+    0.7,
+  );
+  const filtered = suggestions.filter(
+    (s) =>
+      s.confidence >= threshold &&
+      s.role !== beatMentions.find((m) => m.codexId === s.codexId)?.role,
+  );
+  if (filtered.length === 0) return;
+
+  // Orphan check: beat must still exist in doc.
+  if (!findBeatById(editor, beatId)) return;
+
+  const entries: RoleSuggestionEntry[] = filtered.map((s) => {
+    const bm = beatMentions.find((m) => m.codexId === s.codexId)!;
+    return {
+      codexId: s.codexId,
+      name: codexEntries.find((e) => e.id === s.codexId)?.name ?? s.codexId,
+      currentRole: bm.role,
+      suggestedRole: s.role,
+      confidence: s.confidence,
+      status: "pending",
+    };
+  });
+
+  useRoleSuggestionsStore.getState().setSuggestions(beatId, entries);
+}
 
 export type BeatGenerationStatus = "idle" | "generating" | "error";
 
@@ -113,6 +191,23 @@ export function useBeatGeneration(
       " ",
     );
 
+    // C-2: Build "pending beats" section if injection is enabled.
+    const injectEnabled = useSettingsStore
+      .getState()
+      .getBoolean("beat.injectIntoContext", true);
+    let pendingBeatsSection: string | undefined;
+    if (injectEnabled) {
+      const unplacedBeats = useUnplacedBeatsStore.getState().getBeats(sceneId);
+      pendingBeatsSection = buildPendingBeatsSection({
+        sceneDocJson: editor.state.doc.toJSON(),
+        unplacedBeats,
+        resolveCharacterName: (id) =>
+          codexEntries.find((e) => e.id === id)?.name ?? null,
+        currentBeatId: beatId,
+        scenePovCharacterId: node?.povCharacterId ?? null,
+      });
+    }
+
     const promptInput: BeatPromptInput = {
       instructions,
       beatType,
@@ -120,6 +215,7 @@ export function useBeatGeneration(
       sceneTitle,
       sceneTextSoFar,
       povName,
+      pendingBeatsSection,
     };
     const messages = buildBeatMessages(promptInput);
 
@@ -166,6 +262,9 @@ export function useBeatGeneration(
             if (orphaned) return;
             releaseCleanup();
             setState({ status: "idle", error: null, cleanup: null });
+            runRoleInference(editor, beatId, instructions).catch((err) => {
+              console.warn("role inference failed", err);
+            });
           },
           onError: (message) => {
             releaseCleanup();

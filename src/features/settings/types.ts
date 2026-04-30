@@ -84,6 +84,10 @@ export const DEFAULT_SETTINGS: Record<string, string> = {
   "ai.contextBudget.l4": "20",
   "ai.contextBudget.l5": "20",
   "ai.contextBudget.reserve": "5",
+  // Beat AI context injection (Phase C)
+  "beat.injectIntoContext": "true",
+  "beat.inferRoles": "true",
+  "beat.roleInferenceConfidenceThreshold": "0.7",
   // Keys
   "keys.bindings": "{}",
   // Data

@@ -59,6 +59,29 @@ describe("buildBeatUserPrompt", () => {
     const user = buildBeatUserPrompt(BASE);
     expect(user).toMatch(/メタコメント|見出し/);
   });
+
+  it("pendingBeatsSection が空のとき出力に含まれない", () => {
+    const user = buildBeatUserPrompt({ ...BASE, pendingBeatsSection: "" });
+    expect(user).not.toContain("予定ビート");
+  });
+
+  it("pendingBeatsSection が非空のとき sceneTextSoFar と instructions の間に挿入される", () => {
+    const section =
+      "## このシーンの予定ビート\n- [Placed #2 / free] 次のビート";
+    const user = buildBeatUserPrompt({ ...BASE, pendingBeatsSection: section });
+    const bodyIdx = user.indexOf("十年ぶりに故郷");
+    const sectionIdx = user.indexOf("予定ビート");
+    const instrIdx = user.indexOf("雨の夜、廃社");
+    expect(bodyIdx).toBeGreaterThanOrEqual(0);
+    expect(sectionIdx).toBeGreaterThan(bodyIdx);
+    expect(instrIdx).toBeGreaterThan(sectionIdx);
+  });
+
+  it("pendingBeatsSection が undefined でも動作する", () => {
+    expect(() =>
+      buildBeatUserPrompt({ ...BASE, pendingBeatsSection: undefined }),
+    ).not.toThrow();
+  });
 });
 
 describe("buildBeatMessages", () => {

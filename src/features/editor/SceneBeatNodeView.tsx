@@ -29,6 +29,8 @@ import {
 } from "./beat/beatOperations";
 import { generateBeatAlternative } from "./beat/generateBeatAlternative";
 import { findGeneratedBlockForBeat } from "./beat/insertBeatStream";
+import { RoleSuggestionBadges } from "./beat/RoleSuggestionBadges";
+import { useRoleSuggestionsStore } from "./beat/roleSuggestionsStore";
 import { toast } from "sonner";
 
 export function SceneBeatNodeView({
@@ -87,6 +89,16 @@ export function SceneBeatNodeView({
   useEffect(() => {
     if (showActionBar && isModified) setShowActionBar(false);
   }, [showActionBar, isModified]);
+
+  // C-7: Clear role suggestions when beat unmounts (beat deleted or scene unloaded)
+  const clearBeatSuggestions = useRoleSuggestionsStore((s) => s.clearBeat);
+  useEffect(() => {
+    const id = beatId;
+    return () => {
+      if (id) clearBeatSuggestions(id);
+    };
+  }, [beatId, clearBeatSuggestions]);
+
   const generateTooltip = !sceneId
     ? t("editor.beat.generateDisabledHint")
     : generating
@@ -324,6 +336,10 @@ export function SceneBeatNodeView({
             </ul>
           </AnimatedDropdown>
         </div>
+        {/* C-6: Role suggestion badges (after POV chip, before menu) */}
+        {editor && beatId && (
+          <RoleSuggestionBadges editor={editor} beatId={beatId} />
+        )}
         <div ref={menuContainerRef} className="relative ml-auto">
           <button
             type="button"
