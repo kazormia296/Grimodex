@@ -65,6 +65,7 @@ export const DEFAULT_SETTINGS: Record<string, string> = {
   "editor.lineBreak": "strict",
   "editor.focusModeHideBeats": "false",
   "editor.sceneMetaPanelOpen": "true",
+  "editor.sceneMetaPanelWidth": "20",
   "editor.linearBeatDisplay": "collapsed",
   // Display (theme, uiLanguage, uiScale are in GlobalSettings)
   "display.showWordCount": "true",

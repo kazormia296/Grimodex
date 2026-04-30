@@ -24,6 +24,7 @@ export interface EditorSettings {
   focusModeHideBeats: boolean;
   linearBeatDisplay: "normal" | "collapsed" | "hidden";
   sceneMetaPanelOpen: boolean;
+  sceneMetaPanelWidth: number;
 }
 
 export function useEditorSettings(): EditorSettings {
@@ -58,5 +59,6 @@ export function useEditorSettings(): EditorSettings {
       | "collapsed"
       | "hidden",
     sceneMetaPanelOpen: store.getBoolean("editor.sceneMetaPanelOpen", true),
+    sceneMetaPanelWidth: store.getNumber("editor.sceneMetaPanelWidth", 20),
   };
 }
