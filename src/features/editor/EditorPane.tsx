@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from "react";
+import { createPortal } from "react-dom";
 import { useTranslation } from "react-i18next";
 import { Clock } from "lucide-react";
 import { useEditor, EditorContent } from "@tiptap/react";
@@ -10,6 +11,9 @@ import { SynopsisHeader } from "@/features/editor/SynopsisHeader";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { loadSceneContent, saveSceneContent } from "@/features/tree/api";
 import { getCodexEntry, updateCodexEntry } from "@/features/codex/api";
+import type { CodexEntry } from "@/features/codex/api";
+import type { CodexMentionPopupState } from "@/features/codex/CodexMentionExtension";
+import { MentionPopup } from "@/features/chat/components/MentionPopup";
 import { usePhaseStore } from "@/features/codex/phaseStore";
 import { useCodexStore } from "@/features/codex/codexStore";
 import { useCodexHighlightStore } from "@/features/editor/codexHighlightStore";
@@ -185,6 +189,9 @@ export function EditorPane({
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [palettePreselect, setPalettePreselect] =
     useState<InlineAiCommand | null>(null);
+  const [mentionPopup, setMentionPopupState] =
+    useState<CodexMentionPopupState | null>(null);
+  const [mentionIndex, setMentionIndex] = useState(0);
 
   const setIsDirtyRef = useRef(setIsDirty);
   setIsDirtyRef.current = setIsDirty;
@@ -359,7 +366,12 @@ export function EditorPane({
   const insertFromPaste = useEditorStore((s) => s.insertFromPaste);
 
   const editor = useEditor({
-    extensions: getEditorExtensions(),
+    extensions: getEditorExtensions({
+      setMentionPopup: (s) => {
+        setMentionPopupState(s);
+        setMentionIndex(0);
+      },
+    }),
     content: "",
     editorProps: {
       attributes: {
@@ -1023,6 +1035,14 @@ export function EditorPane({
     setTitleEditing(false);
   };
 
+  const handleMentionSelect = useCallback(
+    (entry: CodexEntry) => {
+      mentionPopup?.command?.(entry);
+      setMentionPopupState(null);
+    },
+    [mentionPopup],
+  );
+
   return (
     <div ref={paneRef} className="flex flex-1 flex-col overflow-hidden">
       <Toolbar
@@ -1300,6 +1320,17 @@ export function EditorPane({
         onRetry={retry}
       />
       <SlashCommandPopup />
+      {mentionPopup &&
+        createPortal(
+          <MentionPopup
+            items={mentionPopup.items}
+            selectedIndex={mentionIndex}
+            onSelect={handleMentionSelect}
+            onChangeIndex={setMentionIndex}
+            clientRect={mentionPopup.clientRect}
+          />,
+          document.body,
+        )}
     </div>
   );
 }
