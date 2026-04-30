@@ -574,6 +574,28 @@
   transition: opacity 0.15s ease;
 }
 
+/* Beat visibility: hide sceneBeat blocks when Focus Mode + focusModeHideBeats */
+[data-focus-hide-beats="true"] [data-type="scene-beat"] {
+  display: none;
+}
+
+/* Linear mode Beat display: collapsed — show header only (hide NodeViewContent) */
+[data-linear-beat-display="collapsed"]
+  [data-type="scene-beat"]
+  [data-node-view-content] {
+  display: none;
+}
+[data-linear-beat-display="collapsed"]
+  [data-type="scene-beat"]
+  [data-collapsed="true"] {
+  /* already collapsed, no extra rule needed */
+}
+
+/* Linear mode Beat display: hidden — hide entire beat block */
+[data-linear-beat-display="hidden"] [data-type="scene-beat"] {
+  display: none;
+}
+
 /* Typewriter Mode (C-11): padding to allow centering at doc edges */
 .typewriter-padding .tiptap {
   padding-top: 50vh;
