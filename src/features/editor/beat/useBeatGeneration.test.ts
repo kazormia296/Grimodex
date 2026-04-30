@@ -190,6 +190,90 @@ describe("useBeatGeneration", () => {
     editor.destroy();
   });
 
+  it("running a second generation after the first completes does not double-insert chunks", async () => {
+    // Regression for the listener-leak bug: onDone was setting state but
+    // never calling the cleanup() the previous run returned. Two listeners
+    // would then fire for every chunk of the next generation.
+    const editor = createEditorWithBeat("b1");
+    const { result } = renderHook(() =>
+      useBeatGeneration(editor, "b1", "scene-1"),
+    );
+
+    // First generation
+    let pending: Promise<void>;
+    await act(async () => {
+      pending = result.current.generate();
+      await Promise.resolve();
+    });
+    await waitFor(() => expect(result.current.state.status).toBe("generating"));
+    await act(async () => {
+      emit("inline-ai:stream-chunk", { delta: "first.", block_type: "text" });
+      emit("inline-ai:stream-done", {
+        stop_reason: "end_turn",
+        input_tokens: 0,
+        output_tokens: 0,
+      });
+      await pending!;
+    });
+    await waitFor(() => expect(result.current.state.status).toBe("idle"));
+
+    // Second generation — should register only one fresh listener, not two.
+    await act(async () => {
+      pending = result.current.generate();
+      await Promise.resolve();
+    });
+    await waitFor(() => expect(result.current.state.status).toBe("generating"));
+    await act(async () => {
+      emit("inline-ai:stream-chunk", { delta: "second.", block_type: "text" });
+      emit("inline-ai:stream-done", {
+        stop_reason: "end_turn",
+        input_tokens: 0,
+        output_tokens: 0,
+      });
+      await pending!;
+    });
+    await waitFor(() => expect(result.current.state.status).toBe("idle"));
+
+    const block = findGeneratedBlockForBeat(editor, "b1");
+    const blockNode = editor.state.doc.nodeAt(block!.blockPos);
+    // If the leak were still present, the second-generation chunk would be
+    // inserted twice ("second.second.") because the first run's listener is
+    // still alive.
+    expect(blockNode?.textContent).toBe("first.second.");
+    editor.destroy();
+  });
+
+  it("a second generate() while one is in flight is a no-op (in-flight guard)", async () => {
+    const editor = createEditorWithBeat("b1");
+    const { result } = renderHook(() =>
+      useBeatGeneration(editor, "b1", "scene-1"),
+    );
+
+    let pending: Promise<void>;
+    await act(async () => {
+      pending = result.current.generate();
+      await Promise.resolve();
+    });
+    await waitFor(() => expect(result.current.state.status).toBe("generating"));
+    expect(invokeMock).toHaveBeenCalledTimes(1);
+
+    // Second click while still generating should bail out before invoke.
+    await act(async () => {
+      await result.current.generate();
+    });
+    expect(invokeMock).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      emit("inline-ai:stream-done", {
+        stop_reason: "end_turn",
+        input_tokens: 0,
+        output_tokens: 0,
+      });
+      await pending!;
+    });
+    editor.destroy();
+  });
+
   it("guard: missing sceneId silently no-ops", async () => {
     const editor = createEditorWithBeat("b1");
     const { result } = renderHook(() => useBeatGeneration(editor, "b1", null));
