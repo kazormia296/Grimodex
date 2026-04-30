@@ -18,6 +18,8 @@ import {
 import { countSceneBodyChars } from "@/features/editor/charCountForBody";
 import { countBeats } from "@/features/editor/beat/countBeats";
 import { extractUnplacedBeatPreview } from "@/features/editor/beat/unplacedBeatPreview";
+import { extractBeatMentions } from "@/features/editor/beat/extractBeatMentions";
+import { upsertSceneBeatMentions } from "@/features/editor/beat/mentionApi";
 import { useUnplacedBeatsStore } from "@/features/editor/beat/unplacedBeatsStore";
 import { getCodexEntry, updateCodexEntry } from "@/features/codex/api";
 import type { CodexEntry } from "@/features/codex/api";
@@ -350,6 +352,7 @@ export function EditorPane({
       });
       await saveAuthorshipSpans(id, ed.state.doc);
       await saveForeshadowAnchors(id, ed.state.doc);
+      upsertSceneBeatMentions(id, extractBeatMentions(doc)).catch(() => {});
       useTreeStore
         .getState()
         .refreshAiRatio(id)

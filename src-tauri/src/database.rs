@@ -776,6 +776,19 @@ impl Database {
                 ON foreshadow_codex_links(codex_entry_id);",
         )?;
 
+        // Beat system (Phase B) — role-aware codex mention cache per scene.
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS scene_codex_mentions (
+                scene_id        TEXT NOT NULL REFERENCES tree_nodes(id) ON DELETE CASCADE,
+                codex_entry_id  TEXT NOT NULL REFERENCES codex_entries(id) ON DELETE CASCADE,
+                source          TEXT NOT NULL,
+                role            TEXT NOT NULL DEFAULT 'mentioned',
+                PRIMARY KEY (scene_id, codex_entry_id, source)
+            );
+            CREATE INDEX IF NOT EXISTS idx_scm_codex ON scene_codex_mentions(codex_entry_id);
+            CREATE INDEX IF NOT EXISTS idx_scm_scene  ON scene_codex_mentions(scene_id);",
+        )?;
+
         // Beat system (Phase A) — additive columns on tree_nodes.
         // Existing DBs miss these because CREATE TABLE IF NOT EXISTS won't add columns.
         Self::add_column_if_missing(

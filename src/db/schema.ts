@@ -927,6 +927,26 @@ export const foreshadowCodexLinks = sqliteTable(
   ],
 );
 
+/** Beat system (Phase B) — role-aware codex mention cache per scene. */
+export const sceneCodexMentions = sqliteTable(
+  "scene_codex_mentions",
+  {
+    sceneId: text("scene_id")
+      .notNull()
+      .references(() => treeNodes.id, { onDelete: "cascade" }),
+    codexEntryId: text("codex_entry_id")
+      .notNull()
+      .references(() => codexEntries.id, { onDelete: "cascade" }),
+    source: text("source").notNull(),
+    role: text("role").notNull().default("mentioned"),
+  },
+  (t) => [
+    primaryKey({ columns: [t.sceneId, t.codexEntryId, t.source] }),
+    index("idx_scm_codex").on(t.codexEntryId),
+    index("idx_scm_scene").on(t.sceneId),
+  ],
+);
+
 // Type exports
 export type AuthorshipSpan = typeof authorshipSpans.$inferSelect;
 export type NewAuthorshipSpan = typeof authorshipSpans.$inferInsert;
@@ -975,3 +995,6 @@ export type ForeshadowSetup = typeof foreshadowSetups.$inferSelect;
 export type NewForeshadowSetup = typeof foreshadowSetups.$inferInsert;
 export type ForeshadowCodexLink = typeof foreshadowCodexLinks.$inferSelect;
 export type NewForeshadowCodexLink = typeof foreshadowCodexLinks.$inferInsert;
+
+export type SceneCodexMention = typeof sceneCodexMentions.$inferSelect;
+export type NewSceneCodexMention = typeof sceneCodexMentions.$inferInsert;

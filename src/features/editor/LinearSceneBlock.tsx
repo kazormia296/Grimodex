@@ -20,6 +20,8 @@ import { debugLog, errorDetail } from "@/lib/debugLog";
 import type { SceneStatus } from "@/features/tree/treeStore";
 import { useLinearEditorStore } from "./linearEditorStore";
 import { useChatStore } from "@/features/chat/chatStore";
+import { extractBeatMentions } from "@/features/editor/beat/extractBeatMentions";
+import { upsertSceneBeatMentions } from "@/features/editor/beat/mentionApi";
 
 interface LinearSceneBlockProps {
   sceneId: string;
@@ -84,6 +86,9 @@ function MountedSceneBlock({
     if (!ed) return;
     await saveSceneContent(sceneId, JSON.stringify(ed.getJSON()));
     await saveAuthorshipSpans(sceneId, ed.state.doc);
+    upsertSceneBeatMentions(sceneId, extractBeatMentions(ed.state.doc)).catch(
+      () => {},
+    );
     useTreeStore
       .getState()
       .refreshAiRatio(sceneId)
@@ -268,6 +273,7 @@ function MountedSceneBlock({
           </div>
         )}
         <div
+          data-linear-beat-display={editorSettings.linearBeatDisplay}
           className={filterSource ? `attribution-filter-${filterSource}` : ""}
         >
           <EditorContent editor={editor} />
