@@ -20,6 +20,17 @@ vi.mock("@tauri-apps/api/event", () => ({
   }),
 }));
 
+// Mock inference dependencies for C-7 tests.
+const inferMentionRolesMock = vi.fn();
+vi.mock("./inferMentionRoles", () => ({
+  inferMentionRoles: (...args: unknown[]) => inferMentionRolesMock(...args),
+}));
+
+const extractBeatMentionsMock = vi.fn();
+vi.mock("./extractBeatMentions", () => ({
+  extractBeatMentions: (...args: unknown[]) => extractBeatMentionsMock(...args),
+}));
+
 import { renderHook, act, waitFor } from "@testing-library/react";
 import { Editor } from "@tiptap/core";
 import StarterKit from "@tiptap/starter-kit";
@@ -29,7 +40,9 @@ import { GeneratedProseBlockNode } from "@/features/editor/GeneratedProseBlockNo
 import { useTreeStore } from "@/features/tree/treeStore";
 import { useWorkspaceStore } from "@/features/workspace/store";
 import { useCodexStore } from "@/features/codex/codexStore";
+import { useSettingsStore } from "@/features/settings/settingsStore";
 import { findGeneratedBlockForBeat, findBeatById } from "./insertBeatStream";
+import { useRoleSuggestionsStore } from "./roleSuggestionsStore";
 import { useBeatGeneration } from "./useBeatGeneration";
 
 function emit(event: string, payload: unknown) {
@@ -67,6 +80,17 @@ describe("useBeatGeneration", () => {
     listeners.clear();
     invokeMock.mockReset();
     invokeMock.mockResolvedValue(undefined);
+    // Reset call history AND return values for inference mocks between tests.
+    extractBeatMentionsMock.mockReset();
+    extractBeatMentionsMock.mockReturnValue([]);
+    inferMentionRolesMock.mockReset();
+    inferMentionRolesMock.mockResolvedValue([]);
+    // Reset role suggestion store.
+    useRoleSuggestionsStore.setState({ byBeatId: {} });
+    // Reset settings to defaults (beat.inferRoles = true).
+    useSettingsStore.setState((s) => ({
+      cache: { ...s.cache, "beat.inferRoles": "true" },
+    }));
 
     // Seed stores with a minimal scene + project + codex.
     useTreeStore.setState({
@@ -284,6 +308,210 @@ describe("useBeatGeneration", () => {
 
     expect(result.current.state.status).toBe("idle");
     expect(invokeMock).not.toHaveBeenCalled();
+    editor.destroy();
+  });
+});
+
+// Helper: run a full generate → stream-chunk → stream-done cycle.
+async function runGeneration(
+  result: { current: ReturnType<typeof useBeatGeneration> },
+  chunks: string[] = ["散文テキスト"],
+) {
+  let pending: Promise<void>;
+  await act(async () => {
+    pending = result.current.generate();
+    await Promise.resolve();
+  });
+  await waitFor(() => expect(result.current.state.status).toBe("generating"));
+  await act(async () => {
+    for (const chunk of chunks) {
+      emit("inline-ai:stream-chunk", { delta: chunk, block_type: "text" });
+    }
+    emit("inline-ai:stream-done", {
+      stop_reason: "end_turn",
+      input_tokens: 0,
+      output_tokens: 0,
+    });
+    await pending!;
+  });
+  await waitFor(() => expect(result.current.state.status).toBe("idle"));
+}
+
+describe("runRoleInference (C-7)", () => {
+  beforeEach(() => {
+    listeners.clear();
+    invokeMock.mockReset();
+    invokeMock.mockResolvedValue(undefined);
+    extractBeatMentionsMock.mockReset();
+    extractBeatMentionsMock.mockReturnValue([]);
+    inferMentionRolesMock.mockReset();
+    inferMentionRolesMock.mockResolvedValue([]);
+    useRoleSuggestionsStore.setState({ byBeatId: {} });
+    useSettingsStore.setState((s) => ({
+      cache: { ...s.cache, "beat.inferRoles": "true" },
+    }));
+    useTreeStore.setState({
+      nodes: [
+        {
+          id: "scene-1",
+          projectId: "p1",
+          parentId: null,
+          nodeType: "scene",
+          title: "第1話",
+          synopsis: null,
+          sortOrder: "a0",
+          storyTimeOrder: null,
+          storyTimeLabel: null,
+          povCharacterId: null,
+          locationId: null,
+          status: null,
+          createdAt: "2026-01-01",
+        },
+      ],
+    });
+    useWorkspaceStore.setState({ activeWorkspaceName: "テスト作品" });
+    useCodexStore.setState({ entries: [] });
+  });
+
+  it("onDone 後に inferMentionRoles が呼ばれ、提案が store に保存される", async () => {
+    extractBeatMentionsMock.mockReturnValue([
+      { beatId: "b1", codexId: "c1", role: "mentioned" },
+    ]);
+    inferMentionRolesMock.mockResolvedValue([
+      { codexId: "c1", role: "actor", confidence: 0.9 },
+    ]);
+
+    const editor = createEditorWithBeat("b1");
+    const { result } = renderHook(() =>
+      useBeatGeneration(editor, "b1", "scene-1"),
+    );
+    await runGeneration(result);
+
+    await waitFor(() => expect(inferMentionRolesMock).toHaveBeenCalled());
+
+    const suggestions = useRoleSuggestionsStore.getState().byBeatId["b1"];
+    expect(suggestions).toHaveLength(1);
+    expect(suggestions[0].suggestedRole).toBe("actor");
+    expect(suggestions[0].codexId).toBe("c1");
+    editor.destroy();
+  });
+
+  it("mention が 0 件のとき inferMentionRoles を呼ばない", async () => {
+    // extractBeatMentionsMock already returns [] by default.
+    const editor = createEditorWithBeat("b1");
+    const { result } = renderHook(() =>
+      useBeatGeneration(editor, "b1", "scene-1"),
+    );
+    await runGeneration(result);
+
+    // Give a tick for any async work.
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(inferMentionRolesMock).not.toHaveBeenCalled();
+    editor.destroy();
+  });
+
+  it("beat.inferRoles が OFF のとき API を呼ばない", async () => {
+    useSettingsStore.setState((s) => ({
+      cache: { ...s.cache, "beat.inferRoles": "false" },
+    }));
+    extractBeatMentionsMock.mockReturnValue([
+      { beatId: "b1", codexId: "c1", role: "mentioned" },
+    ]);
+
+    const editor = createEditorWithBeat("b1");
+    const { result } = renderHook(() =>
+      useBeatGeneration(editor, "b1", "scene-1"),
+    );
+    await runGeneration(result);
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(inferMentionRolesMock).not.toHaveBeenCalled();
+    editor.destroy();
+  });
+
+  it("beat が削除済みのとき setSuggestions を呼ばない（孤立チェック）", async () => {
+    extractBeatMentionsMock.mockReturnValue([
+      { beatId: "b1", codexId: "c1", role: "mentioned" },
+    ]);
+    // Controlled promise — resolves only when we call resolveInference.
+    let resolveInference!: (
+      v: { codexId: string; role: string; confidence: number }[],
+    ) => void;
+    inferMentionRolesMock.mockReturnValue(
+      new Promise((res) => {
+        resolveInference = res;
+      }),
+    );
+
+    const editor = createEditorWithBeat("b1");
+    const { result } = renderHook(() =>
+      useBeatGeneration(editor, "b1", "scene-1"),
+    );
+
+    let pending: Promise<void>;
+    await act(async () => {
+      pending = result.current.generate();
+      await Promise.resolve();
+    });
+    await waitFor(() => expect(result.current.state.status).toBe("generating"));
+    await act(async () => {
+      emit("inline-ai:stream-chunk", {
+        delta: "散文テキスト",
+        block_type: "text",
+      });
+      emit("inline-ai:stream-done", {
+        stop_reason: "end_turn",
+        input_tokens: 0,
+        output_tokens: 0,
+      });
+      await pending!;
+    });
+    await waitFor(() => expect(result.current.state.status).toBe("idle"));
+
+    // Delete the beat from the doc while inference is in flight.
+    const beat = findBeatById(editor, "b1");
+    if (beat) {
+      const tr = editor.state.tr;
+      tr.delete(beat.beatPos, beat.beatPos + beat.beatSize);
+      editor.view.dispatch(tr);
+    }
+
+    // Resolve inference now that the beat is gone.
+    await act(async () => {
+      resolveInference([{ codexId: "c1", role: "actor", confidence: 0.9 }]);
+      await Promise.resolve();
+    });
+
+    expect(useRoleSuggestionsStore.getState().byBeatId["b1"]).toBeUndefined();
+    editor.destroy();
+  });
+
+  it("信頼度しきい値未満・同 role の提案はフィルタされる", async () => {
+    extractBeatMentionsMock.mockReturnValue([
+      { beatId: "b1", codexId: "c1", role: "actor" }, // same role
+      { beatId: "b1", codexId: "c2", role: "mentioned" }, // low confidence
+    ]);
+    inferMentionRolesMock.mockResolvedValue([
+      { codexId: "c1", role: "actor", confidence: 0.9 }, // same role → excluded
+      { codexId: "c2", role: "target", confidence: 0.5 }, // below 0.7 → excluded
+    ]);
+
+    const editor = createEditorWithBeat("b1");
+    const { result } = renderHook(() =>
+      useBeatGeneration(editor, "b1", "scene-1"),
+    );
+    await runGeneration(result);
+
+    await waitFor(() => expect(inferMentionRolesMock).toHaveBeenCalled());
+
+    const suggestions = useRoleSuggestionsStore.getState().byBeatId["b1"];
+    expect(suggestions).toBeUndefined();
     editor.destroy();
   });
 });

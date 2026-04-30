@@ -62,23 +62,25 @@ async function runRoleInference(
     mentions,
   });
 
-  // Apply confidence threshold and exclude same-role suggestions.
+  // Apply confidence threshold and exclude same-role / hallucinated suggestions.
+  // Build a Map first so unknown codexIds returned by the AI are safely
+  // rejected in O(1) rather than crashing via non-null assertion.
+  const beatMentionMap = new Map(beatMentions.map((m) => [m.codexId, m]));
   const threshold = settings.getNumber(
     "beat.roleInferenceConfidenceThreshold",
     0.7,
   );
-  const filtered = suggestions.filter(
-    (s) =>
-      s.confidence >= threshold &&
-      s.role !== beatMentions.find((m) => m.codexId === s.codexId)?.role,
-  );
+  const filtered = suggestions.filter((s) => {
+    const bm = beatMentionMap.get(s.codexId);
+    return bm !== undefined && s.confidence >= threshold && s.role !== bm.role;
+  });
   if (filtered.length === 0) return;
 
   // Orphan check: beat must still exist in doc.
   if (!findBeatById(editor, beatId)) return;
 
   const entries: RoleSuggestionEntry[] = filtered.map((s) => {
-    const bm = beatMentions.find((m) => m.codexId === s.codexId)!;
+    const bm = beatMentionMap.get(s.codexId)!; // safe: all passed the filter above
     return {
       codexId: s.codexId,
       name: codexEntries.find((e) => e.id === s.codexId)?.name ?? s.codexId,
