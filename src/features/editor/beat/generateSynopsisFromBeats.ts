@@ -1,7 +1,7 @@
 import type { Editor } from "@tiptap/core";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { useWorkspaceStore } from "@/features/workspace/store";
-import { sendInlineAiStream } from "@/features/editor/inlineAi/inlineAiStreaming";
+import { streamInlineAiText } from "./streamInlineAiText";
 
 interface GenerateSynopsisCallbacks {
   onStart?: () => void;
@@ -52,40 +52,20 @@ export async function generateSynopsisFromBeats(
 
   callbacks?.onStart?.();
 
-  const buffer: string[] = [];
-
-  await new Promise<void>((resolve) => {
-    sendInlineAiStream(messages, {
-      onTextDelta: (delta) => {
-        buffer.push(delta);
-      },
-      onDone: () => {
-        const synopsis = buffer.join("").trim();
-        if (!synopsis) {
-          callbacks?.onError?.("AIが空のレスポンスを返しました");
-          resolve();
-          return;
-        }
-        useTreeStore
-          .getState()
-          .updateSynopsis(sceneId, synopsis)
-          .then(() => {
-            callbacks?.onDone?.();
-            resolve();
-          })
-          .catch(() => {
-            callbacks?.onError?.("シノプシスの保存に失敗しました");
-            resolve();
-          });
-      },
-      onError: (message) => {
-        callbacks?.onError?.(message);
-        resolve();
-      },
-    }).catch((err: unknown) => {
-      const msg = err instanceof Error ? err.message : String(err);
-      callbacks?.onError?.(msg);
-      resolve();
-    });
-  });
+  const result = await streamInlineAiText(messages);
+  if (!result.ok) {
+    callbacks?.onError?.(result.error);
+    return;
+  }
+  const synopsis = result.text.trim();
+  if (!synopsis) {
+    callbacks?.onError?.("AIが空のレスポンスを返しました");
+    return;
+  }
+  try {
+    await useTreeStore.getState().updateSynopsis(sceneId, synopsis);
+    callbacks?.onDone?.();
+  } catch {
+    callbacks?.onError?.("シノプシスの保存に失敗しました");
+  }
 }

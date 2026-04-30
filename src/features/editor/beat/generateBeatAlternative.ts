@@ -3,7 +3,7 @@ import { useTreeStore } from "@/features/tree/treeStore";
 import { useWorkspaceStore } from "@/features/workspace/store";
 import { useCodexStore } from "@/features/codex/codexStore";
 import { useSnippetStore } from "@/features/snippets/snippetStore";
-import { sendInlineAiStream } from "@/features/editor/inlineAi/inlineAiStreaming";
+import { streamInlineAiText } from "./streamInlineAiText";
 import { buildBeatMessages } from "./beatPromptBuilder";
 import { findBeatById } from "./insertBeatStream";
 import type { BeatType } from "@/features/editor/SceneBeatNode";
@@ -65,45 +65,28 @@ export async function generateBeatAlternative(
 
   callbacks?.onStart?.();
 
-  const buffer: string[] = [];
+  const result = await streamInlineAiText(
+    messages,
+    beatModel ? { model: beatModel } : undefined,
+  );
+  if (!result.ok) {
+    callbacks?.onError?.(result.error);
+    return;
+  }
 
-  await new Promise<void>((resolve) => {
-    sendInlineAiStream(
-      messages,
-      {
-        onTextDelta: (delta) => {
-          buffer.push(delta);
-        },
-        onDone: () => {
-          const content = buffer.join("");
-          const preview = content.replace(/\n/g, " ").slice(0, 40).trimEnd();
-          const title =
-            preview.length < content.replace(/\n/g, " ").length
-              ? `${preview}…`
-              : preview || instructions.slice(0, 40);
+  const content = result.text;
+  const preview = content.replace(/\n/g, " ").slice(0, 40).trimEnd();
+  const title =
+    preview.length < content.replace(/\n/g, " ").length
+      ? `${preview}…`
+      : preview || instructions.slice(0, 40);
 
-          useSnippetStore
-            .getState()
-            .create({ title, content, sceneId, contentSource: "ai" })
-            .then(() => {
-              callbacks?.onDone?.();
-              resolve();
-            })
-            .catch(() => {
-              callbacks?.onError?.("スニペットの保存に失敗しました");
-              resolve();
-            });
-        },
-        onError: (message) => {
-          callbacks?.onError?.(message);
-          resolve();
-        },
-      },
-      beatModel ? { model: beatModel } : undefined,
-    ).catch((err: unknown) => {
-      const msg = err instanceof Error ? err.message : String(err);
-      callbacks?.onError?.(msg);
-      resolve();
-    });
-  });
+  try {
+    await useSnippetStore
+      .getState()
+      .create({ title, content, sceneId, contentSource: "ai" });
+    callbacks?.onDone?.();
+  } catch {
+    callbacks?.onError?.("スニペットの保存に失敗しました");
+  }
 }

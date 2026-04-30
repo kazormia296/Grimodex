@@ -1,7 +1,7 @@
 import { useTreeStore } from "@/features/tree/treeStore";
 import { useWorkspaceStore } from "@/features/workspace/store";
 import { useUnplacedBeatsStore } from "@/features/editor/beat/unplacedBeatsStore";
-import { sendInlineAiStream } from "@/features/editor/inlineAi/inlineAiStreaming";
+import { streamInlineAiText } from "./streamInlineAiText";
 import { BEAT_TYPES } from "@/features/editor/SceneBeatNode";
 import type { BeatType } from "@/features/editor/SceneBeatNode";
 
@@ -87,47 +87,31 @@ export async function generateBeatsFromSynopsis(
 
   callbacks?.onStart?.();
 
-  const buffer: string[] = [];
+  const result = await streamInlineAiText(messages);
+  if (!result.ok) {
+    callbacks?.onError?.(result.error);
+    return;
+  }
 
-  await new Promise<void>((resolve) => {
-    sendInlineAiStream(messages, {
-      onTextDelta: (delta) => {
-        buffer.push(delta);
-      },
-      onDone: () => {
-        const raw = buffer.join("").trim();
-        const rawBeats = parseBeatJson(raw);
-        if (!rawBeats) {
-          callbacks?.onError?.("AIの出力をパースできませんでした");
-          resolve();
-          return;
-        }
+  const rawBeats = parseBeatJson(result.text.trim());
+  if (!rawBeats) {
+    callbacks?.onError?.("AIの出力をパースできませんでした");
+    return;
+  }
 
-        const store = useUnplacedBeatsStore.getState();
-        for (const rb of rawBeats) {
-          const instructions =
-            typeof rb.instructions === "string" ? rb.instructions.trim() : "";
-          if (!instructions) continue;
-          store.addBeat(sceneId, {
-            id: crypto.randomUUID(),
-            beatType: toBeatType(rb.beatType),
-            pov: null,
-            collapsed: false,
-            content: [{ type: "text", text: instructions }],
-          });
-        }
-
-        callbacks?.onDone?.();
-        resolve();
-      },
-      onError: (message) => {
-        callbacks?.onError?.(message);
-        resolve();
-      },
-    }).catch((err: unknown) => {
-      const msg = err instanceof Error ? err.message : String(err);
-      callbacks?.onError?.(msg);
-      resolve();
+  const store = useUnplacedBeatsStore.getState();
+  for (const rb of rawBeats) {
+    const instructions =
+      typeof rb.instructions === "string" ? rb.instructions.trim() : "";
+    if (!instructions) continue;
+    store.addBeat(sceneId, {
+      id: crypto.randomUUID(),
+      beatType: toBeatType(rb.beatType),
+      pov: null,
+      collapsed: false,
+      content: [{ type: "text", text: instructions }],
     });
-  });
+  }
+
+  callbacks?.onDone?.();
 }

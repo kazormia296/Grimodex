@@ -149,7 +149,10 @@ export const GeneratedProseBlockNode = Node.create({
 
           const tr = newState.tr;
 
-          // Unwrap orphans bottom-up so earlier positions stay valid.
+          // Unwrap orphans bottom-up so earlier orphan positions stay valid
+          // for each other. After these steps, `touched` positions captured
+          // pre-tr need to be remapped through tr.mapping — they may have
+          // shifted if a touched block sits after an unwrapped orphan.
           for (const orphan of [...orphans].sort((a, b) => b.pos - a.pos)) {
             const node = newState.doc.nodeAt(orphan.pos);
             if (!node) continue;
@@ -162,9 +165,10 @@ export const GeneratedProseBlockNode = Node.create({
 
           if (willFlip) {
             for (const pos of touched) {
-              const node = newState.doc.nodeAt(pos);
-              if (!node) continue;
-              tr.setNodeAttribute(pos, "modified", true);
+              const mapped = tr.mapping.map(pos);
+              const node = tr.doc.nodeAt(mapped);
+              if (!node || node.type.name !== "generatedProseBlock") continue;
+              tr.setNodeAttribute(mapped, "modified", true);
             }
           }
 

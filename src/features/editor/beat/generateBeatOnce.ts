@@ -66,37 +66,40 @@ export async function generateBeatOnce(
   if (!ensureGeneratedBlock(editor, beatId)) return;
 
   const traceId = crypto.randomUUID();
-  // Holds the stop-stream callback once sendInlineAiStream resolves.
-  // Callbacks fire after resolution, so this is always assigned by then.
-  let stopStream: (() => void) | null = null;
-  let orphaned = false;
+  // Single source of truth for the listener cleanup. `released` guards the
+  // (theoretical) race where onDone/onError fire before the awaited Promise
+  // resolves: in that case we fall through and call cleanup synchronously
+  // from the .then handler instead of leaking listeners.
+  let cleanup: (() => void) | null = null;
+  let released = false;
+  const release = () => {
+    released = true;
+    cleanup?.();
+    cleanup = null;
+  };
 
   try {
-    stopStream = await sendInlineAiStream(
+    const c = await sendInlineAiStream(
       messages,
       {
         onTextDelta: (delta) => {
-          if (orphaned) return;
+          if (released) return;
           const ok = appendBeatChunk(editor, beatId, delta, {
             model: beatModel ?? DEFAULT_MODEL,
             traceId,
           });
-          if (!ok) {
-            orphaned = true;
-            stopStream?.();
-            stopStream = null;
-          }
+          if (!ok) release();
         },
-        onDone: () => {
-          stopStream = null;
-        },
+        onDone: () => release(),
         onError: (message) => {
-          stopStream = null;
+          release();
           toast.error(message);
         },
       },
       beatModel ? { model: beatModel } : undefined,
     );
+    if (released) c();
+    else cleanup = c;
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     toast.error(msg);

@@ -169,6 +169,59 @@ describe("GeneratedProseBlockNode", () => {
     editor.destroy();
   });
 
+  it("flips modified on a touched block AFTER an orphan unwrap (position mapping)", () => {
+    // Regression: appendTransaction unwraps orphan blocks, then flips
+    // `modified` on touched blocks. Touched positions captured pre-unwrap
+    // must be remapped through tr.mapping — otherwise a touched block that
+    // sits AFTER the orphan in the doc gets the wrong position and the
+    // setNodeAttribute call lands on the wrong node (or throws).
+    const editor = createTestEditor(
+      '<div data-type="scene-beat" data-beat-id="bA">a</div>' +
+        '<div data-type="generated-prose-block" data-beat-id="bA"><p>prose A</p></div>' +
+        '<div data-type="scene-beat" data-beat-id="bB">b</div>' +
+        '<div data-type="generated-prose-block" data-beat-id="bB"><p>prose B</p></div>',
+    );
+
+    // Locate beatA + blockB.
+    let beatAPos = -1;
+    let blockBPos = -1;
+    editor.state.doc.descendants((node, pos) => {
+      if (node.type.name === "sceneBeat" && node.attrs.id === "bA")
+        beatAPos = pos;
+      if (
+        node.type.name === "generatedProseBlock" &&
+        node.attrs.beatId === "bB"
+      )
+        blockBPos = pos;
+    });
+    expect(beatAPos).toBeGreaterThan(-1);
+    expect(blockBPos).toBeGreaterThan(-1);
+
+    // Single user transaction that BOTH orphans blockA (by deleting beatA)
+    // AND edits blockB's prose. The plugin's appendTransaction must:
+    //   1. Unwrap blockA (positions for blockB shift left).
+    //   2. Flip blockB.modified=true at its remapped position.
+    const beatANode = editor.state.doc.nodeAt(beatAPos);
+    const editPos = blockBPos + 1 + 1; // into block → into paragraph
+    const { tr } = editor.state;
+    tr.delete(beatAPos, beatAPos + (beatANode?.nodeSize ?? 0));
+    tr.insertText(" edit", tr.mapping.map(editPos));
+    editor.view.dispatch(tr);
+
+    // After the dispatch + plugin appendTransaction:
+    let afterModified: boolean | null = null;
+    let orphanStillWrapped = false;
+    editor.state.doc.descendants((node) => {
+      if (node.type.name === "generatedProseBlock") {
+        if (node.attrs.beatId === "bA") orphanStillWrapped = true;
+        if (node.attrs.beatId === "bB") afterModified = !!node.attrs.modified;
+      }
+    });
+    expect(orphanStillWrapped).toBe(false);
+    expect(afterModified).toBe(true);
+    editor.destroy();
+  });
+
   it("auto-deletes the block when its last child paragraph is removed", () => {
     const editor = createTestEditor(
       fixture(
