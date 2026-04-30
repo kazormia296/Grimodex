@@ -832,6 +832,15 @@
   },
   "editor": {
     "placeholder": "ここに書き始める…",
+    "beat": {
+      "label": "Beat",
+      "collapse": "折りたたむ",
+      "expand": "展開する",
+      "generate": "生成",
+      "generateDisabledHint": "生成は近日対応",
+      "menu": "ビートメニュー",
+      "povPrefix": "POV:"
+    },
     "toolbar": {
       "bold": "太字 (Ctrl+B)",
       "italic": "斜体 (Ctrl+I)",

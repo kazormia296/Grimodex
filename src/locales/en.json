@@ -832,6 +832,15 @@
   },
   "editor": {
     "placeholder": "Start writing here…",
+    "beat": {
+      "label": "Beat",
+      "collapse": "Collapse",
+      "expand": "Expand",
+      "generate": "Generate",
+      "generateDisabledHint": "Generation coming soon",
+      "menu": "Beat menu",
+      "povPrefix": "POV:"
+    },
     "toolbar": {
       "bold": "Bold (Ctrl+B)",
       "italic": "Italic (Ctrl+I)",

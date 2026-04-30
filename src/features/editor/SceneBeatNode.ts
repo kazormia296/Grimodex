@@ -1,4 +1,6 @@
 import { Node, mergeAttributes, type RawCommands } from "@tiptap/core";
+import { ReactNodeViewRenderer } from "@tiptap/react";
+import { SceneBeatNodeView } from "./SceneBeatNodeView";
 
 export type BeatType =
   | "free"
@@ -82,6 +84,10 @@ export const SceneBeatNode = Node.create({
       ),
       0,
     ];
+  },
+
+  addNodeView() {
+    return ReactNodeViewRenderer(SceneBeatNodeView);
   },
 
   addCommands() {
