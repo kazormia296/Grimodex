@@ -841,6 +841,7 @@
       "generateDisabledHint": "Scene context unavailable",
       "menu": "Beat menu",
       "povPrefix": "POV:",
+      "povInherit": "Inherit from scene (no override)",
       "menuItems": {
         "convertToText": "Convert to text",
         "deleteBeatOnly": "Delete beat only (keep prose)",

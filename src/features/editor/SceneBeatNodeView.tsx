@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useRef, useState, useMemo } from "react";
 import {
   ChevronDown,
   ChevronRight,
@@ -10,6 +10,7 @@ import { NodeViewContent, NodeViewWrapper } from "@tiptap/react";
 import type { ReactNodeViewProps } from "@tiptap/react";
 import { useTranslation } from "react-i18next";
 import { useCodexStore } from "@/features/codex/codexStore";
+import { useTreeStore } from "@/features/tree/treeStore";
 import { AnimatedDropdown } from "@/components/ui/animated-dropdown";
 import type { BeatType } from "./SceneBeatNode";
 import { useSceneBeatEditorContext } from "./beat/SceneBeatEditorContext";
@@ -35,13 +36,23 @@ export function SceneBeatNodeView({
   const povId = (node.attrs.pov ?? null) as string | null;
   const beatId = (node.attrs.id ?? null) as string | null;
 
+  const ctx = useSceneBeatEditorContext();
+  const sceneId = ctx?.sceneId ?? null;
+
   // Resolve POV id → codex character name (Slice 3c-i).
   const povName = useCodexStore((s) =>
     povId ? (s.entries.find((e) => e.id === povId)?.name ?? null) : null,
   );
-
-  const ctx = useSceneBeatEditorContext();
-  const sceneId = ctx?.sceneId ?? null;
+  const allEntries = useCodexStore((s) => s.entries);
+  const characters = useMemo(
+    () => allEntries.filter((e) => e.type === "character"),
+    [allEntries],
+  );
+  const scenePovCharId = useTreeStore((s) =>
+    sceneId
+      ? (s.nodes.find((n) => n.id === sceneId)?.povCharacterId ?? null)
+      : null,
+  );
   const { state, generate } = useBeatGeneration(editor, beatId ?? "", sceneId);
   const generating = state.status === "generating";
   const generateDisabled = !beatId || !sceneId || generating;
@@ -53,6 +64,8 @@ export function SceneBeatNodeView({
 
   const [menuOpen, setMenuOpen] = useState(false);
   const menuContainerRef = useRef<HTMLDivElement>(null);
+  const [povMenuOpen, setPovMenuOpen] = useState(false);
+  const povMenuRef = useRef<HTMLDivElement>(null);
 
   const runMenuAction = (fn: () => void) => {
     setMenuOpen(false);
@@ -118,14 +131,66 @@ export function SceneBeatNodeView({
         >
           {beatType}
         </span>
-        {povId && (
-          <span
-            data-testid="beat-pov-chip"
-            className="rounded bg-muted px-1 py-0.5 text-[10px]"
+        <div ref={povMenuRef} className="relative">
+          <button
+            type="button"
+            data-testid="beat-pov-btn"
+            onClick={() => setPovMenuOpen((v) => !v)}
+            className={`rounded px-1 py-0.5 text-[10px] ${
+              povId && povId !== scenePovCharId
+                ? "bg-blue-100 text-blue-800 dark:bg-blue-900/30 dark:text-blue-300"
+                : "text-muted-foreground/50 hover:bg-muted"
+            }`}
           >
-            {t("editor.beat.povPrefix")} {povName ?? povId}
-          </span>
-        )}
+            {povId && povId !== scenePovCharId ? (
+              <span data-testid="beat-pov-chip">
+                {t("editor.beat.povPrefix")} {povName ?? povId}
+              </span>
+            ) : (
+              <span className="opacity-60">{t("editor.beat.povPrefix")}</span>
+            )}
+          </button>
+          <AnimatedDropdown
+            open={povMenuOpen}
+            onClose={() => setPovMenuOpen(false)}
+            containerRef={povMenuRef}
+            className="absolute left-0 top-6 z-50 min-w-[160px] rounded-md border border-border bg-popover py-1 shadow-md"
+          >
+            <ul role="menu" className="text-xs">
+              <li>
+                <button
+                  type="button"
+                  role="menuitem"
+                  data-testid="beat-pov-clear"
+                  onClick={() => {
+                    updateAttributes({ pov: null });
+                    setPovMenuOpen(false);
+                  }}
+                  className="block w-full px-3 py-1.5 text-left text-muted-foreground hover:bg-primary hover:text-primary-foreground"
+                >
+                  {t("editor.beat.povInherit")}
+                </button>
+              </li>
+              {characters.map((c) => (
+                <li key={c.id}>
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onClick={() => {
+                      updateAttributes({ pov: c.id });
+                      setPovMenuOpen(false);
+                    }}
+                    className={`block w-full px-3 py-1.5 text-left hover:bg-primary hover:text-primary-foreground ${
+                      c.id === povId ? "font-medium" : ""
+                    }`}
+                  >
+                    {c.name}
+                  </button>
+                </li>
+              ))}
+            </ul>
+          </AnimatedDropdown>
+        </div>
         <button
           type="button"
           data-testid="beat-generate-btn"

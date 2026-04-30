@@ -841,6 +841,7 @@
       "generateDisabledHint": "シーン情報が取得できません",
       "menu": "ビートメニュー",
       "povPrefix": "POV:",
+      "povInherit": "シーン継承（オーバーライドなし）",
       "menuItems": {
         "convertToText": "通常の段落に変換",
         "deleteBeatOnly": "ビートのみ削除（生成文は残す）",

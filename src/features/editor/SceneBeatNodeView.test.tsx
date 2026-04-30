@@ -7,6 +7,7 @@ import StarterKit from "@tiptap/starter-kit";
 import { useEffect } from "react";
 import type { Editor } from "@tiptap/core";
 import { useCodexStore } from "@/features/codex/codexStore";
+import { useTreeStore } from "@/features/tree/treeStore";
 import type { CodexEntry } from "@/features/codex/api";
 import { SceneBeatNode } from "./SceneBeatNode";
 import { GeneratedProseBlockNode } from "./GeneratedProseBlockNode";
@@ -201,5 +202,119 @@ describe("SceneBeatNodeView", () => {
     });
     expect(beatCount).toBe(0);
     expect(editorRef!.getText()).toContain("ビート本文");
+  });
+
+  describe("POV override UI (Slice 7)", () => {
+    beforeEach(() => {
+      useCodexStore.setState({
+        entries: [
+          makeCodex({ id: "char-1", name: "花子", type: "character" }),
+          makeCodex({ id: "char-2", name: "太郎", type: "character" }),
+          makeCodex({ id: "lore-1", name: "設定A", type: "lore" }),
+        ],
+      });
+      // Reset treeStore nodes
+      useTreeStore.setState((s) => ({
+        ...s,
+        nodes: [
+          {
+            id: "scene-1",
+            projectId: "p1",
+            parentId: null,
+            nodeType: "scene",
+            title: "Scene 1",
+            sortOrder: "a",
+            status: null,
+            storyTimeOrder: null,
+            storyTimeLabel: null,
+            povCharacterId: null,
+            locationId: null,
+            synopsis: null,
+            createdAt: "",
+          },
+        ],
+      }));
+    });
+
+    it("POV ドロップダウンに character 型エントリのみ表示される", async () => {
+      render(<HostEditor attrs={{ pov: null }} sceneId="scene-1" />);
+      await waitFor(() => screen.getByText("Beat"));
+
+      await act(async () => {
+        await userEvent.click(screen.getByTestId("beat-pov-btn"));
+      });
+
+      await waitFor(() => {
+        expect(screen.getByText("花子")).toBeTruthy();
+        expect(screen.getByText("太郎")).toBeTruthy();
+      });
+      // lore type should not appear in POV list
+      expect(screen.queryByText("設定A")).toBeNull();
+    });
+
+    it("キャラクターを選択すると attrs.pov が更新される", async () => {
+      let editorRef: Editor | null = null;
+      render(
+        <HostEditor
+          attrs={{ pov: null }}
+          sceneId="scene-1"
+          expose={(e) => (editorRef = e)}
+        />,
+      );
+      await waitFor(() => screen.getByText("Beat"));
+
+      await act(async () => {
+        await userEvent.click(screen.getByTestId("beat-pov-btn"));
+      });
+
+      await waitFor(() => screen.getByText("花子"));
+      await act(async () => {
+        await userEvent.click(screen.getByText("花子"));
+      });
+
+      await waitFor(() => {
+        let pov: string | null = null;
+        editorRef!.state.doc.descendants((node) => {
+          if (node.type.name === "sceneBeat") pov = node.attrs.pov as string;
+        });
+        expect(pov).toBe("char-1");
+      });
+    });
+
+    it("「シーン継承」を選択すると attrs.pov が null に戻る", async () => {
+      let editorRef: Editor | null = null;
+      render(
+        <HostEditor
+          attrs={{ pov: "char-1" }}
+          sceneId="scene-1"
+          expose={(e) => (editorRef = e)}
+        />,
+      );
+      await waitFor(() => screen.getByText("Beat"));
+
+      await act(async () => {
+        await userEvent.click(screen.getByTestId("beat-pov-btn"));
+      });
+
+      const clearBtn = await screen.findByTestId("beat-pov-clear");
+      await act(async () => {
+        await userEvent.click(clearBtn);
+      });
+
+      await waitFor(() => {
+        let pov: string | null | undefined = undefined;
+        editorRef!.state.doc.descendants((node) => {
+          if (node.type.name === "sceneBeat") pov = node.attrs.pov as string;
+        });
+        expect(pov).toBeNull();
+      });
+    });
+
+    it("POV チップはシーン POV と異なる場合のみ表示される", async () => {
+      // scene has no POV → attrs.pov set → chip shows
+      render(<HostEditor attrs={{ pov: "char-1" }} sceneId="scene-1" />);
+      await waitFor(() => screen.getByText("Beat"));
+      expect(screen.getByTestId("beat-pov-chip")).toBeTruthy();
+    });
   });
 });
