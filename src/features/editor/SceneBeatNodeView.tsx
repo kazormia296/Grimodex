@@ -27,6 +27,7 @@ import {
   replaceBeatBlock,
   unplaceBeat,
 } from "./beat/beatOperations";
+import { generateBeatAlternative } from "./beat/generateBeatAlternative";
 import { findGeneratedBlockForBeat } from "./beat/insertBeatStream";
 import { toast } from "sonner";
 
@@ -158,6 +159,25 @@ export function SceneBeatNodeView({
       if (!editor || !beatId || !sceneId) return;
       unplaceBeat(editor, beatId, sceneId);
       toast.info(t("editor.beat.unplaceToast"));
+    });
+  };
+
+  const [isGeneratingAlternative, setIsGeneratingAlternative] = useState(false);
+
+  const handleGenerateAlternative = () => {
+    runMenuAction(() => {
+      if (!editor || !beatId || !sceneId || isGeneratingAlternative) return;
+      setIsGeneratingAlternative(true);
+      void generateBeatAlternative(editor, beatId, sceneId, {
+        onDone: () => {
+          setIsGeneratingAlternative(false);
+          toast.success(t("editor.beat.alternativeSaved"));
+        },
+        onError: (msg) => {
+          setIsGeneratingAlternative(false);
+          toast.error(msg);
+        },
+      });
     });
   };
 
@@ -324,6 +344,20 @@ export function SceneBeatNodeView({
             className="absolute right-0 top-6 z-50 min-w-[180px] rounded-md border border-border bg-popover py-1 shadow-md"
           >
             <ul role="menu" className="text-xs">
+              <li>
+                <button
+                  type="button"
+                  role="menuitem"
+                  data-testid="beat-menu-generate-alternative"
+                  disabled={generateDisabled || isGeneratingAlternative}
+                  onClick={handleGenerateAlternative}
+                  className="block w-full px-3 py-1.5 text-left hover:bg-primary hover:text-primary-foreground disabled:opacity-50"
+                >
+                  {isGeneratingAlternative
+                    ? t("editor.beat.menuItems.generatingAlternative")
+                    : t("editor.beat.menuItems.generateAlternative")}
+                </button>
+              </li>
               <li>
                 <button
                   type="button"

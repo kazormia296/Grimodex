@@ -855,9 +855,12 @@
         "clearBeat": "ビートのコンテンツをクリア",
         "deleteBeatOnly": "ビートのみ削除（生成文は残す）",
         "deleteBeatAndProse": "ビートと生成文を削除",
+        "generateAlternative": "代替案を生成してスニペット保存",
+        "generatingAlternative": "代替案を生成中…",
         "regenerate": "再生成",
         "unplace": "Unplaced に戻す"
       },
+      "alternativeSaved": "代替案をスニペットに保存しました",
       "modelInherit": "モデルを継承",
       "actionBarKeep": "キープ",
       "actionBarRetry": "再試行",
