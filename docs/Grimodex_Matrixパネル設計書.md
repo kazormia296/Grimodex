@@ -268,6 +268,9 @@ Chapter 行のセル自体には ● は描画されない（folder ノードは
 | `heatmap` | 言及回数を背景色の濃淡で | 集中・分散の俯瞰 | Phase B |
 | `pov-color` | POV キャラの色で塗り分け | 視点配分の俯瞰 | Phase B |
 | `role-aware` | actor / target / mentioned / POV を視覚分離 | 誰が能動側／受動側／視点かを区別する | Phase B |
+| `beat-list` | シーンの Unplaced beat 箇条書きを各セル行に表示 | Beat ベースで計画を俯瞰する | Phase B（オプション） |
+
+**`beat-list` モードについて**: Matrix の主用途は記号による俯瞰であるため、Beat 箇条書き表示は Toggle で切替可能なオプションとする（デフォルト OFF）。列は Codex エントリではなく Beat 概要の表示に切り替わる。Grid パネルが Beat の主要計画ビューであり、Matrix では補助的なオプションとして提供する。
 
 `dot` モードでもセル背景のカラーで根拠を区別する：
 

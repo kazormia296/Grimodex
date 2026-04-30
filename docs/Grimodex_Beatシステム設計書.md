@@ -84,6 +84,21 @@ D&D による状態遷移は、フロント側で
 
 生成統計（プロンプトトークン数、モデル名等）を取りたい場合のみ、将来的に `scene_beats` テーブルを別途追加する余地を残す（v1 では実装しない）。
 
+### Beat と Synopsis の役割分担
+
+Beat と Synopsis は同じ「シーンの計画情報」を異なる形式で表現する。両者を明確に分離することで、Novelcrafter が抱える「Plan モードと Beat が断絶している」問題を解消する。
+
+| | Beat | Synopsis |
+|---|---|---|
+| **形式** | 構造的計画（箇条書き） | 叙述的要約（散文） |
+| **主な書き手** | 著者（構成段階） | 著者 or AI（まとめ段階） |
+| **主な用途** | Grid での計画・Editor での生成トリガー | AI コンテキスト補助・シーン概要参照 |
+| **Grid 表示** | 主表示（Beat 箇条書き）※Phase B | 副表示（折りたたみ）※Phase B |
+
+Beat を「計画の一級市民」として扱うことで、Grid で Beat を書いて計画 → そのまま Editor で D&D して生成、という一貫したフローが成立する。
+
+将来的には相互変換（Beats → Synopsis AI生成 / Synopsis → Beat 提案）を Phase B+ で提供する。
+
 ### Subplot は Codex `lore` タイプを流用
 
 Subplot 専用タイプは追加せず、既存の `lore` タイプ + `#subplot` タグで運用する。
@@ -244,30 +259,54 @@ paste handler で `generatedProseBlock` を unwrap する場合も AuthorshipMar
 
 ## UI 表現
 
-### Editor 上部の Beats セクション
+### SceneMetaPanel（右パネル）
 
-Synopsis セクションと並列に配置。Beats セクションは折りたたみ可能で、Unplaced・Placed が両方0件のときはデフォルト折りたたみ。
+**Phase A 実装済み:** Synopsis・POV・Location は Editor 上部の `SynopsisHeader`、Unplaced/Placed Beats の一覧は `BeatsHeader` にそれぞれ配置されており、本文エリアの上端を占有している。
+
+> **Phase B 予定:** Synopsis・POV・Location・Beats を Editor 本文の**右側パネル**（`SceneMetaPanel`）にまとめる。本文エリアを圧迫しない配置にするとともに、「参照しながら書く」ための常時可視領域として機能させる。
+
+**基本仕様（Phase B 目標）:**
+
+- 幅: 256px 固定（Phase B でリサイズ可）
+- デフォルト: **開き**（参照しながら書くのが標準ワークフローのため）
+- トグルボタンでパネル全体を折りたたみ可能
+- Focus Mode 有効時は自動的に折りたたむ
+- `EditorPane` のレイアウトを flex-row に変更し、DndContext はパネルと本文の両方を包む（Unplaced beat → 本文の D&D は変わらず機能する）
 
 ```
-┌──────────────────────────────────────────────────────┐
-│ › Synopsis  雨の夜、朱音は十年ぶりに故郷の廃社へ...   │
-├──────────────────────────────────────────────────────┤
-│ ▾ Beats  3 unplaced · 2 placed              [+ Beat] │
-│                                                       │
-│  📌 Unplaced (drag to insert in document):           │
-│  ┃ Setting: 雨の夜、廃社の前で立ち止まる朱音         │
-│  ┃ Conflict: 祭壇に置かれた朱紐を見つける            │
-│  ┃ Memory: 触れた瞬間に流れ込む見知らぬ記憶          │
-│                                                       │
-│  📍 Placed (in document order):                      │
-│  ┃ Setting beat (line 3) — generated                 │
-│  ┃ Dialog beat (line 18)                             │
-└──────────────────────────────────────────────────────┘
+┌─ Toolbar ──────────────────────────────────────────────────────┐
+│                                          │                     │
+│  [本文エリア]                             │  POV:  花子 ▾      │
+│                                          │  Location: 廃社 ▾  │
+│  ┌─ ⠿ Beat ──────── [▼][⋮][🗑] ─┐      │  ─────────────      │
+│  │ Dorothyが...                   │      │  Synopsis           │
+│  ├────────────────────────────────┤      │  ┌──────────────┐   │
+│  │ [Model ▾]  [⚡Generate]        │      │  │ 雨の夜、朱音 │   │
+│  └────────────────────────────────┘      │  └──────────────┘   │
+│                                          │  ─────────────      │
+│  生成された prose...                      │  Beats  [+ Beat]    │
+│                                          │  ┃ 廃社の前で立...   │
+│  ┌─ generatedProseBlock ───────┐         │  ┃ 朱紐を見つける    │
+│  │ ドロシーは...               │         │  ┃ 記憶が流れ込む    │
+│  ├────────────────────────────┤          │  ─────────────      │
+│  │[✓ Keep][↺ Retry][✕ Discard]│         │  Placed (2)         │
+│  └────────────────────────────┘          │  ┃ Beat (line 3) ✓  │
+│                                          │  ┃ Beat (line 18)   │
+└──────────────────────────────────────────┴─────────────────────┘
 ```
+
+**右パネル内の各セクション:**
+
+| セクション | 内容 | 挙動 |
+|-----------|------|------|
+| POV / Location | シーンの POV キャラ・場所セレクタ | 既存の `SynopsisHeader` から移動 |
+| Synopsis | 自由テキストのシーン要約 | 編集可。AI コンテキスト補助として使用 |
+| Beats（Unplaced） | Unplaced beat の一覧・追加・編集 | 縦線を掴んで本文にドラッグ → Placed に遷移 |
+| Beats（Placed） | Placed beat の参照リスト（ドキュメント順） | クリックで本文の該当位置にスクロール |
 
 **Unplaced セクションの挙動:**
 
-- 左の縦線（`┃`）を掴んで本文にドラッグ → Placed に遷移
+- 縦線（`┃`）を掴んで本文にドラッグ → Placed に遷移（右パネルから本文への水平 D&D）
 - `+ Beat` ボタンで新規 Unplaced beat を追加
 - 並び順は `unplaced_beats_doc` 配列の順序で決定。D&D で並べ替え可
 - 各項目の右に `[⋮]` メニュー: Edit / Place at end / Duplicate / Delete
@@ -280,24 +319,85 @@ Synopsis セクションと並列に配置。Beats セクションは折りた�
 
 ### 本文中の Placed beat 表示
 
+**Phase A 実装済み:**
+
 ```
-┌─ Beat ──────────────────────────── [▼] [⚡Generate] [⋮] ┐
-│ Dorothyがトトをベッドの下から取り出し、地下室に向かう。       │
-│ 家が揺れて転倒し、サイクロンに巻き込まれる感触。              │
-│ @トト [pace: slow]                                       │
-└──────────────────────────────────────────────────────────┘
+┌─  Beat ──────────────── [POV: 花子] [▼] [⋮] [🗑] ─┐
+│ Dorothyがトトをベッドの下から取り出し、地下室に向かう。 │
+│ 家が揺れて転倒し、サイクロンに巻き込まれる感触。        │
+│ @トト [pace: slow]                                   │
+│ [⚡Generate]                                          │   ← ヘッダー内ボタン
+└─────────────────────────────────────────────────────┘
 
-（↓生成された prose、通常の段落として並ぶ）
-ドロシーはベッドの下に手を伸ばし、震えるトトを抱き寄せた...
+（↓生成された prose）
+┌─ generatedProseBlock ───────────────────────────────┐
+│ ドロシーはベッドの下に手を伸ばし、震えるトトを抱き寄せた... │
+│ ...                                                   │
+└─────────────────────────────────────────────────────┘
 
-┌─ Beat (collapsed) ──── トト視点の恐怖描写... ── [▶] [⋮] ┐
-└──────────────────────────────────────────────────────────┘
+┌─  Beat (collapsed) ──── トト視点の恐怖描写... ── [▶] [⋮] [🗑] ┐
+└──────────────────────────────────────────────────────────────────┘
 ```
 
-- 折りたたみ時はヘッダーと冒頭文だけ表示
-- 左ボーダーの色で Attribution と区別する（Beat: 黄色系、Attribution: 紫系）
-- 生成中はストリーミング表示（prose が下に追記されていく）
-- ヘッダー右の操作: 折りたたみトグル `[▼]/[▶]`、`[⚡Generate]`（未生成時のみ）、`[⋮]` メニュー
+> **Phase B 予定:** `⠿` D&D ハンドルをヘッダー左端に追加。Generate ボタンをフッターに移動してモデルセレクタも併置。生成完了直後に `generatedProseBlock` 下端へ ephemeral アクションバー（Keep / Retry / Discard）を表示。`[Clear Beat]` をフッターに追加。
+>
+> ```
+> ┌─ ⠿  Beat ─────────────── [POV: 花子] [▼] [⋮] [🗑] ─┐
+> │ Dorothyがトトをベッドの下から取り出し、地下室に向かう。  │
+> │ 家が揺れて転倒し、サイクロンに巻き込まれる感触。         │
+> │ @トト [pace: slow]                                    │
+> ├──────────────────────────────────────────────────────┤
+> │ [Model: Sonnet 4.6 ▾]              [⚡Generate]       │   ← フッター
+> └──────────────────────────────────────────────────────┘
+>
+> （↓生成された prose）
+> ┌─ generatedProseBlock ────────────────────────────────┐
+> │ ドロシーはベッドの下に手を伸ばし、震えるトトを抱き寄せた... │
+> │ ...                                                    │
+> ├────────────────────────────────────────────────────── ┤
+> │  [✓ Keep]   [↺ Retry]   [✕ Discard]                  │  ← 生成完了直後のみ
+> └──────────────────────────────────────────────────────┘
+>
+> ┌─ ⠿  Beat (collapsed) ──── トト視点の恐怖描写... ── [▶] [⋮] [🗑] ┐
+> └───────────────────────────────────────────────────────────────────┘
+> ```
+
+**ヘッダー行:**
+
+- `⠿` ドラッグハンドル（Phase B）: Beat ブロック（+ 直後の `generatedProseBlock`）を本文内の任意位置に移動
+- POV チップ（`[POV: 花子]`）: シーン POV と異なる場合のみ表示
+- `[▼]/[▶]`: 折りたたみトグル
+- `[⋮]`: 操作メニュー
+- `[🗑]`: Beat のみ削除（prose は残す）のショートカット
+
+**フッター行（展開時のみ表示、Phase B）:**
+
+- モデルセレクタ: Beat ごとに生成モデルを上書き可能（チャットパネルと同じセレクタコンポーネントを再利用）。省略時はプロジェクトデフォルトモデルを継承
+- `[⚡Generate]`: 未生成時は「Generate」、生成済み（`generatedProseBlock` が存在）時は「Regenerate」と表示
+- `[Clear Beat]`（Phase B）: 次の Beat またはドキュメント末尾までのすべての本文内容（`generatedProseBlock` + 手動テキスト）を削除。確認ダイアログあり（後述）
+
+**生成後 ephemeral アクションバー（Phase B）:**
+
+生成ストリーミング完了後、`generatedProseBlock` の下端に一時的なアクションバーを表示する。
+
+| ボタン | 動作 |
+|-------|------|
+| `✓ Keep` | バーを閉じる（テキストは確定済み、変更なし） |
+| `↺ Retry` | `generatedProseBlock` を差し替えて再生成（`modified=true` の場合は確認なし） |
+| `✕ Discard` | `generatedProseBlock` を削除 |
+
+- バーが表示中はフッターの Generate/Regenerate を非活性にする
+- ユーザーが本文を編集し始めるか、Beat 外をクリックするとバーは自動的に閉じる（Keep 扱い）
+
+**折りたたみ時:**
+
+ヘッダーと冒頭文のみ表示。フッターは非表示。
+
+**左ボーダーの色:**
+
+- Beat ヘッダー: 黄色系
+- `generatedProseBlock`: 控えめなグレー
+- Attribution（AuthorshipMark）: 紫系（別レイヤーで共存）
 
 ### Beat 内の特殊記法
 
@@ -400,10 +500,11 @@ Unplaced beat には `Generate` ボタンを表示しない（本文中の位置
    - **追加**: Beat instructions 本文（角括弧記法を含む）
    - **追加**: この beat の POV（`attrs.pov` がセットされていればそれ、null ならシーン POV を継承）。AI に「この beat は X の視点で書く」と明示
    - **追加（条件付き）**: 自分より後ろの Placed beat および全ての Unplaced beat を「予定されているビート」として注入（Settings で切替可能、default: ON）
-3. Vercel AI SDK でストリーミング生成
+3. Vercel AI SDK でストリーミング生成。生成中はフッターの Generate / Regenerate を非活性にする
 4. Beat ノードの**直後**に `generatedProseBlock`（`beatId = sceneBeat.attrs.id`、内部に空の段落1個）を挿入。schema は `content: 'block+'` のため子ゼロのブロックは許可されない（PM の schema validation で reject される）。`defining: true` の境界保護を維持するため、空状態を `block*` に緩めるのではなく **必ず初期段落1個を持たせて挿入** する
 5. ストリーミングで届くテキストを上記初期段落に追記しつつ、各 text node に **AuthorshipMark='ai'** を自動付与（既存機構）。段落跨ぎが必要になったら通常の paragraph split で次段落をブロック内に追加
 6. ブロックの存在自体が「生成済み」を表すため、Beat ノード側のフラグ更新は不要
+7. ストリーミング完了後、`generatedProseBlock` の下端に **ephemeral アクションバー**（Keep / Retry / Discard）を表示。ユーザーが本文を編集し始めるか Beat 外をクリックするとバーは自動的に閉じる（Keep 扱い）
 
 ### 生成失敗時の挙動
 
@@ -419,13 +520,14 @@ Unplaced beat には `Generate` ボタンを表示しない（本文中の位置
 
 | 項目 | 動作 |
 |------|------|
-| Regenerate | 既存の prose を削除して再生成 |
+| Regenerate | 既存の `generatedProseBlock` を差し替えて再生成（ephemeral bar の Retry と同等） |
 | Generate alternative | 既存を残したまま別バージョンを生成（Snippet として保存） |
 | Edit beat | Beat 内容を編集 |
 | Convert to text | Beat を通常の段落テキストに変換（prose だけ残したいとき） |
 | Unplace | Beat を Unplaced セクションに戻す（prose は残る、Beat だけ移動） |
-| Delete beat only | Beat だけ削除、prose は残す |
-| Delete beat and prose | Beat と紐づく prose を両方削除 |
+| Delete beat only | Beat だけ削除、prose は残す（ヘッダーの `[🗑]` と同等） |
+| Delete beat and prose | Beat と紐づく `generatedProseBlock` を両方削除 |
+| Clear Beat | 次の Beat またはドキュメント末尾までの**すべての本文内容**（`generatedProseBlock` + 手動テキスト）を削除。確認ダイアログあり |
 
 ### Unplaced beat の `[⋮]` メニュー
 
@@ -443,9 +545,11 @@ Unplaced beat には `Generate` ボタンを表示しない（本文中の位置
 ### Editor との接続
 
 - Placed beat は Editor の TipTap カスタムノード（`sceneBeat` / `generatedProseBlock`）として実装、Unplaced beat は `tree_nodes.unplaced_beats_doc` を読み取る独立 TipTap editor で実装
+- Synopsis・POV・Location・Beats セクション（Unplaced + Placed）は **SceneMetaPanel**（右パネル、256px）にまとめる。`EditorPane` は flex-row レイアウトに変更し、既存の `SynopsisHeader` / `BeatsHeader` はパネル内に移動する
+- `DndContext` は `EditorPane` 全体を包むため、右パネルから本文への水平 D&D（Unplaced → Placed）は引き続き dnd-kit で機能する
 - 既存の Attribution（AuthorshipMark）、Codex ハイライトと共存。`generatedProseBlock` は inline mark の AuthorshipMark と別レイヤーで動作するため干渉しない
 - ステータスバーに「Beats: 6 (3 generated)」などの統計を表示（"generated" は対応 `generatedProseBlock` を持つ Placed beat 数）
-- Focus mode では Beat を非表示にするオプション
+- Focus mode 有効時は SceneMetaPanel を自動折りたたみ
 - リニア編集モードでの Beat 表示は Settings で切替（通常表示 / 折りたたみ / 非表示）
 
 ### Codex との接続
@@ -465,6 +569,17 @@ Unplaced beat には `Generate` ボタンを表示しない（本文中の位置
 - Matrix のセル右クリック → 「Add beat to this scene」で Unplaced beat を追加（Matrix 設計書参照）
 - 列の Codex エントリは `@mention` として自動挿入される
 - シーン行ヘッダーの右クリックでも Beat 追加可能（Codex 自動挿入なし）
+- Matrix セルへの Beat 箇条書き表示は**オプション**（Toggle で切替）。Matrix の主用途は記号による俯瞰であるため、デフォルトは非表示
+
+### Grid との接続
+
+Grid パネルは Beat と Synopsis の両方を表示する主要な計画ビューとして機能する。
+
+- シーンカードの**主表示**: `unplaced_beat_preview` を Beat 箇条書きとして表示（現在のテキストプレビューを置き換え）
+- シーンカードの**副表示**: Synopsis テキスト（折りたたみ or 小さく表示）
+- Grid からの Beat 追加（右クリック or [+ Beat] ボタン）は既存設計通り
+- Beat を主表示にすることで「Grid で計画 → Editor で生成」という一貫したフローが成立する
+- 詳細は Grid 設計書を参照（別タスクで追記）
 
 ### 伏線レジスタとの接続
 
@@ -544,21 +659,12 @@ Unplaced beat には `Generate` ボタンを表示しない（本文中の位置
 - [x] Placed beat の本文中表示（折りたたみ含む）
 - [x] `Generate` ボタンによるストリーミング生成（Beat 直後に空 `generatedProseBlock` を挿入し、内部に AuthorshipMark='ai' 付き text を流す）
 - [x] `generatedProseBlock` の左ボーダー（控えめなグレー、AuthorshipMark の紫系・Beat ヘッダの黄色系と分離）
-- [x] Placed beat の `Regenerate`（対応 `generatedProseBlock` ごと差し替え。`modified=true` 時は確認ダイアログ）/ `Unplace` / `Convert to text` / `Delete beat only` / `Delete beat and prose`
+- [x] Placed beat の `Regenerate` / `Unplace` / `Convert to text` / `Delete beat only` / `Delete beat and prose`
 - [x] **POV オーバーライド UI**: Beat ヘッダーから POV を選択（character タイプの Codex から選択 or null）。シーン POV と異なる場合のみ `POV: 花子` チップを表示
 - [x] 生成プロンプトへの POV 注入（`attrs.pov` または継承された scene POV を AI に渡す）
 
-**Editor 上部 Beats セクション（Unplaced beat の表示・編集）:**
-- [x] `SynopsisHeader.tsx`（`src/features/editor/`）と同じ親 div の兄弟要素として `BeatsHeader.tsx` を新規作成（既存 Synopsis セクションは独立 DOM のため衝突しない）
-- [x] `tree_nodes.unplaced_beats_doc` を読み込んで Unplaced beat を一覧表示・追加・編集（独立 TipTap editor、Codex メンション拡張を共有）
-- [x] Placed beat の一覧表示（`PlacedBeatList.tsx`、本文 EditorView を読み取って `sceneBeat` ノードへの参照を生成）
-- [x] `+ Beat` で Unplaced beat 追加（`unplaced_beats_doc` 配列末尾に新規エントリを push）
-- [x] Unplaced beat の `[⋮]` メニュー（Edit / Place at end / Duplicate / Delete）
-- [x] Unplaced beat の「Place at end of document and generate」（`generateBeatOnce.ts` で hook 外の fire-and-forget 生成を実装）
-
 **D&D による状態遷移:**
 - [x] Unplaced → Placed: @dnd-kit でドラッグハンドルを実装。エディタ領域へドロップで `placeBeatAtEnd` を呼び出し、自動保存で DB に反映（`EditorPane` の `DndContext` + `useDroppable`）
-- [ ] Placed → Unplaced: D&D は未実装（メニューの「Unplaced に戻す」で代替。Phase B で D&D 実装予定）
 - [x] **v1 制限の明文化**: Unplace 時のトーストに「旧生成段落は文書内に残ります」と表示。Unplace→再 Placed 後の Regenerate は新規ブロックを Beat 直後に挿入し、旧段落は通常段落として残る仕様（`beatOperations.ts` コメント参照）
 
 **保存ペイロード（フロント側で計算してバックエンドに送る）:**
@@ -573,14 +679,38 @@ Unplaced beat には `Generate` ボタンを表示しない（本文中の位置
 **Phase A 既知の制限・v1 仕様:**
 - Unplace した beat を再度 Placed に戻しても、unwrap 済みの旧生成段落との連結は復元されない（片道変換）
 - Placed → Unplaced の D&D は未実装（メニューボタンで代替、Phase B）
-- Placed beat の並び替え D&D は未実装（Phase B）
+- SceneMetaPanel（右パネル）は未実装（SynopsisHeader / BeatsHeader のエディタ上部配置が現行、Phase B で右パネル化）
 
 依存: Editor、Chat のコンテキスト構築機構、Attribution、Codex メンション、@dnd-kit
 
-### Phase B: Beat type と高度な操作
+### Phase B: Beat type・SceneMetaPanel・高度な操作
 
+**SceneMetaPanel（右パネル）:**
+- [ ] `EditorPane.tsx` のレイアウトを flex-row に変更（本文エリア + 右パネル 256px）
+- [ ] `SceneMetaPanel.tsx` を新規作成。内部に POV/Location セレクタ・Synopsis・Unplaced Beats・Placed Beats リストを配置
+- [ ] 既存の `SynopsisHeader.tsx` / `BeatsHeader.tsx` のコンテンツを `SceneMetaPanel` 内にリファクタ（ロジックは流用）
+- [ ] パネルトグルボタン（`EditorPane` のツールバー端）でパネルを折りたたみ可能
+- [ ] Focus Mode 有効時はパネルを自動折りたたみ
+- [ ] DndContext は EditorPane 全体を包む形を維持（右パネルから本文への D&D が機能するよう）
+- [ ] SceneMetaPanel のリサイズ対応（幅を自由に調整可能に）
+
+**Beat UI 拡張:**
+- [ ] **Beat フッター**: モデルセレクタ（Beat ごとの生成モデル上書き、省略時はプロジェクトデフォルト継承）+ Generate/Regenerate ボタンをフッターに移動
+- [ ] **ephemeral アクションバー**: 生成完了後に `generatedProseBlock` 下端へ Keep / Retry / Discard を表示。Beat 外クリックまたは編集開始で自動 Keep
+- [ ] **Clear Beat**: 次の Beat またはドキュメント末尾までの本文内容（`generatedProseBlock` + 手動テキスト）を全削除。確認ダイアログあり
+- [ ] **Beat ブロックの D&D 移動ハンドル**: SceneBeat NodeView に `⠿` ハンドルを追加し、本文内の任意位置にドラッグ移動可能（`generatedProseBlock` も一緒に移動）
+- [ ] Placed → Unplaced の D&D 実装（SceneMetaPanel への水平ドラッグ）
+
+**Beat type:**
 - [ ] Beat type（`free` / `summary` / `guided` / `dialogue` / `setting` / `micro`）の選択 UI
 - [ ] Beat type に応じたデフォルトプロンプトの調整
+
+**Grid / Matrix 連携:**
+- [ ] **Grid パネルの Beat 主表示**: シーンカードの主表示を `unplaced_beat_preview` の箇条書きに変更、Synopsis は副表示へ（Grid 設計書と連携）
+- [ ] Matrix セルへの Beat 箇条書き表示オプション（Toggle で切替、デフォルト OFF）
+- [ ] **Beats ↔ Synopsis 相互変換**: Beats → Synopsis AI生成ボタン / Synopsis → Beat 提案ボタン（SceneMetaPanel 内）
+
+**その他:**
 - [ ] `Generate alternative` で Snippet 化
 - [ ] `Convert to text`（Beat を通常段落に変換）
 - [ ] ステータスバーに Beat 統計表示
@@ -675,16 +805,18 @@ Matrix で連続して複数シーンに Beat を追加するワークフロー�
 
 ## 既存設計書への影響
 
-本設計書の確定に伴い、以下の既存設計書への追記が必要（別タスク）：
+本設計書の確定に伴う既存設計書の更新状況：
 
-| 設計書 | 追記内容 |
-|--------|----------|
-| `Grimodex_Editorパネル設計書.md` | Beat ブロックノードの追加、ツールバー、`/` コマンド、Beat の操作メニュー、Beats セクションの UI |
-| `Grimodex_Codexパネル設計書.md` | `lore` タイプの subplot 運用、Codex メンションの Beat 内利用、Codex Quick の言及スキャン結果を Matrix と共有する記述 |
-| `Grimodex_Chatパネル設計書.md` | Beat 生成のコンテキスト構築（L1〜L4 + Beat instructions）を別フローとして記述 |
-| `Grimodex_統合DBスキーマ.md` | `tree_nodes.unplaced_beats_doc` / `tree_nodes.char_count` カラム追加。（将来）`scene_beats` テーブル追加の可能性。subplot のためのスキーマ変更は不要 |
-| `Grimodex_エクスポートダイアログ設計書.md` | Beat ブロックの Export 時挙動（除去） |
-| `Grimodex_Settingsパネル設計書.md` | Beat type プロンプト編集、Beat 注入トグル、subplot タグ名カスタマイズ |
+| 設計書 | 更新内容 | 状態 |
+|--------|----------|------|
+| `Grimodex_Editorパネル設計書.md` | Beat システム Phase A/B の記述分離、SceneMetaPanel 移行注記、Placed beat 表示の Phase B 変更予定、Clear Beat 追加 | ✅ 更新済み |
+| `Grimodex_Gridパネル設計書.md` | Beat 主表示化（Phase B）の注記追加、Beat システムとの接続に Phase B 予定を追記 | ✅ 更新済み |
+| `Grimodex_Matrixパネル設計書.md` | `beat-list` 表示モードをオプション（Phase B）として追加 | ✅ 更新済み |
+| `Grimodex_Codexパネル設計書.md` | `lore` タイプの subplot 運用、Codex メンションの Beat 内利用 | 未更新（別タスク） |
+| `Grimodex_Chatパネル設計書.md` | Beat 生成のコンテキスト構築（L1〜L4 + Beat instructions）を別フローとして記述 | 未更新（別タスク） |
+| `Grimodex_統合DBスキーマ.md` | `tree_nodes.unplaced_beats_doc` / `tree_nodes.char_count` カラム追加。（将来）`scene_beats` テーブル追加の可能性 | 未更新（別タスク） |
+| `Grimodex_エクスポートダイアログ設計書.md` | Beat ブロックの Export 時挙動（除去） | 未更新（別タスク） |
+| `Grimodex_Settingsパネル設計書.md` | Beat type プロンプト編集、Beat 注入トグル、subplot タグ名カスタマイズ | 未更新（別タスク） |
 
 ---
 

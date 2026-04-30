@@ -305,6 +305,8 @@ Attr / Cmt / Focus / TW の 4 つは独立したトグルで、組み合わせ�
 - `src/features/editor/SynopsisHeader.tsx` — 折りたたみヘッダー（Scene限定ガード済み: `nodeType !== "scene"` で null return）
 - `src/features/tree/SynopsisArea.tsx` — テキストエリア本体（同様に Scene 限定ガード済み）
 
+> **Phase B 予定**: Synopsis（Scene）・POV・Location セレクタは `SceneMetaPanel`（右パネル、256px）に移動する。現在のエディタ上部配置から右パネルへのリファクタリングにより、本文エリアを最大化し「参照しながら書く」レイアウトを実現する。詳細は Beat システム設計書「SceneMetaPanel（右パネル）」参照。
+
 ---
 
 ## D. エディタキャンバス
@@ -1382,9 +1384,9 @@ Codex Dynamic Phases のフェーズ定義、フェーズ切替 UI、`codex_phas
 
 ---
 
-## Beat システム（Beat 設計書 Phase A 連携）
+## Beat システム（Phase A 実装済 / Phase B 予定）
 
-Beat システムの導入に伴い、Editor キャンバスと上部ヘッダーに以下を追加する。詳細は [Beat システム設計書](./Grimodex_Beatシステム設計書.md)。
+Beat システムの Phase A は実装済み。Phase B で UI の大幅拡張と `SceneMetaPanel`（右パネル）への移行を行う。詳細は [Beat システム設計書](./Grimodex_Beatシステム設計書.md)。
 
 ### TipTap カスタムノード
 
@@ -1406,25 +1408,36 @@ Beat システムの導入に伴い、Editor キャンバスと上部ヘッダ�
 
 既存の `ChatMentionExtension`（`src/features/chat/extensions/ChatMentionExtension.ts`）と同等のメンション拡張を SceneEditor の Extensions リストに追加する。`sceneBeat` の `inline*` content 内で `@キャラ名` のオートコンプリートが動作する。Phase B で role 修飾子（`@name:actor` / `@name:target`）を Mention `attrs.role` で表現する。
 
-### Beats セクション（Synopsis 隣）
+### Beats セクション（現行: エディタ上部）
 
-`SynopsisHeader.tsx` と同じ親 div の兄弟要素として `BeatsHeader.tsx` を新規追加（既存 Synopsis セクションは独立 DOM のため衝突しない）。
+**Phase A 実装済み**: `SynopsisHeader.tsx` と同じ親 div の兄弟要素として `BeatsHeader.tsx` を追加。エディタ上部（Synopsis の下）に配置。
 
 - Unplaced beat の一覧表示・追加・編集・並べ替え
 - Placed beat の一覧表示（本文位置への参照）
-- D&D による Unplaced ↔ Placed の状態遷移
+- D&D による Unplaced → Placed の状態遷移
 - `+ Beat` ボタン
 
+> **Phase B 予定**: `SynopsisHeader` / `BeatsHeader` を廃止し、新規 `SceneMetaPanel.tsx`（右パネル）に統合。`EditorPane` のレイアウトを flex-col → flex-row に変更。`DndContext` は EditorPane 全体を包む形を維持するため、右パネル → 本文の水平 D&D は引き続き dnd-kit で機能する。
+
 ### Placed beat の本文中表示
+
+**Phase A 実装済み:**
 
 - ヘッダーバー: 折りたたみトグル `[▼]/[▶]`、`[⚡Generate]`（対応 `generatedProseBlock` 不在時のみ）、`[⋮]` メニュー、`POV: 花子` チップ（シーン POV と異なる場合のみ）
 - 折りたたみ時はヘッダーと冒頭文だけ表示
 - 左ボーダーで Attribution / 生成 prose ブロックと区別（Beat ヘッダ: 黄色系、Attribution: 紫系、`generatedProseBlock`: 控えめなグレー）
 - 生成中はストリーミング表示（Beat 直後の `generatedProseBlock` 内に prose が追記されていく）
 
+> **Phase B 予定（Beat UI 拡張）:**
+> - ヘッダーに `⠿` D&D ハンドルを追加（本文内の任意位置に Beat ブロックを移動）
+> - フッター行を追加: モデルセレクタ（Beat ごとの生成モデル上書き）+ Generate/Regenerate ボタン
+> - 生成完了後に `generatedProseBlock` 下端へ ephemeral アクションバー（`✓ Keep` / `↺ Retry` / `✕ Discard`）を表示。Beat 外クリックまたは編集開始で自動 Keep
+
 ### `[⋮]` メニュー（Placed beat）
 
-`Regenerate` / `Generate alternative` / `Edit beat` / `Convert to text` / `Unplace` / `Delete beat only` / `Delete beat and prose`
+**Phase A 実装済み:** `Regenerate` / `Generate alternative` / `Edit beat` / `Convert to text` / `Unplace` / `Delete beat only` / `Delete beat and prose`
+
+> **Phase B 追加予定:** `Clear Beat`（次の Beat ノードまでの本文内容をすべて削除、確認ダイアログあり）
 
 ### `/` コマンド
 

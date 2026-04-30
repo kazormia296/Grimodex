@@ -181,7 +181,9 @@ Help
 
 #### Synopsis vs Beat 冒頭の優先順位
 
-Synopsis が空でない場合は Synopsis を全文表示（最大3行、超過は `…`）。Synopsis が空の場合は Unplaced beat の最初3件の冒頭1行を bullet で表示。両方空の場合は灰色で「Empty scene」と表示。
+**現行（Phase A）**: Synopsis が空でない場合は Synopsis を全文表示（最大3行、超過は `…`）。Synopsis が空の場合は Unplaced beat の最初3件の冒頭1行を bullet で表示。両方空の場合は灰色で「Empty scene」と表示。
+
+> **Phase B 予定（Beat 主表示化）**: 優先順位を逆転させ、**Beat 箇条書きを主表示**、Synopsis を副表示（折りたたみ or 小さく）に変更する。Beat と Synopsis の役割分担（Beat = 構造的計画、Synopsis = 叙述的要約）を Grid 上でも視覚的に反映し、「Grid で Beat を計画 → Editor で D&D して生成」のフローを一貫させる。詳細は Beat システム設計書「Grid との接続」参照。
 
 #### Codex チップ
 
@@ -278,8 +280,10 @@ Synopsis は **Scenes パネル（Outline モード）／ Editor 上部の Synop
 ### Beat システムとの接続
 
 - カード本体の bullet 表示は Unplaced beat の冒頭文を読み出している（`tree_nodes.unplaced_beat_preview` キャッシュ、シーン保存時にフロントが `unplaced_beats_doc` から事前抽出）
-- Beat の追加・編集・削除は Editor で行う（Grid 上では編集しない、表示のみ）
+- Beat の追加・編集・削除は Editor で行う（Grid 上では表示のみ）
 - カードの `[⋮]` メニューに「Add unplaced beat...」を追加することは可能（Phase B 検討）
+
+> **Phase B 予定**: Beat 箇条書きをカードの主表示に昇格（現行は Synopsis の fallback）。Synopsis セクションを副表示（折りたたみ）に変更。`unplaced_beat_preview` の取得戦略・表示フォーマットは既存のまま流用可能。
 
 ### Timeline / Map との接続
 
