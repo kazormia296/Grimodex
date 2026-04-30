@@ -32,8 +32,17 @@ import { ForeshadowPayoffMark } from "@/features/foreshadow/marks/ForeshadowPayo
 import { ForeshadowPasteRule } from "@/features/foreshadow/marks/foreshadowPasteRule";
 export { COMMENT_REBUILD_META } from "@/features/editor/CommentDecorationPlugin";
 import { useCursorSettingsStore } from "@/features/editor/cursorSettingsStore";
+import {
+  createCodexMentionExtension,
+  type CodexMentionPopupState,
+} from "@/features/codex/CodexMentionExtension";
 import i18next from "@/lib/i18n";
 import type { Extensions } from "@tiptap/core";
+
+export interface EditorExtensionOptions {
+  /** When set, registers the Codex @mention extension and routes suggestion state here. */
+  setMentionPopup?: (state: CodexMentionPopupState | null) => void;
+}
 
 // Extends Paragraph to preserve empty paragraphs during markdown roundtrip.
 // tiptap-markdown serializes empty paragraphs as blank lines, which markdown-it
@@ -131,8 +140,10 @@ const ToolbarShortcutsExtension = Extension.create({
  * Each feature registers its extensions here to avoid merge conflicts
  * when multiple features add extensions in parallel.
  */
-export function getEditorExtensions(): Extensions {
-  return [
+export function getEditorExtensions(
+  options: EditorExtensionOptions = {},
+): Extensions {
+  const extensions: Extensions = [
     StarterKit.configure({ paragraph: false }),
     ParagraphWithEmptyLineSupport,
     Markdown.configure({ html: true }),
@@ -173,8 +184,18 @@ export function getEditorExtensions(): Extensions {
     ForeshadowPayoffMark,
     ForeshadowPasteRule,
   ];
+
+  if (options.setMentionPopup) {
+    extensions.push(createCodexMentionExtension(options.setMentionPopup));
+  }
+
+  return extensions;
 }
 
-export function getReadonlyEditorExtensions(): Extensions {
-  return getEditorExtensions().filter((ext) => ext.name !== "placeholder");
+export function getReadonlyEditorExtensions(
+  options: EditorExtensionOptions = {},
+): Extensions {
+  return getEditorExtensions(options).filter(
+    (ext) => ext.name !== "placeholder",
+  );
 }
