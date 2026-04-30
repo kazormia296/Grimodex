@@ -16,6 +16,7 @@ import {
   convertBeatToText,
   deleteBeatAndProse,
   deleteBeatOnly,
+  moveBeatToPosition,
   replaceBeatBlock,
   unplaceBeat,
 } from "./beatOperations";
@@ -395,3 +396,84 @@ describe("unplaceBeat", () => {
     editor.destroy();
   });
 });
+
+describe("moveBeatToPosition", () => {
+  it("存在しない beatId は false を返す", () => {
+    const editor = createEditor();
+    expect(moveBeatToPosition(editor, "ghost", 0)).toBe(false);
+    editor.destroy();
+  });
+
+  it("beat を前方に移動する", () => {
+    const editor = createEditor();
+    // para → beat1 → para → beat2
+    editor.commands.setContent({
+      type: "doc",
+      content: [
+        { type: "paragraph", content: [{ type: "text", text: "first" }] },
+        insertBeatJson("b1"),
+        { type: "paragraph", content: [{ type: "text", text: "middle" }] },
+        insertBeatJson("b2"),
+        { type: "paragraph", content: [{ type: "text", text: "last" }] },
+      ],
+    });
+
+    // Position 0 = before first paragraph
+    const result = moveBeatToPosition(editor, "b2", 0);
+    expect(result).toBe(true);
+
+    // b2 should now appear before b1
+    const ids: string[] = [];
+    editor.state.doc.descendants((n) => {
+      if (n.type.name === "sceneBeat") ids.push(n.attrs.id as string);
+    });
+    expect(ids[0]).toBe("b2");
+    expect(ids[1]).toBe("b1");
+    editor.destroy();
+  });
+
+  it("beat を後方に移動する", () => {
+    const editor = createEditor();
+    editor.commands.setContent({
+      type: "doc",
+      content: [
+        insertBeatJson("b1"),
+        { type: "paragraph", content: [{ type: "text", text: "between" }] },
+        insertBeatJson("b2"),
+      ],
+    });
+
+    // Find b2 end position and move b1 after b2
+    let b2End = -1;
+    editor.state.doc.descendants((n, pos) => {
+      if (n.type.name === "sceneBeat" && n.attrs.id === "b2") {
+        b2End = pos + n.nodeSize;
+      }
+    });
+    expect(b2End).toBeGreaterThan(0);
+
+    const result = moveBeatToPosition(editor, "b1", b2End);
+    expect(result).toBe(true);
+
+    const ids: string[] = [];
+    editor.state.doc.descendants((n) => {
+      if (n.type.name === "sceneBeat") ids.push(n.attrs.id as string);
+    });
+    expect(ids[0]).toBe("b2");
+    expect(ids[1]).toBe("b1");
+    editor.destroy();
+  });
+});
+
+function insertBeatJson(id: string) {
+  return {
+    type: "sceneBeat",
+    attrs: { id, beatType: "free", collapsed: false, pov: null, model: null },
+    content: [
+      {
+        type: "paragraph",
+        content: [{ type: "text", text: `Beat ${id}` }],
+      },
+    ],
+  };
+}

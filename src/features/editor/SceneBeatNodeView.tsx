@@ -3,10 +3,12 @@ import { useSettingsStore } from "@/features/settings/settingsStore";
 import {
   ChevronDown,
   ChevronRight,
+  GripVertical,
   Loader2,
   MoreVertical,
   Zap,
 } from "lucide-react";
+import { useDraggable } from "@dnd-kit/core";
 import { NodeViewContent, NodeViewWrapper } from "@tiptap/react";
 import type { ReactNodeViewProps } from "@tiptap/react";
 import { useTranslation } from "react-i18next";
@@ -159,6 +161,14 @@ export function SceneBeatNodeView({
     });
   };
 
+  const { listeners: dragListeners, attributes: dragAttributes } = useDraggable(
+    {
+      id: `placed-beat-${beatId ?? "unknown"}`,
+      data: { placedBeatId: beatId },
+      disabled: !beatId,
+    },
+  );
+
   return (
     <NodeViewWrapper
       as="div"
@@ -171,6 +181,16 @@ export function SceneBeatNodeView({
         contentEditable={false}
         className="flex select-none items-center gap-2 px-2 py-1 text-xs text-muted-foreground"
       >
+        <button
+          type="button"
+          data-testid="beat-drag-handle"
+          aria-label="Drag to reorder"
+          className="cursor-grab rounded p-0.5 text-muted-foreground/40 hover:bg-muted hover:text-muted-foreground active:cursor-grabbing"
+          {...dragListeners}
+          {...dragAttributes}
+        >
+          <GripVertical className="h-3 w-3" />
+        </button>
         <button
           type="button"
           data-testid="beat-collapse-toggle"

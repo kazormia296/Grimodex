@@ -187,3 +187,38 @@ export function unplaceBeat(
   editor.view.dispatch(tr);
   return true;
 }
+
+/**
+ * Move a placed beat (+ its generatedProseBlock if present) to a new position
+ * in the document. `targetPos` is a ProseMirror doc position; the beat will be
+ * inserted at that position (adjusted for the deletion).
+ */
+export function moveBeatToPosition(
+  editor: Editor,
+  beatId: string,
+  targetPos: number,
+): boolean {
+  const beat = findBeatById(editor, beatId);
+  if (!beat) return false;
+
+  const beatStart = beat.beatPos;
+  const beatEnd = beat.beatPos + beat.beatSize;
+
+  const gen = findGeneratedBlockForBeat(editor, beatId);
+  const blockNode = gen ? editor.state.doc.nodeAt(gen.blockPos) : null;
+  const rangeEnd =
+    gen && blockNode ? gen.blockPos + blockNode.nodeSize : beatEnd;
+
+  if (targetPos > beatStart && targetPos < rangeEnd) return false;
+
+  const moveSize = rangeEnd - beatStart;
+  const insertAt =
+    targetPos > rangeEnd ? targetPos - moveSize : Math.max(0, targetPos);
+
+  const content = editor.state.doc.slice(beatStart, rangeEnd).content;
+  const mtr = editor.state.tr;
+  mtr.delete(beatStart, rangeEnd);
+  mtr.insert(insertAt, content);
+  editor.view.dispatch(mtr);
+  return true;
+}
