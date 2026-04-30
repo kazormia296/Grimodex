@@ -526,48 +526,55 @@ Unplaced beat には `Generate` ボタンを表示しない（本文中の位置
 最小機能の Beat システム。**Unplaced/Placed の二状態を最初から実装**する（後付けはデータ移行が複雑になる）。
 
 **スキーマ migration:**
-- [ ] `tree_nodes.unplaced_beats_doc TEXT NOT NULL DEFAULT '[]'` カラム追加（Unplaced beat の保存先）
-- [ ] `tree_nodes.char_count INTEGER NOT NULL DEFAULT 0` カラム追加（Grid のステータスバー集計に使用、シーン保存時にフロントが値を同梱）
+- [x] `tree_nodes.unplaced_beats_doc TEXT NOT NULL DEFAULT '[]'` カラム追加（Unplaced beat の保存先）
+- [x] `tree_nodes.char_count INTEGER NOT NULL DEFAULT 0` カラム追加（Grid のステータスバー集計に使用、シーン保存時にフロントが値を同梱）
+- [x] `tree_nodes.unplaced_beat_preview TEXT` カラム追加（Grid 設計書参照）
 
 **TipTap 拡張:**
-- [ ] TipTap カスタムノード `sceneBeat` の実装（Placed beat 用、`attrs`: `id` / `collapsed` / `beatType` / `pov`）
-- [ ] TipTap カスタムノード `generatedProseBlock` の実装（`group: 'block'`、`content: 'block+'`、`defining: true`、`attrs`: `beatId` / `modified`）
-- [ ] `appendTransaction`: `generatedProseBlock` 内の編集を検出して `modified=true` に倒す
-- [ ] **Codex メンション拡張を SceneEditor に登録**: `ChatMentionExtension` と同等のメンション拡張（または共通化したもの）を SceneEditor の Extensions リストに追加。`sceneBeat` ノードは `inline*` content のため、Mention（`group: 'inline'`）はそのまま動作する想定だが、Phase A の最初に挿入動作を検証すること
-- [ ] **Mention Extension の suggestion provider 戦略**: Chat input / SceneEditor 本文 / Unplaced beat editor の3か所で同一の Mention Node を共有する一方、suggestion 候補のソース（pinned codex の優先度、検索範囲、自動 trigger）は文脈で異なる可能性がある。Phase A は「3か所すべて Chat と同一の suggestion provider を流用」で進め、provider のプラガブル化は Phase B 以降に分離する。Phase A 着手時に Chat の `ChatMentionExtension` の suggestion provider が他文脈で問題なく動くかを最初に検証
-- [ ] Beat の角括弧記法ハイライト（Decoration、視覚的強調のみ）
-- [ ] paste ハンドラ: シーン内 ID 重複検出と再採番、対応 beat 不在の `generatedProseBlock` を unwrap（中身の段落と AuthorshipMark は維持）
+- [x] TipTap カスタムノード `sceneBeat` の実装（Placed beat 用、`attrs`: `id` / `collapsed` / `beatType` / `pov`）
+- [x] TipTap カスタムノード `generatedProseBlock` の実装（`group: 'block'`、`content: 'block+'`、`defining: true`、`attrs`: `beatId` / `modified`）
+- [x] `appendTransaction`: `generatedProseBlock` 内の編集を検出して `modified=true` に倒す
+- [x] **Codex メンション拡張を SceneEditor に登録**: `CodexMentionExtension` を Beat 内 @メンションに配線済み（SceneBeatEditorContext 経由）
+- [x] **Mention Extension の suggestion provider 戦略**: Phase A は Chat と同一の provider を流用
+- [x] Beat の角括弧記法ハイライト（`BracketInstructionDecoration.ts`、Decoration で視覚的強調）
+- [x] paste ハンドラ: シーン内 ID 重複検出と再採番、対応 beat 不在の `generatedProseBlock` を unwrap（`pasteSanitize.ts`）
 
 **Editor 内 UI（Placed beat）:**
-- [ ] `/` コマンドで Placed beat 挿入
-- [ ] Placed beat の本文中表示（折りたたみ含む）
-- [ ] `Generate` ボタンによるストリーミング生成（Beat 直後に空 `generatedProseBlock` を挿入し、内部に AuthorshipMark='ai' 付き text を流す）
-- [ ] `generatedProseBlock` の左ボーダー（控えめなグレー、AuthorshipMark の紫系・Beat ヘッダの黄色系と分離）
-- [ ] Placed beat の `Regenerate`（対応 `generatedProseBlock` ごと差し替え。`modified=true` 時は確認ダイアログ）/ `Edit` / `Unplace` / `Convert to text` / `Delete beat only` / `Delete beat and prose`
-- [ ] **POV オーバーライド UI**: Beat ヘッダーから POV を選択（character タイプの Codex から選択 or null）。シーン POV と異なる場合のみ `POV: 花子` チップを表示
-- [ ] 生成プロンプトへの POV 注入（`attrs.pov` または継承された scene POV を AI に渡す）
+- [x] `/` コマンドで Placed beat 挿入（slash command 登録済み）
+- [x] Placed beat の本文中表示（折りたたみ含む）
+- [x] `Generate` ボタンによるストリーミング生成（Beat 直後に空 `generatedProseBlock` を挿入し、内部に AuthorshipMark='ai' 付き text を流す）
+- [x] `generatedProseBlock` の左ボーダー（控えめなグレー、AuthorshipMark の紫系・Beat ヘッダの黄色系と分離）
+- [x] Placed beat の `Regenerate`（対応 `generatedProseBlock` ごと差し替え。`modified=true` 時は確認ダイアログ）/ `Unplace` / `Convert to text` / `Delete beat only` / `Delete beat and prose`
+- [x] **POV オーバーライド UI**: Beat ヘッダーから POV を選択（character タイプの Codex から選択 or null）。シーン POV と異なる場合のみ `POV: 花子` チップを表示
+- [x] 生成プロンプトへの POV 注入（`attrs.pov` または継承された scene POV を AI に渡す）
 
 **Editor 上部 Beats セクション（Unplaced beat の表示・編集）:**
-- [ ] `SynopsisHeader.tsx`（`src/features/editor/`）と同じ親 div の兄弟要素として `BeatsHeader.tsx` を新規作成（既存 Synopsis セクションは独立 DOM のため衝突しない）
-- [ ] `tree_nodes.unplaced_beats_doc` を読み込んで Unplaced beat を一覧表示・追加・編集・並べ替え（独立 TipTap editor または共通の単一 editor、いずれも Codex メンション拡張を共有）
-- [ ] Placed beat の一覧表示（本文 EditorView を読み取って `sceneBeat` ノードへの参照を生成、クリックで本文内位置へスクロール）
-- [ ] `+ Beat` で Unplaced beat 追加（`unplaced_beats_doc` 配列末尾に新規エントリを push）
-- [ ] Unplaced beat の `[⋮]` メニュー（Edit / Place at end / Duplicate / Delete）
-- [ ] Unplaced beat の「Place at end of document and generate」ショートカット
+- [x] `SynopsisHeader.tsx`（`src/features/editor/`）と同じ親 div の兄弟要素として `BeatsHeader.tsx` を新規作成（既存 Synopsis セクションは独立 DOM のため衝突しない）
+- [x] `tree_nodes.unplaced_beats_doc` を読み込んで Unplaced beat を一覧表示・追加・編集（独立 TipTap editor、Codex メンション拡張を共有）
+- [x] Placed beat の一覧表示（`PlacedBeatList.tsx`、本文 EditorView を読み取って `sceneBeat` ノードへの参照を生成）
+- [x] `+ Beat` で Unplaced beat 追加（`unplaced_beats_doc` 配列末尾に新規エントリを push）
+- [x] Unplaced beat の `[⋮]` メニュー（Edit / Place at end / Duplicate / Delete）
+- [ ] Unplaced beat の「Place at end of document and generate」（Place at end のみ実装済み。"and generate" は Phase B）
 
 **D&D による状態遷移:**
-- [ ] Unplaced → Placed: フロントで `unplaced_beats_doc` から要素を pop、本文 EditorView に `sceneBeat` を挿入する PM transaction を発行、両者を1リクエストでバックエンドに保存（@dnd-kit + ProseMirror Bridge）
-- [ ] Placed → Unplaced: 逆方向。**本文の `sceneBeat` ノードのみ**を抽出して Unplaced 側に push（attrs と inline content だけを `unplaced_beats_doc` の新規エントリに変換）。隣接していた `generatedProseBlock` は **本文中にそのまま残す**が、`beatId` 参照先の sceneBeat は本文から消えるため、`appendTransaction` で beatId 不在を検出して `generatedProseBlock` を unwrap（中身の段落と AuthorshipMark は維持される）
-- [ ] **v1 制限の明文化**: 一度 Unplaced へ戻した beat を再度 Placed に戻しても、unwrap 済みの旧生成段落と再 Placed beat の連結は復元されない（unwrap で `beatId` リンクが切れるため）。次に Regenerate を押すと「対応 `generatedProseBlock` 不在 → Beat 直後に新規挿入」となり、旧生成段落は本文中に通常段落として残ったまま新しい生成 prose が並ぶ。これは `Convert to text` に類似する**片道変換**として扱う。Phase A の UX 仕様に明記し、Unplace ボタン押下時の確認トーストにも反映する
+- [x] Unplaced → Placed: @dnd-kit でドラッグハンドルを実装。エディタ領域へドロップで `placeBeatAtEnd` を呼び出し、自動保存で DB に反映（`EditorPane` の `DndContext` + `useDroppable`）
+- [ ] Placed → Unplaced: D&D は未実装（メニューの「Unplaced に戻す」で代替。Phase B で D&D 実装予定）
+- [x] **v1 制限の明文化**: Unplace 時のトーストに「旧生成段落は文書内に残ります」と表示。Unplace→再 Placed 後の Regenerate は新規ブロックを Beat 直後に挿入し、旧段落は通常段落として残る仕様（`beatOperations.ts` コメント参照）
 
 **保存ペイロード（フロント側で計算してバックエンドに送る）:**
-- [ ] `tree_nodes.content`（本文 PM JSON）
-- [ ] `tree_nodes.unplaced_beats_doc`（Unplaced 配列）
-- [ ] `tree_nodes.char_count`（本文の文字数。CharacterCount 拡張の値）
-- [ ] `tree_nodes.unplaced_beat_preview`（Unplaced 先頭3件 × 40文字、Grid 設計書参照）
+- [x] `tree_nodes.content`（本文 PM JSON）
+- [x] `tree_nodes.unplaced_beats_doc`（Unplaced 配列）
+- [x] `tree_nodes.char_count`（本文の文字数。`countSceneBodyChars` で Beat を除いた本文のみ計算）
+- [x] `tree_nodes.unplaced_beat_preview`（Unplaced 先頭3件 × 40文字、`extractUnplacedBeatPreview.ts`）
 
 **Export:**
-- [ ] Export 時の Beat ブロック除去：本文の `sceneBeat` ノードを除去、`generatedProseBlock` は unwrap（中身の段落だけ残す）。Unplaced beat は元から本文外なので Export 対象外（自然に除外される）
+- [x] Export 時の Beat ブロック除去：本文の `sceneBeat` ノードを除去、`generatedProseBlock` は unwrap（`exportEngine.ts`）。Unplaced beat は元から本文外なので Export 対象外
+
+**Phase A 既知の制限・v1 仕様:**
+- Unplace した beat を再度 Placed に戻しても、unwrap 済みの旧生成段落との連結は復元されない（片道変換）
+- Placed → Unplaced の D&D は未実装（メニューボタンで代替）
+- `Place at end and generate` の「generate」部分は未実装（Phase B）
+- Placed beat の並び替え D&D は未実装（Phase B）
 
 依存: Editor、Chat のコンテキスト構築機構、Attribution、Codex メンション、@dnd-kit
 
