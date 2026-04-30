@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { useTranslation } from "react-i18next";
 import { cn } from "@/lib/utils";
 import type { InlineAiCommand } from "./inlineAiTypes";
@@ -78,7 +79,11 @@ export function SlashCommandPopup() {
 
   if (!isOpen || items.length === 0 || !rect) return null;
 
-  return (
+  // Portal to <body> so `position: fixed` is viewport-relative.
+  // Without this, a transformed ancestor (the editor pane uses transforms
+  // for scroll/animation) becomes the containing block for fixed children,
+  // and the menu floats far from the caret. Same fix as EditorContextMenu.
+  return createPortal(
     <div
       ref={ref}
       style={{ top: rect.bottom + 4, left: rect.left }}
@@ -103,6 +108,7 @@ export function SlashCommandPopup() {
           </span>
         </button>
       ))}
-    </div>
+    </div>,
+    document.body,
   );
 }
