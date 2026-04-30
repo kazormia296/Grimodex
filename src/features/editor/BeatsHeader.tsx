@@ -2,6 +2,7 @@ import { useCallback, useState } from "react";
 import type { UnplacedBeat } from "@/features/editor/beat/unplacedBeatsStore";
 import { ChevronDown, ChevronRight, Plus } from "lucide-react";
 import type { Editor } from "@tiptap/core";
+import { useDroppable } from "@dnd-kit/core";
 import { useUnplacedBeatsStore } from "@/features/editor/beat/unplacedBeatsStore";
 import { UnplacedBeatItem } from "@/features/editor/UnplacedBeatItem";
 import { PlacedBeatList } from "@/features/editor/PlacedBeatList";
@@ -40,6 +41,9 @@ export function BeatsHeader({
   const addBeat = useUnplacedBeatsStore((s) => s.addBeat);
 
   const placedCount = countPlacedBeats(editor);
+
+  const { setNodeRef: setUnplacedDropRef, isOver: isOverUnplaced } =
+    useDroppable({ id: "unplaced-drop-zone" });
 
   const [collapsed, setCollapsed] = useState(true);
 
@@ -103,25 +107,37 @@ export function BeatsHeader({
 
       {!collapsed && (
         <div className="px-2 pb-2">
-          {beats.length > 0 && (
-            <div className="mb-1">
-              <p className="mb-0.5 text-[10px] font-medium text-muted-foreground">
-                📌 Unplaced (drag to insert in document):
+          <div
+            ref={setUnplacedDropRef}
+            data-testid="beats-unplaced-drop-zone"
+            className={`mb-1 rounded transition-colors ${isOverUnplaced ? "bg-accent/30 ring-1 ring-accent" : ""}`}
+          >
+            {beats.length > 0 ? (
+              <>
+                <p className="mb-0.5 text-[10px] font-medium text-muted-foreground">
+                  📌 Unplaced (drag to insert in document):
+                </p>
+                <ul data-testid="beats-unplaced-list" className="space-y-0.5">
+                  {beats.map((beat) => (
+                    <li key={beat.id}>
+                      <UnplacedBeatItem
+                        sceneId={sceneId}
+                        beat={beat}
+                        mainEditor={editor}
+                        setMentionPopup={setMentionPopup}
+                      />
+                    </li>
+                  ))}
+                </ul>
+              </>
+            ) : (
+              <p
+                className={`py-1 text-[10px] italic text-muted-foreground/60 ${isOverUnplaced ? "text-accent-foreground/70" : ""}`}
+              >
+                Drop beat here to unplace
               </p>
-              <ul data-testid="beats-unplaced-list" className="space-y-0.5">
-                {beats.map((beat) => (
-                  <li key={beat.id}>
-                    <UnplacedBeatItem
-                      sceneId={sceneId}
-                      beat={beat}
-                      mainEditor={editor}
-                      setMentionPopup={setMentionPopup}
-                    />
-                  </li>
-                ))}
-              </ul>
-            </div>
-          )}
+            )}
+          </div>
 
           {beats.length === 0 && placedCount === 0 && (
             <p className="text-[10px] text-muted-foreground/60 italic">

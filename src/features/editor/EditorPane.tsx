@@ -111,6 +111,7 @@ import type { DragEndEvent, DragStartEvent } from "@dnd-kit/core";
 import {
   moveBeatToPosition,
   placeBeatAtEnd,
+  unplaceBeat,
 } from "@/features/editor/beat/beatOperations";
 import type { UnplacedBeat } from "@/features/editor/beat/unplacedBeatsStore";
 import {
@@ -239,41 +240,58 @@ export function EditorPane({
     );
   }, []);
 
-  const handleBeatDragEnd = useCallback((event: DragEndEvent) => {
-    setDraggingBeat(null);
-    const { active, over } = event;
-    const ed = editorRef.current;
-    if (over?.id === "beat-editor-drop-zone" && ed) {
-      // Unplaced beat → place at end
-      const beat = active.data.current?.beat as UnplacedBeat | undefined;
-      const dragSceneId = active.data.current?.sceneId as string | undefined;
-      if (beat && dragSceneId) {
-        placeBeatAtEnd(ed, dragSceneId, beat);
-        return;
-      }
-      // Placed beat → move within document via pointer position
-      const placedBeatId = active.data.current?.placedBeatId as
-        | string
-        | undefined;
-      if (placedBeatId) {
-        const activatorEvent = event.activatorEvent as MouseEvent | TouchEvent;
-        const startX =
-          "clientX" in activatorEvent
-            ? activatorEvent.clientX
-            : ((activatorEvent as TouchEvent).touches[0]?.clientX ?? 0);
-        const startY =
-          "clientY" in activatorEvent
-            ? activatorEvent.clientY
-            : ((activatorEvent as TouchEvent).touches[0]?.clientY ?? 0);
-        const finalX = startX + event.delta.x;
-        const finalY = startY + event.delta.y;
-        const resolved = ed.view.posAtCoords({ left: finalX, top: finalY });
-        if (resolved) {
-          moveBeatToPosition(ed, placedBeatId, resolved.pos);
+  const handleBeatDragEnd = useCallback(
+    (event: DragEndEvent) => {
+      setDraggingBeat(null);
+      const { active, over } = event;
+      const ed = editorRef.current;
+
+      // Placed beat → Unplaced drop zone (B-17)
+      if (over?.id === "unplaced-drop-zone" && ed) {
+        const placedBeatId = active.data.current?.placedBeatId as
+          | string
+          | undefined;
+        if (placedBeatId) {
+          unplaceBeat(ed, placedBeatId, nodeId);
+          return;
         }
       }
-    }
-  }, []);
+
+      if (over?.id === "beat-editor-drop-zone" && ed) {
+        // Unplaced beat → place at end
+        const beat = active.data.current?.beat as UnplacedBeat | undefined;
+        const dragSceneId = active.data.current?.sceneId as string | undefined;
+        if (beat && dragSceneId) {
+          placeBeatAtEnd(ed, dragSceneId, beat);
+          return;
+        }
+        // Placed beat → move within document via pointer position
+        const placedBeatId = active.data.current?.placedBeatId as
+          | string
+          | undefined;
+        if (placedBeatId) {
+          const activatorEvent = event.activatorEvent as
+            | MouseEvent
+            | TouchEvent;
+          const startX =
+            "clientX" in activatorEvent
+              ? activatorEvent.clientX
+              : ((activatorEvent as TouchEvent).touches[0]?.clientX ?? 0);
+          const startY =
+            "clientY" in activatorEvent
+              ? activatorEvent.clientY
+              : ((activatorEvent as TouchEvent).touches[0]?.clientY ?? 0);
+          const finalX = startX + event.delta.x;
+          const finalY = startY + event.delta.y;
+          const resolved = ed.view.posAtCoords({ left: finalX, top: finalY });
+          if (resolved) {
+            moveBeatToPosition(ed, placedBeatId, resolved.pos);
+          }
+        }
+      }
+    },
+    [nodeId],
+  );
   const [titleEditing, setTitleEditing] = useState(false);
   const [titleDraft, setTitleDraft] = useState("");
   const [findOpen, setFindOpen] = useState(false);
