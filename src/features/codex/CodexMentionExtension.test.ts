@@ -58,6 +58,70 @@ describe("createCodexMentionExtension — suggestion provider", () => {
   });
 });
 
+describe("mention role attribute (B-6)", () => {
+  it("新規 mention はデフォルトで role=mentioned を持つ", () => {
+    const editor = new Editor({
+      extensions: getEditorExtensions({ setMentionPopup: vi.fn() }),
+    });
+    editor.commands.insertContent({
+      type: "mention",
+      attrs: { id: "1", label: "ドロシー" },
+    });
+    let role: string | null = null;
+    editor.state.doc.descendants((node) => {
+      if (node.type.name === "mention") role = node.attrs.role as string;
+    });
+    expect(role).toBe("mentioned");
+    editor.destroy();
+  });
+
+  it("role=actor を attrs に指定すると保存される", () => {
+    const editor = new Editor({
+      extensions: getEditorExtensions({ setMentionPopup: vi.fn() }),
+    });
+    editor.commands.insertContent({
+      type: "mention",
+      attrs: { id: "1", label: "ドロシー", role: "actor" },
+    });
+    let role: string | null = null;
+    editor.state.doc.descendants((node) => {
+      if (node.type.name === "mention") role = node.attrs.role as string;
+    });
+    expect(role).toBe("actor");
+    editor.destroy();
+  });
+
+  it("data-role=target を持つ HTML を parse すると role=target になる", () => {
+    const editor = new Editor({
+      extensions: getEditorExtensions({ setMentionPopup: vi.fn() }),
+    });
+    editor.commands.setContent(
+      '<p><span data-type="mention" data-id="1" data-label="X" data-role="target">@X</span></p>',
+    );
+    let role: string | null = null;
+    editor.state.doc.descendants((node) => {
+      if (node.type.name === "mention") role = node.attrs.role as string;
+    });
+    expect(role).toBe("target");
+    editor.destroy();
+  });
+
+  it("data-role なし既存 mention は role=mentioned として解釈される", () => {
+    const editor = new Editor({
+      extensions: getEditorExtensions({ setMentionPopup: vi.fn() }),
+    });
+    editor.commands.setContent(
+      '<p><span data-type="mention" data-id="1" data-label="Y">@Y</span></p>',
+    );
+    let role: string | null = null;
+    editor.state.doc.descendants((node) => {
+      if (node.type.name === "mention") role = node.attrs.role as string;
+    });
+    expect(role).toBe("mentioned");
+    editor.destroy();
+  });
+});
+
 describe("getEditorExtensions — mention wiring", () => {
   it("does NOT register the mention extension when no setter is provided", () => {
     const editor = new Editor({ extensions: getEditorExtensions() });

@@ -3,6 +3,24 @@ import type { SuggestionProps } from "@tiptap/suggestion";
 import type { CodexEntry } from "@/features/codex/api";
 import { useCodexStore } from "@/features/codex/codexStore";
 
+export type MentionRole = "mentioned" | "actor" | "target";
+
+const MentionWithRole = Mention.extend({
+  addAttributes() {
+    return {
+      ...this.parent?.(),
+      role: {
+        default: "mentioned" as MentionRole,
+        parseHTML: (el: Element) =>
+          (el.getAttribute("data-role") as MentionRole) ?? "mentioned",
+        renderHTML: (attrs: Record<string, unknown>) => ({
+          "data-role": (attrs.role as MentionRole) ?? "mentioned",
+        }),
+      },
+    };
+  },
+});
+
 export interface CodexMentionPopupState {
   items: CodexEntry[];
   selectedIndex: number;
@@ -21,14 +39,18 @@ export interface CodexMentionPopupState {
 export function createCodexMentionExtension(
   setPopup: (state: CodexMentionPopupState | null) => void,
 ) {
-  return Mention.configure({
+  return MentionWithRole.configure({
     HTMLAttributes: {
       class: "mention",
     },
     renderHTML({ options, node }) {
       return [
         "span",
-        { ...options.HTMLAttributes, "data-entry-id": node.attrs.id },
+        {
+          ...options.HTMLAttributes,
+          "data-entry-id": node.attrs.id,
+          "data-role": (node.attrs.role as MentionRole) ?? "mentioned",
+        },
         `${options.suggestion.char}${node.attrs.label ?? node.attrs.id}`,
       ];
     },
