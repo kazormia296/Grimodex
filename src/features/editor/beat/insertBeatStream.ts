@@ -80,6 +80,10 @@ export function ensureGeneratedBlock(
   const insertAt = beat.beatPos + beat.beatSize;
   const { tr } = editor.state;
   tr.setMeta(BEAT_STREAM_META, true);
+  // AiEditedPlugin strips authorship marks from inserts that land inside an
+  // AI-marked span unless this meta is set. Beat-side inserts are
+  // unconditionally programmatic, so always tag them.
+  tr.setMeta("programmaticInsert", true);
   tr.insert(insertAt, block);
   editor.view.dispatch(tr);
 
@@ -129,6 +133,15 @@ export function appendBeatChunk(
   const segments = chunk.split("\n");
   const { tr } = editor.state;
   tr.setMeta(BEAT_STREAM_META, true);
+  // Without programmaticInsert=true, AiEditedPlugin treats each chunk after
+  // the first as a user edit inside the AI span and strips its AuthorshipMark
+  // (so later chunks would render as "human" attribution). Mirror the inline-AI
+  // streaming convention here.
+  tr.setMeta("programmaticInsert", true);
+  // Streaming chunks should not pollute the undo stack; one Ctrl+Z should
+  // collapse the entire generated block (which is in history via
+  // ensureGeneratedBlock).
+  tr.setMeta("addToHistory", false);
 
   let pos = tailPos;
   segments.forEach((segment, i) => {

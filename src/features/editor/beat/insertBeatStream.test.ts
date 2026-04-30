@@ -3,6 +3,7 @@ import { describe, it, expect } from "vitest";
 import { Editor } from "@tiptap/core";
 import StarterKit from "@tiptap/starter-kit";
 import { AuthorshipMark } from "@/features/attribution/AuthorshipMark";
+import { createAiEditedPlugin } from "@/features/attribution/AiEditedPlugin";
 import { SceneBeatNode } from "@/features/editor/SceneBeatNode";
 import { GeneratedProseBlockNode } from "@/features/editor/GeneratedProseBlockNode";
 import {
@@ -12,8 +13,13 @@ import {
   findGeneratedBlockForBeat,
 } from "./insertBeatStream";
 
-function createEditor(content = "") {
-  return new Editor({
+/**
+ * `withAiEditedPlugin` mirrors EditorPane's runtime, where useAttribution()
+ * registers AiEditedPlugin. Chunks that don't tag programmaticInsert get
+ * their AuthorshipMark stripped by that plugin.
+ */
+function createEditor(content = "", { withAiEditedPlugin = false } = {}) {
+  const editor = new Editor({
     extensions: [
       StarterKit,
       AuthorshipMark,
@@ -22,6 +28,10 @@ function createEditor(content = "") {
     ],
     content,
   });
+  if (withAiEditedPlugin) {
+    editor.registerPlugin(createAiEditedPlugin());
+  }
+  return editor;
 }
 
 function insertBeat(editor: Editor, id: string, paragraphAfter = true) {
@@ -154,6 +164,41 @@ describe("appendBeatChunk", () => {
     expect(blockNode?.child(0).textContent).toBe("first");
     expect(blockNode?.child(1).textContent).toBe("second");
     expect(blockNode?.attrs.modified).toBe(false);
+    editor.destroy();
+  });
+
+  it("preserves AuthorshipMark='ai' across multiple chunks even when AiEditedPlugin is active (regression)", () => {
+    // Without programmaticInsert=true on the chunk transactions, AiEditedPlugin
+    // would strip the AuthorshipMark from chunks 2..N (they land inside the
+    // AI-marked span produced by chunk 1), making them render as "human".
+    const editor = createEditor("", { withAiEditedPlugin: true });
+    insertBeat(editor, "b1");
+    ensureGeneratedBlock(editor, "b1");
+    appendBeatChunk(editor, "b1", "Hello, ", {
+      model: "claude",
+      traceId: "t1",
+    });
+    appendBeatChunk(editor, "b1", "world.", { model: "claude", traceId: "t1" });
+    appendBeatChunk(editor, "b1", " Again.", {
+      model: "claude",
+      traceId: "t1",
+    });
+
+    const block = findGeneratedBlockForBeat(editor, "b1");
+    const blockNode = editor.state.doc.nodeAt(block!.blockPos);
+    expect(blockNode?.textContent).toBe("Hello, world. Again.");
+
+    let aiTextLen = 0;
+    blockNode!.descendants((node) => {
+      if (node.isText) {
+        const hasAi = node.marks.some(
+          (m) => m.type.name === "authorship" && m.attrs.source === "ai",
+        );
+        if (hasAi) aiTextLen += node.text!.length;
+      }
+    });
+    // EVERY character should remain AI-attributed.
+    expect(aiTextLen).toBe("Hello, world. Again.".length);
     editor.destroy();
   });
 
