@@ -39,13 +39,17 @@ export function GridCardChips({
   const entryIds = useSceneCodexPinsStore(
     (s) => s.pinsByScene[sceneId] ?? EMPTY_IDS,
   );
+  const isPinsLoaded = useSceneCodexPinsStore(
+    (s) => s.pinsByScene[sceneId] !== undefined,
+  );
   const addPin = useSceneCodexPinsStore((s) => s.addPin);
   const removePin = useSceneCodexPinsStore((s) => s.removePin);
   const entries = useCodexStore((s) => s.entries);
 
   useEffect(() => {
+    if (isPinsLoaded) return;
     void loadPinsForScene(sceneId);
-  }, [sceneId, loadPinsForScene]);
+  }, [sceneId, isPinsLoaded, loadPinsForScene]);
 
   const pinnedIds = useMemo(() => new Set(entryIds), [entryIds]);
 
