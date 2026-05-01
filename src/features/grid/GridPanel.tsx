@@ -82,7 +82,18 @@ export function GridPanel() {
   );
 
   function handleDragStart(e: DragStartEvent) {
-    setActiveId(String(e.active.id));
+    const activeIdStr = String(e.active.id);
+    const node = nodes.find(
+      (n) => n.id === activeIdStr.replace(/^(scene|column)-/, ""),
+    );
+    // eslint-disable-next-line no-console
+    console.log("[Grid DnD] dragStart", {
+      activeId: activeIdStr,
+      kind: activeDragKind(activeIdStr),
+      title: node?.title,
+      parentId: node?.parentId,
+    });
+    setActiveId(activeIdStr);
     setDropIndicator(null);
     setColumnDropIndicator(null);
   }
@@ -148,6 +159,22 @@ export function GridPanel() {
         orderedFolders,
         containerId,
       );
+      // eslint-disable-next-line no-console
+      console.log("[Grid DnD] column dragOver", {
+        activeTitle: activeNode?.title,
+        overId,
+        pointerX: pointerXRef.current,
+        overRect: { left: rect.left, width: rect.width },
+        relativeX: pointerXRef.current - rect.left,
+        zonePct:
+          rect.width > 0
+            ? ((pointerXRef.current - rect.left) / rect.width).toFixed(3)
+            : "n/a",
+        indicator,
+        targetTitle: indicator
+          ? nodes.find((n) => n.id === indicator.targetId)?.title
+          : null,
+      });
       setColumnDropIndicator(indicator);
       setDropIndicator(null);
     }
@@ -159,7 +186,19 @@ export function GridPanel() {
     setColumnDropIndicator(null);
     const activeIdStr = String(e.active.id);
     const overIdStr = e.over ? String(e.over.id) : "";
-    if (!overIdStr) return;
+    // eslint-disable-next-line no-console
+    console.log("[Grid DnD] dragEnd RAW", {
+      activeId: activeIdStr,
+      overId: overIdStr,
+      pointerX: pointerXRef.current,
+      pointerY: pointerYRef.current,
+      overRect: e.over?.rect,
+    });
+    if (!overIdStr) {
+      // eslint-disable-next-line no-console
+      console.log("[Grid DnD] dragEnd: over is null, no move");
+      return;
+    }
 
     const kind = activeDragKind(activeIdStr);
 
@@ -215,6 +254,16 @@ export function GridPanel() {
           } else {
             afterId = sceneId;
           }
+          // eslint-disable-next-line no-console
+          console.log("[Grid DnD] dragEnd SAME-PARENT-SCENE-REORDER", {
+            activeTitle: activeNode?.title,
+            sceneTitle: sceneNode?.title,
+            insertBefore,
+            afterId,
+            afterTitle: afterId
+              ? nodes.find((n) => n.id === afterId)?.title
+              : null,
+          });
           void moveNode(folderId, activeParent, afterId);
           return;
         }
@@ -241,6 +290,28 @@ export function GridPanel() {
         sceneParentMap,
         containerId,
       );
+      // eslint-disable-next-line no-console
+      console.log("[Grid DnD] dragEnd COLUMN-PATH", {
+        activeTitle: activeNode?.title,
+        overId: overIdStr,
+        pointerX: pointerXRef.current,
+        overRect: { left: rect.left, width: rect.width },
+        relativeX: pointerXRef.current - rect.left,
+        zonePct:
+          rect.width > 0
+            ? ((pointerXRef.current - rect.left) / rect.width).toFixed(3)
+            : "n/a",
+        target,
+        targetParentTitle: target
+          ? target.targetParentId
+            ? nodes.find((n) => n.id === target.targetParentId)?.title
+            : "(root)"
+          : null,
+        afterTitle:
+          target && target.afterId
+            ? nodes.find((n) => n.id === target.afterId)?.title
+            : null,
+      });
       if (target) {
         void moveNode(folderId, target.targetParentId, target.afterId);
       }
