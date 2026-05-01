@@ -519,6 +519,45 @@ describe("computeColumnDropTarget", () => {
     );
     expect(result).toBeNull();
   });
+
+  it("places column AFTER last loose scene when dropping 'before' a chapter that follows a loose column (regression)", () => {
+    // Tree (children of Act = "act", in sortOrder):
+    //   s1, s7   (loose scenes)
+    //   ch1, ch2 (chapter folders)
+    //   pa1, pa2 (Part folders — pa1 is being dragged)
+    // User drops pa1 to the LEFT zone of ch1 (between the loose column and ch1).
+    // Predecessor must be s7 (the last loose scene before ch1), NOT null —
+    // null would make pa1 the FIRST child of act, dumping it before s1 visually.
+    const fpm: Record<string, string | null> = {
+      act: null,
+      ch1: "act",
+      ch2: "act",
+      pa1: "act",
+      pa2: "act",
+    };
+    const orderedSiblings = [
+      { id: "act", parentId: null },
+      { id: "s1", parentId: "act" },
+      { id: "s7", parentId: "act" },
+      { id: "ch1", parentId: "act" },
+      { id: "ch2", parentId: "act" },
+      { id: "pa1", parentId: "act" },
+      { id: "pa2", parentId: "act" },
+    ];
+    const spm = { s1: "act", s7: "act", s_in_ch1: "ch1" };
+    const result = computeColumnDropTarget(
+      "pa1",
+      "scene-drop-s_in_ch1",
+      // pointerX in left zone of the over scene → resolves to "before ch1"
+      10,
+      { left: 0, width: 100 },
+      fpm,
+      orderedSiblings,
+      spm,
+      "act",
+    );
+    expect(result).toEqual({ targetParentId: "act", afterId: "s7" });
+  });
 });
 
 describe("activeDragKind", () => {

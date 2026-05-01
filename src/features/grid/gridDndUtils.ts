@@ -200,12 +200,12 @@ function isAdjacentColumnNoOp(
   targetId: string,
   position: "before" | "after",
   folderParentMap: Record<string, string | null>,
-  orderedFolders: Array<{ id: string; parentId: string | null }>,
+  orderedSiblings: Array<{ id: string; parentId: string | null }>,
 ): boolean {
   const activeParentId = folderParentMap[activeFolderId] ?? null;
   const targetParentId = folderParentMap[targetId] ?? null;
   if (targetParentId !== activeParentId) return false;
-  const siblings = orderedFolders
+  const siblings = orderedSiblings
     .filter((f) => f.parentId === activeParentId)
     .map((f) => f.id);
   const activeIdx = siblings.indexOf(activeFolderId);
@@ -236,7 +236,7 @@ function resolveColumnDropPosition(
   pointerX: number,
   overRect: { left: number; width: number },
   folderParentMap: Record<string, string | null>,
-  orderedFolders: Array<{ id: string; parentId: string | null }>,
+  orderedSiblings: Array<{ id: string; parentId: string | null }>,
 ): "before" | "after" | "nest" | null {
   const leftZone = overRect.left + overRect.width * 0.4;
   const rightZone = overRect.left + overRect.width * 0.6;
@@ -262,7 +262,7 @@ function resolveColumnDropPosition(
       targetId,
       initial,
       folderParentMap,
-      orderedFolders,
+      orderedSiblings,
     )
   ) {
     return null;
@@ -283,7 +283,7 @@ export function computeColumnDropIndicator(
   overRect: { left: number; width: number },
   sceneParentMap: Record<string, string | null>,
   folderParentMap: Record<string, string | null>,
-  orderedFolders: Array<{ id: string; parentId: string | null }>,
+  orderedSiblings: Array<{ id: string; parentId: string | null }>,
   containerId: string | null,
 ): ColumnDropIndicator | null {
   if (!overId) return null;
@@ -312,7 +312,7 @@ export function computeColumnDropIndicator(
     pointerX,
     overRect,
     folderParentMap,
-    orderedFolders,
+    orderedSiblings,
   );
   if (!position) return null;
   return { targetId, position };
@@ -326,7 +326,7 @@ export function computeColumnDropIndicator(
  * @param pointerX - Current pointer X (viewport coords)
  * @param overRect - Bounding rect of the over element
  * @param folderParentMap - Maps folderId → parentId
- * @param orderedFolders - All folder nodes sorted by sortOrder (resolves predecessor for "before")
+ * @param orderedSiblings - All folder nodes sorted by sortOrder (resolves predecessor for "before")
  * @param sceneParentMap - Maps sceneId → parentId (for resolving enclosing column)
  * @param containerId - The current Grid container; rejects drops onto its own loose area.
  */
@@ -336,7 +336,7 @@ export function computeColumnDropTarget(
   pointerX: number,
   overRect: { left: number; width: number },
   folderParentMap: Record<string, string | null>,
-  orderedFolders: Array<{ id: string; parentId: string | null }>,
+  orderedSiblings: Array<{ id: string; parentId: string | null }>,
   sceneParentMap: Record<string, string | null>,
   containerId: string | null,
 ): DropTarget | null {
@@ -366,7 +366,7 @@ export function computeColumnDropTarget(
     pointerX,
     overRect,
     folderParentMap,
-    orderedFolders,
+    orderedSiblings,
   );
   if (!position) return null;
   if (position === "nest") {
@@ -375,7 +375,7 @@ export function computeColumnDropTarget(
   const targetParentId = folderParentMap[targetId] ?? null;
   if (position === "before") {
     // Insert before target: predecessor is target's prev sibling in same parent (excluding active)
-    const siblings = orderedFolders.filter(
+    const siblings = orderedSiblings.filter(
       (f) => f.parentId === targetParentId && f.id !== activeFolderId,
     );
     const idx = siblings.findIndex((f) => f.id === targetId);

@@ -132,20 +132,27 @@ export function GridPanel() {
       }
 
       const folderParentMap: Record<string, string | null> = {};
-      const orderedFolders: Array<{ id: string; parentId: string | null }> = [];
+      const orderedSiblings: Array<{ id: string; parentId: string | null }> =
+        [];
       const sceneParentMap: Record<string, string | null> = {};
-      // CRITICAL: orderedFolders must be sorted by sortOrder (visual order),
+      // CRITICAL: orderedSiblings must be sorted by sortOrder (visual order),
       // not nodes-array insertion order. isAdjacentColumnNoOp and predecessor
       // calculations both rely on indexOf reflecting visual adjacency.
+      // Includes BOTH folders and scenes so predecessor calculations correctly
+      // see scene siblings (e.g. loose-column scenes between two chapter
+      // folders). Folder-only ordering missed those and produced afterId=null
+      // when dropping a Part between a loose column and a chapter column.
       const sortedNodes = [...nodes].sort((a, b) =>
         cmpKeys(a.sortOrder, b.sortOrder),
       );
       for (const n of sortedNodes) {
         if (n.nodeType === "folder") {
           folderParentMap[n.id] = n.parentId;
-          orderedFolders.push({ id: n.id, parentId: n.parentId });
         }
         if (n.nodeType === "scene") sceneParentMap[n.id] = n.parentId;
+        if (n.nodeType === "folder" || n.nodeType === "scene") {
+          orderedSiblings.push({ id: n.id, parentId: n.parentId });
+        }
       }
       const rect = e.over?.rect ?? { left: 0, width: 200 };
       const indicator = computeColumnDropIndicator(
@@ -155,7 +162,7 @@ export function GridPanel() {
         { left: rect.left, width: rect.width },
         sceneParentMap,
         folderParentMap,
-        orderedFolders,
+        orderedSiblings,
         containerId,
       );
       setColumnDropIndicator(indicator);
@@ -231,20 +238,24 @@ export function GridPanel() {
       }
 
       const folderParentMap: Record<string, string | null> = {};
-      const orderedFolders: Array<{ id: string; parentId: string | null }> = [];
+      const orderedSiblings: Array<{ id: string; parentId: string | null }> =
+        [];
       const sceneParentMap: Record<string, string | null> = {};
-      // CRITICAL: orderedFolders must be sorted by sortOrder (visual order),
+      // CRITICAL: orderedSiblings must be sorted by sortOrder (visual order),
       // not nodes-array insertion order. isAdjacentColumnNoOp and predecessor
       // calculations both rely on indexOf reflecting visual adjacency.
+      // Includes BOTH folders and scenes — see handleDragOver for rationale.
       const sortedNodes = [...nodes].sort((a, b) =>
         cmpKeys(a.sortOrder, b.sortOrder),
       );
       for (const n of sortedNodes) {
         if (n.nodeType === "folder") {
           folderParentMap[n.id] = n.parentId;
-          orderedFolders.push({ id: n.id, parentId: n.parentId });
         }
         if (n.nodeType === "scene") sceneParentMap[n.id] = n.parentId;
+        if (n.nodeType === "folder" || n.nodeType === "scene") {
+          orderedSiblings.push({ id: n.id, parentId: n.parentId });
+        }
       }
       const rect = e.over?.rect ?? { left: 0, width: 200 };
       const target = computeColumnDropTarget(
@@ -253,7 +264,7 @@ export function GridPanel() {
         pointerXRef.current,
         { left: rect.left, width: rect.width },
         folderParentMap,
-        orderedFolders,
+        orderedSiblings,
         sceneParentMap,
         containerId,
       );
