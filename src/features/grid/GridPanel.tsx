@@ -49,7 +49,7 @@ export function GridPanel() {
 
   const pinsByScene = useSceneCodexPinsStore((s) => s.pinsByScene);
 
-  const { chapters, looseScenes, totalChapters, totalScenes } =
+  const { chapters, looseScenes, orderedColumns, totalChapters, totalScenes } =
     useGridDerivedData(containerId);
 
   const [activeId, setActiveId] = useState<string | null>(null);
@@ -262,37 +262,41 @@ export function GridPanel() {
         )}
 
         <div className="flex flex-1 gap-3 overflow-x-auto overflow-y-hidden p-4">
-          {chapters.map(({ folder, descendants }) => (
-            <GridColumn
-              key={folder.id}
-              folder={folder}
-              descendants={descendants}
-              display={display}
-              visibility={visibility}
-              dropIndicator={dropIndicator}
-              columnDropIndicator={columnDropIndicator}
-            />
-          ))}
-
-          {looseScenes.length > 0 && (
-            <GridLooseColumn
-              containerId={containerId}
-              scenes={looseScenes}
-              display={display}
-              chapters={chapters.map((ch) => ch.folder)}
-              visibility={visibility}
-              dropIndicator={dropIndicator}
-              title={
-                // When container is a folder, these "loose" scenes are direct content
-                // of that folder (not truly uncategorized) — label the column with the
-                // folder's own name. "未分類シーン" only applies at the project root.
-                containerId
-                  ? (nodes.find((n) => n.id === containerId)?.title ??
-                    undefined)
-                  : undefined
-              }
-            />
-          )}
+          {orderedColumns.map((entry) => {
+            if (entry.kind === "chapter") {
+              return (
+                <GridColumn
+                  key={entry.data.folder.id}
+                  folder={entry.data.folder}
+                  descendants={entry.data.descendants}
+                  display={display}
+                  visibility={visibility}
+                  dropIndicator={dropIndicator}
+                  columnDropIndicator={columnDropIndicator}
+                />
+              );
+            }
+            return (
+              <GridLooseColumn
+                key="loose"
+                containerId={containerId}
+                scenes={entry.scenes}
+                display={display}
+                chapters={chapters.map((ch) => ch.folder)}
+                visibility={visibility}
+                dropIndicator={dropIndicator}
+                title={
+                  // When container is a folder, these "loose" scenes are direct content
+                  // of that folder (not truly uncategorized) — label the column with the
+                  // folder's own name. "未分類シーン" only applies at the project root.
+                  containerId
+                    ? (nodes.find((n) => n.id === containerId)?.title ??
+                      undefined)
+                    : undefined
+                }
+              />
+            );
+          })}
 
           {chapters.length === 0 && looseScenes.length === 0 && (
             <div className="flex flex-1 items-center justify-center text-sm text-muted-foreground">

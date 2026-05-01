@@ -152,6 +152,62 @@ describe("useGridDerivedData", () => {
     ).toEqual(["s2", "s1"]);
   });
 
+  it("orderedColumns interleaves loose group with chapters by sortOrder", () => {
+    // Tree under root: scene_a (a1), chapter_x (a2), scene_b (a3)
+    // Expected order: loose (first loose sortOrder = a1) → chapter_x (a2)
+    // (loose group is a single column, slotted at the FIRST loose's sortOrder)
+    const sa = makeNodeData({
+      id: "sa",
+      nodeType: "scene",
+      parentId: null,
+      sortOrder: "a1",
+    });
+    const ch = makeNodeData({
+      id: "chx",
+      nodeType: "folder",
+      parentId: null,
+      sortOrder: "a2",
+    });
+    const sb = makeNodeData({
+      id: "sb",
+      nodeType: "scene",
+      parentId: null,
+      sortOrder: "a3",
+    });
+    resetTree(sa, ch, sb);
+
+    const { result } = renderHook(() => useGridDerivedData(null));
+    const cols = result.current.orderedColumns;
+    expect(cols.map((c) => c.kind)).toEqual(["loose", "chapter"]);
+    if (cols[0].kind !== "loose") throw new Error("expected loose first");
+    expect(cols[0].scenes.map((s) => s.id)).toEqual(["sa", "sb"]);
+    if (cols[1].kind !== "chapter") throw new Error("expected chapter");
+    expect(cols[1].data.folder.id).toBe("chx");
+  });
+
+  it("orderedColumns places loose group AFTER chapters when first loose's sortOrder follows them", () => {
+    // chapter_x (a1), scene_a (a2)
+    const ch = makeNodeData({
+      id: "chx",
+      nodeType: "folder",
+      parentId: null,
+      sortOrder: "a1",
+    });
+    const sa = makeNodeData({
+      id: "sa",
+      nodeType: "scene",
+      parentId: null,
+      sortOrder: "a2",
+    });
+    resetTree(ch, sa);
+
+    const { result } = renderHook(() => useGridDerivedData(null));
+    expect(result.current.orderedColumns.map((c) => c.kind)).toEqual([
+      "chapter",
+      "loose",
+    ]);
+  });
+
   it("flattens nested folder descendants depth-first with depth metadata", () => {
     // ch1
     //   ├ s1 (depth 0)

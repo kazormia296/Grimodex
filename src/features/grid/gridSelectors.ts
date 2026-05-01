@@ -14,9 +14,21 @@ export interface GridChapterData {
   descendants: GridDescendant[];
 }
 
+/**
+ * Ordered column entry for rendering. Chapters and the loose scene group are
+ * merged into one list ordered by sortOrder, so the loose group is positioned
+ * to match the Scenes-panel order (e.g. Part-direct scenes appear before the
+ * chapter sub-folder when their sortOrder precedes it).
+ */
+export type GridColumnEntry =
+  | { kind: "chapter"; data: GridChapterData; sortOrder: string }
+  | { kind: "loose"; scenes: TreeNodeData[]; sortOrder: string };
+
 export interface GridDerivedData {
   chapters: GridChapterData[];
   looseScenes: TreeNodeData[];
+  /** Chapters + loose group merged and sorted by sortOrder, ready for rendering. */
+  orderedColumns: GridColumnEntry[];
   totalScenes: number;
   totalChapters: number;
 }
@@ -71,9 +83,27 @@ export function useGridDerivedData(
         0,
       ) + looseScenes.length;
 
+    // Merge chapters + loose group into one sortOrder-ordered list. The loose
+    // group's representative sortOrder is the first loose scene's sortOrder, so
+    // it slots between chapter columns at the right tree position.
+    const orderedColumns: GridColumnEntry[] = chapters.map((ch) => ({
+      kind: "chapter" as const,
+      data: ch,
+      sortOrder: ch.folder.sortOrder,
+    }));
+    if (looseScenes.length > 0) {
+      orderedColumns.push({
+        kind: "loose" as const,
+        scenes: looseScenes,
+        sortOrder: looseScenes[0].sortOrder,
+      });
+    }
+    orderedColumns.sort((a, b) => cmpKeys(a.sortOrder, b.sortOrder));
+
     return {
       chapters,
       looseScenes,
+      orderedColumns,
       totalScenes,
       totalChapters: chapters.length,
     };
