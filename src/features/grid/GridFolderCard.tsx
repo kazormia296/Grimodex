@@ -1,18 +1,19 @@
 import { Folder, ChevronRight } from "lucide-react";
-import { useDroppable } from "@dnd-kit/core";
+import { useDraggable, useDroppable } from "@dnd-kit/core";
 import { useTranslation } from "react-i18next";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { useGridStore } from "./gridStore";
 import { cn } from "@/lib/utils";
-import { columnNestId } from "./gridDndUtils";
+import { columnDraggableId, columnNestId } from "./gridDndUtils";
 import type { TreeNodeData } from "@/features/tree/treeStore";
 
 interface Props {
   folder: TreeNodeData;
   compact?: boolean;
+  isDragOverlay?: boolean;
 }
 
-export function GridFolderCard({ folder, compact }: Props) {
+export function GridFolderCard({ folder, compact, isDragOverlay }: Props) {
   const { t } = useTranslation();
   const nodes = useTreeStore((s) => s.nodes);
   const projectId = useTreeStore((s) => s.projectId);
@@ -23,6 +24,18 @@ export function GridFolderCard({ folder, compact }: Props) {
   const { setNodeRef: setNestRef, isOver: isNestOver } = useDroppable({
     id: columnNestId(folder.id),
     data: { kind: "column-nest", folderId: folder.id },
+    disabled: !!isDragOverlay,
+  });
+
+  const {
+    attributes,
+    listeners,
+    setNodeRef: setDragRef,
+    isDragging,
+  } = useDraggable({
+    id: columnDraggableId(folder.id),
+    data: { kind: "column", folderId: folder.id },
+    disabled: !!isDragOverlay,
   });
 
   const isExpanded = expandedFolderIds.has(folder.id);
@@ -46,13 +59,18 @@ export function GridFolderCard({ folder, compact }: Props) {
 
   return (
     <div
-      ref={setNestRef}
+      ref={(node) => {
+        setNestRef(node);
+        setDragRef(node);
+      }}
       className={cn(
         "group relative flex flex-col rounded-md border-2 border-dashed border-border/60 bg-muted/30",
         "hover:border-primary/50 hover:bg-accent/40 transition-colors",
         "select-none",
         isNestOver && "border-primary bg-primary/10 ring-2 ring-primary",
+        isDragging && "opacity-40",
       )}
+      style={{ transition: "opacity 120ms ease-out" }}
     >
       <div
         className={cn(
@@ -93,7 +111,9 @@ export function GridFolderCard({ folder, compact }: Props) {
         <button
           type="button"
           onClick={diveIn}
-          className="flex flex-1 items-center gap-1.5 min-w-0 text-left"
+          {...attributes}
+          {...listeners}
+          className="flex flex-1 items-center gap-1.5 min-w-0 text-left cursor-grab active:cursor-grabbing"
           title={t("grid.folderCard.diveIn", "クリックで中を表示")}
         >
           <Folder className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
