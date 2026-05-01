@@ -328,7 +328,7 @@ describe("computeColumnDropTarget", () => {
     expect(result).toBeNull();
   });
 
-  it("nests via center zone (40% middle) of an unrelated target column", () => {
+  it("nests via center zone (20% middle) of an unrelated target column", () => {
     // ch1 (parent root) over ch3's center zone → nest INTO ch3
     const result = computeColumnDropTarget(
       "ch1",

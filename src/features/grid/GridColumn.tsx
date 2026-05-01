@@ -124,9 +124,12 @@ export function GridColumn({
         setSlotRef(node);
       }}
       style={{
-        paddingLeft: isColDropBefore ? COL_GAP : 0,
-        paddingRight: isColDropAfter ? COL_GAP : 0,
-        transition: "padding 120ms ease-out",
+        // Use margin instead of padding so the wrapper's bounding box stays
+        // stable during drag-over — padding-right would grow wrapper.width and
+        // shift the "after" zone past the cursor, causing mode oscillation.
+        marginLeft: isColDropBefore ? COL_GAP : 0,
+        marginRight: isColDropAfter ? COL_GAP : 0,
+        transition: "margin 120ms ease-out",
       }}
     >
       <div

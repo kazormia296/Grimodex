@@ -220,11 +220,13 @@ function isAdjacentColumnNoOp(
 
 /**
  * Resolve the meaningful drop position for a column drag using a 3-zone scheme:
- *   left 30% → "before", right 30% → "after", center 40% → "nest".
+ *   left 40% → "before", right 40% → "after", center 20% → "nest".
  *
- * For "before"/"after", flip to the opposite side when the cursor lands on
- * the half that would put the column back where it is (existing behavior).
- * For "nest", returns null when active is already a direct child of target.
+ * Wider edge zones (40% each) make Part-to-Part swap easier; nest stays
+ * accessible via the central 20% strip and via explicit folder-card / column-end
+ * droppables. For "before"/"after", flip to the opposite side when the cursor
+ * lands on the half that would put the column back where it is. For "nest",
+ * returns null when active is already a direct child of target.
  */
 function resolveColumnDropPosition(
   activeFolderId: string,
@@ -234,8 +236,8 @@ function resolveColumnDropPosition(
   folderParentMap: Record<string, string | null>,
   orderedFolders: Array<{ id: string; parentId: string | null }>,
 ): "before" | "after" | "nest" | null {
-  const leftZone = overRect.left + overRect.width * 0.3;
-  const rightZone = overRect.left + overRect.width * 0.7;
+  const leftZone = overRect.left + overRect.width * 0.4;
+  const rightZone = overRect.left + overRect.width * 0.6;
 
   let initial: "before" | "after" | "nest";
   if (pointerX < leftZone) initial = "before";
