@@ -22,7 +22,8 @@ function makeScene(id: string, locationId: string | null = null): TreeNodeData {
 
     charCount: 0,
     unplacedBeatPreview: null,
-    updatedAt: "",  };
+    updatedAt: "",
+  };
 }
 
 function makeLocation(id: string): CodexEntry {

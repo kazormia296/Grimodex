@@ -20,7 +20,8 @@ function makeScene(id: string): Parameters<typeof layoutFree>[0]["scenes"][0] {
 
     charCount: 0,
     unplacedBeatPreview: null,
-    updatedAt: "",  };
+    updatedAt: "",
+  };
 }
 
 function makePos(

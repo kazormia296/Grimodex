@@ -25,7 +25,8 @@ function makeScene(
 
     charCount: 0,
     unplacedBeatPreview: null,
-    updatedAt: "",  };
+    updatedAt: "",
+  };
 }
 
 function makePos(treeNodeId: string, pinned = 0): MapNodePositionRecord {

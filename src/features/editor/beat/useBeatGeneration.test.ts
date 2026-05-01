@@ -112,7 +112,8 @@ describe("useBeatGeneration", () => {
 
           charCount: 0,
           unplacedBeatPreview: null,
-          updatedAt: "2026-01-01",        },
+          updatedAt: "2026-01-01",
+        },
       ],
     });
     useWorkspaceStore.setState({ activeWorkspaceName: "テスト作品" });
@@ -372,7 +373,8 @@ describe("runRoleInference (C-7)", () => {
 
           charCount: 0,
           unplacedBeatPreview: null,
-          updatedAt: "2026-01-01",        },
+          updatedAt: "2026-01-01",
+        },
       ],
     });
     useWorkspaceStore.setState({ activeWorkspaceName: "テスト作品" });

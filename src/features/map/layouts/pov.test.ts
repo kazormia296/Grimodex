@@ -25,7 +25,8 @@ function makeScene(
 
     charCount: 0,
     unplacedBeatPreview: null,
-    updatedAt: "",  };
+    updatedAt: "",
+  };
 }
 
 function makeCharacter(id: string): CodexEntry {

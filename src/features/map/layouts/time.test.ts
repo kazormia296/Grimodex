@@ -24,7 +24,8 @@ function makeScene(
 
     charCount: 0,
     unplacedBeatPreview: null,
-    updatedAt: "",  };
+    updatedAt: "",
+  };
 }
 
 const EMPTY_INPUT: LayoutInput = {

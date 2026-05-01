@@ -18,7 +18,8 @@ const NODE_DEFAULTS = {
 
   charCount: 0,
   unplacedBeatPreview: null,
-  updatedAt: "2024-01-01T00:00:00Z",};
+  updatedAt: "2024-01-01T00:00:00Z",
+};
 
 function setScene(
   overrides: Partial<typeof NODE_DEFAULTS & { id: string }> & { id: string },

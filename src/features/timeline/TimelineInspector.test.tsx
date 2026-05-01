@@ -34,7 +34,8 @@ const mockNode: TreeNodeData = {
 
   charCount: 0,
   unplacedBeatPreview: null,
-  updatedAt: "2024-01-01T00:00:00Z",};
+  updatedAt: "2024-01-01T00:00:00Z",
+};
 
 function resetStore() {
   useTimelineStore.setState({

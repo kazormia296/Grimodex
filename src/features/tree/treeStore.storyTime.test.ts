@@ -43,7 +43,8 @@ const NODE_DEFAULTS = {
 
   charCount: 0,
   unplacedBeatPreview: null,
-  updatedAt: "2024-01-01T00:00:00Z",} as const;
+  updatedAt: "2024-01-01T00:00:00Z",
+} as const;
 
 const SCENE = {
   id: "scene-1",

@@ -406,7 +406,8 @@ const mockSceneNodes: TreeNodeData[] = [
 
     charCount: 0,
     unplacedBeatPreview: null,
-    updatedAt: "2024-01-01T00:00:00Z",  },
+    updatedAt: "2024-01-01T00:00:00Z",
+  },
   {
     id: "s2",
     projectId: "p",
@@ -424,7 +425,8 @@ const mockSceneNodes: TreeNodeData[] = [
 
     charCount: 0,
     unplacedBeatPreview: null,
-    updatedAt: "2024-01-02T00:00:00Z",  },
+    updatedAt: "2024-01-02T00:00:00Z",
+  },
   {
     id: "s3",
     projectId: "p",
@@ -442,7 +444,8 @@ const mockSceneNodes: TreeNodeData[] = [
 
     charCount: 0,
     unplacedBeatPreview: null,
-    updatedAt: "2024-01-03T00:00:00Z",  },
+    updatedAt: "2024-01-03T00:00:00Z",
+  },
 ];
 
 function mockTreeWith(nodes: TreeNodeData[]) {

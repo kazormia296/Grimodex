@@ -94,7 +94,8 @@ describe("generateBeatAlternative", () => {
 
           charCount: 0,
           unplacedBeatPreview: null,
-          updatedAt: "2026-01-01",        },
+          updatedAt: "2026-01-01",
+        },
       ],
     });
     useWorkspaceStore.setState({ activeWorkspaceName: "テスト作品" });
