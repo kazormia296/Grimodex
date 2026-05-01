@@ -10,10 +10,10 @@ function resetTree(...nodes: ReturnType<typeof makeNodeData>[]) {
   useTreeStore.setState((s) => ({ ...s, nodes }));
 }
 
-function setExpanded(...ids: string[]) {
+function setCollapsed(...ids: string[]) {
   useGridStore.setState((s) => ({
     ...s,
-    expandedFolderIds: new Set<string>(ids),
+    collapsedFolderIds: new Set<string>(ids),
   }));
 }
 
@@ -22,7 +22,7 @@ describe("useGridDerivedData", () => {
     useTreeStore.setState((s) => ({ ...s, nodes: [] }));
     useGridStore.setState((s) => ({
       ...s,
-      expandedFolderIds: new Set<string>(),
+      collapsedFolderIds: new Set<string>(),
     }));
   });
 
@@ -220,7 +220,7 @@ describe("useGridDerivedData", () => {
     ]);
   });
 
-  it("collapses nested folders by default; only direct children of chapter are listed", () => {
+  it("expands all nested folders by default (collapsed set empty)", () => {
     const ch1 = makeNodeData({
       id: "ch1",
       nodeType: "folder",
@@ -248,15 +248,44 @@ describe("useGridDerivedData", () => {
     resetTree(ch1, s1, subA, s2);
 
     const { result } = renderHook(() => useGridDerivedData(null));
-    // subA is collapsed → its child s2 is not included
+    // subA is expanded by default → its child s2 IS included
     expect(
       result.current.chapters[0].descendants.map((d) => d.node.id),
-    ).toEqual(["s1", "subA"]);
-    // totalScenes counts ALL scene descendants regardless of expand state
+    ).toEqual(["s1", "subA", "s2"]);
     expect(result.current.totalScenes).toBe(2);
   });
 
-  it("expands nested folders when their IDs are in expandedFolderIds", () => {
+  it("hides nested-folder children when their IDs are in collapsedFolderIds", () => {
+    const ch1 = makeNodeData({
+      id: "ch1",
+      nodeType: "folder",
+      parentId: null,
+      sortOrder: "a1",
+    });
+    const subA = makeNodeData({
+      id: "subA",
+      nodeType: "folder",
+      parentId: "ch1",
+      sortOrder: "a1",
+    });
+    const s1 = makeNodeData({
+      id: "s1",
+      nodeType: "scene",
+      parentId: "subA",
+      sortOrder: "a1",
+    });
+    resetTree(ch1, subA, s1);
+    setCollapsed("subA");
+
+    const { result } = renderHook(() => useGridDerivedData(null));
+    // subA collapsed → s1 omitted from descendants but still counted in totalScenes
+    expect(
+      result.current.chapters[0].descendants.map((d) => d.node.id),
+    ).toEqual(["subA"]);
+    expect(result.current.totalScenes).toBe(1);
+  });
+
+  it("flattens nested folder descendants depth-first by default", () => {
     // ch1
     //   ├ s1 (depth 0)
     //   ├ subA (depth 0)
@@ -307,7 +336,7 @@ describe("useGridDerivedData", () => {
       sortOrder: "a3",
     });
     resetTree(ch1, s1, subA, s2, subB, s3, s4);
-    setExpanded("subA", "subB");
+    // No setCollapsed call → all expanded by default
 
     const { result } = renderHook(() => useGridDerivedData(null));
     expect(result.current.chapters).toHaveLength(1);

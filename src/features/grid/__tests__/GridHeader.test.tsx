@@ -4,6 +4,8 @@ import { render, screen, fireEvent } from "@testing-library/react";
 
 const mockCreateNode = vi.fn().mockResolvedValue(undefined);
 const mockSetSearchQuery = vi.fn();
+const mockExpandAll = vi.fn();
+const mockCollapseAll = vi.fn();
 
 vi.mock("@/features/tree/treeStore", () => ({
   useTreeStore: vi.fn((sel: (s: unknown) => unknown) =>
@@ -13,7 +15,13 @@ vi.mock("@/features/tree/treeStore", () => ({
 
 vi.mock("../gridStore", () => ({
   useGridStore: vi.fn((sel: (s: unknown) => unknown) =>
-    sel({ searchQuery: "", setSearchQuery: mockSetSearchQuery }),
+    sel({
+      searchQuery: "",
+      setSearchQuery: mockSetSearchQuery,
+      collapsedFolderIds: new Set<string>(),
+      expandAllFolders: mockExpandAll,
+      collapseAllFolders: mockCollapseAll,
+    }),
   ),
 }));
 
@@ -33,7 +41,13 @@ const mockGridStore = useGridStore as unknown as {
 beforeEach(() => {
   vi.clearAllMocks();
   mockGridStore.mockImplementation((sel) =>
-    sel({ searchQuery: "", setSearchQuery: mockSetSearchQuery }),
+    sel({
+      searchQuery: "",
+      setSearchQuery: mockSetSearchQuery,
+      collapsedFolderIds: new Set<string>(),
+      expandAllFolders: mockExpandAll,
+      collapseAllFolders: mockCollapseAll,
+    }),
   );
 });
 
@@ -42,6 +56,7 @@ describe("GridHeader", () => {
     containerId: "c1",
     projectId: "proj-1",
     chapterCount: 3,
+    nestedFolderIds: [] as string[],
     onContainerChange: vi.fn(),
     onTogglePanelMenu: vi.fn(),
   };
@@ -101,7 +116,13 @@ describe("GridHeader", () => {
 
   it("searchQuery が非空のとき × ボタンが表示される", () => {
     mockGridStore.mockImplementation((sel) =>
-      sel({ searchQuery: "序章", setSearchQuery: mockSetSearchQuery }),
+      sel({
+        searchQuery: "序章",
+        setSearchQuery: mockSetSearchQuery,
+        collapsedFolderIds: new Set<string>(),
+        expandAllFolders: mockExpandAll,
+        collapseAllFolders: mockCollapseAll,
+      }),
     );
     render(<GridHeader {...defaultProps} />);
     fireEvent.click(screen.getByTitle("検索"));

@@ -16,6 +16,7 @@ import { useTranslation } from "react-i18next";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { useCodexStore } from "@/features/codex/codexStore";
 import { useSceneCodexPinsStore } from "@/features/codex/sceneCodexPinsStore";
+import { cmpKeys } from "@/features/tree/fractionalIndex";
 import { useGridStore } from "./gridStore";
 import { useGridDerivedData } from "./gridSelectors";
 import { useGridCardVisibility } from "./useGridCardVisibility";
@@ -107,6 +108,25 @@ export function GridPanel() {
 
     if (kind === "column") {
       const folderId = activeIdStr.replace(/^column-/, "");
+      const activeNode = nodes.find((n) => n.id === folderId);
+      const activeParent = activeNode?.parentId ?? null;
+
+      // Same-parent vertical reorder: drop on a scene-drop in the same parent
+      // → show scene-gap indicator (before/after by pointerY), skip column ind.
+      if (overId.startsWith("scene-drop-")) {
+        const sceneId = overId.slice("scene-drop-".length);
+        const sceneNode = nodes.find((n) => n.id === sceneId);
+        if (sceneNode && sceneNode.parentId === activeParent) {
+          const rect = e.over?.rect ?? { top: 0, height: 60 };
+          const midY = rect.top + rect.height / 2;
+          const position: "before" | "after" =
+            pointerYRef.current <= midY ? "before" : "after";
+          setDropIndicator({ targetId: sceneId, position });
+          setColumnDropIndicator(null);
+          return;
+        }
+      }
+
       const folderParentMap: Record<string, string | null> = {};
       const orderedFolders: Array<{ id: string; parentId: string | null }> = [];
       const sceneParentMap: Record<string, string | null> = {};
@@ -172,6 +192,34 @@ export function GridPanel() {
 
     if (kind === "column") {
       const folderId = activeIdStr.replace(/^column-/, "");
+      const activeNode = nodes.find((n) => n.id === folderId);
+      const activeParent = activeNode?.parentId ?? null;
+
+      // Same-parent vertical reorder: scene-drop target shares active's parent
+      // → use pointerY to compute predecessor among ALL siblings (mixed scenes
+      // and folders) ordered by sortOrder.
+      if (overIdStr.startsWith("scene-drop-")) {
+        const sceneId = overIdStr.slice("scene-drop-".length);
+        const sceneNode = nodes.find((n) => n.id === sceneId);
+        if (sceneNode && sceneNode.parentId === activeParent) {
+          const rect = e.over?.rect ?? { top: 0, height: 60 };
+          const midY = rect.top + rect.height / 2;
+          const insertBefore = pointerYRef.current <= midY;
+          const siblings = nodes
+            .filter((n) => n.parentId === activeParent && n.id !== folderId)
+            .sort((a, b) => cmpKeys(a.sortOrder, b.sortOrder));
+          let afterId: string | null | undefined;
+          if (insertBefore) {
+            const idx = siblings.findIndex((s) => s.id === sceneId);
+            afterId = idx > 0 ? (siblings[idx - 1]?.id ?? null) : null;
+          } else {
+            afterId = sceneId;
+          }
+          void moveNode(folderId, activeParent, afterId);
+          return;
+        }
+      }
+
       const folderParentMap: Record<string, string | null> = {};
       const orderedFolders: Array<{ id: string; parentId: string | null }> = [];
       const sceneParentMap: Record<string, string | null> = {};
@@ -203,6 +251,22 @@ export function GridPanel() {
     ? (nodes.find((n) => n.id === activeId.replace(/^(scene|column)-/, "")) ??
       null)
     : null;
+
+  // All nested folder IDs visible under chapter columns (depth >= 1 — i.e. not
+  // chapter folders themselves). Computed by walking the full subtree, not the
+  // currently-flattened descendants, so collapsed folders are still counted.
+  const nestedFolderIds = useMemo(() => {
+    const ids: string[] = [];
+    const walk = (parentId: string) => {
+      for (const n of nodes) {
+        if (n.parentId !== parentId || n.nodeType !== "folder") continue;
+        ids.push(n.id);
+        walk(n.id);
+      }
+    };
+    for (const ch of chapters) walk(ch.folder.id);
+    return ids;
+  }, [nodes, chapters]);
 
   // Compute visibility for all displayed scenes (recursively including nested-folder scenes)
   const allDisplayedScenes = useMemo(
@@ -250,6 +314,7 @@ export function GridPanel() {
           containerId={containerId}
           projectId={projectId}
           chapterCount={totalChapters}
+          nestedFolderIds={nestedFolderIds}
           onContainerChange={(id) => void setContainerId(projectId, id)}
           onTogglePanelMenu={() => setShowPanelMenu((v) => !v)}
         />

@@ -42,7 +42,7 @@ function flattenSubtree(
   parentId: string,
   nodes: TreeNodeData[],
   depth: number,
-  expandedFolderIds: Set<string>,
+  collapsedFolderIds: Set<string>,
   acc: GridDescendant[],
 ): void {
   const children = nodes
@@ -50,10 +50,10 @@ function flattenSubtree(
     .sort(sortByOrder);
   for (const child of children) {
     acc.push({ node: child, depth });
-    // Recurse into nested folders only when the user has expanded them.
+    // Default-expanded: recurse unless the user explicitly collapsed this folder.
     // Top-level chapter folders are entered unconditionally by the caller.
-    if (child.nodeType === "folder" && expandedFolderIds.has(child.id)) {
-      flattenSubtree(child.id, nodes, depth + 1, expandedFolderIds, acc);
+    if (child.nodeType === "folder" && !collapsedFolderIds.has(child.id)) {
+      flattenSubtree(child.id, nodes, depth + 1, collapsedFolderIds, acc);
     }
   }
 }
@@ -62,7 +62,7 @@ export function useGridDerivedData(
   containerId: string | null,
 ): GridDerivedData {
   const nodes = useTreeStore((s) => s.nodes);
-  const expandedFolderIds = useGridStore((s) => s.expandedFolderIds);
+  const collapsedFolderIds = useGridStore((s) => s.collapsedFolderIds);
 
   return useMemo(() => {
     const containerChildren = nodes
@@ -76,7 +76,7 @@ export function useGridDerivedData(
 
     const chapters: GridChapterData[] = chapterFolders.map((folder) => {
       const descendants: GridDescendant[] = [];
-      flattenSubtree(folder.id, nodes, 0, expandedFolderIds, descendants);
+      flattenSubtree(folder.id, nodes, 0, collapsedFolderIds, descendants);
       return { folder, descendants };
     });
 
@@ -120,7 +120,7 @@ export function useGridDerivedData(
       totalScenes,
       totalChapters: chapters.length,
     };
-  }, [nodes, containerId, expandedFolderIds]);
+  }, [nodes, containerId, collapsedFolderIds]);
 }
 
 /** Flat ordered list of all folder nodes for the container selector dropdown */

@@ -1,5 +1,12 @@
 import { useState } from "react";
-import { Plus, Search, MoreVertical, X } from "lucide-react";
+import {
+  Plus,
+  Search,
+  MoreVertical,
+  X,
+  ChevronsDownUp,
+  ChevronsUpDown,
+} from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { useGridStore } from "./gridStore";
@@ -9,6 +16,8 @@ interface Props {
   containerId: string | null;
   projectId: string;
   chapterCount: number;
+  /** All nested folder IDs visible in the current Grid view (for collapse-all). */
+  nestedFolderIds: string[];
   onContainerChange: (id: string | null) => void;
   onTogglePanelMenu: () => void;
 }
@@ -17,6 +26,7 @@ export function GridHeader({
   containerId,
   projectId,
   chapterCount,
+  nestedFolderIds,
   onContainerChange,
   onTogglePanelMenu,
 }: Props) {
@@ -25,6 +35,20 @@ export function GridHeader({
   const createNode = useTreeStore((s) => s.createNode);
   const searchQuery = useGridStore((s) => s.searchQuery);
   const setSearchQuery = useGridStore((s) => s.setSearchQuery);
+  const collapsedFolderIds = useGridStore((s) => s.collapsedFolderIds);
+  const expandAllFolders = useGridStore((s) => s.expandAllFolders);
+  const collapseAllFolders = useGridStore((s) => s.collapseAllFolders);
+
+  const anyCollapsed = collapsedFolderIds.size > 0;
+  const hasNestedFolders = nestedFolderIds.length > 0;
+
+  function handleToggleAll() {
+    if (anyCollapsed) {
+      expandAllFolders();
+    } else {
+      collapseAllFolders(nestedFolderIds);
+    }
+  }
 
   async function addChapter() {
     await createNode({ nodeType: "folder", parentId: containerId });
@@ -69,6 +93,29 @@ export function GridHeader({
           <Plus className="h-3 w-3" />
           {t("grid.header.newChapter", "章を追加")}
         </button>
+
+        {hasNestedFolders && (
+          <button
+            className="rounded p-1 hover:bg-accent transition-colors"
+            onClick={handleToggleAll}
+            title={
+              anyCollapsed
+                ? t("grid.header.expandAll", "全て展開")
+                : t("grid.header.collapseAll", "全て折りたたむ")
+            }
+            aria-label={
+              anyCollapsed
+                ? t("grid.header.expandAll", "全て展開")
+                : t("grid.header.collapseAll", "全て折りたたむ")
+            }
+          >
+            {anyCollapsed ? (
+              <ChevronsUpDown className="h-3.5 w-3.5" />
+            ) : (
+              <ChevronsDownUp className="h-3.5 w-3.5" />
+            )}
+          </button>
+        )}
 
         <button
           className="rounded p-1 hover:bg-accent transition-colors"

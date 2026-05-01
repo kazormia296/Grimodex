@@ -32,8 +32,11 @@ interface GridState {
   display: GridDisplaySettings;
   filter: GridFilterSettings;
   searchQuery: string;
-  /** Folder IDs whose inline children are currently expanded (session-only). */
-  expandedFolderIds: Set<string>;
+  /**
+   * Folder IDs explicitly collapsed (session-only). Default-expanded semantics:
+   * a folder is considered expanded iff its ID is NOT in this set.
+   */
+  collapsedFolderIds: Set<string>;
 
   loadForProject: (projectId: string) => Promise<void>;
   setContainerId: (projectId: string, id: string | null) => Promise<void>;
@@ -41,7 +44,9 @@ interface GridState {
   setFilter: (updates: Partial<GridFilterSettings>) => void;
   setSearchQuery: (q: string) => void;
   clearFilter: () => void;
-  toggleFolderExpanded: (folderId: string) => void;
+  toggleFolderCollapsed: (folderId: string) => void;
+  expandAllFolders: () => void;
+  collapseAllFolders: (folderIds: string[]) => void;
   loadFromSettings: (settings: GlobalSettings) => void;
 }
 
@@ -64,7 +69,7 @@ export const useGridStore = create<GridState>((set, _get) => ({
   display: { ...DEFAULT_DISPLAY },
   filter: { ...DEFAULT_FILTER },
   searchQuery: "",
-  expandedFolderIds: new Set<string>(),
+  collapsedFolderIds: new Set<string>(),
 
   async loadForProject(projectId) {
     const stored = await loadContainerId(projectId);
@@ -109,13 +114,21 @@ export const useGridStore = create<GridState>((set, _get) => ({
     set({ filter: { ...DEFAULT_FILTER } });
   },
 
-  toggleFolderExpanded(folderId) {
+  toggleFolderCollapsed(folderId) {
     set((s) => {
-      const next = new Set(s.expandedFolderIds);
+      const next = new Set(s.collapsedFolderIds);
       if (next.has(folderId)) next.delete(folderId);
       else next.add(folderId);
-      return { expandedFolderIds: next };
+      return { collapsedFolderIds: next };
     });
+  },
+
+  expandAllFolders() {
+    set({ collapsedFolderIds: new Set<string>() });
+  },
+
+  collapseAllFolders(folderIds) {
+    set({ collapsedFolderIds: new Set<string>(folderIds) });
   },
 
   loadFromSettings(settings) {

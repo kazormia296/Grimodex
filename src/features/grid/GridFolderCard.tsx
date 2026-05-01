@@ -18,8 +18,8 @@ export function GridFolderCard({ folder, compact, isDragOverlay }: Props) {
   const nodes = useTreeStore((s) => s.nodes);
   const projectId = useTreeStore((s) => s.projectId);
   const setContainerId = useGridStore((s) => s.setContainerId);
-  const expandedFolderIds = useGridStore((s) => s.expandedFolderIds);
-  const toggleFolderExpanded = useGridStore((s) => s.toggleFolderExpanded);
+  const collapsedFolderIds = useGridStore((s) => s.collapsedFolderIds);
+  const toggleFolderCollapsed = useGridStore((s) => s.toggleFolderCollapsed);
 
   const { setNodeRef: setNestRef, isOver: isNestOver } = useDroppable({
     id: columnNestId(folder.id),
@@ -38,7 +38,7 @@ export function GridFolderCard({ folder, compact, isDragOverlay }: Props) {
     disabled: !!isDragOverlay,
   });
 
-  const isExpanded = expandedFolderIds.has(folder.id);
+  const isExpanded = !collapsedFolderIds.has(folder.id);
 
   const directScenes = nodes.filter(
     (n) => n.parentId === folder.id && n.nodeType === "scene",
@@ -54,7 +54,7 @@ export function GridFolderCard({ folder, compact, isDragOverlay }: Props) {
 
   function handleToggle(e: React.MouseEvent) {
     e.stopPropagation();
-    toggleFolderExpanded(folder.id);
+    toggleFolderCollapsed(folder.id);
   }
 
   return (
