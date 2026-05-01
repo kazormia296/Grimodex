@@ -46,6 +46,7 @@ import { MapPanel } from "@/features/map/MapPanel";
 import { LinterPanel } from "@/features/lint/LinterPanel";
 import { ForeshadowPanel } from "@/features/foreshadow/ForeshadowPanel";
 import { GridPanel } from "@/features/grid/GridPanel";
+import { MatrixPanel } from "@/features/matrix/MatrixPanel";
 import { StatusBarIndicator } from "@/features/lint/StatusBarIndicator";
 import { GlobalSearchDialog } from "@/features/search/GlobalSearchDialog";
 import { useState } from "react";
@@ -120,6 +121,10 @@ function ForeshadowContent(_props: IDockviewPanelProps) {
 
 function GridContent(_props: IDockviewPanelProps) {
   return <GridPanel />;
+}
+
+function MatrixContent(_props: IDockviewPanelProps) {
+  return <MatrixPanel />;
 }
 
 /* ── Default layout builder (delegates to builtin preset) ── */
@@ -307,6 +312,7 @@ function EditorScreen() {
       linter: LinterContent,
       foreshadow: ForeshadowContent,
       grid: GridContent,
+      matrix: MatrixContent,
     }),
     [],
   );

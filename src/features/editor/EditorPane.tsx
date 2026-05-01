@@ -19,6 +19,7 @@ import { countBeats } from "@/features/editor/beat/countBeats";
 import { extractUnplacedBeatPreview } from "@/features/editor/beat/unplacedBeatPreview";
 import { extractBeatMentions } from "@/features/editor/beat/extractBeatMentions";
 import { upsertSceneBeatMentions } from "@/features/editor/beat/mentionApi";
+import { upsertSceneBodyMentions } from "@/features/editor/beat/bodyMentionApi";
 import { useUnplacedBeatsStore } from "@/features/editor/beat/unplacedBeatsStore";
 import { getCodexEntry, updateCodexEntry } from "@/features/codex/api";
 import type { CodexEntry } from "@/features/codex/api";
@@ -406,6 +407,20 @@ export function EditorPane({
           errorDetail(e),
         );
       });
+      // Deferred body-mention scan — does not block the save response
+      const allEntries = useCodexStore.getState().entries;
+      if (allEntries.length > 0) {
+        const docJsonStr = JSON.stringify(ed.getJSON());
+        setTimeout(() => {
+          upsertSceneBodyMentions(id, docJsonStr, allEntries).catch((e) => {
+            debugLog.error(
+              "EditorPane",
+              "upsertSceneBodyMentions failed",
+              errorDetail(e),
+            );
+          });
+        }, 0);
+      }
       useTreeStore
         .getState()
         .refreshAiRatio(id)

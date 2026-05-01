@@ -12,6 +12,10 @@ import { SettingToggle } from "../components/SettingToggle";
 import { SettingSlider } from "../components/SettingSlider";
 import { exportCodexJson } from "../exportUtils";
 import { IntegrityCheckSection } from "@/features/workspace/IntegrityCheckDialog";
+import {
+  enqueueRescan,
+  useRescanStore,
+} from "@/features/codex/mentionRescanQueue";
 
 const PROJECT_ID = "default-project";
 
@@ -73,6 +77,13 @@ export function DataCategory() {
   const [isExportingCodex, setIsExportingCodex] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [confirmClear, setConfirmClear] = useState(false);
+  const rescanRunning = useRescanStore((s) => s.isRunning);
+  const rescanProgress = useRescanStore((s) => s.progress);
+  const rescanTotal = useRescanStore((s) => s.total);
+
+  function handleRebuildMentionCache() {
+    enqueueRescan(null);
+  }
 
   useEffect(() => {
     getProjectStats()
@@ -239,6 +250,24 @@ export function DataCategory() {
       {/* Data Management */}
       <SettingSection title={t("settings.data.management")}>
         <div className="space-y-2">
+          <div className="flex items-center justify-between">
+            <div>
+              <span className="text-sm">Codex 言及キャッシュを再構築</span>
+              {rescanRunning && (
+                <p className="text-xs text-muted-foreground">
+                  Scanning... {rescanProgress}/{rescanTotal}
+                </p>
+              )}
+            </div>
+            <button
+              type="button"
+              onClick={handleRebuildMentionCache}
+              disabled={rescanRunning}
+              className="rounded-md border border-border px-3 py-1.5 text-sm hover:bg-accent disabled:opacity-50"
+            >
+              {rescanRunning ? "実行中..." : t("settings.data.rebuild")}
+            </button>
+          </div>
           <div className="flex items-center justify-between">
             <span className="text-sm">{t("settings.data.ftsRebuild")}</span>
             <button

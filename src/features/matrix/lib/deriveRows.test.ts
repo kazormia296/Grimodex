@@ -2,20 +2,35 @@ import { describe, it, expect } from "vitest";
 import { deriveRows, type MatrixRow } from "./deriveRows";
 import type { TreeNodeData } from "@/features/tree/treeStore";
 
+const BASE: Omit<
+  TreeNodeData,
+  "id" | "parentId" | "nodeType" | "title" | "sortOrder"
+> = {
+  projectId: "default-project",
+  synopsis: null,
+  storyTimeOrder: null,
+  charCount: 0,
+  status: null,
+  storyTimeLabel: null,
+  povCharacterId: null,
+  locationId: null,
+  unplacedBeatPreview: null,
+  createdAt: "2024-01-01T00:00:00Z",
+  updatedAt: "2024-01-01T00:00:00Z",
+};
+
 function makeFolder(
   id: string,
   parentId: string | null,
   sortOrder: string,
 ): TreeNodeData {
   return {
+    ...BASE,
     id,
     parentId,
     nodeType: "folder",
     title: `Folder ${id}`,
-    synopsis: null,
     sortOrder,
-    storyTimeOrder: null,
-    charCount: 0,
   };
 }
 function makeScene(
@@ -24,14 +39,12 @@ function makeScene(
   sortOrder: string,
 ): TreeNodeData {
   return {
+    ...BASE,
     id,
     parentId,
     nodeType: "scene",
     title: `Scene ${id}`,
-    synopsis: null,
     sortOrder,
-    storyTimeOrder: null,
-    charCount: 0,
   };
 }
 
@@ -96,14 +109,11 @@ describe("deriveRows", () => {
   it("filters rows by searchQuery matching node title", () => {
     const nodes: TreeNodeData[] = [
       makeFolder("f1", null, "a"),
-      makeScene("s1", "f1", "a"),
+      { ...makeScene("s1", "f1", "a"), title: "魔法シーン" },
       makeScene("s2", "f1", "b"),
     ];
-    // Rename s1 to have matching title
-    nodes[1] = { ...nodes[1], title: "魔法シーン" };
     const rows = deriveRows(nodes, new Set(), "魔法");
     const ids = rows.map((r) => r.node.id);
-    // s1 matches, f1 (parent) should appear too, s2 should not
     expect(ids).toContain("s1");
     expect(ids).toContain("f1");
     expect(ids).not.toContain("s2");

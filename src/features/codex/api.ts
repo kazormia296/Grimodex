@@ -1,6 +1,7 @@
 import { db } from "@/db/client";
 import { codexEntries } from "@/db/schema";
 import { eq } from "drizzle-orm";
+import { enqueueRescan } from "./mentionRescanQueue";
 
 export type CodexEntry = typeof codexEntries.$inferSelect;
 export type NewCodexEntry = typeof codexEntries.$inferInsert;
@@ -79,6 +80,16 @@ export async function updateCodexEntry(
     .set({ ...data, updatedAt: new Date().toISOString() })
     .where(eq(codexEntries.id, id))
     .returning();
+
+  // If name/aliases/excludedAliases changed, body-mention cache may be stale
+  if (
+    data.name !== undefined ||
+    data.aliases !== undefined ||
+    data.excludedAliases !== undefined
+  ) {
+    enqueueRescan(id);
+  }
+
   return rows[0];
 }
 

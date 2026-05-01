@@ -23,7 +23,8 @@ export type PanelId =
   | "map"
   | "linter"
   | "foreshadow"
-  | "grid";
+  | "grid"
+  | "matrix";
 
 /** MIME type used to transfer panel IDs during external drag operations */
 export const PANEL_DRAG_TYPE = "application/grimodex-panel-id";
@@ -95,6 +96,13 @@ const PANEL_INSERT_REGISTRY: Record<PanelId, InsertRule[]> = {
     { panel: null, direction: "below" },
   ],
   grid: [
+    { panel: "timeline", direction: "within" },
+    { panel: "map", direction: "within" },
+    { panel: "editor", direction: "below" },
+    { panel: null, direction: "below" },
+  ],
+  matrix: [
+    { panel: "grid", direction: "within" },
     { panel: "timeline", direction: "within" },
     { panel: "map", direction: "within" },
     { panel: "editor", direction: "below" },

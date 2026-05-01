@@ -344,7 +344,8 @@
       "map": "Map",
       "linter": "Linter",
       "foreshadow": "Foreshadow",
-      "grid": "Grid"
+      "grid": "Grid",
+      "matrix": "Matrix"
     },
     "preset": {
       "title": "Layout presets",

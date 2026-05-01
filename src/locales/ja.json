@@ -344,7 +344,8 @@
       "map": "マップ",
       "linter": "Linter",
       "foreshadow": "伏線",
-      "grid": "グリッド"
+      "grid": "グリッド",
+      "matrix": "マトリクス"
     },
     "preset": {
       "title": "レイアウトプリセット",

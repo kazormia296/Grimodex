@@ -68,6 +68,14 @@ function buildDefault(api: DockviewApi) {
     inactive: true,
   });
 
+  api.addPanel({
+    id: "matrix",
+    component: "matrix",
+    title: getPanelTitle("matrix"),
+    position: { referencePanel: "snippets", direction: "within" },
+    inactive: true,
+  });
+
   const leftGroup = api.getPanel("scenes")?.group;
   const rightGroup = api.getPanel("chat")?.group;
   if (leftGroup && rightGroup) {
@@ -122,6 +130,14 @@ function buildChatMain(api: DockviewApi) {
     minimumWidth: 320,
   });
 
+  api.addPanel({
+    id: "matrix",
+    component: "matrix",
+    title: getPanelTitle("matrix"),
+    position: { referencePanel: "snippets", direction: "within" },
+    inactive: true,
+  });
+
   // 4. Set sizes: left ~15%, right ~30%, center gets the rest (~55%)
   const leftGroup = api.getPanel("scenes")?.group;
   const rightGroup = api.getPanel("codex")?.group;
@@ -164,6 +180,14 @@ function buildCodexMain(api: DockviewApi) {
     component: "chat-history",
     title: getPanelTitle("chat-history"),
     position: { referencePanel: "chat", direction: "within" },
+    inactive: true,
+  });
+
+  api.addPanel({
+    id: "matrix",
+    component: "matrix",
+    title: getPanelTitle("matrix"),
+    position: { referencePanel: "snippets", direction: "within" },
     inactive: true,
   });
 

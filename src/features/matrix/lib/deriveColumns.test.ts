@@ -32,7 +32,9 @@ describe("deriveColumns", () => {
       makeEntry("e3", "魔法陣", "lore"),
     ];
     const cols = deriveColumns(entries, "codex-all", [], false);
-    expect(cols.map((c) => c.entry.id)).toEqual(["e1", "e2", "e3"]);
+    expect(
+      cols.filter((c) => !c.isSectionHeader).map((c) => c.entry!.id),
+    ).toEqual(["e1", "e2", "e3"]);
   });
 
   it("filters by type for codex-characters mode", () => {
@@ -41,7 +43,9 @@ describe("deriveColumns", () => {
       makeEntry("e2", "廃社", "location"),
     ];
     const cols = deriveColumns(entries, "codex-characters", [], false);
-    expect(cols.map((c) => c.entry.id)).toEqual(["e1"]);
+    expect(
+      cols.filter((c) => !c.isSectionHeader).map((c) => c.entry!.id),
+    ).toEqual(["e1"]);
   });
 
   it("filters by type for codex-locations mode", () => {
@@ -50,7 +54,9 @@ describe("deriveColumns", () => {
       makeEntry("e2", "廃社", "location"),
     ];
     const cols = deriveColumns(entries, "codex-locations", [], false);
-    expect(cols.map((c) => c.entry.id)).toEqual(["e2"]);
+    expect(
+      cols.filter((c) => !c.isSectionHeader).map((c) => c.entry!.id),
+    ).toEqual(["e2"]);
   });
 
   it("applies tag filter (AND) when tagFilter is non-empty", () => {
@@ -65,7 +71,9 @@ describe("deriveColumns", () => {
       ["main", "hero"],
       false,
     );
-    expect(cols.map((c) => c.entry.id)).toEqual(["e1"]);
+    expect(
+      cols.filter((c) => !c.isSectionHeader).map((c) => c.entry!.id),
+    ).toEqual(["e1"]);
   });
 
   it("returns all entries when tagFilter is empty", () => {
@@ -102,7 +110,7 @@ describe("deriveColumns", () => {
   it("MatrixColumn has expected shape", () => {
     const entries: Entry[] = [makeEntry("e1", "太郎", "character")];
     const cols = deriveColumns(entries, "codex-all", [], false);
-    const col: MatrixColumn = cols[0];
+    const col = cols[0] as MatrixColumn;
     expect(col).toMatchObject({
       entry: expect.objectContaining({ id: "e1" }),
       isSectionHeader: false,

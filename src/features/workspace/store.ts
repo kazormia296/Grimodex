@@ -38,6 +38,8 @@ export interface GlobalSettings {
   map?: unknown;
   /** Persisted grid panel display settings */
   grid?: unknown;
+  /** Persisted matrix panel settings */
+  matrix?: unknown;
 }
 
 export type AppView = "loading" | "welcome" | "launcher" | "editor";
@@ -152,6 +154,8 @@ export const useWorkspaceStore = create<WorkspaceState>()((set, get) => ({
       }
       useMapStore.getState().loadFromSettings(settings);
       useGridStore.getState().loadFromSettings(settings);
+      const { useMatrixStore } = await import("@/features/matrix/matrixStore");
+      useMatrixStore.getState().loadFromSettings(settings);
       // Optimize FTS indexes in background (fire-and-forget)
       invoke("fts_optimize").catch(() => {});
     } catch (e) {
