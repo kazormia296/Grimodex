@@ -181,7 +181,7 @@ export function GridColumn({
         </div>
 
         {/* Items: scenes (cards) + nested folders (folder cards), recursively flattened */}
-        <div className="flex flex-col gap-2 p-2 flex-1">
+        <div className="flex flex-col gap-2 p-2 flex-1 min-h-0 overflow-y-auto">
           {descendants.length === 0 ? (
             <div
               ref={setEmptyRef}

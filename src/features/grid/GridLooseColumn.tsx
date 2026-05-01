@@ -107,7 +107,7 @@ export function GridLooseColumn({
   return (
     <div
       className={cn(
-        `flex flex-col ${colWidth} shrink-0 rounded-lg border border-dashed bg-muted/10`,
+        `flex flex-col h-full ${colWidth} shrink-0 rounded-lg border border-dashed bg-muted/10`,
       )}
     >
       {/* Header */}
@@ -172,7 +172,7 @@ export function GridLooseColumn({
       </div>
 
       {/* Cards */}
-      <div className="flex flex-col gap-2 p-2 flex-1">
+      <div className="flex flex-col gap-2 p-2 flex-1 min-h-0 overflow-y-auto">
         {scenes.length === 0 ? (
           <div
             ref={setEmptyRef}
