@@ -283,10 +283,10 @@ export function GridPanel() {
               visibility={visibility}
               dropIndicator={dropIndicator}
               title={
-                // When container is a folder AND has no chapter sub-folders,
-                // show the container's own name (e.g. "Part.2") instead of "未分類シーン",
-                // since these scenes ARE this folder's content (not "uncategorized").
-                chapters.length === 0 && containerId
+                // When container is a folder, these "loose" scenes are direct content
+                // of that folder (not truly uncategorized) — label the column with the
+                // folder's own name. "未分類シーン" only applies at the project root.
+                containerId
                   ? (nodes.find((n) => n.id === containerId)?.title ??
                     undefined)
                   : undefined
