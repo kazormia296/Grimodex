@@ -239,8 +239,9 @@ describe("GridSceneCard", () => {
         dimmed={true}
       />,
     );
-    const card = container.firstChild as HTMLElement;
-    expect(card.className).toContain("opacity-40");
+    const inner = (container.firstChild as HTMLElement)
+      .firstChild as HTMLElement;
+    expect(inner.className).toContain("opacity-40");
   });
 
   it("dimmed=false → opacity-40 クラスが付かない（isDragging=false 時）", () => {
@@ -251,8 +252,9 @@ describe("GridSceneCard", () => {
         dimmed={false}
       />,
     );
-    const card = container.firstChild as HTMLElement;
-    expect(card.className).not.toContain("opacity-40");
+    const inner = (container.firstChild as HTMLElement)
+      .firstChild as HTMLElement;
+    expect(inner.className).not.toContain("opacity-40");
   });
 
   it("charCounts のリアルタイム値をストアから取得して表示する", () => {

@@ -92,95 +92,99 @@ export function GridSceneCard({
         setDragRef(node);
         setDropRef(node);
       }}
-      className={cn(
-        "relative rounded-md border bg-card text-card-foreground shadow-sm",
-        "flex flex-col select-none",
-        (isDragging || dimmed) && "opacity-40",
-      )}
       style={{
         paddingTop: isDropBefore ? GAP : 0,
         paddingBottom: isDropAfter ? GAP : 0,
-        transition: "padding 120ms ease-out, opacity 120ms ease-out",
+        transition: "padding 120ms ease-out",
       }}
     >
-      {/* Drag handle area */}
       <div
-        {...attributes}
-        {...listeners}
-        className="absolute inset-x-0 top-0 h-4 cursor-grab active:cursor-grabbing rounded-t-md"
-        aria-label="ドラッグして移動"
-      />
+        className={cn(
+          "relative rounded-md border bg-card text-card-foreground shadow-sm",
+          "flex flex-col select-none",
+          (isDragging || dimmed) && "opacity-40",
+        )}
+        style={{ transition: "opacity 120ms ease-out" }}
+      >
+        {/* Drag handle area */}
+        <div
+          {...attributes}
+          {...listeners}
+          className="absolute inset-x-0 top-0 h-4 cursor-grab active:cursor-grabbing rounded-t-md"
+          aria-label="ドラッグして移動"
+        />
 
-      <GridCardHeader
-        nodeId={scene.id}
-        title={scene.title}
-        onMenuOpen={() => setMenuOpen((v) => !v)}
-        onTitleClick={openInEditor}
-        menuBtnRef={menuBtnRef}
-      />
+        <GridCardHeader
+          nodeId={scene.id}
+          title={scene.title}
+          onMenuOpen={() => setMenuOpen((v) => !v)}
+          onTitleClick={openInEditor}
+          menuBtnRef={menuBtnRef}
+        />
 
-      <GridCardBody
-        nodeId={scene.id}
-        synopsis={scene.synopsis}
-        unplacedBeatPreview={scene.unplacedBeatPreview}
-        showSynopsis={display.showSynopsis}
-        showBeats={display.showBeats}
-        compact={display.compactCards}
-        onEditingChange={setIsEditing}
-      />
+        <GridCardBody
+          nodeId={scene.id}
+          synopsis={scene.synopsis}
+          unplacedBeatPreview={scene.unplacedBeatPreview}
+          showSynopsis={display.showSynopsis}
+          showBeats={display.showBeats}
+          compact={display.compactCards}
+          onEditingChange={setIsEditing}
+        />
 
-      {addingBeat && (
-        <div className="px-3 pb-2">
-          <input
-            // eslint-disable-next-line jsx-a11y/no-autofocus
-            autoFocus
-            className="w-full rounded border border-input bg-background px-2 py-1 text-[11px] focus:outline-none focus:ring-1 focus:ring-ring"
-            placeholder={t(
-              "grid.card.beatPlaceholder",
-              "Beat を入力… (Enter で確定)",
-            )}
-            value={beatDraft}
-            onChange={(e) => setBeatDraft(e.target.value)}
-            onKeyDown={handleBeatKeyDown}
-            onBlur={() => void commitBeat()}
-          />
+        {addingBeat && (
+          <div className="px-3 pb-2">
+            <input
+              // eslint-disable-next-line jsx-a11y/no-autofocus
+              autoFocus
+              className="w-full rounded border border-input bg-background px-2 py-1 text-[11px] focus:outline-none focus:ring-1 focus:ring-ring"
+              placeholder={t(
+                "grid.card.beatPlaceholder",
+                "Beat を入力… (Enter で確定)",
+              )}
+              value={beatDraft}
+              onChange={(e) => setBeatDraft(e.target.value)}
+              onKeyDown={handleBeatKeyDown}
+              onBlur={() => void commitBeat()}
+            />
+          </div>
+        )}
+
+        {display.showCodex && (
+          <div className="px-3 pb-2">
+            <GridCardChips
+              sceneId={scene.id}
+              editable
+              compact={display.compactCards}
+            />
+          </div>
+        )}
+
+        {/* Footer: status badge + char count */}
+        <div className="flex items-center gap-2 px-3 pb-2 pt-0.5 border-t border-border/40 mt-0.5">
+          <StatusBadge status={scene.status} iconOnly={!display.showLabel} />
+          <span className="text-[10px] text-muted-foreground/60 ml-auto">
+            {liveCharCount.toLocaleString()} chars
+          </span>
         </div>
-      )}
 
-      {display.showCodex && (
-        <div className="px-3 pb-2">
-          <GridCardChips
-            sceneId={scene.id}
-            editable
-            compact={display.compactCards}
-          />
-        </div>
-      )}
-
-      {/* Footer: status badge + char count */}
-      <div className="flex items-center gap-2 px-3 pb-2 pt-0.5 border-t border-border/40 mt-0.5">
-        <StatusBadge status={scene.status} iconOnly={!display.showLabel} />
-        <span className="text-[10px] text-muted-foreground/60 ml-auto">
-          {liveCharCount.toLocaleString()} chars
-        </span>
+        {menuOpen && (
+          <div className="relative">
+            <GridCardMenu
+              nodeId={scene.id}
+              onClose={() => setMenuOpen(false)}
+              onRename={() => {
+                setMenuOpen(false);
+              }}
+              onAddBeat={() => {
+                setAddingBeat(true);
+                setBeatDraft("");
+              }}
+              anchorRef={menuBtnRef}
+            />
+          </div>
+        )}
       </div>
-
-      {menuOpen && (
-        <div className="relative">
-          <GridCardMenu
-            nodeId={scene.id}
-            onClose={() => setMenuOpen(false)}
-            onRename={() => {
-              setMenuOpen(false);
-            }}
-            onAddBeat={() => {
-              setAddingBeat(true);
-              setBeatDraft("");
-            }}
-            anchorRef={menuBtnRef}
-          />
-        </div>
-      )}
     </div>
   );
 }

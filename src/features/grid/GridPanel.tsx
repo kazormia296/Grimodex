@@ -245,7 +245,7 @@ export function GridPanel() {
         {activeDragNode && (
           <div
             className={`flex flex-col rounded-md border-2 border-primary bg-card shadow-xl ring-2 ring-primary/30 ${display.compactCards ? "w-44" : "w-56"}`}
-            style={{ opacity: 0.92, rotate: "1.5deg" }}
+            style={{ opacity: 0.92 }}
           >
             <div className="flex items-center gap-1 border-b px-3 py-2">
               <span className="flex-1 truncate text-sm font-semibold">
