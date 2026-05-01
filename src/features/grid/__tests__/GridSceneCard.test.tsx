@@ -24,8 +24,16 @@ vi.mock("@/features/layout/layoutStore", () => ({
 }));
 vi.mock("@/features/codex/sceneCodexPinsStore", () => ({
   useSceneCodexPinsStore: vi.fn(
-    (sel: (s: { pinsByScene: Record<string, string[]> }) => unknown) =>
-      sel({ pinsByScene: {} }),
+    (
+      sel: (s: {
+        pinsByScene: Record<string, string[]>;
+        loadPinsForScene: () => Promise<void>;
+      }) => unknown,
+    ) =>
+      sel({
+        pinsByScene: {},
+        loadPinsForScene: vi.fn().mockResolvedValue(undefined),
+      }),
   ),
 }));
 vi.mock("@/features/codex/codexStore", () => ({

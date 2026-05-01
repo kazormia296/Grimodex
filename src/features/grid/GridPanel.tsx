@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   DndContext,
   DragOverlay,
@@ -39,11 +39,21 @@ export function GridPanel() {
 
   const [activeId, setActiveId] = useState<string | null>(null);
   const [showDisplayMenu, setShowDisplayMenu] = useState(false);
+  const pointerYRef = useRef(0);
 
   // Load persisted containerId when project changes
   useEffect(() => {
     void loadForProject(projectId);
   }, [projectId, loadForProject]);
+
+  // Track actual pointer Y for accurate above/below-midpoint DnD decisions
+  useEffect(() => {
+    const handler = (e: PointerEvent) => {
+      pointerYRef.current = e.clientY;
+    };
+    window.addEventListener("pointermove", handler);
+    return () => window.removeEventListener("pointermove", handler);
+  }, []);
 
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
@@ -64,22 +74,22 @@ export function GridPanel() {
 
     if (kind === "scene") {
       const sceneId = activeIdStr.replace(/^scene-/, "");
-      // Build parentMap for all scenes
-      const sceneParentMap: Record<string, string | null> = {};
-      for (const n of nodes) {
-        if (n.nodeType === "scene") sceneParentMap[n.id] = n.parentId;
-      }
-      // Approximate pointer and rect (dnd-kit doesn't give them in dragEnd directly)
+      // Build ordered scene list from derived data (already sorted by sortOrder)
+      const orderedScenes = [
+        ...chapters.flatMap((ch) =>
+          ch.scenes.map((s) => ({ id: s.id, parentId: s.parentId })),
+        ),
+        ...looseScenes.map((s) => ({ id: s.id, parentId: s.parentId })),
+      ];
       const overNode = e.over;
       const rect = overNode?.rect ?? { top: 0, height: 60 };
-      const pointerY = (e.delta?.y ?? 0) + (rect.top + rect.height / 2);
 
       const target = computeSceneDropTarget(
         sceneId,
         overIdStr,
-        pointerY,
+        pointerYRef.current,
         { top: rect.top, height: rect.height },
-        sceneParentMap,
+        orderedScenes,
         containerId,
       );
       if (target) {

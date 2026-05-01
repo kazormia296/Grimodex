@@ -37,16 +37,17 @@ describe("parseId", () => {
 });
 
 describe("computeSceneDropTarget", () => {
-  const parentMap: Record<string, string | null> = {
-    s1: "ch1",
-    s2: "ch1",
-    s3: "ch2",
-  };
+  // Ordered by sortOrder within each parent
+  const orderedScenes = [
+    { id: "s1", parentId: "ch1" },
+    { id: "s2", parentId: "ch1" },
+    { id: "s3", parentId: "ch2" },
+  ];
   const rect = { top: 100, height: 60 };
 
   it("returns null when overId is empty", () => {
     expect(
-      computeSceneDropTarget("s1", "", 120, rect, parentMap, "root"),
+      computeSceneDropTarget("s1", "", 120, rect, orderedScenes, "root"),
     ).toBeNull();
   });
 
@@ -57,19 +58,46 @@ describe("computeSceneDropTarget", () => {
         sceneDroppableId("s1"),
         120,
         rect,
-        parentMap,
+        orderedScenes,
         "root",
       ),
     ).toBeNull();
   });
 
-  it("inserts before target when pointer is above midpoint", () => {
+  it("inserts before first scene in column → prepend (afterId null)", () => {
+    // Drag s3 (ch2) before s1 (first in ch1) — no predecessor → prepend
     const result = computeSceneDropTarget(
-      "s1",
-      sceneDroppableId("s2"),
-      110, // below rect.top=100, above mid=130
+      "s3",
+      sceneDroppableId("s1"),
+      110, // above mid=130
       rect,
-      parentMap,
+      orderedScenes,
+      "root",
+    );
+    expect(result).toEqual({ targetParentId: "ch1", afterId: null });
+  });
+
+  it("inserts before non-first scene → resolves predecessor", () => {
+    // Drag s3 (ch2) before s2 (second in ch1) → afterId = s1
+    const result = computeSceneDropTarget(
+      "s3",
+      sceneDroppableId("s2"),
+      110, // above mid=130
+      rect,
+      orderedScenes,
+      "root",
+    );
+    expect(result).toEqual({ targetParentId: "ch1", afterId: "s1" });
+  });
+
+  it("dragging within same column before self-adjacent: active excluded from siblings", () => {
+    // Drag s2 (ch1) before s1 (first in ch1) — active excluded → predecessor null
+    const result = computeSceneDropTarget(
+      "s2",
+      sceneDroppableId("s1"),
+      110,
+      rect,
+      orderedScenes,
       "root",
     );
     expect(result).toEqual({ targetParentId: "ch1", afterId: null });
@@ -79,9 +107,9 @@ describe("computeSceneDropTarget", () => {
     const result = computeSceneDropTarget(
       "s1",
       sceneDroppableId("s3"),
-      145, // above rect.top+height=160, below mid=130
+      145, // below mid=130
       rect,
-      parentMap,
+      orderedScenes,
       "root",
     );
     expect(result).toEqual({ targetParentId: "ch2", afterId: "s3" });
@@ -93,7 +121,7 @@ describe("computeSceneDropTarget", () => {
       columnEndId("ch2"),
       0,
       rect,
-      parentMap,
+      orderedScenes,
       "root",
     );
     expect(result).toEqual({ targetParentId: "ch2", afterId: null });
@@ -105,7 +133,7 @@ describe("computeSceneDropTarget", () => {
       columnEmptyId("loose"),
       0,
       rect,
-      parentMap,
+      orderedScenes,
       "root",
     );
     expect(result).toEqual({ targetParentId: "root", afterId: null });
@@ -117,7 +145,7 @@ describe("computeSceneDropTarget", () => {
       columnEndId("loose"),
       0,
       rect,
-      parentMap,
+      orderedScenes,
       "root",
     );
     expect(result).toEqual({ targetParentId: "root", afterId: null });
@@ -129,7 +157,7 @@ describe("computeSceneDropTarget", () => {
       columnEmptyId("ch3"),
       0,
       rect,
-      parentMap,
+      orderedScenes,
       "root",
     );
     expect(result).toEqual({ targetParentId: "ch3", afterId: null });

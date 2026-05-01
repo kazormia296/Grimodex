@@ -1,3 +1,4 @@
+import { useEffect } from "react";
 import { useCodexStore } from "@/features/codex/codexStore";
 import { useSceneCodexPinsStore } from "@/features/codex/sceneCodexPinsStore";
 import { cn } from "@/lib/utils";
@@ -18,10 +19,15 @@ interface Props {
 }
 
 export function GridCardChips({ sceneId, onChipClick }: Props) {
+  const loadPinsForScene = useSceneCodexPinsStore((s) => s.loadPinsForScene);
   const entryIds = useSceneCodexPinsStore(
     (s) => s.pinsByScene[sceneId] ?? EMPTY_IDS,
   );
   const entries = useCodexStore((s) => s.entries);
+
+  useEffect(() => {
+    void loadPinsForScene(sceneId);
+  }, [sceneId, loadPinsForScene]);
 
   const chips = entryIds
     .slice(0, MAX_CHIPS)

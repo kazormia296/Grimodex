@@ -42,9 +42,9 @@ export function parseId(id: string): {
  *
  * @param activeSceneId - The scene being dragged
  * @param overId - The dnd-kit `over.id` string
- * @param pointerY - Current pointer Y in viewport coordinates
+ * @param pointerY - Current pointer Y in viewport coordinates (e.g. from pointermove clientY)
  * @param overRect - Bounding rect of the over element
- * @param scenes - All scene infos in the target column (sorted by sortOrder)
+ * @param orderedScenes - All scenes sorted by sortOrder (used to resolve predecessors)
  * @param containerId - The grid root container (used when dropping to loose)
  */
 export function computeSceneDropTarget(
@@ -52,7 +52,7 @@ export function computeSceneDropTarget(
   overId: string,
   pointerY: number,
   overRect: { top: number; height: number },
-  sceneParentMap: Record<string, string | null>,
+  orderedScenes: Array<{ id: string; parentId: string | null }>,
   containerId: string | null,
 ): DropTarget | null {
   if (!overId) return null;
@@ -62,11 +62,18 @@ export function computeSceneDropTarget(
   if (kind === "drop") {
     const targetSceneId = rawId;
     if (targetSceneId === activeSceneId) return null;
-    const targetParentId = sceneParentMap[targetSceneId] ?? null;
+    const targetScene = orderedScenes.find((s) => s.id === targetSceneId);
+    const targetParentId = targetScene?.parentId ?? null;
     const midY = overRect.top + overRect.height / 2;
     if (pointerY <= midY) {
-      // Insert before target → afterId = predecessor of target
-      return { targetParentId, afterId: null }; // simplified: caller resolves predecessor
+      // Insert before target: find predecessor in the same parent (excluding active)
+      const siblings = orderedScenes.filter(
+        (s) => s.parentId === targetParentId && s.id !== activeSceneId,
+      );
+      const targetIdx = siblings.findIndex((s) => s.id === targetSceneId);
+      const predecessor =
+        targetIdx > 0 ? (siblings[targetIdx - 1]?.id ?? null) : null;
+      return { targetParentId, afterId: predecessor };
     }
     return { targetParentId, afterId: targetSceneId };
   }
