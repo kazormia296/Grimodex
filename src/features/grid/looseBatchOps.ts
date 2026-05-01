@@ -9,7 +9,7 @@ export async function consolidateLooseIntoChapter(
 ): Promise<void> {
   const { moveNode } = useTreeStore.getState();
   for (const sceneId of looseSceneIds) {
-    await moveNode(sceneId, targetChapterId, null);
+    await moveNode(sceneId, targetChapterId, undefined);
   }
 }
 
@@ -37,7 +37,7 @@ export async function convertLooseToChapter(
   });
 
   for (const sceneId of looseSceneIds) {
-    await moveNode(sceneId, newNode.id, null);
+    await moveNode(sceneId, newNode.id, undefined);
   }
 
   return newNode.id;

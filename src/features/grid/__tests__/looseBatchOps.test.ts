@@ -28,9 +28,9 @@ describe("consolidateLooseIntoChapter", () => {
     await consolidateLooseIntoChapter(["s1", "s2", "s3"], "ch1");
 
     expect(moveNode).toHaveBeenCalledTimes(3);
-    expect(moveNode).toHaveBeenCalledWith("s1", "ch1", null);
-    expect(moveNode).toHaveBeenCalledWith("s2", "ch1", null);
-    expect(moveNode).toHaveBeenCalledWith("s3", "ch1", null);
+    expect(moveNode).toHaveBeenCalledWith("s1", "ch1", undefined);
+    expect(moveNode).toHaveBeenCalledWith("s2", "ch1", undefined);
+    expect(moveNode).toHaveBeenCalledWith("s3", "ch1", undefined);
   });
 
   it("空配列を渡した場合は何もしない", async () => {
@@ -64,8 +64,8 @@ describe("convertLooseToChapter", () => {
       title: "Chapter 1",
     });
     expect(moveNode).toHaveBeenCalledTimes(2);
-    expect(moveNode).toHaveBeenCalledWith("s1", newFolderId, null);
-    expect(moveNode).toHaveBeenCalledWith("s2", newFolderId, null);
+    expect(moveNode).toHaveBeenCalledWith("s1", newFolderId, undefined);
+    expect(moveNode).toHaveBeenCalledWith("s2", newFolderId, undefined);
     expect(result).toBe(newFolderId);
   });
 
