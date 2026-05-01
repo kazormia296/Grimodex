@@ -130,6 +130,24 @@ export async function loadSceneContent(sceneId: string): Promise<string> {
   return rows[0]?.content ?? "";
 }
 
+/**
+ * Save unplaced beats doc + preview without touching content.
+ * Used by Grid "Add unplaced beat" to avoid overwriting in-Editor unsaved changes.
+ */
+export async function saveSceneBeatsOnly(
+  sceneId: string,
+  payload: { unplacedBeatsDoc: string; unplacedBeatPreview: string | null },
+): Promise<void> {
+  await db
+    .update(treeNodes)
+    .set({
+      unplacedBeatsDoc: payload.unplacedBeatsDoc,
+      unplacedBeatPreview: payload.unplacedBeatPreview,
+      updatedAt: new Date().toISOString(),
+    })
+    .where(eq(treeNodes.id, sceneId));
+}
+
 /** Load scene content + unplaced beats doc in one query. */
 export async function loadSceneFull(
   sceneId: string,

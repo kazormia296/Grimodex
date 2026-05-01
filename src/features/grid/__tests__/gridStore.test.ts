@@ -41,8 +41,19 @@ const DEFAULT_DISPLAY = {
   compactCards: false,
 };
 
+const DEFAULT_FILTER = {
+  emptyOnly: false,
+  hideCompleted: false,
+  codexFilter: null as string | null,
+};
+
 function resetStore() {
-  useGridStore.setState({ containerId: null, display: { ...DEFAULT_DISPLAY } });
+  useGridStore.setState({
+    containerId: null,
+    display: { ...DEFAULT_DISPLAY },
+    filter: { ...DEFAULT_FILTER },
+    searchQuery: "",
+  });
 }
 
 beforeEach(() => {
@@ -139,6 +150,60 @@ describe("loadForProject", () => {
 
     expect(useGridStore.getState().containerId).toBeNull();
     expect(mockClearContainerId).toHaveBeenCalledWith("proj-1");
+  });
+});
+
+describe("filter", () => {
+  it("初期 filter はすべて false / null", () => {
+    expect(useGridStore.getState().filter).toEqual(DEFAULT_FILTER);
+  });
+
+  it("setFilter は部分更新する", () => {
+    useGridStore.getState().setFilter({ emptyOnly: true });
+    const { filter } = useGridStore.getState();
+    expect(filter.emptyOnly).toBe(true);
+    expect(filter.hideCompleted).toBe(false);
+    expect(filter.codexFilter).toBeNull();
+  });
+
+  it("clearFilter はデフォルトに戻す", () => {
+    useGridStore.getState().setFilter({ emptyOnly: true, codexFilter: "e1" });
+    useGridStore.getState().clearFilter();
+    expect(useGridStore.getState().filter).toEqual(DEFAULT_FILTER);
+  });
+
+  it("setSearchQuery / 初期値は空文字 / 永続化しない", () => {
+    useGridStore.getState().setSearchQuery("旅");
+    expect(useGridStore.getState().searchQuery).toBe("旅");
+    // searchQuery is NOT in the persistent snapshot
+    // (tested indirectly: loadFromSettings doesn't restore it)
+    resetStore();
+    expect(useGridStore.getState().searchQuery).toBe("");
+  });
+});
+
+describe("loadFromSettings — filter 永続化", () => {
+  it("filter を GlobalSettings から復元する", () => {
+    const settings = {
+      grid: {
+        display: DEFAULT_DISPLAY,
+        filter: { emptyOnly: true, hideCompleted: false, codexFilter: "e1" },
+      },
+    } as unknown as import("@/features/workspace/store").GlobalSettings;
+
+    useGridStore.getState().loadFromSettings(settings);
+    const { filter } = useGridStore.getState();
+    expect(filter.emptyOnly).toBe(true);
+    expect(filter.codexFilter).toBe("e1");
+  });
+
+  it("filter キーが欠落している場合はデフォルトにフォールバックする", () => {
+    const settings = {
+      grid: { display: DEFAULT_DISPLAY },
+    } as unknown as import("@/features/workspace/store").GlobalSettings;
+
+    useGridStore.getState().loadFromSettings(settings);
+    expect(useGridStore.getState().filter).toEqual(DEFAULT_FILTER);
   });
 });
 

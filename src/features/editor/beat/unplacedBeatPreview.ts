@@ -1,6 +1,5 @@
-// Phase B: raise to 8 × 60 when Beat becomes the primary card display
-const MAX_BEATS = 3;
-const MAX_CHARS_PER_BEAT = 40;
+const MAX_BEATS = 8;
+const MAX_CHARS_PER_BEAT = 60;
 
 type UnplacedBeatLike = { content: { text?: string }[] };
 

@@ -1,6 +1,10 @@
-import { useEffect } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { Plus, X } from "lucide-react";
+import { useTranslation } from "react-i18next";
 import { useCodexStore } from "@/features/codex/codexStore";
 import { useSceneCodexPinsStore } from "@/features/codex/sceneCodexPinsStore";
+import { PinEntryDialog } from "@/features/codex/components/PinEntryDialog";
+import { useLayoutStore } from "@/features/layout/layoutStore";
 import { cn } from "@/lib/utils";
 
 const TYPE_COLORS: Record<string, string> = {
@@ -10,48 +14,115 @@ const TYPE_COLORS: Record<string, string> = {
   lore: "bg-purple-500/20 text-purple-300 border-purple-500/30",
 };
 
-const MAX_CHIPS = 5;
 const EMPTY_IDS: string[] = [];
 
 interface Props {
   sceneId: string;
   onChipClick?: (entryId: string) => void;
+  editable?: boolean;
+  compact?: boolean;
 }
 
-export function GridCardChips({ sceneId, onChipClick }: Props) {
+export function GridCardChips({
+  sceneId,
+  onChipClick,
+  editable,
+  compact,
+}: Props) {
+  const { t } = useTranslation();
+  const containerRef = useRef<HTMLDivElement>(null);
+  const [popoverOpen, setPopoverOpen] = useState(false);
+
+  const MAX_CHIPS = compact ? 3 : 5;
+
   const loadPinsForScene = useSceneCodexPinsStore((s) => s.loadPinsForScene);
   const entryIds = useSceneCodexPinsStore(
     (s) => s.pinsByScene[sceneId] ?? EMPTY_IDS,
   );
+  const addPin = useSceneCodexPinsStore((s) => s.addPin);
+  const removePin = useSceneCodexPinsStore((s) => s.removePin);
   const entries = useCodexStore((s) => s.entries);
 
   useEffect(() => {
     void loadPinsForScene(sceneId);
   }, [sceneId, loadPinsForScene]);
 
+  const pinnedIds = useMemo(() => new Set(entryIds), [entryIds]);
+
   const chips = entryIds
     .slice(0, MAX_CHIPS)
     .map((id) => entries.find((e) => e.id === id))
     .filter(Boolean);
 
-  if (chips.length === 0) return null;
+  const overflow = entryIds.length - MAX_CHIPS;
+
+  if (chips.length === 0 && !editable) return null;
 
   return (
-    <div className="flex flex-wrap gap-1">
+    <div
+      ref={containerRef}
+      className="relative flex flex-wrap items-center gap-1"
+    >
       {chips.map((entry) => (
-        <button
-          key={entry!.id}
-          className={cn(
-            "rounded border px-1.5 py-0.5 text-[10px] font-medium leading-none",
-            TYPE_COLORS[entry!.type] ??
-              "bg-muted text-muted-foreground border-border",
+        <div key={entry!.id} className="group/chip relative inline-flex">
+          <button
+            className={cn(
+              "rounded border px-1.5 py-0.5 text-[10px] font-medium leading-none",
+              editable && "pr-4",
+              TYPE_COLORS[entry!.type] ??
+                "bg-muted text-muted-foreground border-border",
+            )}
+            onClick={() => {
+              if (!editable) {
+                onChipClick?.(entry!.id);
+                useLayoutStore.getState().showPanel("codex");
+              }
+            }}
+            title={entry!.name}
+          >
+            {entry!.name}
+          </button>
+          {editable && (
+            <button
+              className="absolute right-0.5 top-1/2 -translate-y-1/2 rounded-full opacity-0 group-hover/chip:opacity-100 transition-opacity hover:text-destructive"
+              onClick={(e) => {
+                e.stopPropagation();
+                void removePin(sceneId, entry!.id);
+              }}
+              title={t("grid.card.removeCodex", "削除")}
+            >
+              <X className="h-2 w-2" />
+            </button>
           )}
-          onClick={() => onChipClick?.(entry!.id)}
-          title={entry!.name}
-        >
-          {entry!.name}
-        </button>
+        </div>
       ))}
+
+      {overflow > 0 && (
+        <span className="text-[10px] text-muted-foreground/60">
+          +{overflow}
+        </span>
+      )}
+
+      {editable && (
+        <button
+          className="rounded border border-dashed border-border px-1.5 py-0.5 text-[10px] text-muted-foreground hover:border-primary hover:text-primary transition-colors"
+          onClick={() => setPopoverOpen((v) => !v)}
+          title={t("grid.card.addCodex", "Codex を紐付け")}
+        >
+          <Plus className="h-2.5 w-2.5" />
+        </button>
+      )}
+
+      <PinEntryDialog
+        open={popoverOpen}
+        pinnedIds={pinnedIds}
+        onPin={(eid) => void addPin(sceneId, eid)}
+        onUnpin={(eid) => void removePin(sceneId, eid)}
+        onClose={() => setPopoverOpen(false)}
+        containerRef={containerRef}
+        tabs={["codex"]}
+        title={t("grid.card.pinCodexTitle", "Codex を紐付け")}
+      />
     </div>
   );
 }

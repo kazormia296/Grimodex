@@ -43,12 +43,18 @@ vi.mock("@/features/codex/codexStore", () => ({
 }));
 vi.mock("@/features/tree/treeStore", () => ({
   useTreeStore: Object.assign(
-    vi.fn((sel: (s: { pendingRenameId: string | null }) => unknown) =>
-      sel({ pendingRenameId: null }),
+    vi.fn(
+      (
+        sel: (s: {
+          pendingRenameId: string | null;
+          charCounts: Record<string, number>;
+        }) => unknown,
+      ) => sel({ pendingRenameId: null, charCounts: {} }),
     ),
     {
       getState: vi.fn(() => ({
         pendingRenameId: null,
+        charCounts: {},
         setPendingRenameId: vi.fn(),
       })),
     },
@@ -56,8 +62,19 @@ vi.mock("@/features/tree/treeStore", () => ({
 }));
 
 import { useDraggable } from "@dnd-kit/core";
+import { useTreeStore } from "@/features/tree/treeStore";
 
 const mockUseDraggable = vi.mocked(useDraggable);
+const mockTreeStore = useTreeStore as unknown as {
+  mockImplementation: (
+    fn: (
+      selector: (s: {
+        pendingRenameId: string | null;
+        charCounts: Record<string, number>;
+      }) => unknown,
+    ) => unknown,
+  ) => void;
+};
 
 // --- component under test (imported after mocks) ---
 import { GridSceneCard } from "../GridSceneCard";
@@ -174,17 +191,18 @@ describe("GridSceneCard", () => {
         display={{ ...DEFAULT_DISPLAY, showLabel: true }}
       />,
     );
-    expect(screen.getByText("draft")).toBeDefined();
+    expect(screen.getByText("Draft")).toBeDefined();
   });
 
-  it("hides status label when showLabel=false", () => {
+  it("hides status label text when showLabel=false (icon-only mode)", () => {
     render(
       <GridSceneCard
         scene={makeScene({ status: "draft" })}
         display={{ ...DEFAULT_DISPLAY, showLabel: false }}
       />,
     );
-    expect(screen.queryByText("draft")).toBeNull();
+    // icon-only renders a dot with title="Draft", not visible text
+    expect(screen.queryByText("Draft")).toBeNull();
   });
 
   it("passes disabled=true to useDraggable when editing", () => {
@@ -211,5 +229,42 @@ describe("GridSceneCard", () => {
   it("drag handle is present when not editing", () => {
     render(<GridSceneCard scene={makeScene()} display={DEFAULT_DISPLAY} />);
     expect(screen.getByLabelText("ドラッグして移動")).toBeDefined();
+  });
+
+  it("dimmed=true → 外側 div に opacity-40 クラスが付く", () => {
+    const { container } = render(
+      <GridSceneCard
+        scene={makeScene()}
+        display={DEFAULT_DISPLAY}
+        dimmed={true}
+      />,
+    );
+    const card = container.firstChild as HTMLElement;
+    expect(card.className).toContain("opacity-40");
+  });
+
+  it("dimmed=false → opacity-40 クラスが付かない（isDragging=false 時）", () => {
+    const { container } = render(
+      <GridSceneCard
+        scene={makeScene()}
+        display={DEFAULT_DISPLAY}
+        dimmed={false}
+      />,
+    );
+    const card = container.firstChild as HTMLElement;
+    expect(card.className).not.toContain("opacity-40");
+  });
+
+  it("charCounts のリアルタイム値をストアから取得して表示する", () => {
+    mockTreeStore.mockImplementation((sel) =>
+      sel({ pendingRenameId: null, charCounts: { "scene-1": 9999 } }),
+    );
+    render(
+      <GridSceneCard
+        scene={makeScene({ charCount: 0 })}
+        display={DEFAULT_DISPLAY}
+      />,
+    );
+    expect(screen.getByText("9,999 chars")).toBeDefined();
   });
 });

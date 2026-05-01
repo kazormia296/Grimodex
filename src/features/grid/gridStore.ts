@@ -16,17 +16,29 @@ export interface GridDisplaySettings {
   compactCards: boolean;
 }
 
+export interface GridFilterSettings {
+  emptyOnly: boolean;
+  hideCompleted: boolean;
+  codexFilter: string | null;
+}
+
 export interface GridPersistentState {
   display: GridDisplaySettings;
+  filter: GridFilterSettings;
 }
 
 interface GridState {
   containerId: string | null;
   display: GridDisplaySettings;
+  filter: GridFilterSettings;
+  searchQuery: string;
 
   loadForProject: (projectId: string) => Promise<void>;
   setContainerId: (projectId: string, id: string | null) => Promise<void>;
   setDisplay: (updates: Partial<GridDisplaySettings>) => void;
+  setFilter: (updates: Partial<GridFilterSettings>) => void;
+  setSearchQuery: (q: string) => void;
+  clearFilter: () => void;
   loadFromSettings: (settings: GlobalSettings) => void;
 }
 
@@ -38,9 +50,17 @@ const DEFAULT_DISPLAY: GridDisplaySettings = {
   compactCards: false,
 };
 
+const DEFAULT_FILTER: GridFilterSettings = {
+  emptyOnly: false,
+  hideCompleted: false,
+  codexFilter: null,
+};
+
 export const useGridStore = create<GridState>((set, _get) => ({
   containerId: null,
   display: { ...DEFAULT_DISPLAY },
+  filter: { ...DEFAULT_FILTER },
+  searchQuery: "",
 
   async loadForProject(projectId) {
     const stored = await loadContainerId(projectId);
@@ -73,19 +93,32 @@ export const useGridStore = create<GridState>((set, _get) => ({
     set((s) => ({ display: { ...s.display, ...updates } }));
   },
 
+  setFilter(updates) {
+    set((s) => ({ filter: { ...s.filter, ...updates } }));
+  },
+
+  setSearchQuery(q) {
+    set({ searchQuery: q });
+  },
+
+  clearFilter() {
+    set({ filter: { ...DEFAULT_FILTER } });
+  },
+
   loadFromSettings(settings) {
     const saved = (settings as GlobalSettings & { grid?: GridPersistentState })
       .grid;
     if (!saved) return;
     set({
       display: { ...DEFAULT_DISPLAY, ...(saved.display ?? {}) },
+      filter: { ...DEFAULT_FILTER, ...(saved.filter ?? {}) },
     });
   },
 }));
 
-// Auto-persist display settings to global-settings.json
+// Auto-persist display + filter settings to global-settings.json
 function snapshotPersistent(s: GridState): GridPersistentState {
-  return { display: s.display };
+  return { display: s.display, filter: s.filter };
 }
 
 let prevSnapshot = JSON.stringify(snapshotPersistent(useGridStore.getState()));

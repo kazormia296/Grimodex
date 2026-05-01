@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   DndContext,
   DragOverlay,
@@ -10,8 +10,11 @@ import {
 import type { DragEndEvent, DragStartEvent } from "@dnd-kit/core";
 import { useTranslation } from "react-i18next";
 import { useTreeStore } from "@/features/tree/treeStore";
+import { useCodexStore } from "@/features/codex/codexStore";
+import { useSceneCodexPinsStore } from "@/features/codex/sceneCodexPinsStore";
 import { useGridStore } from "./gridStore";
 import { useGridDerivedData } from "./gridSelectors";
+import { useGridCardVisibility } from "./useGridCardVisibility";
 import { GridHeader } from "./GridHeader";
 import { GridColumn } from "./GridColumn";
 import { GridLooseColumn } from "./GridLooseColumn";
@@ -28,25 +31,28 @@ export function GridPanel() {
   const projectId = useTreeStore((s) => s.projectId);
   const moveNode = useTreeStore((s) => s.moveNode);
   const nodes = useTreeStore((s) => s.nodes);
+  const charCounts = useTreeStore((s) => s.charCounts);
 
   const containerId = useGridStore((s) => s.containerId);
   const display = useGridStore((s) => s.display);
+  const filter = useGridStore((s) => s.filter);
+  const searchQuery = useGridStore((s) => s.searchQuery);
   const setContainerId = useGridStore((s) => s.setContainerId);
   const loadForProject = useGridStore((s) => s.loadForProject);
+
+  const pinsByScene = useSceneCodexPinsStore((s) => s.pinsByScene);
 
   const { chapters, looseScenes, totalChapters, totalScenes } =
     useGridDerivedData(containerId);
 
   const [activeId, setActiveId] = useState<string | null>(null);
-  const [showDisplayMenu, setShowDisplayMenu] = useState(false);
+  const [showPanelMenu, setShowPanelMenu] = useState(false);
   const pointerYRef = useRef(0);
 
-  // Load persisted containerId when project changes
   useEffect(() => {
     void loadForProject(projectId);
   }, [projectId, loadForProject]);
 
-  // Track actual pointer Y for accurate above/below-midpoint DnD decisions
   useEffect(() => {
     const handler = (e: PointerEvent) => {
       pointerYRef.current = e.clientY;
@@ -74,7 +80,6 @@ export function GridPanel() {
 
     if (kind === "scene") {
       const sceneId = activeIdStr.replace(/^scene-/, "");
-      // Build ordered scene list from derived data (already sorted by sortOrder)
       const orderedScenes = [
         ...chapters.flatMap((ch) =>
           ch.scenes.map((s) => ({ id: s.id, parentId: s.parentId })),
@@ -115,11 +120,37 @@ export function GridPanel() {
     }
   }
 
-  // Find active drag item for DragOverlay
   const activeDragNode: TreeNodeData | null = activeId
     ? (nodes.find((n) => n.id === activeId.replace(/^(scene|column)-/, "")) ??
       null)
     : null;
+
+  // Compute visibility for all displayed scenes
+  const allDisplayedScenes = useMemo(
+    () => [...chapters.flatMap((ch) => ch.scenes), ...looseScenes],
+    [chapters, looseScenes],
+  );
+
+  const visibility = useGridCardVisibility({
+    scenes: allDisplayedScenes,
+    searchQuery,
+    filter,
+    charCounts,
+    pinsByScene,
+  });
+
+  // Total char count (live from store)
+  const totalCharCount = useMemo(
+    () =>
+      allDisplayedScenes.reduce(
+        (sum, s) => sum + (charCounts[s.id] ?? s.charCount ?? 0),
+        0,
+      ),
+    [allDisplayedScenes, charCounts],
+  );
+
+  const hasActiveFilter =
+    filter.emptyOnly || filter.hideCompleted || filter.codexFilter !== null;
 
   return (
     <DndContext
@@ -133,15 +164,16 @@ export function GridPanel() {
           projectId={projectId}
           chapterCount={totalChapters}
           onContainerChange={(id) => void setContainerId(projectId, id)}
-          onToggleDisplay={() => setShowDisplayMenu((v) => !v)}
+          onTogglePanelMenu={() => setShowPanelMenu((v) => !v)}
         />
 
-        {/* Display settings flyout */}
-        {showDisplayMenu && (
-          <GridDisplayMenu onClose={() => setShowDisplayMenu(false)} />
+        {showPanelMenu && (
+          <GridPanelMenu
+            onClose={() => setShowPanelMenu(false)}
+            hasActiveFilter={hasActiveFilter}
+          />
         )}
 
-        {/* Column scroll area */}
         <div className="flex flex-1 gap-3 overflow-x-auto overflow-y-hidden p-4">
           {chapters.map(({ folder, scenes }) => (
             <GridColumn
@@ -149,6 +181,7 @@ export function GridPanel() {
               folder={folder}
               scenes={scenes}
               display={display}
+              visibility={visibility}
             />
           ))}
 
@@ -157,6 +190,8 @@ export function GridPanel() {
               containerId={containerId}
               scenes={looseScenes}
               display={display}
+              chapters={chapters.map((ch) => ch.folder)}
+              visibility={visibility}
             />
           )}
 
@@ -173,6 +208,7 @@ export function GridPanel() {
         <GridStatusBar
           totalChapters={totalChapters}
           totalScenes={totalScenes}
+          totalCharCount={totalCharCount}
         />
       </div>
 
@@ -187,13 +223,28 @@ export function GridPanel() {
   );
 }
 
-// Inline display settings flyout
-function GridDisplayMenu({ onClose }: { onClose: () => void }) {
+// Panel-level menu: Display + Filter + Help
+function GridPanelMenu({
+  onClose,
+  hasActiveFilter,
+}: {
+  onClose: () => void;
+  hasActiveFilter: boolean;
+}) {
   const { t } = useTranslation();
   const display = useGridStore((s) => s.display);
   const setDisplay = useGridStore((s) => s.setDisplay);
+  const filter = useGridStore((s) => s.filter);
+  const setFilter = useGridStore((s) => s.setFilter);
+  const clearFilter = useGridStore((s) => s.clearFilter);
+  const codexEntries = useCodexStore((s) => s.entries);
+  const loadEntries = useCodexStore((s) => s.loadEntries);
 
-  const toggles: Array<{
+  useEffect(() => {
+    if (codexEntries.length === 0) loadEntries();
+  }, [codexEntries.length, loadEntries]);
+
+  const displayToggles: Array<{
     key: keyof typeof display;
     label: string;
   }> = [
@@ -207,31 +258,95 @@ function GridDisplayMenu({ onClose }: { onClose: () => void }) {
       key: "showLabel",
       label: t("grid.display.label", "ステータスラベル表示"),
     },
+    {
+      key: "compactCards",
+      label: t("grid.display.compact", "コンパクト表示"),
+    },
   ];
 
   return (
-    <div className="border-b bg-popover px-4 py-3">
-      <div className="mb-1 text-[11px] font-semibold text-muted-foreground uppercase tracking-wide">
-        {t("grid.display.title", "表示設定")}
+    <div className="border-b bg-popover px-4 py-3 space-y-3">
+      {/* Display */}
+      <div>
+        <div className="mb-1 text-[11px] font-semibold text-muted-foreground uppercase tracking-wide">
+          {t("grid.display.title", "表示設定")}
+        </div>
+        <div className="flex flex-wrap gap-x-4 gap-y-1">
+          {displayToggles.map(({ key, label }) => (
+            <label
+              key={key}
+              className="flex items-center gap-1.5 text-[12px] cursor-pointer"
+            >
+              <input
+                type="checkbox"
+                checked={display[key]}
+                onChange={(e) => setDisplay({ [key]: e.target.checked })}
+                className="h-3 w-3"
+              />
+              {label}
+            </label>
+          ))}
+        </div>
       </div>
-      <div className="flex flex-wrap gap-x-4 gap-y-1">
-        {toggles.map(({ key, label }) => (
-          <label
-            key={key}
-            className="flex items-center gap-1.5 text-[12px] cursor-pointer"
-          >
+
+      {/* Filter */}
+      <div>
+        <div className="mb-1 flex items-center gap-2 text-[11px] font-semibold text-muted-foreground uppercase tracking-wide">
+          {t("grid.filter.title", "フィルタ")}
+          {hasActiveFilter && (
+            <button
+              className="text-[10px] normal-case text-primary hover:underline"
+              onClick={clearFilter}
+            >
+              {t("grid.filter.clear", "クリア")}
+            </button>
+          )}
+        </div>
+        <div className="flex flex-wrap gap-x-4 gap-y-1">
+          <label className="flex items-center gap-1.5 text-[12px] cursor-pointer">
             <input
               type="checkbox"
-              checked={display[key]}
-              onChange={(e) => setDisplay({ [key]: e.target.checked })}
+              checked={filter.emptyOnly}
+              onChange={(e) => setFilter({ emptyOnly: e.target.checked })}
               className="h-3 w-3"
             />
-            {label}
+            {t("grid.filter.emptyOnly", "空のシーンのみ")}
           </label>
-        ))}
+          <label className="flex items-center gap-1.5 text-[12px] cursor-pointer">
+            <input
+              type="checkbox"
+              checked={filter.hideCompleted}
+              onChange={(e) => setFilter({ hideCompleted: e.target.checked })}
+              className="h-3 w-3"
+            />
+            {t("grid.filter.hideCompleted", "完成済みを非表示")}
+          </label>
+        </div>
+        {codexEntries.length > 0 && (
+          <div className="mt-1.5 flex items-center gap-2">
+            <span className="text-[11px] text-muted-foreground">
+              {t("grid.filter.codex", "Codex:")}
+            </span>
+            <select
+              value={filter.codexFilter ?? ""}
+              onChange={(e) =>
+                setFilter({ codexFilter: e.target.value || null })
+              }
+              className="rounded border border-input bg-background px-1.5 py-0.5 text-[11px] focus:outline-none focus:ring-1 focus:ring-ring"
+            >
+              <option value="">{t("grid.filter.codexAll", "すべて")}</option>
+              {codexEntries.map((entry) => (
+                <option key={entry.id} value={entry.id}>
+                  {entry.name}
+                </option>
+              ))}
+            </select>
+          </div>
+        )}
       </div>
+
       <button
-        className="mt-2 text-[11px] text-muted-foreground hover:text-foreground"
+        className="text-[11px] text-muted-foreground hover:text-foreground"
         onClick={onClose}
       >
         {t("common.close", "閉じる")}

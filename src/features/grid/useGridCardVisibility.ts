@@ -1,0 +1,82 @@
+import { useMemo } from "react";
+import { useCodexStore } from "@/features/codex/codexStore";
+import { parseBeatPreview } from "./parseBeatPreview";
+import type { TreeNodeData } from "@/features/tree/treeStore";
+import type { GridFilterSettings } from "./gridStore";
+
+interface CardVisibility {
+  matchesSearch: boolean;
+  passesFilter: boolean;
+}
+
+// Module-level constant to avoid new-reference-in-selector issue
+const EMPTY_CODEX_ENTRIES: ReturnType<
+  typeof useCodexStore.getState
+>["entries"] = [];
+
+interface UseGridCardVisibilityArgs {
+  scenes: TreeNodeData[];
+  searchQuery: string;
+  filter: GridFilterSettings;
+  charCounts: Record<string, number>;
+  pinsByScene: Record<string, string[]>;
+}
+
+export function useGridCardVisibility({
+  scenes,
+  searchQuery,
+  filter,
+  charCounts,
+  pinsByScene,
+}: UseGridCardVisibilityArgs): Map<string, CardVisibility> {
+  const codexEntries = useCodexStore((s) =>
+    s.entries.length > 0 ? s.entries : EMPTY_CODEX_ENTRIES,
+  );
+
+  return useMemo(() => {
+    const q = searchQuery.trim().toLowerCase();
+    const result = new Map<string, CardVisibility>();
+
+    // Build a name lookup map for codex entries once
+    const codexNameById = new Map<string, string>();
+    for (const entry of codexEntries) {
+      codexNameById.set(entry.id, entry.name.toLowerCase());
+    }
+
+    for (const scene of scenes) {
+      // --- search match ---
+      let matchesSearch = true;
+      if (q) {
+        const titleMatch = scene.title.toLowerCase().includes(q);
+        const synopsisMatch = (scene.synopsis ?? "").toLowerCase().includes(q);
+        const beatLines = parseBeatPreview(scene.unplacedBeatPreview) ?? [];
+        const beatMatch = beatLines.some((line) =>
+          line.toLowerCase().includes(q),
+        );
+        const codexIds = pinsByScene[scene.id] ?? [];
+        const codexMatch = codexIds.some((eid) =>
+          (codexNameById.get(eid) ?? "").includes(q),
+        );
+        matchesSearch = titleMatch || synopsisMatch || beatMatch || codexMatch;
+      }
+
+      // --- filter pass ---
+      let passesFilter = true;
+      if (filter.emptyOnly) {
+        const count = charCounts[scene.id] ?? scene.charCount ?? 0;
+        passesFilter = count === 0;
+      }
+      if (passesFilter && filter.hideCompleted) {
+        passesFilter = scene.status !== "complete" && scene.status !== "final";
+      }
+      if (passesFilter && filter.codexFilter !== null) {
+        const codexIds = pinsByScene[scene.id] ?? [];
+        passesFilter = codexIds.includes(filter.codexFilter);
+      }
+
+      result.set(scene.id, { matchesSearch, passesFilter });
+    }
+
+    return result;
+  }, [scenes, searchQuery, filter, charCounts, pinsByScene, codexEntries]);
+}

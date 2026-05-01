@@ -1,6 +1,12 @@
 import { useRef, useEffect } from "react";
 import { useTranslation } from "react-i18next";
-import { ExternalLink, Pencil, Trash2, PanelLeft } from "lucide-react";
+import {
+  ExternalLink,
+  Pencil,
+  Trash2,
+  PanelLeft,
+  PlusCircle,
+} from "lucide-react";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { useTabStore } from "@/features/editor/tabStore";
 import { useLayoutStore } from "@/features/layout/layoutStore";
@@ -9,10 +15,17 @@ interface Props {
   nodeId: string;
   onClose: () => void;
   onRename: () => void;
+  onAddBeat: () => void;
   anchorRef: React.RefObject<HTMLElement | null>;
 }
 
-export function GridCardMenu({ nodeId, onClose, onRename, anchorRef }: Props) {
+export function GridCardMenu({
+  nodeId,
+  onClose,
+  onRename,
+  onAddBeat,
+  anchorRef,
+}: Props) {
   const { t } = useTranslation();
   const menuRef = useRef<HTMLDivElement>(null);
   const deleteNode = useTreeStore((s) => s.deleteNode);
@@ -80,6 +93,16 @@ export function GridCardMenu({ nodeId, onClose, onRename, anchorRef }: Props) {
       >
         <Pencil className="h-3.5 w-3.5" />
         {t("grid.card.menu.rename", "名前を変更")}
+      </button>
+      <button
+        className="flex w-full items-center gap-2 rounded px-2 py-1.5 hover:bg-accent"
+        onClick={() => {
+          onAddBeat();
+          onClose();
+        }}
+      >
+        <PlusCircle className="h-3.5 w-3.5" />
+        {t("grid.card.menu.addBeat", "+ Beat を追加…")}
       </button>
       <button
         className="flex w-full items-center gap-2 rounded px-2 py-1.5 hover:bg-accent"

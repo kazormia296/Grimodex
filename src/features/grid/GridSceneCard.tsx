@@ -1,8 +1,11 @@
 import { useRef, useState } from "react";
 import { useDraggable, useDroppable } from "@dnd-kit/core";
+import { useTranslation } from "react-i18next";
 import { useTabStore } from "@/features/editor/tabStore";
 import { useLayoutStore } from "@/features/layout/layoutStore";
-import { StatusDot } from "@/features/tree/StatusDot";
+import { useTreeStore } from "@/features/tree/treeStore";
+import { StatusBadge } from "@/features/tree/StatusBadge";
+import { addUnplacedBeatFromGrid } from "@/features/editor/beat/addUnplacedBeatFromGrid";
 import type { TreeNodeData } from "@/features/tree/treeStore";
 import { cn } from "@/lib/utils";
 import { GridCardHeader } from "./GridCardHeader";
@@ -15,12 +18,20 @@ import type { GridDisplaySettings } from "./gridStore";
 interface Props {
   scene: TreeNodeData;
   display: GridDisplaySettings;
+  dimmed?: boolean;
 }
 
-export function GridSceneCard({ scene, display }: Props) {
+export function GridSceneCard({ scene, display, dimmed }: Props) {
+  const { t } = useTranslation();
   const [menuOpen, setMenuOpen] = useState(false);
   const [isEditing, setIsEditing] = useState(false);
+  const [addingBeat, setAddingBeat] = useState(false);
+  const [beatDraft, setBeatDraft] = useState("");
   const menuBtnRef = useRef<HTMLButtonElement>(null);
+
+  const liveCharCount = useTreeStore(
+    (s) => s.charCounts[scene.id] ?? scene.charCount ?? 0,
+  );
 
   const {
     attributes,
@@ -30,7 +41,7 @@ export function GridSceneCard({ scene, display }: Props) {
   } = useDraggable({
     id: sceneDraggableId(scene.id),
     data: { kind: "scene", sceneId: scene.id },
-    disabled: isEditing,
+    disabled: isEditing || addingBeat,
   });
 
   const { setNodeRef: setDropRef, isOver } = useDroppable({
@@ -43,6 +54,25 @@ export function GridSceneCard({ scene, display }: Props) {
     useLayoutStore.getState().showPanel("editor");
   }
 
+  async function commitBeat() {
+    const text = beatDraft.trim();
+    setAddingBeat(false);
+    setBeatDraft("");
+    if (text) {
+      await addUnplacedBeatFromGrid(scene.id, text);
+    }
+  }
+
+  function handleBeatKeyDown(e: React.KeyboardEvent<HTMLInputElement>) {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      void commitBeat();
+    } else if (e.key === "Escape") {
+      setAddingBeat(false);
+      setBeatDraft("");
+    }
+  }
+
   return (
     <div
       ref={(node) => {
@@ -53,6 +83,7 @@ export function GridSceneCard({ scene, display }: Props) {
         "relative rounded-md border bg-card text-card-foreground shadow-sm",
         "flex flex-col select-none",
         isDragging && "opacity-40",
+        dimmed && "opacity-40",
         isOver && "ring-2 ring-primary",
       )}
     >
@@ -69,6 +100,7 @@ export function GridSceneCard({ scene, display }: Props) {
         title={scene.title}
         onMenuOpen={() => setMenuOpen((v) => !v)}
         onTitleClick={openInEditor}
+        menuBtnRef={menuBtnRef}
       />
 
       <GridCardBody
@@ -77,29 +109,44 @@ export function GridSceneCard({ scene, display }: Props) {
         unplacedBeatPreview={scene.unplacedBeatPreview}
         showSynopsis={display.showSynopsis}
         showBeats={display.showBeats}
+        compact={display.compactCards}
         onEditingChange={setIsEditing}
       />
+
+      {addingBeat && (
+        <div className="px-3 pb-2">
+          <input
+            // eslint-disable-next-line jsx-a11y/no-autofocus
+            autoFocus
+            className="w-full rounded border border-input bg-background px-2 py-1 text-[11px] focus:outline-none focus:ring-1 focus:ring-ring"
+            placeholder={t(
+              "grid.card.beatPlaceholder",
+              "Beat を入力… (Enter で確定)",
+            )}
+            value={beatDraft}
+            onChange={(e) => setBeatDraft(e.target.value)}
+            onKeyDown={handleBeatKeyDown}
+            onBlur={() => void commitBeat()}
+          />
+        </div>
+      )}
 
       {display.showCodex && (
         <div className="px-3 pb-2">
           <GridCardChips
             sceneId={scene.id}
-            onChipClick={(entryId) => {
-              useLayoutStore.getState().showPanel("codex");
-              // Future: focus the entry in CodexPanel
-              void entryId;
-            }}
+            editable
+            compact={display.compactCards}
           />
         </div>
       )}
 
-      <div className="flex items-center gap-1 px-3 pb-2">
-        <StatusDot status={scene.status} />
-        {display.showLabel && scene.status && (
-          <span className="text-[10px] text-muted-foreground">
-            {scene.status}
-          </span>
-        )}
+      {/* Footer: status badge + char count */}
+      <div className="flex items-center gap-2 px-3 pb-2 pt-0.5 border-t border-border/40 mt-0.5">
+        <StatusBadge status={scene.status} iconOnly={!display.showLabel} />
+        <span className="text-[10px] text-muted-foreground/60 ml-auto">
+          {liveCharCount.toLocaleString()} chars
+        </span>
       </div>
 
       {menuOpen && (
@@ -108,8 +155,11 @@ export function GridSceneCard({ scene, display }: Props) {
             nodeId={scene.id}
             onClose={() => setMenuOpen(false)}
             onRename={() => {
-              // handled inside GridCardHeader via double-click; close menu only
               setMenuOpen(false);
+            }}
+            onAddBeat={() => {
+              setAddingBeat(true);
+              setBeatDraft("");
             }}
             anchorRef={menuBtnRef}
           />

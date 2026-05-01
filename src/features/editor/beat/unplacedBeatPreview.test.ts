@@ -16,19 +16,18 @@ describe("extractUnplacedBeatPreview", () => {
     expect(extractUnplacedBeatPreview([beat("Hello")])).toBe('["Hello"]');
   });
 
-  it("40文字を超えるテキストは切り詰める", () => {
-    const long = "あ".repeat(50);
+  it("60文字を超えるテキストは切り詰める", () => {
+    const long = "あ".repeat(70);
     const result = JSON.parse(extractUnplacedBeatPreview([beat(long)]));
-    expect(result[0]).toBe("あ".repeat(40));
+    expect(result[0]).toBe("あ".repeat(60));
   });
 
-  it("先頭3件のみ使用する", () => {
-    const beats = [beat("A"), beat("B"), beat("C"), beat("D"), beat("E")];
+  it("先頭8件のみ使用する", () => {
+    const beats = Array.from({ length: 10 }, (_, i) => beat(String(i)));
     const result = JSON.parse(extractUnplacedBeatPreview(beats));
-    expect(result).toHaveLength(3);
-    expect(result[0]).toBe("A");
-    expect(result[1]).toBe("B");
-    expect(result[2]).toBe("C");
+    expect(result).toHaveLength(8);
+    expect(result[0]).toBe("0");
+    expect(result[7]).toBe("7");
   });
 
   it("JSON配列として有効な文字列を返す", () => {

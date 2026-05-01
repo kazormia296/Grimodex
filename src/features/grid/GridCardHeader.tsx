@@ -8,6 +8,7 @@ interface Props {
   title: string;
   onMenuOpen: () => void;
   onTitleClick?: () => void;
+  menuBtnRef?: React.RefObject<HTMLButtonElement | null>;
 }
 
 export function GridCardHeader({
@@ -15,6 +16,7 @@ export function GridCardHeader({
   title,
   onMenuOpen,
   onTitleClick,
+  menuBtnRef,
 }: Props) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState("");
@@ -83,6 +85,7 @@ export function GridCardHeader({
       </button>
 
       <button
+        ref={menuBtnRef}
         className="shrink-0 rounded p-0.5 opacity-0 group-hover:opacity-100 hover:bg-accent transition-opacity"
         onClick={(e) => {
           e.stopPropagation();

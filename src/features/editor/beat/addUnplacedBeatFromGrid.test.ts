@@ -1,0 +1,126 @@
+import { describe, it, expect, vi, beforeEach } from "vitest";
+import { useUnplacedBeatsStore } from "./unplacedBeatsStore";
+import type { UnplacedBeat } from "./unplacedBeatsStore";
+
+vi.mock("@/features/tree/api", () => ({
+  loadSceneFull: vi.fn(),
+  saveSceneBeatsOnly: vi.fn().mockResolvedValue(undefined),
+}));
+
+vi.mock("@/features/tree/treeStore", () => ({
+  useTreeStore: {
+    setState: vi.fn(),
+  },
+}));
+
+vi.mock("./unplacedBeatPreview", () => ({
+  extractUnplacedBeatPreview: vi.fn().mockReturnValue("preview"),
+}));
+
+import { loadSceneFull, saveSceneBeatsOnly } from "@/features/tree/api";
+import { addUnplacedBeatFromGrid } from "./addUnplacedBeatFromGrid";
+
+const mockLoadSceneFull = vi.mocked(loadSceneFull);
+const mockSaveSceneBeatsOnly = vi.mocked(saveSceneBeatsOnly);
+
+function makeExistingBeat(id: string, text: string): UnplacedBeat {
+  return {
+    id,
+    beatType: "free",
+    pov: null,
+    collapsed: false,
+    content: [{ type: "text", text }],
+  };
+}
+
+beforeEach(() => {
+  useUnplacedBeatsStore.setState({ sceneBeats: {} });
+  vi.clearAllMocks();
+  mockSaveSceneBeatsOnly.mockResolvedValue(undefined);
+});
+
+describe("addUnplacedBeatFromGrid", () => {
+  it("空テキストは何もしない", async () => {
+    await addUnplacedBeatFromGrid("s1", "   ");
+    expect(mockSaveSceneBeatsOnly).not.toHaveBeenCalled();
+  });
+
+  it("ストアが空のとき DB から既存 beat を hydrate してから追加する（データ消失防止）", async () => {
+    const existingBeats = [makeExistingBeat("b-old", "古いBeat")];
+    mockLoadSceneFull.mockResolvedValue({
+      content: "",
+      unplacedBeatsDoc: JSON.stringify(existingBeats),
+    });
+
+    await addUnplacedBeatFromGrid("s1", "新しいBeat");
+
+    const savedDoc = JSON.parse(
+      mockSaveSceneBeatsOnly.mock.calls[0][1].unplacedBeatsDoc,
+    ) as UnplacedBeat[];
+    expect(savedDoc).toHaveLength(2);
+    expect(savedDoc[0].id).toBe("b-old");
+    expect(savedDoc[1].content[0]).toMatchObject({
+      type: "text",
+      text: "新しいBeat",
+    });
+  });
+
+  it("ストアに既存 beat があるとき DB 問い合わせをスキップする", async () => {
+    const existing = [makeExistingBeat("b-existing", "既存")];
+    useUnplacedBeatsStore.getState().setBeats("s1", existing, "load");
+
+    await addUnplacedBeatFromGrid("s1", "追加Beat");
+
+    expect(mockLoadSceneFull).not.toHaveBeenCalled();
+
+    const savedDoc = JSON.parse(
+      mockSaveSceneBeatsOnly.mock.calls[0][1].unplacedBeatsDoc,
+    ) as UnplacedBeat[];
+    expect(savedDoc).toHaveLength(2);
+  });
+
+  it("DB の unplacedBeatsDoc が空配列の場合に新規追加だけ保存する", async () => {
+    mockLoadSceneFull.mockResolvedValue({
+      content: "",
+      unplacedBeatsDoc: "[]",
+    });
+
+    await addUnplacedBeatFromGrid("s1", "初beat");
+
+    const savedDoc = JSON.parse(
+      mockSaveSceneBeatsOnly.mock.calls[0][1].unplacedBeatsDoc,
+    ) as UnplacedBeat[];
+    expect(savedDoc).toHaveLength(1);
+    expect(savedDoc[0].content[0]).toMatchObject({
+      type: "text",
+      text: "初beat",
+    });
+  });
+
+  it("DB が壊れた JSON を返しても例外を投げず空として扱う", async () => {
+    mockLoadSceneFull.mockResolvedValue({
+      content: "",
+      unplacedBeatsDoc: "invalid-json",
+    });
+
+    await expect(
+      addUnplacedBeatFromGrid("s1", "beat"),
+    ).resolves.toBeUndefined();
+    const savedDoc = JSON.parse(
+      mockSaveSceneBeatsOnly.mock.calls[0][1].unplacedBeatsDoc,
+    ) as UnplacedBeat[];
+    expect(savedDoc).toHaveLength(1);
+  });
+
+  it("追加後に saveSceneBeatsOnly を呼ぶ", async () => {
+    mockLoadSceneFull.mockResolvedValue({
+      content: "",
+      unplacedBeatsDoc: "[]",
+    });
+
+    await addUnplacedBeatFromGrid("s1", "テスト");
+
+    expect(mockSaveSceneBeatsOnly).toHaveBeenCalledOnce();
+    expect(mockSaveSceneBeatsOnly.mock.calls[0][0]).toBe("s1");
+  });
+});

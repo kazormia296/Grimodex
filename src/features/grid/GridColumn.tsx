@@ -14,14 +14,26 @@ import {
 } from "./gridDndUtils";
 import type { GridDisplaySettings } from "./gridStore";
 
+interface CardVisibility {
+  matchesSearch: boolean;
+  passesFilter: boolean;
+}
+
 interface Props {
   folder: TreeNodeData;
   scenes: TreeNodeData[];
   display: GridDisplaySettings;
   isDragOverlay?: boolean;
+  visibility: Map<string, CardVisibility>;
 }
 
-export function GridColumn({ folder, scenes, display, isDragOverlay }: Props) {
+export function GridColumn({
+  folder,
+  scenes,
+  display,
+  isDragOverlay,
+  visibility,
+}: Props) {
   const { t } = useTranslation();
   const [editingTitle, setEditingTitle] = useState(false);
   const [titleDraft, setTitleDraft] = useState("");
@@ -30,7 +42,6 @@ export function GridColumn({ folder, scenes, display, isDragOverlay }: Props) {
   const updateNodeTitle = useTreeStore((s) => s.updateNodeTitle);
   const pendingRename = useTreeStore((s) => s.pendingRenameId);
 
-  // Draggable for the column itself (chapter reorder)
   const {
     attributes,
     listeners,
@@ -42,19 +53,16 @@ export function GridColumn({ folder, scenes, display, isDragOverlay }: Props) {
     disabled: !!isDragOverlay,
   });
 
-  // Droppable slot for column reorder (drop target at column header level)
   const { setNodeRef: setSlotRef, isOver: isSlotOver } = useDroppable({
     id: columnSlotId(folder.id),
     data: { kind: "column-slot", folderId: folder.id },
   });
 
-  // Droppable at column end (scene drop to bottom of column)
   const { setNodeRef: setEndRef, isOver: isEndOver } = useDroppable({
     id: columnEndId(folder.id),
     data: { kind: "column-end", folderId: folder.id },
   });
 
-  // Droppable for empty column
   const { setNodeRef: setEmptyRef, isOver: isEmptyOver } = useDroppable({
     id: columnEmptyId(folder.id),
     data: { kind: "column-empty", folderId: folder.id },
@@ -78,8 +86,12 @@ export function GridColumn({ folder, scenes, display, isDragOverlay }: Props) {
     await createNode({ nodeType: "scene", parentId: folder.id });
   }
 
-  // Start title edit if this folder was just created (pendingRenameId)
   const shouldAutoEdit = pendingRename === folder.id;
+  const colWidth = display.compactCards ? "w-44" : "w-56";
+
+  const visibleScenes = scenes.filter(
+    (s) => visibility.get(s.id)?.passesFilter !== false,
+  );
 
   return (
     <div
@@ -88,7 +100,7 @@ export function GridColumn({ folder, scenes, display, isDragOverlay }: Props) {
         setSlotRef(node);
       }}
       className={cn(
-        "flex flex-col w-56 shrink-0 rounded-lg border bg-muted/30",
+        `flex flex-col ${colWidth} shrink-0 rounded-lg border bg-muted/30`,
         isDragging && "opacity-40",
         isSlotOver && "ring-2 ring-primary",
       )}
@@ -102,6 +114,7 @@ export function GridColumn({ folder, scenes, display, isDragOverlay }: Props) {
         {editingTitle || shouldAutoEdit ? (
           <input
             ref={titleInputRef}
+            // eslint-disable-next-line jsx-a11y/no-autofocus
             autoFocus={shouldAutoEdit}
             className="flex-1 min-w-0 rounded bg-accent px-1 py-0.5 text-sm font-semibold outline-none"
             value={titleDraft || (shouldAutoEdit ? folder.title : "")}
@@ -127,7 +140,10 @@ export function GridColumn({ folder, scenes, display, isDragOverlay }: Props) {
           </button>
         )}
         <span className="text-[10px] text-muted-foreground shrink-0">
-          {scenes.length}
+          {visibleScenes.length}
+          {visibleScenes.length !== scenes.length && (
+            <span className="opacity-50">/{scenes.length}</span>
+          )}
         </span>
       </div>
 
@@ -146,10 +162,18 @@ export function GridColumn({ folder, scenes, display, isDragOverlay }: Props) {
           </div>
         ) : (
           <>
-            {scenes.map((scene) => (
-              <GridSceneCard key={scene.id} scene={scene} display={display} />
-            ))}
-            {/* End-of-column drop zone */}
+            {scenes.map((scene) => {
+              const vis = visibility.get(scene.id);
+              if (vis && !vis.passesFilter) return null;
+              return (
+                <GridSceneCard
+                  key={scene.id}
+                  scene={scene}
+                  display={display}
+                  dimmed={vis !== undefined && !vis.matchesSearch}
+                />
+              );
+            })}
             <div
               ref={setEndRef}
               className={cn(
@@ -161,7 +185,6 @@ export function GridColumn({ folder, scenes, display, isDragOverlay }: Props) {
         )}
       </div>
 
-      {/* Add scene button */}
       <button
         className="flex items-center gap-1 px-3 py-2 text-[11px] text-muted-foreground hover:text-foreground hover:bg-accent/40 border-t transition-colors rounded-b-lg"
         onClick={() => void addScene()}
