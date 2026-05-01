@@ -5,6 +5,36 @@
 
 export type DragKind = "scene" | "column";
 
+export interface DropIndicator {
+  /** The scene card whose padding should open up */
+  targetId: string;
+  /** Open gap above or below the target card */
+  position: "before" | "after";
+}
+
+/**
+ * Compute which card should show a drop-indicator gap during drag-over.
+ * Only handles scene-drop zones (between cards); column-level zones don't
+ * produce a per-card indicator.
+ */
+export function computeSceneDropIndicator(
+  activeSceneId: string,
+  overId: string,
+  pointerY: number,
+  overRect: { top: number; height: number },
+): DropIndicator | null {
+  if (!overId) return null;
+  const { kind, rawId } = parseId(overId);
+  if (kind !== "drop") return null;
+  const targetSceneId = rawId;
+  if (targetSceneId === activeSceneId) return null;
+  const midY = overRect.top + overRect.height / 2;
+  return {
+    targetId: targetSceneId,
+    position: pointerY <= midY ? "before" : "after",
+  };
+}
+
 export interface DropTarget {
   /** New parent for the dragged item */
   targetParentId: string | null;

@@ -12,6 +12,7 @@ import {
   columnEndId,
   columnEmptyId,
 } from "./gridDndUtils";
+import type { DropIndicator } from "./gridDndUtils";
 import type { GridDisplaySettings } from "./gridStore";
 
 interface CardVisibility {
@@ -25,6 +26,7 @@ interface Props {
   display: GridDisplaySettings;
   isDragOverlay?: boolean;
   visibility: Map<string, CardVisibility>;
+  dropIndicator?: DropIndicator | null;
 }
 
 export function GridColumn({
@@ -33,6 +35,7 @@ export function GridColumn({
   display,
   isDragOverlay,
   visibility,
+  dropIndicator,
 }: Props) {
   const { t } = useTranslation();
   const [editingTitle, setEditingTitle] = useState(false);
@@ -171,6 +174,7 @@ export function GridColumn({
                   scene={scene}
                   display={display}
                   dimmed={vis !== undefined && !vis.matchesSearch}
+                  dropIndicator={dropIndicator}
                 />
               );
             })}

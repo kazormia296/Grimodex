@@ -7,7 +7,11 @@ import {
   useSensor,
   useSensors,
 } from "@dnd-kit/core";
-import type { DragEndEvent, DragStartEvent } from "@dnd-kit/core";
+import type {
+  DragEndEvent,
+  DragOverEvent,
+  DragStartEvent,
+} from "@dnd-kit/core";
 import { useTranslation } from "react-i18next";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { useCodexStore } from "@/features/codex/codexStore";
@@ -23,7 +27,9 @@ import {
   activeDragKind,
   computeSceneDropTarget,
   computeColumnDropTarget,
+  computeSceneDropIndicator,
 } from "./gridDndUtils";
+import type { DropIndicator } from "./gridDndUtils";
 import type { TreeNodeData } from "@/features/tree/treeStore";
 
 export function GridPanel() {
@@ -47,6 +53,9 @@ export function GridPanel() {
 
   const [activeId, setActiveId] = useState<string | null>(null);
   const [showPanelMenu, setShowPanelMenu] = useState(false);
+  const [dropIndicator, setDropIndicator] = useState<DropIndicator | null>(
+    null,
+  );
   const pointerYRef = useRef(0);
 
   useEffect(() => {
@@ -68,10 +77,27 @@ export function GridPanel() {
 
   function handleDragStart(e: DragStartEvent) {
     setActiveId(String(e.active.id));
+    setDropIndicator(null);
+  }
+
+  function handleDragOver(e: DragOverEvent) {
+    const activeIdStr = String(e.active.id);
+    if (activeDragKind(activeIdStr) !== "scene") return;
+    const sceneId = activeIdStr.replace(/^scene-/, "");
+    const overId = e.over ? String(e.over.id) : "";
+    const rect = e.over?.rect ?? { top: 0, height: 60 };
+    const indicator = computeSceneDropIndicator(
+      sceneId,
+      overId,
+      pointerYRef.current,
+      { top: rect.top, height: rect.height },
+    );
+    setDropIndicator(indicator);
   }
 
   function handleDragEnd(e: DragEndEvent) {
     setActiveId(null);
+    setDropIndicator(null);
     const activeIdStr = String(e.active.id);
     const overIdStr = e.over ? String(e.over.id) : "";
     if (!overIdStr) return;
@@ -156,6 +182,7 @@ export function GridPanel() {
     <DndContext
       sensors={sensors}
       onDragStart={handleDragStart}
+      onDragOver={handleDragOver}
       onDragEnd={handleDragEnd}
     >
       <div className="flex h-full flex-col overflow-hidden">
@@ -182,6 +209,7 @@ export function GridPanel() {
               scenes={scenes}
               display={display}
               visibility={visibility}
+              dropIndicator={dropIndicator}
             />
           ))}
 
@@ -192,6 +220,7 @@ export function GridPanel() {
               display={display}
               chapters={chapters.map((ch) => ch.folder)}
               visibility={visibility}
+              dropIndicator={dropIndicator}
             />
           )}
 
@@ -214,8 +243,20 @@ export function GridPanel() {
 
       <DragOverlay dropAnimation={null}>
         {activeDragNode && (
-          <div className="rounded-md border bg-card px-3 py-2 shadow-lg text-sm opacity-90">
-            {activeDragNode.title}
+          <div
+            className={`flex flex-col rounded-md border-2 border-primary bg-card shadow-xl ring-2 ring-primary/30 ${display.compactCards ? "w-44" : "w-56"}`}
+            style={{ opacity: 0.92, rotate: "1.5deg" }}
+          >
+            <div className="flex items-center gap-1 border-b px-3 py-2">
+              <span className="flex-1 truncate text-sm font-semibold">
+                {activeDragNode.title}
+              </span>
+            </div>
+            {activeDragNode.synopsis && (
+              <p className="line-clamp-2 px-3 py-1.5 text-[11px] text-muted-foreground">
+                {activeDragNode.synopsis}
+              </p>
+            )}
           </div>
         )}
       </DragOverlay>

@@ -11,6 +11,7 @@ import {
   convertLooseToChapter,
 } from "./looseBatchOps";
 import { columnEndId, columnEmptyId } from "./gridDndUtils";
+import type { DropIndicator } from "./gridDndUtils";
 import type { GridDisplaySettings } from "./gridStore";
 
 interface CardVisibility {
@@ -24,6 +25,7 @@ interface Props {
   display: GridDisplaySettings;
   chapters: TreeNodeData[];
   visibility: Map<string, CardVisibility>;
+  dropIndicator?: DropIndicator | null;
 }
 
 export function GridLooseColumn({
@@ -32,6 +34,7 @@ export function GridLooseColumn({
   display,
   chapters,
   visibility,
+  dropIndicator,
 }: Props) {
   const { t } = useTranslation();
   const [menuOpen, setMenuOpen] = useState(false);
@@ -189,6 +192,7 @@ export function GridLooseColumn({
                   scene={scene}
                   display={display}
                   dimmed={vis !== undefined && !vis.matchesSearch}
+                  dropIndicator={dropIndicator}
                 />
               );
             })}

@@ -13,15 +13,22 @@ import { GridCardBody } from "./GridCardBody";
 import { GridCardChips } from "./GridCardChips";
 import { GridCardMenu } from "./GridCardMenu";
 import { sceneDraggableId, sceneDroppableId } from "./gridDndUtils";
+import type { DropIndicator } from "./gridDndUtils";
 import type { GridDisplaySettings } from "./gridStore";
 
 interface Props {
   scene: TreeNodeData;
   display: GridDisplaySettings;
   dimmed?: boolean;
+  dropIndicator?: DropIndicator | null;
 }
 
-export function GridSceneCard({ scene, display, dimmed }: Props) {
+export function GridSceneCard({
+  scene,
+  display,
+  dimmed,
+  dropIndicator,
+}: Props) {
   const { t } = useTranslation();
   const [menuOpen, setMenuOpen] = useState(false);
   const [isEditing, setIsEditing] = useState(false);
@@ -44,10 +51,16 @@ export function GridSceneCard({ scene, display, dimmed }: Props) {
     disabled: isEditing || addingBeat,
   });
 
-  const { setNodeRef: setDropRef, isOver } = useDroppable({
+  const { setNodeRef: setDropRef } = useDroppable({
     id: sceneDroppableId(scene.id),
     data: { kind: "scene-drop", sceneId: scene.id },
   });
+
+  const isDropBefore =
+    dropIndicator?.targetId === scene.id && dropIndicator.position === "before";
+  const isDropAfter =
+    dropIndicator?.targetId === scene.id && dropIndicator.position === "after";
+  const GAP = display.compactCards ? 56 : 72;
 
   function openInEditor() {
     useTabStore.getState().openPinned(scene.id);
@@ -82,10 +95,13 @@ export function GridSceneCard({ scene, display, dimmed }: Props) {
       className={cn(
         "relative rounded-md border bg-card text-card-foreground shadow-sm",
         "flex flex-col select-none",
-        isDragging && "opacity-40",
-        dimmed && "opacity-40",
-        isOver && "ring-2 ring-primary",
+        (isDragging || dimmed) && "opacity-40",
       )}
+      style={{
+        paddingTop: isDropBefore ? GAP : 0,
+        paddingBottom: isDropAfter ? GAP : 0,
+        transition: "padding 120ms ease-out, opacity 120ms ease-out",
+      }}
     >
       {/* Drag handle area */}
       <div
