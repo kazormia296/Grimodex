@@ -4,7 +4,8 @@ import { cmpKeys } from "@/features/tree/fractionalIndex";
 
 export interface GridChapterData {
   folder: TreeNodeData;
-  scenes: TreeNodeData[];
+  /** Mixed children of the chapter folder: scenes and nested sub-folders, sorted by sortOrder */
+  children: TreeNodeData[];
 }
 
 export interface GridDerivedData {
@@ -35,12 +36,15 @@ export function useGridDerivedData(
 
     const chapters: GridChapterData[] = chapterFolders.map((folder) => ({
       folder,
-      scenes: nodes.filter((n) => n.parentId === folder.id).sort(sortByOrder),
+      children: nodes.filter((n) => n.parentId === folder.id).sort(sortByOrder),
     }));
 
     const totalScenes =
-      chapters.reduce((acc, ch) => acc + ch.scenes.length, 0) +
-      looseScenes.length;
+      chapters.reduce(
+        (acc, ch) =>
+          acc + ch.children.filter((n) => n.nodeType === "scene").length,
+        0,
+      ) + looseScenes.length;
 
     return {
       chapters,

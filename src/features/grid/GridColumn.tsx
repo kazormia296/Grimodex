@@ -6,13 +6,14 @@ import { useTreeStore } from "@/features/tree/treeStore";
 import type { TreeNodeData } from "@/features/tree/treeStore";
 import { cn } from "@/lib/utils";
 import { GridSceneCard } from "./GridSceneCard";
+import { GridFolderCard } from "./GridFolderCard";
 import {
   columnDraggableId,
   columnSlotId,
   columnEndId,
   columnEmptyId,
 } from "./gridDndUtils";
-import type { DropIndicator } from "./gridDndUtils";
+import type { DropIndicator, ColumnDropIndicator } from "./gridDndUtils";
 import type { GridDisplaySettings } from "./gridStore";
 
 interface CardVisibility {
@@ -22,20 +23,23 @@ interface CardVisibility {
 
 interface Props {
   folder: TreeNodeData;
-  scenes: TreeNodeData[];
+  /** Mixed children of this chapter: scenes + nested sub-folders, sorted by sortOrder */
+  items: TreeNodeData[];
   display: GridDisplaySettings;
   isDragOverlay?: boolean;
   visibility: Map<string, CardVisibility>;
   dropIndicator?: DropIndicator | null;
+  columnDropIndicator?: ColumnDropIndicator | null;
 }
 
 export function GridColumn({
   folder,
-  scenes,
+  items,
   display,
   isDragOverlay,
   visibility,
   dropIndicator,
+  columnDropIndicator,
 }: Props) {
   const { t } = useTranslation();
   const [editingTitle, setEditingTitle] = useState(false);
@@ -92,9 +96,19 @@ export function GridColumn({
   const shouldAutoEdit = pendingRename === folder.id;
   const colWidth = display.compactCards ? "w-44" : "w-56";
 
-  const visibleScenes = scenes.filter(
+  const sceneItems = items.filter((n) => n.nodeType === "scene");
+  const visibleScenes = sceneItems.filter(
     (s) => visibility.get(s.id)?.passesFilter !== false,
   );
+
+  // Column drop indicator (left/right gap when this column is the drop target)
+  const isColDropBefore =
+    columnDropIndicator?.targetId === folder.id &&
+    columnDropIndicator.position === "before";
+  const isColDropAfter =
+    columnDropIndicator?.targetId === folder.id &&
+    columnDropIndicator.position === "after";
+  const COL_GAP = display.compactCards ? 176 : 224; // w-44 = 11rem = 176px / w-56 = 14rem = 224px
 
   return (
     <div
@@ -102,100 +116,118 @@ export function GridColumn({
         setDragRef(node);
         setSlotRef(node);
       }}
-      className={cn(
-        `flex flex-col ${colWidth} shrink-0 rounded-lg border bg-muted/30`,
-        isDragging && "opacity-40",
-        isSlotOver && "ring-2 ring-primary",
-      )}
+      style={{
+        paddingLeft: isColDropBefore ? COL_GAP : 0,
+        paddingRight: isColDropAfter ? COL_GAP : 0,
+        transition: "padding 120ms ease-out",
+      }}
     >
-      {/* Column header */}
       <div
-        className="flex items-center gap-1 px-3 py-2 border-b cursor-grab active:cursor-grabbing"
-        {...attributes}
-        {...listeners}
-      >
-        {editingTitle || shouldAutoEdit ? (
-          <input
-            ref={titleInputRef}
-            // eslint-disable-next-line jsx-a11y/no-autofocus
-            autoFocus={shouldAutoEdit}
-            className="flex-1 min-w-0 rounded bg-accent px-1 py-0.5 text-sm font-semibold outline-none"
-            value={titleDraft || (shouldAutoEdit ? folder.title : "")}
-            onChange={(e) => setTitleDraft(e.target.value)}
-            onBlur={commitTitle}
-            onKeyDown={(e) => {
-              if (e.key === "Enter") {
-                e.preventDefault();
-                commitTitle();
-              } else if (e.key === "Escape") {
-                setEditingTitle(false);
-              }
-            }}
-            onClick={(e) => e.stopPropagation()}
-          />
-        ) : (
-          <button
-            className="flex-1 min-w-0 text-left text-sm font-semibold truncate hover:text-accent-foreground"
-            onDoubleClick={startTitleEdit}
-            title={folder.title}
-          >
-            {folder.title}
-          </button>
+        className={cn(
+          `flex flex-col h-full ${colWidth} shrink-0 rounded-lg border bg-muted/30`,
+          isDragging && "opacity-40",
+          isSlotOver && !columnDropIndicator && "ring-2 ring-primary",
         )}
-        <span className="text-[10px] text-muted-foreground shrink-0">
-          {visibleScenes.length}
-          {visibleScenes.length !== scenes.length && (
-            <span className="opacity-50">/{scenes.length}</span>
-          )}
-        </span>
-      </div>
-
-      {/* Scene cards */}
-      <div className="flex flex-col gap-2 p-2 flex-1">
-        {scenes.length === 0 ? (
-          <div
-            ref={setEmptyRef}
-            className={cn(
-              "flex-1 rounded-md border-2 border-dashed border-border min-h-16",
-              "flex items-center justify-center text-[11px] text-muted-foreground",
-              isEmptyOver && "border-primary bg-primary/5",
-            )}
-          >
-            {t("grid.column.dropHere", "ここにドロップ")}
-          </div>
-        ) : (
-          <>
-            {scenes.map((scene) => {
-              const vis = visibility.get(scene.id);
-              if (vis && !vis.passesFilter) return null;
-              return (
-                <GridSceneCard
-                  key={scene.id}
-                  scene={scene}
-                  display={display}
-                  dimmed={vis !== undefined && !vis.matchesSearch}
-                  dropIndicator={dropIndicator}
-                />
-              );
-            })}
-            <div
-              ref={setEndRef}
-              className={cn(
-                "h-4 rounded transition-colors",
-                isEndOver && "bg-primary/20",
-              )}
+        style={{ transition: "opacity 120ms ease-out" }}
+      >
+        {/* Column header */}
+        <div
+          className="flex items-center gap-1 px-3 py-2 border-b cursor-grab active:cursor-grabbing"
+          {...attributes}
+          {...listeners}
+        >
+          {editingTitle || shouldAutoEdit ? (
+            <input
+              ref={titleInputRef}
+              // eslint-disable-next-line jsx-a11y/no-autofocus
+              autoFocus={shouldAutoEdit}
+              className="flex-1 min-w-0 rounded bg-accent px-1 py-0.5 text-sm font-semibold outline-none"
+              value={titleDraft || (shouldAutoEdit ? folder.title : "")}
+              onChange={(e) => setTitleDraft(e.target.value)}
+              onBlur={commitTitle}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  commitTitle();
+                } else if (e.key === "Escape") {
+                  setEditingTitle(false);
+                }
+              }}
+              onClick={(e) => e.stopPropagation()}
             />
-          </>
-        )}
-      </div>
+          ) : (
+            <button
+              className="flex-1 min-w-0 text-left text-sm font-semibold truncate hover:text-accent-foreground"
+              onDoubleClick={startTitleEdit}
+              title={folder.title}
+            >
+              {folder.title}
+            </button>
+          )}
+          <span className="text-[10px] text-muted-foreground shrink-0">
+            {visibleScenes.length}
+            {visibleScenes.length !== sceneItems.length && (
+              <span className="opacity-50">/{sceneItems.length}</span>
+            )}
+          </span>
+        </div>
 
-      <button
-        className="flex items-center gap-1 px-3 py-2 text-[11px] text-muted-foreground hover:text-foreground hover:bg-accent/40 border-t transition-colors rounded-b-lg"
-        onClick={() => void addScene()}
-      >
-        <Plus className="h-3 w-3" />
-        {t("grid.column.newScene", "+ シーンを追加")}
-      </button>
+        {/* Items: scenes (cards) + nested folders (folder cards) */}
+        <div className="flex flex-col gap-2 p-2 flex-1">
+          {items.length === 0 ? (
+            <div
+              ref={setEmptyRef}
+              className={cn(
+                "flex-1 rounded-md border-2 border-dashed border-border min-h-16",
+                "flex items-center justify-center text-[11px] text-muted-foreground",
+                isEmptyOver && "border-primary bg-primary/5",
+              )}
+            >
+              {t("grid.column.dropHere", "ここにドロップ")}
+            </div>
+          ) : (
+            <>
+              {items.map((node) => {
+                if (node.nodeType === "folder") {
+                  return (
+                    <GridFolderCard
+                      key={node.id}
+                      folder={node}
+                      compact={display.compactCards}
+                    />
+                  );
+                }
+                const vis = visibility.get(node.id);
+                if (vis && !vis.passesFilter) return null;
+                return (
+                  <GridSceneCard
+                    key={node.id}
+                    scene={node}
+                    display={display}
+                    dimmed={vis !== undefined && !vis.matchesSearch}
+                    dropIndicator={dropIndicator}
+                  />
+                );
+              })}
+              <div
+                ref={setEndRef}
+                className={cn(
+                  "h-4 rounded transition-colors",
+                  isEndOver && "bg-primary/20",
+                )}
+              />
+            </>
+          )}
+        </div>
+
+        <button
+          className="flex items-center gap-1 px-3 py-2 text-[11px] text-muted-foreground hover:text-foreground hover:bg-accent/40 border-t transition-colors rounded-b-lg"
+          onClick={() => void addScene()}
+        >
+          <Plus className="h-3 w-3" />
+          {t("grid.column.newScene", "+ シーンを追加")}
+        </button>
+      </div>
     </div>
   );
 }

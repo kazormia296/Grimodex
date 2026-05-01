@@ -28,8 +28,9 @@ import {
   computeSceneDropTarget,
   computeColumnDropTarget,
   computeSceneDropIndicator,
+  computeColumnDropIndicator,
 } from "./gridDndUtils";
-import type { DropIndicator } from "./gridDndUtils";
+import type { DropIndicator, ColumnDropIndicator } from "./gridDndUtils";
 import type { TreeNodeData } from "@/features/tree/treeStore";
 
 export function GridPanel() {
@@ -56,7 +57,10 @@ export function GridPanel() {
   const [dropIndicator, setDropIndicator] = useState<DropIndicator | null>(
     null,
   );
+  const [columnDropIndicator, setColumnDropIndicator] =
+    useState<ColumnDropIndicator | null>(null);
   const pointerYRef = useRef(0);
+  const pointerXRef = useRef(0);
 
   useEffect(() => {
     void loadForProject(projectId);
@@ -64,6 +68,7 @@ export function GridPanel() {
 
   useEffect(() => {
     const handler = (e: PointerEvent) => {
+      pointerXRef.current = e.clientX;
       pointerYRef.current = e.clientY;
     };
     window.addEventListener("pointermove", handler);
@@ -78,26 +83,59 @@ export function GridPanel() {
   function handleDragStart(e: DragStartEvent) {
     setActiveId(String(e.active.id));
     setDropIndicator(null);
+    setColumnDropIndicator(null);
   }
 
   function handleDragOver(e: DragOverEvent) {
     const activeIdStr = String(e.active.id);
-    if (activeDragKind(activeIdStr) !== "scene") return;
-    const sceneId = activeIdStr.replace(/^scene-/, "");
+    const kind = activeDragKind(activeIdStr);
     const overId = e.over ? String(e.over.id) : "";
-    const rect = e.over?.rect ?? { top: 0, height: 60 };
-    const indicator = computeSceneDropIndicator(
-      sceneId,
-      overId,
-      pointerYRef.current,
-      { top: rect.top, height: rect.height },
-    );
-    setDropIndicator(indicator);
+
+    if (kind === "scene") {
+      const sceneId = activeIdStr.replace(/^scene-/, "");
+      const rect = e.over?.rect ?? { top: 0, height: 60 };
+      const indicator = computeSceneDropIndicator(
+        sceneId,
+        overId,
+        pointerYRef.current,
+        { top: rect.top, height: rect.height },
+      );
+      setDropIndicator(indicator);
+      setColumnDropIndicator(null);
+      return;
+    }
+
+    if (kind === "column") {
+      const folderId = activeIdStr.replace(/^column-/, "");
+      const folderParentMap: Record<string, string | null> = {};
+      const orderedFolders: Array<{ id: string; parentId: string | null }> = [];
+      const sceneParentMap: Record<string, string | null> = {};
+      for (const n of nodes) {
+        if (n.nodeType === "folder") {
+          folderParentMap[n.id] = n.parentId;
+          orderedFolders.push({ id: n.id, parentId: n.parentId });
+        }
+        if (n.nodeType === "scene") sceneParentMap[n.id] = n.parentId;
+      }
+      const rect = e.over?.rect ?? { left: 0, width: 200 };
+      const indicator = computeColumnDropIndicator(
+        folderId,
+        overId,
+        pointerXRef.current,
+        { left: rect.left, width: rect.width },
+        sceneParentMap,
+        folderParentMap,
+        orderedFolders,
+      );
+      setColumnDropIndicator(indicator);
+      setDropIndicator(null);
+    }
   }
 
   function handleDragEnd(e: DragEndEvent) {
     setActiveId(null);
     setDropIndicator(null);
+    setColumnDropIndicator(null);
     const activeIdStr = String(e.active.id);
     const overIdStr = e.over ? String(e.over.id) : "";
     if (!overIdStr) return;
@@ -108,7 +146,7 @@ export function GridPanel() {
       const sceneId = activeIdStr.replace(/^scene-/, "");
       const orderedScenes = [
         ...chapters.flatMap((ch) =>
-          ch.scenes.map((s) => ({ id: s.id, parentId: s.parentId })),
+          ch.children.map((n) => ({ id: n.id, parentId: n.parentId })),
         ),
         ...looseScenes.map((s) => ({ id: s.id, parentId: s.parentId })),
       ];
@@ -132,13 +170,24 @@ export function GridPanel() {
     if (kind === "column") {
       const folderId = activeIdStr.replace(/^column-/, "");
       const folderParentMap: Record<string, string | null> = {};
+      const orderedFolders: Array<{ id: string; parentId: string | null }> = [];
+      const sceneParentMap: Record<string, string | null> = {};
       for (const n of nodes) {
-        if (n.nodeType === "folder") folderParentMap[n.id] = n.parentId;
+        if (n.nodeType === "folder") {
+          folderParentMap[n.id] = n.parentId;
+          orderedFolders.push({ id: n.id, parentId: n.parentId });
+        }
+        if (n.nodeType === "scene") sceneParentMap[n.id] = n.parentId;
       }
+      const rect = e.over?.rect ?? { left: 0, width: 200 };
       const target = computeColumnDropTarget(
         folderId,
         overIdStr,
+        pointerXRef.current,
+        { left: rect.left, width: rect.width },
         folderParentMap,
+        orderedFolders,
+        sceneParentMap,
       );
       if (target) {
         void moveNode(folderId, target.targetParentId, target.afterId);
@@ -151,9 +200,14 @@ export function GridPanel() {
       null)
     : null;
 
-  // Compute visibility for all displayed scenes
+  // Compute visibility for all displayed scenes (excluding nested folders shown as folder cards)
   const allDisplayedScenes = useMemo(
-    () => [...chapters.flatMap((ch) => ch.scenes), ...looseScenes],
+    () => [
+      ...chapters.flatMap((ch) =>
+        ch.children.filter((n) => n.nodeType === "scene"),
+      ),
+      ...looseScenes,
+    ],
     [chapters, looseScenes],
   );
 
@@ -202,14 +256,15 @@ export function GridPanel() {
         )}
 
         <div className="flex flex-1 gap-3 overflow-x-auto overflow-y-hidden p-4">
-          {chapters.map(({ folder, scenes }) => (
+          {chapters.map(({ folder, children: items }) => (
             <GridColumn
               key={folder.id}
               folder={folder}
-              scenes={scenes}
+              items={items}
               display={display}
               visibility={visibility}
               dropIndicator={dropIndicator}
+              columnDropIndicator={columnDropIndicator}
             />
           ))}
 
@@ -221,6 +276,15 @@ export function GridPanel() {
               chapters={chapters.map((ch) => ch.folder)}
               visibility={visibility}
               dropIndicator={dropIndicator}
+              title={
+                // When container is a folder AND has no chapter sub-folders,
+                // show the container's own name (e.g. "Part.2") instead of "未分類シーン",
+                // since these scenes ARE this folder's content (not "uncategorized").
+                chapters.length === 0 && containerId
+                  ? (nodes.find((n) => n.id === containerId)?.title ??
+                    undefined)
+                  : undefined
+              }
             />
           )}
 

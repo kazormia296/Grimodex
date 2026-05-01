@@ -12,6 +12,13 @@ export interface DropIndicator {
   position: "before" | "after";
 }
 
+export interface ColumnDropIndicator {
+  /** The chapter column whose padding should open up */
+  targetId: string;
+  /** Open gap to the left or right of the target column */
+  position: "before" | "after";
+}
+
 /**
  * Compute which card should show a drop-indicator gap during drag-over.
  * Only handles scene-drop zones (between cards); column-level zones don't
@@ -139,27 +146,168 @@ export function computeSceneDropTarget(
 }
 
 /**
+ * Resolve any over.id (slot / drop / end / empty) to the enclosing chapter column.
+ * Used during column drag-over so the indicator still appears when the cursor
+ * lands on a scene card or end zone inside a target column.
+ *
+ * @returns folder id of the enclosing column, or null if not resolvable
+ */
+export function resolveEnclosingFolderId(
+  overId: string,
+  sceneParentMap: Record<string, string | null>,
+): string | null {
+  if (!overId) return null;
+  const { kind, rawId } = parseId(overId);
+  if (kind === "slot" || kind === "end" || kind === "empty") {
+    return rawId === "loose" ? null : rawId;
+  }
+  if (kind === "drop") {
+    return sceneParentMap[rawId] ?? null;
+  }
+  return null;
+}
+
+/**
+ * Determine if moving `activeFolderId` to be `position` of `targetId` would be a no-op
+ * (target is adjacent to active in the same parent).
+ */
+function isAdjacentColumnNoOp(
+  activeFolderId: string,
+  targetId: string,
+  position: "before" | "after",
+  folderParentMap: Record<string, string | null>,
+  orderedFolders: Array<{ id: string; parentId: string | null }>,
+): boolean {
+  const activeParentId = folderParentMap[activeFolderId] ?? null;
+  const targetParentId = folderParentMap[targetId] ?? null;
+  if (targetParentId !== activeParentId) return false;
+  const siblings = orderedFolders
+    .filter((f) => f.parentId === activeParentId)
+    .map((f) => f.id);
+  const activeIdx = siblings.indexOf(activeFolderId);
+  const targetIdx = siblings.indexOf(targetId);
+  if (activeIdx < 0 || targetIdx < 0) return false;
+  // "before target" with target == active+1 → A would land back in its own slot
+  if (position === "before" && targetIdx === activeIdx + 1) return true;
+  // "after target" with target == active-1 → ditto
+  if (position === "after" && targetIdx === activeIdx - 1) return true;
+  return false;
+}
+
+/**
+ * Resolve the meaningful drop position for a column drag, accounting for the no-op
+ * case when the cursor lands on the half that would put the column back where it is.
+ * In that case, flip to the opposite half so the indicator/move stays meaningful
+ * across the entire target column area.
+ */
+function resolveColumnDropPosition(
+  activeFolderId: string,
+  targetId: string,
+  pointerX: number,
+  overRect: { left: number; width: number },
+  folderParentMap: Record<string, string | null>,
+  orderedFolders: Array<{ id: string; parentId: string | null }>,
+): "before" | "after" | null {
+  const midX = overRect.left + overRect.width / 2;
+  const initial: "before" | "after" = pointerX <= midX ? "before" : "after";
+  if (
+    !isAdjacentColumnNoOp(
+      activeFolderId,
+      targetId,
+      initial,
+      folderParentMap,
+      orderedFolders,
+    )
+  ) {
+    return initial;
+  }
+  // Initial side is no-op → try the opposite side.
+  const flipped: "before" | "after" = initial === "before" ? "after" : "before";
+  if (
+    isAdjacentColumnNoOp(
+      activeFolderId,
+      targetId,
+      flipped,
+      folderParentMap,
+      orderedFolders,
+    )
+  ) {
+    return null;
+  }
+  return flipped;
+}
+
+/**
+ * Compute which column should show the left/right drop-indicator gap during a column drag.
+ * Returns null when the move would be a no-op (target adjacent to source in same parent).
+ */
+export function computeColumnDropIndicator(
+  activeFolderId: string,
+  overId: string,
+  pointerX: number,
+  overRect: { left: number; width: number },
+  sceneParentMap: Record<string, string | null>,
+  folderParentMap: Record<string, string | null>,
+  orderedFolders: Array<{ id: string; parentId: string | null }>,
+): ColumnDropIndicator | null {
+  const targetId = resolveEnclosingFolderId(overId, sceneParentMap);
+  if (!targetId) return null;
+  if (targetId === activeFolderId) return null;
+  const position = resolveColumnDropPosition(
+    activeFolderId,
+    targetId,
+    pointerX,
+    overRect,
+    folderParentMap,
+    orderedFolders,
+  );
+  if (!position) return null;
+  return { targetId, position };
+}
+
+/**
  * Compute where to drop a column (folder reorder).
  *
  * @param activeFolderId - The folder being dragged
  * @param overId - The dnd-kit `over.id` string
+ * @param pointerX - Current pointer X (viewport coords)
+ * @param overRect - Bounding rect of the over element
  * @param folderParentMap - Maps folderId → parentId
+ * @param orderedFolders - All folder nodes sorted by sortOrder (resolves predecessor for "before")
+ * @param sceneParentMap - Maps sceneId → parentId (for resolving enclosing column)
  */
 export function computeColumnDropTarget(
   activeFolderId: string,
   overId: string,
+  pointerX: number,
+  overRect: { left: number; width: number },
   folderParentMap: Record<string, string | null>,
+  orderedFolders: Array<{ id: string; parentId: string | null }>,
+  sceneParentMap: Record<string, string | null>,
 ): DropTarget | null {
-  if (!overId) return null;
-  const { kind, rawId } = parseId(overId);
-
-  if (kind === "slot") {
-    if (rawId === activeFolderId) return null;
-    const targetParentId = folderParentMap[rawId] ?? null;
-    return { targetParentId, afterId: rawId };
+  const targetId = resolveEnclosingFolderId(overId, sceneParentMap);
+  if (!targetId) return null;
+  if (targetId === activeFolderId) return null;
+  const targetParentId = folderParentMap[targetId] ?? null;
+  const position = resolveColumnDropPosition(
+    activeFolderId,
+    targetId,
+    pointerX,
+    overRect,
+    folderParentMap,
+    orderedFolders,
+  );
+  if (!position) return null;
+  if (position === "before") {
+    // Insert before target: predecessor is target's prev sibling in same parent (excluding active)
+    const siblings = orderedFolders.filter(
+      (f) => f.parentId === targetParentId && f.id !== activeFolderId,
+    );
+    const idx = siblings.findIndex((f) => f.id === targetId);
+    const predecessor = idx > 0 ? (siblings[idx - 1]?.id ?? null) : null;
+    return { targetParentId, afterId: predecessor };
   }
-
-  return null;
+  return { targetParentId, afterId: targetId };
 }
 
 export function activeDragKind(activeId: string): DragKind | null {

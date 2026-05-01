@@ -182,24 +182,140 @@ describe("computeColumnDropTarget", () => {
     ch2: "root",
     ch3: "root",
   };
+  const orderedFolders = [
+    { id: "ch1", parentId: "root" },
+    { id: "ch2", parentId: "root" },
+    { id: "ch3", parentId: "root" },
+  ];
+  const sceneParentMap: Record<string, string | null> = {};
+  const rect = { left: 0, width: 200 };
 
   it("returns null when overId is empty", () => {
-    expect(computeColumnDropTarget("ch1", "", folderParentMap)).toBeNull();
+    expect(
+      computeColumnDropTarget(
+        "ch1",
+        "",
+        100,
+        rect,
+        folderParentMap,
+        orderedFolders,
+        sceneParentMap,
+      ),
+    ).toBeNull();
   });
 
   it("returns null when dropping column on itself", () => {
     expect(
-      computeColumnDropTarget("ch1", columnSlotId("ch1"), folderParentMap),
+      computeColumnDropTarget(
+        "ch1",
+        columnSlotId("ch1"),
+        100,
+        rect,
+        folderParentMap,
+        orderedFolders,
+        sceneParentMap,
+      ),
     ).toBeNull();
   });
 
-  it("inserts column after target", () => {
+  it("inserts column AFTER target when pointer is on right half", () => {
     const result = computeColumnDropTarget(
       "ch1",
       columnSlotId("ch3"),
+      150, // right half (mid is 100)
+      rect,
       folderParentMap,
+      orderedFolders,
+      sceneParentMap,
     );
     expect(result).toEqual({ targetParentId: "root", afterId: "ch3" });
+  });
+
+  it("inserts column BEFORE target when pointer is on left half", () => {
+    // Drop ch3 before ch2: predecessor is ch1
+    const result = computeColumnDropTarget(
+      "ch3",
+      columnSlotId("ch2"),
+      50, // left half (mid is 100)
+      rect,
+      folderParentMap,
+      orderedFolders,
+      sceneParentMap,
+    );
+    expect(result).toEqual({ targetParentId: "root", afterId: "ch1" });
+  });
+
+  it("inserts column at start (afterId=null) when target is first sibling", () => {
+    // Drop ch3 before ch1: no predecessor → prepend
+    const result = computeColumnDropTarget(
+      "ch3",
+      columnSlotId("ch1"),
+      50, // left half
+      rect,
+      folderParentMap,
+      orderedFolders,
+      sceneParentMap,
+    );
+    expect(result).toEqual({ targetParentId: "root", afterId: null });
+  });
+
+  it("resolves enclosing column when over.id is a scene-drop inside a target column", () => {
+    // Dragging ch1 over scene-drop-s1, where s1.parentId === "ch3"
+    const result = computeColumnDropTarget(
+      "ch1",
+      "scene-drop-s1",
+      150, // right half
+      rect,
+      folderParentMap,
+      orderedFolders,
+      { s1: "ch3" },
+    );
+    expect(result).toEqual({ targetParentId: "root", afterId: "ch3" });
+  });
+
+  it("flips no-op side to the meaningful side when hovering an adjacent column (right→left)", () => {
+    // ch1 hovering ch2's left half = "before ch2" = no-op (ch1 is already there).
+    // Should flip to "after ch2" so the cursor anywhere over ch2 produces a real move.
+    const result = computeColumnDropTarget(
+      "ch1",
+      columnSlotId("ch2"),
+      50, // left half (would be "before ch2")
+      rect,
+      folderParentMap,
+      orderedFolders,
+      sceneParentMap,
+    );
+    expect(result).toEqual({ targetParentId: "root", afterId: "ch2" });
+  });
+
+  it("flips no-op side to the meaningful side when hovering an adjacent column (left→right)", () => {
+    // ch2 hovering ch1's right half = "after ch1" = no-op.
+    // Should flip to "before ch1" → afterId=null (prepend).
+    const result = computeColumnDropTarget(
+      "ch2",
+      columnSlotId("ch1"),
+      150, // right half (would be "after ch1")
+      rect,
+      folderParentMap,
+      orderedFolders,
+      sceneParentMap,
+    );
+    expect(result).toEqual({ targetParentId: "root", afterId: null });
+  });
+
+  it("returns null when both sides would be no-op (only two columns adjacent — should never happen since target!=active is filtered)", () => {
+    // Sanity: can't construct a real "both sides no-op" given target !== active and at least one direction is real.
+    // This test just documents that a self-target is filtered earlier.
+    const result = computeColumnDropTarget(
+      "ch1",
+      columnSlotId("ch1"),
+      100,
+      rect,
+      folderParentMap,
+      orderedFolders,
+      sceneParentMap,
+    );
+    expect(result).toBeNull();
   });
 });
 

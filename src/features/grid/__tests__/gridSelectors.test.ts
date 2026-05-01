@@ -64,12 +64,13 @@ describe("useGridDerivedData", () => {
     const { result } = renderHook(() => useGridDerivedData("root"));
     expect(result.current.chapters).toHaveLength(2);
     expect(result.current.chapters[0].folder.id).toBe("ch1");
-    expect(result.current.chapters[0].scenes.map((s) => s.id)).toEqual([
-      "s1",
-      "s2",
-    ]);
+    expect(
+      result.current.chapters[0].children.map((s: { id: string }) => s.id),
+    ).toEqual(["s1", "s2"]);
     expect(result.current.chapters[1].folder.id).toBe("ch2");
-    expect(result.current.chapters[1].scenes.map((s) => s.id)).toEqual(["s3"]);
+    expect(
+      result.current.chapters[1].children.map((s: { id: string }) => s.id),
+    ).toEqual(["s3"]);
     expect(result.current.looseScenes).toEqual([]);
     expect(result.current.totalScenes).toBe(3);
     expect(result.current.totalChapters).toBe(2);
@@ -146,9 +147,8 @@ describe("useGridDerivedData", () => {
     const { result } = renderHook(() => useGridDerivedData(null));
     expect(result.current.chapters[0].folder.id).toBe("ch2");
     expect(result.current.chapters[1].folder.id).toBe("ch1");
-    expect(result.current.chapters[1].scenes.map((s) => s.id)).toEqual([
-      "s2",
-      "s1",
-    ]);
+    expect(
+      result.current.chapters[1].children.map((s: { id: string }) => s.id),
+    ).toEqual(["s2", "s1"]);
   });
 });

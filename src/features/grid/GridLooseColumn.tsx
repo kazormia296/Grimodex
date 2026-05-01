@@ -26,6 +26,8 @@ interface Props {
   chapters: TreeNodeData[];
   visibility: Map<string, CardVisibility>;
   dropIndicator?: DropIndicator | null;
+  /** Override default "未分類シーン" header (e.g. when container is a folder with no chapter children) */
+  title?: string;
 }
 
 export function GridLooseColumn({
@@ -35,6 +37,7 @@ export function GridLooseColumn({
   chapters,
   visibility,
   dropIndicator,
+  title,
 }: Props) {
   const { t } = useTranslation();
   const [menuOpen, setMenuOpen] = useState(false);
@@ -110,7 +113,7 @@ export function GridLooseColumn({
       {/* Header */}
       <div className="flex items-center gap-1 px-3 py-2 border-b">
         <span className="flex-1 text-sm font-semibold text-muted-foreground">
-          {t("grid.looseColumn.title", "未分類シーン")}
+          {title ?? t("grid.looseColumn.title", "未分類シーン")}
         </span>
         <span className="text-[10px] text-muted-foreground">
           {visibleScenes.length}
