@@ -168,7 +168,7 @@ Help
 
 - 個別 Scene を D&D で別 Chapter 列にドロップして移動できる（Phase A）
 - この仮想列に `+ New Scene` を押した場合、container 直下に Scene が追加される（Loose のまま）
-- 仮想列ごと既存 Chapter にまとめる／新規 Chapter folder に変換する一括操作は Phase B 以降で検討（MVP では個別 D&D のみ）
+- 仮想列ごと既存 Chapter にまとめる／新規 Chapter folder に変換する一括操作は **Phase B で実装済み**（仮想列の `[⋮]` メニューから操作可能）
 
 ### カード（Scene）
 
@@ -289,9 +289,9 @@ Synopsis は **Scenes パネル（Outline モード）／ Editor 上部の Synop
 
 - カード本体の bullet 表示は Unplaced beat の冒頭文を読み出している（`tree_nodes.unplaced_beat_preview` キャッシュ、シーン保存時にフロントが `unplaced_beats_doc` から事前抽出）
 - Beat の追加・編集・削除は Editor で行う（Grid 上では表示のみ）
-- カードの `[⋮]` メニューに「Add unplaced beat...」を追加することは可能（Phase B 検討）
+- カードの `[⋮]` メニューに「Add unplaced beat...」を追加済み（**Phase B で実装済み**）。Editor 起動なしで Unplaced beat を追加でき、カードに即時反映される。
 
-> **Phase B 予定**: Beat 箇条書きをカードの主表示に昇格（現行は Synopsis の fallback）。Synopsis セクションを副表示（折りたたみ）に変更。`unplaced_beat_preview` の取得戦略・表示フォーマットは既存のまま流用可能。
+> **Phase B 実装済み**: Beat 箇条書きをカードの主表示に昇格（Synopsis は `▸ Show synopsis` トグルで折りたたみ既定）。`unplaced_beat_preview` の最大 beat 数を 3→8、1 beat あたり文字数を 40→60 に拡張。Synopsis 副表示の折りたたみは決定事項。
 
 ### Timeline / Map との接続
 
