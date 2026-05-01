@@ -78,15 +78,21 @@ export function computeSceneDropTarget(
     return { targetParentId, afterId: targetSceneId };
   }
 
-  // Dropped at the end of a column
+  // Dropped on column-slot: the full-column droppable wins collision detection
+  // over scene-drop zones when hovering a non-empty column — treat as append.
+  if (kind === "slot") {
+    return { targetParentId: rawId, afterId: undefined };
+  }
+
+  // Dropped at the end of a column → append after last sibling
   if (kind === "end") {
     return {
       targetParentId: rawId === "loose" ? containerId : rawId,
-      afterId: null,
+      afterId: undefined,
     };
   }
 
-  // Dropped on empty column
+  // Dropped on empty column → first (and only) child
   if (kind === "empty") {
     return {
       targetParentId: rawId === "loose" ? containerId : rawId,

@@ -115,7 +115,7 @@ describe("computeSceneDropTarget", () => {
     expect(result).toEqual({ targetParentId: "ch2", afterId: "s3" });
   });
 
-  it("drops to column-end returns folder as targetParentId", () => {
+  it("drops to column-end appends (afterId undefined)", () => {
     const result = computeSceneDropTarget(
       "s1",
       columnEndId("ch2"),
@@ -124,7 +124,19 @@ describe("computeSceneDropTarget", () => {
       orderedScenes,
       "root",
     );
-    expect(result).toEqual({ targetParentId: "ch2", afterId: null });
+    expect(result).toEqual({ targetParentId: "ch2", afterId: undefined });
+  });
+
+  it("drops to column-slot appends to non-empty column (afterId undefined)", () => {
+    const result = computeSceneDropTarget(
+      "s3",
+      columnSlotId("ch1"),
+      0,
+      rect,
+      orderedScenes,
+      "root",
+    );
+    expect(result).toEqual({ targetParentId: "ch1", afterId: undefined });
   });
 
   it("drops to column-empty-loose returns containerId as targetParentId", () => {
@@ -139,7 +151,7 @@ describe("computeSceneDropTarget", () => {
     expect(result).toEqual({ targetParentId: "root", afterId: null });
   });
 
-  it("drops to column-end-loose returns containerId as targetParentId", () => {
+  it("drops to column-end-loose appends (afterId undefined)", () => {
     const result = computeSceneDropTarget(
       "s1",
       columnEndId("loose"),
@@ -148,7 +160,7 @@ describe("computeSceneDropTarget", () => {
       orderedScenes,
       "root",
     );
-    expect(result).toEqual({ targetParentId: "root", afterId: null });
+    expect(result).toEqual({ targetParentId: "root", afterId: undefined });
   });
 
   it("drops to empty chapter column", () => {
