@@ -123,4 +123,18 @@ describe("addUnplacedBeatFromGrid", () => {
     expect(mockSaveSceneBeatsOnly).toHaveBeenCalledOnce();
     expect(mockSaveSceneBeatsOnly.mock.calls[0][0]).toBe("s1");
   });
+
+  it("DB 書き込み失敗時はストアを元に戻して例外を伝播する", async () => {
+    const existing = [makeExistingBeat("b-existing", "既存")];
+    useUnplacedBeatsStore.getState().setBeats("s1", existing, "load");
+    mockSaveSceneBeatsOnly.mockRejectedValueOnce(new Error("disk full"));
+
+    await expect(addUnplacedBeatFromGrid("s1", "失敗するbeat")).rejects.toThrow(
+      "disk full",
+    );
+
+    const beats = useUnplacedBeatsStore.getState().getBeats("s1");
+    expect(beats).toHaveLength(1);
+    expect(beats[0].id).toBe("b-existing");
+  });
 });

@@ -42,13 +42,23 @@ export async function addUnplacedBeatFromGrid(
     content: [{ type: "text", text: trimmed }],
   };
 
+  const prevBeats = useUnplacedBeatsStore.getState().getBeats(sceneId);
   useUnplacedBeatsStore.getState().addBeat(sceneId, newBeat);
 
   const beats = useUnplacedBeatsStore.getState().getBeats(sceneId);
   const unplacedBeatsDoc = JSON.stringify(beats);
   const unplacedBeatPreview = extractUnplacedBeatPreview(beats) || null;
 
-  await saveSceneBeatsOnly(sceneId, { unplacedBeatsDoc, unplacedBeatPreview });
+  try {
+    await saveSceneBeatsOnly(sceneId, {
+      unplacedBeatsDoc,
+      unplacedBeatPreview,
+    });
+  } catch (err) {
+    // DB 書き込み失敗時はストアを元に戻し、treeStore も触らない
+    useUnplacedBeatsStore.getState().setBeats(sceneId, prevBeats);
+    throw err;
+  }
 
   // Optimistic update so the Grid card shows the new bullet without reloading
   useTreeStore.setState((s) => ({
