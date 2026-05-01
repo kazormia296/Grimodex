@@ -40,7 +40,7 @@ import { useLayoutStore } from "@/features/layout/layoutStore";
 import { TreeNodeItem, NodeIcon } from "./TreeNodeItem";
 import { StatusDot } from "./StatusDot";
 import { SynopsisArea } from "./SynopsisArea";
-import { InlineSynopsisEdit } from "./InlineSynopsisEdit";
+import { InlineSynopsisEditor } from "@/features/editor/InlineSynopsisEditor";
 import type { TreeNodeData, NodeType } from "./treeStore";
 import { canHaveChildren } from "./treeStore";
 import type { DropIndicator } from "./TreeNodeItem";
@@ -225,11 +225,19 @@ function TreeRenderer({
               />
             </TreeNodeItem>
             {viewMode === "outline" && node.nodeType === "scene" && visible && (
-              <InlineSynopsisEdit
-                nodeId={node.id}
-                synopsis={node.synopsis}
-                depth={depth}
-              />
+              <li
+                className="list-none"
+                style={{
+                  paddingLeft: `${depth * 12 + 58}px`,
+                  paddingBottom: 4,
+                }}
+              >
+                <InlineSynopsisEditor
+                  nodeId={node.id}
+                  synopsis={node.synopsis}
+                  className="cursor-text rounded text-[11px] text-muted-foreground hover:bg-accent/30"
+                />
+              </li>
             )}
           </Fragment>
         );

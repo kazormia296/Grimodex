@@ -263,7 +263,10 @@ describe("SceneBeatNodeView", () => {
             povCharacterId: null,
             locationId: null,
             synopsis: null,
+            charCount: 0,
+            unplacedBeatPreview: null,
             createdAt: "",
+            updatedAt: "",
           },
         ],
       }));

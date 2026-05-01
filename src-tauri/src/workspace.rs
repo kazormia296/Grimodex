@@ -52,6 +52,9 @@ pub struct GlobalSettings {
     /// Map panel settings (mode, viewport, show flags, etc.).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub map: Option<serde_json::Value>,
+    /// Grid panel display settings (showSynopsis, showBeats, etc.).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub grid: Option<serde_json::Value>,
 }
 
 impl Default for GlobalSettings {
@@ -71,6 +74,7 @@ impl Default for GlobalSettings {
             has_seen_welcome: false,
             timeline: None,
             map: None,
+            grid: None,
         }
     }
 }

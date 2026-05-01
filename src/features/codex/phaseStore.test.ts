@@ -57,7 +57,10 @@ const mockScene: TreeNodeData = {
   storyTimeLabel: null,
   povCharacterId: null,
   locationId: null,
+  charCount: 0,
+  unplacedBeatPreview: null,
   createdAt: "2024-01-01T00:00:00Z",
+  updatedAt: "2024-01-01T00:00:00Z",
 };
 
 describe("phaseStore", () => {

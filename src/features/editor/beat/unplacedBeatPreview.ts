@@ -1,24 +1,31 @@
+// Phase B: raise to 8 × 60 when Beat becomes the primary card display
 const MAX_BEATS = 3;
 const MAX_CHARS_PER_BEAT = 40;
 
 type UnplacedBeatLike = { content: { text?: string }[] };
 
 /**
- * Unplaced beats の配列から先頭3件×40文字のプレビュー文字列を生成する。
- * Grid のステータスバー表示に使用する。
+ * Unplaced beats の配列から先頭 MAX_BEATS 件 × MAX_CHARS_PER_BEAT 文字の
+ * プレビューを JSON 配列文字列として返す。
+ * tree_nodes.unplaced_beat_preview カラムに保存し、Grid カードで bullet 表示する。
+ *
+ * フォーマット: '["line1","line2","line3"]'
+ * バックエンドは値を opaque TEXT として保存するだけで中身を解釈しない。
  */
 export function extractUnplacedBeatPreview(beats: UnplacedBeatLike[]): string {
-  if (!beats?.length) return "";
+  if (!beats?.length) return "[]";
 
-  const lines: string[] = [];
+  const items: string[] = [];
   for (const beat of beats) {
-    if (lines.length >= MAX_BEATS) break;
-    const text = beat.content
+    if (items.length >= MAX_BEATS) break;
+    const raw = beat.content
       .map((n) => n.text ?? "")
       .join("")
       .trim();
-    if (!text) continue;
-    lines.push(text.slice(0, MAX_CHARS_PER_BEAT));
+    if (!raw) continue;
+    // Normalize whitespace (newlines, tabs → single space)
+    const normalized = raw.replace(/[\n\r\t]+/g, " ").trim();
+    items.push(normalized.slice(0, MAX_CHARS_PER_BEAT));
   }
-  return lines.join("\n");
+  return JSON.stringify(items);
 }

@@ -6,6 +6,7 @@ import { useCursorSettingsStore } from "@/features/editor/cursorSettingsStore";
 import { loadAndSyncTimelineSettings } from "@/features/timeline/timelineStore";
 import type { TimelineSettings } from "@/features/timeline/timelineStore";
 import { useMapStore } from "@/features/map/mapStore";
+import { useGridStore } from "@/features/grid/gridStore";
 
 export interface RecentWorkspace {
   path: string;
@@ -35,6 +36,8 @@ export interface GlobalSettings {
   timeline?: TimelineSettings;
   /** Persisted map panel state */
   map?: unknown;
+  /** Persisted grid panel display settings */
+  grid?: unknown;
 }
 
 export type AppView = "loading" | "welcome" | "launcher" | "editor";
@@ -148,6 +151,7 @@ export const useWorkspaceStore = create<WorkspaceState>()((set, get) => ({
         loadAndSyncTimelineSettings(settings.timeline);
       }
       useMapStore.getState().loadFromSettings(settings);
+      useGridStore.getState().loadFromSettings(settings);
       // Optimize FTS indexes in background (fire-and-forget)
       invoke("fts_optimize").catch(() => {});
     } catch (e) {

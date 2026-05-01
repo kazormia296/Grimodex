@@ -19,7 +19,10 @@ function makeScene(id: string, locationId: string | null = null): TreeNodeData {
     povCharacterId: null,
     locationId,
     createdAt: "",
-  };
+
+    charCount: 0,
+    unplacedBeatPreview: null,
+    updatedAt: "",  };
 }
 
 function makeLocation(id: string): CodexEntry {

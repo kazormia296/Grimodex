@@ -21,7 +21,10 @@ function makeScene(
     povCharacterId,
     locationId: null,
     createdAt: "",
-  };
+
+    charCount: 0,
+    unplacedBeatPreview: null,
+    updatedAt: "",  };
 }
 
 const EMPTY_INPUT: LayoutInput = {

@@ -614,6 +614,28 @@ export const projectSettings = sqliteTable(
   (table) => [primaryKey({ columns: [table.projectId, table.key] })],
 );
 
+// Scene–Codex many-to-many pins (explicit user-created links, distinct from
+// auto-detected mentions). One row = one Scene has one Codex entry pinned.
+export const sceneCodexPins = sqliteTable(
+  "scene_codex_pins",
+  {
+    sceneId: text("scene_id")
+      .notNull()
+      .references(() => treeNodes.id, { onDelete: "cascade" }),
+    entryId: text("entry_id")
+      .notNull()
+      .references(() => codexEntries.id, { onDelete: "cascade" }),
+    createdAt: text("created_at")
+      .notNull()
+      .$defaultFn(() => new Date().toISOString()),
+  },
+  (table) => [
+    primaryKey({ columns: [table.sceneId, table.entryId] }),
+    index("idx_scene_codex_pins_scene").on(table.sceneId),
+    index("idx_scene_codex_pins_entry").on(table.entryId),
+  ],
+);
+
 // Map panel tables
 
 export const mapBoards = sqliteTable(

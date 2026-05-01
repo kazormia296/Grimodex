@@ -343,7 +343,8 @@
       "timeline": "タイムライン",
       "map": "マップ",
       "linter": "Linter",
-      "foreshadow": "伏線"
+      "foreshadow": "伏線",
+      "grid": "グリッド"
     },
     "preset": {
       "title": "レイアウトプリセット",
@@ -641,6 +642,47 @@
       "summary": "概要",
       "tags": "タグ",
       "tagsPlaceholder": "タグをカンマ区切りで入力"
+    }
+  },
+  "grid": {
+    "empty": "章がありません。「章を追加」から始めましょう。",
+    "header": {
+      "chapterCount": "{{count}} 章",
+      "newChapter": "章を追加",
+      "displaySettings": "表示設定"
+    },
+    "column": {
+      "newScene": "+ シーンを追加",
+      "dropHere": "ここにドロップ"
+    },
+    "looseColumn": {
+      "title": "未分類シーン"
+    },
+    "card": {
+      "synopsisPlaceholder": "シノプシスを追加…",
+      "empty": "空のシーン",
+      "menu": {
+        "open": "エディタで開く",
+        "rename": "名前を変更",
+        "showInScenes": "シーン一覧で表示",
+        "delete": "削除",
+        "deleteConfirm": "このシーンを削除しますか？"
+      }
+    },
+    "container": {
+      "root": "プロジェクトルート",
+      "selectFolder": "フォルダを選択"
+    },
+    "display": {
+      "title": "表示設定",
+      "synopsis": "シノプシス表示",
+      "beats": "Beat プレビュー表示",
+      "codex": "Codex チップ表示",
+      "label": "ステータスラベル表示"
+    },
+    "status": {
+      "chapters": "{{count}} 章",
+      "scenes": "{{count}} シーン"
     }
   },
   "foreshadow": {

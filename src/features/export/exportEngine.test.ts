@@ -28,7 +28,10 @@ function makeFolder(
     povCharacterId: null,
     locationId: null,
     createdAt: "2024-01-01T00:00:00Z",
-  };
+
+    charCount: 0,
+    unplacedBeatPreview: null,
+    updatedAt: "2024-01-01T00:00:00Z",  };
 }
 
 function makeScene(
@@ -51,7 +54,10 @@ function makeScene(
     povCharacterId: null,
     locationId: null,
     createdAt: "2024-01-01T00:00:00Z",
-  };
+
+    charCount: 0,
+    unplacedBeatPreview: null,
+    updatedAt: "2024-01-01T00:00:00Z",  };
 }
 
 function makeNote(id: string, parentId: string | null = null): TreeNodeData {
@@ -69,7 +75,10 @@ function makeNote(id: string, parentId: string | null = null): TreeNodeData {
     povCharacterId: null,
     locationId: null,
     createdAt: "2024-01-01T00:00:00Z",
-  };
+
+    charCount: 0,
+    unplacedBeatPreview: null,
+    updatedAt: "2024-01-01T00:00:00Z",  };
 }
 
 /** ProseMirrorの段落JSONを作成 */

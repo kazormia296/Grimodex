@@ -805,6 +805,18 @@ impl Database {
         )?;
         Self::add_column_if_missing(&conn, "tree_nodes", "unplaced_beat_preview", "TEXT")?;
 
+        // Grid panel — Scene×Codex explicit pins (many-to-many).
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS scene_codex_pins (
+                scene_id   TEXT NOT NULL REFERENCES tree_nodes(id) ON DELETE CASCADE,
+                entry_id   TEXT NOT NULL REFERENCES codex_entries(id) ON DELETE CASCADE,
+                created_at TEXT NOT NULL,
+                PRIMARY KEY (scene_id, entry_id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_scene_codex_pins_scene ON scene_codex_pins(scene_id);
+            CREATE INDEX IF NOT EXISTS idx_scene_codex_pins_entry ON scene_codex_pins(entry_id);",
+        )?;
+
         Ok(())
     }
 

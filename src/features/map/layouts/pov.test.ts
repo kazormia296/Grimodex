@@ -22,7 +22,10 @@ function makeScene(
     povCharacterId,
     locationId: null,
     createdAt: "",
-  };
+
+    charCount: 0,
+    unplacedBeatPreview: null,
+    updatedAt: "",  };
 }
 
 function makeCharacter(id: string): CodexEntry {

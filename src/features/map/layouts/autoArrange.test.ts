@@ -22,7 +22,10 @@ function makeScene(
     povCharacterId: null,
     locationId: null,
     createdAt: "",
-  };
+
+    charCount: 0,
+    unplacedBeatPreview: null,
+    updatedAt: "",  };
 }
 
 function makePos(treeNodeId: string, pinned = 0): MapNodePositionRecord {

@@ -17,7 +17,10 @@ function makeScene(id: string): Parameters<typeof layoutFree>[0]["scenes"][0] {
     povCharacterId: null,
     locationId: null,
     createdAt: "",
-  };
+
+    charCount: 0,
+    unplacedBeatPreview: null,
+    updatedAt: "",  };
 }
 
 function makePos(

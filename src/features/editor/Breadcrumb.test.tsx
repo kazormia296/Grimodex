@@ -7,7 +7,10 @@ const NODE_DEFAULTS = {
   storyTimeLabel: null,
   povCharacterId: null,
   locationId: null,
+  charCount: 0,
+  unplacedBeatPreview: null,
   createdAt: "2024-01-01T00:00:00Z",
+  updatedAt: "2024-01-01T00:00:00Z",
 } as const;
 
 const NODES: TreeNodeData[] = [

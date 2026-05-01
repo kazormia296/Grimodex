@@ -37,7 +37,10 @@ export interface TreeNodeData {
   storyTimeLabel: string | null;
   povCharacterId: string | null;
   locationId: string | null;
+  charCount: number;
+  unplacedBeatPreview: string | null;
   createdAt: string;
+  updatedAt: string;
 }
 
 /** Returns true when a node type can hold children */
@@ -66,7 +69,10 @@ function toNodeData(n: ApiNode): TreeNodeData {
     storyTimeLabel: n.storyTimeLabel ?? null,
     povCharacterId: n.povCharacterId ?? null,
     locationId: n.locationId ?? null,
+    charCount: n.charCount,
+    unplacedBeatPreview: n.unplacedBeatPreview ?? null,
     createdAt: n.createdAt,
+    updatedAt: n.updatedAt,
   };
 }
 

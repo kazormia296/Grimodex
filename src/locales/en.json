@@ -343,7 +343,8 @@
       "timeline": "Timeline",
       "map": "Map",
       "linter": "Linter",
-      "foreshadow": "Foreshadow"
+      "foreshadow": "Foreshadow",
+      "grid": "Grid"
     },
     "preset": {
       "title": "Layout presets",
@@ -641,6 +642,47 @@
       "summary": "Summary",
       "tags": "Tags",
       "tagsPlaceholder": "Enter tags separated by commas"
+    }
+  },
+  "grid": {
+    "empty": "No chapters yet. Use \"Add Chapter\" to get started.",
+    "header": {
+      "chapterCount": "{{count}} chapter(s)",
+      "newChapter": "Add Chapter",
+      "displaySettings": "Display settings"
+    },
+    "column": {
+      "newScene": "+ Add Scene",
+      "dropHere": "Drop here"
+    },
+    "looseColumn": {
+      "title": "Unassigned Scenes"
+    },
+    "card": {
+      "synopsisPlaceholder": "Add synopsis…",
+      "empty": "Empty scene",
+      "menu": {
+        "open": "Open in Editor",
+        "rename": "Rename",
+        "showInScenes": "Show in Scenes",
+        "delete": "Delete",
+        "deleteConfirm": "Delete this scene?"
+      }
+    },
+    "container": {
+      "root": "Project Root",
+      "selectFolder": "Select folder"
+    },
+    "display": {
+      "title": "Display settings",
+      "synopsis": "Show synopsis",
+      "beats": "Show beat preview",
+      "codex": "Show codex chips",
+      "label": "Show status label"
+    },
+    "status": {
+      "chapters": "{{count}} chapter(s)",
+      "scenes": "{{count}} scene(s)"
     }
   },
   "foreshadow": {

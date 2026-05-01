@@ -1,10 +1,11 @@
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useCallback } from "react";
 import { useTranslation } from "react-i18next";
 import { useTreeStore } from "./treeStore";
 import { loadSceneContent } from "./api";
 import { prosemirrorToText } from "@/lib/prosemirror";
 import { generateSynopsisFromContent } from "@/features/chat/chatApi";
 import { toast } from "sonner";
+import { InlineSynopsisEditor } from "@/features/editor/InlineSynopsisEditor";
 
 interface SynopsisAreaProps {
   nodeId: string;
@@ -14,27 +15,9 @@ export function SynopsisArea({ nodeId }: SynopsisAreaProps) {
   const nodes = useTreeStore((s) => s.nodes);
   const updateSynopsis = useTreeStore((s) => s.updateSynopsis);
   const node = nodes.find((n) => n.id === nodeId);
-  const [text, setText] = useState(node?.synopsis ?? "");
   const [isGenerating, setIsGenerating] = useState(false);
   const [confirmOverwrite, setConfirmOverwrite] = useState(false);
-  const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const { t } = useTranslation();
-
-  // Sync external changes
-  useEffect(() => {
-    setText(node?.synopsis ?? "");
-  }, [node?.synopsis]);
-
-  const handleChange = useCallback(
-    (value: string) => {
-      setText(value);
-      if (saveTimer.current) clearTimeout(saveTimer.current);
-      saveTimer.current = setTimeout(() => {
-        updateSynopsis(nodeId, value).catch(() => {});
-      }, 1000);
-    },
-    [nodeId, updateSynopsis],
-  );
 
   const doGenerate = useCallback(async () => {
     if (!node) return;
@@ -49,7 +32,6 @@ export function SynopsisArea({ nodeId }: SynopsisAreaProps) {
       }
       const generated = await generateSynopsisFromContent(node.title, content);
       const trimmed = generated.trim();
-      setText(trimmed);
       await updateSynopsis(nodeId, trimmed);
       toast.success(t("tree.synopsis.generated"));
     } catch {
@@ -57,24 +39,22 @@ export function SynopsisArea({ nodeId }: SynopsisAreaProps) {
     } finally {
       setIsGenerating(false);
     }
-  }, [node, nodeId, updateSynopsis]);
+  }, [node, nodeId, updateSynopsis, t]);
 
   const handleGenerate = useCallback(async () => {
     if (!node) return;
-    // Check body content first, before asking about overwrite
     const rawContent = await loadSceneContent(nodeId);
     const content = prosemirrorToText(rawContent);
     if (!content?.trim()) {
       toast.warning(t("tree.synopsis.emptySceneWarning"));
       return;
     }
-    // Show inline confirmation if synopsis already exists
-    if (text.trim()) {
+    if (node.synopsis?.trim()) {
       setConfirmOverwrite(true);
       return;
     }
     await doGenerate();
-  }, [node, nodeId, text, doGenerate]);
+  }, [node, nodeId, doGenerate, t]);
 
   if (!node || node.nodeType !== "scene") return null;
 
@@ -118,12 +98,13 @@ export function SynopsisArea({ nodeId }: SynopsisAreaProps) {
         </div>
       )}
 
-      <textarea
-        value={text}
-        onChange={(e) => handleChange(e.target.value)}
-        placeholder="What happens in this scene?"
-        className="w-full resize-none rounded border border-border bg-background px-2 py-1.5 text-xs text-foreground placeholder:text-muted-foreground/60 focus:outline-none focus:ring-1 focus:ring-ring"
+      <InlineSynopsisEditor
+        nodeId={nodeId}
+        synopsis={node.synopsis}
+        alwaysEditing
         rows={3}
+        placeholder="What happens in this scene?"
+        textareaClassName="w-full resize-none rounded border border-border bg-background px-2 py-1.5 text-xs text-foreground placeholder:text-muted-foreground/60 focus:outline-none focus:ring-1 focus:ring-ring"
       />
     </div>
   );

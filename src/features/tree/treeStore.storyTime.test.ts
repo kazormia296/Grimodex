@@ -40,7 +40,10 @@ const NODE_DEFAULTS = {
   povCharacterId: null,
   locationId: null,
   createdAt: "2024-01-01T00:00:00Z",
-} as const;
+
+  charCount: 0,
+  unplacedBeatPreview: null,
+  updatedAt: "2024-01-01T00:00:00Z",} as const;
 
 const SCENE = {
   id: "scene-1",

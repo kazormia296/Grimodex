@@ -45,6 +45,7 @@ import { TimelinePanel } from "@/features/timeline/TimelinePanel";
 import { MapPanel } from "@/features/map/MapPanel";
 import { LinterPanel } from "@/features/lint/LinterPanel";
 import { ForeshadowPanel } from "@/features/foreshadow/ForeshadowPanel";
+import { GridPanel } from "@/features/grid/GridPanel";
 import { StatusBarIndicator } from "@/features/lint/StatusBarIndicator";
 import { GlobalSearchDialog } from "@/features/search/GlobalSearchDialog";
 import { useState } from "react";
@@ -115,6 +116,10 @@ function LinterContent(_props: IDockviewPanelProps) {
 
 function ForeshadowContent(_props: IDockviewPanelProps) {
   return <ForeshadowPanel />;
+}
+
+function GridContent(_props: IDockviewPanelProps) {
+  return <GridPanel />;
 }
 
 /* ── Default layout builder (delegates to builtin preset) ── */
@@ -301,6 +306,7 @@ function EditorScreen() {
       map: MapContent,
       linter: LinterContent,
       foreshadow: ForeshadowContent,
+      grid: GridContent,
     }),
     [],
   );
