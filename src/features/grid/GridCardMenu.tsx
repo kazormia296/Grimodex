@@ -7,7 +7,6 @@ import {
   PanelLeft,
   PlusCircle,
 } from "lucide-react";
-import { useTreeStore } from "@/features/tree/treeStore";
 import { useTabStore } from "@/features/editor/tabStore";
 import { useLayoutStore } from "@/features/layout/layoutStore";
 
@@ -16,6 +15,7 @@ interface Props {
   onClose: () => void;
   onRename: () => void;
   onAddBeat: () => void;
+  onDelete: () => void;
   anchorRef: React.RefObject<HTMLElement | null>;
 }
 
@@ -24,11 +24,11 @@ export function GridCardMenu({
   onClose,
   onRename,
   onAddBeat,
+  onDelete,
   anchorRef,
 }: Props) {
   const { t } = useTranslation();
   const menuRef = useRef<HTMLDivElement>(null);
-  const deleteNode = useTreeStore((s) => s.deleteNode);
 
   useEffect(() => {
     function handleClick(e: MouseEvent) {
@@ -60,15 +60,6 @@ export function GridCardMenu({
 
   function showInScenes() {
     useLayoutStore.getState().showPanel("scenes");
-    onClose();
-  }
-
-  async function handleDelete() {
-    if (
-      confirm(t("grid.card.menu.deleteConfirm", "このシーンを削除しますか？"))
-    ) {
-      await deleteNode(nodeId);
-    }
     onClose();
   }
 
@@ -114,7 +105,10 @@ export function GridCardMenu({
       <hr className="my-1 border-border" />
       <button
         className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-destructive hover:bg-accent"
-        onClick={() => void handleDelete()}
+        onClick={() => {
+          onDelete();
+          onClose();
+        }}
       >
         <Trash2 className="h-3.5 w-3.5" />
         {t("grid.card.menu.delete", "削除")}

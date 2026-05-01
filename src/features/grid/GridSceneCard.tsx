@@ -1,4 +1,5 @@
 import { useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { useDraggable, useDroppable } from "@dnd-kit/core";
 import { useTranslation } from "react-i18next";
 import { useTabStore } from "@/features/editor/tabStore";
@@ -34,11 +35,22 @@ export function GridSceneCard({
   const [isEditing, setIsEditing] = useState(false);
   const [addingBeat, setAddingBeat] = useState(false);
   const [beatDraft, setBeatDraft] = useState("");
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const menuBtnRef = useRef<HTMLButtonElement>(null);
 
   const liveCharCount = useTreeStore(
     (s) => s.charCounts[scene.id] ?? scene.charCount ?? 0,
   );
+  const deleteNode = useTreeStore((s) => s.deleteNode);
+
+  function requestDelete() {
+    const needsConfirm = liveCharCount > 0 || !!scene.synopsis;
+    if (needsConfirm) {
+      setShowDeleteConfirm(true);
+    } else {
+      void deleteNode(scene.id);
+    }
+  }
 
   const {
     attributes,
@@ -180,11 +192,50 @@ export function GridSceneCard({
                 setAddingBeat(true);
                 setBeatDraft("");
               }}
+              onDelete={requestDelete}
               anchorRef={menuBtnRef}
             />
           </div>
         )}
       </div>
+
+      {showDeleteConfirm &&
+        createPortal(
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80">
+            <div className="rounded-lg border border-border bg-popover p-4 shadow-xl w-72">
+              <p className="text-sm font-medium mb-1">
+                {t("scenes.deleteConfirmTitle", "削除の確認")}
+              </p>
+              <p className="text-xs text-muted-foreground mb-4">
+                {t(
+                  "scenes.deleteConfirmBody",
+                  "{{count}}件のシーンに本文またはsynopsisがあります。削除してもよいですか？",
+                  { count: 1 },
+                )}
+              </p>
+              <div className="flex gap-2 justify-end">
+                <button
+                  type="button"
+                  className="rounded px-3 py-1 text-xs border border-border hover:bg-accent"
+                  onClick={() => setShowDeleteConfirm(false)}
+                >
+                  {t("common.cancel", "キャンセル")}
+                </button>
+                <button
+                  type="button"
+                  className="rounded px-3 py-1 text-xs bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                  onClick={() => {
+                    setShowDeleteConfirm(false);
+                    void deleteNode(scene.id);
+                  }}
+                >
+                  {t("common.deleteConfirm", "削除する")}
+                </button>
+              </div>
+            </div>
+          </div>,
+          document.body,
+        )}
     </div>
   );
 }
