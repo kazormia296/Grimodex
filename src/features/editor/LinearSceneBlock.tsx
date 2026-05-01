@@ -22,6 +22,8 @@ import { useLinearEditorStore } from "./linearEditorStore";
 import { useChatStore } from "@/features/chat/chatStore";
 import { extractBeatMentions } from "@/features/editor/beat/extractBeatMentions";
 import { upsertSceneBeatMentions } from "@/features/editor/beat/mentionApi";
+import { upsertSceneBodyMentions } from "@/features/editor/beat/bodyMentionApi";
+import { useCodexStore } from "@/features/codex/codexStore";
 
 interface LinearSceneBlockProps {
   sceneId: string;
@@ -95,6 +97,19 @@ function MountedSceneBlock({
         );
       },
     );
+    setTimeout(() => {
+      const allEntries = useCodexStore.getState().entries;
+      if (allEntries.length > 0) {
+        const docJsonStr = JSON.stringify(ed.getJSON());
+        upsertSceneBodyMentions(sceneId, docJsonStr, allEntries).catch((e) => {
+          debugLog.error(
+            "LinearSceneBlock",
+            "upsertSceneBodyMentions failed",
+            errorDetail(e),
+          );
+        });
+      }
+    }, 0);
     useTreeStore
       .getState()
       .refreshAiRatio(sceneId)
