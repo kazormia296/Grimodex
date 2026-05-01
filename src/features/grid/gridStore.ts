@@ -32,6 +32,8 @@ interface GridState {
   display: GridDisplaySettings;
   filter: GridFilterSettings;
   searchQuery: string;
+  /** Folder IDs whose inline children are currently expanded (session-only). */
+  expandedFolderIds: Set<string>;
 
   loadForProject: (projectId: string) => Promise<void>;
   setContainerId: (projectId: string, id: string | null) => Promise<void>;
@@ -39,6 +41,7 @@ interface GridState {
   setFilter: (updates: Partial<GridFilterSettings>) => void;
   setSearchQuery: (q: string) => void;
   clearFilter: () => void;
+  toggleFolderExpanded: (folderId: string) => void;
   loadFromSettings: (settings: GlobalSettings) => void;
 }
 
@@ -61,6 +64,7 @@ export const useGridStore = create<GridState>((set, _get) => ({
   display: { ...DEFAULT_DISPLAY },
   filter: { ...DEFAULT_FILTER },
   searchQuery: "",
+  expandedFolderIds: new Set<string>(),
 
   async loadForProject(projectId) {
     const stored = await loadContainerId(projectId);
@@ -103,6 +107,15 @@ export const useGridStore = create<GridState>((set, _get) => ({
 
   clearFilter() {
     set({ filter: { ...DEFAULT_FILTER } });
+  },
+
+  toggleFolderExpanded(folderId) {
+    set((s) => {
+      const next = new Set(s.expandedFolderIds);
+      if (next.has(folderId)) next.delete(folderId);
+      else next.add(folderId);
+      return { expandedFolderIds: next };
+    });
   },
 
   loadFromSettings(settings) {

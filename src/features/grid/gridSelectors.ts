@@ -1,6 +1,7 @@
 import { useMemo } from "react";
 import { useTreeStore, type TreeNodeData } from "@/features/tree/treeStore";
 import { cmpKeys } from "@/features/tree/fractionalIndex";
+import { useGridStore } from "./gridStore";
 
 export interface GridDescendant {
   node: TreeNodeData;
@@ -41,6 +42,7 @@ function flattenSubtree(
   parentId: string,
   nodes: TreeNodeData[],
   depth: number,
+  expandedFolderIds: Set<string>,
   acc: GridDescendant[],
 ): void {
   const children = nodes
@@ -48,8 +50,10 @@ function flattenSubtree(
     .sort(sortByOrder);
   for (const child of children) {
     acc.push({ node: child, depth });
-    if (child.nodeType === "folder") {
-      flattenSubtree(child.id, nodes, depth + 1, acc);
+    // Recurse into nested folders only when the user has expanded them.
+    // Top-level chapter folders are entered unconditionally by the caller.
+    if (child.nodeType === "folder" && expandedFolderIds.has(child.id)) {
+      flattenSubtree(child.id, nodes, depth + 1, expandedFolderIds, acc);
     }
   }
 }
@@ -58,6 +62,7 @@ export function useGridDerivedData(
   containerId: string | null,
 ): GridDerivedData {
   const nodes = useTreeStore((s) => s.nodes);
+  const expandedFolderIds = useGridStore((s) => s.expandedFolderIds);
 
   return useMemo(() => {
     const containerChildren = nodes
@@ -71,15 +76,23 @@ export function useGridDerivedData(
 
     const chapters: GridChapterData[] = chapterFolders.map((folder) => {
       const descendants: GridDescendant[] = [];
-      flattenSubtree(folder.id, nodes, 0, descendants);
+      flattenSubtree(folder.id, nodes, 0, expandedFolderIds, descendants);
       return { folder, descendants };
     });
 
+    // Count ALL scene descendants for status (not just expanded ones), so the
+    // total stays meaningful regardless of expand state.
+    const countAllSceneDescendants = (folderId: string): number => {
+      let n = 0;
+      for (const child of nodes.filter((c) => c.parentId === folderId)) {
+        if (child.nodeType === "scene") n++;
+        else n += countAllSceneDescendants(child.id);
+      }
+      return n;
+    };
     const totalScenes =
-      chapters.reduce(
-        (acc, ch) =>
-          acc +
-          ch.descendants.filter((d) => d.node.nodeType === "scene").length,
+      chapterFolders.reduce(
+        (acc, ch) => acc + countAllSceneDescendants(ch.id),
         0,
       ) + looseScenes.length;
 
@@ -107,7 +120,7 @@ export function useGridDerivedData(
       totalScenes,
       totalChapters: chapters.length,
     };
-  }, [nodes, containerId]);
+  }, [nodes, containerId, expandedFolderIds]);
 }
 
 /** Flat ordered list of all folder nodes for the container selector dropdown */

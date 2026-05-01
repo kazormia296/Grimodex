@@ -2,6 +2,7 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import { renderHook } from "@testing-library/react";
 import { useTreeStore } from "@/features/tree/treeStore";
+import { useGridStore } from "../gridStore";
 import { useGridDerivedData } from "../gridSelectors";
 import { makeNodeData } from "@/test-utils/nodeFixture";
 
@@ -9,9 +10,20 @@ function resetTree(...nodes: ReturnType<typeof makeNodeData>[]) {
   useTreeStore.setState((s) => ({ ...s, nodes }));
 }
 
+function setExpanded(...ids: string[]) {
+  useGridStore.setState((s) => ({
+    ...s,
+    expandedFolderIds: new Set<string>(ids),
+  }));
+}
+
 describe("useGridDerivedData", () => {
   beforeEach(() => {
     useTreeStore.setState((s) => ({ ...s, nodes: [] }));
+    useGridStore.setState((s) => ({
+      ...s,
+      expandedFolderIds: new Set<string>(),
+    }));
   });
 
   it("returns empty when no nodes", () => {
@@ -208,7 +220,43 @@ describe("useGridDerivedData", () => {
     ]);
   });
 
-  it("flattens nested folder descendants depth-first with depth metadata", () => {
+  it("collapses nested folders by default; only direct children of chapter are listed", () => {
+    const ch1 = makeNodeData({
+      id: "ch1",
+      nodeType: "folder",
+      parentId: null,
+      sortOrder: "a1",
+    });
+    const s1 = makeNodeData({
+      id: "s1",
+      nodeType: "scene",
+      parentId: "ch1",
+      sortOrder: "a1",
+    });
+    const subA = makeNodeData({
+      id: "subA",
+      nodeType: "folder",
+      parentId: "ch1",
+      sortOrder: "a2",
+    });
+    const s2 = makeNodeData({
+      id: "s2",
+      nodeType: "scene",
+      parentId: "subA",
+      sortOrder: "a1",
+    });
+    resetTree(ch1, s1, subA, s2);
+
+    const { result } = renderHook(() => useGridDerivedData(null));
+    // subA is collapsed → its child s2 is not included
+    expect(
+      result.current.chapters[0].descendants.map((d) => d.node.id),
+    ).toEqual(["s1", "subA"]);
+    // totalScenes counts ALL scene descendants regardless of expand state
+    expect(result.current.totalScenes).toBe(2);
+  });
+
+  it("expands nested folders when their IDs are in expandedFolderIds", () => {
     // ch1
     //   ├ s1 (depth 0)
     //   ├ subA (depth 0)
@@ -259,6 +307,7 @@ describe("useGridDerivedData", () => {
       sortOrder: "a3",
     });
     resetTree(ch1, s1, subA, s2, subB, s3, s4);
+    setExpanded("subA", "subB");
 
     const { result } = renderHook(() => useGridDerivedData(null));
     expect(result.current.chapters).toHaveLength(1);
