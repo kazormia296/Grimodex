@@ -31,6 +31,7 @@ interface Props {
   visibility: Map<string, CardVisibility>;
   dropIndicator?: DropIndicator | null;
   columnDropIndicator?: ColumnDropIndicator | null;
+  onRequestDeleteConfirm?: (sceneId: string) => void;
 }
 
 export function GridColumn({
@@ -41,6 +42,7 @@ export function GridColumn({
   visibility,
   dropIndicator,
   columnDropIndicator,
+  onRequestDeleteConfirm,
 }: Props) {
   const { t } = useTranslation();
   const [editingTitle, setEditingTitle] = useState(false);
@@ -217,6 +219,7 @@ export function GridColumn({
                       display={display}
                       dimmed={vis !== undefined && !vis.matchesSearch}
                       dropIndicator={dropIndicator}
+                      onRequestDeleteConfirm={onRequestDeleteConfirm}
                     />
                   </div>
                 );

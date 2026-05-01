@@ -28,6 +28,7 @@ interface Props {
   dropIndicator?: DropIndicator | null;
   /** Override default "未分類シーン" header (e.g. when container is a folder with no chapter children) */
   title?: string;
+  onRequestDeleteConfirm?: (sceneId: string) => void;
 }
 
 export function GridLooseColumn({
@@ -38,6 +39,7 @@ export function GridLooseColumn({
   visibility,
   dropIndicator,
   title,
+  onRequestDeleteConfirm,
 }: Props) {
   const { t } = useTranslation();
   const [menuOpen, setMenuOpen] = useState(false);
@@ -196,6 +198,7 @@ export function GridLooseColumn({
                   display={display}
                   dimmed={vis !== undefined && !vis.matchesSearch}
                   dropIndicator={dropIndicator}
+                  onRequestDeleteConfirm={onRequestDeleteConfirm}
                 />
               );
             })}

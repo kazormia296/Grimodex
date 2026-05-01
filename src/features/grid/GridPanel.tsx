@@ -60,6 +60,10 @@ export function GridPanel() {
   );
   const [columnDropIndicator, setColumnDropIndicator] =
     useState<ColumnDropIndicator | null>(null);
+  const [deleteConfirmSceneId, setDeleteConfirmSceneId] = useState<
+    string | null
+  >(null);
+  const deleteNode = useTreeStore((s) => s.deleteNode);
   const pointerYRef = useRef(0);
   const pointerXRef = useRef(0);
 
@@ -321,7 +325,7 @@ export function GridPanel() {
       onDragOver={handleDragOver}
       onDragEnd={handleDragEnd}
     >
-      <div className="flex h-full flex-col overflow-hidden">
+      <div className="relative flex h-full flex-col overflow-hidden">
         <GridHeader
           containerId={containerId}
           projectId={projectId}
@@ -350,6 +354,7 @@ export function GridPanel() {
                   visibility={visibility}
                   dropIndicator={dropIndicator}
                   columnDropIndicator={columnDropIndicator}
+                  onRequestDeleteConfirm={setDeleteConfirmSceneId}
                 />
               );
             }
@@ -371,6 +376,7 @@ export function GridPanel() {
                       undefined)
                     : undefined
                 }
+                onRequestDeleteConfirm={setDeleteConfirmSceneId}
               />
             );
           })}
@@ -390,6 +396,43 @@ export function GridPanel() {
           totalScenes={totalScenes}
           totalCharCount={totalCharCount}
         />
+
+        {deleteConfirmSceneId && (
+          <div className="absolute inset-0 z-50 flex items-center justify-center bg-background/80">
+            <div className="rounded-lg border border-border bg-popover p-4 shadow-xl w-72">
+              <p className="text-sm font-medium mb-1">
+                {t("scenes.deleteConfirmTitle", "削除の確認")}
+              </p>
+              <p className="text-xs text-muted-foreground mb-4">
+                {t(
+                  "scenes.deleteConfirmBody",
+                  "{{count}}件のシーンに本文またはsynopsisがあります。削除してもよいですか？",
+                  { count: 1 },
+                )}
+              </p>
+              <div className="flex gap-2 justify-end">
+                <button
+                  type="button"
+                  className="rounded px-3 py-1 text-xs border border-border hover:bg-accent"
+                  onClick={() => setDeleteConfirmSceneId(null)}
+                >
+                  {t("common.cancel", "キャンセル")}
+                </button>
+                <button
+                  type="button"
+                  className="rounded px-3 py-1 text-xs bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                  onClick={() => {
+                    const id = deleteConfirmSceneId;
+                    setDeleteConfirmSceneId(null);
+                    void deleteNode(id);
+                  }}
+                >
+                  {t("common.deleteConfirm", "削除する")}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
 
       <DragOverlay dropAnimation={null}>
