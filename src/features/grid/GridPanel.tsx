@@ -141,7 +141,13 @@ export function GridPanel() {
       const folderParentMap: Record<string, string | null> = {};
       const orderedFolders: Array<{ id: string; parentId: string | null }> = [];
       const sceneParentMap: Record<string, string | null> = {};
-      for (const n of nodes) {
+      // CRITICAL: orderedFolders must be sorted by sortOrder (visual order),
+      // not nodes-array insertion order. isAdjacentColumnNoOp and predecessor
+      // calculations both rely on indexOf reflecting visual adjacency.
+      const sortedNodes = [...nodes].sort((a, b) =>
+        cmpKeys(a.sortOrder, b.sortOrder),
+      );
+      for (const n of sortedNodes) {
         if (n.nodeType === "folder") {
           folderParentMap[n.id] = n.parentId;
           orderedFolders.push({ id: n.id, parentId: n.parentId });
@@ -272,7 +278,13 @@ export function GridPanel() {
       const folderParentMap: Record<string, string | null> = {};
       const orderedFolders: Array<{ id: string; parentId: string | null }> = [];
       const sceneParentMap: Record<string, string | null> = {};
-      for (const n of nodes) {
+      // CRITICAL: orderedFolders must be sorted by sortOrder (visual order),
+      // not nodes-array insertion order. isAdjacentColumnNoOp and predecessor
+      // calculations both rely on indexOf reflecting visual adjacency.
+      const sortedNodes = [...nodes].sort((a, b) =>
+        cmpKeys(a.sortOrder, b.sortOrder),
+      );
+      for (const n of sortedNodes) {
         if (n.nodeType === "folder") {
           folderParentMap[n.id] = n.parentId;
           orderedFolders.push({ id: n.id, parentId: n.parentId });
