@@ -115,7 +115,6 @@ export function GridColumn({
   const isColDropNest =
     columnDropIndicator?.targetId === folder.id &&
     columnDropIndicator.position === "nest";
-  const COL_GAP = display.compactCards ? 176 : 224; // w-44 = 11rem = 176px / w-56 = 14rem = 224px
 
   return (
     <div
@@ -123,15 +122,27 @@ export function GridColumn({
         setDragRef(node);
         setSlotRef(node);
       }}
-      style={{
-        // Use margin instead of padding so the wrapper's bounding box stays
-        // stable during drag-over — padding-right would grow wrapper.width and
-        // shift the "after" zone past the cursor, causing mode oscillation.
-        marginLeft: isColDropBefore ? COL_GAP : 0,
-        marginRight: isColDropAfter ? COL_GAP : 0,
-        transition: "margin 120ms ease-out",
-      }}
+      className="relative"
     >
+      {/*
+        Drop indicator bars: absolutely positioned in the gap between columns
+        so the wrapper's bounding box stays unchanged during drag-over. Using
+        margin or padding here shifts the wrapper, knocking the cursor off the
+        droppable rect and causing over to oscillate (which has produced bogus
+        drop targets in the past).
+      */}
+      {isColDropBefore && (
+        <div
+          aria-hidden
+          className="pointer-events-none absolute -left-2 top-0 bottom-0 z-20 w-1.5 rounded-full bg-primary"
+        />
+      )}
+      {isColDropAfter && (
+        <div
+          aria-hidden
+          className="pointer-events-none absolute -right-2 top-0 bottom-0 z-20 w-1.5 rounded-full bg-primary"
+        />
+      )}
       <div
         className={cn(
           `flex flex-col h-full ${colWidth} shrink-0 rounded-lg border bg-muted/30`,
