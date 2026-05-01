@@ -15,6 +15,7 @@ import {
 } from "./gridDndUtils";
 import type { DropIndicator, ColumnDropIndicator } from "./gridDndUtils";
 import type { GridDisplaySettings } from "./gridStore";
+import type { GridDescendant } from "./gridSelectors";
 
 interface CardVisibility {
   matchesSearch: boolean;
@@ -23,8 +24,8 @@ interface CardVisibility {
 
 interface Props {
   folder: TreeNodeData;
-  /** Mixed children of this chapter: scenes + nested sub-folders, sorted by sortOrder */
-  items: TreeNodeData[];
+  /** All descendants (scenes + nested folders) in display order, with depth */
+  descendants: GridDescendant[];
   display: GridDisplaySettings;
   isDragOverlay?: boolean;
   visibility: Map<string, CardVisibility>;
@@ -34,7 +35,7 @@ interface Props {
 
 export function GridColumn({
   folder,
-  items,
+  descendants,
   display,
   isDragOverlay,
   visibility,
@@ -96,10 +97,13 @@ export function GridColumn({
   const shouldAutoEdit = pendingRename === folder.id;
   const colWidth = display.compactCards ? "w-44" : "w-56";
 
-  const sceneItems = items.filter((n) => n.nodeType === "scene");
+  const sceneItems = descendants
+    .filter((d) => d.node.nodeType === "scene")
+    .map((d) => d.node);
   const visibleScenes = sceneItems.filter(
     (s) => visibility.get(s.id)?.passesFilter !== false,
   );
+  const INDENT_PX = 12;
 
   // Column drop indicator (left/right gap when this column is the drop target)
   const isColDropBefore =
@@ -176,9 +180,9 @@ export function GridColumn({
           </span>
         </div>
 
-        {/* Items: scenes (cards) + nested folders (folder cards) */}
+        {/* Items: scenes (cards) + nested folders (folder cards), recursively flattened */}
         <div className="flex flex-col gap-2 p-2 flex-1">
-          {items.length === 0 ? (
+          {descendants.length === 0 ? (
             <div
               ref={setEmptyRef}
               className={cn(
@@ -191,26 +195,30 @@ export function GridColumn({
             </div>
           ) : (
             <>
-              {items.map((node) => {
+              {descendants.map(({ node, depth }) => {
+                const indentStyle =
+                  depth > 0 ? { paddingLeft: depth * INDENT_PX } : undefined;
                 if (node.nodeType === "folder") {
                   return (
-                    <GridFolderCard
-                      key={node.id}
-                      folder={node}
-                      compact={display.compactCards}
-                    />
+                    <div key={node.id} style={indentStyle}>
+                      <GridFolderCard
+                        folder={node}
+                        compact={display.compactCards}
+                      />
+                    </div>
                   );
                 }
                 const vis = visibility.get(node.id);
                 if (vis && !vis.passesFilter) return null;
                 return (
-                  <GridSceneCard
-                    key={node.id}
-                    scene={node}
-                    display={display}
-                    dimmed={vis !== undefined && !vis.matchesSearch}
-                    dropIndicator={dropIndicator}
-                  />
+                  <div key={node.id} style={indentStyle}>
+                    <GridSceneCard
+                      scene={node}
+                      display={display}
+                      dimmed={vis !== undefined && !vis.matchesSearch}
+                      dropIndicator={dropIndicator}
+                    />
+                  </div>
                 );
               })}
               <div

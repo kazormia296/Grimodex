@@ -147,7 +147,9 @@ export function GridPanel() {
       const sceneId = activeIdStr.replace(/^scene-/, "");
       const orderedScenes = [
         ...chapters.flatMap((ch) =>
-          ch.children.map((n) => ({ id: n.id, parentId: n.parentId })),
+          ch.descendants
+            .filter((d) => d.node.nodeType === "scene")
+            .map((d) => ({ id: d.node.id, parentId: d.node.parentId })),
         ),
         ...looseScenes.map((s) => ({ id: s.id, parentId: s.parentId })),
       ];
@@ -202,11 +204,13 @@ export function GridPanel() {
       null)
     : null;
 
-  // Compute visibility for all displayed scenes (excluding nested folders shown as folder cards)
+  // Compute visibility for all displayed scenes (recursively including nested-folder scenes)
   const allDisplayedScenes = useMemo(
     () => [
       ...chapters.flatMap((ch) =>
-        ch.children.filter((n) => n.nodeType === "scene"),
+        ch.descendants
+          .filter((d) => d.node.nodeType === "scene")
+          .map((d) => d.node),
       ),
       ...looseScenes,
     ],
@@ -258,11 +262,11 @@ export function GridPanel() {
         )}
 
         <div className="flex flex-1 gap-3 overflow-x-auto overflow-y-hidden p-4">
-          {chapters.map(({ folder, children: items }) => (
+          {chapters.map(({ folder, descendants }) => (
             <GridColumn
               key={folder.id}
               folder={folder}
-              items={items}
+              descendants={descendants}
               display={display}
               visibility={visibility}
               dropIndicator={dropIndicator}

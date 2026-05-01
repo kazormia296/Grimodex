@@ -2,10 +2,16 @@ import { useMemo } from "react";
 import { useTreeStore, type TreeNodeData } from "@/features/tree/treeStore";
 import { cmpKeys } from "@/features/tree/fractionalIndex";
 
+export interface GridDescendant {
+  node: TreeNodeData;
+  /** 0 = direct child of the chapter folder; +1 per nesting level */
+  depth: number;
+}
+
 export interface GridChapterData {
   folder: TreeNodeData;
-  /** Mixed children of the chapter folder: scenes and nested sub-folders, sorted by sortOrder */
-  children: TreeNodeData[];
+  /** All descendants (scenes + folders), depth-first in sortOrder, with depth metadata. */
+  descendants: GridDescendant[];
 }
 
 export interface GridDerivedData {
@@ -17,6 +23,23 @@ export interface GridDerivedData {
 
 function sortByOrder(a: TreeNodeData, b: TreeNodeData) {
   return cmpKeys(a.sortOrder, b.sortOrder);
+}
+
+function flattenSubtree(
+  parentId: string,
+  nodes: TreeNodeData[],
+  depth: number,
+  acc: GridDescendant[],
+): void {
+  const children = nodes
+    .filter((n) => n.parentId === parentId)
+    .sort(sortByOrder);
+  for (const child of children) {
+    acc.push({ node: child, depth });
+    if (child.nodeType === "folder") {
+      flattenSubtree(child.id, nodes, depth + 1, acc);
+    }
+  }
 }
 
 export function useGridDerivedData(
@@ -34,15 +57,17 @@ export function useGridDerivedData(
     );
     const looseScenes = containerChildren.filter((n) => n.nodeType === "scene");
 
-    const chapters: GridChapterData[] = chapterFolders.map((folder) => ({
-      folder,
-      children: nodes.filter((n) => n.parentId === folder.id).sort(sortByOrder),
-    }));
+    const chapters: GridChapterData[] = chapterFolders.map((folder) => {
+      const descendants: GridDescendant[] = [];
+      flattenSubtree(folder.id, nodes, 0, descendants);
+      return { folder, descendants };
+    });
 
     const totalScenes =
       chapters.reduce(
         (acc, ch) =>
-          acc + ch.children.filter((n) => n.nodeType === "scene").length,
+          acc +
+          ch.descendants.filter((d) => d.node.nodeType === "scene").length,
         0,
       ) + looseScenes.length;
 

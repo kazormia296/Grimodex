@@ -65,11 +65,11 @@ describe("useGridDerivedData", () => {
     expect(result.current.chapters).toHaveLength(2);
     expect(result.current.chapters[0].folder.id).toBe("ch1");
     expect(
-      result.current.chapters[0].children.map((s: { id: string }) => s.id),
+      result.current.chapters[0].descendants.map((d) => d.node.id),
     ).toEqual(["s1", "s2"]);
     expect(result.current.chapters[1].folder.id).toBe("ch2");
     expect(
-      result.current.chapters[1].children.map((s: { id: string }) => s.id),
+      result.current.chapters[1].descendants.map((d) => d.node.id),
     ).toEqual(["s3"]);
     expect(result.current.looseScenes).toEqual([]);
     expect(result.current.totalScenes).toBe(3);
@@ -148,7 +148,74 @@ describe("useGridDerivedData", () => {
     expect(result.current.chapters[0].folder.id).toBe("ch2");
     expect(result.current.chapters[1].folder.id).toBe("ch1");
     expect(
-      result.current.chapters[1].children.map((s: { id: string }) => s.id),
+      result.current.chapters[1].descendants.map((d) => d.node.id),
     ).toEqual(["s2", "s1"]);
+  });
+
+  it("flattens nested folder descendants depth-first with depth metadata", () => {
+    // ch1
+    //   ├ s1 (depth 0)
+    //   ├ subA (depth 0)
+    //   │   ├ s2 (depth 1)
+    //   │   └ subB (depth 1)
+    //   │       └ s3 (depth 2)
+    //   └ s4 (depth 0)
+    const ch1 = makeNodeData({
+      id: "ch1",
+      nodeType: "folder",
+      parentId: null,
+      sortOrder: "a1",
+    });
+    const s1 = makeNodeData({
+      id: "s1",
+      nodeType: "scene",
+      parentId: "ch1",
+      sortOrder: "a1",
+    });
+    const subA = makeNodeData({
+      id: "subA",
+      nodeType: "folder",
+      parentId: "ch1",
+      sortOrder: "a2",
+    });
+    const s2 = makeNodeData({
+      id: "s2",
+      nodeType: "scene",
+      parentId: "subA",
+      sortOrder: "a1",
+    });
+    const subB = makeNodeData({
+      id: "subB",
+      nodeType: "folder",
+      parentId: "subA",
+      sortOrder: "a2",
+    });
+    const s3 = makeNodeData({
+      id: "s3",
+      nodeType: "scene",
+      parentId: "subB",
+      sortOrder: "a1",
+    });
+    const s4 = makeNodeData({
+      id: "s4",
+      nodeType: "scene",
+      parentId: "ch1",
+      sortOrder: "a3",
+    });
+    resetTree(ch1, s1, subA, s2, subB, s3, s4);
+
+    const { result } = renderHook(() => useGridDerivedData(null));
+    expect(result.current.chapters).toHaveLength(1);
+    const ds = result.current.chapters[0].descendants;
+    expect(ds.map((d) => [d.node.id, d.depth])).toEqual([
+      ["s1", 0],
+      ["subA", 0],
+      ["s2", 1],
+      ["subB", 1],
+      ["s3", 2],
+      ["s4", 0],
+    ]);
+    // totalScenes counts all scene descendants recursively
+    expect(result.current.totalScenes).toBe(4);
   });
 });
