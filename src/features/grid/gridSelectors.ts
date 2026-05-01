@@ -104,11 +104,20 @@ export function useGridDerivedData(
       data: ch,
       sortOrder: ch.folder.sortOrder,
     }));
-    if (looseScenes.length > 0) {
+    // Show the loose column when:
+    //   - there are direct scenes to display, OR
+    //   - the container is a folder with no chapter sub-folders. In that case
+    //     the loose column doubles as the "entered folder" column itself, so
+    //     an empty folder still appears as one empty column rather than a
+    //     blank panel (mirrors how the folder shows up from the outer view).
+    const shouldShowLooseColumn =
+      looseScenes.length > 0 ||
+      (containerId !== null && chapterFolders.length === 0);
+    if (shouldShowLooseColumn) {
       orderedColumns.push({
         kind: "loose" as const,
         scenes: looseScenes,
-        sortOrder: looseScenes[0].sortOrder,
+        sortOrder: looseScenes[0]?.sortOrder ?? "",
       });
     }
     orderedColumns.sort((a, b) => cmpKeys(a.sortOrder, b.sortOrder));
