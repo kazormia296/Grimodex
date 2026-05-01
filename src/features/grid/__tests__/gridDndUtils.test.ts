@@ -8,6 +8,7 @@ import {
   columnSlotId,
   columnEndId,
   columnEmptyId,
+  columnNestId,
   sceneDraggableId,
   columnDraggableId,
 } from "../gridDndUtils";
@@ -200,6 +201,7 @@ describe("computeColumnDropTarget", () => {
         folderParentMap,
         orderedFolders,
         sceneParentMap,
+        null,
       ),
     ).toBeNull();
   });
@@ -214,6 +216,7 @@ describe("computeColumnDropTarget", () => {
         folderParentMap,
         orderedFolders,
         sceneParentMap,
+        null,
       ),
     ).toBeNull();
   });
@@ -222,11 +225,12 @@ describe("computeColumnDropTarget", () => {
     const result = computeColumnDropTarget(
       "ch1",
       columnSlotId("ch3"),
-      150, // right half (mid is 100)
+      150, // right zone (>70%)
       rect,
       folderParentMap,
       orderedFolders,
       sceneParentMap,
+      null,
     );
     expect(result).toEqual({ targetParentId: "root", afterId: "ch3" });
   });
@@ -236,11 +240,12 @@ describe("computeColumnDropTarget", () => {
     const result = computeColumnDropTarget(
       "ch3",
       columnSlotId("ch2"),
-      50, // left half (mid is 100)
+      50, // left zone (<30%)
       rect,
       folderParentMap,
       orderedFolders,
       sceneParentMap,
+      null,
     );
     expect(result).toEqual({ targetParentId: "root", afterId: "ch1" });
   });
@@ -250,11 +255,12 @@ describe("computeColumnDropTarget", () => {
     const result = computeColumnDropTarget(
       "ch3",
       columnSlotId("ch1"),
-      50, // left half
+      50, // left zone
       rect,
       folderParentMap,
       orderedFolders,
       sceneParentMap,
+      null,
     );
     expect(result).toEqual({ targetParentId: "root", afterId: null });
   });
@@ -264,41 +270,44 @@ describe("computeColumnDropTarget", () => {
     const result = computeColumnDropTarget(
       "ch1",
       "scene-drop-s1",
-      150, // right half
+      150, // right zone
       rect,
       folderParentMap,
       orderedFolders,
       { s1: "ch3" },
+      null,
     );
     expect(result).toEqual({ targetParentId: "root", afterId: "ch3" });
   });
 
   it("flips no-op side to the meaningful side when hovering an adjacent column (right→left)", () => {
-    // ch1 hovering ch2's left half = "before ch2" = no-op (ch1 is already there).
+    // ch1 hovering ch2's left zone = "before ch2" = no-op (ch1 is already there).
     // Should flip to "after ch2" so the cursor anywhere over ch2 produces a real move.
     const result = computeColumnDropTarget(
       "ch1",
       columnSlotId("ch2"),
-      50, // left half (would be "before ch2")
+      50, // left zone (would be "before ch2")
       rect,
       folderParentMap,
       orderedFolders,
       sceneParentMap,
+      null,
     );
     expect(result).toEqual({ targetParentId: "root", afterId: "ch2" });
   });
 
   it("flips no-op side to the meaningful side when hovering an adjacent column (left→right)", () => {
-    // ch2 hovering ch1's right half = "after ch1" = no-op.
+    // ch2 hovering ch1's right zone = "after ch1" = no-op.
     // Should flip to "before ch1" → afterId=null (prepend).
     const result = computeColumnDropTarget(
       "ch2",
       columnSlotId("ch1"),
-      150, // right half (would be "after ch1")
+      150, // right zone (would be "after ch1")
       rect,
       folderParentMap,
       orderedFolders,
       sceneParentMap,
+      null,
     );
     expect(result).toEqual({ targetParentId: "root", afterId: null });
   });
@@ -314,6 +323,153 @@ describe("computeColumnDropTarget", () => {
       folderParentMap,
       orderedFolders,
       sceneParentMap,
+      null,
+    );
+    expect(result).toBeNull();
+  });
+
+  it("nests via center zone (40% middle) of an unrelated target column", () => {
+    // ch1 (parent root) over ch3's center zone → nest INTO ch3
+    const result = computeColumnDropTarget(
+      "ch1",
+      columnSlotId("ch3"),
+      100, // center zone (30-70%)
+      rect,
+      folderParentMap,
+      orderedFolders,
+      sceneParentMap,
+      null,
+    );
+    expect(result).toEqual({ targetParentId: "ch3", afterId: undefined });
+  });
+
+  it("nests via explicit column-nest droppable (folder card)", () => {
+    const result = computeColumnDropTarget(
+      "ch1",
+      columnNestId("ch3"),
+      0,
+      rect,
+      folderParentMap,
+      orderedFolders,
+      sceneParentMap,
+      null,
+    );
+    expect(result).toEqual({ targetParentId: "ch3", afterId: undefined });
+  });
+
+  it("rejects nest onto self", () => {
+    const result = computeColumnDropTarget(
+      "ch1",
+      columnNestId("ch1"),
+      0,
+      rect,
+      folderParentMap,
+      orderedFolders,
+      sceneParentMap,
+      null,
+    );
+    expect(result).toBeNull();
+  });
+
+  it("rejects nest when active is already a direct child of target", () => {
+    // sub1's parent is ch1 already → nesting into ch1 is no-op
+    const fpm = { ...folderParentMap, sub1: "ch1" };
+    const ofs = [...orderedFolders, { id: "sub1", parentId: "ch1" }];
+    const result = computeColumnDropTarget(
+      "sub1",
+      columnNestId("ch1"),
+      0,
+      rect,
+      fpm,
+      ofs,
+      sceneParentMap,
+      null,
+    );
+    expect(result).toBeNull();
+  });
+
+  it("rejects center-zone nest when active is already a direct child of target column", () => {
+    const fpm = { ...folderParentMap, sub1: "ch1" };
+    const ofs = [...orderedFolders, { id: "sub1", parentId: "ch1" }];
+    const result = computeColumnDropTarget(
+      "sub1",
+      columnSlotId("ch1"),
+      100, // center zone
+      rect,
+      fpm,
+      ofs,
+      sceneParentMap,
+      null,
+    );
+    expect(result).toBeNull();
+  });
+
+  it("rejects loose-area drop (target === containerId) — does not bubble Part out of container", () => {
+    // Inside Part X (containerId="X"), looseScene.parentId === "X".
+    // Dragging ch1 over a loose scene resolves to "X" → must reject (not move ch1 to root).
+    const fpm = { ...folderParentMap, X: null, ch1: "X" };
+    const ofs = [
+      { id: "X", parentId: null },
+      { id: "ch1", parentId: "X" },
+    ];
+    const result = computeColumnDropTarget(
+      "ch1",
+      "scene-drop-loose1",
+      100,
+      rect,
+      fpm,
+      ofs,
+      { loose1: "X" },
+      "X", // containerId
+    );
+    expect(result).toBeNull();
+  });
+
+  it("rejects cycle: nesting an ancestor folder into its descendant via column-nest", () => {
+    // Tree: A → B → C. Dragging A onto C.nest would create A→…→C→A cycle.
+    const fpm: Record<string, string | null> = {
+      A: null,
+      B: "A",
+      C: "B",
+    };
+    const ofs = [
+      { id: "A", parentId: null },
+      { id: "B", parentId: "A" },
+      { id: "C", parentId: "B" },
+    ];
+    const result = computeColumnDropTarget(
+      "A",
+      columnNestId("C"),
+      0,
+      rect,
+      fpm,
+      ofs,
+      {},
+      null,
+    );
+    expect(result).toBeNull();
+  });
+
+  it("rejects cycle: nesting an ancestor folder into its descendant via center-zone", () => {
+    const fpm: Record<string, string | null> = {
+      A: null,
+      B: "A",
+      C: "B",
+    };
+    const ofs = [
+      { id: "A", parentId: null },
+      { id: "B", parentId: "A" },
+      { id: "C", parentId: "B" },
+    ];
+    const result = computeColumnDropTarget(
+      "A",
+      columnSlotId("C"),
+      100, // center zone
+      rect,
+      fpm,
+      ofs,
+      {},
+      null,
     );
     expect(result).toBeNull();
   });
@@ -337,4 +493,5 @@ describe("id helpers", () => {
   it("columnEndId", () => expect(columnEndId("f1")).toBe("column-end-f1"));
   it("columnEmptyId", () =>
     expect(columnEmptyId("loose")).toBe("column-empty-loose"));
+  it("columnNestId", () => expect(columnNestId("f1")).toBe("column-nest-f1"));
 });

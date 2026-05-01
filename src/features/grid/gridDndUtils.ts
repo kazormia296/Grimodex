@@ -13,10 +13,13 @@ export interface DropIndicator {
 }
 
 export interface ColumnDropIndicator {
-  /** The chapter column whose padding should open up */
+  /** The chapter column whose padding should open up, or the folder card to nest into */
   targetId: string;
-  /** Open gap to the left or right of the target column */
-  position: "before" | "after";
+  /**
+   * "before" / "after" — open gap to the left/right of the target column for sibling reorder.
+   * "nest" — drop INTO the target (becomes a child of targetId).
+   */
+  position: "before" | "after" | "nest";
 }
 
 /**
@@ -58,10 +61,10 @@ export interface DropTarget {
  * Parse the kind and raw id from a dnd-kit active/over id string.
  * Format: "scene-{id}", "column-{id}", "scene-drop-{id}", "column-slot-{id}",
  *         "column-end-{folderId}", "column-empty-{folderId}",
- *         "column-empty-loose"
+ *         "column-nest-{folderId}", "column-empty-loose"
  */
 export function parseId(id: string): {
-  kind: DragKind | "drop" | "slot" | "end" | "empty";
+  kind: DragKind | "drop" | "slot" | "end" | "empty" | "nest";
   rawId: string;
 } {
   if (id.startsWith("scene-drop-"))
@@ -72,6 +75,8 @@ export function parseId(id: string): {
     return { kind: "end", rawId: id.slice("column-end-".length) };
   if (id.startsWith("column-empty-"))
     return { kind: "empty", rawId: id.slice("column-empty-".length) };
+  if (id.startsWith("column-nest-"))
+    return { kind: "nest", rawId: id.slice("column-nest-".length) };
   if (id.startsWith("scene-"))
     return { kind: "scene", rawId: id.slice("scene-".length) };
   if (id.startsWith("column-"))
@@ -168,6 +173,25 @@ export function resolveEnclosingFolderId(
 }
 
 /**
+ * Returns true when `candidateId` is `ancestorId` itself or a descendant of it.
+ * Walks parent links via `folderParentMap`. Visited-set guards against existing cycles.
+ */
+function isSelfOrDescendant(
+  candidateId: string | null,
+  ancestorId: string,
+  folderParentMap: Record<string, string | null>,
+): boolean {
+  let cur: string | null = candidateId;
+  const visited = new Set<string>();
+  while (cur && !visited.has(cur)) {
+    if (cur === ancestorId) return true;
+    visited.add(cur);
+    cur = folderParentMap[cur] ?? null;
+  }
+  return false;
+}
+
+/**
  * Determine if moving `activeFolderId` to be `position` of `targetId` would be a no-op
  * (target is adjacent to active in the same parent).
  */
@@ -195,10 +219,12 @@ function isAdjacentColumnNoOp(
 }
 
 /**
- * Resolve the meaningful drop position for a column drag, accounting for the no-op
- * case when the cursor lands on the half that would put the column back where it is.
- * In that case, flip to the opposite half so the indicator/move stays meaningful
- * across the entire target column area.
+ * Resolve the meaningful drop position for a column drag using a 3-zone scheme:
+ *   left 30% → "before", right 30% → "after", center 40% → "nest".
+ *
+ * For "before"/"after", flip to the opposite side when the cursor lands on
+ * the half that would put the column back where it is (existing behavior).
+ * For "nest", returns null when active is already a direct child of target.
  */
 function resolveColumnDropPosition(
   activeFolderId: string,
@@ -207,9 +233,21 @@ function resolveColumnDropPosition(
   overRect: { left: number; width: number },
   folderParentMap: Record<string, string | null>,
   orderedFolders: Array<{ id: string; parentId: string | null }>,
-): "before" | "after" | null {
-  const midX = overRect.left + overRect.width / 2;
-  const initial: "before" | "after" = pointerX <= midX ? "before" : "after";
+): "before" | "after" | "nest" | null {
+  const leftZone = overRect.left + overRect.width * 0.3;
+  const rightZone = overRect.left + overRect.width * 0.7;
+
+  let initial: "before" | "after" | "nest";
+  if (pointerX < leftZone) initial = "before";
+  else if (pointerX > rightZone) initial = "after";
+  else initial = "nest";
+
+  if (initial === "nest") {
+    // No-op when active is already a direct child of target
+    if ((folderParentMap[activeFolderId] ?? null) === targetId) return null;
+    return "nest";
+  }
+
   if (
     !isAdjacentColumnNoOp(
       activeFolderId,
@@ -238,8 +276,10 @@ function resolveColumnDropPosition(
 }
 
 /**
- * Compute which column should show the left/right drop-indicator gap during a column drag.
- * Returns null when the move would be a no-op (target adjacent to source in same parent).
+ * Compute which column should show the left/right/nest drop-indicator during a column drag.
+ * Returns null when the move would be a no-op.
+ *
+ * @param containerId - The current Grid container; rejects drops onto its own loose area.
  */
 export function computeColumnDropIndicator(
   activeFolderId: string,
@@ -249,10 +289,28 @@ export function computeColumnDropIndicator(
   sceneParentMap: Record<string, string | null>,
   folderParentMap: Record<string, string | null>,
   orderedFolders: Array<{ id: string; parentId: string | null }>,
+  containerId: string | null,
 ): ColumnDropIndicator | null {
+  if (!overId) return null;
+  const { kind, rawId } = parseId(overId);
+
+  // Explicit nest droppable (e.g. nested folder card)
+  if (kind === "nest") {
+    if (rawId === activeFolderId) return null;
+    if (isSelfOrDescendant(rawId, activeFolderId, folderParentMap)) return null;
+    if ((folderParentMap[activeFolderId] ?? null) === rawId) return null;
+    return { targetId: rawId, position: "nest" };
+  }
+
   const targetId = resolveEnclosingFolderId(overId, sceneParentMap);
   if (!targetId) return null;
   if (targetId === activeFolderId) return null;
+  // Conservative: dropping onto loose scenes (children of containerId) shouldn't
+  // bubble up and move the column out of containerId.
+  if (targetId === containerId) return null;
+  // Cycle prevention: target must not be a descendant of active.
+  if (isSelfOrDescendant(targetId, activeFolderId, folderParentMap))
+    return null;
   const position = resolveColumnDropPosition(
     activeFolderId,
     targetId,
@@ -266,7 +324,7 @@ export function computeColumnDropIndicator(
 }
 
 /**
- * Compute where to drop a column (folder reorder).
+ * Compute where to drop a column (folder reorder or nest).
  *
  * @param activeFolderId - The folder being dragged
  * @param overId - The dnd-kit `over.id` string
@@ -275,6 +333,7 @@ export function computeColumnDropIndicator(
  * @param folderParentMap - Maps folderId → parentId
  * @param orderedFolders - All folder nodes sorted by sortOrder (resolves predecessor for "before")
  * @param sceneParentMap - Maps sceneId → parentId (for resolving enclosing column)
+ * @param containerId - The current Grid container; rejects drops onto its own loose area.
  */
 export function computeColumnDropTarget(
   activeFolderId: string,
@@ -284,11 +343,28 @@ export function computeColumnDropTarget(
   folderParentMap: Record<string, string | null>,
   orderedFolders: Array<{ id: string; parentId: string | null }>,
   sceneParentMap: Record<string, string | null>,
+  containerId: string | null,
 ): DropTarget | null {
+  if (!overId) return null;
+  const { kind, rawId } = parseId(overId);
+
+  // Explicit nest droppable (e.g. nested folder card) — append into target.
+  if (kind === "nest") {
+    if (rawId === activeFolderId) return null;
+    if (isSelfOrDescendant(rawId, activeFolderId, folderParentMap)) return null;
+    if ((folderParentMap[activeFolderId] ?? null) === rawId) return null;
+    return { targetParentId: rawId, afterId: undefined };
+  }
+
   const targetId = resolveEnclosingFolderId(overId, sceneParentMap);
   if (!targetId) return null;
   if (targetId === activeFolderId) return null;
-  const targetParentId = folderParentMap[targetId] ?? null;
+  // Conservative: dropping a Part onto loose scenes (children of containerId)
+  // shouldn't bubble up and move the Part out of containerId.
+  if (targetId === containerId) return null;
+  // Cycle prevention: target must not be a descendant of active.
+  if (isSelfOrDescendant(targetId, activeFolderId, folderParentMap))
+    return null;
   const position = resolveColumnDropPosition(
     activeFolderId,
     targetId,
@@ -298,6 +374,10 @@ export function computeColumnDropTarget(
     orderedFolders,
   );
   if (!position) return null;
+  if (position === "nest") {
+    return { targetParentId: targetId, afterId: undefined };
+  }
+  const targetParentId = folderParentMap[targetId] ?? null;
   if (position === "before") {
     // Insert before target: predecessor is target's prev sibling in same parent (excluding active)
     const siblings = orderedFolders.filter(
@@ -327,6 +407,9 @@ export function columnEndId(folderId: string | "loose") {
 }
 export function columnEmptyId(folderId: string | "loose") {
   return `column-empty-${folderId}`;
+}
+export function columnNestId(folderId: string) {
+  return `column-nest-${folderId}`;
 }
 export function sceneDraggableId(sceneId: string) {
   return `scene-${sceneId}`;

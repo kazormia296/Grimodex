@@ -1,8 +1,10 @@
 import { Folder, ChevronRight } from "lucide-react";
+import { useDroppable } from "@dnd-kit/core";
 import { useTranslation } from "react-i18next";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { useGridStore } from "./gridStore";
 import { cn } from "@/lib/utils";
+import { columnNestId } from "./gridDndUtils";
 import type { TreeNodeData } from "@/features/tree/treeStore";
 
 interface Props {
@@ -15,6 +17,11 @@ export function GridFolderCard({ folder, compact }: Props) {
   const nodes = useTreeStore((s) => s.nodes);
   const projectId = useTreeStore((s) => s.projectId);
   const setContainerId = useGridStore((s) => s.setContainerId);
+
+  const { setNodeRef: setNestRef, isOver: isNestOver } = useDroppable({
+    id: columnNestId(folder.id),
+    data: { kind: "column-nest", folderId: folder.id },
+  });
 
   const directScenes = nodes.filter(
     (n) => n.parentId === folder.id && n.nodeType === "scene",
@@ -29,12 +36,14 @@ export function GridFolderCard({ folder, compact }: Props) {
 
   return (
     <button
+      ref={setNestRef}
       type="button"
       onClick={diveIn}
       className={cn(
         "group relative flex flex-col rounded-md border-2 border-dashed border-border/60 bg-muted/30",
         "hover:border-primary/50 hover:bg-accent/40 transition-colors text-left",
         "select-none",
+        isNestOver && "border-primary bg-primary/10 ring-2 ring-primary",
       )}
       title={t("grid.folderCard.diveIn", "クリックで中を表示")}
     >

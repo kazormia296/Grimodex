@@ -126,6 +126,7 @@ export function GridPanel() {
         sceneParentMap,
         folderParentMap,
         orderedFolders,
+        containerId,
       );
       setColumnDropIndicator(indicator);
       setDropIndicator(null);
@@ -188,6 +189,7 @@ export function GridPanel() {
         folderParentMap,
         orderedFolders,
         sceneParentMap,
+        containerId,
       );
       if (target) {
         void moveNode(folderId, target.targetParentId, target.afterId);

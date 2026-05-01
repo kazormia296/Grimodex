@@ -108,6 +108,9 @@ export function GridColumn({
   const isColDropAfter =
     columnDropIndicator?.targetId === folder.id &&
     columnDropIndicator.position === "after";
+  const isColDropNest =
+    columnDropIndicator?.targetId === folder.id &&
+    columnDropIndicator.position === "nest";
   const COL_GAP = display.compactCards ? 176 : 224; // w-44 = 11rem = 176px / w-56 = 14rem = 224px
 
   return (
@@ -127,6 +130,7 @@ export function GridColumn({
           `flex flex-col h-full ${colWidth} shrink-0 rounded-lg border bg-muted/30`,
           isDragging && "opacity-40",
           isSlotOver && !columnDropIndicator && "ring-2 ring-primary",
+          isColDropNest && "ring-2 ring-primary bg-primary/10",
         )}
         style={{ transition: "opacity 120ms ease-out" }}
       >
