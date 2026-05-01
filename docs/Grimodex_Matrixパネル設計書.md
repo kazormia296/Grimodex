@@ -109,7 +109,7 @@ Matrix と Map のフィルタは独立管理する（v1 では「同期」機�
 | Show ドロップダウン | 何を列に表示するか（後述） |
 | Tag フィルタ | Show モードで選ばれた候補列を Codex タグで絞り込む。**全モード共通で常時表示**（後述） |
 | Sort ドロップダウン | 行の並び順 |
-| 🔍 検索 | シーン名・Codex 名で行/列を絞り込み |
+| 🔍 検索 | シーン名・Chapter 名・Codex 名で行/列を絞り込み（Chapter 名ヒット時は配下シーンを全表示、Scene 名ヒット時は親 Chapter を自動展開して表示） |
 | [⋮] パネルメニュー | Display / Filter / Export / Help |
 
 ### Tag フィルタ
@@ -139,7 +139,7 @@ Show モードで選ばれた列候補に対し、Codex タグで二段目の絞
 | `Codex (locations)` | location タイプのみ | 同上 |
 | `Codex (items)` | item タイプのみ | 同上 |
 | `Codex (lore)` | lore タイプのみ | 同上 |
-| `POV` | character タイプの Codex エントリ | シーンの `tree_nodes.pov_character_id` を直接 JOIN（1行につき1セルだけ ●、未設定なら空行）。**Phase A 時点ではシーン POV のみ。Phase B 以降は本文 docJson を走査して `sceneBeat.attrs.pov` のオーバーライドも反映**（シーン POV と異なる beat-pov があれば、そのキャラ列にも ★ を付与し、シーン POV キャラ列の ● は維持） |
+| `POV` | character タイプの Codex エントリ | シーンの `tree_nodes.pov_character_id` を直接 JOIN（1行につき1セルだけ ●、未設定なら空行）。**Phase B 投入時はシーン POV のみで開始**。Beat レベル POV オーバーライド（`sceneBeat.attrs.pov` がシーン POV と異なる場合に該当キャラ列へ ★ を追加）は **Phase B 内の後続マイルストーン**で対応（後述「実装フェーズ」「Phase B POV オーバーライドの走査戦略」参照） |
 | `Location` | location タイプの Codex エントリ | シーンの `locationId`（同上） |
 | `Subplot` | `#subplot` タグ付きの `lore` エントリ | subplot の進行密度（言及スキャン結果ベース） |
 | `Custom` | **ユーザーが手動で追加した任意 Codex エントリの集合**（タイプ・タグ問わず） | 言及/関連の有無 |
@@ -223,13 +223,25 @@ Help
 
 #### Chapter 行のセル
 
-Chapter 行のセル自体には ● は描画されない（folder ノードはドキュメントを持たないため言及スキャン対象外）。代わりに、空セル全面が `+ Add scene` のホットエリアになる：
+Chapter 行のセル自体には ● は描画されない（folder ノードはドキュメントを持たないため言及スキャン対象外）。代わりに、**hover 時に明示的な `+` ボタンを表示**し、ボタンクリックでのみ新 Scene を作成する：
 
-- **クリック**: その Chapter folder 直下に新 Scene を作成。**列の Codex を `scene_codex_pins` に明示的に紐付ける**（リレーション ●、source = `relation`）
-- **右クリック**:
-  - **Add scene to this chapter (with @{Codex 名})**: 上記と同じ動作
-  - **Add scene to this chapter (no codex)**: Codex 紐付けなしで新 Scene
+- **空セル（hover していない）**: 何も表示しない、クリックは無反応（誤タップで Scene が増えるのを防ぐ）
+- **空セル（hover）**: セル中央に薄い `+` ボタンを表示（hover 状態は CSS の `:hover` でセル単位に絞る、行全体 hover で全セルに `+` を出さない）
+- **`+` ボタンクリック**: その Chapter folder 直下に新 Scene を作成。**列が紐付け対象を持つモードでは、列要素を新 Scene に自動付与**（後述「Show モード別の新 Scene 作成セマンティクス」参照）
+- **右クリック（セルのどこでも）**:
+  - **Add scene to this chapter (with @{列名})**: `+` ボタンと同じ動作（列要素を自動付与）
+  - **Add scene to this chapter (no association)**: 列要素の自動付与なしで新 Scene
   - **Open chapter folder in Scenes panel**: Scenes パネルで該当 folder を選択
+
+##### Show モード別の新 Scene 作成セマンティクス
+
+| Show モード | 列の意味 | 自動付与される値 | 反映先 |
+|------------|----------|--------------------|--------|
+| `Codex (*)` / `Subplot` / `Custom` | Codex エントリ | 列の Codex を `scene_codex_pins` に INSERT（`source='relation'` 行も同期更新） | `scene_codex_pins` |
+| `POV` | character Codex | 新 Scene の `tree_nodes.pov_character_id` をその character に設定 | `tree_nodes.pov_character_id` |
+| `Location` | location Codex | 新 Scene の `tree_nodes.location_id` をその location に設定 | `tree_nodes.location_id` |
+
+POV / Location モードでは `scene_codex_pins` には書かない（メタデータカラムとリレーションテーブルの二重持ちを避ける）。Codex モードで紐付けた列が同時に POV キャラだった場合でも、POV カラムは触らず `scene_codex_pins` のみ更新する（POV 設定はユーザーの明示操作に任せる）。
 
 新 Scene の挿入位置：
 
@@ -332,16 +344,20 @@ Matrix の最大の付加価値のひとつ。Editor を開かずにプロッテ
 ## C. ステータスバー
 
 ```
+// Phase A（MVP）
+12 scenes × 16 codex entries  •  47 cells filled  •  Settings: Saved
+
+// v2（整合性チェック投入後）
 12 scenes × 16 codex entries  •  47 cells filled  •  Settings: Saved  •  ⚠ 2 warnings
 ```
 
-| 要素 | 表示 |
-|------|------|
-| 表サイズ | `{シーン数} × {Codex数}` |
-| 埋まっているセル数 | `{count} cells filled` |
-| 設定保存状態 | `Settings: Saved` / `Settings: Saving...`（Matrix 自身のフィルタ・ソート設定の永続化状態。表データ自体は他パネルに依存し、ここでは保存状態を扱わない） |
-| キャッシュ状態 | `Scanning... 12/500` キャッシュ再構築中のみ表示（後述「キャッシュ戦略」参照） |
-| 整合性警告（v2） | `⚠ N warnings` クリックで詳細表示 |
+| 要素 | 表示 | 導入 Phase |
+|------|------|-----------|
+| 表サイズ | `{シーン数} × {Codex数}` | Phase A |
+| 埋まっているセル数 | `{count} cells filled` | Phase A |
+| 設定保存状態 | `Settings: Saved` / `Settings: Saving...`（Matrix 自身のフィルタ・ソート設定の永続化状態。表データ自体は他パネルに依存し、ここでは保存状態を扱わない） | Phase A |
+| キャッシュ状態 | `Scanning... 12/500` キャッシュ再構築中のみ表示（後述「キャッシュ戦略」参照） | Phase A |
+| 整合性警告 | `⚠ N warnings` クリックで詳細表示 | v2 |
 
 ---
 
@@ -413,6 +429,8 @@ Matrix のフィルタ・ソート設定は `global-settings.json` に保存。
 
 `subplotTagName` は Subplot モードで列に表示する Codex タグの名前。default は `subplot`。
 
+**`subplotTagName` と `tagFilter.subplot` の関係**: `subplotTagName` は Subplot モードの**列候補生成のための基底タグ**（lore 中で `#subplot` を持つエントリを列にする）。`tagFilter.subplot` はその上にかかる**追加 AND フィルタ**（例: `#main_arc` を AND 指定すれば「`#subplot` かつ `#main_arc` の lore のみ」）。二段階で役割が異なる。
+
 ---
 
 ## 言及スキャン結果のキャッシュ戦略
@@ -477,19 +495,62 @@ CREATE INDEX scene_codex_mentions_by_codex ON scene_codex_mentions(codex_entry_i
 **POV はこのテーブルに含めない**。POV は「言及」ではなくメタデータのため `scene_codex_mentions` の責務範囲外：
 
 - シーン POV: `tree_nodes.pov_character_id` を Matrix 描画時に直接 JOIN
-- Beat POV（Phase B 以降の `sceneBeat.attrs.pov`）: 必要になった時点で本文 docJson を走査して導出。導出コストが問題化したら別途小さい cache テーブル `scene_beat_pov_cache` を追加する余地を残す
+- Beat POV（Phase B 以降の `sceneBeat.attrs.pov`）: **Phase B 投入時点では未対応**。後続マイルストーンで `scene_beat_pov_cache` テーブルを追加し、保存時にキャッシュする方針（描画時に全シーンの docJson を走査するアプローチは採用しない、後述「Phase B POV オーバーライドの走査戦略」参照）
 
 ### 更新タイミング
 
-- **シーン保存時**: 該当シーン行を全 Codex に対して再計算（既存の保存パイプラインに hook）
-- **Codex エントリ追加**: 該当 Codex 1件のパターンだけを対象として全シーンを非同期スキャン（バックグラウンドジョブ、キュー実装）。他 Codex の行は触らない
+- **シーン保存時**: 該当シーン行を全 Codex に対して再計算（既存の保存パイプラインに hook）。本文 docJson から `source='body'` 行を、`unplaced_beats_doc` および本文中の `sceneBeat` ノードから `source='beat'` 行をそれぞれ算出して upsert する（同一トランザクションで両 source を同時更新）
+- **Codex エントリ追加・rename・alias 変更**: 同じ部分再スキャン経路を共通利用 — **該当 Codex 1件のパターンだけ**を対象として全シーンを非同期スキャン（バックグラウンドジョブ、キュー実装）。その Codex 列の `source='body'` / `source='beat'` 行のみ更新し、他 Codex の行は触らない
 - **Codex エントリ削除**: キャッシュから該当列を `ON DELETE CASCADE` で自動削除
-- **Codex 名/alias 変更**: **該当 Codex 1件のパターンだけ**を対象として全シーンを非同期スキャンし、その Codex 列の `source='body'` 行のみ更新する。他 Codex の行は触らない
-- **Codex リレーション変更**: 該当ペアの `source = 'relation'` 行を更新
+- **Codex リレーション変更**（`scene_codex_pins` の INSERT/DELETE）: 該当ペアの `source='relation'` 行を**同一トランザクション内で**同時更新（後述「リレーション同期の実装規約」）
+
+#### `source='beat'` 行の算出ロジック
+
+`source='beat'` 行が表すのは「シーン内の Beat（unplaced + placed の両方）に該当 Codex の `@mention` が含まれるか」。Phase A での仕様：
+
+- スキャン対象: `tree_nodes.unplaced_beats_doc`（ProseMirror JSON）と本文 docJson 内の `sceneBeat` ノードを連結し、その中の `mention` ノードを列挙
+- `mention_count`: シーン内の Beat 全体での `@codex` 言及回数の合計
+- `role`: Phase A は常に `'mentioned'`（Beat 設計書 Phase B で role 修飾子が入った時点で actor/target/mentioned の最強値に切り替え。スキーマ変更不要）
+- 行が0件になる場合は DELETE（`mention_count=0` の行を残さない）
+
+#### リレーション同期の実装規約
+
+`scene_codex_pins` の INSERT/DELETE は **必ず専用関数 `upsertScenePin()` / `deleteScenePin()` 経由**で行う。これらの関数の内部で同一トランザクション内に `scene_codex_mentions` の `source='relation'` 行を upsert / delete する。
+
+- DB トリガーは使わない（Drizzle ORM 経路の透明性を優先）
+- `scene_codex_pins` への直接 INSERT/DELETE クエリを書かない（コードレビューで弾く規約）
+- Scene / Codex の CASCADE 削除は `scene_codex_mentions` 側にも `ON DELETE CASCADE` が効くため、`scene_codex_pins` 経由の二重削除は不要
+
+### `mention_count` の Phase A 役割
+
+`dot` モードでは `mention_count` は表示に使わないが、Phase A から**正確な count を保存する**：
+
+- Aho-Corasick マッチャーの戻り値を集計するだけのため、保存時の追加コストは無視できる
+- Phase B で `count` / `heatmap` モードを投入する際に**全シーン再スキャンが不要**になる（Settings の手動再構築依存を回避）
+- `source='beat'` 行の count はシーン内 Beat 全体での `@mention` 回数
 
 #### 部分再スキャンの理論的限界と逃げ道
 
 「該当 Codex 列のみ再スキャン」は Aho-Corasick の最長一致挙動により、稀に他 Codex のマッチを巻き込む可能性がある（rename 後の新パターンが他 Codex の名前と接頭/接尾で衝突する場合など）。実用上の頻度は低いが、整合性が疑われたときの逃げ道として **Settings → Data → "Codex 言及キャッシュを再構築"** ボタンを Phase A から提供し、全 Codex × 全シーンの完全再スキャンをユーザーが手動で叩けるようにする（進捗バー付き）。
+
+### Phase B POV オーバーライドの走査戦略
+
+Phase B の後続マイルストーンで Beat レベル POV オーバーライド（`sceneBeat.attrs.pov`）を Matrix の POV モードに反映する際、**走査タイミングは「シーン保存時のキャッシュ」一択**とする：
+
+- **採用**: 保存時に本文 docJson 内の `sceneBeat` ノードを走査し、シーン POV と異なる Beat POV を `scene_beat_pov_cache` テーブルに永続化。Matrix 描画時はこのキャッシュを JOIN するだけで済む
+- **不採用**: Matrix 描画のたびに全シーンの docJson を走査するアプローチ（500シーン分の docJson パースは Matrix の俯瞰用途と相反する）
+
+`scene_beat_pov_cache` のスキーマ案（Phase B 後続で確定）：
+
+```sql
+CREATE TABLE scene_beat_pov_cache (
+  scene_id TEXT NOT NULL REFERENCES tree_nodes(id) ON DELETE CASCADE,
+  pov_character_id TEXT NOT NULL REFERENCES codex_entries(id) ON DELETE CASCADE,
+  PRIMARY KEY (scene_id, pov_character_id)
+);
+```
+
+「シーン POV と異なる Beat POV のみ」を行として持つ（差分のみ保存）。シーン POV と一致する Beat POV は記録しない（行を 1 シーンあたり数行に抑える）。
 
 ### 不採用の戦略
 
@@ -553,8 +614,9 @@ CREATE INDEX scene_codex_mentions_by_codex ON scene_codex_mentions(codex_entry_i
 
 - [ ] **`scene_codex_pins` テーブルの新規追加**（Drizzle migration）— 明示リレーションの一次ソース。Grid のカード Codex チップもこれを参照
 - [ ] **`scene_codex_mentions` キャッシュテーブルの新規追加**（Drizzle migration、PK は `(scene_id, codex_entry_id, source)`、`role` カラムは Phase A 時点で全行 `'mentioned'`）
-- [ ] シーン保存時のキャッシュ更新フック（既存の保存パイプラインに統合）
-- [ ] Codex 追加・削除・rename 時のキャッシュ部分再構築バックグラウンドジョブ（該当 Codex 列のみ再スキャン）
+- [ ] シーン保存時のキャッシュ更新フック（既存の保存パイプラインに統合、本文 + Beat の両 source を同一トランザクションで upsert、`mention_count` を Phase A から正確に保持）
+- [ ] Codex 追加・rename・alias 変更時のキャッシュ部分再構築バックグラウンドジョブ（該当 Codex 列のみ再スキャン、共通経路）
+- [ ] **`scene_codex_pins` 操作の専用関数化**（`upsertScenePin()` / `deleteScenePin()` を実装し、内部で `scene_codex_mentions` の `source='relation'` 行を同一トランザクションで同期更新。直接 INSERT/DELETE は禁止規約）
 - [ ] **Settings → Data → "Codex 言及キャッシュを再構築" ボタン**（全 Codex × 全シーン再スキャン、進捗バー付き、衝突疑い時の逃げ道として）
 - [ ] 新規パネル `MatrixPanel` の実装（feature-based ディレクトリ `src/features/matrix/`）
 - [ ] Codex モード（default）
@@ -562,12 +624,13 @@ CREATE INDEX scene_codex_mentions_by_codex ON scene_codex_mentions(codex_entry_i
 - [ ] セル表示（`scene_codex_mentions` キャッシュを参照、根拠別に背景色を変える）
 - [ ] **Tag フィルタ UI**（オートコンプリート、AND 条件、Show モードごとに別状態を保持）
 - [ ] Sort: Reading order / Story-time order
-- [ ] 🔍 検索（行/列の絞り込み）
+- [ ] 🔍 検索（行/列の絞り込み、Chapter 名ヒット時は配下シーンを全表示、Scene 名ヒット時は親 Chapter を自動展開）
 - [ ] セルクリックで Editor を開く
 - [ ] **Scene 行のセル右クリック → 「Add beat to this scene」**（列の Codex を `@mention` として自動挿入）
 - [ ] **Scene 行ヘッダー右クリック → 「Add beat to this scene」**（Codex 自動挿入なし）
-- [ ] **Chapter 行のセルクリック / 右クリック → 「Add scene to this chapter」**（列の Codex を `scene_codex_pins` に自動付与、folder 末尾に挿入、Scene 名は自動採番）
-- [ ] **Chapter 行ヘッダー右クリック → 「Add scene to this chapter」**（Codex 紐付けなし）
+- [ ] **Chapter 行のセルは hover 時のみ `+` ボタンを表示**（誤クリック防止のため、空セル全面ホットエリアにはしない）
+- [ ] **`+` ボタンクリック / セル右クリック → 「Add scene to this chapter」**（Codex モードでは列の Codex を `scene_codex_pins` 経由で自動付与。POV/Location モードでは新 Scene の `pov_character_id` / `location_id` を直接設定。folder 末尾に挿入、Scene 名は自動採番）
+- [ ] **Chapter 行ヘッダー右クリック → 「Add scene to this chapter」**（列要素の自動付与なし）
 - [ ] **新 Scene 作成直後のインライン入力ポップオーバー**（Synopsis 即入力、「Add another scene」で連続追加。Beat 追加ポップオーバーと同じパターン）
 - [ ] レイアウト: Bottom Dock デフォルト非表示（レイアウトシステム設計書に追記）
 - [ ] 設定の永続化（`global-settings.json`）
@@ -578,14 +641,15 @@ CREATE INDEX scene_codex_mentions_by_codex ON scene_codex_mentions(codex_entry_i
 - [ ] Show モード切替（`POV` / `Location` / `Subplot` / `Custom`）
 - [ ] Custom モード: 列ヘッダ `+` ボタン、Codex パネルからの「Add to Matrix Custom」
 - [ ] Custom モード: 複数プリセットの保存・切替・rename・削除
-- [ ] Display モード: `count` / `heatmap` / `pov-color`
+- [ ] Display モード: `count` / `heatmap` / `pov-color`（Phase A で `mention_count` を正確に保持しているため再スキャン不要）
 - [ ] **Display モード `role-aware`**（Beat 設計書 Phase B の role 修飾子と連動、actor 太枠 / target 細枠 / mentioned 薄 ● / POV ★）
-- [ ] **POV モードに Beat レベル POV オーバーライドを反映**（本文 docJson を走査して `sceneBeat.attrs.pov` がシーン POV と異なれば該当キャラ列に ★ を追加。`scene_codex_mentions` には POV を入れない方針のため docJson 走査または別途 cache テーブルで対応）
 - [ ] `scene_codex_mentions` の `role` カラム（`source='beat'` 行）に actor/target/mentioned の最強値を書き込む実装（Phase A スキーマで `role` カラムは既に存在、PK 変更不要）
-- [ ] Display モード（`dot` / `count` / `heatmap` / `pov-color`）
+- [ ] **`scene_beat_pov_cache` テーブルの新規追加**（Phase B 後続マイルストーン、Drizzle migration）
+- [ ] **POV モードに Beat レベル POV オーバーライドを反映**（保存時に `sceneBeat.attrs.pov` を `scene_beat_pov_cache` に upsert、Matrix 描画時は同テーブルを JOIN して該当キャラ列に ★ を追加。描画時 docJson 走査は採用しない）
 - [ ] フィルタ・絞り込み（空セル非表示、未編集のみ）
 - [ ] Codex 列の折りたたみ・並べ替え・ピン留め
-- [ ] CSV エクスポート
+- [ ] CSV エクスポート（`source` 別行は1セル単位に集約。集約フォーマットは Phase B 着手前に確定 — 案: `●` 文字記号 / `B`/`R`/`M` の根拠コード文字列 / `source` を別列に分解、のいずれか）
+- [ ] Custom モードのプリセット切替時の UI 状態保持仕様（列幅は保持、スクロール位置はリセット）
 - [ ] Sort: Word count / Last edited
 
 ### Phase C: 整合性チェック（v2+）

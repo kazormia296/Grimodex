@@ -118,7 +118,7 @@ Grimodex のツリーは任意深さ（Part > Chapter > Sub-chapter > Scene 等�
 | Container セレクタ | 表示対象の親フォルダ。breadcrumb 表示（`Part 1 / Act 1`）。クリックでドロップダウン展開、ツリー上の任意 folder を選択可。Default はプロジェクトルート |
 | Chapter 数表示 | `{N} chapters`（直下フォルダ数。Scene 直接子は `+ {M} loose scenes` と併記） |
 | `[+ New Chapter]` | 現在の container 直下に新規 folder を作成。名前は自動採番（Scenes パネル設計書の採番ロジックに従う） |
-| 🔍 検索 | カード内テキスト（Scene 名 / Synopsis / beat 冒頭 / Codex 名）でインクリメンタル絞り込み。マッチしないカードはグレー表示 |
+| 🔍 検索 | カード内テキスト（Scene 名 / Synopsis / beat 冒頭 / Codex 名）でインクリメンタル絞り込み。マッチしないカードはグレー表示。**Phase A では非表示または disabled（Phase B で実装）** |
 | `[⋮]` パネルメニュー | Display / Filter / Help |
 
 ### Container セレクタの動作
@@ -127,7 +127,8 @@ Grimodex のツリーは任意深さ（Part > Chapter > Sub-chapter > Scene 等�
 - 選択した folder が新しい container になる
 - 同 folder に階層が深い場合、breadcrumb が長くなる（`Project / Part 1 / Act 1` 等）
 - 「←」ボタンで親 container に戻る
-- 選択 container は `global-settings.json` に保存（再起動時に復元）
+- 選択 container は **プロジェクトスコープ**で永続化（プロジェクト切り替えで別プロジェクトの ID を引きずらないため、プロジェクト ID をキーに含めて保存）
+- 起動時に保存された ID が現プロジェクト内に存在しない場合（削除済み・別プロジェクト由来）はプロジェクトルートにフォールバック
 
 ### `[⋮]` パネルメニュー
 
@@ -165,8 +166,9 @@ Help
 
 選択 container 直下に Scene が直接ぶら下がっている場合、仮想列「`Scenes`」（または「`(no chapter)`」）として最右に表示される：
 
-- ユーザー操作で Chapter folder にまとめて移動できる（D&D で列ごと別 Chapter に変換 — または個別 Scene を別列にドロップ）
+- 個別 Scene を D&D で別 Chapter 列にドロップして移動できる（Phase A）
 - この仮想列に `+ New Scene` を押した場合、container 直下に Scene が追加される（Loose のまま）
+- 仮想列ごと既存 Chapter にまとめる／新規 Chapter folder に変換する一括操作は Phase B 以降で検討（MVP では個別 D&D のみ）
 
 ### カード（Scene）
 
@@ -176,8 +178,10 @@ Help
 |------|------|--------|
 | ヘッダ | Scene 名 + 編集 ✏ + `[⋮]` メニュー | `tree_nodes.title` |
 | 本体（上段） | Synopsis（あれば）または Unplaced beat の最初の3件の冒頭文 | `tree_nodes.synopsis` / `tree_nodes.unplaced_beat_preview`（保存時にフロントが事前抽出したプレビュー、Beat 設計書 / 後述「Beat 冒頭の取得戦略」参照） |
-| 本体（中段） | Codex チップ（最大5件、`×` で削除可、`+ Codex` で追加） | `scene_codex_pins` |
+| 本体（中段） | Codex チップ（最大5件） | `scene_codex_pins` |
 | フッタ | Label / 文字数 / Status | （Label は Phase B、`tree_nodes.status` は Scenes パネル設計書既定、文字数は `tree_nodes.char_count`） |
+
+> Phase A での Codex チップは**表示専用**（タイプ別色分け・クリックで Codex 詳細パネル起動）。`+ Codex` 追加・`×` 削除のインタラクションは Phase B（後述「実装フェーズ」参照）。
 
 #### Synopsis vs Beat 冒頭の優先順位
 
@@ -189,9 +193,12 @@ Help
 
 - `scene_codex_pins` のリレーションを表示（明示的に紐付けたもの）
 - 言及スキャンによる暗黙の Codex は表示しない（チップ過多を防ぐ）
-- `+ Codex` クリックで **Chat パネルの「📌ピン留め追加ポップオーバー」（Codex/Snippet タブ式検索 UI、Chat パネル設計書「コンテキストバー」「手動ピン留め」セクション参照）と同じコンポーネント**を再利用。選択した Codex を `scene_codex_pins` に追加
-- `×` クリックでリレーション削除（`scene_codex_pins` から行削除）
 - チップ色は Codex タイプ別（character/location/item/lore）
+- チップクリックで Codex 詳細パネルを開く
+
+**Phase A**: 表示専用。`+ Codex` / `×` ボタンは表示しない（Codex 紐付けは Editor 経由）。
+
+**Phase B**: `+ Codex` クリックで **Chat パネルの「📌ピン留め追加ポップオーバー」（Codex/Snippet タブ式検索 UI、Chat パネル設計書「コンテキストバー」「手動ピン留め」セクション参照）と同じコンポーネント**を再利用。選択した Codex を `scene_codex_pins` に追加。`×` クリックでリレーション削除（`scene_codex_pins` から行削除）。
 
 ### カードの操作
 
@@ -202,8 +209,8 @@ Help
 | **Synopsis ダブルクリック** | インライン編集モード（後述「Synopsis 共有編集コンポーネント」参照） |
 | **編集 ✏ クリック** | Synopsis をインライン編集モードに切替（ダブルクリックと同じ） |
 | **`[⋮]` メニュー** | Open in Editor / Rename / Duplicate / Delete / Move to chapter… / Show in Scenes panel |
-| **D&D（同列内）** | `sort_order` 変更 |
-| **D&D（別列）** | `parent_id` 変更（移動先 chapter folder の子に）。`scene_codex_pins` / `povCharacterId` / `locationId` / TipTap docJson はすべて保持される（Scene エンティティそのものを移動するだけ） |
+| **D&D（同列内）** | `tree_nodes.sort_order` 更新のみ |
+| **D&D（別列）** | `tree_nodes.parent_id` と `sort_order` 更新のみ。関連テーブル（`scene_codex_pins` / `povCharacterId` / `locationId` / TipTap docJson）は touch しない — Scene エンティティの ID は変わらないため、リレーションは自動的に保持される |
 | **右クリック** | `[⋮]` メニューと同じ |
 
 ### Synopsis 共有編集コンポーネント
@@ -217,6 +224,7 @@ Synopsis は **Scenes パネル（Outline モード）／ Editor 上部の Synop
 - フォーカスを失う（外側クリック）と確定保存
 - 保存失敗時はトースト通知し、編集状態を維持
 - IME 入力中の `Enter` は確定しない（`compositionend` 後に有効化）
+- 編集中はホストカードの D&D を無効化（drag handle を編集中は disable する）。Grid 側の責務として、`isEditing` 状態を購読してドラッグ可否を切り替える
 
 実装場所: `src/features/editor/InlineSynopsisEditor.tsx`（既存 Editor 配下に新規追加し、3パネルから import）。
 
@@ -320,6 +328,23 @@ ALTER TABLE tree_nodes ADD COLUMN unplaced_beat_preview TEXT;
 -- 値が NULL or '[]' なら表示しない
 ```
 
+**フォーマット契約（フロント↔バックエンド共通の I/F）:**
+
+- 値は JSON 配列文字列、要素は plain text（`unplaced_beats_doc` から抽出した冒頭文）
+- 要素数の上限はフロント側でバリデーション（Phase A: 最大3件、Phase B Beat 主表示化時に拡張予定）
+- 1要素あたりの文字数上限もフロント側で切り詰め（Phase A: 40文字、超過は `…` 付与なしで切る）
+- 改行・タブはフロント抽出時に半角スペースに正規化
+- バックエンドは値を opaque な TEXT として保存・返却するのみ。中身を解釈・検証しない
+
+**読み出し側のエラーハンドリング:**
+
+- JSON.parse 失敗・配列以外・要素が文字列以外 → すべて NULL と同等に扱う（カードの beat 領域を非表示）
+- カードコンポーネントは parse 失敗で例外を投げないこと（描画ループ全体を巻き込むため）
+
+**Phase B（Beat 主表示化）への拡張:**
+
+Beat 箇条書きをカード主表示に昇格する際、プレビュー件数・1件あたり文字数を引き上げる予定（暫定: 8件 × 60文字）。`unplaced_beat_preview` カラムの形式は同じ JSON 配列のまま、抽出側のパラメータだけを変更する。
+
 **抽出責任をフロント側に置く理由:**
 
 - `unplaced_beats_doc` の構造（ProseMirror JSON fragment）を定義しているのは TipTap 側（フロント）。schema 変更があれば必ずフロントから始まるので、バックエンドに同じ JSON 構造の知識を二重に持たせると drift が起きる
@@ -332,12 +357,15 @@ ALTER TABLE tree_nodes ADD COLUMN unplaced_beat_preview TEXT;
 
 ### ユーザー設定の永続化
 
-`global-settings.json` に Grid のビュー状態を保存：
+Grid のビュー状態は**スコープを分けて**保存する：
+
+- **プロジェクトスコープ**（プロジェクトメタに保存）: `containerId` — プロジェクト固有の `tree_nodes.id` を参照するため、`global-settings.json` には置かない
+- **グローバルスコープ**（`global-settings.json`）: 表示・フィルタ設定（プロジェクト横断で一貫していてよいユーザー嗜好）
 
 ```json
+// global-settings.json
 {
   "grid": {
-    "containerId": "node-act1",
     "compactCards": false,
     "showSynopsis": true,
     "showBeats": true,
@@ -352,6 +380,15 @@ ALTER TABLE tree_nodes ADD COLUMN unplaced_beat_preview TEXT;
 }
 ```
 
+```json
+// プロジェクトメタ（per-project）
+{
+  "grid": {
+    "containerId": "node-act1"  // 起動時に存在チェックし、無効ならルートにフォールバック
+  }
+}
+```
+
 ---
 
 ## 実装フェーズ
@@ -361,23 +398,26 @@ ALTER TABLE tree_nodes ADD COLUMN unplaced_beat_preview TEXT;
 依存: Scenes パネル、Codex リレーション、Editor の Synopsis 機構、Beat システム設計書 Phase A の `unplaced_beats_doc` カラム（読み出しのみ）と `unplaced_beat_preview` キャッシュ
 
 - [ ] **`tree_nodes.unplaced_beat_preview` カラムを追加**（Drizzle migration、Beat 設計書の `unplaced_beats_doc` / `char_count` と同 migration ファイルにまとめる）
+- [ ] **プレビュー再計算トリガーの保存経路を特定**（既存の TipTap content 保存と `tree_nodes` メタ更新の経路を調査し、`unplaced_beats_doc` 変更時に `unplaced_beat_preview` を再計算・同梱する箇所を確定。debounce 保存・明示保存・Beat 編集確定など複数経路がある場合は1つに集約）
 - [ ] シーン保存時にフロント側が `unplaced_beats_doc` から先頭3件×40文字を抽出して保存ペイロードに同梱（バックエンドは値を保存するだけ、解釈しない）
-- [ ] **`<InlineSynopsisEditor>` 共有コンポーネントを新規作成**（`src/features/editor/InlineSynopsisEditor.tsx`）。Scenes Outline モードと Editor Synopsis セクションも同コンポーネントに切り替え（既存実装の置換）
-- [ ] **Codex 追加ポップオーバーの再利用設定**: Chat パネルの「📌ピン留め追加ポップオーバー」を共有可能なコンポーネントとしてリファクタ（必要なら）、Grid から呼び出し可能にする
+- [ ] **`<InlineSynopsisEditor>` 共有コンポーネントを新規作成**（`src/features/editor/InlineSynopsisEditor.tsx`）。Scenes Outline モードと Editor Synopsis セクションも同コンポーネントに切り替え（既存実装の置換）。`isEditing` を外部購読可能にし、ホスト側の D&D 無効化に利用
 - [ ] 新規パネル `GridPanel` の実装（`src/features/grid/`）
-- [ ] Container セレクタ（breadcrumb + ツリー型ドロップダウン）
+- [ ] Container セレクタ（breadcrumb + ツリー型ドロップダウン、無効 ID のルートフォールバック含む）
 - [ ] Chapter 列の描画（`tree_nodes` の folder ノード）
-- [ ] Scene カードの描画（`tree_nodes` の scene ノード、Synopsis / beat 冒頭 / Codex / Status）
+- [ ] Scene カードの描画（`tree_nodes` の scene ノード、Synopsis / beat 冒頭 / Codex チップ表示 / Status）
+- [ ] Codex チップは**表示専用**（タイプ別色分け・チップクリックで Codex 詳細パネル起動）。`+ Codex` / `×` ボタンは出さない
 - [ ] `+ New Scene` / `+ New Chapter`（自動採番、追加後インライン編集）
 - [ ] カードタイトルクリック → Editor 起動
-- [ ] Synopsis インライン編集
-- [ ] D&D による Scene 並べ替え（同列内）
-- [ ] D&D による Scene の chapter 間移動（`parent_id` 変更）
+- [ ] Synopsis インライン編集（編集中はカード D&D 無効）
+- [ ] D&D による Scene 並べ替え（同列内、`sort_order` 更新のみ）
+- [ ] D&D による Scene の chapter 間移動（`parent_id` + `sort_order` 更新のみ、関連テーブル touch なし）
 - [ ] D&D による Chapter 列の並べ替え
 - [ ] カード `[⋮]` メニュー（Open / Rename / Duplicate / Delete / Move to chapter… / Show in Scenes）
-- [ ] Loose Scenes 仮想列の対応
+- [ ] Loose Scenes 仮想列の対応（個別 Scene の D&D のみ。仮想列ごとの一括変換は Phase B+）
 - [ ] レイアウト: Bottom Dock デフォルト非表示（レイアウトシステム設計書に追記）
-- [ ] Container 選択の永続化
+- [ ] Container 選択の永続化（プロジェクトスコープ、無効 ID は起動時にルートへフォールバック）
+- [ ] ヘッダーの 🔍 検索アイコンは Phase A では非表示または disabled で配置（Phase B で機能実装）
+- [ ] 文字数表示は `tree_nodes.char_count` キャッシュ値をそのまま表示（**保存時点の値**であり、編集中はリアルタイム更新されない旨をツールチップ等で示唆）
 
 ### Phase B: 機能拡張
 
@@ -385,9 +425,11 @@ ALTER TABLE tree_nodes ADD COLUMN unplaced_beat_preview TEXT;
 - [ ] フィルタ（空 Scene のみ / 完成済み非表示 / Codex フィルタ）
 - [ ] カード `[⋮] → Add unplaced beat...`（Editor 起動なしで beat 追加）
 - [ ] Compact カード幅モード
-- [ ] Codex チップの直接編集（`+ Codex` ポップオーバー、`×` で削除）
+- [ ] **Codex チップの直接編集**: `+ Codex` ポップオーバー（Chat パネル「📌ピン留め追加ポップオーバー」を共有可能コンポーネントとしてリファクタしたうえで再利用）、`×` で削除
+- [ ] Loose Scenes 仮想列の一括操作（既存 Chapter にまとめる／新規 Chapter folder に変換）
 - [ ] カード本体の Status バッジ表示
-- [ ] 文字数のカード表示（Phase A は概算、Phase B でリアルタイム）
+- [ ] 文字数カード表示のリアルタイム更新（編集中も反映）
+- [ ] **Beat 主表示化**: カード本体上段の優先順位を Beat 箇条書き優先に切替、Synopsis を副表示（折りたたみ）に降格。`unplaced_beat_preview` の抽出パラメータを 8件 × 60文字に拡張
 
 ### Phase C: 連携機能
 
@@ -429,7 +471,8 @@ container 直下に Scene が直接ぶら下がっている場合の仮想列の
 
 カード本体に表示する Unplaced beat の冒頭文の長さ：
 
-- **暫定方針**: 各 beat 冒頭1行（最大40文字）、最大3 beat 表示。それ以上は「+N more」リンク
+- **暫定方針（Phase A）**: 各 beat 冒頭1行（最大40文字）、最大3 beat 表示。それ以上は「+N more」リンク
+- **Phase B（Beat 主表示化）**: 暫定 8件 × 60文字に拡張（データモデル「Beat 冒頭の取得戦略」参照）
 - 代替案: 全 beat を全文表示（カード高さ可変）
 
 ### カード幅とレイアウト
