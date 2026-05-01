@@ -222,11 +222,13 @@ function isAdjacentColumnNoOp(
  * Resolve the meaningful drop position for a column drag using a 3-zone scheme:
  *   left 40% → "before", right 40% → "after", center 20% → "nest".
  *
- * Wider edge zones (40% each) make Part-to-Part swap easier; nest stays
- * accessible via the central 20% strip and via explicit folder-card / column-end
- * droppables. For "before"/"after", flip to the opposite side when the cursor
- * lands on the half that would put the column back where it is. For "nest",
- * returns null when active is already a direct child of target.
+ * No-op detection: when the position would put the column back where it
+ * already sits (target is the immediately-adjacent sibling on that side),
+ * return null instead of silently flipping to the other side. Returning null
+ * gives the user an honest "this drop does nothing" feedback (no indicator,
+ * no move). To swap with an adjacent neighbor, the user aims for the FAR
+ * side of that neighbor (e.g. swap with right-neighbor B → drop on B's right
+ * 40%, which yields "after B").
  */
 function resolveColumnDropPosition(
   activeFolderId: string,
@@ -250,8 +252,12 @@ function resolveColumnDropPosition(
     return "nest";
   }
 
+  // No-op when target is the adjacent sibling on the same side as the position
+  // (the drop would land active back in its current slot). Return null instead
+  // of flipping — silent flips have produced surprising results where dropping
+  // on the LEFT of right-neighbor moved active to the RIGHT of that neighbor.
   if (
-    !isAdjacentColumnNoOp(
+    isAdjacentColumnNoOp(
       activeFolderId,
       targetId,
       initial,
@@ -259,22 +265,9 @@ function resolveColumnDropPosition(
       orderedFolders,
     )
   ) {
-    return initial;
-  }
-  // Initial side is no-op → try the opposite side.
-  const flipped: "before" | "after" = initial === "before" ? "after" : "before";
-  if (
-    isAdjacentColumnNoOp(
-      activeFolderId,
-      targetId,
-      flipped,
-      folderParentMap,
-      orderedFolders,
-    )
-  ) {
     return null;
   }
-  return flipped;
+  return initial;
 }
 
 /**

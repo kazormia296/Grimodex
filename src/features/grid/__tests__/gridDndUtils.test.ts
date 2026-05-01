@@ -280,9 +280,11 @@ describe("computeColumnDropTarget", () => {
     expect(result).toEqual({ targetParentId: "root", afterId: "ch3" });
   });
 
-  it("flips no-op side to the meaningful side when hovering an adjacent column (right→left)", () => {
+  it("returns null when hovering adjacent right-neighbor's left zone (no-op, no flip)", () => {
     // ch1 hovering ch2's left zone = "before ch2" = no-op (ch1 is already there).
-    // Should flip to "after ch2" so the cursor anywhere over ch2 produces a real move.
+    // Previously this silently flipped to "after ch2", surprising the user.
+    // Now returns null so no indicator/move occurs; user aims for the FAR side
+    // of the neighbor to swap.
     const result = computeColumnDropTarget(
       "ch1",
       columnSlotId("ch2"),
@@ -293,12 +295,11 @@ describe("computeColumnDropTarget", () => {
       sceneParentMap,
       null,
     );
-    expect(result).toEqual({ targetParentId: "root", afterId: "ch2" });
+    expect(result).toBeNull();
   });
 
-  it("flips no-op side to the meaningful side when hovering an adjacent column (left→right)", () => {
-    // ch2 hovering ch1's right zone = "after ch1" = no-op.
-    // Should flip to "before ch1" → afterId=null (prepend).
+  it("returns null when hovering adjacent left-neighbor's right zone (no-op, no flip)", () => {
+    // ch2 hovering ch1's right zone = "after ch1" = no-op (ch2 is already there).
     const result = computeColumnDropTarget(
       "ch2",
       columnSlotId("ch1"),
@@ -309,7 +310,52 @@ describe("computeColumnDropTarget", () => {
       sceneParentMap,
       null,
     );
-    expect(result).toEqual({ targetParentId: "root", afterId: null });
+    expect(result).toBeNull();
+  });
+
+  it("user's reported scenario: dropping ch1 (idx=1) on ch2's (idx=2) scene-drop left zone is no-op (no longer silently flips to after ch2)", () => {
+    // Reproduces the bug from screenshots: cursor on left edge of right-neighbor
+    // resolves to "before right-neighbor" which would be no-op. Previously
+    // flipped to "after right-neighbor" and moved active past the neighbor.
+    // Now returns null → no surprise move.
+    const fpm: Record<string, string | null> = {
+      ch0: "root",
+      ch1: "root",
+      ch2: "root",
+      ch3: "root",
+    };
+    const ofs = [
+      { id: "ch0", parentId: "root" },
+      { id: "ch1", parentId: "root" },
+      { id: "ch2", parentId: "root" },
+      { id: "ch3", parentId: "root" },
+    ];
+    const result = computeColumnDropTarget(
+      "ch1",
+      "scene-drop-s_in_ch2",
+      // pointerX such that relativeX < 40% → left zone of the scene
+      20,
+      { left: 0, width: 100 },
+      fpm,
+      ofs,
+      { s_in_ch2: "ch2" },
+      null,
+    );
+    expect(result).toBeNull();
+  });
+
+  it("dropping ch1 (idx=1) on ch2's right zone yields swap (after ch2) — the ergonomic swap path", () => {
+    const result = computeColumnDropTarget(
+      "ch1",
+      columnSlotId("ch2"),
+      150, // right zone of ch2
+      rect,
+      folderParentMap,
+      orderedFolders,
+      sceneParentMap,
+      null,
+    );
+    expect(result).toEqual({ targetParentId: "root", afterId: "ch2" });
   });
 
   it("returns null when both sides would be no-op (only two columns adjacent — should never happen since target!=active is filtered)", () => {
