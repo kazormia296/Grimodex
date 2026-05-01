@@ -120,6 +120,7 @@ export function GridCardChips({
         onUnpin={(eid) => void removePin(sceneId, eid)}
         onClose={() => setPopoverOpen(false)}
         containerRef={containerRef}
+        anchorRef={containerRef}
         tabs={["codex"]}
         title={t("grid.card.pinCodexTitle", "Codex を紐付け")}
       />

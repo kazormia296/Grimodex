@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { Search } from "lucide-react";
 import { AnimatedPopover } from "@/components/ui/animated-popover";
 import { useTranslation } from "react-i18next";
@@ -168,6 +169,12 @@ export interface PinEntryDialogProps {
   onUnpin: (entryId: string) => void;
   onClose: () => void;
   containerRef?: React.RefObject<HTMLElement | null>;
+  /**
+   * When set, the dialog renders in a portal (document.body) with `fixed`
+   * positioning anchored below this element. Use this to escape overflow
+   * clipping from ancestor scroll containers (e.g. Grid panel).
+   */
+  anchorRef?: React.RefObject<HTMLElement | null>;
   /** Override the dialog title. Defaults to chat.context.pinEntries i18n key. */
   title?: string;
   /** Which tabs to show. Defaults to ["codex", "snippet"]. Single-tab hides the tab bar. */
@@ -184,6 +191,7 @@ export function PinEntryDialog({
   onUnpin,
   onClose,
   containerRef,
+  anchorRef,
   title,
   tabs = ["codex", "snippet"],
   withChildrenIds,
@@ -231,6 +239,40 @@ export function PinEntryDialog({
       .then(setCodexTypes)
       .catch(() => setCodexTypes([]));
   }, [open, loadEntries, loadSnippets, showSnippetTab]);
+
+  // Portal mode: compute fixed position from anchorRef when opening
+  const portalDivRef = useRef<HTMLDivElement>(null);
+  const [portalPos, setPortalPos] = useState<{
+    left: number;
+    top: number;
+  } | null>(null);
+
+  useEffect(() => {
+    if (!open || !anchorRef?.current) {
+      setPortalPos(null);
+      return;
+    }
+    const rect = anchorRef.current.getBoundingClientRect();
+    const popoverWidth = 384; // w-96
+    const left = Math.max(
+      8,
+      Math.min(rect.right - popoverWidth, window.innerWidth - popoverWidth - 8),
+    );
+    setPortalPos({ left, top: rect.bottom + 4 });
+  }, [open, anchorRef]);
+
+  // Click-outside for portal mode (containerRef handler in AnimatedPopover is bypassed)
+  useEffect(() => {
+    if (!open || !anchorRef || !portalPos) return;
+    const handler = (e: MouseEvent) => {
+      const target = e.target as Node;
+      const insidePortal = portalDivRef.current?.contains(target) ?? false;
+      const insideAnchor = anchorRef.current?.contains(target) ?? false;
+      if (!insidePortal && !insideAnchor) onClose();
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [open, anchorRef, portalPos, onClose]);
 
   const allCodexTags = useMemo(() => {
     const tagSet = new Set<string>();
@@ -335,197 +377,211 @@ export function PinEntryDialog({
     showSnippetTab,
   ]);
 
-  return (
+  const popover = (
     <AnimatedPopover
       open={open}
-      onClose={onClose}
-      containerRef={containerRef}
-      className="absolute right-0 top-full z-50 mt-1 w-96 rounded-lg border border-border bg-background p-4 shadow-lg"
+      onClose={anchorRef ? undefined : onClose}
+      containerRef={anchorRef ? undefined : containerRef}
+      className={
+        anchorRef
+          ? "fixed z-[9999] w-96 rounded-lg border border-border bg-background p-4 shadow-lg"
+          : "absolute right-0 top-full z-50 mt-1 w-96 rounded-lg border border-border bg-background p-4 shadow-lg"
+      }
+      style={portalPos ?? undefined}
     >
-      <h3 className="mb-3 text-sm font-semibold">
-        {title ?? t("chat.context.pinEntries")}
-      </h3>
+      <div ref={portalDivRef}>
+        <h3 className="mb-3 text-sm font-semibold">
+          {title ?? t("chat.context.pinEntries")}
+        </h3>
 
-      {showTabBar && (
-        <div className="mb-3 flex overflow-hidden rounded-md border border-border">
-          <button
-            type="button"
-            onClick={() => setActiveTab("codex")}
-            className={`flex-1 px-3 py-1 text-xs font-medium transition-colors ${
-              activeTab === "codex"
-                ? "bg-primary text-primary-foreground"
-                : "bg-background text-muted-foreground hover:bg-accent"
-            }`}
-          >
-            Codex
-          </button>
-          <button
-            type="button"
-            onClick={() => setActiveTab("snippet")}
-            className={`flex-1 px-3 py-1 text-xs font-medium transition-colors ${
-              activeTab === "snippet"
-                ? "bg-primary text-primary-foreground"
-                : "bg-background text-muted-foreground hover:bg-accent"
-            }`}
-          >
-            Snippet
-          </button>
-        </div>
-      )}
+        {showTabBar && (
+          <div className="mb-3 flex overflow-hidden rounded-md border border-border">
+            <button
+              type="button"
+              onClick={() => setActiveTab("codex")}
+              className={`flex-1 px-3 py-1 text-xs font-medium transition-colors ${
+                activeTab === "codex"
+                  ? "bg-primary text-primary-foreground"
+                  : "bg-background text-muted-foreground hover:bg-accent"
+              }`}
+            >
+              Codex
+            </button>
+            <button
+              type="button"
+              onClick={() => setActiveTab("snippet")}
+              className={`flex-1 px-3 py-1 text-xs font-medium transition-colors ${
+                activeTab === "snippet"
+                  ? "bg-primary text-primary-foreground"
+                  : "bg-background text-muted-foreground hover:bg-accent"
+              }`}
+            >
+              Snippet
+            </button>
+          </div>
+        )}
 
-      {(!showTabBar || activeTab === "codex") && showCodexTab ? (
-        entries.length === 0 ? (
-          <p className="text-xs text-muted-foreground">
-            {t("chat.context.noCodexEntries")}
-          </p>
-        ) : (
-          <>
-            <div className="relative mb-2">
-              <Search className="absolute left-2 top-1/2 h-3 w-3 -translate-y-1/2 text-muted-foreground" />
-              <input
-                type="text"
-                value={codexSearch}
-                onChange={(e) => setCodexSearch(e.target.value)}
-                placeholder={t("codex.searchPlaceholder")}
-                className="w-full rounded border border-input bg-background py-1 pl-6 pr-2 text-xs focus:outline-none focus:ring-1 focus:ring-ring"
-              />
-            </div>
-
-            <div className="mb-2 flex items-center gap-1.5">
-              <div className="flex min-w-0 flex-1 flex-wrap gap-1">
-                <button
-                  type="button"
-                  onClick={() => setCodexFilterType(null)}
-                  className={`rounded-full px-2 py-0.5 text-[10px] font-medium transition-colors ${
-                    codexFilterType === null
-                      ? "bg-primary text-primary-foreground"
-                      : "bg-muted text-muted-foreground hover:bg-accent"
-                  }`}
-                >
-                  {t("codex.filterAll")}
-                </button>
-                {uniqueCodexTypes.map((type) => (
-                  <button
-                    key={type}
-                    type="button"
-                    onClick={() =>
-                      setCodexFilterType(codexFilterType === type ? null : type)
-                    }
-                    className={`rounded-full px-2 py-0.5 text-[10px] font-medium transition-colors ${
-                      codexFilterType === type
-                        ? "bg-primary text-primary-foreground"
-                        : "bg-muted text-muted-foreground hover:bg-accent"
-                    }`}
-                  >
-                    {getTypeLabel(type)}
-                  </button>
-                ))}
-              </div>
-              <select
-                value={codexSortOrder}
-                onChange={(e) =>
-                  setCodexSortOrder(e.target.value as CodexSortOrder)
-                }
-                title={t("codex.sortOrderTitle")}
-                className="shrink-0 rounded border border-input bg-background px-1 py-0.5 text-[10px] focus:outline-none focus:ring-1 focus:ring-ring"
-              >
-                {DIALOG_CODEX_SORT_OPTIONS.map((opt) => (
-                  <option key={opt.value} value={opt.value}>
-                    {t(opt.key)}
-                  </option>
-                ))}
-              </select>
-            </div>
-
-            {allCodexTags.length > 0 && (
-              <div className="mb-2">
-                <TagFilterBar
-                  allTags={allCodexTags}
-                  selectedTags={codexSelectedTags}
-                  onToggle={(tag) =>
-                    setCodexSelectedTags((prev) => {
-                      const next = new Set(prev);
-                      if (next.has(tag)) next.delete(tag);
-                      else next.add(tag);
-                      return next;
-                    })
-                  }
-                  onClear={() => setCodexSelectedTags(new Set())}
+        {(!showTabBar || activeTab === "codex") && showCodexTab ? (
+          entries.length === 0 ? (
+            <p className="text-xs text-muted-foreground">
+              {t("chat.context.noCodexEntries")}
+            </p>
+          ) : (
+            <>
+              <div className="relative mb-2">
+                <Search className="absolute left-2 top-1/2 h-3 w-3 -translate-y-1/2 text-muted-foreground" />
+                <input
+                  type="text"
+                  value={codexSearch}
+                  onChange={(e) => setCodexSearch(e.target.value)}
+                  placeholder={t("codex.searchPlaceholder")}
+                  className="w-full rounded border border-input bg-background py-1 pl-6 pr-2 text-xs focus:outline-none focus:ring-1 focus:ring-ring"
                 />
               </div>
-            )}
 
-            <PinCodexList
-              entries={filteredCodexEntries}
-              allEntries={entries}
-              pinnedIds={pinnedIds}
-              withChildrenIds={withChildrenIds}
-              onPin={(id) => onPin(id, "codex")}
-              onUnpin={onUnpin}
-              onToggleChildren={onToggleChildren}
-            />
-          </>
-        )
-      ) : showTabBar && activeTab === "snippet" && showSnippetTab ? (
-        snippetEntries.length === 0 ? (
-          <p className="text-xs text-muted-foreground">
-            {t("chat.context.noSnippets")}
-          </p>
-        ) : (
-          <>
-            <div className="relative mb-2">
-              <Search className="absolute left-2 top-1/2 h-3 w-3 -translate-y-1/2 text-muted-foreground" />
-              <input
-                type="text"
-                value={snippetSearch}
-                onChange={(e) => setSnippetSearch(e.target.value)}
-                placeholder={t("snippets.searchPlaceholder")}
-                className="w-full rounded border border-input bg-background py-1 pl-6 pr-2 text-xs focus:outline-none focus:ring-1 focus:ring-ring"
-              />
-            </div>
-
-            <div className="mb-2 flex items-center gap-1.5">
-              <div className="flex min-w-0 flex-1 flex-wrap gap-1">
-                {SNIPPET_SOURCE_OPTIONS.map((opt) => (
+              <div className="mb-2 flex items-center gap-1.5">
+                <div className="flex min-w-0 flex-1 flex-wrap gap-1">
                   <button
-                    key={opt.value}
                     type="button"
-                    onClick={() => setSnippetSourceFilter(opt.value)}
+                    onClick={() => setCodexFilterType(null)}
                     className={`rounded-full px-2 py-0.5 text-[10px] font-medium transition-colors ${
-                      snippetSourceFilter === opt.value
+                      codexFilterType === null
                         ? "bg-primary text-primary-foreground"
                         : "bg-muted text-muted-foreground hover:bg-accent"
                     }`}
                   >
-                    {t(opt.key)}
+                    {t("codex.filterAll")}
                   </button>
-                ))}
+                  {uniqueCodexTypes.map((type) => (
+                    <button
+                      key={type}
+                      type="button"
+                      onClick={() =>
+                        setCodexFilterType(
+                          codexFilterType === type ? null : type,
+                        )
+                      }
+                      className={`rounded-full px-2 py-0.5 text-[10px] font-medium transition-colors ${
+                        codexFilterType === type
+                          ? "bg-primary text-primary-foreground"
+                          : "bg-muted text-muted-foreground hover:bg-accent"
+                      }`}
+                    >
+                      {getTypeLabel(type)}
+                    </button>
+                  ))}
+                </div>
+                <select
+                  value={codexSortOrder}
+                  onChange={(e) =>
+                    setCodexSortOrder(e.target.value as CodexSortOrder)
+                  }
+                  title={t("codex.sortOrderTitle")}
+                  className="shrink-0 rounded border border-input bg-background px-1 py-0.5 text-[10px] focus:outline-none focus:ring-1 focus:ring-ring"
+                >
+                  {DIALOG_CODEX_SORT_OPTIONS.map((opt) => (
+                    <option key={opt.value} value={opt.value}>
+                      {t(opt.key)}
+                    </option>
+                  ))}
+                </select>
               </div>
-              <select
-                value={snippetSortOrder}
-                onChange={(e) =>
-                  setSnippetSortOrder(e.target.value as SnippetSortOrder)
-                }
-                title={t("snippets.sortOrder")}
-                className="shrink-0 rounded border border-input bg-background px-1 py-0.5 text-[10px] focus:outline-none focus:ring-1 focus:ring-ring"
-              >
-                {SNIPPET_SORT_OPTIONS.map((opt) => (
-                  <option key={opt.value} value={opt.value}>
-                    {t(opt.key)}
-                  </option>
-                ))}
-              </select>
-            </div>
 
-            <PinSnippetList
-              snippets={filteredSnippetEntries}
-              pinnedSnippetIds={pinnedSnippetIds ?? new Set()}
-              onPin={(id) => onPin(id, "snippet")}
-              onUnpin={onUnpin}
-            />
-          </>
-        )
-      ) : null}
+              {allCodexTags.length > 0 && (
+                <div className="mb-2">
+                  <TagFilterBar
+                    allTags={allCodexTags}
+                    selectedTags={codexSelectedTags}
+                    onToggle={(tag) =>
+                      setCodexSelectedTags((prev) => {
+                        const next = new Set(prev);
+                        if (next.has(tag)) next.delete(tag);
+                        else next.add(tag);
+                        return next;
+                      })
+                    }
+                    onClear={() => setCodexSelectedTags(new Set())}
+                  />
+                </div>
+              )}
+
+              <PinCodexList
+                entries={filteredCodexEntries}
+                allEntries={entries}
+                pinnedIds={pinnedIds}
+                withChildrenIds={withChildrenIds}
+                onPin={(id) => onPin(id, "codex")}
+                onUnpin={onUnpin}
+                onToggleChildren={onToggleChildren}
+              />
+            </>
+          )
+        ) : showTabBar && activeTab === "snippet" && showSnippetTab ? (
+          snippetEntries.length === 0 ? (
+            <p className="text-xs text-muted-foreground">
+              {t("chat.context.noSnippets")}
+            </p>
+          ) : (
+            <>
+              <div className="relative mb-2">
+                <Search className="absolute left-2 top-1/2 h-3 w-3 -translate-y-1/2 text-muted-foreground" />
+                <input
+                  type="text"
+                  value={snippetSearch}
+                  onChange={(e) => setSnippetSearch(e.target.value)}
+                  placeholder={t("snippets.searchPlaceholder")}
+                  className="w-full rounded border border-input bg-background py-1 pl-6 pr-2 text-xs focus:outline-none focus:ring-1 focus:ring-ring"
+                />
+              </div>
+
+              <div className="mb-2 flex items-center gap-1.5">
+                <div className="flex min-w-0 flex-1 flex-wrap gap-1">
+                  {SNIPPET_SOURCE_OPTIONS.map((opt) => (
+                    <button
+                      key={opt.value}
+                      type="button"
+                      onClick={() => setSnippetSourceFilter(opt.value)}
+                      className={`rounded-full px-2 py-0.5 text-[10px] font-medium transition-colors ${
+                        snippetSourceFilter === opt.value
+                          ? "bg-primary text-primary-foreground"
+                          : "bg-muted text-muted-foreground hover:bg-accent"
+                      }`}
+                    >
+                      {t(opt.key)}
+                    </button>
+                  ))}
+                </div>
+                <select
+                  value={snippetSortOrder}
+                  onChange={(e) =>
+                    setSnippetSortOrder(e.target.value as SnippetSortOrder)
+                  }
+                  title={t("snippets.sortOrder")}
+                  className="shrink-0 rounded border border-input bg-background px-1 py-0.5 text-[10px] focus:outline-none focus:ring-1 focus:ring-ring"
+                >
+                  {SNIPPET_SORT_OPTIONS.map((opt) => (
+                    <option key={opt.value} value={opt.value}>
+                      {t(opt.key)}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <PinSnippetList
+                snippets={filteredSnippetEntries}
+                pinnedSnippetIds={pinnedSnippetIds ?? new Set()}
+                onPin={(id) => onPin(id, "snippet")}
+                onUnpin={onUnpin}
+              />
+            </>
+          )
+        ) : null}
+      </div>
     </AnimatedPopover>
   );
+
+  if (anchorRef && portalPos) {
+    return createPortal(popover, document.body);
+  }
+  return popover;
 }

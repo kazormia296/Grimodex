@@ -141,7 +141,7 @@ interface TreeState {
   moveNode: (
     id: string,
     newParentId: string | null,
-    afterId: string | null,
+    afterId: string | null | undefined,
   ) => Promise<void>;
 
   updateStoryTime: (

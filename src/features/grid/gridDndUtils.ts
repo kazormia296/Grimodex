@@ -8,8 +8,13 @@ export type DragKind = "scene" | "column";
 export interface DropTarget {
   /** New parent for the dragged item */
   targetParentId: string | null;
-  /** Insert after this id (null = prepend) */
-  afterId: string | null;
+  /**
+   * Insert after this sibling id.
+   * null      = prepend (before first child)
+   * undefined = append  (after last child)
+   * string    = insert after that sibling
+   */
+  afterId: string | null | undefined;
 }
 
 /**

@@ -9,6 +9,7 @@ interface AnimatedPopoverProps {
   /** ref wrapping trigger + popover; used for click-outside detection */
   containerRef?: React.RefObject<HTMLElement | null>;
   className?: string;
+  style?: React.CSSProperties;
   children: React.ReactNode;
 }
 
@@ -17,6 +18,7 @@ export function AnimatedPopover({
   onClose,
   containerRef,
   className,
+  style,
   children,
 }: AnimatedPopoverProps) {
   const reduced = useReducedMotion();
@@ -49,6 +51,7 @@ export function AnimatedPopover({
       {open && (
         <motion.div
           className={cn(className)}
+          style={style}
           initial={{ opacity: 0, scale: 0.95 }}
           animate={{ opacity: 1, scale: 1 }}
           exit={{ opacity: 0 }}
