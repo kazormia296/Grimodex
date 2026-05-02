@@ -191,4 +191,51 @@ describe("deriveColumns", () => {
     const cols = deriveColumns(entries, "pov", [], true);
     expect(cols.every((c) => !c.isSectionHeader)).toBe(true);
   });
+
+  // Phase B-2: column operations
+  it("pinnedColumnIds puts those entries first", () => {
+    const entries: Entry[] = [
+      makeEntry("e1", "A", "character"),
+      makeEntry("e2", "B", "character"),
+      makeEntry("e3", "C", "character"),
+    ];
+    const cols = deriveColumns(entries, "codex-all", [], false, {
+      pinnedColumnIds: ["e3"],
+    });
+    const ids = cols.filter((c) => !c.isSectionHeader).map((c) => c.entry!.id);
+    expect(ids[0]).toBe("e3");
+  });
+
+  it("hiddenColumnIds removes those entries", () => {
+    const entries: Entry[] = [
+      makeEntry("e1", "A", "character"),
+      makeEntry("e2", "B", "character"),
+    ];
+    const cols = deriveColumns(entries, "codex-all", [], false, {
+      hiddenColumnIds: ["e2"],
+    });
+    const ids = cols.filter((c) => !c.isSectionHeader).map((c) => c.entry!.id);
+    expect(ids).toEqual(["e1"]);
+    expect(ids).not.toContain("e2");
+  });
+
+  it("collapsedTypeSections removes entries for that type but keeps section header", () => {
+    const entries: Entry[] = [
+      makeEntry("e1", "A", "character"),
+      makeEntry("e2", "B", "location"),
+    ];
+    const cols = deriveColumns(entries, "codex-all", [], true, {
+      collapsedTypeSections: ["character"],
+    });
+    const sectionHeader = cols.find(
+      (c) => c.isSectionHeader && c.sectionType === "character",
+    );
+    expect(sectionHeader).toBeDefined();
+    expect(
+      cols.filter((c) => !c.isSectionHeader).map((c) => c.entry!.id),
+    ).not.toContain("e1");
+    expect(
+      cols.filter((c) => !c.isSectionHeader).map((c) => c.entry!.id),
+    ).toContain("e2");
+  });
 });

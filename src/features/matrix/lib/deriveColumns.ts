@@ -52,6 +52,12 @@ export interface DeriveColumnsOpts {
   subplotTagName?: string;
   /** Entry IDs in the active Custom set */
   customEntryIds?: string[];
+  /** Entry IDs to place first (pinned columns) */
+  pinnedColumnIds?: string[];
+  /** Entry IDs to hide entirely */
+  hiddenColumnIds?: string[];
+  /** Type slugs whose entries are hidden (section header kept) */
+  collapsedTypeSections?: string[];
 }
 
 function parseTags(tagsCache: string | null | undefined): string[] {
@@ -74,7 +80,16 @@ export function deriveColumns(
   groupByType: boolean,
   opts: DeriveColumnsOpts = {},
 ): MatrixColumnOrHeader[] {
-  const { subplotTagName = "subplot", customEntryIds } = opts;
+  const {
+    subplotTagName = "subplot",
+    customEntryIds,
+    pinnedColumnIds,
+    hiddenColumnIds,
+    collapsedTypeSections,
+  } = opts;
+  const hiddenSet = new Set(hiddenColumnIds ?? []);
+  const pinnedSet = new Set(pinnedColumnIds ?? []);
+  const collapsedSections = new Set(collapsedTypeSections ?? []);
 
   let filtered: typeof allEntries;
 
@@ -107,15 +122,21 @@ export function deriveColumns(
     });
   }
 
+  // Remove hidden entries
+  if (hiddenSet.size > 0) {
+    filtered = filtered.filter((e) => !hiddenSet.has(e.id));
+  }
+
   // Never group-by-type for single-type or custom modes
   const shouldGroup = groupByType && !NO_GROUP_MODES.has(showMode);
 
   if (!shouldGroup) {
-    return filtered.map((e) => ({
+    const cols: MatrixColumnOrHeader[] = filtered.map((e) => ({
       key: e.id,
       entry: e,
       isSectionHeader: false as const,
     }));
+    return applyPinOrder(cols, pinnedSet);
   }
 
   // Group by type in canonical order
@@ -136,9 +157,33 @@ export function deriveColumns(
       isSectionHeader: true,
       sectionType: type,
     });
+    // If the type section is collapsed, skip its entries (but keep the header)
+    if (collapsedSections.has(type)) continue;
     for (const e of entries) {
       result.push({ key: e.id, entry: e, isSectionHeader: false });
     }
   }
-  return result;
+  return applyPinOrder(result, pinnedSet);
+}
+
+/**
+ * Move pinned entry columns to the front while preserving relative order
+ * of both pinned and unpinned groups. Section headers stay with their entries.
+ */
+function applyPinOrder(
+  cols: MatrixColumnOrHeader[],
+  pinnedSet: Set<string>,
+): MatrixColumnOrHeader[] {
+  if (pinnedSet.size === 0) return cols;
+  const pinned: MatrixColumnOrHeader[] = [];
+  const rest: MatrixColumnOrHeader[] = [];
+  for (const col of cols) {
+    const id = col.isSectionHeader ? null : col.entry.id;
+    if (id && pinnedSet.has(id)) {
+      pinned.push(col);
+    } else {
+      rest.push(col);
+    }
+  }
+  return [...pinned, ...rest];
 }

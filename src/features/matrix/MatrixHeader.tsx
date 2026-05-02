@@ -50,6 +50,10 @@ export function MatrixHeader({ availableTags }: Props) {
   const setTagFilter = useMatrixStore((s) => s.setTagFilter);
   const searchQuery = useMatrixStore((s) => s.searchQuery);
   const setSearchQuery = useMatrixStore((s) => s.setSearchQuery);
+  const hideEmptyRows = useMatrixStore((s) => s.hideEmptyRows);
+  const onlyUneditedRows = useMatrixStore((s) => s.onlyUneditedRows);
+  const setHideEmptyRows = useMatrixStore((s) => s.setHideEmptyRows);
+  const setOnlyUneditedRows = useMatrixStore((s) => s.setOnlyUneditedRows);
 
   const [searchOpen, setSearchOpen] = useState(false);
   const [tagInput, setTagInput] = useState("");
@@ -172,6 +176,34 @@ export function MatrixHeader({ availableTags }: Props) {
                   {m.label}
                 </button>
               ))}
+              <div className="my-1 border-t border-border/50" />
+              <div className="px-3 py-2 text-[10px] font-semibold uppercase text-muted-foreground">
+                Row filters
+              </div>
+              <button
+                type="button"
+                className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs hover:bg-accent"
+                onClick={() => setHideEmptyRows(!hideEmptyRows)}
+              >
+                <span>
+                  {hideEmptyRows ? "✓" : <span className="w-3 inline-block" />}
+                </span>
+                空セルを非表示
+              </button>
+              <button
+                type="button"
+                className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs hover:bg-accent"
+                onClick={() => setOnlyUneditedRows(!onlyUneditedRows)}
+              >
+                <span>
+                  {onlyUneditedRows ? (
+                    "✓"
+                  ) : (
+                    <span className="w-3 inline-block" />
+                  )}
+                </span>
+                未編集シーンのみ
+              </button>
             </div>
           )}
         </div>

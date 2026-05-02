@@ -6,6 +6,7 @@ import { SceneCellMenu } from "./menu/SceneCellMenu";
 import { ChapterCellMenu } from "./menu/ChapterCellMenu";
 import { SceneRowHeaderMenu } from "./menu/SceneRowHeaderMenu";
 import { ChapterRowHeaderMenu } from "./menu/ChapterRowHeaderMenu";
+import { ColumnHeaderMenu } from "./menu/ColumnHeaderMenu";
 import { ScenePopover } from "./menu/ScenePopover";
 import { BeatPopover } from "./menu/BeatPopover";
 import type { MatrixRow } from "./lib/deriveRows";
@@ -21,7 +22,12 @@ const ROW_HEADER_WIDTH = 200;
 const COL_HEADER_HEIGHT = 40;
 
 interface ContextMenuState {
-  type: "scene-cell" | "chapter-cell" | "scene-header" | "chapter-header";
+  type:
+    | "scene-cell"
+    | "chapter-cell"
+    | "scene-header"
+    | "chapter-header"
+    | "column-header";
   x: number;
   y: number;
   rowIndex: number;
@@ -72,6 +78,11 @@ export function MatrixTable({
 }: Props) {
   const toggleRowCollapsed = useMatrixStore((s) => s.toggleRowCollapsed);
   const collapsedRowIds = useMatrixStore((s) => s.collapsedRowIds);
+  const pinnedColumnIds = useMatrixStore((s) => s.pinnedColumnIds);
+  const collapsedTypeSections = useMatrixStore((s) => s.collapsedTypeSections);
+  const togglePinnedColumn = useMatrixStore((s) => s.togglePinnedColumn);
+  const toggleHiddenColumn = useMatrixStore((s) => s.toggleHiddenColumn);
+  const toggleTypeSection = useMatrixStore((s) => s.toggleTypeSection);
 
   const containerRef = useRef<HTMLDivElement>(null);
 
@@ -126,6 +137,20 @@ export function MatrixTable({
       });
     },
     [rows],
+  );
+
+  const handleColHeaderContextMenu = useCallback(
+    (e: React.MouseEvent, colIdx: number) => {
+      e.preventDefault();
+      setContextMenu({
+        type: "column-header",
+        x: e.clientX,
+        y: e.clientY,
+        rowIndex: -1,
+        colIndex: colIdx,
+      });
+    },
+    [],
   );
 
   function openAddScene(rowIdx: number, colIdx: number, x: number, y: number) {
@@ -223,6 +248,7 @@ export function MatrixTable({
                 }}
                 className="flex items-end justify-center overflow-hidden border-r border-border/30 pb-1"
                 title={col.entry.name}
+                onContextMenu={(e) => handleColHeaderContextMenu(e, vc.index)}
               >
                 <span
                   className="max-w-full truncate px-1 text-[10px]"
@@ -473,6 +499,31 @@ export function MatrixTable({
                     onRename={() => onRenameNode(row.node.id, row.node.title)}
                     onShowInScenes={() => onRevealInScenes(row.node.id)}
                     onToggleCollapse={() => toggleRowCollapsed(row.node.id)}
+                  />
+                );
+              })()}
+            {contextMenu.type === "column-header" &&
+              (() => {
+                const col = columns[contextMenu.colIndex];
+                if (!col || col.isSectionHeader) return null;
+                const isPinned = pinnedColumnIds.includes(col.entry.id);
+                const isSectionCollapsed = collapsedTypeSections.includes(
+                  col.entry.type,
+                );
+                return (
+                  <ColumnHeaderMenu
+                    x={contextMenu.x}
+                    y={contextMenu.y}
+                    entryName={col.entry.name}
+                    entryType={col.entry.type}
+                    isPinned={isPinned}
+                    isSectionCollapsed={isSectionCollapsed}
+                    onClose={closeAll}
+                    onTogglePin={() => togglePinnedColumn(col.entry.id)}
+                    onHide={() => toggleHiddenColumn(col.entry.id)}
+                    onToggleTypeSection={() =>
+                      toggleTypeSection(col.entry.type)
+                    }
                   />
                 );
               })()}

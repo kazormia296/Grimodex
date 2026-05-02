@@ -129,4 +129,56 @@ describe("deriveRows", () => {
       isFolder: false,
     });
   });
+
+  // Phase B-2: row filter options
+  it("hideEmpty removes scene rows with no cellMap entries", () => {
+    const nodes: TreeNodeData[] = [
+      makeScene("s1", null, "a"),
+      makeScene("s2", null, "b"),
+    ];
+    const cellMap = new Map([["s1::e1", {} as never]]);
+    const rows = deriveRows(nodes, new Set(), null, {
+      hideEmpty: true,
+      cellMap,
+    });
+    expect(rows.map((r) => r.node.id)).toEqual(["s1"]);
+  });
+
+  it("hideEmpty removes folder whose all child scenes are empty", () => {
+    const nodes: TreeNodeData[] = [
+      makeFolder("f1", null, "a"),
+      makeScene("s1", "f1", "a"),
+    ];
+    const cellMap = new Map<string, never>();
+    const rows = deriveRows(nodes, new Set(), null, {
+      hideEmpty: true,
+      cellMap,
+    });
+    expect(rows).toHaveLength(0);
+  });
+
+  it("hideEmpty keeps folder when at least one child scene has cells", () => {
+    const nodes: TreeNodeData[] = [
+      makeFolder("f1", null, "a"),
+      makeScene("s1", "f1", "a"),
+      makeScene("s2", "f1", "b"),
+    ];
+    const cellMap = new Map([["s1::e1", {} as never]]);
+    const rows = deriveRows(nodes, new Set(), null, {
+      hideEmpty: true,
+      cellMap,
+    });
+    expect(rows.map((r) => r.node.id)).toContain("f1");
+    expect(rows.map((r) => r.node.id)).toContain("s1");
+    expect(rows.map((r) => r.node.id)).not.toContain("s2");
+  });
+
+  it("onlyUnedited keeps only scenes with charCount === 0", () => {
+    const nodes: TreeNodeData[] = [
+      { ...makeScene("s1", null, "a"), charCount: 0 },
+      { ...makeScene("s2", null, "b"), charCount: 100 },
+    ];
+    const rows = deriveRows(nodes, new Set(), null, { onlyUnedited: true });
+    expect(rows.map((r) => r.node.id)).toEqual(["s1"]);
+  });
 });

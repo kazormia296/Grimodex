@@ -29,6 +29,8 @@ export interface MatrixSettings {
   tagFilter: Record<ShowMode, string[]>;
   customSets: CustomSet[];
   activeCustomSetId: string | null;
+  hideEmptyRows: boolean;
+  onlyUneditedRows: boolean;
   bodyBackfillCompleted: boolean;
 }
 
@@ -56,6 +58,8 @@ const DEFAULT_SETTINGS: MatrixSettings = {
   tagFilter: { ...DEFAULT_TAG_FILTER },
   customSets: [],
   activeCustomSetId: null,
+  hideEmptyRows: false,
+  onlyUneditedRows: false,
   bodyBackfillCompleted: false,
 };
 
@@ -69,6 +73,11 @@ interface MatrixState extends MatrixSettings {
   setDisplayMode: (mode: DisplayMode) => void;
   setTagFilter: (mode: ShowMode, tags: string[]) => void;
   setGroupCodexByType: (v: boolean) => void;
+  setHideEmptyRows: (v: boolean) => void;
+  setOnlyUneditedRows: (v: boolean) => void;
+  togglePinnedColumn: (id: string) => void;
+  toggleHiddenColumn: (id: string) => void;
+  toggleTypeSection: (type: string) => void;
   setSearchQuery: (q: string) => void;
   toggleRowCollapsed: (id: string) => void;
   loadFromSettings: (settings: GlobalSettings) => void;
@@ -96,6 +105,36 @@ export const useMatrixStore = create<MatrixState>()((set, get) => ({
   },
   setGroupCodexByType(v) {
     set({ groupCodexByType: v, settingsSaved: false });
+  },
+  setHideEmptyRows(v) {
+    set({ hideEmptyRows: v, settingsSaved: false });
+  },
+  setOnlyUneditedRows(v) {
+    set({ onlyUneditedRows: v, settingsSaved: false });
+  },
+  togglePinnedColumn(id) {
+    set((s) => {
+      const pinned = s.pinnedColumnIds.includes(id)
+        ? s.pinnedColumnIds.filter((x) => x !== id)
+        : [...s.pinnedColumnIds, id];
+      return { pinnedColumnIds: pinned, settingsSaved: false };
+    });
+  },
+  toggleHiddenColumn(id) {
+    set((s) => {
+      const hidden = s.hiddenColumnIds.includes(id)
+        ? s.hiddenColumnIds.filter((x) => x !== id)
+        : [...s.hiddenColumnIds, id];
+      return { hiddenColumnIds: hidden, settingsSaved: false };
+    });
+  },
+  toggleTypeSection(type) {
+    set((s) => {
+      const collapsed = s.collapsedTypeSections.includes(type)
+        ? s.collapsedTypeSections.filter((x) => x !== type)
+        : [...s.collapsedTypeSections, type];
+      return { collapsedTypeSections: collapsed, settingsSaved: false };
+    });
   },
   setSearchQuery(q) {
     set({ searchQuery: q });
@@ -126,6 +165,8 @@ export const useMatrixStore = create<MatrixState>()((set, get) => ({
       tagFilter: { ...DEFAULT_TAG_FILTER, ...(saved.tagFilter ?? {}) },
       customSets: saved.customSets ?? [],
       activeCustomSetId: saved.activeCustomSetId ?? null,
+      hideEmptyRows: saved.hideEmptyRows ?? false,
+      onlyUneditedRows: saved.onlyUneditedRows ?? false,
       bodyBackfillCompleted: saved.bodyBackfillCompleted ?? false,
       settingsSaved: true,
     });
@@ -152,6 +193,8 @@ function snapshotPersistent(s: MatrixState): MatrixSettings {
     tagFilter: s.tagFilter,
     customSets: s.customSets,
     activeCustomSetId: s.activeCustomSetId,
+    hideEmptyRows: s.hideEmptyRows,
+    onlyUneditedRows: s.onlyUneditedRows,
     bodyBackfillCompleted: s.bodyBackfillCompleted,
   };
 }

@@ -45,6 +45,11 @@ export function MatrixPanel() {
   const subplotTagName = useMatrixStore((s) => s.subplotTagName);
   const customSets = useMatrixStore((s) => s.customSets);
   const activeCustomSetId = useMatrixStore((s) => s.activeCustomSetId);
+  const hideEmptyRows = useMatrixStore((s) => s.hideEmptyRows);
+  const onlyUneditedRows = useMatrixStore((s) => s.onlyUneditedRows);
+  const pinnedColumnIds = useMatrixStore((s) => s.pinnedColumnIds);
+  const hiddenColumnIds = useMatrixStore((s) => s.hiddenColumnIds);
+  const collapsedTypeSections = useMatrixStore((s) => s.collapsedTypeSections);
 
   // Raw mentions from DB
   const [mentions, setMentions] = useState<MentionRow[]>([]);
@@ -123,9 +128,44 @@ export function MatrixPanel() {
     return sceneNodes;
   }, [nodes, sortMode]);
 
-  const rows = useMemo(
-    () => deriveRows(sortedNodes, collapsedRowIds, searchQuery || null),
+  // Derive cell map first (rows depends on it for hideEmpty)
+  const cellMap = useMemo(
+    () =>
+      deriveCellMap(
+        mentions as {
+          sceneId: string;
+          codexEntryId: string;
+          source: CellSource;
+          role: string;
+        }[],
+      ),
+    [mentions],
+  );
+
+  // Total visible scene count before row filters (for status bar)
+  const totalSceneCount = useMemo(
+    () =>
+      deriveRows(sortedNodes, collapsedRowIds, searchQuery || null).filter(
+        (r) => !r.isFolder,
+      ).length,
     [sortedNodes, collapsedRowIds, searchQuery],
+  );
+
+  const rows = useMemo(
+    () =>
+      deriveRows(sortedNodes, collapsedRowIds, searchQuery || null, {
+        hideEmpty: hideEmptyRows,
+        onlyUnedited: onlyUneditedRows,
+        cellMap,
+      }),
+    [
+      sortedNodes,
+      collapsedRowIds,
+      searchQuery,
+      hideEmptyRows,
+      onlyUneditedRows,
+      cellMap,
+    ],
   );
 
   // Active custom set entry IDs
@@ -149,7 +189,13 @@ export function MatrixPanel() {
       showMode,
       tagFilter[showMode] ?? [],
       groupCodexByType,
-      { subplotTagName, customEntryIds: activeCustomEntryIds },
+      {
+        subplotTagName,
+        customEntryIds: activeCustomEntryIds,
+        pinnedColumnIds,
+        hiddenColumnIds,
+        collapsedTypeSections,
+      },
     );
   }, [
     allEntries,
@@ -158,24 +204,37 @@ export function MatrixPanel() {
     groupCodexByType,
     subplotTagName,
     activeCustomEntryIds,
+    pinnedColumnIds,
+    hiddenColumnIds,
+    collapsedTypeSections,
   ]);
-
-  // Derive cell map
-  const cellMap = useMemo(
-    () =>
-      deriveCellMap(
-        mentions as {
-          sceneId: string;
-          codexEntryId: string;
-          source: CellSource;
-          role: string;
-        }[],
-      ),
-    [mentions],
-  );
 
   // Stats
   const sceneCount = rows.filter((r) => !r.isFolder).length;
+  const totalCodexCount = useMemo(() => {
+    const targets = allEntries.map((e) => ({
+      id: e.id,
+      name: e.name,
+      type: e.type,
+      aliases: e.aliases ?? undefined,
+      excludedAliases: e.excludedAliases ?? undefined,
+      tagsCache: e.tagsCache,
+    }));
+    return deriveColumns(
+      targets,
+      showMode,
+      tagFilter[showMode] ?? [],
+      groupCodexByType,
+      { subplotTagName, customEntryIds: activeCustomEntryIds },
+    ).filter((c) => !c.isSectionHeader).length;
+  }, [
+    allEntries,
+    showMode,
+    tagFilter,
+    groupCodexByType,
+    subplotTagName,
+    activeCustomEntryIds,
+  ]);
   const codexCount = columns.filter((c) => !c.isSectionHeader).length;
   const filledCells = cellMap.size;
 
@@ -260,7 +319,9 @@ export function MatrixPanel() {
       />
       <MatrixStatusBar
         sceneCount={sceneCount}
+        totalSceneCount={totalSceneCount}
         codexCount={codexCount}
+        totalCodexCount={totalCodexCount}
         filledCells={filledCells}
       />
     </div>
