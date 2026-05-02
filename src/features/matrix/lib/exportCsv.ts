@@ -2,11 +2,20 @@ import type { MatrixRow } from "./deriveRows";
 import type { MatrixColumnOrHeader } from "./deriveColumns";
 import type { CellInfo } from "./deriveCells";
 
+// Prevent CSV formula injection: spreadsheets execute leading =/+/-/@/\t/\r as formulas.
+const FORMULA_PREFIX = /^[=+\-@\t\r]/;
+
 function csvEscape(value: string): string {
-  if (value.includes(",") || value.includes('"') || value.includes("\n")) {
-    return `"${value.replace(/"/g, '""')}"`;
+  const safe = FORMULA_PREFIX.test(value) ? `'${value}` : value;
+  if (
+    safe.includes(",") ||
+    safe.includes('"') ||
+    safe.includes("\n") ||
+    safe.includes("\r")
+  ) {
+    return `"${safe.replace(/"/g, '""')}"`;
   }
-  return value;
+  return safe;
 }
 
 /**

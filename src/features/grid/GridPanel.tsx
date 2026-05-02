@@ -91,7 +91,16 @@ export function GridPanel() {
 
   // Esc: clear selection
   useEffect(() => {
+    function isEditableTarget(): boolean {
+      const el = document.activeElement;
+      if (!el) return false;
+      const tag = el.tagName;
+      if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT")
+        return true;
+      return (el as HTMLElement).isContentEditable;
+    }
     function handleKey(e: KeyboardEvent) {
+      if (isEditableTarget()) return;
       if (e.key === "Escape" && !deleteConfirmIds) {
         clearSelection();
       }

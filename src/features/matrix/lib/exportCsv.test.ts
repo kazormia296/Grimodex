@@ -147,6 +147,33 @@ describe("buildCsvString", () => {
     expect(csv.split("\n")[1]).toBe("s1,S1,R");
   });
 
+  it("neutralizes leading =/+/-/@ to prevent formula injection", () => {
+    const rows = [
+      makeScene("s1", "=cmd|'/c calc'!A1"),
+      makeScene("s2", "+attack"),
+      makeScene("s3", "-1+1"),
+      makeScene("s4", "@SUM(A1)"),
+    ];
+    const cols = [makeCol("e1", "=danger")];
+    const cellMap = new Map<string, CellInfo>();
+    const csv = buildCsvString(rows, cols, cellMap);
+    const lines = csv.split("\n");
+    expect(lines[0]).toBe(`scene_id,scene_title,'=danger`);
+    expect(lines[1]).toBe(`s1,'=cmd|'/c calc'!A1,""`);
+    expect(lines[2]).toBe(`s2,'+attack,""`);
+    expect(lines[3]).toBe(`s3,'-1+1,""`);
+    expect(lines[4]).toBe(`s4,'@SUM(A1),""`);
+  });
+
+  it("escapes bare CR in title to prevent record corruption", () => {
+    const rows = [makeScene("s1", "line1\rline2")];
+    const cols = [makeCol("e1", "Alice")];
+    const cellMap = new Map<string, CellInfo>();
+    const csv = buildCsvString(rows, cols, cellMap);
+    const lines = csv.split("\n");
+    expect(lines[1]).toBe(`s1,"line1\rline2",""`);
+  });
+
   it("multiple columns in correct order", () => {
     const rows = [makeScene("s1", "S1")];
     const cols = [makeCol("e1", "Alice"), makeCol("e2", "Bob")];
