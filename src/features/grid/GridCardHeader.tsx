@@ -67,7 +67,10 @@ export function GridCardHeader({
             "flex-1 min-w-0 text-left text-[12px] font-medium leading-snug truncate",
             "hover:text-accent-foreground",
           )}
-          onClick={onTitleClick}
+          onClick={(e) => {
+            e.stopPropagation();
+            onTitleClick?.();
+          }}
           onDoubleClick={startEdit}
           title={title}
         >

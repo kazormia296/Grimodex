@@ -31,7 +31,9 @@ interface Props {
   visibility: Map<string, CardVisibility>;
   dropIndicator?: DropIndicator | null;
   columnDropIndicator?: ColumnDropIndicator | null;
-  onRequestDeleteConfirm?: (sceneId: string) => void;
+  onRequestDeleteConfirm?: (sceneIds: string[]) => void;
+  /** Flat scene order across all columns, for range selection. */
+  flatOrder?: string[];
 }
 
 export function GridColumn({
@@ -43,6 +45,7 @@ export function GridColumn({
   dropIndicator,
   columnDropIndicator,
   onRequestDeleteConfirm,
+  flatOrder,
 }: Props) {
   const { t } = useTranslation();
   const [editingTitle, setEditingTitle] = useState(false);
@@ -220,6 +223,7 @@ export function GridColumn({
                       dimmed={vis !== undefined && !vis.matchesSearch}
                       dropIndicator={dropIndicator}
                       onRequestDeleteConfirm={onRequestDeleteConfirm}
+                      flatOrder={flatOrder}
                     />
                   </div>
                 );

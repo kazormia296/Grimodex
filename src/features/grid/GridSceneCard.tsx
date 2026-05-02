@@ -15,15 +15,17 @@ import { GridCardMenu } from "./GridCardMenu";
 import { sceneDraggableId, sceneDroppableId } from "./gridDndUtils";
 import type { DropIndicator } from "./gridDndUtils";
 import type { GridDisplaySettings } from "./gridStore";
+import { useGridStore } from "./gridStore";
 
 interface Props {
   scene: TreeNodeData;
   display: GridDisplaySettings;
   dimmed?: boolean;
   dropIndicator?: DropIndicator | null;
-  /** Called when the scene has content/synopsis and needs a delete confirm
-   *  modal. The parent (GridPanel) renders the modal scoped to its panel. */
-  onRequestDeleteConfirm?: (sceneId: string) => void;
+  /** Called when delete is requested (single or multi-select). */
+  onRequestDeleteConfirm?: (sceneIds: string[]) => void;
+  /** Flat scene order for range selection (Shift+Click). */
+  flatOrder?: string[];
 }
 
 export function GridSceneCard({
@@ -32,6 +34,7 @@ export function GridSceneCard({
   dimmed,
   dropIndicator,
   onRequestDeleteConfirm,
+  flatOrder,
 }: Props) {
   const { t } = useTranslation();
   const [menuOpen, setMenuOpen] = useState(false);
@@ -45,12 +48,27 @@ export function GridSceneCard({
   );
   const deleteNode = useTreeStore((s) => s.deleteNode);
 
+  const isSelected = useGridStore((s) => s.selectedSceneIds.has(scene.id));
+  const isRevealed = useGridStore((s) => s.revealedSceneId === scene.id);
+  const selectOnly = useGridStore((s) => s.selectOnly);
+  const toggleSelection = useGridStore((s) => s.toggleSelection);
+  const rangeSelect = useGridStore((s) => s.rangeSelect);
+  const clearSelection = useGridStore((s) => s.clearSelection);
+
   function requestDelete() {
-    const needsConfirm = liveCharCount > 0 || !!scene.synopsis;
-    if (needsConfirm && onRequestDeleteConfirm) {
-      onRequestDeleteConfirm(scene.id);
+    const { selectedSceneIds } = useGridStore.getState();
+    const isMultiSelect =
+      selectedSceneIds.has(scene.id) && selectedSceneIds.size > 1;
+    if (isMultiSelect) {
+      onRequestDeleteConfirm?.(Array.from(selectedSceneIds));
     } else {
-      void deleteNode(scene.id);
+      const needsConfirm = liveCharCount > 0 || !!scene.synopsis;
+      if (needsConfirm && onRequestDeleteConfirm) {
+        onRequestDeleteConfirm([scene.id]);
+      } else {
+        clearSelection();
+        void deleteNode(scene.id);
+      }
     }
   }
 
@@ -100,12 +118,24 @@ export function GridSceneCard({
     }
   }
 
+  function handleCardClick(e: React.MouseEvent) {
+    if (isEditing || addingBeat) return;
+    if (e.metaKey || e.ctrlKey) {
+      toggleSelection(scene.id);
+    } else if (e.shiftKey) {
+      rangeSelect(scene.id, flatOrder ?? []);
+    } else {
+      selectOnly(scene.id);
+    }
+  }
+
   return (
     <div
       ref={(node) => {
         setDragRef(node);
         setDropRef(node);
       }}
+      data-grid-scene-id={scene.id}
       style={{
         paddingTop: isDropBefore ? GAP : 0,
         paddingBottom: isDropAfter ? GAP : 0,
@@ -113,12 +143,19 @@ export function GridSceneCard({
       }}
     >
       <div
+        tabIndex={0}
+        role="option"
+        aria-selected={isSelected}
         className={cn(
           "relative rounded-md border bg-card text-card-foreground shadow-sm",
-          "flex flex-col select-none",
+          "flex flex-col select-none outline-none",
           (isDragging || dimmed) && "opacity-40",
+          isSelected && "ring-2 ring-primary border-primary/60 bg-primary/5",
+          isRevealed &&
+            "ring-2 ring-amber-400 border-amber-400/60 bg-amber-400/10",
         )}
         style={{ transition: "opacity 120ms ease-out" }}
+        onClick={handleCardClick}
       >
         {/* Drag handle area */}
         <div
@@ -127,6 +164,20 @@ export function GridSceneCard({
           className="absolute inset-x-0 top-0 h-4 cursor-grab active:cursor-grabbing rounded-t-md"
           aria-label="ドラッグして移動"
         />
+
+        {isSelected && (
+          <div className="absolute left-1.5 top-1.5 z-10 h-3.5 w-3.5 rounded-full bg-primary flex items-center justify-center">
+            <svg
+              viewBox="0 0 10 10"
+              className="h-2 w-2 text-primary-foreground"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="1.5"
+            >
+              <polyline points="1.5,5 4,8 8.5,2" />
+            </svg>
+          </div>
+        )}
 
         <GridCardHeader
           nodeId={scene.id}

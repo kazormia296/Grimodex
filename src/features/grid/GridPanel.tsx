@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   DndContext,
   DragOverlay,
@@ -18,12 +18,15 @@ import { useCodexStore } from "@/features/codex/codexStore";
 import { useSceneCodexPinsStore } from "@/features/codex/sceneCodexPinsStore";
 import { cmpKeys } from "@/features/tree/fractionalIndex";
 import { useGridStore } from "./gridStore";
-import { useGridDerivedData } from "./gridSelectors";
+import { useGridDerivedData, useGridFlatSceneOrder } from "./gridSelectors";
 import { useGridCardVisibility } from "./useGridCardVisibility";
 import { GridHeader } from "./GridHeader";
 import { GridColumn } from "./GridColumn";
 import { GridLooseColumn } from "./GridLooseColumn";
 import { GridStatusBar } from "./GridStatusBar";
+import { GridSelectionToolbar } from "./GridSelectionToolbar";
+import { moveScenesToChapter } from "./bulkSceneOps";
+import { resolveContainerForScene } from "./gridReveal";
 import {
   activeDragKind,
   computeSceneDropTarget,
@@ -40,6 +43,7 @@ export function GridPanel() {
   const moveNode = useTreeStore((s) => s.moveNode);
   const nodes = useTreeStore((s) => s.nodes);
   const charCounts = useTreeStore((s) => s.charCounts);
+  const deleteNode = useTreeStore((s) => s.deleteNode);
 
   const containerId = useGridStore((s) => s.containerId);
   const display = useGridStore((s) => s.display);
@@ -47,11 +51,16 @@ export function GridPanel() {
   const searchQuery = useGridStore((s) => s.searchQuery);
   const setContainerId = useGridStore((s) => s.setContainerId);
   const loadForProject = useGridStore((s) => s.loadForProject);
+  const clearSelection = useGridStore((s) => s.clearSelection);
+  const selectAll = useGridStore((s) => s.selectAll);
+  const selectedSceneIds = useGridStore((s) => s.selectedSceneIds);
+  const pendingRevealSceneId = useGridStore((s) => s.pendingRevealSceneId);
 
   const pinsByScene = useSceneCodexPinsStore((s) => s.pinsByScene);
 
   const { chapters, looseScenes, orderedColumns, totalChapters, totalScenes } =
     useGridDerivedData(containerId);
+  const flatOrder = useGridFlatSceneOrder(containerId);
 
   const [activeId, setActiveId] = useState<string | null>(null);
   const [showPanelMenu, setShowPanelMenu] = useState(false);
@@ -60,12 +69,12 @@ export function GridPanel() {
   );
   const [columnDropIndicator, setColumnDropIndicator] =
     useState<ColumnDropIndicator | null>(null);
-  const [deleteConfirmSceneId, setDeleteConfirmSceneId] = useState<
-    string | null
-  >(null);
-  const deleteNode = useTreeStore((s) => s.deleteNode);
+  const [deleteConfirmIds, setDeleteConfirmIds] = useState<string[] | null>(
+    null,
+  );
   const pointerYRef = useRef(0);
   const pointerXRef = useRef(0);
+  const panelRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     void loadForProject(projectId);
@@ -79,6 +88,103 @@ export function GridPanel() {
     window.addEventListener("pointermove", handler);
     return () => window.removeEventListener("pointermove", handler);
   }, []);
+
+  // Esc: clear selection
+  useEffect(() => {
+    function handleKey(e: KeyboardEvent) {
+      if (e.key === "Escape" && !deleteConfirmIds) {
+        clearSelection();
+      }
+      // Cmd/Ctrl+A: select all visible scenes (only when panel is focused)
+      if (
+        (e.key === "a" || e.key === "A") &&
+        (e.metaKey || e.ctrlKey) &&
+        !e.shiftKey
+      ) {
+        const panel = panelRef.current;
+        if (
+          panel &&
+          (panel.contains(document.activeElement) ||
+            panel === document.activeElement)
+        ) {
+          e.preventDefault();
+          selectAll(flatOrder);
+        }
+      }
+    }
+    document.addEventListener("keydown", handleKey);
+    return () => document.removeEventListener("keydown", handleKey);
+  }, [clearSelection, selectAll, flatOrder, deleteConfirmIds]);
+
+  // Click outside: clear selection
+  function handlePanelClick(e: React.MouseEvent<HTMLDivElement>) {
+    const target = e.target as HTMLElement;
+    // If click landed directly on the panel background (not a card or button), clear selection
+    if (
+      target === panelRef.current ||
+      (target.closest("[data-grid-scene-id]") === null &&
+        !target.closest("button") &&
+        !target.closest("[role='option']"))
+    ) {
+      clearSelection();
+    }
+  }
+
+  // Reveal: respond to pendingRevealSceneId from Matrix → Grid cross-nav
+  useEffect(() => {
+    if (!pendingRevealSceneId) return;
+    useGridStore.getState().clearPendingReveal();
+
+    const nodesById = Object.fromEntries(nodes.map((n) => [n.id, n]));
+    const resolution = resolveContainerForScene(
+      pendingRevealSceneId,
+      nodesById,
+    );
+
+    if (resolution.type === "not_found") {
+      console.warn("[Grid] reveal: scene not found", pendingRevealSceneId);
+      return;
+    }
+
+    if (resolution.type === "set") {
+      void setContainerId(projectId, resolution.containerId);
+    }
+
+    const sceneId = pendingRevealSceneId;
+    let attempts = 0;
+    function tryScroll() {
+      const el = document.querySelector(`[data-grid-scene-id="${sceneId}"]`);
+      if (el) {
+        el.scrollIntoView({ block: "center", behavior: "smooth" });
+        useGridStore.getState().setRevealedSceneId(sceneId);
+        useGridStore.getState().selectOnly(sceneId);
+        setTimeout(() => {
+          useGridStore.getState().clearRevealedSceneId();
+        }, 1200);
+      } else if (attempts < 15) {
+        attempts++;
+        requestAnimationFrame(tryScroll);
+      }
+    }
+    requestAnimationFrame(tryScroll);
+  }, [pendingRevealSceneId, nodes, projectId, setContainerId]);
+
+  // Bulk delete handler
+  const handleDeleteScenes = useCallback(
+    (ids: string[]) => {
+      const anyHasContent = ids.some((id) => {
+        const n = nodes.find((node) => node.id === id);
+        return n && ((charCounts[id] ?? n.charCount ?? 0) > 0 || !!n.synopsis);
+      });
+      if (anyHasContent) {
+        setDeleteConfirmIds(ids);
+      } else {
+        clearSelection();
+        for (const id of ids) void deleteNode(id);
+      }
+    },
+    [nodes, charCounts, clearSelection, deleteNode],
+  );
 
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
@@ -115,8 +221,6 @@ export function GridPanel() {
       const activeNode = nodes.find((n) => n.id === folderId);
       const activeParent = activeNode?.parentId ?? null;
 
-      // Same-parent vertical reorder: drop on a scene-drop in the same parent
-      // → show scene-gap indicator (before/after by pointerY), skip column ind.
       if (overId.startsWith("scene-drop-")) {
         const sceneId = overId.slice("scene-drop-".length);
         const sceneNode = nodes.find((n) => n.id === sceneId);
@@ -135,13 +239,6 @@ export function GridPanel() {
       const orderedSiblings: Array<{ id: string; parentId: string | null }> =
         [];
       const sceneParentMap: Record<string, string | null> = {};
-      // CRITICAL: orderedSiblings must be sorted by sortOrder (visual order),
-      // not nodes-array insertion order. isAdjacentColumnNoOp and predecessor
-      // calculations both rely on indexOf reflecting visual adjacency.
-      // Includes BOTH folders and scenes so predecessor calculations correctly
-      // see scene siblings (e.g. loose-column scenes between two chapter
-      // folders). Folder-only ordering missed those and produced afterId=null
-      // when dropping a Part between a loose column and a chapter column.
       const sortedNodes = [...nodes].sort((a, b) =>
         cmpKeys(a.sortOrder, b.sortOrder),
       );
@@ -202,7 +299,15 @@ export function GridPanel() {
         containerId,
       );
       if (target) {
-        void moveNode(sceneId, target.targetParentId, target.afterId);
+        // Multi-select D&D: move entire selection if dragged scene is in selection
+        if (selectedSceneIds.has(sceneId) && selectedSceneIds.size > 1) {
+          const orderedSelected = flatOrder.filter((id) =>
+            selectedSceneIds.has(id),
+          );
+          void moveScenesToChapter(orderedSelected, target.targetParentId);
+        } else {
+          void moveNode(sceneId, target.targetParentId, target.afterId);
+        }
       }
       return;
     }
@@ -212,9 +317,6 @@ export function GridPanel() {
       const activeNode = nodes.find((n) => n.id === folderId);
       const activeParent = activeNode?.parentId ?? null;
 
-      // Same-parent vertical reorder: scene-drop target shares active's parent
-      // → use pointerY to compute predecessor among ALL siblings (mixed scenes
-      // and folders) ordered by sortOrder.
       if (overIdStr.startsWith("scene-drop-")) {
         const sceneId = overIdStr.slice("scene-drop-".length);
         const sceneNode = nodes.find((n) => n.id === sceneId);
@@ -241,10 +343,6 @@ export function GridPanel() {
       const orderedSiblings: Array<{ id: string; parentId: string | null }> =
         [];
       const sceneParentMap: Record<string, string | null> = {};
-      // CRITICAL: orderedSiblings must be sorted by sortOrder (visual order),
-      // not nodes-array insertion order. isAdjacentColumnNoOp and predecessor
-      // calculations both rely on indexOf reflecting visual adjacency.
-      // Includes BOTH folders and scenes — see handleDragOver for rationale.
       const sortedNodes = [...nodes].sort((a, b) =>
         cmpKeys(a.sortOrder, b.sortOrder),
       );
@@ -278,10 +376,12 @@ export function GridPanel() {
     ? (nodes.find((n) => n.id === activeId.replace(/^(scene|column)-/, "")) ??
       null)
     : null;
+  const activeDragIsMultiSelect =
+    activeId !== null &&
+    activeDragKind(activeId) === "scene" &&
+    selectedSceneIds.has(activeId.replace(/^scene-/, "")) &&
+    selectedSceneIds.size > 1;
 
-  // All nested folder IDs visible under chapter columns (depth >= 1 — i.e. not
-  // chapter folders themselves). Computed by walking the full subtree, not the
-  // currently-flattened descendants, so collapsed folders are still counted.
   const nestedFolderIds = useMemo(() => {
     const ids: string[] = [];
     const walk = (parentId: string) => {
@@ -295,7 +395,6 @@ export function GridPanel() {
     return ids;
   }, [nodes, chapters]);
 
-  // Compute visibility for all displayed scenes (recursively including nested-folder scenes)
   const allDisplayedScenes = useMemo(
     () => [
       ...chapters.flatMap((ch) =>
@@ -316,7 +415,6 @@ export function GridPanel() {
     pinsByScene,
   });
 
-  // Total char count (live from store)
   const totalCharCount = useMemo(
     () =>
       allDisplayedScenes.reduce(
@@ -336,7 +434,11 @@ export function GridPanel() {
       onDragOver={handleDragOver}
       onDragEnd={handleDragEnd}
     >
-      <div className="relative flex h-full flex-col overflow-hidden">
+      <div
+        ref={panelRef}
+        className="relative flex h-full flex-col overflow-hidden"
+        onClick={handlePanelClick}
+      >
         <GridHeader
           containerId={containerId}
           projectId={projectId}
@@ -365,7 +467,8 @@ export function GridPanel() {
                   visibility={visibility}
                   dropIndicator={dropIndicator}
                   columnDropIndicator={columnDropIndicator}
-                  onRequestDeleteConfirm={setDeleteConfirmSceneId}
+                  onRequestDeleteConfirm={handleDeleteScenes}
+                  flatOrder={flatOrder}
                 />
               );
             }
@@ -379,15 +482,13 @@ export function GridPanel() {
                 visibility={visibility}
                 dropIndicator={dropIndicator}
                 title={
-                  // When container is a folder, these "loose" scenes are direct content
-                  // of that folder (not truly uncategorized) — label the column with the
-                  // folder's own name. "未分類シーン" only applies at the project root.
                   containerId
                     ? (nodes.find((n) => n.id === containerId)?.title ??
                       undefined)
                     : undefined
                 }
-                onRequestDeleteConfirm={setDeleteConfirmSceneId}
+                onRequestDeleteConfirm={handleDeleteScenes}
+                flatOrder={flatOrder}
               />
             );
           })}
@@ -402,13 +503,23 @@ export function GridPanel() {
           )}
         </div>
 
+        <GridSelectionToolbar
+          onMoveToChapter={(folderId) => {
+            const ids = flatOrder.filter((id) => selectedSceneIds.has(id));
+            if (ids.length === 0) return;
+            clearSelection();
+            void moveScenesToChapter(ids, folderId);
+          }}
+          onDelete={() => handleDeleteScenes(Array.from(selectedSceneIds))}
+        />
+
         <GridStatusBar
           totalChapters={totalChapters}
           totalScenes={totalScenes}
           totalCharCount={totalCharCount}
         />
 
-        {deleteConfirmSceneId && (
+        {deleteConfirmIds && (
           <div className="absolute inset-0 z-50 flex items-center justify-center bg-background/80">
             <div className="rounded-lg border border-border bg-popover p-4 shadow-xl w-72">
               <p className="text-sm font-medium mb-1">
@@ -418,14 +529,14 @@ export function GridPanel() {
                 {t(
                   "scenes.deleteConfirmBody",
                   "{{count}}件のシーンに本文またはsynopsisがあります。削除してもよいですか？",
-                  { count: 1 },
+                  { count: deleteConfirmIds.length },
                 )}
               </p>
               <div className="flex gap-2 justify-end">
                 <button
                   type="button"
                   className="rounded px-3 py-1 text-xs border border-border hover:bg-accent"
-                  onClick={() => setDeleteConfirmSceneId(null)}
+                  onClick={() => setDeleteConfirmIds(null)}
                 >
                   {t("common.cancel", "キャンセル")}
                 </button>
@@ -433,9 +544,10 @@ export function GridPanel() {
                   type="button"
                   className="rounded px-3 py-1 text-xs bg-destructive text-destructive-foreground hover:bg-destructive/90"
                   onClick={() => {
-                    const id = deleteConfirmSceneId;
-                    setDeleteConfirmSceneId(null);
-                    void deleteNode(id);
+                    const ids = deleteConfirmIds;
+                    setDeleteConfirmIds(null);
+                    clearSelection();
+                    for (const id of ids) void deleteNode(id);
                   }}
                 >
                   {t("common.deleteConfirm", "削除する")}
@@ -449,7 +561,7 @@ export function GridPanel() {
       <DragOverlay dropAnimation={null}>
         {activeDragNode && (
           <div
-            className={`flex flex-col rounded-md border-2 border-primary bg-card shadow-xl ring-2 ring-primary/30 ${display.compactCards ? "w-44" : "w-56"}`}
+            className={`relative flex flex-col rounded-md border-2 border-primary bg-card shadow-xl ring-2 ring-primary/30 ${display.compactCards ? "w-44" : "w-56"}`}
             style={{ opacity: 0.92 }}
           >
             <div className="flex items-center gap-1 border-b px-3 py-2">
@@ -461,6 +573,11 @@ export function GridPanel() {
               <p className="line-clamp-2 px-3 py-1.5 text-[11px] text-muted-foreground">
                 {activeDragNode.synopsis}
               </p>
+            )}
+            {activeDragIsMultiSelect && (
+              <div className="absolute -right-2 -top-2 flex h-5 w-5 items-center justify-center rounded-full bg-primary text-[10px] font-bold text-primary-foreground">
+                {selectedSceneIds.size}
+              </div>
             )}
           </div>
         )}

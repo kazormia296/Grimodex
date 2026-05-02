@@ -7,6 +7,7 @@ import {
   clearContainerId,
 } from "./gridContainerPersistence";
 import { useTreeStore } from "@/features/tree/treeStore";
+import { toggleSceneSelection, rangeSelectScenes } from "./gridSelection";
 
 export interface GridDisplaySettings {
   showSynopsis: boolean;
@@ -32,11 +33,16 @@ interface GridState {
   display: GridDisplaySettings;
   filter: GridFilterSettings;
   searchQuery: string;
-  /**
-   * Folder IDs explicitly collapsed (session-only). Default-expanded semantics:
-   * a folder is considered expanded iff its ID is NOT in this set.
-   */
+  /** Folder IDs explicitly collapsed (session-only). */
   collapsedFolderIds: Set<string>;
+  /** Currently selected scene IDs (session-only, not persisted). */
+  selectedSceneIds: Set<string>;
+  /** Anchor for Shift+Click range selection. */
+  selectionAnchorId: string | null;
+  /** Set by requestRevealScene; GridPanel's useEffect consumes and clears this. */
+  pendingRevealSceneId: string | null;
+  /** Set by GridPanel after scrollIntoView; cleared after highlight duration. */
+  revealedSceneId: string | null;
 
   loadForProject: (projectId: string) => Promise<void>;
   setContainerId: (projectId: string, id: string | null) => Promise<void>;
@@ -48,6 +54,21 @@ interface GridState {
   expandAllFolders: () => void;
   collapseAllFolders: (folderIds: string[]) => void;
   loadFromSettings: (settings: GlobalSettings) => void;
+  /** Select a single scene, resetting any previous selection. */
+  selectOnly: (id: string) => void;
+  /** Toggle a scene in/out of the selection. */
+  toggleSelection: (id: string) => void;
+  /** Range-select from current anchor to targetId using the given flat order. */
+  rangeSelect: (targetId: string, flatOrder: string[]) => void;
+  /** Replace selection with all given IDs. */
+  selectAll: (ids: string[]) => void;
+  /** Clear all selected scenes. */
+  clearSelection: () => void;
+  /** Signal Grid panel to reveal this scene (open panel + scroll to card). */
+  requestRevealScene: (id: string) => void;
+  clearPendingReveal: () => void;
+  setRevealedSceneId: (id: string) => void;
+  clearRevealedSceneId: () => void;
 }
 
 const DEFAULT_DISPLAY: GridDisplaySettings = {
@@ -64,12 +85,16 @@ const DEFAULT_FILTER: GridFilterSettings = {
   codexFilter: null,
 };
 
-export const useGridStore = create<GridState>((set, _get) => ({
+export const useGridStore = create<GridState>((set, get) => ({
   containerId: null,
   display: { ...DEFAULT_DISPLAY },
   filter: { ...DEFAULT_FILTER },
   searchQuery: "",
   collapsedFolderIds: new Set<string>(),
+  selectedSceneIds: new Set<string>(),
+  selectionAnchorId: null,
+  pendingRevealSceneId: null,
+  revealedSceneId: null,
 
   async loadForProject(projectId) {
     const stored = await loadContainerId(projectId);
@@ -139,6 +164,58 @@ export const useGridStore = create<GridState>((set, _get) => ({
       display: { ...DEFAULT_DISPLAY, ...(saved.display ?? {}) },
       filter: { ...DEFAULT_FILTER, ...(saved.filter ?? {}) },
     });
+  },
+
+  selectOnly(id) {
+    set({ selectedSceneIds: new Set([id]), selectionAnchorId: id });
+  },
+
+  toggleSelection(id) {
+    set((s) => ({
+      selectedSceneIds: toggleSceneSelection(s.selectedSceneIds, id),
+      selectionAnchorId: id,
+    }));
+  },
+
+  rangeSelect(targetId, flatOrder) {
+    const anchorId = get().selectionAnchorId;
+    if (!anchorId) {
+      set({
+        selectedSceneIds: new Set([targetId]),
+        selectionAnchorId: targetId,
+      });
+      return;
+    }
+    set({
+      selectedSceneIds: rangeSelectScenes(flatOrder, anchorId, targetId),
+    });
+  },
+
+  selectAll(ids) {
+    set({
+      selectedSceneIds: new Set(ids),
+      selectionAnchorId: ids[0] ?? null,
+    });
+  },
+
+  clearSelection() {
+    set({ selectedSceneIds: new Set<string>(), selectionAnchorId: null });
+  },
+
+  requestRevealScene(id) {
+    set({ pendingRevealSceneId: id });
+  },
+
+  clearPendingReveal() {
+    set({ pendingRevealSceneId: null });
+  },
+
+  setRevealedSceneId(id) {
+    set({ revealedSceneId: id });
+  },
+
+  clearRevealedSceneId() {
+    set({ revealedSceneId: null });
   },
 }));
 

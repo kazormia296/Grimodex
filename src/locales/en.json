@@ -684,6 +684,14 @@
     "status": {
       "chapters": "{{count}} chapter(s)",
       "scenes": "{{count}} scene(s)"
+    },
+    "selection": {
+      "count": "{{count}} selected",
+      "moveTo": "Move to chapter…",
+      "delete": "Delete",
+      "clear": "Clear selection",
+      "moveToChapter": "Select target chapter",
+      "noChapters": "No chapters"
     }
   },
   "foreshadow": {

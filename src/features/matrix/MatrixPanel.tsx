@@ -5,6 +5,7 @@ import { useTreeStore } from "@/features/tree/treeStore";
 import { useCodexStore } from "@/features/codex/codexStore";
 import { useLayoutStore } from "@/features/layout/layoutStore";
 import { useTabStore } from "@/features/editor/tabStore";
+import { useGridStore } from "@/features/grid/gridStore";
 import {
   upsertScenePin,
   deleteScenePin,
@@ -302,6 +303,11 @@ export function MatrixPanel() {
     useLayoutStore.getState().showPanel("scenes");
   }
 
+  function handleRevealInGrid(id: string) {
+    useGridStore.getState().requestRevealScene(id);
+    useLayoutStore.getState().showPanel("grid");
+  }
+
   async function handleExportCsv() {
     try {
       const csv = buildCsvString(rows, columns, cellMap);
@@ -338,6 +344,7 @@ export function MatrixPanel() {
         onAddScene={handleAddScene}
         onRenameNode={handleRenameNode}
         onRevealInScenes={handleRevealInScenes}
+        onRevealInGrid={handleRevealInGrid}
       />
       <MatrixStatusBar
         sceneCount={sceneCount}

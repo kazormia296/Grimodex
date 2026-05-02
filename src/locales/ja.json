@@ -684,6 +684,14 @@
     "status": {
       "chapters": "{{count}} 章",
       "scenes": "{{count}} シーン"
+    },
+    "selection": {
+      "count": "{{count}} 件選択中",
+      "moveTo": "章に移動…",
+      "delete": "削除",
+      "clear": "選択解除",
+      "moveToChapter": "移動先の章を選択",
+      "noChapters": "章がありません"
     }
   },
   "foreshadow": {
@@ -865,9 +873,7 @@
       "generateFromBeats": "ビートからSynopsisを生成",
       "generatingFromBeats": "Synopsisを生成中…",
       "generatedFromBeats": "ビートからSynopsisを生成しました",
-      "generateFromBeatsFailed": "Synopsis生成に失敗しました",
-      "overwriteConfirm": "既存のSynopsisを上書きしますか？",
-      "overwrite": "上書き"
+      "generateFromBeatsFailed": "Synopsis生成に失敗しました"
     },
     "quickSection": {
       "unpin": "ピン留め解除",

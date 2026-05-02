@@ -60,6 +60,7 @@ interface Props {
   ) => Promise<void>;
   onRenameNode: (id: string, title: string) => void;
   onRevealInScenes: (id: string) => void;
+  onRevealInGrid: (id: string) => void;
 }
 
 export function MatrixTable({
@@ -75,6 +76,7 @@ export function MatrixTable({
   onAddScene,
   onRenameNode,
   onRevealInScenes,
+  onRevealInGrid,
 }: Props) {
   const toggleRowCollapsed = useMatrixStore((s) => s.toggleRowCollapsed);
   const collapsedRowIds = useMatrixStore((s) => s.collapsedRowIds);
@@ -426,6 +428,7 @@ export function MatrixTable({
                         `@${entryName} `,
                       )
                     }
+                    onShowInGrid={() => onRevealInGrid(row.node.id)}
                   />
                 );
               })()}
@@ -483,6 +486,7 @@ export function MatrixTable({
                     }
                     onRename={() => onRenameNode(row.node.id, row.node.title)}
                     onShowInScenes={() => onRevealInScenes(row.node.id)}
+                    onShowInGrid={() => onRevealInGrid(row.node.id)}
                   />
                 );
               })()}

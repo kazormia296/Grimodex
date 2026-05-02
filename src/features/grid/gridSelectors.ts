@@ -132,6 +132,28 @@ export function useGridDerivedData(
   }, [nodes, containerId, collapsedFolderIds]);
 }
 
+/**
+ * Flat list of scene IDs in Grid display order:
+ * chapter columns (top-to-bottom) → loose column last.
+ * Used as the flat order for Shift+Click range selection and Cmd+A.
+ */
+export function useGridFlatSceneOrder(containerId: string | null): string[] {
+  const { orderedColumns } = useGridDerivedData(containerId);
+  return useMemo(() => {
+    const ids: string[] = [];
+    for (const col of orderedColumns) {
+      if (col.kind === "chapter") {
+        for (const d of col.data.descendants) {
+          if (d.node.nodeType === "scene") ids.push(d.node.id);
+        }
+      } else {
+        for (const s of col.scenes) ids.push(s.id);
+      }
+    }
+    return ids;
+  }, [orderedColumns]);
+}
+
 /** Flat ordered list of all folder nodes for the container selector dropdown */
 export function useContainerTree(): TreeNodeData[] {
   const nodes = useTreeStore((s) => s.nodes);

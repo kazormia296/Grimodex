@@ -14,6 +14,7 @@ interface Props {
   onPin: () => void;
   onRemovePin: () => void;
   onAddBeat: () => void;
+  onShowInGrid: () => void;
 }
 
 const SOURCE_LABEL: Record<CellSource, string> = {
@@ -33,6 +34,7 @@ export function SceneCellMenu({
   onPin,
   onRemovePin,
   onAddBeat,
+  onShowInGrid,
 }: Props) {
   const ref = useRef<HTMLDivElement>(null);
 
@@ -53,6 +55,7 @@ export function SceneCellMenu({
 
   const items = [
     { label: `Open scene: ${sceneName}`, action: onOpenScene },
+    { label: "Show in Grid", action: onShowInGrid },
     source !== "relation"
       ? { label: `Pin to scene (@${entryName})`, action: onPin }
       : null,

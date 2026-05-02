@@ -76,7 +76,8 @@ export function GridCardChips({
               TYPE_COLORS[entry!.type] ??
                 "bg-muted text-muted-foreground border-border",
             )}
-            onClick={() => {
+            onClick={(e) => {
+              e.stopPropagation();
               if (!editable) {
                 onChipClick?.(entry!.id);
                 useLayoutStore.getState().showPanel("codex");

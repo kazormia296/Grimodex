@@ -9,6 +9,7 @@ interface Props {
   onAddBeat: () => void;
   onRename: () => void;
   onShowInScenes: () => void;
+  onShowInGrid: () => void;
 }
 
 export function SceneRowHeaderMenu({
@@ -20,6 +21,7 @@ export function SceneRowHeaderMenu({
   onAddBeat,
   onRename,
   onShowInScenes,
+  onShowInGrid,
 }: Props) {
   const ref = useRef<HTMLDivElement>(null);
 
@@ -43,6 +45,7 @@ export function SceneRowHeaderMenu({
     { label: "Add beat to this scene", action: onAddBeat },
     { label: "Rename scene", action: onRename },
     { label: "Show in Scenes panel", action: onShowInScenes },
+    { label: "Show in Grid", action: onShowInGrid },
   ];
 
   return (
