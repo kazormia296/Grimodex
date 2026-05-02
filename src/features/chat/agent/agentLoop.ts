@@ -11,10 +11,6 @@ import type {
 } from "./agentTypes";
 
 const MAX_TOOL_CALLS = 10;
-const MSG_CALL_LIMIT =
-  "ツール呼び出し上限（10回）に達しました。現在の情報で回答してください。";
-const MSG_TOKEN_LIMIT =
-  "ツール結果のトークン予算に達しました。現在の情報で回答してください。";
 
 export interface AgentLoopOptions {
   messages: AgentMessagePayload[];
@@ -32,6 +28,9 @@ export interface AgentLoopOptions {
   onProgress: (progress: AgentLoopProgress) => void;
   onToolComplete?: (record: ToolCallRecord) => void;
   onTextChunk: (text: string) => void;
+  /** 言語別制御メッセージ（getPromptCatalog(lang).agentControl から渡す） */
+  callLimitMessage: string;
+  tokenBudgetMessage: string;
 }
 
 export interface AgentLoopResult {
@@ -208,7 +207,9 @@ export async function runAgentLoop(
     // Check limits — insert system message then let LLM respond once more
     if (totalCalls >= MAX_TOOL_CALLS || totalTokens >= tokenBudget) {
       const limitMsg =
-        totalCalls >= MAX_TOOL_CALLS ? MSG_CALL_LIMIT : MSG_TOKEN_LIMIT;
+        totalCalls >= MAX_TOOL_CALLS
+          ? options.callLimitMessage
+          : options.tokenBudgetMessage;
       conversation.push({ role: "user", content: limitMsg });
       limitMessageInserted = true;
     }

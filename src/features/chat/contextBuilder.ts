@@ -6,6 +6,17 @@ import {
   formatTimelineContext,
   type ResolvedCodexState,
 } from "@/features/codex/phaseResolver";
+import type {
+  PromptLang,
+  L1TrimMarkers,
+  L3TrimMarkers,
+} from "@/prompts/shared/types";
+import {
+  JA_L1_TRIM_MARKERS,
+  JA_L3_TRIM_MARKERS,
+  JA_TYPE_LABELS,
+} from "@/prompts/ja/chatSystem";
+import { getPromptCatalog } from "@/prompts/index";
 
 export interface SceneContext {
   id: string;
@@ -92,6 +103,8 @@ export interface BuildSystemPromptInput {
   };
   /** C-3: 「予定ビート」セクション文字列（buildPendingBeatsSection の結果）。Synopsis 後・本文前に注入。 */
   pendingBeatsSection?: string;
+  /** 執筆言語（project.language）。省略時は "ja" にフォールバック */
+  lang?: PromptLang;
 }
 
 export interface LayerBudgets {
@@ -160,6 +173,10 @@ function deduplicateById(entries: CodexContext[]): CodexContext[] {
   });
 }
 
+// Re-export for backward compatibility
+export type { L1TrimMarkers, L3TrimMarkers };
+export { JA_TYPE_LABELS };
+
 // ---------------------------------------------------------------------------
 // Layer trim helpers
 // ---------------------------------------------------------------------------
@@ -213,12 +230,15 @@ function trimL2Text(text: string, targetTokens: number): string {
 }
 
 /** L3: シーン本文を先頭から切り詰め（ヘッダ保持、末尾保持） */
-function trimL3Text(text: string, targetTokens: number): string {
+function trimL3Text(
+  text: string,
+  targetTokens: number,
+  markers: L3TrimMarkers = JA_L3_TRIM_MARKERS,
+): string {
   if (countTokens(text) <= targetTokens) return text;
   if (targetTokens <= 0) return "";
 
-  // Keep "## 現在のシーン" header section up to "### シーン本文\n"
-  const bodyHeaderMatch = text.match(/([\s\S]*?### シーン本文\n)/);
+  const bodyHeaderMatch = text.match(markers.bodyHeaderRegex);
   if (!bodyHeaderMatch) return text;
 
   const sceneHeader = bodyHeaderMatch[1];
@@ -251,23 +271,16 @@ function trimL3Text(text: string, targetTokens: number): string {
 }
 
 /** L1: styleGuide → aiInstructions → genre/pov/tense の順で除去（タイトルは必ず保持） */
-function trimL1Text(text: string, targetTokens: number): string {
+function trimL1Text(
+  text: string,
+  targetTokens: number,
+  markers: L1TrimMarkers = JA_L1_TRIM_MARKERS,
+): string {
   if (countTokens(text) <= targetTokens) return text;
   if (targetTokens <= 0) return "";
 
-  // Rebuild the L1 text by progressively removing optional fields
-  // We work on the raw text via line-based manipulation.
-  // Fields to remove in order: styleGuide block, aiInstructions block, genre line, pov line, tense line
-  const removablePatterns = [
-    /\n文体ガイド:\n[\s\S]*?(?=\n[^\s]|$)/,
-    /\nAI指示:\n[\s\S]*?(?=\n[^\s]|$)/,
-    /\nジャンル:[^\n]*/,
-    /\n視点:[^\n]*/,
-    /\n時制:[^\n]*/,
-  ];
-
   let current = text;
-  for (const pattern of removablePatterns) {
+  for (const pattern of markers.removablePatterns) {
     current = current.replace(pattern, "");
     if (countTokens(current) <= targetTokens) return current;
   }
@@ -341,24 +354,24 @@ export function trimToFit(layers: TrimInput, budget: number): TrimResult {
 export function buildSystemPrompt(
   input: BuildSystemPromptInput,
 ): SystemPromptResult {
+  const s = getPromptCatalog(input.lang ?? "ja").chatSystem;
   const layers: LayerBreakdown[] = [];
 
   // Base instruction (L0)
-  const baseText =
-    "あなたは小説執筆を支援するAIアシスタントです。" +
-    "ユーザーの執筆スタイルを尊重し、創造的な提案や文章の改善を行ってください。";
+  const baseText = s.baseText;
 
   // L1: Project info
   let l1Text = "";
   if (input.project) {
     const p = input.project;
-    const info: string[] = [`タイトル: ${p.title}`];
-    if (p.genre) info.push(`ジャンル: ${p.genre}`);
-    if (p.pov) info.push(`視点: ${p.pov}`);
-    if (p.tense) info.push(`時制: ${p.tense}`);
-    if (p.styleGuide) info.push(`文体ガイド:\n${p.styleGuide}`);
-    if (p.aiInstructions) info.push(`AI指示:\n${p.aiInstructions}`);
-    l1Text = `\n## プロジェクト情報\n${info.join("\n")}`;
+    const info: string[] = [`${s.labels.title}: ${p.title}`];
+    if (p.genre) info.push(`${s.labels.genre}: ${p.genre}`);
+    if (p.pov) info.push(`${s.labels.pov}: ${p.pov}`);
+    if (p.tense) info.push(`${s.labels.tense}: ${p.tense}`);
+    if (p.styleGuide) info.push(`${s.labels.styleGuide}:\n${p.styleGuide}`);
+    if (p.aiInstructions)
+      info.push(`${s.labels.aiInstructions}:\n${p.aiInstructions}`);
+    l1Text = `${s.headers.projectInfo}\n${info.join("\n")}`;
   }
 
   // L2: Story so far
@@ -367,11 +380,11 @@ export function buildSystemPrompt(
   // L3: Current scene (+ G11: preceding scene synopsis + G19: active tab content)
   let l3Text = "";
   if (input.previousScene) {
-    l3Text += `\n## 直前のシーン\nタイトル: ${input.previousScene.title}\n要約: ${input.previousScene.synopsis}`;
+    l3Text += `${s.headers.previousScene}\n${s.labels.prevTitle}: ${input.previousScene.title}\n${s.labels.prevSummary}: ${input.previousScene.synopsis}`;
   }
-  l3Text += `\n## 現在のシーン\nタイトル: ${input.scene.title}`;
+  l3Text += `${s.headers.currentScene}\n${s.labels.title}: ${input.scene.title}`;
   if (input.scene.synopsis) {
-    l3Text += `\nあらすじ: ${input.scene.synopsis}`;
+    l3Text += `\n${s.labels.synopsis}: ${input.scene.synopsis}`;
   }
   // C-3: 「予定ビート」セクションを Synopsis 後・本文前に注入
   if (
@@ -381,12 +394,12 @@ export function buildSystemPrompt(
     l3Text += `\n${input.pendingBeatsSection.trim()}`;
   }
   if (input.scene.content) {
-    l3Text += `\n\n### シーン本文\n${sanitizeSceneContent(input.scene.content)}`;
+    l3Text += `${s.headers.sceneBody}\n${sanitizeSceneContent(input.scene.content)}`;
   }
   if (input.activeTabContent) {
     const typeLabel =
       input.activeTabContent.type === "codex" ? "Codex" : "Snippet";
-    l3Text += `\n\n## 参照中のコンテンツ\nタイプ: ${typeLabel}\nタイトル: ${input.activeTabContent.title}\n内容: ${input.activeTabContent.content}`;
+    l3Text += `${s.headers.referencingContent}\n${s.labels.contentType}: ${typeLabel}\n${s.labels.contentTitle}: ${input.activeTabContent.title}\n${s.labels.contentBody}: ${input.activeTabContent.content}`;
   }
 
   // L4: Codex entries
@@ -416,15 +429,9 @@ export function buildSystemPrompt(
   const hasPinnedSnippets =
     input.pinnedSnippets && input.pinnedSnippets.length > 0;
   if (allCodex.length > 0 || hasPinnedSnippets) {
-    const typeLabels: Record<string, string> = {
-      character: "キャラクター",
-      location: "場所",
-      item: "アイテム",
-      lore: "設定",
-    };
-    const lines = ["\n## 登場キャラクター・設定情報"];
+    const lines = [s.headers.codexSection];
     for (const entry of allCodex) {
-      const label = typeLabels[entry.type] ?? entry.type;
+      const label = s.typeLabels[entry.type] ?? entry.type;
       // G13: summary未記入時はcontentPlainTextにフォールバック
       const displaySummary =
         entry.summary.trim() || entry.contentFallback || "";
@@ -453,12 +460,12 @@ export function buildSystemPrompt(
 
   // L5: G17 会話要約（Progressive Summarization）
   const l5Text = input.conversationSummary
-    ? `\n## これまでの会話の要約\n${input.conversationSummary}`
+    ? `${s.headers.conversationSummary}\n${input.conversationSummary}`
     : "";
 
   // L6: Command instruction（一回限りのコマンド注入）
   const l6Text = input.commandInstruction
-    ? `\n## 指示\n${input.commandInstruction}`
+    ? `${s.headers.commandInstruction}\n${input.commandInstruction}`
     : "";
 
   // Apply excludeLayers: set specified layers to empty string
@@ -564,29 +571,28 @@ export interface BuildAgentSystemPromptInput {
   scene?: SceneContext;
   project?: ProjectContext;
   storySoFar?: string;
+  lang?: PromptLang;
 }
 
 /** Agent mode用システムプロンプト — Layer 4（Codex自動注入）を除外 */
 export function buildAgentSystemPrompt(
   input: BuildAgentSystemPromptInput,
 ): string {
+  const s = getPromptCatalog(input.lang ?? "ja").chatSystem;
   const parts: string[] = [];
 
-  parts.push(
-    "あなたは小説執筆を支援するAIアシスタントです。" +
-      "ユーザーの執筆スタイルを尊重し、創造的な提案や文章の改善を行ってください。\n" +
-      "プロジェクトデータを検索するツールが利用可能です。回答に必要な情報はツールで取得してください。",
-  );
+  parts.push(s.agentBaseText);
 
   if (input.project) {
     const p = input.project;
-    const info: string[] = [`タイトル: ${p.title}`];
-    if (p.genre) info.push(`ジャンル: ${p.genre}`);
-    if (p.pov) info.push(`視点: ${p.pov}`);
-    if (p.tense) info.push(`時制: ${p.tense}`);
-    if (p.styleGuide) info.push(`文体ガイド:\n${p.styleGuide}`);
-    if (p.aiInstructions) info.push(`AI指示:\n${p.aiInstructions}`);
-    parts.push(`\n## プロジェクト情報\n${info.join("\n")}`);
+    const info: string[] = [`${s.labels.title}: ${p.title}`];
+    if (p.genre) info.push(`${s.labels.genre}: ${p.genre}`);
+    if (p.pov) info.push(`${s.labels.pov}: ${p.pov}`);
+    if (p.tense) info.push(`${s.labels.tense}: ${p.tense}`);
+    if (p.styleGuide) info.push(`${s.labels.styleGuide}:\n${p.styleGuide}`);
+    if (p.aiInstructions)
+      info.push(`${s.labels.aiInstructions}:\n${p.aiInstructions}`);
+    parts.push(`${s.headers.projectInfo}\n${info.join("\n")}`);
   }
 
   if (input.storySoFar) {
@@ -594,9 +600,9 @@ export function buildAgentSystemPrompt(
   }
 
   if (input.scene) {
-    let sceneSection = `\n## 現在のシーン\nタイトル: ${input.scene.title}`;
+    let sceneSection = `${s.headers.currentScene}\n${s.labels.title}: ${input.scene.title}`;
     if (input.scene.synopsis) {
-      sceneSection += `\nあらすじ: ${input.scene.synopsis}`;
+      sceneSection += `\n${s.labels.synopsis}: ${input.scene.synopsis}`;
     }
     parts.push(sceneSection);
     if (input.scene.content) {
@@ -625,6 +631,7 @@ export function buildStorySoFar(
   currentSceneId: string,
   allNodes: TreeNodeData[],
   tokenBudget: number,
+  lang?: PromptLang,
 ): string {
   // Find the current scene's sortOrder
   const currentScene = allNodes.find((n) => n.id === currentSceneId);
@@ -650,8 +657,9 @@ export function buildStorySoFar(
     synopsis: scene.synopsis as string,
   }));
 
+  const s = getPromptCatalog(lang ?? "ja").chatSystem;
   // Trim oldest scenes first if token budget exceeded
-  const header = "## これまでの物語\n\n";
+  const header = s.headers.storySoFar;
   let kept = [...entries];
   while (kept.length > 0) {
     const body = kept.map((e) => `${e.title}\n${e.synopsis}`).join("\n\n");
@@ -692,12 +700,7 @@ export function formatTimelineEntry(
     );
   }
   // フェーズなし: 通常フォーマット
-  const typeLabels: Record<string, string> = {
-    character: "キャラクター",
-    location: "場所",
-    item: "アイテム",
-    lore: "設定",
-  };
+  const typeLabels = JA_TYPE_LABELS;
   const label = typeLabels[entry.type] ?? entry.type;
   const displaySummary = entry.summary.trim() || entry.contentFallback || "";
   return `- **${entry.name}** (${label}): ${displaySummary}`;

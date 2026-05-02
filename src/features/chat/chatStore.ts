@@ -93,6 +93,7 @@ import { listPinnedSnippetEntries } from "./chatApi";
 import type { PinnedSnippetContext } from "./contextBuilder";
 import { useUnplacedBeatsStore } from "@/features/editor/beat/unplacedBeatsStore";
 import { buildPendingBeatsSection } from "@/features/editor/beat/pendingBeatsContext";
+import { getPromptCatalog } from "@/prompts/index";
 
 // フェーズ解決ヘルパー: エントリ配列に対してフェーズを一括解決する
 async function resolveEntriesForContext(
@@ -1021,10 +1022,13 @@ export const useChatStore = create<ChatState>()((set, get) => ({
         // Accumulate tool calls for live metadata update
         const accToolCalls: ToolCallRecord[] = [];
 
+        const agentControl = getPromptCatalog("ja").agentControl;
         const { toolCallRecords, finalThinkingBlocks } = await runAgentLoop({
           messages: agentMsgs,
           tools: AGENT_TOOLS,
           tokenBudget,
+          callLimitMessage: agentControl.callLimitMessage,
+          tokenBudgetMessage: agentControl.tokenBudgetMessage,
           sendToLLM: (msgs, tools) =>
             chatApi.sendAgentMessage(msgs, tools, agentThinkingParams),
           executeTool,

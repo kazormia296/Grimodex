@@ -2,6 +2,7 @@ import type { Editor } from "@tiptap/core";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { useWorkspaceStore } from "@/features/workspace/store";
 import { streamInlineAiText } from "./streamInlineAiText";
+import { getPromptCatalog } from "@/prompts/index";
 
 interface GenerateSynopsisCallbacks {
   onStart?: () => void;
@@ -39,16 +40,13 @@ export async function generateSynopsisFromBeats(
     .map((instr, i) => `${i + 1}. ${instr}`)
     .join("\n");
 
-  const messages: { role: string; content: string }[] = [
-    {
-      role: "system",
-      content: `あなたは小説執筆アシスタントです。プロジェクト「${projectTitle}」のシーン「${sceneTitle}」のビートリストから、簡潔なシノプシスを1〜3文で生成します。`,
-    },
-    {
-      role: "user",
-      content: `以下のビートリストを元に、このシーンのシノプシスを1〜3文で書いてください。本文は書かず、要約のみ出力してください。\n\n## ビートリスト\n${beatList}`,
-    },
-  ];
+  const messages = getPromptCatalog(
+    "ja",
+  ).beatGenerate.buildGenerateSynopsisMessages(
+    projectTitle,
+    sceneTitle,
+    beatList,
+  );
 
   callbacks?.onStart?.();
 

@@ -4,6 +4,7 @@ import { useUnplacedBeatsStore } from "@/features/editor/beat/unplacedBeatsStore
 import { streamInlineAiText } from "./streamInlineAiText";
 import { BEAT_TYPES } from "@/features/editor/SceneBeatNode";
 import type { BeatType } from "@/features/editor/SceneBeatNode";
+import { getPromptCatalog } from "@/prompts/index";
 
 interface GenerateBeatsCallbacks {
   onStart?: () => void;
@@ -70,20 +71,9 @@ export async function generateBeatsFromSynopsis(
   const projectTitle = useWorkspaceStore.getState().activeWorkspaceName ?? "";
   const sceneTitle = treeNode?.title ?? "";
 
-  const beatTypeList = BEAT_TYPES.join(" | ");
-
-  const messages: { role: string; content: string }[] = [
-    {
-      role: "system",
-      content: `あなたは小説執筆アシスタントです。プロジェクト「${projectTitle}」のシーン「${sceneTitle}」のシノプシスから、実行可能なビートリストを提案します。
-必ず以下の JSON 形式のみを出力してください（他のテキストは一切出力しないこと）:
-{"beats": [{"beatType": "${beatTypeList}", "instructions": "日本語の指示文"}]}`,
-    },
-    {
-      role: "user",
-      content: `以下のシノプシスから、このシーンのビートを3〜6件提案してください。\n\n## シノプシス\n${synopsis}`,
-    },
-  ];
+  const messages = getPromptCatalog(
+    "ja",
+  ).beatGenerate.buildGenerateBeatsMessages(projectTitle, sceneTitle, synopsis);
 
   callbacks?.onStart?.();
 

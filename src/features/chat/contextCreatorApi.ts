@@ -72,6 +72,8 @@ export async function runContextCreator(
     onTextChunk: (text) => {
       finalText += text;
     },
+    callLimitMessage: "Tool call limit reached. Please summarize findings.",
+    tokenBudgetMessage: "Token budget low. Please summarize findings.",
   });
 
   return parseSuggestedEntries(finalText, pinnedIds);
