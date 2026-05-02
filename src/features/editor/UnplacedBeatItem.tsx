@@ -102,7 +102,7 @@ export function UnplacedBeatItem({
 
   return (
     <div
-      className={`group flex items-start gap-1 rounded px-1 py-0.5 hover:bg-muted/40 ${isDragging ? "opacity-50" : ""}`}
+      className={`group flex items-center gap-1 rounded px-1 py-0.5 hover:bg-muted/40 ${isDragging ? "opacity-50" : ""}`}
       data-beat-id={beat.id}
     >
       {/* Drag handle */}
@@ -110,7 +110,7 @@ export function UnplacedBeatItem({
         type="button"
         ref={setDragRef}
         aria-label="Drag to reorder"
-        className="mt-0.5 inline-flex h-4 cursor-grab items-center justify-center rounded px-0.5 text-muted-foreground/40 opacity-0 hover:bg-muted hover:text-muted-foreground group-hover:opacity-100 active:cursor-grabbing"
+        className="inline-flex h-4 cursor-grab items-center justify-center rounded px-0.5 text-muted-foreground/40 opacity-0 hover:bg-muted hover:text-muted-foreground group-hover:opacity-100 active:cursor-grabbing"
         {...attributes}
         {...listeners}
       >
@@ -118,7 +118,7 @@ export function UnplacedBeatItem({
       </button>
 
       {/* Beat type chip */}
-      <div ref={typeMenuRef} className="relative mt-0.5 flex-shrink-0">
+      <div ref={typeMenuRef} className="relative flex-shrink-0">
         <button
           type="button"
           data-testid={`unplaced-beat-type-chip-${beat.id}`}
@@ -158,7 +158,7 @@ export function UnplacedBeatItem({
       <div className="min-w-0 flex-1">
         <EditorContent
           editor={editor}
-          className="beat-inline-editor text-xs leading-relaxed text-foreground [&_.ProseMirror]:min-h-[1.5em] [&_.ProseMirror]:outline-none [&_.ProseMirror_p]:my-0"
+          className="beat-inline-editor text-xs leading-relaxed text-foreground [&_.ProseMirror]:min-h-[1.5em] [&_.ProseMirror]:outline-none"
         />
       </div>
 

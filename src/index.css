@@ -217,7 +217,14 @@
   p {
     margin: 0.5em 0;
   }
+}
 
+/* Beat inline editor: paragraphs have no margin (single-line inline context) */
+.beat-inline-editor .tiptap p {
+  margin: 0;
+}
+
+.tiptap {
   blockquote {
     border-left: 3px solid var(--content-border);
     padding-left: 1em;
