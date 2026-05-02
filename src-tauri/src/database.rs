@@ -817,6 +817,16 @@ impl Database {
             CREATE INDEX IF NOT EXISTS idx_scene_codex_pins_entry ON scene_codex_pins(entry_id);",
         )?;
 
+        // Beat-level POV override cache for Matrix ★ display.
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS scene_beat_pov_cache (
+                scene_id          TEXT NOT NULL REFERENCES tree_nodes(id) ON DELETE CASCADE,
+                pov_character_id  TEXT NOT NULL REFERENCES codex_entries(id) ON DELETE CASCADE,
+                PRIMARY KEY (scene_id, pov_character_id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_scene_beat_pov_scene ON scene_beat_pov_cache(scene_id);",
+        )?;
+
         Ok(())
     }
 

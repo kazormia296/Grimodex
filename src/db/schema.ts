@@ -969,6 +969,22 @@ export const sceneCodexMentions = sqliteTable(
   ],
 );
 
+export const sceneBeatPovCache = sqliteTable(
+  "scene_beat_pov_cache",
+  {
+    sceneId: text("scene_id")
+      .notNull()
+      .references(() => treeNodes.id, { onDelete: "cascade" }),
+    povCharacterId: text("pov_character_id")
+      .notNull()
+      .references(() => codexEntries.id, { onDelete: "cascade" }),
+  },
+  (t) => [
+    primaryKey({ columns: [t.sceneId, t.povCharacterId] }),
+    index("idx_scene_beat_pov_scene").on(t.sceneId),
+  ],
+);
+
 // Type exports
 export type AuthorshipSpan = typeof authorshipSpans.$inferSelect;
 export type NewAuthorshipSpan = typeof authorshipSpans.$inferInsert;
@@ -1020,3 +1036,6 @@ export type NewForeshadowCodexLink = typeof foreshadowCodexLinks.$inferInsert;
 
 export type SceneCodexMention = typeof sceneCodexMentions.$inferSelect;
 export type NewSceneCodexMention = typeof sceneCodexMentions.$inferInsert;
+
+export type SceneBeatPovCache = typeof sceneBeatPovCache.$inferSelect;
+export type NewSceneBeatPovCache = typeof sceneBeatPovCache.$inferInsert;

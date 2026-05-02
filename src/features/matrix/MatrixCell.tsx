@@ -14,6 +14,8 @@ interface Props {
   povCharacterId?: string | null;
   /** Scene's location_id (for location mode) */
   locationId?: string | null;
+  /** Whether this column's character has a beat-level POV override in this scene */
+  isBeatPovOverride?: boolean;
   displayMode: DisplayMode;
   showMode: ShowMode;
   onContextMenu?: (e: React.MouseEvent) => void;
@@ -45,7 +47,7 @@ function renderDisplay(display: DisplayCell): React.ReactNode {
     case "heatmap":
       return null; // background color applied by container
     case "pov":
-      return <span>●</span>;
+      return <span>{display.isBeatOverride ? "★" : "●"}</span>;
     case "role-aware": {
       const symbol =
         display.role === "actor" ? "●" : display.role === "target" ? "◯" : "·";
@@ -85,6 +87,7 @@ export function MatrixCell({
   colEntryId,
   povCharacterId,
   locationId,
+  isBeatPovOverride,
   displayMode,
   showMode,
   onContextMenu,
@@ -116,6 +119,7 @@ export function MatrixCell({
     locationId,
     displayMode,
     showMode,
+    isBeatPovOverride,
   );
 
   return (

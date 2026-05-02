@@ -22,6 +22,8 @@ import { useLinearEditorStore } from "./linearEditorStore";
 import { useChatStore } from "@/features/chat/chatStore";
 import { extractBeatMentions } from "@/features/editor/beat/extractBeatMentions";
 import { upsertSceneBeatMentions } from "@/features/editor/beat/mentionApi";
+import { extractBeatPovOverrides } from "@/features/editor/beat/extractBeatPovOverrides";
+import { upsertSceneBeatPovOverrides } from "@/features/editor/beat/beatPovCacheApi";
 import { upsertSceneBodyMentions } from "@/features/editor/beat/bodyMentionApi";
 import { useCodexStore } from "@/features/codex/codexStore";
 
@@ -97,6 +99,16 @@ function MountedSceneBlock({
         );
       },
     );
+    upsertSceneBeatPovOverrides(
+      sceneId,
+      extractBeatPovOverrides(ed.state.doc),
+    ).catch((e) => {
+      debugLog.error(
+        "LinearSceneBlock",
+        "upsertSceneBeatPovOverrides failed",
+        errorDetail(e),
+      );
+    });
     setTimeout(() => {
       const allEntries = useCodexStore.getState().entries;
       if (allEntries.length > 0) {

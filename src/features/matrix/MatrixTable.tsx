@@ -47,6 +47,8 @@ interface Props {
   rows: MatrixRow[];
   columns: MatrixColumnOrHeader[];
   cellMap: Map<string, CellInfo>;
+  /** "sceneId::characterId" pairs from scene_beat_pov_cache */
+  beatPovCache: Set<string>;
   displayMode: DisplayMode;
   showMode: ShowMode;
   onOpenScene: (sceneId: string) => void;
@@ -67,6 +69,7 @@ export function MatrixTable({
   rows,
   columns,
   cellMap,
+  beatPovCache,
   displayMode,
   showMode,
   onOpenScene,
@@ -353,6 +356,7 @@ export function MatrixTable({
                     }
                     const key = `${row.node.id}::${col.entry.id}`;
                     const cellInfo = cellMap.get(key);
+                    const isBeatPovOverride = beatPovCache.has(key);
                     return (
                       <div
                         key={vc.key}
@@ -368,6 +372,7 @@ export function MatrixTable({
                           colEntryId={col.entry.id}
                           povCharacterId={row.node.povCharacterId}
                           locationId={row.node.locationId}
+                          isBeatPovOverride={isBeatPovOverride}
                           displayMode={displayMode}
                           showMode={showMode}
                           isFolder={row.isFolder}

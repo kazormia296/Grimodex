@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { db } from "@/db/client";
-import { sceneCodexMentions, codexTags } from "@/db/schema";
+import { sceneCodexMentions, codexTags, sceneBeatPovCache } from "@/db/schema";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { useCodexStore } from "@/features/codex/codexStore";
 import { useLayoutStore } from "@/features/layout/layoutStore";
@@ -56,17 +56,23 @@ export function MatrixPanel() {
 
   // Raw mentions from DB
   const [mentions, setMentions] = useState<MentionRow[]>([]);
+  // Beat-level POV override cache: "sceneId::characterId" pairs
+  const [beatPovCache, setBeatPovCache] = useState<Set<string>>(new Set());
   // Available tags for the tag filter autocomplete
   const [availableTags, setAvailableTags] = useState<string[]>([]);
 
   // Load mentions from DB whenever panel is shown
   useEffect(() => {
     void loadMentions();
+    void loadBeatPovCache();
   }, []);
 
   // Reload mentions when rescan finishes (poll interval)
   useEffect(() => {
-    const interval = setInterval(() => void loadMentions(), 3000);
+    const interval = setInterval(() => {
+      void loadMentions();
+      void loadBeatPovCache();
+    }, 3000);
     return () => clearInterval(interval);
   }, []);
 
@@ -80,6 +86,18 @@ export function MatrixPanel() {
       })
       .from(sceneCodexMentions);
     setMentions(rows);
+  }
+
+  async function loadBeatPovCache() {
+    const rows = await db
+      .select({
+        sceneId: sceneBeatPovCache.sceneId,
+        povCharacterId: sceneBeatPovCache.povCharacterId,
+      })
+      .from(sceneBeatPovCache);
+    setBeatPovCache(
+      new Set(rows.map((r) => `${r.sceneId}::${r.povCharacterId}`)),
+    );
   }
 
   // Load available tags for autocomplete
@@ -335,6 +353,7 @@ export function MatrixPanel() {
         rows={rows}
         columns={columns}
         cellMap={cellMap}
+        beatPovCache={beatPovCache}
         displayMode={displayMode}
         showMode={showMode}
         onOpenScene={openScene}

@@ -149,3 +149,83 @@ describe("deriveCellDisplay – role-aware mode", () => {
     if (result?.kind === "role-aware") expect(result.isPov).toBe(true);
   });
 });
+
+describe("deriveCellDisplay – pov mode with beat POV override", () => {
+  it("returns null when neither scene POV nor beat POV override", () => {
+    const result = deriveCellDisplay(
+      undefined,
+      "char1",
+      null,
+      null,
+      "dot",
+      "pov",
+      false,
+    );
+    expect(result).toBeNull();
+  });
+
+  it("returns pov cell (isBeatOverride=false) for scene-level POV match", () => {
+    const result = deriveCellDisplay(
+      undefined,
+      "char1",
+      "char1",
+      null,
+      "dot",
+      "pov",
+      false,
+    );
+    expect(result?.kind).toBe("pov");
+    if (result?.kind === "pov") {
+      expect(result.isPov).toBe(true);
+      expect(result.isBeatOverride).toBeUndefined();
+    }
+  });
+
+  it("returns pov cell with isBeatOverride=true for beat-only POV", () => {
+    const result = deriveCellDisplay(
+      undefined,
+      "char2",
+      "char1", // scene POV is char1, not char2
+      null,
+      "dot",
+      "pov",
+      true, // char2 has a beat-level POV override
+    );
+    expect(result?.kind).toBe("pov");
+    if (result?.kind === "pov") {
+      expect(result.isPov).toBe(true);
+      expect(result.isBeatOverride).toBe(true);
+    }
+  });
+
+  it("scene POV takes priority over beat POV (no isBeatOverride when both match)", () => {
+    const result = deriveCellDisplay(
+      undefined,
+      "char1",
+      "char1", // scene POV matches
+      null,
+      "dot",
+      "pov",
+      true, // also a beat POV override
+    );
+    expect(result?.kind).toBe("pov");
+    if (result?.kind === "pov") {
+      // Scene-level POV path is hit first; isBeatOverride is not set
+      expect(result.isBeatOverride).toBeUndefined();
+    }
+  });
+
+  it("beat POV override has no effect in non-pov show modes", () => {
+    const info = makeInfo("beat");
+    const result = deriveCellDisplay(
+      info,
+      "char2",
+      "char1",
+      null,
+      "dot",
+      undefined, // not pov show mode
+      true,
+    );
+    expect(result?.kind).toBe("dot");
+  });
+});

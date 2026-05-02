@@ -19,6 +19,8 @@ import { countBeats } from "@/features/editor/beat/countBeats";
 import { extractUnplacedBeatPreview } from "@/features/editor/beat/unplacedBeatPreview";
 import { extractBeatMentions } from "@/features/editor/beat/extractBeatMentions";
 import { upsertSceneBeatMentions } from "@/features/editor/beat/mentionApi";
+import { extractBeatPovOverrides } from "@/features/editor/beat/extractBeatPovOverrides";
+import { upsertSceneBeatPovOverrides } from "@/features/editor/beat/beatPovCacheApi";
 import { upsertSceneBodyMentions } from "@/features/editor/beat/bodyMentionApi";
 import { useUnplacedBeatsStore } from "@/features/editor/beat/unplacedBeatsStore";
 import { getCodexEntry, updateCodexEntry } from "@/features/codex/api";
@@ -407,6 +409,15 @@ export function EditorPane({
           errorDetail(e),
         );
       });
+      upsertSceneBeatPovOverrides(id, extractBeatPovOverrides(doc)).catch(
+        (e) => {
+          debugLog.error(
+            "EditorPane",
+            "upsertSceneBeatPovOverrides failed",
+            errorDetail(e),
+          );
+        },
+      );
       // Deferred body-mention scan — does not block the save response
       const allEntries = useCodexStore.getState().entries;
       if (allEntries.length > 0) {

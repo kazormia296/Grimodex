@@ -6,7 +6,7 @@ export type DisplayCell =
   | { kind: "dot"; source: CellSource }
   | { kind: "count"; count: number; source: CellSource }
   | { kind: "heatmap"; intensity: 1 | 2 | 3; source: CellSource }
-  | { kind: "pov"; isPov: true }
+  | { kind: "pov"; isPov: true; isBeatOverride?: boolean }
   | {
       kind: "role-aware";
       role: MentionRole;
@@ -39,12 +39,16 @@ export function deriveCellDisplay(
   locationId: string | null | undefined,
   displayMode: DisplayMode,
   showMode?: ShowMode,
+  isBeatPovOverride?: boolean,
 ): DisplayCell {
   // POV/Location show modes: cell is determined by direct tree_nodes reference,
   // not by scene_codex_mentions.
   if (showMode === "pov") {
     if (povCharacterId && povCharacterId === colEntryId) {
       return { kind: "pov", isPov: true };
+    }
+    if (isBeatPovOverride) {
+      return { kind: "pov", isPov: true, isBeatOverride: true };
     }
     return null;
   }
