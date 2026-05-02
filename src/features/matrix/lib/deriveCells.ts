@@ -1,4 +1,5 @@
 export type CellSource = "body" | "beat" | "relation";
+export type MentionRole = "mentioned" | "actor" | "target";
 
 const SOURCE_PRIORITY: Record<CellSource, number> = {
   body: 2,
@@ -6,28 +7,61 @@ const SOURCE_PRIORITY: Record<CellSource, number> = {
   relation: 0,
 };
 
+const ROLE_PRIORITY: Record<MentionRole, number> = {
+  actor: 2,
+  target: 1,
+  mentioned: 0,
+};
+
+export interface CellInfo {
+  /** All sources present for this (scene, codex) pair */
+  sources: Set<CellSource>;
+  /** Strongest source: body > beat > relation */
+  topSource: CellSource;
+  /** Best role from source='beat' row: actor > target > mentioned */
+  role: MentionRole;
+}
+
 interface MentionRow {
   sceneId: string;
   codexEntryId: string;
   source: CellSource;
+  role?: string | null;
 }
 
 /**
- * Build a map of "sceneId::codexEntryId" → strongest CellSource.
- * Multiple rows for the same pair (different source values) are collapsed to
- * the highest-priority source: body > beat > relation.
+ * Build a map of "sceneId::codexEntryId" → CellInfo.
+ * Multiple rows for the same pair are collapsed:
+ *   - topSource: body > beat > relation
+ *   - sources: union of all present source values
+ *   - role: strongest role from source='beat' rows (actor > target > mentioned)
  */
-export function deriveCellMap(mentions: MentionRow[]): Map<string, CellSource> {
-  const map = new Map<string, CellSource>();
+export function deriveCellMap(mentions: MentionRow[]): Map<string, CellInfo> {
+  const map = new Map<string, CellInfo>();
 
   for (const row of mentions) {
     const key = `${row.sceneId}::${row.codexEntryId}`;
     const existing = map.get(key);
-    if (
-      existing === undefined ||
-      SOURCE_PRIORITY[row.source] > SOURCE_PRIORITY[existing]
-    ) {
-      map.set(key, row.source);
+
+    const rowRole = (row.role as MentionRole | null | undefined) ?? "mentioned";
+
+    if (!existing) {
+      map.set(key, {
+        sources: new Set([row.source]),
+        topSource: row.source,
+        role: row.source === "beat" ? rowRole : "mentioned",
+      });
+    } else {
+      existing.sources.add(row.source);
+      if (SOURCE_PRIORITY[row.source] > SOURCE_PRIORITY[existing.topSource]) {
+        existing.topSource = row.source;
+      }
+      if (
+        row.source === "beat" &&
+        ROLE_PRIORITY[rowRole] > ROLE_PRIORITY[existing.role]
+      ) {
+        existing.role = rowRole;
+      }
     }
   }
 

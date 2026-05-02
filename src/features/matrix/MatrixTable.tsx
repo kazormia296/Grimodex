@@ -10,7 +10,9 @@ import { ScenePopover } from "./menu/ScenePopover";
 import { BeatPopover } from "./menu/BeatPopover";
 import type { MatrixRow } from "./lib/deriveRows";
 import type { MatrixColumnOrHeader } from "./lib/deriveColumns";
-import type { CellSource } from "./lib/deriveCells";
+import type { CellInfo } from "./lib/deriveCells";
+import type { DisplayMode } from "./matrixStore";
+import type { ShowMode } from "./lib/deriveColumns";
 import { useMatrixStore } from "./matrixStore";
 
 const ROW_HEIGHT = 32;
@@ -38,7 +40,9 @@ interface PopoverState {
 interface Props {
   rows: MatrixRow[];
   columns: MatrixColumnOrHeader[];
-  cellMap: Map<string, CellSource>;
+  cellMap: Map<string, CellInfo>;
+  displayMode: DisplayMode;
+  showMode: ShowMode;
   onOpenScene: (sceneId: string) => void;
   onPin: (sceneId: string, entryId: string) => Promise<void>;
   onRemovePin: (sceneId: string, entryId: string) => Promise<void>;
@@ -56,6 +60,8 @@ export function MatrixTable({
   rows,
   columns,
   cellMap,
+  displayMode,
+  showMode,
   onOpenScene,
   onPin,
   onRemovePin,
@@ -309,7 +315,7 @@ export function MatrixTable({
                       );
                     }
                     const key = `${row.node.id}::${col.entry.id}`;
-                    const source = cellMap.get(key);
+                    const cellInfo = cellMap.get(key);
                     return (
                       <div
                         key={vc.key}
@@ -321,7 +327,12 @@ export function MatrixTable({
                         }}
                       >
                         <MatrixCell
-                          source={source}
+                          cellInfo={cellInfo}
+                          colEntryId={col.entry.id}
+                          povCharacterId={row.node.povCharacterId}
+                          locationId={row.node.locationId}
+                          displayMode={displayMode}
+                          showMode={showMode}
                           isFolder={row.isFolder}
                           onClick={
                             !row.isFolder
@@ -356,7 +367,8 @@ export function MatrixTable({
                 const entryId = col && !col.isSectionHeader ? col.entry.id : "";
                 const entryName =
                   col && !col.isSectionHeader ? col.entry.name : "";
-                const source = cellMap.get(`${row.node.id}::${entryId}`);
+                const cellInfo = cellMap.get(`${row.node.id}::${entryId}`);
+                const source = cellInfo?.topSource;
                 return (
                   <SceneCellMenu
                     x={contextMenu.x}

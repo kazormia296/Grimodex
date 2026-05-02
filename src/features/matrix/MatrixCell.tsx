@@ -1,31 +1,92 @@
-import type { CellSource } from "./lib/deriveCells";
+import type { CellInfo } from "./lib/deriveCells";
+import type { DisplayCell } from "./lib/deriveCellRender";
+import type { DisplayMode } from "./matrixStore";
+import type { ShowMode } from "./lib/deriveColumns";
+import { deriveCellDisplay } from "./lib/deriveCellRender";
 
 interface Props {
-  source: CellSource | undefined;
+  cellInfo: CellInfo | undefined;
   /** Whether the row is a folder (Chapter) row */
   isFolder: boolean;
+  /** Column's Codex entry ID (for pov/location mode) */
+  colEntryId: string;
+  /** Scene's pov_character_id (for pov mode) */
+  povCharacterId?: string | null;
+  /** Scene's location_id (for location mode) */
+  locationId?: string | null;
+  displayMode: DisplayMode;
+  showMode: ShowMode;
   onContextMenu?: (e: React.MouseEvent) => void;
   onClick?: () => void;
   onHoverAddClick?: () => void;
 }
 
-/** Background class per source strength */
-const SOURCE_CLASS: Record<CellSource, string> = {
-  body: "bg-primary/20 text-primary",
-  beat: "bg-primary/10 text-primary/80",
-  relation: "bg-primary/5 text-primary/60",
+const INTENSITY_CLASS: Record<1 | 2 | 3, string> = {
+  1: "bg-primary/5 text-primary/60",
+  2: "bg-primary/12 text-primary/80",
+  3: "bg-primary/25 text-primary",
 };
 
-/** Dot symbol per source */
-const SOURCE_DOT: Record<CellSource, string> = {
-  body: "●",
-  beat: "●",
-  relation: "◯",
-};
+function renderDisplay(display: DisplayCell): React.ReactNode {
+  if (!display) return null;
+  switch (display.kind) {
+    case "dot":
+      return (
+        <span className={display.source === "relation" ? "opacity-50" : ""}>
+          {display.source === "relation" ? "◯" : "●"}
+        </span>
+      );
+    case "count":
+      return (
+        <span className="tabular-nums text-[10px] font-semibold">
+          {display.count}
+        </span>
+      );
+    case "heatmap":
+      return null; // background color applied by container
+    case "pov":
+      return <span>●</span>;
+    case "role-aware": {
+      const symbol =
+        display.role === "actor" ? "●" : display.role === "target" ? "◯" : "·";
+      return (
+        <span>
+          {display.isPov ? "★" : ""}
+          {symbol}
+        </span>
+      );
+    }
+  }
+}
+
+function cellBgClass(display: DisplayCell): string {
+  if (!display) return "";
+  switch (display.kind) {
+    case "dot":
+    case "role-aware": {
+      const src = display.source;
+      if (src === "body") return "bg-primary/20 text-primary";
+      if (src === "beat") return "bg-primary/10 text-primary/80";
+      return "bg-primary/5 text-primary/60";
+    }
+    case "count":
+    case "pov":
+      return "bg-primary/20 text-primary";
+    case "heatmap":
+      return INTENSITY_CLASS[display.intensity];
+    default:
+      return "";
+  }
+}
 
 export function MatrixCell({
-  source,
+  cellInfo,
   isFolder,
+  colEntryId,
+  povCharacterId,
+  locationId,
+  displayMode,
+  showMode,
   onContextMenu,
   onClick,
   onHoverAddClick,
@@ -48,15 +109,22 @@ export function MatrixCell({
     );
   }
 
+  const display = deriveCellDisplay(
+    cellInfo,
+    colEntryId,
+    povCharacterId,
+    locationId,
+    displayMode,
+    showMode,
+  );
+
   return (
     <div
-      className={`flex h-8 w-full cursor-pointer items-center justify-center border-b border-r border-border/30 text-xs transition-colors hover:bg-accent/50 ${
-        source ? SOURCE_CLASS[source] : ""
-      }`}
+      className={`flex h-8 w-full cursor-pointer items-center justify-center border-b border-r border-border/30 text-xs transition-colors hover:bg-accent/50 ${cellBgClass(display)}`}
       onClick={onClick}
       onContextMenu={onContextMenu}
     >
-      {source && <span>{SOURCE_DOT[source]}</span>}
+      {renderDisplay(display)}
     </div>
   );
 }

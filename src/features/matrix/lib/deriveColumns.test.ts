@@ -116,4 +116,79 @@ describe("deriveColumns", () => {
       isSectionHeader: false,
     });
   });
+
+  // Phase B: new Show modes
+  it("pov mode returns only character entries", () => {
+    const entries: Entry[] = [
+      makeEntry("e1", "太郎", "character"),
+      makeEntry("e2", "廃社", "location"),
+      makeEntry("e3", "魔法陣", "lore"),
+    ];
+    const cols = deriveColumns(entries, "pov", [], false);
+    expect(
+      cols.filter((c) => !c.isSectionHeader).map((c) => c.entry!.id),
+    ).toEqual(["e1"]);
+  });
+
+  it("location mode returns only location entries", () => {
+    const entries: Entry[] = [
+      makeEntry("e1", "太郎", "character"),
+      makeEntry("e2", "廃社", "location"),
+    ];
+    const cols = deriveColumns(entries, "location", [], false);
+    expect(
+      cols.filter((c) => !c.isSectionHeader).map((c) => c.entry!.id),
+    ).toEqual(["e2"]);
+  });
+
+  it("subplot mode returns lore entries with matching subplot tag", () => {
+    const entries: Entry[] = [
+      makeEntry("e1", "太郎", "character", ["subplot"]),
+      makeEntry("e2", "サブプロットA", "lore", ["subplot"]),
+      makeEntry("e3", "世界設定", "lore", ["worldbuilding"]),
+    ];
+    const cols = deriveColumns(entries, "subplot", [], false, {
+      subplotTagName: "subplot",
+    });
+    expect(
+      cols.filter((c) => !c.isSectionHeader).map((c) => c.entry!.id),
+    ).toEqual(["e2"]);
+  });
+
+  it("custom mode returns only entries in customEntryIds", () => {
+    const entries: Entry[] = [
+      makeEntry("e1", "太郎", "character"),
+      makeEntry("e2", "廃社", "location"),
+      makeEntry("e3", "魔法陣", "lore"),
+    ];
+    const cols = deriveColumns(entries, "custom", [], false, {
+      customEntryIds: ["e1", "e3"],
+    });
+    expect(
+      cols.filter((c) => !c.isSectionHeader).map((c) => c.entry!.id),
+    ).toEqual(["e1", "e3"]);
+  });
+
+  it("custom mode ignores tag filter", () => {
+    const entries: Entry[] = [
+      makeEntry("e1", "太郎", "character", ["main"]),
+      makeEntry("e2", "廃社", "location"),
+    ];
+    // tagFilter ["main"] should NOT be applied in custom mode
+    const cols = deriveColumns(entries, "custom", ["main"], false, {
+      customEntryIds: ["e1", "e2"],
+    });
+    expect(
+      cols.filter((c) => !c.isSectionHeader).map((c) => c.entry!.id),
+    ).toEqual(["e1", "e2"]);
+  });
+
+  it("pov and location modes do not add section headers even when groupByType=true", () => {
+    const entries: Entry[] = [
+      makeEntry("e1", "太郎", "character"),
+      makeEntry("e2", "花子", "character"),
+    ];
+    const cols = deriveColumns(entries, "pov", [], true);
+    expect(cols.every((c) => !c.isSectionHeader)).toBe(true);
+  });
 });

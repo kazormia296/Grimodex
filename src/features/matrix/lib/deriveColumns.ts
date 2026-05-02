@@ -5,12 +5,15 @@ export type ShowMode =
   | "codex-characters"
   | "codex-locations"
   | "codex-items"
-  | "codex-lore";
+  | "codex-lore"
+  | "pov"
+  | "location"
+  | "subplot"
+  | "custom";
 
 const TYPE_ORDER = ["character", "location", "item", "lore"] as const;
 
 export interface MatrixColumn {
-  /** Unique key for the column (entry id, or section header key) */
   key: string;
   entry: CodexMatchTarget & { tagsCache?: string | null };
   isSectionHeader: false;
@@ -26,13 +29,30 @@ export interface MatrixSectionHeader {
 
 export type MatrixColumnOrHeader = MatrixColumn | MatrixSectionHeader;
 
-const MODE_TYPE_MAP: Record<ShowMode, string | null> = {
-  "codex-all": null,
+/** Type filter for Codex-family modes */
+const MODE_TYPE_MAP: Partial<Record<ShowMode, string>> = {
   "codex-characters": "character",
   "codex-locations": "location",
   "codex-items": "item",
   "codex-lore": "lore",
+  pov: "character",
+  location: "location",
 };
+
+/** Show modes where groupByType should never add section headers */
+const NO_GROUP_MODES = new Set<ShowMode>([
+  "pov",
+  "location",
+  "subplot",
+  "custom",
+]);
+
+export interface DeriveColumnsOpts {
+  /** Tag name used as the Subplot label (default: "subplot") */
+  subplotTagName?: string;
+  /** Entry IDs in the active Custom set */
+  customEntryIds?: string[];
+}
 
 function parseTags(tagsCache: string | null | undefined): string[] {
   if (!tagsCache) return [];
@@ -52,21 +72,45 @@ export function deriveColumns(
   showMode: ShowMode,
   tagFilter: string[],
   groupByType: boolean,
+  opts: DeriveColumnsOpts = {},
 ): MatrixColumnOrHeader[] {
-  const typeFilter = MODE_TYPE_MAP[showMode];
+  const { subplotTagName = "subplot", customEntryIds } = opts;
 
-  let filtered = typeFilter
-    ? allEntries.filter((e) => e.type === typeFilter)
-    : [...allEntries];
+  let filtered: typeof allEntries;
 
-  if (tagFilter.length > 0) {
+  if (showMode === "custom") {
+    // Custom mode: explicit entry list, tag filter not applied
+    const ids = new Set(customEntryIds ?? []);
+    filtered = ids.size > 0 ? allEntries.filter((e) => ids.has(e.id)) : [];
+  } else if (showMode === "subplot") {
+    // subplot mode: lore type + matching subplot tag
+    filtered = allEntries.filter((e) => {
+      if (e.type !== "lore") return false;
+      return parseTags(e.tagsCache).includes(subplotTagName);
+    });
+  } else {
+    const typeFilter = MODE_TYPE_MAP[showMode] ?? null;
+    filtered = typeFilter
+      ? allEntries.filter((e) => e.type === typeFilter)
+      : [...allEntries];
+  }
+
+  // Apply tag filter (AND logic) — not for custom or pov/location/subplot
+  if (
+    tagFilter.length > 0 &&
+    showMode !== "custom" &&
+    !NO_GROUP_MODES.has(showMode)
+  ) {
     filtered = filtered.filter((e) => {
       const tags = parseTags(e.tagsCache);
       return tagFilter.every((t) => tags.includes(t));
     });
   }
 
-  if (!groupByType) {
+  // Never group-by-type for single-type or custom modes
+  const shouldGroup = groupByType && !NO_GROUP_MODES.has(showMode);
+
+  if (!shouldGroup) {
     return filtered.map((e) => ({
       key: e.id,
       entry: e,
@@ -77,7 +121,6 @@ export function deriveColumns(
   // Group by type in canonical order
   const byType = new Map<string, typeof filtered>();
   for (const type of TYPE_ORDER) byType.set(type, []);
-  // Collect any types not in TYPE_ORDER
   for (const e of filtered) {
     const bucket = byType.get(e.type) ?? [];
     if (!byType.has(e.type)) byType.set(e.type, bucket);

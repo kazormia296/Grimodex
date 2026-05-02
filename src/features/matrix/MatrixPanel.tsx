@@ -27,6 +27,7 @@ interface MentionRow {
   sceneId: string;
   codexEntryId: string;
   source: string;
+  role: string;
 }
 
 export function MatrixPanel() {
@@ -35,11 +36,15 @@ export function MatrixPanel() {
 
   const showMode = useMatrixStore((s) => s.showMode);
   const sortMode = useMatrixStore((s) => s.sortMode);
+  const displayMode = useMatrixStore((s) => s.displayMode);
   const tagFilter = useMatrixStore((s) => s.tagFilter);
   const groupCodexByType = useMatrixStore((s) => s.groupCodexByType);
   const searchQuery = useMatrixStore((s) => s.searchQuery);
   const collapsedRowIds = useMatrixStore((s) => s.collapsedRowIds);
   const bodyBackfillCompleted = useMatrixStore((s) => s.bodyBackfillCompleted);
+  const subplotTagName = useMatrixStore((s) => s.subplotTagName);
+  const customSets = useMatrixStore((s) => s.customSets);
+  const activeCustomSetId = useMatrixStore((s) => s.activeCustomSetId);
 
   // Raw mentions from DB
   const [mentions, setMentions] = useState<MentionRow[]>([]);
@@ -63,6 +68,7 @@ export function MatrixPanel() {
         sceneId: sceneCodexMentions.sceneId,
         codexEntryId: sceneCodexMentions.codexEntryId,
         source: sceneCodexMentions.source,
+        role: sceneCodexMentions.role,
       })
       .from(sceneCodexMentions);
     setMentions(rows);
@@ -94,12 +100,25 @@ export function MatrixPanel() {
   // Derive sorted rows
   const sortedNodes = useMemo(() => {
     const sceneNodes = [...nodes];
-    if (sortMode === "story-time") {
-      sceneNodes.sort((a, b) => {
-        const ao = a.storyTimeOrder ?? "z";
-        const bo = b.storyTimeOrder ?? "z";
-        return ao.localeCompare(bo);
-      });
+    switch (sortMode) {
+      case "story-time":
+        sceneNodes.sort((a, b) => {
+          const ao = a.storyTimeOrder ?? "z";
+          const bo = b.storyTimeOrder ?? "z";
+          return ao.localeCompare(bo);
+        });
+        break;
+      case "word-count":
+        sceneNodes.sort((a, b) => (b.charCount ?? 0) - (a.charCount ?? 0));
+        break;
+      case "last-edited":
+        sceneNodes.sort(
+          (a, b) =>
+            new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime(),
+        );
+        break;
+      default:
+        break;
     }
     return sceneNodes;
   }, [nodes, sortMode]);
@@ -108,6 +127,12 @@ export function MatrixPanel() {
     () => deriveRows(sortedNodes, collapsedRowIds, searchQuery || null),
     [sortedNodes, collapsedRowIds, searchQuery],
   );
+
+  // Active custom set entry IDs
+  const activeCustomEntryIds = useMemo(() => {
+    if (!activeCustomSetId) return undefined;
+    return customSets.find((s) => s.id === activeCustomSetId)?.codexEntryIds;
+  }, [customSets, activeCustomSetId]);
 
   // Derive columns
   const columns = useMemo(() => {
@@ -124,8 +149,16 @@ export function MatrixPanel() {
       showMode,
       tagFilter[showMode] ?? [],
       groupCodexByType,
+      { subplotTagName, customEntryIds: activeCustomEntryIds },
     );
-  }, [allEntries, showMode, tagFilter, groupCodexByType]);
+  }, [
+    allEntries,
+    showMode,
+    tagFilter,
+    groupCodexByType,
+    subplotTagName,
+    activeCustomEntryIds,
+  ]);
 
   // Derive cell map
   const cellMap = useMemo(
@@ -135,6 +168,7 @@ export function MatrixPanel() {
           sceneId: string;
           codexEntryId: string;
           source: CellSource;
+          role: string;
         }[],
       ),
     [mentions],
@@ -214,6 +248,8 @@ export function MatrixPanel() {
         rows={rows}
         columns={columns}
         cellMap={cellMap}
+        displayMode={displayMode}
+        showMode={showMode}
         onOpenScene={openScene}
         onPin={handlePin}
         onRemovePin={handleRemovePin}

@@ -3,8 +3,19 @@ import { invoke } from "@tauri-apps/api/core";
 import type { GlobalSettings } from "@/features/workspace/store";
 import type { ShowMode } from "./lib/deriveColumns";
 
-export type SortMode = "reading" | "story-time";
-export type DisplayMode = "dot";
+export type SortMode = "reading" | "story-time" | "word-count" | "last-edited";
+export type DisplayMode =
+  | "dot"
+  | "count"
+  | "heatmap"
+  | "pov-color"
+  | "role-aware";
+
+export interface CustomSet {
+  id: string;
+  name: string;
+  codexEntryIds: string[];
+}
 
 export interface MatrixSettings {
   showMode: ShowMode;
@@ -16,6 +27,8 @@ export interface MatrixSettings {
   collapsedTypeSections: string[];
   subplotTagName: string;
   tagFilter: Record<ShowMode, string[]>;
+  customSets: CustomSet[];
+  activeCustomSetId: string | null;
   bodyBackfillCompleted: boolean;
 }
 
@@ -25,6 +38,10 @@ const DEFAULT_TAG_FILTER: Record<ShowMode, string[]> = {
   "codex-locations": [],
   "codex-items": [],
   "codex-lore": [],
+  pov: [],
+  location: [],
+  subplot: [],
+  custom: [],
 };
 
 const DEFAULT_SETTINGS: MatrixSettings = {
@@ -37,6 +54,8 @@ const DEFAULT_SETTINGS: MatrixSettings = {
   collapsedTypeSections: [],
   subplotTagName: "subplot",
   tagFilter: { ...DEFAULT_TAG_FILTER },
+  customSets: [],
+  activeCustomSetId: null,
   bodyBackfillCompleted: false,
 };
 
@@ -47,6 +66,7 @@ interface MatrixState extends MatrixSettings {
 
   setShowMode: (mode: ShowMode) => void;
   setSortMode: (mode: SortMode) => void;
+  setDisplayMode: (mode: DisplayMode) => void;
   setTagFilter: (mode: ShowMode, tags: string[]) => void;
   setGroupCodexByType: (v: boolean) => void;
   setSearchQuery: (q: string) => void;
@@ -66,6 +86,9 @@ export const useMatrixStore = create<MatrixState>()((set, get) => ({
   },
   setSortMode(mode) {
     set({ sortMode: mode, settingsSaved: false });
+  },
+  setDisplayMode(mode) {
+    set({ displayMode: mode, settingsSaved: false });
   },
   setTagFilter(mode, tags) {
     const tf = { ...get().tagFilter, [mode]: tags };
@@ -101,6 +124,8 @@ export const useMatrixStore = create<MatrixState>()((set, get) => ({
       collapsedTypeSections: saved.collapsedTypeSections ?? [],
       subplotTagName: saved.subplotTagName ?? DEFAULT_SETTINGS.subplotTagName,
       tagFilter: { ...DEFAULT_TAG_FILTER, ...(saved.tagFilter ?? {}) },
+      customSets: saved.customSets ?? [],
+      activeCustomSetId: saved.activeCustomSetId ?? null,
       bodyBackfillCompleted: saved.bodyBackfillCompleted ?? false,
       settingsSaved: true,
     });
@@ -125,6 +150,8 @@ function snapshotPersistent(s: MatrixState): MatrixSettings {
     collapsedTypeSections: s.collapsedTypeSections,
     subplotTagName: s.subplotTagName,
     tagFilter: s.tagFilter,
+    customSets: s.customSets,
+    activeCustomSetId: s.activeCustomSetId,
     bodyBackfillCompleted: s.bodyBackfillCompleted,
   };
 }
