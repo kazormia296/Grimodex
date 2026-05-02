@@ -14,6 +14,7 @@ import type { ReactNodeViewProps } from "@tiptap/react";
 import { useTranslation } from "react-i18next";
 import { useCodexStore } from "@/features/codex/codexStore";
 import { useTreeStore } from "@/features/tree/treeStore";
+import { useAiSettingsStore } from "@/features/chat/store";
 import { AnimatedDropdown } from "@/components/ui/animated-dropdown";
 import type { BeatType } from "./SceneBeatNode";
 import { BEAT_TYPES } from "./SceneBeatNode";
@@ -106,15 +107,18 @@ export function SceneBeatNodeView({
       ? t("editor.beat.generating")
       : t("editor.beat.generate");
 
+  const allModels = useAiSettingsStore((s) => s.models);
+  const loadModels = useAiSettingsStore((s) => s.loadModels);
   const modelWhitelistRaw = useSettingsStore((s) => s.get("ai.modelWhitelist"));
-  const availableModels = useMemo<string[]>(() => {
+  const availableModels = useMemo(() => {
     try {
-      const list: string[] = JSON.parse(modelWhitelistRaw || "[]");
-      return list;
+      const whitelist: string[] = JSON.parse(modelWhitelistRaw || "[]");
+      if (whitelist.length === 0) return allModels;
+      return allModels.filter((m) => whitelist.includes(m.id));
     } catch {
-      return [];
+      return allModels;
     }
-  }, [modelWhitelistRaw]);
+  }, [modelWhitelistRaw, allModels]);
 
   const handleModelSelect = useCallback(
     (model: string | null) => {
@@ -212,7 +216,7 @@ export function SceneBeatNodeView({
     >
       <header
         contentEditable={false}
-        className="flex select-none items-center gap-2 px-2 py-1 text-xs text-muted-foreground"
+        className="flex select-none items-center gap-2 px-2 py-1 font-sans text-xs text-muted-foreground"
       >
         <button
           type="button"
@@ -255,9 +259,9 @@ export function SceneBeatNodeView({
             open={typeMenuOpen}
             onClose={() => setTypeMenuOpen(false)}
             containerRef={typeMenuRef}
-            className="absolute left-0 top-6 z-50 min-w-[120px] rounded-md border border-border bg-popover py-1 shadow-md"
+            className="absolute left-0 top-6 z-50 min-w-[120px] rounded-md border border-border bg-popover py-1 shadow-md font-sans"
           >
-            <ul role="menu" className="text-xs">
+            <ul role="menu" className="m-0! list-none! p-0! text-xs">
               {BEAT_TYPES.map((bt) => (
                 <li key={bt}>
                   <button
@@ -300,9 +304,9 @@ export function SceneBeatNodeView({
             open={povMenuOpen}
             onClose={() => setPovMenuOpen(false)}
             containerRef={povMenuRef}
-            className="absolute left-0 top-6 z-50 min-w-[160px] rounded-md border border-border bg-popover py-1 shadow-md"
+            className="absolute left-0 top-6 z-50 min-w-[160px] rounded-md border border-border bg-popover py-1 shadow-md font-sans"
           >
-            <ul role="menu" className="text-xs">
+            <ul role="menu" className="m-0! list-none! p-0! text-xs">
               <li>
                 <button
                   type="button"
@@ -358,9 +362,9 @@ export function SceneBeatNodeView({
             open={menuOpen}
             onClose={() => setMenuOpen(false)}
             containerRef={menuContainerRef}
-            className="absolute right-0 top-6 z-50 min-w-[180px] rounded-md border border-border bg-popover py-1 shadow-md"
+            className="absolute right-0 top-6 z-50 min-w-[180px] rounded-md border border-border bg-popover py-1 shadow-md font-sans"
           >
-            <ul role="menu" className="text-xs">
+            <ul role="menu" className="m-0! list-none! p-0! text-xs">
               <li>
                 <button
                   type="button"
@@ -467,7 +471,7 @@ export function SceneBeatNodeView({
         <div
           contentEditable={false}
           data-testid="beat-error"
-          className="border-t border-red-200/50 bg-red-50/30 px-2 py-1 text-xs text-red-700 dark:bg-red-900/10 dark:text-red-300"
+          className="border-t border-red-200/50 bg-red-50/30 px-2 py-1 font-sans text-xs text-red-700 dark:bg-red-900/10 dark:text-red-300"
         >
           {state.error}
         </div>
@@ -491,7 +495,7 @@ export function SceneBeatNodeView({
         <div
           contentEditable={false}
           data-testid="beat-action-bar"
-          className="flex select-none items-center gap-1 border-t border-yellow-200/50 bg-yellow-50/60 px-2 py-1 text-xs dark:bg-yellow-900/15 dark:border-yellow-800/30"
+          className="flex select-none items-center gap-1 border-t border-yellow-200/50 bg-yellow-50/60 px-2 py-1 font-sans text-xs dark:bg-yellow-900/15 dark:border-yellow-800/30"
         >
           <span className="mr-1 text-muted-foreground/60">
             {t("editor.beat.generating")}
@@ -525,13 +529,16 @@ export function SceneBeatNodeView({
       {!collapsed && (
         <footer
           contentEditable={false}
-          className="flex select-none items-center gap-1.5 border-t border-yellow-200/50 px-2 py-1 text-xs text-muted-foreground dark:border-yellow-800/30"
+          className="flex select-none items-center gap-1.5 border-t border-yellow-200/50 px-2 py-1 font-sans text-xs text-muted-foreground dark:border-yellow-800/30"
         >
           <div ref={modelMenuRef} className="relative">
             <button
               type="button"
               data-testid="beat-model-btn"
-              onClick={() => setModelMenuOpen((v) => !v)}
+              onClick={() => {
+                if (!modelMenuOpen) loadModels();
+                setModelMenuOpen((v) => !v);
+              }}
               className="rounded px-1 py-0.5 text-[10px] text-muted-foreground/70 hover:bg-muted"
             >
               {beatModel ?? t("editor.beat.modelInherit")}
@@ -540,9 +547,9 @@ export function SceneBeatNodeView({
               open={modelMenuOpen}
               onClose={() => setModelMenuOpen(false)}
               containerRef={modelMenuRef}
-              className="absolute bottom-6 left-0 z-50 min-w-[160px] rounded-md border border-border bg-popover py-1 shadow-md"
+              className="absolute bottom-6 left-0 z-50 max-h-48 min-w-[200px] overflow-y-auto rounded-md border border-border bg-popover py-1 shadow-md font-sans"
             >
-              <ul role="menu" className="text-xs">
+              <ul role="menu" className="m-0! list-none! p-0! text-xs">
                 <li>
                   <button
                     type="button"
@@ -555,15 +562,15 @@ export function SceneBeatNodeView({
                   </button>
                 </li>
                 {availableModels.map((m) => (
-                  <li key={m}>
+                  <li key={m.id}>
                     <button
                       type="button"
                       role="menuitem"
-                      data-testid={`beat-model-option-${m}`}
-                      onClick={() => handleModelSelect(m)}
-                      className={`block w-full px-3 py-1.5 text-left hover:bg-primary hover:text-primary-foreground ${m === beatModel ? "font-medium" : ""}`}
+                      data-testid={`beat-model-option-${m.id}`}
+                      onClick={() => handleModelSelect(m.id)}
+                      className={`block w-full px-3 py-1.5 text-left hover:bg-primary hover:text-primary-foreground ${m.id === beatModel ? "font-medium" : ""}`}
                     >
-                      {m}
+                      {m.name || m.id}
                     </button>
                   </li>
                 ))}
