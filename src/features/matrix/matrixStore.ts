@@ -82,6 +82,13 @@ interface MatrixState extends MatrixSettings {
   toggleRowCollapsed: (id: string) => void;
   loadFromSettings: (settings: GlobalSettings) => void;
   markSettingsSaved: () => void;
+
+  createCustomSet: (name: string) => void;
+  renameCustomSet: (id: string, name: string) => void;
+  deleteCustomSet: (id: string) => void;
+  addCodexToCustomSet: (setId: string, codexId: string) => void;
+  removeCodexFromCustomSet: (setId: string, codexId: string) => void;
+  setActiveCustomSetId: (id: string | null) => void;
 }
 
 export const useMatrixStore = create<MatrixState>()((set, get) => ({
@@ -173,6 +180,61 @@ export const useMatrixStore = create<MatrixState>()((set, get) => ({
   },
   markSettingsSaved() {
     set({ settingsSaved: true });
+  },
+
+  createCustomSet(name) {
+    const newSet: CustomSet = {
+      id: crypto.randomUUID(),
+      name,
+      codexEntryIds: [],
+    };
+    set((s) => ({
+      customSets: [...s.customSets, newSet],
+      activeCustomSetId: newSet.id,
+      settingsSaved: false,
+    }));
+  },
+  renameCustomSet(id, name) {
+    set((s) => ({
+      customSets: s.customSets.map((cs) =>
+        cs.id === id ? { ...cs, name } : cs,
+      ),
+      settingsSaved: false,
+    }));
+  },
+  deleteCustomSet(id) {
+    set((s) => ({
+      customSets: s.customSets.filter((cs) => cs.id !== id),
+      activeCustomSetId:
+        s.activeCustomSetId === id ? null : s.activeCustomSetId,
+      settingsSaved: false,
+    }));
+  },
+  addCodexToCustomSet(setId, codexId) {
+    set((s) => ({
+      customSets: s.customSets.map((cs) =>
+        cs.id === setId && !cs.codexEntryIds.includes(codexId)
+          ? { ...cs, codexEntryIds: [...cs.codexEntryIds, codexId] }
+          : cs,
+      ),
+      settingsSaved: false,
+    }));
+  },
+  removeCodexFromCustomSet(setId, codexId) {
+    set((s) => ({
+      customSets: s.customSets.map((cs) =>
+        cs.id === setId
+          ? {
+              ...cs,
+              codexEntryIds: cs.codexEntryIds.filter((id) => id !== codexId),
+            }
+          : cs,
+      ),
+      settingsSaved: false,
+    }));
+  },
+  setActiveCustomSetId(id) {
+    set({ activeCustomSetId: id, settingsSaved: false });
   },
 }));
 

@@ -13,7 +13,7 @@ const SHOW_MODES: { value: ShowMode; label: string; disabled?: boolean }[] = [
   { value: "pov", label: "POV" },
   { value: "location", label: "Location" },
   { value: "subplot", label: "Subplot" },
-  { value: "custom", label: "Custom (Phase B-3)" },
+  { value: "custom", label: "Custom" },
 ];
 
 const SORT_MODES: { value: SortMode; label: string }[] = [
@@ -36,9 +36,10 @@ const NO_TAG_FILTER_MODES = new Set<ShowMode>(["pov", "location", "custom"]);
 
 interface Props {
   availableTags: string[];
+  onExportCsv: () => void;
 }
 
-export function MatrixHeader({ availableTags }: Props) {
+export function MatrixHeader({ availableTags, onExportCsv }: Props) {
   const showMode = useMatrixStore((s) => s.showMode);
   const sortMode = useMatrixStore((s) => s.sortMode);
   const displayMode = useMatrixStore((s) => s.displayMode);
@@ -54,6 +55,12 @@ export function MatrixHeader({ availableTags }: Props) {
   const onlyUneditedRows = useMatrixStore((s) => s.onlyUneditedRows);
   const setHideEmptyRows = useMatrixStore((s) => s.setHideEmptyRows);
   const setOnlyUneditedRows = useMatrixStore((s) => s.setOnlyUneditedRows);
+  const customSets = useMatrixStore((s) => s.customSets);
+  const activeCustomSetId = useMatrixStore((s) => s.activeCustomSetId);
+  const createCustomSet = useMatrixStore((s) => s.createCustomSet);
+  const renameCustomSet = useMatrixStore((s) => s.renameCustomSet);
+  const deleteCustomSet = useMatrixStore((s) => s.deleteCustomSet);
+  const setActiveCustomSetId = useMatrixStore((s) => s.setActiveCustomSetId);
 
   const [searchOpen, setSearchOpen] = useState(false);
   const [tagInput, setTagInput] = useState("");
@@ -204,6 +211,18 @@ export function MatrixHeader({ availableTags }: Props) {
                 </span>
                 未編集シーンのみ
               </button>
+              <div className="my-1 border-t border-border/50" />
+              <button
+                type="button"
+                className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs hover:bg-accent"
+                onClick={() => {
+                  setMenuOpen(false);
+                  onExportCsv();
+                }}
+              >
+                <span className="w-3 inline-block" />
+                CSV をエクスポート
+              </button>
             </div>
           )}
         </div>
@@ -228,6 +247,71 @@ export function MatrixHeader({ availableTags }: Props) {
             }}
             className="flex-1 rounded border border-border bg-background px-2 py-0.5 text-xs outline-none"
           />
+        </div>
+      )}
+
+      {/* Custom set toolbar (custom mode only) */}
+      {showMode === "custom" && (
+        <div className="flex items-center gap-2 border-t px-3 py-1.5">
+          {customSets.length === 0 ? (
+            <span className="flex-1 text-[11px] text-muted-foreground">
+              セットなし — 「+」で作成
+            </span>
+          ) : (
+            <select
+              value={activeCustomSetId ?? ""}
+              onChange={(e) => setActiveCustomSetId(e.target.value || null)}
+              className="flex-1 rounded border border-border bg-background px-2 py-0.5 text-xs"
+            >
+              <option value="">— セットを選択 —</option>
+              {customSets.map((cs) => (
+                <option key={cs.id} value={cs.id}>
+                  {cs.name} ({cs.codexEntryIds.length})
+                </option>
+              ))}
+            </select>
+          )}
+          <button
+            type="button"
+            title="新規セット"
+            className="rounded px-1.5 py-0.5 text-xs hover:bg-accent"
+            onClick={() => {
+              const name = window.prompt("セット名:");
+              if (name?.trim()) createCustomSet(name.trim());
+            }}
+          >
+            +
+          </button>
+          {activeCustomSetId && (
+            <>
+              <button
+                type="button"
+                title="リネーム"
+                className="rounded px-1.5 py-0.5 text-xs hover:bg-accent"
+                onClick={() => {
+                  const current =
+                    customSets.find((cs) => cs.id === activeCustomSetId)
+                      ?.name ?? "";
+                  const name = window.prompt("新しいセット名:", current);
+                  if (name?.trim())
+                    renameCustomSet(activeCustomSetId, name.trim());
+                }}
+              >
+                ✎
+              </button>
+              <button
+                type="button"
+                title="削除"
+                className="rounded px-1.5 py-0.5 text-xs text-destructive hover:bg-accent"
+                onClick={() => {
+                  if (window.confirm("このセットを削除しますか?"))
+                    deleteCustomSet(activeCustomSetId);
+                }}
+              >
+                ×
+              </button>
+            </>
+          )}
         </div>
       )}
 
