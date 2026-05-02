@@ -94,11 +94,23 @@ export function MatrixTable({
   );
 
   const containerRef = useRef<HTMLDivElement>(null);
+  const headerRef = useRef<HTMLDivElement>(null);
 
   // Reset scroll when switching custom sets
   useEffect(() => {
     containerRef.current?.scrollTo(0, 0);
   }, [activeCustomSetId]);
+
+  // Sync column header horizontal scroll with body
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    const sync = () => {
+      if (headerRef.current) headerRef.current.scrollLeft = el.scrollLeft;
+    };
+    el.addEventListener("scroll", sync, { passive: true });
+    return () => el.removeEventListener("scroll", sync);
+  }, []);
 
   const rowVirtualizer = useVirtualizer({
     count: rows.length,
@@ -222,20 +234,41 @@ export function MatrixTable({
   return (
     <div className="relative flex-1 overflow-hidden">
       {/* Column headers — sticky top */}
-      <div
-        className="sticky top-0 z-20 flex border-b bg-background"
-        style={{ paddingLeft: ROW_HEADER_WIDTH }}
-      >
+      <div className="sticky top-0 z-20 flex border-b bg-background">
+        {/* Corner placeholder aligned with row headers */}
         <div
-          style={{
-            width: colVirtualizer.getTotalSize(),
-            position: "relative",
-            height: COL_HEADER_HEIGHT,
-          }}
+          className="shrink-0 border-r border-border/30"
+          style={{ width: ROW_HEADER_WIDTH, height: COL_HEADER_HEIGHT }}
+        />
+        <div
+          ref={headerRef}
+          style={{ overflowX: "hidden", flex: 1, height: COL_HEADER_HEIGHT }}
         >
-          {virtualCols.map((vc) => {
-            const col = columns[vc.index];
-            if (col.isSectionHeader) {
+          <div
+            style={{
+              width: colVirtualizer.getTotalSize(),
+              position: "relative",
+              height: COL_HEADER_HEIGHT,
+            }}
+          >
+            {virtualCols.map((vc) => {
+              const col = columns[vc.index];
+              if (col.isSectionHeader) {
+                return (
+                  <div
+                    key={vc.key}
+                    style={{
+                      position: "absolute",
+                      left: vc.start,
+                      width: vc.size,
+                      height: COL_HEADER_HEIGHT,
+                    }}
+                    className="flex items-end justify-center border-r border-border/30 pb-1 text-[10px] font-semibold uppercase text-muted-foreground"
+                  >
+                    {col.sectionType}
+                  </div>
+                );
+              }
               return (
                 <div
                   key={vc.key}
@@ -245,38 +278,17 @@ export function MatrixTable({
                     width: vc.size,
                     height: COL_HEADER_HEIGHT,
                   }}
-                  className="flex items-end justify-center border-r border-border/30 pb-1 text-[10px] font-semibold uppercase text-muted-foreground"
+                  className="flex items-end justify-center overflow-hidden border-r border-border/30 pb-1"
+                  title={col.entry.name}
+                  onContextMenu={(e) => handleColHeaderContextMenu(e, vc.index)}
                 >
-                  {col.sectionType}
+                  <span className="max-w-full truncate px-1 text-[10px]">
+                    {col.entry.name}
+                  </span>
                 </div>
               );
-            }
-            return (
-              <div
-                key={vc.key}
-                style={{
-                  position: "absolute",
-                  left: vc.start,
-                  width: vc.size,
-                  height: COL_HEADER_HEIGHT,
-                }}
-                className="flex items-end justify-center overflow-hidden border-r border-border/30 pb-1"
-                title={col.entry.name}
-                onContextMenu={(e) => handleColHeaderContextMenu(e, vc.index)}
-              >
-                <span
-                  className="max-w-full truncate px-1 text-[10px]"
-                  style={{
-                    writingMode: "vertical-rl",
-                    transform: "rotate(180deg)",
-                    maxHeight: 36,
-                  }}
-                >
-                  {col.entry.name}
-                </span>
-              </div>
-            );
-          })}
+            })}
+          </div>
         </div>
       </div>
 
