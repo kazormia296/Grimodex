@@ -17,7 +17,7 @@ export function extractUnplacedBeatPreview(beats: UnplacedBeatLike[]): string {
   const items: string[] = [];
   for (const beat of beats) {
     if (items.length >= MAX_BEATS) break;
-    const raw = beat.content
+    const raw = (beat.content ?? [])
       .map((n) => n.text ?? "")
       .join("")
       .trim();

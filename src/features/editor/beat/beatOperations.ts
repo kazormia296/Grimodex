@@ -151,7 +151,7 @@ export function placeBeatAtEnd(
       pov: beat.pov,
       collapsed: false,
     },
-    content: beat.content.length ? beat.content : undefined,
+    content: beat.content?.length ? beat.content : undefined,
   };
   editor.commands.insertContentAt(editor.state.doc.content.size, beatJSON);
   useUnplacedBeatsStore.getState().removeBeat(sceneId, beat.id);
@@ -179,7 +179,7 @@ export function unplaceBeat(
     beatType: (beatNode.attrs.beatType ?? "free") as BeatType,
     pov: (beatNode.attrs.pov ?? null) as string | null,
     collapsed: false,
-    content: beatNode.content.toJSON() as {
+    content: (beatNode.content.toJSON() ?? []) as {
       type?: string;
       text?: string;
       [key: string]: unknown;

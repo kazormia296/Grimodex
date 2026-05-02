@@ -42,12 +42,15 @@ export function UnplacedBeatItem({
     }: {
       editor: {
         state: {
-          doc: { firstChild: { content: { toJSON: () => unknown[] } } | null };
+          doc: {
+            firstChild: { content: { toJSON: () => unknown[] | null } } | null;
+          };
         };
       };
     }) => {
       const firstChild = ed.state.doc.firstChild;
-      const content = firstChild ? firstChild.content.toJSON() : [];
+      // Fragment.toJSON() returns null when the fragment is empty; normalise to [].
+      const content = firstChild ? (firstChild.content.toJSON() ?? []) : [];
       updateBeat(sceneId, beat.id, {
         content: content as UnplacedBeat["content"],
       });
@@ -59,7 +62,7 @@ export function UnplacedBeatItem({
 
   const editor = useEditor({
     extensions,
-    content: beat.content.length
+    content: beat.content?.length
       ? { type: "doc", content: [{ type: "paragraph", content: beat.content }] }
       : { type: "doc", content: [{ type: "paragraph" }] },
     onUpdate: handleUpdate,

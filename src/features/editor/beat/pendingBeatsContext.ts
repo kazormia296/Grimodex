@@ -26,7 +26,9 @@ function truncate(text: string): string {
 }
 
 function extractUnplacedText(content: UnplacedBeat["content"]): string {
-  return content.map((n) => (n.type === "text" ? (n.text ?? "") : "")).join("");
+  return (content ?? [])
+    .map((n) => (n.type === "text" ? (n.text ?? "") : ""))
+    .join("");
 }
 
 /**
