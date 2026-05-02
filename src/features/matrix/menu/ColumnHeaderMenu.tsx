@@ -11,6 +11,7 @@ interface Props {
   onTogglePin: () => void;
   onHide: () => void;
   onToggleTypeSection: () => void;
+  onRemoveFromSet?: () => void;
 }
 
 export function ColumnHeaderMenu({
@@ -24,6 +25,7 @@ export function ColumnHeaderMenu({
   onTogglePin,
   onHide,
   onToggleTypeSection,
+  onRemoveFromSet,
 }: Props) {
   const ref = useRef<HTMLDivElement>(null);
 
@@ -78,6 +80,21 @@ export function ColumnHeaderMenu({
           {item.label}
         </button>
       ))}
+      {onRemoveFromSet && (
+        <>
+          <div className="my-1 border-t border-border/50" />
+          <button
+            type="button"
+            className="block w-full px-3 py-1.5 text-left text-xs text-destructive hover:bg-accent"
+            onClick={() => {
+              onRemoveFromSet();
+              onClose();
+            }}
+          >
+            セットから削除
+          </button>
+        </>
+      )}
     </div>
   );
 }

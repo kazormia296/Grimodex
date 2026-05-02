@@ -80,9 +80,13 @@ export function MatrixTable({
   const collapsedRowIds = useMatrixStore((s) => s.collapsedRowIds);
   const pinnedColumnIds = useMatrixStore((s) => s.pinnedColumnIds);
   const collapsedTypeSections = useMatrixStore((s) => s.collapsedTypeSections);
+  const activeCustomSetId = useMatrixStore((s) => s.activeCustomSetId);
   const togglePinnedColumn = useMatrixStore((s) => s.togglePinnedColumn);
   const toggleHiddenColumn = useMatrixStore((s) => s.toggleHiddenColumn);
   const toggleTypeSection = useMatrixStore((s) => s.toggleTypeSection);
+  const removeCodexFromCustomSet = useMatrixStore(
+    (s) => s.removeCodexFromCustomSet,
+  );
 
   const containerRef = useRef<HTMLDivElement>(null);
 
@@ -523,6 +527,15 @@ export function MatrixTable({
                     onHide={() => toggleHiddenColumn(col.entry.id)}
                     onToggleTypeSection={() =>
                       toggleTypeSection(col.entry.type)
+                    }
+                    onRemoveFromSet={
+                      showMode === "custom" && activeCustomSetId
+                        ? () =>
+                            removeCodexFromCustomSet(
+                              activeCustomSetId,
+                              col.entry.id,
+                            )
+                        : undefined
                     }
                   />
                 );

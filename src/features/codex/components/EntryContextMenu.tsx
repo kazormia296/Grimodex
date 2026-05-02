@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Copy, MapPin, Pencil, Pin, Tag, Trash2 } from "lucide-react";
+import { Copy, Grid2X2, MapPin, Pencil, Pin, Tag, Trash2 } from "lucide-react";
 import type { CodexEntry } from "../api";
 import type { CodexType } from "../typeApi";
 import { useCodexHighlightStore } from "@/features/editor/codexHighlightStore";
@@ -16,6 +16,8 @@ interface EntryContextMenuProps {
   onChangeType?: (id: string, newType: string) => void;
   onPinToChat?: (id: string) => void;
   codexTypes?: CodexType[];
+  customSets?: Array<{ id: string; name: string }>;
+  onAddToCustomSet?: (setId: string) => void;
 }
 
 export function EntryContextMenu({
@@ -30,9 +32,12 @@ export function EntryContextMenu({
   onChangeType,
   onPinToChat,
   codexTypes = [],
+  customSets,
+  onAddToCustomSet,
 }: EntryContextMenuProps) {
   const menuRef = useRef<HTMLDivElement>(null);
   const [showTypeSubmenu, setShowTypeSubmenu] = useState(false);
+  const [showCustomSetSubmenu, setShowCustomSetSubmenu] = useState(false);
   const typeColorMap = useCodexHighlightStore((s) => s.typeColorMap);
 
   useEffect(() => {
@@ -176,6 +181,46 @@ export function EntryContextMenu({
             <Pin className="h-3.5 w-3.5 text-muted-foreground" />
             チャットにピン留め
           </button>
+        )}
+
+        {onAddToCustomSet && (
+          <div className="relative">
+            <button
+              type="button"
+              data-testid="entry-context-menu-add-to-custom-set"
+              onClick={() => setShowCustomSetSubmenu((prev) => !prev)}
+              className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm hover:bg-accent"
+            >
+              <Grid2X2 className="h-3.5 w-3.5 text-muted-foreground" />
+              Matrix カスタムセットに追加
+            </button>
+            {showCustomSetSubmenu && (
+              <div className="absolute left-full top-0 z-50 min-w-[160px] rounded-lg border border-border bg-background shadow-lg">
+                <div className="py-1">
+                  {customSets && customSets.length > 0 ? (
+                    customSets.map((cs) => (
+                      <button
+                        key={cs.id}
+                        type="button"
+                        data-testid={`entry-context-menu-custom-set-${cs.id}`}
+                        onClick={() => {
+                          onAddToCustomSet(cs.id);
+                          onClose();
+                        }}
+                        className="flex w-full items-center px-3 py-1.5 text-left text-sm hover:bg-accent"
+                      >
+                        {cs.name}
+                      </button>
+                    ))
+                  ) : (
+                    <p className="px-3 py-1.5 text-xs text-muted-foreground">
+                      セットなし
+                    </p>
+                  )}
+                </div>
+              </div>
+            )}
+          </div>
         )}
 
         <div className="my-1 border-t border-border" />

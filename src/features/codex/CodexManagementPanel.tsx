@@ -32,6 +32,7 @@ import { buildCrossReferenceReport } from "./crossReference";
 import * as chatApi from "@/features/chat/chatApi";
 import { useChatStore } from "@/features/chat/chatStore";
 import { useTabStore } from "@/features/editor/tabStore";
+import { useMatrixStore } from "@/features/matrix/matrixStore";
 
 // Fallback colors for when types haven't loaded yet
 const FALLBACK_TYPE_COLORS: Record<string, string> = {
@@ -61,6 +62,8 @@ function VirtualizedEntryList({
   onStartRename,
   scrollToEntryId,
   onScrollComplete,
+  customSets,
+  onAddToCustomSet,
 }: {
   entries: CodexEntry[];
   isLoading: boolean;
@@ -79,6 +82,8 @@ function VirtualizedEntryList({
   onStartRename?: (id: string) => void;
   scrollToEntryId?: string | null;
   onScrollComplete?: () => void;
+  customSets?: Array<{ id: string; name: string }>;
+  onAddToCustomSet?: (setId: string, entryId: string) => void;
 }) {
   const { t } = useTranslation();
   const parentRef = useRef<HTMLDivElement>(null);
@@ -198,6 +203,15 @@ function VirtualizedEntryList({
               : undefined
           }
           codexTypes={codexTypes}
+          customSets={customSets}
+          onAddToCustomSet={
+            onAddToCustomSet && contextMenu
+              ? (setId) => {
+                  onAddToCustomSet(setId, contextMenu.entry.id);
+                  setContextMenu(null);
+                }
+              : undefined
+          }
         />
       )}
     </div>
@@ -223,6 +237,8 @@ function CategoryGroupedList({
   onStartRename,
   scrollToEntryId,
   onScrollComplete,
+  customSets,
+  onAddToCustomSet,
 }: {
   entries: CodexEntry[];
   isLoading: boolean;
@@ -240,6 +256,8 @@ function CategoryGroupedList({
   onStartRename?: (id: string) => void;
   scrollToEntryId?: string | null;
   onScrollComplete?: () => void;
+  customSets?: Array<{ id: string; name: string }>;
+  onAddToCustomSet?: (setId: string, entryId: string) => void;
 }) {
   const { t } = useTranslation();
   const containerRef = useRef<HTMLDivElement>(null);
@@ -422,6 +440,15 @@ function CategoryGroupedList({
               : undefined
           }
           codexTypes={codexTypes}
+          customSets={customSets}
+          onAddToCustomSet={
+            onAddToCustomSet && contextMenu
+              ? (setId) => {
+                  onAddToCustomSet(setId, contextMenu.entry.id);
+                  setContextMenu(null);
+                }
+              : undefined
+          }
         />
       )}
     </div>
@@ -485,6 +512,9 @@ export function CodexManagementPanel({
   const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
   // S3: active chat session
   const activeSessionId = useChatStore((s) => s.activeSessionId);
+
+  // Matrix custom sets (for "Add to Matrix Custom" context menu item)
+  const matrixCustomSets = useMatrixStore((s) => s.customSets);
 
   const [scrollToEntryId, setScrollToEntryId] = useState<string | null>(null);
 
@@ -962,6 +992,13 @@ export function CodexManagementPanel({
     onStartRename: (id: string) => setRenamingEntryId(id),
     scrollToEntryId,
     onScrollComplete: () => setScrollToEntryId(null),
+    customSets: matrixCustomSets.length > 0 ? matrixCustomSets : undefined,
+    onAddToCustomSet:
+      matrixCustomSets.length > 0
+        ? (setId: string, entryId: string) => {
+            useMatrixStore.getState().addCodexToCustomSet(setId, entryId);
+          }
+        : undefined,
   };
 
   // --- List panel content ---
