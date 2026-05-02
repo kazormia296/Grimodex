@@ -1,4 +1,4 @@
-import { useRef, useState, useCallback } from "react";
+import { useRef, useState, useCallback, useEffect } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { createPortal } from "react-dom";
 import { MatrixCell } from "./MatrixCell";
@@ -89,6 +89,11 @@ export function MatrixTable({
   );
 
   const containerRef = useRef<HTMLDivElement>(null);
+
+  // Reset scroll when switching custom sets
+  useEffect(() => {
+    containerRef.current?.scrollTo(0, 0);
+  }, [activeCustomSetId]);
 
   const rowVirtualizer = useVirtualizer({
     count: rows.length,
