@@ -1315,7 +1315,7 @@ export function EditorPane({
           >
             <ResizablePanel
               id="editor-main"
-              minSize={40}
+              minSize="40%"
               className="flex flex-col overflow-hidden"
             >
               <FindReplaceBar
@@ -1427,9 +1427,9 @@ export function EditorPane({
             <ResizableHandle withHandle />
             <ResizablePanel
               id="scene-meta"
-              minSize={15}
-              maxSize={50}
-              defaultSize={sceneMetaPanelWidth}
+              minSize="15%"
+              maxSize="50%"
+              defaultSize={`${sceneMetaPanelWidth}%`}
               className="flex flex-col overflow-hidden"
             >
               <SceneMetaPanel

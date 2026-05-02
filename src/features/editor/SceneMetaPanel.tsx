@@ -17,7 +17,7 @@ export function SceneMetaPanel({
   return (
     <div
       data-testid="scene-meta-panel"
-      className="flex w-72 flex-shrink-0 flex-col overflow-y-auto border-l border-border bg-muted/20"
+      className="flex h-full w-full flex-col overflow-y-auto border-l border-border bg-muted/20"
     >
       <SynopsisHeader sceneId={sceneId} editor={editor} />
       <BeatsHeader
