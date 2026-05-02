@@ -1,6 +1,6 @@
 import { useRef, useState, useCallback } from "react";
 import { useEditor, EditorContent } from "@tiptap/react";
-import { MoreVertical } from "lucide-react";
+import { GripVertical, MoreVertical } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { useDraggable } from "@dnd-kit/core";
 import { AnimatedDropdown } from "@/components/ui/animated-dropdown";
@@ -105,6 +105,18 @@ export function UnplacedBeatItem({
       className={`group flex items-start gap-1 rounded px-1 py-0.5 hover:bg-muted/40 ${isDragging ? "opacity-50" : ""}`}
       data-beat-id={beat.id}
     >
+      {/* Drag handle */}
+      <button
+        type="button"
+        ref={setDragRef}
+        aria-label="Drag to reorder"
+        className="mt-0.5 inline-flex h-4 cursor-grab items-center justify-center rounded px-0.5 text-muted-foreground/40 opacity-0 hover:bg-muted hover:text-muted-foreground group-hover:opacity-100 active:cursor-grabbing"
+        {...attributes}
+        {...listeners}
+      >
+        <GripVertical className="h-2.5 w-2.5" />
+      </button>
+
       {/* Beat type chip */}
       <div ref={typeMenuRef} className="relative mt-0.5 flex-shrink-0">
         <button
@@ -112,7 +124,7 @@ export function UnplacedBeatItem({
           data-testid={`unplaced-beat-type-chip-${beat.id}`}
           data-beat-type={beat.beatType}
           onClick={() => setTypeMenuOpen((v) => !v)}
-          className="rounded bg-muted px-1 py-0.5 text-[10px] uppercase tracking-wide hover:bg-muted/80"
+          className="inline-flex h-4 items-center rounded bg-muted px-1 text-[10px] uppercase leading-none tracking-wide hover:bg-muted/80"
         >
           {t(`editor.beat.types.${beat.beatType}`, beat.beatType)}
         </button>
@@ -143,27 +155,10 @@ export function UnplacedBeatItem({
         </AnimatedDropdown>
       </div>
 
-      {/* Drag handle */}
-      <div
-        ref={setDragRef}
-        className="mt-1 h-3 w-2 cursor-grab opacity-30 group-hover:opacity-70"
-        {...attributes}
-        {...listeners}
-      >
-        <svg viewBox="0 0 8 12" fill="currentColor" className="h-3 w-2">
-          <circle cx="2" cy="2" r="1" />
-          <circle cx="6" cy="2" r="1" />
-          <circle cx="2" cy="6" r="1" />
-          <circle cx="6" cy="6" r="1" />
-          <circle cx="2" cy="10" r="1" />
-          <circle cx="6" cy="10" r="1" />
-        </svg>
-      </div>
-
       <div className="min-w-0 flex-1">
         <EditorContent
           editor={editor}
-          className="beat-inline-editor text-xs leading-relaxed text-foreground [&_.ProseMirror]:min-h-[1.5em] [&_.ProseMirror]:outline-none"
+          className="beat-inline-editor text-xs leading-relaxed text-foreground [&_.ProseMirror]:min-h-[1.5em] [&_.ProseMirror]:outline-none [&_.ProseMirror_p]:my-0"
         />
       </div>
 

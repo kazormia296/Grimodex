@@ -23,7 +23,7 @@ beforeEach(() => {
 });
 
 describe("BeatsHeader", () => {
-  it("Unplaced・Placed が両方0件のときデフォルト折りたたみ表示", () => {
+  it("Unplaced・Placed が両方0件のときヘッダーのみ表示（リストは描画されない）", () => {
     render(
       <BeatsHeader
         sceneId="s1"
@@ -33,7 +33,7 @@ describe("BeatsHeader", () => {
     );
     // ヘッダーは表示される
     expect(screen.getByTestId("beats-header")).toBeTruthy();
-    // Unplaced リストは折りたたまれているので非表示
+    // 0件のとき beats-unplaced-list は描画されない
     expect(screen.queryByTestId("beats-unplaced-list")).toBeNull();
   });
 
@@ -45,9 +45,7 @@ describe("BeatsHeader", () => {
         setMentionPopup={vi.fn()}
       />,
     );
-    // ヘッダーを展開
-    fireEvent.click(screen.getByTestId("beats-header-toggle"));
-    // + Beat ボタンをクリック
+    // + Beat ボタンをクリック（デフォルトで展開済み）
     fireEvent.click(screen.getByTestId("beats-add-button"));
     // ストアに1件追加されていること
     expect(useUnplacedBeatsStore.getState().getBeats("s1")).toHaveLength(1);
@@ -80,7 +78,7 @@ describe("BeatsHeader", () => {
     );
   });
 
-  it("ヘッダーを展開すると Unplaced リストが表示される", () => {
+  it("Unplaced beats がある場合、デフォルトで展開され Unplaced リストが表示される", () => {
     useUnplacedBeatsStore.setState({
       sceneBeats: {
         s1: [
@@ -101,7 +99,6 @@ describe("BeatsHeader", () => {
         setMentionPopup={vi.fn()}
       />,
     );
-    fireEvent.click(screen.getByTestId("beats-header-toggle"));
     expect(screen.getByTestId("beats-unplaced-list")).toBeTruthy();
   });
 
@@ -126,9 +123,7 @@ describe("BeatsHeader", () => {
         setMentionPopup={vi.fn()}
       />,
     );
-    // 展開
-    fireEvent.click(screen.getByTestId("beats-header-toggle"));
-    // [⋮] メニューを開く
+    // [⋮] メニューを開く（デフォルトで展開済み）
     fireEvent.click(screen.getByTestId("beat-item-menu-b1"));
     // Delete をクリック
     fireEvent.click(screen.getByTestId("beat-menu-delete-b1"));

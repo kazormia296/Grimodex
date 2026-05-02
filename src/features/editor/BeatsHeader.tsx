@@ -55,7 +55,7 @@ export function BeatsHeader({
   const { setNodeRef: setUnplacedDropRef, isOver: isOverUnplaced } =
     useDroppable({ id: "unplaced-drop-zone" });
 
-  const [collapsed, setCollapsed] = useState(true);
+  const [collapsed, setCollapsed] = useState(false);
   const [isGenerating, setIsGenerating] = useState(false);
 
   const handleAddBeat = useCallback(() => {
