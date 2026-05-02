@@ -64,6 +64,7 @@ vi.mock("@/features/project/api", () => ({
       id: "proj-1",
       title: "テストプロジェクト",
       genre: "ファンタジー",
+      language: "ja",
     }),
   ),
 }));

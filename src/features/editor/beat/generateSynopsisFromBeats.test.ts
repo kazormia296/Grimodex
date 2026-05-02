@@ -22,6 +22,7 @@ const updateSynopsisMock = vi.fn();
 vi.mock("@/features/tree/treeStore", () => ({
   useTreeStore: {
     getState: () => ({
+      projectId: "p1",
       nodes: [
         {
           id: "scene-1",
@@ -42,6 +43,10 @@ vi.mock("@/features/tree/treeStore", () => ({
       updateSynopsis: updateSynopsisMock,
     }),
   },
+}));
+
+vi.mock("@/features/project/api", () => ({
+  getProject: vi.fn(() => Promise.resolve({ language: "ja" })),
 }));
 
 vi.mock("@/features/workspace/store", () => ({

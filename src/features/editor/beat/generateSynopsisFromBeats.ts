@@ -3,6 +3,7 @@ import { useTreeStore } from "@/features/tree/treeStore";
 import { useWorkspaceStore } from "@/features/workspace/store";
 import { streamInlineAiText } from "./streamInlineAiText";
 import { getPromptCatalog } from "@/prompts/index";
+import { getProject } from "@/features/project/api";
 
 interface GenerateSynopsisCallbacks {
   onStart?: () => void;
@@ -35,13 +36,20 @@ export async function generateSynopsisFromBeats(
   const treeNode = state.nodes.find((n) => n.id === sceneId);
   const projectTitle = useWorkspaceStore.getState().activeWorkspaceName ?? "";
   const sceneTitle = treeNode?.title ?? "";
+  let project;
+  try {
+    project = await getProject(state.projectId);
+  } catch {
+    // ignore
+  }
+  const lang = project?.language ?? "ja";
 
   const beatList = beatInstructions
     .map((instr, i) => `${i + 1}. ${instr}`)
     .join("\n");
 
   const messages = getPromptCatalog(
-    "ja",
+    lang,
   ).beatGenerate.buildGenerateSynopsisMessages(
     projectTitle,
     sceneTitle,

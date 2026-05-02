@@ -28,6 +28,7 @@ vi.mock("@/features/editor/beat/unplacedBeatsStore", () => ({
 vi.mock("@/features/tree/treeStore", () => ({
   useTreeStore: {
     getState: () => ({
+      projectId: "p1",
       nodes: [
         {
           id: "scene-1",
@@ -47,6 +48,10 @@ vi.mock("@/features/tree/treeStore", () => ({
       ],
     }),
   },
+}));
+
+vi.mock("@/features/project/api", () => ({
+  getProject: vi.fn(() => Promise.resolve({ language: "ja" })),
 }));
 
 vi.mock("@/features/workspace/store", () => ({

@@ -322,9 +322,10 @@ async function fetchSceneContext(
 async function fetchProjectContext(
   projectId: string | null,
 ): Promise<ProjectContext | null> {
-  if (projectId == null) return null;
+  const effectiveId = projectId ?? useTreeStore.getState().projectId;
+  if (!effectiveId) return null;
   try {
-    const project = await getProject(projectId);
+    const project = await getProject(effectiveId);
     if (!project) return null;
     return {
       title: project.title,
@@ -333,6 +334,7 @@ async function fetchProjectContext(
       tense: project.tense,
       styleGuide: project.styleGuide,
       aiInstructions: project.aiInstructions,
+      language: project.language,
     };
   } catch {
     return null;
@@ -669,6 +671,7 @@ async function buildSceneContextPrompt(opts: {
     contextWindow,
     conversationSummary,
     pendingBeatsSection,
+    lang: projectCtx?.language ?? "ja",
   });
 
   return {
@@ -840,6 +843,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
             scene: sceneCtx ?? undefined,
             project: projectCtx ?? undefined,
             storySoFar: storySoFar || undefined,
+            lang: projectCtx?.language ?? "ja",
           });
           parts.push(`[system]\n${systemPrompt}`);
         } else if (sceneCtx) {
@@ -867,6 +871,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
           const { prompt } = buildSystemPrompt({
             scene: { id: "", title: "", content: "" },
             project: projectCtx,
+            lang: projectCtx.language ?? "ja",
           });
           parts.push(`[system]\n${prompt}`);
         }
@@ -989,6 +994,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
             scene: sceneCtx ?? undefined,
             project: projectCtx ?? undefined,
             storySoFar: storySoFar || undefined,
+            lang: projectCtx?.language ?? "ja",
           });
           set({
             contextTokenCount: countTokens(systemPrompt),
@@ -1022,7 +1028,9 @@ export const useChatStore = create<ChatState>()((set, get) => ({
         // Accumulate tool calls for live metadata update
         const accToolCalls: ToolCallRecord[] = [];
 
-        const agentControl = getPromptCatalog("ja").agentControl;
+        const agentControl = getPromptCatalog(
+          projectCtx?.language ?? "ja",
+        ).agentControl;
         const { toolCallRecords, finalThinkingBlocks } = await runAgentLoop({
           messages: agentMsgs,
           tools: AGENT_TOOLS,
@@ -1098,7 +1106,12 @@ export const useChatStore = create<ChatState>()((set, get) => ({
               const agentModel =
                 useAiSettingsStore.getState().settings?.model ?? "";
               chatApi
-                .generateSessionTitle(content, lastMsg.content, agentModel)
+                .generateSessionTitle(
+                  content,
+                  lastMsg.content,
+                  agentModel,
+                  projectCtx?.language ?? "ja",
+                )
                 .then(async (title) => {
                   if (!title) {
                     title = content.slice(0, 30);
@@ -1155,6 +1168,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
             const summaryText = await runSummarization(
               candidates,
               chatApi.sendChatMessageWithThinking,
+              projectCtx?.language ?? "ja",
             );
             const candidateIds = candidates.map((m) => m.id);
             const chatSummary = await chatApi.addSummary(
@@ -1405,7 +1419,12 @@ export const useChatStore = create<ChatState>()((set, get) => ({
                   lastMsg.content
                 ) {
                   chatApi
-                    .generateSessionTitle(content, lastMsg.content, chatModel)
+                    .generateSessionTitle(
+                      content,
+                      lastMsg.content,
+                      chatModel,
+                      projectCtx?.language ?? "ja",
+                    )
                     .then(async (title) => {
                       if (!title) {
                         title = content.slice(0, 30);
@@ -1614,6 +1633,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
               : undefined,
           pinnedSnippets:
             globalPinnedSnippets.length > 0 ? globalPinnedSnippets : undefined,
+          lang: projectCtx?.language ?? "ja",
         });
 
         set({

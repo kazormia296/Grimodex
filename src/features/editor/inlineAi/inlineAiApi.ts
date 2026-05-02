@@ -5,15 +5,17 @@ import { getPromptCatalog } from "@/prompts/index";
 export function buildSystemPrompt(
   command: InlineAiCommand,
   ctx: InlineAiContext,
+  lang = "ja",
 ): string {
-  return getPromptCatalog("ja").inlineAi.buildSystemPrompt(command, ctx);
+  return getPromptCatalog(lang).inlineAi.buildSystemPrompt(command, ctx);
 }
 
 export function buildUserPrompt(
   command: InlineAiCommand,
   ctx: InlineAiContext,
+  lang = "ja",
 ): string {
-  return getPromptCatalog("ja").inlineAi.buildUserPrompt(command, ctx);
+  return getPromptCatalog(lang).inlineAi.buildUserPrompt(command, ctx);
 }
 
 /**
@@ -28,10 +30,11 @@ export async function generateInlineAi(
   context: InlineAiContext,
   onChunk: (chunk: string) => void,
   signal?: AbortSignal,
+  lang = "ja",
 ): Promise<{ text: string; model: string; stopReason: string }> {
   const messages = [
-    { role: "system", content: buildSystemPrompt(command, context) },
-    { role: "user", content: buildUserPrompt(command, context) },
+    { role: "system", content: buildSystemPrompt(command, context, lang) },
+    { role: "user", content: buildUserPrompt(command, context, lang) },
   ];
 
   let accumulated = "";

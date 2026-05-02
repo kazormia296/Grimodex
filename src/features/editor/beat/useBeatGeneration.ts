@@ -3,6 +3,7 @@ import type { Editor } from "@tiptap/core";
 import { sendInlineAiStream } from "@/features/editor/inlineAi/inlineAiStreaming";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { useWorkspaceStore } from "@/features/workspace/store";
+import { getProject } from "@/features/project/api";
 import { useCodexStore } from "@/features/codex/codexStore";
 import { useSettingsStore } from "@/features/settings/settingsStore";
 import { buildBeatMessages, type BeatPromptInput } from "./beatPromptBuilder";
@@ -219,6 +220,12 @@ export function useBeatGeneration(
       });
     }
 
+    let project;
+    try {
+      project = await getProject(useTreeStore.getState().projectId);
+    } catch {
+      // ignore
+    }
     const promptInput: BeatPromptInput = {
       instructions,
       beatType,
@@ -227,6 +234,7 @@ export function useBeatGeneration(
       sceneTextSoFar,
       povName,
       pendingBeatsSection,
+      lang: project?.language ?? "ja",
     };
     const messages = buildBeatMessages(promptInput);
 

@@ -1,6 +1,7 @@
 import type { Editor } from "@tiptap/core";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { useWorkspaceStore } from "@/features/workspace/store";
+import { getProject } from "@/features/project/api";
 import { useCodexStore } from "@/features/codex/codexStore";
 import { useSnippetStore } from "@/features/snippets/snippetStore";
 import { streamInlineAiText } from "./streamInlineAiText";
@@ -41,6 +42,13 @@ export async function generateBeatAlternative(
   const projectTitle = useWorkspaceStore.getState().activeWorkspaceName ?? "";
   const sceneTitle = node?.title ?? "";
   const codexEntries = useCodexStore.getState().entries;
+  let project;
+  try {
+    project = await getProject(useTreeStore.getState().projectId);
+  } catch {
+    // ignore
+  }
+  const lang = project?.language ?? "ja";
 
   const povCharId = beatPov ?? node?.povCharacterId ?? null;
   const povName = povCharId
@@ -61,6 +69,7 @@ export async function generateBeatAlternative(
     sceneTitle,
     sceneTextSoFar,
     povName,
+    lang,
   });
 
   callbacks?.onStart?.();

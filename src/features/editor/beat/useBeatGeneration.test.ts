@@ -20,6 +20,10 @@ vi.mock("@tauri-apps/api/event", () => ({
   }),
 }));
 
+vi.mock("@/features/project/api", () => ({
+  getProject: vi.fn(() => Promise.resolve({ language: "ja" })),
+}));
+
 // Mock inference dependencies for C-7 tests.
 const inferMentionRolesMock = vi.fn();
 vi.mock("./inferMentionRoles", () => ({

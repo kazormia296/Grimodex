@@ -1,6 +1,7 @@
 import { useTreeStore } from "@/features/tree/treeStore";
 import { useWorkspaceStore } from "@/features/workspace/store";
 import { useUnplacedBeatsStore } from "@/features/editor/beat/unplacedBeatsStore";
+import { getProject } from "@/features/project/api";
 import { streamInlineAiText } from "./streamInlineAiText";
 import { BEAT_TYPES } from "@/features/editor/SceneBeatNode";
 import type { BeatType } from "@/features/editor/SceneBeatNode";
@@ -70,9 +71,16 @@ export async function generateBeatsFromSynopsis(
 
   const projectTitle = useWorkspaceStore.getState().activeWorkspaceName ?? "";
   const sceneTitle = treeNode?.title ?? "";
+  let project;
+  try {
+    project = await getProject(state.projectId);
+  } catch {
+    // ignore
+  }
+  const lang = project?.language ?? "ja";
 
   const messages = getPromptCatalog(
-    "ja",
+    lang,
   ).beatGenerate.buildGenerateBeatsMessages(projectTitle, sceneTitle, synopsis);
 
   callbacks?.onStart?.();

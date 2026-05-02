@@ -3,6 +3,8 @@ import { sendChatMessageWithThinking } from "@/features/chat/chatApi";
 import { invoke } from "@/lib/tauri";
 import { getPromptCatalog } from "@/prompts/index";
 import { extractJsonObject } from "@/prompts/shared/jsonContract";
+import { useTreeStore } from "@/features/tree/treeStore";
+import { getProject } from "@/features/project/api";
 import {
   foreshadows,
   foreshadowSetups,
@@ -596,6 +598,14 @@ export async function proposePastSetups(
     return res.candidates.filter(isValidCandidate);
   }
 
+  let _project;
+  try {
+    _project = await getProject(useTreeStore.getState().projectId);
+  } catch {
+    // ignore
+  }
+  const _lang = _project?.language ?? "ja";
+
   const sceneSummary = req.pastScenes
     .slice(0, 30)
     .map(
@@ -608,15 +618,15 @@ export async function proposePastSetups(
     .map((entry) => `- ${entry.name}: ${entry.summary}`)
     .join("\n");
 
-  const prompt = getPromptCatalog("ja").foreshadow.buildProposePastSetupsPrompt(
-    {
-      intent: req.intent,
-      payoffSceneId: req.payoffSceneId,
-      payoffExcerpt: req.payoffExcerpt,
-      sceneSummary,
-      codexSummary,
-    },
-  );
+  const prompt = getPromptCatalog(
+    _lang,
+  ).foreshadow.buildProposePastSetupsPrompt({
+    intent: req.intent,
+    payoffSceneId: req.payoffSceneId,
+    payoffExcerpt: req.payoffExcerpt,
+    sceneSummary,
+    codexSummary,
+  });
 
   const response = await sendChatMessageWithThinking([
     { role: "user", content: prompt },
@@ -644,8 +654,14 @@ export interface EvaluateStrengthRequest {
 export async function evaluateSetupStrength(
   req: EvaluateStrengthRequest,
 ): Promise<AiEvaluation | null> {
+  let _project;
+  try {
+    _project = await getProject(useTreeStore.getState().projectId);
+  } catch {
+    // ignore
+  }
   const prompt = getPromptCatalog(
-    "ja",
+    _project?.language ?? "ja",
   ).foreshadow.buildEvaluateSetupStrengthPrompt({
     foreshadowIntent: req.foreshadowIntent,
     setupExcerpt: req.setupExcerpt,
@@ -702,6 +718,14 @@ export async function auditChapter(
     return res.candidates.filter(isValidAuditCandidate);
   }
 
+  let _auditProject;
+  try {
+    _auditProject = await getProject(useTreeStore.getState().projectId);
+  } catch {
+    // ignore
+  }
+  const _auditLang = _auditProject?.language ?? "ja";
+
   const nonEmptyScenes = req.scenes.filter((s) => s.bodyText.trim().length > 0);
   if (nonEmptyScenes.length === 0) return [];
 
@@ -727,7 +751,9 @@ export async function auditChapter(
       ? req.relatedCodex.map((e) => `- ${e.name}: ${e.summary}`).join("\n")
       : "(なし)";
 
-  const prompt = getPromptCatalog("ja").foreshadow.buildAuditChapterPrompt({
+  const prompt = getPromptCatalog(
+    _auditLang,
+  ).foreshadow.buildAuditChapterPrompt({
     existingList,
     codexList,
     sceneTexts,

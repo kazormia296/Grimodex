@@ -6,11 +6,7 @@ import {
   formatTimelineContext,
   type ResolvedCodexState,
 } from "@/features/codex/phaseResolver";
-import type {
-  PromptLang,
-  L1TrimMarkers,
-  L3TrimMarkers,
-} from "@/prompts/shared/types";
+import type { L1TrimMarkers, L3TrimMarkers } from "@/prompts/shared/types";
 import {
   JA_L1_TRIM_MARKERS,
   JA_L3_TRIM_MARKERS,
@@ -34,6 +30,7 @@ export interface ProjectContext {
   tense?: string | null;
   styleGuide?: string | null;
   aiInstructions?: string | null;
+  language?: string;
 }
 
 export interface CodexContext {
@@ -104,7 +101,7 @@ export interface BuildSystemPromptInput {
   /** C-3: 「予定ビート」セクション文字列（buildPendingBeatsSection の結果）。Synopsis 後・本文前に注入。 */
   pendingBeatsSection?: string;
   /** 執筆言語（project.language）。省略時は "ja" にフォールバック */
-  lang?: PromptLang;
+  lang?: string;
 }
 
 export interface LayerBudgets {
@@ -571,7 +568,7 @@ export interface BuildAgentSystemPromptInput {
   scene?: SceneContext;
   project?: ProjectContext;
   storySoFar?: string;
-  lang?: PromptLang;
+  lang?: string;
 }
 
 /** Agent mode用システムプロンプト — Layer 4（Codex自動注入）を除外 */
@@ -631,7 +628,7 @@ export function buildStorySoFar(
   currentSceneId: string,
   allNodes: TreeNodeData[],
   tokenBudget: number,
-  lang?: PromptLang,
+  lang?: string,
 ): string {
   // Find the current scene's sortOrder
   const currentScene = allNodes.find((n) => n.id === currentSceneId);

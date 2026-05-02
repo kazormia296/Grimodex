@@ -8,6 +8,8 @@ import {
 } from "./InlineAIDiffPlugin";
 import { generateInlineAi } from "./inlineAiApi";
 import type { InlineAiCommand, InlineAiContext } from "./inlineAiTypes";
+import { useTreeStore } from "@/features/tree/treeStore";
+import { getProject } from "@/features/project/api";
 
 const DEFAULT_MODEL = "claude-sonnet-4-6";
 
@@ -91,6 +93,13 @@ export function useInlineAiDiff(editor: Editor | null) {
         const insertedFrom = isReplace ? (originalRange?.to ?? from) : from;
         let insertedTo = insertedFrom;
 
+        let project;
+        try {
+          project = await getProject(useTreeStore.getState().projectId);
+        } catch {
+          // ignore
+        }
+        const lang = project?.language ?? "ja";
         const result = await generateInlineAi(
           command,
           context,
@@ -106,6 +115,7 @@ export function useInlineAiDiff(editor: Editor | null) {
               .setGeneratedRange({ from: insertedFrom, to: insertedTo });
           },
           abortController.signal,
+          lang,
         );
 
         // Toolbar からの早押し abort が先に店じまいを終えているケースは

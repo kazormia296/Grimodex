@@ -2,6 +2,8 @@ import { sendChatMessageWithThinking } from "@/features/chat/chatApi";
 import type { MentionRole } from "@/features/codex/CodexMentionExtension";
 import { getPromptCatalog } from "@/prompts/index";
 import { extractJsonObject } from "@/prompts/shared/jsonContract";
+import { useTreeStore } from "@/features/tree/treeStore";
+import { getProject } from "@/features/project/api";
 
 export interface RoleInferenceInput {
   beatInstructions: string;
@@ -29,8 +31,19 @@ function isValidRole(value: unknown): value is MentionRole {
   return value === "actor" || value === "target" || value === "mentioned";
 }
 
-function buildPrompt(input: RoleInferenceInput): string {
-  return getPromptCatalog("ja").inferMentionRoles.buildPrompt(input);
+async function getPromptLang(): Promise<string> {
+  const projectId = useTreeStore.getState().projectId;
+  let project;
+  try {
+    project = await getProject(projectId);
+  } catch {
+    // ignore
+  }
+  return project?.language ?? "ja";
+}
+
+function buildPrompt(input: RoleInferenceInput, lang: string): string {
+  return getPromptCatalog(lang).inferMentionRoles.buildPrompt(input);
 }
 
 /**
@@ -43,7 +56,8 @@ export async function inferMentionRoles(
 ): Promise<RoleSuggestion[]> {
   if (input.mentions.length === 0) return [];
 
-  const prompt = buildPrompt(input);
+  const lang = await getPromptLang();
+  const prompt = buildPrompt(input, lang);
 
   let responseText: string;
   try {

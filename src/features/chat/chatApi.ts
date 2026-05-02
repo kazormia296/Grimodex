@@ -29,6 +29,8 @@ import type {
 import type { CodexEntry } from "@/features/codex/api";
 import { sanitizeSceneContent } from "./contextBuilder";
 import { getPromptCatalog } from "@/prompts/index";
+import { useTreeStore } from "@/features/tree/treeStore";
+import { getProject } from "@/features/project/api";
 
 // --- AI message sending (existing) ---
 
@@ -75,10 +77,13 @@ export async function generateSynopsisFromContent(
   sceneTitle: string,
   sceneContent: string,
 ): Promise<string> {
+  const projectId = useTreeStore.getState().projectId;
+  const project = await getProject(projectId).catch(() => null);
+  const lang = project?.language ?? "ja";
   const messages = [
     {
       role: "user",
-      content: getPromptCatalog("ja").chatApi.buildSynopsisFromContentPrompt(
+      content: getPromptCatalog(lang).chatApi.buildSynopsisFromContentPrompt(
         sceneTitle,
         sanitizeSceneContent(sceneContent),
       ),
@@ -263,6 +268,7 @@ export async function generateSessionTitle(
   userMessage: string,
   assistantReply: string,
   model: string,
+  lang = "ja",
 ): Promise<string | null> {
   try {
     const thinkingParams = buildThinkingParams(
@@ -273,7 +279,7 @@ export async function generateSessionTitle(
     const messages = [
       {
         role: "user",
-        content: getPromptCatalog("ja").chatApi.buildSessionTitlePrompt(
+        content: getPromptCatalog(lang).chatApi.buildSessionTitlePrompt(
           userMessage,
           assistantReply,
         ),

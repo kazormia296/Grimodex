@@ -55,8 +55,9 @@ export async function runSummarization(
     messages: { role: string; content: string }[],
     thinkingParams?: ThinkingParams,
   ) => Promise<ChatMessageResult>,
+  lang = "ja",
 ): Promise<string> {
-  const prompt = createSummarizationPrompt(candidates);
+  const prompt = createSummarizationPrompt(candidates, lang);
   const result = await sendMessage([{ role: "user", content: prompt }], {
     effort: "low",
   });

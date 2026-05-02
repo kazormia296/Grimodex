@@ -25,6 +25,10 @@ vi.mock("@/features/snippets/snippetStore", () => ({
   },
 }));
 
+vi.mock("@/features/project/api", () => ({
+  getProject: vi.fn(() => Promise.resolve({ language: "ja" })),
+}));
+
 import { Editor } from "@tiptap/core";
 import StarterKit from "@tiptap/starter-kit";
 import { AuthorshipMark } from "@/features/attribution/AuthorshipMark";
