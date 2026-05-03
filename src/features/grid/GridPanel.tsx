@@ -21,6 +21,8 @@ import { useGridDerivedData, useGridFlatSceneOrder } from "./gridSelectors";
 import { useGridCardVisibility } from "./useGridCardVisibility";
 import { GridHeader } from "./GridHeader";
 import { GridDisplayToolbar } from "./GridDisplayToolbar";
+import { ManageLabelsDialog } from "@/features/labels/ManageLabelsDialog";
+import { useLabelStore } from "@/features/labels/labelStore";
 import { GridColumn } from "./GridColumn";
 import { GridLooseColumn } from "./GridLooseColumn";
 import { GridStatusBar } from "./GridStatusBar";
@@ -65,6 +67,7 @@ export function GridPanel() {
   const toolbarOpen = useGridStore((s) => s.toolbarOpen);
   const setToolbarOpen = useGridStore((s) => s.setToolbarOpen);
 
+  const [manageLabelsOpen, setManageLabelsOpen] = useState(false);
   const [activeId, setActiveId] = useState<string | null>(null);
   const [dropIndicator, setDropIndicator] = useState<DropIndicator | null>(
     null,
@@ -80,6 +83,7 @@ export function GridPanel() {
 
   useEffect(() => {
     void loadForProject(projectId);
+    void useLabelStore.getState().load(projectId);
   }, [projectId, loadForProject]);
 
   useEffect(() => {
@@ -455,9 +459,15 @@ export function GridPanel() {
           onContainerChange={(id) => void setContainerId(projectId, id)}
           toolbarOpen={toolbarOpen}
           onToggleToolbar={() => setToolbarOpen(!toolbarOpen)}
+          onManageLabels={() => setManageLabelsOpen(true)}
         />
 
         {toolbarOpen && <GridDisplayToolbar />}
+
+        <ManageLabelsDialog
+          open={manageLabelsOpen}
+          onClose={() => setManageLabelsOpen(false)}
+        />
 
         <div className="flex flex-1 gap-3 overflow-x-auto overflow-y-hidden p-4">
           {orderedColumns.map((entry) => {
