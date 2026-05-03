@@ -1,10 +1,16 @@
+import { useMemo } from "react";
 import type { Snippet } from "@/features/snippets/api";
+import { htmlToPlainText } from "@/features/snippets/htmlToPlainText";
 
 export function SnippetCardBody({ snippet }: { snippet: Snippet }) {
+  const plainText = useMemo(
+    () => htmlToPlainText(snippet.content),
+    [snippet.content],
+  );
   return (
     <>
       <p className="mt-1 line-clamp-2 text-xs text-muted-foreground">
-        {snippet.content}
+        {plainText}
       </p>
       <div className="mt-1 flex flex-wrap items-center gap-1.5">
         {snippet.contentSource === "ai" ? (
@@ -17,7 +23,7 @@ export function SnippetCardBody({ snippet }: { snippet: Snippet }) {
           </span>
         ) : null}
         <span className="text-[10px] text-muted-foreground">
-          {snippet.content.length} chars
+          {plainText.length} chars
         </span>
       </div>
     </>
