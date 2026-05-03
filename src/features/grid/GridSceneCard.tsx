@@ -124,12 +124,21 @@ export function GridSceneCard({
 
   function handleCardClick(e: React.MouseEvent) {
     if (isEditing || addingBeat) return;
+    // Ignore clicks on interactive descendants — they handle their own clicks
+    if (
+      (e.target as HTMLElement).closest(
+        "button, a, input, textarea, [contenteditable='true']",
+      )
+    ) {
+      return;
+    }
     if (e.metaKey || e.ctrlKey) {
       toggleSelection(scene.id);
     } else if (e.shiftKey) {
       rangeSelect(scene.id, flatOrder ?? []);
     } else {
       selectOnly(scene.id);
+      openInEditor();
     }
   }
 
