@@ -7,6 +7,7 @@ import {
   ChevronDown,
   FileText,
   Folder,
+  FolderOpen,
   FolderPlus,
   GripVertical,
 } from "lucide-react";
@@ -35,12 +36,22 @@ const STATUS_LABELS: Record<SceneStatus, string> = {
   final: "Final",
 };
 
-export function NodeIcon({ nodeType }: { nodeType: string }) {
+export function NodeIcon({
+  nodeType,
+  isExpanded = false,
+}: {
+  nodeType: string;
+  isExpanded?: boolean;
+}) {
   switch (nodeType) {
     case "folder":
-      return <Folder className="h-3.5 w-3.5 text-teal-500" />;
+      return isExpanded ? (
+        <FolderOpen className="h-3.5 w-3.5 text-muted-foreground" />
+      ) : (
+        <Folder className="h-3.5 w-3.5 text-muted-foreground" />
+      );
     case "note":
-      return <FileText className="h-3.5 w-3.5 text-teal-500" />;
+      return <FileText className="h-3.5 w-3.5 text-muted-foreground" />;
     default:
       return null;
   }
@@ -341,7 +352,7 @@ export function TreeNodeItem({
             )}
           </div>
         ) : (
-          <NodeIcon nodeType={node.nodeType} />
+          <NodeIcon nodeType={node.nodeType} isExpanded={isExpanded} />
         )}
 
         {/* Title */}

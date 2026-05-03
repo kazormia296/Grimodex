@@ -13,6 +13,7 @@ import {
   ChevronsUpDown,
   MoreHorizontal,
   Check,
+  ChevronRight,
   GripVertical,
   Undo2,
   Redo2,
@@ -379,42 +380,76 @@ function PanelMenu({
         setViewMode as (v: string) => void,
       )}
       <div className="my-1 border-t border-border" />
-      <div className="px-3 py-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
-        {t("scenes.sortByLabel")}
-      </div>
-      {(["manual", "title", "wordcount", "status"] as const).map((m) =>
-        radioItem(m, sortMode, t(SORT_LABEL_KEYS[m]), setSortMode),
-      )}
-      <div className="my-1 border-t border-border" />
-      <div className="px-3 py-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
-        {t("scenes.filterByStatusLabel")}
-      </div>
-      {STATUS_FILTER_VALUES.map((value) =>
-        radioItem(
-          value,
-          statusFilter,
-          value === null
-            ? t("scenes.filterAll")
-            : value.charAt(0).toUpperCase() + value.slice(1),
-          setStatusFilter,
-        ),
-      )}
-      <div className="my-1 border-t border-border" />
-      <div className="px-3 py-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
-        {t("scenes.showLabel")}
-      </div>
-      {checkItem(t("scenes.showWordCount"), showWordCounts, setShowWordCounts)}
-      {checkItem(t("scenes.showStatusDots"), showStatusDots, setShowStatusDots)}
-      {checkItem(t("scenes.showLabelDots"), showLabelDots, setShowLabelDots)}
-      {checkItem(
-        t("scenes.showAiBadge"),
-        showAiAttribution,
-        setShowAiAttribution,
-      )}
-      {checkItem(
-        t("scenes.autoRevealActive"),
-        autoRevealActiveScene,
-        setAutoRevealActiveScene,
+      <SubMenuGroup label={t("scenes.sortByLabel")}>
+        {(["manual", "title", "wordcount", "status"] as const).map((m) =>
+          radioItem(m, sortMode, t(SORT_LABEL_KEYS[m]), setSortMode),
+        )}
+      </SubMenuGroup>
+      <SubMenuGroup label={t("scenes.filterByStatusLabel")}>
+        {STATUS_FILTER_VALUES.map((value) =>
+          radioItem(
+            value,
+            statusFilter,
+            value === null
+              ? t("scenes.filterAll")
+              : value.charAt(0).toUpperCase() + value.slice(1),
+            setStatusFilter,
+          ),
+        )}
+      </SubMenuGroup>
+      <SubMenuGroup label={t("scenes.showLabel")}>
+        {checkItem(
+          t("scenes.showWordCount"),
+          showWordCounts,
+          setShowWordCounts,
+        )}
+        {checkItem(
+          t("scenes.showStatusDots"),
+          showStatusDots,
+          setShowStatusDots,
+        )}
+        {checkItem(t("scenes.showLabelDots"), showLabelDots, setShowLabelDots)}
+        {checkItem(
+          t("scenes.showAiBadge"),
+          showAiAttribution,
+          setShowAiAttribution,
+        )}
+        {checkItem(
+          t("scenes.autoRevealActive"),
+          autoRevealActiveScene,
+          setAutoRevealActiveScene,
+        )}
+      </SubMenuGroup>
+    </div>
+  );
+}
+
+function SubMenuGroup({
+  label,
+  children,
+}: {
+  label: string;
+  children: React.ReactNode;
+}) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div
+      className="relative"
+      onMouseEnter={() => setOpen(true)}
+      onMouseLeave={() => setOpen(false)}
+    >
+      <button
+        type="button"
+        className="flex w-full items-center gap-2 px-3 py-1.5 text-xs hover:bg-accent"
+      >
+        <span className="w-3" />
+        {label}
+        <ChevronRight className="ml-auto h-3 w-3" />
+      </button>
+      {open && (
+        <div className="absolute right-full top-0 mr-1 min-w-[180px] rounded-md border border-border bg-popover py-1 shadow-md">
+          {children}
+        </div>
       )}
     </div>
   );
