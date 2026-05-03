@@ -177,17 +177,61 @@ Help
 | 領域 | 内容 | データソース |
 |------|------|--------|
 | ヘッダ | Scene 名 + 編集 ✏ + `[⋮]` メニュー | `tree_nodes.title` |
-| 本体（上段） | Synopsis（あれば）または Unplaced beat の最初の3件の冒頭文 | `tree_nodes.synopsis` / `tree_nodes.unplaced_beat_preview`（保存時にフロントが事前抽出したプレビュー、Beat 設計書 / 後述「Beat 冒頭の取得戦略」参照） |
+| ヘッダ直下 | POV chip 行（最大3人 + `+N more`） | `scene_beat_pov_cache` ∪ `tree_nodes.povCharacterId`（後述「POV chip」参照） |
+| 本体（上段） | Beat 箇条書き（主表示）／ Synopsis は折りたたみ | `tree_nodes.unplaced_beat_preview` / `tree_nodes.synopsis`（保存時にフロントが事前抽出したプレビュー、Beat 設計書 / 後述「Beat 冒頭の取得戦略」参照） |
 | 本体（中段） | Codex チップ（最大5件） | `scene_codex_pins` |
 | フッタ | Label / 文字数 / Status | （Label は Phase B、`tree_nodes.status` は Scenes パネル設計書既定、文字数は `tree_nodes.char_count`） |
 
 > Phase A での Codex チップは**表示専用**（タイプ別色分け・クリックで Codex 詳細パネル起動）。`+ Codex` 追加・`×` 削除のインタラクションは Phase B（後述「実装フェーズ」参照）。
 
-#### Synopsis vs Beat 冒頭の優先順位
+#### Beat 主表示と Synopsis 折りたたみ（実装済み）
 
-**現行（Phase A）**: Synopsis が空でない場合は Synopsis を全文表示（最大3行、超過は `…`）。Synopsis が空の場合は Unplaced beat の最初3件の冒頭1行を bullet で表示。両方空の場合は灰色で「Empty scene」と表示。
+**現行**: Beat 箇条書きを主表示、Synopsis は副表示として折りたたむ。Beat と Synopsis の役割分担（Beat = 構造的計画、Synopsis = 叙述的要約）を Grid 上でも視覚的に反映し、「Grid で Beat を計画 → Editor で D&D して生成」のフローを一貫させる。詳細は Beat システム設計書「Grid との接続」参照。
 
-> **Phase B 予定（Beat 主表示化）**: 優先順位を逆転させ、**Beat 箇条書きを主表示**、Synopsis を副表示（折りたたみ or 小さく）に変更する。Beat と Synopsis の役割分担（Beat = 構造的計画、Synopsis = 叙述的要約）を Grid 上でも視覚的に反映し、「Grid で Beat を計画 → Editor で D&D して生成」のフローを一貫させる。詳細は Beat システム設計書「Grid との接続」参照。
+- **Beat あり**: Beat を bullet 表示（最大8件 × 60文字、`unplaced_beat_preview` キャッシュから読む）。Synopsis がある場合は下に `▸ Show synopsis` / `▾ Hide synopsis` トグルで展開可能（双方向）
+- **Beat なし / Synopsis あり**: Synopsis を本体に直接表示
+- **両方なし**: 灰色で「空のシーン」と表示
+
+#### POV chip
+
+ヘッダ直下に独立した行として、そのシーンの **effective POVs**（scene POV ＋ Beat 内 POV オーバーライド）を chip で並べる。Codex character chip との視覚混同を避けるため、Codex 行とは分離して描画する。
+
+**データソース**:
+
+- 第1ソース: `scene_beat_pov_cache (scene_id, pov_character_id)` — `extractBeatPovOverrides` が Beat ノードの明示 `pov` 属性のみを抽出してキャッシュ（属性なしで scene POV を継承する Beat はキャッシュに入らない）
+- フォールバック: cache が空かつ `tree_nodes.povCharacterId` が set されている場合は scene POV のみ表示
+- 両方 null（POV 未設定）の場合は POV chip 行ごと描画しない（領域も詰める）
+- character 名は `codexEntries` を join して取得
+
+**Effective POVs の構築ルール**:
+
+- `effective = unique(scene POV + cache の POVs)`
+- **scene POV を先頭固定**、後続は Beat 出現順
+- cache に scene POV と一致する ID が含まれている場合は dedupe（重複 chip を出さない）
+- Beat 設計書 `pendingBeatsContext.ts:69` の Beat ラベル省略ロジックと同じ思想
+
+**スタイル（chip の見分け）**:
+
+| 種類 | 見た目 | tooltip |
+|------|--------|---------|
+| scene POV | **塗り chip**（character タイプ色、文字白） | "Scene POV" |
+| Beat 由来のみ | **アウトライン chip**（character 色を border、背景透明、文字 muted） | "POV used in beats only" |
+
+**上限と多 POV の扱い**:
+
+- chip 表示は最大3人。超過分は `+N more` バッジで省略
+- バッジクリックでポップオーバーを開き、effective POVs の全員を一覧表示
+
+**クリック挙動**:
+
+- chip クリックで character codex 詳細パネルを開く（既存 Codex チップと同じ）
+- POV の編集自体は Editor の SynopsisHeader で行う（Grid からの編集は提供しない）
+
+**Cache 更新タイミング**（既存挙動の確認）:
+
+- `EditorPane.tsx:472` / `LinearSceneBlock.tsx:102` のシーン保存時に `upsertSceneBeatPovOverrides` で完全置換（insert + 不在 ID の delete）
+- character codex 削除時は schema の `onDelete: cascade` で cache 行も自動削除
+- マイグレーション後に未編集の既存シーンは cache 空のまま。fallback で scene POV のみ表示され、次回保存で自然解消（`unplaced_beat_preview` と同じ lazy パターン）
 
 #### Codex チップ
 
@@ -309,6 +353,7 @@ Grid は新規テーブルを持たない。表示内容はすべて既存テー
 | Scene カード | `tree_nodes` の scene ノード（folder 列の子、または Loose） |
 | Synopsis | `tree_nodes.synopsis` |
 | Beat 冒頭 | `tree_nodes.unplaced_beat_preview` キャッシュ（後述「Beat 冒頭の取得戦略」参照） |
+| POV chip | `scene_beat_pov_cache` ∪ `tree_nodes.povCharacterId`（dedupe、scene POV 先頭、character 名は `codexEntries` を join） |
 | Codex チップ | `scene_codex_pins` |
 | Label | （Phase B、Label 機能が追加されたら対応） |
 | Status | `tree_nodes.status`（Scenes パネル設計書既定） |
@@ -423,13 +468,27 @@ Grid のビュー状態は**スコープを分けて**保存する：
 
 - [ ] 🔍 検索（インクリメンタル、ヒット外カードグレーアウト）
 - [ ] フィルタ（空 Scene のみ / 完成済み非表示 / Codex フィルタ）
-- [ ] カード `[⋮] → Add unplaced beat...`（Editor 起動なしで beat 追加）
+- [x] カード `[⋮] → Add unplaced beat...`（Editor 起動なしで beat 追加）
 - [ ] Compact カード幅モード
 - [ ] **Codex チップの直接編集**: `+ Codex` ポップオーバー（Chat パネル「📌ピン留め追加ポップオーバー」を共有可能コンポーネントとしてリファクタしたうえで再利用）、`×` で削除
-- [ ] Loose Scenes 仮想列の一括操作（既存 Chapter にまとめる／新規 Chapter folder に変換）
+- [x] Loose Scenes 仮想列の一括操作（既存 Chapter にまとめる／新規 Chapter folder に変換）
 - [ ] カード本体の Status バッジ表示
 - [ ] 文字数カード表示のリアルタイム更新（編集中も反映）
-- [ ] **Beat 主表示化**: カード本体上段の優先順位を Beat 箇条書き優先に切替、Synopsis を副表示（折りたたみ）に降格。`unplaced_beat_preview` の抽出パラメータを 8件 × 60文字に拡張
+- [x] **Beat 主表示化**: カード本体上段の優先順位を Beat 箇条書き優先に切替、Synopsis を副表示（折りたたみ）に降格。`unplaced_beat_preview` の抽出パラメータを 8件 × 60文字に拡張
+- [ ] **POV chip 行**: ヘッダ直下に effective POVs（scene POV ∪ Beat 内 POV オーバーライド）を chip 表示。詳細は「POV chip」節参照
+  - データソース: `scene_beat_pov_cache` を SELECT、空なら `tree_nodes.povCharacterId` を fallback
+  - 順序: scene POV を先頭固定、後続は Beat 出現順、scene POV と一致する cache POV は dedupe
+  - スタイル: scene POV は塗り chip、Beat 由来のみはアウトライン chip（character タイプ色を共通使用）
+  - 上限: 3人 + `+N more` バッジ。バッジクリックでポップオーバーで全員表示
+  - クリック: character codex 詳細パネルを開く（編集自体は Editor 側で）
+  - cache 更新は既存の `EditorPane.tsx:472` / `LinearSceneBlock.tsx:102` の保存経路にすでに組み込み済みなので追加実装不要
+- [ ] **Label 機能**（手法非依存の色タグ。Scrivener corkboard 流）
+  - `tree_nodes.label_id` カラム + 新規 `labels` テーブル + プロジェクト設定 UI が前提
+  - Grid カード上は左端の細い縦カラーバーで表示（情報密度を上げない）
+  - Scenes パネル / Editor などへの波及あり、独立タスクとして設計が必要
+- [ ] **伏線リンク表示**: 伏線レジスタ（Phase 1〜5 実装済み）と接続し、カードフッタに「promise N · payoff M」counter を表示。ホバーで anchor 一覧ポップオーバー
+  - データソース: `foreshadow_setups` / `foreshadows.payoff_scene_id` を scene_id で集計
+  - 既存テーブルからの集計のみで新規データモデル不要
 
 ### Phase C: 連携機能
 
