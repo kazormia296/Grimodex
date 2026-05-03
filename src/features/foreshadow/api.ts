@@ -181,6 +181,30 @@ export async function listForeshadows(
     .where(eq(foreshadows.projectId, projectId)) as Promise<ForeshadowRow[]>;
 }
 
+export interface SceneForeshadowInfo {
+  setupForeshadowIds: string[];
+  payoffForeshadowIds: string[];
+}
+
+export async function getSceneForeshadowInfo(
+  sceneId: string,
+): Promise<SceneForeshadowInfo> {
+  const [setupRows, payoffRows] = await Promise.all([
+    db
+      .selectDistinct({ foreshadowId: foreshadowSetups.foreshadowId })
+      .from(foreshadowSetups)
+      .where(eq(foreshadowSetups.sceneId, sceneId)),
+    db
+      .select({ id: foreshadows.id })
+      .from(foreshadows)
+      .where(eq(foreshadows.payoffSceneId, sceneId)),
+  ]);
+  return {
+    setupForeshadowIds: setupRows.map((r) => r.foreshadowId),
+    payoffForeshadowIds: payoffRows.map((r) => r.id),
+  };
+}
+
 export async function updateForeshadow(
   id: string,
   patch: Partial<

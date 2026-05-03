@@ -13,6 +13,7 @@ import { GridCardBody } from "./GridCardBody";
 import { GridCardChips } from "./GridCardChips";
 import { GridCardLabelBar } from "./GridCardLabelBar";
 import { GridCardPovChips } from "./GridCardPovChips";
+import { GridCardForeshadowIndicator } from "./GridCardForeshadowIndicator";
 import { GridCardMenu } from "./GridCardMenu";
 import { sceneDraggableId, sceneDroppableId } from "./gridDndUtils";
 import type { DropIndicator } from "./gridDndUtils";
@@ -219,6 +220,13 @@ export function GridSceneCard({
               compact={display.compactCards}
             />
           </div>
+        )}
+
+        {display.showForeshadow && (
+          <GridCardForeshadowIndicator
+            sceneId={scene.id}
+            compact={display.compactCards}
+          />
         )}
 
         {/* Footer: status badge + char count */}

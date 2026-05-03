@@ -19,6 +19,11 @@ interface ForeshadowNavState {
   pendingPanelHighlight: string | null;
   requestPanelHighlight: (foreshadowId: string) => void;
   consumePanelHighlight: () => string | null;
+
+  /** Grid カードからシーン関連に絞り込む要求。 */
+  pendingSceneFilter: string | null;
+  requestSceneFilter: (sceneId: string) => void;
+  consumeSceneFilter: () => string | null;
 }
 
 export const useForeshadowNavStore = create<ForeshadowNavState>()(
@@ -40,6 +45,15 @@ export const useForeshadowNavStore = create<ForeshadowNavState>()(
       if (!pendingPanelHighlight) return null;
       set({ pendingPanelHighlight: null });
       return pendingPanelHighlight;
+    },
+
+    pendingSceneFilter: null,
+    requestSceneFilter: (sceneId) => set({ pendingSceneFilter: sceneId }),
+    consumeSceneFilter: () => {
+      const { pendingSceneFilter } = get();
+      if (!pendingSceneFilter) return null;
+      set({ pendingSceneFilter: null });
+      return pendingSceneFilter;
     },
   }),
 );

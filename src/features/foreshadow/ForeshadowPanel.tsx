@@ -20,7 +20,7 @@ import { EditForeshadowDialog } from "./EditForeshadowDialog";
 import { ForeshadowChapterTab } from "./ForeshadowChapterTab";
 import { isSetupEvaluationStale } from "./staleness";
 import { safeParseAiEvaluation } from "./types";
-import { setSetupStrength } from "./api";
+import { setSetupStrength, getSceneForeshadowInfo } from "./api";
 import type {
   DerivedLabel,
   ForeshadowLoadBearing,
@@ -320,6 +320,29 @@ export function ForeshadowPanel() {
     setExpandedId(id);
     void loadSetups(id);
   };
+  const [sceneFilter, setSceneFilter] = useState<string | null>(null);
+  const [sceneFilterIds, setSceneFilterIds] = useState<Set<string>>(
+    () => new Set(),
+  );
+
+  // Grid カードからのシーン絞り込み要求を処理する
+  useEffect(() => {
+    return useForeshadowNavStore.subscribe((state) => {
+      const sceneId = state.pendingSceneFilter;
+      if (!sceneId) return;
+      useForeshadowNavStore.getState().consumeSceneFilter();
+      setActiveTab("list");
+      setSceneFilter(sceneId);
+      void getSceneForeshadowInfo(sceneId).then(
+        ({ setupForeshadowIds, payoffForeshadowIds }) => {
+          setSceneFilterIds(
+            new Set([...setupForeshadowIds, ...payoffForeshadowIds]),
+          );
+        },
+      );
+    });
+  }, []);
+
   const [activeFilters, setActiveFilters] = useState<Set<DerivedLabel>>(
     () => new Set(),
   );
@@ -336,10 +359,11 @@ export function ForeshadowPanel() {
     });
   };
 
-  const visibleItems =
-    activeFilters.size === 0
-      ? items
-      : items.filter((item) => activeFilters.has(item.label));
+  const visibleItems = items.filter((item) => {
+    if (sceneFilter && !sceneFilterIds.has(item.id)) return false;
+    if (activeFilters.size > 0 && !activeFilters.has(item.label)) return false;
+    return true;
+  });
 
   const usedLabels = new Set(items.map((item) => item.label));
 
@@ -438,11 +462,20 @@ export function ForeshadowPanel() {
               {t(`foreshadow.label.${label}`)}
             </button>
           ))}
-          {activeFilters.size > 0 && (
+          {sceneFilter && (
+            <span className="rounded-full bg-primary/15 px-2 py-0.5 text-[10px] font-medium text-primary">
+              {t("foreshadow.panel.sceneFilter", "シーン関連")}
+            </span>
+          )}
+          {(activeFilters.size > 0 || sceneFilter) && (
             <button
               type="button"
               data-testid="foreshadow-filter-clear"
-              onClick={() => setActiveFilters(new Set())}
+              onClick={() => {
+                setActiveFilters(new Set());
+                setSceneFilter(null);
+                setSceneFilterIds(new Set());
+              }}
               className="ml-auto rounded p-0.5 text-muted-foreground hover:bg-accent"
               aria-label={t("foreshadow.panel.clearFilter", "フィルタをクリア")}
             >
