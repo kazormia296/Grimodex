@@ -2,8 +2,7 @@
  * 構造テンプレート定義
  *
  * Apply structure template ▸ で適用する。
- * 各テンプレートは新規 Chapter folder を 1 つ作って、その配下に
- * folder / scene の骨格を生成する。各 placeholder scene には
+ * `rootChildren` を現在のコンテナ直下に直置きで展開し、各 placeholder scene には
  * その段階の説明文（synopsis）を初期値として埋める。
  *
  * i18n キー設計:
@@ -140,7 +139,7 @@ export function countTemplateNodes(template: StructureTemplate): {
   folders: number;
   scenes: number;
 } {
-  let folders = 1; // ルートコンテナ
+  let folders = 0;
   let scenes = 0;
   function walk(nodes: StructureNode[]): void {
     for (const node of nodes) {
