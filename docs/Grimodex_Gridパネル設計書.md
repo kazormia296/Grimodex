@@ -146,6 +146,7 @@ Filter:  ☐空のみ  ☐完成非表示  [Codex フィルタ▾]              
 | Display | Beat プレビュー表示 | ON |
 | Display | Codex チップ表示 | ON |
 | Display | Label カラーバー表示 | ON |
+| Display | Foreshadow indicator 表示 | ON |
 | Display | コンパクト表示 | OFF |
 | Filter | 空の Scene のみ | OFF |
 | Filter | 完成済み Scene を非表示 | OFF |
@@ -324,6 +325,62 @@ CREATE INDEX idx_tree_node_labels_node ON tree_node_labels(node_id);
 | Editor SynopsisHeader | （Phase 後半）任意の小チップ |
 | Filter UI | 各パネルで「ラベルでフィルタ」共通ドロップダウン |
 
+#### Foreshadow indicator
+
+伏線レジスタ（Phase 1〜5 実装済み）の情報をカードフッタに**健全性ドット + setup/payoff counter**として露出する。シーンごとの「仕込み×回収」の分布と、関連伏線の異常状態を一目で把握できるようにする。
+
+**カードフッタでの表現**:
+
+```
+[Status] [Label dots] ... 🟢 📌2 ✓1     1,200 chars
+```
+
+| 要素 | 意味 |
+|------|------|
+| 健全性ドット（🟢/🔴/🟡） | このシーンに紐づく全伏線の derivedLabel から算出される最悪状態 |
+| 📌 N | このシーンが setup を持つ伏線の数（`foreshadow_setups.scene_id = sceneId`） |
+| ✓ N | このシーンが payoff になっている伏線の数（`foreshadows.payoff_scene_id = sceneId`） |
+
+**健全性ドットの色判定**:
+
+- 🔴 赤: 関連伏線に `needs_strengthening` / `critical_weak` / `orphan_payoff` が1つでもある
+- 🟡 黄: 上記なしだが `planned`（setup ゼロ）が混在
+- 🟢 緑: すべて `seeded` or `paid`
+- ⚪ グレー: 関連伏線が `abandoned` のみ
+- 0件シーン: ドット・counter 群すべて非表示（フッタに余白を残さず詰める）
+
+**ホバー挙動**:
+
+ポップオーバーで関連伏線一覧を表示。setup と payoff を視覚的に分けて2セクション化：
+
+```
+Sets up:
+  🌱 ○○の指輪
+  ⚠ 隠された血脈
+Pays off:
+  ✓ 旧友の正体
+```
+
+各行は **derivedLabel アイコン + 伏線 title**。アイコンは `ForeshadowPanel` 既存のラベルスタイルを共有。
+
+**クリック挙動**:
+
+`ForeshadowPanel` を起動し、**このシーンに関連する伏線にフィルタ**して表示する。`foreshadowNavStore` 既存のフィルタ機構と連携（要確認、未対応なら拡張）。
+
+**データ取得**:
+
+新規 Tauri command は追加せず、既存 `foreshadowStore` の selector から派生：
+
+- 前提: `foreshadowStore` がプロジェクト全 foreshadow + setups を保持している（要確認、lazy load 設計なら Grid マウント時に明示 load を呼ぶ）
+- selector: `selectSceneForeshadowSummary(sceneId)` が `{ setupCount, payoffCount, derivedHealth, foreshadows[] }` を返す
+- 伏線編集（追加・削除・state 変更）は store 経由で反映されるため、Grid カードは自動再描画
+
+**Display トグル**:
+
+`[⌃]` ツールバーの Display グループに `☑ Foreshadow indicator 表示`（既定 ON）。伏線管理を使わないユーザーは OFF にできる。
+
+**実装場所**: `src/features/grid/GridCardForeshadowIndicator.tsx`（新規）。selector は `src/features/foreshadow/foreshadowStore.ts` に追加。
+
 #### ラベルテンプレート
 
 ユーザーが手動で全ラベルを作るのを避けるため、**著名なプロット構造を opt-in で適用**できるテンプレートを Grid `[⋮]` ドロップダウンの `Apply label template ▸` から提供する。テンプレートは「**ラベル定義のセットを生やすだけ**」で、各シーンへの自動タグ付けはしない（ユーザーが手動で割り当てる）。
@@ -468,6 +525,7 @@ Grid は新規テーブルを持たない。表示内容はすべて既存テー
 | POV chip | `scene_beat_pov_cache` ∪ `tree_nodes.povCharacterId`（dedupe、scene POV 先頭、character 名は `codexEntries` を join） |
 | Codex チップ | `scene_codex_pins` |
 | Label カラーバー | `tree_node_labels` (M:N) → `labels` (project スコープ、固定パレット色)。Phase B 新規テーブル |
+| Foreshadow indicator | `foreshadowStore` から派生: `foreshadow_setups.scene_id = sceneId` で setup 件数、`foreshadows.payoff_scene_id = sceneId` で payoff 件数。健全性ドットは関連伏線の `deriveLabel` 出力から算出 |
 | Status | `tree_nodes.status`（Scenes パネル設計書既定） |
 | 文字数 | `tree_nodes.char_count` キャッシュカラム（Beat 設計書 Phase A で追加、シーン保存時にフロントが値を同梱） |
 
@@ -611,9 +669,14 @@ Grid のビュー状態は**スコープを分けて**保存する：
   - i18n 対訳辞書（ja/en、意訳ベース。"Setup / Development / Twist / Conclusion" 等）
   - Tauri command `apply_label_template(project_id, template_key)`、既存同名はスキップ、結果トースト
   - 色はパレット順に自動割当、シーン自動タグ付けはしない
-- [ ] **伏線リンク表示**: 伏線レジスタ（Phase 1〜5 実装済み）と接続し、カードフッタに「promise N · payoff M」counter を表示。ホバーで anchor 一覧ポップオーバー
-  - データソース: `foreshadow_setups` / `foreshadows.payoff_scene_id` を scene_id で集計
-  - 既存テーブルからの集計のみで新規データモデル不要
+- [ ] **Foreshadow indicator**（伏線レジスタ Phase 1〜5 実装済みと接続） — 詳細は「Foreshadow indicator」節参照
+  - データ取得: 既存 `foreshadowStore` から派生、新規 Tauri command 不要
+  - `foreshadowStore` の load タイミング確認（Grid マウント時に明示 load が必要か、既に他パネルから load 済みか）
+  - selector `selectSceneForeshadowSummary(sceneId)` を `foreshadowStore.ts` に追加
+  - `GridCardForeshadowIndicator.tsx` 新規: 健全性ドット（🟢/🟡/🔴/⚪）+ `📌N ✓N` counter、0件は非表示
+  - ホバーポップオーバー: Sets up / Pays off の2セクション、derivedLabel アイコン + 伏線 title
+  - クリックで `ForeshadowPanel` 起動 + シーン関連伏線にフィルタ（`foreshadowNavStore` 拡張要否を実装時に確認）
+  - `[⌃]` ツールバー Display グループに `☑ Foreshadow indicator 表示` トグル追加（既定 ON）
 
 ### Phase C: 連携機能
 
