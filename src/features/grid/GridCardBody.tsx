@@ -12,6 +12,8 @@ interface Props {
   showBeats: boolean;
   compact?: boolean;
   onEditingChange?: (editing: boolean) => void;
+  /** Rendered between beats list and synopsis area. */
+  addBeatSlot?: React.ReactNode;
 }
 
 export function GridCardBody({
@@ -22,6 +24,7 @@ export function GridCardBody({
   showBeats,
   compact,
   onEditingChange,
+  addBeatSlot,
 }: Props) {
   const { t } = useTranslation();
   const [synopsisOpen, setSynopsisOpen] = useState(false);
@@ -45,6 +48,8 @@ export function GridCardBody({
             </li>
           ))}
         </ul>
+
+        {addBeatSlot}
 
         {showSynopsis && hasSynopsis && (
           <>
@@ -85,6 +90,7 @@ export function GridCardBody({
   if (showSynopsis && (hasSynopsis || !beats)) {
     return (
       <div className="px-3 pb-2 pt-1">
+        {addBeatSlot}
         <InlineSynopsisEditor
           nodeId={nodeId}
           synopsis={synopsis}
@@ -98,8 +104,11 @@ export function GridCardBody({
   }
 
   return (
-    <p className="px-3 pb-2 pt-1 text-[10px] italic text-muted-foreground/50">
-      {t("grid.card.empty", "空のシーン")}
-    </p>
+    <div className="px-3 pb-2 pt-1">
+      {addBeatSlot}
+      <p className="text-[10px] italic text-muted-foreground/50">
+        {t("grid.card.empty", "空のシーン")}
+      </p>
+    </div>
   );
 }

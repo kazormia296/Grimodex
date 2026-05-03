@@ -1,5 +1,5 @@
 import { useState, useRef } from "react";
-import { Pencil, MoreHorizontal } from "lucide-react";
+import { MoreHorizontal } from "lucide-react";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { cn } from "@/lib/utils";
 
@@ -9,6 +9,8 @@ interface Props {
   onMenuOpen: () => void;
   onTitleClick?: () => void;
   menuBtnRef?: React.RefObject<HTMLButtonElement | null>;
+  /** Rendered next to the menu button so popover anchors to it. */
+  menuSlot?: React.ReactNode;
 }
 
 export function GridCardHeader({
@@ -17,6 +19,7 @@ export function GridCardHeader({
   onMenuOpen,
   onTitleClick,
   menuBtnRef,
+  menuSlot,
 }: Props) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState("");
@@ -78,27 +81,21 @@ export function GridCardHeader({
         </button>
       )}
 
-      <button
-        className="shrink-0 rounded p-0.5 opacity-0 group-hover:opacity-100 hover:bg-accent transition-opacity"
-        onClick={startEdit}
-        tabIndex={-1}
-        title="名前を変更"
-      >
-        <Pencil className="h-2.5 w-2.5" />
-      </button>
-
-      <button
-        ref={menuBtnRef}
-        className="shrink-0 rounded p-0.5 opacity-0 group-hover:opacity-100 hover:bg-accent transition-opacity"
-        onClick={(e) => {
-          e.stopPropagation();
-          onMenuOpen();
-        }}
-        data-testid="grid-card-menu-btn"
-        title="メニュー"
-      >
-        <MoreHorizontal className="h-3 w-3" />
-      </button>
+      <div className="relative shrink-0">
+        <button
+          ref={menuBtnRef}
+          className="rounded p-0.5 opacity-0 group-hover:opacity-100 hover:bg-accent transition-opacity"
+          onClick={(e) => {
+            e.stopPropagation();
+            onMenuOpen();
+          }}
+          data-testid="grid-card-menu-btn"
+          title="メニュー"
+        >
+          <MoreHorizontal className="h-3 w-3" />
+        </button>
+        {menuSlot}
+      </div>
     </div>
   );
 }

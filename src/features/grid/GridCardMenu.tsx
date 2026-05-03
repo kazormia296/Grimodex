@@ -2,10 +2,8 @@ import { useRef, useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
   ExternalLink,
-  Pencil,
   Trash2,
   PanelLeft,
-  PlusCircle,
   Tag,
   ChevronRight,
   Check,
@@ -18,20 +16,11 @@ import { LABEL_PALETTE } from "@/lib/labelPalette";
 interface Props {
   nodeId: string;
   onClose: () => void;
-  onRename: () => void;
-  onAddBeat: () => void;
   onDelete: () => void;
   anchorRef: React.RefObject<HTMLElement | null>;
 }
 
-export function GridCardMenu({
-  nodeId,
-  onClose,
-  onRename,
-  onAddBeat,
-  onDelete,
-  anchorRef,
-}: Props) {
+export function GridCardMenu({ nodeId, onClose, onDelete, anchorRef }: Props) {
   const { t } = useTranslation();
   const menuRef = useRef<HTMLDivElement>(null);
   const [labelMenuOpen, setLabelMenuOpen] = useState(false);
@@ -92,26 +81,6 @@ export function GridCardMenu({
       >
         <ExternalLink className="h-3.5 w-3.5" />
         {t("grid.card.menu.open", "エディタで開く")}
-      </button>
-      <button
-        className="flex w-full items-center gap-2 rounded px-2 py-1.5 hover:bg-accent"
-        onClick={() => {
-          onRename();
-          onClose();
-        }}
-      >
-        <Pencil className="h-3.5 w-3.5" />
-        {t("grid.card.menu.rename", "名前を変更")}
-      </button>
-      <button
-        className="flex w-full items-center gap-2 rounded px-2 py-1.5 hover:bg-accent"
-        onClick={() => {
-          onAddBeat();
-          onClose();
-        }}
-      >
-        <PlusCircle className="h-3.5 w-3.5" />
-        {t("grid.card.menu.addBeat", "+ Beat を追加…")}
       </button>
       <button
         className="flex w-full items-center gap-2 rounded px-2 py-1.5 hover:bg-accent"

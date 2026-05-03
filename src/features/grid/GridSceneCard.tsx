@@ -1,5 +1,6 @@
 import { useRef, useState } from "react";
 import { useDraggable, useDroppable } from "@dnd-kit/core";
+import { Plus } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { useTabStore } from "@/features/editor/tabStore";
 import { useLayoutStore } from "@/features/layout/layoutStore";
@@ -176,6 +177,16 @@ export function GridSceneCard({
           onMenuOpen={() => setMenuOpen((v) => !v)}
           onTitleClick={openInEditor}
           menuBtnRef={menuBtnRef}
+          menuSlot={
+            menuOpen ? (
+              <GridCardMenu
+                nodeId={scene.id}
+                onClose={() => setMenuOpen(false)}
+                onDelete={requestDelete}
+                anchorRef={menuBtnRef}
+              />
+            ) : null
+          }
         />
 
         <GridCardPovChips
@@ -192,6 +203,22 @@ export function GridSceneCard({
           showBeats={display.showBeats}
           compact={display.compactCards}
           onEditingChange={setIsEditing}
+          addBeatSlot={
+            display.showBeats && !addingBeat ? (
+              <button
+                type="button"
+                className="mb-1 flex items-center gap-1 rounded px-1 py-0.5 text-[10px] text-muted-foreground/50 hover:bg-accent hover:text-muted-foreground transition-colors"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setAddingBeat(true);
+                  setBeatDraft("");
+                }}
+              >
+                <Plus className="h-2.5 w-2.5" />
+                {t("grid.card.addBeat", "Beat を追加")}
+              </button>
+            ) : null
+          }
         />
 
         {addingBeat && (
@@ -239,24 +266,6 @@ export function GridSceneCard({
             {liveCharCount.toLocaleString()} chars
           </span>
         </div>
-
-        {menuOpen && (
-          <div className="relative">
-            <GridCardMenu
-              nodeId={scene.id}
-              onClose={() => setMenuOpen(false)}
-              onRename={() => {
-                setMenuOpen(false);
-              }}
-              onAddBeat={() => {
-                setAddingBeat(true);
-                setBeatDraft("");
-              }}
-              onDelete={requestDelete}
-              anchorRef={menuBtnRef}
-            />
-          </div>
-        )}
       </div>
     </div>
   );
