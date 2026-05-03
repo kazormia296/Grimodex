@@ -6,10 +6,11 @@
 import { execSync } from "node:child_process";
 import { existsSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { join, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
 import { formatLicensesMarkdown } from "../src/features/licenses/formatter";
 import type { LicenseEntry } from "../src/features/licenses/types";
 
-const ROOT = join(dirname(new URL(import.meta.url).pathname), "..");
+const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 
 /* ------------------------------------------------------------------ */
 /*  npm 依存のライセンス収集                                            */
