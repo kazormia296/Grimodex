@@ -103,6 +103,11 @@ export function GridSceneCard({
     useLayoutStore.getState().showPanel("editor");
   }
 
+  function openInPreview() {
+    useTabStore.getState().openPreview(scene.id);
+    useLayoutStore.getState().showPanel("editor");
+  }
+
   async function commitBeat() {
     const text = beatDraft.trim();
     setAddingBeat(false);
@@ -138,8 +143,22 @@ export function GridSceneCard({
       rangeSelect(scene.id, flatOrder ?? []);
     } else {
       selectOnly(scene.id);
-      openInEditor();
+      openInPreview();
     }
+  }
+
+  function handleCardDoubleClick(e: React.MouseEvent) {
+    if (isEditing || addingBeat) return;
+    if (
+      (e.target as HTMLElement).closest(
+        "button, a, input, textarea, [contenteditable='true']",
+      )
+    ) {
+      return;
+    }
+    if (e.metaKey || e.ctrlKey || e.shiftKey) return;
+    selectOnly(scene.id);
+    openInEditor();
   }
 
   return (
@@ -169,6 +188,7 @@ export function GridSceneCard({
         )}
         style={{ transition: "opacity 120ms ease-out" }}
         onClick={handleCardClick}
+        onDoubleClick={handleCardDoubleClick}
       >
         {/* Drag handle area */}
         <div
