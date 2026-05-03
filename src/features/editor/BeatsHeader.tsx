@@ -4,6 +4,10 @@ import { ChevronDown, ChevronRight, Plus, Sparkles } from "lucide-react";
 import type { Editor } from "@tiptap/core";
 import { toast } from "sonner";
 import { useDroppable } from "@dnd-kit/core";
+import {
+  SortableContext,
+  verticalListSortingStrategy,
+} from "@dnd-kit/sortable";
 import { useUnplacedBeatsStore } from "@/features/editor/beat/unplacedBeatsStore";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { UnplacedBeatItem } from "@/features/editor/UnplacedBeatItem";
@@ -157,18 +161,23 @@ export function BeatsHeader({
                 <p className="mb-0.5 text-[10px] font-medium text-muted-foreground">
                   📌 Unplaced (drag to insert in document):
                 </p>
-                <ul data-testid="beats-unplaced-list" className="space-y-0.5">
-                  {beats.map((beat) => (
-                    <li key={beat.id}>
-                      <UnplacedBeatItem
-                        sceneId={sceneId}
-                        beat={beat}
-                        mainEditor={editor}
-                        setMentionPopup={setMentionPopup}
-                      />
-                    </li>
-                  ))}
-                </ul>
+                <SortableContext
+                  items={beats.map((b) => b.id)}
+                  strategy={verticalListSortingStrategy}
+                >
+                  <ul data-testid="beats-unplaced-list" className="space-y-0.5">
+                    {beats.map((beat) => (
+                      <li key={beat.id}>
+                        <UnplacedBeatItem
+                          sceneId={sceneId}
+                          beat={beat}
+                          mainEditor={editor}
+                          setMentionPopup={setMentionPopup}
+                        />
+                      </li>
+                    ))}
+                  </ul>
+                </SortableContext>
               </>
             ) : (
               <p

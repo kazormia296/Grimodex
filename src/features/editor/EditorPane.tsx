@@ -109,8 +109,14 @@ import {
   useSensor,
   useSensors,
   useDroppable,
+  pointerWithin,
+  rectIntersection,
 } from "@dnd-kit/core";
-import type { DragEndEvent, DragStartEvent } from "@dnd-kit/core";
+import type {
+  CollisionDetection,
+  DragEndEvent,
+  DragStartEvent,
+} from "@dnd-kit/core";
 import {
   moveBeatToPosition,
   placeBeatAtEnd,
@@ -140,6 +146,41 @@ const STATUS_COLORS: Record<SceneStatus, string> = {
   revision: "text-purple-400",
   final: "text-blue-400",
 };
+
+/**
+ * Wraps the editor content area as a dnd-kit droppable. Must be rendered as a
+ * descendant of the relevant DndContext — registering useDroppable in the
+ * EditorPane body would attach it to an ancestor (or default) DnD manager,
+ * leaving the inner DndContext unable to resolve `over` for this zone.
+ */
+function EditorDropDiv({
+  outerRef,
+  className,
+  onClick,
+  children,
+  ...rest
+}: {
+  outerRef: React.MutableRefObject<HTMLDivElement | null>;
+  className?: string;
+  onClick?: React.MouseEventHandler<HTMLDivElement>;
+  children: React.ReactNode;
+  "data-show-foreshadow-marks"?: string;
+  "data-focus-hide-beats"?: string;
+}) {
+  const { setNodeRef } = useDroppable({ id: "beat-editor-drop-zone" });
+  const setRef = useCallback(
+    (el: HTMLDivElement | null) => {
+      outerRef.current = el;
+      setNodeRef(el);
+    },
+    [setNodeRef, outerRef],
+  );
+  return (
+    <div ref={setRef} className={className} onClick={onClick} {...rest}>
+      {children}
+    </div>
+  );
+}
 
 interface EditorPaneProps {
   nodeId: string;
@@ -224,19 +265,14 @@ export function EditorPane({
   const beatSensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 6 } }),
   );
-  const { setNodeRef: setEditorDropRef } = useDroppable({
-    id: "beat-editor-drop-zone",
-  });
-  const setEditorContainerRef = useCallback(
-    (el: HTMLDivElement | null) => {
-      (
-        editorContainerRef as React.MutableRefObject<HTMLDivElement | null>
-      ).current = el;
-      setEditorDropRef(el);
-    },
-    [setEditorDropRef],
-  );
-
+  // pointerWithin works well for sortable items + outer drop zones; fall back
+  // to rectIntersection if the pointer doesn't directly overlap any droppable
+  // (e.g. when dragging fast or releasing in a gap between zones).
+  const beatCollisionDetection: CollisionDetection = useCallback((args) => {
+    const pointerCollisions = pointerWithin(args);
+    if (pointerCollisions.length > 0) return pointerCollisions;
+    return rectIntersection(args);
+  }, []);
   const handleBeatDragStart = useCallback((event: DragStartEvent) => {
     setDraggingBeat(
       (event.active.data.current?.beat as UnplacedBeat | undefined) ?? null,
@@ -249,8 +285,32 @@ export function EditorPane({
       const { active, over } = event;
       const ed = editorRef.current;
 
+      if (!over) return;
+
+      // Reorder within the unplaced list: over.id is a sibling beat id
+      // (sortable items register their own droppable zones).
+      if (over.id !== active.id) {
+        const draggedBeat = active.data.current?.beat as
+          | UnplacedBeat
+          | undefined;
+        const dragSceneId = active.data.current?.sceneId as string | undefined;
+        if (draggedBeat && dragSceneId) {
+          const beats = useUnplacedBeatsStore.getState().getBeats(dragSceneId);
+          const toIdx = beats.findIndex((b) => b.id === over.id);
+          if (toIdx !== -1) {
+            const fromIdx = beats.findIndex((b) => b.id === active.id);
+            if (fromIdx !== -1 && fromIdx !== toIdx) {
+              useUnplacedBeatsStore
+                .getState()
+                .reorder(dragSceneId, fromIdx, toIdx);
+            }
+            return;
+          }
+        }
+      }
+
       // Placed beat → Unplaced drop zone (B-17)
-      if (over?.id === "unplaced-drop-zone" && ed) {
+      if (over.id === "unplaced-drop-zone" && ed) {
         const placedBeatId = active.data.current?.placedBeatId as
           | string
           | undefined;
@@ -260,7 +320,7 @@ export function EditorPane({
         }
       }
 
-      if (over?.id === "beat-editor-drop-zone" && ed) {
+      if (over.id === "beat-editor-drop-zone" && ed) {
         // Unplaced beat → place at end
         const beat = active.data.current?.beat as UnplacedBeat | undefined;
         const dragSceneId = active.data.current?.sceneId as string | undefined;
@@ -1304,6 +1364,7 @@ export function EditorPane({
       )}
       <DndContext
         sensors={beatSensors}
+        collisionDetection={beatCollisionDetection}
         onDragStart={handleBeatDragStart}
         onDragEnd={handleBeatDragEnd}
       >
@@ -1324,8 +1385,8 @@ export function EditorPane({
                 showReplace={findShowReplace}
                 onClose={() => setFindOpen(false)}
               />
-              <div
-                ref={setEditorContainerRef}
+              <EditorDropDiv
+                outerRef={editorContainerRef}
                 data-show-foreshadow-marks={
                   showForeshadowMarks ? "true" : "false"
                 }
@@ -1422,7 +1483,7 @@ export function EditorPane({
                     containerRef={editorContainerRef}
                   />
                 </div>
-              </div>
+              </EditorDropDiv>
             </ResizablePanel>
             <ResizableHandle withHandle />
             <ResizablePanel
@@ -1448,8 +1509,8 @@ export function EditorPane({
                 showReplace={findShowReplace}
                 onClose={() => setFindOpen(false)}
               />
-              <div
-                ref={setEditorContainerRef}
+              <EditorDropDiv
+                outerRef={editorContainerRef}
                 data-show-foreshadow-marks={
                   showForeshadowMarks ? "true" : "false"
                 }
@@ -1546,13 +1607,16 @@ export function EditorPane({
                     containerRef={editorContainerRef}
                   />
                 </div>
-              </div>
+              </EditorDropDiv>
             </div>
           </div>
         )}
         <DragOverlay dropAnimation={null}>
           {draggingBeat && (
-            <div className="rounded border border-border bg-popover px-2 py-1 text-xs shadow-md opacity-90">
+            <div
+              className="rounded border border-border bg-popover px-2 py-1 text-xs shadow-md opacity-90 whitespace-nowrap"
+              style={{ width: "max-content", maxWidth: "320px" }}
+            >
               {draggingBeat.content
                 .map((c) => ("text" in c ? String(c.text ?? "") : ""))
                 .join("")

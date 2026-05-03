@@ -2,7 +2,8 @@ import { useRef, useState, useCallback } from "react";
 import { useEditor, EditorContent } from "@tiptap/react";
 import { GripVertical, MoreVertical } from "lucide-react";
 import { useTranslation } from "react-i18next";
-import { useDraggable } from "@dnd-kit/core";
+import { useSortable } from "@dnd-kit/sortable";
+import { CSS } from "@dnd-kit/utilities";
 import { AnimatedDropdown } from "@/components/ui/animated-dropdown";
 import { useUnplacedBeatsStore } from "@/features/editor/beat/unplacedBeatsStore";
 import { createUnplacedBeatExtensions } from "@/features/editor/beat/createUnplacedBeatExtensions";
@@ -93,22 +94,32 @@ export function UnplacedBeatItem({
   const {
     attributes,
     listeners,
-    setNodeRef: setDragRef,
+    setNodeRef: setSortableRef,
+    setActivatorNodeRef,
+    transform,
+    transition,
     isDragging,
-  } = useDraggable({
+  } = useSortable({
     id: beat.id,
     data: { beat, sceneId },
   });
 
+  const sortableStyle: React.CSSProperties = {
+    transform: CSS.Transform.toString(transform),
+    transition,
+  };
+
   return (
     <div
+      ref={setSortableRef}
+      style={sortableStyle}
       className={`group flex items-center gap-1 rounded px-1 py-0.5 hover:bg-muted/40 ${isDragging ? "opacity-50" : ""}`}
       data-beat-id={beat.id}
     >
       {/* Drag handle */}
       <button
         type="button"
-        ref={setDragRef}
+        ref={setActivatorNodeRef}
         aria-label="Drag to reorder"
         className="inline-flex h-4 cursor-grab items-center justify-center rounded px-0.5 text-muted-foreground/40 opacity-0 hover:bg-muted hover:text-muted-foreground group-hover:opacity-100 active:cursor-grabbing"
         {...attributes}
