@@ -177,14 +177,11 @@ export async function createBrowserMock(): Promise<BrowserMock> {
   db.run("PRAGMA foreign_keys = ON;");
   db.run(SCHEMA_DDL);
 
-  // Seed default project + chapter so tree_nodes can reference parent
+  // Seed default project only — folder/scenes are no longer auto-created
+  // so a fresh workspace stays empty (mirrors src-tauri/src/database.rs).
   const now = new Date().toISOString();
   db.run(
     "INSERT OR IGNORE INTO projects (id, title, language, created_at, updated_at) VALUES ('default-project', '無題のプロジェクト', 'ja', ?, ?)",
-    [now, now],
-  );
-  db.run(
-    "INSERT OR IGNORE INTO tree_nodes (id, project_id, node_type, title, sort_order, created_at, updated_at) VALUES ('default-chapter', 'default-project', 'folder', 'Part.1', 'a0', ?, ?)",
     [now, now],
   );
 

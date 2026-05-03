@@ -730,15 +730,9 @@ impl Database {
                   VALUES (new.id || '-main-board', new.id, 'Main', 0.0, datetime('now'), datetime('now'));
             END;
 
-            -- Seed default project + folder node
+            -- Seed default project (folder is no longer auto-created so the workspace can stay empty)
             INSERT OR IGNORE INTO projects (id, title, language, created_at, updated_at)
-              VALUES ('default-project', '無題のプロジェクト', 'ja', datetime('now'), datetime('now'));
-            INSERT OR IGNORE INTO tree_nodes (id, project_id, node_type, title, sort_order, created_at, updated_at)
-              VALUES ('default-chapter', 'default-project', 'folder', 'Part.1', 'a0', datetime('now'), datetime('now'));
-
-            -- Fix legacy default folder name (e7af0e35)
-            UPDATE tree_nodes SET title = 'Part.1'
-              WHERE id = 'default-chapter' AND title = '第1章';",
+              VALUES ('default-project', '無題のプロジェクト', 'ja', datetime('now'), datetime('now'));",
         )?;
 
         // Foreshadow register tables (added post-initial schema)
@@ -1308,6 +1302,18 @@ mod tests {
         db
     }
 
+    /// Insert a `default-chapter` folder for tests that historically relied
+    /// on it being seeded by the schema.
+    fn seed_default_chapter(db: &Database) {
+        db.execute(
+            "INSERT OR IGNORE INTO tree_nodes (id, project_id, node_type, title, sort_order, created_at, updated_at) \
+             VALUES ('default-chapter', 'default-project', 'folder', 'Part.1', 'a0', datetime('now'), datetime('now'))",
+            &[],
+            "run",
+        )
+        .expect("seed default-chapter");
+    }
+
     #[test]
     fn test_migrate_creates_all_tables() {
         let db = test_db();
@@ -1466,12 +1472,13 @@ mod tests {
         assert_eq!(projects[0]["id"], Value::String("default-project".into()));
         assert_eq!(projects[0]["language"], Value::String("ja".into()));
 
+        // Fresh workspace must start with no folders/scenes so the user
+        // can opt into structure (or use a template) instead of having a
+        // placeholder Part.1 folder forced on them.
         let nodes = db
             .execute("SELECT * FROM tree_nodes", &[], "all")
             .expect("select");
-        assert_eq!(nodes.len(), 1);
-        assert_eq!(nodes[0]["id"], Value::String("default-chapter".into()));
-        assert_eq!(nodes[0]["node_type"], Value::String("folder".into()));
+        assert!(nodes.is_empty(), "tree_nodes should not be auto-seeded");
     }
 
     #[test]
@@ -1541,6 +1548,7 @@ mod tests {
     #[test]
     fn test_crud_tree_nodes() {
         let db = test_db();
+        seed_default_chapter(&db);
 
         // Create a scene under the default chapter
         db.execute(
@@ -2209,6 +2217,7 @@ mod tests {
     #[test]
     fn test_nullify_snippet_scene_on_node_delete() {
         let db = test_db();
+        seed_default_chapter(&db);
 
         // Create scene node
         db.execute(
@@ -2374,6 +2383,7 @@ mod tests {
     #[test]
     fn test_authorship_spans_crud() {
         let db = test_db();
+        seed_default_chapter(&db);
 
         // Create a scene node first
         db.execute(
@@ -2819,6 +2829,7 @@ mod tests {
     #[test]
     fn test_authorship_spans_check_rejects_two_owners() {
         let db = test_db();
+        seed_default_chapter(&db);
 
         // Two owner columns set → CHECK violation
         let result = db.execute(
@@ -2839,6 +2850,7 @@ mod tests {
     #[test]
     fn test_authorship_spans_check_accepts_single_owner() {
         let db = test_db();
+        seed_default_chapter(&db);
 
         // node_id only → OK
         let r1 = db.execute(

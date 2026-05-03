@@ -34,6 +34,21 @@ describe("createBrowserMock", () => {
     it("inserts and selects a tree_node with TEXT primary key", async () => {
       const now = new Date().toISOString();
 
+      // Seed a parent folder first (default-chapter is no longer auto-seeded)
+      await mock.invoke("db_execute", {
+        sql: "insert into tree_nodes (id, project_id, node_type, title, sort_order, created_at, updated_at) values (?, ?, ?, ?, ?, ?, ?)",
+        params: [
+          "default-chapter",
+          "default-project",
+          "folder",
+          "Part.1",
+          "a0",
+          now,
+          now,
+        ],
+        method: "run",
+      });
+
       // Insert tree_node referencing default-project seed
       const uuid = "550e8400-e29b-41d4-a716-446655440000";
       await mock.invoke("db_execute", {
@@ -152,17 +167,16 @@ describe("createBrowserMock", () => {
   });
 
   describe("seed data", () => {
-    it("seeds default chapter with node_type 'folder' so it expands in ScenesPanel", async () => {
+    it("does not auto-seed any tree_nodes (workspace starts empty)", async () => {
       const result = await mock.invoke<{ rows: Record<string, unknown>[] }>(
         "db_execute",
         {
-          sql: "select * from tree_nodes where id = ?",
-          params: ["default-chapter"],
+          sql: "select * from tree_nodes",
+          params: [],
           method: "all",
         },
       );
-      expect(result.rows).toHaveLength(1);
-      expect(result.rows[0]).toHaveProperty("node_type", "folder");
+      expect(result.rows).toHaveLength(0);
     });
   });
 

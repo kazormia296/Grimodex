@@ -13,7 +13,7 @@ import {
   removePinnedCodex,
 } from "./codexQuickPinApi";
 import { usePhaseStore } from "@/features/codex/phaseStore";
-import { cmpKeys, generateKeyBetween, INITIAL_KEY } from "./fractionalIndex";
+import { cmpKeys, generateKeyBetween } from "./fractionalIndex";
 
 export type NodeType = "folder" | "scene" | "note";
 export type SceneStatus =
@@ -381,32 +381,7 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
   async loadTree(projectId = DEFAULT_PROJECT_ID) {
     set({ isLoading: true, projectId });
     try {
-      let raw = await api.listNodes(projectId);
-      // Auto-create default scene if no scenes exist under default chapter
-      const scenes = raw.filter((n) => n.nodeType === "scene");
-      if (scenes.length === 0) {
-        const defaultChapter = raw.find((n) => n.id === DEFAULT_CHAPTER_ID);
-        if (!defaultChapter) {
-          // Create a default folder
-          const ch = await api.createNode({
-            id: DEFAULT_CHAPTER_ID,
-            projectId,
-            nodeType: "folder",
-            title: "Part.1",
-            sortOrder: INITIAL_KEY,
-          });
-          raw = [...raw, ch];
-        }
-        const scene = await api.createNode({
-          id: crypto.randomUUID(),
-          projectId,
-          parentId: DEFAULT_CHAPTER_ID,
-          nodeType: "scene",
-          title: `${i18next.t("tree.defaultScene")} 1`,
-          sortOrder: INITIAL_KEY,
-        });
-        raw = [...raw, scene];
-      }
+      const raw = await api.listNodes(projectId);
       const nodes = raw.map(toNodeData);
       const sc = computeScenes(nodes);
       // Expand folders by default
@@ -507,11 +482,11 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
 
   async deleteScene(id) {
     const { scenes } = get();
-    if (scenes.length <= 1) return;
     await api.deleteNode(id);
     const { activeSceneId } = get();
     const remaining = scenes.filter((s) => s.id !== id);
-    const newActive = activeSceneId === id ? remaining[0].id : activeSceneId;
+    const newActive =
+      activeSceneId === id ? (remaining[0]?.id ?? "") : activeSceneId;
     set((state) => {
       const nodes = state.nodes.filter((n) => n.id !== id);
       return { nodes, scenes: computeScenes(nodes), activeSceneId: newActive };
