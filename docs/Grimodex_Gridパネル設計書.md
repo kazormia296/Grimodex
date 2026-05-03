@@ -145,7 +145,8 @@ Filter:  ☐空のみ  ☐完成非表示  [Codex フィルタ▾]              
 | Display | Synopsis 表示（あれば、Beat の下に折りたたみで） | ON |
 | Display | Beat プレビュー表示 | ON |
 | Display | Codex チップ表示 | ON |
-| Display | Label カラーバー表示 | ON |
+| Display | Status ラベル文字表示（既存 `showStatusLabel`、旧 `showLabel`） | ON |
+| Display | Label カラーバー表示（新規 `showLabelBar`） | ON |
 | Display | Foreshadow indicator 表示 | ON |
 | Display | コンパクト表示 | OFF |
 | Filter | 空の Scene のみ | OFF |
@@ -223,9 +224,11 @@ Grid の使い方                    （Help）
 **Effective POVs の構築ルール**:
 
 - `effective = unique(scene POV + cache の POVs)`
-- **scene POV を先頭固定**、後続は Beat 出現順
+- **scene POV を先頭固定**、後続は **character 名昇順**（locale-aware）
 - cache に scene POV と一致する ID が含まれている場合は dedupe（重複 chip を出さない）
 - Beat 設計書 `pendingBeatsContext.ts:69` の Beat ラベル省略ロジックと同じ思想
+
+> **設計判断**: 「Beat 出現順」を採用しなかった理由 — `scene_beat_pov_cache` は `(scene_id, pov_character_id)` の M:N で**順序情報を持たない** PRIMARY KEY 構成。出現順を再現するには (a) cache に `first_seen_index` 列を追加して保存時に埋める / (b) 描画時に doc 再パース のいずれかが必要だが、(a) はマイグレーションコスト、(b) は cache の意義を損なう。Grid カードの POV 表示はあくまで「誰が登場するか」の俯瞰目的で、出現順の表現は Editor 側に任せるのが妥当と判断。
 
 **スタイル（chip の見分け）**:
 
@@ -301,9 +304,18 @@ CREATE INDEX idx_tree_node_labels_node ON tree_node_labels(node_id);
 **Grid カードでの表現**:
 
 - カード**左端の縦カラーバー**（幅 4-6px、カード全高）
-- 複数ラベルは縦方向に等分（2色なら半々、3色なら 1/3 ずつ。4色以上は最初の3色 + 残数表示は省略してシンプルに3色まで）
-- ホバーでポップオーバーにラベル名一覧
+- 複数ラベルは縦方向に等分（2色なら半々、3色なら 1/3 ずつ）
+- **4色以上の場合**: 最初の3色 + バー下端に小さな `+N` バッジ（直径 ~10px、背景 muted、文字白）を被せる。バッジクリック or バー全体ホバーでポップオーバーに全ラベル名一覧
 - ラベル0件のシーンはバー領域そのものを描かない（カード幅は変えない、左 padding で吸収）
+
+**列ヘッダ（Folder = Chapter）でのラベル表現**:
+
+Label の適用対象は `tree_nodes` 全般のため、Chapter にもラベルを付与できる（「Act 1 = blue」のユースケース）。Grid 列ヘッダでの表現は：
+
+- 列ヘッダ上端に**水平カラーバー**（高さ 4-6px、列幅いっぱい）
+- 複数ラベル時は水平方向に等分（縦カラーバーの逆）
+- 4色以上は最初の3色 + 右端 `+N` バッジ（縦バーと同じ規則）
+- ホバーでポップオーバー、編集は列ヘッダ `[⋮]` メニューの `Add label ▸` から
 
 **カード `[⋮]` メニューからの編集**:
 
@@ -329,25 +341,34 @@ CREATE INDEX idx_tree_node_labels_node ON tree_node_labels(node_id);
 
 伏線レジスタ（Phase 1〜5 実装済み）の情報をカードフッタに**健全性ドット + setup/payoff counter**として露出する。シーンごとの「仕込み×回収」の分布と、関連伏線の異常状態を一目で把握できるようにする。
 
-**カードフッタでの表現**:
+**カードフッタの全体構成**（Label dots はフッタに置かず左端カラーバーに集約、フッタは3要素のみ）:
 
 ```
-[Status] [Label dots] ... 🟢 📌2 ✓1     1,200 chars
+通常時:   [Status]  🟢 📌2 ✓1                    1,200 chars
+Compact:  [Status]  🟢                            1,200 chars
+0件時:    [Status]                                 1,200 chars
 ```
 
 | 要素 | 意味 |
 |------|------|
-| 健全性ドット（🟢/🔴/🟡） | このシーンに紐づく全伏線の derivedLabel から算出される最悪状態 |
+| 健全性ドット（✨/🟢/🟡/🔴/⚪） | このシーンに紐づく全伏線の derivedLabel から算出される状態 |
 | 📌 N | このシーンが setup を持つ伏線の数（`foreshadow_setups.scene_id = sceneId`） |
 | ✓ N | このシーンが payoff になっている伏線の数（`foreshadows.payoff_scene_id = sceneId`） |
 
-**健全性ドットの色判定**:
+**健全性ドットの色判定**（優先順位は上から）:
 
 - 🔴 赤: 関連伏線に `needs_strengthening` / `critical_weak` / `orphan_payoff` が1つでもある
 - 🟡 黄: 上記なしだが `planned`（setup ゼロ）が混在
-- 🟢 緑: すべて `seeded` or `paid`
+- ✨ 黄金: 上記2つに該当せず、payoff 件数 > 0（このシーンで何らかの伏線が回収されている達成シーン）
+- 🟢 緑: 上記いずれにも該当せず、関連伏線がすべて `seeded` or `paid`（setup 済みで進行中）
 - ⚪ グレー: 関連伏線が `abandoned` のみ
 - 0件シーン: ドット・counter 群すべて非表示（フッタに余白を残さず詰める）
+
+**Compact モード時の縮退規則**:
+
+- counter `📌N ✓N` を非表示にし、健全性ドット **1個のみ**に縮退
+- ホバー時のポップオーバーは通常時と同じ内容を表示（情報損失なし）
+- 縮退判定は `display.compactCards` フラグで切替
 
 **ホバー挙動**:
 
@@ -392,7 +413,7 @@ Pays off:
 | 3幕構成 | 3 | 全ジャンル汎用、初心者にも分かりやすい |
 | 起承転結 | 4 | 日本語圏の伝統構造、短編・中編向け |
 | Freytag's Pyramid（5幕） | 5 | 古典文学・戯曲風、明確なクライマックス構造 |
-| Save the Cat | 15 | ハリウッド型、ジャンル小説向け詳細構造 |
+| Save the Cat | 15 | ハリウッド型、ジャンル小説向け詳細構造（後述「用語の使い分け」参照） |
 | 英雄の旅 | 12 | 神話・冒険ファンタジー向け |
 | Story Circle（Harmon） | 8 | 短編・連作・キャラクター変化重視 |
 | 24章構成（Derek Murphy） | 24 | 長編商業ノベル（80,000-100,000字級）向け章単位レシピ |
@@ -412,6 +433,18 @@ Pays off:
 - シーンへの自動タグ付けは行わない（テンプレート適用後、ユーザーが手動で各シーンに割り当てる）
 
 **実装場所**: `src/features/grid/labelTemplates.ts` にテンプレート定義（純データ、i18n キー含む）。Apply 処理は Tauri command `apply_label_template(project_id, template_key)` でバックエンド側で原子的に実行。
+
+**用語の使い分け**（"Beat" 衝突回避）:
+
+Grimodex には既に **Beat システム**（TipTap `sceneBeat` ノード、Unplaced beats 等）があり、ユーザーは「Beat = シーン内部の構成単位」として認識している。Save the Cat の "Beat sheet" や英雄の旅の各段階を「ビート」と呼ぶと **シーン内 Beat と混同**する。テンプレート関連の用語は以下で統一：
+
+| 文脈 | 日本語 | 英語 |
+|------|--------|------|
+| シーン内構成単位（既存） | ビート / Beat | Beat |
+| プロット構造の段階（テンプレート） | **段階 / ラベル** | **Stage / Label**（"Beat" を避ける） |
+| Save the Cat の元来の "Beat" 用語 | 「Save the Cat の段階」と表記 | "Save the Cat Stage" と表記 |
+
+i18n 辞書を作る際は、テンプレートのラベル名・テンプレート紹介文・Apply 結果トーストすべてでこの規約を守る。
 
 ### カードの操作
 
@@ -608,46 +641,52 @@ Grid のビュー状態は**スコープを分けて**保存する：
 
 ## 実装フェーズ
 
-### Phase A: Grid MVP
+### 実装済み
+
+**Phase A: Grid MVP**（全項目完了）
 
 依存: Scenes パネル、Codex リレーション、Editor の Synopsis 機構、Beat システム設計書 Phase A の `unplaced_beats_doc` カラム（読み出しのみ）と `unplaced_beat_preview` キャッシュ
 
-- [ ] **`tree_nodes.unplaced_beat_preview` カラムを追加**（Drizzle migration、Beat 設計書の `unplaced_beats_doc` / `char_count` と同 migration ファイルにまとめる）
-- [ ] **プレビュー再計算トリガーの保存経路を特定**（既存の TipTap content 保存と `tree_nodes` メタ更新の経路を調査し、`unplaced_beats_doc` 変更時に `unplaced_beat_preview` を再計算・同梱する箇所を確定。debounce 保存・明示保存・Beat 編集確定など複数経路がある場合は1つに集約）
-- [ ] シーン保存時にフロント側が `unplaced_beats_doc` から先頭3件×40文字を抽出して保存ペイロードに同梱（バックエンドは値を保存するだけ、解釈しない）
-- [ ] **`<InlineSynopsisEditor>` 共有コンポーネントを新規作成**（`src/features/editor/InlineSynopsisEditor.tsx`）。Scenes Outline モードと Editor Synopsis セクションも同コンポーネントに切り替え（既存実装の置換）。`isEditing` を外部購読可能にし、ホスト側の D&D 無効化に利用
-- [ ] 新規パネル `GridPanel` の実装（`src/features/grid/`）
-- [ ] Container セレクタ（breadcrumb + ツリー型ドロップダウン、無効 ID のルートフォールバック含む）
-- [ ] Chapter 列の描画（`tree_nodes` の folder ノード）
-- [ ] Scene カードの描画（`tree_nodes` の scene ノード、Synopsis / beat 冒頭 / Codex チップ表示 / Status）
-- [ ] Codex チップは**表示専用**（タイプ別色分け・チップクリックで Codex 詳細パネル起動）。`+ Codex` / `×` ボタンは出さない
-- [ ] `+ New Scene` / `+ New Chapter`（自動採番、追加後インライン編集）
-- [ ] カードタイトルクリック → Editor 起動
-- [ ] Synopsis インライン編集（編集中はカード D&D 無効）
-- [ ] D&D による Scene 並べ替え（同列内、`sort_order` 更新のみ）
-- [ ] D&D による Scene の chapter 間移動（`parent_id` + `sort_order` 更新のみ、関連テーブル touch なし）
-- [ ] D&D による Chapter 列の並べ替え
-- [ ] カード `[⋮]` メニュー（Open / Rename / Duplicate / Delete / Move to chapter… / Show in Scenes）
-- [ ] Loose Scenes 仮想列の対応（個別 Scene の D&D のみ。仮想列ごとの一括変換は Phase B+）
-- [ ] レイアウト: Bottom Dock デフォルト非表示（レイアウトシステム設計書に追記）
-- [ ] Container 選択の永続化（プロジェクトスコープ、無効 ID は起動時にルートへフォールバック）
-- [ ] ヘッダーの 🔍 検索アイコンは Phase A では非表示または disabled で配置（Phase B で機能実装）
-- [ ] 文字数表示は `tree_nodes.char_count` キャッシュ値をそのまま表示（**保存時点の値**であり、編集中はリアルタイム更新されない旨をツールチップ等で示唆）
+- [x] `tree_nodes.unplaced_beat_preview` カラム追加（Drizzle migration）
+- [x] プレビュー再計算トリガーの保存経路特定と同梱
+- [x] シーン保存時にフロント側が `unplaced_beats_doc` から抽出して保存ペイロード同梱
+- [x] `<InlineSynopsisEditor>` 共有コンポーネント（Scenes Outline / Editor Synopsis / Grid カードで共通）
+- [x] 新規パネル `GridPanel` の実装（`src/features/grid/`）
+- [x] Container セレクタ（breadcrumb + ツリー型ドロップダウン、無効 ID のルートフォールバック含む）
+- [x] Chapter 列の描画（`tree_nodes` の folder ノード）
+- [x] Scene カード描画（Synopsis / Beat 冒頭 / Codex チップ / Status）
+- [x] Codex チップは表示専用（タイプ別色分け、チップクリックで Codex 詳細パネル起動）
+- [x] `+ New Scene` / `+ New Chapter`（自動採番、追加後インライン編集）
+- [x] カードタイトルクリック → Editor 起動
+- [x] Synopsis インライン編集（編集中はカード D&D 無効）
+- [x] D&D: Scene 並べ替え（同列・別列）、Chapter 列並び替え
+- [x] カード `[⋮]` メニュー（Open / Rename / Duplicate / Delete / Move to chapter… / Show in Scenes）
+- [x] Loose Scenes 仮想列対応
+- [x] レイアウト: Bottom Dock デフォルト非表示
+- [x] Container 選択のプロジェクトスコープ永続化（無効 ID はルートにフォールバック）
+- [x] 文字数表示は `tree_nodes.char_count` キャッシュ値（保存時点の値、編集中は更新されない）
 
-### Phase B: 機能拡張
+**Phase B: 完了済みの機能拡張**
+
+- [x] **Beat 主表示化**: Beat 箇条書きを主表示に昇格、Synopsis は折りたたみ副表示。`unplaced_beat_preview` を 8件 × 60文字に拡張
+- [x] カード `[⋮] → Add unplaced beat...`（Editor 起動なしで beat 追加）
+- [x] Loose Scenes 仮想列の一括操作（既存 Chapter にまとめる／新規 Chapter folder に変換）
+- [x] Synopsis トグル双方向化（`▸ Show synopsis` / `▾ Hide synopsis`、コミット a3bb682）
+- [x] 選択チェックマーク削除（リング枠で十分、コミット a3bb682）
+
+### Backlog
+
+**Phase B 残: 機能拡張**
 
 - [ ] 🔍 検索（インクリメンタル、ヒット外カードグレーアウト）
 - [ ] フィルタ（空 Scene のみ / 完成済み非表示 / Codex フィルタ）
-- [x] カード `[⋮] → Add unplaced beat...`（Editor 起動なしで beat 追加）
 - [ ] Compact カード幅モード
 - [ ] **Codex チップの直接編集**: `+ Codex` ポップオーバー（Chat パネル「📌ピン留め追加ポップオーバー」を共有可能コンポーネントとしてリファクタしたうえで再利用）、`×` で削除
-- [x] Loose Scenes 仮想列の一括操作（既存 Chapter にまとめる／新規 Chapter folder に変換）
 - [ ] カード本体の Status バッジ表示
 - [ ] 文字数カード表示のリアルタイム更新（編集中も反映）
-- [x] **Beat 主表示化**: カード本体上段の優先順位を Beat 箇条書き優先に切替、Synopsis を副表示（折りたたみ）に降格。`unplaced_beat_preview` の抽出パラメータを 8件 × 60文字に拡張
 - [ ] **POV chip 行**: ヘッダ直下に effective POVs（scene POV ∪ Beat 内 POV オーバーライド）を chip 表示。詳細は「POV chip」節参照
   - データソース: `scene_beat_pov_cache` を SELECT、空なら `tree_nodes.povCharacterId` を fallback
-  - 順序: scene POV を先頭固定、後続は Beat 出現順、scene POV と一致する cache POV は dedupe
+  - 順序: scene POV を先頭固定、後続は **character 名昇順**（cache に順序情報がないため Beat 出現順は採用しない）、scene POV と一致する cache POV は dedupe
   - スタイル: scene POV は塗り chip、Beat 由来のみはアウトライン chip（character タイプ色を共通使用）
   - 上限: 3人 + `+N more` バッジ。バッジクリックでポップオーバーで全員表示
   - クリック: character codex 詳細パネルを開く（編集自体は Editor 側で）
@@ -655,11 +694,14 @@ Grid のビュー状態は**スコープを分けて**保存する：
 - [ ] **ヘッダ UI 再構成**: 現状の `[⋮]` 押下で下に展開する横長バーを廃止し、`[⌃]` 折りたたみツールバー（ビュー状態のクイック切替）と `[⋮]` ドロップダウンメニュー（操作・遷移アクション）に分離
   - `GridPanelMenu` を `GridDisplayToolbar` と `GridActionsMenu` の2コンポーネントに分割
   - ツールバー開閉状態は `global-settings.json` に保存（プロジェクト横断）
+  - **既存 `display.showLabel` をリネーム**: 現状の `showLabel` は実は Status バッジの文字ラベル表示トグル（`StatusBadge` の iconOnly 切替）。Label 機能と名前衝突するため `showStatusLabel` に改名。新規 Label カラーバー用は `showLabelBar` として追加
+  - **既存テスト書き換え**: `GridHeader.test.tsx` の `onTogglePanelMenu` 前提が壊れる。新 props 構成（`onToggleToolbar` / `onOpenActionsMenu` 等）に追従。`GridSceneCard.test.tsx` 等で `display.showLabel` を参照している箇所も `showStatusLabel` / `showLabelBar` に分割
 - [ ] **Label 機能**（手法非依存の色タグ。Scrivener corkboard 流）— 詳細は「Label カラーバー」節参照
   - DB マイグレーション: `labels` テーブル + `tree_node_labels` 中間テーブル新規追加
   - パレット定義（`src/lib/labelPalette.ts`、固定 10〜12色、dark/light 両モード対応）
   - Tauri command 群: `list_labels` / `create_label` / `update_label` / `delete_label` / `reorder_labels` / `set_node_labels`
-  - Zustand store + Grid カード左端カラーバー描画（複数ラベルは縦に等分、最大3色表示）
+  - Zustand store + Grid カード左端縦カラーバー描画（複数ラベルは縦に等分、最大3色 + 4色以上は `+N` バッジ）
+  - Grid 列ヘッダ（Folder = Chapter）への水平カラーバー描画（4色以上は右端 `+N` バッジ）
   - Manage labels モーダル（CRUD + ドラッグ並べ替え + 削除確認）
   - カード `[⋮]` メニューに `Add label ▸` / `Manage labels...` 追加
   - Scenes パネルにタイトル右の小色ドット表示
@@ -673,18 +715,18 @@ Grid のビュー状態は**スコープを分けて**保存する：
   - データ取得: 既存 `foreshadowStore` から派生、新規 Tauri command 不要
   - `foreshadowStore` の load タイミング確認（Grid マウント時に明示 load が必要か、既に他パネルから load 済みか）
   - selector `selectSceneForeshadowSummary(sceneId)` を `foreshadowStore.ts` に追加
-  - `GridCardForeshadowIndicator.tsx` 新規: 健全性ドット（🟢/🟡/🔴/⚪）+ `📌N ✓N` counter、0件は非表示
+  - `GridCardForeshadowIndicator.tsx` 新規: 健全性ドット（✨/🟢/🟡/🔴/⚪）+ `📌N ✓N` counter、0件は非表示
+  - Compact モード時は counter を非表示にし健全性ドットのみに縮退（`display.compactCards` で切替）
   - ホバーポップオーバー: Sets up / Pays off の2セクション、derivedLabel アイコン + 伏線 title
   - クリックで `ForeshadowPanel` 起動 + シーン関連伏線にフィルタ（`foreshadowNavStore` 拡張要否を実装時に確認）
   - `[⌃]` ツールバー Display グループに `☑ Foreshadow indicator 表示` トグル追加（既定 ON）
 
-### Phase C: 連携機能
+**Phase C: 連携機能**
 
 - [ ] Matrix → Grid のクロスナビゲーション（「Show in Grid」）
 - [ ] Grid 上のカード複数選択 + 一括操作（一括移動、一括削除）
-- [ ] Label 機能対応（Label 機能が別途追加されたら）
 
-### Phase D: AI 連携（v2+）
+**Phase D: AI 連携（v2+）**
 
 - [ ] カード `[⋮] → Generate scene from chapter outline`（章のサマリーから Scene 提案）
 - [ ] 空カード / `+ New Scene` の AI ドラフト生成
