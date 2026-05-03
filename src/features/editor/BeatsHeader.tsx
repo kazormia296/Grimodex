@@ -86,8 +86,12 @@ export function BeatsHeader({
   }, [sceneId, collapsed]);
 
   const badge = [
-    beats.length > 0 ? `${beats.length} unplaced` : null,
-    placedCount > 0 ? `${placedCount} placed` : null,
+    beats.length > 0
+      ? t("editor.beat.panel.unplacedBadge", { count: beats.length })
+      : null,
+    placedCount > 0
+      ? t("editor.beat.panel.placedBadge", { count: placedCount })
+      : null,
   ]
     .filter(Boolean)
     .join(" · ");
@@ -110,7 +114,7 @@ export function BeatsHeader({
             <ChevronDown className="h-3 w-3 text-muted-foreground" />
           )}
           <span className="text-[11px] font-medium text-muted-foreground">
-            Beats
+            {t("editor.beat.panel.title")}
           </span>
           {badge && (
             <span
@@ -137,7 +141,7 @@ export function BeatsHeader({
           type="button"
           data-testid="beats-add-button"
           onClick={handleAddBeat}
-          title="Add beat"
+          title={t("editor.beat.panel.addBeat")}
           className="rounded p-0.5 hover:bg-muted"
         >
           <Plus className="h-3 w-3 text-muted-foreground" />
@@ -159,7 +163,7 @@ export function BeatsHeader({
             {beats.length > 0 ? (
               <>
                 <p className="mb-0.5 text-[10px] font-medium text-muted-foreground">
-                  📌 Unplaced (drag to insert in document):
+                  {t("editor.beat.panel.unplacedHeading")}
                 </p>
                 <SortableContext
                   items={beats.map((b) => b.id)}
@@ -183,14 +187,14 @@ export function BeatsHeader({
               <p
                 className={`py-1 text-[10px] italic text-muted-foreground/60 ${isOverUnplaced ? "text-accent-foreground/70" : ""}`}
               >
-                Drop beat here to unplace
+                {t("editor.beat.panel.dropToUnplace")}
               </p>
             )}
           </div>
 
           {beats.length === 0 && placedCount === 0 && (
             <p className="text-[10px] text-muted-foreground/60 italic">
-              No beats yet. Click + to add your first beat.
+              {t("editor.beat.panel.emptyState")}
             </p>
           )}
 

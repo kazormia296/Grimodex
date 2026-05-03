@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import type { Editor } from "@tiptap/core";
+import { useTranslation } from "react-i18next";
 
 interface PlacedBeatEntry {
   id: string;
@@ -26,6 +27,7 @@ function collectPlacedBeats(editor: Editor | null): PlacedBeatEntry[] {
 }
 
 export function PlacedBeatList({ editor }: PlacedBeatListProps) {
+  const { t } = useTranslation();
   const [beats, setBeats] = useState<PlacedBeatEntry[]>(() =>
     collectPlacedBeats(editor),
   );
@@ -45,7 +47,7 @@ export function PlacedBeatList({ editor }: PlacedBeatListProps) {
   return (
     <div className="mt-1">
       <p className="mb-0.5 text-[10px] font-medium text-muted-foreground">
-        📍 Placed (in document order):
+        {t("editor.beat.panel.placedHeading")}
       </p>
       <ul className="space-y-0.5">
         {beats.map((beat) => (
@@ -62,7 +64,11 @@ export function PlacedBeatList({ editor }: PlacedBeatListProps) {
             >
               <span className="text-[10px] opacity-50">┃</span>
               <span className="min-w-0 flex-1 truncate">
-                {beat.preview || <em className="opacity-50">empty beat</em>}
+                {beat.preview || (
+                  <em className="opacity-50">
+                    {t("editor.beat.panel.emptyBeat")}
+                  </em>
+                )}
               </span>
             </button>
           </li>

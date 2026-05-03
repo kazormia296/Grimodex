@@ -72,9 +72,9 @@ describe("BeatsHeader", () => {
         setMentionPopup={vi.fn()}
       />,
     );
-    // バッジに "1 unplaced" が含まれる
+    // バッジに "1 未配置" が含まれる
     expect(screen.getByTestId("beats-count-badge").textContent).toContain(
-      "1 unplaced",
+      "1 未配置",
     );
   });
 

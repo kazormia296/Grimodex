@@ -1316,6 +1316,25 @@
         "regenerate": "Regenerate",
         "unplace": "Move to Unplaced"
       },
+      "unplacedDragHandle": "Drag to reorder",
+      "unplacedMenuItems": {
+        "edit": "Edit",
+        "placeAtEnd": "Place at end of document",
+        "placeAtEndAndGenerate": "Place at end and generate",
+        "duplicate": "Duplicate",
+        "delete": "Delete"
+      },
+      "panel": {
+        "title": "Beats",
+        "addBeat": "Add beat",
+        "unplacedBadge": "{{count}} unplaced",
+        "placedBadge": "{{count}} placed",
+        "unplacedHeading": "📌 Unplaced (drag to insert in document):",
+        "dropToUnplace": "Drop beat here to unplace",
+        "emptyState": "No beats yet. Click + to add your first beat.",
+        "placedHeading": "📍 Placed (in document order):",
+        "emptyBeat": "empty beat"
+      },
       "modelInherit": "Inherit model",
       "actionBarKeep": "Keep",
       "actionBarRetry": "Retry",

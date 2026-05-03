@@ -120,7 +120,7 @@ export function UnplacedBeatItem({
       <button
         type="button"
         ref={setActivatorNodeRef}
-        aria-label="Drag to reorder"
+        aria-label={t("editor.beat.unplacedDragHandle")}
         className="inline-flex h-4 cursor-grab items-center justify-center rounded px-0.5 text-muted-foreground/40 opacity-0 hover:bg-muted hover:text-muted-foreground group-hover:opacity-100 active:cursor-grabbing"
         {...attributes}
         {...listeners}
@@ -199,7 +199,7 @@ export function UnplacedBeatItem({
                 }}
                 className="block w-full px-3 py-1.5 text-left hover:bg-primary hover:text-primary-foreground"
               >
-                Edit
+                {t("editor.beat.unplacedMenuItems.edit")}
               </button>
             </li>
             <li>
@@ -211,7 +211,7 @@ export function UnplacedBeatItem({
                 onClick={handlePlaceAtEnd}
                 className="block w-full px-3 py-1.5 text-left hover:bg-primary hover:text-primary-foreground disabled:opacity-50"
               >
-                Place at end of document
+                {t("editor.beat.unplacedMenuItems.placeAtEnd")}
               </button>
             </li>
             <li>
@@ -223,7 +223,7 @@ export function UnplacedBeatItem({
                 onClick={handlePlaceAtEndAndGenerate}
                 className="block w-full px-3 py-1.5 text-left hover:bg-primary hover:text-primary-foreground disabled:opacity-50"
               >
-                Place at end and generate
+                {t("editor.beat.unplacedMenuItems.placeAtEndAndGenerate")}
               </button>
             </li>
             <li>
@@ -233,7 +233,7 @@ export function UnplacedBeatItem({
                 onClick={handleDuplicate}
                 className="block w-full px-3 py-1.5 text-left hover:bg-primary hover:text-primary-foreground"
               >
-                Duplicate
+                {t("editor.beat.unplacedMenuItems.duplicate")}
               </button>
             </li>
             <li>
@@ -244,7 +244,7 @@ export function UnplacedBeatItem({
                 onClick={handleDelete}
                 className="block w-full px-3 py-1.5 text-left text-red-600 hover:bg-primary hover:text-primary-foreground dark:text-red-400"
               >
-                Delete
+                {t("editor.beat.unplacedMenuItems.delete")}
               </button>
             </li>
           </ul>

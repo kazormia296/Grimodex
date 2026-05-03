@@ -1322,6 +1322,25 @@
         "regenerate": "再生成",
         "unplace": "Unplaced に戻す"
       },
+      "unplacedDragHandle": "ドラッグして並び替え",
+      "unplacedMenuItems": {
+        "edit": "編集",
+        "placeAtEnd": "ドキュメント末尾に配置",
+        "placeAtEndAndGenerate": "末尾に配置して生成",
+        "duplicate": "複製",
+        "delete": "削除"
+      },
+      "panel": {
+        "title": "Beats",
+        "addBeat": "Beat を追加",
+        "unplacedBadge": "{{count}} 未配置",
+        "placedBadge": "{{count}} 配置済み",
+        "unplacedHeading": "📌 未配置（ドラッグで本文に挿入）：",
+        "dropToUnplace": "ここにドロップして未配置に戻す",
+        "emptyState": "Beat はまだありません。+ を押して追加してください。",
+        "placedHeading": "📍 配置済み（本文順）：",
+        "emptyBeat": "空の Beat"
+      },
       "alternativeSaved": "代替案をスニペットに保存しました",
       "modelInherit": "モデルを継承",
       "actionBarKeep": "キープ",
