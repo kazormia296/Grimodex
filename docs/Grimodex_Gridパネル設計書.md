@@ -118,8 +118,9 @@ Grimodex のツリーは任意深さ（Part > Chapter > Sub-chapter > Scene 等�
 | Container セレクタ | 表示対象の親フォルダ。breadcrumb 表示（`Part 1 / Act 1`）。クリックでドロップダウン展開、ツリー上の任意 folder を選択可。Default はプロジェクトルート |
 | Chapter 数表示 | `{N} chapters`（直下フォルダ数。Scene 直接子は `+ {M} loose scenes` と併記） |
 | `[+ New Chapter]` | 現在の container 直下に新規 folder を作成。名前は自動採番（Scenes パネル設計書の採番ロジックに従う） |
+| `[⌃]` ツールバー切替 | 折りたたみツールバー（Display + Filter）の開閉。状態は global-settings に保存 |
 | 🔍 検索 | カード内テキスト（Scene 名 / Synopsis / beat 冒頭 / Codex 名）でインクリメンタル絞り込み。マッチしないカードはグレー表示。**Phase A では非表示または disabled（Phase B で実装）** |
-| `[⋮]` パネルメニュー | Display / Filter / Help |
+| `[⋮]` アクションメニュー | ドロップダウン: Apply label template ▸ / Manage labels... / Help |
 
 ### Container セレクタの動作
 
@@ -130,24 +131,39 @@ Grimodex のツリーは任意深さ（Part > Chapter > Sub-chapter > Scene 等�
 - 選択 container は **プロジェクトスコープ**で永続化（プロジェクト切り替えで別プロジェクトの ID を引きずらないため、プロジェクト ID をキーに含めて保存）
 - 起動時に保存された ID が現プロジェクト内に存在しない場合（削除済み・別プロジェクト由来）はプロジェクトルートにフォールバック
 
-### `[⋮]` パネルメニュー
+### `[⌃]` 折りたたみツールバー（ビュー状態のクイック切替）
+
+`[⋮]` ドロップダウンとは役割を分離し、**頻繁に切り替える表示状態**だけをこのツールバーに集約する。`[⌃]` で開閉、状態は `global-settings.json` に保存（プロジェクト横断）。
 
 ```
-Display
-  ☑ Synopsis を表示（あれば）
-  ☑ Unplaced beat の冒頭を表示
-  ☑ Codex チップを表示
-  ☑ Label を表示（Phase B、Label 機能追加時のみ有効）
-  ☐ カード幅をコンパクトにする
-
-Filter
-  ☐ 空の Scene（本文未着手）のみ
-  ☐ 完成済み Scene を非表示
-  ☐ 特定 Codex を含む Scene のみ（Codex セレクタ）
-
-Help
-  Grid の使い方
+Display: ☑Synopsis  ☑Beat  ☑Codex  ☑Label  ☐Compact
+Filter:  ☐空のみ  ☐完成非表示  [Codex フィルタ▾]              [Clear]
 ```
+
+| グループ | 項目 | 既定 |
+|---------|------|------|
+| Display | Synopsis 表示（あれば、Beat の下に折りたたみで） | ON |
+| Display | Beat プレビュー表示 | ON |
+| Display | Codex チップ表示 | ON |
+| Display | Label カラーバー表示 | ON |
+| Display | コンパクト表示 | OFF |
+| Filter | 空の Scene のみ | OFF |
+| Filter | 完成済み Scene を非表示 | OFF |
+| Filter | 特定 Codex を含む Scene のみ（Codex セレクタ） | OFF |
+
+### `[⋮]` アクションメニュー（ドロップダウン）
+
+`[⌃]` ツールバーが**ビュー状態**を扱うのに対し、こちらは**操作・遷移を伴うアクション**を集める。`MoreVertical` アイコン押下で popover 形式のドロップダウンを表示。
+
+```
+Apply label template      ▸  ─┐
+Manage labels...               ├─ ラベル系
+                              ─┘
+─────────────
+Grid の使い方                    （Help）
+```
+
+`Apply label template ▸` のサブメニューはラベルテンプレート節（後述）を参照。
 
 ---
 
@@ -243,6 +259,102 @@ Help
 **Phase A**: 表示専用。`+ Codex` / `×` ボタンは表示しない（Codex 紐付けは Editor 経由）。
 
 **Phase B**: `+ Codex` クリックで **Chat パネルの「📌ピン留め追加ポップオーバー」（Codex/Snippet タブ式検索 UI、Chat パネル設計書「コンテキストバー」「手動ピン留め」セクション参照）と同じコンポーネント**を再利用。選択した Codex を `scene_codex_pins` に追加。`×` クリックでリレーション削除（`scene_codex_pins` から行削除）。
+
+#### Label カラーバー
+
+ユーザー定義の色付きタグ。Scrivener corkboard 流の左端カラーバー方式で、カードの**横幅を一切食わずに**プロット線・テーマ・サブプロットを視覚的に追跡できるようにする。Codex chip（個別エンティティ参照）や Status バッジ（システム規定の進行状態）とは役割が異なる**ユーザー任意の分類軸**。
+
+**設計方針サマリ**:
+
+| 軸 | 採用 |
+|----|------|
+| カーディナリティ | 多対多（1 シーンに複数ラベル可） |
+| 適用対象 | `tree_nodes` 全般（Scene + Folder。子伝搬なし） |
+| 色 | 固定パレット 10〜12色（パレット slot 名で永続化） |
+| デフォルト | 空スタート（テンプレート適用は opt-in） |
+| Grid 表現 | 左端の縦カラーバー（複数は積む）+ ホバーで名前ポップオーバー |
+
+**データモデル（新規）**:
+
+```sql
+CREATE TABLE labels (
+  id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  name TEXT NOT NULL,
+  color TEXT NOT NULL,           -- パレット slot 名（'red'|'blue'|... 等）
+  sort_order INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL
+);
+CREATE UNIQUE INDEX uq_labels_project_name ON labels(project_id, name);
+
+CREATE TABLE tree_node_labels (
+  node_id TEXT NOT NULL REFERENCES tree_nodes(id) ON DELETE CASCADE,
+  label_id TEXT NOT NULL REFERENCES labels(id) ON DELETE CASCADE,
+  PRIMARY KEY (node_id, label_id)
+);
+CREATE INDEX idx_tree_node_labels_node ON tree_node_labels(node_id);
+```
+
+**カラーパレット**: 固定 10〜12色を `src/lib/labelPalette.ts` に定数定義。dark/light 両モードで読みやすい彩度に調整。Status バッジで使う色とは別パレット（混同防止）。
+
+**Grid カードでの表現**:
+
+- カード**左端の縦カラーバー**（幅 4-6px、カード全高）
+- 複数ラベルは縦方向に等分（2色なら半々、3色なら 1/3 ずつ。4色以上は最初の3色 + 残数表示は省略してシンプルに3色まで）
+- ホバーでポップオーバーにラベル名一覧
+- ラベル0件のシーンはバー領域そのものを描かない（カード幅は変えない、左 padding で吸収）
+
+**カード `[⋮]` メニューからの編集**:
+
+- `Add label ▸` サブメニュー: 既存ラベル一覧から選択（複数選択可）
+- `Manage labels...` リンク: パネル `[⋮]` の `Manage labels...` と同じモーダルへ
+
+**Manage labels モーダル**（プロジェクトスコープ）:
+
+- ラベル CRUD（追加・rename・色変更・削除）
+- ドラッグで並べ替え（`sort_order` 更新）
+- 削除時は使用中シーン数を表示して確認ダイアログ（「N シーンから外されます」）
+
+**他パネルへの波及**:
+
+| パネル | 表示 |
+|--------|------|
+| Grid カード | 左端カラーバー（プライマリ表現） |
+| Scenes パネル | タイトル右に小色ドット |
+| Editor SynopsisHeader | （Phase 後半）任意の小チップ |
+| Filter UI | 各パネルで「ラベルでフィルタ」共通ドロップダウン |
+
+#### ラベルテンプレート
+
+ユーザーが手動で全ラベルを作るのを避けるため、**著名なプロット構造を opt-in で適用**できるテンプレートを Grid `[⋮]` ドロップダウンの `Apply label template ▸` から提供する。テンプレートは「**ラベル定義のセットを生やすだけ**」で、各シーンへの自動タグ付けはしない（ユーザーが手動で割り当てる）。
+
+**収録テンプレート**:
+
+| テンプレート | ラベル数 | 想定用途 |
+|------|---------|---------|
+| 3幕構成 | 3 | 全ジャンル汎用、初心者にも分かりやすい |
+| 起承転結 | 4 | 日本語圏の伝統構造、短編・中編向け |
+| Freytag's Pyramid（5幕） | 5 | 古典文学・戯曲風、明確なクライマックス構造 |
+| Save the Cat | 15 | ハリウッド型、ジャンル小説向け詳細構造 |
+| 英雄の旅 | 12 | 神話・冒険ファンタジー向け |
+| Story Circle（Harmon） | 8 | 短編・連作・キャラクター変化重視 |
+| 24章構成（Derek Murphy） | 24 | 長編商業ノベル（80,000-100,000字級）向け章単位レシピ |
+
+**i18n（意訳ベース）**: 各テンプレート・ラベルは ja/en の対訳辞書を持つ。**transliteration（音訳）ではなく意訳**を採用：
+
+- 起承転結 → "Setup / Development / Twist / Conclusion"（英語版）
+- Save the Cat の "Theme Stated" → 「テーマ提示」（日本語版）
+- 24 chapters → ja は「Hook / Setup / Plot Point 1 / Pinch 1 / Midpoint / ...」を意訳した日本語版
+
+**適用挙動**:
+
+- 既存と同名のラベルがある場合は**スキップ**（`uq_labels_project_name` ユニーク制約準拠）
+- 結果はトーストで報告（「N 件追加、M 件は既存のためスキップ」）
+- 色はパレット順に自動割当。ユーザーは Manage labels モーダルで後から変更可
+- 同じテンプレートを複数回適用しても重複は発生しない
+- シーンへの自動タグ付けは行わない（テンプレート適用後、ユーザーが手動で各シーンに割り当てる）
+
+**実装場所**: `src/features/grid/labelTemplates.ts` にテンプレート定義（純データ、i18n キー含む）。Apply 処理は Tauri command `apply_label_template(project_id, template_key)` でバックエンド側で原子的に実行。
 
 ### カードの操作
 
@@ -355,7 +467,7 @@ Grid は新規テーブルを持たない。表示内容はすべて既存テー
 | Beat 冒頭 | `tree_nodes.unplaced_beat_preview` キャッシュ（後述「Beat 冒頭の取得戦略」参照） |
 | POV chip | `scene_beat_pov_cache` ∪ `tree_nodes.povCharacterId`（dedupe、scene POV 先頭、character 名は `codexEntries` を join） |
 | Codex チップ | `scene_codex_pins` |
-| Label | （Phase B、Label 機能が追加されたら対応） |
+| Label カラーバー | `tree_node_labels` (M:N) → `labels` (project スコープ、固定パレット色)。Phase B 新規テーブル |
 | Status | `tree_nodes.status`（Scenes パネル設計書既定） |
 | 文字数 | `tree_nodes.char_count` キャッシュカラム（Beat 設計書 Phase A で追加、シーン保存時にフロントが値を同梱） |
 
@@ -482,10 +594,23 @@ Grid のビュー状態は**スコープを分けて**保存する：
   - 上限: 3人 + `+N more` バッジ。バッジクリックでポップオーバーで全員表示
   - クリック: character codex 詳細パネルを開く（編集自体は Editor 側で）
   - cache 更新は既存の `EditorPane.tsx:472` / `LinearSceneBlock.tsx:102` の保存経路にすでに組み込み済みなので追加実装不要
-- [ ] **Label 機能**（手法非依存の色タグ。Scrivener corkboard 流）
-  - `tree_nodes.label_id` カラム + 新規 `labels` テーブル + プロジェクト設定 UI が前提
-  - Grid カード上は左端の細い縦カラーバーで表示（情報密度を上げない）
-  - Scenes パネル / Editor などへの波及あり、独立タスクとして設計が必要
+- [ ] **ヘッダ UI 再構成**: 現状の `[⋮]` 押下で下に展開する横長バーを廃止し、`[⌃]` 折りたたみツールバー（ビュー状態のクイック切替）と `[⋮]` ドロップダウンメニュー（操作・遷移アクション）に分離
+  - `GridPanelMenu` を `GridDisplayToolbar` と `GridActionsMenu` の2コンポーネントに分割
+  - ツールバー開閉状態は `global-settings.json` に保存（プロジェクト横断）
+- [ ] **Label 機能**（手法非依存の色タグ。Scrivener corkboard 流）— 詳細は「Label カラーバー」節参照
+  - DB マイグレーション: `labels` テーブル + `tree_node_labels` 中間テーブル新規追加
+  - パレット定義（`src/lib/labelPalette.ts`、固定 10〜12色、dark/light 両モード対応）
+  - Tauri command 群: `list_labels` / `create_label` / `update_label` / `delete_label` / `reorder_labels` / `set_node_labels`
+  - Zustand store + Grid カード左端カラーバー描画（複数ラベルは縦に等分、最大3色表示）
+  - Manage labels モーダル（CRUD + ドラッグ並べ替え + 削除確認）
+  - カード `[⋮]` メニューに `Add label ▸` / `Manage labels...` 追加
+  - Scenes パネルにタイトル右の小色ドット表示
+  - Filter UI に「ラベルでフィルタ」ドロップダウン追加（共通コンポーネント化）
+- [ ] **ラベルテンプレート**（Apply label template ▸ サブメニュー） — 詳細は「ラベルテンプレート」節参照
+  - 7テンプレート定義: 3幕構成 / 起承転結 / Freytag's Pyramid / Save the Cat / 英雄の旅 / Story Circle / 24章構成
+  - i18n 対訳辞書（ja/en、意訳ベース。"Setup / Development / Twist / Conclusion" 等）
+  - Tauri command `apply_label_template(project_id, template_key)`、既存同名はスキップ、結果トースト
+  - 色はパレット順に自動割当、シーン自動タグ付けはしない
 - [ ] **伏線リンク表示**: 伏線レジスタ（Phase 1〜5 実装済み）と接続し、カードフッタに「promise N · payoff M」counter を表示。ホバーで anchor 一覧ポップオーバー
   - データソース: `foreshadow_setups` / `foreshadows.payoff_scene_id` を scene_id で集計
   - 既存テーブルからの集計のみで新規データモデル不要
