@@ -23,6 +23,7 @@ import { GridHeader } from "./GridHeader";
 import { GridDisplayToolbar } from "./GridDisplayToolbar";
 import { ManageLabelsDialog } from "@/features/labels/ManageLabelsDialog";
 import { useLabelStore } from "@/features/labels/labelStore";
+import { useForeshadowStore } from "@/features/foreshadow/foreshadowStore";
 import { GridColumn } from "./GridColumn";
 import { GridLooseColumn } from "./GridLooseColumn";
 import { GridStatusBar } from "./GridStatusBar";
@@ -84,6 +85,7 @@ export function GridPanel() {
   useEffect(() => {
     void loadForProject(projectId);
     void useLabelStore.getState().load(projectId);
+    void useForeshadowStore.getState().load(projectId);
   }, [projectId, loadForProject]);
 
   useEffect(() => {

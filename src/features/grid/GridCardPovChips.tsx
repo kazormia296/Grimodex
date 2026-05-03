@@ -1,5 +1,7 @@
 import { useEffect, useState } from "react";
 import { useCodexStore } from "@/features/codex/codexStore";
+import { useCodexHighlightStore } from "@/features/editor/codexHighlightStore";
+import { useLayoutStore } from "@/features/layout/layoutStore";
 import { listSceneBeatPovOverrides } from "@/features/editor/beat/beatPovCacheApi";
 
 const MAX_CHIPS = 3;
@@ -13,6 +15,7 @@ interface Props {
 export function GridCardPovChips({ sceneId, scenePovCharacterId }: Props) {
   const [beatPovIds, setBeatPovIds] = useState<string[]>([]);
   const entries = useCodexStore((s) => s.entries);
+  const typeColorMap = useCodexHighlightStore((s) => s.typeColorMap);
 
   useEffect(() => {
     void listSceneBeatPovOverrides(sceneId).then(setBeatPovIds);
@@ -34,23 +37,38 @@ export function GridCardPovChips({ sceneId, scenePovCharacterId }: Props) {
   const displayPovs = effectivePovIds.slice(0, MAX_CHIPS);
   const extraCount = Math.max(0, effectivePovIds.length - MAX_CHIPS);
 
+  function handleChipClick(e: React.MouseEvent, entryId: string) {
+    e.stopPropagation();
+    useCodexStore.getState().requestSelectEntry(entryId);
+    useLayoutStore.getState().showPanel("codex");
+  }
+
   return (
     <div className="flex flex-wrap items-center gap-1 px-3 pb-1.5">
       {displayPovs.map(({ id, isScene }) => {
         const entry = entries.find((e) => e.id === id);
         const name = entry?.name ?? id.slice(0, 8);
+        const fgColor = entry?.type
+          ? (typeColorMap[entry.type]?.fg ?? "#888888")
+          : "#888888";
+
         return (
-          <span
+          <button
             key={id}
-            className={
+            onClick={(e) => handleChipClick(e, id)}
+            className="inline-flex items-center rounded-full px-1.5 py-0.5 text-[10px] font-medium transition-opacity hover:opacity-80"
+            style={
               isScene
-                ? "inline-flex items-center rounded-full px-1.5 py-0.5 text-[10px] font-medium bg-blue-500/70 text-white"
-                : "inline-flex items-center rounded-full border border-blue-500/50 px-1.5 py-0.5 text-[10px] font-medium text-blue-400"
+                ? { backgroundColor: fgColor + "b3", color: "#fff" }
+                : {
+                    boxShadow: `inset 0 0 0 1px ${fgColor}80`,
+                    color: fgColor,
+                  }
             }
             title={isScene ? "Scene POV" : "Beat POV override"}
           >
             {name}
-          </span>
+          </button>
         );
       })}
       {extraCount > 0 && (

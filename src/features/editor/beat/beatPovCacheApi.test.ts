@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, vi } from "vitest";
 
 vi.mock("@/db/client", () => ({
   db: {
+    select: vi.fn(),
     insert: vi.fn(),
     delete: vi.fn(),
   },
@@ -25,7 +26,10 @@ vi.mock("drizzle-orm", () => ({
 import { db } from "@/db/client";
 const mockDb = vi.mocked(db);
 
-import { upsertSceneBeatPovOverrides } from "./beatPovCacheApi";
+import {
+  listSceneBeatPovOverrides,
+  upsertSceneBeatPovOverrides,
+} from "./beatPovCacheApi";
 
 interface InsertChain {
   values: ReturnType<typeof vi.fn>;
@@ -140,5 +144,47 @@ describe("upsertSceneBeatPovOverrides", () => {
     expect(and).toHaveBeenCalledTimes(1);
     const whereArg = deleteChain.where.mock.calls[0][0];
     expect(whereArg).toMatchObject({ and: expect.any(Array) });
+  });
+});
+
+describe("listSceneBeatPovOverrides", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  function mockSelectChain(rows: { povCharacterId: string }[]) {
+    const whereChain = { where: vi.fn().mockResolvedValue(rows) };
+    const fromChain = { from: vi.fn().mockReturnValue(whereChain) };
+    mockDb.select.mockReturnValue(fromChain as never);
+    return whereChain;
+  }
+
+  it("返り値は povCharacterId の string[] になっている", async () => {
+    mockSelectChain([
+      { povCharacterId: "char-a" },
+      { povCharacterId: "char-b" },
+    ]);
+
+    const result = await listSceneBeatPovOverrides("s1");
+
+    expect(result).toEqual(["char-a", "char-b"]);
+  });
+
+  it("該当行がない場合は空配列を返す", async () => {
+    mockSelectChain([]);
+
+    const result = await listSceneBeatPovOverrides("s1");
+
+    expect(result).toEqual([]);
+  });
+
+  it("where 条件に sceneId が渡される", async () => {
+    const chain = mockSelectChain([]);
+    const { eq } = await import("drizzle-orm");
+
+    await listSceneBeatPovOverrides("target-scene");
+
+    expect(eq).toHaveBeenCalledWith("sceneId", "target-scene");
+    expect(chain.where).toHaveBeenCalledTimes(1);
   });
 });
