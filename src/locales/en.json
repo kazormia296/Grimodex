@@ -76,7 +76,9 @@
     "invalidLayout": "Saved layout was invalid and has been reset to default. ({{reason}})",
     "degenLayout": "Layout was degenerate and has been reset to default. ({{reason}})",
     "exportTitle": "Export (Ctrl+Shift+E)",
-    "settingsTitle": "Settings (Ctrl+Alt+,)"
+    "exportLabel": "Export",
+    "settingsTitle": "Settings (Ctrl+Alt+,)",
+    "settingsLabel": "Settings"
   },
   "settings": {
     "title": "Settings",

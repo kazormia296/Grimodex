@@ -76,7 +76,9 @@
     "invalidLayout": "保存済みレイアウトが不正なため、デフォルトに戻しました。（{{reason}}）",
     "degenLayout": "レイアウトが退化しているため、デフォルトに戻しました。（{{reason}}）",
     "exportTitle": "エクスポート (Ctrl+Shift+E)",
-    "settingsTitle": "設定 (Ctrl+Alt+,)"
+    "exportLabel": "エクスポート",
+    "settingsTitle": "設定 (Ctrl+Alt+,)",
+    "settingsLabel": "設定"
   },
   "settings": {
     "title": "Settings",
