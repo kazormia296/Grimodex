@@ -807,6 +807,8 @@
       "empty": "No foreshadows yet",
       "filterEmpty": "No foreshadows match the filter",
       "clearFilter": "Clear filter",
+      "clearSceneFilter": "Clear scene filter",
+      "sceneFilterBanner": "Foreshadows in \"{{title}}\"",
       "newButton": "New",
       "toggle": "Expand/collapse",
       "setupsEmpty": "No setups",

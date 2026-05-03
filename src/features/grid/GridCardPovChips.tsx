@@ -1,10 +1,33 @@
 import { useEffect, useState } from "react";
 import { useCodexStore } from "@/features/codex/codexStore";
-import { useCodexHighlightStore } from "@/features/editor/codexHighlightStore";
 import { useLayoutStore } from "@/features/layout/layoutStore";
 import { listSceneBeatPovOverrides } from "@/features/editor/beat/beatPovCacheApi";
 
 const MAX_CHIPS = 3;
+
+// Visually distinct palette that works on both light/dark backgrounds
+const POV_PALETTE = [
+  "#e05c5c", // red
+  "#e0875a", // orange
+  "#c9a53a", // amber
+  "#5aaa6b", // green
+  "#3aaa9a", // teal
+  "#3a8fd6", // blue
+  "#6a5ad6", // indigo
+  "#9a3ad6", // violet
+  "#d63aaa", // pink
+  "#d65a7a", // rose
+  "#7aaa3a", // lime
+  "#3aaad6", // cyan
+];
+
+function hashIdToColor(id: string): string {
+  let h = 0;
+  for (let i = 0; i < id.length; i++) {
+    h = (Math.imul(31, h) + id.charCodeAt(i)) | 0;
+  }
+  return POV_PALETTE[Math.abs(h) % POV_PALETTE.length];
+}
 
 interface Props {
   sceneId: string;
@@ -15,7 +38,6 @@ interface Props {
 export function GridCardPovChips({ sceneId, scenePovCharacterId }: Props) {
   const [beatPovIds, setBeatPovIds] = useState<string[]>([]);
   const entries = useCodexStore((s) => s.entries);
-  const typeColorMap = useCodexHighlightStore((s) => s.typeColorMap);
 
   useEffect(() => {
     void listSceneBeatPovOverrides(sceneId).then(setBeatPovIds);
@@ -48,9 +70,7 @@ export function GridCardPovChips({ sceneId, scenePovCharacterId }: Props) {
       {displayPovs.map(({ id, isScene }) => {
         const entry = entries.find((e) => e.id === id);
         const name = entry?.name ?? id.slice(0, 8);
-        const fgColor = entry?.type
-          ? (typeColorMap[entry.type]?.fg ?? "#888888")
-          : "#888888";
+        const color = hashIdToColor(id);
 
         return (
           <button
@@ -59,10 +79,10 @@ export function GridCardPovChips({ sceneId, scenePovCharacterId }: Props) {
             className="inline-flex items-center rounded-full px-1.5 py-0.5 text-[10px] font-medium transition-opacity hover:opacity-80"
             style={
               isScene
-                ? { backgroundColor: fgColor + "b3", color: "#fff" }
+                ? { backgroundColor: color + "cc", color: "#fff" }
                 : {
-                    boxShadow: `inset 0 0 0 1px ${fgColor}80`,
-                    color: fgColor,
+                    boxShadow: `inset 0 0 0 1px ${color}99`,
+                    color: color,
                   }
             }
             title={isScene ? "Scene POV" : "Beat POV override"}

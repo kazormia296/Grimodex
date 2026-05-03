@@ -807,6 +807,8 @@
       "empty": "伏線はありません",
       "filterEmpty": "該当する伏線はありません",
       "clearFilter": "フィルタをクリア",
+      "clearSceneFilter": "シーンフィルタを解除",
+      "sceneFilterBanner": "「{{title}}」の伏線",
       "newButton": "新規作成",
       "toggle": "展開/折り畳み",
       "setupsEmpty": "Setup なし",

@@ -5,6 +5,7 @@ import {
   ChevronDown,
   ChevronRight,
   Loader2,
+  MapPin,
   Pencil,
   Plus,
   Sparkles,
@@ -324,6 +325,10 @@ export function ForeshadowPanel() {
   const [sceneFilterIds, setSceneFilterIds] = useState<Set<string>>(
     () => new Set(),
   );
+  const nodes = useTreeStore((s) => s.nodes);
+  const sceneFilterTitle = sceneFilter
+    ? (nodes.find((n) => n.id === sceneFilter)?.title ?? "…")
+    : null;
 
   // Grid カードからのシーン絞り込み要求を処理する
   useEffect(() => {
@@ -444,6 +449,33 @@ export function ForeshadowPanel() {
         </div>
       )}
 
+      {/* Scene filter banner — shown when opened from a Grid card */}
+      {activeTab === "list" && sceneFilter && (
+        <div className="flex items-center gap-1.5 border-b border-amber-400/30 bg-amber-400/10 px-2 py-1.5">
+          <MapPin className="h-3 w-3 shrink-0 text-amber-500 dark:text-amber-400" />
+          <span className="flex-1 truncate text-[10px] text-amber-800 dark:text-amber-300">
+            {t("foreshadow.panel.sceneFilterBanner", {
+              title: sceneFilterTitle,
+              defaultValue: "「{{title}}」の伏線",
+            })}
+          </span>
+          <button
+            type="button"
+            onClick={() => {
+              setSceneFilter(null);
+              setSceneFilterIds(new Set());
+            }}
+            className="rounded p-0.5 text-amber-600 hover:bg-amber-400/20 dark:text-amber-400"
+            aria-label={t(
+              "foreshadow.panel.clearSceneFilter",
+              "シーンフィルタを解除",
+            )}
+          >
+            <X className="h-3 w-3" />
+          </button>
+        </div>
+      )}
+
       {/* Label filter bar — only shown when items exist and on list tab */}
       {activeTab === "list" && items.length > 0 && (
         <div className="flex flex-wrap items-center gap-1 border-b border-border px-2 py-1.5">
@@ -462,19 +494,12 @@ export function ForeshadowPanel() {
               {t(`foreshadow.label.${label}`)}
             </button>
           ))}
-          {sceneFilter && (
-            <span className="rounded-full bg-primary/15 px-2 py-0.5 text-[10px] font-medium text-primary">
-              {t("foreshadow.panel.sceneFilter", "シーン関連")}
-            </span>
-          )}
-          {(activeFilters.size > 0 || sceneFilter) && (
+          {activeFilters.size > 0 && (
             <button
               type="button"
               data-testid="foreshadow-filter-clear"
               onClick={() => {
                 setActiveFilters(new Set());
-                setSceneFilter(null);
-                setSceneFilterIds(new Set());
               }}
               className="ml-auto rounded p-0.5 text-muted-foreground hover:bg-accent"
               aria-label={t("foreshadow.panel.clearFilter", "フィルタをクリア")}
