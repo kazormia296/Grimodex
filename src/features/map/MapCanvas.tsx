@@ -626,14 +626,9 @@ export function MapCanvas() {
         className={paletteMode === "connect" ? "map-connect-mode" : undefined}
         elevateNodesOnSelect={false}
       >
-        <Background
-          variant={
-            corkboardFeel ? BackgroundVariant.Lines : BackgroundVariant.Dots
-          }
-          gap={corkboardFeel ? 40 : 24}
-          size={1}
-          color={corkboardFeel ? "rgba(139,92,44,0.12)" : undefined}
-        />
+        {!corkboardFeel && (
+          <Background variant={BackgroundVariant.Dots} gap={24} size={1} />
+        )}
         <Controls />
         {minimapVisible && (
           <MiniMap style={{ width: 120, height: 80 }} zoomable pannable />

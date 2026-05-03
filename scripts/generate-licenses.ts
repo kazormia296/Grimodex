@@ -134,6 +134,35 @@ function gatherCargoLicenses(): LicenseEntry[] {
 }
 
 /* ------------------------------------------------------------------ */
+/*  バンドル済みアセット (画像・フォント等)                              */
+/* ------------------------------------------------------------------ */
+
+const CC0_LICENSE_TEXT = `Creative Commons Legal Code
+
+CC0 1.0 Universal
+
+The person who associated a work with this deed has dedicated the work to
+the public domain by waiving all of his or her rights to the work worldwide
+under copyright law, including all related and neighboring rights, to the
+extent allowed by law.
+
+You can copy, modify, distribute and perform the work, even for commercial
+purposes, all without asking permission. See https://creativecommons.org/publicdomain/zero/1.0/
+for the full legal code.`;
+
+function gatherAssetLicenses(): LicenseEntry[] {
+  return [
+    {
+      name: "Cork001 (cork texture)",
+      version: "1K-JPG",
+      license: "CC0-1.0",
+      repository: "https://ambientcg.com/view?id=Cork001",
+      licenseText: CC0_LICENSE_TEXT,
+    },
+  ];
+}
+
+/* ------------------------------------------------------------------ */
 /*  メイン                                                             */
 /* ------------------------------------------------------------------ */
 
@@ -146,7 +175,15 @@ function main() {
   const cargoEntries = gatherCargoLicenses();
   console.log(`  Found ${cargoEntries.length} Cargo crates`);
 
-  const markdown = formatLicensesMarkdown(npmEntries, cargoEntries);
+  console.log("Gathering bundled asset licenses...");
+  const assetEntries = gatherAssetLicenses();
+  console.log(`  Found ${assetEntries.length} assets`);
+
+  const markdown = formatLicensesMarkdown(
+    npmEntries,
+    cargoEntries,
+    assetEntries,
+  );
 
   const rootOutput = join(ROOT, "THIRD_PARTY_LICENSES.md");
   writeFileSync(rootOutput, markdown, "utf-8");

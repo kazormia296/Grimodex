@@ -703,66 +703,22 @@
   height: 14px;
 }
 
-/* Map corkboard feel: layered radial-gradient SVG texture that sits behind
-   the React Flow viewport. Warm beige tones suggest cork/pinboard without
-   requiring an image asset. Light/dark adapt via opacity + hue shift. */
+/* Map corkboard feel: a tiled cork photo (ambientCG Cork001, CC0) sits
+   behind the React Flow viewport, blended with a warm base color so light
+   and dark themes share the same texture asset. */
 .map-corkboard .react-flow {
-  background-color: #e8dcc0;
-  background-image:
-    radial-gradient(
-      circle at 20% 30%,
-      rgba(139, 92, 44, 0.18) 0 2px,
-      transparent 3px
-    ),
-    radial-gradient(
-      circle at 70% 65%,
-      rgba(139, 92, 44, 0.14) 0 2px,
-      transparent 3px
-    ),
-    radial-gradient(
-      circle at 45% 85%,
-      rgba(120, 75, 35, 0.12) 0 1.5px,
-      transparent 3px
-    ),
-    radial-gradient(
-      circle at 85% 15%,
-      rgba(160, 110, 60, 0.16) 0 1.5px,
-      transparent 3px
-    );
-  background-size:
-    120px 120px,
-    150px 150px,
-    90px 90px,
-    110px 110px;
+  background-color: #ecd9b8;
+  background-image: url("./assets/textures/cork.jpg");
+  background-repeat: repeat;
+  background-size: 512px 512px;
+  background-blend-mode: multiply;
 }
 .dark .map-corkboard .react-flow {
-  background-color: #3a2d1c;
-  background-image:
-    radial-gradient(
-      circle at 20% 30%,
-      rgba(200, 150, 90, 0.18) 0 2px,
-      transparent 3px
-    ),
-    radial-gradient(
-      circle at 70% 65%,
-      rgba(200, 150, 90, 0.12) 0 2px,
-      transparent 3px
-    ),
-    radial-gradient(
-      circle at 45% 85%,
-      rgba(180, 130, 70, 0.1) 0 1.5px,
-      transparent 3px
-    ),
-    radial-gradient(
-      circle at 85% 15%,
-      rgba(220, 170, 110, 0.14) 0 1.5px,
-      transparent 3px
-    );
-  background-size:
-    120px 120px,
-    150px 150px,
-    90px 90px,
-    110px 110px;
+  background-color: #846445;
+  background-image: url("./assets/textures/cork.jpg");
+  background-repeat: repeat;
+  background-size: 512px 512px;
+  background-blend-mode: multiply;
 }
 
 /* Hover edit-affordance indicator (✎). Fades in after 500ms hover.

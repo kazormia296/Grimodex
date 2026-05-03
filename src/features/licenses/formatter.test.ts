@@ -31,6 +31,30 @@ describe("formatLicensesMarkdown", () => {
     expect(result).toContain("MIT OR Apache-2.0");
   });
 
+  it("Assetsセクションを出力する", () => {
+    const assets: LicenseEntry[] = [
+      {
+        name: "Cork001",
+        version: "1K-JPG",
+        license: "CC0-1.0",
+        repository: "https://ambientcg.com/view?id=Cork001",
+      },
+    ];
+    const result = formatLicensesMarkdown([], [], assets);
+    expect(result).toContain("## Assets");
+    expect(result).toContain("Cork001");
+    expect(result).toContain("CC0-1.0");
+    expect(result).toContain("https://ambientcg.com/view?id=Cork001");
+  });
+
+  it("Assetsエントリが空のセクションは出力しない", () => {
+    const npm: LicenseEntry[] = [
+      { name: "react", version: "19.1.0", license: "MIT" },
+    ];
+    const result = formatLicensesMarkdown(npm, [], []);
+    expect(result).not.toContain("## Assets");
+  });
+
   it("npm/cargo両方のセクションを出力する", () => {
     const npm: LicenseEntry[] = [
       { name: "react", version: "19.1.0", license: "MIT" },
