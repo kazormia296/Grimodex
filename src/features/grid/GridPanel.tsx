@@ -14,13 +14,13 @@ import type {
 } from "@dnd-kit/core";
 import { useTranslation } from "react-i18next";
 import { useTreeStore } from "@/features/tree/treeStore";
-import { useCodexStore } from "@/features/codex/codexStore";
 import { useSceneCodexPinsStore } from "@/features/codex/sceneCodexPinsStore";
 import { cmpKeys } from "@/features/tree/fractionalIndex";
 import { useGridStore } from "./gridStore";
 import { useGridDerivedData, useGridFlatSceneOrder } from "./gridSelectors";
 import { useGridCardVisibility } from "./useGridCardVisibility";
 import { GridHeader } from "./GridHeader";
+import { GridDisplayToolbar } from "./GridDisplayToolbar";
 import { GridColumn } from "./GridColumn";
 import { GridLooseColumn } from "./GridLooseColumn";
 import { GridStatusBar } from "./GridStatusBar";
@@ -62,8 +62,10 @@ export function GridPanel() {
     useGridDerivedData(containerId);
   const flatOrder = useGridFlatSceneOrder(containerId);
 
+  const toolbarOpen = useGridStore((s) => s.toolbarOpen);
+  const setToolbarOpen = useGridStore((s) => s.setToolbarOpen);
+
   const [activeId, setActiveId] = useState<string | null>(null);
-  const [showPanelMenu, setShowPanelMenu] = useState(false);
   const [dropIndicator, setDropIndicator] = useState<DropIndicator | null>(
     null,
   );
@@ -433,9 +435,6 @@ export function GridPanel() {
     [allDisplayedScenes, charCounts],
   );
 
-  const hasActiveFilter =
-    filter.emptyOnly || filter.hideCompleted || filter.codexFilter !== null;
-
   return (
     <DndContext
       sensors={sensors}
@@ -454,15 +453,11 @@ export function GridPanel() {
           chapterCount={totalChapters}
           nestedFolderIds={nestedFolderIds}
           onContainerChange={(id) => void setContainerId(projectId, id)}
-          onTogglePanelMenu={() => setShowPanelMenu((v) => !v)}
+          toolbarOpen={toolbarOpen}
+          onToggleToolbar={() => setToolbarOpen(!toolbarOpen)}
         />
 
-        {showPanelMenu && (
-          <GridPanelMenu
-            onClose={() => setShowPanelMenu(false)}
-            hasActiveFilter={hasActiveFilter}
-          />
-        )}
+        {toolbarOpen && <GridDisplayToolbar />}
 
         <div className="flex flex-1 gap-3 overflow-x-auto overflow-y-hidden p-4">
           {orderedColumns.map((entry) => {
@@ -592,137 +587,5 @@ export function GridPanel() {
         )}
       </DragOverlay>
     </DndContext>
-  );
-}
-
-// Panel-level menu: Display + Filter + Help
-function GridPanelMenu({
-  onClose,
-  hasActiveFilter,
-}: {
-  onClose: () => void;
-  hasActiveFilter: boolean;
-}) {
-  const { t } = useTranslation();
-  const display = useGridStore((s) => s.display);
-  const setDisplay = useGridStore((s) => s.setDisplay);
-  const filter = useGridStore((s) => s.filter);
-  const setFilter = useGridStore((s) => s.setFilter);
-  const clearFilter = useGridStore((s) => s.clearFilter);
-  const codexEntries = useCodexStore((s) => s.entries);
-  const loadEntries = useCodexStore((s) => s.loadEntries);
-
-  useEffect(() => {
-    if (codexEntries.length === 0) loadEntries();
-  }, [codexEntries.length, loadEntries]);
-
-  const displayToggles: Array<{
-    key: keyof typeof display;
-    label: string;
-  }> = [
-    {
-      key: "showSynopsis",
-      label: t("grid.display.synopsis", "シノプシス表示"),
-    },
-    { key: "showBeats", label: t("grid.display.beats", "Beat プレビュー表示") },
-    { key: "showCodex", label: t("grid.display.codex", "Codex チップ表示") },
-    {
-      key: "showLabel",
-      label: t("grid.display.label", "ステータスラベル表示"),
-    },
-    {
-      key: "compactCards",
-      label: t("grid.display.compact", "コンパクト表示"),
-    },
-  ];
-
-  return (
-    <div className="border-b bg-popover px-4 py-3 space-y-3">
-      {/* Display */}
-      <div>
-        <div className="mb-1 text-[11px] font-semibold text-muted-foreground uppercase tracking-wide">
-          {t("grid.display.title", "表示設定")}
-        </div>
-        <div className="flex flex-wrap gap-x-4 gap-y-1">
-          {displayToggles.map(({ key, label }) => (
-            <label
-              key={key}
-              className="flex items-center gap-1.5 text-[12px] cursor-pointer"
-            >
-              <input
-                type="checkbox"
-                checked={display[key]}
-                onChange={(e) => setDisplay({ [key]: e.target.checked })}
-                className="h-3 w-3"
-              />
-              {label}
-            </label>
-          ))}
-        </div>
-      </div>
-
-      {/* Filter */}
-      <div>
-        <div className="mb-1 flex items-center gap-2 text-[11px] font-semibold text-muted-foreground uppercase tracking-wide">
-          {t("grid.filter.title", "フィルタ")}
-          {hasActiveFilter && (
-            <button
-              className="text-[10px] normal-case text-primary hover:underline"
-              onClick={clearFilter}
-            >
-              {t("grid.filter.clear", "クリア")}
-            </button>
-          )}
-        </div>
-        <div className="flex flex-wrap gap-x-4 gap-y-1">
-          <label className="flex items-center gap-1.5 text-[12px] cursor-pointer">
-            <input
-              type="checkbox"
-              checked={filter.emptyOnly}
-              onChange={(e) => setFilter({ emptyOnly: e.target.checked })}
-              className="h-3 w-3"
-            />
-            {t("grid.filter.emptyOnly", "空のシーンのみ")}
-          </label>
-          <label className="flex items-center gap-1.5 text-[12px] cursor-pointer">
-            <input
-              type="checkbox"
-              checked={filter.hideCompleted}
-              onChange={(e) => setFilter({ hideCompleted: e.target.checked })}
-              className="h-3 w-3"
-            />
-            {t("grid.filter.hideCompleted", "完成済みを非表示")}
-          </label>
-        </div>
-        {codexEntries.length > 0 && (
-          <div className="mt-1.5 flex items-center gap-2">
-            <span className="text-[11px] text-muted-foreground">
-              {t("grid.filter.codex", "Codex:")}
-            </span>
-            <select
-              value={filter.codexFilter ?? ""}
-              onChange={(e) =>
-                setFilter({ codexFilter: e.target.value || null })
-              }
-              className="rounded border border-input bg-background px-1.5 py-0.5 text-[11px] focus:outline-none focus:ring-1 focus:ring-ring"
-            >
-              <option value="">{t("grid.filter.codexAll", "すべて")}</option>
-              {codexEntries.map((entry) => (
-                <option key={entry.id} value={entry.id}>
-                  {entry.name}
-                </option>
-              ))}
-            </select>
-          </div>
-        )}
-      </div>
-
-      <button
-        className="text-[11px] text-muted-foreground hover:text-foreground"
-        onClick={onClose}
-      >
-        {t("common.close", "閉じる")}
-      </button>
-    </div>
   );
 }

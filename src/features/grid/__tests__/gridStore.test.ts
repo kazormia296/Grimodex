@@ -37,7 +37,9 @@ const DEFAULT_DISPLAY = {
   showSynopsis: true,
   showBeats: true,
   showCodex: true,
-  showLabel: true,
+  showStatusLabel: true,
+  showLabelBar: true,
+  showForeshadow: true,
   compactCards: false,
 };
 
@@ -52,6 +54,7 @@ function resetStore() {
     containerId: null,
     display: { ...DEFAULT_DISPLAY },
     filter: { ...DEFAULT_FILTER },
+    toolbarOpen: false,
     searchQuery: "",
   });
 }
@@ -69,6 +72,7 @@ describe("initial state", () => {
     const s = useGridStore.getState();
     expect(s.containerId).toBeNull();
     expect(s.display).toEqual(DEFAULT_DISPLAY);
+    expect(s.toolbarOpen).toBe(false);
   });
 });
 
@@ -83,7 +87,7 @@ describe("setDisplay", () => {
     // unaffected flags stay at default
     expect(display.showBeats).toBe(true);
     expect(display.showCodex).toBe(true);
-    expect(display.showLabel).toBe(true);
+    expect(display.showStatusLabel).toBe(true);
   });
 });
 

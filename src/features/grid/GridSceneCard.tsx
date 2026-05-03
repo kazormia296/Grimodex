@@ -213,7 +213,10 @@ export function GridSceneCard({
 
         {/* Footer: status badge + char count */}
         <div className="flex items-center gap-2 px-3 pb-2 pt-0.5 border-t border-border/40 mt-0.5">
-          <StatusBadge status={scene.status} iconOnly={!display.showLabel} />
+          <StatusBadge
+            status={scene.status}
+            iconOnly={!display.showStatusLabel}
+          />
           <span className="text-[10px] text-muted-foreground/60 ml-auto">
             {liveCharCount.toLocaleString()} chars
           </span>

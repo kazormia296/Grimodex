@@ -13,7 +13,9 @@ export interface GridDisplaySettings {
   showSynopsis: boolean;
   showBeats: boolean;
   showCodex: boolean;
-  showLabel: boolean;
+  showStatusLabel: boolean; // StatusBadge のラベル文字表示 (旧 showLabel)
+  showLabelBar: boolean; // Label カラーバー表示
+  showForeshadow: boolean; // Foreshadow indicator 表示
   compactCards: boolean;
 }
 
@@ -26,6 +28,7 @@ export interface GridFilterSettings {
 export interface GridPersistentState {
   display: GridDisplaySettings;
   filter: GridFilterSettings;
+  toolbarOpen: boolean;
 }
 
 interface GridState {
@@ -43,6 +46,9 @@ interface GridState {
   pendingRevealSceneId: string | null;
   /** Set by GridPanel after scrollIntoView; cleared after highlight duration. */
   revealedSceneId: string | null;
+
+  toolbarOpen: boolean;
+  setToolbarOpen: (open: boolean) => void;
 
   loadForProject: (projectId: string) => Promise<void>;
   setContainerId: (projectId: string, id: string | null) => Promise<void>;
@@ -75,7 +81,9 @@ const DEFAULT_DISPLAY: GridDisplaySettings = {
   showSynopsis: true,
   showBeats: true,
   showCodex: true,
-  showLabel: true,
+  showStatusLabel: true,
+  showLabelBar: true,
+  showForeshadow: true,
   compactCards: false,
 };
 
@@ -89,6 +97,7 @@ export const useGridStore = create<GridState>((set, get) => ({
   containerId: null,
   display: { ...DEFAULT_DISPLAY },
   filter: { ...DEFAULT_FILTER },
+  toolbarOpen: false,
   searchQuery: "",
   collapsedFolderIds: new Set<string>(),
   selectedSceneIds: new Set<string>(),
@@ -121,6 +130,10 @@ export const useGridStore = create<GridState>((set, get) => ({
     } else {
       await saveContainerId(projectId, id);
     }
+  },
+
+  setToolbarOpen(open) {
+    set({ toolbarOpen: open });
   },
 
   setDisplay(updates) {
@@ -160,9 +173,19 @@ export const useGridStore = create<GridState>((set, get) => ({
     const saved = (settings as GlobalSettings & { grid?: GridPersistentState })
       .grid;
     if (!saved) return;
+    const savedDisplay = (saved.display ?? {}) as unknown as Record<
+      string,
+      unknown
+    >;
+    // Backwards compat: old 'showLabel' key → showStatusLabel
+    const showStatusLabel =
+      (savedDisplay.showStatusLabel as boolean | undefined) ??
+      (savedDisplay.showLabel as boolean | undefined) ??
+      DEFAULT_DISPLAY.showStatusLabel;
     set({
-      display: { ...DEFAULT_DISPLAY, ...(saved.display ?? {}) },
+      display: { ...DEFAULT_DISPLAY, ...savedDisplay, showStatusLabel },
       filter: { ...DEFAULT_FILTER, ...(saved.filter ?? {}) },
+      toolbarOpen: saved.toolbarOpen ?? false,
     });
   },
 
@@ -219,9 +242,9 @@ export const useGridStore = create<GridState>((set, get) => ({
   },
 }));
 
-// Auto-persist display + filter settings to global-settings.json
+// Auto-persist display + filter + toolbar state to global-settings.json
 function snapshotPersistent(s: GridState): GridPersistentState {
-  return { display: s.display, filter: s.filter };
+  return { display: s.display, filter: s.filter, toolbarOpen: s.toolbarOpen };
 }
 
 let prevSnapshot = JSON.stringify(snapshotPersistent(useGridStore.getState()));

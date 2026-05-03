@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import {
   Plus,
   Search,
@@ -6,11 +6,14 @@ import {
   X,
   ChevronsDownUp,
   ChevronsUpDown,
+  ChevronDown,
+  ChevronUp,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { useGridStore } from "./gridStore";
 import { GridContainerSelector } from "./GridContainerSelector";
+import { GridActionsMenu } from "./GridActionsMenu";
 
 interface Props {
   containerId: string | null;
@@ -19,7 +22,9 @@ interface Props {
   /** All nested folder IDs visible in the current Grid view (for collapse-all). */
   nestedFolderIds: string[];
   onContainerChange: (id: string | null) => void;
-  onTogglePanelMenu: () => void;
+  toolbarOpen: boolean;
+  onToggleToolbar: () => void;
+  onManageLabels?: () => void;
 }
 
 export function GridHeader({
@@ -28,10 +33,14 @@ export function GridHeader({
   chapterCount,
   nestedFolderIds,
   onContainerChange,
-  onTogglePanelMenu,
+  toolbarOpen,
+  onToggleToolbar,
+  onManageLabels,
 }: Props) {
   const { t } = useTranslation();
   const [searchOpen, setSearchOpen] = useState(false);
+  const [actionsMenuOpen, setActionsMenuOpen] = useState(false);
+  const menuBtnRef = useRef<HTMLButtonElement>(null);
   const createNode = useTreeStore((s) => s.createNode);
   const searchQuery = useGridStore((s) => s.searchQuery);
   const setSearchQuery = useGridStore((s) => s.setSearchQuery);
@@ -128,11 +137,38 @@ export function GridHeader({
 
         <button
           className="rounded p-1 hover:bg-accent transition-colors"
-          onClick={onTogglePanelMenu}
-          title={t("grid.header.panelMenu", "メニュー")}
+          onClick={onToggleToolbar}
+          title={
+            toolbarOpen
+              ? t("grid.header.hideToolbar", "表示設定を閉じる")
+              : t("grid.header.showToolbar", "表示設定")
+          }
+          aria-pressed={toolbarOpen}
         >
-          <MoreVertical className="h-3.5 w-3.5" />
+          {toolbarOpen ? (
+            <ChevronUp className="h-3.5 w-3.5" />
+          ) : (
+            <ChevronDown className="h-3.5 w-3.5" />
+          )}
         </button>
+
+        <div className="relative">
+          <button
+            ref={menuBtnRef}
+            className="rounded p-1 hover:bg-accent transition-colors"
+            onClick={() => setActionsMenuOpen((v) => !v)}
+            title={t("grid.header.actionsMenu", "アクション")}
+          >
+            <MoreVertical className="h-3.5 w-3.5" />
+          </button>
+          {actionsMenuOpen && (
+            <GridActionsMenu
+              onClose={() => setActionsMenuOpen(false)}
+              anchorRef={menuBtnRef}
+              onManageLabels={onManageLabels}
+            />
+          )}
+        </div>
       </div>
 
       {searchOpen && (

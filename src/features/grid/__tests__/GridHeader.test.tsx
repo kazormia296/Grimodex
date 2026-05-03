@@ -29,6 +29,10 @@ vi.mock("../GridContainerSelector", () => ({
   GridContainerSelector: () => <div data-testid="container-selector" />,
 }));
 
+vi.mock("../GridActionsMenu", () => ({
+  GridActionsMenu: () => <div data-testid="actions-menu" />,
+}));
+
 import { useGridStore } from "../gridStore";
 import { GridHeader } from "../GridHeader";
 
@@ -58,7 +62,8 @@ describe("GridHeader", () => {
     chapterCount: 3,
     nestedFolderIds: [] as string[],
     onContainerChange: vi.fn(),
-    onTogglePanelMenu: vi.fn(),
+    toolbarOpen: false,
+    onToggleToolbar: vi.fn(),
   };
 
   it("章数を表示する", () => {
@@ -107,11 +112,16 @@ describe("GridHeader", () => {
     expect(mockSetSearchQuery).toHaveBeenCalledWith("");
   });
 
-  it("[⋮] ボタンクリックで onTogglePanelMenu が呼ばれる", () => {
+  it("[⌃] ボタンクリックで onToggleToolbar が呼ばれる", () => {
     const onToggle = vi.fn();
-    render(<GridHeader {...defaultProps} onTogglePanelMenu={onToggle} />);
-    fireEvent.click(screen.getByTitle("メニュー"));
+    render(<GridHeader {...defaultProps} onToggleToolbar={onToggle} />);
+    fireEvent.click(screen.getByTitle("表示設定"));
     expect(onToggle).toHaveBeenCalledTimes(1);
+  });
+
+  it("toolbarOpen=true のとき ChevronUp アイコンが表示される", () => {
+    render(<GridHeader {...defaultProps} toolbarOpen={true} />);
+    expect(screen.getByTitle("表示設定を閉じる")).toBeDefined();
   });
 
   it("searchQuery が非空のとき × ボタンが表示される", () => {

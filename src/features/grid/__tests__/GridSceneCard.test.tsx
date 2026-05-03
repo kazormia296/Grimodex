@@ -83,7 +83,9 @@ const DEFAULT_DISPLAY: GridDisplaySettings = {
   showSynopsis: true,
   showBeats: true,
   showCodex: true,
-  showLabel: true,
+  showStatusLabel: true,
+  showLabelBar: true,
+  showForeshadow: true,
   compactCards: false,
 };
 
@@ -184,21 +186,21 @@ describe("GridSceneCard", () => {
     expect(document.body).toBeDefined();
   });
 
-  it("shows status label when showLabel=true and status is set", () => {
+  it("shows status label when showStatusLabel=true and status is set", () => {
     render(
       <GridSceneCard
         scene={makeScene({ status: "draft" })}
-        display={{ ...DEFAULT_DISPLAY, showLabel: true }}
+        display={{ ...DEFAULT_DISPLAY, showStatusLabel: true }}
       />,
     );
     expect(screen.getByText("Draft")).toBeDefined();
   });
 
-  it("hides status label text when showLabel=false (icon-only mode)", () => {
+  it("hides status label text when showStatusLabel=false (icon-only mode)", () => {
     render(
       <GridSceneCard
         scene={makeScene({ status: "draft" })}
-        display={{ ...DEFAULT_DISPLAY, showLabel: false }}
+        display={{ ...DEFAULT_DISPLAY, showStatusLabel: false }}
       />,
     );
     // icon-only renders a dot with title="Draft", not visible text
