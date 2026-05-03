@@ -159,6 +159,26 @@ impl Database {
             CREATE INDEX IF NOT EXISTS idx_codex_entry_tags_tag
                 ON codex_entry_tags(tag_id);
 
+            CREATE TABLE IF NOT EXISTS labels (
+                id          TEXT PRIMARY KEY,
+                project_id  TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                name        TEXT NOT NULL,
+                color       TEXT NOT NULL,
+                sort_order  REAL NOT NULL DEFAULT 0.0,
+                created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+                UNIQUE(project_id, name)
+            );
+            CREATE INDEX IF NOT EXISTS idx_labels_project
+                ON labels(project_id);
+
+            CREATE TABLE IF NOT EXISTS tree_node_labels (
+                node_id  TEXT NOT NULL REFERENCES tree_nodes(id) ON DELETE CASCADE,
+                label_id TEXT NOT NULL REFERENCES labels(id) ON DELETE CASCADE,
+                PRIMARY KEY (node_id, label_id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_tree_node_labels_label
+                ON tree_node_labels(label_id);
+
             CREATE TABLE IF NOT EXISTS codex_detail_definitions (
                 id                TEXT PRIMARY KEY,
                 project_id        TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,

@@ -985,6 +985,43 @@ export const sceneBeatPovCache = sqliteTable(
   ],
 );
 
+// Label system (project-scoped color tags, M:N with tree_nodes)
+export const labels = sqliteTable(
+  "labels",
+  {
+    id: text("id").primaryKey(),
+    projectId: text("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+    color: text("color").notNull(), // palette slot name (e.g. 'red', 'blue')
+    sortOrder: real("sort_order").notNull().default(0.0),
+    createdAt: text("created_at")
+      .notNull()
+      .$defaultFn(() => new Date().toISOString()),
+  },
+  (table) => [
+    uniqueIndex("uq_labels_project_name").on(table.projectId, table.name),
+    index("idx_labels_project").on(table.projectId),
+  ],
+);
+
+export const treeNodeLabels = sqliteTable(
+  "tree_node_labels",
+  {
+    nodeId: text("node_id")
+      .notNull()
+      .references(() => treeNodes.id, { onDelete: "cascade" }),
+    labelId: text("label_id")
+      .notNull()
+      .references(() => labels.id, { onDelete: "cascade" }),
+  },
+  (table) => [
+    primaryKey({ columns: [table.nodeId, table.labelId] }),
+    index("idx_tree_node_labels_label").on(table.labelId),
+  ],
+);
+
 // Type exports
 export type AuthorshipSpan = typeof authorshipSpans.$inferSelect;
 export type NewAuthorshipSpan = typeof authorshipSpans.$inferInsert;
@@ -1039,3 +1076,6 @@ export type NewSceneCodexMention = typeof sceneCodexMentions.$inferInsert;
 
 export type SceneBeatPovCache = typeof sceneBeatPovCache.$inferSelect;
 export type NewSceneBeatPovCache = typeof sceneBeatPovCache.$inferInsert;
+
+export type Label = typeof labels.$inferSelect;
+export type NewLabel = typeof labels.$inferInsert;
