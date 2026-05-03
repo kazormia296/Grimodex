@@ -1205,30 +1205,41 @@ export function ScenesPanel() {
             setRootContextMenu({ x: e.clientX, y: e.clientY });
           }}
         >
-          <ul className="list-none">
-            <TreeRenderer
-              parentId={null}
-              childMap={childMap}
-              nodeMap={nodeMap}
-              depth={0}
-              activeSceneId={activeSceneId}
-              selectedIds={selectedIds}
-              expandedIds={expandedIds}
-              filterQuery={filterQuery}
-              statusFilter={statusFilter}
-              viewMode={viewMode}
-              charCounts={charCounts}
-              aiRatios={aiRatios}
-              showWordCounts={showWordCounts}
-              showStatusDots={showStatusDots}
-              showLabelDots={showLabelDots}
-              showAiAttribution={showAiAttribution}
-              dropIndicator={dropIndicator}
-              nodeTotals={nodeTotals}
-              orderedNodes={flatNodes}
-            />
-          </ul>
-          <BottomDropZone />
+          {nodes.length === 0 ? (
+            <div
+              data-testid="scenes-empty-state"
+              className="flex h-full items-center justify-center px-4 text-center text-xs text-muted-foreground"
+            >
+              {t("scenes.empty")}
+            </div>
+          ) : (
+            <>
+              <ul className="list-none">
+                <TreeRenderer
+                  parentId={null}
+                  childMap={childMap}
+                  nodeMap={nodeMap}
+                  depth={0}
+                  activeSceneId={activeSceneId}
+                  selectedIds={selectedIds}
+                  expandedIds={expandedIds}
+                  filterQuery={filterQuery}
+                  statusFilter={statusFilter}
+                  viewMode={viewMode}
+                  charCounts={charCounts}
+                  aiRatios={aiRatios}
+                  showWordCounts={showWordCounts}
+                  showStatusDots={showStatusDots}
+                  showLabelDots={showLabelDots}
+                  showAiAttribution={showAiAttribution}
+                  dropIndicator={dropIndicator}
+                  nodeTotals={nodeTotals}
+                  orderedNodes={flatNodes}
+                />
+              </ul>
+              <BottomDropZone />
+            </>
+          )}
         </div>
 
         {/* Synopsis area — hidden in Outline mode (synopsis is shown inline there) */}

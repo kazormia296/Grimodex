@@ -1767,7 +1767,8 @@
     "panelMenu": "パネルメニュー",
     "filterPlaceholder": "フィルター...",
     "deleteConfirmTitle": "削除の確認",
-    "deleteConfirmBody": "{{count}}件のシーンに本文またはsynopsisがあります。削除してもよいですか？"
+    "deleteConfirmBody": "{{count}}件のシーンに本文またはsynopsisがあります。削除してもよいですか？",
+    "empty": "シーンがありません。「＋」から最初のシーンを作成しましょう。"
   },
   "integrity": {
     "check": "整合性チェック",

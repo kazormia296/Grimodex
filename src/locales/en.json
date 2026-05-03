@@ -1758,7 +1758,8 @@
     "panelMenu": "Panel menu",
     "filterPlaceholder": "Filter...",
     "deleteConfirmTitle": "Confirm Delete",
-    "deleteConfirmBody": "{{count}} scenes have content or synopsis. Are you sure you want to delete?"
+    "deleteConfirmBody": "{{count}} scenes have content or synopsis. Are you sure you want to delete?",
+    "empty": "No scenes yet. Use the “+” button to create your first scene."
   },
   "integrity": {
     "check": "Check Integrity",
