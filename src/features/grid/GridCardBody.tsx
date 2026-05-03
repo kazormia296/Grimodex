@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { ChevronRight } from "lucide-react";
+import { ChevronRight, ChevronDown } from "lucide-react";
 import { parseBeatPreview } from "./parseBeatPreview";
 import { InlineSynopsisEditor } from "@/features/editor/InlineSynopsisEditor";
 import { useTranslation } from "react-i18next";
@@ -46,29 +46,37 @@ export function GridCardBody({
           ))}
         </ul>
 
-        {showSynopsis &&
-          hasSynopsis &&
-          (synopsisOpen ? (
-            <InlineSynopsisEditor
-              nodeId={nodeId}
-              synopsis={synopsis}
-              className="mt-1 cursor-text rounded text-[11px] text-muted-foreground hover:bg-accent/30"
-              placeholder={t(
-                "grid.card.synopsisPlaceholder",
-                "シノプシスを追加…",
-              )}
-              triggerOn="doubleClick"
-              onEditingChange={onEditingChange}
-            />
-          ) : (
+        {showSynopsis && hasSynopsis && (
+          <>
             <button
               className="mt-1 flex items-center gap-0.5 text-[10px] text-muted-foreground/50 hover:text-muted-foreground transition-colors"
-              onClick={() => setSynopsisOpen(true)}
+              onClick={() => setSynopsisOpen((v) => !v)}
+              aria-expanded={synopsisOpen}
             >
-              <ChevronRight className="h-2.5 w-2.5" />
-              {t("grid.card.showSynopsis", "Show synopsis")}
+              {synopsisOpen ? (
+                <ChevronDown className="h-2.5 w-2.5" />
+              ) : (
+                <ChevronRight className="h-2.5 w-2.5" />
+              )}
+              {synopsisOpen
+                ? t("grid.card.hideSynopsis", "Hide synopsis")
+                : t("grid.card.showSynopsis", "Show synopsis")}
             </button>
-          ))}
+            {synopsisOpen && (
+              <InlineSynopsisEditor
+                nodeId={nodeId}
+                synopsis={synopsis}
+                className="mt-1 cursor-text rounded text-[11px] text-muted-foreground hover:bg-accent/30"
+                placeholder={t(
+                  "grid.card.synopsisPlaceholder",
+                  "シノプシスを追加…",
+                )}
+                triggerOn="doubleClick"
+                onEditingChange={onEditingChange}
+              />
+            )}
+          </>
+        )}
       </div>
     );
   }

@@ -165,20 +165,6 @@ export function GridSceneCard({
           aria-label="ドラッグして移動"
         />
 
-        {isSelected && (
-          <div className="absolute left-1.5 top-1.5 z-10 h-3.5 w-3.5 rounded-full bg-primary flex items-center justify-center">
-            <svg
-              viewBox="0 0 10 10"
-              className="h-2 w-2 text-primary-foreground"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="1.5"
-            >
-              <polyline points="1.5,5 4,8 8.5,2" />
-            </svg>
-          </div>
-        )}
-
         <GridCardHeader
           nodeId={scene.id}
           title={scene.title}
