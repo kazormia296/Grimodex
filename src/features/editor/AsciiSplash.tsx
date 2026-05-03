@@ -56,6 +56,11 @@ export function AsciiSplash({ onClick }: { onClick?: () => void }) {
       const { width, height } = container.getBoundingClientRect();
       cols = Math.floor(width / charW);
       rows = Math.floor(height / charH);
+      // Pin the <pre> width to the grid extent so non-monospace glyphs in
+      // GRADIENT can't cause the auto-width box (and its centered transform)
+      // to wobble between frames.
+      pre.style.width = `${cols * charW}px`;
+      pre.style.height = `${rows * charH}px`;
     };
 
     const ro = new ResizeObserver(updateSize);
@@ -146,7 +151,7 @@ export function AsciiSplash({ onClick }: { onClick?: () => void }) {
       {/* Animated character grid */}
       <pre
         ref={preRef}
-        className="pointer-events-none absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 font-mono text-[11px] leading-[1.1] text-muted-foreground/15"
+        className="pointer-events-none absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 overflow-hidden whitespace-pre font-mono text-[11px] leading-[1.1] text-muted-foreground/15"
         aria-hidden="true"
       />
 
