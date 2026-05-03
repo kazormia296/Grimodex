@@ -2,6 +2,16 @@ import { db } from "@/db/client";
 import { sceneBeatPovCache } from "@/db/schema";
 import { and, eq, notInArray } from "drizzle-orm";
 
+export async function listSceneBeatPovOverrides(
+  sceneId: string,
+): Promise<string[]> {
+  const rows = await db
+    .select({ povCharacterId: sceneBeatPovCache.povCharacterId })
+    .from(sceneBeatPovCache)
+    .where(eq(sceneBeatPovCache.sceneId, sceneId));
+  return rows.map((r) => r.povCharacterId);
+}
+
 export async function upsertSceneBeatPovOverrides(
   sceneId: string,
   povCharIds: string[],

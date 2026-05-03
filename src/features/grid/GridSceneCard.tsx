@@ -12,6 +12,7 @@ import { GridCardHeader } from "./GridCardHeader";
 import { GridCardBody } from "./GridCardBody";
 import { GridCardChips } from "./GridCardChips";
 import { GridCardLabelBar } from "./GridCardLabelBar";
+import { GridCardPovChips } from "./GridCardPovChips";
 import { GridCardMenu } from "./GridCardMenu";
 import { sceneDraggableId, sceneDroppableId } from "./gridDndUtils";
 import type { DropIndicator } from "./gridDndUtils";
@@ -174,6 +175,12 @@ export function GridSceneCard({
           onMenuOpen={() => setMenuOpen((v) => !v)}
           onTitleClick={openInEditor}
           menuBtnRef={menuBtnRef}
+        />
+
+        <GridCardPovChips
+          sceneId={scene.id}
+          scenePovCharacterId={scene.povCharacterId}
+          compact={display.compactCards}
         />
 
         <GridCardBody
