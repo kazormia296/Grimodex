@@ -141,6 +141,7 @@ interface TreeRendererProps {
   aiRatios: Record<string, number>;
   showWordCounts: boolean;
   showStatusDots: boolean;
+  showLabelDots: boolean;
   showAiAttribution: boolean;
   dropIndicator: DropIndicator | null;
   nodeTotals: Record<string, number>;
@@ -162,6 +163,7 @@ function TreeRenderer({
   aiRatios,
   showWordCounts,
   showStatusDots,
+  showLabelDots,
   showAiAttribution,
   dropIndicator,
   nodeTotals,
@@ -197,6 +199,7 @@ function TreeRenderer({
               charCount={count}
               showWordCounts={showWordCounts}
               showStatusDots={showStatusDots}
+              showLabelDots={showLabelDots}
               showAiAttribution={showAiAttribution}
               aiRatio={aiRatios[id] ?? 0}
               dropIndicator={dropIndicator}
@@ -218,6 +221,7 @@ function TreeRenderer({
                 aiRatios={aiRatios}
                 showWordCounts={showWordCounts}
                 showStatusDots={showStatusDots}
+                showLabelDots={showLabelDots}
                 showAiAttribution={showAiAttribution}
                 dropIndicator={dropIndicator}
                 nodeTotals={nodeTotals}
@@ -260,6 +264,8 @@ interface PanelMenuProps {
   setShowWordCounts: (v: boolean) => void;
   showStatusDots: boolean;
   setShowStatusDots: (v: boolean) => void;
+  showLabelDots: boolean;
+  setShowLabelDots: (v: boolean) => void;
   showAiAttribution: boolean;
   setShowAiAttribution: (v: boolean) => void;
   autoRevealActiveScene: boolean;
@@ -290,6 +296,8 @@ function PanelMenu({
   setShowWordCounts,
   showStatusDots,
   setShowStatusDots,
+  showLabelDots,
+  setShowLabelDots,
   showAiAttribution,
   setShowAiAttribution,
   autoRevealActiveScene,
@@ -396,6 +404,7 @@ function PanelMenu({
       </div>
       {checkItem(t("scenes.showWordCount"), showWordCounts, setShowWordCounts)}
       {checkItem(t("scenes.showStatusDots"), showStatusDots, setShowStatusDots)}
+      {checkItem(t("scenes.showLabelDots"), showLabelDots, setShowLabelDots)}
       {checkItem(
         t("scenes.showAiBadge"),
         showAiAttribution,
@@ -515,6 +524,7 @@ export function ScenesPanel() {
     aiRatios,
     showWordCounts,
     showStatusDots,
+    showLabelDots,
     showAiAttribution,
     autoRevealActiveScene,
     loadTree,
@@ -527,6 +537,7 @@ export function ScenesPanel() {
     setStatusFilter,
     setShowWordCounts,
     setShowStatusDots,
+    setShowLabelDots,
     setShowAiAttribution,
     setAutoRevealActiveScene,
     toggleExpand,
@@ -1210,6 +1221,7 @@ export function ScenesPanel() {
               aiRatios={aiRatios}
               showWordCounts={showWordCounts}
               showStatusDots={showStatusDots}
+              showLabelDots={showLabelDots}
               showAiAttribution={showAiAttribution}
               dropIndicator={dropIndicator}
               nodeTotals={nodeTotals}
@@ -1377,6 +1389,8 @@ export function ScenesPanel() {
               setShowWordCounts={setShowWordCounts}
               showStatusDots={showStatusDots}
               setShowStatusDots={setShowStatusDots}
+              showLabelDots={showLabelDots}
+              setShowLabelDots={setShowLabelDots}
               showAiAttribution={showAiAttribution}
               setShowAiAttribution={setShowAiAttribution}
               autoRevealActiveScene={autoRevealActiveScene}

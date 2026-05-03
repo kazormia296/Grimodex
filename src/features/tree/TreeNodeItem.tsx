@@ -18,6 +18,7 @@ import type { TreeNodeData, SceneStatus } from "./treeStore";
 import { TreeContextMenu } from "./TreeContextMenu";
 import { useTabStore } from "@/features/editor/tabStore";
 import { useLayoutStore } from "@/features/layout/layoutStore";
+import { LabelDots } from "@/features/labels/LabelDots";
 
 const STATUS_OPTIONS: SceneStatus[] = [
   "outline",
@@ -96,6 +97,7 @@ interface TreeNodeItemProps {
   charCount: number;
   showWordCounts: boolean;
   showStatusDots: boolean;
+  showLabelDots: boolean;
   showAiAttribution: boolean;
   aiRatio: number; // 0-100; shown as badge when showAiAttribution && aiRatio > 0
   dropIndicator: DropIndicator | null;
@@ -116,6 +118,7 @@ export function TreeNodeItem({
   charCount,
   showWordCounts,
   showStatusDots,
+  showLabelDots,
   showAiAttribution,
   aiRatio,
   dropIndicator,
@@ -397,6 +400,11 @@ export function TreeNodeItem({
               <FolderPlus className="h-3 w-3" />
             </button>
           </div>
+        )}
+
+        {/* Label dots */}
+        {showLabelDots && node.nodeType === "scene" && !isEditing && (
+          <LabelDots nodeId={node.id} />
         )}
 
         {/* AI attribution badge */}

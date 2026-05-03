@@ -107,6 +107,7 @@ interface TreeState {
   aiRatios: Record<string, number>; // nodeId → AI attribution % (0-100)
   showWordCounts: boolean;
   showStatusDots: boolean;
+  showLabelDots: boolean;
   showAiAttribution: boolean;
   autoRevealActiveScene: boolean;
 
@@ -176,6 +177,7 @@ interface TreeState {
   refreshAiRatio: (nodeId: string) => Promise<void>;
   setShowWordCounts: (v: boolean) => void;
   setShowStatusDots: (v: boolean) => void;
+  setShowLabelDots: (v: boolean) => void;
   setShowAiAttribution: (v: boolean) => void;
   setAutoRevealActiveScene: (v: boolean) => void;
 
@@ -370,6 +372,7 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
   aiRatios: {},
   showWordCounts: true,
   showStatusDots: true,
+  showLabelDots: true,
   showAiAttribution: false,
   autoRevealActiveScene: true,
   pinnedCodexIds: [],
@@ -1100,6 +1103,10 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
 
   setShowStatusDots(v) {
     set({ showStatusDots: v });
+  },
+
+  setShowLabelDots(v) {
+    set({ showLabelDots: v });
   },
 
   setShowAiAttribution(v) {
