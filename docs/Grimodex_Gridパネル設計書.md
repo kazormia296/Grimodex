@@ -671,58 +671,43 @@ Grid のビュー状態は**スコープを分けて**保存する：
 - [x] **Beat 主表示化**: Beat 箇条書きを主表示に昇格、Synopsis は折りたたみ副表示。`unplaced_beat_preview` を 8件 × 60文字に拡張
 - [x] カード `[⋮] → Add unplaced beat...`（Editor 起動なしで beat 追加）
 - [x] Loose Scenes 仮想列の一括操作（既存 Chapter にまとめる／新規 Chapter folder に変換）
-- [x] Synopsis トグル双方向化（`▸ Show synopsis` / `▾ Hide synopsis`、コミット a3bb682）
-- [x] 選択チェックマーク削除（リング枠で十分、コミット a3bb682）
+- [x] Synopsis トグル双方向化（`▸ Show synopsis` / `▾ Hide synopsis`）
+- [x] 選択チェックマーク削除（リング枠で十分）
+- [x] **ヘッダ UI 再構成**: `[⌃]` 折りたたみ `GridDisplayToolbar` + `[⋮]` `GridActionsMenu` に分離。`display.showLabel` → `showStatusLabel` リネーム、`showLabelBar` / `showForeshadow` / `toolbarOpen` 追加。開閉状態は `global-settings.json` に永続化
+- [x] **Compact カード幅モード**: `display.compactCards` トグル（ツールバーから切替）
+- [x] **Label 機能**（手法非依存の色タグ）— `labels` テーブル + `tree_node_labels` 中間テーブル新規追加（Rust マイグレーション + Drizzle schema）
+  - `src/lib/labelPalette.ts`（固定 12色、dark/light 両モード対応 CSS 変数）
+  - `src/features/labels/labelApi.ts` — Drizzle 直叩き（Tauri command 化なし。codex_tags と同方針）
+  - `src/features/labels/labelStore.ts`（Zustand、GridPanel mount 時に load）
+  - `GridCardLabelBar.tsx`（カード左端縦バー、最大3色 + `+N` バッジ、ホバーポップオーバー）
+  - `GridColumnLabelBar.tsx`（列ヘッダ水平バー）
+  - カード `[⋮]` メニューに `Label を付ける ▸` サブメニュー追加
+  - `Manage labels...` モーダル（`ManageLabelsDialog.tsx`、CRUD + DnD 並べ替え + 削除時シーン数確認）
+  - `LabelDots.tsx`（Scenes パネルのタイトル右に小色ドット。`showLabelDots` トグルで制御）
+  - ⚠️ **未実装**: Filter UI への「ラベルでフィルタ」ドロップダウン（Phase C Backlog へ移管）
+- [x] **ラベルテンプレート**（`[⋮] → Apply label template ▸`）
+  - 7テンプレート定義: 3幕構成 / 起承転結 / Freytag's Pyramid / Save the Cat / 英雄の旅 / Story Circle / 24章構成（`labelTemplates.ts`）
+  - i18n 対訳辞書（ja/en）。既存同名ラベルはスキップ、追加件数をトーストで通知
+  - Tauri command 化なし（フロント TS で Drizzle 直実行）
+- [x] **POV chip 行**（`GridCardPovChips.tsx`）— ヘッダ直下に effective POVs を chip 表示
+  - データソース: `scene_beat_pov_cache` (`listSceneBeatPovOverrides`)、`tree_nodes.povCharacterId` を先頭に dedupe
+  - スタイル: scene POV は塗り chip、Beat 由来のみはアウトライン chip
+  - **実装の差異**: 色は character タイプ色ではなく **character ID のハッシュで 12色パレットから決定**（per-character で視覚的に区別可能）
+  - 上限: 3人 + `+N more`。クリックで `requestSelectEntry` + Codex パネルを開く
+- [x] **Foreshadow indicator**（`GridCardForeshadowIndicator.tsx`）— カードフッタに健全性ドット + `📌N ✓N` counter
+  - データ取得: `getSceneForeshadowInfo(sceneId)` で setup/payoff ID を取得、`useForeshadowStore.items` でラベル解決
+  - GridPanel mount 時に `useForeshadowStore.load(projectId)` を eager 実行（ForeshadowPanel 未起動でも動作）
+  - Compact 時はドットのみに縮退。`display.showForeshadow` トグルで表示制御
+  - クリックで ForeshadowPanel を起動。**シーンフィルターは pill ではなく amber バナー形式**で表示（`foreshadowNavStore.requestSceneFilter` + `ForeshadowPanel` 内 `consumeSceneFilter` で連携）
 
 ### Backlog
 
-**Phase B 残: 機能拡張**
-
-- [ ] 🔍 検索（インクリメンタル、ヒット外カードグレーアウト）
-- [ ] フィルタ（空 Scene のみ / 完成済み非表示 / Codex フィルタ）
-- [ ] Compact カード幅モード
-- [ ] **Codex チップの直接編集**: `+ Codex` ポップオーバー（Chat パネル「📌ピン留め追加ポップオーバー」を共有可能コンポーネントとしてリファクタしたうえで再利用）、`×` で削除
-- [ ] カード本体の Status バッジ表示
-- [ ] 文字数カード表示のリアルタイム更新（編集中も反映）
-- [ ] **POV chip 行**: ヘッダ直下に effective POVs（scene POV ∪ Beat 内 POV オーバーライド）を chip 表示。詳細は「POV chip」節参照
-  - データソース: `scene_beat_pov_cache` を SELECT、空なら `tree_nodes.povCharacterId` を fallback
-  - 順序: scene POV を先頭固定、後続は **character 名昇順**（cache に順序情報がないため Beat 出現順は採用しない）、scene POV と一致する cache POV は dedupe
-  - スタイル: scene POV は塗り chip、Beat 由来のみはアウトライン chip（character タイプ色を共通使用）
-  - 上限: 3人 + `+N more` バッジ。バッジクリックでポップオーバーで全員表示
-  - クリック: character codex 詳細パネルを開く（編集自体は Editor 側で）
-  - cache 更新は既存の `EditorPane.tsx:472` / `LinearSceneBlock.tsx:102` の保存経路にすでに組み込み済みなので追加実装不要
-- [ ] **ヘッダ UI 再構成**: 現状の `[⋮]` 押下で下に展開する横長バーを廃止し、`[⌃]` 折りたたみツールバー（ビュー状態のクイック切替）と `[⋮]` ドロップダウンメニュー（操作・遷移アクション）に分離
-  - `GridPanelMenu` を `GridDisplayToolbar` と `GridActionsMenu` の2コンポーネントに分割
-  - ツールバー開閉状態は `global-settings.json` に保存（プロジェクト横断）
-  - **既存 `display.showLabel` をリネーム**: 現状の `showLabel` は実は Status バッジの文字ラベル表示トグル（`StatusBadge` の iconOnly 切替）。Label 機能と名前衝突するため `showStatusLabel` に改名。新規 Label カラーバー用は `showLabelBar` として追加
-  - **既存テスト書き換え**: `GridHeader.test.tsx` の `onTogglePanelMenu` 前提が壊れる。新 props 構成（`onToggleToolbar` / `onOpenActionsMenu` 等）に追従。`GridSceneCard.test.tsx` 等で `display.showLabel` を参照している箇所も `showStatusLabel` / `showLabelBar` に分割
-- [ ] **Label 機能**（手法非依存の色タグ。Scrivener corkboard 流）— 詳細は「Label カラーバー」節参照
-  - DB マイグレーション: `labels` テーブル + `tree_node_labels` 中間テーブル新規追加
-  - パレット定義（`src/lib/labelPalette.ts`、固定 10〜12色、dark/light 両モード対応）
-  - Tauri command 群: `list_labels` / `create_label` / `update_label` / `delete_label` / `reorder_labels` / `set_node_labels`
-  - Zustand store + Grid カード左端縦カラーバー描画（複数ラベルは縦に等分、最大3色 + 4色以上は `+N` バッジ）
-  - Grid 列ヘッダ（Folder = Chapter）への水平カラーバー描画（4色以上は右端 `+N` バッジ）
-  - Manage labels モーダル（CRUD + ドラッグ並べ替え + 削除確認）
-  - カード `[⋮]` メニューに `Add label ▸` / `Manage labels...` 追加
-  - Scenes パネルにタイトル右の小色ドット表示
-  - Filter UI に「ラベルでフィルタ」ドロップダウン追加（共通コンポーネント化）
-- [ ] **ラベルテンプレート**（Apply label template ▸ サブメニュー） — 詳細は「ラベルテンプレート」節参照
-  - 7テンプレート定義: 3幕構成 / 起承転結 / Freytag's Pyramid / Save the Cat / 英雄の旅 / Story Circle / 24章構成
-  - i18n 対訳辞書（ja/en、意訳ベース。"Setup / Development / Twist / Conclusion" 等）
-  - Tauri command `apply_label_template(project_id, template_key)`、既存同名はスキップ、結果トースト
-  - 色はパレット順に自動割当、シーン自動タグ付けはしない
-- [ ] **Foreshadow indicator**（伏線レジスタ Phase 1〜5 実装済みと接続） — 詳細は「Foreshadow indicator」節参照
-  - データ取得: 既存 `foreshadowStore` から派生、新規 Tauri command 不要
-  - `foreshadowStore` の load タイミング確認（Grid マウント時に明示 load が必要か、既に他パネルから load 済みか）
-  - selector `selectSceneForeshadowSummary(sceneId)` を `foreshadowStore.ts` に追加
-  - `GridCardForeshadowIndicator.tsx` 新規: 健全性ドット（✨/🟢/🟡/🔴/⚪）+ `📌N ✓N` counter、0件は非表示
-  - Compact モード時は counter を非表示にし健全性ドットのみに縮退（`display.compactCards` で切替）
-  - ホバーポップオーバー: Sets up / Pays off の2セクション、derivedLabel アイコン + 伏線 title
-  - クリックで `ForeshadowPanel` 起動 + シーン関連伏線にフィルタ（`foreshadowNavStore` 拡張要否を実装時に確認）
-  - `[⌃]` ツールバー Display グループに `☑ Foreshadow indicator 表示` トグル追加（既定 ON）
-
 **Phase C: 連携機能**
 
+- [ ] 🔍 検索（インクリメンタル、ヒット外カードグレーアウト）
+- [ ] フィルタ拡張: ラベルでフィルタ（Label 機能の残課題。Label 選択ドロップダウンを GridDisplayToolbar の Filter セクションに追加）
+- [ ] **Codex チップの直接編集**: `+ Codex` ポップオーバー（Chat パネル「📌ピン留め追加ポップオーバー」を共有可能コンポーネントとしてリファクタしたうえで再利用）、`×` で削除
+- [ ] 文字数カード表示のリアルタイム更新（編集中も反映。現状は保存時点の値）
 - [ ] Matrix → Grid のクロスナビゲーション（「Show in Grid」）
 - [ ] Grid 上のカード複数選択 + 一括操作（一括移動、一括削除）
 
