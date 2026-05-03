@@ -1,9 +1,10 @@
 import { useRef, useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { ChevronRight, Tag, HelpCircle } from "lucide-react";
+import { ChevronRight, LayoutTemplate, Tag, HelpCircle } from "lucide-react";
 import { useTreeStore } from "@/features/tree/treeStore";
-import { LABEL_TEMPLATES } from "./labelTemplates";
-import { applyLabelTemplate } from "./applyLabelTemplate";
+import { useGridStore } from "./gridStore";
+import { STRUCTURE_TEMPLATES } from "./structureTemplates";
+import { applyStructureTemplate } from "./applyStructureTemplate";
 import { toast } from "sonner";
 
 interface Props {
@@ -17,6 +18,7 @@ export function GridActionsMenu({ onClose, anchorRef, onManageLabels }: Props) {
   const menuRef = useRef<HTMLDivElement>(null);
   const [templateMenuOpen, setTemplateMenuOpen] = useState(false);
   const projectId = useTreeStore((s) => s.projectId);
+  const containerId = useGridStore((s) => s.containerId);
 
   useEffect(() => {
     function handleClick(e: MouseEvent) {
@@ -43,17 +45,17 @@ export function GridActionsMenu({ onClose, anchorRef, onManageLabels }: Props) {
   async function handleApplyTemplate(templateKey: string) {
     onClose();
     try {
-      const result = await applyLabelTemplate(projectId, templateKey);
-      if (result.added === 0) {
-        toast(t("grid.actions.templateAppliedNone"));
-      } else {
-        toast.success(
-          t("grid.actions.templateApplied", {
-            added: result.added,
-            skipped: result.skipped,
-          }),
-        );
-      }
+      const result = await applyStructureTemplate(
+        projectId,
+        templateKey,
+        containerId,
+      );
+      toast.success(
+        t("grid.actions.structureTemplateApplied", {
+          folders: result.folders,
+          scenes: result.scenes,
+        }),
+      );
     } catch {
       toast.error(t("common.error", "エラーが発生しました"));
     }
@@ -64,26 +66,26 @@ export function GridActionsMenu({ onClose, anchorRef, onManageLabels }: Props) {
       ref={menuRef}
       className="absolute right-0 top-full z-50 mt-1 min-w-[200px] rounded-md border bg-popover p-1 shadow-md text-sm"
     >
-      {/* Apply label template submenu */}
+      {/* Apply structure template submenu */}
       <div
         className="relative"
         onMouseEnter={() => setTemplateMenuOpen(true)}
         onMouseLeave={() => setTemplateMenuOpen(false)}
       >
         <button className="flex w-full items-center gap-2 rounded px-2 py-1.5 hover:bg-accent">
-          <Tag className="h-3.5 w-3.5" />
-          {t("grid.actions.applyTemplate", "Label テンプレートを適用")}
+          <LayoutTemplate className="h-3.5 w-3.5" />
+          {t("grid.actions.applyStructureTemplate", "構造テンプレートを適用")}
           <ChevronRight className="ml-auto h-3 w-3" />
         </button>
         {templateMenuOpen && (
-          <div className="absolute right-full top-0 mr-1 min-w-[200px] rounded-md border bg-popover p-1 shadow-md">
-            {LABEL_TEMPLATES.map((tmpl) => (
+          <div className="absolute right-full top-0 mr-1 min-w-[220px] rounded-md border bg-popover p-1 shadow-md">
+            {STRUCTURE_TEMPLATES.map((tmpl) => (
               <button
                 key={tmpl.key}
                 className="flex w-full items-center gap-2 rounded px-2 py-1.5 hover:bg-accent text-left"
                 onClick={() => void handleApplyTemplate(tmpl.key)}
               >
-                {t(`grid.labelTemplates.${tmpl.nameI18nKey}`, tmpl.nameI18nKey)}
+                {t(`grid.structureTemplates.${tmpl.key}.name`, tmpl.key)}
               </button>
             ))}
           </div>

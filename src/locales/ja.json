@@ -696,96 +696,372 @@
       "clear": "クリア"
     },
     "actions": {
-      "applyTemplate": "Label テンプレートを適用",
+      "applyStructureTemplate": "構造テンプレートを適用",
       "manageLabels": "Label を管理…",
       "help": "Grid の使い方",
-      "templateComingSoon": "次フェーズで実装予定",
-      "templateApplied": "{{added}} 件のラベルを追加しました（{{skipped}} 件は既存のためスキップ）",
-      "templateAppliedNone": "すべてのラベルが既に存在します（スキップ）"
+      "structureTemplateApplied": "{{folders}} folders / {{scenes}} scenes を追加しました"
     },
-    "labelTemplates": {
-      "threeAct": "3幕構成",
-      "kishoten": "起承転結",
-      "freytag": "Freytag の5幕",
-      "saveTheCat": "Save the Cat の段階",
-      "heroJourney": "英雄の旅",
-      "storyCircle": "Story Circle",
-      "twentyFour": "24章構成",
-      "labels": {
-        "act1": "第1幕",
-        "act2": "第2幕",
-        "act3": "第3幕",
-        "ki": "起",
-        "sho": "承",
-        "ten": "転",
-        "ketsu": "結",
-        "exposition": "導入",
-        "risingAction": "展開",
-        "climax": "クライマックス",
-        "fallingAction": "下降",
-        "resolution": "解決",
-        "openingImage": "冒頭イメージ",
-        "themeStated": "テーマ提示",
-        "setup": "世界観設定",
-        "catalyst": "触媒",
-        "debate": "葛藤",
-        "breakIntoTwo": "第2幕へ",
-        "bStory": "Bストーリー",
-        "funAndGames": "楽しみと試練",
-        "midpoint": "中間点",
-        "badGuysClose": "追い詰められる",
-        "allIsLost": "絶望",
-        "darkNightOfSoul": "魂の暗夜",
-        "breakIntoThree": "第3幕へ",
-        "finale": "フィナーレ",
-        "finalImage": "終幕イメージ",
-        "ordinaryWorld": "日常世界",
-        "callToAdventure": "冒険への召喚",
-        "refusal": "拒絶",
-        "meeting": "賢者との出会い",
-        "crossingThreshold": "境界を越える",
-        "testsAlliesEnemies": "試練・仲間・敵",
-        "approach": "核心へ接近",
-        "ordeal": "試練",
-        "reward": "報酬",
-        "roadBack": "帰途",
-        "resurrection": "復活",
-        "returnWithElixir": "霊薬を持ち帰る",
-        "youInZone": "ゾーンの中の自分",
-        "needWantDiscomfort": "望み・不満",
-        "unfamiliarSituation": "未知の状況",
-        "adaptationFunGames": "適応と試練",
-        "beginToWantMoreSelf": "更なる望み",
-        "familiar": "慣れ",
-        "bigChangeTryFail": "大変化と失敗",
-        "darkMomentOrChange": "暗転・変化",
-        "crossing": "越境",
-        "returnChanged": "変容した帰還",
-        "hook": "フック",
-        "ch1Setup": "第1章：設定",
-        "ch2Inciting": "第2章：発端",
-        "ch3React": "第3章：反応",
-        "ch4Act": "第4章：行動",
-        "ch5Consequence": "第5章：結果",
-        "ch6Pressure": "第6章：圧力",
-        "ch7Pinch1": "第7章：ピンチ1",
-        "ch8Midpoint": "第8章：中間点",
-        "ch9Rally": "第9章：立て直し",
-        "ch10Pinch2": "第10章：ピンチ2",
-        "ch11Setback": "第11章：後退",
-        "ch12Darkest": "第12章：最暗部",
-        "ch13Climax": "第13章：クライマックス",
-        "ch14Resolution": "第14章：解決",
-        "ch15Denouement": "第15章：後日談",
-        "ch16Aftermath": "第16章：余韻",
-        "ch17NewNormal": "第17章：新たな日常",
-        "ch18FinalChallenge": "第18章：最終課題",
-        "ch19TwistSetup": "第19章：転換準備",
-        "ch20Revelation": "第20章：啓示",
-        "ch21Convergence": "第21章：集束",
-        "ch22LastStand": "第22章：最後の砦",
-        "ch23CrisisResolved": "第23章：危機解決",
-        "ch24Epilogue": "第24章：エピローグ"
+    "structureTemplates": {
+      "threeAct": {
+        "name": "3幕構成",
+        "stages": {
+          "act1": { "name": "第1幕：設定" },
+          "act1Scene": {
+            "name": "導入",
+            "synopsis": "主人公の日常世界と価値観を提示する。これから崩されるべき前提と、読者が感情移入する手がかりをここに置く。"
+          },
+          "act2": { "name": "第2幕：対立" },
+          "act2Scene": {
+            "name": "対立",
+            "synopsis": "目標を追う中で障害が積み重なる中盤。内面・対人関係・外的状況の葛藤を多層に重ね、価値観の転換へ向かわせる。"
+          },
+          "act3": { "name": "第3幕：解決" },
+          "act3Scene": {
+            "name": "決着",
+            "synopsis": "クライマックスで主人公が最大の試練と対峙し、設定した目標について決着がつく。余韻として変化後の姿を示す。"
+          }
+        }
+      },
+      "kishoten": {
+        "name": "起承転結",
+        "stages": {
+          "ki": { "name": "起：発端" },
+          "kiScene": {
+            "name": "発端",
+            "synopsis": "状況・登場人物・舞台を読者に提示する導入。物語の前提となる世界観を示す。"
+          },
+          "sho": { "name": "承：展開" },
+          "shoScene": {
+            "name": "展開",
+            "synopsis": "起で示した状況を膨らませ、出来事や関係性を発展させる。読者の関心を保ちつつ転に向けて伏線を張る。"
+          },
+          "ten": { "name": "転：転換" },
+          "tenScene": {
+            "name": "転換",
+            "synopsis": "物語が大きく動く転換点。これまでの前提を覆す事件や視点の変化を起こし、読者に意外性を与える。"
+          },
+          "ketsu": { "name": "結：結末" },
+          "ketsuScene": {
+            "name": "結末",
+            "synopsis": "転で生じた変化を引き受けて物語を締めくくる。余韻と読後感を整える。"
+          }
+        }
+      },
+      "freytag": {
+        "name": "Freytag の5幕",
+        "stages": {
+          "exposition": { "name": "序：説明" },
+          "expositionScene": {
+            "name": "導入",
+            "synopsis": "登場人物・場所・状況を提示。物語が始まる前の安定状態を描く。"
+          },
+          "risingAction": { "name": "上昇：展開" },
+          "risingActionScene": {
+            "name": "展開",
+            "synopsis": "主人公が目標に向かって動き、対立が積み重なっていく。緊張が段階的に高まる。"
+          },
+          "climax": { "name": "頂点：クライマックス" },
+          "climaxScene": {
+            "name": "クライマックス",
+            "synopsis": "物語の最も劇的な瞬間。主人公の運命が決定的に分岐するターニングポイント。"
+          },
+          "fallingAction": { "name": "下降：余波" },
+          "fallingActionScene": {
+            "name": "余波",
+            "synopsis": "クライマックスの結果が広がっていく場面。残された対立が解消に向かう。"
+          },
+          "resolution": { "name": "終結：解決" },
+          "resolutionScene": {
+            "name": "解決",
+            "synopsis": "物語の決着。新たな安定状態と、変化したキャラクターの姿を示す。"
+          }
+        }
+      },
+      "saveTheCat": {
+        "name": "Save the Cat の段階",
+        "stages": {
+          "act1": { "name": "第1幕" },
+          "act2": { "name": "第2幕" },
+          "act3": { "name": "第3幕" },
+          "openingImage": {
+            "name": "冒頭イメージ",
+            "synopsis": "物語の世界とトーンを一目で伝える映像的な1シーン。終幕イメージと対になる「変化前」の姿を示す。"
+          },
+          "themeStated": {
+            "name": "テーマ提示",
+            "synopsis": "主人公が最終的に学ぶべき真実を、別キャラが何気なく口にする。主人公はまだその意味を理解しない。"
+          },
+          "setup": {
+            "name": "世界観設定",
+            "synopsis": "主人公の日常・欠点・目標・関係性を提示する。修正されるべき問題を読者に明確にする。"
+          },
+          "catalyst": {
+            "name": "触媒",
+            "synopsis": "日常を破壊する出来事。主人公を冒険へ押し出す不可逆なきっかけ。"
+          },
+          "debate": {
+            "name": "葛藤",
+            "synopsis": "「行くべきか戻るべきか」と主人公が葛藤する。冒険を受け入れる決意を固める前段。"
+          },
+          "breakIntoTwo": {
+            "name": "第2幕突入",
+            "synopsis": "主人公が決断し、新しい世界へ足を踏み入れる。後戻りできない選択。"
+          },
+          "bStory": {
+            "name": "Bストーリー",
+            "synopsis": "テーマを体現するサブプロット（多くは恋愛や友情）が始まる。主人公の内面変化を支える軸。"
+          },
+          "funAndGames": {
+            "name": "楽しみと試練",
+            "synopsis": "ジャンル本来の見どころシーン。読者がこの物語に期待した「お約束」を提供する。"
+          },
+          "midpoint": {
+            "name": "中間点",
+            "synopsis": "偽の勝利または偽の敗北。主人公が一見ゴールに到達するが、その代償が見え始める。"
+          },
+          "badGuysClose": {
+            "name": "迫る悪",
+            "synopsis": "敵対勢力が近づき、主人公の内外で圧力が高まる。チームに亀裂が入ることも。"
+          },
+          "allIsLost": {
+            "name": "全ての喪失",
+            "synopsis": "最低点。主人公が大切な何か（仲間・希望・自己像）を失う。死の匂いがする瞬間。"
+          },
+          "darkNightOfSoul": {
+            "name": "魂の暗夜",
+            "synopsis": "絶望の底で主人公が真実と向き合う。テーマ提示で示された教訓に到達する内省。"
+          },
+          "breakIntoThree": {
+            "name": "第3幕突入",
+            "synopsis": "新たな解決策を得て主人公が再び立ち上がる。AストーリーとBストーリーの統合。"
+          },
+          "finale": {
+            "name": "フィナーレ",
+            "synopsis": "クライマックス。主人公が変化した自分で最終決戦に挑み、世界を作り直す。"
+          },
+          "finalImage": {
+            "name": "終幕イメージ",
+            "synopsis": "冒頭イメージと対になる映像。世界とキャラクターがどう変化したかを一目で示す。"
+          }
+        }
+      },
+      "heroJourney": {
+        "name": "英雄の旅",
+        "stages": {
+          "departure": { "name": "旅立ち" },
+          "initiation": { "name": "試練" },
+          "returnAct": { "name": "帰還" },
+          "ordinaryWorld": {
+            "name": "日常世界",
+            "synopsis": "主人公の元の生活と、満たされない欲求を描く。冒険前の基準点となる日常。"
+          },
+          "callToAdventure": {
+            "name": "冒険への召喚",
+            "synopsis": "日常を揺るがすメッセージや事件。主人公に冒険への参加が呼びかけられる。"
+          },
+          "refusal": {
+            "name": "召喚の拒絶",
+            "synopsis": "主人公は恐れや義務感から召喚を断る。普通の人としての逡巡を示す。"
+          },
+          "meeting": {
+            "name": "賢者との出会い",
+            "synopsis": "導き手（メンター）が現れ、主人公に必要な道具・知識・勇気を授ける。"
+          },
+          "crossingThreshold": {
+            "name": "境界を越える",
+            "synopsis": "主人公が日常を離れ、未知の世界へ踏み出す。後戻りできない一歩。"
+          },
+          "testsAlliesEnemies": {
+            "name": "試練・仲間・敵",
+            "synopsis": "新世界のルールを学ぶ。仲間と敵を見極め、自分の能力を試す。"
+          },
+          "approach": {
+            "name": "最深部への接近",
+            "synopsis": "最大の試練を前にした準備と緊張。チーム内の議論や戦略の練り直し。"
+          },
+          "ordeal": {
+            "name": "最大の試練",
+            "synopsis": "主人公が象徴的に「死」を経験する瞬間。最大の恐怖と直面する。"
+          },
+          "reward": {
+            "name": "報酬",
+            "synopsis": "試練を乗り越えて得る褒美。物理的な宝、知識、和解、自己理解など。"
+          },
+          "roadBack": {
+            "name": "帰路",
+            "synopsis": "日常世界へ戻る決断。残された敵からの追跡や新たな障害が立ちはだかる。"
+          },
+          "resurrection": {
+            "name": "復活",
+            "synopsis": "クライマックス。主人公が最終試練で完全に変容し、新たな自分として生まれ変わる。"
+          },
+          "returnWithElixir": {
+            "name": "霊薬を持ち帰る",
+            "synopsis": "変化した主人公が日常世界に戻り、得たものを共同体と分かち合う。"
+          }
+        }
+      },
+      "storyCircle": {
+        "name": "Story Circle",
+        "stages": {
+          "youInZone": {
+            "name": "安住",
+            "synopsis": "主人公がコンフォートゾーンにいる状態。安定しているが、何かが欠けている。"
+          },
+          "needWantDiscomfort": {
+            "name": "欲求",
+            "synopsis": "主人公が「足りないもの」を意識する。欠落感・憧れ・違和感が動機になる。"
+          },
+          "unfamiliarSituation": {
+            "name": "未知への移行",
+            "synopsis": "主人公が未知の状況へ踏み出す。コンフォートゾーンを離れる選択。"
+          },
+          "adaptationFunGames": {
+            "name": "適応",
+            "synopsis": "新しい世界のルールに適応していく。試行錯誤と発見の段階。"
+          },
+          "beginToWantMoreSelf": {
+            "name": "獲得",
+            "synopsis": "主人公が望んでいたものを手に入れる。ただし代償は始まったばかり。"
+          },
+          "familiar": {
+            "name": "代償",
+            "synopsis": "獲得の代わりに支払うべきものを知る。決断の重みが押し寄せる。"
+          },
+          "bigChangeTryFail": {
+            "name": "帰還",
+            "synopsis": "変化を抱えてコンフォートゾーンへ戻る。元の世界はもう同じには見えない。"
+          },
+          "returnChanged": {
+            "name": "変容",
+            "synopsis": "変化した主人公として日常に再統合される。物語前との違いが明確になる。"
+          }
+        }
+      },
+      "twentyFour": {
+        "name": "24章構成",
+        "stages": {
+          "ch1": { "name": "第1章：フック" },
+          "ch1Scene": {
+            "name": "フック",
+            "synopsis": "読者を物語に引き込む冒頭シーン。世界観・トーン・主人公の核を一気に提示する。"
+          },
+          "ch2": { "name": "第2章：状況設定" },
+          "ch2Scene": {
+            "name": "状況設定",
+            "synopsis": "主人公の日常と欠落を提示。これから崩されるべき前提を整える。"
+          },
+          "ch3": { "name": "第3章：日常の崩壊" },
+          "ch3Scene": {
+            "name": "日常の崩壊",
+            "synopsis": "日常を揺るがす最初の事件。主人公の世界に亀裂が入る。"
+          },
+          "ch4": { "name": "第4章：拒絶と決断" },
+          "ch4Scene": {
+            "name": "拒絶と決断",
+            "synopsis": "事件への対応を巡る葛藤。主人公が冒険を受け入れるか拒むかの分岐。"
+          },
+          "ch5": { "name": "第5章：新世界への突入" },
+          "ch5Scene": {
+            "name": "新世界への突入",
+            "synopsis": "主人公が決断し、新しい世界へ踏み込む。後戻りできない一歩。"
+          },
+          "ch6": { "name": "第6章：探索と発見" },
+          "ch6Scene": {
+            "name": "探索と発見",
+            "synopsis": "新世界のルール・敵・味方を学ぶ。物語のステークスが具体化する。"
+          },
+          "ch7": { "name": "第7章：第1ピンチ" },
+          "ch7Scene": {
+            "name": "第1ピンチ",
+            "synopsis": "敵対勢力が初めて本格的に動き、主人公にダメージを与える。"
+          },
+          "ch8": { "name": "第8章：再編成" },
+          "ch8Scene": {
+            "name": "再編成",
+            "synopsis": "敗北からの立て直し。チームを再編し、戦略を練り直す。"
+          },
+          "ch9": { "name": "第9章：中盤" },
+          "ch9Scene": {
+            "name": "中盤",
+            "synopsis": "中盤の山場。主人公の理解と能力が大きく拡張される。"
+          },
+          "ch10": { "name": "第10章：偽の勝利" },
+          "ch10Scene": {
+            "name": "偽の勝利",
+            "synopsis": "勝利のように見える局面。だが裏側ではコストが膨らんでいる。"
+          },
+          "ch11": { "name": "第11章：転換" },
+          "ch11Scene": {
+            "name": "転換",
+            "synopsis": "視点や状況が反転する瞬間。これまでの前提が覆される。"
+          },
+          "ch12": { "name": "第12章：第2ピンチ" },
+          "ch12Scene": {
+            "name": "第2ピンチ",
+            "synopsis": "敵が再び圧力を強める。仲間内の信頼にもひびが入る。"
+          },
+          "ch13": { "name": "第13章：危機の深化" },
+          "ch13Scene": {
+            "name": "危機の深化",
+            "synopsis": "状況がさらに悪化。主人公の選択肢が次々と消えていく。"
+          },
+          "ch14": { "name": "第14章：全ての喪失" },
+          "ch14Scene": {
+            "name": "全ての喪失",
+            "synopsis": "最大の喪失。主人公が大切な何かを失う最低点。"
+          },
+          "ch15": { "name": "第15章：魂の暗夜" },
+          "ch15Scene": {
+            "name": "魂の暗夜",
+            "synopsis": "絶望の底で内省し、本当に必要だった答えに到達する。"
+          },
+          "ch16": { "name": "第16章：再起" },
+          "ch16Scene": {
+            "name": "再起",
+            "synopsis": "新たな決意。残された手段で再び立ち上がる。"
+          },
+          "ch17": { "name": "第17章：第3幕突入" },
+          "ch17Scene": {
+            "name": "第3幕突入",
+            "synopsis": "第3幕の幕開け。クライマックスへの準備が始まる。"
+          },
+          "ch18": { "name": "第18章：再集結" },
+          "ch18Scene": {
+            "name": "再集結",
+            "synopsis": "仲間が再集結し、最終決戦に向けて整える。"
+          },
+          "ch19": { "name": "第19章：最終接近" },
+          "ch19Scene": {
+            "name": "最終接近",
+            "synopsis": "最後の障害が浮上し、主人公が決定的な選択を迫られる。"
+          },
+          "ch20": { "name": "第20章：最後の障害" },
+          "ch20Scene": {
+            "name": "最後の障害",
+            "synopsis": "クライマックス直前の静けさ。賭け金が最大化する。"
+          },
+          "ch21": { "name": "第21章：クライマックス" },
+          "ch21Scene": {
+            "name": "クライマックス",
+            "synopsis": "クライマックス。主人公が真の自分として最終試練に挑む。"
+          },
+          "ch22": { "name": "第22章：最終決戦" },
+          "ch22Scene": {
+            "name": "最終決戦",
+            "synopsis": "最終決戦の最終局面。世界の運命が決まる瞬間。"
+          },
+          "ch23": { "name": "第23章：解決" },
+          "ch23Scene": {
+            "name": "解決",
+            "synopsis": "戦後処理。残された問題が一つずつ解消されていく。"
+          },
+          "ch24": { "name": "第24章：エピローグ" },
+          "ch24Scene": {
+            "name": "エピローグ",
+            "synopsis": "変化した主人公の新たな日常を示し物語を閉じる。"
+          }
+        }
       }
     },
     "status": {

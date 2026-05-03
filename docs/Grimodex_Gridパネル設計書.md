@@ -120,7 +120,7 @@ Grimodex のツリーは任意深さ（Part > Chapter > Sub-chapter > Scene 等�
 | `[+ New Chapter]` | 現在の container 直下に新規 folder を作成。名前は自動採番（Scenes パネル設計書の採番ロジックに従う） |
 | `[⌃]` ツールバー切替 | 折りたたみツールバー（Display + Filter）の開閉。状態は global-settings に保存 |
 | 🔍 検索 | カード内テキスト（Scene 名 / Synopsis / beat 冒頭 / Codex 名）でインクリメンタル絞り込み。マッチしないカードはグレー表示。**Phase A では非表示または disabled（Phase B で実装）** |
-| `[⋮]` アクションメニュー | ドロップダウン: Apply label template ▸ / Manage labels... / Help |
+| `[⋮]` アクションメニュー | ドロップダウン: Apply structure template ▸ / Manage labels... / Help |
 
 ### Container セレクタの動作
 
@@ -158,14 +158,14 @@ Filter:  ☐空のみ  ☐完成非表示  [Codex フィルタ▾]              
 `[⌃]` ツールバーが**ビュー状態**を扱うのに対し、こちらは**操作・遷移を伴うアクション**を集める。`MoreVertical` アイコン押下で popover 形式のドロップダウンを表示。
 
 ```
-Apply label template      ▸  ─┐
-Manage labels...               ├─ ラベル系
-                              ─┘
+Apply structure template  ▸  ─┐ 構造テンプレート（Chapter/Scene 骨格を一括生成）
+─────────────
+Manage labels...               ─ ラベル管理
 ─────────────
 Grid の使い方                    （Help）
 ```
 
-`Apply label template ▸` のサブメニューはラベルテンプレート節（後述）を参照。
+`Apply structure template ▸` のサブメニューは構造テンプレート節（後述）を参照。
 
 ---
 
@@ -402,37 +402,38 @@ Pays off:
 
 **実装場所**: `src/features/grid/GridCardForeshadowIndicator.tsx`（新規）。selector は `src/features/foreshadow/foreshadowStore.ts` に追加。
 
-#### ラベルテンプレート
+#### 構造テンプレート（シーン/フォルダ骨格生成）
 
-ユーザーが手動で全ラベルを作るのを避けるため、**著名なプロット構造を opt-in で適用**できるテンプレートを Grid `[⋮]` ドロップダウンの `Apply label template ▸` から提供する。テンプレートは「**ラベル定義のセットを生やすだけ**」で、各シーンへの自動タグ付けはしない（ユーザーが手動で割り当てる）。
+著名なプロット構造を opt-in で適用できるテンプレートを Grid `[⋮]` ドロップダウンの `Apply structure template ▸` から提供する。テンプレートは **Chapter folder と placeholder Scene の骨格を一括生成**する（ラベルは生成しない。色付き分類軸が必要な場合は別途 Manage labels で作成する）。
 
 **収録テンプレート**:
 
-| テンプレート | ラベル数 | 想定用途 |
+| テンプレート | 生成構造 | 想定用途 |
 |------|---------|---------|
-| 3幕構成 | 3 | 全ジャンル汎用、初心者にも分かりやすい |
-| 起承転結 | 4 | 日本語圏の伝統構造、短編・中編向け |
-| Freytag's Pyramid（5幕） | 5 | 古典文学・戯曲風、明確なクライマックス構造 |
-| Save the Cat | 15 | ハリウッド型、ジャンル小説向け詳細構造（後述「用語の使い分け」参照） |
-| 英雄の旅 | 12 | 神話・冒険ファンタジー向け |
-| Story Circle（Harmon） | 8 | 短編・連作・キャラクター変化重視 |
-| 24章構成（Derek Murphy） | 24 | 長編商業ノベル（80,000-100,000字級）向け章単位レシピ |
+| 3幕構成 | 3 folders（Act 1/2/3）+ 各幕に placeholder scene 1件 | 全ジャンル汎用、初心者にも分かりやすい |
+| 起承転結 | 4 folders + 各 placeholder scene 1件 | 日本語圏の伝統構造、短編・中編向け |
+| Freytag's Pyramid（5幕） | 5 folders + 各 placeholder scene 1件 | 古典文学・戯曲風 |
+| Save the Cat | 3 act folders + 計 15 placeholder scenes（各段階1件、Act 配下に分配） | ハリウッド型、ジャンル小説向け詳細構造 |
+| 英雄の旅 | 3 act folders + 計 12 placeholder scenes | 神話・冒険ファンタジー向け |
+| Story Circle（Harmon） | 8 placeholder scenes（フラット） | 短編・連作・キャラクター変化重視 |
+| 24章構成（Derek Murphy） | 24 folders + 各 placeholder scene 1件 | 長編商業ノベル（80,000-100,000字級）向け |
 
-**i18n（意訳ベース）**: 各テンプレート・ラベルは ja/en の対訳辞書を持つ。**transliteration（音訳）ではなく意訳**を採用：
+**i18n（意訳ベース）**: 各テンプレート・段階名は ja/en の対訳辞書を持つ。**transliteration（音訳）ではなく意訳**を採用：
 
 - 起承転結 → "Setup / Development / Twist / Conclusion"（英語版）
 - Save the Cat の "Theme Stated" → 「テーマ提示」（日本語版）
-- 24 chapters → ja は「Hook / Setup / Plot Point 1 / Pinch 1 / Midpoint / ...」を意訳した日本語版
+- 24 chapters → ja は「導入フック / 状況設定 / プロットポイント1 / ピンチ1 / 中間点 / …」を意訳した日本語版
 
 **適用挙動**:
 
-- 既存と同名のラベルがある場合は**スキップ**（`uq_labels_project_name` ユニーク制約準拠）
-- 結果はトーストで報告（「N 件追加、M 件は既存のためスキップ」）
-- 色はパレット順に自動割当。ユーザーは Manage labels モーダルで後から変更可
-- 同じテンプレートを複数回適用しても重複は発生しない
-- シーンへの自動タグ付けは行わない（テンプレート適用後、ユーザーが手動で各シーンに割り当てる）
+- **現在の container 直下に新規 Chapter folder を 1 つ作って、その配下に骨格を展開**する（既存構造と衝突させない／既存シーンを破壊しない）
+- ルート folder 名は `{テンプレート名} - {自動採番}`（例: `3幕構成 - 1`）
+- 各 placeholder scene の **synopsis にはその段階の説明文を初期値として埋める**（例: Save the Cat の "Theme Stated" → 「主人公が最終的に学ぶべき真実を、別キャラが何気なく提示する」）。ユーザーはそれを叩き台に書き始められる
+- scene 名は段階名（例: `テーマ提示`、`Plot Point 1`）。ユーザーが後から rename 可
+- 同じテンプレートを複数回適用してもよい（毎回新規 Chapter folder が作られる）
+- 結果はトーストで報告（「N folders / M scenes 追加」）
 
-**実装場所**: `src/features/grid/labelTemplates.ts` にテンプレート定義（純データ、i18n キー含む）。Apply 処理は Tauri command `apply_label_template(project_id, template_key)` でバックエンド側で原子的に実行。
+**実装場所**: `src/features/grid/structureTemplates.ts`（テンプレート定義、純データ + i18n キー）。Apply 処理はフロント TS で Drizzle 直実行（既存 Scene/Folder 作成 API を反復呼び出し、原子性は1トランザクションでまとめる）。
 
 **用語の使い分け**（"Beat" 衝突回避）:
 
@@ -441,10 +442,10 @@ Grimodex には既に **Beat システム**（TipTap `sceneBeat` ノード、Unp
 | 文脈 | 日本語 | 英語 |
 |------|--------|------|
 | シーン内構成単位（既存） | ビート / Beat | Beat |
-| プロット構造の段階（テンプレート） | **段階 / ラベル** | **Stage / Label**（"Beat" を避ける） |
+| プロット構造の段階（テンプレート） | **段階** | **Stage**（"Beat" を避ける） |
 | Save the Cat の元来の "Beat" 用語 | 「Save the Cat の段階」と表記 | "Save the Cat Stage" と表記 |
 
-i18n 辞書を作る際は、テンプレートのラベル名・テンプレート紹介文・Apply 結果トーストすべてでこの規約を守る。
+i18n 辞書を作る際は、テンプレートの段階名・紹介文・Apply 結果トーストすべてでこの規約を守る。
 
 ### カードの操作
 
@@ -685,10 +686,7 @@ Grid のビュー状態は**スコープを分けて**保存する：
   - `Manage labels...` モーダル（`ManageLabelsDialog.tsx`、CRUD + DnD 並べ替え + 削除時シーン数確認）
   - `LabelDots.tsx`（Scenes パネルのタイトル右に小色ドット。`showLabelDots` トグルで制御）
   - Filter UI へのラベルフィルタ Pill 行（Phase C で実装済み。詳細は下記）
-- [x] **ラベルテンプレート**（`[⋮] → Apply label template ▸`）
-  - 7テンプレート定義: 3幕構成 / 起承転結 / Freytag's Pyramid / Save the Cat / 英雄の旅 / Story Circle / 24章構成（`labelTemplates.ts`）
-  - i18n 対訳辞書（ja/en）。既存同名ラベルはスキップ、追加件数をトーストで通知
-  - Tauri command 化なし（フロント TS で Drizzle 直実行）
+- [x] ~~**ラベルテンプレート**~~ → **構造テンプレートに置き換え済み**（下記 Phase D 参照）。`labelTemplates.ts` / `applyLabelTemplate.ts` / `[⋮] → Apply label template ▸` は削除済み
 - [x] **POV chip 行**（`GridCardPovChips.tsx`）— ヘッダ直下に effective POVs を chip 表示
   - データソース: `scene_beat_pov_cache` (`listSceneBeatPovOverrides`)、`tree_nodes.povCharacterId` を先頭に dedupe
   - スタイル: scene POV は塗り chip、Beat 由来のみはアウトライン chip
@@ -710,9 +708,19 @@ Grid のビュー状態は**スコープを分けて**保存する：
 - [x] **Matrix → Grid クロスナビゲーション** — `requestRevealScene + showPanel("grid")`。Grid パネル前面化 + scrollIntoView + 一時 amber ring（`revealedSceneId`）
 - [x] **複数選択 + 一括操作** — Click / Shift+Click / Cmd+Click、`GridSelectionToolbar` + `bulkSceneOps.ts` で章移動・一括削除
 
+**Phase D: 構造テンプレート（ラベルテンプレート置き換え、完了済み）**
+
+- [x] `src/features/grid/structureTemplates.ts` 定義（7 テンプレート、純データ）
+- [x] `[⋮] → Apply structure template ▸` メニューに置換（`LayoutTemplate` アイコン）
+- [x] 適用処理 `applyStructureTemplate`: 現 container 直下に新規 root folder を作り、その配下に folder/scene 骨格を `treeApi.createNode` で連続生成。各 placeholder scene の `synopsis` に段階説明文を初期値として埋める
+- [x] root folder 名は `{templateName} - {N}` 自動採番（同名衝突回避）
+- [x] 旧 `labelTemplates.ts` / `applyLabelTemplate.ts` / 関連 i18n エントリ削除
+- [x] ja/en 対訳辞書追加（`grid.structureTemplates.{key}.name` / `stages.{stageKey}.{name|synopsis}`）。各段階の synopsis は意訳ベースで物書きに役立つ叩き台として記述
+- [x] トースト通知（「N folders / M scenes 追加」）
+
 ### Backlog
 
-**Phase D: AI 連携（v2+）**
+**Phase E: AI 連携（v2+）**
 
 - [ ] カード `[⋮] → Generate scene from chapter outline`（章のサマリーから Scene 提案）
 - [ ] 空カード / `+ New Scene` の AI ドラフト生成
