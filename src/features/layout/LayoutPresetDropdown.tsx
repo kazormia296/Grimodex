@@ -113,7 +113,7 @@ export function LayoutPresetDropdown() {
 
       {/* Dropdown menu */}
       {isOpen && (
-        <div className="absolute right-0 top-full z-50 mt-1 min-w-56 rounded-md border border-border bg-background py-1 shadow-lg">
+        <div className="absolute right-0 top-full z-50 mt-1 min-w-56 rounded-md border border-border bg-popover py-1 shadow-lg">
           {/* Builtin presets */}
           <div className="px-3 pb-0.5 pt-1 text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
             {t("layout.preset.builtinSection")}

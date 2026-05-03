@@ -328,6 +328,7 @@ function PanelMenu({
     label: string,
     onSelect: (v: T) => void,
   ) {
+    const selected = current === value;
     return (
       <button
         key={String(value)}
@@ -335,13 +336,12 @@ function PanelMenu({
         onClick={() => {
           onSelect(value);
         }}
-        className="flex w-full items-center gap-2 px-3 py-1.5 text-xs hover:bg-accent"
-      >
-        {current === value ? (
-          <Check className="h-3 w-3" />
-        ) : (
-          <span className="w-3" />
+        className={cn(
+          "flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs text-foreground hover:bg-accent",
+          selected && "bg-accent font-medium",
         )}
+      >
+        {selected ? <Check className="h-3 w-3" /> : <span className="w-3" />}
         {label}
       </button>
     );
@@ -356,7 +356,10 @@ function PanelMenu({
       <button
         type="button"
         onClick={() => onChange(!checked)}
-        className="flex w-full items-center gap-2 px-3 py-1.5 text-xs hover:bg-accent"
+        className={cn(
+          "flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs text-foreground hover:bg-accent",
+          checked && "font-medium",
+        )}
       >
         {checked ? <Check className="h-3 w-3" /> : <span className="w-3" />}
         {label}
@@ -440,7 +443,10 @@ function SubMenuGroup({
     >
       <button
         type="button"
-        className="flex w-full items-center gap-2 px-3 py-1.5 text-xs hover:bg-accent"
+        className={cn(
+          "flex w-full items-center gap-2 px-3 py-1.5 text-xs text-foreground hover:bg-accent",
+          open && "bg-accent",
+        )}
       >
         <span className="w-3" />
         {label}
@@ -1400,7 +1406,7 @@ export function ScenesPanel() {
               right: window.innerWidth - createMenuPos.right,
               zIndex: 9999,
             }}
-            className="min-w-[140px] rounded-md border border-border bg-popover p-1 shadow-md"
+            className="min-w-[140px] rounded-md border border-border bg-popover py-1 shadow-md"
           >
             {CREATE_OPTIONS.map((opt, i) =>
               opt === null ? (
@@ -1409,7 +1415,7 @@ export function ScenesPanel() {
                 <button
                   key={opt.type}
                   type="button"
-                  className="flex w-full rounded px-2 py-1 text-xs hover:bg-accent"
+                  className="flex w-full px-3 py-1.5 text-left text-xs text-foreground hover:bg-accent"
                   onClick={() => handleCreate(opt.type)}
                 >
                   {t(opt.labelKey)}

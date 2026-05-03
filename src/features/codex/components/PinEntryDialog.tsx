@@ -384,8 +384,8 @@ export function PinEntryDialog({
       containerRef={anchorRef ? undefined : containerRef}
       className={
         anchorRef
-          ? "fixed z-[9999] w-96 rounded-lg border border-border bg-background p-4 shadow-lg"
-          : "absolute right-0 top-full z-50 mt-1 w-96 rounded-lg border border-border bg-background p-4 shadow-lg"
+          ? "fixed z-[9999] w-96 rounded-lg border border-border bg-popover p-4 shadow-lg"
+          : "absolute right-0 top-full z-50 mt-1 w-96 rounded-lg border border-border bg-popover p-4 shadow-lg"
       }
       style={portalPos ?? undefined}
     >

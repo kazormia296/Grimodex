@@ -1642,7 +1642,7 @@ export function EditorPane({
               {statusPopoverOpen && (
                 <div
                   ref={statusPopoverRef}
-                  className="absolute bottom-full left-0 z-50 mb-1 min-w-[120px] rounded border border-border bg-background py-1 shadow-md"
+                  className="absolute bottom-full left-0 z-50 mb-1 min-w-[120px] rounded border border-border bg-popover py-1 shadow-md"
                 >
                   {(
                     Object.entries(getStatusLabels()) as [SceneStatus, string][]

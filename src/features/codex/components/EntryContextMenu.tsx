@@ -88,7 +88,7 @@ export function EntryContextMenu({
       ref={menuRef}
       data-testid="entry-context-menu"
       style={{ left: `${x}px`, top: `${y}px` }}
-      className="fixed z-50 min-w-[180px] rounded-lg border border-border bg-background shadow-lg"
+      className="fixed z-50 min-w-[180px] rounded-lg border border-border bg-popover shadow-lg"
     >
       {/* Header */}
       <div className="border-b border-border px-3 py-2">
@@ -130,7 +130,7 @@ export function EntryContextMenu({
             タイプ変更
           </button>
           {showTypeSubmenu && codexTypes.length > 0 && (
-            <div className="absolute left-full top-0 z-50 min-w-[140px] rounded-lg border border-border bg-background shadow-lg">
+            <div className="absolute left-full top-0 z-50 min-w-[140px] rounded-lg border border-border bg-popover shadow-lg">
               <div className="py-1">
                 {codexTypes.map((t) => (
                   <button
@@ -195,7 +195,7 @@ export function EntryContextMenu({
               Matrix カスタムセットに追加
             </button>
             {showCustomSetSubmenu && (
-              <div className="absolute left-full top-0 z-50 min-w-[160px] rounded-lg border border-border bg-background shadow-lg">
+              <div className="absolute left-full top-0 z-50 min-w-[160px] rounded-lg border border-border bg-popover shadow-lg">
                 <div className="py-1">
                   {customSets && customSets.length > 0 ? (
                     customSets.map((cs) => (

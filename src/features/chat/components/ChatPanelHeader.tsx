@@ -109,7 +109,7 @@ export function ChatPanelHeader({
           </button>
 
           {dropdownOpen && (
-            <div className="absolute left-0 top-full z-50 mt-1 w-52 rounded-md border border-border bg-background shadow-lg">
+            <div className="absolute left-0 top-full z-50 mt-1 w-52 rounded-md border border-border bg-popover shadow-lg">
               <div className="max-h-64 overflow-y-auto py-1">
                 {sceneGroups.map((group) => (
                   <div key={group.groupLabel}>

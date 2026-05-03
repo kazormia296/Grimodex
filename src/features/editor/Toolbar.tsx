@@ -517,7 +517,7 @@ export function Toolbar({
       {fontSizeOpen && (
         <div
           ref={fontSizeDropdownRef}
-          className="absolute right-0 top-full z-50 mt-1 rounded border border-border bg-background p-3 shadow-md"
+          className="absolute right-0 top-full z-50 mt-1 rounded border border-border bg-popover p-3 shadow-md"
         >
           <div className="flex items-center gap-2">
             <span className="min-w-[2.5rem] text-xs text-muted-foreground">
@@ -540,7 +540,7 @@ export function Toolbar({
       {overflowOpen && (
         <div
           ref={overflowDropdownRef}
-          className="absolute right-0 top-full z-50 mt-1 min-w-[200px] rounded border border-border bg-background py-1 shadow-md"
+          className="absolute right-0 top-full z-50 mt-1 min-w-[200px] rounded border border-border bg-popover py-1 shadow-md"
         >
           {/* ツールバーに収まらないボタン群 */}
           {visibleUnitCount < 2 && (
@@ -673,7 +673,7 @@ export function Toolbar({
         rubyPos &&
         createPortal(
           <div
-            className="fixed z-50 flex items-center gap-1.5 rounded border border-border bg-background p-2 shadow-md"
+            className="fixed z-50 flex items-center gap-1.5 rounded border border-border bg-popover p-2 shadow-md"
             style={{ left: rubyPos.x, top: rubyPos.y }}
             onMouseDown={(e) => e.stopPropagation()}
           >
@@ -726,7 +726,7 @@ export function Toolbar({
         linkPos &&
         createPortal(
           <div
-            className="fixed z-50 flex items-center gap-1.5 rounded border border-border bg-background p-2 shadow-md"
+            className="fixed z-50 flex items-center gap-1.5 rounded border border-border bg-popover p-2 shadow-md"
             style={{ left: linkPos.x, top: linkPos.y }}
             onMouseDown={(e) => e.stopPropagation()}
           >

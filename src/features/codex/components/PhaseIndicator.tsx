@@ -155,7 +155,7 @@ export function PhaseIndicator({
 
       {/* ドロップダウン */}
       {dropdownOpen && (
-        <div className="absolute left-0 right-0 top-full z-20 mt-1 rounded-md border border-border bg-background shadow-md">
+        <div className="absolute left-0 right-0 top-full z-20 mt-1 rounded-md border border-border bg-popover shadow-md">
           {/* Base state */}
           <button
             type="button"
