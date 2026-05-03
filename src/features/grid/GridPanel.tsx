@@ -28,6 +28,7 @@ import { GridColumn } from "./GridColumn";
 import { GridLooseColumn } from "./GridLooseColumn";
 import { GridStatusBar } from "./GridStatusBar";
 import { GridSelectionToolbar } from "./GridSelectionToolbar";
+import { StructureTemplatePicker } from "./StructureTemplatePicker";
 import { moveScenesToChapter } from "./bulkSceneOps";
 import { resolveContainerForScene } from "./gridReveal";
 import {
@@ -510,11 +511,17 @@ export function GridPanel() {
           })}
 
           {chapters.length === 0 && looseScenes.length === 0 && (
-            <div className="flex flex-1 items-center justify-center text-sm text-muted-foreground">
-              {t(
-                "grid.empty",
-                "章がありません。「章を追加」から始めましょう。",
-              )}
+            <div className="flex flex-1 flex-col items-center justify-center gap-3 px-4 text-center">
+              <p className="text-sm text-muted-foreground">
+                {t(
+                  "grid.empty",
+                  "章がありません。「章を追加」から始めましょう。",
+                )}
+              </p>
+              <StructureTemplatePicker
+                projectId={projectId}
+                containerId={containerId}
+              />
             </div>
           )}
         </div>

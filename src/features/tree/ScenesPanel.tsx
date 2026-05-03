@@ -38,6 +38,7 @@ import { useTreeHistoryStore } from "./treeHistoryStore";
 import { useTabStore } from "@/features/editor/tabStore";
 import { useLayoutStore } from "@/features/layout/layoutStore";
 import { TreeNodeItem, NodeIcon } from "./TreeNodeItem";
+import { StructureTemplatePicker } from "@/features/grid/StructureTemplatePicker";
 import { StatusDot } from "./StatusDot";
 import { SynopsisArea } from "./SynopsisArea";
 import { InlineSynopsisEditor } from "@/features/editor/InlineSynopsisEditor";
@@ -545,6 +546,7 @@ export function ScenesPanel() {
     moveNode,
     pendingRevealId,
     setPendingRenameId,
+    projectId,
   } = useTreeStore();
 
   const { canUndo, canRedo } = useTreeHistoryStore();
@@ -1208,9 +1210,15 @@ export function ScenesPanel() {
           {nodes.length === 0 ? (
             <div
               data-testid="scenes-empty-state"
-              className="flex h-full items-center justify-center px-4 text-center text-xs text-muted-foreground"
+              className="flex h-full flex-col items-center justify-center gap-3 px-4 text-center"
             >
-              {t("scenes.empty")}
+              <p className="text-xs text-muted-foreground">
+                {t("scenes.empty")}
+              </p>
+              <StructureTemplatePicker
+                projectId={projectId}
+                containerId={null}
+              />
             </div>
           ) : (
             <>
