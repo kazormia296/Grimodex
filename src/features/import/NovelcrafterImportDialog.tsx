@@ -3,10 +3,18 @@ import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import { Upload } from "lucide-react";
 import { parseNovelcrafterZip, collectAllTagNames } from "./novelcrafterParser";
-import { importCodexEntries, importSnippets, PROJECT_ID } from "./importApi";
+import {
+  importCodexEntries,
+  importSnippets,
+  importChapters,
+  importChatSessionsBatch,
+  PROJECT_ID,
+} from "./importApi";
 import type { TagMappingAction, TagImportOptions } from "./importApi";
 import { useCodexStore } from "@/features/codex/codexStore";
 import { useSnippetStore } from "@/features/snippets/snippetStore";
+import { useTreeStore } from "@/features/tree/treeStore";
+import { useChatHistoryStore } from "@/features/chat/chatHistoryStore";
 import type { ParseResult } from "./novelcrafterParser";
 import type { ImportProgress } from "./importApi";
 import { AnimatedOverlay } from "@/components/ui/animated-overlay";
@@ -84,6 +92,8 @@ export function NovelcrafterImportDialog({ open, onClose }: Props) {
 
   const reloadCodex = useCodexStore((s) => s.loadEntries);
   const reloadSnippets = useSnippetStore((s) => s.loadEntries);
+  const reloadTree = useTreeStore((s) => s.loadTree);
+  const reloadSessions = useChatHistoryStore((s) => s.loadSessions);
 
   // Load existing types and compute tag names when parse result arrives
   useEffect(() => {
@@ -145,20 +155,34 @@ export function NovelcrafterImportDialog({ open, onClose }: Props) {
         await importSnippets(parsed.snippets, (p) => setProgress(p));
       allErrors.push(...snippetErrors);
 
+      const { imported: chaptersImported, errors: chapterErrors } =
+        await importChapters(parsed.chapters, (p) => setProgress(p));
+      allErrors.push(...chapterErrors);
+
+      const { imported: chatsImported, errors: chatErrors } =
+        await importChatSessionsBatch(parsed.chatSessions, (p) =>
+          setProgress(p),
+        );
+      allErrors.push(...chatErrors);
+
       setErrors(allErrors);
       setPhase("done");
 
       await reloadCodex();
       await reloadSnippets();
+      await reloadTree(PROJECT_ID);
+      await reloadSessions(PROJECT_ID);
 
       toast.success(
         t("import.success", {
           codex: codexImported,
           snippets: snippetsImported,
+          chapters: chaptersImported,
+          chats: chatsImported,
         }),
       );
     },
-    [parsed, t, reloadCodex, reloadSnippets],
+    [parsed, t, reloadCodex, reloadSnippets, reloadTree, reloadSessions],
   );
 
   /** Called from preview "Import" button */
@@ -240,30 +264,38 @@ export function NovelcrafterImportDialog({ open, onClose }: Props) {
 
         {/* Dropzone — shown in idle/preview */}
         {(phase === "idle" || phase === "preview") && (
-          <div
-            role="button"
-            tabIndex={0}
-            className="flex cursor-pointer flex-col items-center gap-2 rounded-md border-2 border-dashed border-border p-8 text-sm text-muted-foreground transition-colors hover:border-primary hover:text-foreground"
-            onClick={() => fileInputRef.current?.click()}
-            onKeyDown={(e) =>
-              (e.key === "Enter" || e.key === " ") &&
-              fileInputRef.current?.click()
-            }
-            onDrop={handleDrop}
-            onDragOver={(e) => e.preventDefault()}
-          >
-            <Upload className="h-8 w-8 opacity-50" />
-            <span>{t("import.dropzone")}</span>
-            <input
-              ref={fileInputRef}
-              type="file"
-              accept=".zip"
-              className="hidden"
-              onChange={(e) =>
-                void handleFileChange(e.target.files?.[0] ?? null)
+          <>
+            <div
+              role="button"
+              tabIndex={0}
+              className="flex cursor-pointer flex-col items-center gap-2 rounded-md border-2 border-dashed border-border p-8 text-sm text-muted-foreground transition-colors hover:border-primary hover:text-foreground"
+              onClick={() => fileInputRef.current?.click()}
+              onKeyDown={(e) =>
+                (e.key === "Enter" || e.key === " ") &&
+                fileInputRef.current?.click()
               }
-            />
-          </div>
+              onDrop={handleDrop}
+              onDragOver={(e) => e.preventDefault()}
+            >
+              <Upload className="h-8 w-8 opacity-50" />
+              <span>{t("import.dropzone")}</span>
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept=".zip"
+                className="hidden"
+                onChange={(e) =>
+                  void handleFileChange(e.target.files?.[0] ?? null)
+                }
+              />
+            </div>
+            <p className="text-xs text-muted-foreground">
+              {t("import.bodyMarkdownOnly")}
+            </p>
+            <p className="text-xs font-medium text-destructive">
+              {t("import.untrustedSourceWarning")}
+            </p>
+          </>
         )}
 
         {/* Analyzing */}
@@ -283,6 +315,17 @@ export function NovelcrafterImportDialog({ open, onClose }: Props) {
               </li>
               <li>
                 {t("import.snippets")}: {parsed.snippets.length}
+              </li>
+              <li>
+                {t("import.chapters")}: {parsed.chapters.length}
+                {parsed.chapters.length > 0 &&
+                  ` (${t("import.scenes")}: ${parsed.chapters.reduce(
+                    (sum, c) => sum + c.scenes.length,
+                    0,
+                  )})`}
+              </li>
+              <li>
+                {t("import.chats")}: {parsed.chatSessions.length}
               </li>
             </ul>
           </div>

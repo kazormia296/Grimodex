@@ -420,4 +420,121 @@ fields: {}
       expect(codexEntries[0].content).toBe("{}");
     });
   });
+
+  describe("novel body — chapters/scenes", () => {
+    it("parses ## as chapters and ### as scenes, capturing body verbatim", () => {
+      const novel = `# Title
+by Author
+
+## Act 1
+
+### 導入
+
+- 主人公が目覚める
+- 異変に気付く
+
+---
+
+朝、太郎は目を覚ました。
+
+### 出発
+
+- 旅の準備をする
+
+## Act 2
+
+### 戦闘
+
+- 敵と遭遇
+
+---
+
+剣を抜いた。`;
+      const zip = makeZip({ "novel.md": novel });
+      const { chapters } = parseNovelcrafterZip(zip);
+
+      expect(chapters).toHaveLength(2);
+      expect(chapters[0].title).toBe("Act 1");
+      expect(chapters[0].scenes).toHaveLength(2);
+      expect(chapters[0].scenes[0].title).toBe("導入");
+      // body は bullets / 区切り / 本文 をすべて含む
+      expect(chapters[0].scenes[0].body).toBe(
+        "- 主人公が目覚める\n- 異変に気付く\n\n---\n\n朝、太郎は目を覚ました。",
+      );
+      expect(chapters[0].scenes[1].body).toBe("- 旅の準備をする");
+      expect(chapters[1].scenes[0].body).toBe(
+        "- 敵と遭遇\n\n---\n\n剣を抜いた。",
+      );
+    });
+
+    it("returns empty array when novel.md is missing", () => {
+      const { chapters } = parseNovelcrafterZip(makeZip({}));
+      expect(chapters).toEqual([]);
+    });
+
+    it("places scenes without an enclosing ## under a synthetic chapter", () => {
+      const novel = `# Title
+
+### orphan
+
+- bullet`;
+      const { chapters } = parseNovelcrafterZip(makeZip({ "novel.md": novel }));
+      expect(chapters).toHaveLength(1);
+      expect(chapters[0].scenes[0].title).toBe("orphan");
+    });
+  });
+
+  describe("chat sessions", () => {
+    const chat = `---
+title: ""
+favourite: false
+---
+## User
+こんにちは
+
+## AI
+こんにちは。何かお手伝いしますか？
+
+## User
+小説のアドバイスをください。
+`;
+
+    it("parses chat file into a session with messages", () => {
+      const zip = makeZip({ "chats/2026-03-07 abc123.md": chat });
+      const { chatSessions } = parseNovelcrafterZip(zip);
+
+      expect(chatSessions).toHaveLength(1);
+      expect(chatSessions[0].messages).toHaveLength(3);
+      expect(chatSessions[0].messages[0]).toEqual({
+        role: "user",
+        content: "こんにちは",
+      });
+      expect(chatSessions[0].messages[1].role).toBe("assistant");
+      expect(chatSessions[0].messages[2].role).toBe("user");
+    });
+
+    it("uses date prefix from filename as createdAt", () => {
+      const zip = makeZip({ "chats/2026-03-07 abc123.md": chat });
+      const { chatSessions } = parseNovelcrafterZip(zip);
+      expect(chatSessions[0].createdAt.startsWith("2026-03-07")).toBe(true);
+    });
+
+    it("falls back to first user message preview when title is empty", () => {
+      const zip = makeZip({ "chats/2026-03-07 abc123.md": chat });
+      const { chatSessions } = parseNovelcrafterZip(zip);
+      expect(chatSessions[0].title).toBe("こんにちは");
+    });
+
+    it("uses frontmatter title when provided", () => {
+      const titled = `---
+title: "アイデア出し"
+favourite: false
+---
+## User
+本文`;
+      const zip = makeZip({ "chats/2026-03-07 x.md": titled });
+      const { chatSessions } = parseNovelcrafterZip(zip);
+      expect(chatSessions[0].title).toBe("アイデア出し");
+    });
+  });
 });

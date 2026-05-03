@@ -45,10 +45,54 @@ export interface ParsedSnippet {
   content: string;
 }
 
+/** A scene parsed from novel.md (under a chapter). */
+export interface ParsedScene {
+  /** New Grimodex UUID */
+  id: string;
+  title: string;
+  /**
+   * Verbatim text between this scene's heading and the next heading.
+   * Bullets, `---` separators, and prose are all preserved as-is — the body
+   * editor treats them as plain paragraph text after import.
+   */
+  body: string;
+}
+
+/** A chapter parsed from novel.md (`## Heading`). */
+export interface ParsedChapter {
+  /** New Grimodex UUID */
+  id: string;
+  title: string;
+  scenes: ParsedScene[];
+}
+
+/** A single message inside an imported chat session. */
+export interface ParsedChatMessage {
+  /** "user" or "assistant". */
+  role: "user" | "assistant";
+  /** Raw markdown content of the message. */
+  content: string;
+}
+
+/** A chat session parsed from `chats/*.md`. */
+export interface ParsedChatSession {
+  /** New Grimodex UUID */
+  id: string;
+  /** Resolved title (frontmatter title → first-user-message preview → filename). */
+  title: string;
+  /** True when the title came from a non-empty frontmatter `title` field. */
+  titleFromFrontmatter: boolean;
+  /** ISO timestamp derived from the YYYY-MM-DD prefix of the filename. */
+  createdAt: string;
+  messages: ParsedChatMessage[];
+}
+
 export interface ParseResult {
   projectTitle: string;
   codexEntries: ParsedCodexEntry[];
   snippets: ParsedSnippet[];
+  chapters: ParsedChapter[];
+  chatSessions: ParsedChatSession[];
 }
 
 /** Collect all unique tag names across parsed entries, sorted alphabetically. */
@@ -96,8 +140,16 @@ export function parseNovelcrafterZip(zipBytes: Uint8Array): ParseResult {
   const projectTitle = parseProjectTitle(files);
   const { entries } = parseCodexEntries(files);
   const snippets = parseSnippets(files);
+  const chapters = parseNovelBody(files);
+  const chatSessions = parseChatSessions(files);
 
-  return { projectTitle, codexEntries: entries, snippets };
+  return {
+    projectTitle,
+    codexEntries: entries,
+    snippets,
+    chapters,
+    chatSessions,
+  };
 }
 
 // ─────────────────────────────────────────────────────────────────
@@ -331,4 +383,200 @@ interface NcMetadata {
   relationships?: {
     nestedEntries?: string[];
   };
+}
+
+// ─────────────────────────────────────────────────────────────────
+// Novel body (novel.md)
+// ─────────────────────────────────────────────────────────────────
+
+/**
+ * Parse `novel.md` into chapters/scenes.
+ *
+ * Format produced by Novelcrafter's "full markdown" export:
+ *
+ *   # Project Title
+ *   by Author
+ *
+ *   ## Act 1            ← chapter (folder)
+ *
+ *   ### Scene Title     ← scene
+ *
+ *   ...any text...      ← scene body (preserved verbatim)
+ *
+ * The leading `# Title` and the `by ...` line are skipped. Everything between
+ * a scene heading and the next heading (`##` or `###`) is captured verbatim
+ * as the scene `body` — bullet lists, `---` separators, and prose are all
+ * treated as part of the same document.
+ */
+function parseNovelBody(files: Record<string, Uint8Array>): ParsedChapter[] {
+  const novelMd = files["novel.md"];
+  if (!novelMd) return [];
+
+  const text = strFromU8(novelMd).replace(/\r\n/g, "\n");
+  const lines = text.split("\n");
+
+  const chapters: ParsedChapter[] = [];
+  let currentChapter: ParsedChapter | null = null;
+  let currentScene: ParsedScene | null = null;
+
+  let bodyLines: string[] = [];
+
+  function flushScene(): void {
+    if (!currentScene) return;
+    currentScene.body = bodyLines.join("\n").replace(/^\n+|\n+$/g, "");
+    bodyLines = [];
+  }
+
+  for (const line of lines) {
+    // Chapter heading: "## ..." (but not "### ...")
+    const chapterMatch = /^##\s+(.+?)\s*$/.exec(line);
+    if (chapterMatch && !line.startsWith("###")) {
+      flushScene();
+      currentScene = null;
+      currentChapter = {
+        id: crypto.randomUUID(),
+        title: chapterMatch[1].trim(),
+        scenes: [],
+      };
+      chapters.push(currentChapter);
+      continue;
+    }
+
+    // Scene heading: "### ..."
+    const sceneMatch = /^###\s+(.+?)\s*$/.exec(line);
+    if (sceneMatch) {
+      flushScene();
+      // Scenes without an enclosing chapter are placed under a synthetic chapter
+      if (!currentChapter) {
+        currentChapter = {
+          id: crypto.randomUUID(),
+          title: "Untitled",
+          scenes: [],
+        };
+        chapters.push(currentChapter);
+      }
+      currentScene = {
+        id: crypto.randomUUID(),
+        title: sceneMatch[1].trim(),
+        body: "",
+      };
+      currentChapter.scenes.push(currentScene);
+      continue;
+    }
+
+    if (!currentScene) continue; // pre-scene preamble (title / author)
+    bodyLines.push(line);
+  }
+
+  flushScene();
+
+  return chapters;
+}
+
+// ─────────────────────────────────────────────────────────────────
+// Chat sessions (chats/*.md)
+// ─────────────────────────────────────────────────────────────────
+
+/**
+ * Parse `chats/*.md` into chat sessions.
+ *
+ * Each file is one session. Format:
+ *
+ *   ---
+ *   title: "..."
+ *   favourite: false
+ *   ---
+ *   ## User
+ *   <message body>
+ *
+ *   ## AI
+ *   <message body>
+ *
+ * Filename pattern: `YYYY-MM-DD <id>.md` — date used as session createdAt.
+ */
+function parseChatSessions(
+  files: Record<string, Uint8Array>,
+): ParsedChatSession[] {
+  const sessions: ParsedChatSession[] = [];
+
+  for (const [path, data] of Object.entries(files)) {
+    if (!path.startsWith("chats/") || !path.endsWith(".md")) continue;
+
+    const md = strFromU8(data);
+    const { frontmatter, body } = parseFrontmatter(md);
+
+    const messages = parseChatMessages(body);
+
+    const filename = basenameWithoutExtension(path);
+    const fm =
+      frontmatter && typeof frontmatter === "object"
+        ? (frontmatter as Record<string, unknown>)
+        : {};
+    const fmTitle = typeof fm.title === "string" ? fm.title.trim() : "";
+    const titleFromFrontmatter = fmTitle.length > 0;
+
+    let title = fmTitle;
+    if (!title) {
+      const firstUser = messages.find((m) => m.role === "user");
+      if (firstUser) {
+        const preview = firstUser.content.replace(/\s+/g, " ").trim();
+        title = preview.length > 40 ? `${preview.slice(0, 40)}…` : preview;
+      }
+    }
+    if (!title) title = filename;
+
+    const createdAt = parseDateFromFilename(filename);
+
+    sessions.push({
+      id: crypto.randomUUID(),
+      title,
+      titleFromFrontmatter,
+      createdAt,
+      messages,
+    });
+  }
+
+  return sessions;
+}
+
+function parseChatMessages(body: string): ParsedChatMessage[] {
+  const normalized = body.replace(/\r\n/g, "\n");
+  const lines = normalized.split("\n");
+  const messages: ParsedChatMessage[] = [];
+
+  let currentRole: "user" | "assistant" | null = null;
+  let buffer: string[] = [];
+
+  function flush(): void {
+    if (currentRole === null) return;
+    const content = buffer.join("\n").trim();
+    if (content) messages.push({ role: currentRole, content });
+    buffer = [];
+  }
+
+  for (const line of lines) {
+    const m = /^##\s+(User|AI|Assistant)\s*$/i.exec(line);
+    if (m) {
+      flush();
+      const label = m[1].toLowerCase();
+      currentRole = label === "user" ? "user" : "assistant";
+      continue;
+    }
+    if (currentRole !== null) buffer.push(line);
+  }
+  flush();
+
+  return messages;
+}
+
+/**
+ * Extract a YYYY-MM-DD prefix from the filename and convert to an ISO timestamp
+ * at midnight UTC. Falls back to the current time if no date prefix is present.
+ */
+function parseDateFromFilename(filename: string): string {
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(filename);
+  if (!m) return new Date().toISOString();
+  const [, y, mo, d] = m;
+  const date = new Date(Date.UTC(Number(y), Number(mo) - 1, Number(d)));
+  return date.toISOString();
 }

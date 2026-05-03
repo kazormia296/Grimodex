@@ -28,7 +28,20 @@ vi.mock("@/features/codex/detailApi", () => ({
 
 vi.mock("@/features/codex/typeApi", () => ({
   ensureBuiltinTypes: vi.fn(),
+  listCodexTypes: vi.fn(async () => []),
+  createCodexType: vi.fn(),
 }));
+
+vi.mock("@/features/tree/api", () => ({
+  createNode: vi.fn(async () => ({})),
+  listNodes: vi.fn(async () => []),
+  saveSceneContent: vi.fn(async () => undefined),
+}));
+
+vi.mock("@/db/client", () => {
+  const insert = vi.fn(() => ({ values: vi.fn(async () => undefined) }));
+  return { db: { insert } };
+});
 
 import {
   createCodexEntry,
@@ -48,8 +61,20 @@ import {
   upsertValue,
 } from "@/features/codex/detailApi";
 import { ensureBuiltinTypes } from "@/features/codex/typeApi";
-import { importCodexEntries, importSnippets } from "./importApi";
-import type { ParsedCodexEntry, ParsedSnippet } from "./novelcrafterParser";
+import { createNode, saveSceneContent } from "@/features/tree/api";
+import { db } from "@/db/client";
+import {
+  importCodexEntries,
+  importSnippets,
+  importChapters,
+  importChatSessionsBatch,
+} from "./importApi";
+import type {
+  ParsedCodexEntry,
+  ParsedSnippet,
+  ParsedChapter,
+  ParsedChatSession,
+} from "./novelcrafterParser";
 
 const mockCreateCodexEntry = vi.mocked(createCodexEntry);
 const mockUpdateCodexEntry = vi.mocked(updateCodexEntry);
@@ -425,5 +450,136 @@ describe("importSnippets", () => {
       done: 2,
       total: 2,
     });
+  });
+});
+
+describe("importChapters", () => {
+  const mockCreateNode = vi.mocked(createNode);
+  const mockSaveSceneContent = vi.mocked(saveSceneContent);
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockCreateNode.mockResolvedValue({} as never);
+    mockSaveSceneContent.mockResolvedValue(undefined);
+  });
+
+  function makeChapter(overrides: Partial<ParsedChapter> = {}): ParsedChapter {
+    return {
+      id: "chap-1",
+      title: "Act 1",
+      scenes: [
+        {
+          id: "scene-1",
+          title: "導入",
+          body: "朝が来た。",
+        },
+      ],
+      ...overrides,
+    };
+  }
+
+  it("章とシーンの両方を作成し、本文がある場合は saveSceneContent を呼ぶ", async () => {
+    const result = await importChapters([makeChapter()]);
+
+    expect(result.imported).toBe(2); // chapter + scene
+    expect(result.errors).toHaveLength(0);
+    expect(mockCreateNode).toHaveBeenCalledTimes(2);
+    expect(mockSaveSceneContent).toHaveBeenCalledTimes(1);
+    expect(mockSaveSceneContent).toHaveBeenCalledWith(
+      "scene-1",
+      expect.objectContaining({ charCount: "朝が来た。".length }),
+    );
+  });
+
+  it("本文が空のシーンでは saveSceneContent を呼ばない", async () => {
+    const chapter = makeChapter({
+      scenes: [{ id: "scene-1", title: "メモ", body: "" }],
+    });
+    await importChapters([chapter]);
+    expect(mockSaveSceneContent).not.toHaveBeenCalled();
+  });
+
+  it("空入力のときはエラーなく0を返す", async () => {
+    const result = await importChapters([]);
+    expect(result.imported).toBe(0);
+    expect(mockCreateNode).not.toHaveBeenCalled();
+  });
+
+  it("章作成失敗時はそのシーン群をスキップして次の章へ進む", async () => {
+    mockCreateNode.mockRejectedValueOnce(new Error("DB"));
+    const chapters = [
+      makeChapter({ id: "chap-1", title: "失敗章" }),
+      makeChapter({
+        id: "chap-2",
+        title: "成功章",
+        scenes: [{ id: "scene-2", title: "S2", body: "" }],
+      }),
+    ];
+    const result = await importChapters(chapters);
+    expect(result.errors[0]).toContain("失敗章");
+    expect(result.imported).toBe(2); // chap-2 + scene-2
+  });
+});
+
+describe("importChatSessionsBatch", () => {
+  const mockDbInsert = vi.mocked(db.insert);
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockDbInsert.mockReturnValue({
+      values: vi.fn(async () => undefined),
+    } as never);
+  });
+
+  function makeSession(
+    overrides: Partial<ParsedChatSession> = {},
+  ): ParsedChatSession {
+    return {
+      id: "sess-1",
+      title: "テスト",
+      titleFromFrontmatter: false,
+      createdAt: "2026-03-07T00:00:00.000Z",
+      messages: [
+        { role: "user", content: "Hi" },
+        { role: "assistant", content: "Hello" },
+      ],
+      ...overrides,
+    };
+  }
+
+  it("セッション1件 + メッセージ2件を挿入する", async () => {
+    const result = await importChatSessionsBatch([makeSession()]);
+
+    expect(result.imported).toBe(1);
+    expect(result.errors).toHaveLength(0);
+    // 1 insert for the session, 2 for messages
+    expect(mockDbInsert).toHaveBeenCalledTimes(3);
+  });
+
+  it("titleFromFrontmatter=true なら titleManual=1 で保存する", async () => {
+    const valuesSpy = vi.fn(async (_v: unknown) => undefined);
+    mockDbInsert.mockReturnValue({ values: valuesSpy } as never);
+
+    await importChatSessionsBatch([
+      makeSession({ titleFromFrontmatter: true, title: "手書きタイトル" }),
+    ]);
+
+    // First call is the session insert
+    const sessionPayload = valuesSpy.mock.calls[0]?.[0] as {
+      titleManual: number;
+    };
+    expect(sessionPayload.titleManual).toBe(1);
+  });
+
+  it("titleFromFrontmatter=false なら titleManual=0 で保存する", async () => {
+    const valuesSpy = vi.fn(async (_v: unknown) => undefined);
+    mockDbInsert.mockReturnValue({ values: valuesSpy } as never);
+
+    await importChatSessionsBatch([makeSession()]);
+
+    const sessionPayload = valuesSpy.mock.calls[0]?.[0] as {
+      titleManual: number;
+    };
+    expect(sessionPayload.titleManual).toBe(0);
   });
 });

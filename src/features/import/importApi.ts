@@ -24,7 +24,16 @@ import {
   listCodexTypes,
   createCodexType,
 } from "@/features/codex/typeApi";
-import type { ParsedCodexEntry, ParsedSnippet } from "./novelcrafterParser";
+import { createNode, listNodes, saveSceneContent } from "@/features/tree/api";
+import { generateNKeysBetween } from "@/features/tree/fractionalIndex";
+import { db } from "@/db/client";
+import { chatSessions, chatMessages } from "@/db/schema";
+import type {
+  ParsedCodexEntry,
+  ParsedSnippet,
+  ParsedChapter,
+  ParsedChatSession,
+} from "./novelcrafterParser";
 
 export const PROJECT_ID = "default-project";
 
@@ -384,6 +393,160 @@ export async function importSnippets(
   onProgress?.({
     total: snippets.length,
     done: snippets.length,
+    currentName: "",
+  });
+  return { imported, errors };
+}
+
+// ─────────────────────────────────────────────────────────────────
+// Novel body (chapters / scenes from novel.md)
+// ─────────────────────────────────────────────────────────────────
+
+/**
+ * Insert chapters (folders) and their scenes into the tree, appended after any
+ * existing top-level nodes. Each scene's bullets become its synopsis and the
+ * post-`---` body becomes its ProseMirror content.
+ */
+export async function importChapters(
+  chapters: ParsedChapter[],
+  onProgress?: (p: ImportProgress) => void,
+): Promise<{ imported: number; errors: string[] }> {
+  let imported = 0;
+  const errors: string[] = [];
+
+  const totalScenes = chapters.reduce((sum, c) => sum + c.scenes.length, 0);
+  const total = chapters.length + totalScenes;
+  if (total === 0) {
+    onProgress?.({ total: 0, done: 0, currentName: "" });
+    return { imported: 0, errors };
+  }
+
+  // Append chapters after any existing top-level nodes
+  const allRoots = (await listNodes(PROJECT_ID, null)).slice();
+  allRoots.sort((a, b) =>
+    a.sortOrder < b.sortOrder ? -1 : a.sortOrder > b.sortOrder ? 1 : 0,
+  );
+  const lastRootKey = allRoots.at(-1)?.sortOrder ?? null;
+  const chapterKeys = generateNKeysBetween(lastRootKey, null, chapters.length);
+
+  let done = 0;
+  for (let ci = 0; ci < chapters.length; ci++) {
+    const chapter = chapters[ci];
+    onProgress?.({ total, done, currentName: chapter.title });
+    try {
+      await createNode({
+        id: chapter.id,
+        projectId: PROJECT_ID,
+        nodeType: "folder",
+        title: chapter.title || "Untitled",
+        sortOrder: chapterKeys[ci],
+      });
+      imported++;
+      done++;
+
+      if (chapter.scenes.length > 0) {
+        const sceneKeys = generateNKeysBetween(
+          null,
+          null,
+          chapter.scenes.length,
+        );
+        for (let si = 0; si < chapter.scenes.length; si++) {
+          const scene = chapter.scenes[si];
+          onProgress?.({ total, done, currentName: scene.title });
+          try {
+            await createNode({
+              id: scene.id,
+              projectId: PROJECT_ID,
+              parentId: chapter.id,
+              nodeType: "scene",
+              title: scene.title || "Untitled",
+              sortOrder: sceneKeys[si],
+            });
+            // Set body content if present
+            if (scene.body) {
+              await saveSceneContent(scene.id, {
+                content: fieldValueToProseMirror(scene.body),
+                charCount: scene.body.length,
+              });
+            }
+            imported++;
+          } catch (sceneErr) {
+            errors.push(`${scene.title}: ${String(sceneErr)}`);
+          }
+          done++;
+        }
+      }
+    } catch (chapterErr) {
+      errors.push(`${chapter.title}: ${String(chapterErr)}`);
+      // Skip ahead past this chapter's scenes in progress
+      done += chapter.scenes.length;
+    }
+  }
+
+  onProgress?.({ total, done: total, currentName: "" });
+  return { imported, errors };
+}
+
+// ─────────────────────────────────────────────────────────────────
+// Chat sessions (chats/*.md)
+// ─────────────────────────────────────────────────────────────────
+
+/**
+ * Insert parsed chat sessions and their messages directly via Drizzle so we
+ * can preserve the original session createdAt and produce a deterministic
+ * createdAt sequence for messages within a session.
+ */
+export async function importChatSessionsBatch(
+  sessionsToImport: ParsedChatSession[],
+  onProgress?: (p: ImportProgress) => void,
+): Promise<{ imported: number; errors: string[] }> {
+  let imported = 0;
+  const errors: string[] = [];
+
+  for (let i = 0; i < sessionsToImport.length; i++) {
+    const s = sessionsToImport[i];
+    onProgress?.({
+      total: sessionsToImport.length,
+      done: i,
+      currentName: s.title,
+    });
+
+    try {
+      const sessionCreated = s.createdAt;
+      await db.insert(chatSessions).values({
+        id: s.id,
+        projectId: PROJECT_ID,
+        nodeId: null,
+        title: s.title || "Imported chat",
+        titleManual: s.titleFromFrontmatter ? 1 : 0,
+        createdAt: sessionCreated,
+        updatedAt: sessionCreated,
+      });
+
+      // Generate strictly-increasing createdAt timestamps for messages so they
+      // sort in the order they appeared in the chat file. Add one millisecond
+      // per message to the session timestamp.
+      const baseMs = Date.parse(sessionCreated);
+      for (let mi = 0; mi < s.messages.length; mi++) {
+        const msg = s.messages[mi];
+        const ts = new Date(baseMs + mi).toISOString();
+        await db.insert(chatMessages).values({
+          id: crypto.randomUUID(),
+          sessionId: s.id,
+          role: msg.role,
+          content: msg.content,
+          createdAt: ts,
+        });
+      }
+      imported++;
+    } catch (err) {
+      errors.push(`${s.title}: ${String(err)}`);
+    }
+  }
+
+  onProgress?.({
+    total: sessionsToImport.length,
+    done: sessionsToImport.length,
     currentName: "",
   });
   return { imported, errors };
