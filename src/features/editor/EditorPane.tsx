@@ -93,6 +93,7 @@ import { shouldAutoDraftTransition } from "@/features/editor/autoStatusTransitio
 import { shouldPromptSynopsis } from "@/features/editor/synopsisSuggestion";
 import { getDocText } from "@/features/editor/RubyNode";
 import { useLinter } from "@/features/lint/useLinter";
+import { StatusBarIndicator } from "@/features/lint/StatusBarIndicator";
 import { useForeshadowNavStore } from "@/features/foreshadow/foreshadowNavStore";
 import { generateSynopsisFromContent } from "@/features/chat/chatApi";
 import { useChatStore } from "@/features/chat/chatStore";
@@ -1669,6 +1670,7 @@ export function EditorPane({
         </div>
         {/* Right: stats + save state + history */}
         <div className="flex flex-shrink-0 items-center gap-3">
+          <StatusBarIndicator />
           {showAttribution && aiRatio > 0 && (
             <button
               type="button"
