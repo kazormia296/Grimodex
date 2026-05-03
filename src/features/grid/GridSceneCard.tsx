@@ -11,6 +11,7 @@ import { cn } from "@/lib/utils";
 import { GridCardHeader } from "./GridCardHeader";
 import { GridCardBody } from "./GridCardBody";
 import { GridCardChips } from "./GridCardChips";
+import { GridCardLabelBar } from "./GridCardLabelBar";
 import { GridCardMenu } from "./GridCardMenu";
 import { sceneDraggableId, sceneDroppableId } from "./gridDndUtils";
 import type { DropIndicator } from "./gridDndUtils";
@@ -164,6 +165,8 @@ export function GridSceneCard({
           className="absolute inset-x-0 top-0 h-4 cursor-grab active:cursor-grabbing rounded-t-md"
           aria-label="ドラッグして移動"
         />
+
+        {display.showLabelBar && <GridCardLabelBar nodeId={scene.id} />}
 
         <GridCardHeader
           nodeId={scene.id}

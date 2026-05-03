@@ -665,6 +665,8 @@
       "menu": {
         "open": "Open in Editor",
         "rename": "Rename",
+        "addBeat": "+ Add Beat…",
+        "addLabel": "Add Label",
         "showInScenes": "Show in Scenes",
         "delete": "Delete",
         "deleteConfirm": "Delete this scene?"

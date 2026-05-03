@@ -7,6 +7,7 @@ import type { TreeNodeData } from "@/features/tree/treeStore";
 import { cn } from "@/lib/utils";
 import { GridSceneCard } from "./GridSceneCard";
 import { GridFolderCard } from "./GridFolderCard";
+import { GridColumnLabelBar } from "./GridColumnLabelBar";
 import {
   columnDraggableId,
   columnSlotId,
@@ -143,6 +144,8 @@ export function GridColumn({
         )}
         style={{ transition: "opacity 120ms ease-out" }}
       >
+        {display.showLabelBar && <GridColumnLabelBar nodeId={folder.id} />}
+
         {/* Column header */}
         <div
           className="flex items-center gap-1 px-3 py-2 border-b cursor-grab active:cursor-grabbing"
