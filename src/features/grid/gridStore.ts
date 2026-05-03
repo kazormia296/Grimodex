@@ -23,6 +23,7 @@ export interface GridFilterSettings {
   emptyOnly: boolean;
   hideCompleted: boolean;
   codexFilter: string | null;
+  labelFilter: string[];
 }
 
 export interface GridPersistentState {
@@ -91,6 +92,7 @@ const DEFAULT_FILTER: GridFilterSettings = {
   emptyOnly: false,
   hideCompleted: false,
   codexFilter: null,
+  labelFilter: [],
 };
 
 export const useGridStore = create<GridState>((set, get) => ({

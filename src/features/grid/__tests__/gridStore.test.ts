@@ -47,6 +47,7 @@ const DEFAULT_FILTER = {
   emptyOnly: false,
   hideCompleted: false,
   codexFilter: null as string | null,
+  labelFilter: [] as string[],
 };
 
 function resetStore() {
@@ -208,6 +209,55 @@ describe("loadFromSettings — filter 永続化", () => {
 
     useGridStore.getState().loadFromSettings(settings);
     expect(useGridStore.getState().filter).toEqual(DEFAULT_FILTER);
+  });
+});
+
+describe("labelFilter", () => {
+  it("初期値は空配列", () => {
+    expect(useGridStore.getState().filter.labelFilter).toEqual([]);
+  });
+
+  it("setFilter で labelFilter を更新できる", () => {
+    useGridStore.getState().setFilter({ labelFilter: ["label-a", "label-b"] });
+    expect(useGridStore.getState().filter.labelFilter).toEqual([
+      "label-a",
+      "label-b",
+    ]);
+  });
+
+  it("clearFilter で labelFilter が空配列に戻る", () => {
+    useGridStore.getState().setFilter({ labelFilter: ["label-a"] });
+    useGridStore.getState().clearFilter();
+    expect(useGridStore.getState().filter.labelFilter).toEqual([]);
+  });
+
+  it("loadFromSettings: 旧形式（labelFilter 欠落）でも空配列でフォールバックする", () => {
+    const settings = {
+      grid: {
+        display: DEFAULT_DISPLAY,
+        filter: { emptyOnly: false, hideCompleted: false, codexFilter: null },
+      },
+    } as unknown as import("@/features/workspace/store").GlobalSettings;
+
+    useGridStore.getState().loadFromSettings(settings);
+    expect(useGridStore.getState().filter.labelFilter).toEqual([]);
+  });
+
+  it("loadFromSettings: labelFilter が保存されていれば復元する", () => {
+    const settings = {
+      grid: {
+        display: DEFAULT_DISPLAY,
+        filter: {
+          emptyOnly: false,
+          hideCompleted: false,
+          codexFilter: null,
+          labelFilter: ["label-x"],
+        },
+      },
+    } as unknown as import("@/features/workspace/store").GlobalSettings;
+
+    useGridStore.getState().loadFromSettings(settings);
+    expect(useGridStore.getState().filter.labelFilter).toEqual(["label-x"]);
   });
 });
 

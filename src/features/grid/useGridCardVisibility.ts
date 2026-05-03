@@ -1,5 +1,6 @@
 import { useMemo } from "react";
 import { useCodexStore } from "@/features/codex/codexStore";
+import { useLabelStore } from "@/features/labels/labelStore";
 import { parseBeatPreview } from "./parseBeatPreview";
 import type { TreeNodeData } from "@/features/tree/treeStore";
 import type { GridFilterSettings } from "./gridStore";
@@ -9,10 +10,11 @@ interface CardVisibility {
   passesFilter: boolean;
 }
 
-// Module-level constant to avoid new-reference-in-selector issue
+// Module-level constants to avoid new-reference-in-selector issue
 const EMPTY_CODEX_ENTRIES: ReturnType<
   typeof useCodexStore.getState
 >["entries"] = [];
+const EMPTY_NODE_LABELS: Record<string, string[]> = {};
 
 interface UseGridCardVisibilityArgs {
   scenes: TreeNodeData[];
@@ -31,6 +33,9 @@ export function useGridCardVisibility({
 }: UseGridCardVisibilityArgs): Map<string, CardVisibility> {
   const codexEntries = useCodexStore((s) =>
     s.entries.length > 0 ? s.entries : EMPTY_CODEX_ENTRIES,
+  );
+  const nodeLabels = useLabelStore((s) =>
+    Object.keys(s.nodeLabels).length > 0 ? s.nodeLabels : EMPTY_NODE_LABELS,
   );
 
   return useMemo(() => {
@@ -73,10 +78,24 @@ export function useGridCardVisibility({
         const codexIds = pinsByScene[scene.id] ?? [];
         passesFilter = codexIds.includes(filter.codexFilter);
       }
+      if (passesFilter && filter.labelFilter.length > 0) {
+        const sceneLabels = nodeLabels[scene.id] ?? [];
+        passesFilter = filter.labelFilter.some((id) =>
+          sceneLabels.includes(id),
+        );
+      }
 
       result.set(scene.id, { matchesSearch, passesFilter });
     }
 
     return result;
-  }, [scenes, searchQuery, filter, charCounts, pinsByScene, codexEntries]);
+  }, [
+    scenes,
+    searchQuery,
+    filter,
+    charCounts,
+    pinsByScene,
+    codexEntries,
+    nodeLabels,
+  ]);
 }

@@ -684,7 +684,7 @@ Grid のビュー状態は**スコープを分けて**保存する：
   - カード `[⋮]` メニューに `Label を付ける ▸` サブメニュー追加
   - `Manage labels...` モーダル（`ManageLabelsDialog.tsx`、CRUD + DnD 並べ替え + 削除時シーン数確認）
   - `LabelDots.tsx`（Scenes パネルのタイトル右に小色ドット。`showLabelDots` トグルで制御）
-  - ⚠️ **未実装**: Filter UI への「ラベルでフィルタ」ドロップダウン（Phase C Backlog へ移管）
+  - Filter UI へのラベルフィルタ Pill 行（Phase C で実装済み。詳細は下記）
 - [x] **ラベルテンプレート**（`[⋮] → Apply label template ▸`）
   - 7テンプレート定義: 3幕構成 / 起承転結 / Freytag's Pyramid / Save the Cat / 英雄の旅 / Story Circle / 24章構成（`labelTemplates.ts`）
   - i18n 対訳辞書（ja/en）。既存同名ラベルはスキップ、追加件数をトーストで通知
@@ -700,16 +700,17 @@ Grid のビュー状態は**スコープを分けて**保存する：
   - Compact 時はドットのみに縮退。`display.showForeshadow` トグルで表示制御
   - クリックで ForeshadowPanel を起動。**シーンフィルターは pill ではなく amber バナー形式**で表示（`foreshadowNavStore.requestSceneFilter` + `ForeshadowPanel` 内 `consumeSceneFilter` で連携）
 
+### Phase C: 完了済みの連携機能
+
+- [x] **🔍 検索**（インクリメンタル、ヒット外カードグレーアウト）— `useGridCardVisibility` で title / synopsis / beat / codex 名の OR 検索。ヒット外は `dimmed` で半透明（`opacity-40`）、フィルタ外は完全非表示
+- [x] **ラベルでフィルタ**（複数選択 OR）— `labelFilter: string[]` を `gridStore.filter` に追加、`GridDisplayToolbar` の Filter セクションに色付き Pill 行を追加（クリックで OR トグル、選択中は塗り、未選択は枠のみ）。ラベル削除 / プロジェクト切替時の dangling ID は `useEffect` で自動除去。永続化は `global-settings.json`。
+  - **設計との差異**: 当初 Backlog では「Label 選択ドロップダウン」と記載していたが、ラベルが色情報を持つため Pill 形式（`TagFilterBar` 準拠）に変更。色視認性と複数選択 OR の操作性を優先した。
+- [x] **Codex チップの直接編集** — `GridCardChips.tsx` の editable mode（`+` で `PinEntryDialog`、`×` で削除）
+- [x] **文字数リアルタイム更新** — `GridSceneCard.tsx:49-51` で `useTreeStore.charCounts` map を購読。Editor 編集サイクルに同期
+- [x] **Matrix → Grid クロスナビゲーション** — `requestRevealScene + showPanel("grid")`。Grid パネル前面化 + scrollIntoView + 一時 amber ring（`revealedSceneId`）
+- [x] **複数選択 + 一括操作** — Click / Shift+Click / Cmd+Click、`GridSelectionToolbar` + `bulkSceneOps.ts` で章移動・一括削除
+
 ### Backlog
-
-**Phase C: 連携機能**
-
-- [ ] 🔍 検索（インクリメンタル、ヒット外カードグレーアウト）
-- [ ] フィルタ拡張: ラベルでフィルタ（Label 機能の残課題。Label 選択ドロップダウンを GridDisplayToolbar の Filter セクションに追加）
-- [ ] **Codex チップの直接編集**: `+ Codex` ポップオーバー（Chat パネル「📌ピン留め追加ポップオーバー」を共有可能コンポーネントとしてリファクタしたうえで再利用）、`×` で削除
-- [ ] 文字数カード表示のリアルタイム更新（編集中も反映。現状は保存時点の値）
-- [ ] Matrix → Grid のクロスナビゲーション（「Show in Grid」）
-- [ ] Grid 上のカード複数選択 + 一括操作（一括移動、一括削除）
 
 **Phase D: AI 連携（v2+）**
 

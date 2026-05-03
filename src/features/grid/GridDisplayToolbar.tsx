@@ -1,6 +1,8 @@
 import { useEffect } from "react";
 import { useTranslation } from "react-i18next";
 import { useCodexStore } from "@/features/codex/codexStore";
+import { useLabelStore } from "@/features/labels/labelStore";
+import { resolveLabelColor } from "@/lib/labelPalette";
 import { useGridStore } from "./gridStore";
 
 export function GridDisplayToolbar() {
@@ -12,13 +14,33 @@ export function GridDisplayToolbar() {
   const clearFilter = useGridStore((s) => s.clearFilter);
   const codexEntries = useCodexStore((s) => s.entries);
   const loadEntries = useCodexStore((s) => s.loadEntries);
+  const labels = useLabelStore((s) => s.labels);
 
   useEffect(() => {
     if (codexEntries.length === 0) loadEntries();
   }, [codexEntries.length, loadEntries]);
 
+  // Remove dangling label IDs when labels change (e.g. project switch or label deletion)
+  useEffect(() => {
+    const validIds = new Set(labels.map((l) => l.id));
+    const filtered = filter.labelFilter.filter((id) => validIds.has(id));
+    if (filtered.length !== filter.labelFilter.length) {
+      setFilter({ labelFilter: filtered });
+    }
+  }, [labels, filter.labelFilter, setFilter]);
+
   const hasActiveFilter =
-    filter.emptyOnly || filter.hideCompleted || filter.codexFilter !== null;
+    filter.emptyOnly ||
+    filter.hideCompleted ||
+    filter.codexFilter !== null ||
+    filter.labelFilter.length > 0;
+
+  function toggleLabelFilter(id: string) {
+    const next = filter.labelFilter.includes(id)
+      ? filter.labelFilter.filter((x) => x !== id)
+      : [...filter.labelFilter, id];
+    setFilter({ labelFilter: next });
+  }
 
   const displayToggles: Array<{
     key: keyof typeof display;
@@ -125,6 +147,30 @@ export function GridDisplayToolbar() {
                 </option>
               ))}
             </select>
+          </div>
+        )}
+        {labels.length > 0 && (
+          <div className="mt-1.5 flex flex-wrap gap-1.5">
+            {labels.map((label) => {
+              const active = filter.labelFilter.includes(label.id);
+              const color = resolveLabelColor(label.color);
+              return (
+                <button
+                  key={label.id}
+                  type="button"
+                  onClick={() => toggleLabelFilter(label.id)}
+                  className="flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] transition-colors"
+                  style={{
+                    borderColor: color,
+                    backgroundColor: active ? color : "transparent",
+                    color: active ? "#fff" : color,
+                  }}
+                  title={label.name}
+                >
+                  {label.name}
+                </button>
+              );
+            })}
           </div>
         )}
       </div>
