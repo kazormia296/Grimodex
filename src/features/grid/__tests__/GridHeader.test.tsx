@@ -105,10 +105,10 @@ describe("GridHeader", () => {
     ).toBeNull();
   });
 
-  it("🔍 ボタンを再クリックすると検索バーが閉じて setSearchQuery('') が呼ばれる", () => {
+  it("検索バーの × ボタンで閉じると setSearchQuery('') が呼ばれる", () => {
     render(<GridHeader {...defaultProps} />);
     fireEvent.click(screen.getByTitle("検索"));
-    fireEvent.click(screen.getByTitle("検索"));
+    fireEvent.click(screen.getByLabelText("検索を閉じる"));
     expect(mockSetSearchQuery).toHaveBeenCalledWith("");
   });
 

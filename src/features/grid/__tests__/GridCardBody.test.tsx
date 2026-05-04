@@ -1,5 +1,5 @@
 // @vitest-environment happy-dom
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, fireEvent } from "@testing-library/react";
 
 vi.mock("@/features/editor/InlineSynopsisEditor", () => ({
@@ -13,9 +13,15 @@ vi.mock("@/features/editor/InlineSynopsisEditor", () => ({
 }));
 
 import { GridCardBody } from "../GridCardBody";
+import { useGridStore } from "../gridStore";
+
+beforeEach(() => {
+  // Reset global card tab mode between tests.
+  useGridStore.getState().setCardTabMode("auto");
+});
 
 describe("GridCardBody", () => {
-  it("showSynopsis=false / showBeats=false → 空のシーン 表示", () => {
+  it("両方 OFF → 空のシーン プレースホルダ", () => {
     render(
       <GridCardBody
         nodeId="n1"
@@ -28,12 +34,12 @@ describe("GridCardBody", () => {
     expect(screen.getByText("空のシーン")).toBeDefined();
   });
 
-  it("beats がある → bullet list を beat-primary で表示", () => {
+  it("両タブ表示 / beats あり → デフォルトで Beat タブ選択", () => {
     const preview = JSON.stringify(["Beat A", "Beat B"]);
     render(
       <GridCardBody
         nodeId="n1"
-        synopsis={null}
+        synopsis="my synopsis"
         unplacedBeatPreview={preview}
         showSynopsis={true}
         showBeats={true}
@@ -41,70 +47,29 @@ describe("GridCardBody", () => {
     );
     expect(screen.getByText("Beat A")).toBeDefined();
     expect(screen.getByText("Beat B")).toBeDefined();
-  });
-
-  it("beats + synopsis → 'Show synopsis' トグルを表示（synopsis は非表示）", () => {
-    const preview = JSON.stringify(["Beat A"]);
-    render(
-      <GridCardBody
-        nodeId="n1"
-        synopsis="My synopsis"
-        unplacedBeatPreview={preview}
-        showSynopsis={true}
-        showBeats={true}
-      />,
-    );
-    expect(screen.getByText("Beat A")).toBeDefined();
-    expect(screen.getByText("Show synopsis")).toBeDefined();
     expect(screen.queryByTestId("synopsis-editor")).toBeNull();
+    // Tab strip は両タブとも表示
+    expect(screen.getByRole("tab", { name: /Beat/ })).toBeDefined();
+    expect(screen.getByRole("tab", { name: "Synopsis" })).toBeDefined();
   });
 
-  it("'Show synopsis' クリックで InlineSynopsisEditor が展開される", () => {
+  it("Synopsis タブをクリックすると本文が切り替わる", () => {
     const preview = JSON.stringify(["Beat A"]);
     render(
       <GridCardBody
         nodeId="n1"
-        synopsis="My synopsis"
+        synopsis="my synopsis"
         unplacedBeatPreview={preview}
         showSynopsis={true}
         showBeats={true}
       />,
     );
-    fireEvent.click(screen.getByText("Show synopsis"));
+    fireEvent.click(screen.getByRole("tab", { name: "Synopsis" }));
     expect(screen.getByTestId("synopsis-editor")).toBeDefined();
-  });
-
-  it("showSynopsis=false のとき beats あっても 'Show synopsis' は非表示", () => {
-    const preview = JSON.stringify(["Beat A"]);
-    render(
-      <GridCardBody
-        nodeId="n1"
-        synopsis="My synopsis"
-        unplacedBeatPreview={preview}
-        showSynopsis={false}
-        showBeats={true}
-      />,
-    );
-    expect(screen.getByText("Beat A")).toBeDefined();
-    expect(screen.queryByText("Show synopsis")).toBeNull();
-  });
-
-  it("showBeats=false → beats 非表示で synopsis を表示", () => {
-    const preview = JSON.stringify(["Beat A"]);
-    render(
-      <GridCardBody
-        nodeId="n1"
-        synopsis="My synopsis"
-        unplacedBeatPreview={preview}
-        showSynopsis={true}
-        showBeats={false}
-      />,
-    );
     expect(screen.queryByText("Beat A")).toBeNull();
-    expect(screen.getByTestId("synopsis-editor")).toBeDefined();
   });
 
-  it("beats なし / synopsis あり → synopsis のみ表示", () => {
+  it("beats なし / synopsis あり → デフォルトで Synopsis タブ", () => {
     render(
       <GridCardBody
         nodeId="n1"
@@ -115,10 +80,57 @@ describe("GridCardBody", () => {
       />,
     );
     expect(screen.getByTestId("synopsis-editor")).toBeDefined();
-    expect(screen.queryByText("Show synopsis")).toBeNull();
   });
 
-  it("compact=true → beat 行に line-clamp-1 クラスが付く", () => {
+  it("Beat タブが空のとき '＋ Beat を追加' プロンプトが出て onRequestAddBeat を呼ぶ", () => {
+    const onRequestAddBeat = vi.fn();
+    render(
+      <GridCardBody
+        nodeId="n1"
+        synopsis={null}
+        unplacedBeatPreview={null}
+        showSynopsis={false}
+        showBeats={true}
+        onRequestAddBeat={onRequestAddBeat}
+      />,
+    );
+    const prompt = screen.getByText("＋ Beat を追加");
+    fireEvent.click(prompt);
+    expect(onRequestAddBeat).toHaveBeenCalledTimes(1);
+  });
+
+  it("単タブのとき (showBeats のみ) はタブ strip を出さない", () => {
+    const preview = JSON.stringify(["Beat A"]);
+    render(
+      <GridCardBody
+        nodeId="n1"
+        synopsis={null}
+        unplacedBeatPreview={preview}
+        showSynopsis={false}
+        showBeats={true}
+      />,
+    );
+    expect(screen.getByText("Beat A")).toBeDefined();
+    expect(screen.queryByRole("tablist")).toBeNull();
+  });
+
+  it("showBeats=false のとき Beat タブは出ず Synopsis のみ", () => {
+    const preview = JSON.stringify(["Beat A"]);
+    render(
+      <GridCardBody
+        nodeId="n1"
+        synopsis="my synopsis"
+        unplacedBeatPreview={preview}
+        showSynopsis={true}
+        showBeats={false}
+      />,
+    );
+    expect(screen.queryByText("Beat A")).toBeNull();
+    expect(screen.getByTestId("synopsis-editor")).toBeDefined();
+    expect(screen.queryByRole("tab", { name: /Beat/ })).toBeNull();
+  });
+
+  it("compact=true → beat 行に line-clamp-1", () => {
     const preview = JSON.stringify(["Beat A"]);
     const { container } = render(
       <GridCardBody
@@ -133,7 +145,69 @@ describe("GridCardBody", () => {
     expect(container.querySelector(".line-clamp-1")).not.toBeNull();
   });
 
-  it("compact=false → beat 行に line-clamp-2 クラスが付く", () => {
+  it("cardTabMode='synopsis' → beats があっても Synopsis タブが選択される", () => {
+    useGridStore.getState().setCardTabMode("synopsis");
+    const preview = JSON.stringify(["Beat A"]);
+    render(
+      <GridCardBody
+        nodeId="n1"
+        synopsis="my synopsis"
+        unplacedBeatPreview={preview}
+        showSynopsis={true}
+        showBeats={true}
+      />,
+    );
+    expect(screen.getByTestId("synopsis-editor")).toBeDefined();
+    expect(screen.queryByText("Beat A")).toBeNull();
+  });
+
+  it("cardTabMode 非 auto のとき タブクリックは store を更新する (broadcast)", () => {
+    useGridStore.getState().setCardTabMode("beat");
+    const preview = JSON.stringify(["Beat A"]);
+    render(
+      <GridCardBody
+        nodeId="n1"
+        synopsis="my synopsis"
+        unplacedBeatPreview={preview}
+        showSynopsis={true}
+        showBeats={true}
+      />,
+    );
+    fireEvent.click(screen.getByRole("tab", { name: "Synopsis" }));
+    expect(useGridStore.getState().cardTabMode).toBe("synopsis");
+  });
+
+  it("cardTabMode='auto' のとき タブクリックは store を変更しない", () => {
+    useGridStore.getState().setCardTabMode("auto");
+    const preview = JSON.stringify(["Beat A"]);
+    render(
+      <GridCardBody
+        nodeId="n1"
+        synopsis="my synopsis"
+        unplacedBeatPreview={preview}
+        showSynopsis={true}
+        showBeats={true}
+      />,
+    );
+    fireEvent.click(screen.getByRole("tab", { name: "Synopsis" }));
+    expect(useGridStore.getState().cardTabMode).toBe("auto");
+  });
+
+  it("cardTabMode='beat' でも beats タブが非表示なら synopsis にフォールバック", () => {
+    useGridStore.getState().setCardTabMode("beat");
+    render(
+      <GridCardBody
+        nodeId="n1"
+        synopsis="my synopsis"
+        unplacedBeatPreview={null}
+        showSynopsis={true}
+        showBeats={false}
+      />,
+    );
+    expect(screen.getByTestId("synopsis-editor")).toBeDefined();
+  });
+
+  it("compact=false → beat 行に line-clamp-2", () => {
     const preview = JSON.stringify(["Beat A"]);
     const { container } = render(
       <GridCardBody

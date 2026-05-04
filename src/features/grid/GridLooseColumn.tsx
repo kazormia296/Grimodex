@@ -103,7 +103,7 @@ export function GridLooseColumn({
     );
   }
 
-  const colWidth = display.compactCards ? "w-44" : "w-56";
+  const colWidth = display.compactCards ? "w-56" : "w-80";
 
   const visibleScenes = scenes.filter(
     (s) => visibility.get(s.id)?.passesFilter !== false,

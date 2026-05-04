@@ -26,10 +26,20 @@ export interface GridFilterSettings {
   labelFilter: string[];
 }
 
+/**
+ * Card tab synchronization mode.
+ * - `auto`: each card picks its own default + remembers per-card clicks
+ * - any other value: all cards forced to that tab; clicks broadcast a new mode
+ *
+ * Add a new tab id here when adding a new card body tab.
+ */
+export type CardTabMode = "auto" | "beat" | "synopsis";
+
 export interface GridPersistentState {
   display: GridDisplaySettings;
   filter: GridFilterSettings;
   toolbarOpen: boolean;
+  cardTabMode: CardTabMode;
 }
 
 interface GridState {
@@ -50,6 +60,9 @@ interface GridState {
 
   toolbarOpen: boolean;
   setToolbarOpen: (open: boolean) => void;
+
+  cardTabMode: CardTabMode;
+  setCardTabMode: (mode: CardTabMode) => void;
 
   loadForProject: (projectId: string) => Promise<void>;
   setContainerId: (projectId: string, id: string | null) => Promise<void>;
@@ -100,6 +113,7 @@ export const useGridStore = create<GridState>((set, get) => ({
   display: { ...DEFAULT_DISPLAY },
   filter: { ...DEFAULT_FILTER },
   toolbarOpen: false,
+  cardTabMode: "auto",
   searchQuery: "",
   collapsedFolderIds: new Set<string>(),
   selectedSceneIds: new Set<string>(),
@@ -136,6 +150,10 @@ export const useGridStore = create<GridState>((set, get) => ({
 
   setToolbarOpen(open) {
     set({ toolbarOpen: open });
+  },
+
+  setCardTabMode(mode) {
+    set({ cardTabMode: mode });
   },
 
   setDisplay(updates) {
@@ -188,6 +206,7 @@ export const useGridStore = create<GridState>((set, get) => ({
       display: { ...DEFAULT_DISPLAY, ...savedDisplay, showStatusLabel },
       filter: { ...DEFAULT_FILTER, ...(saved.filter ?? {}) },
       toolbarOpen: saved.toolbarOpen ?? false,
+      cardTabMode: saved.cardTabMode ?? "auto",
     });
   },
 
@@ -246,7 +265,12 @@ export const useGridStore = create<GridState>((set, get) => ({
 
 // Auto-persist display + filter + toolbar state to global-settings.json
 function snapshotPersistent(s: GridState): GridPersistentState {
-  return { display: s.display, filter: s.filter, toolbarOpen: s.toolbarOpen };
+  return {
+    display: s.display,
+    filter: s.filter,
+    toolbarOpen: s.toolbarOpen,
+    cardTabMode: s.cardTabMode,
+  };
 }
 
 let prevSnapshot = JSON.stringify(snapshotPersistent(useGridStore.getState()));

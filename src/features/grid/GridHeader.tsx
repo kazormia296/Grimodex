@@ -1,6 +1,5 @@
 import { useRef, useState } from "react";
 import {
-  Plus,
   Search,
   MoreVertical,
   X,
@@ -10,7 +9,7 @@ import {
   ChevronUp,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
-import { useTreeStore } from "@/features/tree/treeStore";
+import { cn } from "@/lib/utils";
 import { useGridStore } from "./gridStore";
 import { GridContainerSelector } from "./GridContainerSelector";
 import { GridActionsMenu } from "./GridActionsMenu";
@@ -41,7 +40,7 @@ export function GridHeader({
   const [searchOpen, setSearchOpen] = useState(false);
   const [actionsMenuOpen, setActionsMenuOpen] = useState(false);
   const menuBtnRef = useRef<HTMLButtonElement>(null);
-  const createNode = useTreeStore((s) => s.createNode);
+  const searchInputRef = useRef<HTMLInputElement>(null);
   const searchQuery = useGridStore((s) => s.searchQuery);
   const setSearchQuery = useGridStore((s) => s.setSearchQuery);
   const collapsedFolderIds = useGridStore((s) => s.collapsedFolderIds);
@@ -59,15 +58,14 @@ export function GridHeader({
     }
   }
 
-  async function addChapter() {
-    await createNode({ nodeType: "folder", parentId: containerId });
-  }
-
   function toggleSearch() {
     if (searchOpen) {
       setSearchQuery("");
+      setSearchOpen(false);
+    } else {
+      setSearchOpen(true);
+      setTimeout(() => searchInputRef.current?.focus(), 0);
     }
-    setSearchOpen((v) => !v);
   }
 
   function handleSearchKeyDown(e: React.KeyboardEvent<HTMLInputElement>) {
@@ -80,13 +78,18 @@ export function GridHeader({
   return (
     <div className="shrink-0 border-b">
       <div className="flex items-center gap-2 px-3 py-2">
+        <span className="font-mono text-[10px] uppercase tracking-wider text-muted-foreground">
+          {t("grid.header.kicker", "Grid")}
+        </span>
+        <span className="text-muted-foreground/40">/</span>
+
         <GridContainerSelector
           containerId={containerId}
           projectId={projectId}
           onSelect={onContainerChange}
         />
 
-        <span className="ml-1 text-[11px] text-muted-foreground">
+        <span className="ml-1 font-mono text-[10px] text-muted-foreground">
           {t("grid.header.chapterCount", "{{count}} 章", {
             count: chapterCount,
           })}
@@ -94,14 +97,39 @@ export function GridHeader({
 
         <div className="flex-1" />
 
-        <button
-          className="flex items-center gap-1 rounded px-2 py-1 text-[11px] hover:bg-accent transition-colors"
-          onClick={() => void addChapter()}
-          title={t("grid.header.newChapter", "章を追加")}
-        >
-          <Plus className="h-3 w-3" />
-          {t("grid.header.newChapter", "章を追加")}
-        </button>
+        {searchOpen ? (
+          <div className="flex items-center gap-1 rounded border border-input bg-background px-2 py-1">
+            <Search className="h-3 w-3 shrink-0 text-muted-foreground" />
+            <input
+              ref={searchInputRef}
+              type="text"
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              onKeyDown={handleSearchKeyDown}
+              placeholder={t(
+                "grid.header.searchPlaceholder",
+                "シーン名・Synopsis・Beat・Codex を検索…",
+              )}
+              className="w-48 bg-transparent text-[11px] outline-none placeholder:text-muted-foreground/50"
+            />
+            <button
+              className="shrink-0 rounded p-0.5 hover:bg-accent"
+              onClick={toggleSearch}
+              aria-label={t("grid.header.closeSearch", "検索を閉じる")}
+            >
+              <X className="h-3 w-3" />
+            </button>
+          </div>
+        ) : (
+          <button
+            className="rounded p-1 hover:bg-accent transition-colors"
+            onClick={toggleSearch}
+            title={t("grid.header.search", "検索")}
+            aria-pressed={searchOpen}
+          >
+            <Search className="h-3.5 w-3.5" />
+          </button>
+        )}
 
         {hasNestedFolders && (
           <button
@@ -127,16 +155,12 @@ export function GridHeader({
         )}
 
         <button
-          className="rounded p-1 hover:bg-accent transition-colors"
-          onClick={toggleSearch}
-          title={t("grid.header.search", "検索")}
-          aria-pressed={searchOpen}
-        >
-          <Search className="h-3.5 w-3.5" />
-        </button>
-
-        <button
-          className="rounded p-1 hover:bg-accent transition-colors"
+          className={cn(
+            "inline-flex items-center gap-1 rounded border px-2 py-1 font-mono text-[10.5px] tracking-wider transition-colors",
+            toolbarOpen
+              ? "border-border bg-accent text-foreground"
+              : "border-border/60 text-muted-foreground hover:text-foreground hover:bg-accent/50",
+          )}
           onClick={onToggleToolbar}
           title={
             toolbarOpen
@@ -145,17 +169,18 @@ export function GridHeader({
           }
           aria-pressed={toolbarOpen}
         >
+          {t("grid.header.displayFilter", "表示・フィルタ")}
           {toolbarOpen ? (
-            <ChevronUp className="h-3.5 w-3.5" />
+            <ChevronUp className="h-3 w-3" />
           ) : (
-            <ChevronDown className="h-3.5 w-3.5" />
+            <ChevronDown className="h-3 w-3" />
           )}
         </button>
 
         <div className="relative">
           <button
             ref={menuBtnRef}
-            className="rounded p-1 hover:bg-accent transition-colors"
+            className="rounded border border-border/60 p-1 text-muted-foreground hover:bg-accent hover:text-foreground transition-colors"
             onClick={() => setActionsMenuOpen((v) => !v)}
             title={t("grid.header.actionsMenu", "アクション")}
           >
@@ -170,33 +195,6 @@ export function GridHeader({
           )}
         </div>
       </div>
-
-      {searchOpen && (
-        <div className="flex items-center gap-1 border-t px-3 py-1.5">
-          <Search className="h-3 w-3 shrink-0 text-muted-foreground" />
-          <input
-            // eslint-disable-next-line jsx-a11y/no-autofocus
-            autoFocus
-            type="text"
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            onKeyDown={handleSearchKeyDown}
-            placeholder={t(
-              "grid.header.searchPlaceholder",
-              "シーン名・Synopsis・Beat・Codex を検索…",
-            )}
-            className="flex-1 bg-transparent text-[11px] outline-none placeholder:text-muted-foreground/50"
-          />
-          {searchQuery && (
-            <button
-              className="shrink-0 rounded p-0.5 hover:bg-accent"
-              onClick={() => setSearchQuery("")}
-            >
-              <X className="h-3 w-3" />
-            </button>
-          )}
-        </div>
-      )}
     </div>
   );
 }

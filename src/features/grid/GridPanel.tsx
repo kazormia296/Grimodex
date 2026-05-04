@@ -15,6 +15,7 @@ import type {
 import { useTranslation } from "react-i18next";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { useSceneCodexPinsStore } from "@/features/codex/sceneCodexPinsStore";
+import { useEnsureCodexTypeColors } from "@/features/codex/useEnsureCodexTypeColors";
 import { cmpKeys } from "@/features/tree/fractionalIndex";
 import { useGridStore } from "./gridStore";
 import { useGridDerivedData, useGridFlatSceneOrder } from "./gridSelectors";
@@ -59,6 +60,13 @@ export function GridPanel() {
   const selectAll = useGridStore((s) => s.selectAll);
   const selectedSceneIds = useGridStore((s) => s.selectedSceneIds);
   const pendingRevealSceneId = useGridStore((s) => s.pendingRevealSceneId);
+  const createNode = useTreeStore((s) => s.createNode);
+
+  async function addChapter() {
+    await createNode({ nodeType: "folder", parentId: containerId });
+  }
+
+  useEnsureCodexTypeColors();
 
   const pinsByScene = useSceneCodexPinsStore((s) => s.pinsByScene);
 
@@ -524,6 +532,18 @@ export function GridPanel() {
               />
             </div>
           )}
+
+          {(chapters.length > 0 || looseScenes.length > 0) && (
+            <button
+              type="button"
+              onClick={() => void addChapter()}
+              className="flex shrink-0 items-center justify-center self-stretch min-h-[8rem] w-14 rounded-lg border border-dashed border-border bg-transparent text-muted-foreground hover:text-foreground hover:bg-accent/30 hover:border-foreground/40 transition-colors font-mono text-[11px] tracking-widest"
+              style={{ writingMode: "vertical-rl" }}
+              title={t("grid.header.newChapter", "章を追加")}
+            >
+              ＋ {t("grid.header.newChapter", "章を追加")}
+            </button>
+          )}
         </div>
 
         <GridSelectionToolbar
@@ -584,7 +604,7 @@ export function GridPanel() {
       <DragOverlay dropAnimation={null}>
         {activeDragNode && (
           <div
-            className={`relative flex flex-col rounded-md border-2 border-primary bg-card shadow-xl ring-2 ring-primary/30 ${display.compactCards ? "w-44" : "w-56"}`}
+            className={`relative flex flex-col rounded-md border-2 border-primary bg-card shadow-xl ring-2 ring-primary/30 ${display.compactCards ? "w-56" : "w-80"}`}
             style={{ opacity: 0.92 }}
           >
             <div className="flex items-center gap-1 border-b px-3 py-2">

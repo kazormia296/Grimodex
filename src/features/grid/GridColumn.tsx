@@ -101,7 +101,7 @@ export function GridColumn({
   }
 
   const shouldAutoEdit = pendingRename === folder.id;
-  const colWidth = display.compactCards ? "w-44" : "w-56";
+  const colWidth = display.compactCards ? "w-56" : "w-80";
 
   const sceneItems = descendants
     .filter((d) => d.node.nodeType === "scene")
@@ -121,7 +121,7 @@ export function GridColumn({
   const isColDropNest =
     columnDropIndicator?.targetId === folder.id &&
     columnDropIndicator.position === "nest";
-  const COL_GAP = display.compactCards ? 176 : 224; // w-44 = 11rem = 176px / w-56 = 14rem = 224px
+  const COL_GAP = display.compactCards ? 224 : 320; // w-56 = 14rem = 224px / w-80 = 20rem = 320px
 
   return (
     <div

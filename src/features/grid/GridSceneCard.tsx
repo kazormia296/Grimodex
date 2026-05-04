@@ -1,6 +1,5 @@
 import { useRef, useState } from "react";
 import { useDraggable, useDroppable } from "@dnd-kit/core";
-import { Plus } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { useTabStore } from "@/features/editor/tabStore";
 import { useLayoutStore } from "@/features/layout/layoutStore";
@@ -232,22 +231,12 @@ export function GridSceneCard({
           showBeats={display.showBeats}
           compact={display.compactCards}
           onEditingChange={setIsEditing}
-          addBeatSlot={
-            display.showBeats && !addingBeat ? (
-              <button
-                type="button"
-                className="mb-1 flex items-center gap-1 rounded px-1 py-0.5 text-[10px] text-muted-foreground/50 hover:bg-accent hover:text-muted-foreground transition-colors"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  setAddingBeat(true);
-                  setBeatDraft("");
-                }}
-              >
-                <Plus className="h-2.5 w-2.5" />
-                {t("grid.card.addBeat", "Beat を追加")}
-              </button>
-            ) : null
-          }
+          onRequestAddBeat={() => {
+            if (!addingBeat) {
+              setAddingBeat(true);
+              setBeatDraft("");
+            }
+          }}
         />
 
         {addingBeat && (
@@ -278,19 +267,18 @@ export function GridSceneCard({
           </div>
         )}
 
-        {display.showForeshadow && (
-          <GridCardForeshadowIndicator
-            sceneId={scene.id}
-            compact={display.compactCards}
-          />
-        )}
-
-        {/* Footer: status badge + char count */}
-        <div className="flex items-center gap-2 px-3 pb-2 pt-0.5 border-t border-border/40 mt-0.5">
+        {/* Footer: status badge + foreshadow + char count */}
+        <div className="flex items-center gap-2 px-3 pb-2 pt-1 border-t border-border/40 mt-0.5">
           <StatusBadge
             status={scene.status}
             iconOnly={!display.showStatusLabel}
           />
+          {display.showForeshadow && (
+            <GridCardForeshadowIndicator
+              sceneId={scene.id}
+              compact={display.compactCards}
+            />
+          )}
           <span className="text-[10px] text-muted-foreground/60 ml-auto">
             {liveCharCount.toLocaleString()} chars
           </span>

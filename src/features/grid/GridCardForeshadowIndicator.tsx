@@ -72,29 +72,18 @@ export function GridCardForeshadowIndicator({ sceneId, compact }: Props) {
     useLayoutStore.getState().showPanel("foreshadow");
   }
 
-  if (compact) {
-    return (
-      <button
-        className="flex items-center px-3 pb-1"
-        onClick={handleClick}
-        title={dot.title}
-      >
-        <span className={`inline-block h-2 w-2 rounded-full ${dot.bg}`} />
-      </button>
-    );
-  }
-
   return (
     <button
-      className="flex items-center gap-1.5 px-3 pb-1.5 text-[10px] text-muted-foreground hover:text-foreground"
+      type="button"
+      className="inline-flex items-center gap-1 text-[10px] text-muted-foreground/80 hover:text-foreground transition-colors"
       onClick={handleClick}
       title={dot.title}
     >
       <span
         className={`inline-block h-2 w-2 rounded-full shrink-0 ${dot.bg}`}
       />
-      {setupCount > 0 && <span>📌{setupCount}</span>}
-      {payoffCount > 0 && <span>✓{payoffCount}</span>}
+      {!compact && setupCount > 0 && <span>📌{setupCount}</span>}
+      {!compact && payoffCount > 0 && <span>✓{payoffCount}</span>}
     </button>
   );
 }
