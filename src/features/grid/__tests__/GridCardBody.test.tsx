@@ -207,6 +207,79 @@ describe("GridCardBody", () => {
     expect(screen.getByTestId("synopsis-editor")).toBeDefined();
   });
 
+  it("Beat が複数あるときも '+ Beat' ボタンが表示され onRequestAddBeat を呼ぶ", () => {
+    const onRequestAddBeat = vi.fn();
+    const preview = JSON.stringify(["Beat A", "Beat B"]);
+    render(
+      <GridCardBody
+        nodeId="n1"
+        synopsis={null}
+        unplacedBeatPreview={preview}
+        showSynopsis={false}
+        showBeats={true}
+        onRequestAddBeat={onRequestAddBeat}
+      />,
+    );
+    const addBtn = screen.getByRole("button", { name: "＋ Beat を追加" });
+    fireEvent.click(addBtn);
+    expect(onRequestAddBeat).toHaveBeenCalledTimes(1);
+  });
+
+  it("Beat が 4 件以上のとき先頭 3 件のみ表示 + '他 N 件' を出す", () => {
+    const preview = JSON.stringify(["B1", "B2", "B3", "B4", "B5"]);
+    render(
+      <GridCardBody
+        nodeId="n1"
+        synopsis={null}
+        unplacedBeatPreview={preview}
+        showSynopsis={false}
+        showBeats={true}
+      />,
+    );
+    expect(screen.getByText("B1")).toBeDefined();
+    expect(screen.getByText("B2")).toBeDefined();
+    expect(screen.getByText("B3")).toBeDefined();
+    expect(screen.queryByText("B4")).toBeNull();
+    expect(screen.queryByText("B5")).toBeNull();
+    expect(screen.getByText("他 2 件")).toBeDefined();
+  });
+
+  it("'他 N 件' をクリックすると全 Beat が展開され、再クリックで折りたたまれる", () => {
+    const preview = JSON.stringify(["B1", "B2", "B3", "B4", "B5"]);
+    render(
+      <GridCardBody
+        nodeId="n1"
+        synopsis={null}
+        unplacedBeatPreview={preview}
+        showSynopsis={false}
+        showBeats={true}
+      />,
+    );
+    fireEvent.click(screen.getByText("他 2 件"));
+    expect(screen.getByText("B4")).toBeDefined();
+    expect(screen.getByText("B5")).toBeDefined();
+    expect(screen.queryByText("他 2 件")).toBeNull();
+
+    fireEvent.click(screen.getByText("折りたたむ"));
+    expect(screen.queryByText("B4")).toBeNull();
+    expect(screen.queryByText("B5")).toBeNull();
+    expect(screen.getByText("他 2 件")).toBeDefined();
+  });
+
+  it("Beat が 3 件以下なら '他 N 件' は表示しない", () => {
+    const preview = JSON.stringify(["B1", "B2", "B3"]);
+    render(
+      <GridCardBody
+        nodeId="n1"
+        synopsis={null}
+        unplacedBeatPreview={preview}
+        showSynopsis={false}
+        showBeats={true}
+      />,
+    );
+    expect(screen.queryByText(/他 \d+ 件/)).toBeNull();
+  });
+
   it("compact=false → beat 行に line-clamp-2", () => {
     const preview = JSON.stringify(["Beat A"]);
     const { container } = render(

@@ -670,6 +670,8 @@
       "synopsisPlaceholder": "シノプシスを追加…",
       "empty": "空のシーン",
       "openInEditor": "エディタで開く",
+      "moreBeats": "他 {{n}} 件",
+      "collapseBeats": "折りたたむ",
       "menu": {
         "rename": "名前を変更",
         "addBeat": "+ Beat を追加…",

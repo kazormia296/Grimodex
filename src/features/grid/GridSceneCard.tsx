@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useLayoutEffect, useRef, useState } from "react";
 import { useDraggable, useDroppable } from "@dnd-kit/core";
 import { useTranslation } from "react-i18next";
 import { useTabStore } from "@/features/editor/tabStore";
@@ -45,6 +45,7 @@ export function GridSceneCard({
   const [addingBeat, setAddingBeat] = useState(false);
   const [beatDraft, setBeatDraft] = useState("");
   const menuBtnRef = useRef<HTMLButtonElement>(null);
+  const beatInputRef = useRef<HTMLTextAreaElement>(null);
 
   const liveCharCount = useTreeStore(
     (s) => s.charCounts[scene.id] ?? scene.charCount ?? 0,
@@ -111,15 +112,25 @@ export function GridSceneCard({
     }
   }
 
-  function handleBeatKeyDown(e: React.KeyboardEvent<HTMLInputElement>) {
-    if (e.key === "Enter") {
+  function handleBeatKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
+    if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
       void commitBeat();
     } else if (e.key === "Escape") {
+      e.preventDefault();
       setAddingBeat(false);
       setBeatDraft("");
     }
   }
+
+  // Auto-resize the add-beat textarea to fit content.
+  useLayoutEffect(() => {
+    if (!addingBeat) return;
+    const el = beatInputRef.current;
+    if (!el) return;
+    el.style.height = "auto";
+    el.style.height = `${el.scrollHeight}px`;
+  }, [addingBeat, beatDraft]);
 
   function handleCardClick(e: React.MouseEvent) {
     if (isEditing || addingBeat) return;
@@ -220,18 +231,24 @@ export function GridSceneCard({
 
         {addingBeat && (
           <div className="px-3 pb-2">
-            <input
+            <textarea
+              ref={beatInputRef}
               // eslint-disable-next-line jsx-a11y/no-autofocus
               autoFocus
-              className="w-full rounded border border-input bg-background px-2 py-1 text-[11px] focus:outline-none focus:ring-1 focus:ring-ring"
+              rows={1}
+              className="w-full resize-none overflow-hidden rounded border border-input bg-background px-2 py-1 text-[11px] leading-snug focus:outline-none focus:ring-1 focus:ring-ring"
               placeholder={t(
                 "grid.card.beatPlaceholder",
-                "Beat を入力… (Enter で確定)",
+                "Beat を入力… (Enter で確定 / Shift+Enter で改行)",
               )}
               value={beatDraft}
               onChange={(e) => setBeatDraft(e.target.value)}
               onKeyDown={handleBeatKeyDown}
               onBlur={() => void commitBeat()}
+              title={t(
+                "grid.card.beatEditHint",
+                "Enter で確定、Shift+Enter で改行、Esc で取消",
+              )}
             />
           </div>
         )}

@@ -670,6 +670,8 @@
       "synopsisPlaceholder": "Add synopsis…",
       "empty": "Empty scene",
       "openInEditor": "Open in Editor",
+      "moreBeats": "+{{n}} more",
+      "collapseBeats": "Collapse",
       "menu": {
         "rename": "Rename",
         "addBeat": "+ Add Beat…",
