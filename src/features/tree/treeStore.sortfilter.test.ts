@@ -12,6 +12,7 @@ function resetStore() {
   useTreeStore.setState({
     sortMode: "manual",
     statusFilter: null,
+    labelFilter: [],
   });
 }
 
@@ -66,5 +67,34 @@ describe("treeStore statusFilter", () => {
       useTreeStore.getState().setStatusFilter(status);
       expect(useTreeStore.getState().statusFilter).toBe(status);
     }
+  });
+});
+
+describe("treeStore labelFilter", () => {
+  beforeEach(resetStore);
+
+  it("defaults to empty array (show all)", () => {
+    expect(useTreeStore.getState().labelFilter).toEqual([]);
+  });
+
+  it("toggleLabelFilter adds an id when absent and removes when present", () => {
+    const { toggleLabelFilter } = useTreeStore.getState();
+    toggleLabelFilter("L1");
+    expect(useTreeStore.getState().labelFilter).toEqual(["L1"]);
+    toggleLabelFilter("L2");
+    expect(useTreeStore.getState().labelFilter).toEqual(["L1", "L2"]);
+    toggleLabelFilter("L1");
+    expect(useTreeStore.getState().labelFilter).toEqual(["L2"]);
+  });
+
+  it("setLabelFilter replaces the entire selection", () => {
+    useTreeStore.getState().setLabelFilter(["A", "B", "C"]);
+    expect(useTreeStore.getState().labelFilter).toEqual(["A", "B", "C"]);
+  });
+
+  it("clearLabelFilter empties the selection", () => {
+    useTreeStore.getState().setLabelFilter(["A", "B"]);
+    useTreeStore.getState().clearLabelFilter();
+    expect(useTreeStore.getState().labelFilter).toEqual([]);
   });
 });

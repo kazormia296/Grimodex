@@ -101,6 +101,7 @@ interface TreeState {
   viewMode: ViewMode;
   sortMode: SortMode;
   statusFilter: SceneStatus | null; // null = show all
+  labelFilter: string[]; // [] = show all; OR semantics
 
   // Display settings
   charCounts: Record<string, number>;
@@ -170,6 +171,9 @@ interface TreeState {
   setViewMode: (mode: ViewMode) => void;
   setSortMode: (mode: SortMode) => void;
   setStatusFilter: (status: SceneStatus | null) => void;
+  toggleLabelFilter: (id: string) => void;
+  setLabelFilter: (ids: string[]) => void;
+  clearLabelFilter: () => void;
 
   // Display settings
   setCharCount: (id: string, count: number) => void;
@@ -368,6 +372,7 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
   viewMode: "tree",
   sortMode: "manual",
   statusFilter: null,
+  labelFilter: [],
   charCounts: {},
   aiRatios: {},
   showWordCounts: true,
@@ -968,6 +973,22 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
 
   setStatusFilter(status) {
     set({ statusFilter: status });
+  },
+
+  toggleLabelFilter(id) {
+    set((state) => ({
+      labelFilter: state.labelFilter.includes(id)
+        ? state.labelFilter.filter((x) => x !== id)
+        : [...state.labelFilter, id],
+    }));
+  },
+
+  setLabelFilter(ids) {
+    set({ labelFilter: ids });
+  },
+
+  clearLabelFilter() {
+    set({ labelFilter: [] });
   },
 
   async moveNode(id, newParentId, afterId) {

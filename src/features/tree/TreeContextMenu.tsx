@@ -1,11 +1,17 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useTranslation } from "react-i18next";
+import { Check, ChevronRight, Settings, Tag } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useTreeStore } from "./treeStore";
 import { useTabStore } from "@/features/editor/tabStore";
+import { useLabelStore } from "@/features/labels/labelStore";
+import { resolveLabelColor } from "@/lib/labelPalette";
+import { useScenesPanelContext } from "./ScenesPanelContext";
 import { StatusDot } from "./StatusDot";
 import type { TreeNodeData, SceneStatus } from "./treeStore";
+
+const EMPTY_LABEL_IDS: readonly string[] = Object.freeze([]);
 
 const STATUS_OPTIONS: SceneStatus[] = [
   "outline",
@@ -40,6 +46,20 @@ export function TreeContextMenu({
   const { t } = useTranslation();
   const menuRef = useRef<HTMLDivElement>(null);
   const { deleteNode, setStatus, createNode, setActiveScene } = useTreeStore();
+  const allLabels = useLabelStore((s) => s.labels);
+  const assignedLabelIds = useLabelStore(
+    (s) => s.nodeLabels[node.id] ?? EMPTY_LABEL_IDS,
+  );
+  const [labelMenuOpen, setLabelMenuOpen] = useState(false);
+  const scenesContext = useScenesPanelContext();
+
+  async function handleToggleLabel(labelId: string) {
+    const current = useLabelStore.getState().nodeLabels[node.id] ?? [];
+    const next = current.includes(labelId)
+      ? current.filter((id) => id !== labelId)
+      : [...current, labelId];
+    await useLabelStore.getState().setNodeLabels(node.id, next);
+  }
 
   // Close on outside click or Escape
   useEffect(() => {
@@ -162,6 +182,76 @@ export function TreeContextMenu({
 
       {/* Rename */}
       {item(t("tree.rename"), onStartRename, "F2")}
+
+      {/* Assign labels (scene / note) */}
+      {(isScene || isNote) && (
+        <div
+          className="relative"
+          onMouseEnter={() => setLabelMenuOpen(true)}
+          onMouseLeave={() => setLabelMenuOpen(false)}
+        >
+          <button
+            type="button"
+            className={cn(
+              "flex w-full items-center gap-2 px-3 py-1.5 text-xs text-foreground hover:bg-accent",
+              labelMenuOpen && "bg-accent",
+            )}
+          >
+            <Tag className="h-3 w-3" />
+            <span>{t("tree.assignLabels")}</span>
+            <ChevronRight className="ml-auto h-3 w-3" />
+          </button>
+          {labelMenuOpen && (
+            <div className="absolute left-full top-0 ml-1 min-w-[180px] rounded-md border border-border bg-popover py-1 shadow-md">
+              {allLabels.length === 0 && (
+                <div className="px-3 py-1.5 text-xs text-muted-foreground">
+                  {t("scenes.noLabels")}
+                </div>
+              )}
+              {allLabels.map((label) => {
+                const checked = assignedLabelIds.includes(label.id);
+                return (
+                  <button
+                    key={label.id}
+                    type="button"
+                    onClick={() => void handleToggleLabel(label.id)}
+                    className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs text-foreground hover:bg-accent"
+                  >
+                    {checked ? (
+                      <Check className="h-3 w-3 shrink-0" />
+                    ) : (
+                      <span className="w-3 shrink-0" />
+                    )}
+                    <span
+                      className="h-2.5 w-2.5 shrink-0 rounded-full"
+                      style={{
+                        backgroundColor: resolveLabelColor(label.color),
+                      }}
+                    />
+                    <span className="truncate">{label.name}</span>
+                  </button>
+                );
+              })}
+              {scenesContext && (
+                <>
+                  <div className="my-1 border-t border-border" />
+                  <button
+                    type="button"
+                    onClick={() => {
+                      scenesContext.openManageLabels();
+                      onClose();
+                    }}
+                    className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs text-foreground hover:bg-accent"
+                  >
+                    <Settings className="h-3 w-3 shrink-0" />
+                    <span>{t("tree.manageLabels")}</span>
+                  </button>
+                </>
+              )}
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Add children inside folder */}
       {isFolder &&

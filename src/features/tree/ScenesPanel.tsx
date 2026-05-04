@@ -17,6 +17,7 @@ import {
   GripVertical,
   Undo2,
   Redo2,
+  X,
 } from "lucide-react";
 import {
   DndContext,
@@ -34,6 +35,10 @@ import type {
 } from "@dnd-kit/core";
 import { cn } from "@/lib/utils";
 import { useTreeStore } from "./treeStore";
+import { useLabelStore } from "@/features/labels/labelStore";
+import { ManageLabelsDialog } from "@/features/labels/ManageLabelsDialog";
+import { ScenesPanelContext } from "./ScenesPanelContext";
+import { resolveLabelColor } from "@/lib/labelPalette";
 import { cmpKeys } from "./fractionalIndex";
 import { useTreeHistoryStore } from "./treeHistoryStore";
 import { useTabStore } from "@/features/editor/tabStore";
@@ -65,18 +70,40 @@ function flattenVisible(
   expandedIds: string[],
   query: string,
   statusFilter?: string | null,
+  labelFilter?: string[],
+  nodeLabels?: Record<string, string[]>,
 ): TreeNodeData[] {
   const ids = childMap[parentId ?? "root"] ?? [];
   const result: TreeNodeData[] = [];
   for (const id of ids) {
     const node = nodeMap[id];
     if (!node) continue;
-    if (!isNodeVisible(node, childMap, nodeMap, query, statusFilter)) continue;
+    if (
+      !isNodeVisible(
+        node,
+        childMap,
+        nodeMap,
+        query,
+        statusFilter,
+        labelFilter,
+        nodeLabels,
+      )
+    )
+      continue;
     result.push(node);
     const isContainer = node.nodeType === "folder";
     const expanded =
       expandedIds.includes(id) ||
-      (!!query && isNodeVisible(node, childMap, nodeMap, query, statusFilter));
+      (!!query &&
+        isNodeVisible(
+          node,
+          childMap,
+          nodeMap,
+          query,
+          statusFilter,
+          labelFilter,
+          nodeLabels,
+        ));
     if (isContainer && expanded) {
       result.push(
         ...flattenVisible(
@@ -86,6 +113,8 @@ function flattenVisible(
           expandedIds,
           query,
           statusFilter,
+          labelFilter,
+          nodeLabels,
         ),
       );
     }
@@ -113,6 +142,8 @@ function isNodeVisible(
   nodeMap: Record<string, TreeNodeData>,
   query: string,
   statusFilter?: string | null,
+  labelFilter?: string[],
+  nodeLabels?: Record<string, string[]>,
 ): boolean {
   // Status filter: hide scene nodes whose status doesn't match
   if (
@@ -121,6 +152,17 @@ function isNodeVisible(
     node.status !== statusFilter
   ) {
     return false;
+  }
+  // Label filter (OR semantics): hide leaf nodes that don't carry any selected
+  // label. Folders pass through so they remain navigable; if all descendants
+  // are hidden, the folder simply renders empty.
+  if (
+    labelFilter &&
+    labelFilter.length > 0 &&
+    (node.nodeType === "scene" || node.nodeType === "note")
+  ) {
+    const assigned = nodeLabels?.[node.id] ?? [];
+    if (!labelFilter.some((id) => assigned.includes(id))) return false;
   }
   if (!query) return true;
   if (node.title.toLowerCase().includes(query)) return true;
@@ -138,6 +180,8 @@ interface TreeRendererProps {
   expandedIds: string[];
   filterQuery: string;
   statusFilter?: string | null;
+  labelFilter?: string[];
+  nodeLabels?: Record<string, string[]>;
   viewMode: string;
   charCounts: Record<string, number>;
   aiRatios: Record<string, number>;
@@ -160,6 +204,8 @@ function TreeRenderer({
   expandedIds,
   filterQuery,
   statusFilter,
+  labelFilter,
+  nodeLabels,
   viewMode,
   charCounts,
   aiRatios,
@@ -185,6 +231,8 @@ function TreeRenderer({
           nodeMap,
           query,
           statusFilter,
+          labelFilter,
+          nodeLabels,
         );
         const isExpanded = expandedIds.includes(id) || (!!query && visible);
         const isLeaf = node.nodeType === "scene" || node.nodeType === "note";
@@ -218,6 +266,8 @@ function TreeRenderer({
                 expandedIds={expandedIds}
                 filterQuery={filterQuery}
                 statusFilter={statusFilter}
+                labelFilter={labelFilter}
+                nodeLabels={nodeLabels}
                 viewMode={viewMode}
                 charCounts={charCounts}
                 aiRatios={aiRatios}
@@ -262,6 +312,9 @@ interface PanelMenuProps {
   setStatusFilter: (
     s: "outline" | "draft" | "complete" | "revision" | "final" | null,
   ) => void;
+  labelFilter: string[];
+  toggleLabelFilter: (id: string) => void;
+  clearLabelFilter: () => void;
   showWordCounts: boolean;
   setShowWordCounts: (v: boolean) => void;
   showStatusDots: boolean;
@@ -294,6 +347,9 @@ function PanelMenu({
   setSortMode,
   statusFilter,
   setStatusFilter,
+  labelFilter,
+  toggleLabelFilter,
+  clearLabelFilter,
   showWordCounts,
   setShowWordCounts,
   showStatusDots,
@@ -309,6 +365,7 @@ function PanelMenu({
 }: PanelMenuProps) {
   const { t } = useTranslation();
   const ref = useRef<HTMLDivElement>(null);
+  const allLabels = useLabelStore((s) => s.labels);
   useEffect(() => {
     function close(e: MouseEvent) {
       if (
@@ -398,6 +455,57 @@ function PanelMenu({
               : value.charAt(0).toUpperCase() + value.slice(1),
             setStatusFilter,
           ),
+        )}
+      </SubMenuGroup>
+      <SubMenuGroup label={t("scenes.filterByLabelLabel")}>
+        {allLabels.length === 0 ? (
+          <div className="px-3 py-1.5 text-xs text-muted-foreground">
+            {t("scenes.noLabels")}
+          </div>
+        ) : (
+          <>
+            <button
+              type="button"
+              onClick={clearLabelFilter}
+              className={cn(
+                "flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs text-foreground hover:bg-accent",
+                labelFilter.length === 0 && "bg-accent font-medium",
+              )}
+            >
+              {labelFilter.length === 0 ? (
+                <Check className="h-3 w-3" />
+              ) : (
+                <span className="w-3" />
+              )}
+              {t("scenes.filterAllLabels")}
+            </button>
+            {allLabels.map((label) => {
+              const checked = labelFilter.includes(label.id);
+              const color = resolveLabelColor(label.color);
+              return (
+                <button
+                  key={label.id}
+                  type="button"
+                  onClick={() => toggleLabelFilter(label.id)}
+                  className={cn(
+                    "flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs text-foreground hover:bg-accent",
+                    checked && "font-medium",
+                  )}
+                >
+                  {checked ? (
+                    <Check className="h-3 w-3" />
+                  ) : (
+                    <span className="w-3" />
+                  )}
+                  <span
+                    className="h-2.5 w-2.5 rounded-full shrink-0"
+                    style={{ backgroundColor: color }}
+                  />
+                  <span className="truncate">{label.name}</span>
+                </button>
+              );
+            })}
+          </>
         )}
       </SubMenuGroup>
       <SubMenuGroup label={t("scenes.showLabel")}>
@@ -562,6 +670,7 @@ export function ScenesPanel() {
     viewMode,
     sortMode,
     statusFilter,
+    labelFilter,
     charCounts,
     aiRatios,
     showWordCounts,
@@ -577,6 +686,9 @@ export function ScenesPanel() {
     setViewMode,
     setSortMode,
     setStatusFilter,
+    toggleLabelFilter,
+    clearLabelFilter,
+    setLabelFilter,
     setShowWordCounts,
     setShowStatusDots,
     setShowLabelDots,
@@ -592,11 +704,28 @@ export function ScenesPanel() {
 
   const { canUndo, canRedo } = useTreeHistoryStore();
   const reduced = useReducedMotion();
+  const allLabels = useLabelStore((s) => s.labels);
+  const nodeLabels = useLabelStore((s) => s.nodeLabels);
+
+  // Drop dangling label IDs when labels are deleted/project changes
+  useEffect(() => {
+    if (labelFilter.length === 0) return;
+    const validIds = new Set(allLabels.map((l) => l.id));
+    const filtered = labelFilter.filter((id) => validIds.has(id));
+    if (filtered.length !== labelFilter.length) {
+      setLabelFilter(filtered);
+    }
+  }, [allLabels, labelFilter, setLabelFilter]);
 
   const filterRef = useRef<HTMLInputElement>(null);
   const treeRef = useRef<HTMLDivElement>(null);
   const [showCreateMenu, setShowCreateMenu] = useState(false);
   const [showPanelMenu, setShowPanelMenu] = useState(false);
+  const [manageLabelsOpen, setManageLabelsOpen] = useState(false);
+  const scenesPanelContextValue = useMemo(
+    () => ({ openManageLabels: () => setManageLabelsOpen(true) }),
+    [],
+  );
   const createBtnRef = useRef<HTMLButtonElement>(null);
   const panelMenuBtnRef = useRef<HTMLButtonElement>(null);
   const createMenuRef = useRef<HTMLDivElement>(null);
@@ -723,8 +852,18 @@ export function ScenesPanel() {
         expandedIds,
         filterQuery.toLowerCase(),
         statusFilter,
+        labelFilter,
+        nodeLabels,
       ),
-    [childMap, nodeMap, expandedIds, filterQuery, statusFilter],
+    [
+      childMap,
+      nodeMap,
+      expandedIds,
+      filterQuery,
+      statusFilter,
+      labelFilter,
+      nodeLabels,
+    ],
   );
 
   // Auto-reveal active scene: scroll it into view when activeSceneId changes
@@ -1125,342 +1264,417 @@ export function ScenesPanel() {
   const draggingNode = draggingId ? nodeMap[draggingId] : null;
 
   return (
-    <DndContext
-      sensors={sensors}
-      onDragStart={onDragStart}
-      onDragMove={(e) => {
-        onDragMove(e);
-        onDragOver(e as unknown as DragMoveEvent);
-      }}
-      onDragEnd={onDragEnd}
-    >
-      <div className="relative flex h-full flex-col">
-        {/* Toolbar */}
-        <div className="flex flex-shrink-0 items-center justify-between border-b border-border px-2 py-1.5">
-          <span className="text-xs font-semibold text-foreground">Scenes</span>
-          <div className="flex items-center gap-0.5">
-            {/* Create button */}
-            <button
-              ref={createBtnRef}
-              type="button"
-              title={t("scenes.create")}
-              onClick={() => {
-                if (!showCreateMenu && createBtnRef.current) {
-                  setCreateMenuPos(
-                    createBtnRef.current.getBoundingClientRect(),
-                  );
+    <ScenesPanelContext.Provider value={scenesPanelContextValue}>
+      <DndContext
+        sensors={sensors}
+        onDragStart={onDragStart}
+        onDragMove={(e) => {
+          onDragMove(e);
+          onDragOver(e as unknown as DragMoveEvent);
+        }}
+        onDragEnd={onDragEnd}
+      >
+        <div className="relative flex h-full flex-col">
+          {/* Toolbar */}
+          <div className="flex flex-shrink-0 items-center justify-between border-b border-border px-2 py-1.5">
+            <span className="text-xs font-semibold text-foreground">
+              Scenes
+            </span>
+            <div className="flex items-center gap-0.5">
+              {/* Create button */}
+              <button
+                ref={createBtnRef}
+                type="button"
+                title={t("scenes.create")}
+                onClick={() => {
+                  if (!showCreateMenu && createBtnRef.current) {
+                    setCreateMenuPos(
+                      createBtnRef.current.getBoundingClientRect(),
+                    );
+                  }
+                  setShowCreateMenu((v) => !v);
+                }}
+                className="flex h-6 w-6 items-center justify-center rounded text-muted-foreground hover:bg-accent hover:text-foreground active:scale-[0.97] transition-transform duration-75"
+              >
+                <Plus className="h-3.5 w-3.5" />
+              </button>
+
+              {/* Undo */}
+              <button
+                type="button"
+                title={t("scenes.undo")}
+                disabled={!canUndo}
+                onClick={() =>
+                  useTreeHistoryStore
+                    .getState()
+                    .undo()
+                    .catch(() => {})
                 }
-                setShowCreateMenu((v) => !v);
-              }}
-              className="flex h-6 w-6 items-center justify-center rounded text-muted-foreground hover:bg-accent hover:text-foreground active:scale-[0.97] transition-transform duration-75"
-            >
-              <Plus className="h-3.5 w-3.5" />
-            </button>
+                className="flex h-6 w-6 items-center justify-center rounded text-muted-foreground hover:bg-accent hover:text-foreground disabled:pointer-events-none disabled:opacity-30 active:scale-[0.97] transition-transform duration-75"
+              >
+                <Undo2 className="h-3.5 w-3.5" />
+              </button>
 
-            {/* Undo */}
-            <button
-              type="button"
-              title={t("scenes.undo")}
-              disabled={!canUndo}
-              onClick={() =>
-                useTreeHistoryStore
-                  .getState()
-                  .undo()
-                  .catch(() => {})
-              }
-              className="flex h-6 w-6 items-center justify-center rounded text-muted-foreground hover:bg-accent hover:text-foreground disabled:pointer-events-none disabled:opacity-30 active:scale-[0.97] transition-transform duration-75"
-            >
-              <Undo2 className="h-3.5 w-3.5" />
-            </button>
-
-            {/* Redo */}
-            <button
-              type="button"
-              title={t("scenes.redo")}
-              disabled={!canRedo}
-              onClick={() =>
-                useTreeHistoryStore
-                  .getState()
-                  .redo()
-                  .catch(() => {})
-              }
-              className="flex h-6 w-6 items-center justify-center rounded text-muted-foreground hover:bg-accent hover:text-foreground disabled:pointer-events-none disabled:opacity-30 active:scale-[0.97] transition-transform duration-75"
-            >
-              <Redo2 className="h-3.5 w-3.5" />
-            </button>
-
-            {/* Expand/collapse toggle */}
-            <button
-              type="button"
-              title={t("scenes.expandCollapse")}
-              onClick={handleToggleAll}
-              className="flex h-6 w-6 items-center justify-center rounded text-muted-foreground hover:bg-accent hover:text-foreground active:scale-[0.97] transition-transform duration-75"
-            >
-              <ChevronsUpDown className="h-3.5 w-3.5" />
-            </button>
-
-            {/* Panel menu */}
-            <button
-              ref={panelMenuBtnRef}
-              type="button"
-              title={t("scenes.panelMenu")}
-              onClick={() => {
-                if (!showPanelMenu && panelMenuBtnRef.current) {
-                  setPanelMenuPos(
-                    panelMenuBtnRef.current.getBoundingClientRect(),
-                  );
+              {/* Redo */}
+              <button
+                type="button"
+                title={t("scenes.redo")}
+                disabled={!canRedo}
+                onClick={() =>
+                  useTreeHistoryStore
+                    .getState()
+                    .redo()
+                    .catch(() => {})
                 }
-                setShowPanelMenu((v) => !v);
-              }}
-              className={cn(
-                "flex h-6 w-6 items-center justify-center rounded text-muted-foreground hover:bg-accent hover:text-foreground active:scale-[0.97] transition-transform duration-75",
-                showPanelMenu && "bg-accent text-foreground",
-              )}
-            >
-              <MoreHorizontal className="h-3.5 w-3.5" />
-            </button>
-          </div>
-        </div>
+                className="flex h-6 w-6 items-center justify-center rounded text-muted-foreground hover:bg-accent hover:text-foreground disabled:pointer-events-none disabled:opacity-30 active:scale-[0.97] transition-transform duration-75"
+              >
+                <Redo2 className="h-3.5 w-3.5" />
+              </button>
 
-        {/* Filter input */}
-        <div className="flex-shrink-0 border-b border-border px-2 py-1">
-          <input
-            ref={filterRef}
-            type="text"
-            value={filterQuery}
-            onChange={(e) => setFilterQuery(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Escape") setFilterQuery("");
-            }}
-            placeholder={t("scenes.filterPlaceholder")}
-            className="w-full rounded border border-border bg-background px-2 py-0.5 text-xs text-foreground placeholder:text-muted-foreground/60 focus:outline-none focus:ring-1 focus:ring-ring"
-          />
-        </div>
+              {/* Expand/collapse toggle */}
+              <button
+                type="button"
+                title={t("scenes.expandCollapse")}
+                onClick={handleToggleAll}
+                className="flex h-6 w-6 items-center justify-center rounded text-muted-foreground hover:bg-accent hover:text-foreground active:scale-[0.97] transition-transform duration-75"
+              >
+                <ChevronsUpDown className="h-3.5 w-3.5" />
+              </button>
 
-        {/* Tree */}
-        <div
-          ref={treeRef}
-          className="flex-1 overflow-y-auto overflow-x-hidden py-1 outline-none"
-          tabIndex={0}
-          onKeyDown={handleTreeKeyDown}
-          onContextMenu={(e) => {
-            e.preventDefault();
-            setRootContextMenu({ x: e.clientX, y: e.clientY });
-          }}
-        >
-          {nodes.length === 0 ? (
-            <div
-              data-testid="scenes-empty-state"
-              className="flex h-full flex-col items-center justify-center gap-3 px-4 text-center"
-            >
-              <p className="text-xs text-muted-foreground">
-                {t("scenes.empty")}
-              </p>
-              <StructureTemplatePicker
-                projectId={projectId}
-                containerId={null}
-              />
+              {/* Panel menu */}
+              <button
+                ref={panelMenuBtnRef}
+                type="button"
+                title={t("scenes.panelMenu")}
+                onClick={() => {
+                  if (!showPanelMenu && panelMenuBtnRef.current) {
+                    setPanelMenuPos(
+                      panelMenuBtnRef.current.getBoundingClientRect(),
+                    );
+                  }
+                  setShowPanelMenu((v) => !v);
+                }}
+                className={cn(
+                  "flex h-6 w-6 items-center justify-center rounded text-muted-foreground hover:bg-accent hover:text-foreground active:scale-[0.97] transition-transform duration-75",
+                  showPanelMenu && "bg-accent text-foreground",
+                )}
+              >
+                <MoreHorizontal className="h-3.5 w-3.5" />
+              </button>
             </div>
-          ) : (
-            <>
-              <ul className="list-none">
-                <TreeRenderer
-                  parentId={null}
-                  childMap={childMap}
-                  nodeMap={nodeMap}
-                  depth={0}
-                  activeSceneId={activeSceneId}
-                  selectedIds={selectedIds}
-                  expandedIds={expandedIds}
-                  filterQuery={filterQuery}
-                  statusFilter={statusFilter}
-                  viewMode={viewMode}
-                  charCounts={charCounts}
-                  aiRatios={aiRatios}
-                  showWordCounts={showWordCounts}
-                  showStatusDots={showStatusDots}
-                  showLabelDots={showLabelDots}
-                  showAiAttribution={showAiAttribution}
-                  dropIndicator={dropIndicator}
-                  nodeTotals={nodeTotals}
-                  orderedNodes={flatNodes}
+          </div>
+
+          {/* Filter input */}
+          <div className="flex-shrink-0 border-b border-border px-2 py-1">
+            <input
+              ref={filterRef}
+              type="text"
+              value={filterQuery}
+              onChange={(e) => setFilterQuery(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Escape") setFilterQuery("");
+              }}
+              placeholder={t("scenes.filterPlaceholder")}
+              className="w-full rounded border border-border bg-background px-2 py-0.5 text-xs text-foreground placeholder:text-muted-foreground/60 focus:outline-none focus:ring-1 focus:ring-ring"
+            />
+          </div>
+
+          {/* Active filter chips */}
+          {(statusFilter || labelFilter.length > 0) && (
+            <div className="flex-shrink-0 flex flex-wrap items-center gap-1 border-b border-border px-2 py-1">
+              {statusFilter && (
+                <button
+                  type="button"
+                  onClick={() => setStatusFilter(null)}
+                  title={t("scenes.removeFilter")}
+                  className="flex items-center gap-1 rounded-full border border-border bg-accent/50 px-1.5 py-0.5 text-[10px] text-foreground hover:bg-accent"
+                >
+                  <StatusDot status={statusFilter} />
+                  <span>
+                    {statusFilter.charAt(0).toUpperCase() +
+                      statusFilter.slice(1)}
+                  </span>
+                  <X className="h-2.5 w-2.5" />
+                </button>
+              )}
+              {labelFilter.map((id) => {
+                const label = allLabels.find((l) => l.id === id);
+                if (!label) return null;
+                const color = resolveLabelColor(label.color);
+                return (
+                  <button
+                    key={id}
+                    type="button"
+                    onClick={() => toggleLabelFilter(id)}
+                    title={t("scenes.removeFilter")}
+                    className="flex items-center gap-1 rounded-full border px-1.5 py-0.5 text-[10px]"
+                    style={{
+                      borderColor: color,
+                      backgroundColor: `${color}22`,
+                      color,
+                    }}
+                  >
+                    <span
+                      className="h-2 w-2 rounded-full"
+                      style={{ backgroundColor: color }}
+                    />
+                    <span className="truncate max-w-[100px]">{label.name}</span>
+                    <X className="h-2.5 w-2.5" />
+                  </button>
+                );
+              })}
+              <button
+                type="button"
+                onClick={() => {
+                  setStatusFilter(null);
+                  clearLabelFilter();
+                }}
+                className="ml-auto text-[10px] text-primary hover:underline"
+              >
+                {t("scenes.clearFilters")}
+              </button>
+            </div>
+          )}
+
+          {/* Tree */}
+          <div
+            ref={treeRef}
+            className="flex-1 overflow-y-auto overflow-x-hidden py-1 outline-none"
+            tabIndex={0}
+            onKeyDown={handleTreeKeyDown}
+            onContextMenu={(e) => {
+              e.preventDefault();
+              setRootContextMenu({ x: e.clientX, y: e.clientY });
+            }}
+          >
+            {nodes.length === 0 ? (
+              <div
+                data-testid="scenes-empty-state"
+                className="flex h-full flex-col items-center justify-center gap-3 px-4 text-center"
+              >
+                <p className="text-xs text-muted-foreground">
+                  {t("scenes.empty")}
+                </p>
+                <StructureTemplatePicker
+                  projectId={projectId}
+                  containerId={null}
                 />
-              </ul>
-              <BottomDropZone />
-            </>
+              </div>
+            ) : (
+              <>
+                <ul className="list-none">
+                  <TreeRenderer
+                    parentId={null}
+                    childMap={childMap}
+                    nodeMap={nodeMap}
+                    depth={0}
+                    activeSceneId={activeSceneId}
+                    selectedIds={selectedIds}
+                    expandedIds={expandedIds}
+                    filterQuery={filterQuery}
+                    statusFilter={statusFilter}
+                    labelFilter={labelFilter}
+                    nodeLabels={nodeLabels}
+                    viewMode={viewMode}
+                    charCounts={charCounts}
+                    aiRatios={aiRatios}
+                    showWordCounts={showWordCounts}
+                    showStatusDots={showStatusDots}
+                    showLabelDots={showLabelDots}
+                    showAiAttribution={showAiAttribution}
+                    dropIndicator={dropIndicator}
+                    nodeTotals={nodeTotals}
+                    orderedNodes={flatNodes}
+                  />
+                </ul>
+                <BottomDropZone />
+              </>
+            )}
+          </div>
+
+          {/* Synopsis area — hidden in Outline mode (synopsis is shown inline there) */}
+          <AnimatePresence mode="wait">
+            {viewMode !== "outline" && activeNode?.nodeType === "scene" && (
+              <motion.div
+                key="synopsis"
+                initial={{ opacity: 0, y: 8 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: 8 }}
+                transition={
+                  reduced
+                    ? { duration: 0 }
+                    : { duration: DURATIONS.fast, ease: EASINGS.easeOut }
+                }
+              >
+                <SynopsisArea nodeId={activeSceneId} />
+              </motion.div>
+            )}
+          </AnimatePresence>
+
+          {rootContextMenu && (
+            <RootContextMenu
+              x={rootContextMenu.x}
+              y={rootContextMenu.y}
+              onClose={() => setRootContextMenu(null)}
+              createNode={createNode}
+            />
           )}
-        </div>
 
-        {/* Synopsis area — hidden in Outline mode (synopsis is shown inline there) */}
-        <AnimatePresence mode="wait">
-          {viewMode !== "outline" && activeNode?.nodeType === "scene" && (
-            <motion.div
-              key="synopsis"
-              initial={{ opacity: 0, y: 8 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: 8 }}
-              transition={
-                reduced
-                  ? { duration: 0 }
-                  : { duration: DURATIONS.fast, ease: EASINGS.easeOut }
-              }
-            >
-              <SynopsisArea nodeId={activeSceneId} />
-            </motion.div>
-          )}
-        </AnimatePresence>
-
-        {rootContextMenu && (
-          <RootContextMenu
-            x={rootContextMenu.x}
-            y={rootContextMenu.y}
-            onClose={() => setRootContextMenu(null)}
-            createNode={createNode}
-          />
-        )}
-
-        {deleteConfirm && (
-          <div className="absolute inset-0 z-50 flex items-center justify-center bg-background/80">
-            <div className="rounded-lg border border-border bg-popover p-4 shadow-xl w-72">
-              <p className="text-sm font-medium mb-1">
-                {t("scenes.deleteConfirmTitle")}
-              </p>
-              <p className="text-xs text-muted-foreground mb-4">
-                {t("scenes.deleteConfirmBody", {
-                  count: (() => {
-                    function collectAll(id: string): string[] {
-                      return [id, ...(childMap[id] ?? []).flatMap(collectAll)];
-                    }
-                    return deleteConfirm.flatMap(collectAll).filter((id) => {
-                      const node = nodeMap[id];
-                      if (!node || node.nodeType === "folder") return false;
-                      return (charCounts[id] ?? 0) > 0 || !!node.synopsis;
-                    }).length;
-                  })(),
-                })}
-              </p>
-              <div className="flex gap-2 justify-end">
-                <button
-                  type="button"
-                  className="rounded px-3 py-1 text-xs border border-border hover:bg-accent"
-                  onClick={() => setDeleteConfirm(null)}
-                >
-                  {t("common.cancel")}
-                </button>
-                <button
-                  type="button"
-                  className="rounded px-3 py-1 text-xs bg-destructive text-destructive-foreground hover:bg-destructive/90"
-                  onClick={() => {
-                    const ids = deleteConfirm;
-                    setDeleteConfirm(null);
-                    ids
-                      .reduce(
-                        (p, id) =>
-                          p.then(() => useTreeStore.getState().deleteNode(id)),
-                        Promise.resolve(),
-                      )
-                      .catch(() => {});
-                  }}
-                >
-                  {t("common.deleteConfirm")}
-                </button>
+          {deleteConfirm && (
+            <div className="absolute inset-0 z-50 flex items-center justify-center bg-background/80">
+              <div className="rounded-lg border border-border bg-popover p-4 shadow-xl w-72">
+                <p className="text-sm font-medium mb-1">
+                  {t("scenes.deleteConfirmTitle")}
+                </p>
+                <p className="text-xs text-muted-foreground mb-4">
+                  {t("scenes.deleteConfirmBody", {
+                    count: (() => {
+                      function collectAll(id: string): string[] {
+                        return [
+                          id,
+                          ...(childMap[id] ?? []).flatMap(collectAll),
+                        ];
+                      }
+                      return deleteConfirm.flatMap(collectAll).filter((id) => {
+                        const node = nodeMap[id];
+                        if (!node || node.nodeType === "folder") return false;
+                        return (charCounts[id] ?? 0) > 0 || !!node.synopsis;
+                      }).length;
+                    })(),
+                  })}
+                </p>
+                <div className="flex gap-2 justify-end">
+                  <button
+                    type="button"
+                    className="rounded px-3 py-1 text-xs border border-border hover:bg-accent"
+                    onClick={() => setDeleteConfirm(null)}
+                  >
+                    {t("common.cancel")}
+                  </button>
+                  <button
+                    type="button"
+                    className="rounded px-3 py-1 text-xs bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                    onClick={() => {
+                      const ids = deleteConfirm;
+                      setDeleteConfirm(null);
+                      ids
+                        .reduce(
+                          (p, id) =>
+                            p.then(() =>
+                              useTreeStore.getState().deleteNode(id),
+                            ),
+                          Promise.resolve(),
+                        )
+                        .catch(() => {});
+                    }}
+                  >
+                    {t("common.deleteConfirm")}
+                  </button>
+                </div>
               </div>
             </div>
-          </div>
-        )}
-      </div>
-
-      {/* Drag overlay — portaled to body to escape dockview's transform context
-         which breaks position:fixed used by DragOverlay */}
-      {createPortal(
-        <DragOverlay dropAnimation={null}>
-          {draggingNode && (
-            <div className="flex items-center gap-0.5 rounded bg-background/80 px-1 py-0.5 text-sm shadow-lg ring-1 ring-primary">
-              <span className="flex h-4 w-3 flex-shrink-0 items-center justify-center text-muted-foreground/50">
-                <GripVertical className="h-3 w-3" />
-              </span>
-              <span className="w-4 flex-shrink-0" />
-              {draggingNode.nodeType === "scene" && showStatusDots ? (
-                <StatusDot status={draggingNode.status} />
-              ) : (
-                <NodeIcon nodeType={draggingNode.nodeType} />
-              )}
-              <span className="block truncate text-xs leading-5">
-                {draggingNode.title}
-              </span>
-            </div>
           )}
-        </DragOverlay>,
-        document.body,
-      )}
+        </div>
 
-      {/* Create menu portal — escapes dockview stacking context */}
-      {showCreateMenu &&
-        createMenuPos &&
-        createPortal(
-          <div
-            ref={createMenuRef}
-            style={{
-              position: "fixed",
-              top: createMenuPos.bottom + 2,
-              right: window.innerWidth - createMenuPos.right,
-              zIndex: 9999,
-            }}
-            className="min-w-[140px] rounded-md border border-border bg-popover py-1 shadow-md"
-          >
-            {CREATE_OPTIONS.map((opt, i) =>
-              opt === null ? (
-                <div key={i} className="my-1 border-t border-border" />
-              ) : (
-                <button
-                  key={opt.type}
-                  type="button"
-                  className="flex w-full px-3 py-1.5 text-left text-xs text-foreground hover:bg-accent"
-                  onClick={() => handleCreate(opt.type)}
-                >
-                  {t(opt.labelKey)}
-                </button>
-              ),
+        {/* Drag overlay — portaled to body to escape dockview's transform context
+         which breaks position:fixed used by DragOverlay */}
+        {createPortal(
+          <DragOverlay dropAnimation={null}>
+            {draggingNode && (
+              <div className="flex items-center gap-0.5 rounded bg-background/80 px-1 py-0.5 text-sm shadow-lg ring-1 ring-primary">
+                <span className="flex h-4 w-3 flex-shrink-0 items-center justify-center text-muted-foreground/50">
+                  <GripVertical className="h-3 w-3" />
+                </span>
+                <span className="w-4 flex-shrink-0" />
+                {draggingNode.nodeType === "scene" && showStatusDots ? (
+                  <StatusDot status={draggingNode.status} />
+                ) : (
+                  <NodeIcon nodeType={draggingNode.nodeType} />
+                )}
+                <span className="block truncate text-xs leading-5">
+                  {draggingNode.title}
+                </span>
+              </div>
             )}
-          </div>,
+          </DragOverlay>,
           document.body,
         )}
 
-      {/* Panel menu portal — escapes dockview stacking context */}
-      {showPanelMenu &&
-        panelMenuPos &&
-        createPortal(
-          <div
-            style={{
-              position: "fixed",
-              top: panelMenuPos.bottom + 2,
-              right: window.innerWidth - panelMenuPos.right,
-              zIndex: 9999,
-            }}
-          >
-            <PanelMenu
-              viewMode={viewMode}
-              setViewMode={setViewMode}
-              sortMode={sortMode}
-              setSortMode={setSortMode}
-              statusFilter={statusFilter}
-              setStatusFilter={setStatusFilter}
-              showWordCounts={showWordCounts}
-              setShowWordCounts={setShowWordCounts}
-              showStatusDots={showStatusDots}
-              setShowStatusDots={setShowStatusDots}
-              showLabelDots={showLabelDots}
-              setShowLabelDots={setShowLabelDots}
-              showAiAttribution={showAiAttribution}
-              setShowAiAttribution={setShowAiAttribution}
-              autoRevealActiveScene={autoRevealActiveScene}
-              setAutoRevealActiveScene={setAutoRevealActiveScene}
-              onClose={() => setShowPanelMenu(false)}
-              excludedRef={panelMenuBtnRef}
-            />
-          </div>,
-          document.body,
-        )}
-    </DndContext>
+        {/* Create menu portal — escapes dockview stacking context */}
+        {showCreateMenu &&
+          createMenuPos &&
+          createPortal(
+            <div
+              ref={createMenuRef}
+              style={{
+                position: "fixed",
+                top: createMenuPos.bottom + 2,
+                right: window.innerWidth - createMenuPos.right,
+                zIndex: 9999,
+              }}
+              className="min-w-[140px] rounded-md border border-border bg-popover py-1 shadow-md"
+            >
+              {CREATE_OPTIONS.map((opt, i) =>
+                opt === null ? (
+                  <div key={i} className="my-1 border-t border-border" />
+                ) : (
+                  <button
+                    key={opt.type}
+                    type="button"
+                    className="flex w-full px-3 py-1.5 text-left text-xs text-foreground hover:bg-accent"
+                    onClick={() => handleCreate(opt.type)}
+                  >
+                    {t(opt.labelKey)}
+                  </button>
+                ),
+              )}
+            </div>,
+            document.body,
+          )}
+
+        {/* Panel menu portal — escapes dockview stacking context */}
+        {showPanelMenu &&
+          panelMenuPos &&
+          createPortal(
+            <div
+              style={{
+                position: "fixed",
+                top: panelMenuPos.bottom + 2,
+                right: window.innerWidth - panelMenuPos.right,
+                zIndex: 9999,
+              }}
+            >
+              <PanelMenu
+                viewMode={viewMode}
+                setViewMode={setViewMode}
+                sortMode={sortMode}
+                setSortMode={setSortMode}
+                statusFilter={statusFilter}
+                setStatusFilter={setStatusFilter}
+                labelFilter={labelFilter}
+                toggleLabelFilter={toggleLabelFilter}
+                clearLabelFilter={clearLabelFilter}
+                showWordCounts={showWordCounts}
+                setShowWordCounts={setShowWordCounts}
+                showStatusDots={showStatusDots}
+                setShowStatusDots={setShowStatusDots}
+                showLabelDots={showLabelDots}
+                setShowLabelDots={setShowLabelDots}
+                showAiAttribution={showAiAttribution}
+                setShowAiAttribution={setShowAiAttribution}
+                autoRevealActiveScene={autoRevealActiveScene}
+                setAutoRevealActiveScene={setAutoRevealActiveScene}
+                onClose={() => setShowPanelMenu(false)}
+                excludedRef={panelMenuBtnRef}
+              />
+            </div>,
+            document.body,
+          )}
+        <ManageLabelsDialog
+          open={manageLabelsOpen}
+          onClose={() => setManageLabelsOpen(false)}
+        />
+      </DndContext>
+    </ScenesPanelContext.Provider>
   );
 }
