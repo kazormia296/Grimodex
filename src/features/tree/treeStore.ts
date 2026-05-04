@@ -197,17 +197,30 @@ export interface CreateNodeOpts {
   title?: string;
 }
 
+function isValidOrderKey(key: string): boolean {
+  try {
+    generateKeyBetween(key, null);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Compute next sort_order key for inserting after `afterId` within the same parent.
  * 文字列 fractional-indexing で afterId の次（または末尾）のキーを生成する。
+ *
+ * 古いシードや手動編集で不正な fractional-indexing キー（例: "z0" は 'z'
+ * 始まりで 27 文字必要だが 2 文字）が混入することがある。`generateKeyBetween`
+ * は不正キーで例外を投げるので、無効な兄弟は事前に除外する。
  */
 function nextSortOrder(
   siblings: TreeNodeData[],
   afterId: string | null | undefined,
 ): string {
-  const sorted = [...siblings].sort((a, b) =>
-    cmpKeys(a.sortOrder, b.sortOrder),
-  );
+  const sorted = siblings
+    .filter((n) => isValidOrderKey(n.sortOrder))
+    .sort((a, b) => cmpKeys(a.sortOrder, b.sortOrder));
   if (!afterId) {
     const last = sorted[sorted.length - 1];
     return generateKeyBetween(last ? last.sortOrder : null, null);

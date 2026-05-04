@@ -1495,7 +1495,7 @@ def seed(db_path: Path) -> None:
     conn.execute(
         """INSERT INTO tree_nodes (id,project_id,parent_id,node_type,title,sort_order,content,created_at,updated_at)
            VALUES (?,?,NULL,?,?,?,?,?,?)""",
-        (notes_folder_id, project_id, "folder", "覚書", "z0",
+        (notes_folder_id, project_id, "folder", "覚書", "a2",
          json.dumps({"type": "doc", "content": []}, ensure_ascii=False), now, now),
     )
 
@@ -2379,13 +2379,13 @@ def seed(db_path: Path) -> None:
     for title, syn, status_, sort, story in [
         ("番外：朱紐の起源（complete）",
          "朱紐がどこから来たかを書いた短い章。完成済みフラグの確認用。",
-         "complete", "z1", "前史"),
+         "complete", "a1", "前史"),
         ("番外：陰陽寮の地下（revision）",
          "陰陽寮の封書庫を初めて描く章。改稿待ち。",
-         "revision", "z2", "十年後・初冬"),
+         "revision", "a2", "十年後・初冬"),
         ("番外：燃えた夜の祝詞（final）",
          "回想で母が唱えていた祝詞の全文。校了済み。",
-         "final", "z3", "十年前・夏の夜"),
+         "final", "a3", "十年前・夏の夜"),
     ]:
         sid = uid()
         status_variant_ids[status_] = sid
