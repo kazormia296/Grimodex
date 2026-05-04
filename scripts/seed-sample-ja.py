@@ -146,7 +146,10 @@ CREATE TABLE IF NOT EXISTS tree_nodes (
     location_id       TEXT REFERENCES codex_entries(id) ON DELETE SET NULL,
     status            TEXT DEFAULT 'outline'
                         CHECK(status IS NULL OR status IN ('outline','draft','complete','revision','final')),
-    content           TEXT NOT NULL DEFAULT '{}',
+    content              TEXT NOT NULL DEFAULT '{}',
+    unplaced_beats_doc   TEXT NOT NULL DEFAULT '[]',
+    char_count           INTEGER NOT NULL DEFAULT 0,
+    unplaced_beat_preview TEXT,
     created_at        TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at        TEXT NOT NULL DEFAULT (datetime('now'))
 );
@@ -236,6 +239,25 @@ CREATE TABLE IF NOT EXISTS codex_entry_tags (
     PRIMARY KEY (entry_id, tag_id)
 );
 CREATE INDEX IF NOT EXISTS idx_codex_entry_tags_tag ON codex_entry_tags(tag_id);
+
+CREATE TABLE IF NOT EXISTS labels (
+    id          TEXT PRIMARY KEY,
+    project_id  TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    name        TEXT NOT NULL,
+    color       TEXT NOT NULL,
+    sort_order  REAL NOT NULL DEFAULT 0.0,
+    created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE(project_id, name)
+);
+CREATE INDEX IF NOT EXISTS idx_labels_project ON labels(project_id);
+
+CREATE TABLE IF NOT EXISTS tree_node_labels (
+    node_id  TEXT NOT NULL REFERENCES tree_nodes(id) ON DELETE CASCADE,
+    label_id TEXT NOT NULL REFERENCES labels(id) ON DELETE CASCADE,
+    PRIMARY KEY (node_id, label_id)
+);
+CREATE INDEX IF NOT EXISTS idx_tree_node_labels_label
+    ON tree_node_labels(label_id);
 
 CREATE TABLE IF NOT EXISTS codex_detail_definitions (
     id                 TEXT PRIMARY KEY,
@@ -639,6 +661,35 @@ CREATE TABLE IF NOT EXISTS foreshadow_codex_links (
 CREATE INDEX IF NOT EXISTS idx_fs_codex_codex
     ON foreshadow_codex_links(codex_entry_id);
 
+-- Beat system Phase B：role-aware codex mention cache per scene
+CREATE TABLE IF NOT EXISTS scene_codex_mentions (
+    scene_id        TEXT NOT NULL REFERENCES tree_nodes(id) ON DELETE CASCADE,
+    codex_entry_id  TEXT NOT NULL REFERENCES codex_entries(id) ON DELETE CASCADE,
+    source          TEXT NOT NULL,
+    role            TEXT NOT NULL DEFAULT 'mentioned',
+    PRIMARY KEY (scene_id, codex_entry_id, source)
+);
+CREATE INDEX IF NOT EXISTS idx_scm_codex ON scene_codex_mentions(codex_entry_id);
+CREATE INDEX IF NOT EXISTS idx_scm_scene  ON scene_codex_mentions(scene_id);
+
+-- Grid panel：Scene×Codex の明示ピン
+CREATE TABLE IF NOT EXISTS scene_codex_pins (
+    scene_id   TEXT NOT NULL REFERENCES tree_nodes(id) ON DELETE CASCADE,
+    entry_id   TEXT NOT NULL REFERENCES codex_entries(id) ON DELETE CASCADE,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (scene_id, entry_id)
+);
+CREATE INDEX IF NOT EXISTS idx_scene_codex_pins_scene ON scene_codex_pins(scene_id);
+CREATE INDEX IF NOT EXISTS idx_scene_codex_pins_entry ON scene_codex_pins(entry_id);
+
+-- Matrix の ★ 表示用：beat 単位 POV 上書きキャッシュ
+CREATE TABLE IF NOT EXISTS scene_beat_pov_cache (
+    scene_id          TEXT NOT NULL REFERENCES tree_nodes(id) ON DELETE CASCADE,
+    pov_character_id  TEXT NOT NULL REFERENCES codex_entries(id) ON DELETE CASCADE,
+    PRIMARY KEY (scene_id, pov_character_id)
+);
+CREATE INDEX IF NOT EXISTS idx_scene_beat_pov_scene ON scene_beat_pov_cache(scene_id);
+
 -- FTS5 全文検索インデックス
 CREATE VIRTUAL TABLE IF NOT EXISTS codex_fts USING fts5(
     name, aliases, summary, tags_cache,
@@ -845,6 +896,26 @@ def seed(db_path: Path) -> None:
         conn.execute(
             "INSERT INTO codex_tags (id,project_id,name,color,created_at) VALUES (?,?,?,?,?)",
             (tid, project_id, name, color, now),
+        )
+
+    # ---- Label（Scene パネル / Grid 用のラベル） ----
+    # color はパレットのスロット名（src/lib/labelPalette.ts）を保存し、
+    # UI 側で resolveLabelColor() を通して hex に解決する。
+    label_ids: dict[str, str] = {}
+    for sort_idx, (name, color_slot) in enumerate([
+        ("起",         "rose"),
+        ("承",         "sky"),
+        ("転",         "amber"),
+        ("結",         "emerald"),
+        ("重要",       "red"),
+        ("検討中",     "slate"),
+        ("朱鬼登場",   "violet"),
+    ]):
+        lid = uid()
+        label_ids[name] = lid
+        conn.execute(
+            "INSERT INTO labels (id,project_id,name,color,sort_order,created_at) VALUES (?,?,?,?,?,?)",
+            (lid, project_id, name, color_slot, float(sort_idx), now),
         )
 
     # ---- キャラクター ----
@@ -2304,6 +2375,7 @@ def seed(db_path: Path) -> None:
     )
 
     # ---- status バリアント網羅用の追加シーン ----
+    status_variant_ids: dict[str, str] = {}
     for title, syn, status_, sort, story in [
         ("番外：朱紐の起源（complete）",
          "朱紐がどこから来たかを書いた短い章。完成済みフラグの確認用。",
@@ -2316,6 +2388,7 @@ def seed(db_path: Path) -> None:
          "final", "z3", "十年前・夏の夜"),
     ]:
         sid = uid()
+        status_variant_ids[status_] = sid
         conn.execute(
             """INSERT INTO tree_nodes
                (id,project_id,parent_id,node_type,title,synopsis,sort_order,story_time_order,story_time_label,
@@ -2326,6 +2399,258 @@ def seed(db_path: Path) -> None:
              doc_nodes(para(f"【{status_} ステータス確認用のサンプル本文】")),
              now, now),
         )
+
+    # ================================================================
+    # 新機能サンプル：Beat / Mention / Pin / POV キャッシュ / Label
+    # ================================================================
+
+    # ---- Beat ノード（scene2 の outline を実際の placed sceneBeat ブロックに差し替え） ----
+    # SceneBeatNode 名は "sceneBeat"、generatedProseBlock は "generatedProseBlock"。
+    # Beat は inline*、generated prose は paragraph を内包する block。
+    def beat_node(beat_id: str, instr: str, beat_type: str = "free",
+                  pov: str | None = None) -> dict:
+        return {
+            "type": "sceneBeat",
+            "attrs": {"id": beat_id, "beatType": beat_type,
+                      "pov": pov, "collapsed": False},
+            "content": [{"type": "text", "text": instr}],
+        }
+
+    def generated_prose_node(beat_id: str, paragraphs: list[str]) -> dict:
+        return {
+            "type": "generatedProseBlock",
+            "attrs": {"beatId": beat_id, "modified": False},
+            "content": [
+                {"type": "paragraph",
+                 "content": [{"type": "text", "text": p}]}
+                for p in paragraphs
+            ],
+        }
+
+    beat_s2_intro_id = uid()
+    beat_s2_letter_id = uid()
+    beat_s2_otowa_id = uid()
+    scene2_doc = {
+        "type": "doc",
+        "content": [
+            {"type": "heading", "attrs": {"level": 2},
+             "content": [{"type": "text", "text": "二章：封じ文"}]},
+            beat_node(beat_s2_intro_id,
+                     "朱音が拝殿で目を覚ます。朱紐は手の中。"
+                     "他人の記憶——感覚と感情のかけらだけが残っている。",
+                     beat_type="summary", pov=akane_id),
+            generated_prose_node(beat_s2_intro_id, [
+                "朱音が目を覚ますと、朱紐は手の中にあった。"
+                "握りしめた指の隙間から、紐は乾いた温度を伝えていた。",
+                "誰かが走っていた。誰かが恐怖していた。"
+                "誰、とは特定できない。記憶の輪郭だけが残り、中身は薄い。",
+            ]),
+            beat_node(beat_s2_letter_id,
+                     "封じ文を見つける。朱紐の下。「帰れ」の二文字、朱縄の儀の手順、"
+                     "そして読めない最終行。",
+                     beat_type="guided", pov=akane_id),
+            beat_node(beat_s2_otowa_id,
+                     "音羽が来る。「やっぱり来たか」とだけ言って饅頭を差し出す。"
+                     "なぜ知っていたかは聞かない。聞けない。",
+                     beat_type="dialogue", pov=otowa_id),
+        ],
+    }
+    scene2_content_new = json.dumps(scene2_doc, ensure_ascii=False)
+    conn.execute(
+        "UPDATE tree_nodes SET content=?, status=? WHERE id=?",
+        (scene2_content_new, "draft", scene2_id),
+    )
+
+    # ---- Unplaced beats（scene3：未執筆のシーンに beat 案を貯めておく） ----
+    # フォーマットは UnplacedBeat[] を JSON 配列で保存（unplacedBeatsStore.ts 参照）
+    unplaced_beats_scene3 = [
+        {
+            "id": uid(),
+            "beatType": "summary",
+            "pov": akane_id,
+            "collapsed": False,
+            "content": [{"type": "text",
+                         "text": "都の宿に戻った朱音。封じ文を懐に抱えたまま夜を越す。"}],
+        },
+        {
+            "id": uid(),
+            "beatType": "dialogue",
+            "pov": akane_id,
+            "collapsed": False,
+            "content": [{"type": "text",
+                         "text": "翌朝、宿の前に冬弥が立っている。"
+                                 "「桐野まで行ったそうですね」——彼はなぜか知っている。"}],
+        },
+        {
+            "id": uid(),
+            "beatType": "guided",
+            "pov": fuuya_id,
+            "collapsed": False,
+            "content": [{"type": "text",
+                         "text": "冬弥の内心：朱音が朱紐に再び触れたことを察知している。"
+                                 "彼女が真相に気付く前に、彼は何を伝え、何を伏せるか決めねばならない。"}],
+        },
+        {
+            "id": uid(),
+            "beatType": "setting",
+            "pov": None,
+            "collapsed": True,
+            "content": [{"type": "text",
+                         "text": "舞台：都の朝。霧が低く垂れ、人通りはまだ少ない。"}],
+        },
+        {
+            "id": uid(),
+            "beatType": "micro",
+            "pov": None,
+            "collapsed": False,
+            "content": [{"type": "text",
+                         "text": "朱音の癖：『三つ数えてから』動き出す描写を冒頭に置く。"}],
+        },
+    ]
+    unplaced_beats_doc_scene3 = json.dumps(unplaced_beats_scene3, ensure_ascii=False)
+    # preview: 各 beat 先頭 60 文字 × 最大 8 件を JSON 配列で
+    preview_scene3 = json.dumps(
+        [b["content"][0]["text"][:60] for b in unplaced_beats_scene3],
+        ensure_ascii=False,
+    )
+    conn.execute(
+        "UPDATE tree_nodes SET unplaced_beats_doc=?, unplaced_beat_preview=? WHERE id=?",
+        (unplaced_beats_doc_scene3, preview_scene3, scene3_id),
+    )
+
+    # 番外シーンにも 1 件だけ unplaced beat を入れて Grid プレビューの確認に使う
+    bonus_beat = [{
+        "id": uid(),
+        "beatType": "free",
+        "pov": akane_id,
+        "collapsed": False,
+        "content": [{"type": "text",
+                     "text": "封書庫の扉を開く瞬間。冬弥は鍵を捻る前に一度だけ振り返る。"}],
+    }]
+    conn.execute(
+        "UPDATE tree_nodes SET unplaced_beats_doc=?, unplaced_beat_preview=? WHERE id=?",
+        (json.dumps(bonus_beat, ensure_ascii=False),
+         json.dumps([bonus_beat[0]["content"][0]["text"][:60]], ensure_ascii=False),
+         status_variant_ids["revision"]),
+    )
+
+    # ---- char_count（本文の text ノードを再帰的に拾って合算） ----
+    def _count_doc_chars(doc_json: str) -> int:
+        try:
+            doc = json.loads(doc_json)
+        except json.JSONDecodeError:
+            return 0
+        total = 0
+        # sceneBeat 内のテキストは本文文字数から除外（charCountForBody.ts 準拠）。
+        # generatedProseBlock 内は含める。
+        def walk(node: dict, in_beat: bool) -> None:
+            nonlocal total
+            ntype = node.get("type")
+            if ntype == "sceneBeat":
+                for child in node.get("content", []) or []:
+                    walk(child, True)
+                return
+            if ntype == "text" and not in_beat:
+                total += len(node.get("text", ""))
+                return
+            for child in node.get("content", []) or []:
+                walk(child, in_beat)
+        walk(doc, False)
+        return total
+
+    for sid in (scene1_id, scene2_id, scene3_id,
+                scene_flashback_id, scene_payoff_id):
+        row = conn.execute("SELECT content FROM tree_nodes WHERE id=?", (sid,)).fetchone()
+        if row is not None:
+            conn.execute("UPDATE tree_nodes SET char_count=? WHERE id=?",
+                         (_count_doc_chars(row[0]), sid))
+
+    # ---- scene_codex_mentions（POV/場所/Beat の混在サンプル） ----
+    # source ∈ ('body','beat','relation')、role ∈ ('mentioned','actor','target')
+    # source='beat' 行は本文の placed beat に対応するメンションを再現したもの。
+    #   現状は beat の text に @メンションマークが入っていないため、本文編集後の
+    #   rescan で消える可能性がある（初回起動時の Grid 表示確認用と割り切る）。
+    # source='relation' 行は scene_codex_pins とペアで挿入する（pins ループで実装）。
+    mentions_rows = [
+        # (scene_id, codex_id, source, role)
+        # scene1：本文に登場する人物・モノ
+        (scene1_id,          akane_id,     "body", "actor"),
+        (scene1_id,          haisha_id,    "body", "mentioned"),
+        (scene1_id,          akahimo_id,   "body", "target"),
+        # scene2：placed beat 由来の mention（source='beat'）
+        (scene2_id,          akane_id,     "beat", "actor"),
+        (scene2_id,          akahimo_id,   "beat", "target"),
+        (scene2_id,          fuujibumi_id, "beat", "target"),
+        (scene2_id,          otowa_id,     "beat", "actor"),
+        # scene_flashback：朱鬼は target
+        (scene_flashback_id, akane_id,     "body", "actor"),
+        (scene_flashback_id, shuki_id,     "body", "target"),
+        # scene_payoff：札と朱鬼の手がかり
+        (scene_payoff_id,    akane_id,     "body", "actor"),
+        (scene_payoff_id,    shuki_id,     "body", "target"),
+        (scene_payoff_id,    haisha_id,    "body", "mentioned"),
+        # scene3：unplaced beat 段階なので beat 由来は意図的に少なめ
+        (scene3_id,          akane_id,     "beat", "actor"),
+        (scene3_id,          fuuya_id,     "beat", "target"),
+    ]
+    for sid, cid, src, role in mentions_rows:
+        conn.execute(
+            "INSERT INTO scene_codex_mentions (scene_id, codex_entry_id, source, role)"
+            " VALUES (?,?,?,?)",
+            (sid, cid, src, role),
+        )
+
+    # ---- scene_codex_pins（Grid パネルで scene に明示ピンしたエントリ） ----
+    # ここに入れたものは Grid カードの Codex chip として常時可視になる。
+    # 本番の upsertScenePin と同じく、source='relation', role='mentioned' の
+    # mention 行も同時に作る（pins と relation-mentions の対応を保つ）。
+    pins_rows = [
+        (scene2_id, akahimo_id),
+        (scene2_id, fuujibumi_id),
+        (scene3_id, fuuya_id),
+        (scene_payoff_id, akahimo_id),
+    ]
+    for sid, cid in pins_rows:
+        conn.execute(
+            "INSERT INTO scene_codex_pins (scene_id, entry_id, created_at) VALUES (?,?,?)",
+            (sid, cid, now),
+        )
+        conn.execute(
+            "INSERT OR IGNORE INTO scene_codex_mentions"
+            " (scene_id, codex_entry_id, source, role) VALUES (?,?,?,?)",
+            (sid, cid, "relation", "mentioned"),
+        )
+
+    # ---- scene_beat_pov_cache（Matrix の ★ 表示確認用：beat 単位 POV 上書き） ----
+    # scene2 は POV=朱音 だが、音羽 beat があるため音羽もキャッシュに含める。
+    # scene3 は POV=朱音 だが、冬弥視点の beat 案があるため冬弥を入れる。
+    beat_pov_rows = [
+        (scene2_id, otowa_id),
+        (scene3_id, fuuya_id),
+    ]
+    for sid, cid in beat_pov_rows:
+        conn.execute(
+            "INSERT INTO scene_beat_pov_cache (scene_id, pov_character_id) VALUES (?,?)",
+            (sid, cid),
+        )
+
+    # ---- tree_node_labels（起承転結 + 状態タグの割り当て） ----
+    label_assignments = [
+        (scene_flashback_id, ["起"]),
+        (scene1_id,          ["起", "重要"]),
+        (scene_payoff_id,    ["承", "朱鬼登場"]),
+        (scene2_id,          ["承", "検討中"]),
+        (scene3_id,          ["転", "検討中"]),
+        (status_variant_ids["complete"], ["結"]),
+        (status_variant_ids["revision"], ["転", "検討中"]),
+        (status_variant_ids["final"],    ["起", "重要"]),
+    ]
+    for node_id, names in label_assignments:
+        for name in names:
+            conn.execute(
+                "INSERT INTO tree_node_labels (node_id, label_id) VALUES (?,?)",
+                (node_id, label_ids[name]),
+            )
 
     conn.commit()
     conn.close()
