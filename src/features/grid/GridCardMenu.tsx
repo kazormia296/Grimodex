@@ -1,14 +1,6 @@
 import { useRef, useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
-import {
-  ExternalLink,
-  Trash2,
-  PanelLeft,
-  Tag,
-  ChevronRight,
-  Check,
-} from "lucide-react";
-import { useTabStore } from "@/features/editor/tabStore";
+import { Trash2, PanelLeft, Tag, ChevronRight, Check } from "lucide-react";
 import { useLayoutStore } from "@/features/layout/layoutStore";
 import { useLabelStore } from "@/features/labels/labelStore";
 import { LABEL_PALETTE } from "@/lib/labelPalette";
@@ -51,12 +43,6 @@ export function GridCardMenu({ nodeId, onClose, onDelete, anchorRef }: Props) {
     };
   }, [onClose, anchorRef]);
 
-  function openInEditor() {
-    useTabStore.getState().openPinned(nodeId);
-    useLayoutStore.getState().showPanel("editor");
-    onClose();
-  }
-
   function showInScenes() {
     useLayoutStore.getState().showPanel("scenes");
     onClose();
@@ -75,13 +61,6 @@ export function GridCardMenu({ nodeId, onClose, onDelete, anchorRef }: Props) {
       ref={menuRef}
       className="absolute right-0 top-full z-50 mt-1 min-w-[160px] rounded-md border bg-popover p-1 shadow-md text-sm"
     >
-      <button
-        className="flex w-full items-center gap-2 rounded px-2 py-1.5 hover:bg-accent"
-        onClick={openInEditor}
-      >
-        <ExternalLink className="h-3.5 w-3.5" />
-        {t("grid.card.menu.open", "エディタで開く")}
-      </button>
       <button
         className="flex w-full items-center gap-2 rounded px-2 py-1.5 hover:bg-accent"
         onClick={showInScenes}

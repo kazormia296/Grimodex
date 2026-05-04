@@ -1,5 +1,6 @@
 import { useState, useRef } from "react";
-import { MoreHorizontal } from "lucide-react";
+import { ExternalLink, MoreHorizontal } from "lucide-react";
+import { useTranslation } from "react-i18next";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { cn } from "@/lib/utils";
 
@@ -7,7 +8,7 @@ interface Props {
   nodeId: string;
   title: string;
   onMenuOpen: () => void;
-  onTitleClick?: () => void;
+  onOpenInEditor?: () => void;
   menuBtnRef?: React.RefObject<HTMLButtonElement | null>;
   /** Rendered next to the menu button so popover anchors to it. */
   menuSlot?: React.ReactNode;
@@ -17,10 +18,11 @@ export function GridCardHeader({
   nodeId,
   title,
   onMenuOpen,
-  onTitleClick,
+  onOpenInEditor,
   menuBtnRef,
   menuSlot,
 }: Props) {
+  const { t } = useTranslation();
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState("");
   const inputRef = useRef<HTMLInputElement>(null);
@@ -65,19 +67,29 @@ export function GridCardHeader({
           onClick={(e) => e.stopPropagation()}
         />
       ) : (
-        <button
+        <span
           className={cn(
             "flex-1 min-w-0 text-left text-[12px] font-medium leading-snug truncate",
-            "hover:text-accent-foreground",
           )}
-          onClick={(e) => {
-            e.stopPropagation();
-            onTitleClick?.();
-          }}
           onDoubleClick={startEdit}
           title={title}
         >
           {title}
+        </span>
+      )}
+
+      {onOpenInEditor && (
+        <button
+          className="shrink-0 rounded p-0.5 opacity-0 group-hover:opacity-100 hover:bg-accent transition-opacity"
+          onClick={(e) => {
+            e.stopPropagation();
+            onOpenInEditor();
+          }}
+          data-testid="grid-card-open-editor-btn"
+          title={t("grid.card.openInEditor", "エディタで開く")}
+          aria-label={t("grid.card.openInEditor", "エディタで開く")}
+        >
+          <ExternalLink className="h-3 w-3" />
         </button>
       )}
 

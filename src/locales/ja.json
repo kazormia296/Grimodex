@@ -669,8 +669,8 @@
     "card": {
       "synopsisPlaceholder": "シノプシスを追加…",
       "empty": "空のシーン",
+      "openInEditor": "エディタで開く",
       "menu": {
-        "open": "エディタで開く",
         "rename": "名前を変更",
         "addBeat": "+ Beat を追加…",
         "addLabel": "Label を付ける",

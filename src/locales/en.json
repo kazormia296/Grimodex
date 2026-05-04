@@ -669,8 +669,8 @@
     "card": {
       "synopsisPlaceholder": "Add synopsis…",
       "empty": "Empty scene",
+      "openInEditor": "Open in Editor",
       "menu": {
-        "open": "Open in Editor",
         "rename": "Rename",
         "addBeat": "+ Add Beat…",
         "addLabel": "Add Label",
