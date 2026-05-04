@@ -455,11 +455,28 @@ export function EditorPane({
       const charCount = countSceneBodyChars(doc);
       const beats = useUnplacedBeatsStore.getState().getBeats(id);
       const unplacedBeatsDoc = JSON.stringify(beats);
-      await saveSceneContent(id, {
-        content: JSON.stringify(ed.getJSON()),
-        unplacedBeatsDoc,
-        charCount,
-      });
+      const { placedBeatPreview, unplacedBeatPreview } = await saveSceneContent(
+        id,
+        {
+          content: JSON.stringify(ed.getJSON()),
+          unplacedBeatsDoc,
+          charCount,
+        },
+      );
+      // Mirror the derived previews into the tree store so the Grid panel
+      // reflects placed/unplaced changes without waiting for the next
+      // loadTree (e.g. unplaced→placed via drag&drop).
+      useTreeStore.setState((s) => ({
+        nodes: s.nodes.map((n) =>
+          n.id === id
+            ? {
+                ...n,
+                placedBeatPreview: placedBeatPreview ?? null,
+                unplacedBeatPreview: unplacedBeatPreview ?? null,
+              }
+            : n,
+        ),
+      }));
       await saveAuthorshipSpans(id, ed.state.doc);
       await saveForeshadowAnchors(id, ed.state.doc);
       upsertSceneBeatMentions(id, extractBeatMentions(doc)).catch((e) => {
