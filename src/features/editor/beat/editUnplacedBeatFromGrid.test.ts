@@ -4,17 +4,15 @@ import type { UnplacedBeat } from "./unplacedBeatsStore";
 
 vi.mock("@/features/tree/api", () => ({
   loadSceneFull: vi.fn(),
-  saveSceneBeatsOnly: vi.fn().mockResolvedValue(undefined),
+  saveSceneBeatsOnly: vi
+    .fn()
+    .mockResolvedValue({ unplacedBeatPreview: "preview" }),
 }));
 
 vi.mock("@/features/tree/treeStore", () => ({
   useTreeStore: {
     setState: vi.fn(),
   },
-}));
-
-vi.mock("./unplacedBeatPreview", () => ({
-  extractUnplacedBeatPreview: vi.fn().mockReturnValue("preview"),
 }));
 
 import { loadSceneFull, saveSceneBeatsOnly } from "@/features/tree/api";
@@ -43,7 +41,7 @@ function makeBeat(
 beforeEach(() => {
   useUnplacedBeatsStore.setState({ sceneBeats: {} });
   vi.clearAllMocks();
-  mockSaveSceneBeatsOnly.mockResolvedValue(undefined);
+  mockSaveSceneBeatsOnly.mockResolvedValue({ unplacedBeatPreview: "preview" });
 });
 
 describe("beatToPlainText", () => {

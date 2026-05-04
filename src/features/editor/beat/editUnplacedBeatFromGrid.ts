@@ -1,6 +1,5 @@
 import { useUnplacedBeatsStore } from "./unplacedBeatsStore";
 import type { UnplacedBeat } from "./unplacedBeatsStore";
-import { extractUnplacedBeatPreview } from "./unplacedBeatPreview";
 import { saveSceneBeatsOnly, loadSceneFull } from "@/features/tree/api";
 import { useTreeStore } from "@/features/tree/treeStore";
 
@@ -72,13 +71,12 @@ export async function editUnplacedBeatFromGrid(
 
   const beats = store.getBeats(sceneId);
   const unplacedBeatsDoc = JSON.stringify(beats);
-  const unplacedBeatPreview = extractUnplacedBeatPreview(beats) || null;
 
+  let unplacedBeatPreview: string | null;
   try {
-    await saveSceneBeatsOnly(sceneId, {
+    ({ unplacedBeatPreview } = await saveSceneBeatsOnly(sceneId, {
       unplacedBeatsDoc,
-      unplacedBeatPreview,
-    });
+    }));
   } catch (err) {
     store.setBeats(sceneId, prevBeats);
     throw err;

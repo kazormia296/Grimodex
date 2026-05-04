@@ -17,7 +17,6 @@ import {
 } from "@/features/tree/api";
 import { countSceneBodyChars } from "@/features/editor/charCountForBody";
 import { countBeats } from "@/features/editor/beat/countBeats";
-import { extractUnplacedBeatPreview } from "@/features/editor/beat/unplacedBeatPreview";
 import { extractPlacedBeatPreview } from "@/features/editor/beat/placedBeatPreview";
 import { extractBeatMentions } from "@/features/editor/beat/extractBeatMentions";
 import { upsertSceneBeatMentions } from "@/features/editor/beat/mentionApi";
@@ -456,15 +455,10 @@ export function EditorPane({
       const charCount = countSceneBodyChars(doc);
       const beats = useUnplacedBeatsStore.getState().getBeats(id);
       const unplacedBeatsDoc = JSON.stringify(beats);
-      const unplacedBeatPreview = extractUnplacedBeatPreview(beats);
-      const placedBeatPreview = extractPlacedBeatPreview(doc);
       await saveSceneContent(id, {
         content: JSON.stringify(ed.getJSON()),
         unplacedBeatsDoc,
         charCount,
-        unplacedBeatPreview: unplacedBeatPreview || null,
-        placedBeatPreview:
-          placedBeatPreview === "[]" ? null : placedBeatPreview,
       });
       await saveAuthorshipSpans(id, ed.state.doc);
       await saveForeshadowAnchors(id, ed.state.doc);
@@ -1120,7 +1114,7 @@ export function EditorPane({
             .getState()
             .nodes.find((n) => n.id === nodeId);
           if (node && node.placedBeatPreview == null) {
-            const preview = extractPlacedBeatPreview(editor!.state.doc);
+            const preview = extractPlacedBeatPreview(editor!.getJSON());
             if (preview !== "[]") {
               const next = preview;
               savePlacedBeatPreviewOnly(nodeId, next).catch(() => {});

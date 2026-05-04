@@ -1,6 +1,5 @@
 import { useUnplacedBeatsStore } from "./unplacedBeatsStore";
 import type { UnplacedBeat } from "./unplacedBeatsStore";
-import { extractUnplacedBeatPreview } from "./unplacedBeatPreview";
 import { saveSceneBeatsOnly, loadSceneFull } from "@/features/tree/api";
 import { useTreeStore } from "@/features/tree/treeStore";
 
@@ -47,13 +46,12 @@ export async function addUnplacedBeatFromGrid(
 
   const beats = useUnplacedBeatsStore.getState().getBeats(sceneId);
   const unplacedBeatsDoc = JSON.stringify(beats);
-  const unplacedBeatPreview = extractUnplacedBeatPreview(beats) || null;
 
+  let unplacedBeatPreview: string | null;
   try {
-    await saveSceneBeatsOnly(sceneId, {
+    ({ unplacedBeatPreview } = await saveSceneBeatsOnly(sceneId, {
       unplacedBeatsDoc,
-      unplacedBeatPreview,
-    });
+    }));
   } catch (err) {
     // DB 書き込み失敗時はストアを元に戻し、treeStore も触らない
     useUnplacedBeatsStore.getState().setBeats(sceneId, prevBeats);
