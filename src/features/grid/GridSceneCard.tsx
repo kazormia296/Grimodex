@@ -217,6 +217,7 @@ export function GridSceneCard({
           nodeId={scene.id}
           synopsis={scene.synopsis}
           unplacedBeatPreview={scene.unplacedBeatPreview}
+          placedBeatPreview={scene.placedBeatPreview}
           showSynopsis={display.showSynopsis}
           showBeats={display.showBeats}
           compact={display.compactCards}

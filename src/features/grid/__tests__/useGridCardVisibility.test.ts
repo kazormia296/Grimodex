@@ -45,6 +45,7 @@ function makeScene(
     status: "draft",
     synopsis: null,
     unplacedBeatPreview: null,
+    placedBeatPreview: null,
     label: null,
     ...overrides,
   } as TreeNodeData;

@@ -98,6 +98,7 @@ describe("generateBeatAlternative", () => {
 
           charCount: 0,
           unplacedBeatPreview: null,
+          placedBeatPreview: null,
           updatedAt: "2026-01-01",
         },
       ],

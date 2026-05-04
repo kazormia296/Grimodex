@@ -69,6 +69,8 @@ export const treeNodes = sqliteTable(
     charCount: integer("char_count").notNull().default(0),
     // Preview text for Grid display: first 3 unplaced beats × 40 chars, newline-separated.
     unplacedBeatPreview: text("unplaced_beat_preview"),
+    // JSON array string of placed-beat preview lines, extracted from `content` on save.
+    placedBeatPreview: text("placed_beat_preview"),
     createdAt: text("created_at")
       .notNull()
       .$defaultFn(() => new Date().toISOString()),

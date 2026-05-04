@@ -18,6 +18,7 @@ const BASE_NODE: Omit<
   povCharacterId: null,
   locationId: null,
   unplacedBeatPreview: null,
+  placedBeatPreview: null,
   createdAt: "2024-01-01T00:00:00Z",
   updatedAt: "2024-01-01T00:00:00Z",
 };

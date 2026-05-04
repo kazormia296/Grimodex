@@ -88,6 +88,7 @@ export interface SaveScenePayload {
   unplacedBeatsDoc?: string;
   charCount?: number;
   unplacedBeatPreview?: string | null;
+  placedBeatPreview?: string | null;
 }
 
 /**
@@ -116,6 +117,9 @@ export async function saveSceneContent(
       ...(payload.unplacedBeatPreview !== undefined && {
         unplacedBeatPreview: payload.unplacedBeatPreview,
       }),
+      ...(payload.placedBeatPreview !== undefined && {
+        placedBeatPreview: payload.placedBeatPreview,
+      }),
       updatedAt: new Date().toISOString(),
     })
     .where(eq(treeNodes.id, sceneId));
@@ -136,13 +140,38 @@ export async function loadSceneContent(sceneId: string): Promise<string> {
  */
 export async function saveSceneBeatsOnly(
   sceneId: string,
-  payload: { unplacedBeatsDoc: string; unplacedBeatPreview: string | null },
+  payload: {
+    unplacedBeatsDoc: string;
+    unplacedBeatPreview: string | null;
+    placedBeatPreview?: string | null;
+  },
 ): Promise<void> {
   await db
     .update(treeNodes)
     .set({
       unplacedBeatsDoc: payload.unplacedBeatsDoc,
       unplacedBeatPreview: payload.unplacedBeatPreview,
+      ...(payload.placedBeatPreview !== undefined && {
+        placedBeatPreview: payload.placedBeatPreview,
+      }),
+      updatedAt: new Date().toISOString(),
+    })
+    .where(eq(treeNodes.id, sceneId));
+}
+
+/**
+ * Persist only the cached `placed_beat_preview` column. Used by the lazy
+ * backfill path when a legacy scene is loaded that has placed sceneBeat
+ * nodes but no cached preview yet.
+ */
+export async function savePlacedBeatPreviewOnly(
+  sceneId: string,
+  placedBeatPreview: string | null,
+): Promise<void> {
+  await db
+    .update(treeNodes)
+    .set({
+      placedBeatPreview,
       updatedAt: new Date().toISOString(),
     })
     .where(eq(treeNodes.id, sceneId));

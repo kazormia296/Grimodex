@@ -17,6 +17,7 @@ function makeNode(
     status: "draft",
     charCount: 0,
     unplacedBeatPreview: null,
+    placedBeatPreview: null,
     storyTimeOrder: null,
     updatedAt: new Date().toISOString(),
     coverId: null,

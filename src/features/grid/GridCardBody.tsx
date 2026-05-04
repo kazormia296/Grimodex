@@ -18,6 +18,7 @@ interface Props {
   nodeId: string;
   synopsis: string | null;
   unplacedBeatPreview: string | null;
+  placedBeatPreview?: string | null;
   showSynopsis: boolean;
   showBeats: boolean;
   compact?: boolean;
@@ -26,10 +27,18 @@ interface Props {
   onRequestAddBeat?: () => void;
 }
 
+interface DisplayBeat {
+  key: string;
+  kind: "placed" | "unplaced";
+  text: string;
+  unplacedIndex?: number;
+}
+
 export function GridCardBody({
   nodeId,
   synopsis,
   unplacedBeatPreview,
+  placedBeatPreview = null,
   showSynopsis,
   showBeats,
   compact,
@@ -38,8 +47,22 @@ export function GridCardBody({
 }: Props) {
   const { t } = useTranslation();
 
-  const beats = parseBeatPreview(unplacedBeatPreview);
-  const hasBeats = !!beats && beats.length > 0;
+  const placedBeats = parseBeatPreview(placedBeatPreview) ?? [];
+  const unplacedBeats = parseBeatPreview(unplacedBeatPreview) ?? [];
+  const displayBeats: DisplayBeat[] = [
+    ...placedBeats.map((text, i) => ({
+      key: `p-${i}`,
+      kind: "placed" as const,
+      text,
+    })),
+    ...unplacedBeats.map((text, i) => ({
+      key: `u-${i}`,
+      kind: "unplaced" as const,
+      text,
+      unplacedIndex: i,
+    })),
+  ];
+  const hasBeats = displayBeats.length > 0;
   const hasSynopsis = !!synopsis?.trim();
 
   const beatTabVisible = showBeats;
@@ -108,20 +131,23 @@ export function GridCardBody({
   }
 
   function renderBeatBody() {
-    if (hasBeats && beats) {
-      const overflow = beats.length > BEAT_VISIBLE_LIMIT;
+    if (hasBeats) {
+      const overflow = displayBeats.length > BEAT_VISIBLE_LIMIT;
       const visible =
-        overflow && !beatsExpanded ? beats.slice(0, BEAT_VISIBLE_LIMIT) : beats;
-      const hidden = beats.length - visible.length;
+        overflow && !beatsExpanded
+          ? displayBeats.slice(0, BEAT_VISIBLE_LIMIT)
+          : displayBeats;
+      const hidden = displayBeats.length - visible.length;
       return (
         <div className="flex flex-col gap-1">
           <ol className="m-0 flex list-none flex-col gap-1 p-0">
-            {visible.map((line, i) => (
+            {visible.map((b) => (
               <BeatListItem
-                key={i}
+                key={b.key}
                 sceneId={nodeId}
-                index={i}
-                previewText={line}
+                kind={b.kind}
+                unplacedIndex={b.unplacedIndex}
+                previewText={b.text}
                 compact={compact}
                 clamp={!beatsExpanded}
                 onEditingChange={onEditingChange}
@@ -221,7 +247,7 @@ export function GridCardBody({
             <TabButton
               active={tab === "beat"}
               onClick={() => handleTabClick("beat")}
-              label={`Beat${hasBeats && beats ? ` · ${beats.length}` : ""}`}
+              label={`Beat${hasBeats ? ` · ${displayBeats.length}` : ""}`}
               dim={!hasBeats}
             />
           )}
@@ -253,7 +279,9 @@ interface TabButtonProps {
 
 interface BeatListItemProps {
   sceneId: string;
-  index: number;
+  kind: "placed" | "unplaced";
+  /** Position in the unplaced-beats array (used to look up the editable beat). */
+  unplacedIndex?: number;
   previewText: string;
   compact?: boolean;
   /** When true, line-clamp the text to 1 (compact) or 2 lines. */
@@ -263,7 +291,8 @@ interface BeatListItemProps {
 
 function BeatListItem({
   sceneId,
-  index,
+  kind,
+  unplacedIndex,
   previewText,
   compact,
   clamp,
@@ -277,9 +306,11 @@ function BeatListItem({
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const committedRef = useRef(false);
 
+  const editable = kind === "unplaced" && unplacedIndex !== undefined;
+
   async function startEdit() {
-    if (editing) return;
-    const loaded = await loadBeatTextByIndex(sceneId, index);
+    if (editing || !editable || unplacedIndex === undefined) return;
+    const loaded = await loadBeatTextByIndex(sceneId, unplacedIndex);
     if (!loaded) return;
     beatIdRef.current = loaded.id;
     setDraft(loaded.text);
@@ -336,10 +367,20 @@ function BeatListItem({
     el.style.height = `${el.scrollHeight}px`;
   }, [editing, draft]);
 
+  const prefix =
+    kind === "placed" ? "┃" : String((unplacedIndex ?? 0) + 1).padStart(2, "0");
+  const prefixTitle =
+    kind === "placed"
+      ? t("grid.card.placedBeatHint", "本文に配置済みの Beat")
+      : t("grid.card.unplacedBeatHint", "未配置の Beat");
+
   return (
     <li className="flex items-start gap-1.5 text-[11px] leading-snug text-foreground/80">
-      <span className="mt-px shrink-0 font-mono text-[9px] tabular-nums text-muted-foreground/60">
-        {String(index + 1).padStart(2, "0")}
+      <span
+        className="mt-px shrink-0 font-mono text-[9px] tabular-nums text-muted-foreground/60"
+        title={prefixTitle}
+      >
+        {prefix}
       </span>
       {editing ? (
         <textarea
@@ -359,13 +400,19 @@ function BeatListItem({
       ) : (
         <span
           className={cn(
-            "flex-1 cursor-text rounded hover:bg-accent/30",
+            "flex-1 rounded",
+            editable && "cursor-text hover:bg-accent/30",
+            !editable && "text-foreground/70",
             clamp && (compact ? "line-clamp-1" : "line-clamp-2"),
           )}
-          onDoubleClick={(e) => {
-            e.stopPropagation();
-            void startEdit();
-          }}
+          onDoubleClick={
+            editable
+              ? (e) => {
+                  e.stopPropagation();
+                  void startEdit();
+                }
+              : undefined
+          }
         >
           {previewText}
         </span>

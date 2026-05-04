@@ -39,6 +39,7 @@ export interface TreeNodeData {
   locationId: string | null;
   charCount: number;
   unplacedBeatPreview: string | null;
+  placedBeatPreview: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -71,6 +72,7 @@ function toNodeData(n: ApiNode): TreeNodeData {
     locationId: n.locationId ?? null,
     charCount: n.charCount,
     unplacedBeatPreview: n.unplacedBeatPreview ?? null,
+    placedBeatPreview: n.placedBeatPreview ?? null,
     createdAt: n.createdAt,
     updatedAt: n.updatedAt,
   };

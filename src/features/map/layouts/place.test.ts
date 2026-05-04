@@ -22,6 +22,7 @@ function makeScene(id: string, locationId: string | null = null): TreeNodeData {
 
     charCount: 0,
     unplacedBeatPreview: null,
+    placedBeatPreview: null,
     updatedAt: "",
   };
 }

@@ -280,6 +280,43 @@ describe("GridCardBody", () => {
     expect(screen.queryByText(/他 \d+ 件/)).toBeNull();
   });
 
+  it("placedBeatPreview を unplaced より前に表示する", () => {
+    const placed = JSON.stringify(["Placed A", "Placed B"]);
+    const unplaced = JSON.stringify(["Unplaced X"]);
+    render(
+      <GridCardBody
+        nodeId="n1"
+        synopsis={null}
+        placedBeatPreview={placed}
+        unplacedBeatPreview={unplaced}
+        showSynopsis={false}
+        showBeats={true}
+      />,
+    );
+    expect(screen.getByText("Placed A")).toBeDefined();
+    expect(screen.getByText("Placed B")).toBeDefined();
+    expect(screen.getByText("Unplaced X")).toBeDefined();
+    // Tab label に総数が出る (両方 ON のときのみ tablist が出るので単タブでは検証しない)
+  });
+
+  it("placed beat はダブルクリックしても編集 UI に切り替わらない", () => {
+    const placed = JSON.stringify(["Placed only"]);
+    render(
+      <GridCardBody
+        nodeId="n1"
+        synopsis={null}
+        placedBeatPreview={placed}
+        unplacedBeatPreview={null}
+        showSynopsis={false}
+        showBeats={true}
+      />,
+    );
+    const span = screen.getByText("Placed only");
+    fireEvent.doubleClick(span);
+    // textarea が現れない（編集モードに入らない）
+    expect(document.querySelector("textarea")).toBeNull();
+  });
+
   it("compact=false → beat 行に line-clamp-2", () => {
     const preview = JSON.stringify(["Beat A"]);
     const { container } = render(

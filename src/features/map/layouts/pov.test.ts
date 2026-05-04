@@ -25,6 +25,7 @@ function makeScene(
 
     charCount: 0,
     unplacedBeatPreview: null,
+    placedBeatPreview: null,
     updatedAt: "",
   };
 }

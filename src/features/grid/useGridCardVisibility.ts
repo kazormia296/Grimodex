@@ -54,7 +54,10 @@ export function useGridCardVisibility({
       if (q) {
         const titleMatch = scene.title.toLowerCase().includes(q);
         const synopsisMatch = (scene.synopsis ?? "").toLowerCase().includes(q);
-        const beatLines = parseBeatPreview(scene.unplacedBeatPreview) ?? [];
+        const beatLines = [
+          ...(parseBeatPreview(scene.placedBeatPreview) ?? []),
+          ...(parseBeatPreview(scene.unplacedBeatPreview) ?? []),
+        ];
         const beatMatch = beatLines.some((line) =>
           line.toLowerCase().includes(q),
         );

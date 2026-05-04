@@ -265,6 +265,7 @@ describe("SceneBeatNodeView", () => {
             synopsis: null,
             charCount: 0,
             unplacedBeatPreview: null,
+            placedBeatPreview: null,
             createdAt: "",
             updatedAt: "",
           },

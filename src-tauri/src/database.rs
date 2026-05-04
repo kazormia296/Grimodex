@@ -818,6 +818,7 @@ impl Database {
             "INTEGER NOT NULL DEFAULT 0",
         )?;
         Self::add_column_if_missing(&conn, "tree_nodes", "unplaced_beat_preview", "TEXT")?;
+        Self::add_column_if_missing(&conn, "tree_nodes", "placed_beat_preview", "TEXT")?;
 
         // Grid panel — Scene×Codex explicit pins (many-to-many).
         conn.execute_batch(

@@ -99,6 +99,7 @@ function makeScene(overrides: Partial<TreeNodeData> = {}): TreeNodeData {
     sortOrder: "a0",
     synopsis: null,
     unplacedBeatPreview: null,
+    placedBeatPreview: null,
     status: null,
     storyTimeOrder: null,
     storyTimeLabel: null,
