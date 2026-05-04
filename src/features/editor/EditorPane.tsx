@@ -726,6 +726,71 @@ export function EditorPane({
           .setLiveContent(sid, e.getJSON(), groupIndex);
       }
     },
+    onTransaction({ editor: e, transaction }) {
+      if (!transaction.docChanged) return;
+      if (isCodexMode || isSnippetMode) return;
+      const sid = saveSceneIdRef.current;
+      if (!sid) return;
+
+      // Reconcile sceneBeat ↔ unplacedBeatsStore for transactions that
+      // bypass `placeBeatAtEnd` / `unplaceBeat` — most importantly Ctrl+Z.
+      //   Disappear from doc + not in store → restore (Place → Undo).
+      //   Appear in doc + still in store    → drop from store (Unplace → Undo,
+      //                                       prevents the same id showing up
+      //                                       in both lists in the Grid).
+      const oldBeats = new Map<
+        string,
+        {
+          beatType: string;
+          pov: string | null;
+          content: unknown[];
+        }
+      >();
+      transaction.before.descendants((node) => {
+        if (node.type.name === "sceneBeat") {
+          const id = node.attrs.id as string | null;
+          if (id) {
+            oldBeats.set(id, {
+              beatType: (node.attrs.beatType ?? "free") as string,
+              pov: (node.attrs.pov ?? null) as string | null,
+              content: node.content.toJSON() as unknown[],
+            });
+          }
+          return false;
+        }
+        return true;
+      });
+
+      const newIds = new Set<string>();
+      e.state.doc.descendants((node) => {
+        if (node.type.name === "sceneBeat") {
+          const id = node.attrs.id as string | null;
+          if (id) newIds.add(id);
+          return false;
+        }
+        return true;
+      });
+
+      const store = useUnplacedBeatsStore.getState();
+
+      for (const [id, snap] of oldBeats) {
+        if (newIds.has(id)) continue;
+        if (store.getBeats(sid).some((b) => b.id === id)) continue;
+        store.addBeat(sid, {
+          id,
+          beatType: snap.beatType as UnplacedBeat["beatType"],
+          pov: snap.pov,
+          collapsed: false,
+          content: snap.content as UnplacedBeat["content"],
+        });
+      }
+
+      for (const id of newIds) {
+        if (oldBeats.has(id)) continue;
+        if (!store.getBeats(sid).some((b) => b.id === id)) continue;
+        store.removeBeat(sid, id);
+      }
+    },
     onSelectionUpdate() {},
     onFocus() {
       onFocus();
