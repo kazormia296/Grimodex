@@ -723,3 +723,111 @@ export async function updateFrame(
 export async function deleteFrame(id: string): Promise<void> {
   await db.delete(mapFrames).where(eq(mapFrames.id, id));
 }
+
+/**
+ * Promote a Frame to a Codex entry by aggregating contained Sticky bodies.
+ * - Stickies whose center (x,y) falls inside the frame bounds are collected
+ * - Their titles (if any) become H3 headings; bodies are concatenated
+ * - A new Codex entry is created; the frame + its stickies are deleted
+ * - A new map_node_positions row is created at the frame center
+ */
+export async function promoteFrame(
+  frameId: string,
+  boardId: string,
+  options: { projectId: string; codexType?: string },
+): Promise<{ newEntityId: string }> {
+  const [frame] = await db
+    .select()
+    .from(mapFrames)
+    .where(eq(mapFrames.id, frameId))
+    .limit(1);
+  if (!frame) throw new Error(`Frame ${frameId} not found`);
+
+  // Find sticky positions within frame bounds
+  const allPositions = await db
+    .select()
+    .from(mapNodePositions)
+    .where(
+      and(
+        eq(mapNodePositions.boardId, boardId),
+        isNotNull(mapNodePositions.stickyId),
+      ),
+    );
+
+  const insidePositions = allPositions.filter(
+    (p) =>
+      p.x >= frame.x &&
+      p.x <= frame.x + frame.width &&
+      p.y >= frame.y &&
+      p.y <= frame.y + frame.height,
+  );
+
+  // Load sticky bodies
+  const insideStickyIds = insidePositions
+    .map((p) => p.stickyId)
+    .filter(Boolean) as string[];
+
+  const insideStickies =
+    insideStickyIds.length > 0
+      ? await db
+          .select()
+          .from(mapStickies)
+          .where(
+            insideStickyIds.length === 1
+              ? eq(mapStickies.id, insideStickyIds[0])
+              : eq(mapStickies.boardId, boardId),
+          )
+          .then((rows) => rows.filter((s) => insideStickyIds.includes(s.id)))
+      : [];
+
+  // Build merged ProseMirror JSON
+  const mergedContent: unknown[] = [];
+  for (const sticky of insideStickies) {
+    if (sticky.title) {
+      mergedContent.push({
+        type: "heading",
+        attrs: { level: 3 },
+        content: [{ type: "text", text: sticky.title }],
+      });
+    }
+    try {
+      const doc = JSON.parse(sticky.body) as { content?: unknown[] };
+      if (doc.content) mergedContent.push(...doc.content);
+    } catch {
+      // ignore malformed body
+    }
+  }
+
+  const now = new Date().toISOString();
+  const codexId = crypto.randomUUID();
+  const codexType = options.codexType ?? "lore";
+
+  await db.insert(codexEntries).values({
+    id: codexId,
+    projectId: options.projectId,
+    type: codexType,
+    name: frame.title || "Untitled",
+    content: JSON.stringify({ type: "doc", content: mergedContent }),
+    createdAt: now,
+    updatedAt: now,
+  });
+
+  // Delete stickies (cascades to positions via stickyId FK)
+  for (const stickyId of insideStickyIds) {
+    await db.delete(mapStickies).where(eq(mapStickies.id, stickyId));
+  }
+
+  // Create position for the new Codex entry at frame center
+  await upsertNodePosition({
+    boardId,
+    nodeRefType: "codex",
+    codexEntryId: codexId,
+    x: frame.x + frame.width / 2,
+    y: frame.y + frame.height / 2,
+  });
+
+  // Delete the frame
+  await db.delete(mapFrames).where(eq(mapFrames.id, frameId));
+
+  return { newEntityId: codexId };
+}

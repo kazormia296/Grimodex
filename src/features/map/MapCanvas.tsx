@@ -55,6 +55,9 @@ import {
   createSticky,
   setNodePinned,
   deleteNodePosition,
+  promoteFrame,
+  listNodePositions,
+  listStickies,
 } from "./mapApi";
 import { deleteNode as deleteTreeNode } from "@/features/tree/api";
 import { deleteCodexEntry } from "@/features/codex/api";
@@ -336,6 +339,34 @@ export function MapCanvas() {
       }
     },
   });
+
+  const handlePromoteFrame = useCallback(
+    async (codexType: string) => {
+      if (!contextMenu || !boardId) return;
+      const frameId = contextMenu.nodeId.slice("frame:".length);
+      await promoteFrame(frameId, boardId, {
+        projectId: PROJECT_ID,
+        codexType,
+      });
+      setFrames((prev) => prev.filter((f) => f.id !== frameId));
+      const [reloadedPos, reloadedStickies] = await Promise.all([
+        listNodePositions(boardId),
+        listStickies(boardId),
+      ]);
+      setPositions(reloadedPos as import("./types").MapNodePositionRecord[]);
+      setStickies(reloadedStickies);
+      void useCodexStore.getState().loadEntries();
+      setContextMenu(null);
+    },
+    [
+      contextMenu,
+      boardId,
+      setFrames,
+      setPositions,
+      setStickies,
+      setContextMenu,
+    ],
+  );
 
   const {
     onConnect,
@@ -678,6 +709,7 @@ export function MapCanvas() {
           isPinned={contextMenu.isPinned}
           isScene={contextMenu.isScene}
           isSticky={contextMenu.nodeId.startsWith("sticky:")}
+          isFrame={contextMenu.nodeId.startsWith("frame:")}
           focusedNodeId={focusedNodeId}
           onClose={() => setContextMenu(null)}
           onOpen={handleContextMenuOpen}
@@ -689,6 +721,7 @@ export function MapCanvas() {
           onBringToFront={handleBringToFront}
           onSendToBack={handleSendToBack}
           onPromote={handlePromoteSticky}
+          onPromoteFrame={handlePromoteFrame}
         />
       )}
 

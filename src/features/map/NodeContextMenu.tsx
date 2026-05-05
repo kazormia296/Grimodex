@@ -15,6 +15,7 @@ interface NodeContextMenuProps {
   isPinned: boolean;
   isScene: boolean;
   isSticky?: boolean;
+  isFrame?: boolean;
   focusedNodeId: string | null;
   onClose: () => void;
   onOpen: () => void;
@@ -26,6 +27,7 @@ interface NodeContextMenuProps {
   onBringToFront: () => void;
   onSendToBack: () => void;
   onPromote?: (type: PromoteTargetType, codexType?: string) => void;
+  onPromoteFrame?: (codexType: string) => void;
 }
 
 const MENU_WIDTH = 200;
@@ -36,6 +38,7 @@ export function NodeContextMenu({
   isPinned,
   isScene,
   isSticky = false,
+  isFrame = false,
   focusedNodeId,
   onClose,
   onOpen,
@@ -47,10 +50,12 @@ export function NodeContextMenu({
   onBringToFront,
   onSendToBack,
   onPromote,
+  onPromoteFrame,
 }: NodeContextMenuProps) {
   const menuRef = useRef<HTMLDivElement>(null);
   const [showPromoteMenu, setShowPromoteMenu] = useState(false);
   const [showCodexTypes, setShowCodexTypes] = useState(false);
+  const [showFrameCodexTypes, setShowFrameCodexTypes] = useState(false);
 
   const close = useCallback(() => onClose(), [onClose]);
 
@@ -86,7 +91,57 @@ export function NodeContextMenu({
       onMouseDown={(e) => e.stopPropagation()}
     >
       <div className="flex flex-col py-1">
-        {isScene && (
+        {isFrame && (
+          <>
+            {onPromoteFrame && (
+              <div
+                className="relative"
+                onMouseEnter={() => setShowFrameCodexTypes(true)}
+                onMouseLeave={() => setShowFrameCodexTypes(false)}
+              >
+                <button
+                  type="button"
+                  className="w-full px-3 py-1.5 text-sm text-left hover:bg-accent flex items-center justify-between"
+                >
+                  <span>Codex に昇格…</span>
+                  <span className="text-xs text-muted-foreground">▶</span>
+                </button>
+                {showFrameCodexTypes && (
+                  <div
+                    className="absolute left-full top-0 bg-popover border border-border rounded-md shadow-md py-1 z-50"
+                    style={{ minWidth: 130 }}
+                  >
+                    {CODEX_TYPES.map(({ value, label }) => (
+                      <button
+                        key={value}
+                        type="button"
+                        className="w-full px-3 py-1.5 text-sm text-left hover:bg-accent"
+                        onClick={() => {
+                          close();
+                          onPromoteFrame(value);
+                        }}
+                      >
+                        {label}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+            <div className="my-1 border-t border-border" />
+            <button
+              type="button"
+              className="px-3 py-1.5 text-sm text-left hover:bg-accent text-destructive"
+              onClick={() => {
+                close();
+                onRemoveFromBoard();
+              }}
+            >
+              削除
+            </button>
+          </>
+        )}
+        {!isFrame && isScene && (
           <>
             <button
               type="button"
@@ -102,80 +157,84 @@ export function NodeContextMenu({
           </>
         )}
 
-        {isPinned ? (
-          <button
-            type="button"
-            className="px-3 py-1.5 text-sm text-left hover:bg-accent"
-            onClick={() => {
-              close();
-              onUnpin();
-            }}
-          >
-            固定解除
-          </button>
-        ) : (
-          <button
-            type="button"
-            className="px-3 py-1.5 text-sm text-left hover:bg-accent"
-            onClick={() => {
-              close();
-              onPin();
-            }}
-          >
-            位置を固定
-          </button>
+        {!isFrame && (
+          <>
+            {isPinned ? (
+              <button
+                type="button"
+                className="px-3 py-1.5 text-sm text-left hover:bg-accent"
+                onClick={() => {
+                  close();
+                  onUnpin();
+                }}
+              >
+                固定解除
+              </button>
+            ) : (
+              <button
+                type="button"
+                className="px-3 py-1.5 text-sm text-left hover:bg-accent"
+                onClick={() => {
+                  close();
+                  onPin();
+                }}
+              >
+                位置を固定
+              </button>
+            )}
+
+            <div className="my-1 border-t border-border" />
+
+            <button
+              type="button"
+              className="px-3 py-1.5 text-sm text-left hover:bg-accent"
+              onClick={() => {
+                close();
+                onBringToFront();
+              }}
+            >
+              前面へ移動
+            </button>
+            <button
+              type="button"
+              className="px-3 py-1.5 text-sm text-left hover:bg-accent"
+              onClick={() => {
+                close();
+                onSendToBack();
+              }}
+            >
+              背面へ移動
+            </button>
+
+            <div className="my-1 border-t border-border" />
+
+            {focusedNodeId ? (
+              <button
+                type="button"
+                className="px-3 py-1.5 text-sm text-left hover:bg-accent"
+                onClick={() => {
+                  close();
+                  onExitFocus();
+                }}
+              >
+                フォーカスを解除
+              </button>
+            ) : (
+              <button
+                type="button"
+                className="px-3 py-1.5 text-sm text-left hover:bg-accent"
+                onClick={() => {
+                  close();
+                  onFocus();
+                }}
+              >
+                フォーカス
+              </button>
+            )}
+          </>
         )}
 
-        <div className="my-1 border-t border-border" />
-
-        <button
-          type="button"
-          className="px-3 py-1.5 text-sm text-left hover:bg-accent"
-          onClick={() => {
-            close();
-            onBringToFront();
-          }}
-        >
-          前面へ移動
-        </button>
-        <button
-          type="button"
-          className="px-3 py-1.5 text-sm text-left hover:bg-accent"
-          onClick={() => {
-            close();
-            onSendToBack();
-          }}
-        >
-          背面へ移動
-        </button>
-
-        <div className="my-1 border-t border-border" />
-
-        {focusedNodeId ? (
-          <button
-            type="button"
-            className="px-3 py-1.5 text-sm text-left hover:bg-accent"
-            onClick={() => {
-              close();
-              onExitFocus();
-            }}
-          >
-            フォーカスを解除
-          </button>
-        ) : (
-          <button
-            type="button"
-            className="px-3 py-1.5 text-sm text-left hover:bg-accent"
-            onClick={() => {
-              close();
-              onFocus();
-            }}
-          >
-            フォーカス
-          </button>
-        )}
-
-        {isSticky && onPromote && (
+        {!isFrame && isSticky && onPromote && (
           <>
             <div className="my-1 border-t border-border" />
             <div
@@ -259,18 +318,22 @@ export function NodeContextMenu({
           </>
         )}
 
-        <div className="my-1 border-t border-border" />
+        {!isFrame && (
+          <>
+            <div className="my-1 border-t border-border" />
 
-        <button
-          type="button"
-          className="px-3 py-1.5 text-sm text-left hover:bg-accent text-destructive"
-          onClick={() => {
-            close();
-            onRemoveFromBoard();
-          }}
-        >
-          {isSticky ? "削除" : "このボードから削除"}
-        </button>
+            <button
+              type="button"
+              className="px-3 py-1.5 text-sm text-left hover:bg-accent text-destructive"
+              onClick={() => {
+                close();
+                onRemoveFromBoard();
+              }}
+            >
+              {isSticky ? "削除" : "このボードから削除"}
+            </button>
+          </>
+        )}
       </div>
     </div>,
     document.body,
