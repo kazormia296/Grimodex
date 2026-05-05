@@ -49,6 +49,7 @@ import { useFrameGroupDrag } from "./hooks/useFrameGroupDrag";
 import {
   deleteUserEdge,
   updateUserEdge,
+  createUserEdge,
   deleteFrame,
   deleteAiBranch,
   deleteSticky,
@@ -598,6 +599,31 @@ export function MapCanvas() {
     [boardId, getSpawnPosition, setStickies, setPositions],
   );
 
+  const handleBranchFromSticky = useCallback(async () => {
+    if (!contextMenu || !boardId) return;
+    const sourceNodeId = contextMenu.nodeId;
+    const sourceNode = getNodes().find((n) => n.id === sourceNodeId);
+    if (!sourceNode) return;
+    const sourcePos = findPosByNodeId(positionsRef.current, sourceNodeId);
+    if (!sourcePos) return;
+    const newX = sourceNode.position.x + 280;
+    const newY = sourceNode.position.y;
+    const result = await createSticky({
+      boardId,
+      x: newX,
+      y: newY,
+      color: "yellow",
+    });
+    setStickies((prev) => [...prev, result.sticky]);
+    setPositions((prev) => [...prev, result.position as MapNodePositionRecord]);
+    const edge = await createUserEdge({
+      boardId,
+      fromPositionId: sourcePos.id,
+      toPositionId: result.position.id,
+    });
+    setUserEdges((prev) => [...prev, edge]);
+  }, [contextMenu, boardId, getNodes, setStickies, setPositions, setUserEdges]);
+
   const handlePaneDoubleClick = useCallback(
     (event: React.MouseEvent) => {
       if (!boardId) return;
@@ -786,6 +812,11 @@ export function MapCanvas() {
           onSendToBack={handleSendToBack}
           onPromote={handlePromoteSticky}
           onPromoteFrame={handlePromoteFrame}
+          onBranchFrom={
+            contextMenu.nodeId.startsWith("sticky:")
+              ? handleBranchFromSticky
+              : undefined
+          }
         />
       )}
 

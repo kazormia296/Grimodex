@@ -28,6 +28,7 @@ interface NodeContextMenuProps {
   onSendToBack: () => void;
   onPromote?: (type: PromoteTargetType, codexType?: string) => void;
   onPromoteFrame?: (codexType: string) => void;
+  onBranchFrom?: () => void;
 }
 
 const MENU_WIDTH = 200;
@@ -51,6 +52,7 @@ export function NodeContextMenu({
   onSendToBack,
   onPromote,
   onPromoteFrame,
+  onBranchFrom,
 }: NodeContextMenuProps) {
   const menuRef = useRef<HTMLDivElement>(null);
   const [showPromoteMenu, setShowPromoteMenu] = useState(false);
@@ -231,6 +233,22 @@ export function NodeContextMenu({
                 フォーカス
               </button>
             )}
+          </>
+        )}
+
+        {!isFrame && isSticky && onBranchFrom && (
+          <>
+            <div className="my-1 border-t border-border" />
+            <button
+              type="button"
+              className="px-3 py-1.5 text-sm text-left hover:bg-accent"
+              onClick={() => {
+                close();
+                onBranchFrom();
+              }}
+            >
+              ここから分岐
+            </button>
           </>
         )}
 

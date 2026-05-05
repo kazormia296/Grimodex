@@ -13,6 +13,7 @@ export interface StickyNodeData {
   previewText: string;
   color: StickyColor;
   useTipTap: boolean;
+  colorBy?: string;
   onUpdate?: (updates: {
     title?: string;
     body?: string;
@@ -135,7 +136,10 @@ export const StickyNode = memo(function StickyNode({
   }, [d.color]);
 
   const bg = STICKY_BG[localColor] ?? STICKY_BG.yellow;
-  const borderColor = STICKY_BORDER[localColor] ?? STICKY_BORDER.yellow;
+  const borderColor =
+    d.colorBy === "none" || d.colorBy === "status"
+      ? "var(--border)"
+      : (STICKY_BORDER[localColor] ?? STICKY_BORDER.yellow);
 
   const save = useCallback(async () => {
     const json = latestBodyRef.current;

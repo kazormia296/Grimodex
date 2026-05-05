@@ -7,6 +7,9 @@ const DEFAULT_NODE_SIZE: Record<string, { w: number; h: number }> = {
   codex: { w: 200, h: 90 },
   note: { w: 180, h: 72 },
   ai: { w: 160, h: 96 },
+  sticky: { w: 240, h: 120 },
+  snippet: { w: 200, h: 40 },
+  ai_branch: { w: 200, h: 90 },
 };
 
 interface FrameDragState {

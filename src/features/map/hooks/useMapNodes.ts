@@ -330,6 +330,7 @@ export function useMapNodes({
                 previewText: st.previewText ?? "",
                 color: st.color,
                 useTipTap,
+                colorBy,
                 onUpdate: async (updates: {
                   title?: string;
                   body?: string;
