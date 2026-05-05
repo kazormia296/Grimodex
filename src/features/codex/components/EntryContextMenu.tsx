@@ -1,8 +1,20 @@
 import { useEffect, useRef, useState } from "react";
-import { Copy, Grid2X2, MapPin, Pencil, Pin, Tag, Trash2 } from "lucide-react";
+import {
+  ChevronRight,
+  Copy,
+  Grid2X2,
+  MapPin,
+  Pencil,
+  Pin,
+  Tag,
+  Trash2,
+} from "lucide-react";
 import type { CodexEntry } from "../api";
 import type { CodexType } from "../typeApi";
 import { useCodexHighlightStore } from "@/features/editor/codexHighlightStore";
+import { useAddToMapBoards } from "@/features/map/hooks/useAddToMapBoards";
+
+const PROJECT_ID = "default-project";
 
 interface EntryContextMenuProps {
   entry: CodexEntry;
@@ -38,7 +50,9 @@ export function EntryContextMenu({
   const menuRef = useRef<HTMLDivElement>(null);
   const [showTypeSubmenu, setShowTypeSubmenu] = useState(false);
   const [showCustomSetSubmenu, setShowCustomSetSubmenu] = useState(false);
+  const [showMapSubmenu, setShowMapSubmenu] = useState(false);
   const typeColorMap = useCodexHighlightStore((s) => s.typeColorMap);
+  const { boards, addToBoard } = useAddToMapBoards(PROJECT_ID);
 
   useEffect(() => {
     const handlePointerDown = (e: PointerEvent) => {
@@ -167,6 +181,43 @@ export function EntryContextMenu({
           <MapPin className="h-3.5 w-3.5 text-muted-foreground" />
           シーンで検索
         </button>
+
+        {boards.length > 0 && (
+          <div
+            className="relative"
+            onMouseEnter={() => setShowMapSubmenu(true)}
+            onMouseLeave={() => setShowMapSubmenu(false)}
+          >
+            <button
+              type="button"
+              className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm hover:bg-accent"
+            >
+              <MapPin className="h-3.5 w-3.5 text-muted-foreground" />
+              <span>Map に追加</span>
+              <ChevronRight className="ml-auto h-3.5 w-3.5 text-muted-foreground" />
+            </button>
+            {showMapSubmenu && (
+              <div className="absolute left-full top-0 ml-1 min-w-[160px] rounded-md border border-border bg-popover py-1 shadow-md">
+                {boards.map((b) => (
+                  <button
+                    key={b.id}
+                    type="button"
+                    onClick={() => {
+                      void addToBoard(b.id, {
+                        nodeRefType: "codex",
+                        codexEntryId: entry.id,
+                      });
+                      onClose();
+                    }}
+                    className="flex w-full items-center px-3 py-1.5 text-left text-sm text-foreground hover:bg-accent"
+                  >
+                    {b.title}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
 
         {onPinToChat && (
           <button

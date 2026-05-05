@@ -2,8 +2,10 @@ import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
   Bookmark,
+  ChevronRight,
   Copy,
   FilePlus,
+  MapPin,
   Pencil,
   TextCursorInput,
   Trash2,
@@ -17,6 +19,7 @@ import { CreateForeshadowDialog } from "@/features/foreshadow/CreateForeshadowDi
 import { useForeshadowStore } from "@/features/foreshadow/foreshadowStore";
 import type { Snippet } from "./api";
 import { useSnippetStore } from "./snippetStore";
+import { useAddToMapBoards } from "@/features/map/hooks/useAddToMapBoards";
 
 const PROJECT_ID = "default-project";
 
@@ -44,6 +47,8 @@ export function SnippetContextMenu({
   const setActiveScene = useTreeStore((s) => s.setActiveScene);
   const createForeshadow = useForeshadowStore((s) => s.create);
   const [foreshadowDialogOpen, setForeshadowDialogOpen] = useState(false);
+  const [mapMenuOpen, setMapMenuOpen] = useState(false);
+  const { boards, addToBoard } = useAddToMapBoards(PROJECT_ID);
 
   useEffect(() => {
     const handlePointerDown = (e: PointerEvent) => {
@@ -201,6 +206,43 @@ export function SnippetContextMenu({
           <FilePlus className="h-3.5 w-3.5 text-muted-foreground" />
           {t("snippets.contextMenu.duplicate")}
         </button>
+
+        {boards.length > 0 && (
+          <div
+            className="relative"
+            onMouseEnter={() => setMapMenuOpen(true)}
+            onMouseLeave={() => setMapMenuOpen(false)}
+          >
+            <button
+              type="button"
+              className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm hover:bg-accent"
+            >
+              <MapPin className="h-3.5 w-3.5 text-muted-foreground" />
+              <span>Map に追加</span>
+              <ChevronRight className="ml-auto h-3.5 w-3.5 text-muted-foreground" />
+            </button>
+            {mapMenuOpen && (
+              <div className="absolute left-full top-0 ml-1 min-w-[160px] rounded-md border border-border bg-popover py-1 shadow-md">
+                {boards.map((b) => (
+                  <button
+                    key={b.id}
+                    type="button"
+                    onClick={() => {
+                      void addToBoard(b.id, {
+                        nodeRefType: "snippet",
+                        snippetId: snippet.id,
+                      });
+                      onClose();
+                    }}
+                    className="flex w-full items-center px-3 py-1.5 text-left text-sm text-foreground hover:bg-accent"
+                  >
+                    {b.title}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
 
         {snippet.sceneId && (
           <button

@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useTranslation } from "react-i18next";
-import { Check, ChevronRight, Settings, Tag } from "lucide-react";
+import { Check, ChevronRight, MapPin, Settings, Tag } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useTreeStore } from "./treeStore";
 import { useTabStore } from "@/features/editor/tabStore";
@@ -10,6 +10,9 @@ import { resolveLabelColor } from "@/lib/labelPalette";
 import { useScenesPanelContext } from "./ScenesPanelContext";
 import { StatusDot } from "./StatusDot";
 import type { TreeNodeData, SceneStatus } from "./treeStore";
+import { useAddToMapBoards } from "@/features/map/hooks/useAddToMapBoards";
+
+const PROJECT_ID = "default-project";
 
 const EMPTY_LABEL_IDS: readonly string[] = Object.freeze([]);
 
@@ -51,6 +54,8 @@ export function TreeContextMenu({
     (s) => s.nodeLabels[node.id] ?? EMPTY_LABEL_IDS,
   );
   const [labelMenuOpen, setLabelMenuOpen] = useState(false);
+  const [mapMenuOpen, setMapMenuOpen] = useState(false);
+  const { boards, addToBoard } = useAddToMapBoards(PROJECT_ID);
   const scenesContext = useScenesPanelContext();
 
   async function handleToggleLabel(labelId: string) {
@@ -310,6 +315,50 @@ export function TreeContextMenu({
         })}
 
       {isContainer && sep()}
+
+      {/* Add to Map (scene / note only) */}
+      {(isScene || isNote) && boards.length > 0 && (
+        <>
+          {sep()}
+          <div
+            className="relative"
+            onMouseEnter={() => setMapMenuOpen(true)}
+            onMouseLeave={() => setMapMenuOpen(false)}
+          >
+            <button
+              type="button"
+              className={cn(
+                "flex w-full items-center gap-2 px-3 py-1.5 text-xs text-foreground hover:bg-accent",
+                mapMenuOpen && "bg-accent",
+              )}
+            >
+              <MapPin className="h-3 w-3" />
+              <span>Map に追加</span>
+              <ChevronRight className="ml-auto h-3 w-3" />
+            </button>
+            {mapMenuOpen && (
+              <div className="absolute left-full top-0 ml-1 min-w-[160px] rounded-md border border-border bg-popover py-1 shadow-md">
+                {boards.map((b) => (
+                  <button
+                    key={b.id}
+                    type="button"
+                    onClick={() => {
+                      void addToBoard(b.id, {
+                        nodeRefType: node.nodeType as "scene" | "note",
+                        treeNodeId: node.id,
+                      });
+                      onClose();
+                    }}
+                    className="flex w-full items-center px-3 py-1.5 text-left text-xs text-foreground hover:bg-accent"
+                  >
+                    {b.title}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+        </>
+      )}
 
       {/* Delete */}
       {sep()}
