@@ -70,6 +70,7 @@ export function ChatPanel() {
   const loadSessions = useChatStore((s) => s.loadSessions);
   const selectSession = useChatStore((s) => s.selectSession);
   const createNewSession = useChatStore((s) => s.createNewSession);
+  const ensureSession = useChatStore((s) => s.ensureSession);
   const isGlobalChat = useChatStore((s) => s.isGlobalChat);
   const setIsGlobalChat = useChatStore((s) => s.setIsGlobalChat);
   const starMessage = useChatStore((s) => s.starMessage);
@@ -203,25 +204,22 @@ export function ChatPanel() {
 
   const handlePin = useCallback(
     async (entryId: string, type: "codex" | "snippet" = "codex") => {
-      if (!activeSessionId) return;
-      await chatApi.pinCodexEntry(
-        activeSessionId,
-        entryId,
-        false,
-        "manual",
-        type,
-      );
+      // 新規シーンでメッセージ未送信のときは activeSessionId がまだ無い。
+      // sendMessage と同じく、ピン操作時にもセッションを自動作成して紐づける。
+      const sessionId = await ensureSession();
+      if (!sessionId) return;
+      await chatApi.pinCodexEntry(sessionId, entryId, false, "manual", type);
       // Bug#1: ピン直後にautoリストから即時除去
       removeEntryFromAuto(entryId);
       const [updatedCodex, updatedSnippets] = await Promise.all([
-        chatApi.listPinnedCodexEntries(activeSessionId),
-        chatApi.listPinnedSnippetEntries(activeSessionId),
+        chatApi.listPinnedCodexEntries(sessionId),
+        chatApi.listPinnedSnippetEntries(sessionId),
       ]);
       setPinnedEntries(updatedCodex);
       setPinnedSnippets(updatedSnippets);
       await refreshContextLayers();
     },
-    [activeSessionId, removeEntryFromAuto, refreshContextLayers],
+    [ensureSession, removeEntryFromAuto, refreshContextLayers],
   );
 
   const handleUnpin = useCallback(
@@ -284,12 +282,13 @@ export function ChatPanel() {
 
   const handleTogglePinChildren = useCallback(
     async (entryId: string, withChildren: boolean) => {
-      if (!activeSessionId) return;
-      await chatApi.togglePinChildren(activeSessionId, entryId, withChildren);
-      const updated = await chatApi.listPinnedCodexEntries(activeSessionId);
+      const sessionId = await ensureSession();
+      if (!sessionId) return;
+      await chatApi.togglePinChildren(sessionId, entryId, withChildren);
+      const updated = await chatApi.listPinnedCodexEntries(sessionId);
       setPinnedEntries(updated);
     },
-    [activeSessionId],
+    [ensureSession],
   );
 
   const bottomRef = useRef<HTMLDivElement>(null);

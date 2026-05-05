@@ -262,6 +262,12 @@ interface ChatState {
     title: string,
     nodeId?: string,
   ) => Promise<void>;
+  /**
+   * 現在のシーン/グローバルモードに紐づくセッションを保証する。
+   * 既存の activeSessionId があればそれを返し、無ければ DB に作成して
+   * activeSessionId / sessions に反映してから id を返す。失敗時は null。
+   */
+  ensureSession: () => Promise<string | null>;
   deleteSession: (sessionId: string) => Promise<void>;
   persistMessage: (role: MessageRole, content: string) => Promise<void>;
 
@@ -771,6 +777,30 @@ export const useChatStore = create<ChatState>()((set, get) => ({
     } catch (e) {
       toast.error(i18next.t("chat.createSessionFailed"));
       debugLog.error("ChatStore", "createNewSession", errorDetail(e));
+    }
+  },
+
+  ensureSession: async () => {
+    const { activeSessionId, activeProjectId, activeSceneId, isGlobalChat } =
+      get();
+    if (activeSessionId) return activeSessionId;
+    const effectiveNodeId = isGlobalChat
+      ? undefined
+      : (activeSceneId ?? undefined);
+    try {
+      const session = await chatApi.createSession(
+        activeProjectId ?? "default-project",
+        "New session",
+        effectiveNodeId,
+      );
+      set((state) => ({
+        sessions: [session, ...state.sessions],
+        activeSessionId: session.id,
+      }));
+      return session.id;
+    } catch (e) {
+      debugLog.error("ChatStore", "ensureSession", errorDetail(e));
+      return null;
     }
   },
 
