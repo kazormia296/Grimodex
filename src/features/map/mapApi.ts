@@ -9,6 +9,7 @@ import {
   treeNodes,
   codexEntries,
   snippets,
+  authorshipSpans,
   type MapBoard,
   type NewMapBoard,
   type MapNodePosition,
@@ -22,6 +23,7 @@ import {
   type NewMapFrame,
 } from "@/db/schema";
 import { eq, and, isNotNull } from "drizzle-orm";
+import { generateKeyBetween } from "@/features/tree/fractionalIndex";
 import type { NodeRefType, StickyColor } from "./types";
 
 export type PromoteTargetType = "scene" | "note" | "snippet" | "codex";
@@ -531,13 +533,24 @@ export async function promoteSticky(
 
   if (targetType === "scene" || targetType === "note") {
     newEntityId = crypto.randomUUID();
+    // Place under the default chapter with a proper sort order
+    const DEFAULT_CHAPTER_ID = "default-chapter";
+    const siblings = await db
+      .select()
+      .from(treeNodes)
+      .where(eq(treeNodes.parentId, DEFAULT_CHAPTER_ID));
+    const lastKey = siblings.length
+      ? siblings.sort((a, b) => (a.sortOrder > b.sortOrder ? 1 : -1)).at(-1)!
+          .sortOrder
+      : null;
+    const sortOrder = generateKeyBetween(lastKey, null);
     await db.insert(treeNodes).values({
       id: newEntityId,
       projectId: options.projectId,
-      parentId: null,
+      parentId: DEFAULT_CHAPTER_ID,
       nodeType: targetType,
       title,
-      sortOrder: "a0",
+      sortOrder,
       content: body,
       createdAt: now,
       updatedAt: now,
@@ -584,6 +597,18 @@ export async function promoteSticky(
     })
     .where(eq(mapNodePositions.id, positionId))
     .returning();
+
+  // Migrate authorship spans to the new entity before CASCADE deletes them
+  await db
+    .update(authorshipSpans)
+    .set({
+      nodeId:
+        targetType === "scene" || targetType === "note" ? newEntityId : null,
+      codexEntryId: targetType === "codex" ? newEntityId : null,
+      snippetId: targetType === "snippet" ? newEntityId : null,
+      stickyId: null,
+    })
+    .where(eq(authorshipSpans.stickyId, stickyId));
 
   await db.delete(mapStickies).where(eq(mapStickies.id, stickyId));
 
@@ -754,12 +779,15 @@ export async function promoteFrame(
       ),
     );
 
+  // Use center of sticky node (fixed width 240px, approximate height 80px)
+  const STICKY_HALF_W = 120;
+  const STICKY_HALF_H = 40;
   const insidePositions = allPositions.filter(
     (p) =>
-      p.x >= frame.x &&
-      p.x <= frame.x + frame.width &&
-      p.y >= frame.y &&
-      p.y <= frame.y + frame.height,
+      p.x + STICKY_HALF_W >= frame.x &&
+      p.x + STICKY_HALF_W <= frame.x + frame.width &&
+      p.y + STICKY_HALF_H >= frame.y &&
+      p.y + STICKY_HALF_H <= frame.y + frame.height,
   );
 
   // Load sticky bodies
@@ -811,6 +839,14 @@ export async function promoteFrame(
     createdAt: now,
     updatedAt: now,
   });
+
+  // Migrate authorship spans to the new Codex entry before CASCADE deletes them
+  for (const stickyId of insideStickyIds) {
+    await db
+      .update(authorshipSpans)
+      .set({ codexEntryId: codexId, stickyId: null })
+      .where(eq(authorshipSpans.stickyId, stickyId));
+  }
 
   // Delete stickies (cascades to positions via stickyId FK)
   for (const stickyId of insideStickyIds) {
