@@ -8,6 +8,7 @@ interface MapPaletteProps {
   onPaletteModeChange: (mode: PaletteMode) => void;
   onAddSticky: () => void;
   onOpenPicker: (type: PickerEntityType) => void;
+  onOpenAiBranch: () => void;
 }
 
 const PICKER_ITEMS: { type: PickerEntityType; label: string }[] = [
@@ -22,6 +23,7 @@ export function MapPalette({
   onPaletteModeChange,
   onAddSticky,
   onOpenPicker,
+  onOpenAiBranch,
 }: MapPaletteProps) {
   const [addMenuOpen, setAddMenuOpen] = useState(false);
   const addMenuRef = useRef<HTMLDivElement>(null);
@@ -69,6 +71,12 @@ export function MapPalette({
         label="+ Sticky"
         onClick={onAddSticky}
         title="付箋を追加 (S)"
+      />
+
+      <PaletteButton
+        label="✦ AI Branch"
+        onClick={onOpenAiBranch}
+        title="AI Branchを生成"
       />
 
       {/* [▾ Add…] dropdown */}

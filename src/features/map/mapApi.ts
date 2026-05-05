@@ -15,12 +15,14 @@ import {
   type MapNodePosition,
   type NewMapNodePosition,
   type MapAiBranch,
+  type NewMapAiBranch,
   type MapSticky,
   type NewMapSticky,
   type MapEdge,
   type NewMapEdge,
   type MapFrame,
   type NewMapFrame,
+  type NewAuthorshipSpan,
 } from "@/db/schema";
 import { eq, and, isNotNull } from "drizzle-orm";
 import { generateKeyBetween } from "@/features/tree/fractionalIndex";
@@ -408,7 +410,7 @@ export async function deleteNodePosition(id: string): Promise<void> {
 // ── Stickies ───────────────────────────────────────────────────────────────
 
 /** Extract first 40 chars of plain text from ProseMirror JSON string. */
-export function extractPreviewText(bodyJson: string): string {
+function extractAllText(bodyJson: string): string {
   try {
     const doc = JSON.parse(bodyJson) as { content?: unknown[] };
     const texts: string[] = [];
@@ -426,11 +428,15 @@ export function extractPreviewText(bodyJson: string): string {
       if (n.content) for (const child of n.content) walk(child);
     }
     if (doc.content) for (const child of doc.content) walk(child);
-    const full = texts.join("");
-    return full.length > 40 ? full.slice(0, 40) + "…" : full;
+    return texts.join("");
   } catch {
     return "";
   }
+}
+
+export function extractPreviewText(bodyJson: string): string {
+  const full = extractAllText(bodyJson);
+  return full.length > 40 ? full.slice(0, 40) + "…" : full;
 }
 
 export async function listStickies(boardId: string): Promise<MapSticky[]> {
@@ -622,6 +628,160 @@ export async function listAiBranches(boardId: string): Promise<MapAiBranch[]> {
     .select()
     .from(mapAiBranches)
     .where(eq(mapAiBranches.boardId, boardId));
+}
+
+export type AiBranchCard = { title: string; body: string };
+
+export async function createAiBranch(
+  boardId: string,
+  prompt: string,
+  seedNodeIds: string[],
+  cards: AiBranchCard[],
+  options?: {
+    sessionId?: string | null;
+    model?: string | null;
+    spawnX?: number;
+    spawnY?: number;
+  },
+): Promise<{
+  branch: MapAiBranch;
+  stickies: MapSticky[];
+  positions: MapNodePosition[];
+}> {
+  const now = new Date().toISOString();
+  const branchId = crypto.randomUUID();
+  const spawnX = options?.spawnX ?? 0;
+  const spawnY = options?.spawnY ?? 0;
+
+  const [branch] = await db
+    .insert(mapAiBranches)
+    .values({
+      id: branchId,
+      boardId,
+      prompt,
+      seedNodeIds: JSON.stringify(seedNodeIds),
+      sessionId: options?.sessionId ?? null,
+      model: options?.model ?? null,
+      tokenUsage: null,
+      createdAt: now,
+      updatedAt: now,
+    } satisfies NewMapAiBranch)
+    .returning();
+
+  // Place branch node at the spawn position
+  const branchPosId = crypto.randomUUID();
+  const [branchPosition] = await db
+    .insert(mapNodePositions)
+    .values({
+      id: branchPosId,
+      boardId,
+      nodeRefType: "ai_branch",
+      aiBranchId: branchId,
+      treeNodeId: null,
+      codexEntryId: null,
+      snippetId: null,
+      stickyId: null,
+      x: spawnX,
+      y: spawnY,
+      pinned: 0,
+      zIndex: 0,
+      createdAt: now,
+      updatedAt: now,
+    } satisfies NewMapNodePosition)
+    .returning();
+
+  const stickies: MapSticky[] = [];
+  const positions: MapNodePosition[] = [branchPosition];
+
+  const angleStep = cards.length > 0 ? (2 * Math.PI) / cards.length : 0;
+  const radius = 280;
+
+  for (let i = 0; i < cards.length; i++) {
+    const card = cards[i];
+    const stickyId = crypto.randomUUID();
+    const posId = crypto.randomUUID();
+    const body = card.body || '{"type":"doc","content":[]}';
+    const previewText = extractPreviewText(body);
+
+    const angle = angleStep * i - Math.PI / 2;
+    const x = spawnX + Math.round(radius * Math.cos(angle));
+    const y = spawnY + Math.round(radius * Math.sin(angle));
+
+    const [sticky] = await db
+      .insert(mapStickies)
+      .values({
+        id: stickyId,
+        boardId,
+        title: card.title || null,
+        body,
+        previewText: previewText || null,
+        color: "yellow",
+        aiBranchId: branchId,
+        sourceChatMessageId: null,
+        createdAt: now,
+        updatedAt: now,
+      } satisfies NewMapSticky)
+      .returning();
+
+    const [pos] = await db
+      .insert(mapNodePositions)
+      .values({
+        id: posId,
+        boardId,
+        nodeRefType: "sticky",
+        stickyId,
+        aiBranchId: null,
+        treeNodeId: null,
+        codexEntryId: null,
+        snippetId: null,
+        x,
+        y,
+        pinned: 0,
+        zIndex: 0,
+        createdAt: now,
+        updatedAt: now,
+      } satisfies NewMapNodePosition)
+      .returning();
+
+    // Dashed edge: branch → sticky
+    await db.insert(mapEdges).values({
+      id: crypto.randomUUID(),
+      boardId,
+      fromPositionId: branchPosId,
+      toPositionId: posId,
+      forwardLabel: null,
+      backwardLabel: null,
+      labels: "[]",
+      style: "dashed",
+      color: "#888888",
+      direction: "forward",
+      createdAt: now,
+      updatedAt: now,
+    } satisfies NewMapEdge);
+
+    // Authorship span covering the full body (use full text, not truncated preview)
+    const bodyLen = extractAllText(body).length;
+    await db.insert(authorshipSpans).values({
+      id: crypto.randomUUID(),
+      stickyId,
+      nodeId: null,
+      codexEntryId: null,
+      snippetId: null,
+      detailValueId: null,
+      fromPos: 0,
+      toPos: Math.max(bodyLen, 1),
+      source: "ai",
+      model: options?.model ?? null,
+      timestamp: now,
+      chatMsgId: null,
+      phaseId: null,
+    } satisfies NewAuthorshipSpan);
+
+    stickies.push(sticky);
+    positions.push(pos);
+  }
+
+  return { branch, stickies, positions };
 }
 
 export async function deleteAiBranch(id: string): Promise<void> {

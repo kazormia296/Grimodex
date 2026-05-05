@@ -53,12 +53,15 @@ import {
   deleteAiBranch,
   deleteSticky,
   createSticky,
+  createAiBranch,
   setNodePinned,
   deleteNodePosition,
   promoteFrame,
   listNodePositions,
   listStickies,
 } from "./mapApi";
+import { AINodeDialog } from "./AINodeDialog";
+import { generateAiBranchCards } from "./mapAiApi";
 import { deleteNode as deleteTreeNode } from "@/features/tree/api";
 import { deleteCodexEntry } from "@/features/codex/api";
 import { findPosByNodeId } from "./utils/nodeIdCodec";
@@ -157,6 +160,7 @@ export function MapCanvas() {
     stickies,
     setStickies,
     aiBranches,
+    setAiBranches,
   } = useMapBoardData(PROJECT_ID);
 
   const [nodes, setNodes] = useState<Node[]>([]);
@@ -169,6 +173,12 @@ export function MapCanvas() {
   );
   const [edgeContextMenu, setEdgeContextMenu] =
     useState<EdgeContextMenuState | null>(null);
+  const [aiBranchDialog, setAiBranchDialog] = useState<{
+    spawnPosition: { x: number; y: number };
+    seedNodeIds: string[];
+    seedNodeTitles: string[];
+  } | null>(null);
+  const [generatingAiBranch, setGeneratingAiBranch] = useState(false);
   const [modeTransitionActive, setModeTransitionActive] = useState(false);
   const [forceLayoutRunning, setForceLayoutRunning] = useState(false);
   const [forceAlpha, setForceAlpha] = useState(1);
@@ -261,6 +271,7 @@ export function MapCanvas() {
     modeTransitionActive,
     setFrames,
     setStickies,
+    setAiBranches,
     setNodes,
     setForceLayoutRunning,
     setForceAlpha,
@@ -599,6 +610,59 @@ export function MapCanvas() {
     [boardId, screenToFlowPosition, handleAddSticky],
   );
 
+  const handleOpenAiBranch = useCallback(() => {
+    if (!boardId) return;
+    const selected = getNodes().filter((n) => n.selected && n.type !== "frame");
+    const seedNodeIds = selected.map((n) => n.id);
+    const seedNodeTitles = selected
+      .map((n) => {
+        const data = n.data as { title?: string; name?: string };
+        return data.title ?? data.name ?? n.id;
+      })
+      .filter(Boolean) as string[];
+    setAiBranchDialog({
+      spawnPosition: getSpawnPosition(),
+      seedNodeIds,
+      seedNodeTitles,
+    });
+  }, [boardId, getNodes, getSpawnPosition]);
+
+  const handleAiBranchConfirm = useCallback(
+    async (prompt: string, count: 3 | 5 | 8) => {
+      if (!boardId || !aiBranchDialog) return;
+      const dialogState = aiBranchDialog;
+      setAiBranchDialog(null);
+      setGeneratingAiBranch(true);
+
+      try {
+        const cards = await generateAiBranchCards(
+          prompt,
+          count,
+          dialogState.seedNodeTitles,
+        );
+
+        const pos = dialogState.spawnPosition;
+        const result = await createAiBranch(
+          boardId,
+          prompt,
+          dialogState.seedNodeIds,
+          cards,
+          { spawnX: pos.x, spawnY: pos.y },
+        );
+
+        setAiBranches((prev) => [...prev, result.branch]);
+        setStickies((prev) => [...prev, ...result.stickies]);
+        setPositions((prev) => [
+          ...prev,
+          ...(result.positions as MapNodePositionRecord[]),
+        ]);
+      } finally {
+        setGeneratingAiBranch(false);
+      }
+    },
+    [boardId, aiBranchDialog, setAiBranches, setStickies, setPositions],
+  );
+
   const { executeAutoArrange } = useMapAutoArrange({
     boardId,
     pendingAutoArrange,
@@ -735,12 +799,47 @@ export function MapCanvas() {
 
       {forceLayoutRunning && <ForceLayoutProgress alpha={forceAlpha} />}
 
+      {generatingAiBranch && (
+        <div
+          style={{
+            position: "absolute",
+            bottom: 60,
+            left: "50%",
+            transform: "translateX(-50%)",
+            background: "var(--popover)",
+            border: "1px solid var(--border)",
+            borderRadius: 6,
+            padding: "6px 16px",
+            fontSize: 12,
+            color: "var(--foreground)",
+            boxShadow: "0 2px 8px rgba(0,0,0,0.12)",
+            zIndex: 20,
+            display: "flex",
+            alignItems: "center",
+            gap: 8,
+          }}
+        >
+          <span>✨ AI Branch を生成中…</span>
+        </div>
+      )}
+
       <MapPalette
         paletteMode={paletteMode}
         onPaletteModeChange={setPaletteMode}
         onAddSticky={handleAddSticky}
         onOpenPicker={setPickerType}
+        onOpenAiBranch={handleOpenAiBranch}
       />
+
+      {aiBranchDialog && boardId && (
+        <AINodeDialog
+          boardId={boardId}
+          spawnPosition={aiBranchDialog.spawnPosition}
+          seedNodeTitles={aiBranchDialog.seedNodeTitles}
+          onConfirm={handleAiBranchConfirm}
+          onCancel={() => setAiBranchDialog(null)}
+        />
+      )}
 
       {pickerType && boardId && (
         <AddToMapPickerDialog

@@ -5,6 +5,7 @@ import {
   updateFrame,
   deleteFrame,
   updateSticky,
+  deleteAiBranch,
   extractPreviewText,
 } from "../mapApi";
 import { layoutFor, layoutForAsync } from "../layouts";
@@ -44,6 +45,7 @@ interface UseMapNodesInput {
   modeTransitionActive: boolean;
   setFrames: React.Dispatch<React.SetStateAction<MapFrame[]>>;
   setStickies: React.Dispatch<React.SetStateAction<MapSticky[]>>;
+  setAiBranches: React.Dispatch<React.SetStateAction<MapAiBranch[]>>;
   setNodes: React.Dispatch<React.SetStateAction<Node[]>>;
   setForceLayoutRunning: (v: boolean) => void;
   setForceAlpha: (v: number) => void;
@@ -70,6 +72,7 @@ export function useMapNodes({
   modeTransitionActive,
   setFrames,
   setStickies,
+  setAiBranches,
   setNodes,
   setForceLayoutRunning,
   setForceAlpha,
@@ -372,6 +375,9 @@ export function useMapNodes({
       const aiBranchNodes: Node[] = show.aiBranch
         ? aiBranches.map((ab, idx) => {
             const key = `ai_branch:${ab.id}`;
+            const derivedStickyCount = stickies.filter(
+              (s) => s.aiBranchId === ab.id,
+            ).length;
             return {
               id: key,
               type: "ai_branch",
@@ -385,10 +391,16 @@ export function useMapNodes({
               data: {
                 prompt: ab.prompt,
                 sessionId: ab.sessionId,
+                derivedStickyCount,
                 onOpenChat: () => {
                   if (ab.sessionId) {
                     useChatStore.getState().selectSession(ab.sessionId);
                   }
+                },
+                onDelete: async () => {
+                  await deleteAiBranch(ab.id);
+                  setAiBranches((prev) => prev.filter((b) => b.id !== ab.id));
+                  // Stickies persist as orphans (aiBranchId → null in DB via ON DELETE SET NULL)
                 },
               },
             };

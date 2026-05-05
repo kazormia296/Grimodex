@@ -320,3 +320,117 @@ describe("mapApi — duplicateBoard", () => {
     await expect(duplicateBoard("nonexistent", "proj")).rejects.toThrow();
   });
 });
+
+describe("mapApi — createAiBranch", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("branch + positions + stickies + edges + authorship spans を作成する", async () => {
+    const branch = {
+      id: "branch-1",
+      boardId: "b1",
+      prompt: "アイデアを出して",
+      seedNodeIds: "[]",
+      sessionId: null,
+      model: null,
+      tokenUsage: null,
+      createdAt: "2024-01-01",
+      updatedAt: "2024-01-01",
+    };
+    const branchPos = {
+      id: "pos-branch",
+      boardId: "b1",
+      nodeRefType: "ai_branch",
+      aiBranchId: "branch-1",
+      x: 0,
+      y: 0,
+    };
+    const sticky1 = {
+      id: "sticky-1",
+      boardId: "b1",
+      title: "アイデア1",
+      body: '{"type":"doc","content":[]}',
+      previewText: null,
+      color: "yellow",
+      aiBranchId: "branch-1",
+      sourceChatMessageId: null,
+      createdAt: "2024-01-01",
+      updatedAt: "2024-01-01",
+    };
+    const stickyPos1 = {
+      id: "pos-s1",
+      boardId: "b1",
+      nodeRefType: "sticky",
+      stickyId: "sticky-1",
+      x: 0,
+      y: -280,
+    };
+    const edge1 = { id: "edge-1", boardId: "b1", style: "dashed" };
+    const span1 = { id: "span-1" };
+
+    // Sequence of insert calls:
+    // 1: mapAiBranches → branch
+    // 2: mapNodePositions (branch pos)
+    // 3: mapStickies (sticky 1)
+    // 4: mapNodePositions (sticky pos 1)
+    // 5: mapEdges (edge 1)
+    // 6: authorshipSpans (span 1)
+    (db.insert as ReturnType<typeof vi.fn>)
+      .mockReturnValueOnce(makeMock([branch]))
+      .mockReturnValueOnce(makeMock([branchPos]))
+      .mockReturnValueOnce(makeMock([sticky1]))
+      .mockReturnValueOnce(makeMock([stickyPos1]))
+      .mockReturnValueOnce(makeMock([edge1]))
+      .mockReturnValueOnce(makeMock([span1]));
+
+    const { createAiBranch } = await import("./mapApi");
+    const result = await createAiBranch(
+      "b1",
+      "アイデアを出して",
+      [],
+      [{ title: "アイデア1", body: '{"type":"doc","content":[]}' }],
+    );
+
+    expect(result.branch.prompt).toBe("アイデアを出して");
+    expect(result.stickies).toHaveLength(1);
+    expect(result.stickies[0].aiBranchId).toBe("branch-1");
+    // branch position + 1 sticky position
+    expect(result.positions).toHaveLength(2);
+    // insert was called 6 times (branch, branchPos, sticky, stickyPos, edge, span)
+    expect(db.insert).toHaveBeenCalledTimes(6);
+  });
+
+  it("cards が空のとき branch と branchPosition だけ作成する", async () => {
+    const branch = {
+      id: "branch-empty",
+      boardId: "b1",
+      prompt: "テスト",
+      seedNodeIds: "[]",
+      sessionId: null,
+      model: null,
+      tokenUsage: null,
+      createdAt: "2024-01-01",
+      updatedAt: "2024-01-01",
+    };
+    const branchPos = {
+      id: "pos-branch-empty",
+      boardId: "b1",
+      nodeRefType: "ai_branch",
+      aiBranchId: "branch-empty",
+      x: 0,
+      y: 0,
+    };
+
+    (db.insert as ReturnType<typeof vi.fn>)
+      .mockReturnValueOnce(makeMock([branch]))
+      .mockReturnValueOnce(makeMock([branchPos]));
+
+    const { createAiBranch } = await import("./mapApi");
+    const result = await createAiBranch("b1", "テスト", [], []);
+
+    expect(result.stickies).toHaveLength(0);
+    expect(result.positions).toHaveLength(1);
+    expect(db.insert).toHaveBeenCalledTimes(2);
+  });
+});

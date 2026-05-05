@@ -1,11 +1,13 @@
-import { memo } from "react";
+import { memo, useState } from "react";
 import { Handle, Position } from "@xyflow/react";
 import type { NodeProps } from "@xyflow/react";
 
 export interface AIBranchNodeData {
   prompt: string;
   sessionId?: string | null;
+  derivedStickyCount?: number;
   onOpenChat?: () => void;
+  onDelete?: () => void;
   [key: string]: unknown;
 }
 
@@ -16,10 +18,49 @@ export const AIBranchNode = memo(function AIBranchNode({
   const d = data as AIBranchNodeData;
   const promptPreview = d.prompt.slice(0, 60);
   const hasSession = !!d.sessionId;
+  const count = d.derivedStickyCount ?? 0;
+  const [hovered, setHovered] = useState(false);
 
   return (
-    <div style={{ position: "relative" }}>
+    <div
+      style={{ position: "relative" }}
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
+    >
       <Handle type="target" position={Position.Left} className="map-handle" />
+
+      {/* × delete badge */}
+      {(hovered || selected) && d.onDelete && (
+        <button
+          type="button"
+          title="AI Branch を削除"
+          onClick={(e) => {
+            e.stopPropagation();
+            d.onDelete?.();
+          }}
+          style={{
+            position: "absolute",
+            top: -8,
+            right: -8,
+            width: 18,
+            height: 18,
+            borderRadius: "50%",
+            background: "#EF4444",
+            color: "#fff",
+            border: "none",
+            cursor: "pointer",
+            fontSize: 11,
+            fontWeight: 700,
+            lineHeight: "18px",
+            textAlign: "center",
+            zIndex: 10,
+            padding: 0,
+          }}
+        >
+          ×
+        </button>
+      )}
+
       <div
         onDoubleClick={(e) => {
           e.stopPropagation();
@@ -85,11 +126,28 @@ export const AIBranchNode = memo(function AIBranchNode({
             fontSize: 10,
             color: "#78350F",
             opacity: 0.7,
+            display: "flex",
+            gap: 6,
+            alignItems: "center",
           }}
         >
-          AI Branch
+          <span>AI Branch</span>
+          {count > 0 && (
+            <span
+              style={{
+                background: "#FDE68A",
+                borderRadius: 8,
+                padding: "1px 6px",
+                fontSize: 10,
+                color: "#92400E",
+              }}
+            >
+              {count} 枚
+            </span>
+          )}
         </div>
       </div>
+
       <Handle type="source" position={Position.Right} className="map-handle" />
     </div>
   );

@@ -1,15 +1,31 @@
+import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 
-interface AINodeDialogProps {
+interface AIBranchDialogProps {
   boardId: string;
-  contextLines: string[];
   spawnPosition: { x: number; y: number };
-  onCreated: (node: unknown) => void;
+  seedNodeTitles: string[];
+  onConfirm: (prompt: string, count: 3 | 5 | 8) => void;
   onCancel: () => void;
 }
 
-// Phase C placeholder — AIBranchDialog will replace this
-export function AINodeDialog({ onCancel }: AINodeDialogProps) {
+const COUNT_OPTIONS = [3, 5, 8] as const;
+
+export function AINodeDialog({
+  seedNodeTitles,
+  onConfirm,
+  onCancel,
+}: AIBranchDialogProps) {
+  const [prompt, setPrompt] = useState("");
+  const [count, setCount] = useState<3 | 5 | 8>(5);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+  useEffect(() => {
+    textareaRef.current?.focus();
+  }, []);
+
+  const canSubmit = prompt.trim().length > 0;
+
   return createPortal(
     <div
       style={{
@@ -24,31 +40,154 @@ export function AINodeDialog({ onCancel }: AINodeDialogProps) {
       onClick={onCancel}
     >
       <div
-        className="bg-popover border border-border rounded-lg shadow-xl p-6"
-        style={{ minWidth: 320 }}
+        className="bg-popover border border-border rounded-lg shadow-xl"
+        style={{ minWidth: 360, maxWidth: 520, padding: 24 }}
         onClick={(e) => e.stopPropagation()}
       >
-        <p
-          className="text-foreground"
-          style={{ fontSize: 14, marginBottom: 16 }}
+        <div
+          style={{
+            fontSize: 15,
+            fontWeight: 600,
+            color: "var(--foreground)",
+            marginBottom: 16,
+          }}
         >
-          AI Branch は Phase C で実装予定です。
-        </p>
-        <div style={{ display: "flex", justifyContent: "flex-end" }}>
-          <button
-            type="button"
-            className="hover:bg-accent text-foreground"
+          AI Branch
+        </div>
+
+        {seedNodeTitles.length > 0 && (
+          <div style={{ marginBottom: 12 }}>
+            <div
+              style={{
+                fontSize: 11,
+                color: "var(--muted-foreground)",
+                marginBottom: 4,
+              }}
+            >
+              コンテキスト
+            </div>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
+              {seedNodeTitles.map((title, i) => (
+                <span
+                  key={i}
+                  style={{
+                    fontSize: 11,
+                    padding: "2px 8px",
+                    borderRadius: 12,
+                    background: "var(--accent)",
+                    color: "var(--accent-foreground)",
+                  }}
+                >
+                  {title}
+                </span>
+              ))}
+            </div>
+          </div>
+        )}
+
+        <div style={{ marginBottom: 14 }}>
+          <div
             style={{
-              padding: "4px 16px",
+              fontSize: 11,
+              color: "var(--muted-foreground)",
+              marginBottom: 4,
+            }}
+          >
+            プロンプト
+          </div>
+          <textarea
+            ref={textareaRef}
+            value={prompt}
+            onChange={(e) => setPrompt(e.target.value)}
+            placeholder="アイデアを展開してください…"
+            onKeyDown={(e) => {
+              if (e.key === "Escape") onCancel();
+              if (e.key === "Enter" && (e.metaKey || e.ctrlKey) && canSubmit) {
+                onConfirm(prompt.trim(), count);
+              }
+            }}
+            style={{
+              width: "100%",
+              minHeight: 80,
+              resize: "vertical",
+              padding: "8px 10px",
               fontSize: 13,
               borderRadius: 5,
               border: "1px solid var(--border)",
-              cursor: "pointer",
-              background: "transparent",
+              background: "var(--background)",
+              color: "var(--foreground)",
+              boxSizing: "border-box",
+              outline: "none",
+              fontFamily: "inherit",
             }}
+          />
+        </div>
+
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 8,
+            marginBottom: 20,
+          }}
+        >
+          <span style={{ fontSize: 11, color: "var(--muted-foreground)" }}>
+            生成数
+          </span>
+          {COUNT_OPTIONS.map((n) => (
+            <button
+              key={n}
+              type="button"
+              onClick={() => setCount(n)}
+              style={{
+                padding: "3px 12px",
+                fontSize: 12,
+                borderRadius: 4,
+                border: "1px solid",
+                borderColor: count === n ? "#534AB7" : "var(--border)",
+                background: count === n ? "#534AB7" : "var(--secondary)",
+                color: count === n ? "#fff" : "var(--secondary-foreground)",
+                cursor: "pointer",
+                fontWeight: count === n ? 600 : 400,
+              }}
+            >
+              {n}
+            </button>
+          ))}
+        </div>
+
+        <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
+          <button
+            type="button"
             onClick={onCancel}
+            style={{
+              padding: "5px 16px",
+              fontSize: 13,
+              borderRadius: 5,
+              border: "1px solid var(--border)",
+              background: "transparent",
+              color: "var(--foreground)",
+              cursor: "pointer",
+            }}
           >
-            閉じる
+            キャンセル
+          </button>
+          <button
+            type="button"
+            disabled={!canSubmit}
+            onClick={() => canSubmit && onConfirm(prompt.trim(), count)}
+            style={{
+              padding: "5px 16px",
+              fontSize: 13,
+              borderRadius: 5,
+              border: "none",
+              background: canSubmit ? "#534AB7" : "var(--muted)",
+              color: canSubmit ? "#fff" : "var(--muted-foreground)",
+              cursor: canSubmit ? "pointer" : "not-allowed",
+              fontWeight: 600,
+            }}
+          >
+            生成
           </button>
         </div>
       </div>
