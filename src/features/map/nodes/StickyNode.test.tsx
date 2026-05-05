@@ -28,6 +28,7 @@ vi.mock("@/features/editor/extensions", () => ({
 vi.mock("../mapApi", () => ({
   updateSticky: vi.fn().mockResolvedValue(undefined),
   extractPreviewText: vi.fn().mockReturnValue("preview text"),
+  pendingAutoFocusIds: new Set<string>(),
 }));
 
 function makeProps(

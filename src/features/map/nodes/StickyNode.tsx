@@ -3,7 +3,11 @@ import { Handle, Position } from "@xyflow/react";
 import type { NodeProps } from "@xyflow/react";
 import { useEditor, EditorContent } from "@tiptap/react";
 import { getStickyEditorExtensions } from "@/features/editor/extensions";
-import { updateSticky, extractPreviewText } from "../mapApi";
+import {
+  updateSticky,
+  extractPreviewText,
+  pendingAutoFocusIds,
+} from "../mapApi";
 import type { StickyColor } from "../types";
 
 export interface StickyNodeData {
@@ -135,9 +139,18 @@ export const StickyNode = memo(function StickyNode({
     setLocalColor(d.color);
   }, [d.color]);
 
+  // Auto-enter edit mode for newly created stickies (branch / add)
+  useEffect(() => {
+    if (pendingAutoFocusIds.has(d.id)) {
+      pendingAutoFocusIds.delete(d.id);
+      if (d.useTipTap) setEditing(true);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const bg = STICKY_BG[localColor] ?? STICKY_BG.yellow;
   const borderColor =
-    d.colorBy === "none" || d.colorBy === "status"
+    d.colorBy === "status"
       ? "var(--border)"
       : (STICKY_BORDER[localColor] ?? STICKY_BORDER.yellow);
 

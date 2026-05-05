@@ -30,6 +30,9 @@ import type { NodeRefType, StickyColor } from "./types";
 
 export type PromoteTargetType = "scene" | "note" | "snippet" | "codex";
 
+/** Sticky IDs that should enter edit mode immediately on first mount. */
+export const pendingAutoFocusIds = new Set<string>();
+
 // ── Board ──────────────────────────────────────────────────────────────────
 
 export async function listBoards(projectId: string): Promise<MapBoard[]> {

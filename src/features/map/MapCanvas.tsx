@@ -60,6 +60,7 @@ import {
   promoteFrame,
   listNodePositions,
   listStickies,
+  pendingAutoFocusIds,
 } from "./mapApi";
 import { AINodeDialog } from "./AINodeDialog";
 import { generateAiBranchCards } from "./mapAiApi";
@@ -590,6 +591,7 @@ export function MapCanvas() {
         y: pos.y,
         color: "yellow",
       });
+      pendingAutoFocusIds.add(sticky.sticky.id);
       setStickies((prev) => [...prev, sticky.sticky]);
       setPositions((prev) => [
         ...prev,
@@ -606,14 +608,17 @@ export function MapCanvas() {
     if (!sourceNode) return;
     const sourcePos = findPosByNodeId(positionsRef.current, sourceNodeId);
     if (!sourcePos) return;
+    const sourceColor =
+      (sourceNode.data as { color?: string }).color ?? "yellow";
     const newX = sourceNode.position.x + 280;
     const newY = sourceNode.position.y;
     const result = await createSticky({
       boardId,
       x: newX,
       y: newY,
-      color: "yellow",
+      color: sourceColor as import("./types").StickyColor,
     });
+    pendingAutoFocusIds.add(result.sticky.id);
     setStickies((prev) => [...prev, result.sticky]);
     setPositions((prev) => [...prev, result.position as MapNodePositionRecord]);
     const edge = await createUserEdge({
