@@ -215,3 +215,108 @@ describe("mapApi — frames", () => {
     await expect(deleteFrame("frame1")).resolves.toBeUndefined();
   });
 });
+
+describe("mapApi — extractPreviewText", () => {
+  it("ProseMirror doc から先頭 40 文字を返す", async () => {
+    const { extractPreviewText } = await import("./mapApi");
+    const body = JSON.stringify({
+      type: "doc",
+      content: [
+        {
+          type: "paragraph",
+          content: [{ type: "text", text: "Hello world" }],
+        },
+      ],
+    });
+    expect(extractPreviewText(body)).toBe("Hello world");
+  });
+
+  it("40 文字超は省略記号を付ける", async () => {
+    const { extractPreviewText } = await import("./mapApi");
+    const long = "a".repeat(50);
+    const body = JSON.stringify({
+      type: "doc",
+      content: [{ type: "paragraph", content: [{ type: "text", text: long }] }],
+    });
+    const result = extractPreviewText(body);
+    expect(result.length).toBeLessThanOrEqual(41);
+    expect(result.endsWith("…")).toBe(true);
+  });
+
+  it("table ノードを (table) に変換する", async () => {
+    const { extractPreviewText } = await import("./mapApi");
+    const body = JSON.stringify({
+      type: "doc",
+      content: [{ type: "table", content: [] }],
+    });
+    expect(extractPreviewText(body)).toBe("(table)");
+  });
+
+  it("空ボディは空文字を返す", async () => {
+    const { extractPreviewText } = await import("./mapApi");
+    expect(extractPreviewText('{"type":"doc","content":[]}')).toBe("");
+  });
+
+  it("不正 JSON でも例外を投げない", async () => {
+    const { extractPreviewText } = await import("./mapApi");
+    expect(() => extractPreviewText("not json")).not.toThrow();
+    expect(extractPreviewText("not json")).toBe("");
+  });
+});
+
+describe("mapApi — createSticky", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("sticky と position を同時に作成して返す", async () => {
+    const newSticky = {
+      id: "sticky-1",
+      boardId: "b1",
+      title: null,
+      body: '{"type":"doc","content":[]}',
+      previewText: null,
+      color: "yellow",
+      aiBranchId: null,
+      sourceChatMessageId: null,
+      createdAt: "2024-01-01",
+      updatedAt: "2024-01-01",
+    };
+    const newPos = {
+      id: "pos-1",
+      boardId: "b1",
+      nodeRefType: "sticky",
+      stickyId: "sticky-1",
+      x: 10,
+      y: 20,
+    };
+
+    const insertChain = makeMock([newSticky]);
+    const selectChain = makeMock([]);
+    const insertPosChain = makeMock([newPos]);
+
+    (db.insert as ReturnType<typeof vi.fn>)
+      .mockReturnValueOnce(insertChain)
+      .mockReturnValueOnce(insertPosChain);
+    (db.select as ReturnType<typeof vi.fn>).mockReturnValue(selectChain);
+
+    const { createSticky } = await import("./mapApi");
+    const result = await createSticky({ boardId: "b1", x: 10, y: 20 });
+    expect(result.sticky.color).toBe("yellow");
+    expect(result.position.nodeRefType).toBe("sticky");
+  });
+});
+
+describe("mapApi — duplicateBoard", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("ソースボードが存在しない場合はエラーを投げる", async () => {
+    const emptyChain = makeMock([]);
+    (db.select as ReturnType<typeof vi.fn>).mockReturnValue(emptyChain);
+
+    const { duplicateBoard } = await import("./mapApi");
+    await expect(duplicateBoard("nonexistent", "proj")).rejects.toThrow();
+  });
+});
