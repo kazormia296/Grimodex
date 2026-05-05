@@ -57,7 +57,7 @@ Left/Right DockはTop/Bottom間で縦分割（ゾーン内スプリット）が�
 | Chat History | 全シーン横断のチャットセッション検索・閲覧 |
 | Snippets | 再利用可能なテキスト断片。Chat/Editorから保存、D&Dでエディタに挿入 |
 | Attribution | AI帰属統計ダッシュボード。シーン/チャプター/プロジェクト単位の集計、モデル別使用状況 |
-| Map | シーン・Codexの2D無限キャンバス可視化。Free/Time/Theme/POV/Placeの5レイアウトモード |
+| Map | マインドマップ用ボード（複数ボード対応）。Sticky で発散し、Codex/Scene/Note/Snippet を手動キュレーションで配置。Free / Theme の 2 モード。AI Branch で種からアイデアを撒く |
 | Matrix | シーン × Codex のクロス表。登場分布の俯瞰、不在検出、Beat 追加プロッティング起点。デフォルトBottom Dock（非表示） |
 | Grid | Chapter ごとに Scene カードを縦に積む作業ビュー。Synopsis インライン編集、D&Dで章間移動。デフォルトBottom Dock（非表示） |
 | Settings | プロジェクト/AI/エディタ/表示/キーバインド/データ管理。常にフローティング |

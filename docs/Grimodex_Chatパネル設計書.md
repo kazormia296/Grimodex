@@ -775,6 +775,7 @@ thinking ブロックのストリーミングは以下のイベント順序で�
 | Insert to editor | メッセージ全文をエディタに挿入 |
 | Add to Codex | Codexエントリを即時作成 |
 | Save as Snippet | Snippetとして保存 |
+| **Add to Map ▸** | **メッセージを Map ボードに送る（後述「Map への送出」参照）** |
 | Copy | クリップボードにコピー。Authorship情報 `{ source: 'ai', model, chatMessageId }` を `application/x-grimodex-authorship` に付与 |
 | --- | |
 | Regenerate | 同じプロンプトで再生成 |
@@ -789,6 +790,44 @@ thinking ブロックのストリーミングは以下のイベント順序で�
 | Insert selection | 選択範囲のみをエディタに挿入 |
 | Add selection to Codex | 選択範囲でCodexエントリを即時作成 |
 | Save selection as Snippet | 選択範囲をSnippetとして保存 |
+| **Add selection to Map ▸** | **選択範囲を Map ボードに送る（As Sticky / As Snippet のみ）** |
+
+### Map への送出
+
+Chat で AI と議論した内容を Map に還元するための動線。**新ノードタイプは追加せず**、既存の Sticky / Snippet / AI Branch / Codex のいずれかに変換する。Map パネル設計書「← Chat（Chat → Map）」と対応。
+
+#### `Add to Map ▸` サブメニュー（メッセージ単位）
+
+```
+Add to Map ▸  As Sticky        （短文 1 アイデアを付箋化）
+              As Snippet        （応答の塊を再利用テキストとして保存）
+              As AI Branch...   （議論の流れ全体を AI Branch ノード化、応答を Sticky 群に分解）
+              Extract codex...  （Detailed 抽出フローへ）
+```
+
+| 形式 | 変換ルール | authorship |
+|------|----------|----------|
+| **As Sticky** | メッセージ本文を Sticky body にコピー（ProseMirror JSON）。`map_stickies.source_chat_message_id = メッセージID`、`map_stickies.title` は空 | 元メッセージの authorship を継承（AI 応答なら全範囲 `ai`、ユーザー発言なら `human`） |
+| **As Snippet** | `snippets` に新規行作成、content にメッセージ本文をコピー、`source_chat_message_id` 設定 | 既存の Snippet 抽出フローと同じ |
+| **As AI Branch** | `map_ai_branches` に新規行作成（prompt = 元の質問テキスト、session_id = 現セッション）。**応答テキストを再度 AI に投げて N 個の Sticky に分解**してから Map に配置（後述「As AI Branch の特殊動作」） | 派生 Sticky は全範囲 `ai` で初期化 |
+| **Extract codex...** | 既存の Detailed 抽出ダイアログ（`Add to Codex (Detailed)`）に転送し、抽出後に Map にも Codex ノードとして配置するか確認 | 既存フロー |
+
+すべての形式で、**配置先 Map ボード選択ダイアログ**が事前に出る（複数ボードが存在するため）。
+
+#### `Add selection to Map ▸` サブメニュー（テキスト選択範囲）
+
+選択範囲が短いことを前提に、`As Sticky` と `As Snippet` の 2 形式のみ提供。authorship は選択範囲の span をそのまま転記する。
+
+#### As AI Branch の特殊動作
+
+1. ユーザーが応答メッセージで `As AI Branch...` を選択
+2. ダイアログ: 配置先 Map ボード + 分解する Sticky 数（3/5/8）
+3. 内部プロンプト: 「この応答からアイデアを N 個に分解して。各アイデアは独立した Sticky 1 個になるように、markdown で出力。」
+4. **同じ Chat session_id で再投する**ため、Chat 上にも分解再投メッセージとその応答が記録として残る
+5. 分解結果を Map に Sticky として配置、AI Branch ノードは元質問テキストをプロンプトとして保持
+6. AI Branch ノードのダブルクリックで Chat に戻ると、元の議論 + 分解再投の両方が見える
+
+これにより「議論の流れ全体（Chat 側）」と「分解されたアイデア群（Map 側）」が両方保存され、相互参照できる。
 
 ---
 

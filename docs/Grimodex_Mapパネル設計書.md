@@ -2,15 +2,27 @@
 
 ## 概要
 
-Mapパネルはプロジェクトのシーン・Codexエントリを**2D空間に配置して可視化・構造化**するパネル。Scenesパネルがツリー構造（1次元・reading-order）、Timelineパネルが時間軸（1次元・story-time / reading / write）を担うのに対し、Mapは**関係性のトポロジー**と**空間的クラスタリング**を扱う。
+Map パネルはプロジェクトの**マインドマップ用ボード**。**未確定のアイデアを発散して、価値あるものを構造化する**ための作業場であり、確定したカード並べ（Grid）や時間軸俯瞰（Timeline）とは役割が違う。
 
-プロッティング・取材・俯瞰のフェーズで威力を発揮する。執筆そのものには向かないため、Editorとの連携（シーンを開く）と役割分担を明確にする。
+Map は**全エンティティを自動でぶちまけない**。空のボードから始まり、ユーザーが必要に応じて Sticky（Map 専用付箋）を撒く・既存の Codex/Scene/Note を**手動で呼び寄せる**ことで、その時点で考えたい関係だけが盤に乗る。1 プロジェクトに**複数ボード**を持てるため、「人物関係図」「Part 1 のプロット盤」「世界の地理」のように目的別に切り分ける。
 
-Sceneノードは Compact / Card / Image の3バリアントを持ち、Cardバリアント + Free モードでは **Scrivener 風のコルクボード体験**（インデックスカード・Synopsisインライン編集・ステータススタンプ）を提供する。モード連動デフォルトにより、「Freeに切り替えた瞬間にカードになる」自然な切り替えが起きる。
+Map のコア体験は「**Sticky で発散 → Frame でまとめる → 価値あるものを Codex/Scene/Note へ昇格**」というフロー。これは Grimodex のコア思想（Chat から知識を抽出して構造化する）の Map 版に当たる。
 
-デフォルト位置: Bottom Dock（非表示）。大画面ではフローティングウィンドウやCenterスプリットで運用するのが理想。
+デフォルト位置: Bottom Dock（非表示）。大画面ではフローティングウィンドウや Center スプリットで運用するのが理想。
 
-設計思想: **Mapは座標をもつビュー。座標の決め方（手動・重力場・ハイブリッド）を切り替えることで、同じデータの別の見方を提供する。**
+設計思想: **Map は探索の盤。既存エンティティの整理だけでなく、未構造の思考を撒いて育てて、価値が見えたら構造化する。**
+
+### 他パネルとの役割分担
+
+| パネル | 扱うもの | 主用途 |
+|--------|---------|--------|
+| Scenes | ツリー構造（1次元・reading-order） | 構造管理・読者順の編集 |
+| Grid | Chapter 列 × Scene カード（密な情報） | 確定したカードの並べ・章単位の俯瞰 |
+| Timeline | 時間軸（1次元・story / reading / write） | 時系列俯瞰・story-time 編集 |
+| Matrix | Scene × Codex のクロス表 | 登場分布の監査 |
+| **Map** | **任意のノードを 2D 空間に置く** | **発散 → 関係描き → 構造化** |
+
+Grid との違いは決定的に重要：**Grid は確定したシーンを密に俯瞰する盤**（Beat / POV / Codex / Label / Foreshadow を全部出す）。**Map は思考の枝を生やす盤**で、ノードは軽量・関係描画とグルーピングが主役。Map 上のシーンノードは Grid のサブセットでも上位互換でもなく、**意図的に簡素**にしてある。
 
 ---
 
@@ -19,32 +31,29 @@ Sceneノードは Compact / Card / Image の3バリアントを持ち、Cardバ�
 ```
 ┌───────────────────────────────────────────────────────────────┐
 │ A. ヘッダー                                                    │
-│ Map                 [Free ▼] [Board: Main ▼] [🔍] [⋮]         │
+│ Map  [Board: 人物関係図 ▼ +] [Free ▼] [🔍] [⋮]                │
 ├───────────────────────────────────────────────────────────────┤
 │ B. モードバー                                                   │
-│ Mode:  [Free] [Time] [Theme] [POV] [Place]                   │
-│ Show:  ☑Scenes  ☑Codex  ☑Derived edges  ☐User edges  ☑Frames │
+│ Mode: [Free] [Theme]                                          │
+│ Show: ☑Scenes ☑Codex ☑Snippets ☑Notes ☑Stickies ☑Frames      │
+│       ☑Derived edges ☐User edges                              │
 ├───────────────────────────────────────────────────────────────┤
 │ C. キャンバスビューポート（無限・スクロール・ズーム可能）          │
 │                                                                │
-│  ┌─ Frame: Part I plot ──────────────────┐                    │
-│  │   ● Ch.1        ● Ch.2                │                    │
-│  │   廃社           封じ文                │                    │
-│  │     ＼         ／                     │                    │
-│  │       ● Elara                         │                    │
-│  │         │                             │                    │
-│  │       ◯ Marcus                        │                    │
-│  └───────────────────────────────────────┘                    │
+│  ┌─ Frame: 主要キャラ ────────────────┐                       │
+│  │   ◯ Elara ─── ◯ Marcus            │                       │
+│  │     │ 師匠/弟子   │                │                       │
+│  │   📌 「魔術の才能をどこで知る？」   │  ← Sticky（黄）         │
+│  └────────────────────────────────────┘                       │
 │                                                                │
-│  ┌─ Frame: Codex anchors ────────────────┐                    │
-│  │   □ Tower    □ Forest    ◆ Amulet     │                    │
-│  └───────────────────────────────────────┘                    │
+│  📌 「序盤に伏線」  📌 封じ文の起源は？                         │
 │                                                                │
-│  ✦ AI: 封じ文の差出人？                                         │
+│  ✦ AI Branch: Elara の動機（5 件の種）                         │
+│   └─ 📌 復讐  📌 探索  📌 義務  📌 偶然  📌 逃避               │
 │                                                                │
-│  ┌─ Palette ──────────────────────┐           [Zoom: 100%]     │
-│  │ [+Scene] [+Codex] [+Note] [+Frame] [⌥Connect] │           │
-│  └────────────────────────────────┘                           │
+│  ┌─ Palette ──────────────────────────────┐  [Zoom: 100%]     │
+│  │ [+Sticky] [+Frame] [⌥Connect] │ ▾Add… │                   │
+│  └─────────────────────────────────────────┘                  │
 └───────────────────────────────────────────────────────────────┘
 ```
 
@@ -52,31 +61,25 @@ Sceneノードは Compact / Card / Image の3バリアントを持ち、Cardバ�
 
 ## レイアウトモード
 
-5つのモードを提供する。内部的には**1つのNodesコレクション + 1つのEdgesコレクション**に対して、異なる座標決定関数を適用しているだけ。
+5 モード（旧設計）から **2 モード**に絞る。Time / POV / Place は Timeline・Codex 章別フィルタとの責務重複が大きく、Map の本質から外れるため削除。
 
 | モード | 座標決定 | 用途 |
 |--------|---------|------|
-| **Free** | ユーザー手動ドラッグ | プロッティング・取材・ブレインストーミング |
-| **Time** | X軸=story_time_order、Y軸=POVレーン | 時系列+視点の俯瞰 |
-| **Theme** | Force-directed（共有タグで引力） | テーマ・モチーフの可視化 |
-| **POV** | クラスタリング（POVキャラごとに塊） | 視点構造の俯瞰 |
-| **Place** | クラスタリング（locationごとに塊） | 舞台地理の俯瞰 |
+| **Free** | ユーザー手動ドラッグ（デフォルト） | プロッティング・関係描き・ブレインストーミング |
+| **Theme** | Force-directed（共有タグ・User edge で引力） | テーマ・モチーフのクラスタ可視化 |
 
-### Hybrid 挙動
+### Hybrid 挙動（Theme モード時）
 
-Free以外の全モードで、**ピン留めされたノード**はユーザー座標を優先し、それ以外のノードを重力場で自動配置する。
-
-- ノード右クリック → 「Pin position」で個別ピン留め
+- Theme モード時、ノード右クリック → 「Pin position」で個別ピン留め
 - ピン留めされたノードは Free モードで設定した `(x, y)` を保持
-- 重力モード切替時もピンは維持される
-- 「これが物語の骨格」と思う重要ノードだけピン留めし、残りは重力場の自動配置に任せる使い方
+- 残りのノードは force layout で自動配置
+- 「これが骨格」と思うノードだけ固定し、残りは重力場に任せる使い方
 
 ### モード切替の振る舞い
 
-- モード切替時はトランジションアニメーション（300ms）で座標が移動
-- **Theme モードへの切替は2段階**: ①Web Worker で force layout を計算（プログレス表示あり、数ノードなら即時・100ノード超は数秒）→ ②計算完了後に 300ms トランジションで各ノードを最終座標へ移動。他モード間の切替では計算フェーズはなく 300ms トランジションのみ
-- Free モードで設定した位置は保持され、モード切替時に失われない
-- Free モードに戻ると、最後に手動配置した位置に復元される
+- モード切替時はトランジションアニメーション（300ms）
+- Theme モードへの切替は 2 段階: ① Web Worker で force layout 計算 → ② 300ms トランジションで最終座標へ
+- Free モードに戻ると、最後に手動配置した位置に復元
 
 ---
 
@@ -87,69 +90,60 @@ Free以外の全モードで、**ピン留めされたノード**はユーザー
 | 要素 | 詳細 |
 |------|------|
 | パネルタイトル | 「Map」。左寄せ |
-| モードドロップダウン | 現在のレイアウトモード表示（モードバーと同期、狭小画面用の冗長表示） |
-| ボード切替ドロップダウン | 複数ボード対応時のボード選択（後述、v2拡張） |
-| [🔍] 検索ボタン | 展開でインクリメンタルノード検索、ヒットノードにビューポート自動センタリング |
+| **ボード切替ドロップダウン** | 現在のボード名を表示。クリックで全ボード一覧 + `+ New board` + 各ボードのリネーム/複製/削除メニュー |
+| モードドロップダウン | 現在のレイアウトモード（モードバーと同期、狭小画面用の冗長表示） |
+| [🔍] 検索ボタン | インクリメンタルノード検索、ヒットノードにビューポート自動センタリング |
 | [⋮] パネルメニュー | Display / Export / Reset layout / Help |
 
 ### パネルメニュー
 
 ```
 Display
-  ☑ シーン
+  ☑ Scenes
   ☑ Codex
-  ☑ ノート
-  ☑ AIノード（手動追加のみ）
-  ☑ Derived edges（Codex親子・シーン言及）
+  ☑ Snippets
+  ☑ Notes
+  ☑ Stickies
+  ☑ AI Branch
+  ☑ Derived edges（Codex親子・Scene言及・Snippet出処）
   ☐ User edges（ユーザー描画）
   ☑ Frames
   ☐ ミニマップ
   ☑ グリッドスナップ
-  ☐ 非表示ノードを表示（グレー表示）  ← このボードで隠したノードを再表示可能にする
   ---
-  Scene display     ▶ Compact / Card / Image / Auto
-  Color by          ▶ None / Status / POV / Tag / Label
-  ☐ Corkboard feel  （カードに微回転 + テクスチャ背景）
+  Color by         ▶ None / Status / Sticky color / POV / Tag (v2)
+  Visual theme     ▶ Default / Corkboard feel / Constellation (v2)
 
 Layout
-  Auto-arrange      ▶ Grid by reading-order
-                      Grid by story-time
-                      Grid by POV
-                      Force-directed compact
+  Auto-arrange     ▶ Grid by reading-order
+                     Force-directed compact
   ---
-  Reset Free positions
+  Reset Free positions（ピン留め以外を原点近傍に戻す）
   Fit to viewport
 
 Export
   SVG / PNG として保存
   JSONとしてエクスポート（他ツール連携用）
+  ✨ Starchart として保存（Constellation スキン強制、v2）
 ```
 
 ### Auto-arrange アクション
 
-レイアウトモードとは独立した、**ワンショットの整列アクション**。実行すると選択モード（または全ノード）の位置が一括で更新され、その後は Free モードで自由に調整可能。
+旧設計では 4 つあったが、Time/POV モード削除に伴い 2 つに縮小。実行すると `pinned=false` のノードのみ位置が一括更新され、以降は Free モードで調整可能。
 
 | アクション | 動作 |
 |----------|------|
-| **Grid by reading-order** | Reading-order 順でグリッド配置（N列、左から右・上から下） |
-| **Grid by story-time** | `story_time_order` 順でグリッド配置。未設定シーンは末尾 |
-| **Grid by POV** | POVごとの行 × reading-order の列。POV未設定は下段 |
-| **Force-directed compact** | Themeモードのforce layoutを実行し、結果を Free の座標として固定 |
-
-**重要**: これらはモードではなく**アクション**。実行後は Free モードで、ユーザーが手でノードを動かした瞬間から手動配置として保存される。Scrivenerの "Linear / Freeform" 切替とは異なり、整列は一度きり・以降はFreeで編集する、という分業。
+| **Grid by reading-order** | Scene ノードのみ reading-order 順でグリッド配置（N 列、左から右・上から下） |
+| **Force-directed compact** | Theme モードの force layout を実行し、結果を Free の座標として固定 |
 
 実行前に確認ダイアログ:
+
 ```
-この操作はFreeモードのノード位置を上書きします
+この操作は Free モードのノード位置を上書きします
 （ピン留めされたノードの座標は変更されません）。
 
                   [キャンセル]  [実行]
 ```
-
-**Auto-arrangeとピン留めの関係**:
-- ピン留め済みノードの `(x, y)` はAuto-arrangeで**上書きされない**。ピン留めフラグ自体も変わらない
-- ピン留めされていないノードの `(x, y)` のみ新座標に上書きされる
-- Auto-arrange実行後は全ノードが Free モードの座標として扱われ、以降はユーザーが自由に調整できる
 
 ---
 
@@ -157,57 +151,35 @@ Export
 
 ### Mode セグメント
 
-5モードをボタンで切替。
-
-| モード | Axisラベル |
-|--------|----------|
-| Free | （なし） |
-| Time | X: story-time / Y: POV |
-| Theme | Force-directed |
-| POV | Cluster by POV |
-| Place | Cluster by location |
+`[Free]` と `[Theme]` の 2 ボタンのみ。
 
 ### Show チェックボックス
 
-表示するノード種別・エッジ種別を制御。全チェックでない場合、非表示ノードは**完全に隠す**（Timeline と異なり opacity 0.25 ではない）。Mapは散らかりやすいため、明示的に隠す方が実用的。
+表示するノード種別・エッジ種別を制御。チェックOFFのノードは**完全に隠す**（Map は散らかりやすいため、Timeline と異なり opacity 半透明ではなく非表示）。
 
 | チェック | 対象 |
 |---------|------|
-| Scenes | Sceneノード（`tree_nodes.node_type = 'scene'`） |
-| Codex | Codexエントリノード（`codex_entries`） |
-| Notes | Noteノード（`tree_nodes.node_type = 'note'`） |
-| Derived edges | Codex親子・シーン言及から導出されるエッジ |
+| Scenes | Scene ノード（手動でこのボードに追加されたもの） |
+| Codex | Codex エントリノード（手動でこのボードに追加されたもの） |
+| Snippets | Snippet ノード（手動でこのボードに追加されたもの） |
+| Notes | Note ノード（手動でこのボードに追加されたもの） |
+| **Stickies** | **Sticky ノード（このボード固有の付箋）** |
+| **AI Branch** | **AI Branch ノード（種を撒いた跡） + 派生 Sticky** |
+| Derived edges | 既存リレーションから導出されるエッジ |
 | User edges | `map_edges` に保存されたユーザー描画エッジ |
-| Frames | `map_frames` に保存されたフレーム（Free モード時のみ有効。他モードでは常に非表示） |
-
-### Scene display ドロップダウン
-
-Sceneノードのバリアント（Compact / Card / Image）をボード全体（全シーン一括）で切り替える。個別ノード単位での切り替えは不可。詳細は「Scene ノード」および「Scene カード表示の詳細」セクション参照。
-
-```
-Scene display: [Card ▾]
-  Compact
-  ● Card
-  Image (v2)
-  ---
-  Auto (follow mode)   ← モード連動デフォルトに戻す
-```
-
-- 初期値は「Auto (follow mode)」。現在のレイアウトモードに応じた既定バリアント（Free=Card、その他=Compact）が適用される
-- ユーザーが明示的に選択すると、そのモードでの選択が記憶される
-- 「Auto」に戻すとモード連動デフォルトに戻る
+| Frames | `map_frames` に保存されたフレーム（Free モード時のみ有効） |
 
 ### Color by ドロップダウン
 
-Sceneノードのボーダー色で意味付けする軸を選択。詳細は「Scene カード表示の詳細 > カラーコーディング」セクション参照。
+ノードのボーダー色で意味付けする軸を選択。
 
 ```
-Color by: [Status ▾]
-  None
-  ● Status
-  POV character (v2)
-  Tag (v2)
-  Label (v2)
+Color by: [None ▾]
+  ● None
+  Status            （Scene のみ。ステータス色）
+  Sticky color      （Sticky のみ。本人カラー）
+  POV character     （v2、tree_nodes.pov_character_id 追加後）
+  Tag               （v2）
 ```
 
 ---
@@ -216,250 +188,292 @@ Color by: [Status ▾]
 
 ### 無限キャンバス
 
-- 論理座標空間: 無限（X/Y共にInt32の範囲）
+- 論理座標空間: 無限（X/Y 共に Int32 の範囲）
 - ズーム範囲: 10% 〜 400%
-- 初期ビュー: 全ノードが収まる Fit to viewport
+- 初期ビュー: 全ノードが収まる Fit to viewport（空ボードの場合は原点中央）
 
 ### 背景
 
-- ドットグリッド背景（`Ctrl+G` でON/OFF）
+- ドットグリッド背景（`Ctrl+G` で ON/OFF）
 - グリッド間隔: ズームレベルに応じて適応的（16px / 32px / 64px）
 - スナップ: 設定 ON 時のみ、ドラッグ終了時にグリッドに吸着
+
+### 空白エリアのインタラクション
+
+| 操作 | 動作 |
+|------|------|
+| **空白ダブルクリック** | **クリック位置に Sticky を即時追加**（タイトル input にフォーカス入った状態） |
+| 空白シングルクリック | 選択解除 |
+| 空白ドラッグ | ラバーバンド選択（矩形内の全ノードを選択） |
+| 空白右クリック | コンテキストメニュー: `Add Sticky here` / `Add Frame here` / `Add Scene…` / `Add Codex…` / `Add Note here` / `Paste` |
+| Space + ドラッグ | パン |
+
+空白ダブルクリックでの Sticky 即時追加は Map の最重要 UX。発想の流れを止めずに付箋を撒けることが、マインドマップとしての成立条件。
 
 ---
 
 ## ノードタイプ
 
-Mapに表示されるノードは4種類。それぞれ参照先のエンティティが異なる。
+Map に表示されるノードは 5 種類。**Sticky と AI Branch が Map のために新設**、Scene/Codex/Note は手動で呼び寄せる仕様に変更。
+
+### Sticky ノード（Map 専用・新規）
+
+Map のために新設する**軽量メモ**。`tree_nodes` に乗らず Scenes パネルにも出ないため、ツリー汚染ゼロ。発想を止めずに撒ける。**body は ProseMirror JSON で保持**し、TipTap の minimal インスタンスでインライン編集する（Codex ハイライト・authorship・AI 生成図表に対応するため）。
+
+```
+┌──────────────────────┐
+│ 封じ文の起源は？      │   ← title（任意、空も許容）
+│ ──────────────────── │
+│ 帝国時代の儀式に源流？│   ← body（ProseMirror、Codex ハイライト適用）
+│                       │
+│ | 候補 | 出典 |       │   ← table も可（AI 生成図表対応）
+│ |---|---|             │
+│ | 西方教団 | 序章 |    │
+│         ✦  💬         │   ← 帰属バッジ + Chat由来バッジ
+└──────────────────────┘
+```
+
+| プロパティ | 詳細 |
+|----------|------|
+| 参照 | なし（Map 専用エンティティ） |
+| 保存先 | `map_stickies` テーブル |
+| 表示 | カラー付き付箋（パレット 8 色から選択、デフォルト黄）+ TipTap read-only ビュー |
+| サイズ | **幅: 固定 240px / 高さ: auto**（最小 80px、最大 600px。超過は内部スクロール） |
+| タイトル | 任意（空も可、plain text） |
+| 本文 | **ProseMirror JSON**。改行・段落・H3・list・table・code 対応 |
+| 編集 | ダブルクリックで TipTap 編集モード、floating toolbar |
+
+#### TipTap minimal インスタンス仕様
+
+Sticky body は専用の TipTap プリセットで編集する。Editor / Snippet / Codex で使う TipTap とは別プリセットだが、authorship / Codex highlight などの mark は共有する。
+
+**含める extension**:
+
+| カテゴリ | Extension | 理由 |
+|---------|----------|------|
+| 基本 | StarterKit（Document/Paragraph/Text/Bold/Italic/Heading/BulletList/OrderedList/CodeBlock/History） | 軽量編集 |
+| 表 | `@tiptap/extension-table`（Table/TableRow/TableCell/TableHeader） | AI 図表対応 |
+| 画像 | `@tiptap/extension-image` | v2、貼り付け対応 |
+| Mark（既存共有） | **CodexHighlightMark** | Codex 名の自動ハイライト |
+| Mark（既存共有） | **AuthorshipMark** | 帰属追跡 |
+| 装飾 | Placeholder | 空 Sticky に「思いついたことを書く…」表示 |
+
+**含めない**: リンク・引用・水平線・タスクリスト等。Sticky の軽量性を守るため。リッチに書きたいなら Note/Snippet に昇格する。
+
+**編集 UI**:
+
+- シングルクリック: ノード選択
+- **ダブルクリック / `Enter`**: TipTap 編集モード起動。title input と body エディタの両方が編集可能になる
+- 編集モード時にノード下に **floating toolbar**（B / I / H / list / table / code）
+- markdown ショートカット（`**bold**` / `#` / `-` / 三連バッククォート / `|table|` 等）有効
+- Codex ハイライトは編集中もリアルタイム適用
+- `Esc` / 外側クリックで離脱、自動保存
+- 編集中はカード D&D を無効化（誤ドラッグ防止）
+
+**非編集時の描画**:
+
+- TipTap を **read-only モード**で常時マウント
+- Codex ハイライト・Authorship 色付けは常時表示
+- Sticky 数が多い場合のパフォーマンスは未解決事項参照（ズームアウト時の static HTML 切替を Phase A で実測判断）
+
+#### Authorship 連携
+
+Sticky body は他の ProseMirror ベース document（Codex content / Snippet content / Scene 本文）と同じく **`authorship_spans` テーブルで帰属を range 単位で track** する。
+
+**初期 authorship**:
+
+| 作成経路 | 初期 authorship |
+|---------|---------------|
+| 空白ダブルクリック / `S` キー / `[+Sticky]` ボタン | 全範囲 `human` |
+| AI Branch から生成 | 全範囲 `ai` |
+| Chat → Map の `As Sticky` | 元 Chat メッセージの authorship を継承（AI 応答なら `ai`、ユーザー発言なら `human`、選択範囲の span をそのまま転記） |
+| Sticky → Snippet 昇格時 | Sticky の authorship を新 Snippet にコピー |
+| 編集 | 編集範囲のみ `human` で上書き（既存の TipTap authorship パイプラインに乗る） |
+
+**帰属バッジ（ノード右下）**:
+
+| バッジ | 条件 |
+|------|------|
+| なし | 全 human（最も多いケースは UI を汚さない） |
+| **`✦`** スパークル（AI 色） | 全 ai または ai 主体（ai 文字数 > 50%） |
+| **`◐`** 半円 | 混在（ai と human が両方 1 文字以上） |
+
+バッジクリックで Attribution パネルへ遷移。
+
+**Chat 由来バッジ（💬）**:
+
+`map_stickies.source_chat_message_id` が non-null の場合、ノード右下に小さな `💬` を表示。クリックで Chat の該当メッセージへジャンプ。
+
+#### 作成方法
+
+- **空白ダブルクリック**（最速）
+- パレットの `[+Sticky]` ボタン
+- 空白右クリック → `Add Sticky here`
+- 既存 Sticky の右クリック → `Branch from this`（隣に Sticky を生やす、エッジで自動接続）
+- `S` キー（フォーカス時、現在ビューポート中央に追加）
+- **Chat メッセージの `Map に追加 ▸ As Sticky`**（後述「Chat との連携」）
+- AI Branch ノード生成時（種からの派生）
+
+#### 昇格動線（Sticky → 構造化）
+
+Sticky の右クリック → `Promote to ▸` サブメニューで、Map 限定のメモを正式エンティティに変換できる。すべて ProseMirror ベースなので **content をそのままコピー**できる（authorship / Codex highlight も継承）。
+
+| 昇格先 | 変換ルール |
+|--------|----------|
+| **Scene** | `tree_nodes` に新規 Scene 行作成。title = Sticky title（空なら「Untitled scene」）、synopsis = body 先頭段落の plain text、本文 = body 全体の ProseMirror JSON。配置先 chapter は確認ダイアログ。Sticky 削除、新 Scene の Map ノードに置き換え |
+| **Codex** | `codex_entries` に新規行作成。type 選択ダイアログ（character / location / item / lore）→ name = title（空なら「Untitled」）、content = body の ProseMirror JSON をそのままコピー。Sticky 削除、新 Codex の Map ノードに置き換え |
+| **Snippet** | `snippets` に新規行作成。content = body の ProseMirror JSON をそのままコピー（title があれば先頭に H3 として挿入）。`scene_id` は NULL、`source_chat_message_id` は Sticky から継承。Sticky 削除、新 Snippet の Map ノードに置き換え |
+| **Note** | `tree_nodes` に新規 Note 行作成。title = title（空なら「Untitled note」）、本文 = body の ProseMirror JSON。配置先フォルダは確認ダイアログ。Sticky 削除、新 Note の Map ノードに置き換え |
+
+昇格後、元 Sticky に接続していた User edge は新ノードに引き継がれる（`map_edges.from_position_id` / `to_position_id` を新 `map_node_positions.id` に張り替え）。authorship_spans も `sticky_id` から新エンティティの ID 列に張り替え。
+
+#### Frame ごと Codex に昇格
+
+Frame の右クリック → `Promote frame to Codex` で、内包 Sticky 群を 1 Codex エントリに集約できる。
+
+- Frame title → Codex name
+- 内包 Sticky の body を ProseMirror JSON として連結 → Codex content に流し込む（Sticky に title がある場合は H3 見出しとして挿入し、その下に body を配置）
+- 各 Sticky の authorship_spans は新 Codex の content にオフセット調整して移植
+- type は確認ダイアログでユーザーが選択（character / location / item / lore）
+- 内包 Sticky は削除、Frame 自体は Codex ノード 1 つに置き換わる
 
 ### Scene ノード
 
-Sceneノードは3つの表示バリアントを持ち、ボード単位（全シーン一括）で切り替える。個別ノード単位ではない（Scrivenerのコルクボードと同じ思想）。
-
-| バリアント | サイズ | 表示内容 | 主な用途 |
-|----------|-------|---------|---------|
-| **Compact** | 180×72 | ステータスドット・章番号・タイトル・文字数 | 重力場モード・高密度ビュー |
-| **Card** | 260×180 | タイトル・章番号・ステータススタンプ・Synopsis・文字数 | Freeモード・コルクボード用途 |
-| **Image** | 260×240 | Card + 上部画像エリア | v2拡張（シーンに画像紐付け機能が入ってから） |
-
-#### Compact バリアント
+旧設計の **Card / Image バリアントは廃止**。Compact 一本化。Grid との情報量差別化が主目的。
 
 ```
-┌─────────────────┐
-│ ● Ch.1          │
-│ 廃社            │
-│ 1,120 chars     │
-└─────────────────┘
+┌─────────────────────┐
+│●Ch.1 廃社            │   ← Status色ドット + 章番号 + タイトル
+└─────────────────────┘
 ```
 
-#### Card バリアント
+| プロパティ | 詳細 |
+|----------|------|
+| 参照 | `tree_nodes.id`（node_type = 'scene'） |
+| 表示 | Status 色ドット + 章番号 + タイトル + Label 色ドット 1 個（Label が複数ある場合は最初の 1 色 + `+N`） |
+| サイズ | 固定（200×40px、Compact のみ） |
+| 詳細表示 | ホバーでツールチップ（title + synopsis 抜粋 + status + POV）。常時カードに出さない |
+| ダブルクリック | Editor で固定タブ起動（既存挙動） |
+| シングルクリック | 選択 |
 
-```
-┌──────────────────────────────┐
-│ 朝の市場           Ch.1 ●DR │  ← タイトル / 章番号 / ステータススタンプ
-├──────────────────────────────┤
-│                              │
-│ エララが塔の麓に到着する。    │  ← Synopsis（カードの主役）
-│ 門番が姿を消しており、不審に │    serif フォント、2サイズ大
-│ 思いながらも中へ進む。        │
-│                              │
-├──────────────────────────────┤
-│                    1,120字  │  ← 文字数フッター
-└──────────────────────────────┘
-```
-
-詳細は「Scene カード表示の詳細」セクション参照。
-
-#### モード連動のデフォルト
-
-ボードのバリアント選択は「ボードの表示設定」だが、初期値は**現在のレイアウトモードに応じて自動選択**される。
-
-| モード | デフォルトバリアント | 理由 |
-|--------|------------------|------|
-| Free | **Card** | コルクボード用途の主戦場。Synopsisが主役 |
-| Time | Compact | 高密度の1Dタイムライン向き |
-| Theme | Compact | Force-directed で大量ノードが散る |
-| POV | Compact | クラスタ表示で密度が高い |
-| Place | Compact | 同上 |
-
-ユーザーが明示的にバリアントを切り替えた場合、その選択はモードごとに記憶される（`mapStore.sceneDisplayByMode: { free: 'card', time: 'compact', ... }`）。リセットは `⋮` メニューから可能。
-
-#### 共通の動作
-
-- 参照: `tree_nodes.id`（node_type = 'scene'）
-- ダブルクリック（カード本体）: Editorで該当シーンを開く
-- Card/Image バリアントではインライン編集が可能（後述）
+**Map に出てくるのは「ユーザーが手動でこのボードに追加した Scene のみ」**。プロジェクトの全 Scene が自動で並ぶことはない。追加経路は後述「手動キュレーション」。
 
 ### Codex ノード
 
 ```
-┌─────────────────┐
-│ ◯ Elara         │
-│ character       │
-│ 主人公、魔術師見  │
-│ 習い             │
-└─────────────────┘
+┌─────────────────────┐
+│ ◯ Elara             │   ← typeアイコン + name
+│ character           │   ← typeラベル
+└─────────────────────┘
 ```
 
-- 参照: `codex_entries.id`
-- 表示: タイプアイコン・name・タイプラベル・summary先頭40文字
-- ダブルクリック: Codexパネルで該当エントリを開く
-- サイズ: 固定（200×90px）
-- アイコン画像あり: 左端に28×28pxで表示
-- タイプ別の色: `codex_types.color` を左ボーダーに適用
+| プロパティ | 詳細 |
+|----------|------|
+| 参照 | `codex_entries.id` |
+| 表示 | type アイコン + name + type ラベル |
+| サイズ | 固定（200×60px） |
+| アイコン画像あり | 左端に 28×28px |
+| ダブルクリック | Codex パネルで該当エントリを開く |
+
+旧設計の summary 先頭 40 文字表示は削除（ホバーツールチップに退避）。Map では「誰がいるか」が見えれば十分で、概要は Codex パネルに任せる。
+
+### Snippet ノード
+
+```
+┌──────────────────────┐
+│ ✂ 「封じ文の文面…」   │   ← scissorsアイコン + content先頭40文字
+└──────────────────────┘
+```
+
+| プロパティ | 詳細 |
+|----------|------|
+| 参照 | `snippets.id` |
+| 表示 | scissors アイコン + content から抽出した先頭 40 文字（ProseMirror JSON の最初の text ノード） |
+| サイズ | 固定（200×40px） |
+| ダブルクリック | Snippets パネルで該当 Snippet を開く |
+| Derived edge | `snippets.scene_id` が指す Scene が同じボードにいれば、薄い点線で接続 |
+
+`snippets` テーブルは title カラムを持たない（content のみ）ため、Map ノードの表示は **content の先頭 40 文字を自動抽出**する。長文の場合は末尾 `…` で省略、ホバーで本文先頭 200 文字をツールチップ表示。
 
 ### Note ノード
 
 ```
-┌─────────────────┐
-│ 📝 執筆メモ      │
-│ ここで朱音の...  │
-└─────────────────┘
+┌─────────────────────┐
+│ 📝 取材メモ          │
+└─────────────────────┘
 ```
 
-- 参照: `tree_nodes.id`（node_type = 'note'）
-- 表示: アイコン・タイトル・本文先頭40文字
-- ダブルクリック: Editorで該当ノートを開く
-- サイズ: 固定（180×72px）
+| プロパティ | 詳細 |
+|----------|------|
+| 参照 | `tree_nodes.id`（node_type = 'note'） |
+| 表示 | アイコン + タイトル |
+| サイズ | 固定（180×40px） |
+| ダブルクリック | Editor でノートを開く |
 
-### AI ノード（手動追加のみ）
+**Note と Sticky の境界線**:
 
-```
-┌─────────────────┐
-│ ✨ AI           │
-│ 封じ文の差出人   │
-│ は誰か？候補3件  │
-└─────────────────┘
-```
+| 軸 | Note | Sticky |
+|----|------|--------|
+| 永続性 | Scenes パネルツリーに常駐 | Map のボード限定 |
+| エディタ | フル TipTap（リンク・引用・タスクリスト等すべて） | minimal TipTap（B/I/H/list/table/code のみ、リンク等なし） |
+| 編集面積 | 本文をフルエディタで書く | 高さ可変だが 400px 超で昇格を促される |
+| 用途 | 取材メモ・設定資料・脚本断片 | 落書き・思いつき・問い・AI 図表の受け皿 |
+| 寿命 | 長期保管 | 短期、昇格 or 削除されるのが前提 |
 
-- 参照: なし（Map専用の独立エンティティ）
-- 表示: ✨アイコン・プロンプト要約・AI応答要約
-- 保存先: `map_ai_nodes` テーブル（Map専用）
-- ダブルクリック: Chatパネルに遷移し、該当セッションを開く（`session_id` 紐付け）。`session_id` が NULL（チャットセッション削除後）の場合はダブルクリック操作を無効化し、ツールチップで「チャットセッションが削除されました」と表示
-- サイズ: 可変（内容に応じて120〜240px幅）
-- 黄色ハイライト背景で視覚的に区別
+### AI Branch ノード
 
-**作成方法**:
-- パレットの [+AI] ボタン → ダイアログでプロンプト入力 → AI応答生成（現在のMapの文脈＝表示中ノードをコンテキストとして注入）→ ノード化
-- v1では手動作成のみ。自動提案は v2以降
-
----
-
-## Scene カード表示の詳細
-
-Card / Image バリアントでの追加仕様。Compact バリアントには適用されない。
-
-### カード本体の構造
+AI を**「種を撒く道具」**として使うノード。Map から既存ノードを種にして AI に派生アイデアを生成させ、結果を Sticky 群として撒く。「生成された応答 1 つを保持する」ではなく「種から多数の Sticky を派生させる」点がポイント。
 
 ```
-┌────────────────────────────────┐
-│ タイトル             Ch.X ●ST │  ← ヘッダー行
-├────────────────────────────────┤
-│                                │
-│ Synopsis本文（serif）           │  ← Synopsis領域
-│ 最大4行、それ以降は省略         │
-│                                │
-├────────────────────────────────┤
-│ N,NNN字 · [⏱1]         [Open↗]│  ← フッター
-└────────────────────────────────┘
+✦ AI Branch
+「Elara の動機の候補」
+   ├─ 📌 復讐
+   ├─ 📌 探索
+   ├─ 📌 義務
+   ├─ 📌 偶然
+   └─ 📌 逃避
 ```
 
-| 領域 | 内容 |
-|------|------|
-| ヘッダー | タイトル（インライン編集可）・章番号・ステータススタンプ |
-| Synopsis領域 | `tree_nodes.synopsis` の内容。4行を超えると末尾 `…` で省略。ホバーでフル表示ツールチップ |
-| フッター | 文字数・Phaseアンカー数（`⏱N`、あれば）・Open ボタン |
+| プロパティ | 詳細 |
+|----------|------|
+| 参照 | なし（Map 専用、`map_ai_branches` テーブル） |
+| 動作 | 選択ノードを「種」として AI に渡し、派生アイデアを N 個（デフォルト 5）の **Sticky として撒く** |
+| 永続化 | プロンプト + 生成された Sticky の ID リスト + session_id |
+| 結果ではなく種 | 生成された Sticky は通常の Sticky と同じく編集・昇格・削除可能 |
 
-### ステータススタンプ
+#### 作成方法
 
-ステータスを視覚的に強調する2文字コード + ドット。Scenesパネルの左端ドットよりインパクトある表現（コルクボードの「スタンプ」感）。
+- ノード右クリック → `AI Branch from this`
+- 選択ノード（複数可）右クリック → `AI Branch from selection`
+- パレット `[+AI Branch]`（コンテキストノード未選択時はキャンバス全体を文脈に）
 
-| ステータス | コード | 色 |
-|----------|------|-----|
-| Outline | `OU` | `#888780`（グレー） |
-| Draft | `DR` | `#EF9F27`（アンバー） |
-| Complete | `CP` | `#1D9E75`（グリーン） |
-| Revision | `RV` | `#7F77DD`（パープル） |
-| Final | `FN` | `#22a06b` + `✓` アイコン |
+#### 動作
 
-コード + 色付きドットを右上に表示。クリックでステータス変更ポップオーバー（Scenesパネルのコンテキストメニューと同じ5択）。
+1. AI Branch ダイアログ: プロンプト入力（種ノードの内容は自動で添付、ユーザーは追加指示を書く）+ 生成数（3/5/8 から選択）
+2. AI への内部プロンプト規約: **「結果は markdown で。各アイデアは独立した Sticky 1 個に対応。表が必要なら markdown table、リストが必要なら箇条書き、コードが必要なら code block を使用。」** これにより応答内の図表が Sticky body の TipTap JSON に変換できる
+3. AI 応答（markdown）→ 既存の markdown→ProseMirror JSON 変換パイプライン（Chat → Snippet 抽出と共通）で N 個に分割
+4. それぞれを Sticky として種ノード周囲に配置。各 Sticky の authorship は全範囲 `ai` で初期化
+5. AI Branch ノード自体は中央に置かれ、各 Sticky と細い破線エッジで接続（種ノード→AI Branch→生成 Sticky）
+6. ユーザーは生成 Sticky を編集・削除・他の Sticky と接続・昇格できる。編集した範囲は自動的に `human` authorship に切り替わる
 
-### Synopsisが空の場合
+#### Chat 連携
 
-プレースホルダーを薄いグレー斜体で表示：
-```
-What happens in this scene?
-```
+- AI Branch は内部的に Chat セッションを 1 つ作る（`map_ai_branches.session_id`）
+- ノードダブルクリックで Chat パネルに飛び、続けて掘り下げ可能
 
-文言はScenesパネル / Editorヘッダー のSynopsis編集欄と統一。
+#### ワンクリック削除（× ボタン）
 
-### インライン編集
+AI Branch ノードはホバー時に右上に **`×` バッジ**が表示される。これは「気軽に何度でも撒き直せる」マインドマップ体験のため：種があまり良くなければ即捨てて、別のプロンプトで撒き直す、というフローを高速化する。
 
-Card / Image バリアント時のみ有効。編集境界を明確にするため、領域ごとに操作を分ける。
+- `×` クリックで **確認ダイアログなしで即削除**（永続価値の低いエンティティのため）
+- **派生 Sticky は残る**（`map_stickies.ai_branch_id` の `ON DELETE SET NULL` で由来情報のみ失われる）。ユーザーが Sticky の中で残したいものがあれば手動で残せる
+- 派生 Sticky も一括で消したい場合は、ノード右クリック → `Delete with all derived stickies`（こちらは件数を表示する確認ダイアログ）
 
-| 領域 | シングルクリック | ダブルクリック |
-|------|-------------|------------|
-| ヘッダーのタイトル | ノード選択 | タイトル編集モード |
-| Synopsis領域 | ノード選択 | Synopsis編集モード |
-| フッターの文字数 | ノード選択 | （無反応） |
-| フッターの `Open↗` | Editorで開く | — |
-| カード外周（ヘッダー・フッター以外の縁） | ノード選択 | Editorで該当シーンを開く（現状のノードダブルクリック動作） |
+`×` バッジは AI Branch ノード固有の UI。Sticky や Scene/Codex/Note には付かない（誤削除リスクが高いため）。
 
-#### Synopsis編集モード
+### 永続化されないこと
 
-Synopsis領域がインライン textarea に切り替わる。
-
-- serif フォント維持（視覚的ジャンプを防ぐ）
-- カード外クリック or `Escape` で確定離脱
-- `Ctrl+Enter` で即時保存 + 離脱
-- `Tab` でタイトル編集モードに遷移（`Shift+Tab` で逆順：タイトル→Synopsis）
-- 保存はデバウンス2秒（Scenesパネル・Editorヘッダーと同じ挙動）
-- 4行を超えても textarea 内ではスクロール可能（カードのサイズは伸びない、Card バリアントの固定サイズを維持）
-
-#### タイトル編集モード
-
-ヘッダーのタイトル部が inline input に切り替わる。`F2` ショートカットでも起動。
-
-- `Enter` / フォーカス外しで確定
-- `Escape` で取消
-- `Tab` で Synopsis 編集モードに遷移（`Shift+Tab` で逆順）
-- 空文字は許容せず、元のタイトルに戻る
-
-### ホバーインジケーター
-
-カードに hover すると、編集可能な箇所の脇に薄い鉛筆アイコン（`✎`）がフェードインする（500ms 遅延）。ユーザーが「どこを触ると編集できるか」を学習する手がかり。Scrivenerにはない補助だが、我々のUIは境界判定が多層なので明示する価値がある。
-
-### コルクボード的な装飾（オプション）
-
-`⋮` メニュー → Display → `☐ Corkboard feel` チェックを有効にすると：
-
-- カードに微弱なランダム回転（`±0.5°`、シーンIDから決定的に計算）
-- 背景にコルクボードテクスチャ（薄いベージュ、SVGパターン）
-
-デフォルトはOFF。ビジュアル装飾であり機能には影響しない。Scrivener経験者のノスタルジア向けの遊び要素。
-
-### カラーコーディング
-
-カード（および Compact）のボーダー色を意味付きで変更できる。ボード単位で1つの軸を選択。
-
-```
-Color by: [None ▾]
-  None
-  Status
-  POV character            ← v2
-  Tag                       ← v2
-  Label (manual)            ← v2
-```
-
-| 選択 | v1 | 動作 |
-|------|-----|------|
-| **None** | ✓ | ボーダー黒、背景白 |
-| **Status** | ✓ | ボーダー色 = ステータス色（スタンプと冗長だが、Compactでもステータスが色で分かる） |
-| **POV character** | v2 | `tree_nodes.pov_character_id` から自動生成色。キャラ変更で色が変わる |
-| **Tag** | v2 | 先頭タグの色（タグにカラー属性がある場合のみ） |
-| **Label (manual)** | v2 | プロジェクト定義のラベル（Scrivener流、`scene_labels` テーブル別途追加） |
-
-v2 で追加される POV / Tag / Label には、それぞれ前提となるDBカラム・テーブル追加が必要。v1 では **None / Status** のみ。Label機能は重いので v2 中でも後半に回す。
+Map では**全ノード が `map_node_positions` に行を持つ**。これはどのボードにどの座標で配置されているかの台帳。Scene/Codex/Note の Map への出現は手動キュレーションなので、追加されない限り行は作られない。
 
 ---
 
@@ -467,152 +481,148 @@ v2 で追加される POV / Tag / Label には、それぞれ前提となるDB�
 
 ### Derived edges（自動生成）
 
-既存のリレーションから自動的に描画されるエッジ。ユーザーが明示的に作成するものではない。
+既存のリレーションから自動的に描画されるエッジ。**ただし両端のノードが両方このボードに配置されている場合のみ描画**（手動キュレーション原則の徹底）。
 
 | 出典 | 表示スタイル | 意味 |
 |------|------------|------|
-| `codex_entries.parent_id` | 実線・両端丸 | Codex親子関係 |
-| シーン→Codex言及 | 点線・矢印なし | シーン本文にCodex名が出現 |
-| `codex_entry_phases.anchor_node_id` | 波線 | PhaseアンカーがScene側 |
-| `snippets.scene_id` | 薄い点線 | Snippetの元シーン |
+| `codex_entries.parent_id` | 実線・両端丸 | Codex 親子関係 |
+| Scene → Codex 言及 | 点線・矢印なし | シーン本文に Codex 名が出現 |
+| `codex_entry_phases.anchor_node_id` | 波線 | Phase アンカーが Scene 側 |
+| `snippets.scene_id` | 薄い点線 | Snippet の出処シーン |
 
-- 大量に表示すると可読性が崩壊するため、デフォルトは **Derived edges ON**, **ただし親子関係のみ** の表示。詳細なエッジは設定で追加可能
+- デフォルトは **Codex 親子のみ ON**、シーン言及・Phase は設定で追加
 - Derived edges は編集不可（ソースを変更しないと変わらない）
+- ノード数 200 を超えたら Derived edges を自動 OFF（旧設計から踏襲）
 
 ### User edges（ユーザー描画）
 
-ユーザーが明示的に引いたエッジ。`map_edges` テーブルに保存。
+ユーザーが明示的に引いたエッジ。`map_edges` テーブルに保存。**双方向ラベルと多重ラベル**を v1 から対応。
 
 | プロパティ | 詳細 |
 |----------|------|
-| from_node | 起点ノードの参照（polymorphic: scene / codex / note / ai） |
-| to_node | 終点ノード |
-| label | ラベル文字列（optional、例: 「師匠」「恋人」「影響」） |
+| from_position_id / to_position_id | `map_node_positions.id` 参照 |
+| **forward_label** | A→B 方向のラベル（例: 「師匠」） |
+| **backward_label** | B→A 方向のラベル（例: 「弟子」）。空ならラベル片方向のみ |
+| **labels** | 補助ラベル配列（例: `["師匠", "父"]`、JSON 配列文字列）。1 関係に複数の意味を持たせる |
 | style | 線種（solid / dashed / dotted） |
 | color | 色（hex） |
-| direction | 方向（`none` / `forward` / `bidirectional`） |
+| direction | `none` / `forward` / `bidirectional` |
 
-**描画方法**:
+#### 描画方法
+
 - ノードのエッジ（端）をドラッグ → 別ノードにドロップ
 - または `Alt/⌥` 押しながらノード→ノード
-- 描画中は半透明プレビュー線を表示
-- ドロップ時にラベル入力インライン（Escでキャンセル、空でラベルなし）
+- 描画中は半透明プレビュー線
+- ドロップ時にラベル入力インライン（forward / backward 2 行）
 
-**編集**:
-- エッジクリック → 選択状態（太線ハイライト）
-- ダブルクリック → ラベル編集
-- 右クリック → コンテキストメニュー（線種変更・色変更・削除）
+#### 編集
+
+- エッジクリック → 選択（太線ハイライト）
+- ダブルクリック → ラベル編集ポップオーバー（forward / backward / 補助ラベル配列を一括編集）
+- 右クリック → コンテキストメニュー（線種変更・色変更・**Codex Relation に昇格**（v2）・削除）
+
+#### Codex Relation への昇格（v2）
+
+両端が Codex ノードである User edge は、`Promote to Codex relation` で正式 Relation に昇格できる（`codex_relations` テーブル新設前提、v2）。Map で発見した関係を構造化する経路。
+
+```
+A: Elara ──「師匠」──> B: Marcus      （User edge）
+        ↓ Promote to Codex relation
+codex_relations: { from: Elara, to: Marcus, type: "mentor", label: "師匠" }
+```
+
+昇格後の User edge は Derived edge として描画される（自動生成扱い）。
 
 ---
 
 ## フレーム
 
-フレームはノードをグループ化する矩形領域。Miro / FigJam の Frame と同じ概念。
+ノードをグループ化する矩形領域。Miro / FigJam の Frame と同じ概念。
 
-### 構造
+### 構造・作成・操作
 
-```
-┌─ Part I plot ─────────────────────┐
-│                                    │
-│   ● Ch.1    ● Ch.2    ● Ch.3      │
-│                                    │
-│   ◯ Elara       ◯ Marcus          │
-│                                    │
-└────────────────────────────────────┘
-```
+旧設計から大きく変えない。
 
-- タイトル（上部ヘッダ）
-- 背景色（薄いティント）
-- ボーダー色
-- ノードを含むかどうかは**位置の重なり**で判定（親子関係DBに持たない）
+- タイトル + 背景色 + ボーダー色
+- パレット `[+Frame]` または `F` キーで矩形描画
+- ヘッダドラッグで内包ノード一括移動
+- ボーダードラッグでリサイズ
+- 入れ子不可（v1）
 
-### 作成
+### 新規アクション: Promote frame to Codex
 
-- パレットの [+Frame] クリック → キャンバス上でドラッグして矩形を描画
-- または空白エリアで `F` キー → ドラッグで矩形作成
-- 作成後、タイトル入力インライン
-
-### 操作
-
-- ヘッダをドラッグ → フレーム本体 + **内包されるノード全て**が一緒に移動
-- ボーダードラッグ → リサイズ（内包ノードは動かない、内包判定が再計算される）
-- 右クリック → ラベル変更・色変更・削除（内包ノードは削除されない）
-
-### 階層
-
-v1では**入れ子不可**。フレーム同士の重なりは禁止（新規作成時にバリデーション）。
+Frame の右クリック → `Promote to Codex` で、Frame と内包 Sticky 群を 1 Codex エントリに変換できる（前述「Sticky → Codex 昇格」セクション参照）。Sticky 群でブレストした結果を 1 つの正式 Codex に集約する動線。
 
 ### 制限
 
-- Derived edges はフレームを無視して直線で描画（フレームは純粋にビジュアルなグループ化）
-- 重力場モードでは**Framesは無視される**（ノード配置は重力関数が決め、フレームは追従できない）
-- 重力場モードではフレームのヘッダドラッグによる内包ノードの一括移動も**無効**（ノード座標は重力関数が管理するため）
-- そのため**Framesが活きるのは Free モード**のみ。他モードでは**完全に非表示**になる。Free モードに戻ると位置・タイトル・内包ノードがそのまま復元される
+- Free モード以外では非表示（旧設計踏襲）
+- 重力場モードでは内包ノード一括移動も無効
 
 ---
 
-## レイアウトモード詳細
+## 手動キュレーション
 
-### Free モード（手動配置）
+Map の最大の方針転換。**Scene / Codex / Note は自動で並ばず、ユーザーが明示的にこのボードへ追加したものだけが現れる**。
 
-- 各ノードは `map_node_positions.x, y` に保存された座標に配置
-- ドラッグで自由に移動、位置はデバウンス500msで自動保存
-- Undo/Redo対応（最大50件）
-- グリッドスナップON時は16px単位に吸着
+### 追加経路
 
-このモードだけが**フレーム・エッジ描画の意味を持つ**。
+| 経路 | 動作 |
+|------|------|
+| **Scenes パネル右クリック** | `Add to Map ▸ <ボード名>` でツリー上の Scene/Note を現在のボードに追加（座標は新規ノード初回配置ロジックに従う） |
+| **Codex パネル右クリック** | `Add to Map ▸ <ボード名>` で Codex エントリを追加 |
+| **Snippets パネル右クリック** | `Add to Map ▸ <ボード名>` で Snippet を追加 |
+| **Map パレット `▾Add…`** | `Add Scene…` / `Add Codex…` / `Add Snippet…` / `Add Note…` で検索ダイアログを開き、既存エンティティを選んで追加 |
+| **Map 空白右クリック** | `Add Scene…` / `Add Codex…` / `Add Snippet…` / `Add Note here` で同上 |
+| **Map 上で新規作成** | パレット `[+New Scene]` 等は v2 検討。v1 は既存エンティティの追加のみ（新規作成は Scenes/Codex パネルで） |
 
-### Time モード
+### 削除経路
 
-2D タイムライン:
+Map ノードの右クリック → `Remove from this board` で `map_node_positions` の行を削除（参照先エンティティは無傷）。旧設計の `hidden = 1` 方式は廃止（ハードデリートの方が手動キュレーション原則に合致）。
 
-| 軸 | 値 |
-|----|---|
-| X軸 | Scene: `story_time_order`（未設定時は `sort_order` によるDFS reading-order順）。Codex: アンカーされたPhaseの平均時間、またはX軸中央 |
-| Y軸 | Scene: POVキャラクターごとの水平レーン。Codex: タイプ別のレーン（character / location / item / lore） |
+エンティティそのものを削除したい場合は、ダブルクリックで対応パネルへ飛んでそちらから削除する（Map から直接エンティティ削除は混乱を招くため不可）。
 
-- POVレーンが2つ以上のシーンで使われる場合のみ有効（単一POVの作品では Time モード = Timeline パネル相当）
-- `tree_nodes.pov_character_id`（Phase C-2 で追加するカラム）が未実装の段階では、Y軸は全シーンで同一（1Dライン）
+### Sticky と AI Branch は別扱い
 
-**story_time_order 未設定シーンの扱い**:
-- `story_time_order=NULL` のシーンは X 軸右端に「Unscheduled」エリアとして分離して配置（Timeline パネルと同じ方針）
-- Unscheduled エリアは X 軸の最大値より右にオフセットし、破線で区切って表示
-- Codex は `story_time_order=NULL` でも影響なし（X軸中央に配置）
+Sticky / AI Branch は Map 専用エンティティなので、Map で削除すれば本当に消える（昇格しない限り保存されない）。
 
-**Timelineパネルとの差異**: Timeline は単一レーン（純粋1D）、Map の Time モードは POV レーン分かれ（2D）。視点構造を持つ作品では Map の Time モードが有用。
+---
 
-### Theme モード
+## 複数ボード（v1 から対応）
 
-Force-directed レイアウト:
+旧設計の v2 計画を **v1 に前倒し**。1 プロジェクト = 1 ボードでは目的別の整理ができないため。
 
-- **引力**: 共有タグが多い Scene-Scene / Scene-Codex / Codex-Codex ペアほど強く引き寄せ合う
-- **斥力**: 全ノード間に弱い斥力（重なりを防ぐ）
-- **中心引力**: 全ノードを中心に寄せる弱い力
-- アルゴリズム: D3-force または Fruchterman-Reingold
+### ボード操作
 
-**ユースケース**: 「このタグを持つノードがどこにクラスタしているか」を可視化。記憶テーマと喪失テーマが重なる部分が見える、など。
+- ヘッダーのボード切替ドロップダウン → 全ボード一覧
+- `+ New board` → 名前入力 → 空ボード作成
+- 各ボード横に `⋯` メニュー → リネーム / 複製（位置情報含む）/ 削除
+- ボードごとに独立した Node positions / Edges / Frames / Stickies / AI Branches
+- 同一の Codex/Scene/Note を複数ボードに配置可能（参照は共通、座標はボードごと）
 
-**制約**: 安定化までに数秒の計算時間がかかる可能性。ノード数100以上だと重くなるため、Webワーカーで計算しプログレス表示。
+### ボード名のサジェスト
 
-### POV モード
+新規ボード作成時、テンプレ候補を提示（任意、ユーザーが自由名でも OK）:
 
-クラスタリングレイアウト:
+- 「人物関係図」
+- 「Part 1 のプロット盤」
+- 「世界の地理」
+- 「ブレインストーミング」
 
-- POVキャラクター（`tree_nodes.pov_character_id`）ごとに円形クラスタを配置
-- クラスタ中心に該当Codexエントリノード、周囲にそのPOVのシーン群
-- クラスタ同士の位置関係は、キャラクター間の共演頻度に基づき配置（共演多いキャラは近く）
-- POV未設定のシーンは「Unassigned」クラスタに集約
+### 削除確認
 
-**制約**: `pov_character_id` が未追加の段階（Phase C-2 前）では無効化（Grayout）。
+ボード削除時は `map_node_positions` / `map_edges` / `map_frames` / `map_stickies` / `map_ai_branches` が CASCADE で消える。Sticky / AI Branch のように Map 専用エンティティが付随する場合、それらの行数を表示してダブル確認:
 
-### Place モード
+```
+このボードを削除すると、以下も削除されます:
+- 12 個の Sticky
+- 2 個の AI Branch
+- 8 本の User edge
+- 3 個の Frame
 
-同上、`location_id` ベースのクラスタリング:
+参照されている Scene / Codex / Note は削除されません。
 
-- ロケーション（`tree_nodes.location_id`）ごとにクラスタ
-- クラスタ中心にLocation Codexノード、周囲にそのロケーションのシーン
-
-**将来拡張**: ユーザーが画像をアップロードして地図として背景に表示できる機能（「world map overlay」）。画像の上にLocation Codexをピン留めし、シーンが該当地理に配置される。地図背景は `projects.world_map_image` （v3以降）。
+  [キャンセル]  [削除する]
+```
 
 ---
 
@@ -622,92 +632,104 @@ Force-directed レイアウト:
 
 | 操作 | 動作 |
 |------|------|
-| シングルクリック | 選択状態 |
-| ダブルクリック（ノード外周） | 対応するエンティティを該当パネルで開く（Scene→Editor、Codex→Codex、Note→Editor、AI→Chat） |
-| ダブルクリック（Sceneノード Card バリアントのSynopsis領域） | Synopsisインライン編集モード |
-| ダブルクリック（Sceneノード Card バリアントのタイトル） | タイトルインライン編集モード |
+| シングルクリック（ノード） | 選択 |
+| ダブルクリック（Scene/Codex/Note） | 対応パネルでエンティティを開く |
+| ダブルクリック（Sticky） | インライン編集 |
+| ダブルクリック（AI Branch） | Chat パネルに飛んで該当セッションを開く |
+| **ダブルクリック（空白）** | **クリック位置に Sticky を即時追加** |
 | `Ctrl+クリック` | 個別トグル選択 |
-| `Shift+クリック` | 選択セットへの追加/除外（トグル） |
-| 空白ドラッグ | ラバーバンド選択（矩形内の全ノードを選択） |
-
-Sceneノード内でのインライン編集の詳細は「Scene カード表示の詳細 > インライン編集」セクション参照。
+| `Shift+クリック` | 範囲選択（最後の選択ノードからの矩形範囲） |
+| 空白ドラッグ | ラバーバンド選択 |
 
 ### ドラッグ
 
 | 操作 | 動作 |
 |------|------|
 | Free モードでドラッグ | 座標更新 → `map_node_positions` に保存 |
-| 重力モード + ピンなしノードをドラッグ | 自動的にピン留めされる + 座標保存（Hybrid化） |
-| 重力モード + ピン済みノードをドラッグ | 座標更新のみ |
-| Shift+ドラッグ | 複数選択ノードを一緒に移動 |
+| Theme モード + ピンなしドラッグ | 自動的にピン留め + 座標保存（Hybrid 化） |
+| Theme モード + ピン済みドラッグ | 座標更新のみ |
+| Shift + ドラッグ | 複数選択ノードを一緒に移動 |
 
 ### コンテキストメニュー
 
-ノード右クリック:
+#### Scene / Codex / Note ノード
 
 | メニュー項目 | 動作 |
 |-------------|------|
-| Open | 対応するエンティティを開く |
-| Open in side group | 新しいEditor Groupで開く |
+| Open | 対応パネルで開く |
+| Open in side group | 新しい Editor Group で開く |
 | --- | |
-| Pin position | 現在座標にピン留め（Hybrid化） |
-| Unpin | ピン解除（重力場に戻る） |
+| Pin position | 現在座標にピン留め（Theme モードで Hybrid 化） |
+| Unpin | ピン解除 |
 | --- | |
-| Connect to... | 次にクリックしたノードとUser edgeを作成 |
-| Bring to front / Send to back | z-index変更。`Bring to front` は現在の最大 `z_index + 1`、`Send to back` は最小 `z_index - 1`（ただし `-1` 未満にはしない。`map_frames.z_index` のデフォルト `-1` と区別するため、ノードの最小は `0` を下限とする） |
+| Connect to… | 次にクリックしたノードと User edge 作成 |
+| **AI Branch from this** | このノードを種に AI で派生アイデアを Sticky として撒く |
 | --- | |
-| Hide on this board | このボードでのみ非表示化（`map_node_positions.hidden = 1`）。そのノードに接続する User edge はアプリ層でフィルタし非表示にする（CASCADE は発火しないため）。再表示は「Show on this board」で `hidden = 0` に戻り、エッジも再表示される |
+| Bring to front / Send to back | z-index 変更 |
+| **Remove from this board** | `map_node_positions` 削除（エンティティは無傷） |
 | --- | |
-| Focus | 選択ノード + 1次接続ノードのみ表示、他はopacity 0.15で非表示。1次接続 = User edge または Derived edge（Show設定の有無に関わらず）で直接繋がるノード。`Escape` またはコンテキストメニューの「Exit Focus」で解除 |
+| Focus | 選択ノード + 1 次接続のみ表示、他は opacity 0.15 |
+
+#### Sticky ノード
+
+| メニュー項目 | 動作 |
+|-------------|------|
+| Edit | インライン編集モード |
+| Change color ▶ | 8 色パレットから選択 |
+| --- | |
+| Connect to… | User edge 作成 |
+| Branch from this | 隣に新規 Sticky を生やしてエッジで接続 |
+| AI Branch from this | この Sticky を種に AI 派生 |
+| --- | |
+| **Promote to ▶** | **Scene / Codex / Note への昇格サブメニュー**（前述） |
+| --- | |
+| Bring to front / Send to back | z-index |
+| Delete | 削除（確認ダイアログなし、即削除） |
+
+#### Frame
+
+| メニュー項目 | 動作 |
+|-------------|------|
+| Rename | タイトル編集 |
+| Change color ▶ | 背景色 |
+| **Promote to Codex** | Frame と内包 Sticky を 1 Codex に集約（前述） |
+| Delete | 削除（内包ノードは残る） |
 
 ### ホバー
 
-- ホバー500msでツールチップ表示（タイトル/name + synopsis/summary + type）
-- 接続されているエッジがハイライト
-- 接続先ノードも軽く強調
+- ホバー 500ms でツールチップ
+- Scene/Codex/Note: title + synopsis/summary 抜粋 + type/status + POV
+- Sticky: 全文（編集はせず参照のみ）
+- 接続エッジがハイライト、接続先ノードも軽く強調
 
 ---
 
 ## パレット
 
-キャンバス下部に固定配置される操作パレット。
+キャンバス下部に固定配置。
 
 ```
-┌─────────────────────────────────────────────────┐
-│ [+Scene] [+Codex] [+Note] [+AI] [+Frame] │ [⌥Connect] │
-└─────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────┐
+│ [+Sticky] [+Frame] [+AI Branch] [⌥Connect] │ [▾Add…]    │
+└─────────────────────────────────────────────────────────┘
 ```
 
-### [+Scene / +Codex / +Note]
+| ボタン | 動作 |
+|------|------|
+| `[+Sticky]` | クリック後、キャンバスクリックで Sticky 配置 |
+| `[+Frame]` | ドラッグで矩形描画 |
+| `[+AI Branch]` | AI Branch ダイアログ（コンテキスト未選択時はボード全体を文脈に） |
+| `[⌥Connect]` | エッジ描画モード |
+| `[▾Add…]` | ドロップダウン: `Add Scene…` / `Add Codex…` / `Add Note…`（既存エンティティを検索して追加） |
 
-クリック後、キャンバス上でクリックした位置に新規エンティティが作成される。
-
-- Scene: 新規シーン作成ダイアログ（title入力のみ、後で編集）
-- Codex: 新規Codex作成ダイアログ（name + type選択）
-- Note: 新規ノート作成ダイアログ
-
-作成されたエンティティは対応するDBテーブル（`tree_nodes` / `codex_entries`）に保存され、Map上に配置される。
-
-### [+AI]
-
-AIノード作成モードに入る。キャンバスクリックで位置確定 → プロンプト入力ダイアログ → AI応答生成 → ノード配置。**Phase D で実装**（それ以前はボタンが非活性表示）。
-
-### [+Frame]
-
-フレーム作成モード。ドラッグで矩形描画。
-
-### [Alt/⌥Connect]
-
-エッジ描画モード（`Alt/⌥` 押下でも同じ）。ノード→ノードで User edge 作成。
-
-### パレットのフェーズ別提供状況
+### フェーズ別提供状況
 
 | ボタン | 実装フェーズ |
 |--------|------------|
-| [+Scene] [+Codex] | Phase A |
-| [+Frame] [Alt/⌥Connect] | Phase B |
-| [+Note] | Phase D |
-| [+AI] | Phase D |
+| `[+Sticky]` `[▾Add…]` `[+Frame]` `[⌥Connect]` | Phase A |
+| `[+AI Branch]` | Phase C |
+
+旧設計にあった `[+Scene]` `[+Codex]` `[+Note]` の「Map 上で新規エンティティ作成」は v1 では削除（`[▾Add…]` で既存追加のみ）。新規作成は Scenes / Codex パネルで行うのが一貫したフロー。
 
 ---
 
@@ -716,8 +738,8 @@ AIノード作成モードに入る。キャンバスクリックで位置確定
 | 操作 | 動作 |
 |------|------|
 | `Ctrl+ホイール` / ピンチ | ズーム（10%〜400%） |
-| スペース+ドラッグ | パン |
-| 中クリック+ドラッグ | パン |
+| Space + ドラッグ | パン |
+| 中クリック + ドラッグ | パン |
 | `Ctrl+0` | Fit to viewport |
 | `Ctrl++` / `Ctrl+-` | 段階的ズーム |
 | `Ctrl+1` | 100% |
@@ -725,7 +747,7 @@ AIノード作成モードに入る。キャンバスクリックで位置確定
 
 ### ミニマップ
 
-`⋮` メニューでON/OFF。キャンバス右下に固定配置（120×80px）。
+`⋮` メニューで ON/OFF。キャンバス右下に固定（120×80px）。
 
 - 全ノードの縮小表示
 - 現在のビューポートを矩形枠で表示
@@ -733,34 +755,17 @@ AIノード作成モードに入る。キャンバスクリックで位置確定
 
 ---
 
-## 複数ボード対応（v2）
-
-v1では**1プロジェクト = 1 Map ボード**に制限。v2で複数ボードに拡張予定。
-
-### v2の構想
-
-- `map_boards` テーブル: プロジェクトごとに複数ボードを持てる
-- 各ボードで独立した Node positions / Edges / Frames
-- ユースケース:
-  - 「キャラクター関係図」ボード（Codexのみ表示）
-  - 「地理マップ」ボード（Placeモード固定）
-  - 「プロット全景」ボード（Scenesのみ表示）
-- ヘッダーのボード切替ドロップダウンで切り替え
-- ボードは複製・削除・名前変更可能
-
-v1ではヘッダーに「Board: Main」と固定表示のみ。将来拡張の余地を残す。
-
----
-
 ## 検索
 
-`🔍` ボタンまたは `Ctrl+F` で検索バーを展開。
+`🔍` ボタンまたは `Ctrl+F` で検索バー展開。
 
-- ノード種別ごとに以下を対象としてインクリメンタル検索:
-  - **Sceneノード**: `title`（タイトル）+ `synopsis`（シーン要約）
-  - **Codexノード**: `name`（エントリ名）+ `summary`（概要）+ タグ名
-  - **Noteノード**: `title` + 本文先頭テキスト
-  - **AIノード**: `prompt`（プロンプト要約）
+- 検索対象（現在のボードのみ、全ボード横断は v2）:
+  - **Sticky**: title + body
+  - **Scene**: title + synopsis
+  - **Codex**: name + content + tag 名
+  - **Snippet**: content + tag 名
+  - **Note**: title + 本文先頭テキスト
+  - **AI Branch**: prompt
 - ヒットノードはキャンバス上で黄色ハイライト
 - `Enter` でヒットノードにビューポート移動 + 選択
 - `↑↓` で複数ヒット間の移動
@@ -773,43 +778,35 @@ v1ではヘッダーに「Board: Main」と固定表示のみ。将来拡張の�
 
 | フィールド | 型 | 説明 |
 |-----------|-----|------|
-| `activeBoardId` | `string` | 現在のボードID（v1では固定値） |
-| `mode` | `'free' \| 'time' \| 'theme' \| 'pov' \| 'place'` | 現在のレイアウトモード |
-| `viewport` | `{ x, y, zoom }` | ビューポート状態 |
-| `selectedNodeIds` | `Set<string>` | 選択中のノードID |
-| `selectedEdgeIds` | `Set<string>` | 選択中のエッジID |
-| `show` | `{ scenes, codex, notes, ai, derivedEdges, userEdges, frames }` | 表示チェックボックス状態 |
-| `gridSnap` | `boolean` | グリッドスナップON/OFF |
-| `minimapVisible` | `boolean` | ミニマップ表示。初期値 `false`（`⋮` メニューで明示的にONにするまで非表示） |
-| `sceneDisplayByMode` | `Record<Mode, 'compact' \| 'card' \| 'image' \| 'auto'>` | モードごとのSceneバリアント選択。`'auto'` はモード連動デフォルトに従う。v1は単一ボードのためグローバル設定として保存。v2では `map_boards` テーブルに移行予定 |
-| `colorBy` | `'none' \| 'status' \| 'pov' \| 'tag' \| 'label'` | カラーコーディング軸。v1 は `'none'` / `'status'` のみ |
-| `corkboardFeel` | `boolean` | コルクボード装飾（微回転 + テクスチャ）ON/OFF。**v2 で `visualTheme: 'default' \| 'corkboard' \| 'constellation'` に昇格**（Constellationスキン追加時）。マイグレーション時は `true→'corkboard'` / `false→'default'` |
+| `activeBoardId` | `string` | 現在のボード ID（v1 から複数ボード） |
+| `mode` | `'free' \| 'theme'` | 現在のレイアウトモード |
+| `viewport` | `{ x, y, zoom }` | ボードごとのビューポート状態 |
+| `selectedNodeIds` | `string[]` | 選択中のノード ID（配列、Set ではない） |
+| `selectedEdgeIds` | `string[]` | 選択中のエッジ ID |
+| `show` | `{ scenes, codex, snippets, notes, stickies, aiBranch, derivedEdges, userEdges, frames }` | 表示チェックボックス状態 |
+| `gridSnap` | `boolean` | グリッドスナップ ON/OFF |
+| `minimapVisible` | `boolean` | ミニマップ表示。初期値 `false` |
+| `colorBy` | `'none' \| 'status' \| 'stickyColor' \| 'pov' \| 'tag'` | カラーコーディング軸。v1 は `none / status / stickyColor` のみ |
+| `visualTheme` | `'default' \| 'corkboard' \| 'constellation'` | ビジュアルスキン（Constellation は v2） |
 
 ### 派生データ
 
 - `visibleNodes(show, viewport)`: ビューポート内 + 表示設定でフィルタ後のノード
-- `computedPositions(mode, pinnedPositions)`: 現在のモードでの各ノード位置（Freeは保存値、重力場は計算値）
-- `derivedEdges`: 既存リレーションから導出されるエッジのメモ化
-- `effectiveSceneVariant(mode)`: 現在のモードで実際に使われるSceneバリアント。`sceneDisplayByMode[mode]` が `'auto'` の場合は Free=`'card'` / その他=`'compact'` を返す
+- `computedPositions(mode, pinnedPositions)`: 現在のモードでの各ノード位置
+- `derivedEdges`: 既存リレーションから導出 + 両端がボードに配置されているもののみ
 
 ### 永続化
 
-以下を `global-settings.json` の `map` セクションに保存:
-
-- `mode`, `viewport`, `show`, `gridSnap`, `minimapVisible`
-- `sceneDisplayByMode`, `colorBy`, `corkboardFeel`
-
-**v1の設計判断**: `sceneDisplayByMode` / `colorBy` / `corkboardFeel` はボードの見た目設定だが、v1はボードが1つしかないため、クロスプロジェクト的なUI設定として `global-settings.json` に保存する。v2で複数ボードを導入する際には `map_boards` テーブルへの移行が必要。
-
-`map_node_positions` / `map_edges` / `map_frames` はプロジェクトDBに保存（後述）。
+- ボードごとの状態（`viewport`, `mode`, `show` など）はプロジェクト DB の `map_boards` に持つ
+- グローバル UI 設定（`gridSnap`, `minimapVisible`, `visualTheme`）は `global-settings.json` の `map` セクション
 
 ---
 
-## DBスキーマの追加
+## DB スキーマ
 
-DBスキーマの正規版は統合DBスキーマ設計書（`Grimodex_統合DBスキーマ.md`）を参照。本設計書で追加が必要なテーブルを以下に記載。
+DB スキーマの正規版は統合 DB スキーマ設計書（`Grimodex_統合DBスキーマ.md`）を参照。本設計書で追加が必要なテーブルを以下に記載。
 
-### map_boards（v2準備、v1では単一行を自動作成）
+### map_boards（v1 から複数ボード）
 
 ```sql
 CREATE TABLE map_boards (
@@ -817,6 +814,13 @@ CREATE TABLE map_boards (
   project_id  TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
   title       TEXT NOT NULL DEFAULT 'Main',
   sort_order  REAL NOT NULL DEFAULT 0.0,
+  -- ボード固有設定
+  mode        TEXT NOT NULL DEFAULT 'free' CHECK(mode IN ('free', 'theme')),
+  viewport_x  REAL NOT NULL DEFAULT 0,
+  viewport_y  REAL NOT NULL DEFAULT 0,
+  viewport_zoom REAL NOT NULL DEFAULT 1.0,
+  show_config TEXT NOT NULL DEFAULT '{}',  -- JSON: 表示チェックボックス状態
+  color_by    TEXT NOT NULL DEFAULT 'none',
   created_at  TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
 );
@@ -824,67 +828,127 @@ CREATE TABLE map_boards (
 CREATE INDEX idx_map_boards_project ON map_boards(project_id);
 ```
 
-v1ではプロジェクト作成時に `title = 'Main'` のボードを1行自動作成し、以降追加させない。
+新規プロジェクト作成時に `title = 'Main'` のボードを 1 行自動作成。以降ユーザーが任意に追加。
 
 ### map_node_positions
 
-ノードのボード上での位置情報。ポリモーフィック参照（Scene / Codex / Note / AI）。
+ノードのボード上での位置情報。ポリモーフィック参照（Scene / Codex / Note / Sticky / AI Branch）。
 
 ```sql
 CREATE TABLE map_node_positions (
   id              TEXT PRIMARY KEY,
   board_id        TEXT NOT NULL REFERENCES map_boards(id) ON DELETE CASCADE,
   node_ref_type   TEXT NOT NULL
-                    CHECK(node_ref_type IN ('scene', 'codex', 'note', 'ai')),
+                    CHECK(node_ref_type IN ('scene', 'codex', 'snippet', 'note', 'sticky', 'ai_branch')),
   tree_node_id    TEXT REFERENCES tree_nodes(id) ON DELETE CASCADE,
   codex_entry_id  TEXT REFERENCES codex_entries(id) ON DELETE CASCADE,
-  ai_node_id      TEXT REFERENCES map_ai_nodes(id) ON DELETE CASCADE,
+  snippet_id      TEXT REFERENCES snippets(id) ON DELETE CASCADE,
+  sticky_id       TEXT REFERENCES map_stickies(id) ON DELETE CASCADE,
+  ai_branch_id    TEXT REFERENCES map_ai_branches(id) ON DELETE CASCADE,
   x               REAL NOT NULL,
   y               REAL NOT NULL,
-  pinned          INTEGER NOT NULL DEFAULT 0,  -- 1 if pinned in gravity modes
-  hidden          INTEGER NOT NULL DEFAULT 0,  -- 1 if hidden on this board
+  pinned          INTEGER NOT NULL DEFAULT 0,
   z_index         INTEGER NOT NULL DEFAULT 0,
   created_at      TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at      TEXT NOT NULL DEFAULT (datetime('now')),
-  -- 1段目: 3つのFKのうちちょうど1つが non-null
   CHECK (
-    (CASE WHEN tree_node_id IS NOT NULL THEN 1 ELSE 0 END +
+    (CASE WHEN tree_node_id   IS NOT NULL THEN 1 ELSE 0 END +
      CASE WHEN codex_entry_id IS NOT NULL THEN 1 ELSE 0 END +
-     CASE WHEN ai_node_id IS NOT NULL THEN 1 ELSE 0 END) = 1
+     CASE WHEN snippet_id     IS NOT NULL THEN 1 ELSE 0 END +
+     CASE WHEN sticky_id      IS NOT NULL THEN 1 ELSE 0 END +
+     CASE WHEN ai_branch_id   IS NOT NULL THEN 1 ELSE 0 END) = 1
   ),
-  -- 2段目: node_ref_type と non-null FK カラムの対応を保証
-  -- (scene/note → tree_node_id、codex → codex_entry_id、ai → ai_node_id)
   CHECK (
-    (node_ref_type IN ('scene', 'note') AND tree_node_id   IS NOT NULL AND codex_entry_id IS NULL     AND ai_node_id IS NULL) OR
-    (node_ref_type = 'codex'            AND codex_entry_id IS NOT NULL AND tree_node_id   IS NULL     AND ai_node_id IS NULL) OR
-    (node_ref_type = 'ai'               AND ai_node_id     IS NOT NULL AND tree_node_id   IS NULL AND codex_entry_id IS NULL)
+    (node_ref_type IN ('scene', 'note') AND tree_node_id   IS NOT NULL) OR
+    (node_ref_type = 'codex'            AND codex_entry_id IS NOT NULL) OR
+    (node_ref_type = 'snippet'          AND snippet_id     IS NOT NULL) OR
+    (node_ref_type = 'sticky'           AND sticky_id      IS NOT NULL) OR
+    (node_ref_type = 'ai_branch'        AND ai_branch_id   IS NOT NULL)
   )
 );
 
 CREATE INDEX idx_map_pos_board ON map_node_positions(board_id);
-CREATE INDEX idx_map_pos_tree ON map_node_positions(tree_node_id);
-CREATE INDEX idx_map_pos_codex ON map_node_positions(codex_entry_id);
--- SQLite の NULL 意味論: NULLを含む複合UNIQUE INDEXでは一意性が保証されないため、
--- ノードタイプ別に部分インデックスで分割する
 CREATE UNIQUE INDEX idx_map_pos_uniq_scene ON map_node_positions(board_id, tree_node_id)
   WHERE tree_node_id IS NOT NULL;
 CREATE UNIQUE INDEX idx_map_pos_uniq_codex ON map_node_positions(board_id, codex_entry_id)
   WHERE codex_entry_id IS NOT NULL;
-CREATE UNIQUE INDEX idx_map_pos_uniq_ai    ON map_node_positions(board_id, ai_node_id)
-  WHERE ai_node_id IS NOT NULL;
+CREATE UNIQUE INDEX idx_map_pos_uniq_snippet ON map_node_positions(board_id, snippet_id)
+  WHERE snippet_id IS NOT NULL;
+CREATE UNIQUE INDEX idx_map_pos_uniq_sticky ON map_node_positions(board_id, sticky_id)
+  WHERE sticky_id IS NOT NULL;
+CREATE UNIQUE INDEX idx_map_pos_uniq_ai ON map_node_positions(board_id, ai_branch_id)
+  WHERE ai_branch_id IS NOT NULL;
 ```
 
-**設計判断**:
-- ポリモーフィック参照を採用。3つのFKカラムのうち1つのみnon-null（CHECK制約）
-- インデックスはそれぞれの参照先で張る（逆引き対応）
-- `node_ref_type` を冗長に持つのは、フィルタクエリの簡略化のため
-- UNIQUE制約はノードタイプ別の**部分インデックス**で実現（SQLiteのNULL=NULLではない意味論のため、NULLを含む複合UNIQUE INDEXでは一意性が保証されない）
-- CHECK制約は2段構え: ①exactly-one-non-null検証 + ②`node_ref_type`とFK列の対応検証
-- ただし `node_ref_type` が `'scene'` または `'note'` のとき `tree_node_id` が指す `tree_nodes.node_type` の整合性（scene行かnote行か）は SQLite CHECK では検証不可能なため、**アプリ層のバリデーションで担保する**
+旧設計の `hidden` カラムは削除（手動キュレーション化に伴い、削除はハードデリート）。
 
-### map_edges
+### map_stickies（新規）
 
-ユーザー描画エッジ。
+```sql
+CREATE TABLE map_stickies (
+  id          TEXT PRIMARY KEY,
+  board_id    TEXT NOT NULL REFERENCES map_boards(id) ON DELETE CASCADE,
+  title       TEXT,                                                    -- plain text, nullable
+  body        TEXT NOT NULL DEFAULT '{"type":"doc","content":[]}',     -- ProseMirror JSON
+  preview_text TEXT,                                                    -- body 先頭40文字キャッシュ（保存時に抽出、ノード上の縮小表示用）
+  color       TEXT NOT NULL DEFAULT 'yellow'
+                CHECK(color IN ('yellow', 'orange', 'pink', 'green', 'blue', 'purple', 'gray', 'white')),
+  ai_branch_id TEXT REFERENCES map_ai_branches(id) ON DELETE SET NULL,  -- AI生成由来の Sticky
+  source_chat_message_id TEXT REFERENCES chat_messages(id) ON DELETE SET NULL,  -- Chat由来の Sticky
+  created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX idx_map_stickies_board ON map_stickies(board_id);
+CREATE INDEX idx_map_stickies_ai_branch ON map_stickies(ai_branch_id);
+CREATE INDEX idx_map_stickies_chat_msg ON map_stickies(source_chat_message_id)
+  WHERE source_chat_message_id IS NOT NULL;
+```
+
+| カラム | 説明 |
+|--------|------|
+| `body` | **ProseMirror JSON 文字列**。TipTap minimal インスタンスで編集される（前述「TipTap minimal インスタンス仕様」参照）。空 Sticky のデフォルトは空 doc |
+| `preview_text` | body 先頭の text を 40 文字で抽出したキャッシュ。保存時にフロント側で計算して同梱（Beat 設計書の `unplaced_beat_preview` と同じ lazy パターン）。ノード縮小描画 / 検索ヒット表示で使用 |
+| `ai_branch_id` | AI Branch 生成時にリンク。AI Branch を消しても Sticky は残るが由来情報は失う（`ON DELETE SET NULL`） |
+| `source_chat_message_id` | Chat → Map で `As Sticky` 抽出した場合の元メッセージ。non-null なら Map ノード上に `💬` バッジ表示。元 Chat メッセージ削除時は SET NULL（Sticky 自体は残る） |
+
+### authorship_spans への sticky_id 追加
+
+既存の `authorship_spans` テーブルに `sticky_id` カラムを追加し、polymorphic CHECK 制約も更新する。詳細は **統合 DB スキーマ設計書**側で正規化定義（本設計書では追加カラムのみ提示）。
+
+```sql
+ALTER TABLE authorship_spans ADD COLUMN sticky_id TEXT
+  REFERENCES map_stickies(id) ON DELETE CASCADE;
+
+-- 既存の "exactly-one-non-null" CHECK 制約に sticky_id を追加（統合DBスキーマ設計書側で再定義）
+
+CREATE INDEX idx_authorship_spans_sticky ON authorship_spans(sticky_id)
+  WHERE sticky_id IS NOT NULL;
+```
+
+これにより Sticky body の各文字 range について `(start, end, source: 'human' | 'ai' | 'unknown')` が記録され、編集時に既存の TipTap authorship パイプラインが自動更新する。
+
+### map_ai_branches
+
+```sql
+CREATE TABLE map_ai_branches (
+  id            TEXT PRIMARY KEY,
+  board_id      TEXT NOT NULL REFERENCES map_boards(id) ON DELETE CASCADE,
+  prompt        TEXT NOT NULL,
+  seed_node_ids TEXT NOT NULL DEFAULT '[]',  -- 種ノードの ID 配列（JSON）
+  session_id    TEXT REFERENCES chat_sessions(id) ON DELETE SET NULL,
+  model         TEXT,
+  token_usage   INTEGER,
+  created_at    TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at    TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX idx_map_ai_branches_board ON map_ai_branches(board_id);
+```
+
+AI 応答はノード自体ではなく**派生 Sticky 群として外部化**される（`map_stickies.ai_branch_id` でリンク）。AI Branch ノード自体はプロンプトと session_id だけを保持する。
+
+### map_edges（双方向ラベル + 多重ラベル対応）
 
 ```sql
 CREATE TABLE map_edges (
@@ -892,7 +956,9 @@ CREATE TABLE map_edges (
   board_id            TEXT NOT NULL REFERENCES map_boards(id) ON DELETE CASCADE,
   from_position_id    TEXT NOT NULL REFERENCES map_node_positions(id) ON DELETE CASCADE,
   to_position_id      TEXT NOT NULL REFERENCES map_node_positions(id) ON DELETE CASCADE,
-  label               TEXT,
+  forward_label       TEXT,                          -- A→B 方向
+  backward_label      TEXT,                          -- B→A 方向
+  labels              TEXT NOT NULL DEFAULT '[]',    -- 補助ラベル配列（JSON）
   style               TEXT NOT NULL DEFAULT 'solid'
                         CHECK(style IN ('solid', 'dashed', 'dotted')),
   color               TEXT NOT NULL DEFAULT '#000000',
@@ -907,58 +973,11 @@ CREATE INDEX idx_map_edges_from ON map_edges(from_position_id);
 CREATE INDEX idx_map_edges_to ON map_edges(to_position_id);
 ```
 
-**設計判断**:
-- エッジの参照先は `map_node_positions.id`（ノード直接参照ではなく位置レコード経由）。ボードを跨いだエッジを禁止するため
-- ノードが非表示・削除された場合にエッジも自動削除（CASCADE）
+旧 `label` カラムは `forward_label` にリネーム（マイグレーションで値を移送）。`backward_label` / `labels` を新規追加。
 
-### map_frames
+### map_frames（変更なし）
 
-フレーム。
-
-```sql
-CREATE TABLE map_frames (
-  id            TEXT PRIMARY KEY,
-  board_id      TEXT NOT NULL REFERENCES map_boards(id) ON DELETE CASCADE,
-  title         TEXT NOT NULL DEFAULT 'Frame',
-  x             REAL NOT NULL,
-  y             REAL NOT NULL,
-  width         REAL NOT NULL,
-  height        REAL NOT NULL,
-  background    TEXT NOT NULL DEFAULT '#f5f5f5',
-  border_color  TEXT NOT NULL DEFAULT '#cccccc',
-  z_index       INTEGER NOT NULL DEFAULT -1,  -- デフォルトでノードの下
-  created_at    TEXT NOT NULL DEFAULT (datetime('now')),
-  updated_at    TEXT NOT NULL DEFAULT (datetime('now'))
-);
-
-CREATE INDEX idx_map_frames_board ON map_frames(board_id);
-```
-
-- ノードの内包判定は**位置の重なり**のみ。DB上の親子関係は持たない
-- フレームのヘッダドラッグ時、内包判定されているノードが一緒に移動する動作はアプリ層で実装
-
-### map_ai_nodes
-
-Map専用のAIノード。
-
-```sql
-CREATE TABLE map_ai_nodes (
-  id            TEXT PRIMARY KEY,
-  board_id      TEXT NOT NULL REFERENCES map_boards(id) ON DELETE CASCADE,
-  prompt        TEXT NOT NULL,
-  response      TEXT,
-  session_id    TEXT REFERENCES chat_sessions(id) ON DELETE SET NULL,
-  model         TEXT,
-  token_usage   INTEGER,
-  created_at    TEXT NOT NULL DEFAULT (datetime('now')),
-  updated_at    TEXT NOT NULL DEFAULT (datetime('now'))
-);
-
-CREATE INDEX idx_map_ai_board ON map_ai_nodes(board_id);
-```
-
-- `session_id` が付与される場合は Chatパネルのセッションとリンク
-- `response` は要約版。フル会話は Chatパネルで参照
+旧設計から変更なし。ただし `Promote frame to Codex` の動作はアプリ層で実装。
 
 ---
 
@@ -966,35 +985,80 @@ CREATE INDEX idx_map_ai_board ON map_ai_nodes(board_id);
 
 ### → Editor
 
-- Sceneノード / Noteノードをダブルクリック → Editorで固定タブとして開く
-- Codexノードをダブルクリック → Codexパネルで該当エントリを表示（Editor側ではなくCodex側）
-- Map上で新規Scene作成 → 作成直後にEditorで開く動線をオプションで提供（設定）
+- Scene/Note ノードをダブルクリック → Editor で固定タブとして開く
+- Codex ノードをダブルクリック → Codex パネルで該当エントリ（Editor 側ではなく）
 
 ### → Codex
 
-- Codexノードをダブルクリック → Codexパネルの詳細画面
-- Codexエントリのtype変更 / 削除 → Map上のノード表示が即時更新
-- Codex Phase の anchor_node_id が設定 → Derived edge として Scene と Codex を繋ぐ波線が追加
+- Codex ノードをダブルクリック → Codex パネルの詳細画面
+- Codex エントリの type 変更 / 削除 → Map 上のノード表示が即時更新
+- Codex Phase の anchor_node_id 設定 → Derived edge として描画（両端がボードにいれば）
+- **Sticky / Frame からの昇格動線**で新規 Codex を作成可能
 
 ### → Scenes
 
-- Mapで選択したSceneノードは、Scenesパネルのツリーでも選択状態で連動（`activeSceneSync`）
-- Scenesパネルでのツリー D&D → reading-order 変更 → Map の Time モード（reading-order フォールバック）で位置更新
+- Map で選択した Scene ノードは Scenes パネルのツリーでも選択状態で連動（`activeSceneSync`）
+- **Scenes パネル右クリック → `Add to Map ▸ <ボード名>`** でツリー上の Scene/Note を追加
+- **Sticky → Scene 昇格**で新規 Scene を作成（配置 chapter は確認ダイアログ）
+
+### → Snippets
+
+- Snippets パネル右クリック → `Add to Map ▸ <ボード名>` で既存 Snippet を追加
+- **Sticky → Snippet 昇格**で新規 Snippet を作成（`scene_id` は NULL）
+- Snippet ノードのダブルクリックで Snippets パネルを開く
+- `snippets.scene_id` が指す Scene が同じボードにいれば Derived edge として薄い点線で接続
+
+### → Grid
+
+- Map と Grid は**役割が違う**ため別パネル（概要セクション参照）
+- Sticky → Scene 昇格で作った Scene は Grid の該当 Chapter 列に即時反映
+- Map から Grid へのクロスナビゲーション（Show in Grid）は v2 検討
 
 ### → Timeline
 
-- Map の Time モードは、Timeline パネルの2D拡張版に相当
-- Timeline で story_time_order を編集 → Map の Time モードの X軸が再計算
-- Map から「Open in Timeline」リンク（ボード単位のビューポートを Timeline に展開）
+- Map 上の Scene が `story_time_order` を持っていても Map では使わない（旧 Time モード削除）
+- Timeline で `story_time_order` を変更しても Map の配置は変わらない
 
-### → Chat
+### → Chat（Map → Chat）
 
-- AIノードのダブルクリック → Chatパネルで該当セッションを開く
-- Chat の「Attach context」で現在のMapボードを添付可能（v2）
+- AI Branch ノードのダブルクリック → Chat パネルで該当セッションを開いて掘り下げ
+- AI Branch 生成時のプロンプトと応答は Chat の通常セッションとして保存される
 
-### ← Chat / Codex （Derived edges として）
+### ← Chat（Chat → Map: 議論を Map に還元）
 
-Codex parent-child、Scene-Codex言及、Phase anchor、Snippet origin などが自動的に Derived edges として描画される。Codex / Chat / Scenes 側でこれらを変更すると、Map の Derived edges がリアクティブに更新される。
+Chat で AI と議論した内容を Map に持ち込む経路。**新ノードタイプは追加せず**、既存の Sticky / Snippet / AI Branch / Codex のいずれかに変換する。Chat パネル側に「Map に追加 ▸」サブメニューを設ける。詳細仕様は Chat パネル設計書側で扱う。
+
+#### メッセージ単位の動線
+
+Chat メッセージの `⋯` メニュー → `Map に追加 ▸` で 4 形式から選択：
+
+| 形式 | 用途 | 変換ルール |
+|------|------|----------|
+| **As Sticky** | 短文・1 アイデアをその場で付箋化 | メッセージ本文（または選択範囲）を Sticky body にコピー。`source_chat_message_id` を保存。authorship は元メッセージから継承（AI 応答なら `ai`、ユーザー発言なら `human`） |
+| **As Snippet** | 応答の塊を再利用テキストとして保存 | `snippets` に新規行作成。`source_chat_message_id` を保存。authorship 継承 |
+| **As AI Branch** | 議論の流れ全体を Map に置き、応答を Sticky 群に分解 | `map_ai_branches` に新規行作成（prompt = 元の質問、session_id = 元 Chat セッション）。**応答テキストを再度 AI に投げて N 個の Sticky に分解**してから配置（既存 AI Branch の「種から撒く」動作の入力源を Chat メッセージに変えただけ） |
+| **As Codex…** | 応答に出てきた人物・場所を構造化 | 既存の Chat → Codex 抽出フロー（`extractedCodex` メタデータ）に乗せる。Codex 作成後、Map に Codex ノードとして配置 |
+
+配置先ボードは確認ダイアログで選択（複数ボードがあるため）。
+
+#### テキスト選択範囲の動線
+
+Chat メッセージ内のテキストを選択して右クリック → `Map に追加 ▸ As Sticky / As Snippet`（範囲が短いのでこの 2 つのみ）。選択範囲の authorship span をそのまま転記する。
+
+#### As AI Branch の特殊動作
+
+AI Branch ノードは元々「Map から AI に種を投げて Sticky を撒く」設計だったが、Chat → Map では入力源が「既存の AI 応答」になる。動作は：
+
+1. ユーザーが応答メッセージで `As AI Branch` を選択
+2. Map ボード選択ダイアログ + 分解する Sticky 数（3/5/8）選択
+3. 内部的に「この応答からアイデアを N 個に分解して。各アイデアは独立した Sticky 1 個になるように。」と AI に再投する（Chat の同じ session_id を継続）
+4. 分解結果を Sticky として配置、AI Branch ノードは元質問をプロンプトとして保存
+5. ノードダブルクリックで Chat に戻ると、元の議論 + 分解再投の両方が見える
+
+#### Sticky / Snippet の Chat 由来追跡
+
+- Sticky: `map_stickies.source_chat_message_id` カラム（後述 DB スキーマ参照）。non-null なら `💬` バッジ表示、クリックで Chat 該当メッセージへ
+- Snippet: 既存の `snippets.source_chat_message_id` を活用
 
 ---
 
@@ -1004,42 +1068,35 @@ Codex parent-child、Scene-Codex言及、Phase anchor、Snippet origin などが
 
 | ショートカット | 動作 |
 |-------------|------|
-| `Ctrl+Alt+M` | Mapパネルのフォーカス/トグル |
+| `Ctrl+Alt+M` | Map パネルのフォーカス/トグル |
 
-### Mapパネルフォーカス時
+### Map パネルフォーカス時
 
 | ショートカット | 動作 |
 |-------------|------|
-| `1` / `2` / `3` / `4` / `5` | モード切替（Free / Time / Theme / POV / Place） |
-| `Ctrl+F` | 検索バーにフォーカス |
-| `Ctrl++` / `Ctrl+-` / `Ctrl+0` | ズームイン / アウト / Fit |
+| `1` / `2` | モード切替（Free / Theme） |
+| `Ctrl+F` | 検索バー |
+| `Ctrl++` / `Ctrl+-` / `Ctrl+0` | ズーム |
 | `Ctrl+1` | ズーム 100% |
-| `Space+ドラッグ` | パン |
-| `F` | Frameを作成モード |
-| `Alt/⌥` 押下 / `E` | Connectモード（エッジ描画） |
-| `Del` / `Backspace` | 選択中のノード / エッジ / フレームを削除 |
+| Space + ドラッグ | パン |
+| **`S`** | **現在ビューポート中央に Sticky を即時追加** |
+| `F` | Frame 作成モード |
+| `Alt/⌥` 押下 / `E` | Connect モード |
+| `Del` / `Backspace` | 選択中のノード/エッジ/フレーム削除 |
 | `Ctrl+A` | 全ノード選択 |
-| `Ctrl+D` | 選択ノードをDuplicate。**参照先エンティティをDBレベルで複製**（新規 Scene / Codex / Note として作成）し、複製ノードをビューポート内にオフセット配置する。複製後の行は Scenes / Codex パネルにも反映される。AIノードは複製不可 |
+| `Ctrl+D` | 選択ノード Duplicate（Sticky のみ。Scene/Codex/Note は参照ノードのため複製不可） |
 | `Ctrl+G` | グリッドスナップ ON/OFF |
-| `F2` | 選択ノードの名前をインライン編集（参照先エンティティの名前変更） |
-| `Enter` | Sceneノード Card バリアント時: Synopsisインライン編集モード。それ以外: Editorで開く |
-| `Ctrl+P` | 選択ノードをピン留めトグル |
-| `Escape` | インライン編集離脱 / 選択解除 / モードキャンセル / Focusモード解除（優先順で最初に該当するものを実行） |
+| `F2` | 選択ノードの名前/タイトルをインライン編集 |
+| `Enter` | Sticky: インライン編集 / その他: 対応パネルで開く |
+| `Ctrl+P` | 選択ノードのピン留めトグル |
+| `Escape` | 編集離脱 / 選択解除 / モードキャンセル / Focus 解除 |
 
 ### ノード削除の挙動
 
-Mapでノードを削除すると:
-- **Scene/Note/Codex ノード**: 確認ダイアログ「Mapから隠す」「エンティティごと削除」の2択
-  - 「隠す」: `map_node_positions.hidden = 1` にする（エンティティは残る）。再表示は `⋮` メニュー → Display → 「☑ 非表示ノードを表示」でグレー表示 → 右クリック → 「Show on this board」
-  - 「削除」: 参照先エンティティをDB削除（Scenes/Codex側と同じフロー）
-- **AI ノード**: 即削除（Map専用エンティティなので）
-- **User edge**: 即削除
-- **Frame**: 即削除（内包ノードは残る）
+- **Sticky / AI Branch / User edge / Frame**: 即削除（Map 専用エンティティ）
+- **Scene / Codex / Note**: `Remove from this board` と同じ挙動（`map_node_positions` 削除のみ、参照先エンティティは無傷）。エンティティそのものを削除したい場合は対応パネルから
 
-**複数選択での Delete 挙動**:
-- 選択ノードにScene/Note/Codexが含まれる場合、1つの確認ダイアログをまとめて表示（「N件を隠す」「N件を削除」）。種別が混在していても一括で同じ操作を適用する
-- AI ノード・User edge・Frame が混在する場合は、種別ごとにグループ分けして処理順（Frame・edge → AI → Scene/Note/Codex の順）を保つ
-- 選択セット全体が AI / edge / Frame のみの場合は確認ダイアログなし即削除
+複数選択での Delete は、選択セット内の各種別に上記ルールを適用。確認ダイアログは Sticky / AI Branch を含まず Scene/Codex/Note のみの場合は不要（Map から外すだけだから）、含む場合は Sticky 件数を表示して確認。
 
 ---
 
@@ -1049,25 +1106,21 @@ Mapでノードを削除すると:
 
 | パネル幅 | モードバー | ヘッダーモードドロップダウン |
 |---------|-----------|--------------------------|
-| ≥ 600px | 表示（5ボタン全部） | 非表示（冗長なため） |
-| < 600px | 非表示 | 表示（現在モードをドロップダウンで選択） |
+| ≥ 600px | 表示（Free / Theme） | 非表示 |
+| < 600px | 非表示 | 表示 |
 
-ヘッダーのモードドロップダウンはモードバーが表示されているときも同期しているが、幅 ≥ 600px では `display: none` にして重複表示を避ける。
+### 高さ ≥ 500px
 
-### 高さ ≥ 500px（フローティング・Centerスプリット）
+全機能フルセット。
 
-全機能フルセット。パレット・ミニマップ・インスペクター全て表示可能。
+### 高さ 300〜499px
 
-### 高さ 300〜499px（通常のBottom Dock）
-
-- パレットはコンパクトモード（アイコンのみ）
-- ミニマップは初期OFF
-- インスペクターは別パネルとして表示するか、ポップオーバー化
+- パレットはコンパクト（アイコンのみ）
+- ミニマップは初期 OFF
 
 ### 高さ < 300px
 
-- 「Map は小さい画面ではあまり使えません」ヒント表示 + 「フローティングで開く」ボタン
-- 操作は最低限可能だが、快適とは言えない
+- 「Map は小さい画面ではあまり使えません」ヒント + 「フローティングで開く」ボタン
 
 ---
 
@@ -1077,322 +1130,214 @@ Mapでノードを削除すると:
 
 | 候補 | 判定 | 理由 |
 |------|------|------|
-| **React Flow** | **第一候補** | ノード・エッジ・ズーム・パン・ミニマップ・D&Dを網羅、Reactネイティブ |
-| **tldraw** | 第二候補 | より高機能（フリーハンド描画・付箋・図形）だが大きすぎる |
-| 自前実装（SVG + Canvas） | 不採用 | パン/ズーム/エッジルーティングの実装コストが高い |
-| **D3** | 部分採用 | Force-directedレイアウトのみ `d3-force` を利用 |
+| **React Flow** | **第一候補** | ノード・エッジ・ズーム・パン・ミニマップ・D&D を網羅、React ネイティブ |
+| tldraw | 第二候補 | 高機能だが大きすぎる |
+| 自前実装 | 不採用 | 実装コスト過大 |
+| **D3** | 部分採用 | `d3-force` を Theme モードで使用 |
 
-**React Flow** を採用し、独自ノードタイプ（SceneNode / CodexNode / NoteNode / AINode）とフレームカスタムコンポーネントを実装する方針。
+React Flow を採用し、独自ノードタイプ（SceneNode / CodexNode / NoteNode / **StickyNode / AIBranchNode**）を実装。
 
 ### Force-directed レイアウト
 
-- `d3-force` を Web Worker で実行（メインスレッドをブロックしない）
+- `d3-force` を Web Worker で実行
 - Theme モードで使用
-- 100ノード以内は即時収束、それ以上はプログレス表示
-
-### ドラッグ
-
-- React Flow 内蔵のドラッグハンドラを使用
-- Scenesパネルで使用中の `@dnd-kit` とは独立（キャンバスドラッグは座標系が異なるため）
+- 100 ノード以内は即時、それ以上はプログレス表示
 
 ---
 
 ## 実装フェーズ
 
-### Phase A: 最小動作
+### Phase A: マインドマップ基盤（最小動作）
 
-- `map_boards` / `map_node_positions` テーブル追加（単一ボード固定）
-- Free モードのみ実装
-- Scene / Codex ノード表示（Note / AIは後回し）
-- **Sceneノード Compact バリアントのみ**
+- `map_boards` / `map_node_positions` / `map_stickies` テーブル追加
+- 複数ボード対応（一覧・追加・削除・リネーム・複製）
+- Free モード
+- **Sticky ノード**（空白ダブルクリック / `S` キー / パレットで追加、インライン編集、色変更、削除）
 - ノードドラッグ・座標保存
 - ズーム・パン
-- Derived edges: Codex parent-child のみ
-- パレット（+Scene / +Codex のみ）
-- ダブルクリックで Editor / Codex 連携
+- 既存 Codex/Scene/Snippet/Note の手動追加（各パネル右クリック「Add to Map ▸」+ Map パレット `[▾Add…]`）
+- Scene/Codex/Snippet/Note ノード（Compact のみ、ホバーツールチップで詳細）
+- Derived edges: Codex 親子のみ
+- ダブルクリックで Editor / Codex / Snippets 連携
+- `Remove from this board` メニュー
 
-### Phase B: 関係性の可視化 + Cardバリアント
+### Phase B: 関係性と昇格
 
-- Derived edges 全種（シーン言及 / Phase anchor / Snippet origin）
-- User edges の描画・編集・削除
-- Frames の作成・移動・リサイズ
-- 検索バー
-- ミニマップ
-- **Sceneノード Card バリアント + インライン Synopsis / タイトル編集**
-- **Color by (None / Status)**
-- **Corkboard feel 装飾**
-- **Scene display ドロップダウン（モード連動 Auto 挙動）**
-- **Show チェックボックスの全項目をUIに追加**（Notes / AI チェックボックスは Phase D までグレーアウト表示し、ホバーで「Phase D で対応予定」ツールチップを出す。チェックボックス自体は操作不可にし、誤解を防ぐ）
+- User edges 描画・編集・削除（**双方向ラベル + 多重ラベル**対応）
+- Frames 作成・移動・リサイズ
+- 検索バー・ミニマップ
+- **Sticky → Scene/Codex/Snippet/Note の昇格動線**
+- **Frame → Codex の昇格動線**（内包 Sticky body を Codex content に集約）
+- Derived edges 全種（Scene 言及・Phase アンカー・Snippet 出処）
+- Color by (None / Status / Sticky color)
+- Visual theme: Default / Corkboard feel
 
-### Phase C-1: Time モード + Hybrid 挙動
+### Phase C: AI と Theme
 
-**前提条件**: なし（`story_time_order` は既存カラム）
-
-- Time モード（X軸=`story_time_order`、Y軸=暫定1Dライン）
-- Unscheduled エリア（`story_time_order=NULL` シーンを右端に分離）
-- Hybrid 挙動（Pin/Unpin）
-- モード切替時の 300ms トランジション
-- Auto-arrange アクション: **Grid by reading-order** / **Grid by story-time**
-
-### Phase C-2: Theme モード + POV/Place モード
-
-**前提条件（DB マイグレーション）**:
-
-`tree_nodes` に以下の2カラムを追加するマイグレーションを先行適用すること:
-
-```sql
-ALTER TABLE tree_nodes ADD COLUMN
-  pov_character_id TEXT REFERENCES codex_entries(id) ON DELETE SET NULL;
-  -- Sceneのみ使用。codex_entries.type='character' であることはアプリ層で保証
-
-ALTER TABLE tree_nodes ADD COLUMN
-  location_id TEXT REFERENCES codex_entries(id) ON DELETE SET NULL;
-  -- Sceneのみ使用。codex_entries.type='location' であることはアプリ層で保証
-
-CREATE INDEX idx_tree_pov ON tree_nodes(project_id, pov_character_id)
-  WHERE pov_character_id IS NOT NULL;
-CREATE INDEX idx_tree_location ON tree_nodes(project_id, location_id)
-  WHERE location_id IS NOT NULL;
-```
-
-統合DBスキーマ（`Grimodex_統合DBスキーマ.md`）への反映も同時に行う。
-
+- **AI Branch ノード**（種から Sticky を撒く、Chat セッション連携、`×` ワンクリック削除）
 - Theme モード（d3-force + Web Worker）
-- POV モード（`pov_character_id` ベースのクラスタリング）
-- Place モード（`location_id` ベースのクラスタリング）
-- Time モードのY軸をPOVレーン化（`pov_character_id` が使えるようになってから）
-- Auto-arrange アクション: **Grid by POV** / **Force-directed compact**
+- Hybrid 挙動（Pin/Unpin）
+- Auto-arrange: Force-directed compact
 
 ### Phase D: 高度な機能
 
-- Note ノード表示
-- AI ノード（手動追加 + Chat連携）
-- Focusモード（選択ノード + 1次接続のみ表示）
+- Focus モード（選択 + 1 次接続のみ表示）
 - SVG / PNG エクスポート
+- Sticky Branch（隣に新規 Sticky を生やしてエッジ自動接続）
+- Auto-arrange: Grid by reading-order
 
-### Phase E: 拡張（v2以降）
+### Phase E: v2 拡張
 
-- 複数ボード対応
-- ボード間ノード参照（1つのCodexエントリが複数ボードに配置）
-- World map overlay（画像背景）
-- **Constellation visual theme（星図スキン、後述「Visual Theme: Constellation スキン」セクション参照）**
-- 共同編集（マルチユーザー、将来の大きな拡張）
+- **Codex Relation テーブル新設 + User edge → Relation 昇格動線**
+- Constellation visual theme（Starchart エクスポート）
+- POV / Tag による Color by（`tree_nodes.pov_character_id` 追加が前提）
+- World map overlay
+- 全ボード横断検索
+- Map から Grid / Matrix へのクロスナビゲーション
 
 ---
 
-## Visual Theme: Constellation スキン（v2拡張）
+## Visual Theme: Constellation スキン（v2 拡張）
 
-Mapパネルのビジュアルを「夜空の星図」に置き換える代替スキン。**機能・DBスキーマ・操作体系には一切手を入れず、レンダリング層だけを差し替える。** Themeモード・POVモードの重力場クラスタが既に「星座」のような配置を作るため、別パネル化する代わりに Map のスキンとして統合する方針。
+旧設計から大きくは変えない（Sticky / AI Branch のメタファー対応を追加）。
 
-### 目的
+**Constellation スキンでのメタファー対応（追加分）**:
 
-- **執筆者のモチベーション補助**: プロジェクトの全景を"機能的なダイアグラム"ではなく"詩的な地図"として見せ、長期プロジェクトでの俯瞰感・愛着を育てる
-- **エクスポート素材としての魅力**: SVG / PNG 出力時にポスター品質の「物語の星図（Starchart）」が得られる。SNS 投稿・作家の自己モチベーション・表紙原案などに転用可能
-- **既存機能を壊さない**: 表示スキンであり、DB追加なし・状態管理は既存ストアを流用
-
-### 有効化
-
-`⋮` メニュー → Display → **Visual theme** の3択に統合する（v1 の `Corkboard feel` チェックボックスを置き換え）:
-
-```
-Visual theme
-  ● Default           （通常）
-  ○ Corkboard feel    （微回転 + テクスチャ背景）
-  ○ Constellation     （星図）
-```
-
-既存の `mapStore.corkboardFeel: boolean` を **`mapStore.visualTheme: 'default' | 'corkboard' | 'constellation'`** の enum に置き換える（v2 マイグレーション：`corkboardFeel === true` → `'corkboard'`、`false` → `'default'`）。3つは排他。
-
-### メタファー対応表
-
-| Mapの概念 | Constellation表現 |
+| Map の概念 | Constellation 表現 |
 |----------|------------------|
-| 背景 | 濃紺〜黒のグラデーション + 微細なスターフィールドノイズ（Canvas層でプロシージャル生成） |
-| Sceneノード | ★ 星（ステータスに応じて輝度変化） |
-| Codex character | ◎ 恒星。名前に小さくギリシャ文字ラベル（例：「Elara β」） |
-| Codex location | ● 惑星（塗りの大きめ円、type色を低彩度化） |
-| Codex item | ✦ 小さな輝点 |
-| Codex lore | 星雲（ソフトなグロー、塗りなし輪郭なし） |
-| Noteノード | ◌ 微弱な点（0.35 opacity） |
-| AIノード | 💫 彗星（尾を引くSVG gradient、常時緩やかにドリフト） |
-| Derived edge | 細い破線（白、opacity 0.2〜0.3）— 星座の補助線 |
-| User edge | 連星線（太め・白に近い色・両端にドット） |
-| Frame | 星雲状領域（ソフトグラデ境界、タイトルは筆記体フォント） |
-| ホバー | 該当の星が一瞬きらめく（opacity 0.7→1.0 の pulse） |
-| 選択 | Halo リング（放射状の淡い光） |
-| Focusモード | 非Focusノードは 0.08 opacity まで落とす（Default スキンの 0.15 より暗く、夜空感を強める） |
+| Sticky ノード | 流星跡（短い光の筋、色は本人カラーを低彩度化） |
+| AI Branch ノード | 超新星（中心の輝点 + 放射状の細光線、各 Sticky への接続線が光線として描画される） |
 
-### ステータス → 輝度マッピング
-
-| status | 表現 |
-|--------|-----|
-| Outline | 小さく淡い星（opacity 0.4、サイズ 0.8x） |
-| Draft | 中輝度（opacity 0.7） |
-| Complete | 明るく、淡い放射グロー |
-| Revision | パープル tint で脈動（5秒周期） |
-| Final | 最大輝度 + 放射状のグロー + 微小なレンズフレア風のキラキラ |
-
-### アニメーション
-
-- **Twinkle**: 全Sceneノードに独立した `@keyframes` で opacity を 0.7→1.0 に 3〜5秒周期で揺らす。遅延はノードIDのハッシュ値から決定的に計算（ボードを開き直しても配置が同じに見える）
-- **Comet drift**: AIノードは常時 ±2px の範囲で 10秒周期のゆるやかな parallax ドリフト。尾は進行方向と逆向きにSVG linear-gradient で描画
-- **Selection halo**: 選択時にノード周囲 80px まで広がる淡い光、2秒周期で 0.6→0.9 opacity 揺らぎ
-- `prefers-reduced-motion: reduce` 検出時は全アニメーションを停止し、すべて静止した状態で描画
-
-### スキン適用時の制約
-
-| 項目 | 挙動 |
-|------|------|
-| **Scene display = Card / Image** | Constellation適用時はCompactに強制切替。Scene display ドロップダウンはグレーアウトし、ホバーで「Constellation skin uses Compact nodes」ツールチップ表示。スキン解除で元の選択に復帰 |
-| **Corkboard feel** | `visualTheme` enum で排他。UIでは3択ラジオのため、選択不能状態は自然に表現される |
-| **Color by = Status** | 有効のまま動作するが、"輝度 = ステータス"の表現と重なる。Constellationスキン適用時のデフォルトは `None` に自動切替（ユーザーが明示的にStatus等を選んだ場合はそれを尊重） |
-| **Color by = POV / Tag / Label**（v2） | 彩度を一段下げて、夜空のコントラストを保つ |
-| **グリッドスナップ** | 表示はOFFになる（グリッドドットを描画しない）。機能としては有効で、スナップ挙動は維持 |
-| **ミニマップ** | 同じスキンが適用される（夜空の小型俯瞰図） |
-
-### エクスポート: Starchart プリセット
-
-`⋮` メニュー → Export に専用プリセットを追加:
-
-```
-Export
-  SVG / PNG として保存
-  JSONとしてエクスポート
-  ---
-  ✨ Starchart として保存
-     （Constellationスキン強制 / 解像度選択 / 透明背景オプション）
-```
-
-- 現在の `visualTheme` が何であれ、**エクスポート時のみ一時的に Constellation を適用**してレンダリング → 保存後に元スキンに戻す
-- 解像度オプション: **1x / 2x / 4x**（PNGのみ、SVGは解像度非依存）
-- **透明背景オプション**: 夜空の背景を透過にして、ユーザーが別の背景（本の表紙画像など）に重ねられるようにする
-- フレーム・タイトルラベルをエクスポートに含めるかのトグル（星図単体で書き出したい場合の配慮）
-
-### 実装アプローチ
-
-- ライブラリ追加なし（既存の React Flow + `d3-force` + SVG で完結）
-- **代替ノードコンポーネント**: `ConstellationSceneNode` / `ConstellationCodexNode` / `ConstellationAINode` などを React Flow に登録し、`visualTheme` に応じて `nodeTypes` プロパティを切り替える
-- **背景の星空**: React Flow の pane 背後に `<canvas>` レイヤーを重ね、プロシージャル生成の恒星（ノード数に依存しない純粋な装飾）を描画。パン/ズームに合わせて parallax スクロール
-- **エッジのスタイル**: React Flow の `edgeTypes` で Constellation 用のカスタム edge を差し込み、CSS filter で glow を適用
-- **CSS テーマレイヤー**: `data-visual-theme="constellation"` を Map ルートに付与し、CSS変数（`--node-bg`, `--edge-color`, etc.）を一括で上書き
-
-### 実装フェーズ
-
-**Phase E**（v2以降の拡張）扱い。コア機能（Phase A〜D）が安定してから着手する。優先度は「複数ボード対応」「World map overlay」より低く、novelty / ブランディング要素として位置づける。
-
-### なぜラディカル案02の「独立パネル化」を取り下げたか
-
-当初のラディカルUI案02「Constellation」は、Mapとは別の独立パネルとして構想されていた。しかし、Map パネルの重力場モード（特に Theme / POV）が既に「クラスタ状に配置されたノード群」を表示できるため、**別パネル化するより Map のビジュアルスキンに統合する方が**:
-
-- 実装コストが低い（DB追加なし、状態管理共有、操作体系の再発明なし）
-- ユーザーの学習コストが低い（新パネルの操作を覚える必要がない）
-- エクスポート時に好きなスキンを選べるため、用途が広がる（Default で構造把握 → Constellation でポスター出力、の往復が自然）
-
-従って、ラディカル案02は**独立パネル化を取り下げ、`mapStore.visualTheme = 'constellation'` として Map に統合**する。
+その他のメタファー（Scene = 星、Codex character = 恒星 など）と enable 条件・アニメーション・Starchart エクスポートは旧設計から踏襲。
 
 ---
 
 ## 未解決の検討事項
 
-### 1. Derived edges の可読性問題
+### 1. Sticky body のサイズ制約
 
-500シーン × 20Codex = 万単位のDerived edgeが描画される可能性。対策案:
+旧設計の plain text 500 文字上限は撤廃（ProseMirror 化に伴い文字数定義が曖昧になるため）。代わりに**高さベースの制約**で運用：
 
-- **Edge bundling**: 近い経路のエッジを束ねて描画（d3-hierarchy の edge bundling）
-- **距離ベース非表示**: ビューポート外のエッジは描画しない
-- **種別フィルタ**: Derived edges を種類別（親子のみ / 言及のみ / Phase のみ）でさらに細分化
-- **閾値制限**: ノード数が 200 を超えたら Derived edges は自動OFF
+- ノード高さ 400px を超えたら「Sticky が長くなっています。Note / Snippet への昇格を検討」のヒント表示
+- 600px で内部スクロール開始（カード自体はそれ以上伸びない）
+- 強制切り詰めはしない、判断はユーザーに委ねる
 
-MVPでは**種別フィルタ + 閾値制限**の組み合わせで対応。
+### 1b. TipTap minimal インスタンスのマウント数とパフォーマンス（Phase A 実装ガード）
 
-### 2. 位置情報の肥大化
+Sticky を 100 個マウントすると TipTap インスタンス 100 個になり、メモリ・初期化コストが Map 全体の動作可否を左右する。React Flow の virtualization（ビューポート外は unmount）に頼るだけでは、ボード全体ズームアウト時に全 Sticky が同時マウントされるため不十分。
 
-全シーン + 全Codex × ボード数の `map_node_positions` 行が発生。500 + 300 = 800 ノード × 5ボード（v2）= 4,000行。SQLiteのサイズには影響ないが、ビュー切替時の全読み込みは速度に注意。
+**Phase A での実装ガード（必須）**:
 
-対策: ビューポート可視範囲のみ LAZY LOAD、モード切替時は差分更新。
+1. ビューポート内の Sticky 数を計測し、**50 個を超えたら static HTML フォールバック**に自動切替
+2. static HTML 側でも Codex highlight・authorship 色付けは事前計算で描画（情報量を落とさない）
+3. ノードを選択 / ダブルクリックした瞬間にそのノードだけ TipTap インスタンスをマウント（編集モード起動）
+4. 50 個閾値はフィーチャーフラグで調整可能にし、Phase A 実測でチューニング
 
-### 3. ノードの「初回配置」問題
+**未編集 / 編集経験ありの区別**: 編集セッション中だけ TipTap を保持し、離脱時に static HTML に戻す案も検討余地あり。実測で判断。
 
-新規Scene / Codex を追加した時、Map 上のどこに配置するか？
+この実装ガードは Phase A の必達要件として位置づける（性能未検証のまま Sticky 体験を損なわないため）。
 
-- 案A: 原点 (0, 0) 固定 → 重なり問題
-- 案B: ビューポート中央 + ランダムオフセット → 現状の Map を見ていなくても追加される
-- 案C: 直近の兄弟ノードの隣 → ツリー構造の近いものを参照
-- 案D: 重力場モードで自動計算した位置 → 一度モード切替する必要あり
+### 1c. Sticky body の `preview_text` 再生成
 
-**採用（フェーズ別の二段構え）**:
+`preview_text` は保存時にフロントが抽出してキャッシュ。マイグレーション後の既存 Sticky（v1 テーブル新設のため発生しないが、他経路で migrate した場合）は NULL から始まる。次回保存で自然に埋まる lazy パターン。
 
-- **Phase A〜B（Theme モード未実装）**: 案Bを採用。新規ノードは「現在のビューポート中央 + `(index * 24px, index * 24px)` のオフセット」（`index` = その操作で追加された順番、リセットはビューポート移動後）で配置し、`pinned=false` として保存。重なりを完全には防げないが許容範囲とし、ユーザーがドラッグで調整できる。
-- **Phase C-2以降（Theme モード実装後）**: ユーザーが初めて Theme モードに切り替えたとき、`pinned=false` の全ノードに対して force layout を一括計算し、その結果を `x, y` に書き戻す。以降の新規追加ノードは「既存ノードと重ならない位置にスポーン（force simulation を1ステップだけ実行）」してから `pinned=false` で保存する。
+- Codex / character の rename で Codex ハイライトが変わっても `preview_text` の text 内容は不変なので影響なし
+- body の table / image しか含まない Sticky は `preview_text` が `(table)` `(image)` 等のフォールバック文字列になる
 
-### 4. フレームの内包判定のエッジケース
+### 2. AI Branch の生成数とコスト
 
-フレームが**部分的に**ノードと重なっている場合、内包扱いするか？
+5 個生成がデフォルト。多すぎると盤が散らかり、少なすぎると役に立たない。
 
-- 案A: ノードの中心がフレーム内 → 内包
-- 案B: ノードの全矩形がフレーム内 → 内包
-- 案C: ユーザー明示（D&Dでフレーム内にドロップ）
+- 3/5/8 から選択可能（v1）
+- ユーザーがどれを使うか観察してデフォルトを再評価
+- 「気軽に削除して撒き直す」前提のため、`×` ワンクリック削除 UX とセットで運用する想定
 
-**採用**: 案A（中心判定）。ユーザーの直感に最も近い。
+### 3. AI Branch の文脈サイズ
 
-### 5. 大きな作品での性能
+種ノード + 周辺ノード（接続エッジで繋がるもの 1 次まで）を文脈として渡す。多すぎるとトークン超過。
 
-1000ノード級の作品で React Flow がどこまでスムーズに動くか未検証。
+- 文脈ノード数の上限を 20 に固定（v1）
+- ユーザーが「文脈に含めるノード」を明示的に指定できる UI（v2）
 
-- React Flow は仮想化（virtualization）対応あり、ビューポート外ノードは描画しない
-- ただし Derived edges の計算は全ノード対象のため、こちらがボトルネック
-- ベンチマーク実装後に判断、必要なら Canvas（raw）ベースに切替
+### 4. Sticky の色とパレットの共有
 
-### 6. 重力モードでの「ノードが散らばる」問題
+8 色固定パレットは Label（Grid）の色パレットと重複させるべきか。
 
-Theme モードで共有タグがないノードは中心引力だけで引き寄せられるため、中心部に団子になる。対策:
+- 案 A: 独立（Sticky は手書き感のある暖色系中心、Label は分類用の彩度高め）
+- 案 B: 共有（一貫性）
 
-- 孤立ノード（共有タグなし）を外周にレイアウト
-- 「Gravity strength」スライダーで引力/斥力のバランスをユーザーが調整
+**暫定**: 案 A。Sticky は「付箋」のメタファーで暖色系（黄/オレンジ/ピンク）が中心。Label は「分類タグ」で彩度高めの 12 色。
 
-v1 では固定値、v2 で調整UI追加。
+### 5. ボード間の Sticky 移動
 
-### 7. Map と Outline / Constellation（ラディカル案）の関係
+ボード A の Sticky をボード B に移したい場合、現状は手動コピペ相当の操作しかない。
 
-ラディカルUI案02「Constellation」は当初独立パネルとして構想されていたが、Map パネルの重力場モードと機能的に重複するため、**Mapのビジュアルスキンとして統合**する方針に変更した。詳細仕様は「Visual Theme: Constellation スキン（v2拡張）」セクション参照。
+- 案: コンテキストメニュー `Move to board ▸` で `board_id` を更新。座標は新ボード中央にリセット
+- v2 検討
 
-### 8. Card バリアントと重力場モードの相性
+### 6. User edge → Codex Relation 昇格の双方向性
 
-重力モードではノード座標が関数で決まるため、Cardの大きなサイズ（260×180）は密度を下げる。対策:
+Map で引いた User edge を Codex Relation に昇格できるが、逆（Codex で作った Relation を Map に Derived edge として降ろす）は自動。一貫性は取れるが、Map で引いた User edge と Codex 由来の Derived edge が同じ関係を二重描画する可能性。
 
-- モード連動デフォルトで Free=Card / その他=Compact を採用済み（B案）
-- ユーザーが明示的に「重力モードでもCardを使いたい」と切り替えた場合、force layout のパラメータ（ノード間距離・斥力）を Card サイズに合わせて自動調整
-- それでもPOV/Theme モードで数百ノードをCardで表示するとスクロール量が膨大になる。高密度ビューが必要なユーザーには Compact への切替を提案するヒントを表示
+- 昇格時に元 User edge を削除し、以降は Derived edge として描画する（前述）
+- ただし Codex 側で Relation を削除した場合、Map の Derived edge も消えるが「元々ユーザーが引いたエッジ」の情報は失われる
+- v2 で Codex Relation の削除時に「Map の元 User edge を復元するか」確認ダイアログを出す案
 
-### 9. ラベル（Label）機能の導入タイミング
+### 7. As AI Branch の Chat セッション共有のトレードオフ
 
-Scrivener のラベル機能（プロジェクト固有のカラーラベルをSceneに付与）は v2 で導入予定だが、Codex Tags との重複が懸念。
+Chat → Map の `As AI Branch` は元の Chat session_id を継続して分解再投する仕様（Chat 側にも分解再投メッセージが残る）。これは「議論の流れ全体を Chat に保ち、Map では分解結果だけ見る」という相互参照のための意図的なトレードオフ。
 
-- 案A: 専用の `scene_labels` テーブルを追加（Scrivener互換）
-- 案B: `codex_tags` を流用（タグにカラーを持たせ、Sceneに直接タグ付与可能にする）
-- 案C: 既存の `codex_entries`（`character` や `lore` タイプのエントリ）をラベル代替として使う
+- メリット: 元の議論 + 分解結果の両方が 1 セッションに連続して残る、Map ノードからのジャンプで全体が見える
+- デメリット: ユーザーの Chat 履歴に「この応答を N 個に分解して」という system-like な再投プロンプトが混在する
+- 代替案（v2 検討）: 分解再投を hidden subsession に隔離し、Chat 履歴上は表示しない。AI Branch ノードからは両方見える
+- v1 は同 session 共有のまま運用し、ユーザー反応次第で v2 で hidden subsession 化を検討
 
-案Bが一番データモデルを汚さない。Snippetsが既に `codex_tags` を共有しているので、Sceneも同じ仕組みに乗せるのは筋が良い。v2 で検討する際はタグ側の設計から詰める。
+### 8. ノード密度のスケーラビリティ
 
-### 10. コルクボード装飾の国際化問題
+複数ボード化により 1 ボードあたりのノード数は減る想定だが、それでも長編で 1 ボードに 100 Sticky が散ることはあり得る。
 
-`Corkboard feel` の微回転装飾は、長い日本語タイトルでは視認性が落ちる可能性。回転角の上限を言語に応じて調整するか、日本語環境ではデフォルトOFFにするか、v1 実装時にユーザーテストで判断。
+- React Flow の仮想化（ビューポート外ノードは描画スキップ）に依存
+- 1 ボード 200 ノードを警告閾値、500 を上限として推奨（強制はしない）
+
+### 9. Sticky の Undo/Redo
+
+空白ダブルクリックで Sticky が量産される性質上、誤クリックでの Sticky 量産が起きる。
+
+- `Ctrl+Z` で直近の Sticky 追加を取り消し
+- Map 操作の Undo スタックは 50 件、Sticky 追加・削除・座標移動・編集・色変更を含む
+- 他パネルの Undo（Scenes ツリー操作など）とは独立スタック
+
+### 10. Snippet ノードの先頭テキスト抽出
+
+`snippets` テーブルは title カラムを持たず content のみ（ProseMirror JSON）。Map ノード上での 40 文字表示は ProseMirror 走査で先頭の text ノードを取得する。
+
+- 画像・テーブルなどテキスト以外の要素から始まる Snippet は「(media-only snippet)」表示にフォールバック
+- content の先頭 200 文字程度をフロント側でキャッシュするか毎回パースするかは性能次第で判断（v1 は毎回パース、ノード数 100 程度までなら問題ない想定）
+- Snippet 数が多くなる場合、`snippets.preview_text` カラムを追加して保存時に抽出する案も v2 で検討
+
+### 11. Frame 内の Sticky をフレーム外に出す挙動
+
+Sticky を Frame 外にドラッグした場合、内包判定（中心位置）から外れる。
+
+- Frame の内包判定は表示時の動的計算（DB 保存しない、旧設計踏襲）
+- ドラッグで外に出れば自動的に内包から外れる
+- `Promote frame to Codex` 実行時の内包判定はその時点のスナップショット
 
 ---
 
 ## Matrix パネル連携
 
-Matrix パネル（[設計書](./Grimodex_Matrixパネル設計書.md)）は Map と同じ「2次元」だが用途が異なる：
+Matrix パネル（[設計書](./Grimodex_Matrixパネル設計書.md)）は Map と同じ「2 次元」だが用途が異なる：
 
-- **Map**: 連続座標、関係の発見・クラスタリング、**探索的**
-- **Matrix**: 離散カテゴリのクロス表、登場分布の可視化、**監査的**
+- **Map**: 連続座標、関係の発見・**探索的**・思考の枝を生やす
+- **Matrix**: 離散カテゴリのクロス表、登場分布の**監査的**
 
 両者は別パネルとして共存する。
 
 ### 言及スキャン結果のキャッシュ共有
 
-Matrix Phase A で新規追加される `scene_codex_mentions` キャッシュテーブルは、Codex 名/alias 変更時のキャッシュ再構築を Map と Matrix で共通化できる。Map 側は v1 では現行のメモリ計算のままで、キャッシュテーブルの利用は v2 以降の最適化として検討する（必要性が確認されてから）。それまでは「同じ Rust Aho-Corasick マッチャーを呼ぶ」という共通点だけを保ち、データ層の共有は強制しない。
+Matrix Phase A で新規追加される `scene_codex_mentions` キャッシュテーブルは、Codex 名/alias 変更時のキャッシュ再構築を Map と Matrix で共通化できる。Map 側は v1 では現行のメモリ計算のままで、キャッシュテーブルの利用は v2 以降の最適化として検討する。
 
 ### Matrix への Show in Matrix 動線（v2）
 
-Map のシーンノード右クリック → 「Show in Matrix」で、Matrix が該当シーン行にスクロールする動線を v2 で追加検討。フィルタ状態は v1 では独立管理（Map と Matrix のフィルタ「同期」トグルは v2 で検討）。
+Map のシーンノード右クリック → 「Show in Matrix」で、Matrix が該当シーン行にスクロールする動線を v2 で追加検討。

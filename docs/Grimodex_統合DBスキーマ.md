@@ -107,6 +107,9 @@ codex_detail_definitions (1)
 codex_detail_values (1)
  └──< authorship_spans (*)    detail_value_id (nullable)
 
+map_stickies (1)
+ └──< authorship_spans (*)    sticky_id (nullable)
+
 chat_sessions (1)
  ├──< chat_messages (*)              session_id (ON DELETE CASCADE)
  ├──< chat_summaries (*)             session_id (ON DELETE CASCADE)
@@ -527,7 +530,7 @@ CREATE INDEX idx_chat_messages_session ON chat_messages(session_id, created_at);
 ### authorship_spans
 
 AI帰属追跡。エディタの自動保存時にTipTap AuthorshipMarkから同期。
-対象ドキュメントの種別に応じて `node_id`、`codex_entry_id`、`snippet_id`、`detail_value_id` のいずれか1つのみを設定する。`phase_id` はCodexエントリのフェーズ `contentOverride` 編集時の帰属追跡に使用。
+対象ドキュメントの種別に応じて `node_id`、`codex_entry_id`、`snippet_id`、`detail_value_id`、`sticky_id` のいずれか1つのみを設定する。`phase_id` はCodexエントリのフェーズ `contentOverride` 編集時の帰属追跡に使用。
 
 ```sql
 CREATE TABLE authorship_spans (
@@ -536,6 +539,7 @@ CREATE TABLE authorship_spans (
   codex_entry_id  TEXT REFERENCES codex_entries(id) ON DELETE CASCADE,     -- Codex content の場合
   snippet_id      TEXT REFERENCES snippets(id) ON DELETE CASCADE,          -- Snippet content の場合
   detail_value_id TEXT REFERENCES codex_detail_values(id) ON DELETE CASCADE, -- Codex カスタムディテール text フィールドの場合
+  sticky_id       TEXT REFERENCES map_stickies(id) ON DELETE CASCADE,      -- Map Sticky body の場合
   from_pos        INTEGER NOT NULL,
   to_pos          INTEGER NOT NULL,
   source          TEXT NOT NULL CHECK(source IN ('human', 'ai', 'unknown')),
@@ -543,12 +547,13 @@ CREATE TABLE authorship_spans (
   timestamp       TEXT,                -- ISO 8601
   chat_msg_id     TEXT,                -- 抽出元チャットメッセージID（nullable）
   phase_id        TEXT REFERENCES codex_entry_phases(id) ON DELETE CASCADE,  -- フェーズcontentOverride帰属追跡用（nullable）
-  -- node_id, codex_entry_id, snippet_id, detail_value_id のいずれか1つのみNOT NULL（所有文書）
+  -- node_id, codex_entry_id, snippet_id, detail_value_id, sticky_id のいずれか1つのみNOT NULL（所有文書）
   CHECK (
     (CASE WHEN node_id IS NOT NULL THEN 1 ELSE 0 END +
      CASE WHEN codex_entry_id IS NOT NULL THEN 1 ELSE 0 END +
      CASE WHEN snippet_id IS NOT NULL THEN 1 ELSE 0 END +
-     CASE WHEN detail_value_id IS NOT NULL THEN 1 ELSE 0 END) = 1
+     CASE WHEN detail_value_id IS NOT NULL THEN 1 ELSE 0 END +
+     CASE WHEN sticky_id IS NOT NULL THEN 1 ELSE 0 END) = 1
   ),
   -- phase_id（フェーズ contentOverride 編集時）は codex_entry_id とセットで必須
   CHECK (phase_id IS NULL OR codex_entry_id IS NOT NULL)
@@ -558,6 +563,7 @@ CREATE INDEX idx_authorship_node ON authorship_spans(node_id, source);
 CREATE INDEX idx_authorship_codex ON authorship_spans(codex_entry_id, source);
 CREATE INDEX idx_authorship_snippet ON authorship_spans(snippet_id, source);
 CREATE INDEX idx_authorship_detail ON authorship_spans(detail_value_id);
+CREATE INDEX idx_authorship_sticky ON authorship_spans(sticky_id, source) WHERE sticky_id IS NOT NULL;
 CREATE INDEX idx_authorship_phase ON authorship_spans(phase_id) WHERE phase_id IS NOT NULL;
 ```
 

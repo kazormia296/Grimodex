@@ -241,8 +241,11 @@ Attribution 集計の前提となる AuthorshipMark は以下の属性を持つ�
 - `snippet_id`: Snippet 本文
 - `detail_value_id`: カスタムディテール値
 - `phase_id`: フェーズ固有本文
+- `sticky_id`: Map Sticky body（Map パネル設計書で追加）
 
 いずれの参照カラムも NULL 許容で、1 レコードにつき排他的に 1 つだけが非 NULL となる。Attribution パネルの集計は、スコープに応じてこれら参照カラムも対象に含める。
+
+**プロジェクト全体の集計に Map Sticky を含める**: Sticky body は ProseMirror JSON で保持され、AI Branch 由来は初期 `ai`、ユーザーが編集すると `human` に切り替わる。Attribution パネルの「プロジェクト」スコープでは Sticky の文字数も AI 比率に算入する。サマリーカード上で「Map Stickies: N 件、AI X%」のように内訳を 1 行表示する（v2 で UI 拡張）。
 
 ### AiEditedPlugin
 

@@ -792,10 +792,11 @@ Timelineパネルのデフォルト位置はBottom Dock（非表示）。`Ctrl+A
 - Timeline が独自順序を実装しないことで、Scenes と Timeline の表示が常に一致する
 - Scenes 側で Part/Chapter のツリーを再構成した場合は `computeGlobalSceneOrder` の返り値が変わり、Timeline の Reading 軸に自動的に反映される
 
-### Map パネル（将来）
+### Map パネル
 
-- POV / Location フィルタ（`tree_nodes.pov_character_id` / `location_id`）は Timeline と Map パネルで共通の情報源
-- Timeline の「Map へジャンプ」動線は未設計だが、共通の Codex エントリを参照できる前提で Phase D で検討
+- Map は時間軸を扱わない（旧設計の Time モードは Map 設計書改訂で削除済み）。`story_time_order` の編集は Timeline が唯一の編集点
+- Map で配置された Scene ノードは `story_time_order` の有無に関わらず手動座標で配置される
+- POV / Location 情報（`tree_nodes.pov_character_id` / `location_id`、Phase C-2 以降）は Timeline のフィルタと Map の Color by で共通参照する想定
 
 ### i18n の注記
 

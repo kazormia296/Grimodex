@@ -353,6 +353,7 @@ Snippet の `create` 呼び出しは楽観的更新で扱う。ストア側は `
 | Duplicate | スニペットを複製（「{title} (copy)」） |
 | Go to source chat | `source_chat_message_id` がある場合のみ表示。Chat Historyで元セッションを開く |
 | Go to scene | `scene_id` がある場合のみ表示。Editorでそのシーンを開く |
+| **Add to Map ▸** | **サブメニュー: 各 Map ボード名を一覧表示。選択でこの Snippet を Map に Snippet ノードとして配置（手動キュレーション、Map パネル設計書「手動キュレーション」参照）** |
 | --- | |
 | Delete | 確認ダイアログ後に削除 |
 

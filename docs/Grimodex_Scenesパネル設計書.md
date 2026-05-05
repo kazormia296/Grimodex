@@ -280,6 +280,7 @@ Chatパネルのコンテキストバーに、storySoFar（Layer 2）のSynopsis
 | サイドで開く | `Ctrl+Enter` | 新しいEditor Groupにスプリットして開く |
 | --- | | |
 | Set status | ▶ | サブメニュー: Outline / Draft / Complete / Revision / Final |
+| **Add to Map ▸** | | **サブメニュー: 各 Map ボード名を一覧表示。選択でその Scene を Map に Scene ノードとして配置（手動キュレーション、Map パネル設計書「手動キュレーション」参照）** |
 | --- | | |
 | 名前を変更 | `F2` | タイトルをインライン編集モードにする |
 | --- | | |
@@ -295,6 +296,8 @@ Chatパネルのコンテキストバーに、storySoFar（Layer 2）のSynopsis
 |-------------|-------------|------|
 | Editorで開く | `Enter` | Editorにタブとして開く |
 | サイドで開く | `Ctrl+Enter` | 新しいEditor Groupにスプリットして開く |
+| --- | | |
+| **Add to Map ▸** | | **サブメニュー: 各 Map ボード名を一覧表示。選択でその Note を Map に Note ノードとして配置** |
 | --- | | |
 | 名前を変更 | `F2` | タイトルをインライン編集モードにする |
 | --- | | |
