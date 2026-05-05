@@ -17,7 +17,11 @@ import {
 } from "@/features/tree/api";
 import { countSceneBodyChars } from "@/features/editor/charCountForBody";
 import { countBeats } from "@/features/editor/beat/countBeats";
-import { extractPlacedBeatPreview } from "@/features/editor/beat/placedBeatPreview";
+import {
+  extractPlacedBeatPreview,
+  extractPlacedBeatPreviewFromDoc,
+} from "@/features/editor/beat/placedBeatPreview";
+import { extractUnplacedBeatPreview } from "@/features/editor/beat/unplacedBeatPreview";
 import { extractBeatMentions } from "@/features/editor/beat/extractBeatMentions";
 import { upsertSceneBeatMentions } from "@/features/editor/beat/mentionApi";
 import { extractBeatPovOverrides } from "@/features/editor/beat/extractBeatPovOverrides";
@@ -790,6 +794,22 @@ export function EditorPane({
         if (!store.getBeats(sid).some((b) => b.id === id)) continue;
         store.removeBeat(sid, id);
       }
+
+      // Live-sync the Grid preview cache (treeStore) so the Grid panel sees
+      // beat changes immediately, without waiting for the debounced save.
+      const placed = extractPlacedBeatPreviewFromDoc(e.state.doc);
+      const unplaced = extractUnplacedBeatPreview(store.getBeats(sid));
+      useTreeStore.setState((s) => ({
+        nodes: s.nodes.map((n) =>
+          n.id === sid
+            ? {
+                ...n,
+                placedBeatPreview: placed === "[]" ? null : placed,
+                unplacedBeatPreview: unplaced === "[]" ? null : unplaced,
+              }
+            : n,
+        ),
+      }));
     },
     onSelectionUpdate() {},
     onFocus() {
@@ -1068,7 +1088,8 @@ export function EditorPane({
     return unsubscribe;
   }, [nodeId, groupIndex, editor]);
 
-  // Subscribe to unplaced beats changes → mark dirty and schedule save
+  // Subscribe to unplaced beats changes → mark dirty and schedule save,
+  // and live-sync the Grid preview cache for immediate UI feedback.
   useEffect(() => {
     if (!nodeId || isCodexMode || isSnippetMode) return;
     const unsubscribe = useUnplacedBeatsStore
@@ -1076,6 +1097,18 @@ export function EditorPane({
       .subscribe(nodeId, () => {
         schedule();
         setIsDirtyRef.current(true);
+        const beats = useUnplacedBeatsStore.getState().getBeats(nodeId);
+        const unplaced = extractUnplacedBeatPreview(beats);
+        useTreeStore.setState((s) => ({
+          nodes: s.nodes.map((n) =>
+            n.id === nodeId
+              ? {
+                  ...n,
+                  unplacedBeatPreview: unplaced === "[]" ? null : unplaced,
+                }
+              : n,
+          ),
+        }));
       });
     return unsubscribe;
   }, [nodeId, isCodexMode, isSnippetMode]);

@@ -1,3 +1,5 @@
+import type { Node as PMNode } from "@tiptap/pm/model";
+
 const MAX_BEATS = 8;
 const MAX_CHARS_PER_BEAT = 60;
 
@@ -48,6 +50,28 @@ export function extractPlacedBeatPreview(docJson: unknown): string {
   if (docJson && typeof docJson === "object") {
     walk(docJson as PmNodeJson, items);
   }
+  return JSON.stringify(items);
+}
+
+/**
+ * PMNode-form variant of {@link extractPlacedBeatPreview}. Used by the live
+ * editor path to avoid an extra full-doc serialisation per transaction.
+ * Output format is identical to the JSON-form extractor.
+ */
+export function extractPlacedBeatPreviewFromDoc(doc: PMNode): string {
+  const items: string[] = [];
+  doc.descendants((node) => {
+    if (items.length >= MAX_BEATS) return false;
+    if (node.type.name === "sceneBeat") {
+      const raw = node.textContent.trim();
+      if (raw) {
+        const normalized = raw.replace(/[\n\r\t]+/g, " ").trim();
+        items.push(normalized.slice(0, MAX_CHARS_PER_BEAT));
+      }
+      return false;
+    }
+    return true;
+  });
   return JSON.stringify(items);
 }
 
