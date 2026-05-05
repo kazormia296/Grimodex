@@ -47,5 +47,15 @@ export async function layoutTheme(
   for (const pos of output.positions) {
     result.set(pos.id, { x: pos.x, y: pos.y });
   }
+
+  // Hybrid: pinned nodes keep their stored position regardless of force output
+  for (const p of input.positions) {
+    if (!p.pinned) continue;
+    if (p.treeNodeId && p.nodeRefType === "scene")
+      result.set(`scene:${p.treeNodeId}`, { x: p.x, y: p.y });
+    else if (p.codexEntryId)
+      result.set(`codex:${p.codexEntryId}`, { x: p.x, y: p.y });
+  }
+
   return result;
 }
