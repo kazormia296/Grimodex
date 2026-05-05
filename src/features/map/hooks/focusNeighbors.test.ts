@@ -4,7 +4,7 @@ import type { MapNodePositionRecord } from "../types";
 
 function makePos(
   id: string,
-  refType: "scene" | "codex" | "note" | "ai",
+  refType: "scene" | "codex" | "note" | "ai_branch",
   ref: string,
 ): MapNodePositionRecord {
   return {
@@ -13,11 +13,12 @@ function makePos(
     nodeRefType: refType,
     treeNodeId: refType === "scene" || refType === "note" ? ref : null,
     codexEntryId: refType === "codex" ? ref : null,
-    aiNodeId: refType === "ai" ? ref : null,
+    snippetId: null,
+    stickyId: null,
+    aiBranchId: refType === "ai_branch" ? ref : null,
     x: 0,
     y: 0,
     pinned: 0,
-    hidden: 0,
     zIndex: 0,
     createdAt: "",
     updatedAt: "",
@@ -36,7 +37,9 @@ const userEdges = [
     boardId: "b1",
     fromPositionId: "p1",
     toPositionId: "p3",
-    label: null,
+    forwardLabel: null,
+    backwardLabel: null,
+    labels: "[]",
     style: "solid" as const,
     color: "#000",
     direction: "none" as const,

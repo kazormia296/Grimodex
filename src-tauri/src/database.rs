@@ -562,80 +562,129 @@ impl Database {
                   VALUES (new.id || '-lore', new.id, 'lore', '伝承', '#993C1D', 3, 1, 3.0, datetime('now'));
             END;
 
-            -- Map panel tables (map_ai_nodes first; map_node_positions references it)
-            CREATE TABLE IF NOT EXISTS map_ai_nodes (
+            -- Map panel tables: drop old schema first (drop & recreate migration)
+            DROP TABLE IF EXISTS map_edges;
+            DROP TABLE IF EXISTS map_frames;
+            DROP TABLE IF EXISTS map_node_positions;
+            DROP TABLE IF EXISTS map_stickies;
+            DROP TABLE IF EXISTS map_ai_branches;
+            DROP TABLE IF EXISTS map_ai_nodes;
+            DROP TABLE IF EXISTS map_boards;
+
+            -- map_boards: per-project boards with viewport/show state
+            CREATE TABLE IF NOT EXISTS map_boards (
+                id            TEXT PRIMARY KEY,
+                project_id    TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                title         TEXT NOT NULL DEFAULT 'Main',
+                sort_order    REAL NOT NULL DEFAULT 0.0,
+                mode          TEXT NOT NULL DEFAULT 'free' CHECK(mode IN ('free', 'theme')),
+                viewport_x    REAL NOT NULL DEFAULT 0,
+                viewport_y    REAL NOT NULL DEFAULT 0,
+                viewport_zoom REAL NOT NULL DEFAULT 1.0,
+                show_config   TEXT NOT NULL DEFAULT '{}',
+                color_by      TEXT NOT NULL DEFAULT 'none',
+                created_at    TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at    TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+            CREATE INDEX IF NOT EXISTS idx_map_boards_project
+                ON map_boards(project_id);
+
+            -- map_ai_branches: AI branch seeds (responses live in derived Stickies)
+            CREATE TABLE IF NOT EXISTS map_ai_branches (
                 id            TEXT PRIMARY KEY,
                 board_id      TEXT NOT NULL REFERENCES map_boards(id) ON DELETE CASCADE,
                 prompt        TEXT NOT NULL,
-                response      TEXT,
+                seed_node_ids TEXT NOT NULL DEFAULT '[]',
                 session_id    TEXT REFERENCES chat_sessions(id) ON DELETE SET NULL,
                 model         TEXT,
                 token_usage   INTEGER,
                 created_at    TEXT NOT NULL DEFAULT (datetime('now')),
                 updated_at    TEXT NOT NULL DEFAULT (datetime('now'))
             );
-            CREATE INDEX IF NOT EXISTS idx_map_ai_board
-                ON map_ai_nodes(board_id);
+            CREATE INDEX IF NOT EXISTS idx_map_ai_branches_board
+                ON map_ai_branches(board_id);
 
-            CREATE TABLE IF NOT EXISTS map_boards (
-                id          TEXT PRIMARY KEY,
-                project_id  TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-                title       TEXT NOT NULL DEFAULT 'Main',
-                sort_order  REAL NOT NULL DEFAULT 0.0,
-                created_at  TEXT NOT NULL DEFAULT (datetime('now')),
-                updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
+            -- map_stickies: Map-only lightweight memos with ProseMirror body
+            CREATE TABLE IF NOT EXISTS map_stickies (
+                id                     TEXT PRIMARY KEY,
+                board_id               TEXT NOT NULL REFERENCES map_boards(id) ON DELETE CASCADE,
+                title                  TEXT,
+                body                   TEXT NOT NULL DEFAULT '{\"type\":\"doc\",\"content\":[]}',
+                preview_text           TEXT,
+                color                  TEXT NOT NULL DEFAULT 'yellow'
+                                         CHECK(color IN ('yellow','orange','pink','green','blue','purple','gray','white')),
+                ai_branch_id           TEXT REFERENCES map_ai_branches(id) ON DELETE SET NULL,
+                source_chat_message_id TEXT REFERENCES chat_messages(id) ON DELETE SET NULL,
+                created_at             TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at             TEXT NOT NULL DEFAULT (datetime('now'))
             );
-            CREATE INDEX IF NOT EXISTS idx_map_boards_project
-                ON map_boards(project_id);
+            CREATE INDEX IF NOT EXISTS idx_map_stickies_board
+                ON map_stickies(board_id);
+            CREATE INDEX IF NOT EXISTS idx_map_stickies_ai_branch
+                ON map_stickies(ai_branch_id);
+            CREATE INDEX IF NOT EXISTS idx_map_stickies_chat_msg
+                ON map_stickies(source_chat_message_id)
+                WHERE source_chat_message_id IS NOT NULL;
 
+            -- map_node_positions: positions for all node types on a board
             CREATE TABLE IF NOT EXISTS map_node_positions (
                 id              TEXT PRIMARY KEY,
                 board_id        TEXT NOT NULL REFERENCES map_boards(id) ON DELETE CASCADE,
                 node_ref_type   TEXT NOT NULL
-                                    CHECK(node_ref_type IN ('scene', 'codex', 'note', 'ai')),
+                                    CHECK(node_ref_type IN ('scene','codex','snippet','note','sticky','ai_branch')),
                 tree_node_id    TEXT REFERENCES tree_nodes(id) ON DELETE CASCADE,
                 codex_entry_id  TEXT REFERENCES codex_entries(id) ON DELETE CASCADE,
-                ai_node_id      TEXT REFERENCES map_ai_nodes(id) ON DELETE CASCADE,
+                snippet_id      TEXT REFERENCES snippets(id) ON DELETE CASCADE,
+                sticky_id       TEXT REFERENCES map_stickies(id) ON DELETE CASCADE,
+                ai_branch_id    TEXT REFERENCES map_ai_branches(id) ON DELETE CASCADE,
                 x               REAL NOT NULL,
                 y               REAL NOT NULL,
                 pinned          INTEGER NOT NULL DEFAULT 0,
-                hidden          INTEGER NOT NULL DEFAULT 0,
                 z_index         INTEGER NOT NULL DEFAULT 0,
                 created_at      TEXT NOT NULL DEFAULT (datetime('now')),
                 updated_at      TEXT NOT NULL DEFAULT (datetime('now')),
                 CHECK (
-                    (CASE WHEN tree_node_id IS NOT NULL THEN 1 ELSE 0 END +
+                    (CASE WHEN tree_node_id   IS NOT NULL THEN 1 ELSE 0 END +
                      CASE WHEN codex_entry_id IS NOT NULL THEN 1 ELSE 0 END +
-                     CASE WHEN ai_node_id IS NOT NULL THEN 1 ELSE 0 END) = 1
+                     CASE WHEN snippet_id     IS NOT NULL THEN 1 ELSE 0 END +
+                     CASE WHEN sticky_id      IS NOT NULL THEN 1 ELSE 0 END +
+                     CASE WHEN ai_branch_id   IS NOT NULL THEN 1 ELSE 0 END) = 1
                 ),
                 CHECK (
-                    (node_ref_type IN ('scene', 'note') AND tree_node_id   IS NOT NULL AND codex_entry_id IS NULL     AND ai_node_id IS NULL) OR
-                    (node_ref_type = 'codex'            AND codex_entry_id IS NOT NULL AND tree_node_id   IS NULL     AND ai_node_id IS NULL) OR
-                    (node_ref_type = 'ai'               AND ai_node_id     IS NOT NULL AND tree_node_id   IS NULL AND codex_entry_id IS NULL)
+                    (node_ref_type IN ('scene','note') AND tree_node_id   IS NOT NULL) OR
+                    (node_ref_type = 'codex'           AND codex_entry_id IS NOT NULL) OR
+                    (node_ref_type = 'snippet'         AND snippet_id     IS NOT NULL) OR
+                    (node_ref_type = 'sticky'          AND sticky_id      IS NOT NULL) OR
+                    (node_ref_type = 'ai_branch'       AND ai_branch_id   IS NOT NULL)
                 )
             );
             CREATE INDEX IF NOT EXISTS idx_map_pos_board
                 ON map_node_positions(board_id);
-            CREATE INDEX IF NOT EXISTS idx_map_pos_tree
-                ON map_node_positions(tree_node_id);
-            CREATE INDEX IF NOT EXISTS idx_map_pos_codex
-                ON map_node_positions(codex_entry_id);
             CREATE UNIQUE INDEX IF NOT EXISTS idx_map_pos_uniq_scene
                 ON map_node_positions(board_id, tree_node_id)
                 WHERE tree_node_id IS NOT NULL;
             CREATE UNIQUE INDEX IF NOT EXISTS idx_map_pos_uniq_codex
                 ON map_node_positions(board_id, codex_entry_id)
                 WHERE codex_entry_id IS NOT NULL;
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_map_pos_uniq_snippet
+                ON map_node_positions(board_id, snippet_id)
+                WHERE snippet_id IS NOT NULL;
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_map_pos_uniq_sticky
+                ON map_node_positions(board_id, sticky_id)
+                WHERE sticky_id IS NOT NULL;
             CREATE UNIQUE INDEX IF NOT EXISTS idx_map_pos_uniq_ai
-                ON map_node_positions(board_id, ai_node_id)
-                WHERE ai_node_id IS NOT NULL;
+                ON map_node_positions(board_id, ai_branch_id)
+                WHERE ai_branch_id IS NOT NULL;
 
+            -- map_edges: user-drawn edges with bidirectional / multi-label support
             CREATE TABLE IF NOT EXISTS map_edges (
                 id                  TEXT PRIMARY KEY,
                 board_id            TEXT NOT NULL REFERENCES map_boards(id) ON DELETE CASCADE,
                 from_position_id    TEXT NOT NULL REFERENCES map_node_positions(id) ON DELETE CASCADE,
                 to_position_id      TEXT NOT NULL REFERENCES map_node_positions(id) ON DELETE CASCADE,
-                label               TEXT,
+                forward_label       TEXT,
+                backward_label      TEXT,
+                labels              TEXT NOT NULL DEFAULT '[]',
                 style               TEXT NOT NULL DEFAULT 'solid'
                                         CHECK(style IN ('solid', 'dashed', 'dotted')),
                 color               TEXT NOT NULL DEFAULT '#000000',
@@ -651,6 +700,7 @@ impl Database {
             CREATE INDEX IF NOT EXISTS idx_map_edges_to
                 ON map_edges(to_position_id);
 
+            -- map_frames: grouping frames (visual only, no containment in DB)
             CREATE TABLE IF NOT EXISTS map_frames (
                 id            TEXT PRIMARY KEY,
                 board_id      TEXT NOT NULL REFERENCES map_boards(id) ON DELETE CASCADE,
@@ -726,8 +776,8 @@ impl Database {
             -- Seed a default Map board for every new project
             CREATE TRIGGER IF NOT EXISTS seed_default_map_board
             AFTER INSERT ON projects BEGIN
-                INSERT OR IGNORE INTO map_boards (id, project_id, title, sort_order, created_at, updated_at)
-                  VALUES (new.id || '-main-board', new.id, 'Main', 0.0, datetime('now'), datetime('now'));
+                INSERT OR IGNORE INTO map_boards (id, project_id, title, sort_order, mode, viewport_x, viewport_y, viewport_zoom, show_config, color_by, created_at, updated_at)
+                  VALUES (new.id || '-main-board', new.id, 'Main', 0.0, 'free', 0, 0, 1.0, '{}', 'none', datetime('now'), datetime('now'));
             END;
 
             -- Seed default project (folder is no longer auto-created so the workspace can stay empty)
@@ -830,6 +880,14 @@ impl Database {
             );
             CREATE INDEX IF NOT EXISTS idx_scene_codex_pins_scene ON scene_codex_pins(scene_id);
             CREATE INDEX IF NOT EXISTS idx_scene_codex_pins_entry ON scene_codex_pins(entry_id);",
+        )?;
+
+        // Map Stickies: add sticky_id to authorship_spans (additive column)
+        Self::add_column_if_missing(
+            &conn,
+            "authorship_spans",
+            "sticky_id",
+            "TEXT REFERENCES map_stickies(id) ON DELETE CASCADE",
         )?;
 
         // Beat-level POV override cache for Matrix ★ display.

@@ -1,7 +1,23 @@
-export type MapMode = "free" | "time" | "theme" | "pov" | "place";
-export type NodeRefType = "scene" | "codex" | "note" | "ai";
-export type SceneDisplayVariant = "compact" | "card" | "image" | "auto";
-export type ColorByAxis = "none" | "status";
+export type MapMode = "free" | "theme";
+export type NodeRefType =
+  | "scene"
+  | "codex"
+  | "snippet"
+  | "note"
+  | "sticky"
+  | "ai_branch";
+export type SceneDisplayVariant = "compact" | "auto";
+export type ColorByAxis = "none" | "status" | "stickyColor";
+export type VisualTheme = "default" | "corkboard" | "constellation";
+export type StickyColor =
+  | "yellow"
+  | "orange"
+  | "pink"
+  | "green"
+  | "blue"
+  | "purple"
+  | "gray"
+  | "white";
 
 export interface MapNodePositionRecord {
   id: string;
@@ -9,11 +25,12 @@ export interface MapNodePositionRecord {
   nodeRefType: NodeRefType;
   treeNodeId: string | null;
   codexEntryId: string | null;
-  aiNodeId: string | null;
+  snippetId: string | null;
+  stickyId: string | null;
+  aiBranchId: string | null;
   x: number;
   y: number;
   pinned: number;
-  hidden: number;
   zIndex: number;
   createdAt: string;
   updatedAt: string;
@@ -24,6 +41,12 @@ export interface MapBoardRecord {
   projectId: string;
   title: string;
   sortOrder: number;
+  mode: MapMode;
+  viewportX: number;
+  viewportY: number;
+  viewportZoom: number;
+  showConfig: string;
+  colorBy: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -31,29 +54,25 @@ export interface MapBoardRecord {
 export interface ShowFlags {
   scenes: boolean;
   codex: boolean;
+  snippets: boolean;
   notes: boolean;
-  ai: boolean;
+  stickies: boolean;
+  aiBranch: boolean;
   derivedEdges: boolean;
   userEdges: boolean;
   frames: boolean;
 }
 
 export interface MapPersistentState {
-  mode: MapMode;
-  viewport: { x: number; y: number; zoom: number };
-  show: ShowFlags;
+  activeBoardId: string | null;
   gridSnap: boolean;
   minimapVisible: boolean;
-  sceneDisplayByMode: Record<MapMode, SceneDisplayVariant>;
+  visualTheme: VisualTheme;
   colorBy: ColorByAxis;
-  corkboardFeel: boolean;
 }
 
-// Auto-mode defaults: Free → card, others → compact
-export function resolveSceneVariant(
-  variant: SceneDisplayVariant,
-  mode: MapMode,
-): "compact" | "card" | "image" {
-  if (variant !== "auto") return variant;
-  return mode === "free" ? "card" : "compact";
+// Auto-mode default: compact
+export function resolveSceneVariant(variant: SceneDisplayVariant): "compact" {
+  void variant;
+  return "compact";
 }

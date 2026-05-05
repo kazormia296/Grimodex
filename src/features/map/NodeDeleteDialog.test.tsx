@@ -6,7 +6,6 @@ import { NodeDeleteDialog } from "./NodeDeleteDialog";
 
 const baseProps = {
   count: 1,
-  onHide: vi.fn(),
   onDelete: vi.fn(),
   onCancel: vi.fn(),
 };
@@ -25,23 +24,14 @@ describe("NodeDeleteDialog", () => {
     expect(baseProps.onCancel).toHaveBeenCalledOnce();
   });
 
-  it("「Mapから隠す」ボタンで onHide が呼ばれる", async () => {
+  it("「削除」ボタンで onDelete が呼ばれる", async () => {
     render(<NodeDeleteDialog {...baseProps} />);
-    await userEvent.click(screen.getByRole("button", { name: "Mapから隠す" }));
-    expect(baseProps.onHide).toHaveBeenCalledOnce();
-  });
-
-  it("「エンティティごと削除」ボタンで onDelete が呼ばれる", async () => {
-    render(<NodeDeleteDialog {...baseProps} />);
-    await userEvent.click(
-      screen.getByRole("button", { name: "エンティティごと削除" }),
-    );
+    await userEvent.click(screen.getByRole("button", { name: "削除" }));
     expect(baseProps.onDelete).toHaveBeenCalledOnce();
   });
 
   it("オーバーレイを直接クリックすると onCancel が呼ばれる", async () => {
     const { container } = render(<NodeDeleteDialog {...baseProps} />);
-    // The overlay is the first fixed-position div (portal target is document.body)
     const overlay = container.ownerDocument.body.querySelector(
       "[style*='position: fixed']",
     ) as HTMLElement;
@@ -52,8 +42,7 @@ describe("NodeDeleteDialog", () => {
 
   it("ダイアログ内クリックは onCancel を呼ばない", async () => {
     render(<NodeDeleteDialog {...baseProps} />);
-    // Click somewhere inside the dialog content (the heading)
-    const heading = screen.getByText(/のノードをどうしますか/);
+    const heading = screen.getByText(/のノードを削除しますか/);
     await userEvent.click(heading);
     expect(baseProps.onCancel).not.toHaveBeenCalled();
   });

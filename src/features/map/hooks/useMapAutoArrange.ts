@@ -1,5 +1,5 @@
 import { useCallback } from "react";
-import { upsertNodePosition, listAllNodePositions } from "../mapApi";
+import { upsertNodePosition, listNodePositions } from "../mapApi";
 import {
   autoArrange,
   autoArrangeForceDirected,
@@ -16,7 +16,6 @@ interface UseMapAutoArrangeInput {
   positions: MapNodePositionRecord[];
   treeNodes: TreeNodeData[];
   codexEntries: CodexEntry[];
-  variant: "compact" | "card" | "image";
   setPositions: React.Dispatch<React.SetStateAction<MapNodePositionRecord[]>>;
   setForceLayoutRunning: (v: boolean) => void;
   setForceAlpha: (v: number) => void;
@@ -30,7 +29,6 @@ export function useMapAutoArrange({
   positions,
   treeNodes,
   codexEntries,
-  variant,
   setPositions,
   setForceLayoutRunning,
   setForceAlpha,
@@ -42,20 +40,19 @@ export function useMapAutoArrange({
     const type = pendingAutoArrange;
     setPendingAutoArrange(null);
 
-    const hiddenSceneIds = new Set(
-      positions
-        .filter((p) => p.hidden === 1 && p.treeNodeId)
-        .map((p) => p.treeNodeId!),
+    // Only consider scenes/codex that are already on the board (manual curation)
+    const positionedTreeNodeIds = new Set(
+      positions.filter((p) => p.treeNodeId).map((p) => p.treeNodeId!),
     );
-    const hiddenCodexIds = new Set(
-      positions
-        .filter((p) => p.hidden === 1 && p.codexEntryId)
-        .map((p) => p.codexEntryId!),
+    const positionedCodexIds = new Set(
+      positions.filter((p) => p.codexEntryId).map((p) => p.codexEntryId!),
     );
     const scenes = treeNodes.filter(
-      (n) => n.nodeType === "scene" && !hiddenSceneIds.has(n.id),
+      (n) => n.nodeType === "scene" && positionedTreeNodeIds.has(n.id),
     );
-    const visibleCodex = codexEntries.filter((e) => !hiddenCodexIds.has(e.id));
+    const visibleCodex = codexEntries.filter((e) =>
+      positionedCodexIds.has(e.id),
+    );
     const pinnedIds = new Set(
       positions
         .filter((p) => p.pinned === 1 && p.treeNodeId)
@@ -80,7 +77,6 @@ export function useMapAutoArrange({
         allTreeNodes: treeNodes,
         scenes,
         positions,
-        variant,
       });
     }
 
@@ -108,7 +104,7 @@ export function useMapAutoArrange({
       }),
     );
 
-    const refreshed = await listAllNodePositions(boardId);
+    const refreshed = await listNodePositions(boardId);
     setPositions(refreshed as MapNodePositionRecord[]);
     setMode("free");
   }, [
@@ -117,7 +113,6 @@ export function useMapAutoArrange({
     treeNodes,
     codexEntries,
     positions,
-    variant,
     setPositions,
     setForceLayoutRunning,
     setForceAlpha,

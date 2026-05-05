@@ -1,0 +1,59 @@
+import { memo } from "react";
+import { Handle, Position } from "@xyflow/react";
+import type { NodeProps } from "@xyflow/react";
+
+export interface SnippetNodeData {
+  title: string | null;
+  content: string;
+  [key: string]: unknown;
+}
+
+export const SnippetNode = memo(function SnippetNode({
+  data,
+  selected,
+}: NodeProps) {
+  const d = data as SnippetNodeData;
+  const label = d.title?.trim() || d.content.trim().slice(0, 40);
+
+  return (
+    <div style={{ position: "relative" }}>
+      <Handle type="target" position={Position.Left} className="map-handle" />
+      <div
+        style={{
+          width: 200,
+          height: 40,
+          background: "var(--muted)",
+          border: `1.5px solid ${selected ? "#534AB7" : "var(--border)"}`,
+          borderRadius: 4,
+          padding: "0 10px",
+          display: "flex",
+          alignItems: "center",
+          gap: 6,
+          boxShadow: selected
+            ? "0 0 0 2px rgba(83,74,183,0.3)"
+            : "0 1px 2px rgba(0,0,0,0.08)",
+          cursor: "default",
+          userSelect: "none",
+          overflow: "hidden",
+        }}
+      >
+        <span style={{ fontSize: 13, flexShrink: 0 }}>✂</span>
+        <span
+          style={{
+            fontSize: 11,
+            color: "var(--foreground)",
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+            whiteSpace: "nowrap",
+            flex: 1,
+          }}
+          title={d.title ?? d.content}
+        >
+          {label}
+          {!d.title && d.content.trim().length > 40 ? "…" : ""}
+        </span>
+      </div>
+      <Handle type="source" position={Position.Right} className="map-handle" />
+    </div>
+  );
+});

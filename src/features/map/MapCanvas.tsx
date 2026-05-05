@@ -19,12 +19,13 @@ import { SceneNode } from "./nodes/SceneNode";
 import { CodexNode } from "./nodes/CodexNode";
 import { FrameNode } from "./nodes/FrameNode";
 import { NoteNode } from "./nodes/NoteNode";
-import { AINode } from "./nodes/AINode";
+import { StickyNode } from "./nodes/StickyNode";
+import { SnippetNode } from "./nodes/SnippetNode";
+import { AIBranchNode } from "./nodes/AIBranchNode";
 import { NodeContextMenu } from "./NodeContextMenu";
 import { UserEdge } from "./edges/UserEdge";
 import { MapPalette } from "./MapPalette";
 import { MapSearch } from "./MapSearch";
-import { AINodeDialog } from "./AINodeDialog";
 import { DURATIONS, useReducedMotion } from "@/lib/animation";
 import { AutoArrangeDialog } from "./AutoArrangeDialog";
 import { NodeDeleteDialog } from "./NodeDeleteDialog";
@@ -46,16 +47,18 @@ import { useMapCallbacks } from "./hooks/useMapCallbacks";
 import { useFrameGroupDrag } from "./hooks/useFrameGroupDrag";
 import {
   upsertNodePosition,
-  updateNodePosition,
   deleteUserEdge,
   updateUserEdge,
   deleteFrame,
-  deleteAINode,
+  deleteAiBranch,
+  deleteSticky,
+  createSticky,
   setNodePinned,
+  deleteNodePosition,
 } from "./mapApi";
 import { deleteNode as deleteTreeNode } from "@/features/tree/api";
 import { deleteCodexEntry } from "@/features/codex/api";
-import { findPosByNodeId, buildUpsertArgs } from "./utils/nodeIdCodec";
+import { findPosByNodeId } from "./utils/nodeIdCodec";
 import type { MapNodePositionRecord } from "./types";
 
 const PROJECT_ID = "default-project";
@@ -65,18 +68,21 @@ export function partitionDeletableNodes(nodes: Node[]) {
   const frameNodes = nodes.filter(
     (n) => n.type === "frame" || n.id.startsWith("frame:"),
   );
+  // Sticky and AI Branch nodes are deleted immediately (no confirm)
+  const immediateNodes = nodes.filter(
+    (n) => n.id.startsWith("sticky:") || n.id.startsWith("ai_branch:"),
+  );
+  // Scene/Codex/Note require confirmation dialog
   const entityNodes = nodes.filter(
     (n) =>
       n.id.startsWith("scene:") ||
       n.id.startsWith("note:") ||
       n.id.startsWith("codex:"),
   );
-  const aiNodes = nodes.filter((n) => n.id.startsWith("ai:"));
-  // AI nodes join the dialog only when entity nodes are also present so the
-  // user can cancel without partial data loss.
-  const showDialog = entityNodes.length > 0 ? [...entityNodes, ...aiNodes] : [];
-  const immediateAI = entityNodes.length === 0 ? aiNodes : [];
-  return { frameNodes, showDialog, immediateAI };
+  // Snippets: remove from board only (no entity delete)
+  const snippetNodes = nodes.filter((n) => n.id.startsWith("snippet:"));
+  const showDialog = entityNodes.length > 0 ? entityNodes : [];
+  return { frameNodes, showDialog, immediateNodes, snippetNodes };
 }
 
 const NODE_TYPES = {
@@ -84,7 +90,9 @@ const NODE_TYPES = {
   codex: CodexNode,
   frame: FrameNode,
   note: NoteNode,
-  ai: AINode,
+  sticky: StickyNode,
+  snippet: SnippetNode,
+  ai_branch: AIBranchNode,
 };
 
 const EDGE_TYPES = {
@@ -115,8 +123,7 @@ export function MapCanvas() {
   const setGridSnap = useMapStore((s) => s.setGridSnap);
   const setViewport = useMapStore((s) => s.setViewport);
   const colorBy = useMapStore((s) => s.colorBy);
-  const corkboardFeel = useMapStore((s) => s.corkboardFeel);
-  const effectiveSceneVariant = useMapStore((s) => s.effectiveSceneVariant);
+  const visualTheme = useMapStore((s) => s.visualTheme);
   const searchVisible = useMapStore((s) => s.searchVisible);
   const setSearchVisible = useMapStore((s) => s.setSearchVisible);
   const pendingAutoArrange = useMapStore((s) => s.pendingAutoArrange);
@@ -125,8 +132,6 @@ export function MapCanvas() {
   const setFocusedNode = useMapStore((s) => s.setFocusedNode);
   const pendingExport = useMapStore((s) => s.pendingExport);
   const setPendingExport = useMapStore((s) => s.setPendingExport);
-
-  const variant = effectiveSceneVariant(mode);
 
   const {
     getViewport,
@@ -149,13 +154,13 @@ export function MapCanvas() {
     setUserEdges,
     frames,
     setFrames,
-    aiNodes,
-    setAiNodes,
+    stickies,
+    setStickies,
+    aiBranches,
   } = useMapBoardData(PROJECT_ID);
 
   const [nodes, setNodes] = useState<Node[]>([]);
   const [paletteMode, setPaletteMode] = useState<PaletteMode>("default");
-  const [showAINodeDialog, setShowAINodeDialog] = useState(false);
   const [deleteDialogNodes, setDeleteDialogNodes] = useState<Node[] | null>(
     null,
   );
@@ -165,34 +170,19 @@ export function MapCanvas() {
   const [forceLayoutRunning, setForceLayoutRunning] = useState(false);
   const [forceAlpha, setForceAlpha] = useState(1);
 
-  // Always-current positions ref so async callbacks never close over stale state.
   const positionsRef = useRef(positions);
   positionsRef.current = positions;
 
-  // IDs of nodes currently being moved as part of a frame group drag.
-  // Shared between useFrameGroupDrag (writer) and useMapNodes (reader) so
-  // that any rebuild of nodes mid-drag does not revert contained nodes to
-  // their pre-drag positions.
   const groupDraggingRef = useRef<Set<string>>(new Set());
-
-  // IDs whose post-drop positions are being persisted to the DB (IPC in
-  // flight). Between drop and setPositions/setFrames committing the new
-  // coords, any unrelated dep change (concurrent drag, store write) can
-  // trigger useMapNodes to rebuild from stale positions/frames — causing a
-  // brief snap-back or all-nodes flicker. Preserving `prev.position` while
-  // the id is in this set keeps the node visually stable during the window.
   const persistingRef = useRef<Set<string>>(new Set());
 
-  // Spawn counter: resets when viewport changes (pan/zoom)
   const spawnRef = useRef<{
     vp: { x: number; y: number; zoom: number };
     count: number;
   } | null>(null);
 
-  // Trigger node transition when mode changes (skip on mount)
-  const TRANSITION_MS = DURATIONS.slow * 1000 + 50; // 350ms
+  const TRANSITION_MS = DURATIONS.slow * 1000 + 50;
 
-  // Non-theme modes: start transition immediately on mode change.
   const isMountRef = useRef(true);
   useEffect(() => {
     if (isMountRef.current) {
@@ -208,7 +198,6 @@ export function MapCanvas() {
     return () => clearTimeout(timer);
   }, [mode, reducedMotion, TRANSITION_MS]);
 
-  // Theme mode: start transition only after force layout finishes.
   const prevForceRunningRef = useRef(false);
   useEffect(() => {
     const prev = prevForceRunningRef.current;
@@ -236,14 +225,12 @@ export function MapCanvas() {
     handleFrameOverlayUp,
   } = useFrameDrawing(screenToFlowPosition, boardId, setFrames, setPaletteMode);
 
-  // Load snippets for snippet-origin edges if not yet loaded
   useEffect(() => {
     if (snippetEntries.length === 0) {
       void useSnippetStore.getState().loadEntries();
     }
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Pre-load phases for all codex entries so phase-anchor edges can render
   useEffect(() => {
     if (!show.derivedEdges || codexEntries.length === 0) return;
     const { loadPhasesForEntry, phasesByEntry: current } =
@@ -260,15 +247,17 @@ export function MapCanvas() {
     positions,
     treeNodes,
     codexEntries,
-    aiNodes,
+    snippets: snippetEntries,
+    stickies,
+    aiBranches,
     frames,
     show,
     mode,
-    variant,
     colorBy,
-    corkboardFeel,
+    visualTheme,
     modeTransitionActive,
     setFrames,
+    setStickies,
     setNodes,
     setForceLayoutRunning,
     setForceAlpha,
@@ -281,7 +270,7 @@ export function MapCanvas() {
 
   const handleUserEdgeLabelSave = useCallback(
     async (edgeId: string, label: string | null) => {
-      const updated = await updateUserEdge(edgeId, { label });
+      const updated = await updateUserEdge(edgeId, { forwardLabel: label });
       if (updated) {
         setUserEdges((prev) =>
           prev.map((u) => (u.id === edgeId ? updated : u)),
@@ -320,8 +309,7 @@ export function MapCanvas() {
     onNodeContextMenu,
     handleContextMenuPin,
     handleContextMenuUnpin,
-    handleContextMenuHide,
-    handleContextMenuShowHidden,
+    handleRemoveFromBoard,
     handleContextMenuOpen,
     handleBringToFront,
     handleSendToBack,
@@ -336,8 +324,6 @@ export function MapCanvas() {
   const {
     onConnect,
     onNodeDoubleClick,
-    aiContextLines,
-    handleAINodeCreated,
     syncViewport,
     focusNode,
     visibleNodes,
@@ -350,39 +336,12 @@ export function MapCanvas() {
     positions,
     focusedNodeId,
     setUserEdges,
-    setAiNodes,
-    setShowAINodeDialog,
     setActiveScene,
     setSearchVisible,
     getViewport,
     setViewport,
     fitView,
   });
-
-  const hideNodes = useCallback(
-    async (nodesToHide: Node[]) => {
-      if (!boardId) return;
-      for (const node of nodesToHide) {
-        const existing = findPosByNodeId(positionsRef.current, node.id);
-        if (existing) {
-          await updateNodePosition(existing.id, { hidden: 1 });
-          setPositions((prev) =>
-            prev.map((p) => (p.id === existing.id ? { ...p, hidden: 1 } : p)),
-          );
-        } else {
-          const args = buildUpsertArgs(boardId, node.id);
-          if (!args) continue;
-          const newPos = await upsertNodePosition(args);
-          await updateNodePosition(newPos.id, { hidden: 1 });
-          setPositions((prev) => [
-            ...prev,
-            { ...newPos, hidden: 1 } as MapNodePositionRecord,
-          ]);
-        }
-      }
-    },
-    [boardId, setPositions],
-  );
 
   const deleteEntityNodes = useCallback(
     async (nodesToDelete: Node[]) => {
@@ -393,18 +352,34 @@ export function MapCanvas() {
           await deleteTreeNode(node.id.slice("note:".length));
         } else if (node.id.startsWith("codex:")) {
           await deleteCodexEntry(node.id.slice("codex:".length));
-        } else if (node.id.startsWith("ai:")) {
-          const aiId = node.id.slice("ai:".length);
-          await deleteAINode(aiId);
-          setAiNodes((prev) => prev.filter((a) => a.id !== aiId));
+        } else if (node.id.startsWith("sticky:")) {
+          await deleteSticky(node.id.slice("sticky:".length));
+          setStickies((prev) =>
+            prev.filter((s) => s.id !== node.id.slice("sticky:".length)),
+          );
+        } else if (node.id.startsWith("ai_branch:")) {
+          await deleteAiBranch(node.id.slice("ai_branch:".length));
+        } else if (node.id.startsWith("snippet:")) {
+          // Snippets: remove from board only
+          const pos = findPosByNodeId(positionsRef.current, node.id);
+          if (pos) await deleteNodePosition(pos.id);
         }
-        const pos = findPosByNodeId(positionsRef.current, node.id);
-        if (pos) {
-          setPositions((prev) => prev.filter((p) => p.id !== pos.id));
+        if (
+          !node.id.startsWith("snippet:") &&
+          !node.id.startsWith("sticky:") &&
+          !node.id.startsWith("ai_branch:")
+        ) {
+          const pos = findPosByNodeId(positionsRef.current, node.id);
+          if (pos) {
+            setPositions((prev) => prev.filter((p) => p.id !== pos.id));
+          }
+        } else {
+          const pos = findPosByNodeId(positionsRef.current, node.id);
+          if (pos) setPositions((prev) => prev.filter((p) => p.id !== pos.id));
         }
       }
     },
-    [setPositions, setAiNodes],
+    [setPositions, setStickies],
   );
 
   const onDeleteSelected = useCallback(async () => {
@@ -419,7 +394,7 @@ export function MapCanvas() {
       setUserEdges((prev) => prev.filter((u) => u.id !== userEdgeId));
     }
 
-    const { frameNodes, showDialog, immediateAI } =
+    const { frameNodes, showDialog, immediateNodes, snippetNodes } =
       partitionDeletableNodes(selectedNodes);
 
     for (const node of frameNodes) {
@@ -430,14 +405,30 @@ export function MapCanvas() {
       setFrames((prev) => prev.filter((f) => f.id !== frameId));
     }
 
-    if (showDialog.length > 0) {
-      setDeleteDialogNodes(showDialog);
-    } else {
-      for (const node of immediateAI) {
-        await deleteEntityNodes([node]);
+    for (const node of snippetNodes) {
+      const pos = findPosByNodeId(positionsRef.current, node.id);
+      if (pos) {
+        await deleteNodePosition(pos.id);
+        setPositions((prev) => prev.filter((p) => p.id !== pos.id));
       }
     }
-  }, [boardId, getNodes, getEdges, setUserEdges, setFrames, deleteEntityNodes]);
+
+    for (const node of immediateNodes) {
+      await deleteEntityNodes([node]);
+    }
+
+    if (showDialog.length > 0) {
+      setDeleteDialogNodes(showDialog);
+    }
+  }, [
+    boardId,
+    getNodes,
+    getEdges,
+    setUserEdges,
+    setFrames,
+    setPositions,
+    deleteEntityNodes,
+  ]);
 
   const selectAll = useCallback(() => {
     setNodes((prev) =>
@@ -513,7 +504,6 @@ export function MapCanvas() {
     groupDraggingRef,
   });
 
-  // Returns viewport-center position offset by spawn index (resets on pan/zoom)
   const getSpawnPosition = useCallback(() => {
     const vp = getViewport();
     const cur = spawnRef.current;
@@ -577,13 +567,43 @@ export function MapCanvas() {
     setPositions((prev) => [...prev, record as MapNodePositionRecord]);
   }, [boardId, createNote, getSpawnPosition, setPositions]);
 
+  const handleAddSticky = useCallback(
+    async (flowPos?: { x: number; y: number }) => {
+      if (!boardId) return;
+      const pos = flowPos ?? getSpawnPosition();
+      const sticky = await createSticky({
+        boardId,
+        x: pos.x,
+        y: pos.y,
+        color: "yellow",
+      });
+      setStickies((prev) => [...prev, sticky.sticky]);
+      setPositions((prev) => [
+        ...prev,
+        sticky.position as MapNodePositionRecord,
+      ]);
+    },
+    [boardId, getSpawnPosition, setStickies, setPositions],
+  );
+
+  const handlePaneDoubleClick = useCallback(
+    (event: React.MouseEvent) => {
+      if (!boardId) return;
+      const flowPos = screenToFlowPosition({
+        x: event.clientX,
+        y: event.clientY,
+      });
+      void handleAddSticky(flowPos);
+    },
+    [boardId, screenToFlowPosition, handleAddSticky],
+  );
+
   const { executeAutoArrange } = useMapAutoArrange({
     boardId,
     pendingAutoArrange,
     positions,
     treeNodes,
     codexEntries,
-    variant,
     setPositions,
     setForceLayoutRunning,
     setForceAlpha,
@@ -593,9 +613,11 @@ export function MapCanvas() {
 
   useMapExport(pendingExport, setPendingExport, getNodes, getEdges);
 
+  const isCorkboard = visualTheme === "corkboard";
+
   return (
     <div
-      className={corkboardFeel ? "map-corkboard" : undefined}
+      className={isCorkboard ? "map-corkboard" : undefined}
       style={{ width: "100%", height: "100%", position: "relative" }}
       onKeyDown={onKeyDown}
       onKeyUp={onKeyUp}
@@ -616,6 +638,10 @@ export function MapCanvas() {
         onNodeContextMenu={onNodeContextMenu}
         onEdgeContextMenu={onEdgeContextMenu}
         onPaneContextMenu={(e) => e.preventDefault()}
+        onPaneClick={(e) => {
+          // Double-click detection for sticky creation
+          if (e.detail === 2) handlePaneDoubleClick(e);
+        }}
         onMoveEnd={syncViewport}
         snapToGrid={gridSnap}
         snapGrid={[16, 16]}
@@ -626,7 +652,7 @@ export function MapCanvas() {
         className={paletteMode === "connect" ? "map-connect-mode" : undefined}
         elevateNodesOnSelect={false}
       >
-        {!corkboardFeel && (
+        {!isCorkboard && (
           <Background variant={BackgroundVariant.Dots} gap={24} size={1} />
         )}
         <Controls />
@@ -635,7 +661,6 @@ export function MapCanvas() {
         )}
       </ReactFlow>
 
-      {/* Frame drawing overlay — captures all pointer events when active */}
       {paletteMode === "frame" && (
         <div
           style={{
@@ -668,7 +693,6 @@ export function MapCanvas() {
         </div>
       )}
 
-      {/* Search overlay */}
       {searchVisible && (
         <MapSearch
           nodes={visibleNodes}
@@ -683,14 +707,12 @@ export function MapCanvas() {
           screenPosition={contextMenu.screenPosition}
           isPinned={contextMenu.isPinned}
           isScene={contextMenu.isScene}
-          isHidden={contextMenu.isHidden}
           focusedNodeId={focusedNodeId}
           onClose={() => setContextMenu(null)}
           onOpen={handleContextMenuOpen}
           onPin={handleContextMenuPin}
           onUnpin={handleContextMenuUnpin}
-          onHide={handleContextMenuHide}
-          onShowHidden={handleContextMenuShowHidden}
+          onRemoveFromBoard={handleRemoveFromBoard}
           onFocus={() => setFocusedNode(contextMenu.nodeId)}
           onExitFocus={() => setFocusedNode(null)}
           onBringToFront={handleBringToFront}
@@ -711,10 +733,10 @@ export function MapCanvas() {
       <MapPalette
         paletteMode={paletteMode}
         onPaletteModeChange={setPaletteMode}
-        onCreateAI={() => setShowAINodeDialog(true)}
         onAddScene={handleAddScene}
         onAddCodex={handleAddCodex}
         onAddNote={handleAddNote}
+        onAddSticky={handleAddSticky}
       />
 
       {edgeContextMenu && (
@@ -755,31 +777,11 @@ export function MapCanvas() {
       {deleteDialogNodes && deleteDialogNodes.length > 0 && (
         <NodeDeleteDialog
           count={deleteDialogNodes.length}
-          onHide={async () => {
-            await hideNodes(deleteDialogNodes);
-            setDeleteDialogNodes(null);
-          }}
           onDelete={async () => {
             await deleteEntityNodes(deleteDialogNodes);
             setDeleteDialogNodes(null);
           }}
           onCancel={() => setDeleteDialogNodes(null)}
-        />
-      )}
-
-      {showAINodeDialog && boardId && (
-        <AINodeDialog
-          boardId={boardId}
-          contextLines={aiContextLines()}
-          spawnPosition={(() => {
-            const vp = getViewport();
-            return {
-              x: (-vp.x + window.innerWidth / 2) / vp.zoom,
-              y: (-vp.y + window.innerHeight / 2) / vp.zoom,
-            };
-          })()}
-          onCreated={handleAINodeCreated}
-          onCancel={() => setShowAINodeDialog(false)}
         />
       )}
     </div>

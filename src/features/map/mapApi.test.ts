@@ -19,7 +19,7 @@ import { db } from "@/db/client";
 // Helper to build a chainable query mock.
 function makeMock(returnValue: unknown) {
   const chain: Record<string, unknown> = {};
-  const allMethods = ["from", "where", "limit", "values", "set"];
+  const allMethods = ["from", "where", "limit", "values", "set", "orderBy"];
   for (const m of allMethods) {
     chain[m] = vi.fn().mockReturnValue(chain);
   }

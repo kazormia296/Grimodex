@@ -199,3 +199,17 @@ export function getReadonlyEditorExtensions(
     (ext) => ext.name !== "placeholder",
   );
 }
+
+/** Minimal TipTap preset for Sticky note editor. */
+export function getStickyEditorExtensions(): Extensions {
+  return [
+    StarterKit,
+    Markdown.configure({ html: false }),
+    Table.configure({ resizable: false }),
+    TableRow,
+    TableHeader,
+    TableCell,
+    Placeholder.configure({ placeholder: "思いついたことを書く…" }),
+    AuthorshipMark,
+  ];
+}

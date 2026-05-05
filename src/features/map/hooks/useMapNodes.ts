@@ -1,14 +1,23 @@
 import { useEffect } from "react";
 import type { Node } from "@xyflow/react";
 import { useChatStore } from "@/features/chat/chatStore";
-import { createCodexMatcher } from "@/features/codex/codexMatcher";
-import { updateFrame, deleteFrame } from "../mapApi";
+import {
+  updateFrame,
+  deleteFrame,
+  updateSticky,
+  extractPreviewText,
+} from "../mapApi";
 import { layoutFor, layoutForAsync } from "../layouts";
 import { WorkerForceLayoutEngine } from "../layouts/forceEngine";
 import type { MapNodePositionRecord, ShowFlags } from "../types";
 import type { TreeNodeData } from "@/features/tree/treeStore";
 import type { CodexEntry } from "@/features/codex/api";
-import type { MapAiNode, MapFrame } from "@/db/schema";
+import type { MapAiBranch, MapFrame, MapSticky } from "@/db/schema";
+import type { Snippet } from "@/features/snippets/api";
+import type { StickyColor } from "../types";
+
+/** Threshold: above this many stickies in view → fall back to static HTML */
+export const STICKY_TIPTAP_THRESHOLD = 50;
 
 // Deterministic rotation from node id for corkboard feel (±0.5deg)
 export function corkRotation(id: string): number {
@@ -24,15 +33,17 @@ interface UseMapNodesInput {
   positions: MapNodePositionRecord[];
   treeNodes: TreeNodeData[];
   codexEntries: CodexEntry[];
-  aiNodes: MapAiNode[];
+  snippets: Snippet[];
+  stickies: MapSticky[];
+  aiBranches: MapAiBranch[];
   frames: MapFrame[];
   show: ShowFlags;
   mode: string;
-  variant: "compact" | "card" | "image";
-  colorBy: "none" | "status";
-  corkboardFeel: boolean;
+  colorBy: "none" | "status" | "stickyColor";
+  visualTheme: string;
   modeTransitionActive: boolean;
   setFrames: React.Dispatch<React.SetStateAction<MapFrame[]>>;
+  setStickies: React.Dispatch<React.SetStateAction<MapSticky[]>>;
   setNodes: React.Dispatch<React.SetStateAction<Node[]>>;
   setForceLayoutRunning: (v: boolean) => void;
   setForceAlpha: (v: number) => void;
@@ -48,15 +59,17 @@ export function useMapNodes({
   positions,
   treeNodes,
   codexEntries,
-  aiNodes,
+  snippets,
+  stickies,
+  aiBranches,
   frames,
   show,
   mode,
-  variant,
   colorBy,
-  corkboardFeel,
+  visualTheme,
   modeTransitionActive,
   setFrames,
+  setStickies,
   setNodes,
   setForceLayoutRunning,
   setForceAlpha,
@@ -71,26 +84,28 @@ export function useMapNodes({
     let cancelled = false;
 
     async function buildNodes() {
-      const hiddenTreeNodeIds = new Set(
-        positions
-          .filter((p) => p.hidden === 1 && p.treeNodeId)
-          .map((p) => p.treeNodeId!),
+      // ── Manual curation: only entities that have a position row ───────────
+      const positionedTreeNodeIds = new Set(
+        positions.filter((p) => p.treeNodeId).map((p) => p.treeNodeId!),
       );
-      const hiddenCodexIds = new Set(
-        positions
-          .filter((p) => p.hidden === 1 && p.codexEntryId)
-          .map((p) => p.codexEntryId!),
+      const positionedCodexIds = new Set(
+        positions.filter((p) => p.codexEntryId).map((p) => p.codexEntryId!),
       );
-      const visiblePositions = positions.filter((p) => p.hidden !== 1);
+      const positionedSnippetIds = new Set(
+        positions.filter((p) => p.snippetId).map((p) => p.snippetId!),
+      );
 
       const scenes = treeNodes.filter(
-        (n) => n.nodeType === "scene" && !hiddenTreeNodeIds.has(n.id),
+        (n) => n.nodeType === "scene" && positionedTreeNodeIds.has(n.id),
       );
       const notes = treeNodes.filter(
-        (n) => n.nodeType === "note" && !hiddenTreeNodeIds.has(n.id),
+        (n) => n.nodeType === "note" && positionedTreeNodeIds.has(n.id),
       );
-      const visibleCodex = codexEntries.filter(
-        (e) => !hiddenCodexIds.has(e.id),
+      const visibleCodex = codexEntries.filter((e) =>
+        positionedCodexIds.has(e.id),
+      );
+      const visibleSnippets = snippets.filter((s) =>
+        positionedSnippetIds.has(s.id),
       );
 
       let computedPositions;
@@ -98,18 +113,12 @@ export function useMapNodes({
         setForceLayoutRunning(true);
         setForceAlpha(1);
         const engine = new WorkerForceLayoutEngine();
-        const themeMatcher = createCodexMatcher(visibleCodex);
-        const scenesWithTags = scenes.map((s) => {
-          const text = [s.title, s.synopsis].filter(Boolean).join(" ");
-          const tags = [...new Set(themeMatcher(text).map((m) => m.entryId))];
-          return { ...s, tags };
-        });
         computedPositions = await layoutForAsync(
           "theme",
           {
-            scenes: scenesWithTags,
+            scenes,
             codexEntries: visibleCodex,
-            positions: visiblePositions,
+            positions,
           },
           engine,
           (alpha) => {
@@ -119,10 +128,10 @@ export function useMapNodes({
         if (cancelled) return;
         setForceLayoutRunning(false);
       } else {
-        computedPositions = layoutFor(mode as Parameters<typeof layoutFor>[0], {
+        computedPositions = layoutFor(mode as "free", {
           scenes,
           codexEntries: visibleCodex,
-          positions: visiblePositions,
+          positions,
         });
       }
       if (cancelled) return;
@@ -158,15 +167,22 @@ export function useMapNodes({
         ? "with-mode-transition"
         : undefined;
 
+      const corkboardFeel = visualTheme === "corkboard";
+
       const zIndexMap = new Map<string, number>();
-      for (const p of visiblePositions) {
+      for (const p of positions) {
         if (p.treeNodeId && p.nodeRefType === "scene")
           zIndexMap.set(`scene:${p.treeNodeId}`, p.zIndex ?? 0);
         else if (p.treeNodeId && p.nodeRefType === "note")
           zIndexMap.set(`note:${p.treeNodeId}`, p.zIndex ?? 0);
         else if (p.codexEntryId)
           zIndexMap.set(`codex:${p.codexEntryId}`, p.zIndex ?? 0);
-        else if (p.aiNodeId) zIndexMap.set(`ai:${p.aiNodeId}`, p.zIndex ?? 0);
+        else if (p.snippetId)
+          zIndexMap.set(`snippet:${p.snippetId}`, p.zIndex ?? 0);
+        else if (p.stickyId)
+          zIndexMap.set(`sticky:${p.stickyId}`, p.zIndex ?? 0);
+        else if (p.aiBranchId)
+          zIndexMap.set(`ai_branch:${p.aiBranchId}`, p.zIndex ?? 0);
       }
 
       const sceneNodes: Node[] = show.scenes
@@ -186,7 +202,7 @@ export function useMapNodes({
                 synopsis: n.synopsis ?? null,
                 status: n.status ?? "outline",
                 wordCount: undefined,
-                variant,
+                variant: "compact" as const,
                 colorBy,
                 corkboardFeel,
                 rotation,
@@ -226,8 +242,36 @@ export function useMapNodes({
           })
         : [];
 
+      // Snippet positions from positions array
+      const snippetPosMap = new Map<string, { x: number; y: number }>();
+      for (const p of positions) {
+        if (p.snippetId) {
+          snippetPosMap.set(`snippet:${p.snippetId}`, { x: p.x, y: p.y });
+        }
+      }
+      const snippetNodes: Node[] = show.snippets
+        ? visibleSnippets.map((s, idx) => {
+            const key = `snippet:${s.id}`;
+            return {
+              id: key,
+              type: "snippet",
+              position: snippetPosMap.get(key) ?? {
+                x: 300 + (idx % 5) * 220,
+                y: 400 + Math.floor(idx / 5) * 80,
+              },
+              className: transitionClass,
+              draggable: true,
+              zIndex: zIndexMap.get(key) ?? 0,
+              data: {
+                title: s.title || null,
+                content: s.content,
+              },
+            };
+          })
+        : [];
+
       const notePosMap = new Map<string, { x: number; y: number }>();
-      for (const p of visiblePositions) {
+      for (const p of positions) {
         if (p.treeNodeId && p.nodeRefType === "note") {
           notePosMap.set(`note:${p.treeNodeId}`, { x: p.x, y: p.y });
         }
@@ -254,19 +298,84 @@ export function useMapNodes({
           })
         : [];
 
-      const aiPosMap = new Map<string, { x: number; y: number }>();
-      for (const p of visiblePositions) {
-        if (p.aiNodeId) {
-          aiPosMap.set(`ai:${p.aiNodeId}`, { x: p.x, y: p.y });
+      // Sticky nodes: positions from positions array
+      const stickyPosMap = new Map<string, { x: number; y: number }>();
+      for (const p of positions) {
+        if (p.stickyId) {
+          stickyPosMap.set(`sticky:${p.stickyId}`, { x: p.x, y: p.y });
         }
       }
-      const aiRfNodes: Node[] = show.ai
-        ? aiNodes.map((an, idx) => {
-            const key = `ai:${an.id}`;
+      // 50-sticky TipTap threshold guard (design spec §1b)
+      const useTipTap = stickies.length <= STICKY_TIPTAP_THRESHOLD;
+      const stickyNodes: Node[] = show.stickies
+        ? stickies.map((st, idx) => {
+            const key = `sticky:${st.id}`;
             return {
               id: key,
-              type: "ai",
-              position: aiPosMap.get(key) ?? {
+              type: "sticky",
+              position: stickyPosMap.get(key) ?? {
+                x: 100 + (idx % 5) * 260,
+                y: 200 + Math.floor(idx / 5) * 200,
+              },
+              className: transitionClass,
+              draggable: true,
+              zIndex: zIndexMap.get(key) ?? 0,
+              data: {
+                id: st.id,
+                title: st.title ?? "",
+                body: st.body,
+                previewText: st.previewText ?? "",
+                color: st.color,
+                useTipTap,
+                onUpdate: async (updates: {
+                  title?: string;
+                  body?: string;
+                  previewText?: string;
+                  color?: StickyColor;
+                }) => {
+                  const preview =
+                    updates.body !== undefined
+                      ? extractPreviewText(updates.body)
+                      : undefined;
+                  await updateSticky(st.id, {
+                    ...updates,
+                    previewText: preview ?? updates.previewText,
+                  });
+                  setStickies((prev) =>
+                    prev.map((s) =>
+                      s.id === st.id
+                        ? {
+                            ...s,
+                            ...updates,
+                            previewText:
+                              preview ?? updates.previewText ?? s.previewText,
+                          }
+                        : s,
+                    ),
+                  );
+                },
+              },
+            };
+          })
+        : [];
+
+      // AI Branch nodes
+      const aiBranchPosMap = new Map<string, { x: number; y: number }>();
+      for (const p of positions) {
+        if (p.aiBranchId) {
+          aiBranchPosMap.set(`ai_branch:${p.aiBranchId}`, {
+            x: p.x,
+            y: p.y,
+          });
+        }
+      }
+      const aiBranchNodes: Node[] = show.aiBranch
+        ? aiBranches.map((ab, idx) => {
+            const key = `ai_branch:${ab.id}`;
+            return {
+              id: key,
+              type: "ai_branch",
+              position: aiBranchPosMap.get(key) ?? {
                 x: 400 + (idx % 4) * 260,
                 y: 800 + Math.floor(idx / 4) * 140,
               },
@@ -274,12 +383,11 @@ export function useMapNodes({
               draggable: true,
               zIndex: zIndexMap.get(key) ?? 0,
               data: {
-                prompt: an.prompt,
-                response: an.response,
-                sessionId: an.sessionId,
+                prompt: ab.prompt,
+                sessionId: ab.sessionId,
                 onOpenChat: () => {
-                  if (an.sessionId) {
-                    useChatStore.getState().selectSession(an.sessionId);
+                  if (ab.sessionId) {
+                    useChatStore.getState().selectSession(ab.sessionId);
                   }
                 },
               },
@@ -291,8 +399,10 @@ export function useMapNodes({
         ...frameNodes,
         ...sceneNodes,
         ...codexNodes,
+        ...snippetNodes,
         ...noteNodes,
-        ...aiRfNodes,
+        ...stickyNodes,
+        ...aiBranchNodes,
       ];
       setNodes((prev) => {
         const prevMap = new Map(prev.map((n) => [n.id, n]));
@@ -301,12 +411,6 @@ export function useMapNodes({
         const merged = nextNodes.map((n) => {
           const p = prevMap.get(n.id);
           if (!p) return n;
-          // Always preserve React Flow's per-node runtime state: `measured`
-          // (from ResizeObserver), `selected`, `dragging`. Dropping these on
-          // every rebuild would make React Flow think sizes changed and
-          // re-emit `dim` events for every node — which feeds back through
-          // `persistFrameResize` → setFrames → rebuild, causing an infinite
-          // loop and visible full-canvas flicker.
           const base = {
             ...n,
             selected: p.selected,
@@ -316,18 +420,11 @@ export function useMapNodes({
           if (p.dragging || groupDragging.has(n.id)) {
             return { ...base, position: p.position };
           }
-          // Drop-to-persist window: nodes/frames state has the new coords
-          // (applyNodeChanges is synchronous) but positions/frames state is
-          // still mid-IPC. Preserve the live position to prevent snap-back.
           if (persisting.has(n.id)) {
             return { ...base, position: p.position };
           }
           return base;
         });
-        // Preserve any prev nodes still flagged as group-dragging that are
-        // missing from nextNodes (e.g., upstream store churn briefly drops
-        // them during a frame drag). They will be reconciled naturally on
-        // the next rebuild once the drag completes.
         if (groupDragging.size > 0) {
           const nextIds = new Set(nextNodes.map((n) => n.id));
           for (const id of groupDragging) {
@@ -351,20 +448,24 @@ export function useMapNodes({
     positions,
     treeNodes,
     codexEntries,
-    aiNodes,
+    snippets,
+    stickies,
+    aiBranches,
     show,
     mode,
-    variant,
     colorBy,
-    corkboardFeel,
+    visualTheme,
     frames,
     modeTransitionActive,
     setFrames,
+    setStickies,
     setNodes,
     setForceLayoutRunning,
     setForceAlpha,
     updateNodeTitle,
     updateSynopsis,
     setActiveScene,
+    groupDraggingRef,
+    persistingRef,
   ]);
 }

@@ -8,7 +8,8 @@ function posToRfId(pos: MapNodePositionRecord): string | null {
     return `note:${pos.treeNodeId}`;
   if (pos.nodeRefType === "codex" && pos.codexEntryId)
     return `codex:${pos.codexEntryId}`;
-  if (pos.nodeRefType === "ai" && pos.aiNodeId) return `ai:${pos.aiNodeId}`;
+  if (pos.nodeRefType === "ai_branch" && pos.aiBranchId)
+    return `ai_branch:${pos.aiBranchId}`;
   return null;
 }
 

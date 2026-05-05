@@ -6,14 +6,12 @@ interface NodeContextMenuProps {
   screenPosition: { x: number; y: number };
   isPinned: boolean;
   isScene: boolean;
-  isHidden: boolean;
   focusedNodeId: string | null;
   onClose: () => void;
   onOpen: () => void;
   onPin: () => void;
   onUnpin: () => void;
-  onHide: () => void;
-  onShowHidden: () => void;
+  onRemoveFromBoard: () => void;
   onFocus: () => void;
   onExitFocus: () => void;
   onBringToFront: () => void;
@@ -27,14 +25,12 @@ export function NodeContextMenu({
   screenPosition,
   isPinned,
   isScene,
-  isHidden,
   focusedNodeId,
   onClose,
   onOpen,
   onPin,
   onUnpin,
-  onHide,
-  onShowHidden,
+  onRemoveFromBoard,
   onFocus,
   onExitFocus,
   onBringToFront,
@@ -44,10 +40,6 @@ export function NodeContextMenu({
 
   const close = useCallback(() => onClose(), [onClose]);
 
-  // Close on outside click or Escape.
-  // Use capture phase so React Flow's internal stopPropagation on pointer/mouse
-  // events cannot swallow the dismissal (React Flow captures pointerdown for
-  // drag/selection and can prevent our bubble-phase listener from firing).
   useEffect(() => {
     function onPointerDown(e: PointerEvent | MouseEvent) {
       if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
@@ -145,33 +137,6 @@ export function NodeContextMenu({
 
         <div className="my-1 border-t border-border" />
 
-        {isHidden ? (
-          <button
-            type="button"
-            className="px-3 py-1.5 text-sm text-left hover:bg-accent"
-            onClick={() => {
-              close();
-              onShowHidden();
-            }}
-          >
-            このボードで再表示
-          </button>
-        ) : (
-          <button
-            type="button"
-            className="flex items-center justify-between px-3 py-1.5 text-sm text-left hover:bg-accent text-destructive"
-            onClick={() => {
-              close();
-              onHide();
-            }}
-          >
-            <span>このボードで非表示</span>
-            <span className="ml-4 text-xs text-muted-foreground">Del</span>
-          </button>
-        )}
-
-        <div className="my-1 border-t border-border" />
-
         {focusedNodeId ? (
           <button
             type="button"
@@ -198,15 +163,16 @@ export function NodeContextMenu({
 
         <div className="my-1 border-t border-border" />
 
-        {(["サイドグループで開く", "接続..."] as const).map((label) => (
-          <div
-            key={label}
-            className="px-3 py-1.5 text-sm text-muted-foreground cursor-not-allowed"
-            title="未実装"
-          >
-            {label}
-          </div>
-        ))}
+        <button
+          type="button"
+          className="px-3 py-1.5 text-sm text-left hover:bg-accent text-destructive"
+          onClick={() => {
+            close();
+            onRemoveFromBoard();
+          }}
+        >
+          このボードから削除
+        </button>
       </div>
     </div>,
     document.body,

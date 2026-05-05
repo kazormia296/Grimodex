@@ -15,14 +15,22 @@ export function findPosByNodeId(
     return positions.find(
       (p) => p.codexEntryId === nodeId.slice("codex:".length),
     );
+  if (nodeId.startsWith("snippet:"))
+    return positions.find(
+      (p) => p.snippetId === nodeId.slice("snippet:".length),
+    );
   if (nodeId.startsWith("note:"))
     return positions.find(
       (p) =>
         p.nodeRefType === "note" &&
         p.treeNodeId === nodeId.slice("note:".length),
     );
-  if (nodeId.startsWith("ai:"))
-    return positions.find((p) => p.aiNodeId === nodeId.slice("ai:".length));
+  if (nodeId.startsWith("sticky:"))
+    return positions.find((p) => p.stickyId === nodeId.slice("sticky:".length));
+  if (nodeId.startsWith("ai_branch:"))
+    return positions.find(
+      (p) => p.aiBranchId === nodeId.slice("ai_branch:".length),
+    );
   return undefined;
 }
 
@@ -31,7 +39,9 @@ type UpsertArgs = {
   nodeRefType: NodeRefType;
   treeNodeId?: string;
   codexEntryId?: string;
-  aiNodeId?: string;
+  snippetId?: string;
+  stickyId?: string;
+  aiBranchId?: string;
   x: number;
   y: number;
 };
@@ -59,6 +69,14 @@ export function buildUpsertArgs(
       x,
       y,
     };
+  if (nodeId.startsWith("snippet:"))
+    return {
+      boardId,
+      nodeRefType: "snippet",
+      snippetId: nodeId.slice("snippet:".length),
+      x,
+      y,
+    };
   if (nodeId.startsWith("note:"))
     return {
       boardId,
@@ -67,11 +85,19 @@ export function buildUpsertArgs(
       x,
       y,
     };
-  if (nodeId.startsWith("ai:"))
+  if (nodeId.startsWith("sticky:"))
     return {
       boardId,
-      nodeRefType: "ai",
-      aiNodeId: nodeId.slice("ai:".length),
+      nodeRefType: "sticky",
+      stickyId: nodeId.slice("sticky:".length),
+      x,
+      y,
+    };
+  if (nodeId.startsWith("ai_branch:"))
+    return {
+      boardId,
+      nodeRefType: "ai_branch",
+      aiBranchId: nodeId.slice("ai_branch:".length),
       x,
       y,
     };

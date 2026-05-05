@@ -26,7 +26,7 @@ interface UseMapEdgesInput {
     id: string;
     fromPositionId: string;
     toPositionId: string;
-    label?: string | null;
+    forwardLabel?: string | null;
     style: string;
     color: string;
     direction: string;
@@ -44,7 +44,8 @@ function posToRfId(pos: MapNodePositionRecord | undefined): string | null {
     return `note:${pos.treeNodeId}`;
   if (pos.nodeRefType === "codex" && pos.codexEntryId)
     return `codex:${pos.codexEntryId}`;
-  if (pos.nodeRefType === "ai" && pos.aiNodeId) return `ai:${pos.aiNodeId}`;
+  if (pos.nodeRefType === "ai_branch" && pos.aiBranchId)
+    return `ai_branch:${pos.aiBranchId}`;
   return null;
 }
 
@@ -170,7 +171,7 @@ export function useMapEdges({
               type: "user",
               zIndex: 1,
               data: {
-                label: ue.label,
+                label: ue.forwardLabel,
                 style: ue.style,
                 color: ue.color,
                 direction: ue.direction,

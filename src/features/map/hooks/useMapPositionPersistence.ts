@@ -125,12 +125,48 @@ export function useMapPositionPersistence({
             }
             return [...prev, updated as MapNodePositionRecord];
           });
-        } else if (nodeId.startsWith("ai:")) {
-          const aiNodeId = nodeId.slice("ai:".length);
+        } else if (nodeId.startsWith("snippet:")) {
+          const snippetId = nodeId.slice("snippet:".length);
           const updated = await upsertNodePosition({
             boardId,
-            nodeRefType: "ai",
-            aiNodeId,
+            nodeRefType: "snippet",
+            snippetId,
+            x,
+            y,
+          });
+          setPositions((prev) => {
+            const idx = prev.findIndex((p) => p.id === updated.id);
+            if (idx >= 0) {
+              const next = [...prev];
+              next[idx] = updated as MapNodePositionRecord;
+              return next;
+            }
+            return [...prev, updated as MapNodePositionRecord];
+          });
+        } else if (nodeId.startsWith("sticky:")) {
+          const stickyId = nodeId.slice("sticky:".length);
+          const updated = await upsertNodePosition({
+            boardId,
+            nodeRefType: "sticky",
+            stickyId,
+            x,
+            y,
+          });
+          setPositions((prev) => {
+            const idx = prev.findIndex((p) => p.id === updated.id);
+            if (idx >= 0) {
+              const next = [...prev];
+              next[idx] = updated as MapNodePositionRecord;
+              return next;
+            }
+            return [...prev, updated as MapNodePositionRecord];
+          });
+        } else if (nodeId.startsWith("ai_branch:")) {
+          const aiBranchId = nodeId.slice("ai_branch:".length);
+          const updated = await upsertNodePosition({
+            boardId,
+            nodeRefType: "ai_branch",
+            aiBranchId,
             x,
             y,
           });

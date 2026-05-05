@@ -8,55 +8,63 @@ function node(id: string, type?: string): Node {
 }
 
 describe("partitionDeletableNodes", () => {
-  it("フレームのみ → frameNodes に入り showDialog/immediateAI は空", () => {
-    const { frameNodes, showDialog, immediateAI } = partitionDeletableNodes([
+  it("フレームのみ → frameNodes に入り他は空", () => {
+    const { frameNodes, showDialog, immediateNodes } = partitionDeletableNodes([
       node("frame:f1", "frame"),
       node("frame:f2"),
     ]);
     expect(frameNodes).toHaveLength(2);
     expect(showDialog).toHaveLength(0);
-    expect(immediateAI).toHaveLength(0);
+    expect(immediateNodes).toHaveLength(0);
   });
 
-  it("AIのみ → immediateAI に入り showDialog は空", () => {
-    const { frameNodes, showDialog, immediateAI } = partitionDeletableNodes([
-      node("ai:a1"),
-      node("ai:a2"),
+  it("sticky/ai_branchのみ → immediateNodes に入り showDialog は空", () => {
+    const { frameNodes, showDialog, immediateNodes } = partitionDeletableNodes([
+      node("sticky:s1"),
+      node("ai_branch:a1"),
     ]);
     expect(frameNodes).toHaveLength(0);
     expect(showDialog).toHaveLength(0);
-    expect(immediateAI).toHaveLength(2);
+    expect(immediateNodes).toHaveLength(2);
   });
 
-  it("scene/note/codexのみ → showDialog に入り immediateAI は空", () => {
-    const { showDialog, immediateAI } = partitionDeletableNodes([
+  it("scene/note/codexのみ → showDialog に入り immediateNodes は空", () => {
+    const { showDialog, immediateNodes } = partitionDeletableNodes([
       node("scene:s1"),
       node("note:n1"),
       node("codex:c1"),
     ]);
     expect(showDialog).toHaveLength(3);
-    expect(immediateAI).toHaveLength(0);
+    expect(immediateNodes).toHaveLength(0);
   });
 
-  it("AI + scene → showDialog に両方含まれ immediateAI は空", () => {
-    const { showDialog, immediateAI } = partitionDeletableNodes([
+  it("sticky + scene → sticky は immediateNodes、scene は showDialog", () => {
+    const { showDialog, immediateNodes } = partitionDeletableNodes([
       node("scene:s1"),
-      node("ai:a1"),
+      node("sticky:st1"),
     ]);
-    expect(showDialog).toHaveLength(2);
-    expect(showDialog.map((n) => n.id)).toContain("scene:s1");
-    expect(showDialog.map((n) => n.id)).toContain("ai:a1");
-    expect(immediateAI).toHaveLength(0);
+    expect(showDialog).toHaveLength(1);
+    expect(showDialog[0].id).toBe("scene:s1");
+    expect(immediateNodes).toHaveLength(1);
+    expect(immediateNodes[0].id).toBe("sticky:st1");
   });
 
-  it("frame + AI + scene → frame は即削除、AI+scene は dialog", () => {
-    const { frameNodes, showDialog, immediateAI } = partitionDeletableNodes([
+  it("frame + scene + sticky → 各カテゴリに分類される", () => {
+    const { frameNodes, showDialog, immediateNodes } = partitionDeletableNodes([
       node("frame:f1", "frame"),
       node("scene:s1"),
-      node("ai:a1"),
+      node("sticky:st1"),
     ]);
     expect(frameNodes).toHaveLength(1);
-    expect(showDialog).toHaveLength(2);
-    expect(immediateAI).toHaveLength(0);
+    expect(showDialog).toHaveLength(1);
+    expect(immediateNodes).toHaveLength(1);
+  });
+
+  it("snippet → snippetNodes に入り他には影響しない", () => {
+    const { snippetNodes, showDialog, immediateNodes } =
+      partitionDeletableNodes([node("snippet:sn1")]);
+    expect(snippetNodes).toHaveLength(1);
+    expect(showDialog).toHaveLength(0);
+    expect(immediateNodes).toHaveLength(0);
   });
 });

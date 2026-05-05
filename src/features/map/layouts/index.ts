@@ -2,9 +2,6 @@ import type { MapMode } from "../types";
 import type { LayoutInput, LayoutOutput } from "./types";
 import type { ForceLayoutEngine } from "./forceEngine";
 import { layoutFree } from "./free";
-import { layoutTime } from "./time";
-import { layoutPOV } from "./pov";
-import { layoutPlace } from "./place";
 
 function applyPinnedOverrides(
   computed: LayoutOutput,
@@ -22,26 +19,9 @@ function applyPinnedOverrides(
   return computed;
 }
 
-/** Synchronous layout dispatcher for free / time / pov / place modes. */
-export function layoutFor(mode: MapMode, input: LayoutInput): LayoutOutput {
-  let computed: LayoutOutput;
-
-  switch (mode) {
-    case "time":
-      computed = layoutTime(input);
-      break;
-    case "pov":
-      computed = layoutPOV(input);
-      break;
-    case "place":
-      computed = layoutPlace(input);
-      break;
-    default:
-      computed = layoutFree(input);
-  }
-
-  if (mode !== "free") applyPinnedOverrides(computed, input);
-  return computed;
+/** Synchronous layout dispatcher for free mode. */
+export function layoutFor(_mode: MapMode, input: LayoutInput): LayoutOutput {
+  return layoutFree(input);
 }
 
 /** Async layout for theme mode (uses d3-force engine). */

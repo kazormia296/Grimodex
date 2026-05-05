@@ -4,6 +4,7 @@ import {
   setNodePinned,
   updateNodePosition,
   upsertNodePosition,
+  deleteNodePosition,
 } from "../mapApi";
 import { findPosByNodeId, buildUpsertArgs } from "../utils/nodeIdCodec";
 import type { MapNodePositionRecord } from "../types";
@@ -13,7 +14,6 @@ export interface ContextMenuState {
   screenPosition: { x: number; y: number };
   isPinned: boolean;
   isScene: boolean;
-  isHidden: boolean;
 }
 
 interface UseMapContextMenuInput {
@@ -42,7 +42,6 @@ export function useMapContextMenu({
         screenPosition: { x: event.clientX, y: event.clientY },
         isPinned: pos ? pos.pinned === 1 : false,
         isScene: node.id.startsWith("scene:"),
-        isHidden: pos ? pos.hidden === 1 : false,
       });
     },
     [positions],
@@ -76,35 +75,14 @@ export function useMapContextMenu({
     }
   }, [contextMenu, positions, setPositions]);
 
-  const handleContextMenuHide = useCallback(async () => {
-    if (!contextMenu || !boardId) return;
-    const nodeId = contextMenu.nodeId;
-    const pos = findPosByNodeId(positions, nodeId);
-    if (pos) {
-      await updateNodePosition(pos.id, { hidden: 1 });
-      setPositions((prev) =>
-        prev.map((p) => (p.id === pos.id ? { ...p, hidden: 1 } : p)),
-      );
-    } else {
-      const args = buildUpsertArgs(boardId, nodeId);
-      if (!args) return;
-      const newPos = await upsertNodePosition(args);
-      await updateNodePosition(newPos.id, { hidden: 1 });
-      setPositions((prev) => [
-        ...prev,
-        { ...newPos, hidden: 1 } as MapNodePositionRecord,
-      ]);
-    }
-  }, [contextMenu, boardId, positions, setPositions]);
-
-  const handleContextMenuShowHidden = useCallback(async () => {
+  /** Remove node from this board (delete position row, keep the entity itself). */
+  const handleRemoveFromBoard = useCallback(async () => {
     if (!contextMenu) return;
     const pos = findPosByNodeId(positions, contextMenu.nodeId);
     if (!pos) return;
-    await updateNodePosition(pos.id, { hidden: 0 });
-    setPositions((prev) =>
-      prev.map((p) => (p.id === pos.id ? { ...p, hidden: 0 } : p)),
-    );
+    await deleteNodePosition(pos.id);
+    setPositions((prev) => prev.filter((p) => p.id !== pos.id));
+    setContextMenu(null);
   }, [contextMenu, positions, setPositions]);
 
   const handleContextMenuOpen = useCallback(() => {
@@ -166,8 +144,7 @@ export function useMapContextMenu({
     onNodeContextMenu,
     handleContextMenuPin,
     handleContextMenuUnpin,
-    handleContextMenuHide,
-    handleContextMenuShowHidden,
+    handleRemoveFromBoard,
     handleContextMenuOpen,
     handleBringToFront,
     handleSendToBack,

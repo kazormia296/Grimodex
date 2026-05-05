@@ -4,7 +4,7 @@ import type { Node, Edge, Connection } from "@xyflow/react";
 import { useCodexStore } from "@/features/codex/codexStore";
 import { upsertNodePosition, createUserEdge } from "../mapApi";
 import { buildUpsertArgs } from "../utils/nodeIdCodec";
-import type { MapAiNode, MapEdge } from "@/db/schema";
+import type { MapEdge } from "@/db/schema";
 import type { MapNodePositionRecord } from "../types";
 import { buildFocusNeighbors } from "./focusNeighbors";
 
@@ -16,8 +16,6 @@ interface UseMapCallbacksInput {
   positions: MapNodePositionRecord[];
   focusedNodeId: string | null;
   setUserEdges: React.Dispatch<React.SetStateAction<MapEdge[]>>;
-  setAiNodes: React.Dispatch<React.SetStateAction<MapAiNode[]>>;
-  setShowAINodeDialog: (v: boolean) => void;
   setActiveScene: (id: string) => void;
   setSearchVisible: (v: boolean) => void;
   getViewport: () => { x: number; y: number; zoom: number };
@@ -37,8 +35,6 @@ export function useMapCallbacks({
   positions,
   focusedNodeId,
   setUserEdges,
-  setAiNodes,
-  setShowAINodeDialog,
   setActiveScene,
   setSearchVisible,
   getViewport,
@@ -92,7 +88,7 @@ export function useMapCallbacks({
       } else if (n.type === "note") {
         const d = n.data as { title?: string };
         if (d.title) lines.push(`Note: ${d.title}`);
-      } else if (n.type === "ai") {
+      } else if (n.type === "ai_branch") {
         const d = n.data as { prompt?: string };
         if (d.prompt) lines.push(`AI: ${d.prompt.slice(0, 50)}`);
       }
@@ -100,29 +96,13 @@ export function useMapCallbacks({
     return lines;
   }, [nodes]);
 
+  // Stub — AI Branch creation is Phase C
   const handleAINodeCreated = useCallback(
-    (created: {
-      id: string;
-      prompt: string;
-      response: string;
-      sessionId: string | null;
-      position: { x: number; y: number };
-    }) => {
-      setShowAINodeDialog(false);
-      const newAiNode: MapAiNode = {
-        id: created.id,
-        boardId: boardId!,
-        prompt: created.prompt,
-        response: created.response,
-        sessionId: created.sessionId,
-        model: null,
-        tokenUsage: null,
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString(),
-      };
-      setAiNodes((prev) => [...prev, newAiNode]);
+    (_created: unknown) => {
+      void _created;
+      void boardId;
     },
-    [boardId, setAiNodes, setShowAINodeDialog],
+    [boardId],
   );
 
   const syncViewport = useDebouncedCallback(() => {

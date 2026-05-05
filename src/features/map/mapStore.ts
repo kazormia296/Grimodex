@@ -5,130 +5,105 @@ import type {
   MapMode,
   ShowFlags,
   MapPersistentState,
-  SceneDisplayVariant,
   ColorByAxis,
+  VisualTheme,
 } from "./types";
-import { resolveSceneVariant } from "./types";
-import type { AutoArrangeType } from "./layouts/autoArrange";
-
-const DEFAULT_SCENE_DISPLAY: Record<MapMode, SceneDisplayVariant> = {
-  free: "auto",
-  time: "auto",
-  theme: "auto",
-  pov: "auto",
-  place: "auto",
-};
 
 interface MapState {
+  activeBoardId: string | null;
   mode: MapMode;
   viewport: { x: number; y: number; zoom: number };
   show: ShowFlags;
   gridSnap: boolean;
   minimapVisible: boolean;
-  sceneDisplayByMode: Record<MapMode, SceneDisplayVariant>;
   colorBy: ColorByAxis;
-  corkboardFeel: boolean;
+  visualTheme: VisualTheme;
   // transient UI state (not persisted)
   searchVisible: boolean;
   pendingAutoArrange: AutoArrangeType | null;
   focusedNodeId: string | null;
   pendingExport: "svg" | "png" | "json" | null;
 
+  setActiveBoardId: (id: string | null) => void;
   setMode: (mode: MapMode) => void;
   setViewport: (viewport: { x: number; y: number; zoom: number }) => void;
   setShow: (show: Partial<ShowFlags>) => void;
   setGridSnap: (v: boolean) => void;
   setMinimapVisible: (v: boolean) => void;
-  setSceneDisplayForMode: (mode: MapMode, variant: SceneDisplayVariant) => void;
   setColorBy: (axis: ColorByAxis) => void;
-  setCorkboardFeel: (v: boolean) => void;
+  setVisualTheme: (theme: VisualTheme) => void;
   setSearchVisible: (v: boolean) => void;
   setPendingAutoArrange: (type: AutoArrangeType | null) => void;
   setFocusedNode: (id: string | null) => void;
   setPendingExport: (type: "svg" | "png" | "json" | null) => void;
-  effectiveSceneVariant: (mode: MapMode) => "compact" | "card" | "image";
   loadFromSettings: (settings: GlobalSettings) => void;
 }
+
+// Import here to avoid circular dep — autoArrange types live in layouts
+type AutoArrangeType = import("./layouts/autoArrange").AutoArrangeType;
 
 const DEFAULT_SHOW: ShowFlags = {
   scenes: true,
   codex: true,
+  snippets: true,
   notes: false,
-  ai: false,
+  stickies: true,
+  aiBranch: false,
   derivedEdges: true,
   userEdges: false,
   frames: true,
 };
 
-export const useMapStore = create<MapState>((set, get) => ({
+export const useMapStore = create<MapState>((set) => ({
+  activeBoardId: null,
   mode: "free",
   viewport: { x: 0, y: 0, zoom: 1 },
   show: DEFAULT_SHOW,
   gridSnap: false,
   minimapVisible: false,
-  sceneDisplayByMode: { ...DEFAULT_SCENE_DISPLAY },
   colorBy: "none",
-  corkboardFeel: false,
+  visualTheme: "default",
   searchVisible: false,
   pendingAutoArrange: null,
   focusedNodeId: null,
   pendingExport: null,
 
-  setMode: (mode) => {
-    // C2-T hook: when switching to theme, set pendingForceLayout flag (no-op until C2-T)
-    set({ mode });
-  },
+  setActiveBoardId: (id) => set({ activeBoardId: id }),
+  setMode: (mode) => set({ mode }),
   setViewport: (viewport) => set({ viewport }),
   setShow: (partial) => set((s) => ({ show: { ...s.show, ...partial } })),
   setGridSnap: (v) => set({ gridSnap: v }),
   setMinimapVisible: (v) => set({ minimapVisible: v }),
-  setSceneDisplayForMode: (mode, variant) =>
-    set((s) => ({
-      sceneDisplayByMode: { ...s.sceneDisplayByMode, [mode]: variant },
-    })),
   setColorBy: (axis) => set({ colorBy: axis }),
-  setCorkboardFeel: (v) => set({ corkboardFeel: v }),
+  setVisualTheme: (theme) => set({ visualTheme: theme }),
   setSearchVisible: (v) => set({ searchVisible: v }),
   setPendingAutoArrange: (type) => set({ pendingAutoArrange: type }),
   setFocusedNode: (id) => set({ focusedNodeId: id }),
   setPendingExport: (type) => set({ pendingExport: type }),
-  effectiveSceneVariant: (mode) =>
-    resolveSceneVariant(get().sceneDisplayByMode[mode], mode),
 
   loadFromSettings: (settings) => {
     const saved = settings.map as MapPersistentState | undefined;
     if (!saved) return;
     set({
-      mode: saved.mode ?? "free",
-      viewport: saved.viewport ?? { x: 0, y: 0, zoom: 1 },
-      show: { ...DEFAULT_SHOW, ...saved.show },
+      activeBoardId: saved.activeBoardId ?? null,
       gridSnap: saved.gridSnap ?? false,
       minimapVisible: saved.minimapVisible ?? false,
-      sceneDisplayByMode: {
-        ...DEFAULT_SCENE_DISPLAY,
-        ...(saved.sceneDisplayByMode ?? {}),
-      },
       colorBy: saved.colorBy ?? "none",
-      corkboardFeel: saved.corkboardFeel ?? false,
+      visualTheme: saved.visualTheme ?? "default",
     });
   },
 }));
 
-// Snapshot helper — only fields that should be persisted
 function snapshotPersistent(s: MapState): MapPersistentState {
   return {
-    mode: s.mode,
-    viewport: s.viewport,
-    show: s.show,
+    activeBoardId: s.activeBoardId,
     gridSnap: s.gridSnap,
     minimapVisible: s.minimapVisible,
-    sceneDisplayByMode: s.sceneDisplayByMode,
     colorBy: s.colorBy,
-    corkboardFeel: s.corkboardFeel,
+    visualTheme: s.visualTheme,
   };
 }
 
-// Subscribe for auto-persistence to global-settings.json
 let prevSnapshot = JSON.stringify(snapshotPersistent(useMapStore.getState()));
 let saveTimer: ReturnType<typeof setTimeout> | null = null;
 

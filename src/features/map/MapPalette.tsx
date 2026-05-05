@@ -5,19 +5,19 @@ type PaletteMode = "default" | "frame" | "connect";
 interface MapPaletteProps {
   paletteMode: PaletteMode;
   onPaletteModeChange: (mode: PaletteMode) => void;
-  onCreateAI: () => void;
   onAddScene: () => void;
   onAddCodex: () => void;
   onAddNote: () => void;
+  onAddSticky: () => void;
 }
 
 export function MapPalette({
   paletteMode,
   onPaletteModeChange,
-  onCreateAI,
   onAddScene,
   onAddCodex,
   onAddNote,
+  onAddSticky,
 }: MapPaletteProps) {
   const toggleMode = useCallback(
     (mode: PaletteMode) => {
@@ -44,14 +44,14 @@ export function MapPalette({
         alignItems: "center",
       }}
     >
+      <PaletteButton
+        label="+ Sticky"
+        onClick={onAddSticky}
+        title="付箋を追加 (S)"
+      />
       <PaletteButton label="+ Scene" onClick={onAddScene} />
       <PaletteButton label="+ Codex" onClick={onAddCodex} />
       <PaletteButton label="+ Note" onClick={onAddNote} title="ノートを追加" />
-      <PaletteButton
-        label="✨ AI"
-        onClick={onCreateAI}
-        title="AIノードを作成"
-      />
       <PaletteButton
         label="+ Frame"
         active={paletteMode === "frame"}
@@ -75,7 +75,6 @@ export function MapPalette({
         title="エッジを接続 (Alt)"
       />
 
-      {/* Mode indicator */}
       {paletteMode !== "default" && (
         <div
           style={{

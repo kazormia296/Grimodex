@@ -476,7 +476,12 @@ export const authorshipSpans = sqliteTable(
       (): any => codexEntryPhases.id,
       { onDelete: "cascade" },
     ),
-    // SQL CHECK: exactly one of nodeId/codexEntryId/snippetId/detailValueId is NOT NULL.
+    stickyId: text("sticky_id").references(
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (): any => mapStickies.id,
+      { onDelete: "cascade" },
+    ), // nullable: Map Sticky
+    // SQL CHECK: exactly one of nodeId/codexEntryId/snippetId/detailValueId/stickyId is NOT NULL.
     // phaseId is orthogonal but requires codexEntryId to be set (enforced in SQL).
   },
   (table) => [
@@ -485,6 +490,7 @@ export const authorshipSpans = sqliteTable(
     index("idx_authorship_snippet").on(table.snippetId, table.source),
     index("idx_authorship_detail").on(table.detailValueId),
     index("idx_authorship_phase").on(table.phaseId),
+    index("idx_authorship_sticky").on(table.stickyId),
   ],
 );
 
@@ -649,6 +655,14 @@ export const mapBoards = sqliteTable(
       .references(() => projects.id, { onDelete: "cascade" }),
     title: text("title").notNull().default("Main"),
     sortOrder: real("sort_order").notNull().default(0.0),
+    mode: text("mode", { enum: ["free", "theme"] })
+      .notNull()
+      .default("free"),
+    viewportX: real("viewport_x").notNull().default(0),
+    viewportY: real("viewport_y").notNull().default(0),
+    viewportZoom: real("viewport_zoom").notNull().default(1.0),
+    showConfig: text("show_config").notNull().default("{}"),
+    colorBy: text("color_by").notNull().default("none"),
     createdAt: text("created_at")
       .notNull()
       .$defaultFn(() => new Date().toISOString()),
@@ -659,15 +673,15 @@ export const mapBoards = sqliteTable(
   (table) => [index("idx_map_boards_project").on(table.projectId)],
 );
 
-export const mapAiNodes = sqliteTable(
-  "map_ai_nodes",
+export const mapAiBranches = sqliteTable(
+  "map_ai_branches",
   {
     id: text("id").primaryKey(),
     boardId: text("board_id")
       .notNull()
       .references(() => mapBoards.id, { onDelete: "cascade" }),
     prompt: text("prompt").notNull(),
-    response: text("response"),
+    seedNodeIds: text("seed_node_ids").notNull().default("[]"),
     sessionId: text("session_id").references(() => chatSessions.id, {
       onDelete: "set null",
     }),
@@ -680,7 +694,51 @@ export const mapAiNodes = sqliteTable(
       .notNull()
       .$defaultFn(() => new Date().toISOString()),
   },
-  (table) => [index("idx_map_ai_board").on(table.boardId)],
+  (table) => [index("idx_map_ai_branches_board").on(table.boardId)],
+);
+
+export const mapStickies = sqliteTable(
+  "map_stickies",
+  {
+    id: text("id").primaryKey(),
+    boardId: text("board_id")
+      .notNull()
+      .references(() => mapBoards.id, { onDelete: "cascade" }),
+    title: text("title"),
+    body: text("body").notNull().default('{"type":"doc","content":[]}'),
+    previewText: text("preview_text"),
+    color: text("color", {
+      enum: [
+        "yellow",
+        "orange",
+        "pink",
+        "green",
+        "blue",
+        "purple",
+        "gray",
+        "white",
+      ],
+    })
+      .notNull()
+      .default("yellow"),
+    aiBranchId: text("ai_branch_id").references(() => mapAiBranches.id, {
+      onDelete: "set null",
+    }),
+    sourceChatMessageId: text("source_chat_message_id").references(
+      () => chatMessages.id,
+      { onDelete: "set null" },
+    ),
+    createdAt: text("created_at")
+      .notNull()
+      .$defaultFn(() => new Date().toISOString()),
+    updatedAt: text("updated_at")
+      .notNull()
+      .$defaultFn(() => new Date().toISOString()),
+  },
+  (table) => [
+    index("idx_map_stickies_board").on(table.boardId),
+    index("idx_map_stickies_ai_branch").on(table.aiBranchId),
+  ],
 );
 
 export const mapNodePositions = sqliteTable(
@@ -691,7 +749,7 @@ export const mapNodePositions = sqliteTable(
       .notNull()
       .references(() => mapBoards.id, { onDelete: "cascade" }),
     nodeRefType: text("node_ref_type", {
-      enum: ["scene", "codex", "note", "ai"],
+      enum: ["scene", "codex", "snippet", "note", "sticky", "ai_branch"],
     }).notNull(),
     treeNodeId: text("tree_node_id").references(() => treeNodes.id, {
       onDelete: "cascade",
@@ -699,13 +757,18 @@ export const mapNodePositions = sqliteTable(
     codexEntryId: text("codex_entry_id").references(() => codexEntries.id, {
       onDelete: "cascade",
     }),
-    aiNodeId: text("ai_node_id").references(() => mapAiNodes.id, {
+    snippetId: text("snippet_id").references(() => snippets.id, {
+      onDelete: "cascade",
+    }),
+    stickyId: text("sticky_id").references(() => mapStickies.id, {
+      onDelete: "cascade",
+    }),
+    aiBranchId: text("ai_branch_id").references(() => mapAiBranches.id, {
       onDelete: "cascade",
     }),
     x: real("x").notNull(),
     y: real("y").notNull(),
     pinned: integer("pinned").notNull().default(0),
-    hidden: integer("hidden").notNull().default(0),
     zIndex: integer("z_index").notNull().default(0),
     createdAt: text("created_at")
       .notNull()
@@ -714,11 +777,7 @@ export const mapNodePositions = sqliteTable(
       .notNull()
       .$defaultFn(() => new Date().toISOString()),
   },
-  (table) => [
-    index("idx_map_pos_board").on(table.boardId),
-    index("idx_map_pos_tree").on(table.treeNodeId),
-    index("idx_map_pos_codex").on(table.codexEntryId),
-  ],
+  (table) => [index("idx_map_pos_board").on(table.boardId)],
 );
 
 export const mapEdges = sqliteTable(
@@ -734,7 +793,9 @@ export const mapEdges = sqliteTable(
     toPositionId: text("to_position_id")
       .notNull()
       .references(() => mapNodePositions.id, { onDelete: "cascade" }),
-    label: text("label"),
+    forwardLabel: text("forward_label"),
+    backwardLabel: text("backward_label"),
+    labels: text("labels").notNull().default("[]"),
     style: text("style", { enum: ["solid", "dashed", "dotted"] })
       .notNull()
       .default("solid"),
@@ -1056,8 +1117,10 @@ export type MapEdge = typeof mapEdges.$inferSelect;
 export type NewMapEdge = typeof mapEdges.$inferInsert;
 export type MapFrame = typeof mapFrames.$inferSelect;
 export type NewMapFrame = typeof mapFrames.$inferInsert;
-export type MapAiNode = typeof mapAiNodes.$inferSelect;
-export type NewMapAiNode = typeof mapAiNodes.$inferInsert;
+export type MapSticky = typeof mapStickies.$inferSelect;
+export type NewMapSticky = typeof mapStickies.$inferInsert;
+export type MapAiBranch = typeof mapAiBranches.$inferSelect;
+export type NewMapAiBranch = typeof mapAiBranches.$inferInsert;
 
 export type LintIgnoredDiagnostic = typeof lintIgnoredDiagnostics.$inferSelect;
 export type NewLintIgnoredDiagnostic =

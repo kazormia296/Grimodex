@@ -2,14 +2,12 @@ import { createPortal } from "react-dom";
 
 interface NodeDeleteDialogProps {
   count: number;
-  onHide: () => void;
   onDelete: () => void;
   onCancel: () => void;
 }
 
 export function NodeDeleteDialog({
   count,
-  onHide,
   onDelete,
   onCancel,
 }: NodeDeleteDialogProps) {
@@ -38,15 +36,17 @@ export function NodeDeleteDialog({
           style={{ fontSize: 15, fontWeight: 600, marginBottom: 8 }}
           className="text-foreground"
         >
-          {label}のノードをどうしますか？
+          {label}のノードを削除しますか？
         </h3>
         <p
           style={{ fontSize: 13, marginBottom: 20, lineHeight: 1.6 }}
           className="text-muted-foreground"
         >
-          「Mapから隠す」はこのボードでのみ非表示にします。エンティティ（シーン・Codex等）は残ります。
+          シーン・Codex
+          などのエンティティは元のデータも完全に削除されます。この操作は取り消せません。
           <br />
-          「エンティティごと削除」は元のデータも完全に削除します。この操作は取り消せません。
+          ボードから外すだけの場合は右クリック
+          →「このボードから削除」を使ってください。
         </p>
         <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
           <button
@@ -66,21 +66,6 @@ export function NodeDeleteDialog({
           </button>
           <button
             type="button"
-            className="hover:bg-accent text-foreground"
-            style={{
-              padding: "4px 16px",
-              fontSize: 13,
-              borderRadius: 5,
-              border: "1px solid var(--border)",
-              cursor: "pointer",
-              background: "transparent",
-            }}
-            onClick={onHide}
-          >
-            Mapから隠す
-          </button>
-          <button
-            type="button"
             style={{
               padding: "4px 16px",
               fontSize: 13,
@@ -92,7 +77,7 @@ export function NodeDeleteDialog({
             }}
             onClick={onDelete}
           >
-            エンティティごと削除
+            削除
           </button>
         </div>
       </div>

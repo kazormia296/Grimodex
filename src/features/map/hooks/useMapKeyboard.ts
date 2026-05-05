@@ -8,7 +8,7 @@ import {
 } from "react";
 import type { MapMode } from "../types";
 
-const MODES_ORDER: MapMode[] = ["free", "time", "theme", "pov", "place"];
+const MODES_ORDER: MapMode[] = ["free", "theme"];
 
 type Rect = { x: number; y: number; w: number; h: number };
 type Vec2 = { x: number; y: number };

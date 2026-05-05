@@ -1,34 +1,31 @@
 import { useState, useRef, useEffect } from "react";
 import { useMapStore } from "./mapStore";
-import type { MapMode, SceneDisplayVariant, ColorByAxis } from "./types";
+import type { MapMode, ColorByAxis, VisualTheme } from "./types";
 import type { AutoArrangeType } from "./layouts/autoArrange";
 
 const ARRANGE_ITEMS: {
   type: AutoArrangeType;
   label: string;
-  disabled?: boolean;
 }[] = [
   { type: "reading-order", label: "Grid: 読み順" },
-  { type: "story-time", label: "Grid: 物語時間順" },
+  { type: "force-directed", label: "Force-directed" },
 ];
 
 const MODES: { key: MapMode; label: string }[] = [
   { key: "free", label: "Free" },
-  { key: "time", label: "Time" },
   { key: "theme", label: "Theme" },
-  { key: "pov", label: "POV" },
-  { key: "place", label: "Place" },
-];
-
-const SCENE_DISPLAY_OPTIONS: { value: SceneDisplayVariant; label: string }[] = [
-  { value: "auto", label: "Auto" },
-  { value: "compact", label: "Compact" },
-  { value: "card", label: "Card" },
 ];
 
 const COLOR_BY_OPTIONS: { value: ColorByAxis; label: string }[] = [
-  { value: "none", label: "None" },
-  { value: "status", label: "Status" },
+  { value: "none", label: "なし" },
+  { value: "status", label: "ステータス" },
+  { value: "stickyColor", label: "付箋カラー" },
+];
+
+const VISUAL_THEME_OPTIONS: { value: VisualTheme; label: string }[] = [
+  { value: "default", label: "デフォルト" },
+  { value: "corkboard", label: "コルクボード" },
+  { value: "constellation", label: "星座" },
 ];
 
 export function MapHeader() {
@@ -38,34 +35,27 @@ export function MapHeader() {
   const setShow = useMapStore((s) => s.setShow);
   const minimapVisible = useMapStore((s) => s.minimapVisible);
   const setMinimapVisible = useMapStore((s) => s.setMinimapVisible);
-  const sceneDisplayByMode = useMapStore((s) => s.sceneDisplayByMode);
-  const setSceneDisplayForMode = useMapStore((s) => s.setSceneDisplayForMode);
   const colorBy = useMapStore((s) => s.colorBy);
   const setColorBy = useMapStore((s) => s.setColorBy);
-  const corkboardFeel = useMapStore((s) => s.corkboardFeel);
-  const setCorkboardFeel = useMapStore((s) => s.setCorkboardFeel);
+  const visualTheme = useMapStore((s) => s.visualTheme);
+  const setVisualTheme = useMapStore((s) => s.setVisualTheme);
   const setSearchVisible = useMapStore((s) => s.setSearchVisible);
   const setPendingAutoArrange = useMapStore((s) => s.setPendingAutoArrange);
   const setPendingExport = useMapStore((s) => s.setPendingExport);
 
-  const currentDisplay = sceneDisplayByMode[mode];
-
-  const [arrangeMenuOpen, setArrangeMenuOpen] = useState(false);
-  const arrangeMenuRef = useRef<HTMLDivElement>(null);
+  const [menuOpen, setMenuOpen] = useState(false);
+  const menuRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    if (!arrangeMenuOpen) return;
+    if (!menuOpen) return;
     function onMouseDown(e: MouseEvent) {
-      if (
-        arrangeMenuRef.current &&
-        !arrangeMenuRef.current.contains(e.target as Node)
-      ) {
-        setArrangeMenuOpen(false);
+      if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
+        setMenuOpen(false);
       }
     }
     document.addEventListener("mousedown", onMouseDown);
     return () => document.removeEventListener("mousedown", onMouseDown);
-  }, [arrangeMenuOpen]);
+  }, [menuOpen]);
 
   return (
     <div
@@ -82,7 +72,6 @@ export function MapHeader() {
         fontSize: 12,
       }}
     >
-      {/* Panel title */}
       <span style={{ fontWeight: 600, marginRight: 4, fontSize: 13 }}>Map</span>
 
       {/* Mode buttons */}
@@ -123,6 +112,21 @@ export function MapHeader() {
         onChange={(v) => setShow({ codex: v })}
       />
       <ShowCheckbox
+        label="Stickies"
+        checked={show.stickies}
+        onChange={(v) => setShow({ stickies: v })}
+      />
+      <ShowCheckbox
+        label="Snippets"
+        checked={show.snippets}
+        onChange={(v) => setShow({ snippets: v })}
+      />
+      <ShowCheckbox
+        label="Notes"
+        checked={show.notes}
+        onChange={(v) => setShow({ notes: v })}
+      />
+      <ShowCheckbox
         label="Edges"
         checked={show.derivedEdges}
         onChange={(v) => setShow({ derivedEdges: v })}
@@ -137,25 +141,12 @@ export function MapHeader() {
         checked={show.frames}
         onChange={(v) => setShow({ frames: v })}
       />
-      <ShowCheckbox
-        label="Notes"
-        checked={show.notes}
-        onChange={(v) => setShow({ notes: v })}
-      />
-      <ShowCheckbox
-        label="AI"
-        checked={show.ai}
-        onChange={(v) => setShow({ ai: v })}
-      />
 
-      {/* ⋮ menu (auto-arrange / display / export) */}
-      <div
-        ref={arrangeMenuRef}
-        style={{ position: "relative", marginLeft: "auto" }}
-      >
+      {/* ⋮ overflow menu */}
+      <div ref={menuRef} style={{ position: "relative", marginLeft: "auto" }}>
         <button
-          onClick={() => setArrangeMenuOpen((v) => !v)}
-          title="自動配置"
+          onClick={() => setMenuOpen((v) => !v)}
+          title="メニュー"
           style={{
             padding: "2px 8px",
             borderRadius: 4,
@@ -168,14 +159,14 @@ export function MapHeader() {
         >
           ⋮
         </button>
-        {arrangeMenuOpen && (
+        {menuOpen && (
           <div
             style={{
               position: "absolute",
               top: "calc(100% + 4px)",
               right: 0,
               zIndex: 50,
-              minWidth: 180,
+              minWidth: 200,
               background: "var(--popover)",
               border: "1px solid var(--border)",
               borderRadius: 6,
@@ -183,31 +174,9 @@ export function MapHeader() {
               padding: "4px 0",
             }}
           >
-            {/* Display section */}
-            <SectionLabel>表示</SectionLabel>
+            <SectionLabel>表示設定</SectionLabel>
             <MenuRow
-              label="Scene display"
-              control={
-                <select
-                  value={currentDisplay}
-                  onChange={(e) =>
-                    setSceneDisplayForMode(
-                      mode,
-                      e.target.value as SceneDisplayVariant,
-                    )
-                  }
-                  style={menuSelectStyle}
-                >
-                  {SCENE_DISPLAY_OPTIONS.map(({ value, label }) => (
-                    <option key={value} value={value}>
-                      {label}
-                    </option>
-                  ))}
-                </select>
-              }
-            />
-            <MenuRow
-              label="Color by"
+              label="カラー"
               control={
                 <select
                   value={colorBy}
@@ -222,22 +191,32 @@ export function MapHeader() {
                 </select>
               }
             />
-            <MenuToggle
-              label="🪵 Corkboard feel"
-              checked={corkboardFeel}
-              onChange={setCorkboardFeel}
+            <MenuRow
+              label="テーマ"
+              control={
+                <select
+                  value={visualTheme}
+                  onChange={(e) =>
+                    setVisualTheme(e.target.value as VisualTheme)
+                  }
+                  style={menuSelectStyle}
+                >
+                  {VISUAL_THEME_OPTIONS.map(({ value, label }) => (
+                    <option key={value} value={value}>
+                      {label}
+                    </option>
+                  ))}
+                </select>
+              }
             />
             <MenuToggle
-              label="Minimap"
+              label="ミニマップ"
               checked={minimapVisible}
               onChange={setMinimapVisible}
             />
 
             <div
-              style={{
-                borderTop: "1px solid var(--border)",
-                margin: "4px 0",
-              }}
+              style={{ borderTop: "1px solid var(--border)", margin: "4px 0" }}
             />
 
             <SectionLabel>自動配置</SectionLabel>
@@ -246,60 +225,10 @@ export function MapHeader() {
                 key={item.type}
                 type="button"
                 onClick={() => {
-                  setArrangeMenuOpen(false);
+                  setMenuOpen(false);
                   setPendingAutoArrange(item.type);
                 }}
-                style={{
-                  display: "block",
-                  width: "100%",
-                  padding: "5px 12px",
-                  textAlign: "left",
-                  fontSize: 12,
-                  background: "transparent",
-                  border: "none",
-                  color: "var(--foreground)",
-                  cursor: "pointer",
-                }}
-                onMouseEnter={(e) =>
-                  (e.currentTarget.style.background = "var(--accent)")
-                }
-                onMouseLeave={(e) =>
-                  (e.currentTarget.style.background = "transparent")
-                }
-              >
-                {item.label}
-              </button>
-            ))}
-            <div
-              style={{
-                borderTop: "1px solid var(--border)",
-                margin: "4px 0",
-              }}
-            />
-            {(
-              [
-                { type: "pov-order", label: "Grid: POV別" },
-                { type: "force-directed", label: "Force-directed" },
-              ] as const
-            ).map((item) => (
-              <button
-                key={item.type}
-                type="button"
-                onClick={() => {
-                  setArrangeMenuOpen(false);
-                  setPendingAutoArrange(item.type);
-                }}
-                style={{
-                  display: "block",
-                  width: "100%",
-                  padding: "5px 12px",
-                  textAlign: "left",
-                  fontSize: 12,
-                  background: "transparent",
-                  border: "none",
-                  color: "var(--foreground)",
-                  cursor: "pointer",
-                }}
+                style={menuItemStyle}
                 onMouseEnter={(e) =>
                   (e.currentTarget.style.background = "var(--accent)")
                 }
@@ -311,13 +240,10 @@ export function MapHeader() {
               </button>
             ))}
 
-            {/* Export section */}
             <div
-              style={{
-                borderTop: "1px solid var(--border)",
-                margin: "4px 0",
-              }}
+              style={{ borderTop: "1px solid var(--border)", margin: "4px 0" }}
             />
+
             <SectionLabel>エクスポート</SectionLabel>
             {(
               [
@@ -330,20 +256,10 @@ export function MapHeader() {
                 key={item.type}
                 type="button"
                 onClick={() => {
-                  setArrangeMenuOpen(false);
+                  setMenuOpen(false);
                   setPendingExport(item.type);
                 }}
-                style={{
-                  display: "block",
-                  width: "100%",
-                  padding: "5px 12px",
-                  textAlign: "left",
-                  fontSize: 12,
-                  background: "transparent",
-                  border: "none",
-                  color: "var(--foreground)",
-                  cursor: "pointer",
-                }}
+                style={menuItemStyle}
                 onMouseEnter={(e) =>
                   (e.currentTarget.style.background = "var(--accent)")
                 }
@@ -415,6 +331,18 @@ const menuSelectStyle: React.CSSProperties = {
   background: "var(--background)",
   color: "var(--foreground)",
   padding: "1px 4px",
+  cursor: "pointer",
+};
+
+const menuItemStyle: React.CSSProperties = {
+  display: "block",
+  width: "100%",
+  padding: "5px 12px",
+  textAlign: "left",
+  fontSize: 12,
+  background: "transparent",
+  border: "none",
+  color: "var(--foreground)",
   cursor: "pointer",
 };
 
