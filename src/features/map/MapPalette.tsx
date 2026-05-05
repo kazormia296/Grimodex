@@ -1,30 +1,51 @@
-import { useCallback } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 type PaletteMode = "default" | "frame" | "connect";
+type PickerEntityType = "scene" | "note" | "codex" | "snippet";
 
 interface MapPaletteProps {
   paletteMode: PaletteMode;
   onPaletteModeChange: (mode: PaletteMode) => void;
-  onAddScene: () => void;
-  onAddCodex: () => void;
-  onAddNote: () => void;
   onAddSticky: () => void;
+  onOpenPicker: (type: PickerEntityType) => void;
 }
+
+const PICKER_ITEMS: { type: PickerEntityType; label: string }[] = [
+  { type: "scene", label: "シーンを追加…" },
+  { type: "note", label: "ノートを追加…" },
+  { type: "codex", label: "Codexを追加…" },
+  { type: "snippet", label: "スニペットを追加…" },
+];
 
 export function MapPalette({
   paletteMode,
   onPaletteModeChange,
-  onAddScene,
-  onAddCodex,
-  onAddNote,
   onAddSticky,
+  onOpenPicker,
 }: MapPaletteProps) {
+  const [addMenuOpen, setAddMenuOpen] = useState(false);
+  const addMenuRef = useRef<HTMLDivElement>(null);
+
   const toggleMode = useCallback(
     (mode: PaletteMode) => {
       onPaletteModeChange(paletteMode === mode ? "default" : mode);
     },
     [paletteMode, onPaletteModeChange],
   );
+
+  useEffect(() => {
+    if (!addMenuOpen) return;
+    function onPointerDown(e: PointerEvent) {
+      if (
+        addMenuRef.current &&
+        !addMenuRef.current.contains(e.target as Node)
+      ) {
+        setAddMenuOpen(false);
+      }
+    }
+    document.addEventListener("pointerdown", onPointerDown);
+    return () => document.removeEventListener("pointerdown", onPointerDown);
+  }, [addMenuOpen]);
 
   return (
     <div
@@ -49,9 +70,63 @@ export function MapPalette({
         onClick={onAddSticky}
         title="付箋を追加 (S)"
       />
-      <PaletteButton label="+ Scene" onClick={onAddScene} />
-      <PaletteButton label="+ Codex" onClick={onAddCodex} />
-      <PaletteButton label="+ Note" onClick={onAddNote} title="ノートを追加" />
+
+      {/* [▾ Add…] dropdown */}
+      <div ref={addMenuRef} style={{ position: "relative" }}>
+        <PaletteButton
+          label="▾ Add…"
+          active={addMenuOpen}
+          onClick={() => setAddMenuOpen((v) => !v)}
+          title="既存エンティティをMapに追加"
+        />
+        {addMenuOpen && (
+          <div
+            style={{
+              position: "absolute",
+              bottom: "calc(100% + 6px)",
+              left: 0,
+              minWidth: 160,
+              background: "var(--popover)",
+              border: "1px solid var(--border)",
+              borderRadius: 6,
+              boxShadow: "0 4px 12px rgba(0,0,0,0.15)",
+              padding: "4px 0",
+              zIndex: 20,
+            }}
+          >
+            {PICKER_ITEMS.map((item) => (
+              <button
+                key={item.type}
+                type="button"
+                onClick={() => {
+                  setAddMenuOpen(false);
+                  onOpenPicker(item.type);
+                }}
+                style={{
+                  display: "block",
+                  width: "100%",
+                  padding: "6px 14px",
+                  textAlign: "left",
+                  fontSize: 12,
+                  background: "transparent",
+                  border: "none",
+                  color: "var(--foreground)",
+                  cursor: "pointer",
+                }}
+                onMouseEnter={(e) =>
+                  (e.currentTarget.style.background = "var(--accent)")
+                }
+                onMouseLeave={(e) =>
+                  (e.currentTarget.style.background = "transparent")
+                }
+              >
+                {item.label}
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+
       <PaletteButton
         label="+ Frame"
         active={paletteMode === "frame"}

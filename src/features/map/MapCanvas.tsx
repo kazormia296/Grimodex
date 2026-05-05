@@ -25,6 +25,7 @@ import { AIBranchNode } from "./nodes/AIBranchNode";
 import { NodeContextMenu } from "./NodeContextMenu";
 import { UserEdge } from "./edges/UserEdge";
 import { MapPalette } from "./MapPalette";
+import { AddToMapPickerDialog } from "./AddToMapPickerDialog";
 import { MapSearch } from "./MapSearch";
 import { DURATIONS, useReducedMotion } from "@/lib/animation";
 import { AutoArrangeDialog } from "./AutoArrangeDialog";
@@ -46,7 +47,6 @@ import { useMapAutoArrange } from "./hooks/useMapAutoArrange";
 import { useMapCallbacks } from "./hooks/useMapCallbacks";
 import { useFrameGroupDrag } from "./hooks/useFrameGroupDrag";
 import {
-  upsertNodePosition,
   deleteUserEdge,
   updateUserEdge,
   deleteFrame,
@@ -108,9 +108,6 @@ export function MapCanvas() {
   const setActiveScene = useTreeStore((s) => s.setActiveScene);
   const updateNodeTitle = useTreeStore((s) => s.updateNodeTitle);
   const updateSynopsis = useTreeStore((s) => s.updateSynopsis);
-  const createScene = useTreeStore((s) => s.createScene);
-  const createNote = useTreeStore((s) => s.createNote);
-  const createCodexEntry = useCodexStore((s) => s.create);
 
   const phasesByEntry = usePhaseStore((s) => s.phasesByEntry);
   const snippetEntries = useSnippetStore((s) => s.entries);
@@ -161,6 +158,9 @@ export function MapCanvas() {
 
   const [nodes, setNodes] = useState<Node[]>([]);
   const [paletteMode, setPaletteMode] = useState<PaletteMode>("default");
+  const [pickerType, setPickerType] = useState<
+    "scene" | "note" | "codex" | "snippet" | null
+  >(null);
   const [deleteDialogNodes, setDeleteDialogNodes] = useState<Node[] | null>(
     null,
   );
@@ -521,52 +521,6 @@ export function MapCanvas() {
     return { x: cx + idx * 24, y: cy + idx * 24 };
   }, [getViewport]);
 
-  const handleAddScene = useCallback(async () => {
-    if (!boardId) return;
-    const pos = getSpawnPosition();
-    const id = await createScene();
-    const record = await upsertNodePosition({
-      boardId,
-      nodeRefType: "scene",
-      treeNodeId: id,
-      x: pos.x,
-      y: pos.y,
-    });
-    setPositions((prev) => [...prev, record as MapNodePositionRecord]);
-  }, [boardId, createScene, getSpawnPosition, setPositions]);
-
-  const handleAddCodex = useCallback(async () => {
-    if (!boardId) return;
-    const pos = getSpawnPosition();
-    const entry = await createCodexEntry({
-      name: "新しいエントリ",
-      type: "character",
-      summary: "",
-    });
-    const record = await upsertNodePosition({
-      boardId,
-      nodeRefType: "codex",
-      codexEntryId: entry.id,
-      x: pos.x,
-      y: pos.y,
-    });
-    setPositions((prev) => [...prev, record as MapNodePositionRecord]);
-  }, [boardId, createCodexEntry, getSpawnPosition, setPositions]);
-
-  const handleAddNote = useCallback(async () => {
-    if (!boardId) return;
-    const pos = getSpawnPosition();
-    const id = await createNote();
-    const record = await upsertNodePosition({
-      boardId,
-      nodeRefType: "note",
-      treeNodeId: id,
-      x: pos.x,
-      y: pos.y,
-    });
-    setPositions((prev) => [...prev, record as MapNodePositionRecord]);
-  }, [boardId, createNote, getSpawnPosition, setPositions]);
-
   const handleAddSticky = useCallback(
     async (flowPos?: { x: number; y: number }) => {
       if (!boardId) return;
@@ -733,11 +687,17 @@ export function MapCanvas() {
       <MapPalette
         paletteMode={paletteMode}
         onPaletteModeChange={setPaletteMode}
-        onAddScene={handleAddScene}
-        onAddCodex={handleAddCodex}
-        onAddNote={handleAddNote}
         onAddSticky={handleAddSticky}
+        onOpenPicker={setPickerType}
       />
+
+      {pickerType && boardId && (
+        <AddToMapPickerDialog
+          boardId={boardId}
+          initialType={pickerType}
+          onClose={() => setPickerType(null)}
+        />
+      )}
 
       {edgeContextMenu && (
         <EdgeContextMenu
