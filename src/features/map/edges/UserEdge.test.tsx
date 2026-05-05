@@ -45,47 +45,65 @@ describe("UserEdge — ラベル編集", () => {
     expect(hitArea).toBeTruthy();
   });
 
-  it("ラベルありのとき label テキストが表示される", () => {
-    render(<UserEdge {...makeProps({ data: { label: "テスト" } })} />);
+  it("forwardLabel ありのとき label テキストが表示される", () => {
+    render(<UserEdge {...makeProps({ data: { forwardLabel: "テスト" } })} />);
     expect(screen.getByText("テスト")).toBeTruthy();
   });
 
-  it("ダブルクリックで入力欄が表示される", async () => {
-    render(<UserEdge {...makeProps({ data: { label: "既存" } })} />);
+  it("forwardLabel と backwardLabel を両方表示する", () => {
+    render(
+      <UserEdge
+        {...makeProps({
+          data: { forwardLabel: "前向き", backwardLabel: "後ろ向き" },
+        })}
+      />,
+    );
+    expect(screen.getByText("前向き")).toBeTruthy();
+    expect(screen.getByText("後ろ向き")).toBeTruthy();
+  });
+
+  it("ダブルクリックで forwardLabel の入力欄が表示される", async () => {
+    render(<UserEdge {...makeProps({ data: { forwardLabel: "既存" } })} />);
     await userEvent.dblClick(screen.getByText("既存"));
     expect(screen.getByRole("textbox")).toBeTruthy();
   });
 
-  it("Enter で onLabelSave が呼ばれ編集終了", async () => {
+  it("Enter で onLabelSave が forwardLabel フィールドで呼ばれる", async () => {
     const onLabelSave = vi.fn();
     render(
-      <UserEdge {...makeProps({ data: { label: "既存", onLabelSave } })} />,
+      <UserEdge
+        {...makeProps({ data: { forwardLabel: "既存", onLabelSave } })}
+      />,
     );
     await userEvent.dblClick(screen.getByText("既存"));
     const input = screen.getByRole("textbox");
     await userEvent.clear(input);
     await userEvent.type(input, "新しい");
     await userEvent.keyboard("{Enter}");
-    expect(onLabelSave).toHaveBeenCalledWith("新しい");
+    expect(onLabelSave).toHaveBeenCalledWith("forwardLabel", "新しい");
     expect(screen.queryByRole("textbox")).toBeNull();
   });
 
   it("空文字で確定すると null が渡される", async () => {
     const onLabelSave = vi.fn();
     render(
-      <UserEdge {...makeProps({ data: { label: "既存", onLabelSave } })} />,
+      <UserEdge
+        {...makeProps({ data: { forwardLabel: "既存", onLabelSave } })}
+      />,
     );
     await userEvent.dblClick(screen.getByText("既存"));
     const input = screen.getByRole("textbox");
     await userEvent.clear(input);
     await userEvent.keyboard("{Enter}");
-    expect(onLabelSave).toHaveBeenCalledWith(null);
+    expect(onLabelSave).toHaveBeenCalledWith("forwardLabel", null);
   });
 
   it("Escape で onLabelSave を呼ばずに編集キャンセル", async () => {
     const onLabelSave = vi.fn();
     render(
-      <UserEdge {...makeProps({ data: { label: "既存", onLabelSave } })} />,
+      <UserEdge
+        {...makeProps({ data: { forwardLabel: "既存", onLabelSave } })}
+      />,
     );
     await userEvent.dblClick(screen.getByText("既存"));
     await userEvent.keyboard("{Escape}");

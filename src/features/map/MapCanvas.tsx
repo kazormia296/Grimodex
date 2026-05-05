@@ -269,8 +269,12 @@ export function MapCanvas() {
   });
 
   const handleUserEdgeLabelSave = useCallback(
-    async (edgeId: string, label: string | null) => {
-      const updated = await updateUserEdge(edgeId, { forwardLabel: label });
+    async (
+      edgeId: string,
+      field: "forwardLabel" | "backwardLabel",
+      label: string | null,
+    ) => {
+      const updated = await updateUserEdge(edgeId, { [field]: label });
       if (updated) {
         setUserEdges((prev) =>
           prev.map((u) => (u.id === edgeId ? updated : u)),

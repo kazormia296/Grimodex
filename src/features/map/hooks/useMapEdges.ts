@@ -27,13 +27,18 @@ interface UseMapEdgesInput {
     fromPositionId: string;
     toPositionId: string;
     forwardLabel?: string | null;
+    backwardLabel?: string | null;
     style: string;
     color: string;
     direction: string;
   }[];
   positions: MapNodePositionRecord[];
   show: ShowFlags;
-  onUserEdgeLabelSave?: (edgeId: string, label: string | null) => void;
+  onUserEdgeLabelSave?: (
+    edgeId: string,
+    field: "forwardLabel" | "backwardLabel",
+    label: string | null,
+  ) => void;
 }
 
 function posToRfId(pos: MapNodePositionRecord | undefined): string | null {
@@ -171,12 +176,16 @@ export function useMapEdges({
               type: "user",
               zIndex: 1,
               data: {
-                label: ue.forwardLabel,
+                forwardLabel: ue.forwardLabel,
+                backwardLabel: ue.backwardLabel,
                 style: ue.style,
                 color: ue.color,
                 direction: ue.direction,
                 onLabelSave: onUserEdgeLabelSave
-                  ? (label: string | null) => onUserEdgeLabelSave(ue.id, label)
+                  ? (
+                      field: "forwardLabel" | "backwardLabel",
+                      label: string | null,
+                    ) => onUserEdgeLabelSave(ue.id, field, label)
                   : undefined,
               },
             } as Edge;
