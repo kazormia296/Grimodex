@@ -6,6 +6,9 @@ import {
   mapStickies,
   mapEdges,
   mapFrames,
+  treeNodes,
+  codexEntries,
+  snippets,
   type MapBoard,
   type NewMapBoard,
   type MapNodePosition,
@@ -20,6 +23,8 @@ import {
 } from "@/db/schema";
 import { eq, and, isNotNull } from "drizzle-orm";
 import type { NodeRefType, StickyColor } from "./types";
+
+export type PromoteTargetType = "scene" | "note" | "snippet" | "codex";
 
 // ── Board ──────────────────────────────────────────────────────────────────
 
@@ -497,6 +502,92 @@ export async function updateSticky(
 
 export async function deleteSticky(id: string): Promise<void> {
   await db.delete(mapStickies).where(eq(mapStickies.id, id));
+}
+
+/**
+ * Promote a Sticky to a structured entity (Scene/Note/Snippet/Codex).
+ * - Creates the new entity with sticky title + body as content
+ * - Updates the map_node_positions row in-place (same ID, new entity reference)
+ * - Deletes the sticky
+ */
+export async function promoteSticky(
+  stickyId: string,
+  positionId: string,
+  targetType: PromoteTargetType,
+  options: { projectId: string; codexType?: string },
+): Promise<{ newEntityId: string; updatedPosition: MapNodePosition }> {
+  const [sticky] = await db
+    .select()
+    .from(mapStickies)
+    .where(eq(mapStickies.id, stickyId))
+    .limit(1);
+  if (!sticky) throw new Error(`Sticky ${stickyId} not found`);
+
+  const title = sticky.title || "Untitled";
+  const body = sticky.body || '{"type":"doc","content":[]}';
+  const now = new Date().toISOString();
+  let newEntityId: string;
+  let nodeRefType: NodeRefType;
+
+  if (targetType === "scene" || targetType === "note") {
+    newEntityId = crypto.randomUUID();
+    await db.insert(treeNodes).values({
+      id: newEntityId,
+      projectId: options.projectId,
+      parentId: null,
+      nodeType: targetType,
+      title,
+      sortOrder: "a0",
+      content: body,
+      createdAt: now,
+      updatedAt: now,
+    });
+    nodeRefType = targetType;
+  } else if (targetType === "snippet") {
+    newEntityId = crypto.randomUUID();
+    await db.insert(snippets).values({
+      id: newEntityId,
+      projectId: options.projectId,
+      title,
+      content: body,
+      createdAt: now,
+      updatedAt: now,
+    });
+    nodeRefType = "snippet";
+  } else {
+    // codex
+    newEntityId = crypto.randomUUID();
+    const type = options.codexType ?? "character";
+    await db.insert(codexEntries).values({
+      id: newEntityId,
+      projectId: options.projectId,
+      type,
+      name: title,
+      content: body,
+      createdAt: now,
+      updatedAt: now,
+    });
+    nodeRefType = "codex";
+  }
+
+  const [updatedPosition] = await db
+    .update(mapNodePositions)
+    .set({
+      nodeRefType,
+      treeNodeId:
+        targetType === "scene" || targetType === "note" ? newEntityId : null,
+      codexEntryId: targetType === "codex" ? newEntityId : null,
+      snippetId: targetType === "snippet" ? newEntityId : null,
+      stickyId: null,
+      aiBranchId: null,
+      updatedAt: now,
+    })
+    .where(eq(mapNodePositions.id, positionId))
+    .returning();
+
+  await db.delete(mapStickies).where(eq(mapStickies.id, stickyId));
+
+  return { newEntityId, updatedPosition };
 }
 
 // ── AI Branches ────────────────────────────────────────────────────────────

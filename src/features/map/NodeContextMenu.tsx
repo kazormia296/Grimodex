@@ -1,11 +1,20 @@
-import { useEffect, useRef, useCallback } from "react";
+import { useEffect, useRef, useCallback, useState } from "react";
 import { createPortal } from "react-dom";
+import type { PromoteTargetType } from "./mapApi";
+
+const CODEX_TYPES = [
+  { value: "character", label: "キャラクター" },
+  { value: "location", label: "場所" },
+  { value: "item", label: "アイテム" },
+  { value: "lore", label: "設定・用語" },
+] as const;
 
 interface NodeContextMenuProps {
   nodeId: string;
   screenPosition: { x: number; y: number };
   isPinned: boolean;
   isScene: boolean;
+  isSticky?: boolean;
   focusedNodeId: string | null;
   onClose: () => void;
   onOpen: () => void;
@@ -16,6 +25,7 @@ interface NodeContextMenuProps {
   onExitFocus: () => void;
   onBringToFront: () => void;
   onSendToBack: () => void;
+  onPromote?: (type: PromoteTargetType, codexType?: string) => void;
 }
 
 const MENU_WIDTH = 200;
@@ -25,6 +35,7 @@ export function NodeContextMenu({
   screenPosition,
   isPinned,
   isScene,
+  isSticky = false,
   focusedNodeId,
   onClose,
   onOpen,
@@ -35,8 +46,11 @@ export function NodeContextMenu({
   onExitFocus,
   onBringToFront,
   onSendToBack,
+  onPromote,
 }: NodeContextMenuProps) {
   const menuRef = useRef<HTMLDivElement>(null);
+  const [showPromoteMenu, setShowPromoteMenu] = useState(false);
+  const [showCodexTypes, setShowCodexTypes] = useState(false);
 
   const close = useCallback(() => onClose(), [onClose]);
 
@@ -161,6 +175,90 @@ export function NodeContextMenu({
           </button>
         )}
 
+        {isSticky && onPromote && (
+          <>
+            <div className="my-1 border-t border-border" />
+            <div
+              className="relative"
+              onMouseEnter={() => setShowPromoteMenu(true)}
+              onMouseLeave={() => {
+                setShowPromoteMenu(false);
+                setShowCodexTypes(false);
+              }}
+            >
+              <button
+                type="button"
+                className="w-full px-3 py-1.5 text-sm text-left hover:bg-accent flex items-center justify-between"
+              >
+                <span>昇格…</span>
+                <span className="text-xs text-muted-foreground">▶</span>
+              </button>
+              {showPromoteMenu && (
+                <div
+                  className="absolute left-full top-0 bg-popover border border-border rounded-md shadow-md py-1 z-50"
+                  style={{ minWidth: 140 }}
+                >
+                  {(
+                    [
+                      { type: "scene" as PromoteTargetType, label: "シーン" },
+                      { type: "note" as PromoteTargetType, label: "ノート" },
+                      {
+                        type: "snippet" as PromoteTargetType,
+                        label: "スニペット",
+                      },
+                    ] as const
+                  ).map(({ type, label }) => (
+                    <button
+                      key={type}
+                      type="button"
+                      className="w-full px-3 py-1.5 text-sm text-left hover:bg-accent"
+                      onClick={() => {
+                        close();
+                        onPromote(type);
+                      }}
+                    >
+                      {label}
+                    </button>
+                  ))}
+                  <div
+                    className="relative"
+                    onMouseEnter={() => setShowCodexTypes(true)}
+                    onMouseLeave={() => setShowCodexTypes(false)}
+                  >
+                    <button
+                      type="button"
+                      className="w-full px-3 py-1.5 text-sm text-left hover:bg-accent flex items-center justify-between"
+                    >
+                      <span>Codex</span>
+                      <span className="text-xs text-muted-foreground">▶</span>
+                    </button>
+                    {showCodexTypes && (
+                      <div
+                        className="absolute left-full top-0 bg-popover border border-border rounded-md shadow-md py-1 z-50"
+                        style={{ minWidth: 130 }}
+                      >
+                        {CODEX_TYPES.map(({ value, label }) => (
+                          <button
+                            key={value}
+                            type="button"
+                            className="w-full px-3 py-1.5 text-sm text-left hover:bg-accent"
+                            onClick={() => {
+                              close();
+                              onPromote("codex", value);
+                            }}
+                          >
+                            {label}
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+            </div>
+          </>
+        )}
+
         <div className="my-1 border-t border-border" />
 
         <button
@@ -171,7 +269,7 @@ export function NodeContextMenu({
             onRemoveFromBoard();
           }}
         >
-          このボードから削除
+          {isSticky ? "削除" : "このボードから削除"}
         </button>
       </div>
     </div>,

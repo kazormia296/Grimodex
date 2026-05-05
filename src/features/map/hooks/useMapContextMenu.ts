@@ -5,9 +5,13 @@ import {
   updateNodePosition,
   upsertNodePosition,
   deleteNodePosition,
+  deleteSticky,
+  promoteSticky,
+  type PromoteTargetType,
 } from "../mapApi";
 import { findPosByNodeId, buildUpsertArgs } from "../utils/nodeIdCodec";
 import type { MapNodePositionRecord } from "../types";
+import type { MapSticky } from "@/db/schema";
 
 export interface ContextMenuState {
   nodeId: string;
@@ -18,18 +22,24 @@ export interface ContextMenuState {
 
 interface UseMapContextMenuInput {
   boardId: string | null;
+  projectId: string;
   positions: MapNodePositionRecord[];
   nodes: Node[];
   setPositions: React.Dispatch<React.SetStateAction<MapNodePositionRecord[]>>;
+  setStickies: React.Dispatch<React.SetStateAction<MapSticky[]>>;
   setActiveScene: (id: string) => void;
+  onAfterPromote?: (targetType: PromoteTargetType) => void;
 }
 
 export function useMapContextMenu({
   boardId,
+  projectId,
   positions,
   nodes,
   setPositions,
+  setStickies,
   setActiveScene,
+  onAfterPromote,
 }: UseMapContextMenuInput) {
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
 
@@ -75,15 +85,20 @@ export function useMapContextMenu({
     }
   }, [contextMenu, positions, setPositions]);
 
-  /** Remove node from this board (delete position row, keep the entity itself). */
+  /** For sticky nodes: delete both sticky and position. For others: remove from board only. */
   const handleRemoveFromBoard = useCallback(async () => {
     if (!contextMenu) return;
     const pos = findPosByNodeId(positions, contextMenu.nodeId);
     if (!pos) return;
-    await deleteNodePosition(pos.id);
+    if (pos.stickyId) {
+      await deleteSticky(pos.stickyId);
+      setStickies((prev) => prev.filter((s) => s.id !== pos.stickyId));
+    } else {
+      await deleteNodePosition(pos.id);
+    }
     setPositions((prev) => prev.filter((p) => p.id !== pos.id));
     setContextMenu(null);
-  }, [contextMenu, positions, setPositions]);
+  }, [contextMenu, positions, setPositions, setStickies]);
 
   const handleContextMenuOpen = useCallback(() => {
     if (!contextMenu) return;
@@ -138,6 +153,38 @@ export function useMapContextMenu({
     }
   }, [contextMenu, positions, ensurePositionForNodeId, setPositions]);
 
+  const handlePromoteSticky = useCallback(
+    async (targetType: PromoteTargetType, codexType?: string) => {
+      if (!contextMenu) return;
+      const pos = findPosByNodeId(positions, contextMenu.nodeId);
+      if (!pos?.stickyId) return;
+      const { updatedPosition } = await promoteSticky(
+        pos.stickyId,
+        pos.id,
+        targetType,
+        { projectId, codexType },
+      );
+      setPositions((prev) =>
+        prev.map((p) =>
+          p.id === updatedPosition.id
+            ? (updatedPosition as MapNodePositionRecord)
+            : p,
+        ),
+      );
+      setStickies((prev) => prev.filter((s) => s.id !== pos.stickyId));
+      setContextMenu(null);
+      onAfterPromote?.(targetType);
+    },
+    [
+      contextMenu,
+      positions,
+      projectId,
+      setPositions,
+      setStickies,
+      onAfterPromote,
+    ],
+  );
+
   return {
     contextMenu,
     setContextMenu,
@@ -148,5 +195,6 @@ export function useMapContextMenu({
     handleContextMenuOpen,
     handleBringToFront,
     handleSendToBack,
+    handlePromoteSticky,
   };
 }

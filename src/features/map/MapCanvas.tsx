@@ -317,12 +317,24 @@ export function MapCanvas() {
     handleContextMenuOpen,
     handleBringToFront,
     handleSendToBack,
+    handlePromoteSticky,
   } = useMapContextMenu({
     boardId,
+    projectId: PROJECT_ID,
     positions,
     nodes,
     setPositions,
+    setStickies,
     setActiveScene,
+    onAfterPromote: (targetType) => {
+      if (targetType === "scene" || targetType === "note") {
+        void useTreeStore.getState().loadTree(PROJECT_ID);
+      } else if (targetType === "codex") {
+        void useCodexStore.getState().loadEntries();
+      } else if (targetType === "snippet") {
+        void useSnippetStore.getState().loadEntries();
+      }
+    },
   });
 
   const {
@@ -665,6 +677,7 @@ export function MapCanvas() {
           screenPosition={contextMenu.screenPosition}
           isPinned={contextMenu.isPinned}
           isScene={contextMenu.isScene}
+          isSticky={contextMenu.nodeId.startsWith("sticky:")}
           focusedNodeId={focusedNodeId}
           onClose={() => setContextMenu(null)}
           onOpen={handleContextMenuOpen}
@@ -675,6 +688,7 @@ export function MapCanvas() {
           onExitFocus={() => setFocusedNode(null)}
           onBringToFront={handleBringToFront}
           onSendToBack={handleSendToBack}
+          onPromote={handlePromoteSticky}
         />
       )}
 
