@@ -562,15 +562,6 @@ impl Database {
                   VALUES (new.id || '-lore', new.id, 'lore', '伝承', '#993C1D', 3, 1, 3.0, datetime('now'));
             END;
 
-            -- Map panel tables: drop old schema first (drop & recreate migration)
-            DROP TABLE IF EXISTS map_edges;
-            DROP TABLE IF EXISTS map_frames;
-            DROP TABLE IF EXISTS map_node_positions;
-            DROP TABLE IF EXISTS map_stickies;
-            DROP TABLE IF EXISTS map_ai_branches;
-            DROP TABLE IF EXISTS map_ai_nodes;
-            DROP TABLE IF EXISTS map_boards;
-
             -- map_boards: per-project boards with viewport/show state
             CREATE TABLE IF NOT EXISTS map_boards (
                 id            TEXT PRIMARY KEY,
