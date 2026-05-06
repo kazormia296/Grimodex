@@ -18,7 +18,6 @@ export interface StickyNodeData {
   body: string;
   previewText: string;
   color: StickyColor;
-  useTipTap: boolean;
   colorBy?: string;
   rotation?: number;
   isDeleting?: boolean;
@@ -172,7 +171,7 @@ export const StickyNode = memo(function StickyNode({
   useEffect(() => {
     if (pendingAutoFocusIds.has(d.id)) {
       pendingAutoFocusIds.delete(d.id);
-      if (d.useTipTap) setEditing(true);
+      setEditing(true);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -265,7 +264,7 @@ export const StickyNode = memo(function StickyNode({
               userSelect: editing ? "text" : "none",
             }}
             onDoubleClick={(e) => {
-              if (!editing && d.useTipTap) {
+              if (!editing) {
                 e.stopPropagation();
                 setEditing(true);
               }
@@ -367,7 +366,7 @@ export const StickyNode = memo(function StickyNode({
               )}
 
               {/* Body */}
-              {editing && d.useTipTap ? (
+              {editing ? (
                 <StickyBodyEditor
                   body={d.body}
                   onContentChange={(json) => {

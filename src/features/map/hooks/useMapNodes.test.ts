@@ -3,20 +3,10 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { renderHook, act } from "@testing-library/react";
 import type { Node } from "@xyflow/react";
 
-import {
-  STICKY_TIPTAP_THRESHOLD,
-  corkRotation,
-  useMapNodes,
-} from "./useMapNodes";
+import { corkRotation, useMapNodes } from "./useMapNodes";
 import type { MapNodePositionRecord } from "../types";
 
 // ── Pure exports ────────────────────────────────────────────────────────────
-
-describe("STICKY_TIPTAP_THRESHOLD", () => {
-  it("50 である", () => {
-    expect(STICKY_TIPTAP_THRESHOLD).toBe(50);
-  });
-});
 
 describe("corkRotation", () => {
   it("同じ id は常に同じ回転値を返す（決定論的）", () => {

@@ -17,9 +17,6 @@ import type { MapAiBranch, MapFrame, MapSticky } from "@/db/schema";
 import type { Snippet } from "@/features/snippets/api";
 import type { StickyColor } from "../types";
 
-/** Threshold: above this many stickies in view → fall back to static HTML */
-export const STICKY_TIPTAP_THRESHOLD = 50;
-
 // Deterministic rotation from node id for corkboard feel (±0.5deg)
 export function corkRotation(id: string): number {
   let hash = 0;
@@ -321,9 +318,6 @@ export function useMapNodes({
           stickyPosMap.set(`sticky:${p.stickyId}`, { x: p.x, y: p.y });
         }
       }
-      // 50-sticky TipTap threshold guard (design spec §1b)
-      const useTipTap = stickies.length <= STICKY_TIPTAP_THRESHOLD;
-
       const stickyNodes: Node[] = show.stickies
         ? stickies.map((st, idx) => {
             const key = `sticky:${st.id}`;
@@ -343,7 +337,6 @@ export function useMapNodes({
                 body: st.body,
                 previewText: st.previewText ?? "",
                 color: st.color,
-                useTipTap,
                 colorBy,
                 rotation: stickyRotation(st.id),
                 isDeleting: deletingStickyIds?.has(st.id) ?? false,

@@ -38,7 +38,6 @@ function makeProps(
     body: string;
     previewText: string;
     color: string;
-    useTipTap: boolean;
     onUpdate: ReturnType<typeof vi.fn>;
   }> = {},
 ): NodeProps {
@@ -51,7 +50,6 @@ function makeProps(
       body: '{"type":"doc","content":[]}',
       previewText: "preview text",
       color: "yellow",
-      useTipTap: true,
       ...overrides,
     },
     type: "sticky",
@@ -88,24 +86,13 @@ describe("StickyNode — 表示", () => {
 describe("StickyNode — 編集モード", () => {
   beforeEach(() => vi.clearAllMocks());
 
-  it("ダブルクリックで編集モードが起動する（useTipTap=true）", async () => {
+  it("ダブルクリックで編集モードが起動する", async () => {
     const { container } = render(<StickyNode {...makeProps()} />);
     const innerDiv = container.querySelector(
       "[style*='cursor']",
     ) as HTMLElement;
     fireEvent.dblClick(innerDiv);
     expect(screen.getByTestId("tiptap-editor")).toBeTruthy();
-  });
-
-  it("useTipTap=false のとき静的表示のまま（編集モードに入らない）", () => {
-    const { container } = render(
-      <StickyNode {...makeProps({ useTipTap: false })} />,
-    );
-    const innerDiv = container.querySelector(
-      "[style*='cursor']",
-    ) as HTMLElement;
-    fireEvent.dblClick(innerDiv);
-    expect(screen.queryByTestId("tiptap-editor")).toBeNull();
   });
 
   it("Escape キーで編集が終了する", async () => {
@@ -139,18 +126,6 @@ describe("StickyNode — カラー変更", () => {
     await userEvent.click(colorBtn);
     await userEvent.click(screen.getByTitle("pink"));
     expect(onUpdate).toHaveBeenCalledWith({ color: "pink" });
-  });
-});
-
-describe("StickyNode — 50 閾値フォールバック", () => {
-  it("useTipTap=false のとき静的 HTML プレビューを表示する", () => {
-    render(
-      <StickyNode
-        {...makeProps({ useTipTap: false, previewText: "静的プレビュー" })}
-      />,
-    );
-    expect(screen.getByText("静的プレビュー")).toBeTruthy();
-    expect(screen.queryByTestId("tiptap-editor")).toBeNull();
   });
 });
 

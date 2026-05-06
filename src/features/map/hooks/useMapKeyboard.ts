@@ -64,9 +64,11 @@ export function useMapKeyboard(opts: {
 
   const onKeyDown = useCallback(
     (e: KeyboardEvent<HTMLDivElement>) => {
+      const target = e.target;
       const inInput =
-        e.target instanceof HTMLInputElement ||
-        e.target instanceof HTMLTextAreaElement;
+        target instanceof HTMLInputElement ||
+        target instanceof HTMLTextAreaElement ||
+        (target instanceof HTMLElement && target.isContentEditable);
 
       if (e.key === "Escape") {
         // Priority: frame drawing > search > focus > palette
