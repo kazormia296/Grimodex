@@ -10,6 +10,8 @@ import {
   deleteBoard,
   duplicateBoard,
 } from "./mapApi";
+import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 
 const PROJECT_ID = "default-project";
 
@@ -164,28 +166,19 @@ export function MapHeader() {
 
       {/* Board selector */}
       <div ref={boardMenuRef} style={{ position: "relative" }}>
-        <button
+        <Button
+          variant="outline"
+          size="xs"
           onClick={() => {
             setBoardMenuOpen((v) => !v);
             setBoardSubMenu(null);
           }}
-          style={{
-            padding: "2px 8px",
-            borderRadius: 4,
-            border: "1px solid var(--border)",
-            background: "transparent",
-            color: "var(--foreground)",
-            cursor: "pointer",
-            fontSize: 11,
-            maxWidth: 140,
-            overflow: "hidden",
-            textOverflow: "ellipsis",
-            whiteSpace: "nowrap",
-          }}
           title="ボードを切り替え"
+          className="max-w-[140px] overflow-hidden text-ellipsis"
         >
-          {activeBoard?.title ?? "—"} ▾
-        </button>
+          <span className="truncate">{activeBoard?.title ?? "—"}</span>
+          <span aria-hidden>▾</span>
+        </Button>
         {boardMenuOpen && (
           <div
             style={{
@@ -260,31 +253,21 @@ export function MapHeader() {
                       padding: "4px 0",
                     }}
                   >
-                    <button
-                      type="button"
-                      style={boardSubMenuItemStyle}
+                    <MenuButton
                       onClick={() => void handleBoardRename(b.id, b.title)}
                     >
                       リネーム
-                    </button>
-                    <button
-                      type="button"
-                      style={boardSubMenuItemStyle}
-                      onClick={() => void handleBoardDuplicate(b.id)}
-                    >
+                    </MenuButton>
+                    <MenuButton onClick={() => void handleBoardDuplicate(b.id)}>
                       複製
-                    </button>
+                    </MenuButton>
                     {boards.length > 1 && (
-                      <button
-                        type="button"
-                        style={{
-                          ...boardSubMenuItemStyle,
-                          color: "var(--destructive)",
-                        }}
+                      <MenuButton
+                        destructive
                         onClick={() => void handleBoardDelete(b.id)}
                       >
                         削除
-                      </button>
+                      </MenuButton>
                     )}
                   </div>
                 )}
@@ -293,39 +276,39 @@ export function MapHeader() {
             <div
               style={{ borderTop: "1px solid var(--border)", margin: "4px 0" }}
             />
-            <button
-              type="button"
-              style={menuItemStyle}
-              onClick={() => void handleBoardCreate()}
-            >
+            <MenuButton onClick={() => void handleBoardCreate()}>
               + 新規ボード
-            </button>
+            </MenuButton>
           </div>
         )}
       </div>
 
       {/* Mode buttons */}
       <div style={{ display: "flex", gap: 2 }}>
-        {MODES.map(({ key, label }) => (
-          <button
-            key={key}
-            onClick={() => setMode(key)}
-            title={`${label} モード`}
-            style={{
-              padding: "2px 8px",
-              borderRadius: 4,
-              border: "1px solid",
-              borderColor: mode === key ? "#534AB7" : "var(--border)",
-              background: mode === key ? "#534AB7" : "transparent",
-              color: mode === key ? "#fff" : "var(--foreground)",
-              cursor: "pointer",
-              fontSize: 11,
-              fontWeight: mode === key ? 600 : 400,
-            }}
-          >
-            {label}
-          </button>
-        ))}
+        {MODES.map(({ key, label }) => {
+          const active = mode === key;
+          return (
+            <Button
+              key={key}
+              variant={active ? "default" : "outline"}
+              size="xs"
+              onClick={() => setMode(key)}
+              title={`${label} モード`}
+              style={
+                active
+                  ? {
+                      background: "#534AB7",
+                      borderColor: "#534AB7",
+                      color: "#fff",
+                    }
+                  : undefined
+              }
+              className={active ? "font-semibold" : "font-normal"}
+            >
+              {label}
+            </Button>
+          );
+        })}
       </div>
 
       <Divider />
@@ -374,21 +357,14 @@ export function MapHeader() {
 
       {/* ⋮ overflow menu */}
       <div ref={menuRef} style={{ position: "relative", marginLeft: "auto" }}>
-        <button
+        <Button
+          variant="outline"
+          size="xs"
           onClick={() => setMenuOpen((v) => !v)}
           title="メニュー"
-          style={{
-            padding: "2px 8px",
-            borderRadius: 4,
-            border: "1px solid var(--border)",
-            background: "transparent",
-            color: "var(--foreground)",
-            cursor: "pointer",
-            fontSize: 11,
-          }}
         >
           ⋮
-        </button>
+        </Button>
         {menuOpen && (
           <div
             style={{
@@ -451,23 +427,15 @@ export function MapHeader() {
 
             <SectionLabel>自動配置</SectionLabel>
             {ARRANGE_ITEMS.map((item) => (
-              <button
+              <MenuButton
                 key={item.type}
-                type="button"
                 onClick={() => {
                   setMenuOpen(false);
                   setPendingAutoArrange(item.type);
                 }}
-                style={menuItemStyle}
-                onMouseEnter={(e) =>
-                  (e.currentTarget.style.background = "var(--accent)")
-                }
-                onMouseLeave={(e) =>
-                  (e.currentTarget.style.background = "transparent")
-                }
               >
                 {item.label}
-              </button>
+              </MenuButton>
             ))}
 
             <div
@@ -482,44 +450,29 @@ export function MapHeader() {
                 { type: "json", label: "JSON としてエクスポート" },
               ] as const
             ).map((item) => (
-              <button
+              <MenuButton
                 key={item.type}
-                type="button"
                 onClick={() => {
                   setMenuOpen(false);
                   setPendingExport(item.type);
                 }}
-                style={menuItemStyle}
-                onMouseEnter={(e) =>
-                  (e.currentTarget.style.background = "var(--accent)")
-                }
-                onMouseLeave={(e) =>
-                  (e.currentTarget.style.background = "transparent")
-                }
               >
                 {item.label}
-              </button>
+              </MenuButton>
             ))}
           </div>
         )}
       </div>
 
       {/* Search button */}
-      <button
+      <Button
+        variant="outline"
+        size="xs"
         onClick={() => setSearchVisible(true)}
         title="ノードを検索 (Ctrl+F)"
-        style={{
-          padding: "2px 8px",
-          borderRadius: 4,
-          border: "1px solid var(--border)",
-          background: "transparent",
-          color: "var(--foreground)",
-          cursor: "pointer",
-          fontSize: 11,
-        }}
       >
         🔍
-      </button>
+      </Button>
     </div>
   );
 }
@@ -564,29 +517,26 @@ const menuSelectStyle: React.CSSProperties = {
   cursor: "pointer",
 };
 
-const menuItemStyle: React.CSSProperties = {
-  display: "block",
-  width: "100%",
-  padding: "5px 12px",
-  textAlign: "left",
-  fontSize: 12,
-  background: "transparent",
-  border: "none",
-  color: "var(--foreground)",
-  cursor: "pointer",
-};
-
-const boardSubMenuItemStyle: React.CSSProperties = {
-  display: "block",
-  width: "100%",
-  padding: "5px 12px",
-  textAlign: "left",
-  fontSize: 12,
-  background: "transparent",
-  border: "none",
-  color: "var(--foreground)",
-  cursor: "pointer",
-};
+function MenuButton({
+  children,
+  onClick,
+  destructive,
+}: {
+  children: React.ReactNode;
+  onClick: () => void;
+  destructive?: boolean;
+}) {
+  return (
+    <Button
+      variant="ghost"
+      onClick={onClick}
+      className="block h-auto w-full justify-start rounded-none px-3 py-1.5 text-left text-xs font-normal"
+      style={destructive ? { color: "var(--destructive)" } : undefined}
+    >
+      {children}
+    </Button>
+  );
+}
 
 function MenuRow({
   label,
@@ -637,11 +587,9 @@ function MenuToggle({
       }}
     >
       <span>{label}</span>
-      <input
-        type="checkbox"
+      <Checkbox
         checked={checked}
-        onChange={(e) => onChange(e.target.checked)}
-        style={{ cursor: "pointer" }}
+        onCheckedChange={(v) => onChange(v === true)}
       />
     </label>
   );
@@ -661,17 +609,16 @@ function ShowCheckbox({
       style={{
         display: "flex",
         alignItems: "center",
-        gap: 3,
+        gap: 4,
         cursor: "pointer",
         fontSize: 11,
         userSelect: "none",
       }}
     >
-      <input
-        type="checkbox"
+      <Checkbox
         checked={checked}
-        onChange={(e) => onChange(e.target.checked)}
-        style={{ width: 12, height: 12, cursor: "pointer" }}
+        onCheckedChange={(v) => onChange(v === true)}
+        className="h-3.5 w-3.5"
       />
       {label}
     </label>
