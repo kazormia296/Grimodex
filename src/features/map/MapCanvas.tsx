@@ -734,8 +734,8 @@ export function MapCanvas() {
         onNodeContextMenu={onNodeContextMenu}
         onEdgeContextMenu={onEdgeContextMenu}
         onPaneContextMenu={(e) => e.preventDefault()}
+        zoomOnDoubleClick={false}
         onPaneClick={(e) => {
-          // Double-click detection for sticky creation
           if (e.detail === 2) handlePaneDoubleClick(e);
         }}
         onMoveEnd={syncViewport}
