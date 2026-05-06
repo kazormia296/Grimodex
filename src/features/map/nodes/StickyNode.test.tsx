@@ -354,3 +354,65 @@ describe("StickyNode — 折れ角 (Phase 2)", () => {
     expect(paper?.getAttribute("data-old")).toBe("false");
   });
 });
+
+// ────────────────────────────────────────────────────────────────
+// Phase 3: enter アニメ
+// ────────────────────────────────────────────────────────────────
+vi.mock("motion/react", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("motion/react")>();
+  return {
+    ...actual,
+    motion: {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      ...(actual.motion as any),
+      div: ({
+        children,
+        initial,
+        animate,
+        "data-testid": testId,
+        ...rest
+      }: React.HTMLAttributes<HTMLDivElement> & {
+        initial?: unknown;
+        animate?: unknown;
+      }) => (
+        <div
+          data-testid={testId}
+          data-motion-initial={JSON.stringify(initial)}
+          data-motion-animate={JSON.stringify(animate)}
+          {...rest}
+        >
+          {children}
+        </div>
+      ),
+    },
+  };
+});
+
+describe("StickyNode — enter アニメ (Phase 3)", () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it("motion-wrapper が描画される", () => {
+    const { container } = render(<StickyNode {...makeProps()} />);
+    expect(
+      container.querySelector('[data-testid="sticky-motion"]'),
+    ).toBeTruthy();
+  });
+
+  it("initial が opacity:0 を含む", () => {
+    const { container } = render(<StickyNode {...makeProps()} />);
+    const wrapper = container.querySelector('[data-testid="sticky-motion"]');
+    const initial = JSON.parse(
+      wrapper?.getAttribute("data-motion-initial") ?? "{}",
+    );
+    expect(initial.opacity).toBe(0);
+  });
+
+  it("animate が opacity:1 を含む", () => {
+    const { container } = render(<StickyNode {...makeProps()} />);
+    const wrapper = container.querySelector('[data-testid="sticky-motion"]');
+    const animate = JSON.parse(
+      wrapper?.getAttribute("data-motion-animate") ?? "{}",
+    );
+    expect(animate.opacity).toBe(1);
+  });
+});
