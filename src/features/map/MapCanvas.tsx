@@ -357,6 +357,7 @@ export function MapCanvas() {
     handleBringToFront,
     handleSendToBack,
     handlePromoteSticky,
+    handleChangeStickyColor,
   } = useMapContextMenu({
     boardId,
     projectId: PROJECT_ID,
@@ -844,6 +845,11 @@ export function MapCanvas() {
           onBranchFrom={
             contextMenu.nodeId.startsWith("sticky:")
               ? handleBranchFromSticky
+              : undefined
+          }
+          onChangeColor={
+            contextMenu.nodeId.startsWith("sticky:")
+              ? handleChangeStickyColor
               : undefined
           }
         />

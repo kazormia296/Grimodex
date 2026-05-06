@@ -6,10 +6,11 @@ import {
   upsertNodePosition,
   deleteNodePosition,
   promoteSticky,
+  updateSticky,
   type PromoteTargetType,
 } from "../mapApi";
 import { findPosByNodeId, buildUpsertArgs } from "../utils/nodeIdCodec";
-import type { MapNodePositionRecord } from "../types";
+import type { MapNodePositionRecord, StickyColor } from "../types";
 import type { MapSticky } from "@/db/schema";
 
 export interface ContextMenuState {
@@ -186,6 +187,20 @@ export function useMapContextMenu({
     ],
   );
 
+  const handleChangeStickyColor = useCallback(
+    async (color: StickyColor) => {
+      if (!contextMenu) return;
+      const pos = findPosByNodeId(positions, contextMenu.nodeId);
+      if (!pos?.stickyId) return;
+      await updateSticky(pos.stickyId, { color });
+      setStickies((prev) =>
+        prev.map((s) => (s.id === pos.stickyId ? { ...s, color } : s)),
+      );
+      setContextMenu(null);
+    },
+    [contextMenu, positions, setStickies],
+  );
+
   return {
     contextMenu,
     setContextMenu,
@@ -197,5 +212,6 @@ export function useMapContextMenu({
     handleBringToFront,
     handleSendToBack,
     handlePromoteSticky,
+    handleChangeStickyColor,
   };
 }

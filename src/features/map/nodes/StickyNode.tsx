@@ -31,17 +31,6 @@ export interface StickyNodeData {
   [key: string]: unknown;
 }
 
-const STICKY_BORDER: Record<StickyColor, string> = {
-  yellow: "#CA8A04",
-  orange: "#EA580C",
-  pink: "#DB2777",
-  green: "#16A34A",
-  blue: "#2563EB",
-  purple: "#7C3AED",
-  gray: "#6B7280",
-  white: "#D1D5DB",
-};
-
 const STICKY_ANIMATE = {
   opacity: 1,
   y: 0,
@@ -67,17 +56,6 @@ const STICKY_REDUCED_VARIANTS = {
   animate: STICKY_ANIMATE,
   exit: STICKY_EXIT,
 } as const;
-
-const COLOR_KEYS: StickyColor[] = [
-  "yellow",
-  "orange",
-  "pink",
-  "green",
-  "blue",
-  "purple",
-  "gray",
-  "white",
-];
 
 function parseBodyContent(body: string): object | undefined {
   if (!body) return undefined;
@@ -147,25 +125,16 @@ export const StickyNode = memo(function StickyNode({
   const exitFiredRef = useRef(false);
 
   const [editing, setEditing] = useState(false);
-  const [localTitle, setLocalTitle] = useState(d.title);
-  const [localColor, setLocalColor] = useState<StickyColor>(d.color);
-  const [showColorPicker, setShowColorPicker] = useState(false);
   const [glueOrient, setGlueOrient] = useState<"left" | "top">("left");
   const latestBodyRef = useRef<string>(d.body);
-  const titleRef = useRef<string>(d.title);
   const measureRef = useRef<HTMLDivElement>(null);
 
-  // Sync from parent when not editing
+  // Sync body from parent when not editing
   useEffect(() => {
     if (!editing) {
-      setLocalTitle(d.title);
       latestBodyRef.current = d.body;
     }
-  }, [d.title, d.body, editing]);
-
-  useEffect(() => {
-    setLocalColor(d.color);
-  }, [d.color]);
+  }, [d.body, editing]);
 
   // Auto-enter edit mode for newly created stickies (branch / add)
   useEffect(() => {
@@ -193,37 +162,17 @@ export const StickyNode = memo(function StickyNode({
     return () => ro.disconnect();
   }, []);
 
-  const borderColor =
-    d.colorBy === "status"
-      ? "var(--border)"
-      : (STICKY_BORDER[localColor] ?? STICKY_BORDER.yellow);
-
   const save = useCallback(async () => {
     const json = latestBodyRef.current;
     const preview = extractPreviewText(json);
-    const title = titleRef.current;
-    await (d.onUpdate?.({ title, body: json, previewText: preview }) ??
-      updateSticky(d.id, { title, body: json, previewText: preview }));
+    await (d.onUpdate?.({ body: json, previewText: preview }) ??
+      updateSticky(d.id, { body: json, previewText: preview }));
   }, [d]);
 
   const exitEditing = useCallback(async () => {
     setEditing(false);
     await save();
   }, [save]);
-
-  const handleColorChange = useCallback(
-    async (color: StickyColor) => {
-      setLocalColor(color);
-      setShowColorPicker(false);
-      await (d.onUpdate?.({ color }) ?? updateSticky(d.id, { color }));
-    },
-    [d],
-  );
-
-  const handleTitleChange = useCallback((val: string) => {
-    setLocalTitle(val);
-    titleRef.current = val;
-  }, []);
 
   return (
     <div style={{ position: "relative" }}>
@@ -250,16 +199,15 @@ export const StickyNode = memo(function StickyNode({
           <div
             data-testid="sticky-paper"
             className="sticky-paper"
-            data-color={localColor}
+            data-color={d.color}
             data-glue={glueOrient}
             style={{
-              width: 240,
-              minHeight: 80,
-              maxHeight: editing ? 600 : 300,
+              width: 200,
+              minHeight: 52,
+              maxHeight: editing ? 480 : 280,
               overflow: editing ? "auto" : "hidden",
-              border: `1.5px solid ${selected ? "#534AB7" : borderColor}`,
-              outline: selected ? "2px solid rgba(83,74,183,0.3)" : "none",
-              outlineOffset: "1px",
+              outline: selected ? "2px solid #534AB7" : "none",
+              outlineOffset: "2px",
               cursor: editing ? "text" : "default",
               userSelect: editing ? "text" : "none",
             }}
@@ -276,95 +224,6 @@ export const StickyNode = memo(function StickyNode({
               data-testid="sticky-content"
               className="sticky-content"
             >
-              {/* Header row: title + color button */}
-              <div
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  gap: 4,
-                  marginBottom: 4,
-                }}
-              >
-                <input
-                  value={localTitle}
-                  placeholder="タイトル"
-                  onChange={(e) => handleTitleChange(e.target.value)}
-                  onPointerDown={(e) => e.stopPropagation()}
-                  onKeyDown={(e) => {
-                    if (e.key === "Escape") {
-                      e.preventDefault();
-                      exitEditing();
-                    }
-                  }}
-                  style={{
-                    flex: 1,
-                    border: "none",
-                    outline: "none",
-                    background: "transparent",
-                    fontSize: 12,
-                    fontWeight: 600,
-                    color: "rgba(0,0,0,0.75)",
-                    padding: 0,
-                    cursor: "text",
-                    minWidth: 0,
-                  }}
-                />
-                {/* Color picker toggle */}
-                <button
-                  onPointerDown={(e) => e.stopPropagation()}
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    setShowColorPicker((v) => !v);
-                  }}
-                  style={{
-                    width: 16,
-                    height: 16,
-                    borderRadius: "50%",
-                    border: "1.5px solid rgba(0,0,0,0.2)",
-                    background: `var(--sticky-bg-${localColor}, #FEF9C3)`,
-                    cursor: "pointer",
-                    flexShrink: 0,
-                    padding: 0,
-                  }}
-                  title="色を変更"
-                />
-              </div>
-
-              {/* Color palette */}
-              {showColorPicker && (
-                <div
-                  onPointerDown={(e) => e.stopPropagation()}
-                  style={{
-                    display: "flex",
-                    flexWrap: "wrap",
-                    gap: 4,
-                    marginBottom: 6,
-                    padding: "4px 0",
-                    borderBottom: "1px solid rgba(0,0,0,0.08)",
-                  }}
-                >
-                  {COLOR_KEYS.map((c) => (
-                    <button
-                      key={c}
-                      onClick={() => handleColorChange(c)}
-                      style={{
-                        width: 20,
-                        height: 20,
-                        borderRadius: "50%",
-                        border:
-                          c === localColor
-                            ? "2px solid #534AB7"
-                            : `1.5px solid ${STICKY_BORDER[c]}`,
-                        background: `var(--sticky-bg-${c}, #FEF9C3)`,
-                        cursor: "pointer",
-                        padding: 0,
-                      }}
-                      title={c}
-                    />
-                  ))}
-                </div>
-              )}
-
               {/* Body */}
               {editing ? (
                 <StickyBodyEditor
@@ -388,7 +247,7 @@ export const StickyNode = memo(function StickyNode({
                     WebkitBoxOrient: "vertical",
                   }}
                 >
-                  {d.previewText || (localTitle ? "" : "（空）")}
+                  {d.previewText}
                 </div>
               )}
             </div>

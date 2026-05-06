@@ -1,7 +1,6 @@
 // @vitest-environment happy-dom
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, fireEvent, act } from "@testing-library/react";
-import userEvent from "@testing-library/user-event";
 import { StickyNode } from "./StickyNode";
 import type { NodeProps } from "@xyflow/react";
 
@@ -71,12 +70,6 @@ describe("StickyNode — 表示", () => {
     expect(screen.getByText("本文プレビュー")).toBeTruthy();
   });
 
-  it("title が input に表示される", () => {
-    render(<StickyNode {...makeProps({ title: "テスト" })} />);
-    const input = screen.getByPlaceholderText("タイトル") as HTMLInputElement;
-    expect(input.value).toBe("テスト");
-  });
-
   it("非編集時に TipTap エディタが表示されない", () => {
     render(<StickyNode {...makeProps()} />);
     expect(screen.queryByTestId("tiptap-editor")).toBeNull();
@@ -101,31 +94,9 @@ describe("StickyNode — 編集モード", () => {
       "[style*='cursor']",
     ) as HTMLElement;
     fireEvent.dblClick(innerDiv);
-    expect(screen.getByTestId("tiptap-editor")).toBeTruthy();
-
-    const titleInput = screen.getByPlaceholderText("タイトル");
-    await userEvent.type(titleInput, "{Escape}");
+    const editor = screen.getByTestId("tiptap-editor");
+    fireEvent.keyDown(editor, { key: "Escape" });
     expect(screen.queryByTestId("tiptap-editor")).toBeNull();
-  });
-});
-
-describe("StickyNode — カラー変更", () => {
-  beforeEach(() => vi.clearAllMocks());
-
-  it("カラーボタンをクリックするとパレットが表示される", async () => {
-    render(<StickyNode {...makeProps()} />);
-    const colorBtn = screen.getByTitle("色を変更");
-    await userEvent.click(colorBtn);
-    expect(screen.getByTitle("pink")).toBeTruthy();
-  });
-
-  it("色を選択すると onUpdate が呼ばれる", async () => {
-    const onUpdate = vi.fn().mockResolvedValue(undefined);
-    render(<StickyNode {...makeProps({ onUpdate })} />);
-    const colorBtn = screen.getByTitle("色を変更");
-    await userEvent.click(colorBtn);
-    await userEvent.click(screen.getByTitle("pink"));
-    expect(onUpdate).toHaveBeenCalledWith({ color: "pink" });
   });
 });
 

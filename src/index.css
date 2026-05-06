@@ -87,15 +87,17 @@
   --content-border: oklch(0.269 0 0);
   --note-bg: #2a2540;
   --note-border: #7a6bc4;
-  /* Dark mode sticky colors — desaturated warm tones */
-  --sticky-bg-yellow: #3a3520;
-  --sticky-bg-orange: #3a2a18;
-  --sticky-bg-pink: #381828;
-  --sticky-bg-green: #1a3022;
-  --sticky-bg-blue: #182438;
-  --sticky-bg-purple: #28203a;
-  --sticky-bg-gray: #2a2a2a;
-  --sticky-bg-white: #2e2e2e;
+  /* Sticky colors keep light-mode pastels in dark mode (Post-It is a physical
+     object, not a themed UI surface), but mix in 8% black so the paper sits
+     more comfortably against the dark canvas without losing hue identity. */
+  --sticky-bg-yellow: color-mix(in srgb, #fef9c3 92%, black);
+  --sticky-bg-orange: color-mix(in srgb, #fed7aa 92%, black);
+  --sticky-bg-pink: color-mix(in srgb, #fce7f3 92%, black);
+  --sticky-bg-green: color-mix(in srgb, #dcfce7 92%, black);
+  --sticky-bg-blue: color-mix(in srgb, #dbeafe 92%, black);
+  --sticky-bg-purple: color-mix(in srgb, #ede9fe 92%, black);
+  --sticky-bg-gray: color-mix(in srgb, #f3f4f6 92%, black);
+  --sticky-bg-white: color-mix(in srgb, #ffffff 92%, black);
 }
 
 @theme inline {
@@ -837,14 +839,16 @@
   /* Base paper: left-glue default (tight left shadow, curling right) */
   .sticky-paper {
     position: relative;
-    border-radius: 4px;
+    /* Sticky paper stays light in both themes (see :root sticky-bg-* vars),
+       so text must be dark regardless of --foreground. */
+    color: rgba(0, 0, 0, 0.78);
     background-color: var(--sticky-bg-yellow);
     /* Layered: paper grain + top-left highlight glow + bottom-right shadow falloff */
     background-image:
       var(--sticky-noise),
       radial-gradient(
         120% 60% at 0% 0%,
-        rgba(255, 255, 255, 0.55),
+        rgba(255, 255, 255, 0.35),
         rgba(255, 255, 255, 0) 40%
       ),
       radial-gradient(
@@ -859,7 +863,7 @@
       0 1px 0 rgba(0, 0, 0, 0.04),
       2px 3px 3px rgba(0, 0, 0, 0.06),
       8px 14px 22px -10px rgba(0, 0, 0, 0.32),
-      inset 0 1px 0 rgba(255, 255, 255, 0.55),
+      inset 0 1px 0 rgba(255, 255, 255, 0.35),
       inset 0 -10px 18px -14px rgba(0, 0, 0, 0.18);
   }
 
@@ -870,7 +874,6 @@
     inset: 0 auto 0 0;
     width: 12px;
     background: linear-gradient(90deg, rgba(0, 0, 0, 0.07), transparent);
-    border-radius: 4px 0 0 4px;
     pointer-events: none;
     z-index: 1;
   }
@@ -881,7 +884,7 @@
       0 1px 0 rgba(0, 0, 0, 0.04),
       0 3px 3px rgba(0, 0, 0, 0.06),
       0 14px 22px -10px rgba(0, 0, 0, 0.32),
-      inset 0 1px 0 rgba(255, 255, 255, 0.55),
+      inset 0 1px 0 rgba(255, 255, 255, 0.35),
       inset 0 -10px 18px -14px rgba(0, 0, 0, 0.18);
   }
 
@@ -890,7 +893,6 @@
     width: auto;
     height: 12px;
     background: linear-gradient(180deg, rgba(0, 0, 0, 0.07), transparent);
-    border-radius: 4px 4px 0 0;
   }
 
   /* Per-color backgrounds */

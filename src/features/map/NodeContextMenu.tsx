@@ -1,6 +1,7 @@
 import { useEffect, useRef, useCallback, useState } from "react";
 import { createPortal } from "react-dom";
 import type { PromoteTargetType } from "./mapApi";
+import type { StickyColor } from "./types";
 
 const CODEX_TYPES = [
   { value: "character", label: "キャラクター" },
@@ -8,6 +9,17 @@ const CODEX_TYPES = [
   { value: "item", label: "アイテム" },
   { value: "lore", label: "設定・用語" },
 ] as const;
+
+const STICKY_COLORS: { value: StickyColor; label: string }[] = [
+  { value: "yellow", label: "イエロー" },
+  { value: "orange", label: "オレンジ" },
+  { value: "pink", label: "ピンク" },
+  { value: "green", label: "グリーン" },
+  { value: "blue", label: "ブルー" },
+  { value: "purple", label: "パープル" },
+  { value: "gray", label: "グレー" },
+  { value: "white", label: "ホワイト" },
+];
 
 interface NodeContextMenuProps {
   nodeId: string;
@@ -29,6 +41,7 @@ interface NodeContextMenuProps {
   onPromote?: (type: PromoteTargetType, codexType?: string) => void;
   onPromoteFrame?: (codexType: string) => void;
   onBranchFrom?: () => void;
+  onChangeColor?: (color: StickyColor) => void;
 }
 
 const MENU_WIDTH = 200;
@@ -53,11 +66,13 @@ export function NodeContextMenu({
   onPromote,
   onPromoteFrame,
   onBranchFrom,
+  onChangeColor,
 }: NodeContextMenuProps) {
   const menuRef = useRef<HTMLDivElement>(null);
   const [showPromoteMenu, setShowPromoteMenu] = useState(false);
   const [showCodexTypes, setShowCodexTypes] = useState(false);
   const [showFrameCodexTypes, setShowFrameCodexTypes] = useState(false);
+  const [showColorMenu, setShowColorMenu] = useState(false);
 
   const close = useCallback(() => onClose(), [onClose]);
 
@@ -233,6 +248,56 @@ export function NodeContextMenu({
                 フォーカス
               </button>
             )}
+          </>
+        )}
+
+        {!isFrame && isSticky && onChangeColor && (
+          <>
+            <div className="my-1 border-t border-border" />
+            <div
+              className="relative"
+              onMouseEnter={() => setShowColorMenu(true)}
+              onMouseLeave={() => setShowColorMenu(false)}
+            >
+              <button
+                type="button"
+                className="w-full px-3 py-1.5 text-sm text-left hover:bg-accent flex items-center justify-between"
+              >
+                <span>色を変更…</span>
+                <span className="text-xs text-muted-foreground">▶</span>
+              </button>
+              {showColorMenu && (
+                <div
+                  className="absolute left-full top-0 bg-popover border border-border rounded-md shadow-md py-1 z-50"
+                  style={{ minWidth: 140 }}
+                >
+                  {STICKY_COLORS.map(({ value, label }) => (
+                    <button
+                      key={value}
+                      type="button"
+                      className="w-full px-3 py-1.5 text-sm text-left hover:bg-accent flex items-center gap-2"
+                      onClick={() => {
+                        close();
+                        onChangeColor(value);
+                      }}
+                    >
+                      <span
+                        aria-hidden
+                        style={{
+                          width: 12,
+                          height: 12,
+                          borderRadius: "50%",
+                          border: "1.5px solid rgba(0,0,0,0.2)",
+                          background: `var(--sticky-bg-${value})`,
+                          flexShrink: 0,
+                        }}
+                      />
+                      <span>{label}</span>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
           </>
         )}
 
