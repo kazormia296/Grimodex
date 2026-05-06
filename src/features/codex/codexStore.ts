@@ -10,6 +10,7 @@ import {
 } from "./api";
 import type { CodexEntry, CodexEntryType, NewCodexEntry } from "./api";
 import { searchCodexEntries } from "./search";
+import { useGlobalHistoryStore } from "@/store/globalHistoryStore";
 
 export type CodexSortOrder =
   | "category"
@@ -18,6 +19,49 @@ export type CodexSortOrder =
   | "updated"
   | "created"
   | "most-referenced";
+
+type StructuralPatch = Partial<
+  Pick<
+    NewCodexEntry,
+    | "type"
+    | "name"
+    | "summary"
+    | "content"
+    | "tagsCache"
+    | "aliases"
+    | "excludedAliases"
+    | "parentId"
+    | "contextMode"
+    | "icon"
+    | "childrenBudget"
+    | "notes"
+  >
+>;
+
+type TextPatch = Partial<Pick<NewCodexEntry, "summary" | "content" | "notes">>;
+
+const FIELD_LABELS: Record<string, string> = {
+  type: "種別変更",
+  name: "名称変更",
+  summary: "概要変更",
+  content: "内容変更",
+  notes: "ノート変更",
+  tagsCache: "タグ変更",
+  aliases: "別名変更",
+  excludedAliases: "除外別名変更",
+  parentId: "親変更",
+  contextMode: "コンテキストモード変更",
+  icon: "アイコン変更",
+  childrenBudget: "子budget変更",
+};
+
+function labelForPatch(data: StructuralPatch): string {
+  const keys = Object.keys(data);
+  if (keys.length === 1) {
+    return FIELD_LABELS[keys[0]] ?? "Codex 更新";
+  }
+  return "Codex 更新";
+}
 
 interface CodexState {
   entries: CodexEntry[];
@@ -43,25 +87,15 @@ interface CodexState {
         >
       >,
   ) => Promise<CodexEntry>;
-  update: (
-    id: string,
-    data: Partial<
-      Pick<
-        NewCodexEntry,
-        | "type"
-        | "name"
-        | "summary"
-        | "content"
-        | "tagsCache"
-        | "aliases"
-        | "excludedAliases"
-        | "contextMode"
-        | "icon"
-        | "childrenBudget"
-        | "notes"
-      >
-    >,
-  ) => Promise<void>;
+  /**
+   * Structural / deliberate user edits. Pushes a history entry.
+   */
+  update: (id: string, data: StructuralPatch) => Promise<void>;
+  /**
+   * Auto-save path for TipTap-driven text fields. Does NOT push history;
+   * TipTap's built-in undo handles text-level reversal.
+   */
+  updateText: (id: string, data: TextPatch) => Promise<void>;
   remove: (id: string) => Promise<void>;
   setFilterType: (type: CodexEntryType | null) => Promise<void>;
   requestSelectEntry: (id: string) => void;
@@ -117,17 +151,55 @@ export const useCodexStore = create<CodexState>()((set, get) => ({
 
   create: async (data) => {
     try {
+      const id = crypto.randomUUID();
       const entry = await createCodexEntry({
-        id: crypto.randomUUID(),
+        id,
         projectId: "default-project",
         ...data,
       });
-      // Optimistic update: add to store immediately without triggering isLoading cycle.
-      // isLoading=true unmounts the virtualizer's scroll container, causing a one-frame
-      // gap where getVirtualItems() returns [] before ResizeObserver fires.
       const { filterType } = get();
       if (!filterType || filterType === entry.type) {
         set((state) => ({ entries: [entry, ...state.entries] }));
+      }
+
+      if (!useGlobalHistoryStore.getState().isReplaying) {
+        const captured = { ...entry };
+        useGlobalHistoryStore.getState().push({
+          kind: "codex",
+          label: "Codex作成",
+          async undo() {
+            await deleteCodexEntry(captured.id);
+            set((state) => ({
+              entries: state.entries.filter((e) => e.id !== captured.id),
+            }));
+          },
+          async redo() {
+            await createCodexEntry({
+              id: captured.id,
+              projectId: captured.projectId,
+              type: captured.type,
+              name: captured.name,
+              summary: captured.summary ?? undefined,
+              tagsCache: captured.tagsCache ?? undefined,
+              aliases: captured.aliases ?? undefined,
+              excludedAliases: captured.excludedAliases ?? undefined,
+              parentId: captured.parentId ?? undefined,
+              sourceChatMessageId: captured.sourceChatMessageId ?? undefined,
+            });
+            // Apply remaining fields not accepted by createCodexEntry
+            await updateCodexEntry(captured.id, {
+              content: captured.content ?? undefined,
+              contextMode: captured.contextMode ?? undefined,
+              icon: captured.icon ?? undefined,
+              childrenBudget: captured.childrenBudget ?? undefined,
+              notes: captured.notes ?? undefined,
+            });
+            const { filterType } = get();
+            if (!filterType || filterType === captured.type) {
+              set((state) => ({ entries: [captured, ...state.entries] }));
+            }
+          },
+        });
       }
       return entry;
     } catch (e) {
@@ -138,6 +210,8 @@ export const useCodexStore = create<CodexState>()((set, get) => ({
   },
 
   update: async (id, data) => {
+    const before = get().entries.find((e) => e.id === id);
+
     try {
       const updated = await updateCodexEntry(id, data);
       if (updated) {
@@ -148,16 +222,104 @@ export const useCodexStore = create<CodexState>()((set, get) => ({
     } catch (e) {
       toast.error(i18next.t("codex.store.updateFailed"));
       debugLog.error("CodexStore", `update: ${rootCause(e)}`, errorDetail(e));
+      return;
+    }
+
+    if (!before) return;
+    if (useGlobalHistoryStore.getState().isReplaying) return;
+
+    const undoPatch: Record<string, unknown> = {};
+    for (const key of Object.keys(data)) {
+      const v = (before as unknown as Record<string, unknown>)[key];
+      undoPatch[key] = v ?? undefined;
+    }
+
+    useGlobalHistoryStore.getState().push({
+      kind: "codex",
+      label: labelForPatch(data),
+      async undo() {
+        const restored = await updateCodexEntry(
+          id,
+          undoPatch as StructuralPatch,
+        );
+        if (restored) {
+          set((state) => ({
+            entries: state.entries.map((e) => (e.id === id ? restored : e)),
+          }));
+        }
+      },
+      async redo() {
+        const reapplied = await updateCodexEntry(id, data);
+        if (reapplied) {
+          set((state) => ({
+            entries: state.entries.map((e) => (e.id === id ? reapplied : e)),
+          }));
+        }
+      },
+    });
+  },
+
+  updateText: async (id, data) => {
+    try {
+      const updated = await updateCodexEntry(id, data);
+      if (updated) {
+        set((state) => ({
+          entries: state.entries.map((e) => (e.id === id ? updated : e)),
+        }));
+      }
+    } catch (e) {
+      toast.error(i18next.t("codex.store.updateFailed"));
+      debugLog.error(
+        "CodexStore",
+        `updateText: ${rootCause(e)}`,
+        errorDetail(e),
+      );
     }
   },
 
   remove: async (id) => {
+    const before = get().entries.find((e) => e.id === id);
     try {
       await deleteCodexEntry(id);
       await get().loadEntries();
     } catch (e) {
       toast.error(i18next.t("codex.store.deleteFailed"));
       debugLog.error("CodexStore", `remove: ${rootCause(e)}`, errorDetail(e));
+      return;
+    }
+
+    if (before && !useGlobalHistoryStore.getState().isReplaying) {
+      const captured = { ...before };
+      useGlobalHistoryStore.getState().push({
+        kind: "codex",
+        label: "Codex削除",
+        async undo() {
+          await createCodexEntry({
+            id: captured.id,
+            projectId: captured.projectId,
+            type: captured.type,
+            name: captured.name,
+            summary: captured.summary ?? undefined,
+            tagsCache: captured.tagsCache ?? undefined,
+            aliases: captured.aliases ?? undefined,
+            excludedAliases: captured.excludedAliases ?? undefined,
+            parentId: captured.parentId ?? undefined,
+            sourceChatMessageId: captured.sourceChatMessageId ?? undefined,
+          });
+          await updateCodexEntry(captured.id, {
+            content: captured.content ?? undefined,
+            contextMode: captured.contextMode ?? undefined,
+            icon: captured.icon ?? undefined,
+            childrenBudget: captured.childrenBudget ?? undefined,
+            notes: captured.notes ?? undefined,
+          });
+          await get().loadEntries();
+        },
+        async redo() {
+          await deleteCodexEntry(captured.id);
+          await get().loadEntries();
+        },
+      });
     }
   },
 

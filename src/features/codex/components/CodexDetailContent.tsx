@@ -79,6 +79,7 @@ export function CodexDetailContent({
   initialTab = "details",
 }: CodexDetailContentProps) {
   const update = useCodexStore((s) => s.update);
+  const updateText = useCodexStore((s) => s.updateText);
   const { shouldAutoRevision, recordAutoRevision } = useRevisionStore();
 
   const [activeTab, setActiveTab] = useState(initialTab);
@@ -178,8 +179,8 @@ export function CodexDetailContent({
   // Auto-save: summary (1 second debounce)
   const { schedule: scheduleSummarySave } = useAutoSave(
     useCallback(async () => {
-      await update(entry.id, { summary: summaryRef.current });
-    }, [entry.id, update]),
+      await updateText(entry.id, { summary: summaryRef.current });
+    }, [entry.id, updateText]),
     1000,
   );
 
@@ -187,7 +188,7 @@ export function CodexDetailContent({
   const { schedule: scheduleContentSave } = useAutoSave(
     useCallback(async () => {
       const content = contentRef.current;
-      await update(entry.id, { content });
+      await updateText(entry.id, { content });
       try {
         const intervalMs =
           useSettingsStore.getState().getNumber("revision.autoInterval", 5) *
@@ -217,15 +218,15 @@ export function CodexDetailContent({
           errorDetail(e),
         );
       }
-    }, [entry.id, update, shouldAutoRevision, recordAutoRevision]),
+    }, [entry.id, updateText, shouldAutoRevision, recordAutoRevision]),
     2000,
   );
 
   // Auto-save: notes (2 second debounce)
   const { schedule: scheduleNotesSave } = useAutoSave(
     useCallback(async () => {
-      await update(entry.id, { notes: notesRef.current });
-    }, [entry.id, update]),
+      await updateText(entry.id, { notes: notesRef.current });
+    }, [entry.id, updateText]),
     2000,
   );
 
