@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { useMapStore } from "./mapStore";
 import type { MapMode, ColorByAxis, VisualTheme } from "./types";
 import type { AutoArrangeType } from "./layouts/autoArrange";
@@ -12,6 +12,22 @@ import {
 } from "./mapApi";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
+import { ChevronDown, MoreVertical } from "lucide-react";
+import {
+  DropdownMenu,
+  DropdownMenuTrigger,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuCheckboxItem,
+  DropdownMenuRadioGroup,
+  DropdownMenuRadioItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuShortcut,
+  DropdownMenuSub,
+  DropdownMenuSubTrigger,
+  DropdownMenuSubContent,
+} from "@/components/ui/dropdown-menu";
 
 const PROJECT_ID = "default-project";
 
@@ -37,6 +53,12 @@ const VISUAL_THEME_OPTIONS: { value: VisualTheme; label: string }[] = [
   { value: "constellation", label: "星座" },
 ];
 
+const EXPORT_ITEMS = [
+  { type: "svg", label: "SVG として保存" },
+  { type: "png", label: "PNG として保存" },
+  { type: "json", label: "JSON としてエクスポート" },
+] as const;
+
 export function MapHeader() {
   const mode = useMapStore((s) => s.mode);
   const setMode = useMapStore((s) => s.setMode);
@@ -57,12 +79,6 @@ export function MapHeader() {
   const [boards, setBoards] = useState<MapBoard[]>([]);
   const activeBoard = boards.find((b) => b.id === activeBoardId);
 
-  const [menuOpen, setMenuOpen] = useState(false);
-  const [boardMenuOpen, setBoardMenuOpen] = useState(false);
-  const [boardSubMenu, setBoardSubMenu] = useState<string | null>(null);
-  const menuRef = useRef<HTMLDivElement>(null);
-  const boardMenuRef = useRef<HTMLDivElement>(null);
-
   const reloadBoards = useCallback(async () => {
     const all = await listBoards(PROJECT_ID);
     setBoards(all);
@@ -73,32 +89,6 @@ export function MapHeader() {
     reloadBoards().catch(console.error);
   }, [reloadBoards, activeBoardId]);
 
-  useEffect(() => {
-    if (!menuOpen) return;
-    function onMouseDown(e: MouseEvent) {
-      if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
-        setMenuOpen(false);
-      }
-    }
-    document.addEventListener("mousedown", onMouseDown);
-    return () => document.removeEventListener("mousedown", onMouseDown);
-  }, [menuOpen]);
-
-  useEffect(() => {
-    if (!boardMenuOpen) return;
-    function onMouseDown(e: MouseEvent) {
-      if (
-        boardMenuRef.current &&
-        !boardMenuRef.current.contains(e.target as Node)
-      ) {
-        setBoardMenuOpen(false);
-        setBoardSubMenu(null);
-      }
-    }
-    document.addEventListener("mousedown", onMouseDown);
-    return () => document.removeEventListener("mousedown", onMouseDown);
-  }, [boardMenuOpen]);
-
   async function handleBoardCreate() {
     const title = window.prompt("ボード名を入力", "新規ボード");
     if (!title?.trim()) return;
@@ -107,7 +97,6 @@ export function MapHeader() {
     if (all.length === 1 || !activeBoardId) {
       setActiveBoardId(newBoard.id);
     }
-    setBoardMenuOpen(false);
   }
 
   async function handleBoardRename(id: string, currentTitle: string) {
@@ -115,18 +104,12 @@ export function MapHeader() {
     if (!title?.trim()) return;
     await renameBoard(id, title.trim());
     await reloadBoards();
-    setBoardMenuOpen(false);
-    setBoardSubMenu(null);
   }
 
   async function handleBoardDuplicate(id: string) {
-    const src = boards.find((b) => b.id === id);
     const newBoard = await duplicateBoard(id, PROJECT_ID);
     await reloadBoards();
     setActiveBoardId(newBoard.id);
-    setBoardMenuOpen(false);
-    setBoardSubMenu(null);
-    void src;
   }
 
   async function handleBoardDelete(id: string) {
@@ -143,8 +126,6 @@ export function MapHeader() {
     if (activeBoardId === id) {
       setActiveBoardId(remaining[0]?.id ?? null);
     }
-    setBoardMenuOpen(false);
-    setBoardSubMenu(null);
   }
 
   return (
@@ -165,123 +146,67 @@ export function MapHeader() {
       <span style={{ fontWeight: 600, marginRight: 4, fontSize: 13 }}>Map</span>
 
       {/* Board selector */}
-      <div ref={boardMenuRef} style={{ position: "relative" }}>
-        <Button
-          variant="outline"
-          size="xs"
-          onClick={() => {
-            setBoardMenuOpen((v) => !v);
-            setBoardSubMenu(null);
-          }}
-          title="ボードを切り替え"
-          className="max-w-[140px] overflow-hidden text-ellipsis"
-        >
-          <span className="truncate">{activeBoard?.title ?? "—"}</span>
-          <span aria-hidden>▾</span>
-        </Button>
-        {boardMenuOpen && (
-          <div
-            style={{
-              position: "absolute",
-              top: "calc(100% + 4px)",
-              left: 0,
-              zIndex: 50,
-              minWidth: 180,
-              background: "var(--popover)",
-              border: "1px solid var(--border)",
-              borderRadius: 6,
-              boxShadow: "0 4px 12px rgba(0,0,0,0.15)",
-              padding: "4px 0",
-            }}
+      <DropdownMenu>
+        <DropdownMenuTrigger asChild>
+          <Button
+            variant="outline"
+            size="xs"
+            title="ボードを切り替え"
+            className="max-w-[140px] overflow-hidden"
           >
-            {boards.map((b) => (
-              <div
-                key={b.id}
-                style={{ position: "relative" }}
-                onMouseEnter={() => setBoardSubMenu(b.id)}
-                onMouseLeave={() => setBoardSubMenu(null)}
+            <span className="truncate">{activeBoard?.title ?? "—"}</span>
+            <ChevronDown className="ml-1 h-3 w-3" aria-hidden />
+          </Button>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="start" className="min-w-[180px]">
+          {boards.map((b) => (
+            <DropdownMenuItem
+              key={b.id}
+              onSelect={() => setActiveBoardId(b.id)}
+              className={b.id === activeBoardId ? "bg-accent" : undefined}
+            >
+              <span className="truncate">{b.title}</span>
+            </DropdownMenuItem>
+          ))}
+          <DropdownMenuSeparator />
+          <DropdownMenuSub>
+            <DropdownMenuSubTrigger disabled={!activeBoard}>
+              アクティブボード操作
+            </DropdownMenuSubTrigger>
+            <DropdownMenuSubContent>
+              <DropdownMenuItem
+                disabled={!activeBoard}
+                onSelect={() => {
+                  if (!activeBoard) return;
+                  void handleBoardRename(activeBoard.id, activeBoard.title);
+                }}
               >
-                <div
-                  style={{
-                    display: "flex",
-                    alignItems: "center",
-                    justifyContent: "space-between",
-                    padding: "5px 12px",
-                    background:
-                      b.id === activeBoardId ? "var(--accent)" : "transparent",
-                    cursor: "pointer",
-                    fontSize: 12,
-                    color: "var(--foreground)",
-                  }}
+                リネーム
+              </DropdownMenuItem>
+              <DropdownMenuItem
+                disabled={!activeBoard}
+                onSelect={() => {
+                  if (!activeBoard) return;
+                  void handleBoardDuplicate(activeBoard.id);
+                }}
+              >
+                複製
+              </DropdownMenuItem>
+              {boards.length > 1 && activeBoard && (
+                <DropdownMenuItem
+                  onSelect={() => void handleBoardDelete(activeBoard.id)}
+                  className="text-[color:var(--destructive)] focus:text-[color:var(--destructive)]"
                 >
-                  <span
-                    style={{
-                      flex: 1,
-                      overflow: "hidden",
-                      textOverflow: "ellipsis",
-                      whiteSpace: "nowrap",
-                    }}
-                    onClick={() => {
-                      setActiveBoardId(b.id);
-                      setBoardMenuOpen(false);
-                    }}
-                  >
-                    {b.title}
-                  </span>
-                  <span
-                    style={{
-                      fontSize: 10,
-                      color: "var(--muted-foreground)",
-                      marginLeft: 4,
-                    }}
-                  >
-                    ⋯
-                  </span>
-                </div>
-                {boardSubMenu === b.id && (
-                  <div
-                    style={{
-                      position: "absolute",
-                      top: 0,
-                      left: "100%",
-                      zIndex: 51,
-                      minWidth: 140,
-                      background: "var(--popover)",
-                      border: "1px solid var(--border)",
-                      borderRadius: 6,
-                      boxShadow: "0 4px 12px rgba(0,0,0,0.15)",
-                      padding: "4px 0",
-                    }}
-                  >
-                    <MenuButton
-                      onClick={() => void handleBoardRename(b.id, b.title)}
-                    >
-                      リネーム
-                    </MenuButton>
-                    <MenuButton onClick={() => void handleBoardDuplicate(b.id)}>
-                      複製
-                    </MenuButton>
-                    {boards.length > 1 && (
-                      <MenuButton
-                        destructive
-                        onClick={() => void handleBoardDelete(b.id)}
-                      >
-                        削除
-                      </MenuButton>
-                    )}
-                  </div>
-                )}
-              </div>
-            ))}
-            <div
-              style={{ borderTop: "1px solid var(--border)", margin: "4px 0" }}
-            />
-            <MenuButton onClick={() => void handleBoardCreate()}>
-              + 新規ボード
-            </MenuButton>
-          </div>
-        )}
-      </div>
+                  削除
+                </DropdownMenuItem>
+              )}
+            </DropdownMenuSubContent>
+          </DropdownMenuSub>
+          <DropdownMenuItem onSelect={() => void handleBoardCreate()}>
+            + 新規ボード
+          </DropdownMenuItem>
+        </DropdownMenuContent>
+      </DropdownMenu>
 
       {/* Mode buttons */}
       <div style={{ display: "flex", gap: 2 }}>
@@ -356,125 +281,89 @@ export function MapHeader() {
       />
 
       {/* ⋮ overflow menu */}
-      <div ref={menuRef} style={{ position: "relative", marginLeft: "auto" }}>
-        <Button
-          variant="outline"
-          size="xs"
-          onClick={() => setMenuOpen((v) => !v)}
-          title="メニュー"
-        >
-          ⋮
-        </Button>
-        {menuOpen && (
-          <div
-            style={{
-              position: "absolute",
-              top: "calc(100% + 4px)",
-              right: 0,
-              zIndex: 50,
-              minWidth: 200,
-              background: "var(--popover)",
-              border: "1px solid var(--border)",
-              borderRadius: 6,
-              boxShadow: "0 4px 12px rgba(0,0,0,0.15)",
-              padding: "4px 0",
-            }}
-          >
-            <MenuButton
-              onClick={() => {
-                setMenuOpen(false);
-                setSearchVisible(true);
-              }}
+      <div style={{ marginLeft: "auto" }}>
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <Button
+              variant="outline"
+              size="xs"
+              title="メニュー"
+              aria-label="メニュー"
             >
-              ノードを検索 (Ctrl+F)
-            </MenuButton>
+              <MoreVertical className="h-3.5 w-3.5" aria-hidden />
+            </Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end" className="min-w-[200px]">
+            <DropdownMenuItem onSelect={() => setSearchVisible(true)}>
+              ノードを検索
+              <DropdownMenuShortcut>Ctrl+F</DropdownMenuShortcut>
+            </DropdownMenuItem>
 
-            <div
-              style={{ borderTop: "1px solid var(--border)", margin: "4px 0" }}
-            />
+            <DropdownMenuSeparator />
 
-            <SectionLabel>表示設定</SectionLabel>
-            <MenuRow
-              label="カラー"
-              control={
-                <select
+            <DropdownMenuLabel>表示設定</DropdownMenuLabel>
+            <DropdownMenuSub>
+              <DropdownMenuSubTrigger>カラー</DropdownMenuSubTrigger>
+              <DropdownMenuSubContent>
+                <DropdownMenuRadioGroup
                   value={colorBy}
-                  onChange={(e) => setColorBy(e.target.value as ColorByAxis)}
-                  style={menuSelectStyle}
+                  onValueChange={(v) => setColorBy(v as ColorByAxis)}
                 >
                   {COLOR_BY_OPTIONS.map(({ value, label }) => (
-                    <option key={value} value={value}>
+                    <DropdownMenuRadioItem key={value} value={value}>
                       {label}
-                    </option>
+                    </DropdownMenuRadioItem>
                   ))}
-                </select>
-              }
-            />
-            <MenuRow
-              label="テーマ"
-              control={
-                <select
+                </DropdownMenuRadioGroup>
+              </DropdownMenuSubContent>
+            </DropdownMenuSub>
+            <DropdownMenuSub>
+              <DropdownMenuSubTrigger>テーマ</DropdownMenuSubTrigger>
+              <DropdownMenuSubContent>
+                <DropdownMenuRadioGroup
                   value={visualTheme}
-                  onChange={(e) =>
-                    setVisualTheme(e.target.value as VisualTheme)
-                  }
-                  style={menuSelectStyle}
+                  onValueChange={(v) => setVisualTheme(v as VisualTheme)}
                 >
                   {VISUAL_THEME_OPTIONS.map(({ value, label }) => (
-                    <option key={value} value={value}>
+                    <DropdownMenuRadioItem key={value} value={value}>
                       {label}
-                    </option>
+                    </DropdownMenuRadioItem>
                   ))}
-                </select>
-              }
-            />
-            <MenuToggle
-              label="ミニマップ"
+                </DropdownMenuRadioGroup>
+              </DropdownMenuSubContent>
+            </DropdownMenuSub>
+            <DropdownMenuCheckboxItem
               checked={minimapVisible}
-              onChange={setMinimapVisible}
-            />
+              onCheckedChange={(v) => setMinimapVisible(v === true)}
+            >
+              ミニマップ
+            </DropdownMenuCheckboxItem>
 
-            <div
-              style={{ borderTop: "1px solid var(--border)", margin: "4px 0" }}
-            />
+            <DropdownMenuSeparator />
 
-            <SectionLabel>自動配置</SectionLabel>
+            <DropdownMenuLabel>自動配置</DropdownMenuLabel>
             {ARRANGE_ITEMS.map((item) => (
-              <MenuButton
+              <DropdownMenuItem
                 key={item.type}
-                onClick={() => {
-                  setMenuOpen(false);
-                  setPendingAutoArrange(item.type);
-                }}
+                onSelect={() => setPendingAutoArrange(item.type)}
               >
                 {item.label}
-              </MenuButton>
+              </DropdownMenuItem>
             ))}
 
-            <div
-              style={{ borderTop: "1px solid var(--border)", margin: "4px 0" }}
-            />
+            <DropdownMenuSeparator />
 
-            <SectionLabel>エクスポート</SectionLabel>
-            {(
-              [
-                { type: "svg", label: "SVG として保存" },
-                { type: "png", label: "PNG として保存" },
-                { type: "json", label: "JSON としてエクスポート" },
-              ] as const
-            ).map((item) => (
-              <MenuButton
+            <DropdownMenuLabel>エクスポート</DropdownMenuLabel>
+            {EXPORT_ITEMS.map((item) => (
+              <DropdownMenuItem
                 key={item.type}
-                onClick={() => {
-                  setMenuOpen(false);
-                  setPendingExport(item.type);
-                }}
+                onSelect={() => setPendingExport(item.type)}
               >
                 {item.label}
-              </MenuButton>
+              </DropdownMenuItem>
             ))}
-          </div>
-        )}
+          </DropdownMenuContent>
+        </DropdownMenu>
       </div>
     </div>
   );
@@ -491,110 +380,6 @@ function Divider() {
         flexShrink: 0,
       }}
     />
-  );
-}
-
-function SectionLabel({ children }: { children: React.ReactNode }) {
-  return (
-    <div
-      style={{
-        padding: "4px 12px 2px",
-        fontSize: 10,
-        color: "var(--muted-foreground)",
-        textTransform: "uppercase",
-        letterSpacing: "0.05em",
-      }}
-    >
-      {children}
-    </div>
-  );
-}
-
-const menuSelectStyle: React.CSSProperties = {
-  fontSize: 11,
-  border: "1px solid var(--border)",
-  borderRadius: 3,
-  background: "var(--background)",
-  color: "var(--foreground)",
-  padding: "1px 4px",
-  cursor: "pointer",
-};
-
-function MenuButton({
-  children,
-  onClick,
-  destructive,
-}: {
-  children: React.ReactNode;
-  onClick: () => void;
-  destructive?: boolean;
-}) {
-  return (
-    <Button
-      variant="ghost"
-      onClick={onClick}
-      className="block h-auto w-full justify-start rounded-none px-3 py-1.5 text-left text-xs font-normal"
-      style={destructive ? { color: "var(--destructive)" } : undefined}
-    >
-      {children}
-    </Button>
-  );
-}
-
-function MenuRow({
-  label,
-  control,
-}: {
-  label: string;
-  control: React.ReactNode;
-}) {
-  return (
-    <div
-      style={{
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "space-between",
-        padding: "4px 12px",
-        fontSize: 12,
-        color: "var(--foreground)",
-        gap: 8,
-      }}
-    >
-      <span>{label}</span>
-      {control}
-    </div>
-  );
-}
-
-function MenuToggle({
-  label,
-  checked,
-  onChange,
-}: {
-  label: string;
-  checked: boolean;
-  onChange: (v: boolean) => void;
-}) {
-  return (
-    <label
-      style={{
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "space-between",
-        padding: "4px 12px",
-        fontSize: 12,
-        color: "var(--foreground)",
-        gap: 8,
-        cursor: "pointer",
-        userSelect: "none",
-      }}
-    >
-      <span>{label}</span>
-      <Checkbox
-        checked={checked}
-        onCheckedChange={(v) => onChange(v === true)}
-      />
-    </label>
   );
 }
 
