@@ -183,6 +183,75 @@ Chatパネルのコンテキストバーに、storySoFar（Layer 2）のSynopsis
 
 ---
 
+## ラベル
+
+ノードにプロジェクト固有のカラータグを複数付与できる**ラベル機能**。ステータスがシーンの執筆進行を表すのに対し、ラベルは「重要」「要確認」「視点A」など**ユーザー定義の自由な分類軸**を担う。
+
+### 適用範囲
+
+- Scene / Note / Folder の **3 種すべて**に付与可能（ステータスは Scene 限定だがラベルは制限なし）
+- 1 ノードに複数ラベルを付与可（M:N）
+
+### 表示
+
+ノード行のタイトル右側、文字数の手前に**ラベルドット**（小さな丸）を最大 3 つまで横並びで表示。3 つを超える場合は `+N` バッジで省略する。
+
+```
+● Scene title    ●●● +2    [34%] 1,247
+                 ↑          ↑     ↑
+                 ラベルドット AI%   文字数
+```
+
+- 各ドットの色はラベルの `color`（パレットスロット名）を `colorThemes.ts` のテーマカラーで解決
+- ラベルドット表示はパネルメニュー「Show: Label dots」でオフ可能（デフォルト ON）
+- ホバーでラベル名のツールチップ
+
+### 編集
+
+#### 個別ノードへの付与
+コンテキストメニュー「Assign labels ▶」サブメニューでチェックボックス式に付与・解除。複数選択中はマルチセレクトに一括適用。
+
+#### プロジェクトのラベル管理
+パネルメニュー「Manage labels…」で `ManageLabelsDialog` を開く。
+
+- ラベルの新規作成（名前 + パレットスロットから色選択）
+- ラベル名・色の編集
+- ラベルの削除（DB 上の `tree_node_labels` 行は `ON DELETE CASCADE` で自動削除）
+- ラベル並び順の変更（パネルメニューでの表示順、フィルタメニュー順に反映）
+
+### フィルタリング
+
+パネルメニュー「Filter by label ▶」で 1 つ以上のラベルを選択すると、選択中のラベルが**いずれか 1 つでも**付与されているノードのみツリーに残る（OR セマンティクス）。
+
+- ステータスフィルタとは AND 結合（両方の条件を満たすノードのみ表示）
+- フィルタチップ行（後述）に `Label: 重要 ×` の形で表示
+- パネルメニュー再表示時は選択状態を保持
+
+### DB スキーマ
+
+```sql
+CREATE TABLE labels (
+  id          TEXT PRIMARY KEY,
+  project_id  TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  name        TEXT NOT NULL,
+  color       TEXT NOT NULL,        -- パレットスロット名（例: 'red', 'blue'）
+  sort_order  REAL NOT NULL DEFAULT 0.0,
+  created_at  TEXT NOT NULL,
+  UNIQUE (project_id, name)
+);
+
+CREATE TABLE tree_node_labels (
+  node_id  TEXT NOT NULL REFERENCES tree_nodes(id) ON DELETE CASCADE,
+  label_id TEXT NOT NULL REFERENCES labels(id) ON DELETE CASCADE,
+  PRIMARY KEY (node_id, label_id)
+);
+```
+
+- ラベルの色は実 RGB ではなく**パレットスロット名**で保存。テーマ切替時に色味が連動する
+- `tree_node_labels` は M:N の中間テーブル。ノード削除・ラベル削除のいずれでも対応行が `CASCADE` で自動消滅
+
+---
+
 ## パネルツールバー
 
 ```
@@ -218,11 +287,23 @@ Chatパネルのコンテキストバーに、storySoFar（Layer 2）のSynopsis
 **[⋮] パネルメニュー**
 - View: Tree (default) / Outline
 - Sort by: Manual (default) / Title (A→Z) / Word count / Status
-- Show: Word counts ✓ / AI attribution ✓ / Status dots ✓ / アクティブを自動表示 ✓
+- Show: Word counts ✓ / AI attribution ✓ / Status dots ✓ / Label dots ✓ / アクティブを自動表示 ✓
 - Filter by status: All ✓ / Outline / Draft / Complete / Revision / Final
+- Filter by label: （プロジェクトに登録されているラベル一覧 / OR セマンティクス）
+- ---
+- Manage labels…
 - ---
 - Expand all
 - Collapse all
+
+### Sort by の動作仕様
+
+`Manual` 以外を選んだ場合の並び順は、**コンテナ（Folder）の並びは変えず、各コンテナ配下の leaf（Scene/Note）のみソート**する。
+
+- ルート直下のノードは「ルート」を一つのコンテナと見なして同じ規則を適用
+- Folder 同士の順序は常に `sort_order`（manual）に従う。`Title`/`Word count`/`Status` でも Folder は並べ替えられない
+- ソート中も D&D による移動は可能。移動結果は `sort_order` に書き戻され、`Manual` に戻したときに反映される
+- `Status` ソートは `outline → draft → complete → revision → final` の順
 
 ### フィルター入力欄
 
@@ -231,6 +312,15 @@ Chatパネルのコンテキストバーに、storySoFar（Layer 2）のSynopsis
 - フィルタ中はノードの折りたたみ状態を無視して全マッチを展開表示
 - `Esc` でフィルタクリア
 - `Ctrl+F`（Scenesパネルにフォーカス時）でフィルタ入力欄にフォーカス
+
+### アクティブフィルタチップ行
+
+ステータスフィルタとラベルフィルタが 1 件以上有効なとき、フィルタ入力欄の直下に**アクティブフィルタチップ行**を表示する。
+
+- 各フィルタ条件をピル型チップで列挙（例: `Status: Draft ×`、`Label: 重要 ×`）
+- チップの `×` で個別解除
+- 末尾に `Clear filters` リンク（全解除）
+- フィルタが全て無効なときは行ごと非表示
 
 ---
 
@@ -261,7 +351,7 @@ Chatパネルのコンテキストバーに、storySoFar（Layer 2）のSynopsis
       ...
 ```
 
-- Synopsisが空のSceneはタイトルのみ表示（プレースホルダーなし）
+- Synopsis が空の Scene でも**タイトル直下に空のインライン編集 UI を表示**する。プレースホルダー「What happens in this scene?」が出るので、Outline モードのままその場で書き起こせる
 - ステータスドット・文字数は通常通り表示
 - D&Dによる並べ替えも通常通り動作
 - フィルター・ソートも通常通り適用
@@ -280,6 +370,7 @@ Chatパネルのコンテキストバーに、storySoFar（Layer 2）のSynopsis
 | サイドで開く | `Ctrl+Enter` | 新しいEditor Groupにスプリットして開く |
 | --- | | |
 | Set status | ▶ | サブメニュー: Outline / Draft / Complete / Revision / Final |
+| Assign labels | ▶ | サブメニュー: プロジェクト内のラベル一覧。チェック式で複数付与・解除（マルチセレクト時は全件に一括適用） |
 | **Add to Map ▸** | | **サブメニュー: 各 Map ボード名を一覧表示。選択でその Scene を Map に Scene ノードとして配置（手動キュレーション、Map パネル設計書「手動キュレーション」参照）** |
 | --- | | |
 | 名前を変更 | `F2` | タイトルをインライン編集モードにする |
@@ -297,6 +388,7 @@ Chatパネルのコンテキストバーに、storySoFar（Layer 2）のSynopsis
 | Editorで開く | `Enter` | Editorにタブとして開く |
 | サイドで開く | `Ctrl+Enter` | 新しいEditor Groupにスプリットして開く |
 | --- | | |
+| Assign labels | ▶ | サブメニュー: プロジェクト内のラベル一覧。チェック式で複数付与・解除 |
 | **Add to Map ▸** | | **サブメニュー: 各 Map ボード名を一覧表示。選択でその Note を Map に Note ノードとして配置** |
 | --- | | |
 | 名前を変更 | `F2` | タイトルをインライン編集モードにする |
@@ -312,12 +404,25 @@ Chatパネルのコンテキストバーに、storySoFar（Layer 2）のSynopsis
 | メニュー項目 | ショートカット | 動作 |
 |-------------|-------------|------|
 | 名前を変更 | `F2` | タイトルをインライン編集モードにする |
+| Assign labels | ▶ | サブメニュー: プロジェクト内のラベル一覧。チェック式で複数付与・解除 |
 | --- | | |
 | シーンを追加 | | このFolderの末尾に新規Scene |
 | ノートを追加 | | このFolderの末尾に新規Note |
 | フォルダーを追加 | | このFolderの末尾に新規Folder |
 | --- | | |
 | 削除 | `Del` | 右クリックメニュー経由の Delete は確認ダイアログを経由せず即削除する（キーボード `Del` / ツールバー経由は `initiateDelete` を通り、配下に本文または synopsis を持つ Scene/Note が 1 件以上ある場合に確認ダイアログを表示） |
+
+### ルート（空エリア）の右クリック
+
+ツリーのノード以外の背景領域を右クリックすると、ルート末尾への新規作成メニューを表示する。
+
+| メニュー項目 | 動作 |
+|-------------|------|
+| 新規シーン | ルート末尾に新規 Scene |
+| 新規ノート | ルート末尾に新規 Note |
+| 新規フォルダー | ルート末尾に新規 Folder |
+
+ツリーが空のときも同じメニューが利用できる（最初のノードを作るための入口）。
 
 ### マルチセレクト時のメニュー挙動と削除確認
 
@@ -407,6 +512,14 @@ Folderノードにホバーすると、タイトル右側に2つのクイック�
 - 📄 → そのFolder内末尾に新規Scene追加
 - 📁 → そのFolder内末尾に新規Folder追加
 
+### 空ステート（StructureTemplatePicker）
+
+ツリーにノードが 1 件もない場合、ツリー領域に Grid 機能の `StructureTemplatePicker` を表示する。
+
+- 新規プロジェクトで最初の構造（章立てテンプレート、3 幕構成テンプレートなど）を一括投入できる
+- 「空のまま始める」を選ぶと従来通り何も作らずルート右クリックでの追加に委ねる
+- ノードが 1 件以上できた時点でピッカーは消え、通常のツリー表示に切り替わる
+
 ---
 
 ## Editorとの連携
@@ -450,11 +563,30 @@ Editorでアクティブなタブが変わると、Scenesパネルが連動す�
 - Codex Quickセクションが新しいシーンの関連エントリに更新される
 - この自動追従はパネルメニューの「アクティブを自動表示」でon/off可能
 
+#### 外部からの reveal トリガー
+
+`treeStore.revealInTree(nodeId)` を呼ぶと、対象ノードの祖先 Folder を自動展開し、ツリー内でスクロール・選択する。`pendingRevealId` 状態を介して再描画後に確実にスクロールが走る仕組み。
+
+- Editor タブの右クリック「Show in Scenes」など、Scenes パネル外からツリーの該当行を提示したいケースで使用
+- `setActiveScene` とは独立。reveal はあくまで「見せて選択する」だけで、Editor タブを開かない
+
 ---
 
 ## Codex Quickパネル
 
 Codex QuickはScenesパネルとは独立した専用dockviewパネル。詳細仕様は [`Grimodex_CodexQuickパネル設計書.md`](Grimodex_CodexQuickパネル設計書.md) を参照。
+
+---
+
+## アニメーション
+
+`src/lib/animation.ts` の `DURATIONS` / `EASINGS` / `VARIANTS` を介してアニメーションを付与する（べた書き禁止、`/polish-motion` 参照）。
+
+- **Folder の展開・折りたたみ**: 子要素の高さアニメ + フェード
+- **Synopsis 編集エリアの開閉**（Scenes パネル下部の選択中シーン Synopsis）: 高さアニメ
+- **Reduced Motion**: OS 設定が `prefers-reduced-motion: reduce` のときはアニメをスキップし即座に状態遷移する
+
+ドラッグ中はクリック・ダブルクリック・rename 開始を抑制し、ドロップ完了の動きが他操作と被らないようにする。
 
 ---
 
@@ -579,21 +711,19 @@ D&Dドロップ時および `createNode` 時に検証する。
 
 ### codex_quick_pins テーブル
 
-Codex Quick パネルに表示される Scene × Codex Entry のピン情報は `codex_quick_pins` テーブルに永続化される。
+Codex Quick パネルに表示される **プロジェクト全体共通**のピン情報は `codex_quick_pins` テーブルに永続化される。ピンはシーンごとではなく**プロジェクト単位で 1 セット**として管理する。
 
 ```sql
 CREATE TABLE codex_quick_pins (
-  scene_id    TEXT NOT NULL REFERENCES tree_nodes(id) ON DELETE CASCADE,
-  entry_id    TEXT NOT NULL REFERENCES codex_entries(id) ON DELETE CASCADE,
-  sort_order  TEXT NOT NULL, -- 文字列 fractional indexing
-  created_at  TEXT NOT NULL DEFAULT (datetime('now')),
-  PRIMARY KEY (scene_id, entry_id)
+  entry_id    TEXT PRIMARY KEY REFERENCES codex_entries(id) ON DELETE CASCADE,
+  created_at  TEXT NOT NULL DEFAULT (datetime('now'))
 );
 ```
 
-- Scene の切替時に `scene_id = ?` で読み出し、Codex Quick パネルに反映する
-- ピン追加・解除・並べ替えは Codex Quick パネル側の UI で行うが、**Scenes パネル（`treeStore`）も `syncCodexQuickPins` を介して再読み込みをトリガー**する（シーン名変更・シーン削除時等、Scene 側のイベントで Codex Quick の表示を更新する必要があるため）
-- Scenes パネル自体には Codex ピン用の直接 UI はない
+- プロジェクトロード時に一括読み出しして Codex Quick パネルに反映する
+- 並び順は Codex Quick パネル側のユーザー選択ソート（カテゴリ／タイトル／参照頻度）で決まる。手動 D&D 並べ替えは行わない（必要になったら `sort_order` カラムを追加する）
+- ピン追加・解除は Codex Quick パネル側の UI で行う。Scenes パネル自体には Codex ピン用の直接 UI はない
+- `tree_nodes(id) ON DELETE CASCADE` には依存せず、プロジェクト単位で独立。シーン削除時の同期処理は不要
 
 ---
 
@@ -633,7 +763,7 @@ Scenes パネルは Grimodex のデータ骨格（`tree_nodes`）を管理する
 |--------|------|------|
 | **Timeline パネル** | `tree_nodes.story_time_order` / `story_time_label` を共有。並び順は独立するが、行自体は同一 | [`Grimodex_Timelineパネル設計書.md`] |
 | **Map パネル** | `tree_nodes.pov_character_id` / `location_id` を共有。Map 上から編集する | [`Grimodex_Mapパネル設計書.md`] |
-| **Codex Quick パネル** | `codex_quick_pins` テーブルを共有。Scenes パネルは `syncCodexQuickPins` で再読み込みをトリガー | [`Grimodex_CodexQuickパネル設計書.md`] |
+| **Codex Quick パネル** | `codex_quick_pins` テーブル（プロジェクト全体で1セット）を共有。Scenes パネルは pin 状態を読むのみで、追加・解除 UI は持たない | [`Grimodex_CodexQuickパネル設計書.md`] |
 | **Codex パネル（Phase）** | Scenes の読み順を `usePhaseStore.recomputeSceneOrder` 経由で供給 | [`Grimodex_Codexパネル設計書.md`] |
 | **Attribution パネル** | Scene ノードに表示する AI 比率バッジは `loadBatchAiRatio` 経由で取得し、`display.showAiBadge` で切替 | [`Grimodex_Attributionパネル設計書.md`] |
 | **Chat パネル** | storySoFar カバレッジピルのデータソース（読み順 + Synopsis 充填率）を提供。Synopsis 自動提案トーストもステータス遷移イベント経由で連携 | [`Grimodex_Chatパネル設計書.md`] |
