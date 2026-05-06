@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import { useMapStore } from "./mapStore";
 import type { MapMode, ColorByAxis, VisualTheme } from "./types";
 import type { AutoArrangeType } from "./layouts/autoArrange";
@@ -28,6 +28,11 @@ import {
   DropdownMenuSubTrigger,
   DropdownMenuSubContent,
 } from "@/components/ui/dropdown-menu";
+import {
+  Popover,
+  PopoverAnchor,
+  PopoverContent,
+} from "@/components/ui/popover";
 
 const PROJECT_ID = "default-project";
 
@@ -52,6 +57,11 @@ const VISUAL_THEME_OPTIONS: { value: VisualTheme; label: string }[] = [
   { value: "corkboard", label: "コルクボード" },
   { value: "constellation", label: "星座" },
 ];
+
+type EditingBoardState =
+  | { mode: "rename"; id: string; title: string }
+  | { mode: "create" }
+  | null;
 
 const EXPORT_ITEMS = [
   { type: "svg", label: "SVG として保存" },
@@ -79,6 +89,8 @@ export function MapHeader() {
   const [boards, setBoards] = useState<MapBoard[]>([]);
   const activeBoard = boards.find((b) => b.id === activeBoardId);
 
+  const [editingBoard, setEditingBoard] = useState<EditingBoardState>(null);
+
   const reloadBoards = useCallback(async () => {
     const all = await listBoards(PROJECT_ID);
     setBoards(all);
@@ -89,21 +101,20 @@ export function MapHeader() {
     reloadBoards().catch(console.error);
   }, [reloadBoards, activeBoardId]);
 
-  async function handleBoardCreate() {
-    const title = window.prompt("ボード名を入力", "新規ボード");
-    if (!title?.trim()) return;
-    const newBoard = await createBoard(PROJECT_ID, title.trim());
-    const all = await reloadBoards();
-    if (all.length === 1 || !activeBoardId) {
-      setActiveBoardId(newBoard.id);
+  async function commitBoardEdit(value: string) {
+    const trimmed = value.trim();
+    if (!trimmed || !editingBoard) return;
+    if (editingBoard.mode === "rename") {
+      await renameBoard(editingBoard.id, trimmed);
+      await reloadBoards();
+    } else {
+      const newBoard = await createBoard(PROJECT_ID, trimmed);
+      const all = await reloadBoards();
+      if (all.length === 1 || !activeBoardId) {
+        setActiveBoardId(newBoard.id);
+      }
     }
-  }
-
-  async function handleBoardRename(id: string, currentTitle: string) {
-    const title = window.prompt("新しいボード名", currentTitle);
-    if (!title?.trim()) return;
-    await renameBoard(id, title.trim());
-    await reloadBoards();
+    setEditingBoard(null);
   }
 
   async function handleBoardDuplicate(id: string) {
@@ -146,67 +157,97 @@ export function MapHeader() {
       <span style={{ fontWeight: 600, marginRight: 4, fontSize: 13 }}>Map</span>
 
       {/* Board selector */}
-      <DropdownMenu>
-        <DropdownMenuTrigger asChild>
-          <Button
-            variant="outline"
-            size="xs"
-            title="ボードを切り替え"
-            className="max-w-[140px] overflow-hidden"
-          >
-            <span className="truncate">{activeBoard?.title ?? "—"}</span>
-            <ChevronDown className="ml-1 h-3 w-3" aria-hidden />
-          </Button>
-        </DropdownMenuTrigger>
-        <DropdownMenuContent align="start" className="min-w-[180px]">
-          {boards.map((b) => (
-            <DropdownMenuItem
-              key={b.id}
-              onSelect={() => setActiveBoardId(b.id)}
-              className={b.id === activeBoardId ? "bg-accent" : undefined}
-            >
-              <span className="truncate">{b.title}</span>
-            </DropdownMenuItem>
-          ))}
-          <DropdownMenuSeparator />
-          <DropdownMenuSub>
-            <DropdownMenuSubTrigger disabled={!activeBoard}>
-              アクティブボード操作
-            </DropdownMenuSubTrigger>
-            <DropdownMenuSubContent>
-              <DropdownMenuItem
-                disabled={!activeBoard}
-                onSelect={() => {
-                  if (!activeBoard) return;
-                  void handleBoardRename(activeBoard.id, activeBoard.title);
-                }}
+      <Popover
+        open={editingBoard !== null}
+        onOpenChange={(open) => {
+          if (!open) setEditingBoard(null);
+        }}
+      >
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <PopoverAnchor asChild>
+              <Button
+                variant="outline"
+                size="xs"
+                title="ボードを切り替え"
+                className="max-w-[140px] overflow-hidden"
               >
-                リネーム
-              </DropdownMenuItem>
+                <span className="truncate">{activeBoard?.title ?? "—"}</span>
+                <ChevronDown className="ml-1 h-3 w-3" aria-hidden />
+              </Button>
+            </PopoverAnchor>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="start" className="min-w-[180px]">
+            {boards.map((b) => (
               <DropdownMenuItem
-                disabled={!activeBoard}
-                onSelect={() => {
-                  if (!activeBoard) return;
-                  void handleBoardDuplicate(activeBoard.id);
-                }}
+                key={b.id}
+                onSelect={() => setActiveBoardId(b.id)}
+                className={b.id === activeBoardId ? "bg-accent" : undefined}
               >
-                複製
+                <span className="truncate">{b.title}</span>
               </DropdownMenuItem>
-              {boards.length > 1 && activeBoard && (
+            ))}
+            <DropdownMenuSeparator />
+            <DropdownMenuSub>
+              <DropdownMenuSubTrigger disabled={!activeBoard}>
+                アクティブボード操作
+              </DropdownMenuSubTrigger>
+              <DropdownMenuSubContent>
                 <DropdownMenuItem
-                  onSelect={() => void handleBoardDelete(activeBoard.id)}
-                  className="text-[color:var(--destructive)] focus:text-[color:var(--destructive)]"
+                  disabled={!activeBoard}
+                  onSelect={() => {
+                    if (!activeBoard) return;
+                    setEditingBoard({
+                      mode: "rename",
+                      id: activeBoard.id,
+                      title: activeBoard.title,
+                    });
+                  }}
                 >
-                  削除
+                  リネーム
                 </DropdownMenuItem>
-              )}
-            </DropdownMenuSubContent>
-          </DropdownMenuSub>
-          <DropdownMenuItem onSelect={() => void handleBoardCreate()}>
-            + 新規ボード
-          </DropdownMenuItem>
-        </DropdownMenuContent>
-      </DropdownMenu>
+                <DropdownMenuItem
+                  disabled={!activeBoard}
+                  onSelect={() => {
+                    if (!activeBoard) return;
+                    void handleBoardDuplicate(activeBoard.id);
+                  }}
+                >
+                  複製
+                </DropdownMenuItem>
+                {boards.length > 1 && activeBoard && (
+                  <DropdownMenuItem
+                    onSelect={() => void handleBoardDelete(activeBoard.id)}
+                    className="text-[color:var(--destructive)] focus:text-[color:var(--destructive)]"
+                  >
+                    削除
+                  </DropdownMenuItem>
+                )}
+              </DropdownMenuSubContent>
+            </DropdownMenuSub>
+            <DropdownMenuItem
+              onSelect={() => setEditingBoard({ mode: "create" })}
+            >
+              + 新規ボード
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
+        <PopoverContent align="start" className="w-64">
+          {editingBoard !== null && (
+            <BoardEditForm
+              key={
+                editingBoard.mode === "rename" ? editingBoard.id : "__create__"
+              }
+              mode={editingBoard.mode}
+              initialValue={
+                editingBoard.mode === "rename" ? editingBoard.title : ""
+              }
+              onSubmit={(value) => void commitBoardEdit(value)}
+              onCancel={() => setEditingBoard(null)}
+            />
+          )}
+        </PopoverContent>
+      </Popover>
 
       {/* Mode buttons */}
       <div style={{ display: "flex", gap: 2 }}>
@@ -380,6 +421,93 @@ function Divider() {
         flexShrink: 0,
       }}
     />
+  );
+}
+
+function BoardEditForm({
+  mode,
+  initialValue,
+  onSubmit,
+  onCancel,
+}: {
+  mode: "rename" | "create";
+  initialValue: string;
+  onSubmit: (value: string) => void;
+  onCancel: () => void;
+}) {
+  const [value, setValue] = useState(initialValue);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    inputRef.current?.focus();
+    inputRef.current?.select();
+  }, []);
+
+  const trimmed = value.trim();
+
+  return (
+    <form
+      onSubmit={(e) => {
+        e.preventDefault();
+        if (trimmed) onSubmit(trimmed);
+      }}
+      style={{ display: "flex", flexDirection: "column", gap: 8 }}
+    >
+      <label
+        style={{
+          fontSize: 11,
+          color: "var(--muted-foreground)",
+          fontWeight: 500,
+        }}
+      >
+        {mode === "rename" ? "新しいボード名" : "新規ボード名"}
+      </label>
+      <input
+        ref={inputRef}
+        value={value}
+        onChange={(e) => setValue(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === "Escape") {
+            e.preventDefault();
+            onCancel();
+          }
+        }}
+        placeholder={mode === "create" ? "新規ボード" : ""}
+        style={{
+          fontSize: 12,
+          padding: "5px 8px",
+          border: "1px solid var(--border)",
+          borderRadius: 4,
+          background: "var(--background)",
+          color: "var(--foreground)",
+          outline: "none",
+        }}
+      />
+      <div
+        style={{
+          display: "flex",
+          justifyContent: "flex-end",
+          gap: 4,
+        }}
+      >
+        <Button type="button" variant="ghost" size="xs" onClick={onCancel}>
+          キャンセル
+        </Button>
+        <Button
+          type="submit"
+          variant="default"
+          size="xs"
+          disabled={!trimmed}
+          style={{
+            background: "#534AB7",
+            borderColor: "#534AB7",
+            color: "#fff",
+          }}
+        >
+          {mode === "rename" ? "リネーム" : "作成"}
+        </Button>
+      </div>
+    </form>
   );
 }
 
