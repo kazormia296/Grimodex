@@ -380,6 +380,19 @@ export function MapHeader() {
               padding: "4px 0",
             }}
           >
+            <MenuButton
+              onClick={() => {
+                setMenuOpen(false);
+                setSearchVisible(true);
+              }}
+            >
+              ノードを検索 (Ctrl+F)
+            </MenuButton>
+
+            <div
+              style={{ borderTop: "1px solid var(--border)", margin: "4px 0" }}
+            />
+
             <SectionLabel>表示設定</SectionLabel>
             <MenuRow
               label="カラー"
@@ -463,16 +476,6 @@ export function MapHeader() {
           </div>
         )}
       </div>
-
-      {/* Search button */}
-      <Button
-        variant="outline"
-        size="xs"
-        onClick={() => setSearchVisible(true)}
-        title="ノードを検索 (Ctrl+F)"
-      >
-        🔍
-      </Button>
     </div>
   );
 }

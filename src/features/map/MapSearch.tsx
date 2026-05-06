@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { Node } from "@xyflow/react";
+import { Search } from "lucide-react";
 
 interface SearchResult {
   nodeId: string;
@@ -97,9 +98,8 @@ export function MapSearch({ nodes, onFocus, onClose }: MapSearchProps) {
           gap: 6,
         }}
       >
-        <span style={{ fontSize: 14, color: "var(--muted-foreground)" }}>
-          🔍
-        </span>
+        <Search size={14} color="var(--muted-foreground)" aria-hidden />
+
         <input
           ref={inputRef}
           value={query}
