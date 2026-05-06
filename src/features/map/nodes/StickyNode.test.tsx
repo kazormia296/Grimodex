@@ -374,6 +374,7 @@ vi.mock("motion/react", async (importOriginal) => {
       }: React.HTMLAttributes<HTMLDivElement> & {
         initial?: unknown;
         animate?: unknown;
+        "data-testid"?: string;
       }) => (
         <div
           data-testid={testId}
