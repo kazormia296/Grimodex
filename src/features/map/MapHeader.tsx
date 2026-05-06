@@ -61,6 +61,7 @@ const VISUAL_THEME_OPTIONS: { value: VisualTheme; label: string }[] = [
 type EditingBoardState =
   | { mode: "rename"; id: string; title: string }
   | { mode: "create" }
+  | { mode: "delete"; id: string; title: string }
   | null;
 
 const EXPORT_ITEMS = [
@@ -123,20 +124,13 @@ export function MapHeader() {
     setActiveBoardId(newBoard.id);
   }
 
-  async function handleBoardDelete(id: string) {
-    const board = boards.find((b) => b.id === id);
-    if (!board) return;
-    if (
-      !window.confirm(
-        `「${board.title}」を削除しますか？ボード上のデータも消えます。`,
-      )
-    )
-      return;
+  async function commitBoardDelete(id: string) {
     await deleteBoard(id);
     const remaining = await reloadBoards();
     if (activeBoardId === id) {
       setActiveBoardId(remaining[0]?.id ?? null);
     }
+    setEditingBoard(null);
   }
 
   return (
@@ -197,11 +191,16 @@ export function MapHeader() {
                   disabled={!activeBoard}
                   onSelect={() => {
                     if (!activeBoard) return;
-                    setEditingBoard({
-                      mode: "rename",
-                      id: activeBoard.id,
-                      title: activeBoard.title,
-                    });
+                    const target = activeBoard;
+                    // Defer to next tick so the dropdown's closing click
+                    // doesn't get interpreted as an outside-click on the popover.
+                    setTimeout(() => {
+                      setEditingBoard({
+                        mode: "rename",
+                        id: target.id,
+                        title: target.title,
+                      });
+                    }, 0);
                   }}
                 >
                   リネーム
@@ -217,7 +216,16 @@ export function MapHeader() {
                 </DropdownMenuItem>
                 {boards.length > 1 && activeBoard && (
                   <DropdownMenuItem
-                    onSelect={() => void handleBoardDelete(activeBoard.id)}
+                    onSelect={() => {
+                      const target = activeBoard;
+                      setTimeout(() => {
+                        setEditingBoard({
+                          mode: "delete",
+                          id: target.id,
+                          title: target.title,
+                        });
+                      }, 0);
+                    }}
                     className="text-[color:var(--destructive)] focus:text-[color:var(--destructive)]"
                   >
                     削除
@@ -226,14 +234,23 @@ export function MapHeader() {
               </DropdownMenuSubContent>
             </DropdownMenuSub>
             <DropdownMenuItem
-              onSelect={() => setEditingBoard({ mode: "create" })}
+              onSelect={() => {
+                setTimeout(() => setEditingBoard({ mode: "create" }), 0);
+              }}
             >
               + 新規ボード
             </DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>
         <PopoverContent align="start" className="w-64">
-          {editingBoard !== null && (
+          {editingBoard?.mode === "delete" ? (
+            <BoardDeleteConfirm
+              key={editingBoard.id}
+              title={editingBoard.title}
+              onConfirm={() => void commitBoardDelete(editingBoard.id)}
+              onCancel={() => setEditingBoard(null)}
+            />
+          ) : editingBoard !== null ? (
             <BoardEditForm
               key={
                 editingBoard.mode === "rename" ? editingBoard.id : "__create__"
@@ -245,7 +262,7 @@ export function MapHeader() {
               onSubmit={(value) => void commitBoardEdit(value)}
               onCancel={() => setEditingBoard(null)}
             />
-          )}
+          ) : null}
         </PopoverContent>
       </Popover>
 
@@ -508,6 +525,49 @@ function BoardEditForm({
         </Button>
       </div>
     </form>
+  );
+}
+
+function BoardDeleteConfirm({
+  title,
+  onConfirm,
+  onCancel,
+}: {
+  title: string;
+  onConfirm: () => void;
+  onCancel: () => void;
+}) {
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+      <div style={{ fontSize: 13, fontWeight: 600 }}>ボードを削除</div>
+      <div style={{ fontSize: 12, color: "var(--muted-foreground)" }}>
+        「{title}」を削除しますか？ボード上のデータも消えます。
+      </div>
+      <div
+        style={{
+          display: "flex",
+          justifyContent: "flex-end",
+          gap: 4,
+        }}
+      >
+        <Button type="button" variant="ghost" size="xs" onClick={onCancel}>
+          キャンセル
+        </Button>
+        <Button
+          type="button"
+          variant="default"
+          size="xs"
+          onClick={onConfirm}
+          style={{
+            background: "var(--destructive)",
+            borderColor: "var(--destructive)",
+            color: "var(--destructive-foreground)",
+          }}
+        >
+          削除
+        </Button>
+      </div>
+    </div>
   );
 }
 
