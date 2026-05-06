@@ -3,7 +3,6 @@ import type { RefObject } from "react";
 import { useTabStore } from "@/features/editor/tabStore";
 import { useLayoutStore } from "@/features/layout/layoutStore";
 import { useTreeStore } from "./treeStore";
-import { useGlobalHistoryStore } from "@/store/globalHistoryStore";
 import type { TreeNodeData } from "./treeStore";
 
 interface KeyboardArgs {
@@ -139,18 +138,6 @@ export function useScenesKeyboard({
       } else if (e.key === "f" && e.ctrlKey) {
         e.preventDefault();
         filterRef.current?.focus();
-      } else if (e.key === "z" && (e.ctrlKey || e.metaKey) && !e.shiftKey) {
-        e.preventDefault();
-        useGlobalHistoryStore
-          .getState()
-          .undo()
-          .catch(() => {});
-      } else if (e.key === "z" && (e.ctrlKey || e.metaKey) && e.shiftKey) {
-        e.preventDefault();
-        useGlobalHistoryStore
-          .getState()
-          .redo()
-          .catch(() => {});
       }
     },
     [
