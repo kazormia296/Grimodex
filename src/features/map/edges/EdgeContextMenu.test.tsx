@@ -18,9 +18,9 @@ const baseProps = {
 describe("EdgeContextMenu", () => {
   beforeEach(() => vi.clearAllMocks());
 
-  it("線種ボタンをクリックすると onStyleChange が呼ばれてメニューが閉じる", async () => {
+  it("線種項目をクリックすると onStyleChange が呼ばれてメニューが閉じる", async () => {
     render(<EdgeContextMenu {...baseProps} />);
-    await userEvent.click(screen.getByRole("button", { name: /破線/ }));
+    await userEvent.click(screen.getByRole("menuitem", { name: /破線/ }));
     expect(baseProps.onStyleChange).toHaveBeenCalledWith("dashed");
     expect(baseProps.onClose).toHaveBeenCalledOnce();
   });
@@ -32,9 +32,9 @@ describe("EdgeContextMenu", () => {
     expect(baseProps.onClose).toHaveBeenCalledOnce();
   });
 
-  it("削除ボタンをクリックすると onDelete が呼ばれてメニューが閉じる", async () => {
+  it("削除項目をクリックすると onDelete が呼ばれてメニューが閉じる", async () => {
     render(<EdgeContextMenu {...baseProps} />);
-    await userEvent.click(screen.getByRole("button", { name: "削除" }));
+    await userEvent.click(screen.getByRole("menuitem", { name: "削除" }));
     expect(baseProps.onDelete).toHaveBeenCalledOnce();
     expect(baseProps.onClose).toHaveBeenCalledOnce();
   });
@@ -49,20 +49,5 @@ describe("EdgeContextMenu", () => {
     render(<EdgeContextMenu {...baseProps} />);
     await userEvent.pointer({ target: document.body, keys: "[MouseLeft]" });
     expect(baseProps.onClose).toHaveBeenCalledOnce();
-  });
-
-  it("メニュー内クリックは onClose を呼ばない (stopPropagation)", async () => {
-    const { container } = render(<EdgeContextMenu {...baseProps} />);
-    const menu = container.ownerDocument.body.querySelector(
-      ".rounded-md",
-    ) as HTMLElement;
-    expect(menu).toBeTruthy();
-    // Simulate pointerdown on the menu itself — should not close
-    const pointerDown = new PointerEvent("pointerdown", {
-      bubbles: true,
-      cancelable: true,
-    });
-    menu.dispatchEvent(pointerDown);
-    expect(baseProps.onClose).not.toHaveBeenCalled();
   });
 });

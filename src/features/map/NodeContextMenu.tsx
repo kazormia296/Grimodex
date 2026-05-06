@@ -1,13 +1,27 @@
-import { useEffect, useRef, useCallback, useState } from "react";
-import { createPortal } from "react-dom";
 import type { PromoteTargetType } from "./mapApi";
 import { getPalette, DEFAULT_PALETTE_ID } from "@/lib/stickyPalettes";
+import {
+  DropdownMenu,
+  DropdownMenuTrigger,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuSub,
+  DropdownMenuSubTrigger,
+  DropdownMenuSubContent,
+} from "@/components/ui/dropdown-menu";
 
 const CODEX_TYPES = [
   { value: "character", label: "キャラクター" },
   { value: "location", label: "場所" },
   { value: "item", label: "アイテム" },
   { value: "lore", label: "設定・用語" },
+] as const;
+
+const PROMOTE_FLAT_ITEMS = [
+  { type: "scene" as PromoteTargetType, label: "シーン" },
+  { type: "note" as PromoteTargetType, label: "ノート" },
+  { type: "snippet" as PromoteTargetType, label: "スニペット" },
 ] as const;
 
 interface NodeContextMenuProps {
@@ -35,7 +49,8 @@ interface NodeContextMenuProps {
   stickyPaletteId?: string;
 }
 
-const MENU_WIDTH = 200;
+const DESTRUCTIVE_CLASS =
+  "text-[color:var(--destructive)] focus:text-[color:var(--destructive)]";
 
 export function NodeContextMenu({
   nodeId: _nodeId,
@@ -60,363 +75,166 @@ export function NodeContextMenu({
   onChangeColor,
   stickyPaletteId,
 }: NodeContextMenuProps) {
-  const menuRef = useRef<HTMLDivElement>(null);
-  const [showPromoteMenu, setShowPromoteMenu] = useState(false);
-  const [showCodexTypes, setShowCodexTypes] = useState(false);
-  const [showFrameCodexTypes, setShowFrameCodexTypes] = useState(false);
-  const [showColorMenu, setShowColorMenu] = useState(false);
+  const palette = getPalette(stickyPaletteId ?? DEFAULT_PALETTE_ID);
 
-  const close = useCallback(() => onClose(), [onClose]);
-
-  useEffect(() => {
-    function onPointerDown(e: PointerEvent | MouseEvent) {
-      if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
-        close();
-      }
-    }
-    function onKeyDown(e: KeyboardEvent) {
-      if (e.key === "Escape") close();
-    }
-    document.addEventListener("pointerdown", onPointerDown, true);
-    document.addEventListener("mousedown", onPointerDown, true);
-    document.addEventListener("contextmenu", onPointerDown, true);
-    document.addEventListener("keydown", onKeyDown);
-    return () => {
-      document.removeEventListener("pointerdown", onPointerDown, true);
-      document.removeEventListener("mousedown", onPointerDown, true);
-      document.removeEventListener("contextmenu", onPointerDown, true);
-      document.removeEventListener("keydown", onKeyDown);
-    };
-  }, [close]);
-
-  const x = Math.min(screenPosition.x, window.innerWidth - MENU_WIDTH - 8);
-  const y = Math.min(screenPosition.y, window.innerHeight - 280);
-
-  return createPortal(
-    <div
-      ref={menuRef}
-      className="fixed z-50 rounded-md border border-border bg-popover shadow-md"
-      style={{ left: x, top: y, minWidth: MENU_WIDTH }}
-      onMouseDown={(e) => e.stopPropagation()}
+  return (
+    <DropdownMenu
+      open
+      modal={false}
+      onOpenChange={(o) => {
+        if (!o) onClose();
+      }}
     >
-      <div className="flex flex-col py-1">
-        {isFrame && (
+      <DropdownMenuTrigger asChild>
+        <span
+          aria-hidden
+          style={{
+            position: "fixed",
+            left: screenPosition.x,
+            top: screenPosition.y,
+            width: 0,
+            height: 0,
+            pointerEvents: "none",
+          }}
+        />
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="start" className="min-w-[200px]">
+        {isFrame ? (
           <>
             {onPromoteFrame && (
-              <div
-                className="relative"
-                onMouseEnter={() => setShowFrameCodexTypes(true)}
-                onMouseLeave={() => setShowFrameCodexTypes(false)}
-              >
-                <button
-                  type="button"
-                  className="w-full px-3 py-1.5 text-sm text-left hover:bg-accent flex items-center justify-between"
-                >
-                  <span>Codex に昇格…</span>
-                  <span className="text-xs text-muted-foreground">▶</span>
-                </button>
-                {showFrameCodexTypes && (
-                  <div
-                    className="absolute left-full top-0 bg-popover border border-border rounded-md shadow-md py-1 z-50"
-                    style={{ minWidth: 130 }}
-                  >
-                    {CODEX_TYPES.map(({ value, label }) => (
-                      <button
-                        key={value}
-                        type="button"
-                        className="w-full px-3 py-1.5 text-sm text-left hover:bg-accent"
-                        onClick={() => {
-                          close();
-                          onPromoteFrame(value);
-                        }}
-                      >
-                        {label}
-                      </button>
-                    ))}
-                  </div>
-                )}
-              </div>
-            )}
-            <div className="my-1 border-t border-border" />
-            <button
-              type="button"
-              className="px-3 py-1.5 text-sm text-left hover:bg-accent text-destructive"
-              onClick={() => {
-                close();
-                onRemoveFromBoard();
-              }}
-            >
-              削除
-            </button>
-          </>
-        )}
-        {!isFrame && isScene && (
-          <>
-            <button
-              type="button"
-              className="px-3 py-1.5 text-sm text-left hover:bg-accent"
-              onClick={() => {
-                close();
-                onOpen();
-              }}
-            >
-              開く
-            </button>
-            <div className="my-1 border-t border-border" />
-          </>
-        )}
-
-        {!isFrame && (
-          <>
-            {isPinned ? (
-              <button
-                type="button"
-                className="px-3 py-1.5 text-sm text-left hover:bg-accent"
-                onClick={() => {
-                  close();
-                  onUnpin();
-                }}
-              >
-                固定解除
-              </button>
-            ) : (
-              <button
-                type="button"
-                className="px-3 py-1.5 text-sm text-left hover:bg-accent"
-                onClick={() => {
-                  close();
-                  onPin();
-                }}
-              >
-                位置を固定
-              </button>
-            )}
-
-            <div className="my-1 border-t border-border" />
-
-            <button
-              type="button"
-              className="px-3 py-1.5 text-sm text-left hover:bg-accent"
-              onClick={() => {
-                close();
-                onBringToFront();
-              }}
-            >
-              前面へ移動
-            </button>
-            <button
-              type="button"
-              className="px-3 py-1.5 text-sm text-left hover:bg-accent"
-              onClick={() => {
-                close();
-                onSendToBack();
-              }}
-            >
-              背面へ移動
-            </button>
-
-            <div className="my-1 border-t border-border" />
-
-            {focusedNodeId ? (
-              <button
-                type="button"
-                className="px-3 py-1.5 text-sm text-left hover:bg-accent"
-                onClick={() => {
-                  close();
-                  onExitFocus();
-                }}
-              >
-                フォーカスを解除
-              </button>
-            ) : (
-              <button
-                type="button"
-                className="px-3 py-1.5 text-sm text-left hover:bg-accent"
-                onClick={() => {
-                  close();
-                  onFocus();
-                }}
-              >
-                フォーカス
-              </button>
-            )}
-          </>
-        )}
-
-        {!isFrame && isSticky && onChangeColor && (
-          <>
-            <div className="my-1 border-t border-border" />
-            <div
-              className="relative"
-              onMouseEnter={() => setShowColorMenu(true)}
-              onMouseLeave={() => setShowColorMenu(false)}
-            >
-              <button
-                type="button"
-                className="w-full px-3 py-1.5 text-sm text-left hover:bg-accent flex items-center justify-between"
-              >
-                <span>色を変更…</span>
-                <span className="text-xs text-muted-foreground">▶</span>
-              </button>
-              {showColorMenu &&
-                (() => {
-                  const palette = getPalette(
-                    stickyPaletteId ?? DEFAULT_PALETTE_ID,
-                  );
-                  return (
-                    <div
-                      className="absolute left-full top-0 bg-popover border border-border rounded-md shadow-md py-1 z-50"
-                      style={{ minWidth: 160 }}
-                    >
-                      {palette.colors.map((c, slot) => (
-                        <button
-                          key={slot}
-                          type="button"
-                          className="w-full px-3 py-1.5 text-sm text-left hover:bg-accent flex items-center gap-2"
-                          onClick={() => {
-                            close();
-                            onChangeColor(palette.id, slot);
-                          }}
-                        >
-                          <span
-                            aria-hidden
-                            style={{
-                              width: 12,
-                              height: 12,
-                              borderRadius: "50%",
-                              border: "1.5px solid rgba(0,0,0,0.2)",
-                              background: c.hex,
-                              flexShrink: 0,
-                            }}
-                          />
-                          <span>{c.label}</span>
-                        </button>
-                      ))}
-                    </div>
-                  );
-                })()}
-            </div>
-          </>
-        )}
-
-        {!isFrame && isSticky && onBranchFrom && (
-          <>
-            <div className="my-1 border-t border-border" />
-            <button
-              type="button"
-              className="px-3 py-1.5 text-sm text-left hover:bg-accent"
-              onClick={() => {
-                close();
-                onBranchFrom();
-              }}
-            >
-              ここから分岐
-            </button>
-          </>
-        )}
-
-        {!isFrame && isSticky && onPromote && (
-          <>
-            <div className="my-1 border-t border-border" />
-            <div
-              className="relative"
-              onMouseEnter={() => setShowPromoteMenu(true)}
-              onMouseLeave={() => {
-                setShowPromoteMenu(false);
-                setShowCodexTypes(false);
-              }}
-            >
-              <button
-                type="button"
-                className="w-full px-3 py-1.5 text-sm text-left hover:bg-accent flex items-center justify-between"
-              >
-                <span>昇格…</span>
-                <span className="text-xs text-muted-foreground">▶</span>
-              </button>
-              {showPromoteMenu && (
-                <div
-                  className="absolute left-full top-0 bg-popover border border-border rounded-md shadow-md py-1 z-50"
-                  style={{ minWidth: 140 }}
-                >
-                  {(
-                    [
-                      { type: "scene" as PromoteTargetType, label: "シーン" },
-                      { type: "note" as PromoteTargetType, label: "ノート" },
-                      {
-                        type: "snippet" as PromoteTargetType,
-                        label: "スニペット",
-                      },
-                    ] as const
-                  ).map(({ type, label }) => (
-                    <button
-                      key={type}
-                      type="button"
-                      className="w-full px-3 py-1.5 text-sm text-left hover:bg-accent"
-                      onClick={() => {
-                        close();
-                        onPromote(type);
-                      }}
+              <DropdownMenuSub>
+                <DropdownMenuSubTrigger>Codex に昇格…</DropdownMenuSubTrigger>
+                <DropdownMenuSubContent>
+                  {CODEX_TYPES.map(({ value, label }) => (
+                    <DropdownMenuItem
+                      key={value}
+                      onSelect={() => onPromoteFrame(value)}
                     >
                       {label}
-                    </button>
+                    </DropdownMenuItem>
                   ))}
-                  <div
-                    className="relative"
-                    onMouseEnter={() => setShowCodexTypes(true)}
-                    onMouseLeave={() => setShowCodexTypes(false)}
-                  >
-                    <button
-                      type="button"
-                      className="w-full px-3 py-1.5 text-sm text-left hover:bg-accent flex items-center justify-between"
-                    >
-                      <span>Codex</span>
-                      <span className="text-xs text-muted-foreground">▶</span>
-                    </button>
-                    {showCodexTypes && (
-                      <div
-                        className="absolute left-full top-0 bg-popover border border-border rounded-md shadow-md py-1 z-50"
-                        style={{ minWidth: 130 }}
+                </DropdownMenuSubContent>
+              </DropdownMenuSub>
+            )}
+            {onPromoteFrame && <DropdownMenuSeparator />}
+            <DropdownMenuItem
+              onSelect={onRemoveFromBoard}
+              className={DESTRUCTIVE_CLASS}
+            >
+              削除
+            </DropdownMenuItem>
+          </>
+        ) : (
+          <>
+            {isScene && (
+              <>
+                <DropdownMenuItem onSelect={onOpen}>開く</DropdownMenuItem>
+                <DropdownMenuSeparator />
+              </>
+            )}
+
+            <DropdownMenuItem onSelect={isPinned ? onUnpin : onPin}>
+              {isPinned ? "固定解除" : "位置を固定"}
+            </DropdownMenuItem>
+
+            <DropdownMenuSeparator />
+
+            <DropdownMenuItem onSelect={onBringToFront}>
+              前面へ移動
+            </DropdownMenuItem>
+            <DropdownMenuItem onSelect={onSendToBack}>
+              背面へ移動
+            </DropdownMenuItem>
+
+            <DropdownMenuSeparator />
+
+            <DropdownMenuItem onSelect={focusedNodeId ? onExitFocus : onFocus}>
+              {focusedNodeId ? "フォーカスを解除" : "フォーカス"}
+            </DropdownMenuItem>
+
+            {isSticky && onChangeColor && (
+              <>
+                <DropdownMenuSeparator />
+                <DropdownMenuSub>
+                  <DropdownMenuSubTrigger>色を変更…</DropdownMenuSubTrigger>
+                  <DropdownMenuSubContent className="min-w-[160px]">
+                    {palette.colors.map((c, slot) => (
+                      <DropdownMenuItem
+                        key={slot}
+                        onSelect={() => onChangeColor(palette.id, slot)}
                       >
+                        <span
+                          aria-hidden
+                          style={{
+                            width: 12,
+                            height: 12,
+                            borderRadius: "50%",
+                            border: "1.5px solid rgba(0,0,0,0.2)",
+                            background: c.hex,
+                            flexShrink: 0,
+                            marginRight: 8,
+                          }}
+                        />
+                        <span>{c.label}</span>
+                      </DropdownMenuItem>
+                    ))}
+                  </DropdownMenuSubContent>
+                </DropdownMenuSub>
+              </>
+            )}
+
+            {isSticky && onBranchFrom && (
+              <>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem onSelect={onBranchFrom}>
+                  ここから分岐
+                </DropdownMenuItem>
+              </>
+            )}
+
+            {isSticky && onPromote && (
+              <>
+                <DropdownMenuSeparator />
+                <DropdownMenuSub>
+                  <DropdownMenuSubTrigger>昇格…</DropdownMenuSubTrigger>
+                  <DropdownMenuSubContent className="min-w-[140px]">
+                    {PROMOTE_FLAT_ITEMS.map(({ type, label }) => (
+                      <DropdownMenuItem
+                        key={type}
+                        onSelect={() => onPromote(type)}
+                      >
+                        {label}
+                      </DropdownMenuItem>
+                    ))}
+                    <DropdownMenuSub>
+                      <DropdownMenuSubTrigger>Codex</DropdownMenuSubTrigger>
+                      <DropdownMenuSubContent className="min-w-[130px]">
                         {CODEX_TYPES.map(({ value, label }) => (
-                          <button
+                          <DropdownMenuItem
                             key={value}
-                            type="button"
-                            className="w-full px-3 py-1.5 text-sm text-left hover:bg-accent"
-                            onClick={() => {
-                              close();
-                              onPromote("codex", value);
-                            }}
+                            onSelect={() => onPromote("codex", value)}
                           >
                             {label}
-                          </button>
+                          </DropdownMenuItem>
                         ))}
-                      </div>
-                    )}
-                  </div>
-                </div>
-              )}
-            </div>
-          </>
-        )}
+                      </DropdownMenuSubContent>
+                    </DropdownMenuSub>
+                  </DropdownMenuSubContent>
+                </DropdownMenuSub>
+              </>
+            )}
 
-        {!isFrame && (
-          <>
-            <div className="my-1 border-t border-border" />
+            <DropdownMenuSeparator />
 
-            <button
-              type="button"
-              className="px-3 py-1.5 text-sm text-left hover:bg-accent text-destructive"
-              onClick={() => {
-                close();
-                onRemoveFromBoard();
-              }}
+            <DropdownMenuItem
+              onSelect={onRemoveFromBoard}
+              className={DESTRUCTIVE_CLASS}
             >
               {isSticky ? "削除" : "このボードから削除"}
-            </button>
+            </DropdownMenuItem>
           </>
         )}
-      </div>
-    </div>,
-    document.body,
+      </DropdownMenuContent>
+    </DropdownMenu>
   );
 }

@@ -1,5 +1,11 @@
-import { useEffect, useRef, useCallback } from "react";
-import { createPortal } from "react-dom";
+import {
+  DropdownMenu,
+  DropdownMenuTrigger,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+} from "@/components/ui/dropdown-menu";
 
 export interface EdgeContextMenuState {
   edgeId: string;
@@ -15,10 +21,6 @@ interface EdgeContextMenuProps extends EdgeContextMenuState {
   onDelete: () => void;
 }
 
-const MENU_WIDTH = 200;
-// 3 line-style items + 2 section headers + color row + 2 dividers + delete
-const MENU_HEIGHT = 260;
-
 const COLOR_PRESETS = [
   { value: "#555555", label: "グレー" },
   { value: "#ef4444", label: "赤" },
@@ -27,6 +29,12 @@ const COLOR_PRESETS = [
   { value: "#22c55e", label: "緑" },
   { value: "#3b82f6", label: "青" },
   { value: "#a855f7", label: "紫" },
+] as const;
+
+const STYLE_ITEMS = [
+  { value: "solid", label: "実線", glyph: "──" },
+  { value: "dashed", label: "破線", glyph: "╌╌" },
+  { value: "dotted", label: "点線", glyph: "···" },
 ] as const;
 
 export function EdgeContextMenu({
@@ -38,73 +46,48 @@ export function EdgeContextMenu({
   onColorChange,
   onDelete,
 }: EdgeContextMenuProps) {
-  const menuRef = useRef<HTMLDivElement>(null);
-  const close = useCallback(() => onClose(), [onClose]);
-
-  useEffect(() => {
-    function onPointerDown(e: PointerEvent | MouseEvent) {
-      if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
-        close();
-      }
-    }
-    function onKeyDown(e: KeyboardEvent) {
-      if (e.key === "Escape") close();
-    }
-    document.addEventListener("pointerdown", onPointerDown, true);
-    document.addEventListener("keydown", onKeyDown);
-    return () => {
-      document.removeEventListener("pointerdown", onPointerDown, true);
-      document.removeEventListener("keydown", onKeyDown);
-    };
-  }, [close]);
-
-  const x = Math.max(
-    8,
-    Math.min(screenPosition.x, window.innerWidth - MENU_WIDTH - 8),
-  );
-  const y = Math.max(
-    8,
-    Math.min(screenPosition.y, window.innerHeight - MENU_HEIGHT - 8),
-  );
-
-  return createPortal(
-    <div
-      ref={menuRef}
-      className="fixed z-50 rounded-md border border-border bg-popover shadow-md"
-      style={{ left: x, top: y, minWidth: MENU_WIDTH }}
-      onMouseDown={(e) => e.stopPropagation()}
+  return (
+    <DropdownMenu
+      open
+      modal={false}
+      onOpenChange={(o) => {
+        if (!o) onClose();
+      }}
     >
-      <div className="flex flex-col py-1">
-        <div className="px-3 py-1 text-xs text-muted-foreground font-medium">
-          線種
-        </div>
-        {(["solid", "dashed", "dotted"] as const).map((s) => (
-          <button
-            key={s}
-            type="button"
-            className={`px-3 py-1.5 text-sm text-left hover:bg-accent flex items-center gap-2 ${style === s ? "font-semibold" : ""}`}
-            onClick={() => {
-              onStyleChange(s);
-              close();
-            }}
+      <DropdownMenuTrigger asChild>
+        <span
+          aria-hidden
+          style={{
+            position: "fixed",
+            left: screenPosition.x,
+            top: screenPosition.y,
+            width: 0,
+            height: 0,
+            pointerEvents: "none",
+          }}
+        />
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="start" className="min-w-[200px]">
+        <DropdownMenuLabel>線種</DropdownMenuLabel>
+        {STYLE_ITEMS.map(({ value, label, glyph }) => (
+          <DropdownMenuItem
+            key={value}
+            onSelect={() => onStyleChange(value)}
+            className={style === value ? "font-semibold" : undefined}
           >
-            <span className="w-8 inline-block">
-              {s === "solid" ? "──" : s === "dashed" ? "╌╌" : "···"}
-            </span>
-            {s === "solid" ? "実線" : s === "dashed" ? "破線" : "点線"}
-          </button>
+            <span className="inline-block w-8">{glyph}</span>
+            {label}
+          </DropdownMenuItem>
         ))}
-
-        <div className="my-1 border-t border-border" />
-        <div className="px-3 py-1 text-xs text-muted-foreground font-medium">
-          色変更
-        </div>
-        <div className="px-3 py-2 flex gap-2 flex-wrap">
+        <DropdownMenuSeparator />
+        <DropdownMenuLabel>色変更</DropdownMenuLabel>
+        <div className="flex flex-wrap gap-2 px-2 py-2">
           {COLOR_PRESETS.map((c) => (
             <button
               key={c.value}
               type="button"
               title={c.label}
+              aria-label={c.label}
               className="rounded-full border-2 transition-transform hover:scale-110"
               style={{
                 width: 20,
@@ -115,25 +98,19 @@ export function EdgeContextMenu({
               }}
               onClick={() => {
                 onColorChange(c.value);
-                close();
+                onClose();
               }}
             />
           ))}
         </div>
-
-        <div className="my-1 border-t border-border" />
-        <button
-          type="button"
-          className="px-3 py-1.5 text-sm text-left hover:bg-accent text-destructive"
-          onClick={() => {
-            onDelete();
-            close();
-          }}
+        <DropdownMenuSeparator />
+        <DropdownMenuItem
+          onSelect={onDelete}
+          className="text-[color:var(--destructive)] focus:text-[color:var(--destructive)]"
         >
           削除
-        </button>
-      </div>
-    </div>,
-    document.body,
+        </DropdownMenuItem>
+      </DropdownMenuContent>
+    </DropdownMenu>
   );
 }
