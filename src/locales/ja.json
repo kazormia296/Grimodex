@@ -457,6 +457,7 @@
       "noResults": "該当するエントリが見つかりませんでした。",
       "inputPlaceholder": "コンテキストに追加するものを指示...",
       "alreadyPinned": "(Spotlight 済)",
+      "spotlightCandidate": "Spotlight 候補",
       "foundEntries": "{{count}} 件のエントリが見つかりました:",
       "addSelected": "選択を追加 ({{count}})",
       "running": "実行中: {{name}}",

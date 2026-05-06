@@ -457,6 +457,7 @@
       "noResults": "No matching entries found.",
       "inputPlaceholder": "Describe what to add to context...",
       "alreadyPinned": "(in Spotlight)",
+      "spotlightCandidate": "Spotlight candidate",
       "foundEntries": "Found {{count}} entries:",
       "addSelected": "Add selected ({{count}})",
       "running": "Running: {{name}}",

@@ -17,6 +17,7 @@ import { AgentProgressBar } from "./components/AgentProgressBar";
 import { CodexExtractionDialog } from "@/features/codex/CodexExtractionDialog";
 import { SnippetExtractionDialog } from "@/features/snippets/SnippetExtractionDialog";
 import { ContextBar } from "./components/ContextBar";
+import { computeSpotlightCandidates } from "./spotlightSuggestion";
 import { SessionsPanel } from "./components/SessionsPanel";
 import { CodexPopover } from "@/features/editor/CodexPopover";
 import * as chatApi from "./chatApi";
@@ -530,6 +531,11 @@ export function ChatPanel() {
             : detectedEntries.filter((e) => !inputPinnedIds.has(e.id))
         }
         alwaysEntries={alwaysEntries.filter((e) => !inputPinnedIds.has(e.id))}
+        spotlightCandidateIds={computeSpotlightCandidates(
+          isGlobalChat ? [] : detectedEntries,
+          alwaysEntries,
+          new Set([...pinnedIds, ...inputPinnedIds]),
+        )}
         onReturnToAuto={handleReturnToAuto}
         onRemove={handleRemoveEntry}
         onRemoveAuto={handleRemoveAuto}

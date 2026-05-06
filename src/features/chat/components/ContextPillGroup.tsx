@@ -6,7 +6,7 @@ import {
   type MouseEvent,
 } from "react";
 import { createPortal } from "react-dom";
-import { X, Pin, Undo2 } from "lucide-react";
+import { X, Sparkles, Spotlight, Undo2 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import type { CodexEntry } from "@/features/codex/api";
 import type { PinnedCodexEntryWithData } from "../chatApi";
@@ -25,6 +25,8 @@ interface ContextPillGroupProps {
   autoEntries: CodexEntry[];
   /** via表示の子エントリ（pinned の後、auto の前に表示） */
   viaEntries?: { child: CodexEntry; parentName: string }[];
+  /** auto エントリのうち ✨ Spotlight 候補としてマークする ID 集合 */
+  spotlightCandidateIds?: ReadonlySet<string>;
   /** 手動ピンをautoに戻す */
   onReturnToAuto: (entryId: string) => void;
   /** コンテキストから完全除去 */
@@ -42,6 +44,7 @@ export function ContextPillGroup({
   pinnedEntries,
   autoEntries,
   viaEntries = [],
+  spotlightCandidateIds,
   onReturnToAuto,
   onRemove,
   onRemoveAuto,
@@ -232,7 +235,7 @@ export function ContextPillGroup({
                         name: child.name,
                       })}
                     >
-                      <Pin className="h-3 w-3" />
+                      <Spotlight className="h-3 w-3" />
                     </button>
                     {onDismissVia && (
                       <button
@@ -249,44 +252,57 @@ export function ContextPillGroup({
                   </div>
                 </div>
               ))}
-              {autoEntries.map((entry) => (
-                <div
-                  key={entry.id}
-                  className="flex w-full items-center justify-between gap-2 px-2 py-0.5 text-xs hover:bg-accent/50 opacity-75"
-                  onMouseEnter={(e) => handleEntryMouseEnter(entry, e)}
-                  onMouseLeave={handleEntryMouseLeave}
-                >
-                  <span
-                    className="truncate"
-                    style={pillStyle ? { color: pillStyle.color } : undefined}
+              {autoEntries.map((entry) => {
+                const isCandidate =
+                  spotlightCandidateIds?.has(entry.id) ?? false;
+                return (
+                  <div
+                    key={entry.id}
+                    className="flex w-full items-center justify-between gap-2 px-2 py-0.5 text-xs hover:bg-accent/50 opacity-75"
+                    onMouseEnter={(e) => handleEntryMouseEnter(entry, e)}
+                    onMouseLeave={handleEntryMouseLeave}
                   >
-                    {entry.name}
-                    <span className="ml-1 text-muted-foreground/70">auto</span>
-                  </span>
-                  <div className="flex shrink-0 items-center gap-0.5">
-                    <button
-                      type="button"
-                      onClick={() => onPin(entry.id)}
-                      className="hover:text-foreground text-muted-foreground/70"
-                      aria-label={t("chat.context.pinEntry", {
-                        name: entry.name,
-                      })}
+                    <span
+                      className="truncate"
+                      style={pillStyle ? { color: pillStyle.color } : undefined}
                     >
-                      <Pin className="h-3 w-3" />
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => onRemoveAuto(entry.id)}
-                      className="hover:text-destructive text-muted-foreground/70"
-                      aria-label={t("chat.context.unpinEntry", {
-                        name: entry.name,
-                      })}
-                    >
-                      <X className="h-3 w-3" />
-                    </button>
+                      {entry.name}
+                      {isCandidate ? (
+                        <span className="ml-1 inline-flex items-center gap-0.5 text-muted-foreground/70">
+                          <Sparkles className="h-3 w-3" />
+                          {t("chat.context.spotlightCandidate")}
+                        </span>
+                      ) : (
+                        <span className="ml-1 text-muted-foreground/70">
+                          auto
+                        </span>
+                      )}
+                    </span>
+                    <div className="flex shrink-0 items-center gap-0.5">
+                      <button
+                        type="button"
+                        onClick={() => onPin(entry.id)}
+                        className="hover:text-foreground text-muted-foreground/70"
+                        aria-label={t("chat.context.pinEntry", {
+                          name: entry.name,
+                        })}
+                      >
+                        <Spotlight className="h-3 w-3" />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => onRemoveAuto(entry.id)}
+                        className="hover:text-destructive text-muted-foreground/70"
+                        aria-label={t("chat.context.unpinEntry", {
+                          name: entry.name,
+                        })}
+                      >
+                        <X className="h-3 w-3" />
+                      </button>
+                    </div>
                   </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
           </div>,
           document.body,

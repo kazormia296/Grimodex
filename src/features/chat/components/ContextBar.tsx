@@ -13,7 +13,8 @@ import {
   BookOpen,
   ChevronDown,
   ChevronUp,
-  Pin,
+  Sparkles,
+  Spotlight,
   Undo2,
   Bot,
 } from "lucide-react";
@@ -68,6 +69,8 @@ interface ContextBarProps {
   onDismissViaChild?: (childId: string) => void;
   dismissedViaChildIds?: Set<string>;
   pinnedSnippetIds: Set<string>;
+  /** auto エントリのうち ✨ Spotlight 候補としてマークする ID 集合 */
+  spotlightCandidateIds?: ReadonlySet<string>;
   onPinEntry: (entryId: string, type?: "codex" | "snippet") => void;
   onUnpinEntry: (entryId: string) => void;
   onTogglePinChildren: (entryId: string, withChildren: boolean) => void;
@@ -91,6 +94,7 @@ export function ContextBar({
   onDismissViaChild,
   dismissedViaChildIds,
   pinnedSnippetIds,
+  spotlightCandidateIds,
   onPinEntry,
   onUnpinEntry,
   onTogglePinChildren,
@@ -399,6 +403,7 @@ export function ContextBar({
                             child: vc.child,
                             parentName: vc.viaParentName,
                           }))}
+                          spotlightCandidateIds={spotlightCandidateIds}
                           onReturnToAuto={onReturnToAuto}
                           onRemove={onRemove}
                           onRemoveAuto={onRemoveAuto}
@@ -487,7 +492,7 @@ export function ContextBar({
                               name: child.name,
                             })}
                           >
-                            <Pin className="h-3 w-3" />
+                            <Spotlight className="h-3 w-3" />
                           </button>
                           {onDismissViaChild && (
                             <button
@@ -507,40 +512,53 @@ export function ContextBar({
                   ))}
                 {/* G15: auto entries (非グループ時のみ個別表示) */}
                 {!useGrouping &&
-                  [...detectedEntries, ...alwaysEntries].map((entry) => (
-                    <CodexPill
-                      key={entry.id}
-                      entry={entry}
-                      dim
-                      suffix={
-                        <span className="text-muted-foreground/70">auto</span>
-                      }
-                      actions={
-                        <span className="inline-flex items-center gap-1 pr-1">
-                          <button
-                            type="button"
-                            onClick={() => onPin(entry.id)}
-                            className="hover:text-foreground text-muted-foreground/70"
-                            aria-label={t("chat.context.pinEntry", {
-                              name: entry.name,
-                            })}
-                          >
-                            <Pin className="h-3 w-3" />
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => onRemoveAuto(entry.id)}
-                            className="hover:text-destructive text-muted-foreground/70"
-                            aria-label={t("chat.context.unpinEntry", {
-                              name: entry.name,
-                            })}
-                          >
-                            <X className="h-3 w-3" />
-                          </button>
-                        </span>
-                      }
-                    />
-                  ))}
+                  [...detectedEntries, ...alwaysEntries].map((entry) => {
+                    const isCandidate =
+                      spotlightCandidateIds?.has(entry.id) ?? false;
+                    return (
+                      <CodexPill
+                        key={entry.id}
+                        entry={entry}
+                        dim
+                        suffix={
+                          isCandidate ? (
+                            <span className="inline-flex items-center gap-0.5 text-muted-foreground/70">
+                              <Sparkles className="h-3 w-3" />
+                              {t("chat.context.spotlightCandidate")}
+                            </span>
+                          ) : (
+                            <span className="text-muted-foreground/70">
+                              auto
+                            </span>
+                          )
+                        }
+                        actions={
+                          <span className="inline-flex items-center gap-1 pr-1">
+                            <button
+                              type="button"
+                              onClick={() => onPin(entry.id)}
+                              className="hover:text-foreground text-muted-foreground/70"
+                              aria-label={t("chat.context.pinEntry", {
+                                name: entry.name,
+                              })}
+                            >
+                              <Spotlight className="h-3 w-3" />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => onRemoveAuto(entry.id)}
+                              className="hover:text-destructive text-muted-foreground/70"
+                              aria-label={t("chat.context.unpinEntry", {
+                                name: entry.name,
+                              })}
+                            >
+                              <X className="h-3 w-3" />
+                            </button>
+                          </span>
+                        }
+                      />
+                    );
+                  })}
                 {/* G16: ピン留め Snippet エントリ */}
                 {pinnedSnippets.map((snippet) => (
                   <span
