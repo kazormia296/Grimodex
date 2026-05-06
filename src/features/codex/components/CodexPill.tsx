@@ -106,7 +106,21 @@ export function CodexPill({
       ? "px-1.5 py-0 text-[10px] gap-1"
       : "px-2 py-0.5 text-xs gap-1";
 
-  const fallbackClass = !color ? "bg-accent text-accent-foreground" : undefined;
+  const fallbackClass = !color
+    ? dim
+      ? "border border-border text-muted-foreground"
+      : "bg-accent text-accent-foreground"
+    : undefined;
+
+  const colorStyle = color
+    ? dim
+      ? {
+          backgroundColor: "transparent",
+          color: color.fg,
+          boxShadow: `inset 0 0 0 1px ${color.hl}`,
+        }
+      : { backgroundColor: color.hl, color: color.fg }
+    : undefined;
 
   return (
     <span
@@ -114,10 +128,9 @@ export function CodexPill({
         "inline-flex shrink-0 items-center whitespace-nowrap rounded-full",
         sizeClass,
         fallbackClass,
-        dim && "opacity-75",
         className,
       )}
-      style={color ? { backgroundColor: color.hl, color: color.fg } : undefined}
+      style={colorStyle}
       onMouseEnter={handleMouseEnter}
       onMouseLeave={handleMouseLeave}
     >

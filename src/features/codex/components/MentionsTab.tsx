@@ -1,4 +1,5 @@
 import { MessageSquare } from "lucide-react";
+import { useTranslation } from "react-i18next";
 import type { CodexEntry } from "../api";
 import { ReferencesSection } from "./ReferencesSection";
 
@@ -8,12 +9,11 @@ interface MentionsTabProps {
 }
 
 export function MentionsTab({ entry, sourceSessionTitle }: MentionsTabProps) {
+  const { t } = useTranslation();
   return (
     <div className="space-y-3">
-      {/* Appears in (References) */}
       <ReferencesSection entry={entry} />
 
-      {/* Source */}
       {entry.sourceChatMessageId && (
         <div
           data-testid="codex-source-chat-link"
@@ -21,7 +21,9 @@ export function MentionsTab({ entry, sourceSessionTitle }: MentionsTabProps) {
         >
           <MessageSquare className="h-3.5 w-3.5" />
           <span>
-            抽出元チャット: {sourceSessionTitle ?? entry.sourceChatMessageId}
+            {t("codex.mentions.sourceChat", {
+              title: sourceSessionTitle ?? entry.sourceChatMessageId,
+            })}
           </span>
         </div>
       )}

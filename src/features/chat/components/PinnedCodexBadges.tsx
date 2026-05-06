@@ -1,4 +1,4 @@
-import { X, BookOpen } from "lucide-react";
+import { X, Spotlight } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import type { PinnedCodexEntryWithData } from "@/features/chat/chatApi";
 import { getChildrenFromArray } from "@/features/codex/childrenBudget";
@@ -29,7 +29,7 @@ export function PinnedCodexBadges({
         className="inline-flex items-center gap-1 rounded-md border border-dashed border-border px-2 py-0.5 text-xs text-muted-foreground hover:bg-accent"
         aria-label={t("chat.context.pinCodex")}
       >
-        <BookOpen className="h-3 w-3" />
+        <Spotlight className="h-3 w-3" />
         {t("chat.context.pin")}
       </button>
       {pinnedEntries.map((entry) => {

@@ -208,7 +208,7 @@ export function DetailsSection({ entry }: DetailsSectionProps) {
         className="flex items-center justify-between"
       >
         <span className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-          Details
+          {t("codex.detail.customDetailsTitle")}
         </span>
         <div className="flex items-center gap-1">
           <button
@@ -219,7 +219,7 @@ export function DetailsSection({ entry }: DetailsSectionProps) {
             title={t("codex.detail.addField")}
           >
             <Plus className="h-3 w-3" />
-            Add field
+            {t("codex.detail.addField")}
           </button>
           <button
             type="button"

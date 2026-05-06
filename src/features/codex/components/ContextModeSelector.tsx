@@ -1,31 +1,5 @@
+import { useTranslation } from "react-i18next";
 import type { CodexContextMode } from "@/db/schema";
-
-const CONTEXT_MODE_OPTIONS: {
-  value: CodexContextMode;
-  label: string;
-  description: string;
-}[] = [
-  {
-    value: "always",
-    label: "Always include",
-    description: "Always inject into AI context",
-  },
-  {
-    value: "mentioned",
-    label: "When mentioned",
-    description: "Inject when detected in scene",
-  },
-  {
-    value: "suppress",
-    label: "Manual only",
-    description: "Only via manual pin",
-  },
-  {
-    value: "hidden",
-    label: "Exclude from AI",
-    description: "Never inject into AI context",
-  },
-];
 
 interface ContextModeSelectorProps {
   value: CodexContextMode;
@@ -36,10 +10,22 @@ export function ContextModeSelector({
   value,
   onChange,
 }: ContextModeSelectorProps) {
+  const { t } = useTranslation();
+  const options: {
+    value: CodexContextMode;
+    labelKey: string;
+    descKey: string;
+  }[] = [
+    { value: "always", labelKey: "always", descKey: "alwaysDesc" },
+    { value: "mentioned", labelKey: "mentioned", descKey: "mentionedDesc" },
+    { value: "suppress", labelKey: "manual", descKey: "manualDesc" },
+    { value: "hidden", labelKey: "hidden", descKey: "hiddenDesc" },
+  ];
+
   return (
     <div>
       <label className="mb-1 block text-xs font-medium text-muted-foreground">
-        Context
+        {t("codex.tracking.contextLabel")}
       </label>
       <select
         data-testid="context-mode-selector"
@@ -47,9 +33,10 @@ export function ContextModeSelector({
         onChange={(e) => onChange(e.target.value as CodexContextMode)}
         className="w-full rounded-md border border-input bg-background px-2 py-1.5 text-sm"
       >
-        {CONTEXT_MODE_OPTIONS.map((opt) => (
+        {options.map((opt) => (
           <option key={opt.value} value={opt.value}>
-            {opt.label} — {opt.description}
+            {t(`codex.tracking.${opt.labelKey}`)} —{" "}
+            {t(`codex.tracking.${opt.descKey}`)}
           </option>
         ))}
       </select>

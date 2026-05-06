@@ -33,7 +33,7 @@ export function ReferencesSection({ entry }: ReferencesSectionProps) {
       className="space-y-2 border-t border-border pt-3"
     >
       <h4 className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
-        Appears in
+        {t("codex.references.appearsIn")}
       </h4>
 
       {scenes === null ? (

@@ -274,7 +274,7 @@ describe("ContextBar 子エントリピル表示 (非グループモード)", ()
     const pills = screen.getByTestId("pills-visible");
     expect(within(pills).getByText("子キャラ")).toBeInTheDocument();
     const dismissBtn = within(pills).getByRole("button", {
-      name: /子キャラのピン留め解除/,
+      name: /子キャラ の Spotlight 解除/,
     });
     await user.click(dismissBtn);
     expect(onDismissViaChild).toHaveBeenCalledWith("c1");

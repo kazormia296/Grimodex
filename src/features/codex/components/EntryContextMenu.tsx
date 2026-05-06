@@ -5,7 +5,7 @@ import {
   Grid2X2,
   MapPin,
   Pencil,
-  Pin,
+  Spotlight,
   Tag,
   Trash2,
 } from "lucide-react";
@@ -229,8 +229,8 @@ export function EntryContextMenu({
             }}
             className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm hover:bg-accent"
           >
-            <Pin className="h-3.5 w-3.5 text-muted-foreground" />
-            チャットにピン留め
+            <Spotlight className="h-3.5 w-3.5 text-muted-foreground" />
+            チャットで Spotlight
           </button>
         )}
 

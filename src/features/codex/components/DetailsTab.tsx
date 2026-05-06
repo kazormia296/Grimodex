@@ -309,7 +309,9 @@ export function DetailsTab({
       {/* Content (TipTap) */}
       <div>
         <div className="mb-1 flex items-center justify-between">
-          <label className="block text-xs font-medium">Content</label>
+          <label className="block text-xs font-medium">
+            {t("codex.detail.contentLabel")}
+          </label>
           <button
             type="button"
             onClick={() =>

@@ -448,15 +448,15 @@
       "showPrompt": "Show full prompt",
       "projectInfo": "Project info",
       "sceneTokens": "Scene: {{count}} tokens",
-      "unpinEntry": "Unpin {{name}}",
+      "unpinEntry": "Unspotlight {{name}}",
       "returnToAuto": "Return {{name}} to auto",
-      "pinEntry": "Pin {{name}}",
-      "pinCodexSnippet": "Pin Codex/Snippet",
-      "pin": "Pin",
+      "pinEntry": "Spotlight {{name}}",
+      "pinCodexSnippet": "Spotlight Codex/Snippet",
+      "pin": "Spotlight",
       "group": "{{label}} group",
       "noResults": "No matching entries found.",
       "inputPlaceholder": "Describe what to add to context...",
-      "alreadyPinned": "(already pinned)",
+      "alreadyPinned": "(in Spotlight)",
       "foundEntries": "Found {{count}} entries:",
       "addSelected": "Add selected ({{count}})",
       "running": "Running: {{name}}",
@@ -465,10 +465,10 @@
       "codexExtracted": "Codex extracted ({{count}})",
       "snippetSaved": "Snippet saved ({{count}})",
       "includeChildren": "Include child entries",
-      "pinEntries": "Pin entries",
+      "pinEntries": "Spotlight entries",
       "noCodexEntries": "No Codex entries",
       "noSnippets": "No snippets",
-      "pinCodex": "Pin Codex",
+      "pinCodex": "Spotlight Codex",
       "promptPreviewTitle": "System prompt preview",
       "layerBreakdown": "Token breakdown by layer",
       "layerColumn": "Layer",
@@ -565,7 +565,9 @@
       "fieldNamePlaceholder": "Field name",
       "summaryLabel": "Summary",
       "empty": "(empty)",
-      "showBaseContent": "Show base content",
+      "contentLabel": "Description",
+      "customDetailsTitle": "Custom Details",
+      "showBaseContent": "Show base description",
       "selectPlaceholder": "— Select —"
     },
     "relation": {
@@ -599,7 +601,23 @@
     "references": {
       "searching": "Searching...",
       "checkOccurrences": "Check occurrences",
-      "noMentions": "Not mentioned in text"
+      "noMentions": "Not mentioned in text",
+      "appearsIn": "Appears in"
+    },
+    "tracking": {
+      "contextLabel": "Context",
+      "excludedLabel": "Excluded aliases",
+      "always": "Always include",
+      "alwaysDesc": "Always inject into AI context",
+      "mentioned": "When mentioned",
+      "mentionedDesc": "Inject when detected in scene",
+      "manual": "Manual only",
+      "manualDesc": "Only via Spotlight",
+      "hidden": "Exclude from AI",
+      "hiddenDesc": "Never inject into AI context"
+    },
+    "mentions": {
+      "sourceChat": "Source chat: {{title}}"
     },
     "tagFilter": {
       "clearFilter": "Clear filter"
@@ -1268,10 +1286,10 @@
       "overwrite": "Overwrite"
     },
     "quickSection": {
-      "unpin": "Unpin",
-      "pin": "Pin",
+      "unpin": "Unspotlight",
+      "pin": "Spotlight",
       "noEntries": "No entries",
-      "pinCodex": "Pin Codex entry"
+      "pinCodex": "Spotlight Codex entry"
     }
   },
   "commandPalette": {
@@ -1603,8 +1621,8 @@
     "overrideFields": "Override fields",
     "summary": "Summary",
     "summaryPlaceholder": "Overview from this phase onward...",
-    "content": "Content",
-    "contentNote": "After saving, edit in the Details tab Content editor",
+    "content": "Description",
+    "contentNote": "After saving, edit in the Details tab Description editor",
     "contextMode": "Context mode",
     "overrideRequired": "Select at least one field to override",
     "saving": "Saving..."

@@ -148,7 +148,7 @@ describe("ContextPillGroup", () => {
     );
     await user.click(screen.getByRole("button", { name: /キャラクター/ }));
     await user.click(
-      screen.getByRole("button", { name: /Elaraのピン留め解除/ }),
+      screen.getByRole("button", { name: /Elara の Spotlight 解除/ }),
     );
     // ↩ ボタンのaria-labelは returnToAuto、× は unpinEntry
     // ↩ボタンはreturnToAutoなのでここではonReturnToAutoは呼ばれない（×ボタンを押した）
@@ -214,7 +214,7 @@ describe("ContextPillGroup", () => {
     );
     await user.click(screen.getByRole("button", { name: /キャラクター/ }));
     await user.click(
-      screen.getByRole("button", { name: /Elaraのピン留め解除/ }),
+      screen.getByRole("button", { name: /Elara の Spotlight 解除/ }),
     );
     expect(onRemove).toHaveBeenCalledWith("1");
   });
@@ -231,7 +231,7 @@ describe("ContextPillGroup", () => {
       />,
     );
     await user.click(screen.getByRole("button", { name: /キャラクター/ }));
-    await user.click(screen.getByRole("button", { name: /Liraをピン留め/ }));
+    await user.click(screen.getByRole("button", { name: /Lira を Spotlight/ }));
     expect(onPin).toHaveBeenCalledWith("3");
   });
 });

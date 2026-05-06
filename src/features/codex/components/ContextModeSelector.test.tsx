@@ -14,10 +14,10 @@ describe("ContextModeSelector", () => {
 
   it("shows all four context modes", () => {
     render(<ContextModeSelector value="mentioned" onChange={vi.fn()} />);
-    expect(screen.getByText(/Always include/)).toBeInTheDocument();
-    expect(screen.getByText(/When mentioned/)).toBeInTheDocument();
-    expect(screen.getByText(/Manual only/)).toBeInTheDocument();
-    expect(screen.getByText(/Exclude from AI/)).toBeInTheDocument();
+    expect(screen.getByText(/常に含める/)).toBeInTheDocument();
+    expect(screen.getByText(/言及時/)).toBeInTheDocument();
+    expect(screen.getByText(/手動のみ/)).toBeInTheDocument();
+    expect(screen.getByText(/AI から除外/)).toBeInTheDocument();
   });
 
   it("calls onChange with new value when selection changes", async () => {
