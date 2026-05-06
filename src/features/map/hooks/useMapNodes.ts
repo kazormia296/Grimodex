@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import type { Node } from "@xyflow/react";
 import { useChatStore } from "@/features/chat/chatStore";
 import {
@@ -91,6 +91,10 @@ export function useMapNodes({
   groupDraggingRef,
   persistingRef,
 }: UseMapNodesInput) {
+  // Session-persistent isOld set: once a sticky is "old", it stays old for the session.
+  // This prevents the folded corner from flickering when count oscillates near the threshold.
+  const everOldRef = useRef<Set<string>>(new Set());
+
   useEffect(() => {
     if (!boardId) return;
     let cancelled = false;
@@ -319,6 +323,22 @@ export function useMapNodes({
       }
       // 50-sticky TipTap threshold guard (design spec §1b)
       const useTipTap = stickies.length <= STICKY_TIPTAP_THRESHOLD;
+
+      // isOld: stickies with 50+ newer siblings get a folded corner.
+      // Sort descending (newest first); index >= 50 are "old".
+      // everOldRef makes it sticky — once old, stays old for the session.
+      const sortedDesc = [...stickies].sort((a, b) =>
+        b.createdAt.localeCompare(a.createdAt),
+      );
+      const currentOldIds = new Set(sortedDesc.slice(50).map((s) => s.id));
+      const liveIds = new Set(stickies.map((s) => s.id));
+      // Accumulate + prune deleted stickies from the persistent set
+      for (const id of currentOldIds) everOldRef.current.add(id);
+      for (const id of [...everOldRef.current]) {
+        if (!liveIds.has(id)) everOldRef.current.delete(id);
+      }
+      const oldIds = everOldRef.current;
+
       const stickyNodes: Node[] = show.stickies
         ? stickies.map((st, idx) => {
             const key = `sticky:${st.id}`;
@@ -341,6 +361,7 @@ export function useMapNodes({
                 useTipTap,
                 colorBy,
                 rotation: stickyRotation(st.id),
+                isOld: oldIds.has(st.id),
                 onUpdate: async (updates: {
                   title?: string;
                   body?: string;

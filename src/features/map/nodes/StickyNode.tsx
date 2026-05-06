@@ -19,6 +19,7 @@ export interface StickyNodeData {
   useTipTap: boolean;
   colorBy?: string;
   rotation?: number;
+  isOld?: boolean;
   onUpdate?: (updates: {
     title?: string;
     body?: string;
@@ -110,6 +111,7 @@ export const StickyNode = memo(function StickyNode({
 }: NodeProps) {
   const d = data as StickyNodeData;
   const rotation = d.rotation ?? 0;
+  const isOld = d.isOld ?? false;
 
   const [editing, setEditing] = useState(false);
   const [localTitle, setLocalTitle] = useState(d.title);
@@ -200,6 +202,7 @@ export const StickyNode = memo(function StickyNode({
         className="sticky-paper"
         data-color={localColor}
         data-glue={glueOrient}
+        data-old={String(isOld)}
         style={{
           transform: `rotate(${rotation}deg)`,
           width: 240,

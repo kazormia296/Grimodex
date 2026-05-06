@@ -904,7 +904,7 @@
     background-color: var(--sticky-bg-white);
   }
 
-  /* Folded corner — hidden in Phase 1, enabled in Phase 2 via [data-old=true] */
+  /* Folded corner — visible only when sticky is "old" (50+ newer siblings) */
   .sticky-corner {
     display: none;
     position: absolute;
@@ -920,6 +920,21 @@
     );
     filter: drop-shadow(-1px -1px 1px rgba(0, 0, 0, 0.15));
     z-index: 2;
+  }
+
+  /* Show corner when sticky is old (data-old="true") */
+  .sticky-paper[data-old="true"] {
+    clip-path: polygon(
+      0 0,
+      100% 0,
+      100% calc(100% - 14px),
+      calc(100% - 14px) 100%,
+      0 100%
+    );
+  }
+
+  .sticky-paper[data-old="true"] .sticky-corner {
+    display: block;
   }
 
   /* Content wrapper inside paper */
