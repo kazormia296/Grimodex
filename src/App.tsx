@@ -66,6 +66,7 @@ import { TitleBar } from "@/components/TitleBar";
 import { useTabStore } from "@/features/editor/tabStore";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { useGlobalHistoryStore } from "@/store/globalHistoryStore";
+import { HistoryButtons } from "@/features/history/HistoryButtons";
 import { getProject } from "@/features/project/api";
 import { usePhaseStore } from "@/features/codex/phaseStore";
 import { WelcomeDialog } from "@/features/onboarding/WelcomeDialog";
@@ -292,6 +293,11 @@ function EditorScreen() {
         usePhaseStore.getState().setResolutionMode(p.phaseResolutionMode);
       }
     });
+  }, []);
+
+  // ワークスペース切替時は前ワークスペースの Undo command を実行できないので clear する
+  useEffect(() => {
+    useGlobalHistoryStore.getState().clear();
   }, []);
   const { togglePanel, loadLayout, loadPresets, setDockviewApi } =
     useLayoutStore();
@@ -521,7 +527,11 @@ function EditorScreen() {
         void useGlobalHistoryStore
           .getState()
           .undo()
-          .catch(() => {});
+          .catch(() => {
+            toast.error(
+              i18next.t("history.undoError", "元に戻す操作に失敗しました"),
+            );
+          });
         return;
       }
       if ((key === "z" && e.shiftKey) || key === "y") {
@@ -529,7 +539,11 @@ function EditorScreen() {
         void useGlobalHistoryStore
           .getState()
           .redo()
-          .catch(() => {});
+          .catch(() => {
+            toast.error(
+              i18next.t("history.redoError", "やり直し操作に失敗しました"),
+            );
+          });
       }
     }
     window.addEventListener("keydown", onUndoRedo);
@@ -590,6 +604,7 @@ function EditorScreen() {
       >
         <GrimodexLogo height={24} className="text-foreground" />
         <WorkspaceMenu />
+        <HistoryButtons />
         <button
           type="button"
           title={t("app.exportTitle")}

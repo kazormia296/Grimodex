@@ -1822,6 +1822,12 @@
     "deleteConfirmBody": "{{count}} scenes have content or synopsis. Are you sure you want to delete?",
     "empty": "No scenes yet. Use the “+” button to create your first scene."
   },
+  "history": {
+    "undo": "Undo",
+    "redo": "Redo",
+    "undoError": "Undo failed",
+    "redoError": "Redo failed"
+  },
   "integrity": {
     "check": "Check Integrity",
     "checking": "Checking…",

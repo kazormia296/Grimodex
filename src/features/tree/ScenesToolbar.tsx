@@ -1,18 +1,9 @@
 import type { RefObject } from "react";
 import { useTranslation } from "react-i18next";
-import {
-  Plus,
-  ChevronsUpDown,
-  MoreHorizontal,
-  Undo2,
-  Redo2,
-} from "lucide-react";
+import { Plus, ChevronsUpDown, MoreHorizontal } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { useGlobalHistoryStore } from "@/store/globalHistoryStore";
 
 interface ScenesToolbarProps {
-  canUndo: boolean;
-  canRedo: boolean;
   showPanelMenu: boolean;
   createBtnRef: RefObject<HTMLButtonElement | null>;
   panelMenuBtnRef: RefObject<HTMLButtonElement | null>;
@@ -22,8 +13,6 @@ interface ScenesToolbarProps {
 }
 
 export function ScenesToolbar({
-  canUndo,
-  canRedo,
   showPanelMenu,
   createBtnRef,
   panelMenuBtnRef,
@@ -45,34 +34,6 @@ export function ScenesToolbar({
           className="flex h-6 w-6 items-center justify-center rounded text-muted-foreground hover:bg-accent hover:text-foreground active:scale-[0.97] transition-transform duration-75"
         >
           <Plus className="h-3.5 w-3.5" />
-        </button>
-        <button
-          type="button"
-          title={t("scenes.undo")}
-          disabled={!canUndo}
-          onClick={() =>
-            useGlobalHistoryStore
-              .getState()
-              .undo()
-              .catch(() => {})
-          }
-          className="flex h-6 w-6 items-center justify-center rounded text-muted-foreground hover:bg-accent hover:text-foreground disabled:pointer-events-none disabled:opacity-30 active:scale-[0.97] transition-transform duration-75"
-        >
-          <Undo2 className="h-3.5 w-3.5" />
-        </button>
-        <button
-          type="button"
-          title={t("scenes.redo")}
-          disabled={!canRedo}
-          onClick={() =>
-            useGlobalHistoryStore
-              .getState()
-              .redo()
-              .catch(() => {})
-          }
-          className="flex h-6 w-6 items-center justify-center rounded text-muted-foreground hover:bg-accent hover:text-foreground disabled:pointer-events-none disabled:opacity-30 active:scale-[0.97] transition-transform duration-75"
-        >
-          <Redo2 className="h-3.5 w-3.5" />
         </button>
         <button
           type="button"

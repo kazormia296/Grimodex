@@ -1,0 +1,55 @@
+import { Undo2, Redo2 } from "lucide-react";
+import { toast } from "sonner";
+import i18next from "i18next";
+import { useGlobalHistoryStore } from "@/store/globalHistoryStore";
+
+export function HistoryButtons() {
+  const past = useGlobalHistoryStore((s) => s.past);
+  const future = useGlobalHistoryStore((s) => s.future);
+  const undo = useGlobalHistoryStore((s) => s.undo);
+  const redo = useGlobalHistoryStore((s) => s.redo);
+
+  const undoLabel = past.length > 0 ? past[past.length - 1].label : null;
+  const redoLabel = future.length > 0 ? future[0].label : null;
+
+  const undoTitle = undoLabel
+    ? `${i18next.t("history.undo", "元に戻す")}: ${undoLabel} (Ctrl+Z)`
+    : i18next.t("history.undo", "元に戻す") + " (Ctrl+Z)";
+  const redoTitle = redoLabel
+    ? `${i18next.t("history.redo", "やり直し")}: ${redoLabel} (Ctrl+Shift+Z)`
+    : i18next.t("history.redo", "やり直し") + " (Ctrl+Shift+Z)";
+
+  const onUndo = () => {
+    undo().catch(() => {
+      toast.error(i18next.t("history.undoError", "元に戻す操作に失敗しました"));
+    });
+  };
+  const onRedo = () => {
+    redo().catch(() => {
+      toast.error(i18next.t("history.redoError", "やり直し操作に失敗しました"));
+    });
+  };
+
+  return (
+    <>
+      <button
+        type="button"
+        title={undoTitle}
+        disabled={past.length === 0}
+        onClick={onUndo}
+        className="flex h-8 w-8 items-center justify-center rounded text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:pointer-events-none disabled:opacity-30"
+      >
+        <Undo2 className="h-4 w-4" />
+      </button>
+      <button
+        type="button"
+        title={redoTitle}
+        disabled={future.length === 0}
+        onClick={onRedo}
+        className="flex h-8 w-8 items-center justify-center rounded text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:pointer-events-none disabled:opacity-30"
+      >
+        <Redo2 className="h-4 w-4" />
+      </button>
+    </>
+  );
+}

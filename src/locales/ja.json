@@ -1831,6 +1831,12 @@
     "deleteConfirmBody": "{{count}}件のシーンに本文またはsynopsisがあります。削除してもよいですか？",
     "empty": "シーンがありません。「＋」から最初のシーンを作成しましょう。"
   },
+  "history": {
+    "undo": "元に戻す",
+    "redo": "やり直し",
+    "undoError": "元に戻す操作に失敗しました",
+    "redoError": "やり直し操作に失敗しました"
+  },
   "integrity": {
     "check": "整合性チェック",
     "checking": "チェック中…",

@@ -11,7 +11,6 @@ import { useScenesKeyboard } from "./useScenesKeyboard";
 import { useLabelStore } from "@/features/labels/labelStore";
 import { ManageLabelsDialog } from "@/features/labels/ManageLabelsDialog";
 import { ScenesPanelContext } from "./ScenesPanelContext";
-import { useGlobalHistoryStore } from "@/store/globalHistoryStore";
 import { useTabStore } from "@/features/editor/tabStore";
 import { NodeIcon } from "./TreeNodeItem";
 import { StructureTemplatePicker } from "@/features/grid/StructureTemplatePicker";
@@ -82,7 +81,6 @@ export function ScenesPanel() {
     projectId,
   } = useTreeStore();
 
-  const { canUndo, canRedo } = useGlobalHistoryStore();
   const reduced = useReducedMotion();
   const allLabels = useLabelStore((s) => s.labels);
   const nodeLabels = useLabelStore((s) => s.nodeLabels);
@@ -296,8 +294,6 @@ export function ScenesPanel() {
       >
         <div className="relative flex h-full flex-col">
           <ScenesToolbar
-            canUndo={canUndo}
-            canRedo={canRedo}
             showPanelMenu={showPanelMenu}
             createBtnRef={createBtnRef}
             panelMenuBtnRef={panelMenuBtnRef}
