@@ -23,7 +23,7 @@ export function useMapBoardData(projectId: string) {
   const setActiveBoardId = useMapStore((s) => s.setActiveBoardId);
 
   const [boards, setBoards] = useState<MapBoard[]>([]);
-  const [boardId, setBoardId] = useState<string | null>(null);
+  const [boardId, setBoardId] = useState<string | null>(activeBoardId);
   const [positions, setPositions] = useState<MapNodePositionRecord[]>([]);
   const [userEdges, setUserEdges] = useState<MapEdge[]>([]);
   const [frames, setFrames] = useState<MapFrame[]>([]);
@@ -57,7 +57,7 @@ export function useMapBoardData(projectId: string) {
 
       if (!cancelled) setActiveBoardId(target);
     }
-    init();
+    init().catch(console.error);
     return () => {
       cancelled = true;
     };

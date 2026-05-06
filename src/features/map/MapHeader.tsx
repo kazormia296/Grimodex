@@ -69,7 +69,7 @@ export function MapHeader() {
 
   useEffect(() => {
     reloadBoards().catch(console.error);
-  }, [reloadBoards]);
+  }, [reloadBoards, activeBoardId]);
 
   useEffect(() => {
     if (!menuOpen) return;
