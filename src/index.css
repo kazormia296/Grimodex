@@ -933,7 +933,8 @@
     );
   }
 
-  .sticky-paper[data-old="true"] .sticky-corner {
+  /* sticky-corner is a sibling of sticky-paper, so use ~ combinator */
+  .sticky-paper[data-old="true"] ~ .sticky-corner {
     display: block;
   }
 

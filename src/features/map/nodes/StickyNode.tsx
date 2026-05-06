@@ -245,157 +245,162 @@ export const StickyNode = memo(function StickyNode({
           }
         }}
       >
-        {/* sticky-paper: rotation + Post-It visual. Handles live outside this div. */}
+        {/* sticky-paper-wrap: carries rotation. sticky-corner is a sibling of
+            sticky-paper here so clip-path on sticky-paper does not clip the corner. */}
         <div
-          data-testid="sticky-paper"
-          className="sticky-paper"
-          data-color={localColor}
-          data-glue={glueOrient}
-          data-old={String(isOld)}
-          style={{
-            transform: `rotate(${rotation}deg)`,
-            width: 240,
-            minHeight: 80,
-            maxHeight: editing ? 600 : 300,
-            overflow: editing ? "auto" : "hidden",
-            border: `1.5px solid ${selected ? "#534AB7" : borderColor}`,
-            outline: selected ? "2px solid rgba(83,74,183,0.3)" : "none",
-            outlineOffset: "1px",
-            cursor: editing ? "text" : "default",
-            userSelect: editing ? "text" : "none",
-          }}
-          onDoubleClick={(e) => {
-            if (!editing && d.useTipTap) {
-              e.stopPropagation();
-              setEditing(true);
-            }
-          }}
+          data-testid="sticky-paper-wrap"
+          style={{ position: "relative", transform: `rotate(${rotation}deg)` }}
         >
-          {/* Folded corner — hidden in Phase 1, shown in Phase 2 via [data-old=true] CSS */}
-          <div className="sticky-corner" aria-hidden />
-
-          {/* Content area measured by ResizeObserver */}
           <div
-            ref={measureRef}
-            data-testid="sticky-content"
-            className="sticky-content"
+            data-testid="sticky-paper"
+            className="sticky-paper"
+            data-color={localColor}
+            data-glue={glueOrient}
+            data-old={String(isOld)}
+            style={{
+              width: 240,
+              minHeight: 80,
+              maxHeight: editing ? 600 : 300,
+              overflow: editing ? "auto" : "hidden",
+              border: `1.5px solid ${selected ? "#534AB7" : borderColor}`,
+              outline: selected ? "2px solid rgba(83,74,183,0.3)" : "none",
+              outlineOffset: "1px",
+              cursor: editing ? "text" : "default",
+              userSelect: editing ? "text" : "none",
+            }}
+            onDoubleClick={(e) => {
+              if (!editing && d.useTipTap) {
+                e.stopPropagation();
+                setEditing(true);
+              }
+            }}
           >
-            {/* Header row: title + color button */}
+            {/* Content area measured by ResizeObserver */}
             <div
-              style={{
-                display: "flex",
-                alignItems: "center",
-                gap: 4,
-                marginBottom: 4,
-              }}
+              ref={measureRef}
+              data-testid="sticky-content"
+              className="sticky-content"
             >
-              <input
-                value={localTitle}
-                placeholder="タイトル"
-                onChange={(e) => handleTitleChange(e.target.value)}
-                onPointerDown={(e) => e.stopPropagation()}
-                onKeyDown={(e) => {
-                  if (e.key === "Escape") {
-                    e.preventDefault();
-                    exitEditing();
-                  }
-                }}
-                style={{
-                  flex: 1,
-                  border: "none",
-                  outline: "none",
-                  background: "transparent",
-                  fontSize: 12,
-                  fontWeight: 600,
-                  color: "rgba(0,0,0,0.75)",
-                  padding: 0,
-                  cursor: "text",
-                  minWidth: 0,
-                }}
-              />
-              {/* Color picker toggle */}
-              <button
-                onPointerDown={(e) => e.stopPropagation()}
-                onClick={(e) => {
-                  e.stopPropagation();
-                  setShowColorPicker((v) => !v);
-                }}
-                style={{
-                  width: 16,
-                  height: 16,
-                  borderRadius: "50%",
-                  border: "1.5px solid rgba(0,0,0,0.2)",
-                  background: `var(--sticky-bg-${localColor}, #FEF9C3)`,
-                  cursor: "pointer",
-                  flexShrink: 0,
-                  padding: 0,
-                }}
-                title="色を変更"
-              />
-            </div>
-
-            {/* Color palette */}
-            {showColorPicker && (
+              {/* Header row: title + color button */}
               <div
-                onPointerDown={(e) => e.stopPropagation()}
                 style={{
                   display: "flex",
-                  flexWrap: "wrap",
+                  alignItems: "center",
                   gap: 4,
-                  marginBottom: 6,
-                  padding: "4px 0",
-                  borderBottom: "1px solid rgba(0,0,0,0.08)",
+                  marginBottom: 4,
                 }}
               >
-                {COLOR_KEYS.map((c) => (
-                  <button
-                    key={c}
-                    onClick={() => handleColorChange(c)}
-                    style={{
-                      width: 20,
-                      height: 20,
-                      borderRadius: "50%",
-                      border:
-                        c === localColor
-                          ? "2px solid #534AB7"
-                          : `1.5px solid ${STICKY_BORDER[c]}`,
-                      background: `var(--sticky-bg-${c}, #FEF9C3)`,
-                      cursor: "pointer",
-                      padding: 0,
-                    }}
-                    title={c}
-                  />
-                ))}
+                <input
+                  value={localTitle}
+                  placeholder="タイトル"
+                  onChange={(e) => handleTitleChange(e.target.value)}
+                  onPointerDown={(e) => e.stopPropagation()}
+                  onKeyDown={(e) => {
+                    if (e.key === "Escape") {
+                      e.preventDefault();
+                      exitEditing();
+                    }
+                  }}
+                  style={{
+                    flex: 1,
+                    border: "none",
+                    outline: "none",
+                    background: "transparent",
+                    fontSize: 12,
+                    fontWeight: 600,
+                    color: "rgba(0,0,0,0.75)",
+                    padding: 0,
+                    cursor: "text",
+                    minWidth: 0,
+                  }}
+                />
+                {/* Color picker toggle */}
+                <button
+                  onPointerDown={(e) => e.stopPropagation()}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setShowColorPicker((v) => !v);
+                  }}
+                  style={{
+                    width: 16,
+                    height: 16,
+                    borderRadius: "50%",
+                    border: "1.5px solid rgba(0,0,0,0.2)",
+                    background: `var(--sticky-bg-${localColor}, #FEF9C3)`,
+                    cursor: "pointer",
+                    flexShrink: 0,
+                    padding: 0,
+                  }}
+                  title="色を変更"
+                />
               </div>
-            )}
 
-            {/* Body */}
-            {editing && d.useTipTap ? (
-              <StickyBodyEditor
-                body={d.body}
-                onContentChange={(json) => {
-                  latestBodyRef.current = json;
-                }}
-                onEscape={exitEditing}
-              />
-            ) : (
-              <div
-                style={{
-                  fontSize: 12,
-                  lineHeight: 1.5,
-                  color: "rgba(0,0,0,0.65)",
-                  whiteSpace: "pre-wrap",
-                  wordBreak: "break-word",
-                  overflow: "hidden",
-                  display: "-webkit-box",
-                  WebkitLineClamp: 8,
-                  WebkitBoxOrient: "vertical",
-                }}
-              >
-                {d.previewText || (localTitle ? "" : "（空）")}
-              </div>
-            )}
+              {/* Color palette */}
+              {showColorPicker && (
+                <div
+                  onPointerDown={(e) => e.stopPropagation()}
+                  style={{
+                    display: "flex",
+                    flexWrap: "wrap",
+                    gap: 4,
+                    marginBottom: 6,
+                    padding: "4px 0",
+                    borderBottom: "1px solid rgba(0,0,0,0.08)",
+                  }}
+                >
+                  {COLOR_KEYS.map((c) => (
+                    <button
+                      key={c}
+                      onClick={() => handleColorChange(c)}
+                      style={{
+                        width: 20,
+                        height: 20,
+                        borderRadius: "50%",
+                        border:
+                          c === localColor
+                            ? "2px solid #534AB7"
+                            : `1.5px solid ${STICKY_BORDER[c]}`,
+                        background: `var(--sticky-bg-${c}, #FEF9C3)`,
+                        cursor: "pointer",
+                        padding: 0,
+                      }}
+                      title={c}
+                    />
+                  ))}
+                </div>
+              )}
+
+              {/* Body */}
+              {editing && d.useTipTap ? (
+                <StickyBodyEditor
+                  body={d.body}
+                  onContentChange={(json) => {
+                    latestBodyRef.current = json;
+                  }}
+                  onEscape={exitEditing}
+                />
+              ) : (
+                <div
+                  style={{
+                    fontSize: 12,
+                    lineHeight: 1.5,
+                    color: "rgba(0,0,0,0.65)",
+                    whiteSpace: "pre-wrap",
+                    wordBreak: "break-word",
+                    overflow: "hidden",
+                    display: "-webkit-box",
+                    WebkitLineClamp: 8,
+                    WebkitBoxOrient: "vertical",
+                  }}
+                >
+                  {d.previewText || (localTitle ? "" : "（空）")}
+                </div>
+              )}
+            </div>
           </div>
+
+          {/* Folded corner — sibling of sticky-paper so clip-path doesn't hide it */}
+          <div className="sticky-corner" aria-hidden />
         </div>
       </motion.div>
 

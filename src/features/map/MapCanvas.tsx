@@ -263,12 +263,10 @@ export function MapCanvas() {
 
   const onStickyExitComplete = useCallback(
     async (stickyId: string) => {
-      // Guard: skip if already removed (double-delete protection)
-      setStickies((prev) => {
-        if (!prev.some((s) => s.id === stickyId)) return prev;
-        void deleteSticky(stickyId);
-        return prev.filter((s) => s.id !== stickyId);
-      });
+      // exitFiredRef in StickyNode guarantees this is called at most once per sticky.
+      // Call deleteSticky outside the state updater to avoid React Strict Mode double-invoke.
+      await deleteSticky(stickyId);
+      setStickies((prev) => prev.filter((s) => s.id !== stickyId));
       setDeletingStickyIds((prev) => {
         const next = new Set(prev);
         next.delete(stickyId);

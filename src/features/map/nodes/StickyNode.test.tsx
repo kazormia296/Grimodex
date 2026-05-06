@@ -281,7 +281,7 @@ describe("StickyNode — Post-It デザイン (Phase 1)", () => {
     ).toBe("left");
   });
 
-  it("data.rotation が paper の transform style に反映される", () => {
+  it("data.rotation が sticky-paper-wrap の transform style に反映される", () => {
     const { container } = render(
       <StickyNode
         {...makeProps()}
@@ -293,18 +293,18 @@ describe("StickyNode — Post-It デザイン (Phase 1)", () => {
         }
       />,
     );
-    const paper = container.querySelector(
-      '[data-testid="sticky-paper"]',
+    const wrap = container.querySelector(
+      '[data-testid="sticky-paper-wrap"]',
     ) as HTMLElement;
-    expect(paper?.style.transform).toContain("rotate(2.1deg)");
+    expect(wrap?.style.transform).toContain("rotate(2.1deg)");
   });
 
-  it("data.rotation が未指定のとき transform は rotate(0deg)", () => {
+  it("data.rotation が未指定のとき sticky-paper-wrap の transform は rotate(0deg)", () => {
     const { container } = render(<StickyNode {...makeProps()} />);
-    const paper = container.querySelector(
-      '[data-testid="sticky-paper"]',
+    const wrap = container.querySelector(
+      '[data-testid="sticky-paper-wrap"]',
     ) as HTMLElement;
-    expect(paper?.style.transform).toContain("rotate(0deg)");
+    expect(wrap?.style.transform).toContain("rotate(0deg)");
   });
 });
 
