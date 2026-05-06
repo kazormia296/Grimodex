@@ -65,6 +65,7 @@ import { WindowControls } from "@/components/WindowControls";
 import { TitleBar } from "@/components/TitleBar";
 import { useTabStore } from "@/features/editor/tabStore";
 import { useTreeStore } from "@/features/tree/treeStore";
+import { useGlobalHistoryStore } from "@/store/globalHistoryStore";
 import { getProject } from "@/features/project/api";
 import { usePhaseStore } from "@/features/codex/phaseStore";
 import { WelcomeDialog } from "@/features/onboarding/WelcomeDialog";
@@ -497,6 +498,43 @@ function EditorScreen() {
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [handleKeyDown]);
+
+  // Global Undo/Redo. Focus-based routing: TipTap / native form fields keep their built-in undo.
+  useEffect(() => {
+    function onUndoRedo(e: KeyboardEvent) {
+      if (e.defaultPrevented) return;
+
+      const ae = document.activeElement as HTMLElement | null;
+      if (ae) {
+        const tag = ae.tagName;
+        if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
+        if (ae.isContentEditable) return;
+        if (ae.closest('.ProseMirror, [contenteditable="true"]')) return;
+      }
+
+      const isMod = e.ctrlKey || e.metaKey;
+      if (!isMod) return;
+      const key = e.key.toLowerCase();
+
+      if (key === "z" && !e.shiftKey) {
+        e.preventDefault();
+        void useGlobalHistoryStore
+          .getState()
+          .undo()
+          .catch(() => {});
+        return;
+      }
+      if ((key === "z" && e.shiftKey) || key === "y") {
+        e.preventDefault();
+        void useGlobalHistoryStore
+          .getState()
+          .redo()
+          .catch(() => {});
+      }
+    }
+    window.addEventListener("keydown", onUndoRedo);
+    return () => window.removeEventListener("keydown", onUndoRedo);
+  }, []);
 
   // Ctrl+Tab / Ctrl+Shift+Tab: switch tabs in the active editor group
   useEffect(() => {
