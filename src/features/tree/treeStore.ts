@@ -5,7 +5,7 @@ import type { TreeNode as ApiNode } from "./api";
 import { loadBatchAiRatio } from "@/features/attribution/api";
 import { useSettingsStore } from "@/features/settings/settingsStore";
 import { useTabStore } from "@/features/editor/tabStore";
-import { useTreeHistoryStore } from "./treeHistoryStore";
+import { useGlobalHistoryStore } from "@/store/globalHistoryStore";
 import {
   listPinnedCodexIds,
   addPinnedCodex,
@@ -620,9 +620,17 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
     });
     usePhaseStore.getState().recomputeSceneOrder(get().nodes);
 
-    if (!useTreeHistoryStore.getState().isReplaying) {
+    if (!useGlobalHistoryStore.getState().isReplaying) {
       const captured = { ...newNode };
-      useTreeHistoryStore.getState().push({
+      const createLabel =
+        newNode.nodeType === "scene"
+          ? "シーン作成"
+          : newNode.nodeType === "folder"
+            ? "フォルダー作成"
+            : "ノート作成";
+      useGlobalHistoryStore.getState().push({
+        kind: "scenes",
+        label: createLabel,
         async undo() {
           await api.deleteNode(captured.id);
           set((state) => {
@@ -675,8 +683,10 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
       const nodes = state.nodes.map((n) => (n.id === id ? { ...n, title } : n));
       return { nodes, scenes: computeScenes(nodes) };
     });
-    if (!useTreeHistoryStore.getState().isReplaying) {
-      useTreeHistoryStore.getState().push({
+    if (!useGlobalHistoryStore.getState().isReplaying) {
+      useGlobalHistoryStore.getState().push({
+        kind: "scenes",
+        label: "リネーム",
         async undo() {
           await api.updateNode(id, { title: oldTitle });
           set((state) => {
@@ -711,7 +721,7 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
     }
 
     // Capture snapshots before deletion so we can restore on undo
-    const trackHistory = !useTreeHistoryStore.getState().isReplaying;
+    const trackHistory = !useGlobalHistoryStore.getState().isReplaying;
     const deletedNodes = nodes.filter((n) => toDelete.has(n.id));
     const contentSnapshots: Record<string, string> = {};
     if (trackHistory) {
@@ -746,7 +756,9 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
     }
 
     if (trackHistory) {
-      useTreeHistoryStore.getState().push({
+      useGlobalHistoryStore.getState().push({
+        kind: "scenes",
+        label: "削除",
         async undo() {
           // Restore nodes (parents before children)
           const sorted = topologicalSort(deletedNodes);
@@ -816,8 +828,10 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
     set((state) => ({
       nodes: state.nodes.map((n) => (n.id === id ? { ...n, synopsis } : n)),
     }));
-    if (!useTreeHistoryStore.getState().isReplaying) {
-      useTreeHistoryStore.getState().push({
+    if (!useGlobalHistoryStore.getState().isReplaying) {
+      useGlobalHistoryStore.getState().push({
+        kind: "scenes",
+        label: "synopsis 更新",
         async undo() {
           await api.updateNode(id, { synopsis: oldSynopsis ?? undefined });
           set((state) => ({
@@ -844,8 +858,10 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
     set((state) => ({
       nodes: state.nodes.map((n) => (n.id === id ? { ...n, status } : n)),
     }));
-    if (!useTreeHistoryStore.getState().isReplaying) {
-      useTreeHistoryStore.getState().push({
+    if (!useGlobalHistoryStore.getState().isReplaying) {
+      useGlobalHistoryStore.getState().push({
+        kind: "scenes",
+        label: "ステータス変更",
         async undo() {
           await api.updateNode(id, {
             status: (oldStatus as SceneStatus) ?? undefined,
@@ -888,8 +904,10 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
       ),
     }));
     usePhaseStore.getState().recomputeSceneOrder(get().nodes);
-    if (!useTreeHistoryStore.getState().isReplaying) {
-      useTreeHistoryStore.getState().push({
+    if (!useGlobalHistoryStore.getState().isReplaying) {
+      useGlobalHistoryStore.getState().push({
+        kind: "scenes",
+        label: "時系列順変更",
         async undo() {
           const undoPatch: Parameters<typeof api.updateNode>[1] = {
             storyTimeOrder: oldOrder ?? undefined,
@@ -1048,8 +1066,10 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
       sortOrder,
     });
 
-    if (!useTreeHistoryStore.getState().isReplaying) {
-      useTreeHistoryStore.getState().push({
+    if (!useGlobalHistoryStore.getState().isReplaying) {
+      useGlobalHistoryStore.getState().push({
+        kind: "scenes",
+        label: "移動",
         async undo() {
           await api.updateNode(id, {
             parentId: oldParentId ?? undefined,

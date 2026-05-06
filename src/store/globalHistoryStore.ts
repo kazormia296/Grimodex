@@ -2,7 +2,19 @@ import { create } from "zustand";
 
 type AsyncFn = () => Promise<void>;
 
-export interface TreeCommand {
+export type HistoryKind =
+  | "scenes"
+  | "codex"
+  | "map"
+  | "snippets"
+  | "pins"
+  | "phase"
+  | "tags"
+  | "foreshadow";
+
+export interface HistoryCommand {
+  kind: HistoryKind;
+  label: string;
   undo: AsyncFn;
   redo: AsyncFn;
 }
@@ -10,19 +22,18 @@ export interface TreeCommand {
 const MAX_HISTORY = 50;
 
 interface HistoryState {
-  past: TreeCommand[];
-  future: TreeCommand[];
+  past: HistoryCommand[];
+  future: HistoryCommand[];
   canUndo: boolean;
   canRedo: boolean;
-  /** True while an undo/redo is in progress — suppresses history pushes */
   isReplaying: boolean;
-  push: (cmd: TreeCommand) => void;
+  push: (cmd: HistoryCommand) => void;
   undo: () => Promise<void>;
   redo: () => Promise<void>;
   clear: () => void;
 }
 
-export const useTreeHistoryStore = create<HistoryState>()((set, get) => ({
+export const useGlobalHistoryStore = create<HistoryState>()((set, get) => ({
   past: [],
   future: [],
   canUndo: false,
@@ -43,8 +54,12 @@ export const useTreeHistoryStore = create<HistoryState>()((set, get) => ({
     set({ isReplaying: true });
     try {
       await cmd.undo();
+    } catch (err) {
+      get().clear();
+      throw err;
     } finally {
       set((state) => {
+        if (state.isReplaying === false) return state;
         const newPast = state.past.slice(0, -1);
         const newFuture = [cmd, ...state.future];
         return {
@@ -65,8 +80,12 @@ export const useTreeHistoryStore = create<HistoryState>()((set, get) => ({
     set({ isReplaying: true });
     try {
       await cmd.redo();
+    } catch (err) {
+      get().clear();
+      throw err;
     } finally {
       set((state) => {
+        if (state.isReplaying === false) return state;
         const newFuture = state.future.slice(1);
         const newPast = [...state.past, cmd];
         return {
@@ -81,6 +100,12 @@ export const useTreeHistoryStore = create<HistoryState>()((set, get) => ({
   },
 
   clear() {
-    set({ past: [], future: [], canUndo: false, canRedo: false });
+    set({
+      past: [],
+      future: [],
+      canUndo: false,
+      canRedo: false,
+      isReplaying: false,
+    });
   },
 }));

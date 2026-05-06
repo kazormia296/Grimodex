@@ -11,7 +11,7 @@ import { useScenesKeyboard } from "./useScenesKeyboard";
 import { useLabelStore } from "@/features/labels/labelStore";
 import { ManageLabelsDialog } from "@/features/labels/ManageLabelsDialog";
 import { ScenesPanelContext } from "./ScenesPanelContext";
-import { useTreeHistoryStore } from "./treeHistoryStore";
+import { useGlobalHistoryStore } from "@/store/globalHistoryStore";
 import { useTabStore } from "@/features/editor/tabStore";
 import { NodeIcon } from "./TreeNodeItem";
 import { StructureTemplatePicker } from "@/features/grid/StructureTemplatePicker";
@@ -82,7 +82,7 @@ export function ScenesPanel() {
     projectId,
   } = useTreeStore();
 
-  const { canUndo, canRedo } = useTreeHistoryStore();
+  const { canUndo, canRedo } = useGlobalHistoryStore();
   const reduced = useReducedMotion();
   const allLabels = useLabelStore((s) => s.labels);
   const nodeLabels = useLabelStore((s) => s.nodeLabels);

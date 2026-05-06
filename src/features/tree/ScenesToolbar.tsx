@@ -8,7 +8,7 @@ import {
   Redo2,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { useTreeHistoryStore } from "./treeHistoryStore";
+import { useGlobalHistoryStore } from "@/store/globalHistoryStore";
 
 interface ScenesToolbarProps {
   canUndo: boolean;
@@ -51,7 +51,7 @@ export function ScenesToolbar({
           title={t("scenes.undo")}
           disabled={!canUndo}
           onClick={() =>
-            useTreeHistoryStore
+            useGlobalHistoryStore
               .getState()
               .undo()
               .catch(() => {})
@@ -65,7 +65,7 @@ export function ScenesToolbar({
           title={t("scenes.redo")}
           disabled={!canRedo}
           onClick={() =>
-            useTreeHistoryStore
+            useGlobalHistoryStore
               .getState()
               .redo()
               .catch(() => {})

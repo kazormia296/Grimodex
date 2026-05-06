@@ -28,8 +28,8 @@ vi.mock("@/features/codex/phaseStore", () => ({
   },
 }));
 
-vi.mock("./treeHistoryStore", () => ({
-  useTreeHistoryStore: {
+vi.mock("@/store/globalHistoryStore", () => ({
+  useGlobalHistoryStore: {
     getState: mockHistoryGetState,
   },
 }));
