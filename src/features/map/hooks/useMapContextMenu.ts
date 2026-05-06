@@ -5,7 +5,6 @@ import {
   updateNodePosition,
   upsertNodePosition,
   deleteNodePosition,
-  deleteSticky,
   promoteSticky,
   type PromoteTargetType,
 } from "../mapApi";
@@ -27,6 +26,7 @@ interface UseMapContextMenuInput {
   nodes: Node[];
   setPositions: React.Dispatch<React.SetStateAction<MapNodePositionRecord[]>>;
   setStickies: React.Dispatch<React.SetStateAction<MapSticky[]>>;
+  setDeletingStickyIds: React.Dispatch<React.SetStateAction<Set<string>>>;
   setActiveScene: (id: string) => void;
   onAfterPromote?: (targetType: PromoteTargetType) => void;
 }
@@ -38,6 +38,7 @@ export function useMapContextMenu({
   nodes,
   setPositions,
   setStickies,
+  setDeletingStickyIds,
   setActiveScene,
   onAfterPromote,
 }: UseMapContextMenuInput) {
@@ -85,20 +86,20 @@ export function useMapContextMenu({
     }
   }, [contextMenu, positions, setPositions]);
 
-  /** For sticky nodes: delete both sticky and position. For others: remove from board only. */
+  /** For sticky nodes: trigger 2-phase animated delete. For others: remove from board only. */
   const handleRemoveFromBoard = useCallback(async () => {
     if (!contextMenu) return;
     const pos = findPosByNodeId(positions, contextMenu.nodeId);
     if (!pos) return;
     if (pos.stickyId) {
-      await deleteSticky(pos.stickyId);
-      setStickies((prev) => prev.filter((s) => s.id !== pos.stickyId));
+      // 2-phase delete: exit animation plays, actual DB delete happens in onStickyExitComplete
+      setDeletingStickyIds((prev) => new Set(prev).add(pos.stickyId!));
     } else {
       await deleteNodePosition(pos.id);
+      setPositions((prev) => prev.filter((p) => p.id !== pos.id));
     }
-    setPositions((prev) => prev.filter((p) => p.id !== pos.id));
     setContextMenu(null);
-  }, [contextMenu, positions, setPositions, setStickies]);
+  }, [contextMenu, positions, setPositions, setDeletingStickyIds]);
 
   const handleContextMenuOpen = useCallback(() => {
     if (!contextMenu) return;

@@ -517,5 +517,7 @@ export function useMapNodes({
     setActiveScene,
     groupDraggingRef,
     persistingRef,
+    deletingStickyIds,
+    onStickyExitComplete,
   ]);
 }

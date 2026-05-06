@@ -238,8 +238,8 @@ export const StickyNode = memo(function StickyNode({
         initial={enterVariants.initial}
         animate={isDeleting ? enterVariants.exit : enterVariants.animate}
         style={{ transformOrigin: isDeleting ? "100% 100%" : "50% 0%" }}
-        onAnimationComplete={(def) => {
-          if (def === "exit" && !exitFiredRef.current) {
+        onAnimationComplete={() => {
+          if (isDeleting && !exitFiredRef.current) {
             exitFiredRef.current = true;
             d.onExitComplete?.(d.id);
           }

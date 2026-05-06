@@ -364,6 +364,7 @@ export function MapCanvas() {
     nodes,
     setPositions,
     setStickies,
+    setDeletingStickyIds,
     setActiveScene,
     onAfterPromote: (targetType) => {
       if (targetType === "scene" || targetType === "note") {
@@ -769,6 +770,7 @@ export function MapCanvas() {
         nodesDraggable={paletteMode === "default" && !modeTransitionActive}
         className={paletteMode === "connect" ? "map-connect-mode" : undefined}
         elevateNodesOnSelect={false}
+        deleteKeyCode={null}
       >
         {!isCorkboard && (
           <Background variant={BackgroundVariant.Dots} gap={24} size={1} />
