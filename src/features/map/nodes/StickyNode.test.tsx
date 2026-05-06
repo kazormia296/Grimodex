@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
-import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, fireEvent } from "@testing-library/react";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { render, screen, fireEvent, act } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { StickyNode } from "./StickyNode";
 import type { NodeProps } from "@xyflow/react";
@@ -151,5 +151,150 @@ describe("StickyNode — 50 閾値フォールバック", () => {
     );
     expect(screen.getByText("静的プレビュー")).toBeTruthy();
     expect(screen.queryByTestId("tiptap-editor")).toBeNull();
+  });
+});
+
+// ────────────────────────────────────────────────────────────────
+// Phase 1: Post-It スキューモフィズムデザイン
+// ────────────────────────────────────────────────────────────────
+describe("StickyNode — Post-It デザイン (Phase 1)", () => {
+  let originalResizeObserver: typeof ResizeObserver;
+
+  beforeEach(() => {
+    originalResizeObserver = globalThis.ResizeObserver;
+    vi.clearAllMocks();
+  });
+
+  afterEach(() => {
+    globalThis.ResizeObserver = originalResizeObserver;
+  });
+
+  it("sticky-paper 要素が描画される", () => {
+    const { container } = render(<StickyNode {...makeProps()} />);
+    expect(
+      container.querySelector('[data-testid="sticky-paper"]'),
+    ).toBeTruthy();
+  });
+
+  it("data-color 属性が color prop に対応する", () => {
+    const { container } = render(
+      <StickyNode {...makeProps({ color: "blue" })} />,
+    );
+    const paper = container.querySelector('[data-testid="sticky-paper"]');
+    expect(paper?.getAttribute("data-color")).toBe("blue");
+  });
+
+  it("data-glue の初期値は left", () => {
+    const { container } = render(<StickyNode {...makeProps()} />);
+    const paper = container.querySelector('[data-testid="sticky-paper"]');
+    expect(paper?.getAttribute("data-glue")).toBe("left");
+  });
+
+  it("ResizeObserver が height >= 110 を報告すると data-glue が top に切替わる", () => {
+    let roCallback: ResizeObserverCallback | undefined;
+    const MockResizeObserver = vi.fn((cb: ResizeObserverCallback) => {
+      roCallback = cb;
+      return { observe: vi.fn(), disconnect: vi.fn() };
+    });
+    vi.stubGlobal("ResizeObserver", MockResizeObserver);
+
+    const { container } = render(<StickyNode {...makeProps()} />);
+
+    act(() => {
+      roCallback?.(
+        [{ contentRect: { height: 115 } } as ResizeObserverEntry],
+        {} as ResizeObserver,
+      );
+    });
+
+    const paper = container.querySelector('[data-testid="sticky-paper"]');
+    expect(paper?.getAttribute("data-glue")).toBe("top");
+  });
+
+  it("ResizeObserver height が 90 以下に戻ると data-glue が left に戻る（ヒステリシス）", () => {
+    let roCallback: ResizeObserverCallback | undefined;
+    const MockResizeObserver = vi.fn((cb: ResizeObserverCallback) => {
+      roCallback = cb;
+      return { observe: vi.fn(), disconnect: vi.fn() };
+    });
+    vi.stubGlobal("ResizeObserver", MockResizeObserver);
+
+    const { container } = render(<StickyNode {...makeProps()} />);
+
+    // top に切替
+    act(() => {
+      roCallback?.(
+        [{ contentRect: { height: 115 } } as ResizeObserverEntry],
+        {} as ResizeObserver,
+      );
+    });
+    expect(
+      container
+        .querySelector('[data-testid="sticky-paper"]')
+        ?.getAttribute("data-glue"),
+    ).toBe("top");
+
+    // left に戻す (90 以下)
+    act(() => {
+      roCallback?.(
+        [{ contentRect: { height: 85 } } as ResizeObserverEntry],
+        {} as ResizeObserver,
+      );
+    });
+    expect(
+      container
+        .querySelector('[data-testid="sticky-paper"]')
+        ?.getAttribute("data-glue"),
+    ).toBe("left");
+  });
+
+  it("height が 91–109 の範囲では切替わらない（ヒステリシスのデッドバンド）", () => {
+    let roCallback: ResizeObserverCallback | undefined;
+    const MockResizeObserver = vi.fn((cb: ResizeObserverCallback) => {
+      roCallback = cb;
+      return { observe: vi.fn(), disconnect: vi.fn() };
+    });
+    vi.stubGlobal("ResizeObserver", MockResizeObserver);
+
+    const { container } = render(<StickyNode {...makeProps()} />);
+
+    act(() => {
+      roCallback?.(
+        [{ contentRect: { height: 100 } } as ResizeObserverEntry],
+        {} as ResizeObserver,
+      );
+    });
+
+    expect(
+      container
+        .querySelector('[data-testid="sticky-paper"]')
+        ?.getAttribute("data-glue"),
+    ).toBe("left");
+  });
+
+  it("data.rotation が paper の transform style に反映される", () => {
+    const { container } = render(
+      <StickyNode
+        {...makeProps()}
+        data={
+          {
+            ...(makeProps().data as object),
+            rotation: 2.1,
+          } as NodeProps["data"]
+        }
+      />,
+    );
+    const paper = container.querySelector(
+      '[data-testid="sticky-paper"]',
+    ) as HTMLElement;
+    expect(paper?.style.transform).toContain("rotate(2.1deg)");
+  });
+
+  it("data.rotation が未指定のとき transform は rotate(0deg)", () => {
+    const { container } = render(<StickyNode {...makeProps()} />);
+    const paper = container.querySelector(
+      '[data-testid="sticky-paper"]',
+    ) as HTMLElement;
+    expect(paper?.style.transform).toContain("rotate(0deg)");
   });
 });
