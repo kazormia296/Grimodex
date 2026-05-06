@@ -91,6 +91,12 @@ export function MapHeader() {
   const activeBoard = boards.find((b) => b.id === activeBoardId);
 
   const [editingBoard, setEditingBoard] = useState<EditingBoardState>(null);
+  // Set synchronously inside DropdownMenuItem.onSelect just before opening
+  // the popover. Read inside DropdownMenuContent.onCloseAutoFocus to suppress
+  // the trigger refocus that would otherwise close the popover via
+  // focus-outside. Captured via ref because the close-auto-focus callback's
+  // closure may pre-date the editingBoard state update.
+  const suppressTriggerRefocusRef = useRef(false);
 
   const reloadBoards = useCallback(async () => {
     const all = await listBoards(PROJECT_ID);
@@ -171,7 +177,16 @@ export function MapHeader() {
               </Button>
             </PopoverAnchor>
           </DropdownMenuTrigger>
-          <DropdownMenuContent align="start" className="min-w-[180px]">
+          <DropdownMenuContent
+            align="start"
+            className="min-w-[180px]"
+            onCloseAutoFocus={(e) => {
+              if (suppressTriggerRefocusRef.current) {
+                suppressTriggerRefocusRef.current = false;
+                e.preventDefault();
+              }
+            }}
+          >
             {boards.map((b) => (
               <DropdownMenuItem
                 key={b.id}
@@ -191,16 +206,12 @@ export function MapHeader() {
                   disabled={!activeBoard}
                   onSelect={() => {
                     if (!activeBoard) return;
-                    const target = activeBoard;
-                    // Defer to next tick so the dropdown's closing click
-                    // doesn't get interpreted as an outside-click on the popover.
-                    setTimeout(() => {
-                      setEditingBoard({
-                        mode: "rename",
-                        id: target.id,
-                        title: target.title,
-                      });
-                    }, 0);
+                    suppressTriggerRefocusRef.current = true;
+                    setEditingBoard({
+                      mode: "rename",
+                      id: activeBoard.id,
+                      title: activeBoard.title,
+                    });
                   }}
                 >
                   リネーム
@@ -217,14 +228,12 @@ export function MapHeader() {
                 {boards.length > 1 && activeBoard && (
                   <DropdownMenuItem
                     onSelect={() => {
-                      const target = activeBoard;
-                      setTimeout(() => {
-                        setEditingBoard({
-                          mode: "delete",
-                          id: target.id,
-                          title: target.title,
-                        });
-                      }, 0);
+                      suppressTriggerRefocusRef.current = true;
+                      setEditingBoard({
+                        mode: "delete",
+                        id: activeBoard.id,
+                        title: activeBoard.title,
+                      });
                     }}
                     className="text-[color:var(--destructive)] focus:text-[color:var(--destructive)]"
                   >
@@ -235,14 +244,24 @@ export function MapHeader() {
             </DropdownMenuSub>
             <DropdownMenuItem
               onSelect={() => {
-                setTimeout(() => setEditingBoard({ mode: "create" }), 0);
+                suppressTriggerRefocusRef.current = true;
+                setEditingBoard({ mode: "create" });
               }}
             >
               + 新規ボード
             </DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>
-        <PopoverContent align="start" className="w-64">
+        <PopoverContent
+          align="start"
+          className="w-64"
+          onFocusOutside={(e) => {
+            // Stray focus shifts (e.g. trigger refocus from the dropdown
+            // closing) should not auto-close. Outside-click and Escape
+            // still dismiss the popover.
+            e.preventDefault();
+          }}
+        >
           {editingBoard?.mode === "delete" ? (
             <BoardDeleteConfirm
               key={editingBoard.id}
