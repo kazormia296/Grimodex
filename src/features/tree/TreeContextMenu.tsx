@@ -49,21 +49,55 @@ export function TreeContextMenu({
   const { t } = useTranslation();
   const menuRef = useRef<HTMLDivElement>(null);
   const { deleteNode, setStatus, createNode, setActiveScene } = useTreeStore();
+  const selectedIds = useTreeStore((s) => s.selectedIds);
+  const allNodes = useTreeStore((s) => s.nodes);
   const allLabels = useLabelStore((s) => s.labels);
   const assignedLabelIds = useLabelStore(
     (s) => s.nodeLabels[node.id] ?? EMPTY_LABEL_IDS,
   );
   const [labelMenuOpen, setLabelMenuOpen] = useState(false);
+  const [statusMenuOpen, setStatusMenuOpen] = useState(false);
   const [mapMenuOpen, setMapMenuOpen] = useState(false);
   const { boards, addToBoard } = useAddToMapBoards(PROJECT_ID);
   const scenesContext = useScenesPanelContext();
 
+  // If the right-clicked node is part of a multi-selection, operations apply
+  // to all selected nodes; otherwise only to the right-clicked node.
+  const targetIds: string[] =
+    selectedIds.includes(node.id) && selectedIds.length > 1
+      ? selectedIds
+      : [node.id];
+  const isMulti = targetIds.length > 1;
+  const targetSceneIds = targetIds.filter(
+    (id) => allNodes.find((n) => n.id === id)?.nodeType === "scene",
+  );
+
   async function handleToggleLabel(labelId: string) {
-    const current = useLabelStore.getState().nodeLabels[node.id] ?? [];
-    const next = current.includes(labelId)
-      ? current.filter((id) => id !== labelId)
-      : [...current, labelId];
-    await useLabelStore.getState().setNodeLabels(node.id, next);
+    const hasLabel = assignedLabelIds.includes(labelId);
+    const labelStore = useLabelStore.getState();
+    for (const id of targetIds) {
+      const current = labelStore.nodeLabels[id] ?? [];
+      const next = hasLabel
+        ? current.filter((x) => x !== labelId)
+        : current.includes(labelId)
+          ? current
+          : [...current, labelId];
+      if (next !== current) {
+        await labelStore.setNodeLabels(id, next);
+      }
+    }
+  }
+
+  async function handleSetStatus(status: SceneStatus) {
+    for (const id of targetSceneIds) {
+      await setStatus(id, status);
+    }
+  }
+
+  async function handleDelete() {
+    for (const id of targetIds) {
+      await deleteNode(id).catch(() => {});
+    }
   }
 
   // Close on outside click or Escape
@@ -158,29 +192,48 @@ export function TreeContextMenu({
         )}
       {(isScene || isNote) && sep()}
 
-      {/* Set Status (Scene only) */}
-      {isScene && (
+      {/* Set Status (Scene only — submenu) */}
+      {targetSceneIds.length > 0 && (
         <>
-          <div className="px-3 py-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
-            {t("tree.setStatus")}
-          </div>
-          {STATUS_OPTIONS.map((s) => (
+          <div
+            className="relative"
+            onMouseEnter={() => setStatusMenuOpen(true)}
+            onMouseLeave={() => setStatusMenuOpen(false)}
+          >
             <button
-              key={s}
               type="button"
-              onClick={() => {
-                setStatus(node.id, s);
-                onClose();
-              }}
               className={cn(
-                "flex w-full items-center gap-2 px-3 py-1.5 text-xs hover:bg-accent",
-                node.status === s && "font-medium text-foreground",
+                "flex w-full items-center gap-2 px-3 py-1.5 text-xs text-foreground hover:bg-accent",
+                statusMenuOpen && "bg-accent",
               )}
             >
-              <StatusDot status={s} />
-              {STATUS_LABELS[s]}
+              <span>{t("tree.setStatus")}</span>
+              <ChevronRight className="ml-auto h-3 w-3" />
             </button>
-          ))}
+            {statusMenuOpen && (
+              <div className="absolute left-full top-0 ml-1 min-w-[160px] rounded-md border border-border bg-popover py-1 shadow-md">
+                {STATUS_OPTIONS.map((s) => (
+                  <button
+                    key={s}
+                    type="button"
+                    onClick={() => {
+                      void handleSetStatus(s);
+                      onClose();
+                    }}
+                    className={cn(
+                      "flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs hover:bg-accent",
+                      !isMulti &&
+                        node.status === s &&
+                        "font-medium text-foreground",
+                    )}
+                  >
+                    <StatusDot status={s} />
+                    <span>{STATUS_LABELS[s]}</span>
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
           {sep()}
         </>
       )}
@@ -362,12 +415,7 @@ export function TreeContextMenu({
 
       {/* Delete */}
       {sep()}
-      {item(
-        t("tree.delete"),
-        () => deleteNode(node.id).catch(() => {}),
-        "Del",
-        false,
-      )}
+      {item(t("tree.delete"), () => void handleDelete(), "Del", false)}
     </div>,
     document.body,
   );

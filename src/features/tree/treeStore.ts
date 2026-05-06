@@ -1,6 +1,5 @@
 import { create } from "zustand";
 import i18next from "@/lib/i18n";
-import { prosemirrorToText } from "@/lib/prosemirror";
 import * as api from "./api";
 import type { TreeNode as ApiNode } from "./api";
 import { loadBatchAiRatio } from "@/features/attribution/api";
@@ -406,12 +405,22 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
       const sc = computeScenes(nodes);
       // Expand folders by default
       const chapters = nodes.filter((n) => n.nodeType === "folder");
+      // Prime char counts from the cached `tree_nodes.char_count` column.
+      // EditorPane writes this on every save, so it is the authoritative
+      // source — no need to re-tokenize ProseMirror docs on tree load.
+      const charCounts: Record<string, number> = {};
+      for (const n of nodes) {
+        if (n.nodeType === "scene" || n.nodeType === "note") {
+          charCounts[n.id] = n.charCount;
+        }
+      }
       set({
         nodes,
         scenes: sc,
         activeSceneId: sc[0]?.id ?? "",
         isLoading: false,
         expandedIds: chapters.map((c) => c.id),
+        charCounts,
       });
       // Recompute phase scene order for phase resolution
       usePhaseStore.getState().recomputeSceneOrder(nodes);
@@ -426,24 +435,6 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
       get()
         .loadPinnedCodexIds()
         .catch(() => {});
-      // Background-load char counts for all scene/note nodes
-      const contentNodes = nodes.filter(
-        (n) => n.nodeType === "scene" || n.nodeType === "note",
-      );
-      Promise.allSettled(
-        contentNodes.map((n) =>
-          api.loadSceneContent(n.id).then((content) => ({
-            id: n.id,
-            count: prosemirrorToText(content).length,
-          })),
-        ),
-      ).then((results) => {
-        const counts: Record<string, number> = {};
-        for (const r of results) {
-          if (r.status === "fulfilled") counts[r.value.id] = r.value.count;
-        }
-        set((state) => ({ charCounts: { ...state.charCounts, ...counts } }));
-      });
     } catch {
       set({ isLoading: false });
     }

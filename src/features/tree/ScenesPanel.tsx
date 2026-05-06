@@ -731,7 +731,6 @@ export function ScenesPanel() {
   const createMenuRef = useRef<HTMLDivElement>(null);
   const [createMenuPos, setCreateMenuPos] = useState<DOMRect | null>(null);
   const [panelMenuPos, setPanelMenuPos] = useState<DOMRect | null>(null);
-  const allExpandedRef = useRef(false);
   const pointerYRef = useRef(0);
   const [dropIndicator, setDropIndicator] = useState<DropIndicator | null>(
     null,
@@ -896,10 +895,14 @@ export function ScenesPanel() {
   }, [pendingRevealId]);
 
   const handleToggleAll = useCallback(() => {
-    if (allExpandedRef.current) collapseAll();
+    const folderIds = nodes
+      .filter((n) => n.nodeType === "folder")
+      .map((n) => n.id);
+    const allExpanded =
+      folderIds.length > 0 && folderIds.every((id) => expandedIds.includes(id));
+    if (allExpanded) collapseAll();
     else expandAll();
-    allExpandedRef.current = !allExpandedRef.current;
-  }, [expandAll, collapseAll]);
+  }, [nodes, expandedIds, expandAll, collapseAll]);
 
   const handleCreate = useCallback(
     (type: NodeType) => {
@@ -1233,9 +1236,7 @@ export function ScenesPanel() {
         return;
       }
       const pointerY = pointerYRef.current;
-      const isContainer = ["part", "chapter", "folder"].includes(
-        overNode.nodeType,
-      );
+      const isContainer = overNode.nodeType === "folder";
       const relY = pointerY - overRect.top;
       const h = overRect.height;
       let position: "before" | "after" | "inside";
