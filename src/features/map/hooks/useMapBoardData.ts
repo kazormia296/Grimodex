@@ -23,7 +23,6 @@ export function useMapBoardData(projectId: string) {
   const setActiveBoardId = useMapStore((s) => s.setActiveBoardId);
 
   const [boards, setBoards] = useState<MapBoard[]>([]);
-  const [boardId, setBoardId] = useState<string | null>(activeBoardId);
   const [positions, setPositions] = useState<MapNodePositionRecord[]>([]);
   const [userEdges, setUserEdges] = useState<MapEdge[]>([]);
   const [frames, setFrames] = useState<MapFrame[]>([]);
@@ -67,17 +66,16 @@ export function useMapBoardData(projectId: string) {
   // Load board data whenever active board changes
   useEffect(() => {
     if (!activeBoardId) return;
+    const boardId = activeBoardId;
     let cancelled = false;
-    setBoardId(activeBoardId);
 
     async function load() {
-      if (!activeBoardId) return;
       const [pos, ue, fr, st, ai] = await Promise.all([
-        listNodePositions(activeBoardId),
-        listUserEdges(activeBoardId),
-        listFrames(activeBoardId),
-        listStickies(activeBoardId),
-        listAiBranches(activeBoardId),
+        listNodePositions(boardId),
+        listUserEdges(boardId),
+        listFrames(boardId),
+        listStickies(boardId),
+        listAiBranches(boardId),
       ]);
       if (cancelled) return;
       setPositions(pos as MapNodePositionRecord[]);
@@ -95,7 +93,7 @@ export function useMapBoardData(projectId: string) {
   return {
     boards,
     setBoards,
-    boardId,
+    boardId: activeBoardId,
     reloadBoards,
     positions,
     setPositions,
