@@ -276,7 +276,8 @@ describe("mapApi — createSticky", () => {
       title: null,
       body: '{"type":"doc","content":[]}',
       previewText: null,
-      color: "yellow",
+      paletteId: "post-it-playful",
+      colorSlot: 0,
       aiBranchId: null,
       sourceChatMessageId: null,
       createdAt: "2024-01-01",
@@ -302,7 +303,8 @@ describe("mapApi — createSticky", () => {
 
     const { createSticky } = await import("./mapApi");
     const result = await createSticky({ boardId: "b1", x: 10, y: 20 });
-    expect(result.sticky.color).toBe("yellow");
+    expect(result.sticky.paletteId).toBe("post-it-playful");
+    expect(result.sticky.colorSlot).toBe(0);
     expect(result.position.nodeRefType).toBe("sticky");
   });
 });
@@ -352,7 +354,8 @@ describe("mapApi — createAiBranch", () => {
       title: "アイデア1",
       body: '{"type":"doc","content":[]}',
       previewText: null,
-      color: "yellow",
+      paletteId: "post-it-playful",
+      colorSlot: 0,
       aiBranchId: "branch-1",
       sourceChatMessageId: null,
       createdAt: "2024-01-01",

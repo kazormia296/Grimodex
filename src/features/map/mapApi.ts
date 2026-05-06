@@ -26,7 +26,8 @@ import {
 } from "@/db/schema";
 import { eq, and, isNotNull } from "drizzle-orm";
 import { generateKeyBetween } from "@/features/tree/fractionalIndex";
-import type { NodeRefType, StickyColor } from "./types";
+import type { NodeRefType } from "./types";
+import { DEFAULT_PALETTE_ID, DEFAULT_COLOR_SLOT } from "@/lib/stickyPalettes";
 
 export type PromoteTargetType = "scene" | "note" | "snippet" | "codex";
 
@@ -450,7 +451,8 @@ export async function createSticky(data: {
   boardId: string;
   x: number;
   y: number;
-  color?: StickyColor;
+  paletteId?: string;
+  colorSlot?: number;
   title?: string;
   body?: string;
 }): Promise<{ sticky: MapSticky; position: MapNodePosition }> {
@@ -467,7 +469,8 @@ export async function createSticky(data: {
       title: data.title ?? null,
       body,
       previewText: previewText || null,
-      color: data.color ?? "yellow",
+      paletteId: data.paletteId ?? DEFAULT_PALETTE_ID,
+      colorSlot: data.colorSlot ?? DEFAULT_COLOR_SLOT,
       aiBranchId: null,
       sourceChatMessageId: null,
       createdAt: now,
@@ -491,7 +494,8 @@ export async function updateSticky(
   update: {
     title?: string | null;
     body?: string;
-    color?: StickyColor;
+    paletteId?: string;
+    colorSlot?: number;
     previewText?: string | null;
   },
 ): Promise<MapSticky | undefined> {
@@ -502,7 +506,8 @@ export async function updateSticky(
     set.body = update.body;
     set.previewText = extractPreviewText(update.body) || null;
   }
-  if (update.color !== undefined) set.color = update.color;
+  if (update.paletteId !== undefined) set.paletteId = update.paletteId;
+  if (update.colorSlot !== undefined) set.colorSlot = update.colorSlot;
   const rows = await db
     .update(mapStickies)
     .set(set)
@@ -718,7 +723,8 @@ export async function createAiBranch(
         title: card.title || null,
         body,
         previewText: previewText || null,
-        color: "yellow",
+        paletteId: DEFAULT_PALETTE_ID,
+        colorSlot: DEFAULT_COLOR_SLOT,
         aiBranchId: branchId,
         sourceChatMessageId: null,
         createdAt: now,

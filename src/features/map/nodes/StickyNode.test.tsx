@@ -36,7 +36,8 @@ function makeProps(
     title: string;
     body: string;
     previewText: string;
-    color: string;
+    paletteId: string;
+    colorSlot: number;
     onUpdate: ReturnType<typeof vi.fn>;
   }> = {},
 ): NodeProps {
@@ -48,7 +49,8 @@ function makeProps(
       title: "テストタイトル",
       body: '{"type":"doc","content":[]}',
       previewText: "preview text",
-      color: "yellow",
+      paletteId: "post-it-playful",
+      colorSlot: 0,
       ...overrides,
     },
     type: "sticky",
@@ -122,12 +124,15 @@ describe("StickyNode — Post-It デザイン (Phase 1)", () => {
     ).toBeTruthy();
   });
 
-  it("data-color 属性が color prop に対応する", () => {
+  it("--sticky-bg-light 変数が paletteId/colorSlot から解決される", () => {
+    // post-it-playful slot 4 = Blue Paradise #2A8FBD
     const { container } = render(
-      <StickyNode {...makeProps({ color: "blue" })} />,
+      <StickyNode {...makeProps({ colorSlot: 4 })} />,
     );
-    const paper = container.querySelector('[data-testid="sticky-paper"]');
-    expect(paper?.getAttribute("data-color")).toBe("blue");
+    const paper = container.querySelector(
+      '[data-testid="sticky-paper"]',
+    ) as HTMLElement;
+    expect(paper?.style.getPropertyValue("--sticky-bg-light")).toBe("#2A8FBD");
   });
 
   it("data-glue の初期値は left", () => {

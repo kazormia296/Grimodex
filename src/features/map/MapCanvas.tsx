@@ -612,7 +612,6 @@ export function MapCanvas() {
         boardId,
         x: pos.x,
         y: pos.y,
-        color: "yellow",
       });
       pendingAutoFocusIds.add(sticky.sticky.id);
       setStickies((prev) => [...prev, sticky.sticky]);
@@ -631,15 +630,18 @@ export function MapCanvas() {
     if (!sourceNode) return;
     const sourcePos = findPosByNodeId(positionsRef.current, sourceNodeId);
     if (!sourcePos) return;
-    const sourceColor =
-      (sourceNode.data as { color?: string }).color ?? "yellow";
+    const sourceData = sourceNode.data as {
+      paletteId?: string;
+      colorSlot?: number;
+    };
     const newX = sourceNode.position.x + 280;
     const newY = sourceNode.position.y;
     const result = await createSticky({
       boardId,
       x: newX,
       y: newY,
-      color: sourceColor as import("./types").StickyColor,
+      paletteId: sourceData.paletteId,
+      colorSlot: sourceData.colorSlot,
     });
     pendingAutoFocusIds.add(result.sticky.id);
     setStickies((prev) => [...prev, result.sticky]);
@@ -850,6 +852,12 @@ export function MapCanvas() {
           onChangeColor={
             contextMenu.nodeId.startsWith("sticky:")
               ? handleChangeStickyColor
+              : undefined
+          }
+          stickyPaletteId={
+            contextMenu.nodeId.startsWith("sticky:")
+              ? stickies.find((s) => `sticky:${s.id}` === contextMenu.nodeId)
+                  ?.paletteId
               : undefined
           }
         />

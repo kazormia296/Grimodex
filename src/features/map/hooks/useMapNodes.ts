@@ -15,7 +15,6 @@ import type { TreeNodeData } from "@/features/tree/treeStore";
 import type { CodexEntry } from "@/features/codex/api";
 import type { MapAiBranch, MapFrame, MapSticky } from "@/db/schema";
 import type { Snippet } from "@/features/snippets/api";
-import type { StickyColor } from "../types";
 
 // Deterministic rotation from node id for corkboard feel (±0.5deg)
 export function corkRotation(id: string): number {
@@ -336,7 +335,8 @@ export function useMapNodes({
                 title: st.title ?? "",
                 body: st.body,
                 previewText: st.previewText ?? "",
-                color: st.color,
+                paletteId: st.paletteId,
+                colorSlot: st.colorSlot,
                 colorBy,
                 rotation: stickyRotation(st.id),
                 isDeleting: deletingStickyIds?.has(st.id) ?? false,
@@ -345,7 +345,8 @@ export function useMapNodes({
                   title?: string;
                   body?: string;
                   previewText?: string;
-                  color?: StickyColor;
+                  paletteId?: string;
+                  colorSlot?: number;
                 }) => {
                   const preview =
                     updates.body !== undefined

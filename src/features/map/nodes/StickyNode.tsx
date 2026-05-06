@@ -1,4 +1,11 @@
-import { memo, useState, useRef, useCallback, useEffect } from "react";
+import {
+  memo,
+  useState,
+  useRef,
+  useCallback,
+  useEffect,
+  type CSSProperties,
+} from "react";
 import { motion } from "motion/react";
 import { Handle, Position } from "@xyflow/react";
 import type { NodeProps } from "@xyflow/react";
@@ -9,7 +16,7 @@ import {
   extractPreviewText,
   pendingAutoFocusIds,
 } from "../mapApi";
-import type { StickyColor } from "../types";
+import { resolveStickyHex } from "@/lib/stickyPalettes";
 import { DURATIONS, EASINGS, useReducedMotion } from "@/lib/animation";
 
 export interface StickyNodeData {
@@ -17,7 +24,8 @@ export interface StickyNodeData {
   title: string;
   body: string;
   previewText: string;
-  color: StickyColor;
+  paletteId: string;
+  colorSlot: number;
   colorBy?: string;
   rotation?: number;
   isDeleting?: boolean;
@@ -26,7 +34,8 @@ export interface StickyNodeData {
     title?: string;
     body?: string;
     previewText?: string;
-    color?: StickyColor;
+    paletteId?: string;
+    colorSlot?: number;
   }) => Promise<void>;
   [key: string]: unknown;
 }
@@ -199,18 +208,20 @@ export const StickyNode = memo(function StickyNode({
           <div
             data-testid="sticky-paper"
             className="sticky-paper"
-            data-color={d.color}
             data-glue={glueOrient}
-            style={{
-              width: 200,
-              minHeight: 52,
-              maxHeight: editing ? 480 : 280,
-              overflow: editing ? "auto" : "hidden",
-              outline: selected ? "2px solid #534AB7" : "none",
-              outlineOffset: "2px",
-              cursor: editing ? "text" : "default",
-              userSelect: editing ? "text" : "none",
-            }}
+            style={
+              {
+                width: 200,
+                minHeight: 52,
+                maxHeight: editing ? 480 : 280,
+                overflow: editing ? "auto" : "hidden",
+                outline: selected ? "2px solid #534AB7" : "none",
+                outlineOffset: "2px",
+                cursor: editing ? "text" : "default",
+                userSelect: editing ? "text" : "none",
+                "--sticky-bg-light": resolveStickyHex(d.paletteId, d.colorSlot),
+              } as CSSProperties
+            }
             onDoubleClick={(e) => {
               if (!editing) {
                 e.stopPropagation();

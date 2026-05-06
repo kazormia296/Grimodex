@@ -595,15 +595,19 @@ impl Database {
             CREATE INDEX IF NOT EXISTS idx_map_ai_branches_board
                 ON map_ai_branches(board_id);
 
-            -- map_stickies: Map-only lightweight memos with ProseMirror body
+            -- map_stickies: Map-only lightweight memos with ProseMirror body.
+            -- Color is referenced as (palette_id, color_slot); the palette is
+            -- defined in code (see src/lib/stickyPalettes.ts), the slot is an
+            -- index into that palette's `colors` array.
             CREATE TABLE IF NOT EXISTS map_stickies (
                 id                     TEXT PRIMARY KEY,
                 board_id               TEXT NOT NULL REFERENCES map_boards(id) ON DELETE CASCADE,
                 title                  TEXT,
                 body                   TEXT NOT NULL DEFAULT '{\"type\":\"doc\",\"content\":[]}',
                 preview_text           TEXT,
-                color                  TEXT NOT NULL DEFAULT 'yellow'
-                                         CHECK(color IN ('yellow','orange','pink','green','blue','purple','gray','white')),
+                palette_id             TEXT NOT NULL DEFAULT 'post-it-playful',
+                color_slot             INTEGER NOT NULL DEFAULT 0
+                                         CHECK(color_slot >= 0),
                 ai_branch_id           TEXT REFERENCES map_ai_branches(id) ON DELETE SET NULL,
                 source_chat_message_id TEXT REFERENCES chat_messages(id) ON DELETE SET NULL,
                 created_at             TEXT NOT NULL DEFAULT (datetime('now')),
@@ -891,6 +895,69 @@ impl Database {
             CREATE INDEX IF NOT EXISTS idx_scene_beat_pov_scene ON scene_beat_pov_cache(scene_id);",
         )?;
 
+        // Sticky color: enum text → (palette_id, color_slot). Existing DBs
+        // still have the old `color` column; rebuild the table to migrate.
+        Self::migrate_stickies_color_to_palette_slot(&conn)?;
+
+        Ok(())
+    }
+
+    /// One-shot migration: drop legacy `color` enum column from map_stickies
+    /// and replace with `palette_id` + `color_slot`. Old color names map to
+    /// post-it-playful slots 0..5; gray/white fall back to slot 0.
+    fn migrate_stickies_color_to_palette_slot(conn: &Connection) -> anyhow::Result<()> {
+        let columns: Vec<String> = conn
+            .prepare("PRAGMA table_info(map_stickies)")?
+            .query_map([], |row| row.get::<_, String>("name"))?
+            .collect::<Result<_, _>>()?;
+        let has_legacy_color = columns.iter().any(|c| c == "color");
+        if !has_legacy_color {
+            return Ok(());
+        }
+        conn.execute_batch(
+            "BEGIN;
+            CREATE TABLE map_stickies_new (
+                id                     TEXT PRIMARY KEY,
+                board_id               TEXT NOT NULL REFERENCES map_boards(id) ON DELETE CASCADE,
+                title                  TEXT,
+                body                   TEXT NOT NULL DEFAULT '{\"type\":\"doc\",\"content\":[]}',
+                preview_text           TEXT,
+                palette_id             TEXT NOT NULL DEFAULT 'post-it-playful',
+                color_slot             INTEGER NOT NULL DEFAULT 0
+                                         CHECK(color_slot >= 0),
+                ai_branch_id           TEXT REFERENCES map_ai_branches(id) ON DELETE SET NULL,
+                source_chat_message_id TEXT REFERENCES chat_messages(id) ON DELETE SET NULL,
+                created_at             TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at             TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+            INSERT INTO map_stickies_new
+                (id, board_id, title, body, preview_text, palette_id, color_slot,
+                 ai_branch_id, source_chat_message_id, created_at, updated_at)
+            SELECT
+                id, board_id, title, body, preview_text,
+                'post-it-playful',
+                CASE color
+                    WHEN 'yellow' THEN 0
+                    WHEN 'orange' THEN 1
+                    WHEN 'pink'   THEN 2
+                    WHEN 'green'  THEN 3
+                    WHEN 'blue'   THEN 4
+                    WHEN 'purple' THEN 5
+                    ELSE 0
+                END,
+                ai_branch_id, source_chat_message_id, created_at, updated_at
+            FROM map_stickies;
+            DROP TABLE map_stickies;
+            ALTER TABLE map_stickies_new RENAME TO map_stickies;
+            CREATE INDEX IF NOT EXISTS idx_map_stickies_board
+                ON map_stickies(board_id);
+            CREATE INDEX IF NOT EXISTS idx_map_stickies_ai_branch
+                ON map_stickies(ai_branch_id);
+            CREATE INDEX IF NOT EXISTS idx_map_stickies_chat_msg
+                ON map_stickies(source_chat_message_id)
+                WHERE source_chat_message_id IS NOT NULL;
+            COMMIT;",
+        )?;
         Ok(())
     }
 
@@ -1484,6 +1551,86 @@ mod tests {
             .execute("SELECT new_col FROM legacy WHERE id='row1'", &[], "all")
             .expect("select");
         assert_eq!(rows[0]["new_col"], Value::from(7));
+    }
+
+    #[test]
+    fn test_migrate_stickies_color_to_palette_slot() {
+        // Build a legacy DB by hand (old `color` column), then migrate and
+        // verify the table is rebuilt with palette_id/color_slot and the
+        // existing color enum is mapped to the right slot index.
+        let db = Database::new(Path::new(":memory:")).expect("open");
+        {
+            let conn = db.conn.lock().expect("lock");
+            conn.execute_batch(
+                "CREATE TABLE map_boards (id TEXT PRIMARY KEY);
+                 CREATE TABLE map_ai_branches (id TEXT PRIMARY KEY);
+                 CREATE TABLE chat_messages (id TEXT PRIMARY KEY);
+                 INSERT INTO map_boards (id) VALUES ('b1');
+                 CREATE TABLE map_stickies (
+                    id          TEXT PRIMARY KEY,
+                    board_id    TEXT NOT NULL REFERENCES map_boards(id) ON DELETE CASCADE,
+                    title       TEXT,
+                    body        TEXT NOT NULL DEFAULT '{\"type\":\"doc\",\"content\":[]}',
+                    preview_text TEXT,
+                    color       TEXT NOT NULL DEFAULT 'yellow'
+                                  CHECK(color IN ('yellow','orange','pink','green','blue','purple','gray','white')),
+                    ai_branch_id TEXT,
+                    source_chat_message_id TEXT,
+                    created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+                    updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
+                 );
+                 INSERT INTO map_stickies (id, board_id, color) VALUES ('s_y', 'b1', 'yellow');
+                 INSERT INTO map_stickies (id, board_id, color) VALUES ('s_p', 'b1', 'purple');
+                 INSERT INTO map_stickies (id, board_id, color) VALUES ('s_g', 'b1', 'gray');",
+            )
+            .expect("seed legacy");
+
+            Database::migrate_stickies_color_to_palette_slot(&conn).expect("migrate");
+        }
+
+        let cols = db
+            .execute("PRAGMA table_info('map_stickies')", &[], "all")
+            .expect("pragma");
+        let names: Vec<String> = cols
+            .iter()
+            .filter_map(|row| {
+                if let Value::String(s) = &row["name"] {
+                    Some(s.clone())
+                } else {
+                    None
+                }
+            })
+            .collect();
+        assert!(
+            !names.contains(&"color".to_string()),
+            "legacy color column should be dropped"
+        );
+        assert!(names.contains(&"palette_id".to_string()));
+        assert!(names.contains(&"color_slot".to_string()));
+
+        let rows = db
+            .execute(
+                "SELECT id, palette_id, color_slot FROM map_stickies ORDER BY id",
+                &[],
+                "all",
+            )
+            .expect("select");
+        // s_g (gray) → 0, s_p (purple) → 5, s_y (yellow) → 0
+        assert_eq!(rows[0]["id"], Value::from("s_g"));
+        assert_eq!(rows[0]["color_slot"], Value::from(0));
+        assert_eq!(rows[0]["palette_id"], Value::from("post-it-playful"));
+        assert_eq!(rows[1]["id"], Value::from("s_p"));
+        assert_eq!(rows[1]["color_slot"], Value::from(5));
+        assert_eq!(rows[2]["id"], Value::from("s_y"));
+        assert_eq!(rows[2]["color_slot"], Value::from(0));
+    }
+
+    #[test]
+    fn test_migrate_stickies_color_to_palette_slot_idempotent() {
+        // Already-new schema: migrate is a no-op.
+        let db = test_db(); // already has new schema (no `color` column)
+        let conn = db.conn.lock().expect("lock");
+        Database::migrate_stickies_color_to_palette_slot(&conn).expect("noop");
     }
 
     #[test]

@@ -40,15 +40,8 @@
   /* Map note node — tinted with the app's brand accent (#534AB7). */
   --note-bg: #eeebfa;
   --note-border: #8b7fd4;
-  /* Map sticky note colors */
-  --sticky-bg-yellow: #fef9c3;
-  --sticky-bg-orange: #fed7aa;
-  --sticky-bg-pink: #fce7f3;
-  --sticky-bg-green: #dcfce7;
-  --sticky-bg-blue: #dbeafe;
-  --sticky-bg-purple: #ede9fe;
-  --sticky-bg-gray: #f3f4f6;
-  --sticky-bg-white: #ffffff;
+  /* Sticky paper bg is set per-instance via inline `--sticky-bg-light` from
+     stickyPalettes.ts. See `.sticky-paper` rule below for the consumer. */
   /* Subtle paper noise texture (fractalNoise, ~5% opacity) */
   --sticky-noise: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='80' height='80'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.95' numOctaves='2' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0.08 0'/></filter><rect width='100%' height='100%' filter='url(%23n)'/></svg>");
 }
@@ -87,17 +80,8 @@
   --content-border: oklch(0.269 0 0);
   --note-bg: #2a2540;
   --note-border: #7a6bc4;
-  /* Sticky colors keep light-mode pastels in dark mode (Post-It is a physical
-     object, not a themed UI surface), but mix in 8% black so the paper sits
-     more comfortably against the dark canvas without losing hue identity. */
-  --sticky-bg-yellow: color-mix(in srgb, #fef9c3 92%, black);
-  --sticky-bg-orange: color-mix(in srgb, #fed7aa 92%, black);
-  --sticky-bg-pink: color-mix(in srgb, #fce7f3 92%, black);
-  --sticky-bg-green: color-mix(in srgb, #dcfce7 92%, black);
-  --sticky-bg-blue: color-mix(in srgb, #dbeafe 92%, black);
-  --sticky-bg-purple: color-mix(in srgb, #ede9fe 92%, black);
-  --sticky-bg-gray: color-mix(in srgb, #f3f4f6 92%, black);
-  --sticky-bg-white: color-mix(in srgb, #ffffff 92%, black);
+  /* Sticky paper bg in dark mode is computed from the inline --sticky-bg-light
+     variable via color-mix in the .sticky-paper rule (8% black mixed in). */
 }
 
 @theme inline {
@@ -836,13 +820,16 @@
    below inline styles but above Tailwind utilities.
    ───────────────────────────────────────────── */
 @layer components {
-  /* Base paper: left-glue default (tight left shadow, curling right) */
+  /* Base paper: left-glue default (tight left shadow, curling right).
+     The bg color is supplied by the StickyNode component via the inline
+     `--sticky-bg-light` CSS variable (resolved through stickyPalettes.ts).
+     The dark theme override below mixes 8% black in. */
   .sticky-paper {
     position: relative;
-    /* Sticky paper stays light in both themes (see :root sticky-bg-* vars),
-       so text must be dark regardless of --foreground. */
+    /* Sticky paper stays light in both themes (Post-It is a physical object,
+       not a themed UI surface), so text must be dark regardless of --foreground. */
     color: rgba(0, 0, 0, 0.78);
-    background-color: var(--sticky-bg-yellow);
+    background-color: var(--sticky-bg-light, #fef9c3);
     /* Layered: paper grain + top-left highlight glow + bottom-right shadow falloff */
     background-image:
       var(--sticky-noise),
@@ -895,30 +882,13 @@
     background: linear-gradient(180deg, rgba(0, 0, 0, 0.07), transparent);
   }
 
-  /* Per-color backgrounds */
-  .sticky-paper[data-color="yellow"] {
-    background-color: var(--sticky-bg-yellow);
-  }
-  .sticky-paper[data-color="orange"] {
-    background-color: var(--sticky-bg-orange);
-  }
-  .sticky-paper[data-color="pink"] {
-    background-color: var(--sticky-bg-pink);
-  }
-  .sticky-paper[data-color="green"] {
-    background-color: var(--sticky-bg-green);
-  }
-  .sticky-paper[data-color="blue"] {
-    background-color: var(--sticky-bg-blue);
-  }
-  .sticky-paper[data-color="purple"] {
-    background-color: var(--sticky-bg-purple);
-  }
-  .sticky-paper[data-color="gray"] {
-    background-color: var(--sticky-bg-gray);
-  }
-  .sticky-paper[data-color="white"] {
-    background-color: var(--sticky-bg-white);
+  /* Dark theme: tone the paper down 8% to fit a dark canvas without losing hue. */
+  .dark .sticky-paper {
+    background-color: color-mix(
+      in srgb,
+      var(--sticky-bg-light, #fef9c3) 92%,
+      black
+    );
   }
 
   /* Content wrapper inside paper */

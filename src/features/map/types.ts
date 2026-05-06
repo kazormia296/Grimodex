@@ -9,15 +9,6 @@ export type NodeRefType =
 export type SceneDisplayVariant = "compact" | "auto";
 export type ColorByAxis = "none" | "status" | "stickyColor";
 export type VisualTheme = "default" | "corkboard" | "constellation";
-export type StickyColor =
-  | "yellow"
-  | "orange"
-  | "pink"
-  | "green"
-  | "blue"
-  | "purple"
-  | "gray"
-  | "white";
 
 export interface MapNodePositionRecord {
   id: string;

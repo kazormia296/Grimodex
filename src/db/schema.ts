@@ -707,20 +707,8 @@ export const mapStickies = sqliteTable(
     title: text("title"),
     body: text("body").notNull().default('{"type":"doc","content":[]}'),
     previewText: text("preview_text"),
-    color: text("color", {
-      enum: [
-        "yellow",
-        "orange",
-        "pink",
-        "green",
-        "blue",
-        "purple",
-        "gray",
-        "white",
-      ],
-    })
-      .notNull()
-      .default("yellow"),
+    paletteId: text("palette_id").notNull().default("post-it-playful"),
+    colorSlot: integer("color_slot").notNull().default(0),
     aiBranchId: text("ai_branch_id").references(() => mapAiBranches.id, {
       onDelete: "set null",
     }),
