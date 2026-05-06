@@ -26,6 +26,8 @@ ORM: Drizzle ORM（sqlite-proxy）
 | `codex_entry_phases` | 通常 | Codex | Codexエントリの経時的変化（フェーズ） |
 | `codex_phase_detail_overrides` | 通常 | Codex | フェーズごとのカスタムディテールオーバーライド |
 | `codex_quick_pins` | 通常 | Codex | クイックピン永続化 |
+| `labels` | 通常 | Scenes | プロジェクトスコープのカラーラベル定義 |
+| `tree_node_labels` | 通常 | Scenes | ツリーノード↔ラベルの多対多リレーション |
 | `snippets` | 通常 | Snippets | 再利用テキスト断片 |
 | `snippet_entry_tags` | 通常 | Snippets | Snippet↔タグの多対多リレーション |
 | `chat_sessions` | 通常 | Chat | チャットセッション（シーン or プロジェクトスコープ） |
@@ -44,12 +46,20 @@ ORM: Drizzle ORM（sqlite-proxy）
 | `chat_messages_fts` | FTS5仮想 | Chat History | チャットメッセージの全文検索 |
 | `tree_nodes_fts` | FTS5仮想 | Scenes | ツリーノードの全文検索 |
 | `map_boards` | 通常 | Map | Mapボード（v1は単一ボード固定） |
-| `map_node_positions` | 通常 | Map | ノードのボード上位置情報（Scene/Codex/Note/AIのポリモーフィック参照） |
-| `map_edges` | 通常 | Map | ユーザー描画エッジ |
+| `map_stickies` | 通常 | Map | Mapの付箋ノード（ProseMirror本文付き） |
+| `map_ai_branches` | 通常 | Map | Map AI生成ブランチ（プロンプト+シードノード） |
+| `map_node_positions` | 通常 | Map | ノードのボード上位置情報（Scene/Codex/Snippet/Note/Sticky/AI BranchのポリモーフィックFK） |
+| `map_edges` | 通常 | Map | ユーザー描画エッジ（双方向ラベル対応） |
 | `map_frames` | 通常 | Map | フレーム（グループ化矩形） |
-| `map_ai_nodes` | 通常 | Map | Map専用AIノード |
-| `scene_codex_pins` | 通常 | Matrix / Grid | シーン × Codex の明示的リレーション（Pin to scene、Add scene with codex の保存先） |
-| `scene_codex_mentions` | 通常 | Matrix | シーン × Codex の言及スキャンキャッシュ（source 別: body/beat/relation、role: mentioned/actor/target。POV はこのテーブルに含めない） |
+| `lint_ignored_diagnostics` | 通常 | Lint | Lint診断の永続的無視リスト |
+| `lint_term_dictionary` | 通常 | Lint | プロジェクトスコープの用語辞書（表記ゆれ検出） |
+| `lint_action_log` | 通常 | Lint | Lintアクション履歴（自己チューニング用イベントログ） |
+| `foreshadows` | 通常 | Foreshadow | 伏線レジスタ（payoff-anchored） |
+| `foreshadow_setups` | 通常 | Foreshadow | 伏線の撒きアンカー |
+| `foreshadow_codex_links` | 通常 | Foreshadow | 伏線↔Codexエントリのリレーション |
+| `scene_codex_pins` | 通常 | Matrix / Grid | シーン × Codex の明示的リレーション（Pin to scene の保存先） |
+| `scene_codex_mentions` | 通常 | Matrix | シーン × Codex の言及スキャンキャッシュ（source 別: body/beat/relation、role: mentioned/actor/target） |
+| `scene_beat_pov_cache` | 通常 | Matrix / Beat | Beat レベル POV キャラクターの集約キャッシュ |
 
 ---
 
@@ -65,7 +75,10 @@ projects (1)
  ├──< snippets (*)            project_id
  ├──< chat_sessions (*)       project_id
  ├──< project_snapshots (*)   project_id
- └──< project_settings (*)    project_id
+ ├──< project_settings (*)    project_id
+ ├──< labels (*)              project_id
+ ├──< foreshadows (*)         project_id
+ └──< map_boards (*)          project_id
 
 tree_nodes (1)
  ├──< tree_nodes (*)          parent_id (自己参照、ツリー構造)
@@ -73,11 +86,18 @@ tree_nodes (1)
  ├──< snippets (*)            scene_id
  ├──< codex_entry_phases (*)  anchor_node_id (nullable)
  ├──< authorship_spans (*)    node_id (nullable)
- ├──> codex_entries (?)       pov_character_id (nullable, Phase C-2)
- └──> codex_entries (?)       location_id (nullable, Phase C-2)
+ ├──< tree_node_labels (*)    node_id
+ ├──< scene_codex_pins (*)    scene_id
+ ├──< scene_codex_mentions (*) scene_id
+ ├──< scene_beat_pov_cache (*) scene_id
+ ├──< foreshadows (?)         payoff_scene_id (nullable)
+ ├──< foreshadow_setups (*)   scene_id
+ ├──< lint_ignored_diagnostics (*) scene_id
+ ├──> codex_entries (?)       pov_character_id (nullable)
+ └──> codex_entries (?)       location_id (nullable)
 
 codex_types (1)
- └──< codex_detail_definitions (*) type_slug (論理参照、FKなし)
+ └──< codex_detail_definitions (*) type_slug (複合FK: project_id + type_slug)
 
 codex_entries (1)
  ├──< codex_entries (*)       parent_id (自己参照、リレーション)
@@ -86,7 +106,11 @@ codex_entries (1)
  ├──< codex_detail_values (*) entry_id
  ├──< codex_entry_phases (*)  entry_id
  ├──< codex_quick_pins (*)    entry_id
- └──< authorship_spans (*)    codex_entry_id (nullable)
+ ├──< authorship_spans (*)    codex_entry_id (nullable)
+ ├──< scene_codex_pins (*)    entry_id
+ ├──< scene_codex_mentions (*) codex_entry_id
+ ├──< scene_beat_pov_cache (*) pov_character_id
+ └──< foreshadow_codex_links (*) codex_entry_id
 
 codex_entry_phases (1)
  ├──< codex_phase_detail_overrides (*) phase_id
@@ -94,11 +118,15 @@ codex_entry_phases (1)
 
 snippets (1)
  ├──< snippet_entry_tags (*)  snippet_id
- └──< authorship_spans (*)    snippet_id (nullable)
+ ├──< authorship_spans (*)    snippet_id (nullable)
+ └──< map_node_positions (*)  snippet_id (nullable)
 
 codex_tags (1)
  ├──< codex_entry_tags (*)    tag_id
  └──< snippet_entry_tags (*)  tag_id
+
+labels (1)
+ └──< tree_node_labels (*)    label_id
 
 codex_detail_definitions (1)
  ├──< codex_detail_values (*) definition_id
@@ -108,12 +136,14 @@ codex_detail_values (1)
  └──< authorship_spans (*)    detail_value_id (nullable)
 
 map_stickies (1)
- └──< authorship_spans (*)    sticky_id (nullable)
+ ├──< authorship_spans (*)    sticky_id (nullable)
+ └──< map_node_positions (*)  sticky_id (nullable)
 
 chat_sessions (1)
  ├──< chat_messages (*)              session_id (ON DELETE CASCADE)
  ├──< chat_summaries (*)             session_id (ON DELETE CASCADE)
- └──< chat_session_pinned_codex (*)  session_id (ON DELETE CASCADE)
+ ├──< chat_session_pinned_codex (*)  session_id (ON DELETE CASCADE)
+ └──< map_ai_branches (*)            session_id (nullable, ON DELETE SET NULL)
 
 chat_summaries (1)
  └──< chat_summary_messages (*) summary_id (ON DELETE CASCADE)
@@ -121,28 +151,26 @@ chat_summaries (1)
 chat_messages (1)
  ├──< codex_entries (*)          source_chat_message_id
  ├──< snippets (*)               source_chat_message_id
+ ├──< map_stickies (*)           source_chat_message_id (nullable)
  └──< chat_summary_messages (*)  message_id (ON DELETE CASCADE)
 
 map_boards (1)
+ ├──< map_stickies (*)        board_id
+ ├──< map_ai_branches (*)     board_id
  ├──< map_node_positions (*)  board_id
  ├──< map_edges (*)           board_id
- ├──< map_frames (*)          board_id
- └──< map_ai_nodes (*)        board_id
+ └──< map_frames (*)          board_id
+
+map_ai_branches (1)
+ ├──< map_stickies (*)        ai_branch_id (nullable)
+ └──< map_node_positions (*)  ai_branch_id (nullable)
 
 map_node_positions (1)
  └──< map_edges (*)           from_position_id / to_position_id
 
-tree_nodes (1)
- └──< map_node_positions (*)  tree_node_id (nullable, scene or note)
-
-codex_entries (1)
- └──< map_node_positions (*)  codex_entry_id (nullable)
-
-map_ai_nodes (1)
- └──< map_node_positions (*)  ai_node_id (nullable)
-
-chat_sessions (1)
- └──< map_ai_nodes (*)        session_id (nullable, ON DELETE SET NULL)
+foreshadows (1)
+ ├──< foreshadow_setups (*)      foreshadow_id
+ └──< foreshadow_codex_links (*) foreshadow_id
 ```
 
 ---
@@ -195,7 +223,6 @@ CREATE TABLE tree_nodes (
   content           TEXT NOT NULL DEFAULT '{}',  -- Scene/Note本文（ProseMirror JSON）
   story_time_order  TEXT,                  -- Sceneのみ: 文字列 fractional indexing キー（作中時間順、辞書順比較）。NULL = 未設定
   story_time_label  TEXT,                   -- Sceneのみ: 表示用ラベル（例: '帝国暦1024年3月', 'Day 3 morning'）。NULL = 未設定
-  -- 以下2カラムは Map Phase C-2 のマイグレーションで ALTER TABLE ADD COLUMN する
   pov_character_id  TEXT REFERENCES codex_entries(id) ON DELETE SET NULL,
                                             -- Sceneのみ: POVキャラクター（codex_entries.type='character'）。型整合性はアプリ層で保証
   location_id       TEXT REFERENCES codex_entries(id) ON DELETE SET NULL,
@@ -207,7 +234,8 @@ CREATE TABLE tree_nodes (
   unplaced_beat_preview TEXT,               -- Sceneのみ: unplaced_beats_doc から抽出した
                                             -- 先頭3 beat の冒頭40文字を JSON 配列で保持。
                                             -- Grid パネルカード描画に使用。シーン保存時にフロントが値を同梱
-                                            -- （バックエンドは保存するだけ、Grid 設計書参照）
+  placed_beat_preview TEXT,                 -- Sceneのみ: content (本文) 内の placed beat 冒頭テキストの JSON 配列キャッシュ。
+                                            -- シーン保存時にフロントが content から抽出して同梱
   char_count        INTEGER NOT NULL DEFAULT 0,
                                             -- Sceneのみ: 本文 (content カラム) の文字数キャッシュ。
                                             -- シーン保存時にフロントが CharacterCount 拡張の値を同梱。
@@ -234,7 +262,7 @@ Scene/Noteの本文は `content` カラムに直接格納する。
 - `story_time_label` は表示用で `story_time_order` から独立。同じ order でもラベルだけ自由に変更できるし、label だけ先に決めて order は後で設定する運用も可能
 - Folder/Note ノードでは `story_time_order` / `story_time_label` は未使用（Timeline パネルが葉 Scene のみ扱う）
 - `write-order（執筆順）`は `created_at` で表現される（専用カラムは不要）
-- `pov_character_id` / `location_id` は Map Phase C-2 で `ALTER TABLE ADD COLUMN` により追加される。SQLite の `codex_entries.type` が `'character'` / `'location'` であることはアプリ層で保証（FK の CHECK 制約は SQLite で cross-table 検証不可のため）
+- `pov_character_id` / `location_id` は実装済み。SQLite の `codex_entries.type` が `'character'` / `'location'` であることはアプリ層で保証（FK の CHECK 制約は SQLite で cross-table 検証不可のため）
 - 詳細は Timeline パネル設計書（`Grimodex_Timelineパネル設計書.md`）と Codex パネル設計書のフェーズシステム節を参照
 
 ### codex_types
@@ -958,6 +986,13 @@ SQLiteにはネイティブJSON型がないため、TEXT カラムにJSON文字�
 | `chat_messages.metadata` | `object` | `{"extractedCodex":["id1"],"extractedSnippets":["id2"]}` |
 | `app_settings.value` | `any` | `"16"`, `"system"`, `"true"` |
 | `project_settings.value` | `any` | `"16"`, `"system"`, `"true"` |
+| `map_boards.show_config` | `object` | `{"scene":true,"codex":false}` ノードタイプ別の表示ON/OFF |
+| `map_ai_branches.seed_node_ids` | `string[]` | `["pos-id-1","pos-id-2"]` 生成の参照元 map_node_positions.id 一覧 |
+| `map_edges.labels` | `string[]` | `["好敵手","師弟"]` 追加ラベル配列 |
+| `lint_term_dictionary.variants` | `string[]` | `["あなた","貴方","貴女"]` ゆれ表記一覧 |
+| `tree_nodes.unplaced_beats_doc` | `object[]` | `[{"id":"u1","beatType":"free","pov":null,"collapsed":false,"content":[...]}]` |
+| `tree_nodes.unplaced_beat_preview` | `string[]` | `["雨の夜、廃社の前で","祭壇に置かれた朱紐"]` 先頭3 beatの冒頭40文字 |
+| `tree_nodes.placed_beat_preview` | `string[]` | 本文内 placed beat 冒頭テキスト |
 
 SQLite 3.38+の `json()` / `json_extract()` 関数でクエリ内でのJSON操作が可能。ただしDrizzle ORM経由のアプリケーション層でのパース/シリアライズを基本とする。
 
@@ -1176,12 +1211,18 @@ Mapパネル設計書の策定に伴い、以下の5テーブルを追加。詳�
 
 ```sql
 CREATE TABLE map_boards (
-  id          TEXT PRIMARY KEY,
-  project_id  TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-  title       TEXT NOT NULL DEFAULT 'Main',
-  sort_order  REAL NOT NULL DEFAULT 0.0,
-  created_at  TEXT NOT NULL DEFAULT (datetime('now')),
-  updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
+  id            TEXT PRIMARY KEY,
+  project_id    TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  title         TEXT NOT NULL DEFAULT 'Main',
+  sort_order    REAL NOT NULL DEFAULT 0.0,
+  mode          TEXT NOT NULL DEFAULT 'free' CHECK(mode IN ('free', 'theme')),
+  viewport_x    REAL NOT NULL DEFAULT 0,      -- ビューポート左端X（保存・復元用）
+  viewport_y    REAL NOT NULL DEFAULT 0,      -- ビューポート上端Y
+  viewport_zoom REAL NOT NULL DEFAULT 1.0,   -- ズーム倍率
+  show_config   TEXT NOT NULL DEFAULT '{}',  -- ノードタイプ別表示ON/OFF JSON
+  color_by      TEXT NOT NULL DEFAULT 'none', -- ノード彩色基準（'none' | 'type' | ...）
+  created_at    TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at    TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
 CREATE INDEX idx_map_boards_project ON map_boards(project_id);
@@ -1189,57 +1230,65 @@ CREATE INDEX idx_map_boards_project ON map_boards(project_id);
 
 ### map_node_positions
 
-ノードのボード上位置情報。ポリモーフィック参照（Scene/Note → `tree_node_id`、Codex → `codex_entry_id`、AI → `ai_node_id`）。
+ノードのボード上位置情報。ポリモーフィック参照（Scene/Note → `tree_node_id`、Codex → `codex_entry_id`、Snippet → `snippet_id`、Sticky → `sticky_id`、AI Branch → `ai_branch_id`）。
 
 ```sql
 CREATE TABLE map_node_positions (
   id              TEXT PRIMARY KEY,
   board_id        TEXT NOT NULL REFERENCES map_boards(id) ON DELETE CASCADE,
   node_ref_type   TEXT NOT NULL
-                    CHECK(node_ref_type IN ('scene', 'codex', 'note', 'ai')),
+                    CHECK(node_ref_type IN ('scene','codex','snippet','note','sticky','ai_branch')),
   tree_node_id    TEXT REFERENCES tree_nodes(id) ON DELETE CASCADE,
   codex_entry_id  TEXT REFERENCES codex_entries(id) ON DELETE CASCADE,
-  ai_node_id      TEXT REFERENCES map_ai_nodes(id) ON DELETE CASCADE,
+  snippet_id      TEXT REFERENCES snippets(id) ON DELETE CASCADE,
+  sticky_id       TEXT REFERENCES map_stickies(id) ON DELETE CASCADE,
+  ai_branch_id    TEXT REFERENCES map_ai_branches(id) ON DELETE CASCADE,
   x               REAL NOT NULL,
   y               REAL NOT NULL,
   pinned          INTEGER NOT NULL DEFAULT 0,  -- 1 if pinned in gravity modes
-  hidden          INTEGER NOT NULL DEFAULT 0,  -- 1 if hidden on this board
   z_index         INTEGER NOT NULL DEFAULT 0,
   created_at      TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at      TEXT NOT NULL DEFAULT (datetime('now')),
-  -- 1段目: 3つのFKのうちちょうど1つが non-null
+  -- 1段目: 5つのFKのうちちょうど1つが non-null
   CHECK (
-    (CASE WHEN tree_node_id IS NOT NULL THEN 1 ELSE 0 END +
+    (CASE WHEN tree_node_id   IS NOT NULL THEN 1 ELSE 0 END +
      CASE WHEN codex_entry_id IS NOT NULL THEN 1 ELSE 0 END +
-     CASE WHEN ai_node_id IS NOT NULL THEN 1 ELSE 0 END) = 1
+     CASE WHEN snippet_id     IS NOT NULL THEN 1 ELSE 0 END +
+     CASE WHEN sticky_id      IS NOT NULL THEN 1 ELSE 0 END +
+     CASE WHEN ai_branch_id   IS NOT NULL THEN 1 ELSE 0 END) = 1
   ),
   -- 2段目: node_ref_type と non-null FK カラムの対応を保証
   CHECK (
-    (node_ref_type IN ('scene', 'note') AND tree_node_id   IS NOT NULL AND codex_entry_id IS NULL     AND ai_node_id IS NULL) OR
-    (node_ref_type = 'codex'            AND codex_entry_id IS NOT NULL AND tree_node_id   IS NULL     AND ai_node_id IS NULL) OR
-    (node_ref_type = 'ai'               AND ai_node_id     IS NOT NULL AND tree_node_id   IS NULL AND codex_entry_id IS NULL)
+    (node_ref_type IN ('scene','note') AND tree_node_id   IS NOT NULL) OR
+    (node_ref_type = 'codex'           AND codex_entry_id IS NOT NULL) OR
+    (node_ref_type = 'snippet'         AND snippet_id     IS NOT NULL) OR
+    (node_ref_type = 'sticky'          AND sticky_id      IS NOT NULL) OR
+    (node_ref_type = 'ai_branch'       AND ai_branch_id   IS NOT NULL)
   )
 );
 
 CREATE INDEX idx_map_pos_board ON map_node_positions(board_id);
-CREATE INDEX idx_map_pos_tree  ON map_node_positions(tree_node_id);
-CREATE INDEX idx_map_pos_codex ON map_node_positions(codex_entry_id);
 -- SQLite の NULL 意味論: NULLを含む複合UNIQUE INDEXでは一意性が保証されないため、タイプ別部分インデックスで分割
-CREATE UNIQUE INDEX idx_map_pos_uniq_scene ON map_node_positions(board_id, tree_node_id)
+CREATE UNIQUE INDEX idx_map_pos_uniq_scene   ON map_node_positions(board_id, tree_node_id)
   WHERE tree_node_id IS NOT NULL;
-CREATE UNIQUE INDEX idx_map_pos_uniq_codex ON map_node_positions(board_id, codex_entry_id)
+CREATE UNIQUE INDEX idx_map_pos_uniq_codex   ON map_node_positions(board_id, codex_entry_id)
   WHERE codex_entry_id IS NOT NULL;
-CREATE UNIQUE INDEX idx_map_pos_uniq_ai    ON map_node_positions(board_id, ai_node_id)
-  WHERE ai_node_id IS NOT NULL;
+CREATE UNIQUE INDEX idx_map_pos_uniq_snippet ON map_node_positions(board_id, snippet_id)
+  WHERE snippet_id IS NOT NULL;
+CREATE UNIQUE INDEX idx_map_pos_uniq_sticky  ON map_node_positions(board_id, sticky_id)
+  WHERE sticky_id IS NOT NULL;
+CREATE UNIQUE INDEX idx_map_pos_uniq_ai      ON map_node_positions(board_id, ai_branch_id)
+  WHERE ai_branch_id IS NOT NULL;
 ```
 
 **設計判断**:
-- `node_ref_type` と FK カラムの対応は2段CHECKで検証。ただし `node_ref_type='scene'` のとき `tree_nodes.node_type='scene'`（note行でない）であることは SQL では検証不可のため**アプリ層で担保する**
+- `node_ref_type` と FK カラムの対応は2段CHECKで検証。`node_ref_type='scene'` のとき `tree_nodes.node_type='scene'`（note行でない）であることは SQL では検証不可のため**アプリ層で担保する**
 - UNIQUE制約はタイプ別部分インデックスで実現（SQLite NULL 意味論対応）
+- `hidden` カラムは廃止。非表示はアプリ層のビューポートフィルタで制御
 
 ### map_edges
 
-ユーザー描画エッジ。参照先は `map_node_positions.id`（ボード跨ぎエッジを禁止）。
+ユーザー描画エッジ。参照先は `map_node_positions.id`（ボード跨ぎエッジを禁止）。双方向ラベルと複数ラベルに対応。
 
 ```sql
 CREATE TABLE map_edges (
@@ -1247,7 +1296,9 @@ CREATE TABLE map_edges (
   board_id            TEXT NOT NULL REFERENCES map_boards(id) ON DELETE CASCADE,
   from_position_id    TEXT NOT NULL REFERENCES map_node_positions(id) ON DELETE CASCADE,
   to_position_id      TEXT NOT NULL REFERENCES map_node_positions(id) ON DELETE CASCADE,
-  label               TEXT,
+  forward_label       TEXT,                       -- from→to 方向のラベル
+  backward_label      TEXT,                       -- to→from 方向のラベル（双方向エッジ用）
+  labels              TEXT NOT NULL DEFAULT '[]', -- JSON string[]: 追加ラベル配列
   style               TEXT NOT NULL DEFAULT 'solid'
                         CHECK(style IN ('solid', 'dashed', 'dotted')),
   color               TEXT NOT NULL DEFAULT '#000000',
@@ -1285,16 +1336,41 @@ CREATE TABLE map_frames (
 CREATE INDEX idx_map_frames_board ON map_frames(board_id);
 ```
 
-### map_ai_nodes
+### map_stickies
 
-Map専用AIノード。`session_id` は削除時 SET NULL（セッション削除後もノードは残るが、ダブルクリックは無効化される）。
+Map専用の付箋ノード。本文は ProseMirror JSON。カラーは `(palette_id, color_slot)` で参照し、パレット定義はコード側（`src/lib/stickyPalettes.ts`）に置く。`ai_branch_id` が非 NULL の場合は AI 生成付箋。
 
 ```sql
-CREATE TABLE map_ai_nodes (
+CREATE TABLE map_stickies (
+  id                     TEXT PRIMARY KEY,
+  board_id               TEXT NOT NULL REFERENCES map_boards(id) ON DELETE CASCADE,
+  title                  TEXT,
+  body                   TEXT NOT NULL DEFAULT '{"type":"doc","content":[]}',
+  preview_text           TEXT,           -- プレーンテキストキャッシュ（検索・ツールチップ用）
+  palette_id             TEXT NOT NULL DEFAULT 'post-it-playful',
+  color_slot             INTEGER NOT NULL DEFAULT 0 CHECK(color_slot >= 0),
+  ai_branch_id           TEXT REFERENCES map_ai_branches(id) ON DELETE SET NULL,
+  source_chat_message_id TEXT REFERENCES chat_messages(id) ON DELETE SET NULL,
+  created_at             TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at             TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX idx_map_stickies_board     ON map_stickies(board_id);
+CREATE INDEX idx_map_stickies_ai_branch ON map_stickies(ai_branch_id);
+CREATE INDEX idx_map_stickies_chat_msg  ON map_stickies(source_chat_message_id)
+  WHERE source_chat_message_id IS NOT NULL;
+```
+
+### map_ai_branches
+
+Map AI生成ブランチ。プロンプトとシードノードを保持し、生成結果は `map_stickies` の行として作成される。`session_id` は削除時 SET NULL（セッション削除後もブランチは残るが再実行は無効化される）。
+
+```sql
+CREATE TABLE map_ai_branches (
   id            TEXT PRIMARY KEY,
   board_id      TEXT NOT NULL REFERENCES map_boards(id) ON DELETE CASCADE,
   prompt        TEXT NOT NULL,
-  response      TEXT,
+  seed_node_ids TEXT NOT NULL DEFAULT '[]',  -- JSON string[]: 生成の参照元ノードID一覧
   session_id    TEXT REFERENCES chat_sessions(id) ON DELETE SET NULL,
   model         TEXT,
   token_usage   INTEGER,
@@ -1302,7 +1378,7 @@ CREATE TABLE map_ai_nodes (
   updated_at    TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
-CREATE INDEX idx_map_ai_board ON map_ai_nodes(board_id);
+CREATE INDEX idx_map_ai_branches_board ON map_ai_branches(board_id);
 ```
 
 ### 初期化・マイグレーション方針
@@ -1310,7 +1386,6 @@ CREATE INDEX idx_map_ai_board ON map_ai_nodes(board_id);
 - プロジェクト作成時に `map_boards` へ `title = 'Main'` の行を1行シードする
 - v1 では追加ボードの作成を禁止（UIに追加ボタンを出さない）
 - v2 で複数ボード対応時に `map_boards` の `sort_order` インデックスと UI を追加
-- `global-settings.json` に保存していた `sceneDisplayByMode` / `colorBy` / `corkboardFeel` は v2 で `map_boards` テーブルへ移行予定
 
 ---
 
@@ -1324,14 +1399,14 @@ Matrix（シーン × Codex のクロス表）と Grid（Chapter 単位のカー
 
 ```sql
 CREATE TABLE scene_codex_pins (
-  scene_id        TEXT NOT NULL REFERENCES tree_nodes(id) ON DELETE CASCADE,
-  codex_entry_id  TEXT NOT NULL REFERENCES codex_entries(id) ON DELETE CASCADE,
-  created_at      TEXT NOT NULL DEFAULT (datetime('now')),
-  PRIMARY KEY (scene_id, codex_entry_id)
+  scene_id   TEXT NOT NULL REFERENCES tree_nodes(id) ON DELETE CASCADE,
+  entry_id   TEXT NOT NULL REFERENCES codex_entries(id) ON DELETE CASCADE,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (scene_id, entry_id)
 );
 
-CREATE INDEX idx_scene_codex_pins_by_scene ON scene_codex_pins(scene_id);
-CREATE INDEX idx_scene_codex_pins_by_codex ON scene_codex_pins(codex_entry_id);
+CREATE INDEX idx_scene_codex_pins_scene ON scene_codex_pins(scene_id);
+CREATE INDEX idx_scene_codex_pins_entry ON scene_codex_pins(entry_id);
 ```
 
 このテーブルは下記 `scene_codex_mentions` キャッシュの `source = 'relation'` 行の一次ソースになる（同期更新）。
@@ -1342,17 +1417,15 @@ CREATE INDEX idx_scene_codex_pins_by_codex ON scene_codex_pins(codex_entry_id);
 
 ```sql
 CREATE TABLE scene_codex_mentions (
-  scene_id         TEXT NOT NULL REFERENCES tree_nodes(id) ON DELETE CASCADE,
-  codex_entry_id   TEXT NOT NULL REFERENCES codex_entries(id) ON DELETE CASCADE,
-  mention_count    INTEGER NOT NULL DEFAULT 0,
-  last_scanned_at  TEXT NOT NULL DEFAULT (datetime('now')),
-  source           TEXT NOT NULL,                      -- 'body' | 'beat' | 'relation'
-  role             TEXT NOT NULL DEFAULT 'mentioned',  -- 'mentioned' | 'actor' | 'target'
+  scene_id        TEXT NOT NULL REFERENCES tree_nodes(id) ON DELETE CASCADE,
+  codex_entry_id  TEXT NOT NULL REFERENCES codex_entries(id) ON DELETE CASCADE,
+  source          TEXT NOT NULL,                      -- 'body' | 'beat' | 'relation'
+  role            TEXT NOT NULL DEFAULT 'mentioned',  -- 'mentioned' | 'actor' | 'target'
   PRIMARY KEY (scene_id, codex_entry_id, source)
 );
 
-CREATE INDEX idx_scene_codex_mentions_by_scene ON scene_codex_mentions(scene_id);
-CREATE INDEX idx_scene_codex_mentions_by_codex ON scene_codex_mentions(codex_entry_id);
+CREATE INDEX idx_scm_codex ON scene_codex_mentions(codex_entry_id);
+CREATE INDEX idx_scm_scene  ON scene_codex_mentions(scene_id);
 ```
 
 更新タイミング：
@@ -1418,8 +1491,229 @@ Subplot は Codex の `lore` タイプ + `#subplot` タグで運用するため�
 
 ### 初期化・マイグレーション方針
 
-- 既存プロジェクトには `unplaced_beats_doc` を `'[]'`、`unplaced_beat_preview` を `NULL`、`char_count` を `0` で追加
-- `unplaced_beats_doc` / `unplaced_beat_preview` / `char_count` は次回シーン保存時にフロントが正しい値を同梱して埋める
+- 既存プロジェクトには `unplaced_beats_doc` を `'[]'`、`unplaced_beat_preview`/`placed_beat_preview` を `NULL`、`char_count` を `0` で追加（`add_column_if_missing` による追加的マイグレーション）
+- `unplaced_beats_doc` / `unplaced_beat_preview` / `placed_beat_preview` / `char_count` は次回シーン保存時にフロントが正しい値を同梱して埋める
 - `scene_codex_pins` / `scene_codex_mentions` は空のテーブルとして作成（既存データ移行は不要）
 - Matrix を最初に開いたとき、未スキャンシーンを検出すると進捗バナーを出してバックグラウンドスキャンする
-- Beat / Matrix / Grid 関連のカラム追加・テーブル新規作成は **1本の Drizzle migration ファイル** にまとめる（Phase A 着手時に同時投入、機能横断のため分割しない）
+
+---
+
+## ラベルシステム（2026-05-07 追加）
+
+ツリーノード（Scene/Note/Folder）にカラーラベルを付ける M:N リレーション。Codex タグとは独立したプロジェクトスコープのカラーシステム。
+
+### labels
+
+```sql
+CREATE TABLE labels (
+  id          TEXT PRIMARY KEY,
+  project_id  TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  name        TEXT NOT NULL,
+  color       TEXT NOT NULL,         -- パレットスロット名 (例: 'red', 'blue')
+  sort_order  REAL NOT NULL DEFAULT 0.0,
+  created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+  UNIQUE(project_id, name)
+);
+
+CREATE INDEX idx_labels_project ON labels(project_id);
+```
+
+### tree_node_labels
+
+```sql
+CREATE TABLE tree_node_labels (
+  node_id  TEXT NOT NULL REFERENCES tree_nodes(id) ON DELETE CASCADE,
+  label_id TEXT NOT NULL REFERENCES labels(id) ON DELETE CASCADE,
+  PRIMARY KEY (node_id, label_id)
+);
+
+CREATE INDEX idx_tree_node_labels_label ON tree_node_labels(label_id);
+```
+
+---
+
+## Lint機能（2026-05-07 追加）
+
+Lintパネルの永続化データ。診断エンジン（Rust）・フロント（React）とのやり取りに使用。
+
+### lint_ignored_diagnostics
+
+特定のルール×テキスト断片を永続的に無視するリスト（Phase 2+）。`text_snippet` + `context_before`/`context_after` で出現箇所をフィンガープリントする。
+
+```sql
+CREATE TABLE lint_ignored_diagnostics (
+  id              TEXT PRIMARY KEY,
+  rule_id         TEXT NOT NULL,
+  scene_id        TEXT NOT NULL REFERENCES tree_nodes(id) ON DELETE CASCADE,
+  text_snippet    TEXT NOT NULL,
+  context_before  TEXT NOT NULL,
+  context_after   TEXT NOT NULL,
+  note            TEXT,
+  created_at      INTEGER NOT NULL   -- Unix timestamp (ms)
+);
+
+CREATE INDEX idx_lint_ignored_scene ON lint_ignored_diagnostics(scene_id);
+CREATE INDEX idx_lint_ignored_rule  ON lint_ignored_diagnostics(rule_id);
+```
+
+### lint_term_dictionary
+
+プロジェクトスコープの用語辞書。`variants` は JSON string[] で、CRUD 層が重複排除・エスケープ処理を行う。`severity` は `'warning' | 'info'`（DB 制約なし、アプリ層で検証）。
+
+```sql
+CREATE TABLE lint_term_dictionary (
+  id         TEXT PRIMARY KEY,
+  preferred  TEXT NOT NULL,          -- 正規表記
+  variants   TEXT NOT NULL,          -- JSON string[]: ゆれ表記一覧
+  severity   TEXT NOT NULL DEFAULT 'warning',
+  note       TEXT,
+  enabled    INTEGER NOT NULL DEFAULT 1,  -- 0: 無効化（削除せず保持）
+  sort_order INTEGER NOT NULL DEFAULT 0,
+  created_at INTEGER NOT NULL,       -- Unix timestamp (ms)
+  updated_at INTEGER NOT NULL
+);
+
+CREATE INDEX idx_lint_term_dict_preferred ON lint_term_dictionary(preferred);
+CREATE INDEX idx_lint_term_dict_sort      ON lint_term_dictionary(sort_order);
+```
+
+### lint_action_log
+
+Lint アクション履歴（Phase 2-3）。自己チューニング統計（「この診断を 80% の確率で無視している」など）に使用する追記専用ログ。シーン削除時は `scene_id` が NULL になるが履歴レコード自体は保持される（ON DELETE SET NULL）。
+
+```sql
+CREATE TABLE lint_action_log (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  rule_id     TEXT NOT NULL,
+  action      TEXT NOT NULL,   -- 'detected'|'fixed'|'ignored_once'|'ignored_persistent_set'|
+                               --  'ignored_persistent_unset'|'disabled_inline'
+  scene_id    TEXT REFERENCES tree_nodes(id) ON DELETE SET NULL,
+  occurred_at INTEGER NOT NULL  -- Unix timestamp (ms)
+);
+
+CREATE INDEX idx_lint_action_log_rule     ON lint_action_log(rule_id);
+CREATE INDEX idx_lint_action_log_occurred ON lint_action_log(occurred_at);
+```
+
+---
+
+## 伏線レジスタ（2026-05-07 追加）
+
+payoff-anchored アーキテクチャで伏線と回収を管理。Phase 1〜5 実装済み、Phase 6（`load_bearing`）は検討中。詳細は [伏線レジスタ設計書](./Grimodex_伏線レジスタ設計書.md) 参照。
+
+### foreshadows
+
+伏線エントリ。payoff のアンカーはインライン（1:1）で `payoff_scene_id` + `payoff_from_pos`/`payoff_to_pos` に直接格納。
+
+```sql
+CREATE TABLE foreshadows (
+  id               TEXT PRIMARY KEY,
+  project_id       TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  title            TEXT NOT NULL,
+  intent           TEXT,             -- 作者の意図メモ
+  notes            TEXT,             -- 自由メモ
+  payoff_scene_id  TEXT REFERENCES tree_nodes(id) ON DELETE SET NULL,
+  payoff_from_pos  INTEGER,
+  payoff_to_pos    INTEGER,
+  payoff_confirmed INTEGER NOT NULL DEFAULT 0,  -- 1: 回収確定
+  abandoned        INTEGER NOT NULL DEFAULT 0,  -- 1: 放棄済み
+  load_bearing     TEXT,    -- Phase 6: 'critical'|'supporting'|'optional'|NULL
+  created_at       INTEGER NOT NULL,  -- Unix timestamp (ms)
+  updated_at       INTEGER NOT NULL
+);
+
+CREATE INDEX idx_foreshadows_project     ON foreshadows(project_id);
+CREATE INDEX idx_foreshadows_payoff_scene ON foreshadows(payoff_scene_id);
+```
+
+### foreshadow_setups
+
+伏線の撒きアンカー。1 つの伏線に複数の撒き箇所を持てる（1:多）。`is_orphan` は撒きテキストがシーン本文から消えたことを示す。
+
+```sql
+CREATE TABLE foreshadow_setups (
+  id                 TEXT PRIMARY KEY,
+  foreshadow_id      TEXT NOT NULL REFERENCES foreshadows(id) ON DELETE CASCADE,
+  scene_id           TEXT NOT NULL REFERENCES tree_nodes(id) ON DELETE CASCADE,
+  from_pos           INTEGER NOT NULL,
+  to_pos             INTEGER NOT NULL,
+  kind               TEXT NOT NULL,   -- 'designated_existing'|'inserted_new'|'rewritten'
+  strength           TEXT,            -- 'subtle'|'moderate'|'overt'|NULL（ユーザー評価）
+  ai_strength        TEXT,            -- AI評価
+  ai_reasoning       TEXT,
+  attribution        TEXT NOT NULL DEFAULT 'human',
+  ai_rationale       TEXT,
+  last_evaluated_at  INTEGER,         -- Unix timestamp (ms)
+  is_orphan          INTEGER NOT NULL DEFAULT 0,
+  created_at         INTEGER NOT NULL,
+  updated_at         INTEGER NOT NULL
+);
+
+CREATE INDEX idx_fs_setup_fid    ON foreshadow_setups(foreshadow_id);
+CREATE INDEX idx_fs_setup_scene  ON foreshadow_setups(scene_id);
+CREATE INDEX idx_fs_setup_orphan ON foreshadow_setups(is_orphan);
+```
+
+### foreshadow_codex_links
+
+伏線と関連 Codex エントリの多対多リレーション。
+
+```sql
+CREATE TABLE foreshadow_codex_links (
+  foreshadow_id   TEXT NOT NULL REFERENCES foreshadows(id) ON DELETE CASCADE,
+  codex_entry_id  TEXT NOT NULL REFERENCES codex_entries(id) ON DELETE CASCADE,
+  PRIMARY KEY (foreshadow_id, codex_entry_id)
+);
+
+CREATE INDEX idx_fs_codex_codex ON foreshadow_codex_links(codex_entry_id);
+```
+
+---
+
+## Beat / Matrix 関連キャッシュ（2026-05-07 追加）
+
+### scene_beat_pov_cache
+
+Beat レベル POV キャラクターの集約キャッシュ。Beat の POV 指定を beat ノードの `pov` 属性から導出し、Matrix の ★ 表示に使用する。`tree_nodes.pov_character_id`（シーン全体 POV）とは独立。
+
+```sql
+CREATE TABLE scene_beat_pov_cache (
+  scene_id          TEXT NOT NULL REFERENCES tree_nodes(id) ON DELETE CASCADE,
+  pov_character_id  TEXT NOT NULL REFERENCES codex_entries(id) ON DELETE CASCADE,
+  PRIMARY KEY (scene_id, pov_character_id)
+);
+
+CREATE INDEX idx_scene_beat_pov_scene ON scene_beat_pov_cache(scene_id);
+```
+
+---
+
+## スキーマ更新履歴（2026-05-07）
+
+現状コードベース（`src/db/schema.ts` + `src-tauri/src/database.rs`）と設計書の乖離を解消。
+
+### 追加テーブル（設計書に未記載だったもの）
+
+| テーブル | 追加理由 |
+|---------|---------|
+| `labels` / `tree_node_labels` | ツリーノードラベルシステム実装済みだが設計書に記載なし |
+| `lint_ignored_diagnostics` | Lint Phase 2 実装済みだが設計書に記載なし |
+| `lint_term_dictionary` | 用語辞書実装済みだが設計書に記載なし |
+| `lint_action_log` | Lint イベントログ実装済みだが設計書に記載なし |
+| `foreshadows` / `foreshadow_setups` / `foreshadow_codex_links` | 伏線レジスタ実装済みだが設計書に記載なし |
+| `scene_beat_pov_cache` | Beat POV キャッシュ実装済みだが設計書に記載なし |
+| `map_stickies` | Map付箋機能実装済みだが設計書に記載なし |
+| `map_ai_branches` | `map_ai_nodes` を置き換える形で実装 |
+
+### 変更されたテーブル定義
+
+| テーブル | 変更内容 |
+|---------|---------|
+| `tree_nodes` | `placed_beat_preview TEXT` カラム追加（設計書未記載） |
+| `tree_nodes` | `pov_character_id`/`location_id` の "Phase C-2 で追加" 注釈を削除（実装済み） |
+| `map_boards` | `mode`/`viewport_x`/`viewport_y`/`viewport_zoom`/`show_config`/`color_by` カラム追加 |
+| `map_node_positions` | `node_ref_type` を `('scene','codex','snippet','note','sticky','ai_branch')` に拡張；`ai_node_id` → `snippet_id`+`sticky_id`+`ai_branch_id` に分離；`hidden` カラム削除；UNIQUE インデックス対応追加 |
+| `map_edges` | `label` → `forward_label`+`backward_label`+`labels` に変更（双方向ラベル対応） |
+| `map_ai_nodes` | `map_ai_branches` に改名。`response` カラム削除、`seed_node_ids` 追加 |
+| `scene_codex_pins` | `codex_entry_id` → `entry_id` に修正；インデックス名を `by_scene/by_codex` → `scene/entry` に統一 |
+| `scene_codex_mentions` | `mention_count`/`last_scanned_at` カラム削除（実装では不使用）；インデックス名修正 |
