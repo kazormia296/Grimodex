@@ -358,6 +358,9 @@ describe("StickyNode — 折れ角 (Phase 2)", () => {
 // ────────────────────────────────────────────────────────────────
 // Phase 3: enter アニメ
 // ────────────────────────────────────────────────────────────────
+// motion/react mock — captures onAnimationComplete for Phase 4 tests
+let capturedOnAnimationComplete: ((definition: string) => void) | undefined;
+
 vi.mock("motion/react", async (importOriginal) => {
   const actual = await importOriginal<typeof import("motion/react")>();
   return {
@@ -369,22 +372,27 @@ vi.mock("motion/react", async (importOriginal) => {
         children,
         initial,
         animate,
+        onAnimationComplete,
         "data-testid": testId,
         ...rest
       }: React.HTMLAttributes<HTMLDivElement> & {
         initial?: unknown;
         animate?: unknown;
         "data-testid"?: string;
-      }) => (
-        <div
-          data-testid={testId}
-          data-motion-initial={JSON.stringify(initial)}
-          data-motion-animate={JSON.stringify(animate)}
-          {...rest}
-        >
-          {children}
-        </div>
-      ),
+        onAnimationComplete?: (definition: string) => void;
+      }) => {
+        capturedOnAnimationComplete = onAnimationComplete;
+        return (
+          <div
+            data-testid={testId}
+            data-motion-initial={JSON.stringify(initial)}
+            data-motion-animate={JSON.stringify(animate)}
+            {...rest}
+          >
+            {children}
+          </div>
+        );
+      },
     },
   };
 });
@@ -415,5 +423,97 @@ describe("StickyNode — enter アニメ (Phase 3)", () => {
       wrapper?.getAttribute("data-motion-animate") ?? "{}",
     );
     expect(animate.opacity).toBe(1);
+  });
+});
+
+// ────────────────────────────────────────────────────────────────
+// Phase 4: exit アニメ + 2-phase delete
+// ────────────────────────────────────────────────────────────────
+describe("StickyNode — exit アニメ (Phase 4)", () => {
+  beforeEach(() => {
+    capturedOnAnimationComplete = undefined;
+    vi.clearAllMocks();
+  });
+
+  it("isDeleting=true のとき animate は exit variant (opacity:0)", () => {
+    const { container } = render(
+      <StickyNode
+        {...makeProps()}
+        data={
+          {
+            ...(makeProps().data as object),
+            isDeleting: true,
+          } as NodeProps["data"]
+        }
+      />,
+    );
+    const wrapper = container.querySelector('[data-testid="sticky-motion"]');
+    const animate = JSON.parse(
+      wrapper?.getAttribute("data-motion-animate") ?? "{}",
+    );
+    expect(animate.opacity).toBe(0);
+  });
+
+  it("isDeleting=false のとき animate は enter variant (opacity:1)", () => {
+    const { container } = render(
+      <StickyNode
+        {...makeProps()}
+        data={
+          {
+            ...(makeProps().data as object),
+            isDeleting: false,
+          } as NodeProps["data"]
+        }
+      />,
+    );
+    const wrapper = container.querySelector('[data-testid="sticky-motion"]');
+    const animate = JSON.parse(
+      wrapper?.getAttribute("data-motion-animate") ?? "{}",
+    );
+    expect(animate.opacity).toBe(1);
+  });
+
+  it("onAnimationComplete('exit') で onExitComplete(id) が呼ばれる", () => {
+    const onExitComplete = vi.fn();
+    render(
+      <StickyNode
+        {...makeProps()}
+        data={
+          {
+            ...(makeProps().data as object),
+            isDeleting: true,
+            onExitComplete,
+          } as NodeProps["data"]
+        }
+      />,
+    );
+
+    act(() => {
+      capturedOnAnimationComplete?.("exit");
+    });
+
+    expect(onExitComplete).toHaveBeenCalledWith("test-1");
+  });
+
+  it("onAnimationComplete('animate') では onExitComplete は呼ばれない", () => {
+    const onExitComplete = vi.fn();
+    render(
+      <StickyNode
+        {...makeProps()}
+        data={
+          {
+            ...(makeProps().data as object),
+            isDeleting: false,
+            onExitComplete,
+          } as NodeProps["data"]
+        }
+      />,
+    );
+
+    act(() => {
+      capturedOnAnimationComplete?.("animate");
+    });
+
+    expect(onExitComplete).not.toHaveBeenCalled();
   });
 });
