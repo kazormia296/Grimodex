@@ -21,7 +21,6 @@ export interface StickyNodeData {
   useTipTap: boolean;
   colorBy?: string;
   rotation?: number;
-  isOld?: boolean;
   isDeleting?: boolean;
   onExitComplete?: (id: string) => void;
   onUpdate?: (updates: {
@@ -141,7 +140,6 @@ export const StickyNode = memo(function StickyNode({
 }: NodeProps) {
   const d = data as StickyNodeData;
   const rotation = d.rotation ?? 0;
-  const isOld = d.isOld ?? false;
   const isDeleting = d.isDeleting ?? false;
   const reducedMotion = useReducedMotion();
   const enterVariants = reducedMotion
@@ -245,8 +243,7 @@ export const StickyNode = memo(function StickyNode({
           }
         }}
       >
-        {/* sticky-paper-wrap: carries rotation. sticky-corner is a sibling of
-            sticky-paper here so clip-path on sticky-paper does not clip the corner. */}
+        {/* sticky-paper-wrap: carries rotation. */}
         <div
           data-testid="sticky-paper-wrap"
           style={{ position: "relative", transform: `rotate(${rotation}deg)` }}
@@ -256,7 +253,6 @@ export const StickyNode = memo(function StickyNode({
             className="sticky-paper"
             data-color={localColor}
             data-glue={glueOrient}
-            data-old={String(isOld)}
             style={{
               width: 240,
               minHeight: 80,
@@ -398,9 +394,6 @@ export const StickyNode = memo(function StickyNode({
               )}
             </div>
           </div>
-
-          {/* Folded corner — sibling of sticky-paper so clip-path doesn't hide it */}
-          <div className="sticky-corner" aria-hidden />
         </div>
       </motion.div>
 

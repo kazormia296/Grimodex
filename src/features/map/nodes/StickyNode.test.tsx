@@ -309,53 +309,6 @@ describe("StickyNode — Post-It デザイン (Phase 1)", () => {
 });
 
 // ────────────────────────────────────────────────────────────────
-// Phase 2: 折れ角 (isOld)
-// ────────────────────────────────────────────────────────────────
-describe("StickyNode — 折れ角 (Phase 2)", () => {
-  beforeEach(() => vi.clearAllMocks());
-
-  it("isOld=false のとき sticky-corner は非表示（display:none CSS に委ねる）", () => {
-    const { container } = render(
-      <StickyNode
-        {...makeProps()}
-        data={
-          { ...(makeProps().data as object), isOld: false } as NodeProps["data"]
-        }
-      />,
-    );
-    const corner = container.querySelector(".sticky-corner");
-    expect(corner).toBeTruthy();
-    expect(corner?.getAttribute("aria-hidden")).toBe("true");
-  });
-
-  it("isOld=true のとき sticky-paper に data-old='true' が付く", () => {
-    const { container } = render(
-      <StickyNode
-        {...makeProps()}
-        data={
-          { ...(makeProps().data as object), isOld: true } as NodeProps["data"]
-        }
-      />,
-    );
-    const paper = container.querySelector('[data-testid="sticky-paper"]');
-    expect(paper?.getAttribute("data-old")).toBe("true");
-  });
-
-  it("isOld=false のとき data-old='false' が付く", () => {
-    const { container } = render(
-      <StickyNode
-        {...makeProps()}
-        data={
-          { ...(makeProps().data as object), isOld: false } as NodeProps["data"]
-        }
-      />,
-    );
-    const paper = container.querySelector('[data-testid="sticky-paper"]');
-    expect(paper?.getAttribute("data-old")).toBe("false");
-  });
-});
-
-// ────────────────────────────────────────────────────────────────
 // Phase 3: enter アニメ
 // ────────────────────────────────────────────────────────────────
 // motion/react mock — captures onAnimationComplete for Phase 4 tests

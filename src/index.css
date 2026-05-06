@@ -904,40 +904,6 @@
     background-color: var(--sticky-bg-white);
   }
 
-  /* Folded corner — visible only when sticky is "old" (50+ newer siblings) */
-  .sticky-corner {
-    display: none;
-    position: absolute;
-    right: 0;
-    bottom: 0;
-    width: 14px;
-    height: 14px;
-    pointer-events: none;
-    background: linear-gradient(
-      135deg,
-      transparent 50%,
-      rgba(0, 0, 0, 0.18) 50%
-    );
-    filter: drop-shadow(-1px -1px 1px rgba(0, 0, 0, 0.15));
-    z-index: 2;
-  }
-
-  /* Show corner when sticky is old (data-old="true") */
-  .sticky-paper[data-old="true"] {
-    clip-path: polygon(
-      0 0,
-      100% 0,
-      100% calc(100% - 14px),
-      calc(100% - 14px) 100%,
-      0 100%
-    );
-  }
-
-  /* sticky-corner is a sibling of sticky-paper, so use ~ combinator */
-  .sticky-paper[data-old="true"] ~ .sticky-corner {
-    display: block;
-  }
-
   /* Content wrapper inside paper */
   .sticky-content {
     padding: 6px 10px 10px;
