@@ -1,52 +1,32 @@
 import { useEffect, useRef, useState, useCallback, useMemo } from "react";
 import { createPortal } from "react-dom";
 import { useTranslation } from "react-i18next";
-import {
-  Plus,
-  ChevronsUpDown,
-  MoreHorizontal,
-  GripVertical,
-  Undo2,
-  Redo2,
-  X,
-} from "lucide-react";
-import {
-  DndContext,
-  PointerSensor,
-  KeyboardSensor,
-  useSensor,
-  useSensors,
-  DragOverlay,
-} from "@dnd-kit/core";
-import type {
-  DragStartEvent,
-  DragEndEvent,
-  DragMoveEvent,
-} from "@dnd-kit/core";
-import { cn } from "@/lib/utils";
+import { GripVertical } from "lucide-react";
+import { DndContext, DragOverlay } from "@dnd-kit/core";
+import type { DragMoveEvent } from "@dnd-kit/core";
 import { useTreeStore } from "./treeStore";
+import { useScenesDerivedData } from "./useScenesDerivedData";
+import { useScenesDnd } from "./useScenesDnd";
+import { useScenesKeyboard } from "./useScenesKeyboard";
 import { useLabelStore } from "@/features/labels/labelStore";
 import { ManageLabelsDialog } from "@/features/labels/ManageLabelsDialog";
 import { ScenesPanelContext } from "./ScenesPanelContext";
-import { resolveLabelColor } from "@/lib/labelPalette";
-import { cmpKeys } from "./fractionalIndex";
 import { useTreeHistoryStore } from "./treeHistoryStore";
 import { useTabStore } from "@/features/editor/tabStore";
-import { useLayoutStore } from "@/features/layout/layoutStore";
 import { NodeIcon } from "./TreeNodeItem";
 import { StructureTemplatePicker } from "@/features/grid/StructureTemplatePicker";
 import { StatusDot } from "./StatusDot";
 import { SynopsisArea } from "./SynopsisArea";
-import type { TreeNodeData, NodeType } from "./treeStore";
-import { canHaveChildren } from "./treeStore";
-import type { DropIndicator } from "./TreeNodeItem";
+import type { NodeType } from "./treeStore";
 import { motion, AnimatePresence } from "motion/react";
 import { DURATIONS, EASINGS, useReducedMotion } from "@/lib/animation";
-import { BottomDropZone, BOTTOM_DROP_ZONE_ID } from "./BottomDropZone";
+import { BottomDropZone } from "./BottomDropZone";
 import { TreeRenderer } from "./TreeRenderer";
 import { PanelMenu } from "./PanelMenu";
 import { RootContextMenu } from "./RootContextMenu";
-import { flattenVisible } from "./treeVisibility";
+import { ScenesToolbar } from "./ScenesToolbar";
+import { ScenesFilterBar } from "./ScenesFilterBar";
+import { DeleteConfirmDialog } from "./DeleteConfirmDialog";
 
 const DEFAULT_PROJECT_ID = "default-project";
 
@@ -131,11 +111,6 @@ export function ScenesPanel() {
   const createMenuRef = useRef<HTMLDivElement>(null);
   const [createMenuPos, setCreateMenuPos] = useState<DOMRect | null>(null);
   const [panelMenuPos, setPanelMenuPos] = useState<DOMRect | null>(null);
-  const pointerYRef = useRef(0);
-  const [dropIndicator, setDropIndicator] = useState<DropIndicator | null>(
-    null,
-  );
-  const [draggingId, setDraggingId] = useState<string | null>(null);
   const [deleteConfirm, setDeleteConfirm] = useState<string[] | null>(null);
   const [rootContextMenu, setRootContextMenu] = useState<{
     x: number;
@@ -172,98 +147,16 @@ export function ScenesPanel() {
     return () => document.removeEventListener("mousedown", handleMouseDown);
   }, [showCreateMenu]);
 
-  const STATUS_SORT_ORDER: Record<string, number> = {
-    outline: 0,
-    draft: 1,
-    complete: 2,
-    revision: 3,
-    final: 4,
-  };
-
-  const { childMap, nodeMap } = useMemo(() => {
-    const nm: Record<string, TreeNodeData> = {};
-    const cm: Record<string, string[]> = { root: [] };
-    for (const n of nodes) nm[n.id] = n;
-
-    // Base order: always sort by sortOrder first
-    let sorted = [...nodes].sort((a, b) => cmpKeys(a.sortOrder, b.sortOrder));
-
-    // Apply sortMode to leaf nodes within each parent
-    if (sortMode !== "manual") {
-      sorted = sorted.sort((a, b) => {
-        // Keep containers in manual order; only sort leaves
-        const aIsLeaf = a.nodeType === "scene" || a.nodeType === "note";
-        const bIsLeaf = b.nodeType === "scene" || b.nodeType === "note";
-        if (!aIsLeaf || !bIsLeaf || a.parentId !== b.parentId) {
-          return cmpKeys(a.sortOrder, b.sortOrder);
-        }
-        if (sortMode === "title") {
-          return a.title.localeCompare(b.title, "ja");
-        }
-        if (sortMode === "wordcount") {
-          return (charCounts[b.id] ?? 0) - (charCounts[a.id] ?? 0);
-        }
-        if (sortMode === "status") {
-          return (
-            (STATUS_SORT_ORDER[a.status ?? "outline"] ?? 0) -
-            (STATUS_SORT_ORDER[b.status ?? "outline"] ?? 0)
-          );
-        }
-        return 0;
-      });
-    }
-
-    for (const n of sorted) {
-      const key = n.parentId ?? "root";
-      if (!cm[key]) cm[key] = [];
-      cm[key].push(n.id);
-    }
-    return { childMap: cm, nodeMap: nm };
-  }, [nodes, sortMode, charCounts]);
-
-  // Compute container word count totals (sum of descendant scenes/notes)
-  const nodeTotals = useMemo(() => {
-    const totals: Record<string, number> = {};
-    function sumDescendants(id: string): number {
-      const node = nodeMap[id];
-      if (!node) return 0;
-      if (node.nodeType === "scene" || node.nodeType === "note") {
-        return charCounts[id] ?? 0;
-      }
-      let total = 0;
-      for (const childId of childMap[id] ?? []) {
-        total += sumDescendants(childId);
-      }
-      totals[id] = total;
-      return total;
-    }
-    for (const id of childMap["root"] ?? []) sumDescendants(id);
-    return totals;
-  }, [nodeMap, childMap, charCounts]);
-
-  // Flat visible list for keyboard navigation
-  const flatNodes = useMemo(
-    () =>
-      flattenVisible(
-        null,
-        childMap,
-        nodeMap,
-        expandedIds,
-        filterQuery.toLowerCase(),
-        statusFilter,
-        labelFilter,
-        nodeLabels,
-      ),
-    [
-      childMap,
-      nodeMap,
-      expandedIds,
-      filterQuery,
-      statusFilter,
-      labelFilter,
-      nodeLabels,
-    ],
-  );
+  const { childMap, nodeMap, nodeTotals, flatNodes } = useScenesDerivedData({
+    nodes,
+    sortMode,
+    charCounts,
+    expandedIds,
+    filterQuery,
+    statusFilter,
+    labelFilter,
+    nodeLabels,
+  });
 
   // Auto-reveal active scene: scroll it into view when activeSceneId changes
   useEffect(() => {
@@ -353,304 +246,30 @@ export function ScenesPanel() {
     [nodeMap, charCounts, childMap],
   );
 
-  function focusEditorPanel() {
-    const { dockviewApi } = useLayoutStore.getState();
-    if (!dockviewApi) return;
-    const panel = dockviewApi.getPanel("editor");
-    if (panel) {
-      panel.api.setActive();
-    } else {
-      dockviewApi.addPanel({
-        id: "editor",
-        component: "editor",
-        title: t("layout.panel.editor"),
-      });
-    }
-  }
+  const handleTreeKeyDown = useScenesKeyboard({
+    flatNodes,
+    nodeMap,
+    activeSceneId,
+    selectedIds,
+    expandedIds,
+    setActiveScene,
+    toggleExpand,
+    setPendingRenameId,
+    initiateDelete,
+    treeRef,
+    filterRef,
+    editorPanelTitle: t("layout.panel.editor"),
+  });
 
-  // Keyboard navigation
-  const handleTreeKeyDown = useCallback(
-    (e: React.KeyboardEvent) => {
-      // Let input elements handle their own arrow/delete keys
-      if ((e.target as HTMLElement).tagName === "INPUT") return;
-
-      const idx = flatNodes.findIndex((n) => n.id === activeSceneId);
-      if (e.key === "ArrowDown") {
-        e.preventDefault();
-        const next = flatNodes[idx + 1];
-        if (next) {
-          if (next.nodeType === "scene" || next.nodeType === "note") {
-            useTabStore.getState().openPreview(next.id);
-            focusEditorPanel();
-          }
-          useTreeStore.getState().selectNode(next.id, false);
-        }
-      } else if (e.key === "ArrowUp") {
-        e.preventDefault();
-        const prev = flatNodes[idx - 1];
-        if (prev) {
-          if (prev.nodeType === "scene" || prev.nodeType === "note") {
-            useTabStore.getState().openPreview(prev.id);
-            focusEditorPanel();
-          }
-          useTreeStore.getState().selectNode(prev.id, false);
-        }
-      } else if (e.key === " ") {
-        e.preventDefault();
-        const cur = nodeMap[activeSceneId];
-        if (cur && (cur.nodeType === "scene" || cur.nodeType === "note")) {
-          useTabStore.getState().openPreview(cur.id);
-          focusEditorPanel();
-        }
-      } else if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
-        // Ctrl+Enter: open in secondary group (split view)
-        e.preventDefault();
-        const cur = nodeMap[activeSceneId];
-        if (cur && (cur.nodeType === "scene" || cur.nodeType === "note")) {
-          useTabStore.getState().openInSecondaryGroup(cur.id);
-          setActiveScene(cur.id);
-          focusEditorPanel();
-        }
-      } else if (e.key === "Enter") {
-        e.preventDefault();
-        const cur = nodeMap[activeSceneId];
-        if (cur && (cur.nodeType === "scene" || cur.nodeType === "note")) {
-          useTabStore.getState().openPinned(cur.id);
-          setActiveScene(cur.id);
-          focusEditorPanel();
-        } else if (cur) {
-          toggleExpand(cur.id);
-        }
-      } else if (e.key === "ArrowRight") {
-        e.preventDefault();
-        const cur = nodeMap[activeSceneId];
-        if (cur && cur.nodeType === "folder") {
-          if (!expandedIds.includes(activeSceneId)) toggleExpand(activeSceneId);
-        }
-      } else if (e.key === "ArrowLeft") {
-        e.preventDefault();
-        const cur = nodeMap[activeSceneId];
-        if (
-          cur &&
-          cur.nodeType === "folder" &&
-          expandedIds.includes(activeSceneId)
-        ) {
-          toggleExpand(activeSceneId);
-        } else if (cur?.parentId) {
-          setActiveScene(cur.parentId);
-        }
-      } else if (e.key === "F2") {
-        e.preventDefault();
-        if (activeSceneId) setPendingRenameId(activeSceneId);
-      } else if (e.key === "Delete" || e.key === "Backspace") {
-        if (document.activeElement === treeRef.current) {
-          e.preventDefault();
-          const idsToDelete =
-            selectedIds.length > 0
-              ? selectedIds
-              : activeSceneId
-                ? [activeSceneId]
-                : [];
-          if (idsToDelete.length > 0) {
-            initiateDelete(idsToDelete);
-          }
-        }
-      } else if (e.key === "f" && e.ctrlKey) {
-        e.preventDefault();
-        filterRef.current?.focus();
-      } else if (e.key === "z" && (e.ctrlKey || e.metaKey) && !e.shiftKey) {
-        e.preventDefault();
-        useTreeHistoryStore
-          .getState()
-          .undo()
-          .catch(() => {});
-      } else if (e.key === "z" && (e.ctrlKey || e.metaKey) && e.shiftKey) {
-        e.preventDefault();
-        useTreeHistoryStore
-          .getState()
-          .redo()
-          .catch(() => {});
-      }
-    },
-    [
-      flatNodes,
-      activeSceneId,
-      nodeMap,
-      expandedIds,
-      setActiveScene,
-      toggleExpand,
-      selectedIds,
-      initiateDelete,
-    ],
-  );
-
-  // D&D sensors
-  const sensors = useSensors(
-    useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
-    useSensor(KeyboardSensor),
-  );
-
-  const onDragStart = useCallback(({ active }: DragStartEvent) => {
-    setDraggingId(active.id as string);
-  }, []);
-
-  const onDragMove = useCallback(({ activatorEvent, delta }: DragMoveEvent) => {
-    if (activatorEvent instanceof PointerEvent) {
-      pointerYRef.current = activatorEvent.clientY + delta.y;
-    }
-  }, []);
-
-  const onDragEnd = useCallback(
-    ({ active, over }: DragEndEvent) => {
-      setDraggingId(null);
-      setDropIndicator(null);
-      if (active.id === over?.id) return;
-
-      const activeId = active.id as string;
-      const activeNode = nodeMap[activeId];
-      if (!activeNode) return;
-
-      if (!over) return;
-
-      const rawOverId = String(over.id);
-
-      // Handle drop on bottom zone → after last visible item
-      if (rawOverId === BOTTOM_DROP_ZONE_ID) {
-        const lastNode = flatNodes
-          .filter((n) => n.id !== activeId)
-          .slice(-1)[0];
-        if (!lastNode) return;
-        const parentNode = lastNode.parentId
-          ? nodeMap[lastNode.parentId]
-          : null;
-        if (parentNode && !canHaveChildren(parentNode.nodeType)) return;
-        moveNode(activeId, lastNode.parentId, lastNode.id).catch(() => {});
-        return;
-      }
-
-      // over.id is like "drop-{nodeId}"
-      const overId = rawOverId.replace(/^drop-/, "");
-      if (activeId === overId) return;
-
-      const overNode = nodeMap[overId];
-      if (!overNode) return;
-
-      // Compute drop position from pointer Y vs over element rect
-      const overRect = over.rect;
-      const pointerY = pointerYRef.current;
-      let position: "before" | "after" | "inside" = "after";
-      if (overRect) {
-        const isContainer = overNode.nodeType === "folder";
-        const relY = pointerY - overRect.top;
-        const h = overRect.height;
-        if (isContainer) {
-          if (relY < h * 0.25) position = "before";
-          else if (relY > h * 0.75) position = "after";
-          else position = "inside";
-        } else {
-          position = relY < h / 2 ? "before" : "after";
-        }
-      }
-
-      // Determine newParentId and afterId
-      let newParentId: string | null;
-      let afterId: string | null;
-      if (position === "inside") {
-        newParentId = overId;
-        afterId = null;
-      } else {
-        newParentId = overNode.parentId;
-        if (position === "after") {
-          afterId = overId;
-        } else {
-          // before: find the sibling before overId
-          const siblings = childMap[newParentId ?? "root"] ?? [];
-          const idx = siblings.indexOf(overId);
-          afterId = idx > 0 ? siblings[idx - 1] : null;
-        }
-      }
-
-      // Validate: only folders can receive children
-      const parentNode = newParentId ? nodeMap[newParentId] : null;
-      if (parentNode && !canHaveChildren(parentNode.nodeType)) return;
-
-      // Multi-select: move all selected nodes if the dragged node is in the selection
-      const { selectedIds } = useTreeStore.getState();
-      if (selectedIds.includes(activeId) && selectedIds.length > 1) {
-        // Sort selected nodes by current sortOrder to preserve relative order
-        const selectedNodes = selectedIds
-          .map((id) => nodeMap[id])
-          .filter(Boolean)
-          .sort((a, b) =>
-            cmpKeys(a!.sortOrder, b!.sortOrder),
-          ) as TreeNodeData[];
-        let prevAfterId = afterId;
-        for (const selNode of selectedNodes) {
-          moveNode(selNode.id, newParentId, prevAfterId).catch(() => {});
-          prevAfterId = selNode.id;
-        }
-      } else {
-        moveNode(activeId, newParentId, afterId).catch(() => {});
-      }
-    },
-    [nodeMap, childMap, moveNode, flatNodes],
-  );
-
-  // Update drop indicator during drag
-  const onDragOver = useCallback(
-    ({ active, over }: DragMoveEvent) => {
-      if (!over) {
-        setDropIndicator(null);
-        return;
-      }
-
-      const rawOverId = String(over.id);
-
-      // Bottom drop zone → "after" on last visible item
-      if (rawOverId === BOTTOM_DROP_ZONE_ID) {
-        const lastNode = flatNodes
-          .filter((n) => n.id !== String(active.id))
-          .slice(-1)[0];
-        if (lastNode) {
-          setDropIndicator({ nodeId: lastNode.id, position: "after" });
-        } else {
-          setDropIndicator(null);
-        }
-        return;
-      }
-
-      const overId = rawOverId.replace(/^drop-/, "");
-      if (active.id === overId) {
-        setDropIndicator(null);
-        return;
-      }
-      const overNode = nodeMap[overId];
-      if (!overNode) {
-        setDropIndicator(null);
-        return;
-      }
-
-      const overRect = over.rect;
-      if (!overRect) {
-        setDropIndicator(null);
-        return;
-      }
-      const pointerY = pointerYRef.current;
-      const isContainer = overNode.nodeType === "folder";
-      const relY = pointerY - overRect.top;
-      const h = overRect.height;
-      let position: "before" | "after" | "inside";
-      if (isContainer) {
-        if (relY < h * 0.25) position = "before";
-        else if (relY > h * 0.75) position = "after";
-        else position = "inside";
-      } else {
-        position = relY < h / 2 ? "before" : "after";
-      }
-      setDropIndicator({ nodeId: overId, position });
-    },
-    [nodeMap, flatNodes],
-  );
+  const {
+    sensors,
+    draggingId,
+    dropIndicator,
+    onDragStart,
+    onDragMove,
+    onDragEnd,
+    onDragOver,
+  } = useScenesDnd({ nodeMap, childMap, flatNodes, moveNode });
 
   const activeNode = nodeMap[activeSceneId];
 
@@ -676,166 +295,39 @@ export function ScenesPanel() {
         onDragEnd={onDragEnd}
       >
         <div className="relative flex h-full flex-col">
-          {/* Toolbar */}
-          <div className="flex flex-shrink-0 items-center justify-between border-b border-border px-2 py-1.5">
-            <span className="text-xs font-semibold text-foreground">
-              Scenes
-            </span>
-            <div className="flex items-center gap-0.5">
-              {/* Create button */}
-              <button
-                ref={createBtnRef}
-                type="button"
-                title={t("scenes.create")}
-                onClick={() => {
-                  if (!showCreateMenu && createBtnRef.current) {
-                    setCreateMenuPos(
-                      createBtnRef.current.getBoundingClientRect(),
-                    );
-                  }
-                  setShowCreateMenu((v) => !v);
-                }}
-                className="flex h-6 w-6 items-center justify-center rounded text-muted-foreground hover:bg-accent hover:text-foreground active:scale-[0.97] transition-transform duration-75"
-              >
-                <Plus className="h-3.5 w-3.5" />
-              </button>
-
-              {/* Undo */}
-              <button
-                type="button"
-                title={t("scenes.undo")}
-                disabled={!canUndo}
-                onClick={() =>
-                  useTreeHistoryStore
-                    .getState()
-                    .undo()
-                    .catch(() => {})
-                }
-                className="flex h-6 w-6 items-center justify-center rounded text-muted-foreground hover:bg-accent hover:text-foreground disabled:pointer-events-none disabled:opacity-30 active:scale-[0.97] transition-transform duration-75"
-              >
-                <Undo2 className="h-3.5 w-3.5" />
-              </button>
-
-              {/* Redo */}
-              <button
-                type="button"
-                title={t("scenes.redo")}
-                disabled={!canRedo}
-                onClick={() =>
-                  useTreeHistoryStore
-                    .getState()
-                    .redo()
-                    .catch(() => {})
-                }
-                className="flex h-6 w-6 items-center justify-center rounded text-muted-foreground hover:bg-accent hover:text-foreground disabled:pointer-events-none disabled:opacity-30 active:scale-[0.97] transition-transform duration-75"
-              >
-                <Redo2 className="h-3.5 w-3.5" />
-              </button>
-
-              {/* Expand/collapse toggle */}
-              <button
-                type="button"
-                title={t("scenes.expandCollapse")}
-                onClick={handleToggleAll}
-                className="flex h-6 w-6 items-center justify-center rounded text-muted-foreground hover:bg-accent hover:text-foreground active:scale-[0.97] transition-transform duration-75"
-              >
-                <ChevronsUpDown className="h-3.5 w-3.5" />
-              </button>
-
-              {/* Panel menu */}
-              <button
-                ref={panelMenuBtnRef}
-                type="button"
-                title={t("scenes.panelMenu")}
-                onClick={() => {
-                  if (!showPanelMenu && panelMenuBtnRef.current) {
-                    setPanelMenuPos(
-                      panelMenuBtnRef.current.getBoundingClientRect(),
-                    );
-                  }
-                  setShowPanelMenu((v) => !v);
-                }}
-                className={cn(
-                  "flex h-6 w-6 items-center justify-center rounded text-muted-foreground hover:bg-accent hover:text-foreground active:scale-[0.97] transition-transform duration-75",
-                  showPanelMenu && "bg-accent text-foreground",
-                )}
-              >
-                <MoreHorizontal className="h-3.5 w-3.5" />
-              </button>
-            </div>
-          </div>
-
-          {/* Filter input */}
-          <div className="flex-shrink-0 border-b border-border px-2 py-1">
-            <input
-              ref={filterRef}
-              type="text"
-              value={filterQuery}
-              onChange={(e) => setFilterQuery(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Escape") setFilterQuery("");
-              }}
-              placeholder={t("scenes.filterPlaceholder")}
-              className="w-full rounded border border-border bg-background px-2 py-0.5 text-xs text-foreground placeholder:text-muted-foreground/60 focus:outline-none focus:ring-1 focus:ring-ring"
-            />
-          </div>
-
-          {/* Active filter chips */}
-          {(statusFilter || labelFilter.length > 0) && (
-            <div className="flex-shrink-0 flex flex-wrap items-center gap-1 border-b border-border px-2 py-1">
-              {statusFilter && (
-                <button
-                  type="button"
-                  onClick={() => setStatusFilter(null)}
-                  title={t("scenes.removeFilter")}
-                  className="flex items-center gap-1 rounded-full border border-border bg-accent/50 px-1.5 py-0.5 text-[10px] text-foreground hover:bg-accent"
-                >
-                  <StatusDot status={statusFilter} />
-                  <span>
-                    {statusFilter.charAt(0).toUpperCase() +
-                      statusFilter.slice(1)}
-                  </span>
-                  <X className="h-2.5 w-2.5" />
-                </button>
-              )}
-              {labelFilter.map((id) => {
-                const label = allLabels.find((l) => l.id === id);
-                if (!label) return null;
-                const color = resolveLabelColor(label.color);
-                return (
-                  <button
-                    key={id}
-                    type="button"
-                    onClick={() => toggleLabelFilter(id)}
-                    title={t("scenes.removeFilter")}
-                    className="flex items-center gap-1 rounded-full border px-1.5 py-0.5 text-[10px]"
-                    style={{
-                      borderColor: color,
-                      backgroundColor: `${color}22`,
-                      color,
-                    }}
-                  >
-                    <span
-                      className="h-2 w-2 rounded-full"
-                      style={{ backgroundColor: color }}
-                    />
-                    <span className="truncate max-w-[100px]">{label.name}</span>
-                    <X className="h-2.5 w-2.5" />
-                  </button>
+          <ScenesToolbar
+            canUndo={canUndo}
+            canRedo={canRedo}
+            showPanelMenu={showPanelMenu}
+            createBtnRef={createBtnRef}
+            panelMenuBtnRef={panelMenuBtnRef}
+            onOpenCreateMenu={() => {
+              if (!showCreateMenu && createBtnRef.current) {
+                setCreateMenuPos(createBtnRef.current.getBoundingClientRect());
+              }
+              setShowCreateMenu((v) => !v);
+            }}
+            onOpenPanelMenu={() => {
+              if (!showPanelMenu && panelMenuBtnRef.current) {
+                setPanelMenuPos(
+                  panelMenuBtnRef.current.getBoundingClientRect(),
                 );
-              })}
-              <button
-                type="button"
-                onClick={() => {
-                  setStatusFilter(null);
-                  clearLabelFilter();
-                }}
-                className="ml-auto text-[10px] text-primary hover:underline"
-              >
-                {t("scenes.clearFilters")}
-              </button>
-            </div>
-          )}
+              }
+              setShowPanelMenu((v) => !v);
+            }}
+            onToggleAll={handleToggleAll}
+          />
+          <ScenesFilterBar
+            filterRef={filterRef}
+            filterQuery={filterQuery}
+            setFilterQuery={setFilterQuery}
+            statusFilter={statusFilter}
+            setStatusFilter={setStatusFilter}
+            labelFilter={labelFilter}
+            toggleLabelFilter={toggleLabelFilter}
+            clearLabelFilter={clearLabelFilter}
+            allLabels={allLabels}
+          />
 
           {/* Tree */}
           <div
@@ -922,58 +414,14 @@ export function ScenesPanel() {
           )}
 
           {deleteConfirm && (
-            <div className="absolute inset-0 z-50 flex items-center justify-center bg-background/80">
-              <div className="rounded-lg border border-border bg-popover p-4 shadow-xl w-72">
-                <p className="text-sm font-medium mb-1">
-                  {t("scenes.deleteConfirmTitle")}
-                </p>
-                <p className="text-xs text-muted-foreground mb-4">
-                  {t("scenes.deleteConfirmBody", {
-                    count: (() => {
-                      function collectAll(id: string): string[] {
-                        return [
-                          id,
-                          ...(childMap[id] ?? []).flatMap(collectAll),
-                        ];
-                      }
-                      return deleteConfirm.flatMap(collectAll).filter((id) => {
-                        const node = nodeMap[id];
-                        if (!node || node.nodeType === "folder") return false;
-                        return (charCounts[id] ?? 0) > 0 || !!node.synopsis;
-                      }).length;
-                    })(),
-                  })}
-                </p>
-                <div className="flex gap-2 justify-end">
-                  <button
-                    type="button"
-                    className="rounded px-3 py-1 text-xs border border-border hover:bg-accent"
-                    onClick={() => setDeleteConfirm(null)}
-                  >
-                    {t("common.cancel")}
-                  </button>
-                  <button
-                    type="button"
-                    className="rounded px-3 py-1 text-xs bg-destructive text-destructive-foreground hover:bg-destructive/90"
-                    onClick={() => {
-                      const ids = deleteConfirm;
-                      setDeleteConfirm(null);
-                      ids
-                        .reduce(
-                          (p, id) =>
-                            p.then(() =>
-                              useTreeStore.getState().deleteNode(id),
-                            ),
-                          Promise.resolve(),
-                        )
-                        .catch(() => {});
-                    }}
-                  >
-                    {t("common.deleteConfirm")}
-                  </button>
-                </div>
-              </div>
-            </div>
+            <DeleteConfirmDialog
+              ids={deleteConfirm}
+              childMap={childMap}
+              nodeMap={nodeMap}
+              charCounts={charCounts}
+              onCancel={() => setDeleteConfirm(null)}
+              onConfirm={() => setDeleteConfirm(null)}
+            />
           )}
         </div>
 
