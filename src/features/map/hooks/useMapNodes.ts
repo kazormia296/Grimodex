@@ -29,6 +29,15 @@ export function corkRotation(id: string): number {
   return ((hash % 100) / 100) * 1.0 - 0.5;
 }
 
+// Deterministic rotation for sticky notes (±2.5deg) — skeuomorphic Post-It feel
+export function stickyRotation(id: string): number {
+  let hash = 0;
+  for (let i = 0; i < id.length; i++) {
+    hash = ((hash << 5) - hash + id.charCodeAt(i)) | 0;
+  }
+  return ((Math.abs(hash) % 1000) / 1000) * 5 - 2.5;
+}
+
 interface UseMapNodesInput {
   boardId: string | null;
   positions: MapNodePositionRecord[];
@@ -331,6 +340,7 @@ export function useMapNodes({
                 color: st.color,
                 useTipTap,
                 colorBy,
+                rotation: stickyRotation(st.id),
                 onUpdate: async (updates: {
                   title?: string;
                   body?: string;

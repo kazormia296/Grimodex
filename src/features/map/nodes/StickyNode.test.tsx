@@ -192,10 +192,13 @@ describe("StickyNode — Post-It デザイン (Phase 1)", () => {
 
   it("ResizeObserver が height >= 110 を報告すると data-glue が top に切替わる", () => {
     let roCallback: ResizeObserverCallback | undefined;
-    const MockResizeObserver = vi.fn((cb: ResizeObserverCallback) => {
-      roCallback = cb;
-      return { observe: vi.fn(), disconnect: vi.fn() };
-    });
+    class MockResizeObserver {
+      constructor(cb: ResizeObserverCallback) {
+        roCallback = cb;
+      }
+      observe = vi.fn();
+      disconnect = vi.fn();
+    }
     vi.stubGlobal("ResizeObserver", MockResizeObserver);
 
     const { container } = render(<StickyNode {...makeProps()} />);
@@ -213,10 +216,13 @@ describe("StickyNode — Post-It デザイン (Phase 1)", () => {
 
   it("ResizeObserver height が 90 以下に戻ると data-glue が left に戻る（ヒステリシス）", () => {
     let roCallback: ResizeObserverCallback | undefined;
-    const MockResizeObserver = vi.fn((cb: ResizeObserverCallback) => {
-      roCallback = cb;
-      return { observe: vi.fn(), disconnect: vi.fn() };
-    });
+    class MockResizeObserver {
+      constructor(cb: ResizeObserverCallback) {
+        roCallback = cb;
+      }
+      observe = vi.fn();
+      disconnect = vi.fn();
+    }
     vi.stubGlobal("ResizeObserver", MockResizeObserver);
 
     const { container } = render(<StickyNode {...makeProps()} />);
@@ -250,10 +256,13 @@ describe("StickyNode — Post-It デザイン (Phase 1)", () => {
 
   it("height が 91–109 の範囲では切替わらない（ヒステリシスのデッドバンド）", () => {
     let roCallback: ResizeObserverCallback | undefined;
-    const MockResizeObserver = vi.fn((cb: ResizeObserverCallback) => {
-      roCallback = cb;
-      return { observe: vi.fn(), disconnect: vi.fn() };
-    });
+    class MockResizeObserver {
+      constructor(cb: ResizeObserverCallback) {
+        roCallback = cb;
+      }
+      observe = vi.fn();
+      disconnect = vi.fn();
+    }
     vi.stubGlobal("ResizeObserver", MockResizeObserver);
 
     const { container } = render(<StickyNode {...makeProps()} />);

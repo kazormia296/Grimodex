@@ -73,8 +73,8 @@ export const AIBranchNode = memo(function AIBranchNode({
         }
         style={{
           width: 220,
-          background: "#FEF9C3",
-          border: `2px solid ${selected ? "#534AB7" : "#F59E0B"}`,
+          background: "#DBEAFE",
+          border: `2px solid ${selected ? "#534AB7" : "#2563EB"}`,
           borderRadius: 6,
           padding: "6px 10px",
           boxShadow: selected
@@ -91,7 +91,7 @@ export const AIBranchNode = memo(function AIBranchNode({
             display: "flex",
             alignItems: "center",
             gap: 5,
-            borderBottom: "1px solid #FDE68A",
+            borderBottom: "1px solid #BFDBFE",
             paddingBottom: 4,
             marginBottom: 4,
           }}
@@ -101,7 +101,7 @@ export const AIBranchNode = memo(function AIBranchNode({
             style={{
               fontWeight: 600,
               fontSize: 11,
-              color: "#92400E",
+              color: "#1E40AF",
               flex: 1,
               overflow: "hidden",
               textOverflow: "ellipsis",
@@ -115,7 +115,7 @@ export const AIBranchNode = memo(function AIBranchNode({
           {!hasSession && (
             <span
               title="Chatセッションが削除されました"
-              style={{ fontSize: 10, color: "#D97706" }}
+              style={{ fontSize: 10, color: "#3B82F6" }}
             >
               ⚠
             </span>
@@ -124,7 +124,7 @@ export const AIBranchNode = memo(function AIBranchNode({
         <div
           style={{
             fontSize: 10,
-            color: "#78350F",
+            color: "#1E3A8A",
             opacity: 0.7,
             display: "flex",
             gap: 6,
@@ -135,11 +135,11 @@ export const AIBranchNode = memo(function AIBranchNode({
           {count > 0 && (
             <span
               style={{
-                background: "#FDE68A",
+                background: "#BFDBFE",
                 borderRadius: 8,
                 padding: "1px 6px",
                 fontSize: 10,
-                color: "#92400E",
+                color: "#1E40AF",
               }}
             >
               {count} 枚

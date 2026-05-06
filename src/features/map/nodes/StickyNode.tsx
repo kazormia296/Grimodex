@@ -18,6 +18,7 @@ export interface StickyNodeData {
   color: StickyColor;
   useTipTap: boolean;
   colorBy?: string;
+  rotation?: number;
   onUpdate?: (updates: {
     title?: string;
     body?: string;
@@ -26,17 +27,6 @@ export interface StickyNodeData {
   }) => Promise<void>;
   [key: string]: unknown;
 }
-
-const STICKY_BG: Record<StickyColor, string> = {
-  yellow: "#FEF9C3",
-  orange: "#FED7AA",
-  pink: "#FCE7F3",
-  green: "#DCFCE7",
-  blue: "#DBEAFE",
-  purple: "#EDE9FE",
-  gray: "#F3F4F6",
-  white: "#FFFFFF",
-};
 
 const STICKY_BORDER: Record<StickyColor, string> = {
   yellow: "#CA8A04",
@@ -119,13 +109,16 @@ export const StickyNode = memo(function StickyNode({
   selected,
 }: NodeProps) {
   const d = data as StickyNodeData;
+  const rotation = d.rotation ?? 0;
 
   const [editing, setEditing] = useState(false);
   const [localTitle, setLocalTitle] = useState(d.title);
   const [localColor, setLocalColor] = useState<StickyColor>(d.color);
   const [showColorPicker, setShowColorPicker] = useState(false);
+  const [glueOrient, setGlueOrient] = useState<"left" | "top">("left");
   const latestBodyRef = useRef<string>(d.body);
   const titleRef = useRef<string>(d.title);
+  const measureRef = useRef<HTMLDivElement>(null);
 
   // Sync from parent when not editing
   useEffect(() => {
@@ -148,7 +141,23 @@ export const StickyNode = memo(function StickyNode({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const bg = STICKY_BG[localColor] ?? STICKY_BG.yellow;
+  // ResizeObserver: switch glue side based on content height with hysteresis
+  // left→top at >= 110px, top→left at <= 90px (dead band avoids oscillation)
+  useEffect(() => {
+    const el = measureRef.current;
+    if (!el) return;
+    const ro = new ResizeObserver(([entry]) => {
+      const h = entry.contentRect.height;
+      setGlueOrient((prev) => {
+        if (prev === "left" && h >= 110) return "top";
+        if (prev === "top" && h <= 90) return "left";
+        return prev;
+      });
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+
   const borderColor =
     d.colorBy === "status"
       ? "var(--border)"
@@ -185,19 +194,21 @@ export const StickyNode = memo(function StickyNode({
     <div style={{ position: "relative" }}>
       <Handle type="target" position={Position.Left} className="map-handle" />
 
+      {/* sticky-paper: rotation + Post-It visual. Handles live outside this div. */}
       <div
+        data-testid="sticky-paper"
+        className="sticky-paper"
+        data-color={localColor}
+        data-glue={glueOrient}
         style={{
+          transform: `rotate(${rotation}deg)`,
           width: 240,
           minHeight: 80,
           maxHeight: editing ? 600 : 300,
           overflow: editing ? "auto" : "hidden",
-          background: bg,
-          border: `2px solid ${selected ? "#534AB7" : borderColor}`,
-          borderRadius: 6,
-          padding: "6px 10px 10px",
-          boxShadow: selected
-            ? "0 0 0 2px rgba(83,74,183,0.3)"
-            : "0 1px 4px rgba(0,0,0,0.12)",
+          border: `1.5px solid ${selected ? "#534AB7" : borderColor}`,
+          outline: selected ? "2px solid rgba(83,74,183,0.3)" : "none",
+          outlineOffset: "1px",
           cursor: editing ? "text" : "default",
           userSelect: editing ? "text" : "none",
         }}
@@ -208,121 +219,131 @@ export const StickyNode = memo(function StickyNode({
           }
         }}
       >
-        {/* Header row: title + color button */}
-        <div
-          style={{
-            display: "flex",
-            alignItems: "center",
-            gap: 4,
-            marginBottom: 4,
-          }}
-        >
-          <input
-            value={localTitle}
-            placeholder="タイトル"
-            onChange={(e) => handleTitleChange(e.target.value)}
-            onPointerDown={(e) => e.stopPropagation()}
-            onKeyDown={(e) => {
-              if (e.key === "Escape") {
-                e.preventDefault();
-                exitEditing();
-              }
-            }}
-            style={{
-              flex: 1,
-              border: "none",
-              outline: "none",
-              background: "transparent",
-              fontSize: 12,
-              fontWeight: 600,
-              color: "rgba(0,0,0,0.75)",
-              padding: 0,
-              cursor: "text",
-              minWidth: 0,
-            }}
-          />
-          {/* Color picker toggle */}
-          <button
-            onPointerDown={(e) => e.stopPropagation()}
-            onClick={(e) => {
-              e.stopPropagation();
-              setShowColorPicker((v) => !v);
-            }}
-            style={{
-              width: 16,
-              height: 16,
-              borderRadius: "50%",
-              border: "1.5px solid rgba(0,0,0,0.2)",
-              background: bg,
-              cursor: "pointer",
-              flexShrink: 0,
-              padding: 0,
-            }}
-            title="色を変更"
-          />
-        </div>
+        {/* Folded corner — hidden in Phase 1, shown in Phase 2 via [data-old=true] CSS */}
+        <div className="sticky-corner" aria-hidden />
 
-        {/* Color palette */}
-        {showColorPicker && (
+        {/* Content area measured by ResizeObserver */}
+        <div
+          ref={measureRef}
+          data-testid="sticky-content"
+          className="sticky-content"
+        >
+          {/* Header row: title + color button */}
           <div
-            onPointerDown={(e) => e.stopPropagation()}
             style={{
               display: "flex",
-              flexWrap: "wrap",
+              alignItems: "center",
               gap: 4,
-              marginBottom: 6,
-              padding: "4px 0",
-              borderBottom: "1px solid rgba(0,0,0,0.08)",
+              marginBottom: 4,
             }}
           >
-            {COLOR_KEYS.map((c) => (
-              <button
-                key={c}
-                onClick={() => handleColorChange(c)}
-                style={{
-                  width: 20,
-                  height: 20,
-                  borderRadius: "50%",
-                  border:
-                    c === localColor
-                      ? "2px solid #534AB7"
-                      : `1.5px solid ${STICKY_BORDER[c]}`,
-                  background: STICKY_BG[c],
-                  cursor: "pointer",
-                  padding: 0,
-                }}
-                title={c}
-              />
-            ))}
+            <input
+              value={localTitle}
+              placeholder="タイトル"
+              onChange={(e) => handleTitleChange(e.target.value)}
+              onPointerDown={(e) => e.stopPropagation()}
+              onKeyDown={(e) => {
+                if (e.key === "Escape") {
+                  e.preventDefault();
+                  exitEditing();
+                }
+              }}
+              style={{
+                flex: 1,
+                border: "none",
+                outline: "none",
+                background: "transparent",
+                fontSize: 12,
+                fontWeight: 600,
+                color: "rgba(0,0,0,0.75)",
+                padding: 0,
+                cursor: "text",
+                minWidth: 0,
+              }}
+            />
+            {/* Color picker toggle */}
+            <button
+              onPointerDown={(e) => e.stopPropagation()}
+              onClick={(e) => {
+                e.stopPropagation();
+                setShowColorPicker((v) => !v);
+              }}
+              style={{
+                width: 16,
+                height: 16,
+                borderRadius: "50%",
+                border: "1.5px solid rgba(0,0,0,0.2)",
+                background: `var(--sticky-bg-${localColor}, #FEF9C3)`,
+                cursor: "pointer",
+                flexShrink: 0,
+                padding: 0,
+              }}
+              title="色を変更"
+            />
           </div>
-        )}
 
-        {/* Body */}
-        {editing && d.useTipTap ? (
-          <StickyBodyEditor
-            body={d.body}
-            onContentChange={(json) => {
-              latestBodyRef.current = json;
-            }}
-            onEscape={exitEditing}
-          />
-        ) : (
-          <div
-            style={{
-              fontSize: 12,
-              lineHeight: 1.5,
-              color: "rgba(0,0,0,0.65)",
-              whiteSpace: "pre-wrap",
-              wordBreak: "break-word",
-              overflow: "hidden",
-              display: "-webkit-box",
-              WebkitLineClamp: 8,
-              WebkitBoxOrient: "vertical",
-            }}
-          >
-            {d.previewText || (localTitle ? "" : "（空）")}
-          </div>
-        )}
+          {/* Color palette */}
+          {showColorPicker && (
+            <div
+              onPointerDown={(e) => e.stopPropagation()}
+              style={{
+                display: "flex",
+                flexWrap: "wrap",
+                gap: 4,
+                marginBottom: 6,
+                padding: "4px 0",
+                borderBottom: "1px solid rgba(0,0,0,0.08)",
+              }}
+            >
+              {COLOR_KEYS.map((c) => (
+                <button
+                  key={c}
+                  onClick={() => handleColorChange(c)}
+                  style={{
+                    width: 20,
+                    height: 20,
+                    borderRadius: "50%",
+                    border:
+                      c === localColor
+                        ? "2px solid #534AB7"
+                        : `1.5px solid ${STICKY_BORDER[c]}`,
+                    background: `var(--sticky-bg-${c}, #FEF9C3)`,
+                    cursor: "pointer",
+                    padding: 0,
+                  }}
+                  title={c}
+                />
+              ))}
+            </div>
+          )}
+
+          {/* Body */}
+          {editing && d.useTipTap ? (
+            <StickyBodyEditor
+              body={d.body}
+              onContentChange={(json) => {
+                latestBodyRef.current = json;
+              }}
+              onEscape={exitEditing}
+            />
+          ) : (
+            <div
+              style={{
+                fontSize: 12,
+                lineHeight: 1.5,
+                color: "rgba(0,0,0,0.65)",
+                whiteSpace: "pre-wrap",
+                wordBreak: "break-word",
+                overflow: "hidden",
+                display: "-webkit-box",
+                WebkitLineClamp: 8,
+                WebkitBoxOrient: "vertical",
+              }}
+            >
+              {d.previewText || (localTitle ? "" : "（空）")}
+            </div>
+          )}
+        </div>
       </div>
 
       {/* Click-away to exit editing */}
