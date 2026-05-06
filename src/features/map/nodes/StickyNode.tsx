@@ -22,6 +22,8 @@ export interface StickyNodeData {
   colorBy?: string;
   rotation?: number;
   isOld?: boolean;
+  isDeleting?: boolean;
+  onExitComplete?: (id: string) => void;
   onUpdate?: (updates: {
     title?: string;
     body?: string;
@@ -42,19 +44,30 @@ const STICKY_BORDER: Record<StickyColor, string> = {
   white: "#D1D5DB",
 };
 
+const STICKY_ANIMATE = {
+  opacity: 1,
+  y: 0,
+  rotateX: 0,
+  transition: { duration: DURATIONS.slow, ease: EASINGS.easeOut },
+} as const;
+
+const STICKY_EXIT = {
+  opacity: 0,
+  y: -100,
+  rotate: -16,
+  transition: { duration: DURATIONS.slow, ease: EASINGS.easeOut },
+} as const;
+
 const STICKY_ENTER_VARIANTS = {
   initial: { opacity: 0, y: -14, rotateX: -24 },
-  animate: {
-    opacity: 1,
-    y: 0,
-    rotateX: 0,
-    transition: { duration: DURATIONS.slow, ease: EASINGS.easeOut },
-  },
+  animate: STICKY_ANIMATE,
+  exit: STICKY_EXIT,
 } as const;
 
 const STICKY_REDUCED_VARIANTS = {
   initial: { opacity: 1, y: 0, rotateX: 0 },
-  animate: { opacity: 1, y: 0, rotateX: 0 },
+  animate: STICKY_ANIMATE,
+  exit: STICKY_EXIT,
 } as const;
 
 const COLOR_KEYS: StickyColor[] = [
@@ -129,10 +142,12 @@ export const StickyNode = memo(function StickyNode({
   const d = data as StickyNodeData;
   const rotation = d.rotation ?? 0;
   const isOld = d.isOld ?? false;
+  const isDeleting = d.isDeleting ?? false;
   const reducedMotion = useReducedMotion();
   const enterVariants = reducedMotion
     ? STICKY_REDUCED_VARIANTS
     : STICKY_ENTER_VARIANTS;
+  const exitFiredRef = useRef(false);
 
   const [editing, setEditing] = useState(false);
   const [localTitle, setLocalTitle] = useState(d.title);
@@ -217,12 +232,18 @@ export const StickyNode = memo(function StickyNode({
     <div style={{ position: "relative" }}>
       <Handle type="target" position={Position.Left} className="map-handle" />
 
-      {/* motion wrapper: enter animation only. transformOrigin at top so it peels down. */}
+      {/* motion wrapper: enter/exit animation. transformOrigin switches on delete. */}
       <motion.div
         data-testid="sticky-motion"
         initial={enterVariants.initial}
-        animate={enterVariants.animate}
-        style={{ transformOrigin: "50% 0%" }}
+        animate={isDeleting ? enterVariants.exit : enterVariants.animate}
+        style={{ transformOrigin: isDeleting ? "100% 100%" : "50% 0%" }}
+        onAnimationComplete={(def) => {
+          if (def === "exit" && !exitFiredRef.current) {
+            exitFiredRef.current = true;
+            d.onExitComplete?.(d.id);
+          }
+        }}
       >
         {/* sticky-paper: rotation + Post-It visual. Handles live outside this div. */}
         <div

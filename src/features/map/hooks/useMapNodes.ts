@@ -63,6 +63,8 @@ interface UseMapNodesInput {
   setActiveScene: (id: string) => void;
   groupDraggingRef: React.MutableRefObject<Set<string>>;
   persistingRef: React.MutableRefObject<Set<string>>;
+  deletingStickyIds?: Set<string>;
+  onStickyExitComplete?: (id: string) => void;
 }
 
 export function useMapNodes({
@@ -90,6 +92,8 @@ export function useMapNodes({
   setActiveScene,
   groupDraggingRef,
   persistingRef,
+  deletingStickyIds,
+  onStickyExitComplete,
 }: UseMapNodesInput) {
   // Session-persistent isOld set: once a sticky is "old", it stays old for the session.
   // This prevents the folded corner from flickering when count oscillates near the threshold.
@@ -362,6 +366,8 @@ export function useMapNodes({
                 colorBy,
                 rotation: stickyRotation(st.id),
                 isOld: oldIds.has(st.id),
+                isDeleting: deletingStickyIds?.has(st.id) ?? false,
+                onExitComplete: onStickyExitComplete,
                 onUpdate: async (updates: {
                   title?: string;
                   body?: string;

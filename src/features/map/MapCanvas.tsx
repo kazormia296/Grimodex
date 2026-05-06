@@ -184,6 +184,9 @@ export function MapCanvas() {
   const [modeTransitionActive, setModeTransitionActive] = useState(false);
   const [forceLayoutRunning, setForceLayoutRunning] = useState(false);
   const [forceAlpha, setForceAlpha] = useState(1);
+  const [deletingStickyIds, setDeletingStickyIds] = useState<Set<string>>(
+    new Set(),
+  );
 
   const positionsRef = useRef(positions);
   positionsRef.current = positions;
@@ -258,6 +261,25 @@ export function MapCanvas() {
     }
   }, [show.derivedEdges, codexEntries]);
 
+  const onStickyExitComplete = useCallback(
+    async (stickyId: string) => {
+      // Guard: skip if already removed (double-delete protection)
+      setStickies((prev) => {
+        if (!prev.some((s) => s.id === stickyId)) return prev;
+        void deleteSticky(stickyId);
+        return prev.filter((s) => s.id !== stickyId);
+      });
+      setDeletingStickyIds((prev) => {
+        const next = new Set(prev);
+        next.delete(stickyId);
+        return next;
+      });
+      const pos = findPosByNodeId(positionsRef.current, `sticky:${stickyId}`);
+      if (pos) setPositions((prev) => prev.filter((p) => p.id !== pos.id));
+    },
+    [setStickies, setPositions],
+  );
+
   useMapNodes({
     boardId,
     positions,
@@ -283,6 +305,8 @@ export function MapCanvas() {
     setActiveScene,
     groupDraggingRef,
     persistingRef,
+    deletingStickyIds,
+    onStickyExitComplete,
   });
 
   const handleUserEdgeLabelSave = useCallback(
@@ -414,10 +438,10 @@ export function MapCanvas() {
         } else if (node.id.startsWith("codex:")) {
           await deleteCodexEntry(node.id.slice("codex:".length));
         } else if (node.id.startsWith("sticky:")) {
-          await deleteSticky(node.id.slice("sticky:".length));
-          setStickies((prev) =>
-            prev.filter((s) => s.id !== node.id.slice("sticky:".length)),
-          );
+          // 2-phase delete: trigger exit animation first; actual DB delete
+          // happens in onStickyExitComplete after the animation completes.
+          const stickyId = node.id.slice("sticky:".length);
+          setDeletingStickyIds((prev) => new Set(prev).add(stickyId));
         } else if (node.id.startsWith("ai_branch:")) {
           await deleteAiBranch(node.id.slice("ai_branch:".length));
         } else if (node.id.startsWith("snippet:")) {
@@ -425,22 +449,14 @@ export function MapCanvas() {
           const pos = findPosByNodeId(positionsRef.current, node.id);
           if (pos) await deleteNodePosition(pos.id);
         }
-        if (
-          !node.id.startsWith("snippet:") &&
-          !node.id.startsWith("sticky:") &&
-          !node.id.startsWith("ai_branch:")
-        ) {
-          const pos = findPosByNodeId(positionsRef.current, node.id);
-          if (pos) {
-            setPositions((prev) => prev.filter((p) => p.id !== pos.id));
-          }
-        } else {
+        // sticky position is cleaned up by onStickyExitComplete after animation
+        if (!node.id.startsWith("sticky:")) {
           const pos = findPosByNodeId(positionsRef.current, node.id);
           if (pos) setPositions((prev) => prev.filter((p) => p.id !== pos.id));
         }
       }
     },
-    [setPositions, setStickies],
+    [setPositions],
   );
 
   const onDeleteSelected = useCallback(async () => {
