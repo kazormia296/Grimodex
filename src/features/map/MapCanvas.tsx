@@ -195,6 +195,7 @@ export function MapCanvas() {
     vp: { x: number; y: number; zoom: number };
     count: number;
   } | null>(null);
+  const wrapperRef = useRef<HTMLDivElement>(null);
 
   const TRANSITION_MS = DURATIONS.slow * 1000 + 50;
 
@@ -576,10 +577,13 @@ export function MapCanvas() {
       spawnRef.current = { vp: { x: vp.x, y: vp.y, zoom: vp.zoom }, count: 0 };
     }
     const idx = spawnRef.current!.count++;
-    const cx = (-vp.x + window.innerWidth / 2) / vp.zoom;
-    const cy = (-vp.y + window.innerHeight / 2) / vp.zoom;
-    return { x: cx + idx * 24, y: cy + idx * 24 };
-  }, [getViewport]);
+    const rect = wrapperRef.current?.getBoundingClientRect();
+    const screenCenter = rect
+      ? { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 }
+      : { x: window.innerWidth / 2, y: window.innerHeight / 2 };
+    const center = screenToFlowPosition(screenCenter);
+    return { x: center.x + idx * 24, y: center.y + idx * 24 };
+  }, [getViewport, screenToFlowPosition]);
 
   const handleAddSticky = useCallback(
     async (flowPos?: { x: number; y: number }) => {
@@ -713,6 +717,7 @@ export function MapCanvas() {
 
   return (
     <div
+      ref={wrapperRef}
       className={isCorkboard ? "map-corkboard" : undefined}
       style={{ width: "100%", height: "100%", position: "relative" }}
       onKeyDown={onKeyDown}
