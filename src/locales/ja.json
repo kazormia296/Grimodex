@@ -1278,6 +1278,13 @@
       "pinCodex": "Codexをピン留め"
     }
   },
+  "commandPalette": {
+    "placeholder": "コマンドを検索…",
+    "noMatch": "一致するコマンドなし",
+    "setSceneStatus": "シーンのステータスを変更",
+    "setSceneStatusDescription": "現在開いているシーンのステータスを切り替える",
+    "noActiveScene": "アクティブなシーンがありません"
+  },
   "chatCommands": {
     "continue": {
       "description": "現在のシーンの続きを生成"

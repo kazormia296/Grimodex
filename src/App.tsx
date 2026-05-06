@@ -48,6 +48,7 @@ import { ForeshadowPanel } from "@/features/foreshadow/ForeshadowPanel";
 import { GridPanel } from "@/features/grid/GridPanel";
 import { MatrixPanel } from "@/features/matrix/MatrixPanel";
 import { GlobalSearchDialog } from "@/features/search/GlobalSearchDialog";
+import { CommandPalette } from "@/features/commandPalette/CommandPalette";
 import { useState } from "react";
 import { Settings, FileOutput } from "lucide-react";
 import { ExportDialog } from "@/features/export/ExportDialog";
@@ -259,6 +260,7 @@ function EditorScreen() {
     useState<SettingsCategory>("project");
   const [showExport, setShowExport] = useState(false);
   const [showSearch, setShowSearch] = useState(false);
+  const [showCommandPalette, setShowCommandPalette] = useState(false);
   const { globalSettings, updateGlobalSettings } = useWorkspaceStore();
   const [showWelcome, setShowWelcome] = useState(
     () => !globalSettings?.hasSeenWelcome,
@@ -444,6 +446,13 @@ function EditorScreen() {
         return;
       }
 
+      // Ctrl+Shift+P: コマンドパレット
+      if (e.ctrlKey && e.shiftKey && e.key.toLowerCase() === "p") {
+        e.preventDefault();
+        setShowCommandPalette((v) => !v);
+        return;
+      }
+
       if (!e.ctrlKey || !e.altKey) return;
 
       const keyMap: Record<string, PanelId | "settings"> = {
@@ -578,6 +587,9 @@ function EditorScreen() {
       <ExportDialog open={showExport} onClose={() => setShowExport(false)} />
       {showSearch && (
         <GlobalSearchDialog onClose={() => setShowSearch(false)} />
+      )}
+      {showCommandPalette && (
+        <CommandPalette onClose={() => setShowCommandPalette(false)} />
       )}
       <WelcomeDialog
         open={showWelcome}

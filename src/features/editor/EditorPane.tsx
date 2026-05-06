@@ -10,7 +10,6 @@ import type { ToolbarActions } from "@/features/editor/Toolbar";
 import { SceneMetaPanel } from "@/features/editor/SceneMetaPanel";
 import { useTreeStore } from "@/features/tree/treeStore";
 import {
-  loadSceneContent,
   loadSceneFull,
   savePlacedBeatPreviewOnly,
   saveSceneContent,
@@ -96,14 +95,12 @@ import {
 import { useSceneContentStore } from "@/features/editor/sceneContentStore";
 import { shouldAutoDraftTransition } from "@/features/editor/autoStatusTransition";
 import { shouldPromptSynopsis } from "@/features/editor/synopsisSuggestion";
+import { useSynopsisSuggestionStore } from "@/features/editor/synopsisSuggestionStore";
 import { getDocText } from "@/features/editor/RubyNode";
 import { useLinter } from "@/features/lint/useLinter";
 import { StatusBarIndicator } from "@/features/lint/StatusBarIndicator";
 import { useForeshadowNavStore } from "@/features/foreshadow/foreshadowNavStore";
-import { generateSynopsisFromContent } from "@/features/chat/chatApi";
 import { useChatStore } from "@/features/chat/chatStore";
-import { prosemirrorToText } from "@/lib/prosemirror";
-import { toast } from "sonner";
 import { debugLog, errorDetail } from "@/lib/debugLog";
 import i18next from "i18next";
 import type { SceneStatus } from "@/features/tree/treeStore";
@@ -399,40 +396,7 @@ export function EditorPane({
       .getState()
       .nodes.find((n) => n.id === nodeId)?.synopsis;
     if (shouldPromptSynopsis(prev, activeStatus, synopsis)) {
-      const id = nodeId;
-      toast(i18next.t("editor.status.synopsisEmpty"), {
-        description: i18next.t("editor.status.synopsisPrompt"),
-        duration: 10000,
-        action: {
-          label: "Generate",
-          onClick: async () => {
-            const node = useTreeStore.getState().nodes.find((n) => n.id === id);
-            if (!node) return;
-            try {
-              const rawContent = await loadSceneContent(id);
-              const content = prosemirrorToText(rawContent);
-              if (!content?.trim()) {
-                toast.warning(i18next.t("editor.status.emptySceneWarning"));
-                return;
-              }
-              const generated = await generateSynopsisFromContent(
-                node.title,
-                content,
-              );
-              await useTreeStore
-                .getState()
-                .updateSynopsis(id, generated.trim());
-              toast.success(i18next.t("editor.status.synopsisGenerated"));
-            } catch {
-              toast.error(i18next.t("editor.status.synopsisGenerateFailed"));
-            }
-          },
-        },
-        cancel: {
-          label: "Dismiss",
-          onClick: () => {},
-        },
-      });
+      useSynopsisSuggestionStore.getState().propose(nodeId);
     }
   }, [activeStatus, nodeId, isCodexMode, isSnippetMode]);
 

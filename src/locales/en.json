@@ -1274,6 +1274,13 @@
       "pinCodex": "Pin Codex entry"
     }
   },
+  "commandPalette": {
+    "placeholder": "Search commands…",
+    "noMatch": "No matching commands",
+    "setSceneStatus": "Set scene status",
+    "setSceneStatusDescription": "Change the status of the currently active scene",
+    "noActiveScene": "No active scene"
+  },
   "chatCommands": {
     "continue": {
       "description": "Generate continuation of the current scene"
