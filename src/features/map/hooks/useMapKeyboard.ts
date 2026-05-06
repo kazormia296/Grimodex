@@ -28,6 +28,7 @@ export function useMapKeyboard(opts: {
   setFrameDraftRect: (rect: Rect | null) => void;
   setFrameDraftScreenRect: (rect: Rect | null) => void;
   onDeleteSelected: () => void;
+  onAddSticky: () => void;
   fitView: () => void;
   zoomIn: () => void;
   zoomOut: () => void;
@@ -50,6 +51,7 @@ export function useMapKeyboard(opts: {
     setFrameDraftRect,
     setFrameDraftScreenRect,
     onDeleteSelected,
+    onAddSticky,
     fitView,
     zoomIn,
     zoomOut,
@@ -90,6 +92,12 @@ export function useMapKeyboard(opts: {
       }
 
       if (inInput) return;
+
+      // S: add sticky
+      if (e.key === "s" && !e.ctrlKey && !e.metaKey && !e.altKey) {
+        onAddSticky();
+        return;
+      }
 
       // Delete / Backspace: remove selected nodes (hide from board) and edges
       if (e.key === "Delete" || e.key === "Backspace") {
@@ -189,6 +197,7 @@ export function useMapKeyboard(opts: {
       setFrameDraftRect,
       setFrameDraftScreenRect,
       onDeleteSelected,
+      onAddSticky,
       fitView,
       zoomIn,
       zoomOut,

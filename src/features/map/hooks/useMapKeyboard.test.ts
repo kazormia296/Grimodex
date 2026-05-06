@@ -6,6 +6,7 @@ import { useMapKeyboard } from "./useMapKeyboard";
 function makeKeyEvent(
   key: string,
   opts: { ctrlKey?: boolean; metaKey?: boolean; altKey?: boolean } = {},
+  target: HTMLElement = document.createElement("div"),
 ): React.KeyboardEvent<HTMLDivElement> {
   return {
     key,
@@ -15,7 +16,7 @@ function makeKeyEvent(
     shiftKey: false,
     preventDefault: vi.fn(),
     stopPropagation: vi.fn(),
-    target: document.createElement("div"),
+    target,
   } as unknown as React.KeyboardEvent<HTMLDivElement>;
 }
 
@@ -48,6 +49,7 @@ function renderKeyboard(
     setFrameDraftRect: vi.fn(),
     setFrameDraftScreenRect: vi.fn(),
     onDeleteSelected: vi.fn(),
+    onAddSticky: vi.fn(),
     fitView: vi.fn(),
     zoomIn: vi.fn(),
     zoomOut: vi.fn(),
@@ -160,5 +162,24 @@ describe("useMapKeyboard — 新規ショートカット", () => {
     const { onKeyDown, mocks } = renderKeyboard();
     act(() => onKeyDown(makeKeyEvent("g", { ctrlKey: true })));
     expect(mocks.setGridSnap).toHaveBeenCalledWith(true);
+  });
+
+  it("S キーで onAddSticky が呼ばれる", () => {
+    const { onKeyDown, mocks } = renderKeyboard();
+    act(() => onKeyDown(makeKeyEvent("s")));
+    expect(mocks.onAddSticky).toHaveBeenCalledOnce();
+  });
+
+  it("Ctrl+S では onAddSticky が呼ばれない", () => {
+    const { onKeyDown, mocks } = renderKeyboard();
+    act(() => onKeyDown(makeKeyEvent("s", { ctrlKey: true })));
+    expect(mocks.onAddSticky).not.toHaveBeenCalled();
+  });
+
+  it("S キーは input フォーカス中には発火しない", () => {
+    const { onKeyDown, mocks } = renderKeyboard();
+    const input = document.createElement("input");
+    act(() => onKeyDown(makeKeyEvent("s", {}, input)));
+    expect(mocks.onAddSticky).not.toHaveBeenCalled();
   });
 });

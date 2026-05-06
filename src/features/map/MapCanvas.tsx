@@ -564,6 +564,9 @@ export function MapCanvas() {
     setFrameDraftRect,
     setFrameDraftScreenRect,
     onDeleteSelected,
+    onAddSticky: () => {
+      void handleAddSticky();
+    },
     fitView: () => fitView({ duration: 400 }),
     zoomIn: () => zoomIn({ duration: 200 }),
     zoomOut: () => zoomOut({ duration: 200 }),
@@ -881,7 +884,9 @@ export function MapCanvas() {
       <MapPalette
         paletteMode={paletteMode}
         onPaletteModeChange={setPaletteMode}
-        onAddSticky={handleAddSticky}
+        onAddSticky={() => {
+          void handleAddSticky();
+        }}
         onOpenPicker={setPickerType}
         onOpenAiBranch={handleOpenAiBranch}
       />
