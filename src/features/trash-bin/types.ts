@@ -32,9 +32,68 @@ export interface TextFragmentPayload {
   spans: TrashSpan[];
 }
 
-// 構造アイテム payload は Phase 4-5 で具体型を入れる。
-// Phase 1 では型枠だけ用意しておく。
-export type StructureItemPayload = Record<string, unknown>;
+// 設計書 §16.2: Scene 削除のスナップショット。
+// 復元時は新 ID を発行し、folderHintId が現存しない場合はルートに戻す。
+export interface ScenePayload {
+  originalId: string;
+  title: string;
+  body: string; // ProseMirror JSON を JSON.stringify したもの
+  /** unplacedBeatsDoc (JSON 配列) を生のまま保持 */
+  beats: string;
+  povCharacterId: string | null;
+  folderHintId: string | null;
+  folderHintName: string | null;
+  /** synopsis / status / storyTimeOrder / locationId 等の補助情報 */
+  metadata: {
+    synopsis: string | null;
+    status: string | null;
+    nodeType: "scene" | "folder" | "note";
+    locationId: string | null;
+    sortOrder: string;
+    storyTimeOrder: string | null;
+    storyTimeLabel: string | null;
+  };
+  charCount: number;
+}
+
+// 設計書 §16.3: CodexEntry 削除のスナップショット。
+// fields/links は schema に存在しないため Phase 4 では取り扱わない (空配列)。
+export interface CodexEntryPayload {
+  originalId: string;
+  name: string;
+  /** schema 上の type カラム (Codex 種別 slug) */
+  category: string;
+  body: string;
+  summary: string | null;
+  aliases: string | null; // schema は JSON 文字列で保持
+  excludedAliases: string | null;
+  icon: string | null;
+  notes: string | null;
+  contextMode: string;
+  childrenBudget: string;
+  parentId: string | null;
+  /** 設計書互換のため空配列で常に存在させる */
+  fields: never[];
+  links: never[];
+  imageRefs: never[];
+}
+
+// 設計書 §16.4: Snippet 削除のスナップショット。
+export interface SnippetPayload {
+  originalId: string;
+  title: string;
+  body: string;
+  /** schema の tagsCache (JSON 文字列) を生で保持 */
+  tags: string | null;
+  contentSource: string | null;
+  sceneId: string | null;
+}
+
+export type StructureItemPayload =
+  | ScenePayload
+  | CodexEntryPayload
+  | SnippetPayload
+  | Record<string, unknown>; // Phase 5: map-sticky / foreshadow / pin / grid-chapter
 
 export type TrashPayload = TextFragmentPayload | StructureItemPayload;
 

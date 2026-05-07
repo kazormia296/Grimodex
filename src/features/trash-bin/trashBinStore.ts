@@ -3,7 +3,10 @@ import { toast } from "sonner";
 import i18next from "i18next";
 import { debugLog, errorDetail } from "@/lib/debugLog";
 import * as trashApi from "./api";
-import { isInterestingTextFragment } from "./interestingness";
+import {
+  isInterestingStructureItem,
+  isInterestingTextFragment,
+} from "./interestingness";
 import type {
   PendingTrashItem,
   TextFragmentPayload,
@@ -169,7 +172,7 @@ async function flushPending(tempId: string): Promise<void> {
           (data.payload as TextFragmentPayload).text ?? "",
           (data.payload as TextFragmentPayload).spans ?? [],
         )
-      : false;
+      : isInterestingStructureItem(data.subKind, data.previewText);
 
   // 文字数は payload.text を Unicode コードポイントで数える
   const charCount =
