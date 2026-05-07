@@ -1,4 +1,4 @@
-import { useCallback } from "react";
+import { useCallback, useRef } from "react";
 import type {
   OnNodesChange,
   OnEdgesChange,
@@ -16,6 +16,7 @@ import {
 import type { MapNodePositionRecord } from "../types";
 import type { MapEdge, MapFrame } from "@/db/schema";
 import { useKeyedDebouncedCallback } from "@/lib/useDebounce";
+import { useGlobalHistoryStore } from "@/store/globalHistoryStore";
 
 interface UseMapPositionPersistenceInput {
   boardId: string | null;
@@ -60,7 +61,12 @@ export function useMapPositionPersistence({
   // preserve the live (post-drop) position from `prev` instead of falling
   // back to the stale computed position.
   const persistPosition = useCallback(
-    async (nodeId: string, x: number, y: number): Promise<void> => {
+    async (
+      nodeId: string,
+      x: number,
+      y: number,
+      startPos?: { x: number; y: number },
+    ): Promise<void> => {
       if (!boardId) return;
       persistingRef.current.add(nodeId);
       try {
@@ -193,8 +199,117 @@ export function useMapPositionPersistence({
         }
       } catch (err) {
         reportPersistError(err);
+        return;
       } finally {
         persistingRef.current.delete(nodeId);
+      }
+
+      if (
+        startPos &&
+        (startPos.x !== x || startPos.y !== y) &&
+        !useGlobalHistoryStore.getState().isReplaying
+      ) {
+        const captured = {
+          nodeId,
+          fromX: startPos.x,
+          fromY: startPos.y,
+          toX: x,
+          toY: y,
+        };
+        const moveTo = async (toX: number, toY: number) => {
+          if (!boardId) return;
+          if (captured.nodeId.startsWith("frame:")) {
+            const frameId = captured.nodeId.slice("frame:".length);
+            const frameNode = getNodes().find((n) => n.id === captured.nodeId);
+            const w = (frameNode?.style?.width as number) ?? 400;
+            const h = (frameNode?.style?.height as number) ?? 300;
+            await updateFrame(frameId, { x: toX, y: toY, width: w, height: h });
+            setFrames((prev) =>
+              prev.map((f) =>
+                f.id === frameId ? { ...f, x: toX, y: toY } : f,
+              ),
+            );
+            return;
+          }
+          // For entity-backed nodes, rebuild the upsert args from the prefix.
+          const [prefix, rawId] = captured.nodeId.split(":", 2);
+          if (!prefix || !rawId) return;
+          const args = (() => {
+            switch (prefix) {
+              case "scene":
+                return {
+                  boardId,
+                  nodeRefType: "scene" as const,
+                  treeNodeId: rawId,
+                  x: toX,
+                  y: toY,
+                };
+              case "codex":
+                return {
+                  boardId,
+                  nodeRefType: "codex" as const,
+                  codexEntryId: rawId,
+                  x: toX,
+                  y: toY,
+                };
+              case "note":
+                return {
+                  boardId,
+                  nodeRefType: "note" as const,
+                  treeNodeId: rawId,
+                  x: toX,
+                  y: toY,
+                };
+              case "snippet":
+                return {
+                  boardId,
+                  nodeRefType: "snippet" as const,
+                  snippetId: rawId,
+                  x: toX,
+                  y: toY,
+                };
+              case "sticky":
+                return {
+                  boardId,
+                  nodeRefType: "sticky" as const,
+                  stickyId: rawId,
+                  x: toX,
+                  y: toY,
+                };
+              case "ai_branch":
+                return {
+                  boardId,
+                  nodeRefType: "ai_branch" as const,
+                  aiBranchId: rawId,
+                  x: toX,
+                  y: toY,
+                };
+              default:
+                return null;
+            }
+          })();
+          if (!args) return;
+          const updated = await upsertNodePosition(args);
+          setPositions((prev) => {
+            const idx = prev.findIndex((p) => p.id === updated.id);
+            if (idx >= 0) {
+              const next = [...prev];
+              next[idx] = updated as MapNodePositionRecord;
+              return next;
+            }
+            return [...prev, updated as MapNodePositionRecord];
+          });
+        };
+        useGlobalHistoryStore.getState().push({
+          kind: "map",
+          label: "ノード移動",
+          async undo() {
+            await moveTo(captured.fromX, captured.fromY);
+          },
+          async redo() {
+            await moveTo(captured.toX, captured.toY);
+          },
+        });
       }
     },
     [boardId, mode, getNodes, setFrames, setPositions, persistingRef],
@@ -232,13 +347,42 @@ export function useMapPositionPersistence({
     identityKey,
   );
 
+  const dragStartPositionsRef = useRef(
+    new Map<string, { x: number; y: number }>(),
+  );
+
   const onNodesChange: OnNodesChange = useCallback(
     (changes: NodeChange[]) => {
-      setNodes((nds) => applyNodeChanges(changes, nds));
+      // Capture drag-start positions BEFORE applying the change so that the
+      // history entry's "from" matches the position at drag start, not after
+      // the first dragging:true event already nudged the node.
+      setNodes((nds) => {
+        for (const change of changes) {
+          if (change.type === "position" && change.dragging) {
+            if (!dragStartPositionsRef.current.has(change.id)) {
+              const prevNode = nds.find((n) => n.id === change.id);
+              if (prevNode) {
+                dragStartPositionsRef.current.set(change.id, {
+                  x: prevNode.position.x,
+                  y: prevNode.position.y,
+                });
+              }
+            }
+          }
+        }
+        return applyNodeChanges(changes, nds);
+      });
       for (const change of changes) {
         if (change.type === "position" && change.position && !change.dragging) {
+          const startPos = dragStartPositionsRef.current.get(change.id);
+          dragStartPositionsRef.current.delete(change.id);
           // persistPosition swallows its own errors, so no handler needed.
-          void persistPosition(change.id, change.position.x, change.position.y);
+          void persistPosition(
+            change.id,
+            change.position.x,
+            change.position.y,
+            startPos,
+          );
         }
         if (change.type === "dimensions" && change.dimensions) {
           persistFrameResize(
