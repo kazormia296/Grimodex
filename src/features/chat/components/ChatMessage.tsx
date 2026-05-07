@@ -116,7 +116,7 @@ export function ChatMessage({
     copyChatMessageWithAttribution(msg.content, msg.id, msg.model)
       .then(() => toast.success(t("chat.copied")))
       .catch(() => toast.error(t("chat.copyFailed")));
-  }, [msg.content, msg.id, msg.model]);
+  }, [msg.content, msg.id, msg.model, t]);
 
   const handleContextMenu = (e: React.MouseEvent) => {
     if (!showActions) return;

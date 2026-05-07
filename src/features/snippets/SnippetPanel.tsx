@@ -145,7 +145,7 @@ export function SnippetPanel() {
     } catch {
       // error toast shown by store
     }
-  }, [create]);
+  }, [create, t]);
 
   const handleKeyDown = useCallback(
     async (e: React.KeyboardEvent) => {
@@ -242,6 +242,7 @@ export function SnippetPanel() {
       create,
       search,
       incrementUsageCount,
+      t,
     ],
   );
 

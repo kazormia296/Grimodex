@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { Editor } from "@tiptap/react";
 import { useTranslation } from "react-i18next";
 import { motion, AnimatePresence } from "motion/react";
@@ -26,8 +26,14 @@ export function InlineAIPalette({
   onClose,
   onSubmit,
 }: InlineAIPaletteProps) {
-  const { t } = useTranslation();
-  const commands = getInlineAiCommands();
+  const { t, i18n } = useTranslation();
+  // Re-translate when locale changes. getInlineAiCommands() reads from i18next.t
+  // directly so eslint can't see the dependency — depend on language explicitly.
+  const commands = useMemo(
+    () => getInlineAiCommands(),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [i18n.language],
+  );
   const [prompt, setPrompt] = useState("");
   const [selectedCommand, setSelectedCommand] = useState<InlineAiCommand>(
     preselectedCommand ?? commands[0],
@@ -41,7 +47,7 @@ export function InlineAIPalette({
       setSelectedCommand(preselectedCommand ?? commands[0]);
       setTimeout(() => inputRef.current?.focus(), 0);
     }
-  }, [open, preselectedCommand]);
+  }, [open, preselectedCommand, commands]);
 
   useEffect(() => {
     if (!open) return;

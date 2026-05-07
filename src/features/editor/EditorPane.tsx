@@ -534,7 +534,13 @@ export function EditorPane({
         );
       }
     }
-  }, [isCodexMode, coreSave, shouldAutoRevision, recordAutoRevision]);
+  }, [
+    isCodexMode,
+    isSnippetMode,
+    coreSave,
+    shouldAutoRevision,
+    recordAutoRevision,
+  ]);
 
   // Register this pane's save function so the tab context menu can trigger it
   useEffect(() => {
@@ -856,7 +862,7 @@ export function EditorPane({
       content,
       snapshotType: "manual",
     });
-  }, [flush, isCodexMode]);
+  }, [flush, isCodexMode, isSnippetMode]);
 
   useEffect(() => {
     function onKeyDown(e: KeyboardEvent) {
@@ -1029,7 +1035,7 @@ export function EditorPane({
         "inlineai:slash-command",
         onSlashCommand,
       );
-  }, [editor]);
+  }, [editor, nodeId, generate]);
 
   // Subscribe to content sync from the other pane (or CodexContentEditor mini-editor)
   useEffect(() => {
@@ -1075,7 +1081,7 @@ export function EditorPane({
         }));
       });
     return unsubscribe;
-  }, [nodeId, isCodexMode, isSnippetMode]);
+  }, [nodeId, isCodexMode, isSnippetMode, schedule]);
 
   // Load content when nodeId changes
   useEffect(() => {
@@ -1353,6 +1359,7 @@ export function EditorPane({
     isCodexMode,
     isSnippetMode,
     overridePhaseId,
+    groupIndex,
   ]);
 
   const isNote =

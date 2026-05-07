@@ -131,16 +131,23 @@ export function DetailsTab({
   // アクティブフェーズが変わったときにローカル状態を同期
   useEffect(() => {
     setPhaseSummaryLocal(activePhase?.summaryOverride ?? "");
-  }, [activePhase?.id]); // intentional: sync only when phase identity changes, not on value update
+    // intentional: sync only when phase identity changes, not on value update
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activePhase?.id]);
 
   // Phase summaryの自動保存（1秒デバウンス）
   const { schedule: schedulePhaseSummarySave } = useAutoSave(
-    useCallback(async () => {
-      if (!activePhase) return;
-      await updatePhase(activePhase.id, {
-        summaryOverride: phaseSummaryRef.current,
-      });
-    }, [activePhase?.id, updatePhase]), // intentional: phaseSummaryRef used for latest value
+    useCallback(
+      async () => {
+        if (!activePhase) return;
+        await updatePhase(activePhase.id, {
+          summaryOverride: phaseSummaryRef.current,
+        });
+      },
+      // intentional: phaseSummaryRef used for latest value, identity tracked via .id
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+      [activePhase?.id, updatePhase],
+    ),
     1000,
   );
 

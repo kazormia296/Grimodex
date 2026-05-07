@@ -278,7 +278,7 @@ export function ChatInput({
         toast.error(t("chat.copyFailed"));
       }
     },
-    [editor, buildPromptForCopy],
+    [editor, buildPromptForCopy, t],
   );
 
   const canUseTools = caps.supportsTools;

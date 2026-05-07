@@ -172,7 +172,9 @@ export function ExportDialog({ open, onClose }: Props) {
         setProjectLanguage(p.language || "ja");
       }
     });
-  }, [open]); // intentionally omit deps: runs only when dialog opens
+    // intentionally omit deps: runs only when dialog opens
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open]);
 
   // 設定変更を永続化
   const handleSettingsChange = useCallback(

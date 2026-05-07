@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useSettingsStore } from "../settingsStore";
 import {
@@ -17,23 +17,29 @@ export function KeysCategory() {
 
   // Parse stored bindings (overlay on defaults)
   const storedJson = store.get("keys.bindings", "{}");
-  const storedOverrides: Record<string, string> = (() => {
+  const storedOverrides = useMemo<Record<string, string>>(() => {
     try {
       return JSON.parse(storedJson);
     } catch {
       return {};
     }
-  })();
+  }, [storedJson]);
 
-  const bindings: Record<string, string> = {
-    ...DEFAULT_KEYBINDINGS,
-    ...storedOverrides,
-  };
+  const bindings = useMemo<Record<string, string>>(
+    () => ({
+      ...DEFAULT_KEYBINDINGS,
+      ...storedOverrides,
+    }),
+    [storedOverrides],
+  );
 
-  function saveOverride(id: string, binding: string) {
-    const next = { ...storedOverrides, [id]: binding };
-    store.set("keys.bindings", JSON.stringify(next));
-  }
+  const saveOverride = useCallback(
+    (id: string, binding: string) => {
+      const next = { ...storedOverrides, [id]: binding };
+      store.set("keys.bindings", JSON.stringify(next));
+    },
+    [storedOverrides, store],
+  );
 
   function resetAll() {
     store.set("keys.bindings", "{}");
@@ -78,7 +84,7 @@ export function KeysCategory() {
 
     window.addEventListener("keydown", onKeyDown, true);
     return () => window.removeEventListener("keydown", onKeyDown, true);
-  }, [capturing, bindings, storedOverrides]);
+  }, [capturing, bindings, storedOverrides, saveOverride]);
 
   const filtered = getCommands().filter(
     (c) =>

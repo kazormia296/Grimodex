@@ -199,7 +199,7 @@ export function TreeNodeItem({
     transition: "padding 100ms ease-out",
   };
 
-  function focusEditorPanel() {
+  const focusEditorPanel = useCallback(() => {
     const { dockviewApi } = useLayoutStore.getState();
     if (!dockviewApi) return;
     const panel = dockviewApi.getPanel("editor");
@@ -212,7 +212,7 @@ export function TreeNodeItem({
         title: t("layout.panel.editor"),
       });
     }
-  }
+  }, [t]);
 
   const handleClick = useCallback(
     (e: React.MouseEvent) => {
@@ -233,7 +233,7 @@ export function TreeNodeItem({
         toggleExpand(node.id);
       }
     },
-    [node, orderedNodes, setActiveScene, toggleExpand],
+    [node, orderedNodes, setActiveScene, toggleExpand, focusEditorPanel],
   );
 
   const handleDoubleClick = useCallback(() => {
@@ -242,7 +242,7 @@ export function TreeNodeItem({
       setActiveScene(node.id);
       focusEditorPanel();
     }
-  }, [node, setActiveScene]);
+  }, [node, setActiveScene, focusEditorPanel]);
 
   const startEdit = useCallback(() => {
     setEditTitle(node.title);

@@ -163,7 +163,7 @@ export function useCodexHighlight(
     );
     const tr = editor.state.tr.setMeta("codexHighlightUpdate", true);
     editor.view.dispatch(tr);
-  }, [editor, entries, highlightStyle, skipMatchedIds]);
+  }, [editor, entries, highlightStyle, skipMatchedIds, setMatchedEntryIds]);
 
   // Schedule async match on doc changes only
   useEffect(() => {

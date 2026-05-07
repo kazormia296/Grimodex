@@ -474,7 +474,7 @@ export function ChatPanel() {
         .then(() => toast.success(t("chat.copied")))
         .catch(() => toast.error(t("chat.copyFailed")));
     },
-    [messages],
+    [messages, t],
   );
 
   const handleSend = useCallback(

@@ -122,7 +122,7 @@ function ExportPreview({
     return () => {
       if (timerRef.current) clearTimeout(timerRef.current);
     };
-  }, [nodes, contentMap, checkedIds, settings]);
+  }, [nodes, contentMap, checkedIds, settings, t]);
 
   return (
     <div className="mt-1 max-h-[160px] overflow-y-auto rounded border border-border bg-muted/30 p-2">

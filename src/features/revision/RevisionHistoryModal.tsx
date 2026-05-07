@@ -407,6 +407,7 @@ export function RevisionHistoryModal() {
     currentContent,
     mainEditor,
     closeHistory,
+    t,
   ]);
 
   const isCurrentVersionSelected = selectedRevisionId === null;

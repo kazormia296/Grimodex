@@ -58,6 +58,9 @@ export function ProjectSnapshotModal({
       return;
     }
     loadSnapshots();
+    // loadSnapshots は同コンポーネント内のローカル関数で
+    // open が立ち上がる初回ロードでのみ呼びたい。再実行不要。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
 
   async function loadSnapshots() {

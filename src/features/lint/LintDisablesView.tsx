@@ -119,6 +119,7 @@ export function DisablesView() {
     // `docVersion` is the doc-change signal — eslint-no-unused isn't
     // worth silencing via a `void` call because we genuinely need
     // the memo to re-run on every transaction.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [editor, currentSceneId, docVersion]);
 
   // Other scenes: walk the stored JSON. The design doc explicitly

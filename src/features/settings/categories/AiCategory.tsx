@@ -96,6 +96,8 @@ export function AiCategory() {
 
   useEffect(() => {
     if (hasApiKey && settings) handleLoadModels();
+    // settings は truthy ガード用途。再実行のトリガは provider 変更のみで十分。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [hasApiKey, settings?.provider, handleLoadModels]);
 
   async function handleProviderChange(provider: AiProvider) {

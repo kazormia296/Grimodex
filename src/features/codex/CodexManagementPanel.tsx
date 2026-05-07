@@ -312,7 +312,7 @@ function CategoryGroupedList({
           entries: grpEntries,
         };
       });
-  }, [entries, codexTypes, typeColorMap]);
+  }, [entries, codexTypes, typeColorMap, t]);
 
   const isExpanded = useCallback(
     (slug: string) => expandedGroups[slug] !== false, // default: expanded
@@ -652,6 +652,15 @@ export function CodexManagementPanel({
     codexTypes,
   ]);
 
+  const handleSelectEntry = useCallback(
+    (entry: CodexEntry, tab = "details") => {
+      setDetailInitialTab(tab);
+      setSelectedEntry(entry);
+      if (isStackMode) setShowDetail(true);
+    },
+    [isStackMode],
+  );
+
   // Ctrl+K / Ctrl+F / ↑↓ / F2 / Delete shortcuts
   useEffect(() => {
     const handleKeyDown = (e: globalThis.KeyboardEvent) => {
@@ -708,7 +717,13 @@ export function CodexManagementPanel({
     };
     document.addEventListener("keydown", handleKeyDown);
     return () => document.removeEventListener("keydown", handleKeyDown);
-  }, [navigableEntries, selectedEntry, renamingEntryId, initiateDelete]);
+  }, [
+    navigableEntries,
+    selectedEntry,
+    renamingEntryId,
+    initiateDelete,
+    handleSelectEntry,
+  ]);
 
   // Debounced search (300ms)
   const handleSearchChange = useCallback(
@@ -746,15 +761,6 @@ export function CodexManagementPanel({
     setScrollToEntryId(entry.id);
     if (isStackMode) setShowDetail(true);
   }, [create, isStackMode]);
-
-  const handleSelectEntry = useCallback(
-    (entry: CodexEntry, tab = "details") => {
-      setDetailInitialTab(tab);
-      setSelectedEntry(entry);
-      if (isStackMode) setShowDetail(true);
-    },
-    [isStackMode],
-  );
 
   const confirmDelete = useCallback(async () => {
     const id = deleteConfirmId;
@@ -935,7 +941,7 @@ export function CodexManagementPanel({
         );
       }
       return opts;
-    }, [codexTypes]);
+    }, [codexTypes, t]);
 
   const filterTabs = (
     <div className="flex flex-wrap gap-1 border-b border-border px-2 py-2">

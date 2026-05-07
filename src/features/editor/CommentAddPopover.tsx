@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import type { Editor } from "@tiptap/react";
 import { useCursorSettingsStore } from "./cursorSettingsStore";
@@ -40,10 +40,10 @@ export function CommentAddPopover({ editor }: Props) {
     setTimeout(() => inputRef.current?.focus(), 0);
   }, [open, editor, setOpen]);
 
-  const close = () => {
+  const close = useCallback(() => {
     setOpen(false);
     editor?.commands.focus();
-  };
+  }, [setOpen, editor]);
 
   const confirm = () => {
     if (!editor || !text.trim()) {
@@ -96,7 +96,7 @@ export function CommentAddPopover({ editor }: Props) {
       document.removeEventListener("keydown", onKey);
       document.removeEventListener("mousedown", onMouseDown);
     };
-  }, [open]);
+  }, [open, close]);
 
   if (!open || !pos) return null;
 

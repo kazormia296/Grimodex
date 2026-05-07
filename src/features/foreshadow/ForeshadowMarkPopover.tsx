@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useTranslation } from "react-i18next";
 import type { Editor } from "@tiptap/react";
@@ -78,10 +78,10 @@ export function ForeshadowMarkPopover({ editor }: Props) {
     }
   }, [showNewForm]);
 
-  const close = () => {
+  const close = useCallback(() => {
     setOpen(false);
     editor?.commands.focus();
-  };
+  }, [setOpen, editor]);
 
   const applySetupMark = (foreshadowId: string) => {
     if (!editor || !savedRange) return;
@@ -143,7 +143,7 @@ export function ForeshadowMarkPopover({ editor }: Props) {
       document.removeEventListener("keydown", onKey);
       document.removeEventListener("mousedown", onMouseDown);
     };
-  }, [open]);
+  }, [open, close]);
 
   if (!open || !pos) return null;
 

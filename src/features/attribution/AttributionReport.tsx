@@ -73,6 +73,9 @@ export function AttributionReport() {
   const stats = useMemo(() => {
     if (scope !== "scene" || !editor) return null;
     return computeAttributionStats(editor.state.doc);
+    // editor は安定参照だが TipTap の state.doc は遷移ごとに変わる。
+    // doc の変化で再計算したいので明示的に依存に含める。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [scope, editor, editor?.state.doc]);
 
   const handleExportMd = useCallback(() => {
