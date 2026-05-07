@@ -882,9 +882,7 @@ impl Database {
     /// One-shot migration: drop legacy `color` enum column from map_stickies
     /// and replace with `palette_id` + `color_slot`. Old color names map to
     /// post-it-playful slots 0..5; gray/white fall back to slot 0.
-    pub(super) fn migrate_stickies_color_to_palette_slot(
-        conn: &Connection,
-    ) -> anyhow::Result<()> {
+    pub(super) fn migrate_stickies_color_to_palette_slot(conn: &Connection) -> anyhow::Result<()> {
         let columns: Vec<String> = conn
             .prepare("PRAGMA table_info(map_stickies)")?
             .query_map([], |row| row.get::<_, String>("name"))?

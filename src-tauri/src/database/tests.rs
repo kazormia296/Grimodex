@@ -108,21 +108,11 @@ fn test_add_column_if_missing_adds_then_skips() {
         )
         .expect("seed");
 
-        Database::add_column_if_missing(
-            &conn,
-            "legacy",
-            "new_col",
-            "INTEGER NOT NULL DEFAULT 7",
-        )
-        .expect("first add");
+        Database::add_column_if_missing(&conn, "legacy", "new_col", "INTEGER NOT NULL DEFAULT 7")
+            .expect("first add");
         // Idempotency: a second call must be a no-op (no error, no duplicate column).
-        Database::add_column_if_missing(
-            &conn,
-            "legacy",
-            "new_col",
-            "INTEGER NOT NULL DEFAULT 7",
-        )
-        .expect("second add is noop");
+        Database::add_column_if_missing(&conn, "legacy", "new_col", "INTEGER NOT NULL DEFAULT 7")
+            .expect("second add is noop");
     }
 
     let cols = db
@@ -1446,7 +1436,8 @@ fn test_cascade_delete_codex_entry_to_detail_values() {
             Value::String("170cm".into()),
         ],
         "run",
-    ).expect("insert detail value");
+    )
+    .expect("insert detail value");
 
     // Delete the entry
     db.execute(
@@ -1474,11 +1465,13 @@ fn test_codex_types_crud() {
     let db = test_db();
 
     // Verify built-in types exist
-    let rows = db.execute(
-        "SELECT * FROM codex_types WHERE project_id = ? AND is_builtin = 1 ORDER BY sort_order",
-        &[Value::String("default-project".into())],
-        "all",
-    ).expect("select built-in types");
+    let rows = db
+        .execute(
+            "SELECT * FROM codex_types WHERE project_id = ? AND is_builtin = 1 ORDER BY sort_order",
+            &[Value::String("default-project".into())],
+            "all",
+        )
+        .expect("select built-in types");
     assert_eq!(rows.len(), 4);
 
     // Insert user-defined type

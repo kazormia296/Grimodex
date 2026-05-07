@@ -706,7 +706,10 @@ fn anthropic_request(
     params: &ChatParams<'_>,
     body: &serde_json::Value,
 ) -> reqwest::RequestBuilder {
-    let url = format!("{}/messages", params.provider.base_url(params.ollama_endpoint));
+    let url = format!(
+        "{}/messages",
+        params.provider.base_url(params.ollama_endpoint)
+    );
     let mut req = client
         .post(url)
         .header("x-api-key", params.api_key)
@@ -729,7 +732,9 @@ fn openai_compat_request(
 ) -> reqwest::RequestBuilder {
     let url = format!(
         "{}/chat/completions",
-        params.provider.openai_compat_base_url(params.ollama_endpoint)
+        params
+            .provider
+            .openai_compat_base_url(params.ollama_endpoint)
     );
     let mut req = client.post(url).header("content-type", "application/json");
     if !matches!(params.provider, AiProvider::Ollama) {
