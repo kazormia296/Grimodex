@@ -1,6 +1,6 @@
 import { useEffect } from "react";
 import type { Editor } from "@tiptap/core";
-import { useCursorSettingsStore } from "./cursorSettingsStore";
+import { useSettingsStore } from "@/features/settings/settingsStore";
 import {
   cursorOverlayKey,
   createCursorOverlayPlugin,
@@ -8,19 +8,30 @@ import {
 
 /**
  * Registers the cursor overlay ProseMirror plugin for the given editor.
+ * Reads `editor.smoothCaret` (custom-cursor enable) and `editor.cursorBlink`
+ * (blink animation) directly from the settings store so changes from any
+ * surface (Settings UI, programmatic toggle) propagate immediately.
  * Mirrors the useFocusMode pattern: plugin is registered once on mount and
- * a meta transaction is dispatched whenever the setting toggles to force an
+ * a meta transaction is dispatched whenever the toggle changes to force an
  * update cycle.
  */
 export function useCursorOverlay(editor: Editor | null) {
-  const cursorAnimation = useCursorSettingsStore((s) => s.cursorAnimation);
+  const cursorAnimation = useSettingsStore((s) =>
+    s.getBoolean("editor.smoothCaret", true),
+  );
+  const cursorBlink = useSettingsStore((s) =>
+    s.getBoolean("editor.cursorBlink", true),
+  );
 
   // Register plugin once per editor instance
   useEffect(() => {
     if (!editor) return;
     editor.registerPlugin(
       createCursorOverlayPlugin(
-        () => useCursorSettingsStore.getState().cursorAnimation,
+        () =>
+          useSettingsStore.getState().getBoolean("editor.smoothCaret", true),
+        () =>
+          useSettingsStore.getState().getBoolean("editor.cursorBlink", true),
       ),
     );
     return () => {
@@ -28,11 +39,11 @@ export function useCursorOverlay(editor: Editor | null) {
     };
   }, [editor]);
 
-  // Force update cycle when the toggle changes
+  // Force update cycle when either toggle changes
   useEffect(() => {
     if (!editor) return;
     const { tr } = editor.state;
     tr.setMeta(cursorOverlayKey, true);
     editor.view.dispatch(tr);
-  }, [editor, cursorAnimation]);
+  }, [editor, cursorAnimation, cursorBlink]);
 }

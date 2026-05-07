@@ -4,6 +4,8 @@ import { useSettingsStore } from "@/features/settings/settingsStore";
 interface CursorSettingsState {
   cursorAnimation: boolean;
   toggleCursorAnimation: () => void;
+  cursorBlink: boolean;
+  toggleCursorBlink: () => void;
   focusMode: boolean;
   toggleFocusMode: () => void;
   typewriterMode: boolean;
@@ -35,6 +37,14 @@ export const useCursorSettingsStore = create<CursorSettingsState>()((set) => ({
       const next = !s.cursorAnimation;
       useSettingsStore.getState().set("editor.smoothCaret", String(next));
       return { cursorAnimation: next };
+    }),
+
+  cursorBlink: true,
+  toggleCursorBlink: () =>
+    set((s) => {
+      const next = !s.cursorBlink;
+      useSettingsStore.getState().set("editor.cursorBlink", String(next));
+      return { cursorBlink: next };
     }),
 
   focusMode: false,
@@ -75,6 +85,7 @@ export const useCursorSettingsStore = create<CursorSettingsState>()((set) => ({
     const s = useSettingsStore.getState();
     set({
       cursorAnimation: s.getBoolean("editor.smoothCaret", true),
+      cursorBlink: s.getBoolean("editor.cursorBlink", true),
       focusMode: s.getBoolean("editor.focusMode", false),
       typewriterMode: s.getBoolean("editor.typewriterMode", false),
     });

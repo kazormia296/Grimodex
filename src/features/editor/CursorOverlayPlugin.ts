@@ -22,14 +22,17 @@ export const cursorOverlayKey = new PluginKey("cursorOverlay");
  * same coordinates so the bias has no effect.  This avoids reading the DOM
  * Selection after ProseMirror has re-set it (which loses affinity context).
  */
-export function createCursorOverlayPlugin(getEnabled: () => boolean): Plugin {
+export function createCursorOverlayPlugin(
+  getEnabled: () => boolean,
+  getBlink: () => boolean = () => true,
+): Plugin {
   let overlayView: CursorOverlayView | null = null;
 
   return new Plugin({
     key: cursorOverlayKey,
 
     view(editorView) {
-      overlayView = new CursorOverlayView(editorView, getEnabled);
+      overlayView = new CursorOverlayView(editorView, getEnabled, getBlink);
       return overlayView;
     },
 
@@ -123,6 +126,7 @@ class CursorOverlayView {
   constructor(
     private view: EditorView,
     private getEnabled: () => boolean,
+    private getBlink: () => boolean,
   ) {
     const wrapper = view.dom.parentElement;
     if (!wrapper) throw new Error("CursorOverlayView: editor has no parent");
@@ -274,11 +278,14 @@ class CursorOverlayView {
     this.el.style.height = `${pos.height}px`;
 
     // Restart blink: solid for one frame, then resume blinking.
+    // When blink is disabled, keep the cursor solid (no class added).
     this.el.classList.remove("blinking");
     cancelAnimationFrame(this.rafHandle);
-    this.rafHandle = requestAnimationFrame(() => {
-      this.el.classList.add("blinking");
-    });
+    if (this.getBlink()) {
+      this.rafHandle = requestAnimationFrame(() => {
+        this.el.classList.add("blinking");
+      });
+    }
   }
 
   hide() {
