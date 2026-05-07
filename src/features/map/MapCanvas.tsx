@@ -56,6 +56,7 @@ import {
   deleteSticky,
   createSticky,
   getSticky,
+  upsertNodePosition,
   createAiBranch,
   setNodePinned,
   deleteNodePosition,
@@ -68,7 +69,7 @@ import { AINodeDialog } from "./AINodeDialog";
 import { generateAiBranchCards } from "./mapAiApi";
 import { deleteNode as deleteTreeNode } from "@/features/tree/api";
 import { deleteCodexEntry } from "@/features/codex/api";
-import { findPosByNodeId } from "./utils/nodeIdCodec";
+import { findPosByNodeId, buildUpsertArgs } from "./utils/nodeIdCodec";
 import type { MapNodePositionRecord } from "./types";
 
 const PROJECT_ID = "default-project";
@@ -524,6 +525,16 @@ export function MapCanvas() {
     const selectedNodes = getNodes().filter((n) => n.selected);
     const selectedEdges = getEdges().filter((e) => e.selected);
 
+    // Capture user edges for bulk undo
+    const capturedEdges = selectedEdges
+      .filter((e) => e.id.startsWith("user:"))
+      .map((e) => {
+        const id = e.id.slice("user:".length);
+        return userEdgesRef.current.find((u) => u.id === id);
+      })
+      .filter((u): u is NonNullable<typeof u> => Boolean(u))
+      .map((u) => ({ ...u }));
+
     for (const edge of selectedEdges) {
       if (!edge.id.startsWith("user:")) continue;
       const userEdgeId = edge.id.slice("user:".length);
@@ -542,9 +553,15 @@ export function MapCanvas() {
       setFrames((prev) => prev.filter((f) => f.id !== frameId));
     }
 
+    // Capture snippet positions for bulk undo
+    const capturedSnippetPositions: {
+      nodeId: string;
+      pos: MapNodePositionRecord;
+    }[] = [];
     for (const node of snippetNodes) {
       const pos = findPosByNodeId(positionsRef.current, node.id);
       if (pos) {
+        capturedSnippetPositions.push({ nodeId: node.id, pos: { ...pos } });
         await deleteNodePosition(pos.id);
         setPositions((prev) => prev.filter((p) => p.id !== pos.id));
       }
@@ -556,6 +573,80 @@ export function MapCanvas() {
 
     if (showDialog.length > 0) {
       setDeleteDialogNodes(showDialog);
+    }
+
+    // Push 1 bulk history entry for edges + snippet positions deleted in this
+    // pass. Frames and entity nodes (Scene/Note/Codex) are intentionally
+    // excluded — entity deletions go through their own stores which already
+    // push their own history entries; frames are out of scope.
+    if (
+      !useGlobalHistoryStore.getState().isReplaying &&
+      (capturedEdges.length > 0 || capturedSnippetPositions.length > 0)
+    ) {
+      const cap = {
+        edges: capturedEdges,
+        snippets: capturedSnippetPositions,
+      };
+      // Track upsertNodePosition's possibly-new ids for redo
+      const liveSnippetIds = capturedSnippetPositions.map((s) => s.pos.id);
+      useGlobalHistoryStore.getState().push({
+        kind: "map",
+        label:
+          cap.edges.length + cap.snippets.length === 1
+            ? cap.edges.length === 1
+              ? "エッジ削除"
+              : "ボードから外す"
+            : "複数削除",
+        async undo() {
+          for (const e of cap.edges) {
+            await createUserEdge({
+              id: e.id,
+              boardId: e.boardId,
+              fromPositionId: e.fromPositionId,
+              toPositionId: e.toPositionId,
+              forwardLabel: e.forwardLabel ?? undefined,
+              backwardLabel: e.backwardLabel ?? undefined,
+              style: e.style,
+              color: e.color,
+              direction: e.direction,
+            });
+          }
+          if (cap.edges.length > 0) {
+            setUserEdges((prev) => [...prev, ...cap.edges]);
+          }
+
+          const restored: MapNodePositionRecord[] = [];
+          for (let i = 0; i < cap.snippets.length; i++) {
+            const { nodeId, pos } = cap.snippets[i];
+            const args = buildUpsertArgs(boardId, nodeId, pos.x, pos.y);
+            if (!args) continue;
+            const r = await upsertNodePosition(args);
+            liveSnippetIds[i] = r.id;
+            restored.push(r as MapNodePositionRecord);
+          }
+          if (restored.length > 0) {
+            setPositions((prev) => [...prev, ...restored]);
+          }
+        },
+        async redo() {
+          for (const e of cap.edges) {
+            await deleteUserEdge(e.id);
+          }
+          if (cap.edges.length > 0) {
+            setUserEdges((prev) =>
+              prev.filter((u) => !cap.edges.some((e) => e.id === u.id)),
+            );
+          }
+          for (const id of liveSnippetIds) {
+            await deleteNodePosition(id);
+          }
+          if (liveSnippetIds.length > 0) {
+            setPositions((prev) =>
+              prev.filter((p) => !liveSnippetIds.includes(p.id)),
+            );
+          }
+        },
+      });
     }
   }, [
     boardId,
