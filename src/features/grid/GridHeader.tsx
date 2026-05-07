@@ -10,6 +10,7 @@ import {
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { cn } from "@/lib/utils";
+import { Button } from "@/components/ui/button";
 import { useGridStore } from "./gridStore";
 import { GridContainerSelector } from "./GridContainerSelector";
 import { GridActionsMenu } from "./GridActionsMenu";
@@ -112,28 +113,31 @@ export function GridHeader({
               )}
               className="w-48 bg-transparent text-[11px] outline-none placeholder:text-muted-foreground/50"
             />
-            <button
-              className="shrink-0 rounded p-0.5 hover:bg-accent"
+            <Button
+              variant="ghost"
+              size="icon-xs"
               onClick={toggleSearch}
               aria-label={t("grid.header.closeSearch", "検索を閉じる")}
             >
-              <X className="h-3 w-3" />
-            </button>
+              <X />
+            </Button>
           </div>
         ) : (
-          <button
-            className="rounded p-1 hover:bg-accent transition-colors"
+          <Button
+            variant="ghost"
+            size="icon-xs"
             onClick={toggleSearch}
             title={t("grid.header.search", "検索")}
             aria-pressed={searchOpen}
           >
-            <Search className="h-3.5 w-3.5" />
-          </button>
+            <Search />
+          </Button>
         )}
 
         {hasNestedFolders && (
-          <button
-            className="rounded p-1 hover:bg-accent transition-colors"
+          <Button
+            variant="ghost"
+            size="icon-xs"
             onClick={handleToggleAll}
             title={
               anyCollapsed
@@ -146,20 +150,18 @@ export function GridHeader({
                 : t("grid.header.collapseAll", "全て折りたたむ")
             }
           >
-            {anyCollapsed ? (
-              <ChevronsUpDown className="h-3.5 w-3.5" />
-            ) : (
-              <ChevronsDownUp className="h-3.5 w-3.5" />
-            )}
-          </button>
+            {anyCollapsed ? <ChevronsUpDown /> : <ChevronsDownUp />}
+          </Button>
         )}
 
-        <button
+        <Button
+          variant="outline"
+          size="xs"
           className={cn(
-            "inline-flex items-center gap-1 rounded border px-2 py-1 font-mono text-[10.5px] tracking-wider transition-colors",
+            "font-mono text-[10.5px] tracking-wider",
             toolbarOpen
-              ? "border-border bg-accent text-foreground"
-              : "border-border/60 text-muted-foreground hover:text-foreground hover:bg-accent/50",
+              ? "bg-accent text-foreground"
+              : "border-border/60 text-muted-foreground hover:text-foreground",
           )}
           onClick={onToggleToolbar}
           title={
@@ -170,22 +172,20 @@ export function GridHeader({
           aria-pressed={toolbarOpen}
         >
           {t("grid.header.displayFilter", "表示・フィルタ")}
-          {toolbarOpen ? (
-            <ChevronUp className="h-3 w-3" />
-          ) : (
-            <ChevronDown className="h-3 w-3" />
-          )}
-        </button>
+          {toolbarOpen ? <ChevronUp /> : <ChevronDown />}
+        </Button>
 
         <div className="relative">
-          <button
+          <Button
             ref={menuBtnRef}
-            className="rounded border border-border/60 p-1 text-muted-foreground hover:bg-accent hover:text-foreground transition-colors"
+            variant="outline"
+            size="icon-xs"
+            className="border-border/60 text-muted-foreground hover:text-foreground"
             onClick={() => setActionsMenuOpen((v) => !v)}
             title={t("grid.header.actionsMenu", "アクション")}
           >
-            <MoreVertical className="h-3.5 w-3.5" />
-          </button>
+            <MoreVertical />
+          </Button>
           {actionsMenuOpen && (
             <GridActionsMenu
               onClose={() => setActionsMenuOpen(false)}

@@ -4,6 +4,8 @@ import { useCodexStore } from "@/features/codex/codexStore";
 import { useLabelStore } from "@/features/labels/labelStore";
 import { resolveLabelColor } from "@/lib/labelPalette";
 import { cn } from "@/lib/utils";
+import { Button } from "@/components/ui/button";
+import { Checkbox as ShadcnCheckbox } from "@/components/ui/checkbox";
 import { useGridStore, type CardTabMode } from "./gridStore";
 
 export function GridDisplayToolbar() {
@@ -183,13 +185,14 @@ export function GridDisplayToolbar() {
             label={t("grid.filter.hideCompleted", "完成を非表示")}
           />
           {hasActiveFilter && (
-            <button
-              type="button"
-              className="text-[10px] text-primary hover:underline"
+            <Button
+              variant="link"
+              size="xs"
+              className="h-auto p-0 text-[10px]"
               onClick={clearFilter}
             >
               {t("grid.filter.clear", "クリア")}
-            </button>
+            </Button>
           )}
         </div>
       </div>
@@ -221,10 +224,9 @@ function Checkbox({
         checked ? "text-foreground" : "text-muted-foreground",
       )}
     >
-      <input
-        type="checkbox"
+      <ShadcnCheckbox
         checked={checked}
-        onChange={(e) => onChange(e.target.checked)}
+        onCheckedChange={(v) => onChange(v === true)}
         className="h-3 w-3"
       />
       {label}
