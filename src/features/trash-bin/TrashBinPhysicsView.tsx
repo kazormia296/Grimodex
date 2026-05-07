@@ -15,7 +15,7 @@ import {
 import { getBodySize } from "./displayHelpers";
 import { useDropTargetRegistry } from "@/store/dropTargetRegistry";
 import { useTrashBinStore } from "./trashBinStore";
-import { pickupAndDispatch } from "./pickupHandlers";
+import { TrashBinPopover } from "./TrashBinPopover";
 import type { TrashItemData } from "./types";
 
 export interface PhysicsViewHandle {
@@ -59,6 +59,11 @@ export function TrashBinPhysicsView({
   } | null>(null);
   const [hoverTargetId, setHoverTargetId] = useState<string | null>(null);
   const [draggingItemId, setDraggingItemId] = useState<string | null>(null);
+  const [popoverItemId, setPopoverItemId] = useState<string | null>(null);
+  const [popoverAnchor, setPopoverAnchor] = useState<{
+    x: number;
+    y: number;
+  } | null>(null);
   const itemsRef = useRef<Map<string, TrashItemData>>(new Map());
   useEffect(() => {
     itemsRef.current = new Map(items.map((i) => [i.id, i]));
@@ -347,7 +352,9 @@ export function TrashBinPhysicsView({
       setHoverTargetId(null);
 
       if (!drag.started) {
-        // クリック扱い: 5px 未満で離した。Popover は未実装なので何もしない。
+        // クリック扱い (5px 未満で離した): Popover を開く (設計書 §5-A)
+        setPopoverItemId(drag.itemId);
+        setPopoverAnchor({ x: e.clientX, y: e.clientY });
         return;
       }
 
@@ -374,13 +381,12 @@ export function TrashBinPhysicsView({
         return;
       }
 
-      // ドロップ確定: pickup に restorer を渡す
+      // ドロップ確定: target.onDrop を呼ぶ (useDropTarget が pickup + restorer
+      // を統括)。Map ペインはここで transformPoint=screenToFlowPosition を噛ませる。
       const dropPoint = { x: e.clientX, y: e.clientY };
-      const result = await useTrashBinStore
-        .getState()
-        .pickup(item.id, () => pickupAndDispatch(item, acceptable, dropPoint));
-      if (!result.ok) {
-        // 失敗 → trash に残るので body を再 attach
+      await acceptable.onDrop(item, dropPoint);
+      // pickup が失敗していれば item は trash に残っているので body を再 attach
+      if (useTrashBinStore.getState().items.has(item.id)) {
         const survived = bodiesRef.current.get(drag.itemId);
         if (survived) {
           bodiesRef.current.set(drag.itemId, attach(survived));
@@ -442,6 +448,30 @@ export function TrashBinPhysicsView({
           isDragging={draggingItemId === item.id}
         />
       ))}
+
+      {/* クリック (5px 未満) で開く Popover (設計書 §5-A) */}
+      {popoverItemId && popoverAnchor
+        ? (() => {
+            const item = itemsRef.current.get(popoverItemId);
+            if (!item) return null;
+            return (
+              <TrashBinPopover
+                key={popoverItemId}
+                item={item}
+                open
+                onOpenChange={(open) => {
+                  if (!open) {
+                    setPopoverItemId(null);
+                    setPopoverAnchor(null);
+                  }
+                }}
+                anchorPoint={popoverAnchor}
+              >
+                <span />
+              </TrashBinPopover>
+            );
+          })()
+        : null}
     </div>
   );
 }

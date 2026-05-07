@@ -8,47 +8,55 @@
  * return <div ref={targetRef} data-droptarget-id="scenes-panel">...</div>;
  * ```
  *
- * accepts / onDrop は pickupHandlers の汎用関数を内部で呼ぶ。
+ * `transformPoint` を渡すと、PhysicsView から渡されたスクリーン座標を
+ * パネル固有の座標系 (例: ReactFlow の flow 座標) へ変換できる。Map ペインは
+ * これで screenToFlowPosition を噛ませる。
  */
 import { useEffect, useRef } from "react";
 import {
   useDropTargetRegistry,
+  type DropPoint,
   type DropTargetKind,
 } from "@/store/dropTargetRegistry";
 import { useTrashBinStore } from "./trashBinStore";
 import { acceptsMatrix, pickupAndDispatch } from "./pickupHandlers";
+import type { TrashItemData, TrashSubKind } from "./types";
+
+export interface UseDropTargetOptions {
+  /**
+   * 受け取った client 座標 (window 基準) をパネル固有座標系に変換する。
+   * 未指定なら client 座標をそのまま渡す。
+   */
+  transformPoint?: (client: DropPoint, item: TrashItemData) => DropPoint;
+}
 
 export function useDropTarget(
   id: string,
   kind: DropTargetKind,
+  options: UseDropTargetOptions = {},
 ): React.RefObject<HTMLDivElement | null> {
   const ref = useRef<HTMLDivElement | null>(null);
+  // options を ref で参照して、毎レンダの再 register を避ける
+  const optionsRef = useRef(options);
+  optionsRef.current = options;
 
   useEffect(() => {
     const register = useDropTargetRegistry.getState().register;
-    const unregister = register({
+    // self-reference を埋め込むので一旦 let に組み立てる
+    const target = {
       id,
       kind,
       rect: () => ref.current?.getBoundingClientRect() ?? null,
-      accepts: (subKind) => acceptsMatrix(kind, subKind),
-      onDrop: async (item, point) => {
+      accepts: (subKind: TrashSubKind) => acceptsMatrix(kind, subKind),
+      onDrop: async (item: TrashItemData, clientPoint: DropPoint) => {
+        const localPoint =
+          optionsRef.current.transformPoint?.(clientPoint, item) ?? clientPoint;
         await useTrashBinStore
           .getState()
-          .pickup(item.id, () =>
-            pickupAndDispatch(
-              item,
-              {
-                id,
-                kind,
-                rect: () => null,
-                accepts: () => true,
-                onDrop: async () => {},
-              },
-              point,
-            ),
-          );
+          .pickup(item.id, () => pickupAndDispatch(item, target, localPoint));
       },
-    });
+    };
+    const unregister = register(target);
     return unregister;
   }, [id, kind]);
 

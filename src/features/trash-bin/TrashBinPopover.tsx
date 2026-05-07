@@ -26,9 +26,20 @@ import type { TrashItemData } from "./types";
 interface Props {
   item: TrashItemData;
   children: React.ReactNode;
+  /** 制御モード: 物理ビューから空 trigger + 任意座標で開きたいとき。 */
+  open?: boolean;
+  onOpenChange?: (open: boolean) => void;
+  /** 制御モード時のアンカー点 (client 座標)。trigger 不要で位置だけ決める。 */
+  anchorPoint?: { x: number; y: number };
 }
 
-export function TrashBinPopover({ item, children }: Props) {
+export function TrashBinPopover({
+  item,
+  children,
+  open,
+  onOpenChange,
+  anchorPoint,
+}: Props) {
   const { t } = useTranslation();
   const targets = useDropTargetRegistry((s) => s.targets);
   const removeItem = useTrashBinStore((s) => s.removeItem);
@@ -59,9 +70,24 @@ export function TrashBinPopover({ item, children }: Props) {
     void removeItem(item.id);
   };
 
+  // 制御モードでは anchorPoint をスタイルに使う「見えない trigger」を絶対配置する
+  const controlledTrigger = anchorPoint ? (
+    <span
+      style={{
+        position: "fixed",
+        left: anchorPoint.x,
+        top: anchorPoint.y,
+        width: 1,
+        height: 1,
+        pointerEvents: "none",
+      }}
+      aria-hidden
+    />
+  ) : null;
+
   return (
-    <Popover>
-      <PopoverTrigger asChild>{children}</PopoverTrigger>
+    <Popover open={open} onOpenChange={onOpenChange}>
+      <PopoverTrigger asChild>{controlledTrigger ?? children}</PopoverTrigger>
       <PopoverContent className="w-72 space-y-2 p-3 text-sm">
         <div className="font-semibold">
           {item.previewText || "(無題)"}

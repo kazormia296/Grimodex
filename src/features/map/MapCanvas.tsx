@@ -19,6 +19,7 @@ import { useMapStore } from "./mapStore";
 import { useGlobalHistoryStore } from "@/store/globalHistoryStore";
 import { captureMapStickyDeletion } from "@/features/trash-bin/captureHooks";
 import { useTrashBinStore } from "@/features/trash-bin/trashBinStore";
+import { useDropTarget } from "@/features/trash-bin/useDropTarget";
 import { SceneNode } from "./nodes/SceneNode";
 import { CodexNode } from "./nodes/CodexNode";
 import { FrameNode } from "./nodes/FrameNode";
@@ -1118,10 +1119,25 @@ export function MapCanvas() {
 
   const isCorkboard = visualTheme === "corkboard";
 
+  // Trash Bin の Map ペインへの drop ターゲット登録。
+  // PhysicsView から渡される client 座標を screenToFlowPosition で flow 座標に変換し、
+  // 既定の (0,0) ではなくドロップ点に Sticky を生成する (advisor が指摘した bug 修正)。
+  const trashDropRef = useDropTarget("map-panel", "map-panel", {
+    transformPoint: (client) => screenToFlowPosition(client),
+  });
+  const setRootRef = useCallback(
+    (el: HTMLDivElement | null) => {
+      wrapperRef.current = el;
+      trashDropRef.current = el;
+    },
+    [trashDropRef],
+  );
+
   return (
     <div
-      ref={wrapperRef}
-      className={isCorkboard ? "map-corkboard" : undefined}
+      ref={setRootRef}
+      data-droptarget-id="map-panel"
+      className={`${isCorkboard ? "map-corkboard " : ""}data-[trash-drop-hover=true]:ring-2 data-[trash-drop-hover=true]:ring-primary/60`}
       style={{ width: "100%", height: "100%", position: "relative" }}
       onKeyDown={onKeyDown}
       onKeyUp={onKeyUp}
