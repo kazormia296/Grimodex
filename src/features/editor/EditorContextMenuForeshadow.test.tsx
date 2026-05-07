@@ -41,8 +41,19 @@ vi.mock("@/features/layout/layoutStore", () => ({
 }));
 vi.mock("@/features/snippets/snippetStore", () => ({
   useSnippetStore: (
-    sel: (s: { create: typeof mockSnippetCreate }) => unknown,
-  ) => sel({ create: mockSnippetCreate }),
+    sel: (s: {
+      create: typeof mockSnippetCreate;
+      entries: never[];
+      loadEntries: () => Promise<void>;
+      incrementUsageCount: () => Promise<void>;
+    }) => unknown,
+  ) =>
+    sel({
+      create: mockSnippetCreate,
+      entries: [],
+      loadEntries: async () => {},
+      incrementUsageCount: async () => {},
+    }),
 }));
 vi.mock("@/features/tree/store", () => ({
   useSceneStore: (sel: (s: { activeSceneId: string }) => unknown) =>
