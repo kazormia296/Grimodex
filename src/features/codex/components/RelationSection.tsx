@@ -6,8 +6,10 @@ import type { CodexEntry } from "../api";
 import {
   listDismissedRelationIds,
   dismissRelation,
+  undismissRelation,
   setParentRelation,
 } from "../relationApi";
+import { useGlobalHistoryStore } from "@/store/globalHistoryStore";
 import { extractPlainText } from "../prosemirrorTextExtractor";
 import { findMentionedEntriesAsync } from "../rustMatcher";
 import { getChildrenFromArray } from "../childrenBudget";
@@ -154,33 +156,84 @@ export function RelationSection({ entry }: RelationSectionProps) {
     });
   }, [entry, allEntries, children, dismissedIds]);
 
+  const pushParentChange = useCallback(
+    (
+      childId: string,
+      beforeParentId: string | null,
+      afterParentId: string | null,
+    ) => {
+      if (beforeParentId === afterParentId) return;
+      if (useGlobalHistoryStore.getState().isReplaying) return;
+      useGlobalHistoryStore.getState().push({
+        kind: "codex",
+        label: "親変更",
+        async undo() {
+          await setParentRelation(childId, beforeParentId);
+          await loadEntries();
+        },
+        async redo() {
+          await setParentRelation(childId, afterParentId);
+          await loadEntries();
+        },
+      });
+    },
+    [loadEntries],
+  );
+
   const handleRemoveParent = useCallback(async () => {
+    const beforeParentId = entry.parentId ?? null;
     await setParentRelation(entry.id, null);
     await loadEntries();
-  }, [entry.id, loadEntries]);
+    pushParentChange(entry.id, beforeParentId, null);
+  }, [entry.id, entry.parentId, loadEntries, pushParentChange]);
 
   const handleAddChild = useCallback(
     async (childEntry: CodexEntry) => {
+      const beforeParentId = childEntry.parentId ?? null;
       await setParentRelation(childEntry.id, entry.id);
       await loadEntries();
+      pushParentChange(childEntry.id, beforeParentId, entry.id);
     },
-    [entry.id, loadEntries],
+    [entry.id, loadEntries, pushParentChange],
   );
 
   const handleDismiss = useCallback(
     async (dismissedId: string) => {
       await dismissRelation(entry.id, dismissedId);
       setDismissedIds((prev) => new Set([...prev, dismissedId]));
+
+      if (!useGlobalHistoryStore.getState().isReplaying) {
+        const cap = { entryId: entry.id, dismissedId };
+        useGlobalHistoryStore.getState().push({
+          kind: "codex",
+          label: "関連候補を非表示",
+          async undo() {
+            await undismissRelation(cap.entryId, cap.dismissedId);
+            setDismissedIds((prev) => {
+              const next = new Set(prev);
+              next.delete(cap.dismissedId);
+              return next;
+            });
+          },
+          async redo() {
+            await dismissRelation(cap.entryId, cap.dismissedId);
+            setDismissedIds((prev) => new Set([...prev, cap.dismissedId]));
+          },
+        });
+      }
     },
     [entry.id],
   );
 
   const handleAddSuggestion = useCallback(
     async (suggestionId: string) => {
+      const suggestion = allEntries.find((e) => e.id === suggestionId);
+      const beforeParentId = suggestion?.parentId ?? null;
       await setParentRelation(suggestionId, entry.id);
       await loadEntries();
+      pushParentChange(suggestionId, beforeParentId, entry.id);
     },
-    [entry.id, loadEntries],
+    [entry.id, allEntries, loadEntries, pushParentChange],
   );
 
   const childIds = useMemo(
