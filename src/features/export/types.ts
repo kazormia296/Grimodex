@@ -46,6 +46,8 @@ export interface ExportSettings {
   sceneBreakStyle: SceneBreakStyle;
   /** カスタムシーンブレイク文字列 */
   sceneBreakCustom: string;
+  /** ゴミ箱の中身を export に含める (設計書 §3.5)。デフォルト false。 */
+  includeTrashBin: boolean;
 }
 
 export const DEFAULT_EXPORT_SETTINGS: ExportSettings = {
@@ -59,6 +61,7 @@ export const DEFAULT_EXPORT_SETTINGS: ExportSettings = {
   emphasisDotsStyle: null,
   sceneBreakStyle: "asterisks",
   sceneBreakCustom: "",
+  includeTrashBin: false,
 };
 
 /** settings テーブルのキー定数 */
@@ -73,6 +76,7 @@ export const EXPORT_SETTING_KEYS = {
   emphasisDotsStyle: "export.emphasisDotsStyle",
   sceneBreakStyle: "export.sceneBreakStyle",
   sceneBreakCustom: "export.sceneBreakCustom",
+  includeTrashBin: "export.includeTrashBin",
 } as const;
 
 /** デフォルトルビスタイル（出力形式別） */

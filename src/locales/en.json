@@ -1237,6 +1237,8 @@
       "gridChapter": "Chapter"
     },
     "stir": "Stir",
+    "enableLabel": "Enable trash bin",
+    "includeInExport": "Include trash bin contents",
     "pickup": "Pick up",
     "pickupTo": "Pickup destination",
     "pickupFailed": "Failed to pick up",

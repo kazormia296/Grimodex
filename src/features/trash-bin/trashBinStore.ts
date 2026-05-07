@@ -2,6 +2,7 @@ import { create } from "zustand";
 import { toast } from "sonner";
 import i18next from "i18next";
 import { debugLog, errorDetail } from "@/lib/debugLog";
+import { useSettingsStore } from "@/features/settings/settingsStore";
 import * as trashApi from "./api";
 import {
   isInterestingStructureItem,
@@ -103,6 +104,12 @@ export const useTrashBinStore = create<TrashBinStore>()((set, get) => ({
 
   enqueuePending: (data, options) => {
     if (!get().isCapturing) return;
+    // プロジェクト設定 (`trashBin.enabled`) で無効化されているなら何もしない
+    // (設計書 §3.5)。デフォルト ON。
+    const enabled = useSettingsStore
+      .getState()
+      .getBoolean("trashBin.enabled", true);
+    if (!enabled) return;
 
     const { tempId } = options;
     const expireAt = Date.now() + UNDO_ABSORB_WINDOW_MS;

@@ -1237,6 +1237,8 @@
       "gridChapter": "章ヘッダ"
     },
     "stir": "かき混ぜる",
+    "enableLabel": "ゴミ箱を有効化",
+    "includeInExport": "ゴミ箱の内容を含める",
     "pickup": "拾い上げる",
     "pickupTo": "拾い上げ先",
     "pickupFailed": "復元に失敗しました",

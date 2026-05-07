@@ -321,6 +321,16 @@ export function ExportSettingsPanel({
         )}
       </div>
 
+      {/* ゴミ箱の中身 (設計書 §3.5) */}
+      <SectionTitle>{t("export.settings.trashBin", "ゴミ箱")}</SectionTitle>
+      <div className="space-y-3 pl-2">
+        <Checkbox
+          checked={settings.includeTrashBin}
+          onChange={(v) => update("includeTrashBin", v)}
+          label={t("trashBin.includeInExport", "ゴミ箱の内容を含める")}
+        />
+      </div>
+
       {/* プレビュー */}
       <SectionTitle>{t("export.settings.preview")}</SectionTitle>
       <ExportPreview

@@ -56,6 +56,10 @@ function loadSettingsFromStore(
     sceneBreakStyle: (s.get(EXPORT_SETTING_KEYS.sceneBreakStyle) ||
       DEFAULT_EXPORT_SETTINGS.sceneBreakStyle) as ExportSettings["sceneBreakStyle"],
     sceneBreakCustom: s.get(EXPORT_SETTING_KEYS.sceneBreakCustom, ""),
+    includeTrashBin: s.getBoolean(
+      EXPORT_SETTING_KEYS.includeTrashBin,
+      DEFAULT_EXPORT_SETTINGS.includeTrashBin,
+    ),
   };
 }
 
@@ -208,6 +212,10 @@ export function ExportDialog({ open, onClose }: Props) {
       settingsStore.set(
         EXPORT_SETTING_KEYS.sceneBreakCustom,
         next.sceneBreakCustom,
+      );
+      settingsStore.set(
+        EXPORT_SETTING_KEYS.includeTrashBin,
+        String(next.includeTrashBin),
       );
     },
     [settingsStore],

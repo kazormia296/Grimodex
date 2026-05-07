@@ -1,6 +1,6 @@
 import { useTranslation } from "react-i18next";
 import { useProjectSettings } from "../hooks/useProjectSettings";
-import { useSettingControl } from "../useSettingControl";
+import { useSettingControl, useSettingBoolean } from "../useSettingControl";
 import { SettingSection } from "../components/SettingSection";
 import { SettingRow } from "../components/SettingRow";
 import { SettingTextarea } from "../components/SettingTextarea";
@@ -27,6 +27,7 @@ export function ProjectCategory() {
     t("tree.defaultNote"),
   );
   const numberingScope = useSettingControl("tree.numberingScope", "project");
+  const trashBinEnabled = useSettingBoolean("trashBin.enabled", true);
 
   const GENRE_OPTIONS = [
     { value: "", label: t("settings.project.unselected") },
@@ -223,6 +224,23 @@ export function ProjectCategory() {
               </option>
             ))}
           </select>
+        </SettingRow>
+      </SettingSection>
+
+      <SettingSection title={t("settings.project.trashBin", "ゴミ箱")}>
+        <SettingRow
+          label={t("trashBin.enableLabel", "ゴミ箱を有効化")}
+          description={t(
+            "settings.project.trashBinDesc",
+            "削除した文字片や構造アイテムをゴミ箱に保持します (60 日)。",
+          )}
+        >
+          <input
+            type="checkbox"
+            checked={trashBinEnabled.value}
+            onChange={(e) => trashBinEnabled.setValue(e.target.checked)}
+            className="h-4 w-4 cursor-pointer rounded border-input"
+          />
         </SettingRow>
       </SettingSection>
 

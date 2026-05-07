@@ -8,9 +8,18 @@ import {
   type PhysicsViewHandle,
 } from "./TrashBinPhysicsView";
 import { TrashBinStirButton } from "./TrashBinStirButton";
+import { pruneTrashItems } from "./api";
 import { useReducedMotion } from "@/lib/animation";
 
 const PROJECT_ID = "default-project";
+
+// 設計書 §3.4: 文字屑 50 件 + 構造 50 件 = 物理ビュー最大 100 body
+const PHYSICS_DISPLAY_LIMIT = 100;
+// セーフティバルブ (10000 text + 500 structure ≒ 10500)
+const PRUNE_MAX_COUNT = 10_500;
+const PRUNE_RETENTION_DAYS = 60;
+// 1 時間おきのバックグラウンド prune
+const PRUNE_INTERVAL_MS = 60 * 60 * 1000;
 
 export function TrashBinPanel() {
   const { t } = useTranslation();
@@ -28,7 +37,30 @@ export function TrashBinPanel() {
   const [shuffleSeed, setShuffleSeed] = useState(0);
 
   useEffect(() => {
-    loadItems(PROJECT_ID);
+    // 起動時 prune → loadItems の順 (古い物が残ったまま表示されないように)
+    void (async () => {
+      try {
+        await pruneTrashItems(
+          PROJECT_ID,
+          PRUNE_RETENTION_DAYS,
+          PRUNE_MAX_COUNT,
+        );
+      } catch {
+        /* prune 失敗は致命的ではない */
+      }
+      await loadItems(PROJECT_ID);
+    })();
+
+    // 1 時間おきのバックグラウンド prune (設計書 §3.4)
+    // パネル mount 中のみ動作 — フォアグラウンド時のみという要件を満たす。
+    const intervalId = setInterval(() => {
+      void pruneTrashItems(
+        PROJECT_ID,
+        PRUNE_RETENTION_DAYS,
+        PRUNE_MAX_COUNT,
+      ).then(() => loadItems(PROJECT_ID));
+    }, PRUNE_INTERVAL_MS);
+    return () => clearInterval(intervalId);
   }, [loadItems]);
 
   // selector 内で派生配列を生成すると new ref になるため、
@@ -50,6 +82,12 @@ export function TrashBinPanel() {
     }
     return list;
   }, [items, reducedMotion, shuffleSeed]);
+
+  // 物理ビューは 100 body まで (設計書 §3.4)。それ以上はリスト fallback で全件閲覧可能。
+  const physicsItems = useMemo(
+    () => sortedItems.slice(0, PHYSICS_DISPLAY_LIMIT),
+    [sortedItems],
+  );
 
   const handleStir = (intensity: number) => {
     if (reducedMotion) {
@@ -119,7 +157,7 @@ export function TrashBinPanel() {
           </div>
         ) : (
           <TrashBinPhysicsView
-            items={sortedItems}
+            items={physicsItems}
             isLoading={isLoading}
             handleRef={physicsHandleRef}
           />
