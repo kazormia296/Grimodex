@@ -29,6 +29,14 @@ import { DisablesView } from "./LintDisablesView";
 import type { ScannedScene } from "./projectScan";
 import { extensionFor, renderReport, type ReportFormat } from "./lintReport";
 import { runLintNow } from "./useLinter";
+import {
+  filterDiagnostics,
+  groupByRule,
+  groupBySeverity,
+  matchesDiagnosticFilter,
+  useDiagnosticFilter,
+  type SeverityFilter,
+} from "./useDiagnosticFilter";
 
 // TODO(multi-project): replace with the active project id from a
 // ProjectStore once the app supports more than one project. Mirrors the
@@ -91,12 +99,6 @@ function extractExcerpt(
   const before = sceneText.slice(beforeStart, start);
   const after = sceneText.slice(end, afterEnd);
   return { before, hit, after };
-}
-
-interface SeverityFilter {
-  error: boolean;
-  warning: boolean;
-  info: boolean;
 }
 
 /**
@@ -245,15 +247,18 @@ function CurrentLinterView() {
   const reapplyIgnores = useLintStore((s) => s.reapplyIgnores);
   const pushNotification = useLintStore((s) => s.pushNotification);
 
-  const [severityFilter, setSeverityFilter] = useState<SeverityFilter>({
-    error: true,
-    warning: true,
-    info: true,
-  });
-  const [groupMode, setGroupMode] = useState<GroupMode>("severity");
-  const [query, setQuery] = useState("");
-  const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
-  const [selectedKey, setSelectedKey] = useState<string | null>(null);
+  const {
+    severityFilter,
+    setSeverityFilter,
+    groupMode,
+    setGroupMode,
+    query,
+    setQuery,
+    collapsed,
+    setCollapsed,
+    selectedKey,
+    setSelectedKey,
+  } = useDiagnosticFilter<GroupMode>("severity");
   const [menu, setMenu] = useState<{
     x: number;
     y: number;
@@ -277,56 +282,19 @@ function CurrentLinterView() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [editor, diagnostics]);
 
-  const filtered = useMemo(() => {
-    const q = query.trim().toLowerCase();
-    return diagnostics.filter((d) => {
-      if (!severityFilter[d.severity]) return false;
-      if (q.length > 0) {
-        const hay = `${d.rule_id} ${d.message}`.toLowerCase();
-        if (!hay.includes(q)) return false;
-      }
-      return true;
-    });
-  }, [diagnostics, severityFilter, query]);
+  const filtered = useMemo(
+    () => filterDiagnostics(diagnostics, severityFilter, query),
+    [diagnostics, severityFilter, query],
+  );
 
   const grouped = useMemo(() => {
     if (groupMode === "none") {
       return [{ key: "all", label: null as string | null, items: filtered }];
     }
     if (groupMode === "rule") {
-      const buckets = new Map<string, Diagnostic[]>();
-      for (const d of filtered) {
-        const arr = buckets.get(d.rule_id) ?? [];
-        arr.push(d);
-        buckets.set(d.rule_id, arr);
-      }
-      return [...buckets.entries()]
-        .sort(([a], [b]) => a.localeCompare(b))
-        .map(([ruleId, items]) => ({
-          key: `rule:${ruleId}`,
-          label: `${ruleId} (${items.length})`,
-          items,
-        }));
+      return groupByRule(filtered, (d) => d.rule_id);
     }
-    const order: Severity[] = ["error", "warning", "info"];
-    const buckets: Record<Severity, Diagnostic[]> = {
-      error: [],
-      warning: [],
-      info: [],
-    };
-    for (const d of filtered) buckets[d.severity].push(d);
-    const labels: Record<Severity, string> = {
-      error: "Error",
-      warning: "Warning",
-      info: "Info",
-    };
-    return order
-      .filter((s) => buckets[s].length > 0)
-      .map((s) => ({
-        key: s,
-        label: `${labels[s]} (${buckets[s].length})`,
-        items: buckets[s],
-      }));
+    return groupBySeverity(filtered, (d) => d.severity);
   }, [filtered, groupMode]);
 
   /**
@@ -514,7 +482,7 @@ function CurrentLinterView() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [flatRows, selectedKey, jumpTo, applyFix]);
+  }, [flatRows, selectedKey, setSelectedKey, jumpTo, applyFix]);
 
   // Close context menu on outside click / Escape.
   useEffect(() => {
@@ -1035,14 +1003,18 @@ function ProjectLinterView() {
   const addIgnore = useLintIgnoreStore((s) => s.addIgnore);
   const setRule = useLintConfigStore((s) => s.setRule);
 
-  const [severityFilter, setSeverityFilter] = useState<SeverityFilter>({
-    error: true,
-    warning: true,
-    info: true,
-  });
-  const [groupMode, setGroupMode] = useState<ProjectGroupMode>("scene");
-  const [query, setQuery] = useState("");
-  const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
+  const {
+    severityFilter,
+    setSeverityFilter,
+    groupMode,
+    setGroupMode,
+    query,
+    setQuery,
+    collapsed,
+    setCollapsed,
+    selectedKey,
+    setSelectedKey,
+  } = useDiagnosticFilter<ProjectGroupMode>("scene");
   const [exportOpen, setExportOpen] = useState(false);
   const [menu, setMenu] = useState<{
     x: number;
@@ -1050,7 +1022,6 @@ function ProjectLinterView() {
     scene: ScannedScene;
     d: Diagnostic;
   } | null>(null);
-  const [selectedKey, setSelectedKey] = useState<string | null>(null);
   const listRef = useRef<HTMLDivElement | null>(null);
 
   const counts = useMemo(() => {
@@ -1062,18 +1033,12 @@ function ProjectLinterView() {
   }, [scenes]);
 
   const filteredScenes = useMemo(() => {
-    const q = query.trim().toLowerCase();
     return scenes
       .map((scene) => ({
         ...scene,
-        diagnostics: scene.diagnostics.filter((d) => {
-          if (!severityFilter[d.severity]) return false;
-          if (q.length > 0) {
-            const hay = `${d.rule_id} ${d.message}`.toLowerCase();
-            if (!hay.includes(q)) return false;
-          }
-          return true;
-        }),
+        diagnostics: scene.diagnostics.filter((d) =>
+          matchesDiagnosticFilter(d, severityFilter, query),
+        ),
       }))
       .filter((scene) => scene.diagnostics.length > 0);
   }, [scenes, severityFilter, query]);
@@ -1098,39 +1063,9 @@ function ProjectLinterView() {
       for (const d of scene.diagnostics) flat.push({ scene, d });
     }
     if (groupMode === "rule") {
-      const buckets = new Map<string, Item[]>();
-      for (const item of flat) {
-        const arr = buckets.get(item.d.rule_id) ?? [];
-        arr.push(item);
-        buckets.set(item.d.rule_id, arr);
-      }
-      return [...buckets.entries()]
-        .sort(([a], [b]) => a.localeCompare(b))
-        .map(([ruleId, items]) => ({
-          key: `rule:${ruleId}`,
-          label: `${ruleId} (${items.length})`,
-          items,
-        }));
+      return groupByRule(flat, (item) => item.d.rule_id);
     }
-    const order: Severity[] = ["error", "warning", "info"];
-    const buckets: Record<Severity, Item[]> = {
-      error: [],
-      warning: [],
-      info: [],
-    };
-    for (const item of flat) buckets[item.d.severity].push(item);
-    const labels: Record<Severity, string> = {
-      error: "Error",
-      warning: "Warning",
-      info: "Info",
-    };
-    return order
-      .filter((s) => buckets[s].length > 0)
-      .map((s) => ({
-        key: `sev:${s}`,
-        label: `${labels[s]} (${buckets[s].length})`,
-        items: buckets[s],
-      }));
+    return groupBySeverity(flat, (item) => item.d.severity, "sev:");
   }, [filteredScenes, groupMode]);
 
   const onStart = useCallback(() => {
@@ -1302,7 +1237,7 @@ function ProjectLinterView() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [flatRows, selectedKey, onJump, applyFix]);
+  }, [flatRows, selectedKey, setSelectedKey, onJump, applyFix]);
 
   const isRunning = phase === "running";
   const progressPct = total > 0 ? Math.round((completed / total) * 100) : 0;
