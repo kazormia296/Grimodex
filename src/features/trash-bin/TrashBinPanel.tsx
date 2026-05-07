@@ -2,12 +2,15 @@ import { useEffect, useMemo } from "react";
 import { useTranslation } from "react-i18next";
 import { Trash2, Circle } from "lucide-react";
 import { useTrashBinStore } from "./trashBinStore";
-import { TrashBinItem } from "./TrashBinItem";
+import { TrashBinListView } from "./TrashBinListView";
+import { TrashBinPhysicsView } from "./TrashBinPhysicsView";
+import { useReducedMotion } from "@/lib/animation";
 
 const PROJECT_ID = "default-project";
 
 export function TrashBinPanel() {
   const { t } = useTranslation();
+  const reducedMotion = useReducedMotion();
   const items = useTrashBinStore((s) => s.items);
   const isCapturing = useTrashBinStore((s) => s.isCapturing);
   const isLoading = useTrashBinStore((s) => s.isLoading);
@@ -73,21 +76,17 @@ export function TrashBinPanel() {
         </button>
       </header>
 
-      <div className="flex-1 overflow-y-auto">
-        {isLoading ? (
-          <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
-            …
-          </div>
-        ) : sortedItems.length === 0 ? (
-          <div className="flex h-full items-center justify-center px-6 py-12 text-center text-sm text-muted-foreground">
-            {t("trashBin.empty")}
+      <div className="flex-1 overflow-hidden">
+        {reducedMotion ? (
+          <div className="h-full overflow-y-auto">
+            <TrashBinListView
+              items={sortedItems}
+              isLoading={isLoading}
+              onRemove={removeItem}
+            />
           </div>
         ) : (
-          <ul className="divide-y divide-border/50">
-            {sortedItems.map((item) => (
-              <TrashBinItem key={item.id} item={item} onRemove={removeItem} />
-            ))}
-          </ul>
+          <TrashBinPhysicsView items={sortedItems} isLoading={isLoading} />
         )}
       </div>
     </div>
