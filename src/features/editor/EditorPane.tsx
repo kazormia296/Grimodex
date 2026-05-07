@@ -2,6 +2,7 @@ import { useState, useEffect, useRef, useCallback } from "react";
 import { createPortal } from "react-dom";
 import { useTranslation } from "react-i18next";
 import { Clock } from "lucide-react";
+import { cn } from "@/lib/utils";
 import { useEditor, EditorContent } from "@tiptap/react";
 import { getEditorExtensions } from "@/features/editor/extensions";
 import { SceneBeatEditorContextProvider } from "@/features/editor/beat/SceneBeatEditorContext";
@@ -1420,6 +1421,7 @@ export function EditorPane({
                   <EditorContextMenu
                     editor={editor}
                     containerRef={editorContainerRef}
+                    toolbarActionsRef={toolbarActionsRef}
                   />
                 </div>
               </EditorDropDiv>
@@ -1544,6 +1546,7 @@ export function EditorPane({
                   <EditorContextMenu
                     editor={editor}
                     containerRef={editorContainerRef}
+                    toolbarActionsRef={toolbarActionsRef}
                   />
                 </div>
               </EditorDropDiv>
@@ -1631,13 +1634,36 @@ export function EditorPane({
           <span
             ref={charCountRef}
             data-testid="char-count"
-            className="tabular-nums"
+            className="flex items-center gap-1.5 tabular-nums"
           >
-            {charCount.toLocaleString()} chars
+            <span>{charCount.toLocaleString()} chars</span>
             {targetCharCount > 0 && (
-              <span className="ml-1 text-muted-foreground">
-                / {targetCharCount.toLocaleString()}
-              </span>
+              <>
+                <span className="text-muted-foreground">
+                  / {targetCharCount.toLocaleString()}
+                </span>
+                <span
+                  className="relative h-1 w-12 overflow-hidden rounded-full bg-muted"
+                  aria-hidden
+                >
+                  <span
+                    className={cn(
+                      "absolute inset-y-0 left-0 transition-[width] duration-200",
+                      charCount >= targetCharCount
+                        ? "bg-emerald-500"
+                        : "bg-primary",
+                    )}
+                    style={{
+                      width: `${Math.min(100, (charCount / targetCharCount) * 100)}%`,
+                    }}
+                  />
+                </span>
+                {charCount > targetCharCount && (
+                  <span className="text-rose-500">
+                    +{(charCount - targetCharCount).toLocaleString()}
+                  </span>
+                )}
+              </>
             )}
           </span>
           {isSaving ? (
