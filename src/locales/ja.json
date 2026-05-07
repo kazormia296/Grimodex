@@ -1382,6 +1382,7 @@
       "actionBarRetry": "再試行",
       "actionBarDiscard": "破棄",
       "regenerateConfirm": "生成済みの文章を破棄して再生成しますか？",
+      "clearConfirm": "次のビートまでの本文をすべて削除しますか？",
       "unplaceToast": "ビートを Unplaced に移動しました（v1: 旧生成段落は文書内に残ります）",
       "typeLabel": "ビートタイプ",
       "types": {

@@ -158,6 +158,14 @@ export function SceneBeatNodeView({
     });
   };
 
+  const handleClearBeat = () => {
+    runMenuAction(() => {
+      if (!editor || !beatId) return;
+      if (!window.confirm(t("editor.beat.clearConfirm"))) return;
+      clearBeatContent(editor, beatId);
+    });
+  };
+
   const handleActionBarRetry = () => {
     setShowActionBar(false);
     if (!editor || !beatId) return;
@@ -408,11 +416,7 @@ export function SceneBeatNodeView({
                   type="button"
                   role="menuitem"
                   data-testid="beat-menu-clear"
-                  onClick={() =>
-                    runMenuAction(() => {
-                      if (editor && beatId) clearBeatContent(editor, beatId);
-                    })
-                  }
+                  onClick={handleClearBeat}
                   className="block w-full px-3 py-1.5 text-left hover:bg-primary hover:text-primary-foreground"
                 >
                   {t("editor.beat.menuItems.clearBeat")}

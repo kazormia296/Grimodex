@@ -1375,6 +1375,7 @@
       "actionBarRetry": "Retry",
       "actionBarDiscard": "Discard",
       "regenerateConfirm": "Discard generated prose and regenerate?",
+      "clearConfirm": "Delete all body content up to the next beat?",
       "unplaceToast": "Beat moved to Unplaced (v1: existing prose stays in document)",
       "typeLabel": "Beat type",
       "types": {
