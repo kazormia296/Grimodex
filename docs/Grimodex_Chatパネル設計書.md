@@ -605,12 +605,74 @@ function buildContext(
 
 ### 対応プロバイダ
 
+#### API プロバイダ（HTTP / BYOK）
+
 | プロバイダ | SDK | 特記事項 |
 |-----------|-----|---------|
 | OpenRouter | Vercel AI SDK `openrouter` | 推奨デフォルト。500+モデルに単一キーでアクセス |
 | Anthropic | Vercel AI SDK `anthropic` | Claude直接利用 |
 | OpenAI | Vercel AI SDK `openai` | GPT-4o等 |
 | Ollama | Vercel AI SDK `ollama` | ローカルモデル。オフライン対応 |
+| OpenAI 互換（カスタム） | Vercel AI SDK `openai`（`baseURL` 上書き） | llama.cpp / LM Studio / vLLM / 自前ホストの GPU 推論サーバ等。`baseURL` と任意の `apiKey` を Settings で指定 |
+| AI のべりすと | Vercel AI SDK `openai`（`baseURL` 固定） | 日本語小説特化。`https://api.tringpt.com/api` / Bearer 認証。OpenAI 互換チャット API。コンテキスト窓 2048 tok・独自サンプリングパラメータ・拡張思考非対応の特殊扱い（後述） |
+
+##### ローカル LLM / OpenAI 互換接続時の制限
+
+Ollama および OpenAI 互換（カスタム）プロバイダで接続するローカル / セルフホストモデルでは、商用 API と機能差があるため以下のデグレード方針を取る。
+
+- **拡張思考は非対応扱い**: `supportsThinking: false` / `supportsAdaptiveThinking: false` 固定。§拡張思考と effort パラメータ のロジックはスキップされ、`thinking` / `effort` パラメータをリクエストに含めない
+- **構造化出力に依存するタスクは明示的に警告**: AI Codex 自動抽出 / Synopsis 自動生成 / セッションタイトル自動生成は JSON Schema 強制を前提とするため、ローカルモデル接続時は Settings 上で「ローカルモデルでは精度が落ちる可能性があります」と注意表示し、デフォルトでは無効化する（ユーザーが明示的にオプトイン可能）
+- **コンテキスト上限はユーザー指定**: API から取得できないことが多いため、Settings の「OpenAI 互換」エンドポイント設定にモデルごとの `max_context_tokens` 手動指定欄を設ける。未指定時は保守的に 8k で扱う
+- **トークン計上**: API レスポンスの `usage` を信頼する。返さない実装の場合は `tokens_in / tokens_out` を NULL 許容
+- **接続テスト**: Settings に「接続テスト」ボタンを設け、`GET <baseURL>/models` で疎通とモデル一覧取得を確認できるようにする
+
+##### AI のべりすと固有の扱い
+
+AI のべりすと（[ai-novel.com](https://ai-novel.com/account_api_help.php)）は OpenAI 互換チャット API を提供するが、商用 API と前提が大きく異なるため独立プロバイダとして扱い、以下の特殊化を行う。
+
+- **配線**: ベース実装は Vercel AI SDK `openai` の `baseURL` 差し替え（`https://api.tringpt.com/api`）。Bearer 認証は keyring に保存
+- **モデル一覧**: ハードコード（`spiko` / `spiko_solid` / `spiko_max` / `derrida_03` / `damsel_ray` / `supertrin_highpres` / `supertrin_maxpres`）。動的取得は将来検討
+- **コンテキスト窓**: **2048 トークン固定**。§トークン予算管理 の floor 合計（6,500 tok）を満たせないため、本プロバイダ専用の配分プロファイルを用意:
+  - L3 Scene と応答予約を最優先
+  - L1 Project / L2 storySoFar / L4 Codex は**ゼロまで圧縮許容**
+  - L5 History は直近 1〜2 ターンのみ
+  - Settings に「AI のべりすと使用時はプロジェクト指示・Codex がコンテキストに含まれない場合があります」と注意表示
+  - シーン本文も全文が入らないケースが常態化するため、L3 は「シーン末尾優先で抜粋」する（小説継続用途に特化）
+- **拡張思考**: 非対応（`supportsThinking: false` / `supportsAdaptiveThinking: false`）。`thinking` / `effort` パラメータはリクエストに含めない
+- **構造化出力依存タスク**: AI Codex 自動抽出 / Synopsis 自動生成 / セッションタイトル自動生成はデフォルト無効化（ユーザーが明示オプトイン可能）。日本語継続生成への特化と引き換え
+- **独自サンプリングパラメータ**: OpenAI には存在しない以下のフィールドを Settings の AI のべりすと専用セクションで編集可能にし、リクエストボディに素通しで含める:
+  - `top_a`, `tailfree`, `typical_p`, `min_p`, `rep_pen` (1.0〜2.0)
+  - `badwords`, `stoptokens`, `logit_bias`
+  - 入力エリアのモデルセレクタで AI のべりすとを選んだ時のみ、これらのプリセットを切り替える簡易 UI も検討（プリセット = `バランス` / `創造的` / `保守的` 等）
+- **ストリーミング**: API ドキュメントに明記されていないため、実装着手時に実機検証する。非対応の場合は非ストリーム応答として扱い、UI 側でローディング表示で繋ぐ
+- **トークン計上**: API レスポンスの `usage` を信頼。返さない場合は `tokens_in / tokens_out` を NULL 許容
+- **接続テスト**: Settings に専用の「接続テスト」ボタン（カスタム OpenAI 互換とは別動線）。短文を投げて 200 が返ることを確認
+
+#### CLI プロバイダ（サブスクリプション流用）
+
+API キーを持たないユーザーが、既にローカルにインストール・認証済みの CLI エージェントをチャットバックエンドとして流用するためのレイヤ。**目的は「サブスク（Claude Pro / ChatGPT Plus 等）の流用による API コスト削減」に限定**し、CLI のエージェント機能（ファイル操作、shell 実行、サブエージェント、MCP 接続等）は本パネルからは使わない。
+
+| プロバイダ | 起動コマンド | ストリーム形式 |
+|-----------|-------------|--------------|
+| Claude Code | `claude -p <prompt> --output-format stream-json --allowed-tools "" --permission-mode plan` | NDJSON |
+| OpenAI Codex CLI | `codex exec --json --sandbox read-only <prompt>` | NDJSON |
+| OpenCode | `opencode run --print-logs --no-tools <prompt>` | JSON 行 |
+
+**設計原則:**
+
+- **ツール全 Off で起動**: 各 CLI のフラグでファイル R/W・shell・WebSearch を無効化し、実質的に「テキスト応答だけを返す HTTP API」相当の挙動に縛る。プロンプトインジェクションが効いても影響範囲を Anthropic API 直叩きと同等まで下げる
+- **Tauri Command 経由の subprocess**: `tauri-plugin-shell` で子プロセス spawn → stdout NDJSON を Rust 側でパース → 既存の `chatProvider` ストリームインターフェースに整形して流す。フロント側のストリーミング UI は API プロバイダと共通
+- **認証は CLI 側に委譲**: keyring には何も保存しない。CLI 側で `claude login` / `codex auth` / `opencode auth` 済みであることを前提とし、未認証の場合は Settings 画面で「`<コマンド>` でログインしてください」と案内するのみ
+- **モデル選択**: 各 CLI の `--model` フラグ経由。effort / thinking の細粒度制御は CLI が公開している範囲のみ対応（adaptive thinking 連動は API プロバイダ専用）
+- **トークン計上**: CLI が `usage` を返す場合（Claude Code stream-json は対応）は `chat_messages.tokens_in / tokens_out` に記録。返さない場合は NULL を許容
+- **対象プラットフォーム**: macOS / Linux / WSL を v1 対象とする。Windows ネイティブは各 CLI 側の安定リリース後に追従（PATH 検出・`.cmd` shim・改行コード差異の負債を避ける）
+
+**やらないこと（明示的スコープ外）:**
+
+- CLI のエージェント機能を Chat パネル内で活用すること（ファイル編集を伴う Agent mode、サブエージェント呼び出し、MCP 接続経由の Codex 操作 等）
+- これらは別レイヤで扱う:
+  - **プロジェクト横断の自然言語操作 / エージェント活用** → MCP サーバー設計書を参照（ユーザーが自分のターミナルで Claude Code を起動し、Grimodex の MCP サーバーに接続する想定）
+  - **長時間自律実行（AutoNovel 風の章単位生成）** → 将来検討。Chat パネルではなく専用の「Background Run」型 UI として別途設計する
 
 ### APIキーの保存
 
