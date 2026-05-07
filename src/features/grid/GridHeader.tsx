@@ -1,7 +1,6 @@
 import { useRef, useState } from "react";
 import {
   Search,
-  MoreVertical,
   X,
   ChevronsDownUp,
   ChevronsUpDown,
@@ -39,8 +38,6 @@ export function GridHeader({
 }: Props) {
   const { t } = useTranslation();
   const [searchOpen, setSearchOpen] = useState(false);
-  const [actionsMenuOpen, setActionsMenuOpen] = useState(false);
-  const menuBtnRef = useRef<HTMLButtonElement>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
   const searchQuery = useGridStore((s) => s.searchQuery);
   const setSearchQuery = useGridStore((s) => s.setSearchQuery);
@@ -175,25 +172,7 @@ export function GridHeader({
           {toolbarOpen ? <ChevronUp /> : <ChevronDown />}
         </Button>
 
-        <div className="relative">
-          <Button
-            ref={menuBtnRef}
-            variant="outline"
-            size="icon-xs"
-            className="border-border/60 text-muted-foreground hover:text-foreground"
-            onClick={() => setActionsMenuOpen((v) => !v)}
-            title={t("grid.header.actionsMenu", "アクション")}
-          >
-            <MoreVertical />
-          </Button>
-          {actionsMenuOpen && (
-            <GridActionsMenu
-              onClose={() => setActionsMenuOpen(false)}
-              anchorRef={menuBtnRef}
-              onManageLabels={onManageLabels}
-            />
-          )}
-        </div>
+        <GridActionsMenu onManageLabels={onManageLabels} />
       </div>
     </div>
   );

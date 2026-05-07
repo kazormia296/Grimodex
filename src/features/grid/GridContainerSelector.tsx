@@ -1,10 +1,16 @@
-import { useState, useRef, useEffect } from "react";
+import { useState } from "react";
 import { ChevronDown, ChevronRight, Home } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { useTreeStore } from "@/features/tree/treeStore";
 import type { TreeNodeData } from "@/features/tree/treeStore";
 import { cmpKeys } from "@/features/tree/fractionalIndex";
 import { cn } from "@/lib/utils";
+import { Button } from "@/components/ui/button";
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover";
 
 interface Props {
   containerId: string | null;
@@ -92,8 +98,6 @@ function FolderNode({
 export function GridContainerSelector({ containerId, onSelect }: Props) {
   const { t } = useTranslation();
   const [open, setOpen] = useState(false);
-  const popoverRef = useRef<HTMLDivElement>(null);
-  const buttonRef = useRef<HTMLButtonElement>(null);
   const nodes = useTreeStore((s) => s.nodes);
   const nodesById = Object.fromEntries(nodes.map((n) => [n.id, n]));
 
@@ -102,66 +106,50 @@ export function GridContainerSelector({ containerId, onSelect }: Props) {
     .filter((n) => n.nodeType === "folder" && n.parentId === null)
     .sort((a, b) => cmpKeys(a.sortOrder, b.sortOrder));
 
-  useEffect(() => {
-    function handleClick(e: MouseEvent) {
-      if (
-        popoverRef.current &&
-        !popoverRef.current.contains(e.target as Node) &&
-        buttonRef.current &&
-        !buttonRef.current.contains(e.target as Node)
-      ) {
-        setOpen(false);
-      }
-    }
-    if (open) document.addEventListener("mousedown", handleClick);
-    return () => document.removeEventListener("mousedown", handleClick);
-  }, [open]);
-
   return (
-    <div className="relative flex items-center gap-0.5 text-[12px]">
+    <div className="flex items-center gap-0.5 text-[12px]">
       {/* Root breadcrumb */}
-      <button
-        className="flex items-center gap-1 rounded px-1.5 py-0.5 hover:bg-accent"
+      <Button
+        variant="ghost"
+        size="icon-xs"
         onClick={() => onSelect(null)}
         title={t("grid.container.root", "プロジェクトルート")}
       >
-        <Home className="h-3 w-3" />
-      </button>
+        <Home />
+      </Button>
 
       {/* Ancestor breadcrumbs */}
       {ancestors.map((seg) => (
         <span key={seg.id} className="flex items-center gap-0.5">
           <ChevronRight className="h-3 w-3 text-muted-foreground" />
-          <button
-            className="rounded px-1.5 py-0.5 hover:bg-accent truncate max-w-[120px]"
+          <Button
+            variant="ghost"
+            size="xs"
+            className="max-w-[120px] px-1.5 font-normal"
             onClick={() => onSelect(seg.id)}
             title={seg.title}
           >
-            {seg.title}
-          </button>
+            <span className="truncate">{seg.title}</span>
+          </Button>
         </span>
       ))}
 
       {/* Dropdown toggle */}
-      <button
-        ref={buttonRef}
-        className={cn(
-          "rounded px-1 py-0.5 hover:bg-accent",
-          open && "bg-accent",
-        )}
-        onClick={() => setOpen((v) => !v)}
-        aria-label={t("grid.container.selectFolder", "フォルダを選択")}
-      >
-        <ChevronDown className="h-3 w-3" />
-      </button>
-
-      {/* Dropdown */}
-      {open && (
-        <div
-          ref={popoverRef}
-          className="absolute left-0 top-full z-50 mt-1 min-w-[200px] max-h-64 overflow-y-auto rounded-md border bg-popover p-1 shadow-md"
+      <Popover open={open} onOpenChange={setOpen}>
+        <PopoverTrigger asChild>
+          <Button
+            variant="ghost"
+            size="icon-xs"
+            className={cn(open && "bg-accent")}
+            aria-label={t("grid.container.selectFolder", "フォルダを選択")}
+          >
+            <ChevronDown />
+          </Button>
+        </PopoverTrigger>
+        <PopoverContent
+          align="start"
+          className="w-auto min-w-[200px] max-h-64 overflow-y-auto p-1"
         >
-          {/* Root option */}
           <button
             className={cn(
               "flex w-full items-center gap-1 rounded px-2 py-1 text-[12px] hover:bg-accent",
@@ -189,8 +177,8 @@ export function GridContainerSelector({ containerId, onSelect }: Props) {
               }}
             />
           ))}
-        </div>
-      )}
+        </PopoverContent>
+      </Popover>
     </div>
   );
 }
