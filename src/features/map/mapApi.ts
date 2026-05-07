@@ -25,7 +25,7 @@ import {
   type AuthorshipSpan,
   type NewAuthorshipSpan,
 } from "@/db/schema";
-import { eq, and, isNotNull } from "drizzle-orm";
+import { eq, and, isNotNull, inArray } from "drizzle-orm";
 import { generateKeyBetween } from "@/features/tree/fractionalIndex";
 import type { NodeRefType } from "./types";
 import { DEFAULT_PALETTE_ID, DEFAULT_COLOR_SLOT } from "@/lib/stickyPalettes";
@@ -861,11 +861,8 @@ export async function getAiBranchSnapshot(
           .where(
             and(
               eq(mapNodePositions.boardId, branch.boardId),
-              isNotNull(mapNodePositions.stickyId),
+              inArray(mapNodePositions.stickyId, stickyIds),
             ),
-          )
-          .then((rows) =>
-            rows.filter((p) => p.stickyId && stickyIds.includes(p.stickyId)),
           )
       : [];
 
@@ -879,9 +876,7 @@ export async function getAiBranchSnapshot(
       ? await db
           .select()
           .from(authorshipSpans)
-          .then((rows) =>
-            rows.filter((sp) => sp.stickyId && stickyIds.includes(sp.stickyId)),
-          )
+          .where(inArray(authorshipSpans.stickyId, stickyIds))
       : [];
 
   return { branch, branchPosition, stickies, stickyPositions, edges, spans };

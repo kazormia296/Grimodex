@@ -1,5 +1,6 @@
 import { useEffect, useState, useCallback, useMemo } from "react";
 import { useTranslation } from "react-i18next";
+import { toast } from "sonner";
 import { Plus, X } from "lucide-react";
 import { useCodexStore } from "../codexStore";
 import type { CodexEntry } from "../api";
@@ -182,7 +183,12 @@ export function RelationSection({ entry }: RelationSectionProps) {
 
   const handleRemoveParent = useCallback(async () => {
     const beforeParentId = entry.parentId ?? null;
-    await setParentRelation(entry.id, null);
+    try {
+      await setParentRelation(entry.id, null);
+    } catch (err) {
+      toast.error("親関係の解除に失敗しました", { description: String(err) });
+      return;
+    }
     await loadEntries();
     pushParentChange(entry.id, beforeParentId, null);
   }, [entry.id, entry.parentId, loadEntries, pushParentChange]);
@@ -190,7 +196,14 @@ export function RelationSection({ entry }: RelationSectionProps) {
   const handleAddChild = useCallback(
     async (childEntry: CodexEntry) => {
       const beforeParentId = childEntry.parentId ?? null;
-      await setParentRelation(childEntry.id, entry.id);
+      try {
+        await setParentRelation(childEntry.id, entry.id);
+      } catch (err) {
+        toast.error("子関係の追加に失敗しました", {
+          description: String(err),
+        });
+        return;
+      }
       await loadEntries();
       pushParentChange(childEntry.id, beforeParentId, entry.id);
     },
@@ -199,7 +212,14 @@ export function RelationSection({ entry }: RelationSectionProps) {
 
   const handleDismiss = useCallback(
     async (dismissedId: string) => {
-      await dismissRelation(entry.id, dismissedId);
+      try {
+        await dismissRelation(entry.id, dismissedId);
+      } catch (err) {
+        toast.error("候補の非表示化に失敗しました", {
+          description: String(err),
+        });
+        return;
+      }
       setDismissedIds((prev) => new Set([...prev, dismissedId]));
 
       if (!useGlobalHistoryStore.getState().isReplaying) {
@@ -229,7 +249,14 @@ export function RelationSection({ entry }: RelationSectionProps) {
     async (suggestionId: string) => {
       const suggestion = allEntries.find((e) => e.id === suggestionId);
       const beforeParentId = suggestion?.parentId ?? null;
-      await setParentRelation(suggestionId, entry.id);
+      try {
+        await setParentRelation(suggestionId, entry.id);
+      } catch (err) {
+        toast.error("子関係の追加に失敗しました", {
+          description: String(err),
+        });
+        return;
+      }
       await loadEntries();
       pushParentChange(suggestionId, beforeParentId, entry.id);
     },

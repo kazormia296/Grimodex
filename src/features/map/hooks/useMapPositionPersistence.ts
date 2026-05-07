@@ -27,6 +27,12 @@ interface UseMapPositionPersistenceInput {
   setFrames: React.Dispatch<React.SetStateAction<MapFrame[]>>;
   setNodes: React.Dispatch<React.SetStateAction<Node[]>>;
   setUserEdges: React.Dispatch<React.SetStateAction<MapEdge[]>>;
+  /**
+   * Synchronously-current snapshot of userEdges. Used by onEdgesChange so we
+   * can read the to-be-deleted row without putting a side effect inside a
+   * setUserEdges updater (StrictMode double-invokes setters).
+   */
+  userEdgesRef: React.MutableRefObject<MapEdge[]>;
   persistingRef: React.MutableRefObject<Set<string>>;
 }
 
@@ -49,6 +55,7 @@ export function useMapPositionPersistence({
   setFrames,
   setNodes,
   setUserEdges,
+  userEdgesRef,
   persistingRef,
 }: UseMapPositionPersistenceInput) {
   // persistPosition fires once per drag stop (per node). No debouncing here —
@@ -402,15 +409,27 @@ export function useMapPositionPersistence({
       for (const change of changes) {
         if (change.type === "remove" && change.id.startsWith("user:")) {
           const dbId = change.id.slice("user:".length);
-          let captured: MapEdge | undefined;
-          setUserEdges((prev) => {
-            captured = prev.find((e) => e.id === dbId);
-            return prev.filter((e) => e.id !== dbId);
-          });
-          deleteUserEdge(dbId).catch(() => {});
-
-          if (captured && !useGlobalHistoryStore.getState().isReplaying) {
-            const cap = captured;
+          // Read the to-be-deleted row from the synchronously-current ref
+          // BEFORE mutating state. Putting a `find` inside a setUserEdges
+          // updater would mis-capture under StrictMode's double-invoke.
+          const captured = userEdgesRef.current.find((e) => e.id === dbId);
+          if (!captured) continue;
+          setUserEdges((prev) => prev.filter((e) => e.id !== dbId));
+          const cap = captured;
+          void (async () => {
+            try {
+              await deleteUserEdge(cap.id);
+            } catch (err) {
+              // IPC failed: roll the optimistic UI delete back and skip the
+              // history push so undo cannot replay against a still-existing
+              // DB row (UNIQUE violation).
+              setUserEdges((prev) =>
+                prev.some((e) => e.id === cap.id) ? prev : [...prev, cap],
+              );
+              reportPersistError(err);
+              return;
+            }
+            if (useGlobalHistoryStore.getState().isReplaying) return;
             useGlobalHistoryStore.getState().push({
               kind: "map",
               label: "エッジ削除",
@@ -433,11 +452,11 @@ export function useMapPositionPersistence({
                 setUserEdges((prev) => prev.filter((e) => e.id !== cap.id));
               },
             });
-          }
+          })();
         }
       }
     },
-    [setUserEdges],
+    [setUserEdges, userEdgesRef],
   );
 
   return { onNodesChange, onEdgesChange, persistPosition };

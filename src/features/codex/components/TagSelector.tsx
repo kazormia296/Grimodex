@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from "react";
 import { useTranslation } from "react-i18next";
+import { toast } from "sonner";
 import { TagPill } from "./TagPill";
 import {
   listCodexTags,
@@ -141,10 +142,16 @@ export function TagSelector({
       ? selectedTags.filter((t) => t.id !== tag.id)
       : [...selectedTags, tag];
     onTagsChange(next);
-    await persistTags(
-      entryId,
-      next.map((t) => t.id),
-    );
+    try {
+      await persistTags(
+        entryId,
+        next.map((t) => t.id),
+      );
+    } catch (err) {
+      onTagsChange(before);
+      toast.error("タグの保存に失敗しました", { description: String(err) });
+      return;
+    }
     pushTagAssociation(before, next, "タグ切替");
   };
 
@@ -152,30 +159,56 @@ export function TagSelector({
     const before = selectedTags;
     const next = selectedTags.filter((t) => t.id !== tagId);
     onTagsChange(next);
-    await persistTags(
-      entryId,
-      next.map((t) => t.id),
-    );
+    try {
+      await persistTags(
+        entryId,
+        next.map((t) => t.id),
+      );
+    } catch (err) {
+      onTagsChange(before);
+      toast.error("タグの保存に失敗しました", { description: String(err) });
+      return;
+    }
     pushTagAssociation(before, next, "タグ解除");
   };
 
   const handleCreate = async () => {
     if (!newName.trim()) return;
     const id = crypto.randomUUID();
-    const tag = await createCodexTag({
-      id,
-      projectId,
-      name: newName.trim(),
-      color: newColor,
-    });
+    let tag: CodexTag;
+    try {
+      tag = await createCodexTag({
+        id,
+        projectId,
+        name: newName.trim(),
+        color: newColor,
+      });
+    } catch (err) {
+      toast.error("タグの作成に失敗しました", { description: String(err) });
+      return;
+    }
     setAllTags((prev) => [...prev, tag]);
     const before = selectedTags;
     const next = [...selectedTags, tag];
     onTagsChange(next);
-    await persistTags(
-      entryId,
-      next.map((t) => t.id),
-    );
+    try {
+      await persistTags(
+        entryId,
+        next.map((t) => t.id),
+      );
+    } catch (err) {
+      // Tag is created (DB row exists, allTags includes it). Roll back the
+      // optimistic association only and skip the history push — the tag
+      // creation itself is a valid standalone outcome.
+      onTagsChange(before);
+      toast.error("タグの関連付けに失敗しました", {
+        description: String(err),
+      });
+      setNewName("");
+      setNewColor(PRESET_COLORS[0]);
+      setShowCreate(false);
+      return;
+    }
     setNewName("");
     setNewColor(PRESET_COLORS[0]);
     setShowCreate(false);

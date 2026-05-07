@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import { toast } from "sonner";
 import i18next from "@/lib/i18n";
 import * as api from "./api";
 import type { TreeNode as ApiNode } from "./api";
@@ -737,23 +738,40 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
     }
     const prevActiveSceneId = activeSceneId;
 
-    // Delete from DB (leaf-first to avoid FK issues)
+    // Delete from DB (leaf-first to avoid FK issues). Track ids that
+    // succeeded so a partial failure leaves in-memory state and DB in sync
+    // and we can skip pushing an un-redoable history entry.
+    const successfullyDeleted = new Set<string>();
+    let partialFailure = false;
     for (const delId of [...toDelete].reverse()) {
-      await api.deleteNode(delId);
+      try {
+        await api.deleteNode(delId);
+        successfullyDeleted.add(delId);
+      } catch (err) {
+        partialFailure = true;
+        toast.error("ノード削除に失敗しました", { description: String(err) });
+        break;
+      }
     }
-    const remaining = nodes.filter((n) => !toDelete.has(n.id));
+    const remaining = nodes.filter((n) => !successfullyDeleted.has(n.id));
     const newScenes = computeScenes(remaining);
-    const newActive = toDelete.has(activeSceneId)
+    const newActive = successfullyDeleted.has(activeSceneId)
       ? (newScenes[0]?.id ?? "")
       : activeSceneId;
     set({ nodes: remaining, scenes: newScenes, activeSceneId: newActive });
     usePhaseStore.getState().recomputeSceneOrder(remaining);
-    // Close editor tabs for all deleted nodes
+    // Close editor tabs only for nodes that actually got deleted.
     const tabStore = useTabStore.getState();
-    for (const delId of [...toDelete]) {
+    for (const delId of successfullyDeleted) {
       tabStore.closeTab(delId);
       tabStore.closeSecondaryTab(delId);
     }
+
+    // Partial failure: undo would try to recreate rows still present in DB
+    // and redo would re-traverse a tree whose shape we never finished
+    // mutating. Skip the history push entirely so the timeline cannot
+    // replay an inconsistent state.
+    if (partialFailure) return;
 
     if (trackHistory) {
       useGlobalHistoryStore.getState().push({

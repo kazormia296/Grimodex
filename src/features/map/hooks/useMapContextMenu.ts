@@ -1,5 +1,6 @@
 import { useState, useCallback } from "react";
 import type { Node } from "@xyflow/react";
+import { toast } from "sonner";
 import {
   setNodePinned,
   updateNodePosition,
@@ -98,7 +99,15 @@ export function useMapContextMenu({
       setDeletingStickyIds((prev) => new Set(prev).add(pos.stickyId!));
     } else {
       const captured = { ...pos, nodeId: contextMenu.nodeId };
-      await deleteNodePosition(pos.id);
+      try {
+        await deleteNodePosition(pos.id);
+      } catch (err) {
+        toast.error("ボードからの削除に失敗しました", {
+          description: String(err),
+        });
+        setContextMenu(null);
+        return;
+      }
       setPositions((prev) => prev.filter((p) => p.id !== pos.id));
 
       if (boardId && !useGlobalHistoryStore.getState().isReplaying) {

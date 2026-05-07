@@ -269,18 +269,75 @@ export const useForeshadowStore = create<ForeshadowState>()((set, get) => ({
     if (!before) return;
     if (useGlobalHistoryStore.getState().isReplaying) return;
 
-    // 注意: payoffSceneId === null 経由で mark を剥がした場合、Undo で
-    // foreshadow row のデータは復元できるが、本文中の payoff mark までは
-    // 戻せない。adopt 系アトミック化と合わせて別 PR で対応する。
+    // payoffSceneId を null にした更新の場合、本文の payoff mark を物理削除
+    // しているため、Undo 側で「対象シーンが現在開かれていれば mark を再付与
+    // して saveSceneContent」を行う必要がある。対象シーンが開かれていない
+    // 場合は DB だけ巻き戻せば、ロード時に loadForeshadowAnchors が DB から
+    // mark を復元する。
+    const releasedPayoff =
+      patch.payoffSceneId === null &&
+      typeof before.payoffSceneId === "string" &&
+      before.payoffFromPos != null &&
+      before.payoffToPos != null;
+    const releasedPayoffSnapshot = releasedPayoff
+      ? {
+          sceneId: before.payoffSceneId as string,
+          fromPos: before.payoffFromPos as number,
+          toPos: before.payoffToPos as number,
+        }
+      : null;
+
     useGlobalHistoryStore.getState().push({
       kind: "foreshadow",
       label: "伏線更新",
       async undo() {
         await updateForeshadow(id, undoPatch);
+        if (releasedPayoffSnapshot) {
+          const editor = useEditorStore.getState().editor;
+          const activeSceneId = useSceneStore.getState().activeSceneId;
+          if (
+            editor &&
+            activeSceneId &&
+            activeSceneId === releasedPayoffSnapshot.sceneId
+          ) {
+            const payoffType = editor.state.schema.marks["foreshadowPayoff"];
+            if (payoffType) {
+              const tr = editor.state.tr;
+              tr.addMark(
+                releasedPayoffSnapshot.fromPos,
+                releasedPayoffSnapshot.toPos,
+                payoffType.create({ foreshadowId: id }),
+              );
+              editor.view.dispatch(tr);
+              const contentJson = JSON.stringify(editor.getJSON());
+              await saveSceneContent(activeSceneId, contentJson);
+            }
+          }
+        }
         await get().load(projectId);
       },
       async redo() {
         await updateForeshadow(id, patch);
+        if (releasedPayoffSnapshot) {
+          const editor = useEditorStore.getState().editor;
+          const activeSceneId = useSceneStore.getState().activeSceneId;
+          if (
+            editor &&
+            activeSceneId &&
+            activeSceneId === releasedPayoffSnapshot.sceneId
+          ) {
+            unsetForeshadowPayoffMarksByForeshadowIds(
+              (fn) => {
+                const tr = editor.state.tr;
+                fn(tr);
+                editor.view.dispatch(tr);
+              },
+              [id],
+            );
+            const contentJson = JSON.stringify(editor.getJSON());
+            await saveSceneContent(activeSceneId, contentJson);
+          }
+        }
         await get().load(projectId);
       },
     });

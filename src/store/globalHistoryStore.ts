@@ -42,6 +42,11 @@ export const useGlobalHistoryStore = create<HistoryState>()((set, get) => ({
 
   push(cmd) {
     set((state) => {
+      // Safety net: ignore pushes triggered during undo/redo replay so that
+      // a missing call-site guard cannot corrupt the timeline. Call sites
+      // should still guard themselves to skip building closures on the no-op
+      // path (defense in depth).
+      if (state.isReplaying) return state;
       const past = [...state.past, cmd].slice(-MAX_HISTORY);
       return { past, future: [], canUndo: true, canRedo: false };
     });

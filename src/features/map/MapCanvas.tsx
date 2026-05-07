@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { toast } from "sonner";
 import {
   ReactFlow,
   Background,
@@ -75,7 +76,7 @@ import { deleteNode as deleteTreeNode } from "@/features/tree/api";
 import { deleteCodexEntry } from "@/features/codex/api";
 import { findPosByNodeId, buildUpsertArgs } from "./utils/nodeIdCodec";
 import type { MapNodePositionRecord } from "./types";
-import type { MapFrame } from "@/db/schema";
+import type { MapEdge, MapFrame } from "@/db/schema";
 
 const PROJECT_ID = "default-project";
 
@@ -413,6 +414,7 @@ export function MapCanvas() {
       setFrames,
       setNodes,
       setUserEdges,
+      userEdgesRef,
       persistingRef,
     });
 
@@ -568,54 +570,69 @@ export function MapCanvas() {
     const selectedNodes = getNodes().filter((n) => n.selected);
     const selectedEdges = getEdges().filter((e) => e.selected);
 
-    // Capture user edges for bulk undo
-    const capturedEdges = selectedEdges
-      .filter((e) => e.id.startsWith("user:"))
-      .map((e) => {
-        const id = e.id.slice("user:".length);
-        return userEdgesRef.current.find((u) => u.id === id);
-      })
-      .filter((u): u is NonNullable<typeof u> => Boolean(u))
-      .map((u) => ({ ...u }));
-
+    // Capture buckets are populated *after* a successful IPC, so the history
+    // entry only contains rows that actually got removed from DB. A partial
+    // failure during bulk delete leaves the surviving rows visible (state
+    // wasn't filtered) and out of the history entry.
+    const capturedEdges: MapEdge[] = [];
     for (const edge of selectedEdges) {
       if (!edge.id.startsWith("user:")) continue;
       const userEdgeId = edge.id.slice("user:".length);
-      await deleteUserEdge(userEdgeId);
+      const original = userEdgesRef.current.find((u) => u.id === userEdgeId);
+      try {
+        await deleteUserEdge(userEdgeId);
+      } catch (err) {
+        toast.error("エッジ削除に失敗しました", { description: String(err) });
+        continue;
+      }
+      if (original) capturedEdges.push({ ...original });
       setUserEdges((prev) => prev.filter((u) => u.id !== userEdgeId));
     }
 
     const { frameNodes, showDialog, immediateNodes, snippetNodes } =
       partitionDeletableNodes(selectedNodes);
 
-    // Capture frames for bulk undo
     const capturedFrames: MapFrame[] = [];
     for (const node of frameNodes) {
       const frameId = node.id.startsWith("frame:")
         ? node.id.slice("frame:".length)
         : node.id;
       const frame = framesRef.current.find((f) => f.id === frameId);
+      try {
+        await deleteFrame(frameId);
+      } catch (err) {
+        toast.error("Frame 削除に失敗しました", { description: String(err) });
+        continue;
+      }
       if (frame) capturedFrames.push({ ...frame });
-      await deleteFrame(frameId);
       setFrames((prev) => prev.filter((f) => f.id !== frameId));
     }
 
-    // Capture snippet positions for bulk undo
     const capturedSnippetPositions: {
       nodeId: string;
       pos: MapNodePositionRecord;
     }[] = [];
     for (const node of snippetNodes) {
       const pos = findPosByNodeId(positionsRef.current, node.id);
-      if (pos) {
-        capturedSnippetPositions.push({ nodeId: node.id, pos: { ...pos } });
+      if (!pos) continue;
+      try {
         await deleteNodePosition(pos.id);
-        setPositions((prev) => prev.filter((p) => p.id !== pos.id));
+      } catch (err) {
+        toast.error("ボードからの削除に失敗しました", {
+          description: String(err),
+        });
+        continue;
       }
+      capturedSnippetPositions.push({ nodeId: node.id, pos: { ...pos } });
+      setPositions((prev) => prev.filter((p) => p.id !== pos.id));
     }
 
     for (const node of immediateNodes) {
-      await deleteEntityNodes([node]);
+      try {
+        await deleteEntityNodes([node]);
+      } catch (err) {
+        toast.error("ノード削除に失敗しました", { description: String(err) });
+      }
     }
 
     if (showDialog.length > 0) {

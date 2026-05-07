@@ -1,5 +1,6 @@
 import { useState, useRef, useCallback } from "react";
 import type { XYPosition } from "@xyflow/react";
+import { toast } from "sonner";
 import type { MapFrame } from "@/db/schema";
 import { createFrame, deleteFrame } from "../mapApi";
 import { useGlobalHistoryStore } from "@/store/globalHistoryStore";
@@ -71,14 +72,20 @@ export function useFrameDrawing(
     setFrameDraftScreenRect(null);
     if (!rect || rect.w < 40 || rect.h < 40) return;
 
-    const newFrame = await createFrame({
-      boardId,
-      title: "Frame",
-      x: rect.x,
-      y: rect.y,
-      width: rect.w,
-      height: rect.h,
-    });
+    let newFrame: MapFrame;
+    try {
+      newFrame = await createFrame({
+        boardId,
+        title: "Frame",
+        x: rect.x,
+        y: rect.y,
+        width: rect.w,
+        height: rect.h,
+      });
+    } catch (err) {
+      toast.error("Frame の作成に失敗しました", { description: String(err) });
+      return;
+    }
     setFrames((prev) => [...prev, newFrame]);
     setPaletteMode("default");
 

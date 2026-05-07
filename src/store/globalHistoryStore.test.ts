@@ -149,6 +149,35 @@ describe("useGlobalHistoryStore", () => {
     expect(undoCount).toBe(1);
   });
 
+  it("push is a no-op while replaying", async () => {
+    let observedFutureLen = -1;
+    useGlobalHistoryStore.getState().push({
+      kind: "scenes",
+      label: "outer",
+      undo: async () => {
+        // Misbehaving inner code tries to push during undo; should be ignored
+        // by the safety net even if a call site forgets to guard.
+        useGlobalHistoryStore.getState().push({
+          kind: "scenes",
+          label: "inner",
+          undo: async () => {},
+          redo: async () => {},
+        });
+        observedFutureLen = useGlobalHistoryStore.getState().future.length;
+      },
+      redo: async () => {},
+    });
+    await useGlobalHistoryStore.getState().undo();
+    const s = useGlobalHistoryStore.getState();
+    // The inner push was ignored, so future contains exactly the outer cmd
+    expect(s.past).toHaveLength(0);
+    expect(s.future).toHaveLength(1);
+    expect(s.future[0].label).toBe("outer");
+    // While replaying, future was still empty (push had not yet appended outer
+    // to future and the inner push was rejected outright).
+    expect(observedFutureLen).toBe(0);
+  });
+
   it("clear removes both past and future and resets canUndo/canRedo", async () => {
     useGlobalHistoryStore.getState().push({
       kind: "scenes",

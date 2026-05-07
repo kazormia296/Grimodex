@@ -233,6 +233,9 @@ export const useCodexStore = create<CodexState>()((set, get) => ({
       const v = (before as unknown as Record<string, unknown>)[key];
       undoPatch[key] = v ?? undefined;
     }
+    // Defensive copy so later mutation of `data` by the caller cannot change
+    // the redo behavior captured in this closure.
+    const redoPatch = { ...data };
 
     useGlobalHistoryStore.getState().push({
       kind: "codex",
@@ -249,7 +252,7 @@ export const useCodexStore = create<CodexState>()((set, get) => ({
         }
       },
       async redo() {
-        const reapplied = await updateCodexEntry(id, data);
+        const reapplied = await updateCodexEntry(id, redoPatch);
         if (reapplied) {
           set((state) => ({
             entries: state.entries.map((e) => (e.id === id ? reapplied : e)),
