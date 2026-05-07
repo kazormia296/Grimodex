@@ -33,6 +33,7 @@ import type { AuditCandidate } from "./types";
 import { deriveLabel } from "./deriveLabel";
 import { useEditorStore } from "@/features/editor/editorStore";
 import { useSceneStore } from "@/features/tree/store";
+import { useGlobalHistoryStore } from "@/store/globalHistoryStore";
 import type {
   ForeshadowRow,
   ForeshadowSetupRow,
@@ -153,8 +154,9 @@ export const useForeshadowStore = create<ForeshadowState>()((set, get) => ({
 
   create: async (data) => {
     try {
+      const id = crypto.randomUUID();
       const row = await createForeshadow({
-        id: crypto.randomUUID(),
+        id,
         projectId: data.projectId,
         title: data.title,
         intent: data.intent ?? null,
@@ -172,6 +174,40 @@ export const useForeshadowStore = create<ForeshadowState>()((set, get) => ({
         label: "planned",
       };
       set((s) => ({ items: [item, ...s.items] }));
+
+      if (!useGlobalHistoryStore.getState().isReplaying) {
+        const cap = { ...row };
+        useGlobalHistoryStore.getState().push({
+          kind: "foreshadow",
+          label: "伏線作成",
+          async undo() {
+            await deleteForeshadow(cap.id);
+            set((s) => ({ items: s.items.filter((i) => i.id !== cap.id) }));
+          },
+          async redo() {
+            await createForeshadow({
+              id: cap.id,
+              projectId: cap.projectId,
+              title: cap.title,
+              intent: cap.intent ?? null,
+              notes: cap.notes ?? null,
+              payoffSceneId: cap.payoffSceneId ?? null,
+              payoffFromPos: cap.payoffFromPos ?? null,
+              payoffToPos: cap.payoffToPos ?? null,
+              payoffConfirmed: cap.payoffConfirmed,
+              abandoned: cap.abandoned,
+              loadBearing: cap.loadBearing ?? null,
+            });
+            set((s) => ({
+              items: [
+                { ...cap, setupCount: 0, label: "planned" as const },
+                ...s.items.filter((i) => i.id !== cap.id),
+              ],
+            }));
+          },
+        });
+      }
+
       return item;
     } catch (e) {
       toast.error(
@@ -187,6 +223,16 @@ export const useForeshadowStore = create<ForeshadowState>()((set, get) => ({
   },
 
   update: async (id, patch, projectId) => {
+    const before = get().items.find((i) => i.id === id);
+    const undoPatch: typeof patch = {};
+    if (before) {
+      for (const key of Object.keys(patch) as (keyof typeof patch)[]) {
+        const v = (before as unknown as Record<string, unknown>)[key];
+        // @ts-expect-error narrow union not assignable here
+        undoPatch[key] = v ?? null;
+      }
+    }
+
     try {
       await updateForeshadow(id, patch);
 
@@ -217,10 +263,31 @@ export const useForeshadowStore = create<ForeshadowState>()((set, get) => ({
         `update: ${rootCause(e)}`,
         errorDetail(e),
       );
+      return;
     }
+
+    if (!before) return;
+    if (useGlobalHistoryStore.getState().isReplaying) return;
+
+    // 注意: payoffSceneId === null 経由で mark を剥がした場合、Undo で
+    // foreshadow row のデータは復元できるが、本文中の payoff mark までは
+    // 戻せない。adopt 系アトミック化と合わせて別 PR で対応する。
+    useGlobalHistoryStore.getState().push({
+      kind: "foreshadow",
+      label: "伏線更新",
+      async undo() {
+        await updateForeshadow(id, undoPatch);
+        await get().load(projectId);
+      },
+      async redo() {
+        await updateForeshadow(id, patch);
+        await get().load(projectId);
+      },
+    });
   },
 
   remove: async (id) => {
+    const before = get().items.find((i) => i.id === id);
     try {
       await deleteForeshadow(id);
       set((s) => ({ items: s.items.filter((i) => i.id !== id) }));
@@ -233,7 +300,40 @@ export const useForeshadowStore = create<ForeshadowState>()((set, get) => ({
         `remove: ${rootCause(e)}`,
         errorDetail(e),
       );
+      return;
     }
+
+    if (!before) return;
+    if (useGlobalHistoryStore.getState().isReplaying) return;
+
+    // Note: cascade FK は foreshadowSetups を消す。本 entry では foreshadow row
+    // のみを restore し、setup 行とそれに対応する mark は復元できない。
+    // 別 PR の adopt 系アトミック化で扱う想定。
+    const cap = { ...before };
+    useGlobalHistoryStore.getState().push({
+      kind: "foreshadow",
+      label: "伏線削除",
+      async undo() {
+        await createForeshadow({
+          id: cap.id,
+          projectId: cap.projectId,
+          title: cap.title,
+          intent: cap.intent ?? null,
+          notes: cap.notes ?? null,
+          payoffSceneId: cap.payoffSceneId ?? null,
+          payoffFromPos: cap.payoffFromPos ?? null,
+          payoffToPos: cap.payoffToPos ?? null,
+          payoffConfirmed: cap.payoffConfirmed,
+          abandoned: cap.abandoned,
+          loadBearing: cap.loadBearing ?? null,
+        });
+        set((s) => ({ items: [cap, ...s.items] }));
+      },
+      async redo() {
+        await deleteForeshadow(cap.id);
+        set((s) => ({ items: s.items.filter((i) => i.id !== cap.id) }));
+      },
+    });
   },
 
   loadSetups: async (foreshadowId) => {
