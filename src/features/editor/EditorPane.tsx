@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { createPortal } from "react-dom";
 import { useTranslation } from "react-i18next";
-import { Clock } from "lucide-react";
+import { Clock, BookOpen, Files } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useEditor, EditorContent } from "@tiptap/react";
 import { getEditorExtensions } from "@/features/editor/extensions";
@@ -1275,8 +1275,9 @@ export function EditorPane({
       )}
       {isCodexMode && (
         <div className="flex items-center gap-1.5 border-b border-purple-500/30 bg-purple-500/10 px-3 py-1 text-xs text-purple-600 dark:text-purple-400">
-          <span className="font-medium">
-            📖 {t("editor.ribbon.codexEditing")}
+          <span className="flex items-center gap-1 font-medium">
+            <BookOpen className="h-3 w-3" aria-hidden />
+            {t("editor.ribbon.codexEditing")}
           </span>
           {activeCodexEntry && (
             <span className="text-purple-500/60">
@@ -1292,8 +1293,9 @@ export function EditorPane({
       )}
       {isSnippetMode && (
         <div className="flex items-center gap-1.5 border-b border-emerald-500/30 bg-emerald-500/10 px-3 py-1 text-xs text-emerald-600 dark:text-emerald-400">
-          <span className="font-medium">
-            📎 {t("editor.ribbon.snippetEditing")}
+          <span className="flex items-center gap-1 font-medium">
+            <Files className="h-3 w-3" aria-hidden />
+            {t("editor.ribbon.snippetEditing")}
           </span>
           {activeSnippetEntry && (
             <span className="text-emerald-500/60">
@@ -1341,6 +1343,9 @@ export function EditorPane({
                 }}
               >
                 <div
+                  className={cn(
+                    editorSettings.showLineNumbers && "editor-line-numbers",
+                  )}
                   style={
                     {
                       fontFamily: editorSettings.fontFamily,
@@ -1469,6 +1474,9 @@ export function EditorPane({
                 }}
               >
                 <div
+                  className={cn(
+                    editorSettings.showLineNumbers && "editor-line-numbers",
+                  )}
                   style={
                     {
                       fontFamily: editorSettings.fontFamily,
