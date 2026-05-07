@@ -922,7 +922,7 @@ export const useForeshadowStore = create<ForeshadowState>()((set, get) => ({
       isOrphan: false,
     };
 
-    let afterContent: string | null = null;
+    let afterContent: string;
 
     try {
       // Pre-create DB record with AI metadata before inserting text.
@@ -975,7 +975,6 @@ export const useForeshadowStore = create<ForeshadowState>()((set, get) => ({
     }
 
     if (useGlobalHistoryStore.getState().isReplaying) return;
-    if (!afterContent) return;
 
     const capCandidate = { ...candidate };
     const capIdx = candidateIdx;
