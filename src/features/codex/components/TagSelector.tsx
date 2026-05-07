@@ -1,8 +1,14 @@
 import { useState, useEffect, useRef } from "react";
 import { useTranslation } from "react-i18next";
 import { TagPill } from "./TagPill";
-import { listCodexTags, createCodexTag, setEntryTags } from "../tagApi";
+import {
+  listCodexTags,
+  createCodexTag,
+  deleteCodexTag,
+  setEntryTags,
+} from "../tagApi";
 import type { CodexTag } from "../tagApi";
+import { useGlobalHistoryStore } from "@/store/globalHistoryStore";
 
 type PersistFn = (entryId: string, tagIds: string[]) => Promise<void>;
 
@@ -98,7 +104,39 @@ export function TagSelector({
 
   const selectedIds = new Set(selectedTags.map((t) => t.id));
 
+  const pushTagAssociation = (
+    before: CodexTag[],
+    after: CodexTag[],
+    label: string,
+  ) => {
+    if (useGlobalHistoryStore.getState().isReplaying) return;
+    const cap = {
+      entryId,
+      before: [...before],
+      after: [...after],
+    };
+    useGlobalHistoryStore.getState().push({
+      kind: "tags",
+      label,
+      async undo() {
+        await persistTags(
+          cap.entryId,
+          cap.before.map((t) => t.id),
+        );
+        onTagsChange(cap.before);
+      },
+      async redo() {
+        await persistTags(
+          cap.entryId,
+          cap.after.map((t) => t.id),
+        );
+        onTagsChange(cap.after);
+      },
+    });
+  };
+
   const handleToggle = async (tag: CodexTag) => {
+    const before = selectedTags;
     const next = selectedIds.has(tag.id)
       ? selectedTags.filter((t) => t.id !== tag.id)
       : [...selectedTags, tag];
@@ -107,26 +145,31 @@ export function TagSelector({
       entryId,
       next.map((t) => t.id),
     );
+    pushTagAssociation(before, next, "タグ切替");
   };
 
   const handleRemove = async (tagId: string) => {
+    const before = selectedTags;
     const next = selectedTags.filter((t) => t.id !== tagId);
     onTagsChange(next);
     await persistTags(
       entryId,
       next.map((t) => t.id),
     );
+    pushTagAssociation(before, next, "タグ解除");
   };
 
   const handleCreate = async () => {
     if (!newName.trim()) return;
+    const id = crypto.randomUUID();
     const tag = await createCodexTag({
-      id: crypto.randomUUID(),
+      id,
       projectId,
       name: newName.trim(),
       color: newColor,
     });
     setAllTags((prev) => [...prev, tag]);
+    const before = selectedTags;
     const next = [...selectedTags, tag];
     onTagsChange(next);
     await persistTags(
@@ -136,6 +179,47 @@ export function TagSelector({
     setNewName("");
     setNewColor(PRESET_COLORS[0]);
     setShowCreate(false);
+
+    // Atomic: tag definition creation + association in one history entry.
+    // Undo deletes both the association and the tag definition.
+    if (!useGlobalHistoryStore.getState().isReplaying) {
+      const cap = {
+        tag: { ...tag },
+        entryId,
+        before: [...before],
+        after: [...next],
+      };
+      useGlobalHistoryStore.getState().push({
+        kind: "tags",
+        label: "タグ作成",
+        async undo() {
+          await persistTags(
+            cap.entryId,
+            cap.before.map((t) => t.id),
+          );
+          await deleteCodexTag(cap.tag.id);
+          setAllTags((prev) => prev.filter((t) => t.id !== cap.tag.id));
+          onTagsChange(cap.before);
+        },
+        async redo() {
+          await createCodexTag({
+            id: cap.tag.id,
+            projectId: cap.tag.projectId,
+            name: cap.tag.name,
+            color: cap.tag.color ?? undefined,
+            typeFilter: cap.tag.typeFilter
+              ? JSON.parse(cap.tag.typeFilter)
+              : undefined,
+          });
+          setAllTags((prev) => [...prev, cap.tag]);
+          await persistTags(
+            cap.entryId,
+            cap.after.map((t) => t.id),
+          );
+          onTagsChange(cap.after);
+        },
+      });
+    }
   };
 
   return (
