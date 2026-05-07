@@ -105,27 +105,11 @@ import { debugLog, errorDetail } from "@/lib/debugLog";
 import i18next from "i18next";
 import type { SceneStatus } from "@/features/tree/treeStore";
 import type { GroupIndex, TabContentType } from "@/features/editor/tabStore";
-import {
-  DndContext,
-  DragOverlay,
-  PointerSensor,
-  useSensor,
-  useSensors,
-  useDroppable,
-  pointerWithin,
-  rectIntersection,
-} from "@dnd-kit/core";
-import type {
-  CollisionDetection,
-  DragEndEvent,
-  DragStartEvent,
-} from "@dnd-kit/core";
-import {
-  moveBeatToPosition,
-  placeBeatAtEnd,
-  unplaceBeat,
-} from "@/features/editor/beat/beatOperations";
+import { DndContext, DragOverlay } from "@dnd-kit/core";
 import type { UnplacedBeat } from "@/features/editor/beat/unplacedBeatsStore";
+import { EditorDropDiv } from "@/features/editor/EditorDropDiv";
+import { useBeatDragDrop } from "@/features/editor/useBeatDragDrop";
+import { useEditorKeyboard } from "@/features/editor/useEditorKeyboard";
 import {
   ResizablePanelGroup,
   ResizablePanel,
@@ -149,41 +133,6 @@ const STATUS_COLORS: Record<SceneStatus, string> = {
   revision: "text-purple-400",
   final: "text-blue-400",
 };
-
-/**
- * Wraps the editor content area as a dnd-kit droppable. Must be rendered as a
- * descendant of the relevant DndContext — registering useDroppable in the
- * EditorPane body would attach it to an ancestor (or default) DnD manager,
- * leaving the inner DndContext unable to resolve `over` for this zone.
- */
-function EditorDropDiv({
-  outerRef,
-  className,
-  onClick,
-  children,
-  ...rest
-}: {
-  outerRef: React.MutableRefObject<HTMLDivElement | null>;
-  className?: string;
-  onClick?: React.MouseEventHandler<HTMLDivElement>;
-  children: React.ReactNode;
-  "data-show-foreshadow-marks"?: string;
-  "data-focus-hide-beats"?: string;
-}) {
-  const { setNodeRef } = useDroppable({ id: "beat-editor-drop-zone" });
-  const setRef = useCallback(
-    (el: HTMLDivElement | null) => {
-      outerRef.current = el;
-      setNodeRef(el);
-    },
-    [setNodeRef, outerRef],
-  );
-  return (
-    <div ref={setRef} className={className} onClick={onClick} {...rest}>
-      {children}
-    </div>
-  );
-}
 
 interface EditorPaneProps {
   nodeId: string;
@@ -263,101 +212,13 @@ export function EditorPane({
   const paneRef = useRef<HTMLDivElement>(null);
   const editorContainerRef = useRef<HTMLDivElement>(null);
   const toolbarActionsRef = useRef<ToolbarActions | null>(null);
-  const [draggingBeat, setDraggingBeat] = useState<UnplacedBeat | null>(null);
-
-  const beatSensors = useSensors(
-    useSensor(PointerSensor, { activationConstraint: { distance: 6 } }),
-  );
-  // pointerWithin works well for sortable items + outer drop zones; fall back
-  // to rectIntersection if the pointer doesn't directly overlap any droppable
-  // (e.g. when dragging fast or releasing in a gap between zones).
-  const beatCollisionDetection: CollisionDetection = useCallback((args) => {
-    const pointerCollisions = pointerWithin(args);
-    if (pointerCollisions.length > 0) return pointerCollisions;
-    return rectIntersection(args);
-  }, []);
-  const handleBeatDragStart = useCallback((event: DragStartEvent) => {
-    setDraggingBeat(
-      (event.active.data.current?.beat as UnplacedBeat | undefined) ?? null,
-    );
-  }, []);
-
-  const handleBeatDragEnd = useCallback(
-    (event: DragEndEvent) => {
-      setDraggingBeat(null);
-      const { active, over } = event;
-      const ed = editorRef.current;
-
-      if (!over) return;
-
-      // Reorder within the unplaced list: over.id is a sibling beat id
-      // (sortable items register their own droppable zones).
-      if (over.id !== active.id) {
-        const draggedBeat = active.data.current?.beat as
-          | UnplacedBeat
-          | undefined;
-        const dragSceneId = active.data.current?.sceneId as string | undefined;
-        if (draggedBeat && dragSceneId) {
-          const beats = useUnplacedBeatsStore.getState().getBeats(dragSceneId);
-          const toIdx = beats.findIndex((b) => b.id === over.id);
-          if (toIdx !== -1) {
-            const fromIdx = beats.findIndex((b) => b.id === active.id);
-            if (fromIdx !== -1 && fromIdx !== toIdx) {
-              useUnplacedBeatsStore
-                .getState()
-                .reorder(dragSceneId, fromIdx, toIdx);
-            }
-            return;
-          }
-        }
-      }
-
-      // Placed beat → Unplaced drop zone (B-17)
-      if (over.id === "unplaced-drop-zone" && ed) {
-        const placedBeatId = active.data.current?.placedBeatId as
-          | string
-          | undefined;
-        if (placedBeatId) {
-          unplaceBeat(ed, placedBeatId, nodeId);
-          return;
-        }
-      }
-
-      if (over.id === "beat-editor-drop-zone" && ed) {
-        // Unplaced beat → place at end
-        const beat = active.data.current?.beat as UnplacedBeat | undefined;
-        const dragSceneId = active.data.current?.sceneId as string | undefined;
-        if (beat && dragSceneId) {
-          placeBeatAtEnd(ed, dragSceneId, beat);
-          return;
-        }
-        // Placed beat → move within document via pointer position
-        const placedBeatId = active.data.current?.placedBeatId as
-          | string
-          | undefined;
-        if (placedBeatId) {
-          const activatorEvent = event.activatorEvent as
-            | MouseEvent
-            | TouchEvent;
-          const startX =
-            "clientX" in activatorEvent
-              ? activatorEvent.clientX
-              : ((activatorEvent as TouchEvent).touches[0]?.clientX ?? 0);
-          const startY =
-            "clientY" in activatorEvent
-              ? activatorEvent.clientY
-              : ((activatorEvent as TouchEvent).touches[0]?.clientY ?? 0);
-          const finalX = startX + event.delta.x;
-          const finalY = startY + event.delta.y;
-          const resolved = ed.view.posAtCoords({ left: finalX, top: finalY });
-          if (resolved) {
-            moveBeatToPosition(ed, placedBeatId, resolved.pos);
-          }
-        }
-      }
-    },
-    [nodeId],
-  );
+  const {
+    sensors: beatSensors,
+    collisionDetection: beatCollisionDetection,
+    draggingBeat,
+    onDragStart: handleBeatDragStart,
+    onDragEnd: handleBeatDragEnd,
+  } = useBeatDragDrop({ editorRef, nodeId });
   const [titleEditing, setTitleEditing] = useState(false);
   const [titleDraft, setTitleDraft] = useState("");
   const [findOpen, setFindOpen] = useState(false);
@@ -864,43 +725,17 @@ export function EditorPane({
     });
   }, [flush, isCodexMode, isSnippetMode]);
 
-  useEffect(() => {
-    function onKeyDown(e: KeyboardEvent) {
-      if (!paneRef.current?.contains(document.activeElement)) return;
-      if (e.ctrlKey && e.key === "s" && !e.altKey && !e.shiftKey) {
-        e.preventDefault();
-        handleManualSave();
-      } else if (e.ctrlKey && e.key === "f" && !e.altKey && !e.shiftKey) {
-        e.preventDefault();
-        setFindOpen(true);
-        setFindShowReplace(false);
-      } else if (e.ctrlKey && e.key === "h" && !e.altKey && !e.shiftKey) {
-        e.preventDefault();
-        setFindOpen(true);
-        setFindShowReplace(true);
-      } else if (e.ctrlKey && e.shiftKey && e.key === "H") {
-        e.preventDefault();
-        const id = saveSceneIdRef.current;
-        const ed = editorRef.current;
-        if (id && ed) {
-          const content = JSON.stringify(ed.getJSON());
-          useRevisionStore.getState().openHistory("scene", id, content);
-        }
-      } else if (e.ctrlKey && e.shiftKey && e.key === " ") {
-        e.preventDefault();
-        setPalettePreselect(null);
-        setPaletteOpen(true);
-      } else if (e.ctrlKey && e.key === "k" && !e.altKey && !e.shiftKey) {
-        e.preventDefault();
-        toolbarActionsRef.current?.openLink();
-      } else if (e.ctrlKey && e.shiftKey && e.key === "R") {
-        e.preventDefault();
-        toolbarActionsRef.current?.openRuby();
-      }
-    }
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
-  }, [handleManualSave]);
+  useEditorKeyboard({
+    paneRef,
+    saveSceneIdRef,
+    editorRef,
+    toolbarActionsRef,
+    handleManualSave,
+    setFindOpen,
+    setFindShowReplace,
+    setPalettePreselect,
+    setPaletteOpen,
+  });
 
   // Close status popover on outside click
   useEffect(() => {
