@@ -55,6 +55,7 @@ import {
   deleteAiBranch,
   deleteSticky,
   createSticky,
+  getSticky,
   createAiBranch,
   setNodePinned,
   deleteNodePosition,
@@ -271,8 +272,13 @@ export function MapCanvas() {
   const onStickyExitComplete = useCallback(
     async (stickyId: string) => {
       // exitFiredRef in StickyNode guarantees this is called at most once per sticky.
-      // Capture the sticky's full state BEFORE the DB delete so we can restore on undo.
-      const capturedSticky = stickiesRef.current.find((s) => s.id === stickyId);
+      // Capture the sticky's full state from DB BEFORE the delete so we can
+      // restore on undo. Reading from DB (instead of stickiesRef) captures the
+      // latest body even when StickyNode was still in editing mode and parent
+      // state hadn't synced yet.
+      const capturedSticky =
+        (await getSticky(stickyId)) ??
+        stickiesRef.current.find((s) => s.id === stickyId);
       const capturedPos = findPosByNodeId(
         positionsRef.current,
         `sticky:${stickyId}`,

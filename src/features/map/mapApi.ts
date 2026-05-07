@@ -447,6 +447,15 @@ export async function listStickies(boardId: string): Promise<MapSticky[]> {
   return db.select().from(mapStickies).where(eq(mapStickies.boardId, boardId));
 }
 
+export async function getSticky(id: string): Promise<MapSticky | undefined> {
+  const rows = await db
+    .select()
+    .from(mapStickies)
+    .where(eq(mapStickies.id, id))
+    .limit(1);
+  return rows[0];
+}
+
 export async function createSticky(data: {
   boardId: string;
   x: number;

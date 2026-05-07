@@ -183,6 +183,16 @@ export const StickyNode = memo(function StickyNode({
     await save();
   }, [save]);
 
+  // 削除トリガー (isDeleting=true) が立ったら、編集中の未保存内容を即保存する。
+  // exitEditing 経由でないと save が走らないため、Undo で復元する内容に
+  // ユーザーが編集中だった文字が反映されないバグの根本対応。
+  useEffect(() => {
+    if (isDeleting && editing) {
+      void save();
+      setEditing(false);
+    }
+  }, [isDeleting, editing, save]);
+
   return (
     <div style={{ position: "relative" }}>
       <Handle type="target" position={Position.Left} className="map-handle" />
