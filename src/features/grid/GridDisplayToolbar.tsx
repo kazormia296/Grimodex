@@ -6,7 +6,16 @@ import { resolveLabelColor } from "@/lib/labelPalette";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Checkbox as ShadcnCheckbox } from "@/components/ui/checkbox";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { useGridStore, type CardTabMode } from "./gridStore";
+
+const CODEX_FILTER_ALL = "__all__";
 
 export function GridDisplayToolbar() {
   const { t } = useTranslation();
@@ -154,23 +163,29 @@ export function GridDisplayToolbar() {
           })}
 
         {codexEntries.length > 0 && (
-          <label className="inline-flex items-center gap-1.5 text-[11px] text-muted-foreground">
+          <div className="inline-flex items-center gap-1.5 text-[11px] text-muted-foreground">
             <span>{t("grid.filter.codex", "Codex:")}</span>
-            <select
-              value={filter.codexFilter ?? ""}
-              onChange={(e) =>
-                setFilter({ codexFilter: e.target.value || null })
+            <Select
+              value={filter.codexFilter ?? CODEX_FILTER_ALL}
+              onValueChange={(v) =>
+                setFilter({ codexFilter: v === CODEX_FILTER_ALL ? null : v })
               }
-              className="rounded border border-input bg-background px-1.5 py-0.5 text-[11px] focus:outline-none focus:ring-1 focus:ring-ring"
             >
-              <option value="">{t("grid.filter.codexAll", "すべて")}</option>
-              {codexEntries.map((entry) => (
-                <option key={entry.id} value={entry.id}>
-                  {entry.name}
-                </option>
-              ))}
-            </select>
-          </label>
+              <SelectTrigger className="h-6 w-auto min-w-[8rem] gap-1 px-2 py-0 text-[11px]">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value={CODEX_FILTER_ALL}>
+                  {t("grid.filter.codexAll", "すべて")}
+                </SelectItem>
+                {codexEntries.map((entry) => (
+                  <SelectItem key={entry.id} value={entry.id}>
+                    {entry.name}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
         )}
 
         <div className="ml-auto flex items-center gap-3">
