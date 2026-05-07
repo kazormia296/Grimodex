@@ -16,6 +16,7 @@ import { useAttributionStore } from "@/features/attribution/attributionStore";
 import type { AuthorshipSource } from "@/features/attribution/AuthorshipMark";
 import { useChatStore } from "@/features/chat/chatStore";
 import { useCursorSettingsStore } from "@/features/editor/cursorSettingsStore";
+import type { ToolbarActions } from "@/features/editor/Toolbar";
 
 interface Position {
   x: number;
@@ -25,6 +26,7 @@ interface Position {
 interface EditorContextMenuProps {
   editor: Editor | null;
   containerRef: React.RefObject<HTMLElement | null>;
+  toolbarActionsRef?: React.RefObject<ToolbarActions | null>;
 }
 
 /**
@@ -34,6 +36,7 @@ interface EditorContextMenuProps {
 export function EditorContextMenu({
   editor,
   containerRef,
+  toolbarActionsRef,
 }: EditorContextMenuProps) {
   const { t } = useTranslation();
   const [pos, setPos] = useState<Position | null>(null);
@@ -197,6 +200,11 @@ export function EditorContextMenu({
     editor?.chain().focus().insertSceneBreak().run();
   };
 
+  const handleSetRuby = () => {
+    close();
+    toolbarActionsRef?.current?.openRuby();
+  };
+
   const handleAttributionOverride = (newSource: AuthorshipSource) => {
     close();
     if (!editor) return;
@@ -310,6 +318,15 @@ export function EditorContextMenu({
         {canSetDisable && (
           <>
             <div className="my-1 border-t border-border" />
+            {toolbarActionsRef && (
+              <button
+                type="button"
+                className="px-3 py-1.5 text-sm text-left hover:bg-primary hover:text-primary-foreground"
+                onClick={handleSetRuby}
+              >
+                {t("editor.contextMenu.setRuby")}
+              </button>
+            )}
             <button
               type="button"
               className="px-3 py-1.5 text-sm text-left hover:bg-primary hover:text-primary-foreground"
