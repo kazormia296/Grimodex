@@ -1,10 +1,12 @@
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { createPortal } from "react-dom";
 import { useTranslation } from "react-i18next";
+import { toast } from "sonner";
 import type { Editor } from "@tiptap/react";
 import { BUILTIN_CODEX_TYPES } from "@/features/codex/api";
 import { useCodexStore } from "@/features/codex/codexStore";
 import { useSnippetStore } from "@/features/snippets/snippetStore";
+import { useEditorStore } from "@/features/editor/editorStore";
 import { useSceneStore } from "@/features/tree/store";
 import { useLayoutStore } from "@/features/layout/layoutStore";
 import {
@@ -58,11 +60,32 @@ export function EditorContextMenu({
   const activeSceneId = useSceneStore((s) => s.activeSceneId);
   const codexCreate = useCodexStore((s) => s.create);
   const snippetCreate = useSnippetStore((s) => s.create);
+  const snippetEntries = useSnippetStore((s) => s.entries);
+  const loadSnippets = useSnippetStore((s) => s.loadEntries);
+  const incrementSnippetUsage = useSnippetStore((s) => s.incrementUsageCount);
   const showAttribution = useAttributionStore((s) => s.showAttribution);
   const setPendingLookupText = useChatStore((s) => s.setPendingLookupText);
   const openForeshadowPicker = useCursorSettingsStore(
     (s) => s.openForeshadowPicker,
   );
+
+  const [snippetPickerPos, setSnippetPickerPos] = useState<Position | null>(
+    null,
+  );
+  const [snippetSearch, setSnippetSearch] = useState("");
+  const snippetPickerRef = useRef<HTMLDivElement>(null);
+
+  const filteredSnippets = useMemo(() => {
+    const q = snippetSearch.trim().toLowerCase();
+    if (!q) return snippetEntries.slice(0, 50);
+    return snippetEntries
+      .filter(
+        (s) =>
+          s.title.toLowerCase().includes(q) ||
+          s.content.toLowerCase().includes(q),
+      )
+      .slice(0, 50);
+  }, [snippetEntries, snippetSearch]);
 
   const close = useCallback(() => {
     setPos(null);
@@ -115,6 +138,30 @@ export function EditorContextMenu({
       document.removeEventListener("keydown", onKeyDown);
     };
   }, [pos, close]);
+
+  // Snippet picker: close on outside click / Escape
+  useEffect(() => {
+    if (!snippetPickerPos) return;
+
+    function onMouseDown(e: MouseEvent) {
+      if (
+        snippetPickerRef.current &&
+        !snippetPickerRef.current.contains(e.target as Node)
+      ) {
+        setSnippetPickerPos(null);
+      }
+    }
+    function onKeyDown(e: KeyboardEvent) {
+      if (e.key === "Escape") setSnippetPickerPos(null);
+    }
+
+    document.addEventListener("mousedown", onMouseDown);
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("mousedown", onMouseDown);
+      document.removeEventListener("keydown", onKeyDown);
+    };
+  }, [snippetPickerPos]);
 
   const handleAddToCodex = async () => {
     close();
@@ -205,6 +252,31 @@ export function EditorContextMenu({
     toolbarActionsRef?.current?.openRuby();
   };
 
+  const handleOpenSnippetPicker = () => {
+    if (!pos) return;
+    setSnippetPickerPos(pos);
+    setSnippetSearch("");
+    setPos(null);
+    void loadSnippets();
+  };
+
+  const handleInsertSnippet = (snippetId: string) => {
+    const snippet = snippetEntries.find((s) => s.id === snippetId);
+    if (!snippet) {
+      setSnippetPickerPos(null);
+      return;
+    }
+    const source = (snippet.contentSource as "ai" | "human") ?? "human";
+    const success = useEditorStore
+      .getState()
+      .insertFromSnippet(snippet.id, snippet.content, source, null);
+    if (success) {
+      void incrementSnippetUsage(snippet.id);
+      toast.success(t("snippets.inserted"));
+    }
+    setSnippetPickerPos(null);
+  };
+
   const handleAttributionOverride = (newSource: AuthorshipSource) => {
     close();
     if (!editor) return;
@@ -236,17 +308,68 @@ export function EditorContextMenu({
   const lintPickerSelection =
     lintDisableOpen && editor ? selectionFromEditor(editor) : null;
 
-  if (!pos && !lintDisableOpen) return null;
+  const snippetPickerNode =
+    snippetPickerPos &&
+    createPortal(
+      <div
+        ref={snippetPickerRef}
+        className="fixed z-50 flex w-72 flex-col rounded-md border border-border bg-popover shadow-md"
+        style={{
+          left: Math.min(snippetPickerPos.x, window.innerWidth - 288 - 8),
+          top: snippetPickerPos.y,
+        }}
+        onMouseDown={(e) => e.stopPropagation()}
+      >
+        <input
+          // eslint-disable-next-line jsx-a11y/no-autofocus
+          autoFocus
+          type="text"
+          value={snippetSearch}
+          onChange={(e) => setSnippetSearch(e.target.value)}
+          placeholder={t("editor.contextMenu.searchSnippet")}
+          className="m-2 rounded border border-border bg-background px-2 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-ring"
+        />
+        <div className="max-h-64 overflow-y-auto pb-1">
+          {filteredSnippets.length === 0 ? (
+            <div className="px-3 py-2 text-xs text-muted-foreground">
+              {t("editor.contextMenu.noSnippet")}
+            </div>
+          ) : (
+            filteredSnippets.map((s) => (
+              <button
+                key={s.id}
+                type="button"
+                onClick={() => handleInsertSnippet(s.id)}
+                className="flex w-full flex-col items-start px-3 py-1.5 text-left text-sm hover:bg-accent"
+              >
+                <span className="truncate font-medium">{s.title}</span>
+                <span className="line-clamp-1 text-[10px] text-muted-foreground">
+                  {s.content.slice(0, 80)}
+                </span>
+              </button>
+            ))
+          )}
+        </div>
+      </div>,
+      document.body,
+    );
+
+  if (!pos && !lintDisableOpen) return snippetPickerNode || null;
 
   if (!pos) {
     // Menu already closed, picker still open.
-    return lintPickerSelection && editor ? (
-      <LintDisablePicker
-        editor={editor}
-        selection={lintPickerSelection}
-        onClose={() => setLintDisableOpen(false)}
-      />
-    ) : null;
+    return (
+      <>
+        {lintPickerSelection && editor ? (
+          <LintDisablePicker
+            editor={editor}
+            selection={lintPickerSelection}
+            onClose={() => setLintDisableOpen(false)}
+          />
+        ) : null}
+        {snippetPickerNode}
+      </>
+    );
   }
 
   // Adjust position to stay within viewport
@@ -312,6 +435,13 @@ export function EditorContextMenu({
           onClick={handleInsertSceneBreak}
         >
           {t("editor.contextMenu.insertSceneBreak")}
+        </button>
+        <button
+          type="button"
+          className="px-3 py-1.5 text-sm text-left hover:bg-primary hover:text-primary-foreground"
+          onClick={handleOpenSnippetPicker}
+        >
+          {t("editor.contextMenu.insertFromSnippet")}
         </button>
 
         {/* Selection actions */}
