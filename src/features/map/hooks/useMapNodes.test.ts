@@ -140,6 +140,7 @@ describe("useMapNodes — 手動キュレーション表示判定", () => {
         setFrames: vi.fn(),
         setStickies: vi.fn(),
         setAiBranches: vi.fn(),
+        setPositions: vi.fn(),
         setNodes,
         setForceLayoutRunning: vi.fn(),
         setForceAlpha: vi.fn(),

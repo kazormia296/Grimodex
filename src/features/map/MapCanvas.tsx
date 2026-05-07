@@ -58,6 +58,9 @@ import {
   getSticky,
   upsertNodePosition,
   createFrame,
+  getAiBranchSnapshot,
+  restoreAiBranchSnapshot,
+  eraseAiBranchSnapshot,
   createAiBranch,
   setNodePinned,
   deleteNodePosition,
@@ -361,6 +364,7 @@ export function MapCanvas() {
     setFrames,
     setStickies,
     setAiBranches,
+    setPositions,
     setNodes,
     setForceLayoutRunning,
     setForceAlpha,
@@ -509,7 +513,41 @@ export function MapCanvas() {
           const stickyId = node.id.slice("sticky:".length);
           setDeletingStickyIds((prev) => new Set(prev).add(stickyId));
         } else if (node.id.startsWith("ai_branch:")) {
-          await deleteAiBranch(node.id.slice("ai_branch:".length));
+          const branchId = node.id.slice("ai_branch:".length);
+          // Capture full state for undo, then perform the standard delete which
+          // preserves derived stickies as orphans (aiBranchId → null).
+          const snapshot = !useGlobalHistoryStore.getState().isReplaying
+            ? await getAiBranchSnapshot(branchId)
+            : null;
+          await deleteAiBranch(branchId);
+          setAiBranches((prev) => prev.filter((b) => b.id !== branchId));
+
+          if (snapshot) {
+            const cap = snapshot;
+            useGlobalHistoryStore.getState().push({
+              kind: "map",
+              label: "AI Branch 削除",
+              async undo() {
+                // restoreAiBranchSnapshot re-links orphan stickies' aiBranchId
+                // and re-inserts the branch row, branch position, and dashed edges.
+                await restoreAiBranchSnapshot(cap);
+                setAiBranches((prev) => [...prev, cap.branch]);
+                setPositions((prev) => [
+                  ...prev,
+                  cap.branchPosition as MapNodePositionRecord,
+                ]);
+              },
+              async redo() {
+                await deleteAiBranch(cap.branch.id);
+                setAiBranches((prev) =>
+                  prev.filter((b) => b.id !== cap.branch.id),
+                );
+                setPositions((prev) =>
+                  prev.filter((p) => p.id !== cap.branchPosition.id),
+                );
+              },
+            });
+          }
         } else if (node.id.startsWith("snippet:")) {
           // Snippets: remove from board only
           const pos = findPosByNodeId(positionsRef.current, node.id);
@@ -998,6 +1036,44 @@ export function MapCanvas() {
           ...prev,
           ...(result.positions as MapNodePositionRecord[]),
         ]);
+
+        if (!useGlobalHistoryStore.getState().isReplaying) {
+          // Capture full snapshot (includes edges + spans created internally)
+          const snapshot = await getAiBranchSnapshot(result.branch.id);
+          if (snapshot) {
+            const cap = snapshot;
+            const stickyIds = cap.stickies.map((s) => s.id);
+            const posIds = cap.stickyPositions
+              .map((p) => p.id)
+              .concat(cap.branchPosition.id);
+            useGlobalHistoryStore.getState().push({
+              kind: "map",
+              label: "AI Branch 生成",
+              async undo() {
+                await eraseAiBranchSnapshot(cap);
+                setAiBranches((prev) =>
+                  prev.filter((b) => b.id !== cap.branch.id),
+                );
+                setStickies((prev) =>
+                  prev.filter((s) => !stickyIds.includes(s.id)),
+                );
+                setPositions((prev) =>
+                  prev.filter((p) => !posIds.includes(p.id)),
+                );
+              },
+              async redo() {
+                await restoreAiBranchSnapshot(cap);
+                setAiBranches((prev) => [...prev, cap.branch]);
+                setStickies((prev) => [...prev, ...cap.stickies]);
+                setPositions((prev) => [
+                  ...prev,
+                  cap.branchPosition as MapNodePositionRecord,
+                  ...(cap.stickyPositions as MapNodePositionRecord[]),
+                ]);
+              },
+            });
+          }
+        }
       } finally {
         setGeneratingAiBranch(false);
       }

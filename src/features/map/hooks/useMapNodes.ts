@@ -7,6 +7,8 @@ import {
   createFrame,
   updateSticky,
   deleteAiBranch,
+  getAiBranchSnapshot,
+  restoreAiBranchSnapshot,
   extractPreviewText,
 } from "../mapApi";
 import { useGlobalHistoryStore } from "@/store/globalHistoryStore";
@@ -53,6 +55,7 @@ interface UseMapNodesInput {
   setFrames: React.Dispatch<React.SetStateAction<MapFrame[]>>;
   setStickies: React.Dispatch<React.SetStateAction<MapSticky[]>>;
   setAiBranches: React.Dispatch<React.SetStateAction<MapAiBranch[]>>;
+  setPositions: React.Dispatch<React.SetStateAction<MapNodePositionRecord[]>>;
   setNodes: React.Dispatch<React.SetStateAction<Node[]>>;
   setForceLayoutRunning: (v: boolean) => void;
   setForceAlpha: (v: number) => void;
@@ -82,6 +85,7 @@ export function useMapNodes({
   setFrames,
   setStickies,
   setAiBranches,
+  setPositions,
   setNodes,
   setForceLayoutRunning,
   setForceAlpha,
@@ -440,9 +444,42 @@ export function useMapNodes({
                   }
                 },
                 onDelete: async () => {
+                  const snapshot = !useGlobalHistoryStore.getState().isReplaying
+                    ? await getAiBranchSnapshot(ab.id)
+                    : null;
                   await deleteAiBranch(ab.id);
                   setAiBranches((prev) => prev.filter((b) => b.id !== ab.id));
+                  if (snapshot) {
+                    setPositions((prev) =>
+                      prev.filter((p) => p.id !== snapshot.branchPosition.id),
+                    );
+                  }
                   // Stickies persist as orphans (aiBranchId → null in DB via ON DELETE SET NULL)
+
+                  if (snapshot) {
+                    const cap = snapshot;
+                    useGlobalHistoryStore.getState().push({
+                      kind: "map",
+                      label: "AI Branch 削除",
+                      async undo() {
+                        await restoreAiBranchSnapshot(cap);
+                        setAiBranches((prev) => [...prev, cap.branch]);
+                        setPositions((prev) => [
+                          ...prev,
+                          cap.branchPosition as MapNodePositionRecord,
+                        ]);
+                      },
+                      async redo() {
+                        await deleteAiBranch(cap.branch.id);
+                        setAiBranches((prev) =>
+                          prev.filter((b) => b.id !== cap.branch.id),
+                        );
+                        setPositions((prev) =>
+                          prev.filter((p) => p.id !== cap.branchPosition.id),
+                        );
+                      },
+                    });
+                  }
                 },
               },
             };

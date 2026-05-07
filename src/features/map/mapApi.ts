@@ -22,6 +22,7 @@ import {
   type NewMapEdge,
   type MapFrame,
   type NewMapFrame,
+  type AuthorshipSpan,
   type NewAuthorshipSpan,
 } from "@/db/schema";
 import { eq, and, isNotNull } from "drizzle-orm";
@@ -805,6 +806,145 @@ export async function createAiBranch(
 
 export async function deleteAiBranch(id: string): Promise<void> {
   await db.delete(mapAiBranches).where(eq(mapAiBranches.id, id));
+}
+
+export interface AiBranchSnapshot {
+  branch: MapAiBranch;
+  branchPosition: MapNodePosition;
+  stickies: MapSticky[];
+  stickyPositions: MapNodePosition[];
+  edges: MapEdge[];
+  spans: AuthorshipSpan[];
+}
+
+/**
+ * Capture the full state of an AI branch (branch row + branch position +
+ * derived stickies + their positions + dashed edges + authorship spans) for
+ * Undo/Redo snapshot-restore.
+ */
+export async function getAiBranchSnapshot(
+  id: string,
+): Promise<AiBranchSnapshot | null> {
+  const branchRows = await db
+    .select()
+    .from(mapAiBranches)
+    .where(eq(mapAiBranches.id, id))
+    .limit(1);
+  const branch = branchRows[0];
+  if (!branch) return null;
+
+  const branchPosRows = await db
+    .select()
+    .from(mapNodePositions)
+    .where(
+      and(
+        eq(mapNodePositions.boardId, branch.boardId),
+        isNotNull(mapNodePositions.aiBranchId),
+        eq(mapNodePositions.aiBranchId, id),
+      ),
+    )
+    .limit(1);
+  const branchPosition = branchPosRows[0];
+  if (!branchPosition) return null;
+
+  const stickies = await db
+    .select()
+    .from(mapStickies)
+    .where(eq(mapStickies.aiBranchId, id));
+
+  const stickyIds = stickies.map((s) => s.id);
+  const stickyPositions =
+    stickyIds.length > 0
+      ? await db
+          .select()
+          .from(mapNodePositions)
+          .where(
+            and(
+              eq(mapNodePositions.boardId, branch.boardId),
+              isNotNull(mapNodePositions.stickyId),
+            ),
+          )
+          .then((rows) =>
+            rows.filter((p) => p.stickyId && stickyIds.includes(p.stickyId)),
+          )
+      : [];
+
+  const edges = await db
+    .select()
+    .from(mapEdges)
+    .where(eq(mapEdges.fromPositionId, branchPosition.id));
+
+  const spans =
+    stickyIds.length > 0
+      ? await db
+          .select()
+          .from(authorshipSpans)
+          .then((rows) =>
+            rows.filter((sp) => sp.stickyId && stickyIds.includes(sp.stickyId)),
+          )
+      : [];
+
+  return { branch, branchPosition, stickies, stickyPositions, edges, spans };
+}
+
+/**
+ * Re-insert all rows captured by getAiBranchSnapshot. Use as the redo path
+ * for an AI branch creation undo, or the undo path for a deletion (whether
+ * the prior deletion was a full erase or an explicit `deleteAiBranch` that
+ * preserved orphan stickies — onConflictDoNothing handles both, and the
+ * explicit aiBranchId UPDATE re-links any orphans back to this branch).
+ */
+export async function restoreAiBranchSnapshot(
+  snapshot: AiBranchSnapshot,
+): Promise<void> {
+  await db.insert(mapAiBranches).values(snapshot.branch).onConflictDoNothing();
+  await db
+    .insert(mapNodePositions)
+    .values(snapshot.branchPosition)
+    .onConflictDoNothing();
+  for (const sticky of snapshot.stickies) {
+    await db.insert(mapStickies).values(sticky).onConflictDoNothing();
+    // Re-link orphan stickies (aiBranchId was set NULL by ON DELETE SET NULL)
+    await db
+      .update(mapStickies)
+      .set({ aiBranchId: snapshot.branch.id })
+      .where(eq(mapStickies.id, sticky.id));
+  }
+  for (const pos of snapshot.stickyPositions) {
+    await db.insert(mapNodePositions).values(pos).onConflictDoNothing();
+  }
+  for (const edge of snapshot.edges) {
+    await db.insert(mapEdges).values(edge).onConflictDoNothing();
+  }
+  for (const span of snapshot.spans) {
+    await db.insert(authorshipSpans).values(span).onConflictDoNothing();
+  }
+}
+
+/**
+ * Delete all rows captured in the snapshot. Use as the redo path for a
+ * deletion (or the undo path for a creation). Deletes go in reverse FK order.
+ */
+export async function eraseAiBranchSnapshot(
+  snapshot: AiBranchSnapshot,
+): Promise<void> {
+  // mapAiBranches deletion cascades to: branch position (ai_branch_id cascade),
+  // and edges from that position (position cascade). Stickies' aiBranchId is
+  // set null. So we still need to explicitly delete the derived stickies and
+  // their positions and authorship spans.
+  for (const span of snapshot.spans) {
+    await db.delete(authorshipSpans).where(eq(authorshipSpans.id, span.id));
+  }
+  for (const pos of snapshot.stickyPositions) {
+    await db.delete(mapNodePositions).where(eq(mapNodePositions.id, pos.id));
+  }
+  for (const sticky of snapshot.stickies) {
+    await db.delete(mapStickies).where(eq(mapStickies.id, sticky.id));
+  }
+  // Branch deletion cascades to branch position + edges from that position
+  await db
+    .delete(mapAiBranches)
+    .where(eq(mapAiBranches.id, snapshot.branch.id));
 }
 
 // ── User edges ─────────────────────────────────────────────────────────────
