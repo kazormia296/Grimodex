@@ -12,6 +12,7 @@ import {
 import { findPosByNodeId, buildUpsertArgs } from "../utils/nodeIdCodec";
 import type { MapNodePositionRecord } from "../types";
 import type { MapSticky } from "@/db/schema";
+import { useGlobalHistoryStore } from "@/store/globalHistoryStore";
 
 export interface ContextMenuState {
   nodeId: string;
@@ -96,11 +97,37 @@ export function useMapContextMenu({
       // 2-phase delete: exit animation plays, actual DB delete happens in onStickyExitComplete
       setDeletingStickyIds((prev) => new Set(prev).add(pos.stickyId!));
     } else {
+      const captured = { ...pos, nodeId: contextMenu.nodeId };
       await deleteNodePosition(pos.id);
       setPositions((prev) => prev.filter((p) => p.id !== pos.id));
+
+      if (boardId && !useGlobalHistoryStore.getState().isReplaying) {
+        const cap = captured;
+        // upsertNodePosition は新規 row 作成時に新しい id を発行するため、
+        // undo で復元された position の id を liveId に追跡し redo で削除対象を特定する
+        let liveId = cap.id;
+        useGlobalHistoryStore.getState().push({
+          kind: "map",
+          label: "ボードから外す",
+          async undo() {
+            const args = buildUpsertArgs(boardId, cap.nodeId, cap.x, cap.y);
+            if (!args) return;
+            const restored = await upsertNodePosition(args);
+            liveId = restored.id;
+            setPositions((prev) => [
+              ...prev,
+              restored as MapNodePositionRecord,
+            ]);
+          },
+          async redo() {
+            await deleteNodePosition(liveId);
+            setPositions((prev) => prev.filter((p) => p.id !== liveId));
+          },
+        });
+      }
     }
     setContextMenu(null);
-  }, [contextMenu, positions, setPositions, setDeletingStickyIds]);
+  }, [contextMenu, positions, setPositions, setDeletingStickyIds, boardId]);
 
   const handleContextMenuOpen = useCallback(() => {
     if (!contextMenu) return;
