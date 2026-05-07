@@ -5,9 +5,16 @@ import type { Node as ProseMirrorNode } from "prosemirror-model";
  * Extract text from a ProseMirror document, including ruby base characters.
  * Unlike `doc.textContent`, atom ruby nodes are visited and their `base`
  * attribute is included in the output string.
+ *
+ * Block boundaries are emitted as "\n" so that adjacent paragraphs do not
+ * collide in the codex matcher's char-class boundary check (otherwise
+ * `<p>a</p><p>hoge</p>` becomes `"ahoge"` and the latin-latin neighbour
+ * suppresses both matches). The CodexHighlightPlugin's flat→PM index
+ * mapping must mirror this — see `mapMatchesToDecorations`.
  */
 export function getDocText(doc: ProseMirrorNode): string {
   let text = "";
+  let firstBlock = true;
   doc.descendants((node) => {
     if (node.type.name === "ruby") {
       text += (node.attrs.base as string) ?? "";
@@ -15,6 +22,11 @@ export function getDocText(doc: ProseMirrorNode): string {
     }
     if (node.isText) {
       text += node.text ?? "";
+      return;
+    }
+    if (node.isBlock) {
+      if (!firstBlock) text += "\n";
+      firstBlock = false;
     }
   });
   return text;

@@ -26,6 +26,31 @@ function getDecoSet(state: EditorState): DecorationSet {
   return codexHighlightKey.getState(state) as DecorationSet;
 }
 
+describe("CodexHighlightPlugin – multi-paragraph mapping", () => {
+  it("maps matches in second paragraph correctly with the block-newline placeholder", () => {
+    // <p>a</p><p>hoge</p> — getDocText returns "a\nhoge".
+    // Match offsets refer to that flat string: a=[0,1), hoge=[2,6).
+    // PM positions: p0 text "a" at 1, p1 text "hoge" at 4..7.
+    const state = EditorState.create({
+      doc: schema.nodes.doc.create({}, [
+        schema.nodes.paragraph.create({}, [schema.text("a")]),
+        schema.nodes.paragraph.create({}, [schema.text("hoge")]),
+      ]),
+      plugins: [createCodexHighlightPlugin()],
+    });
+    const seeded = seedMatches(state, [
+      { from: 0, to: 1, entryId: "1", entryType: "person", entryName: "a" },
+      { from: 2, to: 6, entryId: "2", entryType: "person", entryName: "hoge" },
+    ]);
+    const decos = getDecoSet(seeded).find();
+    expect(decos).toHaveLength(2);
+    expect(decos[0].from).toBe(1);
+    expect(decos[0].to).toBe(2);
+    expect(decos[1].from).toBe(4);
+    expect(decos[1].to).toBe(8);
+  });
+});
+
 describe("CodexHighlightPlugin – adjacent decoration crash guard", () => {
   it("clears decorations when initial set already contains adjacent decos", () => {
     // "abcdef" → flat indices [0,3) and [3,6) produce PM decos [1,4) and [4,7)

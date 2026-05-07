@@ -2,7 +2,7 @@
 import { describe, it, expect } from "vitest";
 import { Editor } from "@tiptap/core";
 import StarterKit from "@tiptap/starter-kit";
-import { RubyNode } from "./RubyNode";
+import { getDocText, RubyNode } from "./RubyNode";
 
 function createTestEditor(content = "") {
   return new Editor({
@@ -95,6 +95,28 @@ describe("RubyNode", () => {
       }
     });
     expect(found).toBe(true);
+    editor.destroy();
+  });
+
+  it("getDocText separates blocks with newline so codex boundary check works", () => {
+    // Reproduces the bug: <p>a</p><p>hoge</p> used to flatten to "ahoge",
+    // which fails the latin-latin char-class boundary in the codex matcher.
+    const editor = createTestEditor("<p>a</p><p>hoge</p><p>あああああ</p>");
+    expect(getDocText(editor.state.doc)).toBe("a\nhoge\nあああああ");
+    editor.destroy();
+  });
+
+  it("getDocText emits no leading newline for the first block", () => {
+    const editor = createTestEditor("<p>太郎</p>");
+    expect(getDocText(editor.state.doc)).toBe("太郎");
+    editor.destroy();
+  });
+
+  it("getDocText preserves ruby base across block boundaries", () => {
+    const editor = createTestEditor(
+      '<p><ruby data-base="太郎" data-annotation="たろう">太郎<rp>(</rp><rt>たろう</rt><rp>)</rp></ruby></p><p>走った</p>',
+    );
+    expect(getDocText(editor.state.doc)).toBe("太郎\n走った");
     editor.destroy();
   });
 
