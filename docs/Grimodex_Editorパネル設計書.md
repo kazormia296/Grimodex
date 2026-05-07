@@ -1610,12 +1610,21 @@ C-4 セクションの既存 textarea 実装は本コンポーネントに置換
 
 - ✅ Phase A: sceneBeat / generatedProseBlock ノード、Unplaced 別カラム、ヘッダーバー、`[⋮]` メニュー、`/` コマンド、`Ctrl+Shift+B`、ステータスバーの Beats 表示、Markdown export 時の除去
 - 🟡 Phase B: SceneMetaPanel 右パネル統合は実装済み。SynopsisHeader / BeatsHeader の完全廃止は未完了
-- ❌ Phase B: D&D ハンドル `⠿` / フッターのモデルセレクタ / ephemeral アクションバー（`✓ Keep` / `↺ Retry` / `✕ Discard`）/ `Clear Beat` メニュー項目
+- ✅ Phase B: D&D ハンドル `⠿`（`useDraggable` + `GripVertical`）/ フッターのモデルセレクタ + Generate ボタン（モデル whitelist 連動）/ ephemeral アクションバー（生成完了後の `✓ Keep` / `↺ Retry` / `✕ Discard`、編集開始で自動 dismiss）/ `Clear Beat` メニュー項目（確認ダイアログ付き）
 
 ### 重要ギャップ Top 5（更新版）
 
-1. **文字アニメ 3 種（Cursor blink / Character fade-in / Character fade-out）が UI のみで未配線** — 設定を切ってもエディタ動作が変わらない無言失敗。最も影響範囲が広く優先度高
-2. **VerticalPreview がモーダル実装で Dock / フローティング構想と乖離** — 「縦書きで参照しながら書く」体験が未提供。レイアウトシステムとの結合が深く要構造変更
-3. **Phase B Beat 拡張**（D&D ハンドル `⠿` / フッターのモデルセレクタ / ephemeral アクションバー / `Clear Beat` メニュー）— SceneMetaPanel 統合は完了済みだが UI 拡張が未着手
+1. ~~文字アニメ 3 種~~ ✅ Bundle で実装済み（Cursor blink 配線、Character fade-in/fade-out プラグイン化）
+2. ~~Phase B Beat 拡張~~ ✅ 調査時点ですべて実装済（D&D ハンドル / モデルセレクタ / ephemeral アクションバー / Clear Beat 確認ダイアログ）。SynopsisHeader / BeatsHeader の完全廃止のみ未完了
+3. **VerticalPreview がモーダル実装で Dock / フローティング構想と乖離** — 「縦書きで参照しながら書く」体験が未提供。レイアウトシステムとの結合が深く要構造変更
 4. **クリップボード Authorship 伝搬の独自 MIME 出力側**（`application/x-grimodex-authorship`）— エディタからのコピー時にシリアライザ拡張で MIME を書き出す処理が未実装
 5. **文字数詳細ポップオーバー**（原稿用紙換算 / 推定読了時間 / 単語数）— 文字数表示クリック時のポップオーバーが未実装
+
+### 残タスク（中量）
+
+- SynopsisHeader / BeatsHeader の旧エディタ上部配置を完全廃止し、SceneMetaPanel への移行を仕上げる
+- タブを Center 外にドラッグ → フローティングウィンドウ
+- Group エッジへのドロップで新規スプリット作成
+- ペースト Case 1 判定を独自 MIME `application/x-grimodex-authorship` 直接読みに統一
+- Codex タブの「Summary」入力欄 + ✦ Generate ボタン
+- `InlineSynopsisEditor` の 3 パネル共通化を完全実施
