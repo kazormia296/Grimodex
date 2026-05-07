@@ -1,0 +1,268 @@
+use std::sync::Arc;
+
+use crate::ai;
+
+use super::{AiSettingsPath, AppError, InlineAiAbortFlag, StreamAbortFlag};
+
+/// Ollama はAPIキー不要のため空文字を返す。それ以外は設定済みキーを要求する。
+pub(super) fn resolve_api_key(provider: &ai::AiProvider) -> anyhow::Result<String> {
+    if matches!(provider, ai::AiProvider::Ollama) {
+        return Ok(String::new());
+    }
+    ai::get_api_key(provider)?
+        .ok_or_else(|| anyhow::anyhow!("No API key configured for {}", provider))
+}
+
+#[derive(serde::Deserialize)]
+pub(crate) struct ChatMessagePayload {
+    role: String,
+    content: String,
+}
+
+#[tauri::command]
+pub(crate) async fn send_chat_message(
+    ai_path: tauri::State<'_, AiSettingsPath>,
+    messages: Vec<ChatMessagePayload>,
+    thinking: Option<ai::ThinkingConfig>,
+    effort: Option<String>,
+    reasoning_enabled: Option<bool>,
+    reasoning_effort: Option<String>,
+) -> Result<ai::ChatResponse, AppError> {
+    let settings = ai::read_ai_settings(&ai_path.path);
+    let api_key = resolve_api_key(&settings.provider)?;
+    let params = ai::ChatParams {
+        provider: &settings.provider,
+        model: &settings.model,
+        api_key: &api_key,
+        ollama_endpoint: &settings.ollama_endpoint,
+        thinking,
+        effort,
+        reasoning_enabled,
+        reasoning_effort,
+    };
+    let result = ai::send_chat(
+        &params,
+        &messages
+            .iter()
+            .map(|m| (m.role.as_str(), m.content.as_str()))
+            .collect::<Vec<_>>(),
+    )
+    .await?;
+    Ok(result)
+}
+
+#[tauri::command]
+pub(crate) fn abort_chat_stream(
+    abort_flag: tauri::State<'_, StreamAbortFlag>,
+) -> Result<(), AppError> {
+    abort_flag
+        .flag
+        .store(true, std::sync::atomic::Ordering::Relaxed);
+    Ok(())
+}
+
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn send_chat_message_stream(
+    ai_path: tauri::State<'_, AiSettingsPath>,
+    abort_flag: tauri::State<'_, StreamAbortFlag>,
+    app_handle: tauri::AppHandle,
+    messages: Vec<ChatMessagePayload>,
+    thinking: Option<ai::ThinkingConfig>,
+    effort: Option<String>,
+    reasoning_enabled: Option<bool>,
+    reasoning_effort: Option<String>,
+) -> Result<(), AppError> {
+    abort_flag
+        .flag
+        .store(false, std::sync::atomic::Ordering::Relaxed);
+
+    let settings = ai::read_ai_settings(&ai_path.path);
+    let api_key = resolve_api_key(&settings.provider)?;
+    let flag_clone = Arc::clone(&abort_flag.flag);
+    let params = ai::ChatParams {
+        provider: &settings.provider,
+        model: &settings.model,
+        api_key: &api_key,
+        ollama_endpoint: &settings.ollama_endpoint,
+        thinking,
+        effort,
+        reasoning_enabled,
+        reasoning_effort,
+    };
+
+    let result = ai::send_chat_stream(
+        &params,
+        &messages
+            .iter()
+            .map(|m| (m.role.as_str(), m.content.as_str()))
+            .collect::<Vec<_>>(),
+        flag_clone,
+        app_handle.clone(),
+        "chat",
+    )
+    .await;
+
+    if let Err(e) = result {
+        use tauri::Emitter;
+        let _ = app_handle.emit(
+            "chat:stream-error",
+            serde_json::json!({ "message": e.to_string() }),
+        );
+        return Err(AppError::Anyhow(e));
+    }
+
+    Ok(())
+}
+
+#[tauri::command]
+pub(crate) fn abort_inline_ai_stream(
+    abort_flag: tauri::State<'_, InlineAiAbortFlag>,
+) -> Result<(), AppError> {
+    abort_flag
+        .flag
+        .store(true, std::sync::atomic::Ordering::Relaxed);
+    Ok(())
+}
+
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn send_inline_ai_stream(
+    ai_path: tauri::State<'_, AiSettingsPath>,
+    abort_flag: tauri::State<'_, InlineAiAbortFlag>,
+    app_handle: tauri::AppHandle,
+    messages: Vec<ChatMessagePayload>,
+    thinking: Option<ai::ThinkingConfig>,
+    effort: Option<String>,
+    reasoning_enabled: Option<bool>,
+    reasoning_effort: Option<String>,
+    model: Option<String>,
+) -> Result<(), AppError> {
+    abort_flag
+        .flag
+        .store(false, std::sync::atomic::Ordering::Relaxed);
+
+    let settings = ai::read_ai_settings(&ai_path.path);
+    let api_key = resolve_api_key(&settings.provider)?;
+    let flag_clone = Arc::clone(&abort_flag.flag);
+    let resolved_model = model
+        .as_deref()
+        .filter(|m| !m.is_empty())
+        .unwrap_or(&settings.model);
+    let params = ai::ChatParams {
+        provider: &settings.provider,
+        model: resolved_model,
+        api_key: &api_key,
+        ollama_endpoint: &settings.ollama_endpoint,
+        thinking,
+        effort,
+        reasoning_enabled,
+        reasoning_effort,
+    };
+
+    let result = ai::send_chat_stream(
+        &params,
+        &messages
+            .iter()
+            .map(|m| (m.role.as_str(), m.content.as_str()))
+            .collect::<Vec<_>>(),
+        flag_clone,
+        app_handle.clone(),
+        "inline-ai",
+    )
+    .await;
+
+    if let Err(e) = result {
+        use tauri::Emitter;
+        let _ = app_handle.emit(
+            "inline-ai:stream-error",
+            serde_json::json!({ "message": e.to_string() }),
+        );
+        return Err(AppError::Anyhow(e));
+    }
+
+    Ok(())
+}
+
+#[tauri::command]
+pub(crate) async fn send_agent_message(
+    ai_path: tauri::State<'_, AiSettingsPath>,
+    messages: Vec<ai::AgentMessage>,
+    tools: Vec<ai::AgentToolDef>,
+    thinking: Option<ai::ThinkingConfig>,
+    effort: Option<String>,
+    reasoning_enabled: Option<bool>,
+    reasoning_effort: Option<String>,
+) -> Result<ai::ChatResponse, AppError> {
+    let settings = ai::read_ai_settings(&ai_path.path);
+    let api_key = resolve_api_key(&settings.provider)?;
+    let params = ai::ChatParams {
+        provider: &settings.provider,
+        model: &settings.model,
+        api_key: &api_key,
+        ollama_endpoint: &settings.ollama_endpoint,
+        thinking,
+        effort,
+        reasoning_enabled,
+        reasoning_effort,
+    };
+    let result = ai::send_chat_with_tools(&params, &messages, &tools).await?;
+    Ok(result)
+}
+
+#[tauri::command]
+pub(crate) fn get_ai_settings(
+    ai_path: tauri::State<'_, AiSettingsPath>,
+) -> Result<ai::AiSettings, AppError> {
+    Ok(ai::read_ai_settings(&ai_path.path))
+}
+
+#[tauri::command]
+pub(crate) fn save_ai_settings(
+    ai_path: tauri::State<'_, AiSettingsPath>,
+    settings: ai::AiSettings,
+) -> Result<(), AppError> {
+    ai::write_ai_settings(&ai_path.path, &settings)?;
+    Ok(())
+}
+
+#[tauri::command]
+pub(crate) fn save_api_key(provider: ai::AiProvider, key: String) -> Result<(), AppError> {
+    ai::save_api_key(&provider, &key)?;
+    Ok(())
+}
+
+#[tauri::command]
+pub(crate) fn get_api_key(provider: ai::AiProvider) -> Result<Option<String>, AppError> {
+    Ok(ai::get_api_key(&provider)?)
+}
+
+#[tauri::command]
+pub(crate) fn delete_api_key(provider: ai::AiProvider) -> Result<(), AppError> {
+    ai::delete_api_key(&provider)?;
+    Ok(())
+}
+
+#[tauri::command]
+pub(crate) async fn list_ai_models(
+    ai_path: tauri::State<'_, AiSettingsPath>,
+    provider: ai::AiProvider,
+) -> Result<Vec<ai::AiModel>, AppError> {
+    let settings = ai::read_ai_settings(&ai_path.path);
+    let api_key = ai::get_api_key(&provider)?.unwrap_or_default();
+    let models = ai::fetch_models(&provider, &api_key, &settings.ollama_endpoint).await?;
+    Ok(models)
+}
+
+#[tauri::command]
+pub(crate) async fn test_ai_connection(
+    ai_path: tauri::State<'_, AiSettingsPath>,
+    provider: ai::AiProvider,
+    model: String,
+) -> Result<String, AppError> {
+    let settings = ai::read_ai_settings(&ai_path.path);
+    let api_key = resolve_api_key(&provider)?;
+    let result =
+        ai::test_connection(&provider, &model, &api_key, &settings.ollama_endpoint).await?;
+    Ok(result)
+}
