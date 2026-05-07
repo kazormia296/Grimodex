@@ -110,6 +110,9 @@ export function Toolbar({
   const { value: showBreadcrumb, setValue: setShowBreadcrumb } =
     useSettingBoolean("editor.showBreadcrumb", true);
 
+  const { value: showLineNumbers, setValue: setShowLineNumbers } =
+    useSettingBoolean("editor.showLineNumbers", false);
+
   const { showAttribution, toggleAttribution } = useAttributionStore();
   const {
     focusMode,
@@ -674,7 +677,11 @@ export function Toolbar({
             checked={showBreadcrumb}
             onClick={() => setShowBreadcrumb(!showBreadcrumb)}
           />
-          <OverflowItem label={t("editor.toolbar.showLineNumbers")} disabled />
+          <OverflowItem
+            label={t("editor.toolbar.showLineNumbers")}
+            checked={showLineNumbers}
+            onClick={() => setShowLineNumbers(!showLineNumbers)}
+          />
         </div>
       )}
 

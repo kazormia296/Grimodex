@@ -233,6 +233,46 @@
   text-indent: var(--editor-paragraph-indent, 0);
 }
 
+/* Line numbers (paragraph-level counter) — toggled by editor.showLineNumbers.
+   Numbers render in the left gutter via absolute-positioned ::before, so the
+   wrapper reserves padding-left to keep numbers from overlapping body text. */
+.editor-line-numbers {
+  padding-left: 2.5em;
+}
+.editor-line-numbers .tiptap {
+  counter-reset: editor-line;
+}
+.editor-line-numbers .tiptap > p,
+.editor-line-numbers .tiptap > h1,
+.editor-line-numbers .tiptap > h2,
+.editor-line-numbers .tiptap > h3,
+.editor-line-numbers .tiptap > blockquote,
+.editor-line-numbers .tiptap > ul,
+.editor-line-numbers .tiptap > ol {
+  position: relative;
+  counter-increment: editor-line;
+}
+.editor-line-numbers .tiptap > p::before,
+.editor-line-numbers .tiptap > h1::before,
+.editor-line-numbers .tiptap > h2::before,
+.editor-line-numbers .tiptap > h3::before,
+.editor-line-numbers .tiptap > blockquote::before,
+.editor-line-numbers .tiptap > ul::before,
+.editor-line-numbers .tiptap > ol::before {
+  content: counter(editor-line);
+  position: absolute;
+  left: -2.5em;
+  width: 2em;
+  text-align: right;
+  color: var(--muted-foreground);
+  opacity: 0.5;
+  font-size: 0.85em;
+  font-feature-settings: "tnum";
+  line-height: inherit;
+  user-select: none;
+  pointer-events: none;
+}
+
 .tiptap {
   blockquote {
     border-left: 3px solid var(--content-border);

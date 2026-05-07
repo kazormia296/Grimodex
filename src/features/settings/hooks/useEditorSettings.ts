@@ -26,6 +26,7 @@ export interface EditorSettings {
   sceneMetaPanelOpen: boolean;
   sceneMetaPanelWidth: number;
   showBreadcrumb: boolean;
+  showLineNumbers: boolean;
   paragraphIndent: number;
 }
 
@@ -63,6 +64,7 @@ export function useEditorSettings(): EditorSettings {
     sceneMetaPanelOpen: store.getBoolean("editor.sceneMetaPanelOpen", true),
     sceneMetaPanelWidth: store.getNumber("editor.sceneMetaPanelWidth", 20),
     showBreadcrumb: store.getBoolean("editor.showBreadcrumb", true),
+    showLineNumbers: store.getBoolean("editor.showLineNumbers", false),
     paragraphIndent: store.getNumber("editor.paragraphIndent", 0),
   };
 }

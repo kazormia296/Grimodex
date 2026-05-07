@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { useEditor, EditorContent } from "@tiptap/react";
 import type { Editor } from "@tiptap/core";
+import { cn } from "@/lib/utils";
 import { getEditorExtensions } from "@/features/editor/extensions";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { loadSceneContent, saveSceneContent } from "@/features/tree/api";
@@ -281,6 +282,7 @@ function MountedSceneBlock({
   return (
     <div ref={containerRef}>
       <div
+        className={cn(editorSettings.showLineNumbers && "editor-line-numbers")}
         style={
           {
             fontFamily: editorSettings.fontFamily,
