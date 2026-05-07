@@ -8,6 +8,16 @@ ChatパネルはGrimodexのコア体験を担うAI対話パネル。現在のシ
 
 設計思想: **AIチャットが執筆体験の中心。チャットから生まれた知識（キャラクター設定、プロット断片、世界観メモ）をCodex/Snippetとして構造化し、再利用する。**
 
+### 用語対応（UI ↔ 内部名）
+
+| UI 表記 | 旧称（本書内の歴史的記述） | 内部名（DB / コード識別子） |
+| ------- | ------------------- | ------------------------- |
+| Spotlight / 🔦 | ピン留め / 📌 | `pinned_codex` / `chat_session_pinned_codex` / `pinSource: 'manual' \| 'chat_mention'` / `inputPinnedEntries` 等 |
+| Unspotlight | ピン解除 | `unpinCodexEntry` 等 |
+| Spotlight 候補 (✨) | （新規） | `spotlightSuggestion.ts` / `computeSpotlightCandidates` |
+
+UI 用語は `feat(chat,codex): ピン留めを Spotlight にリネーム` で全面置換済み。**DB 列名およびコード識別子は `pinned_*` のまま**であり、本書の DB スキーマ章とコードフロー記述では旧来の識別子を保持する。本文中の「ピン留め」は UI 上「Spotlight」と読み替えること。
+
 ---
 
 ## パネル構造
@@ -52,6 +62,8 @@ ChatパネルはGrimodexのコア体験を担うAI対話パネル。現在のシ
 - **パネルタイトル**: 「Chat」
 - **🌐 グローバルチャットボタン**: ワンクリックでプロジェクトスコープ（`node_id = NULL`）に切り替え。再度クリックでアクティブシーンに復帰。プロジェクトスコープ時はシーンインジケーターが「Project」に切り替わる
 - **シーンインジケーター**: 現在のアクティブシーン名。クリックでシーン選択ドロップダウン（Chatのコンテキストをエディタのアクティブシーンから手動で切り替える場合に使用）
+  - ドロップダウンはツリー上の **フォルダ単位でグループ化** して表示する。各グループ見出しは親フォルダのタイトル（親無しのシーンは "Uncategorized"）、見出し下にそのフォルダ直下のシーンを列挙する。プロジェクトスコープ（🌐）時は選択されているグループ無し状態で「Project」ラベルが表示される
+  - 現在の実装は `ChatPanelHeader.tsx` の `sceneGroups` 構築ロジック（`nodes.filter(nodeType === 'folder')` でフォルダタイトルを参照しつつ scene を `parentId` でグループ化）に対応する
 - **Sessions ボタン**: セッション一覧サイドシートを開く（後述）
 - **+ ボタン**: 新しいセッションを作成
 
@@ -129,7 +141,12 @@ Codex + Snippet のピル合計が コンテキストバーの横幅に収まら
 - **`context_mode = suppress` のエントリはミュート表示 + ツールチップ（「ピン留めでAIコンテキストに含まれます」）**
 - ピン留めしたエントリはセッション内で永続（セッション終了まで有効）
 - 自動検出されたCodexエントリも×ボタンで個別除外可能
-- **ピルプレビュー内ピン昇格**: 自動検出（未ピン留め）のCodexエントリのピルをクリックしたポップオーバー内に「📌ピン留め」ボタンを表示。クリックでピン留めに昇格し、ピルに📌が付き、以降content全文が注入される
+- **ピルプレビュー内ピン昇格**: 自動検出（未ピン留め）のCodexエントリのピルをクリックしたポップオーバー内に「Spotlight」ボタンを表示。クリックで Spotlight に昇格し、ピルに 🔦 が付き、以降content全文が注入される
+- **✨ Spotlight 候補マーク（自動推薦）**: auto エントリ（detected + always）のうち、本文の充実したエントリを最大 N 件まで「✨ Spotlight candidate」として強調表示する。クリック動作は通常の auto ピルと同じで、Spotlight ボタン押下で content 全文注入に昇格する。ユーザーが「どのエントリを Spotlight 化すべきか」の発見を支援する非破壊的なヒント表示
+  - 判定ロジックは `spotlightSuggestion.ts` の `isSpotlightCandidate` / `computeSpotlightCandidates`
+  - 採用条件: `content` が空 doc（`{}` または `{"type":"doc","content":[]}`）でない、かつ文字数 ≥ `MIN_CONTENT_LEN`（既定 30）
+  - 上限: `MAX_CANDIDATES`（既定 3）。先頭から順に候補化し、すでに pinned のエントリは除外
+  - グループ化表示時もグループ内ピル展開後に同じ ✨ マークが付与される
 - **チャット言及による自動ピン留め**: ユーザーのチャットメッセージ内でCodexエントリ名が検出された場合（CodexHighlightまたは@メンション経由）、そのエントリをセッションの `pinned_codex` に自動追加する。シーン本文での言及（summary注入）とは異なり、チャットでの言及はユーザーの明確な意図を示すため、content全文を注入する。自動ピン留めされたエントリはContext Barにピルとして表示され、不要な場合は×で除外可能
 - **チャット言及の編集による自動ピン解除**: 送信前にユーザーがメッセージを編集し、Codexエントリ名が入力欄から消えた場合、そのエントリの自動ピン留めを解除する。ただし手動ピン留め（「+」ボタンやピルプレビューのPinボタン経由）されたエントリは編集で解除されない。これを区別するため、`pinned_codex` の各エントリに `source: 'manual' | 'chat_mention'` を保持する
 - **Pin with children**: Codexエントリのピルのコンテキストメニューに「子エントリも含める」オプションを提供。選択すると親+全直接子エントリをまとめてピン留めし、それぞれcontent全文が注入される（手動ピンはサブツリートークン予算を無視する）。個別の×ボタンで子エントリ単位の除外も可能
@@ -775,7 +792,7 @@ thinking ブロックのストリーミングは以下のイベント順序で�
 | Insert to editor | メッセージ全文をエディタに挿入 |
 | Add to Codex | Codexエントリを即時作成 |
 | Save as Snippet | Snippetとして保存 |
-| **Add to Map ▸** | **メッセージを Map ボードに送る（後述「Map への送出」参照）** |
+| **Add to Map ▸** ⏳未実装 | **メッセージを Map ボードに送る（後述「Map への送出」参照）** |
 | Copy | クリップボードにコピー。Authorship情報 `{ source: 'ai', model, chatMessageId }` を `application/x-grimodex-authorship` に付与 |
 | --- | |
 | Regenerate | 同じプロンプトで再生成 |
@@ -790,9 +807,11 @@ thinking ブロックのストリーミングは以下のイベント順序で�
 | Insert selection | 選択範囲のみをエディタに挿入 |
 | Add selection to Codex | 選択範囲でCodexエントリを即時作成 |
 | Save selection as Snippet | 選択範囲をSnippetとして保存 |
-| **Add selection to Map ▸** | **選択範囲を Map ボードに送る（As Sticky / As Snippet のみ）** |
+| **Add selection to Map ▸** ⏳未実装 | **選択範囲を Map ボードに送る（As Sticky / As Snippet のみ）** |
 
 ### Map への送出
+
+> **🚧 未実装（Phase 未着手）**: 本セクションは設計のみで、現在の `ChatMessageContextMenu.tsx` には `Add to Map ▸` サブメニューが存在しない。`map_stickies.source_chat_message_id` / `map_ai_branches` への書き込みコードも未実装。Map パネル本体の進捗に合わせて段階導入する。
 
 Chat で AI と議論した内容を Map に還元するための動線。**新ノードタイプは追加せず**、既存の Sticky / Snippet / AI Branch / Codex のいずれかに変換する。Map パネル設計書「← Chat（Chat → Map）」と対応。
 
