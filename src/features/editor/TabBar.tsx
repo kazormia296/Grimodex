@@ -18,6 +18,8 @@ import { useCodexStore } from "@/features/codex/codexStore";
 import { useSnippetStore } from "@/features/snippets/snippetStore";
 import { usePhaseStore } from "@/features/codex/phaseStore";
 import { TabContextMenu } from "./TabContextMenu";
+import { UnsavedDialog } from "./UnsavedDialog";
+import { saveScene } from "./editorSaveRegistry";
 import type { GroupIndex, TabEntry } from "./tabStore";
 import type { CodexEntryPhase } from "@/features/codex/phaseApi";
 
@@ -110,6 +112,13 @@ export function TabBar({ groupIndex = 0 }: TabBarProps) {
     y: number;
   } | null>(null);
 
+  // Unsaved-changes dialog state for X / middle-click / secondary-group close
+  const [pendingClose, setPendingClose] = useState<{
+    nodeIds: string[];
+    /** true when the secondary group panel itself should close after the tabs close */
+    closeSecondaryGroupAfter?: boolean;
+  } | null>(null);
+
   // Split dropdown state (primary group only)
   const splitMenuRef = useRef<HTMLDivElement>(null);
   const [splitMenuOpen, setSplitMenuOpen] = useState(false);
@@ -176,8 +185,32 @@ export function TabBar({ groupIndex = 0 }: TabBarProps) {
     }
   }
 
+  function executeClose(nodeIds: string[], closeSecondaryGroupAfter = false) {
+    const store = useTabStore.getState();
+    for (const id of nodeIds) {
+      if (isPrimary) store.closeTab(id);
+      else store.closeSecondaryTab(id);
+    }
+    if (closeSecondaryGroupAfter) {
+      useTabStore.getState().closeSecondaryGroup();
+    }
+    const { activeTabId: newActiveId, secondaryTabs: remaining } =
+      useTabStore.getState();
+    if (isPrimary) {
+      if (newActiveId) useTreeStore.getState().setActiveScene(newActiveId);
+    } else {
+      if (remaining.length === 0 && newActiveId) {
+        useTreeStore.getState().setActiveScene(newActiveId);
+      }
+    }
+  }
+
   function handleTabClose(e: React.MouseEvent, nodeId: string) {
     e.stopPropagation();
+    if (useTabStore.getState().dirtyTabIds.has(nodeId)) {
+      setPendingClose({ nodeIds: [nodeId] });
+      return;
+    }
     if (isPrimary) {
       useTabStore.getState().closeTab(nodeId);
       const newActiveId = useTabStore.getState().activeTabId;
@@ -190,6 +223,22 @@ export function TabBar({ groupIndex = 0 }: TabBarProps) {
         useTreeStore.getState().setActiveScene(primaryActive);
       }
     }
+  }
+
+  function handleCloseSecondaryGroup() {
+    const { secondaryTabs: tabsInGroup, dirtyTabIds: dirty } =
+      useTabStore.getState();
+    const dirtyIds = tabsInGroup
+      .map((t) => t.nodeId)
+      .filter((id) => dirty.has(id));
+    if (dirtyIds.length > 0) {
+      setPendingClose({
+        nodeIds: tabsInGroup.map((t) => t.nodeId),
+        closeSecondaryGroupAfter: true,
+      });
+      return;
+    }
+    useTabStore.getState().closeSecondaryGroup();
   }
 
   function handleTabDoubleClick(nodeId: string, isPreview: boolean) {
@@ -530,7 +579,7 @@ export function TabBar({ groupIndex = 0 }: TabBarProps) {
         <button
           type="button"
           title={t("editor.tabBar.closeGroup")}
-          onClick={() => useTabStore.getState().closeSecondaryGroup()}
+          onClick={handleCloseSecondaryGroup}
           className="flex h-full flex-shrink-0 items-center border-l border-border px-2 text-muted-foreground hover:bg-accent hover:text-foreground active:scale-[0.97] transition-transform duration-75"
         >
           <X className="h-3.5 w-3.5" />
@@ -632,6 +681,29 @@ export function TabBar({ groupIndex = 0 }: TabBarProps) {
           x={contextMenu.x}
           y={contextMenu.y}
           onClose={() => setContextMenu(null)}
+        />
+      )}
+
+      {pendingClose && (
+        <UnsavedDialog
+          count={
+            pendingClose.nodeIds.filter((id) => dirtyTabIds.has(id)).length
+          }
+          onSaveAndClose={() => {
+            const { nodeIds, closeSecondaryGroupAfter } = pendingClose;
+            Promise.all(nodeIds.map((id) => saveScene(id)))
+              .then(() => executeClose(nodeIds, closeSecondaryGroupAfter))
+              .catch(console.error);
+            setPendingClose(null);
+          }}
+          onCloseWithoutSave={() => {
+            executeClose(
+              pendingClose.nodeIds,
+              pendingClose.closeSecondaryGroupAfter,
+            );
+            setPendingClose(null);
+          }}
+          onCancel={() => setPendingClose(null)}
         />
       )}
     </div>
