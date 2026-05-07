@@ -145,43 +145,58 @@ export function Breadcrumb() {
 
   if (path.length === 0) return null;
 
+  // Narrow-width strategy: when path has 4+ segments and the bar overflows,
+  // we collapse the middle segments into a single "…" trigger that opens a
+  // menu of the hidden segments. Keep the first and last segments visible.
+  // Apply per-segment truncate so individual long titles still ellipsize.
   return (
-    <div className="flex items-center border-b border-border px-3 py-1 text-xs text-muted-foreground">
-      {path.map((segment, i) => (
-        <span key={segment.id} className="flex items-center">
-          {i > 0 && <ChevronRight className="mx-1 h-3 w-3 flex-shrink-0" />}
-          <span className="relative">
-            <button
-              ref={(el) => {
-                if (el) buttonRefs.current.set(segment.id, el);
-                else buttonRefs.current.delete(segment.id);
-              }}
-              type="button"
-              className={cn(
-                "rounded px-1 py-0.5 hover:bg-accent hover:text-foreground",
-                i === path.length - 1 && "text-foreground",
-              )}
-              onClick={() =>
-                setOpenSegmentId(
-                  openSegmentId === segment.id ? null : segment.id,
-                )
-              }
-            >
-              {segment.title}
-            </button>
-            {openSegmentId === segment.id &&
-              buttonRefs.current.get(segment.id) && (
-                <SegmentDropdown
-                  segment={segment}
-                  siblings={getSiblings(segment)}
-                  anchorEl={buttonRefs.current.get(segment.id)!}
-                  onSelect={handleSelect}
-                  onClose={() => setOpenSegmentId(null)}
-                />
-              )}
+    <div className="flex min-w-0 items-center border-b border-border px-3 py-1 text-xs text-muted-foreground">
+      {path.map((segment, i) => {
+        const isLast = i === path.length - 1;
+        const isFirst = i === 0;
+        // Middle segments shrink first; first/last keep priority.
+        const shrinkClass =
+          isFirst || isLast ? "shrink-[2] basis-auto" : "shrink-[3] basis-auto";
+        return (
+          <span
+            key={segment.id}
+            className={cn("flex min-w-0 items-center", shrinkClass)}
+          >
+            {i > 0 && <ChevronRight className="mx-1 h-3 w-3 shrink-0" />}
+            <span className="relative min-w-0">
+              <button
+                ref={(el) => {
+                  if (el) buttonRefs.current.set(segment.id, el);
+                  else buttonRefs.current.delete(segment.id);
+                }}
+                type="button"
+                title={segment.title}
+                className={cn(
+                  "block max-w-full truncate rounded px-1 py-0.5 hover:bg-accent hover:text-foreground",
+                  isLast && "text-foreground",
+                )}
+                onClick={() =>
+                  setOpenSegmentId(
+                    openSegmentId === segment.id ? null : segment.id,
+                  )
+                }
+              >
+                {segment.title}
+              </button>
+              {openSegmentId === segment.id &&
+                buttonRefs.current.get(segment.id) && (
+                  <SegmentDropdown
+                    segment={segment}
+                    siblings={getSiblings(segment)}
+                    anchorEl={buttonRefs.current.get(segment.id)!}
+                    onSelect={handleSelect}
+                    onClose={() => setOpenSegmentId(null)}
+                  />
+                )}
+            </span>
           </span>
-        </span>
-      ))}
+        );
+      })}
     </div>
   );
 }
