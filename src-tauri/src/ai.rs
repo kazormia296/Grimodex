@@ -351,93 +351,51 @@ pub async fn send_chat(
     params: &ChatParams<'_>,
     messages: &[(&str, &str)],
 ) -> anyhow::Result<ChatResponse> {
-    let provider = params.provider;
-    let model = params.model;
-    let api_key = params.api_key;
-    let ollama_endpoint = params.ollama_endpoint;
     let client = reqwest::Client::new();
 
-    match provider {
+    match params.provider {
         AiProvider::Anthropic => {
-            // Anthropic: system is a top-level field, not in messages
-            let system_content: String = messages
-                .iter()
-                .filter(|(role, _)| *role == "system")
-                .map(|(_, content)| *content)
-                .collect::<Vec<_>>()
-                .join("\n");
-
-            let chat_messages: Vec<serde_json::Value> = messages
-                .iter()
-                .filter(|(role, _)| *role != "system")
-                .map(|(role, content)| serde_json::json!({ "role": role, "content": content }))
-                .collect();
+            let (system_content, chat_messages) = split_system_messages(messages);
 
             let mut body = serde_json::json!({
-                "model": model,
+                "model": params.model,
                 "max_tokens": 4096,
                 "messages": chat_messages,
             });
-
             if !system_content.is_empty() {
                 body["system"] = serde_json::Value::String(system_content);
             }
             apply_thinking_to_body(&mut body, &params.thinking, &params.effort);
 
-            let resp = client
-                .post(format!("{}/messages", provider.base_url(ollama_endpoint)))
-                .header("x-api-key", api_key)
-                .header("anthropic-version", "2023-06-01")
-                .header("content-type", "application/json")
-                .json(&body)
+            let resp = anthropic_request(&client, params, &body)
                 .send()
                 .await?
                 .error_for_status()?;
-
             let result: serde_json::Value = resp.json().await?;
             parse_anthropic_response(&result)
         }
         _ => {
-            // OpenAI-compatible format (OpenRouter, OpenAI, Ollama)
             let chat_messages: Vec<serde_json::Value> = messages
                 .iter()
                 .map(|(role, content)| serde_json::json!({ "role": role, "content": content }))
                 .collect();
 
             let mut body = serde_json::json!({
-                "model": model,
+                "model": params.model,
                 "max_tokens": 4096,
                 "messages": chat_messages,
             });
-
             apply_reasoning_to_body(
                 &mut body,
-                provider,
+                params.provider,
                 params.reasoning_enabled,
                 &params.reasoning_effort,
             );
 
-            let url = format!(
-                "{}/chat/completions",
-                provider.openai_compat_base_url(ollama_endpoint)
-            );
-
-            let mut req = client.post(&url).header("content-type", "application/json");
-
-            if !matches!(provider, AiProvider::Ollama) {
-                req = req.header("Authorization", format!("Bearer {api_key}"));
-            }
-
-            if matches!(provider, AiProvider::OpenRouter) {
-                req = req
-                    .header(
-                        "HTTP-Referer",
-                        "https://github.com/futurebassisdead/Grimodex",
-                    )
-                    .header("X-Title", "Grimodex");
-            }
-
-            let resp = req.json(&body).send().await?.error_for_status()?;
+            let resp = openai_compat_request(&client, params, &body)
+                .send()
+                .await?
+                .error_for_status()?;
             let result: serde_json::Value = resp.json().await?;
             parse_openai_response(&result)
         }
@@ -730,19 +688,90 @@ fn apply_thinking_to_body(
     }
 }
 
+// ---------------------------------------------------------------------------
+// Provider request helpers (private)
+//
+// Anthropic と OpenAI 互換系で完全に同じ HTTP セットアップを `send_chat` /
+// `send_chat_with_tools` / `send_chat_stream` の3箇所で繰り返していたため、
+// ヘッダ付与・URL 組み立て・system 分離をここに集約する。
+// 公開 API のシグネチャは変えない（挙動は完全に等価）。
+// ---------------------------------------------------------------------------
+
+/// Build a POST request to Anthropic's `/messages` endpoint with required
+/// headers (`x-api-key`, `anthropic-version`, `content-type`) and the
+/// `anthropic-beta: interleaved-thinking-2025-05-14` header when
+/// `params.thinking` is set, then attach `body` as JSON.
+fn anthropic_request(
+    client: &reqwest::Client,
+    params: &ChatParams<'_>,
+    body: &serde_json::Value,
+) -> reqwest::RequestBuilder {
+    let url = format!("{}/messages", params.provider.base_url(params.ollama_endpoint));
+    let mut req = client
+        .post(url)
+        .header("x-api-key", params.api_key)
+        .header("anthropic-version", "2023-06-01")
+        .header("content-type", "application/json");
+    if params.thinking.is_some() {
+        req = req.header("anthropic-beta", "interleaved-thinking-2025-05-14");
+    }
+    req.json(body)
+}
+
+/// Build a POST request to an OpenAI-compatible `/chat/completions` endpoint
+/// (OpenAI / OpenRouter / Ollama). Adds `Authorization: Bearer ...` for
+/// non-Ollama providers and OpenRouter's attribution headers, then attaches
+/// `body` as JSON.
+fn openai_compat_request(
+    client: &reqwest::Client,
+    params: &ChatParams<'_>,
+    body: &serde_json::Value,
+) -> reqwest::RequestBuilder {
+    let url = format!(
+        "{}/chat/completions",
+        params.provider.openai_compat_base_url(params.ollama_endpoint)
+    );
+    let mut req = client.post(url).header("content-type", "application/json");
+    if !matches!(params.provider, AiProvider::Ollama) {
+        req = req.header("Authorization", format!("Bearer {}", params.api_key));
+    }
+    if matches!(params.provider, AiProvider::OpenRouter) {
+        req = req
+            .header(
+                "HTTP-Referer",
+                "https://github.com/futurebassisdead/Grimodex",
+            )
+            .header("X-Title", "Grimodex");
+    }
+    req.json(body)
+}
+
+/// Split `(role, content)` tuples into Anthropic's two-part shape:
+/// joined system content and the non-system messages as JSON values.
+fn split_system_messages(messages: &[(&str, &str)]) -> (String, Vec<serde_json::Value>) {
+    let system_content: String = messages
+        .iter()
+        .filter(|(role, _)| *role == "system")
+        .map(|(_, content)| *content)
+        .collect::<Vec<_>>()
+        .join("\n");
+    let chat_messages: Vec<serde_json::Value> = messages
+        .iter()
+        .filter(|(role, _)| *role != "system")
+        .map(|(role, content)| serde_json::json!({ "role": role, "content": content }))
+        .collect();
+    (system_content, chat_messages)
+}
+
 /// Send a tool-aware chat request and return a structured response.
 pub async fn send_chat_with_tools(
     params: &ChatParams<'_>,
     messages: &[AgentMessage],
     tools: &[AgentToolDef],
 ) -> anyhow::Result<ChatResponse> {
-    let provider = params.provider;
-    let model = params.model;
-    let api_key = params.api_key;
-    let ollama_endpoint = params.ollama_endpoint;
     let client = reqwest::Client::new();
 
-    match provider {
+    match params.provider {
         AiProvider::Anthropic => {
             // Collect system content
             let system_content: String = messages
@@ -835,7 +864,7 @@ pub async fn send_chat_with_tools(
                 .collect();
 
             let mut body = serde_json::json!({
-                "model": model,
+                "model": params.model,
                 "max_tokens": 4096,
                 "messages": anthropic_messages,
                 "tools": anthropic_tools
@@ -846,17 +875,10 @@ pub async fn send_chat_with_tools(
             // thinking / effort パラメータを追加
             apply_thinking_to_body(&mut body, &params.thinking, &params.effort);
 
-            let mut req = client
-                .post(format!("{}/messages", provider.base_url(ollama_endpoint)))
-                .header("x-api-key", api_key)
-                .header("anthropic-version", "2023-06-01")
-                .header("content-type", "application/json");
-            // interleaved thinking 用ベータヘッダー
-            if params.thinking.is_some() {
-                req = req.header("anthropic-beta", "interleaved-thinking-2025-05-14");
-            }
-            let resp = req.json(&body).send().await?.error_for_status()?;
-
+            let resp = anthropic_request(&client, params, &body)
+                .send()
+                .await?
+                .error_for_status()?;
             let result: serde_json::Value = resp.json().await?;
             parse_anthropic_response(&result)
         }
@@ -936,38 +958,22 @@ pub async fn send_chat_with_tools(
                 .collect();
 
             let mut body = serde_json::json!({
-                "model": model,
+                "model": params.model,
                 "max_tokens": 4096,
                 "messages": openai_messages,
                 "tools": openai_tools
             });
-
             apply_reasoning_to_body(
                 &mut body,
-                provider,
+                params.provider,
                 params.reasoning_enabled,
                 &params.reasoning_effort,
             );
 
-            let url = format!(
-                "{}/chat/completions",
-                provider.openai_compat_base_url(ollama_endpoint)
-            );
-            let mut req = client.post(&url).header("content-type", "application/json");
-
-            if !matches!(provider, AiProvider::Ollama) {
-                req = req.header("Authorization", format!("Bearer {api_key}"));
-            }
-            if matches!(provider, AiProvider::OpenRouter) {
-                req = req
-                    .header(
-                        "HTTP-Referer",
-                        "https://github.com/futurebassisdead/Grimodex",
-                    )
-                    .header("X-Title", "Grimodex");
-            }
-
-            let resp = req.json(&body).send().await?.error_for_status()?;
+            let resp = openai_compat_request(&client, params, &body)
+                .send()
+                .await?
+                .error_for_status()?;
             let result: serde_json::Value = resp.json().await?;
             parse_openai_response(&result)
         }
@@ -985,10 +991,6 @@ pub async fn send_chat_stream(
     app_handle: tauri::AppHandle,
     event_prefix: &str,
 ) -> anyhow::Result<()> {
-    let provider = params.provider;
-    let model = params.model;
-    let api_key = params.api_key;
-    let ollama_endpoint = params.ollama_endpoint;
     use tauri::Emitter;
 
     let chunk_event = format!("{}:stream-chunk", event_prefix);
@@ -996,43 +998,22 @@ pub async fn send_chat_stream(
 
     let client = reqwest::Client::new();
 
-    match provider {
+    match params.provider {
         AiProvider::Anthropic => {
-            let system_content: String = messages
-                .iter()
-                .filter(|(role, _)| *role == "system")
-                .map(|(_, content)| *content)
-                .collect::<Vec<_>>()
-                .join("\n");
-
-            let chat_messages: Vec<serde_json::Value> = messages
-                .iter()
-                .filter(|(role, _)| *role != "system")
-                .map(|(role, content)| serde_json::json!({ "role": role, "content": content }))
-                .collect();
+            let (system_content, chat_messages) = split_system_messages(messages);
 
             let mut body = serde_json::json!({
-                "model": model,
+                "model": params.model,
                 "max_tokens": 4096,
                 "messages": chat_messages,
                 "stream": true,
             });
-
             if !system_content.is_empty() {
                 body["system"] = serde_json::Value::String(system_content);
             }
             apply_thinking_to_body(&mut body, &params.thinking, &params.effort);
 
-            let mut req = client
-                .post(format!("{}/messages", provider.base_url(ollama_endpoint)))
-                .header("x-api-key", api_key)
-                .header("anthropic-version", "2023-06-01")
-                .header("content-type", "application/json");
-            if params.thinking.is_some() {
-                req = req.header("anthropic-beta", "interleaved-thinking-2025-05-14");
-            }
-
-            let resp = req.json(&body).send().await?;
+            let resp = anthropic_request(&client, params, &body).send().await?;
             if !resp.status().is_success() {
                 let status = resp.status();
                 let body_text = resp.text().await.unwrap_or_default();
@@ -1137,39 +1118,19 @@ pub async fn send_chat_stream(
                 .collect();
 
             let mut body = serde_json::json!({
-                "model": model,
+                "model": params.model,
                 "max_tokens": 4096,
                 "messages": chat_messages,
                 "stream": true,
             });
-
             apply_reasoning_to_body(
                 &mut body,
-                provider,
+                params.provider,
                 params.reasoning_enabled,
                 &params.reasoning_effort,
             );
 
-            let url = format!(
-                "{}/chat/completions",
-                provider.openai_compat_base_url(ollama_endpoint)
-            );
-
-            let mut req = client.post(&url).header("content-type", "application/json");
-
-            if !matches!(provider, AiProvider::Ollama) {
-                req = req.header("Authorization", format!("Bearer {api_key}"));
-            }
-            if matches!(provider, AiProvider::OpenRouter) {
-                req = req
-                    .header(
-                        "HTTP-Referer",
-                        "https://github.com/futurebassisdead/Grimodex",
-                    )
-                    .header("X-Title", "Grimodex");
-            }
-
-            let resp = req.json(&body).send().await?;
+            let resp = openai_compat_request(&client, params, &body).send().await?;
             if !resp.status().is_success() {
                 let status = resp.status();
                 let body_text = resp.text().await.unwrap_or_default();
