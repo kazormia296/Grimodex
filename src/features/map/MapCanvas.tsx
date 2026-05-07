@@ -31,7 +31,6 @@ import { AddToMapPickerDialog } from "./AddToMapPickerDialog";
 import { MapSearch } from "./MapSearch";
 import { DURATIONS, useReducedMotion } from "@/lib/animation";
 import { AutoArrangeDialog } from "./AutoArrangeDialog";
-import { NodeDeleteDialog } from "./NodeDeleteDialog";
 import {
   EdgeContextMenu,
   type EdgeContextMenuState,
@@ -72,8 +71,6 @@ import {
 } from "./mapApi";
 import { AINodeDialog } from "./AINodeDialog";
 import { generateAiBranchCards } from "./mapAiApi";
-import { deleteNode as deleteTreeNode } from "@/features/tree/api";
-import { deleteCodexEntry } from "@/features/codex/api";
 import { findPosByNodeId, buildUpsertArgs } from "./utils/nodeIdCodec";
 import type { MapNodePositionRecord } from "./types";
 import type { MapEdge, MapFrame } from "@/db/schema";
@@ -82,24 +79,25 @@ const PROJECT_ID = "default-project";
 
 /** Pure classification used by onDeleteSelected — exported for tests. */
 export function partitionDeletableNodes(nodes: Node[]) {
+  // Frames are map-only entities → delete the frame record itself.
   const frameNodes = nodes.filter(
     (n) => n.type === "frame" || n.id.startsWith("frame:"),
   );
-  // Sticky and AI Branch nodes are deleted immediately (no confirm)
+  // Sticky and AI Branch are map-only entities → delete the entity itself.
   const immediateNodes = nodes.filter(
     (n) => n.id.startsWith("sticky:") || n.id.startsWith("ai_branch:"),
   );
-  // Scene/Codex/Note require confirmation dialog
-  const entityNodes = nodes.filter(
+  // Scene / Note / Codex / Snippet are shared with other panels → only
+  // remove the board position (the underlying entity stays intact and
+  // can still be deleted from its native panel).
+  const removeFromBoardNodes = nodes.filter(
     (n) =>
       n.id.startsWith("scene:") ||
       n.id.startsWith("note:") ||
-      n.id.startsWith("codex:"),
+      n.id.startsWith("codex:") ||
+      n.id.startsWith("snippet:"),
   );
-  // Snippets: remove from board only (no entity delete)
-  const snippetNodes = nodes.filter((n) => n.id.startsWith("snippet:"));
-  const showDialog = entityNodes.length > 0 ? entityNodes : [];
-  return { frameNodes, showDialog, immediateNodes, snippetNodes };
+  return { frameNodes, immediateNodes, removeFromBoardNodes };
 }
 
 const NODE_TYPES = {
@@ -179,9 +177,6 @@ export function MapCanvas() {
   const [pickerType, setPickerType] = useState<
     "scene" | "note" | "codex" | "snippet" | null
   >(null);
-  const [deleteDialogNodes, setDeleteDialogNodes] = useState<Node[] | null>(
-    null,
-  );
   const [edgeContextMenu, setEdgeContextMenu] =
     useState<EdgeContextMenuState | null>(null);
   const [aiBranchDialog, setAiBranchDialog] = useState<{
@@ -500,16 +495,14 @@ export function MapCanvas() {
     fitView,
   });
 
+  // Map 専属エンティティ（Sticky / AI Branch）の本体削除。
+  // Scene / Note / Codex / Snippet はマップ外に存在するため Delete キー
+  // ではボードから外すだけ（partitionDeletableNodes 参照）で、本体削除
+  // は各パネルの専用 UI から行う。
   const deleteEntityNodes = useCallback(
     async (nodesToDelete: Node[]) => {
       for (const node of nodesToDelete) {
-        if (node.id.startsWith("scene:")) {
-          await deleteTreeNode(node.id.slice("scene:".length));
-        } else if (node.id.startsWith("note:")) {
-          await deleteTreeNode(node.id.slice("note:".length));
-        } else if (node.id.startsWith("codex:")) {
-          await deleteCodexEntry(node.id.slice("codex:".length));
-        } else if (node.id.startsWith("sticky:")) {
+        if (node.id.startsWith("sticky:")) {
           // 2-phase delete: trigger exit animation first; actual DB delete
           // happens in onStickyExitComplete after the animation completes.
           const stickyId = node.id.slice("sticky:".length);
@@ -589,7 +582,7 @@ export function MapCanvas() {
       setUserEdges((prev) => prev.filter((u) => u.id !== userEdgeId));
     }
 
-    const { frameNodes, showDialog, immediateNodes, snippetNodes } =
+    const { frameNodes, immediateNodes, removeFromBoardNodes } =
       partitionDeletableNodes(selectedNodes);
 
     const capturedFrames: MapFrame[] = [];
@@ -612,7 +605,7 @@ export function MapCanvas() {
       nodeId: string;
       pos: MapNodePositionRecord;
     }[] = [];
-    for (const node of snippetNodes) {
+    for (const node of removeFromBoardNodes) {
       const pos = findPosByNodeId(positionsRef.current, node.id);
       if (!pos) continue;
       try {
@@ -633,10 +626,6 @@ export function MapCanvas() {
       } catch (err) {
         toast.error("ノード削除に失敗しました", { description: String(err) });
       }
-    }
-
-    if (showDialog.length > 0) {
-      setDeleteDialogNodes(showDialog);
     }
 
     // Push 1 bulk history entry for edges + snippet positions + frames deleted
@@ -1373,17 +1362,6 @@ export function MapCanvas() {
               });
             }
           }}
-        />
-      )}
-
-      {deleteDialogNodes && deleteDialogNodes.length > 0 && (
-        <NodeDeleteDialog
-          count={deleteDialogNodes.length}
-          onDelete={async () => {
-            await deleteEntityNodes(deleteDialogNodes);
-            setDeleteDialogNodes(null);
-          }}
-          onCancel={() => setDeleteDialogNodes(null)}
         />
       )}
     </div>
