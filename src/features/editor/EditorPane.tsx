@@ -2,6 +2,12 @@ import { useState, useEffect, useRef, useCallback } from "react";
 import { createPortal } from "react-dom";
 import { useTranslation } from "react-i18next";
 import { Clock, BookOpen, Files } from "lucide-react";
+import { AnimatedDropdown } from "@/components/ui/animated-dropdown";
+import {
+  countWords,
+  manuscriptPages,
+  readingMinutes,
+} from "@/features/editor/charCountStats";
 import { cn } from "@/lib/utils";
 import { useEditor, EditorContent } from "@tiptap/react";
 import { getEditorExtensions } from "@/features/editor/extensions";
@@ -149,6 +155,16 @@ interface EditorPaneProps {
  * When the same nodeId is open in both groups, edits propagate via sceneContentStore.
  * Supports both scene/note content (Markdown via Tauri) and codex entry content (ProseMirror JSON via DB).
  */
+
+function Stat({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="flex items-center justify-between gap-4">
+      <span className="text-muted-foreground">{label}</span>
+      <span className="font-medium">{value}</span>
+    </div>
+  );
+}
+
 export function EditorPane({
   nodeId,
   contentType,
@@ -223,6 +239,8 @@ export function EditorPane({
   } = useBeatDragDrop({ editorRef, nodeId });
   const [titleEditing, setTitleEditing] = useState(false);
   const [titleDraft, setTitleDraft] = useState("");
+  const [charCountPopoverOpen, setCharCountPopoverOpen] = useState(false);
+  const charCountContainerRef = useRef<HTMLDivElement>(null);
   const [findOpen, setFindOpen] = useState(false);
   const [findShowReplace, setFindShowReplace] = useState(false);
   const [verticalPreviewOpen, setVerticalPreviewOpen] = useState(false);
@@ -1647,41 +1665,113 @@ export function EditorPane({
               {beatGenerated > 0 && ` (${beatGenerated} generated)`}
             </span>
           )}
-          <span
-            ref={charCountRef}
-            data-testid="char-count"
-            className="flex items-center gap-1.5 tabular-nums"
-          >
-            <span>{charCount.toLocaleString()} chars</span>
-            {targetCharCount > 0 && (
-              <>
-                <span className="text-muted-foreground">
-                  / {targetCharCount.toLocaleString()}
-                </span>
-                <span
-                  className="relative h-1 w-12 overflow-hidden rounded-full bg-muted"
-                  aria-hidden
-                >
-                  <span
-                    className={cn(
-                      "absolute inset-y-0 left-0 transition-[width] duration-200",
-                      charCount >= targetCharCount
-                        ? "bg-emerald-500"
-                        : "bg-primary",
-                    )}
-                    style={{
-                      width: `${Math.min(100, (charCount / targetCharCount) * 100)}%`,
-                    }}
-                  />
-                </span>
-                {charCount > targetCharCount && (
-                  <span className="text-rose-500">
-                    +{(charCount - targetCharCount).toLocaleString()}
+          <div ref={charCountContainerRef} className="relative">
+            <button
+              type="button"
+              ref={charCountRef as React.RefObject<HTMLButtonElement>}
+              data-testid="char-count"
+              onClick={() => setCharCountPopoverOpen((v) => !v)}
+              title={i18next.t("editor.status.charCountDetails")}
+              className="flex items-center gap-1.5 tabular-nums hover:text-foreground"
+            >
+              <span>{charCount.toLocaleString()} chars</span>
+              {targetCharCount > 0 && (
+                <>
+                  <span className="text-muted-foreground">
+                    / {targetCharCount.toLocaleString()}
                   </span>
-                )}
-              </>
-            )}
-          </span>
+                  <span
+                    className="relative h-1 w-12 overflow-hidden rounded-full bg-muted"
+                    aria-hidden
+                  >
+                    <span
+                      className={cn(
+                        "absolute inset-y-0 left-0 transition-[width] duration-200",
+                        charCount >= targetCharCount
+                          ? "bg-emerald-500"
+                          : "bg-primary",
+                      )}
+                      style={{
+                        width: `${Math.min(100, (charCount / targetCharCount) * 100)}%`,
+                      }}
+                    />
+                  </span>
+                  {charCount > targetCharCount && (
+                    <span className="text-rose-500">
+                      +{(charCount - targetCharCount).toLocaleString()}
+                    </span>
+                  )}
+                </>
+              )}
+            </button>
+            <AnimatedDropdown
+              open={charCountPopoverOpen}
+              onClose={() => setCharCountPopoverOpen(false)}
+              containerRef={charCountContainerRef}
+              className="absolute bottom-6 right-0 z-50 min-w-[220px] rounded-md border border-border bg-popover px-3 py-2 text-xs shadow-md"
+            >
+              {(() => {
+                const text = editor ? getDocText(editor.state.doc) : "";
+                const wc = countWords(text);
+                const pages = manuscriptPages(charCount);
+                const minutes = readingMinutes(charCount);
+                return (
+                  <div className="flex flex-col gap-1.5 tabular-nums">
+                    <Stat
+                      label={i18next.t("editor.status.chars")}
+                      value={charCount.toLocaleString()}
+                    />
+                    <Stat
+                      label={i18next.t("editor.status.words")}
+                      value={wc.toLocaleString()}
+                    />
+                    <Stat
+                      label={i18next.t("editor.status.manuscriptPages")}
+                      value={i18next.t("editor.status.manuscriptPagesValue", {
+                        n: pages.toFixed(1),
+                      })}
+                    />
+                    <Stat
+                      label={i18next.t("editor.status.readingTime")}
+                      value={i18next.t("editor.status.readingTimeValue", {
+                        n: minutes,
+                      })}
+                    />
+                    {targetCharCount > 0 && (
+                      <>
+                        <div className="my-1 border-t border-border" />
+                        <Stat
+                          label={i18next.t("editor.status.goal")}
+                          value={`${targetCharCount.toLocaleString()} chars`}
+                        />
+                        <div className="flex items-center gap-2">
+                          <span
+                            className="relative h-1 flex-1 overflow-hidden rounded-full bg-muted"
+                            aria-hidden
+                          >
+                            <span
+                              className={cn(
+                                "absolute inset-y-0 left-0",
+                                charCount >= targetCharCount
+                                  ? "bg-emerald-500"
+                                  : "bg-primary",
+                              )}
+                              style={{
+                                width: `${Math.min(100, (charCount / targetCharCount) * 100)}%`,
+                              }}
+                            />
+                          </span>
+                          <span className="w-10 text-right text-muted-foreground">
+                            {Math.round((charCount / targetCharCount) * 100)}%
+                          </span>
+                        </div>
+                      </>
+                    )}
+                  </div>
+                );
+              })()}
+            </AnimatedDropdown>
+          </div>
           {isSaving ? (
             <span className="opacity-50">Saving...</span>
           ) : isDirty ? (

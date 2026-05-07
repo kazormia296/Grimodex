@@ -1452,7 +1452,15 @@
       "synopsisGenerated": "Synopsis を生成しました",
       "synopsisGenerateFailed": "Synopsis 生成に失敗しました",
       "openAttribution": "Attributionパネルを開く",
-      "revisionHistory": "リビジョン履歴 (Ctrl+Shift+H)"
+      "revisionHistory": "リビジョン履歴 (Ctrl+Shift+H)",
+      "charCountDetails": "文字数の詳細",
+      "chars": "文字数",
+      "words": "単語数",
+      "manuscriptPages": "原稿用紙換算",
+      "manuscriptPagesValue": "{{n}} 枚（400字詰め）",
+      "readingTime": "推定読了時間",
+      "readingTimeValue": "約{{n}}分",
+      "goal": "目標"
     },
     "tabBar": {
       "syncedIndicator": "別のグループでも開かれています",

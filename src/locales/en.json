@@ -1443,7 +1443,15 @@
       "synopsisGenerated": "Synopsis generated",
       "synopsisGenerateFailed": "Synopsis generation failed",
       "openAttribution": "Open Attribution panel",
-      "revisionHistory": "Revision history (Ctrl+Shift+H)"
+      "revisionHistory": "Revision history (Ctrl+Shift+H)",
+      "charCountDetails": "Word count details",
+      "chars": "Characters",
+      "words": "Words",
+      "manuscriptPages": "Manuscript pages",
+      "manuscriptPagesValue": "{{n}} pages (400 chars)",
+      "readingTime": "Reading time",
+      "readingTimeValue": "~{{n}} min",
+      "goal": "Goal"
     },
     "tabBar": {
       "syncedIndicator": "Also open in another group",
