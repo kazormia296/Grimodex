@@ -6,7 +6,10 @@ import { cn } from "@/lib/utils";
 import { useAttributionStore } from "@/features/attribution/attributionStore";
 import { useCursorSettingsStore } from "@/features/editor/cursorSettingsStore";
 import { COMMENT_REBUILD_META } from "@/features/editor/CommentDecorationPlugin";
-import { useSettingNumber } from "@/features/settings/useSettingControl";
+import {
+  useSettingBoolean,
+  useSettingNumber,
+} from "@/features/settings/useSettingControl";
 
 function ToolbarButton({
   active,
@@ -103,6 +106,9 @@ export function Toolbar({
 
   const { value: targetCharCount, setValue: setTargetCharCount } =
     useSettingNumber("editor.targetCharCount", 0);
+
+  const { value: showBreadcrumb, setValue: setShowBreadcrumb } =
+    useSettingBoolean("editor.showBreadcrumb", true);
 
   const { showAttribution, toggleAttribution } = useAttributionStore();
   const {
@@ -663,7 +669,11 @@ export function Toolbar({
             }}
           />
           <div className="my-1 border-t border-border" />
-          <OverflowItem label={t("editor.toolbar.showBreadcrumb")} disabled />
+          <OverflowItem
+            label={t("editor.toolbar.showBreadcrumb")}
+            checked={showBreadcrumb}
+            onClick={() => setShowBreadcrumb(!showBreadcrumb)}
+          />
           <OverflowItem label={t("editor.toolbar.showLineNumbers")} disabled />
         </div>
       )}
@@ -769,11 +779,13 @@ function OverflowItem({
   shortcut,
   onClick,
   disabled,
+  checked,
 }: {
   label: string;
   shortcut?: string;
   onClick?: () => void;
   disabled?: boolean;
+  checked?: boolean;
 }) {
   return (
     <button
@@ -781,6 +793,8 @@ function OverflowItem({
       disabled={disabled}
       onMouseDown={(e) => e.preventDefault()}
       onClick={onClick}
+      role={checked !== undefined ? "menuitemcheckbox" : undefined}
+      aria-checked={checked}
       className={cn(
         "flex w-full items-center justify-between px-3 py-1.5 text-left text-xs",
         disabled
@@ -788,7 +802,20 @@ function OverflowItem({
           : "text-foreground hover:bg-accent",
       )}
     >
-      <span>{label}</span>
+      <span className="flex items-center gap-1.5">
+        {checked !== undefined && (
+          <span
+            aria-hidden
+            className={cn(
+              "inline-block w-3 text-center",
+              checked ? "opacity-100" : "opacity-0",
+            )}
+          >
+            ✓
+          </span>
+        )}
+        {label}
+      </span>
       {shortcut && (
         <span className="ml-4 text-muted-foreground">{shortcut}</span>
       )}

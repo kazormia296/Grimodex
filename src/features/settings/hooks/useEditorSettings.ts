@@ -25,6 +25,7 @@ export interface EditorSettings {
   linearBeatDisplay: "normal" | "collapsed" | "hidden";
   sceneMetaPanelOpen: boolean;
   sceneMetaPanelWidth: number;
+  showBreadcrumb: boolean;
 }
 
 export function useEditorSettings(): EditorSettings {
@@ -60,5 +61,6 @@ export function useEditorSettings(): EditorSettings {
       | "hidden",
     sceneMetaPanelOpen: store.getBoolean("editor.sceneMetaPanelOpen", true),
     sceneMetaPanelWidth: store.getNumber("editor.sceneMetaPanelWidth", 20),
+    showBreadcrumb: store.getBoolean("editor.showBreadcrumb", true),
   };
 }
