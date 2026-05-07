@@ -7,8 +7,8 @@ import {
   type CSSProperties,
 } from "react";
 import { motion } from "motion/react";
-import { Handle, Position } from "@xyflow/react";
 import type { NodeProps } from "@xyflow/react";
+import { FloatingHandle } from "./FloatingHandle";
 import { useEditor, EditorContent } from "@tiptap/react";
 import { getStickyEditorExtensions } from "@/features/editor/extensions";
 import {
@@ -195,7 +195,7 @@ export const StickyNode = memo(function StickyNode({
 
   return (
     <div style={{ position: "relative" }}>
-      <Handle type="target" position={Position.Left} className="map-handle" />
+      <FloatingHandle />
 
       {/* motion wrapper: enter/exit animation. transformOrigin switches on delete. */}
       <motion.div
@@ -287,8 +287,6 @@ export const StickyNode = memo(function StickyNode({
           onPointerDown={exitEditing}
         />
       )}
-
-      <Handle type="source" position={Position.Right} className="map-handle" />
     </div>
   );
 });

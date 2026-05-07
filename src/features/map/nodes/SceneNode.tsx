@@ -1,6 +1,6 @@
 import { memo, useCallback, useEffect, useRef, useState } from "react";
-import { Handle, Position } from "@xyflow/react";
 import type { NodeProps } from "@xyflow/react";
+import { FloatingHandle } from "./FloatingHandle";
 
 export interface SceneNodeData {
   title: string;
@@ -646,7 +646,7 @@ export const SceneNode = memo(function SceneNode({
 
   return (
     <div style={{ ...rotationStyle, position: "relative" }}>
-      <Handle type="target" position={Position.Left} className="map-handle" />
+      <FloatingHandle />
       <span className="map-edit-indicator" aria-hidden>
         ✎
       </span>
@@ -686,8 +686,6 @@ export const SceneNode = memo(function SceneNode({
           onCancel={() => setEditMode("none")}
         />
       )}
-
-      <Handle type="source" position={Position.Right} className="map-handle" />
     </div>
   );
 });

@@ -1,6 +1,6 @@
 import { memo, useState } from "react";
-import { Handle, Position } from "@xyflow/react";
 import type { NodeProps } from "@xyflow/react";
+import { FloatingHandle } from "./FloatingHandle";
 
 export interface AIBranchNodeData {
   prompt: string;
@@ -27,7 +27,7 @@ export const AIBranchNode = memo(function AIBranchNode({
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
     >
-      <Handle type="target" position={Position.Left} className="map-handle" />
+      <FloatingHandle />
 
       {/* × delete badge */}
       {(hovered || selected) && d.onDelete && (
@@ -147,8 +147,6 @@ export const AIBranchNode = memo(function AIBranchNode({
           )}
         </div>
       </div>
-
-      <Handle type="source" position={Position.Right} className="map-handle" />
     </div>
   );
 });

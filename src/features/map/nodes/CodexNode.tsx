@@ -1,8 +1,8 @@
 import { memo } from "react";
-import { Handle, Position } from "@xyflow/react";
 import type { NodeProps } from "@xyflow/react";
 import { parseTags } from "@/features/codex/components/EntryCard";
 import { TagPill } from "@/features/codex/components/TagPill";
+import { FloatingHandle } from "./FloatingHandle";
 
 export interface CodexNodeData {
   name: string;
@@ -49,7 +49,7 @@ export const CodexNode = memo(function CodexNode({
         lineHeight: 1.4,
       }}
     >
-      <Handle type="target" position={Position.Left} className="map-handle" />
+      <FloatingHandle />
       <span className="map-edit-indicator" aria-hidden>
         ✎
       </span>
@@ -119,8 +119,6 @@ export const CodexNode = memo(function CodexNode({
           )}
         </div>
       )}
-
-      <Handle type="source" position={Position.Right} className="map-handle" />
     </div>
   );
 });

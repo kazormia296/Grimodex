@@ -1,6 +1,6 @@
 import { memo } from "react";
-import { Handle, Position } from "@xyflow/react";
 import type { NodeProps } from "@xyflow/react";
+import { FloatingHandle } from "./FloatingHandle";
 
 export interface NoteNodeData {
   title: string;
@@ -15,7 +15,7 @@ export const NoteNode = memo(function NoteNode({ data, selected }: NodeProps) {
 
   return (
     <div style={{ position: "relative" }}>
-      <Handle type="target" position={Position.Left} className="map-handle" />
+      <FloatingHandle />
       <span className="map-edit-indicator" aria-hidden>
         ✎
       </span>
@@ -79,7 +79,6 @@ export const NoteNode = memo(function NoteNode({ data, selected }: NodeProps) {
           </div>
         )}
       </div>
-      <Handle type="source" position={Position.Right} className="map-handle" />
     </div>
   );
 });

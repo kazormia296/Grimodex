@@ -819,27 +819,36 @@
   opacity: 0.7;
 }
 
-/* Map node connection handles.
-   Hidden by default, revealed on node hover OR when connect mode is active.
-   Hit area extends slightly beyond the visual dot for easier grabbing. */
-.react-flow__handle.map-handle {
-  width: 10px;
-  height: 10px;
-  background: var(--primary);
-  border: 2px solid var(--background);
-  opacity: 0;
-  transition: opacity 120ms ease-out;
-}
-.react-flow__handle.map-handle::before {
-  content: "";
+/* Floating connection handles — drop / drag pair.
+   Both cover a transparent rectangle that includes a 6px ring around the
+   node body. drag stays at z-index: -1 so it's only exposed on the
+   outer ring (the visible body covers the rest). drop sits at z-index: 1
+   on top of the visible body so React Flow's pointerenter fires anywhere
+   on the node — its isConnectableStart=false in FloatingHandle.tsx
+   prevents accidental connection starts and lets pointerdown reach the
+   node body for normal drag/click interaction. */
+.react-flow__handle.map-handle-floating-drop,
+.react-flow__handle.map-handle-floating-drag {
   position: absolute;
-  inset: -6px;
+  top: -6px;
+  left: -6px;
+  right: -6px;
+  bottom: -6px;
+  width: auto;
+  height: auto;
+  min-width: 0;
+  min-height: 0;
+  background: transparent;
+  border: none;
+  border-radius: inherit;
+  transform: none;
+  opacity: 0;
 }
-.react-flow__node:hover .react-flow__handle.map-handle,
-.react-flow__handle.map-handle.connectingfrom,
-.react-flow__handle.map-handle.connectingto,
-.map-connect-mode .react-flow__handle.map-handle {
-  opacity: 1;
+.react-flow__handle.map-handle-floating-drag {
+  z-index: -1;
+}
+.react-flow__handle.map-handle-floating-drop {
+  z-index: 1;
 }
 
 /* React Flow Controls / MiniMap: theme-aware colors */

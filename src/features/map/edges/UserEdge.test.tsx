@@ -14,8 +14,25 @@ vi.mock("@xyflow/react", async (importOriginal) => {
       <>{children}</>
     ),
     getBezierPath: () => ["M0,0", 50, 50],
+    // Stub useInternalNode so the floating-edge code path returns valid
+    // node refs without requiring a real ReactFlowProvider in tests.
+    useInternalNode: () => ({
+      measured: { width: 100, height: 50 },
+      internals: { positionAbsolute: { x: 0, y: 0 } },
+    }),
   };
 });
+
+vi.mock("./floatingEdge", () => ({
+  getFloatingEdgeParams: () => ({
+    sx: 0,
+    sy: 0,
+    tx: 100,
+    ty: 100,
+    sourcePos: "right",
+    targetPos: "left",
+  }),
+}));
 
 function makeProps(
   overrides: Partial<EdgeProps> & { data?: Record<string, unknown> } = {},

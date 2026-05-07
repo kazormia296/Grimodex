@@ -1,6 +1,6 @@
 import { memo } from "react";
-import { Handle, Position } from "@xyflow/react";
 import type { NodeProps } from "@xyflow/react";
+import { FloatingHandle } from "./FloatingHandle";
 
 export interface SnippetNodeData {
   title: string | null;
@@ -17,7 +17,7 @@ export const SnippetNode = memo(function SnippetNode({
 
   return (
     <div style={{ position: "relative" }}>
-      <Handle type="target" position={Position.Left} className="map-handle" />
+      <FloatingHandle />
       <div
         style={{
           width: 200,
@@ -53,7 +53,6 @@ export const SnippetNode = memo(function SnippetNode({
           {!d.title && d.content.trim().length > 40 ? "…" : ""}
         </span>
       </div>
-      <Handle type="source" position={Position.Right} className="map-handle" />
     </div>
   );
 });

@@ -3,8 +3,10 @@ import {
   BaseEdge,
   EdgeLabelRenderer,
   getBezierPath,
+  useInternalNode,
   type EdgeProps,
 } from "@xyflow/react";
+import { getFloatingEdgeParams } from "./floatingEdge";
 
 export interface UserEdgeData {
   forwardLabel?: string | null;
@@ -118,12 +120,8 @@ function InlineLabel({
 
 export const UserEdge = memo(function UserEdge({
   id,
-  sourceX,
-  sourceY,
-  targetX,
-  targetY,
-  sourcePosition,
-  targetPosition,
+  source,
+  target,
   data,
   selected,
 }: EdgeProps) {
@@ -136,14 +134,28 @@ export const UserEdge = memo(function UserEdge({
   const edgeStyle = d.style ?? "solid";
   const direction = d.direction ?? "none";
 
+  // Floating edge: anchor at the node-rectangle border closest to the other
+  // node, instead of at a fixed handle position. Both nodes use a single
+  // invisible handle that covers their entire bounds, so the visual
+  // attachment point is computed from node geometry every render.
+  const sourceNode = useInternalNode(source);
+  const targetNode = useInternalNode(target);
+
+  const params =
+    sourceNode && targetNode
+      ? getFloatingEdgeParams(sourceNode, targetNode)
+      : null;
+
   const [edgePath, labelX, labelY] = getBezierPath({
-    sourceX,
-    sourceY,
-    sourcePosition,
-    targetX,
-    targetY,
-    targetPosition,
+    sourceX: params?.sx ?? 0,
+    sourceY: params?.sy ?? 0,
+    sourcePosition: params?.sourcePos,
+    targetX: params?.tx ?? 0,
+    targetY: params?.ty ?? 0,
+    targetPosition: params?.targetPos,
   });
+
+  if (!params) return null;
 
   const strokeDasharray =
     edgeStyle === "dashed" ? "6 3" : edgeStyle === "dotted" ? "2 3" : undefined;
