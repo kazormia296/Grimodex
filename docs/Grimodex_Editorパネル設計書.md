@@ -1561,7 +1561,7 @@ C-4 セクションの既存 textarea 実装は本コンポーネントに置換
 
 - ✅ ステータスバッジ、AI: %、Beats、文字数（target との `/X` 表示）、Saving/Saved/Unsaved、History
 - ✅ 文字数ミニプログレスバー（達成時 emerald / 未達 primary、超過文字数を rose で `+N` 表示）
-- 🟡 文字数詳細ポップオーバー: 原稿用紙換算 / 推定読了時間 / 単語数の表示は未実装
+- ✅ 文字数詳細ポップオーバー（クリックで開く AnimatedDropdown：文字数 / 単語数 / 原稿用紙換算 400字詰め / 推定読了時間 / 目標との進捗）
 - ➕ Lint Status インジケータ
 
 ### リニア編集モード
@@ -1616,9 +1616,9 @@ C-4 セクションの既存 textarea 実装は本コンポーネントに置換
 
 1. ~~文字アニメ 3 種~~ ✅ Bundle で実装済み（Cursor blink 配線、Character fade-in/fade-out プラグイン化）
 2. ~~Phase B Beat 拡張~~ ✅ 調査時点ですべて実装済（D&D ハンドル / モデルセレクタ / ephemeral アクションバー / Clear Beat 確認ダイアログ）。SynopsisHeader / BeatsHeader の完全廃止のみ未完了
-3. **VerticalPreview がモーダル実装で Dock / フローティング構想と乖離** — 「縦書きで参照しながら書く」体験が未提供。レイアウトシステムとの結合が深く要構造変更
-4. **クリップボード Authorship 伝搬の独自 MIME 出力側**（`application/x-grimodex-authorship`）— エディタからのコピー時にシリアライザ拡張で MIME を書き出す処理が未実装
-5. **文字数詳細ポップオーバー**（原稿用紙換算 / 推定読了時間 / 単語数）— 文字数表示クリック時のポップオーバーが未実装
+3. ~~文字数詳細ポップオーバー~~ ✅ 実装済み（クリックで AnimatedDropdown 開、原稿用紙換算 / 推定読了時間 / 単語数 / 進捗）
+4. **VerticalPreview がモーダル実装で Dock / フローティング構想と乖離** — 「縦書きで参照しながら書く」体験が未提供。レイアウトシステムとの結合が深く要構造変更
+5. **クリップボード Authorship 伝搬の独自 MIME 出力側**（`application/x-grimodex-authorship`）— エディタからのコピー時にシリアライザ拡張で MIME を書き出す処理が未実装
 
 ### 残タスク（中量）
 
