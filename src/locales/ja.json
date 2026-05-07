@@ -1241,11 +1241,15 @@
       "openInEditor": "エディタで開く",
       "goToScene": "関連シーンへ移動",
       "titleLabel": "タイトル",
+      "titlePlaceholder": "無題のスニペット",
       "tagsLabel": "タグ",
       "contentLabel": "内容",
       "createdAt": "作成日: {{date}}",
       "usageCount": "使用回数: {{count}}",
-      "sourceChat": "抽出元チャット: {{id}}"
+      "sourceChat": "抽出元チャット: {{id}}",
+      "sourceAi": "AI",
+      "sourceHuman": "人手",
+      "sourceManual": "手動"
     },
     "store": {
       "loadFailed": "スニペットの読み込みに失敗しました",

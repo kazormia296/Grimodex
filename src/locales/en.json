@@ -1241,11 +1241,15 @@
       "openInEditor": "Open in editor",
       "goToScene": "Go to related scene",
       "titleLabel": "Title",
+      "titlePlaceholder": "Untitled snippet",
       "tagsLabel": "Tags",
       "contentLabel": "Content",
       "createdAt": "Created: {{date}}",
       "usageCount": "Usage: {{count}}",
-      "sourceChat": "Source chat: {{id}}"
+      "sourceChat": "Source chat: {{id}}",
+      "sourceAi": "AI",
+      "sourceHuman": "Human",
+      "sourceManual": "Manual"
     },
     "store": {
       "loadFailed": "Failed to load snippets",

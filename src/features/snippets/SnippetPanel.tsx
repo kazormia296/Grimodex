@@ -149,6 +149,17 @@ export function SnippetPanel() {
 
   const handleKeyDown = useCallback(
     async (e: React.KeyboardEvent) => {
+      // Don't intercept keys while typing in an input/textarea or contenteditable
+      // (e.g. detail title input or the Tiptap content editor).
+      const target = e.target as HTMLElement | null;
+      if (
+        target?.isContentEditable ||
+        target?.tagName === "INPUT" ||
+        target?.tagName === "TEXTAREA"
+      ) {
+        return;
+      }
+
       // Ctrl+V: paste from clipboard
       if (e.ctrlKey && e.key === "v") {
         e.preventDefault();

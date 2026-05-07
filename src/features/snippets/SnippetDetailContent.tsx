@@ -1,7 +1,6 @@
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useTranslation } from "react-i18next";
 import {
-  Save,
   Copy,
   Clock,
   Trash2,
@@ -9,6 +8,8 @@ import {
   ExternalLink,
   FileText,
   TextCursorInput,
+  Sparkles,
+  User as UserIcon,
 } from "lucide-react";
 import { useRevisionStore } from "@/features/revision/revisionStore";
 import { createRevision, pruneRevisions } from "@/features/revision/api";
@@ -19,6 +20,8 @@ import { useEditor, EditorContent } from "@tiptap/react";
 import StarterKit from "@tiptap/starter-kit";
 import { AuthorshipMark } from "@/features/attribution/AuthorshipMark";
 import { useAttribution } from "@/features/attribution/useAttribution";
+import { useCodexHighlight } from "@/features/editor/useCodexHighlight";
+import { CodexPopover } from "@/features/editor/CodexPopover";
 import {
   copyWithAttribution,
   handleCopyWithAttribution,
@@ -30,17 +33,25 @@ import { useTabStore } from "@/features/editor/tabStore";
 import { useEditorStore } from "@/features/editor/editorStore";
 import { useSnippetStore } from "./snippetStore";
 import { TagSelector } from "@/features/codex/components/TagSelector";
+import { TagsChip } from "@/features/codex/components/TagsChip";
 import {
   listSnippetEntryTags,
   setSnippetEntryTags,
 } from "@/features/codex/tagApi";
 import type { CodexTag } from "@/features/codex/tagApi";
+import { useFitsInline } from "@/hooks/useFitsInline";
 
 interface SnippetDetailContentProps {
   snippet: Snippet;
   onSave: (id: string, data: { title: string; content: string }) => void;
   onDelete: (id: string) => void;
 }
+
+const SOURCE_ICON = {
+  ai: Sparkles,
+  human: UserIcon,
+  unknown: FileText,
+} as const;
 
 export function SnippetDetailContent({
   snippet,
@@ -67,6 +78,7 @@ export function SnippetDetailContent({
   });
 
   useAttribution(editor);
+  useCodexHighlight(editor, { skipMatchedIds: true });
 
   // Load relational tags when snippet changes
   useEffect(() => {
@@ -131,25 +143,6 @@ export function SnippetDetailContent({
     }, 2000);
   }
 
-  const handleSave = useCallback(async () => {
-    if (autoSaveTimerRef.current) clearTimeout(autoSaveTimerRef.current);
-    if (!title.trim()) return;
-    const content = editor?.getHTML() ?? snippet.content;
-    onSave(snippet.id, { title: title.trim(), content });
-    const rev = await createRevision({
-      entityType: "snippet",
-      entityId: snippet.id,
-      content,
-      snapshotType: "manual",
-    });
-    if (rev) {
-      const keepCount = useSettingsStore
-        .getState()
-        .getNumber("revision.keepCount", 50);
-      pruneRevisions("snippet", snippet.id, keepCount).catch(console.error);
-    }
-  }, [title, editor, snippet, onSave]);
-
   function handleInsertAtCursor() {
     const content = editor?.getHTML() ?? snippet.content;
     const source = (snippet.contentSource as "ai" | "human") ?? "human";
@@ -160,131 +153,168 @@ export function SnippetDetailContent({
     }
   }
 
+  const tagsFit = useFitsInline();
+
+  const sourceKey: keyof typeof SOURCE_ICON =
+    snippet.contentSource === "ai"
+      ? "ai"
+      : snippet.contentSource === "human"
+        ? "human"
+        : "unknown";
+  const SourceIcon = SOURCE_ICON[sourceKey];
+  const sourceLabel =
+    sourceKey === "ai"
+      ? t("snippets.detail.sourceAi")
+      : sourceKey === "human"
+        ? t("snippets.detail.sourceHuman")
+        : t("snippets.detail.sourceManual");
+
   return (
     <div data-testid="snippet-detail-content" className="flex h-full flex-col">
-      <div className="flex items-center justify-between border-b border-border px-3 py-2">
-        <h3 className="text-sm font-semibold">{t("snippets.detailTitle")}</h3>
-        <div className="flex items-center gap-1">
-          <button
-            type="button"
-            data-testid="snippet-insert-at-cursor"
-            onClick={handleInsertAtCursor}
-            className="rounded p-1.5 text-muted-foreground hover:bg-accent hover:text-accent-foreground"
-            title={t("snippets.detail.insertAtCursor")}
-          >
-            <TextCursorInput className="h-3.5 w-3.5" />
-          </button>
-          <button
-            type="button"
-            data-testid="snippet-save-button"
-            onClick={() => void handleSave()}
-            className="rounded p-1.5 text-muted-foreground hover:bg-accent hover:text-accent-foreground"
-            title={t("common.save")}
-          >
-            <Save className="h-3.5 w-3.5" />
-          </button>
-          <button
-            type="button"
-            data-testid="snippet-copy-button"
-            onClick={() =>
-              copyWithAttribution(
-                editor?.getText() ?? snippet.content,
-                "human" as AuthorshipSource,
-              )
-            }
-            className="rounded p-1.5 text-muted-foreground hover:bg-accent hover:text-accent-foreground"
-            title={t("snippets.contextMenu.copy")}
-          >
-            <Copy className="h-3.5 w-3.5" />
-          </button>
-          <button
-            type="button"
-            data-testid="snippet-open-in-editor"
-            onClick={() => useTabStore.getState().openSnippetTab(snippet.id)}
-            className="rounded p-1.5 text-muted-foreground hover:bg-accent hover:text-accent-foreground"
-            title={t("snippets.detail.openInEditor")}
-          >
-            <ExternalLink className="h-3.5 w-3.5" />
-          </button>
-          {snippet.sceneId && (
+      {/* ===== Header (Codex-aligned) ===== */}
+      <div className="shrink-0 px-7 pt-3">
+        {/* Kicker row: [source-icon + label] ... [insert][copy][scene?][history][delete] */}
+        <div className="mb-2 flex items-center justify-between gap-2">
+          <div className="flex min-w-0 items-center gap-1.5 text-[11px] uppercase tracking-[0.04em] text-muted-foreground">
+            <SourceIcon
+              className="h-3 w-3 shrink-0 text-muted-foreground/80"
+              strokeWidth={2}
+            />
+            <span>{sourceLabel}</span>
+          </div>
+          <div className="flex shrink-0 items-center gap-0.5">
             <button
               type="button"
-              data-testid="snippet-navigate-to-scene"
-              onClick={() => setActiveScene(snippet.sceneId!)}
+              data-testid="snippet-insert-at-cursor"
+              onClick={handleInsertAtCursor}
               className="rounded p-1.5 text-muted-foreground hover:bg-accent hover:text-accent-foreground"
-              title={t("snippets.detail.goToScene")}
+              title={t("snippets.detail.insertAtCursor")}
             >
-              <FileText className="h-3.5 w-3.5" />
+              <TextCursorInput className="h-3.5 w-3.5" />
             </button>
-          )}
-          <button
-            type="button"
-            data-testid="snippet-detail-history"
-            onClick={() => {
-              const content = editor?.getHTML() ?? snippet.content;
-              useRevisionStore
-                .getState()
-                .openHistory("snippet", snippet.id, content);
-            }}
-            className="rounded p-1.5 text-muted-foreground hover:bg-accent hover:text-accent-foreground"
-            title={t("editor.status.revisionHistory", "Revision History")}
-          >
-            <Clock className="h-3.5 w-3.5" />
-          </button>
-          <button
-            type="button"
-            data-testid="snippet-detail-delete"
-            onClick={() => onDelete(snippet.id)}
-            className="rounded p-1.5 text-destructive hover:bg-destructive/10"
-            title={t("common.delete")}
-          >
-            <Trash2 className="h-3.5 w-3.5" />
-          </button>
+            <button
+              type="button"
+              data-testid="snippet-copy-button"
+              onClick={() =>
+                copyWithAttribution(
+                  editor?.getText() ?? snippet.content,
+                  "human" as AuthorshipSource,
+                )
+              }
+              className="rounded p-1.5 text-muted-foreground hover:bg-accent hover:text-accent-foreground"
+              title={t("snippets.contextMenu.copy")}
+            >
+              <Copy className="h-3.5 w-3.5" />
+            </button>
+            {snippet.sceneId && (
+              <button
+                type="button"
+                data-testid="snippet-navigate-to-scene"
+                onClick={() => setActiveScene(snippet.sceneId!)}
+                className="rounded p-1.5 text-muted-foreground hover:bg-accent hover:text-accent-foreground"
+                title={t("snippets.detail.goToScene")}
+              >
+                <FileText className="h-3.5 w-3.5" />
+              </button>
+            )}
+            <button
+              type="button"
+              data-testid="snippet-detail-history"
+              onClick={() => {
+                const content = editor?.getHTML() ?? snippet.content;
+                useRevisionStore
+                  .getState()
+                  .openHistory("snippet", snippet.id, content);
+              }}
+              className="rounded p-1.5 text-muted-foreground hover:bg-accent hover:text-accent-foreground"
+              title={t("editor.status.revisionHistory", "Revision History")}
+            >
+              <Clock className="h-3.5 w-3.5" />
+            </button>
+            <button
+              type="button"
+              data-testid="snippet-detail-delete"
+              onClick={() => onDelete(snippet.id)}
+              className="rounded p-1.5 text-destructive hover:bg-destructive/10"
+              title={t("common.delete")}
+            >
+              <Trash2 className="h-3.5 w-3.5" />
+            </button>
+          </div>
+        </div>
+
+        {/* Hero row: title + tags (no avatar column for snippets) */}
+        <div className="grid grid-cols-[minmax(0,1fr)] items-start gap-6">
+          <div className="min-w-0">
+            <input
+              data-testid="snippet-detail-title"
+              type="text"
+              value={title}
+              placeholder={t("snippets.detail.titlePlaceholder")}
+              onChange={(e) => {
+                setTitle(e.target.value);
+                scheduleAutoSave();
+              }}
+              className="-ml-1.5 block w-full rounded border border-transparent bg-transparent px-1.5 py-0.5 text-[26px] font-bold leading-[1.1] tracking-[-0.01em] text-foreground transition-colors hover:bg-accent/40 focus:border-transparent focus:bg-transparent focus:outline-none focus:ring-2 focus:ring-primary"
+              style={{ fontFamily: "inherit" }}
+            />
+
+            {/* Tags row — individual pills if they fit, otherwise grouped chip */}
+            <div
+              ref={tagsFit.containerRef}
+              data-testid="snippet-detail-tags"
+              className="relative mt-2 min-w-0"
+            >
+              <TagsMeasure
+                ref={tagsFit.measureRef}
+                tags={selectedTags}
+                addLabel={t("codex.tagSelector.addTag")}
+              />
+              {tagsFit.fits ? (
+                <TagSelector
+                  entryId={snippet.id}
+                  entryType="snippet"
+                  selectedTags={selectedTags}
+                  onTagsChange={setSelectedTags}
+                  persistTags={setSnippetEntryTags}
+                />
+              ) : (
+                <TagsChip
+                  entryId={snippet.id}
+                  entryType="snippet"
+                  selectedTags={selectedTags}
+                  onTagsChange={setSelectedTags}
+                />
+              )}
+            </div>
+          </div>
         </div>
       </div>
 
+      {/* ===== Body ===== */}
       <div
-        className="flex-1 space-y-3 overflow-y-auto px-3 py-3"
+        className="flex-1 space-y-3 overflow-y-auto px-7 py-3"
         onCopy={(e) =>
           handleCopyWithAttribution(e, "human" as AuthorshipSource)
         }
       >
         <div>
-          <label className="mb-1 block text-xs font-medium">
-            {t("snippets.detail.titleLabel")}
-          </label>
-          <input
-            data-testid="snippet-detail-title"
-            type="text"
-            value={title}
-            onChange={(e) => {
-              setTitle(e.target.value);
-              scheduleAutoSave();
-            }}
-            className="w-full rounded-md border border-input bg-background px-2 py-1.5 text-sm"
-          />
-        </div>
-
-        <div>
-          <label className="mb-1 block text-xs font-medium">
-            {t("snippets.detail.tagsLabel")}
-          </label>
-          <TagSelector
-            entryId={snippet.id}
-            entryType="snippet"
-            selectedTags={selectedTags}
-            onTagsChange={setSelectedTags}
-            persistTags={setSnippetEntryTags}
-          />
-        </div>
-
-        <div>
-          <label className="mb-1 block text-xs font-medium">
-            {t("snippets.detail.contentLabel")}
-          </label>
+          <div className="mb-1 flex items-center justify-end">
+            <button
+              type="button"
+              data-testid="snippet-open-in-editor"
+              onClick={() => useTabStore.getState().openSnippetTab(snippet.id)}
+              className="flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] text-muted-foreground hover:bg-accent"
+              title={t("snippets.detail.openInEditor")}
+            >
+              <ExternalLink className="h-3 w-3" />
+              {t("snippets.detail.openInEditor")}
+            </button>
+          </div>
           <div className="rounded-md border border-input bg-background p-2">
             <EditorContent editor={editor} />
           </div>
+          <CodexPopover editor={editor} />
         </div>
 
         {/* Metadata */}
@@ -294,21 +324,10 @@ export function SnippetDetailContent({
               date: new Date(snippet.createdAt).toLocaleString(),
             })}
           </div>
-          <div className="flex items-center gap-2">
-            <span>
-              {t("snippets.detail.usageCount", {
-                count: snippet.usageCount ?? 0,
-              })}
-            </span>
-            {snippet.contentSource === "ai" ? (
-              <span className="rounded-full bg-purple-500/20 px-1.5 py-0.5 text-[10px] text-purple-400">
-                AI
-              </span>
-            ) : snippet.contentSource === "human" ? (
-              <span className="rounded-full bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">
-                Human
-              </span>
-            ) : null}
+          <div>
+            {t("snippets.detail.usageCount", {
+              count: snippet.usageCount ?? 0,
+            })}
           </div>
         </div>
 
@@ -326,6 +345,38 @@ export function SnippetDetailContent({
           </div>
         )}
       </div>
+    </div>
+  );
+}
+
+/* ---------- measure-only stand-in (mirrors CodexEntryHeader.TagsMeasure) ---------- */
+
+interface TagsMeasureProps {
+  ref: React.Ref<HTMLDivElement>;
+  tags: CodexTag[];
+  addLabel: string;
+}
+
+function TagsMeasure({ ref, tags, addLabel }: TagsMeasureProps) {
+  return (
+    <div
+      ref={ref}
+      aria-hidden="true"
+      style={{ width: "max-content" }}
+      className="pointer-events-none invisible absolute left-0 top-0 flex flex-nowrap items-center gap-1"
+    >
+      {tags.map((tag) => (
+        <span
+          key={tag.id}
+          className="inline-flex items-center gap-0.5 rounded-full px-1.5 py-0.5 text-[10px] font-medium"
+        >
+          {tag.name}
+          <span className="ml-0.5">×</span>
+        </span>
+      ))}
+      <span className="rounded-full border border-dashed px-1.5 py-0.5 text-[10px]">
+        {addLabel}
+      </span>
     </div>
   );
 }
