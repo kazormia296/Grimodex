@@ -15,6 +15,7 @@ import { useCodexStore } from "@/features/codex/codexStore";
 import { usePhaseStore } from "@/features/codex/phaseStore";
 import { useSnippetStore } from "@/features/snippets/snippetStore";
 import { useMapStore } from "./mapStore";
+import { useGlobalHistoryStore } from "@/store/globalHistoryStore";
 import { SceneNode } from "./nodes/SceneNode";
 import { CodexNode } from "./nodes/CodexNode";
 import { FrameNode } from "./nodes/FrameNode";
@@ -619,6 +620,44 @@ export function MapCanvas() {
         ...prev,
         sticky.position as MapNodePositionRecord,
       ]);
+
+      if (!useGlobalHistoryStore.getState().isReplaying) {
+        const captured = {
+          sticky: { ...sticky.sticky },
+          position: { ...sticky.position },
+          boardId,
+        };
+        useGlobalHistoryStore.getState().push({
+          kind: "map",
+          label: "Sticky作成",
+          async undo() {
+            await deleteSticky(captured.sticky.id);
+            setStickies((prev) =>
+              prev.filter((s) => s.id !== captured.sticky.id),
+            );
+            setPositions((prev) =>
+              prev.filter((p) => p.id !== captured.position.id),
+            );
+          },
+          async redo() {
+            const recreated = await createSticky({
+              id: captured.sticky.id,
+              boardId: captured.boardId,
+              x: captured.position.x,
+              y: captured.position.y,
+              paletteId: captured.sticky.paletteId,
+              colorSlot: captured.sticky.colorSlot,
+              title: captured.sticky.title ?? undefined,
+              body: captured.sticky.body,
+            });
+            setStickies((prev) => [...prev, recreated.sticky]);
+            setPositions((prev) => [
+              ...prev,
+              recreated.position as MapNodePositionRecord,
+            ]);
+          },
+        });
+      }
     },
     [boardId, getSpawnPosition, setStickies, setPositions],
   );
@@ -652,6 +691,60 @@ export function MapCanvas() {
       toPositionId: result.position.id,
     });
     setUserEdges((prev) => [...prev, edge]);
+
+    if (!useGlobalHistoryStore.getState().isReplaying) {
+      const captured = {
+        sticky: { ...result.sticky },
+        position: { ...result.position },
+        edge: { ...edge },
+        sourcePosId: sourcePos.id,
+        boardId,
+      };
+      useGlobalHistoryStore.getState().push({
+        kind: "map",
+        label: "分岐 Sticky 作成",
+        async undo() {
+          await deleteUserEdge(captured.edge.id);
+          await deleteSticky(captured.sticky.id);
+          setUserEdges((prev) => prev.filter((u) => u.id !== captured.edge.id));
+          setStickies((prev) =>
+            prev.filter((s) => s.id !== captured.sticky.id),
+          );
+          setPositions((prev) =>
+            prev.filter((p) => p.id !== captured.position.id),
+          );
+        },
+        async redo() {
+          const recreatedSticky = await createSticky({
+            id: captured.sticky.id,
+            boardId: captured.boardId,
+            x: captured.position.x,
+            y: captured.position.y,
+            paletteId: captured.sticky.paletteId,
+            colorSlot: captured.sticky.colorSlot,
+            title: captured.sticky.title ?? undefined,
+            body: captured.sticky.body,
+          });
+          const recreatedEdge = await createUserEdge({
+            id: captured.edge.id,
+            boardId: captured.boardId,
+            fromPositionId: captured.sourcePosId,
+            toPositionId: recreatedSticky.position.id,
+            forwardLabel: captured.edge.forwardLabel ?? undefined,
+            backwardLabel: captured.edge.backwardLabel ?? undefined,
+            style: captured.edge.style,
+            color: captured.edge.color,
+            direction: captured.edge.direction,
+          });
+          setStickies((prev) => [...prev, recreatedSticky.sticky]);
+          setPositions((prev) => [
+            ...prev,
+            recreatedSticky.position as MapNodePositionRecord,
+          ]);
+          setUserEdges((prev) => [...prev, recreatedEdge]);
+        },
+      });
+    }
   }, [contextMenu, boardId, getNodes, setStickies, setPositions, setUserEdges]);
 
   const handlePaneDoubleClick = useCallback(

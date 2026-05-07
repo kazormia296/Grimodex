@@ -455,9 +455,10 @@ export async function createSticky(data: {
   colorSlot?: number;
   title?: string;
   body?: string;
+  id?: string;
 }): Promise<{ sticky: MapSticky; position: MapNodePosition }> {
   const now = new Date().toISOString();
-  const stickyId = crypto.randomUUID();
+  const stickyId = data.id ?? crypto.randomUUID();
   const body = data.body ?? '{"type":"doc","content":[]}';
   const previewText = extractPreviewText(body);
 
@@ -812,9 +813,10 @@ export async function createUserEdge(data: {
   style?: NewMapEdge["style"];
   color?: string;
   direction?: NewMapEdge["direction"];
+  id?: string;
 }): Promise<MapEdge> {
   const now = new Date().toISOString();
-  const id = crypto.randomUUID();
+  const id = data.id ?? crypto.randomUUID();
   const insertData: NewMapEdge = {
     id,
     boardId: data.boardId,

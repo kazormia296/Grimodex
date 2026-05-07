@@ -2,7 +2,8 @@ import { useCallback, useMemo } from "react";
 import { useDebouncedCallback } from "@/lib/useDebounce";
 import type { Node, Edge, Connection } from "@xyflow/react";
 import { useCodexStore } from "@/features/codex/codexStore";
-import { upsertNodePosition, createUserEdge } from "../mapApi";
+import { upsertNodePosition, createUserEdge, deleteUserEdge } from "../mapApi";
+import { useGlobalHistoryStore } from "@/store/globalHistoryStore";
 import { buildUpsertArgs } from "../utils/nodeIdCodec";
 import type { MapEdge } from "@/db/schema";
 import type { MapNodePositionRecord } from "../types";
@@ -57,6 +58,32 @@ export function useMapCallbacks({
         toPositionId: targetPos.id,
       });
       setUserEdges((prev) => [...prev, newEdge]);
+
+      if (!useGlobalHistoryStore.getState().isReplaying) {
+        const captured = { ...newEdge };
+        useGlobalHistoryStore.getState().push({
+          kind: "map",
+          label: "エッジ作成",
+          async undo() {
+            await deleteUserEdge(captured.id);
+            setUserEdges((prev) => prev.filter((e) => e.id !== captured.id));
+          },
+          async redo() {
+            const recreated = await createUserEdge({
+              id: captured.id,
+              boardId: captured.boardId,
+              fromPositionId: captured.fromPositionId,
+              toPositionId: captured.toPositionId,
+              forwardLabel: captured.forwardLabel ?? undefined,
+              backwardLabel: captured.backwardLabel ?? undefined,
+              style: captured.style,
+              color: captured.color,
+              direction: captured.direction,
+            });
+            setUserEdges((prev) => [...prev, recreated]);
+          },
+        });
+      }
     },
     [boardId, setUserEdges],
   );
