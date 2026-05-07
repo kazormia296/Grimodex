@@ -1493,25 +1493,27 @@ C-4 セクションの既存 textarea 実装は本コンポーネントに置換
 
 本セクションは設計書本文の理想形と現実装のギャップを集約したスナップショット。✅ 実装済 / 🟡 部分実装 / ❌ 未実装 / ⚠️ 設計と差異 / ➕ 設計書外で追加実装。
 
+> 履歴: 初回スナップショットの後、Bundle A / B / C で **Snippet タブアイコン / 文字数ミニプログレスバー / Show breadcrumb・Show line numbers トグル / Set ruby・Insert from Snippet コンテキストメニュー / 段落字下げ設定 / Breadcrumb 狭幅省略 / タブ種バナーの lucide 化** を実装済みに更新。Bundle B/C 着手時の調査で **Attribution highlight opacity / タブ種バナー本体** は既に実装済みであったことが判明したため、誤検知扱いで ✅ に修正。
+
 ### A. タブバー
 
 - ✅ プレビュー/固定タブ、Codex/Snippet タブ、同期バッジ、未保存インジケータ、コンテキストメニュー、Linear モードトグル、永続化、Ctrl+Tab 系
-- 🟡 Snippet タブアイコン: 設計書は `🗂` だが実装には Snippet 専用絵文字描画分岐が見当たらない
+- ✅ Snippet タブアイコン: lucide `Files`。Note は `StickyNote`、Codex は `BookOpen` で TabBar / バナー全体を統一
 - ❌ タブを Center 外にドラッグ → フローティングエディタウィンドウ
 - ❌ Group エッジへのドロップで新規スプリット作成（既存 Group 内移動のみ実装）
-- ❌ エディタ上部の「タブ種バナー」（Codex/Snippet/Note 全種で未実装）
+- ✅ エディタ上部の「タブ種バナー」（Note / Codex / Snippet 全種）— `EditorPane.tsx` で実装済み。Codex には phase ラベル表示も併設
 - ➕ Codex タブの phase ラベル表示（`getTabPhaseLabel`）
 
 ### B. ブレッドクラム
 
 - ✅ パス表示、セグメントクリックで兄弟ドロップダウン
-- ❌ ツールバー オーバーフローの `Show breadcrumb` トグル（`Toolbar.tsx` で `disabled`）
-- ❌ 狭幅時の `...` 省略
+- ✅ ツールバー オーバーフローの `Show breadcrumb` トグル（`editor.showBreadcrumb`、default: true）
+- ✅ 狭幅時の省略（`max-width` + `flex-shrink` + `truncate`、`title` 属性で full text 保持。中間セグメント優先で縮む）
 
 ### C. ツールバー
 
 - ✅ グループ 1〜5 の主要ボタン、Aa ポップオーバー、Attr / Cmt / Focus / TW、Find & Replace、Word count goal、Vertical preview
-- ❌ オーバーフロー: `Show breadcrumb` / `Show line numbers`（いずれも `disabled` 固定）
+- ✅ オーバーフロー: `Show breadcrumb` / `Show line numbers` 両方ともチェック付きトグルとして稼働
 - ➕ Fs（伏線マーク表示）トグル
 - ➕ ▶（SceneMetaPanel 開閉）ボタン
 
@@ -1539,13 +1541,14 @@ C-4 セクションの既存 textarea 実装は本コンポーネントに置換
 #### Pure Decorations
 
 - ✅ CodexHighlight / AttributionHighlight / FocusDim / LintDecorationPlugin
-- ❌ Attribution highlight opacity 設定（5–25%）
+- ✅ Attribution highlight opacity 設定（5–25%）— `display.attributionHighlightOpacity` を `App.tsx` で CSS 変数 `--attribution-pct` に同期、`DisplayCategory` に slider、`index.css` の `attribution-ai/unknown` で適用
 
 #### スタイル / モード
 
 - ✅ Typewriter モード、Placeholder
 - ✅ フォントサイズ・行間・最大幅・パディングの Settings 連動
-- ❌ 段落字下げ設定（OFF / 1字 / 2字）
+- ✅ 段落字下げ設定（OFF / 1字 / 2字）— `editor.paragraphIndent` + CSS 変数 `--editor-paragraph-indent` で `text-indent` を表示上のみ適用
+- ✅ 行番号表示（CSS counter ベースの段落番号方式）— `editor.showLineNumbers` で `.editor-line-numbers` クラスを wrapper に付与
 
 #### カーソル / 文字アニメーション 4 種
 
@@ -1557,8 +1560,8 @@ C-4 セクションの既存 textarea 実装は本コンポーネントに置換
 ### E. ステータスバー
 
 - ✅ ステータスバッジ、AI: %、Beats、文字数（target との `/X` 表示）、Saving/Saved/Unsaved、History
+- ✅ 文字数ミニプログレスバー（達成時 emerald / 未達 primary、超過文字数を rose で `+N` 表示）
 - 🟡 文字数詳細ポップオーバー: 原稿用紙換算 / 推定読了時間 / 単語数の表示は未実装
-- ❌ 文字数ミニプログレスバー（達成時グリーン / 超過時赤）
 - ➕ Lint Status インジケータ
 
 ### リニア編集モード
@@ -1569,8 +1572,8 @@ C-4 セクションの既存 textarea 実装は本コンポーネントに置換
 ### エディタ内コンテキストメニュー
 
 - ✅ Cut / Copy / Paste / Add comment / Add to Codex / Save as Snippet / Look up in Chat / Mark as ▶（Attribution 変更）/ Insert scene break / Select all
-- ❌ `Set ruby...`（選択時メニュー項目）
-- ❌ `Insert from Snippet...`（非選択時メニュー項目）
+- ✅ `Set ruby...`（選択時）— Toolbar の openRuby を `toolbarActionsRef` 経由で起動し既存 Ruby ダイアログを再利用
+- ✅ `Insert from Snippet...` — 検索ボックス付き Snippet ピッカーで `editorStore.insertFromSnippet` 経由挿入
 - ➕ Lint Disable / Foreshadow メニュー項目
 
 ### Find & Replace / 全シーン横断検索
@@ -1584,7 +1587,7 @@ C-4 セクションの既存 textarea 実装は本コンポーネントに置換
 ### 文字数目標
 
 - ✅ ツールバーオーバーフローでの設定、ステータスバーでの `{count} / {goal}` 表示
-- ❌ ミニプログレスバー / 達成色変化 / 超過色赤
+- ✅ ミニプログレスバー（達成色 emerald / 超過色 rose）
 
 ### 縦書きプレビュー
 
@@ -1597,7 +1600,7 @@ C-4 セクションの既存 textarea 実装は本コンポーネントに置換
 ### タブ種別ごとの差異
 
 - ✅ Lint 下線が Primary Group の Scene のみ、Codex タブで自エントリ除外、Snippet タブで Codex Quick 更新スキップ
-- ❌ エディタ上部バナー（Note / Codex / Snippet すべて未実装）
+- ✅ エディタ上部バナー（Note / Codex / Snippet すべて実装済み）
 
 ### キーボードショートカット
 
@@ -1609,10 +1612,10 @@ C-4 セクションの既存 textarea 実装は本コンポーネントに置換
 - 🟡 Phase B: SceneMetaPanel 右パネル統合は実装済み。SynopsisHeader / BeatsHeader の完全廃止は未完了
 - ❌ Phase B: D&D ハンドル `⠿` / フッターのモデルセレクタ / ephemeral アクションバー（`✓ Keep` / `↺ Retry` / `✕ Discard`）/ `Clear Beat` メニュー項目
 
-### 重要ギャップ Top 5
+### 重要ギャップ Top 5（更新版）
 
-1. **文字アニメ 3 種（Cursor blink / Character fade-in / Character fade-out）が UI のみで未配線** — 設定を切ってもエディタ動作が変わらない無言失敗
-2. **エディタ上部の「タブ種バナー」が完全欠落** — Codex/Snippet/Note タブで何のレコードを編集中か視覚的に判別困難
-3. **`Show breadcrumb` / `Show line numbers` トグルが `disabled` 固定** — 設計書記載機能が UI 上は disabled のまま放置
-4. **VerticalPreview がモーダル実装で Dock / フローティング構想と乖離** — 「縦書きで参照しながら書く」体験が未提供
-5. **コンテキストメニュー欠落: `Set ruby...`（選択時）/ `Insert from Snippet...`（非選択時）** — キーボード/メニュー経由の Snippet 挿入が断絶
+1. **文字アニメ 3 種（Cursor blink / Character fade-in / Character fade-out）が UI のみで未配線** — 設定を切ってもエディタ動作が変わらない無言失敗。最も影響範囲が広く優先度高
+2. **VerticalPreview がモーダル実装で Dock / フローティング構想と乖離** — 「縦書きで参照しながら書く」体験が未提供。レイアウトシステムとの結合が深く要構造変更
+3. **Phase B Beat 拡張**（D&D ハンドル `⠿` / フッターのモデルセレクタ / ephemeral アクションバー / `Clear Beat` メニュー）— SceneMetaPanel 統合は完了済みだが UI 拡張が未着手
+4. **クリップボード Authorship 伝搬の独自 MIME 出力側**（`application/x-grimodex-authorship`）— エディタからのコピー時にシリアライザ拡張で MIME を書き出す処理が未実装
+5. **文字数詳細ポップオーバー**（原稿用紙換算 / 推定読了時間 / 単語数）— 文字数表示クリック時のポップオーバーが未実装
