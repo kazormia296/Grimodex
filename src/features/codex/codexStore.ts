@@ -9,8 +9,13 @@ import {
   deleteCodexEntry,
 } from "./api";
 import type { CodexEntry, CodexEntryType, NewCodexEntry } from "./api";
+import { listCodexTypes, type CodexType } from "./typeApi";
 import { searchCodexEntries } from "./search";
 import { useGlobalHistoryStore } from "@/store/globalHistoryStore";
+import { captureCodexDeletion } from "@/features/trash-bin/captureHooks";
+import { useTrashBinStore } from "@/features/trash-bin/trashBinStore";
+
+const DEFAULT_PROJECT_ID = "default-project";
 
 export type CodexSortOrder =
   | "category"
@@ -65,6 +70,8 @@ function labelForPatch(data: StructuralPatch): string {
 
 interface CodexState {
   entries: CodexEntry[];
+  /** type slug → CodexType の lookup 用キャッシュ。loadEntries で更新。 */
+  types: CodexType[];
   searchQuery: string;
   filterType: CodexEntryType | null;
   sortOrder: CodexSortOrder;
@@ -104,6 +111,7 @@ interface CodexState {
 
 export const useCodexStore = create<CodexState>()((set, get) => ({
   entries: [],
+  types: [],
   searchQuery: "",
   filterType: null,
   sortOrder: "category" as CodexSortOrder,
@@ -114,8 +122,11 @@ export const useCodexStore = create<CodexState>()((set, get) => ({
     set({ isLoading: true });
     try {
       const { filterType } = get();
-      const entries = await listCodexEntries(filterType ?? undefined);
-      set({ entries, isLoading: false });
+      const [entries, types] = await Promise.all([
+        listCodexEntries(filterType ?? undefined),
+        listCodexTypes(DEFAULT_PROJECT_ID),
+      ]);
+      set({ entries, types, isLoading: false });
     } catch (e) {
       set({ isLoading: false });
       toast.error(i18next.t("codex.store.loadFailed"));
@@ -293,10 +304,20 @@ export const useCodexStore = create<CodexState>()((set, get) => ({
 
     if (before && !useGlobalHistoryStore.getState().isReplaying) {
       const captured = { ...before };
+      const trashTempId = `trash-codex-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      const matchedType = get().types.find((t) => t.slug === captured.type);
+      captureCodexDeletion({
+        projectId: captured.projectId,
+        entry: captured,
+        categoryLabel: matchedType?.label ?? null,
+        iconName: matchedType?.icon ?? null,
+        tempId: trashTempId,
+      });
       useGlobalHistoryStore.getState().push({
         kind: "codex",
         label: "Codex削除",
         async undo() {
+          useTrashBinStore.getState().cancelPending({ tempId: trashTempId });
           await createCodexEntry({
             id: captured.id,
             projectId: captured.projectId,

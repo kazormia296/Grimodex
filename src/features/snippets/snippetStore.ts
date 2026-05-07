@@ -6,6 +6,8 @@ import * as snippetApi from "./api";
 import type { Snippet, NewSnippet } from "./api";
 import { searchSnippets } from "./search";
 import { useGlobalHistoryStore } from "@/store/globalHistoryStore";
+import { captureSnippetDeletion } from "@/features/trash-bin/captureHooks";
+import { useTrashBinStore } from "@/features/trash-bin/trashBinStore";
 
 export type SnippetSourceFilter =
   | "all"
@@ -215,10 +217,17 @@ export const useSnippetStore = create<SnippetState>()((set, get) => ({
     if (useGlobalHistoryStore.getState().isReplaying) return;
 
     const captured = { ...before };
+    const trashTempId = `trash-snippet-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    captureSnippetDeletion({
+      projectId: captured.projectId,
+      snippet: captured,
+      tempId: trashTempId,
+    });
     useGlobalHistoryStore.getState().push({
       kind: "snippets",
       label: "Snippet削除",
       async undo() {
+        useTrashBinStore.getState().cancelPending({ tempId: trashTempId });
         await snippetApi.createSnippet({
           id: captured.id,
           projectId: captured.projectId,

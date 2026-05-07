@@ -7,6 +7,8 @@ import { loadBatchAiRatio } from "@/features/attribution/api";
 import { useSettingsStore } from "@/features/settings/settingsStore";
 import { useTabStore } from "@/features/editor/tabStore";
 import { useGlobalHistoryStore } from "@/store/globalHistoryStore";
+import { captureSceneDeletion } from "@/features/trash-bin/captureHooks";
+import { useTrashBinStore } from "@/features/trash-bin/trashBinStore";
 import {
   listPinnedCodexIds,
   addPinnedCodex,
@@ -773,11 +775,39 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
     // replay an inconsistent state.
     if (partialFailure) return;
 
+    // Trash 連携: 削除に成功した scene について一括キャプチャ。
+    // フォルダ削除でも descendant の各 scene が個別アイテムとして trash に流れる。
+    const trashTempIds = new Map<string, string>();
+    if (trackHistory) {
+      for (const node of deletedNodes) {
+        if (node.nodeType !== "scene" || !successfullyDeleted.has(node.id)) {
+          continue;
+        }
+        const tempId = `trash-scene-${Date.now()}-${Math.random().toString(36).slice(2, 8)}-${node.id}`;
+        trashTempIds.set(node.id, tempId);
+        const folderHintName =
+          deletedNodes.find((n) => n.id === node.parentId)?.title ??
+          nodes.find((n) => n.id === node.parentId)?.title ??
+          null;
+        captureSceneDeletion({
+          projectId: node.projectId,
+          node,
+          content: contentSnapshots[node.id] ?? "",
+          folderHintName,
+          tempId,
+        });
+      }
+    }
+
     if (trackHistory) {
       useGlobalHistoryStore.getState().push({
         kind: "scenes",
         label: "削除",
         async undo() {
+          // 1500ms 以内 Ctrl+Z 吸収: trash 保留を全 cancel
+          for (const tempId of trashTempIds.values()) {
+            useTrashBinStore.getState().cancelPending({ tempId });
+          }
           // Restore nodes (parents before children)
           const sorted = topologicalSort(deletedNodes);
           for (const node of sorted) {
