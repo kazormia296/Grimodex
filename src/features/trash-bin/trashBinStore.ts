@@ -20,6 +20,18 @@ interface EnqueueOptions {
   tempId: string;
 }
 
+/**
+ * `pickup` の戻り値 (設計書 §11)。restorer の `RestoreOutcome` をそのまま返す。
+ * 設計書 §9.4: pickup 自体は Global Undo に乗せない。
+ */
+export type PickupResult =
+  | { ok: true; newId: string; brokenLinks: string[] }
+  | {
+      ok: false;
+      reason: "rejected" | "no-target" | "internal-error" | "duplicate";
+      message?: string;
+    };
+
 interface TrashBinStore {
   items: Map<string, TrashItemData>;
   selectedItemId: string | null;
@@ -43,6 +55,15 @@ interface TrashBinStore {
   clearAll(projectId: string): Promise<void>;
   setSelectedItem(id: string | null): void;
   setCapturing(value: boolean): void;
+  /**
+   * 拾い上げ (D&D / キーボード経由共通)。
+   * target.onDrop() を呼び (内部で restorer を呼ぶ)、成功したら DB から item を
+   * 消し store からも削除。失敗時は item は trash に残す。
+   */
+  pickup(
+    itemId: string,
+    onRestore: () => Promise<PickupResult>,
+  ): Promise<PickupResult>;
 }
 
 // store 外で保持するタイマー (再描画を起こさないため state には含めない)
@@ -149,6 +170,39 @@ export const useTrashBinStore = create<TrashBinStore>()((set, get) => ({
       return;
     }
     set({ items: new Map() });
+  },
+
+  pickup: async (itemId, onRestore) => {
+    const item = get().items.get(itemId);
+    if (!item) {
+      return { ok: false, reason: "no-target", message: "item not found" };
+    }
+    let result: PickupResult;
+    try {
+      result = await onRestore();
+    } catch (e) {
+      return {
+        ok: false,
+        reason: "internal-error",
+        message: e instanceof Error ? e.message : String(e),
+      };
+    }
+    if (!result.ok) return result;
+
+    // 復元成功 → trash 側から削除 (DB + store)。失敗時は trash に残す。
+    try {
+      await trashApi.deleteTrashItem(itemId);
+    } catch (e) {
+      debugLog.error("TrashBinStore", "pickup/delete", errorDetail(e));
+      // 復元自体は成功しているので呼び出し側には ok を返す
+    }
+    set((s) => {
+      if (!s.items.has(itemId)) return s;
+      const next = new Map(s.items);
+      next.delete(itemId);
+      return { items: next };
+    });
+    return result;
   },
 }));
 

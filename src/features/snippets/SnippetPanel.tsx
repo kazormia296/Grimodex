@@ -8,6 +8,7 @@ import {
   ResizableHandle,
 } from "@/components/ui/resizable";
 import { useSnippetStore } from "./snippetStore";
+import { useDropTarget } from "@/features/trash-bin/useDropTarget";
 import type { SnippetSourceFilter, SnippetSortOrder } from "./snippetStore";
 import { SnippetDetailContent } from "./SnippetDetailContent";
 import { SnippetContextMenu } from "./SnippetContextMenu";
@@ -71,6 +72,14 @@ export function SnippetPanel() {
   const panelRef = useRef<HTMLDivElement>(null);
   const listContainerRef = useRef<HTMLDivElement>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
+  const trashDropRef = useDropTarget("snippets-panel", "snippets-panel");
+  const setRootRef = useCallback(
+    (el: HTMLDivElement | null) => {
+      panelRef.current = el;
+      trashDropRef.current = el;
+    },
+    [trashDropRef],
+  );
 
   useEffect(() => {
     loadEntries();
@@ -315,8 +324,9 @@ export function SnippetPanel() {
 
   return (
     <div
-      ref={panelRef}
-      className="relative flex h-full flex-col"
+      ref={setRootRef}
+      data-droptarget-id="snippets-panel"
+      className="relative flex h-full flex-col data-[trash-drop-hover=true]:ring-2 data-[trash-drop-hover=true]:ring-primary/60"
       data-testid="snippet-panel"
       tabIndex={0}
       onKeyDown={handleKeyDown}

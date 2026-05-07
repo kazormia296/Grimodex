@@ -5,6 +5,7 @@ import { useVirtualizer } from "@tanstack/react-virtual";
 import { useCodexStore } from "./codexStore";
 import { getTypeLabel } from "@/features/chat/utils/typeLabels";
 import type { CodexEntry, CodexEntryType } from "./api";
+import { useDropTarget } from "@/features/trash-bin/useDropTarget";
 
 const TYPE_OPTION_KEYS: { value: CodexEntryType; key: string }[] = [
   { value: "character", key: "codex.character" },
@@ -285,6 +286,7 @@ export function CodexPanel() {
   const [isEditing, setIsEditing] = useState(false);
   const [localSearch, setLocalSearch] = useState(searchQuery);
   const searchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const trashDropRef = useDropTarget("codex-panel", "codex-panel");
 
   useEffect(() => {
     loadEntries();
@@ -353,7 +355,12 @@ export function CodexPanel() {
   }
 
   return (
-    <div data-testid="codex-panel" className="flex h-full flex-col">
+    <div
+      ref={trashDropRef}
+      data-testid="codex-panel"
+      data-droptarget-id="codex-panel"
+      className="flex h-full flex-col data-[trash-drop-hover=true]:ring-2 data-[trash-drop-hover=true]:ring-primary/60"
+    >
       <div className="space-y-2 border-b border-border px-3 py-2">
         <div className="relative">
           <Search className="absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />

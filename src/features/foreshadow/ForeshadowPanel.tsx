@@ -19,6 +19,7 @@ import { useForeshadowNavStore } from "./foreshadowNavStore";
 import { CreateForeshadowDialog } from "./CreateForeshadowDialog";
 import { EditForeshadowDialog } from "./EditForeshadowDialog";
 import { ForeshadowChapterTab } from "./ForeshadowChapterTab";
+import { useDropTarget } from "@/features/trash-bin/useDropTarget";
 import { isSetupEvaluationStale } from "./staleness";
 import { safeParseAiEvaluation } from "./types";
 import { setSetupStrength, getSceneForeshadowInfo } from "./api";
@@ -255,6 +256,7 @@ type PanelTab = "list" | "chapter";
 
 export function ForeshadowPanel() {
   const { t } = useTranslation();
+  const trashDropRef = useDropTarget("foreshadow-panel", "foreshadow-panel");
   const {
     items,
     isLoading,
@@ -390,7 +392,11 @@ export function ForeshadowPanel() {
   };
 
   return (
-    <div className="flex h-full flex-col">
+    <div
+      ref={trashDropRef}
+      data-droptarget-id="foreshadow-panel"
+      className="flex h-full flex-col data-[trash-drop-hover=true]:ring-2 data-[trash-drop-hover=true]:ring-primary/60"
+    >
       <div className="flex items-center justify-between border-b border-border px-3 py-2">
         <span className="text-xs font-semibold text-foreground">
           {t("foreshadow.panel.title")}

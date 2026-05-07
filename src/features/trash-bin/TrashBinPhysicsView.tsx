@@ -1,8 +1,11 @@
-import { useCallback, useEffect, useRef } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { TrashBinItem } from "./TrashBinItem";
 import {
+  applyShake,
+  attach,
   createBody,
+  detach,
   hasUnsettled,
   PhysicsBody,
   placeFloorPreset,
@@ -10,16 +13,30 @@ import {
   wakeNeighbors,
 } from "./physics";
 import { getBodySize } from "./displayHelpers";
+import { useDropTargetRegistry } from "@/store/dropTargetRegistry";
+import { useTrashBinStore } from "./trashBinStore";
+import { pickupAndDispatch } from "./pickupHandlers";
 import type { TrashItemData } from "./types";
+
+export interface PhysicsViewHandle {
+  stir(intensity: number): void;
+}
 
 interface PhysicsViewProps {
   items: TrashItemData[];
   isLoading: boolean;
+  /** Stir ボタンから呼ぶ imperative handle */
+  handleRef?: React.MutableRefObject<PhysicsViewHandle | null>;
 }
 
 const MAX_DT = 0.033; // 30fps 下限
+const DRAG_THRESHOLD_PX = 5; // 設計書 §5-A / §7
 
-export function TrashBinPhysicsView({ items, isLoading }: PhysicsViewProps) {
+export function TrashBinPhysicsView({
+  items,
+  isLoading,
+  handleRef,
+}: PhysicsViewProps) {
   const { t } = useTranslation();
   const containerRef = useRef<HTMLDivElement>(null);
   const bodiesRef = useRef<Map<string, PhysicsBody>>(new Map());
@@ -29,6 +46,23 @@ export function TrashBinPhysicsView({ items, isLoading }: PhysicsViewProps) {
   const visibleRef = useRef(true);
   const rafRef = useRef<number | null>(null);
   const lastTsRef = useRef(0);
+
+  // D&D 状態 (pointer down → 5px しきい値で drag 開始 → drop or cancel)
+  const dragStateRef = useRef<{
+    pointerId: number;
+    itemId: string;
+    startClientX: number;
+    startClientY: number;
+    bodyOffsetX: number;
+    bodyOffsetY: number;
+    started: boolean;
+  } | null>(null);
+  const [hoverTargetId, setHoverTargetId] = useState<string | null>(null);
+  const [draggingItemId, setDraggingItemId] = useState<string | null>(null);
+  const itemsRef = useRef<Map<string, TrashItemData>>(new Map());
+  useEffect(() => {
+    itemsRef.current = new Map(items.map((i) => [i.id, i]));
+  }, [items]);
 
   const applyTransform = useCallback((body: PhysicsBody) => {
     const el = nodesRef.current.get(body.id);
@@ -212,6 +246,171 @@ export function TrashBinPhysicsView({ items, isLoading }: PhysicsViewProps) {
     };
   }, []);
 
+  // 攪拌 imperative handle (設計書 §7 攪拌)
+  useEffect(() => {
+    if (!handleRef) return;
+    handleRef.current = {
+      stir: (intensity) => {
+        const list = Array.from(bodiesRef.current.values());
+        const shaken = applyShake(list, intensity, intensity);
+        bodiesRef.current = new Map(shaken.map((b) => [b.id, b]));
+        startLoop();
+      },
+    };
+    return () => {
+      if (handleRef.current) handleRef.current = null;
+    };
+  }, [handleRef, startLoop]);
+
+  // ── D&D ハンドラ (設計書 §5-A) ─────────────────────────────────
+  // 5px しきい値で drag 開始 (それ未満で離したら未来の Popover 起動枠)。
+  const handlePointerDown = useCallback(
+    (e: React.PointerEvent<HTMLDivElement>) => {
+      if (e.button !== 0) return;
+      const target = e.target as HTMLElement;
+      const itemEl = target.closest<HTMLElement>("[data-trash-body-id]");
+      if (!itemEl) return;
+      const itemId = itemEl.dataset.trashBodyId;
+      if (!itemId) return;
+      const body = bodiesRef.current.get(itemId);
+      if (!body) return;
+      const containerRect = containerRef.current?.getBoundingClientRect();
+      if (!containerRect) return;
+      // body 内のクリック点 offset (drag 中のマウス追従基準)
+      const clientX = e.clientX;
+      const clientY = e.clientY;
+      const bodyClientX = containerRect.left + body.x;
+      const bodyClientY = containerRect.top + body.y;
+      dragStateRef.current = {
+        pointerId: e.pointerId,
+        itemId,
+        startClientX: clientX,
+        startClientY: clientY,
+        bodyOffsetX: clientX - bodyClientX,
+        bodyOffsetY: clientY - bodyClientY,
+        started: false,
+      };
+      itemEl.setPointerCapture(e.pointerId);
+    },
+    [],
+  );
+
+  const handlePointerMove = useCallback(
+    (e: React.PointerEvent<HTMLDivElement>) => {
+      const drag = dragStateRef.current;
+      if (!drag || drag.pointerId !== e.pointerId) return;
+      const dx = e.clientX - drag.startClientX;
+      const dy = e.clientY - drag.startClientY;
+      if (!drag.started) {
+        if (Math.hypot(dx, dy) < DRAG_THRESHOLD_PX) return;
+        // 5px 超過 → drag 開始: physics から detach
+        drag.started = true;
+        setDraggingItemId(drag.itemId);
+        const body = bodiesRef.current.get(drag.itemId);
+        if (body) {
+          bodiesRef.current.set(drag.itemId, detach(body));
+        }
+      }
+      // body 位置をマウス追従させる (container 座標系)
+      const containerRect = containerRef.current?.getBoundingClientRect();
+      if (!containerRect) return;
+      const body = bodiesRef.current.get(drag.itemId);
+      if (!body) return;
+      const next: PhysicsBody = {
+        ...body,
+        x: e.clientX - containerRect.left - drag.bodyOffsetX,
+        y: e.clientY - containerRect.top - drag.bodyOffsetY,
+      };
+      bodiesRef.current.set(drag.itemId, next);
+      applyTransform(next);
+
+      // hit test (panel ハイライト)
+      const hover = useDropTargetRegistry
+        .getState()
+        .hitTest({ x: e.clientX, y: e.clientY });
+      const item = itemsRef.current.get(drag.itemId);
+      if (hover && item && hover.accepts(item.subKind)) {
+        setHoverTargetId(hover.id);
+      } else {
+        setHoverTargetId(null);
+      }
+    },
+    [applyTransform],
+  );
+
+  const finishDrag = useCallback(
+    async (e: React.PointerEvent<HTMLDivElement>) => {
+      const drag = dragStateRef.current;
+      if (!drag || drag.pointerId !== e.pointerId) return;
+      dragStateRef.current = null;
+      setDraggingItemId(null);
+      setHoverTargetId(null);
+
+      if (!drag.started) {
+        // クリック扱い: 5px 未満で離した。Popover は未実装なので何もしない。
+        return;
+      }
+
+      const item = itemsRef.current.get(drag.itemId);
+      const body = bodiesRef.current.get(drag.itemId);
+      const target = useDropTargetRegistry
+        .getState()
+        .hitTest({ x: e.clientX, y: e.clientY });
+
+      const acceptable =
+        item && target && target.accepts(item.subKind) ? target : null;
+
+      if (!acceptable || !item) {
+        // 元位置に戻す: detach 解除 + 上から落下し直し感のため settled=false
+        if (body) {
+          bodiesRef.current.set(drag.itemId, attach(body));
+          const woken = wakeNeighbors(
+            bodiesRef.current.get(drag.itemId)!,
+            Array.from(bodiesRef.current.values()),
+          );
+          bodiesRef.current = new Map(woken.map((b) => [b.id, b]));
+          startLoop();
+        }
+        return;
+      }
+
+      // ドロップ確定: pickup に restorer を渡す
+      const dropPoint = { x: e.clientX, y: e.clientY };
+      const result = await useTrashBinStore
+        .getState()
+        .pickup(item.id, () => pickupAndDispatch(item, acceptable, dropPoint));
+      if (!result.ok) {
+        // 失敗 → trash に残るので body を再 attach
+        const survived = bodiesRef.current.get(drag.itemId);
+        if (survived) {
+          bodiesRef.current.set(drag.itemId, attach(survived));
+          startLoop();
+        }
+      }
+      // 成功時は items 配列から消えるので useEffect が body を回収する
+    },
+    [startLoop],
+  );
+
+  // hover ハイライトを registry の対象 panel にも反映する。
+  // Phase 6-d で各パネル側が `data-droptarget-id` を持つので、ここでは
+  // 該当 DOM に ring class を直接 toggle する。registry に DOM ref が
+  // 渡らないのは意図的 (パネル間の双方向依存を避ける)。
+  useEffect(() => {
+    const lastEl = document.querySelector<HTMLElement>(
+      "[data-trash-drop-hover='true']",
+    );
+    if (lastEl && lastEl.dataset.droptargetId !== hoverTargetId) {
+      delete lastEl.dataset.trashDropHover;
+    }
+    if (hoverTargetId) {
+      const el = document.querySelector<HTMLElement>(
+        `[data-droptarget-id="${hoverTargetId}"]`,
+      );
+      if (el) el.dataset.trashDropHover = "true";
+    }
+  }, [hoverTargetId]);
+
   if (isLoading) {
     return (
       <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
@@ -223,8 +422,12 @@ export function TrashBinPhysicsView({ items, isLoading }: PhysicsViewProps) {
   return (
     <div
       ref={containerRef}
-      className="relative flex-1 overflow-hidden"
+      className="relative flex-1 overflow-hidden touch-none"
       data-testid="trash-bin-physics-view"
+      onPointerDown={handlePointerDown}
+      onPointerMove={handlePointerMove}
+      onPointerUp={finishDrag}
+      onPointerCancel={finishDrag}
     >
       {items.length === 0 && (
         <div className="flex h-full items-center justify-center px-6 py-12 text-center text-sm text-muted-foreground">
@@ -232,7 +435,12 @@ export function TrashBinPhysicsView({ items, isLoading }: PhysicsViewProps) {
         </div>
       )}
       {items.map((item) => (
-        <TrashBinItem key={item.id} item={item} registerNode={registerNode} />
+        <TrashBinItem
+          key={item.id}
+          item={item}
+          registerNode={registerNode}
+          isDragging={draggingItemId === item.id}
+        />
       ))}
     </div>
   );

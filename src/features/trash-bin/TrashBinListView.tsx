@@ -1,7 +1,8 @@
 import { useTranslation } from "react-i18next";
-import { Trash2 } from "lucide-react";
+import { Trash2, Hand } from "lucide-react";
 import type { TrashItemData } from "./types";
 import { dominantSource } from "./displayHelpers";
+import { TrashBinPopover } from "./TrashBinPopover";
 
 interface ListViewProps {
   items: TrashItemData[];
@@ -81,7 +82,11 @@ function TrashBinListItem({
   };
 
   return (
-    <li className="group flex items-center gap-2 border-b border-border/50 px-3 py-2 text-sm hover:bg-muted/50">
+    <li
+      className="group flex items-center gap-2 border-b border-border/50 px-3 py-2 text-sm hover:bg-muted/50"
+      data-subkind={item.subKind}
+      data-interesting={item.isInteresting}
+    >
       <span
         className={`h-3 w-1 rounded-full ${sourceColor}`}
         aria-hidden="true"
@@ -98,6 +103,16 @@ function TrashBinListItem({
       <span className="text-xs text-muted-foreground">
         {relativeTime(item.deletedAt)}
       </span>
+      <TrashBinPopover item={item}>
+        <button
+          type="button"
+          className="rounded p-1 text-muted-foreground opacity-0 hover:bg-primary/10 hover:text-primary group-hover:opacity-100"
+          title={t("trashBin.pickup")}
+          aria-label={t("trashBin.pickup")}
+        >
+          <Hand className="h-3.5 w-3.5" />
+        </button>
+      </TrashBinPopover>
       <button
         type="button"
         onClick={handleDelete}

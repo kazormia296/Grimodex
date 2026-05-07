@@ -52,6 +52,7 @@ function setupStore(items: Map<string, TrashItemData>, isLoading = false) {
     clearAll: vi.fn().mockResolvedValue(undefined),
     setSelectedItem: vi.fn(),
     setCapturing: vi.fn(),
+    pickup: vi.fn().mockResolvedValue({ ok: false, reason: "rejected" }),
   };
   vi.mocked(useTrashBinStore).mockImplementation(
     (selector?: (s: typeof state) => unknown) =>

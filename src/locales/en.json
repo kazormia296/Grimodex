@@ -1230,7 +1230,27 @@
       "textFragment": "Text scrap",
       "scene": "Scene",
       "codex": "Codex",
-      "snippet": "Snippet"
+      "snippet": "Snippet",
+      "mapSticky": "Sticky",
+      "foreshadow": "Foreshadow",
+      "pin": "Pin",
+      "gridChapter": "Chapter"
+    },
+    "stir": "Stir",
+    "pickup": "Pick up",
+    "pickupTo": "Pickup destination",
+    "pickupFailed": "Failed to pick up",
+    "pickupSuccess": "Restored",
+    "brokenLinkWarning": "Restored, but some links are broken",
+    "noDropTarget": "No pickup target is open",
+    "dropTarget": {
+      "editor": "Insert into editor",
+      "scenes": "Restore as scene",
+      "codex": "Restore as Codex entry",
+      "snippets": "Restore as snippet",
+      "map": "Restore as sticky",
+      "foreshadow": "Restore as foreshadow",
+      "pin": "Restore as pin"
     }
   },
   "snippets": {

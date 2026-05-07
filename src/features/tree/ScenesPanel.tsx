@@ -26,6 +26,7 @@ import { ScenesToolbar } from "./ScenesToolbar";
 import { ScenesFilterBar } from "./ScenesFilterBar";
 import { DeleteConfirmDialog } from "./DeleteConfirmDialog";
 import { ContextMenu, ContextMenuTrigger } from "@/components/ui/context-menu";
+import { useDropTarget } from "@/features/trash-bin/useDropTarget";
 
 const DEFAULT_PROJECT_ID = "default-project";
 
@@ -240,6 +241,7 @@ export function ScenesPanel() {
   }
 
   const draggingNode = draggingId ? nodeMap[draggingId] : null;
+  const trashDropRef = useDropTarget("scenes-panel", "scenes-panel");
 
   return (
     <ScenesPanelContext.Provider value={scenesPanelContextValue}>
@@ -252,7 +254,11 @@ export function ScenesPanel() {
         }}
         onDragEnd={onDragEnd}
       >
-        <div className="relative flex h-full flex-col">
+        <div
+          ref={trashDropRef}
+          data-droptarget-id="scenes-panel"
+          className="relative flex h-full flex-col data-[trash-drop-hover=true]:ring-2 data-[trash-drop-hover=true]:ring-primary/60"
+        >
           <ScenesToolbar
             onCreate={handleCreate}
             onToggleAll={handleToggleAll}
