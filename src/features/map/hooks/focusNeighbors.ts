@@ -10,6 +10,10 @@ function posToRfId(pos: MapNodePositionRecord): string | null {
     return `codex:${pos.codexEntryId}`;
   if (pos.nodeRefType === "ai_branch" && pos.aiBranchId)
     return `ai_branch:${pos.aiBranchId}`;
+  if (pos.nodeRefType === "sticky" && pos.stickyId)
+    return `sticky:${pos.stickyId}`;
+  if (pos.nodeRefType === "snippet" && pos.snippetId)
+    return `snippet:${pos.snippetId}`;
   return null;
 }
 

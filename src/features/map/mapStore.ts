@@ -50,7 +50,7 @@ const DEFAULT_SHOW: ShowFlags = {
   stickies: true,
   aiBranch: false,
   derivedEdges: true,
-  userEdges: false,
+  userEdges: true,
   frames: true,
 };
 

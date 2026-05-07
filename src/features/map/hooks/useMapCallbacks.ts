@@ -2,9 +2,9 @@ import { useCallback, useMemo } from "react";
 import { useDebouncedCallback } from "@/lib/useDebounce";
 import type { Node, Edge, Connection } from "@xyflow/react";
 import { useCodexStore } from "@/features/codex/codexStore";
-import { upsertNodePosition, createUserEdge, deleteUserEdge } from "../mapApi";
+import { createUserEdge, deleteUserEdge } from "../mapApi";
 import { useGlobalHistoryStore } from "@/store/globalHistoryStore";
-import { buildUpsertArgs } from "../utils/nodeIdCodec";
+import { findPosByNodeId } from "../utils/nodeIdCodec";
 import type { MapEdge } from "@/db/schema";
 import type { MapNodePositionRecord } from "../types";
 import { buildFocusNeighbors } from "./focusNeighbors";
@@ -45,13 +45,9 @@ export function useMapCallbacks({
   const onConnect = useCallback(
     async (connection: Connection) => {
       if (!boardId || !connection.source || !connection.target) return;
-      const sourceArgs = buildUpsertArgs(boardId, connection.source);
-      const targetArgs = buildUpsertArgs(boardId, connection.target);
-      if (!sourceArgs || !targetArgs) return;
-      const [sourcePos, targetPos] = await Promise.all([
-        upsertNodePosition(sourceArgs),
-        upsertNodePosition(targetArgs),
-      ]);
+      const sourcePos = findPosByNodeId(positions, connection.source);
+      const targetPos = findPosByNodeId(positions, connection.target);
+      if (!sourcePos || !targetPos) return;
       const newEdge = await createUserEdge({
         boardId,
         fromPositionId: sourcePos.id,
@@ -85,7 +81,7 @@ export function useMapCallbacks({
         });
       }
     },
-    [boardId, setUserEdges],
+    [boardId, positions, setUserEdges],
   );
 
   const onNodeDoubleClick = useCallback(
