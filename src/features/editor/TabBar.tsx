@@ -2,7 +2,15 @@ import { useRef, useState, useEffect } from "react";
 import { useTranslation } from "react-i18next";
 import { motion, AnimatePresence } from "motion/react";
 import { useReducedMotion } from "@/lib/animation";
-import { X, ChevronDown, Columns2, ScrollText } from "lucide-react";
+import {
+  X,
+  ChevronDown,
+  Columns2,
+  ScrollText,
+  Files,
+  StickyNote,
+  BookOpen,
+} from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useTabStore } from "./tabStore";
 import { useTreeStore } from "@/features/tree/treeStore";
@@ -401,10 +409,22 @@ export function TabBar({ groupIndex = 0 }: TabBarProps) {
                     />
                   )}
                   {node?.nodeType === "note" && (
-                    <span className="mr-0.5 text-teal-500">📝</span>
+                    <StickyNote
+                      className="mr-1 h-3 w-3 shrink-0 text-teal-500"
+                      aria-hidden
+                    />
                   )}
                   {isCodex && (
-                    <span className="mr-0.5 text-purple-500">📖</span>
+                    <BookOpen
+                      className="mr-1 h-3 w-3 shrink-0 text-purple-500"
+                      aria-hidden
+                    />
+                  )}
+                  {isSnippet && (
+                    <Files
+                      className="mr-1 h-3 w-3 shrink-0 text-amber-500"
+                      aria-hidden
+                    />
                   )}
                   <span
                     className={cn(
@@ -574,10 +594,22 @@ export function TabBar({ groupIndex = 0 }: TabBarProps) {
                     )}
                   >
                     {node?.nodeType === "note" && (
-                      <span className="mr-1 text-teal-500">📝</span>
+                      <StickyNote
+                        className="mr-1 h-3 w-3 shrink-0 text-teal-500"
+                        aria-hidden
+                      />
                     )}
                     {isOverflowCodex && (
-                      <span className="mr-1 text-purple-500">📖</span>
+                      <BookOpen
+                        className="mr-1 h-3 w-3 shrink-0 text-purple-500"
+                        aria-hidden
+                      />
+                    )}
+                    {isOverflowSnippet && (
+                      <Files
+                        className="mr-1 h-3 w-3 shrink-0 text-amber-500"
+                        aria-hidden
+                      />
                     )}
                     {title}
                     {overflowPhaseLabel && (
