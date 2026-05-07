@@ -357,7 +357,8 @@
       "linter": "Linter",
       "foreshadow": "Foreshadow",
       "grid": "Grid",
-      "matrix": "Matrix"
+      "matrix": "Matrix",
+      "trash-bin": "Trash Bin"
     },
     "preset": {
       "title": "Layout presets",
@@ -1207,6 +1208,26 @@
         "casual": "Casual",
         "skim": "Skim"
       }
+    }
+  },
+  "trashBin": {
+    "title": "Trash Bin",
+    "empty": "Nothing discarded yet",
+    "count": "{{count}} items",
+    "discard": "Delete permanently",
+    "clearAll": "Clear all",
+    "clearConfirm": "Permanently delete all items in the trash bin? This cannot be undone.",
+    "removeConfirm": "Permanently delete this item? This cannot be undone.",
+    "recording": "Recording",
+    "paused": "Paused",
+    "pauseToggle": "Pause / resume recording",
+    "loadFailed": "Failed to load trash bin",
+    "deleteFailed": "Failed to delete item",
+    "clearFailed": "Failed to clear trash bin",
+    "originScene": "Scene",
+    "originCodex": "Codex",
+    "kind": {
+      "textFragment": "Text scrap"
     }
   },
   "snippets": {

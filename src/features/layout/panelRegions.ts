@@ -20,6 +20,7 @@ export const PANEL_REGION_MAP: Record<
   foreshadow: "center-bottom",
   grid: "center-bottom",
   matrix: "center-bottom",
+  "trash-bin": "center-bottom",
 };
 
 /** Keyboard shortcut hints for each panel */
@@ -37,6 +38,7 @@ export const KEYBOARD_SHORTCUT_MAP: Partial<Record<PanelId, string>> = {
   foreshadow: "Ctrl+Alt+F",
   grid: "Ctrl+Alt+G",
   matrix: "Ctrl+Alt+R",
+  "trash-bin": "Ctrl+Alt+B",
 };
 
 /** Panels shown in the dropdown, grouped by region */
@@ -57,4 +59,5 @@ export const TOGGLEABLE_PANELS: Exclude<PanelId, "editor">[] = [
   "foreshadow",
   "grid",
   "matrix",
+  "trash-bin",
 ];

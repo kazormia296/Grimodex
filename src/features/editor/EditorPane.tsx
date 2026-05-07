@@ -118,6 +118,9 @@ import type { UnplacedBeat } from "@/features/editor/beat/unplacedBeatsStore";
 import { EditorDropDiv } from "@/features/editor/EditorDropDiv";
 import { useBeatDragDrop } from "@/features/editor/useBeatDragDrop";
 import { useEditorKeyboard } from "@/features/editor/useEditorKeyboard";
+import { useTrashBinCapture } from "@/features/editor/useTrashBinCapture";
+import { useFocusedContentEditorStore } from "@/store/focusedContentEditorStore";
+import type { TrashOrigin } from "@/features/trash-bin/types";
 import {
   ResizablePanelGroup,
   ResizablePanel,
@@ -665,6 +668,17 @@ export function EditorPane({
     onSelectionUpdate() {},
     onFocus() {
       onFocus();
+      // Trash bin の D&D 復元先として「最後にフォーカスしていたエディタ」を共有。
+      if (nodeId) {
+        const kind = isSnippetMode
+          ? "snippet"
+          : isCodexMode
+            ? "codex"
+            : "scene";
+        useFocusedContentEditorStore
+          .getState()
+          .setCurrent({ kind, id: nodeId });
+      }
       // Apply lazy cursor/scroll restore if one was deferred (Scenes-panel navigation).
       const pending = pendingCursorRestoreRef.current;
       if (pending) {
@@ -697,6 +711,15 @@ export function EditorPane({
   const lintSceneId =
     groupIndex === 0 && !isCodexMode && !isSnippetMode ? nodeId : null;
   useLinter(editor, lintSceneId);
+
+  // ゴミ箱キャプチャ。Snippet タブは origin = null で skip、
+  // Scene/Codex は対応する種別で記録する。
+  const trashOrigin: TrashOrigin | null = isSnippetMode
+    ? null
+    : nodeId
+      ? { kind: isCodexMode ? "codex" : "scene", id: nodeId }
+      : null;
+  useTrashBinCapture(editor, trashOrigin);
 
   // 同シーン内の伏線ジャンプ要求を処理する。
   // クロスシーンは switchScene の consumeJump に任せる（タイミング統一のため）。

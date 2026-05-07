@@ -876,6 +876,29 @@ impl Database {
         // still have the old `color` column; rebuild the table to migrate.
         Self::migrate_stickies_color_to_palette_slot(&conn)?;
 
+        // Trash bin (削除物の物理ゴミ箱) — Phase 1 では文字屑のみ書き込む。
+        // payload / preview_meta は素の TEXT で JSON.stringify を保持。
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS trash_items (
+                id              TEXT PRIMARY KEY,
+                project_id      TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                kind            TEXT NOT NULL,
+                sub_kind        TEXT NOT NULL,
+                origin_scene_id TEXT REFERENCES tree_nodes(id) ON DELETE CASCADE,
+                origin_codex_id TEXT REFERENCES codex_entries(id) ON DELETE CASCADE,
+                preview_text    TEXT NOT NULL,
+                preview_meta    TEXT,
+                payload         TEXT NOT NULL,
+                char_count      INTEGER NOT NULL,
+                is_interesting  INTEGER NOT NULL DEFAULT 0,
+                deleted_at      TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_trash_project_deleted
+                ON trash_items(project_id, deleted_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_trash_project_kind_deleted
+                ON trash_items(project_id, kind, deleted_at DESC);",
+        )?;
+
         Ok(())
     }
 

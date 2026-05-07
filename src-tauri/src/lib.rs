@@ -107,6 +107,11 @@ pub fn run() {
             commands::integrity::fts_search,
             commands::integrity::integrity_check,
             commands::integrity::repair_integrity,
+            commands::trash_bin::trash_bin_create,
+            commands::trash_bin::trash_bin_list,
+            commands::trash_bin::trash_bin_delete,
+            commands::trash_bin::trash_bin_clear_all,
+            commands::trash_bin::trash_bin_prune,
             codex_matching::codex_rebuild_matcher,
             codex_matching::codex_match_text,
             commands::lint::lint_text

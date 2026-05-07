@@ -1073,6 +1073,44 @@ export const treeNodeLabels = sqliteTable(
   ],
 );
 
+// Trash bin: holds deleted text fragments (Phase 1) and structure items (Phase 4-5).
+// payload / preview_meta は素の TEXT で JSON.stringify を保持（aiReasoning と同流儀）。
+export const trashItems = sqliteTable(
+  "trash_items",
+  {
+    id: text("id").primaryKey(),
+    projectId: text("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    kind: text("kind").notNull(), // "text-fragment" | "structure-item"
+    subKind: text("sub_kind").notNull(), // "text-fragment" / "scene" / "codex-entry" / ...
+    originSceneId: text("origin_scene_id").references(
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (): any => treeNodes.id,
+      { onDelete: "cascade" },
+    ),
+    originCodexId: text("origin_codex_id").references(
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (): any => codexEntries.id,
+      { onDelete: "cascade" },
+    ),
+    previewText: text("preview_text").notNull(),
+    previewMeta: text("preview_meta"), // JSON string
+    payload: text("payload").notNull(), // JSON string
+    charCount: integer("char_count").notNull(),
+    isInteresting: integer("is_interesting").notNull().default(0),
+    deletedAt: text("deleted_at").notNull(),
+  },
+  (table) => [
+    index("idx_trash_project_deleted").on(table.projectId, table.deletedAt),
+    index("idx_trash_project_kind_deleted").on(
+      table.projectId,
+      table.kind,
+      table.deletedAt,
+    ),
+  ],
+);
+
 // Type exports
 export type AuthorshipSpan = typeof authorshipSpans.$inferSelect;
 export type NewAuthorshipSpan = typeof authorshipSpans.$inferInsert;
@@ -1132,3 +1170,6 @@ export type NewSceneBeatPovCache = typeof sceneBeatPovCache.$inferInsert;
 
 export type Label = typeof labels.$inferSelect;
 export type NewLabel = typeof labels.$inferInsert;
+
+export type TrashItem = typeof trashItems.$inferSelect;
+export type NewTrashItem = typeof trashItems.$inferInsert;

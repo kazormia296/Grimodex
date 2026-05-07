@@ -47,6 +47,7 @@ import { LinterPanel } from "@/features/lint/LinterPanel";
 import { ForeshadowPanel } from "@/features/foreshadow/ForeshadowPanel";
 import { GridPanel } from "@/features/grid/GridPanel";
 import { MatrixPanel } from "@/features/matrix/MatrixPanel";
+import { TrashBinPanel } from "@/features/trash-bin/TrashBinPanel";
 import { GlobalSearchDialog } from "@/features/search/GlobalSearchDialog";
 import { CommandPalette } from "@/features/commandPalette/CommandPalette";
 import { useState } from "react";
@@ -127,6 +128,10 @@ function GridContent(_props: IDockviewPanelProps) {
 
 function MatrixContent(_props: IDockviewPanelProps) {
   return <MatrixPanel />;
+}
+
+function TrashBinContent(_props: IDockviewPanelProps) {
+  return <TrashBinPanel />;
 }
 
 /* ── Default layout builder (delegates to builtin preset) ── */
@@ -321,6 +326,7 @@ function EditorScreen() {
       foreshadow: ForeshadowContent,
       grid: GridContent,
       matrix: MatrixContent,
+      "trash-bin": TrashBinContent,
     }),
     [],
   );
@@ -474,6 +480,7 @@ function EditorScreen() {
         m: "map",
         t: "linter",
         f: "foreshadow",
+        b: "trash-bin",
         ",": "settings",
       };
 

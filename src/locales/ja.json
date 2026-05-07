@@ -357,7 +357,8 @@
       "linter": "Linter",
       "foreshadow": "伏線",
       "grid": "グリッド",
-      "matrix": "マトリクス"
+      "matrix": "マトリクス",
+      "trash-bin": "ゴミ箱"
     },
     "preset": {
       "title": "レイアウトプリセット",
@@ -1207,6 +1208,26 @@
         "casual": "普通",
         "skim": "流し読み"
       }
+    }
+  },
+  "trashBin": {
+    "title": "ゴミ箱",
+    "empty": "ゴミ箱は空です",
+    "count": "{{count}} 件",
+    "discard": "完全に削除",
+    "clearAll": "全削除",
+    "clearConfirm": "ゴミ箱の中身をすべて完全に削除します。取り消せません。",
+    "removeConfirm": "この屑を完全に削除します。取り消せません。",
+    "recording": "記録中",
+    "paused": "記録停止中",
+    "pauseToggle": "記録を一時停止 / 再開",
+    "loadFailed": "ゴミ箱の読み込みに失敗しました",
+    "deleteFailed": "削除に失敗しました",
+    "clearFailed": "全削除に失敗しました",
+    "originScene": "本文",
+    "originCodex": "設定資料",
+    "kind": {
+      "textFragment": "文字屑"
     }
   },
   "snippets": {

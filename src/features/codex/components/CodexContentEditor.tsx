@@ -6,6 +6,7 @@ import { useAttribution } from "@/features/attribution/useAttribution";
 import { useCodexHighlight } from "@/features/editor/useCodexHighlight";
 import { useSceneContentStore } from "@/features/editor/sceneContentStore";
 import { CodexPopover } from "@/features/editor/CodexPopover";
+import { useTrashBinCapture } from "@/features/editor/useTrashBinCapture";
 
 // Sentinel group index — distinguishes mini-editor updates from pane 0 / pane 1
 const CODEX_MINI_GROUP = 99;
@@ -70,6 +71,13 @@ export function CodexContentEditor({
     excludeEntryIds: entryId ? [entryId] : [],
     skipMatchedIds: true,
   });
+
+  // ゴミ箱キャプチャ (副次経路)。externalContent プレビュー中は paused で停止。
+  useTrashBinCapture(
+    editor,
+    entryId ? { kind: "codex", id: entryId } : null,
+    externalContent != null,
+  );
 
   // externalContent（フェーズプレビュー）変化時にエディタ内容を更新
   useEffect(() => {
