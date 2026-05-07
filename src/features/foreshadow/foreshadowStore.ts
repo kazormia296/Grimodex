@@ -738,22 +738,25 @@ export const useForeshadowStore = create<ForeshadowState>()((set, get) => ({
       return;
     }
 
+    const setupId = crypto.randomUUID();
+    const setupPayload = {
+      id: setupId,
+      foreshadowId,
+      sceneId: candidate.sceneId,
+      fromPos: candidate.fromPosHint,
+      toPos: candidate.toPosHint,
+      kind: "designated_existing" as const,
+      strength: candidate.predictedStrength,
+      aiStrength: candidate.predictedStrength,
+      aiReasoning: null,
+      attribution: "ai" as const,
+      aiRationale: candidate.rationale,
+      lastEvaluatedAt: null,
+      isOrphan: false,
+    };
+
     try {
-      await createForeshadowSetup({
-        id: crypto.randomUUID(),
-        foreshadowId,
-        sceneId: candidate.sceneId,
-        fromPos: candidate.fromPosHint,
-        toPos: candidate.toPosHint,
-        kind: "designated_existing",
-        strength: candidate.predictedStrength,
-        aiStrength: candidate.predictedStrength,
-        aiReasoning: null,
-        attribution: "ai",
-        aiRationale: candidate.rationale,
-        lastEvaluatedAt: null,
-        isOrphan: false,
-      });
+      await createForeshadowSetup(setupPayload);
 
       await get().loadSetups(foreshadowId);
 
@@ -774,7 +777,41 @@ export const useForeshadowStore = create<ForeshadowState>()((set, get) => ({
         `adoptProposedSetup: ${rootCause(e)}`,
         errorDetail(e),
       );
+      return;
     }
+
+    if (useGlobalHistoryStore.getState().isReplaying) return;
+
+    const capCandidate = { ...candidate };
+    const capIdx = candidateIdx;
+    useGlobalHistoryStore.getState().push({
+      kind: "foreshadow",
+      label: "Setup採用",
+      async undo() {
+        await deleteSetup(setupPayload.id);
+        await get().loadSetups(foreshadowId);
+        // Restore candidate to proposeResults at original index
+        set((s) => {
+          const list = [...(s.proposeResults[foreshadowId] ?? [])];
+          list.splice(capIdx, 0, capCandidate);
+          return {
+            proposeResults: { ...s.proposeResults, [foreshadowId]: list },
+          };
+        });
+      },
+      async redo() {
+        await createForeshadowSetup(setupPayload);
+        await get().loadSetups(foreshadowId);
+        set((s) => ({
+          proposeResults: {
+            ...s.proposeResults,
+            [foreshadowId]: (s.proposeResults[foreshadowId] ?? []).filter(
+              (c) => c !== capCandidate,
+            ),
+          },
+        }));
+      },
+    });
   },
 
   adoptInsertedNewSetup: async (foreshadowId, candidateIdx) => {
@@ -809,25 +846,31 @@ export const useForeshadowStore = create<ForeshadowState>()((set, get) => ({
 
     const setupId = crypto.randomUUID();
     const { from } = editor.state.selection;
+    // Snapshot the scene's JSON content BEFORE the insert so undo can restore.
+    const beforeContent = JSON.stringify(editor.getJSON());
+
+    const setupPayload = {
+      id: setupId,
+      foreshadowId,
+      sceneId: activeSceneId,
+      fromPos: from,
+      toPos: from + suggestedText.length,
+      kind: "inserted_new" as const,
+      strength: candidate.predictedStrength,
+      aiStrength: candidate.predictedStrength,
+      aiReasoning: null,
+      attribution: "ai" as const,
+      aiRationale: candidate.rationale,
+      lastEvaluatedAt: null,
+      isOrphan: false,
+    };
+
+    let afterContent: string | null = null;
 
     try {
       // Pre-create DB record with AI metadata before inserting text.
       // The saveForeshadowAnchors UPSERT will only update fromPos/toPos — metadata is preserved.
-      await createForeshadowSetup({
-        id: setupId,
-        foreshadowId,
-        sceneId: activeSceneId,
-        fromPos: from,
-        toPos: from + suggestedText.length,
-        kind: "inserted_new",
-        strength: candidate.predictedStrength,
-        aiStrength: candidate.predictedStrength,
-        aiReasoning: null,
-        attribution: "ai",
-        aiRationale: candidate.rationale,
-        lastEvaluatedAt: null,
-        isOrphan: false,
-      });
+      await createForeshadowSetup(setupPayload);
 
       // Insert text and apply foreshadowSetup mark in the editor
       editor
@@ -841,12 +884,12 @@ export const useForeshadowStore = create<ForeshadowState>()((set, get) => ({
       await saveForeshadowAnchors(activeSceneId, editor.state.doc);
 
       // Persist scene content and record a revision
-      const contentJson = JSON.stringify(editor.getJSON());
-      await saveSceneContent(activeSceneId, contentJson);
+      afterContent = JSON.stringify(editor.getJSON());
+      await saveSceneContent(activeSceneId, afterContent);
       await createRevision({
         entityType: "scene",
         entityId: activeSceneId,
-        content: contentJson,
+        content: afterContent,
         snapshotType: "auto",
       });
 
@@ -871,7 +914,69 @@ export const useForeshadowStore = create<ForeshadowState>()((set, get) => ({
         `adoptInsertedNewSetup: ${rootCause(e)}`,
         errorDetail(e),
       );
+      return;
     }
+
+    if (useGlobalHistoryStore.getState().isReplaying) return;
+    if (!afterContent) return;
+
+    const capCandidate = { ...candidate };
+    const capIdx = candidateIdx;
+    const capSceneId = activeSceneId;
+    const capBefore = beforeContent;
+    const capAfter = afterContent;
+
+    useGlobalHistoryStore.getState().push({
+      kind: "foreshadow",
+      label: "Setup採用 (本文挿入)",
+      async undo() {
+        await deleteSetup(setupPayload.id);
+        await saveSceneContent(capSceneId, capBefore);
+        // If the editor is currently displaying this scene, also reset its content
+        // without firing onUpdate (second arg false).
+        const ed = useEditorStore.getState().editor;
+        const curScene = useSceneStore.getState().activeSceneId;
+        if (ed && curScene === capSceneId) {
+          try {
+            ed.commands.setContent(JSON.parse(capBefore), {
+              emitUpdate: false,
+            });
+          } catch {
+            // ignore parse errors — DB state is the truth
+          }
+        }
+        await get().loadSetups(foreshadowId);
+        set((s) => {
+          const list = [...(s.proposeResults[foreshadowId] ?? [])];
+          list.splice(capIdx, 0, capCandidate);
+          return {
+            proposeResults: { ...s.proposeResults, [foreshadowId]: list },
+          };
+        });
+      },
+      async redo() {
+        await createForeshadowSetup(setupPayload);
+        await saveSceneContent(capSceneId, capAfter);
+        const ed = useEditorStore.getState().editor;
+        const curScene = useSceneStore.getState().activeSceneId;
+        if (ed && curScene === capSceneId) {
+          try {
+            ed.commands.setContent(JSON.parse(capAfter), { emitUpdate: false });
+          } catch {
+            // ignore
+          }
+        }
+        await get().loadSetups(foreshadowId);
+        set((s) => ({
+          proposeResults: {
+            ...s.proposeResults,
+            [foreshadowId]: (s.proposeResults[foreshadowId] ?? []).filter(
+              (c) => c !== capCandidate,
+            ),
+          },
+        }));
+      },
+    });
   },
 
   auditChapter: async (chapterId) => {
