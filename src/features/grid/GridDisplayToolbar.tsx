@@ -67,7 +67,7 @@ export function GridDisplayToolbar() {
   ];
 
   return (
-    <div className="border-b bg-popover px-4 py-2 flex flex-col gap-2">
+    <div className="border-b bg-muted/40 px-4 py-2 flex flex-col gap-2">
       {/* Display row */}
       <div className="flex items-center gap-3 flex-wrap">
         <RowLabel>{t("grid.display.title", "表示")}</RowLabel>
