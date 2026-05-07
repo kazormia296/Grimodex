@@ -614,7 +614,7 @@ function buildContext(
 | OpenAI | Vercel AI SDK `openai` | GPT-4o等 |
 | Ollama | Vercel AI SDK `ollama` | ローカルモデル。オフライン対応 |
 | OpenAI 互換（カスタム） | Vercel AI SDK `openai`（`baseURL` 上書き） | llama.cpp / LM Studio / vLLM / 自前ホストの GPU 推論サーバ等。`baseURL` と任意の `apiKey` を Settings で指定 |
-| AI のべりすと | Vercel AI SDK `openai`（`baseURL` 固定） | 日本語小説特化。`https://api.tringpt.com/api` / Bearer 認証。OpenAI 互換チャット API。コンテキスト窓 2048 tok・独自サンプリングパラメータ・拡張思考非対応の特殊扱い（後述） |
+| AI のべりすと | Vercel AI SDK `openai`（`baseURL` 固定） | 日本語小説特化。`https://api.tringpt.com/api` / Bearer 認証。OpenAI 互換チャット API。最大 40k 入力 / 4k 出力（モデル依存）・独自サンプリングパラメータ・拡張思考非対応の特殊扱い（後述） |
 
 ##### ローカル LLM / OpenAI 互換接続時の制限
 
@@ -631,13 +631,22 @@ Ollama および OpenAI 互換（カスタム）プロバイダで接続する�
 AI のべりすと（[ai-novel.com](https://ai-novel.com/account_api_help.php)）は OpenAI 互換チャット API を提供するが、商用 API と前提が大きく異なるため独立プロバイダとして扱い、以下の特殊化を行う。
 
 - **配線**: ベース実装は Vercel AI SDK `openai` の `baseURL` 差し替え（`https://api.tringpt.com/api`）。Bearer 認証は keyring に保存
-- **モデル一覧**: ハードコード（`spiko` / `spiko_solid` / `spiko_max` / `derrida_03` / `damsel_ray` / `supertrin_highpres` / `supertrin_maxpres`）。動的取得は将来検討
-- **コンテキスト窓**: **2048 トークン固定**。§トークン予算管理 の floor 合計（6,500 tok）を満たせないため、本プロバイダ専用の配分プロファイルを用意:
+- **モデル一覧と能力**: ハードコード（動的取得は将来検討）。現行主力は 40k 入力でクラウド API と遜色ない予算配分が可能、レガシーは出力上限が小さく特殊扱いが必要
+
+  | モデル | 最大入力 | 最大出力 | 区分 |
+  |--|--|--|--|
+  | `derrida_03` / `spiko` / `spiko_solid` / `spiko_max` | 40,000 | 4,096 | 現行主力 |
+  | `damsel_ray` | 12,288 | 400 | 現行（出力極小） |
+  | `supertrin_highpres` / `supertrin_maxpres` / `supertrin` | 9,216 | 400 | レガシー |
+  | `damsel` | 2,400 | 400 | レガシー（最古） |
+
+- **コンテキスト窓の扱い**: モデルごとの最大入力を `getModelContextLimit` から返し、§トークン予算管理 の比率配分をそのまま適用する。floor 合計（6,500 tok）を割るモデル（`damsel`、レガシー supertrin 系）に限り、本プロバイダ専用の縮退配分プロファイルを適用:
   - L3 Scene と応答予約を最優先
   - L1 Project / L2 storySoFar / L4 Codex は**ゼロまで圧縮許容**
   - L5 History は直近 1〜2 ターンのみ
-  - Settings に「AI のべりすと使用時はプロジェクト指示・Codex がコンテキストに含まれない場合があります」と注意表示
-  - シーン本文も全文が入らないケースが常態化するため、L3 は「シーン末尾優先で抜粋」する（小説継続用途に特化）
+  - Settings に「`damsel` / レガシー supertrin 系使用時はプロジェクト指示・Codex がコンテキストに含まれない場合があります」と注意表示
+- **出力上限のクランプ**: 応答予約は `min(設定比率による配分, model.max_output)` でクランプする。`damsel_ray` / レガシー系は出力 400 tok 上限のため、ストリーミング中の最大応答長 UI もこの値に合わせる
+- **レート制限**: 現行モデル 200 req/分、`damsel` のみ 90 req/分。プロバイダ層で 429 検出時は指数バックオフでリトライし、UI に「レート制限到達」を表示
 - **拡張思考**: 非対応（`supportsThinking: false` / `supportsAdaptiveThinking: false`）。`thinking` / `effort` パラメータはリクエストに含めない
 - **構造化出力依存タスク**: AI Codex 自動抽出 / Synopsis 自動生成 / セッションタイトル自動生成はデフォルト無効化（ユーザーが明示オプトイン可能）。日本語継続生成への特化と引き換え
 - **独自サンプリングパラメータ**: OpenAI には存在しない以下のフィールドを Settings の AI のべりすと専用セクションで編集可能にし、リクエストボディに素通しで含める:
