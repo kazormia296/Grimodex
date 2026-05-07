@@ -57,6 +57,7 @@ import {
   createSticky,
   getSticky,
   upsertNodePosition,
+  createFrame,
   createAiBranch,
   setNodePinned,
   deleteNodePosition,
@@ -71,6 +72,7 @@ import { deleteNode as deleteTreeNode } from "@/features/tree/api";
 import { deleteCodexEntry } from "@/features/codex/api";
 import { findPosByNodeId, buildUpsertArgs } from "./utils/nodeIdCodec";
 import type { MapNodePositionRecord } from "./types";
+import type { MapFrame } from "@/db/schema";
 
 const PROJECT_ID = "default-project";
 
@@ -199,6 +201,9 @@ export function MapCanvas() {
 
   const userEdgesRef = useRef(userEdges);
   userEdgesRef.current = userEdges;
+
+  const framesRef = useRef(frames);
+  framesRef.current = frames;
 
   const groupDraggingRef = useRef<Set<string>>(new Set());
   const persistingRef = useRef<Set<string>>(new Set());
@@ -545,10 +550,14 @@ export function MapCanvas() {
     const { frameNodes, showDialog, immediateNodes, snippetNodes } =
       partitionDeletableNodes(selectedNodes);
 
+    // Capture frames for bulk undo
+    const capturedFrames: MapFrame[] = [];
     for (const node of frameNodes) {
       const frameId = node.id.startsWith("frame:")
         ? node.id.slice("frame:".length)
         : node.id;
+      const frame = framesRef.current.find((f) => f.id === frameId);
+      if (frame) capturedFrames.push({ ...frame });
       await deleteFrame(frameId);
       setFrames((prev) => prev.filter((f) => f.id !== frameId));
     }
@@ -575,27 +584,34 @@ export function MapCanvas() {
       setDeleteDialogNodes(showDialog);
     }
 
-    // Push 1 bulk history entry for edges + snippet positions deleted in this
-    // pass. Frames and entity nodes (Scene/Note/Codex) are intentionally
-    // excluded — entity deletions go through their own stores which already
-    // push their own history entries; frames are out of scope.
+    // Push 1 bulk history entry for edges + snippet positions + frames deleted
+    // in this pass. Entity nodes (Scene/Note/Codex/Sticky/AI branch) are
+    // intentionally excluded — those deletions go through their own stores
+    // which already push their own history entries.
     if (
       !useGlobalHistoryStore.getState().isReplaying &&
-      (capturedEdges.length > 0 || capturedSnippetPositions.length > 0)
+      (capturedEdges.length > 0 ||
+        capturedSnippetPositions.length > 0 ||
+        capturedFrames.length > 0)
     ) {
       const cap = {
         edges: capturedEdges,
         snippets: capturedSnippetPositions,
+        frames: capturedFrames,
       };
       // Track upsertNodePosition's possibly-new ids for redo
       const liveSnippetIds = capturedSnippetPositions.map((s) => s.pos.id);
+      const totalCount =
+        cap.edges.length + cap.snippets.length + cap.frames.length;
       useGlobalHistoryStore.getState().push({
         kind: "map",
         label:
-          cap.edges.length + cap.snippets.length === 1
+          totalCount === 1
             ? cap.edges.length === 1
               ? "エッジ削除"
-              : "ボードから外す"
+              : cap.frames.length === 1
+                ? "Frame削除"
+                : "ボードから外す"
             : "複数削除",
         async undo() {
           for (const e of cap.edges) {
@@ -627,6 +643,25 @@ export function MapCanvas() {
           if (restored.length > 0) {
             setPositions((prev) => [...prev, ...restored]);
           }
+
+          const restoredFrames: MapFrame[] = [];
+          for (const f of cap.frames) {
+            const r = await createFrame({
+              id: f.id,
+              boardId: f.boardId,
+              title: f.title ?? undefined,
+              x: f.x,
+              y: f.y,
+              width: f.width,
+              height: f.height,
+              background: f.background ?? undefined,
+              borderColor: f.borderColor ?? undefined,
+            });
+            restoredFrames.push(r);
+          }
+          if (restoredFrames.length > 0) {
+            setFrames((prev) => [...prev, ...restoredFrames]);
+          }
         },
         async redo() {
           for (const e of cap.edges) {
@@ -643,6 +678,14 @@ export function MapCanvas() {
           if (liveSnippetIds.length > 0) {
             setPositions((prev) =>
               prev.filter((p) => !liveSnippetIds.includes(p.id)),
+            );
+          }
+          for (const f of cap.frames) {
+            await deleteFrame(f.id);
+          }
+          if (cap.frames.length > 0) {
+            setFrames((prev) =>
+              prev.filter((fr) => !cap.frames.some((cf) => cf.id === fr.id)),
             );
           }
         },

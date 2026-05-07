@@ -4,10 +4,12 @@ import { useChatStore } from "@/features/chat/chatStore";
 import {
   updateFrame,
   deleteFrame,
+  createFrame,
   updateSticky,
   deleteAiBranch,
   extractPreviewText,
 } from "../mapApi";
+import { useGlobalHistoryStore } from "@/store/globalHistoryStore";
 import { layoutFor, layoutForAsync } from "../layouts";
 import { WorkerForceLayoutEngine } from "../layouts/forceEngine";
 import type { MapNodePositionRecord, ShowFlags } from "../types";
@@ -168,8 +170,36 @@ export function useMapNodes({
                   );
                 },
                 onDelete: async () => {
+                  const cap = { ...f };
                   await deleteFrame(f.id);
                   setFrames((prev) => prev.filter((fr) => fr.id !== f.id));
+
+                  if (!useGlobalHistoryStore.getState().isReplaying) {
+                    useGlobalHistoryStore.getState().push({
+                      kind: "map",
+                      label: "Frame削除",
+                      async undo() {
+                        const recreated = await createFrame({
+                          id: cap.id,
+                          boardId: cap.boardId,
+                          title: cap.title ?? undefined,
+                          x: cap.x,
+                          y: cap.y,
+                          width: cap.width,
+                          height: cap.height,
+                          background: cap.background ?? undefined,
+                          borderColor: cap.borderColor ?? undefined,
+                        });
+                        setFrames((prev) => [...prev, recreated]);
+                      },
+                      async redo() {
+                        await deleteFrame(cap.id);
+                        setFrames((prev) =>
+                          prev.filter((fr) => fr.id !== cap.id),
+                        );
+                      },
+                    });
+                  }
                 },
               },
             }))

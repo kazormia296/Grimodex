@@ -883,9 +883,10 @@ export async function createFrame(data: {
   height: number;
   background?: string;
   borderColor?: string;
+  id?: string;
 }): Promise<MapFrame> {
   const now = new Date().toISOString();
-  const id = crypto.randomUUID();
+  const id = data.id ?? crypto.randomUUID();
   const insertData: NewMapFrame = {
     id,
     boardId: data.boardId,

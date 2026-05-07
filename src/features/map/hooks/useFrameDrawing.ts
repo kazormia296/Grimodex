@@ -1,7 +1,8 @@
 import { useState, useRef, useCallback } from "react";
 import type { XYPosition } from "@xyflow/react";
 import type { MapFrame } from "@/db/schema";
-import { createFrame } from "../mapApi";
+import { createFrame, deleteFrame } from "../mapApi";
+import { useGlobalHistoryStore } from "@/store/globalHistoryStore";
 
 type Rect = { x: number; y: number; w: number; h: number };
 
@@ -80,6 +81,32 @@ export function useFrameDrawing(
     });
     setFrames((prev) => [...prev, newFrame]);
     setPaletteMode("default");
+
+    if (!useGlobalHistoryStore.getState().isReplaying) {
+      const cap = { ...newFrame };
+      useGlobalHistoryStore.getState().push({
+        kind: "map",
+        label: "Frame作成",
+        async undo() {
+          await deleteFrame(cap.id);
+          setFrames((prev) => prev.filter((f) => f.id !== cap.id));
+        },
+        async redo() {
+          const recreated = await createFrame({
+            id: cap.id,
+            boardId: cap.boardId,
+            title: cap.title ?? undefined,
+            x: cap.x,
+            y: cap.y,
+            width: cap.width,
+            height: cap.height,
+            background: cap.background ?? undefined,
+            borderColor: cap.borderColor ?? undefined,
+          });
+          setFrames((prev) => [...prev, recreated]);
+        },
+      });
+    }
   }, [boardId, frameDraftRect, setFrames, setPaletteMode]);
 
   return {
