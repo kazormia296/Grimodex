@@ -1291,10 +1291,10 @@
       "generateFromBeatsFailed": "Synopsis生成に失敗しました"
     },
     "quickSection": {
-      "unpin": "Spotlight 解除",
-      "pin": "Spotlight",
+      "unpin": "ピン留め解除",
+      "pin": "ピン留め",
       "noEntries": "エントリなし",
-      "pinCodex": "Codex を Spotlight"
+      "pinCodex": "Codexをピン留め"
     }
   },
   "commandPalette": {

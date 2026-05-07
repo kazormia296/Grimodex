@@ -1287,10 +1287,10 @@
       "overwrite": "Overwrite"
     },
     "quickSection": {
-      "unpin": "Unspotlight",
-      "pin": "Spotlight",
+      "unpin": "Unpin",
+      "pin": "Pin",
       "noEntries": "No entries",
-      "pinCodex": "Spotlight Codex entry"
+      "pinCodex": "Pin Codex entry"
     }
   },
   "commandPalette": {
