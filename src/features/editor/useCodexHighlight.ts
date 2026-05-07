@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useMemo, useRef } from "react";
 import type { Editor } from "@tiptap/core";
 import { useCodexStore } from "@/features/codex/codexStore";
 import { listCodexTypes } from "@/features/codex/typeApi";
@@ -28,7 +28,13 @@ export function useCodexHighlight(
   const resolvedOptions: CodexHighlightOptions = Array.isArray(options)
     ? { excludeEntryIds: options }
     : (options ?? {});
-  const excludeEntryIds = resolvedOptions.excludeEntryIds ?? [];
+  // Memoize the `?? []` fallback so the empty-array path keeps a stable
+  // reference across renders — without this, the `excludeRef` sync effect
+  // below runs every render even when the caller passed nothing.
+  const excludeEntryIds = useMemo(
+    () => resolvedOptions.excludeEntryIds ?? [],
+    [resolvedOptions.excludeEntryIds],
+  );
   const skipMatchedIds = resolvedOptions.skipMatchedIds ?? false;
   const entries = useCodexStore((s) => s.entries);
   const setMatchTargets = useCodexHighlightStore((s) => s.setMatchTargets);

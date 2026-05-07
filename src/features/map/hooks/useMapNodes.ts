@@ -560,5 +560,7 @@ export function useMapNodes({
     persistingRef,
     deletingStickyIds,
     onStickyExitComplete,
+    setAiBranches,
+    setPositions,
   ]);
 }

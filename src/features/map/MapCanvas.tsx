@@ -562,7 +562,7 @@ export function MapCanvas() {
         }
       }
     },
-    [setPositions],
+    [setPositions, setAiBranches],
   );
 
   const onDeleteSelected = useCallback(async () => {

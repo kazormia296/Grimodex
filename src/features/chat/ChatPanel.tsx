@@ -160,8 +160,14 @@ export function ChatPanel() {
     setDismissedViaChildIds(new Set());
   }, [activeSessionId]);
 
-  const pinnedIds = new Set(pinnedEntries.map((e) => e.id));
-  const pinnedSnippetIds = new Set(pinnedSnippets.map((s) => s.id));
+  const pinnedIds = useMemo(
+    () => new Set(pinnedEntries.map((e) => e.id)),
+    [pinnedEntries],
+  );
+  const pinnedSnippetIds = useMemo(
+    () => new Set(pinnedSnippets.map((s) => s.id)),
+    [pinnedSnippets],
+  );
 
   // 入力欄でリアルタイム検出されたCodexエントリID
   const [inputDetectedIds, setInputDetectedIds] = useState<string[]>([]);
