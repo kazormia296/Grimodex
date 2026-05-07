@@ -1,25 +1,22 @@
 import { useState, useRef } from "react";
-import { ExternalLink, MoreHorizontal } from "lucide-react";
+import { ExternalLink } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { useTreeStore } from "@/features/tree/treeStore";
+import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 
 interface Props {
   nodeId: string;
   title: string;
-  onMenuOpen: () => void;
   onOpenInEditor?: () => void;
-  menuBtnRef?: React.RefObject<HTMLButtonElement | null>;
-  /** Rendered next to the menu button so popover anchors to it. */
+  /** Self-contained menu component (e.g. GridCardMenu). */
   menuSlot?: React.ReactNode;
 }
 
 export function GridCardHeader({
   nodeId,
   title,
-  onMenuOpen,
   onOpenInEditor,
-  menuBtnRef,
   menuSlot,
 }: Props) {
   const { t } = useTranslation();
@@ -79,8 +76,10 @@ export function GridCardHeader({
       )}
 
       {onOpenInEditor && (
-        <button
-          className="shrink-0 rounded p-0.5 opacity-0 group-hover:opacity-100 hover:bg-accent transition-opacity"
+        <Button
+          variant="ghost"
+          size="icon-xs"
+          className="opacity-0 group-hover:opacity-100 transition-opacity"
           onClick={(e) => {
             e.stopPropagation();
             onOpenInEditor();
@@ -89,25 +88,11 @@ export function GridCardHeader({
           title={t("grid.card.openInEditor", "エディタで開く")}
           aria-label={t("grid.card.openInEditor", "エディタで開く")}
         >
-          <ExternalLink className="h-3 w-3" />
-        </button>
+          <ExternalLink />
+        </Button>
       )}
 
-      <div className="relative shrink-0">
-        <button
-          ref={menuBtnRef}
-          className="rounded p-0.5 opacity-0 group-hover:opacity-100 hover:bg-accent transition-opacity"
-          onClick={(e) => {
-            e.stopPropagation();
-            onMenuOpen();
-          }}
-          data-testid="grid-card-menu-btn"
-          title="メニュー"
-        >
-          <MoreHorizontal className="h-3 w-3" />
-        </button>
-        {menuSlot}
-      </div>
+      {menuSlot}
     </div>
   );
 }

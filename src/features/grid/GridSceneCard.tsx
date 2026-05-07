@@ -40,11 +40,9 @@ export function GridSceneCard({
   flatOrder,
 }: Props) {
   const { t } = useTranslation();
-  const [menuOpen, setMenuOpen] = useState(false);
   const [isEditing, setIsEditing] = useState(false);
   const [addingBeat, setAddingBeat] = useState(false);
   const [beatDraft, setBeatDraft] = useState("");
-  const menuBtnRef = useRef<HTMLButtonElement>(null);
   const beatInputRef = useRef<HTMLTextAreaElement>(null);
 
   const liveCharCount = useTreeStore(
@@ -192,19 +190,8 @@ export function GridSceneCard({
         <GridCardHeader
           nodeId={scene.id}
           title={scene.title}
-          onMenuOpen={() => setMenuOpen((v) => !v)}
           onOpenInEditor={openInEditor}
-          menuBtnRef={menuBtnRef}
-          menuSlot={
-            menuOpen ? (
-              <GridCardMenu
-                nodeId={scene.id}
-                onClose={() => setMenuOpen(false)}
-                onDelete={requestDelete}
-                anchorRef={menuBtnRef}
-              />
-            ) : null
-          }
+          menuSlot={<GridCardMenu nodeId={scene.id} onDelete={requestDelete} />}
         />
 
         <GridCardPovChips
