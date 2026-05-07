@@ -305,7 +305,7 @@ Attr / Cmt / Focus / TW の 4 つは独立したトグルで、組み合わせ�
 - `src/features/editor/SynopsisHeader.tsx` — 折りたたみヘッダー（Scene限定ガード済み: `nodeType !== "scene"` で null return）
 - `src/features/tree/SynopsisArea.tsx` — テキストエリア本体（同様に Scene 限定ガード済み）
 
-> **Phase B 予定**: Synopsis（Scene）・POV・Location セレクタは `SceneMetaPanel`（右パネル、256px）に移動する。現在のエディタ上部配置から右パネルへのリファクタリングにより、本文エリアを最大化し「参照しながら書く」レイアウトを実現する。詳細は Beat システム設計書「SceneMetaPanel（右パネル）」参照。
+> **Phase B 実装済み（部分）**: Synopsis（Scene）・Beats を含む `SceneMetaPanel`（右パネル）は実装済みで、`EditorPane` の `ResizablePanelGroup` で本文と並列配置されている。ツールバー右端の ▶ ボタンで開閉可能。POV / Location セレクタの右パネルへの統合と、エディタ上部 C-4 セクションの完全廃止は未完了。
 
 ---
 
@@ -1384,9 +1384,9 @@ Codex Dynamic Phases のフェーズ定義、フェーズ切替 UI、`codex_phas
 
 ---
 
-## Beat システム（Phase A 実装済 / Phase B 予定）
+## Beat システム（Phase A 実装済 / Phase B 進行中）
 
-Beat システムの Phase A は実装済み。Phase B で UI の大幅拡張と `SceneMetaPanel`（右パネル）への移行を行う。詳細は [Beat システム設計書](./Grimodex_Beatシステム設計書.md)。
+Beat システムの Phase A は実装済み。Phase B として `SceneMetaPanel`（右パネル）への移行は **既に実装済**（`SceneMetaPanel.tsx` が SynopsisHeader / BeatsHeader を内部で使用、`EditorPane` の `ResizablePanelGroup` 配置済み、ツールバーの ▶ トグルで開閉可能）。残りの Phase B UI 拡張（D&D ハンドル / フッターモデルセレクタ / ephemeral アクションバー / Clear Beat メニュー）は未着手。詳細は [Beat システム設計書](./Grimodex_Beatシステム設計書.md)。
 
 ### TipTap カスタムノード
 
@@ -1408,16 +1408,18 @@ Beat システムの Phase A は実装済み。Phase B で UI の大幅拡張と
 
 既存の `ChatMentionExtension`（`src/features/chat/extensions/ChatMentionExtension.ts`）と同等のメンション拡張を SceneEditor の Extensions リストに追加する。`sceneBeat` の `inline*` content 内で `@キャラ名` のオートコンプリートが動作する。Phase B で role 修飾子（`@name:actor` / `@name:target`）を Mention `attrs.role` で表現する。
 
-### Beats セクション（現行: エディタ上部）
+### Beats セクション（現行: SceneMetaPanel 右パネル）
 
-**Phase A 実装済み**: `SynopsisHeader.tsx` と同じ親 div の兄弟要素として `BeatsHeader.tsx` を追加。エディタ上部（Synopsis の下）に配置。
+**Phase A 実装済み**: 当初は `SynopsisHeader.tsx` と兄弟要素として `BeatsHeader.tsx` をエディタ上部に配置していた。
 
 - Unplaced beat の一覧表示・追加・編集・並べ替え
 - Placed beat の一覧表示（本文位置への参照）
 - D&D による Unplaced → Placed の状態遷移
 - `+ Beat` ボタン
 
-> **Phase B 予定**: `SynopsisHeader` / `BeatsHeader` を廃止し、新規 `SceneMetaPanel.tsx`（右パネル）に統合。`EditorPane` のレイアウトを flex-col → flex-row に変更。`DndContext` は EditorPane 全体を包む形を維持するため、右パネル → 本文の水平 D&D は引き続き dnd-kit で機能する。
+**Phase B 実装済み（部分）**: `SceneMetaPanel.tsx`（右パネル）が SynopsisHeader / BeatsHeader を内部で使用する形で**統合済み**。`EditorPane` は `ResizablePanelGroup` で本文と右パネルを横並びにし、`DndContext` は EditorPane 全体を包むため右パネル → 本文の水平 D&D も継続して動作する。ツールバーの ▶ ボタンで右パネルの開閉が可能。
+
+> **未実装の Phase B 項目**: SynopsisHeader / BeatsHeader を「廃止」する（=右パネル専用コンポーネントに置換する）リファクタは未完了で、現状はエディタ上部にも依然として表示される構成が残っている可能性がある（`showSceneMetaPanel` トグルの状態次第）。
 
 ### Placed beat の本文中表示
 
@@ -1484,3 +1486,133 @@ C-4 セクションの既存 textarea 実装は本コンポーネントに置換
 
 - Grid のカードタイトル → 既存のタブモデル（プレビュータブ昇格ロジック）に従って Scene を開く
 - Editor 側で Synopsis や本文を変更すると、Grid のカード（`tree_nodes.synopsis` / `tree_nodes.unplaced_beat_preview` 経由）も即座に更新される
+
+---
+
+## 実装状況サマリー（2026-05-07 時点）
+
+本セクションは設計書本文の理想形と現実装のギャップを集約したスナップショット。✅ 実装済 / 🟡 部分実装 / ❌ 未実装 / ⚠️ 設計と差異 / ➕ 設計書外で追加実装。
+
+### A. タブバー
+
+- ✅ プレビュー/固定タブ、Codex/Snippet タブ、同期バッジ、未保存インジケータ、コンテキストメニュー、Linear モードトグル、永続化、Ctrl+Tab 系
+- 🟡 Snippet タブアイコン: 設計書は `🗂` だが実装には Snippet 専用絵文字描画分岐が見当たらない
+- ❌ タブを Center 外にドラッグ → フローティングエディタウィンドウ
+- ❌ Group エッジへのドロップで新規スプリット作成（既存 Group 内移動のみ実装）
+- ❌ エディタ上部の「タブ種バナー」（Codex/Snippet/Note 全種で未実装）
+- ➕ Codex タブの phase ラベル表示（`getTabPhaseLabel`）
+
+### B. ブレッドクラム
+
+- ✅ パス表示、セグメントクリックで兄弟ドロップダウン
+- ❌ ツールバー オーバーフローの `Show breadcrumb` トグル（`Toolbar.tsx` で `disabled`）
+- ❌ 狭幅時の `...` 省略
+
+### C. ツールバー
+
+- ✅ グループ 1〜5 の主要ボタン、Aa ポップオーバー、Attr / Cmt / Focus / TW、Find & Replace、Word count goal、Vertical preview
+- ❌ オーバーフロー: `Show breadcrumb` / `Show line numbers`（いずれも `disabled` 固定）
+- ➕ Fs（伏線マーク表示）トグル
+- ➕ ▶（SceneMetaPanel 開閉）ボタン
+
+### C-4. Synopsis / Summary
+
+- ✅ Scene の Synopsis（textarea、自動保存、✦ Generate、Beats からの生成）
+- ⚠️ 配置: 現在は SceneMetaPanel（右パネル）側に統合済み。エディタ上部の C-4 配置は実態と乖離
+- ❌ Codex タブの「Summary」入力欄 + ✦ Generate ボタン
+- 🟡 `InlineSynopsisEditor` 共有化: ファイル自体は存在するが、3パネル共通利用が完全に行き渡っているかは未検証
+
+### D. エディタキャンバス
+
+#### TipTap 拡張（Mark / Node / Plugin）
+
+- ✅ StarterKit + ParagraphWithEmptyLineSupport / Underline / Link / Placeholder / CharacterCount / Typography / Focus / Table 一式 / tiptap-markdown
+- ✅ RubyNode / SceneBreakNode / SceneBeatNode / GeneratedProseBlockNode / EmphasisDotsMark / CommentMark
+- ✅ AuthorshipMark（拡張属性 `traceId` / `toolName` / `toolVersion` / `manualOverride` / `originalLength` すべて完備）
+- ✅ InlineAtomNavigationExtension / ToolbarShortcutsExtension / SlashCommandExtension / LintDecorationPlugin
+- ✅ AiEditedPlugin（`programmaticInsert` meta 対応）/ AttributionPlugin / AttributionOverrideMenu
+- ✅ CodexHighlightPlugin / Codex Mention 拡張
+- ⚠️ ペースト 3 系統分岐: Case 1 の判定が独自 MIME `application/x-grimodex-authorship` ではなく HTML 内 `data-grimodex-source` 文字列マッチに簡略化されている
+- 🟡 クリップボード Authorship 伝搬: Codex/Snippet/Chat 用 writer は `lib/clipboardAttribution.ts` にあるが、AuthorshipMark 付きエディタテキストのコピー時に独自 MIME を書き出す TipTap clipboardSerializer 拡張は未確認
+- ➕ ForeshadowSetupMark / ForeshadowPayoffMark / ForeshadowPasteRule（伏線レジスタ機能）
+
+#### Pure Decorations
+
+- ✅ CodexHighlight / AttributionHighlight / FocusDim / LintDecorationPlugin
+- ❌ Attribution highlight opacity 設定（5–25%）
+
+#### スタイル / モード
+
+- ✅ Typewriter モード、Placeholder
+- ✅ フォントサイズ・行間・最大幅・パディングの Settings 連動
+- ❌ 段落字下げ設定（OFF / 1字 / 2字）
+
+#### カーソル / 文字アニメーション 4 種
+
+- ✅ Smooth caret（CursorOverlayPlugin、`editor.smoothCaret` 連動）
+- 🟡 Cursor blink: 設定キーと UI トグルは存在するが、`editor.cursorBlink` が CursorOverlayPlugin に渡っておらず**設定値とエディタ動作が連動していない**
+- ❌ Character fade-in（`editor.fadeIn` 設定 UI のみ存在、エディタ実装未配線）
+- ❌ Character fade-out（`editor.fadeOut` 設定 UI のみ存在、エディタ実装未配線）
+
+### E. ステータスバー
+
+- ✅ ステータスバッジ、AI: %、Beats、文字数（target との `/X` 表示）、Saving/Saved/Unsaved、History
+- 🟡 文字数詳細ポップオーバー: 原稿用紙換算 / 推定読了時間 / 単語数の表示は未実装
+- ❌ 文字数ミニプログレスバー（達成時グリーン / 超過時赤）
+- ➕ Lint Status インジケータ
+
+### リニア編集モード
+
+- ✅ LinearEditorView / LinearSceneBlock / linearEditorStore、IntersectionObserver 遅延マウント、Toolbar / FindReplace / CodexPopover / EditorContextMenu の共有
+- ❓ Beat の Linear 表示モード設定（通常 / 折りたたみ / 非表示の3択）は未確認
+
+### エディタ内コンテキストメニュー
+
+- ✅ Cut / Copy / Paste / Add comment / Add to Codex / Save as Snippet / Look up in Chat / Mark as ▶（Attribution 変更）/ Insert scene break / Select all
+- ❌ `Set ruby...`（選択時メニュー項目）
+- ❌ `Insert from Snippet...`（非選択時メニュー項目）
+- ➕ Lint Disable / Foreshadow メニュー項目
+
+### Find & Replace / 全シーン横断検索
+
+- ✅ FindReplaceBar / FindReplaceExtension、`Ctrl+F` / `Ctrl+H` / `Ctrl+Shift+F`、FTS5 ベースの全シーン検索
+
+### インライン AI コマンド
+
+- ✅ SlashCommandExtension（行頭 / 空行検出）、Ctrl+Shift+Space パレット、9 種コマンド、diff Decorations + Accept/Reject/Retry、ストリーミング、AuthorshipMark `{source: 'ai'}` 自動付与
+
+### 文字数目標
+
+- ✅ ツールバーオーバーフローでの設定、ステータスバーでの `{count} / {goal}` 表示
+- ❌ ミニプログレスバー / 達成色変化 / 超過色赤
+
+### 縦書きプレビュー
+
+- 🟡 VerticalPreview はモーダルオーバーレイ（`h-[85vh] w-[90vw]`）として実装。設計書の Right Dock デフォルト + Bottom Dock + フローティングウィンドウ構成は未実現
+
+### 自動保存 / sceneContentStore / Codex Phase override / タブ切替時の状態保存
+
+- ✅ デバウンス自動保存、保存先分岐（tree_nodes / codex_entries / codex_phase_detail_overrides / snippets）、sceneContentStore 経由のスプリット間同期、タブ切替時のカーソル/スクロール lazy 復元
+
+### タブ種別ごとの差異
+
+- ✅ Lint 下線が Primary Group の Scene のみ、Codex タブで自エントリ除外、Snippet タブで Codex Quick 更新スキップ
+- ❌ エディタ上部バナー（Note / Codex / Snippet すべて未実装）
+
+### キーボードショートカット
+
+- ✅ 設計書記載のエディタ固有ショートカットはほぼ網羅（`Ctrl+F` / `Ctrl+H` / `Ctrl+Shift+F` / `Ctrl+.` / `Ctrl+Shift+M` / `Ctrl+1-3` / `Ctrl+Shift+X` / `Ctrl+Home/End` / `Ctrl+Shift+Space` / `Tab` / `Esc` 等）
+
+### Beat システム
+
+- ✅ Phase A: sceneBeat / generatedProseBlock ノード、Unplaced 別カラム、ヘッダーバー、`[⋮]` メニュー、`/` コマンド、`Ctrl+Shift+B`、ステータスバーの Beats 表示、Markdown export 時の除去
+- 🟡 Phase B: SceneMetaPanel 右パネル統合は実装済み。SynopsisHeader / BeatsHeader の完全廃止は未完了
+- ❌ Phase B: D&D ハンドル `⠿` / フッターのモデルセレクタ / ephemeral アクションバー（`✓ Keep` / `↺ Retry` / `✕ Discard`）/ `Clear Beat` メニュー項目
+
+### 重要ギャップ Top 5
+
+1. **文字アニメ 3 種（Cursor blink / Character fade-in / Character fade-out）が UI のみで未配線** — 設定を切ってもエディタ動作が変わらない無言失敗
+2. **エディタ上部の「タブ種バナー」が完全欠落** — Codex/Snippet/Note タブで何のレコードを編集中か視覚的に判別困難
+3. **`Show breadcrumb` / `Show line numbers` トグルが `disabled` 固定** — 設計書記載機能が UI 上は disabled のまま放置
+4. **VerticalPreview がモーダル実装で Dock / フローティング構想と乖離** — 「縦書きで参照しながら書く」体験が未提供
+5. **コンテキストメニュー欠落: `Set ruby...`（選択時）/ `Insert from Snippet...`（非選択時）** — キーボード/メニュー経由の Snippet 挿入が断絶
