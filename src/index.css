@@ -227,6 +227,12 @@
   margin: 0;
 }
 
+/* Paragraph indent (display-only) — controlled by --editor-paragraph-indent
+   set on the editor wrapper from editor.paragraphIndent setting. */
+.tiptap > p {
+  text-indent: var(--editor-paragraph-indent, 0);
+}
+
 .tiptap {
   blockquote {
     border-left: 3px solid var(--content-border);

@@ -68,6 +68,7 @@ export const DEFAULT_SETTINGS: Record<string, string> = {
   "editor.sceneMetaPanelWidth": "20",
   "editor.linearBeatDisplay": "collapsed",
   "editor.showBreadcrumb": "true",
+  "editor.paragraphIndent": "0",
   // Display (theme, uiLanguage, uiScale are in GlobalSettings)
   "display.showWordCount": "true",
   "display.showAiBadge": "false",

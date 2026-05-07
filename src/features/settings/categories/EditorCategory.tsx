@@ -55,6 +55,12 @@ export function EditorCategory() {
     false,
   );
 
+  const PARAGRAPH_INDENT_OPTIONS = [
+    { value: "0", label: t("settings.editor.paragraphIndentOff") },
+    { value: "1", label: t("settings.editor.paragraphIndent1") },
+    { value: "2", label: t("settings.editor.paragraphIndent2") },
+  ];
+
   const LINEAR_BEAT_DISPLAY_OPTIONS = [
     { value: "normal", label: t("settings.editor.linearBeatDisplayNormal") },
     {
@@ -122,6 +128,16 @@ export function EditorCategory() {
             step={2}
             defaultValue={8}
             format={(v) => `${v}px`}
+          />
+        </SettingRow>
+        <SettingRow
+          label={t("settings.editor.paragraphIndent")}
+          description={t("settings.editor.paragraphIndentDesc")}
+        >
+          <SettingDropdown
+            settingKey="editor.paragraphIndent"
+            options={PARAGRAPH_INDENT_OPTIONS}
+            defaultValue="0"
           />
         </SettingRow>
         <SettingRow
