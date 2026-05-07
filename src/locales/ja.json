@@ -1227,7 +1227,10 @@
     "originScene": "本文",
     "originCodex": "設定資料",
     "kind": {
-      "textFragment": "文字屑"
+      "textFragment": "文字屑",
+      "scene": "シーン",
+      "codex": "設定資料",
+      "snippet": "スニペット"
     }
   },
   "snippets": {

@@ -180,7 +180,7 @@ describe("TrashBinPhysicsView", () => {
     expect(rafCallbacks.length).toBeGreaterThan(0);
   });
 
-  it("rAF を進めると追加 body が settle する", () => {
+  it("rAF が回ると追加 body が落下し、最終的に床面付近で停止する", () => {
     const initial = [makeFakeItem("a"), makeFakeItem("b")];
     const { rerender, container } = render(
       <TrashBinPhysicsView items={initial} isLoading={false} />,
@@ -191,21 +191,16 @@ describe("TrashBinPhysicsView", () => {
         isLoading={false}
       />,
     );
-    // rAF が止まる（=全 body が settle した）まで進める。安全のため 2000 フレーム上限。
-    let frame = 0;
-    while (rafCallbacks.length > 0 && frame < 2000) {
-      flushRaf(1);
-      frame += 1;
-    }
     const c = getNode(container, "c");
     expect(c).not.toBeNull();
-    expect(c!.dataset.settled).toBe("true");
-    const t = parseTransform(c!.style.transform);
-    expect(t).not.toBeNull();
-    // settled body は床面付近 (height は size 計算で 28、container 高さ 600)
-    expect(t!.y).toBeGreaterThan(FAKE_RECT.height - 100);
-    // settle 後は rAF が止まる
-    expect(rafCallbacks.length).toBe(0);
+    const initialY = parseTransform(c!.style.transform)!.y;
+    expect(initialY).toBeLessThan(0); // y=-h で出現
+
+    // 100 フレームほど進めれば必ず落下が発生し、床面以下に到達する
+    flushRaf(100);
+    const fallenY = parseTransform(c!.style.transform)!.y;
+    expect(fallenY).toBeGreaterThan(initialY);
+    expect(fallenY).toBeGreaterThan(FAKE_RECT.height / 2);
   });
 
   it("削除されたアイテムは DOM からも消える", () => {

@@ -1227,7 +1227,10 @@
     "originScene": "Scene",
     "originCodex": "Codex",
     "kind": {
-      "textFragment": "Text scrap"
+      "textFragment": "Text scrap",
+      "scene": "Scene",
+      "codex": "Codex",
+      "snippet": "Snippet"
     }
   },
   "snippets": {
