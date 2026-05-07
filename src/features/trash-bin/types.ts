@@ -89,11 +89,69 @@ export interface SnippetPayload {
   sceneId: string | null;
 }
 
+// 設計書 §16.5: Map Sticky 削除のスナップショット。
+// 実 schema は body(PM JSON) + previewText + paletteId/colorSlot で、座標は
+// mapNodePositions 別テーブル。x/y/zIndex/pinned はその行から取り込む。
+export interface MapStickyPayload {
+  originalId: string;
+  boardId: string;
+  title: string | null;
+  body: string;
+  previewText: string | null;
+  paletteId: string;
+  colorSlot: number;
+  x: number;
+  y: number;
+  pinned: boolean;
+  zIndex: number;
+}
+
+// 設計書 §16.6: Foreshadow 削除のスナップショット。
+// foreshadowSetups は CASCADE で消えるため、本 entry では parent row のみ保持し
+// setups は復元しない（foreshadowStore.remove と同じ方針）。
+export interface ForeshadowPayload {
+  originalId: string;
+  projectId: string;
+  title: string;
+  intent: string | null;
+  notes: string | null;
+  payoffSceneRef: string | null;
+  payoffFromPos: number | null;
+  payoffToPos: number | null;
+  payoffConfirmed: boolean;
+  abandoned: boolean;
+  loadBearing: string | null;
+}
+
+// 設計書 §16.7 (改): Pin 実体は SceneCodexPin (sceneId, entryId, createdAt の
+// 純粋 join)。復元時は両端が現存するときのみ pin を再作成。表示用に削除時点の
+// hint をスナップショットで保持する。
+export interface PinPayload {
+  sceneId: string;
+  entryId: string;
+  sceneTitleHint: string | null;
+  entryNameHint: string | null;
+  entryIconHint: string | null;
+}
+
+// 設計書 §16.8: Grid Chapter 実体は treeNodes(nodeType="folder")。
+// scene 用の ScenePayload とほぼ同形だが subKind 分岐の明確化のため別型。
+export interface GridChapterPayload {
+  originalId: string;
+  title: string;
+  parentId: string | null;
+  sortOrder: string;
+  metadata: Record<string, unknown>;
+}
+
 export type StructureItemPayload =
   | ScenePayload
   | CodexEntryPayload
   | SnippetPayload
-  | Record<string, unknown>; // Phase 5: map-sticky / foreshadow / pin / grid-chapter
+  | MapStickyPayload
+  | ForeshadowPayload
+  | PinPayload
+  | GridChapterPayload;
 
 export type TrashPayload = TextFragmentPayload | StructureItemPayload;
 

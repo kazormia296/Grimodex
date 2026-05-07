@@ -34,6 +34,8 @@ import { deriveLabel } from "./deriveLabel";
 import { useEditorStore } from "@/features/editor/editorStore";
 import { useSceneStore } from "@/features/tree/store";
 import { useGlobalHistoryStore } from "@/store/globalHistoryStore";
+import { captureForeshadowDeletion } from "@/features/trash-bin/captureHooks";
+import { useTrashBinStore } from "@/features/trash-bin/trashBinStore";
 import type {
   ForeshadowRow,
   ForeshadowSetupRow,
@@ -363,6 +365,15 @@ export const useForeshadowStore = create<ForeshadowState>()((set, get) => ({
     if (!before) return;
     if (useGlobalHistoryStore.getState().isReplaying) return;
 
+    // Trash 連携: foreshadow の削除をゴミ箱にキャプチャ。
+    // setup 行は CASCADE で消えるが復元時には再生できないため payload には含めない。
+    const trashTempId = `trash-foreshadow-${Date.now()}-${Math.random().toString(36).slice(2, 8)}-${before.id}`;
+    captureForeshadowDeletion({
+      projectId: before.projectId,
+      foreshadow: before,
+      tempId: trashTempId,
+    });
+
     // Note: cascade FK は foreshadowSetups を消す。本 entry では foreshadow row
     // のみを restore し、setup 行とそれに対応する mark は復元できない。
     // 別 PR の adopt 系アトミック化で扱う想定。
@@ -371,6 +382,8 @@ export const useForeshadowStore = create<ForeshadowState>()((set, get) => ({
       kind: "foreshadow",
       label: "伏線削除",
       async undo() {
+        // 1500ms 以内 Ctrl+Z 吸収: trash 保留を cancel
+        useTrashBinStore.getState().cancelPending({ tempId: trashTempId });
         await createForeshadow({
           id: cap.id,
           projectId: cap.projectId,

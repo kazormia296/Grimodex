@@ -4,6 +4,10 @@ import { dominantSource, getBodySize } from "./displayHelpers";
 import { SceneTrashItem } from "./items/SceneTrashItem";
 import { CodexTrashItem } from "./items/CodexTrashItem";
 import { SnippetTrashItem } from "./items/SnippetTrashItem";
+import { MapStickyTrashItem } from "./items/MapStickyTrashItem";
+import { ForeshadowTrashItem } from "./items/ForeshadowTrashItem";
+import { PinTrashItem } from "./items/PinTrashItem";
+import { GridChapterTrashItem } from "./items/GridChapterTrashItem";
 
 interface Props {
   item: TrashItemData;
@@ -11,19 +15,26 @@ interface Props {
 }
 
 export function TrashBinItem({ item, registerNode }: Props) {
-  if (item.subKind === "scene") {
-    return <SceneTrashItem item={item} registerNode={registerNode} />;
+  switch (item.subKind) {
+    case "scene":
+      return <SceneTrashItem item={item} registerNode={registerNode} />;
+    case "codex-entry":
+      return <CodexTrashItem item={item} registerNode={registerNode} />;
+    case "snippet":
+      return <SnippetTrashItem item={item} registerNode={registerNode} />;
+    case "map-sticky":
+      return <MapStickyTrashItem item={item} registerNode={registerNode} />;
+    case "foreshadow":
+      return <ForeshadowTrashItem item={item} registerNode={registerNode} />;
+    case "pin":
+      return <PinTrashItem item={item} registerNode={registerNode} />;
+    case "grid-chapter":
+      return <GridChapterTrashItem item={item} registerNode={registerNode} />;
+    case "text-fragment":
+      return <TextFragmentTrashItem item={item} registerNode={registerNode} />;
+    default:
+      return <FallbackTrashItem item={item} registerNode={registerNode} />;
   }
-  if (item.subKind === "codex-entry") {
-    return <CodexTrashItem item={item} registerNode={registerNode} />;
-  }
-  if (item.subKind === "snippet") {
-    return <SnippetTrashItem item={item} registerNode={registerNode} />;
-  }
-  if (item.subKind === "text-fragment") {
-    return <TextFragmentTrashItem item={item} registerNode={registerNode} />;
-  }
-  return <FallbackTrashItem item={item} registerNode={registerNode} />;
 }
 
 function TextFragmentTrashItem({ item, registerNode }: Props) {

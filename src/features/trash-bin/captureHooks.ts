@@ -11,8 +11,18 @@
 import { extractPlainText } from "@/features/codex/prosemirrorTextExtractor";
 import type { CodexEntry } from "@/features/codex/api";
 import type { Snippet } from "@/features/snippets/api";
+import type { MapSticky, MapNodePosition } from "@/db/schema";
+import type { ForeshadowRow } from "@/features/foreshadow/types";
 import { useTrashBinStore } from "./trashBinStore";
-import type { CodexEntryPayload, ScenePayload, SnippetPayload } from "./types";
+import type {
+  CodexEntryPayload,
+  ForeshadowPayload,
+  GridChapterPayload,
+  MapStickyPayload,
+  PinPayload,
+  ScenePayload,
+  SnippetPayload,
+} from "./types";
 
 const PREVIEW_TEXT_MAX = 500;
 const BODY_PREVIEW_MAX = 60;
@@ -58,6 +68,13 @@ export interface CaptureSceneOpts {
 
 export function captureSceneDeletion(opts: CaptureSceneOpts): void {
   const { projectId, node, content, beats, folderHintName, tempId } = opts;
+
+  // folder ノードは Grid 章ヘッダ扱い (subKind=grid-chapter)。設計書 §4-C / §16.8。
+  if (node.nodeType === "folder") {
+    captureGridChapterDeletion({ projectId, node, folderHintName, tempId });
+    return;
+  }
+
   const bodyPreview = truncate(extractPlainText(content), BODY_PREVIEW_MAX);
   const previewText = truncate(node.title || bodyPreview, PREVIEW_TEXT_MAX);
 
@@ -93,6 +110,47 @@ export function captureSceneDeletion(opts: CaptureSceneOpts): void {
         folderName: folderHintName,
         bodyPreview,
         nodeType: node.nodeType,
+      },
+      payload,
+    },
+    { tempId },
+  );
+}
+
+export interface CaptureGridChapterOpts {
+  projectId: string;
+  node: SceneCaptureNodeInput;
+  folderHintName: string | null;
+  tempId: string;
+}
+
+export function captureGridChapterDeletion(opts: CaptureGridChapterOpts): void {
+  const { projectId, node, folderHintName, tempId } = opts;
+  const previewText = truncate(node.title || "(無題)", PREVIEW_TEXT_MAX);
+
+  const payload: GridChapterPayload = {
+    originalId: node.id,
+    title: node.title,
+    parentId: node.parentId ?? null,
+    sortOrder: node.sortOrder,
+    metadata: {
+      synopsis: node.synopsis ?? null,
+      status: node.status ?? null,
+      storyTimeOrder: node.storyTimeOrder ?? null,
+      storyTimeLabel: node.storyTimeLabel ?? null,
+    },
+  };
+
+  useTrashBinStore.getState().enqueuePending(
+    {
+      projectId,
+      kind: "structure-item",
+      subKind: "grid-chapter",
+      originSceneId: null,
+      originCodexId: null,
+      previewText,
+      previewMeta: {
+        folderName: folderHintName,
       },
       payload,
     },
@@ -193,6 +251,158 @@ export function captureSnippetDeletion(opts: CaptureSnippetOpts): void {
       previewMeta: {
         bodyPreview,
         tagsCache: snippet.tagsCache ?? null,
+      },
+      payload,
+    },
+    { tempId },
+  );
+}
+
+export interface CaptureMapStickyOpts {
+  projectId: string;
+  sticky: MapSticky;
+  position: MapNodePosition;
+  tempId: string;
+}
+
+export function captureMapStickyDeletion(opts: CaptureMapStickyOpts): void {
+  const { projectId, sticky, position, tempId } = opts;
+  const bodyPreview = truncate(
+    extractPlainText(sticky.body ?? ""),
+    BODY_PREVIEW_MAX,
+  );
+  const previewText = truncate(
+    sticky.title || sticky.previewText || bodyPreview || "(無題)",
+    PREVIEW_TEXT_MAX,
+  );
+
+  const payload: MapStickyPayload = {
+    originalId: sticky.id,
+    boardId: sticky.boardId,
+    title: sticky.title ?? null,
+    body: sticky.body ?? '{"type":"doc","content":[]}',
+    previewText: sticky.previewText ?? null,
+    paletteId: sticky.paletteId,
+    colorSlot: sticky.colorSlot,
+    x: position.x,
+    y: position.y,
+    pinned: Boolean(position.pinned),
+    zIndex: position.zIndex,
+  };
+
+  useTrashBinStore.getState().enqueuePending(
+    {
+      projectId,
+      kind: "structure-item",
+      subKind: "map-sticky",
+      originSceneId: null,
+      originCodexId: null,
+      previewText,
+      previewMeta: {
+        bodyPreview,
+        paletteId: sticky.paletteId,
+        colorSlot: sticky.colorSlot,
+      },
+      payload,
+    },
+    { tempId },
+  );
+}
+
+export interface CaptureForeshadowOpts {
+  projectId: string;
+  foreshadow: ForeshadowRow;
+  tempId: string;
+}
+
+export function captureForeshadowDeletion(opts: CaptureForeshadowOpts): void {
+  const { projectId, foreshadow, tempId } = opts;
+  const previewText = truncate(
+    foreshadow.title || foreshadow.intent || "(無題)",
+    PREVIEW_TEXT_MAX,
+  );
+
+  const payload: ForeshadowPayload = {
+    originalId: foreshadow.id,
+    projectId: foreshadow.projectId,
+    title: foreshadow.title,
+    intent: foreshadow.intent ?? null,
+    notes: foreshadow.notes ?? null,
+    payoffSceneRef: foreshadow.payoffSceneId ?? null,
+    payoffFromPos: foreshadow.payoffFromPos ?? null,
+    payoffToPos: foreshadow.payoffToPos ?? null,
+    payoffConfirmed: foreshadow.payoffConfirmed,
+    abandoned: foreshadow.abandoned,
+    loadBearing: foreshadow.loadBearing ?? null,
+  };
+
+  useTrashBinStore.getState().enqueuePending(
+    {
+      projectId,
+      kind: "structure-item",
+      subKind: "foreshadow",
+      originSceneId: null,
+      originCodexId: null,
+      previewText,
+      previewMeta: {
+        intent: foreshadow.intent ?? null,
+        loadBearing: foreshadow.loadBearing ?? null,
+        abandoned: foreshadow.abandoned,
+      },
+      payload,
+    },
+    { tempId },
+  );
+}
+
+export interface CapturePinOpts {
+  projectId: string;
+  sceneId: string;
+  entryId: string;
+  /** 削除時点での scene title (Tree から解決して渡す) */
+  sceneTitleHint: string | null;
+  /** 削除時点での codex entry name */
+  entryNameHint: string | null;
+  /** 削除時点での codex icon (Lucide name) */
+  entryIconHint: string | null;
+  tempId: string;
+}
+
+export function capturePinDeletion(opts: CapturePinOpts): void {
+  const {
+    projectId,
+    sceneId,
+    entryId,
+    sceneTitleHint,
+    entryNameHint,
+    entryIconHint,
+    tempId,
+  } = opts;
+  const previewText = truncate(
+    entryNameHint || sceneTitleHint || "(ピン)",
+    PREVIEW_TEXT_MAX,
+  );
+
+  const payload: PinPayload = {
+    sceneId,
+    entryId,
+    sceneTitleHint,
+    entryNameHint,
+    entryIconHint,
+  };
+
+  useTrashBinStore.getState().enqueuePending(
+    {
+      projectId,
+      kind: "structure-item",
+      subKind: "pin",
+      originSceneId: sceneId,
+      originCodexId: entryId,
+      previewText,
+      previewMeta: {
+        sceneTitleHint,
+        entryNameHint,
+        entryIconHint,
       },
       payload,
     },

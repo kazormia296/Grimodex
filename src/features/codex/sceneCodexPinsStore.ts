@@ -1,6 +1,10 @@
 import { create } from "zustand";
 import { listPinsForScene, addPin, removePin } from "./sceneCodexPinsApi";
 import { useGlobalHistoryStore } from "@/store/globalHistoryStore";
+import { useCodexStore } from "./codexStore";
+import { useTreeStore } from "@/features/tree/treeStore";
+import { capturePinDeletion } from "@/features/trash-bin/captureHooks";
+import { useTrashBinStore } from "@/features/trash-bin/trashBinStore";
 
 interface SceneCodexPinsState {
   // Map from sceneId to array of entryIds (sorted by createdAt asc)
@@ -107,10 +111,30 @@ export const useSceneCodexPinsStore = create<SceneCodexPinsState>()(
       if (!wasPinned) return;
       if (useGlobalHistoryStore.getState().isReplaying) return;
 
+      // Trash 連携: pin の解除をゴミ箱にキャプチャ。
+      // 表示用に削除時点の scene title / entry name / icon をスナップショット。
+      const tree = useTreeStore.getState();
+      const codex = useCodexStore.getState();
+      const sceneNode = tree.nodes.find((n) => n.id === sceneId);
+      const entry = codex.entries.find((e) => e.id === entryId);
+      const projectId = sceneNode?.projectId ?? tree.projectId;
+      const trashTempId = `trash-pin-${Date.now()}-${Math.random().toString(36).slice(2, 8)}-${sceneId}-${entryId}`;
+      capturePinDeletion({
+        projectId,
+        sceneId,
+        entryId,
+        sceneTitleHint: sceneNode?.title ?? null,
+        entryNameHint: entry?.name ?? null,
+        entryIconHint: entry?.icon ?? null,
+        tempId: trashTempId,
+      });
+
       useGlobalHistoryStore.getState().push({
         kind: "pins",
         label: "ピン解除",
         async undo() {
+          // 1500ms 以内 Ctrl+Z 吸収: trash 保留を cancel
+          useTrashBinStore.getState().cancelPending({ tempId: trashTempId });
           await addPin(sceneId, entryId);
           set((s) => ({
             pinsByScene: {

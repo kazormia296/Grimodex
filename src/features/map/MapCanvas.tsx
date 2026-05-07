@@ -17,6 +17,8 @@ import { usePhaseStore } from "@/features/codex/phaseStore";
 import { useSnippetStore } from "@/features/snippets/snippetStore";
 import { useMapStore } from "./mapStore";
 import { useGlobalHistoryStore } from "@/store/globalHistoryStore";
+import { captureMapStickyDeletion } from "@/features/trash-bin/captureHooks";
+import { useTrashBinStore } from "@/features/trash-bin/trashBinStore";
 import { SceneNode } from "./nodes/SceneNode";
 import { CodexNode } from "./nodes/CodexNode";
 import { FrameNode } from "./nodes/FrameNode";
@@ -310,10 +312,22 @@ export function MapCanvas() {
           sticky: { ...capturedSticky },
           position: { ...capturedPos },
         };
+
+        // Trash 連携: 削除した Sticky をゴミ箱にキャプチャ。
+        const trashTempId = `trash-sticky-${Date.now()}-${Math.random().toString(36).slice(2, 8)}-${cap.sticky.id}`;
+        captureMapStickyDeletion({
+          projectId: PROJECT_ID,
+          sticky: cap.sticky,
+          position: cap.position,
+          tempId: trashTempId,
+        });
+
         useGlobalHistoryStore.getState().push({
           kind: "map",
           label: "Sticky削除",
           async undo() {
+            // 1500ms 以内 Ctrl+Z 吸収: trash 保留を cancel
+            useTrashBinStore.getState().cancelPending({ tempId: trashTempId });
             const recreated = await createSticky({
               id: cap.sticky.id,
               boardId: cap.sticky.boardId,
