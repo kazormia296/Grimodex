@@ -5,6 +5,7 @@ import { toast } from "sonner";
 import { useTranslation } from "react-i18next";
 import { useEditor, EditorContent, useEditorState } from "@tiptap/react";
 import type { Editor } from "@tiptap/core";
+import { Button } from "@/components/ui/button";
 import { useAiSettingsStore } from "../store";
 import { useChatStore } from "../chatStore";
 import { useSettingsStore } from "@/features/settings/settingsStore";
@@ -314,128 +315,134 @@ export function ChatInput({
       {/* Codex ハイライトポップオーバー（入力エリア用） */}
       <CodexPopover editor={editor} />
 
-      {/* TipTap エディタ入力エリア */}
-      <div className="flex gap-2">
-        <div className="chat-input-editor flex-1 rounded-md border border-input bg-background text-sm focus-within:ring-1 focus-within:ring-ring">
+      {/* shadcn chat-01 風: 入力欄＋下段ツール列を 1 枚の角丸カードに内包 */}
+      <div className="rounded-2xl border border-input bg-background shadow-sm transition-colors focus-within:ring-1 focus-within:ring-ring">
+        {/* TipTap エディタ */}
+        <div className="chat-input-editor">
           <EditorContent editor={editor} />
         </div>
 
-        {/* Send / Stop ボタン */}
-        {isStreaming ? (
-          <button
-            type="button"
-            onClick={stopGeneration}
-            aria-label={t("chat.stopAriaLabel")}
-            title={t("chat.stopTitle")}
-            className="inline-flex items-center justify-center rounded-md bg-destructive px-3 py-2 text-destructive-foreground hover:bg-destructive/90 active:scale-95 transition-transform duration-75"
-          >
-            <Square className="h-4 w-4" />
-          </button>
-        ) : (
-          <button
-            type="button"
-            onClick={handleSendClick}
-            onContextMenu={handleSendContextMenu}
-            disabled={!editor || !hasText}
-            aria-label={t("chat.sendAriaLabel")}
-            title={t("chat.sendTitle")}
-            className="inline-flex items-center justify-center rounded-md bg-primary px-3 py-2 text-primary-foreground hover:bg-primary/90 disabled:pointer-events-none disabled:opacity-50 active:scale-95 transition-transform duration-75"
-          >
-            <Send className="h-4 w-4" />
-          </button>
-        )}
-      </div>
+        {/* 下段ツール列（カード内） */}
+        <div className="flex items-center gap-1 px-2 pb-1.5 pt-0.5">
+          {/* 🛠 オプションポップオーバー */}
+          <div className="relative" ref={optionsRef}>
+            <button
+              type="button"
+              onClick={() => setOptionsOpen((v) => !v)}
+              disabled={!canUseTools && !canThink}
+              title={t("chat.aiOptions")}
+              className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-xs text-muted-foreground hover:bg-accent hover:text-foreground disabled:cursor-not-allowed disabled:opacity-40 active:scale-[0.97] transition-transform duration-75"
+            >
+              <Wrench className="h-3 w-3" />
+            </button>
 
-      {/* 下段: 🛠️ オプション + モデル選択 */}
-      <div className="mt-1.5 flex items-center justify-between">
-        {/* 🛠️ オプションポップオーバー */}
-        <div className="relative" ref={optionsRef}>
-          <button
-            type="button"
-            onClick={() => setOptionsOpen((v) => !v)}
-            disabled={!canUseTools && !canThink}
-            title={t("chat.aiOptions")}
-            className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-xs text-muted-foreground hover:bg-accent hover:text-foreground disabled:cursor-not-allowed disabled:opacity-40 active:scale-[0.97] transition-transform duration-75"
-          >
-            <Wrench className="h-3 w-3" />
-          </button>
+            {optionsOpen && (
+              <div className="absolute bottom-full left-0 z-20 mb-1 min-w-[180px] rounded-md border border-border bg-popover py-1 shadow-md">
+                {/* Agent mode トグル */}
+                <label className="flex cursor-pointer items-center gap-2 px-3 py-1.5 text-xs hover:bg-accent">
+                  <input
+                    type="checkbox"
+                    checked={agentMode}
+                    onChange={(e) => setAgentMode(e.target.checked)}
+                    disabled={!canUseTools}
+                    className="h-3 w-3"
+                  />
+                  <span className={!canUseTools ? "opacity-40" : ""}>
+                    {t("chat.agentMode")}
+                  </span>
+                </label>
 
-          {optionsOpen && (
-            <div className="absolute bottom-full left-0 z-20 mb-1 min-w-[180px] rounded-md border border-border bg-popover py-1 shadow-md">
-              {/* Agent mode トグル */}
-              <label className="flex cursor-pointer items-center gap-2 px-3 py-1.5 text-xs hover:bg-accent">
-                <input
-                  type="checkbox"
-                  checked={agentMode}
-                  onChange={(e) => setAgentMode(e.target.checked)}
-                  disabled={!canUseTools}
-                  className="h-3 w-3"
-                />
-                <span className={!canUseTools ? "opacity-40" : ""}>
-                  {t("chat.agentMode")}
-                </span>
-              </label>
+                {/* Thinking トグル */}
+                <label className="flex cursor-pointer items-center gap-2 px-3 py-1.5 text-xs hover:bg-accent">
+                  <input
+                    type="checkbox"
+                    checked={aiSettings?.thinkingEnabled ?? true}
+                    onChange={handleToggleThinking}
+                    disabled={!canThink}
+                    className="h-3 w-3"
+                  />
+                  <span className={!canThink ? "opacity-40" : ""}>
+                    {t("chat.thinkingMode")}
+                  </span>
+                </label>
 
-              {/* Thinking トグル */}
-              <label className="flex cursor-pointer items-center gap-2 px-3 py-1.5 text-xs hover:bg-accent">
-                <input
-                  type="checkbox"
-                  checked={aiSettings?.thinkingEnabled ?? true}
-                  onChange={handleToggleThinking}
-                  disabled={!canThink}
-                  className="h-3 w-3"
-                />
-                <span className={!canThink ? "opacity-40" : ""}>
-                  {t("chat.thinkingMode")}
-                </span>
-              </label>
+                {/* RAG トグル (未実装) */}
+                <label className="flex cursor-not-allowed items-center gap-2 px-3 py-1.5 text-xs opacity-40">
+                  <input type="checkbox" disabled className="h-3 w-3" />
+                  {t("chat.ragUnimplemented")}
+                </label>
+              </div>
+            )}
+          </div>
 
-              {/* RAG トグル (未実装) */}
-              <label className="flex cursor-not-allowed items-center gap-2 px-3 py-1.5 text-xs opacity-40">
-                <input type="checkbox" disabled className="h-3 w-3" />
-                {t("chat.ragUnimplemented")}
-              </label>
-            </div>
-          )}
-        </div>
+          {/* モデル選択 chip */}
+          <div className="relative" ref={modelRef}>
+            <button
+              type="button"
+              onClick={handleOpenModelMenu}
+              className="flex items-center gap-0.5 rounded px-1.5 py-0.5 text-xs text-muted-foreground hover:bg-accent hover:text-foreground active:scale-[0.97] transition-transform duration-75"
+              title={t("chat.changeModel")}
+            >
+              <span className="max-w-[120px] truncate">{modelLabel}</span>
+              <ChevronDown className="h-3 w-3 shrink-0" />
+            </button>
 
-        {/* モデル選択 */}
-        <div className="relative" ref={modelRef}>
-          <button
-            type="button"
-            onClick={handleOpenModelMenu}
-            className="flex items-center gap-0.5 rounded px-1.5 py-0.5 text-xs text-muted-foreground hover:bg-accent hover:text-foreground active:scale-[0.97] transition-transform duration-75"
-            title={t("chat.changeModel")}
-          >
-            <span className="max-w-[120px] truncate">{modelLabel}</span>
-            <ChevronDown className="h-3 w-3 shrink-0" />
-          </button>
+            {modelOpen && (
+              <div className="absolute bottom-full left-0 z-20 mb-1 max-h-48 min-w-[200px] overflow-y-auto rounded-md border border-border bg-popover py-1 shadow-md">
+                {models.length === 0 ? (
+                  <p className="px-3 py-2 text-xs text-muted-foreground">
+                    {t("chat.loadingModels")}
+                  </p>
+                ) : (
+                  models.map((m) => (
+                    <button
+                      key={m.id}
+                      type="button"
+                      onClick={() => handleSelectModel(m.id)}
+                      className={[
+                        "w-full px-3 py-1.5 text-left text-xs hover:bg-accent",
+                        m.id === currentModel
+                          ? "font-medium text-foreground"
+                          : "text-muted-foreground",
+                      ].join(" ")}
+                    >
+                      {m.name || m.id}
+                    </button>
+                  ))
+                )}
+              </div>
+            )}
+          </div>
 
-          {modelOpen && (
-            <div className="absolute bottom-full right-0 z-20 mb-1 max-h-48 min-w-[200px] overflow-y-auto rounded-md border border-border bg-popover py-1 shadow-md">
-              {models.length === 0 ? (
-                <p className="px-3 py-2 text-xs text-muted-foreground">
-                  {t("chat.loadingModels")}
-                </p>
-              ) : (
-                models.map((m) => (
-                  <button
-                    key={m.id}
-                    type="button"
-                    onClick={() => handleSelectModel(m.id)}
-                    className={[
-                      "w-full px-3 py-1.5 text-left text-xs hover:bg-accent",
-                      m.id === currentModel
-                        ? "font-medium text-foreground"
-                        : "text-muted-foreground",
-                    ].join(" ")}
-                  >
-                    {m.name || m.id}
-                  </button>
-                ))
-              )}
-            </div>
-          )}
+          {/* 右端: Send / Stop 円形ボタン */}
+          <div className="ml-auto">
+            {isStreaming ? (
+              <Button
+                type="button"
+                variant="destructive"
+                size="icon"
+                onClick={stopGeneration}
+                aria-label={t("chat.stopAriaLabel")}
+                title={t("chat.stopTitle")}
+                className="size-8 rounded-full active:scale-95 transition-transform duration-75"
+              >
+                <Square className="h-4 w-4" />
+              </Button>
+            ) : (
+              <Button
+                type="button"
+                size="icon"
+                onClick={handleSendClick}
+                onContextMenu={handleSendContextMenu}
+                disabled={!editor || !hasText}
+                aria-label={t("chat.sendAriaLabel")}
+                title={t("chat.sendTitle")}
+                className="size-8 rounded-full active:scale-95 transition-transform duration-75"
+              >
+                <Send className="h-3.5 w-3.5" />
+              </Button>
+            )}
+          </div>
         </div>
       </div>
     </div>
