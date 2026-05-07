@@ -55,6 +55,7 @@ import { useAttribution } from "@/features/attribution/useAttribution";
 import { useAttributionStore } from "@/features/attribution/attributionStore";
 import { useLayoutStore } from "@/features/layout/layoutStore";
 import { useCursorOverlay } from "@/features/editor/useCursorOverlay";
+import { useCharacterFade } from "@/features/editor/useCharacterFade";
 import { useCursorSettingsStore } from "@/features/editor/cursorSettingsStore";
 import { useEditorSettings } from "@/features/settings/hooks/useEditorSettings";
 import { useSettingsStore } from "@/features/settings/settingsStore";
@@ -827,6 +828,7 @@ export function EditorPane({
   void reject;
 
   useCursorOverlay(editor);
+  useCharacterFade(editor);
   useAttribution(editor);
 
   // Listen for slash-command events dispatched by SlashCommandExtension

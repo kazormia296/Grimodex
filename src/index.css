@@ -593,6 +593,38 @@
   transition: none;
 }
 
+/* Character fade-in — applied by CharacterFadePlugin to newly typed/IME-confirmed
+   ranges. Decoration class is removed after the animation by a cleanup tx. */
+@keyframes editor-fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+.editor-fade-in {
+  animation: editor-fade-in 120ms ease-out;
+}
+
+/* Character fade-out — a ghost glyph appended to document.body by
+   CharacterFadeOutPlugin at the deletion site. Fixed-positioned so screen
+   coords from coordsAtPos work directly. */
+@keyframes editor-fade-out {
+  from {
+    opacity: 1;
+  }
+  to {
+    opacity: 0;
+  }
+}
+.editor-fade-out-ghost {
+  pointer-events: none;
+  user-select: none;
+  z-index: 10;
+  animation: editor-fade-out 80ms ease-in forwards;
+}
+
 /* Attribution decorations — color-mix blends semantic hue with content background,
    so light/dark and per-theme adaptation is automatic.
    AI = teal-green (hue 165°, "processed/machine"), Unknown = warm amber (hue 30°, "uncertain").

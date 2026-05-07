@@ -8,6 +8,7 @@ import { loadSceneContent, saveSceneContent } from "@/features/tree/api";
 import { useAutoSave } from "@/hooks/useAutoSave";
 import { useCodexHighlight } from "@/features/editor/useCodexHighlight";
 import { useAttribution } from "@/features/attribution/useAttribution";
+import { useCharacterFade } from "@/features/editor/useCharacterFade";
 import {
   saveAuthorshipSpans,
   loadAuthorshipSpans,
@@ -202,6 +203,7 @@ function MountedSceneBlock({
   // CodexQuick: only update matchedIds for the active scene
   useCodexHighlight(editor, isActive ? undefined : { skipMatchedIds: true });
   useAttribution(editor);
+  useCharacterFade(editor);
 
   // Load content
   useEffect(() => {
