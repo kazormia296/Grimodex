@@ -1,6 +1,15 @@
 import { useTranslation } from "react-i18next";
 import { useTreeStore } from "./treeStore";
 import type { TreeNodeData } from "./treeStore";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { Button } from "@/components/ui/button";
 
 interface DeleteConfirmDialogProps {
   ids: string[];
@@ -35,25 +44,28 @@ export function DeleteConfirmDialog({
   })();
 
   return (
-    <div className="absolute inset-0 z-50 flex items-center justify-center bg-background/80">
-      <div className="rounded-lg border border-border bg-popover p-4 shadow-xl w-72">
-        <p className="text-sm font-medium mb-1">
-          {t("scenes.deleteConfirmTitle")}
-        </p>
-        <p className="text-xs text-muted-foreground mb-4">
-          {t("scenes.deleteConfirmBody", { count })}
-        </p>
-        <div className="flex gap-2 justify-end">
-          <button
-            type="button"
-            className="rounded px-3 py-1 text-xs border border-border hover:bg-accent"
-            onClick={onCancel}
-          >
+    <Dialog
+      open
+      onOpenChange={(open) => {
+        if (!open) onCancel();
+      }}
+    >
+      <DialogContent className="max-w-xs">
+        <DialogHeader>
+          <DialogTitle>{t("scenes.deleteConfirmTitle")}</DialogTitle>
+          <DialogDescription>
+            {t("scenes.deleteConfirmBody", { count })}
+          </DialogDescription>
+        </DialogHeader>
+        <DialogFooter>
+          <Button type="button" variant="outline" size="xs" onClick={onCancel}>
             {t("common.cancel")}
-          </button>
-          <button
+          </Button>
+          <Button
             type="button"
-            className="rounded px-3 py-1 text-xs bg-destructive text-destructive-foreground hover:bg-destructive/90"
+            variant="default"
+            size="xs"
+            className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
             onClick={() => {
               ids
                 .reduce(
@@ -66,9 +78,9 @@ export function DeleteConfirmDialog({
             }}
           >
             {t("common.deleteConfirm")}
-          </button>
-        </div>
-      </div>
-    </div>
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }

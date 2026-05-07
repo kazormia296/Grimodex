@@ -20,6 +20,14 @@ import { TreeContextMenu } from "./TreeContextMenu";
 import { useTabStore } from "@/features/editor/tabStore";
 import { useLayoutStore } from "@/features/layout/layoutStore";
 import { LabelDots } from "@/features/labels/LabelDots";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import {
+  Popover,
+  PopoverTrigger,
+  PopoverContent,
+} from "@/components/ui/popover";
+import { ContextMenu, ContextMenuTrigger } from "@/components/ui/context-menu";
 
 const STATUS_OPTIONS: SceneStatus[] = [
   "outline",
@@ -55,41 +63,6 @@ export function NodeIcon({
     default:
       return null;
   }
-}
-
-function StatusPopover({
-  status,
-  onSelect,
-  onClose,
-}: {
-  status: string | null;
-  onSelect: (s: SceneStatus) => void;
-  onClose: () => void;
-}) {
-  return (
-    <div
-      className="absolute left-4 top-4 z-50 rounded-md border border-border bg-popover p-1 shadow-md"
-      onMouseLeave={onClose}
-    >
-      {STATUS_OPTIONS.map((s) => (
-        <button
-          key={s}
-          type="button"
-          className={cn(
-            "flex w-full items-center gap-2 rounded px-2 py-1 text-xs hover:bg-accent",
-            status === s && "font-medium text-foreground",
-          )}
-          onClick={() => {
-            onSelect(s);
-            onClose();
-          }}
-        >
-          <StatusDot status={s} />
-          {STATUS_LABELS[s]}
-        </button>
-      ))}
-    </div>
-  );
 }
 
 export interface DropIndicator {
@@ -147,10 +120,6 @@ export function TreeNodeItem({
   const [isEditing, setIsEditing] = useState(false);
   const [editTitle, setEditTitle] = useState(node.title);
   const [showStatusPopover, setShowStatusPopover] = useState(false);
-  const [contextMenu, setContextMenu] = useState<{
-    x: number;
-    y: number;
-  } | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
   const isContainer = node.nodeType === "folder";
@@ -277,171 +246,193 @@ export function TreeNodeItem({
     [finishEdit, node.title],
   );
 
-  const handleContextMenu = useCallback((e: React.MouseEvent) => {
-    e.preventDefault();
-    e.stopPropagation(); // Prevent ScenesPanel root context menu from also opening
-    setContextMenu({ x: e.clientX, y: e.clientY });
-  }, []);
-
   if (!isVisible) return null;
 
   return (
     <li ref={setRef} style={style} className="list-none" data-node-id={node.id}>
-      <div
-        className={cn(
-          "group relative flex cursor-pointer items-center gap-0.5 rounded px-1 py-0.5 text-sm",
-          "hover:bg-accent/50",
-          isActive && "bg-accent/70 font-medium",
-          isActive &&
-            (node.nodeType === "scene" || node.nodeType === "note") &&
-            "border-l-2 border-primary",
-          isSelected && !isActive && "bg-primary/20",
-          isDropInside && "ring-1 ring-primary ring-inset",
-        )}
-        style={{
-          paddingLeft: `${depth * 12 + (isActive && (node.nodeType === "scene" || node.nodeType === "note") ? 2 : 4)}px`,
-        }}
-        title={
-          viewMode !== "outline" && node.nodeType === "scene" && node.synopsis
-            ? node.synopsis.slice(0, 100)
-            : undefined
-        }
-        onClick={dragInProgress ? undefined : (e) => handleClick(e)}
-        onDoubleClick={dragInProgress ? undefined : handleDoubleClick}
-        onContextMenu={handleContextMenu}
-      >
-        {/* Drag handle — always in layout to prevent title shift */}
-        <span
-          {...attributes}
-          {...listeners}
-          className="flex h-5 w-4 flex-shrink-0 cursor-grab items-center justify-center text-muted-foreground/50 opacity-0 group-hover:opacity-100"
-          onClick={(e) => e.stopPropagation()}
-        >
-          <GripVertical className="h-4 w-4" />
-        </span>
-
-        {/* Expand/collapse chevron */}
-        {isContainer ? (
-          <span className="flex h-4 w-4 flex-shrink-0 items-center justify-center text-muted-foreground">
-            {isExpanded ? (
-              <ChevronDown className="h-3.5 w-3.5" />
-            ) : (
-              <ChevronRight className="h-3.5 w-3.5" />
-            )}
-          </span>
-        ) : (
-          <span className="w-4 flex-shrink-0" />
-        )}
-
-        {/* Status dot or icon */}
-        {node.nodeType === "scene" && showStatusDots ? (
-          <div className="relative">
-            <StatusDot
-              status={node.status}
-              onClick={(e) => {
-                e.stopPropagation();
-                setShowStatusPopover((v) => !v);
-              }}
-            />
-            {showStatusPopover && (
-              <StatusPopover
-                status={node.status}
-                onSelect={(s) => setStatus(node.id, s)}
-                onClose={() => setShowStatusPopover(false)}
-              />
-            )}
-          </div>
-        ) : (
-          <NodeIcon nodeType={node.nodeType} isExpanded={isExpanded} />
-        )}
-
-        {/* Title */}
-        <span className="ml-1 flex-1 overflow-hidden">
-          {isEditing ? (
-            <input
-              ref={inputRef}
-              value={editTitle}
-              onChange={(e) => setEditTitle(e.target.value)}
-              onBlur={finishEdit}
-              onKeyDown={handleKeyDown}
-              onClick={(e) => e.stopPropagation()}
-              className="w-full rounded border border-ring bg-background px-1 text-xs focus:outline-none"
-              // eslint-disable-next-line jsx-a11y/no-autofocus
-              autoFocus
-            />
-          ) : (
-            <span className="block truncate text-xs leading-5">
-              {node.title}
-            </span>
-          )}
-        </span>
-
-        {/* Folder hover quick-add buttons */}
-        {node.nodeType === "folder" && !isEditing && (
-          <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100">
-            <button
-              type="button"
-              title={t("tree.addScene")}
-              onClick={(e) => {
-                e.stopPropagation();
-                useTreeStore
-                  .getState()
-                  .createNode({ nodeType: "scene", parentId: node.id })
-                  .then((n) => {
-                    useTabStore.getState().openPinned(n.id);
-                  })
-                  .catch(() => {});
-              }}
-              className="flex h-4 w-4 items-center justify-center rounded text-muted-foreground hover:bg-accent/70 hover:text-foreground"
-            >
-              <FileText className="h-3 w-3" />
-            </button>
-            <button
-              type="button"
-              title={t("tree.addFolder")}
-              onClick={(e) => {
-                e.stopPropagation();
-                useTreeStore
-                  .getState()
-                  .createNode({ nodeType: "folder", parentId: node.id })
-                  .catch(() => {});
-              }}
-              className="flex h-4 w-4 items-center justify-center rounded text-muted-foreground hover:bg-accent/70 hover:text-foreground"
-            >
-              <FolderPlus className="h-3 w-3" />
-            </button>
-          </div>
-        )}
-
-        {/* Label dots */}
-        {showLabelDots && node.nodeType === "scene" && !isEditing && (
-          <LabelDots nodeId={node.id} />
-        )}
-
-        {/* AI attribution badge */}
-        {showAiAttribution &&
-          node.nodeType === "scene" &&
-          aiRatio > 0 &&
-          !isEditing && (
-            <span className="ml-1 flex-shrink-0 rounded px-1 text-[10px] tabular-nums bg-purple-500/15 text-purple-400">
-              {aiRatio}%
-            </span>
-          )}
-
-        {/* Word count */}
-        {showWordCounts && !isEditing && (
-          <span
+      <ContextMenu>
+        <ContextMenuTrigger asChild>
+          <div
             className={cn(
-              "ml-1 flex-shrink-0 text-[10px] tabular-nums",
-              charCount === 0
-                ? "text-muted-foreground/40"
-                : "text-muted-foreground",
+              "group relative flex cursor-pointer items-center gap-0.5 rounded px-1 py-0.5 text-sm",
+              "hover:bg-accent/50",
+              isActive && "bg-accent/70 font-medium",
+              isActive &&
+                (node.nodeType === "scene" || node.nodeType === "note") &&
+                "border-l-2 border-primary",
+              isSelected && !isActive && "bg-primary/20",
+              isDropInside && "ring-1 ring-primary ring-inset",
             )}
+            style={{
+              paddingLeft: `${depth * 12 + (isActive && (node.nodeType === "scene" || node.nodeType === "note") ? 2 : 4)}px`,
+            }}
+            title={
+              viewMode !== "outline" &&
+              node.nodeType === "scene" &&
+              node.synopsis
+                ? node.synopsis.slice(0, 100)
+                : undefined
+            }
+            onClick={dragInProgress ? undefined : (e) => handleClick(e)}
+            onDoubleClick={dragInProgress ? undefined : handleDoubleClick}
           >
-            {charCount > 0 ? charCount.toLocaleString() : ""}
-          </span>
-        )}
-      </div>
+            {/* Drag handle — always in layout to prevent title shift */}
+            <span
+              {...attributes}
+              {...listeners}
+              className="flex h-5 w-4 flex-shrink-0 cursor-grab items-center justify-center text-muted-foreground/50 opacity-0 group-hover:opacity-100"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <GripVertical className="h-4 w-4" />
+            </span>
+
+            {/* Expand/collapse chevron */}
+            {isContainer ? (
+              <span className="flex h-4 w-4 flex-shrink-0 items-center justify-center text-muted-foreground">
+                {isExpanded ? (
+                  <ChevronDown className="h-3.5 w-3.5" />
+                ) : (
+                  <ChevronRight className="h-3.5 w-3.5" />
+                )}
+              </span>
+            ) : (
+              <span className="w-4 flex-shrink-0" />
+            )}
+
+            {/* Status dot or icon */}
+            {node.nodeType === "scene" && showStatusDots ? (
+              <Popover
+                open={showStatusPopover}
+                onOpenChange={setShowStatusPopover}
+              >
+                <PopoverTrigger asChild>
+                  <StatusDot
+                    status={node.status}
+                    onClick={(e) => e.stopPropagation()}
+                  />
+                </PopoverTrigger>
+                <PopoverContent
+                  align="start"
+                  className="w-auto p-1"
+                  onClick={(e) => e.stopPropagation()}
+                >
+                  {STATUS_OPTIONS.map((s) => (
+                    <button
+                      key={s}
+                      type="button"
+                      className={cn(
+                        "flex w-full items-center gap-2 rounded px-2 py-1 text-xs hover:bg-accent",
+                        node.status === s && "font-medium text-foreground",
+                      )}
+                      onClick={() => {
+                        setStatus(node.id, s);
+                        setShowStatusPopover(false);
+                      }}
+                    >
+                      <StatusDot status={s} />
+                      {STATUS_LABELS[s]}
+                    </button>
+                  ))}
+                </PopoverContent>
+              </Popover>
+            ) : (
+              <NodeIcon nodeType={node.nodeType} isExpanded={isExpanded} />
+            )}
+
+            {/* Title */}
+            <span className="ml-1 flex-1 overflow-hidden">
+              {isEditing ? (
+                <Input
+                  ref={inputRef}
+                  value={editTitle}
+                  onChange={(e) => setEditTitle(e.target.value)}
+                  onBlur={finishEdit}
+                  onKeyDown={handleKeyDown}
+                  onClick={(e) => e.stopPropagation()}
+                  className="h-5 w-full rounded border-ring px-1 text-xs"
+                  // eslint-disable-next-line jsx-a11y/no-autofocus
+                  autoFocus
+                />
+              ) : (
+                <span className="block truncate text-xs leading-5">
+                  {node.title}
+                </span>
+              )}
+            </span>
+
+            {/* Folder hover quick-add buttons */}
+            {node.nodeType === "folder" && !isEditing && (
+              <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100">
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon-xs"
+                  title={t("tree.addScene")}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    useTreeStore
+                      .getState()
+                      .createNode({ nodeType: "scene", parentId: node.id })
+                      .then((n) => {
+                        useTabStore.getState().openPinned(n.id);
+                      })
+                      .catch(() => {});
+                  }}
+                  className="h-4 w-4 text-muted-foreground hover:bg-accent/70 hover:text-foreground"
+                >
+                  <FileText className="h-3 w-3" />
+                </Button>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon-xs"
+                  title={t("tree.addFolder")}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    useTreeStore
+                      .getState()
+                      .createNode({ nodeType: "folder", parentId: node.id })
+                      .catch(() => {});
+                  }}
+                  className="h-4 w-4 text-muted-foreground hover:bg-accent/70 hover:text-foreground"
+                >
+                  <FolderPlus className="h-3 w-3" />
+                </Button>
+              </div>
+            )}
+
+            {/* Label dots */}
+            {showLabelDots && node.nodeType === "scene" && !isEditing && (
+              <LabelDots nodeId={node.id} />
+            )}
+
+            {/* AI attribution badge */}
+            {showAiAttribution &&
+              node.nodeType === "scene" &&
+              aiRatio > 0 &&
+              !isEditing && (
+                <span className="ml-1 flex-shrink-0 rounded px-1 text-[10px] tabular-nums bg-purple-500/15 text-purple-400">
+                  {aiRatio}%
+                </span>
+              )}
+
+            {/* Word count */}
+            {showWordCounts && !isEditing && (
+              <span
+                className={cn(
+                  "ml-1 flex-shrink-0 text-[10px] tabular-nums",
+                  charCount === 0
+                    ? "text-muted-foreground/40"
+                    : "text-muted-foreground",
+                )}
+              >
+                {charCount > 0 ? charCount.toLocaleString() : ""}
+              </span>
+            )}
+          </div>
+        </ContextMenuTrigger>
+        <TreeContextMenu node={node} onStartRename={startEdit} />
+      </ContextMenu>
 
       {/* Children */}
       <AnimatePresence initial={false}>
@@ -460,20 +451,6 @@ export function TreeNodeItem({
           </motion.ul>
         )}
       </AnimatePresence>
-
-      {/* Context menu */}
-      {contextMenu && (
-        <TreeContextMenu
-          node={node}
-          x={contextMenu.x}
-          y={contextMenu.y}
-          onClose={() => setContextMenu(null)}
-          onStartRename={() => {
-            setContextMenu(null);
-            startEdit();
-          }}
-        />
-      )}
     </li>
   );
 }

@@ -2,6 +2,8 @@ import type { RefObject } from "react";
 import { useTranslation } from "react-i18next";
 import { X } from "lucide-react";
 import { StatusDot } from "./StatusDot";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { resolveLabelColor } from "@/lib/labelPalette";
 import type { Label } from "@/db/schema";
 import type { SceneStatus } from "./treeStore";
@@ -35,7 +37,7 @@ export function ScenesFilterBar({
   return (
     <>
       <div className="flex-shrink-0 border-b border-border px-2 py-1">
-        <input
+        <Input
           ref={filterRef}
           type="text"
           value={filterQuery}
@@ -44,36 +46,40 @@ export function ScenesFilterBar({
             if (e.key === "Escape") setFilterQuery("");
           }}
           placeholder={t("scenes.filterPlaceholder")}
-          className="w-full rounded border border-border bg-background px-2 py-0.5 text-xs text-foreground placeholder:text-muted-foreground/60 focus:outline-none focus:ring-1 focus:ring-ring"
+          className="h-6 px-2 py-0.5 text-xs"
         />
       </div>
       {hasActiveFilters && (
         <div className="flex-shrink-0 flex flex-wrap items-center gap-1 border-b border-border px-2 py-1">
           {statusFilter && (
-            <button
+            <Button
               type="button"
+              variant="outline"
+              size="xs"
               onClick={() => setStatusFilter(null)}
               title={t("scenes.removeFilter")}
-              className="flex items-center gap-1 rounded-full border border-border bg-accent/50 px-1.5 py-0.5 text-[10px] text-foreground hover:bg-accent"
+              className="h-auto gap-1 rounded-full bg-accent/50 px-1.5 py-0.5 text-[10px] font-normal"
             >
               <StatusDot status={statusFilter} />
               <span>
                 {statusFilter.charAt(0).toUpperCase() + statusFilter.slice(1)}
               </span>
               <X className="h-2.5 w-2.5" />
-            </button>
+            </Button>
           )}
           {labelFilter.map((id) => {
             const label = allLabels.find((l) => l.id === id);
             if (!label) return null;
             const color = resolveLabelColor(label.color);
             return (
-              <button
+              <Button
                 key={id}
                 type="button"
+                variant="outline"
+                size="xs"
                 onClick={() => toggleLabelFilter(id)}
                 title={t("scenes.removeFilter")}
-                className="flex items-center gap-1 rounded-full border px-1.5 py-0.5 text-[10px]"
+                className="h-auto gap-1 rounded-full px-1.5 py-0.5 text-[10px] font-normal"
                 style={{
                   borderColor: color,
                   backgroundColor: `${color}22`,
@@ -86,19 +92,21 @@ export function ScenesFilterBar({
                 />
                 <span className="truncate max-w-[100px]">{label.name}</span>
                 <X className="h-2.5 w-2.5" />
-              </button>
+              </Button>
             );
           })}
-          <button
+          <Button
             type="button"
+            variant="ghost"
+            size="xs"
             onClick={() => {
               setStatusFilter(null);
               clearLabelFilter();
             }}
-            className="ml-auto text-[10px] text-primary hover:underline"
+            className="ml-auto h-auto px-1 py-0 text-[10px] text-primary hover:bg-transparent hover:underline"
           >
             {t("scenes.clearFilters")}
-          </button>
+          </Button>
         </div>
       )}
     </>

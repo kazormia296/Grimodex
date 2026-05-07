@@ -21,21 +21,13 @@ import { motion, AnimatePresence } from "motion/react";
 import { DURATIONS, EASINGS, useReducedMotion } from "@/lib/animation";
 import { BottomDropZone } from "./BottomDropZone";
 import { TreeRenderer } from "./TreeRenderer";
-import { PanelMenu } from "./PanelMenu";
 import { RootContextMenu } from "./RootContextMenu";
 import { ScenesToolbar } from "./ScenesToolbar";
 import { ScenesFilterBar } from "./ScenesFilterBar";
 import { DeleteConfirmDialog } from "./DeleteConfirmDialog";
+import { ContextMenu, ContextMenuTrigger } from "@/components/ui/context-menu";
 
 const DEFAULT_PROJECT_ID = "default-project";
-
-// ---- Main Panel ----
-const CREATE_OPTIONS = [
-  { type: "scene" as NodeType, labelKey: "scenes.newScene" },
-  { type: "note" as NodeType, labelKey: "scenes.newNote" },
-  null, // separator
-  { type: "folder" as NodeType, labelKey: "scenes.newFolder" },
-];
 
 export function ScenesPanel() {
   const { t } = useTranslation();
@@ -62,17 +54,10 @@ export function ScenesPanel() {
     expandAll,
     collapseAll,
     setFilterQuery,
-    setViewMode,
-    setSortMode,
     setStatusFilter,
     toggleLabelFilter,
     clearLabelFilter,
     setLabelFilter,
-    setShowWordCounts,
-    setShowStatusDots,
-    setShowLabelDots,
-    setShowAiAttribution,
-    setAutoRevealActiveScene,
     toggleExpand,
     setActiveScene,
     moveNode,
@@ -97,23 +82,12 @@ export function ScenesPanel() {
 
   const filterRef = useRef<HTMLInputElement>(null);
   const treeRef = useRef<HTMLDivElement>(null);
-  const [showCreateMenu, setShowCreateMenu] = useState(false);
-  const [showPanelMenu, setShowPanelMenu] = useState(false);
   const [manageLabelsOpen, setManageLabelsOpen] = useState(false);
   const scenesPanelContextValue = useMemo(
     () => ({ openManageLabels: () => setManageLabelsOpen(true) }),
     [],
   );
-  const createBtnRef = useRef<HTMLButtonElement>(null);
-  const panelMenuBtnRef = useRef<HTMLButtonElement>(null);
-  const createMenuRef = useRef<HTMLDivElement>(null);
-  const [createMenuPos, setCreateMenuPos] = useState<DOMRect | null>(null);
-  const [panelMenuPos, setPanelMenuPos] = useState<DOMRect | null>(null);
   const [deleteConfirm, setDeleteConfirm] = useState<string[] | null>(null);
-  const [rootContextMenu, setRootContextMenu] = useState<{
-    x: number;
-    y: number;
-  } | null>(null);
 
   useEffect(() => {
     loadTree(DEFAULT_PROJECT_ID).then(() => {
@@ -129,21 +103,6 @@ export function ScenesPanel() {
       useTabStore.getState().disposeAutoSave?.();
     };
   }, [loadTree]);
-
-  // Close create menu when clicking outside (excluding the create button itself)
-  useEffect(() => {
-    if (!showCreateMenu) return;
-    function handleMouseDown(e: MouseEvent) {
-      if (
-        !createMenuRef.current?.contains(e.target as Node) &&
-        !createBtnRef.current?.contains(e.target as Node)
-      ) {
-        setShowCreateMenu(false);
-      }
-    }
-    document.addEventListener("mousedown", handleMouseDown);
-    return () => document.removeEventListener("mousedown", handleMouseDown);
-  }, [showCreateMenu]);
 
   const { childMap, nodeMap, nodeTotals, flatNodes } = useScenesDerivedData({
     nodes,
@@ -197,7 +156,8 @@ export function ScenesPanel() {
 
   const handleCreate = useCallback(
     (type: NodeType) => {
-      // Keep the menu open so the user can create multiple items in a row
+      // The DropdownMenu item uses e.preventDefault() to keep the menu open
+      // so the user can create multiple items in a row.
       let parentId: string | null = null;
       const active = nodeMap[activeSceneId];
       if (active?.nodeType === "scene" || active?.nodeType === "note") {
@@ -294,23 +254,7 @@ export function ScenesPanel() {
       >
         <div className="relative flex h-full flex-col">
           <ScenesToolbar
-            showPanelMenu={showPanelMenu}
-            createBtnRef={createBtnRef}
-            panelMenuBtnRef={panelMenuBtnRef}
-            onOpenCreateMenu={() => {
-              if (!showCreateMenu && createBtnRef.current) {
-                setCreateMenuPos(createBtnRef.current.getBoundingClientRect());
-              }
-              setShowCreateMenu((v) => !v);
-            }}
-            onOpenPanelMenu={() => {
-              if (!showPanelMenu && panelMenuBtnRef.current) {
-                setPanelMenuPos(
-                  panelMenuBtnRef.current.getBoundingClientRect(),
-                );
-              }
-              setShowPanelMenu((v) => !v);
-            }}
+            onCreate={handleCreate}
             onToggleAll={handleToggleAll}
           />
           <ScenesFilterBar
@@ -326,60 +270,61 @@ export function ScenesPanel() {
           />
 
           {/* Tree */}
-          <div
-            ref={treeRef}
-            className="flex-1 overflow-y-auto overflow-x-hidden py-1 outline-none"
-            tabIndex={0}
-            onKeyDown={handleTreeKeyDown}
-            onContextMenu={(e) => {
-              e.preventDefault();
-              setRootContextMenu({ x: e.clientX, y: e.clientY });
-            }}
-          >
-            {nodes.length === 0 ? (
+          <ContextMenu>
+            <ContextMenuTrigger asChild>
               <div
-                data-testid="scenes-empty-state"
-                className="flex h-full flex-col items-center justify-center gap-3 px-4 text-center"
+                ref={treeRef}
+                className="flex-1 overflow-y-auto overflow-x-hidden py-1 outline-none"
+                tabIndex={0}
+                onKeyDown={handleTreeKeyDown}
               >
-                <p className="text-xs text-muted-foreground">
-                  {t("scenes.empty")}
-                </p>
-                <StructureTemplatePicker
-                  projectId={projectId}
-                  containerId={null}
-                />
+                {nodes.length === 0 ? (
+                  <div
+                    data-testid="scenes-empty-state"
+                    className="flex h-full flex-col items-center justify-center gap-3 px-4 text-center"
+                  >
+                    <p className="text-xs text-muted-foreground">
+                      {t("scenes.empty")}
+                    </p>
+                    <StructureTemplatePicker
+                      projectId={projectId}
+                      containerId={null}
+                    />
+                  </div>
+                ) : (
+                  <>
+                    <ul className="list-none">
+                      <TreeRenderer
+                        parentId={null}
+                        childMap={childMap}
+                        nodeMap={nodeMap}
+                        depth={0}
+                        activeSceneId={activeSceneId}
+                        selectedIds={selectedIds}
+                        expandedIds={expandedIds}
+                        filterQuery={filterQuery}
+                        statusFilter={statusFilter}
+                        labelFilter={labelFilter}
+                        nodeLabels={nodeLabels}
+                        viewMode={viewMode}
+                        charCounts={charCounts}
+                        aiRatios={aiRatios}
+                        showWordCounts={showWordCounts}
+                        showStatusDots={showStatusDots}
+                        showLabelDots={showLabelDots}
+                        showAiAttribution={showAiAttribution}
+                        dropIndicator={dropIndicator}
+                        nodeTotals={nodeTotals}
+                        orderedNodes={flatNodes}
+                      />
+                    </ul>
+                    <BottomDropZone />
+                  </>
+                )}
               </div>
-            ) : (
-              <>
-                <ul className="list-none">
-                  <TreeRenderer
-                    parentId={null}
-                    childMap={childMap}
-                    nodeMap={nodeMap}
-                    depth={0}
-                    activeSceneId={activeSceneId}
-                    selectedIds={selectedIds}
-                    expandedIds={expandedIds}
-                    filterQuery={filterQuery}
-                    statusFilter={statusFilter}
-                    labelFilter={labelFilter}
-                    nodeLabels={nodeLabels}
-                    viewMode={viewMode}
-                    charCounts={charCounts}
-                    aiRatios={aiRatios}
-                    showWordCounts={showWordCounts}
-                    showStatusDots={showStatusDots}
-                    showLabelDots={showLabelDots}
-                    showAiAttribution={showAiAttribution}
-                    dropIndicator={dropIndicator}
-                    nodeTotals={nodeTotals}
-                    orderedNodes={flatNodes}
-                  />
-                </ul>
-                <BottomDropZone />
-              </>
-            )}
-          </div>
+            </ContextMenuTrigger>
+            <RootContextMenu createNode={createNode} />
+          </ContextMenu>
 
           {/* Synopsis area — hidden in Outline mode (synopsis is shown inline there) */}
           <AnimatePresence mode="wait">
@@ -399,15 +344,6 @@ export function ScenesPanel() {
               </motion.div>
             )}
           </AnimatePresence>
-
-          {rootContextMenu && (
-            <RootContextMenu
-              x={rootContextMenu.x}
-              y={rootContextMenu.y}
-              onClose={() => setRootContextMenu(null)}
-              createNode={createNode}
-            />
-          )}
 
           {deleteConfirm && (
             <DeleteConfirmDialog
@@ -445,76 +381,6 @@ export function ScenesPanel() {
           document.body,
         )}
 
-        {/* Create menu portal — escapes dockview stacking context */}
-        {showCreateMenu &&
-          createMenuPos &&
-          createPortal(
-            <div
-              ref={createMenuRef}
-              style={{
-                position: "fixed",
-                top: createMenuPos.bottom + 2,
-                right: window.innerWidth - createMenuPos.right,
-                zIndex: 9999,
-              }}
-              className="min-w-[140px] rounded-md border border-border bg-popover py-1 shadow-md"
-            >
-              {CREATE_OPTIONS.map((opt, i) =>
-                opt === null ? (
-                  <div key={i} className="my-1 border-t border-border" />
-                ) : (
-                  <button
-                    key={opt.type}
-                    type="button"
-                    className="flex w-full px-3 py-1.5 text-left text-xs text-foreground hover:bg-accent"
-                    onClick={() => handleCreate(opt.type)}
-                  >
-                    {t(opt.labelKey)}
-                  </button>
-                ),
-              )}
-            </div>,
-            document.body,
-          )}
-
-        {/* Panel menu portal — escapes dockview stacking context */}
-        {showPanelMenu &&
-          panelMenuPos &&
-          createPortal(
-            <div
-              style={{
-                position: "fixed",
-                top: panelMenuPos.bottom + 2,
-                right: window.innerWidth - panelMenuPos.right,
-                zIndex: 9999,
-              }}
-            >
-              <PanelMenu
-                viewMode={viewMode}
-                setViewMode={setViewMode}
-                sortMode={sortMode}
-                setSortMode={setSortMode}
-                statusFilter={statusFilter}
-                setStatusFilter={setStatusFilter}
-                labelFilter={labelFilter}
-                toggleLabelFilter={toggleLabelFilter}
-                clearLabelFilter={clearLabelFilter}
-                showWordCounts={showWordCounts}
-                setShowWordCounts={setShowWordCounts}
-                showStatusDots={showStatusDots}
-                setShowStatusDots={setShowStatusDots}
-                showLabelDots={showLabelDots}
-                setShowLabelDots={setShowLabelDots}
-                showAiAttribution={showAiAttribution}
-                setShowAiAttribution={setShowAiAttribution}
-                autoRevealActiveScene={autoRevealActiveScene}
-                setAutoRevealActiveScene={setAutoRevealActiveScene}
-                onClose={() => setShowPanelMenu(false)}
-                excludedRef={panelMenuBtnRef}
-              />
-            </div>,
-            document.body,
-          )}
         <ManageLabelsDialog
           open={manageLabelsOpen}
           onClose={() => setManageLabelsOpen(false)}

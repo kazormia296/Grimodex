@@ -1,3 +1,4 @@
+import { forwardRef } from "react";
 import { cn } from "@/lib/utils";
 import type { SceneStatus } from "./treeStore";
 
@@ -17,28 +18,29 @@ const STATUS_LABELS: Record<SceneStatus, string> = {
   final: "Final",
 };
 
-interface StatusDotProps {
+interface StatusDotProps extends React.ButtonHTMLAttributes<HTMLButtonElement> {
   status: string | null;
-  onClick?: (e: React.MouseEvent) => void;
-  className?: string;
 }
 
-export function StatusDot({ status, onClick, className }: StatusDotProps) {
-  const s = (status as SceneStatus) ?? "outline";
-
-  return (
-    <button
-      type="button"
-      title={STATUS_LABELS[s] ?? s}
-      onClick={onClick}
-      className={cn(
-        "flex h-3 w-3 flex-shrink-0 items-center justify-center rounded-full text-[7px] font-bold text-white",
-        STATUS_STYLES[s] ?? STATUS_STYLES.outline,
-        onClick && "cursor-pointer hover:opacity-80",
-        className,
-      )}
-    />
-  );
-}
+export const StatusDot = forwardRef<HTMLButtonElement, StatusDotProps>(
+  function StatusDot({ status, className, onClick, ...rest }, ref) {
+    const s = (status as SceneStatus) ?? "outline";
+    return (
+      <button
+        ref={ref}
+        type="button"
+        title={STATUS_LABELS[s] ?? s}
+        onClick={onClick}
+        className={cn(
+          "flex h-3 w-3 flex-shrink-0 items-center justify-center rounded-full text-[7px] font-bold text-white",
+          STATUS_STYLES[s] ?? STATUS_STYLES.outline,
+          onClick && "cursor-pointer hover:opacity-80",
+          className,
+        )}
+        {...rest}
+      />
+    );
+  },
+);
 
 export { STATUS_LABELS, type SceneStatus };

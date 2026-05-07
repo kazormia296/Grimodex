@@ -1,60 +1,86 @@
-import type { RefObject } from "react";
 import { useTranslation } from "react-i18next";
 import { Plus, ChevronsUpDown, MoreHorizontal } from "lucide-react";
-import { cn } from "@/lib/utils";
+import { Button } from "@/components/ui/button";
+import {
+  DropdownMenu,
+  DropdownMenuTrigger,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+} from "@/components/ui/dropdown-menu";
+import { PanelMenu } from "./PanelMenu";
+import type { NodeType } from "./treeStore";
+
+const CREATE_OPTIONS: Array<{ type: NodeType; labelKey: string } | null> = [
+  { type: "scene", labelKey: "scenes.newScene" },
+  { type: "note", labelKey: "scenes.newNote" },
+  null,
+  { type: "folder", labelKey: "scenes.newFolder" },
+];
 
 interface ScenesToolbarProps {
-  showPanelMenu: boolean;
-  createBtnRef: RefObject<HTMLButtonElement | null>;
-  panelMenuBtnRef: RefObject<HTMLButtonElement | null>;
-  onOpenCreateMenu: () => void;
-  onOpenPanelMenu: () => void;
+  onCreate: (type: NodeType) => void;
   onToggleAll: () => void;
 }
 
-export function ScenesToolbar({
-  showPanelMenu,
-  createBtnRef,
-  panelMenuBtnRef,
-  onOpenCreateMenu,
-  onOpenPanelMenu,
-  onToggleAll,
-}: ScenesToolbarProps) {
+export function ScenesToolbar({ onCreate, onToggleAll }: ScenesToolbarProps) {
   const { t } = useTranslation();
 
   return (
     <div className="flex flex-shrink-0 items-center justify-between border-b border-border px-2 py-1.5">
       <span className="text-xs font-semibold text-foreground">Scenes</span>
       <div className="flex items-center gap-0.5">
-        <button
-          ref={createBtnRef}
-          type="button"
-          title={t("scenes.create")}
-          onClick={onOpenCreateMenu}
-          className="flex h-6 w-6 items-center justify-center rounded text-muted-foreground hover:bg-accent hover:text-foreground active:scale-[0.97] transition-transform duration-75"
-        >
-          <Plus className="h-3.5 w-3.5" />
-        </button>
-        <button
-          type="button"
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <Button
+              variant="ghost"
+              size="icon-xs"
+              title={t("scenes.create")}
+              className="text-muted-foreground hover:text-foreground"
+            >
+              <Plus className="h-3.5 w-3.5" />
+            </Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end" className="min-w-[140px]">
+            {CREATE_OPTIONS.map((opt, i) =>
+              opt === null ? (
+                <DropdownMenuSeparator key={`sep-${i}`} />
+              ) : (
+                <DropdownMenuItem
+                  key={opt.type}
+                  onSelect={(e) => {
+                    e.preventDefault();
+                    onCreate(opt.type);
+                  }}
+                >
+                  {t(opt.labelKey)}
+                </DropdownMenuItem>
+              ),
+            )}
+          </DropdownMenuContent>
+        </DropdownMenu>
+        <Button
+          variant="ghost"
+          size="icon-xs"
           title={t("scenes.expandCollapse")}
           onClick={onToggleAll}
-          className="flex h-6 w-6 items-center justify-center rounded text-muted-foreground hover:bg-accent hover:text-foreground active:scale-[0.97] transition-transform duration-75"
+          className="text-muted-foreground hover:text-foreground"
         >
           <ChevronsUpDown className="h-3.5 w-3.5" />
-        </button>
-        <button
-          ref={panelMenuBtnRef}
-          type="button"
-          title={t("scenes.panelMenu")}
-          onClick={onOpenPanelMenu}
-          className={cn(
-            "flex h-6 w-6 items-center justify-center rounded text-muted-foreground hover:bg-accent hover:text-foreground active:scale-[0.97] transition-transform duration-75",
-            showPanelMenu && "bg-accent text-foreground",
-          )}
-        >
-          <MoreHorizontal className="h-3.5 w-3.5" />
-        </button>
+        </Button>
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <Button
+              variant="ghost"
+              size="icon-xs"
+              title={t("scenes.panelMenu")}
+              className="text-muted-foreground hover:text-foreground data-[state=open]:bg-accent data-[state=open]:text-foreground"
+            >
+              <MoreHorizontal className="h-3.5 w-3.5" />
+            </Button>
+          </DropdownMenuTrigger>
+          <PanelMenu />
+        </DropdownMenu>
       </div>
     </div>
   );
