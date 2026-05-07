@@ -12,6 +12,7 @@ import {
   setNodePinned,
   updateFrame,
   deleteUserEdge,
+  createUserEdge as createUserEdgeFn,
 } from "../mapApi";
 import type { MapNodePositionRecord } from "../types";
 import type { MapEdge, MapFrame } from "@/db/schema";
@@ -401,8 +402,38 @@ export function useMapPositionPersistence({
       for (const change of changes) {
         if (change.type === "remove" && change.id.startsWith("user:")) {
           const dbId = change.id.slice("user:".length);
+          let captured: MapEdge | undefined;
+          setUserEdges((prev) => {
+            captured = prev.find((e) => e.id === dbId);
+            return prev.filter((e) => e.id !== dbId);
+          });
           deleteUserEdge(dbId).catch(() => {});
-          setUserEdges((prev) => prev.filter((e) => e.id !== dbId));
+
+          if (captured && !useGlobalHistoryStore.getState().isReplaying) {
+            const cap = captured;
+            useGlobalHistoryStore.getState().push({
+              kind: "map",
+              label: "エッジ削除",
+              async undo() {
+                const recreated = await createUserEdgeFn({
+                  id: cap.id,
+                  boardId: cap.boardId,
+                  fromPositionId: cap.fromPositionId,
+                  toPositionId: cap.toPositionId,
+                  forwardLabel: cap.forwardLabel ?? undefined,
+                  backwardLabel: cap.backwardLabel ?? undefined,
+                  style: cap.style,
+                  color: cap.color,
+                  direction: cap.direction,
+                });
+                setUserEdges((prev) => [...prev, recreated]);
+              },
+              async redo() {
+                await deleteUserEdge(cap.id);
+                setUserEdges((prev) => prev.filter((e) => e.id !== cap.id));
+              },
+            });
+          }
         }
       }
     },

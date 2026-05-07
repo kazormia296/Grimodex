@@ -192,6 +192,12 @@ export function MapCanvas() {
   const positionsRef = useRef(positions);
   positionsRef.current = positions;
 
+  const stickiesRef = useRef(stickies);
+  stickiesRef.current = stickies;
+
+  const userEdgesRef = useRef(userEdges);
+  userEdgesRef.current = userEdges;
+
   const groupDraggingRef = useRef<Set<string>>(new Set());
   const persistingRef = useRef<Set<string>>(new Set());
 
@@ -265,6 +271,13 @@ export function MapCanvas() {
   const onStickyExitComplete = useCallback(
     async (stickyId: string) => {
       // exitFiredRef in StickyNode guarantees this is called at most once per sticky.
+      // Capture the sticky's full state BEFORE the DB delete so we can restore on undo.
+      const capturedSticky = stickiesRef.current.find((s) => s.id === stickyId);
+      const capturedPos = findPosByNodeId(
+        positionsRef.current,
+        `sticky:${stickyId}`,
+      );
+
       // Call deleteSticky outside the state updater to avoid React Strict Mode double-invoke.
       await deleteSticky(stickyId);
       setStickies((prev) => prev.filter((s) => s.id !== stickyId));
@@ -273,8 +286,48 @@ export function MapCanvas() {
         next.delete(stickyId);
         return next;
       });
-      const pos = findPosByNodeId(positionsRef.current, `sticky:${stickyId}`);
-      if (pos) setPositions((prev) => prev.filter((p) => p.id !== pos.id));
+      if (capturedPos) {
+        setPositions((prev) => prev.filter((p) => p.id !== capturedPos.id));
+      }
+
+      if (
+        capturedSticky &&
+        capturedPos &&
+        !useGlobalHistoryStore.getState().isReplaying
+      ) {
+        const cap = {
+          sticky: { ...capturedSticky },
+          position: { ...capturedPos },
+        };
+        useGlobalHistoryStore.getState().push({
+          kind: "map",
+          label: "Sticky削除",
+          async undo() {
+            const recreated = await createSticky({
+              id: cap.sticky.id,
+              boardId: cap.sticky.boardId,
+              x: cap.position.x,
+              y: cap.position.y,
+              paletteId: cap.sticky.paletteId,
+              colorSlot: cap.sticky.colorSlot,
+              title: cap.sticky.title ?? undefined,
+              body: cap.sticky.body,
+            });
+            setStickies((prev) => [...prev, recreated.sticky]);
+            setPositions((prev) => [
+              ...prev,
+              recreated.position as MapNodePositionRecord,
+            ]);
+          },
+          async redo() {
+            await deleteSticky(cap.sticky.id);
+            setStickies((prev) => prev.filter((s) => s.id !== cap.sticky.id));
+            setPositions((prev) =>
+              prev.filter((p) => p.id !== cap.position.id),
+            );
+          },
+        });
+      }
     },
     [setStickies, setPositions],
   );
@@ -1045,10 +1098,36 @@ export function MapCanvas() {
               );
           }}
           onDelete={async () => {
-            await deleteUserEdge(edgeContextMenu.edgeId);
-            setUserEdges((prev) =>
-              prev.filter((u) => u.id !== edgeContextMenu.edgeId),
-            );
+            const edgeId = edgeContextMenu.edgeId;
+            const captured = userEdgesRef.current.find((u) => u.id === edgeId);
+            await deleteUserEdge(edgeId);
+            setUserEdges((prev) => prev.filter((u) => u.id !== edgeId));
+
+            if (captured && !useGlobalHistoryStore.getState().isReplaying) {
+              const cap = { ...captured };
+              useGlobalHistoryStore.getState().push({
+                kind: "map",
+                label: "エッジ削除",
+                async undo() {
+                  const recreated = await createUserEdge({
+                    id: cap.id,
+                    boardId: cap.boardId,
+                    fromPositionId: cap.fromPositionId,
+                    toPositionId: cap.toPositionId,
+                    forwardLabel: cap.forwardLabel ?? undefined,
+                    backwardLabel: cap.backwardLabel ?? undefined,
+                    style: cap.style,
+                    color: cap.color,
+                    direction: cap.direction,
+                  });
+                  setUserEdges((prev) => [...prev, recreated]);
+                },
+                async redo() {
+                  await deleteUserEdge(cap.id);
+                  setUserEdges((prev) => prev.filter((u) => u.id !== cap.id));
+                },
+              });
+            }
           }}
         />
       )}
