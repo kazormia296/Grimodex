@@ -128,7 +128,11 @@ export const UserEdge = memo(function UserEdge({
   selected,
 }: EdgeProps) {
   const d = data as UserEdgeData;
-  const color = d.color ?? "#555";
+  // Treat legacy "#000000" default and "currentColor" sentinel as theme-aware:
+  // resolve to var(--foreground) so edges adapt to dark/light theme.
+  const rawColor = d.color ?? "currentColor";
+  const isThemed = rawColor === "currentColor" || rawColor === "#000000";
+  const color = isThemed ? "var(--foreground)" : rawColor;
   const edgeStyle = d.style ?? "solid";
   const direction = d.direction ?? "none";
 
@@ -168,7 +172,7 @@ export const UserEdge = memo(function UserEdge({
           refY="3"
           orient="auto"
         >
-          <path d="M0,0 L0,6 L8,3 z" fill={color} />
+          <path d="M0,0 L0,6 L8,3 z" style={{ fill: color }} />
         </marker>
         {direction === "bidirectional" && (
           <marker
@@ -179,7 +183,7 @@ export const UserEdge = memo(function UserEdge({
             refY="3"
             orient="auto-start-reverse"
           >
-            <path d="M0,0 L0,6 L8,3 z" fill={color} />
+            <path d="M0,0 L0,6 L8,3 z" style={{ fill: color }} />
           </marker>
         )}
       </defs>

@@ -970,7 +970,7 @@ export async function createUserEdge(data: {
     backwardLabel: data.backwardLabel ?? null,
     labels: "[]",
     style: data.style ?? "solid",
-    color: data.color ?? "#000000",
+    color: data.color ?? "currentColor",
     direction: data.direction ?? "none",
     createdAt: now,
     updatedAt: now,
