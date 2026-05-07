@@ -5,6 +5,7 @@ import { useCodexStore } from "@/features/codex/codexStore";
 import { useSnippetStore } from "@/features/snippets/snippetStore";
 import { upsertNodePosition } from "./mapApi";
 import { useMapStore } from "./mapStore";
+import type { MapNodePositionRecord } from "./types";
 
 type EntityType = "scene" | "note" | "codex" | "snippet";
 
@@ -18,12 +19,14 @@ const TYPE_LABELS: Record<EntityType, string> = {
 interface AddToMapPickerDialogProps {
   boardId: string;
   initialType?: EntityType;
+  onPicked?: (position: MapNodePositionRecord) => void;
   onClose: () => void;
 }
 
 export function AddToMapPickerDialog({
   boardId,
   initialType = "scene",
+  onPicked,
   onClose,
 }: AddToMapPickerDialogProps) {
   const [entityType, setEntityType] = useState<EntityType>(initialType);
@@ -94,7 +97,8 @@ export function AddToMapPickerDialog({
           ? { boardId, nodeRefType: "codex" as const, codexEntryId: id, x, y }
           : { boardId, nodeRefType: "snippet" as const, snippetId: id, x, y };
 
-    await upsertNodePosition(args);
+    const inserted = await upsertNodePosition(args);
+    onPicked?.(inserted as MapNodePositionRecord);
     onClose();
   }
 

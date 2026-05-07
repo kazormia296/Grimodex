@@ -26,6 +26,13 @@ export function useAddToMapBoards(projectId: string) {
       const x = cx + (Math.random() - 0.5) * 120;
       const y = cy + (Math.random() - 0.5) * 120;
       await upsertNodePosition({ boardId, x, y, ...entity });
+      // Notify any open MapCanvas (active board) that data changed so it
+      // re-fetches positions. Cross-panel adds otherwise leave MapCanvas
+      // local state stale until the active board changes.
+      const activeBoardId = useMapStore.getState().activeBoardId;
+      if (boardId === activeBoardId) {
+        useMapStore.getState().bumpBoardDataVersion();
+      }
     },
     [viewport],
   );

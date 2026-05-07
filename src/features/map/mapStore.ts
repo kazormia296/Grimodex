@@ -23,6 +23,9 @@ interface MapState {
   pendingAutoArrange: AutoArrangeType | null;
   focusedNodeId: string | null;
   pendingExport: "svg" | "png" | "json" | null;
+  // Bumped when an external action (cross-panel "add to board") modifies
+  // map data and the open MapCanvas needs to reload its state.
+  boardDataVersion: number;
 
   setActiveBoardId: (id: string | null) => void;
   setMode: (mode: MapMode) => void;
@@ -36,6 +39,7 @@ interface MapState {
   setPendingAutoArrange: (type: AutoArrangeType | null) => void;
   setFocusedNode: (id: string | null) => void;
   setPendingExport: (type: "svg" | "png" | "json" | null) => void;
+  bumpBoardDataVersion: () => void;
   loadFromSettings: (settings: GlobalSettings) => void;
 }
 
@@ -67,6 +71,7 @@ export const useMapStore = create<MapState>((set) => ({
   pendingAutoArrange: null,
   focusedNodeId: null,
   pendingExport: null,
+  boardDataVersion: 0,
 
   setActiveBoardId: (id) => set({ activeBoardId: id }),
   setMode: (mode) => set({ mode }),
@@ -80,6 +85,8 @@ export const useMapStore = create<MapState>((set) => ({
   setPendingAutoArrange: (type) => set({ pendingAutoArrange: type }),
   setFocusedNode: (id) => set({ focusedNodeId: id }),
   setPendingExport: (type) => set({ pendingExport: type }),
+  bumpBoardDataVersion: () =>
+    set((s) => ({ boardDataVersion: s.boardDataVersion + 1 })),
 
   loadFromSettings: (settings) => {
     const saved = settings.map as MapPersistentState | undefined;

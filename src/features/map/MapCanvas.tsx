@@ -1300,6 +1300,17 @@ export function MapCanvas() {
         <AddToMapPickerDialog
           boardId={boardId}
           initialType={pickerType}
+          onPicked={(pos) => {
+            setPositions((prev) => {
+              const idx = prev.findIndex((p) => p.id === pos.id);
+              if (idx >= 0) {
+                const next = [...prev];
+                next[idx] = pos;
+                return next;
+              }
+              return [...prev, pos];
+            });
+          }}
           onClose={() => setPickerType(null)}
         />
       )}

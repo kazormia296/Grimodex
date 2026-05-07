@@ -21,6 +21,7 @@ import type {
 export function useMapBoardData(projectId: string) {
   const activeBoardId = useMapStore((s) => s.activeBoardId);
   const setActiveBoardId = useMapStore((s) => s.setActiveBoardId);
+  const boardDataVersion = useMapStore((s) => s.boardDataVersion);
 
   const [boards, setBoards] = useState<MapBoard[]>([]);
   const [positions, setPositions] = useState<MapNodePositionRecord[]>([]);
@@ -88,7 +89,7 @@ export function useMapBoardData(projectId: string) {
     return () => {
       cancelled = true;
     };
-  }, [activeBoardId]);
+  }, [activeBoardId, boardDataVersion]);
 
   return {
     boards,
