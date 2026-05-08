@@ -13,38 +13,16 @@ export const STIR_IMPULSE_MAX = 1200;
 export const DRAG_THRESHOLD_PX = 5;
 
 /**
- * subKind 別の密度（mass = density * area）。重い順: scene > codex/snippet > ...
- * 密度が低いと小さな impulse でも大きく動くので、Matter のデフォルト 0.001 より高めに振る。
+ * 全 subKind 共通の密度。質量差はサイズで表現する（デモと同方針）。
+ * subKind 間で密度を変えるとスタック内の質量比が大きくなり、重い body が
+ * 軽い body に着地した瞬間に軽い側が popcorn 化するため均一にする。
  */
-const SUBKIND_DENSITY: Record<TrashSubKind, number> = {
-  "text-fragment": 0.002,
-  "map-sticky": 0.0028,
-  foreshadow: 0.0028,
-  "codex-entry": 0.0036,
-  snippet: 0.0036,
-  "grid-chapter": 0.0036,
-  scene: 0.0052,
-};
+const BODY_DENSITY = 0.001;
 
 const WALL_THICKNESS = 200;
 const FRICTION = 0.4;
-// 位置補正由来の velocity を素早く減衰させるため Matter デフォルト (0.01) より高め。
-// 0.05 なら ~毎秒 5% 残留 → 補正速度が次フレームに積み上がらない。
-const FRICTION_AIR = 0.05;
+const FRICTION_AIR = 0.01;
 const RESTITUTION = 0;
-/**
- * 速度上限（px/step、60fps 基準）。Matter の penetration 解決由来の
- * 視覚的な暴走を抑える。20 px/step ≒ 1200 px/sec で投擲には十分速い。
- */
-const MAX_LINEAR_SPEED = 20;
-const MAX_ANGULAR_SPEED = 0.5; // rad/step
-
-/**
- * 侵入許容量（slop）。デフォルト 0.05px は本パネルのスケール（数十〜数百 px の body）
- * に対して厳しすぎ、わずかな rotation でも solver が爆発的な position 補正を行う。
- * 5px 程度まで許容することで補正→Verlet 統合経由の velocity 暴走を抑える。
- */
-const BODY_SLOP = 5;
 
 export interface BodyState {
   id: string;
@@ -89,23 +67,11 @@ export class TrashPhysicsEngine {
   >();
   private containerWidth = 0;
   private floorY = 0;
-  /**
-   * リサイズ直後の calm period: 全動的 body の速度を毎ステップ減衰させて
-   * Matter solver の分離 impulse による爆発的カスケードを soak up する。
-   * フレーム数は減速しながら 0 まで進む。
-   */
-  private calmFramesRemaining = 0;
-  private static readonly CALM_FRAMES = 30;
-  private static readonly CALM_DAMPING = 0.5;
 
   constructor() {
     this.engine = Matter.Engine.create({
-      gravity: { x: 0, y: 1, scale: 0.0009 },
+      gravity: { x: 0, y: 1, scale: 0.001 },
       enableSleeping: true,
-      // スタック安定性のため position iterations を default(6) より上げる。
-      // 残留 overlap が Verlet 統合経由で velocity 化し stack 内を伝播するのを抑える。
-      positionIterations: 8,
-      velocityIterations: 4,
     });
     this.world = this.engine.world;
   }
@@ -146,7 +112,7 @@ export class TrashPhysicsEngine {
 
   /** body を追加。返り値は追加直後の状態。 */
   addBody(opts: AddBodyOpts): BodyState {
-    const { id, subKind, size, initial } = opts;
+    const { id, size, initial } = opts;
     const rng = opts.rng ?? Math.random;
     const w = size.width;
     const h = size.height;
@@ -164,18 +130,15 @@ export class TrashPhysicsEngine {
     }
 
     const body = Matter.Bodies.rectangle(cx, cy, w, h, {
-      density: SUBKIND_DENSITY[subKind] ?? 0.001,
+      density: BODY_DENSITY,
       friction: FRICTION,
       frictionAir: FRICTION_AIR,
       restitution: RESTITUTION,
-      slop: BODY_SLOP,
-      // 初期 angle は控えめに: 大きい角度は隣接 body・床・壁との初期 overlap を生み、
-      // solver が深い penetration を一気に補正 → Verlet 由来の velocity 暴走を引き起こす。
-      angle: initial === "settled-floor" ? 0 : (rng() * 2 - 1) * 0.1,
+      angle: initial === "settled-floor" ? 0 : (rng() * 2 - 1) * 0.5,
       label: id,
     });
     if (initial === "falling") {
-      Matter.Body.setAngularVelocity(body, (rng() * 2 - 1) * 0.05);
+      Matter.Body.setAngularVelocity(body, (rng() * 2 - 1) * 0.08);
     }
 
     Matter.World.add(this.world, body);
@@ -196,6 +159,17 @@ export class TrashPhysicsEngine {
     this.bodies.delete(id);
     this.sizes.delete(id);
     this.dragTracking.delete(id);
+    // 取り出された body の上に乗っていた sleeping bodies は支えを失っても
+    // 自動で wake しないので明示的に起こす（重力で落下させるため）。
+    this.wakeAll();
+  }
+
+  /** 動的 body を全て wake させる。pile の支えが消えた時に呼ぶ。 */
+  private wakeAll() {
+    for (const body of this.bodies.values()) {
+      if (body.isStatic) continue;
+      if (body.isSleeping) Matter.Sleeping.set(body, false);
+    }
   }
 
   hasBody(id: string): boolean {
@@ -207,59 +181,12 @@ export class TrashPhysicsEngine {
   }
 
   /**
-   * 物理ステップを進める。Matter.js は delta>16.67ms で安定性が落ちるため、
-   * 大きな dt はサブステップに分割する（最大合計 33ms にクランプ）。
-   * calm period 中は各サブステップ前に速度を減衰させて爆発を防ぐ。
+   * 物理ステップを進める。Matter.js の resolver 定数は 16.67ms で校正されており、
+   * 1 ステップに大きな dt を渡すと安定性が落ちるため上限でクランプする。
    */
   step(dtMs: number) {
     if (dtMs <= 0) return;
-    // 120Hz サブステップ化: stack 収束のため 1 ステップ dt を 8.33ms に。
-    // 16.67ms より細かく解くことで、衝突 1 回あたり吸収するエネルギーが半分になり、
-    // stack 内に伝播する Verlet 由来の velocity が大幅に減る。
-    const SUB = 1000 / 120;
-    let remaining = Math.min(dtMs, 33);
-    while (remaining > SUB + 0.01) {
-      this.applyCalmDamping();
-      Matter.Engine.update(this.engine, SUB);
-      this.clampMaxSpeed();
-      remaining -= SUB;
-    }
-    if (remaining > 0) {
-      this.applyCalmDamping();
-      Matter.Engine.update(this.engine, remaining);
-      this.clampMaxSpeed();
-    }
-  }
-
-  /** Matter solver の penetration 解決による爆発的な速度を soft-cap。 */
-  private clampMaxSpeed() {
-    for (const body of this.bodies.values()) {
-      if (body.isStatic || body.isSleeping) continue;
-      const { x: vx, y: vy } = body.velocity;
-      const speed = Math.hypot(vx, vy);
-      if (speed > MAX_LINEAR_SPEED) {
-        const k = MAX_LINEAR_SPEED / speed;
-        Matter.Body.setVelocity(body, { x: vx * k, y: vy * k });
-      }
-      const av = body.angularVelocity;
-      if (Math.abs(av) > MAX_ANGULAR_SPEED) {
-        Matter.Body.setAngularVelocity(body, Math.sign(av) * MAX_ANGULAR_SPEED);
-      }
-    }
-  }
-
-  private applyCalmDamping() {
-    if (this.calmFramesRemaining <= 0) return;
-    const k = TrashPhysicsEngine.CALM_DAMPING;
-    for (const body of this.bodies.values()) {
-      if (body.isStatic || body.isSleeping) continue;
-      Matter.Body.setVelocity(body, {
-        x: body.velocity.x * k,
-        y: body.velocity.y * k,
-      });
-      Matter.Body.setAngularVelocity(body, body.angularVelocity * k);
-    }
-    this.calmFramesRemaining -= 1;
+    Matter.Engine.update(this.engine, Math.min(dtMs, 1000 / 60));
   }
 
   getState(id: string): BodyState | null {
@@ -322,6 +249,9 @@ export class TrashPhysicsEngine {
     if (!body) return;
     Matter.Body.setStatic(body, true);
     this.dragTracking.delete(id);
+    // 山の下からドラッグされた場合、上に乗っていた sleeping body は支えが
+    // 動かない限り起きないので明示的に wake する。
+    this.wakeAll();
   }
 
   /** ドラッグ中の位置更新。投擲速度のため最近の位置/時刻を追跡。 */
@@ -372,12 +302,8 @@ export class TrashPhysicsEngine {
   }
 
   /**
-   * ResizeObserver から呼ぶ: 動的 body を境界内にクランプ。
-   *
-   * 跳ね飛び対策の方針:
-   * 1. 位置補正後に速度・角速度を 0 リセット
-   * 2. 全 mutated body を wake（重力で自然に再着地・整列させる）
-   * 3. calm period を起動 → 後続 step() で速度ダンピングを掛けて爆発を吸収
+   * ResizeObserver から呼ぶ: 動的 body を境界内にクランプ。位置補正後に
+   * 速度・角速度を 0 リセットして wake する（重力で自然に再着地させる）。
    *
    * 何か wake な body が動いたら true を返す（rAF 起動判定用）。
    */
@@ -409,18 +335,19 @@ export class TrashPhysicsEngine {
       Matter.Sleeping.set(body, false);
       anyAwakeMutated = true;
     }
-    if (anyAwakeMutated) {
-      this.calmFramesRemaining = TrashPhysicsEngine.CALM_FRAMES;
-    }
     return anyAwakeMutated;
   }
 
   /**
    * 起動時に既存アイテムを「床に積まれた」状態で配置する。
    * 横方向重なりがあれば上に積む決定論的な簡易レイアウト。
+   *
+   * 1px の縦ギャップを入れて 0-penetration で配置する: スタックが起こされた瞬間に
+   * 残留 overlap が impulse 化して popcorn 化するのを防ぐため。
    */
   placeFloorPreset(items: FloorPresetItem[], rng: () => number = Math.random) {
     if (this.containerWidth <= 0 || this.floorY <= 0) return;
+    const STACK_GAP = 1;
     const placed: { x: number; y: number; w: number; h: number }[] = [];
     for (const item of items) {
       const w = item.size.width;
@@ -431,7 +358,7 @@ export class TrashPhysicsEngine {
       for (const p of placed) {
         const overlapX = Math.min(x + w, p.x + p.w) - Math.max(x, p.x);
         if (overlapX > 0) {
-          const candidate = p.y - h;
+          const candidate = p.y - h - STACK_GAP;
           if (candidate < restY) restY = candidate;
         }
       }

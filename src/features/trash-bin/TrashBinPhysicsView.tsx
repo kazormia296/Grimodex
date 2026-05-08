@@ -166,9 +166,15 @@ export function TrashBinPhysicsView({
     const known = knownIdsRef.current;
 
     // 削除分
+    let removed = false;
     for (const id of known) {
-      if (!currentIds.has(id)) engine.removeBody(id);
+      if (!currentIds.has(id)) {
+        engine.removeBody(id);
+        removed = true;
+      }
     }
+    // pickup で下から抜けた場合、上の body が wake されているので落下を進める。
+    if (removed) startLoop();
 
     // 追加分
     const added: TrashItemData[] = [];
@@ -276,6 +282,8 @@ export function TrashBinPhysicsView({
         drag.started = true;
         setDraggingItemId(drag.itemId);
         engine.beginDrag(drag.itemId);
+        // 山の下から抜く場合、上に乗っていた sleeping body を落とすため rAF を再起動。
+        startLoop();
       }
       const containerRect = containerRef.current?.getBoundingClientRect();
       if (!containerRect) return;
@@ -295,7 +303,7 @@ export function TrashBinPhysicsView({
         setHoverTargetId(null);
       }
     },
-    [applyTransform, getEngine],
+    [applyTransform, getEngine, startLoop],
   );
 
   const finishDrag = useCallback(

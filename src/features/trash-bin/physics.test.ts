@@ -74,8 +74,7 @@ describe("TrashPhysicsEngine.step 重力・床", () => {
     }
     expect(e.hasUnsettled()).toBe(false);
     const s = e.getState("a")!;
-    // slop=5 により床への侵入を許容するため、許容値も広げる
-    expect(s.y + s.height).toBeLessThanOrEqual(FLOOR + 5.5);
+    expect(s.y + s.height).toBeLessThanOrEqual(FLOOR + 0.5);
     expect(s.isSleeping).toBe(true);
     e.destroy();
   });
