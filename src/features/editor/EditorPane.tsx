@@ -280,6 +280,13 @@ export function EditorPane({
   setIsDirtyRef.current = setIsDirty;
 
   const saveSceneIdRef = useRef(nodeId);
+  // Tracks the contentType of whatever doc is currently loaded into the editor.
+  // Updated atomically with `saveSceneIdRef` inside switchScene so that
+  // pending autosave flushes route to the same backend the in-editor content
+  // belongs to — even when the prop has already flipped to a new tab's type.
+  // Reading from the prop directly would misroute scene A's pending edits to
+  // codex/snippet on tab switch within the autosave window.
+  const saveContentTypeRef = useRef<TabContentType>(contentType);
   // Codex mode: non-null when the loaded content came from a phase contentOverride → save back to that phase
   const activePhaseIdRef = useRef<string | null>(null);
   // Reactive version of activePhaseIdRef for display purposes
@@ -310,7 +317,11 @@ export function EditorPane({
     const id = saveSceneIdRef.current;
     const ed = editorRef.current;
     if (!id || !ed) return;
-    if (isCodexMode) {
+    // Branch on the ref, not the closure-captured prop, so a pending autosave
+    // flush always saves to the backend matching the doc currently in the
+    // editor — even mid-tab-switch when the prop has already flipped.
+    const ctx = saveContentTypeRef.current;
+    if (ctx === "codex") {
       const content = JSON.stringify(ed.getJSON());
       const phaseId = activePhaseIdRef.current;
       if (phaseId) {
@@ -320,7 +331,7 @@ export function EditorPane({
       } else {
         await updateCodexEntry(id, { content });
       }
-    } else if (isSnippetMode) {
+    } else if (ctx === "snippet") {
       const content = ed.getHTML();
       await updateSnippet(id, { content });
       useSnippetStore.getState().update(id, { content });
@@ -392,7 +403,7 @@ export function EditorPane({
         void chatState.refreshContextLayers();
       }
     }
-  }, [isCodexMode, isSnippetMode]);
+  }, []);
 
   const saveFn = useCallback(async () => {
     setIsSaving(true);
@@ -405,7 +416,7 @@ export function EditorPane({
 
     // Auto-revision is non-critical — don't let it trigger "save failed" toast
     // Codex/snippet tabs don't use the revision system
-    if (!isCodexMode && !isSnippetMode) {
+    if (saveContentTypeRef.current === "scene") {
       try {
         const id = saveSceneIdRef.current;
         const ed = editorRef.current;
@@ -440,13 +451,7 @@ export function EditorPane({
         );
       }
     }
-  }, [
-    isCodexMode,
-    isSnippetMode,
-    coreSave,
-    shouldAutoRevision,
-    recordAutoRevision,
-  ]);
+  }, [coreSave, shouldAutoRevision, recordAutoRevision]);
 
   // Register this pane's save function so the tab context menu can trigger it
   useEffect(() => {
@@ -1011,6 +1016,10 @@ export function EditorPane({
       }
       cancel();
       saveSceneIdRef.current = nodeId;
+      // Update *after* flush() above so the flush still routes scene A's
+      // pending edits to the scene backend, even though the prop has already
+      // flipped to the new tab's contentType.
+      saveContentTypeRef.current = contentType;
 
       // Hold the external-update guard for the entire scene-switch sequence
       // (setContent + authorship load + foreshadow load). Releasing it earlier
