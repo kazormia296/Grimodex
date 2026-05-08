@@ -15,6 +15,5 @@ export { restoreMapSticky } from "./mapSticky";
 export type { MapStickyRestoreOptions } from "./mapSticky";
 export { restoreForeshadow } from "./foreshadow";
 export type { ForeshadowRestoreOptions } from "./foreshadow";
-export { restorePin } from "./pin";
 export { restoreGridChapter } from "./gridChapter";
 export type { GridChapterRestoreOptions } from "./gridChapter";

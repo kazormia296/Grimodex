@@ -22,7 +22,6 @@ export const SUBKIND_MASS: Record<TrashSubKind, number> = {
   "text-fragment": 1.0,
   "map-sticky": 1.5,
   foreshadow: 1.5,
-  pin: 1.5,
   "codex-entry": 2.0,
   snippet: 2.0,
   "grid-chapter": 2.0,

@@ -17,7 +17,6 @@ import {
   restoreSnippet,
   restoreMapSticky,
   restoreForeshadow,
-  restorePin,
   restoreGridChapter,
 } from "./restorers";
 import type { RestoreOutcome } from "./restorers";
@@ -56,8 +55,6 @@ export function acceptsMatrix(
       );
     case "foreshadow-panel":
       return subKind === "foreshadow";
-    case "pin-panel":
-      return subKind === "pin";
   }
 }
 
@@ -90,9 +87,6 @@ export async function dispatchDrop(
   }
   if (kind === "foreshadow-panel" && item.subKind === "foreshadow") {
     return restoreForeshadow(item, { projectId });
-  }
-  if (kind === "pin-panel" && item.subKind === "pin") {
-    return restorePin(item);
   }
   if (kind === "map-panel" && item.subKind === "map-sticky") {
     return restoreMapSticky(item, {

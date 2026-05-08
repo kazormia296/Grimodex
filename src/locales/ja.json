@@ -1233,7 +1233,6 @@
       "snippet": "スニペット",
       "mapSticky": "付箋",
       "foreshadow": "伏線",
-      "pin": "ピン",
       "gridChapter": "章ヘッダ"
     },
     "stir": "かき混ぜる",
@@ -1251,8 +1250,7 @@
       "codex": "設定資料として復元",
       "snippets": "スニペットとして復元",
       "map": "付箋として復元",
-      "foreshadow": "伏線として復元",
-      "pin": "ピンとして復元"
+      "foreshadow": "伏線として復元"
     }
   },
   "snippets": {

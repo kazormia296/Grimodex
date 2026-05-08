@@ -1233,7 +1233,6 @@
       "snippet": "Snippet",
       "mapSticky": "Sticky",
       "foreshadow": "Foreshadow",
-      "pin": "Pin",
       "gridChapter": "Chapter"
     },
     "stir": "Stir",
@@ -1251,8 +1250,7 @@
       "codex": "Restore as Codex entry",
       "snippets": "Restore as snippet",
       "map": "Restore as sticky",
-      "foreshadow": "Restore as foreshadow",
-      "pin": "Restore as pin"
+      "foreshadow": "Restore as foreshadow"
     }
   },
   "snippets": {

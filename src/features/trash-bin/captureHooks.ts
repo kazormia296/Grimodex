@@ -19,7 +19,6 @@ import type {
   ForeshadowPayload,
   GridChapterPayload,
   MapStickyPayload,
-  PinPayload,
   ScenePayload,
   SnippetPayload,
 } from "./types";
@@ -363,61 +362,6 @@ export function captureForeshadowDeletion(opts: CaptureForeshadowOpts): void {
         intent: foreshadow.intent ?? null,
         loadBearing: foreshadow.loadBearing ?? null,
         abandoned: foreshadow.abandoned,
-      },
-      payload,
-    },
-    { tempId },
-  );
-}
-
-export interface CapturePinOpts {
-  projectId: string;
-  sceneId: string;
-  entryId: string;
-  /** 削除時点での scene title (Tree から解決して渡す) */
-  sceneTitleHint: string | null;
-  /** 削除時点での codex entry name */
-  entryNameHint: string | null;
-  /** 削除時点での codex icon (Lucide name) */
-  entryIconHint: string | null;
-  tempId: string;
-}
-
-export function capturePinDeletion(opts: CapturePinOpts): void {
-  const {
-    projectId,
-    sceneId,
-    entryId,
-    sceneTitleHint,
-    entryNameHint,
-    entryIconHint,
-    tempId,
-  } = opts;
-  const previewText = truncate(
-    entryNameHint || sceneTitleHint || "(ピン)",
-    PREVIEW_TEXT_MAX,
-  );
-
-  const payload: PinPayload = {
-    sceneId,
-    entryId,
-    sceneTitleHint,
-    entryNameHint,
-    entryIconHint,
-  };
-
-  useTrashBinStore.getState().enqueuePending(
-    {
-      projectId,
-      kind: "structure-item",
-      subKind: "pin",
-      originSceneId: sceneId,
-      originCodexId: entryId,
-      previewText,
-      previewMeta: {
-        sceneTitleHint,
-        entryNameHint,
-        entryIconHint,
       },
       payload,
     },

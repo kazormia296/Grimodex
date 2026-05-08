@@ -19,8 +19,7 @@ export type DropTargetKind =
   | "codex-panel"
   | "map-panel"
   | "snippets-panel"
-  | "foreshadow-panel"
-  | "pin-panel";
+  | "foreshadow-panel";
 
 export interface DropPoint {
   x: number;

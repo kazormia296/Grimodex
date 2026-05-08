@@ -44,12 +44,6 @@ describe("acceptsMatrix", () => {
     { target: "foreshadow-panel", sub: "foreshadow", expect: true },
     { target: "scene-editor", sub: "foreshadow", expect: true },
 
-    // pin → pin パネル + エディタ (※ pin パネルは現状未実装だが
-    //   matrix 上は受け入れる契約)
-    { target: "pin-panel", sub: "pin", expect: true },
-    { target: "scene-editor", sub: "pin", expect: true },
-    { target: "scenes-panel", sub: "pin", expect: false },
-
     // grid-chapter → scenes パネル + エディタ
     { target: "scenes-panel", sub: "grid-chapter", expect: true },
     { target: "scene-editor", sub: "grid-chapter", expect: true },

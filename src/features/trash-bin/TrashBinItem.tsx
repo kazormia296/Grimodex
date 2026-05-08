@@ -6,7 +6,6 @@ import { CodexTrashItem } from "./items/CodexTrashItem";
 import { SnippetTrashItem } from "./items/SnippetTrashItem";
 import { MapStickyTrashItem } from "./items/MapStickyTrashItem";
 import { ForeshadowTrashItem } from "./items/ForeshadowTrashItem";
-import { PinTrashItem } from "./items/PinTrashItem";
 import { GridChapterTrashItem } from "./items/GridChapterTrashItem";
 
 interface Props {
@@ -72,8 +71,6 @@ export function TrashBinItem({
       return <MapStickyTrashItem item={item} registerNode={reg} />;
     case "foreshadow":
       return <ForeshadowTrashItem item={item} registerNode={reg} />;
-    case "pin":
-      return <PinTrashItem item={item} registerNode={reg} />;
     case "grid-chapter":
       return <GridChapterTrashItem item={item} registerNode={reg} />;
     case "text-fragment":

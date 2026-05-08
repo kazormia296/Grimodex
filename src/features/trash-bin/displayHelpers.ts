@@ -41,8 +41,6 @@ export function getSizeForSubKind(
       return { width: 120, height: 120 };
     case "foreshadow":
       return { width: 120, height: 40 };
-    case "pin":
-      return { width: 40, height: 40 };
     case "grid-chapter":
       return { width: 200, height: 40 };
   }

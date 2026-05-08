@@ -176,8 +176,6 @@ function dropKey(kind: string): string {
       return "map";
     case "foreshadow-panel":
       return "foreshadow";
-    case "pin-panel":
-      return "pin";
     default:
       return kind;
   }

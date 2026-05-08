@@ -12,7 +12,6 @@ import type {
   ForeshadowPayload,
   GridChapterPayload,
   MapStickyPayload,
-  PinPayload,
   ScenePayload,
   SnippetPayload,
   TextFragmentPayload,
@@ -79,10 +78,6 @@ function structureItemToText(item: TrashItemData): string {
     case "foreshadow": {
       const p = item.payload as ForeshadowPayload;
       return p.intent ? `${p.title} — ${p.intent}` : p.title;
-    }
-    case "pin": {
-      const p = item.payload as PinPayload;
-      return p.entryNameHint || p.sceneTitleHint || "";
     }
     case "grid-chapter": {
       const p = item.payload as GridChapterPayload;

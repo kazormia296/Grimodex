@@ -14,7 +14,6 @@ export type TrashSubKind =
   | "snippet"
   | "map-sticky"
   | "foreshadow"
-  | "pin"
   | "grid-chapter";
 
 export type TrashSpanSource = "human" | "ai" | "unknown";
@@ -123,17 +122,6 @@ export interface ForeshadowPayload {
   loadBearing: string | null;
 }
 
-// 設計書 §16.7 (改): Pin 実体は SceneCodexPin (sceneId, entryId, createdAt の
-// 純粋 join)。復元時は両端が現存するときのみ pin を再作成。表示用に削除時点の
-// hint をスナップショットで保持する。
-export interface PinPayload {
-  sceneId: string;
-  entryId: string;
-  sceneTitleHint: string | null;
-  entryNameHint: string | null;
-  entryIconHint: string | null;
-}
-
 // 設計書 §16.8: Grid Chapter 実体は treeNodes(nodeType="folder")。
 // scene 用の ScenePayload とほぼ同形だが subKind 分岐の明確化のため別型。
 export interface GridChapterPayload {
@@ -150,7 +138,6 @@ export type StructureItemPayload =
   | SnippetPayload
   | MapStickyPayload
   | ForeshadowPayload
-  | PinPayload
   | GridChapterPayload;
 
 export type TrashPayload = TextFragmentPayload | StructureItemPayload;
