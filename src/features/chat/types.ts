@@ -8,10 +8,10 @@ export const AI_PROVIDERS = [
 
 export type AiProvider = (typeof AI_PROVIDERS)[number];
 
-/** OpenAI 互換プロバイダのプリセット ID。Phase A.2 で "ainoverist" を追加予定。 */
-export type OpenaiCompatPresetId = "custom";
+/** OpenAI 互換プロバイダのプリセット ID */
+export type OpenaiCompatPresetId = "custom" | "ainoverist";
 
-/** OpenAI 互換プロバイダの設定。プリセット選択 + custom 時のユーザー入力を保持する。 */
+/** OpenAI 互換プロバイダの設定。プリセット選択 + プリセット別のユーザー入力を保持する。 */
 export interface OpenaiCompatibleSettings {
   preset: OpenaiCompatPresetId;
   /** custom プリセット時にユーザーが入力する OpenAI 互換エンドポイント */
@@ -20,6 +20,18 @@ export interface OpenaiCompatibleSettings {
   customMaxContext?: number;
   /** custom プリセット時に手動指定するモデルの最大出力 (tokens) */
   customMaxOutput?: number;
+  /**
+   * プリセット側 `extraSamplingKeys` で許可されているサンプリングパラメータ。
+   * AI のべりすとの top_a / tailfree / typical_p / min_p / rep_pen /
+   * badwords / stoptokens / logit_bias など。リクエストボディに素通しされる。
+   */
+  sampling?: Record<string, unknown>;
+  /**
+   * AI Codex 自動抽出 / Synopsis / セッションタイトル自動生成タスクで
+   * このプロバイダを使うかどうか。プリセットの defaultDisableStructuredTasks=true
+   * の場合、デフォルト false（オプトイン式）。
+   */
+  enableStructuredTasks?: boolean;
 }
 
 export const DEFAULT_OPENAI_COMPATIBLE_SETTINGS: OpenaiCompatibleSettings = {

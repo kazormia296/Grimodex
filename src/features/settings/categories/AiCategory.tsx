@@ -7,7 +7,7 @@ import {
   groupModelsByDeveloper,
 } from "@/features/chat/types";
 import type { AiProvider, OpenaiCompatPresetId } from "@/features/chat/types";
-import { getModelCapabilities } from "@/features/chat/agent/modelLimits";
+import { resolveModelCapabilities } from "@/features/chat/agent/modelLimits";
 import {
   getOpenaiCompatPreset,
   listOpenaiCompatPresets,
@@ -24,6 +24,68 @@ const PROVIDER_LABELS: Record<AiProvider, string> = {
   ollama: "ollama-local",
   "openai-compatible": "OpenAI 互換",
 };
+
+/** AI のべりすと等のサンプリングキーで「数値型」として扱うキー */
+const NUMERIC_SAMPLING_KEYS = new Set([
+  "top_a",
+  "tailfree",
+  "typical_p",
+  "min_p",
+  "rep_pen",
+]);
+
+/**
+ * サンプリング 1 キー分の編集 UI を返す。
+ * - 数値キー: number input、空欄なら undefined
+ * - その他: text input、JSON.parse 可能ならパース、不能なら文字列保存
+ */
+function renderSamplingInput(
+  key: string,
+  value: unknown,
+  onChange: (next: unknown) => void,
+  onBlur: () => void,
+): React.ReactNode {
+  const isNumeric = NUMERIC_SAMPLING_KEYS.has(key);
+  const display =
+    value === undefined || value === null
+      ? ""
+      : typeof value === "string"
+        ? value
+        : JSON.stringify(value);
+  return (
+    <div key={key} className="flex items-center gap-2">
+      <label className="w-24 shrink-0 text-xs font-mono text-muted-foreground">
+        {key}
+      </label>
+      <input
+        type={isNumeric ? "number" : "text"}
+        step={isNumeric ? "any" : undefined}
+        value={display}
+        onChange={(e) => {
+          const raw = e.target.value;
+          if (raw === "") {
+            onChange(undefined);
+            return;
+          }
+          if (isNumeric) {
+            const n = Number(raw);
+            onChange(Number.isFinite(n) ? n : undefined);
+            return;
+          }
+          // 文字列キー: JSON parse 可能ならパース、不能なら生文字列
+          try {
+            onChange(JSON.parse(raw));
+          } catch {
+            onChange(raw);
+          }
+        }}
+        onBlur={onBlur}
+        className="flex-1 rounded-md border border-input bg-background px-2 py-1 text-sm font-mono focus:outline-none"
+        placeholder="(空欄で省略)"
+      />
+    </div>
+  );
+}
 
 export function AiCategory() {
   const { t } = useTranslation();
@@ -326,13 +388,88 @@ export function AiCategory() {
                     </SettingRow>
                   </>
                 ) : (
-                  preset.baseUrl && (
-                    <SettingRow label="Base URL">
-                      <span className="text-sm text-muted-foreground font-mono">
-                        {preset.baseUrl}
-                      </span>
-                    </SettingRow>
-                  )
+                  <>
+                    {preset.baseUrl && (
+                      <SettingRow label="Base URL">
+                        <span className="text-sm text-muted-foreground font-mono">
+                          {preset.baseUrl}
+                        </span>
+                      </SettingRow>
+                    )}
+                    {preset.extraSamplingKeys.length > 0 && (
+                      <div className="mt-3 mb-2">
+                        <p className="mb-1 text-sm font-medium text-foreground">
+                          サンプリングパラメータ
+                        </p>
+                        <p className="mb-2 text-xs text-muted-foreground">
+                          このプリセット固有のサンプリングパラメータ。空欄でリクエストから省略されます。配列やオブジェクトは
+                          JSON 文字列で入力してください（例:{" "}
+                          <code className="font-mono">["foo","bar"]</code>）。
+                        </p>
+                        <div className="space-y-1.5">
+                          {preset.extraSamplingKeys.map((key) =>
+                            renderSamplingInput(
+                              key,
+                              localSettings.openaiCompatible?.sampling?.[key],
+                              (next) => {
+                                // setLocalSettings の queue 経由ではなく onChange の
+                                // クロージャで閉じた最新 localSettings から updated を
+                                // 同期構築し、そのまま saveSettings に渡す（複数 key
+                                // 編集時に間の値が失われないように）
+                                const current =
+                                  localSettings.openaiCompatible?.sampling ??
+                                  {};
+                                const merged = { ...current };
+                                if (next === undefined) {
+                                  delete merged[key];
+                                } else {
+                                  merged[key] = next;
+                                }
+                                const updated = {
+                                  ...localSettings,
+                                  openaiCompatible: {
+                                    ...localSettings.openaiCompatible,
+                                    sampling: merged,
+                                  },
+                                };
+                                setLocalSettings(updated);
+                                void saveSettings(updated);
+                              },
+                              () => {
+                                /* onBlur は no-op: onChange で同期保存済み */
+                              },
+                            ),
+                          )}
+                        </div>
+                      </div>
+                    )}
+                    {preset.defaultDisableStructuredTasks && (
+                      <SettingRow
+                        label="Codex 自動抽出 / Synopsis 自動生成を許可"
+                        description="このプロバイダは構造化出力 (JSON) の精度が低いため、デフォルトで無効化されています。明示的にオプトインする場合のみ有効化してください"
+                      >
+                        <input
+                          type="checkbox"
+                          checked={
+                            localSettings.openaiCompatible
+                              ?.enableStructuredTasks ?? false
+                          }
+                          onChange={async (e) => {
+                            const updated = {
+                              ...localSettings,
+                              openaiCompatible: {
+                                ...localSettings.openaiCompatible,
+                                enableStructuredTasks: e.target.checked,
+                              },
+                            };
+                            setLocalSettings(updated);
+                            await saveSettings(updated);
+                          }}
+                          className="h-4 w-4"
+                        />
+                      </SettingRow>
+                    )}
+                  </>
                 )}
               </>
             );
@@ -585,7 +722,12 @@ export function AiCategory() {
         {/* Thinking toggle — thinking対応モデル選択時のみ表示 */}
         {localSettings.model &&
           (() => {
-            const caps = getModelCapabilities(localSettings.model);
+            // openai-compatible 等のプリセット capabilitiesOverride を反映するため
+            // resolveModelCapabilities を使う
+            const caps = resolveModelCapabilities(
+              localSettings.model,
+              localSettings,
+            );
             return caps.supportsAdaptiveThinking || caps.supportsThinking;
           })() && (
             <SettingRow

@@ -3,6 +3,8 @@ use serde::{Deserialize, Serialize};
 use std::path::Path;
 use std::sync::{atomic::Ordering, Arc};
 
+use crate::openai_compat_presets;
+
 /// Supported AI providers.
 ///
 /// `OpenaiCompatible` はユーザーが任意の OpenAI 互換エンドポイント
@@ -110,7 +112,7 @@ fn default_thinking_enabled() -> bool {
 
 /// OpenAI 互換プロバイダ用の設定。プリセット ID と任意のユーザー入力を保持する。
 /// - `preset = "custom"`: ユーザーが `base_url` を入力する
-/// - `preset = "ainoverist"` (Phase A.2): プリセット側で固定 URL を提供
+/// - `preset = "ainoverist"`: プリセット側で固定 URL を提供
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct OpenaiCompatibleSettings {
@@ -126,6 +128,16 @@ pub struct OpenaiCompatibleSettings {
     /// custom プリセット時に手動指定するモデルの最大出力
     #[serde(default)]
     pub custom_max_output: Option<u32>,
+    /// プリセット側 `extra_sampling_keys` で許可されているサンプリングパラメータ。
+    /// AI のべりすとの top_a / tailfree / typical_p / min_p / rep_pen /
+    /// badwords / stoptokens / logit_bias など。リクエストボディに素通しされる。
+    #[serde(default)]
+    pub sampling: Option<serde_json::Value>,
+    /// AI Codex 自動抽出 / Synopsis / セッションタイトル自動生成タスクで
+    /// このプロバイダを使うかどうか。プリセットの defaultDisableStructuredTasks=true
+    /// の場合、デフォルト false（オプトイン式）。
+    #[serde(default)]
+    pub enable_structured_tasks: Option<bool>,
 }
 
 fn default_openai_compat_preset() -> String {
@@ -147,10 +159,17 @@ pub struct AiSettings {
 
 impl AiSettings {
     /// 現在の設定からプロバイダ別エンドポイントを構築する。
+    /// OpenaiCompatible + ainoverist 等の固定 URL を持つプリセットの場合、
+    /// プリセット側 URL を優先する。
     pub fn endpoints(&self) -> ProviderEndpoints<'_> {
+        let openai_compat_custom =
+            match openai_compat_presets::fixed_base_url(&self.openai_compatible.preset) {
+                Some(fixed) => fixed,
+                None => self.openai_compatible.base_url.as_str(),
+            };
         ProviderEndpoints {
             ollama: &self.ollama_endpoint,
-            openai_compat_custom: &self.openai_compatible.base_url,
+            openai_compat_custom,
         }
     }
 }
@@ -428,6 +447,72 @@ pub struct ChatParams<'a> {
     pub effort: Option<String>,
     pub reasoning_enabled: Option<bool>,
     pub reasoning_effort: Option<String>,
+    /// OpenAI 互換プロバイダのプリセット（ainoverist 等）が要求する追加リクエスト
+    /// ボディフィールド。`top_a` / `tailfree` 等の独自サンプリングパラメータを
+    /// オブジェクトで渡すと、`send_chat*` がリクエストボディにマージする。
+    pub extra_body: Option<serde_json::Value>,
+    /// 429 (Too Many Requests) を受けたときに指数バックオフでリトライするか。
+    /// レート制限を公開しているプリセット（ainoverist 等）で true にする。
+    pub retry_429: bool,
+}
+
+/// `Retry-After` ヘッダから待機ミリ秒を取り出す。秒数 (整数) のみ対応。
+/// 値が無い／パース不能なら None。
+fn parse_retry_after_ms(resp: &reqwest::Response) -> Option<u64> {
+    let header = resp.headers().get(reqwest::header::RETRY_AFTER)?;
+    let s = header.to_str().ok()?;
+    let secs: u64 = s.trim().parse().ok()?;
+    Some(secs.saturating_mul(1000))
+}
+
+/// 429 を受けたときに指数バックオフでリトライするヘルパ。
+/// `retry_enabled = false` のときはリトライせず初回応答を返す。
+async fn send_with_429_retry(
+    initial: reqwest::RequestBuilder,
+    retry_enabled: bool,
+    max_retries: u32,
+) -> anyhow::Result<reqwest::Response> {
+    let mut current = initial;
+    let mut attempt: u32 = 0;
+    loop {
+        // try_clone は send 前にしかできないので、ループの先頭で次の試行用にクローン
+        let next = if retry_enabled && attempt < max_retries {
+            current.try_clone()
+        } else {
+            None
+        };
+        let resp = current.send().await?;
+        if !retry_enabled || resp.status() != reqwest::StatusCode::TOO_MANY_REQUESTS {
+            return Ok(resp);
+        }
+        let Some(c) = next else {
+            // 残り試行回数なし。最後の 429 応答をそのまま返し、呼び出し側で
+            // error_for_status などのハンドリングに任せる。
+            return Ok(resp);
+        };
+        let wait_ms = parse_retry_after_ms(&resp).unwrap_or_else(|| {
+            // 指数バックオフ: 1s, 2s, 4s
+            1000u64 * (1u64 << attempt)
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(wait_ms)).await;
+        attempt += 1;
+        current = c;
+    }
+}
+
+/// `params.extra_body` をリクエストボディにマージする。
+/// `body` がオブジェクトでない場合は何もしない。
+fn merge_extra_body(body: &mut serde_json::Value, extra: &Option<serde_json::Value>) {
+    let Some(serde_json::Value::Object(map)) = extra.clone() else {
+        return;
+    };
+    if let serde_json::Value::Object(target) = body {
+        for (k, v) in map {
+            // 既存キーを上書きしない（プロバイダ固有のサンプリングが事故で
+            // model / messages 等を破壊しないよう保護）
+            target.entry(k).or_insert(v);
+        }
+    }
 }
 
 /// Send a chat completion request with the given messages.
@@ -476,9 +561,10 @@ pub async fn send_chat(
                 params.reasoning_enabled,
                 &params.reasoning_effort,
             );
+            merge_extra_body(&mut body, &params.extra_body);
 
-            let resp = openai_compat_request(&client, params, &body)
-                .send()
+            let req = openai_compat_request(&client, params, &body);
+            let resp = send_with_429_retry(req, params.retry_429, 3)
                 .await?
                 .error_for_status()?;
             let result: serde_json::Value = resp.json().await?;
@@ -1060,9 +1146,10 @@ pub async fn send_chat_with_tools(
                 params.reasoning_enabled,
                 &params.reasoning_effort,
             );
+            merge_extra_body(&mut body, &params.extra_body);
 
-            let resp = openai_compat_request(&client, params, &body)
-                .send()
+            let req = openai_compat_request(&client, params, &body);
+            let resp = send_with_429_retry(req, params.retry_429, 3)
                 .await?
                 .error_for_status()?;
             let result: serde_json::Value = resp.json().await?;
@@ -1220,8 +1307,10 @@ pub async fn send_chat_stream(
                 params.reasoning_enabled,
                 &params.reasoning_effort,
             );
+            merge_extra_body(&mut body, &params.extra_body);
 
-            let resp = openai_compat_request(&client, params, &body).send().await?;
+            let req = openai_compat_request(&client, params, &body);
+            let resp = send_with_429_retry(req, params.retry_429, 3).await?;
             if !resp.status().is_success() {
                 let status = resp.status();
                 let body_text = resp.text().await.unwrap_or_default();

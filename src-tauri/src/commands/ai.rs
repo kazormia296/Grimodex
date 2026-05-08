@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use crate::ai;
+use crate::openai_compat_presets;
 
 use super::{AiSettingsPath, AppError, InlineAiAbortFlag, StreamAbortFlag};
 
@@ -17,6 +18,58 @@ pub(super) fn resolve_api_key(provider: &ai::AiProvider) -> anyhow::Result<Strin
     }
     ai::get_api_key(provider)?
         .ok_or_else(|| anyhow::anyhow!("No API key configured for {}", provider))
+}
+
+/// 設定からプリセット由来のレート制限有無を判定し、429 リトライを有効化すべきか
+/// を返す。プリセットがレート制限を公開していない場合は false。
+pub(super) fn should_retry_429(settings: &ai::AiSettings) -> bool {
+    if !matches!(settings.provider, ai::AiProvider::OpenaiCompatible) {
+        return false;
+    }
+    openai_compat_presets::rate_limit_for(
+        &settings.openai_compatible.preset,
+        &settings.model,
+    )
+    .is_some()
+}
+
+/// OpenAI 互換プロバイダのプリセット extra_body を構築する。
+/// プリセットが許可するサンプリングキーだけを `settings.openai_compatible.sampling`
+/// から抽出して JSON オブジェクトとして返す。プリセットが許可キーを持たない、
+/// またはユーザーが値を設定していない場合は None。
+pub(super) fn build_openai_compat_extra_body(
+    settings: &ai::AiSettings,
+) -> Option<serde_json::Value> {
+    if !matches!(settings.provider, ai::AiProvider::OpenaiCompatible) {
+        return None;
+    }
+    let allowed_keys =
+        openai_compat_presets::extra_sampling_keys(&settings.openai_compatible.preset);
+    if allowed_keys.is_empty() {
+        return None;
+    }
+    let user_sampling = settings.openai_compatible.sampling.as_ref()?;
+    let user_obj = user_sampling.as_object()?;
+    let mut out = serde_json::Map::new();
+    for key in allowed_keys {
+        if let Some(v) = user_obj.get(*key) {
+            // null や空文字は省略（誤送信防止）
+            if v.is_null() {
+                continue;
+            }
+            if let Some(s) = v.as_str() {
+                if s.is_empty() {
+                    continue;
+                }
+            }
+            out.insert((*key).to_string(), v.clone());
+        }
+    }
+    if out.is_empty() {
+        None
+    } else {
+        Some(serde_json::Value::Object(out))
+    }
 }
 
 #[derive(serde::Deserialize)]
@@ -36,6 +89,8 @@ pub(crate) async fn send_chat_message(
 ) -> Result<ai::ChatResponse, AppError> {
     let settings = ai::read_ai_settings(&ai_path.path);
     let api_key = resolve_api_key(&settings.provider)?;
+    let extra_body = build_openai_compat_extra_body(&settings);
+    let retry_429 = should_retry_429(&settings);
     let params = ai::ChatParams {
         provider: &settings.provider,
         model: &settings.model,
@@ -45,6 +100,8 @@ pub(crate) async fn send_chat_message(
         effort,
         reasoning_enabled,
         reasoning_effort,
+        extra_body,
+        retry_429,
     };
     let result = ai::send_chat(
         &params,
@@ -86,6 +143,8 @@ pub(crate) async fn send_chat_message_stream(
     let settings = ai::read_ai_settings(&ai_path.path);
     let api_key = resolve_api_key(&settings.provider)?;
     let flag_clone = Arc::clone(&abort_flag.flag);
+    let extra_body = build_openai_compat_extra_body(&settings);
+    let retry_429 = should_retry_429(&settings);
     let params = ai::ChatParams {
         provider: &settings.provider,
         model: &settings.model,
@@ -95,6 +154,8 @@ pub(crate) async fn send_chat_message_stream(
         effort,
         reasoning_enabled,
         reasoning_effort,
+        extra_body,
+        retry_429,
     };
 
     let result = ai::send_chat_stream(
@@ -155,6 +216,8 @@ pub(crate) async fn send_inline_ai_stream(
         .as_deref()
         .filter(|m| !m.is_empty())
         .unwrap_or(&settings.model);
+    let extra_body = build_openai_compat_extra_body(&settings);
+    let retry_429 = should_retry_429(&settings);
     let params = ai::ChatParams {
         provider: &settings.provider,
         model: resolved_model,
@@ -164,6 +227,8 @@ pub(crate) async fn send_inline_ai_stream(
         effort,
         reasoning_enabled,
         reasoning_effort,
+        extra_body,
+        retry_429,
     };
 
     let result = ai::send_chat_stream(
@@ -202,6 +267,8 @@ pub(crate) async fn send_agent_message(
 ) -> Result<ai::ChatResponse, AppError> {
     let settings = ai::read_ai_settings(&ai_path.path);
     let api_key = resolve_api_key(&settings.provider)?;
+    let extra_body = build_openai_compat_extra_body(&settings);
+    let retry_429 = should_retry_429(&settings);
     let params = ai::ChatParams {
         provider: &settings.provider,
         model: &settings.model,
@@ -211,6 +278,8 @@ pub(crate) async fn send_agent_message(
         effort,
         reasoning_enabled,
         reasoning_effort,
+        extra_body,
+        retry_429,
     };
     let result = ai::send_chat_with_tools(&params, &messages, &tools).await?;
     Ok(result)

@@ -884,6 +884,8 @@ pub(crate) async fn foreshadow_propose_past_setups(
 
     let settings = ai::read_ai_settings(&ai_path.path);
     let api_key = resolve_api_key(&settings.provider)?;
+    let extra_body = crate::commands::ai::build_openai_compat_extra_body(&settings);
+    let retry_429 = crate::commands::ai::should_retry_429(&settings);
     let params = ai::ChatParams {
         provider: &settings.provider,
         model: &settings.model,
@@ -893,6 +895,8 @@ pub(crate) async fn foreshadow_propose_past_setups(
         effort: None,
         reasoning_enabled: None,
         reasoning_effort: None,
+        extra_body,
+        retry_429,
     };
     let response = ai::send_chat(&params, &[("user", prompt.as_str())]).await?;
     let text = response
@@ -1017,6 +1021,8 @@ pub(crate) async fn foreshadow_audit_chapter(
 
     let settings = ai::read_ai_settings(&ai_path.path);
     let api_key = resolve_api_key(&settings.provider)?;
+    let extra_body = crate::commands::ai::build_openai_compat_extra_body(&settings);
+    let retry_429 = crate::commands::ai::should_retry_429(&settings);
     let params = ai::ChatParams {
         provider: &settings.provider,
         model: &settings.model,
@@ -1026,6 +1032,8 @@ pub(crate) async fn foreshadow_audit_chapter(
         effort: None,
         reasoning_enabled: None,
         reasoning_effort: None,
+        extra_body,
+        retry_429,
     };
     let response = ai::send_chat(&params, &[("user", prompt.as_str())]).await?;
     let text = response

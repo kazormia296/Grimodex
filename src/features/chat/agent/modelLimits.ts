@@ -214,23 +214,68 @@ export function resolveModelCapabilities(
     | undefined;
   if (!oc) return base;
 
-  // Phase A.1 では custom プリセットのみ。Phase A.2 で ainoverist を追加した際に
-  // プリセット側 capabilitiesOverride / models を引いて hydrate する。
-  // 動的 import を避けるため、呼び出し側 (settings store) で hydrate 済みの
-  // 値を渡す前提とし、ここでは型安全な custom プリセット処理だけを行う。
-  if (oc.preset === "custom" || oc.preset === undefined) {
+  if (oc.preset === "ainoverist") {
+    // ainoverist プリセット: モデル別の capabilities をプリセット側 hydrator が提供
+    // 循環 import 回避のため動的 import + cache パターンで参照する
+    const aino = getAinoveristCaps(model);
+    if (aino) {
+      return {
+        ...base,
+        contextWindow: aino.contextWindow,
+        maxOutputTokens: aino.maxOutputTokens,
+        supportsTools: false,
+        supportsThinking: false,
+        supportsAdaptiveThinking: false,
+        supportsEffort: false,
+        supportsMaxEffort: false,
+        supportsReasoning: false,
+      };
+    }
+    // 未知モデル名はベースで継続（fallback）
     return {
       ...base,
-      contextWindow: oc.customMaxContext ?? base.contextWindow,
-      maxOutputTokens: oc.customMaxOutput ?? base.maxOutputTokens,
-      // ローカル LLM では拡張思考を OFF 固定
+      supportsTools: false,
       supportsThinking: false,
       supportsAdaptiveThinking: false,
       supportsEffort: false,
     };
   }
 
-  return base;
+  // custom プリセット (or 未指定): ユーザー入力の customMax* を反映
+  return {
+    ...base,
+    contextWindow: oc.customMaxContext ?? base.contextWindow,
+    maxOutputTokens: oc.customMaxOutput ?? base.maxOutputTokens,
+    supportsThinking: false,
+    supportsAdaptiveThinking: false,
+    supportsEffort: false,
+  };
+}
+
+/**
+ * ainoverist モデル能力テーブル参照のヘルパ。
+ * `openaiCompatPresets` から動的 import を避けて再エクスポートする。
+ * このファイルに直接置くと `agent/modelLimits.ts` → `openaiCompatPresets.ts` →
+ * `agent/modelLimits.ts` の循環 import になるため、関数間接参照で切る。
+ */
+let _ainoveristCapsTable: Record<
+  string,
+  Pick<ModelCapabilities, "contextWindow" | "maxOutputTokens">
+> | null = null;
+
+export function registerAinoveristCaps(
+  table: Record<
+    string,
+    Pick<ModelCapabilities, "contextWindow" | "maxOutputTokens">
+  >,
+): void {
+  _ainoveristCapsTable = table;
+}
+
+function getAinoveristCaps(
+  model: string,
+): Pick<ModelCapabilities, "contextWindow" | "maxOutputTokens"> | undefined {
+  return _ainoveristCapsTable?.[model];
 }
 
 /** ツール結果のトークン予算 = コンテキスト上限の30%（最低2,000） */

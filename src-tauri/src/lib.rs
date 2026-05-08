@@ -3,6 +3,7 @@ mod codex_matching;
 mod commands;
 mod database;
 mod lint_logging;
+mod openai_compat_presets;
 mod workspace;
 
 use std::sync::{Arc, Mutex};

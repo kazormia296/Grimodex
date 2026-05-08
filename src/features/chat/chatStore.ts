@@ -50,6 +50,9 @@ import {
   resolveModelCapabilities,
 } from "./agent/modelLimits";
 import { useAiSettingsStore } from "./store";
+// 副作用 import: ainoverist モデル能力テーブルを registerAinoveristCaps() で
+// 起動時に登録する。`resolveModelCapabilities` が参照する。
+import "./openaiCompatPresets";
 import type {
   AgentMessagePayload,
   ToolCallRecord,

@@ -5,12 +5,13 @@
  * ビルダーが同じ宣言を参照する。プロトコル自体は OpenAI 互換そのもの (Vercel AI
  * SDK `openai` の `baseURL` 上書き) だが、プロバイダごとに固有の固定 URL・モデル
  * 一覧・サンプリングパラメータ・レート制限をプリセットとして表現する。
- *
- * Phase A.1 では "custom" のみ。Phase A.2 で "ainoverist" を追加予定。
  */
 
 import type { AiModel } from "./types";
-import type { ModelCapabilities } from "./agent/modelLimits";
+import {
+  registerAinoveristCaps,
+  type ModelCapabilities,
+} from "./agent/modelLimits";
 
 export interface OpenaiCompatPresetRateLimit {
   /** デフォルトのリクエスト/分上限 */
@@ -70,7 +71,86 @@ const CUSTOM_PRESET: OpenaiCompatPreset = {
     "llama.cpp / LM Studio / vLLM / 自前ホストの GPU 推論サーバ等。baseURL を入力してください。API キーが不要なサーバの場合は空欄で構いません。",
 };
 
-const PRESETS: readonly OpenaiCompatPreset[] = [CUSTOM_PRESET];
+/**
+ * AI のべりすとプリセット。
+ * 日本語小説特化のプロバイダ。OpenAI 互換チャット API を提供する。
+ *
+ * - 固定 baseURL: https://api.tringpt.com/api
+ * - モデル別の入力/出力上限が大きく異なる（現行主力 40k/4k vs damsel 2.4k/400）
+ * - 独自サンプリングパラメータ（KoboldAI 系）をリクエストボディに素通し
+ * - 拡張思考非対応・構造化出力タスクはデフォルト無効化
+ * - レート制限: 200 req/分（damsel のみ 90 req/分）
+ */
+const AINOVERIST_PRESET: OpenaiCompatPreset = {
+  id: "ainoverist",
+  displayName: "AI のべりすと",
+  baseUrl: "https://api.tringpt.com/api",
+  models: [
+    // 現行主力 (40k 入力 / 4k 出力)
+    { id: "derrida_03", name: "derrida_03" },
+    { id: "spiko", name: "spiko" },
+    { id: "spiko_solid", name: "spiko_solid" },
+    { id: "spiko_max", name: "spiko_max" },
+    // 現行 (出力小)
+    { id: "damsel_ray", name: "damsel_ray" },
+    // レガシー (9k / 400)
+    { id: "supertrin_highpres", name: "supertrin_highpres" },
+    { id: "supertrin_maxpres", name: "supertrin_maxpres" },
+    { id: "supertrin", name: "supertrin (legacy)" },
+    // レガシー最古 (2.4k / 400)
+    { id: "damsel", name: "damsel (legacy)" },
+  ],
+  capabilitiesOverride: {
+    supportsTools: false,
+    supportsThinking: false,
+    supportsAdaptiveThinking: false,
+    supportsEffort: false,
+    supportsMaxEffort: false,
+    supportsReasoning: false,
+  },
+  rateLimit: {
+    requestsPerMinute: 200,
+    perModelOverride: { damsel: 90 },
+  },
+  extraSamplingKeys: [
+    "top_a",
+    "tailfree",
+    "typical_p",
+    "min_p",
+    "rep_pen",
+    "badwords",
+    "stoptokens",
+    "logit_bias",
+  ],
+  defaultDisableStructuredTasks: true,
+  helperText:
+    "日本語小説特化のプロバイダ。API キーは https://ai-novel.com/account_api.php で発行できます。",
+};
+
+/** ainoverist プリセットのモデル別 capabilities マッピング */
+export const AINOVERIST_MODEL_CAPS: Record<
+  string,
+  Pick<ModelCapabilities, "contextWindow" | "maxOutputTokens">
+> = {
+  // 現行主力 (40k / 4k)
+  derrida_03: { contextWindow: 40_000, maxOutputTokens: 4_096 },
+  spiko: { contextWindow: 40_000, maxOutputTokens: 4_096 },
+  spiko_solid: { contextWindow: 40_000, maxOutputTokens: 4_096 },
+  spiko_max: { contextWindow: 40_000, maxOutputTokens: 4_096 },
+  // damsel_ray (12k / 400)
+  damsel_ray: { contextWindow: 12_288, maxOutputTokens: 400 },
+  // レガシー supertrin 系 (9k / 400)
+  supertrin_highpres: { contextWindow: 9_216, maxOutputTokens: 400 },
+  supertrin_maxpres: { contextWindow: 9_216, maxOutputTokens: 400 },
+  supertrin: { contextWindow: 9_216, maxOutputTokens: 400 },
+  // damsel (2.4k / 400) — 縮退モード対象
+  damsel: { contextWindow: 2_400, maxOutputTokens: 400 },
+};
+
+const PRESETS: readonly OpenaiCompatPreset[] = [
+  CUSTOM_PRESET,
+  AINOVERIST_PRESET,
+];
 
 /** プリセット一覧を返す (UI のドロップダウン構築用) */
 export function listOpenaiCompatPresets(): readonly OpenaiCompatPreset[] {
@@ -83,3 +163,7 @@ export function getOpenaiCompatPreset(
 ): OpenaiCompatPreset {
   return PRESETS.find((p) => p.id === id) ?? CUSTOM_PRESET;
 }
+
+// 循環 import 回避: modelLimits 側に ainoverist のモデル能力テーブルを登録する。
+// `resolveModelCapabilities` が ainoverist プリセットで参照する。
+registerAinoveristCaps(AINOVERIST_MODEL_CAPS);
