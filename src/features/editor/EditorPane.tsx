@@ -34,7 +34,7 @@ import { extractBeatPovOverrides } from "@/features/editor/beat/extractBeatPovOv
 import { upsertSceneBeatPovOverrides } from "@/features/editor/beat/beatPovCacheApi";
 import { upsertSceneBodyMentions } from "@/features/editor/beat/bodyMentionApi";
 import { useUnplacedBeatsStore } from "@/features/editor/beat/unplacedBeatsStore";
-import { getCodexEntry, updateCodexEntry } from "@/features/codex/api";
+import { getCodexEntry } from "@/features/codex/api";
 import type { CodexEntry } from "@/features/codex/api";
 import type {
   CodexMentionPopupState,
@@ -329,7 +329,11 @@ export function EditorPane({
           .getState()
           .updatePhase(phaseId, { contentOverride: content });
       } else {
-        await updateCodexEntry(id, { content });
+        // updateText goes through codexStore so the in-memory entries[] is
+        // refreshed too — otherwise the Codex panel keeps the pre-edit doc
+        // and reverts visually on entry-navigation until a filter / reload
+        // pulls fresh data from DB.
+        await useCodexStore.getState().updateText(id, { content });
       }
     } else if (ctx === "snippet") {
       const content = ed.getHTML();
