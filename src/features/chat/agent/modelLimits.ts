@@ -4,6 +4,12 @@ export type ThinkingDisplay = "summarized" | "omitted";
 
 export interface ModelCapabilities {
   contextWindow: number;
+  /**
+   * モデル固有のハード出力上限（明確な制約があるモデルにのみ設定）。
+   * undefined の場合は contextBuilder 側のデフォルト応答予約ロジックに従う。
+   * AI のべりすと等、API がモデル別に出力上限を持つプロバイダで使用。
+   */
+  maxOutputTokens?: number;
   supportsTools: boolean;
   supportsThinking: boolean; // budget_tokens 方式 (4.5 系)
   supportsAdaptiveThinking: boolean; // adaptive 方式 (4.6 系)

@@ -4,6 +4,8 @@ import {
   trimToFit,
   countTokens,
   sanitizeSceneContent,
+  allocateLayerBudgets,
+  computeResponseReservation,
   type SceneContext,
   type ProjectContext,
   type CodexContext,
@@ -657,6 +659,82 @@ describe("contextBuilder", () => {
       });
       expect(result.prompt).not.toContain("予定ビート");
       expect(result.prompt).not.toContain("本文テキスト");
+    });
+  });
+
+  describe("computeResponseReservation", () => {
+    it("returns ratio-based reservation when maxOutputTokens is undefined", () => {
+      // 200k * 5% = 10,000
+      expect(computeResponseReservation(200_000)).toBe(10_000);
+      // 8k * 5% = 400 -> floor 2,000
+      expect(computeResponseReservation(8_000)).toBe(2_000);
+    });
+
+    it("clamps to maxOutputTokens when smaller than ratio-based", () => {
+      // 200k * 5% = 10,000 だが maxOutputTokens=4096 で頭打ち
+      expect(computeResponseReservation(200_000, 4_096)).toBe(4_096);
+      // 12k * 5% = 600 -> floor 2,000、maxOutputTokens=400 でさらに下に
+      expect(computeResponseReservation(12_288, 400)).toBe(400);
+    });
+
+    it("does not clamp when maxOutputTokens is larger than ratio-based", () => {
+      // 200k * 5% = 10,000、maxOutputTokens=64000 は上限のため無視
+      expect(computeResponseReservation(200_000, 64_000)).toBe(10_000);
+    });
+  });
+
+  describe("allocateLayerBudgets", () => {
+    it("uses standard ratio allocation for typical context windows", () => {
+      const budgets = allocateLayerBudgets(200_000);
+      expect(budgets.degraded).toBe(false);
+      expect(budgets.responseReservation).toBe(10_000);
+      // available = 190,000
+      expect(budgets.l1).toBe(3_800); // 2%
+      expect(budgets.l2).toBe(19_000); // 10%
+      expect(budgets.l3).toBe(76_000); // 40%
+      expect(budgets.l4).toBe(38_000); // 20%
+      expect(budgets.l5).toBe(38_000); // 20%
+    });
+
+    it("preserves legacy behavior when maxOutputTokens is undefined", () => {
+      // Phase 0 の互換性: undefined 時は従来挙動
+      const before = allocateLayerBudgets(8_192);
+      const after = allocateLayerBudgets(8_192, { maxOutputTokens: undefined });
+      expect(after).toEqual(before);
+    });
+
+    it("clamps response reservation when maxOutputTokens is provided", () => {
+      // AI のべりすと spiko (40k入力 / 4k出力) 想定
+      const budgets = allocateLayerBudgets(40_000, { maxOutputTokens: 4_096 });
+      expect(budgets.degraded).toBe(false);
+      expect(budgets.responseReservation).toBe(2_000); // 40k*5%=2000 が下限
+      // 比率配分は通常通り走る
+      expect(budgets.l3).toBeGreaterThan(0);
+      expect(budgets.l4).toBeGreaterThan(0);
+    });
+
+    it("supertrin 系 (9216 入力 / 400 出力) は通常配分で degraded=false", () => {
+      const budgets = allocateLayerBudgets(9_216, { maxOutputTokens: 400 });
+      expect(budgets.degraded).toBe(false);
+      expect(budgets.responseReservation).toBe(400); // 出力 400 でクランプ
+      // available = 9216 - 400 = 8816, floor 4500 を超える
+      expect(budgets.l1).toBeGreaterThan(0);
+      expect(budgets.l2).toBeGreaterThan(0);
+      expect(budgets.l3).toBeGreaterThan(0);
+      expect(budgets.l4).toBeGreaterThan(0);
+      expect(budgets.l5).toBeGreaterThan(0);
+    });
+
+    it("damsel (2400 入力 / 400 出力) は縮退モードで L1/L2/L4=0", () => {
+      const budgets = allocateLayerBudgets(2_400, { maxOutputTokens: 400 });
+      expect(budgets.degraded).toBe(true);
+      expect(budgets.responseReservation).toBe(400);
+      expect(budgets.l1).toBe(0);
+      expect(budgets.l2).toBe(0);
+      expect(budgets.l4).toBe(0);
+      // available = 2000, l3 = min(2000, 1200) = 1200, l5 = min(1000, 600) = 600
+      expect(budgets.l3).toBe(1_200);
+      expect(budgets.l5).toBe(600);
     });
   });
 });

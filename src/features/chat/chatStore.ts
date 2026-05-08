@@ -391,8 +391,8 @@ async function buildSceneContextPrompt(opts: {
   const allEntries = opts.prefetchedEntries ?? (await listCodexEntries());
 
   const chatModel = useAiSettingsStore.getState().settings?.model ?? "";
-  const { contextWindow } = getModelCapabilities(chatModel);
-  const budgets = allocateLayerBudgets(contextWindow);
+  const { contextWindow, maxOutputTokens } = getModelCapabilities(chatModel);
+  const budgets = allocateLayerBudgets(contextWindow, { maxOutputTokens });
   const L4_TOTAL_BUDGET = budgets.l4;
 
   // G12: context_mode filter
@@ -677,6 +677,7 @@ async function buildSceneContextPrompt(opts: {
     commandInstruction,
     conversationTokens,
     contextWindow,
+    maxOutputTokens,
     conversationSummary,
     pendingBeatsSection,
     lang: projectCtx?.language ?? "ja",

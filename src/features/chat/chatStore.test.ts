@@ -35,6 +35,8 @@ vi.mock("./contextBuilder", () => ({
     l2: 19_000,
     l3: 76_000,
     l4: 38_000,
+    l5: 38_000,
+    degraded: false,
   })),
   ensureTokenizer: vi.fn(() => Promise.resolve()),
 }));

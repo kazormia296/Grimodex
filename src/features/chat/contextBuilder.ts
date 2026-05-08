@@ -84,6 +84,11 @@ export interface BuildSystemPromptInput {
   commandInstruction?: string;
   /** G8/G10: モデルのコンテキストウィンドウサイズ（比率ベース予算配分に使用） */
   contextWindow?: number;
+  /**
+   * モデル固有のハード出力上限（明確な制約があるモデルにのみ設定）。
+   * 応答予約計算で min(maxOutputTokens, contextWindow*5%) のクランプに使用。
+   */
+  maxOutputTokens?: number;
   /** G9: 会話履歴のトークン数（trimToFit使用時に必要） */
   conversationTokens?: number;
   /** G25: トリムで除外するレイヤー（空文字に置換される） */
@@ -110,21 +115,70 @@ export interface LayerBudgets {
   l2: number;
   l3: number;
   l4: number;
+  l5: number;
+  /**
+   * 入力側 floor 合計 (4,500 tok) を満たせない極小コンテキストモデル
+   * (例: AI のべりすと damsel = 2,400 tok) で発動する縮退モード。
+   * L1/L2/L4 をゼロに圧縮し、L3 と L5 のみ確保する。
+   */
+  degraded: boolean;
 }
 
 /**
- * G8/G10: コンテキストウィンドウに対する比率ベース予算配分。
- * 応答予約（~5%, 最小2,000）を先に確保し、残りを各レイヤーに配分。
+ * 応答予約トークン数の計算。
+ * モデル固有の `maxOutputTokens` が定義されている場合はそれを上限としてクランプする。
+ * undefined の場合はコンテキストウィンドウの 5%（最小 2,000）を採用。
  */
-export function allocateLayerBudgets(contextWindow: number): LayerBudgets {
-  const responseReservation = Math.max(Math.round(contextWindow * 0.05), 2000);
-  const available = contextWindow - responseReservation;
+export function computeResponseReservation(
+  contextWindow: number,
+  maxOutputTokens?: number,
+): number {
+  const ratioBased = Math.max(Math.round(contextWindow * 0.05), 2000);
+  return maxOutputTokens !== undefined
+    ? Math.min(maxOutputTokens, ratioBased)
+    : ratioBased;
+}
+
+/** 入力側 floor 合計 (応答予約を除く L1〜L5 の最小確保量の和) */
+const INPUT_FLOOR_TOTAL = 4_500; // L1 500 + L2 500 + L3 2000 + L4 500 + L5 1000
+
+/**
+ * G8/G10: コンテキストウィンドウに対する比率ベース予算配分。
+ * 応答予約を先に確保し、残りを各レイヤーに配分する。
+ *
+ * `available = contextWindow - responseReservation` が input floor 合計 (4,500 tok)
+ * を割る場合は縮退モードに入り、L1/L2/L4 をゼロ、L3 と L5 のみ確保する。
+ */
+export function allocateLayerBudgets(
+  contextWindow: number,
+  opts?: { maxOutputTokens?: number },
+): LayerBudgets {
+  const responseReservation = computeResponseReservation(
+    contextWindow,
+    opts?.maxOutputTokens,
+  );
+  const available = Math.max(0, contextWindow - responseReservation);
+
+  if (available < INPUT_FLOOR_TOTAL) {
+    return {
+      responseReservation,
+      l1: 0,
+      l2: 0,
+      l3: Math.round(Math.min(2000, available * 0.6)),
+      l4: 0,
+      l5: Math.round(Math.min(1000, available * 0.3)),
+      degraded: true,
+    };
+  }
+
   return {
     responseReservation,
     l1: Math.round(available * 0.02),
     l2: Math.round(available * 0.1),
     l3: Math.round(available * 0.4),
     l4: Math.round(available * 0.2),
+    l5: Math.round(available * 0.2),
+    degraded: false,
   };
 }
 
@@ -312,8 +366,6 @@ function trimL5Text(_text: string, _targetTokens: number): string {
 // ---------------------------------------------------------------------------
 // trimToFit: budget超過時にL5→L4→L2→L3→L1の順でトリム
 // ---------------------------------------------------------------------------
-
-const RESPONSE_RESERVATION = 4_000;
 
 export function trimToFit(layers: TrimInput, budget: number): TrimResult {
   const sumTokens = (t: TrimInput) =>
@@ -507,8 +559,12 @@ export function buildSystemPrompt(
     input.contextWindow !== undefined &&
     input.conversationTokens !== undefined
   ) {
+    const responseReservation = computeResponseReservation(
+      input.contextWindow,
+      input.maxOutputTokens,
+    );
     const budget =
-      input.contextWindow - RESPONSE_RESERVATION - input.conversationTokens;
+      input.contextWindow - responseReservation - input.conversationTokens;
     const trimInput: TrimInput = {
       baseText,
       l1Text: effectiveL1,
