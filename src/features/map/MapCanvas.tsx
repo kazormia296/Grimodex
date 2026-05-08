@@ -1137,7 +1137,7 @@ export function MapCanvas() {
     <div
       ref={setRootRef}
       data-droptarget-id="map-panel"
-      className={`${isCorkboard ? "map-corkboard " : ""}data-[trash-drop-hover=true]:ring-2 data-[trash-drop-hover=true]:ring-primary/60`}
+      className={`${isCorkboard ? "map-corkboard " : ""}data-[trash-drop-hover=true]:ring-2 data-[trash-drop-hover=true]:ring-primary/60 data-[trash-drop-hover=true]:ring-inset`}
       style={{ width: "100%", height: "100%", position: "relative" }}
       onKeyDown={onKeyDown}
       onKeyUp={onKeyUp}

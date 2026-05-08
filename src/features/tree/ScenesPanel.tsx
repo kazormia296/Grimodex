@@ -259,7 +259,7 @@ export function ScenesPanel() {
         <div
           ref={trashDropRef}
           data-droptarget-id="scenes-panel"
-          className="relative flex h-full flex-col data-[trash-drop-hover=true]:ring-2 data-[trash-drop-hover=true]:ring-primary/60"
+          className="relative flex h-full flex-col data-[trash-drop-hover=true]:ring-2 data-[trash-drop-hover=true]:ring-primary/60 data-[trash-drop-hover=true]:ring-inset"
         >
           <ScenesToolbar
             onCreate={handleCreate}

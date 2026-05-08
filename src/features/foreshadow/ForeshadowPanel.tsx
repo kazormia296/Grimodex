@@ -395,7 +395,7 @@ export function ForeshadowPanel() {
     <div
       ref={trashDropRef}
       data-droptarget-id="foreshadow-panel"
-      className="flex h-full flex-col data-[trash-drop-hover=true]:ring-2 data-[trash-drop-hover=true]:ring-primary/60"
+      className="flex h-full flex-col data-[trash-drop-hover=true]:ring-2 data-[trash-drop-hover=true]:ring-primary/60 data-[trash-drop-hover=true]:ring-inset"
     >
       <div className="flex items-center justify-between border-b border-border px-3 py-2">
         <span className="text-xs font-semibold text-foreground">

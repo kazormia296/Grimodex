@@ -326,7 +326,7 @@ export function SnippetPanel() {
     <div
       ref={setRootRef}
       data-droptarget-id="snippets-panel"
-      className="relative flex h-full flex-col data-[trash-drop-hover=true]:ring-2 data-[trash-drop-hover=true]:ring-primary/60"
+      className="relative flex h-full flex-col data-[trash-drop-hover=true]:ring-2 data-[trash-drop-hover=true]:ring-primary/60 data-[trash-drop-hover=true]:ring-inset"
       data-testid="snippet-panel"
       tabIndex={0}
       onKeyDown={handleKeyDown}
