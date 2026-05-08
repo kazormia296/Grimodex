@@ -77,7 +77,15 @@ function makeSnippet(over: Partial<Snippet> = {}): Snippet {
     id: "sn-1",
     projectId: "p",
     title: "メモ",
-    content: "{}",
+    content: JSON.stringify({
+      type: "doc",
+      content: [
+        {
+          type: "paragraph",
+          content: [{ type: "text", text: "snippet 本文" }],
+        },
+      ],
+    }),
     tagsCache: null,
     contentSource: null,
     sceneId: null,
@@ -90,12 +98,22 @@ function makeSnippet(over: Partial<Snippet> = {}): Snippet {
 }
 
 describe("captureSceneDeletion", () => {
+  const bodyDoc = JSON.stringify({
+    type: "doc",
+    content: [
+      {
+        type: "paragraph",
+        content: [{ type: "text", text: "本文サンプル" }],
+      },
+    ],
+  });
+
   it("ScenePayload を組み立てて enqueuePending を呼ぶ", () => {
     const node = makeNode();
     captureSceneDeletion({
       projectId: "p",
       node,
-      content: "{}",
+      content: bodyDoc,
       folderHintName: "Chapter 1",
       tempId: "tmp-1",
     });
@@ -111,7 +129,7 @@ describe("captureSceneDeletion", () => {
     const payload = input.payload as ScenePayload;
     expect(payload.originalId).toBe("node-1");
     expect(payload.title).toBe("夜の散歩");
-    expect(payload.body).toBe("{}");
+    expect(payload.body).toBe(bodyDoc);
     expect(payload.beats).toBe("[]");
     expect(payload.folderHintId).toBe("folder-1");
     expect(payload.folderHintName).toBe("Chapter 1");
@@ -149,7 +167,7 @@ describe("captureSceneDeletion", () => {
     captureSceneDeletion({
       projectId: "p",
       node: makeNode({ title: longTitle }),
-      content: "{}",
+      content: bodyDoc,
       folderHintName: null,
       tempId: "tmp-3",
     });
@@ -216,17 +234,17 @@ describe("captureSnippetDeletion", () => {
     const payload = input.payload as SnippetPayload;
     expect(payload.originalId).toBe("sn-1");
     expect(payload.title).toBe("メモ");
-    expect(payload.body).toBe("{}");
+    expect(payload.body).toContain("snippet 本文");
     expect(payload.tags).toBe('[{"name":"foo","color":"#f00"}]');
     expect(options.tempId).toBe("tmp-sn");
   });
 });
 
 describe("空コンテンツのキャプチャは skip される", () => {
-  it("scene: title 空 + 本文空なら enqueuePending しない", () => {
+  it("scene: 本文空ならタイトルがあっても skip (デフォルト名対応)", () => {
     captureSceneDeletion({
       projectId: "p",
-      node: makeNode({ title: "", content: "{}" }),
+      node: makeNode({ title: "Scene 1", content: "{}" }),
       content: "{}",
       folderHintName: null,
       tempId: "tmp",
@@ -234,10 +252,10 @@ describe("空コンテンツのキャプチャは skip される", () => {
     expect(enqueueSpy).not.toHaveBeenCalled();
   });
 
-  it("scene: 本文があれば保存される (タイトル空でも)", () => {
+  it("scene: 本文があれば保存される", () => {
     captureSceneDeletion({
       projectId: "p",
-      node: makeNode({ title: "" }),
+      node: makeNode({ title: "Scene 1" }),
       content:
         '{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"本文だけ"}]}]}',
       folderHintName: null,
@@ -246,21 +264,26 @@ describe("空コンテンツのキャプチャは skip される", () => {
     expect(enqueueSpy).toHaveBeenCalledTimes(1);
   });
 
-  it("scene: 空白のみのタイトル + 本文空も skip", () => {
+  it("scene: 空白のみの本文も skip", () => {
     captureSceneDeletion({
       projectId: "p",
-      node: makeNode({ title: "   " }),
-      content: "{}",
+      node: makeNode({ title: "夜の散歩" }),
+      content:
+        '{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"   "}]}]}',
       folderHintName: null,
       tempId: "tmp",
     });
     expect(enqueueSpy).not.toHaveBeenCalled();
   });
 
-  it("codex: name + summary + body 全て空なら skip", () => {
+  it("codex: summary + body 両方空なら name があっても skip", () => {
     captureCodexDeletion({
       projectId: "p",
-      entry: makeCodex({ name: "", summary: "", content: "{}" }),
+      entry: makeCodex({
+        name: "新規キャラクター",
+        summary: "",
+        content: "{}",
+      }),
       categoryLabel: null,
       iconName: null,
       tempId: "tmp",
@@ -268,16 +291,31 @@ describe("空コンテンツのキャプチャは skip される", () => {
     expect(enqueueSpy).not.toHaveBeenCalled();
   });
 
-  it("snippet: title 空 + body 空なら skip", () => {
+  it("codex: summary だけでも保存される", () => {
+    captureCodexDeletion({
+      projectId: "p",
+      entry: makeCodex({
+        name: "新規キャラクター",
+        summary: "概要だけ書かれた",
+        content: "{}",
+      }),
+      categoryLabel: null,
+      iconName: null,
+      tempId: "tmp",
+    });
+    expect(enqueueSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it("snippet: body 空なら title があっても skip", () => {
     captureSnippetDeletion({
       projectId: "p",
-      snippet: makeSnippet({ title: "", content: "{}" }),
+      snippet: makeSnippet({ title: "新規スニペット", content: "{}" }),
       tempId: "tmp",
     });
     expect(enqueueSpy).not.toHaveBeenCalled();
   });
 
-  it("folder: title 空なら grid-chapter として skip", () => {
+  it("folder: title 空なら grid-chapter として skip (title 専用)", () => {
     captureSceneDeletion({
       projectId: "p",
       node: makeNode({ nodeType: "folder", title: "" }),

@@ -83,8 +83,9 @@ export function captureSceneDeletion(opts: CaptureSceneOpts): void {
   }
 
   const bodyText = extractPlainText(content);
-  // タイトル空 + 本文空のシーンは保存しない
-  if (allBlank(node.title, bodyText)) return;
+  // 本文が空のシーンは保存しない (デフォルト名の Scene が量産削除されるノイズ防止)。
+  // タイトルはデフォルト名で常に埋まっているため判定に含めない。
+  if (allBlank(bodyText)) return;
   const bodyPreview = truncate(bodyText, BODY_PREVIEW_MAX);
   const previewText = truncate(node.title || bodyPreview, PREVIEW_TEXT_MAX);
 
@@ -183,8 +184,9 @@ export interface CaptureCodexOpts {
 export function captureCodexDeletion(opts: CaptureCodexOpts): void {
   const { projectId, entry, categoryLabel, iconName, tempId } = opts;
   const bodyText = extractPlainText(entry.content ?? "");
-  // 名前空 + 概要空 + 本文空の Codex は保存しない
-  if (allBlank(entry.name, entry.summary, bodyText)) return;
+  // 概要 + 本文の両方が空の Codex は保存しない。
+  // 名前 (entry.name) はデフォルト名で常に埋まっているため判定に含めない。
+  if (allBlank(entry.summary, bodyText)) return;
   const bodyPreview = truncate(bodyText, BODY_PREVIEW_MAX);
   const previewText = truncate(
     entry.name || entry.summary || bodyPreview,
@@ -238,8 +240,9 @@ export interface CaptureSnippetOpts {
 export function captureSnippetDeletion(opts: CaptureSnippetOpts): void {
   const { projectId, snippet, tempId } = opts;
   const bodyText = extractPlainText(snippet.content ?? "");
-  // タイトル空 + 本文空の Snippet は保存しない
-  if (allBlank(snippet.title, bodyText)) return;
+  // 本文が空の Snippet は保存しない。
+  // タイトルはデフォルト名で常に埋まっているため判定に含めない。
+  if (allBlank(bodyText)) return;
   const bodyPreview = truncate(bodyText, BODY_PREVIEW_MAX);
   const previewText = truncate(snippet.title || bodyPreview, PREVIEW_TEXT_MAX);
 
@@ -280,8 +283,9 @@ export interface CaptureMapStickyOpts {
 export function captureMapStickyDeletion(opts: CaptureMapStickyOpts): void {
   const { projectId, sticky, position, tempId } = opts;
   const bodyText = extractPlainText(sticky.body ?? "");
-  // タイトル空 + previewText 空 + 本文空の Sticky は保存しない
-  if (allBlank(sticky.title, sticky.previewText, bodyText)) return;
+  // previewText + 本文の両方が空の Sticky は保存しない。
+  // タイトルはデフォルト名で常に埋まっているため判定に含めない。
+  if (allBlank(sticky.previewText, bodyText)) return;
   const bodyPreview = truncate(bodyText, BODY_PREVIEW_MAX);
   const previewText = truncate(
     sticky.title || sticky.previewText || bodyPreview,
@@ -329,8 +333,9 @@ export interface CaptureForeshadowOpts {
 
 export function captureForeshadowDeletion(opts: CaptureForeshadowOpts): void {
   const { projectId, foreshadow, tempId } = opts;
-  // タイトル空 + intent 空 + notes 空の伏線は保存しない
-  if (allBlank(foreshadow.title, foreshadow.intent, foreshadow.notes)) return;
+  // intent + notes の両方が空の伏線は保存しない。
+  // タイトルはデフォルト名で常に埋まっているため判定に含めない。
+  if (allBlank(foreshadow.intent, foreshadow.notes)) return;
   const previewText = truncate(
     foreshadow.title || foreshadow.intent || "",
     PREVIEW_TEXT_MAX,
