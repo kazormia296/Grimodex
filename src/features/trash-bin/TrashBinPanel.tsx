@@ -10,6 +10,8 @@ import {
 import { TrashBinStirButton } from "./TrashBinStirButton";
 import { pruneTrashItems } from "./api";
 import { useReducedMotion } from "@/lib/animation";
+import { useSettingsStore } from "@/features/settings/settingsStore";
+import { useConfirmDialog } from "./ConfirmDialog";
 
 const PROJECT_ID = "default-project";
 
@@ -17,9 +19,22 @@ const PROJECT_ID = "default-project";
 const PHYSICS_DISPLAY_LIMIT = 100;
 // セーフティバルブ (10000 text + 500 structure ≒ 10500)
 const PRUNE_MAX_COUNT = 10_500;
-const PRUNE_RETENTION_DAYS = 60;
+const DEFAULT_RETENTION_DAYS = 60;
+// 「無期限」を表す sentinel 値 (設定 UI でこの値を使う)。
+// pruneTrashItems の retentionDays に巨大値を渡せば実質的にスキップできる。
+const RETENTION_UNLIMITED = -1;
+const RETENTION_UNLIMITED_DAYS = 365_000; // 約 1000 年 → 実質 prune しない
 // 1 時間おきのバックグラウンド prune
 const PRUNE_INTERVAL_MS = 60 * 60 * 1000;
+
+function resolveRetentionDays(): number {
+  const raw = useSettingsStore
+    .getState()
+    .getNumber("trashBin.retentionDays", DEFAULT_RETENTION_DAYS);
+  if (raw === RETENTION_UNLIMITED) return RETENTION_UNLIMITED_DAYS;
+  if (!Number.isFinite(raw) || raw <= 0) return DEFAULT_RETENTION_DAYS;
+  return raw;
+}
 
 export function TrashBinPanel() {
   const { t } = useTranslation();
@@ -35,6 +50,7 @@ export function TrashBinPanel() {
   const physicsHandleRef = useRef<PhysicsViewHandle | null>(null);
   // reduced-motion fallback で「かき混ぜる」= シャッフル順を保持
   const [shuffleSeed, setShuffleSeed] = useState(0);
+  const { confirm, dialog: confirmDialog } = useConfirmDialog();
 
   useEffect(() => {
     // 起動時 prune → loadItems の順 (古い物が残ったまま表示されないように)
@@ -42,7 +58,7 @@ export function TrashBinPanel() {
       try {
         await pruneTrashItems(
           PROJECT_ID,
-          PRUNE_RETENTION_DAYS,
+          resolveRetentionDays(),
           PRUNE_MAX_COUNT,
         );
       } catch {
@@ -56,7 +72,7 @@ export function TrashBinPanel() {
     const intervalId = setInterval(() => {
       void pruneTrashItems(
         PROJECT_ID,
-        PRUNE_RETENTION_DAYS,
+        resolveRetentionDays(),
         PRUNE_MAX_COUNT,
       ).then(() => loadItems(PROJECT_ID));
     }, PRUNE_INTERVAL_MS);
@@ -97,14 +113,30 @@ export function TrashBinPanel() {
     physicsHandleRef.current?.stir(intensity);
   };
 
-  const handleClearAll = () => {
+  const handleClearAll = async () => {
     if (sortedItems.length === 0) return;
-    if (!window.confirm(t("trashBin.clearConfirm"))) return;
+    const ok = await confirm({
+      title: t("trashBin.clearAll"),
+      description: t("trashBin.clearConfirm"),
+      confirmLabel: t("trashBin.clearAll"),
+    });
+    if (!ok) return;
     void clearAll(PROJECT_ID);
+  };
+
+  const handleRemoveItem = async (id: string) => {
+    const ok = await confirm({
+      title: t("trashBin.discard"),
+      description: t("trashBin.removeConfirm"),
+      confirmLabel: t("trashBin.discard"),
+    });
+    if (!ok) return;
+    void removeItem(id);
   };
 
   return (
     <div className="flex h-full flex-col" aria-label={t("trashBin.title")}>
+      {confirmDialog}
       <header className="flex items-center gap-2 border-b border-border px-3 py-2">
         <h2 className="text-sm font-semibold">{t("trashBin.title")}</h2>
         <span className="text-xs text-muted-foreground">
@@ -152,7 +184,7 @@ export function TrashBinPanel() {
             <TrashBinListView
               items={sortedItems}
               isLoading={isLoading}
-              onRemove={removeItem}
+              onRemove={handleRemoveItem}
             />
           </div>
         ) : (

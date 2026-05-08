@@ -1,6 +1,10 @@
 import { useTranslation } from "react-i18next";
 import { useProjectSettings } from "../hooks/useProjectSettings";
-import { useSettingControl, useSettingBoolean } from "../useSettingControl";
+import {
+  useSettingControl,
+  useSettingBoolean,
+  useSettingNumber,
+} from "../useSettingControl";
 import { SettingSection } from "../components/SettingSection";
 import { SettingRow } from "../components/SettingRow";
 import { SettingTextarea } from "../components/SettingTextarea";
@@ -28,6 +32,18 @@ export function ProjectCategory() {
   );
   const numberingScope = useSettingControl("tree.numberingScope", "project");
   const trashBinEnabled = useSettingBoolean("trashBin.enabled", true);
+  const trashBinRetention = useSettingNumber("trashBin.retentionDays", 60);
+
+  const TRASH_RETENTION_OPTIONS = [
+    { value: "7", label: t("settings.project.trashRetention7", "7 日") },
+    { value: "30", label: t("settings.project.trashRetention30", "30 日") },
+    { value: "60", label: t("settings.project.trashRetention60", "60 日") },
+    { value: "90", label: t("settings.project.trashRetention90", "90 日") },
+    {
+      value: "-1",
+      label: t("settings.project.trashRetentionUnlimited", "無期限"),
+    },
+  ];
 
   const GENRE_OPTIONS = [
     { value: "", label: t("settings.project.unselected") },
@@ -232,7 +248,7 @@ export function ProjectCategory() {
           label={t("trashBin.enableLabel", "ゴミ箱を有効化")}
           description={t(
             "settings.project.trashBinDesc",
-            "削除した文字片や構造アイテムをゴミ箱に保持します (60 日)。",
+            "削除した文字片や構造アイテムをゴミ箱に保持します。",
           )}
         >
           <input
@@ -241,6 +257,26 @@ export function ProjectCategory() {
             onChange={(e) => trashBinEnabled.setValue(e.target.checked)}
             className="h-4 w-4 cursor-pointer rounded border-input"
           />
+        </SettingRow>
+        <SettingRow
+          label={t("settings.project.trashRetention", "保持期間")}
+          description={t(
+            "settings.project.trashRetentionDesc",
+            "保持期間を超えた屑は次回の起動 / 1 時間ごとの掃除で削除されます。",
+          )}
+        >
+          <select
+            value={String(trashBinRetention.value)}
+            onChange={(e) => trashBinRetention.setValue(Number(e.target.value))}
+            disabled={!trashBinEnabled.value}
+            className="rounded-md border border-input bg-background px-2 py-1 text-sm focus:outline-none disabled:opacity-50"
+          >
+            {TRASH_RETENTION_OPTIONS.map((o) => (
+              <option key={o.value} value={o.value}>
+                {o.label}
+              </option>
+            ))}
+          </select>
         </SettingRow>
       </SettingSection>
 

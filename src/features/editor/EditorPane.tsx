@@ -119,6 +119,7 @@ import { EditorDropDiv } from "@/features/editor/EditorDropDiv";
 import { useBeatDragDrop } from "@/features/editor/useBeatDragDrop";
 import { useEditorKeyboard } from "@/features/editor/useEditorKeyboard";
 import { useTrashBinCapture } from "@/features/editor/useTrashBinCapture";
+import { useDropTarget } from "@/features/trash-bin/useDropTarget";
 import { useFocusedContentEditorStore } from "@/store/focusedContentEditorStore";
 import type { TrashOrigin } from "@/features/trash-bin/types";
 import {
@@ -232,6 +233,23 @@ export function EditorPane({
 
   const paneRef = useRef<HTMLDivElement>(null);
   const editorContainerRef = useRef<HTMLDivElement>(null);
+
+  // Trash Bin drop target: scene-editor / codex-editor / snippet-editor。
+  // ペインごとにユニーク id を振り、kind は contentType で決まる。
+  const editorDropKind = isCodexMode
+    ? "codex-editor"
+    : isSnippetMode
+      ? "snippet-editor"
+      : "scene-editor";
+  const editorDropId = `${editorDropKind}-${nodeId ?? "empty"}-${groupIndex}`;
+  const trashEditorDropRef = useDropTarget(editorDropId, editorDropKind);
+  const setPaneRef = useCallback(
+    (el: HTMLDivElement | null) => {
+      paneRef.current = el;
+      trashEditorDropRef.current = el;
+    },
+    [trashEditorDropRef],
+  );
   const toolbarActionsRef = useRef<ToolbarActions | null>(null);
   const {
     sensors: beatSensors,
@@ -669,6 +687,7 @@ export function EditorPane({
     onFocus() {
       onFocus();
       // Trash bin の D&D 復元先として「最後にフォーカスしていたエディタ」を共有。
+      // editor 参照も渡し、text-fragment 挿入時に直接 chain().insertContent を呼べるように。
       if (nodeId) {
         const kind = isSnippetMode
           ? "snippet"
@@ -677,7 +696,7 @@ export function EditorPane({
             : "scene";
         useFocusedContentEditorStore
           .getState()
-          .setCurrent({ kind, id: nodeId });
+          .setCurrent({ kind, id: nodeId }, editorRef.current);
       }
       // Apply lazy cursor/scroll restore if one was deferred (Scenes-panel navigation).
       const pending = pendingCursorRestoreRef.current;
@@ -1296,7 +1315,11 @@ export function EditorPane({
   );
 
   return (
-    <div ref={paneRef} className="flex flex-1 flex-col overflow-hidden">
+    <div
+      ref={setPaneRef}
+      data-droptarget-id={editorDropId}
+      className="flex flex-1 flex-col overflow-hidden data-[trash-drop-hover=true]:ring-2 data-[trash-drop-hover=true]:ring-primary/60 data-[trash-drop-hover=true]:ring-inset"
+    >
       <Toolbar
         editor={editor}
         onFindReplace={() => {

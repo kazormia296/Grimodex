@@ -22,6 +22,8 @@ import {
 } from "./restorers";
 import type { RestoreOutcome } from "./restorers";
 import type { DropTarget, DropPoint } from "@/store/dropTargetRegistry";
+import { getFocusedEditor } from "@/store/focusedContentEditorStore";
+import { insertTrashItemIntoEditor } from "./editorInsert";
 import type { TextFragmentPayload, TrashItemData, TrashSubKind } from "./types";
 
 const DEFAULT_PROJECT_ID = "default-project";
@@ -163,17 +165,31 @@ export async function dispatchDrop(
     });
   }
 
-  // エディタ本文へのテキスト挿入は Phase 7 (focusedContentEditorStore 経路)
+  // エディタ本文へのテキスト挿入 (設計書 §5-C)。
+  // focusedContentEditorStore に登録されている直近フォーカス済みエディタに挿入する。
   if (
     kind === "scene-editor" ||
     kind === "codex-editor" ||
     kind === "snippet-editor"
   ) {
-    return {
-      ok: false,
-      reason: "rejected",
-      message: "editor-insert not implemented yet",
-    };
+    const editor = getFocusedEditor();
+    if (!editor) {
+      return {
+        ok: false,
+        reason: "no-target",
+        message: "no focused editor",
+      };
+    }
+    const inserted = insertTrashItemIntoEditor(editor, item);
+    if (inserted === 0) {
+      return {
+        ok: false,
+        reason: "rejected",
+        message: "empty payload",
+      };
+    }
+    // 挿入は副作用。新 ID は発行しないので previewText を識別子として返す。
+    return { ok: true, newId: item.id, brokenLinks: [] };
   }
 
   return {

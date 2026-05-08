@@ -21,6 +21,7 @@ import { Trash2 } from "lucide-react";
 import { useTrashBinStore } from "./trashBinStore";
 import { useDropTargetRegistry } from "@/store/dropTargetRegistry";
 import { acceptsMatrix, pickupAndDispatch } from "./pickupHandlers";
+import { useConfirmDialog } from "./ConfirmDialog";
 import type { TrashItemData } from "./types";
 
 interface Props {
@@ -44,6 +45,7 @@ export function TrashBinPopover({
   const targets = useDropTargetRegistry((s) => s.targets);
   const removeItem = useTrashBinStore((s) => s.removeItem);
   const pickup = useTrashBinStore((s) => s.pickup);
+  const { confirm, dialog: confirmDialog } = useConfirmDialog();
 
   const acceptingTargets = useMemo(() => {
     return Array.from(targets.values()).filter((tgt) =>
@@ -65,8 +67,13 @@ export function TrashBinPopover({
     await pickup(item.id, () => pickupAndDispatch(item, target, center));
   };
 
-  const handleDelete = () => {
-    if (!window.confirm(t("trashBin.removeConfirm"))) return;
+  const handleDelete = async () => {
+    const ok = await confirm({
+      title: t("trashBin.discard"),
+      description: t("trashBin.removeConfirm"),
+      confirmLabel: t("trashBin.discard"),
+    });
+    if (!ok) return;
     void removeItem(item.id);
   };
 
@@ -87,6 +94,7 @@ export function TrashBinPopover({
 
   return (
     <Popover open={open} onOpenChange={onOpenChange}>
+      {confirmDialog}
       <PopoverTrigger asChild>{controlledTrigger ?? children}</PopoverTrigger>
       <PopoverContent className="w-72 space-y-2 p-3 text-sm">
         <div className="font-semibold">

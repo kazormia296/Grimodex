@@ -7,6 +7,7 @@ import { useCodexHighlight } from "@/features/editor/useCodexHighlight";
 import { useSceneContentStore } from "@/features/editor/sceneContentStore";
 import { CodexPopover } from "@/features/editor/CodexPopover";
 import { useTrashBinCapture } from "@/features/editor/useTrashBinCapture";
+import { useFocusedContentEditorStore } from "@/store/focusedContentEditorStore";
 
 // Sentinel group index — distinguishes mini-editor updates from pane 0 / pane 1
 const CODEX_MINI_GROUP = 99;
@@ -78,6 +79,23 @@ export function CodexContentEditor({
     entryId ? { kind: "codex", id: entryId } : null,
     externalContent != null,
   );
+
+  // Trash Bin の挿入ターゲットとして「フォーカス中のミニエディタ」を共有。
+  // EditorPane の codex タブが開いているとき主経路はそちらが優先される。
+  useEffect(() => {
+    if (!editor || !entryId) return;
+    // テスト等で mock された Editor は on/off を持たないことがあるためガード。
+    if (typeof editor.on !== "function") return;
+    const handleFocus = () => {
+      useFocusedContentEditorStore
+        .getState()
+        .setCurrent({ kind: "codex", id: entryId }, editor);
+    };
+    editor.on("focus", handleFocus);
+    return () => {
+      if (typeof editor.off === "function") editor.off("focus", handleFocus);
+    };
+  }, [editor, entryId]);
 
   // externalContent（フェーズプレビュー）変化時にエディタ内容を更新
   useEffect(() => {

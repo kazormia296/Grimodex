@@ -77,7 +77,7 @@ function TrashBinListItem({
         : "";
 
   const handleDelete = () => {
-    if (!window.confirm(t("trashBin.removeConfirm"))) return;
+    // 確認は親 (TrashBinPanel) が confirm を返す onRemove で集約処理する。
     onRemove(item.id);
   };
 
