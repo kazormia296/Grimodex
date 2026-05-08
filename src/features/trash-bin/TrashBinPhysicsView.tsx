@@ -78,10 +78,7 @@ export function TrashBinPhysicsView({
 
   const applyTransform = useCallback((body: PhysicsBody) => {
     const el = nodesRef.current.get(body.id);
-    if (!el) {
-      console.log("[trash-bin] applyTransform NO NODE", body.id);
-      return;
-    }
+    if (!el) return;
     el.style.transform = `translate3d(${body.x}px, ${body.y}px, 0) rotate(${body.rotation}deg)`;
     el.dataset.settled = String(body.settled);
   }, []);
@@ -118,19 +115,9 @@ export function TrashBinPhysicsView({
   );
 
   const startLoop = useCallback(() => {
-    if (rafRef.current !== null) {
-      console.log("[trash-bin] startLoop SKIP (already running)");
-      return;
-    }
-    if (!visibleRef.current) {
-      console.log("[trash-bin] startLoop SKIP (not visible)");
-      return;
-    }
-    if (sizeRef.current.width <= 0 || sizeRef.current.floorY <= 0) {
-      console.log("[trash-bin] startLoop SKIP (size 0)", sizeRef.current);
-      return;
-    }
-    console.log("[trash-bin] startLoop START");
+    if (rafRef.current !== null) return;
+    if (!visibleRef.current) return;
+    if (sizeRef.current.width <= 0 || sizeRef.current.floorY <= 0) return;
     lastTsRef.current = 0;
     rafRef.current = requestAnimationFrame(tick);
   }, [tick]);
@@ -138,17 +125,12 @@ export function TrashBinPhysicsView({
   const registerNode = useCallback(
     (id: string, el: HTMLElement | null) => {
       if (el === null) {
-        console.log("[trash-bin] registerNode UNREGISTER", id);
         nodesRef.current.delete(id);
         return;
       }
-      console.log("[trash-bin] registerNode REGISTER", id, {
-        rect: el.getBoundingClientRect(),
-      });
       nodesRef.current.set(id, el);
       const body = bodiesRef.current.get(id);
       if (body) applyTransform(body);
-      else console.log("[trash-bin] registerNode no body yet for", id);
     },
     [applyTransform],
   );
@@ -160,7 +142,6 @@ export function TrashBinPhysicsView({
     const measure = () => {
       const rect = el.getBoundingClientRect();
       const next = { width: rect.width, floorY: rect.height };
-      console.log("[trash-bin] measure", next);
       sizeRef.current = next;
       setSize(next);
       // 既存 body をはみ出さないよう clamp + wake
@@ -197,7 +178,6 @@ export function TrashBinPhysicsView({
       (entries) => {
         const visible = entries[0]?.isIntersecting ?? false;
         const wasVisible = visibleRef.current;
-        console.log("[trash-bin] IO", { visible, wasVisible });
         visibleRef.current = visible;
         if (visible && !wasVisible) startLoop();
       },
@@ -210,14 +190,7 @@ export function TrashBinPhysicsView({
   // items 同期: 初回ロードで床積み、以降は y=-h から落下。
   // size を deps に含めて、ResizeObserver の measure 完了後に再実行されるように。
   useEffect(() => {
-    console.log("[trash-bin] items effect run", {
-      itemsCount: items.length,
-      itemIds: items.map((i) => i.id),
-      size,
-      knownSize: knownIdsRef.current.size,
-    });
     if (size.width <= 0 || size.floorY <= 0) {
-      console.log("[trash-bin] items effect SKIP (size 0)");
       // コンテナ未計測時は size state 更新後の再実行で処理される
       return;
     }
@@ -239,11 +212,6 @@ export function TrashBinPhysicsView({
 
     if (added.length > 0) {
       const isInitialBatch = known.size === 0;
-      console.log("[trash-bin] adding bodies", {
-        count: added.length,
-        isInitialBatch,
-        ids: added.map((i) => i.id),
-      });
       if (isInitialBatch) {
         const presetItems = added.map((item) => ({
           id: item.id,
@@ -251,17 +219,6 @@ export function TrashBinPhysicsView({
           size: getBodySize(item),
         }));
         const bodies = placeFloorPreset(presetItems, size.width, size.floorY);
-        console.log(
-          "[trash-bin] placeFloorPreset bodies",
-          bodies.map((b) => ({
-            id: b.id,
-            x: b.x,
-            y: b.y,
-            w: b.width,
-            h: b.height,
-            settled: b.settled,
-          })),
-        );
         for (const b of bodies) {
           bodiesRef.current.set(b.id, b);
           applyTransform(b);

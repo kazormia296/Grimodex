@@ -79,13 +79,6 @@ export function TrashBinPanel() {
     return () => clearInterval(intervalId);
   }, [loadItems]);
 
-  console.log("[trash-bin] Panel render", {
-    itemsCount: items.size,
-    isCapturing,
-    isLoading,
-    reducedMotion,
-  });
-
   // selector 内で派生配列を生成すると new ref になるため、
   // useMemo で items Map を一度だけ配列化する (`feedback_zustand_selector_new_ref.md`)。
   const sortedItems = useMemo(() => {

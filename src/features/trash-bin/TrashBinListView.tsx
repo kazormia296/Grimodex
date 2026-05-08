@@ -93,7 +93,6 @@ function TrashBinListItem({
       />
       <span className="flex-1 truncate" title={item.previewText}>
         {item.previewText}
-        {item.isInteresting ? " ✨" : ""}
       </span>
       {originLabel && (
         <span className="rounded bg-muted px-1.5 py-0.5 text-xs text-muted-foreground">

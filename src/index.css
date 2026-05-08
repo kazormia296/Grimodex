@@ -987,73 +987,7 @@
   }
 }
 
-/* ── Trash Bin: 光る演出 (設計書 §7 / §8) ─────────────────────────── */
-@keyframes trash-glow-text {
-  0%, 100% { box-shadow: 0 0 0 0 rgba(251, 191, 36, 0.0); }
-  50%      { box-shadow: 0 0 12px 2px rgba(251, 191, 36, 0.55); }
-}
-@keyframes trash-glow-scene {
-  0%, 100% { box-shadow: 0 0 0 0 rgba(96, 165, 250, 0.0); }
-  50%      { box-shadow: 0 0 12px 2px rgba(96, 165, 250, 0.55); }
-}
-@keyframes trash-glow-codex {
-  0%, 100% { box-shadow: 0 0 0 0 rgba(52, 211, 153, 0.0); }
-  50%      { box-shadow: 0 0 12px 2px rgba(52, 211, 153, 0.55); }
-}
-@keyframes trash-glow-snippet {
-  0%, 100% { box-shadow: 0 0 0 0 rgba(244, 114, 182, 0.0); }
-  50%      { box-shadow: 0 0 12px 2px rgba(244, 114, 182, 0.55); }
-}
-@keyframes trash-glow-sticky {
-  0%, 100% { box-shadow: 0 0 0 0 rgba(253, 224, 71, 0.0); }
-  50%      { box-shadow: 0 0 12px 2px rgba(253, 224, 71, 0.65); }
-}
-@keyframes trash-glow-foreshadow {
-  0%, 100% { box-shadow: 0 0 0 0 rgba(248, 113, 113, 0.0); }
-  50%      { box-shadow: 0 0 14px 3px rgba(248, 113, 113, 0.7); }
-}
-@keyframes trash-glow-pin {
-  0%, 100% { box-shadow: 0 0 0 0 rgba(244, 63, 94, 0.0); }
-  50%      { box-shadow: 0 0 10px 2px rgba(244, 63, 94, 0.6); }
-}
-@keyframes trash-glow-grid {
-  0%, 100% { box-shadow: 0 0 0 0 rgba(251, 146, 60, 0.0); }
-  50%      { box-shadow: 0 0 12px 2px rgba(251, 146, 60, 0.55); }
-}
-
-[data-subkind="text-fragment"][data-interesting="true"] {
-  animation: trash-glow-text 2.4s ease-in-out infinite;
-}
-[data-subkind="scene"][data-interesting="true"] {
-  animation: trash-glow-scene 2.6s ease-in-out infinite;
-}
-[data-subkind="codex-entry"][data-interesting="true"] {
-  animation: trash-glow-codex 2.6s ease-in-out infinite;
-}
-[data-subkind="snippet"][data-interesting="true"] {
-  animation: trash-glow-snippet 2.6s ease-in-out infinite;
-}
-[data-subkind="map-sticky"][data-interesting="true"] {
-  animation: trash-glow-sticky 2.6s ease-in-out infinite;
-}
-[data-subkind="foreshadow"][data-interesting="true"] {
-  animation: trash-glow-foreshadow 2.0s ease-in-out infinite;
-}
-[data-subkind="pin"][data-interesting="true"] {
-  animation: trash-glow-pin 2.6s ease-in-out infinite;
-}
-[data-subkind="grid-chapter"][data-interesting="true"] {
-  animation: trash-glow-grid 2.6s ease-in-out infinite;
-}
-
-/* ドラッグ中の body は強調 (z-index は inline で 100 を入れている) */
+/* ── Trash Bin: ドラッグ中の body 強調 ──────────────────────────────── */
 [data-trash-body-id][data-dragging="true"] {
   filter: brightness(1.05) saturate(1.1);
-  animation: none !important;
-}
-
-@media (prefers-reduced-motion: reduce) {
-  [data-subkind][data-interesting="true"] {
-    animation: none;
-  }
 }

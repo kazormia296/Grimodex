@@ -97,10 +97,7 @@ export function TrashBinPopover({
       {confirmDialog}
       <PopoverTrigger asChild>{controlledTrigger ?? children}</PopoverTrigger>
       <PopoverContent className="w-72 space-y-2 p-3 text-sm">
-        <div className="font-semibold">
-          {item.previewText || "(無題)"}
-          {item.isInteresting ? " ✨" : ""}
-        </div>
+        <div className="font-semibold">{item.previewText || "(無題)"}</div>
         <div className="text-xs text-muted-foreground">
           {t(`trashBin.kind.${kindKey(item.subKind)}`)}
         </div>
