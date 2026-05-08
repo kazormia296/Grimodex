@@ -1,272 +1,42 @@
 /**
- * ゴミ箱パネルの物理シミュレーション（設計書 v3 §7）。
+ * ゴミ箱パネル物理シミュレーション (Matter.js バックエンド)。
  *
- * 純関数ベース。`stepPhysics` などは入力配列を mutate せず新配列を返す。
- * DOM や React に依存しないため node 環境のテストで完結する。
+ * `TrashPhysicsEngine` は Matter.js の `Engine`/`World` を内包する stateful
+ * ラッパー。座標は外向き API では `top-left`、内部では Matter 標準の
+ * `center-of-mass` を扱う。
  */
-
+import Matter from "matter-js";
 import type { TrashSubKind } from "./types";
 
-export const GRAVITY = 680;
-export const BOUNCE_DAMPING = 0.35;
-export const WALL_DAMPING = 0.5;
-export const FRICTION = 0.92;
-export const SETTLE_THRESHOLD = 4;
-export const COLLISION_REST = 0.4;
-export const SLEEP_FRAMES = 10;
-export const DRAG_THRESHOLD_PX = 5;
 export const STIR_IMPULSE = 400;
 export const STIR_IMPULSE_MAX = 1200;
+export const DRAG_THRESHOLD_PX = 5;
 
-export const SUBKIND_MASS: Record<TrashSubKind, number> = {
-  "text-fragment": 1.0,
-  "map-sticky": 1.5,
-  foreshadow: 1.5,
-  "codex-entry": 2.0,
-  snippet: 2.0,
-  "grid-chapter": 2.0,
-  scene: 3.0,
+/** subKind 別の密度（mass = density * area）。重い順: scene > codex/snippet > ... */
+const SUBKIND_DENSITY: Record<TrashSubKind, number> = {
+  "text-fragment": 0.001,
+  "map-sticky": 0.0014,
+  foreshadow: 0.0014,
+  "codex-entry": 0.0018,
+  snippet: 0.0018,
+  "grid-chapter": 0.0018,
+  scene: 0.0026,
 };
 
-export interface PhysicsBody {
+const WALL_THICKNESS = 200;
+const FRICTION = 0.4;
+const FRICTION_AIR = 0.005;
+const RESTITUTION = 0.35;
+
+export interface BodyState {
   id: string;
-  subKind: TrashSubKind;
-  x: number;
-  y: number;
-  vx: number;
-  vy: number;
+  x: number; // top-left
+  y: number; // top-left
   width: number;
   height: number;
-  mass: number;
-  rotation: number;
-  rotationV: number;
-  settled: boolean;
-  detached: boolean;
-  // 設計書からの追加フィールド: settle 連続フレームカウンタを body 自身に持たせる
-  // ことで、stepPhysics を pure に保てる（外部 Map を持ち回さない）。
-  settleFrames: number;
-}
-
-export interface CreateBodyOpts {
-  id: string;
-  subKind: TrashSubKind;
-  containerWidth: number;
-  size: { width: number; height: number };
-  rng?: () => number;
-  initial?: "falling" | "settled-floor";
-  floorY?: number;
-}
-
-export function createBody(opts: CreateBodyOpts): PhysicsBody {
-  const rng = opts.rng ?? Math.random;
-  const w = opts.size.width;
-  const h = opts.size.height;
-  const mass = SUBKIND_MASS[opts.subKind] ?? 1.0;
-  const maxX = Math.max(0, opts.containerWidth - w);
-  const x = maxX > 0 ? rng() * maxX : 0;
-  if (opts.initial === "settled-floor") {
-    if (opts.floorY === undefined) {
-      throw new Error(
-        "createBody: floorY is required when initial='settled-floor'",
-      );
-    }
-    return {
-      id: opts.id,
-      subKind: opts.subKind,
-      x,
-      y: opts.floorY - h,
-      vx: 0,
-      vy: 0,
-      width: w,
-      height: h,
-      mass,
-      rotation: (rng() * 2 - 1) * 8,
-      rotationV: 0,
-      settled: true,
-      detached: false,
-      settleFrames: SLEEP_FRAMES,
-    };
-  }
-  return {
-    id: opts.id,
-    subKind: opts.subKind,
-    x,
-    y: -h,
-    vx: (rng() * 2 - 1) * 40,
-    vy: 0,
-    width: w,
-    height: h,
-    mass,
-    rotation: (rng() * 2 - 1) * 15,
-    rotationV: (rng() * 2 - 1) * 60,
-    settled: false,
-    detached: false,
-    settleFrames: 0,
-  };
-}
-
-function clone(b: PhysicsBody): PhysicsBody {
-  return { ...b };
-}
-
-export function stepPhysics(
-  bodies: PhysicsBody[],
-  dt: number,
-  floorY: number,
-  containerWidth: number,
-): PhysicsBody[] {
-  if (bodies.length === 0) return [];
-  if (dt <= 0) return bodies.map(clone);
-
-  const next = bodies.map(clone);
-
-  // Phase 1: 重力・積分・壁反射・床反射
-  for (const b of next) {
-    if (b.detached || b.settled) continue;
-    b.vy += (GRAVITY * dt) / b.mass;
-    b.x += b.vx * dt;
-    b.y += b.vy * dt;
-    b.rotation += b.rotationV * dt;
-
-    if (b.x < 0) {
-      b.x = 0;
-      b.vx = -b.vx * WALL_DAMPING;
-    } else if (b.x + b.width > containerWidth) {
-      b.x = Math.max(0, containerWidth - b.width);
-      b.vx = -b.vx * WALL_DAMPING;
-    }
-
-    if (b.y + b.height > floorY) {
-      b.y = floorY - b.height;
-      b.vy = -b.vy * BOUNCE_DAMPING;
-      b.vx *= FRICTION;
-      b.rotationV *= FRICTION;
-    }
-  }
-
-  // Phase 2: AABB ペア衝突（最大 100 body 想定の naive O(n²)）
-  for (let i = 0; i < next.length; i++) {
-    const a = next[i];
-    if (a.detached) continue;
-    for (let j = i + 1; j < next.length; j++) {
-      const c = next[j];
-      if (c.detached) continue;
-      if (a.settled && c.settled) continue;
-
-      const overlapX =
-        Math.min(a.x + a.width, c.x + c.width) - Math.max(a.x, c.x);
-      const overlapY =
-        Math.min(a.y + a.height, c.y + c.height) - Math.max(a.y, c.y);
-      if (overlapX <= 0 || overlapY <= 0) continue;
-
-      const totalMass = a.mass + c.mass;
-      // 衝突したら settle 解除（接触で拘束されている body も起こす）
-      a.settled = false;
-      c.settled = false;
-      a.settleFrames = 0;
-      c.settleFrames = 0;
-
-      if (overlapX < overlapY) {
-        const sign = a.x < c.x ? 1 : -1;
-        a.x -= (sign * overlapX * c.mass) / totalMass;
-        c.x += (sign * overlapX * a.mass) / totalMass;
-        const rel = a.vx - c.vx;
-        const impulse = (-(1 + COLLISION_REST) * rel) / totalMass;
-        a.vx += impulse * c.mass;
-        c.vx -= impulse * a.mass;
-      } else {
-        const sign = a.y < c.y ? 1 : -1;
-        a.y -= (sign * overlapY * c.mass) / totalMass;
-        c.y += (sign * overlapY * a.mass) / totalMass;
-        const rel = a.vy - c.vy;
-        const impulse = (-(1 + COLLISION_REST) * rel) / totalMass;
-        a.vy += impulse * c.mass;
-        c.vy -= impulse * a.mass;
-      }
-    }
-  }
-
-  // Phase 3: settle 判定
-  // 床直上だけでなく、他の settled body の上に乗っている場合も settle 対象。
-  // 速度閾値 + 連続フレーム数だけで判定するため、自然な「stack」が落ち着く。
-  for (const b of next) {
-    if (b.detached || b.settled) continue;
-    const slow =
-      Math.abs(b.vx) < SETTLE_THRESHOLD && Math.abs(b.vy) < SETTLE_THRESHOLD;
-    if (slow) {
-      b.settleFrames += 1;
-      if (b.settleFrames >= SLEEP_FRAMES) {
-        b.settled = true;
-        b.vx = 0;
-        b.vy = 0;
-        b.rotationV = 0;
-      }
-    } else {
-      b.settleFrames = 0;
-    }
-  }
-
-  return next;
-}
-
-/**
- * 全 body に外力を加えて settled を解除する。
- * y 方向は常に上向きバイアス（vy が負方向に必ずシフトする）。
- */
-export function applyShake(
-  bodies: PhysicsBody[],
-  ax: number,
-  ay: number,
-  rng: () => number = Math.random,
-): PhysicsBody[] {
-  return bodies.map((b) => {
-    if (b.detached) return clone(b);
-    return {
-      ...b,
-      vx: b.vx + (rng() * 2 - 1) * ax,
-      vy: b.vy - Math.abs(ay) * (0.5 + rng() * 0.5),
-      rotationV: b.rotationV + (rng() * 2 - 1) * 200,
-      settled: false,
-      settleFrames: 0,
-    };
-  });
-}
-
-/**
- * `target` と AABB が 1px インフレートで重なっている settled body を wake する。
- * 新規 body 着地時に下の積み重ねを起こす用途。
- */
-export function wakeNeighbors(
-  target: PhysicsBody,
-  bodies: PhysicsBody[],
-): PhysicsBody[] {
-  const ax0 = target.x - 1;
-  const ay0 = target.y - 1;
-  const ax1 = target.x + target.width + 1;
-  const ay1 = target.y + target.height + 1;
-  return bodies.map((b) => {
-    if (b.id === target.id) return clone(b);
-    if (!b.settled) return clone(b);
-    const overlap =
-      ax0 < b.x + b.width && ax1 > b.x && ay0 < b.y + b.height && ay1 > b.y;
-    if (!overlap) return clone(b);
-    return { ...b, settled: false, settleFrames: 0 };
-  });
-}
-
-export function attach(body: PhysicsBody): PhysicsBody {
-  return { ...body, detached: false, settled: false, settleFrames: 0 };
-}
-
-export function detach(body: PhysicsBody): PhysicsBody {
-  return { ...body, detached: true, vx: 0, vy: 0, rotationV: 0 };
-}
-
-export function hasUnsettled(bodies: PhysicsBody[]): boolean {
-  for (const b of bodies) {
-    if (!b.settled && !b.detached) return true;
-  }
-  return false;
+  rotation: number; // degrees
+  isSleeping: boolean;
+  isStatic: boolean;
 }
 
 export interface FloorPresetItem {
@@ -275,48 +45,336 @@ export interface FloorPresetItem {
   size: { width: number; height: number };
 }
 
-/**
- * 起動時に既存アイテムを「床に積まれた」状態で配置する。
- * 簡易的に: 各アイテムをランダム x で配置し、既存配置との横方向重なりがあれば
- * 上に積む。決定論性のため `rng` を seedable に差し替え可能。
- */
-export function placeFloorPreset(
-  items: FloorPresetItem[],
-  containerWidth: number,
-  floorY: number,
-  rng: () => number = Math.random,
-): PhysicsBody[] {
-  const bodies: PhysicsBody[] = [];
-  for (const item of items) {
-    const w = item.size.width;
-    const h = item.size.height;
-    const maxX = Math.max(0, containerWidth - w);
-    const x = maxX > 0 ? rng() * maxX : 0;
-    let restY = floorY - h;
-    for (const placed of bodies) {
-      const overlapX =
-        Math.min(x + w, placed.x + placed.width) - Math.max(x, placed.x);
-      if (overlapX > 0) {
-        const candidate = placed.y - h;
-        if (candidate < restY) restY = candidate;
+export interface AddBodyOpts {
+  id: string;
+  subKind: TrashSubKind;
+  size: { width: number; height: number };
+  initial: "falling" | "settled-floor";
+  /** falling 用にランダム x を決める。未指定時は engine.containerWidth を使う */
+  containerWidth?: number;
+  /** seed 可能 PRNG。テスト用 */
+  rng?: () => number;
+  /** 明示的に top-left 座標を指定（settled-floor 時に内部で使う） */
+  x?: number;
+  y?: number;
+}
+
+export class TrashPhysicsEngine {
+  private engine: Matter.Engine;
+  private world: Matter.World;
+  private bodies = new Map<string, Matter.Body>();
+  private sizes = new Map<string, { width: number; height: number }>();
+  private walls: Matter.Body[] = [];
+  private dragTracking = new Map<
+    string,
+    { cx: number; cy: number; t: number; vx: number; vy: number }
+  >();
+  private containerWidth = 0;
+  private floorY = 0;
+
+  constructor() {
+    this.engine = Matter.Engine.create({
+      gravity: { x: 0, y: 1, scale: 0.0009 },
+      enableSleeping: true,
+    });
+    this.world = this.engine.world;
+  }
+
+  /** 容器サイズを設定。床と左右壁を再生成する。 */
+  setBounds(width: number, floorY: number) {
+    if (width <= 0 || floorY <= 0) return;
+    this.containerWidth = width;
+    this.floorY = floorY;
+    if (this.walls.length > 0) {
+      Matter.World.remove(this.world, this.walls);
+      this.walls = [];
+    }
+    const T = WALL_THICKNESS;
+    const floor = Matter.Bodies.rectangle(
+      width / 2,
+      floorY + T / 2,
+      width + 2 * T,
+      T,
+      { isStatic: true, friction: FRICTION, label: "__floor" },
+    );
+    const left = Matter.Bodies.rectangle(-T / 2, floorY / 2, T, floorY * 4, {
+      isStatic: true,
+      friction: FRICTION,
+      label: "__wall_l",
+    });
+    const right = Matter.Bodies.rectangle(
+      width + T / 2,
+      floorY / 2,
+      T,
+      floorY * 4,
+      { isStatic: true, friction: FRICTION, label: "__wall_r" },
+    );
+    this.walls = [floor, left, right];
+    Matter.World.add(this.world, this.walls);
+  }
+
+  /** body を追加。返り値は追加直後の状態。 */
+  addBody(opts: AddBodyOpts): BodyState {
+    const { id, subKind, size, initial } = opts;
+    const rng = opts.rng ?? Math.random;
+    const w = size.width;
+    const h = size.height;
+
+    let cx: number;
+    let cy: number;
+    if (initial === "falling") {
+      const cw = opts.containerWidth ?? this.containerWidth;
+      const maxX = Math.max(0, cw - w);
+      cx = (opts.x ?? rng() * maxX) + w / 2;
+      cy = (opts.y ?? -h) + h / 2;
+    } else {
+      cx = (opts.x ?? 0) + w / 2;
+      cy = (opts.y ?? this.floorY - h) + h / 2;
+    }
+
+    const body = Matter.Bodies.rectangle(cx, cy, w, h, {
+      density: SUBKIND_DENSITY[subKind] ?? 0.001,
+      friction: FRICTION,
+      frictionAir: FRICTION_AIR,
+      restitution: RESTITUTION,
+      slop: 0.05,
+      angle:
+        initial === "settled-floor"
+          ? (rng() * 2 - 1) * 0.14
+          : (rng() * 2 - 1) * 0.5,
+      label: id,
+    });
+    if (initial === "falling") {
+      Matter.Body.setAngularVelocity(body, (rng() * 2 - 1) * 0.08);
+    }
+
+    Matter.World.add(this.world, body);
+    this.bodies.set(id, body);
+    this.sizes.set(id, { width: w, height: h });
+
+    if (initial === "settled-floor") {
+      Matter.Sleeping.set(body, true);
+    }
+
+    return this.getState(id)!;
+  }
+
+  removeBody(id: string) {
+    const body = this.bodies.get(id);
+    if (!body) return;
+    Matter.World.remove(this.world, body);
+    this.bodies.delete(id);
+    this.sizes.delete(id);
+    this.dragTracking.delete(id);
+  }
+
+  hasBody(id: string): boolean {
+    return this.bodies.has(id);
+  }
+
+  ids(): string[] {
+    return Array.from(this.bodies.keys());
+  }
+
+  /**
+   * 物理ステップを進める。Matter.js は delta>16.67ms で安定性が落ちるため、
+   * 大きな dt はサブステップに分割する（最大合計 33ms にクランプ）。
+   */
+  step(dtMs: number) {
+    if (dtMs <= 0) return;
+    const SUB = 1000 / 60;
+    let remaining = Math.min(dtMs, 33);
+    while (remaining > SUB + 0.01) {
+      Matter.Engine.update(this.engine, SUB);
+      remaining -= SUB;
+    }
+    if (remaining > 0) Matter.Engine.update(this.engine, remaining);
+  }
+
+  getState(id: string): BodyState | null {
+    const body = this.bodies.get(id);
+    const size = this.sizes.get(id);
+    if (!body || !size) return null;
+    return {
+      id,
+      x: body.position.x - size.width / 2,
+      y: body.position.y - size.height / 2,
+      width: size.width,
+      height: size.height,
+      rotation: (body.angle * 180) / Math.PI,
+      isSleeping: body.isSleeping,
+      isStatic: body.isStatic,
+    };
+  }
+
+  forEachState(cb: (state: BodyState) => void) {
+    for (const id of this.bodies.keys()) {
+      const s = this.getState(id);
+      if (s) cb(s);
+    }
+  }
+
+  /** いずれかの動的 body が起きていれば true（rAF 継続判定用）。 */
+  hasUnsettled(): boolean {
+    for (const body of this.bodies.values()) {
+      if (!body.isStatic && !body.isSleeping) return true;
+    }
+    return false;
+  }
+
+  /** 全 body を起こしてランダムな上向きインパルスを与える。 */
+  shake(
+    intensityX: number,
+    intensityY: number,
+    rng: () => number = Math.random,
+  ) {
+    for (const body of this.bodies.values()) {
+      if (body.isStatic) continue;
+      Matter.Sleeping.set(body, false);
+      // 速度スケール: Matter は px/timestep。intensity*0.001 で控えめにした上で +- ランダム。
+      const dvx = (rng() * 2 - 1) * intensityX * 0.001;
+      const dvy = -Math.abs(intensityY) * (0.5 + rng() * 0.5) * 0.001;
+      Matter.Body.setVelocity(body, {
+        x: body.velocity.x + dvx,
+        y: body.velocity.y + dvy,
+      });
+      Matter.Body.setAngularVelocity(
+        body,
+        body.angularVelocity + (rng() * 2 - 1) * 0.15,
+      );
+    }
+  }
+
+  /** ドラッグ開始: body を static にして手動で位置制御できるようにする。 */
+  beginDrag(id: string) {
+    const body = this.bodies.get(id);
+    if (!body) return;
+    Matter.Body.setStatic(body, true);
+    this.dragTracking.delete(id);
+  }
+
+  /** ドラッグ中の位置更新。投擲速度のため最近の位置/時刻を追跡。 */
+  dragTo(id: string, topLeftX: number, topLeftY: number) {
+    const body = this.bodies.get(id);
+    const size = this.sizes.get(id);
+    if (!body || !size) return;
+    const cx = topLeftX + size.width / 2;
+    const cy = topLeftY + size.height / 2;
+    const now =
+      typeof performance !== "undefined" ? performance.now() : Date.now();
+    const prev = this.dragTracking.get(id);
+    if (prev) {
+      const dt = Math.max(1, now - prev.t);
+      const stepRatio = 1000 / 60 / dt;
+      const instVx = (cx - prev.cx) * stepRatio;
+      const instVy = (cy - prev.cy) * stepRatio;
+      this.dragTracking.set(id, {
+        cx,
+        cy,
+        t: now,
+        vx: prev.vx * 0.4 + instVx * 0.6,
+        vy: prev.vy * 0.4 + instVy * 0.6,
+      });
+    } else {
+      this.dragTracking.set(id, { cx, cy, t: now, vx: 0, vy: 0 });
+    }
+    Matter.Body.setPosition(body, { x: cx, y: cy });
+  }
+
+  /** ドラッグ終了: 動的に戻し、投擲速度を反映。 */
+  endDrag(id: string) {
+    const body = this.bodies.get(id);
+    if (!body) return;
+    const tracking = this.dragTracking.get(id);
+    Matter.Body.setStatic(body, false);
+    Matter.Sleeping.set(body, false);
+    if (tracking) {
+      Matter.Body.setVelocity(body, { x: tracking.vx, y: tracking.vy });
+      Matter.Body.setAngularVelocity(body, tracking.vx * 0.005);
+      this.dragTracking.delete(id);
+    }
+  }
+
+  isStatic(id: string): boolean {
+    const body = this.bodies.get(id);
+    return body ? body.isStatic : false;
+  }
+
+  /**
+   * ResizeObserver から呼ぶ: 動的 body を境界内にクランプし wake する。
+   * 何かを動かしたら true を返す（rAF 起動判定用）。
+   */
+  clampBodies(): boolean {
+    if (this.containerWidth <= 0 || this.floorY <= 0) return false;
+    let anyMutated = false;
+    for (const [id, body] of this.bodies.entries()) {
+      if (body.isStatic) continue;
+      const size = this.sizes.get(id)!;
+      const maxCx = this.containerWidth - size.width / 2;
+      const minCx = size.width / 2;
+      const maxCy = this.floorY - size.height / 2;
+      let nx = body.position.x;
+      let ny = body.position.y;
+      let mutated = false;
+      if (nx > maxCx) {
+        nx = maxCx;
+        mutated = true;
+      } else if (nx < minCx) {
+        nx = minCx;
+        mutated = true;
+      }
+      if (ny > maxCy) {
+        ny = maxCy;
+        mutated = true;
+      }
+      if (mutated) {
+        Matter.Body.setPosition(body, { x: nx, y: ny });
+        Matter.Sleeping.set(body, false);
+        anyMutated = true;
       }
     }
-    bodies.push({
-      id: item.id,
-      subKind: item.subKind,
-      x,
-      y: restY,
-      vx: 0,
-      vy: 0,
-      width: w,
-      height: h,
-      mass: SUBKIND_MASS[item.subKind] ?? 1.0,
-      rotation: (rng() * 2 - 1) * 8,
-      rotationV: 0,
-      settled: true,
-      detached: false,
-      settleFrames: SLEEP_FRAMES,
-    });
+    return anyMutated;
   }
-  return bodies;
+
+  /**
+   * 起動時に既存アイテムを「床に積まれた」状態で配置する。
+   * 横方向重なりがあれば上に積む決定論的な簡易レイアウト。
+   */
+  placeFloorPreset(items: FloorPresetItem[], rng: () => number = Math.random) {
+    if (this.containerWidth <= 0 || this.floorY <= 0) return;
+    const placed: { x: number; y: number; w: number; h: number }[] = [];
+    for (const item of items) {
+      const w = item.size.width;
+      const h = item.size.height;
+      const maxX = Math.max(0, this.containerWidth - w);
+      const x = maxX > 0 ? rng() * maxX : 0;
+      let restY = this.floorY - h;
+      for (const p of placed) {
+        const overlapX = Math.min(x + w, p.x + p.w) - Math.max(x, p.x);
+        if (overlapX > 0) {
+          const candidate = p.y - h;
+          if (candidate < restY) restY = candidate;
+        }
+      }
+      placed.push({ x, y: restY, w, h });
+      this.addBody({
+        id: item.id,
+        subKind: item.subKind,
+        size: { width: w, height: h },
+        initial: "settled-floor",
+        x,
+        y: restY,
+        rng,
+      });
+    }
+  }
+
+  destroy() {
+    Matter.World.clear(this.world, false);
+    Matter.Engine.clear(this.engine);
+    this.bodies.clear();
+    this.sizes.clear();
+    this.dragTracking.clear();
+    this.walls = [];
+  }
 }

@@ -1,17 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { TrashBinItem } from "./TrashBinItem";
-import {
-  applyShake,
-  attach,
-  createBody,
-  detach,
-  hasUnsettled,
-  PhysicsBody,
-  placeFloorPreset,
-  stepPhysics,
-  wakeNeighbors,
-} from "./physics";
+import { BodyState, DRAG_THRESHOLD_PX, TrashPhysicsEngine } from "./physics";
 import { getBodySize } from "./displayHelpers";
 import { useDropTargetRegistry } from "@/store/dropTargetRegistry";
 import { useTrashBinStore } from "./trashBinStore";
@@ -29,8 +19,7 @@ interface PhysicsViewProps {
   handleRef?: React.MutableRefObject<PhysicsViewHandle | null>;
 }
 
-const MAX_DT = 0.033; // 30fps 下限
-const DRAG_THRESHOLD_PX = 5; // 設計書 §5-A / §7
+const MAX_DT_MS = 33; // 30fps 下限
 
 export function TrashBinPhysicsView({
   items,
@@ -39,12 +28,16 @@ export function TrashBinPhysicsView({
 }: PhysicsViewProps) {
   const { t } = useTranslation();
   const containerRef = useRef<HTMLDivElement>(null);
-  const bodiesRef = useRef<Map<string, PhysicsBody>>(new Map());
+  const engineRef = useRef<TrashPhysicsEngine | null>(null);
+  // strict mode で unmount cleanup → remount effect の順に走るため、
+  // 関数ボディ側の lazy init では effect 再実行時に null に戻ったままになる。
+  // 各 effect/callback で getEngine() 経由で取得することで再生成を保証する。
+  const getEngine = useCallback((): TrashPhysicsEngine => {
+    if (!engineRef.current) engineRef.current = new TrashPhysicsEngine();
+    return engineRef.current;
+  }, []);
   const nodesRef = useRef<Map<string, HTMLElement>>(new Map());
   const knownIdsRef = useRef<Set<string>>(new Set());
-  // size は state にして、measure() 完了で items useEffect が再実行されるように
-  // する (DockView lazy-mount で items 到着が先になるケース対応)。sizeRef は
-  // tick() のホットパスから ref で読むためのミラー。
   const [size, setSize] = useState({ width: 0, floorY: 0 });
   const sizeRef = useRef(size);
   useEffect(() => {
@@ -54,7 +47,6 @@ export function TrashBinPhysicsView({
   const rafRef = useRef<number | null>(null);
   const lastTsRef = useRef(0);
 
-  // D&D 状態 (pointer down → 5px しきい値で drag 開始 → drop or cancel)
   const dragStateRef = useRef<{
     pointerId: number;
     itemId: string;
@@ -76,42 +68,36 @@ export function TrashBinPhysicsView({
     itemsRef.current = new Map(items.map((i) => [i.id, i]));
   }, [items]);
 
-  const applyTransform = useCallback((body: PhysicsBody) => {
-    const el = nodesRef.current.get(body.id);
+  const applyTransform = useCallback((state: BodyState) => {
+    const el = nodesRef.current.get(state.id);
     if (!el) return;
-    el.style.transform = `translate3d(${body.x}px, ${body.y}px, 0) rotate(${body.rotation}deg)`;
-    el.dataset.settled = String(body.settled);
+    el.style.transform = `translate3d(${state.x}px, ${state.y}px, 0) rotate(${state.rotation}deg)`;
+    el.dataset.settled = String(state.isSleeping);
   }, []);
 
   const tick = useCallback(
     (now: number) => {
+      const engine = getEngine();
       if (!visibleRef.current) {
         rafRef.current = null;
         return;
       }
-      const dt =
+      const dtMs =
         lastTsRef.current === 0
-          ? 1 / 60
-          : Math.min((now - lastTsRef.current) / 1000, MAX_DT);
+          ? 1000 / 60
+          : Math.min(now - lastTsRef.current, MAX_DT_MS);
       lastTsRef.current = now;
 
-      const list = Array.from(bodiesRef.current.values());
-      const next = stepPhysics(
-        list,
-        dt,
-        sizeRef.current.floorY,
-        sizeRef.current.width,
-      );
-      bodiesRef.current = new Map(next.map((b) => [b.id, b]));
-      for (const b of next) applyTransform(b);
+      engine.step(dtMs);
+      engine.forEachState(applyTransform);
 
-      if (hasUnsettled(next)) {
+      if (engine.hasUnsettled()) {
         rafRef.current = requestAnimationFrame(tick);
       } else {
         rafRef.current = null;
       }
     },
-    [applyTransform],
+    [applyTransform, getEngine],
   );
 
   const startLoop = useCallback(() => {
@@ -129,10 +115,10 @@ export function TrashBinPhysicsView({
         return;
       }
       nodesRef.current.set(id, el);
-      const body = bodiesRef.current.get(id);
-      if (body) applyTransform(body);
+      const state = getEngine().getState(id);
+      if (state) applyTransform(state);
     },
-    [applyTransform],
+    [applyTransform, getEngine],
   );
 
   // Container 寸法計測 + ResizeObserver
@@ -144,31 +130,16 @@ export function TrashBinPhysicsView({
       const next = { width: rect.width, floorY: rect.height };
       sizeRef.current = next;
       setSize(next);
-      // 既存 body をはみ出さないよう clamp + wake
-      let mutated = false;
-      for (const body of bodiesRef.current.values()) {
-        const maxX = Math.max(0, next.width - body.width);
-        if (body.x > maxX) {
-          body.x = maxX;
-          mutated = true;
-        }
-        const maxY = next.floorY - body.height;
-        if (body.y > maxY) {
-          body.y = maxY;
-          mutated = true;
-        }
-        if (mutated && body.settled) {
-          body.settled = false;
-          body.settleFrames = 0;
-        }
-      }
+      const engine = getEngine();
+      engine.setBounds(next.width, next.floorY);
+      const mutated = engine.clampBodies();
       if (mutated) startLoop();
     };
     measure();
     const ro = new ResizeObserver(measure);
     ro.observe(el);
     return () => ro.disconnect();
-  }, [startLoop]);
+  }, [startLoop, getEngine]);
 
   // 可視性監視
   useEffect(() => {
@@ -188,24 +159,21 @@ export function TrashBinPhysicsView({
   }, [startLoop]);
 
   // items 同期: 初回ロードで床積み、以降は y=-h から落下。
-  // size を deps に含めて、ResizeObserver の measure 完了後に再実行されるように。
   useEffect(() => {
-    if (size.width <= 0 || size.floorY <= 0) {
-      // コンテナ未計測時は size state 更新後の再実行で処理される
-      return;
-    }
+    if (size.width <= 0 || size.floorY <= 0) return;
+    const engine = getEngine();
     const currentIds = new Set(items.map((i) => i.id));
     const known = knownIdsRef.current;
 
     // 削除分
     for (const id of known) {
-      if (!currentIds.has(id)) bodiesRef.current.delete(id);
+      if (!currentIds.has(id)) engine.removeBody(id);
     }
 
     // 追加分
     const added: TrashItemData[] = [];
     for (const item of items) {
-      if (!known.has(item.id) && !bodiesRef.current.has(item.id)) {
+      if (!known.has(item.id) && !engine.hasBody(item.id)) {
         added.push(item);
       }
     }
@@ -218,34 +186,25 @@ export function TrashBinPhysicsView({
           subKind: item.subKind,
           size: getBodySize(item),
         }));
-        const bodies = placeFloorPreset(presetItems, size.width, size.floorY);
-        for (const b of bodies) {
-          bodiesRef.current.set(b.id, b);
-          applyTransform(b);
-        }
+        engine.placeFloorPreset(presetItems);
+        engine.forEachState(applyTransform);
       } else {
         for (const item of added) {
-          const body = createBody({
+          const state = engine.addBody({
             id: item.id,
             subKind: item.subKind,
-            containerWidth: size.width,
             size: getBodySize(item),
+            containerWidth: size.width,
             initial: "falling",
           });
-          bodiesRef.current.set(body.id, body);
-          const woken = wakeNeighbors(
-            body,
-            Array.from(bodiesRef.current.values()),
-          );
-          bodiesRef.current = new Map(woken.map((b) => [b.id, b]));
-          applyTransform(body);
+          applyTransform(state);
         }
         startLoop();
       }
     }
 
     knownIdsRef.current = currentIds;
-  }, [items, size, startLoop, applyTransform]);
+  }, [items, size, startLoop, applyTransform, getEngine]);
 
   // unmount 時のクリーンアップ
   useEffect(() => {
@@ -254,27 +213,26 @@ export function TrashBinPhysicsView({
         cancelAnimationFrame(rafRef.current);
         rafRef.current = null;
       }
+      engineRef.current?.destroy();
+      engineRef.current = null;
     };
   }, []);
 
-  // 攪拌 imperative handle (設計書 §7 攪拌)
+  // 攪拌 imperative handle
   useEffect(() => {
     if (!handleRef) return;
     handleRef.current = {
       stir: (intensity) => {
-        const list = Array.from(bodiesRef.current.values());
-        const shaken = applyShake(list, intensity, intensity);
-        bodiesRef.current = new Map(shaken.map((b) => [b.id, b]));
+        getEngine().shake(intensity, intensity);
         startLoop();
       },
     };
     return () => {
       if (handleRef.current) handleRef.current = null;
     };
-  }, [handleRef, startLoop]);
+  }, [handleRef, startLoop, getEngine]);
 
-  // ── D&D ハンドラ (設計書 §5-A) ─────────────────────────────────
-  // 5px しきい値で drag 開始 (それ未満で離したら未来の Popover 起動枠)。
+  // ── D&D ハンドラ ─────────────────────────────────
   const handlePointerDown = useCallback(
     (e: React.PointerEvent<HTMLDivElement>) => {
       if (e.button !== 0) return;
@@ -283,15 +241,15 @@ export function TrashBinPhysicsView({
       if (!itemEl) return;
       const itemId = itemEl.dataset.trashBodyId;
       if (!itemId) return;
-      const body = bodiesRef.current.get(itemId);
-      if (!body) return;
+      const engine = getEngine();
+      const state = engine.getState(itemId);
+      if (!state) return;
       const containerRect = containerRef.current?.getBoundingClientRect();
       if (!containerRect) return;
-      // body 内のクリック点 offset (drag 中のマウス追従基準)
       const clientX = e.clientX;
       const clientY = e.clientY;
-      const bodyClientX = containerRect.left + body.x;
-      const bodyClientY = containerRect.top + body.y;
+      const bodyClientX = containerRect.left + state.x;
+      const bodyClientY = containerRect.top + state.y;
       dragStateRef.current = {
         pointerId: e.pointerId,
         itemId,
@@ -303,39 +261,30 @@ export function TrashBinPhysicsView({
       };
       itemEl.setPointerCapture(e.pointerId);
     },
-    [],
+    [getEngine],
   );
 
   const handlePointerMove = useCallback(
     (e: React.PointerEvent<HTMLDivElement>) => {
       const drag = dragStateRef.current;
       if (!drag || drag.pointerId !== e.pointerId) return;
+      const engine = getEngine();
       const dx = e.clientX - drag.startClientX;
       const dy = e.clientY - drag.startClientY;
       if (!drag.started) {
         if (Math.hypot(dx, dy) < DRAG_THRESHOLD_PX) return;
-        // 5px 超過 → drag 開始: physics から detach
         drag.started = true;
         setDraggingItemId(drag.itemId);
-        const body = bodiesRef.current.get(drag.itemId);
-        if (body) {
-          bodiesRef.current.set(drag.itemId, detach(body));
-        }
+        engine.beginDrag(drag.itemId);
       }
-      // body 位置をマウス追従させる (container 座標系)
       const containerRect = containerRef.current?.getBoundingClientRect();
       if (!containerRect) return;
-      const body = bodiesRef.current.get(drag.itemId);
-      if (!body) return;
-      const next: PhysicsBody = {
-        ...body,
-        x: e.clientX - containerRect.left - drag.bodyOffsetX,
-        y: e.clientY - containerRect.top - drag.bodyOffsetY,
-      };
-      bodiesRef.current.set(drag.itemId, next);
-      applyTransform(next);
+      const tlx = e.clientX - containerRect.left - drag.bodyOffsetX;
+      const tly = e.clientY - containerRect.top - drag.bodyOffsetY;
+      engine.dragTo(drag.itemId, tlx, tly);
+      const state = engine.getState(drag.itemId);
+      if (state) applyTransform(state);
 
-      // hit test (panel ハイライト)
       const hover = useDropTargetRegistry
         .getState()
         .hitTest({ x: e.clientX, y: e.clientY });
@@ -346,7 +295,7 @@ export function TrashBinPhysicsView({
         setHoverTargetId(null);
       }
     },
-    [applyTransform],
+    [applyTransform, getEngine],
   );
 
   const finishDrag = useCallback(
@@ -358,14 +307,14 @@ export function TrashBinPhysicsView({
       setHoverTargetId(null);
 
       if (!drag.started) {
-        // クリック扱い (5px 未満で離した): Popover を開く (設計書 §5-A)
+        // クリック扱い: Popover を開く
         setPopoverItemId(drag.itemId);
         setPopoverAnchor({ x: e.clientX, y: e.clientY });
         return;
       }
 
+      const engine = getEngine();
       const item = itemsRef.current.get(drag.itemId);
-      const body = bodiesRef.current.get(drag.itemId);
       const target = useDropTargetRegistry
         .getState()
         .hitTest({ x: e.clientX, y: e.clientY });
@@ -374,40 +323,26 @@ export function TrashBinPhysicsView({
         item && target && target.accepts(item.subKind) ? target : null;
 
       if (!acceptable || !item) {
-        // 元位置に戻す: detach 解除 + 上から落下し直し感のため settled=false
-        if (body) {
-          bodiesRef.current.set(drag.itemId, attach(body));
-          const woken = wakeNeighbors(
-            bodiesRef.current.get(drag.itemId)!,
-            Array.from(bodiesRef.current.values()),
-          );
-          bodiesRef.current = new Map(woken.map((b) => [b.id, b]));
-          startLoop();
-        }
+        // 元位置に戻す: 投擲速度で動的に戻す
+        engine.endDrag(drag.itemId);
+        startLoop();
         return;
       }
 
-      // ドロップ確定: target.onDrop を呼ぶ (useDropTarget が pickup + restorer
-      // を統括)。Map ペインはここで transformPoint=screenToFlowPosition を噛ませる。
       const dropPoint = { x: e.clientX, y: e.clientY };
       await acceptable.onDrop(item, dropPoint);
       // pickup が失敗していれば item は trash に残っているので body を再 attach
       if (useTrashBinStore.getState().items.has(item.id)) {
-        const survived = bodiesRef.current.get(drag.itemId);
-        if (survived) {
-          bodiesRef.current.set(drag.itemId, attach(survived));
+        if (engine.hasBody(drag.itemId)) {
+          engine.endDrag(drag.itemId);
           startLoop();
         }
       }
-      // 成功時は items 配列から消えるので useEffect が body を回収する
     },
-    [startLoop],
+    [startLoop, getEngine],
   );
 
-  // hover ハイライトを registry の対象 panel にも反映する。
-  // Phase 6-d で各パネル側が `data-droptarget-id` を持つので、ここでは
-  // 該当 DOM に ring class を直接 toggle する。registry に DOM ref が
-  // 渡らないのは意図的 (パネル間の双方向依存を避ける)。
+  // hover ハイライト
   useEffect(() => {
     const lastEl = document.querySelector<HTMLElement>(
       "[data-trash-drop-hover='true']",
@@ -455,7 +390,6 @@ export function TrashBinPhysicsView({
         />
       ))}
 
-      {/* クリック (5px 未満) で開く Popover (設計書 §5-A) */}
       {popoverItemId && popoverAnchor
         ? (() => {
             const item = itemsRef.current.get(popoverItemId);
