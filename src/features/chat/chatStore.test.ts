@@ -26,6 +26,7 @@ vi.mock("./contextBuilder", () => ({
     totalTokens: 42,
     layers: [],
   })),
+  buildAgentSystemPrompt: vi.fn(() => "mock agent system prompt"),
   buildStorySoFar: vi.fn(() => ""),
   countTokens: vi.fn(() => 42),
   allocateLayerBudgets: vi.fn(() => ({
@@ -35,6 +36,7 @@ vi.mock("./contextBuilder", () => ({
     l3: 76_000,
     l4: 38_000,
   })),
+  ensureTokenizer: vi.fn(() => Promise.resolve()),
 }));
 
 vi.mock("@/features/codex/prosemirrorTextExtractor", () => ({

@@ -9,6 +9,7 @@ import type {
   ThinkingBlock,
   ToolUseBlock,
 } from "./agentTypes";
+import { ensureTokenizer } from "../contextBuilder";
 
 const MAX_TOOL_CALLS = 10;
 
@@ -88,6 +89,8 @@ export async function runAgentLoop(
     onToolComplete,
     onTextChunk,
   } = options;
+
+  await ensureTokenizer();
 
   const conversation: AgentMessagePayload[] = [...options.messages];
   const toolCallRecords: ToolCallRecord[] = [];

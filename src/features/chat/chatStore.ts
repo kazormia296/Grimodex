@@ -31,6 +31,7 @@ import {
   buildStorySoFar,
   countTokens,
   allocateLayerBudgets,
+  ensureTokenizer,
 } from "./contextBuilder";
 import type {
   SceneContext,
@@ -386,6 +387,7 @@ async function buildSceneContextPrompt(opts: {
     commandInstruction,
   } = opts;
 
+  await ensureTokenizer();
   const allEntries = opts.prefetchedEntries ?? (await listCodexEntries());
 
   const chatModel = useAiSettingsStore.getState().settings?.model ?? "";
@@ -838,6 +840,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
   // --- Prompt preview for copy ---
 
   buildPromptForCopy: async (userInput: string): Promise<string> => {
+    await ensureTokenizer();
     const {
       activeSceneId,
       activeProjectId,
@@ -943,6 +946,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
       isGlobalChat,
     } = get();
     if (isStreaming) return;
+    await ensureTokenizer();
     if (!content.trim()) return;
     const effectiveSceneId = isGlobalChat ? null : activeSceneId;
 
@@ -1551,6 +1555,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
   },
 
   refreshContextLayers: async () => {
+    await ensureTokenizer();
     const { activeSceneId, activeProjectId, activeSessionId, isGlobalChat } =
       get();
     const effectiveSceneId = isGlobalChat ? null : activeSceneId;

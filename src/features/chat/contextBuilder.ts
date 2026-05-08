@@ -1,4 +1,4 @@
-import { encodingForModel } from "js-tiktoken";
+import type { Tiktoken } from "js-tiktoken/lite";
 import i18next from "@/lib/i18n";
 import type { TreeNodeData } from "@/features/tree/treeStore";
 import { cmpKeys } from "@/features/tree/fractionalIndex";
@@ -141,7 +141,27 @@ export interface SystemPromptResult {
   trimmedLayers?: string[];
 }
 
-const encoder = encodingForModel("gpt-4o");
+// js-tiktoken は cl100k/p50k/r50k/o200k 等の BPE テーブルを含み 5MB 超ある。
+// メインチャンクから切り離すため lite + 必要 rank だけを動的 import する。
+// 起動を遅らせないよう事前ロードはせず、`ensureTokenizer()` を chat フロー入口で await する。
+let encoder: Tiktoken | null = null;
+let encoderLoadingPromise: Promise<Tiktoken> | null = null;
+let _heuristicWarned = false;
+
+export async function ensureTokenizer(): Promise<void> {
+  if (encoder) return;
+  if (!encoderLoadingPromise) {
+    encoderLoadingPromise = (async () => {
+      const [lite, ranks] = await Promise.all([
+        import("js-tiktoken/lite"),
+        import("js-tiktoken/ranks/o200k_base"),
+      ]);
+      encoder = new lite.Tiktoken(ranks.default);
+      return encoder;
+    })();
+  }
+  await encoderLoadingPromise;
+}
 
 // Cache token counts to avoid redundant BPE encoding on the same text.
 // Especially effective for repeated refreshContextLayers calls when scene
@@ -616,7 +636,20 @@ export function countTokens(text: string): number {
   if (!text) return 0;
   const cached = _tokenCache.get(text);
   if (cached !== undefined) return cached;
-  const result = encoder.encode(text).length;
+  let result: number;
+  if (encoder) {
+    result = encoder.encode(text).length;
+  } else {
+    // ensureTokenizer() 未 await のフォールバック。Trim 計算が破綻しない程度の概算
+    // （日本語・英語混在で 1 トークン ≒ 2 文字を仮定）。
+    if (!_heuristicWarned) {
+      _heuristicWarned = true;
+      console.warn(
+        "[contextBuilder] countTokens called before ensureTokenizer(); using heuristic.",
+      );
+    }
+    result = Math.ceil(text.length / 2);
+  }
   if (_tokenCache.size >= _TOKEN_CACHE_MAX) {
     _tokenCache.delete(_tokenCache.keys().next().value!);
   }
