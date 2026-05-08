@@ -37,11 +37,14 @@ chrono = "0.4"
 keyring = { version = "3", features = ["sync-secret-service", "windows-native", "apple-native"] }
 reqwest = { version = "0.13", features = ["json", "stream"] }
 futures = "0.3"
-tokio = { version = "1", features = ["macros"] }
+tokio = { version = "1", features = ["macros", "process", "io-util", "rt", "sync", "time"] }
 aho-corasick = "1"
 grimodex-lint = { path = "crates/grimodex-lint" }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tracing-appender = "0.2"
 dirs = "5"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
 

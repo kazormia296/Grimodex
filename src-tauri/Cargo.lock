@@ -1759,6 +1759,7 @@ dependencies = [
  "futures",
  "grimodex-lint",
  "keyring",
+ "libc",
  "reqwest",
  "rusqlite",
  "serde",

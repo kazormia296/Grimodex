@@ -1,4 +1,5 @@
 mod ai;
+mod cli_provider;
 mod codex_matching;
 mod commands;
 mod database;
@@ -11,8 +12,8 @@ use tauri::Manager;
 
 use codex_matching::CodexMatcherState;
 use commands::{
-    AiSettingsPath, GlobalSettingsPath, InlineAiAbortFlag, LogGuard, StreamAbortFlag,
-    WorkspaceState,
+    AiSettingsPath, CliStreamAbortFlag, GlobalSettingsPath, InlineAiAbortFlag, LogGuard,
+    StreamAbortFlag, WorkspaceState,
 };
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -66,6 +67,11 @@ pub fn run() {
                 flag: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             });
 
+            // CLI provider stream abort flag (subprocess based, separate from HTTP streams)
+            app.manage(CliStreamAbortFlag {
+                flag: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            });
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -88,6 +94,10 @@ pub fn run() {
             commands::ai::send_inline_ai_stream,
             commands::ai::abort_inline_ai_stream,
             commands::ai::send_agent_message,
+            commands::cli_ai::detect_cli_binary,
+            commands::cli_ai::test_cli_connection,
+            commands::cli_ai::abort_cli_chat_stream,
+            commands::cli_ai::send_cli_chat_stream,
             commands::foreshadow::foreshadow_create,
             commands::foreshadow::foreshadow_update,
             commands::foreshadow::foreshadow_delete,

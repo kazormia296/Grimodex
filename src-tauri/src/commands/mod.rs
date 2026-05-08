@@ -12,6 +12,7 @@ use std::sync::{Arc, Mutex};
 use crate::database::Database;
 
 pub(crate) mod ai;
+pub(crate) mod cli_ai;
 pub(crate) mod db;
 pub(crate) mod foreshadow;
 pub(crate) mod integrity;
@@ -32,6 +33,13 @@ pub(crate) struct StreamAbortFlag {
 /// Kept separate from `StreamAbortFlag` so that aborting one does not affect the other
 /// when Chat and inline AI are streaming simultaneously.
 pub(crate) struct InlineAiAbortFlag {
+    pub(crate) flag: Arc<std::sync::atomic::AtomicBool>,
+}
+
+/// AtomicBool flag to request aborting an in-progress CLI provider stream.
+/// CLI providers (Claude Code / Codex / OpenCode) are spawned as subprocesses
+/// and need their own abort signal independent from the HTTP-based Chat stream.
+pub(crate) struct CliStreamAbortFlag {
     pub(crate) flag: Arc<std::sync::atomic::AtomicBool>,
 }
 

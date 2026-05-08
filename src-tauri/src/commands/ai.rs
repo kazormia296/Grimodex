@@ -26,11 +26,8 @@ pub(super) fn should_retry_429(settings: &ai::AiSettings) -> bool {
     if !matches!(settings.provider, ai::AiProvider::OpenaiCompatible) {
         return false;
     }
-    openai_compat_presets::rate_limit_for(
-        &settings.openai_compatible.preset,
-        &settings.model,
-    )
-    .is_some()
+    openai_compat_presets::rate_limit_for(&settings.openai_compatible.preset, &settings.model)
+        .is_some()
 }
 
 /// OpenAI 互換プロバイダのプリセット extra_body を構築する。
