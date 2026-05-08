@@ -39,7 +39,7 @@ export async function restoreMapSticky(
   const brokenLinks: string[] = [];
 
   // boardId は (drop 先 > payload の元) の優先順で解決
-  let boardId = options.boardIdOverride ?? payload.boardId;
+  const boardId = options.boardIdOverride ?? payload.boardId;
   if (!(await boardExists(boardId))) {
     if (
       options.boardIdOverride &&
