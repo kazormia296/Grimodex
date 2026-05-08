@@ -52,6 +52,12 @@ def doc_nodes(*nodes) -> str:
     return json.dumps({"type": "doc", "content": list(nodes)}, ensure_ascii=False)
 
 
+# Snippet 本文は ProseMirror JSON ではなく HTML を保存する
+# （src/features/snippets/SnippetDetailContent.tsx は editor.getHTML() を使う）。
+def html_paragraphs(*paragraphs: str) -> str:
+    return "".join(f"<p>{p}</p>" for p in paragraphs)
+
+
 # 伏線マーク付きの段落構築ヘルパー。
 # segments は str（プレーンテキスト）または (key, text, mark_dict) の3要素タプル。
 # 構築時に ProseMirror の絶対位置（fromPos/toPos）を spans 辞書に記録する。
@@ -413,6 +419,7 @@ CREATE TABLE IF NOT EXISTS authorship_spans (
     codex_entry_id  TEXT REFERENCES codex_entries(id) ON DELETE CASCADE,
     snippet_id      TEXT REFERENCES snippets(id) ON DELETE CASCADE,
     detail_value_id TEXT REFERENCES codex_detail_values(id) ON DELETE CASCADE,
+    sticky_id       TEXT REFERENCES map_stickies(id) ON DELETE CASCADE,
     from_pos        INTEGER NOT NULL,
     to_pos          INTEGER NOT NULL,
     source          TEXT NOT NULL CHECK(source IN ('human','ai','unknown')),
@@ -477,52 +484,86 @@ CREATE TABLE IF NOT EXISTS project_settings (
 );
 
 -- Map panel tables
-CREATE TABLE IF NOT EXISTS map_ai_nodes (
-    id          TEXT PRIMARY KEY,
-    board_id    TEXT NOT NULL REFERENCES map_boards(id) ON DELETE CASCADE,
-    prompt      TEXT NOT NULL,
-    response    TEXT,
-    session_id  TEXT REFERENCES chat_sessions(id) ON DELETE SET NULL,
-    model       TEXT,
-    token_usage INTEGER,
-    created_at  TEXT NOT NULL DEFAULT (datetime('now')),
-    updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
-);
-CREATE INDEX IF NOT EXISTS idx_map_ai_board ON map_ai_nodes(board_id);
-
 CREATE TABLE IF NOT EXISTS map_boards (
-    id          TEXT PRIMARY KEY,
-    project_id  TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-    title       TEXT NOT NULL DEFAULT 'Main',
-    sort_order  REAL NOT NULL DEFAULT 0.0,
-    created_at  TEXT NOT NULL DEFAULT (datetime('now')),
-    updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
+    id            TEXT PRIMARY KEY,
+    project_id    TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    title         TEXT NOT NULL DEFAULT 'Main',
+    sort_order    REAL NOT NULL DEFAULT 0.0,
+    mode          TEXT NOT NULL DEFAULT 'free' CHECK(mode IN ('free', 'theme')),
+    viewport_x    REAL NOT NULL DEFAULT 0,
+    viewport_y    REAL NOT NULL DEFAULT 0,
+    viewport_zoom REAL NOT NULL DEFAULT 1.0,
+    show_config   TEXT NOT NULL DEFAULT '{}',
+    color_by      TEXT NOT NULL DEFAULT 'none',
+    created_at    TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at    TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_map_boards_project ON map_boards(project_id);
+
+-- map_ai_branches: AI branch seeds (responses live in derived Stickies)
+CREATE TABLE IF NOT EXISTS map_ai_branches (
+    id            TEXT PRIMARY KEY,
+    board_id      TEXT NOT NULL REFERENCES map_boards(id) ON DELETE CASCADE,
+    prompt        TEXT NOT NULL,
+    seed_node_ids TEXT NOT NULL DEFAULT '[]',
+    session_id    TEXT REFERENCES chat_sessions(id) ON DELETE SET NULL,
+    model         TEXT,
+    token_usage   INTEGER,
+    created_at    TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at    TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_map_ai_branches_board ON map_ai_branches(board_id);
+
+-- map_stickies: Map-only ProseMirror memos. (palette_id, color_slot) は
+-- src/lib/stickyPalettes.ts のパレット定義に対応する。
+CREATE TABLE IF NOT EXISTS map_stickies (
+    id                     TEXT PRIMARY KEY,
+    board_id               TEXT NOT NULL REFERENCES map_boards(id) ON DELETE CASCADE,
+    title                  TEXT,
+    body                   TEXT NOT NULL DEFAULT '{"type":"doc","content":[]}',
+    preview_text           TEXT,
+    palette_id             TEXT NOT NULL DEFAULT 'post-it-playful',
+    color_slot             INTEGER NOT NULL DEFAULT 0 CHECK(color_slot >= 0),
+    ai_branch_id           TEXT REFERENCES map_ai_branches(id) ON DELETE SET NULL,
+    source_chat_message_id TEXT REFERENCES chat_messages(id) ON DELETE SET NULL,
+    created_at             TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at             TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_map_stickies_board     ON map_stickies(board_id);
+CREATE INDEX IF NOT EXISTS idx_map_stickies_ai_branch ON map_stickies(ai_branch_id);
+CREATE INDEX IF NOT EXISTS idx_map_stickies_chat_msg
+    ON map_stickies(source_chat_message_id)
+    WHERE source_chat_message_id IS NOT NULL;
 
 CREATE TABLE IF NOT EXISTS map_node_positions (
     id              TEXT PRIMARY KEY,
     board_id        TEXT NOT NULL REFERENCES map_boards(id) ON DELETE CASCADE,
-    node_ref_type   TEXT NOT NULL CHECK(node_ref_type IN ('scene', 'codex', 'note', 'ai')),
+    node_ref_type   TEXT NOT NULL
+                      CHECK(node_ref_type IN ('scene','codex','snippet','note','sticky','ai_branch')),
     tree_node_id    TEXT REFERENCES tree_nodes(id) ON DELETE CASCADE,
     codex_entry_id  TEXT REFERENCES codex_entries(id) ON DELETE CASCADE,
-    ai_node_id      TEXT REFERENCES map_ai_nodes(id) ON DELETE CASCADE,
+    snippet_id      TEXT REFERENCES snippets(id) ON DELETE CASCADE,
+    sticky_id       TEXT REFERENCES map_stickies(id) ON DELETE CASCADE,
+    ai_branch_id    TEXT REFERENCES map_ai_branches(id) ON DELETE CASCADE,
     x               REAL NOT NULL,
     y               REAL NOT NULL,
     pinned          INTEGER NOT NULL DEFAULT 0,
-    hidden          INTEGER NOT NULL DEFAULT 0,
     z_index         INTEGER NOT NULL DEFAULT 0,
     created_at      TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at      TEXT NOT NULL DEFAULT (datetime('now')),
     CHECK (
         (CASE WHEN tree_node_id    IS NOT NULL THEN 1 ELSE 0 END +
          CASE WHEN codex_entry_id  IS NOT NULL THEN 1 ELSE 0 END +
-         CASE WHEN ai_node_id      IS NOT NULL THEN 1 ELSE 0 END) = 1
+         CASE WHEN snippet_id      IS NOT NULL THEN 1 ELSE 0 END +
+         CASE WHEN sticky_id       IS NOT NULL THEN 1 ELSE 0 END +
+         CASE WHEN ai_branch_id    IS NOT NULL THEN 1 ELSE 0 END) = 1
     ),
     CHECK (
-        (node_ref_type IN ('scene', 'note') AND tree_node_id   IS NOT NULL AND codex_entry_id IS NULL     AND ai_node_id IS NULL) OR
-        (node_ref_type = 'codex'            AND codex_entry_id IS NOT NULL AND tree_node_id   IS NULL     AND ai_node_id IS NULL) OR
-        (node_ref_type = 'ai'               AND ai_node_id     IS NOT NULL AND tree_node_id   IS NULL AND codex_entry_id IS NULL)
+        (node_ref_type IN ('scene','note') AND tree_node_id   IS NOT NULL) OR
+        (node_ref_type = 'codex'           AND codex_entry_id IS NOT NULL) OR
+        (node_ref_type = 'snippet'         AND snippet_id     IS NOT NULL) OR
+        (node_ref_type = 'sticky'          AND sticky_id      IS NOT NULL) OR
+        (node_ref_type = 'ai_branch'       AND ai_branch_id   IS NOT NULL)
     )
 );
 CREATE INDEX IF NOT EXISTS idx_map_pos_board  ON map_node_positions(board_id);
@@ -534,16 +575,24 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_map_pos_uniq_scene
 CREATE UNIQUE INDEX IF NOT EXISTS idx_map_pos_uniq_codex
     ON map_node_positions(board_id, codex_entry_id)
     WHERE codex_entry_id IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_map_pos_uniq_snippet
+    ON map_node_positions(board_id, snippet_id)
+    WHERE snippet_id IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_map_pos_uniq_sticky
+    ON map_node_positions(board_id, sticky_id)
+    WHERE sticky_id IS NOT NULL;
 CREATE UNIQUE INDEX IF NOT EXISTS idx_map_pos_uniq_ai
-    ON map_node_positions(board_id, ai_node_id)
-    WHERE ai_node_id IS NOT NULL;
+    ON map_node_positions(board_id, ai_branch_id)
+    WHERE ai_branch_id IS NOT NULL;
 
 CREATE TABLE IF NOT EXISTS map_edges (
     id                TEXT PRIMARY KEY,
     board_id          TEXT NOT NULL REFERENCES map_boards(id) ON DELETE CASCADE,
     from_position_id  TEXT NOT NULL REFERENCES map_node_positions(id) ON DELETE CASCADE,
     to_position_id    TEXT NOT NULL REFERENCES map_node_positions(id) ON DELETE CASCADE,
-    label             TEXT,
+    forward_label     TEXT,
+    backward_label    TEXT,
+    labels            TEXT NOT NULL DEFAULT '[]',
     style             TEXT NOT NULL DEFAULT 'solid' CHECK(style IN ('solid', 'dashed', 'dotted')),
     color             TEXT NOT NULL DEFAULT '#000000',
     direction         TEXT NOT NULL DEFAULT 'none' CHECK(direction IN ('none', 'forward', 'bidirectional')),
@@ -690,6 +739,26 @@ CREATE TABLE IF NOT EXISTS scene_beat_pov_cache (
 );
 CREATE INDEX IF NOT EXISTS idx_scene_beat_pov_scene ON scene_beat_pov_cache(scene_id);
 
+-- 文屑箱（削除物の物理ゴミ箱）
+CREATE TABLE IF NOT EXISTS trash_items (
+    id              TEXT PRIMARY KEY,
+    project_id      TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    kind            TEXT NOT NULL,
+    sub_kind        TEXT NOT NULL,
+    origin_scene_id TEXT REFERENCES tree_nodes(id) ON DELETE CASCADE,
+    origin_codex_id TEXT REFERENCES codex_entries(id) ON DELETE CASCADE,
+    preview_text    TEXT NOT NULL,
+    preview_meta    TEXT,
+    payload         TEXT NOT NULL,
+    char_count      INTEGER NOT NULL,
+    is_interesting  INTEGER NOT NULL DEFAULT 0,
+    deleted_at      TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_trash_project_deleted
+    ON trash_items(project_id, deleted_at DESC);
+CREATE INDEX IF NOT EXISTS idx_trash_project_kind_deleted
+    ON trash_items(project_id, kind, deleted_at DESC);
+
 -- FTS5 全文検索インデックス
 CREATE VIRTUAL TABLE IF NOT EXISTS codex_fts USING fts5(
     name, aliases, summary, tags_cache,
@@ -813,8 +882,9 @@ END;
 -- プロジェクト作成時にデフォルトMapボードを自動生成
 CREATE TRIGGER IF NOT EXISTS seed_default_map_board
 AFTER INSERT ON projects BEGIN
-    INSERT OR IGNORE INTO map_boards (id, project_id, title, sort_order, created_at, updated_at)
-      VALUES (new.id || '-main-board', new.id, 'Main', 0.0, datetime('now'), datetime('now'));
+    INSERT OR IGNORE INTO map_boards
+      (id, project_id, title, sort_order, mode, viewport_x, viewport_y, viewport_zoom, show_config, color_by, created_at, updated_at)
+      VALUES (new.id || '-main-board', new.id, 'Main', 0.0, 'free', 0, 0, 1.0, '{}', 'none', datetime('now'), datetime('now'));
 END;
 """
 
@@ -1700,11 +1770,11 @@ def seed(db_path: Path) -> None:
            VALUES (?,?,?,?,?,?,?,?,?)""",
         (
             snippet1_id, project_id, "朱紐、再会",
-            doc_nodes(
-                para("朱紐は乾いていた。雨ざらしのはずなのに、濡れていなかった。"),
-                para("指が触れた瞬間、記憶が来た。朱音自身の記憶ではなかった。"
-                     "誰かが走っていた。杉林の中を、夜に、何かから逃げながら。"
-                     "恐怖の感触だけが、くっきりと残った。"),
+            html_paragraphs(
+                "朱紐は乾いていた。雨ざらしのはずなのに、濡れていなかった。",
+                "指が触れた瞬間、記憶が来た。朱音自身の記憶ではなかった。"
+                "誰かが走っていた。杉林の中を、夜に、何かから逃げながら。"
+                "恐怖の感触だけが、くっきりと残った。",
             ),
             "human", scene1_id, 0, now, now,
         ),
@@ -1719,11 +1789,11 @@ def seed(db_path: Path) -> None:
            VALUES (?,?,?,?,?,?,?,?,?)""",
         (
             snippet2_id, project_id, "廃社、扉の前",
-            doc_nodes(
-                para("拝殿の扉は施錠されていなかった。錠前はあったが、錠前ごと落ちていた。"),
-                para("朱音は錠前を拾い上げ、しばらく眺めてから、元の場所に置いた。"
-                     "誰かがここに入った。あるいは、何かがここから出た。どちらにしても、"
-                     "鍵は最初から意味をなしていなかった。"),
+            html_paragraphs(
+                "拝殿の扉は施錠されていなかった。錠前はあったが、錠前ごと落ちていた。",
+                "朱音は錠前を拾い上げ、しばらく眺めてから、元の場所に置いた。"
+                "誰かがここに入った。あるいは、何かがここから出た。どちらにしても、"
+                "鍵は最初から意味をなしていなかった。",
             ),
             "human", scene1_id, 0, now, now,
         ),
@@ -1796,34 +1866,81 @@ def seed(db_path: Path) -> None:
     # seed_default_map_board トリガーで自動生成済みのボードを使用
     board_id = f"{project_id}-main-board"
 
-    def map_pos_scene(tree_node_id: str, x: float, y: float) -> str:
+    def _map_pos(node_ref_type: str, *,
+                 tree_node_id: str | None = None,
+                 codex_entry_id: str | None = None,
+                 snippet_id: str | None = None,
+                 sticky_id: str | None = None,
+                 ai_branch_id: str | None = None,
+                 x: float, y: float, z_index: int = 0) -> str:
         pid = uid()
         conn.execute(
             """INSERT INTO map_node_positions
-               (id,board_id,node_ref_type,tree_node_id,x,y,created_at,updated_at)
-               VALUES (?,?,?,?,?,?,?,?)""",
-            (pid, board_id, "scene", tree_node_id, x, y, now, now),
+               (id,board_id,node_ref_type,tree_node_id,codex_entry_id,snippet_id,
+                sticky_id,ai_branch_id,x,y,z_index,created_at,updated_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (pid, board_id, node_ref_type,
+             tree_node_id, codex_entry_id, snippet_id, sticky_id, ai_branch_id,
+             x, y, z_index, now, now),
         )
         return pid
+
+    def map_pos_scene(tree_node_id: str, x: float, y: float) -> str:
+        return _map_pos("scene", tree_node_id=tree_node_id, x=x, y=y)
 
     def map_pos_codex(codex_entry_id: str, x: float, y: float) -> str:
-        pid = uid()
-        conn.execute(
-            """INSERT INTO map_node_positions
-               (id,board_id,node_ref_type,codex_entry_id,x,y,created_at,updated_at)
-               VALUES (?,?,?,?,?,?,?,?)""",
-            (pid, board_id, "codex", codex_entry_id, x, y, now, now),
-        )
-        return pid
+        return _map_pos("codex", codex_entry_id=codex_entry_id, x=x, y=y)
 
-    def map_edge(from_pos_id: str, to_pos_id: str, label=None,
-                 style="solid", color="#888888", direction="none") -> None:
+    def map_pos_snippet(snippet_id: str, x: float, y: float) -> str:
+        return _map_pos("snippet", snippet_id=snippet_id, x=x, y=y)
+
+    def map_pos_sticky(sticky_id: str, x: float, y: float) -> str:
+        return _map_pos("sticky", sticky_id=sticky_id, x=x, y=y)
+
+    def map_pos_ai_branch(ai_branch_id: str, x: float, y: float) -> str:
+        return _map_pos("ai_branch", ai_branch_id=ai_branch_id, x=x, y=y)
+
+    def map_edge(from_pos_id: str, to_pos_id: str, *,
+                 forward_label: str | None = None,
+                 backward_label: str | None = None,
+                 labels: list[str] | None = None,
+                 style: str = "solid",
+                 color: str = "#888888",
+                 direction: str = "none",
+                 board: str | None = None) -> None:
         conn.execute(
             """INSERT INTO map_edges
-               (id,board_id,from_position_id,to_position_id,label,style,color,direction,created_at,updated_at)
-               VALUES (?,?,?,?,?,?,?,?,?,?)""",
-            (uid(), board_id, from_pos_id, to_pos_id, label, style, color, direction, now, now),
+               (id,board_id,from_position_id,to_position_id,
+                forward_label,backward_label,labels,style,color,direction,created_at,updated_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (uid(), board or board_id, from_pos_id, to_pos_id,
+             forward_label, backward_label,
+             json.dumps(labels or [], ensure_ascii=False),
+             style, color, direction, now, now),
         )
+
+    def make_sticky(*, board: str, title: str | None, paragraphs: list[str],
+                    palette_id: str = "post-it-playful", color_slot: int = 0,
+                    ai_branch_id: str | None = None,
+                    source_chat_message_id: str | None = None) -> str:
+        sid = uid()
+        body = json.dumps(
+            {"type": "doc",
+             "content": [{"type": "paragraph",
+                          "content": [{"type": "text", "text": p}]}
+                         for p in paragraphs]},
+            ensure_ascii=False,
+        )
+        preview = " ".join(paragraphs)[:120] if paragraphs else None
+        conn.execute(
+            """INSERT INTO map_stickies
+               (id,board_id,title,body,preview_text,palette_id,color_slot,
+                ai_branch_id,source_chat_message_id,created_at,updated_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+            (sid, board, title, body, preview,
+             palette_id, color_slot, ai_branch_id, source_chat_message_id, now, now),
+        )
+        return sid
 
     # ノード配置：キャラ列（x≈120）/ 場所・アイテム列（x≈420）/ シーン列（x≈720）
     pos_akane       = map_pos_codex(akane_id,          120.0,  100.0)
@@ -1838,16 +1955,53 @@ def seed(db_path: Path) -> None:
     pos_s2          = map_pos_scene(scene2_id,          720.0,  360.0)
     pos_s3          = map_pos_scene(scene3_id,          720.0,  580.0)
 
-    # エッジ：関係性
-    map_edge(pos_akane,       pos_haisha,        label="帰還",     style="solid",  color="#534AB7", direction="forward")
-    map_edge(pos_akane,       pos_akahimo,       label="所持",     style="solid",  color="#534AB7", direction="forward")
-    map_edge(pos_akane,       pos_otowa,         label="幼なじみ", style="dashed", color="#5B8CDD")
-    map_edge(pos_akane,       pos_fuuya,         label="因縁",     style="dashed", color="#993C1D")
-    map_edge(pos_shuki,       pos_haisha,        label="出現跡",   style="dotted", color="#CC3333")
-    map_edge(pos_haisha,      pos_kirino,        label="所在",     style="solid",  color="#0F6E56", direction="forward")
-    map_edge(pos_s_flashback, pos_haisha,        label="十年前",   style="dotted", color="#BA7517")
-    map_edge(pos_s1,          pos_haisha,        label="舞台",     style="solid",  color="#888888")
-    map_edge(pos_s2,          pos_haisha,        label="舞台",     style="solid",  color="#888888")
+    # Snippet を Map に置く（x≈1020）：本文断片へ視線を誘導するピン
+    pos_snip_reunion = map_pos_snippet(snippet1_id, 1020.0, 200.0)
+    pos_snip_haisha  = map_pos_snippet(snippet2_id, 1020.0, 420.0)
+
+    # 自由メモ（Sticky）2 枚：構想メモと未確定の問いをカラフルに散らす
+    sticky_motive_id = make_sticky(
+        board=board_id,
+        title="朱音の動機メモ",
+        paragraphs=[
+            "「真相を知りたい」よりも「あの夜を成仏させたい」を上に置く。",
+            "知識欲は動機の表層、根っこは喪の作業。",
+        ],
+        color_slot=0,  # Sunnyside
+    )
+    sticky_question_id = make_sticky(
+        board=board_id,
+        title="未確定：朱鬼は誰の記憶を喰っているか",
+        paragraphs=[
+            "候補A：母（情緒寄り）／候補B：冬弥（プロット寄り）",
+            "二章の手応えで決める。確定までは触れない。",
+        ],
+        color_slot=2,  # Tropical Pink
+    )
+    pos_sticky_motive   = map_pos_sticky(sticky_motive_id,   320.0, -120.0)
+    pos_sticky_question = map_pos_sticky(sticky_question_id, 820.0, 800.0)
+
+    # エッジ：関係性（forward/backward 双方向ラベルや labels 配列も活用）
+    map_edge(pos_akane,       pos_haisha,        forward_label="帰還",     style="solid",  color="#534AB7", direction="forward")
+    map_edge(pos_akane,       pos_akahimo,       forward_label="所持",     style="solid",  color="#534AB7", direction="forward")
+    map_edge(pos_akane,       pos_otowa,         forward_label="幼なじみ", style="dashed", color="#5B8CDD")
+    map_edge(pos_akane,       pos_fuuya,
+             forward_label="因縁", backward_label="観察",
+             style="dashed", color="#993C1D", direction="bidirectional")
+    map_edge(pos_shuki,       pos_haisha,        forward_label="出現跡",   style="dotted", color="#CC3333")
+    map_edge(pos_haisha,      pos_kirino,        forward_label="所在",     style="solid",  color="#0F6E56", direction="forward")
+    map_edge(pos_s_flashback, pos_haisha,        forward_label="十年前",   style="dotted", color="#BA7517")
+    map_edge(pos_s1,          pos_haisha,
+             forward_label="舞台",
+             labels=["導入", "視線誘導"],
+             style="solid", color="#888888")
+    map_edge(pos_s2,          pos_haisha,        forward_label="舞台",     style="solid",  color="#888888")
+    # スニペット → シーン：執筆参照リンク
+    map_edge(pos_snip_reunion, pos_s1,           forward_label="本文の元", style="dashed", color="#888888", direction="forward")
+    map_edge(pos_snip_haisha,  pos_s1,           forward_label="本文の元", style="dashed", color="#888888", direction="forward")
+    # 付箋 → 関連ノード
+    map_edge(pos_sticky_motive,   pos_akane,     forward_label="動機",     style="dashed", color="#999999")
+    map_edge(pos_sticky_question, pos_s3,        forward_label="決定保留", style="dotted", color="#999999")
 
     # フレーム：第一部のシーン群をまとめる
     conn.execute(
@@ -2108,6 +2262,21 @@ def seed(db_path: Path) -> None:
                 pos += 2
         return ranges
 
+    # Snippet 本文は HTML 形式（"<p>...</p><p>...</p>"）。
+    # TipTap が読み込んだ後の ProseMirror 位置は paragraph 並びの場合と同等になるため、
+    # 段落テキストを抽出してから _doc_para_ranges と同じ規則で from/to を計算する。
+    import re as _re
+    def _html_para_ranges(html: str) -> list[tuple[int, int]]:
+        paragraphs = _re.findall(r"<p>(.*?)</p>", html, flags=_re.S)
+        pos = 0
+        ranges: list[tuple[int, int]] = []
+        for text in paragraphs:
+            text_start = pos + 1
+            text_len = len(text)
+            ranges.append((text_start, text_start + text_len))
+            pos += 2 + text_len
+        return ranges
+
     # scene1: 段落単位で human / ai / unknown を混在
     scene1_attribution_plan = [
         # (paragraph_index, source, model, chat_msg_id)
@@ -2139,8 +2308,11 @@ def seed(db_path: Path) -> None:
 
     def _attribute_doc(owner_col: str, owner_id: str, content_text: str,
                        source: str, model: str | None, msg_id: str | None,
-                       phase_col_id: str | None = None) -> None:
-        for fp, tp in _doc_para_ranges(content_text):
+                       phase_col_id: str | None = None,
+                       *, is_html: bool = False) -> None:
+        ranges = (_html_para_ranges(content_text) if is_html
+                  else _doc_para_ranges(content_text))
+        for fp, tp in ranges:
             if fp >= tp:
                 continue
             if phase_col_id is None:
@@ -2162,12 +2334,12 @@ def seed(db_path: Path) -> None:
         "SELECT content FROM snippets WHERE id=?", (snippet1_id,)
     ).fetchone()
     _attribute_doc("snippet_id", snippet1_id, snip1_content_row[0],
-                   "human", None, chat_msg_ids[1])
+                   "human", None, chat_msg_ids[1], is_html=True)
     snip2_content_row = conn.execute(
         "SELECT content FROM snippets WHERE id=?", (snippet2_id,)
     ).fetchone()
     _attribute_doc("snippet_id", snippet2_id, snip2_content_row[0],
-                   "ai", "anthropic/claude-sonnet-4.6", None)
+                   "ai", "anthropic/claude-sonnet-4.6", None, is_html=True)
 
     akane_doc_row = conn.execute(
         "SELECT content FROM codex_entries WHERE id=?", (akane_id,)
@@ -2324,33 +2496,74 @@ def seed(db_path: Path) -> None:
             (uid(), flashback_session_id, role, text, now),
         )
 
-    # ---- map_ai_nodes と 2 つ目の map board ----
-    ai_node_id = uid()
+    # ---- AI branch（種ノードからの放射） ----
+    # map_ai_branches は「AI に問いを投げた起点」を保存し、応答カードは派生 Sticky として
+    # ai_branch_id でひも付ける（mapApi.ts createAiBranch 参照）。
+    ai_branch_id = uid()
     conn.execute(
-        """INSERT INTO map_ai_nodes
-           (id,board_id,prompt,response,session_id,model,token_usage,created_at,updated_at)
+        """INSERT INTO map_ai_branches
+           (id,board_id,prompt,seed_node_ids,session_id,model,token_usage,created_at,updated_at)
            VALUES (?,?,?,?,?,?,?,?,?)""",
-        (ai_node_id, board_id,
+        (ai_branch_id, board_id,
          "朱音と冬弥の最初の対峙シーンで、二人のどちらが先に口を開くべき？",
-         "朱音から先に口を開かせると緊張の主導権が朱音に渡る。"
-         "冬弥から先に口を開かせると朱音の沈黙が読者に重みを持つ。"
-         "朱音を『言わない人』として描くなら後者が効く。",
+         json.dumps([pos_akane, pos_fuuya, pos_s3], ensure_ascii=False),
          session_id, "anthropic/claude-sonnet-4.6", 412, now, now),
     )
-    pos_ai_id = uid()
-    conn.execute(
-        """INSERT INTO map_node_positions
-           (id,board_id,node_ref_type,ai_node_id,x,y,created_at,updated_at)
-           VALUES (?,?,?,?,?,?,?,?)""",
-        (pos_ai_id, board_id, "ai", ai_node_id, 920.0, 580.0, now, now),
-    )
-    map_edge(pos_ai_id, pos_s3, label="検討", style="dashed", color="#999999")
+    pos_ai_branch = map_pos_ai_branch(ai_branch_id, 920.0, 580.0)
 
+    # branch から派生する応答カード Sticky（3 枚を放射状に配置）
+    branch_sticky_specs = [
+        ("朱音から", [
+            "緊張の主導権が朱音に渡る。読者は朱音の意志を受け取りやすい。",
+            "ただし「言わない人」設定との整合に注意。",
+        ], 4),  # Blue Paradise
+        ("冬弥から", [
+            "朱音の沈黙が読者に重みを持つ。冬弥の善意（または偽善）が前面化。",
+            "二章の重心を朱音の内面に置きたいならこちら。",
+        ], 5),  # Iris Infusion
+        ("第三者の声", [
+            "音羽が割って入る案。緊張は溶けるがテーマは弱まる。",
+            "対立軸を保ちたい場合は不採用。",
+        ], 1),  # Vital Orange
+    ]
+    branch_sticky_positions: list[str] = []
+    for i, (title, paragraphs, slot) in enumerate(branch_sticky_specs):
+        sid_st = make_sticky(
+            board=board_id, title=title, paragraphs=paragraphs,
+            color_slot=slot, ai_branch_id=ai_branch_id,
+            source_chat_message_id=chat_msg_ids[1] if i == 0 else None,
+        )
+        # branch を中心に半径 220 で 120° ごとに配置
+        import math
+        angle = (2 * math.pi / 3) * i - math.pi / 2
+        sx = 920.0 + 220 * math.cos(angle)
+        sy = 580.0 + 220 * math.sin(angle)
+        bp = map_pos_sticky(sid_st, sx, sy)
+        branch_sticky_positions.append(bp)
+        # branch → sticky の点線エッジ
+        map_edge(pos_ai_branch, bp, style="dashed", color="#999999", direction="forward")
+
+    # branch ノード → 検討対象シーン
+    map_edge(pos_ai_branch, pos_s3, forward_label="検討", style="dashed", color="#999999")
+
+    # フレーム：AI ブランチ群を一目で識別
+    conn.execute(
+        """INSERT INTO map_frames
+           (id,board_id,title,x,y,width,height,background,border_color,z_index,created_at,updated_at)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+        (uid(), board_id, "AI 検討：対峙の口火",
+         640.0, 320.0, 580.0, 540.0,
+         "#fff5f5", "#cc9999", -1, now, now),
+    )
+
+    # ---- 2 つ目の map board（タイムライン視覚化） ----
     board2_id = uid()
     conn.execute(
-        """INSERT INTO map_boards (id, project_id, title, sort_order, created_at, updated_at)
-           VALUES (?,?,?,?,?,?)""",
-        (board2_id, project_id, "タイムライン視覚化", 1.0, now, now),
+        """INSERT INTO map_boards
+           (id, project_id, title, sort_order, mode, viewport_x, viewport_y, viewport_zoom, show_config, color_by, created_at, updated_at)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+        (board2_id, project_id, "タイムライン視覚化", 1.0,
+         "free", 0, 0, 1.0, "{}", "status", now, now),
     )
     for sid_, y in [
         (scene_flashback_id, 0.0),
@@ -2651,6 +2864,189 @@ def seed(db_path: Path) -> None:
                 "INSERT INTO tree_node_labels (node_id, label_id) VALUES (?,?)",
                 (node_id, label_ids[name]),
             )
+
+    # ================================================================
+    # 文屑箱（trash_items）：削除した本文断片・構造アイテムをサンプル投入
+    # ================================================================
+    # types.ts に合わせて payload は camelCase キーで JSON.stringify したものを保存。
+    # is_interesting は trashBinStore の判定（長さ・構造種別）を踏襲した手動付与。
+
+    def trash_text_fragment(*, scene_id: str | None, codex_id: str | None,
+                            text: str, spans: list[dict],
+                            interesting: bool = False,
+                            deleted_offset_seconds: int = 0) -> None:
+        deleted = datetime.now(timezone.utc).timestamp() - deleted_offset_seconds
+        deleted_iso = datetime.fromtimestamp(deleted, tz=timezone.utc) \
+            .strftime("%Y-%m-%dT%H:%M:%SZ")
+        payload = {"text": text, "spans": spans}
+        conn.execute(
+            """INSERT INTO trash_items
+               (id,project_id,kind,sub_kind,origin_scene_id,origin_codex_id,
+                preview_text,preview_meta,payload,char_count,is_interesting,deleted_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (uid(), project_id, "text-fragment", "text-fragment",
+             scene_id, codex_id,
+             text[:80], None,
+             json.dumps(payload, ensure_ascii=False),
+             len(text), 1 if interesting else 0, deleted_iso),
+        )
+
+    def trash_structure(*, sub_kind: str, scene_id: str | None,
+                        codex_id: str | None, preview_text: str,
+                        preview_meta: dict | None, payload_obj: dict,
+                        char_count: int,
+                        deleted_offset_seconds: int = 0) -> None:
+        # 構造アイテムは原則 interesting=true（trashBinStore の判定に倣う）。
+        deleted = datetime.now(timezone.utc).timestamp() - deleted_offset_seconds
+        deleted_iso = datetime.fromtimestamp(deleted, tz=timezone.utc) \
+            .strftime("%Y-%m-%dT%H:%M:%SZ")
+        conn.execute(
+            """INSERT INTO trash_items
+               (id,project_id,kind,sub_kind,origin_scene_id,origin_codex_id,
+                preview_text,preview_meta,payload,char_count,is_interesting,deleted_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (uid(), project_id, "structure-item", sub_kind,
+             scene_id, codex_id,
+             preview_text[:80],
+             json.dumps(preview_meta, ensure_ascii=False) if preview_meta else None,
+             json.dumps(payload_obj, ensure_ascii=False),
+             char_count, 1, deleted_iso),
+        )
+
+    # 1) 短い文字屑（誤字直しで消えた程度のもの）
+    trash_text_fragment(
+        scene_id=scene1_id, codex_id=None,
+        text="——いや、思い出すまでもない。",
+        spans=[{
+            "text": "——いや、思い出すまでもない。",
+            "source": "human",
+            "model": None, "chatMessageId": None, "timestamp": now,
+        }],
+        deleted_offset_seconds=120,
+    )
+
+    # 2) interesting な長文（推敲で削った段落、AI 由来の混在）
+    long_drop = (
+        "鳥居の朱は色褪せていた。十年前に見たときは、もっと血の色に近かった気がする。"
+        "あれは記憶の補正だろうか、それとも本当に色が抜けたのか。"
+        "朱音は手を伸ばしかけて、やめた。触れてしまえば確かめてしまう。それは怖かった。"
+    )
+    trash_text_fragment(
+        scene_id=scene1_id, codex_id=None,
+        text=long_drop,
+        spans=[
+            {"text": "鳥居の朱は色褪せていた。十年前に見たときは、もっと血の色に近かった気がする。",
+             "source": "human", "model": None,
+             "chatMessageId": None, "timestamp": now},
+            {"text": "あれは記憶の補正だろうか、それとも本当に色が抜けたのか。",
+             "source": "ai", "model": "anthropic/claude-sonnet-4.6",
+             "chatMessageId": chat_msg_ids[1] if chat_msg_ids else None,
+             "timestamp": now},
+            {"text": "朱音は手を伸ばしかけて、やめた。触れてしまえば確かめてしまう。それは怖かった。",
+             "source": "human", "model": None,
+             "chatMessageId": None, "timestamp": now},
+        ],
+        interesting=True,
+        deleted_offset_seconds=3600,
+    )
+
+    # 3) Codex 編集中に削った断片（excludedAliases の整理途中で消した行）
+    trash_text_fragment(
+        scene_id=None, codex_id=akane_id,
+        text="（旧設定）幼少期の朱音は朱紐を「お姉さん」と呼んでいた。",
+        spans=[{
+            "text": "（旧設定）幼少期の朱音は朱紐を「お姉さん」と呼んでいた。",
+            "source": "human",
+            "model": None, "chatMessageId": None, "timestamp": now,
+        }],
+        deleted_offset_seconds=7200,
+    )
+
+    # 4) 構造アイテム：削除された Map Sticky（payload に座標と色情報を保持）
+    deleted_sticky_body = json.dumps(
+        {"type": "doc",
+         "content": [{"type": "paragraph",
+                      "content": [{"type": "text",
+                                   "text": "ボツ案：朱鬼が冬弥の母を喰っていた説。"
+                                            "整合が取れず一旦撤回。"}]}]},
+        ensure_ascii=False,
+    )
+    trash_structure(
+        sub_kind="map-sticky",
+        scene_id=None, codex_id=None,
+        preview_text="ボツ案：朱鬼が冬弥の母を喰っていた説。",
+        preview_meta={"paletteId": "post-it-playful", "colorSlot": 6},
+        payload_obj={
+            "originalId": uid(),
+            "boardId": board_id,
+            "title": "撤回した仮説",
+            "body": deleted_sticky_body,
+            "previewText": "ボツ案：朱鬼が冬弥の母を喰っていた説。整合が取れず一旦撤回。",
+            "paletteId": "post-it-playful",
+            "colorSlot": 6,
+            "x": 1180.0, "y": -40.0,
+            "pinned": False, "zIndex": 0,
+        },
+        char_count=32,
+        deleted_offset_seconds=10800,
+    )
+
+    # 5) 構造アイテム：削除された Snippet（執筆候補から外したワンシーン）
+    # snippets.content は HTML 形式なので payload.body も HTML で保存する。
+    deleted_snippet_body_html = html_paragraphs(
+        "「来るな」と冬弥は言った。雪の朝、官庁の門前。"
+        "その声は、朱音が知っている誰の声にも似ていなかった。",
+        "——結局このシーンは三章ではなく、五章で書く。",
+    )
+    trash_structure(
+        sub_kind="snippet",
+        scene_id=scene2_id, codex_id=None,
+        preview_text="「来るな」と冬弥は言った。雪の朝、官庁の門前。",
+        preview_meta=None,
+        payload_obj={
+            "originalId": uid(),
+            "title": "雪の門前（保留）",
+            "body": deleted_snippet_body_html,
+            "tags": json.dumps([], ensure_ascii=False),
+            "contentSource": "human",
+            "sceneId": scene2_id,
+        },
+        char_count=72,
+        deleted_offset_seconds=43200,
+    )
+
+    # 6) 構造アイテム：削除された Scene（番外章を一度作って消したログ）
+    deleted_scene_body = doc_nodes(
+        para("【未採用章】朱音が記録所で十年前の事件記録を盗み見るシーン。"),
+        para("動機の暴露が早すぎて伏線回収に支障が出るため取り下げ。"),
+    )
+    trash_structure(
+        sub_kind="scene",
+        scene_id=None, codex_id=None,
+        preview_text="【未採用章】朱音が記録所で十年前の事件記録を盗み見るシーン。",
+        preview_meta={"status": "outline", "wordCount": 86},
+        payload_obj={
+            "originalId": uid(),
+            "title": "未採用：記録所の盗み見",
+            "body": deleted_scene_body,
+            "beats": json.dumps([], ensure_ascii=False),
+            "povCharacterId": akane_id,
+            "folderHintId": notes_folder_id,
+            "folderHintName": "覚書",
+            "metadata": {
+                "synopsis": "盗み見シーン草案。テンポ崩れのため未採用。",
+                "status": "outline",
+                "nodeType": "scene",
+                "locationId": None,
+                "sortOrder": "z9",
+                "storyTimeOrder": None,
+                "storyTimeLabel": None,
+            },
+            "charCount": 86,
+        },
+        char_count=86,
+        deleted_offset_seconds=86400,
+    )
 
     conn.commit()
     conn.close()
