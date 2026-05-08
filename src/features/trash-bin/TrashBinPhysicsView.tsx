@@ -331,8 +331,10 @@ export function TrashBinPhysicsView({
         item && target && target.accepts(item.subKind) ? target : null;
 
       if (!acceptable || !item) {
-        // 元位置に戻す: 投擲速度で動的に戻す
+        // 元位置に戻す: 投擲速度で動的に戻し、bin 外なら壁内へクランプして
+        // body が壁の外に飛んで見えなくなる事故を防ぐ。
         engine.endDrag(drag.itemId);
+        engine.clampBodies();
         startLoop();
         return;
       }
@@ -343,6 +345,7 @@ export function TrashBinPhysicsView({
       if (useTrashBinStore.getState().items.has(item.id)) {
         if (engine.hasBody(drag.itemId)) {
           engine.endDrag(drag.itemId);
+          engine.clampBodies();
           startLoop();
         }
       }

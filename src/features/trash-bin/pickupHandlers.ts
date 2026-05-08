@@ -24,6 +24,11 @@ import type { DropTarget, DropPoint } from "@/store/dropTargetRegistry";
 import { getFocusedEditor } from "@/store/focusedContentEditorStore";
 import { insertTrashItemIntoEditor } from "./editorInsert";
 import type { TextFragmentPayload, TrashItemData, TrashSubKind } from "./types";
+import { useTreeStore } from "@/features/tree/treeStore";
+import { useCodexStore } from "@/features/codex/codexStore";
+import { useSnippetStore } from "@/features/snippets/snippetStore";
+import { useMapStore } from "@/features/map/mapStore";
+import { useForeshadowStore } from "@/features/foreshadow/foreshadowStore";
 
 const DEFAULT_PROJECT_ID = "default-project";
 
@@ -194,12 +199,44 @@ export async function dispatchDrop(
  * `pickup` のラッパ: dispatchDrop を呼んで失敗時は toast、成功時は brokenLinks
  * を warning として表示。
  */
+/**
+ * 復元先パネルのストアを更新して即時反映させる。restorer は API を直接叩くだけで
+ * Zustand ストアを触らないため、target.kind から該当ストアの reload を発火する。
+ * editor 系は TipTap に直接挿入されるのでパネルリロードは不要。
+ */
+function refreshAfterRestore(target: DropTarget): void {
+  switch (target.kind) {
+    case "scenes-panel":
+      void useTreeStore.getState().loadTree(DEFAULT_PROJECT_ID);
+      return;
+    case "codex-panel":
+      void useCodexStore.getState().loadEntries();
+      return;
+    case "snippets-panel":
+      void useSnippetStore.getState().loadEntries();
+      return;
+    case "map-panel":
+      useMapStore.getState().bumpBoardDataVersion();
+      return;
+    case "foreshadow-panel":
+      void useForeshadowStore.getState().load(DEFAULT_PROJECT_ID);
+      return;
+    case "scene-editor":
+    case "codex-editor":
+    case "snippet-editor":
+      return;
+  }
+}
+
 export async function pickupAndDispatch(
   item: TrashItemData,
   target: DropTarget,
   dropPoint: DropPoint,
 ): Promise<RestoreOutcome> {
   const result = await dispatchDrop(item, target, dropPoint);
+  if (result.ok) {
+    refreshAfterRestore(target);
+  }
   if (!result.ok) {
     toast.error(
       i18next.t("trashBin.pickupFailed", "復元に失敗しました") +
