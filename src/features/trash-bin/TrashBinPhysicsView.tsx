@@ -477,7 +477,7 @@ export function TrashBinPhysicsView({
   return (
     <div
       ref={containerRef}
-      className="relative flex-1 overflow-hidden touch-none"
+      className="relative h-full w-full overflow-hidden touch-none"
       data-testid="trash-bin-physics-view"
       onPointerDown={handlePointerDown}
       onPointerMove={handlePointerMove}
