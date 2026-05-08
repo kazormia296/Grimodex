@@ -54,6 +54,14 @@ function truncate(text: string, max: number): string {
   return [...text].slice(0, max).join("") + "…";
 }
 
+/**
+ * 「実質空」判定: 渡された文字列群がすべて空白のみなら true。
+ * 設計書通り「無題かつ本文 0 文字」の deletion をゴミ箱に積み上げない。
+ */
+function allBlank(...parts: Array<string | null | undefined>): boolean {
+  return parts.every((p) => !p || p.trim().length === 0);
+}
+
 export interface CaptureSceneOpts {
   projectId: string;
   node: SceneCaptureNodeInput;
@@ -75,7 +83,10 @@ export function captureSceneDeletion(opts: CaptureSceneOpts): void {
     return;
   }
 
-  const bodyPreview = truncate(extractPlainText(content), BODY_PREVIEW_MAX);
+  const bodyText = extractPlainText(content);
+  // タイトル空 + 本文空のシーンは保存しない
+  if (allBlank(node.title, bodyText)) return;
+  const bodyPreview = truncate(bodyText, BODY_PREVIEW_MAX);
   const previewText = truncate(node.title || bodyPreview, PREVIEW_TEXT_MAX);
 
   const payload: ScenePayload = {
@@ -126,7 +137,9 @@ export interface CaptureGridChapterOpts {
 
 export function captureGridChapterDeletion(opts: CaptureGridChapterOpts): void {
   const { projectId, node, folderHintName, tempId } = opts;
-  const previewText = truncate(node.title || "(無題)", PREVIEW_TEXT_MAX);
+  // 無題の空 folder は保存しない
+  if (allBlank(node.title)) return;
+  const previewText = truncate(node.title, PREVIEW_TEXT_MAX);
 
   const payload: GridChapterPayload = {
     originalId: node.id,
@@ -170,10 +183,10 @@ export interface CaptureCodexOpts {
 
 export function captureCodexDeletion(opts: CaptureCodexOpts): void {
   const { projectId, entry, categoryLabel, iconName, tempId } = opts;
-  const bodyPreview = truncate(
-    extractPlainText(entry.content ?? ""),
-    BODY_PREVIEW_MAX,
-  );
+  const bodyText = extractPlainText(entry.content ?? "");
+  // 名前空 + 概要空 + 本文空の Codex は保存しない
+  if (allBlank(entry.name, entry.summary, bodyText)) return;
+  const bodyPreview = truncate(bodyText, BODY_PREVIEW_MAX);
   const previewText = truncate(
     entry.name || entry.summary || bodyPreview,
     PREVIEW_TEXT_MAX,
@@ -225,10 +238,10 @@ export interface CaptureSnippetOpts {
 
 export function captureSnippetDeletion(opts: CaptureSnippetOpts): void {
   const { projectId, snippet, tempId } = opts;
-  const bodyPreview = truncate(
-    extractPlainText(snippet.content ?? ""),
-    BODY_PREVIEW_MAX,
-  );
+  const bodyText = extractPlainText(snippet.content ?? "");
+  // タイトル空 + 本文空の Snippet は保存しない
+  if (allBlank(snippet.title, bodyText)) return;
+  const bodyPreview = truncate(bodyText, BODY_PREVIEW_MAX);
   const previewText = truncate(snippet.title || bodyPreview, PREVIEW_TEXT_MAX);
 
   const payload: SnippetPayload = {
@@ -267,12 +280,12 @@ export interface CaptureMapStickyOpts {
 
 export function captureMapStickyDeletion(opts: CaptureMapStickyOpts): void {
   const { projectId, sticky, position, tempId } = opts;
-  const bodyPreview = truncate(
-    extractPlainText(sticky.body ?? ""),
-    BODY_PREVIEW_MAX,
-  );
+  const bodyText = extractPlainText(sticky.body ?? "");
+  // タイトル空 + previewText 空 + 本文空の Sticky は保存しない
+  if (allBlank(sticky.title, sticky.previewText, bodyText)) return;
+  const bodyPreview = truncate(bodyText, BODY_PREVIEW_MAX);
   const previewText = truncate(
-    sticky.title || sticky.previewText || bodyPreview || "(無題)",
+    sticky.title || sticky.previewText || bodyPreview,
     PREVIEW_TEXT_MAX,
   );
 
@@ -317,8 +330,10 @@ export interface CaptureForeshadowOpts {
 
 export function captureForeshadowDeletion(opts: CaptureForeshadowOpts): void {
   const { projectId, foreshadow, tempId } = opts;
+  // タイトル空 + intent 空 + notes 空の伏線は保存しない
+  if (allBlank(foreshadow.title, foreshadow.intent, foreshadow.notes)) return;
   const previewText = truncate(
-    foreshadow.title || foreshadow.intent || "(無題)",
+    foreshadow.title || foreshadow.intent || "",
     PREVIEW_TEXT_MAX,
   );
 

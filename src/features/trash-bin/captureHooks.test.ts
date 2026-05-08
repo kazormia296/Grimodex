@@ -221,3 +221,70 @@ describe("captureSnippetDeletion", () => {
     expect(options.tempId).toBe("tmp-sn");
   });
 });
+
+describe("空コンテンツのキャプチャは skip される", () => {
+  it("scene: title 空 + 本文空なら enqueuePending しない", () => {
+    captureSceneDeletion({
+      projectId: "p",
+      node: makeNode({ title: "", content: "{}" }),
+      content: "{}",
+      folderHintName: null,
+      tempId: "tmp",
+    });
+    expect(enqueueSpy).not.toHaveBeenCalled();
+  });
+
+  it("scene: 本文があれば保存される (タイトル空でも)", () => {
+    captureSceneDeletion({
+      projectId: "p",
+      node: makeNode({ title: "" }),
+      content:
+        '{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"本文だけ"}]}]}',
+      folderHintName: null,
+      tempId: "tmp",
+    });
+    expect(enqueueSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it("scene: 空白のみのタイトル + 本文空も skip", () => {
+    captureSceneDeletion({
+      projectId: "p",
+      node: makeNode({ title: "   " }),
+      content: "{}",
+      folderHintName: null,
+      tempId: "tmp",
+    });
+    expect(enqueueSpy).not.toHaveBeenCalled();
+  });
+
+  it("codex: name + summary + body 全て空なら skip", () => {
+    captureCodexDeletion({
+      projectId: "p",
+      entry: makeCodex({ name: "", summary: "", content: "{}" }),
+      categoryLabel: null,
+      iconName: null,
+      tempId: "tmp",
+    });
+    expect(enqueueSpy).not.toHaveBeenCalled();
+  });
+
+  it("snippet: title 空 + body 空なら skip", () => {
+    captureSnippetDeletion({
+      projectId: "p",
+      snippet: makeSnippet({ title: "", content: "{}" }),
+      tempId: "tmp",
+    });
+    expect(enqueueSpy).not.toHaveBeenCalled();
+  });
+
+  it("folder: title 空なら grid-chapter として skip", () => {
+    captureSceneDeletion({
+      projectId: "p",
+      node: makeNode({ nodeType: "folder", title: "" }),
+      content: "{}",
+      folderHintName: null,
+      tempId: "tmp",
+    });
+    expect(enqueueSpy).not.toHaveBeenCalled();
+  });
+});

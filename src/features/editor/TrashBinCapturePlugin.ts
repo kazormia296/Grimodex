@@ -89,6 +89,8 @@ function flushBuffer(buffer: BackspaceBuffer): void {
     buffer.timerId = null;
   }
   if ([...buffer.text].length < MIN_FRAGMENT_CHARS) return;
+  // 空白のみの削除はゴミ箱に積まない
+  if (buffer.text.trim().length === 0) return;
 
   useTrashBinStore.getState().enqueuePending(
     {
