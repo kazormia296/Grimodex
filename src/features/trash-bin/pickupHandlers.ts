@@ -48,11 +48,7 @@ export function acceptsMatrix(
     case "snippets-panel":
       return subKind === "snippet" || subKind === "text-fragment";
     case "map-panel":
-      return (
-        subKind === "map-sticky" ||
-        subKind === "text-fragment" ||
-        subKind === "codex-entry"
-      );
+      return subKind === "map-sticky" || subKind === "text-fragment";
     case "foreshadow-panel":
       return subKind === "foreshadow";
   }

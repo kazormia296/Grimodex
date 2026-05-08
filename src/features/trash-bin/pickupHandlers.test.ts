@@ -24,10 +24,11 @@ describe("acceptsMatrix", () => {
     { target: "scene-editor", sub: "scene", expect: true },
     { target: "codex-panel", sub: "scene", expect: false },
 
-    // codex-entry → エディタ + codex パネル + map (sticky 化)
+    // codex-entry → エディタ + codex パネル
+    // (map への sticky 化はハンドラ未実装のため受け入れない)
     { target: "codex-panel", sub: "codex-entry", expect: true },
     { target: "scene-editor", sub: "codex-entry", expect: true },
-    { target: "map-panel", sub: "codex-entry", expect: true },
+    { target: "map-panel", sub: "codex-entry", expect: false },
     { target: "scenes-panel", sub: "codex-entry", expect: false },
 
     // snippet → snippets パネル + エディタ
