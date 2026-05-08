@@ -76,11 +76,9 @@ export interface CaptureSceneOpts {
 export function captureSceneDeletion(opts: CaptureSceneOpts): void {
   const { projectId, node, content, beats, folderHintName, tempId } = opts;
 
-  // folder ノードは Grid 章ヘッダ扱い (subKind=grid-chapter)。設計書 §4-C / §16.8。
-  if (node.nodeType === "folder") {
-    captureGridChapterDeletion({ projectId, node, folderHintName, tempId });
-    return;
-  }
+  // フォルダ自体はゴミ箱に入れない (中の scene のみが trash に積まれる仕様)。
+  // 万一フォルダで呼ばれても黙って無視する。
+  if (node.nodeType === "folder") return;
 
   const bodyText = extractPlainText(content);
   // 本文が空のシーンは保存しない (デフォルト名の Scene が量産削除されるノイズ防止)。

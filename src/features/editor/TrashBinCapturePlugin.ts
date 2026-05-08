@@ -150,13 +150,22 @@ export function createTrashBinCapturePlugin(): Plugin<TrashBinCaptureState> {
         const state = trashBinCaptureKey.getState(newState);
         const origin = state?.origin ?? null;
         if (origin) {
-          useTrashBinStore
-            .getState()
-            .cancelPending(
-              origin.kind === "scene"
-                ? { originSceneId: origin.id }
-                : { originCodexId: origin.id },
-            );
+          // scene / codex は FK でまとめてキャンセル (1500ms 内の連打全部)。
+          // snippet / sticky は FK が無いので、現バッファの tempId だけを
+          // 取り消す (現セッションの flush 済み 1 件のみ対象)。
+          if (origin.kind === "scene") {
+            useTrashBinStore
+              .getState()
+              .cancelPending({ originSceneId: origin.id });
+          } else if (origin.kind === "codex") {
+            useTrashBinStore
+              .getState()
+              .cancelPending({ originCodexId: origin.id });
+          } else if (buffer) {
+            useTrashBinStore
+              .getState()
+              .cancelPending({ tempId: buffer.tempId });
+          }
         }
         // 連打バッファも破棄 (合体中の屑は捨てる)
         if (buffer) {

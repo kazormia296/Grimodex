@@ -775,14 +775,14 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
     // replay an inconsistent state.
     if (partialFailure) return;
 
-    // Trash 連携: 削除に成功したノードについて一括キャプチャ。
-    // scene → subKind=scene、folder → subKind=grid-chapter (captureSceneDeletion
-    // が node.nodeType で内部分岐)。note は captureしない (未対応 subKind)。
+    // Trash 連携: 削除に成功した scene のみをキャプチャ。
+    // フォルダ自体はキャプチャしない (中の scene だけが trash に積まれる仕様)。
+    // note も対象外 (未対応 subKind)。
     const trashTempIds = new Map<string, string>();
     if (trackHistory) {
       for (const node of deletedNodes) {
         if (!successfullyDeleted.has(node.id)) continue;
-        if (node.nodeType !== "scene" && node.nodeType !== "folder") continue;
+        if (node.nodeType !== "scene") continue;
         const tempId = `trash-${node.nodeType}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}-${node.id}`;
         trashTempIds.set(node.id, tempId);
         const folderHintName =

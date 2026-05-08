@@ -91,6 +91,9 @@ export async function dispatchDrop(
   }
   if (kind === "map-panel" && item.subKind === "map-sticky") {
     return restoreMapSticky(item, {
+      // 開いている board に強制的に乗せる: 元 board が消えていたり、
+      // 別 board を表示中でも、UI 上のドロップ先と一致させる。
+      boardIdOverride: useMapStore.getState().activeBoardId ?? undefined,
       dropX: dropPoint.x,
       dropY: dropPoint.y,
     });
@@ -104,7 +107,7 @@ export async function dispatchDrop(
       subKind: "snippet",
       payload: {
         originalId: item.id,
-        title: item.previewText.slice(0, 40),
+        title: item.previewText.slice(0, 40) || "Untitled",
         body: JSON.stringify({
           type: "doc",
           content: [
@@ -155,6 +158,7 @@ export async function dispatchDrop(
       },
     };
     return restoreMapSticky(synthetic, {
+      boardIdOverride: useMapStore.getState().activeBoardId ?? undefined,
       dropX: dropPoint.x,
       dropY: dropPoint.y,
     });

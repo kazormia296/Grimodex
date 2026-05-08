@@ -11,6 +11,7 @@ import type { NodeProps } from "@xyflow/react";
 import { FloatingHandle } from "./FloatingHandle";
 import { useEditor, EditorContent } from "@tiptap/react";
 import { getStickyEditorExtensions } from "@/features/editor/extensions";
+import { useTrashBinCapture } from "@/features/editor/useTrashBinCapture";
 import {
   updateSticky,
   extractPreviewText,
@@ -76,12 +77,14 @@ function parseBodyContent(body: string): object | undefined {
 }
 
 interface StickyBodyEditorProps {
+  stickyId: string;
   body: string;
   onContentChange: (json: string) => void;
   onEscape: () => void;
 }
 
 function StickyBodyEditor({
+  stickyId,
   body,
   onContentChange,
   onEscape,
@@ -93,6 +96,7 @@ function StickyBodyEditor({
       onContentChange(JSON.stringify(ed.getJSON()));
     },
   });
+  useTrashBinCapture(editor, { kind: "sticky", id: stickyId });
 
   useEffect(() => {
     if (editor) {
@@ -248,6 +252,7 @@ export const StickyNode = memo(function StickyNode({
               {/* Body */}
               {editing ? (
                 <StickyBodyEditor
+                  stickyId={d.id}
                   body={d.body}
                   onContentChange={(json) => {
                     latestBodyRef.current = json;

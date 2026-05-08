@@ -21,6 +21,7 @@ import StarterKit from "@tiptap/starter-kit";
 import { AuthorshipMark } from "@/features/attribution/AuthorshipMark";
 import { useAttribution } from "@/features/attribution/useAttribution";
 import { useCodexHighlight } from "@/features/editor/useCodexHighlight";
+import { useTrashBinCapture } from "@/features/editor/useTrashBinCapture";
 import { CodexPopover } from "@/features/editor/CodexPopover";
 import {
   copyWithAttribution,
@@ -79,6 +80,7 @@ export function SnippetDetailContent({
 
   useAttribution(editor);
   useCodexHighlight(editor, { skipMatchedIds: true });
+  useTrashBinCapture(editor, { kind: "snippet", id: snippet.id });
 
   // Load relational tags when snippet changes
   useEffect(() => {

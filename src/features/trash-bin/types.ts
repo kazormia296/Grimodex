@@ -143,7 +143,7 @@ export type StructureItemPayload =
 export type TrashPayload = TextFragmentPayload | StructureItemPayload;
 
 export interface TrashOrigin {
-  kind: "scene" | "codex";
+  kind: "scene" | "codex" | "snippet" | "sticky";
   id: string;
 }
 
