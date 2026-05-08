@@ -7,14 +7,17 @@
     <title>Grimodex</title>
     <style>
       /* JS 評価前に表示する初期スプラッシュ。React の createRoot が #root に
-         マウントすると中身が置き換わって自動的に消える。色テーマは JS 起動後に
-         html.style へ注入されるため、ここではシステムの prefers-color-scheme を
-         尊重した最小構成にしておく。 */
-      html,
-      body {
-        margin: 0;
-        padding: 0;
-        height: 100%;
+         マウントすると中身が置き換わって自動的に消える。色は .grimodex-boot
+         スコープのみに閉じ込め、本体起動後の theme トークン（bg-background 等）を
+         素の <style> で上書きしないようにする。 */
+      .grimodex-boot {
+        position: fixed;
+        inset: 0;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 1rem;
         background: #09090b;
         color: #e4e4e7;
         font-family:
@@ -25,32 +28,13 @@
           sans-serif;
       }
       @media (prefers-color-scheme: light) {
-        html,
-        body {
+        .grimodex-boot {
           background: #fafafa;
           color: #18181b;
         }
       }
-      #root {
-        height: 100%;
-      }
-      .grimodex-boot {
-        display: flex;
-        flex-direction: column;
-        align-items: center;
-        justify-content: center;
-        height: 100%;
-        gap: 1rem;
-        opacity: 0;
-        animation: grimodex-boot-fade-in 240ms ease-out 80ms forwards;
-      }
       .grimodex-boot svg {
         animation: grimodex-boot-pulse 1.6s ease-in-out infinite;
-      }
-      @keyframes grimodex-boot-fade-in {
-        to {
-          opacity: 1;
-        }
       }
       @keyframes grimodex-boot-pulse {
         0%,
@@ -62,7 +46,6 @@
         }
       }
       @media (prefers-reduced-motion: reduce) {
-        .grimodex-boot,
         .grimodex-boot svg {
           animation: none;
           opacity: 1;
