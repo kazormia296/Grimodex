@@ -12,9 +12,11 @@ describe("acceptsMatrix", () => {
   type Cell = { target: DropTargetKind; sub: TrashSubKind; expect: boolean };
   const cells: Cell[] = [
     // text-fragment は editor 系 / snippets / map で受け入れ
+    // text-fragment → editor 系のみ受け入れ。snippets/map への "化け復元"
+    // (cross-kind) は孤児を作って文脈が失われるので廃止 (2026-05-09)。
     { target: "scene-editor", sub: "text-fragment", expect: true },
-    { target: "snippets-panel", sub: "text-fragment", expect: true },
-    { target: "map-panel", sub: "text-fragment", expect: true },
+    { target: "snippets-panel", sub: "text-fragment", expect: false },
+    { target: "map-panel", sub: "text-fragment", expect: false },
     { target: "scenes-panel", sub: "text-fragment", expect: false },
     { target: "codex-panel", sub: "text-fragment", expect: false },
     { target: "foreshadow-panel", sub: "text-fragment", expect: false },

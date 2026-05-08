@@ -1244,6 +1244,9 @@
     "pickupSuccess": "Restored",
     "brokenLinkWarning": "Restored, but some links are broken",
     "noDropTarget": "No pickup target is open",
+    "copyToClipboard": "Copy to clipboard",
+    "copied": "Copied",
+    "copyFailed": "Copy failed",
     "dropTarget": {
       "editor": "Insert into editor",
       "scenes": "Restore as scene",

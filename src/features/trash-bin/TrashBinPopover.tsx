@@ -17,12 +17,13 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from "@/components/ui/popover";
-import { Trash2 } from "lucide-react";
+import { Trash2, Copy } from "lucide-react";
+import { toast } from "sonner";
 import { useTrashBinStore } from "./trashBinStore";
 import { useDropTargetRegistry } from "@/store/dropTargetRegistry";
 import { acceptsMatrix, pickupAndDispatch } from "./pickupHandlers";
 import { useConfirmDialog } from "./ConfirmDialog";
-import type { TrashItemData } from "./types";
+import type { TextFragmentPayload, TrashItemData } from "./types";
 
 interface Props {
   item: TrashItemData;
@@ -65,6 +66,20 @@ export function TrashBinPopover({
       ? { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 }
       : { x: 0, y: 0 };
     await pickup(item.id, () => pickupAndDispatch(item, target, center));
+  };
+
+  const handleCopy = async () => {
+    const text =
+      item.subKind === "text-fragment"
+        ? ((item.payload as TextFragmentPayload).text ?? item.previewText)
+        : item.previewText;
+    if (!text) return;
+    try {
+      await navigator.clipboard.writeText(text);
+      toast.success(t("trashBin.copied", "コピーしました"));
+    } catch {
+      toast.error(t("trashBin.copyFailed", "コピーに失敗しました"));
+    }
   };
 
   const handleDelete = async () => {
@@ -131,6 +146,17 @@ export function TrashBinPopover({
             </button>
           </div>
         )}
+
+        {item.subKind === "text-fragment" ? (
+          <button
+            type="button"
+            onClick={handleCopy}
+            className="flex w-full items-center justify-center gap-1 rounded border border-input px-2 py-1 text-xs hover:bg-accent"
+          >
+            <Copy className="h-3 w-3" />
+            {t("trashBin.copyToClipboard", "クリップボードにコピー")}
+          </button>
+        ) : null}
 
         <button
           type="button"

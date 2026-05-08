@@ -6,8 +6,10 @@
  * `onRestore` コールバックに渡す。restorer が成功したら `pickup` 側で trash
  * から item を消す。
  *
- * Phase 6 では構造アイテム → 自パネル復元のみ完全対応。文字屑のエディタ挿入と
- * cross-kind 変換 (text → snippet 等) は同マトリクスで分岐する。
+ * 構造アイテム (scene/codex/snippet/sticky/foreshadow/grid-chapter) は元パネルへ
+ * 復元、text-fragment は editor 系へのテキスト挿入のみを許可。text-fragment を
+ * snippet/sticky に "化けさせる" cross-kind 変換は廃止 (孤児を作って文脈が
+ * 失われるため)。
  */
 import { toast } from "sonner";
 import i18next from "i18next";
@@ -23,7 +25,7 @@ import type { RestoreOutcome } from "./restorers";
 import type { DropTarget, DropPoint } from "@/store/dropTargetRegistry";
 import { getFocusedEditor } from "@/store/focusedContentEditorStore";
 import { insertTrashItemIntoEditor } from "./editorInsert";
-import type { TextFragmentPayload, TrashItemData, TrashSubKind } from "./types";
+import type { TrashItemData, TrashSubKind } from "./types";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { useCodexStore } from "@/features/codex/codexStore";
 import { useSnippetStore } from "@/features/snippets/snippetStore";
@@ -51,9 +53,9 @@ export function acceptsMatrix(
     case "codex-panel":
       return subKind === "codex-entry";
     case "snippets-panel":
-      return subKind === "snippet" || subKind === "text-fragment";
+      return subKind === "snippet";
     case "map-panel":
-      return subKind === "map-sticky" || subKind === "text-fragment";
+      return subKind === "map-sticky";
     case "foreshadow-panel":
       return subKind === "foreshadow";
   }
@@ -99,70 +101,9 @@ export async function dispatchDrop(
     });
   }
 
-  // Cross-kind 変換: text-fragment → snippet (Snippets パネル)
-  if (kind === "snippets-panel" && item.subKind === "text-fragment") {
-    const payload = item.payload as TextFragmentPayload;
-    const synthetic: TrashItemData = {
-      ...item,
-      subKind: "snippet",
-      payload: {
-        originalId: item.id,
-        title: item.previewText.slice(0, 40) || "Untitled",
-        body: JSON.stringify({
-          type: "doc",
-          content: [
-            {
-              type: "paragraph",
-              content: payload.text
-                ? [{ type: "text", text: payload.text }]
-                : [],
-            },
-          ],
-        }),
-        tags: null,
-        contentSource: "trash-bin",
-        sceneId: null,
-      },
-    };
-    return restoreSnippet(synthetic, { projectId });
-  }
-
-  // Cross-kind 変換: text-fragment → map-sticky (Map ペイン)
-  if (kind === "map-panel" && item.subKind === "text-fragment") {
-    const payload = item.payload as TextFragmentPayload;
-    const synthetic: TrashItemData = {
-      ...item,
-      subKind: "map-sticky",
-      payload: {
-        originalId: item.id,
-        boardId: "",
-        title: null,
-        body: JSON.stringify({
-          type: "doc",
-          content: [
-            {
-              type: "paragraph",
-              content: payload.text
-                ? [{ type: "text", text: payload.text }]
-                : [],
-            },
-          ],
-        }),
-        previewText: payload.text.slice(0, 60),
-        paletteId: "post-it-playful",
-        colorSlot: 0,
-        x: dropPoint.x,
-        y: dropPoint.y,
-        pinned: false,
-        zIndex: 0,
-      },
-    };
-    return restoreMapSticky(synthetic, {
-      boardIdOverride: useMapStore.getState().activeBoardId ?? undefined,
-      dropX: dropPoint.x,
-      dropY: dropPoint.y,
-    });
-  }
+  // text-fragment はパネルへの構造化復元はしない。エディタへの挿入か、
+  // Popover のクリップボードコピーで取り出す前提 (設計判断: 文脈の切れた
+  // 孤児 snippet/sticky を勝手に作るとどこへ戻ったか分からなくなるため)。
 
   // エディタ本文へのテキスト挿入 (設計書 §5-C)。
   // ドロップされた pane が保持する Editor を優先し (target.getEditor)、
