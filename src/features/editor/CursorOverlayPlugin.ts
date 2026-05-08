@@ -94,6 +94,15 @@ const IGNORE_KEYS = new Set([
 
 class CursorOverlayView {
   private el: HTMLDivElement;
+  /**
+   * Parent of `view.dom` at the time of writing. TipTap's React EditorContent
+   * moves `view.dom` (and all its sibling childNodes — including this cursor
+   * element) into a new wrapper div on unmount/remount. When that happens the
+   * cursor element follows the tree, but a captured wrapper reference would go
+   * stale: `getBoundingClientRect()` on the detached old wrapper returns 0,0
+   * and `position: relative` is only set on the old node. `syncWrapper()`
+   * re-acquires the current parent before each cursor update.
+   */
   private wrapper: HTMLElement;
   private prevDocSize: number;
   private noTransitionTimer = 0;
@@ -146,6 +155,20 @@ class CursorOverlayView {
     this.updateCursor(view);
   }
 
+  /**
+   * Re-acquire the current `view.dom` parent. See `wrapper` field doc.
+   * Called from `updateCursor` so every render uses the live wrapper rect.
+   */
+  private syncWrapper() {
+    const current = this.view.dom.parentElement;
+    if (!current || current === this.wrapper) return;
+    this.wrapper = current;
+    this.wrapper.style.position = "relative";
+    if (this.el.parentElement !== this.wrapper) {
+      this.wrapper.appendChild(this.el);
+    }
+  }
+
   destroy() {
     clearTimeout(this.noTransitionTimer);
     cancelAnimationFrame(this.rafHandle);
@@ -193,6 +216,7 @@ class CursorOverlayView {
   }
 
   updateCursor(view: EditorView) {
+    this.syncWrapper();
     if (!this.getEnabled()) {
       view.dom.style.caretColor = "";
       this.el.style.visibility = "hidden";
