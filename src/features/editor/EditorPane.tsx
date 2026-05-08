@@ -242,7 +242,11 @@ export function EditorPane({
       ? "snippet-editor"
       : "scene-editor";
   const editorDropId = `${editorDropKind}-${nodeId ?? "empty"}-${groupIndex}`;
-  const trashEditorDropRef = useDropTarget(editorDropId, editorDropKind);
+  // useDropTarget の getEditor は遅延参照クロージャなので、宣言順で後ろの
+  // editorRef.current (line ~700 で代入される) を参照しても安全。
+  const trashEditorDropRef = useDropTarget(editorDropId, editorDropKind, {
+    getEditor: () => editorRef.current,
+  });
   const setPaneRef = useCallback(
     (el: HTMLDivElement | null) => {
       paneRef.current = el;

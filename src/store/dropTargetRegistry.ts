@@ -8,6 +8,7 @@
  * Floating panel 越え D&D は Phase 7 検討事項 (設計書 §5-B 末尾)。
  */
 import { create } from "zustand";
+import type { Editor } from "@tiptap/core";
 import type { TrashItemData, TrashSubKind } from "@/features/trash-bin/types";
 
 export type DropTargetKind =
@@ -36,6 +37,14 @@ export interface DropTarget {
   accepts: (subKind: TrashSubKind) => boolean;
   /** ドロップ確定時の処理。restorers を呼んで成功なら item を trash から消す。 */
   onDrop: (item: TrashItemData, point: DropPoint) => Promise<void>;
+  /**
+   * 編集系 target がドロップを処理するときに使う Editor 参照を返す。
+   * focus と drop が別ペインにずれるケース (primary/secondary group) でも
+   * 「ドロップされたペインのエディタ」を選べるようにするためのもの。
+   * 編集系以外は省略可。pickupHandlers は target.getEditor を優先し、
+   * 無ければ getFocusedEditor() にフォールバックする。
+   */
+  getEditor?: () => Editor | null;
 }
 
 interface DropTargetRegistryState {

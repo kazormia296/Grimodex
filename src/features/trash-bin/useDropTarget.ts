@@ -13,6 +13,7 @@
  * これで screenToFlowPosition を噛ませる。
  */
 import { useEffect, useRef } from "react";
+import type { Editor } from "@tiptap/core";
 import {
   useDropTargetRegistry,
   type DropPoint,
@@ -28,6 +29,11 @@ export interface UseDropTargetOptions {
    * 未指定なら client 座標をそのまま渡す。
    */
   transformPoint?: (client: DropPoint, item: TrashItemData) => DropPoint;
+  /**
+   * 編集系 target が「自身が保持する Editor」を返す。pickupHandlers は
+   * これを優先し、無ければ focusedContentEditorStore へフォールバック。
+   */
+  getEditor?: () => Editor | null;
 }
 
 export function useDropTarget(
@@ -48,6 +54,7 @@ export function useDropTarget(
       kind,
       rect: () => ref.current?.getBoundingClientRect() ?? null,
       accepts: (subKind: TrashSubKind) => acceptsMatrix(kind, subKind),
+      getEditor: () => optionsRef.current.getEditor?.() ?? null,
       onDrop: async (item: TrashItemData, clientPoint: DropPoint) => {
         const localPoint =
           optionsRef.current.transformPoint?.(clientPoint, item) ?? clientPoint;

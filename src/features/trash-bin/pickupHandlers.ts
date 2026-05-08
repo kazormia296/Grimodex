@@ -166,18 +166,19 @@ export async function dispatchDrop(
   }
 
   // エディタ本文へのテキスト挿入 (設計書 §5-C)。
-  // focusedContentEditorStore に登録されている直近フォーカス済みエディタに挿入する。
+  // ドロップされた pane が保持する Editor を優先し (target.getEditor)、
+  // 無ければ focusedContentEditorStore の現在フォーカスエディタにフォールバック。
   if (
     kind === "scene-editor" ||
     kind === "codex-editor" ||
     kind === "snippet-editor"
   ) {
-    const editor = getFocusedEditor();
+    const editor = target.getEditor?.() ?? getFocusedEditor();
     if (!editor) {
       return {
         ok: false,
         reason: "no-target",
-        message: "no focused editor",
+        message: "no editor available",
       };
     }
     const inserted = insertTrashItemIntoEditor(editor, item);
