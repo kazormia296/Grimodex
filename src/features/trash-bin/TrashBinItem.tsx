@@ -1,4 +1,4 @@
-import { useCallback } from "react";
+import { useCallback, useMemo } from "react";
 import type { TrashItemData } from "./types";
 import { dominantSource, getBodySize } from "./displayHelpers";
 import { SceneTrashItem } from "./items/SceneTrashItem";
@@ -55,7 +55,12 @@ export function TrashBinItem({
   registerNode,
   isDragging = false,
 }: Props) {
-  const reg = withBodyAttributes(registerNode, item.id, isDragging);
+  // wrapper を memoize して子の useCallback ref deps を安定化させ、
+  // レンダごとの ref detach/reattach (nodesRef の取りこぼし) を防ぐ。
+  const reg = useMemo(
+    () => withBodyAttributes(registerNode, item.id, isDragging),
+    [registerNode, item.id, isDragging],
+  );
   switch (item.subKind) {
     case "scene":
       return <SceneTrashItem item={item} registerNode={reg} />;

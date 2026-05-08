@@ -42,7 +42,14 @@ export function TrashBinPhysicsView({
   const bodiesRef = useRef<Map<string, PhysicsBody>>(new Map());
   const nodesRef = useRef<Map<string, HTMLElement>>(new Map());
   const knownIdsRef = useRef<Set<string>>(new Set());
-  const sizeRef = useRef({ width: 0, floorY: 0 });
+  // size は state にして、measure() 完了で items useEffect が再実行されるように
+  // する (DockView lazy-mount で items 到着が先になるケース対応)。sizeRef は
+  // tick() のホットパスから ref で読むためのミラー。
+  const [size, setSize] = useState({ width: 0, floorY: 0 });
+  const sizeRef = useRef(size);
+  useEffect(() => {
+    sizeRef.current = size;
+  }, [size]);
   const visibleRef = useRef(true);
   const rafRef = useRef<number | null>(null);
   const lastTsRef = useRef(0);
@@ -134,16 +141,18 @@ export function TrashBinPhysicsView({
     if (!el) return;
     const measure = () => {
       const rect = el.getBoundingClientRect();
-      sizeRef.current = { width: rect.width, floorY: rect.height };
+      const next = { width: rect.width, floorY: rect.height };
+      sizeRef.current = next;
+      setSize(next);
       // 既存 body をはみ出さないよう clamp + wake
       let mutated = false;
       for (const body of bodiesRef.current.values()) {
-        const maxX = Math.max(0, sizeRef.current.width - body.width);
+        const maxX = Math.max(0, next.width - body.width);
         if (body.x > maxX) {
           body.x = maxX;
           mutated = true;
         }
-        const maxY = sizeRef.current.floorY - body.height;
+        const maxY = next.floorY - body.height;
         if (body.y > maxY) {
           body.y = maxY;
           mutated = true;
@@ -178,10 +187,11 @@ export function TrashBinPhysicsView({
     return () => io.disconnect();
   }, [startLoop]);
 
-  // items 同期: 初回ロードで床積み、以降は y=-h から落下
+  // items 同期: 初回ロードで床積み、以降は y=-h から落下。
+  // size を deps に含めて、ResizeObserver の measure 完了後に再実行されるように。
   useEffect(() => {
-    if (sizeRef.current.width <= 0 || sizeRef.current.floorY <= 0) {
-      // コンテナ未計測時は次の measure 完了後の再描画で再実行される
+    if (size.width <= 0 || size.floorY <= 0) {
+      // コンテナ未計測時は size state 更新後の再実行で処理される
       return;
     }
     const currentIds = new Set(items.map((i) => i.id));
@@ -208,11 +218,7 @@ export function TrashBinPhysicsView({
           subKind: item.subKind,
           size: getBodySize(item),
         }));
-        const bodies = placeFloorPreset(
-          presetItems,
-          sizeRef.current.width,
-          sizeRef.current.floorY,
-        );
+        const bodies = placeFloorPreset(presetItems, size.width, size.floorY);
         for (const b of bodies) {
           bodiesRef.current.set(b.id, b);
           applyTransform(b);
@@ -222,7 +228,7 @@ export function TrashBinPhysicsView({
           const body = createBody({
             id: item.id,
             subKind: item.subKind,
-            containerWidth: sizeRef.current.width,
+            containerWidth: size.width,
             size: getBodySize(item),
             initial: "falling",
           });
@@ -239,7 +245,7 @@ export function TrashBinPhysicsView({
     }
 
     knownIdsRef.current = currentIds;
-  }, [items, startLoop, applyTransform]);
+  }, [items, size, startLoop, applyTransform]);
 
   // unmount 時のクリーンアップ
   useEffect(() => {
