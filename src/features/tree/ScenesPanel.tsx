@@ -232,6 +232,9 @@ export function ScenesPanel() {
 
   const activeNode = nodeMap[activeSceneId];
 
+  // hooks の呼び出し順を一定に保つため早期 return より前に置く (React rules)。
+  const trashDropRef = useDropTarget("scenes-panel", "scenes-panel");
+
   if (isLoading && nodes.length === 0) {
     return (
       <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
@@ -241,7 +244,6 @@ export function ScenesPanel() {
   }
 
   const draggingNode = draggingId ? nodeMap[draggingId] : null;
-  const trashDropRef = useDropTarget("scenes-panel", "scenes-panel");
 
   return (
     <ScenesPanelContext.Provider value={scenesPanelContextValue}>
