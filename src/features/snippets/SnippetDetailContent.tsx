@@ -105,7 +105,7 @@ export function SnippetDetailContent({
     setTitle(snippet.title);
     isApplyingExternalUpdate.current = true;
     try {
-      editor?.commands.setContent(snippet.content);
+      editor?.commands.setContent(snippet.content, { emitUpdate: false });
     } finally {
       isApplyingExternalUpdate.current = false;
     }
@@ -145,6 +145,7 @@ export function SnippetDetailContent({
         try {
           editor.commands.setContent(
             json as Parameters<typeof editor.commands.setContent>[0],
+            { emitUpdate: false },
           );
         } finally {
           isApplyingExternalUpdate.current = false;

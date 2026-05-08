@@ -108,6 +108,7 @@ export function CodexContentEditor({
     try {
       editor.commands.setContent(
         parsed as Parameters<typeof editor.commands.setContent>[0],
+        { emitUpdate: false },
       );
     } finally {
       isApplyingExternalUpdate.current = false;
@@ -126,6 +127,7 @@ export function CodexContentEditor({
         try {
           editor.commands.setContent(
             json as Parameters<typeof editor.commands.setContent>[0],
+            { emitUpdate: false },
           );
           const serialized = JSON.stringify(json);
           onExternalSyncRef.current?.(serialized);
