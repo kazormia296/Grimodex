@@ -1,4 +1,5 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
+import { useAutoSave } from "@/hooks/useAutoSave";
 import { useTranslation } from "react-i18next";
 import {
   Copy,
@@ -76,7 +77,6 @@ export function SnippetDetailContent({
   const titleRef = useRef(title);
   titleRef.current = title;
 
-  const autoSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // Suppress the "update" handler (autosave + broadcast) when content is being
   // written into the editor programmatically — either from a `snippet` prop
   // refresh or from a sceneContentStore broadcast — so we don't re-broadcast
@@ -97,9 +97,11 @@ export function SnippetDetailContent({
     listSnippetEntryTags(snippet.id).then(setSelectedTags);
   }, [snippet.id]);
 
-  // Sync form when snippet changes
+  // Sync form when snippet changes (e.g. parent re-renders with refreshed
+  // store data after our own autosave). Note: SnippetPanel keys this component
+  // by snippet.id so id-changes trigger a remount instead — this effect only
+  // fires for in-place title/content prop refreshes.
   useEffect(() => {
-    if (autoSaveTimerRef.current) clearTimeout(autoSaveTimerRef.current);
     setTitle(snippet.title);
     isApplyingExternalUpdate.current = true;
     try {
@@ -150,10 +152,16 @@ export function SnippetDetailContent({
       });
   }, [snippet.id, editor]);
 
-  function scheduleAutoSave() {
-    const snippetId = snippet.id;
-    if (autoSaveTimerRef.current) clearTimeout(autoSaveTimerRef.current);
-    autoSaveTimerRef.current = setTimeout(async () => {
+  // Autosave via useAutoSave so the unmount-flush guarantees that pending
+  // edits are persisted when SnippetPanel swaps to a different entry within
+  // the 2-second debounce window (the panel keys this component by
+  // snippet.id, so id-change → unmount → flush).
+  const { schedule: scheduleAutoSave } = useAutoSave(
+    useCallback(async () => {
+      const snippetId = snippet.id;
+      // Falls back to snippet.content if the editor was already destroyed
+      // (defensive — flush should run before TipTap's cleanup, but keep the
+      // pre-existing fallback semantic).
       const content = editor?.getHTML() ?? snippet.content;
       onSave(snippetId, {
         title: titleRef.current.trim() || snippet.title,
@@ -188,8 +196,17 @@ export function SnippetDetailContent({
           errorDetail(e),
         );
       }
-    }, 2000);
-  }
+    }, [
+      snippet.id,
+      snippet.title,
+      snippet.content,
+      editor,
+      onSave,
+      shouldAutoRevision,
+      recordAutoRevision,
+    ]),
+    2000,
+  );
 
   function handleInsertAtCursor() {
     const content = editor?.getHTML() ?? snippet.content;

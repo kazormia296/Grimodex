@@ -580,6 +580,7 @@ export function SnippetPanel() {
           <div data-testid="snippet-detail-panel" className="h-full">
             {selectedSnippet ? (
               <SnippetDetailContent
+                key={selectedSnippet.id}
                 snippet={selectedSnippet}
                 onSave={handleSave}
                 onDelete={initiateDelete}
