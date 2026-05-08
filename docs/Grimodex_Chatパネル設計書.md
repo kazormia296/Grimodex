@@ -640,11 +640,12 @@ AI のべりすと（[ai-novel.com](https://ai-novel.com/account_api_help.php)�
   | `supertrin_highpres` / `supertrin_maxpres` / `supertrin` | 9,216 | 400 | レガシー |
   | `damsel` | 2,400 | 400 | レガシー（最古） |
 
-- **コンテキスト窓の扱い**: モデルごとの最大入力を `getModelContextLimit` から返し、§トークン予算管理 の比率配分をそのまま適用する。floor 合計（6,500 tok）を割るモデル（`damsel`、レガシー supertrin 系）に限り、本プロバイダ専用の縮退配分プロファイルを適用:
-  - L3 Scene と応答予約を最優先
+- **コンテキスト窓の扱い**: モデルごとの最大入力を `getModelContextLimit` から返し、§トークン予算管理 の比率配分をそのまま適用する。AI のべりすとは入力上限と出力上限が別管理のため、入力側 floor 合計（応答予約を除く 4,500 tok = L1 500 + L2 500 + L3 2,000 + L4 500 + L5 1,000）を割るモデル（**`damsel` のみ**）に限り、本プロバイダ専用の縮退配分プロファイルを適用:
+  - L3 Scene を最優先
   - L1 Project / L2 storySoFar / L4 Codex は**ゼロまで圧縮許容**
   - L5 History は直近 1〜2 ターンのみ
-  - Settings に「`damsel` / レガシー supertrin 系使用時はプロジェクト指示・Codex がコンテキストに含まれない場合があります」と注意表示
+  - Settings に「`damsel` 使用時はプロジェクト指示・Codex がコンテキストに含まれない場合があります」と注意表示
+  - supertrin 系（9,216 入力）/ damsel_ray（12,288 入力）/ 現行主力（40,000 入力）は通常配分で問題なし。出力 400 tok 制約は次項のクランプで吸収
 - **出力上限のクランプ**: 応答予約は `min(設定比率による配分, model.max_output)` でクランプする。`damsel_ray` / レガシー系は出力 400 tok 上限のため、ストリーミング中の最大応答長 UI もこの値に合わせる
 - **レート制限**: 現行モデル 200 req/分、`damsel` のみ 90 req/分。プロバイダ層で 429 検出時は指数バックオフでリトライし、UI に「レート制限到達」を表示
 - **拡張思考**: 非対応（`supportsThinking: false` / `supportsAdaptiveThinking: false`）。`thinking` / `effort` パラメータはリクエストに含めない
