@@ -38,6 +38,7 @@ const defaultSettings: AiSettings = {
   model: "",
   ollamaEndpoint: "http://localhost:11434",
   thinkingEnabled: true,
+  openaiCompatible: { preset: "custom", baseUrl: "" },
 };
 
 describe("useAiSettingsStore", () => {
@@ -76,6 +77,7 @@ describe("useAiSettingsStore", () => {
         model: "gpt-4o",
         ollamaEndpoint: "http://localhost:11434",
         thinkingEnabled: true,
+        openaiCompatible: { preset: "custom", baseUrl: "" },
       };
 
       await useAiSettingsStore.getState().saveSettings(newSettings);

@@ -189,6 +189,50 @@ export function getModelCapabilities(model: string): ModelCapabilities {
   return DEFAULT_CAPABILITIES;
 }
 
+/**
+ * AiSettings を考慮してモデルの能力を解決する。
+ * `provider = openai-compatible` の場合、プリセット側の `capabilitiesOverride` と
+ * ユーザー入力 (custom プリセットの `customMaxContext` / `customMaxOutput`) を
+ * 適用する。それ以外のプロバイダは `getModelCapabilities(model)` と等価。
+ *
+ * 第二引数を Optional にしているのは、AiSettings が不明な呼び出し場所
+ * (synopsis 生成など UI コンテキスト外) からも使えるようにするため。
+ */
+export function resolveModelCapabilities(
+  model: string,
+  settings?: { provider?: string; openaiCompatible?: unknown } | null,
+): ModelCapabilities {
+  const base = getModelCapabilities(model);
+  if (!settings || settings.provider !== "openai-compatible") return base;
+
+  const oc = settings.openaiCompatible as
+    | {
+        preset?: string;
+        customMaxContext?: number;
+        customMaxOutput?: number;
+      }
+    | undefined;
+  if (!oc) return base;
+
+  // Phase A.1 では custom プリセットのみ。Phase A.2 で ainoverist を追加した際に
+  // プリセット側 capabilitiesOverride / models を引いて hydrate する。
+  // 動的 import を避けるため、呼び出し側 (settings store) で hydrate 済みの
+  // 値を渡す前提とし、ここでは型安全な custom プリセット処理だけを行う。
+  if (oc.preset === "custom" || oc.preset === undefined) {
+    return {
+      ...base,
+      contextWindow: oc.customMaxContext ?? base.contextWindow,
+      maxOutputTokens: oc.customMaxOutput ?? base.maxOutputTokens,
+      // ローカル LLM では拡張思考を OFF 固定
+      supportsThinking: false,
+      supportsAdaptiveThinking: false,
+      supportsEffort: false,
+    };
+  }
+
+  return base;
+}
+
 /** ツール結果のトークン予算 = コンテキスト上限の30%（最低2,000） */
 export function getToolTokenBudget(model: string): number {
   const { contextWindow } = getModelCapabilities(model);

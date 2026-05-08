@@ -1,9 +1,17 @@
 import { useState, useEffect, useCallback } from "react";
 import { useTranslation } from "react-i18next";
 import { useAiSettingsStore } from "@/features/chat/store";
-import { AI_PROVIDERS, groupModelsByDeveloper } from "@/features/chat/types";
-import type { AiProvider } from "@/features/chat/types";
+import {
+  AI_PROVIDERS,
+  DEFAULT_OPENAI_COMPATIBLE_SETTINGS,
+  groupModelsByDeveloper,
+} from "@/features/chat/types";
+import type { AiProvider, OpenaiCompatPresetId } from "@/features/chat/types";
 import { getModelCapabilities } from "@/features/chat/agent/modelLimits";
+import {
+  getOpenaiCompatPreset,
+  listOpenaiCompatPresets,
+} from "@/features/chat/openaiCompatPresets";
 import { SettingSection } from "../components/SettingSection";
 import { SettingRow } from "../components/SettingRow";
 import { SettingToggle } from "../components/SettingToggle";
@@ -14,6 +22,7 @@ const PROVIDER_LABELS: Record<AiProvider, string> = {
   openai: "OpenAI",
   anthropic: "Anthropic",
   ollama: "ollama-local",
+  "openai-compatible": "OpenAI 互換",
 };
 
 export function AiCategory() {
@@ -101,10 +110,34 @@ export function AiCategory() {
   }, [hasApiKey, settings?.provider, handleLoadModels]);
 
   async function handleProviderChange(provider: AiProvider) {
-    const updated = { ...localSettings!, provider, model: "" };
+    const updated = {
+      ...localSettings!,
+      provider,
+      model: "",
+      // OpenAI 互換に切替時は openaiCompatible 設定を初期化（既存値は保持）
+      openaiCompatible:
+        localSettings!.openaiCompatible ?? DEFAULT_OPENAI_COMPATIBLE_SETTINGS,
+    };
     setLocalSettings(updated);
     await saveSettings(updated);
     await loadSettings();
+  }
+
+  async function handleOpenaiCompatChange<
+    K extends keyof NonNullable<typeof localSettings>["openaiCompatible"],
+  >(key: K, value: NonNullable<typeof localSettings>["openaiCompatible"][K]) {
+    setLocalSettings((s) =>
+      s
+        ? {
+            ...s,
+            openaiCompatible: { ...s.openaiCompatible, [key]: value },
+          }
+        : s,
+    );
+  }
+
+  async function handleSaveOpenaiCompat() {
+    if (localSettings) await saveSettings(localSettings);
   }
 
   async function handleSaveKey() {
@@ -196,9 +229,125 @@ export function AiCategory() {
           </SettingRow>
         )}
 
+        {/* OpenAI 互換: プリセット選択 + 設定 */}
+        {localSettings.provider === "openai-compatible" &&
+          (() => {
+            const presets = listOpenaiCompatPresets();
+            const currentPresetId =
+              localSettings.openaiCompatible?.preset ?? "custom";
+            const preset = getOpenaiCompatPreset(currentPresetId);
+            const isCustom = preset.id === "custom";
+            return (
+              <>
+                <SettingRow label="プリセット">
+                  <select
+                    value={currentPresetId}
+                    onChange={async (e) => {
+                      const presetId = e.target.value as OpenaiCompatPresetId;
+                      const updated = {
+                        ...localSettings,
+                        openaiCompatible: {
+                          ...localSettings.openaiCompatible,
+                          preset: presetId,
+                        },
+                      };
+                      setLocalSettings(updated);
+                      await saveSettings(updated);
+                    }}
+                    className="rounded-md border border-input bg-background px-2 py-1 text-sm focus:outline-none"
+                  >
+                    {presets.map((p) => (
+                      <option key={p.id} value={p.id}>
+                        {p.displayName}
+                      </option>
+                    ))}
+                  </select>
+                </SettingRow>
+                {preset.helperText && (
+                  <p className="mb-2 text-xs text-muted-foreground">
+                    {preset.helperText}
+                  </p>
+                )}
+                {isCustom ? (
+                  <>
+                    <SettingRow label="Base URL">
+                      <input
+                        type="text"
+                        value={localSettings.openaiCompatible?.baseUrl ?? ""}
+                        onChange={(e) =>
+                          handleOpenaiCompatChange("baseUrl", e.target.value)
+                        }
+                        onBlur={handleSaveOpenaiCompat}
+                        className="w-72 rounded-md border border-input bg-background px-2 py-1 text-sm focus:outline-none"
+                        placeholder="http://localhost:1234/v1"
+                      />
+                    </SettingRow>
+                    <SettingRow
+                      label="コンテキスト窓 (tokens)"
+                      description="モデルの最大入力トークン数。空欄時は 8,000 にフォールバック"
+                    >
+                      <input
+                        type="number"
+                        min={1}
+                        value={
+                          localSettings.openaiCompatible?.customMaxContext ?? ""
+                        }
+                        onChange={(e) =>
+                          handleOpenaiCompatChange(
+                            "customMaxContext",
+                            e.target.value ? Number(e.target.value) : undefined,
+                          )
+                        }
+                        onBlur={handleSaveOpenaiCompat}
+                        className="w-32 rounded-md border border-input bg-background px-2 py-1 text-sm focus:outline-none"
+                        placeholder="8000"
+                      />
+                    </SettingRow>
+                    <SettingRow
+                      label="最大出力 (tokens)"
+                      description="モデル固有の出力上限。指定すると応答予約のクランプに使われる"
+                    >
+                      <input
+                        type="number"
+                        min={1}
+                        value={
+                          localSettings.openaiCompatible?.customMaxOutput ?? ""
+                        }
+                        onChange={(e) =>
+                          handleOpenaiCompatChange(
+                            "customMaxOutput",
+                            e.target.value ? Number(e.target.value) : undefined,
+                          )
+                        }
+                        onBlur={handleSaveOpenaiCompat}
+                        className="w-32 rounded-md border border-input bg-background px-2 py-1 text-sm focus:outline-none"
+                        placeholder="(任意)"
+                      />
+                    </SettingRow>
+                  </>
+                ) : (
+                  preset.baseUrl && (
+                    <SettingRow label="Base URL">
+                      <span className="text-sm text-muted-foreground font-mono">
+                        {preset.baseUrl}
+                      </span>
+                    </SettingRow>
+                  )
+                )}
+              </>
+            );
+          })()}
+
         {/* API Key */}
         {localSettings.provider !== "ollama" && (
-          <SettingRow label={t("settings.ai.apiKey")}>
+          <SettingRow
+            label={t("settings.ai.apiKey")}
+            description={
+              localSettings.provider === "openai-compatible"
+                ? "ローカル LLM サーバ等で API キーが不要な場合は空欄で構いません"
+                : undefined
+            }
+          >
             {hasApiKey ? (
               <div className="flex items-center gap-2">
                 <span className="text-sm text-muted-foreground">
@@ -471,7 +620,9 @@ export function AiCategory() {
             disabled={
               isTestingConnection ||
               !localSettings.model ||
-              (!hasApiKey && localSettings.provider !== "ollama")
+              (!hasApiKey &&
+                localSettings.provider !== "ollama" &&
+                localSettings.provider !== "openai-compatible")
             }
             className="rounded-md bg-secondary px-3 py-1.5 text-sm text-secondary-foreground hover:bg-secondary/80 disabled:opacity-50"
           >

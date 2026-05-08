@@ -47,7 +47,7 @@ import {
   getToolTokenBudget,
   buildThinkingParams,
   getEffortForTask,
-  getModelCapabilities,
+  resolveModelCapabilities,
 } from "./agent/modelLimits";
 import { useAiSettingsStore } from "./store";
 import type {
@@ -390,8 +390,12 @@ async function buildSceneContextPrompt(opts: {
   await ensureTokenizer();
   const allEntries = opts.prefetchedEntries ?? (await listCodexEntries());
 
-  const chatModel = useAiSettingsStore.getState().settings?.model ?? "";
-  const { contextWindow, maxOutputTokens } = getModelCapabilities(chatModel);
+  const aiSettings = useAiSettingsStore.getState().settings;
+  const chatModel = aiSettings?.model ?? "";
+  const { contextWindow, maxOutputTokens } = resolveModelCapabilities(
+    chatModel,
+    aiSettings,
+  );
   const budgets = allocateLayerBudgets(contextWindow, { maxOutputTokens });
   const L4_TOTAL_BUDGET = budgets.l4;
 

@@ -3,15 +3,36 @@ export const AI_PROVIDERS = [
   "openai",
   "anthropic",
   "ollama",
+  "openai-compatible",
 ] as const;
 
 export type AiProvider = (typeof AI_PROVIDERS)[number];
+
+/** OpenAI 互換プロバイダのプリセット ID。Phase A.2 で "ainoverist" を追加予定。 */
+export type OpenaiCompatPresetId = "custom";
+
+/** OpenAI 互換プロバイダの設定。プリセット選択 + custom 時のユーザー入力を保持する。 */
+export interface OpenaiCompatibleSettings {
+  preset: OpenaiCompatPresetId;
+  /** custom プリセット時にユーザーが入力する OpenAI 互換エンドポイント */
+  baseUrl: string;
+  /** custom プリセット時に手動指定するモデルのコンテキスト窓 (tokens) */
+  customMaxContext?: number;
+  /** custom プリセット時に手動指定するモデルの最大出力 (tokens) */
+  customMaxOutput?: number;
+}
+
+export const DEFAULT_OPENAI_COMPATIBLE_SETTINGS: OpenaiCompatibleSettings = {
+  preset: "custom",
+  baseUrl: "",
+};
 
 export interface AiSettings {
   provider: AiProvider;
   model: string;
   ollamaEndpoint: string;
   thinkingEnabled: boolean;
+  openaiCompatible: OpenaiCompatibleSettings;
 }
 
 export const DEFAULT_AI_SETTINGS: AiSettings = {
@@ -19,6 +40,7 @@ export const DEFAULT_AI_SETTINGS: AiSettings = {
   model: "",
   ollamaEndpoint: "http://localhost:11434",
   thinkingEnabled: true,
+  openaiCompatible: DEFAULT_OPENAI_COMPATIBLE_SETTINGS,
 };
 
 export interface AiModel {

@@ -4,13 +4,41 @@ use std::path::Path;
 use std::sync::{atomic::Ordering, Arc};
 
 /// Supported AI providers.
+///
+/// `OpenaiCompatible` はユーザーが任意の OpenAI 互換エンドポイント
+/// (llama.cpp / LM Studio / vLLM / 自前ホスト等) を `baseURL` で指定する
+/// プロバイダ。`AiSettings.openai_compatible.base_url` を参照する。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "lowercase")]
 pub enum AiProvider {
+    #[serde(rename = "openrouter")]
     OpenRouter,
+    #[serde(rename = "openai")]
     OpenAI,
+    #[serde(rename = "anthropic")]
     Anthropic,
+    #[serde(rename = "ollama")]
     Ollama,
+    #[serde(rename = "openai-compatible")]
+    OpenaiCompatible,
+}
+
+/// プロバイダごとに参照するユーザー設定 URL を集約する。
+/// Ollama は `ollama_endpoint`、OpenaiCompatible は `openai_compat_custom` を使う。
+/// それ以外のプロバイダは固定 URL でこの値を参照しない。
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ProviderEndpoints<'a> {
+    pub ollama: &'a str,
+    pub openai_compat_custom: &'a str,
+}
+
+impl<'a> ProviderEndpoints<'a> {
+    #[cfg(test)]
+    pub fn new(ollama: &'a str, openai_compat_custom: &'a str) -> Self {
+        Self {
+            ollama,
+            openai_compat_custom,
+        }
+    }
 }
 
 impl AiProvider {
@@ -21,30 +49,34 @@ impl AiProvider {
             AiProvider::OpenAI => "grimodex-openai",
             AiProvider::Anthropic => "grimodex-anthropic",
             AiProvider::Ollama => "grimodex-ollama",
+            AiProvider::OpenaiCompatible => "grimodex-openai-compatible",
         }
     }
 
     /// Base URL for API requests.
-    pub fn base_url(&self, ollama_endpoint: &str) -> String {
+    pub fn base_url(&self, ep: ProviderEndpoints<'_>) -> String {
         match self {
             AiProvider::OpenRouter => "https://openrouter.ai/api/v1".to_string(),
             AiProvider::OpenAI => "https://api.openai.com/v1".to_string(),
             AiProvider::Anthropic => "https://api.anthropic.com/v1".to_string(),
-            AiProvider::Ollama => format!("{}/api", ollama_endpoint.trim_end_matches('/')),
+            AiProvider::Ollama => format!("{}/api", ep.ollama.trim_end_matches('/')),
+            AiProvider::OpenaiCompatible => {
+                ep.openai_compat_custom.trim_end_matches('/').to_string()
+            }
         }
     }
 
     /// OpenAI-compatible base URL (used for chat/completions).
     /// Ollama exposes the OpenAI-compatible API at /v1, not /api.
-    pub fn openai_compat_base_url(&self, ollama_endpoint: &str) -> String {
+    pub fn openai_compat_base_url(&self, ep: ProviderEndpoints<'_>) -> String {
         match self {
-            AiProvider::Ollama => format!("{}/v1", ollama_endpoint.trim_end_matches('/')),
-            _ => self.base_url(ollama_endpoint),
+            AiProvider::Ollama => format!("{}/v1", ep.ollama.trim_end_matches('/')),
+            _ => self.base_url(ep),
         }
     }
 
     /// Models endpoint URL.
-    pub fn models_url(&self, ollama_endpoint: &str) -> String {
+    pub fn models_url(&self, ep: ProviderEndpoints<'_>) -> String {
         match self {
             AiProvider::OpenRouter => "https://openrouter.ai/api/v1/models".to_string(),
             AiProvider::OpenAI => "https://api.openai.com/v1/models".to_string(),
@@ -52,8 +84,9 @@ impl AiProvider {
                 // Anthropic doesn't have a list models endpoint; return empty
                 String::new()
             }
-            AiProvider::Ollama => {
-                format!("{}/api/tags", ollama_endpoint.trim_end_matches('/'))
+            AiProvider::Ollama => format!("{}/api/tags", ep.ollama.trim_end_matches('/')),
+            AiProvider::OpenaiCompatible => {
+                format!("{}/models", ep.openai_compat_custom.trim_end_matches('/'))
             }
         }
     }
@@ -66,12 +99,37 @@ impl std::fmt::Display for AiProvider {
             AiProvider::OpenAI => write!(f, "openai"),
             AiProvider::Anthropic => write!(f, "anthropic"),
             AiProvider::Ollama => write!(f, "ollama"),
+            AiProvider::OpenaiCompatible => write!(f, "openai-compatible"),
         }
     }
 }
 
 fn default_thinking_enabled() -> bool {
     true
+}
+
+/// OpenAI 互換プロバイダ用の設定。プリセット ID と任意のユーザー入力を保持する。
+/// - `preset = "custom"`: ユーザーが `base_url` を入力する
+/// - `preset = "ainoverist"` (Phase A.2): プリセット側で固定 URL を提供
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct OpenaiCompatibleSettings {
+    /// プリセット ID。デフォルトは "custom"
+    #[serde(default = "default_openai_compat_preset")]
+    pub preset: String,
+    /// custom プリセット時にユーザーが入力する OpenAI 互換エンドポイント
+    #[serde(default)]
+    pub base_url: String,
+    /// custom プリセット時に手動指定するモデルのコンテキスト窓
+    #[serde(default)]
+    pub custom_max_context: Option<u32>,
+    /// custom プリセット時に手動指定するモデルの最大出力
+    #[serde(default)]
+    pub custom_max_output: Option<u32>,
+}
+
+fn default_openai_compat_preset() -> String {
+    "custom".to_string()
 }
 
 /// AI settings persisted in AppData.
@@ -83,6 +141,18 @@ pub struct AiSettings {
     pub ollama_endpoint: String,
     #[serde(default = "default_thinking_enabled")]
     pub thinking_enabled: bool,
+    #[serde(default)]
+    pub openai_compatible: OpenaiCompatibleSettings,
+}
+
+impl AiSettings {
+    /// 現在の設定からプロバイダ別エンドポイントを構築する。
+    pub fn endpoints(&self) -> ProviderEndpoints<'_> {
+        ProviderEndpoints {
+            ollama: &self.ollama_endpoint,
+            openai_compat_custom: &self.openai_compatible.base_url,
+        }
+    }
 }
 
 impl Default for AiSettings {
@@ -92,6 +162,7 @@ impl Default for AiSettings {
             model: String::new(),
             ollama_endpoint: "http://localhost:11434".to_string(),
             thinking_enabled: true,
+            openai_compatible: OpenaiCompatibleSettings::default(),
         }
     }
 }
@@ -154,9 +225,9 @@ pub fn delete_api_key(provider: &AiProvider) -> anyhow::Result<()> {
 pub async fn fetch_models(
     provider: &AiProvider,
     api_key: &str,
-    ollama_endpoint: &str,
+    endpoints: ProviderEndpoints<'_>,
 ) -> anyhow::Result<Vec<AiModel>> {
-    let url = provider.models_url(ollama_endpoint);
+    let url = provider.models_url(endpoints);
     if url.is_empty() {
         // Anthropic: return a static list
         return Ok(vec![
@@ -184,6 +255,12 @@ pub async fn fetch_models(
                     "https://github.com/futurebassisdead/Grimodex",
                 )
                 .header("X-Title", "Grimodex");
+        }
+        AiProvider::OpenaiCompatible => {
+            // ローカル LLM 等で API キー不要のサーバには Authorization ヘッダ自体を付けない
+            if !api_key.is_empty() {
+                req = req.header("Authorization", format!("Bearer {api_key}"));
+            }
         }
         _ => {
             req = req.header("Authorization", format!("Bearer {api_key}"));
@@ -238,14 +315,14 @@ pub async fn test_connection(
     provider: &AiProvider,
     model: &str,
     api_key: &str,
-    ollama_endpoint: &str,
+    endpoints: ProviderEndpoints<'_>,
 ) -> anyhow::Result<String> {
     let client = reqwest::Client::new();
 
     match provider {
         AiProvider::Anthropic => {
             // Anthropic uses a different API format
-            let url = format!("{}/messages", provider.base_url(ollama_endpoint));
+            let url = format!("{}/messages", provider.base_url(endpoints));
             let body = serde_json::json!({
                 "model": model,
                 "max_tokens": 32,
@@ -273,7 +350,7 @@ pub async fn test_connection(
         AiProvider::Ollama => {
             let url = format!(
                 "{}/chat/completions",
-                provider.openai_compat_base_url(ollama_endpoint)
+                provider.openai_compat_base_url(endpoints)
             );
             let body = serde_json::json!({
                 "model": model,
@@ -298,8 +375,11 @@ pub async fn test_connection(
             Ok(text.to_string())
         }
         _ => {
-            // OpenAI-compatible format (OpenRouter, OpenAI)
-            let url = format!("{}/chat/completions", provider.base_url(ollama_endpoint));
+            // OpenAI-compatible format (OpenRouter, OpenAI, OpenaiCompatible)
+            let url = format!(
+                "{}/chat/completions",
+                provider.openai_compat_base_url(endpoints)
+            );
             let body = serde_json::json!({
                 "model": model,
                 "max_tokens": 32,
@@ -308,10 +388,15 @@ pub async fn test_connection(
                 ]
             });
 
-            let mut req = client
-                .post(&url)
-                .header("Authorization", format!("Bearer {api_key}"))
-                .header("content-type", "application/json");
+            let mut req = client.post(&url).header("content-type", "application/json");
+
+            // OpenaiCompatible で API キー未設定 (ローカル LLM 等) の場合は
+            // Authorization ヘッダ自体を付けない
+            let needs_auth =
+                !matches!(provider, AiProvider::OpenaiCompatible) || !api_key.is_empty();
+            if needs_auth {
+                req = req.header("Authorization", format!("Bearer {api_key}"));
+            }
 
             if matches!(provider, AiProvider::OpenRouter) {
                 req = req
@@ -338,7 +423,7 @@ pub struct ChatParams<'a> {
     pub provider: &'a AiProvider,
     pub model: &'a str,
     pub api_key: &'a str,
-    pub ollama_endpoint: &'a str,
+    pub endpoints: ProviderEndpoints<'a>,
     pub thinking: Option<ThinkingConfig>,
     pub effort: Option<String>,
     pub reasoning_enabled: Option<bool>,
@@ -706,10 +791,7 @@ fn anthropic_request(
     params: &ChatParams<'_>,
     body: &serde_json::Value,
 ) -> reqwest::RequestBuilder {
-    let url = format!(
-        "{}/messages",
-        params.provider.base_url(params.ollama_endpoint)
-    );
+    let url = format!("{}/messages", params.provider.base_url(params.endpoints));
     let mut req = client
         .post(url)
         .header("x-api-key", params.api_key)
@@ -722,9 +804,10 @@ fn anthropic_request(
 }
 
 /// Build a POST request to an OpenAI-compatible `/chat/completions` endpoint
-/// (OpenAI / OpenRouter / Ollama). Adds `Authorization: Bearer ...` for
-/// non-Ollama providers and OpenRouter's attribution headers, then attaches
-/// `body` as JSON.
+/// (OpenAI / OpenRouter / Ollama / OpenaiCompatible). Adds `Authorization: Bearer ...`
+/// for providers that require it (skips Ollama, and skips OpenaiCompatible when
+/// the API key is empty for keyless local LLM servers), and OpenRouter's
+/// attribution headers, then attaches `body` as JSON.
 fn openai_compat_request(
     client: &reqwest::Client,
     params: &ChatParams<'_>,
@@ -732,12 +815,15 @@ fn openai_compat_request(
 ) -> reqwest::RequestBuilder {
     let url = format!(
         "{}/chat/completions",
-        params
-            .provider
-            .openai_compat_base_url(params.ollama_endpoint)
+        params.provider.openai_compat_base_url(params.endpoints)
     );
     let mut req = client.post(url).header("content-type", "application/json");
-    if !matches!(params.provider, AiProvider::Ollama) {
+    let needs_auth = match params.provider {
+        AiProvider::Ollama => false,
+        AiProvider::OpenaiCompatible => !params.api_key.is_empty(),
+        _ => true,
+    };
+    if needs_auth {
         req = req.header("Authorization", format!("Bearer {}", params.api_key));
     }
     if matches!(params.provider, AiProvider::OpenRouter) {
@@ -1282,6 +1368,7 @@ mod tests {
             model: "gpt-4o".to_string(),
             ollama_endpoint: "http://localhost:11434".to_string(),
             thinking_enabled: true,
+            openai_compatible: OpenaiCompatibleSettings::default(),
         };
 
         write_ai_settings(&path, &settings).expect("write");
@@ -1317,41 +1404,67 @@ mod tests {
 
     #[test]
     fn test_provider_base_urls() {
-        let endpoint = "http://localhost:11434";
+        let ep = ProviderEndpoints::new("http://localhost:11434", "");
         assert_eq!(
-            AiProvider::OpenRouter.base_url(endpoint),
+            AiProvider::OpenRouter.base_url(ep),
             "https://openrouter.ai/api/v1"
         );
+        assert_eq!(AiProvider::OpenAI.base_url(ep), "https://api.openai.com/v1");
         assert_eq!(
-            AiProvider::OpenAI.base_url(endpoint),
-            "https://api.openai.com/v1"
-        );
-        assert_eq!(
-            AiProvider::Anthropic.base_url(endpoint),
+            AiProvider::Anthropic.base_url(ep),
             "https://api.anthropic.com/v1"
         );
         assert_eq!(
-            AiProvider::Ollama.base_url(endpoint),
+            AiProvider::Ollama.base_url(ep),
             "http://localhost:11434/api"
         );
     }
 
     #[test]
     fn test_provider_openai_compat_base_url() {
-        let endpoint = "http://localhost:11434";
+        let ep = ProviderEndpoints::new("http://localhost:11434", "");
         // Ollama uses /v1 for OpenAI-compatible endpoints
         assert_eq!(
-            AiProvider::Ollama.openai_compat_base_url(endpoint),
+            AiProvider::Ollama.openai_compat_base_url(ep),
             "http://localhost:11434/v1"
         );
         // Other providers unchanged
         assert_eq!(
-            AiProvider::OpenRouter.openai_compat_base_url(endpoint),
+            AiProvider::OpenRouter.openai_compat_base_url(ep),
             "https://openrouter.ai/api/v1"
         );
         assert_eq!(
-            AiProvider::OpenAI.openai_compat_base_url(endpoint),
+            AiProvider::OpenAI.openai_compat_base_url(ep),
             "https://api.openai.com/v1"
+        );
+    }
+
+    #[test]
+    fn test_openai_compatible_uses_custom_url() {
+        let ep = ProviderEndpoints::new("", "http://localhost:1234/v1");
+        assert_eq!(
+            AiProvider::OpenaiCompatible.base_url(ep),
+            "http://localhost:1234/v1"
+        );
+        // openai_compat_base_url falls through to base_url for OpenaiCompatible
+        assert_eq!(
+            AiProvider::OpenaiCompatible.openai_compat_base_url(ep),
+            "http://localhost:1234/v1"
+        );
+        // Trailing slash trimmed
+        let ep2 = ProviderEndpoints::new("", "http://localhost:1234/v1/");
+        assert_eq!(
+            AiProvider::OpenaiCompatible.base_url(ep2),
+            "http://localhost:1234/v1"
+        );
+    }
+
+    #[test]
+    fn test_openai_compatible_models_url() {
+        let ep = ProviderEndpoints::new("", "http://localhost:1234/v1");
+        assert_eq!(
+            AiProvider::OpenaiCompatible.models_url(ep),
+            "http://localhost:1234/v1/models"
         );
     }
 
@@ -1361,6 +1474,10 @@ mod tests {
         assert_eq!(AiProvider::OpenAI.to_string(), "openai");
         assert_eq!(AiProvider::Anthropic.to_string(), "anthropic");
         assert_eq!(AiProvider::Ollama.to_string(), "ollama");
+        assert_eq!(
+            AiProvider::OpenaiCompatible.to_string(),
+            "openai-compatible"
+        );
     }
 
     #[test]
@@ -1369,13 +1486,29 @@ mod tests {
         assert_eq!(json, "\"openrouter\"");
         let parsed: AiProvider = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(parsed, AiProvider::OpenRouter);
+
+        // OpenaiCompatible uses kebab-case
+        let json = serde_json::to_string(&AiProvider::OpenaiCompatible).expect("serialize");
+        assert_eq!(json, "\"openai-compatible\"");
+        let parsed: AiProvider = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(parsed, AiProvider::OpenaiCompatible);
     }
 
     #[test]
     fn test_ollama_endpoint_trailing_slash() {
+        let ep = ProviderEndpoints::new("http://localhost:11434/", "");
         assert_eq!(
-            AiProvider::Ollama.base_url("http://localhost:11434/"),
+            AiProvider::Ollama.base_url(ep),
             "http://localhost:11434/api"
         );
+    }
+
+    #[test]
+    fn test_ai_settings_endpoints_helper() {
+        let mut settings = AiSettings::default();
+        settings.openai_compatible.base_url = "http://localhost:8080/v1".to_string();
+        let ep = settings.endpoints();
+        assert_eq!(ep.ollama, "http://localhost:11434");
+        assert_eq!(ep.openai_compat_custom, "http://localhost:8080/v1");
     }
 }

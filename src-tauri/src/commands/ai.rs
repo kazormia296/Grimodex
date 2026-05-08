@@ -4,10 +4,16 @@ use crate::ai;
 
 use super::{AiSettingsPath, AppError, InlineAiAbortFlag, StreamAbortFlag};
 
-/// Ollama はAPIキー不要のため空文字を返す。それ以外は設定済みキーを要求する。
+/// API キーの解決ルール:
+/// - Ollama: 不要（空文字）
+/// - OpenaiCompatible: 任意（ローカル LLM サーバ等で API キー不要なケースを許容）
+/// - その他: 必須（設定されていなければエラー）
 pub(super) fn resolve_api_key(provider: &ai::AiProvider) -> anyhow::Result<String> {
     if matches!(provider, ai::AiProvider::Ollama) {
         return Ok(String::new());
+    }
+    if matches!(provider, ai::AiProvider::OpenaiCompatible) {
+        return Ok(ai::get_api_key(provider)?.unwrap_or_default());
     }
     ai::get_api_key(provider)?
         .ok_or_else(|| anyhow::anyhow!("No API key configured for {}", provider))
@@ -34,7 +40,7 @@ pub(crate) async fn send_chat_message(
         provider: &settings.provider,
         model: &settings.model,
         api_key: &api_key,
-        ollama_endpoint: &settings.ollama_endpoint,
+        endpoints: settings.endpoints(),
         thinking,
         effort,
         reasoning_enabled,
@@ -84,7 +90,7 @@ pub(crate) async fn send_chat_message_stream(
         provider: &settings.provider,
         model: &settings.model,
         api_key: &api_key,
-        ollama_endpoint: &settings.ollama_endpoint,
+        endpoints: settings.endpoints(),
         thinking,
         effort,
         reasoning_enabled,
@@ -153,7 +159,7 @@ pub(crate) async fn send_inline_ai_stream(
         provider: &settings.provider,
         model: resolved_model,
         api_key: &api_key,
-        ollama_endpoint: &settings.ollama_endpoint,
+        endpoints: settings.endpoints(),
         thinking,
         effort,
         reasoning_enabled,
@@ -200,7 +206,7 @@ pub(crate) async fn send_agent_message(
         provider: &settings.provider,
         model: &settings.model,
         api_key: &api_key,
-        ollama_endpoint: &settings.ollama_endpoint,
+        endpoints: settings.endpoints(),
         thinking,
         effort,
         reasoning_enabled,
@@ -250,7 +256,7 @@ pub(crate) async fn list_ai_models(
 ) -> Result<Vec<ai::AiModel>, AppError> {
     let settings = ai::read_ai_settings(&ai_path.path);
     let api_key = ai::get_api_key(&provider)?.unwrap_or_default();
-    let models = ai::fetch_models(&provider, &api_key, &settings.ollama_endpoint).await?;
+    let models = ai::fetch_models(&provider, &api_key, settings.endpoints()).await?;
     Ok(models)
 }
 
@@ -262,7 +268,6 @@ pub(crate) async fn test_ai_connection(
 ) -> Result<String, AppError> {
     let settings = ai::read_ai_settings(&ai_path.path);
     let api_key = resolve_api_key(&provider)?;
-    let result =
-        ai::test_connection(&provider, &model, &api_key, &settings.ollama_endpoint).await?;
+    let result = ai::test_connection(&provider, &model, &api_key, settings.endpoints()).await?;
     Ok(result)
 }
