@@ -1061,7 +1061,7 @@ export function CodexManagementPanel({
       tabIndex={-1}
       data-testid="codex-management-panel"
       data-droptarget-id="codex-panel"
-      className="flex h-full flex-col outline-none data-[trash-drop-hover=true]:ring-2 data-[trash-drop-hover=true]:ring-primary/60"
+      className="flex h-full flex-col outline-none data-[trash-drop-hover=true]:ring-2 data-[trash-drop-hover=true]:ring-primary/60 data-[trash-drop-hover=true]:ring-inset"
     >
       <AnimatePresence>
         {showCommandPalette && (
