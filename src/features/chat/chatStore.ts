@@ -50,9 +50,21 @@ import {
   resolveModelCapabilities,
 } from "./agent/modelLimits";
 import { useAiSettingsStore } from "./store";
+import * as cliApi from "./cliApi";
 // 副作用 import: ainoverist モデル能力テーブルを registerAinoveristCaps() で
 // 起動時に登録する。`resolveModelCapabilities` が参照する。
 import "./openaiCompatPresets";
+
+/**
+ * 会話履歴を CLI に渡す単一プロンプトに平坦化する。
+ * CLI (claude -p / codex exec / opencode run) は単一プロンプト引数しか
+ * 受け付けないため、role タグ付きで連結する。
+ */
+function flattenMessagesForCli(
+  messages: { role: string; content: string }[],
+): string {
+  return messages.map((m) => `[${m.role}]\n${m.content}`).join("\n\n");
+}
 import type {
   AgentMessagePayload,
   ToolCallRecord,
@@ -1353,12 +1365,13 @@ export const useChatStore = create<ChatState>()((set, get) => ({
         }
       }
 
-      const chatModel = useAiSettingsStore.getState().settings?.model ?? "";
+      const aiSettings = useAiSettingsStore.getState().settings;
+      const chatModel = aiSettings?.model ?? "";
       const chatThinkingParams = buildThinkingParams(
         chatModel,
         getEffortForTask("chat"),
         "summarized",
-        useAiSettingsStore.getState().settings?.thinkingEnabled ?? true,
+        aiSettings?.thinkingEnabled ?? true,
       );
       const apiPayload = messagesForApi.map((m) => ({
         role: m.role,
@@ -1371,149 +1384,171 @@ export const useChatStore = create<ChatState>()((set, get) => ({
       const isFirstResponse =
         prevMessages.filter((m) => m.role === "assistant").length === 0;
 
+      // CLI プロバイダ選択時は subprocess 経由のストリームに切り替える。
+      // CLI は単一プロンプトしか受け付けないので、会話履歴は role タグ付きで
+      // 平坦化する。
+      const isCliProvider = aiSettings?.provider === "cli";
+      const cliConfig = aiSettings?.cli;
+
       // Start streaming — returns a Promise<cleanup_fn>
       await new Promise<void>((resolve, reject) => {
-        chatApi
-          .sendChatMessageStream(apiPayload, chatThinkingParams, {
-            onTextDelta: (delta) => {
-              set((s) => {
-                const msgs = [...s.messages];
-                const idx = msgs.findIndex((m) => m.id === assistantMsg.id);
-                if (idx >= 0) {
-                  msgs[idx] = {
-                    ...msgs[idx],
-                    content: msgs[idx].content + delta,
-                  };
-                }
-                return { messages: msgs };
+        const callbacks = {
+          onTextDelta: (delta: string) => {
+            set((s) => {
+              const msgs = [...s.messages];
+              const idx = msgs.findIndex((m) => m.id === assistantMsg.id);
+              if (idx >= 0) {
+                msgs[idx] = {
+                  ...msgs[idx],
+                  content: msgs[idx].content + delta,
+                };
+              }
+              return { messages: msgs };
+            });
+          },
+          onThinkingDelta: (delta: string) => {
+            thinkingAccumulator += delta;
+          },
+          onDone: (info: {
+            stopReason: string;
+            inputTokens?: number;
+            outputTokens?: number;
+          }) => {
+            const chatDurationMs = Math.round(
+              performance.now() - chatStartTime,
+            );
+
+            // Build metadata: thinking blocks + stopped flag
+            const metadataObj: Record<string, unknown> = {};
+            if (thinkingAccumulator) {
+              metadataObj.thinking_blocks = [{ thinking: thinkingAccumulator }];
+            }
+            if (info.stopReason === "stopped") {
+              metadataObj.stopped = true;
+            }
+            const chatMetadata =
+              Object.keys(metadataObj).length > 0
+                ? JSON.stringify(metadataObj)
+                : undefined;
+
+            // Update final assistant message state
+            set((s) => {
+              const msgs = [...s.messages];
+              const idx = msgs.findIndex((m) => m.id === assistantMsg.id);
+              if (idx >= 0 && chatMetadata) {
+                msgs[idx] = { ...msgs[idx], metadata: chatMetadata };
+              }
+              return { messages: msgs };
+            });
+
+            // Persist to DB
+            const persistToDb = async () => {
+              if (!sessionIdForPersist) return;
+              const finalMessages = get().messages;
+              const lastMsg = finalMessages[finalMessages.length - 1];
+              await chatApi.addMessage(sessionIdForPersist, "user", content, {
+                id: userMsg.id,
               });
-            },
-            onThinkingDelta: (delta) => {
-              thinkingAccumulator += delta;
-            },
-            onDone: (info) => {
-              const chatDurationMs = Math.round(
-                performance.now() - chatStartTime,
+              if (lastMsg && lastMsg.role === "assistant" && lastMsg.content) {
+                await chatApi.addMessage(
+                  sessionIdForPersist,
+                  "assistant",
+                  lastMsg.content,
+                  {
+                    id: assistantMsg.id,
+                    model: chatModel || undefined,
+                    tokensIn: info.inputTokens,
+                    tokensOut: info.outputTokens,
+                    durationMs: chatDurationMs,
+                    ...(chatMetadata ? { metadata: chatMetadata } : {}),
+                  },
+                );
+              }
+
+              // セッションタイトル自動生成 (P1-2) — fire-and-forget
+              const currentSession = get().sessions.find(
+                (s) => s.id === sessionIdForPersist,
+              );
+              if (
+                isFirstResponse &&
+                currentSession &&
+                currentSession.titleManual === 0 &&
+                lastMsg?.role === "assistant" &&
+                lastMsg.content
+              ) {
+                chatApi
+                  .generateSessionTitle(
+                    content,
+                    lastMsg.content,
+                    chatModel,
+                    projectCtx?.language ?? "ja",
+                  )
+                  .then(async (title) => {
+                    if (!title) {
+                      title = content.slice(0, 30);
+                    }
+                    if (sessionIdForPersist) {
+                      await chatApi.updateSessionTitle(
+                        sessionIdForPersist,
+                        title,
+                      );
+                      set((state) => ({
+                        sessions: state.sessions.map((s) =>
+                          s.id === sessionIdForPersist ? { ...s, title } : s,
+                        ),
+                      }));
+                    }
+                  })
+                  .catch((e) => {
+                    debugLog.error(
+                      "ChatStore",
+                      "title generation",
+                      errorDetail(e),
+                    );
+                  });
+              }
+            };
+
+            persistToDb()
+              .catch((e) => {
+                debugLog.error(
+                  "ChatStore",
+                  "persist after stream",
+                  errorDetail(e),
+                );
+              })
+              .finally(() => {
+                _streamCleanup?.();
+                _streamCleanup = null;
+                set({ isStreaming: false });
+                resolve();
+              });
+          },
+          onError: (message: string) => {
+            _streamCleanup?.();
+            _streamCleanup = null;
+            reject(new Error(message));
+          },
+        };
+
+        const streamPromise =
+          isCliProvider && cliConfig
+            ? cliApi.sendCliChatStream(
+                {
+                  cli: cliConfig.kind,
+                  binaryPath: cliConfig.binaryPath || undefined,
+                  model: cliConfig.model || undefined,
+                  prompt: flattenMessagesForCli(apiPayload),
+                },
+                callbacks,
+              )
+            : chatApi.sendChatMessageStream(
+                apiPayload,
+                chatThinkingParams,
+                callbacks,
               );
 
-              // Build metadata: thinking blocks + stopped flag
-              const metadataObj: Record<string, unknown> = {};
-              if (thinkingAccumulator) {
-                metadataObj.thinking_blocks = [
-                  { thinking: thinkingAccumulator },
-                ];
-              }
-              if (info.stopReason === "stopped") {
-                metadataObj.stopped = true;
-              }
-              const chatMetadata =
-                Object.keys(metadataObj).length > 0
-                  ? JSON.stringify(metadataObj)
-                  : undefined;
-
-              // Update final assistant message state
-              set((s) => {
-                const msgs = [...s.messages];
-                const idx = msgs.findIndex((m) => m.id === assistantMsg.id);
-                if (idx >= 0 && chatMetadata) {
-                  msgs[idx] = { ...msgs[idx], metadata: chatMetadata };
-                }
-                return { messages: msgs };
-              });
-
-              // Persist to DB
-              const persistToDb = async () => {
-                if (!sessionIdForPersist) return;
-                const finalMessages = get().messages;
-                const lastMsg = finalMessages[finalMessages.length - 1];
-                await chatApi.addMessage(sessionIdForPersist, "user", content, {
-                  id: userMsg.id,
-                });
-                if (
-                  lastMsg &&
-                  lastMsg.role === "assistant" &&
-                  lastMsg.content
-                ) {
-                  await chatApi.addMessage(
-                    sessionIdForPersist,
-                    "assistant",
-                    lastMsg.content,
-                    {
-                      id: assistantMsg.id,
-                      model: chatModel || undefined,
-                      tokensIn: info.inputTokens,
-                      tokensOut: info.outputTokens,
-                      durationMs: chatDurationMs,
-                      ...(chatMetadata ? { metadata: chatMetadata } : {}),
-                    },
-                  );
-                }
-
-                // セッションタイトル自動生成 (P1-2) — fire-and-forget
-                const currentSession = get().sessions.find(
-                  (s) => s.id === sessionIdForPersist,
-                );
-                if (
-                  isFirstResponse &&
-                  currentSession &&
-                  currentSession.titleManual === 0 &&
-                  lastMsg?.role === "assistant" &&
-                  lastMsg.content
-                ) {
-                  chatApi
-                    .generateSessionTitle(
-                      content,
-                      lastMsg.content,
-                      chatModel,
-                      projectCtx?.language ?? "ja",
-                    )
-                    .then(async (title) => {
-                      if (!title) {
-                        title = content.slice(0, 30);
-                      }
-                      if (sessionIdForPersist) {
-                        await chatApi.updateSessionTitle(
-                          sessionIdForPersist,
-                          title,
-                        );
-                        set((state) => ({
-                          sessions: state.sessions.map((s) =>
-                            s.id === sessionIdForPersist ? { ...s, title } : s,
-                          ),
-                        }));
-                      }
-                    })
-                    .catch((e) => {
-                      debugLog.error(
-                        "ChatStore",
-                        "title generation",
-                        errorDetail(e),
-                      );
-                    });
-                }
-              };
-
-              persistToDb()
-                .catch((e) => {
-                  debugLog.error(
-                    "ChatStore",
-                    "persist after stream",
-                    errorDetail(e),
-                  );
-                })
-                .finally(() => {
-                  _streamCleanup?.();
-                  _streamCleanup = null;
-                  set({ isStreaming: false });
-                  resolve();
-                });
-            },
-            onError: (message) => {
-              _streamCleanup?.();
-              _streamCleanup = null;
-              reject(new Error(message));
-            },
-          })
+        streamPromise
           .then((cleanup) => {
             _streamCleanup = cleanup;
           })
@@ -1724,7 +1759,15 @@ export const useChatStore = create<ChatState>()((set, get) => ({
 
   // --- P2-1: ストリーミング中断 ---
   stopGeneration: () => {
-    void chatApi.abortChatStream().catch(() => {});
+    // CLI subprocess と HTTP ベースのストリームは別系統なので、
+    // 現在のプロバイダに合わせた abort を発火する。両方発火しても害は無いが、
+    // CLI 用フラグはアプリ全体で 1 つしかないため不要な reset を避ける。
+    const provider = useAiSettingsStore.getState().settings?.provider;
+    if (provider === "cli") {
+      void cliApi.abortCliChatStream().catch(() => {});
+    } else {
+      void chatApi.abortChatStream().catch(() => {});
+    }
     _streamCleanup?.();
     _streamCleanup = null;
     set({ isStreaming: false, agentProgress: null });

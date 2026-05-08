@@ -203,7 +203,23 @@ export function resolveModelCapabilities(
   settings?: { provider?: string; openaiCompatible?: unknown } | null,
 ): ModelCapabilities {
   const base = getModelCapabilities(model);
-  if (!settings || settings.provider !== "openai-compatible") return base;
+  if (!settings) return base;
+
+  // CLI プロバイダ: モデル能力は CLI 側に委譲。コンテキスト窓は 200k と仮定
+  // (Claude Code / Codex / OpenCode のデフォルトモデルが大体 200k 級)。
+  // tools / thinking はアプリ層では無効化。
+  if (settings.provider === "cli") {
+    return {
+      ...base,
+      contextWindow: 200_000,
+      supportsTools: false,
+      supportsThinking: false,
+      supportsAdaptiveThinking: false,
+      supportsEffort: false,
+    };
+  }
+
+  if (settings.provider !== "openai-compatible") return base;
 
   const oc = settings.openaiCompatible as
     | {

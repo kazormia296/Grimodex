@@ -41,6 +41,11 @@ vi.mock("@/features/chat/agent/modelLimits", () => ({
     contextWindow: 200000,
     supportsThinking: false,
   }),
+  resolveModelCapabilities: () => ({
+    contextWindow: 200000,
+    supportsThinking: false,
+  }),
+  registerAinoveristCaps: () => {},
 }));
 
 vi.mock("@/features/settings/settingsStore", () => {

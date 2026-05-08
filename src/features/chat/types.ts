@@ -4,9 +4,26 @@ export const AI_PROVIDERS = [
   "anthropic",
   "ollama",
   "openai-compatible",
+  "cli",
 ] as const;
 
 export type AiProvider = (typeof AI_PROVIDERS)[number];
+
+/** CLI エージェント種別 (Claude Code / Codex CLI / OpenCode) */
+export type CliKind = "claude" | "codex" | "opencode";
+
+/** CLI プロバイダ用設定 */
+export interface CliSettings {
+  /** 使用する CLI 種別 */
+  kind: CliKind;
+  /**
+   * 実行可能ファイルのパス。空なら CLI 名を PATH 解決する。
+   * 通常は detect_cli_binary で取得した絶対パスを保存する。
+   */
+  binaryPath?: string;
+  /** CLI に渡すモデル名。空なら CLI のデフォルトモデル */
+  model?: string;
+}
 
 /** OpenAI 互換プロバイダのプリセット ID */
 export type OpenaiCompatPresetId = "custom" | "ainoverist";
@@ -45,6 +62,8 @@ export interface AiSettings {
   ollamaEndpoint: string;
   thinkingEnabled: boolean;
   openaiCompatible: OpenaiCompatibleSettings;
+  /** CLI プロバイダ選択時のみ意味を持つ */
+  cli?: CliSettings;
 }
 
 export const DEFAULT_AI_SETTINGS: AiSettings = {

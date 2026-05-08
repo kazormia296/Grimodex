@@ -7,9 +7,12 @@ use crate::openai_compat_presets;
 
 /// Supported AI providers.
 ///
-/// `OpenaiCompatible` はユーザーが任意の OpenAI 互換エンドポイント
-/// (llama.cpp / LM Studio / vLLM / 自前ホスト等) を `baseURL` で指定する
-/// プロバイダ。`AiSettings.openai_compatible.base_url` を参照する。
+/// - `OpenaiCompatible` はユーザーが任意の OpenAI 互換エンドポイント
+///   (llama.cpp / LM Studio / vLLM / 自前ホスト等) を `baseURL` で指定する
+///   プロバイダ。`AiSettings.openai_compatible.base_url` を参照する。
+/// - `Cli` はローカルにインストール済みの CLI エージェント (Claude Code 等) を
+///   subprocess で起動するプロバイダ。HTTP 系の `send_chat*` には流れず、
+///   `commands/cli_ai.rs` の専用ハンドラで処理される。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum AiProvider {
     #[serde(rename = "openrouter")]
@@ -22,6 +25,8 @@ pub enum AiProvider {
     Ollama,
     #[serde(rename = "openai-compatible")]
     OpenaiCompatible,
+    #[serde(rename = "cli")]
+    Cli,
 }
 
 /// プロバイダごとに参照するユーザー設定 URL を集約する。
@@ -45,6 +50,7 @@ impl<'a> ProviderEndpoints<'a> {
 
 impl AiProvider {
     /// Keyring service name for this provider.
+    /// Cli プロバイダは API キーを使わないが、enum 整合のため名前は持たせる。
     fn keyring_service(&self) -> &str {
         match self {
             AiProvider::OpenRouter => "grimodex-openrouter",
@@ -52,10 +58,13 @@ impl AiProvider {
             AiProvider::Anthropic => "grimodex-anthropic",
             AiProvider::Ollama => "grimodex-ollama",
             AiProvider::OpenaiCompatible => "grimodex-openai-compatible",
+            AiProvider::Cli => "grimodex-cli", // 実質未使用 (CLI 側で認証管理)
         }
     }
 
     /// Base URL for API requests.
+    /// Cli は HTTP 経路を持たないので空文字を返す (呼び出し側はそもそもこの値を
+    /// 使わず、`commands/cli_ai.rs` 経由で subprocess 起動する)。
     pub fn base_url(&self, ep: ProviderEndpoints<'_>) -> String {
         match self {
             AiProvider::OpenRouter => "https://openrouter.ai/api/v1".to_string(),
@@ -65,6 +74,7 @@ impl AiProvider {
             AiProvider::OpenaiCompatible => {
                 ep.openai_compat_custom.trim_end_matches('/').to_string()
             }
+            AiProvider::Cli => String::new(),
         }
     }
 
@@ -90,6 +100,7 @@ impl AiProvider {
             AiProvider::OpenaiCompatible => {
                 format!("{}/models", ep.openai_compat_custom.trim_end_matches('/'))
             }
+            AiProvider::Cli => String::new(),
         }
     }
 }
@@ -102,6 +113,7 @@ impl std::fmt::Display for AiProvider {
             AiProvider::Anthropic => write!(f, "anthropic"),
             AiProvider::Ollama => write!(f, "ollama"),
             AiProvider::OpenaiCompatible => write!(f, "openai-compatible"),
+            AiProvider::Cli => write!(f, "cli"),
         }
     }
 }
@@ -144,6 +156,21 @@ fn default_openai_compat_preset() -> String {
     "custom".to_string()
 }
 
+/// CLI プロバイダ用の設定。`provider = Cli` のときのみ意味を持つ。
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct CliSettings {
+    /// 使用する CLI 種別 ("claude" / "codex" / "opencode")
+    #[serde(default)]
+    pub kind: String,
+    /// 実行可能ファイルのパス。空なら CLI 名で PATH 解決。
+    #[serde(default)]
+    pub binary_path: Option<String>,
+    /// CLI に渡すモデル名 (--model 経由)。空なら CLI のデフォルトモデル。
+    #[serde(default)]
+    pub model: Option<String>,
+}
+
 /// AI settings persisted in AppData.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -155,6 +182,8 @@ pub struct AiSettings {
     pub thinking_enabled: bool,
     #[serde(default)]
     pub openai_compatible: OpenaiCompatibleSettings,
+    #[serde(default)]
+    pub cli: Option<CliSettings>,
 }
 
 impl AiSettings {
@@ -182,6 +211,7 @@ impl Default for AiSettings {
             ollama_endpoint: "http://localhost:11434".to_string(),
             thinking_enabled: true,
             openai_compatible: OpenaiCompatibleSettings::default(),
+            cli: None,
         }
     }
 }
@@ -1458,6 +1488,7 @@ mod tests {
             ollama_endpoint: "http://localhost:11434".to_string(),
             thinking_enabled: true,
             openai_compatible: OpenaiCompatibleSettings::default(),
+            cli: None,
         };
 
         write_ai_settings(&path, &settings).expect("write");

@@ -8,9 +8,10 @@ use super::{AiSettingsPath, AppError, InlineAiAbortFlag, StreamAbortFlag};
 /// API キーの解決ルール:
 /// - Ollama: 不要（空文字）
 /// - OpenaiCompatible: 任意（ローカル LLM サーバ等で API キー不要なケースを許容）
+/// - Cli: 不要（CLI 側で認証管理。送信時はそもそもこのパスを通らない）
 /// - その他: 必須（設定されていなければエラー）
 pub(super) fn resolve_api_key(provider: &ai::AiProvider) -> anyhow::Result<String> {
-    if matches!(provider, ai::AiProvider::Ollama) {
+    if matches!(provider, ai::AiProvider::Ollama | ai::AiProvider::Cli) {
         return Ok(String::new());
     }
     if matches!(provider, ai::AiProvider::OpenaiCompatible) {

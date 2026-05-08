@@ -24,9 +24,7 @@ pub(crate) async fn detect_cli_binary(cli: CliKind) -> Result<Option<String>, Ap
 /// CLI バイナリの起動可否を確認 (`<bin> --version` を叩く)。
 /// 認証状態までは確認しない (各 CLI で `<bin> login` 等を別途実行する想定)。
 #[tauri::command]
-pub(crate) async fn test_cli_connection(
-    binary_path: String,
-) -> Result<String, AppError> {
+pub(crate) async fn test_cli_connection(binary_path: String) -> Result<String, AppError> {
     let result = cli_provider::test_binary(&binary_path).await?;
     Ok(result)
 }
@@ -46,6 +44,7 @@ pub(crate) fn abort_cli_chat_stream(
 }
 
 #[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub(crate) struct CliChatPayload {
     cli: CliKind,
     /// ユーザーが Settings で指定した実行可能ファイルのパス。
@@ -78,7 +77,7 @@ pub(crate) async fn send_cli_chat_stream(
     let result = cli_provider::run(payload.cli, opts, flag_clone, move |evt| match evt {
         CliEvent::TextDelta(delta) => {
             let _ = app_for_events.emit(
-                "chat:stream-chunk",
+                "cli:stream-chunk",
                 serde_json::json!({
                     "delta": delta,
                     "block_type": "text",
@@ -87,7 +86,7 @@ pub(crate) async fn send_cli_chat_stream(
         }
         CliEvent::ThinkingDelta(delta) => {
             let _ = app_for_events.emit(
-                "chat:stream-chunk",
+                "cli:stream-chunk",
                 serde_json::json!({
                     "delta": delta,
                     "block_type": "thinking",
@@ -100,7 +99,7 @@ pub(crate) async fn send_cli_chat_stream(
             stop_reason,
         } => {
             let _ = app_for_events.emit(
-                "chat:stream-done",
+                "cli:stream-done",
                 serde_json::json!({
                     "stop_reason": stop_reason,
                     "input_tokens": input_tokens,
@@ -113,7 +112,7 @@ pub(crate) async fn send_cli_chat_stream(
 
     if let Err(e) = result {
         let _ = app_handle.emit(
-            "chat:stream-error",
+            "cli:stream-error",
             serde_json::json!({ "message": e.to_string() }),
         );
         return Err(AppError::Anyhow(e));

@@ -1,12 +1,18 @@
 import { useState, useEffect, useCallback } from "react";
 import { useTranslation } from "react-i18next";
+import { toast } from "sonner";
 import { useAiSettingsStore } from "@/features/chat/store";
 import {
   AI_PROVIDERS,
   DEFAULT_OPENAI_COMPATIBLE_SETTINGS,
   groupModelsByDeveloper,
 } from "@/features/chat/types";
-import type { AiProvider, OpenaiCompatPresetId } from "@/features/chat/types";
+import type {
+  AiProvider,
+  CliKind,
+  OpenaiCompatPresetId,
+} from "@/features/chat/types";
+import { detectCliBinary, testCliConnection } from "@/features/chat/cliApi";
 import { resolveModelCapabilities } from "@/features/chat/agent/modelLimits";
 import {
   getOpenaiCompatPreset,
@@ -23,6 +29,7 @@ const PROVIDER_LABELS: Record<AiProvider, string> = {
   anthropic: "Anthropic",
   ollama: "ollama-local",
   "openai-compatible": "OpenAI 互換",
+  cli: "CLI エージェント",
 };
 
 /** AI のべりすと等のサンプリングキーで「数値型」として扱うキー */
@@ -475,61 +482,191 @@ export function AiCategory() {
             );
           })()}
 
-        {/* API Key */}
-        {localSettings.provider !== "ollama" && (
-          <SettingRow
-            label={t("settings.ai.apiKey")}
-            description={
-              localSettings.provider === "openai-compatible"
-                ? "ローカル LLM サーバ等で API キーが不要な場合は空欄で構いません"
-                : undefined
-            }
-          >
-            {hasApiKey ? (
-              <div className="flex items-center gap-2">
-                <span className="text-sm text-muted-foreground">
-                  {t("settings.ai.keySet")}
-                </span>
-                <button
-                  type="button"
-                  onClick={handleDeleteKey}
-                  className="rounded-md border border-destructive px-2 py-1 text-xs text-destructive hover:bg-destructive/10"
+        {/* CLI プロバイダ: 種別選択 + バイナリ検出 + 接続テスト */}
+        {localSettings.provider === "cli" &&
+          (() => {
+            const cli = localSettings.cli ?? {
+              kind: "claude" as CliKind,
+              binaryPath: "",
+              model: "",
+            };
+            const updateCli = async (
+              patch: Partial<typeof cli>,
+            ): Promise<void> => {
+              const updated = {
+                ...localSettings,
+                cli: { ...cli, ...patch },
+              };
+              setLocalSettings(updated);
+              await saveSettings(updated);
+            };
+            const isWindowsNative =
+              typeof navigator !== "undefined" &&
+              /Win/.test(navigator.platform) &&
+              !/WSL/i.test(navigator.userAgent);
+            return (
+              <>
+                {isWindowsNative && (
+                  <p className="mb-2 rounded-md border border-yellow-500/50 bg-yellow-500/10 p-2 text-xs text-yellow-700 dark:text-yellow-400">
+                    Windows ネイティブはまだ対応していません。WSL
+                    経由でアプリを起動してください。
+                  </p>
+                )}
+                <SettingRow label="CLI 種別">
+                  <select
+                    value={cli.kind}
+                    onChange={(e) => {
+                      void updateCli({
+                        kind: e.target.value as CliKind,
+                        // バイナリパスは CLI 種別に紐づくのでクリア
+                        binaryPath: "",
+                      });
+                    }}
+                    className="rounded-md border border-input bg-background px-2 py-1 text-sm focus:outline-none"
+                  >
+                    <option value="claude">Claude Code (claude)</option>
+                    <option value="codex">Codex CLI (codex)</option>
+                    <option value="opencode">OpenCode (opencode)</option>
+                  </select>
+                </SettingRow>
+                <p className="mb-2 text-xs text-muted-foreground">
+                  CLI 側で事前に{" "}
+                  <code className="font-mono">{cli.kind} login</code>{" "}
+                  等で認証を済ませてください。本パネルからはツール (ファイル R/W
+                  / shell) は全て無効化された状態で起動します。
+                </p>
+                {cli.kind !== "claude" && (
+                  <p className="mb-2 rounded-md border border-yellow-500/50 bg-yellow-500/10 p-2 text-xs text-yellow-700 dark:text-yellow-400">
+                    {cli.kind === "codex" ? "Codex CLI" : "OpenCode"}{" "}
+                    用の出力パーサは未実装です
+                    (将来対応予定)。現状は応答が空のまま終了します。
+                  </p>
+                )}
+                <SettingRow
+                  label="バイナリパス"
+                  description="空欄なら CLI 名で PATH 解決。「自動検出」で bash -lc 経由で which を試行します"
                 >
-                  {t("settings.ai.deleteKey")}
-                </button>
-              </div>
-            ) : (
-              <div className="flex gap-2">
-                <div className="relative">
+                  <div className="flex gap-2">
+                    <input
+                      type="text"
+                      value={cli.binaryPath ?? ""}
+                      onChange={(e) =>
+                        updateCli({ binaryPath: e.target.value })
+                      }
+                      className="w-72 rounded-md border border-input bg-background px-2 py-1 text-sm font-mono focus:outline-none"
+                      placeholder={`/usr/local/bin/${cli.kind}`}
+                    />
+                    <button
+                      type="button"
+                      onClick={async () => {
+                        const path = await detectCliBinary(cli.kind);
+                        if (path) {
+                          await updateCli({ binaryPath: path });
+                          toast.success(`検出: ${path}`);
+                        } else {
+                          toast.error(
+                            `${cli.kind} が PATH 上で見つかりませんでした。手動でパスを指定してください。`,
+                          );
+                        }
+                      }}
+                      className="rounded-md border border-border px-2 py-1 text-sm hover:bg-accent"
+                    >
+                      自動検出
+                    </button>
+                  </div>
+                </SettingRow>
+                <SettingRow
+                  label="モデル"
+                  description="CLI に --model で渡される。空欄なら CLI のデフォルト"
+                >
                   <input
-                    type={showKey ? "text" : "password"}
-                    value={apiKeyInput}
-                    onChange={(e) => setApiKeyInput(e.target.value)}
-                    onKeyDown={(e) => e.key === "Enter" && handleSaveKey()}
-                    className="w-40 rounded-md border border-input bg-background px-2 py-1 pr-8 text-sm focus:outline-none"
-                    placeholder="sk-..."
+                    type="text"
+                    value={cli.model ?? ""}
+                    onChange={(e) => updateCli({ model: e.target.value })}
+                    className="w-48 rounded-md border border-input bg-background px-2 py-1 text-sm font-mono focus:outline-none"
+                    placeholder="(任意)"
                   />
+                </SettingRow>
+                <div className="mt-2">
                   <button
                     type="button"
-                    onClick={() => setShowKey(!showKey)}
-                    className="absolute right-2 top-1/2 -translate-y-1/2 text-xs text-muted-foreground"
+                    onClick={async () => {
+                      const path = cli.binaryPath || cli.kind;
+                      try {
+                        const version = await testCliConnection(path);
+                        toast.success(`接続成功: ${version}`);
+                      } catch (e) {
+                        toast.error(
+                          `接続失敗: ${e instanceof Error ? e.message : String(e)}`,
+                        );
+                      }
+                    }}
+                    disabled={!cli.binaryPath && !cli.kind}
+                    className="rounded-md bg-secondary px-3 py-1.5 text-sm text-secondary-foreground hover:bg-secondary/80 disabled:opacity-50"
                   >
-                    {showKey
-                      ? t("settings.ai.hideKey")
-                      : t("settings.ai.showKey")}
+                    接続テスト (--version)
                   </button>
                 </div>
-                <button
-                  type="button"
-                  onClick={handleSaveKey}
-                  className="rounded-md bg-primary px-3 py-1 text-sm text-primary-foreground hover:bg-primary/90"
-                >
-                  {t("settings.ai.saveKey")}
-                </button>
-              </div>
-            )}
-          </SettingRow>
-        )}
+              </>
+            );
+          })()}
+
+        {/* API Key */}
+        {localSettings.provider !== "ollama" &&
+          localSettings.provider !== "cli" && (
+            <SettingRow
+              label={t("settings.ai.apiKey")}
+              description={
+                localSettings.provider === "openai-compatible"
+                  ? "ローカル LLM サーバ等で API キーが不要な場合は空欄で構いません"
+                  : undefined
+              }
+            >
+              {hasApiKey ? (
+                <div className="flex items-center gap-2">
+                  <span className="text-sm text-muted-foreground">
+                    {t("settings.ai.keySet")}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={handleDeleteKey}
+                    className="rounded-md border border-destructive px-2 py-1 text-xs text-destructive hover:bg-destructive/10"
+                  >
+                    {t("settings.ai.deleteKey")}
+                  </button>
+                </div>
+              ) : (
+                <div className="flex gap-2">
+                  <div className="relative">
+                    <input
+                      type={showKey ? "text" : "password"}
+                      value={apiKeyInput}
+                      onChange={(e) => setApiKeyInput(e.target.value)}
+                      onKeyDown={(e) => e.key === "Enter" && handleSaveKey()}
+                      className="w-40 rounded-md border border-input bg-background px-2 py-1 pr-8 text-sm focus:outline-none"
+                      placeholder="sk-..."
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setShowKey(!showKey)}
+                      className="absolute right-2 top-1/2 -translate-y-1/2 text-xs text-muted-foreground"
+                    >
+                      {showKey
+                        ? t("settings.ai.hideKey")
+                        : t("settings.ai.showKey")}
+                    </button>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={handleSaveKey}
+                    className="rounded-md bg-primary px-3 py-1 text-sm text-primary-foreground hover:bg-primary/90"
+                  >
+                    {t("settings.ai.saveKey")}
+                  </button>
+                </div>
+              )}
+            </SettingRow>
+          )}
       </SettingSection>
 
       {/* Models */}
@@ -754,37 +891,39 @@ export function AiCategory() {
             </SettingRow>
           )}
 
-        {/* Test connection */}
-        <div className="mt-2">
-          <button
-            type="button"
-            onClick={testConnection}
-            disabled={
-              isTestingConnection ||
-              !localSettings.model ||
-              (!hasApiKey &&
-                localSettings.provider !== "ollama" &&
-                localSettings.provider !== "openai-compatible")
-            }
-            className="rounded-md bg-secondary px-3 py-1.5 text-sm text-secondary-foreground hover:bg-secondary/80 disabled:opacity-50"
-          >
-            {isTestingConnection
-              ? t("settings.ai.testing")
-              : t("settings.ai.testConnection")}
-          </button>
-          {connectionTestResult && (
-            <p
-              className={`mt-1.5 text-sm ${
-                connectionTestResult.success
-                  ? "text-green-600"
-                  : "text-destructive"
-              }`}
+        {/* Test connection (CLI は専用ボタンが上にあるためここでは非表示) */}
+        {localSettings.provider !== "cli" && (
+          <div className="mt-2">
+            <button
+              type="button"
+              onClick={testConnection}
+              disabled={
+                isTestingConnection ||
+                !localSettings.model ||
+                (!hasApiKey &&
+                  localSettings.provider !== "ollama" &&
+                  localSettings.provider !== "openai-compatible")
+              }
+              className="rounded-md bg-secondary px-3 py-1.5 text-sm text-secondary-foreground hover:bg-secondary/80 disabled:opacity-50"
             >
-              {connectionTestResult.success ? "✓ " : "✗ "}
-              {connectionTestResult.message}
-            </p>
-          )}
-        </div>
+              {isTestingConnection
+                ? t("settings.ai.testing")
+                : t("settings.ai.testConnection")}
+            </button>
+            {connectionTestResult && (
+              <p
+                className={`mt-1.5 text-sm ${
+                  connectionTestResult.success
+                    ? "text-green-600"
+                    : "text-destructive"
+                }`}
+              >
+                {connectionTestResult.success ? "✓ " : "✗ "}
+                {connectionTestResult.message}
+              </p>
+            )}
+          </div>
+        )}
       </SettingSection>
 
       {/* Context budget */}
