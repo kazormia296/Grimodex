@@ -33,6 +33,7 @@ import * as chatApi from "@/features/chat/chatApi";
 import { useChatStore } from "@/features/chat/chatStore";
 import { useTabStore } from "@/features/editor/tabStore";
 import { useMatrixStore } from "@/features/matrix/matrixStore";
+import { useDropTarget } from "@/features/trash-bin/useDropTarget";
 
 // Fallback colors for when types haven't loaded yet
 const FALLBACK_TYPE_COLORS: Record<string, string> = {
@@ -519,6 +520,14 @@ export function CodexManagementPanel({
   const [scrollToEntryId, setScrollToEntryId] = useState<string | null>(null);
 
   const containerRef = useRef<HTMLDivElement>(null);
+  const trashDropRef = useDropTarget("codex-panel", "codex-panel");
+  const setRootRef = useCallback(
+    (el: HTMLDivElement | null) => {
+      containerRef.current = el;
+      trashDropRef.current = el;
+    },
+    [trashDropRef],
+  );
   const searchInputRef = useRef<HTMLInputElement>(null);
   const searchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -1048,10 +1057,11 @@ export function CodexManagementPanel({
 
   return (
     <div
-      ref={containerRef}
+      ref={setRootRef}
       tabIndex={-1}
       data-testid="codex-management-panel"
-      className="flex h-full flex-col outline-none"
+      data-droptarget-id="codex-panel"
+      className="flex h-full flex-col outline-none data-[trash-drop-hover=true]:ring-2 data-[trash-drop-hover=true]:ring-primary/60"
     >
       <AnimatePresence>
         {showCommandPalette && (
