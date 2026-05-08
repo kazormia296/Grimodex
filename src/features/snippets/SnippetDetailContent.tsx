@@ -33,6 +33,7 @@ import { useTreeStore } from "@/features/tree/treeStore";
 import { useTabStore } from "@/features/editor/tabStore";
 import { useEditorStore } from "@/features/editor/editorStore";
 import { useSnippetStore } from "./snippetStore";
+import { useSceneContentStore } from "@/features/editor/sceneContentStore";
 import { TagSelector } from "@/features/codex/components/TagSelector";
 import { TagsChip } from "@/features/codex/components/TagsChip";
 import {
@@ -47,6 +48,10 @@ interface SnippetDetailContentProps {
   onSave: (id: string, data: { title: string; content: string }) => void;
   onDelete: (id: string) => void;
 }
+
+// Sentinel group index distinguishing this mini-editor from EditorPane (0/1)
+// and the Codex mini-editor (99) when broadcasting through sceneContentStore.
+const SNIPPET_MINI_GROUP = 98;
 
 const SOURCE_ICON = {
   ai: Sparkles,
@@ -72,6 +77,11 @@ export function SnippetDetailContent({
   titleRef.current = title;
 
   const autoSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Suppress the "update" handler (autosave + broadcast) when content is being
+  // written into the editor programmatically — either from a `snippet` prop
+  // refresh or from a sceneContentStore broadcast — so we don't re-broadcast
+  // our own echo or schedule a no-op autosave loop.
+  const isApplyingExternalUpdate = useRef(false);
 
   const editor = useEditor({
     extensions: [StarterKit.configure(), AuthorshipMark],
@@ -91,18 +101,54 @@ export function SnippetDetailContent({
   useEffect(() => {
     if (autoSaveTimerRef.current) clearTimeout(autoSaveTimerRef.current);
     setTitle(snippet.title);
-    editor?.commands.setContent(snippet.content);
+    isApplyingExternalUpdate.current = true;
+    try {
+      editor?.commands.setContent(snippet.content);
+    } finally {
+      isApplyingExternalUpdate.current = false;
+    }
   }, [snippet.id, snippet.title, snippet.content, editor]);
 
-  // Auto-save on editor content change
+  // Auto-save on editor content change + live-broadcast to sceneContentStore
+  // so an open EditorPane snippet tab reflects edits within a frame instead
+  // of waiting for the 2-second autosave + store refresh round trip.
   useEffect(() => {
     if (!editor) return;
-    const handleUpdate = () => scheduleAutoSave();
+    const handleUpdate = () => {
+      if (isApplyingExternalUpdate.current) return;
+      scheduleAutoSave();
+      try {
+        useSceneContentStore
+          .getState()
+          .setLiveContent(snippet.id, editor.getJSON(), SNIPPET_MINI_GROUP);
+      } catch {
+        // ignore serialization errors
+      }
+    };
     editor.on("update", handleUpdate);
     return () => {
       editor.off("update", handleUpdate);
     };
   });
+
+  // Receive live updates from the EditorPane snippet tab so typing there
+  // shows up here in real time. Mirrors CodexContentEditor's pattern.
+  useEffect(() => {
+    if (!editor) return;
+    return useSceneContentStore
+      .getState()
+      .subscribe(snippet.id, (json, sourceGroupIndex) => {
+        if (sourceGroupIndex === SNIPPET_MINI_GROUP) return; // our own update
+        isApplyingExternalUpdate.current = true;
+        try {
+          editor.commands.setContent(
+            json as Parameters<typeof editor.commands.setContent>[0],
+          );
+        } finally {
+          isApplyingExternalUpdate.current = false;
+        }
+      });
+  }, [snippet.id, editor]);
 
   function scheduleAutoSave() {
     const snippetId = snippet.id;
