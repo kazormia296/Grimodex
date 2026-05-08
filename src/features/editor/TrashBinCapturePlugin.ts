@@ -194,7 +194,13 @@ export function createTrashBinCapturePlugin(): Plugin<TrashBinCaptureState> {
           if (!(step instanceof ReplaceStep)) continue;
           const { from, to } = step as { from: number; to: number };
           if (from === to) continue; // 純粋挿入はスキップ
-          if (step.slice.size > 0) continue; // 置換 (Replace + Insert) はスキップ
+          // 置換 (Replace + Insert) はスキップ。ただし slice が「空段落」など
+          // 構造ノードのみで実テキストを持たない場合は、ProseMirror が
+          // doc に 1 ブロック残すために挿入した補填であって実質「全消し」なので
+          // キャプチャ対象に含める。Ctrl+A → Delete (複数段落) がこのケース。
+          const sliceContent = step.slice.content;
+          const sliceText = sliceContent.textBetween(0, sliceContent.size, "");
+          if (sliceText.length > 0) continue;
 
           // 削除範囲のテキスト・spans 抽出
           const { text, spans } = extractSpans(oldState.doc, from, to);

@@ -123,6 +123,25 @@ describe("TrashBinCapturePlugin", () => {
     editor.destroy();
   });
 
+  it("複数段落の全選択削除 (Ctrl+A → Delete 相当) もキャプチャされる", () => {
+    vi.useFakeTimers();
+    // doc には 1 ブロック必要なので ProseMirror は空段落 1 個を含む slice を
+    // 差し込んで全文を replace する。slice.size > 0 でも textBetween が空なら
+    // 実質「全消し」として扱う。
+    const editor = createTestEditor(
+      "<p>段落いちのテキスト</p><p>段落にのテキスト</p>",
+      { kind: "scene", id: "s1" },
+    );
+    const docSize = editor.state.doc.content.size;
+    deleteRange(editor, 0, docSize);
+    vi.advanceTimersByTime(600);
+    const texts = pendingTexts();
+    expect(texts.length).toBe(1);
+    expect(texts[0]).toContain("段落いちのテキスト");
+    expect(texts[0]).toContain("段落にのテキスト");
+    editor.destroy();
+  });
+
   it("挿入はキャプチャされない", () => {
     vi.useFakeTimers();
     const editor = createTestEditor("<p>テスト</p>", {
