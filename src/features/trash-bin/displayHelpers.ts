@@ -37,8 +37,12 @@ export function getSizeForSubKind(
       return { width: 160, height: 60 };
     case "snippet":
       return { width: 140, height: 100 };
-    case "map-sticky":
-      return { width: 80, height: 80 };
+    case "map-sticky": {
+      // sticky はタイトル空が多いので、本文のみの横長として text-fragment 同様に扱う。
+      const width = Math.max(80, Math.min(240, 60 + charCount * 8));
+      const height = charCount > 30 ? 36 : 28;
+      return { width, height };
+    }
     case "foreshadow":
       return { width: 120, height: 40 };
     case "grid-chapter":

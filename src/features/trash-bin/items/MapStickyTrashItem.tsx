@@ -69,17 +69,12 @@ export function MapStickyTrashItem({ item, registerNode }: Props) {
       title={item.previewText}
     >
       <div
-        className="flex h-full flex-col"
+        className="flex h-full items-center"
         style={{ transform: `rotate(${tilt}deg)` }}
       >
-        <div className="truncate text-[11px] font-semibold leading-tight">
-          {item.previewText || "—"}
-        </div>
-        {meta.bodyPreview ? (
-          <div className="mt-1 line-clamp-3 text-[9px] leading-tight opacity-80">
-            {meta.bodyPreview}
-          </div>
-        ) : null}
+        <span className="block w-full overflow-hidden text-ellipsis whitespace-nowrap text-[11px] leading-tight">
+          {meta.bodyPreview || item.previewText || "—"}
+        </span>
       </div>
     </div>
   );
