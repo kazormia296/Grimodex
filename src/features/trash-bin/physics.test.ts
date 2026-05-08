@@ -74,7 +74,8 @@ describe("TrashPhysicsEngine.step 重力・床", () => {
     }
     expect(e.hasUnsettled()).toBe(false);
     const s = e.getState("a")!;
-    expect(s.y + s.height).toBeLessThanOrEqual(FLOOR + 0.5);
+    // slop=5 により床への侵入を許容するため、許容値も広げる
+    expect(s.y + s.height).toBeLessThanOrEqual(FLOOR + 5.5);
     expect(s.isSleeping).toBe(true);
     e.destroy();
   });
@@ -249,23 +250,67 @@ describe("TrashPhysicsEngine.placeFloorPreset", () => {
 });
 
 describe("TrashPhysicsEngine.clampBodies", () => {
-  it("リサイズで境界外の body を内側にクランプ + wake", () => {
+  it("リサイズで境界外の sleeping body を内側にクランプし wake する", () => {
     const e = makeEngine();
     e.addBody({
       id: "a",
       subKind: "scene",
       size: { width: 200, height: 80 },
       initial: "settled-floor",
-      x: 50,
+      x: 200,
       y: FLOOR - 80,
     });
     expect(e.getState("a")!.isSleeping).toBe(true);
-    // 横を縮めてはみ出し状態にする
+    // body 幅 (200) より広い 250 幅にリサイズ → 通常クランプ
+    e.setBounds(250, FLOOR);
+    const awoke = e.clampBodies();
+    const s = e.getState("a")!;
+    expect(s.x).toBeGreaterThanOrEqual(0);
+    expect(s.x + s.width).toBeLessThanOrEqual(250 + 0.5);
+    // wake させて重力で再着地・整列させる（calm period が爆発を吸収）
+    expect(s.isSleeping).toBe(false);
+    expect(awoke).toBe(true);
+    e.destroy();
+  });
+
+  it("body が container より幅広いときは左寄せ（右側はみ出しを許容）", () => {
+    const e = makeEngine();
+    e.addBody({
+      id: "a",
+      subKind: "scene",
+      size: { width: 200, height: 80 },
+      initial: "settled-floor",
+      x: 100,
+      y: FLOOR - 80,
+    });
+    // body 幅 200 > container 幅 150
     e.setBounds(150, FLOOR);
     e.clampBodies();
     const s = e.getState("a")!;
-    expect(s.x + s.width).toBeLessThanOrEqual(150 + 0.5);
+    expect(s.x).toBeCloseTo(0, 1); // 左端に揃う
+    e.destroy();
+  });
+
+  it("リサイズで落下中の body は wake のままクランプされる", () => {
+    const e = makeEngine();
+    e.addBody({
+      id: "a",
+      subKind: "text-fragment",
+      size: { width: 60, height: 24 },
+      initial: "falling",
+      containerWidth: 400,
+      x: 350, // はみ出させる
+      y: 100,
+      rng: seedRng(1),
+    });
+    expect(e.getState("a")!.isSleeping).toBe(false);
+    e.setBounds(200, FLOOR);
+    const awoke = e.clampBodies();
+    const s = e.getState("a")!;
+    expect(s.x + s.width).toBeLessThanOrEqual(200 + 0.5);
+    // 落下中は wake のまま（重力で再着地できるように）
     expect(s.isSleeping).toBe(false);
+    expect(awoke).toBe(true);
     e.destroy();
   });
 });
