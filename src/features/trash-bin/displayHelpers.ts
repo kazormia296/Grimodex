@@ -38,7 +38,7 @@ export function getSizeForSubKind(
     case "snippet":
       return { width: 140, height: 100 };
     case "map-sticky":
-      return { width: 120, height: 120 };
+      return { width: 80, height: 80 };
     case "foreshadow":
       return { width: 120, height: 40 };
     case "grid-chapter":

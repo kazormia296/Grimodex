@@ -54,7 +54,7 @@ export function MapStickyTrashItem({ item, registerNode }: Props) {
   return (
     <div
       ref={ref}
-      className={`absolute will-change-transform select-none rounded-sm px-2 py-1.5 text-foreground shadow-md ring-1 ring-yellow-900/10 ${bgClass}`}
+      className={`absolute will-change-transform select-none rounded-sm px-2 py-1.5 text-zinc-900 shadow-md ring-1 ring-yellow-900/10 ${bgClass}`}
       style={{
         width: size.width,
         height: size.height,
