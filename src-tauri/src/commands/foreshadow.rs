@@ -835,7 +835,13 @@ pub(crate) fn foreshadow_load_anchors_for_scene(
     ws_state: tauri::State<'_, WorkspaceState>,
     scene_id: String,
 ) -> Result<Vec<AnchorMarkOutput>, AppError> {
-    with_db(&ws_state, |db| load_anchors_for_scene_impl(db, scene_id))
+    let started = std::time::Instant::now();
+    let result = with_db(&ws_state, |db| load_anchors_for_scene_impl(db, scene_id));
+    let total_ms = started.elapsed().as_millis();
+    if total_ms >= 5 {
+        tracing::warn!("foreshadow_load_anchors_for_scene total={}ms", total_ms);
+    }
+    result
 }
 
 #[tauri::command]

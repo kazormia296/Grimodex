@@ -99,7 +99,15 @@ pub(crate) fn with_db<T>(
     ws_state: &tauri::State<'_, WorkspaceState>,
     f: impl FnOnce(&Database) -> anyhow::Result<T>,
 ) -> Result<T, AppError> {
+    // Phase 5 instrumentation: log ws_state lock contention. This is the
+    // outer Mutex held for the entire DB call, so contention here delays
+    // every DB-touching command — including readers behind a slow writer.
+    let lock_started = std::time::Instant::now();
     let inner = ws_state.inner.lock().map_err(|e| anyhow::anyhow!("{e}"))?;
+    let ws_lock_ms = lock_started.elapsed().as_millis();
+    if ws_lock_ms >= 5 {
+        tracing::warn!("with_db ws_state.lock wait={}ms", ws_lock_ms);
+    }
     let ws = inner
         .as_ref()
         .ok_or_else(|| anyhow::anyhow!("No workspace is open"))?;

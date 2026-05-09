@@ -364,11 +364,28 @@ pub fn codex_match_text(
     text: String,
     exclude_entry_ids: Vec<String>,
 ) -> Result<Vec<CodexMatch>, String> {
+    let started = std::time::Instant::now();
+    let text_chars = text.chars().count();
+    let lock_started = std::time::Instant::now();
     let inner = state.inner.lock().map_err(|e| e.to_string())?;
-    match inner.as_ref() {
+    let lock_wait_ms = lock_started.elapsed().as_millis();
+    let match_started = std::time::Instant::now();
+    let result = match inner.as_ref() {
         None => Ok(vec![]),
         Some(matcher) => Ok(matcher.match_text(&text, &exclude_entry_ids)),
+    };
+    let match_ms = match_started.elapsed().as_millis();
+    let total_ms = started.elapsed().as_millis();
+    if total_ms >= 5 {
+        tracing::warn!(
+            "codex_match_text total={}ms lock_wait={}ms match={}ms text_chars={}",
+            total_ms,
+            lock_wait_ms,
+            match_ms,
+            text_chars
+        );
     }
+    result
 }
 
 // ---------------------------------------------------------------------------

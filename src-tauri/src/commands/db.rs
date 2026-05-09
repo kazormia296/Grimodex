@@ -10,7 +10,9 @@ use super::{with_db, AppError, QueryResult, WorkspaceState};
 /// (`db_execute total=...`) and the per-call log inside
 /// `database::execute` (`database.execute lock_wait=... sql=...`) lets us
 /// attribute the time to ws_state lock contention vs conn lock vs SQL itself.
-const SLOW_COMMAND_MS: u128 = 50;
+/// Lowered to 5ms so we can correlate with frontend-perceived 8s autosaves
+/// (whose Rust-side execution may be sub-50ms).
+const SLOW_COMMAND_MS: u128 = 5;
 
 fn sql_prefix(sql: &str) -> String {
     let trimmed = sql.trim_start();
