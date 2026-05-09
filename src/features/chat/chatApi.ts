@@ -374,7 +374,7 @@ export async function createSession(
       id,
       projectId,
       title,
-      nodeId: nodeId ?? null,
+      nodeId: nodeId ? nodeId : null,
       createdAt: now,
       updatedAt: now,
     })
