@@ -1,10 +1,10 @@
 mod ai;
+mod ai_novelist;
 mod cli_provider;
 mod codex_matching;
 mod commands;
 mod database;
 mod lint_logging;
-mod ai_novelist;
 mod workspace;
 
 use std::sync::{Arc, Mutex};

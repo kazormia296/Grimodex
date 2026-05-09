@@ -897,6 +897,7 @@ pub(crate) async fn foreshadow_propose_past_setups(
         reasoning_effort: None,
         extra_body,
         retry_429,
+        ai_novelist_mode: ai::AiNovelistMode::Chat,
     };
     let response = ai::send_chat(&params, &[("user", prompt.as_str())]).await?;
     let text = response
@@ -1034,6 +1035,7 @@ pub(crate) async fn foreshadow_audit_chapter(
         reasoning_effort: None,
         extra_body,
         retry_429,
+        ai_novelist_mode: ai::AiNovelistMode::Chat,
     };
     let response = ai::send_chat(&params, &[("user", prompt.as_str())]).await?;
     let text = response

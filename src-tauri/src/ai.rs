@@ -283,21 +283,54 @@ pub async fn fetch_models(
     match provider {
         AiProvider::Anthropic => {
             return Ok(vec![
-                AiModel { id: "claude-sonnet-4-6".to_string(), name: "Claude Sonnet 4.6".to_string() },
-                AiModel { id: "claude-haiku-4-5-20251001".to_string(), name: "Claude Haiku 4.5".to_string() },
+                AiModel {
+                    id: "claude-sonnet-4-6".to_string(),
+                    name: "Claude Sonnet 4.6".to_string(),
+                },
+                AiModel {
+                    id: "claude-haiku-4-5-20251001".to_string(),
+                    name: "Claude Haiku 4.5".to_string(),
+                },
             ]);
         }
         AiProvider::AiNovelist => {
             return Ok(vec![
-                AiModel { id: "derrida_03".to_string(), name: "derrida_03".to_string() },
-                AiModel { id: "spiko".to_string(), name: "spiko".to_string() },
-                AiModel { id: "spiko_solid".to_string(), name: "spiko_solid".to_string() },
-                AiModel { id: "spiko_max".to_string(), name: "spiko_max".to_string() },
-                AiModel { id: "damsel_ray".to_string(), name: "damsel_ray".to_string() },
-                AiModel { id: "supertrin_highpres".to_string(), name: "supertrin_highpres".to_string() },
-                AiModel { id: "supertrin_maxpres".to_string(), name: "supertrin_maxpres".to_string() },
-                AiModel { id: "supertrin".to_string(), name: "supertrin (legacy)".to_string() },
-                AiModel { id: "damsel".to_string(), name: "damsel (legacy)".to_string() },
+                AiModel {
+                    id: "derrida_03".to_string(),
+                    name: "derrida_03".to_string(),
+                },
+                AiModel {
+                    id: "spiko".to_string(),
+                    name: "spiko".to_string(),
+                },
+                AiModel {
+                    id: "spiko_solid".to_string(),
+                    name: "spiko_solid".to_string(),
+                },
+                AiModel {
+                    id: "spiko_max".to_string(),
+                    name: "spiko_max".to_string(),
+                },
+                AiModel {
+                    id: "damsel_ray".to_string(),
+                    name: "damsel_ray".to_string(),
+                },
+                AiModel {
+                    id: "supertrin_highpres".to_string(),
+                    name: "supertrin_highpres".to_string(),
+                },
+                AiModel {
+                    id: "supertrin_maxpres".to_string(),
+                    name: "supertrin_maxpres".to_string(),
+                },
+                AiModel {
+                    id: "supertrin".to_string(),
+                    name: "supertrin (legacy)".to_string(),
+                },
+                AiModel {
+                    id: "damsel".to_string(),
+                    name: "damsel (legacy)".to_string(),
+                },
             ]);
         }
         _ => {}
@@ -408,18 +441,15 @@ pub async fn test_connection(
             .await?
             .error_for_status()?;
         let result: serde_json::Value = resp.json().await?;
-        let text = if let Some(arr) = result.get("data").and_then(|v| v.as_array()) {
-            arr.first()
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string()
-        } else if let Some(s) = result.get("data").and_then(|v| v.as_str()) {
-            s.to_string()
-        } else {
-            return Err(anyhow::anyhow!(
-                "AI のべりすと: レスポンスに data フィールドが見つかりません"
-            ));
-        };
+        let response = parse_ainoverist_response(&result)?;
+        let text = response
+            .blocks
+            .into_iter()
+            .find_map(|b| match b {
+                ResponseBlock::Text { content } => Some(content),
+                _ => None,
+            })
+            .unwrap_or_default();
         return Ok(if text.is_empty() {
             "Connection successful (empty response)".to_string()
         } else {
@@ -526,6 +556,16 @@ pub async fn test_connection(
     }
 }
 
+/// AI のべりすとの API 呼び出しモード。
+/// - `Chat`: チャットパネル・バックグラウンド処理 → `messages` 配列形式（Chat API）
+/// - `Completion`: インラインAI（続きを書く） → `text` 平坦化形式（Completion API）
+/// 他プロバイダには影響しない。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AiNovelistMode {
+    Chat,
+    Completion,
+}
+
 /// Parameters shared across all AI chat functions.
 pub struct ChatParams<'a> {
     pub provider: &'a AiProvider,
@@ -542,6 +582,8 @@ pub struct ChatParams<'a> {
     pub extra_body: Option<serde_json::Value>,
     /// 429 (Too Many Requests) を受けたときに指数バックオフでリトライするか。
     pub retry_429: bool,
+    /// AI のべりすと専用: Chat API / Completion API の選択。
+    pub ai_novelist_mode: AiNovelistMode,
 }
 
 // ---------------------------------------------------------------------------
@@ -587,6 +629,65 @@ fn build_ainoverist_body(
     body
 }
 
+/// Chat API 用: messages を `[{role, content}]` 配列に変換する。
+/// `system` ロールはチャット API で動作未検証のため、最初の非 system メッセージ先頭に結合する。
+fn messages_to_chat_array(messages: &[(&str, &str)]) -> Vec<serde_json::Value> {
+    let mut system_buf: Vec<&str> = Vec::new();
+    let mut out: Vec<serde_json::Value> = Vec::new();
+    for (role, content) in messages {
+        if *role == "system" {
+            system_buf.push(content);
+        } else {
+            let body = if !system_buf.is_empty() && out.is_empty() {
+                let prefix = system_buf.join("\n\n");
+                system_buf.clear();
+                format!("{prefix}\n\n{content}")
+            } else {
+                (*content).to_string()
+            };
+            out.push(serde_json::json!({ "role": role, "content": body }));
+        }
+    }
+    if !system_buf.is_empty() {
+        out.push(serde_json::json!({
+            "role": "user",
+            "content": system_buf.join("\n\n"),
+        }));
+    }
+    out
+}
+
+/// Chat API 用: `rep_pen` → `repetition_penalty` 等、Completion API と異なるキー名を変換する。
+fn remap_extra_body_for_chat(extra_body: &Option<serde_json::Value>) -> Option<serde_json::Value> {
+    let obj = extra_body.as_ref()?.as_object()?;
+    let mut out = serde_json::Map::new();
+    for (k, v) in obj {
+        let new_key = match k.as_str() {
+            "rep_pen" => "repetition_penalty",
+            other => other,
+        };
+        out.insert(new_key.to_string(), v.clone());
+    }
+    Some(serde_json::Value::Object(out))
+}
+
+/// AI のべりすと Chat API 用リクエストボディを構築する。
+fn build_ainoverist_chat_body(
+    model: &str,
+    messages: &[(&str, &str)],
+    extra_body: &Option<serde_json::Value>,
+) -> serde_json::Value {
+    let msgs = messages_to_chat_array(messages);
+    let mut body = serde_json::json!({
+        "messages": msgs,
+        "model": model,
+        "max_tokens": ai_novelist::length_for(model),
+    });
+    let remapped = remap_extra_body_for_chat(extra_body);
+    merge_extra_body(&mut body, &remapped);
+    body
+}
+
 /// AI のべりすと用リクエストを構築・送信し、ChatResponse に変換する。
 async fn send_chat_ainoverist(
     client: &reqwest::Client,
@@ -599,7 +700,14 @@ async fn send_chat_ainoverist(
             "AI のべりすと: base URL が設定されていません"
         ));
     }
-    let body = build_ainoverist_body(params.model, messages, &params.extra_body);
+    let body = match params.ai_novelist_mode {
+        AiNovelistMode::Chat => {
+            build_ainoverist_chat_body(params.model, messages, &params.extra_body)
+        }
+        AiNovelistMode::Completion => {
+            build_ainoverist_body(params.model, messages, &params.extra_body)
+        }
+    };
 
     let req = client
         .post(&url)
@@ -612,6 +720,25 @@ async fn send_chat_ainoverist(
         .error_for_status()?;
     let result: serde_json::Value = resp.json().await?;
     parse_ainoverist_response(&result)
+}
+
+/// `<think>…</think>` ブロックをすべて除去して前後の空白をトリムする。
+/// 複数ブロック対応。閉じタグなしの場合はそこで打ち切り。
+fn strip_think_blocks(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(start) = rest.find("<think>") {
+        out.push_str(&rest[..start]);
+        match rest[start..].find("</think>") {
+            Some(rel_end) => rest = &rest[start + rel_end + "</think>".len()..],
+            None => {
+                rest = "";
+                break;
+            }
+        }
+    }
+    out.push_str(rest);
+    out.trim().to_string()
 }
 
 fn parse_ainoverist_response(result: &serde_json::Value) -> anyhow::Result<ChatResponse> {
@@ -641,7 +768,9 @@ fn parse_ainoverist_response(result: &serde_json::Value) -> anyhow::Result<ChatR
     } else if let Some(s) = data.as_str() {
         s.to_string()
     } else if let Some(obj) = data.as_object() {
-        // choices[0].text を最優先 (OpenAI text_completion 互換)
+        // choices[0].text を優先 (OpenAI text_completion 互換)。
+        // Chat API では choices[0].text が空文字で data["0"] に本文が入るため、
+        // 空文字は None 扱いにして data["0"] へフォールバックさせる。
         let from_choices = obj
             .get("choices")
             .and_then(|c| c.as_array())
@@ -652,8 +781,9 @@ fn parse_ainoverist_response(result: &serde_json::Value) -> anyhow::Result<ChatR
                 }
                 first.get("text").and_then(|t| t.as_str())
             })
+            .filter(|s| !s.is_empty())
             .map(|s| s.to_string());
-        // フォールバック: data["0"] (現行レスポンスのトップレベル文字列)
+        // フォールバック: data["0"] (Chat API レスポンスはここに本文が入る)
         from_choices.unwrap_or_else(|| {
             obj.get("0")
                 .and_then(|v| v.as_str())
@@ -684,6 +814,8 @@ fn parse_ainoverist_response(result: &serde_json::Value) -> anyhow::Result<ChatR
             .filter(|n| *n >= 0)
             .map(|n| n as u64);
     }
+
+    let text = strip_think_blocks(&text);
 
     let blocks = if text.is_empty() {
         Vec::new()
@@ -1859,7 +1991,10 @@ mod tests {
         assert_eq!(AiProvider::OpenAI.to_string(), "openai");
         assert_eq!(AiProvider::Anthropic.to_string(), "anthropic");
         assert_eq!(AiProvider::Ollama.to_string(), "ollama");
-        assert_eq!(AiProvider::OpenaiCompatible.to_string(), "openai-compatible");
+        assert_eq!(
+            AiProvider::OpenaiCompatible.to_string(),
+            "openai-compatible"
+        );
         assert_eq!(AiProvider::AiNovelist.to_string(), "ai-novelist");
     }
 
@@ -2022,5 +2157,112 @@ mod tests {
         assert_eq!(body["length"], 4_096);
         // sampling パラメータは素通し
         assert_eq!(body["top_a"], 0.1);
+    }
+
+    #[test]
+    fn test_messages_to_chat_array_system_folded_into_first_user() {
+        let msgs = vec![("system", "指示"), ("user", "質問"), ("assistant", "回答")];
+        let arr = messages_to_chat_array(&msgs);
+        assert_eq!(arr.len(), 2);
+        assert_eq!(arr[0]["role"], "user");
+        assert_eq!(arr[0]["content"], "指示\n\n質問");
+        assert_eq!(arr[1]["role"], "assistant");
+        assert_eq!(arr[1]["content"], "回答");
+    }
+
+    #[test]
+    fn test_messages_to_chat_array_system_only_becomes_user() {
+        let msgs = vec![("system", "指示のみ")];
+        let arr = messages_to_chat_array(&msgs);
+        assert_eq!(arr.len(), 1);
+        assert_eq!(arr[0]["role"], "user");
+        assert_eq!(arr[0]["content"], "指示のみ");
+    }
+
+    #[test]
+    fn test_remap_extra_body_for_chat_renames_rep_pen() {
+        let extra = Some(serde_json::json!({ "rep_pen": 1.15, "top_p": 0.9, "top_a": 0.1 }));
+        let remapped = remap_extra_body_for_chat(&extra).unwrap();
+        let obj = remapped.as_object().unwrap();
+        assert!(!obj.contains_key("rep_pen"), "rep_pen should be renamed");
+        assert_eq!(remapped["repetition_penalty"], 1.15);
+        assert_eq!(remapped["top_p"], 0.9);
+        assert_eq!(remapped["top_a"], 0.1);
+    }
+
+    #[test]
+    fn test_build_ainoverist_chat_body_uses_messages_and_max_tokens() {
+        let msgs = vec![("user", "こんにちは")];
+        let body = build_ainoverist_chat_body("spiko", &msgs, &None);
+        assert!(body["messages"].is_array());
+        assert_eq!(body["messages"][0]["role"], "user");
+        assert_eq!(body["messages"][0]["content"], "こんにちは");
+        assert_eq!(body["model"], "spiko");
+        assert_eq!(body["max_tokens"], 4_096);
+        assert!(
+            body.get("text").is_none(),
+            "chat body must not have text field"
+        );
+        assert!(
+            body.get("length").is_none(),
+            "chat body must not have length field"
+        );
+    }
+
+    #[test]
+    fn test_parse_ainoverist_response_chat_api_shape() {
+        // Chat API: choices[0].text が空文字、本文は data["0"]
+        let json = serde_json::json!({
+            "data": {
+                "0": "こんにちは！",
+                "choices": [{ "finish_reason": "stop", "text": "" }],
+                "usage": { "completion_tokens": 10, "prompt_tokens": -1 }
+            }
+        });
+        let resp = parse_ainoverist_response(&json).unwrap();
+        assert_eq!(resp.blocks.len(), 1);
+        match &resp.blocks[0] {
+            ResponseBlock::Text { content } => assert_eq!(content, "こんにちは！"),
+            _ => panic!("expected Text"),
+        }
+        assert_eq!(resp.stop_reason, "stop");
+    }
+
+    #[test]
+    fn test_strip_think_blocks_removes_single_block() {
+        let input = "<think>\n内部思考\n</think>\n本文テキスト";
+        assert_eq!(strip_think_blocks(input), "本文テキスト");
+    }
+
+    #[test]
+    fn test_strip_think_blocks_removes_multiple_blocks() {
+        let input = "<think>A</think>\n<think>B</think>\n応答";
+        assert_eq!(strip_think_blocks(input), "応答");
+    }
+
+    #[test]
+    fn test_strip_think_blocks_no_blocks_unchanged() {
+        assert_eq!(strip_think_blocks("普通のテキスト"), "普通のテキスト");
+    }
+
+    #[test]
+    fn test_strip_think_blocks_unclosed_tag_drops_rest() {
+        let input = "前半<think>閉じない";
+        assert_eq!(strip_think_blocks(input), "前半");
+    }
+
+    #[test]
+    fn test_parse_ainoverist_response_strips_think_blocks() {
+        let json = serde_json::json!({
+            "data": {
+                "0": "<think>\n内部思考\n</think>\nこんにちは！",
+                "choices": [{ "finish_reason": "stop", "text": "" }]
+            }
+        });
+        let resp = parse_ainoverist_response(&json).unwrap();
+        match &resp.blocks[0] {
+            ResponseBlock::Text { content } => assert_eq!(content, "こんにちは！"),
+            _ => panic!("expected Text"),
+        }
     }
 }

@@ -29,9 +29,7 @@ pub(super) fn should_retry_429(settings: &ai::AiSettings) -> bool {
 /// AI のべりすと用 extra_body を構築する。
 /// `EXTRA_SAMPLING_KEYS` で許可されたキーだけを `settings.ai_novelist.sampling`
 /// から抽出して返す。値が無い / 全て空なら None。
-pub(super) fn build_ai_novelist_extra_body(
-    settings: &ai::AiSettings,
-) -> Option<serde_json::Value> {
+pub(super) fn build_ai_novelist_extra_body(settings: &ai::AiSettings) -> Option<serde_json::Value> {
     if !matches!(settings.provider, ai::AiProvider::AiNovelist) {
         return None;
     }
@@ -88,6 +86,7 @@ pub(crate) async fn send_chat_message(
         reasoning_effort,
         extra_body,
         retry_429,
+        ai_novelist_mode: ai::AiNovelistMode::Chat,
     };
     let result = ai::send_chat(
         &params,
@@ -142,6 +141,7 @@ pub(crate) async fn send_chat_message_stream(
         reasoning_effort,
         extra_body,
         retry_429,
+        ai_novelist_mode: ai::AiNovelistMode::Chat,
     };
 
     let result = ai::send_chat_stream(
@@ -215,6 +215,7 @@ pub(crate) async fn send_inline_ai_stream(
         reasoning_effort,
         extra_body,
         retry_429,
+        ai_novelist_mode: ai::AiNovelistMode::Completion,
     };
 
     let result = ai::send_chat_stream(
@@ -266,6 +267,7 @@ pub(crate) async fn send_agent_message(
         reasoning_effort,
         extra_body,
         retry_429,
+        ai_novelist_mode: ai::AiNovelistMode::Chat,
     };
     let result = ai::send_chat_with_tools(&params, &messages, &tools).await?;
     Ok(result)
@@ -323,7 +325,6 @@ pub(crate) async fn test_ai_connection(
 ) -> Result<String, AppError> {
     let settings = ai::read_ai_settings(&ai_path.path);
     let api_key = resolve_api_key(&provider)?;
-    let result =
-        ai::test_connection(&provider, &model, &api_key, settings.endpoints()).await?;
+    let result = ai::test_connection(&provider, &model, &api_key, settings.endpoints()).await?;
     Ok(result)
 }
