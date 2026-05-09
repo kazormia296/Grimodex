@@ -60,14 +60,49 @@ fn char_class(c: char) -> CharClass {
 
 /// Returns true if the boundary at byte offsets [start, end) in `text` is valid.
 /// Mirrors the TypeScript `isValidBoundary` in charClassBoundary.ts.
+///
+/// Standalone variant — builds the char/index tables on every call. Kept for
+/// tests; production callers use `is_valid_boundary_cached` with tables
+/// prebuilt once via `build_boundary_tables`.
+#[cfg(test)]
 fn is_valid_boundary(text: &str, start: usize, end: usize) -> bool {
-    // Build char-indexed view only for the neighbourhood we need
-    let chars: Vec<char> = text.chars().collect();
+    let (chars, byte_to_char_idx) = build_boundary_tables(text);
+    is_valid_boundary_cached(&chars, &byte_to_char_idx, start, end)
+}
 
-    // Convert byte offsets → char indices
-    let start_char = text[..start].chars().count();
-    let end_char = text[..end].chars().count();
+/// Build per-text lookup tables used by the boundary check.
+/// Returns `(chars, byte_to_char_idx)` where `byte_to_char_idx[b]` is the
+/// char index that begins at byte offset `b` (or `usize::MAX` for non-boundary
+/// bytes), and `byte_to_char_idx[text.len()]` is `chars.len()`.
+fn build_boundary_tables(text: &str) -> (Vec<char>, Vec<usize>) {
+    let mut chars: Vec<char> = Vec::with_capacity(text.len());
+    let mut byte_to_char_idx: Vec<usize> = vec![usize::MAX; text.len() + 1];
+    for (b, ch) in text.char_indices() {
+        byte_to_char_idx[b] = chars.len();
+        chars.push(ch);
+    }
+    byte_to_char_idx[text.len()] = chars.len();
+    (chars, byte_to_char_idx)
+}
 
+/// O(1) variant of `is_valid_boundary` using prebuilt tables. The hot path
+/// in `match_text` filters every raw AC match through this; the unwrapped
+/// version was rebuilding a Vec<char> per call, which on a 156k-char scene
+/// with thousands of raw matches was costing ~8s wall time.
+fn is_valid_boundary_cached(
+    chars: &[char],
+    byte_to_char_idx: &[usize],
+    start: usize,
+    end: usize,
+) -> bool {
+    if start >= byte_to_char_idx.len() || end >= byte_to_char_idx.len() {
+        return false;
+    }
+    let start_char = byte_to_char_idx[start];
+    let end_char = byte_to_char_idx[end];
+    if start_char == usize::MAX || end_char == usize::MAX {
+        return false;
+    }
     if start_char >= end_char || end_char > chars.len() {
         return false;
     }
@@ -265,9 +300,13 @@ impl CachedMatcher {
             .collect();
 
         // Step 4: CJK boundary check
+        // Build the chars+byte_to_char_idx tables ONCE for the whole text,
+        // then run the boundary check in O(1) per raw match. Reused later
+        // in Step 6 for the UTF-16 offset conversion.
+        let (chars, byte_to_char_idx) = build_boundary_tables(text);
         let raw: Vec<_> = raw
             .into_iter()
-            .filter(|(from, to, _)| is_valid_boundary(text, *from, *to))
+            .filter(|(from, to, _)| is_valid_boundary_cached(&chars, &byte_to_char_idx, *from, *to))
             .collect();
 
         // Step 5: overlap resolution — longest match wins
@@ -813,5 +852,28 @@ mod tests {
         // 🎭 = 2, 🎪 = 2, 太郎 starts at UTF-16 offset 4
         assert_eq!(matches[0].from, 4);
         assert_eq!(matches[0].to, 6);
+    }
+
+    /// Regression gate (Phase 5): a 150k-char scene with the canonical entry
+    /// "太郎" appearing thousands of times must complete in well under a
+    /// second. Before the boundary-table fix, this took ~8 seconds because
+    /// `is_valid_boundary` rebuilt a Vec<char> per raw match (= O(N*M)).
+    #[test]
+    fn test_match_text_large_scene_perf() {
+        let m = matcher(vec![entry("c1", "太郎", "character")]);
+        // 150k chars worth of "太郎が走った。" (7 chars repeated)
+        let chunk = "太郎が走った。";
+        let text: String = chunk.repeat(150_000 / chunk.chars().count());
+        let started = std::time::Instant::now();
+        let matches = m.match_text(&text, &[]);
+        let elapsed = started.elapsed();
+        assert!(matches.len() > 10_000, "expected many matches");
+        // Generous bound; the actual fix runs this in low double-digit ms.
+        // Anything over 1s indicates the O(N*M) regression is back.
+        assert!(
+            elapsed.as_millis() < 1_000,
+            "match_text on 150k chars took {}ms (regression: boundary-table fix lost?)",
+            elapsed.as_millis()
+        );
     }
 }
