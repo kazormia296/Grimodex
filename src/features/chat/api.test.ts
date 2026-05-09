@@ -46,7 +46,7 @@ describe("chat/api", () => {
         model: "gpt-4o",
         ollamaEndpoint: "http://localhost:11434",
         thinkingEnabled: true,
-        openaiCompatible: { preset: "custom", baseUrl: "" },
+        openaiCompatible: { baseUrl: "" },
       };
 
       await saveAiSettings(settings);

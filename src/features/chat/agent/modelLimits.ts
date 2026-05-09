@@ -1,3 +1,5 @@
+import { AINOVERIST_MODEL_CAPS } from "../aiNovelist";
+
 /** モデルの能力情報 */
 export type EffortLevel = "low" | "medium" | "high" | "max";
 export type ThinkingDisplay = "summarized" | "omitted";
@@ -191,23 +193,21 @@ export function getModelCapabilities(model: string): ModelCapabilities {
 
 /**
  * AiSettings を考慮してモデルの能力を解決する。
- * `provider = openai-compatible` の場合、プリセット側の `capabilitiesOverride` と
- * ユーザー入力 (custom プリセットの `customMaxContext` / `customMaxOutput`) を
- * 適用する。それ以外のプロバイダは `getModelCapabilities(model)` と等価。
- *
  * 第二引数を Optional にしているのは、AiSettings が不明な呼び出し場所
  * (synopsis 生成など UI コンテキスト外) からも使えるようにするため。
  */
 export function resolveModelCapabilities(
   model: string,
-  settings?: { provider?: string; openaiCompatible?: unknown } | null,
+  settings?: {
+    provider?: string;
+    openaiCompatible?: unknown;
+    aiNovelist?: unknown;
+  } | null,
 ): ModelCapabilities {
   const base = getModelCapabilities(model);
   if (!settings) return base;
 
-  // CLI プロバイダ: モデル能力は CLI 側に委譲。コンテキスト窓は 200k と仮定
-  // (Claude Code / Codex / OpenCode のデフォルトモデルが大体 200k 級)。
-  // tools / thinking はアプリ層では無効化。
+  // CLI プロバイダ: モデル能力は CLI 側に委譲。コンテキスト窓は 200k と仮定。
   if (settings.provider === "cli") {
     return {
       ...base,
@@ -219,21 +219,9 @@ export function resolveModelCapabilities(
     };
   }
 
-  if (settings.provider !== "openai-compatible") return base;
-
-  const oc = settings.openaiCompatible as
-    | {
-        preset?: string;
-        customMaxContext?: number;
-        customMaxOutput?: number;
-      }
-    | undefined;
-  if (!oc) return base;
-
-  if (oc.preset === "ainoverist") {
-    // ainoverist プリセット: モデル別の capabilities をプリセット側 hydrator が提供
-    // 循環 import 回避のため動的 import + cache パターンで参照する
-    const aino = getAinoveristCaps(model);
+  // AI のべりすと: モデル別の caps をテーブルから引く
+  if (settings.provider === "ai-novelist") {
+    const aino = AINOVERIST_MODEL_CAPS[model];
     if (aino) {
       return {
         ...base,
@@ -247,7 +235,6 @@ export function resolveModelCapabilities(
         supportsReasoning: false,
       };
     }
-    // 未知モデル名はベースで継続（fallback）
     return {
       ...base,
       supportsTools: false,
@@ -257,41 +244,20 @@ export function resolveModelCapabilities(
     };
   }
 
-  // custom プリセット (or 未指定): ユーザー入力の customMax* を反映
+  if (settings.provider !== "openai-compatible") return base;
+
+  // カスタム OpenAI 互換: ユーザー入力の customMax* を反映
+  const oc = settings.openaiCompatible as
+    | { customMaxContext?: number; customMaxOutput?: number }
+    | undefined;
   return {
     ...base,
-    contextWindow: oc.customMaxContext ?? base.contextWindow,
-    maxOutputTokens: oc.customMaxOutput ?? base.maxOutputTokens,
+    contextWindow: oc?.customMaxContext ?? base.contextWindow,
+    maxOutputTokens: oc?.customMaxOutput ?? base.maxOutputTokens,
     supportsThinking: false,
     supportsAdaptiveThinking: false,
     supportsEffort: false,
   };
-}
-
-/**
- * ainoverist モデル能力テーブル参照のヘルパ。
- * `openaiCompatPresets` から動的 import を避けて再エクスポートする。
- * このファイルに直接置くと `agent/modelLimits.ts` → `openaiCompatPresets.ts` →
- * `agent/modelLimits.ts` の循環 import になるため、関数間接参照で切る。
- */
-let _ainoveristCapsTable: Record<
-  string,
-  Pick<ModelCapabilities, "contextWindow" | "maxOutputTokens">
-> | null = null;
-
-export function registerAinoveristCaps(
-  table: Record<
-    string,
-    Pick<ModelCapabilities, "contextWindow" | "maxOutputTokens">
-  >,
-): void {
-  _ainoveristCapsTable = table;
-}
-
-function getAinoveristCaps(
-  model: string,
-): Pick<ModelCapabilities, "contextWindow" | "maxOutputTokens"> | undefined {
-  return _ainoveristCapsTable?.[model];
 }
 
 /** ツール結果のトークン予算 = コンテキスト上限の30%（最低2,000） */

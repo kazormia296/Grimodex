@@ -7,17 +7,13 @@ import {
   DEFAULT_OPENAI_COMPATIBLE_SETTINGS,
   groupModelsByDeveloper,
 } from "@/features/chat/types";
-import type {
-  AiProvider,
-  CliKind,
-  OpenaiCompatPresetId,
-} from "@/features/chat/types";
+import type { AiProvider, CliKind } from "@/features/chat/types";
 import { detectCliBinary, testCliConnection } from "@/features/chat/cliApi";
 import { resolveModelCapabilities } from "@/features/chat/agent/modelLimits";
 import {
-  getOpenaiCompatPreset,
-  listOpenaiCompatPresets,
-} from "@/features/chat/openaiCompatPresets";
+  AINOVERIST_BASE_URL,
+  AINOVERIST_EXTRA_SAMPLING_KEYS,
+} from "@/features/chat/aiNovelist";
 import { SettingSection } from "../components/SettingSection";
 import { SettingRow } from "../components/SettingRow";
 import { SettingToggle } from "../components/SettingToggle";
@@ -29,6 +25,7 @@ const PROVIDER_LABELS: Record<AiProvider, string> = {
   anthropic: "Anthropic",
   ollama: "ollama-local",
   "openai-compatible": "OpenAI 互換",
+  "ai-novelist": "AI のべりすと",
   cli: "CLI エージェント",
 };
 
@@ -174,24 +171,14 @@ export function AiCategory() {
 
   useEffect(() => {
     if (!settings) return;
-    // OpenAI 互換でハードコードプリセットを使う場合は API を叩かないので
-    // hasApiKey の有無にかかわらずロード可能。CLI プロバイダはモデル一覧を持たない。
-    const presetId = settings.openaiCompatible?.preset;
-    const usePresetModels =
-      settings.provider === "openai-compatible" &&
-      presetId !== undefined &&
-      presetId !== "custom";
-    if (hasApiKey || usePresetModels || settings.provider === "ollama") {
+    // ollama / ai-novelist は認証不要でモデル一覧を取得できる
+    const noKeyNeeded =
+      settings.provider === "ollama" || settings.provider === "ai-novelist";
+    if (hasApiKey || noKeyNeeded) {
       handleLoadModels();
     }
-    // settings は truthy ガード用途。再実行のトリガは provider / preset 変更。
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [
-    hasApiKey,
-    settings?.provider,
-    settings?.openaiCompatible?.preset,
-    handleLoadModels,
-  ]);
+  }, [hasApiKey, settings?.provider, handleLoadModels]);
 
   async function handleProviderChange(provider: AiProvider) {
     const updated = {
@@ -313,189 +300,167 @@ export function AiCategory() {
           </SettingRow>
         )}
 
-        {/* OpenAI 互換: プリセット選択 + 設定 */}
-        {localSettings.provider === "openai-compatible" &&
-          (() => {
-            const presets = listOpenaiCompatPresets();
-            const currentPresetId =
-              localSettings.openaiCompatible?.preset ?? "custom";
-            const preset = getOpenaiCompatPreset(currentPresetId);
-            const isCustom = preset.id === "custom";
-            return (
-              <>
-                <SettingRow label="プリセット">
-                  <select
-                    value={currentPresetId}
-                    onChange={async (e) => {
-                      const presetId = e.target.value as OpenaiCompatPresetId;
+        {/* OpenAI 互換 (カスタム): Base URL + コンテキスト窓 + 最大出力 */}
+        {localSettings.provider === "openai-compatible" && (
+          <>
+            <p className="mb-2 text-xs text-muted-foreground">
+              llama.cpp / LM Studio / vLLM / 自前ホストの GPU
+              推論サーバ等。baseURL を入力してください。API
+              キーが不要なサーバの場合は空欄で構いません。
+            </p>
+            <SettingRow label="Base URL">
+              <input
+                type="text"
+                value={localSettings.openaiCompatible?.baseUrl ?? ""}
+                onChange={(e) =>
+                  handleOpenaiCompatChange("baseUrl", e.target.value)
+                }
+                onBlur={handleSaveOpenaiCompat}
+                className="w-72 rounded-md border border-input bg-background px-2 py-1 text-sm focus:outline-none"
+                placeholder="http://localhost:1234/v1"
+              />
+            </SettingRow>
+            <SettingRow
+              label="コンテキスト窓 (tokens)"
+              description="モデルの最大入力トークン数。空欄時は 8,000 にフォールバック"
+            >
+              <input
+                type="number"
+                min={1}
+                value={localSettings.openaiCompatible?.customMaxContext ?? ""}
+                onChange={(e) =>
+                  handleOpenaiCompatChange(
+                    "customMaxContext",
+                    e.target.value ? Number(e.target.value) : undefined,
+                  )
+                }
+                onBlur={handleSaveOpenaiCompat}
+                className="w-32 rounded-md border border-input bg-background px-2 py-1 text-sm focus:outline-none"
+                placeholder="8000"
+              />
+            </SettingRow>
+            <SettingRow
+              label="最大出力 (tokens)"
+              description="モデル固有の出力上限。指定すると応答予約のクランプに使われる"
+            >
+              <input
+                type="number"
+                min={1}
+                value={localSettings.openaiCompatible?.customMaxOutput ?? ""}
+                onChange={(e) =>
+                  handleOpenaiCompatChange(
+                    "customMaxOutput",
+                    e.target.value ? Number(e.target.value) : undefined,
+                  )
+                }
+                onBlur={handleSaveOpenaiCompat}
+                className="w-32 rounded-md border border-input bg-background px-2 py-1 text-sm focus:outline-none"
+                placeholder="(任意)"
+              />
+            </SettingRow>
+            <SettingRow
+              label="Codex 自動抽出 / Synopsis 自動生成を許可"
+              description="構造化出力 (JSON) の精度が低い場合はオフのままにしてください"
+            >
+              <input
+                type="checkbox"
+                checked={
+                  localSettings.openaiCompatible?.enableStructuredTasks ?? false
+                }
+                onChange={async (e) => {
+                  const updated = {
+                    ...localSettings,
+                    openaiCompatible: {
+                      ...localSettings.openaiCompatible,
+                      enableStructuredTasks: e.target.checked,
+                    },
+                  };
+                  setLocalSettings(updated);
+                  await saveSettings(updated);
+                }}
+                className="h-4 w-4"
+              />
+            </SettingRow>
+          </>
+        )}
+
+        {/* AI のべりすと: 固定 URL 表示 + サンプリングパラメータ + 構造化出力許可 */}
+        {localSettings.provider === "ai-novelist" && (
+          <>
+            <p className="mb-2 text-xs text-muted-foreground">
+              日本語小説特化のプロバイダ。API キーは{" "}
+              <span className="font-mono">ai-novel.com/account_api.php</span>{" "}
+              で発行できます。
+            </p>
+            <SettingRow label="Base URL">
+              <span className="text-sm text-muted-foreground font-mono">
+                {AINOVERIST_BASE_URL}
+              </span>
+            </SettingRow>
+            <div className="mt-3 mb-2">
+              <p className="mb-1 text-sm font-medium text-foreground">
+                サンプリングパラメータ
+              </p>
+              <p className="mb-2 text-xs text-muted-foreground">
+                空欄でリクエストから省略されます。配列・オブジェクトは JSON
+                文字列で入力してください（例:{" "}
+                <code className="font-mono">["foo","bar"]</code>）。
+              </p>
+              <div className="space-y-1.5">
+                {AINOVERIST_EXTRA_SAMPLING_KEYS.map((key) =>
+                  renderSamplingInput(
+                    key,
+                    localSettings.aiNovelist?.sampling?.[key],
+                    (next) => {
+                      const current = localSettings.aiNovelist?.sampling ?? {};
+                      const merged = { ...current };
+                      if (next === undefined) {
+                        delete merged[key];
+                      } else {
+                        merged[key] = next;
+                      }
                       const updated = {
                         ...localSettings,
-                        openaiCompatible: {
-                          ...localSettings.openaiCompatible,
-                          preset: presetId,
+                        aiNovelist: {
+                          ...localSettings.aiNovelist,
+                          sampling: merged,
                         },
                       };
                       setLocalSettings(updated);
-                      await saveSettings(updated);
-                    }}
-                    className="rounded-md border border-input bg-background px-2 py-1 text-sm focus:outline-none"
-                  >
-                    {presets.map((p) => (
-                      <option key={p.id} value={p.id}>
-                        {p.displayName}
-                      </option>
-                    ))}
-                  </select>
-                </SettingRow>
-                {preset.helperText && (
-                  <p className="mb-2 text-xs text-muted-foreground">
-                    {preset.helperText}
-                  </p>
+                      void saveSettings(updated);
+                    },
+                    () => {
+                      /* onBlur は no-op: onChange で同期保存済み */
+                    },
+                  ),
                 )}
-                {isCustom ? (
-                  <>
-                    <SettingRow label="Base URL">
-                      <input
-                        type="text"
-                        value={localSettings.openaiCompatible?.baseUrl ?? ""}
-                        onChange={(e) =>
-                          handleOpenaiCompatChange("baseUrl", e.target.value)
-                        }
-                        onBlur={handleSaveOpenaiCompat}
-                        className="w-72 rounded-md border border-input bg-background px-2 py-1 text-sm focus:outline-none"
-                        placeholder="http://localhost:1234/v1"
-                      />
-                    </SettingRow>
-                    <SettingRow
-                      label="コンテキスト窓 (tokens)"
-                      description="モデルの最大入力トークン数。空欄時は 8,000 にフォールバック"
-                    >
-                      <input
-                        type="number"
-                        min={1}
-                        value={
-                          localSettings.openaiCompatible?.customMaxContext ?? ""
-                        }
-                        onChange={(e) =>
-                          handleOpenaiCompatChange(
-                            "customMaxContext",
-                            e.target.value ? Number(e.target.value) : undefined,
-                          )
-                        }
-                        onBlur={handleSaveOpenaiCompat}
-                        className="w-32 rounded-md border border-input bg-background px-2 py-1 text-sm focus:outline-none"
-                        placeholder="8000"
-                      />
-                    </SettingRow>
-                    <SettingRow
-                      label="最大出力 (tokens)"
-                      description="モデル固有の出力上限。指定すると応答予約のクランプに使われる"
-                    >
-                      <input
-                        type="number"
-                        min={1}
-                        value={
-                          localSettings.openaiCompatible?.customMaxOutput ?? ""
-                        }
-                        onChange={(e) =>
-                          handleOpenaiCompatChange(
-                            "customMaxOutput",
-                            e.target.value ? Number(e.target.value) : undefined,
-                          )
-                        }
-                        onBlur={handleSaveOpenaiCompat}
-                        className="w-32 rounded-md border border-input bg-background px-2 py-1 text-sm focus:outline-none"
-                        placeholder="(任意)"
-                      />
-                    </SettingRow>
-                  </>
-                ) : (
-                  <>
-                    {preset.baseUrl && (
-                      <SettingRow label="Base URL">
-                        <span className="text-sm text-muted-foreground font-mono">
-                          {preset.baseUrl}
-                        </span>
-                      </SettingRow>
-                    )}
-                    {preset.extraSamplingKeys.length > 0 && (
-                      <div className="mt-3 mb-2">
-                        <p className="mb-1 text-sm font-medium text-foreground">
-                          サンプリングパラメータ
-                        </p>
-                        <p className="mb-2 text-xs text-muted-foreground">
-                          このプリセット固有のサンプリングパラメータ。空欄でリクエストから省略されます。配列やオブジェクトは
-                          JSON 文字列で入力してください（例:{" "}
-                          <code className="font-mono">["foo","bar"]</code>）。
-                        </p>
-                        <div className="space-y-1.5">
-                          {preset.extraSamplingKeys.map((key) =>
-                            renderSamplingInput(
-                              key,
-                              localSettings.openaiCompatible?.sampling?.[key],
-                              (next) => {
-                                // setLocalSettings の queue 経由ではなく onChange の
-                                // クロージャで閉じた最新 localSettings から updated を
-                                // 同期構築し、そのまま saveSettings に渡す（複数 key
-                                // 編集時に間の値が失われないように）
-                                const current =
-                                  localSettings.openaiCompatible?.sampling ??
-                                  {};
-                                const merged = { ...current };
-                                if (next === undefined) {
-                                  delete merged[key];
-                                } else {
-                                  merged[key] = next;
-                                }
-                                const updated = {
-                                  ...localSettings,
-                                  openaiCompatible: {
-                                    ...localSettings.openaiCompatible,
-                                    sampling: merged,
-                                  },
-                                };
-                                setLocalSettings(updated);
-                                void saveSettings(updated);
-                              },
-                              () => {
-                                /* onBlur は no-op: onChange で同期保存済み */
-                              },
-                            ),
-                          )}
-                        </div>
-                      </div>
-                    )}
-                    {preset.defaultDisableStructuredTasks && (
-                      <SettingRow
-                        label="Codex 自動抽出 / Synopsis 自動生成を許可"
-                        description="このプロバイダは構造化出力 (JSON) の精度が低いため、デフォルトで無効化されています。明示的にオプトインする場合のみ有効化してください"
-                      >
-                        <input
-                          type="checkbox"
-                          checked={
-                            localSettings.openaiCompatible
-                              ?.enableStructuredTasks ?? false
-                          }
-                          onChange={async (e) => {
-                            const updated = {
-                              ...localSettings,
-                              openaiCompatible: {
-                                ...localSettings.openaiCompatible,
-                                enableStructuredTasks: e.target.checked,
-                              },
-                            };
-                            setLocalSettings(updated);
-                            await saveSettings(updated);
-                          }}
-                          className="h-4 w-4"
-                        />
-                      </SettingRow>
-                    )}
-                  </>
-                )}
-              </>
-            );
-          })()}
+              </div>
+            </div>
+            <SettingRow
+              label="Codex 自動抽出 / Synopsis 自動生成を許可"
+              description="このプロバイダは構造化出力 (JSON) の精度が低いため、デフォルトで無効化されています"
+            >
+              <input
+                type="checkbox"
+                checked={
+                  localSettings.aiNovelist?.enableStructuredTasks ?? false
+                }
+                onChange={async (e) => {
+                  const updated = {
+                    ...localSettings,
+                    aiNovelist: {
+                      ...localSettings.aiNovelist,
+                      enableStructuredTasks: e.target.checked,
+                    },
+                  };
+                  setLocalSettings(updated);
+                  await saveSettings(updated);
+                }}
+                className="h-4 w-4"
+              />
+            </SettingRow>
+          </>
+        )}
 
         {/* CLI プロバイダ: 種別選択 + バイナリ検出 + 接続テスト */}
         {localSettings.provider === "cli" &&
@@ -634,7 +599,9 @@ export function AiCategory() {
               description={
                 localSettings.provider === "openai-compatible"
                   ? "ローカル LLM サーバ等で API キーが不要な場合は空欄で構いません"
-                  : undefined
+                  : localSettings.provider === "ai-novelist"
+                    ? "ai-novel.com/account_api.php で発行した API キーを入力してください"
+                    : undefined
               }
             >
               {hasApiKey ? (

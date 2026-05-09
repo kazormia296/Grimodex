@@ -3,13 +3,15 @@ use serde::{Deserialize, Serialize};
 use std::path::Path;
 use std::sync::{atomic::Ordering, Arc};
 
-use crate::openai_compat_presets;
+use crate::ai_novelist;
 
 /// Supported AI providers.
 ///
 /// - `OpenaiCompatible` はユーザーが任意の OpenAI 互換エンドポイント
 ///   (llama.cpp / LM Studio / vLLM / 自前ホスト等) を `baseURL` で指定する
 ///   プロバイダ。`AiSettings.openai_compatible.base_url` を参照する。
+/// - `AiNovelist` は AI のべりすと専用プロバイダ。独自 API フォーマット
+///   (text / length / data ラッパ) を使い、OpenAI 互換エンドポイントを持たない。
 /// - `Cli` はローカルにインストール済みの CLI エージェント (Claude Code 等) を
 ///   subprocess で起動するプロバイダ。HTTP 系の `send_chat*` には流れず、
 ///   `commands/cli_ai.rs` の専用ハンドラで処理される。
@@ -25,6 +27,8 @@ pub enum AiProvider {
     Ollama,
     #[serde(rename = "openai-compatible")]
     OpenaiCompatible,
+    #[serde(rename = "ai-novelist")]
+    AiNovelist,
     #[serde(rename = "cli")]
     Cli,
 }
@@ -58,6 +62,7 @@ impl AiProvider {
             AiProvider::Anthropic => "grimodex-anthropic",
             AiProvider::Ollama => "grimodex-ollama",
             AiProvider::OpenaiCompatible => "grimodex-openai-compatible",
+            AiProvider::AiNovelist => "grimodex-ai-novelist",
             AiProvider::Cli => "grimodex-cli", // 実質未使用 (CLI 側で認証管理)
         }
     }
@@ -74,6 +79,7 @@ impl AiProvider {
             AiProvider::OpenaiCompatible => {
                 ep.openai_compat_custom.trim_end_matches('/').to_string()
             }
+            AiProvider::AiNovelist => ai_novelist::BASE_URL.to_string(),
             AiProvider::Cli => String::new(),
         }
     }
@@ -100,6 +106,7 @@ impl AiProvider {
             AiProvider::OpenaiCompatible => {
                 format!("{}/models", ep.openai_compat_custom.trim_end_matches('/'))
             }
+            AiProvider::AiNovelist => String::new(), // 静的リストを返すため不要
             AiProvider::Cli => String::new(),
         }
     }
@@ -113,6 +120,7 @@ impl std::fmt::Display for AiProvider {
             AiProvider::Anthropic => write!(f, "anthropic"),
             AiProvider::Ollama => write!(f, "ollama"),
             AiProvider::OpenaiCompatible => write!(f, "openai-compatible"),
+            AiProvider::AiNovelist => write!(f, "ai-novelist"),
             AiProvider::Cli => write!(f, "cli"),
         }
     }
@@ -122,38 +130,38 @@ fn default_thinking_enabled() -> bool {
     true
 }
 
-/// OpenAI 互換プロバイダ用の設定。プリセット ID と任意のユーザー入力を保持する。
-/// - `preset = "custom"`: ユーザーが `base_url` を入力する
-/// - `preset = "ainoverist"`: プリセット側で固定 URL を提供
+/// カスタム OpenAI 互換プロバイダ用の設定。
+/// ユーザーが任意の OpenAI 互換エンドポイント (llama.cpp / LM Studio 等) を指定する。
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct OpenaiCompatibleSettings {
-    /// プリセット ID。デフォルトは "custom"
-    #[serde(default = "default_openai_compat_preset")]
-    pub preset: String,
-    /// custom プリセット時にユーザーが入力する OpenAI 互換エンドポイント
+    /// ユーザーが入力する OpenAI 互換エンドポイント
     #[serde(default)]
     pub base_url: String,
-    /// custom プリセット時に手動指定するモデルのコンテキスト窓
+    /// 手動指定するモデルのコンテキスト窓
     #[serde(default)]
     pub custom_max_context: Option<u32>,
-    /// custom プリセット時に手動指定するモデルの最大出力
+    /// 手動指定するモデルの最大出力
     #[serde(default)]
     pub custom_max_output: Option<u32>,
-    /// プリセット側 `extra_sampling_keys` で許可されているサンプリングパラメータ。
-    /// AI のべりすとの top_a / tailfree / typical_p / min_p / rep_pen /
-    /// badwords / stoptokens / logit_bias など。リクエストボディに素通しされる。
-    #[serde(default)]
-    pub sampling: Option<serde_json::Value>,
     /// AI Codex 自動抽出 / Synopsis / セッションタイトル自動生成タスクで
-    /// このプロバイダを使うかどうか。プリセットの defaultDisableStructuredTasks=true
-    /// の場合、デフォルト false（オプトイン式）。
+    /// このプロバイダを使うかどうか。
     #[serde(default)]
     pub enable_structured_tasks: Option<bool>,
 }
 
-fn default_openai_compat_preset() -> String {
-    "custom".to_string()
+/// AI のべりすと専用の設定。
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct AiNovelistSettings {
+    /// KoboldAI 系独自サンプリングパラメータ (top_a / tailfree 等)。
+    /// リクエストボディに素通しされる。
+    #[serde(default)]
+    pub sampling: Option<serde_json::Value>,
+    /// AI Codex 自動抽出 / Synopsis / セッションタイトル自動生成タスクで
+    /// このプロバイダを使うかどうか。デフォルト false (構造化出力の精度が低いため)。
+    #[serde(default)]
+    pub enable_structured_tasks: Option<bool>,
 }
 
 /// CLI プロバイダ用の設定。`provider = Cli` のときのみ意味を持つ。
@@ -183,22 +191,16 @@ pub struct AiSettings {
     #[serde(default)]
     pub openai_compatible: OpenaiCompatibleSettings,
     #[serde(default)]
+    pub ai_novelist: AiNovelistSettings,
+    #[serde(default)]
     pub cli: Option<CliSettings>,
 }
 
 impl AiSettings {
-    /// 現在の設定からプロバイダ別エンドポイントを構築する。
-    /// OpenaiCompatible + ainoverist 等の固定 URL を持つプリセットの場合、
-    /// プリセット側 URL を優先する。
     pub fn endpoints(&self) -> ProviderEndpoints<'_> {
-        let openai_compat_custom =
-            match openai_compat_presets::fixed_base_url(&self.openai_compatible.preset) {
-                Some(fixed) => fixed,
-                None => self.openai_compatible.base_url.as_str(),
-            };
         ProviderEndpoints {
             ollama: &self.ollama_endpoint,
-            openai_compat_custom,
+            openai_compat_custom: &self.openai_compatible.base_url,
         }
     }
 }
@@ -211,6 +213,7 @@ impl Default for AiSettings {
             ollama_endpoint: "http://localhost:11434".to_string(),
             thinking_enabled: true,
             openai_compatible: OpenaiCompatibleSettings::default(),
+            ai_novelist: AiNovelistSettings::default(),
             cli: None,
         }
     }
@@ -276,19 +279,33 @@ pub async fn fetch_models(
     api_key: &str,
     endpoints: ProviderEndpoints<'_>,
 ) -> anyhow::Result<Vec<AiModel>> {
+    // 静的リストを持つプロバイダは HTTP を叩かずに返す
+    match provider {
+        AiProvider::Anthropic => {
+            return Ok(vec![
+                AiModel { id: "claude-sonnet-4-6".to_string(), name: "Claude Sonnet 4.6".to_string() },
+                AiModel { id: "claude-haiku-4-5-20251001".to_string(), name: "Claude Haiku 4.5".to_string() },
+            ]);
+        }
+        AiProvider::AiNovelist => {
+            return Ok(vec![
+                AiModel { id: "derrida_03".to_string(), name: "derrida_03".to_string() },
+                AiModel { id: "spiko".to_string(), name: "spiko".to_string() },
+                AiModel { id: "spiko_solid".to_string(), name: "spiko_solid".to_string() },
+                AiModel { id: "spiko_max".to_string(), name: "spiko_max".to_string() },
+                AiModel { id: "damsel_ray".to_string(), name: "damsel_ray".to_string() },
+                AiModel { id: "supertrin_highpres".to_string(), name: "supertrin_highpres".to_string() },
+                AiModel { id: "supertrin_maxpres".to_string(), name: "supertrin_maxpres".to_string() },
+                AiModel { id: "supertrin".to_string(), name: "supertrin (legacy)".to_string() },
+                AiModel { id: "damsel".to_string(), name: "damsel (legacy)".to_string() },
+            ]);
+        }
+        _ => {}
+    }
+
     let url = provider.models_url(endpoints);
     if url.is_empty() {
-        // Anthropic: return a static list
-        return Ok(vec![
-            AiModel {
-                id: "claude-sonnet-4-6".to_string(),
-                name: "Claude Sonnet 4.6".to_string(),
-            },
-            AiModel {
-                id: "claude-haiku-4-5-20251001".to_string(),
-                name: "Claude Haiku 4.5".to_string(),
-            },
-        ]);
+        return Ok(vec![]);
     }
 
     let client = reqwest::Client::new();
@@ -365,12 +382,11 @@ pub async fn test_connection(
     model: &str,
     api_key: &str,
     endpoints: ProviderEndpoints<'_>,
-    openai_compat_preset: Option<&str>,
 ) -> anyhow::Result<String> {
     let client = reqwest::Client::new();
 
-    // AI のべりすと: 独自エンドポイント (POST <base>) + text フィールド
-    if is_ainoverist_preset(provider, openai_compat_preset) {
+    // AI のべりすと: 独自エンドポイント (POST <base>) + text / length フィールド
+    if matches!(provider, AiProvider::AiNovelist) {
         let url = provider.base_url(endpoints);
         if url.is_empty() {
             return Err(anyhow::anyhow!(
@@ -380,6 +396,8 @@ pub async fn test_connection(
         let body = serde_json::json!({
             "text": "Reply with exactly: Connection OK",
             "model": model,
+            // 接続確認用なので最小値で十分（length 必須）
+            "length": 32,
         });
         let resp = client
             .post(&url)
@@ -518,23 +536,12 @@ pub struct ChatParams<'a> {
     pub effort: Option<String>,
     pub reasoning_enabled: Option<bool>,
     pub reasoning_effort: Option<String>,
-    /// OpenAI 互換プロバイダのプリセット（ainoverist 等）が要求する追加リクエスト
-    /// ボディフィールド。`top_a` / `tailfree` 等の独自サンプリングパラメータを
+    /// AI のべりすと等が要求する追加リクエストボディフィールド。
+    /// `top_a` / `tailfree` 等の独自サンプリングパラメータを
     /// オブジェクトで渡すと、`send_chat*` がリクエストボディにマージする。
     pub extra_body: Option<serde_json::Value>,
     /// 429 (Too Many Requests) を受けたときに指数バックオフでリトライするか。
-    /// レート制限を公開しているプリセット（ainoverist 等）で true にする。
     pub retry_429: bool,
-    /// OpenAI 互換プロバイダのプリセット ID。`ainoverist` の場合は OpenAI 互換ではなく
-    /// 独自 API フォーマット (text フィールド / data[] レスポンス) に分岐する。
-    pub openai_compat_preset: Option<&'a str>,
-}
-
-/// プリセット ID が ainoverist かどうか判定するヘルパ。
-/// AI のべりすと API は OpenAI 互換ではない独自フォーマットなので、
-/// 各 send_chat 関数でこの判定を使ってパスを分岐する。
-fn is_ainoverist_preset(provider: &AiProvider, preset: Option<&str>) -> bool {
-    matches!(provider, AiProvider::OpenaiCompatible) && preset == Some("ainoverist")
 }
 
 // ---------------------------------------------------------------------------
@@ -561,6 +568,25 @@ fn flatten_messages_for_ainoverist(messages: &[(&str, &str)]) -> String {
         .join("\n\n")
 }
 
+/// AI のべりすと用リクエストボディを構築する。
+/// `length` はモデル別の最大出力 (= TS 側 `AINOVERIST_MODEL_CAPS.maxOutputTokens`)。
+/// API 側で必須なので必ず含める。`extra_body` は最後にマージするが、
+/// `merge_extra_body` は既存キーを上書きしないため `length` は保護される。
+fn build_ainoverist_body(
+    model: &str,
+    messages: &[(&str, &str)],
+    extra_body: &Option<serde_json::Value>,
+) -> serde_json::Value {
+    let text = flatten_messages_for_ainoverist(messages);
+    let mut body = serde_json::json!({
+        "text": text,
+        "model": model,
+        "length": ai_novelist::length_for(model),
+    });
+    merge_extra_body(&mut body, extra_body);
+    body
+}
+
 /// AI のべりすと用リクエストを構築・送信し、ChatResponse に変換する。
 async fn send_chat_ainoverist(
     client: &reqwest::Client,
@@ -573,13 +599,7 @@ async fn send_chat_ainoverist(
             "AI のべりすと: base URL が設定されていません"
         ));
     }
-    let text = flatten_messages_for_ainoverist(messages);
-
-    let mut body = serde_json::json!({
-        "text": text,
-        "model": params.model,
-    });
-    merge_extra_body(&mut body, &params.extra_body);
+    let body = build_ainoverist_body(params.model, messages, &params.extra_body);
 
     let req = client
         .post(&url)
@@ -595,20 +615,75 @@ async fn send_chat_ainoverist(
 }
 
 fn parse_ainoverist_response(result: &serde_json::Value) -> anyhow::Result<ChatResponse> {
-    // { "data": ["生成テキスト", ...] } または { "data": "..." } の両方に対応
-    let text = if let Some(arr) = result.get("data").and_then(|v| v.as_array()) {
+    // 観測されているレスポンス形状:
+    // (a) 旧/簡易: { "data": ["text"] }
+    // (b) 旧/簡易: { "data": "text" }
+    // (c) 現行 (vLLM 風 text_completion):
+    //     { "data": { "0": "text",
+    //                  "choices": [{ "text": "...", "finish_reason": "stop" }],
+    //                  "usage": { "completion_tokens": N, "prompt_tokens": -1 } } }
+    let data = result.get("data").ok_or_else(|| {
+        anyhow::anyhow!(
+            "AI のべりすと: レスポンスに data フィールドが見つかりません: {}",
+            result
+        )
+    })?;
+
+    let mut stop_reason = "end_turn".to_string();
+    let mut input_tokens: Option<u64> = None;
+    let mut output_tokens: Option<u64> = None;
+
+    let text = if let Some(arr) = data.as_array() {
         arr.first()
             .and_then(|v| v.as_str())
             .unwrap_or("")
             .to_string()
-    } else if let Some(s) = result.get("data").and_then(|v| v.as_str()) {
+    } else if let Some(s) = data.as_str() {
         s.to_string()
+    } else if let Some(obj) = data.as_object() {
+        // choices[0].text を最優先 (OpenAI text_completion 互換)
+        let from_choices = obj
+            .get("choices")
+            .and_then(|c| c.as_array())
+            .and_then(|arr| arr.first())
+            .and_then(|first| {
+                if let Some(reason) = first.get("finish_reason").and_then(|r| r.as_str()) {
+                    stop_reason = reason.to_string();
+                }
+                first.get("text").and_then(|t| t.as_str())
+            })
+            .map(|s| s.to_string());
+        // フォールバック: data["0"] (現行レスポンスのトップレベル文字列)
+        from_choices.unwrap_or_else(|| {
+            obj.get("0")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string()
+        })
     } else {
         return Err(anyhow::anyhow!(
-            "AI のべりすと: レスポンスに data フィールドが見つかりません: {}",
+            "AI のべりすと: data フィールドの形状が不正です: {}",
             result
         ));
     };
+
+    // usage は data 内 (現行) または トップレベル (旧) のどちらかにあり得る。
+    // -1 はサーバ側で未集計のセンチネルなので採用しない。
+    let usage = data.get("usage").or_else(|| result.get("usage"));
+    if let Some(u) = usage {
+        input_tokens = u
+            .get("input_tokens")
+            .or_else(|| u.get("prompt_tokens"))
+            .and_then(|v| v.as_i64())
+            .filter(|n| *n >= 0)
+            .map(|n| n as u64);
+        output_tokens = u
+            .get("output_tokens")
+            .or_else(|| u.get("completion_tokens"))
+            .and_then(|v| v.as_i64())
+            .filter(|n| *n >= 0)
+            .map(|n| n as u64);
+    }
 
     let blocks = if text.is_empty() {
         Vec::new()
@@ -617,12 +692,9 @@ fn parse_ainoverist_response(result: &serde_json::Value) -> anyhow::Result<ChatR
     };
     Ok(ChatResponse {
         blocks,
-        stop_reason: "end_turn".to_string(),
-        // usage は API レスポンスに含まれないことが多いので Unknown
-        input_tokens: result.get("usage").and_then(|u| u["input_tokens"].as_u64()),
-        output_tokens: result
-            .get("usage")
-            .and_then(|u| u["output_tokens"].as_u64()),
+        stop_reason,
+        input_tokens,
+        output_tokens,
     })
 }
 
@@ -694,7 +766,7 @@ pub async fn send_chat(
     let client = reqwest::Client::new();
 
     // AI のべりすとは独自フォーマットなので OpenAI 互換パスから外して専用関数に流す
-    if is_ainoverist_preset(params.provider, params.openai_compat_preset) {
+    if matches!(params.provider, AiProvider::AiNovelist) {
         return send_chat_ainoverist(&client, params, messages).await;
     }
 
@@ -1069,6 +1141,7 @@ fn anthropic_request(
 /// for providers that require it (skips Ollama, and skips OpenaiCompatible when
 /// the API key is empty for keyless local LLM servers), and OpenRouter's
 /// attribution headers, then attaches `body` as JSON.
+/// AiNovelist はこの関数を経由しない (独自エンドポイントを使用)。
 fn openai_compat_request(
     client: &reqwest::Client,
     params: &ChatParams<'_>,
@@ -1125,7 +1198,7 @@ pub async fn send_chat_with_tools(
 
     // AI のべりすとは tool use を持たない (Phase A.2 では capabilitiesOverride で
     // supportsTools=false 固定だが、Agent mode から誤って呼ばれた場合の防御)
-    if is_ainoverist_preset(params.provider, params.openai_compat_preset) {
+    if matches!(params.provider, AiProvider::AiNovelist) {
         return Err(anyhow::anyhow!(
             "AI のべりすとは Tool Use に対応していません"
         ));
@@ -1360,7 +1433,7 @@ pub async fn send_chat_stream(
     let client = reqwest::Client::new();
 
     // AI のべりすと: ストリーミング非対応なので非ストリーム版を呼んで結果を一括 emit
-    if is_ainoverist_preset(params.provider, params.openai_compat_preset) {
+    if matches!(params.provider, AiProvider::AiNovelist) {
         if abort_flag.load(Ordering::Relaxed) {
             let _ = app_handle.emit(
                 &done_event,
@@ -1679,6 +1752,7 @@ mod tests {
             ollama_endpoint: "http://localhost:11434".to_string(),
             thinking_enabled: true,
             openai_compatible: OpenaiCompatibleSettings::default(),
+            ai_novelist: AiNovelistSettings::default(),
             cli: None,
         };
 
@@ -1785,10 +1859,8 @@ mod tests {
         assert_eq!(AiProvider::OpenAI.to_string(), "openai");
         assert_eq!(AiProvider::Anthropic.to_string(), "anthropic");
         assert_eq!(AiProvider::Ollama.to_string(), "ollama");
-        assert_eq!(
-            AiProvider::OpenaiCompatible.to_string(),
-            "openai-compatible"
-        );
+        assert_eq!(AiProvider::OpenaiCompatible.to_string(), "openai-compatible");
+        assert_eq!(AiProvider::AiNovelist.to_string(), "ai-novelist");
     }
 
     #[test]
@@ -1798,11 +1870,25 @@ mod tests {
         let parsed: AiProvider = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(parsed, AiProvider::OpenRouter);
 
-        // OpenaiCompatible uses kebab-case
         let json = serde_json::to_string(&AiProvider::OpenaiCompatible).expect("serialize");
         assert_eq!(json, "\"openai-compatible\"");
         let parsed: AiProvider = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(parsed, AiProvider::OpenaiCompatible);
+
+        let json = serde_json::to_string(&AiProvider::AiNovelist).expect("serialize");
+        assert_eq!(json, "\"ai-novelist\"");
+        let parsed: AiProvider = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(parsed, AiProvider::AiNovelist);
+    }
+
+    #[test]
+    fn test_ai_novelist_base_url() {
+        let ep = ProviderEndpoints::default();
+        assert_eq!(
+            AiProvider::AiNovelist.base_url(ep),
+            "https://api.tringpt.com/api"
+        );
+        assert_eq!(AiProvider::AiNovelist.models_url(ep), "");
     }
 
     #[test]
@@ -1821,26 +1907,6 @@ mod tests {
         let ep = settings.endpoints();
         assert_eq!(ep.ollama, "http://localhost:11434");
         assert_eq!(ep.openai_compat_custom, "http://localhost:8080/v1");
-    }
-
-    #[test]
-    fn test_is_ainoverist_preset() {
-        assert!(is_ainoverist_preset(
-            &AiProvider::OpenaiCompatible,
-            Some("ainoverist")
-        ));
-        // 別プロバイダ
-        assert!(!is_ainoverist_preset(
-            &AiProvider::OpenAI,
-            Some("ainoverist")
-        ));
-        // 別プリセット
-        assert!(!is_ainoverist_preset(
-            &AiProvider::OpenaiCompatible,
-            Some("custom")
-        ));
-        // None
-        assert!(!is_ainoverist_preset(&AiProvider::OpenaiCompatible, None));
     }
 
     #[test]
@@ -1884,5 +1950,77 @@ mod tests {
         let json = serde_json::json!({ "data": [""] });
         let resp = parse_ainoverist_response(&json).unwrap();
         assert!(resp.blocks.is_empty());
+    }
+
+    #[test]
+    fn test_parse_ainoverist_response_text_completion_shape() {
+        // 現行 vLLM 風レスポンス: data がオブジェクトで choices[0].text を持つ
+        let json = serde_json::json!({
+            "data": {
+                "0": "本文テキスト",
+                "choices": [{
+                    "finish_reason": "length",
+                    "index": 0,
+                    "text": "本文テキスト",
+                }],
+                "usage": {
+                    "completion_tokens": 175,
+                    "prompt_tokens": -1,
+                    "total_tokens": -1,
+                }
+            }
+        });
+        let resp = parse_ainoverist_response(&json).unwrap();
+        assert_eq!(resp.blocks.len(), 1);
+        match &resp.blocks[0] {
+            ResponseBlock::Text { content } => assert_eq!(content, "本文テキスト"),
+            _ => panic!("expected Text"),
+        }
+        assert_eq!(resp.stop_reason, "length");
+        // -1 は弾く / completion_tokens から採用
+        assert_eq!(resp.input_tokens, None);
+        assert_eq!(resp.output_tokens, Some(175));
+    }
+
+    #[test]
+    fn test_parse_ainoverist_response_object_data_falls_back_to_zero_key() {
+        // choices が無いケースは data["0"] にフォールバック
+        let json = serde_json::json!({
+            "data": { "0": "テキスト" }
+        });
+        let resp = parse_ainoverist_response(&json).unwrap();
+        match &resp.blocks[0] {
+            ResponseBlock::Text { content } => assert_eq!(content, "テキスト"),
+            _ => panic!("expected Text"),
+        }
+    }
+
+    #[test]
+    fn test_build_ainoverist_body_includes_required_fields() {
+        let messages = vec![("user", "続き")];
+        let body = build_ainoverist_body("spiko", &messages, &None);
+        assert_eq!(body["text"], "[user]\n続き");
+        assert_eq!(body["model"], "spiko");
+        // length はモデルの max output (spiko = 4096)
+        assert_eq!(body["length"], 4_096);
+    }
+
+    #[test]
+    fn test_build_ainoverist_body_unknown_model_uses_default_length() {
+        let body = build_ainoverist_body("unknown", &[("user", "x")], &None);
+        assert_eq!(body["length"], 400);
+    }
+
+    #[test]
+    fn test_build_ainoverist_body_extra_body_does_not_override_length() {
+        let extra = Some(serde_json::json!({
+            "length": 99_999,
+            "top_a": 0.1,
+        }));
+        let body = build_ainoverist_body("spiko", &[("user", "x")], &extra);
+        // length は保護される (merge_extra_body は or_insert)
+        assert_eq!(body["length"], 4_096);
+        // sampling パラメータは素通し
+        assert_eq!(body["top_a"], 0.1);
     }
 }

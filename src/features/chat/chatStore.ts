@@ -51,9 +51,6 @@ import {
 } from "./agent/modelLimits";
 import { useAiSettingsStore } from "./store";
 import * as cliApi from "./cliApi";
-// 副作用 import: ainoverist モデル能力テーブルを registerAinoveristCaps() で
-// 起動時に登録する。`resolveModelCapabilities` が参照する。
-import "./openaiCompatPresets";
 
 /**
  * 会話履歴を CLI に渡す単一プロンプトに平坦化する。

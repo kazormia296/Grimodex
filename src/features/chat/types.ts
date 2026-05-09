@@ -4,6 +4,7 @@ export const AI_PROVIDERS = [
   "anthropic",
   "ollama",
   "openai-compatible",
+  "ai-novelist",
   "cli",
 ] as const;
 
@@ -25,36 +26,31 @@ export interface CliSettings {
   model?: string;
 }
 
-/** OpenAI 互換プロバイダのプリセット ID */
-export type OpenaiCompatPresetId = "custom" | "ainoverist";
-
-/** OpenAI 互換プロバイダの設定。プリセット選択 + プリセット別のユーザー入力を保持する。 */
+/** カスタム OpenAI 互換プロバイダの設定。 */
 export interface OpenaiCompatibleSettings {
-  preset: OpenaiCompatPresetId;
-  /** custom プリセット時にユーザーが入力する OpenAI 互換エンドポイント */
+  /** ユーザーが入力する OpenAI 互換エンドポイント */
   baseUrl: string;
-  /** custom プリセット時に手動指定するモデルのコンテキスト窓 (tokens) */
+  /** 手動指定するモデルのコンテキスト窓 (tokens) */
   customMaxContext?: number;
-  /** custom プリセット時に手動指定するモデルの最大出力 (tokens) */
+  /** 手動指定するモデルの最大出力 (tokens) */
   customMaxOutput?: number;
-  /**
-   * プリセット側 `extraSamplingKeys` で許可されているサンプリングパラメータ。
-   * AI のべりすとの top_a / tailfree / typical_p / min_p / rep_pen /
-   * badwords / stoptokens / logit_bias など。リクエストボディに素通しされる。
-   */
-  sampling?: Record<string, unknown>;
-  /**
-   * AI Codex 自動抽出 / Synopsis / セッションタイトル自動生成タスクで
-   * このプロバイダを使うかどうか。プリセットの defaultDisableStructuredTasks=true
-   * の場合、デフォルト false（オプトイン式）。
-   */
+  /** AI Codex 自動抽出 / Synopsis / セッションタイトル自動生成を許可するか */
   enableStructuredTasks?: boolean;
 }
 
 export const DEFAULT_OPENAI_COMPATIBLE_SETTINGS: OpenaiCompatibleSettings = {
-  preset: "custom",
   baseUrl: "",
 };
+
+/** AI のべりすと専用の設定。 */
+export interface AiNovelistSettings {
+  /** KoboldAI 系独自サンプリングパラメータ (top_a / tailfree 等) */
+  sampling?: Record<string, unknown>;
+  /** AI Codex 自動抽出 / Synopsis / セッションタイトル自動生成を許可するか */
+  enableStructuredTasks?: boolean;
+}
+
+export const DEFAULT_AI_NOVELIST_SETTINGS: AiNovelistSettings = {};
 
 export interface AiSettings {
   provider: AiProvider;
@@ -62,6 +58,7 @@ export interface AiSettings {
   ollamaEndpoint: string;
   thinkingEnabled: boolean;
   openaiCompatible: OpenaiCompatibleSettings;
+  aiNovelist?: AiNovelistSettings;
   /** CLI プロバイダ選択時のみ意味を持つ */
   cli?: CliSettings;
 }
