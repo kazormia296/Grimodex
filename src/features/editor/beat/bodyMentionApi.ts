@@ -4,6 +4,7 @@ import { and, eq, notInArray } from "drizzle-orm";
 import { extractPlainText } from "@/features/codex/prosemirrorTextExtractor";
 import { findMentionedEntriesAsync } from "@/features/codex/rustMatcher";
 import type { CodexMatchTarget } from "@/features/codex/codexMatcher";
+import { bumpMatrixDataVersion } from "@/features/matrix/matrixDataVersion";
 
 /**
  * Scan the scene's body doc for Codex mentions and upsert source='body' rows.
@@ -58,4 +59,6 @@ export async function upsertSceneBodyMentions(
         );
 
   await db.delete(sceneCodexMentions).where(condition);
+
+  bumpMatrixDataVersion();
 }

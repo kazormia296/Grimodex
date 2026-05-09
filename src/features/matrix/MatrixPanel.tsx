@@ -17,6 +17,7 @@ import {
 } from "@/features/codex/mentionRescanQueue";
 import { toast } from "sonner";
 import { useMatrixStore } from "./matrixStore";
+import { useMatrixDataVersionStore } from "./matrixDataVersion";
 import { deriveRows } from "./lib/deriveRows";
 import { deriveColumns } from "./lib/deriveColumns";
 import { deriveCellMap } from "./lib/deriveCells";
@@ -61,20 +62,18 @@ export function MatrixPanel() {
   // Available tags for the tag filter autocomplete
   const [availableTags, setAvailableTags] = useState<string[]>([]);
 
-  // Load mentions from DB whenever panel is shown
-  useEffect(() => {
-    void loadMentions();
-    void loadBeatPovCache();
-  }, []);
+  const dataVersion = useMatrixDataVersionStore((s) => s.version);
 
-  // Reload mentions when rescan finishes (poll interval)
+  // Reload mentions on mount and whenever upstream writes bump dataVersion
+  // (scene_codex_mentions / scene_beat_pov_cache writes, rescan completion).
+  // A short debounce coalesces rapid bursts (e.g. rescan loop firing per scene).
   useEffect(() => {
-    const interval = setInterval(() => {
+    const handle = setTimeout(() => {
       void loadMentions();
       void loadBeatPovCache();
-    }, 3000);
-    return () => clearInterval(interval);
-  }, []);
+    }, 250);
+    return () => clearTimeout(handle);
+  }, [dataVersion]);
 
   async function loadMentions() {
     const rows = await db

@@ -1,6 +1,7 @@
 import { db } from "@/db/client";
 import { sceneBeatPovCache } from "@/db/schema";
 import { and, eq, notInArray } from "drizzle-orm";
+import { bumpMatrixDataVersion } from "@/features/matrix/matrixDataVersion";
 
 export async function listSceneBeatPovOverrides(
   sceneId: string,
@@ -31,4 +32,6 @@ export async function upsertSceneBeatPovOverrides(
           notInArray(sceneBeatPovCache.povCharacterId, povCharIds),
         );
   await db.delete(sceneBeatPovCache).where(condition);
+
+  bumpMatrixDataVersion();
 }
