@@ -395,26 +395,32 @@ export function EditorPane({
       markStart("editor.coreSave.saveForeshadow");
       await saveForeshadowAnchors(id, ed.state.doc);
       markEnd("editor.coreSave.saveForeshadow");
+      markStart("editor.coreSave.extractBeatMentions");
+      const beatMentions = extractBeatMentions(doc);
+      markEnd("editor.coreSave.extractBeatMentions");
       markStart("editor.coreSave.upsertBeatMentions");
-      upsertSceneBeatMentions(id, extractBeatMentions(doc)).catch((e) => {
-        debugLog.error(
-          "EditorPane",
-          "upsertSceneBeatMentions failed",
-          errorDetail(e),
-        );
-      });
-      markEnd("editor.coreSave.upsertBeatMentions");
+      upsertSceneBeatMentions(id, beatMentions)
+        .catch((e) => {
+          debugLog.error(
+            "EditorPane",
+            "upsertSceneBeatMentions failed",
+            errorDetail(e),
+          );
+        })
+        .finally(() => markEnd("editor.coreSave.upsertBeatMentions"));
+      markStart("editor.coreSave.extractBeatPovOverrides");
+      const beatPovOverrides = extractBeatPovOverrides(doc);
+      markEnd("editor.coreSave.extractBeatPovOverrides");
       markStart("editor.coreSave.upsertBeatPovOverrides");
-      upsertSceneBeatPovOverrides(id, extractBeatPovOverrides(doc)).catch(
-        (e) => {
+      upsertSceneBeatPovOverrides(id, beatPovOverrides)
+        .catch((e) => {
           debugLog.error(
             "EditorPane",
             "upsertSceneBeatPovOverrides failed",
             errorDetail(e),
           );
-        },
-      );
-      markEnd("editor.coreSave.upsertBeatPovOverrides");
+        })
+        .finally(() => markEnd("editor.coreSave.upsertBeatPovOverrides"));
       // Deferred body-mention scan — does not block the save response
       const allEntries = useCodexStore.getState().entries;
       if (allEntries.length > 0) {
@@ -436,13 +442,19 @@ export function EditorPane({
             });
         }, 0);
       }
+      markStart("editor.coreSave.refreshAiRatio");
       useTreeStore
         .getState()
         .refreshAiRatio(id)
-        .catch(() => {});
+        .catch(() => {})
+        .finally(() => markEnd("editor.coreSave.refreshAiRatio"));
       const chatState = useChatStore.getState();
       if (chatState.activeSceneId === id) {
-        void chatState.refreshContextLayers();
+        markStart("editor.coreSave.refreshContextLayers");
+        chatState
+          .refreshContextLayers()
+          .catch(() => {})
+          .finally(() => markEnd("editor.coreSave.refreshContextLayers"));
       }
     }
     markEnd("editor.coreSave");
@@ -1053,10 +1065,12 @@ export function EditorPane({
     return subscribeLiveContentRafCoalesced(nodeId, groupIndex, (next) => {
       isApplyingExternalUpdate.current = true;
       try {
+        markStart("editor.externalSync.setContent");
         editor.commands.setContent(
           next as Parameters<typeof editor.commands.setContent>[0],
           { emitUpdate: false },
         );
+        markEnd("editor.externalSync.setContent");
       } finally {
         isApplyingExternalUpdate.current = false;
       }
@@ -1172,22 +1186,34 @@ export function EditorPane({
           setLoadedPhaseId(resolvedPhaseId);
 
           const rawContent = phaseContentOverride ?? entry?.content ?? null;
+          markStart("sceneLoad.parseContent.codex");
           const parsed =
             rawContent && rawContent !== "{}" ? JSON.parse(rawContent) : "";
+          markEnd("sceneLoad.parseContent.codex");
+          markStart("sceneLoad.setContent.codex");
           editor!.commands.setContent(parsed, { emitUpdate: false });
+          markEnd("sceneLoad.setContent.codex");
         } else if (isSnippetMode) {
           // Load snippet content (HTML)
           const snippet = await getSnippet(nodeId);
           if (cancelled) return;
+          markStart("sceneLoad.setContent.snippet");
           editor!.commands.setContent(snippet?.content || "", {
             emitUpdate: false,
           });
+          markEnd("sceneLoad.setContent.snippet");
         } else {
           // Load scene/note content + unplaced beats in one query
+          markStart("sceneLoad.loadSceneFull");
           const { content, unplacedBeatsDoc } = await loadSceneFull(nodeId);
+          markEnd("sceneLoad.loadSceneFull");
           if (cancelled) return;
+          markStart(`sceneLoad.parseContent.scene.${content?.length ?? 0}`);
           const parsed = content && content !== "{}" ? JSON.parse(content) : "";
+          markEnd(`sceneLoad.parseContent.scene.${content?.length ?? 0}`);
+          markStart(`sceneLoad.setContent.scene.${content?.length ?? 0}`);
           editor!.commands.setContent(parsed, { emitUpdate: false });
+          markEnd(`sceneLoad.setContent.scene.${content?.length ?? 0}`);
           try {
             const beats = JSON.parse(unplacedBeatsDoc);
             useUnplacedBeatsStore.getState().setBeats(nodeId, beats, "load");
@@ -1221,11 +1247,16 @@ export function EditorPane({
         if (!isCodexMode && !isSnippetMode) {
           useTreeStore.getState().setCharCount(nodeId, count);
 
+          markStart("sceneLoad.loadAuthorshipSpans");
           const spans = await loadAuthorshipSpans(nodeId);
+          markEnd("sceneLoad.loadAuthorshipSpans");
           if (!cancelled && spans.length > 0) {
+            markStart(`sceneLoad.spansToMarkData.${spans.length}`);
             const markData = spansToMarkData(spans);
+            markEnd(`sceneLoad.spansToMarkData.${spans.length}`);
             const authorshipType = editor!.schema.marks["authorship"];
             if (authorshipType) {
+              markStart(`sceneLoad.applyAuthorshipMarks.${markData.length}`);
               editor!
                 .chain()
                 .command(({ tr }) => {
@@ -1245,12 +1276,18 @@ export function EditorPane({
                   return true;
                 })
                 .run();
+              markEnd(`sceneLoad.applyAuthorshipMarks.${markData.length}`);
             }
           }
 
           // Load and apply foreshadow anchors
+          markStart("sceneLoad.loadForeshadowAnchors");
           const foreshadowMarks = await loadForeshadowAnchors(nodeId);
+          markEnd("sceneLoad.loadForeshadowAnchors");
           if (!cancelled && foreshadowMarks.length > 0 && editor) {
+            markStart(
+              `sceneLoad.applyForeshadowMarks.${foreshadowMarks.length}`,
+            );
             editor
               .chain()
               .command(({ tr }) => {
@@ -1268,6 +1305,7 @@ export function EditorPane({
                 return true;
               })
               .run();
+            markEnd(`sceneLoad.applyForeshadowMarks.${foreshadowMarks.length}`);
           }
         }
       } finally {

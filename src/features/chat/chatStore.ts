@@ -75,6 +75,7 @@ import { getProject } from "@/features/project/api";
 import { useSettingsStore } from "@/features/settings/settingsStore";
 import { listCodexEntries } from "@/features/codex/api";
 import { findMentionedEntriesAsync } from "@/features/codex/rustMatcher";
+import { markStart, markEnd } from "@/lib/perfLog";
 import {
   getDescendantsBFS,
   getChildrenFromArray,
@@ -363,8 +364,7 @@ async function fetchProjectContext(
 // Module-level cleanup function for the active stream
 let _streamCleanup: (() => void) | null = null;
 // Debounce timer for refreshContextLayers when input-detected entry IDs change.
-// Token counting (js-tiktoken) is synchronous and can block the main thread for
-// 50–200ms on long scenes, so we wait for typing to settle before recalculating.
+// Token counting (WASM tiktoken) は同期で長文 scene でも数百 ms。打鍵が落ち着いてから走らせる。
 let _inputPinnedRefreshTimer: ReturnType<typeof setTimeout> | null = null;
 
 // ---------------------------------------------------------------------------
@@ -417,10 +417,12 @@ async function buildSceneContextPrompt(opts: {
   );
   const alwaysEntries = allEntries.filter((e) => e.contextMode === "always");
 
+  markStart("buildSceneCtx.findMentionedEntriesAsync");
   const mentioned = await findMentionedEntriesAsync(
     sceneCtx.content,
     detectableEntries,
   );
+  markEnd("buildSceneCtx.findMentionedEntriesAsync");
 
   const mentionedIds = new Set(mentioned.map((e) => e.id));
   const alwaysNotMentioned = alwaysEntries.filter(
@@ -456,10 +458,12 @@ async function buildSceneContextPrompt(opts: {
   });
 
   // G14: enrich with custom details
+  markStart("buildSceneCtx.enrichWithCustomDetails");
   const enrichedCodexEntries = await enrichWithCustomDetails(
     withChildrenCtx,
     allEntries,
   );
+  markEnd("buildSceneCtx.enrichWithCustomDetails");
 
   // Phase resolution
   const rawFullEntries = rawCodexEntries
@@ -561,7 +565,9 @@ async function buildSceneContextPrompt(opts: {
 
   // Story so far
   const allNodes = useTreeStore.getState().nodes;
+  markStart("buildSceneCtx.buildStorySoFar");
   const storySoFar = buildStorySoFar(sceneCtx.id, allNodes, budgets.l2);
+  markEnd("buildSceneCtx.buildStorySoFar");
 
   // G11: previousScene
   const currentScene = allNodes.find((n) => n.id === sceneCtx.id);
@@ -645,9 +651,13 @@ async function buildSceneContextPrompt(opts: {
     }
   }
 
+  markStart(
+    `buildSceneCtx.conversationTokenize.${conversationMessages.length}`,
+  );
   const conversationTokens = conversationMessages
     .filter((m) => m.role !== "system")
     .reduce((sum, m) => sum + countTokens(m.content), 0);
+  markEnd(`buildSceneCtx.conversationTokenize.${conversationMessages.length}`);
 
   // C-3: Build "pending beats" section if injection is enabled.
   // contentJson が undefined/空/JSON parse 失敗のいずれでも、Unplaced beat の
@@ -681,6 +691,7 @@ async function buildSceneContextPrompt(opts: {
     }
   }
 
+  markStart("buildSceneCtx.buildSystemPrompt");
   const promptResult = buildSystemPrompt({
     scene: sceneCtx,
     project: projectCtx ?? undefined,
@@ -698,6 +709,7 @@ async function buildSceneContextPrompt(opts: {
     pendingBeatsSection,
     lang: projectCtx?.language ?? "ja",
   });
+  markEnd("buildSceneCtx.buildSystemPrompt");
 
   return {
     prompt: promptResult.prompt,
@@ -1595,7 +1607,9 @@ export const useChatStore = create<ChatState>()((set, get) => ({
   },
 
   refreshContextLayers: async () => {
+    markStart("refreshContextLayers.ensureTokenizer");
     await ensureTokenizer();
+    markEnd("refreshContextLayers.ensureTokenizer");
     const { activeSceneId, activeProjectId, activeSessionId, isGlobalChat } =
       get();
     const effectiveSceneId = isGlobalChat ? null : activeSceneId;

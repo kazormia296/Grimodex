@@ -5,6 +5,7 @@ import { extractPlainText } from "@/features/codex/prosemirrorTextExtractor";
 import { findMentionedEntriesAsync } from "@/features/codex/rustMatcher";
 import type { CodexMatchTarget } from "@/features/codex/codexMatcher";
 import { bumpMatrixDataVersion } from "@/features/matrix/matrixDataVersion";
+import { markStart, markEnd } from "@/lib/perfLog";
 
 /**
  * Scan the scene's body doc for Codex mentions and upsert source='body' rows.
@@ -21,10 +22,16 @@ export async function upsertSceneBodyMentions(
 ): Promise<void> {
   if (allEntries.length === 0) return;
 
+  markStart("bodyMention.extractPlainText");
   const text = extractPlainText(docJsonStr);
+  markEnd("bodyMention.extractPlainText");
+
+  markStart("bodyMention.findMentionedEntriesAsync");
   const matched = await findMentionedEntriesAsync(text, allEntries);
+  markEnd("bodyMention.findMentionedEntriesAsync");
 
   if (matched.length > 0) {
+    markStart("bodyMention.dbInsert");
     await db
       .insert(sceneCodexMentions)
       .values(
@@ -43,6 +50,7 @@ export async function upsertSceneBodyMentions(
         ],
         set: { role: "mentioned" },
       });
+    markEnd("bodyMention.dbInsert");
   }
 
   const wantedIds = matched.map((e) => e.id);
@@ -58,7 +66,9 @@ export async function upsertSceneBodyMentions(
           notInArray(sceneCodexMentions.codexEntryId, wantedIds),
         );
 
+  markStart("bodyMention.dbDelete");
   await db.delete(sceneCodexMentions).where(condition);
+  markEnd("bodyMention.dbDelete");
 
   bumpMatrixDataVersion();
 }
