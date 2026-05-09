@@ -173,10 +173,25 @@ export function AiCategory() {
   }, [settings, loadModels]);
 
   useEffect(() => {
-    if (hasApiKey && settings) handleLoadModels();
-    // settings は truthy ガード用途。再実行のトリガは provider 変更のみで十分。
+    if (!settings) return;
+    // OpenAI 互換でハードコードプリセットを使う場合は API を叩かないので
+    // hasApiKey の有無にかかわらずロード可能。CLI プロバイダはモデル一覧を持たない。
+    const presetId = settings.openaiCompatible?.preset;
+    const usePresetModels =
+      settings.provider === "openai-compatible" &&
+      presetId !== undefined &&
+      presetId !== "custom";
+    if (hasApiKey || usePresetModels || settings.provider === "ollama") {
+      handleLoadModels();
+    }
+    // settings は truthy ガード用途。再実行のトリガは provider / preset 変更。
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [hasApiKey, settings?.provider, handleLoadModels]);
+  }, [
+    hasApiKey,
+    settings?.provider,
+    settings?.openaiCompatible?.preset,
+    handleLoadModels,
+  ]);
 
   async function handleProviderChange(provider: AiProvider) {
     const updated = {

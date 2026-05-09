@@ -2,6 +2,7 @@ import { create } from "zustand";
 import * as api from "./api";
 import type { AiSettings, AiModel, ConnectionTestResult } from "./types";
 import { DEFAULT_AI_SETTINGS } from "./types";
+import { getOpenaiCompatPreset } from "./openaiCompatPresets";
 
 interface AiSettingsState {
   settings: AiSettings | null;
@@ -86,6 +87,20 @@ export const useAiSettingsStore = create<AiSettingsState>()((set, get) => ({
 
     set({ isLoadingModels: true });
     try {
+      // OpenAI 互換プロバイダで、プリセット側にハードコードモデルがある場合は
+      // そちらを優先する (AI のべりすと等、API の /models を叩かない方が早い・確実)。
+      if (settings.provider === "openai-compatible") {
+        const preset = getOpenaiCompatPreset(settings.openaiCompatible?.preset);
+        if (preset.models.length > 0) {
+          set({ models: [...preset.models], isLoadingModels: false });
+          return;
+        }
+      }
+      // CLI プロバイダはモデル一覧を持たない (CLI 側 settings で個別管理)
+      if (settings.provider === "cli") {
+        set({ models: [], isLoadingModels: false });
+        return;
+      }
       const models = await api.listAiModels(settings.provider);
       set({ models, isLoadingModels: false });
     } catch {
