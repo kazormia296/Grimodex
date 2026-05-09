@@ -14,7 +14,7 @@ import { describe, it, expect, beforeEach } from "vitest";
 import { render, waitFor } from "@testing-library/react";
 import { useEditor, EditorContent } from "@tiptap/react";
 import StarterKit from "@tiptap/starter-kit";
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import {
   useSceneContentStore,
   subscribeLiveContentRafCoalesced,
@@ -29,6 +29,10 @@ function MirrorEditor({ onApply }: { onApply: (doc: object) => void }) {
     extensions: [StarterKit],
     content: "",
   });
+  // ref 化: StrictMode の二重 render で onApply の identity が変わって
+  // subscribe が剥がれ・貼り直しされるのを防ぐ。
+  const onApplyRef = useRef(onApply);
+  onApplyRef.current = onApply;
   useEffect(() => {
     if (!editor) return;
     return subscribeLiveContentRafCoalesced(SCENE, MIRROR_GROUP, (next) => {
@@ -36,9 +40,9 @@ function MirrorEditor({ onApply }: { onApply: (doc: object) => void }) {
         next as Parameters<typeof editor.commands.setContent>[0],
         { emitUpdate: false },
       );
-      onApply(next);
+      onApplyRef.current(next);
     });
-  }, [editor, onApply]);
+  }, [editor]);
   return <EditorContent editor={editor} data-testid="mirror" />;
 }
 
