@@ -1032,25 +1032,40 @@ export function EditorPane({
       );
   }, [editor, nodeId, generate]);
 
-  // Subscribe to content sync from the other pane (or CodexContentEditor mini-editor)
+  // Subscribe to content sync from the other pane (or CodexContentEditor mini-editor).
+  // Apply is rAF-coalesced: a typing burst on the peer pane collapses to at most
+  // one full-doc setContent per frame on the mirror, instead of one per keystroke.
   useEffect(() => {
     if (!editor) return;
+    let pending: object | null = null;
+    let frame: number | null = null;
+    const flush = () => {
+      frame = null;
+      const next = pending;
+      pending = null;
+      if (next == null) return;
+      isApplyingExternalUpdate.current = true;
+      try {
+        editor.commands.setContent(
+          next as Parameters<typeof editor.commands.setContent>[0],
+          { emitUpdate: false },
+        );
+      } finally {
+        isApplyingExternalUpdate.current = false;
+      }
+    };
     const unsubscribe = useSceneContentStore
       .getState()
       .subscribe(nodeId, (content, sourceGroupIndex) => {
         if (sourceGroupIndex === groupIndex) return; // Skip our own updates
-        // isApplyingExternalUpdate guards the onUpdate handler from re-broadcasting
-        isApplyingExternalUpdate.current = true;
-        try {
-          editor.commands.setContent(
-            content as Parameters<typeof editor.commands.setContent>[0],
-            { emitUpdate: false },
-          );
-        } finally {
-          isApplyingExternalUpdate.current = false;
-        }
+        pending = content;
+        if (frame === null) frame = requestAnimationFrame(flush);
       });
-    return unsubscribe;
+    return () => {
+      unsubscribe();
+      if (frame !== null) cancelAnimationFrame(frame);
+      pending = null;
+    };
   }, [nodeId, groupIndex, editor]);
 
   // Subscribe to unplaced beats changes → mark dirty and schedule save,

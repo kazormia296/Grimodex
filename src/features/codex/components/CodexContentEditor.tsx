@@ -116,25 +116,42 @@ export function CodexContentEditor({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [externalContent]);
 
-  // Subscribe to EditorPane updates and apply them to this mini-editor
+  // Subscribe to EditorPane updates and apply them to this mini-editor.
+  // rAF-coalesced: a typing burst in the source EditorPane collapses to one
+  // full-doc setContent per frame (and one JSON.stringify for onExternalSync).
   useEffect(() => {
     if (!entryId || !editor) return;
-    return useSceneContentStore
+    let pending: object | null = null;
+    let frame: number | null = null;
+    const flush = () => {
+      frame = null;
+      const next = pending;
+      pending = null;
+      if (next == null) return;
+      isApplyingExternalUpdate.current = true;
+      try {
+        editor.commands.setContent(
+          next as Parameters<typeof editor.commands.setContent>[0],
+          { emitUpdate: false },
+        );
+        const serialized = JSON.stringify(next);
+        onExternalSyncRef.current?.(serialized);
+      } finally {
+        isApplyingExternalUpdate.current = false;
+      }
+    };
+    const unsubscribe = useSceneContentStore
       .getState()
       .subscribe(entryId, (json, sourceGroupIndex) => {
         if (sourceGroupIndex === CODEX_MINI_GROUP) return; // our own update — ignore
-        isApplyingExternalUpdate.current = true;
-        try {
-          editor.commands.setContent(
-            json as Parameters<typeof editor.commands.setContent>[0],
-            { emitUpdate: false },
-          );
-          const serialized = JSON.stringify(json);
-          onExternalSyncRef.current?.(serialized);
-        } finally {
-          isApplyingExternalUpdate.current = false;
-        }
+        pending = json;
+        if (frame === null) frame = requestAnimationFrame(flush);
       });
+    return () => {
+      unsubscribe();
+      if (frame !== null) cancelAnimationFrame(frame);
+      pending = null;
+    };
   }, [entryId, editor]);
 
   return (

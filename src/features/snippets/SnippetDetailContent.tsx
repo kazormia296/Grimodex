@@ -135,22 +135,38 @@ export function SnippetDetailContent({
 
   // Receive live updates from the EditorPane snippet tab so typing there
   // shows up here in real time. Mirrors CodexContentEditor's pattern.
+  // rAF-coalesced: source-side typing bursts collapse to one apply per frame.
   useEffect(() => {
     if (!editor) return;
-    return useSceneContentStore
+    let pending: object | null = null;
+    let frame: number | null = null;
+    const flush = () => {
+      frame = null;
+      const next = pending;
+      pending = null;
+      if (next == null) return;
+      isApplyingExternalUpdate.current = true;
+      try {
+        editor.commands.setContent(
+          next as Parameters<typeof editor.commands.setContent>[0],
+          { emitUpdate: false },
+        );
+      } finally {
+        isApplyingExternalUpdate.current = false;
+      }
+    };
+    const unsubscribe = useSceneContentStore
       .getState()
       .subscribe(snippet.id, (json, sourceGroupIndex) => {
         if (sourceGroupIndex === SNIPPET_MINI_GROUP) return; // our own update
-        isApplyingExternalUpdate.current = true;
-        try {
-          editor.commands.setContent(
-            json as Parameters<typeof editor.commands.setContent>[0],
-            { emitUpdate: false },
-          );
-        } finally {
-          isApplyingExternalUpdate.current = false;
-        }
+        pending = json;
+        if (frame === null) frame = requestAnimationFrame(flush);
       });
+    return () => {
+      unsubscribe();
+      if (frame !== null) cancelAnimationFrame(frame);
+      pending = null;
+    };
   }, [snippet.id, editor]);
 
   // Autosave via useAutoSave so the unmount-flush guarantees that pending
