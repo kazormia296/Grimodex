@@ -1,6 +1,7 @@
 import { Plugin, PluginKey } from "@tiptap/pm/state";
 import { Decoration, DecorationSet } from "@tiptap/pm/view";
 import { ReplaceStep, ReplaceAroundStep } from "@tiptap/pm/transform";
+import { markStart, markEnd } from "@/lib/perfLog";
 
 export const characterFadeKey = new PluginKey<DecorationSet>("characterFade");
 
@@ -39,54 +40,59 @@ export function createCharacterFadePlugin(
         return DecorationSet.empty;
       },
       apply(tr, decos) {
-        let next = decos.map(tr.mapping, tr.doc);
+        markStart("plugin.characterFade.apply");
+        try {
+          let next = decos.map(tr.mapping, tr.doc);
 
-        const meta = tr.getMeta(characterFadeKey) as CleanupMeta | undefined;
-        if (meta?.type === "cleanup") {
-          const expired = next
-            .find()
-            .filter((d) => (d.spec as FadeDecoSpec).expireAt <= meta.now);
-          if (expired.length > 0) {
-            next = next.remove(expired);
+          const meta = tr.getMeta(characterFadeKey) as CleanupMeta | undefined;
+          if (meta?.type === "cleanup") {
+            const expired = next
+              .find()
+              .filter((d) => (d.spec as FadeDecoSpec).expireAt <= meta.now);
+            if (expired.length > 0) {
+              next = next.remove(expired);
+            }
           }
-        }
 
-        if (!tr.docChanged) return next;
-        if (tr.getMeta("programmaticInsert")) return next;
-        if (!getFadeIn()) return next;
+          if (!tr.docChanged) return next;
+          if (tr.getMeta("programmaticInsert")) return next;
+          if (!getFadeIn()) return next;
 
-        const expireAt = Date.now() + FADE_IN_MS + FADE_CLEANUP_BUFFER_MS;
-        const added: Decoration[] = [];
+          const expireAt = Date.now() + FADE_IN_MS + FADE_CLEANUP_BUFFER_MS;
+          const added: Decoration[] = [];
 
-        for (const step of tr.steps) {
-          if (
-            !(step instanceof ReplaceStep) &&
-            !(step instanceof ReplaceAroundStep)
-          ) {
-            continue;
+          for (const step of tr.steps) {
+            if (
+              !(step instanceof ReplaceStep) &&
+              !(step instanceof ReplaceAroundStep)
+            ) {
+              continue;
+            }
+            const slice = step.slice;
+            if (slice.size === 0) continue;
+
+            // Map the inserted range through subsequent steps in this tr so
+            // the decoration aligns with the final document.
+            const stepIndex = tr.steps.indexOf(step);
+            const mapping = tr.mapping.slice(stepIndex);
+            const from = mapping.map(step.from);
+            const to = mapping.map(step.from + slice.size);
+            if (from < to) {
+              added.push(
+                Decoration.inline(from, to, { class: "editor-fade-in" }, {
+                  expireAt,
+                } satisfies FadeDecoSpec),
+              );
+            }
           }
-          const slice = step.slice;
-          if (slice.size === 0) continue;
 
-          // Map the inserted range through subsequent steps in this tr so
-          // the decoration aligns with the final document.
-          const stepIndex = tr.steps.indexOf(step);
-          const mapping = tr.mapping.slice(stepIndex);
-          const from = mapping.map(step.from);
-          const to = mapping.map(step.from + slice.size);
-          if (from < to) {
-            added.push(
-              Decoration.inline(from, to, { class: "editor-fade-in" }, {
-                expireAt,
-              } satisfies FadeDecoSpec),
-            );
+          if (added.length > 0) {
+            next = next.add(tr.doc, added);
           }
+          return next;
+        } finally {
+          markEnd("plugin.characterFade.apply");
         }
-
-        if (added.length > 0) {
-          next = next.add(tr.doc, added);
-        }
-        return next;
       },
     },
     props: {

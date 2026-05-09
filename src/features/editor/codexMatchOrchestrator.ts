@@ -3,6 +3,7 @@ import { rebuildMatcher, matchText } from "@/features/codex/rustMatcher";
 import type { CodexMatchTarget } from "@/features/codex/codexMatcher";
 import { useCodexHighlightStore } from "./codexHighlightStore";
 import { getDocText } from "./RubyNode";
+import { markStart, markEnd } from "@/lib/perfLog";
 
 // ---------------------------------------------------------------------------
 // Per-editor orchestrator state
@@ -60,12 +61,14 @@ export function scheduleMatch(
         // Discard stale result
         if (state.version !== myVersion) return;
         if (editor.isDestroyed) return;
+        markStart("codexMatch.applyResult");
         const uniqueIds = [...new Set(matches.map((m) => m.entryId))];
         if (!skipMatchedIds) {
           useCodexHighlightStore.getState().setMatchedEntryIds(uniqueIds);
         }
         const tr = editor.state.tr.setMeta("codexHighlightResult", matches);
         editor.view.dispatch(tr);
+        markEnd("codexMatch.applyResult");
       } catch {
         // Silently ignore match errors (e.g. workspace not open yet)
       }

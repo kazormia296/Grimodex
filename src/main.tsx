@@ -4,6 +4,7 @@ import App from "./App";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import { debugLog, errorDetail } from "./lib/debugLog";
 import "./lib/i18n";
+import "./lib/perfLog";
 import "./index.css";
 
 window.addEventListener("unhandledrejection", (event) => {

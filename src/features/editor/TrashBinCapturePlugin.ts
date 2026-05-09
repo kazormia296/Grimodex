@@ -4,6 +4,7 @@ import { ReplaceStep } from "@tiptap/pm/transform";
 import type { Node as ProseMirrorNode } from "@tiptap/pm/model";
 import { useTrashBinStore } from "@/features/trash-bin/trashBinStore";
 import type { TrashOrigin, TrashSpan } from "@/features/trash-bin/types";
+import { markStart, markEnd } from "@/lib/perfLog";
 
 export const trashBinCaptureKey = new PluginKey<TrashBinCaptureState>(
   "trashBinCapture",
@@ -139,114 +140,123 @@ export function createTrashBinCapturePlugin(): Plugin<TrashBinCaptureState> {
       },
     },
     appendTransaction(transactions, oldState, newState) {
-      // Undo / Redo 起源 → 直近の保留を破棄して return null。
-      // docChanged チェックより先に置くことで、meta だけの dispatch も検出可。
-      // history$ のみで判定 (addToHistory:false は origin meta dispatch 等で
-      // 立つので Undo 起源とは限らない)
-      const isUndoRedo = transactions.some(
-        (tr) => tr.getMeta("history$") !== undefined,
-      );
-      if (isUndoRedo) {
-        const state = trashBinCaptureKey.getState(newState);
-        const origin = state?.origin ?? null;
-        if (origin) {
-          // scene / codex は FK でまとめてキャンセル (1500ms 内の連打全部)。
-          // snippet / sticky は FK が無いので、現バッファの tempId だけを
-          // 取り消す (現セッションの flush 済み 1 件のみ対象)。
-          if (origin.kind === "scene") {
-            useTrashBinStore
-              .getState()
-              .cancelPending({ originSceneId: origin.id });
-          } else if (origin.kind === "codex") {
-            useTrashBinStore
-              .getState()
-              .cancelPending({ originCodexId: origin.id });
-          } else if (buffer) {
-            useTrashBinStore
-              .getState()
-              .cancelPending({ tempId: buffer.tempId });
+      markStart("plugin.trashBinCapture.appendTransaction");
+      try {
+        // Undo / Redo 起源 → 直近の保留を破棄して return null。
+        // docChanged チェックより先に置くことで、meta だけの dispatch も検出可。
+        // history$ のみで判定 (addToHistory:false は origin meta dispatch 等で
+        // 立つので Undo 起源とは限らない)
+        const isUndoRedo = transactions.some(
+          (tr) => tr.getMeta("history$") !== undefined,
+        );
+        if (isUndoRedo) {
+          const state = trashBinCaptureKey.getState(newState);
+          const origin = state?.origin ?? null;
+          if (origin) {
+            // scene / codex は FK でまとめてキャンセル (1500ms 内の連打全部)。
+            // snippet / sticky は FK が無いので、現バッファの tempId だけを
+            // 取り消す (現セッションの flush 済み 1 件のみ対象)。
+            if (origin.kind === "scene") {
+              useTrashBinStore
+                .getState()
+                .cancelPending({ originSceneId: origin.id });
+            } else if (origin.kind === "codex") {
+              useTrashBinStore
+                .getState()
+                .cancelPending({ originCodexId: origin.id });
+            } else if (buffer) {
+              useTrashBinStore
+                .getState()
+                .cancelPending({ tempId: buffer.tempId });
+            }
           }
-        }
-        // 連打バッファも破棄 (合体中の屑は捨てる)
-        if (buffer) {
-          if (buffer.timerId !== null) clearTimeout(buffer.timerId);
-          buffer = null;
-        }
-        return null;
-      }
-
-      const state = trashBinCaptureKey.getState(newState);
-      if (!state) return null;
-      if (state.paused) return null;
-      if (state.origin === null) return null;
-
-      // IME 合成中はキャプチャ保留
-      // (ProseMirror plugin の view.composing は appendTransaction 内では
-      //  直接参照不可。ProseMirror state には storedMarks 経由で見えないので
-      //  meta `composition` で transaction を識別するか、from/to/slice の
-      //  パターンで Replace 判定に委ねる。今回は Replace 規則に任せる)
-
-      for (const tr of transactions) {
-        if (tr.getMeta("programmaticDelete") === true) continue;
-        if (tr.getMeta(META_SKIP) === true) continue;
-
-        for (const step of tr.steps) {
-          if (!(step instanceof ReplaceStep)) continue;
-          const { from, to } = step as { from: number; to: number };
-          if (from === to) continue; // 純粋挿入はスキップ
-          // 置換 (Replace + Insert) はスキップ。ただし slice が「空段落」など
-          // 構造ノードのみで実テキストを持たない場合は、ProseMirror が
-          // doc に 1 ブロック残すために挿入した補填であって実質「全消し」なので
-          // キャプチャ対象に含める。Ctrl+A → Delete (複数段落) がこのケース。
-          const sliceContent = step.slice.content;
-          const sliceText = sliceContent.textBetween(0, sliceContent.size, "");
-          if (sliceText.length > 0) continue;
-
-          // 削除範囲のテキスト・spans 抽出
-          const { text, spans } = extractSpans(oldState.doc, from, to);
-          if (text.length === 0) continue;
-
-          if (
-            buffer &&
-            Date.now() - buffer.lastUpdatedAt <= BUFFER_DEBOUNCE_MS
-          ) {
-            const isBackspace = to === buffer.lastFrom; // 直前削除位置の左を削った
-            const isDelete = from === buffer.lastFrom; // 同じ位置から右を削った
-            if (isBackspace) {
-              buffer.text = text + buffer.text;
-              buffer.spans = [...spans, ...buffer.spans];
-              buffer.lastFrom = from;
-              buffer.lastUpdatedAt = Date.now();
-              scheduleFlush(buffer);
-              continue;
-            }
-            if (isDelete) {
-              buffer.text = buffer.text + text;
-              buffer.spans = [...buffer.spans, ...spans];
-              buffer.lastTo = to;
-              buffer.lastUpdatedAt = Date.now();
-              scheduleFlush(buffer);
-              continue;
-            }
-            // 非隣接 → 既存をフラッシュして新バッファへ
-            flushBuffer(buffer);
+          // 連打バッファも破棄 (合体中の屑は捨てる)
+          if (buffer) {
+            if (buffer.timerId !== null) clearTimeout(buffer.timerId);
             buffer = null;
           }
-
-          buffer = {
-            text,
-            spans,
-            lastFrom: from,
-            lastTo: to,
-            lastUpdatedAt: Date.now(),
-            origin: state.origin,
-            timerId: null,
-            tempId: nextTempId(),
-          };
-          scheduleFlush(buffer);
+          return null;
         }
+
+        const state = trashBinCaptureKey.getState(newState);
+        if (!state) return null;
+        if (state.paused) return null;
+        if (state.origin === null) return null;
+
+        // IME 合成中はキャプチャ保留
+        // (ProseMirror plugin の view.composing は appendTransaction 内では
+        //  直接参照不可。ProseMirror state には storedMarks 経由で見えないので
+        //  meta `composition` で transaction を識別するか、from/to/slice の
+        //  パターンで Replace 判定に委ねる。今回は Replace 規則に任せる)
+
+        for (const tr of transactions) {
+          if (tr.getMeta("programmaticDelete") === true) continue;
+          if (tr.getMeta(META_SKIP) === true) continue;
+
+          for (const step of tr.steps) {
+            if (!(step instanceof ReplaceStep)) continue;
+            const { from, to } = step as { from: number; to: number };
+            if (from === to) continue; // 純粋挿入はスキップ
+            // 置換 (Replace + Insert) はスキップ。ただし slice が「空段落」など
+            // 構造ノードのみで実テキストを持たない場合は、ProseMirror が
+            // doc に 1 ブロック残すために挿入した補填であって実質「全消し」なので
+            // キャプチャ対象に含める。Ctrl+A → Delete (複数段落) がこのケース。
+            const sliceContent = step.slice.content;
+            const sliceText = sliceContent.textBetween(
+              0,
+              sliceContent.size,
+              "",
+            );
+            if (sliceText.length > 0) continue;
+
+            // 削除範囲のテキスト・spans 抽出
+            const { text, spans } = extractSpans(oldState.doc, from, to);
+            if (text.length === 0) continue;
+
+            if (
+              buffer &&
+              Date.now() - buffer.lastUpdatedAt <= BUFFER_DEBOUNCE_MS
+            ) {
+              const isBackspace = to === buffer.lastFrom; // 直前削除位置の左を削った
+              const isDelete = from === buffer.lastFrom; // 同じ位置から右を削った
+              if (isBackspace) {
+                buffer.text = text + buffer.text;
+                buffer.spans = [...spans, ...buffer.spans];
+                buffer.lastFrom = from;
+                buffer.lastUpdatedAt = Date.now();
+                scheduleFlush(buffer);
+                continue;
+              }
+              if (isDelete) {
+                buffer.text = buffer.text + text;
+                buffer.spans = [...buffer.spans, ...spans];
+                buffer.lastTo = to;
+                buffer.lastUpdatedAt = Date.now();
+                scheduleFlush(buffer);
+                continue;
+              }
+              // 非隣接 → 既存をフラッシュして新バッファへ
+              flushBuffer(buffer);
+              buffer = null;
+            }
+
+            buffer = {
+              text,
+              spans,
+              lastFrom: from,
+              lastTo: to,
+              lastUpdatedAt: Date.now(),
+              origin: state.origin,
+              timerId: null,
+              tempId: nextTempId(),
+            };
+            scheduleFlush(buffer);
+          }
+        }
+        return null;
+      } finally {
+        markEnd("plugin.trashBinCapture.appendTransaction");
       }
-      return null;
     },
     view() {
       return {

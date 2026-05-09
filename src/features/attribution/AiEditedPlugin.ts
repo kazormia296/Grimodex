@@ -1,5 +1,6 @@
 import { Plugin, PluginKey } from "@tiptap/pm/state";
 import { ReplaceStep } from "@tiptap/pm/transform";
+import { markStart, markEnd } from "@/lib/perfLog";
 
 export const aiEditedKey = new PluginKey("aiEdited");
 
@@ -27,64 +28,68 @@ export function createAiEditedPlugin(): Plugin {
     appendTransaction(transactions, oldState, newState) {
       const docChanged = transactions.some((tr) => tr.docChanged);
       if (!docChanged) return null;
+      markStart("plugin.aiEdited.appendTransaction");
+      try {
+        // Skip programmatic inserts (chat/snippet insertion)
+        const hasProgrammatic = transactions.some(
+          (tr) => tr.getMeta("programmaticInsert") === true,
+        );
+        if (hasProgrammatic) return null;
 
-      // Skip programmatic inserts (chat/snippet insertion)
-      const hasProgrammatic = transactions.some(
-        (tr) => tr.getMeta("programmaticInsert") === true,
-      );
-      if (hasProgrammatic) return null;
+        const { schema, tr } = newState;
+        const authorshipType = schema.marks["authorship"];
+        if (!authorshipType) return null;
 
-      const { schema, tr } = newState;
-      const authorshipType = schema.marks["authorship"];
-      if (!authorshipType) return null;
+        let changed = false;
 
-      let changed = false;
+        for (const transaction of transactions) {
+          if (transaction.getMeta("programmaticInsert") === true) continue;
 
-      for (const transaction of transactions) {
-        if (transaction.getMeta("programmaticInsert") === true) continue;
+          const steps = transaction.steps;
+          for (let i = 0; i < steps.length; i++) {
+            const step = steps[i];
+            if (!(step instanceof ReplaceStep)) continue;
 
-        const steps = transaction.steps;
-        for (let i = 0; i < steps.length; i++) {
-          const step = steps[i];
-          if (!(step instanceof ReplaceStep)) continue;
+            const { from } = step as { from: number };
+            const insertedSize = step.slice.size;
+            if (insertedSize === 0) continue;
 
-          const { from } = step as { from: number };
-          const insertedSize = step.slice.size;
-          if (insertedSize === 0) continue;
-
-          // Check if the insertion/replacement position is inside a splittable span
-          // Use oldState positions (step coordinates are in pre-step document)
-          let mark = null;
-          if (from < oldState.doc.content.size) {
-            const $pos = oldState.doc.resolve(from);
-            mark = $pos
-              .marks()
-              .find(
-                (m) =>
-                  m.type === authorshipType &&
-                  SPLITTABLE_SOURCES.has(m.attrs.source as string) &&
-                  !m.attrs.manualOverride,
-              );
-          }
-
-          if (mark) {
-            // Map the insertion range to newState coordinates
-            // For multi-step transactions, map through subsequent steps
-            let newFrom = from;
-            let newTo = from + insertedSize;
-            for (let j = i + 1; j < steps.length; j++) {
-              const map = steps[j].getMap();
-              newFrom = map.map(newFrom, -1);
-              newTo = map.map(newTo, 1);
+            // Check if the insertion/replacement position is inside a splittable span
+            // Use oldState positions (step coordinates are in pre-step document)
+            let mark = null;
+            if (from < oldState.doc.content.size) {
+              const $pos = oldState.doc.resolve(from);
+              mark = $pos
+                .marks()
+                .find(
+                  (m) =>
+                    m.type === authorshipType &&
+                    SPLITTABLE_SOURCES.has(m.attrs.source as string) &&
+                    !m.attrs.manualOverride,
+                );
             }
 
-            tr.removeMark(newFrom, newTo, authorshipType);
-            changed = true;
+            if (mark) {
+              // Map the insertion range to newState coordinates
+              // For multi-step transactions, map through subsequent steps
+              let newFrom = from;
+              let newTo = from + insertedSize;
+              for (let j = i + 1; j < steps.length; j++) {
+                const map = steps[j].getMap();
+                newFrom = map.map(newFrom, -1);
+                newTo = map.map(newTo, 1);
+              }
+
+              tr.removeMark(newFrom, newTo, authorshipType);
+              changed = true;
+            }
           }
         }
-      }
 
-      return changed ? tr : null;
+        return changed ? tr : null;
+      } finally {
+        markEnd("plugin.aiEdited.appendTransaction");
+      }
     },
   });
 }

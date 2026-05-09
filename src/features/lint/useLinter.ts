@@ -19,6 +19,7 @@ import { resolveLintLanguage } from "./types";
 import type { LintCodexEntry, LintConfig, WireLintBlock } from "./types";
 import { listCodexEntries } from "@/features/codex/api";
 import { useTermDictionaryStore } from "./termDictionaryStore";
+import { markStart, markEnd } from "@/lib/perfLog";
 
 /**
  * Imperative trigger used when an action must bypass the normal debounce
@@ -205,12 +206,14 @@ export function useLinter(editor: Editor | null, sceneId: string | null): void {
       if (timerRef.current) clearTimeout(timerRef.current);
       timerRef.current = setTimeout(async () => {
         if (!editor || !sceneId) return;
+        markStart("linter.scheduledAnalyze");
         const cfgStore = useLintConfigStore.getState();
         const lang = resolveLintLanguage();
         const effective = cfgStore.getEffective();
         // Respect Linter-wide and per-language toggles.
         if (!effective.enabled || !effective.languages[lang]?.enabled) {
           useLintStore.getState().clear();
+          markEnd("linter.scheduledAnalyze");
           return;
         }
         const map = buildOffsetMap(editor.state.doc);
@@ -231,6 +234,7 @@ export function useLinter(editor: Editor | null, sceneId: string | null): void {
             await fetchTermDictionaryForLint();
         }
         void runLint(sceneId, blocks, wire, lang, sceneText, map.disables);
+        markEnd("linter.scheduledAnalyze");
       }, delay);
     }
 
@@ -278,10 +282,12 @@ export function useLinter(editor: Editor | null, sceneId: string | null): void {
     // Track cursor position → scene offset for reverse highlight.
     const onSelectionUpdate = () => {
       if (!editor) return;
+      markStart("linter.selectionUpdate");
       const map = buildOffsetMap(editor.state.doc);
       const head = editor.state.selection.head;
       const off = pmPosToStrOffset(map, head);
       useLintStore.getState().setCursorOffset(off);
+      markEnd("linter.selectionUpdate");
     };
     editor.on("selectionUpdate", onSelectionUpdate);
     onSelectionUpdate();

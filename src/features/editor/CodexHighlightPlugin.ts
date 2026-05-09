@@ -5,6 +5,7 @@ import type { CodexMatch } from "@/features/codex/codexMatcher";
 import { useCodexHighlightStore } from "./codexHighlightStore";
 import { useSettingsStore } from "@/features/settings/settingsStore";
 import type { ResolvedCodexColor } from "@/lib/resolveCodexColors";
+import { markStart, markEnd } from "@/lib/perfLog";
 
 export const codexHighlightKey = new PluginKey("codexHighlight");
 
@@ -133,46 +134,51 @@ export function createCodexHighlightPlugin(): Plugin {
         return DecorationSet.empty;
       },
       apply(tr, oldDecos, _oldState, newState) {
-        const { typeColorMap } = useCodexHighlightStore.getState();
+        markStart("plugin.codexHighlight.apply");
+        try {
+          const { typeColorMap } = useCodexHighlightStore.getState();
 
-        // Async result delivered via transaction meta
-        const asyncResult = tr.getMeta("codexHighlightResult") as
-          | CodexMatch[]
-          | undefined;
-        if (asyncResult !== undefined) {
-          const highlightStyle = useSettingsStore
-            .getState()
-            .get("display.codexHighlightStyle", "color-text");
-          return DecorationSet.create(
-            newState.doc,
-            mapMatchesToDecorations(
+          // Async result delivered via transaction meta
+          const asyncResult = tr.getMeta("codexHighlightResult") as
+            | CodexMatch[]
+            | undefined;
+          if (asyncResult !== undefined) {
+            const highlightStyle = useSettingsStore
+              .getState()
+              .get("display.codexHighlightStyle", "color-text");
+            return DecorationSet.create(
               newState.doc,
-              asyncResult,
-              typeColorMap,
-              highlightStyle,
-            ),
-          );
-        }
-
-        // Doc changed or forced update → remap existing decoration positions
-        if (tr.docChanged || tr.getMeta("codexHighlightUpdate") === true) {
-          // Adjacent inline decorations (deco[i].to === deco[i+1].from) cause
-          // ProseMirror's DOM reconciler to crash when content is inserted at
-          // the shared boundary (null nextSibling in renderDescs). Clear all
-          // decos in that case; asyncResult will rebuild them in ~150ms.
-          // Check after mapping: deletions between previously non-adjacent
-          // decos can pull them into adjacency.
-          const mapped = oldDecos.map(tr.mapping, tr.doc);
-          const decoList = mapped.find();
-          for (let i = 0; i + 1 < decoList.length; i++) {
-            if (decoList[i].to === decoList[i + 1].from) {
-              return DecorationSet.empty;
-            }
+              mapMatchesToDecorations(
+                newState.doc,
+                asyncResult,
+                typeColorMap,
+                highlightStyle,
+              ),
+            );
           }
-          return mapped;
-        }
 
-        return oldDecos;
+          // Doc changed or forced update → remap existing decoration positions
+          if (tr.docChanged || tr.getMeta("codexHighlightUpdate") === true) {
+            // Adjacent inline decorations (deco[i].to === deco[i+1].from) cause
+            // ProseMirror's DOM reconciler to crash when content is inserted at
+            // the shared boundary (null nextSibling in renderDescs). Clear all
+            // decos in that case; asyncResult will rebuild them in ~150ms.
+            // Check after mapping: deletions between previously non-adjacent
+            // decos can pull them into adjacency.
+            const mapped = oldDecos.map(tr.mapping, tr.doc);
+            const decoList = mapped.find();
+            for (let i = 0; i + 1 < decoList.length; i++) {
+              if (decoList[i].to === decoList[i + 1].from) {
+                return DecorationSet.empty;
+              }
+            }
+            return mapped;
+          }
+
+          return oldDecos;
+        } finally {
+          markEnd("plugin.codexHighlight.apply");
+        }
       },
     },
     props: {
