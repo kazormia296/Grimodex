@@ -202,6 +202,49 @@ function gatherAssetLicenses(): LicenseEntry[] {
 }
 
 /* ------------------------------------------------------------------ */
+/*  参考実装 (コードコピーではなく仕様・設計を参考にしたプロジェクト)    */
+/* ------------------------------------------------------------------ */
+
+const VSCODE_AI_NOVELIST_LICENSE_TEXT = `# The MIT License (MIT)
+
+Copyright (c) 2023 whiteball <whiteball11@gmail.com>
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+THE SOFTWARE.`;
+
+function gatherReferenceImplementations(): LicenseEntry[] {
+  return [
+    {
+      // AI のべりすと API クライアントの仕様 (エンドポイント、リクエスト/レスポンス
+      // フォーマット、認証ヘッダ等) を src-tauri/src/ai.rs の send_chat_ainoverist
+      // 実装時に参照した。コード自体はコピーしておらず、API プロトコルの事実情報を
+      // 元に独立実装した。MIT は「コピー時に著作権表記を含める」義務であり厳密には
+      // 不要だが、出典明示と礼儀のために掲載する。
+      name: "vscode-ai-novelist (API protocol reference for AI のべりすと integration)",
+      version: "main branch",
+      license: "MIT",
+      repository: "https://github.com/whiteball/vscode-ai-novelist",
+      licenseText: VSCODE_AI_NOVELIST_LICENSE_TEXT,
+    },
+  ];
+}
+
+/* ------------------------------------------------------------------ */
 /*  メイン                                                             */
 /* ------------------------------------------------------------------ */
 
@@ -218,10 +261,15 @@ function main() {
   const assetEntries = gatherAssetLicenses();
   console.log(`  Found ${assetEntries.length} assets`);
 
+  console.log("Gathering reference implementations...");
+  const referenceEntries = gatherReferenceImplementations();
+  console.log(`  Found ${referenceEntries.length} references`);
+
   const markdown = formatLicensesMarkdown(
     npmEntries,
     cargoEntries,
     assetEntries,
+    referenceEntries,
   );
 
   const rootOutput = join(ROOT, "THIRD_PARTY_LICENSES.md");

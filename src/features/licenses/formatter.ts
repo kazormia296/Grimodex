@@ -33,12 +33,17 @@ function formatSection(heading: string, entries: LicenseEntry[]): string[] {
 }
 
 /**
- * npm/cargo/アセットのライセンスエントリ一覧からMarkdown文字列を生成する。
+ * npm/cargo/アセット/参考実装のライセンスエントリ一覧からMarkdown文字列を生成する。
+ *
+ * Reference Implementations セクションは「コードを直接コピーはしていないが、
+ * API プロトコル仕様や設計判断を参考にしたプロジェクト」の明示的な attribution。
+ * 厳密には MIT 等の attribution 義務外だが、礼儀および出典追跡のために掲載する。
  */
 export function formatLicensesMarkdown(
   npmEntries: LicenseEntry[],
   cargoEntries: LicenseEntry[],
   assetEntries: LicenseEntry[] = [],
+  referenceEntries: LicenseEntry[] = [],
 ): string {
   const lines: string[] = [
     "# Third-Party Licenses",
@@ -50,6 +55,7 @@ export function formatLicensesMarkdown(
   lines.push(...formatSection("npm Packages", npmEntries));
   lines.push(...formatSection("Rust Crates", cargoEntries));
   lines.push(...formatSection("Assets", assetEntries));
+  lines.push(...formatSection("Reference Implementations", referenceEntries));
 
   return lines.join("\n");
 }
