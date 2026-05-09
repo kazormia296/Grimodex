@@ -80,3 +80,47 @@ export const useSceneContentStore = create<SceneContentState>()((set) => ({
     };
   },
 }));
+
+/**
+ * Subscribe to live-content updates for a scene with rAF coalescing.
+ *
+ * A burst of upstream `setLiveContent` calls (e.g. one per keystroke on
+ * another pane / mini-editor) collapses into at most one `apply(content)`
+ * invocation per animation frame, using last-write-wins semantics.
+ *
+ * Updates whose `sourceGroupIndex` matches `ownGroupIndex` are skipped — this
+ * is how each subscriber filters out its own broadcasts.
+ *
+ * @param sceneId - the scene/note/snippet/codex id to mirror
+ * @param ownGroupIndex - the caller's source-group sentinel; matching events
+ *                        are ignored (own broadcast)
+ * @param apply - invoked at most once per frame with the latest content
+ * @returns an unsubscribe function that also cancels any pending frame
+ */
+export function subscribeLiveContentRafCoalesced(
+  sceneId: string,
+  ownGroupIndex: number,
+  apply: (content: object) => void,
+): () => void {
+  let pending: object | null = null;
+  let frame: number | null = null;
+  const flush = () => {
+    frame = null;
+    const next = pending;
+    pending = null;
+    if (next == null) return;
+    apply(next);
+  };
+  const unsubscribe = useSceneContentStore
+    .getState()
+    .subscribe(sceneId, (content, sourceGroupIndex) => {
+      if (sourceGroupIndex === ownGroupIndex) return;
+      pending = content;
+      if (frame === null) frame = requestAnimationFrame(flush);
+    });
+  return () => {
+    unsubscribe();
+    if (frame !== null) cancelAnimationFrame(frame);
+    pending = null;
+  };
+}

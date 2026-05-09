@@ -40,6 +40,7 @@ vi.mock("@/features/editor/sceneContentStore", () => ({
       setLiveContent: vi.fn(),
     }),
   },
+  subscribeLiveContentRafCoalesced: vi.fn(() => () => {}),
 }));
 
 describe("CodexContentEditor", () => {

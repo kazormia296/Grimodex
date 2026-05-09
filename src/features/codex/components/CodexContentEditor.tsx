@@ -4,7 +4,10 @@ import StarterKit from "@tiptap/starter-kit";
 import { AuthorshipMark } from "@/features/attribution/AuthorshipMark";
 import { useAttribution } from "@/features/attribution/useAttribution";
 import { useCodexHighlight } from "@/features/editor/useCodexHighlight";
-import { useSceneContentStore } from "@/features/editor/sceneContentStore";
+import {
+  useSceneContentStore,
+  subscribeLiveContentRafCoalesced,
+} from "@/features/editor/sceneContentStore";
 import { CodexPopover } from "@/features/editor/CodexPopover";
 import { useTrashBinCapture } from "@/features/editor/useTrashBinCapture";
 import { useFocusedContentEditorStore } from "@/store/focusedContentEditorStore";
@@ -121,37 +124,23 @@ export function CodexContentEditor({
   // full-doc setContent per frame (and one JSON.stringify for onExternalSync).
   useEffect(() => {
     if (!entryId || !editor) return;
-    let pending: object | null = null;
-    let frame: number | null = null;
-    const flush = () => {
-      frame = null;
-      const next = pending;
-      pending = null;
-      if (next == null) return;
-      isApplyingExternalUpdate.current = true;
-      try {
-        editor.commands.setContent(
-          next as Parameters<typeof editor.commands.setContent>[0],
-          { emitUpdate: false },
-        );
-        const serialized = JSON.stringify(next);
-        onExternalSyncRef.current?.(serialized);
-      } finally {
-        isApplyingExternalUpdate.current = false;
-      }
-    };
-    const unsubscribe = useSceneContentStore
-      .getState()
-      .subscribe(entryId, (json, sourceGroupIndex) => {
-        if (sourceGroupIndex === CODEX_MINI_GROUP) return; // our own update — ignore
-        pending = json;
-        if (frame === null) frame = requestAnimationFrame(flush);
-      });
-    return () => {
-      unsubscribe();
-      if (frame !== null) cancelAnimationFrame(frame);
-      pending = null;
-    };
+    return subscribeLiveContentRafCoalesced(
+      entryId,
+      CODEX_MINI_GROUP,
+      (next) => {
+        isApplyingExternalUpdate.current = true;
+        try {
+          editor.commands.setContent(
+            next as Parameters<typeof editor.commands.setContent>[0],
+            { emitUpdate: false },
+          );
+          const serialized = JSON.stringify(next);
+          onExternalSyncRef.current?.(serialized);
+        } finally {
+          isApplyingExternalUpdate.current = false;
+        }
+      },
+    );
   }, [entryId, editor]);
 
   return (

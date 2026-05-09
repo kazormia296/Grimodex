@@ -34,7 +34,10 @@ import { useTreeStore } from "@/features/tree/treeStore";
 import { useTabStore } from "@/features/editor/tabStore";
 import { useEditorStore } from "@/features/editor/editorStore";
 import { useSnippetStore } from "./snippetStore";
-import { useSceneContentStore } from "@/features/editor/sceneContentStore";
+import {
+  useSceneContentStore,
+  subscribeLiveContentRafCoalesced,
+} from "@/features/editor/sceneContentStore";
 import { TagSelector } from "@/features/codex/components/TagSelector";
 import { TagsChip } from "@/features/codex/components/TagsChip";
 import {
@@ -138,35 +141,21 @@ export function SnippetDetailContent({
   // rAF-coalesced: source-side typing bursts collapse to one apply per frame.
   useEffect(() => {
     if (!editor) return;
-    let pending: object | null = null;
-    let frame: number | null = null;
-    const flush = () => {
-      frame = null;
-      const next = pending;
-      pending = null;
-      if (next == null) return;
-      isApplyingExternalUpdate.current = true;
-      try {
-        editor.commands.setContent(
-          next as Parameters<typeof editor.commands.setContent>[0],
-          { emitUpdate: false },
-        );
-      } finally {
-        isApplyingExternalUpdate.current = false;
-      }
-    };
-    const unsubscribe = useSceneContentStore
-      .getState()
-      .subscribe(snippet.id, (json, sourceGroupIndex) => {
-        if (sourceGroupIndex === SNIPPET_MINI_GROUP) return; // our own update
-        pending = json;
-        if (frame === null) frame = requestAnimationFrame(flush);
-      });
-    return () => {
-      unsubscribe();
-      if (frame !== null) cancelAnimationFrame(frame);
-      pending = null;
-    };
+    return subscribeLiveContentRafCoalesced(
+      snippet.id,
+      SNIPPET_MINI_GROUP,
+      (next) => {
+        isApplyingExternalUpdate.current = true;
+        try {
+          editor.commands.setContent(
+            next as Parameters<typeof editor.commands.setContent>[0],
+            { emitUpdate: false },
+          );
+        } finally {
+          isApplyingExternalUpdate.current = false;
+        }
+      },
+    );
   }, [snippet.id, editor]);
 
   // Autosave via useAutoSave so the unmount-flush guarantees that pending

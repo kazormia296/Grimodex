@@ -60,6 +60,7 @@ vi.mock("@/features/editor/sceneContentStore", () => ({
       setLiveContent: vi.fn(),
     }),
   },
+  subscribeLiveContentRafCoalesced: vi.fn(() => () => {}),
 }));
 
 vi.mock("@/features/editor/editorStore", () => ({

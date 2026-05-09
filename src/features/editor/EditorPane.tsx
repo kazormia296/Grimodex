@@ -103,6 +103,7 @@ import {
 import {
   useSceneContentStore,
   hasOtherLiveContentSubscriber,
+  subscribeLiveContentRafCoalesced,
 } from "@/features/editor/sceneContentStore";
 import { shouldAutoDraftTransition } from "@/features/editor/autoStatusTransition";
 import { shouldPromptSynopsis } from "@/features/editor/synopsisSuggestion";
@@ -1037,13 +1038,7 @@ export function EditorPane({
   // one full-doc setContent per frame on the mirror, instead of one per keystroke.
   useEffect(() => {
     if (!editor) return;
-    let pending: object | null = null;
-    let frame: number | null = null;
-    const flush = () => {
-      frame = null;
-      const next = pending;
-      pending = null;
-      if (next == null) return;
+    return subscribeLiveContentRafCoalesced(nodeId, groupIndex, (next) => {
       isApplyingExternalUpdate.current = true;
       try {
         editor.commands.setContent(
@@ -1053,19 +1048,7 @@ export function EditorPane({
       } finally {
         isApplyingExternalUpdate.current = false;
       }
-    };
-    const unsubscribe = useSceneContentStore
-      .getState()
-      .subscribe(nodeId, (content, sourceGroupIndex) => {
-        if (sourceGroupIndex === groupIndex) return; // Skip our own updates
-        pending = content;
-        if (frame === null) frame = requestAnimationFrame(flush);
-      });
-    return () => {
-      unsubscribe();
-      if (frame !== null) cancelAnimationFrame(frame);
-      pending = null;
-    };
+    });
   }, [nodeId, groupIndex, editor]);
 
   // Subscribe to unplaced beats changes → mark dirty and schedule save,
