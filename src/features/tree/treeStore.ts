@@ -1149,10 +1149,12 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
   },
 
   setCharCount(id, count) {
-    set((state) => {
-      if (state.charCounts[id] === count) return {};
-      return { charCounts: { ...state.charCounts, [id]: count } };
-    });
+    // Zustand v5 の setState は updater が `{}` を返しても新 state を作って
+    // listener 全員に通知してしまうため、updater 内で早期 return すると無駄な
+    // 再評価が走る (Phase 3 計測で打鍵中 longtask の主犯と判明)。set 自体を
+    // skip する。statSync (200ms debounce) 経由で打鍵中に呼ばれる。
+    if (get().charCounts[id] === count) return;
+    set((state) => ({ charCounts: { ...state.charCounts, [id]: count } }));
   },
 
   setAiRatios(ratios) {
