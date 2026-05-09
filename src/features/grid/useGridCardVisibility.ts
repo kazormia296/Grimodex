@@ -1,6 +1,7 @@
 import { useMemo } from "react";
 import { useCodexStore } from "@/features/codex/codexStore";
 import { useLabelStore } from "@/features/labels/labelStore";
+import { useTreeStore } from "@/features/tree/treeStore";
 import { parseBeatPreview } from "./parseBeatPreview";
 import type { TreeNodeData } from "@/features/tree/treeStore";
 import type { GridFilterSettings } from "./gridStore";
@@ -15,12 +16,12 @@ const EMPTY_CODEX_ENTRIES: ReturnType<
   typeof useCodexStore.getState
 >["entries"] = [];
 const EMPTY_NODE_LABELS: Record<string, string[]> = {};
+const EMPTY_CHAR_COUNTS: Record<string, number> = {};
 
 interface UseGridCardVisibilityArgs {
   scenes: TreeNodeData[];
   searchQuery: string;
   filter: GridFilterSettings;
-  charCounts: Record<string, number>;
   pinsByScene: Record<string, string[]>;
 }
 
@@ -28,9 +29,14 @@ export function useGridCardVisibility({
   scenes,
   searchQuery,
   filter,
-  charCounts,
   pinsByScene,
 }: UseGridCardVisibilityArgs): Map<string, CardVisibility> {
+  // Only subscribe to charCounts when the emptyOnly filter actually needs it.
+  // Otherwise return a stable empty constant so keystroke-driven charCounts
+  // updates do not cause a re-render here.
+  const charCounts = useTreeStore((s) =>
+    filter.emptyOnly ? s.charCounts : EMPTY_CHAR_COUNTS,
+  );
   const codexEntries = useCodexStore((s) =>
     s.entries.length > 0 ? s.entries : EMPTY_CODEX_ENTRIES,
   );

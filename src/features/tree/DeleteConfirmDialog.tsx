@@ -15,7 +15,6 @@ interface DeleteConfirmDialogProps {
   ids: string[];
   childMap: Record<string, string[]>;
   nodeMap: Record<string, TreeNodeData>;
-  charCounts: Record<string, number>;
   onCancel: () => void;
   onConfirm: () => void;
 }
@@ -26,11 +25,11 @@ export function DeleteConfirmDialog({
   ids,
   childMap,
   nodeMap,
-  charCounts,
   onCancel,
   onConfirm,
 }: DeleteConfirmDialogProps) {
   const { t } = useTranslation();
+  const charCounts = useTreeStore((s) => s.charCounts);
 
   const count = (() => {
     function collectAll(id: string): string[] {

@@ -18,14 +18,14 @@ export interface TreeRendererProps {
   labelFilter?: string[];
   nodeLabels?: Record<string, string[]>;
   viewMode: string;
-  charCounts: Record<string, number>;
-  aiRatios: Record<string, number>;
   showWordCounts: boolean;
   showStatusDots: boolean;
   showLabelDots: boolean;
   showAiAttribution: boolean;
   dropIndicator: DropIndicator | null;
-  nodeTotals: Record<string, number>;
+  /** For folder ids, the flat list of leaf descendant ids — used by
+   *  TreeNodeItem to compute its own running total via per-id selector. */
+  leafDescendantsByFolder: Record<string, string[]>;
   orderedNodes: TreeNodeData[];
 }
 
@@ -42,14 +42,12 @@ export function TreeRenderer({
   labelFilter,
   nodeLabels,
   viewMode,
-  charCounts,
-  aiRatios,
   showWordCounts,
   showStatusDots,
   showLabelDots,
   showAiAttribution,
   dropIndicator,
-  nodeTotals,
+  leafDescendantsByFolder,
   orderedNodes,
 }: TreeRendererProps) {
   const ids = childMap[parentId ?? "root"] ?? [];
@@ -70,8 +68,6 @@ export function TreeRenderer({
           nodeLabels,
         );
         const isExpanded = expandedIds.includes(id) || (!!query && visible);
-        const isLeaf = node.nodeType === "scene" || node.nodeType === "note";
-        const count = isLeaf ? (charCounts[id] ?? 0) : (nodeTotals[id] ?? 0);
         return (
           <Fragment key={id}>
             <TreeNodeItem
@@ -81,12 +77,11 @@ export function TreeRenderer({
               isSelected={selectedIds.includes(id)}
               isExpanded={isExpanded}
               isVisible={visible}
-              charCount={count}
+              leafDescendants={leafDescendantsByFolder[id]}
               showWordCounts={showWordCounts}
               showStatusDots={showStatusDots}
               showLabelDots={showLabelDots}
               showAiAttribution={showAiAttribution}
-              aiRatio={aiRatios[id] ?? 0}
               dropIndicator={dropIndicator}
               orderedNodes={orderedNodes}
               viewMode={viewMode}
@@ -104,14 +99,12 @@ export function TreeRenderer({
                 labelFilter={labelFilter}
                 nodeLabels={nodeLabels}
                 viewMode={viewMode}
-                charCounts={charCounts}
-                aiRatios={aiRatios}
                 showWordCounts={showWordCounts}
                 showStatusDots={showStatusDots}
                 showLabelDots={showLabelDots}
                 showAiAttribution={showAiAttribution}
                 dropIndicator={dropIndicator}
-                nodeTotals={nodeTotals}
+                leafDescendantsByFolder={leafDescendantsByFolder}
                 orderedNodes={orderedNodes}
               />
             </TreeNodeItem>

@@ -14,15 +14,23 @@ const STATUS_SORT_ORDER: Record<string, number> = {
 interface DerivedData {
   childMap: Record<string, string[]>;
   nodeMap: Record<string, TreeNodeData>;
-  nodeTotals: Record<string, number>;
+  /** For each folder id, the flat list of leaf (scene/note) descendant ids.
+   *  Used by TreeNodeItem to compute its own running total via a per-id
+   *  charCounts selector — this avoids passing the live charCounts map down
+   *  through every render and re-rendering the whole tree on each keystroke. */
+  leafDescendantsByFolder: Record<string, string[]>;
   flatNodes: TreeNodeData[];
 }
 
-/** Pure derivations from tree state — sort, child grouping, totals, and the
- *  flat visible list used by keyboard nav and the bottom drop zone. */
+/** Pure derivations from tree state — sort, child grouping, leaf-descendant
+ *  index per folder, and the flat visible list used by keyboard nav and the
+ *  bottom drop zone. charCounts is only consumed when sortMode === "wordcount";
+ *  totals are computed reactively per-folder inside TreeNodeItem. */
 export function useScenesDerivedData(args: {
   nodes: TreeNodeData[];
   sortMode: SortMode;
+  /** Only read when sortMode === "wordcount". Pass an empty object otherwise
+   *  to keep the derivation stable across keystrokes. */
   charCounts: Record<string, number>;
   expandedIds: string[];
   filterQuery: string;
@@ -79,24 +87,24 @@ export function useScenesDerivedData(args: {
     return { childMap: cm, nodeMap: nm };
   }, [nodes, sortMode, charCounts]);
 
-  const nodeTotals = useMemo(() => {
-    const totals: Record<string, number> = {};
-    function sumDescendants(id: string): number {
+  const leafDescendantsByFolder = useMemo(() => {
+    const result: Record<string, string[]> = {};
+    function collect(id: string): string[] {
       const node = nodeMap[id];
-      if (!node) return 0;
+      if (!node) return [];
       if (node.nodeType === "scene" || node.nodeType === "note") {
-        return charCounts[id] ?? 0;
+        return [id];
       }
-      let total = 0;
+      const acc: string[] = [];
       for (const childId of childMap[id] ?? []) {
-        total += sumDescendants(childId);
+        acc.push(...collect(childId));
       }
-      totals[id] = total;
-      return total;
+      result[id] = acc;
+      return acc;
     }
-    for (const id of childMap["root"] ?? []) sumDescendants(id);
-    return totals;
-  }, [nodeMap, childMap, charCounts]);
+    for (const id of childMap["root"] ?? []) collect(id);
+    return result;
+  }, [nodeMap, childMap]);
 
   const flatNodes = useMemo(
     () =>
@@ -121,5 +129,5 @@ export function useScenesDerivedData(args: {
     ],
   );
 
-  return { childMap, nodeMap, nodeTotals, flatNodes };
+  return { childMap, nodeMap, leafDescendantsByFolder, flatNodes };
 }

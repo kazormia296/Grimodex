@@ -1149,7 +1149,10 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
   },
 
   setCharCount(id, count) {
-    set((state) => ({ charCounts: { ...state.charCounts, [id]: count } }));
+    set((state) => {
+      if (state.charCounts[id] === count) return {};
+      return { charCounts: { ...state.charCounts, [id]: count } };
+    });
   },
 
   setAiRatios(ratios) {

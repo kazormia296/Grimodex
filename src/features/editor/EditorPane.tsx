@@ -196,6 +196,19 @@ export function EditorPane({
   const [, setWordCount] = useState(0);
   const [beatTotal, setBeatTotal] = useState(0);
   const [beatGenerated, setBeatGenerated] = useState(0);
+  // Debounce footer stats and tree-store charCount sync. These are display-only
+  // and don't need to update on every keystroke; settling 200ms after typing
+  // stops avoids a full doc walk + four React re-renders + a store notification
+  // (which fans out to every TreeNodeItem leaf selector) per character.
+  const statSyncTimeoutRef = useRef<number | null>(null);
+  useEffect(() => {
+    return () => {
+      if (statSyncTimeoutRef.current != null) {
+        window.clearTimeout(statSyncTimeoutRef.current);
+        statSyncTimeoutRef.current = null;
+      }
+    };
+  }, []);
   const charCountRef = useRef<HTMLSpanElement>(null);
   const { value: targetCharCount } = useSettingNumber(
     "editor.targetCharCount",
@@ -571,49 +584,61 @@ export function EditorPane({
       if (useInlineAiStore.getState().status !== "idle") return;
       schedule();
       setIsDirtyRef.current(true);
-      const text = getDocText(e.state.doc);
-      const count = text.length;
-      setCharCount(count);
-      setWordCount(text.trim() === "" ? 0 : text.trim().split(/\s+/).length);
-      const bc = countBeats(e.state.doc);
-      setBeatTotal(bc.total);
-      setBeatGenerated(bc.generated);
       const sid = saveSceneIdRef.current;
+
+      // Auto-promote preview tab to pinned when user starts editing.
       if (sid) {
-        // Auto-promote preview tab to pinned when user starts editing
         if (groupIndex === 0) {
           useTabStore.getState().pinTab(sid);
         } else {
           useTabStore.getState().pinSecondaryTab(sid);
         }
-        if (!isCodexMode && !isSnippetMode) {
-          useTreeStore.getState().setCharCount(sid, count);
-          // Auto-transition outline → draft on first keystroke in empty scene
-          const nodeStatus = useTreeStore
-            .getState()
-            .nodes.find((n) => n.id === sid)?.status as
-            | SceneStatus
-            | null
-            | undefined;
-          if (
-            shouldAutoDraftTransition(
-              count,
-              wasEmptyRef.current,
-              nodeStatus ?? null,
-            )
-          ) {
+        // Auto-transition outline → draft on first keystroke in empty scene.
+        // Only walk the doc text while wasEmptyRef is still true — once we've
+        // seen any content, this branch is skipped permanently.
+        if (!isCodexMode && !isSnippetMode && wasEmptyRef.current) {
+          const count = getDocText(e.state.doc).length;
+          if (count > 0) {
             wasEmptyRef.current = false;
-            useTreeStore
+            const nodeStatus = useTreeStore
               .getState()
-              .setStatus(sid, "draft")
-              .catch(() => {});
+              .nodes.find((n) => n.id === sid)?.status as
+              | SceneStatus
+              | null
+              | undefined;
+            if (shouldAutoDraftTransition(count, true, nodeStatus ?? null)) {
+              useTreeStore
+                .getState()
+                .setStatus(sid, "draft")
+                .catch(() => {});
+            }
           }
         }
-        // Broadcast to other panes showing the same content
+        // Broadcast to other panes showing the same content.
         useSceneContentStore
           .getState()
           .setLiveContent(sid, e.getJSON(), groupIndex);
       }
+
+      // Debounce stats: footer counts and tree-store charCount sync don't
+      // need to update on every keystroke. The doc walk + setState x4 +
+      // store fan-out happens once per typing burst instead of per char.
+      if (statSyncTimeoutRef.current != null) {
+        window.clearTimeout(statSyncTimeoutRef.current);
+      }
+      statSyncTimeoutRef.current = window.setTimeout(() => {
+        statSyncTimeoutRef.current = null;
+        const text = getDocText(e.state.doc);
+        const count = text.length;
+        setCharCount(count);
+        setWordCount(text.trim() === "" ? 0 : text.trim().split(/\s+/).length);
+        const bc = countBeats(e.state.doc);
+        setBeatTotal(bc.total);
+        setBeatGenerated(bc.generated);
+        if (sid && !isCodexMode && !isSnippetMode) {
+          useTreeStore.getState().setCharCount(sid, count);
+        }
+      }, 200);
     },
     onTransaction({ editor: e, transaction }) {
       if (!transaction.docChanged) return;
@@ -684,17 +709,29 @@ export function EditorPane({
       // beat changes immediately, without waiting for the debounced save.
       const placed = extractPlacedBeatPreviewFromDoc(e.state.doc);
       const unplaced = extractUnplacedBeatPreview(store.getBeats(sid));
-      useTreeStore.setState((s) => ({
-        nodes: s.nodes.map((n) =>
-          n.id === sid
-            ? {
-                ...n,
-                placedBeatPreview: placed === "[]" ? null : placed,
-                unplacedBeatPreview: unplaced === "[]" ? null : unplaced,
-              }
-            : n,
-        ),
-      }));
+      const placedNext = placed === "[]" ? null : placed;
+      const unplacedNext = unplaced === "[]" ? null : unplaced;
+      useTreeStore.setState((s) => {
+        const target = s.nodes.find((n) => n.id === sid);
+        if (
+          !target ||
+          ((target.placedBeatPreview ?? null) === placedNext &&
+            (target.unplacedBeatPreview ?? null) === unplacedNext)
+        ) {
+          return {};
+        }
+        return {
+          nodes: s.nodes.map((n) =>
+            n.id === sid
+              ? {
+                  ...n,
+                  placedBeatPreview: placedNext,
+                  unplacedBeatPreview: unplacedNext,
+                }
+              : n,
+          ),
+        };
+      });
     },
     onSelectionUpdate() {},
     onFocus() {

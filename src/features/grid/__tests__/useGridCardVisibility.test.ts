@@ -15,6 +15,13 @@ vi.mock("@/features/labels/labelStore", () => ({
   ),
 }));
 
+let mockCharCounts: Record<string, number> = {};
+vi.mock("@/features/tree/treeStore", () => ({
+  useTreeStore: vi.fn((selector: (s: unknown) => unknown) =>
+    selector({ charCounts: mockCharCounts }),
+  ),
+}));
+
 import { useCodexStore } from "@/features/codex/codexStore";
 import { useLabelStore } from "@/features/labels/labelStore";
 import { useGridCardVisibility } from "../useGridCardVisibility";
@@ -65,6 +72,7 @@ beforeEach(() => {
   mockUseLabelStore.mockImplementation((selector) =>
     selector({ nodeLabels: {} }),
   );
+  mockCharCounts = {};
 });
 
 describe("useGridCardVisibility — 検索", () => {
@@ -75,7 +83,6 @@ describe("useGridCardVisibility — 検索", () => {
         scenes,
         searchQuery: "",
         filter: DEFAULT_FILTER,
-        charCounts: {},
         pinsByScene: {},
       }),
     );
@@ -93,7 +100,6 @@ describe("useGridCardVisibility — 検索", () => {
         scenes,
         searchQuery: "序章",
         filter: DEFAULT_FILTER,
-        charCounts: {},
         pinsByScene: {},
       }),
     );
@@ -111,7 +117,6 @@ describe("useGridCardVisibility — 検索", () => {
         scenes,
         searchQuery: "旅",
         filter: DEFAULT_FILTER,
-        charCounts: {},
         pinsByScene: {},
       }),
     );
@@ -133,7 +138,6 @@ describe("useGridCardVisibility — 検索", () => {
         scenes,
         searchQuery: "伏線",
         filter: DEFAULT_FILTER,
-        charCounts: {},
         pinsByScene: {},
       }),
     );
@@ -151,7 +155,6 @@ describe("useGridCardVisibility — 検索", () => {
         scenes,
         searchQuery: "アリス",
         filter: DEFAULT_FILTER,
-        charCounts: {},
         pinsByScene: { s1: ["e1"] },
       }),
     );
@@ -168,7 +171,6 @@ describe("useGridCardVisibility — フィルタ", () => {
         scenes,
         searchQuery: "",
         filter: { ...DEFAULT_FILTER, emptyOnly: true },
-        charCounts: {},
         pinsByScene: {},
       }),
     );
@@ -177,13 +179,13 @@ describe("useGridCardVisibility — フィルタ", () => {
   });
 
   it("emptyOnly: charCounts をリアルタイム値として優先する", () => {
+    mockCharCounts = { s1: 500 };
     const scenes = [makeScene("s1", { charCount: 0 })];
     const { result } = renderHook(() =>
       useGridCardVisibility({
         scenes,
         searchQuery: "",
         filter: { ...DEFAULT_FILTER, emptyOnly: true },
-        charCounts: { s1: 500 },
         pinsByScene: {},
       }),
     );
@@ -201,7 +203,6 @@ describe("useGridCardVisibility — フィルタ", () => {
         scenes,
         searchQuery: "",
         filter: { ...DEFAULT_FILTER, hideCompleted: true },
-        charCounts: {},
         pinsByScene: {},
       }),
     );
@@ -217,7 +218,6 @@ describe("useGridCardVisibility — フィルタ", () => {
         scenes,
         searchQuery: "",
         filter: { ...DEFAULT_FILTER, codexFilter: "e1" },
-        charCounts: {},
         pinsByScene: { s1: ["e1", "e2"], s2: ["e2"] },
       }),
     );
@@ -234,7 +234,6 @@ describe("useGridCardVisibility — labelFilter", () => {
         scenes,
         searchQuery: "",
         filter: { ...DEFAULT_FILTER, labelFilter: [] },
-        charCounts: {},
         pinsByScene: {},
       }),
     );
@@ -252,7 +251,6 @@ describe("useGridCardVisibility — labelFilter", () => {
         scenes,
         searchQuery: "",
         filter: { ...DEFAULT_FILTER, labelFilter: ["label-a"] },
-        charCounts: {},
         pinsByScene: {},
       }),
     );
@@ -272,7 +270,6 @@ describe("useGridCardVisibility — labelFilter", () => {
         scenes,
         searchQuery: "",
         filter: { ...DEFAULT_FILTER, labelFilter: ["label-a", "label-b"] },
-        charCounts: {},
         pinsByScene: {},
       }),
     );
@@ -298,7 +295,6 @@ describe("useGridCardVisibility — labelFilter", () => {
           labelFilter: ["label-a"],
           emptyOnly: true,
         },
-        charCounts: {},
         pinsByScene: {},
       }),
     );
@@ -316,7 +312,6 @@ describe("useGridCardVisibility — labelFilter", () => {
         scenes,
         searchQuery: "",
         filter: { ...DEFAULT_FILTER, labelFilter: ["nonexistent-label"] },
-        charCounts: {},
         pinsByScene: {},
       }),
     );

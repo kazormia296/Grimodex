@@ -47,7 +47,6 @@ export function GridPanel() {
   const projectId = useTreeStore((s) => s.projectId);
   const moveNode = useTreeStore((s) => s.moveNode);
   const nodes = useTreeStore((s) => s.nodes);
-  const charCounts = useTreeStore((s) => s.charCounts);
   const deleteNode = useTreeStore((s) => s.deleteNode);
 
   const containerId = useGridStore((s) => s.containerId);
@@ -198,6 +197,7 @@ export function GridPanel() {
   // Bulk delete handler
   const handleDeleteScenes = useCallback(
     (ids: string[]) => {
+      const charCounts = useTreeStore.getState().charCounts;
       const anyHasContent = ids.some((id) => {
         const n = nodes.find((node) => node.id === id);
         return n && ((charCounts[id] ?? n.charCount ?? 0) > 0 || !!n.synopsis);
@@ -209,7 +209,7 @@ export function GridPanel() {
         for (const id of ids) void deleteNode(id);
       }
     },
-    [nodes, charCounts, clearSelection, deleteNode],
+    [nodes, clearSelection, deleteNode],
   );
 
   const sensors = useSensors(
@@ -437,18 +437,8 @@ export function GridPanel() {
     scenes: allDisplayedScenes,
     searchQuery,
     filter,
-    charCounts,
     pinsByScene,
   });
-
-  const totalCharCount = useMemo(
-    () =>
-      allDisplayedScenes.reduce(
-        (sum, s) => sum + (charCounts[s.id] ?? s.charCount ?? 0),
-        0,
-      ),
-    [allDisplayedScenes, charCounts],
-  );
 
   return (
     <DndContext
@@ -559,7 +549,7 @@ export function GridPanel() {
         <GridStatusBar
           totalChapters={totalChapters}
           totalScenes={totalScenes}
-          totalCharCount={totalCharCount}
+          displayedScenes={allDisplayedScenes}
         />
 
         {deleteConfirmIds && (

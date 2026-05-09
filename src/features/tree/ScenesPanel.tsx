@@ -29,43 +29,47 @@ import { ContextMenu, ContextMenuTrigger } from "@/components/ui/context-menu";
 import { useDropTarget } from "@/features/trash-bin/useDropTarget";
 
 const DEFAULT_PROJECT_ID = "default-project";
+const EMPTY_CHAR_COUNTS: Record<string, number> = {};
 
 export function ScenesPanel() {
   const { t } = useTranslation();
-  const {
-    nodes,
-    activeSceneId,
-    selectedIds,
-    isLoading,
-    expandedIds,
-    filterQuery,
-    viewMode,
-    sortMode,
-    statusFilter,
-    labelFilter,
-    charCounts,
-    aiRatios,
-    showWordCounts,
-    showStatusDots,
-    showLabelDots,
-    showAiAttribution,
-    autoRevealActiveScene,
-    loadTree,
-    createNode,
-    expandAll,
-    collapseAll,
-    setFilterQuery,
-    setStatusFilter,
-    toggleLabelFilter,
-    clearLabelFilter,
-    setLabelFilter,
-    toggleExpand,
-    setActiveScene,
-    moveNode,
-    pendingRevealId,
-    setPendingRenameId,
-    projectId,
-  } = useTreeStore();
+  const nodes = useTreeStore((s) => s.nodes);
+  const activeSceneId = useTreeStore((s) => s.activeSceneId);
+  const selectedIds = useTreeStore((s) => s.selectedIds);
+  const isLoading = useTreeStore((s) => s.isLoading);
+  const expandedIds = useTreeStore((s) => s.expandedIds);
+  const filterQuery = useTreeStore((s) => s.filterQuery);
+  const viewMode = useTreeStore((s) => s.viewMode);
+  const sortMode = useTreeStore((s) => s.sortMode);
+  const statusFilter = useTreeStore((s) => s.statusFilter);
+  const labelFilter = useTreeStore((s) => s.labelFilter);
+  // charCounts is only needed reactively when sorting by wordcount; otherwise
+  // we keep a stable empty constant so keystrokes don't re-render this panel.
+  // Per-leaf charCount display is handled inside TreeNodeItem via a per-id
+  // selector.
+  const charCounts = useTreeStore((s) =>
+    s.sortMode === "wordcount" ? s.charCounts : EMPTY_CHAR_COUNTS,
+  );
+  const showWordCounts = useTreeStore((s) => s.showWordCounts);
+  const showStatusDots = useTreeStore((s) => s.showStatusDots);
+  const showLabelDots = useTreeStore((s) => s.showLabelDots);
+  const showAiAttribution = useTreeStore((s) => s.showAiAttribution);
+  const autoRevealActiveScene = useTreeStore((s) => s.autoRevealActiveScene);
+  const pendingRevealId = useTreeStore((s) => s.pendingRevealId);
+  const projectId = useTreeStore((s) => s.projectId);
+  const loadTree = useTreeStore((s) => s.loadTree);
+  const createNode = useTreeStore((s) => s.createNode);
+  const expandAll = useTreeStore((s) => s.expandAll);
+  const collapseAll = useTreeStore((s) => s.collapseAll);
+  const setFilterQuery = useTreeStore((s) => s.setFilterQuery);
+  const setStatusFilter = useTreeStore((s) => s.setStatusFilter);
+  const toggleLabelFilter = useTreeStore((s) => s.toggleLabelFilter);
+  const clearLabelFilter = useTreeStore((s) => s.clearLabelFilter);
+  const setLabelFilter = useTreeStore((s) => s.setLabelFilter);
+  const toggleExpand = useTreeStore((s) => s.toggleExpand);
+  const setActiveScene = useTreeStore((s) => s.setActiveScene);
+  const moveNode = useTreeStore((s) => s.moveNode);
+  const setPendingRenameId = useTreeStore((s) => s.setPendingRenameId);
 
   const reduced = useReducedMotion();
   const allLabels = useLabelStore((s) => s.labels);
@@ -105,16 +109,17 @@ export function ScenesPanel() {
     };
   }, [loadTree]);
 
-  const { childMap, nodeMap, nodeTotals, flatNodes } = useScenesDerivedData({
-    nodes,
-    sortMode,
-    charCounts,
-    expandedIds,
-    filterQuery,
-    statusFilter,
-    labelFilter,
-    nodeLabels,
-  });
+  const { childMap, nodeMap, leafDescendantsByFolder, flatNodes } =
+    useScenesDerivedData({
+      nodes,
+      sortMode,
+      charCounts,
+      expandedIds,
+      filterQuery,
+      statusFilter,
+      labelFilter,
+      nodeLabels,
+    });
 
   // Auto-reveal active scene: scroll it into view when activeSceneId changes
   useEffect(() => {
@@ -185,10 +190,11 @@ export function ScenesPanel() {
       }
 
       // Check all descendants (including folder contents) for content/synopsis
+      const liveCharCounts = useTreeStore.getState().charCounts;
       const needsConfirm = ids.flatMap(collectAll).some((id) => {
         const node = nodeMap[id];
         if (!node || node.nodeType === "folder") return false;
-        return (charCounts[id] ?? 0) > 0 || !!node.synopsis;
+        return (liveCharCounts[id] ?? 0) > 0 || !!node.synopsis;
       });
       if (needsConfirm) {
         setDeleteConfirm(ids);
@@ -202,7 +208,7 @@ export function ScenesPanel() {
           .catch(() => {});
       }
     },
-    [nodeMap, charCounts, childMap],
+    [nodeMap, childMap],
   );
 
   const handleTreeKeyDown = useScenesKeyboard({
@@ -315,14 +321,12 @@ export function ScenesPanel() {
                         labelFilter={labelFilter}
                         nodeLabels={nodeLabels}
                         viewMode={viewMode}
-                        charCounts={charCounts}
-                        aiRatios={aiRatios}
                         showWordCounts={showWordCounts}
                         showStatusDots={showStatusDots}
                         showLabelDots={showLabelDots}
                         showAiAttribution={showAiAttribution}
                         dropIndicator={dropIndicator}
-                        nodeTotals={nodeTotals}
+                        leafDescendantsByFolder={leafDescendantsByFolder}
                         orderedNodes={flatNodes}
                       />
                     </ul>
@@ -358,7 +362,6 @@ export function ScenesPanel() {
               ids={deleteConfirm}
               childMap={childMap}
               nodeMap={nodeMap}
-              charCounts={charCounts}
               onCancel={() => setDeleteConfirm(null)}
               onConfirm={() => setDeleteConfirm(null)}
             />

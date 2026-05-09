@@ -78,12 +78,13 @@ interface TreeNodeItemProps {
   isExpanded: boolean;
   children?: React.ReactNode;
   isVisible: boolean;
-  charCount: number;
+  /** For folders, the flat list of leaf descendant ids whose charCount should
+   *  be summed for the running total. Undefined for leaves. */
+  leafDescendants?: string[];
   showWordCounts: boolean;
   showStatusDots: boolean;
   showLabelDots: boolean;
   showAiAttribution: boolean;
-  aiRatio: number; // 0-100; shown as badge when showAiAttribution && aiRatio > 0
   dropIndicator: DropIndicator | null;
   /** Ordered flat list of nodes for Shift+Click range selection */
   orderedNodes: TreeNodeData[];
@@ -99,12 +100,11 @@ export function TreeNodeItem({
   isExpanded,
   children,
   isVisible,
-  charCount,
+  leafDescendants,
   showWordCounts,
   showStatusDots,
   showLabelDots,
   showAiAttribution,
-  aiRatio,
   dropIndicator,
   orderedNodes,
   viewMode,
@@ -115,6 +115,20 @@ export function TreeNodeItem({
   const setStatus = useTreeStore((s) => s.setStatus);
   const pendingRenameId = useTreeStore((s) => s.pendingRenameId);
   const setPendingRenameId = useTreeStore((s) => s.setPendingRenameId);
+
+  // Per-id reactive subscriptions: a keystroke that changes one scene's
+  // charCount only re-renders that scene's leaf and the folder ancestors
+  // whose summed total actually changed (Object.is comparison on the number).
+  const isLeafForCount = node.nodeType === "scene" || node.nodeType === "note";
+  const fallbackCharCount = node.charCount ?? 0;
+  const charCount = useTreeStore((s) => {
+    if (isLeafForCount) return s.charCounts[node.id] ?? fallbackCharCount;
+    if (!leafDescendants) return 0;
+    let total = 0;
+    for (const id of leafDescendants) total += s.charCounts[id] ?? 0;
+    return total;
+  });
+  const aiRatio = useTreeStore((s) => s.aiRatios[node.id] ?? 0);
 
   const { t } = useTranslation();
   const [isEditing, setIsEditing] = useState(false);
