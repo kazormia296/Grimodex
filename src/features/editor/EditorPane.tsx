@@ -381,6 +381,7 @@ export function EditorPane({
       // Mirror the derived previews into the tree store so the Grid panel
       // reflects placed/unplaced changes without waiting for the next
       // loadTree (e.g. unplaced→placed via drag&drop).
+      markStart("editor.coreSave.treeMirror");
       useTreeStore.setState((s) => ({
         nodes: s.nodes.map((n) =>
           n.id === id
@@ -392,6 +393,7 @@ export function EditorPane({
             : n,
         ),
       }));
+      markEnd("editor.coreSave.treeMirror");
       markStart("editor.coreSave.saveAuthorship");
       await saveAuthorshipSpans(id, ed.state.doc);
       markEnd("editor.coreSave.saveAuthorship");
@@ -612,17 +614,23 @@ export function EditorPane({
       // 再度 onUpdate が走り、その時に通常の schedule が実行される。
       if (useInlineAiStore.getState().status !== "idle") return;
       markStart("editor.onUpdate");
+      markStart("editor.onUpdate.schedule");
       schedule();
+      markEnd("editor.onUpdate.schedule");
+      markStart("editor.onUpdate.setDirty");
       setIsDirtyRef.current(true);
+      markEnd("editor.onUpdate.setDirty");
       const sid = saveSceneIdRef.current;
 
       // Auto-promote preview tab to pinned when user starts editing.
       if (sid) {
+        markStart("editor.onUpdate.tabPin");
         if (groupIndex === 0) {
           useTabStore.getState().pinTab(sid);
         } else {
           useTabStore.getState().pinSecondaryTab(sid);
         }
+        markEnd("editor.onUpdate.tabPin");
         // Auto-transition outline → draft on first keystroke in empty scene.
         // Only walk the doc text while wasEmptyRef is still true — once we've
         // seen any content, this branch is skipped permanently.
@@ -693,6 +701,7 @@ export function EditorPane({
       //   Appear in doc + still in store    → drop from store (Unplace → Undo,
       //                                       prevents the same id showing up
       //                                       in both lists in the Grid).
+      markStart("editor.onTransaction.beatScan");
       const oldBeats = new Map<
         string,
         {
@@ -725,6 +734,7 @@ export function EditorPane({
         }
         return true;
       });
+      markEnd("editor.onTransaction.beatScan");
 
       const store = useUnplacedBeatsStore.getState();
 
@@ -748,6 +758,7 @@ export function EditorPane({
 
       // Live-sync the Grid preview cache (treeStore) so the Grid panel sees
       // beat changes immediately, without waiting for the debounced save.
+      markStart("editor.onTransaction.treeMirror");
       const placed = extractPlacedBeatPreviewFromDoc(e.state.doc);
       const unplaced = extractUnplacedBeatPreview(store.getBeats(sid));
       const placedNext = placed === "[]" ? null : placed;
@@ -773,6 +784,7 @@ export function EditorPane({
           ),
         };
       });
+      markEnd("editor.onTransaction.treeMirror");
       markEnd("editor.onTransaction");
     },
     onSelectionUpdate() {},
