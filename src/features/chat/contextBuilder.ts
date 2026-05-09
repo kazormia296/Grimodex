@@ -1,4 +1,4 @@
-import type { Tiktoken } from "js-tiktoken/lite";
+import type { Tiktoken } from "tiktoken/lite/init";
 import i18next from "@/lib/i18n";
 import type { TreeNodeData } from "@/features/tree/treeStore";
 import { cmpKeys } from "@/features/tree/fractionalIndex";
@@ -195,23 +195,40 @@ export interface SystemPromptResult {
   trimmedLayers?: string[];
 }
 
-// js-tiktoken は cl100k/p50k/r50k/o200k 等の BPE テーブルを含み 5MB 超ある。
-// メインチャンクから切り離すため lite + 必要 rank だけを動的 import する。
+// tiktoken (WASM) を o200k_base ranks + lite ランタイムだけ動的 import する。
 // 起動を遅らせないよう事前ロードはせず、`ensureTokenizer()` を chat フロー入口で await する。
 let encoder: Tiktoken | null = null;
-let encoderLoadingPromise: Promise<Tiktoken> | null = null;
+let encoderLoadingPromise: Promise<Tiktoken | null> | null = null;
 let _heuristicWarned = false;
 
 export async function ensureTokenizer(): Promise<void> {
   if (encoder) return;
   if (!encoderLoadingPromise) {
     encoderLoadingPromise = (async () => {
-      const [lite, ranks] = await Promise.all([
-        import("js-tiktoken/lite"),
-        import("js-tiktoken/ranks/o200k_base"),
-      ]);
-      encoder = new lite.Tiktoken(ranks.default);
-      return encoder;
+      try {
+        const [liteInit, o200k, wasmUrl] = await Promise.all([
+          import("tiktoken/lite/init"),
+          import("tiktoken/encoders/o200k_base.json"),
+          import("tiktoken/lite/tiktoken_bg.wasm?url"),
+        ]);
+        await liteInit.init((imports) =>
+          WebAssembly.instantiateStreaming(fetch(wasmUrl.default), imports),
+        );
+        encoder = new liteInit.Tiktoken(
+          o200k.default.bpe_ranks,
+          o200k.default.special_tokens,
+          o200k.default.pat_str,
+        );
+        return encoder;
+      } catch (e) {
+        // テスト環境 (happy-dom) や WASM サポート無し環境では heuristic にフォールバック。
+        // countTokens() の `if (encoder)` 分岐で text.length / 2 が返る。
+        console.warn(
+          "[contextBuilder] tiktoken WASM init failed, falling back to heuristic",
+          e,
+        );
+        return null;
+      }
     })();
   }
   await encoderLoadingPromise;
@@ -586,38 +603,47 @@ export function buildSystemPrompt(
     }
   }
 
+  // 各 layer のトークン数を 1 度だけ計算 (cache hit でも text 全長 hash コストを避ける)
+  const baseTokens = countTokens(baseText);
+  const l1Tokens = countTokens(effectiveL1);
+  const l2Tokens = countTokens(effectiveL2);
+  const l3Tokens = countTokens(effectiveL3);
+  const l4Tokens = countTokens(effectiveL4);
+  const l5Tokens = effectiveL5 ? countTokens(effectiveL5) : 0;
+  const l6Tokens = effectiveL6 ? countTokens(effectiveL6) : 0;
+
   layers.push({
     layer: "L1",
     label: i18next.t("chat.context.layer.L1"),
-    used: countTokens(effectiveL1),
+    used: l1Tokens,
   });
   layers.push({
     layer: "L2",
     label: i18next.t("chat.context.layer.L2"),
-    used: countTokens(effectiveL2),
+    used: l2Tokens,
   });
   layers.push({
     layer: "L3",
     label: i18next.t("chat.context.layer.L3"),
-    used: countTokens(effectiveL3),
+    used: l3Tokens,
   });
   layers.push({
     layer: "L4",
     label: i18next.t("chat.context.layer.L4"),
-    used: countTokens(effectiveL4),
+    used: l4Tokens,
   });
   if (effectiveL5) {
     layers.push({
       layer: "L5",
       label: i18next.t("chat.context.layer.L5"),
-      used: countTokens(effectiveL5),
+      used: l5Tokens,
     });
   }
   if (effectiveL6) {
     layers.push({
       layer: "L6",
       label: i18next.t("chat.context.layer.L6"),
-      used: countTokens(effectiveL6),
+      used: l6Tokens,
     });
   }
 
@@ -630,7 +656,16 @@ export function buildSystemPrompt(
     effectiveL5,
     effectiveL6,
   ].join("\n");
-  const totalTokens = countTokens(prompt);
+  // 結合後の全文を再 tokenize しない: 各 layer 合計 + join した \n 6 個分 (BPE で各 1 token)
+  const totalTokens =
+    baseTokens +
+    l1Tokens +
+    l2Tokens +
+    l3Tokens +
+    l4Tokens +
+    l5Tokens +
+    l6Tokens +
+    6;
 
   return {
     prompt,

@@ -72,7 +72,6 @@
     "gsap": "^3.15.0",
     "i18next": "^26.0.4",
     "jotai": "^2.19.0",
-    "js-tiktoken": "^1.0.21",
     "js-yaml": "^4.1.1",
     "lucide-react": "^1.7.0",
     "matter-js": "^0.20.0",
@@ -89,6 +88,7 @@
     "remark-gfm": "^4.0.1",
     "sonner": "^2.0.7",
     "tailwind-merge": "^3.5.0",
+    "tiktoken": "^1.0.22",
     "tiptap-markdown": "^0.9.0",
     "zustand": "^5.0.12"
   },
