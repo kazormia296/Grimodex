@@ -415,7 +415,7 @@ pub fn codex_match_text(
     };
     let match_ms = match_started.elapsed().as_millis();
     let total_ms = started.elapsed().as_millis();
-    if total_ms >= 5 {
+    if total_ms >= 50 {
         tracing::warn!(
             "codex_match_text total={}ms lock_wait={}ms match={}ms text_chars={}",
             total_ms,

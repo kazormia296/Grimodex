@@ -10,7 +10,7 @@ use super::{BatchStatement, Database};
 /// running the actual statements). The command-layer log adds a `total=`
 /// figure so ws_state lock contention can be derived as
 /// `total - lock_wait - sql`.
-const SLOW_DB_CALL_MS: u128 = 5;
+const SLOW_DB_CALL_MS: u128 = 50;
 
 fn log_prefix(sql: &str) -> String {
     let trimmed = sql.trim_start();

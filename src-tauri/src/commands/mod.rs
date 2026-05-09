@@ -105,7 +105,7 @@ pub(crate) fn with_db<T>(
     let lock_started = std::time::Instant::now();
     let inner = ws_state.inner.lock().map_err(|e| anyhow::anyhow!("{e}"))?;
     let ws_lock_ms = lock_started.elapsed().as_millis();
-    if ws_lock_ms >= 5 {
+    if ws_lock_ms >= 50 {
         tracing::warn!("with_db ws_state.lock wait={}ms", ws_lock_ms);
     }
     let ws = inner

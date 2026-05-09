@@ -5,14 +5,12 @@ use crate::database;
 
 use super::{with_db, AppError, QueryResult, WorkspaceState};
 
-/// Phase 5 instrumentation: log when a single command takes long enough that
-/// it can plausibly cause a visible UI hitch. The split between this log
-/// (`db_execute total=...`) and the per-call log inside
-/// `database::execute` (`database.execute lock_wait=... sql=...`) lets us
-/// attribute the time to ws_state lock contention vs conn lock vs SQL itself.
-/// Lowered to 5ms so we can correlate with frontend-perceived 8s autosaves
-/// (whose Rust-side execution may be sub-50ms).
-const SLOW_COMMAND_MS: u128 = 5;
+/// Phase 5 instrumentation kept as a regression tripwire: warn only when a
+/// single command takes long enough to plausibly cause a visible UI hitch.
+/// The split between this log (`db_execute total=...`) and the per-call log
+/// inside `database::execute` (`database.execute lock_wait=... sql=...`)
+/// attributes time to ws_state lock vs conn lock vs SQL itself.
+const SLOW_COMMAND_MS: u128 = 50;
 
 fn sql_prefix(sql: &str) -> String {
     let trimmed = sql.trim_start();
