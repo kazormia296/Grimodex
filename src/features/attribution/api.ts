@@ -24,7 +24,7 @@ export async function saveAuthorshipSpans(
   // span 件数を topMarks に露出させて、fix 戦略の判断材料にする
   markStart(`saveAuthorship.spanCount.${spans.length}`);
   markEnd(`saveAuthorship.spanCount.${spans.length}`);
-  // eslint-disable-next-line no-console
+
   console.debug("[saveAuthorship] spans:", spans.length);
   if (spans.length === 0) return;
 
