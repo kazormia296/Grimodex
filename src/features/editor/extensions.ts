@@ -1,8 +1,6 @@
 import StarterKit from "@tiptap/starter-kit";
 import { Extension } from "@tiptap/core";
 import { Markdown } from "tiptap-markdown";
-import Underline from "@tiptap/extension-underline";
-import Link from "@tiptap/extension-link";
 import { Table } from "@tiptap/extension-table";
 import TableRow from "@tiptap/extension-table-row";
 import TableHeader from "@tiptap/extension-table-header";
@@ -144,15 +142,15 @@ export function getEditorExtensions(
   options: EditorExtensionOptions = {},
 ): Extensions {
   const extensions: Extensions = [
-    StarterKit.configure({ paragraph: false }),
+    StarterKit.configure({
+      paragraph: false,
+      link: {
+        openOnClick: false,
+        HTMLAttributes: { target: "_blank", rel: "noopener noreferrer" },
+      },
+    }),
     ParagraphWithEmptyLineSupport,
     Markdown.configure({ html: true }),
-    // Official extensions
-    Underline,
-    Link.configure({
-      openOnClick: false,
-      HTMLAttributes: { target: "_blank", rel: "noopener noreferrer" },
-    }),
     Placeholder.configure({
       placeholder: () => i18next.t("editor.placeholder"),
     }),

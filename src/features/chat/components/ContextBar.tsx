@@ -231,10 +231,18 @@ export function ContextBar({
     <>
       <div className="border-b border-border" data-testid="context-bar">
         {/* ヘッダー行: クリックで折りたたみ */}
-        <button
-          type="button"
+        <div
+          role="button"
+          tabIndex={0}
           onClick={() => setCollapsed((v) => !v)}
-          className="flex w-full items-center justify-between px-4 py-1 text-xs text-muted-foreground hover:bg-muted/30"
+          onKeyDown={(e) => {
+            if (e.key === "Enter" || e.key === " ") {
+              e.preventDefault();
+              setCollapsed((v) => !v);
+            }
+          }}
+          aria-expanded={!collapsed}
+          className="flex w-full cursor-pointer items-center justify-between px-4 py-1 text-xs text-muted-foreground hover:bg-muted/30"
         >
           <span className="flex items-center gap-1.5 font-medium">
             Context
@@ -272,7 +280,7 @@ export function ContextBar({
               <ChevronUp className="h-3 w-3" />
             )}
           </div>
-        </button>
+        </div>
 
         {/* ピル行 */}
         {!collapsed && (
