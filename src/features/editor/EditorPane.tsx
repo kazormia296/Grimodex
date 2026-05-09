@@ -381,18 +381,13 @@ export function EditorPane({
       // Mirror the derived previews into the tree store so the Grid panel
       // reflects placed/unplaced changes without waiting for the next
       // loadTree (e.g. unplaced→placed via drag&drop).
+      // Phase 4: nodes[] ではなく nodePreviews を更新するので、whole-array
+      // selector 29 サイトは notify されない (Phase 3 メモ参照)。
       markStart("editor.coreSave.treeMirror");
-      useTreeStore.setState((s) => ({
-        nodes: s.nodes.map((n) =>
-          n.id === id
-            ? {
-                ...n,
-                placedBeatPreview: placedBeatPreview ?? null,
-                unplacedBeatPreview: unplacedBeatPreview ?? null,
-              }
-            : n,
-        ),
-      }));
+      useTreeStore.getState().setNodePreview(id, {
+        placed: placedBeatPreview ?? null,
+        unplaced: unplacedBeatPreview ?? null,
+      });
       markEnd("editor.coreSave.treeMirror");
       markStart("editor.coreSave.saveAuthorship");
       await saveAuthorshipSpans(id, ed.state.doc);
@@ -758,35 +753,15 @@ export function EditorPane({
 
       // Live-sync the Grid preview cache (treeStore) so the Grid panel sees
       // beat changes immediately, without waiting for the debounced save.
-      // Why: Zustand v5 の setState は updater が `{}` を返しても
-      // `Object.assign({}, state, {})` で新 state object を作って listener 全員に
-      // 通知する。毎打鍵 (50/s) この経路が走ると subscriber 全員の selector が
-      // 走り、最終的に React commit が累積して打鍵中の longtask が大量発生する
-      // (Phase 3 計測で B 内訳の 95% を占めていた)。setState の updater 内で
-      // 早期 return しても遅い — 呼ぶ前に同値判定して setState 自体を skip する。
+      // Phase 4: 打鍵 50/s の経路。setNodePreview が同値 skip + nodes[] 非更新
+      // なので、whole-array selector 29 サイトは notify されない。
       markStart("editor.onTransaction.treeMirror");
       const placed = extractPlacedBeatPreviewFromDoc(e.state.doc);
       const unplaced = extractUnplacedBeatPreview(store.getBeats(sid));
-      const placedNext = placed === "[]" ? null : placed;
-      const unplacedNext = unplaced === "[]" ? null : unplaced;
-      const cur = useTreeStore.getState().nodes.find((n) => n.id === sid);
-      const same =
-        cur &&
-        (cur.placedBeatPreview ?? null) === placedNext &&
-        (cur.unplacedBeatPreview ?? null) === unplacedNext;
-      if (!same) {
-        useTreeStore.setState((s) => ({
-          nodes: s.nodes.map((n) =>
-            n.id === sid
-              ? {
-                  ...n,
-                  placedBeatPreview: placedNext,
-                  unplacedBeatPreview: unplacedNext,
-                }
-              : n,
-          ),
-        }));
-      }
+      useTreeStore.getState().setNodePreview(sid, {
+        placed: placed === "[]" ? null : placed,
+        unplaced: unplaced === "[]" ? null : unplaced,
+      });
       markEnd("editor.onTransaction.treeMirror");
       markEnd("editor.onTransaction");
     },
@@ -1099,16 +1074,9 @@ export function EditorPane({
         setIsDirtyRef.current(true);
         const beats = useUnplacedBeatsStore.getState().getBeats(nodeId);
         const unplaced = extractUnplacedBeatPreview(beats);
-        useTreeStore.setState((s) => ({
-          nodes: s.nodes.map((n) =>
-            n.id === nodeId
-              ? {
-                  ...n,
-                  unplacedBeatPreview: unplaced === "[]" ? null : unplaced,
-                }
-              : n,
-          ),
-        }));
+        useTreeStore.getState().setNodePreview(nodeId, {
+          unplaced: unplaced === "[]" ? null : unplaced,
+        });
       });
     return unsubscribe;
   }, [nodeId, isCodexMode, isSnippetMode, schedule]);
@@ -1229,19 +1197,13 @@ export function EditorPane({
 
           // Lazy backfill of placed_beat_preview for legacy scenes that have
           // placed sceneBeat nodes but no cached preview yet.
-          const node = useTreeStore
-            .getState()
-            .nodes.find((n) => n.id === nodeId);
-          if (node && node.placedBeatPreview == null) {
+          const curPreview = useTreeStore.getState().nodePreviews[nodeId];
+          if (curPreview?.placed == null) {
             const preview = extractPlacedBeatPreview(editor!.getJSON());
             if (preview !== "[]") {
               const next = preview;
               savePlacedBeatPreviewOnly(nodeId, next).catch(() => {});
-              useTreeStore.setState((s) => ({
-                nodes: s.nodes.map((n) =>
-                  n.id === nodeId ? { ...n, placedBeatPreview: next } : n,
-                ),
-              }));
+              useTreeStore.getState().setNodePreview(nodeId, { placed: next });
             }
           }
         }

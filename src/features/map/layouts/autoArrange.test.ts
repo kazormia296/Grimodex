@@ -22,8 +22,6 @@ function makeScene(
     locationId: null,
     createdAt: "",
     charCount: 0,
-    unplacedBeatPreview: null,
-    placedBeatPreview: null,
     updatedAt: "",
   };
 }

@@ -1,7 +1,7 @@
 import { useMemo } from "react";
 import { useCodexStore } from "@/features/codex/codexStore";
 import { useLabelStore } from "@/features/labels/labelStore";
-import { useTreeStore } from "@/features/tree/treeStore";
+import { useTreeStore, type NodeBeatPreview } from "@/features/tree/treeStore";
 import { parseBeatPreview } from "./parseBeatPreview";
 import type { TreeNodeData } from "@/features/tree/treeStore";
 import type { GridFilterSettings } from "./gridStore";
@@ -17,6 +17,7 @@ const EMPTY_CODEX_ENTRIES: ReturnType<
 >["entries"] = [];
 const EMPTY_NODE_LABELS: Record<string, string[]> = {};
 const EMPTY_CHAR_COUNTS: Record<string, number> = {};
+const EMPTY_NODE_PREVIEWS: Record<string, NodeBeatPreview> = {};
 
 interface UseGridCardVisibilityArgs {
   scenes: TreeNodeData[];
@@ -36,6 +37,12 @@ export function useGridCardVisibility({
   // updates do not cause a re-render here.
   const charCounts = useTreeStore((s) =>
     filter.emptyOnly ? s.charCounts : EMPTY_CHAR_COUNTS,
+  );
+  // Beat preview は search match でしか使わない。検索クエリが空なら subscribe
+  // しないことで、autosave 時の preview 更新でこの hook が再評価されるのを防ぐ。
+  const hasQuery = searchQuery.trim().length > 0;
+  const nodePreviews = useTreeStore((s) =>
+    hasQuery ? s.nodePreviews : EMPTY_NODE_PREVIEWS,
   );
   const codexEntries = useCodexStore((s) =>
     s.entries.length > 0 ? s.entries : EMPTY_CODEX_ENTRIES,
@@ -60,9 +67,10 @@ export function useGridCardVisibility({
       if (q) {
         const titleMatch = scene.title.toLowerCase().includes(q);
         const synopsisMatch = (scene.synopsis ?? "").toLowerCase().includes(q);
+        const sceneNew = nodePreviews[scene.id];
         const beatLines = [
-          ...(parseBeatPreview(scene.placedBeatPreview) ?? []),
-          ...(parseBeatPreview(scene.unplacedBeatPreview) ?? []),
+          ...(parseBeatPreview(sceneNew?.placed ?? null) ?? []),
+          ...(parseBeatPreview(sceneNew?.unplaced ?? null) ?? []),
         ];
         const beatMatch = beatLines.some((line) =>
           line.toLowerCase().includes(q),
@@ -103,6 +111,7 @@ export function useGridCardVisibility({
     searchQuery,
     filter,
     charCounts,
+    nodePreviews,
     pinsByScene,
     codexEntries,
     nodeLabels,

@@ -3,7 +3,7 @@ import { useDraggable, useDroppable } from "@dnd-kit/core";
 import { useTranslation } from "react-i18next";
 import { useTabStore } from "@/features/editor/tabStore";
 import { useLayoutStore } from "@/features/layout/layoutStore";
-import { useTreeStore } from "@/features/tree/treeStore";
+import { useNodeBeatPreview, useTreeStore } from "@/features/tree/treeStore";
 import { StatusBadge } from "@/features/tree/StatusBadge";
 import { addUnplacedBeatFromGrid } from "@/features/editor/beat/addUnplacedBeatFromGrid";
 import type { TreeNodeData } from "@/features/tree/treeStore";
@@ -49,6 +49,7 @@ export function GridSceneCard({
     (s) => s.charCounts[scene.id] ?? scene.charCount ?? 0,
   );
   const deleteNode = useTreeStore((s) => s.deleteNode);
+  const preview = useNodeBeatPreview(scene.id);
 
   const isSelected = useGridStore((s) => s.selectedSceneIds.has(scene.id));
   const isRevealed = useGridStore((s) => s.revealedSceneId === scene.id);
@@ -203,8 +204,8 @@ export function GridSceneCard({
         <GridCardBody
           nodeId={scene.id}
           synopsis={scene.synopsis}
-          unplacedBeatPreview={scene.unplacedBeatPreview}
-          placedBeatPreview={scene.placedBeatPreview}
+          unplacedBeatPreview={preview.unplaced}
+          placedBeatPreview={preview.placed}
           showSynopsis={display.showSynopsis}
           showBeats={display.showBeats}
           compact={display.compactCards}

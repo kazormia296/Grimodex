@@ -40,8 +40,6 @@ export interface TreeNodeData {
   povCharacterId: string | null;
   locationId: string | null;
   charCount: number;
-  unplacedBeatPreview: string | null;
-  placedBeatPreview: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -73,11 +71,25 @@ function toNodeData(n: ApiNode): TreeNodeData {
     povCharacterId: n.povCharacterId ?? null,
     locationId: n.locationId ?? null,
     charCount: n.charCount,
-    unplacedBeatPreview: n.unplacedBeatPreview ?? null,
-    placedBeatPreview: n.placedBeatPreview ?? null,
     createdAt: n.createdAt,
     updatedAt: n.updatedAt,
   };
+}
+
+export interface NodeBeatPreview {
+  placed: string | null;
+  unplaced: string | null;
+}
+
+const EMPTY_NODE_PREVIEW: NodeBeatPreview = { placed: null, unplaced: null };
+
+/**
+ * セレクター内で fallback として使う安定参照。`?? {placed:null,unplaced:null}`
+ * を毎回作ると Zustand の selector identity が変わって無限ループになる
+ * (feedback_zustand_selector_new_ref.md)。
+ */
+export function emptyNodeBeatPreview(): NodeBeatPreview {
+  return EMPTY_NODE_PREVIEW;
 }
 
 function computeScenes(nodes: TreeNodeData[]): SceneMeta[] {
@@ -106,6 +118,14 @@ interface TreeState {
   sortMode: SortMode;
   statusFilter: SceneStatus | null; // null = show all
   labelFilter: string[]; // [] = show all; OR semantics
+
+  /**
+   * Beat preview を nodes[] から分離して保持する。Phase 4 で打鍵中/autosave 時に
+   * `nodes: nodes.map(...)` で新配列を作るのを避けるため (whole-array selector
+   * 29 サイトが notify されていた)。consumer は useNodeBeatPreview / nodePreviews
+   * セレクター経由で読む。
+   */
+  nodePreviews: Record<string, NodeBeatPreview>;
 
   // Display settings
   charCounts: Record<string, number>;
@@ -178,6 +198,15 @@ interface TreeState {
   toggleLabelFilter: (id: string) => void;
   setLabelFilter: (ids: string[]) => void;
   clearLabelFilter: () => void;
+
+  /**
+   * Beat preview を更新する。同値なら set 自体を skip して subscriber 全員への
+   * notify を回避する (feedback_zustand_set_empty_object.md)。partial 指定可。
+   */
+  setNodePreview: (
+    id: string,
+    next: { placed?: string | null; unplaced?: string | null },
+  ) => void;
 
   // Display settings
   setCharCount: (id: string, count: number) => void;
@@ -391,6 +420,7 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
   statusFilter: null,
   labelFilter: [],
   charCounts: {},
+  nodePreviews: {},
   aiRatios: {},
   showWordCounts: true,
   showStatusDots: true,
@@ -417,6 +447,17 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
           charCounts[n.id] = n.charCount;
         }
       }
+      // Beat preview は TreeNodeData から外したので raw から直接取り出す。
+      // null/null のエントリは読まれた際に EMPTY_NODE_PREVIEW で受けるので
+      // 入れずに省略する。
+      const nodePreviews: Record<string, NodeBeatPreview> = {};
+      for (const n of raw) {
+        const placed = n.placedBeatPreview ?? null;
+        const unplaced = n.unplacedBeatPreview ?? null;
+        if (placed !== null || unplaced !== null) {
+          nodePreviews[n.id] = { placed, unplaced };
+        }
+      }
       set({
         nodes,
         scenes: sc,
@@ -424,6 +465,7 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
         isLoading: false,
         expandedIds: chapters.map((c) => c.id),
         charCounts,
+        nodePreviews,
       });
       // Recompute phase scene order for phase resolution
       usePhaseStore.getState().recomputeSceneOrder(nodes);
@@ -1157,6 +1199,26 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
     set((state) => ({ charCounts: { ...state.charCounts, [id]: count } }));
   },
 
+  setNodePreview(id, next) {
+    const prev = get().nodePreviews[id];
+    const placedNext =
+      next.placed === undefined ? (prev?.placed ?? null) : next.placed;
+    const unplacedNext =
+      next.unplaced === undefined ? (prev?.unplaced ?? null) : next.unplaced;
+    if (prev && prev.placed === placedNext && prev.unplaced === unplacedNext) {
+      return;
+    }
+    if (!prev && placedNext === null && unplacedNext === null) {
+      return;
+    }
+    set((state) => ({
+      nodePreviews: {
+        ...state.nodePreviews,
+        [id]: { placed: placedNext, unplaced: unplacedNext },
+      },
+    }));
+  },
+
   setAiRatios(ratios) {
     set({ aiRatios: ratios });
   },
@@ -1234,3 +1296,12 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
     set({ pendingRevealId: id, selectedIds: [id] });
   },
 }));
+
+/**
+ * Consumer 用 hook。preview レコードが未生成の id でも安定参照の空オブジェクトを
+ * 返すので、`?? {placed:null,unplaced:null}` を呼び側で書く必要がない
+ * (feedback_zustand_selector_new_ref.md)。
+ */
+export function useNodeBeatPreview(id: string): NodeBeatPreview {
+  return useTreeStore((s) => s.nodePreviews[id] ?? EMPTY_NODE_PREVIEW);
+}

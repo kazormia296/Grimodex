@@ -12,6 +12,7 @@ vi.mock("@/features/tree/api", () => ({
 vi.mock("@/features/tree/treeStore", () => ({
   useTreeStore: {
     setState: vi.fn(),
+    getState: vi.fn(() => ({ setNodePreview: vi.fn() })),
   },
 }));
 

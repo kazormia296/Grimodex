@@ -405,8 +405,6 @@ const mockSceneNodes: TreeNodeData[] = [
     createdAt: "2024-01-01T00:00:00Z",
 
     charCount: 0,
-    unplacedBeatPreview: null,
-    placedBeatPreview: null,
     updatedAt: "2024-01-01T00:00:00Z",
   },
   {
@@ -425,8 +423,6 @@ const mockSceneNodes: TreeNodeData[] = [
     createdAt: "2024-01-02T00:00:00Z",
 
     charCount: 0,
-    unplacedBeatPreview: null,
-    placedBeatPreview: null,
     updatedAt: "2024-01-02T00:00:00Z",
   },
   {
@@ -445,8 +441,6 @@ const mockSceneNodes: TreeNodeData[] = [
     createdAt: "2024-01-03T00:00:00Z",
 
     charCount: 0,
-    unplacedBeatPreview: null,
-    placedBeatPreview: null,
     updatedAt: "2024-01-03T00:00:00Z",
   },
 ];

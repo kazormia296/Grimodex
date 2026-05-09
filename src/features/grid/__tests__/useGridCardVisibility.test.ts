@@ -16,9 +16,16 @@ vi.mock("@/features/labels/labelStore", () => ({
 }));
 
 let mockCharCounts: Record<string, number> = {};
+let mockNodePreviews: Record<
+  string,
+  { placed: string | null; unplaced: string | null }
+> = {};
 vi.mock("@/features/tree/treeStore", () => ({
   useTreeStore: vi.fn((selector: (s: unknown) => unknown) =>
-    selector({ charCounts: mockCharCounts }),
+    selector({
+      charCounts: mockCharCounts,
+      nodePreviews: mockNodePreviews,
+    }),
   ),
 }));
 
@@ -51,8 +58,6 @@ function makeScene(
     charCount: 0,
     status: "draft",
     synopsis: null,
-    unplacedBeatPreview: null,
-    placedBeatPreview: null,
     label: null,
     ...overrides,
   } as TreeNodeData;
@@ -73,6 +78,7 @@ beforeEach(() => {
     selector({ nodeLabels: {} }),
   );
   mockCharCounts = {};
+  mockNodePreviews = {};
 });
 
 describe("useGridCardVisibility — 検索", () => {
@@ -125,14 +131,11 @@ describe("useGridCardVisibility — 検索", () => {
   });
 
   it("Beat プレビュー行が一致するとき matchesSearch=true", () => {
-    const scenes = [
-      makeScene("s1", {
-        unplacedBeatPreview: JSON.stringify(["伏線を張る"]),
-      }),
-      makeScene("s2", {
-        unplacedBeatPreview: JSON.stringify(["別の出来事"]),
-      }),
-    ];
+    const scenes = [makeScene("s1"), makeScene("s2")];
+    mockNodePreviews = {
+      s1: { placed: null, unplaced: JSON.stringify(["伏線を張る"]) },
+      s2: { placed: null, unplaced: JSON.stringify(["別の出来事"]) },
+    };
     const { result } = renderHook(() =>
       useGridCardVisibility({
         scenes,

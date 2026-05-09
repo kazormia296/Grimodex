@@ -30,8 +30,6 @@ function makeFolder(
     createdAt: "2024-01-01T00:00:00Z",
 
     charCount: 0,
-    unplacedBeatPreview: null,
-    placedBeatPreview: null,
     updatedAt: "2024-01-01T00:00:00Z",
   };
 }
@@ -58,8 +56,6 @@ function makeScene(
     createdAt: "2024-01-01T00:00:00Z",
 
     charCount: 0,
-    unplacedBeatPreview: null,
-    placedBeatPreview: null,
     updatedAt: "2024-01-01T00:00:00Z",
   };
 }
@@ -81,8 +77,6 @@ function makeNote(id: string, parentId: string | null = null): TreeNodeData {
     createdAt: "2024-01-01T00:00:00Z",
 
     charCount: 0,
-    unplacedBeatPreview: null,
-    placedBeatPreview: null,
     updatedAt: "2024-01-01T00:00:00Z",
   };
 }

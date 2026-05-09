@@ -59,10 +59,11 @@ vi.mock("@/features/tree/treeStore", () => ({
       })),
     },
   ),
+  useNodeBeatPreview: vi.fn(() => ({ placed: null, unplaced: null })),
 }));
 
 import { useDraggable } from "@dnd-kit/core";
-import { useTreeStore } from "@/features/tree/treeStore";
+import { useTreeStore, useNodeBeatPreview } from "@/features/tree/treeStore";
 
 const mockUseDraggable = vi.mocked(useDraggable);
 const mockTreeStore = useTreeStore as unknown as {
@@ -75,6 +76,7 @@ const mockTreeStore = useTreeStore as unknown as {
     ) => unknown,
   ) => void;
 };
+const mockUseNodeBeatPreview = vi.mocked(useNodeBeatPreview);
 
 // --- component under test (imported after mocks) ---
 import { GridSceneCard } from "../GridSceneCard";
@@ -98,8 +100,6 @@ function makeScene(overrides: Partial<TreeNodeData> = {}): TreeNodeData {
     parentId: "folder-1",
     sortOrder: "a0",
     synopsis: null,
-    unplacedBeatPreview: null,
-    placedBeatPreview: null,
     status: null,
     storyTimeOrder: null,
     storyTimeLabel: null,
@@ -114,6 +114,7 @@ function makeScene(overrides: Partial<TreeNodeData> = {}): TreeNodeData {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  mockUseNodeBeatPreview.mockReturnValue({ placed: null, unplaced: null });
   mockUseDraggable.mockReturnValue({
     attributes: {},
     listeners: {},
@@ -153,7 +154,7 @@ describe("GridSceneCard", () => {
   it("shows 'empty scene' placeholder when showSynopsis=false and no beats", () => {
     render(
       <GridSceneCard
-        scene={makeScene({ synopsis: null, unplacedBeatPreview: null })}
+        scene={makeScene({ synopsis: null })}
         display={{ ...DEFAULT_DISPLAY, showSynopsis: false, showBeats: false }}
       />,
     );
@@ -162,9 +163,10 @@ describe("GridSceneCard", () => {
 
   it("shows beat bullets when synopsis empty but beats present", () => {
     const preview = JSON.stringify(["Beat one", "Beat two"]);
+    mockUseNodeBeatPreview.mockReturnValue({ placed: null, unplaced: preview });
     render(
       <GridSceneCard
-        scene={makeScene({ synopsis: null, unplacedBeatPreview: preview })}
+        scene={makeScene({ synopsis: null })}
         display={DEFAULT_DISPLAY}
       />,
     );
@@ -173,12 +175,13 @@ describe("GridSceneCard", () => {
   });
 
   it("renders without crashing when unplacedBeatPreview is malformed", () => {
+    mockUseNodeBeatPreview.mockReturnValue({
+      placed: null,
+      unplaced: "{{not json{{",
+    });
     render(
       <GridSceneCard
-        scene={makeScene({
-          synopsis: null,
-          unplacedBeatPreview: "{{not json{{",
-        })}
+        scene={makeScene({ synopsis: null })}
         display={DEFAULT_DISPLAY}
       />,
     );

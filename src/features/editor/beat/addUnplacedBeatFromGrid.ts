@@ -59,9 +59,7 @@ export async function addUnplacedBeatFromGrid(
   }
 
   // Optimistic update so the Grid card shows the new bullet without reloading
-  useTreeStore.setState((s) => ({
-    nodes: s.nodes.map((n) =>
-      n.id === sceneId ? { ...n, unplacedBeatPreview } : n,
-    ),
-  }));
+  useTreeStore
+    .getState()
+    .setNodePreview(sceneId, { unplaced: unplacedBeatPreview });
 }

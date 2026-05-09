@@ -115,8 +115,6 @@ describe("useBeatGeneration", () => {
           createdAt: "2026-01-01",
 
           charCount: 0,
-          unplacedBeatPreview: null,
-          placedBeatPreview: null,
           updatedAt: "2026-01-01",
         },
       ],
@@ -377,8 +375,6 @@ describe("runRoleInference (C-7)", () => {
           createdAt: "2026-01-01",
 
           charCount: 0,
-          unplacedBeatPreview: null,
-          placedBeatPreview: null,
           updatedAt: "2026-01-01",
         },
       ],

@@ -82,9 +82,7 @@ export async function editUnplacedBeatFromGrid(
     throw err;
   }
 
-  useTreeStore.setState((s) => ({
-    nodes: s.nodes.map((n) =>
-      n.id === sceneId ? { ...n, unplacedBeatPreview } : n,
-    ),
-  }));
+  useTreeStore
+    .getState()
+    .setNodePreview(sceneId, { unplaced: unplacedBeatPreview });
 }
