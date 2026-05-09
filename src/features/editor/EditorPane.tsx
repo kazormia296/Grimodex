@@ -360,17 +360,24 @@ export function EditorPane({
       useSnippetStore.getState().update(id, { content });
     } else {
       const doc = ed.state.doc;
+      markStart("editor.coreSave.countChars");
       const charCount = countSceneBodyChars(doc);
+      markEnd("editor.coreSave.countChars");
       const beats = useUnplacedBeatsStore.getState().getBeats(id);
       const unplacedBeatsDoc = JSON.stringify(beats);
+      markStart("editor.coreSave.getJSON");
+      const sceneJsonStr = JSON.stringify(ed.getJSON());
+      markEnd("editor.coreSave.getJSON");
+      markStart("editor.coreSave.invokeSave");
       const { placedBeatPreview, unplacedBeatPreview } = await saveSceneContent(
         id,
         {
-          content: JSON.stringify(ed.getJSON()),
+          content: sceneJsonStr,
           unplacedBeatsDoc,
           charCount,
         },
       );
+      markEnd("editor.coreSave.invokeSave");
       // Mirror the derived previews into the tree store so the Grid panel
       // reflects placed/unplaced changes without waiting for the next
       // loadTree (e.g. unplaced→placed via drag&drop).
@@ -385,8 +392,13 @@ export function EditorPane({
             : n,
         ),
       }));
+      markStart("editor.coreSave.saveAuthorship");
       await saveAuthorshipSpans(id, ed.state.doc);
+      markEnd("editor.coreSave.saveAuthorship");
+      markStart("editor.coreSave.saveForeshadow");
       await saveForeshadowAnchors(id, ed.state.doc);
+      markEnd("editor.coreSave.saveForeshadow");
+      markStart("editor.coreSave.upsertBeatMentions");
       upsertSceneBeatMentions(id, extractBeatMentions(doc)).catch((e) => {
         debugLog.error(
           "EditorPane",
@@ -394,6 +406,8 @@ export function EditorPane({
           errorDetail(e),
         );
       });
+      markEnd("editor.coreSave.upsertBeatMentions");
+      markStart("editor.coreSave.upsertBeatPovOverrides");
       upsertSceneBeatPovOverrides(id, extractBeatPovOverrides(doc)).catch(
         (e) => {
           debugLog.error(
@@ -403,18 +417,26 @@ export function EditorPane({
           );
         },
       );
+      markEnd("editor.coreSave.upsertBeatPovOverrides");
       // Deferred body-mention scan — does not block the save response
       const allEntries = useCodexStore.getState().entries;
       if (allEntries.length > 0) {
+        markStart("editor.coreSave.bodyMentionGetJSON");
         const docJsonStr = JSON.stringify(ed.getJSON());
+        markEnd("editor.coreSave.bodyMentionGetJSON");
         setTimeout(() => {
-          upsertSceneBodyMentions(id, docJsonStr, allEntries).catch((e) => {
-            debugLog.error(
-              "EditorPane",
-              "upsertSceneBodyMentions failed",
-              errorDetail(e),
-            );
-          });
+          markStart("editor.coreSave.bodyMentionUpsert");
+          upsertSceneBodyMentions(id, docJsonStr, allEntries)
+            .catch((e) => {
+              debugLog.error(
+                "EditorPane",
+                "upsertSceneBodyMentions failed",
+                errorDetail(e),
+              );
+            })
+            .finally(() => {
+              markEnd("editor.coreSave.bodyMentionUpsert");
+            });
         }, 0);
       }
       useTreeStore
