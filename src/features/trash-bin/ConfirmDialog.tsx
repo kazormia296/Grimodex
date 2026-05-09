@@ -75,7 +75,6 @@ export function useConfirmDialog(): UseConfirmDialogResult {
           </button>
           <button
             type="button"
-            autoFocus
             onClick={() => handleClose(true)}
             className={
               (state.destructive ?? true)
