@@ -18,11 +18,6 @@ pub const EXTRA_SAMPLING_KEYS: &[&str] = &[
     "logit_bias",
 ];
 
-/// デフォルトのレート制限 (req/分)
-pub const RATE_LIMIT_RPM: u32 = 200;
-/// damsel 系モデルのレート制限
-pub const DAMSEL_RATE_LIMIT_RPM: u32 = 90;
-
 /// モデル別の最大出力トークン数 (API 必須パラメータ `length` に使用)
 /// TS 側 `AINOVERIST_MODEL_CAPS.maxOutputTokens` と一致させること。
 const MAX_OUTPUT_TOKENS: &[(&str, u32)] = &[
@@ -49,15 +44,6 @@ pub fn length_for(model: &str) -> u32 {
         .unwrap_or(DEFAULT_LENGTH)
 }
 
-/// モデル名からレート制限 RPM を返す。
-pub fn rate_limit_rpm(model: &str) -> u32 {
-    if model.starts_with("damsel") {
-        DAMSEL_RATE_LIMIT_RPM
-    } else {
-        RATE_LIMIT_RPM
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -74,12 +60,5 @@ mod tests {
     fn length_for_unknown_falls_back() {
         assert_eq!(length_for(""), DEFAULT_LENGTH);
         assert_eq!(length_for("unknown_model"), DEFAULT_LENGTH);
-    }
-
-    #[test]
-    fn rate_limit_rpm_per_model() {
-        assert_eq!(rate_limit_rpm("spiko"), RATE_LIMIT_RPM);
-        assert_eq!(rate_limit_rpm("damsel"), DAMSEL_RATE_LIMIT_RPM);
-        assert_eq!(rate_limit_rpm("damsel_ray"), DAMSEL_RATE_LIMIT_RPM);
     }
 }
