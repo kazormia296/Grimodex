@@ -365,8 +365,49 @@ pub async fn test_connection(
     model: &str,
     api_key: &str,
     endpoints: ProviderEndpoints<'_>,
+    openai_compat_preset: Option<&str>,
 ) -> anyhow::Result<String> {
     let client = reqwest::Client::new();
+
+    // AI のべりすと: 独自エンドポイント (POST <base>) + text フィールド
+    if is_ainoverist_preset(provider, openai_compat_preset) {
+        let url = provider.base_url(endpoints);
+        if url.is_empty() {
+            return Err(anyhow::anyhow!(
+                "AI のべりすと: base URL が設定されていません"
+            ));
+        }
+        let body = serde_json::json!({
+            "text": "Reply with exactly: Connection OK",
+            "model": model,
+        });
+        let resp = client
+            .post(&url)
+            .header("content-type", "application/json")
+            .header("Authorization", format!("Bearer {api_key}"))
+            .json(&body)
+            .send()
+            .await?
+            .error_for_status()?;
+        let result: serde_json::Value = resp.json().await?;
+        let text = if let Some(arr) = result.get("data").and_then(|v| v.as_array()) {
+            arr.first()
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string()
+        } else if let Some(s) = result.get("data").and_then(|v| v.as_str()) {
+            s.to_string()
+        } else {
+            return Err(anyhow::anyhow!(
+                "AI のべりすと: レスポンスに data フィールドが見つかりません"
+            ));
+        };
+        return Ok(if text.is_empty() {
+            "Connection successful (empty response)".to_string()
+        } else {
+            text
+        });
+    }
 
     match provider {
         AiProvider::Anthropic => {
@@ -484,6 +525,105 @@ pub struct ChatParams<'a> {
     /// 429 (Too Many Requests) を受けたときに指数バックオフでリトライするか。
     /// レート制限を公開しているプリセット（ainoverist 等）で true にする。
     pub retry_429: bool,
+    /// OpenAI 互換プロバイダのプリセット ID。`ainoverist` の場合は OpenAI 互換ではなく
+    /// 独自 API フォーマット (text フィールド / data[] レスポンス) に分岐する。
+    pub openai_compat_preset: Option<&'a str>,
+}
+
+/// プリセット ID が ainoverist かどうか判定するヘルパ。
+/// AI のべりすと API は OpenAI 互換ではない独自フォーマットなので、
+/// 各 send_chat 関数でこの判定を使ってパスを分岐する。
+fn is_ainoverist_preset(provider: &AiProvider, preset: Option<&str>) -> bool {
+    matches!(provider, AiProvider::OpenaiCompatible) && preset == Some("ainoverist")
+}
+
+// ---------------------------------------------------------------------------
+// AI のべりすと専用パス
+//
+// OpenAI 互換ではない独自フォーマット:
+// - エンドポイント: `<base>` 自体に POST (パス追加なし)
+// - ボディ: { text: <flatten>, ...sampling }
+// - レスポンス: { data: [<生成テキスト>] }
+// - 認証: Authorization: Bearer <key>
+// - ストリーミング非対応 (set stream=true 不可、応答全体を待つ)
+//
+// 参考実装: https://github.com/whiteball/vscode-ai-novelist/blob/main/src/api.ts
+// ---------------------------------------------------------------------------
+
+/// 役割タグ付きで会話履歴を 1 つの text に平坦化する。
+/// AI のべりすとはチャット履歴形式を受け付けないため、
+/// `[system]\n...\n\n[user]\n...\n\n[assistant]\n...` のように連結する。
+fn flatten_messages_for_ainoverist(messages: &[(&str, &str)]) -> String {
+    messages
+        .iter()
+        .map(|(role, content)| format!("[{role}]\n{content}"))
+        .collect::<Vec<_>>()
+        .join("\n\n")
+}
+
+/// AI のべりすと用リクエストを構築・送信し、ChatResponse に変換する。
+async fn send_chat_ainoverist(
+    client: &reqwest::Client,
+    params: &ChatParams<'_>,
+    messages: &[(&str, &str)],
+) -> anyhow::Result<ChatResponse> {
+    let url = params.provider.base_url(params.endpoints);
+    if url.is_empty() {
+        return Err(anyhow::anyhow!(
+            "AI のべりすと: base URL が設定されていません"
+        ));
+    }
+    let text = flatten_messages_for_ainoverist(messages);
+
+    let mut body = serde_json::json!({
+        "text": text,
+        "model": params.model,
+    });
+    merge_extra_body(&mut body, &params.extra_body);
+
+    let req = client
+        .post(&url)
+        .header("content-type", "application/json")
+        .header("Authorization", format!("Bearer {}", params.api_key))
+        .json(&body);
+
+    let resp = send_with_429_retry(req, params.retry_429, 3)
+        .await?
+        .error_for_status()?;
+    let result: serde_json::Value = resp.json().await?;
+    parse_ainoverist_response(&result)
+}
+
+fn parse_ainoverist_response(result: &serde_json::Value) -> anyhow::Result<ChatResponse> {
+    // { "data": ["生成テキスト", ...] } または { "data": "..." } の両方に対応
+    let text = if let Some(arr) = result.get("data").and_then(|v| v.as_array()) {
+        arr.first()
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string()
+    } else if let Some(s) = result.get("data").and_then(|v| v.as_str()) {
+        s.to_string()
+    } else {
+        return Err(anyhow::anyhow!(
+            "AI のべりすと: レスポンスに data フィールドが見つかりません: {}",
+            result
+        ));
+    };
+
+    let blocks = if text.is_empty() {
+        Vec::new()
+    } else {
+        vec![ResponseBlock::Text { content: text }]
+    };
+    Ok(ChatResponse {
+        blocks,
+        stop_reason: "end_turn".to_string(),
+        // usage は API レスポンスに含まれないことが多いので Unknown
+        input_tokens: result.get("usage").and_then(|u| u["input_tokens"].as_u64()),
+        output_tokens: result
+            .get("usage")
+            .and_then(|u| u["output_tokens"].as_u64()),
+    })
 }
 
 /// `Retry-After` ヘッダから待機ミリ秒を取り出す。秒数 (整数) のみ対応。
@@ -552,6 +692,11 @@ pub async fn send_chat(
     messages: &[(&str, &str)],
 ) -> anyhow::Result<ChatResponse> {
     let client = reqwest::Client::new();
+
+    // AI のべりすとは独自フォーマットなので OpenAI 互換パスから外して専用関数に流す
+    if is_ainoverist_preset(params.provider, params.openai_compat_preset) {
+        return send_chat_ainoverist(&client, params, messages).await;
+    }
 
     match params.provider {
         AiProvider::Anthropic => {
@@ -978,6 +1123,14 @@ pub async fn send_chat_with_tools(
 ) -> anyhow::Result<ChatResponse> {
     let client = reqwest::Client::new();
 
+    // AI のべりすとは tool use を持たない (Phase A.2 では capabilitiesOverride で
+    // supportsTools=false 固定だが、Agent mode から誤って呼ばれた場合の防御)
+    if is_ainoverist_preset(params.provider, params.openai_compat_preset) {
+        return Err(anyhow::anyhow!(
+            "AI のべりすとは Tool Use に対応していません"
+        ));
+    }
+
     match params.provider {
         AiProvider::Anthropic => {
             // Collect system content
@@ -1205,6 +1358,44 @@ pub async fn send_chat_stream(
     let done_event = format!("{}:stream-done", event_prefix);
 
     let client = reqwest::Client::new();
+
+    // AI のべりすと: ストリーミング非対応なので非ストリーム版を呼んで結果を一括 emit
+    if is_ainoverist_preset(params.provider, params.openai_compat_preset) {
+        if abort_flag.load(Ordering::Relaxed) {
+            let _ = app_handle.emit(
+                &done_event,
+                serde_json::json!({
+                    "stop_reason": "stopped",
+                    "input_tokens": null,
+                    "output_tokens": null,
+                }),
+            );
+            return Ok(());
+        }
+        let response = send_chat_ainoverist(&client, params, messages).await?;
+        for block in &response.blocks {
+            if let ResponseBlock::Text { content } = block {
+                if !content.is_empty() {
+                    let _ = app_handle.emit(
+                        &chunk_event,
+                        serde_json::json!({
+                            "delta": content,
+                            "block_type": "text",
+                        }),
+                    );
+                }
+            }
+        }
+        let _ = app_handle.emit(
+            &done_event,
+            serde_json::json!({
+                "stop_reason": response.stop_reason,
+                "input_tokens": response.input_tokens,
+                "output_tokens": response.output_tokens,
+            }),
+        );
+        return Ok(());
+    }
 
     match params.provider {
         AiProvider::Anthropic => {
@@ -1630,5 +1821,68 @@ mod tests {
         let ep = settings.endpoints();
         assert_eq!(ep.ollama, "http://localhost:11434");
         assert_eq!(ep.openai_compat_custom, "http://localhost:8080/v1");
+    }
+
+    #[test]
+    fn test_is_ainoverist_preset() {
+        assert!(is_ainoverist_preset(
+            &AiProvider::OpenaiCompatible,
+            Some("ainoverist")
+        ));
+        // 別プロバイダ
+        assert!(!is_ainoverist_preset(
+            &AiProvider::OpenAI,
+            Some("ainoverist")
+        ));
+        // 別プリセット
+        assert!(!is_ainoverist_preset(
+            &AiProvider::OpenaiCompatible,
+            Some("custom")
+        ));
+        // None
+        assert!(!is_ainoverist_preset(&AiProvider::OpenaiCompatible, None));
+    }
+
+    #[test]
+    fn test_flatten_messages_for_ainoverist() {
+        let messages = vec![("system", "あなたは小説家"), ("user", "続きを書いて")];
+        let text = flatten_messages_for_ainoverist(&messages);
+        assert_eq!(text, "[system]\nあなたは小説家\n\n[user]\n続きを書いて");
+    }
+
+    #[test]
+    fn test_parse_ainoverist_response_with_array_data() {
+        let json = serde_json::json!({ "data": ["生成テキスト"] });
+        let resp = parse_ainoverist_response(&json).unwrap();
+        assert_eq!(resp.blocks.len(), 1);
+        match &resp.blocks[0] {
+            ResponseBlock::Text { content } => assert_eq!(content, "生成テキスト"),
+            _ => panic!("expected Text"),
+        }
+        assert_eq!(resp.stop_reason, "end_turn");
+    }
+
+    #[test]
+    fn test_parse_ainoverist_response_with_string_data() {
+        let json = serde_json::json!({ "data": "直接の文字列" });
+        let resp = parse_ainoverist_response(&json).unwrap();
+        assert_eq!(resp.blocks.len(), 1);
+        match &resp.blocks[0] {
+            ResponseBlock::Text { content } => assert_eq!(content, "直接の文字列"),
+            _ => panic!("expected Text"),
+        }
+    }
+
+    #[test]
+    fn test_parse_ainoverist_response_missing_data_errors() {
+        let json = serde_json::json!({ "error": "auth" });
+        assert!(parse_ainoverist_response(&json).is_err());
+    }
+
+    #[test]
+    fn test_parse_ainoverist_response_empty_data_returns_no_blocks() {
+        let json = serde_json::json!({ "data": [""] });
+        let resp = parse_ainoverist_response(&json).unwrap();
+        assert!(resp.blocks.is_empty());
     }
 }

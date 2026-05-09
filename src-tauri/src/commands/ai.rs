@@ -21,6 +21,16 @@ pub(super) fn resolve_api_key(provider: &ai::AiProvider) -> anyhow::Result<Strin
         .ok_or_else(|| anyhow::anyhow!("No API key configured for {}", provider))
 }
 
+/// プロバイダが OpenAI 互換のときだけプリセット ID を返す。それ以外は None。
+/// `ChatParams.openai_compat_preset` に渡して、ainoverist 等の独自パスへの分岐に使う。
+pub(super) fn openai_compat_preset_str(settings: &ai::AiSettings) -> Option<&str> {
+    if matches!(settings.provider, ai::AiProvider::OpenaiCompatible) {
+        Some(settings.openai_compatible.preset.as_str())
+    } else {
+        None
+    }
+}
+
 /// 設定からプリセット由来のレート制限有無を判定し、429 リトライを有効化すべきか
 /// を返す。プリセットがレート制限を公開していない場合は false。
 pub(super) fn should_retry_429(settings: &ai::AiSettings) -> bool {
@@ -89,6 +99,7 @@ pub(crate) async fn send_chat_message(
     let api_key = resolve_api_key(&settings.provider)?;
     let extra_body = build_openai_compat_extra_body(&settings);
     let retry_429 = should_retry_429(&settings);
+    let preset = openai_compat_preset_str(&settings);
     let params = ai::ChatParams {
         provider: &settings.provider,
         model: &settings.model,
@@ -100,6 +111,7 @@ pub(crate) async fn send_chat_message(
         reasoning_effort,
         extra_body,
         retry_429,
+        openai_compat_preset: preset,
     };
     let result = ai::send_chat(
         &params,
@@ -143,6 +155,7 @@ pub(crate) async fn send_chat_message_stream(
     let flag_clone = Arc::clone(&abort_flag.flag);
     let extra_body = build_openai_compat_extra_body(&settings);
     let retry_429 = should_retry_429(&settings);
+    let preset = openai_compat_preset_str(&settings);
     let params = ai::ChatParams {
         provider: &settings.provider,
         model: &settings.model,
@@ -154,6 +167,7 @@ pub(crate) async fn send_chat_message_stream(
         reasoning_effort,
         extra_body,
         retry_429,
+        openai_compat_preset: preset,
     };
 
     let result = ai::send_chat_stream(
@@ -216,6 +230,7 @@ pub(crate) async fn send_inline_ai_stream(
         .unwrap_or(&settings.model);
     let extra_body = build_openai_compat_extra_body(&settings);
     let retry_429 = should_retry_429(&settings);
+    let preset = openai_compat_preset_str(&settings);
     let params = ai::ChatParams {
         provider: &settings.provider,
         model: resolved_model,
@@ -227,6 +242,7 @@ pub(crate) async fn send_inline_ai_stream(
         reasoning_effort,
         extra_body,
         retry_429,
+        openai_compat_preset: preset,
     };
 
     let result = ai::send_chat_stream(
@@ -267,6 +283,7 @@ pub(crate) async fn send_agent_message(
     let api_key = resolve_api_key(&settings.provider)?;
     let extra_body = build_openai_compat_extra_body(&settings);
     let retry_429 = should_retry_429(&settings);
+    let preset = openai_compat_preset_str(&settings);
     let params = ai::ChatParams {
         provider: &settings.provider,
         model: &settings.model,
@@ -278,6 +295,7 @@ pub(crate) async fn send_agent_message(
         reasoning_effort,
         extra_body,
         retry_429,
+        openai_compat_preset: preset,
     };
     let result = ai::send_chat_with_tools(&params, &messages, &tools).await?;
     Ok(result)
@@ -335,6 +353,13 @@ pub(crate) async fn test_ai_connection(
 ) -> Result<String, AppError> {
     let settings = ai::read_ai_settings(&ai_path.path);
     let api_key = resolve_api_key(&provider)?;
-    let result = ai::test_connection(&provider, &model, &api_key, settings.endpoints()).await?;
+    // OpenaiCompatible の場合のみプリセット ID を渡す (ainoverist 等の独自パス分岐用)
+    let preset = if matches!(&provider, ai::AiProvider::OpenaiCompatible) {
+        Some(settings.openai_compatible.preset.as_str())
+    } else {
+        None
+    };
+    let result =
+        ai::test_connection(&provider, &model, &api_key, settings.endpoints(), preset).await?;
     Ok(result)
 }
