@@ -100,7 +100,10 @@ import {
   registerSaveHandler,
   unregisterSaveHandler,
 } from "@/features/editor/editorSaveRegistry";
-import { useSceneContentStore } from "@/features/editor/sceneContentStore";
+import {
+  useSceneContentStore,
+  hasOtherLiveContentSubscriber,
+} from "@/features/editor/sceneContentStore";
 import { shouldAutoDraftTransition } from "@/features/editor/autoStatusTransition";
 import { shouldPromptSynopsis } from "@/features/editor/synopsisSuggestion";
 import { useSynopsisSuggestionStore } from "@/features/editor/synopsisSuggestionStore";
@@ -110,6 +113,7 @@ import { StatusBarIndicator } from "@/features/lint/StatusBarIndicator";
 import { useForeshadowNavStore } from "@/features/foreshadow/foreshadowNavStore";
 import { useChatStore } from "@/features/chat/chatStore";
 import { debugLog, errorDetail } from "@/lib/debugLog";
+import { markStart, markEnd } from "@/lib/perfLog";
 import i18next from "i18next";
 import type { SceneStatus } from "@/features/tree/treeStore";
 import type { GroupIndex, TabContentType } from "@/features/editor/tabStore";
@@ -330,6 +334,7 @@ export function EditorPane({
     const id = saveSceneIdRef.current;
     const ed = editorRef.current;
     if (!id || !ed) return;
+    markStart("editor.coreSave");
     // Branch on the ref, not the closure-captured prop, so a pending autosave
     // flush always saves to the backend matching the doc currently in the
     // editor — even mid-tab-switch when the prop has already flipped.
@@ -420,6 +425,7 @@ export function EditorPane({
         void chatState.refreshContextLayers();
       }
     }
+    markEnd("editor.coreSave");
   }, []);
 
   const saveFn = useCallback(async () => {
@@ -582,6 +588,7 @@ export function EditorPane({
       // Accept/Reject が呼ばれて idle に戻った時点で reset + dispatch によって
       // 再度 onUpdate が走り、その時に通常の schedule が実行される。
       if (useInlineAiStore.getState().status !== "idle") return;
+      markStart("editor.onUpdate");
       schedule();
       setIsDirtyRef.current(true);
       const sid = saveSceneIdRef.current;
@@ -614,10 +621,17 @@ export function EditorPane({
             }
           }
         }
-        // Broadcast to other panes showing the same content.
-        useSceneContentStore
-          .getState()
-          .setLiveContent(sid, e.getJSON(), groupIndex);
+        // Broadcast to other panes showing the same content. Skip the
+        // expensive `e.getJSON()` deep-clone when no Codex/Snippet mini-editor
+        // or second EditorPane group is subscribed for this scene id — the
+        // common case during normal scene editing.
+        if (hasOtherLiveContentSubscriber(sid)) {
+          markStart("editor.setLiveContent");
+          useSceneContentStore
+            .getState()
+            .setLiveContent(sid, e.getJSON(), groupIndex);
+          markEnd("editor.setLiveContent");
+        }
       }
 
       // Debounce stats: footer counts and tree-store charCount sync don't
@@ -628,6 +642,7 @@ export function EditorPane({
       }
       statSyncTimeoutRef.current = window.setTimeout(() => {
         statSyncTimeoutRef.current = null;
+        markStart("editor.statSync");
         const text = getDocText(e.state.doc);
         const count = text.length;
         setCharCount(count);
@@ -638,13 +653,16 @@ export function EditorPane({
         if (sid && !isCodexMode && !isSnippetMode) {
           useTreeStore.getState().setCharCount(sid, count);
         }
+        markEnd("editor.statSync");
       }, 200);
+      markEnd("editor.onUpdate");
     },
     onTransaction({ editor: e, transaction }) {
       if (!transaction.docChanged) return;
       if (isCodexMode || isSnippetMode) return;
       const sid = saveSceneIdRef.current;
       if (!sid) return;
+      markStart("editor.onTransaction");
 
       // Reconcile sceneBeat ↔ unplacedBeatsStore for transactions that
       // bypass `placeBeatAtEnd` / `unplaceBeat` — most importantly Ctrl+Z.
@@ -732,6 +750,7 @@ export function EditorPane({
           ),
         };
       });
+      markEnd("editor.onTransaction");
     },
     onSelectionUpdate() {},
     onFocus() {
@@ -767,6 +786,34 @@ export function EditorPane({
   });
 
   editorRef.current = editor;
+
+  // Wrap view.dispatch to time the full TipTap dispatch cycle: state.apply +
+  // plugin.appendTransactions + view.updateState (DOM patching) + listeners.
+  // This is the only way to attribute longtasks whose work happens entirely
+  // inside the TipTap pipeline (decorations diff, NodeView updates, DOM
+  // mutations) — none of which our per-plugin marks reach.
+  useEffect(() => {
+    if (!editor) return;
+    const view = editor.view;
+    const original = view.dispatch.bind(view);
+    let depth = 0;
+    view.dispatch = function patched(...args) {
+      // Re-entrant dispatch (plugin appendTransaction during plugin apply etc.)
+      // — only mark the outermost call, otherwise nested marks confuse the
+      // duration buffer.
+      if (depth === 0) markStart("editor.viewDispatch");
+      depth++;
+      try {
+        return original(...args);
+      } finally {
+        depth--;
+        if (depth === 0) markEnd("editor.viewDispatch");
+      }
+    };
+    return () => {
+      view.dispatch = original;
+    };
+  }, [editor]);
 
   // Register the primary editor in global store (for ChatPanel inserts)
   const setGlobalEditor = useEditorStore((s) => s.setEditor);

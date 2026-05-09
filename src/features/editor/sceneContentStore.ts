@@ -32,6 +32,20 @@ interface SceneContentState {
 // Subscribers are stored outside Zustand state to avoid serialisation issues
 const subscribers = new Map<string, Set<ContentCallback>>();
 
+/** True if more than one pane is subscribed to live updates for the given
+ *  scene — i.e. some pane *other than the caller* would receive the broadcast.
+ *  Each EditorPane self-subscribes for its own nodeId (to receive updates from
+ *  other panes), so the caller's own subscription always counts as 1. Anyone
+ *  else opening the same id (a second EditorPane group, a Codex/Snippet
+ *  mini-editor showing the same content) bumps the count above 1.
+ *
+ *  Callers use this to skip an expensive `e.getJSON()` deep-clone when no
+ *  external listener exists — the common case during normal scene editing. */
+export function hasOtherLiveContentSubscriber(sceneId: string): boolean {
+  const cbs = subscribers.get(sceneId);
+  return !!cbs && cbs.size > 1;
+}
+
 export const useSceneContentStore = create<SceneContentState>()((set) => ({
   liveContent: {},
 

@@ -26,6 +26,12 @@ function chatEndpoint(provider: AiProvider): string {
       return "/api/openrouter/chat/completions";
     case "ollama":
       return "/api/ollama/v1/chat/completions";
+    case "openai-compatible":
+    case "ai-novelist":
+    case "cli":
+      throw new Error(
+        `Provider "${provider}" is not supported in browser mode (Tauri only)`,
+      );
   }
 }
 
@@ -39,6 +45,10 @@ function modelsEndpoint(provider: AiProvider): string | null {
       return "/api/openrouter/models";
     case "ollama":
       return "/api/ollama/api/tags";
+    case "openai-compatible":
+    case "ai-novelist":
+    case "cli":
+      return null;
   }
 }
 

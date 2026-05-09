@@ -140,9 +140,15 @@ export function useMapEdges({
           }
         }
 
-        // Snippet origin edges
+        // Snippet origin edges. The dedup set lives outside the snippet loop
+        // because the edge id is keyed by (sceneId, entryId) — multiple snippets
+        // attached to the same scene that mention the same codex entry must
+        // collapse into one edge. A per-snippet Set would let the second
+        // snippet emit a duplicate id and trigger React's "two children with
+        // the same key" warning, forcing recovery reconciliation on every
+        // render.
+        const seenEdge = new Set<string>();
         for (const snippet of snippetEntries.filter((s) => s.sceneId)) {
-          const seenEdge = new Set<string>();
           for (const m of matcher(snippet.content)) {
             const key = `${snippet.sceneId}->${m.entryId}`;
             if (seenEdge.has(key)) continue;
