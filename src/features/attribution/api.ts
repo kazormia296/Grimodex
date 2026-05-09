@@ -4,6 +4,7 @@ import { eq, inArray } from "drizzle-orm";
 import type { NewAuthorshipSpan, AuthorshipSpan } from "@/db/schema";
 import type { Node as ProseMirrorNode } from "@tiptap/pm/model";
 import type { AuthorshipSource } from "./AuthorshipMark";
+import { markStart, markEnd } from "@/lib/perfLog";
 
 /**
  * Save authorship spans from a ProseMirror document to the database.
@@ -13,12 +14,21 @@ export async function saveAuthorshipSpans(
   nodeId: string,
   doc: ProseMirrorNode,
 ): Promise<void> {
+  markStart("saveAuthorship.delete");
   await db.delete(authorshipSpans).where(eq(authorshipSpans.nodeId, nodeId));
+  markEnd("saveAuthorship.delete");
 
+  markStart("saveAuthorship.extract");
   const spans = extractDbSpans(nodeId, doc);
+  markEnd("saveAuthorship.extract");
+  // span 件数を topMarks に露出させて、fix 戦略の判断材料にする
+  markStart(`saveAuthorship.spanCount.${spans.length}`);
+  markEnd(`saveAuthorship.spanCount.${spans.length}`);
   if (spans.length === 0) return;
 
+  markStart("saveAuthorship.insert");
   await db.insert(authorshipSpans).values(spans);
+  markEnd("saveAuthorship.insert");
 }
 
 /**
