@@ -758,21 +758,24 @@ export function EditorPane({
 
       // Live-sync the Grid preview cache (treeStore) so the Grid panel sees
       // beat changes immediately, without waiting for the debounced save.
+      // Why: Zustand v5 の setState は updater が `{}` を返しても
+      // `Object.assign({}, state, {})` で新 state object を作って listener 全員に
+      // 通知する。毎打鍵 (50/s) この経路が走ると subscriber 全員の selector が
+      // 走り、最終的に React commit が累積して打鍵中の longtask が大量発生する
+      // (Phase 3 計測で B 内訳の 95% を占めていた)。setState の updater 内で
+      // 早期 return しても遅い — 呼ぶ前に同値判定して setState 自体を skip する。
       markStart("editor.onTransaction.treeMirror");
       const placed = extractPlacedBeatPreviewFromDoc(e.state.doc);
       const unplaced = extractUnplacedBeatPreview(store.getBeats(sid));
       const placedNext = placed === "[]" ? null : placed;
       const unplacedNext = unplaced === "[]" ? null : unplaced;
-      useTreeStore.setState((s) => {
-        const target = s.nodes.find((n) => n.id === sid);
-        if (
-          !target ||
-          ((target.placedBeatPreview ?? null) === placedNext &&
-            (target.unplacedBeatPreview ?? null) === unplacedNext)
-        ) {
-          return {};
-        }
-        return {
+      const cur = useTreeStore.getState().nodes.find((n) => n.id === sid);
+      const same =
+        cur &&
+        (cur.placedBeatPreview ?? null) === placedNext &&
+        (cur.unplacedBeatPreview ?? null) === unplacedNext;
+      if (!same) {
+        useTreeStore.setState((s) => ({
           nodes: s.nodes.map((n) =>
             n.id === sid
               ? {
@@ -782,8 +785,8 @@ export function EditorPane({
                 }
               : n,
           ),
-        };
-      });
+        }));
+      }
       markEnd("editor.onTransaction.treeMirror");
       markEnd("editor.onTransaction");
     },
