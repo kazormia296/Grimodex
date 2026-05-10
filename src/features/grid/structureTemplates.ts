@@ -2,23 +2,30 @@
  * 構造テンプレート定義
  *
  * Apply structure template ▸ で適用する。
- * `rootChildren` を現在のコンテナ直下に直置きで展開し、各 placeholder scene には
- * その段階の説明文（synopsis）を初期値として埋める。
+ * `rootChildren` を現在のコンテナ直下に直置きで展開する。
+ *
+ * Phase 4 後続: 構造役割 (=「Refusal of the Call」のような stage の意図) は
+ * すべて folder.synopsis に格納する設計に統一した。chat の chapter outline
+ * 注入経路に乗せるため。scene は placeholder のみで synopsis を持たない。
  *
  * i18n キー設計:
  *   grid.structureTemplates.{templateKey}.name
  *   grid.structureTemplates.{templateKey}.stages.{stageKey}.name
- *   grid.structureTemplates.{templateKey}.stages.{stageKey}.synopsis  (sceneのみ)
+ *   grid.structureTemplates.{templateKey}.stages.{stageKey}.synopsis  (folder のみ)
+ *   grid.structureTemplates.placeholderScene  (placeholder scene 共通名)
  */
 
 export type StructureNodeKind = "folder" | "scene";
 
 export interface StructureNode {
   kind: StructureNodeKind;
-  /** i18n stage key under grid.structureTemplates.{templateKey}.stages */
+  /** i18n stage key under grid.structureTemplates.{templateKey}.stages。
+   *  placeholder=true のときは i18n lookup をスキップして共通プレースホルダ名を使う。 */
   stage: string;
   /** kind === "folder" のときのみ。再帰可 */
   children?: StructureNode[];
+  /** kind === "scene" のときのみ。共通の "シーン" / "Scene" 名を使う */
+  placeholder?: boolean;
 }
 
 export interface StructureTemplate {
@@ -33,6 +40,14 @@ const folder = (stage: string, children: StructureNode[]): StructureNode => ({
 });
 
 const scene = (stage: string): StructureNode => ({ kind: "scene", stage });
+
+/** 各 stage を folder で wrap し、中に placeholder scene を 1つ置く。
+ *  Pattern B/C (saveTheCat / heroJourney / storyCircle) の beat / stage に使う。 */
+const stageFolder = (stage: string): StructureNode => ({
+  kind: "folder",
+  stage,
+  children: [{ kind: "scene", stage, placeholder: true }],
+});
 
 export const STRUCTURE_TEMPLATES: StructureTemplate[] = [
   {
@@ -66,59 +81,59 @@ export const STRUCTURE_TEMPLATES: StructureTemplate[] = [
     key: "saveTheCat",
     rootChildren: [
       folder("act1", [
-        scene("openingImage"),
-        scene("themeStated"),
-        scene("setup"),
-        scene("catalyst"),
-        scene("debate"),
+        stageFolder("openingImage"),
+        stageFolder("themeStated"),
+        stageFolder("setup"),
+        stageFolder("catalyst"),
+        stageFolder("debate"),
       ]),
       folder("act2", [
-        scene("breakIntoTwo"),
-        scene("bStory"),
-        scene("funAndGames"),
-        scene("midpoint"),
-        scene("badGuysClose"),
-        scene("allIsLost"),
-        scene("darkNightOfSoul"),
-        scene("breakIntoThree"),
+        stageFolder("breakIntoTwo"),
+        stageFolder("bStory"),
+        stageFolder("funAndGames"),
+        stageFolder("midpoint"),
+        stageFolder("badGuysClose"),
+        stageFolder("allIsLost"),
+        stageFolder("darkNightOfSoul"),
+        stageFolder("breakIntoThree"),
       ]),
-      folder("act3", [scene("finale"), scene("finalImage")]),
+      folder("act3", [stageFolder("finale"), stageFolder("finalImage")]),
     ],
   },
   {
     key: "heroJourney",
     rootChildren: [
       folder("departure", [
-        scene("ordinaryWorld"),
-        scene("callToAdventure"),
-        scene("refusal"),
-        scene("meeting"),
-        scene("crossingThreshold"),
+        stageFolder("ordinaryWorld"),
+        stageFolder("callToAdventure"),
+        stageFolder("refusal"),
+        stageFolder("meeting"),
+        stageFolder("crossingThreshold"),
       ]),
       folder("initiation", [
-        scene("testsAlliesEnemies"),
-        scene("approach"),
-        scene("ordeal"),
-        scene("reward"),
+        stageFolder("testsAlliesEnemies"),
+        stageFolder("approach"),
+        stageFolder("ordeal"),
+        stageFolder("reward"),
       ]),
       folder("returnAct", [
-        scene("roadBack"),
-        scene("resurrection"),
-        scene("returnWithElixir"),
+        stageFolder("roadBack"),
+        stageFolder("resurrection"),
+        stageFolder("returnWithElixir"),
       ]),
     ],
   },
   {
     key: "storyCircle",
     rootChildren: [
-      scene("youInZone"),
-      scene("needWantDiscomfort"),
-      scene("unfamiliarSituation"),
-      scene("adaptationFunGames"),
-      scene("beginToWantMoreSelf"),
-      scene("familiar"),
-      scene("bigChangeTryFail"),
-      scene("returnChanged"),
+      stageFolder("youInZone"),
+      stageFolder("needWantDiscomfort"),
+      stageFolder("unfamiliarSituation"),
+      stageFolder("adaptationFunGames"),
+      stageFolder("beginToWantMoreSelf"),
+      stageFolder("familiar"),
+      stageFolder("bigChangeTryFail"),
+      stageFolder("returnChanged"),
     ],
   },
   {

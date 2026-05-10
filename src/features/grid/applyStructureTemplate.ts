@@ -20,7 +20,9 @@ export interface ApplyStructureTemplateResult {
  * - `containerId` 直下にテンプレートの `rootChildren` を直置きで展開する
  *   （構造名のラッパーフォルダは作らない）
  * - 既存構造は破壊しない（新規ノードは末尾に追加）
- * - 各 placeholder scene の synopsis にはテンプレート由来の説明文を初期値として埋める
+ * - Phase 4 後続: 構造役割は **folder.synopsis** にのみ書き込む。
+ *   chat の chapter outline 経路に乗せるため。scene は placeholder で
+ *   synopsis 空（ユーザーが具体的出来事を書く場所として残す）。
  *
  * 履歴は捕捉していない（一括適用 = atomic な1操作とみなす）。
  */
@@ -68,9 +70,10 @@ async function createChildren(
     const sortOrder = keys[i];
     const id = crypto.randomUUID();
     const stageBase = `grid.structureTemplates.${template.key}.stages.${node.stage}`;
-    const name = i18next.t(`${stageBase}.name`, { defaultValue: node.stage });
 
     if (node.kind === "folder") {
+      const name = i18next.t(`${stageBase}.name`, { defaultValue: node.stage });
+      const synopsis = i18next.t(`${stageBase}.synopsis`, { defaultValue: "" });
       await treeApi.createNode({
         id,
         projectId,
@@ -78,14 +81,19 @@ async function createChildren(
         nodeType: "folder",
         title: name,
         sortOrder,
+        synopsis: synopsis || undefined,
       });
       if (node.children) {
         await createChildren(projectId, template, id, node.children);
       }
     } else {
-      const synopsis = i18next.t(`${stageBase}.synopsis`, {
-        defaultValue: "",
-      });
+      // scene branch: placeholder=true なら共通の "シーン" を使う。
+      // Phase 4 後続: scene.synopsis には何も書き込まない。
+      const name = node.placeholder
+        ? i18next.t("grid.structureTemplates.placeholderScene", {
+            defaultValue: "シーン",
+          })
+        : i18next.t(`${stageBase}.name`, { defaultValue: node.stage });
       await treeApi.createNode({
         id,
         projectId,
@@ -93,7 +101,6 @@ async function createChildren(
         nodeType: "scene",
         title: name,
         sortOrder,
-        synopsis: synopsis || undefined,
       });
     }
   }

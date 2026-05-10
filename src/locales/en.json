@@ -748,87 +748,118 @@
       "structureTemplateApplied": "Added {{folders}} folder(s) / {{scenes}} scene(s)"
     },
     "structureTemplates": {
+      "placeholderScene": "Scene",
       "threeAct": {
         "name": "Three-Act Structure",
         "stages": {
-          "act1": { "name": "Act 1: Setup" },
-          "act1Scene": {
-            "name": "Opening",
+          "act1": {
+            "name": "Act 1: Setup",
             "synopsis": "Establish the protagonist's ordinary world and values. Plant the assumptions that will be challenged and the hooks that draw readers in."
           },
-          "act2": { "name": "Act 2: Confrontation" },
-          "act2Scene": {
-            "name": "Confrontation",
+          "act1Scene": {
+            "name": "Opening"
+          },
+          "act2": {
+            "name": "Act 2: Confrontation",
             "synopsis": "Escalate obstacles as the protagonist pursues the goal. Layer internal, interpersonal, and external conflicts toward a midpoint shift in values."
           },
-          "act3": { "name": "Act 3: Resolution" },
-          "act3Scene": {
-            "name": "Climax",
+          "act2Scene": {
+            "name": "Confrontation"
+          },
+          "act3": {
+            "name": "Act 3: Resolution",
             "synopsis": "The protagonist faces the largest trial and the goal is decided. Show the changed world in the closing beats."
+          },
+          "act3Scene": {
+            "name": "Climax"
           }
         }
       },
       "kishoten": {
         "name": "Setup / Development / Twist / Conclusion",
         "stages": {
-          "ki": { "name": "Setup" },
-          "kiScene": {
+          "ki": {
             "name": "Setup",
             "synopsis": "Introduce situation, characters, and setting. Establish the world the story rests on."
           },
-          "sho": { "name": "Development" },
-          "shoScene": {
+          "kiScene": {
+            "name": "Setup"
+          },
+          "sho": {
             "name": "Development",
             "synopsis": "Expand the situation set up in Ki. Build events and relationships, planting the seeds for the twist."
           },
-          "ten": { "name": "Twist" },
-          "tenScene": {
+          "shoScene": {
+            "name": "Development"
+          },
+          "ten": {
             "name": "Twist",
             "synopsis": "A pivotal turn that overturns prior assumptions. Surprise the reader with an event or shift in perspective."
           },
-          "ketsu": { "name": "Conclusion" },
-          "ketsuScene": {
+          "tenScene": {
+            "name": "Twist"
+          },
+          "ketsu": {
             "name": "Conclusion",
             "synopsis": "Absorb the change introduced by the twist and bring the story to a close. Shape the lingering aftertaste."
+          },
+          "ketsuScene": {
+            "name": "Conclusion"
           }
         }
       },
       "freytag": {
         "name": "Freytag's Pyramid (5 Acts)",
         "stages": {
-          "exposition": { "name": "Exposition" },
-          "expositionScene": {
+          "exposition": {
             "name": "Exposition",
             "synopsis": "Introduce characters, place, and situation. Show the stable state before the story begins."
           },
-          "risingAction": { "name": "Rising Action" },
-          "risingActionScene": {
+          "expositionScene": {
+            "name": "Exposition"
+          },
+          "risingAction": {
             "name": "Rising Action",
             "synopsis": "The protagonist pursues the goal as conflicts pile up. Tension rises in stages."
           },
-          "climax": { "name": "Climax" },
-          "climaxScene": {
+          "risingActionScene": {
+            "name": "Rising Action"
+          },
+          "climax": {
             "name": "Climax",
             "synopsis": "The story's most dramatic moment. A decisive turning point for the protagonist's fate."
           },
-          "fallingAction": { "name": "Falling Action" },
-          "fallingActionScene": {
+          "climaxScene": {
+            "name": "Climax"
+          },
+          "fallingAction": {
             "name": "Falling Action",
             "synopsis": "The aftermath spreads outward. Remaining conflicts move toward resolution."
           },
-          "resolution": { "name": "Resolution" },
-          "resolutionScene": {
+          "fallingActionScene": {
+            "name": "Falling Action"
+          },
+          "resolution": {
             "name": "Resolution",
             "synopsis": "The final settlement. Show the new stable state and the changed characters."
+          },
+          "resolutionScene": {
+            "name": "Resolution"
           }
         }
       },
       "saveTheCat": {
         "name": "Save the Cat Stages",
         "stages": {
-          "act1": { "name": "Act 1" },
-          "act2": { "name": "Act 2" },
-          "act3": { "name": "Act 3" },
+          "act1": {
+            "name": "Act 1"
+          },
+          "act2": {
+            "name": "Act 2"
+          },
+          "act3": {
+            "name": "Act 3"
+          },
           "openingImage": {
             "name": "Opening Image",
             "synopsis": "A single visual scene that conveys the world and tone at a glance. The 'before' that pairs with the Final Image."
@@ -894,9 +925,15 @@
       "heroJourney": {
         "name": "Hero's Journey",
         "stages": {
-          "departure": { "name": "Departure" },
-          "initiation": { "name": "Initiation" },
-          "returnAct": { "name": "Return" },
+          "departure": {
+            "name": "Departure"
+          },
+          "initiation": {
+            "name": "Initiation"
+          },
+          "returnAct": {
+            "name": "Return"
+          },
           "ordinaryWorld": {
             "name": "Ordinary World",
             "synopsis": "The protagonist's old life and unmet desire. The baseline before the adventure begins."
@@ -987,125 +1024,173 @@
       "twentyFour": {
         "name": "24-Chapter Structure",
         "stages": {
-          "ch1": { "name": "Ch. 1: Hook" },
-          "ch1Scene": {
-            "name": "Hook",
+          "ch1": {
+            "name": "Ch. 1: Hook",
             "synopsis": "The opening scene that draws the reader in. Convey the world, tone, and the core of the protagonist at once."
           },
-          "ch2": { "name": "Ch. 2: Setup" },
-          "ch2Scene": {
-            "name": "Setup",
+          "ch1Scene": {
+            "name": "Hook"
+          },
+          "ch2": {
+            "name": "Ch. 2: Setup",
             "synopsis": "Present the protagonist's daily life and what is lacking. Lay the assumptions that will be broken."
           },
-          "ch3": { "name": "Ch. 3: Inciting Incident" },
-          "ch3Scene": {
-            "name": "Inciting Incident",
+          "ch2Scene": {
+            "name": "Setup"
+          },
+          "ch3": {
+            "name": "Ch. 3: Inciting Incident",
             "synopsis": "The first event that disrupts the routine. Cracks open in the protagonist's world."
           },
-          "ch4": { "name": "Ch. 4: Refusal & Decision" },
-          "ch4Scene": {
-            "name": "Refusal & Decision",
+          "ch3Scene": {
+            "name": "Inciting Incident"
+          },
+          "ch4": {
+            "name": "Ch. 4: Refusal & Decision",
             "synopsis": "Wrestling with how to respond to the incident. The fork between accepting and refusing the journey."
           },
-          "ch5": { "name": "Ch. 5: Into the New World" },
-          "ch5Scene": {
-            "name": "Into the New World",
+          "ch4Scene": {
+            "name": "Refusal & Decision"
+          },
+          "ch5": {
+            "name": "Ch. 5: Into the New World",
             "synopsis": "The protagonist commits and crosses into the new world. A step that cannot be undone."
           },
-          "ch6": { "name": "Ch. 6: Exploration & Discovery" },
-          "ch6Scene": {
-            "name": "Exploration & Discovery",
+          "ch5Scene": {
+            "name": "Into the New World"
+          },
+          "ch6": {
+            "name": "Ch. 6: Exploration & Discovery",
             "synopsis": "Learn the rules, enemies, and allies of the new world. The stakes become concrete."
           },
-          "ch7": { "name": "Ch. 7: First Pinch" },
-          "ch7Scene": {
-            "name": "First Pinch",
+          "ch6Scene": {
+            "name": "Exploration & Discovery"
+          },
+          "ch7": {
+            "name": "Ch. 7: First Pinch",
             "synopsis": "The opposition makes its first serious move and damages the protagonist."
           },
-          "ch8": { "name": "Ch. 8: Regrouping" },
-          "ch8Scene": {
-            "name": "Regrouping",
+          "ch7Scene": {
+            "name": "First Pinch"
+          },
+          "ch8": {
+            "name": "Ch. 8: Regrouping",
             "synopsis": "Recover from defeat. Reorganize the team and rework the strategy."
           },
-          "ch9": { "name": "Ch. 9: Midgame" },
-          "ch9Scene": {
-            "name": "Midgame",
+          "ch8Scene": {
+            "name": "Regrouping"
+          },
+          "ch9": {
+            "name": "Ch. 9: Midgame",
             "synopsis": "A central peak of the story. The protagonist's understanding and capability expand greatly."
           },
-          "ch10": { "name": "Ch. 10: False Victory" },
-          "ch10Scene": {
-            "name": "False Victory",
+          "ch9Scene": {
+            "name": "Midgame"
+          },
+          "ch10": {
+            "name": "Ch. 10: False Victory",
             "synopsis": "Looks like success on the surface. Underneath, costs are accumulating."
           },
-          "ch11": { "name": "Ch. 11: Reversal" },
-          "ch11Scene": {
-            "name": "Reversal",
+          "ch10Scene": {
+            "name": "False Victory"
+          },
+          "ch11": {
+            "name": "Ch. 11: Reversal",
             "synopsis": "The moment perspective or situation flips. Earlier assumptions are overturned."
           },
-          "ch12": { "name": "Ch. 12: Second Pinch" },
-          "ch12Scene": {
-            "name": "Second Pinch",
+          "ch11Scene": {
+            "name": "Reversal"
+          },
+          "ch12": {
+            "name": "Ch. 12: Second Pinch",
             "synopsis": "Antagonists tighten the screws. Trust within the team begins to crack."
           },
-          "ch13": { "name": "Ch. 13: Crisis Deepens" },
-          "ch13Scene": {
-            "name": "Crisis Deepens",
+          "ch12Scene": {
+            "name": "Second Pinch"
+          },
+          "ch13": {
+            "name": "Ch. 13: Crisis Deepens",
             "synopsis": "Things get worse. The protagonist's options disappear one by one."
           },
-          "ch14": { "name": "Ch. 14: All Is Lost" },
-          "ch14Scene": {
-            "name": "All Is Lost",
+          "ch13Scene": {
+            "name": "Crisis Deepens"
+          },
+          "ch14": {
+            "name": "Ch. 14: All Is Lost",
             "synopsis": "The greatest loss. The lowest point where something precious is taken away."
           },
-          "ch15": { "name": "Ch. 15: Dark Night" },
-          "ch15Scene": {
-            "name": "Dark Night",
+          "ch14Scene": {
+            "name": "All Is Lost"
+          },
+          "ch15": {
+            "name": "Ch. 15: Dark Night",
             "synopsis": "From the bottom of despair the protagonist reflects and arrives at the answer truly needed."
           },
-          "ch16": { "name": "Ch. 16: Rally" },
-          "ch16Scene": {
-            "name": "Rally",
+          "ch15Scene": {
+            "name": "Dark Night"
+          },
+          "ch16": {
+            "name": "Ch. 16: Rally",
             "synopsis": "A new resolve. Stand up again with whatever remains."
           },
-          "ch17": { "name": "Ch. 17: Into Act 3" },
-          "ch17Scene": {
-            "name": "Into Act 3",
+          "ch16Scene": {
+            "name": "Rally"
+          },
+          "ch17": {
+            "name": "Ch. 17: Into Act 3",
             "synopsis": "The third act opens. Preparations for the climax begin."
           },
-          "ch18": { "name": "Ch. 18: Reunion" },
-          "ch18Scene": {
-            "name": "Reunion",
+          "ch17Scene": {
+            "name": "Into Act 3"
+          },
+          "ch18": {
+            "name": "Ch. 18: Reunion",
             "synopsis": "Companions reassemble and align for the final battle."
           },
-          "ch19": { "name": "Ch. 19: Final Approach" },
-          "ch19Scene": {
-            "name": "Final Approach",
+          "ch18Scene": {
+            "name": "Reunion"
+          },
+          "ch19": {
+            "name": "Ch. 19: Final Approach",
             "synopsis": "The last obstacle surfaces and forces a decisive choice from the protagonist."
           },
-          "ch20": { "name": "Ch. 20: Last Obstacle" },
-          "ch20Scene": {
-            "name": "Last Obstacle",
+          "ch19Scene": {
+            "name": "Final Approach"
+          },
+          "ch20": {
+            "name": "Ch. 20: Last Obstacle",
             "synopsis": "Quiet just before the climax. The stakes peak."
           },
-          "ch21": { "name": "Ch. 21: Climax" },
-          "ch21Scene": {
-            "name": "Climax",
+          "ch20Scene": {
+            "name": "Last Obstacle"
+          },
+          "ch21": {
+            "name": "Ch. 21: Climax",
             "synopsis": "The climax. The protagonist faces the final trial as a true self."
           },
-          "ch22": { "name": "Ch. 22: Final Battle" },
-          "ch22Scene": {
-            "name": "Final Battle",
+          "ch21Scene": {
+            "name": "Climax"
+          },
+          "ch22": {
+            "name": "Ch. 22: Final Battle",
             "synopsis": "The last phase of the final battle. The fate of the world is decided."
           },
-          "ch23": { "name": "Ch. 23: Resolution" },
-          "ch23Scene": {
-            "name": "Resolution",
+          "ch22Scene": {
+            "name": "Final Battle"
+          },
+          "ch23": {
+            "name": "Ch. 23: Resolution",
             "synopsis": "After the dust settles. Remaining issues are resolved one by one."
           },
-          "ch24": { "name": "Ch. 24: Epilogue" },
-          "ch24Scene": {
-            "name": "Epilogue",
+          "ch23Scene": {
+            "name": "Resolution"
+          },
+          "ch24": {
+            "name": "Ch. 24: Epilogue",
             "synopsis": "Show the changed protagonist's new daily life and close the story."
+          },
+          "ch24Scene": {
+            "name": "Epilogue"
           }
         }
       }

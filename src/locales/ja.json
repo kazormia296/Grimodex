@@ -748,87 +748,118 @@
       "structureTemplateApplied": "{{folders}} folders / {{scenes}} scenes を追加しました"
     },
     "structureTemplates": {
+      "placeholderScene": "シーン",
       "threeAct": {
         "name": "3幕構成",
         "stages": {
-          "act1": { "name": "第1幕：設定" },
-          "act1Scene": {
-            "name": "導入",
+          "act1": {
+            "name": "第1幕：設定",
             "synopsis": "主人公の日常世界と価値観を提示する。これから崩されるべき前提と、読者が感情移入する手がかりをここに置く。"
           },
-          "act2": { "name": "第2幕：対立" },
-          "act2Scene": {
-            "name": "対立",
+          "act1Scene": {
+            "name": "導入"
+          },
+          "act2": {
+            "name": "第2幕：対立",
             "synopsis": "目標を追う中で障害が積み重なる中盤。内面・対人関係・外的状況の葛藤を多層に重ね、価値観の転換へ向かわせる。"
           },
-          "act3": { "name": "第3幕：解決" },
-          "act3Scene": {
-            "name": "決着",
+          "act2Scene": {
+            "name": "対立"
+          },
+          "act3": {
+            "name": "第3幕：解決",
             "synopsis": "クライマックスで主人公が最大の試練と対峙し、設定した目標について決着がつく。余韻として変化後の姿を示す。"
+          },
+          "act3Scene": {
+            "name": "決着"
           }
         }
       },
       "kishoten": {
         "name": "起承転結",
         "stages": {
-          "ki": { "name": "起：発端" },
-          "kiScene": {
-            "name": "発端",
+          "ki": {
+            "name": "起：発端",
             "synopsis": "状況・登場人物・舞台を読者に提示する導入。物語の前提となる世界観を示す。"
           },
-          "sho": { "name": "承：展開" },
-          "shoScene": {
-            "name": "展開",
+          "kiScene": {
+            "name": "発端"
+          },
+          "sho": {
+            "name": "承：展開",
             "synopsis": "起で示した状況を膨らませ、出来事や関係性を発展させる。読者の関心を保ちつつ転に向けて伏線を張る。"
           },
-          "ten": { "name": "転：転換" },
-          "tenScene": {
-            "name": "転換",
+          "shoScene": {
+            "name": "展開"
+          },
+          "ten": {
+            "name": "転：転換",
             "synopsis": "物語が大きく動く転換点。これまでの前提を覆す事件や視点の変化を起こし、読者に意外性を与える。"
           },
-          "ketsu": { "name": "結：結末" },
-          "ketsuScene": {
-            "name": "結末",
+          "tenScene": {
+            "name": "転換"
+          },
+          "ketsu": {
+            "name": "結：結末",
             "synopsis": "転で生じた変化を引き受けて物語を締めくくる。余韻と読後感を整える。"
+          },
+          "ketsuScene": {
+            "name": "結末"
           }
         }
       },
       "freytag": {
         "name": "Freytag の5幕",
         "stages": {
-          "exposition": { "name": "序：説明" },
-          "expositionScene": {
-            "name": "導入",
+          "exposition": {
+            "name": "序：説明",
             "synopsis": "登場人物・場所・状況を提示。物語が始まる前の安定状態を描く。"
           },
-          "risingAction": { "name": "上昇：展開" },
-          "risingActionScene": {
-            "name": "展開",
+          "expositionScene": {
+            "name": "導入"
+          },
+          "risingAction": {
+            "name": "上昇：展開",
             "synopsis": "主人公が目標に向かって動き、対立が積み重なっていく。緊張が段階的に高まる。"
           },
-          "climax": { "name": "頂点：クライマックス" },
-          "climaxScene": {
-            "name": "クライマックス",
+          "risingActionScene": {
+            "name": "展開"
+          },
+          "climax": {
+            "name": "頂点：クライマックス",
             "synopsis": "物語の最も劇的な瞬間。主人公の運命が決定的に分岐するターニングポイント。"
           },
-          "fallingAction": { "name": "下降：余波" },
-          "fallingActionScene": {
-            "name": "余波",
+          "climaxScene": {
+            "name": "クライマックス"
+          },
+          "fallingAction": {
+            "name": "下降：余波",
             "synopsis": "クライマックスの結果が広がっていく場面。残された対立が解消に向かう。"
           },
-          "resolution": { "name": "終結：解決" },
-          "resolutionScene": {
-            "name": "解決",
+          "fallingActionScene": {
+            "name": "余波"
+          },
+          "resolution": {
+            "name": "終結：解決",
             "synopsis": "物語の決着。新たな安定状態と、変化したキャラクターの姿を示す。"
+          },
+          "resolutionScene": {
+            "name": "解決"
           }
         }
       },
       "saveTheCat": {
         "name": "Save the Cat の段階",
         "stages": {
-          "act1": { "name": "第1幕" },
-          "act2": { "name": "第2幕" },
-          "act3": { "name": "第3幕" },
+          "act1": {
+            "name": "第1幕"
+          },
+          "act2": {
+            "name": "第2幕"
+          },
+          "act3": {
+            "name": "第3幕"
+          },
           "openingImage": {
             "name": "冒頭イメージ",
             "synopsis": "物語の世界とトーンを一目で伝える映像的な1シーン。終幕イメージと対になる「変化前」の姿を示す。"
@@ -894,9 +925,15 @@
       "heroJourney": {
         "name": "英雄の旅",
         "stages": {
-          "departure": { "name": "旅立ち" },
-          "initiation": { "name": "試練" },
-          "returnAct": { "name": "帰還" },
+          "departure": {
+            "name": "旅立ち"
+          },
+          "initiation": {
+            "name": "試練"
+          },
+          "returnAct": {
+            "name": "帰還"
+          },
           "ordinaryWorld": {
             "name": "日常世界",
             "synopsis": "主人公の元の生活と、満たされない欲求を描く。冒険前の基準点となる日常。"
@@ -987,125 +1024,173 @@
       "twentyFour": {
         "name": "24章構成",
         "stages": {
-          "ch1": { "name": "第1章：フック" },
-          "ch1Scene": {
-            "name": "フック",
+          "ch1": {
+            "name": "第1章：フック",
             "synopsis": "読者を物語に引き込む冒頭シーン。世界観・トーン・主人公の核を一気に提示する。"
           },
-          "ch2": { "name": "第2章：状況設定" },
-          "ch2Scene": {
-            "name": "状況設定",
+          "ch1Scene": {
+            "name": "フック"
+          },
+          "ch2": {
+            "name": "第2章：状況設定",
             "synopsis": "主人公の日常と欠落を提示。これから崩されるべき前提を整える。"
           },
-          "ch3": { "name": "第3章：日常の崩壊" },
-          "ch3Scene": {
-            "name": "日常の崩壊",
+          "ch2Scene": {
+            "name": "状況設定"
+          },
+          "ch3": {
+            "name": "第3章：日常の崩壊",
             "synopsis": "日常を揺るがす最初の事件。主人公の世界に亀裂が入る。"
           },
-          "ch4": { "name": "第4章：拒絶と決断" },
-          "ch4Scene": {
-            "name": "拒絶と決断",
+          "ch3Scene": {
+            "name": "日常の崩壊"
+          },
+          "ch4": {
+            "name": "第4章：拒絶と決断",
             "synopsis": "事件への対応を巡る葛藤。主人公が冒険を受け入れるか拒むかの分岐。"
           },
-          "ch5": { "name": "第5章：新世界への突入" },
-          "ch5Scene": {
-            "name": "新世界への突入",
+          "ch4Scene": {
+            "name": "拒絶と決断"
+          },
+          "ch5": {
+            "name": "第5章：新世界への突入",
             "synopsis": "主人公が決断し、新しい世界へ踏み込む。後戻りできない一歩。"
           },
-          "ch6": { "name": "第6章：探索と発見" },
-          "ch6Scene": {
-            "name": "探索と発見",
+          "ch5Scene": {
+            "name": "新世界への突入"
+          },
+          "ch6": {
+            "name": "第6章：探索と発見",
             "synopsis": "新世界のルール・敵・味方を学ぶ。物語のステークスが具体化する。"
           },
-          "ch7": { "name": "第7章：第1ピンチ" },
-          "ch7Scene": {
-            "name": "第1ピンチ",
+          "ch6Scene": {
+            "name": "探索と発見"
+          },
+          "ch7": {
+            "name": "第7章：第1ピンチ",
             "synopsis": "敵対勢力が初めて本格的に動き、主人公にダメージを与える。"
           },
-          "ch8": { "name": "第8章：再編成" },
-          "ch8Scene": {
-            "name": "再編成",
+          "ch7Scene": {
+            "name": "第1ピンチ"
+          },
+          "ch8": {
+            "name": "第8章：再編成",
             "synopsis": "敗北からの立て直し。チームを再編し、戦略を練り直す。"
           },
-          "ch9": { "name": "第9章：中盤" },
-          "ch9Scene": {
-            "name": "中盤",
+          "ch8Scene": {
+            "name": "再編成"
+          },
+          "ch9": {
+            "name": "第9章：中盤",
             "synopsis": "中盤の山場。主人公の理解と能力が大きく拡張される。"
           },
-          "ch10": { "name": "第10章：偽の勝利" },
-          "ch10Scene": {
-            "name": "偽の勝利",
+          "ch9Scene": {
+            "name": "中盤"
+          },
+          "ch10": {
+            "name": "第10章：偽の勝利",
             "synopsis": "勝利のように見える局面。だが裏側ではコストが膨らんでいる。"
           },
-          "ch11": { "name": "第11章：転換" },
-          "ch11Scene": {
-            "name": "転換",
+          "ch10Scene": {
+            "name": "偽の勝利"
+          },
+          "ch11": {
+            "name": "第11章：転換",
             "synopsis": "視点や状況が反転する瞬間。これまでの前提が覆される。"
           },
-          "ch12": { "name": "第12章：第2ピンチ" },
-          "ch12Scene": {
-            "name": "第2ピンチ",
+          "ch11Scene": {
+            "name": "転換"
+          },
+          "ch12": {
+            "name": "第12章：第2ピンチ",
             "synopsis": "敵が再び圧力を強める。仲間内の信頼にもひびが入る。"
           },
-          "ch13": { "name": "第13章：危機の深化" },
-          "ch13Scene": {
-            "name": "危機の深化",
+          "ch12Scene": {
+            "name": "第2ピンチ"
+          },
+          "ch13": {
+            "name": "第13章：危機の深化",
             "synopsis": "状況がさらに悪化。主人公の選択肢が次々と消えていく。"
           },
-          "ch14": { "name": "第14章：全ての喪失" },
-          "ch14Scene": {
-            "name": "全ての喪失",
+          "ch13Scene": {
+            "name": "危機の深化"
+          },
+          "ch14": {
+            "name": "第14章：全ての喪失",
             "synopsis": "最大の喪失。主人公が大切な何かを失う最低点。"
           },
-          "ch15": { "name": "第15章：魂の暗夜" },
-          "ch15Scene": {
-            "name": "魂の暗夜",
+          "ch14Scene": {
+            "name": "全ての喪失"
+          },
+          "ch15": {
+            "name": "第15章：魂の暗夜",
             "synopsis": "絶望の底で内省し、本当に必要だった答えに到達する。"
           },
-          "ch16": { "name": "第16章：再起" },
-          "ch16Scene": {
-            "name": "再起",
+          "ch15Scene": {
+            "name": "魂の暗夜"
+          },
+          "ch16": {
+            "name": "第16章：再起",
             "synopsis": "新たな決意。残された手段で再び立ち上がる。"
           },
-          "ch17": { "name": "第17章：第3幕突入" },
-          "ch17Scene": {
-            "name": "第3幕突入",
+          "ch16Scene": {
+            "name": "再起"
+          },
+          "ch17": {
+            "name": "第17章：第3幕突入",
             "synopsis": "第3幕の幕開け。クライマックスへの準備が始まる。"
           },
-          "ch18": { "name": "第18章：再集結" },
-          "ch18Scene": {
-            "name": "再集結",
+          "ch17Scene": {
+            "name": "第3幕突入"
+          },
+          "ch18": {
+            "name": "第18章：再集結",
             "synopsis": "仲間が再集結し、最終決戦に向けて整える。"
           },
-          "ch19": { "name": "第19章：最終接近" },
-          "ch19Scene": {
-            "name": "最終接近",
+          "ch18Scene": {
+            "name": "再集結"
+          },
+          "ch19": {
+            "name": "第19章：最終接近",
             "synopsis": "最後の障害が浮上し、主人公が決定的な選択を迫られる。"
           },
-          "ch20": { "name": "第20章：最後の障害" },
-          "ch20Scene": {
-            "name": "最後の障害",
+          "ch19Scene": {
+            "name": "最終接近"
+          },
+          "ch20": {
+            "name": "第20章：最後の障害",
             "synopsis": "クライマックス直前の静けさ。賭け金が最大化する。"
           },
-          "ch21": { "name": "第21章：クライマックス" },
-          "ch21Scene": {
-            "name": "クライマックス",
+          "ch20Scene": {
+            "name": "最後の障害"
+          },
+          "ch21": {
+            "name": "第21章：クライマックス",
             "synopsis": "クライマックス。主人公が真の自分として最終試練に挑む。"
           },
-          "ch22": { "name": "第22章：最終決戦" },
-          "ch22Scene": {
-            "name": "最終決戦",
+          "ch21Scene": {
+            "name": "クライマックス"
+          },
+          "ch22": {
+            "name": "第22章：最終決戦",
             "synopsis": "最終決戦の最終局面。世界の運命が決まる瞬間。"
           },
-          "ch23": { "name": "第23章：解決" },
-          "ch23Scene": {
-            "name": "解決",
+          "ch22Scene": {
+            "name": "最終決戦"
+          },
+          "ch23": {
+            "name": "第23章：解決",
             "synopsis": "戦後処理。残された問題が一つずつ解消されていく。"
           },
-          "ch24": { "name": "第24章：エピローグ" },
-          "ch24Scene": {
-            "name": "エピローグ",
+          "ch23Scene": {
+            "name": "解決"
+          },
+          "ch24": {
+            "name": "第24章：エピローグ",
             "synopsis": "変化した主人公の新たな日常を示し物語を閉じる。"
+          },
+          "ch24Scene": {
+            "name": "エピローグ"
           }
         }
       }
