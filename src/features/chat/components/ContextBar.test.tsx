@@ -280,3 +280,57 @@ describe("ContextBar 子エントリピル表示 (非グループモード)", ()
     expect(onDismissViaChild).toHaveBeenCalledWith("c1");
   });
 });
+
+describe("ContextBar outline chip (Phase 4 後続)", () => {
+  it("projectOutline が空なら chip を表示しない", () => {
+    render(<ContextBar {...defaultProps} pinnedEntries={[]} />);
+    const pills = screen.getByTestId("pills-visible");
+    expect(
+      within(pills).queryByText(/Project outline/),
+    ).not.toBeInTheDocument();
+  });
+
+  it("projectOutline が渡されると chip が表示される", () => {
+    render(
+      <ContextBar
+        {...defaultProps}
+        pinnedEntries={[]}
+        projectOutline="全3部構成。テーマは復讐の代償。"
+      />,
+    );
+    const pills = screen.getByTestId("pills-visible");
+    expect(within(pills).getByText("Project outline")).toBeInTheDocument();
+  });
+
+  it("chapterOutlines が祖先順で全件 chip 表示される", () => {
+    render(
+      <ContextBar
+        {...defaultProps}
+        pinnedEntries={[]}
+        chapterOutlines={[
+          { title: "第1部", outline: "outermost" },
+          { title: "第3章", outline: "innermost" },
+        ]}
+      />,
+    );
+    const pills = screen.getByTestId("pills-visible");
+    expect(within(pills).getByText(/第1部/)).toBeInTheDocument();
+    expect(within(pills).getByText(/第3章/)).toBeInTheDocument();
+  });
+
+  it("chip クリックで outline 全文の popover が開く", async () => {
+    const user = userEvent.setup();
+    render(
+      <ContextBar
+        {...defaultProps}
+        pinnedEntries={[]}
+        projectOutline="全3部構成。テーマは復讐の代償。"
+      />,
+    );
+    const pills = screen.getByTestId("pills-visible");
+    await user.click(within(pills).getByText("Project outline"));
+    expect(
+      screen.getByText("全3部構成。テーマは復讐の代償。"),
+    ).toBeInTheDocument();
+  });
+});

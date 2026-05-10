@@ -17,7 +17,13 @@ import {
   Spotlight,
   Undo2,
   Bot,
+  ScrollText,
 } from "lucide-react";
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover";
 import type { CodexEntry } from "@/features/codex/api";
 import type {
   PinnedCodexEntryWithData,
@@ -43,6 +49,12 @@ import { PinCodexDialog } from "./PinCodexDialog";
 
 const TYPE_ORDER = ["character", "location", "item", "lore"];
 const GROUP_THRESHOLD = 6; // DOM未マウント / テスト環境用フォールバック
+// Zustand selector で `?? []` を返すと毎回新規参照になるので、モジュール定数で
+// fallback して再レンダー無限ループを避ける。
+const EMPTY_CHAPTER_OUTLINES: ReadonlyArray<{
+  title: string;
+  outline: string;
+}> = [];
 
 type ViaChild = {
   child: CodexEntry;
@@ -80,6 +92,10 @@ interface ContextBarProps {
   model: string;
   agentMode?: boolean;
   canUseCreator?: boolean;
+  /** Phase 4 後続: AI に注入される project outline 全文（trim 済み・空でない場合のみ） */
+  projectOutline?: string;
+  /** Phase 4 後続: 祖先 chapter の outline（outermost → innermost 順） */
+  chapterOutlines?: ReadonlyArray<{ title: string; outline: string }>;
 }
 
 export function ContextBar({
@@ -104,6 +120,8 @@ export function ContextBar({
   model,
   agentMode = false,
   canUseCreator = false,
+  projectOutline,
+  chapterOutlines = EMPTY_CHAPTER_OUTLINES,
 }: ContextBarProps) {
   const { t } = useTranslation();
   const reduced = useReducedMotion();
@@ -303,6 +321,16 @@ export function ContextBar({
                     Scene: {sceneTokens.toLocaleString()}
                   </span>
                 )}
+                {projectOutline && (
+                  <span className="px-1.5 py-0.5">
+                    {t("chat.context.projectOutline")}
+                  </span>
+                )}
+                {chapterOutlines.map((co) => (
+                  <span key={co.title} className="px-1.5 py-0.5">
+                    {t("chat.context.chapterOutline", { title: co.title })}
+                  </span>
+                ))}
                 {pinnedEntries.map((e) => (
                   <span
                     key={e.id}
@@ -373,6 +401,27 @@ export function ContextBar({
                     Scene: {sceneTokens.toLocaleString()}
                   </span>
                 )}
+                {/* Phase 4 後続: project outline chip — クリックで全文プレビュー */}
+                {projectOutline && (
+                  <OutlineChip
+                    label={t("chat.context.projectOutline")}
+                    title={t("chat.context.projectOutlineTitle")}
+                    body={projectOutline}
+                  />
+                )}
+                {/* Phase 4 後続: chapter outline chip（祖先順）*/}
+                {chapterOutlines.map((co) => (
+                  <OutlineChip
+                    key={co.title}
+                    label={t("chat.context.chapterOutline", {
+                      title: co.title,
+                    })}
+                    title={t("chat.context.chapterOutlineTitle", {
+                      title: co.title,
+                    })}
+                    body={co.outline}
+                  />
+                ))}
                 {/* グループモード: AnimatePresence なし → モード切り替え時に即 DOM 削除 */}
                 {/* exit アニメーション要素が溜まらないので height が膨張しない */}
                 {useGrouping &&
@@ -655,4 +704,39 @@ export function ContextBarConnected(
 ) {
   const systemPrompt = useChatStore((s) => s.lastSystemPrompt);
   return <ContextBar {...props} systemPrompt={systemPrompt} />;
+}
+
+interface OutlineChipProps {
+  label: string;
+  title: string;
+  body: string;
+}
+
+function OutlineChip({ label, title, body }: OutlineChipProps) {
+  return (
+    <Popover>
+      <PopoverTrigger asChild>
+        <button
+          type="button"
+          className="inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded bg-muted px-1.5 py-0.5 text-xs text-muted-foreground hover:bg-accent"
+          title={title}
+        >
+          <ScrollText className="h-3 w-3" />
+          <span className="max-w-[14ch] truncate">{label}</span>
+        </button>
+      </PopoverTrigger>
+      <PopoverContent
+        align="start"
+        sideOffset={6}
+        className="w-80 max-w-[min(24rem,calc(100vw-1rem))]"
+      >
+        <div className="mb-1.5 text-xs font-medium text-muted-foreground">
+          {title}
+        </div>
+        <div className="max-h-64 overflow-y-auto whitespace-pre-wrap break-words text-xs leading-relaxed text-foreground">
+          {body}
+        </div>
+      </PopoverContent>
+    </Popover>
+  );
 }

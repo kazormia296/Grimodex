@@ -316,6 +316,10 @@ interface ChatState {
   contextLayers: LayerBreakdown[];
   lastSystemPrompt: string;
 
+  /** Phase 4 後続: ContextBar chip 表示用。projectOutline は trim 済みの空でない場合のみ。 */
+  projectOutline: string | undefined;
+  chapterOutlines: Array<{ title: string; outline: string }>;
+
   // G15: auto-detected and always-mode entries (excluding pinned)
   detectedEntries: CodexEntry[];
   alwaysEntries: CodexEntry[];
@@ -445,6 +449,9 @@ interface SceneContextPayload {
    * Agent モードで `get_codex_entry` 短絡判定に使う。Spotlight 経路を通った
    * エントリ（pinnedCodexEntries）が該当する。 */
   fullyInjectedIds: string[];
+  /** Phase 4 後続: ContextBar chip 表示用の outline 値。注入されたものと同一。 */
+  projectOutline: string | undefined;
+  chapterOutlines: Array<{ title: string; outline: string }>;
 }
 
 async function buildSceneContextPrompt(opts: {
@@ -899,6 +906,10 @@ async function buildSceneContextPrompt(opts: {
     detectedEntries: detectedNotPinned,
     alwaysEntries: alwaysNotPinned,
     fullyInjectedIds: pinnedCodexEntries.map((e) => e.id),
+    projectOutline: projectCtx?.outline?.trim()
+      ? projectCtx.outline
+      : undefined,
+    chapterOutlines,
   };
 }
 
@@ -914,6 +925,8 @@ export const useChatStore = create<ChatState>()((set, get) => ({
   contextTokenCount: 0,
   contextLayers: [],
   lastSystemPrompt: "",
+  projectOutline: undefined,
+  chapterOutlines: [],
   detectedEntries: [],
   alwaysEntries: [],
   inputPinnedEntryIds: [],
@@ -2012,9 +2025,16 @@ export const useChatStore = create<ChatState>()((set, get) => ({
           lastSystemPrompt: promptResult.prompt,
           detectedEntries: [],
           alwaysEntries: alwaysNotPinned,
+          projectOutline: undefined,
+          chapterOutlines: [],
         });
       } catch {
-        set({ contextTokenCount: 0, contextLayers: [] });
+        set({
+          contextTokenCount: 0,
+          contextLayers: [],
+          projectOutline: undefined,
+          chapterOutlines: [],
+        });
       }
       return;
     }
@@ -2041,6 +2061,8 @@ export const useChatStore = create<ChatState>()((set, get) => ({
         lastSystemPrompt: ctxResult.prompt,
         detectedEntries: ctxResult.detectedEntries,
         alwaysEntries: ctxResult.alwaysEntries,
+        projectOutline: ctxResult.projectOutline,
+        chapterOutlines: ctxResult.chapterOutlines,
       });
     } catch {
       // コンテキスト計算失敗は無視（送信時に再計算される）

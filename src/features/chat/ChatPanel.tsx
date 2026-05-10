@@ -58,6 +58,8 @@ export function ChatPanel() {
   const regenerate = useChatStore((s) => s.regenerate);
   const contextTokenCount = useChatStore((s) => s.contextTokenCount);
   const contextLayers = useChatStore((s) => s.contextLayers);
+  const projectOutline = useChatStore((s) => s.projectOutline);
+  const chapterOutlines = useChatStore((s) => s.chapterOutlines);
   const detectedEntries = useChatStore((s) => s.detectedEntries);
   const alwaysEntries = useChatStore((s) => s.alwaysEntries);
   const systemPrompt = useChatStore((s) => s.lastSystemPrompt);
@@ -565,6 +567,8 @@ export function ChatPanel() {
         model={currentModel}
         agentMode={agentMode}
         canUseCreator={false}
+        projectOutline={projectOutline}
+        chapterOutlines={chapterOutlines}
       />
 
       <div className="flex-1 overflow-y-auto px-4 py-3">
