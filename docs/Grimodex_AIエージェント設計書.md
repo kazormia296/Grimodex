@@ -147,6 +147,23 @@ Codexエントリの全詳細を取得する。
 
 **実行**: `codex_entry_tags` JOIN `codex_tags` WHERE `name IN (?)` → `codex_entries`。
 
+#### find_related_entries
+
+起点エントリの name + aliases を、他エントリの name / summary / aliases / tags_cache に対して LIKE-OR 検索する関係探索ツール。「〇〇の所持品は？」「〇〇に関連する場所は？」のような自然言語の関係質問に対し、`search_codex` への複数語クエリ（trigram の限界で空振りしやすい）の代替として用意する。
+
+```typescript
+{
+  name: "find_related_entries",
+  description: "Find entries that reference a given source entry by name or alias.",
+  parameters: {
+    id: { type: "string", description: "Source entry UUID" },
+    type: { type: "string", description: "Optional type filter" }
+  }
+}
+```
+
+**実行**: 起点エントリの name と aliases を集め、`codex_entries` の name / summary / aliases / tags_cache に対して LIKE-OR で per-token 検索。自分自身は除外、type 指定時はそれで絞り込み。最大 20 件。Embedding 不要、既存の SQL infra で完結する。
+
 ### Scenes系
 
 #### list_chapters

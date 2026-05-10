@@ -81,6 +81,27 @@ export const AGENT_TOOLS: AgentToolDefinition[] = [
       required: ["tags"],
     },
   },
+  {
+    name: "find_related_entries",
+    description:
+      "Find Codex entries that *reference* a given source entry by name or alias. The source entry's name and all its aliases are searched as substrings across other entries' name, summary, aliases, and tags. Use this for natural-language questions like 'what items does Akane carry?', 'what locations relate to the shrine?', 'what lore mentions this character?' — pass the source entry's UUID and optionally a type filter to narrow results. Returns id, name, type, summary (max 20). Much more reliable than search_codex for relationship discovery.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        id: {
+          type: "string",
+          description:
+            "UUID of the source entry whose relationships you want to discover. The UUID can be taken from the `id: ...` line of an injected entry, or from a previous search_codex / list_codex_by_type result.",
+        },
+        type: {
+          type: "string",
+          description:
+            "Optional: filter results to entries of this type only (e.g., 'item', 'location', 'character', 'lore'). Omit to return all types.",
+        },
+      },
+      required: ["id"],
+    },
+  },
 
   // ── Scenes系 ──────────────────────────────────────────────────────────────
   {

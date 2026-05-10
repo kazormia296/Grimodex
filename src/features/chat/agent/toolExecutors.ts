@@ -323,6 +323,98 @@ async function searchCodexByTags(
   };
 }
 
+/**
+ * 起点エントリの name + aliases を、他エントリの name / summary / aliases /
+ * tags_cache に対して LIKE-OR 検索する。"〇〇に関連するエントリ" という
+ * Agent の自然な意図に応える関係探索ツール。type で絞り込み可能。
+ */
+async function findRelatedEntries(
+  params: Record<string, unknown>,
+): Promise<Omit<ToolResult, "toolCallId">> {
+  const id = String(params["id"] ?? "").trim();
+  if (!id)
+    return {
+      name: "find_related_entries",
+      content: [],
+      summary: "No id provided",
+      tokensUsed: 0,
+    };
+
+  const [source] = await db
+    .select()
+    .from(codexEntries)
+    .where(eq(codexEntries.id, id));
+  if (!source)
+    return {
+      name: "find_related_entries",
+      content: [],
+      summary: "Entry not found",
+      tokensUsed: 0,
+    };
+
+  // 起点エントリの name と aliases を検索語として集める。
+  const aliasArr = source.aliases
+    ? (() => {
+        try {
+          const parsed = JSON.parse(source.aliases as string);
+          return Array.isArray(parsed)
+            ? parsed.filter((s): s is string => typeof s === "string")
+            : [];
+        } catch {
+          return [];
+        }
+      })()
+    : [];
+  const terms = [source.name, ...aliasArr].filter(
+    (t) => typeof t === "string" && t.trim().length > 0,
+  );
+  if (terms.length === 0)
+    return {
+      name: "find_related_entries",
+      content: [],
+      summary: "Source entry has no searchable name",
+      tokensUsed: 0,
+    };
+
+  const typeFilter = params["type"] ? String(params["type"]).trim() : undefined;
+
+  const { clause, params: likeParams } = buildLikeOrClause(terms, [
+    "name",
+    "summary",
+    "aliases",
+    "tags_cache",
+  ]);
+
+  const sqlParams: unknown[] = [id, ...likeParams];
+  let sql = `SELECT id, name, type, summary FROM codex_entries
+             WHERE id != ? AND (${clause})`;
+  if (typeFilter) {
+    sql += ` AND type = ?`;
+    sqlParams.push(typeFilter);
+  }
+  sql += ` LIMIT 20`;
+
+  const result = await invoke<QueryResult>("db_execute", {
+    sql,
+    params: sqlParams,
+    method: "all",
+  });
+
+  const content = result.rows.map((r) => ({
+    id: r["id"],
+    name: r["name"],
+    type: r["type"],
+    summary: r["summary"] ?? "",
+  }));
+  const json = JSON.stringify(content);
+  return {
+    name: "find_related_entries",
+    content,
+    summary: `${content.length} related to ${source.name}${typeFilter ? ` (type=${typeFilter})` : ""}`,
+    tokensUsed: countTokens(json),
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Scene tools
 // ---------------------------------------------------------------------------
@@ -590,6 +682,7 @@ const EXECUTORS: Record<string, Executor> = {
   get_codex_entry: getCodexEntry,
   list_codex_tags: listCodexTags,
   search_codex_by_tags: searchCodexByTags,
+  find_related_entries: findRelatedEntries,
   list_chapters: () => listChapters(),
   get_scene: getScene,
   search_scenes: searchScenes,

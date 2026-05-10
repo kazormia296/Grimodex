@@ -309,7 +309,7 @@ AIメッセージ内のテキストを選択すると、選択範囲の近くに
 - @ボタン/ /ボタン : 後述の特殊入力のポップオーバー表示
 - 🛠️ボタン: AIのオプションをポップオーバーリスト表示。全て対応モデルのみ活性化。対応機能が一つもない場合はこのボタン自体非活性マウスカーソル🚫(コンテキストバーのAIボタンと同じ)。ポップオーバー内の各トグル状態は `ai_settings` テーブルに永続化され、セッション・再起動をまたいで保持される。
 	- **🔧 Agent mode トグル（スタンドアロン実行モード）**: Tool Use を有効化し、LLM がプロジェクトデータを能動的に検索・取得できるモードに切り替える。ON にすると送信時に `runAgentLoop` が起動し、LLM のツール呼び出しをループ実行する:
-		- **利用可能ツール（10 種）**: `search_codex` / `list_codex_by_type` / `get_codex_entry` / `list_codex_tags` / `search_codex_by_tags` / `list_chapters` / `get_scene` / `search_scenes` / `search_snippets` / `get_chapter_summaries`
+		- **利用可能ツール（11 種）**: `search_codex` / `list_codex_by_type` / `get_codex_entry` / `list_codex_tags` / `search_codex_by_tags` / `find_related_entries` / `list_chapters` / `get_scene` / `search_scenes` / `search_snippets` / `get_chapter_summaries`
 		- **呼び出し上限**: 1 ターンあたり最大 10 回のツール呼び出し。これを超えた場合はループ打ち切りで最終応答生成に遷移
 		- **トークン予算制御**: ツール結果の累計トークンが予算を超えそうになった時点で追加ツール呼び出しを抑止し、既取得の結果のみで応答を合成する
 		- **進捗 UI**: ループの状態（現在何番目のツールを呼んでいるか／累計ツール呼び出し回数／推定残予算）を `AgentProgressBar` コンポーネントでメッセージリスト上部に可視化する
