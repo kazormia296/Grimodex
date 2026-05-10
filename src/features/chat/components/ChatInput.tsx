@@ -1,6 +1,6 @@
 import { useRef, useEffect, useState, useCallback } from "react";
 import type { MutableRefObject } from "react";
-import { Send, Square, Wrench, ChevronDown } from "lucide-react";
+import { Send, Square, Wrench, ChevronDown, Sparkles, X } from "lucide-react";
 import { toast } from "sonner";
 import { useTranslation } from "react-i18next";
 import { useEditor, EditorContent, useEditorState } from "@tiptap/react";
@@ -18,9 +18,10 @@ import type { CommandPopupState } from "../extensions/ChatSlashCommandExtension"
 import { MentionPopup } from "./MentionPopup";
 import { ChatCommandPopup } from "./ChatCommandPopup";
 import type { CodexEntry } from "@/features/codex/api";
+import { shouldSuggestAgentMode } from "../agentSuggestion";
 
 interface ChatInputProps {
-  onSend: (markdown: string) => void;
+  onSend: (markdown: string, options?: { overrideAgentMode?: boolean }) => void;
   disabled?: boolean;
   editorRef?: MutableRefObject<Editor | null>;
   isGlobalChat?: boolean;
@@ -179,11 +180,39 @@ export function ChatInput({
     };
   }, [editor, onDetectedEntries]);
 
-  // エディタのテキスト有無をリアクティブに購読（disabled 制御に使用）
-  const hasText = useEditorState({
+  // エディタのテキスト有無 + @メンション有無をリアクティブに購読
+  const editorState = useEditorState({
     editor,
-    selector: (ctx) => ctx.editor.getText().trim().length > 0,
+    selector: (ctx) => {
+      const text = ctx.editor.getText().trim();
+      let hasMentions = false;
+      ctx.editor.state.doc.descendants((node) => {
+        if (node.type.name === "mention") hasMentions = true;
+      });
+      return { hasText: text.length > 0, text, hasMentions };
+    },
   });
+  const hasText = editorState?.hasText ?? false;
+
+  // Agent mode サジェスト: 入力が安定して 500ms 経過してから判定 (チップ点滅防止)
+  const [suggestAgent, setSuggestAgent] = useState(false);
+  const [suggestionDismissed, setSuggestionDismissed] = useState(false);
+  useEffect(() => {
+    if (!editorState) return;
+    const handle = window.setTimeout(() => {
+      setSuggestAgent(
+        shouldSuggestAgentMode({
+          text: editorState.text,
+          hasMentions: editorState.hasMentions,
+        }),
+      );
+    }, 500);
+    return () => window.clearTimeout(handle);
+  }, [editorState]);
+  // 入力空になったら却下フラグもリセット
+  useEffect(() => {
+    if (!hasText) setSuggestionDismissed(false);
+  }, [hasText]);
 
   // ストリーミング中は編集不可
   useEffect(() => {
@@ -247,7 +276,7 @@ export function ChatInput({
     [commandPopup],
   );
 
-  const handleSendClick = () => {
+  const handleSendClick = (options?: { overrideAgentMode?: boolean }) => {
     if (!editor || isStreaming) return;
     const text = editor.getText().trim();
     if (!text) return;
@@ -256,8 +285,12 @@ export function ChatInput({
       { getMarkdown?: () => string } | undefined
     >;
     const markdown: string = markdownStorage.markdown?.getMarkdown?.() ?? text;
-    onSend(markdown);
+    onSend(markdown, options);
     editor.commands.clearContent();
+  };
+
+  const handleSendWithAgent = () => {
+    handleSendClick({ overrideAgentMode: true });
   };
 
   const handleSendContextMenu = useCallback(
@@ -314,6 +347,33 @@ export function ChatInput({
 
       {/* Codex ハイライトポップオーバー（入力エリア用） */}
       <CodexPopover editor={editor} />
+
+      {/* Agent mode サジェストチップ (探索系の問いを検出した時のみ) */}
+      {suggestAgent &&
+        !agentMode &&
+        canUseTools &&
+        !suggestionDismissed &&
+        !isStreaming && (
+          <div className="mb-1.5 flex items-center justify-between gap-2 rounded-md border border-border bg-accent/30 px-2.5 py-1 text-xs">
+            <button
+              type="button"
+              onClick={handleSendWithAgent}
+              className="inline-flex flex-1 items-center gap-1.5 text-left text-foreground hover:text-foreground/80"
+              title={t("chat.agentSuggestTitle")}
+            >
+              <Sparkles className="h-3 w-3 shrink-0 text-primary" />
+              <span>{t("chat.agentSuggestLabel")}</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setSuggestionDismissed(true)}
+              aria-label={t("chat.agentSuggestDismiss")}
+              className="inline-flex h-4 w-4 items-center justify-center rounded text-muted-foreground hover:bg-accent hover:text-foreground"
+            >
+              <X className="h-3 w-3" />
+            </button>
+          </div>
+        )}
 
       {/* shadcn chat-01 風: 入力欄＋下段ツール列を 1 枚の角丸カードに内包 */}
       <div className="rounded-2xl border border-input bg-background shadow-sm transition-colors focus-within:ring-1 focus-within:ring-ring">
@@ -432,7 +492,7 @@ export function ChatInput({
               <Button
                 type="button"
                 size="icon"
-                onClick={handleSendClick}
+                onClick={() => handleSendClick()}
                 onContextMenu={handleSendContextMenu}
                 disabled={!editor || !hasText}
                 aria-label={t("chat.sendAriaLabel")}

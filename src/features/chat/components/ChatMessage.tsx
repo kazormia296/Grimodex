@@ -1,11 +1,16 @@
 import { useCallback, useRef } from "react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
+import { Sparkles } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type { ChatMessage as ChatMessageType } from "../chatTypes";
 import type { ToolCallRecord } from "../agent/agentTypes";
 import { ChatMessageActions } from "./ChatMessageActions";
+import { looksLikeMissingInfo } from "../agentSuggestion";
+import { useChatStore } from "../chatStore";
+import { getModelCapabilities } from "../agent/modelLimits";
+import { useAiSettingsStore } from "../store";
 import { MessageBadge } from "./MessageBadge";
 import { ToolCallBlock } from "./ToolCallBlock";
 import { ThinkingBlock } from "./ThinkingBlock";
@@ -77,6 +82,7 @@ interface ChatMessageProps {
   onEdit?: (messageId: string) => void;
   onDelete?: (messageId: string) => void;
   onRegenerate?: (messageId: string) => void;
+  onRetryWithAgent?: (messageId: string) => void;
   onStar?: (messageId: string, starred: boolean) => void;
   onContextMenu?: (e: React.MouseEvent, msg: ChatMessageType) => void;
 }
@@ -92,6 +98,7 @@ export function ChatMessage({
   onEdit,
   onDelete,
   onRegenerate,
+  onRetryWithAgent,
   onStar,
   onContextMenu,
 }: ChatMessageProps) {
@@ -110,6 +117,20 @@ export function ChatMessage({
   const showGhostPreview = useEditorStore((s) => s.showGhostPreview);
   const clearGhostPreview = useEditorStore((s) => s.clearGhostPreview);
   const { selectionInfo } = useTextSelection(containerRef);
+
+  // Agent mode 未使用 (toolCalls なし) で「情報が足りない」っぽい応答に
+  // 限り、再試行ボタンを表示。永続トグルは変えず一回限りの再生成。
+  const currentModel = useAiSettingsStore((s) => s.settings?.model ?? "");
+  const agentMode = useChatStore((s) => s.agentMode);
+  const showAgentRetry =
+    isAssistant &&
+    !isSummary &&
+    showActions &&
+    !agentMode &&
+    toolCalls.length === 0 &&
+    !!onRetryWithAgent &&
+    getModelCapabilities(currentModel).supportsTools &&
+    looksLikeMissingInfo(msg.content);
 
   // G2 + G23: Copy with attribution MIME
   const handleCopy = useCallback(() => {
@@ -184,6 +205,18 @@ export function ChatMessage({
                   .filter(Boolean)
                   .join(" · ")}
               </div>
+            )}
+            {showAgentRetry && (
+              <button
+                type="button"
+                data-testid={`agent-retry-${msg.id}`}
+                onClick={() => onRetryWithAgent?.(msg.id)}
+                className="mt-2 inline-flex items-center gap-1.5 rounded-md border border-border bg-accent/30 px-2.5 py-1 text-xs text-foreground hover:bg-accent"
+                title={t("chat.agentRetryTitle")}
+              >
+                <Sparkles className="h-3 w-3 text-primary" />
+                <span>{t("chat.agentRetryLabel")}</span>
+              </button>
             )}
             {showActions && (
               <ChatMessageActions

@@ -436,6 +436,13 @@ export function ChatPanel() {
     [regenerate],
   );
 
+  const handleRetryWithAgent = useCallback(
+    (messageId: string) => {
+      regenerate(messageId, { withAgentMode: true });
+    },
+    [regenerate],
+  );
+
   const handleStar = useCallback(
     (messageId: string, starred: boolean) => {
       starMessage(messageId, starred);
@@ -478,7 +485,7 @@ export function ChatPanel() {
   );
 
   const handleSend = useCallback(
-    (markdown: string) => {
+    (markdown: string, options?: { overrideAgentMode?: boolean }) => {
       const trimmed = markdown.trim();
       if (!trimmed || isStreaming) return;
       // 送信時に却下セットをリセット（次のメッセージでは再検出可能にする）
@@ -486,7 +493,7 @@ export function ChatPanel() {
       // Flush any pending editor save so sendMessage reads latest scene content from DB.
       const flushAndSend = async () => {
         if (chatSceneId) await saveScene(chatSceneId);
-        sendMessage(trimmed);
+        sendMessage(trimmed, undefined, options);
       };
       void flushAndSend();
     },
@@ -595,6 +602,7 @@ export function ChatPanel() {
                       onEdit={handleEditMessage}
                       onDelete={handleDeleteMessage}
                       onRegenerate={handleRegenerate}
+                      onRetryWithAgent={handleRetryWithAgent}
                       onStar={handleStar}
                       onContextMenu={handleContextMenu}
                     />

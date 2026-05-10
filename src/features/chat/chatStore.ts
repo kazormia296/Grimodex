@@ -346,12 +346,19 @@ interface ChatState {
   setIsGlobalChat: (on: boolean) => void;
 
   // Existing actions
-  sendMessage: (content: string, commandInstruction?: string) => Promise<void>;
+  sendMessage: (
+    content: string,
+    commandInstruction?: string,
+    options?: { overrideAgentMode?: boolean },
+  ) => Promise<void>;
   buildPromptForCopy: (userInput: string) => Promise<string>;
   stopGeneration: () => void;
   deleteMessage: (messageId: string) => Promise<void>;
   editUserMessage: (messageId: string) => string;
-  regenerate: (assistantMessageId: string) => Promise<void>;
+  regenerate: (
+    assistantMessageId: string,
+    options?: { withAgentMode?: boolean },
+  ) => Promise<void>;
   refreshContextLayers: () => Promise<void>;
   clearMessages: () => void;
   clearError: () => void;
@@ -1039,7 +1046,11 @@ export const useChatStore = create<ChatState>()((set, get) => ({
 
   // --- Streaming chat ---
 
-  sendMessage: async (content: string, commandInstruction?: string) => {
+  sendMessage: async (
+    content: string,
+    commandInstruction?: string,
+    options?: { overrideAgentMode?: boolean },
+  ) => {
     const {
       isStreaming,
       activeSceneId,
@@ -1051,6 +1062,9 @@ export const useChatStore = create<ChatState>()((set, get) => ({
     await ensureTokenizer();
     if (!content.trim()) return;
     const effectiveSceneId = isGlobalChat ? null : activeSceneId;
+    // 一回限りの Agent mode override (サジェストチップ / 再試行ボタンから)
+    // ユーザーの永続トグルは変更しない。
+    const agentModeForThisSend = options?.overrideAgentMode ?? get().agentMode;
 
     const sessionId = activeSessionId ?? "";
 
@@ -1113,7 +1127,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
     // を注入する。Agent はその上で必要に応じて search_codex / get_codex_entry を
     // 叩いて未注入エントリの探索や詳細深掘りを行う、という階層的アクセス前提。
     // -----------------------------------------------------------------------
-    if (get().agentMode) {
+    if (agentModeForThisSend) {
       try {
         const sceneCtx = effectiveSceneId
           ? await fetchSceneContext(effectiveSceneId)
@@ -2025,7 +2039,10 @@ export const useChatStore = create<ChatState>()((set, get) => ({
   },
 
   // --- P2-2: AIメッセージ再生成 ---
-  regenerate: async (assistantMessageId: string) => {
+  regenerate: async (
+    assistantMessageId: string,
+    options?: { withAgentMode?: boolean },
+  ) => {
     const { messages, activeSessionId } = get();
     const assIdx = messages.findIndex((m) => m.id === assistantMessageId);
     if (assIdx === -1) return;
@@ -2048,7 +2065,12 @@ export const useChatStore = create<ChatState>()((set, get) => ({
     set({ messages: messages.filter((m) => m.id !== assistantMessageId) });
 
     // 再送信 (ユーザーメッセージは既にstateにある)
-    await get().sendMessage(userMsg.content);
+    // withAgentMode: 一回限りの Agent mode 切替で再試行する場合
+    await get().sendMessage(
+      userMsg.content,
+      undefined,
+      options?.withAgentMode ? { overrideAgentMode: true } : undefined,
+    );
   },
 
   clearMessages: () => set({ messages: [] }),
