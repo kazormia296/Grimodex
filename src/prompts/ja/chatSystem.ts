@@ -83,6 +83,10 @@ export const JA_CHAT_SYSTEM = {
     /** L4 Codex エントリの aliases ラベル。別名で言及されたエントリを
      * Agent が再 fetch しないよう、注入時にカンマ区切りで露出する。 */
     codexAliases: "別名",
+    /** L4 Codex エントリの tags ラベル。Spotlight エントリのみ注入。
+     * Agent は `search_codex_by_tags` でこのタグを起点に同タグの他
+     * エントリを発見できる。 */
+    codexTags: "タグ",
     /** L4 Codex エントリの summary ラベル */
     codexSummary: "概要",
     /** L4 Codex エントリの fullContent ラベル。L3 シーン本文 (`本文:`) と

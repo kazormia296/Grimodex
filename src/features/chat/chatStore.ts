@@ -211,6 +211,25 @@ function parseAliases(json: string | null | undefined): string[] | undefined {
   }
 }
 
+/**
+ * codex_entries.tags_cache (JSON 配列) を string[] に展開する。
+ * Spotlight エントリにのみ詰めて注入する想定。auto-detected には含めない
+ * （L4 の render 側で `pinnedIds.has()` ゲートにより無害化されるが、
+ * 不要なデータ流通を避ける目的でも builder 側で分岐する）。
+ */
+function parseTags(json: string | null | undefined): string[] | undefined {
+  if (!json) return undefined;
+  try {
+    const arr = JSON.parse(json);
+    if (Array.isArray(arr) && arr.length > 0) {
+      return arr.filter((v): v is string => typeof v === "string");
+    }
+    return undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 // G14: Enrich CodexContext array with customDetails (batch query, no N+1)
 // PinnedCodexContext extends CodexContext なので、ジェネリックで両方扱える。
 async function enrichWithCustomDetails<T extends CodexContext>(
@@ -549,6 +568,7 @@ async function buildSceneContextPrompt(opts: {
         allPinnedIdSet,
       );
       const aliases = parseAliases(e.aliases);
+      const tags = parseTags(e.tagsCache);
       return {
         id: e.id,
         type: e.type,
@@ -558,6 +578,7 @@ async function buildSceneContextPrompt(opts: {
         withChildren: e.withChildren,
         children,
         ...(aliases ? { aliases } : {}),
+        ...(tags ? { tags } : {}),
         ...(childrenCtx ? { childrenContext: childrenCtx } : {}),
       };
     });
@@ -574,6 +595,7 @@ async function buildSceneContextPrompt(opts: {
         allPinnedIdSet,
       );
       const aliases = parseAliases(e.aliases);
+      const tags = parseTags(e.tagsCache);
       const ctx: import("./contextBuilder").PinnedCodexContext = {
         id: e.id,
         type: e.type,
@@ -582,6 +604,7 @@ async function buildSceneContextPrompt(opts: {
         fullContent: extractPlainText(e.content) || undefined,
         withChildren: false,
         ...(aliases ? { aliases } : {}),
+        ...(tags ? { tags } : {}),
         ...(childrenCtx ? { childrenContext: childrenCtx } : {}),
       };
       return [ctx];
@@ -1782,6 +1805,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
               allPinnedIdSet,
             );
             const aliases = parseAliases(e.aliases);
+            const tags = parseTags(e.tagsCache);
             return {
               id: e.id,
               type: e.type,
@@ -1791,6 +1815,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
               withChildren: e.withChildren,
               children,
               ...(aliases ? { aliases } : {}),
+              ...(tags ? { tags } : {}),
               ...(childrenCtx ? { childrenContext: childrenCtx } : {}),
             };
           });
@@ -1812,6 +1837,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
             allPinnedIdSet,
           );
           const aliases = parseAliases(e.aliases);
+          const tags = parseTags(e.tagsCache);
           const ctx: import("./contextBuilder").PinnedCodexContext = {
             id: e.id,
             type: e.type,
@@ -1820,6 +1846,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
             fullContent: extractPlainText(e.content) || undefined,
             withChildren: false,
             ...(aliases ? { aliases } : {}),
+            ...(tags ? { tags } : {}),
             ...(childrenCtx ? { childrenContext: childrenCtx } : {}),
           };
           return [ctx];

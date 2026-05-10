@@ -41,6 +41,10 @@ export interface CodexContext {
   /** エントリの別名 (JSON 配列). L4 にカンマ区切りで注入され、Agent が
    * 異なる呼称で言及されたエントリを再 fetch しなくて済むようにする。 */
   aliases?: string[];
+  /** エントリのタグ名一覧。Spotlight 時のみ L4 に「タグ: ...」行として
+   * 注入される (auto-detected には含めない)。Agent は `search_codex_by_tags`
+   * でこの tag を起点に同タグの他エントリを発見できる。 */
+  tags?: string[];
   contentFallback?: string; // G13: plain text from content if summary is empty
   fullContent?: string; // pinned entry: inject full content alongside summary
   childrenContext?: string; // pre-computed descendant summaries within budget
@@ -547,6 +551,9 @@ export function buildSystemPrompt(
       }
       if (displaySummary) {
         lines.push(`  ${s.labels.codexSummary}: ${displaySummary}`);
+      }
+      if (pinnedIds.has(entry.id) && entry.tags?.length) {
+        lines.push(`  ${s.labels.codexTags}: ${entry.tags.join(", ")}`);
       }
       if (pinnedIds.has(entry.id) && entry.customDetails?.length) {
         for (const detail of entry.customDetails) {
