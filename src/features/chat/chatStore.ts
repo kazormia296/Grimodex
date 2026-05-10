@@ -195,10 +195,11 @@ async function resolveEntriesForContext(
 }
 
 // G14: Enrich CodexContext array with customDetails (batch query, no N+1)
-async function enrichWithCustomDetails(
-  entries: CodexContext[],
+// PinnedCodexContext extends CodexContext なので、ジェネリックで両方扱える。
+async function enrichWithCustomDetails<T extends CodexContext>(
+  entries: T[],
   allEntries: CodexEntry[],
-): Promise<CodexContext[]> {
+): Promise<T[]> {
   if (entries.length === 0) return entries;
   const entryIds = entries.map((e) => e.id);
   const details = await listContextDetailsByEntryIds(entryIds);
@@ -552,6 +553,14 @@ async function buildSceneContextPrompt(opts: {
       pinnedCodexEntries = [...pinnedCodexEntries, ...extraPinned];
     }
   }
+
+  // Spotlight された pinned エントリにも customDetails を付ける。
+  // L4 描画は `pinnedIds.has(entry.id) && entry.customDetails?.length` で
+  // pinned 限定なので、ここで詰めないと customDetails 行が永遠に出ない。
+  pinnedCodexEntries = await enrichWithCustomDetails(
+    pinnedCodexEntries,
+    allEntries,
+  );
 
   // G15: compute detectedEntries / alwaysEntries (excluding pinned) for caller
   const pinnedIdSet = new Set(pinnedCodexEntries.map((e) => e.id));
@@ -1726,7 +1735,10 @@ export const useChatStore = create<ChatState>()((set, get) => ({
           };
           return [ctx];
         });
-        const mergedGlobalPinnedCodex = [...globalPinnedCodex, ...extraPinned];
+        const mergedGlobalPinnedCodex = await enrichWithCustomDetails(
+          [...globalPinnedCodex, ...extraPinned],
+          allEntries,
+        );
         const mergedGlobalPinnedIdSet = new Set(
           mergedGlobalPinnedCodex.map((e) => e.id),
         );

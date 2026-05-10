@@ -113,7 +113,11 @@ export const AGENT_TOOLS: AgentToolDefinition[] = [
     inputSchema: {
       type: "object",
       properties: {
-        query: { type: "string", description: "Search keyword or phrase" },
+        query: {
+          type: "string",
+          description:
+            "A single keyword or short phrase. Whitespace-separated tokens are treated as AND, so multi-word queries (e.g. 'akane carries thread') are usually too restrictive and return nothing — issue one specific term per call instead.",
+        },
       },
       required: ["query"],
     },
@@ -127,7 +131,11 @@ export const AGENT_TOOLS: AgentToolDefinition[] = [
     inputSchema: {
       type: "object",
       properties: {
-        query: { type: "string", description: "Search keyword" },
+        query: {
+          type: "string",
+          description:
+            "A single keyword or short phrase. Whitespace-separated tokens are treated as AND, so multi-word queries are usually too restrictive — issue one specific term per call instead.",
+        },
       },
       required: ["query"],
     },
