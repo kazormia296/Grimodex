@@ -19,23 +19,50 @@ interface QueryResult<T = Record<string, unknown>> {
 }
 
 /**
- * 空白区切りのユーザクエリを FTS5 の "phrase OR phrase" 形に書き換える。
- *
- * FTS5 はデフォルトで空白を AND として扱うため、"朱音 所持品" のような
- * 自然な複数語クエリが「両方の語を含むエントリ」を要求して空振りする。
- * Agent の "句で探す" 直感に合わせて OR にする。各トークンはダブル
- * クォートでフレーズ化し、内部のクォートは FTS5 仕様に従い `""` で
- * エスケープする。単一トークンや空白なしの場合はクォートのみで
- * フレーズ化する（FTS 構文文字を含むクエリの安全側）。
+ * 空白区切りでトークン化する。空文字や全空白入力では空配列を返す。
+ * Unicode コードポイント数を返す `codepointLength` も合わせて提供する。
  */
-function rewriteFtsQuery(raw: string): string {
-  const tokens = raw
+function tokenizeQuery(raw: string): string[] {
+  return raw
     .split(/\s+/)
     .map((t) => t.trim())
     .filter((t) => t.length > 0);
-  if (tokens.length === 0) return "";
-  const escaped = tokens.map((t) => `"${t.replace(/"/g, '""')}"`);
-  return escaped.join(" OR ");
+}
+
+function codepointLength(s: string): number {
+  return [...s].length;
+}
+
+/**
+ * トークン群を FTS5 の "phrase OR phrase" 形に変換する。
+ *
+ * FTS5 既定の AND セマンティクスでは "朱音 所持品" のような自然な
+ * 複数語クエリが空振りするため、句単位の OR に書き換えて
+ * Agent の "どれか一語でも当たれば返ってきてほしい" 直感に合わせる。
+ *
+ * 注意: trigram tokenizer は 3 codepoint 未満のトークンを match できない。
+ * 呼び出し側で全トークンが ≥3 cp を確認した上で使うこと。
+ */
+function ftsPhraseOrQuery(tokens: string[]): string {
+  return tokens.map((t) => `"${t.replace(/"/g, '""')}"`).join(" OR ");
+}
+
+/**
+ * トークン群と LIKE 対象列に対し
+ * `(col1 LIKE ? OR col2 LIKE ? OR ...) OR (col1 LIKE ? OR ...) OR ...`
+ * 形の WHERE 断片と束縛パラメータ配列を組み立てる。
+ * trigram で扱えない短いトークンが混じっている場合のフォールバックに使う。
+ */
+function buildLikeOrClause(
+  tokens: string[],
+  columns: string[],
+): { clause: string; params: string[] } {
+  const perToken = tokens.map(
+    () => `(${columns.map((c) => `${c} LIKE ?`).join(" OR ")})`,
+  );
+  const clause = perToken.join(" OR ");
+  const params = tokens.flatMap((t) => columns.map(() => `%${t}%`));
+  return { clause, params };
 }
 
 // ---------------------------------------------------------------------------
@@ -54,11 +81,17 @@ async function searchCodex(
       tokensUsed: 0,
     };
 
-  const charCount = [...query].length;
-  let rows: Record<string, unknown>[];
+  // codex_fts は trigram tokenizer なので 3 codepoint 未満のトークンは
+  // FTS で match できない。短いトークンが 1 つでも混じっていたら
+  // LIKE-OR fallback に倒す。Agent が日本語の 2-3 文字語を渡す前提では
+  // この経路が事実上のメインになる。
+  const tokens = tokenizeQuery(query);
+  const allTrigramFriendly =
+    tokens.length > 0 && tokens.every((t) => codepointLength(t) >= 3);
 
-  if (charCount >= 3) {
-    const ftsQuery = rewriteFtsQuery(query);
+  let rows: Record<string, unknown>[];
+  if (allTrigramFriendly) {
+    const ftsQuery = ftsPhraseOrQuery(tokens);
     const result = await invoke<QueryResult>("db_execute", {
       sql: `SELECT ce.id, ce.name, ce.type, ce.summary
             FROM codex_entries ce
@@ -71,12 +104,15 @@ async function searchCodex(
     });
     rows = result.rows;
   } else {
-    const like = `%${query}%`;
+    const { clause, params: likeParams } = buildLikeOrClause(
+      tokens.length > 0 ? tokens : [query],
+      ["name", "summary", "tags_cache", "aliases"],
+    );
     const result = await invoke<QueryResult>("db_execute", {
       sql: `SELECT id, name, type, summary FROM codex_entries
-            WHERE name LIKE ? OR summary LIKE ? OR tags_cache LIKE ?
+            WHERE ${clause}
             LIMIT 20`,
-      params: [like, like, like],
+      params: likeParams,
       method: "all",
     });
     rows = result.rows;
@@ -377,11 +413,14 @@ async function searchScenes(
       tokensUsed: 0,
     };
 
-  const charCount = [...query].length;
-  let rows: Record<string, unknown>[];
+  // tree_nodes_fts は trigram。短トークンを含む場合は LIKE-OR fallback。
+  const tokens = tokenizeQuery(query);
+  const allTrigramFriendly =
+    tokens.length > 0 && tokens.every((t) => codepointLength(t) >= 3);
 
-  if (charCount >= 3) {
-    const ftsQuery = rewriteFtsQuery(query);
+  let rows: Record<string, unknown>[];
+  if (allTrigramFriendly) {
+    const ftsQuery = ftsPhraseOrQuery(tokens);
     const result = await invoke<QueryResult>("db_execute", {
       sql: `SELECT tn.id, tn.title,
                    snippet(tree_nodes_fts, 1, '[', ']', '...', 40) as excerpt
@@ -394,13 +433,16 @@ async function searchScenes(
     });
     rows = result.rows;
   } else {
-    const like = `%${query}%`;
+    const { clause, params: likeParams } = buildLikeOrClause(
+      tokens.length > 0 ? tokens : [query],
+      ["title", "content"],
+    );
     const result = await invoke<QueryResult>("db_execute", {
       sql: `SELECT id, title, SUBSTR(content, 1, 200) as excerpt
             FROM tree_nodes
-            WHERE node_type = 'scene' AND (title LIKE ? OR content LIKE ?)
+            WHERE node_type = 'scene' AND (${clause})
             LIMIT 10`,
-      params: [like, like],
+      params: likeParams,
       method: "all",
     });
     rows = result.rows;
@@ -436,11 +478,14 @@ async function searchSnippets(
       tokensUsed: 0,
     };
 
-  const charCount = [...query].length;
-  let rows: Record<string, unknown>[];
+  // snippets_fts は trigram。短トークンを含む場合は LIKE-OR fallback。
+  const tokens = tokenizeQuery(query);
+  const allTrigramFriendly =
+    tokens.length > 0 && tokens.every((t) => codepointLength(t) >= 3);
 
-  if (charCount >= 3) {
-    const ftsQuery = rewriteFtsQuery(query);
+  let rows: Record<string, unknown>[];
+  if (allTrigramFriendly) {
+    const ftsQuery = ftsPhraseOrQuery(tokens);
     const result = await invoke<QueryResult>("db_execute", {
       sql: `SELECT s.id, s.title, s.tags_cache, SUBSTR(s.content, 1, 200) as preview
             FROM snippets s
@@ -453,13 +498,16 @@ async function searchSnippets(
     });
     rows = result.rows;
   } else {
-    const like = `%${query}%`;
+    const { clause, params: likeParams } = buildLikeOrClause(
+      tokens.length > 0 ? tokens : [query],
+      ["title", "content", "tags_cache"],
+    );
     const result = await invoke<QueryResult>("db_execute", {
       sql: `SELECT id, title, tags_cache, SUBSTR(content, 1, 200) as preview
             FROM snippets
-            WHERE title LIKE ? OR content LIKE ? OR tags_cache LIKE ?
+            WHERE ${clause}
             LIMIT 10`,
-      params: [like, like, like],
+      params: likeParams,
       method: "all",
     });
     rows = result.rows;
