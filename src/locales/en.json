@@ -71,6 +71,17 @@
     "conflictBack": "Back",
     "conflictImport": "Import"
   },
+  "legal": {
+    "eula": {
+      "title": "Agreement to the Terms of Use",
+      "description": "Using Grimodex requires acceptance of the Terms of Use (v{{version}}). The terms are written in Japanese only.",
+      "agreeCheckbox": "I have read the Terms of Use and agree to them",
+      "acceptButton": "Accept and continue",
+      "showDeveloperMessage": "Read the message from the developer (optional)",
+      "hideDeveloperMessage": "Hide the developer message",
+      "saveFailed": "Failed to save consent: {{message}}"
+    }
+  },
   "app": {
     "loading": "Loading…",
     "invalidLayout": "Saved layout was invalid and has been reset to default. ({{reason}})",
@@ -329,7 +340,17 @@
       "notFound": "No libraries found matching \"{{query}}\"",
       "full": "Full text",
       "loadError": "Failed to load license info: {{message}}",
-      "showWelcomeTour": "Show Welcome Tour"
+      "showWelcomeTour": "Show Welcome Tour",
+      "thirdPartyLicenses": "Third-party licenses",
+      "docLoadError": "Failed to load document: {{message}}",
+      "terms": {
+        "title": "Terms of Use",
+        "description": "Grimodex usage terms and disclaimer (Japanese only)"
+      },
+      "developerMessage": {
+        "title": "Message from the developer",
+        "description": "Not a terms document — words from the developer (Japanese only)"
+      }
     }
   },
   "layout": {

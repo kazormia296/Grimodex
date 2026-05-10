@@ -32,6 +32,8 @@ export interface GlobalSettings {
   trustedWorkspaces?: string[];
   /** Whether the user has already seen the welcome tour. */
   hasSeenWelcome?: boolean;
+  /** Version of the EULA the user has accepted. Mismatch with current version triggers modal. */
+  acceptedEulaVersion?: string;
   /** Persisted timeline panel state */
   timeline?: TimelineSettings;
   /** Persisted map panel state */

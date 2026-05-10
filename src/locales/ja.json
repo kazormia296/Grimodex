@@ -71,6 +71,17 @@
     "conflictBack": "戻る",
     "conflictImport": "インポート"
   },
+  "legal": {
+    "eula": {
+      "title": "利用規約への同意",
+      "description": "Grimodex を使用するには、利用規約 (v{{version}}) への同意が必要です。",
+      "agreeCheckbox": "利用規約の内容を確認し、同意します",
+      "acceptButton": "同意して開始",
+      "showDeveloperMessage": "開発者からのメッセージを読む（任意）",
+      "hideDeveloperMessage": "開発者からのメッセージを閉じる",
+      "saveFailed": "同意の保存に失敗しました: {{message}}"
+    }
+  },
   "app": {
     "loading": "読み込み中…",
     "invalidLayout": "保存済みレイアウトが不正なため、デフォルトに戻しました。（{{reason}}）",
@@ -329,7 +340,17 @@
       "notFound": "「{{query}}」に一致するライブラリは見つかりません",
       "full": "全文",
       "loadError": "ライセンス情報の読み込みに失敗しました: {{message}}",
-      "showWelcomeTour": "ウェルカムツアーを表示"
+      "showWelcomeTour": "ウェルカムツアーを表示",
+      "thirdPartyLicenses": "サードパーティライセンス",
+      "docLoadError": "ドキュメントの読み込みに失敗しました: {{message}}",
+      "terms": {
+        "title": "利用規約",
+        "description": "Grimodex の利用条件と免責事項"
+      },
+      "developerMessage": {
+        "title": "開発者からのメッセージ",
+        "description": "規約ではない、開発者からの言葉"
+      }
     }
   },
   "layout": {

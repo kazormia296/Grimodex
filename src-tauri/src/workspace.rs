@@ -46,6 +46,11 @@ pub struct GlobalSettings {
     #[serde(default)]
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub has_seen_welcome: bool,
+    /// Version of the EULA the user has accepted (e.g. "1.0").
+    /// None = never accepted; modal will be shown on launch.
+    #[serde(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub accepted_eula_version: Option<String>,
     /// Timeline panel settings (zoom, axis mode, scroll offset, etc.).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub timeline: Option<serde_json::Value>,
@@ -72,6 +77,7 @@ impl Default for GlobalSettings {
             color_theme: None,
             trusted_workspaces: Vec::new(),
             has_seen_welcome: false,
+            accepted_eula_version: None,
             timeline: None,
             map: None,
             grid: None,
@@ -278,6 +284,52 @@ mod tests {
             loaded.last_active_workspace,
             Some("D:\\Novels\\MyNovel".to_string())
         );
+
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn test_global_settings_preserves_accepted_eula_version() {
+        let dir = temp_dir("gs_eula");
+        cleanup(&dir);
+        fs::create_dir_all(&dir).ok();
+        let path = dir.join("settings.json");
+
+        let settings = GlobalSettings {
+            accepted_eula_version: Some("1.0".to_string()),
+            ..GlobalSettings::default()
+        };
+
+        write_global_settings(&path, &settings).expect("write");
+        let loaded = read_global_settings(&path);
+
+        assert_eq!(loaded.accepted_eula_version, Some("1.0".to_string()));
+
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn test_global_settings_legacy_json_has_none_eula_version() {
+        // Older settings files written before the EULA field existed should
+        // deserialize cleanly with `accepted_eula_version = None`.
+        let dir = temp_dir("gs_eula_legacy");
+        cleanup(&dir);
+        fs::create_dir_all(&dir).ok();
+        let path = dir.join("settings.json");
+
+        let legacy_json = r#"{
+            "recentWorkspaces": [],
+            "lastActiveWorkspace": null,
+            "theme": "system",
+            "uiLanguage": "ja",
+            "uiScale": 100,
+            "showLauncherOnStartup": false
+        }"#;
+        fs::write(&path, legacy_json).expect("write");
+
+        let loaded = read_global_settings(&path);
+        assert_eq!(loaded.accepted_eula_version, None);
+        assert!(!loaded.has_seen_welcome);
 
         cleanup(&dir);
     }

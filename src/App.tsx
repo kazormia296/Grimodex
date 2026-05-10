@@ -13,6 +13,7 @@ import { WelcomeScreen } from "@/features/workspace/WelcomeScreen";
 import { LauncherScreen } from "@/features/workspace/LauncherScreen";
 import { WorkspaceMenu } from "@/features/workspace/WorkspaceMenu";
 import { WorkspaceTrustDialog } from "@/features/workspace/WorkspaceTrustDialog";
+import { EulaConsentDialog } from "@/features/legal/EulaConsentDialog";
 import { useWorkspaceStore } from "@/features/workspace/store";
 import { SettingsDialog } from "@/features/settings/SettingsDialog";
 import type { SettingsCategory } from "@/features/settings/types";
@@ -255,6 +256,7 @@ function App() {
       {view === "launcher" && <LauncherScreen />}
       {view === "editor" && <EditorScreen key={activeWorkspacePath ?? ""} />}
       <WorkspaceTrustDialog />
+      <EulaConsentDialog />
       <DebugLogViewer />
     </>
   );
