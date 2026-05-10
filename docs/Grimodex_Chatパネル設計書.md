@@ -523,6 +523,7 @@ LLM APIのシステムプロンプトに以下の5レイヤーを階層的に注
   2. Agent mode の `search_codex` ツールにembedding検索オプションを追加（最小実装）
   3. Codex QuickセクションやContext Barで「Suggested by similarity」として候補を表示し、ユーザーがピン留めで確定
 - **現時点で不採用の理由**: 現在の設計（Aho-Corasick + alias + Agent mode ツール検索）でほとんどのケースはカバーでき、embedding検索は実装コスト（ローカルモデルの管理、ベクトルDB、インデックス更新）に対してリターンが不確実。実際のユーザーフィードバックでalias運用の限界が顕在化した段階で再検討する
+- **中間解として実装済み**: 「〇〇に関連するエントリ」「〇〇の所持品」のような関係質問に対しては、Agent mode の `find_related_entries(id, type?)` ツール（起点エントリの name + aliases を他エントリの name / summary / aliases / tags_cache に LIKE-OR で照合）で対応する。embedding を導入せずに既存 SQL infra で関係探索を実現する段階的アプローチ。embedding はこの中間解でもカバーできない曖昧マッチ（「王の頭上の宝飾」→「王冠」等）が顕在化した段階で再検討する
 
 ### トークン予算管理
 
