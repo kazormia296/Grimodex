@@ -107,6 +107,12 @@ export interface BuildSystemPromptInput {
   pendingBeatsSection?: string;
   /** 執筆言語（project.language）。省略時は "ja" にフォールバック */
   lang?: string;
+  /**
+   * Agent モード（Tool Use ループ）として組み立てる場合 true。
+   * baseText の直後に `agentInstruction` を挟み、
+   * 「事前注入を起点にしてツールは深掘り用」という運用前提を LLM に明示する。
+   */
+  agentMode?: boolean;
 }
 
 export interface LayerBudgets {
@@ -443,8 +449,10 @@ export function buildSystemPrompt(
   const s = getPromptCatalog(input.lang ?? "ja").chatSystem;
   const layers: LayerBreakdown[] = [];
 
-  // Base instruction (L0)
-  const baseText = s.baseText;
+  // Base instruction (L0)。Agent モード時は agentInstruction を付加。
+  const baseText = input.agentMode
+    ? `${s.baseText}\n\n${s.agentInstruction}`
+    : s.baseText;
 
   // L1: Project info
   let l1Text = "";
@@ -527,7 +535,10 @@ export function buildSystemPrompt(
       // また本文ラベル "本文:" が L3 のシーン本文ヘッダと衝突するため、
       // それぞれ `${labels.codexSummary}` / `${labels.codexFullContent}` を介して
       // 明示する。
+      // id 行: Agent モードで get_codex_entry を打つときに search_codex
+      // 経由の往復をなくすため、UUID をエントリ直下に露出する。
       lines.push(`- **${entry.name}**${phaseSuffix} (${label})`);
+      lines.push(`  ${s.labels.codexId}: ${entry.id}`);
       if (displaySummary) {
         lines.push(`  ${s.labels.codexSummary}: ${displaySummary}`);
       }

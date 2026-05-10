@@ -387,6 +387,7 @@ async function buildSceneContextPrompt(opts: {
   conversationMessages: ChatMessage[];
   commandInstruction?: string;
   prefetchedEntries?: CodexEntry[];
+  agentMode?: boolean;
 }): Promise<SceneContextPayload> {
   const {
     sceneCtx,
@@ -707,6 +708,7 @@ async function buildSceneContextPrompt(opts: {
     conversationSummary,
     pendingBeatsSection,
     lang: projectCtx?.language ?? "ja",
+    agentMode: opts.agentMode,
   });
   markEnd("buildSceneCtx.buildSystemPrompt");
 
@@ -874,6 +876,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
       activeProjectId,
       activeSessionId,
       isGlobalChat,
+      agentMode,
       messages: prevMessages,
       inputPinnedEntryIds,
     } = get();
@@ -909,6 +912,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
             effectiveSceneId,
             inputPinnedEntryIds,
             conversationMessages,
+            agentMode,
           });
           parts.push(`[system]\n${prompt}`);
         } else if (projectCtx) {
@@ -917,6 +921,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
             scene: { id: "", title: "", content: "" },
             project: projectCtx,
             lang: projectCtx.language ?? "ja",
+            agentMode,
           });
           parts.push(`[system]\n${prompt}`);
         }
@@ -1068,6 +1073,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
             conversationMessages: messagesForCtx,
             commandInstruction,
             prefetchedEntries: allEntriesForCtx,
+            agentMode: true,
           });
           systemPromptForAgent = ctxResult.prompt;
           set({
@@ -1747,6 +1753,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
           pinnedSnippets:
             globalPinnedSnippets.length > 0 ? globalPinnedSnippets : undefined,
           lang: projectCtx?.language ?? "ja",
+          agentMode: get().agentMode,
         });
 
         set({
@@ -1775,6 +1782,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
         effectiveSceneId,
         inputPinnedEntryIds: get().inputPinnedEntryIds,
         conversationMessages: get().messages.filter((m) => !m.isSummarized),
+        agentMode: get().agentMode,
       });
 
       set({

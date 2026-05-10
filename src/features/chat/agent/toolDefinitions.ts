@@ -6,11 +6,15 @@ export const AGENT_TOOLS: AgentToolDefinition[] = [
   {
     name: "search_codex",
     description:
-      "Search Codex entries by keyword across name, aliases, summary, and tags. Note: entries mentioned in the current scene and entries spotlighted by the user are already injected into the system prompt with their summaries — use this tool to discover entries that are NOT already injected. Returns id, name, type, and summary (no full content).",
+      "Search Codex entries by keyword across name, aliases, summary, and tags. Note: entries mentioned in the current scene and entries spotlighted by the user are already injected into the system prompt with their summaries (and their UUIDs as `id: ...` lines) — use this tool to discover entries that are NOT already injected. Returns id, name, type, and summary (no full content).",
     inputSchema: {
       type: "object",
       properties: {
-        query: { type: "string", description: "Search keyword" },
+        query: {
+          type: "string",
+          description:
+            "A single keyword or short phrase. The search uses FTS5 with AND semantics for whitespace-separated tokens, so multi-word queries (e.g. 'akane possessed item') are usually too restrictive and return nothing — issue one specific term per call instead (e.g. 'item', then 'thread').",
+        },
       },
       required: ["query"],
     },
@@ -34,11 +38,15 @@ export const AGENT_TOOLS: AgentToolDefinition[] = [
   {
     name: "get_codex_entry",
     description:
-      "Get the full content body, custom detail fields, and child entry summaries for a specific Codex entry. Note: summaries for scene-mentioned and spotlighted entries are already injected — use this tool only when the injected summary is insufficient and you need the full body or custom details. Use the id from search_codex / list_codex_by_type, or from an injected entry's name.",
+      "Get the full content body, custom detail fields, and child entry summaries for a specific Codex entry. Note: summaries for scene-mentioned and spotlighted entries are already injected — use this tool only when the injected summary is insufficient and you need the full body or custom details.",
     inputSchema: {
       type: "object",
       properties: {
-        id: { type: "string", description: "Codex entry ID" },
+        id: {
+          type: "string",
+          description:
+            "The entry's UUID — NOT its name. For an entry that already appears in the injected Codex section, the UUID is shown on the `id: ...` line directly under the entry's name. For an entry not yet injected, call search_codex / list_codex_by_type first to obtain the UUID.",
+        },
       },
       required: ["id"],
     },

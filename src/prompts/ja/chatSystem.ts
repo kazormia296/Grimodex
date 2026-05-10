@@ -26,6 +26,20 @@ export const JA_CHAT_SYSTEM = {
     "あなたは小説執筆を支援するAIアシスタントです。" +
     "ユーザーの執筆スタイルを尊重し、創造的な提案や文章の改善を行ってください。",
 
+  /**
+   * Agent モード時のみ baseText に続けて注入する追加指示。
+   * 「事前注入された情報を起点に、不足時のみツールを使う」という
+   * 階層的アクセス前提を明示する。
+   */
+  agentInstruction:
+    "プロジェクトデータを検索・取得するツールが利用可能です。" +
+    "ただし、回答に必要な情報の大半は下記の事前注入セクション" +
+    "（プロジェクト情報・現在のシーン・登場キャラクター・設定情報・会話の要約）" +
+    "に既に含まれています。まず事前注入セクションを確認し、" +
+    "そこにある情報で答えられる場合はツールを呼び出さないでください。" +
+    "ツールは、事前注入されていないエントリの探索や、" +
+    "注入された summary では足りない詳細の深掘りに限って使用してください。",
+
   headers: {
     projectInfo: "\n## プロジェクト情報",
     previousScene: "\n## 直前のシーン",
@@ -51,6 +65,9 @@ export const JA_CHAT_SYSTEM = {
     contentType: "タイプ",
     contentTitle: "タイトル",
     contentBody: "内容",
+    /** L4 Codex エントリの id ラベル。Agent が search_codex 往復なしで
+     * get_codex_entry を呼べるよう、ヘッダ直下に UUID を露出させる。 */
+    codexId: "id",
     /** L4 Codex エントリの summary ラベル */
     codexSummary: "概要",
     /** L4 Codex エントリの fullContent ラベル。L3 シーン本文 (`本文:`) と
