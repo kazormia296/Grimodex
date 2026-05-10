@@ -9,8 +9,10 @@ output_dir のデフォルトは ./samples/akane-no-kioku/
 生成後、そのディレクトリを Grimodex でワークスペースとして開いてください。
 """
 
+import argparse
 import json
 import os
+import random
 import sqlite3
 import sys
 import uuid
@@ -112,6 +114,32 @@ def payoff_mark(foreshadow_id: str) -> dict:
         "type": "foreshadowPayoff",
         "attrs": {"foreshadowId": foreshadow_id},
     }
+
+
+# 本文文字数の集計（sceneBeat 内は除外、generatedProseBlock 内は含める）。
+# charCountForBody.ts 準拠。
+def _count_doc_chars(doc_json: str) -> int:
+    try:
+        doc = json.loads(doc_json)
+    except json.JSONDecodeError:
+        return 0
+    total = 0
+
+    def walk(node: dict, in_beat: bool) -> None:
+        nonlocal total
+        ntype = node.get("type")
+        if ntype == "sceneBeat":
+            for child in node.get("content", []) or []:
+                walk(child, True)
+            return
+        if ntype == "text" and not in_beat:
+            total += len(node.get("text", ""))
+            return
+        for child in node.get("content", []) or []:
+            walk(child, in_beat)
+
+    walk(doc, False)
+    return total
 
 
 # ---------------------------------------------------------------------------
@@ -890,10 +918,732 @@ END;
 
 
 # ---------------------------------------------------------------------------
+# パフォーマンス検証用の追加生成（--scale medium）
+# ---------------------------------------------------------------------------
+
+# 新規シーン本文を組み立てる段落テンプレート群。
+# {char}/{loc}/{item}/{ally}/{enemy} のプレースホルダを置換して使う。
+_BULK_PARA_TEMPLATES = [
+    "{char}は{loc}の入り口で立ち止まった。冷たい風が頬を撫で、鼻先には湿った土の匂いが届いた。十年前と同じ匂いだった。",
+    "あれから多くのことが変わったが、ここの景色はほとんど変わっていない。{loc}の杉が高く伸び、空を細く切り取っている。",
+    "「{ally}に会わなければ」と{char}は思った。けれども、その前に確かめたいことがあった。",
+    "懐から{item}を取り出した。表面の朱はわずかに剥げていたが、まだ確かに{char}の手の中で温度を持っていた。",
+    "「来たね」と背後から声がした。振り返ると、{ally}がそこにいた。なぜここにいるかは聞かなかった。聞いてはいけない気がした。",
+    "{enemy}の名前を口にすることは、まだ怖かった。それは呼べば応える名前だったからだ。",
+    "{char}は深く息を吸った。三つ数えてから、ゆっくりと吐いた。動悸が落ち着くまで、それを四度繰り返した。",
+    "拝殿の床は腐っていなかった。誰かが手を入れている。十年放置されたにしては、不自然なほど整っていた。",
+    "「{enemy}は本当にいる」と{ally}は静かに言った。「君が信じるかどうかは別として」。",
+    "祭壇の脇に、見覚えのない札が一枚下がっていた。墨の色がまだ新しい。書いたのは昨日か、せいぜい一昨日だ。",
+    "{char}は札に手を伸ばしかけて、やめた。触れてしまえば確かめてしまう。確かめてしまえば、引き返せなくなる。",
+    "都に帰る道は、来たときと同じはずなのに、なぜか遠く感じた。山の輪郭が記憶よりも険しく、川の音が大きかった。",
+    "「{item}を持っていたのか」と{ally}は驚いたように呟いた。「なら、話は早い。十年前の続きをしよう」。",
+    "{char}は黙って頷いた。返事はそれだけだった。それで十分だった。",
+    "{loc}には人影がなかった。本来なら朝市が立つはずの時間だったが、店も客もいない。空気だけが冷えて漂っていた。",
+    "雨が降り始めた。最初は気づかないほどの細い雨だった。やがて{char}の髪を濡らし、{item}の朱を一段濃くした。",
+    "「{ally}を信じてもいいのか」と{char}は自問した。答えはまだ出なかった。出ない方がいい気もした。",
+    "古い書架の前で{char}は立ち止まった。背表紙の文字は擦れ、半分は読めなかった。それでも一冊だけ、{char}の目を引くものがあった。",
+    "「{enemy}の記録は、ここには残っていない」と{ally}は言った。「誰かが消した。それも、ごく最近に」。",
+    "{char}は{item}を握り直した。指先が冷たかった。冷たさの中に、わずかな温もりが残っているのを感じた。",
+    "{loc}の空は鈍色だった。雲が低く垂れ、遠くで雷の音がした。雨が来るまで、あと半刻もない。",
+    "「思い出したか」と{ally}が問うた。{char}は答えなかった。思い出したくないこと、というのが世の中にはある。",
+    "夜が更けた。{loc}の灯はすべて消え、聞こえるのは風の音と、自分の鼓動だけだった。",
+    "{char}は{item}を懐に戻した。これを使うときが来るかもしれない。来ないことを願いながら、それでも備えておくしかなかった。",
+    "「行こう」と{ally}が促した。{char}は最後に一度、{loc}を振り返った。十年ぶりの帰郷は、ここで終わる。終わらせなければならない。",
+    "古い火傷の跡が、{char}の手首に残っていた。十年前の夜にできたものだった。痛みはとうに消えているはずなのに、雨の日には今も疼いた。",
+    "「{enemy}が来る」と誰かが言った。{char}には、それが誰の声か分からなかった。{ally}でも自分でもない、どこか遠くからの声だった。",
+    "扉が軋んだ。{char}は反射的に{item}に手をかけた。けれども、入ってきたのは{ally}だった。「驚かせたか」と{ally}は短く言った。",
+    "茶碗が並んでいた。湯気はまだ立っていた。誰かがついさっきまでここで茶を飲んでいた。{char}は息を殺して耳を澄ませた。",
+    "「{loc}には触れるな」と{ally}は厳しく言った。「あそこは、まだ封じが効いている。下手に動けば全部崩れる」。",
+    "{char}は手を止めた。{ally}の声には、十年前にはなかった種類の重さが含まれていた。",
+    "風が止んだ。それまで葉が騒いでいたのに、急にすべてが静まった。{char}は{item}を強く握り直した。何かが来る、と本能が告げていた。",
+]
+
+_BULK_BEAT_DESCRIPTIONS = [
+    "{char}が{loc}に到達。違和感を覚える。",
+    "{ally}との再会。短い会話で十年の空白を埋めようとする。",
+    "{item}を取り出して{ally}に見せる。{ally}は驚きを隠せない。",
+    "{enemy}に関する手がかりを発見。記録は意図的に消されている。",
+    "{char}の内面：思い出したくない記憶が表層に浮かびそうになる。",
+    "{loc}の異変を発見。誰かが定期的に手を入れている形跡。",
+    "夜半の見張り。風の音と心拍だけが聞こえる。",
+]
+
+_BULK_FORESHADOW_TEMPLATES = [
+    ("陰陽寮の二重帳簿",
+     "陰陽寮が朱鬼に関する記録を二系統で保管している事実を後段で明かす。",
+     "[bulk] supporting × moderate"),
+    ("{ally}の沈黙の理由",
+     "{ally}が十年前の真相を一部知りながら口を閉ざしている動機を、終盤で明かす。",
+     "[bulk] critical × overt"),
+    ("封書庫の鍵",
+     "封書庫の鍵を持つ者が複数いるという事実を後で明かす。",
+     "[bulk] supporting × subtle"),
+    ("茶碗の湯気",
+     "誰もいないはずの場所に湯気の立つ茶碗があった理由を後段で回収。",
+     "[bulk] optional × subtle"),
+    ("{enemy}の名を呼ぶ声",
+     "夢の中で{char}を呼ぶ声の正体を終盤で確定させる。",
+     "[bulk] critical × moderate"),
+    ("古い火傷",
+     "{char}の手首の火傷が十年前の夜と直結する痕跡だと後で示す。",
+     "[bulk] supporting × moderate"),
+    ("消えた記録",
+     "陰陽寮の記録から削除された頁の犯人を中盤で示唆。",
+     "[bulk] supporting × subtle"),
+    ("封じが弱まる徴", "封じが時間とともに弱まる兆候を散りばめておき、終盤の崩壊で回収。",
+     "[bulk] critical × moderate"),
+]
+
+
+def _seed_bulk_content(conn, project_id, now, ctx) -> None:
+    """--scale medium 用：章フォルダ4つ・シーン32本ほかを procedural 投入する。"""
+    rng = random.Random(0xAEAEBEEF)  # 再現可能性のための固定 seed
+    fs_now_ms = ts_ms()
+
+    # 既存の覚書フォルダを末尾に押し出す（新しい部の sort_order が a3..a6）。
+    conn.execute(
+        "UPDATE tree_nodes SET sort_order=? WHERE id=?",
+        ("z0", ctx["notes_folder_id"]),
+    )
+
+    # ---- 追加 Codex（character / location / item / lore） ----
+    char_type = f"{project_id}-character"
+    loc_type = f"{project_id}-location"
+    item_type = f"{project_id}-item"
+    lore_type = f"{project_id}-lore"
+
+    bulk_chars: list[tuple[str, str, str, str]] = []  # (id, name, summary, content_para)
+    bulk_locs: list[tuple[str, str, str]] = []
+    bulk_items: list[tuple[str, str, str]] = []
+    bulk_lore: list[tuple[str, str, str]] = []
+
+    # tag は ctx["tag_ids"] のキー（"主人公","敵対者","呪術","政治","鬼"）から選ぶ。
+    # spec の 3 番目要素は付与する tag 名のリスト（aliases も別名のみ・canonical 名は含めない）。
+    tag_ids = ctx["tag_ids"]
+
+    def _attach_tags(entry_id: str, tag_names: list[str]) -> None:
+        for tn in tag_names:
+            if tn in tag_ids:
+                conn.execute(
+                    "INSERT OR IGNORE INTO codex_entry_tags (entry_id, tag_id) VALUES (?,?)",
+                    (entry_id, tag_ids[tn]),
+                )
+
+    char_specs = [
+        ("葛原 良衛", ["葛原"], ["政治"],
+         "陰陽寮の長老。朱音が都に来た当初から記録所を取り仕切っている。"
+         "古い時代の儀礼に通じ、若い世代には冷たく見える。"),
+        ("海原 朔",   ["海原", "朔"], ["政治"],
+         "朱音の同僚記録師。気のいい男で、書庫の整理は誰よりも早い。"
+         "酒癖が悪いのと、口が軽いのが玉に瑕。"),
+        ("紫苑",      [], ["呪術"],
+         "冬弥の弟子。十六歳。素直で勘がいいが、師の影響を強く受けている。"),
+        ("千代",      ["千代婆"], [],
+         "音羽の祖母。廃社の近くで一人暮らしをしている老婆。"
+         "十年前の火事の夜、何かを見たらしいが、孫にも話していない。"),
+        ("玄馬",      ["玄馬の旦那"], [],
+         "桐野の山師。山の地理を知り尽くしている。"
+         "金次第で誰の依頼でも引き受けるが、廃社の一帯だけは入りたがらない。"),
+        ("朱音の母",  ["朱の母", "母"], ["呪術"],
+         "故人。十年前の火事の夜に死んだ。朱縄の儀の使い手だったが、"
+         "なぜ儀が失敗したのかは誰も知らない。"),
+        ("比佐",      ["藤屋の女将"], [],
+         "都の宿『藤屋』の女将。朱音が都に来てから世話になっている。"
+         "情報通で、誰がどこに泊まっているかをすべて把握している。"),
+        ("円明",      ["円明上人"], ["呪術"],
+         "古の僧。文献にしか登場しない伝説的人物。"
+         "朱鬼を最初に封じた者として記録されている。"),
+        ("香",        ["香ちゃん"], [],
+         "朱音の幼馴染。廃社の子守唄を覚えている数少ない一人。"
+         "今は桐野の隣村に嫁いでいる。"),
+        ("久遠",      [], ["敵対者", "呪術"],
+         "陰陽寮に最近現れた青年。所属は不明。"
+         "葛原の許可を得て封書庫に出入りしているらしい。"),
+        ("月足",      ["月足の翁"], ["呪術"],
+         "桐野の山に住む元修験者。十年前の火事の現場に最初に駆けつけた一人。"
+         "以来、廃社の半里手前から先には立ち入らない。"),
+        ("銀次",      ["薬の銀次"], [],
+         "都の薬問屋。朱音に時折、夜に薬を届けに来る。"
+         "薬以外の物を運ぶこともあるという噂がある。"),
+    ]
+    for name, aliases, tags, summary in char_specs:
+        cid = uid()
+        bulk_chars.append((cid, name, summary, ""))
+        content = doc_nodes(
+            para(summary),
+            para(f"{name}についての追加メモ。本文中の登場頻度はまだ低いが、"
+                 f"後段の展開で重要な役割を担う想定。"),
+            para("[bulk seed: パフォーマンス検証用に追加された Codex エントリ]"),
+        )
+        conn.execute(
+            """INSERT INTO codex_entries
+               (id,project_id,type,name,aliases,summary,content,context_mode,children_budget,
+                created_at,updated_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+            (cid, project_id, "character", name,
+             json.dumps(aliases, ensure_ascii=False) if aliases else None,
+             summary, content, "mentioned", "compact", now, now),
+        )
+        _attach_tags(cid, tags)
+
+    loc_specs = [
+        ("陰陽寮・封書庫", ["政治", "呪術"],
+         "陰陽寮の地下にある書庫。封じ関係の文献が収められている。"
+         "鍵を持つ者は数えるほどしかいないとされる。"),
+        ("陰陽寮・式神房", ["政治"],
+         "陰陽寮の式神運用室。若手の術師が当番で詰めている。"),
+        ("桐野山道",       [],
+         "桐野へ向かう山道。途中で道が二つに分かれ、片方は廃社へ続く。"),
+        ("廃社の杉林",     ["呪術"],
+         "廃社を取り囲む杉林。樹齢数百年の木が並ぶ。"
+         "風通しが悪く、昼でも薄暗い。"),
+        ("都の薬問屋",     [],
+         "銀次が営む薬問屋。表向きは普通の商い。"
+         "夜になると別の客が訪れる。"),
+        ("朱音の自宅",     [],
+         "都の片隅にある質素な町家。記録所の徒歩圏内。"
+         "家具は最低限しか置かれていない。"),
+        ("神泉苑",         ["呪術"],
+         "都の中心にある古い庭園。水源があり、儀礼に使われることが多い。"),
+        ("桐野の墓地",     [],
+         "桐野の集落の外れにある古い墓地。朱音の母もここに眠る。"),
+    ]
+    for name, tags, summary in loc_specs:
+        cid = uid()
+        bulk_locs.append((cid, name, summary))
+        conn.execute(
+            """INSERT INTO codex_entries
+               (id,project_id,type,name,aliases,summary,content,context_mode,children_budget,
+                created_at,updated_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+            (cid, project_id, "location", name, None, summary,
+             doc_nodes(para(summary), para("[bulk seed]")),
+             "mentioned", "compact", now, now),
+        )
+        _attach_tags(cid, tags)
+
+    item_specs = [
+        ("朱縄式の写本", ["呪術"],
+         "朱縄の儀の手順を記した写本。原本は失われており、写本は数冊しか残っていない。"),
+        ("紫光石",       ["呪術"],
+         "暗闇でわずかに光る石。封じの触媒に使われる。"),
+        ("朱の墨壺",     ["呪術"],
+         "朱音の母が遺した墨壺。中身はもう乾いているが、稀に湿る日がある。"),
+        ("浄めの塩",     ["呪術"],
+         "陰陽寮で常備されている特殊な塩。普通の塩より粒が粗い。"),
+        ("朱鬼の爪",     ["呪術", "鬼"],
+         "朱鬼が落としたとされる爪の断片。陰陽寮の封書庫に厳重に保管されている。"),
+    ]
+    for name, tags, summary in item_specs:
+        cid = uid()
+        bulk_items.append((cid, name, summary))
+        conn.execute(
+            """INSERT INTO codex_entries
+               (id,project_id,type,name,aliases,summary,content,context_mode,children_budget,
+                created_at,updated_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+            (cid, project_id, "item", name, None, summary,
+             doc_nodes(para(summary), para("[bulk seed]")),
+             "mentioned", "compact", now, now),
+        )
+        _attach_tags(cid, tags)
+
+    lore_specs = [
+        ("陰陽寮の階級",   ["政治"],
+         "陰陽寮には五つの階級がある。長老・上座・中座・下座・見習い。"
+         "朱音は記録師であり、術師の階級には属さない。"),
+        ("鬼門八卦",       ["呪術"],
+         "封じの方位を定める古い体系。八方位に対応する印を組み合わせる。"),
+        ("封じ詞",         ["呪術"],
+         "鬼を封じる際に唱える言葉。流派により伝えられる詞が異なる。"),
+        ("朱の一族",       ["呪術"],
+         "朱音の家系。代々、朱縄の儀を伝えてきた。"
+         "現存する血筋は朱音のみと考えられている。"),
+        ("十年前の桐野火災", ["鬼"],
+         "朱音の母が死んだ夜に起きた火事。公式には失火扱い。"
+         "陰陽寮の内部記録では別の見解がある。"),
+    ]
+    for name, tags, summary in lore_specs:
+        cid = uid()
+        bulk_lore.append((cid, name, summary))
+        conn.execute(
+            """INSERT INTO codex_entries
+               (id,project_id,type,name,aliases,summary,content,context_mode,children_budget,
+                created_at,updated_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+            (cid, project_id, "lore", name, None, summary,
+             doc_nodes(para(summary), para("[bulk seed]")),
+             "mentioned", "compact", now, now),
+        )
+        _attach_tags(cid, tags)
+
+    # ---- 追加フォルダ（4 部） ----
+    parts = [
+        ("第三部：陰陽寮の影",   "a3"),
+        ("第四部：朱鬼の足跡",   "a4"),
+        ("第五部：封書庫の秘",   "a5"),
+        ("第六部：朱縄、再び",   "a6"),
+    ]
+    part_ids: list[str] = []
+    for title, sort in parts:
+        pid = uid()
+        part_ids.append(pid)
+        conn.execute(
+            """INSERT INTO tree_nodes
+               (id,project_id,parent_id,node_type,title,sort_order,content,created_at,updated_at)
+               VALUES (?,?,NULL,?,?,?,?,?,?)""",
+            (pid, project_id, "folder", title, sort,
+             json.dumps({"type": "doc", "content": []}, ensure_ascii=False),
+             now, now),
+        )
+
+    # mention 解決用：本文中に登場した名前を追跡するため、
+    # (codex_id, name) のペアを集めておく。既存 codex も含める。
+    name_to_codex: list[tuple[str, str]] = []
+    for cid, name, *_ in bulk_chars:
+        name_to_codex.append((name, cid))
+    for cid, name, *_ in bulk_locs:
+        name_to_codex.append((name, cid))
+    for cid, name, *_ in bulk_items:
+        name_to_codex.append((name, cid))
+    # 既存の主要 codex も検出対象（本文に頻出するため）
+    for name, cid in [
+        ("朱音", ctx["akane_id"]),
+        ("冬弥", ctx["fuuya_id"]),
+        ("音羽", ctx["otowa_id"]),
+        ("朱鬼", ctx["shuki_id"]),
+        ("朱紐", ctx["akahimo_id"]),
+        ("廃社", ctx["haisha_id"]),
+        ("都",   ctx["miyako_id"]),
+    ]:
+        name_to_codex.append((name, cid))
+
+    # POV / location 候補
+    pov_pool = [ctx["akane_id"], ctx["fuuya_id"], ctx["otowa_id"]] + [
+        c[0] for c in bulk_chars[:6]
+    ]
+    location_pool = [ctx["haisha_id"], ctx["miyako_id"]] + [
+        l[0] for l in bulk_locs
+    ]
+    status_cycle = ["outline", "draft", "draft", "complete", "revision", "final"]
+    statuses_distribution = [status_cycle[i % len(status_cycle)] for i in range(32)]
+
+    char_names_for_text = [c[1] for c in bulk_chars] + ["音羽", "冬弥"]
+    enemy_names = ["朱鬼"]
+    item_names = [it[1] for it in bulk_items] + ["朱紐"]
+    loc_names = [l[1] for l in bulk_locs] + ["廃社", "都"]
+
+    bulk_scene_ids: list[str] = []
+    bulk_scene_setup_specs: list[dict] = []  # 後段の伏線レジスタで利用
+
+    scene_counter = 0
+    for part_idx, part_id in enumerate(part_ids):
+        for s_idx in range(8):
+            scene_counter += 1
+            sid = uid()
+            bulk_scene_ids.append(sid)
+
+            char_name = rng.choice(char_names_for_text)
+            ally_name = rng.choice([n for n in char_names_for_text if n != char_name])
+            enemy_name = rng.choice(enemy_names)
+            item_name = rng.choice(item_names)
+            loc_name = rng.choice(loc_names)
+
+            builder = _DocBuilder()
+            # 1 シーンあたり 55-70 段落 → 約 3,000 字前後（パフォーマンス検証用ボリューム）
+            num_paragraphs = rng.randint(55, 70)
+            picked: list[str] = []
+            while len(picked) < num_paragraphs:
+                # 同一テンプレが極端に偏らないよう、テンプレ集をシャッフルした上で順に取り出す
+                shuffled = _BULK_PARA_TEMPLATES[:]
+                rng.shuffle(shuffled)
+                picked.extend(shuffled)
+            picked = picked[:num_paragraphs]
+
+            # 1 シーンに最大 1 個 setup マークを差し込む（fs index は後で割当て）
+            place_setup = (scene_counter % 3 == 0)  # 約 1/3 のシーンに setup
+            place_payoff = (scene_counter % 5 == 0)  # 約 1/5 のシーンに payoff
+            setup_para_idx = rng.randint(2, num_paragraphs - 3) if place_setup else -1
+            payoff_para_idx = rng.randint(2, num_paragraphs - 3) if place_payoff else -1
+            setup_key = f"bulk_setup_{scene_counter}"
+            payoff_key = f"bulk_payoff_{scene_counter}"
+            # 仮 ID（後で実際の foreshadow_id と setup_id を結びつける）
+            tmp_setup_id = uid()
+            tmp_foreshadow_for_setup_id = uid()
+            tmp_foreshadow_for_payoff_id = uid()
+
+            for p_idx, tpl in enumerate(picked):
+                text = tpl.format(
+                    char=char_name, ally=ally_name, enemy=enemy_name,
+                    item=item_name, loc=loc_name,
+                )
+                if p_idx == setup_para_idx:
+                    # 段落内の任意の位置にマーク付き断片を挟む
+                    cut = max(8, len(text) // 2)
+                    head, mark_body, tail = text[:cut], text[cut:cut + 12], text[cut + 12:]
+                    if not mark_body:
+                        mark_body = text[-8:]
+                        head, tail = text[: -8], ""
+                    builder.para(
+                        head,
+                        (setup_key, mark_body,
+                         setup_mark(tmp_setup_id, tmp_foreshadow_for_setup_id)),
+                        tail,
+                    )
+                elif p_idx == payoff_para_idx:
+                    cut = max(8, len(text) // 2)
+                    head, mark_body, tail = text[:cut], text[cut:cut + 14], text[cut + 14:]
+                    if not mark_body:
+                        mark_body = text[-10:]
+                        head, tail = text[: -10], ""
+                    builder.para(
+                        head,
+                        (payoff_key, mark_body,
+                         payoff_mark(tmp_foreshadow_for_payoff_id)),
+                        tail,
+                    )
+                else:
+                    builder.para(text)
+
+            content_json = builder.to_json()
+            char_count = _count_doc_chars(content_json)
+            status = statuses_distribution[scene_counter - 1]
+            pov_id = pov_pool[scene_counter % len(pov_pool)]
+            loc_id = location_pool[scene_counter % len(location_pool)]
+            scene_title = f"{['三','四','五','六'][part_idx]}章{s_idx + 1}：{loc_name}にて"
+            synopsis = (f"{char_name}が{loc_name}を訪れる。"
+                        f"{ally_name}との接触と、{item_name}を巡る逡巡。bulk seed。")
+            story_time = f"十年後・{['初冬','晩冬','早春','春'][part_idx]}・{s_idx + 1}日目"
+            sort_order = f"a{s_idx}"
+
+            conn.execute(
+                """INSERT INTO tree_nodes
+                   (id,project_id,parent_id,node_type,title,synopsis,sort_order,
+                    story_time_order,story_time_label,pov_character_id,location_id,
+                    status,content,char_count,created_at,updated_at)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (sid, project_id, part_id, "scene", scene_title, synopsis,
+                 sort_order, sort_order, story_time,
+                 pov_id, loc_id, status, content_json, char_count, now, now),
+            )
+
+            bulk_scene_setup_specs.append({
+                "scene_id": sid,
+                # テンプレ format() 用の短いキー
+                "char": char_name,
+                "ally": ally_name,
+                "enemy": enemy_name,
+                "item": item_name,
+                "loc": loc_name,
+                # 元ロジック用の長いキーも残す（既存の参照箇所のため）
+                "char_name": char_name,
+                "ally_name": ally_name,
+                "enemy_name": enemy_name,
+                "item_name": item_name,
+                "loc_name": loc_name,
+                "setup_present": place_setup,
+                "payoff_present": place_payoff,
+                "setup_id": tmp_setup_id,
+                "fs_for_setup": tmp_foreshadow_for_setup_id,
+                "fs_for_payoff": tmp_foreshadow_for_payoff_id,
+                "spans": builder.spans,
+                "content_json": content_json,
+                "pov_id": pov_id,
+            })
+
+            # ---- mentions（本文文字列に名前が出るもの全て） ----
+            body_text = "".join(
+                seg.get("text", "") for n in json.loads(content_json).get("content", [])
+                for seg in (n.get("content") or []) if seg.get("type") == "text"
+            )
+            seen = set()
+            for nm, cid in name_to_codex:
+                if cid in seen:
+                    continue
+                if nm and nm in body_text:
+                    role = "actor" if cid == pov_id else "mentioned"
+                    conn.execute(
+                        "INSERT OR IGNORE INTO scene_codex_mentions"
+                        " (scene_id, codex_entry_id, source, role) VALUES (?,?,?,?)",
+                        (sid, cid, "body", role),
+                    )
+                    seen.add(cid)
+
+    # ---- 伏線レジスタ（15 件） ----
+    # 構成: 7 confirmed (setup+payoff), 5 planted (setup only), 2 planned, 1 abandoned
+    setup_scenes = [s for s in bulk_scene_setup_specs if s["setup_present"]]
+    payoff_scenes = [s for s in bulk_scene_setup_specs if s["payoff_present"]]
+    rng.shuffle(setup_scenes)
+    rng.shuffle(payoff_scenes)
+
+    load_bearing_cycle = ["critical", "supporting", "supporting", "optional"]
+    foreshadow_count = 0
+
+    # 7 件: setup + payoff 揃い（confirmed=1）
+    n_confirmed = min(7, len(setup_scenes), len(payoff_scenes))
+    for i in range(n_confirmed):
+        spec_setup = setup_scenes[i]
+        spec_payoff = payoff_scenes[i % len(payoff_scenes)]
+        title_tpl, intent_tpl, notes_tpl = _BULK_FORESHADOW_TEMPLATES[
+            i % len(_BULK_FORESHADOW_TEMPLATES)]
+        title = title_tpl.format(**spec_setup)
+        intent = intent_tpl.format(**spec_setup)
+
+        # foreshadow 行（実 ID は spec の fs_for_setup を使い、scene 本文のマークと一致させる）
+        fs_id = spec_setup["fs_for_setup"]
+        # payoff 位置を別シーンの spans から拾う
+        spans = spec_payoff["spans"]
+        payoff_key = next(
+            (k for k in spans if k.startswith("bulk_payoff_")), None
+        )
+        if payoff_key is None:
+            # payoff スパンが見つからない場合は confirmed=0 に降格
+            payoff_from = payoff_to = None
+            payoff_scene = None
+            confirmed = 0
+        else:
+            payoff_from, payoff_to = spans[payoff_key]
+            payoff_scene = spec_payoff["scene_id"]
+            # payoff 本文のマーク id を fs_id に書き換える必要がある。
+            # 既に挿入済みのため、content_json を再生成して UPDATE する。
+            new_content = spec_payoff["content_json"].replace(
+                spec_payoff["fs_for_payoff"], fs_id
+            )
+            conn.execute(
+                "UPDATE tree_nodes SET content=? WHERE id=?",
+                (new_content, spec_payoff["scene_id"]),
+            )
+            spec_payoff["content_json"] = new_content
+            confirmed = 1
+        load_bearing = load_bearing_cycle[foreshadow_count % len(load_bearing_cycle)]
+        conn.execute(
+            """INSERT INTO foreshadows
+               (id,project_id,title,intent,notes,payoff_scene_id,
+                payoff_from_pos,payoff_to_pos,payoff_confirmed,abandoned,
+                load_bearing,created_at,updated_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (fs_id, project_id, title, intent, notes_tpl,
+             payoff_scene, payoff_from, payoff_to, confirmed, 0,
+             load_bearing, fs_now_ms, fs_now_ms),
+        )
+        # setup 行
+        setup_spans = spec_setup["spans"]
+        setup_key = next(
+            (k for k in setup_spans if k.startswith("bulk_setup_")), None
+        )
+        if setup_key is not None:
+            from_pos, to_pos = setup_spans[setup_key]
+            conn.execute(
+                """INSERT INTO foreshadow_setups
+                   (id,foreshadow_id,scene_id,from_pos,to_pos,kind,
+                    strength,ai_strength,ai_reasoning,attribution,ai_rationale,
+                    last_evaluated_at,is_orphan,created_at,updated_at)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (spec_setup["setup_id"], fs_id, spec_setup["scene_id"],
+                 from_pos, to_pos, "designated_existing",
+                 rng.choice(["subtle", "moderate", "overt"]),
+                 None, None, "human", None, None, 0,
+                 fs_now_ms, fs_now_ms),
+            )
+        foreshadow_count += 1
+
+    # 5 件: setup のみ（confirmed=0）
+    remaining_setup = setup_scenes[n_confirmed:n_confirmed + 5]
+    for i, spec_setup in enumerate(remaining_setup):
+        title_tpl, intent_tpl, notes_tpl = _BULK_FORESHADOW_TEMPLATES[
+            (i + n_confirmed) % len(_BULK_FORESHADOW_TEMPLATES)]
+        title = title_tpl.format(**spec_setup) + "（未回収）"
+        intent = intent_tpl.format(**spec_setup)
+        fs_id = spec_setup["fs_for_setup"]
+        load_bearing = load_bearing_cycle[foreshadow_count % len(load_bearing_cycle)]
+        conn.execute(
+            """INSERT INTO foreshadows
+               (id,project_id,title,intent,notes,payoff_scene_id,
+                payoff_from_pos,payoff_to_pos,payoff_confirmed,abandoned,
+                load_bearing,created_at,updated_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (fs_id, project_id, title, intent, notes_tpl,
+             None, None, None, 0, 0,
+             load_bearing, fs_now_ms, fs_now_ms),
+        )
+        setup_spans = spec_setup["spans"]
+        setup_key = next(
+            (k for k in setup_spans if k.startswith("bulk_setup_")), None
+        )
+        if setup_key is not None:
+            from_pos, to_pos = setup_spans[setup_key]
+            conn.execute(
+                """INSERT INTO foreshadow_setups
+                   (id,foreshadow_id,scene_id,from_pos,to_pos,kind,
+                    strength,ai_strength,ai_reasoning,attribution,ai_rationale,
+                    last_evaluated_at,is_orphan,created_at,updated_at)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (spec_setup["setup_id"], fs_id, spec_setup["scene_id"],
+                 from_pos, to_pos, "designated_existing",
+                 rng.choice(["subtle", "moderate"]),
+                 None, None, "human", None, None, 0,
+                 fs_now_ms, fs_now_ms),
+            )
+        foreshadow_count += 1
+
+    # 2 件: planned のみ（setup なし、title+intent のみ）
+    for i in range(2):
+        fs_id = uid()
+        title_tpl, intent_tpl, notes_tpl = _BULK_FORESHADOW_TEMPLATES[
+            (i + 6) % len(_BULK_FORESHADOW_TEMPLATES)]
+        sample_spec = bulk_scene_setup_specs[i]
+        title = "[計画] " + title_tpl.format(**sample_spec)
+        intent = intent_tpl.format(**sample_spec)
+        load_bearing = load_bearing_cycle[foreshadow_count % len(load_bearing_cycle)]
+        conn.execute(
+            """INSERT INTO foreshadows
+               (id,project_id,title,intent,notes,payoff_scene_id,
+                payoff_from_pos,payoff_to_pos,payoff_confirmed,abandoned,
+                load_bearing,created_at,updated_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (fs_id, project_id, title, intent,
+             "[bulk seed: planned, setup 未配置]",
+             None, None, None, 0, 0,
+             load_bearing, fs_now_ms, fs_now_ms),
+        )
+        foreshadow_count += 1
+
+    # 1 件: abandoned
+    fs_id = uid()
+    sample_spec = bulk_scene_setup_specs[0]
+    conn.execute(
+        """INSERT INTO foreshadows
+           (id,project_id,title,intent,notes,payoff_scene_id,
+            payoff_from_pos,payoff_to_pos,payoff_confirmed,abandoned,
+            load_bearing,created_at,updated_at)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+        (fs_id, project_id, "[撤回] 神泉苑の儀式案",
+         "中盤で神泉苑にて儀礼を行う案。整合が取れず撤回。",
+         "[bulk seed: abandoned]",
+         None, None, None, 0, 1,
+         "optional", fs_now_ms, fs_now_ms),
+    )
+
+    # ---- 追加チャットセッション ----
+    chat_models = [
+        "openrouter/anthropic/claude-sonnet-4.6",
+        "openrouter/anthropic/claude-sonnet-4.6",
+        "openrouter/anthropic/claude-opus-4.6",
+        "openrouter/openai/gpt-4o",
+    ]
+    chat_user_prompts = [
+        "このシーンの{char}の語り口を、もう少し抑えた感じに直してもらえますか。",
+        "{ally}が{char}を疑い始める瞬間を、台詞ではなく所作で書きたいです。案を二つください。",
+        "{loc}の描写を、五感のうち嗅覚と聴覚に寄せて書き直したいです。",
+        "{item}を持ち出す動機を、{char}の内面で一段階深掘りしたいです。",
+        "ここで{enemy}の名前を出すべきか迷っています。出すなら何章まで温存できますか。",
+        "前章との繋がりが弱い気がします。冒頭の三段落で接続を補強したいです。",
+    ]
+    chat_assistant_replies = [
+        "二案を書いてみます。\n\n案A：所作中心。{char}は{item}を握り直したまま、しばらく動かなかった。"
+        "「行こう」と声をかけたのは{ally}の方だった。\n\n"
+        "案B：内面の濁点を残す。{char}は{item}を握り直した。"
+        "握り返してくる感触はなかった。それでよかった、と{char}は思った。",
+        "{ally}の疑念は、視線の長さで示すのが自然だと思います。"
+        "「{char}を見た時間がいつもより半秒長い」程度の描写を、二度繰り返してください。"
+        "三度目に{ally}が口を開く時、読者は既に予感しています。",
+        "嗅覚と聴覚に寄せるなら、「{loc}の苔の匂い」「軒の風鈴の鳴らない音」あたりが効きます。"
+        "視覚情報を意図的に三段落抜くと、読者は登場人物と同じ感覚で空間を再構成し始めます。",
+        "動機の深掘りは、過去の所有経験を一つ挟むのが最短です。"
+        "「以前、これと似たものを{char}は誰かに渡した。あれは結局戻ってこなかった」——一行で十分です。",
+        "{enemy}の名前は、章末の最後の一語まで温存できます。"
+        "そこまでは「あの存在」「呼んではいけない名」の代名詞で通しましょう。",
+        "前章との接続は、小道具の再登場が一番安全です。"
+        "前章で{char}が触れた{item}の感触を、冒頭で「指がまだ覚えていた」程度に呼び戻してください。",
+    ]
+
+    for i in range(8):
+        sess_id = uid()
+        node_id = bulk_scene_ids[i * 4 % len(bulk_scene_ids)]
+        spec = bulk_scene_setup_specs[i * 4 % len(bulk_scene_setup_specs)]
+        title = f"{spec['char_name']}視点の調整 #{i + 1}"
+        model = chat_models[i % len(chat_models)]
+        # 1 セッションだけ長尺に
+        n_pairs = 15 if i == 0 else rng.randint(3, 6)
+        conn.execute(
+            """INSERT INTO chat_sessions
+               (id,project_id,node_id,title,title_manual,model,created_at,updated_at)
+               VALUES (?,?,?,?,?,?,?,?)""",
+            (sess_id, project_id, node_id, title,
+             1 if i % 2 == 0 else 0, model, now, now),
+        )
+        for j in range(n_pairs):
+            user_text = chat_user_prompts[j % len(chat_user_prompts)].format(**spec)
+            asst_text = chat_assistant_replies[j % len(chat_assistant_replies)].format(**spec)
+            uid_msg = uid()
+            conn.execute(
+                "INSERT INTO chat_messages (id,session_id,role,content,is_starred,is_summarized,created_at)"
+                " VALUES (?,?,?,?,?,?,?)",
+                (uid_msg, sess_id, "user", user_text, 0,
+                 1 if (i == 0 and j < n_pairs - 3) else 0, now),
+            )
+            aid_msg = uid()
+            conn.execute(
+                "INSERT INTO chat_messages (id,session_id,role,content,is_starred,is_summarized,created_at)"
+                " VALUES (?,?,?,?,?,?,?)",
+                (aid_msg, sess_id, "assistant", asst_text,
+                 1 if j == 0 else 0,
+                 1 if (i == 0 and j < n_pairs - 3) else 0, now),
+            )
+
+    # ---- 追加スニペット（15 件） ----
+    snippet_titles = [
+        "{char}の所作集",
+        "{loc}の描写候補",
+        "{ally}との会話パターン",
+        "{enemy}を匂わせる比喩",
+        "{item}を取り出す瞬間",
+        "夜半の{loc}",
+        "風の音、雨の匂い",
+        "{char}の手首の火傷",
+        "茶碗の湯気",
+        "封じ詞の断片",
+        "{char}の独白",
+        "{ally}の沈黙",
+        "{loc}の朝",
+        "{char}と{ally}の距離",
+        "終章のための余韻",
+    ]
+    tag_choices = list(ctx["tag_ids"].values())
+    for i, title_tpl in enumerate(snippet_titles):
+        spec = bulk_scene_setup_specs[i % len(bulk_scene_setup_specs)]
+        title = title_tpl.format(**spec)
+        body_paras = [
+            rng.choice(_BULK_PARA_TEMPLATES).format(**spec)
+            for _ in range(rng.randint(2, 4))
+        ]
+        snippet_id = uid()
+        scene_link = bulk_scene_ids[i % len(bulk_scene_ids)] if i % 2 == 0 else None
+        conn.execute(
+            """INSERT INTO snippets
+               (id,project_id,title,content,content_source,scene_id,usage_count,created_at,updated_at)
+               VALUES (?,?,?,?,?,?,?,?,?)""",
+            (snippet_id, project_id, title,
+             html_paragraphs(*body_paras),
+             "human", scene_link, rng.randint(0, 3), now, now),
+        )
+        if tag_choices:
+            conn.execute(
+                "INSERT OR IGNORE INTO snippet_entry_tags (snippet_id,tag_id) VALUES (?,?)",
+                (snippet_id, rng.choice(tag_choices)),
+            )
+
+    print(f"  [bulk seed] {len(bulk_scene_ids)} scenes / "
+          f"{len(bulk_chars) + len(bulk_locs) + len(bulk_items) + len(bulk_lore)} codex / "
+          f"{foreshadow_count + 1} foreshadows / 8 chat sessions / "
+          f"{len(snippet_titles)} snippets を追加しました。")
+
+
+# ---------------------------------------------------------------------------
 # シードデータ
 # ---------------------------------------------------------------------------
 
-def seed(db_path: Path) -> None:
+def seed(db_path: Path, scale: str = "default") -> None:
     conn = sqlite3.connect(db_path)
     conn.executescript(SCHEMA_SQL)
     now = ts()
@@ -2748,29 +3498,6 @@ def seed(db_path: Path) -> None:
     )
 
     # ---- char_count（本文の text ノードを再帰的に拾って合算） ----
-    def _count_doc_chars(doc_json: str) -> int:
-        try:
-            doc = json.loads(doc_json)
-        except json.JSONDecodeError:
-            return 0
-        total = 0
-        # sceneBeat 内のテキストは本文文字数から除外（charCountForBody.ts 準拠）。
-        # generatedProseBlock 内は含める。
-        def walk(node: dict, in_beat: bool) -> None:
-            nonlocal total
-            ntype = node.get("type")
-            if ntype == "sceneBeat":
-                for child in node.get("content", []) or []:
-                    walk(child, True)
-                return
-            if ntype == "text" and not in_beat:
-                total += len(node.get("text", ""))
-                return
-            for child in node.get("content", []) or []:
-                walk(child, in_beat)
-        walk(doc, False)
-        return total
-
     for sid in (scene1_id, scene2_id, scene3_id,
                 scene_flashback_id, scene_payoff_id):
         row = conn.execute("SELECT content FROM tree_nodes WHERE id=?", (sid,)).fetchone()
@@ -3048,6 +3775,25 @@ def seed(db_path: Path) -> None:
         deleted_offset_seconds=86400,
     )
 
+    # ---- --scale medium：パフォーマンス検証用の追加生成 ----
+    if scale == "medium":
+        _seed_bulk_content(
+            conn, project_id, now,
+            ctx={
+                "akane_id": akane_id,
+                "fuuya_id": fuuya_id,
+                "otowa_id": otowa_id,
+                "shuki_id": shuki_id,
+                "haisha_id": haisha_id,
+                "miyako_id": miyako_id,
+                "akahimo_id": akahimo_id,
+                "notes_folder_id": notes_folder_id,
+                "tag_ids": tag_ids,
+                "label_ids": label_ids,
+                "board_id": board_id,
+            },
+        )
+
     conn.commit()
     conn.close()
 
@@ -3057,9 +3803,23 @@ def seed(db_path: Path) -> None:
 # ---------------------------------------------------------------------------
 
 def main() -> None:
-    output_dir = (
-        Path(sys.argv[1]) if len(sys.argv) > 1 else Path("samples/akane-no-kioku")
+    parser = argparse.ArgumentParser(
+        description="日本語サンプルワークスペース「朱の記憶」を生成する。",
     )
+    parser.add_argument(
+        "output_dir",
+        nargs="?",
+        default="samples/akane-no-kioku",
+        help="生成先ディレクトリ（既定: samples/akane-no-kioku）",
+    )
+    parser.add_argument(
+        "--scale",
+        choices=("default", "medium"),
+        default="default",
+        help="default=既存サンプルのみ / medium=シーン+30本・約10万字を追加投入（パフォーマンス検証用）",
+    )
+    args = parser.parse_args()
+    output_dir = Path(args.output_dir)
 
     if output_dir.exists() and (output_dir / "grimodex.db").exists():
         print(f"エラー: {output_dir / 'grimodex.db'} は既に存在します。"
@@ -3075,9 +3835,11 @@ def main() -> None:
     )
 
     db_path = output_dir / "grimodex.db"
-    seed(db_path)
+    seed(db_path, scale=args.scale)
 
     print(f"サンプルワークスペースを生成しました: {output_dir.resolve()}")
+    if args.scale != "default":
+        print(f"  scale = {args.scale}")
     print("Grimodex でこのディレクトリをワークスペースとして開いてください。")
 
 
