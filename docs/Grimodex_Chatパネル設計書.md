@@ -469,6 +469,20 @@ LLM APIのシステムプロンプトに以下の5レイヤーを階層的に注
   - `suppress`: 自動検出では注入しない。ピン留めされている場合のみ注入
 - 注入対象のCodexエントリのフェーズ解決後のsummary + カスタムディテール（`include_in_context = 1`）。**summaryが未記入の場合はフェーズ解決後のcontent全文をフォールバックとして注入する**
 - コンテキストバーでピン留めされたCodexエントリのフェーズ解決後の全文 + カスタムディテール
+- **エントリヘッダの注入要素**: 各エントリは以下の構造で注入される。`id` / `別名` は全エントリに、`タグ` / `カスタムディテール` / `全文` は Spotlight (ピン留め) エントリのみに付く。これにより Agent は注入セクションだけで `find_related_entries(id)` や `search_codex_by_tags(tag)` の起点情報を得られる（再 fetch 不要）:
+  ```
+  - **{name}** [{phaseLabel?}] ({type})
+    id: {uuid}
+    別名: a, b, c               -- aliases (空なら省略)
+    概要: {summary}              -- summary (空なら省略)
+    タグ: t1, t2                 -- tags (Spotlight のみ、空なら省略)
+    - {fieldName}: {value}       -- customDetails (Spotlight のみ)
+    全文:                        -- fullContent (Spotlight のみ)
+    {body}
+  ```
+  - `id` 行は Agent が `get_codex_entry` / `find_related_entries` を search_codex 往復なしで打てるよう露出する
+  - `別名` は別呼称で言及されたエントリの再 fetch を防ぐ
+  - `タグ` は同タグの他エントリ発見動線（`search_codex_by_tags`）の起点として機能する
 - **チャット言及による自動ピン留め**: ユーザーのチャットメッセージ内でCodexエントリ名が検出された場合、セッションの `pinned_codex` に自動追加し、content全文を注入する（シーン本文の自動検出とは区別）
 - コンテキストバーでピン留めされたSnippetの全文
 - **子孫エントリの自動注入**: 上記でマッチした親Codexエントリの子孫エントリのsummaryを、サブツリートークン予算（エントリごとに設定、デフォルト: Layer 4予算の15%）の範囲内でBFS（幅優先）順に自動追加。depth制限はなく、予算が自然な制限として機能する（子のcontext_modeも個別に判定。Codexパネル設計書「コンテキスト注入への影響」セクション参照）
