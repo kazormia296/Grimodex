@@ -664,6 +664,277 @@ describe("contextBuilder", () => {
     });
   });
 
+  describe("buildSystemPrompt — sceneLabels / sceneForeshadow (Phase 1)", () => {
+    const scene: SceneContext = {
+      id: "s1",
+      title: "嵐の夜の決別",
+      content: "本文テキスト",
+      synopsis: "あらすじ文",
+    };
+
+    it("sceneLabels がタイトル行末尾に [カンマ区切り] として付与される", () => {
+      const result = buildSystemPrompt({
+        scene,
+        sceneLabels: ["夜", "戦闘"],
+      });
+      expect(result.prompt).toContain("タイトル: 嵐の夜の決別 [夜, 戦闘]");
+    });
+
+    it("sceneLabels が空配列または undefined のとき suffix は付かない", () => {
+      const without = buildSystemPrompt({ scene });
+      const empty = buildSystemPrompt({ scene, sceneLabels: [] });
+      expect(without.prompt).toContain("タイトル: 嵐の夜の決別\n");
+      expect(empty.prompt).toContain("タイトル: 嵐の夜の決別\n");
+      expect(without.prompt).not.toContain("[");
+    });
+
+    it("sceneForeshadow.setups と payoffs が Synopsis 後・本文前に注入される", () => {
+      const result = buildSystemPrompt({
+        scene,
+        sceneForeshadow: {
+          setups: [
+            {
+              title: "赤いペンダント",
+              intent: "母の形見だと示すが詳細は伏せる",
+            },
+          ],
+          payoffs: [
+            {
+              title: "謎の手紙の差出人",
+              intent: "差出人は母だったと判明",
+              setupSceneTitle: "酒場の夜",
+            },
+          ],
+        },
+      });
+      const synopsisIdx = result.prompt.indexOf("あらすじ文");
+      const headerIdx = result.prompt.indexOf("このシーンの伏線");
+      const setupIdx = result.prompt.indexOf("赤いペンダント");
+      const payoffIdx = result.prompt.indexOf("謎の手紙の差出人");
+      const bodyIdx = result.prompt.indexOf("本文テキスト");
+      expect(headerIdx).toBeGreaterThan(synopsisIdx);
+      expect(setupIdx).toBeGreaterThan(headerIdx);
+      expect(payoffIdx).toBeGreaterThan(headerIdx);
+      expect(bodyIdx).toBeGreaterThan(payoffIdx);
+      expect(result.prompt).toContain("仕込み: 「赤いペンダント」");
+      expect(result.prompt).toContain(
+        "回収: 「謎の手紙の差出人」 — 差出人は母だったと判明（仕込み: 「酒場の夜」）",
+      );
+    });
+
+    it("setups/payoffs が両方空のときセクションごと省略される", () => {
+      const result = buildSystemPrompt({
+        scene,
+        sceneForeshadow: { setups: [], payoffs: [] },
+      });
+      expect(result.prompt).not.toContain("このシーンの伏線");
+    });
+
+    it("intent が null の場合は title のみ表示される", () => {
+      const result = buildSystemPrompt({
+        scene,
+        sceneForeshadow: {
+          setups: [{ title: "未設定の伏線", intent: null }],
+          payoffs: [],
+        },
+      });
+      expect(result.prompt).toContain("- 仕込み: 「未設定の伏線」\n");
+      // em-dash があってはいけない（intent suffix 無し）
+      expect(result.prompt).not.toContain("「未設定の伏線」 —");
+    });
+
+    it("payoff の setupSceneTitle が null のときは setup シーン参照行が省略される", () => {
+      const result = buildSystemPrompt({
+        scene,
+        sceneForeshadow: {
+          setups: [],
+          payoffs: [
+            { title: "未配置回収", intent: "intent", setupSceneTitle: null },
+          ],
+        },
+      });
+      expect(result.prompt).toContain("回収: 「未配置回収」 — intent\n");
+      expect(result.prompt).not.toContain("（仕込み:");
+    });
+
+    it("excludeLayers = ['L3'] のとき sceneLabels と sceneForeshadow も除去される", () => {
+      const result = buildSystemPrompt({
+        scene,
+        sceneLabels: ["夜"],
+        sceneForeshadow: {
+          setups: [{ title: "赤いペンダント", intent: "intent" }],
+          payoffs: [],
+        },
+        excludeLayers: ["L3"],
+      });
+      expect(result.prompt).not.toContain("嵐の夜の決別");
+      expect(result.prompt).not.toContain("赤いペンダント");
+      expect(result.prompt).not.toContain("このシーンの伏線");
+    });
+
+    it("L3 trim 時、伏線セクションは sceneHeader として保持される", () => {
+      const longBody = "本文".repeat(2000);
+      const result = buildSystemPrompt({
+        scene: { ...scene, content: longBody },
+        sceneForeshadow: {
+          setups: [{ title: "守られる伏線", intent: "intent" }],
+          payoffs: [],
+        },
+        contextWindow: 8_000,
+        conversationTokens: 100,
+      });
+      // 本文側がトリムされても伏線セクションは残る（### シーン本文 の前にあるため）
+      expect(result.prompt).toContain("守られる伏線");
+    });
+  });
+
+  describe("buildSystemPrompt — openForeshadows / storyTimePreviousScene (Phase 2)", () => {
+    const scene: SceneContext = {
+      id: "s1",
+      title: "現在シーン",
+      content: "本文",
+      synopsis: "あらすじ",
+    };
+
+    it("openForeshadows が storySoFar の末尾に追記される", () => {
+      const result = buildSystemPrompt({
+        scene,
+        storySoFar: "## これまでの物語\n\n第1話\n冒頭",
+        openForeshadows: [
+          {
+            title: "失われた剣",
+            intent: "勇者の使命を示す",
+            loadBearing: "critical",
+            setupCount: 2,
+          },
+          {
+            title: "古い友人",
+            intent: null,
+            loadBearing: "supporting",
+            setupCount: 0,
+          },
+        ],
+      });
+      const storyIdx = result.prompt.indexOf("第1話");
+      const openForeshadowIdx = result.prompt.indexOf("未回収の伏線");
+      const swordIdx = result.prompt.indexOf("失われた剣");
+      const sceneIdx = result.prompt.indexOf("現在シーン");
+      expect(openForeshadowIdx).toBeGreaterThan(storyIdx);
+      expect(swordIdx).toBeGreaterThan(openForeshadowIdx);
+      expect(sceneIdx).toBeGreaterThan(swordIdx);
+      expect(result.prompt).toContain(
+        "- 「失われた剣」 — 勇者の使命を示す（重要度: critical, 仕込み: 2件）",
+      );
+      // intent null + setupCount 0 の行: title のみ + 重要度 supporting だけ
+      expect(result.prompt).toContain("- 「古い友人」（重要度: supporting）");
+    });
+
+    it("storySoFar が空でも openForeshadows のみで物語ヘッダ付き L2 が出る", () => {
+      const result = buildSystemPrompt({
+        scene,
+        openForeshadows: [
+          {
+            title: "孤立伏線",
+            intent: null,
+            loadBearing: null,
+            setupCount: 0,
+          },
+        ],
+      });
+      expect(result.prompt).toContain("これまでの物語");
+      expect(result.prompt).toContain("未回収の伏線");
+      expect(result.prompt).toContain("- 「孤立伏線」");
+    });
+
+    it("openForeshadows が undefined または空配列なら何も注入されない", () => {
+      const without = buildSystemPrompt({ scene });
+      const empty = buildSystemPrompt({ scene, openForeshadows: [] });
+      expect(without.prompt).toBe(empty.prompt);
+      expect(without.prompt).not.toContain("未回収の伏線");
+    });
+
+    it("loadBearing=null の伏線は重要度ラベルを表示しない", () => {
+      const result = buildSystemPrompt({
+        scene,
+        openForeshadows: [
+          {
+            title: "未分類伏線",
+            intent: "intent",
+            loadBearing: null,
+            setupCount: 0,
+          },
+        ],
+      });
+      expect(result.prompt).toContain("- 「未分類伏線」 — intent\n");
+      expect(result.prompt).not.toContain("重要度");
+    });
+
+    it("storyTimePreviousScene が previousScene の直後に注入される", () => {
+      const result = buildSystemPrompt({
+        scene,
+        previousScene: { title: "読み順前", synopsis: "読み順前のあらすじ" },
+        storyTimePreviousScene: {
+          title: "時系列前",
+          synopsis: "時系列前のあらすじ",
+          storyTimeLabel: "3年前",
+        },
+      });
+      const readingIdx = result.prompt.indexOf("読み順前");
+      const storyTimeHeaderIdx =
+        result.prompt.indexOf("直前のシーン (ストーリー時系列)");
+      const storyTimeTitleIdx = result.prompt.indexOf("時系列前");
+      const currentSceneIdx = result.prompt.indexOf("現在シーン");
+      expect(storyTimeHeaderIdx).toBeGreaterThan(readingIdx);
+      expect(storyTimeTitleIdx).toBeGreaterThan(storyTimeHeaderIdx);
+      expect(currentSceneIdx).toBeGreaterThan(storyTimeTitleIdx);
+      expect(result.prompt).toContain("時期: 3年前");
+    });
+
+    it("storyTimePreviousScene の storyTimeLabel が無いとき時期行が省略される", () => {
+      const result = buildSystemPrompt({
+        scene,
+        storyTimePreviousScene: {
+          title: "時系列前",
+          synopsis: "時系列前のあらすじ",
+        },
+      });
+      expect(result.prompt).toContain("時系列前");
+      expect(result.prompt).not.toContain("時期:");
+    });
+
+    it("excludeLayers = ['L2'] のとき openForeshadows も除去される", () => {
+      const result = buildSystemPrompt({
+        scene,
+        storySoFar: "## これまでの物語\n\n第1話\n冒頭",
+        openForeshadows: [
+          {
+            title: "見えなくなる伏線",
+            intent: null,
+            loadBearing: "critical",
+            setupCount: 0,
+          },
+        ],
+        excludeLayers: ["L2"],
+      });
+      expect(result.prompt).not.toContain("第1話");
+      expect(result.prompt).not.toContain("見えなくなる伏線");
+      expect(result.prompt).not.toContain("未回収の伏線");
+    });
+
+    it("excludeLayers = ['L3'] のとき storyTimePreviousScene も除去される", () => {
+      const result = buildSystemPrompt({
+        scene,
+        storyTimePreviousScene: {
+          title: "時系列前",
+          synopsis: "時系列前のあらすじ",
+        },
+        excludeLayers: ["L3"],
+      });
+      expect(result.prompt).not.toContain("時系列前");
+      expect(result.prompt).not.toContain("ストーリー時系列");
+    });
+  });
+
   describe("computeResponseReservation", () => {
     it("returns ratio-based reservation when maxOutputTokens is undefined", () => {
       // 200k * 5% = 10,000

@@ -186,6 +186,96 @@ export interface SceneForeshadowInfo {
   payoffForeshadowIds: string[];
 }
 
+/**
+ * Phase 2 (chat context): プロジェクト全体の未回収伏線（payoffConfirmed=false
+ * かつ abandoned=false）を loadBearing 優先度（critical > supporting > optional
+ * > null）→ updatedAt DESC でソートして返す。setupCount は orphan を除いた件数。
+ * L2 にバルク表示するための軽量フォーマットで、内容(notes)等は含めない。
+ */
+export interface OpenForeshadowForContext {
+  id: string;
+  title: string;
+  intent: string | null;
+  loadBearing: ForeshadowLoadBearing | null;
+  setupCount: number;
+}
+
+export async function listOpenForeshadowsForContext(
+  projectId: string,
+): Promise<OpenForeshadowForContext[]> {
+  const rows = (await db
+    .select({
+      id: foreshadows.id,
+      title: foreshadows.title,
+      intent: foreshadows.intent,
+      loadBearing: foreshadows.loadBearing,
+      payoffConfirmed: foreshadows.payoffConfirmed,
+      abandoned: foreshadows.abandoned,
+      updatedAt: foreshadows.updatedAt,
+    })
+    .from(foreshadows)
+    .where(
+      and(
+        eq(foreshadows.projectId, projectId),
+        eq(foreshadows.payoffConfirmed, false),
+        eq(foreshadows.abandoned, false),
+      ),
+    )) as Array<{
+    id: string;
+    title: string;
+    intent: string | null;
+    loadBearing: ForeshadowLoadBearing | null;
+    payoffConfirmed: boolean;
+    abandoned: boolean;
+    updatedAt: unknown;
+  }>;
+
+  if (rows.length === 0) return [];
+
+  // Batch setup count (excluding isOrphan)
+  const ids = rows.map((r) => r.id);
+  const setups = await db
+    .select({
+      foreshadowId: foreshadowSetups.foreshadowId,
+      isOrphan: foreshadowSetups.isOrphan,
+    })
+    .from(foreshadowSetups)
+    .where(inArray(foreshadowSetups.foreshadowId, ids));
+  const countMap = new Map<string, number>();
+  for (const s of setups) {
+    if (s.isOrphan) continue;
+    countMap.set(s.foreshadowId, (countMap.get(s.foreshadowId) ?? 0) + 1);
+  }
+
+  const priority: Record<string, number> = {
+    critical: 0,
+    supporting: 1,
+    optional: 2,
+  };
+  const toMs = (v: unknown): number => {
+    if (v instanceof Date) return v.getTime();
+    if (typeof v === "string") return new Date(v).getTime();
+    if (typeof v === "number") return v;
+    return 0;
+  };
+  return rows
+    .map((r) => ({
+      id: r.id,
+      title: r.title,
+      intent: r.intent,
+      loadBearing: r.loadBearing,
+      setupCount: countMap.get(r.id) ?? 0,
+      _updatedMs: toMs(r.updatedAt),
+    }))
+    .sort((a, b) => {
+      const pa = priority[a.loadBearing ?? ""] ?? 3;
+      const pb = priority[b.loadBearing ?? ""] ?? 3;
+      if (pa !== pb) return pa - pb;
+      return b._updatedMs - a._updatedMs;
+    })
+    .map(({ _updatedMs: _ms, ...rest }) => rest);
+}
+
 export async function getSceneForeshadowInfo(
   sceneId: string,
 ): Promise<SceneForeshadowInfo> {
@@ -202,6 +292,91 @@ export async function getSceneForeshadowInfo(
   return {
     setupForeshadowIds: setupRows.map((r) => r.foreshadowId),
     payoffForeshadowIds: payoffRows.map((r) => r.id),
+  };
+}
+
+/**
+ * Phase 1 (chat context): 当シーンで仕込みが置かれた / 回収される伏線の
+ * 表示用情報。`getSceneForeshadowInfo` は ID のみを返すが、AI コンテキスト
+ * 注入では title / intent と「対応する setup シーンタイトル」が要るため、
+ * 一度の呼び出しで join 込みでまとめて返す。abandoned 伏線は除外する。
+ */
+export interface SceneForeshadowContextSetup {
+  title: string;
+  intent: string | null;
+}
+export interface SceneForeshadowContextPayoff {
+  title: string;
+  intent: string | null;
+  /** 仕込みが配置されている代表シーンのタイトル（複数あっても 1 件のみ）。
+   * 仕込みが未配置の場合は null。 */
+  setupSceneTitle: string | null;
+}
+export interface SceneForeshadowContext {
+  setups: SceneForeshadowContextSetup[];
+  payoffs: SceneForeshadowContextPayoff[];
+}
+
+export async function getSceneForeshadowContext(
+  sceneId: string,
+): Promise<SceneForeshadowContext> {
+  const [setupRows, payoffRows] = await Promise.all([
+    db
+      .selectDistinct({
+        title: foreshadows.title,
+        intent: foreshadows.intent,
+      })
+      .from(foreshadowSetups)
+      .innerJoin(foreshadows, eq(foreshadowSetups.foreshadowId, foreshadows.id))
+      .where(
+        and(
+          eq(foreshadowSetups.sceneId, sceneId),
+          eq(foreshadows.abandoned, false),
+        ),
+      ),
+    db
+      .select({
+        id: foreshadows.id,
+        title: foreshadows.title,
+        intent: foreshadows.intent,
+      })
+      .from(foreshadows)
+      .where(
+        and(
+          eq(foreshadows.payoffSceneId, sceneId),
+          eq(foreshadows.abandoned, false),
+        ),
+      ),
+  ]);
+
+  // 各 payoff foreshadow に対して、最初の setup シーンタイトルを 1 件取得する。
+  // 0..1 件で済むのでまとめて IN クエリ → JS 側で代表 1 件抽出。
+  const payoffIds = payoffRows.map((r) => r.id);
+  const setupSceneByForeshadow: Record<string, string> = {};
+  if (payoffIds.length > 0) {
+    const setupSceneRows = await db
+      .select({
+        foreshadowId: foreshadowSetups.foreshadowId,
+        sceneTitle: treeNodes.title,
+      })
+      .from(foreshadowSetups)
+      .innerJoin(treeNodes, eq(foreshadowSetups.sceneId, treeNodes.id))
+      .where(inArray(foreshadowSetups.foreshadowId, payoffIds));
+    for (const row of setupSceneRows) {
+      // 最初に見つけた 1 件のみ採用（複数 setups は L3 を肥大化させない）
+      if (!(row.foreshadowId in setupSceneByForeshadow)) {
+        setupSceneByForeshadow[row.foreshadowId] = row.sceneTitle;
+      }
+    }
+  }
+
+  return {
+    setups: setupRows.map((r) => ({ title: r.title, intent: r.intent })),
+    payoffs: payoffRows.map((r) => ({
+      title: r.title,
+      intent: r.intent,
+      setupSceneTitle: setupSceneByForeshadow[r.id] ?? null,
+    })),
   };
 }
 

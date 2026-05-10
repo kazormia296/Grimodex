@@ -62,6 +62,16 @@ export const JA_CHAT_SYSTEM = {
     conversationSummary: "\n## これまでの会話の要約",
     commandInstruction: "\n## 指示",
     storySoFar: "## これまでの物語\n\n",
+    /** L3: 現在シーンに紐づく伏線セクション。Synopsis / Pending Beats の後・
+     * シーン本文の前に注入される。setup/payoff の両方を含む。 */
+    sceneForeshadow: "\n\n### このシーンの伏線",
+    /** L2: storySoFar 末尾に追記される未回収伏線セクション。projectId 全体から
+     * payoffConfirmed=false かつ abandoned=false の伏線を loadBearing 優先度順に列挙。 */
+    openForeshadows: "### 未回収の伏線",
+    /** L3: storyTimePreviousScene 用ヘッダ。reading-order の `直前のシーン` と
+     * 区別するため、ストーリー時系列で 1 つ前のシーンを別ブロックで注入する。
+     * reading-order と一致する場合は注入しない。 */
+    previousSceneStoryTime: "\n\n## 直前のシーン (ストーリー時系列)",
   },
 
   labels: {
@@ -92,6 +102,16 @@ export const JA_CHAT_SYSTEM = {
     /** L4 Codex エントリの fullContent ラベル。L3 シーン本文 (`本文:`) と
      * 衝突しないよう「全文」と区別する。 */
     codexFullContent: "全文",
+    /** L3 sceneForeshadow セクションの「仕込み」行ラベル */
+    foreshadowSetup: "仕込み",
+    /** L3 sceneForeshadow セクションの「回収」行ラベル */
+    foreshadowPayoff: "回収",
+    /** L3 storyTimePreviousScene の時期ラベル（storyTimeLabel が設定されている場合のみ） */
+    storyTimeLabel: "時期",
+    /** L2 openForeshadows の loadBearing 表記（critical/supporting/optional/unspecified） */
+    foreshadowCritical: "重要度: critical",
+    foreshadowSupporting: "重要度: supporting",
+    foreshadowOptional: "重要度: optional",
   },
 
   typeLabels: JA_TYPE_LABELS,

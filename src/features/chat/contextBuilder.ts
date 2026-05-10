@@ -112,6 +112,42 @@ export interface BuildSystemPromptInput {
   };
   /** C-3: 「予定ビート」セクション文字列（buildPendingBeatsSection の結果）。Synopsis 後・本文前に注入。 */
   pendingBeatsSection?: string;
+  /** Phase 1: 現在シーンに紐づくラベル名一覧。L3 のタイトル行に
+   * `[ラベル1, ラベル2]` として注入される（Codex の phaseLabel と同じパターン）。
+   * 空配列または undefined の場合は何も注入しない。 */
+  sceneLabels?: string[];
+  /** Phase 1: 現在シーンに紐づく伏線。Synopsis / Pending Beats の後、
+   * シーン本文ヘッダの前に「### このシーンの伏線」として注入される。
+   * setups は当シーンで仕込みが置かれた伏線、payoffs は当シーンで回収される伏線。
+   * 両方が空の場合はセクションごと省略する。 */
+  sceneForeshadow?: {
+    setups: Array<{ title: string; intent: string | null }>;
+    payoffs: Array<{
+      title: string;
+      intent: string | null;
+      /** 仕込みが置かれた代表シーンのタイトル（複数ある場合は最初の 1 件）。
+       * 仕込み未配置の payoff（設計のみ）の場合は null。 */
+      setupSceneTitle: string | null;
+    }>;
+  };
+  /** Phase 2: プロジェクト全体の未回収伏線リスト。L2 storySoFar 末尾に
+   * 「### 未回収の伏線」として追記される。loadBearing 優先度（critical →
+   * supporting → optional → unspecified）でソート済みの想定。
+   * 配列が空または undefined の場合はセクションごと省略する。 */
+  openForeshadows?: Array<{
+    title: string;
+    intent: string | null;
+    loadBearing: "critical" | "supporting" | "optional" | null;
+    setupCount: number;
+  }>;
+  /** Phase 2: ストーリー時系列で 1 つ前のシーン。reading-order の
+   * `previousScene` と異なる場合のみ注入される（呼び出し側で同一性判定済みを期待）。
+   * `## 直前のシーン (ストーリー時系列)` ヘッダで `previousScene` の直後に配置。 */
+  storyTimePreviousScene?: {
+    title: string;
+    synopsis: string;
+    storyTimeLabel?: string | null;
+  };
   /** 執筆言語（project.language）。省略時は "ja" にフォールバック */
   lang?: string;
   /**
@@ -475,15 +511,59 @@ export function buildSystemPrompt(
     l1Text = `${s.headers.projectInfo}\n${info.join("\n")}`;
   }
 
-  // L2: Story so far
-  const l2Text = input.storySoFar ? `\n${input.storySoFar}` : "";
+  // L2: Story so far (+ Phase 2: 未回収伏線セクション)
+  // 未回収伏線は storySoFar の末尾に \n\n 区切りで追記する。trimL2Text は
+  // \n\n でエントリ分割し先頭から削るため、伏線セクションは最後に残る。
+  let l2Text = input.storySoFar ? `\n${input.storySoFar}` : "";
+  if (input.openForeshadows && input.openForeshadows.length > 0) {
+    const fsLines: string[] = [s.headers.openForeshadows];
+    for (const fs of input.openForeshadows) {
+      const intentSuffix = fs.intent ? ` — ${fs.intent}` : "";
+      const meta: string[] = [];
+      if (fs.loadBearing === "critical") meta.push(s.labels.foreshadowCritical);
+      else if (fs.loadBearing === "supporting")
+        meta.push(s.labels.foreshadowSupporting);
+      else if (fs.loadBearing === "optional")
+        meta.push(s.labels.foreshadowOptional);
+      if (fs.setupCount > 0)
+        meta.push(`${s.labels.foreshadowSetup}: ${fs.setupCount}件`);
+      const metaSuffix = meta.length > 0 ? `（${meta.join(", ")}）` : "";
+      fsLines.push(`- 「${fs.title}」${intentSuffix}${metaSuffix}`);
+    }
+    const fsBlock = fsLines.join("\n");
+    if (l2Text) {
+      // storySoFar が存在する場合は \n\n 区切りで追記（trim 単位として独立）
+      l2Text = `${l2Text}\n\n${fsBlock}`;
+    } else {
+      // storySoFar が空でも openForeshadows のみ表示する。L2 ヘッダをここでは
+      // 付与しない（storySoFar 側が `## これまでの物語` を含むため）。代わりに
+      // 物語全体セクションヘッダを fsBlock の前に付ける。
+      l2Text = `\n${s.headers.storySoFar}${fsBlock}`;
+    }
+  }
 
   // L3: Current scene (+ G11: preceding scene synopsis + G19: active tab content)
   let l3Text = "";
   if (input.previousScene) {
     l3Text += `${s.headers.previousScene}\n${s.labels.prevTitle}: ${input.previousScene.title}\n${s.labels.prevSummary}: ${input.previousScene.synopsis}`;
   }
-  l3Text += `${s.headers.currentScene}\n${s.labels.title}: ${input.scene.title}`;
+  // Phase 2: ストーリー時系列の前シーン。reading-order の previousScene と
+  // 異なる時のみ呼び出し側から渡される。ヘッダは別ブロックで明示する。
+  if (input.storyTimePreviousScene) {
+    const sts = input.storyTimePreviousScene;
+    l3Text += `${s.headers.previousSceneStoryTime}\n${s.labels.prevTitle}: ${sts.title}`;
+    if (sts.storyTimeLabel) {
+      l3Text += `\n${s.labels.storyTimeLabel}: ${sts.storyTimeLabel}`;
+    }
+    l3Text += `\n${s.labels.prevSummary}: ${sts.synopsis}`;
+  }
+  // Phase 1: シーンラベルをタイトル行末尾に `[label1, label2]` として注入。
+  // Codex エントリの phaseLabel と同じ視覚パターン。空配列なら何も付けない。
+  const labelSuffix =
+    input.sceneLabels && input.sceneLabels.length > 0
+      ? ` [${input.sceneLabels.join(", ")}]`
+      : "";
+  l3Text += `${s.headers.currentScene}\n${s.labels.title}: ${input.scene.title}${labelSuffix}`;
   if (input.scene.synopsis) {
     l3Text += `\n${s.labels.synopsis}: ${input.scene.synopsis}`;
   }
@@ -493,6 +573,31 @@ export function buildSystemPrompt(
     input.pendingBeatsSection.trim().length > 0
   ) {
     l3Text += `\n${input.pendingBeatsSection.trim()}`;
+  }
+  // Phase 1: 当シーンの伏線（setup/payoff）を Pending Beats の後・本文前に注入。
+  // L3 trim では `### シーン本文` ヘッダより前は保持されるため、本文が削られても
+  // 伏線情報は残る。setup/payoff いずれも 0 件ならセクションごと省略。
+  if (input.sceneForeshadow) {
+    const fs = input.sceneForeshadow;
+    if (fs.setups.length > 0 || fs.payoffs.length > 0) {
+      const lines: string[] = [s.headers.sceneForeshadow];
+      for (const setup of fs.setups) {
+        const intentSuffix = setup.intent ? ` — ${setup.intent}` : "";
+        lines.push(
+          `- ${s.labels.foreshadowSetup}: 「${setup.title}」${intentSuffix}`,
+        );
+      }
+      for (const payoff of fs.payoffs) {
+        const intentSuffix = payoff.intent ? ` — ${payoff.intent}` : "";
+        const setupSuffix = payoff.setupSceneTitle
+          ? `（${s.labels.foreshadowSetup}: 「${payoff.setupSceneTitle}」）`
+          : "";
+        lines.push(
+          `- ${s.labels.foreshadowPayoff}: 「${payoff.title}」${intentSuffix}${setupSuffix}`,
+        );
+      }
+      l3Text += lines.join("\n");
+    }
   }
   if (input.scene.content) {
     l3Text += `${s.headers.sceneBody}\n${sanitizeSceneContent(input.scene.content)}`;

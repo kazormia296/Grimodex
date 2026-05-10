@@ -107,6 +107,11 @@ import type { PinnedSnippetContext } from "./contextBuilder";
 import { useUnplacedBeatsStore } from "@/features/editor/beat/unplacedBeatsStore";
 import { buildPendingBeatsSection } from "@/features/editor/beat/pendingBeatsContext";
 import { getPromptCatalog } from "@/prompts/index";
+import {
+  getSceneForeshadowContext,
+  listOpenForeshadowsForContext,
+} from "@/features/foreshadow/api";
+import { listNodeLabels } from "@/features/labels/labelApi";
 
 // フェーズ解決ヘルパー: エントリ配列に対してフェーズを一括解決する
 async function resolveEntriesForContext(
@@ -660,7 +665,7 @@ async function buildSceneContextPrompt(opts: {
   const storySoFar = buildStorySoFar(sceneCtx.id, allNodes, budgets.l2);
   markEnd("buildSceneCtx.buildStorySoFar");
 
-  // G11: previousScene
+  // G11: previousScene (reading-order)
   const currentScene = allNodes.find((n) => n.id === sceneCtx.id);
   const previousSceneNode = currentScene
     ? allNodes
@@ -680,6 +685,33 @@ async function buildSceneContextPrompt(opts: {
         synopsis: previousSceneNode.synopsis as string,
       }
     : undefined;
+
+  // Phase 2: ストーリー時系列の直前シーン。reading-order の previousScene と
+  // 異なる場合のみ注入する。current の storyTimeOrder が未設定なら無効。
+  const storyTimePreviousNode =
+    currentScene && currentScene.storyTimeOrder
+      ? allNodes
+          .filter(
+            (n) =>
+              n.nodeType === "scene" &&
+              n.id !== sceneCtx.id &&
+              n.storyTimeOrder != null &&
+              cmpKeys(n.storyTimeOrder, currentScene.storyTimeOrder!) < 0 &&
+              n.synopsis != null &&
+              n.synopsis.trim() !== "",
+          )
+          .sort((a, b) =>
+            cmpKeys(b.storyTimeOrder as string, a.storyTimeOrder as string),
+          )[0]
+      : undefined;
+  const storyTimePreviousScene =
+    storyTimePreviousNode && storyTimePreviousNode.id !== previousSceneNode?.id
+      ? {
+          title: storyTimePreviousNode.title,
+          synopsis: storyTimePreviousNode.synopsis as string,
+          storyTimeLabel: storyTimePreviousNode.storyTimeLabel ?? null,
+        }
+      : undefined;
 
   // G16: pinned snippets
   let pinnedSnippets: PinnedSnippetContext[] = [];
@@ -782,6 +814,38 @@ async function buildSceneContextPrompt(opts: {
     }
   }
 
+  // Phase 1+2: シーンラベル / シーン直結伏線 / 全体未回収伏線 を並列取得。
+  // すべて DB アクセスのみで in-memory store に依存しない。個別に try/catch して
+  // フォールバックで空にすることで、データが無くても既存挙動は維持される。
+  const projectIdForFs = useTreeStore.getState().projectId;
+  markStart("buildSceneCtx.fetchLabelsAndForeshadow");
+  const [sceneLabelRows, sceneForeshadow, openForeshadowRows] =
+    await Promise.all([
+      listNodeLabels(sceneCtx.id).catch(() => []),
+      getSceneForeshadowContext(sceneCtx.id).catch(() => ({
+        setups: [],
+        payoffs: [],
+      })),
+      projectIdForFs
+        ? listOpenForeshadowsForContext(projectIdForFs).catch(() => [])
+        : Promise.resolve([]),
+    ]);
+  markEnd("buildSceneCtx.fetchLabelsAndForeshadow");
+  const sceneLabels = sceneLabelRows.map((l) => l.name);
+  const sceneForeshadowInput =
+    sceneForeshadow.setups.length > 0 || sceneForeshadow.payoffs.length > 0
+      ? sceneForeshadow
+      : undefined;
+  const openForeshadowsInput =
+    openForeshadowRows.length > 0
+      ? openForeshadowRows.map((r) => ({
+          title: r.title,
+          intent: r.intent,
+          loadBearing: r.loadBearing,
+          setupCount: r.setupCount,
+        }))
+      : undefined;
+
   markStart("buildSceneCtx.buildSystemPrompt");
   const promptResult = buildSystemPrompt({
     scene: sceneCtx,
@@ -798,6 +862,10 @@ async function buildSceneContextPrompt(opts: {
     maxOutputTokens,
     conversationSummary,
     pendingBeatsSection,
+    sceneLabels: sceneLabels.length > 0 ? sceneLabels : undefined,
+    sceneForeshadow: sceneForeshadowInput,
+    openForeshadows: openForeshadowsInput,
+    storyTimePreviousScene,
     lang: projectCtx?.language ?? "ja",
     agentMode: opts.agentMode,
   });
