@@ -559,6 +559,7 @@ pub async fn test_connection(
 /// AI のべりすとの API 呼び出しモード。
 /// - `Chat`: チャットパネル・バックグラウンド処理 → `messages` 配列形式（Chat API）
 /// - `Completion`: インラインAI（続きを書く） → `text` 平坦化形式（Completion API）
+///
 /// 他プロバイダには影響しない。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AiNovelistMode {
