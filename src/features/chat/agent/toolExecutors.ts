@@ -8,10 +8,14 @@ import {
   codexDetailDefinitions,
   codexDetailValues,
   treeNodes,
+  foreshadows,
+  foreshadowSetups,
 } from "@/db/schema";
-import { eq, inArray } from "drizzle-orm";
+import { eq, inArray, and } from "drizzle-orm";
 import { cmpKeys } from "@/features/tree/fractionalIndex";
 import { countTokens } from "../contextBuilder";
+import { useTreeStore } from "@/features/tree/treeStore";
+import { listOpenForeshadowsForContext } from "@/features/foreshadow/api";
 import type { ToolResult } from "./agentTypes";
 
 interface QueryResult<T = Record<string, unknown>> {
@@ -695,6 +699,228 @@ async function getChapterSummaries(): Promise<Omit<ToolResult, "toolCallId">> {
 }
 
 // ---------------------------------------------------------------------------
+// Foreshadow / Timeline tools (Phase 3)
+// ---------------------------------------------------------------------------
+
+async function listOpenForeshadows(): Promise<Omit<ToolResult, "toolCallId">> {
+  const projectId = useTreeStore.getState().projectId;
+  if (!projectId) {
+    return {
+      name: "list_open_foreshadows",
+      content: [],
+      summary: "No active project",
+      tokensUsed: 0,
+    };
+  }
+  const rows = await listOpenForeshadowsForContext(projectId);
+  const content = rows.map((r) => ({
+    id: r.id,
+    title: r.title,
+    intent: r.intent ?? "",
+    loadBearing: r.loadBearing,
+    setupCount: r.setupCount,
+  }));
+  const json = JSON.stringify(content);
+  return {
+    name: "list_open_foreshadows",
+    content,
+    summary: `${content.length} open foreshadowing items`,
+    tokensUsed: countTokens(json),
+  };
+}
+
+async function getForeshadowDetail(
+  params: Record<string, unknown>,
+): Promise<Omit<ToolResult, "toolCallId">> {
+  const id = String(params["id"] ?? "").trim();
+  if (!id) {
+    return {
+      name: "get_foreshadow_detail",
+      content: null,
+      summary: "No id provided",
+      tokensUsed: 0,
+    };
+  }
+
+  const [fs] = await db
+    .select()
+    .from(foreshadows)
+    .where(eq(foreshadows.id, id));
+  if (!fs) {
+    return {
+      name: "get_foreshadow_detail",
+      content: null,
+      summary: "Foreshadow not found",
+      tokensUsed: 0,
+    };
+  }
+
+  // Setups + scene title (innerJoin); orphan は別フィールドで載せる。
+  const setupRows = await db
+    .select({
+      sceneId: foreshadowSetups.sceneId,
+      kind: foreshadowSetups.kind,
+      strength: foreshadowSetups.strength,
+      aiStrength: foreshadowSetups.aiStrength,
+      attribution: foreshadowSetups.attribution,
+      aiRationale: foreshadowSetups.aiRationale,
+      isOrphan: foreshadowSetups.isOrphan,
+      sceneTitle: treeNodes.title,
+    })
+    .from(foreshadowSetups)
+    .innerJoin(treeNodes, eq(foreshadowSetups.sceneId, treeNodes.id))
+    .where(eq(foreshadowSetups.foreshadowId, id));
+
+  // Payoff scene の title 取得（payoffSceneId が無ければ null）
+  let payoffScene: { id: string; title: string } | null = null;
+  if (fs.payoffSceneId) {
+    const [row] = await db
+      .select({ id: treeNodes.id, title: treeNodes.title })
+      .from(treeNodes)
+      .where(eq(treeNodes.id, fs.payoffSceneId));
+    if (row) payoffScene = { id: row.id, title: row.title };
+  }
+
+  const content = {
+    id: fs.id,
+    title: fs.title,
+    intent: fs.intent ?? "",
+    notes: fs.notes ?? "",
+    loadBearing: fs.loadBearing,
+    payoffConfirmed: fs.payoffConfirmed,
+    abandoned: fs.abandoned,
+    payoffScene,
+    setups: setupRows.map((s) => ({
+      sceneId: s.sceneId,
+      sceneTitle: s.sceneTitle,
+      kind: s.kind,
+      // 人手評価が無いとき AI 評価を露出（強度の参考情報）
+      strength: s.strength ?? s.aiStrength ?? null,
+      attribution: s.attribution,
+      aiRationale: s.aiRationale ?? "",
+      isOrphan: s.isOrphan,
+    })),
+  };
+  const json = JSON.stringify(content);
+  return {
+    name: "get_foreshadow_detail",
+    content,
+    summary: `${fs.title}: ${setupRows.length} setup(s), payoff ${
+      fs.payoffConfirmed ? "confirmed" : payoffScene ? "planned" : "unset"
+    }`,
+    tokensUsed: countTokens(json),
+  };
+}
+
+async function getSceneTimelineNeighbors(
+  params: Record<string, unknown>,
+): Promise<Omit<ToolResult, "toolCallId">> {
+  const sceneId = String(params["sceneId"] ?? "").trim();
+  if (!sceneId) {
+    return {
+      name: "get_scene_timeline_neighbors",
+      content: { previous: [], next: [], currentSceneStoryTimeLabel: null },
+      summary: "No sceneId provided",
+      tokensUsed: 0,
+    };
+  }
+
+  const [target] = await db
+    .select({
+      id: treeNodes.id,
+      projectId: treeNodes.projectId,
+      storyTimeOrder: treeNodes.storyTimeOrder,
+      storyTimeLabel: treeNodes.storyTimeLabel,
+    })
+    .from(treeNodes)
+    .where(eq(treeNodes.id, sceneId));
+
+  if (!target || !target.storyTimeOrder) {
+    return {
+      name: "get_scene_timeline_neighbors",
+      content: {
+        previous: [],
+        next: [],
+        currentSceneStoryTimeLabel: target?.storyTimeLabel ?? null,
+      },
+      summary: target
+        ? "Target scene has no storyTimeOrder set"
+        : "Scene not found",
+      tokensUsed: 0,
+    };
+  }
+
+  // 同 project 内の story-time キーを持つシーンだけ拾い、JS で fractional-index 比較。
+  // SQL の文字列順は base62 fractional key と一致するため、order by + limit が
+  // 使えるが、cmpKeys との挙動差分を避けるため全件読み JS でソート分割する
+  // (シーン数 << 数千件と想定)。
+  const candidates = await db
+    .select({
+      id: treeNodes.id,
+      title: treeNodes.title,
+      synopsis: treeNodes.synopsis,
+      storyTimeOrder: treeNodes.storyTimeOrder,
+      storyTimeLabel: treeNodes.storyTimeLabel,
+    })
+    .from(treeNodes)
+    .where(
+      and(
+        eq(treeNodes.projectId, target.projectId),
+        eq(treeNodes.nodeType, "scene"),
+      ),
+    );
+
+  const targetKey = target.storyTimeOrder;
+  const previous = candidates
+    .filter(
+      (n) =>
+        n.id !== sceneId &&
+        n.storyTimeOrder != null &&
+        cmpKeys(n.storyTimeOrder, targetKey) < 0,
+    )
+    .sort((a, b) =>
+      cmpKeys(b.storyTimeOrder as string, a.storyTimeOrder as string),
+    )
+    .slice(0, 3)
+    .map((n) => ({
+      id: n.id,
+      title: n.title,
+      storyTimeLabel: n.storyTimeLabel ?? null,
+      synopsis: n.synopsis ?? "",
+    }));
+  const next = candidates
+    .filter(
+      (n) =>
+        n.id !== sceneId &&
+        n.storyTimeOrder != null &&
+        cmpKeys(n.storyTimeOrder, targetKey) > 0,
+    )
+    .sort((a, b) =>
+      cmpKeys(a.storyTimeOrder as string, b.storyTimeOrder as string),
+    )
+    .slice(0, 3)
+    .map((n) => ({
+      id: n.id,
+      title: n.title,
+      storyTimeLabel: n.storyTimeLabel ?? null,
+      synopsis: n.synopsis ?? "",
+    }));
+
+  const content = {
+    currentSceneStoryTimeLabel: target.storyTimeLabel ?? null,
+    previous,
+    next,
+  };
+  const json = JSON.stringify(content);
+  return {
+    name: "get_scene_timeline_neighbors",
+    content,
+    summary: `previous: ${previous.length}, next: ${next.length}`,
+    tokensUsed: countTokens(json),
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Dispatch map
 // ---------------------------------------------------------------------------
 
@@ -714,6 +940,9 @@ const EXECUTORS: Record<string, Executor> = {
   search_scenes: searchScenes,
   search_snippets: searchSnippets,
   get_chapter_summaries: () => getChapterSummaries(),
+  list_open_foreshadows: () => listOpenForeshadows(),
+  get_foreshadow_detail: getForeshadowDetail,
+  get_scene_timeline_neighbors: getSceneTimelineNeighbors,
 };
 
 /** Execute a named tool and return a ToolResult (always succeeds — errors are wrapped). */

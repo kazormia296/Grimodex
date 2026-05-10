@@ -170,6 +170,48 @@ export const AGENT_TOOLS: AgentToolDefinition[] = [
       required: [],
     },
   },
+
+  // ── Foreshadow / Timeline 系 ─────────────────────────────────────────────
+  {
+    name: "list_open_foreshadows",
+    description:
+      "List all unresolved foreshadowing items in the project (payoff not yet confirmed and not abandoned). Returns id, title, intent, loadBearing (critical/supporting/optional/null), and setupCount (non-orphan). Sorted by loadBearing priority then most recently updated. Note: a small priority-sorted slice is already injected into the system prompt under '### 未回収の伏線' — use this tool when you need the full list (e.g. trimmed in static injection) or want id-based follow-up via get_foreshadow_detail.",
+    inputSchema: {
+      type: "object",
+      properties: {},
+      required: [],
+    },
+  },
+  {
+    name: "get_foreshadow_detail",
+    description:
+      "Get the full detail for a single foreshadowing item: title, intent, notes, loadBearing, payoffConfirmed, abandoned, payoff scene reference, and the list of setups (each with sceneId, sceneTitle, kind, strength, attribution, aiRationale, isOrphan). Use the id from list_open_foreshadows or the injected '### 未回収の伏線' / '### このシーンの伏線' sections.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        id: {
+          type: "string",
+          description: "The foreshadow's UUID",
+        },
+      },
+      required: ["id"],
+    },
+  },
+  {
+    name: "get_scene_timeline_neighbors",
+    description:
+      "Given a scene id, return up to 3 preceding and 3 following scenes in story-time order (not reading order). Each neighbor includes id, title, storyTimeLabel (e.g. '3年前'), and synopsis. Returns empty arrays if the target scene has no storyTimeOrder set. Useful for verifying chronological consistency or recalling story-time-adjacent events that read out of order.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        sceneId: {
+          type: "string",
+          description: "Scene node id whose story-time neighbors to retrieve",
+        },
+      },
+      required: ["sceneId"],
+    },
+  },
 ];
 
 /** ツール名→定義のマップ */

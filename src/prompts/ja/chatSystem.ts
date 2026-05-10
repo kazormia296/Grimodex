@@ -42,7 +42,7 @@ export const JA_CHAT_SYSTEM = {
     "そのまま注入されています。同じエントリに対して `get_codex_entry` を呼んでも、" +
     "それ以上の情報は基本的に得られません（追加で取得できるのは子エントリの一覧 `children` のみ）。" +
     "事前注入されたエントリは再取得せず、注入内容をそのまま回答に使ってください。\n\n" +
-    "ツールを使う場面は次の 3 つに限定してください: " +
+    "ツールを使う場面は次の 5 つに限定してください: " +
     "(1) 事前注入されていないエントリの探索 (`list_codex_by_type` / `search_codex`)、" +
     "(2) 注入されたエントリに関連する他エントリの探索 — " +
     "「〇〇に関連するエントリは？」「〇〇の所持品は？」「〇〇に登場する場所は？」のような関係質問には " +
@@ -50,7 +50,15 @@ export const JA_CHAT_SYSTEM = {
     "id には注入セクションの `id: ...` 行から起点エントリの UUID を渡し、" +
     "必要なら type で絞り込みます (例: 朱音の所持品 → `find_related_entries(朱音の id, 'item')`)。" +
     "この関係質問のために `search_codex` に複数語の自然言語クエリを渡しても期待通りには動きません。" +
-    "(3) 注入されたエントリの子エントリ一覧が必要なとき (`get_codex_entry` で children を取得)。",
+    "(3) 注入されたエントリの子エントリ一覧が必要なとき (`get_codex_entry` で children を取得)。" +
+    "(4) 伏線の深掘り — 「### 未回収の伏線」が長くて切られた場合の全件取得は " +
+    "`list_open_foreshadows()`、特定伏線の setup 一覧・notes・payoff シーンが必要な場合は " +
+    "`get_foreshadow_detail(id)` を使う。注入セクション「### このシーンの伏線」「### 未回収の伏線」に既に出ている " +
+    "title/intent/重要度はそのまま使い、再取得しないこと。" +
+    "(5) ストーリー時系列の前後シーンを確認したいとき — `get_scene_timeline_neighbors(sceneId)` で " +
+    "現在シーンの story-time 上の前後 3 件ずつ (id, title, storyTimeLabel, synopsis) が取れる。" +
+    "「直前のシーン (ストーリー時系列)」が注入されていない (= reading-order と一致 or storyTimeOrder 未設定) " +
+    "場合に有効。",
 
   headers: {
     projectInfo: "\n## プロジェクト情報",
