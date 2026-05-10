@@ -56,23 +56,30 @@ export function SynopsisArea({ nodeId }: SynopsisAreaProps) {
     await doGenerate();
   }, [node, nodeId, doGenerate, t]);
 
-  if (!node || node.nodeType !== "scene") return null;
+  // Scene と folder で synopsis を兼用する。folder の場合はラベルを "Outline" に
+  // 切り替え、AI 生成ボタンは隠す（folder には自動要約の元になる本文が無い）。
+  // nodeType === "note" は対象外（note は AI コンテキストに乗せていない）。
+  if (!node || (node.nodeType !== "scene" && node.nodeType !== "folder"))
+    return null;
+  const isFolder = node.nodeType === "folder";
 
   return (
     <div className="border-t border-border p-2">
       <div className="mb-1 flex items-center justify-between">
         <span className="text-xs font-medium text-muted-foreground">
-          Synopsis
+          {isFolder ? t("tree.outline.label") : "Synopsis"}
         </span>
-        <button
-          type="button"
-          onClick={handleGenerate}
-          disabled={isGenerating}
-          title={t("tree.synopsis.generateTitle")}
-          className="flex items-center gap-0.5 rounded px-1 py-0.5 text-xs text-muted-foreground hover:bg-accent hover:text-foreground disabled:opacity-40"
-        >
-          {isGenerating ? t("tree.synopsis.generating") : "✦ Generate"}
-        </button>
+        {!isFolder && (
+          <button
+            type="button"
+            onClick={handleGenerate}
+            disabled={isGenerating}
+            title={t("tree.synopsis.generateTitle")}
+            className="flex items-center gap-0.5 rounded px-1 py-0.5 text-xs text-muted-foreground hover:bg-accent hover:text-foreground disabled:opacity-40"
+          >
+            {isGenerating ? t("tree.synopsis.generating") : "✦ Generate"}
+          </button>
+        )}
       </div>
 
       {/* Inline overwrite confirmation (replaces window.confirm) */}
@@ -103,7 +110,11 @@ export function SynopsisArea({ nodeId }: SynopsisAreaProps) {
         synopsis={node.synopsis}
         alwaysEditing
         rows={3}
-        placeholder="What happens in this scene?"
+        placeholder={
+          isFolder
+            ? t("tree.outline.placeholder")
+            : "What happens in this scene?"
+        }
         textareaClassName="w-full resize-none rounded border border-border bg-background px-2 py-1.5 text-xs text-foreground placeholder:text-muted-foreground/60 focus:outline-none focus:ring-1 focus:ring-ring"
       />
     </div>

@@ -283,6 +283,21 @@ export function ProjectCategory() {
       <SettingSection title={t("settings.project.aiSettings")}>
         <div className="mb-4">
           <div className="mb-1 text-sm text-foreground">
+            {t("settings.project.outline")}
+          </div>
+          <div className="text-xs text-muted-foreground mb-2">
+            {t("settings.project.outlineDesc")}
+          </div>
+          <SettingTextarea
+            value={project.outline ?? ""}
+            onChange={(v) => updateField("outline", v || null)}
+            placeholder={t("settings.project.outlinePlaceholder")}
+            maxLength={8000}
+            rows={8}
+          />
+        </div>
+        <div className="mb-4">
+          <div className="mb-1 text-sm text-foreground">
             {t("settings.project.styleGuide")}
           </div>
           <div className="text-xs text-muted-foreground mb-2">

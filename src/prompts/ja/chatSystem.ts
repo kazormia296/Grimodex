@@ -80,6 +80,12 @@ export const JA_CHAT_SYSTEM = {
      * 区別するため、ストーリー時系列で 1 つ前のシーンを別ブロックで注入する。
      * reading-order と一致する場合は注入しない。 */
     previousSceneStoryTime: "\n\n## 直前のシーン (ストーリー時系列)",
+    /** L2: 著者手書きのプロジェクト outline (Phase 4)。L2 末尾に配置され、trim
+     * で最後まで残る。物語全体の意図・テーマ・到達点を伝える。 */
+    projectOutline: "## プロジェクト Outline",
+    /** L2: 現在シーンの祖先 folder の outline (Phase 4)。outermost → innermost
+     * 順にリスト表示し、構造的な階層情報を AI に渡す。 */
+    chapterOutlines: "### Chapter Outlines (broad → specific)",
   },
 
   labels: {

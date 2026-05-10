@@ -31,6 +31,10 @@ export interface ProjectContext {
   styleGuide?: string | null;
   aiInstructions?: string | null;
   language?: string;
+  /** Phase 4: 著者手書きの outline。fetch ヘルパーが project から拾い、
+   * `BuildSystemPromptInput.projectOutline` に渡されることを想定する。
+   * L1 (project info) には載らない (L2 narrative 層の扱い)。 */
+  outline?: string | null;
 }
 
 export interface CodexContext {
@@ -148,6 +152,17 @@ export interface BuildSystemPromptInput {
     synopsis: string;
     storyTimeLabel?: string | null;
   };
+  /** Phase 4: プロジェクト全体の outline (著者手書き)。L2 の最先頭に
+   * 「## プロジェクト Outline」として注入され、storySoFar より前に置く。
+   * trim では outline は保持され、storySoFar が先に削られる挙動とする。 */
+  projectOutline?: string;
+  /** Phase 4: 現在シーンの祖先 folder の outline (= treeNodes.synopsis)。
+   * outermost (root 近い) → innermost (現シーン直接親) 順。空配列 / undefined は省略。
+   * L2 で projectOutline の直後・storySoFar の前に注入される。 */
+  chapterOutlines?: Array<{
+    title: string;
+    outline: string;
+  }>;
   /** 執筆言語（project.language）。省略時は "ja" にフォールバック */
   lang?: string;
   /**
@@ -511,9 +526,11 @@ export function buildSystemPrompt(
     l1Text = `${s.headers.projectInfo}\n${info.join("\n")}`;
   }
 
-  // L2: Story so far (+ Phase 2: 未回収伏線セクション)
-  // 未回収伏線は storySoFar の末尾に \n\n 区切りで追記する。trimL2Text は
-  // \n\n でエントリ分割し先頭から削るため、伏線セクションは最後に残る。
+  // L2: Story so far (+ Phase 2: 未回収伏線、Phase 4: outline)
+  // trimL2Text は \n\n でエントリ分割し先頭から削るため、保持優先度が高い
+  // ものを末尾に配置する: storySoFar (古い順に削られる) → openForeshadows →
+  // chapterOutlines → projectOutline。projectOutline は最後尾なので trim
+  // 圧力に最も強い。
   let l2Text = input.storySoFar ? `\n${input.storySoFar}` : "";
   if (input.openForeshadows && input.openForeshadows.length > 0) {
     const fsLines: string[] = [s.headers.openForeshadows];
@@ -540,6 +557,22 @@ export function buildSystemPrompt(
       // 物語全体セクションヘッダを fsBlock の前に付ける。
       l2Text = `\n${s.headers.storySoFar}${fsBlock}`;
     }
+  }
+  // Phase 4: Chapter outlines (祖先 folder の synopsis、outermost → innermost)。
+  // 現在シーン直近の構造的役割を AI に伝える。openForeshadows の後に配置。
+  if (input.chapterOutlines && input.chapterOutlines.length > 0) {
+    const lines: string[] = [s.headers.chapterOutlines];
+    for (const co of input.chapterOutlines) {
+      lines.push(`- **${co.title}**: ${co.outline}`);
+    }
+    const block = lines.join("\n");
+    l2Text = l2Text ? `${l2Text}\n\n${block}` : `\n${block}`;
+  }
+  // Phase 4: Project outline (著者手書きの全体意図)。L2 末尾に置くことで
+  // trim 圧力に最も強くなり、最後まで AI から見える。
+  if (input.projectOutline && input.projectOutline.trim().length > 0) {
+    const block = `${s.headers.projectOutline}\n${input.projectOutline.trim()}`;
+    l2Text = l2Text ? `${l2Text}\n\n${block}` : `\n${block}`;
   }
 
   // L3: Current scene (+ G11: preceding scene synopsis + G19: active tab content)

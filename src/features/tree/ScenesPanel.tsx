@@ -340,21 +340,23 @@ export function ScenesPanel() {
 
           {/* Synopsis area — hidden in Outline mode (synopsis is shown inline there) */}
           <AnimatePresence mode="wait">
-            {viewMode !== "outline" && activeNode?.nodeType === "scene" && (
-              <motion.div
-                key="synopsis"
-                initial={{ opacity: 0, y: 8 }}
-                animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0, y: 8 }}
-                transition={
-                  reduced
-                    ? { duration: 0 }
-                    : { duration: DURATIONS.fast, ease: EASINGS.easeOut }
-                }
-              >
-                <SynopsisArea nodeId={activeSceneId} />
-              </motion.div>
-            )}
+            {viewMode !== "outline" &&
+              (activeNode?.nodeType === "scene" ||
+                activeNode?.nodeType === "folder") && (
+                <motion.div
+                  key="synopsis"
+                  initial={{ opacity: 0, y: 8 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, y: 8 }}
+                  transition={
+                    reduced
+                      ? { duration: 0 }
+                      : { duration: DURATIONS.fast, ease: EASINGS.easeOut }
+                  }
+                >
+                  <SynopsisArea nodeId={activeSceneId} />
+                </motion.div>
+              )}
           </AnimatePresence>
 
           {deleteConfirm && (

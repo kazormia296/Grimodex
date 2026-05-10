@@ -256,7 +256,10 @@
       "styleGuidePlaceholder": "文体の特徴、避けるべき表現、好む語彙など…",
       "aiInstructions": "AI 指示（グローバル）",
       "aiInstructionsDesc": "AIの振る舞い全般を制御します。Chat のコンテキスト（Layer 1）に含まれます。",
-      "aiInstructionsPlaceholder": "AIへの追加指示…"
+      "aiInstructionsPlaceholder": "AIへの追加指示…",
+      "outline": "プロジェクト全体の outline",
+      "outlineDesc": "物語の意図・テーマ・到達点を著者の視点で記述します。Chat のコンテキスト（Layer 2）に常時注入されます。空でも構いません。",
+      "outlinePlaceholder": "全3部構成。テーマは「復讐の代償」。Act 2 break で師匠が裏切る。最終的に王国は崩壊するが、朱音は救われる…"
     },
     "keys": {
       "search": "キーバインドを検索…",
@@ -1350,6 +1353,10 @@
       "generatingFromBeats": "Synopsisを生成中…",
       "generatedFromBeats": "ビートからSynopsisを生成しました",
       "generateFromBeatsFailed": "Synopsis生成に失敗しました"
+    },
+    "outline": {
+      "label": "Outline",
+      "placeholder": "このセクションの構造的役割や局所的な意図…"
     },
     "quickSection": {
       "unpin": "ピン留め解除",

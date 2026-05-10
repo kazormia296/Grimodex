@@ -18,6 +18,10 @@ export const projects = sqliteTable("projects", {
   language: text("language").notNull().default("ja"),
   styleGuide: text("style_guide"),
   aiInstructions: text("ai_instructions"),
+  /** Phase 4: プロジェクト全体の outline (free text)。物語の意図・テーマ・到達点を
+   * 著者が手書きするフィールド。L2 へ常時注入される。空欄可。
+   * 対称概念として treeNodes.synopsis (folder 用) が chapter outline を担う。 */
+  outline: text("outline"),
   phaseResolutionMode: text("phase_resolution_mode", {
     enum: ["reading", "story", "auto"],
   })

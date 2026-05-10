@@ -5,7 +5,7 @@ const { mockInvoke, mockListOpenForeshadows, mockTreeProjectId } = vi.hoisted(
   () => ({
     mockInvoke: vi.fn(),
     mockListOpenForeshadows: vi.fn(),
-    mockTreeProjectId: vi.fn<[], string | null>(),
+    mockTreeProjectId: vi.fn<() => string | null>(),
   }),
 );
 

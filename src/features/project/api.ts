@@ -19,7 +19,13 @@ export async function createProject(
     Partial<
       Pick<
         NewProject,
-        "genre" | "pov" | "tense" | "language" | "styleGuide" | "aiInstructions"
+        | "genre"
+        | "pov"
+        | "tense"
+        | "language"
+        | "styleGuide"
+        | "aiInstructions"
+        | "outline"
       >
     >,
 ): Promise<Project> {
@@ -43,6 +49,7 @@ export async function updateProject(
       | "language"
       | "styleGuide"
       | "aiInstructions"
+      | "outline"
     >
   >,
 ): Promise<Project | undefined> {

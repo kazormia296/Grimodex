@@ -418,6 +418,7 @@ async function fetchProjectContext(
       styleGuide: project.styleGuide,
       aiInstructions: project.aiInstructions,
       language: project.language,
+      outline: project.outline,
     };
   } catch {
     return null;
@@ -661,12 +662,30 @@ async function buildSceneContextPrompt(opts: {
 
   // Story so far
   const allNodes = useTreeStore.getState().nodes;
+  const currentScene = allNodes.find((n) => n.id === sceneCtx.id);
   markStart("buildSceneCtx.buildStorySoFar");
   const storySoFar = buildStorySoFar(sceneCtx.id, allNodes, budgets.l2);
   markEnd("buildSceneCtx.buildStorySoFar");
 
+  // Phase 4: 祖先 folder の outline (= synopsis) を root まで walk して収集。
+  // 非空の synopsis を持つ folder のみ採用し、outermost (root に近い) →
+  // innermost (現シーン直接親) の順で並べる。L2 で chapter outlines として注入。
+  const chapterOutlines: Array<{ title: string; outline: string }> = [];
+  {
+    const path: { title: string; outline: string }[] = [];
+    let cursor: typeof currentScene | undefined = currentScene;
+    while (cursor?.parentId) {
+      const parent = allNodes.find((n) => n.id === cursor!.parentId);
+      if (!parent) break;
+      if (parent.nodeType === "folder" && parent.synopsis?.trim()) {
+        path.push({ title: parent.title, outline: parent.synopsis.trim() });
+      }
+      cursor = parent;
+    }
+    chapterOutlines.push(...path.reverse()); // outermost first
+  }
+
   // G11: previousScene (reading-order)
-  const currentScene = allNodes.find((n) => n.id === sceneCtx.id);
   const previousSceneNode = currentScene
     ? allNodes
         .filter(
@@ -866,6 +885,8 @@ async function buildSceneContextPrompt(opts: {
     sceneForeshadow: sceneForeshadowInput,
     openForeshadows: openForeshadowsInput,
     storyTimePreviousScene,
+    projectOutline: projectCtx?.outline ?? undefined,
+    chapterOutlines: chapterOutlines.length > 0 ? chapterOutlines : undefined,
     lang: projectCtx?.language ?? "ja",
     agentMode: opts.agentMode,
   });

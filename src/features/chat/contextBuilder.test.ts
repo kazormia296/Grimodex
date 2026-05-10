@@ -935,6 +935,123 @@ describe("contextBuilder", () => {
     });
   });
 
+  describe("buildSystemPrompt — projectOutline / chapterOutlines (Phase 4)", () => {
+    const scene: SceneContext = {
+      id: "s1",
+      title: "現在シーン",
+      content: "本文",
+      synopsis: "あらすじ",
+    };
+
+    it("projectOutline が L2 末尾に「## プロジェクト Outline」として注入される", () => {
+      const result = buildSystemPrompt({
+        scene,
+        storySoFar: "## これまでの物語\n\n第1話\n冒頭",
+        projectOutline:
+          "全3部構成。テーマは「復讐の代償」。Act 2 break で師匠が裏切る。",
+      });
+      const storyIdx = result.prompt.indexOf("第1話");
+      const outlineHeaderIdx = result.prompt.indexOf("プロジェクト Outline");
+      const outlineBodyIdx = result.prompt.indexOf("テーマは「復讐の代償」");
+      const sceneIdx = result.prompt.indexOf("現在シーン");
+      expect(outlineHeaderIdx).toBeGreaterThan(storyIdx);
+      expect(outlineBodyIdx).toBeGreaterThan(outlineHeaderIdx);
+      expect(sceneIdx).toBeGreaterThan(outlineBodyIdx);
+    });
+
+    it("空文字 / 空白のみ projectOutline はセクションごと省略される", () => {
+      const empty = buildSystemPrompt({ scene, projectOutline: "" });
+      const whitespace = buildSystemPrompt({
+        scene,
+        projectOutline: "   \n  ",
+      });
+      expect(empty.prompt).not.toContain("プロジェクト Outline");
+      expect(whitespace.prompt).not.toContain("プロジェクト Outline");
+    });
+
+    it("chapterOutlines が outermost → innermost 順で注入される", () => {
+      const result = buildSystemPrompt({
+        scene,
+        chapterOutlines: [
+          { title: "Volume 1", outline: "巻全体の弧" },
+          { title: "第1部", outline: "前半の構造" },
+          { title: "第3章", outline: "局所的な意図" },
+        ],
+      });
+      const v1Idx = result.prompt.indexOf("Volume 1");
+      const p1Idx = result.prompt.indexOf("第1部");
+      const c3Idx = result.prompt.indexOf("第3章");
+      expect(v1Idx).toBeGreaterThan(0);
+      expect(p1Idx).toBeGreaterThan(v1Idx);
+      expect(c3Idx).toBeGreaterThan(p1Idx);
+      expect(result.prompt).toContain("- **Volume 1**: 巻全体の弧");
+      expect(result.prompt).toContain("- **第3章**: 局所的な意図");
+    });
+
+    it("chapterOutlines が空配列なら何も注入されない", () => {
+      const without = buildSystemPrompt({ scene });
+      const empty = buildSystemPrompt({ scene, chapterOutlines: [] });
+      expect(without.prompt).toBe(empty.prompt);
+      expect(without.prompt).not.toContain("Chapter Outlines");
+    });
+
+    it("storySoFar が空でも outlines のみで L2 が組み立てられる", () => {
+      const result = buildSystemPrompt({
+        scene,
+        projectOutline: "プロジェクト全体の意図",
+        chapterOutlines: [{ title: "第1章", outline: "局所の意図" }],
+      });
+      expect(result.prompt).toContain("プロジェクト Outline");
+      expect(result.prompt).toContain("プロジェクト全体の意図");
+      expect(result.prompt).toContain("第1章");
+    });
+
+    it("L2 末尾配置により projectOutline は trim 圧力に強い", () => {
+      // L2 予算をきつく絞り、storySoFar を多数のエントリで埋める
+      const longStorySoFar =
+        "## これまでの物語\n\n" +
+        Array.from(
+          { length: 20 },
+          (_, i) => `第${i}話\n${"x".repeat(200)}`,
+        ).join("\n\n");
+      const result = buildSystemPrompt({
+        scene,
+        storySoFar: longStorySoFar,
+        projectOutline: "守られる outline",
+        contextWindow: 8_000,
+        conversationTokens: 100,
+      });
+      // 末尾にあるため projectOutline は残る
+      expect(result.prompt).toContain("守られる outline");
+    });
+
+    it("excludeLayers = ['L2'] のとき outline 系もすべて除去される", () => {
+      const result = buildSystemPrompt({
+        scene,
+        projectOutline: "見えなくなる outline",
+        chapterOutlines: [{ title: "第1章", outline: "見えなくなる chapter" }],
+        excludeLayers: ["L2"],
+      });
+      expect(result.prompt).not.toContain("見えなくなる outline");
+      expect(result.prompt).not.toContain("見えなくなる chapter");
+      expect(result.prompt).not.toContain("プロジェクト Outline");
+      expect(result.prompt).not.toContain("Chapter Outlines");
+    });
+
+    it("L1 (project info) には outline は含まれない", () => {
+      const result = buildSystemPrompt({
+        scene,
+        project: {
+          title: "テスト作品",
+          outline: "L1 に漏れてはいけない outline",
+        },
+      });
+      expect(result.prompt).toContain("テスト作品");
+      // L1 の project info ブロックには漏れない (outline は別経路の projectOutline で注入)
+      expect(result.prompt).not.toContain("L1 に漏れてはいけない outline");
+    });
+  });
+
   describe("computeResponseReservation", () => {
     it("returns ratio-based reservation when maxOutputTokens is undefined", () => {
       // 200k * 5% = 10,000
