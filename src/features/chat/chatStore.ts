@@ -394,6 +394,10 @@ interface SceneContextPayload {
   layers: LayerBreakdown[];
   detectedEntries: CodexEntry[];
   alwaysEntries: CodexEntry[];
+  /** L4 に full body + custom details + aliases が完全注入されたエントリの ID。
+   * Agent モードで `get_codex_entry` 短絡判定に使う。Spotlight 経路を通った
+   * エントリ（pinnedCodexEntries）が該当する。 */
+  fullyInjectedIds: string[];
 }
 
 async function buildSceneContextPrompt(opts: {
@@ -760,6 +764,7 @@ async function buildSceneContextPrompt(opts: {
     layers: promptResult.layers,
     detectedEntries: detectedNotPinned,
     alwaysEntries: alwaysNotPinned,
+    fullyInjectedIds: pinnedCodexEntries.map((e) => e.id),
   };
 }
 
@@ -1101,6 +1106,11 @@ export const useChatStore = create<ChatState>()((set, get) => ({
 
         const agentMsgs: AgentMessagePayload[] = [];
         let systemPromptForAgent = "";
+        // Spotlight された (= L4 に full body + custom details + aliases が
+        // 揃って注入された) エントリの ID 集合。`get_codex_entry` が
+        // この集合の ID で呼ばれた場合は executor を呼ばずスタブを返す
+        // (LLM はプロンプト指示に従わず再 fetch しがちなため)。
+        let fullyInjectedIds: Set<string> = new Set();
         if (sceneCtx) {
           const messagesForCtx: ChatMessage[] = [
             ...prevMessages.filter((m) => !m.isSummarized),
@@ -1118,6 +1128,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
             agentMode: true,
           });
           systemPromptForAgent = ctxResult.prompt;
+          fullyInjectedIds = new Set(ctxResult.fullyInjectedIds);
           set({
             contextTokenCount: ctxResult.totalTokens,
             contextLayers: ctxResult.layers,
@@ -1131,6 +1142,15 @@ export const useChatStore = create<ChatState>()((set, get) => ({
           // 入力側で新たに Spotlight された場合に備え再計算してから使う。
           await get().refreshContextLayers();
           systemPromptForAgent = get().lastSystemPrompt;
+          const dbPinned = sessionIdForPersist
+            ? await chatApi
+                .listPinnedCodexEntries(sessionIdForPersist)
+                .catch(() => [])
+            : [];
+          fullyInjectedIds = new Set([
+            ...dbPinned.map((e) => e.id),
+            ...get().inputPinnedEntryIds,
+          ]);
         }
 
         if (systemPromptForAgent) {
@@ -1163,6 +1183,34 @@ export const useChatStore = create<ChatState>()((set, get) => ({
         // Accumulate tool calls for live metadata update
         const accToolCalls: ToolCallRecord[] = [];
 
+        // 短絡: get_codex_entry が「事前に full body + custom details +
+        // aliases が注入されているエントリ」に対して呼ばれた場合は、
+        // executor (DB アクセス) を呼ばずスタブを返す。LLM はプロンプト
+        // 指示に従わず再 fetch しがちなため、ランタイム側で受け止める。
+        const guardedExecuteTool: typeof executeTool = async (
+          name,
+          toolCallId,
+          params,
+        ) => {
+          if (name === "get_codex_entry") {
+            const id = String(params?.["id"] ?? "");
+            if (id && fullyInjectedIds.has(id)) {
+              const note =
+                "This entry is already fully injected in the system prompt — refer to the 登場キャラクター・設定情報 section above (id, aliases, summary, custom details, full body are all there). Do not call get_codex_entry on this id again.";
+              const content = { id, note };
+              const json = JSON.stringify(content);
+              return {
+                toolCallId,
+                name,
+                content,
+                summary: "Already injected (short-circuited)",
+                tokensUsed: countTokens(json),
+              };
+            }
+          }
+          return executeTool(name, toolCallId, params);
+        };
+
         const agentControl = getPromptCatalog(
           projectCtx?.language ?? "ja",
         ).agentControl;
@@ -1174,7 +1222,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
           tokenBudgetMessage: agentControl.tokenBudgetMessage,
           sendToLLM: (msgs, tools) =>
             chatApi.sendAgentMessage(msgs, tools, agentThinkingParams),
-          executeTool,
+          executeTool: guardedExecuteTool,
           onProgress: (progress) => {
             set({ agentProgress: progress });
           },
