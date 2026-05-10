@@ -117,8 +117,10 @@ describe("contextBuilder", () => {
       const result = buildSystemPrompt({ scene, codexEntries });
 
       expect(result.prompt).toContain("登場キャラクター・設定情報");
-      expect(result.prompt).toContain("**太郎** (キャラクター): 主人公の青年");
-      expect(result.prompt).toContain("**東京** (場所): 物語の舞台");
+      expect(result.prompt).toContain("**太郎** (キャラクター)");
+      expect(result.prompt).toContain("概要: 主人公の青年");
+      expect(result.prompt).toContain("**東京** (場所)");
+      expect(result.prompt).toContain("概要: 物語の舞台");
     });
 
     it("includes pinned codex entries in the system prompt", () => {
@@ -138,7 +140,8 @@ describe("contextBuilder", () => {
 
       const result = buildSystemPrompt({ scene, pinnedCodexEntries });
 
-      expect(result.prompt).toContain("**魔法の剣** (アイテム): 伝説の武器");
+      expect(result.prompt).toContain("**魔法の剣** (アイテム)");
+      expect(result.prompt).toContain("概要: 伝説の武器");
     });
 
     it("deduplicates entries that appear in both auto and pinned", () => {
@@ -212,7 +215,8 @@ describe("contextBuilder", () => {
 
       const result = buildSystemPrompt({ scene, codexEntries });
 
-      expect(result.prompt).toContain("**魔法体系** (設定): 世界の魔法ルール");
+      expect(result.prompt).toContain("**魔法体系** (設定)");
+      expect(result.prompt).toContain("概要: 世界の魔法ルール");
     });
 
     it("phaseLabelありのCodexContextが正しくフォーマットされる", () => {
@@ -233,9 +237,8 @@ describe("contextBuilder", () => {
 
       const result = buildSystemPrompt({ scene, codexEntries });
 
-      expect(result.prompt).toContain(
-        "**アリス** [フェーズ1] (キャラクター): 変化後の概要",
-      );
+      expect(result.prompt).toContain("**アリス** [フェーズ1] (キャラクター)");
+      expect(result.prompt).toContain("概要: 変化後の概要");
     });
 
     it("phaseLabelなしのCodexContextは通常フォーマット", () => {
@@ -255,9 +258,8 @@ describe("contextBuilder", () => {
 
       const result = buildSystemPrompt({ scene, codexEntries });
 
-      expect(result.prompt).toContain(
-        "**ボブ** (キャラクター): 普通のキャラクター",
-      );
+      expect(result.prompt).toContain("**ボブ** (キャラクター)");
+      expect(result.prompt).toContain("概要: 普通のキャラクター");
       expect(result.prompt).not.toContain("[");
     });
 

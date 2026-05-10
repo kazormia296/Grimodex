@@ -26,11 +26,6 @@ export const JA_CHAT_SYSTEM = {
     "あなたは小説執筆を支援するAIアシスタントです。" +
     "ユーザーの執筆スタイルを尊重し、創造的な提案や文章の改善を行ってください。",
 
-  agentBaseText:
-    "あなたは小説執筆を支援するAIアシスタントです。" +
-    "ユーザーの執筆スタイルを尊重し、創造的な提案や文章の改善を行ってください。\n" +
-    "プロジェクトデータを検索するツールが利用可能です。回答に必要な情報はツールで取得してください。",
-
   headers: {
     projectInfo: "\n## プロジェクト情報",
     previousScene: "\n## 直前のシーン",
@@ -56,6 +51,11 @@ export const JA_CHAT_SYSTEM = {
     contentType: "タイプ",
     contentTitle: "タイトル",
     contentBody: "内容",
+    /** L4 Codex エントリの summary ラベル */
+    codexSummary: "概要",
+    /** L4 Codex エントリの fullContent ラベル。L3 シーン本文 (`本文:`) と
+     * 衝突しないよう「全文」と区別する。 */
+    codexFullContent: "全文",
   },
 
   typeLabels: JA_TYPE_LABELS,

@@ -1,6 +1,7 @@
 import { invoke } from "@/lib/tauri";
 import { loadSceneContent } from "@/features/tree/api";
 import { prosemirrorToText } from "@/lib/prosemirror";
+import { extractPlainText } from "@/features/codex/prosemirrorTextExtractor";
 import { db } from "@/db/client";
 import {
   codexEntries,
@@ -158,12 +159,17 @@ async function getCodexEntry(
     .from(codexEntries)
     .where(eq(codexEntries.parentId, id));
 
-  const content = {
+  // 本体テキスト (ProseMirror JSON → plain text)。Tool description が
+  // "full content body" と謳う以上、ここで抜けてはいけない。
+  const body = entry.content ? extractPlainText(entry.content) : "";
+
+  const result = {
     id: entry.id,
     name: entry.name,
     type: entry.type,
     aliases: entry.aliases ? (JSON.parse(entry.aliases) as string[]) : [],
     summary: entry.summary ?? "",
+    body,
     details,
     children: children.map((c) => ({
       id: c.id,
@@ -172,10 +178,10 @@ async function getCodexEntry(
       summary: c.summary ?? "",
     })),
   };
-  const json = JSON.stringify(content);
+  const json = JSON.stringify(result);
   return {
     name: "get_codex_entry",
-    content,
+    content: result,
     summary: `${entry.name} (${entry.type})`,
     tokensUsed: countTokens(json),
   };

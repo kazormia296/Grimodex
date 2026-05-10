@@ -6,7 +6,7 @@ export const AGENT_TOOLS: AgentToolDefinition[] = [
   {
     name: "search_codex",
     description:
-      "Search Codex entries by keyword. Searches across name, aliases, summary, and tags. Returns id, name, type, and summary (no full content). Use this to find entries matching a concept.",
+      "Search Codex entries by keyword across name, aliases, summary, and tags. Note: entries mentioned in the current scene and entries spotlighted by the user are already injected into the system prompt with their summaries — use this tool to discover entries that are NOT already injected. Returns id, name, type, and summary (no full content).",
     inputSchema: {
       type: "object",
       properties: {
@@ -18,7 +18,7 @@ export const AGENT_TOOLS: AgentToolDefinition[] = [
   {
     name: "list_codex_by_type",
     description:
-      "List all Codex entries of a specific type. Returns id, name, summary, and tags. Common types: character, location, item, lore. Custom types are also supported.",
+      "List all Codex entries of a specific type. Returns id, name, summary, and tags. Useful for cross-cutting queries (e.g. 'list every character', 'find all lore entries'). Common types: character, location, item, lore. Custom types are also supported.",
     inputSchema: {
       type: "object",
       properties: {
@@ -34,7 +34,7 @@ export const AGENT_TOOLS: AgentToolDefinition[] = [
   {
     name: "get_codex_entry",
     description:
-      "Get full details of a specific Codex entry including content, custom detail fields, and child entry summaries. Use the id from search_codex or list_codex_by_type results.",
+      "Get the full content body, custom detail fields, and child entry summaries for a specific Codex entry. Note: summaries for scene-mentioned and spotlighted entries are already injected — use this tool only when the injected summary is insufficient and you need the full body or custom details. Use the id from search_codex / list_codex_by_type, or from an injected entry's name.",
     inputSchema: {
       type: "object",
       properties: {

@@ -27,7 +27,6 @@ function classifyError(
 
 import {
   buildSystemPrompt,
-  buildAgentSystemPrompt,
   buildStorySoFar,
   countTokens,
   allocateLayerBudgets,
@@ -875,7 +874,6 @@ export const useChatStore = create<ChatState>()((set, get) => ({
       activeProjectId,
       activeSessionId,
       isGlobalChat,
-      agentMode,
       messages: prevMessages,
       inputPinnedEntryIds,
     } = get();
@@ -891,24 +889,9 @@ export const useChatStore = create<ChatState>()((set, get) => ({
       ]);
 
       if (sceneCtx || projectCtx) {
-        const allNodes = useTreeStore.getState().nodes;
-        const l2Pct = useSettingsStore
-          .getState()
-          .getNumber("ai.contextBudget.l2", 10);
-        const storySoFarBudget = Math.round((l2Pct / 100) * 200_000);
-
-        if (agentMode) {
-          const storySoFar = sceneCtx
-            ? buildStorySoFar(sceneCtx.id, allNodes, storySoFarBudget)
-            : "";
-          const systemPrompt = buildAgentSystemPrompt({
-            scene: sceneCtx ?? undefined,
-            project: projectCtx ?? undefined,
-            storySoFar: storySoFar || undefined,
-            lang: projectCtx?.language ?? "ja",
-          });
-          parts.push(`[system]\n${systemPrompt}`);
-        } else if (sceneCtx) {
+        // Agent モードでも通常モードと同じコンテキスト（L1〜L4）を組む。
+        // 違いは送信時に AGENT_TOOLS が付くかどうかだけで、system prompt は共通。
+        if (sceneCtx) {
           const conversationMessages: ChatMessage[] = [
             ...prevMessages.filter((m) => !m.isSummarized),
             {
@@ -1034,6 +1017,11 @@ export const useChatStore = create<ChatState>()((set, get) => ({
 
     // -----------------------------------------------------------------------
     // Agent mode path — tool-use loop
+    //
+    // 通常モードと同じ buildSceneContextPrompt / refreshContextLayers 経由で
+    // L1〜L4（自動検出 Codex の summary + Spotlight された Codex/Snippet の content）
+    // を注入する。Agent はその上で必要に応じて search_codex / get_codex_entry を
+    // 叩いて未注入エントリの探索や詳細深掘りを行う、という階層的アクセス前提。
     // -----------------------------------------------------------------------
     if (get().agentMode) {
       try {
@@ -1042,33 +1030,69 @@ export const useChatStore = create<ChatState>()((set, get) => ({
           : null;
         const projectCtx = await fetchProjectContext(activeProjectId);
 
-        // Build agent system prompt (Layer 4 excluded)
+        // 通常モードと同じく、@言及/CodexHighlight 経由でメッセージ内に検出された
+        // Codex エントリを送信時に自動 Spotlight する。
+        // listCodexEntries の結果は buildSceneContextPrompt に prefetchedEntries
+        // として渡し、二重 fetch を避ける。
+        const allEntriesForCtx = sceneCtx ? await listCodexEntries() : [];
+        if (sessionIdForPersist && sceneCtx) {
+          const chatMentioned = await findMentionedEntriesAsync(
+            content,
+            allEntriesForCtx,
+          );
+          for (const entry of chatMentioned) {
+            await chatApi
+              .pinCodexEntry(
+                sessionIdForPersist,
+                entry.id,
+                false,
+                "chat_mention",
+              )
+              .catch(() => {});
+          }
+        }
+
         const agentMsgs: AgentMessagePayload[] = [];
-        if (sceneCtx ?? projectCtx) {
-          const allNodes = useTreeStore.getState().nodes;
-          const l2Pct = useSettingsStore
-            .getState()
-            .getNumber("ai.contextBudget.l2", 10);
-          const storySoFarBudget = Math.round((l2Pct / 100) * 200_000);
-          const storySoFar = sceneCtx
-            ? buildStorySoFar(sceneCtx.id, allNodes, storySoFarBudget)
-            : "";
-          const systemPrompt = buildAgentSystemPrompt({
-            scene: sceneCtx ?? undefined,
-            project: projectCtx ?? undefined,
-            storySoFar: storySoFar || undefined,
-            lang: projectCtx?.language ?? "ja",
+        let systemPromptForAgent = "";
+        if (sceneCtx) {
+          const messagesForCtx: ChatMessage[] = [
+            ...prevMessages.filter((m) => !m.isSummarized),
+            userMsg,
+          ];
+          const ctxResult = await buildSceneContextPrompt({
+            sceneCtx,
+            projectCtx,
+            activeSessionId: sessionIdForPersist ?? activeSessionId,
+            effectiveSceneId,
+            inputPinnedEntryIds: get().inputPinnedEntryIds,
+            conversationMessages: messagesForCtx,
+            commandInstruction,
+            prefetchedEntries: allEntriesForCtx,
           });
+          systemPromptForAgent = ctxResult.prompt;
           set({
-            contextTokenCount: countTokens(systemPrompt),
-            lastSystemPrompt: systemPrompt,
+            contextTokenCount: ctxResult.totalTokens,
+            contextLayers: ctxResult.layers,
+            lastSystemPrompt: ctxResult.prompt,
+            detectedEntries: ctxResult.detectedEntries,
+            alwaysEntries: ctxResult.alwaysEntries,
           });
-          agentMsgs.push({ role: "system", content: systemPrompt });
+        } else if (projectCtx) {
+          // グローバルチャット: refreshContextLayers が事前に組んだ
+          // L1 + Spotlight L4 (codex/snippet) + always エントリ込みの prompt を流用。
+          // 入力側で新たに Spotlight された場合に備え再計算してから使う。
+          await get().refreshContextLayers();
+          systemPromptForAgent = get().lastSystemPrompt;
+        }
+
+        if (systemPromptForAgent) {
+          agentMsgs.push({ role: "system", content: systemPromptForAgent });
         }
 
         // Convert conversation history
         for (const msg of prevMessages) {
           if (msg.role === "system") continue;
+          if (msg.isSummarized) continue;
           if (msg.role === "user") {
             agentMsgs.push({ role: "user", content: msg.content });
           } else if (msg.role === "assistant") {

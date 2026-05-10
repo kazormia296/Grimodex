@@ -26,7 +26,6 @@ vi.mock("./contextBuilder", () => ({
     totalTokens: 42,
     layers: [],
   })),
-  buildAgentSystemPrompt: vi.fn(() => "mock agent system prompt"),
   buildStorySoFar: vi.fn(() => ""),
   countTokens: vi.fn(() => 42),
   allocateLayerBudgets: vi.fn(() => ({

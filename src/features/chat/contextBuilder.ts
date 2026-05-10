@@ -522,16 +522,22 @@ export function buildSystemPrompt(
       const displaySummary =
         entry.summary.trim() || entry.contentFallback || "";
       const phaseSuffix = entry.phaseLabel ? ` [${entry.phaseLabel}]` : "";
-      lines.push(
-        `- **${entry.name}**${phaseSuffix} (${label}): ${displaySummary}`,
-      );
+      // Header 行（サマリも本文もこの下にラベル付きでぶら下げる）。
+      // 旧形式 `... (type): {summary}` だと summary か本文か区別できず、
+      // また本文ラベル "本文:" が L3 のシーン本文ヘッダと衝突するため、
+      // それぞれ `${labels.codexSummary}` / `${labels.codexFullContent}` を介して
+      // 明示する。
+      lines.push(`- **${entry.name}**${phaseSuffix} (${label})`);
+      if (displaySummary) {
+        lines.push(`  ${s.labels.codexSummary}: ${displaySummary}`);
+      }
       if (pinnedIds.has(entry.id) && entry.customDetails?.length) {
         for (const detail of entry.customDetails) {
           lines.push(`  - ${detail.fieldName}: ${detail.value}`);
         }
       }
       if (entry.fullContent) {
-        lines.push(`  本文:\n${entry.fullContent}`);
+        lines.push(`  ${s.labels.codexFullContent}:\n${entry.fullContent}`);
       }
       if (entry.childrenContext) {
         lines.push(entry.childrenContext);
@@ -673,54 +679,6 @@ export function buildSystemPrompt(
     layers,
     ...(trimmedLayers ? { trimmedLayers } : {}),
   };
-}
-
-export interface BuildAgentSystemPromptInput {
-  scene?: SceneContext;
-  project?: ProjectContext;
-  storySoFar?: string;
-  lang?: string;
-}
-
-/** Agent mode用システムプロンプト — Layer 4（Codex自動注入）を除外 */
-export function buildAgentSystemPrompt(
-  input: BuildAgentSystemPromptInput,
-): string {
-  const s = getPromptCatalog(input.lang ?? "ja").chatSystem;
-  const parts: string[] = [];
-
-  parts.push(s.agentBaseText);
-
-  if (input.project) {
-    const p = input.project;
-    const info: string[] = [`${s.labels.title}: ${p.title}`];
-    if (p.genre) info.push(`${s.labels.genre}: ${p.genre}`);
-    if (p.pov) info.push(`${s.labels.pov}: ${p.pov}`);
-    if (p.tense) info.push(`${s.labels.tense}: ${p.tense}`);
-    if (p.styleGuide) info.push(`${s.labels.styleGuide}:\n${p.styleGuide}`);
-    if (p.aiInstructions)
-      info.push(`${s.labels.aiInstructions}:\n${p.aiInstructions}`);
-    parts.push(`${s.headers.projectInfo}\n${info.join("\n")}`);
-  }
-
-  if (input.storySoFar) {
-    parts.push(`\n${input.storySoFar}`);
-  }
-
-  if (input.scene) {
-    let sceneSection = `${s.headers.currentScene}\n${s.labels.title}: ${input.scene.title}`;
-    if (input.scene.synopsis) {
-      sceneSection += `\n${s.labels.synopsis}: ${input.scene.synopsis}`;
-    }
-    parts.push(sceneSection);
-    if (input.scene.content) {
-      parts.push(
-        `\n### シーン本文\n${sanitizeSceneContent(input.scene.content)}`,
-      );
-    }
-  }
-
-  return parts.join("\n");
 }
 
 export function countTokens(text: string): number {
