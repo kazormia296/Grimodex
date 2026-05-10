@@ -87,40 +87,51 @@ function gatherCargoLicenses(): LicenseEntry[] {
     return [];
   }
 
-  let metadataJson: string;
+  // workspace member の id 集合を取得（ワークスペース自身の crate を除外するため）
+  let workspaceMemberIds = new Set<string>();
   try {
-    metadataJson = execSync(
-      "cargo metadata --format-version 1 --no-deps 2>/dev/null || cargo metadata --format-version 1",
-      { cwd: cargoDir, encoding: "utf-8", maxBuffer: 10 * 1024 * 1024 },
-    );
+    const wsJson = execSync("cargo metadata --format-version 1 --no-deps", {
+      cwd: cargoDir,
+      encoding: "utf-8",
+      maxBuffer: 10 * 1024 * 1024,
+    });
+    const wsMetadata = JSON.parse(wsJson);
+    workspaceMemberIds = new Set<string>(wsMetadata.workspace_members ?? []);
   } catch {
-    console.warn("Warning: cargo metadata failed, skipping Cargo licenses");
-    return [];
+    console.warn(
+      "Warning: cargo metadata --no-deps failed, workspace members may appear in output",
+    );
   }
 
-  const metadata = JSON.parse(metadataJson);
-  const rootPkgName = "grimodex";
-  const packages: CargoMetadataPackage[] = metadata.packages ?? [];
-
-  // --no-deps only returns workspace packages. If we got only the root,
-  // re-run without --no-deps to get all dependencies.
-  let allPackages = packages;
-  if (packages.length <= 1) {
-    try {
-      const fullJson = execSync("cargo metadata --format-version 1", {
-        cwd: cargoDir,
-        encoding: "utf-8",
-        maxBuffer: 10 * 1024 * 1024,
-      });
-      allPackages = JSON.parse(fullJson).packages ?? [];
-    } catch {
-      console.warn("Warning: cargo metadata (full) failed");
-    }
+  // フルメタデータで全依存（推移依存含む）を取得。
+  // 旧コードは `--no-deps` の結果数で fallback 判定していたが、
+  // workspace member が複数あると常に「依存取得済み」と誤判定して
+  // 推移依存が漏れる。常にフル取得する方が確実。
+  let allPackages: CargoMetadataPackage[];
+  try {
+    const fullJson = execSync("cargo metadata --format-version 1", {
+      cwd: cargoDir,
+      encoding: "utf-8",
+      maxBuffer: 50 * 1024 * 1024,
+    });
+    allPackages = JSON.parse(fullJson).packages ?? [];
+  } catch {
+    console.warn(
+      "Warning: cargo metadata (full) failed, skipping Cargo licenses",
+    );
+    return [];
   }
 
   const entries: LicenseEntry[] = [];
   for (const pkg of allPackages) {
-    if (pkg.name === rootPkgName) continue;
+    // workspace member（自分たちのクレート）は除外
+    const pkgId = `${pkg.name}@${pkg.version}`;
+    if (
+      workspaceMemberIds.has(pkgId) ||
+      [...workspaceMemberIds].some((id) => id.startsWith(`${pkg.name} `))
+    ) {
+      continue;
+    }
 
     const manifestDir = dirname(pkg.manifest_path);
     entries.push({
