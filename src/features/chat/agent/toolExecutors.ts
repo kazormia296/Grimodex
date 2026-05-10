@@ -18,6 +18,26 @@ interface QueryResult<T = Record<string, unknown>> {
   rows: T[];
 }
 
+/**
+ * 空白区切りのユーザクエリを FTS5 の "phrase OR phrase" 形に書き換える。
+ *
+ * FTS5 はデフォルトで空白を AND として扱うため、"朱音 所持品" のような
+ * 自然な複数語クエリが「両方の語を含むエントリ」を要求して空振りする。
+ * Agent の "句で探す" 直感に合わせて OR にする。各トークンはダブル
+ * クォートでフレーズ化し、内部のクォートは FTS5 仕様に従い `""` で
+ * エスケープする。単一トークンや空白なしの場合はクォートのみで
+ * フレーズ化する（FTS 構文文字を含むクエリの安全側）。
+ */
+function rewriteFtsQuery(raw: string): string {
+  const tokens = raw
+    .split(/\s+/)
+    .map((t) => t.trim())
+    .filter((t) => t.length > 0);
+  if (tokens.length === 0) return "";
+  const escaped = tokens.map((t) => `"${t.replace(/"/g, '""')}"`);
+  return escaped.join(" OR ");
+}
+
 // ---------------------------------------------------------------------------
 // Codex tools
 // ---------------------------------------------------------------------------
@@ -38,6 +58,7 @@ async function searchCodex(
   let rows: Record<string, unknown>[];
 
   if (charCount >= 3) {
+    const ftsQuery = rewriteFtsQuery(query);
     const result = await invoke<QueryResult>("db_execute", {
       sql: `SELECT ce.id, ce.name, ce.type, ce.summary
             FROM codex_entries ce
@@ -45,7 +66,7 @@ async function searchCodex(
             WHERE codex_fts MATCH ?
             ORDER BY fts.rank
             LIMIT 20`,
-      params: [query],
+      params: [ftsQuery],
       method: "all",
     });
     rows = result.rows;
@@ -360,6 +381,7 @@ async function searchScenes(
   let rows: Record<string, unknown>[];
 
   if (charCount >= 3) {
+    const ftsQuery = rewriteFtsQuery(query);
     const result = await invoke<QueryResult>("db_execute", {
       sql: `SELECT tn.id, tn.title,
                    snippet(tree_nodes_fts, 1, '[', ']', '...', 40) as excerpt
@@ -367,7 +389,7 @@ async function searchScenes(
             JOIN tree_nodes_fts fts ON tn.rowid = fts.rowid
             WHERE tree_nodes_fts MATCH ? AND tn.node_type = 'scene'
             LIMIT 10`,
-      params: [query],
+      params: [ftsQuery],
       method: "all",
     });
     rows = result.rows;
@@ -418,6 +440,7 @@ async function searchSnippets(
   let rows: Record<string, unknown>[];
 
   if (charCount >= 3) {
+    const ftsQuery = rewriteFtsQuery(query);
     const result = await invoke<QueryResult>("db_execute", {
       sql: `SELECT s.id, s.title, s.tags_cache, SUBSTR(s.content, 1, 200) as preview
             FROM snippets s
@@ -425,7 +448,7 @@ async function searchSnippets(
             WHERE snippets_fts MATCH ?
             ORDER BY fts.rank
             LIMIT 10`,
-      params: [query],
+      params: [ftsQuery],
       method: "all",
     });
     rows = result.rows;

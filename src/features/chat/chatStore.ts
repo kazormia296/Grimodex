@@ -194,6 +194,23 @@ async function resolveEntriesForContext(
   return { resolved, phases: phasesMap };
 }
 
+/**
+ * codex_entries.aliases (JSON 配列) を string[] に展開する。
+ * パース失敗 / 空配列は undefined を返し、L4 注入時に行を生やさない。
+ */
+function parseAliases(json: string | null | undefined): string[] | undefined {
+  if (!json) return undefined;
+  try {
+    const arr = JSON.parse(json);
+    if (Array.isArray(arr) && arr.length > 0) {
+      return arr.filter((v): v is string => typeof v === "string");
+    }
+    return undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 // G14: Enrich CodexContext array with customDetails (batch query, no N+1)
 // PinnedCodexContext extends CodexContext なので、ジェネリックで両方扱える。
 async function enrichWithCustomDetails<T extends CodexContext>(
@@ -436,7 +453,15 @@ async function buildSceneContextPrompt(opts: {
     const contentFallback = summary.trim()
       ? undefined
       : extractPlainText(e.content) || undefined;
-    return { id: e.id, type: e.type, name: e.name, summary, contentFallback };
+    const aliases = parseAliases(e.aliases);
+    return {
+      id: e.id,
+      type: e.type,
+      name: e.name,
+      summary,
+      contentFallback,
+      ...(aliases ? { aliases } : {}),
+    };
   };
 
   const baseCodexEntries: CodexContext[] = rawCodexEntries.map((e) => {
@@ -502,12 +527,16 @@ async function buildSceneContextPrompt(opts: {
       const children = e.withChildren
         ? getChildrenFromArray(e.id, allEntries)
             .filter((c) => !allPinnedIdSet.has(c.id))
-            .map((c) => ({
-              id: c.id,
-              type: c.type,
-              name: c.name,
-              summary: c.summary ?? "",
-            }))
+            .map((c) => {
+              const childAliases = parseAliases(c.aliases);
+              return {
+                id: c.id,
+                type: c.type,
+                name: c.name,
+                summary: c.summary ?? "",
+                ...(childAliases ? { aliases: childAliases } : {}),
+              };
+            })
         : undefined;
       const childrenCtx = buildChildrenCtxForEntry(
         e,
@@ -515,6 +544,7 @@ async function buildSceneContextPrompt(opts: {
         L4_TOTAL_BUDGET,
         allPinnedIdSet,
       );
+      const aliases = parseAliases(e.aliases);
       return {
         id: e.id,
         type: e.type,
@@ -523,6 +553,7 @@ async function buildSceneContextPrompt(opts: {
         fullContent: extractPlainText(e.content) || undefined,
         withChildren: e.withChildren,
         children,
+        ...(aliases ? { aliases } : {}),
         ...(childrenCtx ? { childrenContext: childrenCtx } : {}),
       };
     });
@@ -538,6 +569,7 @@ async function buildSceneContextPrompt(opts: {
         L4_TOTAL_BUDGET,
         allPinnedIdSet,
       );
+      const aliases = parseAliases(e.aliases);
       const ctx: import("./contextBuilder").PinnedCodexContext = {
         id: e.id,
         type: e.type,
@@ -545,6 +577,7 @@ async function buildSceneContextPrompt(opts: {
         summary: e.summary ?? "",
         fullContent: extractPlainText(e.content) || undefined,
         withChildren: false,
+        ...(aliases ? { aliases } : {}),
         ...(childrenCtx ? { childrenContext: childrenCtx } : {}),
       };
       return [ctx];
@@ -1683,12 +1716,16 @@ export const useChatStore = create<ChatState>()((set, get) => ({
             const children = e.withChildren
               ? getChildrenFromArray(e.id, allEntries)
                   .filter((c) => !allPinnedIdSet.has(c.id))
-                  .map((c) => ({
-                    id: c.id,
-                    type: c.type,
-                    name: c.name,
-                    summary: c.summary ?? "",
-                  }))
+                  .map((c) => {
+                    const childAliases = parseAliases(c.aliases);
+                    return {
+                      id: c.id,
+                      type: c.type,
+                      name: c.name,
+                      summary: c.summary ?? "",
+                      ...(childAliases ? { aliases: childAliases } : {}),
+                    };
+                  })
               : undefined;
             const childrenCtx = buildChildrenCtxForEntry(
               e,
@@ -1696,6 +1733,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
               L4_TOTAL_BUDGET,
               allPinnedIdSet,
             );
+            const aliases = parseAliases(e.aliases);
             return {
               id: e.id,
               type: e.type,
@@ -1704,6 +1742,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
               fullContent: extractPlainText(e.content) || undefined,
               withChildren: e.withChildren,
               children,
+              ...(aliases ? { aliases } : {}),
               ...(childrenCtx ? { childrenContext: childrenCtx } : {}),
             };
           });
@@ -1724,6 +1763,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
             L4_TOTAL_BUDGET,
             allPinnedIdSet,
           );
+          const aliases = parseAliases(e.aliases);
           const ctx: import("./contextBuilder").PinnedCodexContext = {
             id: e.id,
             type: e.type,
@@ -1731,6 +1771,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
             summary: e.summary ?? "",
             fullContent: extractPlainText(e.content) || undefined,
             withChildren: false,
+            ...(aliases ? { aliases } : {}),
             ...(childrenCtx ? { childrenContext: childrenCtx } : {}),
           };
           return [ctx];
@@ -1746,12 +1787,16 @@ export const useChatStore = create<ChatState>()((set, get) => ({
         const alwaysNotPinned = globalAlwaysEntries.filter(
           (e) => !mergedGlobalPinnedIdSet.has(e.id),
         );
-        const globalCodexEntries: CodexContext[] = alwaysNotPinned.map((e) => ({
-          id: e.id,
-          type: e.type,
-          name: e.name,
-          summary: e.summary ?? "",
-        }));
+        const globalCodexEntries: CodexContext[] = alwaysNotPinned.map((e) => {
+          const aliases = parseAliases(e.aliases);
+          return {
+            id: e.id,
+            type: e.type,
+            name: e.name,
+            summary: e.summary ?? "",
+            ...(aliases ? { aliases } : {}),
+          };
+        });
 
         const promptResult = buildSystemPrompt({
           scene: { id: "", title: "", content: "" },

@@ -6,14 +6,13 @@ export const AGENT_TOOLS: AgentToolDefinition[] = [
   {
     name: "search_codex",
     description:
-      "Search Codex entries by keyword across name, aliases, summary, and tags. Note: entries mentioned in the current scene and entries spotlighted by the user are already injected into the system prompt with their summaries (and their UUIDs as `id: ...` lines) — use this tool to discover entries that are NOT already injected. Returns id, name, type, and summary (no full content).",
+      "Search Codex entries by keyword across name, aliases, summary, and tags. Note: entries mentioned in the current scene and entries spotlighted by the user are already injected into the system prompt with their summaries (and their UUIDs as `id: ...` lines, plus aliases) — use this tool to discover entries that are NOT already injected. Returns id, name, type, and summary (no full content). Whitespace-separated tokens are treated as OR (any match), so a multi-word query is fine.",
     inputSchema: {
       type: "object",
       properties: {
         query: {
           type: "string",
-          description:
-            "A single keyword or short phrase. The search uses FTS5 with AND semantics for whitespace-separated tokens, so multi-word queries (e.g. 'akane possessed item') are usually too restrictive and return nothing — issue one specific term per call instead (e.g. 'item', then 'thread').",
+          description: "Search keyword or short phrase",
         },
       },
       required: ["query"],
@@ -109,14 +108,13 @@ export const AGENT_TOOLS: AgentToolDefinition[] = [
   {
     name: "search_scenes",
     description:
-      "Search across all scene texts for a keyword or phrase. Returns scene id, title, and a snippet of matching text.",
+      "Search across all scene texts for a keyword or phrase. Returns scene id, title, and a snippet of matching text. Whitespace-separated tokens are treated as OR (any match).",
     inputSchema: {
       type: "object",
       properties: {
         query: {
           type: "string",
-          description:
-            "A single keyword or short phrase. Whitespace-separated tokens are treated as AND, so multi-word queries (e.g. 'akane carries thread') are usually too restrictive and return nothing — issue one specific term per call instead.",
+          description: "Search keyword or short phrase",
         },
       },
       required: ["query"],
@@ -127,14 +125,13 @@ export const AGENT_TOOLS: AgentToolDefinition[] = [
   {
     name: "search_snippets",
     description:
-      "Search snippets by keyword across title, content, and tags. Returns id, title, tags, and a preview of the content.",
+      "Search snippets by keyword across title, content, and tags. Returns id, title, tags, and a preview of the content. Whitespace-separated tokens are treated as OR (any match).",
     inputSchema: {
       type: "object",
       properties: {
         query: {
           type: "string",
-          description:
-            "A single keyword or short phrase. Whitespace-separated tokens are treated as AND, so multi-word queries are usually too restrictive — issue one specific term per call instead.",
+          description: "Search keyword or short phrase",
         },
       },
       required: ["query"],

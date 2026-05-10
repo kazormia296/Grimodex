@@ -38,6 +38,9 @@ export interface CodexContext {
   type: string;
   name: string;
   summary: string;
+  /** エントリの別名 (JSON 配列). L4 にカンマ区切りで注入され、Agent が
+   * 異なる呼称で言及されたエントリを再 fetch しなくて済むようにする。 */
+  aliases?: string[];
   contentFallback?: string; // G13: plain text from content if summary is empty
   fullContent?: string; // pinned entry: inject full content alongside summary
   childrenContext?: string; // pre-computed descendant summaries within budget
@@ -539,6 +542,9 @@ export function buildSystemPrompt(
       // 経由の往復をなくすため、UUID をエントリ直下に露出する。
       lines.push(`- **${entry.name}**${phaseSuffix} (${label})`);
       lines.push(`  ${s.labels.codexId}: ${entry.id}`);
+      if (entry.aliases && entry.aliases.length > 0) {
+        lines.push(`  ${s.labels.codexAliases}: ${entry.aliases.join(", ")}`);
+      }
       if (displaySummary) {
         lines.push(`  ${s.labels.codexSummary}: ${displaySummary}`);
       }
