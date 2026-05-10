@@ -130,7 +130,7 @@ export const codexEntries = sqliteTable(
     summary: text("summary"),
     content: text("content").notNull().default("{}"), // body (ProseMirror JSON)
     icon: text("icon"), // 128×128 WebP icon image as base64 data URL (nullable)
-    tagsCache: text("tags_cache"), // FTS5 denormalized cache (JSON string[])
+    tagsCache: text("tags_cache"), // FTS5 denormalized cache (JSON `{name: string, color: string | null}[]`; `tagApi.setEntryTags` writes this shape so a list view can render colors without a join)
     contextMode: text("context_mode").notNull().default("mentioned"), // 'always' | 'mentioned' | 'suppress' | 'hidden'
     childrenBudget: text("children_budget").notNull().default("compact"), // 'none' | 'compact' | 'standard' | 'generous'
     sourceChatMessageId: text("source_chat_message_id").references(

@@ -19,6 +19,32 @@ interface QueryResult<T = Record<string, unknown>> {
 }
 
 /**
+ * codex_entries.tags_cache の JSON を tag 名の string[] に展開する。
+ * 実態は `[{"name":"tag1","color":null}, ...]` という object 配列だが、
+ * 旧スキーマ comment 通りの `["tag1", "tag2"]` 形式のレコードもあり得るため
+ * 両形式を許容する。詳細は chatStore.ts の `parseTags` も参照。
+ */
+function parseTagsCacheNames(json: string | null | undefined): string[] {
+  if (!json) return [];
+  try {
+    const arr = JSON.parse(json);
+    if (!Array.isArray(arr)) return [];
+    return arr
+      .map((v): string | undefined => {
+        if (typeof v === "string") return v;
+        if (v && typeof v === "object" && "name" in v) {
+          const name = (v as { name: unknown }).name;
+          return typeof name === "string" ? name : undefined;
+        }
+        return undefined;
+      })
+      .filter((s): s is string => typeof s === "string" && s.length > 0);
+  } catch {
+    return [];
+  }
+}
+
+/**
  * 空白区切りでトークン化する。空文字や全空白入力では空配列を返す。
  * Unicode コードポイント数を返す `codepointLength` も合わせて提供する。
  */
@@ -151,7 +177,7 @@ async function listCodexByType(
     id: r.id,
     name: r.name,
     summary: r.summary ?? "",
-    tags: r.tagsCache ? (JSON.parse(r.tagsCache) as string[]) : [],
+    tags: parseTagsCacheNames(r.tagsCache),
   }));
   const json = JSON.stringify(content);
   return {

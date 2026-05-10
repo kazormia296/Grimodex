@@ -212,7 +212,14 @@ function parseAliases(json: string | null | undefined): string[] | undefined {
 }
 
 /**
- * codex_entries.tags_cache (JSON 配列) を string[] に展開する。
+ * codex_entries.tags_cache (JSON 配列) を tag 名の string[] に展開する。
+ *
+ * 実態として 2 種類の形式が観測される:
+ *   A) `["tag1", "tag2"]` — 旧スキーマ comment 通りの素の string[]
+ *   B) `[{"name":"tag1","color":null}, ...]` — `tagApi.setEntryTags` の実装。
+ *      色情報を一覧表示で使うために object 配列を書き込んでいる。
+ * どちらの形式でも tag 名だけを抜き出して返す。
+ *
  * Spotlight エントリにのみ詰めて注入する想定。auto-detected には含めない
  * （L4 の render 側で `pinnedIds.has()` ゲートにより無害化されるが、
  * 不要なデータ流通を避ける目的でも builder 側で分岐する）。
@@ -221,10 +228,18 @@ function parseTags(json: string | null | undefined): string[] | undefined {
   if (!json) return undefined;
   try {
     const arr = JSON.parse(json);
-    if (Array.isArray(arr) && arr.length > 0) {
-      return arr.filter((v): v is string => typeof v === "string");
-    }
-    return undefined;
+    if (!Array.isArray(arr) || arr.length === 0) return undefined;
+    const names = arr
+      .map((v): string | undefined => {
+        if (typeof v === "string") return v;
+        if (v && typeof v === "object" && "name" in v) {
+          const name = (v as { name: unknown }).name;
+          return typeof name === "string" ? name : undefined;
+        }
+        return undefined;
+      })
+      .filter((s): s is string => typeof s === "string" && s.length > 0);
+    return names.length > 0 ? names : undefined;
   } catch {
     return undefined;
   }
