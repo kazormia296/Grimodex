@@ -1,4 +1,4 @@
-import { useState, useCallback } from "react";
+import { useState, useCallback, useEffect } from "react";
 import { ScanText, Loader2, Eye, EyeOff, BookOpen } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useTreeStore } from "@/features/tree/treeStore";
@@ -25,6 +25,12 @@ interface Props {
 export function PostEffectToolbar({ sceneId, editor }: Props) {
   const [running, setRunning] = useState(false);
   const [runningAll, setRunningAll] = useState(false);
+
+  useEffect(() => {
+    if (!useAiSettingsStore.getState().settings) {
+      void useAiSettingsStore.getState().loadSettings();
+    }
+  }, []);
   const { showAnnotations, toggleShowAnnotations, setAnnotations } =
     useAnnotationStore();
 

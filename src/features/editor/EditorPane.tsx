@@ -1336,6 +1336,7 @@ export function EditorPane({
             sceneId: nodeId,
           });
           markEnd("sceneLoad.loadAnnotationAnchors");
+          useAnnotationStore.getState().setFocusedAnnotationId(null);
           useAnnotationStore
             .getState()
             .setAnnotations(nodeId, annotationResp.annotations);
