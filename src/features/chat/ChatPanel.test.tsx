@@ -76,6 +76,19 @@ vi.mock("./chatApi", () => ({
   updateMessageMetadata: vi.fn(() => Promise.resolve()),
 }));
 
+// tiktoken WASM の dynamic import がフルテスト並列実行時に遅くなり
+// `await ensureTokenizer()` が waitFor timeout に間に合わない問題のガード。
+vi.mock("./contextBuilder", async () => {
+  const actual =
+    await vi.importActual<typeof import("./contextBuilder")>(
+      "./contextBuilder",
+    );
+  return {
+    ...actual,
+    ensureTokenizer: vi.fn(() => Promise.resolve()),
+  };
+});
+
 vi.mock("@/features/editor/editorStore", async () => {
   const { create } = await import("zustand");
   const store = create(() => ({
