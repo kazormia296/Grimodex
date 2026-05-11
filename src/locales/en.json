@@ -433,6 +433,39 @@
       "scene": "Scene",
       "editorHere": "Scene currently open in the editor"
     },
+    "quickActions": {
+      "ariaLabel": "Quick actions",
+      "scene": {
+        "polish": "Polish this scene",
+        "polishPrompt": "Review and polish the prose in this scene — improve rhythm and emotional resonance while respecting the original intent and authorship (human/AI). Call out what you change and why before showing each revision.",
+        "expand": "Expand description",
+        "expandPrompt": "Expand the sensory and interior description in this scene. Stay close to the POV character's perception. Avoid bloat — only add what earns its place.",
+        "dialogue": "Check dialogue",
+        "dialoguePrompt": "Audit the dialogue in this scene. Flag voice inconsistencies, over-explanation, and non-functional exchanges. Suggest concrete fixes."
+      },
+      "folder": {
+        "foreshadow": "Chapter foreshadowing audit",
+        "foreshadowPrompt": "Identify the foreshadowing planted and paid off within this chapter. Call out contradictions, unpaid setups, and over-telegraphing.",
+        "pacing": "Analyze pacing",
+        "pacingPrompt": "Analyze pacing across the scenes in this chapter — tension/release balance, info density, scene length. Point out drag, repetition, or rushed beats with specifics.",
+        "outline": "Re-suggest chapter outline",
+        "outlinePrompt": "Compare the existing chapter outline with what the scenes actually deliver, and propose an improved outline. Make each scene's goal, conflict, and turn explicit.",
+        "arc": "Review act structure",
+        "arcPrompt": "Review the overall structure of this act — does it land its three-act function (setup / confrontation / resolution)? Are theme and protagonist change visible? Be candid about what's missing.",
+        "turning": "Verify turning points",
+        "turningPrompt": "Surface the major turning points in this act. For each, examine motivation, necessity, and character impact. Add reinforcement suggestions for weak ones."
+      },
+      "project": {
+        "plot": "Plot consistency check",
+        "plotPrompt": "Step back across the whole project and audit the plot: planted vs. paid-off foreshadowing, causal coherence, setting/canon contradictions. Order findings by severity.",
+        "character": "Character arc audit",
+        "characterPrompt": "Extract the arc of each major character and judge whether it lands — including unresolved desires. Be concrete about what's missing.",
+        "next": "Next chapter outline ideas",
+        "nextPrompt": "Given the current trajectory, propose 3 outline options for the next chapter (or scene). For each: premise, central conflict, ending, and trade-offs.",
+        "foreshadow": "Foreshadowing inventory",
+        "foreshadowPrompt": "Inventory all foreshadowing across the project with payoff status (paid / pending / partial) and where each is planned to land. Prioritize critical unpaid setups."
+      }
+    },
     "placeholderFolder": "Ask about this {{kind}}…",
     "sessions": "Sessions",
     "newSession": "New session",

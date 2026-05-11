@@ -14,6 +14,7 @@ import { ChatMessageContextMenu } from "./components/ChatMessageContextMenu";
 import { ChatPanelHeader } from "./components/ChatPanelHeader";
 import { ChatInput } from "./components/ChatInput";
 import { AgentProgressBar } from "./components/AgentProgressBar";
+import { QuickActionStrip } from "./components/QuickActionStrip";
 import { CodexExtractionDialog } from "@/features/codex/CodexExtractionDialog";
 import { SnippetExtractionDialog } from "@/features/snippets/SnippetExtractionDialog";
 import { ContextBar } from "./components/ContextBar";
@@ -667,6 +668,8 @@ export function ChatPanel() {
           currentToolName={agentProgress.currentToolName}
         />
       )}
+
+      <QuickActionStrip />
 
       <ChatInput
         onSend={handleSend}
