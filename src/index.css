@@ -457,6 +457,27 @@
   cursor: help;
 }
 
+/* PostEffect annotation decorations — wavy underlines, severity-keyed colours */
+.pe-annotation {
+  text-decoration-line: underline;
+  text-decoration-style: wavy;
+  text-decoration-skip-ink: none;
+  text-underline-offset: 3px;
+  cursor: pointer;
+}
+.pe-annotation-severity-error {
+  text-decoration-color: #ef4444; /* red-500 */
+}
+.pe-annotation-severity-warning {
+  text-decoration-color: #f59e0b; /* amber-500 */
+}
+.pe-annotation-severity-suggestion {
+  text-decoration-color: #60a5fa; /* blue-400 */
+}
+.pe-annotation-severity-info {
+  text-decoration-color: #94a3b8; /* slate-400 / muted */
+}
+
 /* CommentMark decoration — amber wavy underline when showComments is ON */
 .comment-deco {
   text-decoration-line: underline;

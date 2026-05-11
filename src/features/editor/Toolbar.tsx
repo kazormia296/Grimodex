@@ -10,6 +10,7 @@ import {
   useSettingBoolean,
   useSettingNumber,
 } from "@/features/settings/useSettingControl";
+import { PostEffectToolbar } from "@/features/post-effect/PostEffectToolbar";
 
 function ToolbarButton({
   active,
@@ -62,6 +63,8 @@ interface ToolbarProps {
   actionsRef?: React.RefObject<ToolbarActions | null>;
   panelOpen?: boolean;
   onTogglePanel?: () => void;
+  sceneId?: string;
+  nodeType?: string;
 }
 
 export function Toolbar({
@@ -71,6 +74,8 @@ export function Toolbar({
   actionsRef,
   panelOpen,
   onTogglePanel,
+  sceneId,
+  nodeType,
 }: ToolbarProps) {
   const [rubyOpen, setRubyOpen] = useState(false);
   const [rubyBase, setRubyBase] = useState("");
@@ -508,6 +513,12 @@ export function Toolbar({
             >
               ▶
             </ToolbarButton>
+          )}
+          {sceneId && nodeType === "scene" && (
+            <>
+              <Sep />
+              <PostEffectToolbar sceneId={sceneId} editor={editor} />
+            </>
           )}
           <Sep />
           <div ref={overflowBtnRef}>

@@ -80,6 +80,7 @@ import {
 import { saveAnnotationAnchors } from "@/features/post-effect/syncAnnotations";
 import { listAnnotationsForScene } from "@/features/post-effect/api";
 import { useAnnotationStore } from "@/features/post-effect/annotationStore";
+import { applyAnnotationsToEditor } from "@/features/post-effect/applyAnnotationsToEditor";
 import { VerticalPreview } from "@/features/editor/VerticalPreview";
 import { EditorContextMenu } from "@/features/editor/EditorContextMenu";
 import { CommentAddPopover } from "@/features/editor/CommentAddPopover";
@@ -251,6 +252,7 @@ export function EditorPane({
   const updateCodexEntryStore = useCodexStore((s) => s.update);
   const updateSnippetEntryStore = useSnippetStore((s) => s.update);
   const activeStatus = (activeNode?.status ?? null) as SceneStatus | null;
+  const focusedAnnotationId = useAnnotationStore((s) => s.focusedAnnotationId);
 
   const paneRef = useRef<HTMLDivElement>(null);
   const editorContainerRef = useRef<HTMLDivElement>(null);
@@ -903,6 +905,15 @@ export function EditorPane({
     return unsubscribe;
   }, [editor, lintSceneId]);
 
+  // Scroll editor to annotation mark when panel item is focused
+  useEffect(() => {
+    if (!focusedAnnotationId || !editorContainerRef.current) return;
+    const el = editorContainerRef.current.querySelector(
+      `[data-pe-ann-id="${CSS.escape(focusedAnnotationId)}"]`,
+    );
+    if (el) el.scrollIntoView({ behavior: "smooth", block: "center" });
+  }, [focusedAnnotationId]);
+
   // Ctrl+S / Ctrl+F / Ctrl+H / Ctrl+Shift+H key handlers
   const handleManualSave = useCallback(async () => {
     await flush();
@@ -1328,37 +1339,8 @@ export function EditorPane({
           useAnnotationStore
             .getState()
             .setAnnotations(nodeId, annotationResp.annotations);
-          if (!cancelled && annotationResp.annotations.length > 0 && editor) {
-            editor
-              .chain()
-              .command(({ tr }) => {
-                tr.setMeta("programmaticInsert", true);
-                tr.setMeta("annotationUpdate", true);
-                const schema = tr.doc.type.schema;
-                const markType = schema.marks["peAnnotation"];
-                if (!markType) return true;
-                const docSize = tr.doc.content.size;
-                if (docSize > 2) tr.removeMark(1, docSize - 1, markType);
-                for (const ann of annotationResp.annotations) {
-                  if (ann.status === "dismissed") continue;
-                  if (ann.rangeStart == null || ann.rangeEnd == null) continue;
-                  const cf = Math.min(ann.rangeStart, docSize);
-                  const ct = Math.min(ann.rangeEnd, docSize);
-                  if (cf < ct)
-                    tr.addMark(
-                      cf,
-                      ct,
-                      markType.create({
-                        annotationId: ann.id,
-                        category: ann.category,
-                        severity: ann.severity ?? "warning",
-                        status: ann.status,
-                      }),
-                    );
-                }
-                return true;
-              })
-              .run();
+          if (!cancelled && editor) {
+            applyAnnotationsToEditor(editor, annotationResp.annotations);
           }
         }
       } finally {
@@ -1521,6 +1503,8 @@ export function EditorPane({
         actionsRef={toolbarActionsRef}
         panelOpen={sceneMetaPanelOpen}
         onTogglePanel={handleTogglePanel}
+        sceneId={isCodexMode || isSnippetMode ? undefined : nodeId}
+        nodeType={activeNode?.nodeType}
       />
       {isNote && (
         <div className="flex items-center gap-1.5 border-b border-amber-500/30 bg-amber-500/10 px-3 py-1 text-xs text-amber-600 dark:text-amber-400">

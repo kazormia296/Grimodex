@@ -2,6 +2,7 @@ import { useState, useCallback } from "react";
 import { ScanText, Loader2, Eye, EyeOff, BookOpen } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useTreeStore } from "@/features/tree/treeStore";
+import { useAiSettingsStore } from "@/features/chat/store";
 import { useAnnotationStore } from "./annotationStore";
 import {
   buildConsistencyPayload,
@@ -13,19 +14,15 @@ import {
   runPostEffectMulti,
   listAnnotationsForScene,
 } from "./api";
+import { applyAnnotationsToEditor } from "./applyAnnotationsToEditor";
 import type { Editor } from "@tiptap/core";
 
 interface Props {
   sceneId: string;
   editor: Editor | null;
-  model?: string;
 }
 
-export function PostEffectToolbar({
-  sceneId,
-  editor,
-  model = "gpt-4o-mini",
-}: Props) {
+export function PostEffectToolbar({ sceneId, editor }: Props) {
   const [running, setRunning] = useState(false);
   const [runningAll, setRunningAll] = useState(false);
   const { showAnnotations, toggleShowAnnotations, setAnnotations } =
@@ -34,6 +31,8 @@ export function PostEffectToolbar({
   const run = useCallback(async () => {
     if (!editor || running) return;
     const projectId = useTreeStore.getState().projectId;
+    const model =
+      useAiSettingsStore.getState().settings?.model ?? "gpt-4o-mini";
     setRunning(true);
     try {
       const payload = await buildConsistencyPayload(projectId, sceneId, model);
@@ -54,6 +53,7 @@ export function PostEffectToolbar({
             cleanup();
             const resp = await listAnnotationsForScene({ projectId, sceneId });
             setAnnotations(sceneId, resp.annotations);
+            applyAnnotationsToEditor(editor, resp.annotations);
             setRunning(false);
           },
           onError: (e) => {
@@ -67,11 +67,13 @@ export function PostEffectToolbar({
       console.error("post-effect launch error", e);
       setRunning(false);
     }
-  }, [editor, running, sceneId, model, setAnnotations]);
+  }, [editor, running, sceneId, setAnnotations]);
 
   const runAll = useCallback(async () => {
     if (runningAll) return;
     const projectId = useTreeStore.getState().projectId;
+    const model =
+      useAiSettingsStore.getState().settings?.model ?? "gpt-4o-mini";
     setRunningAll(true);
     try {
       const payload = await buildMultiPayload(
@@ -101,6 +103,7 @@ export function PostEffectToolbar({
             cleanup();
             const resp = await listAnnotationsForScene({ projectId, sceneId });
             setAnnotations(sceneId, resp.annotations);
+            applyAnnotationsToEditor(editor, resp.annotations);
             setRunningAll(false);
           },
           onError: (e) => {
@@ -114,7 +117,7 @@ export function PostEffectToolbar({
       console.error("post-effect multi launch error", e);
       setRunningAll(false);
     }
-  }, [runningAll, sceneId, model, setAnnotations]);
+  }, [editor, runningAll, sceneId, setAnnotations]);
 
   return (
     <div className="flex items-center gap-1">

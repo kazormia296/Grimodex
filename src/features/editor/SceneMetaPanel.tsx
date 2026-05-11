@@ -2,6 +2,7 @@ import type { Editor } from "@tiptap/core";
 import type { CodexMentionPopupState } from "@/features/codex/CodexMentionExtension";
 import { SynopsisHeader } from "@/features/editor/SynopsisHeader";
 import { BeatsHeader } from "@/features/editor/BeatsHeader";
+import { PostEffectAnnotationPanel } from "@/features/post-effect/PostEffectAnnotationPanel";
 
 interface SceneMetaPanelProps {
   sceneId: string;
@@ -25,6 +26,12 @@ export function SceneMetaPanel({
         editor={editor}
         setMentionPopup={setMentionPopup}
       />
+      <div className="border-t border-border">
+        <div className="px-3 py-2 text-xs font-medium text-muted-foreground">
+          整合性チェック
+        </div>
+        <PostEffectAnnotationPanel sceneId={sceneId} />
+      </div>
     </div>
   );
 }
