@@ -48,13 +48,70 @@ describe("createCodexMentionExtension — suggestion provider", () => {
       query: "",
       editor: null as never,
     });
-    expect(items.map((e: CodexEntry) => e.name)).toEqual(["ドロシー", "トト"]);
+    expect(items.map((e: { name: string }) => e.name)).toEqual([
+      "ドロシー",
+      "トト",
+    ]);
 
     const filtered = await ext.options.suggestion.items!({
       query: "ドロ",
       editor: null as never,
     });
-    expect(filtered.map((e: CodexEntry) => e.name)).toEqual(["ドロシー"]);
+    expect(filtered.map((e: { name: string }) => e.name)).toEqual(["ドロシー"]);
+  });
+
+  it("codex items are tagged with kind: 'codex'", async () => {
+    const ext = createCodexMentionExtension(() => undefined);
+    const items = await ext.options.suggestion.items!({
+      query: "",
+      editor: null as never,
+    });
+    expect(items.every((i: { kind: string }) => i.kind === "codex")).toBe(true);
+  });
+
+  it("extraItems プロバイダで scene 候補を後ろに追加できる", async () => {
+    const ext = createCodexMentionExtension(() => undefined, {
+      extraItems: (q) => {
+        const scenes = [
+          { id: "s1", name: "出会い" },
+          { id: "s2", name: "ドロシーと魔女の対決" },
+        ];
+        const filtered = q ? scenes.filter((s) => s.name.includes(q)) : scenes;
+        return filtered.map((s) => ({
+          kind: "scene" as const,
+          id: s.id,
+          name: s.name,
+          typeLabel: "scene",
+        }));
+      },
+    });
+    const items = await ext.options.suggestion.items!({
+      query: "",
+      editor: null as never,
+    });
+    // codex (2) + scene (2) で 4 件、scene は末尾
+    expect(items.map((i: { name: string }) => i.name)).toEqual([
+      "ドロシー",
+      "トト",
+      "出会い",
+      "ドロシーと魔女の対決",
+    ]);
+    expect(items.map((i: { kind: string }) => i.kind)).toEqual([
+      "codex",
+      "codex",
+      "scene",
+      "scene",
+    ]);
+
+    // query は codex と scene の両方に適用される
+    const filtered = await ext.options.suggestion.items!({
+      query: "ドロ",
+      editor: null as never,
+    });
+    expect(filtered.map((i: { name: string }) => i.name)).toEqual([
+      "ドロシー",
+      "ドロシーと魔女の対決",
+    ]);
   });
 });
 

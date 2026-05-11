@@ -384,7 +384,14 @@ interface ChatState {
   sendMessage: (
     content: string,
     commandInstruction?: string,
-    options?: { overrideAgentMode?: boolean },
+    options?: {
+      overrideAgentMode?: boolean;
+      /** Chat 入力で `@シーン名` メンションされた scene ID 一覧。
+       * 本メッセージの送信時のみ context へ scene 本文が pin される
+       * (per-message surgical override)。folder/project スコープの eco
+       * モードでも本文注入の対象になる。 */
+      mentionedSceneIds?: string[];
+    },
   ) => Promise<void>;
   buildPromptForCopy: (userInput: string) => Promise<string>;
   stopGeneration: () => void;
@@ -394,7 +401,12 @@ interface ChatState {
     assistantMessageId: string,
     options?: { withAgentMode?: boolean },
   ) => Promise<void>;
-  refreshContextLayers: () => Promise<void>;
+  refreshContextLayers: (opts?: {
+    /** @scene mention 由来の一時 pin (per-send-only)。
+     * UI 表示用の context bar 更新（プリビュー）には渡さず、sendMessage
+     * 内部から folder/project スコープのプロンプト再構築時にだけ使う。 */
+    mentionedSceneIds?: string[];
+  }) => Promise<void>;
   clearMessages: () => void;
   clearError: () => void;
   setActiveSceneId: (id: string) => void;
@@ -409,6 +421,43 @@ interface ChatState {
   /** C: エディタの「チャットで調べる」が pre-fill するテキスト（consumed-once） */
   pendingLookupText: string | null;
   setPendingLookupText: (text: string | null) => void;
+}
+
+/**
+ * `@シーン名` メンションで per-message pin される scene の本文をまとめて
+ * 読み込むヘルパー。tree store から title を引いてから loadSceneContent
+ * で本文を取り、prosemirrorToText で plain text 化する。
+ *
+ * - currentSceneId と一致する id は除外（buildSystemPrompt 側でも除外しているが、
+ *   loadSceneContent の二重呼び出しを避けるためここでも省く）。
+ * - 存在しない id・scene 以外の id・読み込み失敗は単に黙って除外する
+ *   (一時 pin の性質上、エラーで送信を止めない方が望ましい)。
+ */
+async function loadMentionedScenes(
+  ids: string[] | undefined,
+  currentSceneId: string | null,
+): Promise<Array<{ id: string; title: string; content: string }>> {
+  if (!ids || ids.length === 0) return [];
+  const allNodes = useTreeStore.getState().nodes;
+  const out: Array<{ id: string; title: string; content: string }> = [];
+  const seen = new Set<string>();
+  for (const id of ids) {
+    if (seen.has(id)) continue;
+    seen.add(id);
+    if (currentSceneId && id === currentSceneId) continue;
+    const node = allNodes.find((n) => n.id === id);
+    if (!node || node.nodeType !== "scene") continue;
+    try {
+      const raw = await loadSceneContent(id);
+      const text = prosemirrorToText(raw ?? "");
+      if (text) {
+        out.push({ id, title: node.title, content: text });
+      }
+    } catch {
+      // 取得失敗は除外 (送信を止めない)
+    }
+  }
+  return out;
 }
 
 async function fetchSceneContext(
@@ -490,6 +539,10 @@ async function buildSceneContextPrompt(opts: {
   commandInstruction?: string;
   prefetchedEntries?: CodexEntry[];
   agentMode?: boolean;
+  /** @scene mention で per-message pin される scene ID 群。本関数内で
+   * tree から本文を読み込み、buildSystemPrompt の mentionedScenes として
+   * 注入される (eco モードでも必ず注入)。 */
+  mentionedSceneIds?: string[];
 }): Promise<SceneContextPayload> {
   const {
     sceneCtx,
@@ -898,6 +951,14 @@ async function buildSceneContextPrompt(opts: {
         }))
       : undefined;
 
+  // @scene mention の本文ロード (per-send only)。buildSystemPrompt の中で
+  // 現在シーン id と同一のものは除外されるが、ここでも loadSceneContent の
+  // 二重呼び出しを避けるため明示的に弾いている。
+  const mentionedScenes = await loadMentionedScenes(
+    opts.mentionedSceneIds,
+    sceneCtx.id,
+  );
+
   markStart("buildSceneCtx.buildSystemPrompt");
   const promptResult = buildSystemPrompt({
     scene: sceneCtx,
@@ -920,6 +981,7 @@ async function buildSceneContextPrompt(opts: {
     storyTimePreviousScene,
     projectOutline: projectCtx?.outline ?? undefined,
     chapterOutlines: chapterOutlines.length > 0 ? chapterOutlines : undefined,
+    mentionedScenes: mentionedScenes.length > 0 ? mentionedScenes : undefined,
     lang: projectCtx?.language ?? "ja",
     agentMode: opts.agentMode,
   });
@@ -1187,7 +1249,10 @@ export const useChatStore = create<ChatState>()((set, get) => ({
   sendMessage: async (
     content: string,
     commandInstruction?: string,
-    options?: { overrideAgentMode?: boolean },
+    options?: {
+      overrideAgentMode?: boolean;
+      mentionedSceneIds?: string[];
+    },
   ) => {
     const {
       isStreaming,
@@ -1320,6 +1385,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
             commandInstruction,
             prefetchedEntries: allEntriesForCtx,
             agentMode: true,
+            mentionedSceneIds: options?.mentionedSceneIds,
           });
           systemPromptForAgent = ctxResult.prompt;
           fullyInjectedIds = new Set(ctxResult.fullyInjectedIds);
@@ -1334,7 +1400,10 @@ export const useChatStore = create<ChatState>()((set, get) => ({
           // グローバルチャット: refreshContextLayers が事前に組んだ
           // L1 + Spotlight L4 (codex/snippet) + always エントリ込みの prompt を流用。
           // 入力側で新たに Spotlight された場合に備え再計算してから使う。
-          await get().refreshContextLayers();
+          // @scene mention は per-send の一時 pin として渡す。
+          await get().refreshContextLayers({
+            mentionedSceneIds: options?.mentionedSceneIds,
+          });
           systemPromptForAgent = get().lastSystemPrompt;
           const dbPinned = sessionIdForPersist
             ? await chatApi
@@ -1452,8 +1521,15 @@ export const useChatStore = create<ChatState>()((set, get) => ({
 
         // Persist
         if (sessionIdForPersist) {
+          const userMetadata =
+            options?.mentionedSceneIds && options.mentionedSceneIds.length > 0
+              ? JSON.stringify({
+                  mentioned_scene_ids: options.mentionedSceneIds,
+                })
+              : undefined;
           await chatApi.addMessage(sessionIdForPersist, "user", content, {
             id: userMsg.id,
+            ...(userMetadata ? { metadata: userMetadata } : {}),
           });
           const finalMessages = get().messages;
           const lastMsg = finalMessages[finalMessages.length - 1];
@@ -1654,6 +1730,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
           conversationMessages: messagesForApi,
           commandInstruction,
           prefetchedEntries: allEntries,
+          mentionedSceneIds: options?.mentionedSceneIds,
         });
 
         set({
@@ -1674,7 +1751,16 @@ export const useChatStore = create<ChatState>()((set, get) => ({
         messagesForApi.unshift(systemMsg);
       } else {
         // シーンコンテキストなし（グローバルチャットまたはシーン未選択）:
-        // refreshContextLayers が計算済みの lastSystemPrompt をシステムメッセージとして注入
+        // @scene mention があるときは lastSystemPrompt を一時 pin 付きで再構築する。
+        // 無いときは既に計算済みの lastSystemPrompt をそのまま流用する。
+        if (
+          options?.mentionedSceneIds &&
+          options.mentionedSceneIds.length > 0
+        ) {
+          await get().refreshContextLayers({
+            mentionedSceneIds: options.mentionedSceneIds,
+          });
+        }
         const fallbackPrompt = get().lastSystemPrompt;
         if (fallbackPrompt) {
           const fallbackSystemMsg: ChatMessage = {
@@ -1769,8 +1855,16 @@ export const useChatStore = create<ChatState>()((set, get) => ({
               if (!sessionIdForPersist) return;
               const finalMessages = get().messages;
               const lastMsg = finalMessages[finalMessages.length - 1];
+              const userMetadata =
+                options?.mentionedSceneIds &&
+                options.mentionedSceneIds.length > 0
+                  ? JSON.stringify({
+                      mentioned_scene_ids: options.mentionedSceneIds,
+                    })
+                  : undefined;
               await chatApi.addMessage(sessionIdForPersist, "user", content, {
                 id: userMsg.id,
+                ...(userMetadata ? { metadata: userMetadata } : {}),
               });
               if (lastMsg && lastMsg.role === "assistant" && lastMsg.content) {
                 await chatApi.addMessage(
@@ -1920,7 +2014,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
     }
   },
 
-  refreshContextLayers: async () => {
+  refreshContextLayers: async (opts) => {
     markStart("refreshContextLayers.ensureTokenizer");
     await ensureTokenizer();
     markEnd("refreshContextLayers.ensureTokenizer");
@@ -1933,6 +2027,14 @@ export const useChatStore = create<ChatState>()((set, get) => ({
     } = get();
     const effectiveSceneId = chatScope === "scene" ? activeSceneId : null;
     if (!effectiveSceneId) {
+      // @scene mention の per-message pin (sendMessage 経由でのみ渡される)。
+      // 通常の context bar 更新では undefined のままで従来挙動。
+      // scene scope では buildSceneContextPrompt が内部で読み込むため
+      // ここでは folder/project ブロックのみで取得する。
+      const mentionedScenes = await loadMentionedScenes(
+        opts?.mentionedSceneIds,
+        effectiveSceneId,
+      );
       // Folder スコープでは anchor folder + その祖先 folder の synopsis を
       // chapter outlines として注入する（Phase 1: 子シーン本文は集約しない）。
       // Project スコープでは空。outermost (root に近い) → innermost の順。
@@ -2225,6 +2327,8 @@ export const useChatStore = create<ChatState>()((set, get) => ({
             globalPinnedSnippets.length > 0 ? globalPinnedSnippets : undefined,
           chapterOutlines:
             folderScopeOutlines.length > 0 ? folderScopeOutlines : undefined,
+          mentionedScenes:
+            mentionedScenes.length > 0 ? mentionedScenes : undefined,
           lang: projectCtx?.language ?? "ja",
           agentMode: get().agentMode,
         });
@@ -2271,6 +2375,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
         inputPinnedEntryIds: get().inputPinnedEntryIds,
         conversationMessages: get().messages.filter((m) => !m.isSummarized),
         agentMode: get().agentMode,
+        mentionedSceneIds: opts?.mentionedSceneIds,
       });
 
       set({

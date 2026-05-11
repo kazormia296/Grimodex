@@ -86,6 +86,15 @@ export const JA_CHAT_SYSTEM = {
     /** L2: 現在シーンの祖先 folder の outline (Phase 4)。outermost → innermost
      * 順にリスト表示し、構造的な階層情報を AI に渡す。 */
     chapterOutlines: "### Chapter Outlines (broad → specific)",
+    /** L3: chat 入力で `@シーン名` メンションされたシーン本文を per-message
+     * pin として注入するセクションヘッダ。eco モード等で本文圧縮されている
+     * folder/project スコープでも、ここでメンションされた scene の本文は
+     * 必ず注入される (surgical override)。 */
+    mentionedScenes: "\n\n## メンションされたシーン",
+    /** L3: mentionedScenes 配下の各シーンタイトル行 */
+    mentionedSceneHeader: "### シーン: ",
+    /** L3: mentionedScenes 配下のシーン本文サブヘッダ */
+    mentionedSceneBody: "\n本文:\n",
   },
 
   labels: {

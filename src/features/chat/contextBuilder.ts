@@ -163,6 +163,16 @@ export interface BuildSystemPromptInput {
     title: string;
     outline: string;
   }>;
+  /** Chat 入力で `@シーン名` メンションされた scene 本文を per-message pin
+   * として L3 に注入する。folder/project スコープの eco モード等で本文が
+   * 圧縮されていても、ここでメンションされた scene の本文は必ず注入される
+   * (surgical override)。現在シーンと同一の id を含む場合は重複させない
+   * (呼び出し側で除外済みを期待)。配列が空または undefined ならセクション省略。 */
+  mentionedScenes?: Array<{
+    id: string;
+    title: string;
+    content: string;
+  }>;
   /** 執筆言語（project.language）。省略時は "ja" にフォールバック */
   lang?: string;
   /**
@@ -634,6 +644,22 @@ export function buildSystemPrompt(
   }
   if (input.scene.content) {
     l3Text += `${s.headers.sceneBody}\n${sanitizeSceneContent(input.scene.content)}`;
+  }
+  // @scene メンションされたシーン本文を per-message pin として注入。
+  // 現在シーンと同一 id は重複させないよう除外する (呼び出し側でも除外想定)。
+  if (input.mentionedScenes && input.mentionedScenes.length > 0) {
+    const blocks: string[] = [s.headers.mentionedScenes];
+    for (const ms of input.mentionedScenes) {
+      if (ms.id === input.scene.id) continue;
+      const body = sanitizeSceneContent(ms.content ?? "");
+      blocks.push(
+        `${s.headers.mentionedSceneHeader}${ms.title}${s.headers.mentionedSceneBody}${body}`,
+      );
+    }
+    // ヘッダ + 少なくとも 1 件のブロックが揃ったときのみ追記
+    if (blocks.length > 1) {
+      l3Text += blocks.join("\n\n");
+    }
   }
   if (input.activeTabContent) {
     const typeLabel =

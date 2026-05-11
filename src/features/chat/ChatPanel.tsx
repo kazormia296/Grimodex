@@ -509,7 +509,13 @@ export function ChatPanel() {
   );
 
   const handleSend = useCallback(
-    (markdown: string, options?: { overrideAgentMode?: boolean }) => {
+    (
+      markdown: string,
+      options?: {
+        overrideAgentMode?: boolean;
+        mentionedSceneIds?: string[];
+      },
+    ) => {
       const trimmed = markdown.trim();
       if (!trimmed || isStreaming) return;
       // 送信時に却下セットをリセット（次のメッセージでは再検出可能にする）

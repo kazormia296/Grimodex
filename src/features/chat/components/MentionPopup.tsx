@@ -1,16 +1,21 @@
 import { useEffect, useRef } from "react";
 import { useTranslation } from "react-i18next";
-import type { CodexEntry } from "@/features/codex/api";
-import type { MentionRole } from "@/features/codex/CodexMentionExtension";
+import type {
+  MentionItem,
+  MentionRole,
+} from "@/features/codex/CodexMentionExtension";
 import { getTypeLabel } from "../utils/typeLabels";
 
 interface MentionPopupProps {
-  items: CodexEntry[];
+  items: MentionItem[];
   selectedIndex: number;
-  onSelect: (entry: CodexEntry) => void;
+  onSelect: (item: MentionItem) => void;
   onChangeIndex: (index: number) => void;
   clientRect: (() => DOMRect | null) | null | undefined;
-  onSelectWithRole?: (entry: CodexEntry, role: MentionRole) => void;
+  /**
+   * codex item のみで使う role 別 quick-pick。scene item には適用されない。
+   */
+  onSelectWithRole?: (item: MentionItem, role: MentionRole) => void;
 }
 
 const ROLES: { value: MentionRole; label: string }[] = [
@@ -18,6 +23,11 @@ const ROLES: { value: MentionRole; label: string }[] = [
   { value: "actor", label: "A" },
   { value: "target", label: "T" },
 ];
+
+function displayTypeLabel(item: MentionItem, t: (k: string) => string): string {
+  if (item.kind === "scene") return t("chat.context.mentionScene");
+  return getTypeLabel(item.typeLabel);
+}
 
 export function MentionPopup({
   items,
@@ -73,11 +83,12 @@ export function MentionPopup({
       style={style}
       className="max-h-48 min-w-[200px] overflow-y-auto rounded-md border border-border bg-popover py-1 shadow-md"
     >
-      {items.map((entry, i) => (
+      {items.map((item, i) => (
         <li
-          key={entry.id}
+          key={`${item.kind}-${item.id}`}
           role="option"
           aria-selected={i === selectedIndex}
+          data-mention-kind={item.kind}
           className={[
             "flex cursor-pointer items-center gap-2 px-3 py-1.5 text-xs",
             i === selectedIndex
@@ -86,7 +97,7 @@ export function MentionPopup({
           ].join(" ")}
         >
           <span
-            onClick={() => onSelect(entry)}
+            onClick={() => onSelect(item)}
             className="flex min-w-0 flex-1 items-center gap-2"
           >
             <span
@@ -96,10 +107,10 @@ export function MentionPopup({
                   : "rounded bg-muted px-1 py-0.5 text-xs text-muted-foreground"
               }
             >
-              {getTypeLabel(entry.type)}
+              {displayTypeLabel(item, t)}
             </span>
-            <span className="font-medium">{entry.name}</span>
-            {entry.summary && (
+            <span className="font-medium">{item.name}</span>
+            {item.summary && (
               <span
                 className={
                   i === selectedIndex
@@ -107,11 +118,11 @@ export function MentionPopup({
                     : "ml-auto max-w-[120px] truncate text-muted-foreground"
                 }
               >
-                {entry.summary}
+                {item.summary}
               </span>
             )}
           </span>
-          {onSelectWithRole && (
+          {onSelectWithRole && item.kind === "codex" && (
             <span className="ml-auto flex shrink-0 gap-0.5">
               {ROLES.map(({ value, label }) => (
                 <button
@@ -121,7 +132,7 @@ export function MentionPopup({
                   title={t(`editor.mention.role.${value}`)}
                   onClick={(e) => {
                     e.stopPropagation();
-                    onSelectWithRole(entry, value);
+                    onSelectWithRole(item, value);
                   }}
                   className={[
                     "rounded px-1 py-0.5 text-[10px] font-medium",

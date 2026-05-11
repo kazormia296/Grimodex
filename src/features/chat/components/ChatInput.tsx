@@ -17,11 +17,18 @@ import type { MentionPopupState } from "../extensions/ChatMentionExtension";
 import type { CommandPopupState } from "../extensions/ChatSlashCommandExtension";
 import { MentionPopup } from "./MentionPopup";
 import { ChatCommandPopup } from "./ChatCommandPopup";
-import type { CodexEntry } from "@/features/codex/api";
+import type { MentionItem } from "@/features/codex/CodexMentionExtension";
 import { shouldSuggestAgentMode } from "../agentSuggestion";
 
 interface ChatInputProps {
-  onSend: (markdown: string, options?: { overrideAgentMode?: boolean }) => void;
+  onSend: (
+    markdown: string,
+    options?: {
+      overrideAgentMode?: boolean;
+      /** @ で指定された scene ID 一覧（送信時に context へ一時 pin される） */
+      mentionedSceneIds?: string[];
+    },
+  ) => void;
   disabled?: boolean;
   editorRef?: MutableRefObject<Editor | null>;
   onMentionPin?: (entryId: string) => void;
@@ -265,12 +272,16 @@ export function ChatInput({
     });
   };
 
-  // @メンション選択: エントリ挿入 + 自動ピン
+  // @メンション選択: エントリ挿入 + (codex のみ) 自動ピン
+  // scene mention は送信時に metadata 経由で per-message pin されるので
+  // ここでは何もしない。
   const handleMentionSelect = useCallback(
-    (entry: CodexEntry) => {
-      mentionPopup?.command?.(entry);
+    (item: MentionItem) => {
+      mentionPopup?.command?.(item);
       setMentionPopup(null);
-      onMentionPin?.(entry.id);
+      if (item.kind === "codex") {
+        onMentionPin?.(item.id);
+      }
     },
     [mentionPopup, onMentionPin],
   );
@@ -293,7 +304,17 @@ export function ChatInput({
       { getMarkdown?: () => string } | undefined
     >;
     const markdown: string = markdownStorage.markdown?.getMarkdown?.() ?? text;
-    onSend(markdown, options);
+    // doc 内の mention ノードから kind=scene のみ収集（重複排除）。
+    const sceneIdSet = new Set<string>();
+    editor.state.doc.descendants((node) => {
+      if (node.type.name !== "mention") return;
+      const kind = node.attrs.kind as string | undefined;
+      const id = node.attrs.id as string | undefined;
+      if (kind === "scene" && id) sceneIdSet.add(id);
+    });
+    const mentionedSceneIds =
+      sceneIdSet.size > 0 ? Array.from(sceneIdSet) : undefined;
+    onSend(markdown, { ...options, mentionedSceneIds });
     editor.commands.clearContent();
   };
 

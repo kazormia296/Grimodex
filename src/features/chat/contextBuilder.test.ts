@@ -1052,6 +1052,103 @@ describe("contextBuilder", () => {
     });
   });
 
+  describe("buildSystemPrompt — mentionedScenes (@scene per-message pin)", () => {
+    const scene: SceneContext = {
+      id: "current",
+      title: "現在シーン",
+      content: "現在シーン本文",
+    };
+
+    it("mentionedScenes が L3 に「## メンションされたシーン」として注入される", () => {
+      const result = buildSystemPrompt({
+        scene,
+        mentionedScenes: [
+          {
+            id: "s2",
+            title: "出会いの場面",
+            content: "雨の夜、二人は出会った。",
+          },
+        ],
+      });
+      expect(result.prompt).toContain("## メンションされたシーン");
+      expect(result.prompt).toContain("出会いの場面");
+      expect(result.prompt).toContain("雨の夜、二人は出会った。");
+      // 現在シーン本文の後に来る
+      const sceneBodyIdx = result.prompt.indexOf("現在シーン本文");
+      const mentionedIdx = result.prompt.indexOf("メンションされたシーン");
+      expect(mentionedIdx).toBeGreaterThan(sceneBodyIdx);
+    });
+
+    it("複数の scene が順番に列挙される", () => {
+      const result = buildSystemPrompt({
+        scene,
+        mentionedScenes: [
+          { id: "s2", title: "第二の場面", content: "B 本文" },
+          { id: "s3", title: "第三の場面", content: "C 本文" },
+        ],
+      });
+      const bIdx = result.prompt.indexOf("第二の場面");
+      const cIdx = result.prompt.indexOf("第三の場面");
+      expect(bIdx).toBeGreaterThan(0);
+      expect(cIdx).toBeGreaterThan(bIdx);
+    });
+
+    it("現在シーンと同一 id の mentionedScene は重複注入されない", () => {
+      const result = buildSystemPrompt({
+        scene,
+        mentionedScenes: [
+          { id: "current", title: "重複シーン", content: "重複本文" },
+        ],
+      });
+      // 現在シーンとして注入される本文だけが残り、メンション側は省かれる
+      expect(result.prompt).not.toContain("メンションされたシーン");
+      expect(result.prompt).not.toContain("重複シーン");
+      expect(result.prompt).not.toContain("重複本文");
+    });
+
+    it("空配列ならセクションごと省略される", () => {
+      const without = buildSystemPrompt({ scene });
+      const empty = buildSystemPrompt({ scene, mentionedScenes: [] });
+      expect(without.prompt).toBe(empty.prompt);
+      expect(without.prompt).not.toContain("メンションされたシーン");
+    });
+
+    it("eco モード相当 (scene.content 空) でも mentionedScene 本文は注入される", () => {
+      // folder スコープ + eco モードでは現在シーン本文が抑制される。
+      // それでも @scene で pin した本文だけは context に出る、というのが
+      // この機能の核心。
+      const ecoScene: SceneContext = {
+        id: "current",
+        title: "eco シーン",
+        content: "",
+      };
+      const result = buildSystemPrompt({
+        scene: ecoScene,
+        mentionedScenes: [
+          { id: "s2", title: "差し込む場面", content: "雨の夜、決意した。" },
+        ],
+      });
+      expect(result.prompt).toContain("差し込む場面");
+      expect(result.prompt).toContain("雨の夜、決意した。");
+    });
+
+    it("authorship span は sanitize される", () => {
+      const result = buildSystemPrompt({
+        scene,
+        mentionedScenes: [
+          {
+            id: "s2",
+            title: "ハイライト付き",
+            content:
+              'こんにちは<span data-authorship="ai" data-source="ai">、世界</span>。',
+          },
+        ],
+      });
+      expect(result.prompt).toContain("こんにちは、世界。");
+      expect(result.prompt).not.toContain("data-authorship");
+    });
+  });
+
   describe("computeResponseReservation", () => {
     it("returns ratio-based reservation when maxOutputTokens is undefined", () => {
       // 200k * 5% = 10,000

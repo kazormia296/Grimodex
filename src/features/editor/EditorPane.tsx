@@ -35,9 +35,9 @@ import { upsertSceneBeatPovOverrides } from "@/features/editor/beat/beatPovCache
 import { upsertSceneBodyMentions } from "@/features/editor/beat/bodyMentionApi";
 import { useUnplacedBeatsStore } from "@/features/editor/beat/unplacedBeatsStore";
 import { getCodexEntry } from "@/features/codex/api";
-import type { CodexEntry } from "@/features/codex/api";
 import type {
   CodexMentionPopupState,
+  MentionItem,
   MentionRole,
 } from "@/features/codex/CodexMentionExtension";
 import { MentionPopup } from "@/features/chat/components/MentionPopup";
@@ -1434,17 +1434,19 @@ export function EditorPane({
     setTitleEditing(false);
   };
 
+  // EditorPane (SceneEditor) は extraItems を渡さないので popup item は常に
+  // kind="codex"。MentionItem 型のままハンドラに通す。
   const handleMentionSelect = useCallback(
-    (entry: CodexEntry) => {
-      mentionPopup?.command?.(entry);
+    (item: MentionItem) => {
+      mentionPopup?.command?.(item);
       setMentionPopupState(null);
     },
     [mentionPopup],
   );
 
   const handleMentionSelectWithRole = useCallback(
-    (entry: CodexEntry, role: MentionRole) => {
-      mentionPopup?.command?.(entry, role);
+    (item: MentionItem, role: MentionRole) => {
+      mentionPopup?.command?.(item, role);
       setMentionPopupState(null);
     },
     [mentionPopup],

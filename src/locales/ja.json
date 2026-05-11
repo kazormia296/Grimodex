@@ -552,6 +552,7 @@
       "running": "実行中: {{name}}",
       "commandSuggestions": "コマンド候補",
       "mentionSuggestions": "@メンション候補",
+      "mentionScene": "シーン",
       "codexExtracted": "Codex抽出済 ({{count}})",
       "snippetSaved": "Snippet保存済 ({{count}})",
       "includeChildren": "子エントリを含める",

@@ -552,6 +552,7 @@
       "running": "Running: {{name}}",
       "commandSuggestions": "Command suggestions",
       "mentionSuggestions": "Mention suggestions",
+      "mentionScene": "Scene",
       "codexExtracted": "Codex extracted ({{count}})",
       "snippetSaved": "Snippet saved ({{count}})",
       "includeChildren": "Include child entries",
