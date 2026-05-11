@@ -393,7 +393,10 @@ interface ChatState {
       mentionedSceneIds?: string[];
     },
   ) => Promise<void>;
-  buildPromptForCopy: (userInput: string) => Promise<string>;
+  buildPromptForCopy: (
+    userInput: string,
+    options?: { mentionedSceneIds?: string[] },
+  ) => Promise<string>;
   stopGeneration: () => void;
   deleteMessage: (messageId: string) => Promise<void>;
   editUserMessage: (messageId: string) => string;
@@ -421,6 +424,32 @@ interface ChatState {
   /** C: エディタの「チャットで調べる」が pre-fill するテキスト（consumed-once） */
   pendingLookupText: string | null;
   setPendingLookupText: (text: string | null) => void;
+}
+
+/**
+ * user メッセージの `metadata` 文字列 (JSON) から `mentioned_scene_ids`
+ * を取り出すヘルパー。regenerate 経路で per-message pin を復元するために
+ * 使う。JSON parse 失敗・配列でない・空配列はすべて undefined を返す。
+ */
+function parseMentionedSceneIdsFromMetadata(
+  metadata: string | null | undefined,
+): string[] | undefined {
+  if (!metadata) return undefined;
+  try {
+    const obj = JSON.parse(metadata) as unknown;
+    if (obj && typeof obj === "object" && !Array.isArray(obj)) {
+      const ids = (obj as Record<string, unknown>).mentioned_scene_ids;
+      if (Array.isArray(ids)) {
+        const filtered = ids.filter(
+          (id): id is string => typeof id === "string" && id.length > 0,
+        );
+        return filtered.length > 0 ? filtered : undefined;
+      }
+    }
+  } catch {
+    // JSON parse 失敗は単に未指定として扱う
+  }
+  return undefined;
 }
 
 /**
@@ -1161,7 +1190,10 @@ export const useChatStore = create<ChatState>()((set, get) => ({
 
   // --- Prompt preview for copy ---
 
-  buildPromptForCopy: async (userInput: string): Promise<string> => {
+  buildPromptForCopy: async (
+    userInput: string,
+    options?: { mentionedSceneIds?: string[] },
+  ): Promise<string> => {
     await ensureTokenizer();
     const {
       activeSceneId,
@@ -1205,13 +1237,21 @@ export const useChatStore = create<ChatState>()((set, get) => ({
             inputPinnedEntryIds,
             conversationMessages,
             agentMode,
+            mentionedSceneIds: options?.mentionedSceneIds,
           });
           parts.push(`[system]\n${prompt}`);
         } else if (projectCtx) {
-          // Global chat: project context only (no scene)
+          // Global chat: project context only (no scene)。@scene mention は
+          // tree から本文を読み込んで L3 mentionedScenes として注入する。
+          const mentionedScenes = await loadMentionedScenes(
+            options?.mentionedSceneIds,
+            null,
+          );
           const { prompt } = buildSystemPrompt({
             scene: { id: "", title: "", content: "" },
             project: projectCtx,
+            mentionedScenes:
+              mentionedScenes.length > 0 ? mentionedScenes : undefined,
             lang: projectCtx.language ?? "ja",
             agentMode,
           });
@@ -2510,6 +2550,13 @@ export const useChatStore = create<ChatState>()((set, get) => ({
       .find((m) => m.role === "user");
     if (!userMsg) return;
 
+    // @scene mention の per-message pin は user メッセージの metadata
+    // (`mentioned_scene_ids`) に永続化されている。再生成時に復元しないと
+    // 元の prompt と再生成 prompt で context が食い違うので拾い直す。
+    const mentionedSceneIds = parseMentionedSceneIdsFromMetadata(
+      userMsg.metadata,
+    );
+
     // アシスタントメッセージを削除
     if (activeSessionId) {
       try {
@@ -2522,10 +2569,16 @@ export const useChatStore = create<ChatState>()((set, get) => ({
 
     // 再送信 (ユーザーメッセージは既にstateにある)
     // withAgentMode: 一回限りの Agent mode 切替で再試行する場合
+    const sendOptions: {
+      overrideAgentMode?: boolean;
+      mentionedSceneIds?: string[];
+    } = {};
+    if (options?.withAgentMode) sendOptions.overrideAgentMode = true;
+    if (mentionedSceneIds) sendOptions.mentionedSceneIds = mentionedSceneIds;
     await get().sendMessage(
       userMsg.content,
       undefined,
-      options?.withAgentMode ? { overrideAgentMode: true } : undefined,
+      Object.keys(sendOptions).length > 0 ? sendOptions : undefined,
     );
   },
 

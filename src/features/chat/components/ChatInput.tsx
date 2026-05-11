@@ -295,6 +295,21 @@ export function ChatInput({
     [commandPopup],
   );
 
+  // 現在の doc から `@シーン名` メンションされた scene ID 群を抽出する。
+  // 送信用と preview-copy 用で同じロジックを共有して prompt が食い違わない
+  // ようにする。
+  const collectMentionedSceneIds = useCallback((): string[] | undefined => {
+    if (!editor) return undefined;
+    const sceneIdSet = new Set<string>();
+    editor.state.doc.descendants((node) => {
+      if (node.type.name !== "mention") return;
+      const kind = node.attrs.kind as string | undefined;
+      const id = node.attrs.id as string | undefined;
+      if (kind === "scene" && id) sceneIdSet.add(id);
+    });
+    return sceneIdSet.size > 0 ? Array.from(sceneIdSet) : undefined;
+  }, [editor]);
+
   const handleSendClick = (options?: { overrideAgentMode?: boolean }) => {
     if (!editor || isStreaming) return;
     const text = editor.getText().trim();
@@ -304,16 +319,7 @@ export function ChatInput({
       { getMarkdown?: () => string } | undefined
     >;
     const markdown: string = markdownStorage.markdown?.getMarkdown?.() ?? text;
-    // doc 内の mention ノードから kind=scene のみ収集（重複排除）。
-    const sceneIdSet = new Set<string>();
-    editor.state.doc.descendants((node) => {
-      if (node.type.name !== "mention") return;
-      const kind = node.attrs.kind as string | undefined;
-      const id = node.attrs.id as string | undefined;
-      if (kind === "scene" && id) sceneIdSet.add(id);
-    });
-    const mentionedSceneIds =
-      sceneIdSet.size > 0 ? Array.from(sceneIdSet) : undefined;
+    const mentionedSceneIds = collectMentionedSceneIds();
     onSend(markdown, { ...options, mentionedSceneIds });
     editor.commands.clearContent();
   };
@@ -333,15 +339,18 @@ export function ChatInput({
       const text = editor.getText().trim();
       const markdown: string =
         markdownStorage.markdown?.getMarkdown?.() ?? text;
+      const mentionedSceneIds = collectMentionedSceneIds();
       try {
-        const prompt = await buildPromptForCopy(markdown);
+        const prompt = await buildPromptForCopy(markdown, {
+          mentionedSceneIds,
+        });
         await navigator.clipboard.writeText(prompt);
         toast.success(t("chat.promptCopied"));
       } catch {
         toast.error(t("chat.copyFailed"));
       }
     },
-    [editor, buildPromptForCopy, t],
+    [editor, buildPromptForCopy, collectMentionedSceneIds, t],
   );
 
   const canUseTools = caps.supportsTools;
