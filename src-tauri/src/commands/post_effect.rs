@@ -272,6 +272,7 @@ fn is_manually_dismissed(conn: &rusqlite::Connection, dismiss_key: &str) -> bool
 /// consistency チェックを 1 シーン分実行し、挿入したアノテーション数を返す。
 /// 進捗イベントや run ステータス更新は呼び出し側が担当する。
 #[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments)]
 async fn process_consistency_scene(
     app: &AppHandle,
     run_id: &str,
@@ -280,6 +281,7 @@ async fn process_consistency_scene(
     codex_payload_json: &str,
     scene_text: &str,
     ai_settings_path: &std::path::PathBuf,
+    on_stage: impl Fn(f32, &str) + Send,
 ) -> Result<usize, anyhow::Error> {
     let ai_settings = read_ai_settings(ai_settings_path);
     let api_key = match get_api_key(&ai_settings.provider) {
@@ -298,6 +300,7 @@ async fn process_consistency_scene(
     .await
     .map_err(|e| anyhow::anyhow!("AI 呼び出し失敗: {e}"))?;
 
+    on_stage(0.5, "parsing");
     let json_str = extract_json(&raw_response);
     let parsed: Value =
         serde_json::from_str(json_str).map_err(|e| anyhow::anyhow!("LLM 出力のパース失敗: {e}"))?;
@@ -327,6 +330,7 @@ async fn process_consistency_scene(
         })
         .collect();
 
+    on_stage(0.7, "saving");
     let ws_state = app.state::<WorkspaceState>();
     let count: usize = super::with_db(&ws_state, |db| {
         db.with_conn(|conn| {
@@ -445,7 +449,6 @@ async fn process_consistency_scene(
     Ok(count)
 }
 
-#[allow(clippy::too_many_arguments)]
 async fn run_consistency_task(
     app: AppHandle,
     run_id: String,
@@ -483,6 +486,17 @@ async fn run_consistency_task(
         &codex_payload_json,
         &scene_text,
         &ai_settings_path,
+        |p, s| {
+            let _ = app.emit(
+                "post_effect:progress",
+                ProgressEvent {
+                    run_id: &run_id,
+                    stage: s,
+                    progress: p,
+                    message: None,
+                },
+            );
+        },
     )
     .await
     {
@@ -517,6 +531,7 @@ async fn process_intra_scene(
     scene_id: &str,
     scene_text: &str,
     ai_settings_path: &std::path::PathBuf,
+    on_stage: impl Fn(f32, &str) + Send,
 ) -> Result<usize, anyhow::Error> {
     let ai_settings = read_ai_settings(ai_settings_path);
     let api_key = match get_api_key(&ai_settings.provider) {
@@ -535,6 +550,7 @@ async fn process_intra_scene(
     .await
     .map_err(|e| anyhow::anyhow!("AI 呼び出し失敗: {e}"))?;
 
+    on_stage(0.5, "parsing");
     let json_str = extract_json(&raw_response);
     let parsed: Value =
         serde_json::from_str(json_str).map_err(|e| anyhow::anyhow!("LLM 出力のパース失敗: {e}"))?;
@@ -554,6 +570,7 @@ async fn process_intra_scene(
         })
         .collect();
 
+    on_stage(0.7, "saving");
     let ws_state = app.state::<WorkspaceState>();
     let count: usize = super::with_db(&ws_state, |db| {
         db.with_conn(|conn| {
@@ -735,6 +752,17 @@ async fn run_intra_task(
         &scene_id,
         &scene_text,
         &ai_settings_path,
+        |p, s| {
+            let _ = app.emit(
+                "post_effect:progress",
+                ProgressEvent {
+                    run_id: &run_id,
+                    stage: s,
+                    progress: p,
+                    message: None,
+                },
+            );
+        },
     )
     .await
     {
@@ -768,10 +796,23 @@ async fn run_multi_task(
     scenes: Vec<ScenePayload>,
     ai_settings_path: std::path::PathBuf,
 ) {
+    let abort_flag = app.state::<PostEffectAbortFlag>();
     let total = scenes.len();
     let mut total_count = 0usize;
 
     for (idx, scene) in scenes.into_iter().enumerate() {
+        if abort_flag.flag.load(std::sync::atomic::Ordering::Relaxed) {
+            fail_run(&app, &run_id, "中断されました");
+            let _ = app.emit(
+                "post_effect:error",
+                ErrorEvent {
+                    run_id: &run_id,
+                    error: "中断されました".to_string(),
+                },
+            );
+            return;
+        }
+
         let progress = (idx as f32) / (total as f32).max(1.0) * 0.9;
         let msg = format!("{}/{}", idx + 1, total);
         let _ = app.emit(
@@ -793,6 +834,7 @@ async fn run_multi_task(
                 &scene.codex_payload_json,
                 &scene.scene_text,
                 &ai_settings_path,
+                |_p, _s| {},
             )
             .await
         } else {
@@ -803,6 +845,7 @@ async fn run_multi_task(
                 &scene.scene_id,
                 &scene.scene_text,
                 &ai_settings_path,
+                |_p, _s| {},
             )
             .await
         };

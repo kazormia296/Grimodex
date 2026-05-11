@@ -268,7 +268,7 @@ export interface MultiPayloadResult {
   inputHash: string;
 }
 
-function getSceneIdsForScope(
+export function getSceneIdsForScope(
   nodes: TreeNodeData[],
   scopeType: "folder" | "project",
   scopeTargetId: string | null,
