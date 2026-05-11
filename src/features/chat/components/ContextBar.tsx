@@ -40,6 +40,7 @@ import {
   formatContextWindow,
 } from "../agent/modelLimits";
 import { estimateInputCost, formatCost } from "../modelPricing";
+import { CircularProgress } from "@/components/ui/circular-progress";
 import { getTypeLabel } from "../utils/typeLabels";
 import { ContextPillGroup } from "./ContextPillGroup";
 import { useCodexHighlightStore } from "@/features/editor/codexHighlightStore";
@@ -248,14 +249,14 @@ export function ContextBar({
     contextWindow > 0
       ? Math.min(100, Math.round((contextTokenCount / contextWindow) * 100))
       : null;
-  const windowFillTone =
+  const windowFillStroke =
     windowFillPct === null
       ? null
       : windowFillPct >= 80
-        ? "bg-destructive"
+        ? "stroke-destructive"
         : windowFillPct >= 50
-          ? "bg-amber-500"
-          : "bg-primary";
+          ? "stroke-amber-500"
+          : "stroke-primary";
 
   return (
     <>
@@ -313,34 +314,27 @@ export function ContextBar({
                         </span>
                       )}
                     </button>
-                    {ctxWindowLabel && (
-                      <span className="text-xs text-muted-foreground/60">
-                        / {ctxWindowLabel}
-                      </span>
-                    )}
-                    {windowFillPct !== null && windowFillTone && (
+                    {windowFillPct !== null && windowFillStroke && (
                       <div
-                        className="flex items-center gap-1"
                         role="progressbar"
                         aria-valuenow={windowFillPct}
                         aria-valuemin={0}
                         aria-valuemax={100}
-                        aria-label={t("chat.context.windowFill", {
+                        aria-label={t("chat.context.windowFillOfWindow", {
                           pct: windowFillPct,
+                          window: ctxWindowLabel ?? "",
                         })}
-                        title={t("chat.context.windowFill", {
+                        title={t("chat.context.windowFillOfWindow", {
                           pct: windowFillPct,
+                          window: ctxWindowLabel ?? "",
                         })}
                       >
-                        <div className="h-1.5 w-12 overflow-hidden rounded-full bg-muted">
-                          <div
-                            className={`h-full transition-all ${windowFillTone}`}
-                            style={{ width: `${windowFillPct}%` }}
-                          />
-                        </div>
-                        <span className="text-xs tabular-nums text-muted-foreground">
-                          {windowFillPct}%
-                        </span>
+                        <CircularProgress
+                          value={windowFillPct}
+                          size={26}
+                          strokeWidth={3}
+                          strokeClass={windowFillStroke}
+                        />
                       </div>
                     )}
                   </div>

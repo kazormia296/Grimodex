@@ -529,6 +529,7 @@
       "costRow": "Estimated input cost",
       "costNote": "Output not included",
       "windowFill": "Context window usage: {{pct}}%",
+      "windowFillOfWindow": "Context window usage: {{pct}}% (of {{window}})",
       "windowFillRow": "Window usage",
       "projectInfo": "Project info",
       "sceneTokens": "Scene: {{count}} tokens",

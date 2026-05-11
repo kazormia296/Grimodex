@@ -529,6 +529,7 @@
       "costRow": "推定 input コスト",
       "costNote": "output は含まない概算",
       "windowFill": "コンテキストウィンドウ使用率: {{pct}}%",
+      "windowFillOfWindow": "コンテキストウィンドウ使用率: {{pct}}%（容量 {{window}}）",
       "windowFillRow": "ウィンドウ使用率",
       "projectInfo": "プロジェクト情報",
       "sceneTokens": "シーン: {{count}} tokens",
