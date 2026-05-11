@@ -26,6 +26,8 @@ interface ChatInputProps {
   editorRef?: MutableRefObject<Editor | null>;
   onMentionPin?: (entryId: string) => void;
   onDetectedEntries?: (entryIds: string[]) => void;
+  /** 入力欄にテキストがあるかどうかを親に通知（QuickActionStrip の表示制御用） */
+  onHasTextChange?: (hasText: boolean) => void;
 }
 
 export function ChatInput({
@@ -34,6 +36,7 @@ export function ChatInput({
   editorRef,
   onMentionPin,
   onDetectedEntries,
+  onHasTextChange,
 }: ChatInputProps) {
   const { t } = useTranslation();
   const isStreaming = disabled ?? false;
@@ -194,6 +197,10 @@ export function ChatInput({
     },
   });
   const hasText = editorState?.hasText ?? false;
+
+  useEffect(() => {
+    onHasTextChange?.(hasText);
+  }, [hasText, onHasTextChange]);
 
   // Agent mode サジェスト: 入力が安定して 500ms 経過してから判定 (チップ点滅防止)
   const [suggestAgent, setSuggestAgent] = useState(false);

@@ -104,6 +104,7 @@ export function ChatPanel() {
   }, [loadAiSettings]);
 
   const [sessionsPanelOpen, setSessionsPanelOpen] = useState(false);
+  const [inputHasText, setInputHasText] = useState(false);
   const chatEditorRef = useRef<Editor | null>(null);
   // メッセージリストコンテナの DOM 要素（Codex ポップオーバー用）
   const [messagesContainerEl, setMessagesContainerEl] =
@@ -669,7 +670,7 @@ export function ChatPanel() {
         />
       )}
 
-      <QuickActionStrip />
+      <QuickActionStrip hidden={inputHasText} />
 
       <ChatInput
         onSend={handleSend}
@@ -677,6 +678,7 @@ export function ChatPanel() {
         editorRef={chatEditorRef}
         onMentionPin={(id) => handlePin(id, "codex")}
         onDetectedEntries={handleDetectedEntries}
+        onHasTextChange={setInputHasText}
       />
 
       <CodexExtractionDialog

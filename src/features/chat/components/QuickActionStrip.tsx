@@ -75,7 +75,12 @@ const PROJECT_ACTIONS: QuickActionItem[] = [
   },
 ];
 
-export function QuickActionStrip() {
+interface QuickActionStripProps {
+  /** 入力欄に文字があるとき非表示にして編集スペースを邪魔しない */
+  hidden?: boolean;
+}
+
+export function QuickActionStrip({ hidden = false }: QuickActionStripProps) {
   const { t } = useTranslation();
   const chatScope = useChatStore((s) => s.chatScope);
   const scopeAnchorId = useChatStore((s) => s.scopeAnchorId);
@@ -91,7 +96,7 @@ export function QuickActionStrip() {
     return isAct ? FOLDER_ACT_ACTIONS : FOLDER_CHAPTER_ACTIONS;
   }, [chatScope, scopeAnchorId, nodes]);
 
-  if (actions.length === 0) return null;
+  if (actions.length === 0 || hidden) return null;
 
   return (
     <div
