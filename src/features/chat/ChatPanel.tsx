@@ -81,8 +81,10 @@ export function ChatPanel() {
   const setChatScope = useChatStore((s) => s.setChatScope);
   const starMessage = useChatStore((s) => s.starMessage);
 
-  // 派生: scope==="scene" 以外（folder / project）では detect 系を出さない。
-  const isSceneScope = chatScope === "scene";
+  // Phase 2: scene と folder スコープでは本文（または集約本文）が context に
+  // 入るので、そこから検出された codex を ContextBar に出す。project スコープは
+  // 本文集約しないので detect 系は無効。
+  const showDetectedEntries = chatScope !== "project";
 
   // chatStore の activeSceneId (手動変更可能)
   const chatSceneId = useChatStore((s) => s.activeSceneId);
@@ -567,13 +569,13 @@ export function ChatPanel() {
         pinnedEntries={[...pinnedEntries, ...inputPinnedEntries]}
         pinnedSnippets={pinnedSnippets}
         detectedEntries={
-          isSceneScope
+          showDetectedEntries
             ? detectedEntries.filter((e) => !inputPinnedIds.has(e.id))
             : []
         }
         alwaysEntries={alwaysEntries.filter((e) => !inputPinnedIds.has(e.id))}
         spotlightCandidateIds={computeSpotlightCandidates(
-          isSceneScope ? detectedEntries : [],
+          showDetectedEntries ? detectedEntries : [],
           alwaysEntries,
           new Set([...pinnedIds, ...inputPinnedIds]),
         )}

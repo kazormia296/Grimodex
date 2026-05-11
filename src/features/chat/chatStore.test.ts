@@ -44,12 +44,17 @@ vi.mock("@/features/codex/prosemirrorTextExtractor", () => ({
   extractPlainText: vi.fn(() => ""),
 }));
 
-vi.mock("@/features/tree/treeStore", () => ({
-  useTreeStore: Object.assign(
-    vi.fn(() => ({ nodes: [] })),
-    { getState: vi.fn(() => ({ nodes: [] })) },
-  ),
-}));
+vi.mock("@/features/tree/treeStore", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("@/features/tree/treeStore")>();
+  return {
+    ...actual,
+    useTreeStore: Object.assign(
+      vi.fn(() => ({ nodes: [] })),
+      { getState: vi.fn(() => ({ nodes: [] })) },
+    ),
+  };
+});
 
 vi.mock("@/features/tree/api", () => ({
   loadSceneContent: vi.fn(() => Promise.resolve("シーン本文")),
@@ -78,6 +83,10 @@ vi.mock("@/features/codex/api", () => ({
 
 vi.mock("@/features/codex/codexMatcher", () => ({
   findMentionedEntries: vi.fn(() => []),
+}));
+
+vi.mock("@/features/codex/rustMatcher", () => ({
+  findMentionedEntriesAsync: vi.fn(() => Promise.resolve([])),
 }));
 
 import * as chatApi from "./chatApi";
@@ -671,6 +680,184 @@ describe("useChatStore", () => {
       // Y は依然として children/childrenContext に含まれるべき
       expect(parentCtx?.children?.map((c) => c.id) ?? []).toContain("Y");
       expect(parentCtx?.childrenContext ?? "").toContain("Y-summary");
+    });
+  });
+
+  // --- Phase 2: folder scope での子シーン本文集約 ---
+
+  describe("refreshContextLayers folder scope aggregation", () => {
+    it("aggregates descendant scene bodies and detects codex from joined text", async () => {
+      const { listCodexEntries } = await import("@/features/codex/api");
+      const { useTreeStore } = await import("@/features/tree/treeStore");
+      const { loadSceneContent } = await import("@/features/tree/api");
+      const { findMentionedEntriesAsync } =
+        await import("@/features/codex/rustMatcher");
+
+      const mockListCodex = vi.mocked(listCodexEntries);
+      const mockLoadScene = vi.mocked(loadSceneContent);
+      const mockMatcher = vi.mocked(findMentionedEntriesAsync);
+      const mockTreeState = vi.mocked(useTreeStore.getState);
+
+      const folder = {
+        id: "ch1",
+        parentId: null,
+        nodeType: "folder",
+        title: "Chapter 1",
+        sortOrder: "a0",
+        synopsis: "章 outline",
+        charCount: 0,
+      };
+      const sceneA = {
+        id: "sA",
+        parentId: "ch1",
+        nodeType: "scene",
+        title: "シーンA",
+        sortOrder: "a0",
+        synopsis: null,
+        charCount: 100,
+      };
+      const sceneB = {
+        id: "sB",
+        parentId: "ch1",
+        nodeType: "scene",
+        title: "シーンB",
+        sortOrder: "a1",
+        synopsis: null,
+        charCount: 100,
+      };
+
+      const codexEntry = {
+        id: "char1",
+        projectId: "proj-1",
+        parentId: null,
+        type: "character",
+        name: "アリス",
+        aliases: null,
+        excludedAliases: null,
+        summary: "ヒロイン",
+        content: "{}",
+        icon: null,
+        tagsCache: null,
+        contextMode: "mentioned",
+        phaseLabel: null,
+        notes: null,
+        childrenBudget: "compact",
+        sourceChatMessageId: null,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      };
+
+      mockTreeState.mockReturnValue({
+        // @ts-expect-error テスト用に nodes だけ持つ tree state を返す
+        nodes: [folder, sceneA, sceneB],
+        projectId: "proj-1",
+      });
+      mockListCodex.mockResolvedValue([codexEntry]);
+      mockLoadScene
+        .mockResolvedValueOnce("シーンA の本文")
+        .mockResolvedValueOnce("シーンB の本文");
+      mockMatcher.mockResolvedValue([
+        { id: "char1", name: "アリス", type: "character" },
+      ]);
+
+      useChatStore.setState({
+        activeSceneId: "sA",
+        activeProjectId: "proj-1",
+        activeSessionId: null,
+        chatScope: "folder",
+        scopeAnchorId: "ch1",
+        inputPinnedEntryIds: [],
+      });
+
+      mockBuildSystemPrompt.mockReturnValue({
+        prompt: "p",
+        totalTokens: 100,
+        layers: [],
+      });
+
+      await useChatStore.getState().refreshContextLayers();
+
+      // buildSystemPrompt が aggregated content と Chapter title で呼ばれている
+      const args = mockBuildSystemPrompt.mock.calls.at(-1)?.[0];
+      expect(args?.scene.title).toBe("Chapter 1");
+      const content = args?.scene.content ?? "";
+      expect(content).toContain("--- シーンA ---");
+      expect(content).toContain("--- シーンB ---");
+      expect(content).toContain("シーンA の本文");
+      expect(content).toContain("シーンB の本文");
+      // active scene (sA) は最後尾に reorder されるので「シーンA」が「シーンB」より後に出る
+      expect(content.indexOf("--- シーンA ---")).toBeGreaterThan(
+        content.indexOf("--- シーンB ---"),
+      );
+
+      // 検出された codex が detectedEntries に乗っている
+      const state = useChatStore.getState();
+      expect(state.detectedEntries.map((e) => e.id)).toEqual(["char1"]);
+    });
+
+    it("falls back to synopsis-only when scene count exceeds threshold", async () => {
+      const { listCodexEntries } = await import("@/features/codex/api");
+      const { useTreeStore } = await import("@/features/tree/treeStore");
+      const { loadSceneContent } = await import("@/features/tree/api");
+      const { findMentionedEntriesAsync } =
+        await import("@/features/codex/rustMatcher");
+
+      const mockListCodex = vi.mocked(listCodexEntries);
+      const mockLoadScene = vi.mocked(loadSceneContent);
+      const mockMatcher = vi.mocked(findMentionedEntriesAsync);
+      const mockTreeState = vi.mocked(useTreeStore.getState);
+
+      const folder = {
+        id: "ch1",
+        parentId: null,
+        nodeType: "folder",
+        title: "Big Chapter",
+        sortOrder: "a0",
+        synopsis: "outline",
+        charCount: 0,
+      };
+      // 31 個のシーン = MAX_AGGREGATE_SCENES (30) を超える
+      const scenes = Array.from({ length: 31 }, (_, i) => ({
+        id: `s${i}`,
+        parentId: "ch1",
+        nodeType: "scene" as const,
+        title: `S${i}`,
+        sortOrder: `a${i.toString(36)}`,
+        synopsis: null,
+        charCount: 100,
+      }));
+
+      mockTreeState.mockReturnValue({
+        // @ts-expect-error テスト用に nodes だけ持つ tree state を返す
+        nodes: [folder, ...scenes],
+        projectId: "proj-1",
+      });
+      mockListCodex.mockResolvedValue([]);
+      mockLoadScene.mockClear();
+      mockMatcher.mockClear();
+      mockBuildSystemPrompt.mockReturnValue({
+        prompt: "p",
+        totalTokens: 0,
+        layers: [],
+      });
+
+      useChatStore.setState({
+        activeSceneId: "",
+        activeProjectId: "proj-1",
+        activeSessionId: null,
+        chatScope: "folder",
+        scopeAnchorId: "ch1",
+        inputPinnedEntryIds: [],
+      });
+
+      await useChatStore.getState().refreshContextLayers();
+
+      // 閾値超過なので本文 load も matcher も呼ばれない
+      expect(mockLoadScene).not.toHaveBeenCalled();
+      expect(mockMatcher).not.toHaveBeenCalled();
+      // buildSystemPrompt は scene.content 空で呼ばれている（synopsis-only fallback）
+      const args = mockBuildSystemPrompt.mock.calls.at(-1)?.[0];
+      expect(args?.scene.content).toBe("");
     });
   });
 });

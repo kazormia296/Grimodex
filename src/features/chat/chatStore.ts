@@ -66,7 +66,11 @@ import type {
   ToolCallRecord,
   AgentLoopProgress,
 } from "./agent/agentTypes";
-import { useTreeStore, getAncestorFolders } from "@/features/tree/treeStore";
+import {
+  useTreeStore,
+  getAncestorFolders,
+  getDescendantScenesInOrder,
+} from "@/features/tree/treeStore";
 import { cmpKeys } from "@/features/tree/fractionalIndex";
 import { loadSceneContent, getNode } from "@/features/tree/api";
 import { prosemirrorToText } from "@/lib/prosemirror";
@@ -1942,6 +1946,92 @@ export const useChatStore = create<ChatState>()((set, get) => ({
           listCodexEntries(),
         ]);
 
+        // Phase 2: folder スコープで配下シーン本文を集約する。
+        // 規模上限を超える場合は synopsis-only（Phase 1 と同等）にフォールバック。
+        const MAX_AGGREGATE_SCENES = 30;
+        const MAX_AGGREGATE_CHARS = 100_000;
+        const LOAD_CHUNK = 8;
+        let aggregatedScene: {
+          id: string;
+          title: string;
+          content: string;
+        } | null = null;
+        let aggregatedDetected: CodexEntry[] = [];
+        if (chatScope === "folder" && scopeAnchorId) {
+          const allNodes = useTreeStore.getState().nodes;
+          const anchorFolder = allNodes.find((n) => n.id === scopeAnchorId);
+          const descendants = getDescendantScenesInOrder(
+            allNodes,
+            scopeAnchorId,
+          );
+          const totalChars = descendants.reduce(
+            (sum, s) => sum + (s.charCount ?? 0),
+            0,
+          );
+          if (
+            anchorFolder &&
+            descendants.length > 0 &&
+            descendants.length <= MAX_AGGREGATE_SCENES &&
+            totalChars <= MAX_AGGREGATE_CHARS
+          ) {
+            // active scene を最後尾に並べる: trimL3Text は先頭から削るため、
+            // 予算超過時にユーザーが今編集中のシーンを優先して残すための意図的
+            // な reorder。LLM への提示順は自然な物語順ではなくなるが、シーン
+            // 区切り `--- {title} ---` マーカーから流れは再構成できる。
+            // 閾値内なら全シーン残るので「順序」は基本的に問題にならない。
+            const ordered = [...descendants];
+            if (activeSceneId) {
+              const idx = ordered.findIndex((s) => s.id === activeSceneId);
+              if (idx >= 0) {
+                const [active] = ordered.splice(idx, 1);
+                ordered.push(active);
+              }
+            }
+            const bodies: string[] = new Array(ordered.length);
+            for (let i = 0; i < ordered.length; i += LOAD_CHUNK) {
+              const slice = ordered.slice(i, i + LOAD_CHUNK);
+              const loaded = await Promise.all(
+                slice.map(async (s) =>
+                  prosemirrorToText((await loadSceneContent(s.id)) ?? ""),
+                ),
+              );
+              for (let j = 0; j < slice.length; j++) {
+                bodies[i + j] = loaded[j];
+              }
+            }
+            const parts: string[] = [];
+            for (let i = 0; i < ordered.length; i++) {
+              const body = (bodies[i] ?? "").trim();
+              parts.push(`--- ${ordered[i].title} ---\n${body}`);
+            }
+            // LLM に「単一シーン本文ではなく集約モード」であることを明示する
+            // プロローグ。`### シーン本文` ヘッダは buildSystemPrompt が付ける。
+            const preface = `[この章「${anchorFolder.title}」配下のシーンを集約しています。各シーンは「--- {タイトル} ---」区切りで列挙され、最後尾が現在編集中のシーンです]`;
+            const joined = `${preface}\n\n${parts.join("\n\n")}`;
+            aggregatedScene = {
+              id: anchorFolder.id,
+              title: anchorFolder.title,
+              content: joined,
+            };
+            try {
+              const detectable = allEntries.filter(
+                (e) =>
+                  e.contextMode !== "hidden" && e.contextMode !== "suppress",
+              );
+              const matched = await findMentionedEntriesAsync(
+                joined,
+                detectable,
+              );
+              const matchedIds = new Set(matched.map((m) => m.id));
+              aggregatedDetected = detectable.filter((e) =>
+                matchedIds.has(e.id),
+              );
+            } catch {
+              // codex 検出失敗時は無視（detectedEntries は空のまま）
+            }
+          }
+        }
+
         const globalAlwaysEntries = allEntries.filter(
           (e) => e.contextMode === "always",
         );
@@ -2040,7 +2130,17 @@ export const useChatStore = create<ChatState>()((set, get) => ({
         const alwaysNotPinned = globalAlwaysEntries.filter(
           (e) => !mergedGlobalPinnedIdSet.has(e.id),
         );
-        const globalCodexEntries: CodexContext[] = alwaysNotPinned.map((e) => {
+        // Phase 2: 集約した detected をピン重複を除外して合流。
+        // L5 light 入り口の `codexEntries` に detected → always の順で乗せる。
+        const detectedNotPinned = aggregatedDetected.filter(
+          (e) => !mergedGlobalPinnedIdSet.has(e.id),
+        );
+        const detectedIdSet = new Set(detectedNotPinned.map((e) => e.id));
+        const alwaysNotDetected = alwaysNotPinned.filter(
+          (e) => !detectedIdSet.has(e.id),
+        );
+        const codexLightSource = [...detectedNotPinned, ...alwaysNotDetected];
+        const globalCodexEntries: CodexContext[] = codexLightSource.map((e) => {
           const aliases = parseAliases(e.aliases);
           return {
             id: e.id,
@@ -2052,7 +2152,13 @@ export const useChatStore = create<ChatState>()((set, get) => ({
         });
 
         const promptResult = buildSystemPrompt({
-          scene: { id: "", title: "", content: "" },
+          scene: aggregatedScene
+            ? {
+                id: aggregatedScene.id,
+                title: aggregatedScene.title,
+                content: aggregatedScene.content,
+              }
+            : { id: "", title: "", content: "" },
           project: projectCtx ?? undefined,
           codexEntries:
             globalCodexEntries.length > 0 ? globalCodexEntries : undefined,
@@ -2072,8 +2178,8 @@ export const useChatStore = create<ChatState>()((set, get) => ({
           contextTokenCount: promptResult.totalTokens,
           contextLayers: promptResult.layers,
           lastSystemPrompt: promptResult.prompt,
-          detectedEntries: [],
-          alwaysEntries: alwaysNotPinned,
+          detectedEntries: detectedNotPinned,
+          alwaysEntries: alwaysNotDetected,
           projectOutline: projectCtx?.outline ?? undefined,
           chapterOutlines: folderScopeOutlines,
         });
