@@ -6,6 +6,7 @@ import { useGridStore } from "./gridStore";
 import { cn } from "@/lib/utils";
 import { columnDraggableId, columnNestId } from "./gridDndUtils";
 import type { TreeNodeData } from "@/features/tree/treeStore";
+import { InlineSynopsisEditor } from "@/features/editor/InlineSynopsisEditor";
 
 interface Props {
   folder: TreeNodeData;
@@ -146,6 +147,21 @@ export function GridFolderCard({ folder, compact, isDragOverlay }: Props) {
           )}
         </div>
       )}
+      {/* Phase 4 後続: chapter outline (folder.synopsis)。double-click で編集。
+          expanded 時も表示する: scenes は親 column に sibling として展開され
+          folder カード自体は「この folder は何の section か」のラベル役を続ける
+          ため、構造役割としての outline を同時に見られた方が読み解きやすい。 */}
+      <div className={cn(compact ? "px-2 pb-1.5" : "px-3 pb-2")}>
+        <InlineSynopsisEditor
+          nodeId={folder.id}
+          synopsis={folder.synopsis ?? null}
+          className="line-clamp-2 cursor-text rounded text-[11px] leading-snug text-muted-foreground hover:bg-accent/30"
+          textareaClassName="w-full resize-none rounded border border-border bg-background px-1.5 py-1 text-[11px] leading-snug text-foreground focus:outline-none focus:ring-1 focus:ring-ring"
+          placeholder={t("grid.column.addOutline", "＋ Outline を追加")}
+          rows={3}
+          triggerOn="doubleClick"
+        />
+      </div>
     </div>
   );
 }

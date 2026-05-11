@@ -16,13 +16,24 @@ export interface GridChapterData {
 }
 
 /**
- * Ordered column entry for rendering. Chapters and the loose scene group are
- * merged into one list ordered by sortOrder, so the loose group is positioned
- * to match the Scenes-panel order (e.g. Part-direct scenes appear before the
- * chapter sub-folder when their sortOrder precedes it).
+ * Ordered column entry for rendering. Chapters と直下シーン群を sortOrder で
+ * マージして1列に並べる（Scenes パネル順と一致）。
+ *
+ * 直下シーン群は 2 種類に分かれる:
+ * - "container": containerId が folder のときの直下シーン。folder 自身の
+ *   表現（実線・folder アイコン・folder.title）。outline は GridContainerOutline
+ *   bar 側で表示される。
+ * - "loose": project root (containerId === null) で folder にぶら下がってない
+ *   orphan シーン。点線・「未分類シーン」タイトル。
  */
 export type GridColumnEntry =
   | { kind: "chapter"; data: GridChapterData; sortOrder: string }
+  | {
+      kind: "container";
+      scenes: TreeNodeData[];
+      folder: TreeNodeData;
+      sortOrder: string;
+    }
   | { kind: "loose"; scenes: TreeNodeData[]; sortOrder: string };
 
 export interface GridDerivedData {
@@ -96,24 +107,34 @@ export function useGridDerivedData(
         0,
       ) + looseScenes.length;
 
-    // Merge chapters + loose group into one sortOrder-ordered list. The loose
-    // group's representative sortOrder is the first loose scene's sortOrder, so
-    // it slots between chapter columns at the right tree position.
+    // Merge chapters + 直下シーン群 を sortOrder 順に1列に並べる。
     const orderedColumns: GridColumnEntry[] = chapters.map((ch) => ({
       kind: "chapter" as const,
       data: ch,
       sortOrder: ch.folder.sortOrder,
     }));
-    // Show the loose column when:
-    //   - there are direct scenes to display, OR
-    //   - the container is a folder with no chapter sub-folders. In that case
-    //     the loose column doubles as the "entered folder" column itself, so
-    //     an empty folder still appears as one empty column rather than a
-    //     blank panel (mirrors how the folder shows up from the outer view).
-    const shouldShowLooseColumn =
-      looseScenes.length > 0 ||
-      (containerId !== null && chapterFolders.length === 0);
-    if (shouldShowLooseColumn) {
+
+    // 直下シーン群の表現を決める:
+    // - containerId が folder のとき: "container" 列として実線で folder を表現。
+    //   直下シーンが空でも、子に chapter が無いなら空の container 列を1つ出す
+    //   （leaf folder への dive-in 時に「空のフォルダ」を視覚化するため）。
+    // - containerId === null (project root) のとき: orphan シーンを "loose"
+    //   列として点線で表示。chapter のみで orphan が無い場合は何も足さない。
+    const containerNode =
+      containerId !== null
+        ? nodes.find((n) => n.id === containerId && n.nodeType === "folder")
+        : null;
+    if (containerNode) {
+      const shouldEmit = looseScenes.length > 0 || chapterFolders.length === 0;
+      if (shouldEmit) {
+        orderedColumns.push({
+          kind: "container" as const,
+          scenes: looseScenes,
+          folder: containerNode,
+          sortOrder: looseScenes[0]?.sortOrder ?? "",
+        });
+      }
+    } else if (looseScenes.length > 0) {
       orderedColumns.push({
         kind: "loose" as const,
         scenes: looseScenes,

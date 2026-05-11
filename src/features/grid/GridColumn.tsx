@@ -8,6 +8,7 @@ import { cn } from "@/lib/utils";
 import { GridSceneCard } from "./GridSceneCard";
 import { GridFolderCard } from "./GridFolderCard";
 import { GridColumnLabelBar } from "./GridColumnLabelBar";
+import { InlineSynopsisEditor } from "@/features/editor/InlineSynopsisEditor";
 import {
   columnDraggableId,
   columnSlotId,
@@ -186,6 +187,20 @@ export function GridColumn({
               <span className="opacity-50">/{sceneItems.length}</span>
             )}
           </span>
+        </div>
+
+        {/* Phase 4 後続: chapter outline (folder.synopsis)。double-click で編集。
+            chat に chapter outline として注入されるテキスト。 */}
+        <div className="px-3 py-1.5 border-b">
+          <InlineSynopsisEditor
+            nodeId={folder.id}
+            synopsis={folder.synopsis ?? null}
+            className="line-clamp-2 cursor-text rounded text-[11px] leading-snug text-muted-foreground hover:bg-accent/30"
+            textareaClassName="w-full resize-none rounded border border-border bg-background px-1.5 py-1 text-[11px] leading-snug text-foreground focus:outline-none focus:ring-1 focus:ring-ring"
+            placeholder={t("grid.column.addOutline", "＋ Outline を追加")}
+            rows={3}
+            triggerOn="doubleClick"
+          />
         </div>
 
         {/* Items: scenes (cards) + nested folders (folder cards), recursively flattened */}

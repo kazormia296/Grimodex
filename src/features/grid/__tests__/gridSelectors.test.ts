@@ -220,6 +220,90 @@ describe("useGridDerivedData", () => {
     ]);
   });
 
+  it("Phase 4 後続: dive-in 中の folder 直下シーンは container kind になり folder を担う", () => {
+    // act1 folder dive-in: 直下は scene 1 件のみ（chapter sub-folder 無し）
+    const act1 = makeNodeData({
+      id: "act1",
+      nodeType: "folder",
+      parentId: null,
+      sortOrder: "a1",
+    });
+    const sa = makeNodeData({
+      id: "sa",
+      nodeType: "scene",
+      parentId: "act1",
+      sortOrder: "a1",
+    });
+    resetTree(act1, sa);
+
+    const { result } = renderHook(() => useGridDerivedData("act1"));
+    const cols = result.current.orderedColumns;
+    expect(cols.map((c) => c.kind)).toEqual(["container"]);
+    if (cols[0].kind !== "container")
+      throw new Error("expected container kind");
+    expect(cols[0].folder.id).toBe("act1");
+    expect(cols[0].scenes.map((s) => s.id)).toEqual(["sa"]);
+  });
+
+  it("Phase 4 後続: container folder が空でも空 container 列を 1 つ出す", () => {
+    const beat = makeNodeData({
+      id: "beat",
+      nodeType: "folder",
+      parentId: null,
+      sortOrder: "a1",
+    });
+    resetTree(beat);
+
+    const { result } = renderHook(() => useGridDerivedData("beat"));
+    expect(result.current.orderedColumns.map((c) => c.kind)).toEqual([
+      "container",
+    ]);
+  });
+
+  it("Phase 4 後続: container 内に chapter folder と直下シーン両方あれば chapter + container を出す", () => {
+    // mixed: container has both chapter sub-folder and direct scenes
+    const root = makeNodeData({
+      id: "root",
+      nodeType: "folder",
+      parentId: null,
+      sortOrder: "a0",
+    });
+    const ch = makeNodeData({
+      id: "ch",
+      nodeType: "folder",
+      parentId: "root",
+      sortOrder: "a1",
+    });
+    const direct = makeNodeData({
+      id: "direct",
+      nodeType: "scene",
+      parentId: "root",
+      sortOrder: "a2",
+    });
+    resetTree(root, ch, direct);
+
+    const { result } = renderHook(() => useGridDerivedData("root"));
+    expect(result.current.orderedColumns.map((c) => c.kind)).toEqual([
+      "chapter",
+      "container",
+    ]);
+  });
+
+  it("Phase 4 後続: project root で chapter のみ・orphan 無ければ loose 列は出ない", () => {
+    const ch = makeNodeData({
+      id: "ch",
+      nodeType: "folder",
+      parentId: null,
+      sortOrder: "a1",
+    });
+    resetTree(ch);
+
+    const { result } = renderHook(() => useGridDerivedData(null));
+    expect(result.current.orderedColumns.map((c) => c.kind)).toEqual([
+      "chapter",
+    ]);
+  });
+
   it("expands all nested folders by default (collapsed set empty)", () => {
     const ch1 = makeNodeData({
       id: "ch1",

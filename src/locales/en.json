@@ -719,7 +719,8 @@
     },
     "column": {
       "newScene": "+ Add Scene",
-      "dropHere": "Drop here"
+      "dropHere": "Drop here",
+      "addOutline": "+ Add outline"
     },
     "looseColumn": {
       "title": "Unassigned Scenes"

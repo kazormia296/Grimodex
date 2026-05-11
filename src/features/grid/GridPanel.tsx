@@ -21,6 +21,8 @@ import { useGridStore } from "./gridStore";
 import { useGridDerivedData, useGridFlatSceneOrder } from "./gridSelectors";
 import { useGridCardVisibility } from "./useGridCardVisibility";
 import { GridHeader } from "./GridHeader";
+import { GridContainerOutline } from "./GridContainerOutline";
+import { GridContainerSceneColumn } from "./GridContainerSceneColumn";
 import { GridDisplayToolbar } from "./GridDisplayToolbar";
 import { ManageLabelsDialog } from "@/features/labels/ManageLabelsDialog";
 import { useLabelStore } from "@/features/labels/labelStore";
@@ -465,6 +467,8 @@ export function GridPanel() {
 
         {toolbarOpen && <GridDisplayToolbar />}
 
+        <GridContainerOutline containerId={containerId} />
+
         <ManageLabelsDialog
           open={manageLabelsOpen}
           onClose={() => setManageLabelsOpen(false)}
@@ -487,6 +491,21 @@ export function GridPanel() {
                 />
               );
             }
+            if (entry.kind === "container") {
+              return (
+                <GridContainerSceneColumn
+                  key={`container-${entry.folder.id}`}
+                  folder={entry.folder}
+                  scenes={entry.scenes}
+                  display={display}
+                  chapters={chapters.map((ch) => ch.folder)}
+                  visibility={visibility}
+                  dropIndicator={dropIndicator}
+                  onRequestDeleteConfirm={handleDeleteScenes}
+                  flatOrder={flatOrder}
+                />
+              );
+            }
             return (
               <GridLooseColumn
                 key="loose"
@@ -496,12 +515,6 @@ export function GridPanel() {
                 chapters={chapters.map((ch) => ch.folder)}
                 visibility={visibility}
                 dropIndicator={dropIndicator}
-                title={
-                  containerId
-                    ? (nodes.find((n) => n.id === containerId)?.title ??
-                      undefined)
-                    : undefined
-                }
                 onRequestDeleteConfirm={handleDeleteScenes}
                 flatOrder={flatOrder}
               />
