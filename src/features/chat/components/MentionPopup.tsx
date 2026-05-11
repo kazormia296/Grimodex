@@ -62,6 +62,25 @@ export function MentionPopup({
     return () => document.removeEventListener("keydown", onKeyDown, true);
   }, [items, selectedIndex, onSelect, onChangeIndex]);
 
+  // 選択中の <li> が listbox の可視範囲外なら追従スクロール。
+  // `scrollIntoView({ block: "nearest" })` は listbox を独立スクロール領域
+  // として扱い、外側 (ChatPanel 等) のスクロール位置を巻き込まない。
+  useEffect(() => {
+    const list = listRef.current;
+    if (!list) return;
+    const target = list.children[selectedIndex] as HTMLElement | undefined;
+    if (!target) return;
+    const top = target.offsetTop;
+    const bottom = top + target.offsetHeight;
+    const viewTop = list.scrollTop;
+    const viewBottom = viewTop + list.clientHeight;
+    if (top < viewTop) {
+      list.scrollTop = top;
+    } else if (bottom > viewBottom) {
+      list.scrollTop = bottom - list.clientHeight;
+    }
+  }, [selectedIndex, items]);
+
   if (items.length === 0) return null;
 
   // clientRect ベースで上方向に展開
