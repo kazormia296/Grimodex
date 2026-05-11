@@ -874,13 +874,16 @@
         "name": "Save the Cat Stages",
         "stages": {
           "act1": {
-            "name": "Act 1"
+            "name": "Act 1",
+            "synopsis": "The setup half. Establish the ordinary world and what the protagonist lacks, deliver the catalyst, and force the no-going-back decision through debate. Plant the theme and the stakes so readers feel the bet."
           },
           "act2": {
-            "name": "Act 2"
+            "name": "Act 2",
+            "synopsis": "The heart of the story. The protagonist adapts to the new world, the B-story embodies the theme, false victories and defeats compound, and the dark night of the soul leads to the real answer. The transformation gets tested here."
           },
           "act3": {
-            "name": "Act 3"
+            "name": "Act 3",
+            "synopsis": "The synthesis. Armed with the new solution, the protagonist faces the climax and rebuilds the world as a changed self. The final image mirrors the opening, making the change visible."
           },
           "openingImage": {
             "name": "Opening Image",
@@ -948,13 +951,16 @@
         "name": "Hero's Journey",
         "stages": {
           "departure": {
-            "name": "Departure"
+            "name": "Departure",
+            "synopsis": "The Departure stage. Ordinary world → call → refusal → mentor → crossing the threshold. The psychological and physical transition that lands the protagonist in the unknown world."
           },
           "initiation": {
-            "name": "Initiation"
+            "name": "Initiation",
+            "synopsis": "The Initiation stage. Tests/allies/enemies, approach to the inmost cave, the supreme ordeal (a symbolic death), and the reward. The protagonist’s abilities, values, and self-image are tested — the core where transformation is forged."
           },
           "returnAct": {
-            "name": "Return"
+            "name": "Return",
+            "synopsis": "The Return stage. Choosing to return, resurrection (final transformation), and bringing the elixir back to the community. Where what was earned in the trial becomes value in the ordinary world."
           },
           "ordinaryWorld": {
             "name": "Ordinary World",
