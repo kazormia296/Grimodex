@@ -49,6 +49,33 @@ export function canHaveChildren(type: NodeType): boolean {
   return type === "folder";
 }
 
+/**
+ * Walks the parent chain from `nodeId` toward the root and returns folder
+ * ancestors in nearest-first order. Used by Chat scope picker and outline
+ * walkers to identify Chapter/Act layers without hard-coding a depth scheme.
+ */
+export function getAncestorFolders(
+  nodes: TreeNodeData[],
+  nodeId: string | null | undefined,
+): TreeNodeData[] {
+  if (!nodeId) return [];
+  const byId = new Map(nodes.map((n) => [n.id, n]));
+  const start = byId.get(nodeId);
+  if (!start) return [];
+  const result: TreeNodeData[] = [];
+  const guard = new Set<string>();
+  let parentId = start.parentId;
+  while (parentId) {
+    if (guard.has(parentId)) break;
+    guard.add(parentId);
+    const parent = byId.get(parentId);
+    if (!parent) break;
+    if (parent.nodeType === "folder") result.push(parent);
+    parentId = parent.parentId;
+  }
+  return result;
+}
+
 /** Flat scene metadata for backward-compat */
 export interface SceneMeta {
   id: string;

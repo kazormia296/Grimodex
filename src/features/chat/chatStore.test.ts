@@ -648,7 +648,8 @@ describe("useChatStore", () => {
         activeSceneId: "",
         activeProjectId: "proj-1",
         activeSessionId: "session-1",
-        isGlobalChat: true,
+        chatScope: "project",
+        scopeAnchorId: null,
         inputPinnedEntryIds: ["X"],
       });
 

@@ -425,6 +425,15 @@
     "globalScopeOn": "Project scope ON — クリックでシーンに戻す",
     "globalScopeOff": "Project scope OFF — クリックでプロジェクト全体に切り替え",
     "sceneContext": "チャットのシーンコンテキストを切り替え",
+    "scope": {
+      "picker": "Chat スコープ（Scene / Chapter / Act / Project）",
+      "project": "プロジェクト全体",
+      "act": "Act",
+      "chapter": "Chapter",
+      "scene": "シーン",
+      "editorHere": "エディタで開いているシーン"
+    },
+    "placeholderFolder": "この {{kind}} について質問…",
     "sessions": "Sessions",
     "newSession": "新しいセッションを作成",
     "fallbackSceneTitle": "このシーン",

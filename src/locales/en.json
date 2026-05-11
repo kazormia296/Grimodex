@@ -425,6 +425,15 @@
     "globalScopeOn": "Project scope ON — click to return to scene",
     "globalScopeOff": "Project scope OFF — click to switch to project-wide",
     "sceneContext": "Switch chat scene context",
+    "scope": {
+      "picker": "Chat scope (Scene / Chapter / Act / Project)",
+      "project": "Whole project",
+      "act": "Act",
+      "chapter": "Chapter",
+      "scene": "Scene",
+      "editorHere": "Scene currently open in the editor"
+    },
+    "placeholderFolder": "Ask about this {{kind}}…",
     "sessions": "Sessions",
     "newSession": "New session",
     "fallbackSceneTitle": "This scene",

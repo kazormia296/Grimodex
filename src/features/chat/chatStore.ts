@@ -66,7 +66,7 @@ import type {
   ToolCallRecord,
   AgentLoopProgress,
 } from "./agent/agentTypes";
-import { useTreeStore } from "@/features/tree/treeStore";
+import { useTreeStore, getAncestorFolders } from "@/features/tree/treeStore";
 import { cmpKeys } from "@/features/tree/fractionalIndex";
 import { loadSceneContent, getNode } from "@/features/tree/api";
 import { prosemirrorToText } from "@/lib/prosemirror";
@@ -350,9 +350,19 @@ interface ChatState {
   agentProgress: AgentLoopProgress | null;
   setAgentMode: (on: boolean) => void;
 
-  // Global chat (project scope, no scene context)
-  isGlobalChat: boolean;
-  setIsGlobalChat: (on: boolean) => void;
+  // Chat scope — Scene / Folder (Chapter or Act) / Project の3軸統一。
+  // Globe トグルを置き換え、outline 階層に沿ってどこまで context に含めるかを
+  // ユーザーが選択する。scope === "folder" のとき scopeAnchorId は対象 folder id。
+  chatScope: "scene" | "folder" | "project";
+  scopeAnchorId: string | null;
+  /**
+   * scope を更新する。folder スコープに切り替えるときは anchorId 必須。
+   * scope 軸自体は sticky で、tree active scene の変動では動かない。
+   */
+  setChatScope: (
+    scope: "scene" | "folder" | "project",
+    anchorId?: string | null,
+  ) => void;
 
   // Existing actions
   sendMessage: (
@@ -932,7 +942,8 @@ export const useChatStore = create<ChatState>()((set, get) => ({
   inputPinnedEntryIds: [],
   agentMode: false,
   agentProgress: null,
-  isGlobalChat: false,
+  chatScope: "scene",
+  scopeAnchorId: null,
   _editingOldContent: null,
   pendingLookupText: null,
 
@@ -1007,12 +1018,20 @@ export const useChatStore = create<ChatState>()((set, get) => ({
   },
 
   ensureSession: async () => {
-    const { activeSessionId, activeProjectId, activeSceneId, isGlobalChat } =
-      get();
+    const {
+      activeSessionId,
+      activeProjectId,
+      activeSceneId,
+      chatScope,
+      scopeAnchorId,
+    } = get();
     if (activeSessionId) return activeSessionId;
-    const effectiveNodeId = isGlobalChat
-      ? undefined
-      : (activeSceneId ?? undefined);
+    const effectiveNodeId =
+      chatScope === "scene"
+        ? (activeSceneId ?? undefined)
+        : chatScope === "folder"
+          ? (scopeAnchorId ?? undefined)
+          : undefined;
     try {
       const session = await chatApi.createSession(
         activeProjectId ?? "default-project",
@@ -1069,12 +1088,12 @@ export const useChatStore = create<ChatState>()((set, get) => ({
       activeSceneId,
       activeProjectId,
       activeSessionId,
-      isGlobalChat,
+      chatScope,
       agentMode,
       messages: prevMessages,
       inputPinnedEntryIds,
     } = get();
-    const effectiveSceneId = isGlobalChat ? null : activeSceneId;
+    const effectiveSceneId = chatScope === "scene" ? activeSceneId : null;
 
     const parts: string[] = [];
     let contextLoaded = false;
@@ -1158,12 +1177,13 @@ export const useChatStore = create<ChatState>()((set, get) => ({
       activeSceneId,
       activeProjectId,
       activeSessionId,
-      isGlobalChat,
+      chatScope,
+      scopeAnchorId,
     } = get();
     if (isStreaming) return;
     await ensureTokenizer();
     if (!content.trim()) return;
-    const effectiveSceneId = isGlobalChat ? null : activeSceneId;
+    const effectiveSceneId = chatScope === "scene" ? activeSceneId : null;
     // 一回限りの Agent mode override (サジェストチップ / 再試行ボタンから)
     // ユーザーの永続トグルは変更しない。
     const agentModeForThisSend = options?.overrideAgentMode ?? get().agentMode;
@@ -1198,9 +1218,12 @@ export const useChatStore = create<ChatState>()((set, get) => ({
     // -----------------------------------------------------------------------
     let sessionIdForPersist = activeSessionId;
     if (!sessionIdForPersist) {
-      const effectiveNodeId = isGlobalChat
-        ? undefined
-        : (effectiveSceneId ?? undefined);
+      const effectiveNodeId =
+        chatScope === "scene"
+          ? (effectiveSceneId ?? undefined)
+          : chatScope === "folder"
+            ? (scopeAnchorId ?? undefined)
+            : undefined;
       try {
         const session = await chatApi.createSession(
           activeProjectId ?? "default-project",
@@ -1884,10 +1907,34 @@ export const useChatStore = create<ChatState>()((set, get) => ({
     markStart("refreshContextLayers.ensureTokenizer");
     await ensureTokenizer();
     markEnd("refreshContextLayers.ensureTokenizer");
-    const { activeSceneId, activeProjectId, activeSessionId, isGlobalChat } =
-      get();
-    const effectiveSceneId = isGlobalChat ? null : activeSceneId;
+    const {
+      activeSceneId,
+      activeProjectId,
+      activeSessionId,
+      chatScope,
+      scopeAnchorId,
+    } = get();
+    const effectiveSceneId = chatScope === "scene" ? activeSceneId : null;
     if (!effectiveSceneId) {
+      // Folder スコープでは anchor folder + その祖先 folder の synopsis を
+      // chapter outlines として注入する（Phase 1: 子シーン本文は集約しない）。
+      // Project スコープでは空。outermost (root に近い) → innermost の順。
+      const folderScopeOutlines: Array<{ title: string; outline: string }> = [];
+      if (chatScope === "folder" && scopeAnchorId) {
+        const allNodes = useTreeStore.getState().nodes;
+        const anchor = allNodes.find((n) => n.id === scopeAnchorId);
+        const ancestors = getAncestorFolders(allNodes, scopeAnchorId);
+        const chain = anchor ? [anchor, ...ancestors] : ancestors;
+        for (const f of chain) {
+          if (f.nodeType === "folder" && f.synopsis?.trim()) {
+            folderScopeOutlines.push({
+              title: f.title,
+              outline: f.synopsis.trim(),
+            });
+          }
+        }
+        folderScopeOutlines.reverse(); // outermost first
+      }
       // グローバルチャット: L1(project) + L4(pinned + always) のみ計算
       try {
         const [projectCtx, allEntries] = await Promise.all([
@@ -2015,6 +2062,8 @@ export const useChatStore = create<ChatState>()((set, get) => ({
               : undefined,
           pinnedSnippets:
             globalPinnedSnippets.length > 0 ? globalPinnedSnippets : undefined,
+          chapterOutlines:
+            folderScopeOutlines.length > 0 ? folderScopeOutlines : undefined,
           lang: projectCtx?.language ?? "ja",
           agentMode: get().agentMode,
         });
@@ -2025,8 +2074,8 @@ export const useChatStore = create<ChatState>()((set, get) => ({
           lastSystemPrompt: promptResult.prompt,
           detectedEntries: [],
           alwaysEntries: alwaysNotPinned,
-          projectOutline: undefined,
-          chapterOutlines: [],
+          projectOutline: projectCtx?.outline ?? undefined,
+          chapterOutlines: folderScopeOutlines,
         });
       } catch {
         set({
@@ -2070,7 +2119,18 @@ export const useChatStore = create<ChatState>()((set, get) => ({
   },
 
   setAgentMode: (on: boolean) => set({ agentMode: on }),
-  setIsGlobalChat: (on: boolean) => set({ isGlobalChat: on }),
+  setChatScope: (scope, anchorId) => {
+    // scope === "folder" のとき anchorId 必須。空指定なら scene に fallback。
+    if (scope === "folder") {
+      if (!anchorId) {
+        set({ chatScope: "scene", scopeAnchorId: null });
+        return;
+      }
+      set({ chatScope: "folder", scopeAnchorId: anchorId });
+      return;
+    }
+    set({ chatScope: scope, scopeAnchorId: null });
+  },
 
   // --- P2-1: ストリーミング中断 ---
   stopGeneration: () => {
@@ -2187,15 +2247,22 @@ export const useChatStore = create<ChatState>()((set, get) => ({
   clearMessages: () => set({ messages: [] }),
   clearError: () => set({ error: null }),
   setActiveSceneId: (id: string) => {
-    const { activeSceneId } = get();
-    // シーンが実際に変わったときのみグローバルモードをOFF + セッションをクリア
+    const { activeSceneId, chatScope } = get();
+    // tree の active scene が変わったときは activeSceneId を更新。
+    // scope === "scene" のときは anchor が active scene を追従するため、
+    // セッションを切り替えるべく activeSessionId / messages をリセット。
+    // scope === "folder" / "project" のときは scope axis が sticky で、
+    // anchor は user 選択を維持する（=セッションも維持）。
     if (id !== activeSceneId) {
-      set({
-        activeSceneId: id,
-        isGlobalChat: false,
-        activeSessionId: null,
-        messages: [],
-      });
+      if (chatScope === "scene") {
+        set({
+          activeSceneId: id,
+          activeSessionId: null,
+          messages: [],
+        });
+      } else {
+        set({ activeSceneId: id });
+      }
     } else {
       set({ activeSceneId: id });
     }

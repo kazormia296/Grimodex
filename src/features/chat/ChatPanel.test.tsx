@@ -116,6 +116,11 @@ function resetStore() {
     sessions: [],
     isStreaming: false,
     error: null,
+    chatScope: "scene",
+    scopeAnchorId: null,
+    activeSceneId: "",
+    activeSessionId: null,
+    inputPinnedEntryIds: [],
   });
 }
 

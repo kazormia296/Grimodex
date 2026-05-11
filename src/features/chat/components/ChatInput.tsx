@@ -24,7 +24,6 @@ interface ChatInputProps {
   onSend: (markdown: string, options?: { overrideAgentMode?: boolean }) => void;
   disabled?: boolean;
   editorRef?: MutableRefObject<Editor | null>;
-  isGlobalChat?: boolean;
   onMentionPin?: (entryId: string) => void;
   onDetectedEntries?: (entryIds: string[]) => void;
 }
@@ -33,7 +32,6 @@ export function ChatInput({
   onSend,
   disabled,
   editorRef,
-  isGlobalChat = false,
   onMentionPin,
   onDetectedEntries,
 }: ChatInputProps) {
@@ -48,6 +46,7 @@ export function ChatInput({
   const setAgentMode = useChatStore((s) => s.setAgentMode);
   const pendingLookupText = useChatStore((s) => s.pendingLookupText);
   const setPendingLookupText = useChatStore((s) => s.setPendingLookupText);
+  const chatScope = useChatStore((s) => s.chatScope);
 
   const aiSettings = useAiSettingsStore((s) => s.settings);
   const saveSettings = useAiSettingsStore((s) => s.saveSettings);
@@ -87,9 +86,11 @@ export function ChatInput({
 
   const placeholder = isStreaming
     ? t("chat.placeholderStreaming")
-    : isGlobalChat
+    : chatScope === "project"
       ? t("chat.placeholderGlobal")
-      : t("chat.placeholderScene");
+      : chatScope === "folder"
+        ? t("chat.placeholderFolder", { kind: t("chat.scope.chapter") })
+        : t("chat.placeholderScene");
 
   const handleSubmit = useCallback(
     (markdown: string) => {

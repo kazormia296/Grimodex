@@ -157,11 +157,18 @@ export function SessionsPanel({
   const selectSession = useChatStore((s) => s.selectSession);
   const createNewSession = useChatStore((s) => s.createNewSession);
   const deleteSession = useChatStore((s) => s.deleteSession);
-  const isGlobalChat = useChatStore((s) => s.isGlobalChat);
+  const chatScope = useChatStore((s) => s.chatScope);
+  const scopeAnchorId = useChatStore((s) => s.scopeAnchorId);
   const { t } = useTranslation();
 
-  // グローバルモード時は null (nodeId IS NULL)、それ以外はシーンID
-  const effectiveNodeId = isGlobalChat ? null : activeSceneId || undefined;
+  // scope に応じて nodeId を解決: scene → activeSceneId, folder → anchor,
+  // project → null (nodeId IS NULL のセッション一覧)
+  const effectiveNodeId =
+    chatScope === "scene"
+      ? activeSceneId || undefined
+      : chatScope === "folder"
+        ? (scopeAnchorId ?? undefined)
+        : null;
 
   const overlayRef = useRef<HTMLDivElement>(null);
 
@@ -210,8 +217,12 @@ export function SessionsPanel({
       await createNewSession(
         "default-project",
         "New session",
-        // グローバルモード → nodeId = null (undefined を渡すと DB で null になる)
-        isGlobalChat ? undefined : activeSceneId || undefined,
+        // project scope → undefined（DB で nodeId IS NULL になる）
+        chatScope === "scene"
+          ? activeSceneId || undefined
+          : chatScope === "folder"
+            ? (scopeAnchorId ?? undefined)
+            : undefined,
       );
       await loadSessions(effectiveNodeId);
       onClose();
@@ -221,7 +232,8 @@ export function SessionsPanel({
     }
   }, [
     activeSceneId,
-    isGlobalChat,
+    chatScope,
+    scopeAnchorId,
     effectiveNodeId,
     createNewSession,
     loadSessions,

@@ -26,6 +26,7 @@ import { normalizeModelId } from "@/features/attribution/AuthorshipMark";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { copyWithAttribution } from "@/lib/clipboardAttribution";
 import { useLayoutStore } from "@/features/layout/layoutStore";
+import { useTabStore } from "@/features/editor/tabStore";
 import { saveScene } from "@/features/editor/editorSaveRegistry";
 import type { ChatMessage as ChatMessageType } from "./chatTypes";
 import type { PinnedSnippetEntryWithData } from "./chatApi";
@@ -74,9 +75,13 @@ export function ChatPanel() {
   const selectSession = useChatStore((s) => s.selectSession);
   const createNewSession = useChatStore((s) => s.createNewSession);
   const ensureSession = useChatStore((s) => s.ensureSession);
-  const isGlobalChat = useChatStore((s) => s.isGlobalChat);
-  const setIsGlobalChat = useChatStore((s) => s.setIsGlobalChat);
+  const chatScope = useChatStore((s) => s.chatScope);
+  const scopeAnchorId = useChatStore((s) => s.scopeAnchorId);
+  const setChatScope = useChatStore((s) => s.setChatScope);
   const starMessage = useChatStore((s) => s.starMessage);
+
+  // 派生: scope==="scene" 以外（folder / project）では detect 系を出さない。
+  const isSceneScope = chatScope === "scene";
 
   // chatStore の activeSceneId (手動変更可能)
   const chatSceneId = useChatStore((s) => s.activeSceneId);
@@ -110,14 +115,17 @@ export function ChatPanel() {
     setActiveSceneId(treeActiveSceneId);
   }, [treeActiveSceneId, setActiveSceneId]);
 
-  // シーン/グローバルモード切替時にセッションを自動ロードし最新を選択 (P0-1)
-  // シーンIDが空かつグローバルモードでもない初期状態ではスキップ
+  // スコープ切替 / シーン切替時にセッションを自動ロードし最新を選択 (P0-1)
+  // scene スコープでシーン未確定の場合は何もしない。
   useEffect(() => {
-    if (!treeActiveSceneId && !isGlobalChat) return;
+    if (chatScope === "scene" && !treeActiveSceneId) return;
     let stale = false;
-    const effectiveNodeId = isGlobalChat
-      ? null
-      : treeActiveSceneId || undefined;
+    const effectiveNodeId =
+      chatScope === "scene"
+        ? treeActiveSceneId || undefined
+        : chatScope === "folder"
+          ? (scopeAnchorId ?? undefined)
+          : null;
     (async () => {
       await loadSessions(effectiveNodeId);
       if (stale) return;
@@ -131,14 +139,21 @@ export function ChatPanel() {
     return () => {
       stale = true;
     };
-  }, [treeActiveSceneId, isGlobalChat, loadSessions, selectSession]);
+  }, [
+    treeActiveSceneId,
+    chatScope,
+    scopeAnchorId,
+    loadSessions,
+    selectSession,
+  ]);
 
   useEffect(() => {
     refreshContextLayers();
   }, [
     treeActiveSceneId,
     activeSessionId,
-    isGlobalChat,
+    chatScope,
+    scopeAnchorId,
     allCodexEntries,
     refreshContextLayers,
   ]);
@@ -502,25 +517,32 @@ export function ChatPanel() {
     [isStreaming, sendMessage, chatSceneId],
   );
 
-  const handleToggleGlobalChat = useCallback(() => {
-    setIsGlobalChat(!isGlobalChat);
-  }, [isGlobalChat, setIsGlobalChat]);
-
-  const handleSceneChange = useCallback(
-    (sceneId: string) => {
-      // isGlobalChat が ON のときシーンを変えると自動でOFFになる (setActiveSceneId 内で処理)
-      setActiveSceneId(sceneId);
+  const handleScopeChange = useCallback(
+    (scope: "scene" | "folder" | "project", anchorId?: string | null) => {
+      setChatScope(scope, anchorId);
     },
-    [setActiveSceneId],
+    [setChatScope],
   );
 
+  const handleSelectScene = useCallback((sceneId: string) => {
+    // ツリーや他のパネルと同じ navigation 経路で対象シーンを開く:
+    // 1) tab を pinned で開いて active 化、2) Editor パネルを前面化、
+    // 3) tree の active scene を更新（その変化を ChatPanel の mirror effect が
+    //    chatStore.activeSceneId に伝播する）。
+    useTabStore.getState().openPinned(sceneId);
+    useLayoutStore.getState().showPanel("editor");
+    useTreeStore.getState().setActiveScene(sceneId);
+  }, []);
+
   const handleNewSession = useCallback(() => {
-    createNewSession(
-      "default-project",
-      "New session",
-      isGlobalChat ? undefined : chatSceneId || undefined,
-    );
-  }, [createNewSession, isGlobalChat, chatSceneId]);
+    const nodeId =
+      chatScope === "scene"
+        ? chatSceneId || undefined
+        : chatScope === "folder"
+          ? (scopeAnchorId ?? undefined)
+          : undefined;
+    createNewSession("default-project", "New session", nodeId);
+  }, [createNewSession, chatScope, scopeAnchorId, chatSceneId]);
 
   return (
     <div className="relative flex h-full flex-col bg-background">
@@ -530,10 +552,12 @@ export function ChatPanel() {
       <ChatPanelHeader
         sessionsPanelOpen={sessionsPanelOpen}
         setSessionsPanelOpen={setSessionsPanelOpen}
-        isGlobalChat={isGlobalChat}
-        onToggleGlobalChat={handleToggleGlobalChat}
+        chatScope={chatScope}
+        scopeAnchorId={scopeAnchorId}
         chatSceneId={chatSceneId}
-        onSceneChange={handleSceneChange}
+        editorActiveSceneId={treeActiveSceneId}
+        onScopeChange={handleScopeChange}
+        onSelectScene={handleSelectScene}
         onNewSession={handleNewSession}
       />
 
@@ -541,13 +565,13 @@ export function ChatPanel() {
         pinnedEntries={[...pinnedEntries, ...inputPinnedEntries]}
         pinnedSnippets={pinnedSnippets}
         detectedEntries={
-          isGlobalChat
-            ? []
-            : detectedEntries.filter((e) => !inputPinnedIds.has(e.id))
+          isSceneScope
+            ? detectedEntries.filter((e) => !inputPinnedIds.has(e.id))
+            : []
         }
         alwaysEntries={alwaysEntries.filter((e) => !inputPinnedIds.has(e.id))}
         spotlightCandidateIds={computeSpotlightCandidates(
-          isGlobalChat ? [] : detectedEntries,
+          isSceneScope ? detectedEntries : [],
           alwaysEntries,
           new Set([...pinnedIds, ...inputPinnedIds]),
         )}
@@ -648,7 +672,6 @@ export function ChatPanel() {
         onSend={handleSend}
         disabled={isStreaming}
         editorRef={chatEditorRef}
-        isGlobalChat={isGlobalChat}
         onMentionPin={(id) => handlePin(id, "codex")}
         onDetectedEntries={handleDetectedEntries}
       />
