@@ -28,23 +28,21 @@ import type {
 export async function startPostEffectRun(
   req: StartPostEffectRunRequest,
 ): Promise<StartPostEffectRunResult> {
-  return invoke<StartPostEffectRunResult>(
-    "start_post_effect_run",
-    req as unknown as Record<string, unknown>,
-  );
+  return invoke<StartPostEffectRunResult>("start_post_effect_run", {
+    args: req,
+  });
 }
 
 export async function startPostEffectRunMulti(
   req: StartPostEffectRunMultiRequest,
 ): Promise<StartPostEffectRunResult> {
-  return invoke<StartPostEffectRunResult>(
-    "start_post_effect_run_multi",
-    req as unknown as Record<string, unknown>,
-  );
+  return invoke<StartPostEffectRunResult>("start_post_effect_run_multi", {
+    args: req,
+  });
 }
 
 export async function abortPostEffectRun(runId: string): Promise<void> {
-  return invoke<void>("abort_post_effect_run", { run_id: runId });
+  return invoke<void>("abort_post_effect_run", { runId });
 }
 
 // ---------------------------------------------------------------------------
@@ -58,8 +56,8 @@ export async function listPostEffectRuns(params: {
   offset?: number;
 }): Promise<PostEffectRun[]> {
   return invoke<PostEffectRun[]>("list_post_effect_runs", {
-    project_id: params.projectId,
-    effect_type: params.effectType ?? null,
+    projectId: params.projectId,
+    effectType: params.effectType ?? null,
     limit: params.limit ?? 20,
     offset: params.offset ?? 0,
   });
@@ -68,7 +66,7 @@ export async function listPostEffectRuns(params: {
 export async function getPostEffectRun(
   runId: string,
 ): Promise<RunDetailResponse> {
-  return invoke<RunDetailResponse>("get_post_effect_run", { run_id: runId });
+  return invoke<RunDetailResponse>("get_post_effect_run", { runId });
 }
 
 export async function listAnnotationsForScene(params: {
@@ -77,8 +75,8 @@ export async function listAnnotationsForScene(params: {
   status?: PostEffectStatus;
 }): Promise<AnnotationsForSceneResponse> {
   return invoke<AnnotationsForSceneResponse>("list_annotations_for_scene", {
-    project_id: params.projectId,
-    scene_id: params.sceneId,
+    projectId: params.projectId,
+    sceneId: params.sceneId,
     status: params.status ?? null,
   });
 }
@@ -92,7 +90,7 @@ export async function updateAnnotationStatus(
   status: PostEffectStatus,
 ): Promise<PostEffectAnnotation> {
   return invoke<PostEffectAnnotation>("update_annotation_status", {
-    annotation_id: annotationId,
+    annotationId,
     status,
   });
 }
@@ -102,7 +100,7 @@ export async function updateRelationStatus(
   status: PostEffectStatus,
 ): Promise<PostEffectAnnotationRelation> {
   return invoke<PostEffectAnnotationRelation>("update_relation_status", {
-    relation_id: relationId,
+    relationId,
     status,
   });
 }
@@ -119,8 +117,8 @@ export async function savePostEffectAnnotations(params: {
   }>;
 }): Promise<void> {
   return invoke<void>("save_post_effect_annotations", {
-    project_id: params.projectId,
-    scene_id: params.sceneId,
+    projectId: params.projectId,
+    sceneId: params.sceneId,
     annotations: params.annotations.map((a) => ({
       id: a.id,
       range_start: a.rangeStart,
