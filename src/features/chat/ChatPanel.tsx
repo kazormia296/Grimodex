@@ -12,7 +12,7 @@ import { useSnippetStore } from "@/features/snippets/snippetStore";
 import { ChatMessage } from "./components/ChatMessage";
 import { ChatMessageContextMenu } from "./components/ChatMessageContextMenu";
 import { ChatPanelHeader } from "./components/ChatPanelHeader";
-import { ChatInput } from "./components/ChatInput";
+import { ChatInput, restoreSceneMentionChips } from "./components/ChatInput";
 import { AgentProgressBar } from "./components/AgentProgressBar";
 import { QuickActionStrip } from "./components/QuickActionStrip";
 import { CodexExtractionDialog } from "@/features/codex/CodexExtractionDialog";
@@ -437,9 +437,14 @@ export function ChatPanel() {
 
   const handleEditMessage = useCallback(
     (messageId: string) => {
-      const content = editUserMessage(messageId);
+      const { content, mentionedSceneIds } = editUserMessage(messageId);
       if (content && chatEditorRef.current) {
         chatEditorRef.current.commands.setContent(content);
+        // tiptap-markdown が mention を `@Title` に潰すため metadata から
+        // chip を再構築する (詳細は restoreSceneMentionChips のコメント参照)。
+        if (mentionedSceneIds && mentionedSceneIds.length > 0) {
+          restoreSceneMentionChips(chatEditorRef.current, mentionedSceneIds);
+        }
         chatEditorRef.current.commands.focus("end");
       }
     },

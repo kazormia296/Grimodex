@@ -399,7 +399,12 @@ interface ChatState {
   ) => Promise<string>;
   stopGeneration: () => void;
   deleteMessage: (messageId: string) => Promise<void>;
-  editUserMessage: (messageId: string) => string;
+  editUserMessage: (messageId: string) => {
+    content: string;
+    /** メッセージ送信時に渡されていた @scene mention の scene id 群。
+     * 編集 UI 復元時に TipTap doc 上で chip を再構築するために使う。 */
+    mentionedSceneIds?: string[];
+  };
   regenerate: (
     assistantMessageId: string,
     options?: { withAgentMode?: boolean },
@@ -2521,8 +2526,10 @@ export const useChatStore = create<ChatState>()((set, get) => ({
   editUserMessage: (messageId: string) => {
     const { activeSessionId, messages } = get();
     const idx = messages.findIndex((m) => m.id === messageId);
-    if (idx === -1) return "";
-    const content = messages[idx].content;
+    if (idx === -1) return { content: "" };
+    const msg = messages[idx];
+    const content = msg.content;
+    const mentionedSceneIds = parseMentionedSceneIdsFromMetadata(msg.metadata);
     const toDelete = messages.slice(idx).filter((m) => m.role !== "system");
     if (activeSessionId) {
       Promise.all(toDelete.map((m) => chatApi.deleteMessage(m.id))).catch((e) =>
@@ -2531,7 +2538,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
     }
     // G20: save old content to detect removed @mentions on re-send
     set({ messages: messages.slice(0, idx), _editingOldContent: content });
-    return content;
+    return mentionedSceneIds ? { content, mentionedSceneIds } : { content };
   },
 
   // --- P2-2: AIメッセージ再生成 ---

@@ -18,6 +18,7 @@ import type { CommandPopupState } from "../extensions/ChatSlashCommandExtension"
 import { MentionPopup } from "./MentionPopup";
 import { ChatCommandPopup } from "./ChatCommandPopup";
 import type { MentionItem } from "@/features/codex/CodexMentionExtension";
+import { useTreeStore } from "@/features/tree/treeStore";
 import { shouldSuggestAgentMode } from "../agentSuggestion";
 
 interface ChatInputProps {
@@ -35,6 +36,58 @@ interface ChatInputProps {
   onDetectedEntries?: (entryIds: string[]) => void;
   /** 入力欄にテキストがあるかどうかを親に通知（QuickActionStrip の表示制御用） */
   onHasTextChange?: (hasText: boolean) => void;
+}
+
+/**
+ * 編集再開時の chip 再構築ヘルパー。
+ *
+ * tiptap-markdown は mention ノードを `@Title` の plain text として
+ * シリアライズするため、`editor.setContent(markdown)` の往復で chip が
+ * 消える。metadata に保存していた scene id から tree store でタイトルを
+ * 引き直し、doc 内の `@Title` 出現箇所を mention ノードに置換する。
+ *
+ * - tree から消えた scene id は単に無視する（旧メッセージの参照保護）。
+ * - 同じ Title が複数あっても最初の出現のみ置換する（同名 scene の運用は
+ *   そもそも紛らわしいので、復元が完全でなくても妥協する）。
+ */
+export function restoreSceneMentionChips(
+  editor: Editor,
+  sceneIds: string[],
+): void {
+  const scenes = useTreeStore.getState().scenes;
+  const idToTitle = new Map(scenes.map((s) => [s.id, s.title]));
+  const mentionType = editor.schema.nodes.mention;
+  if (!mentionType) return;
+
+  for (const id of sceneIds) {
+    const title = idToTitle.get(id);
+    if (!title) continue;
+    const needle = `@${title}`;
+
+    // doc を走査して text ノードから needle を探す。見つかったらその範囲を
+    // mention ノード + 直後のスペースに置換する。
+    let replaced = false;
+    editor.state.doc.descendants((node, pos) => {
+      if (replaced) return false;
+      if (!node.isText || !node.text) return;
+      const idx = node.text.indexOf(needle);
+      if (idx < 0) return;
+      const from = pos + idx;
+      const to = from + needle.length;
+      editor
+        .chain()
+        .focus()
+        .insertContentAt({ from, to }, [
+          {
+            type: "mention",
+            attrs: { id, label: title, kind: "scene", role: "mentioned" },
+          },
+          { type: "text", text: " " },
+        ])
+        .run();
+      replaced = true;
+    });
+  }
 }
 
 export function ChatInput({
@@ -150,9 +203,16 @@ export function ChatInput({
       const userMessages = messages.filter((m) => m.role === "user");
       const last = userMessages[userMessages.length - 1];
       if (!last) return;
-      const content = editUserMessage(last.id);
+      const { content, mentionedSceneIds } = editUserMessage(last.id);
       if (content) {
         editor.commands.setContent(content);
+        // tiptap-markdown は mention を `@Title` plain text にシリアライズ
+        // してしまうため、metadata に保存していた scene id から chip を
+        // 再構築する。markdown 上の `@Title` 出現箇所を mention ノードに
+        // 置換する形を取る。
+        if (mentionedSceneIds && mentionedSceneIds.length > 0) {
+          restoreSceneMentionChips(editor, mentionedSceneIds);
+        }
         editor.commands.focus("end");
       }
     };
