@@ -209,7 +209,7 @@ export function GridContainerSceneColumn({
         onClick={() => void addScene()}
       >
         <Plus className="h-3 w-3" />
-        {t("grid.column.newScene", "+ シーンを追加")}
+        {t("grid.column.newScene", "シーンを追加")}
       </button>
     </div>
   );
