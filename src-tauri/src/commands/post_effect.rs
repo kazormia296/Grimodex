@@ -111,6 +111,29 @@ pub(crate) struct StartPostEffectRunResult {
     from_cache: bool,
 }
 
+// ---------------------------------------------------------------------------
+// Multi-scene run types
+// ---------------------------------------------------------------------------
+
+#[derive(Deserialize)]
+pub(crate) struct ScenePayload {
+    scene_id: String,
+    codex_payload_json: String,
+    scene_text: String,
+}
+
+#[derive(Deserialize)]
+pub(crate) struct StartPostEffectRunMultiArgs {
+    project_id: String,
+    effect_type: String,
+    scope_type: String,
+    scope_target_id: Option<String>,
+    model: String,
+    prompt_version: String,
+    input_hash: String,
+    scenes: Vec<ScenePayload>,
+}
+
 #[derive(Clone, Serialize)]
 struct ProgressEvent<'a> {
     run_id: &'a str,
@@ -246,97 +269,42 @@ fn is_manually_dismissed(conn: &rusqlite::Connection, dismiss_key: &str) -> bool
 // consistency run
 // ---------------------------------------------------------------------------
 
+/// consistency チェックを 1 シーン分実行し、挿入したアノテーション数を返す。
+/// 進捗イベントや run ステータス更新は呼び出し側が担当する。
 #[allow(clippy::too_many_arguments)]
-async fn run_consistency_task(
-    app: AppHandle,
-    run_id: String,
-    project_id: String,
-    scene_id: String,
-    codex_payload_json: String,
-    scene_text: String,
-    ai_settings_path: std::path::PathBuf,
-) {
-    let emit_err = |msg: &str| {
-        let _ = app.emit(
-            "post_effect:error",
-            ErrorEvent {
-                run_id: &run_id,
-                error: msg.to_string(),
-            },
-        );
-    };
-
-    // --- 進捗 0.1: AI 呼び出し開始 ---
-    let _ = app.emit(
-        "post_effect:progress",
-        ProgressEvent {
-            run_id: &run_id,
-            stage: "calling_ai",
-            progress: 0.1,
-            message: None,
-        },
-    );
-
-    let ai_settings = read_ai_settings(&ai_settings_path);
+async fn process_consistency_scene(
+    app: &AppHandle,
+    run_id: &str,
+    project_id: &str,
+    scene_id: &str,
+    codex_payload_json: &str,
+    scene_text: &str,
+    ai_settings_path: &std::path::PathBuf,
+) -> Result<usize, anyhow::Error> {
+    let ai_settings = read_ai_settings(ai_settings_path);
     let api_key = match get_api_key(&ai_settings.provider) {
         Ok(Some(k)) => k,
-        Ok(None) => {
-            emit_err("API キーが設定されていません");
-            fail_run(&app, &run_id, "API key not configured");
-            return;
-        }
-        Err(e) => {
-            emit_err(&format!("API キー取得失敗: {e}"));
-            fail_run(&app, &run_id, &e.to_string());
-            return;
-        }
+        Ok(None) => return Err(anyhow::anyhow!("API キーが設定されていません")),
+        Err(e) => return Err(anyhow::anyhow!("API キー取得失敗: {e}")),
     };
 
-    let raw_response = match call_post_effect_api(
+    let raw_response = call_post_effect_api(
         &ai_settings,
         &api_key,
         CONSISTENCY_SYSTEM_PROMPT,
-        Some(&codex_payload_json),
-        &scene_text,
+        Some(codex_payload_json),
+        scene_text,
     )
     .await
-    {
-        Ok(r) => r,
-        Err(e) => {
-            emit_err(&format!("AI 呼び出し失敗: {e}"));
-            fail_run(&app, &run_id, &e.to_string());
-            return;
-        }
-    };
-
-    // --- 進捗 0.5: パース ---
-    let _ = app.emit(
-        "post_effect:progress",
-        ProgressEvent {
-            run_id: &run_id,
-            stage: "parsing",
-            progress: 0.5,
-            message: None,
-        },
-    );
+    .map_err(|e| anyhow::anyhow!("AI 呼び出し失敗: {e}"))?;
 
     let json_str = extract_json(&raw_response);
-    let parsed: Value = match serde_json::from_str(json_str) {
-        Ok(v) => v,
-        Err(e) => {
-            emit_err(&format!("LLM 出力のパース失敗: {e}\n{json_str}"));
-            fail_run(&app, &run_id, &format!("JSON parse error: {e}"));
-            return;
-        }
-    };
+    let parsed: Value =
+        serde_json::from_str(json_str).map_err(|e| anyhow::anyhow!("LLM 出力のパース失敗: {e}"))?;
 
-    let violations = match parsed["violations"].as_array() {
-        Some(v) => v.clone(),
-        None => vec![],
-    };
+    let violations = parsed["violations"].as_array().cloned().unwrap_or_default();
 
-    // --- 進捗 0.6: Codex エントリ名の解決 ---
-    let codex_entries: Vec<Value> = serde_json::from_str(&codex_payload_json).unwrap_or_default();
+    let codex_entries: Vec<Value> = serde_json::from_str(codex_payload_json).unwrap_or_default();
     let name_map: HashMap<String, String> = codex_entries
         .iter()
         .filter_map(|e| {
@@ -346,7 +314,6 @@ async fn run_consistency_task(
         })
         .collect();
 
-    // --- dedupe: (entry_id, source_field, detail_definition_id, normalize(found_text)) ---
     let mut seen_keys: std::collections::HashSet<String> = std::collections::HashSet::new();
     let deduped: Vec<&Value> = violations
         .iter()
@@ -360,19 +327,8 @@ async fn run_consistency_task(
         })
         .collect();
 
-    // --- 進捗 0.7: アノテーション挿入 ---
-    let _ = app.emit(
-        "post_effect:progress",
-        ProgressEvent {
-            run_id: &run_id,
-            stage: "saving",
-            progress: 0.7,
-            message: None,
-        },
-    );
-
     let ws_state = app.state::<WorkspaceState>();
-    let insert_result: Result<usize, AppError> = super::with_db(&ws_state, |db| {
+    let count: usize = super::with_db(&ws_state, |db| {
         db.with_conn(|conn| {
             let mut count = 0usize;
 
@@ -395,17 +351,14 @@ async fn run_consistency_task(
 
                 let dismiss_key = dismiss_key_consistency(entry_id, found_text);
                 let entry_name = name_map.get(entry_id).cloned().unwrap_or_default();
-
-                // 手動 dismiss 継承チェック
                 let initial_status = if is_manually_dismissed(conn, &dismiss_key) {
                     "dismissed"
                 } else {
                     "open"
                 };
 
-                // テキスト位置検索
                 let (range_start, range_end, orphaned) =
-                    match find_text_position(&scene_text, found_text, found_context) {
+                    match find_text_position(scene_text, found_text, found_context) {
                         Some((s, e)) => (s as i64, e as i64, false),
                         None => (0i64, 0i64, true),
                     };
@@ -463,14 +416,14 @@ async fn run_consistency_task(
                 let _ = app.emit(
                     "post_effect:partial",
                     PartialEvent {
-                        run_id: &run_id,
+                        run_id,
                         annotation_id: annotation_id.clone(),
                     },
                 );
                 count += 1;
             }
 
-            // §1: 同じ scope の前回 open アノテーションを dismissed に
+            // 同じ scene の前回 open アノテーションを dismissed に
             conn.execute(
                 "UPDATE post_effect_annotations
                     SET status = 'dismissed',
@@ -485,45 +438,20 @@ async fn run_consistency_task(
                 params![project_id, scene_id, run_id],
             )?;
 
-            // run を completed に更新
-            conn.execute(
-                "UPDATE post_effect_runs
-                    SET status = 'completed', completed_at = datetime('now')
-                  WHERE id = ?",
-                params![run_id],
-            )?;
-
             Ok(count)
         })
-    });
+    })?;
 
-    match insert_result {
-        Ok(n) => {
-            let _ = app.emit(
-                "post_effect:done",
-                DoneEvent {
-                    run_id: &run_id,
-                    annotation_count: n,
-                    summary: None,
-                },
-            );
-        }
-        Err(e) => {
-            emit_err(&format!("保存失敗: {e}"));
-            fail_run(&app, &run_id, &e.to_string());
-        }
-    }
+    Ok(count)
 }
 
-// ---------------------------------------------------------------------------
-// intra_scene_consistency run
-// ---------------------------------------------------------------------------
-
-async fn run_intra_task(
+#[allow(clippy::too_many_arguments)]
+async fn run_consistency_task(
     app: AppHandle,
     run_id: String,
     project_id: String,
     scene_id: String,
+    codex_payload_json: String,
     scene_text: String,
     ai_settings_path: std::path::PathBuf,
 ) {
@@ -547,64 +475,72 @@ async fn run_intra_task(
         },
     );
 
-    let ai_settings = read_ai_settings(&ai_settings_path);
-    let api_key = match get_api_key(&ai_settings.provider) {
-        Ok(Some(k)) => k,
-        Ok(None) => {
-            emit_err("API キーが設定されていません");
-            fail_run(&app, &run_id, "API key not configured");
-            return;
-        }
-        Err(e) => {
-            emit_err(&format!("API キー取得失敗: {e}"));
-            fail_run(&app, &run_id, &e.to_string());
-            return;
-        }
-    };
-
-    let raw_response = match call_post_effect_api(
-        &ai_settings,
-        &api_key,
-        INTRA_SYSTEM_PROMPT,
-        None, // Codex なし
+    match process_consistency_scene(
+        &app,
+        &run_id,
+        &project_id,
+        &scene_id,
+        &codex_payload_json,
         &scene_text,
+        &ai_settings_path,
     )
     .await
     {
-        Ok(r) => r,
-        Err(e) => {
-            emit_err(&format!("AI 呼び出し失敗: {e}"));
-            fail_run(&app, &run_id, &e.to_string());
-            return;
+        Ok(n) => {
+            finalize_run(&app, &run_id);
+            let _ = app.emit(
+                "post_effect:done",
+                DoneEvent {
+                    run_id: &run_id,
+                    annotation_count: n,
+                    summary: None,
+                },
+            );
         }
+        Err(e) => {
+            emit_err(&e.to_string());
+            fail_run(&app, &run_id, &e.to_string());
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// intra_scene_consistency run
+// ---------------------------------------------------------------------------
+
+/// intra_scene_consistency チェックを 1 シーン分実行し、挿入したペア数を返す。
+/// 進捗イベントや run ステータス更新は呼び出し側が担当する。
+async fn process_intra_scene(
+    app: &AppHandle,
+    run_id: &str,
+    project_id: &str,
+    scene_id: &str,
+    scene_text: &str,
+    ai_settings_path: &std::path::PathBuf,
+) -> Result<usize, anyhow::Error> {
+    let ai_settings = read_ai_settings(ai_settings_path);
+    let api_key = match get_api_key(&ai_settings.provider) {
+        Ok(Some(k)) => k,
+        Ok(None) => return Err(anyhow::anyhow!("API キーが設定されていません")),
+        Err(e) => return Err(anyhow::anyhow!("API キー取得失敗: {e}")),
     };
 
-    let _ = app.emit(
-        "post_effect:progress",
-        ProgressEvent {
-            run_id: &run_id,
-            stage: "parsing",
-            progress: 0.5,
-            message: None,
-        },
-    );
+    let raw_response = call_post_effect_api(
+        &ai_settings,
+        &api_key,
+        INTRA_SYSTEM_PROMPT,
+        None,
+        scene_text,
+    )
+    .await
+    .map_err(|e| anyhow::anyhow!("AI 呼び出し失敗: {e}"))?;
 
     let json_str = extract_json(&raw_response);
-    let parsed: Value = match serde_json::from_str(json_str) {
-        Ok(v) => v,
-        Err(e) => {
-            emit_err(&format!("LLM 出力のパース失敗: {e}"));
-            fail_run(&app, &run_id, &format!("JSON parse error: {e}"));
-            return;
-        }
-    };
+    let parsed: Value =
+        serde_json::from_str(json_str).map_err(|e| anyhow::anyhow!("LLM 出力のパース失敗: {e}"))?;
 
-    let pairs = match parsed["pairs"].as_array() {
-        Some(p) => p.clone(),
-        None => vec![],
-    };
+    let pairs = parsed["pairs"].as_array().cloned().unwrap_or_default();
 
-    // dedupe: sorted([normalize(a.found_text), normalize(b.found_text)])
     let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
     let deduped: Vec<&Value> = pairs
         .iter()
@@ -618,18 +554,8 @@ async fn run_intra_task(
         })
         .collect();
 
-    let _ = app.emit(
-        "post_effect:progress",
-        ProgressEvent {
-            run_id: &run_id,
-            stage: "saving",
-            progress: 0.7,
-            message: None,
-        },
-    );
-
     let ws_state = app.state::<WorkspaceState>();
-    let insert_result: Result<usize, AppError> = super::with_db(&ws_state, |db| {
+    let count: usize = super::with_db(&ws_state, |db| {
         db.with_conn(|conn| {
             let mut count = 0usize;
 
@@ -646,7 +572,7 @@ async fn run_intra_task(
                     _ => "warning",
                 };
 
-                let dismiss_key = dismiss_key_intra(&scene_id, a_text, b_text);
+                let dismiss_key = dismiss_key_intra(scene_id, a_text, b_text);
                 let initial_status = if is_manually_dismissed(conn, &dismiss_key) {
                     "dismissed"
                 } else {
@@ -654,12 +580,12 @@ async fn run_intra_task(
                 };
 
                 let (a_start, a_end, a_orphaned) =
-                    match find_text_position(&scene_text, a_text, a_ctx) {
+                    match find_text_position(scene_text, a_text, a_ctx) {
                         Some((s, e)) => (s as i64, e as i64, false),
                         None => (0i64, 0i64, true),
                     };
                 let (b_start, b_end, b_orphaned) =
-                    match find_text_position(&scene_text, b_text, b_ctx) {
+                    match find_text_position(scene_text, b_text, b_ctx) {
                         Some((s, e)) => (s as i64, e as i64, false),
                         None => (0i64, 0i64, true),
                     };
@@ -739,24 +665,20 @@ async fn run_intra_task(
                          annotation_a_id, annotation_b_id,
                          relation_type, direction, description, status, metadata, created_at)
                      VALUES (?, ?, ?, ?, ?, 'contradiction', 'bidirectional', ?, 'open', '{}', datetime('now'))",
-                    params![
-                        relation_id, project_id, run_id,
-                        ann_a_id, ann_b_id,
-                        reason,
-                    ],
+                    params![relation_id, project_id, run_id, ann_a_id, ann_b_id, reason],
                 )?;
 
                 let _ = app.emit(
                     "post_effect:partial",
                     PartialEvent {
-                        run_id: &run_id,
+                        run_id,
                         annotation_id: ann_a_id.clone(),
                     },
                 );
                 count += 1;
             }
 
-            // §1: 同じ scope の前回 open アノテーションを dismissed に
+            // 同じ scene の前回 open アノテーションを dismissed に
             conn.execute(
                 "UPDATE post_effect_annotations
                     SET status = 'dismissed',
@@ -771,19 +693,53 @@ async fn run_intra_task(
                 params![project_id, scene_id, run_id],
             )?;
 
-            conn.execute(
-                "UPDATE post_effect_runs
-                    SET status = 'completed', completed_at = datetime('now')
-                  WHERE id = ?",
-                params![run_id],
-            )?;
-
             Ok(count)
         })
-    });
+    })?;
 
-    match insert_result {
+    Ok(count)
+}
+
+async fn run_intra_task(
+    app: AppHandle,
+    run_id: String,
+    project_id: String,
+    scene_id: String,
+    scene_text: String,
+    ai_settings_path: std::path::PathBuf,
+) {
+    let emit_err = |msg: &str| {
+        let _ = app.emit(
+            "post_effect:error",
+            ErrorEvent {
+                run_id: &run_id,
+                error: msg.to_string(),
+            },
+        );
+    };
+
+    let _ = app.emit(
+        "post_effect:progress",
+        ProgressEvent {
+            run_id: &run_id,
+            stage: "calling_ai",
+            progress: 0.1,
+            message: None,
+        },
+    );
+
+    match process_intra_scene(
+        &app,
+        &run_id,
+        &project_id,
+        &scene_id,
+        &scene_text,
+        &ai_settings_path,
+    )
+    .await
+    {
         Ok(n) => {
+            finalize_run(&app, &run_id);
             let _ = app.emit(
                 "post_effect:done",
                 DoneEvent {
@@ -794,10 +750,88 @@ async fn run_intra_task(
             );
         }
         Err(e) => {
-            emit_err(&format!("保存失敗: {e}"));
+            emit_err(&e.to_string());
             fail_run(&app, &run_id, &e.to_string());
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Multi-scene run task
+// ---------------------------------------------------------------------------
+
+async fn run_multi_task(
+    app: AppHandle,
+    run_id: String,
+    project_id: String,
+    effect_type: String,
+    scenes: Vec<ScenePayload>,
+    ai_settings_path: std::path::PathBuf,
+) {
+    let total = scenes.len();
+    let mut total_count = 0usize;
+
+    for (idx, scene) in scenes.into_iter().enumerate() {
+        let progress = (idx as f32) / (total as f32).max(1.0) * 0.9;
+        let msg = format!("{}/{}", idx + 1, total);
+        let _ = app.emit(
+            "post_effect:progress",
+            ProgressEvent {
+                run_id: &run_id,
+                stage: "calling_ai",
+                progress,
+                message: Some(&msg),
+            },
+        );
+
+        let result = if effect_type == "consistency" {
+            process_consistency_scene(
+                &app,
+                &run_id,
+                &project_id,
+                &scene.scene_id,
+                &scene.codex_payload_json,
+                &scene.scene_text,
+                &ai_settings_path,
+            )
+            .await
+        } else {
+            process_intra_scene(
+                &app,
+                &run_id,
+                &project_id,
+                &scene.scene_id,
+                &scene.scene_text,
+                &ai_settings_path,
+            )
+            .await
+        };
+
+        match result {
+            Ok(n) => total_count += n,
+            Err(e) => {
+                let _ = app.emit(
+                    "post_effect:error",
+                    ErrorEvent {
+                        run_id: &run_id,
+                        error: e.to_string(),
+                    },
+                );
+                fail_run(&app, &run_id, &e.to_string());
+                return;
+            }
+        }
+    }
+
+    finalize_run(&app, &run_id);
+    let _ = app.emit(
+        "post_effect:done",
+        DoneEvent {
+            run_id: &run_id,
+            annotation_count: total_count,
+            summary: None,
+        },
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -813,6 +847,21 @@ fn fail_run(app: &AppHandle, run_id: &str, error_message: &str) {
                     SET status = 'failed', error_message = ?, completed_at = datetime('now')
                   WHERE id = ?",
                 params![error_message, run_id],
+            )?;
+            Ok(())
+        })
+    });
+}
+
+fn finalize_run(app: &AppHandle, run_id: &str) {
+    let ws_state = app.state::<WorkspaceState>();
+    let _ = super::with_db(&ws_state, |db| {
+        db.with_conn(|conn| {
+            conn.execute(
+                "UPDATE post_effect_runs
+                    SET status = 'completed', completed_at = datetime('now')
+                  WHERE id = ?",
+                params![run_id],
             )?;
             Ok(())
         })
@@ -936,6 +985,103 @@ pub(crate) async fn start_post_effect_run(
         } else {
             run_intra_task(app, rid, project_id, scene_id, scene_text, ai_path).await;
         }
+    });
+
+    Ok(StartPostEffectRunResult {
+        run_id,
+        from_cache: false,
+    })
+}
+
+#[tauri::command]
+pub(crate) async fn start_post_effect_run_multi(
+    ws_state: State<'_, WorkspaceState>,
+    ai_settings_path: State<'_, AiSettingsPath>,
+    abort_flag: State<'_, PostEffectAbortFlag>,
+    app_handle: AppHandle,
+    args: StartPostEffectRunMultiArgs,
+) -> Result<StartPostEffectRunResult, AppError> {
+    abort_flag
+        .flag
+        .store(false, std::sync::atomic::Ordering::Relaxed);
+
+    if args.scenes.is_empty() {
+        return Err(anyhow::anyhow!("scenes が空です").into());
+    }
+
+    let effect_type = args.effect_type.as_str();
+    let supported = matches!(effect_type, "consistency" | "intra_scene_consistency");
+    if !supported {
+        return Err(anyhow::anyhow!("effect_type '{}' は未実装です", effect_type).into());
+    }
+
+    // キャッシュチェック: 同一 input_hash の completed run があれば再利用
+    let cached_run_id: Option<String> = super::with_db(&ws_state, |db| {
+        db.with_conn(|conn| {
+            let result = conn.query_row(
+                "SELECT id FROM post_effect_runs
+                  WHERE project_id = ?
+                    AND effect_type = ?
+                    AND scope_type = ?
+                    AND COALESCE(scope_target_id, '') = COALESCE(?, '')
+                    AND input_hash = ?
+                    AND status = 'completed'
+                  ORDER BY started_at DESC
+                  LIMIT 1",
+                params![
+                    args.project_id,
+                    args.effect_type,
+                    args.scope_type,
+                    args.scope_target_id.as_deref(),
+                    args.input_hash,
+                ],
+                |row: &rusqlite::Row<'_>| row.get::<_, String>(0),
+            );
+            Ok(result.ok())
+        })
+    })?;
+
+    if let Some(existing_id) = cached_run_id {
+        return Ok(StartPostEffectRunResult {
+            run_id: existing_id,
+            from_cache: true,
+        });
+    }
+
+    let run_id = Uuid::new_v4().to_string();
+    let run_id_clone = run_id.clone();
+
+    super::with_db(&ws_state, |db| {
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO post_effect_runs
+                    (id, project_id, effect_type, scope_type, scope_target_id,
+                     model, prompt_version, input_hash, status, started_at)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'running', datetime('now'))",
+                params![
+                    run_id_clone,
+                    args.project_id,
+                    args.effect_type,
+                    args.scope_type,
+                    args.scope_target_id.as_deref(),
+                    args.model,
+                    args.prompt_version,
+                    args.input_hash,
+                ],
+            )?;
+            Ok(())
+        })
+    })?;
+
+    let app = app_handle.clone();
+    let ai_path = ai_settings_path.path.clone();
+    let project_id = args.project_id.clone();
+    let effect = args.effect_type.clone();
+    let scenes = args.scenes;
+    let rid = run_id.clone();
+
+    tokio::task::spawn(async move {
+        run_multi_task(app, rid, project_id, effect, scenes, ai_path).await;
     });
 
     Ok(StartPostEffectRunResult {

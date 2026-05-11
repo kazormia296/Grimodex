@@ -23,6 +23,8 @@ import { extractPlainText } from "@/features/codex/prosemirrorTextExtractor";
 import { prosemirrorToText } from "@/lib/prosemirror";
 import { findMentionedEntriesAsync } from "@/features/codex/rustMatcher";
 import { computeInputHash, normalizeText } from "./canonicalize";
+import { useTreeStore } from "@/features/tree/treeStore";
+import type { TreeNodeData } from "@/features/tree/treeStore";
 import type { CodexPayloadEntry } from "./types";
 
 // ---------------------------------------------------------------------------
@@ -249,4 +251,84 @@ export async function buildIntraPayload(
     scope: `scene:${sceneId}`,
   });
   return { sceneText, inputHash };
+}
+
+// ---------------------------------------------------------------------------
+// Multi-scene payload builder (folder / project scope)
+// ---------------------------------------------------------------------------
+
+export interface MultiSceneEntry {
+  scene_id: string;
+  codex_payload_json: string;
+  scene_text: string;
+}
+
+export interface MultiPayloadResult {
+  scenes: MultiSceneEntry[];
+  inputHash: string;
+}
+
+function getSceneIdsForScope(
+  nodes: TreeNodeData[],
+  scopeType: "folder" | "project",
+  scopeTargetId: string | null,
+): string[] {
+  if (scopeType === "project") {
+    return nodes.filter((n) => n.nodeType === "scene").map((n) => n.id);
+  }
+  const result: string[] = [];
+  function walk(parentId: string) {
+    for (const n of nodes) {
+      if (n.parentId !== parentId) continue;
+      if (n.nodeType === "scene") result.push(n.id);
+      else if (n.nodeType === "folder") walk(n.id);
+    }
+  }
+  if (scopeTargetId) walk(scopeTargetId);
+  return result;
+}
+
+export async function buildMultiPayload(
+  projectId: string,
+  scopeType: "folder" | "project",
+  scopeTargetId: string | null,
+  model: string,
+  effectType: "consistency" | "intra_scene_consistency" = "consistency",
+): Promise<MultiPayloadResult> {
+  const { nodes } = useTreeStore.getState();
+  const sceneIds = getSceneIdsForScope(nodes, scopeType, scopeTargetId);
+
+  const scenes: MultiSceneEntry[] = [];
+  for (const sceneId of sceneIds) {
+    const sceneText = await getScenePlainText(sceneId);
+    if (effectType === "consistency") {
+      const codexPayload = await buildCodexPayload(projectId, sceneText);
+      scenes.push({
+        scene_id: sceneId,
+        codex_payload_json: JSON.stringify(codexPayload),
+        scene_text: sceneText,
+      });
+    } else {
+      scenes.push({
+        scene_id: sceneId,
+        codex_payload_json: "[]",
+        scene_text: sceneText,
+      });
+    }
+  }
+
+  const promptVersion =
+    effectType === "consistency"
+      ? CONSISTENCY_PROMPT_VERSION
+      : INTRA_CONSISTENCY_PROMPT_VERSION;
+
+  const inputHash = await computeInputHash({
+    promptVersion,
+    model,
+    effectType,
+    scene: scenes.map((s) => normalizeText(s.scene_text)).join("|"),
+    scope: `${scopeType}:${scopeTargetId ?? "all"}`,
+  });
+
+  return { scenes, inputHash };
 }

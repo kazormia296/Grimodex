@@ -132,6 +132,7 @@ pub fn run() {
             codex_matching::codex_match_text,
             commands::lint::lint_text,
             commands::post_effect::start_post_effect_run,
+            commands::post_effect::start_post_effect_run_multi,
             commands::post_effect::abort_post_effect_run,
             commands::post_effect::list_post_effect_runs,
             commands::post_effect::get_post_effect_run,

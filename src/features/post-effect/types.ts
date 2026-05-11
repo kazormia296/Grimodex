@@ -100,6 +100,21 @@ export interface StartPostEffectRunResult {
   from_cache: boolean;
 }
 
+export interface StartPostEffectRunMultiRequest {
+  project_id: string;
+  effect_type: PostEffectType;
+  scope_type: PostEffectScopeType;
+  scope_target_id?: string | null;
+  model: string;
+  prompt_version: string;
+  input_hash: string;
+  scenes: Array<{
+    scene_id: string;
+    codex_payload_json: string;
+    scene_text: string;
+  }>;
+}
+
 // ---------------------------------------------------------------------------
 // Stream event payloads (post_effect:*)
 // ---------------------------------------------------------------------------

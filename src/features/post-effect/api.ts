@@ -11,6 +11,7 @@ import type {
   PostEffectStatus,
   PostEffectType,
   StartPostEffectRunRequest,
+  StartPostEffectRunMultiRequest,
   StartPostEffectRunResult,
   AnnotationsForSceneResponse,
   RunDetailResponse,
@@ -29,6 +30,15 @@ export async function startPostEffectRun(
 ): Promise<StartPostEffectRunResult> {
   return invoke<StartPostEffectRunResult>(
     "start_post_effect_run",
+    req as unknown as Record<string, unknown>,
+  );
+}
+
+export async function startPostEffectRunMulti(
+  req: StartPostEffectRunMultiRequest,
+): Promise<StartPostEffectRunResult> {
+  return invoke<StartPostEffectRunResult>(
+    "start_post_effect_run_multi",
     req as unknown as Record<string, unknown>,
   );
 }
@@ -186,5 +196,34 @@ export async function runPostEffect(
   const cleanup = () => unlisteners.forEach((u) => u());
 
   const result = await startPostEffectRun(req);
+  return { runId: result.run_id, cleanup };
+}
+
+/**
+ * start_post_effect_run_multi を fire-and-forget で起動し、イベント購読を設定する。
+ * folder / project スコープの複数シーン一括チェック用。
+ */
+export async function runPostEffectMulti(
+  req: StartPostEffectRunMultiRequest,
+  callbacks: PostEffectRunCallbacks,
+): Promise<{ runId: string; cleanup: () => void }> {
+  const unlisteners = await Promise.all([
+    callbacks.onProgress
+      ? onPostEffectProgress(callbacks.onProgress)
+      : Promise.resolve(() => {}),
+    callbacks.onPartial
+      ? onPostEffectPartial(callbacks.onPartial)
+      : Promise.resolve(() => {}),
+    callbacks.onDone
+      ? onPostEffectDone(callbacks.onDone)
+      : Promise.resolve(() => {}),
+    callbacks.onError
+      ? onPostEffectError(callbacks.onError)
+      : Promise.resolve(() => {}),
+  ]);
+
+  const cleanup = () => unlisteners.forEach((u) => u());
+
+  const result = await startPostEffectRunMulti(req);
   return { runId: result.run_id, cleanup };
 }

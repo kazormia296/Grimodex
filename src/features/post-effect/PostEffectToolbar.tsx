@@ -1,14 +1,18 @@
 import { useState, useCallback } from "react";
-import { ScanText, Loader2, Eye, EyeOff } from "lucide-react";
+import { ScanText, Loader2, Eye, EyeOff, BookOpen } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { useAnnotationStore } from "./annotationStore";
 import {
   buildConsistencyPayload,
+  buildMultiPayload,
   CONSISTENCY_PROMPT_VERSION,
 } from "./consistencyPayloadBuilder";
-import { runPostEffect } from "./api";
-import { listAnnotationsForScene } from "./api";
+import {
+  runPostEffect,
+  runPostEffectMulti,
+  listAnnotationsForScene,
+} from "./api";
 import type { Editor } from "@tiptap/core";
 
 interface Props {
@@ -23,6 +27,7 @@ export function PostEffectToolbar({
   model = "gpt-4o-mini",
 }: Props) {
   const [running, setRunning] = useState(false);
+  const [runningAll, setRunningAll] = useState(false);
   const { showAnnotations, toggleShowAnnotations, setAnnotations } =
     useAnnotationStore();
 
@@ -64,12 +69,59 @@ export function PostEffectToolbar({
     }
   }, [editor, running, sceneId, model, setAnnotations]);
 
+  const runAll = useCallback(async () => {
+    if (runningAll) return;
+    const projectId = useTreeStore.getState().projectId;
+    setRunningAll(true);
+    try {
+      const payload = await buildMultiPayload(
+        projectId,
+        "project",
+        null,
+        model,
+        "consistency",
+      );
+      if (payload.scenes.length === 0) {
+        setRunningAll(false);
+        return;
+      }
+      const { cleanup } = await runPostEffectMulti(
+        {
+          project_id: projectId,
+          effect_type: "consistency",
+          scope_type: "project",
+          scope_target_id: null,
+          model,
+          prompt_version: CONSISTENCY_PROMPT_VERSION,
+          input_hash: payload.inputHash,
+          scenes: payload.scenes,
+        },
+        {
+          onDone: async () => {
+            cleanup();
+            const resp = await listAnnotationsForScene({ projectId, sceneId });
+            setAnnotations(sceneId, resp.annotations);
+            setRunningAll(false);
+          },
+          onError: (e) => {
+            cleanup();
+            console.error("post-effect multi error", e.error);
+            setRunningAll(false);
+          },
+        },
+      );
+    } catch (e) {
+      console.error("post-effect multi launch error", e);
+      setRunningAll(false);
+    }
+  }, [runningAll, sceneId, model, setAnnotations]);
+
   return (
     <div className="flex items-center gap-1">
       <button
-        aria-label="整合性チェック実行"
-        title="整合性チェック実行"
-        disabled={running}
+        aria-label="このシーンの整合性チェック"
+        title="このシーンの整合性チェック"
+        disabled={running || runningAll}
         onClick={run}
         className={cn(
           "flex h-7 w-7 items-center justify-center rounded text-muted-foreground",
@@ -81,6 +133,23 @@ export function PostEffectToolbar({
           <Loader2 size={15} className="animate-spin" />
         ) : (
           <ScanText size={15} />
+        )}
+      </button>
+      <button
+        aria-label="全シーンの整合性チェック"
+        title="全シーンの整合性チェック"
+        disabled={running || runningAll}
+        onClick={runAll}
+        className={cn(
+          "flex h-7 w-7 items-center justify-center rounded text-muted-foreground",
+          "hover:bg-accent hover:text-accent-foreground",
+          "disabled:opacity-50 disabled:cursor-not-allowed",
+        )}
+      >
+        {runningAll ? (
+          <Loader2 size={15} className="animate-spin" />
+        ) : (
+          <BookOpen size={15} />
         )}
       </button>
       <button
