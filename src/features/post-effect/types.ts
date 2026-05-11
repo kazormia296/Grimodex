@@ -135,6 +135,13 @@ export interface PostEffectDoneEvent {
   run_id: string;
   annotation_count: number;
   summary?: string;
+  /**
+   * バックエンドからの実 done イベントには無く、`runPostEffect` が
+   * `from_cache: true` のとき合成 onDone を発火する際に true をセットする。
+   * 呼び出し側で「キャッシュ短絡で実呼び出ししていない」ことを toast 等で
+   * 区別表示する用途。
+   */
+  from_cache?: boolean;
 }
 
 export interface PostEffectErrorEvent {

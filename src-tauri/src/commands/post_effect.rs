@@ -191,17 +191,117 @@ fn dismiss_key_intra(scene_id: &str, a_text: &str, b_text: &str) -> String {
     sha256_hex(&format!("{}|{}|{}", scene_id, texts[0], texts[1]))
 }
 
-/// LLM が返す JSON を markdown コードブロックから取り出す。
+/// LLM が返す JSON を取り出す。
+/// 1) ```json ... ``` / ``` ... ``` で囲まれた最初のブロックを優先
+/// 2) なければ最初の `{` から最後の `}` までを返す（前置き文対策）
+/// 3) どちらでもなければ trim 済み全文を返す
 fn extract_json(raw: &str) -> &str {
     let trimmed = raw.trim();
-    if let Some(inner) = trimmed
-        .strip_prefix("```json")
-        .or_else(|| trimmed.strip_prefix("```"))
-    {
-        inner.trim_end_matches("```").trim()
-    } else {
-        trimmed
+
+    // 1) コードフェンスを探す（prefix 限定ではなくどこにあっても拾う）
+    if let Some(fence_start) = trimmed.find("```") {
+        let after_fence = &trimmed[fence_start + 3..];
+        let body = after_fence.strip_prefix("json").unwrap_or(after_fence);
+        // 言語タグの直後の改行を飛ばす
+        let body = body.trim_start_matches(['\n', '\r', ' ']);
+        if let Some(end) = body.find("```") {
+            return body[..end].trim();
+        }
+        // 閉じフェンスがない場合は body 末尾までを使う
+        return body.trim();
     }
+
+    // 2) 前置き文 + 生 JSON のパターン: 最初の `{` 〜 最後の `}` を切り出す
+    if let (Some(start), Some(end)) = (trimmed.find('{'), trimmed.rfind('}')) {
+        if start < end {
+            return trimmed[start..=end].trim();
+        }
+    }
+
+    trimmed
+}
+
+#[cfg(test)]
+mod extract_json_tests {
+    use super::extract_json;
+
+    #[test]
+    fn handles_raw_json() {
+        assert_eq!(extract_json("{\"violations\":[]}"), "{\"violations\":[]}");
+    }
+
+    #[test]
+    fn handles_fenced_json_prefix() {
+        let raw = "```json\n{\"violations\":[]}\n```";
+        assert_eq!(extract_json(raw), "{\"violations\":[]}");
+    }
+
+    #[test]
+    fn handles_fenced_json_with_preamble() {
+        let raw = "Here is the result:\n\n```json\n{\"violations\":[1]}\n```\n";
+        assert_eq!(extract_json(raw), "{\"violations\":[1]}");
+    }
+
+    #[test]
+    fn handles_raw_json_with_preamble() {
+        let raw = "The scene describes...\n\n{\"violations\":[]}";
+        assert_eq!(extract_json(raw), "{\"violations\":[]}");
+    }
+
+    #[test]
+    fn handles_fence_without_language_tag() {
+        let raw = "```\n{\"a\":1}\n```";
+        assert_eq!(extract_json(raw), "{\"a\":1}");
+    }
+}
+
+#[cfg(test)]
+mod find_text_position_tests {
+    use super::find_text_position;
+
+    /// 日本語シーン中で found_text を発見できる
+    #[test]
+    fn locates_japanese_found_text_in_scene() {
+        let scene = "茶碗が並んでいた。湯気はまだ立っていた。誰かがついさっきまでここで茶を飲んでいた。円明は息を殺して耳を澄ませた。";
+        let found_text = "円明は息を殺して耳を澄ませた";
+        let context = "ここで茶を飲んでいた。円明は息を殺して耳を澄ませた。";
+        let pos = find_text_position(scene, found_text, context);
+        assert!(pos.is_some(), "日本語 found_text を発見できるべき");
+    }
+
+    /// マルチバイト境界でも panic しない（リグレッション防止）
+    #[test]
+    fn does_not_panic_on_utf8_boundary() {
+        let scene = "あいうえおかきくけこさしすせそたちつてとなにぬねの";
+        // context の前後 50 バイトが char 境界を割る位置に来るケース
+        let context = "けこさしす";
+        let found_text = "けこ";
+        let _ = find_text_position(scene, found_text, context);
+    }
+}
+
+/// `idx` を直下の char 境界に丸める（`is_char_boundary` が安定 API なので自前実装）。
+/// stable Rust では `str::floor_char_boundary` がまだ unstable なため。
+fn floor_char_boundary(s: &str, mut idx: usize) -> usize {
+    if idx >= s.len() {
+        return s.len();
+    }
+    while idx > 0 && !s.is_char_boundary(idx) {
+        idx -= 1;
+    }
+    idx
+}
+
+/// `idx` を直上の char 境界に丸める。
+fn ceil_char_boundary(s: &str, mut idx: usize) -> usize {
+    let len = s.len();
+    if idx >= len {
+        return len;
+    }
+    while idx < len && !s.is_char_boundary(idx) {
+        idx += 1;
+    }
+    idx
 }
 
 /// `found_context` をシーン本文で緩めにマッチし、その window 内で
@@ -225,9 +325,12 @@ fn find_text_position(
         norm_scene.as_str()
     } else {
         // context に found_text が含まれるはずなので context の前後 50 字拡張
+        // (UTF-8 マルチバイトを切らないように char 境界へクランプする)
         if let Some(ctx_pos) = norm_scene.find(norm_ctx.as_str()) {
-            let start = ctx_pos.saturating_sub(50);
-            let end = (ctx_pos + norm_ctx.len() + 50).min(norm_scene.len());
+            let raw_start = ctx_pos.saturating_sub(50);
+            let raw_end = (ctx_pos + norm_ctx.len() + 50).min(norm_scene.len());
+            let start = floor_char_boundary(&norm_scene, raw_start);
+            let end = ceil_char_boundary(&norm_scene, raw_end);
             &norm_scene[start..end]
         } else {
             norm_scene.as_str()
@@ -290,6 +393,16 @@ async fn process_consistency_scene(
         Err(e) => return Err(anyhow::anyhow!("API キー取得失敗: {e}")),
     };
 
+    tracing::info!(
+        run_id = run_id,
+        scene_id = scene_id,
+        provider = %ai_settings.provider,
+        model = %ai_settings.model,
+        codex_bytes = codex_payload_json.len(),
+        scene_chars = scene_text.chars().count(),
+        "[post_effect] consistency: calling AI"
+    );
+    let ai_start = std::time::Instant::now();
     let raw_response = call_post_effect_api(
         &ai_settings,
         &api_key,
@@ -298,14 +411,51 @@ async fn process_consistency_scene(
         scene_text,
     )
     .await
-    .map_err(|e| anyhow::anyhow!("AI 呼び出し失敗: {e}"))?;
+    .map_err(|e| {
+        tracing::error!(
+            run_id = run_id,
+            scene_id = scene_id,
+            elapsed_ms = ai_start.elapsed().as_millis(),
+            error = %e,
+            "[post_effect] consistency: AI call failed"
+        );
+        anyhow::anyhow!("AI 呼び出し失敗: {e}")
+    })?;
+    tracing::info!(
+        run_id = run_id,
+        scene_id = scene_id,
+        elapsed_ms = ai_start.elapsed().as_millis(),
+        raw_bytes = raw_response.len(),
+        "[post_effect] consistency: AI response received"
+    );
 
     on_stage(0.5, "parsing");
     let json_str = extract_json(&raw_response);
-    let parsed: Value =
-        serde_json::from_str(json_str).map_err(|e| anyhow::anyhow!("LLM 出力のパース失敗: {e}"))?;
+    tracing::debug!(
+        run_id = run_id,
+        scene_id = scene_id,
+        json_preview = %&json_str.chars().take(120).collect::<String>(),
+        "[post_effect] consistency: extracted JSON preview"
+    );
+    let parsed: Value = serde_json::from_str(json_str).map_err(|e| {
+        tracing::error!(
+            run_id = run_id,
+            scene_id = scene_id,
+            raw_preview = %&raw_response.chars().take(200).collect::<String>(),
+            extracted_preview = %&json_str.chars().take(200).collect::<String>(),
+            error = %e,
+            "[post_effect] consistency: JSON parse FAILED"
+        );
+        anyhow::anyhow!("LLM 出力のパース失敗: {e}")
+    })?;
 
     let violations = parsed["violations"].as_array().cloned().unwrap_or_default();
+    tracing::info!(
+        run_id = run_id,
+        scene_id = scene_id,
+        violations_count = violations.len(),
+        "[post_effect] consistency: parsed violations"
+    );
 
     let codex_entries: Vec<Value> = serde_json::from_str(codex_payload_json).unwrap_or_default();
     let name_map: HashMap<String, String> = codex_entries
@@ -330,8 +480,15 @@ async fn process_consistency_scene(
         })
         .collect();
 
+    tracing::info!(
+        run_id = run_id,
+        scene_id = scene_id,
+        deduped_count = deduped.len(),
+        "[post_effect] consistency: saving annotations"
+    );
     on_stage(0.7, "saving");
     let ws_state = app.state::<WorkspaceState>();
+    let save_start = std::time::Instant::now();
     let count: usize = super::with_db(&ws_state, |db| {
         db.with_conn(|conn| {
             let mut count = 0usize;
@@ -445,6 +602,13 @@ async fn process_consistency_scene(
             Ok(count)
         })
     })?;
+    tracing::info!(
+        run_id = run_id,
+        scene_id = scene_id,
+        saved_count = count,
+        save_ms = save_start.elapsed().as_millis(),
+        "[post_effect] consistency: scene DONE"
+    );
 
     Ok(count)
 }
@@ -540,6 +704,15 @@ async fn process_intra_scene(
         Err(e) => return Err(anyhow::anyhow!("API キー取得失敗: {e}")),
     };
 
+    tracing::info!(
+        run_id = run_id,
+        scene_id = scene_id,
+        provider = %ai_settings.provider,
+        model = %ai_settings.model,
+        scene_chars = scene_text.chars().count(),
+        "[post_effect] intra: calling AI"
+    );
+    let ai_start = std::time::Instant::now();
     let raw_response = call_post_effect_api(
         &ai_settings,
         &api_key,
@@ -548,14 +721,45 @@ async fn process_intra_scene(
         scene_text,
     )
     .await
-    .map_err(|e| anyhow::anyhow!("AI 呼び出し失敗: {e}"))?;
+    .map_err(|e| {
+        tracing::error!(
+            run_id = run_id,
+            scene_id = scene_id,
+            elapsed_ms = ai_start.elapsed().as_millis(),
+            error = %e,
+            "[post_effect] intra: AI call failed"
+        );
+        anyhow::anyhow!("AI 呼び出し失敗: {e}")
+    })?;
+    tracing::info!(
+        run_id = run_id,
+        scene_id = scene_id,
+        elapsed_ms = ai_start.elapsed().as_millis(),
+        raw_bytes = raw_response.len(),
+        "[post_effect] intra: AI response received"
+    );
 
     on_stage(0.5, "parsing");
     let json_str = extract_json(&raw_response);
-    let parsed: Value =
-        serde_json::from_str(json_str).map_err(|e| anyhow::anyhow!("LLM 出力のパース失敗: {e}"))?;
+    let parsed: Value = serde_json::from_str(json_str).map_err(|e| {
+        tracing::error!(
+            run_id = run_id,
+            scene_id = scene_id,
+            raw_preview = %&raw_response.chars().take(200).collect::<String>(),
+            extracted_preview = %&json_str.chars().take(200).collect::<String>(),
+            error = %e,
+            "[post_effect] intra: JSON parse FAILED"
+        );
+        anyhow::anyhow!("LLM 出力のパース失敗: {e}")
+    })?;
 
     let pairs = parsed["pairs"].as_array().cloned().unwrap_or_default();
+    tracing::info!(
+        run_id = run_id,
+        scene_id = scene_id,
+        pairs_count = pairs.len(),
+        "[post_effect] intra: parsed pairs"
+    );
 
     let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
     let deduped: Vec<&Value> = pairs
@@ -799,9 +1003,16 @@ async fn run_multi_task(
     let abort_flag = app.state::<PostEffectAbortFlag>();
     let total = scenes.len();
     let mut total_count = 0usize;
+    tracing::info!(
+        run_id = %run_id,
+        effect_type = %effect_type,
+        total_scenes = total,
+        "[post_effect] run_multi_task START"
+    );
 
     for (idx, scene) in scenes.into_iter().enumerate() {
         if abort_flag.flag.load(std::sync::atomic::Ordering::Relaxed) {
+            tracing::warn!(run_id = %run_id, "[post_effect] aborted by user");
             fail_run(&app, &run_id, "中断されました");
             let _ = app.emit(
                 "post_effect:error",
@@ -824,6 +1035,16 @@ async fn run_multi_task(
                 message: Some(&msg),
             },
         );
+
+        tracing::info!(
+            run_id = %run_id,
+            idx = idx + 1,
+            total = total,
+            scene_id = %scene.scene_id,
+            scene_text_len = scene.scene_text.chars().count(),
+            "[post_effect] processing scene START"
+        );
+        let scene_start = std::time::Instant::now();
 
         let result = if effect_type == "consistency" {
             process_consistency_scene(
@@ -850,9 +1071,29 @@ async fn run_multi_task(
             .await
         };
 
+        let elapsed_ms = scene_start.elapsed().as_millis();
+
         match result {
-            Ok(n) => total_count += n,
+            Ok(n) => {
+                tracing::info!(
+                    run_id = %run_id,
+                    idx = idx + 1,
+                    scene_id = %scene.scene_id,
+                    annotation_count = n,
+                    elapsed_ms = elapsed_ms,
+                    "[post_effect] processing scene OK"
+                );
+                total_count += n;
+            }
             Err(e) => {
+                tracing::error!(
+                    run_id = %run_id,
+                    idx = idx + 1,
+                    scene_id = %scene.scene_id,
+                    elapsed_ms = elapsed_ms,
+                    error = %e,
+                    "[post_effect] processing scene FAILED"
+                );
                 let _ = app.emit(
                     "post_effect:error",
                     ErrorEvent {
@@ -866,6 +1107,11 @@ async fn run_multi_task(
         }
     }
 
+    tracing::info!(
+        run_id = %run_id,
+        total_count = total_count,
+        "[post_effect] run_multi_task DONE"
+    );
     finalize_run(&app, &run_id);
     let _ = app.emit(
         "post_effect:done",
@@ -1020,13 +1266,35 @@ pub(crate) async fn start_post_effect_run(
     let rid = run_id.clone();
 
     tokio::task::spawn(async move {
-        if effect == "consistency" {
-            run_consistency_task(
-                app, rid, project_id, scene_id, codex_json, scene_text, ai_path,
-            )
-            .await;
-        } else {
-            run_intra_task(app, rid, project_id, scene_id, scene_text, ai_path).await;
+        let app_clone = app.clone();
+        let rid_clone = rid.clone();
+        let join = tokio::task::spawn(async move {
+            if effect == "consistency" {
+                run_consistency_task(
+                    app, rid, project_id, scene_id, codex_json, scene_text, ai_path,
+                )
+                .await;
+            } else {
+                run_intra_task(app, rid, project_id, scene_id, scene_text, ai_path).await;
+            }
+        })
+        .await;
+        if let Err(join_err) = join {
+            // 内側タスクが panic した場合のフォールバック emit
+            // (これがないとフロントの spinner が永遠に止まらない)
+            let msg = if join_err.is_panic() {
+                format!("post-effect タスクが panic しました: {join_err}")
+            } else {
+                format!("post-effect タスクが異常終了しました: {join_err}")
+            };
+            let _ = app_clone.emit(
+                "post_effect:error",
+                ErrorEvent {
+                    run_id: &rid_clone,
+                    error: msg.clone(),
+                },
+            );
+            fail_run(&app_clone, &rid_clone, &msg);
         }
     });
 
@@ -1124,7 +1392,27 @@ pub(crate) async fn start_post_effect_run_multi(
     let rid = run_id.clone();
 
     tokio::task::spawn(async move {
-        run_multi_task(app, rid, project_id, effect, scenes, ai_path).await;
+        let app_clone = app.clone();
+        let rid_clone = rid.clone();
+        let join = tokio::task::spawn(async move {
+            run_multi_task(app, rid, project_id, effect, scenes, ai_path).await;
+        })
+        .await;
+        if let Err(join_err) = join {
+            let msg = if join_err.is_panic() {
+                format!("post-effect multi タスクが panic しました: {join_err}")
+            } else {
+                format!("post-effect multi タスクが異常終了しました: {join_err}")
+            };
+            let _ = app_clone.emit(
+                "post_effect:error",
+                ErrorEvent {
+                    run_id: &rid_clone,
+                    error: msg.clone(),
+                },
+            );
+            fail_run(&app_clone, &rid_clone, &msg);
+        }
     });
 
     Ok(StartPostEffectRunResult {

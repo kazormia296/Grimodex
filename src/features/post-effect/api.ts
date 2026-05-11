@@ -169,59 +169,114 @@ export interface PostEffectRunCallbacks {
 
 /**
  * start_post_effect_run を fire-and-forget で起動し、イベント購読を設定する。
- * 返り値の cleanup 関数を呼ぶことでリスナーを解除できる。
+ *
+ * ## 自動 cleanup
+ * done / error イベントを受信した時点で**自動的に**全リスナーを解除する。
+ * 呼び出し側のハンドラ内で `cleanup()` を呼ぶ必要はない（呼んでも no-op）。
+ *
+ * これは過去のバグ対策: 呼び出し側コードが
+ *   `const { cleanup } = await runPostEffect(req, { onDone: () => cleanup() })`
+ * のように cleanup を const 経由で参照していたとき、empty completion など
+ * バックエンドが極端に速く done を emit すると、cleanup が TDZ のまま
+ * ハンドラが走り ReferenceError → setRunning(false) 未到達 → spinner 永続
+ * という race condition が発生していた。
+ *
+ * 返り値の `cleanup` は早期 abort 時のためだけに残してある。
  */
 export async function runPostEffect(
   req: StartPostEffectRunRequest,
   callbacks: PostEffectRunCallbacks,
 ): Promise<{ runId: string; cleanup: () => void }> {
-  // listen を先に張ってから invoke（初期イベント取り逃し防止）
-  const unlisteners = await Promise.all([
-    callbacks.onProgress
-      ? onPostEffectProgress(callbacks.onProgress)
-      : Promise.resolve(() => {}),
-    callbacks.onPartial
-      ? onPostEffectPartial(callbacks.onPartial)
-      : Promise.resolve(() => {}),
-    callbacks.onDone
-      ? onPostEffectDone(callbacks.onDone)
-      : Promise.resolve(() => {}),
-    callbacks.onError
-      ? onPostEffectError(callbacks.onError)
-      : Promise.resolve(() => {}),
-  ]);
-
-  const cleanup = () => unlisteners.forEach((u) => u());
-
-  const result = await startPostEffectRun(req);
-  return { runId: result.run_id, cleanup };
+  return runPostEffectInternal(callbacks, () => startPostEffectRun(req));
 }
 
 /**
  * start_post_effect_run_multi を fire-and-forget で起動し、イベント購読を設定する。
  * folder / project スコープの複数シーン一括チェック用。
+ *
+ * `runPostEffect` と同じ自動 cleanup 仕様。
  */
 export async function runPostEffectMulti(
   req: StartPostEffectRunMultiRequest,
   callbacks: PostEffectRunCallbacks,
 ): Promise<{ runId: string; cleanup: () => void }> {
-  const unlisteners = await Promise.all([
+  return runPostEffectInternal(callbacks, () => startPostEffectRunMulti(req));
+}
+
+async function runPostEffectInternal(
+  callbacks: PostEffectRunCallbacks,
+  starter: () => Promise<StartPostEffectRunResult>,
+): Promise<{ runId: string; cleanup: () => void }> {
+  // unlisteners は terminal handler 内からも触れるよう先に箱だけ用意する
+  // (Promise.all 完了前にイベントが来ることはないが、TDZ を避けるため)。
+  const unlisteners: Array<() => void> = [];
+  let cleanedUp = false;
+  const cleanup = () => {
+    if (cleanedUp) return;
+    cleanedUp = true;
+    for (const u of unlisteners) {
+      try {
+        u();
+      } catch {
+        /* listen 解除失敗は無視 */
+      }
+    }
+  };
+
+  // terminal (done/error) ハンドラを cleanup 自動付与でラップ。
+  // ユーザー callback の例外は飲み込み (cleanup を最優先で実行する)。
+  const wrapTerminal =
+    <T>(fn: ((e: T) => void | Promise<void>) | undefined) =>
+    async (e: T) => {
+      try {
+        if (fn) await fn(e);
+      } catch (err) {
+        console.error("post-effect terminal handler error", err);
+      } finally {
+        cleanup();
+      }
+    };
+
+  const registered = await Promise.all([
     callbacks.onProgress
       ? onPostEffectProgress(callbacks.onProgress)
       : Promise.resolve(() => {}),
     callbacks.onPartial
       ? onPostEffectPartial(callbacks.onPartial)
       : Promise.resolve(() => {}),
-    callbacks.onDone
-      ? onPostEffectDone(callbacks.onDone)
-      : Promise.resolve(() => {}),
-    callbacks.onError
-      ? onPostEffectError(callbacks.onError)
-      : Promise.resolve(() => {}),
+    onPostEffectDone(wrapTerminal(callbacks.onDone)),
+    onPostEffectError(wrapTerminal(callbacks.onError)),
   ]);
+  unlisteners.push(...registered);
 
-  const cleanup = () => unlisteners.forEach((u) => u());
-
-  const result = await startPostEffectRunMulti(req);
-  return { runId: result.run_id, cleanup };
+  // Listen 登録 → 呼び出し側 await 前に done/error が届くと
+  // cleanup() が走るが、unlisteners に他の listen も入っているので OK。
+  try {
+    const result = await starter();
+    // from_cache: true のときバックエンドはタスクを spawn せず、
+    // 既存の completed run の id だけ返してくる。done イベントは
+    // 永遠に飛んでこないので、ここで合成的に onDone を fire してやる。
+    // (これがないと spinner が永久に回る)
+    if (result.from_cache) {
+      const synthetic: PostEffectDoneEvent = {
+        run_id: result.run_id,
+        annotation_count: 0,
+        from_cache: true,
+      };
+      // wrapTerminal と同じ意味: callback 実行 → cleanup
+      void (async () => {
+        try {
+          if (callbacks.onDone) await callbacks.onDone(synthetic);
+        } catch (err) {
+          console.error("post-effect onDone (cache) error", err);
+        } finally {
+          cleanup();
+        }
+      })();
+    }
+    return { runId: result.run_id, cleanup };
+  } catch (e) {
+    cleanup(); // 起動自体が失敗したらリスナーをリーク死しないよう解除
+    throw e;
+  }
 }

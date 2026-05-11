@@ -1,5 +1,6 @@
 import { useState, useCallback, useEffect } from "react";
 import { ScanText, Loader2, Eye, EyeOff, BookOpen } from "lucide-react";
+import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { useAiSettingsStore } from "@/features/chat/store";
@@ -42,7 +43,10 @@ export function PostEffectToolbar({ sceneId, editor }: Props) {
     setRunning(true);
     try {
       const payload = await buildConsistencyPayload(projectId, sceneId, model);
-      const { cleanup } = await runPostEffect(
+      // terminal イベント (done/error) で listen は runPostEffect 側が
+      // 自動 cleanup する。ハンドラ内で cleanup() を呼ぶ必要はない
+      // (呼ぶと TDZ で ReferenceError → setRunning(false) 未到達 → spinner 永続)。
+      await runPostEffect(
         {
           project_id: projectId,
           effect_type: "consistency",
@@ -55,23 +59,34 @@ export function PostEffectToolbar({ sceneId, editor }: Props) {
           scene_text: payload.sceneText,
         },
         {
-          onDone: async () => {
-            cleanup();
+          onDone: async (e) => {
             const resp = await listAnnotationsForScene({ projectId, sceneId });
             setAnnotations(sceneId, resp.annotations);
             applyAnnotationsToEditor(editor, resp.annotations);
             setRunning(false);
+            if (e.from_cache) {
+              toast.info("前回と同じ内容のためキャッシュから読み込みました", {
+                description: "AI には送信していません",
+              });
+            } else if (e.annotation_count === 0) {
+              toast.success("矛盾は見つかりませんでした");
+            }
           },
           onError: (e) => {
-            cleanup();
             console.error("post-effect error", e.error);
             setRunning(false);
+            toast.error("整合性チェックに失敗しました", {
+              description: e.error,
+            });
           },
         },
       );
     } catch (e) {
       console.error("post-effect launch error", e);
       setRunning(false);
+      toast.error("整合性チェックを起動できませんでした", {
+        description: e instanceof Error ? e.message : String(e),
+      });
     }
   }, [editor, running, sceneId, setAnnotations]);
 
@@ -93,7 +108,7 @@ export function PostEffectToolbar({ sceneId, editor }: Props) {
         setRunningAll(false);
         return;
       }
-      const { cleanup } = await runPostEffectMulti(
+      await runPostEffectMulti(
         {
           project_id: projectId,
           effect_type: "consistency",
@@ -105,23 +120,36 @@ export function PostEffectToolbar({ sceneId, editor }: Props) {
           scenes: payload.scenes,
         },
         {
-          onDone: async () => {
-            cleanup();
+          onDone: async (e) => {
             const resp = await listAnnotationsForScene({ projectId, sceneId });
             setAnnotations(sceneId, resp.annotations);
             applyAnnotationsToEditor(editor, resp.annotations);
             setRunningAll(false);
+            if (e.from_cache) {
+              toast.info("前回と同じ内容のためキャッシュから読み込みました", {
+                description: "AI には送信していません",
+              });
+            } else if (e.annotation_count === 0) {
+              toast.success("全シーンで矛盾は見つかりませんでした");
+            } else {
+              toast.success(`${e.annotation_count} 件の矛盾候補を検出しました`);
+            }
           },
           onError: (e) => {
-            cleanup();
             console.error("post-effect multi error", e.error);
             setRunningAll(false);
+            toast.error("全シーン整合性チェックに失敗しました", {
+              description: e.error,
+            });
           },
         },
       );
     } catch (e) {
       console.error("post-effect multi launch error", e);
       setRunningAll(false);
+      toast.error("全シーン整合性チェックを起動できませんでした", {
+        description: e instanceof Error ? e.message : String(e),
+      });
     }
   }, [editor, runningAll, sceneId, setAnnotations]);
 
