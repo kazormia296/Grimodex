@@ -50,6 +50,43 @@ export function canHaveChildren(type: NodeType): boolean {
 }
 
 /**
+ * DFS pre-order で `folderId` 配下（自身は除く）のシーンを sortOrder 順に
+ * 返す。各レベルで sortOrder を使ってソートするので、ツリー上に表示される
+ * 並びと一致する。folder スコープの本文集約（Phase 2）で使う。
+ *
+ * folder 以外の id を渡した場合や見つからない場合は空配列。
+ */
+export function getDescendantScenesInOrder(
+  nodes: TreeNodeData[],
+  folderId: string | null | undefined,
+): TreeNodeData[] {
+  if (!folderId) return [];
+  const childrenByParent = new Map<string | null, TreeNodeData[]>();
+  for (const n of nodes) {
+    const key = n.parentId;
+    const arr = childrenByParent.get(key) ?? [];
+    arr.push(n);
+    childrenByParent.set(key, arr);
+  }
+  for (const arr of childrenByParent.values()) {
+    arr.sort((a, b) => cmpKeys(a.sortOrder, b.sortOrder));
+  }
+  const out: TreeNodeData[] = [];
+  const guard = new Set<string>();
+  function walk(parentId: string) {
+    if (guard.has(parentId)) return;
+    guard.add(parentId);
+    const kids = childrenByParent.get(parentId) ?? [];
+    for (const n of kids) {
+      if (n.nodeType === "scene") out.push(n);
+      else if (n.nodeType === "folder") walk(n.id);
+    }
+  }
+  walk(folderId);
+  return out;
+}
+
+/**
  * Walks the parent chain from `nodeId` toward the root and returns folder
  * ancestors in nearest-first order. Used by Chat scope picker and outline
  * walkers to identify Chapter/Act layers without hard-coding a depth scheme.
