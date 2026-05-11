@@ -1077,6 +1077,161 @@ export const treeNodeLabels = sqliteTable(
   ],
 );
 
+// =========================================================================
+// PostEffects: 書き換えずに注釈を重ねる AI パスの実行単位と成果物テーブル群。
+// 詳細は docs/Grimodex_PostEffects設計書.md を参照。
+// enum カラムの CHECK 制約と FTS5 仮想テーブル / partial UNIQUE は
+// Rust 側 migrate.rs に直書きされる（Drizzle では表現できないため）。
+// =========================================================================
+export const postEffectRuns = sqliteTable(
+  "post_effect_runs",
+  {
+    id: text("id").primaryKey(),
+    projectId: text("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    // 'review' | 'pseudo_comment' | 'meta_structure' | 'consistency' | 'intra_scene_consistency'
+    effectType: text("effect_type").notNull(),
+    // 'scene' | 'folder' | 'project'
+    scopeType: text("scope_type").notNull(),
+    scopeTargetId: text("scope_target_id").references(
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (): any => treeNodes.id,
+      { onDelete: "cascade" },
+    ),
+    model: text("model").notNull(),
+    promptVersion: text("prompt_version").notNull(),
+    inputHash: text("input_hash"),
+    // 'running' | 'completed' | 'failed' | 'cancelled'
+    status: text("status").notNull(),
+    summary: text("summary"),
+    errorMessage: text("error_message"),
+    startedAt: text("started_at")
+      .notNull()
+      .$defaultFn(() => new Date().toISOString()),
+    completedAt: text("completed_at"),
+  },
+  (table) => [
+    index("idx_runs_project_effect").on(
+      table.projectId,
+      table.effectType,
+      table.startedAt,
+    ),
+  ],
+);
+
+export const postEffectAnnotations = sqliteTable(
+  "post_effect_annotations",
+  {
+    id: text("id").primaryKey(),
+    projectId: text("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    // NULL = 将来的なユーザー手動メモ用の枠（MVP は AI 生成のみ）
+    runId: text("run_id").references(() => postEffectRuns.id, {
+      onDelete: "set null",
+    }),
+    // 'scene_range' | 'codex_entry' | 'synopsis' (MVP は scene_range のみ)
+    anchorType: text("anchor_type").notNull().default("scene_range"),
+    sceneId: text("scene_id").references(() => treeNodes.id, {
+      onDelete: "cascade",
+    }),
+    rangeStart: integer("range_start"),
+    rangeEnd: integer("range_end"),
+    textSnapshot: text("text_snapshot"),
+    // 'review' | 'pseudo_comment' | 'consistency_anchor' | 'foreshadow_anchor' | 'theme_anchor'
+    category: text("category").notNull(),
+    persona: text("persona"),
+    // 'info' | 'suggestion' | 'warning' | 'error'
+    severity: text("severity"),
+    content: text("content").notNull(),
+    // 'ai' | 'user' | 'system'
+    authorRole: text("author_role").notNull().default("ai"),
+    parentId: text("parent_id").references(
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (): any => postEffectAnnotations.id,
+      { onDelete: "cascade" },
+    ),
+    // 'open' | 'resolved' | 'dismissed'
+    status: text("status").notNull().default("open"),
+    metadata: text("metadata").notNull().default("{}"),
+    createdAt: text("created_at")
+      .notNull()
+      .$defaultFn(() => new Date().toISOString()),
+    updatedAt: text("updated_at")
+      .notNull()
+      .$defaultFn(() => new Date().toISOString()),
+  },
+  (table) => [
+    index("idx_pea_scene").on(table.projectId, table.sceneId, table.status),
+    index("idx_pea_run").on(table.runId),
+    index("idx_pea_parent").on(table.parentId),
+  ],
+);
+
+export const postEffectAnnotationRelations = sqliteTable(
+  "post_effect_annotation_relations",
+  {
+    id: text("id").primaryKey(),
+    projectId: text("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    runId: text("run_id").references(() => postEffectRuns.id, {
+      onDelete: "set null",
+    }),
+    annotationAId: text("annotation_a_id")
+      .notNull()
+      .references(() => postEffectAnnotations.id, { onDelete: "cascade" }),
+    annotationBId: text("annotation_b_id")
+      .notNull()
+      .references(() => postEffectAnnotations.id, { onDelete: "cascade" }),
+    // 'contradiction' | 'foreshadowing' | 'theme_echo'
+    relationType: text("relation_type").notNull(),
+    // 'bidirectional' | 'a_to_b' (foreshadowing は a=setup / b=payoff で a_to_b 固定)
+    direction: text("direction").notNull().default("bidirectional"),
+    description: text("description"),
+    // 'open' | 'resolved' | 'dismissed'
+    status: text("status").notNull().default("open"),
+    metadata: text("metadata").notNull().default("{}"),
+    createdAt: text("created_at")
+      .notNull()
+      .$defaultFn(() => new Date().toISOString()),
+  },
+  (table) => [
+    index("idx_pear_a").on(table.annotationAId),
+    index("idx_pear_b").on(table.annotationBId),
+  ],
+);
+
+export const sceneLensData = sqliteTable(
+  "scene_lens_data",
+  {
+    id: text("id").primaryKey(),
+    projectId: text("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    runId: text("run_id")
+      .notNull()
+      .references(() => postEffectRuns.id, { onDelete: "cascade" }),
+    targetId: text("target_id").references(() => treeNodes.id, {
+      onDelete: "cascade",
+    }),
+    // 'plot_structure' | 'pacing' | 'character_arc' | 'pov'
+    lensType: text("lens_type").notNull(),
+    metrics: text("metrics").notNull().default("{}"),
+    finding: text("finding"),
+    // 'info' | 'suggestion' | 'warning' | 'error'
+    severity: text("severity").notNull().default("info"),
+    createdAt: text("created_at")
+      .notNull()
+      .$defaultFn(() => new Date().toISOString()),
+  },
+  (table) => [
+    index("idx_lens_run_target").on(table.runId, table.targetId),
+    index("idx_lens_target_type").on(table.targetId, table.lensType),
+  ],
+);
+
 // Trash bin: holds deleted text fragments (Phase 1) and structure items (Phase 4-5).
 // payload / preview_meta は素の TEXT で JSON.stringify を保持（aiReasoning と同流儀）。
 export const trashItems = sqliteTable(
@@ -1177,3 +1332,47 @@ export type NewLabel = typeof labels.$inferInsert;
 
 export type TrashItem = typeof trashItems.$inferSelect;
 export type NewTrashItem = typeof trashItems.$inferInsert;
+
+export type PostEffectRun = typeof postEffectRuns.$inferSelect;
+export type NewPostEffectRun = typeof postEffectRuns.$inferInsert;
+export type PostEffectAnnotation = typeof postEffectAnnotations.$inferSelect;
+export type NewPostEffectAnnotation = typeof postEffectAnnotations.$inferInsert;
+export type PostEffectAnnotationRelation =
+  typeof postEffectAnnotationRelations.$inferSelect;
+export type NewPostEffectAnnotationRelation =
+  typeof postEffectAnnotationRelations.$inferInsert;
+export type SceneLensData = typeof sceneLensData.$inferSelect;
+export type NewSceneLensData = typeof sceneLensData.$inferInsert;
+
+export type PostEffectType =
+  | "review"
+  | "pseudo_comment"
+  | "meta_structure"
+  | "consistency"
+  | "intra_scene_consistency";
+export type PostEffectScopeType = "scene" | "folder" | "project";
+export type PostEffectRunStatus =
+  | "running"
+  | "completed"
+  | "failed"
+  | "cancelled";
+export type PostEffectAnchorType = "scene_range" | "codex_entry" | "synopsis";
+export type PostEffectCategory =
+  | "review"
+  | "pseudo_comment"
+  | "consistency_anchor"
+  | "foreshadow_anchor"
+  | "theme_anchor";
+export type PostEffectSeverity = "info" | "suggestion" | "warning" | "error";
+export type PostEffectAuthorRole = "ai" | "user" | "system";
+export type PostEffectStatus = "open" | "resolved" | "dismissed";
+export type PostEffectRelationType =
+  | "contradiction"
+  | "foreshadowing"
+  | "theme_echo";
+export type PostEffectRelationDirection = "bidirectional" | "a_to_b";
+export type SceneLensType =
+  | "plot_structure"
+  | "pacing"
+  | "character_arc"
+  | "pov";

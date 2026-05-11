@@ -881,6 +881,147 @@ impl Database {
         // still have the old `color` column; rebuild the table to migrate.
         Self::migrate_stickies_color_to_palette_slot(&conn)?;
 
+        // PostEffects — 書き換えずに注釈を重ねる AI パスの実行単位と成果物。
+        // 設計詳細は docs/Grimodex_PostEffects設計書.md。
+        // enum CHECK と FTS5 仮想テーブル/トリガはここに直書きする（Drizzle では表現不可）。
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS post_effect_runs (
+                id              TEXT PRIMARY KEY,
+                project_id      TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                effect_type     TEXT NOT NULL
+                                  CHECK(effect_type IN ('review','pseudo_comment','meta_structure','consistency','intra_scene_consistency')),
+                scope_type      TEXT NOT NULL
+                                  CHECK(scope_type IN ('scene','folder','project')),
+                scope_target_id TEXT REFERENCES tree_nodes(id) ON DELETE CASCADE,
+                model           TEXT NOT NULL,
+                prompt_version  TEXT NOT NULL,
+                input_hash      TEXT,
+                status          TEXT NOT NULL
+                                  CHECK(status IN ('running','completed','failed','cancelled')),
+                summary         TEXT,
+                error_message   TEXT,
+                started_at      TEXT NOT NULL DEFAULT (datetime('now')),
+                completed_at    TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_runs_project_effect
+                ON post_effect_runs(project_id, effect_type, started_at DESC);
+            -- 同じ (project, effect_type, scope) で running は同時 1 本まで。
+            -- SQLite は NULL を distinct 扱いするため COALESCE で空文字に正規化する
+            -- (project 全体スコープ scope_target_id IS NULL も含めて単一性を保つ)。
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_runs_running_scope
+                ON post_effect_runs(project_id, effect_type, scope_type, COALESCE(scope_target_id, ''))
+                WHERE status = 'running';
+
+            CREATE TABLE IF NOT EXISTS post_effect_annotations (
+                id             TEXT PRIMARY KEY,
+                project_id     TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                run_id         TEXT REFERENCES post_effect_runs(id) ON DELETE SET NULL,
+                anchor_type    TEXT NOT NULL DEFAULT 'scene_range'
+                                  CHECK(anchor_type IN ('scene_range','codex_entry','synopsis')),
+                scene_id       TEXT REFERENCES tree_nodes(id) ON DELETE CASCADE,
+                range_start    INTEGER,
+                range_end      INTEGER,
+                text_snapshot  TEXT,
+                category       TEXT NOT NULL
+                                  CHECK(category IN ('review','pseudo_comment','consistency_anchor','foreshadow_anchor','theme_anchor')),
+                persona        TEXT,
+                severity       TEXT CHECK(severity IS NULL OR severity IN ('info','suggestion','warning','error')),
+                content        TEXT NOT NULL,
+                author_role    TEXT NOT NULL DEFAULT 'ai'
+                                  CHECK(author_role IN ('ai','user','system')),
+                parent_id      TEXT REFERENCES post_effect_annotations(id) ON DELETE CASCADE,
+                status         TEXT NOT NULL DEFAULT 'open'
+                                  CHECK(status IN ('open','resolved','dismissed')),
+                metadata       TEXT NOT NULL DEFAULT '{}',
+                created_at     TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at     TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+            CREATE INDEX IF NOT EXISTS idx_pea_scene
+                ON post_effect_annotations(project_id, scene_id, status);
+            CREATE INDEX IF NOT EXISTS idx_pea_run
+                ON post_effect_annotations(run_id);
+            CREATE INDEX IF NOT EXISTS idx_pea_parent
+                ON post_effect_annotations(parent_id);
+
+            -- FTS5: annotation の content を横断検索する。
+            -- 既存 chat_messages_fts と同じ external-content + trigger 同期方式。
+            CREATE VIRTUAL TABLE IF NOT EXISTS post_effect_annotations_fts USING fts5(
+                content,
+                content=post_effect_annotations, content_rowid=rowid,
+                tokenize='trigram'
+            );
+            CREATE TRIGGER IF NOT EXISTS post_effect_annotations_fts_ai
+              AFTER INSERT ON post_effect_annotations BEGIN
+                INSERT INTO post_effect_annotations_fts(rowid, content)
+                VALUES (new.rowid, new.content);
+            END;
+            CREATE TRIGGER IF NOT EXISTS post_effect_annotations_fts_ad
+              AFTER DELETE ON post_effect_annotations BEGIN
+                INSERT INTO post_effect_annotations_fts(post_effect_annotations_fts, rowid, content)
+                VALUES ('delete', old.rowid, old.content);
+            END;
+            CREATE TRIGGER IF NOT EXISTS post_effect_annotations_fts_au
+              AFTER UPDATE ON post_effect_annotations
+              WHEN old.content IS NOT new.content
+            BEGIN
+                INSERT INTO post_effect_annotations_fts(post_effect_annotations_fts, rowid, content)
+                VALUES ('delete', old.rowid, old.content);
+                INSERT INTO post_effect_annotations_fts(rowid, content)
+                VALUES (new.rowid, new.content);
+            END;
+
+            CREATE TABLE IF NOT EXISTS post_effect_annotation_relations (
+                id               TEXT PRIMARY KEY,
+                project_id       TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                run_id           TEXT REFERENCES post_effect_runs(id) ON DELETE SET NULL,
+                annotation_a_id  TEXT NOT NULL REFERENCES post_effect_annotations(id) ON DELETE CASCADE,
+                annotation_b_id  TEXT NOT NULL REFERENCES post_effect_annotations(id) ON DELETE CASCADE,
+                relation_type    TEXT NOT NULL
+                                   CHECK(relation_type IN ('contradiction','foreshadowing','theme_echo')),
+                direction        TEXT NOT NULL DEFAULT 'bidirectional'
+                                   CHECK(direction IN ('bidirectional','a_to_b')),
+                description      TEXT,
+                status           TEXT NOT NULL DEFAULT 'open'
+                                   CHECK(status IN ('open','resolved','dismissed')),
+                metadata         TEXT NOT NULL DEFAULT '{}',
+                created_at       TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+            CREATE INDEX IF NOT EXISTS idx_pear_a
+                ON post_effect_annotation_relations(annotation_a_id);
+            CREATE INDEX IF NOT EXISTS idx_pear_b
+                ON post_effect_annotation_relations(annotation_b_id);
+
+            CREATE TABLE IF NOT EXISTS scene_lens_data (
+                id          TEXT PRIMARY KEY,
+                project_id  TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                run_id      TEXT NOT NULL REFERENCES post_effect_runs(id) ON DELETE CASCADE,
+                target_id   TEXT REFERENCES tree_nodes(id) ON DELETE CASCADE,
+                lens_type   TEXT NOT NULL
+                              CHECK(lens_type IN ('plot_structure','pacing','character_arc','pov')),
+                metrics     TEXT NOT NULL DEFAULT '{}',
+                finding     TEXT,
+                severity    TEXT NOT NULL DEFAULT 'info'
+                              CHECK(severity IN ('info','suggestion','warning','error')),
+                created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+            CREATE INDEX IF NOT EXISTS idx_lens_run_target
+                ON scene_lens_data(run_id, target_id);
+            CREATE INDEX IF NOT EXISTS idx_lens_target_type
+                ON scene_lens_data(target_id, lens_type);",
+        )?;
+
+        // PostEffect クラッシュリカバリ: プロセス強制終了等で running のまま残った run を
+        // 起動時に failed へ落とす。idx_runs_running_scope の UNIQUE が次回起動を
+        // ブロックするのを防ぐ目的も兼ねる。設計書 §run のステータス遷移 を参照。
+        conn.execute(
+            "UPDATE post_effect_runs
+                SET status = 'failed',
+                    error_message = COALESCE(error_message, 'Process terminated unexpectedly'),
+                    completed_at = datetime('now')
+              WHERE status = 'running'",
+            [],
+        )?;
+
         // Trash bin (削除物の物理ゴミ箱) — Phase 1 では文字屑のみ書き込む。
         // payload / preview_meta は素の TEXT で JSON.stringify を保持。
         conn.execute_batch(

@@ -1726,3 +1726,223 @@ fn test_content_versions_cascade_on_codex_entry_delete() {
         "content_versions should be deleted when codex_entry is deleted"
     );
 }
+
+// --- PostEffects schema ---
+
+fn seed_post_effect_scene(db: &Database) {
+    db.execute(
+        "INSERT INTO tree_nodes (id, project_id, node_type, title, sort_order, created_at, updated_at) \
+         VALUES ('pe-scene', 'default-project', 'scene', 'PE Scene', 'a0', datetime('now'), datetime('now'))",
+        &[],
+        "run",
+    )
+    .expect("seed pe-scene");
+}
+
+fn insert_pe_run(db: &Database, id: &str, scope_target: Option<&str>, status: &str) {
+    let scope_val = scope_target
+        .map(|s| Value::String(s.into()))
+        .unwrap_or(Value::Null);
+    db.execute(
+        "INSERT INTO post_effect_runs \
+            (id, project_id, effect_type, scope_type, scope_target_id, model, prompt_version, status, started_at) \
+         VALUES (?, 'default-project', 'consistency', 'scene', ?, 'm', 'consistency_v1.0', ?, datetime('now'))",
+        &[
+            Value::String(id.into()),
+            scope_val,
+            Value::String(status.into()),
+        ],
+        "run",
+    )
+    .expect("insert pe run");
+}
+
+#[test]
+fn test_post_effect_tables_exist() {
+    let db = test_db();
+    let expected = [
+        "post_effect_runs",
+        "post_effect_annotations",
+        "post_effect_annotation_relations",
+        "scene_lens_data",
+        "post_effect_annotations_fts",
+    ];
+    for table in &expected {
+        let rows = db
+            .execute(
+                "SELECT name FROM sqlite_master WHERE name=? AND type IN ('table','virtual table')",
+                &[Value::String((*table).into())],
+                "all",
+            )
+            .expect("query");
+        assert_eq!(rows.len(), 1, "table '{}' should exist", table);
+    }
+}
+
+#[test]
+fn test_post_effect_runs_rejects_invalid_effect_type() {
+    let db = test_db();
+    let result = db.execute(
+        "INSERT INTO post_effect_runs (id, project_id, effect_type, scope_type, model, prompt_version, status) \
+         VALUES ('r1', 'default-project', 'bogus', 'scene', 'm', 'v', 'running')",
+        &[],
+        "run",
+    );
+    assert!(result.is_err(), "Should reject invalid effect_type");
+}
+
+#[test]
+fn test_post_effect_runs_rejects_invalid_status() {
+    let db = test_db();
+    let result = db.execute(
+        "INSERT INTO post_effect_runs (id, project_id, effect_type, scope_type, model, prompt_version, status) \
+         VALUES ('r1', 'default-project', 'consistency', 'scene', 'm', 'v', 'spinning')",
+        &[],
+        "run",
+    );
+    assert!(result.is_err(), "Should reject invalid run status");
+}
+
+#[test]
+fn test_post_effect_annotations_rejects_invalid_category() {
+    let db = test_db();
+    seed_post_effect_scene(&db);
+    insert_pe_run(&db, "r1", Some("pe-scene"), "completed");
+    let result = db.execute(
+        "INSERT INTO post_effect_annotations (id, project_id, run_id, scene_id, category, content) \
+         VALUES ('a1', 'default-project', 'r1', 'pe-scene', 'invalid_cat', 'x')",
+        &[],
+        "run",
+    );
+    assert!(result.is_err(), "Should reject invalid category");
+}
+
+#[test]
+fn test_post_effect_relations_rejects_invalid_direction() {
+    let db = test_db();
+    seed_post_effect_scene(&db);
+    insert_pe_run(&db, "r1", Some("pe-scene"), "completed");
+    db.execute(
+        "INSERT INTO post_effect_annotations (id, project_id, run_id, scene_id, category, content) \
+         VALUES ('a1', 'default-project', 'r1', 'pe-scene', 'consistency_anchor', 'x'), \
+                ('a2', 'default-project', 'r1', 'pe-scene', 'consistency_anchor', 'y')",
+        &[],
+        "run",
+    )
+    .expect("seed annotations");
+    let result = db.execute(
+        "INSERT INTO post_effect_annotation_relations (id, project_id, run_id, annotation_a_id, annotation_b_id, relation_type, direction) \
+         VALUES ('rel1', 'default-project', 'r1', 'a1', 'a2', 'contradiction', 'sideways')",
+        &[],
+        "run",
+    );
+    assert!(result.is_err(), "Should reject invalid direction");
+}
+
+#[test]
+fn test_post_effect_runs_running_scope_unique() {
+    // 同じ (project, effect_type, scope) で running は 1 本まで。
+    // running が終了すれば次の run を起動できる。
+    let db = test_db();
+    seed_post_effect_scene(&db);
+
+    insert_pe_run(&db, "r1", Some("pe-scene"), "running");
+    // 2 本目の running は UNIQUE 違反で弾かれる
+    let dup = db.execute(
+        "INSERT INTO post_effect_runs (id, project_id, effect_type, scope_type, scope_target_id, model, prompt_version, status, started_at) \
+         VALUES ('r2', 'default-project', 'consistency', 'scene', 'pe-scene', 'm', 'v', 'running', datetime('now'))",
+        &[],
+        "run",
+    );
+    assert!(
+        dup.is_err(),
+        "Second running run on same scope should be rejected"
+    );
+
+    // 別 scope なら通る
+    db.execute(
+        "INSERT INTO tree_nodes (id, project_id, node_type, title, sort_order, created_at, updated_at) \
+         VALUES ('pe-scene-2', 'default-project', 'scene', 'PE Scene 2', 'a1', datetime('now'), datetime('now'))",
+        &[],
+        "run",
+    )
+    .expect("seed second scene");
+    insert_pe_run(&db, "r3", Some("pe-scene-2"), "running");
+
+    // r1 を completed に落とせば、同じ scope で次の running を起動できる
+    db.execute(
+        "UPDATE post_effect_runs SET status='completed', completed_at=datetime('now') WHERE id='r1'",
+        &[],
+        "run",
+    )
+    .expect("complete r1");
+    insert_pe_run(&db, "r4", Some("pe-scene"), "running");
+}
+
+#[test]
+fn test_post_effect_runs_running_scope_unique_for_project_wide() {
+    // scope_target_id IS NULL (project-wide) でも単一性を保つ。
+    // SQLite の NULL distinct 挙動を COALESCE で潰している箇所のテスト。
+    let db = test_db();
+    insert_pe_run(&db, "r1", None, "running");
+    let dup = db.execute(
+        "INSERT INTO post_effect_runs (id, project_id, effect_type, scope_type, model, prompt_version, status, started_at) \
+         VALUES ('r2', 'default-project', 'consistency', 'scene', 'm', 'v', 'running', datetime('now'))",
+        &[],
+        "run",
+    );
+    assert!(
+        dup.is_err(),
+        "Two project-wide running runs (scope_target_id NULL) should be rejected"
+    );
+}
+
+#[test]
+fn test_post_effect_annotations_fts_sync_on_insert() {
+    let db = test_db();
+    seed_post_effect_scene(&db);
+    insert_pe_run(&db, "r1", Some("pe-scene"), "completed");
+    db.execute(
+        "INSERT INTO post_effect_annotations (id, project_id, run_id, scene_id, category, content) \
+         VALUES ('a1', 'default-project', 'r1', 'pe-scene', 'review', '主人公の動機が薄い')",
+        &[],
+        "run",
+    )
+    .expect("insert annotation");
+
+    let rows = db
+        .execute(
+            "SELECT content FROM post_effect_annotations_fts WHERE post_effect_annotations_fts MATCH ?",
+            &[Value::String("主人公".into())],
+            "all",
+        )
+        .expect("fts query");
+    assert_eq!(
+        rows.len(),
+        1,
+        "FTS should index inserted annotation content"
+    );
+}
+
+#[test]
+fn test_post_effect_crash_recovery_running_to_failed() {
+    // プロセス強制終了で running のまま残った run は migrate() で failed に落ちる。
+    let db = test_db();
+    seed_post_effect_scene(&db);
+    insert_pe_run(&db, "r1", Some("pe-scene"), "running");
+
+    db.migrate().expect("re-migrate");
+
+    let rows = db
+        .execute(
+            "SELECT status, error_message FROM post_effect_runs WHERE id = ?",
+            &[Value::String("r1".into())],
+            "all",
+        )
+        .expect("query");
+    assert_eq!(rows[0]["status"], Value::String("failed".into()));
+    assert_eq!(
+        rows[0]["error_message"],
+        Value::String("Process terminated unexpectedly".into())
+    );
+}
