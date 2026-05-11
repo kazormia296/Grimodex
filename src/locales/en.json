@@ -526,6 +526,8 @@
     "context": {
       "showPrompt": "Show full prompt",
       "tokensWithCostTitle": "Show full prompt (estimated input cost for this message: {{cost}}; output not included)",
+      "costRow": "Estimated input cost",
+      "costNote": "Output not included",
       "projectInfo": "Project info",
       "sceneTokens": "Scene: {{count}} tokens",
       "projectOutline": "Project outline",

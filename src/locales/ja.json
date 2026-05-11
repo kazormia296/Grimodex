@@ -526,6 +526,8 @@
     "context": {
       "showPrompt": "プロンプト全文を表示",
       "tokensWithCostTitle": "プロンプト全文を表示（このメッセージで掛かる input 推定コスト: {{cost}}。output は含まない概算）",
+      "costRow": "推定 input コスト",
+      "costNote": "output は含まない概算",
       "projectInfo": "プロジェクト情報",
       "sceneTokens": "シーン: {{count}} tokens",
       "projectOutline": "Project outline",

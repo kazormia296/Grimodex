@@ -709,6 +709,7 @@ export function ContextBar({
           systemPrompt={systemPrompt}
           layers={contextLayers}
           totalTokens={contextTokenCount}
+          model={model}
           onClose={() => setPreviewOpen(false)}
         />
       )}

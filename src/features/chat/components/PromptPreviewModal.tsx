@@ -1,11 +1,14 @@
 import { useTranslation } from "react-i18next";
 import type { LayerBreakdown } from "../contextBuilder";
+import { estimateInputCost, formatCost } from "../modelPricing";
 import { AnimatedOverlay } from "@/components/ui/animated-overlay";
 
 interface PromptPreviewModalProps {
   systemPrompt: string;
   layers: LayerBreakdown[];
   totalTokens: number;
+  /** 現在のモデル ID。コスト推定に使う。未指定 / 未登録モデルではコスト行を省略 */
+  model?: string;
   onClose: () => void;
 }
 
@@ -13,9 +16,13 @@ export function PromptPreviewModal({
   systemPrompt,
   layers,
   totalTokens,
+  model,
   onClose,
 }: PromptPreviewModalProps) {
   const { t } = useTranslation();
+  const estimatedCost =
+    model && totalTokens > 0 ? estimateInputCost(model, totalTokens) : null;
+  const costLabel = estimatedCost !== null ? formatCost(estimatedCost) : null;
   return (
     <AnimatedOverlay
       open
@@ -93,6 +100,19 @@ export function PromptPreviewModal({
                   </td>
                   <td />
                 </tr>
+                {costLabel && (
+                  <tr className="text-muted-foreground">
+                    <td className="py-1 pr-4 text-xs">
+                      {t("chat.context.costRow")}
+                    </td>
+                    <td className="py-1 pr-4 text-right text-xs tabular-nums">
+                      ~{costLabel}
+                    </td>
+                    <td className="py-1 text-xs">
+                      {t("chat.context.costNote")}
+                    </td>
+                  </tr>
+                )}
               </tbody>
             </table>
           </div>
