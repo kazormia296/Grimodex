@@ -87,6 +87,7 @@ pub(crate) async fn send_chat_message(
         extra_body,
         retry_429,
         ai_novelist_mode: ai::AiNovelistMode::Chat,
+        openrouter_provider_pin: settings.openrouter_provider_pin.as_deref(),
     };
     let result = ai::send_chat(
         &params,
@@ -142,6 +143,7 @@ pub(crate) async fn send_chat_message_stream(
         extra_body,
         retry_429,
         ai_novelist_mode: ai::AiNovelistMode::Chat,
+        openrouter_provider_pin: settings.openrouter_provider_pin.as_deref(),
     };
 
     let result = ai::send_chat_stream(
@@ -216,6 +218,7 @@ pub(crate) async fn send_inline_ai_stream(
         extra_body,
         retry_429,
         ai_novelist_mode: ai::AiNovelistMode::Completion,
+        openrouter_provider_pin: settings.openrouter_provider_pin.as_deref(),
     };
 
     let result = ai::send_chat_stream(
@@ -268,6 +271,7 @@ pub(crate) async fn send_agent_message(
         extra_body,
         retry_429,
         ai_novelist_mode: ai::AiNovelistMode::Chat,
+        openrouter_provider_pin: settings.openrouter_provider_pin.as_deref(),
     };
     let result = ai::send_chat_with_tools(&params, &messages, &tools).await?;
     Ok(result)

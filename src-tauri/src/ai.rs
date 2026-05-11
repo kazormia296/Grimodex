@@ -194,6 +194,12 @@ pub struct AiSettings {
     pub ai_novelist: AiNovelistSettings,
     #[serde(default)]
     pub cli: Option<CliSettings>,
+    /// OpenRouter で provider routing を 1 つに固定する slug (例: "anthropic", "amazon-bedrock", "google-vertex")。
+    /// None なら OpenRouter のデフォルト routing。
+    /// 設定すると `provider.order=[slug]` + `allow_fallbacks=true` を body に注入し、
+    /// Anthropic prompt cache が同一 provider に当たりやすくする。
+    #[serde(default)]
+    pub openrouter_provider_pin: Option<String>,
 }
 
 impl AiSettings {
@@ -215,6 +221,7 @@ impl Default for AiSettings {
             openai_compatible: OpenaiCompatibleSettings::default(),
             ai_novelist: AiNovelistSettings::default(),
             cli: None,
+            openrouter_provider_pin: None,
         }
     }
 }
@@ -585,6 +592,9 @@ pub struct ChatParams<'a> {
     pub retry_429: bool,
     /// AI のべりすと専用: Chat API / Completion API の選択。
     pub ai_novelist_mode: AiNovelistMode,
+    /// OpenRouter で provider routing を固定する slug (例: "anthropic")。
+    /// None / 空文字なら適用しない。Anthropic prompt cache を効かせるための設定。
+    pub openrouter_provider_pin: Option<&'a str>,
 }
 
 // ---------------------------------------------------------------------------
@@ -875,6 +885,33 @@ async fn send_with_429_retry(
     }
 }
 
+/// OpenRouter の `provider.order` を固定するため、body に `provider` フィールドを注入する。
+/// `pin` が None / 空文字 / provider が OpenRouter 以外の場合は何もしない。
+/// 同一 provider に毎回ルーティングさせることで Anthropic prompt cache が効きやすくなる。
+fn apply_openrouter_provider_pin(
+    body: &mut serde_json::Value,
+    provider: &AiProvider,
+    pin: Option<&str>,
+) {
+    if !matches!(provider, AiProvider::OpenRouter) {
+        return;
+    }
+    let Some(slug) = pin else { return };
+    let slug = slug.trim();
+    if slug.is_empty() {
+        return;
+    }
+    if let serde_json::Value::Object(target) = body {
+        target.insert(
+            "provider".to_string(),
+            serde_json::json!({
+                "order": [slug],
+                "allow_fallbacks": true,
+            }),
+        );
+    }
+}
+
 /// `params.extra_body` をリクエストボディにマージする。
 /// `body` がオブジェクトでない場合は何もしない。
 fn merge_extra_body(body: &mut serde_json::Value, extra: &Option<serde_json::Value>) {
@@ -942,6 +979,11 @@ pub async fn send_chat(
                 &params.reasoning_effort,
             );
             merge_extra_body(&mut body, &params.extra_body);
+            apply_openrouter_provider_pin(
+                &mut body,
+                params.provider,
+                params.openrouter_provider_pin,
+            );
 
             let req = openai_compat_request(&client, params, &body);
             let resp = send_with_429_retry(req, params.retry_429, 3)
@@ -1536,6 +1578,11 @@ pub async fn send_chat_with_tools(
                 &params.reasoning_effort,
             );
             merge_extra_body(&mut body, &params.extra_body);
+            apply_openrouter_provider_pin(
+                &mut body,
+                params.provider,
+                params.openrouter_provider_pin,
+            );
 
             let req = openai_compat_request(&client, params, &body);
             let resp = send_with_429_retry(req, params.retry_429, 3)
@@ -1621,7 +1668,7 @@ pub async fn call_post_effect_api(
                 "{}/chat/completions",
                 settings.provider.openai_compat_base_url(endpoints)
             );
-            let body = serde_json::json!({
+            let mut body = serde_json::json!({
                 "model": settings.model,
                 "max_tokens": 4096,
                 "messages": [
@@ -1629,6 +1676,11 @@ pub async fn call_post_effect_api(
                     { "role": "user",   "content": user_blocks }
                 ]
             });
+            apply_openrouter_provider_pin(
+                &mut body,
+                &settings.provider,
+                settings.openrouter_provider_pin.as_deref(),
+            );
             let mut req = client.post(url).header("content-type", "application/json");
             let needs_auth = match settings.provider {
                 AiProvider::Ollama => false,
@@ -1867,6 +1919,11 @@ pub async fn send_chat_stream(
                 &params.reasoning_effort,
             );
             merge_extra_body(&mut body, &params.extra_body);
+            apply_openrouter_provider_pin(
+                &mut body,
+                params.provider,
+                params.openrouter_provider_pin,
+            );
 
             let req = openai_compat_request(&client, params, &body);
             let resp = send_with_429_retry(req, params.retry_429, 3).await?;
@@ -1997,6 +2054,34 @@ mod tests {
     }
 
     #[test]
+    fn apply_openrouter_provider_pin_injects_when_openrouter_and_pin_set() {
+        let mut body = serde_json::json!({ "model": "anthropic/claude-4.6-sonnet" });
+        apply_openrouter_provider_pin(&mut body, &AiProvider::OpenRouter, Some("anthropic"));
+        assert_eq!(body["provider"]["order"][0], "anthropic");
+        assert_eq!(body["provider"]["allow_fallbacks"], true);
+    }
+
+    #[test]
+    fn apply_openrouter_provider_pin_noop_when_pin_empty() {
+        let mut body = serde_json::json!({ "model": "x" });
+        apply_openrouter_provider_pin(&mut body, &AiProvider::OpenRouter, Some(""));
+        assert!(body.get("provider").is_none());
+        apply_openrouter_provider_pin(&mut body, &AiProvider::OpenRouter, Some("   "));
+        assert!(body.get("provider").is_none());
+        apply_openrouter_provider_pin(&mut body, &AiProvider::OpenRouter, None);
+        assert!(body.get("provider").is_none());
+    }
+
+    #[test]
+    fn apply_openrouter_provider_pin_noop_when_not_openrouter() {
+        let mut body = serde_json::json!({ "model": "x" });
+        apply_openrouter_provider_pin(&mut body, &AiProvider::OpenAI, Some("anthropic"));
+        assert!(body.get("provider").is_none());
+        apply_openrouter_provider_pin(&mut body, &AiProvider::Anthropic, Some("anthropic"));
+        assert!(body.get("provider").is_none());
+    }
+
+    #[test]
     fn test_default_ai_settings() {
         let settings = AiSettings::default();
         assert_eq!(settings.provider, AiProvider::OpenRouter);
@@ -2019,6 +2104,7 @@ mod tests {
             openai_compatible: OpenaiCompatibleSettings::default(),
             ai_novelist: AiNovelistSettings::default(),
             cli: None,
+            openrouter_provider_pin: None,
         };
 
         write_ai_settings(&path, &settings).expect("write");

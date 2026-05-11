@@ -904,6 +904,7 @@ pub(crate) async fn foreshadow_propose_past_setups(
         extra_body,
         retry_429,
         ai_novelist_mode: ai::AiNovelistMode::Chat,
+        openrouter_provider_pin: settings.openrouter_provider_pin.as_deref(),
     };
     let response = ai::send_chat(&params, &[("user", prompt.as_str())]).await?;
     let text = response
@@ -1042,6 +1043,7 @@ pub(crate) async fn foreshadow_audit_chapter(
         extra_body,
         retry_429,
         ai_novelist_mode: ai::AiNovelistMode::Chat,
+        openrouter_provider_pin: settings.openrouter_provider_pin.as_deref(),
     };
     let response = ai::send_chat(&params, &[("user", prompt.as_str())]).await?;
     let text = response

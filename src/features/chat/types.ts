@@ -61,7 +61,22 @@ export interface AiSettings {
   aiNovelist?: AiNovelistSettings;
   /** CLI プロバイダ選択時のみ意味を持つ */
   cli?: CliSettings;
+  /**
+   * OpenRouter で同一 provider に routing を固定する slug。
+   * 例: "anthropic" / "amazon-bedrock" / "google-vertex"。
+   * 未設定 (undefined / null / 空文字) なら OpenRouter のデフォルト routing。
+   * 設定すると Anthropic prompt cache が安定して効くようになる。
+   */
+  openrouterProviderPin?: string | null;
 }
+
+/** OpenRouter provider pin の候補一覧（UI 用）。 */
+export const OPENROUTER_PROVIDER_PINS: Array<{ slug: string; label: string }> =
+  [
+    { slug: "anthropic", label: "Anthropic (直接)" },
+    { slug: "amazon-bedrock", label: "Amazon Bedrock" },
+    { slug: "google-vertex", label: "Google Vertex" },
+  ];
 
 export const DEFAULT_AI_SETTINGS: AiSettings = {
   provider: "openrouter",

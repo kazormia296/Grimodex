@@ -5,6 +5,7 @@ import { useAiSettingsStore } from "@/features/chat/store";
 import {
   AI_PROVIDERS,
   DEFAULT_OPENAI_COMPATIBLE_SETTINGS,
+  OPENROUTER_PROVIDER_PINS,
   groupModelsByDeveloper,
 } from "@/features/chat/types";
 import type { AiProvider, CliKind } from "@/features/chat/types";
@@ -872,6 +873,35 @@ export function AiCategory() {
               </button>
             </SettingRow>
           )}
+
+        {/* OpenRouter provider pin (OpenRouter 選択時のみ) */}
+        {localSettings.provider === "openrouter" && (
+          <SettingRow
+            label="Provider pin"
+            description="OpenRouter のルーティングを 1 つの provider に固定し、Anthropic prompt cache を効きやすくする。fallbacks 有効なので落ちたら別 provider に逃げる。"
+          >
+            <select
+              value={localSettings.openrouterProviderPin ?? ""}
+              onChange={async (e) => {
+                const v = e.target.value;
+                const updated = {
+                  ...localSettings!,
+                  openrouterProviderPin: v === "" ? null : v,
+                };
+                setLocalSettings(updated);
+                await saveSettings(updated);
+              }}
+              className="rounded-md border border-input bg-background px-2 py-1 text-sm"
+            >
+              <option value="">指定しない（OpenRouter デフォルト）</option>
+              {OPENROUTER_PROVIDER_PINS.map((p) => (
+                <option key={p.slug} value={p.slug}>
+                  {p.label}
+                </option>
+              ))}
+            </select>
+          </SettingRow>
+        )}
 
         {/* Test connection (CLI は専用ボタンが上にあるためここでは非表示) */}
         {localSettings.provider !== "cli" && (
