@@ -1974,19 +1974,10 @@ export const useChatStore = create<ChatState>()((set, get) => ({
             descendants.length <= MAX_AGGREGATE_SCENES &&
             totalChars <= MAX_AGGREGATE_CHARS
           ) {
-            // active scene を最後尾に並べる: trimL3Text は先頭から削るため、
-            // 予算超過時にユーザーが今編集中のシーンを優先して残すための意図的
-            // な reorder。LLM への提示順は自然な物語順ではなくなるが、シーン
-            // 区切り `--- {title} ---` マーカーから流れは再構成できる。
-            // 閾値内なら全シーン残るので「順序」は基本的に問題にならない。
-            const ordered = [...descendants];
-            if (activeSceneId) {
-              const idx = ordered.findIndex((s) => s.id === activeSceneId);
-              if (idx >= 0) {
-                const [active] = ordered.splice(idx, 1);
-                ordered.push(active);
-              }
-            }
+            // sortOrder = reading order をそのまま維持する。LLM がチャプターの
+            // 流れを理解するには物語順が必須。閾値内なら trim が走らないので
+            // 並びを工夫する必要はない（閾値超過時は synopsis-only fallback）。
+            const ordered = descendants;
             const bodies: string[] = new Array(ordered.length);
             for (let i = 0; i < ordered.length; i += LOAD_CHUNK) {
               const slice = ordered.slice(i, i + LOAD_CHUNK);
@@ -2001,12 +1992,20 @@ export const useChatStore = create<ChatState>()((set, get) => ({
             }
             const parts: string[] = [];
             for (let i = 0; i < ordered.length; i++) {
+              const scene = ordered[i];
               const body = (bodies[i] ?? "").trim();
-              parts.push(`--- ${ordered[i].title} ---\n${body}`);
+              const synopsis = scene.synopsis?.trim();
+              const isActive = scene.id === activeSceneId;
+              // 各シーンに title + synopsis + body を出す。
+              // active scene には [current edit] マーカーを付け、LLM が
+              // 「ユーザーが今編集している箇所」を識別できるようにする。
+              const header = `--- ${scene.title}${isActive ? " [current edit]" : ""} ---`;
+              const synopsisLine = synopsis ? `Synopsis: ${synopsis}\n\n` : "";
+              parts.push(`${header}\n${synopsisLine}${body}`);
             }
             // LLM に「単一シーン本文ではなく集約モード」であることを明示する
             // プロローグ。`### シーン本文` ヘッダは buildSystemPrompt が付ける。
-            const preface = `[この章「${anchorFolder.title}」配下のシーンを集約しています。各シーンは「--- {タイトル} ---」区切りで列挙され、最後尾が現在編集中のシーンです]`;
+            const preface = `[この章「${anchorFolder.title}」配下のシーンを reading order (sortOrder) で集約しています。各シーンは「--- {タイトル} ---」区切りで列挙され、Synopsis 行があるシーンはその要約、[current edit] マーカー付きが現在編集中のシーンです]`;
             const joined = `${preface}\n\n${parts.join("\n\n")}`;
             aggregatedScene = {
               id: anchorFolder.id,

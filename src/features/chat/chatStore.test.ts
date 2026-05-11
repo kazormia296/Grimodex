@@ -713,7 +713,7 @@ describe("useChatStore", () => {
         nodeType: "scene",
         title: "シーンA",
         sortOrder: "a0",
-        synopsis: null,
+        synopsis: "Aのあらすじ",
         charCount: 100,
       };
       const sceneB = {
@@ -781,13 +781,17 @@ describe("useChatStore", () => {
       const args = mockBuildSystemPrompt.mock.calls.at(-1)?.[0];
       expect(args?.scene.title).toBe("Chapter 1");
       const content = args?.scene.content ?? "";
-      expect(content).toContain("--- シーンA ---");
+      // active scene には [current edit] マーカー、それ以外は素のタイトル
+      expect(content).toContain("--- シーンA [current edit] ---");
       expect(content).toContain("--- シーンB ---");
       expect(content).toContain("シーンA の本文");
       expect(content).toContain("シーンB の本文");
-      // active scene (sA) は最後尾に reorder されるので「シーンA」が「シーンB」より後に出る
-      expect(content.indexOf("--- シーンA ---")).toBeGreaterThan(
-        content.indexOf("--- シーンB ---"),
+      // 各シーンに synopsis が付く（sceneA のみ synopsis あり、sceneB は無いので
+      // Synopsis 行は sceneA セクションだけに出る）
+      expect(content).toContain("Synopsis: Aのあらすじ");
+      // reading order (sortOrder) を維持: sceneA (a0) が sceneB (a1) より先
+      expect(content.indexOf("シーンA")).toBeLessThan(
+        content.indexOf("シーンB"),
       );
 
       // 検出された codex が detectedEntries に乗っている
