@@ -77,6 +77,9 @@ import {
   loadForeshadowAnchors,
   clearAllForeshadowMarks,
 } from "@/features/foreshadow/saveAnchors";
+import { saveAnnotationAnchors } from "@/features/post-effect/syncAnnotations";
+import { listAnnotationsForScene } from "@/features/post-effect/api";
+import { useAnnotationStore } from "@/features/post-effect/annotationStore";
 import { VerticalPreview } from "@/features/editor/VerticalPreview";
 import { EditorContextMenu } from "@/features/editor/EditorContextMenu";
 import { CommentAddPopover } from "@/features/editor/CommentAddPopover";
@@ -395,6 +398,13 @@ export function EditorPane({
       markStart("editor.coreSave.saveForeshadow");
       await saveForeshadowAnchors(id, ed.state.doc);
       markEnd("editor.coreSave.saveForeshadow");
+      markStart("editor.coreSave.saveAnnotations");
+      await saveAnnotationAnchors(
+        useTreeStore.getState().projectId,
+        id,
+        ed.state.doc,
+      );
+      markEnd("editor.coreSave.saveAnnotations");
       markStart("editor.coreSave.extractBeatMentions");
       const beatMentions = extractBeatMentions(doc);
       markEnd("editor.coreSave.extractBeatMentions");
@@ -1306,6 +1316,49 @@ export function EditorPane({
               })
               .run();
             markEnd(`sceneLoad.applyForeshadowMarks.${foreshadowMarks.length}`);
+          }
+
+          // Load and apply post-effect annotation anchors
+          markStart("sceneLoad.loadAnnotationAnchors");
+          const annotationResp = await listAnnotationsForScene({
+            projectId: useTreeStore.getState().projectId,
+            sceneId: nodeId,
+          });
+          markEnd("sceneLoad.loadAnnotationAnchors");
+          useAnnotationStore
+            .getState()
+            .setAnnotations(nodeId, annotationResp.annotations);
+          if (!cancelled && annotationResp.annotations.length > 0 && editor) {
+            editor
+              .chain()
+              .command(({ tr }) => {
+                tr.setMeta("programmaticInsert", true);
+                tr.setMeta("annotationUpdate", true);
+                const schema = tr.doc.type.schema;
+                const markType = schema.marks["peAnnotation"];
+                if (!markType) return true;
+                const docSize = tr.doc.content.size;
+                if (docSize > 2) tr.removeMark(1, docSize - 1, markType);
+                for (const ann of annotationResp.annotations) {
+                  if (ann.status === "dismissed") continue;
+                  if (ann.rangeStart == null || ann.rangeEnd == null) continue;
+                  const cf = Math.min(ann.rangeStart, docSize);
+                  const ct = Math.min(ann.rangeEnd, docSize);
+                  if (cf < ct)
+                    tr.addMark(
+                      cf,
+                      ct,
+                      markType.create({
+                        annotationId: ann.id,
+                        category: ann.category,
+                        severity: ann.severity ?? "warning",
+                        status: ann.status,
+                      }),
+                    );
+                }
+                return true;
+              })
+              .run();
           }
         }
       } finally {

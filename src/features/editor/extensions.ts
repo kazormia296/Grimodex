@@ -28,6 +28,8 @@ import { createCommentDecorationPlugin } from "@/features/editor/CommentDecorati
 import { ForeshadowSetupMark } from "@/features/foreshadow/marks/ForeshadowSetupMark";
 import { ForeshadowPayoffMark } from "@/features/foreshadow/marks/ForeshadowPayoffMark";
 import { ForeshadowPasteRule } from "@/features/foreshadow/marks/foreshadowPasteRule";
+import { AnnotationMark } from "@/features/post-effect/AnnotationMark";
+import { createAnnotationPlugin } from "@/features/post-effect/AnnotationPlugin";
 export { COMMENT_REBUILD_META } from "@/features/editor/CommentDecorationPlugin";
 import { useCursorSettingsStore } from "@/features/editor/cursorSettingsStore";
 import {
@@ -106,6 +108,13 @@ const CommentDecorationExtension = Extension.create({
   },
 });
 
+const AnnotationDecorationExtension = Extension.create({
+  name: "annotationDecoration",
+  addProseMirrorPlugins() {
+    return [createAnnotationPlugin()];
+  },
+});
+
 const ToolbarShortcutsExtension = Extension.create({
   name: "toolbarShortcuts",
 
@@ -181,6 +190,8 @@ export function getEditorExtensions(
     ForeshadowSetupMark,
     ForeshadowPayoffMark,
     ForeshadowPasteRule,
+    AnnotationMark,
+    AnnotationDecorationExtension,
   ];
 
   if (options.setMentionPopup) {
