@@ -25,6 +25,17 @@ impl Database {
             conn: Mutex::new(conn),
         })
     }
+
+    /// Execute a closure with direct access to the underlying `rusqlite::Connection`.
+    /// Use this only when `execute` / `execute_batch_tx` are insufficient
+    /// (e.g. `prepare` / `query_map` / `query_row` with native params).
+    pub fn with_conn<T, F>(&self, f: F) -> anyhow::Result<T>
+    where
+        F: FnOnce(&Connection) -> anyhow::Result<T>,
+    {
+        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("{e}"))?;
+        f(&conn)
+    }
 }
 
 mod execute;

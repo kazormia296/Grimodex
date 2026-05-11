@@ -13,7 +13,7 @@ use tauri::Manager;
 use codex_matching::CodexMatcherState;
 use commands::{
     AiSettingsPath, CliStreamAbortFlag, GlobalSettingsPath, InlineAiAbortFlag, LogGuard,
-    StreamAbortFlag, WorkspaceState,
+    PostEffectAbortFlag, StreamAbortFlag, WorkspaceState,
 };
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -72,6 +72,11 @@ pub fn run() {
                 flag: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             });
 
+            // PostEffect run abort flag
+            app.manage(PostEffectAbortFlag {
+                flag: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            });
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -125,7 +130,15 @@ pub fn run() {
             commands::trash_bin::trash_bin_prune,
             codex_matching::codex_rebuild_matcher,
             codex_matching::codex_match_text,
-            commands::lint::lint_text
+            commands::lint::lint_text,
+            commands::post_effect::start_post_effect_run,
+            commands::post_effect::abort_post_effect_run,
+            commands::post_effect::list_post_effect_runs,
+            commands::post_effect::get_post_effect_run,
+            commands::post_effect::list_annotations_for_scene,
+            commands::post_effect::update_annotation_status,
+            commands::post_effect::update_relation_status,
+            commands::post_effect::save_post_effect_annotations
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

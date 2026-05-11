@@ -1548,6 +1548,138 @@ pub async fn send_chat_with_tools(
 }
 
 // ---------------------------------------------------------------------------
+// PostEffect: single-shot structured JSON call with prompt caching
+// ---------------------------------------------------------------------------
+
+/// Make a non-streaming call to the AI API for PostEffects.
+/// Uses Anthropic content blocks (with `cache_control`) so that the Codex
+/// prefix can be cached across chunk calls (Phase 2+).
+///
+/// For Anthropic provider: POSTs to /messages with prompt-caching beta header.
+/// For OpenRouter→Anthropic: uses /chat/completions; OpenRouter passes
+/// `cache_control` through to Anthropic when the selected model is Claude.
+/// For other providers: sends without cache_control (silent cost inflation,
+/// acceptable for Phase 1 since only Anthropic family supports caching).
+///
+/// Returns the first text block from the response.
+pub async fn call_post_effect_api(
+    settings: &AiSettings,
+    api_key: &str,
+    system_prompt: &str,
+    // Codex JSON text to attach with cache_control (None for intra_scene_consistency).
+    codex_content: Option<&str>,
+    scene_content: &str,
+) -> anyhow::Result<String> {
+    let client = reqwest::Client::new();
+    let endpoints = settings.endpoints();
+
+    // Build the user content array (content blocks).
+    let mut user_blocks: Vec<serde_json::Value> = Vec::new();
+    if let Some(codex) = codex_content {
+        // Codex prefix — mark for caching so it is reused across chunk calls.
+        // AUDIT POINT: cache_control must sit at the Codex/Scene boundary.
+        user_blocks.push(serde_json::json!({
+            "type": "text",
+            "text": format!("[Codex]\n{}", codex),
+            "cache_control": { "type": "ephemeral" }
+        }));
+    }
+    user_blocks.push(serde_json::json!({
+        "type": "text",
+        "text": format!("[Scene]\n{}", scene_content)
+    }));
+
+    match settings.provider {
+        AiProvider::Anthropic => {
+            let url = format!("{}/messages", settings.provider.base_url(endpoints));
+            let body = serde_json::json!({
+                "model": settings.model,
+                "max_tokens": 4096,
+                "system": system_prompt,
+                "messages": [{ "role": "user", "content": user_blocks }]
+            });
+            let resp = client
+                .post(url)
+                .header("x-api-key", api_key)
+                .header("anthropic-version", "2023-06-01")
+                .header("anthropic-beta", "prompt-caching-2024-07-31")
+                .header("content-type", "application/json")
+                .json(&body)
+                .send()
+                .await?
+                .error_for_status()?;
+            let result: serde_json::Value = resp.json().await?;
+            extract_first_text_block_anthropic(&result)
+        }
+        AiProvider::AiNovelist => {
+            anyhow::bail!("AiNovelist プロバイダは PostEffects に対応していません")
+        }
+        _ => {
+            // OpenRouter / OpenAI compat: use /chat/completions.
+            // OpenRouter passes cache_control to Anthropic when using a Claude model.
+            let url = format!(
+                "{}/chat/completions",
+                settings.provider.openai_compat_base_url(endpoints)
+            );
+            let body = serde_json::json!({
+                "model": settings.model,
+                "max_tokens": 4096,
+                "messages": [
+                    { "role": "system", "content": system_prompt },
+                    { "role": "user",   "content": user_blocks }
+                ]
+            });
+            let mut req = client.post(url).header("content-type", "application/json");
+            let needs_auth = match settings.provider {
+                AiProvider::Ollama => false,
+                AiProvider::OpenaiCompatible => !api_key.is_empty(),
+                _ => true,
+            };
+            if needs_auth {
+                req = req.header("Authorization", format!("Bearer {api_key}"));
+            }
+            if matches!(settings.provider, AiProvider::OpenRouter) {
+                req = req
+                    .header(
+                        "HTTP-Referer",
+                        "https://github.com/futurebassisdead/Grimodex",
+                    )
+                    .header("X-Title", "Grimodex");
+            }
+            let resp = req.json(&body).send().await?.error_for_status()?;
+            let result: serde_json::Value = resp.json().await?;
+            extract_first_text_block_openai(&result)
+        }
+    }
+}
+
+fn extract_first_text_block_anthropic(result: &serde_json::Value) -> anyhow::Result<String> {
+    result["content"]
+        .as_array()
+        .and_then(|arr| arr.iter().find(|b| b["type"] == "text"))
+        .and_then(|b| b["text"].as_str())
+        .map(|s| s.to_string())
+        .ok_or_else(|| {
+            let err = result["error"]["message"]
+                .as_str()
+                .unwrap_or("no text block in response");
+            anyhow::anyhow!("Anthropic API error: {err}")
+        })
+}
+
+fn extract_first_text_block_openai(result: &serde_json::Value) -> anyhow::Result<String> {
+    result["choices"][0]["message"]["content"]
+        .as_str()
+        .map(|s| s.to_string())
+        .ok_or_else(|| {
+            let err = result["error"]["message"]
+                .as_str()
+                .unwrap_or("no content in response");
+            anyhow::anyhow!("API error: {err}")
+        })
+}
+
+// ---------------------------------------------------------------------------
 // G1: Streaming chat
 // ---------------------------------------------------------------------------
 

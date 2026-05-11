@@ -19,6 +19,7 @@ const SLOW_COMMANDS = new Set([
   "abort_inline_ai_stream",
   "test_ai_connection",
   "list_ai_models",
+  "start_post_effect_run",
 ]);
 
 function withTimeout<T>(

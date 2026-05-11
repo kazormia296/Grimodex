@@ -17,6 +17,7 @@ pub(crate) mod db;
 pub(crate) mod foreshadow;
 pub(crate) mod integrity;
 pub(crate) mod lint;
+pub(crate) mod post_effect;
 pub(crate) mod trash_bin;
 pub(crate) mod workspace;
 
@@ -40,6 +41,12 @@ pub(crate) struct InlineAiAbortFlag {
 /// CLI providers (Claude Code / Codex / OpenCode) are spawned as subprocesses
 /// and need their own abort signal independent from the HTTP-based Chat stream.
 pub(crate) struct CliStreamAbortFlag {
+    pub(crate) flag: Arc<std::sync::atomic::AtomicBool>,
+}
+
+/// AtomicBool flag to request aborting an in-progress PostEffect run.
+/// Each run checks this flag periodically; set to true to request cancellation.
+pub(crate) struct PostEffectAbortFlag {
     pub(crate) flag: Arc<std::sync::atomic::AtomicBool>,
 }
 
