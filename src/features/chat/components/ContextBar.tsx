@@ -39,6 +39,7 @@ import {
   getModelCapabilities,
   formatContextWindow,
 } from "../agent/modelLimits";
+import { estimateInputCost, formatCost } from "../modelPricing";
 import { getTypeLabel } from "../utils/typeLabels";
 import { ContextPillGroup } from "./ContextPillGroup";
 import { useCodexHighlightStore } from "@/features/editor/codexHighlightStore";
@@ -272,26 +273,43 @@ export function ContextBar({
             )}
           </span>
           <div className="flex items-center gap-2">
-            {contextTokenCount > 0 && (
-              <div className="flex items-center gap-1">
-                <button
-                  type="button"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    setPreviewOpen(true);
-                  }}
-                  className="rounded bg-muted px-1.5 py-0.5 text-xs hover:bg-accent"
-                  title={t("chat.context.showPrompt")}
-                >
-                  ~{contextTokenCount.toLocaleString()} tokens
-                </button>
-                {ctxWindowLabel && (
-                  <span className="text-xs text-muted-foreground/60">
-                    / {ctxWindowLabel}
-                  </span>
-                )}
-              </div>
-            )}
+            {contextTokenCount > 0 &&
+              (() => {
+                const estimated = estimateInputCost(model, contextTokenCount);
+                const costLabel =
+                  estimated !== null ? formatCost(estimated) : null;
+                return (
+                  <div className="flex items-center gap-1">
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setPreviewOpen(true);
+                      }}
+                      className="rounded bg-muted px-1.5 py-0.5 text-xs hover:bg-accent"
+                      title={
+                        costLabel
+                          ? t("chat.context.tokensWithCostTitle", {
+                              cost: costLabel,
+                            })
+                          : t("chat.context.showPrompt")
+                      }
+                    >
+                      ~{contextTokenCount.toLocaleString()} tokens
+                      {costLabel && (
+                        <span className="ml-1 text-muted-foreground">
+                          · ~{costLabel}
+                        </span>
+                      )}
+                    </button>
+                    {ctxWindowLabel && (
+                      <span className="text-xs text-muted-foreground/60">
+                        / {ctxWindowLabel}
+                      </span>
+                    )}
+                  </div>
+                );
+              })()}
             {collapsed ? (
               <ChevronDown className="h-3 w-3" />
             ) : (
