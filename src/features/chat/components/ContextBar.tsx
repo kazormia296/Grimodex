@@ -242,9 +242,20 @@ export function ContextBar({
   const l3 = contextLayers.find((l) => l.layer === "L3");
   const sceneTokens = l3?.used ?? 0;
 
-  const ctxWindowLabel = model
-    ? formatContextWindow(getModelCapabilities(model).contextWindow)
-    : null;
+  const contextWindow = model ? getModelCapabilities(model).contextWindow : 0;
+  const ctxWindowLabel = model ? formatContextWindow(contextWindow) : null;
+  const windowFillPct =
+    contextWindow > 0
+      ? Math.min(100, Math.round((contextTokenCount / contextWindow) * 100))
+      : null;
+  const windowFillTone =
+    windowFillPct === null
+      ? null
+      : windowFillPct >= 80
+        ? "bg-destructive"
+        : windowFillPct >= 50
+          ? "bg-amber-500"
+          : "bg-primary";
 
   return (
     <>
@@ -306,6 +317,31 @@ export function ContextBar({
                       <span className="text-xs text-muted-foreground/60">
                         / {ctxWindowLabel}
                       </span>
+                    )}
+                    {windowFillPct !== null && windowFillTone && (
+                      <div
+                        className="flex items-center gap-1"
+                        role="progressbar"
+                        aria-valuenow={windowFillPct}
+                        aria-valuemin={0}
+                        aria-valuemax={100}
+                        aria-label={t("chat.context.windowFill", {
+                          pct: windowFillPct,
+                        })}
+                        title={t("chat.context.windowFill", {
+                          pct: windowFillPct,
+                        })}
+                      >
+                        <div className="h-1.5 w-12 overflow-hidden rounded-full bg-muted">
+                          <div
+                            className={`h-full transition-all ${windowFillTone}`}
+                            style={{ width: `${windowFillPct}%` }}
+                          />
+                        </div>
+                        <span className="text-xs tabular-nums text-muted-foreground">
+                          {windowFillPct}%
+                        </span>
+                      </div>
                     )}
                   </div>
                 );
@@ -710,6 +746,7 @@ export function ContextBar({
           layers={contextLayers}
           totalTokens={contextTokenCount}
           model={model}
+          contextWindow={contextWindow}
           onClose={() => setPreviewOpen(false)}
         />
       )}

@@ -528,6 +528,8 @@
       "tokensWithCostTitle": "プロンプト全文を表示（このメッセージで掛かる input 推定コスト: {{cost}}。output は含まない概算）",
       "costRow": "推定 input コスト",
       "costNote": "output は含まない概算",
+      "windowFill": "コンテキストウィンドウ使用率: {{pct}}%",
+      "windowFillRow": "ウィンドウ使用率",
       "projectInfo": "プロジェクト情報",
       "sceneTokens": "シーン: {{count}} tokens",
       "projectOutline": "Project outline",

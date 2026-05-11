@@ -9,6 +9,8 @@ interface PromptPreviewModalProps {
   totalTokens: number;
   /** 現在のモデル ID。コスト推定に使う。未指定 / 未登録モデルではコスト行を省略 */
   model?: string;
+  /** モデルのコンテキストウィンドウ (tokens)。0 / 省略時は fill bar 行も省略 */
+  contextWindow?: number;
   onClose: () => void;
 }
 
@@ -17,12 +19,25 @@ export function PromptPreviewModal({
   layers,
   totalTokens,
   model,
+  contextWindow,
   onClose,
 }: PromptPreviewModalProps) {
   const { t } = useTranslation();
   const estimatedCost =
     model && totalTokens > 0 ? estimateInputCost(model, totalTokens) : null;
   const costLabel = estimatedCost !== null ? formatCost(estimatedCost) : null;
+  const fillPct =
+    contextWindow && contextWindow > 0
+      ? Math.min(100, Math.round((totalTokens / contextWindow) * 100))
+      : null;
+  const fillTone =
+    fillPct === null
+      ? null
+      : fillPct >= 80
+        ? "bg-destructive"
+        : fillPct >= 50
+          ? "bg-amber-500"
+          : "bg-primary";
   return (
     <AnimatedOverlay
       open
@@ -110,6 +125,33 @@ export function PromptPreviewModal({
                     </td>
                     <td className="py-1 text-xs">
                       {t("chat.context.costNote")}
+                    </td>
+                  </tr>
+                )}
+                {fillPct !== null && fillTone && (
+                  <tr className="text-muted-foreground">
+                    <td className="py-1 pr-4 text-xs">
+                      {t("chat.context.windowFillRow")}
+                    </td>
+                    <td className="py-1 pr-4 text-right text-xs tabular-nums">
+                      {fillPct}%
+                    </td>
+                    <td className="py-1 w-32">
+                      <div
+                        className="h-1.5 rounded-full bg-muted"
+                        role="progressbar"
+                        aria-valuenow={fillPct}
+                        aria-valuemin={0}
+                        aria-valuemax={100}
+                        aria-label={t("chat.context.windowFill", {
+                          pct: fillPct,
+                        })}
+                      >
+                        <div
+                          className={`h-1.5 rounded-full transition-all ${fillTone}`}
+                          style={{ width: `${fillPct}%` }}
+                        />
+                      </div>
                     </td>
                   </tr>
                 )}
