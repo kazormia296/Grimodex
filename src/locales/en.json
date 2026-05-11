@@ -431,7 +431,9 @@
       "act": "Act",
       "chapter": "Chapter",
       "scene": "Scene",
-      "editorHere": "Scene currently open in the editor"
+      "editorHere": "Scene currently open in the editor",
+      "bodiesOn": "Bodies included in context (click for eco mode = synopses only)",
+      "bodiesOff": "Eco mode: synopses only (click to also include bodies)"
     },
     "quickActions": {
       "ariaLabel": "Quick actions",

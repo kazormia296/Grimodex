@@ -79,6 +79,8 @@ export function ChatPanel() {
   const chatScope = useChatStore((s) => s.chatScope);
   const scopeAnchorId = useChatStore((s) => s.scopeAnchorId);
   const setChatScope = useChatStore((s) => s.setChatScope);
+  const includeBodies = useChatStore((s) => s.includeBodies);
+  const setIncludeBodies = useChatStore((s) => s.setIncludeBodies);
   const starMessage = useChatStore((s) => s.starMessage);
 
   // Phase 2: scene と folder スコープでは本文（または集約本文）が context に
@@ -158,6 +160,7 @@ export function ChatPanel() {
     activeSessionId,
     chatScope,
     scopeAnchorId,
+    includeBodies,
     allCodexEntries,
     refreshContextLayers,
   ]);
@@ -563,6 +566,8 @@ export function ChatPanel() {
         onScopeChange={handleScopeChange}
         onSelectScene={handleSelectScene}
         onNewSession={handleNewSession}
+        includeBodies={includeBodies}
+        onToggleIncludeBodies={() => setIncludeBodies(!includeBodies)}
       />
 
       <ContextBar

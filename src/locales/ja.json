@@ -431,7 +431,9 @@
       "act": "Act",
       "chapter": "Chapter",
       "scene": "シーン",
-      "editorHere": "エディタで開いているシーン"
+      "editorHere": "エディタで開いているシーン",
+      "bodiesOn": "本文を context に含める（クリックで eco モード = synopsis のみに切替）",
+      "bodiesOff": "eco モード: synopsis のみ（クリックで本文も含める）"
     },
     "quickActions": {
       "ariaLabel": "クイックアクション",

@@ -362,11 +362,23 @@ interface ChatState {
   /**
    * scope を更新する。folder スコープに切り替えるときは anchorId 必須。
    * scope 軸自体は sticky で、tree active scene の変動では動かない。
+   * includeBodies は scope に応じてデフォルトにリセットされる。
    */
   setChatScope: (
     scope: "scene" | "folder" | "project",
     anchorId?: string | null,
   ) => void;
+
+  /**
+   * 本文を context に含めるか。トークン代の暴発を避けるための eco モード相当。
+   * scope ごとのデフォルト: scene=true, folder=false, project=（影響なし）。
+   * 折りたたみ tier の選択軸として refreshContextLayers が解釈する:
+   *   - true & 閾値内 → Tier 1 (body 集約)
+   *   - false または body 閾値超過 → Tier 2 (synopsis 集約)
+   *   - synopsis 閾値も超過 → Tier 3 (outline only)
+   */
+  includeBodies: boolean;
+  setIncludeBodies: (on: boolean) => void;
 
   // Existing actions
   sendMessage: (
@@ -948,6 +960,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
   agentProgress: null,
   chatScope: "scene",
   scopeAnchorId: null,
+  includeBodies: true,
   _editingOldContent: null,
   pendingLookupText: null,
 
@@ -1946,10 +1959,15 @@ export const useChatStore = create<ChatState>()((set, get) => ({
           listCodexEntries(),
         ]);
 
-        // Phase 2: folder スコープで配下シーン本文を集約する。
-        // 規模上限を超える場合は synopsis-only（Phase 1 と同等）にフォールバック。
-        const MAX_AGGREGATE_SCENES = 30;
-        const MAX_AGGREGATE_CHARS = 100_000;
+        // Phase 2 / 2.5: folder スコープでは 3 段階の集約 tier を持つ。
+        //   Tier 1 (body 集約): includeBodies=true かつ scene≤30 かつ chars≤100k
+        //   Tier 2 (synopsis 集約): scene≤200。本文は注入せず title+synopsis のみ
+        //   Tier 3 (outline only): それ以上 — chapterOutlines (祖先 folder の synopsis) のみ
+        // includeBodies のデフォルトは folder スコープでは false なので、
+        // 初期状態は基本的に Tier 2（synopsis 集約）で動く。
+        const MAX_BODY_TIER_SCENES = 30;
+        const MAX_BODY_TIER_CHARS = 100_000;
+        const MAX_SYNOPSIS_TIER_SCENES = 200;
         const LOAD_CHUNK = 8;
         let aggregatedScene: {
           id: string;
@@ -1968,15 +1986,16 @@ export const useChatStore = create<ChatState>()((set, get) => ({
             (sum, s) => sum + (s.charCount ?? 0),
             0,
           );
-          if (
-            anchorFolder &&
-            descendants.length > 0 &&
-            descendants.length <= MAX_AGGREGATE_SCENES &&
-            totalChars <= MAX_AGGREGATE_CHARS
-          ) {
-            // sortOrder = reading order をそのまま維持する。LLM がチャプターの
-            // 流れを理解するには物語順が必須。閾値内なら trim が走らないので
-            // 並びを工夫する必要はない（閾値超過時は synopsis-only fallback）。
+          const includeBodies = get().includeBodies;
+          const canTier1 =
+            includeBodies &&
+            descendants.length <= MAX_BODY_TIER_SCENES &&
+            totalChars <= MAX_BODY_TIER_CHARS;
+          const canTier2 = descendants.length <= MAX_SYNOPSIS_TIER_SCENES;
+
+          if (anchorFolder && descendants.length > 0 && canTier1) {
+            // Tier 1: body 集約。sortOrder = reading order を維持。閾値内なら
+            // trim は基本的に走らないので並び替えは不要。
             const ordered = descendants;
             const bodies: string[] = new Array(ordered.length);
             for (let i = 0; i < ordered.length; i += LOAD_CHUNK) {
@@ -1996,15 +2015,10 @@ export const useChatStore = create<ChatState>()((set, get) => ({
               const body = (bodies[i] ?? "").trim();
               const synopsis = scene.synopsis?.trim();
               const isActive = scene.id === activeSceneId;
-              // 各シーンに title + synopsis + body を出す。
-              // active scene には [current edit] マーカーを付け、LLM が
-              // 「ユーザーが今編集している箇所」を識別できるようにする。
               const header = `--- ${scene.title}${isActive ? " [current edit]" : ""} ---`;
               const synopsisLine = synopsis ? `Synopsis: ${synopsis}\n\n` : "";
               parts.push(`${header}\n${synopsisLine}${body}`);
             }
-            // LLM に「単一シーン本文ではなく集約モード」であることを明示する
-            // プロローグ。`### シーン本文` ヘッダは buildSystemPrompt が付ける。
             const preface = `[この章「${anchorFolder.title}」配下のシーンを reading order (sortOrder) で集約しています。各シーンは「--- {タイトル} ---」区切りで列挙され、Synopsis 行があるシーンはその要約、[current edit] マーカー付きが現在編集中のシーンです]`;
             const joined = `${preface}\n\n${parts.join("\n\n")}`;
             aggregatedScene = {
@@ -2026,9 +2040,51 @@ export const useChatStore = create<ChatState>()((set, get) => ({
                 matchedIds.has(e.id),
               );
             } catch {
-              // codex 検出失敗時は無視（detectedEntries は空のまま）
+              // codex 検出失敗時は無視
+            }
+          } else if (anchorFolder && descendants.length > 0 && canTier2) {
+            // Tier 2: synopsis 集約。本文は読み込まず、各シーンの title +
+            // synopsis のみを reading order で並べる。トークン代を大幅に抑える。
+            // synopsis 未記入のシーンは title のみ表示し、執筆計画の穴も LLM に
+            // 見えるようにする。
+            const ordered = descendants;
+            const parts: string[] = [];
+            for (const scene of ordered) {
+              const synopsis = scene.synopsis?.trim();
+              const isActive = scene.id === activeSceneId;
+              const header = `--- ${scene.title}${isActive ? " [current edit]" : ""} ---`;
+              parts.push(
+                synopsis
+                  ? `${header}\nSynopsis: ${synopsis}`
+                  : `${header}\n(synopsis 未記入)`,
+              );
+            }
+            const preface = `[この章「${anchorFolder.title}」配下のシーンを synopsis 単位で集約しています（eco モード: 本文は注入されていません）。各シーンは「--- {タイトル} ---」区切りで reading order に並んでおり、[current edit] マーカー付きが現在編集中のシーンです]`;
+            const joined = `${preface}\n\n${parts.join("\n\n")}`;
+            aggregatedScene = {
+              id: anchorFolder.id,
+              title: anchorFolder.title,
+              content: joined,
+            };
+            try {
+              const detectable = allEntries.filter(
+                (e) =>
+                  e.contextMode !== "hidden" && e.contextMode !== "suppress",
+              );
+              const matched = await findMentionedEntriesAsync(
+                joined,
+                detectable,
+              );
+              const matchedIds = new Set(matched.map((m) => m.id));
+              aggregatedDetected = detectable.filter((e) =>
+                matchedIds.has(e.id),
+              );
+            } catch {
+              // codex 検出失敗時は無視
             }
           }
+          // どちらの tier にも当てはまらない場合 (descendants > 200) は
+          // aggregatedScene = null のまま Tier 3 (outline only) で fall through。
         }
 
         const globalAlwaysEntries = allEntries.filter(
@@ -2199,6 +2255,14 @@ export const useChatStore = create<ChatState>()((set, get) => ({
       ]);
       if (!sceneCtx) return;
 
+      // scene scope の eco モード: includeBodies=false なら content を空に
+      // して buildSystemPrompt の `### シーン本文` セクションを抑制する。
+      // synopsis や foreshadow など本文以外の情報はそのまま残る。
+      // 副作用として codex auto-detect も synopsis ベースになる。
+      if (!get().includeBodies) {
+        sceneCtx.content = "";
+      }
+
       const ctxResult = await buildSceneContextPrompt({
         sceneCtx,
         projectCtx,
@@ -2226,16 +2290,27 @@ export const useChatStore = create<ChatState>()((set, get) => ({
   setAgentMode: (on: boolean) => set({ agentMode: on }),
   setChatScope: (scope, anchorId) => {
     // scope === "folder" のとき anchorId 必須。空指定なら scene に fallback。
+    // includeBodies は scope ごとのデフォルトに揃え直す: scene=true, folder=false。
+    // project では本文集約しないので値自体は影響しないが false に揃える。
     if (scope === "folder") {
       if (!anchorId) {
-        set({ chatScope: "scene", scopeAnchorId: null });
+        set({ chatScope: "scene", scopeAnchorId: null, includeBodies: true });
         return;
       }
-      set({ chatScope: "folder", scopeAnchorId: anchorId });
+      set({
+        chatScope: "folder",
+        scopeAnchorId: anchorId,
+        includeBodies: false,
+      });
       return;
     }
-    set({ chatScope: scope, scopeAnchorId: null });
+    set({
+      chatScope: scope,
+      scopeAnchorId: null,
+      includeBodies: scope === "scene",
+    });
   },
+  setIncludeBodies: (on: boolean) => set({ includeBodies: on }),
 
   // --- P2-1: ストリーミング中断 ---
   stopGeneration: () => {

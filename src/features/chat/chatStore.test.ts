@@ -767,6 +767,8 @@ describe("useChatStore", () => {
         chatScope: "folder",
         scopeAnchorId: "ch1",
         inputPinnedEntryIds: [],
+        // Tier 1 を発火させるため明示的に includeBodies=true
+        includeBodies: true,
       });
 
       mockBuildSystemPrompt.mockReturnValue({
@@ -799,7 +801,153 @@ describe("useChatStore", () => {
       expect(state.detectedEntries.map((e) => e.id)).toEqual(["char1"]);
     });
 
-    it("falls back to synopsis-only when scene count exceeds threshold", async () => {
+    it("uses Tier 2 (synopsis-only aggregate) when includeBodies=false even within Tier 1 size", async () => {
+      const { listCodexEntries } = await import("@/features/codex/api");
+      const { useTreeStore } = await import("@/features/tree/treeStore");
+      const { loadSceneContent } = await import("@/features/tree/api");
+      const { findMentionedEntriesAsync } =
+        await import("@/features/codex/rustMatcher");
+
+      const mockListCodex = vi.mocked(listCodexEntries);
+      const mockLoadScene = vi.mocked(loadSceneContent);
+      const mockMatcher = vi.mocked(findMentionedEntriesAsync);
+      const mockTreeState = vi.mocked(useTreeStore.getState);
+
+      const folder = {
+        id: "ch1",
+        parentId: null,
+        nodeType: "folder",
+        title: "Small Chapter",
+        sortOrder: "a0",
+        synopsis: "outline",
+        charCount: 0,
+      };
+      const sceneA = {
+        id: "sA",
+        parentId: "ch1",
+        nodeType: "scene",
+        title: "シーンA",
+        sortOrder: "a0",
+        synopsis: "Aのあらすじ",
+        charCount: 100,
+      };
+      const sceneB = {
+        id: "sB",
+        parentId: "ch1",
+        nodeType: "scene",
+        title: "シーンB",
+        sortOrder: "a1",
+        synopsis: null,
+        charCount: 100,
+      };
+
+      mockTreeState.mockReturnValue({
+        // @ts-expect-error テスト用 stub
+        nodes: [folder, sceneA, sceneB],
+        projectId: "proj-1",
+      });
+      mockListCodex.mockResolvedValue([]);
+      mockLoadScene.mockClear();
+      mockMatcher.mockClear();
+      mockMatcher.mockResolvedValue([]);
+      mockBuildSystemPrompt.mockReturnValue({
+        prompt: "p",
+        totalTokens: 0,
+        layers: [],
+      });
+
+      useChatStore.setState({
+        activeSceneId: "sA",
+        activeProjectId: "proj-1",
+        activeSessionId: null,
+        chatScope: "folder",
+        scopeAnchorId: "ch1",
+        inputPinnedEntryIds: [],
+        includeBodies: false, // eco mode 強制
+      });
+
+      await useChatStore.getState().refreshContextLayers();
+
+      // 本文ロードは走らない
+      expect(mockLoadScene).not.toHaveBeenCalled();
+      // synopsis 集約 content が組み立てられている
+      const args = mockBuildSystemPrompt.mock.calls.at(-1)?.[0];
+      const content = args?.scene.content ?? "";
+      expect(content).toContain("--- シーンA [current edit] ---");
+      expect(content).toContain("Synopsis: Aのあらすじ");
+      expect(content).toContain("--- シーンB ---");
+      expect(content).toContain("(synopsis 未記入)");
+      // eco モードのプロローグ
+      expect(content).toContain("eco モード");
+    });
+
+    it("falls back to Tier 3 (outline only) when scene count exceeds Tier 2 threshold (200)", async () => {
+      const { listCodexEntries } = await import("@/features/codex/api");
+      const { useTreeStore } = await import("@/features/tree/treeStore");
+      const { loadSceneContent } = await import("@/features/tree/api");
+      const { findMentionedEntriesAsync } =
+        await import("@/features/codex/rustMatcher");
+
+      const mockListCodex = vi.mocked(listCodexEntries);
+      const mockLoadScene = vi.mocked(loadSceneContent);
+      const mockMatcher = vi.mocked(findMentionedEntriesAsync);
+      const mockTreeState = vi.mocked(useTreeStore.getState);
+
+      const folder = {
+        id: "ch1",
+        parentId: null,
+        nodeType: "folder",
+        title: "Mega Act",
+        sortOrder: "a0",
+        synopsis: "outline",
+        charCount: 0,
+      };
+      // 201 個のシーン = Tier 2 (200) を超える
+      const scenes = Array.from({ length: 201 }, (_, i) => ({
+        id: `s${i}`,
+        parentId: "ch1",
+        nodeType: "scene" as const,
+        title: `S${i}`,
+        sortOrder: `a${i.toString(36)}`,
+        synopsis: null,
+        charCount: 100,
+      }));
+
+      mockTreeState.mockReturnValue({
+        // @ts-expect-error テスト用 stub
+        nodes: [folder, ...scenes],
+        projectId: "proj-1",
+      });
+      mockListCodex.mockResolvedValue([]);
+      mockLoadScene.mockClear();
+      mockMatcher.mockClear();
+      mockBuildSystemPrompt.mockReturnValue({
+        prompt: "p",
+        totalTokens: 0,
+        layers: [],
+      });
+
+      useChatStore.setState({
+        activeSceneId: "",
+        activeProjectId: "proj-1",
+        activeSessionId: null,
+        chatScope: "folder",
+        scopeAnchorId: "ch1",
+        inputPinnedEntryIds: [],
+        includeBodies: true, // Tier 1 願望でも閾値超過で Tier 3 に落ちる
+      });
+
+      await useChatStore.getState().refreshContextLayers();
+
+      // 本文 load も matcher も呼ばれない
+      expect(mockLoadScene).not.toHaveBeenCalled();
+      expect(mockMatcher).not.toHaveBeenCalled();
+      // buildSystemPrompt は scene.content 空で呼ばれている (outline only)
+      const args = mockBuildSystemPrompt.mock.calls.at(-1)?.[0];
+      expect(args?.scene.content).toBe("");
+    });
+
+    it("drops from Tier 1 to Tier 2 when scene count exceeds Tier 1 threshold (30) but within Tier 2 (200)", async () => {
       const { listCodexEntries } = await import("@/features/codex/api");
       const { useTreeStore } = await import("@/features/tree/treeStore");
       const { loadSceneContent } = await import("@/features/tree/api");
@@ -820,7 +968,6 @@ describe("useChatStore", () => {
         synopsis: "outline",
         charCount: 0,
       };
-      // 31 個のシーン = MAX_AGGREGATE_SCENES (30) を超える
       const scenes = Array.from({ length: 31 }, (_, i) => ({
         id: `s${i}`,
         parentId: "ch1",
@@ -832,13 +979,14 @@ describe("useChatStore", () => {
       }));
 
       mockTreeState.mockReturnValue({
-        // @ts-expect-error テスト用に nodes だけ持つ tree state を返す
+        // @ts-expect-error テスト用 stub
         nodes: [folder, ...scenes],
         projectId: "proj-1",
       });
       mockListCodex.mockResolvedValue([]);
       mockLoadScene.mockClear();
       mockMatcher.mockClear();
+      mockMatcher.mockResolvedValue([]);
       mockBuildSystemPrompt.mockReturnValue({
         prompt: "p",
         totalTokens: 0,
@@ -852,16 +1000,74 @@ describe("useChatStore", () => {
         chatScope: "folder",
         scopeAnchorId: "ch1",
         inputPinnedEntryIds: [],
+        // includeBodies=true でも 31 シーンは Tier 1 を超えるので Tier 2 へ降りる
+        includeBodies: true,
       });
 
       await useChatStore.getState().refreshContextLayers();
 
-      // 閾値超過なので本文 load も matcher も呼ばれない
+      // Tier 2 では本文ロードは走らない
       expect(mockLoadScene).not.toHaveBeenCalled();
-      expect(mockMatcher).not.toHaveBeenCalled();
-      // buildSystemPrompt は scene.content 空で呼ばれている（synopsis-only fallback）
+      // ただし synopsis 集約で content は組まれる
+      const args = mockBuildSystemPrompt.mock.calls.at(-1)?.[0];
+      const content = args?.scene.content ?? "";
+      expect(content).toContain("--- S0 ---");
+      expect(content).toContain("(synopsis 未記入)");
+    });
+
+    it("applies eco mode for scene scope by blanking sceneCtx.content when includeBodies=false", async () => {
+      const { useTreeStore } = await import("@/features/tree/treeStore");
+      const { loadSceneContent, getNode } = await import("@/features/tree/api");
+
+      const mockTreeState = vi.mocked(useTreeStore.getState);
+      const mockLoadScene = vi.mocked(loadSceneContent);
+      const mockGetNode = vi.mocked(getNode);
+
+      mockTreeState.mockReturnValue({
+        nodes: [
+          {
+            id: "scene-1",
+            parentId: null,
+            nodeType: "scene",
+            title: "テストシーン",
+            sortOrder: "a0",
+            synopsis: "シーンの要約",
+            charCount: 1000,
+          },
+        ],
+        projectId: "proj-1",
+      } as never);
+      mockGetNode.mockResolvedValue({
+        id: "scene-1",
+        title: "テストシーン",
+        synopsis: "シーンの要約",
+      } as never);
+      mockLoadScene.mockClear();
+      mockLoadScene.mockResolvedValue("これは長いシーン本文");
+      mockBuildSystemPrompt.mockReturnValue({
+        prompt: "p",
+        totalTokens: 0,
+        layers: [],
+      });
+
+      useChatStore.setState({
+        activeSceneId: "scene-1",
+        activeProjectId: "proj-1",
+        activeSessionId: null,
+        chatScope: "scene",
+        scopeAnchorId: null,
+        inputPinnedEntryIds: [],
+        includeBodies: false, // scene scope eco
+      });
+
+      await useChatStore.getState().refreshContextLayers();
+
+      // fetchSceneContext は呼ばれるが、buildSceneContextPrompt 内で sceneCtx.content
+      // を空にしてから buildSystemPrompt に渡される ⇒ scene.content === ""
       const args = mockBuildSystemPrompt.mock.calls.at(-1)?.[0];
       expect(args?.scene.content).toBe("");
+      // 一方 synopsis は残り、scene.title も残る
+      expect(args?.scene.title).toBe("テストシーン");
     });
   });
 });
