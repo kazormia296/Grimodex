@@ -23,6 +23,32 @@ describe("getModelPricing", () => {
     });
   });
 
+  it("normalizes dot-separated versions to dash (OpenRouter format)", () => {
+    // OpenRouter で見かける `anthropic/claude-sonnet-4.6` を解決できる
+    expect(getModelPricing("anthropic/claude-sonnet-4.6")).toEqual({
+      inputPerMillion: 3,
+      outputPerMillion: 15,
+    });
+    expect(getModelPricing("claude-sonnet-4.6")).toEqual({
+      inputPerMillion: 3,
+      outputPerMillion: 15,
+    });
+  });
+
+  it("strips trailing date suffix (Anthropic dated id)", () => {
+    expect(getModelPricing("claude-sonnet-4-6-20260101")).toEqual({
+      inputPerMillion: 3,
+      outputPerMillion: 15,
+    });
+  });
+
+  it("strips -latest suffix", () => {
+    expect(getModelPricing("claude-opus-4-7-latest")).toEqual({
+      inputPerMillion: 15,
+      outputPerMillion: 75,
+    });
+  });
+
   it("is case-insensitive", () => {
     expect(getModelPricing("Claude-Opus-4-7")).not.toBeNull();
   });

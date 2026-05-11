@@ -54,16 +54,22 @@ const PRICING: Record<string, ModelPricing> = {
 /**
  * モデル ID を正規化キーに変換する。
  * - OpenRouter prefix (`anthropic/claude-...`) → スラッシュ後ろを採用
- * - `:beta` `:online` 等のサフィックスを除去
+ * - `:beta` `:online` 等のチャンネルサフィックスを除去
  * - 小文字化
+ * - `.` を `-` に置換 (OpenRouter は `claude-sonnet-4.6`、bare は `claude-sonnet-4-6`)
+ * - 末尾の日付サフィックス `-YYYYMMDD` を除去 (Anthropic 直叩きの dated id)
+ * - 末尾の `-latest` を除去
  */
 function normalizeModelId(id: string): string {
-  const lower = id.toLowerCase();
-  const slash = lower.indexOf("/");
-  const noPrefix = slash >= 0 ? lower.slice(slash + 1) : lower;
-  const colon = noPrefix.indexOf(":");
-  const noSuffix = colon >= 0 ? noPrefix.slice(0, colon) : noPrefix;
-  return noSuffix;
+  let s = id.toLowerCase();
+  const slash = s.indexOf("/");
+  if (slash >= 0) s = s.slice(slash + 1);
+  const colon = s.indexOf(":");
+  if (colon >= 0) s = s.slice(0, colon);
+  s = s.replace(/\./g, "-");
+  s = s.replace(/-\d{8}$/, "");
+  s = s.replace(/-latest$/, "");
+  return s;
 }
 
 /**
