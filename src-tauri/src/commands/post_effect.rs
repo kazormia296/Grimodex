@@ -191,6 +191,55 @@ fn dismiss_key_intra(scene_id: &str, a_text: &str, b_text: &str) -> String {
     sha256_hex(&format!("{}|{}|{}", scene_id, texts[0], texts[1]))
 }
 
+/// `parsed` のルートが Object で、`key` が Array であることを検証して返す。
+///
+/// LLM が以下のような構造ズレを起こした場合、従来は `.as_array().unwrap_or_default()`
+/// で silent に 0 件処理されていたが、本関数は明示的に `anyhow::Err` を返して
+/// run を `failed` に落とす。これにより silent fail を撲滅する。
+///
+/// 検出する異常パターン:
+/// - ルートが Array（`[{...}]` 形式で返す LLM）
+/// - キー名揺れ（`violations` を期待しているのに `issues` / `results` 等で返す）
+/// - キーが配列でない（オブジェクトや文字列で返す）
+fn extract_array_field(parsed: &Value, key: &str) -> anyhow::Result<Vec<Value>> {
+    if !parsed.is_object() {
+        anyhow::bail!(
+            "LLM 出力のルートが Object ではありません (root={})",
+            value_type_name(parsed)
+        );
+    }
+    let field = &parsed[key];
+    if field.is_null() {
+        // 期待キーが存在しない。キー揺れの典型ケース。
+        let other_keys: Vec<&str> = parsed
+            .as_object()
+            .map(|m| m.keys().map(|k| k.as_str()).collect())
+            .unwrap_or_default();
+        anyhow::bail!(
+            "LLM 出力に期待キー '{key}' がありません (実在キー: {:?})",
+            other_keys
+        );
+    }
+    field.as_array().cloned().ok_or_else(|| {
+        anyhow::anyhow!(
+            "LLM 出力の '{key}' が Array ではありません (type={})",
+            value_type_name(field)
+        )
+    })
+}
+
+/// `serde_json::Value` のバリアント名を返す（エラーメッセージ用）。
+fn value_type_name(v: &Value) -> &'static str {
+    match v {
+        Value::Null => "null",
+        Value::Bool(_) => "bool",
+        Value::Number(_) => "number",
+        Value::String(_) => "string",
+        Value::Array(_) => "array",
+        Value::Object(_) => "object",
+    }
+}
+
 /// LLM が返す JSON を取り出す。
 /// 1) ```json ... ``` / ``` ... ``` で囲まれた最初のブロックを優先
 /// 2) なければ最初の `{` から最後の `}` までを返す（前置き文対策）
@@ -252,6 +301,78 @@ mod extract_json_tests {
     fn handles_fence_without_language_tag() {
         let raw = "```\n{\"a\":1}\n```";
         assert_eq!(extract_json(raw), "{\"a\":1}");
+    }
+}
+
+#[cfg(test)]
+mod extract_array_field_tests {
+    use super::extract_array_field;
+    use serde_json::json;
+
+    #[test]
+    fn returns_array_when_well_formed() {
+        let v = json!({ "violations": [{"a": 1}, {"a": 2}] });
+        let result = extract_array_field(&v, "violations").unwrap();
+        assert_eq!(result.len(), 2);
+    }
+
+    #[test]
+    fn empty_array_is_ok() {
+        let v = json!({ "violations": [] });
+        let result = extract_array_field(&v, "violations").unwrap();
+        assert_eq!(result.len(), 0);
+    }
+
+    #[test]
+    fn errors_when_root_is_array() {
+        // `[{...}]` のように配列ルートで返す LLM 対策
+        let v = json!([{"a": 1}]);
+        let err = extract_array_field(&v, "violations").unwrap_err();
+        assert!(
+            err.to_string().contains("ルートが Object ではありません"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn errors_when_key_missing() {
+        // `violations` を `issues` と返すケース
+        let v = json!({ "issues": [{"a": 1}] });
+        let err = extract_array_field(&v, "violations").unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("期待キー 'violations'"), "got: {msg}");
+        assert!(msg.contains("issues"), "got: {msg}");
+    }
+
+    #[test]
+    fn errors_when_field_is_object() {
+        // 配列ではなく単一オブジェクトで返すケース
+        let v = json!({ "violations": {"a": 1} });
+        let err = extract_array_field(&v, "violations").unwrap_err();
+        assert!(
+            err.to_string().contains("Array ではありません"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn errors_when_field_is_string() {
+        let v = json!({ "violations": "なし" });
+        let err = extract_array_field(&v, "violations").unwrap_err();
+        assert!(
+            err.to_string().contains("Array ではありません"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn errors_when_root_is_string() {
+        let v = json!("violations: none");
+        let err = extract_array_field(&v, "violations").unwrap_err();
+        assert!(
+            err.to_string().contains("ルートが Object ではありません"),
+            "got: {err}"
+        );
     }
 }
 
@@ -449,7 +570,17 @@ async fn process_consistency_scene(
         anyhow::anyhow!("LLM 出力のパース失敗: {e}")
     })?;
 
-    let violations = parsed["violations"].as_array().cloned().unwrap_or_default();
+    let violations = extract_array_field(&parsed, "violations").map_err(|e| {
+        tracing::error!(
+            run_id = run_id,
+            scene_id = scene_id,
+            raw_preview = %&raw_response.chars().take(200).collect::<String>(),
+            extracted_preview = %&json_str.chars().take(200).collect::<String>(),
+            error = %e,
+            "[post_effect] consistency: JSON structure INVALID"
+        );
+        anyhow::anyhow!("LLM 出力の構造が不正: {e}")
+    })?;
     tracing::info!(
         run_id = run_id,
         scene_id = scene_id,
@@ -584,20 +715,10 @@ async fn process_consistency_scene(
                 count += 1;
             }
 
-            // 同じ scene の前回 open アノテーションを dismissed に
-            conn.execute(
-                "UPDATE post_effect_annotations
-                    SET status = 'dismissed',
-                        metadata = json_set(metadata, '$.dismiss_source', 'run_completed'),
-                        updated_at = datetime('now')
-                  WHERE status = 'open'
-                    AND project_id = ?
-                    AND scene_id = ?
-                    AND category = 'consistency_anchor'
-                    AND run_id != ?
-                    AND run_id IS NOT NULL",
-                params![project_id, scene_id, run_id],
-            )?;
+            // 旧仕様の「前回 open を run_completed で dismissed」UPDATE はここに
+            // あったが廃止した。LLM 検出は決定論的でなく、揺らぎ・モデル変更で
+            // 真の指摘が silent に消える事故が起きていたため。指摘の close は
+            // ユーザーの明示操作 (manual dismiss / resolved) のみで行う。
 
             Ok(count)
         })
@@ -753,7 +874,17 @@ async fn process_intra_scene(
         anyhow::anyhow!("LLM 出力のパース失敗: {e}")
     })?;
 
-    let pairs = parsed["pairs"].as_array().cloned().unwrap_or_default();
+    let pairs = extract_array_field(&parsed, "pairs").map_err(|e| {
+        tracing::error!(
+            run_id = run_id,
+            scene_id = scene_id,
+            raw_preview = %&raw_response.chars().take(200).collect::<String>(),
+            extracted_preview = %&json_str.chars().take(200).collect::<String>(),
+            error = %e,
+            "[post_effect] intra: JSON structure INVALID"
+        );
+        anyhow::anyhow!("LLM 出力の構造が不正: {e}")
+    })?;
     tracing::info!(
         run_id = run_id,
         scene_id = scene_id,
@@ -899,20 +1030,8 @@ async fn process_intra_scene(
                 count += 1;
             }
 
-            // 同じ scene の前回 open アノテーションを dismissed に
-            conn.execute(
-                "UPDATE post_effect_annotations
-                    SET status = 'dismissed',
-                        metadata = json_set(metadata, '$.dismiss_source', 'run_completed'),
-                        updated_at = datetime('now')
-                  WHERE status = 'open'
-                    AND project_id = ?
-                    AND scene_id = ?
-                    AND category = 'consistency_anchor'
-                    AND run_id != ?
-                    AND run_id IS NOT NULL",
-                params![project_id, scene_id, run_id],
-            )?;
+            // 旧仕様の「前回 open を run_completed で dismissed」UPDATE はここに
+            // あったが廃止した (consistency 側と同じ理由)。
 
             Ok(count)
         })
@@ -1595,6 +1714,40 @@ pub(crate) fn list_annotations_for_scene(
                 "annotations": annotations,
                 "relations": relations,
             }))
+        })
+    })
+}
+
+#[tauri::command]
+pub(crate) fn list_annotations_for_project(
+    ws_state: State<'_, WorkspaceState>,
+    project_id: String,
+    status: Option<String>,
+) -> Result<Value, AppError> {
+    super::with_db(&ws_state, |db| {
+        db.with_conn(|conn| {
+            let annotations = if let Some(st) = &status {
+                let mut stmt = conn.prepare(
+                    "SELECT * FROM post_effect_annotations
+                      WHERE project_id = ? AND status = ?
+                      ORDER BY scene_id, range_start, created_at",
+                )?;
+                let r: Result<Vec<_>, _> = stmt
+                    .query_map(params![project_id, st], row_to_annotation_value)?
+                    .collect();
+                r?
+            } else {
+                let mut stmt = conn.prepare(
+                    "SELECT * FROM post_effect_annotations
+                      WHERE project_id = ?
+                      ORDER BY scene_id, range_start, created_at",
+                )?;
+                let r: Result<Vec<_>, _> = stmt
+                    .query_map(params![project_id], row_to_annotation_value)?
+                    .collect();
+                r?
+            };
+            Ok(serde_json::json!({ "annotations": annotations }))
         })
     })
 }
