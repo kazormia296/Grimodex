@@ -115,6 +115,7 @@ import { useSynopsisSuggestionStore } from "@/features/editor/synopsisSuggestion
 import { getDocText } from "@/features/editor/RubyNode";
 import { useLinter } from "@/features/lint/useLinter";
 import { StatusBarIndicator } from "@/features/lint/StatusBarIndicator";
+import { AiPolicyBadge } from "@/features/ai-policy/AiPolicyBadge";
 import { useForeshadowNavStore } from "@/features/foreshadow/foreshadowNavStore";
 import { useChatStore } from "@/features/chat/chatStore";
 import { debugLog, errorDetail } from "@/lib/debugLog";
@@ -1867,6 +1868,7 @@ export function EditorPane({
         </div>
         {/* Right: stats + save state + history */}
         <div className="flex flex-shrink-0 items-center gap-3">
+          <AiPolicyBadge />
           <StatusBarIndicator />
           {showAttribution && aiRatio > 0 && (
             <button
