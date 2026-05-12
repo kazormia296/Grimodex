@@ -17,6 +17,7 @@ pub(crate) mod db;
 pub(crate) mod foreshadow;
 pub(crate) mod integrity;
 pub(crate) mod lint;
+pub(crate) mod onboarding;
 pub(crate) mod post_effect;
 pub(crate) mod trash_bin;
 pub(crate) mod workspace;

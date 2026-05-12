@@ -52,6 +52,10 @@ export interface GlobalSettings {
    * Covers work-specific settings (tree.*, export.*, beat.*, editor.targetCharCount, ai.contextBudget.*).
    */
   projectDefaults?: Record<string, string>;
+  /** Default AI policy preset applied to new projects (JSON-serialized AiPolicy). */
+  defaultAiPolicy?: string;
+  /** Path to the sample workspace created during onboarding. Used for re-run flow. */
+  sampleWorkspacePath?: string;
 }
 
 export type AppView = "loading" | "welcome" | "launcher" | "editor";

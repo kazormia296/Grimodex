@@ -74,6 +74,15 @@ pub struct GlobalSettings {
     #[serde(default)]
     #[serde(skip_serializing_if = "std::collections::HashMap::is_empty")]
     pub project_defaults: std::collections::HashMap<String, String>,
+    /// Default AI policy preset applied to new projects.
+    /// Serialized as a JSON string matching the AiPolicy TS type.
+    /// None = fall back to the full preset default.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub default_ai_policy: Option<String>,
+    /// Path to the sample workspace created during onboarding.
+    /// Used to re-open or re-seed the sample for the "Restart Tutorial" flow.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sample_workspace_path: Option<String>,
 }
 
 impl Default for GlobalSettings {
@@ -98,6 +107,8 @@ impl Default for GlobalSettings {
             matrix: None,
             user_preferences: std::collections::HashMap::new(),
             project_defaults: std::collections::HashMap::new(),
+            default_ai_policy: None,
+            sample_workspace_path: None,
         }
     }
 }

@@ -1,0 +1,163 @@
+{
+  "project": {
+    "id": "sample-project-v1",
+    "title": "蒼穹の試練",
+    "genre": "fantasy",
+    "language": "ja",
+    "ai_instructions": "主人公エリアスの内面描写と、世界の謎「蒼穹の封印」を中心に描いてください。魔法は古代語の詠唱と意志の力で発動します。"
+  },
+  "tree_nodes": [
+    {
+      "id": "sample-folder-1",
+      "parent_id": null,
+      "node_type": "folder",
+      "title": "第一章　準備",
+      "synopsis": "主人公エリアスが旅立ちを決意し、古城ドラクタールへ向かう準備をする章。",
+      "sort_order": "a0",
+      "status": "draft"
+    },
+    {
+      "id": "sample-scene-1",
+      "parent_id": "sample-folder-1",
+      "node_type": "scene",
+      "title": "剣士の目覚め",
+      "synopsis": "エリアスが封印の夢を見て目を覚ます。祖父の形見の古剣が光り始め、旅立ちの予感を感じる。",
+      "sort_order": "a0",
+      "status": "draft",
+      "content": "{\"type\":\"doc\",\"content\":[{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"夜明け前の静寂の中、エリアスは汗ばんだ額を拭いながら起き上がった。また同じ夢だった。蒼く輝く封印の扉、その向こうから響く無数の叫び声。十七年間、一度も会ったことのない父の声も、その中に混じっているような気がした。\"}]},{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"窓の外では、ハルト村の朝が静かに始まろうとしていた。鶏の鳴き声、パン屋の煙突から立ち上る煙。いつもと変わらぬ光景のはずなのに、今日は何かが違った。\"}]},{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"壁に掛けてあった祖父の形見の剣が、微かに光を放っていた。\"}]},{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"「また始まったか」\"}]},{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"エリアスは剣を手に取った。鞘から抜くと、刀身に古代語の文字が浮かび上がり、青白い光の帯が走った。祖父ガルドが死の床で語っていた言葉が蘇る。\"}]},{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"――この剣は、お前が真の試練に立ち向かう時、目を覚ます。その時が来たら、ドラクタールへ行け。封印の秘密は、あそこにある。\"}]},{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"ドラクタール。北の山脈に屹立する古城。千年前の魔法大戦の戦場となり、今は廃墟となって人々から忌み嫌われる場所。エリアスはベッドの端に腰かけ、剣を膝の上に横たえながら、長い時間をかけて決意を固めた。\"}]},{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"旅立ちの朝は、こうして始まった。\"}]}]}"
+    },
+    {
+      "id": "sample-scene-2",
+      "parent_id": "sample-folder-1",
+      "node_type": "scene",
+      "title": "導師との別れ",
+      "synopsis": "村の導師セレーナがエリアスに旅立ちの餞別として古代魔法の秘伝書を渡す。二人の間に芽生えた感情を匂わせる。",
+      "sort_order": "a1",
+      "status": "outline",
+      "content": "{\"type\":\"doc\",\"content\":[{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"セレーナは魔法工房の棚から、古びた革装丁の本を取り出した。\"}]}]}"
+    },
+    {
+      "id": "sample-folder-2",
+      "parent_id": null,
+      "node_type": "folder",
+      "title": "第二章　対峙",
+      "synopsis": "古城ドラクタールに到着したエリアスが、封印の番人である闇の魔導師ヴェルズと初めて対峙する章。",
+      "sort_order": "a1",
+      "status": "outline"
+    },
+    {
+      "id": "sample-scene-3",
+      "parent_id": "sample-folder-2",
+      "node_type": "scene",
+      "title": "城門の守護者",
+      "synopsis": "ドラクタールの城門前で魔物の群れに遭遇。エリアスが祖父の剣の真の力を初めて解放する。",
+      "sort_order": "a0",
+      "status": "outline",
+      "content": "{\"type\":\"doc\",\"content\":[{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"城門に近づくにつれ、空気が変わった。\"}]}]}"
+    },
+    {
+      "id": "sample-scene-4",
+      "parent_id": "sample-folder-2",
+      "node_type": "scene",
+      "title": "闇の宣告",
+      "synopsis": "城の深部で闇の魔導師ヴェルズと対面。封印の真実が明かされ始め、エリアスの出自に関わる衝撃の事実が示唆される。",
+      "sort_order": "a1",
+      "status": "outline",
+      "content": "{\"type\":\"doc\",\"content\":[{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"「待っていたぞ、エリアス・フォン・ハルト」\"}]}]}"
+    }
+  ],
+  "codex_entries": [
+    {
+      "id": "sample-codex-elias",
+      "type": "character",
+      "name": "エリアス・フォン・ハルト",
+      "aliases": "[\"エリアス\",\"ハルトの剣士\"]",
+      "summary": "ハルト村出身の青年剣士。17歳。封印の夢に悩まされ続けており、祖父の遺志を受けて古城ドラクタールへの旅に出る。不撓不屈の精神と鋭い直感を持つが、自分の出自については何も知らない。",
+      "content": "{\"type\":\"doc\",\"content\":[{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"幼い頃から祖父ガルドに剣術と古代語を叩き込まれた。村では「剣の天才」と呼ばれるが、本人は自覚が薄く、どちらかというと思索的な性格。友人はほとんどいないが、村人からは慕われている。\"}]},{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"繰り返す封印の夢は幼い頃から続いており、夢の中ではいつも誰かの叫び声を聞く。祖父の死後、剣が光り始めたことで旅立ちを決意した。\"}]}]}",
+      "notes": null,
+      "context_mode": "always"
+    },
+    {
+      "id": "sample-codex-selena",
+      "type": "character",
+      "name": "セレーナ・ルース",
+      "aliases": "[\"セレーナ\",\"村の導師\"]",
+      "summary": "ハルト村の若き魔法導師。20歳。古代魔法の研究者であり、エリアスの幼なじみ。表面上は冷静沈着だが、エリアスへの想いを胸の内に秘めている。",
+      "content": "{\"type\":\"doc\",\"content\":[{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"王立魔法学院を主席で卒業後、故郷のハルト村に戻り導師として活動。古代魔法の解読に明け暮れる毎日だったが、エリアスの旅立ちを機に自らも行動を起こすことを決意する。\"}]}]}",
+      "notes": null,
+      "context_mode": "mentioned"
+    },
+    {
+      "id": "sample-codex-velz",
+      "type": "character",
+      "name": "ヴェルズ",
+      "aliases": "[\"闇の魔導師\",\"封印の番人\"]",
+      "summary": "ドラクタール古城に潜む謎の魔導師。千年前の大戦を生き延びたとも、封印によって生き続けているとも言われる。その真の目的は不明。エリアスの旅立ちを「待っていた」と語る。",
+      "content": "{\"type\":\"doc\",\"content\":[{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"表向きは封印の番人として城に棲み着いているが、その行動は必ずしも「悪」とは言えない。エリアスの父親とも何らかの関係があることが示唆される。冷酷な言葉の裏に、何かを護ろうとする意志が垣間見える。\"}]}]}",
+      "notes": null,
+      "context_mode": "mentioned"
+    },
+    {
+      "id": "sample-codex-castle",
+      "type": "location",
+      "name": "古城ドラクタール",
+      "aliases": "[\"ドラクタール\",\"北の古城\"]",
+      "summary": "北の山脈に屹立する千年前の魔法大戦の舞台となった廃城。蒼穹の封印が施されており、近づく者を幻覚や魔物で退ける。現在はヴェルズのみが住む。",
+      "content": "{\"type\":\"doc\",\"content\":[{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"ハルト村から馬で三日の距離にある。千年間、人々によって「近づいてはならぬ地」として語り継がれてきた。城の内部は魔法的に拡張されており、外観より遥かに広大。最深部に「蒼穹の間」と呼ばれる封印の核がある。\"}]}]}",
+      "notes": null,
+      "context_mode": "mentioned"
+    },
+    {
+      "id": "sample-codex-magic",
+      "type": "lore",
+      "name": "古代魔法システム",
+      "aliases": "[\"古代語魔法\",\"封印魔法\"]",
+      "summary": "千年前の大戦で使われた魔法体系。古代語の詠唱と「術者の意志」を組み合わせて発動する。現代では失われたとされるが、エリアスの剣にその欠片が宿っている。",
+      "content": "{\"type\":\"doc\",\"content\":[{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"古代魔法の最大の特徴は「共鳴」にある。術者の感情と意志が強ければ強いほど、魔法の出力が増幅される。反面、感情の乱れは暴走を引き起こす。\"}]},{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"蒼穹の封印はその最高峰の術であり、発動には一族全員の命が必要だったという。なぜエリアスの家系が封印と深く関わっているのかは、物語の核心的な謎の一つ。\"}]}]}",
+      "notes": null,
+      "context_mode": "mentioned"
+    }
+  ],
+  "chat_sessions": [
+    {
+      "id": "sample-session-1",
+      "node_id": "sample-scene-1",
+      "title": "エリアスの人物像をブレスト",
+      "model": "openrouter/anthropic/claude-sonnet-4.6"
+    }
+  ],
+  "chat_messages": [
+    {
+      "id": "sample-msg-1",
+      "session_id": "sample-session-1",
+      "role": "user",
+      "content": "主人公エリアスの性格について、もう少し掘り下げたいです。彼はどんな内面的な葛藤を抱えているでしょうか？"
+    },
+    {
+      "id": "sample-msg-2",
+      "session_id": "sample-session-1",
+      "role": "assistant",
+      "content": "エリアスが抱える葛藤として、いくつかの方向性が考えられます。\n\n**1. アイデンティティの空白**\n父を知らずに育った彼にとって、「自分は何者か」という問いは常に胸の奥にあります。剣が光り始め、旅立ちを促されることで、その問いが急に切実になってくる。\n\n**2. 使命感 vs 恐怖**\n「ドラクタールへ行け」という祖父の言葉を信じたい気持ちはある。でも、千年間誰も近づかなかった場所に一人で乗り込む恐ろしさも正直にある。\n\n**3. セレーナを残していくことへの罪悪感**\n幼なじみで、おそらく自分の気持ちもわかっている。それでも行かなければならない——この「誰かを傷つけることを知りながら進む」感覚は、英雄譚の定番ですが、エリアスが17歳という若さだからこそリアルに描けます。\n\nどの方向性が一番しっくりきますか？"
+    },
+    {
+      "id": "sample-msg-3",
+      "session_id": "sample-session-1",
+      "role": "user",
+      "content": "1と3の組み合わせが良さそうです。父親を知らないことと、セレーナを置いていく罪悪感を絡めてみたいです。"
+    },
+    {
+      "id": "sample-msg-4",
+      "session_id": "sample-session-1",
+      "role": "assistant",
+      "content": "それは深みが出ますね。一つの切り口を提案します。\n\nエリアスがセレーナを置いていくことへの罪悪感の根っこには、「父が母（または自分）を置いていった」という無意識の反復恐怖がある——という構造はどうでしょうか。\n\n彼は父に捨てられた（と思っている）。その父と同じことを自分がしようとしている。だから「旅に出る」という決断が、ただの冒険心ではなく、自己嫌悪と隣り合わせになる。\n\nこれが後のヴェルズとの対峙で「父の真実」が明かされた時の衝撃をより大きくします。「捨てた」のではなく「護るために消えた」のだとわかった時、エリアスは自分の出発の意味も再解釈しなければならない。\n\nCodexのエリアスの項目に「父への複雑な感情」をメモしておくと、後の伏線管理が楽になりますよ。"
+    }
+  ],
+  "foreshadows": [
+    {
+      "id": "sample-foreshadow-1",
+      "title": "祖父の剣が放つ光",
+      "intent": "エリアスの血統と封印の関係を示す伏線。物語終盤で「剣がエリアスの血に反応していた＝一族の封印魔法の鍵だった」という形で回収される。",
+      "notes": "第一章scene-1で剣が光るシーンが伏線の設置。回収は第三章以降（未執筆）の予定。"
+    }
+  ]
+}

@@ -856,6 +856,10 @@ impl Database {
             "TEXT NOT NULL DEFAULT '{\"preset\":\"full\",\"toggles\":{\"chat\":true,\"bodyWrite\":true,\"analysis\":true}}'",
         )?;
 
+        // Onboarding: mark sample workspace projects so EditorScreen can
+        // trigger SampleTour on first open.
+        Self::add_column_if_missing(&conn, "projects", "is_sample", "INTEGER NOT NULL DEFAULT 0")?;
+
         // Grid panel — Scene×Codex explicit pins (many-to-many).
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS scene_codex_pins (
