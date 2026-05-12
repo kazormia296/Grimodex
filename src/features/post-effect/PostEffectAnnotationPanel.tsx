@@ -1,45 +1,18 @@
 import { useEffect } from "react";
-import {
-  AlertTriangle,
-  CheckCircle2,
-  Info,
-  MapPinOff,
-  X,
-  XCircle,
-} from "lucide-react";
+import { AlertTriangle, CheckCircle2, Info, X, XCircle } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { useAiSettingsStore } from "@/features/chat/store";
 import { useAnnotationStore } from "./annotationStore";
 import { listAnnotationsForScene, updateAnnotationStatus } from "./api";
+import { parseAnnotationMeta } from "./annotationMeta";
+import {
+  CodexChip,
+  ConfidenceBadge,
+  ContrastRow,
+  ExpandedDetails,
+} from "./AnnotationDetails";
 import type { PostEffectAnnotation, PostEffectSeverity } from "./types";
-
-/**
- * metadata から orphaned フラグと detected_by_model を取り出す。
- * metadata は通常 row_to_annotation_value 経由で object 化されているが、
- * 万が一 string で来た場合は parse、parse 失敗時は安全な既定値を返す。
- */
-function readAnnotationMeta(ann: PostEffectAnnotation): {
-  orphaned: boolean;
-  detectedByModel?: string;
-} {
-  let meta: Record<string, unknown> | undefined;
-  try {
-    meta =
-      typeof ann.metadata === "string"
-        ? (JSON.parse(ann.metadata) as Record<string, unknown>)
-        : (ann.metadata as Record<string, unknown> | undefined);
-  } catch {
-    return { orphaned: false };
-  }
-  if (!meta) return { orphaned: false };
-  const ref = (meta.codex_ref as Record<string, unknown> | undefined) ?? {};
-  const orphaned = meta.orphaned === true || ref.orphaned === true;
-  const detectedByModel =
-    (ref.detected_by_model as string | undefined) ??
-    (meta.detected_by_model as string | undefined);
-  return { orphaned, detectedByModel };
-}
 
 interface Props {
   sceneId: string;
@@ -80,12 +53,13 @@ function AnnotationItem({ ann }: { ann: PostEffectAnnotation }) {
 
   const severity = (ann.severity ?? "info") as PostEffectSeverity;
   const isDone = ann.status === "dismissed" || ann.status === "resolved";
-  const { orphaned, detectedByModel } = readAnnotationMeta(ann);
+  const parsed = parseAnnotationMeta(ann);
   const currentModel = useAiSettingsStore((s) => s.settings?.model);
-  const isStaleModel =
-    detectedByModel != null &&
-    currentModel != null &&
-    detectedByModel !== currentModel;
+
+  // consistency の content は "{entry}.{detail} と矛盾: {found}" の長文。
+  // CodexChip + ContrastRow が同じ情報を綺麗に持つので、consistency 時は
+  // タイトル本文を出さず chip 行で代替する。
+  const showTitle = parsed.kind === "intra";
 
   return (
     <div
@@ -97,7 +71,7 @@ function AnnotationItem({ ann }: { ann: PostEffectAnnotation }) {
           setFocusedAnnotationId(focused ? null : ann.id);
       }}
       className={cn(
-        "group flex flex-col gap-1 rounded-md border px-3 py-2 text-sm cursor-pointer select-none",
+        "group flex flex-col gap-1.5 rounded-md border px-3 py-2 text-sm cursor-pointer select-none",
         "transition-colors",
         focused
           ? "border-primary/60 bg-primary/5"
@@ -107,9 +81,15 @@ function AnnotationItem({ ann }: { ann: PostEffectAnnotation }) {
     >
       <div className="flex items-start gap-2">
         {SEVERITY_ICONS[severity]}
-        <p className="flex-1 leading-snug">{ann.content}</p>
+        <div className="flex flex-1 flex-wrap items-center gap-1.5">
+          {parsed.codex && <CodexChip codex={parsed.codex} />}
+          {parsed.confidence && <ConfidenceBadge level={parsed.confidence} />}
+          {showTitle && (
+            <p className="basis-full leading-snug">{ann.content}</p>
+          )}
+        </div>
         {!isDone && (
-          <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+          <div className="flex shrink-0 gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
             <button
               aria-label="解決済み"
               title="解決済み"
@@ -135,30 +115,19 @@ function AnnotationItem({ ann }: { ann: PostEffectAnnotation }) {
           </div>
         )}
       </div>
+      {parsed.codex && (
+        <ContrastRow
+          expected={parsed.codex.expectedValue}
+          found={parsed.codex.foundValue}
+        />
+      )}
       {ann.textSnapshot && (
         <blockquote className="border-l-2 border-muted-foreground/30 pl-2 text-xs text-muted-foreground line-clamp-2">
           {ann.textSnapshot}
         </blockquote>
       )}
-      {(orphaned || isStaleModel) && (
-        <div className="flex flex-wrap items-center gap-1 pt-0.5 text-[10px]">
-          {orphaned && (
-            <span
-              title="本文中の該当位置を特定できませんでした"
-              className="inline-flex items-center gap-0.5 rounded bg-amber-500/10 px-1.5 py-0.5 text-amber-600 dark:text-amber-400"
-            >
-              <MapPinOff size={10} /> 位置特定不可
-            </span>
-          )}
-          {isStaleModel && (
-            <span
-              title={`現在のモデル (${currentModel}) とは別モデルで検出された指摘です`}
-              className="inline-flex items-center gap-0.5 rounded bg-muted px-1.5 py-0.5 text-muted-foreground"
-            >
-              by {detectedByModel}
-            </span>
-          )}
-        </div>
+      {focused && (
+        <ExpandedDetails parsed={parsed} currentModel={currentModel} />
       )}
     </div>
   );
