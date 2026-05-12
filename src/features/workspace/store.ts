@@ -72,6 +72,8 @@ interface WorkspaceState {
   activeWorkspaceName: string | null;
   error: string | null;
   pendingTrustPath: string | null;
+  /** In-memory only — not persisted. True while SampleTour should be shown. */
+  showSampleTour: boolean;
 
   initialize: () => Promise<void>;
   openWorkspace: (path: string) => Promise<void>;
@@ -84,6 +86,9 @@ interface WorkspaceState {
   updateProjectDefaults: (updates: Record<string, string>) => Promise<void>;
   showLauncher: () => void;
   clearError: () => void;
+  setShowSampleTour: (show: boolean) => void;
+  /** Seed sample workspace, open it, and flag tour to show. */
+  seedAndOpenSample: (language: string, aiPolicy: string) => Promise<void>;
 }
 
 export const useWorkspaceStore = create<WorkspaceState>()((set, get) => ({
@@ -93,6 +98,7 @@ export const useWorkspaceStore = create<WorkspaceState>()((set, get) => ({
   activeWorkspaceName: null,
   error: null,
   pendingTrustPath: null,
+  showSampleTour: false,
 
   initialize: async () => {
     try {
@@ -305,5 +311,30 @@ export const useWorkspaceStore = create<WorkspaceState>()((set, get) => ({
 
   clearError: () => {
     set({ error: null });
+  },
+
+  setShowSampleTour: (show: boolean) => {
+    set({ showSampleTour: show });
+  },
+
+  async seedAndOpenSample(language: string, aiPolicy: string) {
+    try {
+      set({ error: null });
+      const result = await invoke<{ path: string; projectId: string }>(
+        "seed_sample_workspace",
+        { language, aiPolicy },
+      );
+      // Add to trusted workspaces so the trust dialog is bypassed
+      const currentTrusted = get().globalSettings?.trustedWorkspaces ?? [];
+      if (!currentTrusted.includes(result.path)) {
+        await get().updateGlobalSettings({
+          trustedWorkspaces: [...currentTrusted, result.path],
+        });
+      }
+      await get().openWorkspace(result.path);
+      set({ showSampleTour: true });
+    } catch (e) {
+      set({ error: e instanceof Error ? e.message : String(e) });
+    }
   },
 }));

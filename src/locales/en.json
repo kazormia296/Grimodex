@@ -2161,5 +2161,39 @@
         "hint": "Try toggling the panels below"
       }
     }
+  },
+  "preflight": {
+    "step1Title": "Choose your language",
+    "step2Title": "Set your AI usage scope",
+    "step2Subtitle": "You can change your provider at any time later.",
+    "next": "Next",
+    "back": "← Back",
+    "skip": "Skip",
+    "skipConfirmTitle": "Skip the tutorial?",
+    "skipConfirmDesc": "You can restart it any time from Settings > About.",
+    "skipYes": "Skip",
+    "skipNo": "Cancel",
+    "startSample": "Start with Sample",
+    "starting": "Preparing…",
+    "nextProvider": "Next: Provider Setup →",
+    "stepOf": "{{current}} / {{total}}"
+  },
+  "aiPolicy": {
+    "full": {
+      "label": "Use all AI features",
+      "desc": "Full use of chat, writing assist, and consistency checks"
+    },
+    "assistOff": {
+      "label": "Chat and analysis only",
+      "desc": "Body auto-write is disabled"
+    },
+    "reviewOnly": {
+      "label": "Analysis only",
+      "desc": "Consistency checks only. No chat or auto-generation"
+    },
+    "off": {
+      "label": "No AI",
+      "desc": "Fully local writing mode. All AI features are off"
+    }
   }
 }

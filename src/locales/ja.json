@@ -2170,5 +2170,39 @@
         "hint": "パネルの表示を切り替えてみましょう"
       }
     }
+  },
+  "preflight": {
+    "step1Title": "言語を選んでください",
+    "step2Title": "AI の利用範囲を設定してください",
+    "step2Subtitle": "プロバイダは後からいつでも変更できます。",
+    "next": "次へ",
+    "back": "← 戻る",
+    "skip": "スキップ",
+    "skipConfirmTitle": "チュートリアルをスキップしますか？",
+    "skipConfirmDesc": "後からいつでも Settings > About から再実行できます。",
+    "skipYes": "スキップ",
+    "skipNo": "キャンセル",
+    "startSample": "サンプルで始める",
+    "starting": "準備中…",
+    "nextProvider": "次へ：プロバイダ設定 →",
+    "stepOf": "{{current}} / {{total}}"
+  },
+  "aiPolicy": {
+    "full": {
+      "label": "すべての AI 機能を使う",
+      "desc": "チャット・執筆補助・整合性チェックをフル活用します"
+    },
+    "assistOff": {
+      "label": "チャットと分析のみ",
+      "desc": "本文の自動生成（執筆補助）はオフにします"
+    },
+    "reviewOnly": {
+      "label": "分析のみ",
+      "desc": "整合性チェックのみ。チャット・自動生成なし"
+    },
+    "off": {
+      "label": "AI を使わない",
+      "desc": "完全ローカル執筆モード。AI 機能はすべてオフ"
+    }
   }
 }

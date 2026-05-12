@@ -4,6 +4,7 @@ import { openFolderDialog } from "@/lib/dialog";
 import { useWorkspaceStore } from "./store";
 import { TitleBar } from "@/components/TitleBar";
 import { GrimodexLogo } from "@/components/GrimodexLogo";
+import { PreflightCard } from "@/features/onboarding/PreflightCard";
 
 const LANGUAGE_OPTIONS = [
   { value: "ja", label: "日本語" },
@@ -11,6 +12,19 @@ const LANGUAGE_OPTIONS = [
 ];
 
 export function WelcomeScreen() {
+  const hasSeenWelcome = useWorkspaceStore(
+    (s) => s.globalSettings?.hasSeenWelcome,
+  );
+
+  // First-run: show interactive preflight instead of the folder-picker
+  if (!hasSeenWelcome) {
+    return <PreflightCard />;
+  }
+
+  return <ReturningUserScreen />;
+}
+
+function ReturningUserScreen() {
   const { t } = useTranslation();
   const requestOpenWorkspace = useWorkspaceStore((s) => s.requestOpenWorkspace);
   const error = useWorkspaceStore((s) => s.error);
