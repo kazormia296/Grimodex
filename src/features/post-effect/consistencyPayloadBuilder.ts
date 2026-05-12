@@ -31,7 +31,7 @@ import type { CodexPayloadEntry } from "./types";
 // Prompt versions (semver 定数)
 // プロンプトの本質的変更時に minor/major を上げる。
 // ---------------------------------------------------------------------------
-export const CONSISTENCY_PROMPT_VERSION = "consistency_v1.0";
+export const CONSISTENCY_PROMPT_VERSION = "consistency_v1.1";
 export const INTRA_CONSISTENCY_PROMPT_VERSION = "intra_scene_consistency_v1.0";
 
 // ---------------------------------------------------------------------------

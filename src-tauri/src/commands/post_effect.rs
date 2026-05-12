@@ -22,7 +22,7 @@ use crate::ai::{call_post_effect_api, get_api_key, read_ai_settings};
 // プロンプトバージョン定数 (プロンプトの本質的変更で minor/major を上げる)
 // ---------------------------------------------------------------------------
 
-const CONSISTENCY_PROMPT_VERSION: &str = "consistency_v1.0";
+const CONSISTENCY_PROMPT_VERSION: &str = "consistency_v1.1";
 const INTRA_PROMPT_VERSION: &str = "intra_scene_consistency_v1.0";
 
 // ---------------------------------------------------------------------------
@@ -42,6 +42,8 @@ Rules:
 - If a span does not contradict any CODEX entry, do not report it.
 - Include enough context in found_context (~30 characters before/after found_text) to locate the exact position in the scene.
 
+When source_field is "detail", set "detail_name" to the EXACT name string from the entry's detail_values list (e.g. "温度", "材質"). For "summary" or "content" set detail_name to null.
+
 Respond with a JSON object in this exact format (no markdown, no explanation, only the JSON):
 {
   "violations": [
@@ -49,7 +51,7 @@ Respond with a JSON object in this exact format (no markdown, no explanation, on
       "entry_id": "string",
       "source_field": "summary" | "content" | "detail",
       "source_excerpt": "string (quote from CODEX that is contradicted)",
-      "detail_definition_id": "string or null",
+      "detail_name": "string or null (the detail's name, only when source_field='detail')",
       "expected_value": "string (what CODEX says)",
       "found_text": "string (exact text in SCENE that contradicts)",
       "found_context": "string (~30 chars before+after found_text for positioning)",
@@ -189,6 +191,38 @@ fn dismiss_key_intra(scene_id: &str, a_text: &str, b_text: &str) -> String {
     let mut texts = [normalize_ws(a_text), normalize_ws(b_text)];
     texts.sort();
     sha256_hex(&format!("{}|{}|{}", scene_id, texts[0], texts[1]))
+}
+
+/// violation の `entry_id` が Codex payload の有効 id 集合に含まれるか判定する。
+///
+/// 空文字 or 未知 id は false を返す。LLM が hallucinate した entry_id を
+/// 検出して捨てるための判定（呼び出し側で warn ログを出す）。
+fn violation_has_valid_entry_id(v: &Value, valid_ids: &HashMap<String, String>) -> bool {
+    v["entry_id"]
+        .as_str()
+        .map(|id| !id.is_empty() && valid_ids.contains_key(id))
+        .unwrap_or(false)
+}
+
+/// violation の `detail_name` が対象 entry の detail_values の name に
+/// 実在するか判定する。
+///
+/// LLM プロンプト v1.1 から、detail_name は Codex payload の
+/// `detail_values[].name` から正確に引いてくるよう要求している。
+/// LLM が hallucinate した name (例: 存在しない detail 名や hyphen 違い) は
+/// false を返す。呼び出し側で None に丸める。
+fn detail_name_is_valid(
+    entry_id: &str,
+    detail_name: &str,
+    detail_names_by_entry: &HashMap<String, std::collections::HashSet<String>>,
+) -> bool {
+    if detail_name.is_empty() {
+        return false;
+    }
+    detail_names_by_entry
+        .get(entry_id)
+        .map(|names| names.contains(detail_name))
+        .unwrap_or(false)
 }
 
 /// `parsed` のルートが Object で、`key` が Array であることを検証して返す。
@@ -373,6 +407,129 @@ mod extract_array_field_tests {
             err.to_string().contains("ルートが Object ではありません"),
             "got: {err}"
         );
+    }
+}
+
+#[cfg(test)]
+mod violation_has_valid_entry_id_tests {
+    use super::violation_has_valid_entry_id;
+    use serde_json::json;
+    use std::collections::HashMap;
+
+    fn map(ids: &[(&str, &str)]) -> HashMap<String, String> {
+        ids.iter()
+            .map(|(id, name)| (id.to_string(), name.to_string()))
+            .collect()
+    }
+
+    #[test]
+    fn accepts_known_entry_id() {
+        let v = json!({ "entry_id": "abc-1" });
+        let m = map(&[("abc-1", "朱紐")]);
+        assert!(violation_has_valid_entry_id(&v, &m));
+    }
+
+    #[test]
+    fn rejects_unknown_entry_id() {
+        // LLM が架空の UUID を返したケース
+        let v = json!({ "entry_id": "ghost-uuid" });
+        let m = map(&[("abc-1", "朱紐")]);
+        assert!(!violation_has_valid_entry_id(&v, &m));
+    }
+
+    #[test]
+    fn rejects_empty_string() {
+        let v = json!({ "entry_id": "" });
+        let m = map(&[("abc-1", "朱紐")]);
+        assert!(!violation_has_valid_entry_id(&v, &m));
+    }
+
+    #[test]
+    fn rejects_null() {
+        let v = json!({ "entry_id": null });
+        let m = map(&[("abc-1", "朱紐")]);
+        assert!(!violation_has_valid_entry_id(&v, &m));
+    }
+
+    #[test]
+    fn rejects_missing_field() {
+        let v = json!({ "found_text": "..." });
+        let m = map(&[("abc-1", "朱紐")]);
+        assert!(!violation_has_valid_entry_id(&v, &m));
+    }
+
+    #[test]
+    fn rejects_non_string_value() {
+        // LLM が数値や object で entry_id を返す異常パターン
+        let v = json!({ "entry_id": 42 });
+        let m = map(&[("abc-1", "朱紐")]);
+        assert!(!violation_has_valid_entry_id(&v, &m));
+    }
+
+    #[test]
+    fn empty_codex_payload_rejects_all() {
+        // Codex 不在の scene (mention なし) で LLM が違反を返した場合は全部捨てる
+        let v = json!({ "entry_id": "abc-1" });
+        let m = map(&[]);
+        assert!(!violation_has_valid_entry_id(&v, &m));
+    }
+}
+
+#[cfg(test)]
+mod detail_name_is_valid_tests {
+    use super::detail_name_is_valid;
+    use std::collections::{HashMap, HashSet};
+
+    fn build(entry_id: &str, names: &[&str]) -> HashMap<String, HashSet<String>> {
+        let mut m = HashMap::new();
+        m.insert(
+            entry_id.to_string(),
+            names.iter().map(|s| s.to_string()).collect(),
+        );
+        m
+    }
+
+    #[test]
+    fn accepts_known_detail_name() {
+        let m = build("entry-1", &["温度", "材質"]);
+        assert!(detail_name_is_valid("entry-1", "温度", &m));
+        assert!(detail_name_is_valid("entry-1", "材質", &m));
+    }
+
+    #[test]
+    fn rejects_unknown_detail_name() {
+        // LLM が架空の detail 名を返したケース
+        let m = build("entry-1", &["温度", "材質"]);
+        assert!(!detail_name_is_valid("entry-1", "色", &m));
+    }
+
+    #[test]
+    fn rejects_empty_string() {
+        let m = build("entry-1", &["温度"]);
+        assert!(!detail_name_is_valid("entry-1", "", &m));
+    }
+
+    #[test]
+    fn rejects_unknown_entry_id() {
+        // entry_id 自体が不在ならどんな detail_name でも false
+        let m = build("entry-1", &["温度"]);
+        assert!(!detail_name_is_valid("ghost-entry", "温度", &m));
+    }
+
+    #[test]
+    fn rejects_when_entry_has_no_details() {
+        // entry に detail_values が無い場合（HashSet 空）
+        let m = build("entry-1", &[]);
+        assert!(!detail_name_is_valid("entry-1", "温度", &m));
+    }
+
+    #[test]
+    fn case_and_punctuation_strict() {
+        // 完全一致を要求する (NFKC や trim は意図的に入れない)
+        // LLM が変な揺らぎを出したら hallucination 扱い
+        let m = build("entry-1", &["温度"]);
+        assert!(!detail_name_is_valid("entry-1", "温度 ", &m));
+        assert!(!detail_name_is_valid("entry-1", "おんど", &m));
     }
 }
 
@@ -598,15 +755,62 @@ async fn process_consistency_scene(
         })
         .collect();
 
-    let mut seen_keys: std::collections::HashSet<String> = std::collections::HashSet::new();
-    let deduped: Vec<&Value> = violations
+    // entry_id → detail_values の name 集合。LLM が返した detail_name を
+    // この集合と照合して、hallucination を弾く。
+    let detail_names_by_entry: HashMap<String, std::collections::HashSet<String>> = codex_entries
         .iter()
+        .filter_map(|e| {
+            let id = e["id"].as_str()?.to_string();
+            let detail_values = e["detail_values"].as_array()?;
+            let names: std::collections::HashSet<String> = detail_values
+                .iter()
+                .filter_map(|dv| dv["name"].as_str().map(|s| s.to_string()))
+                .collect();
+            Some((id, names))
+        })
+        .collect();
+
+    // entry_id の検証: LLM が hallucinate した存在しない entry_id を捨てる。
+    // (silent に DB へ入れると entry_name が空の不格好な annotation になる)
+    let mut hallucinated: Vec<String> = Vec::new();
+    let validated: Vec<&Value> = violations
+        .iter()
+        .filter(|v| {
+            if violation_has_valid_entry_id(v, &name_map) {
+                return true;
+            }
+            let reason = v["entry_id"]
+                .as_str()
+                .filter(|s| !s.is_empty())
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| "(empty)".to_string());
+            hallucinated.push(reason);
+            false
+        })
+        .collect();
+    if !hallucinated.is_empty() {
+        tracing::warn!(
+            run_id = run_id,
+            scene_id = scene_id,
+            hallucinated_entry_ids = ?hallucinated,
+            valid_entry_ids = ?name_map.keys().collect::<Vec<_>>(),
+            "[post_effect] consistency: dropped violations with unknown entry_id"
+        );
+    }
+
+    let mut seen_keys: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let deduped: Vec<&Value> = validated
+        .iter()
+        .copied()
         .filter(|v| {
             let entry_id = v["entry_id"].as_str().unwrap_or("");
             let source_field = v["source_field"].as_str().unwrap_or("");
-            let detail_id = v["detail_definition_id"].as_str().unwrap_or("__none__");
+            // dedup キーには LLM が返した detail_name をそのまま使う。
+            // hallucination の検証/丸めは INSERT 直前で行う (同じ run で同じ
+            // 不正値を 2 回返すケースを 1 件に dedup させる挙動を意図)。
+            let detail_name = v["detail_name"].as_str().unwrap_or("__none__");
             let found_text = normalize_ws(v["found_text"].as_str().unwrap_or(""));
-            let key = format!("{entry_id}|{source_field}|{detail_id}|{found_text}");
+            let key = format!("{entry_id}|{source_field}|{detail_name}|{found_text}");
             seen_keys.insert(key)
         })
         .collect();
@@ -633,7 +837,31 @@ async fn process_consistency_scene(
                 let expected_value = violation["expected_value"].as_str().unwrap_or("");
                 let source_field = violation["source_field"].as_str().unwrap_or("content");
                 let source_excerpt = violation["source_excerpt"].as_str();
-                let detail_def_id = violation["detail_definition_id"].as_str();
+
+                // detail_name の検証: LLM が hallucinate した detail 名は捨てる。
+                // 不正値は warn ログを残しつつ None に丸めて annotation 自体は残す。
+                let raw_detail_name = violation["detail_name"].as_str();
+                let detail_name: Option<&str> = match raw_detail_name {
+                    Some("") => None,
+                    Some(name) => {
+                        if detail_name_is_valid(entry_id, name, &detail_names_by_entry) {
+                            Some(name)
+                        } else {
+                            tracing::warn!(
+                                run_id = run_id,
+                                scene_id = scene_id,
+                                entry_id = entry_id,
+                                hallucinated_detail_name = name,
+                                valid_detail_names = ?detail_names_by_entry
+                                    .get(entry_id)
+                                    .map(|s| s.iter().collect::<Vec<_>>()),
+                                "[post_effect] consistency: detail_name not in Codex; coerced to null"
+                            );
+                            None
+                        }
+                    }
+                    None => None,
+                };
 
                 let severity = match confidence {
                     "high" => "error",
@@ -659,7 +887,7 @@ async fn process_consistency_scene(
                 let content = format!(
                     "{}.{} と矛盾: {}",
                     entry_name,
-                    detail_def_id.unwrap_or(source_field),
+                    detail_name.unwrap_or(source_field),
                     found_text
                 );
                 let metadata = serde_json::json!({
@@ -668,7 +896,7 @@ async fn process_consistency_scene(
                         "entry_name": entry_name,
                         "source_field": source_field,
                         "source_excerpt": source_excerpt,
-                        "detail_definition_id": detail_def_id,
+                        "detail_name": detail_name,
                         "expected_value": expected_value,
                         "found_value": found_text,
                         "found_text": found_text,
