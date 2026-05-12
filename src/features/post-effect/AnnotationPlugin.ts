@@ -5,6 +5,15 @@ import { useAnnotationStore } from "./annotationStore";
 
 export const annotationKey = new PluginKey("peAnnotation");
 
+/**
+ * Meta key to force decoration rebuild. Dispatched when:
+ * - applyAnnotationsToEditor 経由で mark を貼り替えたとき
+ * - showAnnotations トグルが切り替わったとき (call site から dispatch)
+ *
+ * Comment 系の COMMENT_REBUILD_META と同じ規約。
+ */
+export const ANNOTATION_REBUILD_META = "annotationUpdate";
+
 function buildDecorations(doc: ProseMirrorNode): DecorationSet {
   const { showAnnotations } = useAnnotationStore.getState();
   if (!showAnnotations) return DecorationSet.empty;
@@ -51,7 +60,7 @@ export function createAnnotationPlugin(): Plugin {
         return buildDecorations(doc);
       },
       apply(tr, oldDecos, _oldState, newState) {
-        if (tr.docChanged || tr.getMeta("annotationUpdate") === true) {
+        if (tr.docChanged || tr.getMeta(ANNOTATION_REBUILD_META) === true) {
           return buildDecorations(newState.doc);
         }
         return oldDecos.map(tr.mapping, tr.doc);

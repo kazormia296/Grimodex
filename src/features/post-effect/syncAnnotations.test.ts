@@ -117,8 +117,8 @@ describe("saveAnnotationAnchors", () => {
     expect(mockInvoke).toHaveBeenCalledWith(
       "save_post_effect_annotations",
       expect.objectContaining({
-        project_id: "proj-1",
-        scene_id: "scene-1",
+        projectId: "proj-1",
+        sceneId: "scene-1",
         annotations: expect.arrayContaining([
           expect.objectContaining({ id: "ann-001" }),
         ]),

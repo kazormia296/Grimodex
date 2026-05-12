@@ -1,12 +1,46 @@
 // @vitest-environment happy-dom
 import { describe, it, expect, vi } from "vitest";
+import { Schema } from "@tiptap/pm/model";
 import { applyAnnotationsToEditor } from "./applyAnnotationsToEditor";
 import type { Editor } from "@tiptap/core";
 import type { PostEffectAnnotation } from "./types";
 
 // ---------------------------------------------------------------------------
-// Helpers
+// Real PM schema with the peAnnotation mark — covers the resolver logic that
+// `applyAnnotationsToEditor` now delegates to (`resolveAnnotationRange`).
 // ---------------------------------------------------------------------------
+
+const schema = new Schema({
+  nodes: {
+    doc: { content: "block+" },
+    paragraph: {
+      group: "block",
+      content: "inline*",
+      toDOM: () => ["p", 0],
+    },
+    text: { group: "inline" },
+  },
+  marks: {
+    peAnnotation: {
+      attrs: {
+        annotationId: { default: null },
+        category: { default: "consistency_anchor" },
+        severity: { default: "warning" },
+        status: { default: "open" },
+      },
+    },
+  },
+});
+
+function makeDoc(...paragraphs: string[]) {
+  return schema.node(
+    "doc",
+    null,
+    paragraphs.map((t) =>
+      schema.node("paragraph", null, t ? [schema.text(t)] : []),
+    ),
+  );
+}
 
 function makeAnnotation(
   overrides: Partial<PostEffectAnnotation> = {},
@@ -17,9 +51,9 @@ function makeAnnotation(
     runId: "run-1",
     anchorType: "scene_range",
     sceneId: "scene-1",
-    rangeStart: 5,
-    rangeEnd: 10,
-    textSnapshot: null,
+    rangeStart: 1,
+    rangeEnd: 4,
+    textSnapshot: "abc",
     category: "consistency_anchor",
     persona: null,
     severity: "warning",
@@ -34,7 +68,7 @@ function makeAnnotation(
   } as PostEffectAnnotation;
 }
 
-function makeMockEditor(docSize = 100) {
+function makeMockEditor(doc = makeDoc("abcdef")) {
   let commandCallback:
     | ((h: { tr: ReturnType<typeof makeMockTr> }) => boolean)
     | null = null;
@@ -49,16 +83,13 @@ function makeMockEditor(docSize = 100) {
   const editor = { chain: mockChain } as unknown as Editor;
 
   function makeMockTr() {
-    const mockMarkType = { create: vi.fn().mockReturnValue("MARK") };
+    const markCreate = vi.spyOn(schema.marks["peAnnotation"]!, "create");
     return {
       setMeta: vi.fn(),
-      doc: {
-        type: { schema: { marks: { peAnnotation: mockMarkType } } },
-        content: { size: docSize },
-      },
+      doc,
       removeMark: vi.fn(),
       addMark: vi.fn(),
-      mockMarkType,
+      markCreate,
     };
   }
 
@@ -100,14 +131,17 @@ describe("applyAnnotationsToEditor", () => {
   });
 
   it("clears existing marks when docSize > 2", () => {
-    const { editor, invokeCommand, makeMockTr } = makeMockEditor(50);
+    // <p>abcdef</p> → docSize = 8 (1 open + 6 chars + 1 close)
+    const { editor, invokeCommand, makeMockTr } = makeMockEditor(
+      makeDoc("abcdef"),
+    );
     applyAnnotationsToEditor(editor, []);
     const tr = makeMockTr();
     invokeCommand(tr);
     expect(tr.removeMark).toHaveBeenCalledWith(
       1,
-      49,
-      tr.doc.type.schema.marks.peAnnotation,
+      tr.doc.content.size - 1,
+      schema.marks["peAnnotation"],
     );
   });
 
@@ -122,12 +156,13 @@ describe("applyAnnotationsToEditor", () => {
     expect(tr.addMark).toHaveBeenCalledTimes(1);
   });
 
-  it("annotations with null rangeStart/rangeEnd are skipped", () => {
+  it("annotations with null textSnapshot AND mismatched PM range are skipped (orphans)", () => {
     const { editor, invokeCommand, makeMockTr } = makeMockEditor();
     applyAnnotationsToEditor(editor, [
       makeAnnotation({
         rangeStart: null as unknown as number,
         rangeEnd: null as unknown as number,
+        textSnapshot: null,
       }),
     ]);
     const tr = makeMockTr();
@@ -135,17 +170,32 @@ describe("applyAnnotationsToEditor", () => {
     expect(tr.addMark).not.toHaveBeenCalled();
   });
 
-  it("positions are clamped to docSize", () => {
-    const docSize = 8;
-    const { editor, invokeCommand, makeMockTr } = makeMockEditor(docSize);
+  it("annotations whose textSnapshot is not present in the doc are skipped", () => {
+    const { editor, invokeCommand, makeMockTr } = makeMockEditor(
+      makeDoc("hello world"),
+    );
     applyAnnotationsToEditor(editor, [
-      makeAnnotation({ rangeStart: 3, rangeEnd: 999 }),
+      makeAnnotation({ textSnapshot: "ghost", rangeStart: 0, rangeEnd: 5 }),
     ]);
     const tr = makeMockTr();
     invokeCommand(tr);
-    const [cf, ct] = tr.addMark.mock.calls[0] as [number, number, unknown];
-    expect(cf).toBe(3);
-    expect(ct).toBe(docSize);
+    expect(tr.addMark).not.toHaveBeenCalled();
+  });
+
+  it("resolves textSnapshot to real PM positions in the doc", () => {
+    // <p>abcdef</p>: "cd" is at flat index 2 → PM positions 3..5
+    const { editor, invokeCommand, makeMockTr } = makeMockEditor(
+      makeDoc("abcdef"),
+    );
+    applyAnnotationsToEditor(editor, [
+      makeAnnotation({ textSnapshot: "cd", rangeStart: 999, rangeEnd: 1001 }),
+    ]);
+    const tr = makeMockTr();
+    invokeCommand(tr);
+    expect(tr.addMark).toHaveBeenCalledTimes(1);
+    const [from, to] = tr.addMark.mock.calls[0] as [number, number, unknown];
+    expect(from).toBe(3);
+    expect(to).toBe(5);
   });
 
   it("mark is created with correct annotation attributes", () => {
@@ -153,6 +203,7 @@ describe("applyAnnotationsToEditor", () => {
     applyAnnotationsToEditor(editor, [
       makeAnnotation({
         id: "my-id",
+        textSnapshot: "abc",
         category: "consistency_anchor",
         severity: "error",
         status: "open",
@@ -160,7 +211,7 @@ describe("applyAnnotationsToEditor", () => {
     ]);
     const tr = makeMockTr();
     invokeCommand(tr);
-    expect(tr.mockMarkType.create).toHaveBeenCalledWith({
+    expect(tr.markCreate).toHaveBeenCalledWith({
       annotationId: "my-id",
       category: "consistency_anchor",
       severity: "error",
@@ -170,12 +221,12 @@ describe("applyAnnotationsToEditor", () => {
 
   it("null severity defaults to 'warning'", () => {
     const { editor, invokeCommand, makeMockTr } = makeMockEditor();
-    applyAnnotationsToEditor(editor, [makeAnnotation({ severity: null })]);
+    applyAnnotationsToEditor(editor, [
+      makeAnnotation({ textSnapshot: "abc", severity: null }),
+    ]);
     const tr = makeMockTr();
     invokeCommand(tr);
-    const attrs = tr.mockMarkType.create.mock.calls[0][0] as {
-      severity: string;
-    };
+    const attrs = tr.markCreate.mock.calls[0]?.[0] as { severity: string };
     expect(attrs.severity).toBe("warning");
   });
 });

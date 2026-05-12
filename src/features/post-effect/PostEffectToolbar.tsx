@@ -11,6 +11,7 @@ import {
 } from "./consistencyPayloadBuilder";
 import { runPostEffect, listAnnotationsForScene } from "./api";
 import { applyAnnotationsToEditor } from "./applyAnnotationsToEditor";
+import { ANNOTATION_REBUILD_META } from "./AnnotationPlugin";
 import type { Editor } from "@tiptap/core";
 import type { PostEffectAnnotation } from "./types";
 
@@ -163,7 +164,15 @@ export function PostEffectToolbar({ sceneId, editor }: Props) {
           showAnnotations ? "アノテーション非表示" : "アノテーション表示"
         }
         title={showAnnotations ? "アノテーション非表示" : "アノテーション表示"}
-        onClick={toggleShowAnnotations}
+        onClick={() => {
+          toggleShowAnnotations();
+          // Comment と同じ流儀: store トグル後に editor へ rebuild meta を投げて
+          // Decoration を即時再構築させる。
+          if (editor)
+            editor.view.dispatch(
+              editor.state.tr.setMeta(ANNOTATION_REBUILD_META, true),
+            );
+        }}
         className={cn(
           "flex h-7 w-7 items-center justify-center rounded",
           showAnnotations

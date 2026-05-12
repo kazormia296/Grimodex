@@ -1136,6 +1136,12 @@ export const postEffectAnnotations = sqliteTable(
     sceneId: text("scene_id").references(() => treeNodes.id, {
       onDelete: "cascade",
     }),
+    // NOTE: range_start/range_end の意味論はソースによってブレる:
+    // - Rust の consistency runner (post_effect.rs find_text_position) は
+    //   正規化済みプレーンテキストへの byte offset を書き込む
+    // - JS の saveAnnotationAnchors (syncAnnotations.ts) は PM position を書き込む
+    // 表示時は text_snapshot から PM 位置を再解決すること
+    // (post-effect/resolveAnnotationRange.ts)。range_* は曖昧マッチ時の近傍ヒントのみ。
     rangeStart: integer("range_start"),
     rangeEnd: integer("range_end"),
     textSnapshot: text("text_snapshot"),
