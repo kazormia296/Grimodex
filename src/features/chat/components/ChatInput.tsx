@@ -31,6 +31,8 @@ interface ChatInputProps {
     },
   ) => void;
   disabled?: boolean;
+  /** AIポリシーまたはプロバイダ未設定により送信不可の場合 true */
+  policyDisabled?: boolean;
   editorRef?: MutableRefObject<Editor | null>;
   onMentionPin?: (entryId: string) => void;
   onDetectedEntries?: (entryIds: string[]) => void;
@@ -93,6 +95,7 @@ export function restoreSceneMentionChips(
 export function ChatInput({
   onSend,
   disabled,
+  policyDisabled,
   editorRef,
   onMentionPin,
   onDetectedEntries,
@@ -592,7 +595,7 @@ export function ChatInput({
                 size="icon"
                 onClick={() => handleSendClick()}
                 onContextMenu={handleSendContextMenu}
-                disabled={!editor || !hasText}
+                disabled={!editor || !hasText || (policyDisabled ?? false)}
                 aria-label={t("chat.sendAriaLabel")}
                 title={t("chat.sendTitle")}
                 className="size-8 rounded-full active:scale-95 transition-transform duration-75"

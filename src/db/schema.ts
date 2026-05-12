@@ -27,6 +27,11 @@ export const projects = sqliteTable("projects", {
   })
     .notNull()
     .default("auto"),
+  aiPolicy: text("ai_policy")
+    .notNull()
+    .default(
+      '{"preset":"full","toggles":{"chat":true,"bodyWrite":true,"analysis":true}}',
+    ),
   createdAt: text("created_at")
     .notNull()
     .$defaultFn(() => new Date().toISOString()),

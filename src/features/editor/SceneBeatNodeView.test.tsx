@@ -1,5 +1,5 @@
 // @vitest-environment happy-dom
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach, vi } from "vitest";
 import { render, screen, waitFor, act } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useEditor, EditorContent } from "@tiptap/react";
@@ -12,6 +12,10 @@ import type { CodexEntry } from "@/features/codex/api";
 import { SceneBeatNode } from "./SceneBeatNode";
 import { GeneratedProseBlockNode } from "./GeneratedProseBlockNode";
 import { SceneBeatEditorContextProvider } from "./beat/SceneBeatEditorContext";
+
+vi.mock("@/features/ai-policy/useAiCapability", () => ({
+  useAiCapability: vi.fn(() => ({ state: "enabled" })),
+}));
 
 function makeCodex(partial: Partial<CodexEntry>): CodexEntry {
   return {

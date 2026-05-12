@@ -50,6 +50,7 @@ export async function updateProject(
       | "styleGuide"
       | "aiInstructions"
       | "outline"
+      | "aiPolicy"
     >
   >,
 ): Promise<Project | undefined> {

@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
-import { useAiSettingsStore } from "./store";
+import { useAiSettingsStore, selectProviderReadiness } from "./store";
 import type { AiSettings, AiModel } from "./types";
 
 vi.mock("./api", () => ({
@@ -12,7 +12,12 @@ vi.mock("./api", () => ({
   listAiModels: vi.fn(),
 }));
 
+vi.mock("./cliApi", () => ({
+  detectCliBinary: vi.fn(),
+}));
+
 import * as api from "./api";
+import * as cliApi from "./cliApi";
 
 const mockGetAiSettings = vi.mocked(api.getAiSettings);
 const mockSaveAiSettings = vi.mocked(api.saveAiSettings);
@@ -22,10 +27,13 @@ const mockDeleteApiKey = vi.mocked(api.deleteApiKey);
 const mockTestAiConnection = vi.mocked(api.testAiConnection);
 const mockListAiModels = vi.mocked(api.listAiModels);
 
+const mockDetectCliBinary = vi.mocked(cliApi.detectCliBinary);
+
 function resetStore() {
   useAiSettingsStore.setState({
     settings: null,
     hasApiKey: false,
+    cliBinaryAvailable: null,
     isTestingConnection: false,
     connectionTestResult: null,
     models: [],
@@ -184,5 +192,230 @@ describe("useAiSettingsStore", () => {
       await useAiSettingsStore.getState().loadModels();
       expect(mockListAiModels).not.toHaveBeenCalled();
     });
+  });
+
+  describe("loadSettings — CLI binary detection", () => {
+    const cliSettings: AiSettings = {
+      ...defaultSettings,
+      provider: "cli",
+      model: "claude",
+      cli: { kind: "claude" },
+    };
+
+    it("detects CLI binary when provider is cli", async () => {
+      mockGetAiSettings.mockResolvedValueOnce(cliSettings);
+      mockGetApiKey.mockResolvedValueOnce(null);
+      mockDetectCliBinary.mockResolvedValueOnce("/usr/local/bin/claude");
+
+      await useAiSettingsStore.getState().loadSettings();
+
+      expect(mockDetectCliBinary).toHaveBeenCalledWith("claude");
+      expect(useAiSettingsStore.getState().cliBinaryAvailable).toBe(true);
+    });
+
+    it("sets cliBinaryAvailable=false when binary not found", async () => {
+      mockGetAiSettings.mockResolvedValueOnce(cliSettings);
+      mockGetApiKey.mockResolvedValueOnce(null);
+      mockDetectCliBinary.mockResolvedValueOnce(null);
+
+      await useAiSettingsStore.getState().loadSettings();
+
+      expect(useAiSettingsStore.getState().cliBinaryAvailable).toBe(false);
+    });
+
+    it("does not call detectCliBinary for non-CLI providers", async () => {
+      mockGetAiSettings.mockResolvedValueOnce(defaultSettings);
+      mockGetApiKey.mockResolvedValueOnce("sk-key");
+
+      await useAiSettingsStore.getState().loadSettings();
+
+      expect(mockDetectCliBinary).not.toHaveBeenCalled();
+      expect(useAiSettingsStore.getState().cliBinaryAvailable).toBeNull();
+    });
+  });
+
+  describe("saveSettings — provider switch and CLI re-detection", () => {
+    const cliSettings: AiSettings = {
+      ...defaultSettings,
+      provider: "cli",
+      model: "claude",
+      cli: { kind: "claude" },
+    };
+
+    it("re-detects when switching to CLI provider", async () => {
+      mockSaveAiSettings.mockResolvedValueOnce(undefined);
+      mockDetectCliBinary.mockResolvedValueOnce("/usr/local/bin/claude");
+
+      await useAiSettingsStore.getState().saveSettings(cliSettings);
+
+      expect(mockDetectCliBinary).toHaveBeenCalledWith("claude");
+      expect(useAiSettingsStore.getState().cliBinaryAvailable).toBe(true);
+    });
+
+    it("re-detects when CLI kind changes", async () => {
+      useAiSettingsStore.setState({
+        settings: cliSettings,
+        cliBinaryAvailable: true,
+      });
+      const codexSettings: AiSettings = {
+        ...cliSettings,
+        cli: { kind: "codex" },
+      };
+      mockSaveAiSettings.mockResolvedValueOnce(undefined);
+      mockDetectCliBinary.mockResolvedValueOnce(null);
+
+      await useAiSettingsStore.getState().saveSettings(codexSettings);
+
+      expect(mockDetectCliBinary).toHaveBeenCalledWith("codex");
+      expect(useAiSettingsStore.getState().cliBinaryAvailable).toBe(false);
+    });
+
+    it("resets cliBinaryAvailable when switching away from CLI", async () => {
+      useAiSettingsStore.setState({
+        settings: cliSettings,
+        cliBinaryAvailable: true,
+      });
+      mockSaveAiSettings.mockResolvedValueOnce(undefined);
+
+      await useAiSettingsStore.getState().saveSettings(defaultSettings);
+
+      expect(mockDetectCliBinary).not.toHaveBeenCalled();
+      expect(useAiSettingsStore.getState().cliBinaryAvailable).toBeNull();
+    });
+  });
+});
+
+describe("selectProviderReadiness", () => {
+  it("returns pending when settings is null", () => {
+    useAiSettingsStore.setState({ settings: null });
+    expect(selectProviderReadiness(useAiSettingsStore.getState())).toBe(
+      "pending",
+    );
+  });
+
+  it("returns no-model when model is empty", () => {
+    useAiSettingsStore.setState({
+      settings: { ...defaultSettings, provider: "openrouter", model: "" },
+      hasApiKey: true,
+    });
+    expect(selectProviderReadiness(useAiSettingsStore.getState())).toBe(
+      "no-model",
+    );
+  });
+
+  it.each([
+    ["openrouter" as const],
+    ["openai" as const],
+    ["anthropic" as const],
+    ["ai-novelist" as const],
+  ])("%s with key → ready", (provider) => {
+    useAiSettingsStore.setState({
+      settings: { ...defaultSettings, provider, model: "m" },
+      hasApiKey: true,
+    });
+    expect(selectProviderReadiness(useAiSettingsStore.getState())).toBe(
+      "ready",
+    );
+  });
+
+  it.each([
+    ["openrouter" as const],
+    ["openai" as const],
+    ["anthropic" as const],
+    ["ai-novelist" as const],
+  ])("%s without key → no-provider", (provider) => {
+    useAiSettingsStore.setState({
+      settings: { ...defaultSettings, provider, model: "m" },
+      hasApiKey: false,
+    });
+    expect(selectProviderReadiness(useAiSettingsStore.getState())).toBe(
+      "no-provider",
+    );
+  });
+
+  it("openai-compatible with baseUrl → ready", () => {
+    useAiSettingsStore.setState({
+      settings: {
+        ...defaultSettings,
+        provider: "openai-compatible",
+        model: "m",
+        openaiCompatible: { baseUrl: "http://localhost" },
+      },
+    });
+    expect(selectProviderReadiness(useAiSettingsStore.getState())).toBe(
+      "ready",
+    );
+  });
+
+  it("openai-compatible without baseUrl → no-provider", () => {
+    useAiSettingsStore.setState({
+      settings: {
+        ...defaultSettings,
+        provider: "openai-compatible",
+        model: "m",
+        openaiCompatible: { baseUrl: "" },
+      },
+    });
+    expect(selectProviderReadiness(useAiSettingsStore.getState())).toBe(
+      "no-provider",
+    );
+  });
+
+  it("ollama with endpoint → ready", () => {
+    useAiSettingsStore.setState({
+      settings: {
+        ...defaultSettings,
+        provider: "ollama",
+        model: "llama3",
+        ollamaEndpoint: "http://localhost:11434",
+      },
+    });
+    expect(selectProviderReadiness(useAiSettingsStore.getState())).toBe(
+      "ready",
+    );
+  });
+
+  it("ollama without endpoint → no-provider", () => {
+    useAiSettingsStore.setState({
+      settings: {
+        ...defaultSettings,
+        provider: "ollama",
+        model: "llama3",
+        ollamaEndpoint: "",
+      },
+    });
+    expect(selectProviderReadiness(useAiSettingsStore.getState())).toBe(
+      "no-provider",
+    );
+  });
+
+  it("cli with cliBinaryAvailable=null → pending", () => {
+    useAiSettingsStore.setState({
+      settings: { ...defaultSettings, provider: "cli", model: "claude" },
+      cliBinaryAvailable: null,
+    });
+    expect(selectProviderReadiness(useAiSettingsStore.getState())).toBe(
+      "pending",
+    );
+  });
+
+  it("cli with cliBinaryAvailable=true → ready", () => {
+    useAiSettingsStore.setState({
+      settings: { ...defaultSettings, provider: "cli", model: "claude" },
+      cliBinaryAvailable: true,
+    });
+    expect(selectProviderReadiness(useAiSettingsStore.getState())).toBe(
+      "ready",
+    );
+  });
+
+  it("cli with cliBinaryAvailable=false → no-provider", () => {
+    useAiSettingsStore.setState({
+      settings: { ...defaultSettings, provider: "cli", model: "claude" },
+      cliBinaryAvailable: false,
+    });
+    expect(selectProviderReadiness(useAiSettingsStore.getState())).toBe(
+      "no-provider",
+    );
   });
 });

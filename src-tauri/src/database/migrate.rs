@@ -847,6 +847,15 @@ impl Database {
         // 著者が手書きする物語全体の outline を保持し、AI コンテキスト L2 に常時注入される。
         Self::add_column_if_missing(&conn, "projects", "outline", "TEXT")?;
 
+        // AI Policy: プロジェクト単位の AI 使用方針 (chat/bodyWrite/analysis トグル)。
+        // デフォルトは Full プリセット (全機能有効)。
+        Self::add_column_if_missing(
+            &conn,
+            "projects",
+            "ai_policy",
+            "TEXT NOT NULL DEFAULT '{\"preset\":\"full\",\"toggles\":{\"chat\":true,\"bodyWrite\":true,\"analysis\":true}}'",
+        )?;
+
         // Grid panel — Scene×Codex explicit pins (many-to-many).
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS scene_codex_pins (

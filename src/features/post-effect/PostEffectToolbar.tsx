@@ -4,6 +4,7 @@ import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { useAiSettingsStore } from "@/features/chat/store";
+import { useAiCapability } from "@/features/ai-policy/useAiCapability";
 import { useAnnotationStore } from "./annotationStore";
 import {
   buildConsistencyPayload,
@@ -58,6 +59,7 @@ function countOpenByOtherModel(
 
 export function PostEffectToolbar({ sceneId, editor }: Props) {
   const [running, setRunning] = useState(false);
+  const analysisCapability = useAiCapability("analysis");
 
   useEffect(() => {
     if (!useAiSettingsStore.getState().settings) {
@@ -144,8 +146,16 @@ export function PostEffectToolbar({ sceneId, editor }: Props) {
     <div className="flex items-center gap-1">
       <button
         aria-label="このシーンの整合性チェック"
-        title="このシーンの整合性チェック"
-        disabled={running}
+        title={
+          analysisCapability.state === "disabled"
+            ? analysisCapability.reason === "policy"
+              ? "AIポリシーにより無効"
+              : analysisCapability.reason === "no-model"
+                ? "AIモデルが未選択です"
+                : "AIが未設定です"
+            : "このシーンの整合性チェック"
+        }
+        disabled={running || analysisCapability.state !== "enabled"}
         onClick={run}
         className={cn(
           "flex h-7 w-7 items-center justify-center rounded text-muted-foreground",

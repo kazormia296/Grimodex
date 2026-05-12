@@ -15,6 +15,7 @@ import { useTranslation } from "react-i18next";
 import { useCodexStore } from "@/features/codex/codexStore";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { useAiSettingsStore } from "@/features/chat/store";
+import { useAiCapability } from "@/features/ai-policy/useAiCapability";
 import { AnimatedDropdown } from "@/components/ui/animated-dropdown";
 import type { BeatType } from "./SceneBeatNode";
 import { BEAT_TYPES } from "./SceneBeatNode";
@@ -65,7 +66,12 @@ export function SceneBeatNodeView({
   );
   const { state, generate } = useBeatGeneration(editor, beatId ?? "", sceneId);
   const generating = state.status === "generating";
-  const generateDisabled = !beatId || !sceneId || generating;
+  const bodyWriteCapability = useAiCapability("bodyWrite");
+  const generateDisabled =
+    !beatId ||
+    !sceneId ||
+    generating ||
+    bodyWriteCapability.state !== "enabled";
 
   const [showActionBar, setShowActionBar] = useState(false);
   const prevStatusRef = useRef(state.status);
@@ -101,11 +107,18 @@ export function SceneBeatNodeView({
     };
   }, [beatId]);
 
-  const generateTooltip = !sceneId
-    ? t("editor.beat.generateDisabledHint")
-    : generating
-      ? t("editor.beat.generating")
-      : t("editor.beat.generate");
+  const generateTooltip =
+    bodyWriteCapability.state === "disabled"
+      ? bodyWriteCapability.reason === "policy"
+        ? "AIポリシーにより無効"
+        : bodyWriteCapability.reason === "no-model"
+          ? "AIモデルが未選択です"
+          : "AIが未設定です"
+      : !sceneId
+        ? t("editor.beat.generateDisabledHint")
+        : generating
+          ? t("editor.beat.generating")
+          : t("editor.beat.generate");
 
   const allModels = useAiSettingsStore((s) => s.models);
   const loadModels = useAiSettingsStore((s) => s.loadModels);

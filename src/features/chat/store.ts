@@ -1,11 +1,14 @@
 import { create } from "zustand";
 import * as api from "./api";
+import { detectCliBinary } from "./cliApi";
 import type { AiSettings, AiModel, ConnectionTestResult } from "./types";
 import { DEFAULT_AI_SETTINGS } from "./types";
 
-interface AiSettingsState {
+export interface AiSettingsState {
   settings: AiSettings | null;
   hasApiKey: boolean;
+  /** CLI バイナリの検出結果。null = 未検出/CLI プロバイダ非選択。 */
+  cliBinaryAvailable: boolean | null;
   isTestingConnection: boolean;
   connectionTestResult: ConnectionTestResult | null;
   models: AiModel[];
@@ -22,6 +25,7 @@ interface AiSettingsState {
 export const useAiSettingsStore = create<AiSettingsState>()((set, get) => ({
   settings: null,
   hasApiKey: false,
+  cliBinaryAvailable: null,
   isTestingConnection: false,
   connectionTestResult: null,
   models: [],
@@ -30,15 +34,29 @@ export const useAiSettingsStore = create<AiSettingsState>()((set, get) => ({
   loadSettings: async () => {
     const settings = await api.getAiSettings();
     const key = await api.getApiKey(settings.provider);
-    set({
-      settings,
-      hasApiKey: key !== null,
-    });
+    let cliBinaryAvailable: boolean | null = null;
+    if (settings.provider === "cli") {
+      const path = await detectCliBinary(settings.cli?.kind ?? "claude");
+      cliBinaryAvailable = path !== null;
+    }
+    set({ settings, hasApiKey: key !== null, cliBinaryAvailable });
   },
 
   saveSettings: async (settings: AiSettings) => {
     await api.saveAiSettings(settings);
-    set({ settings });
+    const prev = get().settings;
+    let cliBinaryAvailable: boolean | null = get().cliBinaryAvailable;
+    if (settings.provider === "cli") {
+      const providerChanged = prev?.provider !== "cli";
+      const kindChanged = prev?.cli?.kind !== settings.cli?.kind;
+      if (providerChanged || kindChanged) {
+        const path = await detectCliBinary(settings.cli?.kind ?? "claude");
+        cliBinaryAvailable = path !== null;
+      }
+    } else {
+      cliBinaryAvailable = null;
+    }
+    set({ settings, cliBinaryAvailable });
   },
 
   saveApiKey: async (key: string) => {
@@ -103,3 +121,33 @@ export const useAiSettingsStore = create<AiSettingsState>()((set, get) => ({
 
 // Re-export default settings for use in components
 export { DEFAULT_AI_SETTINGS };
+
+export type ProviderReadiness =
+  | "pending"
+  | "ready"
+  | "no-provider"
+  | "no-model";
+
+/** AI プロバイダが実際に呼び出せる状態かを返す derived selector。
+ * policy 判定とは独立しており、`useAiCapability` 内で組み合わせて使う。 */
+export function selectProviderReadiness(s: AiSettingsState): ProviderReadiness {
+  const { settings, hasApiKey, cliBinaryAvailable } = s;
+  if (!settings) return "pending";
+  if (!settings.model) return "no-model";
+  switch (settings.provider) {
+    case "openrouter":
+    case "openai":
+    case "anthropic":
+    case "ai-novelist":
+      return hasApiKey ? "ready" : "no-provider";
+    case "openai-compatible":
+      return settings.openaiCompatible.baseUrl ? "ready" : "no-provider";
+    case "ollama":
+      return settings.ollamaEndpoint ? "ready" : "no-provider";
+    case "cli":
+      if (cliBinaryAvailable === null) return "pending";
+      return cliBinaryAvailable ? "ready" : "no-provider";
+    default:
+      return "no-provider";
+  }
+}

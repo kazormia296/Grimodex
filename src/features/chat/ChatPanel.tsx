@@ -23,6 +23,7 @@ import { SessionsPanel } from "./components/SessionsPanel";
 import { CodexPopover } from "@/features/editor/CodexPopover";
 import * as chatApi from "./chatApi";
 import { useAiSettingsStore } from "./store";
+import { useAiCapability } from "@/features/ai-policy/useAiCapability";
 import { normalizeModelId } from "@/features/attribution/AuthorshipMark";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { copyWithAttribution } from "@/lib/clipboardAttribution";
@@ -51,6 +52,7 @@ interface ContextMenuState {
 export function ChatPanel() {
   const { t } = useTranslation();
   const reduced = useReducedMotion();
+  const chatCapability = useAiCapability("chat");
   const messages = useChatStore((s) => s.messages);
   const isStreaming = useChatStore((s) => s.isStreaming);
   const error = useChatStore((s) => s.error);
@@ -693,6 +695,7 @@ export function ChatPanel() {
       <ChatInput
         onSend={handleSend}
         disabled={isStreaming}
+        policyDisabled={chatCapability.state !== "enabled"}
         editorRef={chatEditorRef}
         onMentionPin={(id) => handlePin(id, "codex")}
         onDetectedEntries={handleDetectedEntries}
