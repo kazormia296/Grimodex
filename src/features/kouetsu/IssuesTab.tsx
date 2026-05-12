@@ -1,9 +1,15 @@
 import { useState } from "react";
 import { ChevronRight } from "lucide-react";
+import { usePanelRef } from "react-resizable-panels";
 import { cn } from "@/lib/utils";
 import { useLintStore } from "@/features/lint/lintStore";
 import { useAnnotationStore } from "@/features/post-effect/annotationStore";
 import { useTreeStore } from "@/features/tree/treeStore";
+import {
+  ResizablePanelGroup,
+  ResizablePanel,
+  ResizableHandle,
+} from "@/components/ui/resizable";
 import { useKouetsuStore } from "./kouetsuStore";
 import { IssuesScopeBar } from "./IssuesScopeBar";
 import { LinterSection } from "./sections/LinterSection";
@@ -57,6 +63,8 @@ function SectionHeader({
 export function IssuesTab() {
   const [linterExpanded, setLinterExpanded] = useState(true);
   const [consistencyExpanded, setConsistencyExpanded] = useState(true);
+  const linterRef = usePanelRef();
+  const consistencyRef = usePanelRef();
 
   const scope = useKouetsuStore((s) => s.activeIssuesScope);
   const diagnosticCount = useLintStore((s) => s.diagnostics.length);
@@ -69,33 +77,78 @@ export function IssuesTab() {
           ?.filter((a) => a.status === "open").length ?? 0)
       : 0;
 
+  const handleLinterToggle = () => {
+    if (linterExpanded) {
+      linterRef.current?.collapse();
+    } else {
+      linterRef.current?.expand();
+    }
+  };
+
+  const handleConsistencyToggle = () => {
+    if (consistencyExpanded) {
+      consistencyRef.current?.collapse();
+    } else {
+      consistencyRef.current?.expand();
+    }
+  };
+
   return (
     <div className="flex h-full flex-col overflow-hidden">
       <IssuesScopeBar />
 
-      <SectionHeader
-        title="校正"
-        count={diagnosticCount}
-        expanded={linterExpanded}
-        onToggle={() => setLinterExpanded((v) => !v)}
-      />
-      {linterExpanded && (
-        <div className="min-h-0 flex-1 overflow-hidden">
-          <LinterSection />
-        </div>
-      )}
+      <ResizablePanelGroup
+        orientation="vertical"
+        className="flex-1 overflow-hidden"
+      >
+        <ResizablePanel
+          panelRef={linterRef}
+          collapsible
+          collapsedSize={32}
+          minSize="15%"
+          defaultSize="50%"
+          onResize={() => {
+            setLinterExpanded(!(linterRef.current?.isCollapsed() ?? false));
+          }}
+          className="flex flex-col overflow-hidden"
+        >
+          <SectionHeader
+            title="校正"
+            count={diagnosticCount}
+            expanded={linterExpanded}
+            onToggle={handleLinterToggle}
+          />
+          <div className="min-h-0 flex-1 overflow-hidden">
+            <LinterSection />
+          </div>
+        </ResizablePanel>
 
-      <SectionHeader
-        title="整合性"
-        count={consistencyCount}
-        expanded={consistencyExpanded}
-        onToggle={() => setConsistencyExpanded((v) => !v)}
-      />
-      {consistencyExpanded && (
-        <div className="min-h-0 flex-1 overflow-y-auto">
-          <ConsistencySection />
-        </div>
-      )}
+        <ResizableHandle horizontal withHandle />
+
+        <ResizablePanel
+          panelRef={consistencyRef}
+          collapsible
+          collapsedSize={32}
+          minSize="15%"
+          defaultSize="50%"
+          onResize={() => {
+            setConsistencyExpanded(
+              !(consistencyRef.current?.isCollapsed() ?? false),
+            );
+          }}
+          className="flex flex-col overflow-hidden"
+        >
+          <SectionHeader
+            title="整合性"
+            count={consistencyCount}
+            expanded={consistencyExpanded}
+            onToggle={handleConsistencyToggle}
+          />
+          <div className="min-h-0 flex-1 overflow-y-auto">
+            <ConsistencySection />
+          </div>
+        </ResizablePanel>
+      </ResizablePanelGroup>
     </div>
   );
 }
