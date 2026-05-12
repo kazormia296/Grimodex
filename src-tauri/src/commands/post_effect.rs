@@ -174,6 +174,42 @@ fn normalize_ws(s: &str) -> String {
     s.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
+/// dedupe / dismiss_key 用の強い正規化。
+/// 空白・句読点・記号を除去し ASCII 英字を小文字化する。
+///
+/// LLM の表現揺れを吸収するためのもの:
+/// - 「朱紐は乾いていた」と「朱紐は乾いていた。」を同一視
+/// - 「Sandwich」と「sandwich」を同一視
+/// - 全角/半角の混在は (現状の運用では入力経路が同じため) 別途対応不要
+fn strong_normalize(s: &str) -> String {
+    s.chars()
+        .filter(|c| !is_strippable_char(*c))
+        .flat_map(|c| c.to_lowercase())
+        .collect()
+}
+
+/// `strong_normalize` で除去すべき文字か判定する。
+/// 空白・改行・タブ・主要な日本語/英語の句読点・括弧類を除去対象とする。
+fn is_strippable_char(c: char) -> bool {
+    if c.is_whitespace() {
+        return true;
+    }
+    matches!(
+        c,
+        // 日本語句読点
+        '。' | '、' | '．' | '，' | '・' | '：' | '；'
+        | '！' | '？' | '〜' | '～' | '…' | '‥'
+        // 日本語括弧
+        | '「' | '」' | '『' | '』' | '（' | '）' | '【' | '】'
+        | '［' | '］' | '〈' | '〉' | '《' | '》' | '〔' | '〕'
+        | '｛' | '｝' | '“' | '”' | '‘' | '’'
+        // 英語句読点・記号
+        | '.' | ',' | ':' | ';' | '!' | '?' | '/' | '\\' | '|'
+        | '(' | ')' | '[' | ']' | '{' | '}' | '"' | '\'' | '`'
+        | '-' | '_'
+    )
+}
+
 /// SHA-256 ハッシュ (hex)。dismiss_key / dedupe key に使用。
 fn sha256_hex(input: &str) -> String {
     let mut hasher = Sha256::new();
@@ -181,14 +217,19 @@ fn sha256_hex(input: &str) -> String {
     hex::encode(hasher.finalize())
 }
 
-/// dismiss_key (consistency): hash(entry_id + "|" + normalize(found_text))
+/// dismiss_key (consistency): hash(entry_id + "|" + strong_normalize(found_text))
+///
+/// `strong_normalize` ベースに変更したことで以下の表現揺れが同一視される:
+/// - 句読点違い (「乾いていた」 vs 「乾いていた。」)
+/// - 空白差 (連続空白・前後空白)
+/// - 英字ケース差
 fn dismiss_key_consistency(entry_id: &str, found_text: &str) -> String {
-    sha256_hex(&format!("{}|{}", entry_id, normalize_ws(found_text)))
+    sha256_hex(&format!("{}|{}", entry_id, strong_normalize(found_text)))
 }
 
 /// dismiss_key (intra_scene): hash(scene_id + "|" + sorted found_texts joined)
 fn dismiss_key_intra(scene_id: &str, a_text: &str, b_text: &str) -> String {
-    let mut texts = [normalize_ws(a_text), normalize_ws(b_text)];
+    let mut texts = [strong_normalize(a_text), strong_normalize(b_text)];
     texts.sort();
     sha256_hex(&format!("{}|{}|{}", scene_id, texts[0], texts[1]))
 }
@@ -556,6 +597,117 @@ mod find_text_position_tests {
         let found_text = "けこ";
         let _ = find_text_position(scene, found_text, context);
     }
+
+    /// 同じ found_text が複数箇所にあるとき、context に最も近い位置を選ぶ (B4)
+    #[test]
+    fn picks_best_position_among_multiple_occurrences() {
+        // 「金色の髪」が 2 箇所。context は 2 箇所目の周辺を指している。
+        let scene =
+            "ある日、金色の髪の女性が現れた。それからしばらくして、舞台では金色の髪の歌手が歌っていた。";
+        let found_text = "金色の髪";
+        let context = "舞台では金色の髪の歌手";
+        let pos = find_text_position(scene, found_text, context).expect("should find");
+        // 2 箇所目の出現位置は context を完全包含するのでこちらが選ばれる
+        let expected_start = scene.find("舞台では金色の髪").unwrap() + "舞台では".len();
+        assert_eq!(pos.0, expected_start, "context が示す方の出現を選ぶべき");
+    }
+
+    /// found_text が見つからなければ None
+    #[test]
+    fn returns_none_when_text_not_found() {
+        let scene = "今日は良い天気だ。";
+        assert!(find_text_position(scene, "雪が降る", "").is_none());
+    }
+
+    /// context が空でも単一出現なら見つけられる
+    #[test]
+    fn handles_empty_context() {
+        let scene = "今日は良い天気だ。";
+        let pos = find_text_position(scene, "良い天気", "").expect("should find");
+        assert_eq!(&scene[pos.0..pos.1], "良い天気");
+    }
+}
+
+#[cfg(test)]
+mod strong_normalize_tests {
+    use super::strong_normalize;
+
+    #[test]
+    fn strips_japanese_punctuation() {
+        assert_eq!(strong_normalize("朱紐は乾いていた。"), "朱紐は乾いていた");
+        assert_eq!(strong_normalize("「朱紐」"), "朱紐");
+        assert_eq!(strong_normalize("乾いていた、冷たく。"), "乾いていた冷たく");
+    }
+
+    #[test]
+    fn strips_english_punctuation_and_lowercases() {
+        assert_eq!(strong_normalize("Hello, World!"), "helloworld");
+        assert_eq!(strong_normalize("It's a test."), "itsatest");
+    }
+
+    #[test]
+    fn strips_whitespace() {
+        assert_eq!(strong_normalize("  ab  c "), "abc");
+        assert_eq!(strong_normalize("ab\nc\td"), "abcd");
+        assert_eq!(strong_normalize("全角\u{3000}スペース"), "全角スペース");
+    }
+
+    #[test]
+    fn idempotent() {
+        let s = "朱紐は乾いていた。";
+        let once = strong_normalize(s);
+        let twice = strong_normalize(&once);
+        assert_eq!(once, twice);
+    }
+
+    #[test]
+    fn same_intent_different_punctuation_match() {
+        // dedup の主目的 — 句点ありなしを同一視
+        assert_eq!(
+            strong_normalize("朱紐は乾いていた。"),
+            strong_normalize("朱紐は乾いていた")
+        );
+        assert_eq!(
+            strong_normalize("「朱紐は乾いていた。」"),
+            strong_normalize("朱紐は乾いていた")
+        );
+    }
+}
+
+#[cfg(test)]
+mod merge_confidence_tests {
+    use super::merge_confidence;
+
+    #[test]
+    fn high_wins_over_medium() {
+        assert_eq!(merge_confidence("high", "medium"), "high");
+        assert_eq!(merge_confidence("medium", "high"), "high");
+    }
+
+    #[test]
+    fn medium_wins_over_low() {
+        assert_eq!(merge_confidence("medium", "low"), "medium");
+        assert_eq!(merge_confidence("low", "medium"), "medium");
+    }
+
+    #[test]
+    fn high_wins_over_low() {
+        assert_eq!(merge_confidence("high", "low"), "high");
+        assert_eq!(merge_confidence("low", "high"), "high");
+    }
+
+    #[test]
+    fn same_returns_old() {
+        // 同じランクなら old を保つ (createdAt 時刻保護)
+        assert_eq!(merge_confidence("high", "high"), "high");
+        assert_eq!(merge_confidence("medium", "medium"), "medium");
+    }
+
+    #[test]
+    fn unknown_treated_as_medium() {
+        assert_eq!(merge_confidence("garbage", "high"), "high");
+        assert_eq!(merge_confidence("garbage", "low"), "garbage");
+    }
 }
 
 /// `idx` を直下の char 境界に丸める（`is_char_boundary` が安定 API なので自前実装）。
@@ -585,6 +737,11 @@ fn ceil_char_boundary(s: &str, mut idx: usize) -> usize {
 /// `found_context` をシーン本文で緩めにマッチし、その window 内で
 /// `found_text` を locate する。文字単位のオフセットを返す。
 /// 失敗時は `None` (orphaned annotation として扱う)。
+///
+/// `found_text` が複数箇所に出現する場合は、各位置の周辺と `found_context`
+/// の一致度 (trigram 重なり + 完全包含ボーナス) をスコアリングして
+/// 最良の位置を選ぶ。これは「同じ表現が複数箇所にあるが LLM は特定の
+/// 1 箇所を指摘している」ケースで誤位置に annotation が貼られる事故を防ぐ。
 fn find_text_position(
     scene_text: &str,
     found_text: &str,
@@ -598,36 +755,75 @@ fn find_text_position(
         return None;
     }
 
-    // まず found_context でウィンドウを絞る
-    let search_region = if norm_ctx.is_empty() {
-        norm_scene.as_str()
-    } else {
-        // context に found_text が含まれるはずなので context の前後 50 字拡張
-        // (UTF-8 マルチバイトを切らないように char 境界へクランプする)
-        if let Some(ctx_pos) = norm_scene.find(norm_ctx.as_str()) {
-            let raw_start = ctx_pos.saturating_sub(50);
-            let raw_end = (ctx_pos + norm_ctx.len() + 50).min(norm_scene.len());
-            let start = floor_char_boundary(&norm_scene, raw_start);
-            let end = ceil_char_boundary(&norm_scene, raw_end);
-            &norm_scene[start..end]
-        } else {
-            norm_scene.as_str()
-        }
-    };
+    // found_text の全出現位置を列挙
+    let occurrences: Vec<usize> = norm_scene
+        .match_indices(norm_ft.as_str())
+        .map(|(i, _)| i)
+        .collect();
 
-    // ウィンドウ内で found_text を検索
-    let region_start = norm_scene.find(search_region).unwrap_or(0);
-
-    if let Some(rel_pos) = search_region.find(norm_ft.as_str()) {
-        let abs_start = region_start + rel_pos;
-        let abs_end = abs_start + norm_ft.len();
-        Some((abs_start, abs_end))
-    } else {
-        // フォールバック: 全文で検索
-        norm_scene
-            .find(norm_ft.as_str())
-            .map(|pos| (pos, pos + norm_ft.len()))
+    if occurrences.is_empty() {
+        return None;
     }
+
+    // 単一出現 or context なし: 最初 (=唯一) の位置を返す
+    if occurrences.len() == 1 || norm_ctx.is_empty() {
+        let pos = occurrences[0];
+        return Some((pos, pos + norm_ft.len()));
+    }
+
+    // 複数出現: 周辺ウィンドウと context の一致度でスコアリングし最良を選ぶ
+    let best_pos = occurrences
+        .iter()
+        .copied()
+        .max_by_key(|&pos| {
+            let window = scene_window_around(&norm_scene, pos, norm_ft.len(), norm_ctx.len());
+            score_context_match(window, &norm_ctx)
+        })
+        .unwrap_or(occurrences[0]);
+
+    Some((best_pos, best_pos + norm_ft.len()))
+}
+
+/// `pos` の前後 `radius` バイトの窓を char 境界でクランプして返す。
+fn scene_window_around(scene: &str, pos: usize, ft_len: usize, radius: usize) -> &str {
+    let raw_start = pos.saturating_sub(radius);
+    let raw_end = (pos + ft_len + radius).min(scene.len());
+    let start = floor_char_boundary(scene, raw_start);
+    let end = ceil_char_boundary(scene, raw_end);
+    &scene[start..end]
+}
+
+/// 出現位置周辺のウィンドウと `context` の一致度スコア。
+///
+/// - ウィンドウが context を完全包含 → 大ボーナス (1_000_000)
+/// - そうでなければ trigram 重なり数 (順序を多少考慮した粗い一致度)
+fn score_context_match(window: &str, context: &str) -> u32 {
+    if context.is_empty() {
+        return 0;
+    }
+    if window.contains(context) {
+        return 1_000_000;
+    }
+    let n = 3;
+    let ctx_chars: Vec<char> = context.chars().collect();
+    if ctx_chars.len() < n {
+        return 0;
+    }
+    let trigrams: std::collections::HashSet<String> = (0..=ctx_chars.len() - n)
+        .map(|i| ctx_chars[i..i + n].iter().collect::<String>())
+        .collect();
+    let win_chars: Vec<char> = window.chars().collect();
+    if win_chars.len() < n {
+        return 0;
+    }
+    let mut hits: u32 = 0;
+    for i in 0..=win_chars.len() - n {
+        let tg: String = win_chars[i..i + n].iter().collect();
+        if trigrams.contains(&tg) {
+            hits += 1;
+        }
+    }
+    hits
 }
 
 // ---------------------------------------------------------------------------
@@ -644,6 +840,72 @@ fn is_manually_dismissed(conn: &rusqlite::Connection, dismiss_key: &str) -> bool
         |_| Ok(()),
     )
     .is_ok()
+}
+
+/// confidence の優先順位 (high > medium > low) で重みを返す。
+fn confidence_rank(c: &str) -> u8 {
+    match c {
+        "high" => 3,
+        "low" => 1,
+        // medium またはその他は medium 扱い
+        _ => 2,
+    }
+}
+
+/// 2 つの confidence をマージする (max 採用)。
+/// 過去 run で high が出ていた指摘が、後続 run で medium になっても
+/// high のまま保持する (LLM の揺らぎで severity が下がるのを防ぐ)。
+fn merge_confidence<'a>(old: &'a str, new: &'a str) -> &'a str {
+    if confidence_rank(old) >= confidence_rank(new) {
+        old
+    } else {
+        new
+    }
+}
+
+/// `confidence` に対応する `severity` 値を返す。
+fn severity_from_confidence(confidence: &str) -> &'static str {
+    match confidence {
+        "high" => "error",
+        "low" => "suggestion",
+        _ => "warning",
+    }
+}
+
+/// 同 entry_id / 同 scene の open annotation で、range が `[new_start, new_end)`
+/// と重なるものを 1 件返す（複数あれば最初の 1 件）。重なる既存があれば
+/// in-place で UPDATE して LLM 揺らぎを吸収する。
+///
+/// orphaned (range_start == range_end) 同士は重なり判定対象外。
+fn find_overlapping_open_annotation(
+    conn: &rusqlite::Connection,
+    project_id: &str,
+    scene_id: &str,
+    entry_id: &str,
+    new_start: i64,
+    new_end: i64,
+) -> Option<(String, String)> {
+    if new_start == new_end {
+        return None; // orphaned な新規は merge 対象から外す
+    }
+    conn.query_row(
+        "SELECT id,
+                COALESCE(json_extract(metadata, '$.codex_ref.confidence'), 'medium') AS conf
+           FROM post_effect_annotations
+          WHERE project_id = ?
+            AND scene_id = ?
+            AND category = 'consistency_anchor'
+            AND status = 'open'
+            AND json_extract(metadata, '$.codex_ref.entry_id') = ?
+            AND range_end > range_start
+            AND range_start < ?
+            AND range_end > ?
+          ORDER BY created_at ASC
+          LIMIT 1",
+        params![project_id, scene_id, entry_id, new_end, new_start],
+        |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+    )
+    .ok()
 }
 
 // ---------------------------------------------------------------------------
@@ -809,7 +1071,7 @@ async fn process_consistency_scene(
             // hallucination の検証/丸めは INSERT 直前で行う (同じ run で同じ
             // 不正値を 2 回返すケースを 1 件に dedup させる挙動を意図)。
             let detail_name = v["detail_name"].as_str().unwrap_or("__none__");
-            let found_text = normalize_ws(v["found_text"].as_str().unwrap_or(""));
+            let found_text = strong_normalize(v["found_text"].as_str().unwrap_or(""));
             let key = format!("{entry_id}|{source_field}|{detail_name}|{found_text}");
             seen_keys.insert(key)
         })
@@ -863,12 +1125,6 @@ async fn process_consistency_scene(
                     None => None,
                 };
 
-                let severity = match confidence {
-                    "high" => "error",
-                    "low" => "suggestion",
-                    _ => "warning",
-                };
-
                 let dismiss_key = dismiss_key_consistency(entry_id, found_text);
                 let entry_name = name_map.get(entry_id).cloned().unwrap_or_default();
                 let initial_status = if is_manually_dismissed(conn, &dismiss_key) {
@@ -883,7 +1139,24 @@ async fn process_consistency_scene(
                         None => (0i64, 0i64, true),
                     };
 
-                let annotation_id = Uuid::new_v4().to_string();
+                // 既存 open annotation で range が重なるものを探す。
+                // ヒットすれば INSERT せず UPDATE (LLM の表現揺れを吸収)。
+                // 既存 dismissed/resolved は触らない (ユーザー判断を尊重)。
+                let existing = if initial_status == "open" {
+                    find_overlapping_open_annotation(
+                        conn, project_id, scene_id, entry_id, range_start, range_end,
+                    )
+                } else {
+                    None
+                };
+
+                // confidence は既存とのマージで max を採る (揺らぎで下がるのを防ぐ)
+                let merged_confidence: String = match &existing {
+                    Some((_, old_conf)) => merge_confidence(old_conf, confidence).to_string(),
+                    None => confidence.to_string(),
+                };
+                let severity = severity_from_confidence(&merged_confidence);
+
                 let content = format!(
                     "{}.{} と矛盾: {}",
                     entry_name,
@@ -901,43 +1174,78 @@ async fn process_consistency_scene(
                         "found_value": found_text,
                         "found_text": found_text,
                         "found_context": found_context,
-                        "confidence": confidence,
+                        "confidence": merged_confidence,
                         "llm_reason": reason,
                         "dismiss_key": dismiss_key,
                     },
                     "orphaned": orphaned,
                 });
 
-                conn.execute(
-                    "INSERT INTO post_effect_annotations
-                        (id, project_id, run_id, anchor_type, scene_id,
-                         range_start, range_end, text_snapshot,
-                         category, severity, content, author_role,
-                         status, metadata, created_at, updated_at)
-                     VALUES (?, ?, ?, 'scene_range', ?,
-                             ?, ?, ?,
-                             'consistency_anchor', ?, ?, 'ai',
-                             ?, ?, datetime('now'), datetime('now'))",
-                    params![
-                        annotation_id,
-                        project_id,
-                        run_id,
-                        scene_id,
-                        range_start,
-                        range_end,
-                        found_text,
-                        severity,
-                        content,
-                        initial_status,
-                        metadata.to_string(),
-                    ],
-                )?;
+                let emitted_id = if let Some((existing_id, _)) = existing {
+                    // 既存 annotation を in-place 更新
+                    conn.execute(
+                        "UPDATE post_effect_annotations
+                            SET run_id = ?,
+                                range_start = ?,
+                                range_end = ?,
+                                text_snapshot = ?,
+                                severity = ?,
+                                content = ?,
+                                metadata = ?,
+                                updated_at = datetime('now')
+                          WHERE id = ?",
+                        params![
+                            run_id,
+                            range_start,
+                            range_end,
+                            found_text,
+                            severity,
+                            content,
+                            metadata.to_string(),
+                            existing_id,
+                        ],
+                    )?;
+                    tracing::debug!(
+                        run_id = run_id,
+                        scene_id = scene_id,
+                        annotation_id = %existing_id,
+                        "[post_effect] consistency: merged into existing annotation"
+                    );
+                    existing_id
+                } else {
+                    let new_id = Uuid::new_v4().to_string();
+                    conn.execute(
+                        "INSERT INTO post_effect_annotations
+                            (id, project_id, run_id, anchor_type, scene_id,
+                             range_start, range_end, text_snapshot,
+                             category, severity, content, author_role,
+                             status, metadata, created_at, updated_at)
+                         VALUES (?, ?, ?, 'scene_range', ?,
+                                 ?, ?, ?,
+                                 'consistency_anchor', ?, ?, 'ai',
+                                 ?, ?, datetime('now'), datetime('now'))",
+                        params![
+                            new_id,
+                            project_id,
+                            run_id,
+                            scene_id,
+                            range_start,
+                            range_end,
+                            found_text,
+                            severity,
+                            content,
+                            initial_status,
+                            metadata.to_string(),
+                        ],
+                    )?;
+                    new_id
+                };
 
                 let _ = app.emit(
                     "post_effect:partial",
                     PartialEvent {
                         run_id,
-                        annotation_id: annotation_id.clone(),
+                        annotation_id: emitted_id,
                     },
                 );
                 count += 1;
@@ -1124,8 +1432,8 @@ async fn process_intra_scene(
     let deduped: Vec<&Value> = pairs
         .iter()
         .filter(|p| {
-            let a_t = normalize_ws(p["a"]["found_text"].as_str().unwrap_or(""));
-            let b_t = normalize_ws(p["b"]["found_text"].as_str().unwrap_or(""));
+            let a_t = strong_normalize(p["a"]["found_text"].as_str().unwrap_or(""));
+            let b_t = strong_normalize(p["b"]["found_text"].as_str().unwrap_or(""));
             let mut sorted = [a_t.clone(), b_t.clone()];
             sorted.sort();
             let key = format!("{}|{}", scene_id, sorted.join("|"));
