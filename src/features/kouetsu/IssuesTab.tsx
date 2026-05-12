@@ -67,7 +67,7 @@ export function IssuesTab() {
   return (
     <div className="flex h-full flex-col overflow-y-auto">
       <SectionHeader
-        title="Linter"
+        title="校正"
         count={diagnosticCount}
         expanded={linterExpanded}
         onToggle={() => setLinterExpanded((v) => !v)}

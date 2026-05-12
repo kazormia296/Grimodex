@@ -78,21 +78,21 @@ function LinterRulesTab() {
   return (
     <div className="flex flex-col gap-6 p-6 text-sm">
       <section>
-        <h3 className="mb-3 text-base font-semibold">Linter</h3>
+        <h3 className="mb-3 text-base font-semibold">校正</h3>
         <label className="flex items-center gap-2">
           <input
             type="checkbox"
             checked={effective.enabled}
             onChange={(e) => setLinterEnabled(e.target.checked)}
           />
-          Linter を有効にする
+          校正 を有効にする
         </label>
         <button
           type="button"
           onClick={() => {
             if (
               window.confirm(
-                "Linter 設定をすべてデフォルトに戻します。よろしいですか？",
+                "校正 設定をすべてデフォルトに戻します。よろしいですか？",
               )
             ) {
               resetAll();

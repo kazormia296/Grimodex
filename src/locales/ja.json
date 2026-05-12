@@ -1726,10 +1726,10 @@
       "requestForeshadow": "伏線を要請",
       "registerForeshadow": "伏線として登録",
       "designatePayoff": "回収先として指名",
-      "lintDisable": "選択範囲で Lint ルールを無効化",
-      "lintUnsetSpan": "Lint 無効化を解除（Span）",
-      "lintUnsetBlock": "Lint 無効化を解除（ブロック）",
-      "lintUnsetBoth": "Lint 無効化を解除（Span + ブロック）"
+      "lintDisable": "選択範囲で校正ルールを無効化",
+      "lintUnsetSpan": "校正無効化を解除（Span）",
+      "lintUnsetBlock": "校正無効化を解除（ブロック）",
+      "lintUnsetBoth": "校正無効化を解除（Span + ブロック）"
     },
     "find": {
       "placeholder": "検索…",
