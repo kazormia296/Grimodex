@@ -10,6 +10,9 @@ import { SettingRow } from "../components/SettingRow";
 import { SettingTextarea } from "../components/SettingTextarea";
 import { usePhaseStore } from "@/features/codex/phaseStore";
 import type { PhaseResolutionMode } from "@/features/codex/phaseResolver";
+import { parseAiPolicy, serializeAiPolicy } from "@/features/ai-policy/parse";
+import { expandPreset, inferPreset } from "@/features/ai-policy/preset";
+import type { AiFeature, AiPolicyPreset } from "@/features/ai-policy/types";
 
 const LANGUAGE_OPTIONS = [
   { value: "ja", label: "日本語" },
@@ -101,6 +104,23 @@ export function ProjectCategory() {
       </div>
     );
   }
+
+  const currentPolicy = parseAiPolicy(project.aiPolicy);
+
+  const handlePresetChange = (preset: AiPolicyPreset) => {
+    if (preset === "custom") return;
+    const toggles = expandPreset(preset);
+    updateField("aiPolicy", serializeAiPolicy({ preset, toggles }));
+  };
+
+  const handleToggleChange = (feature: AiFeature, checked: boolean) => {
+    const newToggles = { ...currentPolicy.toggles, [feature]: checked };
+    const newPreset = inferPreset(newToggles);
+    updateField(
+      "aiPolicy",
+      serializeAiPolicy({ preset: newPreset, toggles: newToggles }),
+    );
+  };
 
   return (
     <div className="p-6">
@@ -277,6 +297,88 @@ export function ProjectCategory() {
               </option>
             ))}
           </select>
+        </SettingRow>
+      </SettingSection>
+
+      <SettingSection title={t("settings.project.aiPolicy", "AI使用ポリシー")}>
+        <SettingRow
+          label={t("settings.project.aiPolicyPreset", "プリセット")}
+          description={t(
+            "settings.project.aiPolicyPresetDesc",
+            "AI機能の使用範囲を一括設定します。個別トグルを変更するとカスタムになります。",
+          )}
+        >
+          <select
+            value={currentPolicy.preset}
+            onChange={(e) =>
+              handlePresetChange(e.target.value as AiPolicyPreset)
+            }
+            className="rounded-md border border-input bg-background px-2 py-1 text-sm focus:outline-none"
+          >
+            <option value="full">
+              {t("settings.project.aiPolicyFull", "Full — すべて有効")}
+            </option>
+            <option value="assist-off">
+              {t(
+                "settings.project.aiPolicyAssistOff",
+                "Assist-off — 本文書き込みを除外",
+              )}
+            </option>
+            <option value="review-only">
+              {t(
+                "settings.project.aiPolicyReviewOnly",
+                "Review-only — 分析のみ",
+              )}
+            </option>
+            <option value="off">
+              {t("settings.project.aiPolicyOff", "Off — すべて無効")}
+            </option>
+            <option value="custom" disabled>
+              {t("settings.project.aiPolicyCustom", "カスタム")}
+            </option>
+          </select>
+        </SettingRow>
+        <SettingRow
+          label={t("settings.project.aiPolicyChat", "チャット")}
+          description={t(
+            "settings.project.aiPolicyChatDesc",
+            "チャットパネル・Agent・CLI 連携",
+          )}
+        >
+          <input
+            type="checkbox"
+            checked={currentPolicy.toggles.chat}
+            onChange={(e) => handleToggleChange("chat", e.target.checked)}
+            className="h-4 w-4 cursor-pointer rounded border-input"
+          />
+        </SettingRow>
+        <SettingRow
+          label={t("settings.project.aiPolicyBodyWrite", "本文書き込み")}
+          description={t(
+            "settings.project.aiPolicyBodyWriteDesc",
+            "インライン AI・Beat 生成",
+          )}
+        >
+          <input
+            type="checkbox"
+            checked={currentPolicy.toggles.bodyWrite}
+            onChange={(e) => handleToggleChange("bodyWrite", e.target.checked)}
+            className="h-4 w-4 cursor-pointer rounded border-input"
+          />
+        </SettingRow>
+        <SettingRow
+          label={t("settings.project.aiPolicyAnalysis", "分析")}
+          description={t(
+            "settings.project.aiPolicyAnalysisDesc",
+            "整合性チェック・伏線 AI",
+          )}
+        >
+          <input
+            type="checkbox"
+            checked={currentPolicy.toggles.analysis}
+            onChange={(e) => handleToggleChange("analysis", e.target.checked)}
+            className="h-4 w-4 cursor-pointer rounded border-input"
+          />
         </SettingRow>
       </SettingSection>
 
