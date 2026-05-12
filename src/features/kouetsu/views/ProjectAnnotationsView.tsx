@@ -1,14 +1,24 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { AlertTriangle, BookOpen, Info, Loader2, XCircle } from "lucide-react";
+import {
+  AlertTriangle,
+  BookOpen,
+  ChevronDown,
+  Info,
+  Loader2,
+  XCircle,
+} from "lucide-react";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { useAiSettingsStore } from "@/features/chat/store";
+import { useAiCapability } from "@/features/ai-policy/useAiCapability";
 import { useAnnotationStore } from "@/features/post-effect/annotationStore";
 import { useEditorStore } from "@/features/editor/editorStore";
 import {
   buildMultiPayload,
+  getSceneIdsForScope,
   CONSISTENCY_PROMPT_VERSION,
+  INTRA_CONSISTENCY_PROMPT_VERSION,
 } from "@/features/post-effect/consistencyPayloadBuilder";
 import {
   listAnnotationsForProject,
@@ -23,8 +33,15 @@ import {
   ContrastRow,
   ExpandedDetails,
 } from "@/features/post-effect/AnnotationDetails";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import type {
   PostEffectAnnotation,
+  PostEffectDoneEvent,
   PostEffectSeverity,
 } from "@/features/post-effect/types";
 import { useKouetsuStore } from "@/features/kouetsu/kouetsuStore";
@@ -36,10 +53,15 @@ const SEVERITY_ICONS: Record<PostEffectSeverity, React.ReactNode> = {
   info: <Info size={13} className="text-muted-foreground shrink-0" />,
 };
 
+type RunOutcome =
+  | { kind: "ok"; effect: "consistency" | "intra"; e: PostEffectDoneEvent }
+  | { kind: "err"; effect: "consistency" | "intra"; error: string };
+
 export function ProjectAnnotationsView() {
   const [annotations, setAnnotations] = useState<PostEffectAnnotation[]>([]);
   const [loading, setLoading] = useState(false);
   const [runningAll, setRunningAll] = useState(false);
+  const analysisCapability = useAiCapability("analysis");
 
   const projectId = useTreeStore((s) => s.projectId);
   const scenes = useTreeStore((s) => s.scenes);
@@ -65,79 +87,175 @@ export function ProjectAnnotationsView() {
     }
   }, []);
 
-  const runAll = useCallback(async () => {
-    if (runningAll) return;
-    const model =
-      useAiSettingsStore.getState().settings?.model ?? "gpt-4o-mini";
-    const sceneId = useTreeStore.getState().activeSceneId;
-    setRunningAll(true);
-    try {
-      const payload = await buildMultiPayload(
-        projectId,
-        "project",
-        null,
-        model,
-        "consistency",
-      );
-      if (payload.scenes.length === 0) {
-        setRunningAll(false);
-        return;
+  /** 全完了後の共通後処理: editor反映 + プロジェクト一覧再取得 */
+  const afterRunAll = useCallback(
+    async (activeSceneId: string | null) => {
+      if (activeSceneId) {
+        const resp = await listAnnotationsForScene({
+          projectId,
+          sceneId: activeSceneId,
+        });
+        storeSetAnnotations(activeSceneId, resp.annotations);
+        const editor = useEditorStore.getState().editor;
+        if (editor) applyAnnotationsToEditor(editor, resp.annotations);
       }
-      await runPostEffectMulti(
-        {
-          project_id: projectId,
-          effect_type: "consistency",
-          scope_type: "project",
-          scope_target_id: null,
-          model,
-          prompt_version: CONSISTENCY_PROMPT_VERSION,
-          input_hash: payload.inputHash,
-          scenes: payload.scenes,
-        },
-        {
-          onDone: async (e) => {
-            if (sceneId) {
-              const resp = await listAnnotationsForScene({
-                projectId,
-                sceneId,
-              });
-              storeSetAnnotations(sceneId, resp.annotations);
-              const editor = useEditorStore.getState().editor;
-              if (editor) applyAnnotationsToEditor(editor, resp.annotations);
-            }
-            const fresh = await listAnnotationsForProject({
-              projectId,
-              status: "open",
+      const fresh = await listAnnotationsForProject({
+        projectId,
+        status: "open",
+      });
+      setAnnotations(fresh.annotations);
+    },
+    [projectId, storeSetAnnotations],
+  );
+
+  const runMulti = useCallback(
+    async (kind: "consistency" | "intra" | "both") => {
+      if (runningAll) return;
+      // シーンが無いプロジェクトは静かに終了 (旧 runAll と同じ挙動)
+      const { nodes } = useTreeStore.getState();
+      if (getSceneIdsForScope(nodes, "project", null).length === 0) return;
+      const model =
+        useAiSettingsStore.getState().settings?.model ?? "gpt-4o-mini";
+      const activeSceneId = useTreeStore.getState().activeSceneId;
+      setRunningAll(true);
+
+      try {
+        // runPostEffectMulti は starter() 完了で即 resolve するため、terminal を
+        // 待つには手動 Promise を組む。onError も resolve して Promise.all が
+        // 片方失敗で全体 reject されないようにする。
+        function startOneMulti(
+          effect: "consistency" | "intra",
+        ): Promise<RunOutcome> {
+          return new Promise((resolve) => {
+            const effectType =
+              effect === "consistency"
+                ? ("consistency" as const)
+                : ("intra_scene_consistency" as const);
+            const promptVersion =
+              effect === "consistency"
+                ? CONSISTENCY_PROMPT_VERSION
+                : INTRA_CONSISTENCY_PROMPT_VERSION;
+            buildMultiPayload(projectId, "project", null, model, effectType)
+              .then((payload) => {
+                if (payload.scenes.length === 0) {
+                  resolve({
+                    kind: "ok",
+                    effect,
+                    e: { run_id: "", annotation_count: 0, from_cache: false },
+                  });
+                  return;
+                }
+                runPostEffectMulti(
+                  {
+                    project_id: projectId,
+                    effect_type: effectType,
+                    scope_type: "project",
+                    scope_target_id: null,
+                    model,
+                    prompt_version: promptVersion,
+                    input_hash: payload.inputHash,
+                    scenes: payload.scenes,
+                  },
+                  {
+                    onDone: (e) => resolve({ kind: "ok", effect, e }),
+                    onError: (e) =>
+                      resolve({ kind: "err", effect, error: e.error }),
+                  },
+                ).catch((err) =>
+                  resolve({ kind: "err", effect, error: String(err) }),
+                );
+              })
+              .catch((err) =>
+                resolve({ kind: "err", effect, error: String(err) }),
+              );
+          });
+        }
+
+        if (kind === "both") {
+          const [resA, resB] = await Promise.all([
+            startOneMulti("consistency"),
+            startOneMulti("intra"),
+          ]);
+          await afterRunAll(activeSceneId);
+          setRunningAll(false);
+
+          const errors: string[] = [];
+          if (resA.kind === "err") errors.push(`Codex: ${resA.error}`);
+          if (resB.kind === "err") errors.push(`シーン内: ${resB.error}`);
+
+          if (errors.length === 2) {
+            toast.error("全シーン整合性チェックに失敗しました", {
+              description: errors.join(" / "),
             });
-            setAnnotations(fresh.annotations);
-            setRunningAll(false);
-            if (e.from_cache) {
+            return;
+          }
+          if (errors.length === 1) {
+            const label = resA.kind === "err" ? "Codex整合性" : "シーン内矛盾";
+            toast.error(`全シーン整合性チェック (${label}) に失敗しました`, {
+              description: errors[0],
+            });
+          } else {
+            const bothCache =
+              resA.kind === "ok" &&
+              resB.kind === "ok" &&
+              resA.e.from_cache === true &&
+              resB.e.from_cache === true;
+            const totalCount =
+              (resA.kind === "ok" ? resA.e.annotation_count : 0) +
+              (resB.kind === "ok" ? resB.e.annotation_count : 0);
+            const consCount = resA.kind === "ok" ? resA.e.annotation_count : 0;
+            const intraCount = resB.kind === "ok" ? resB.e.annotation_count : 0;
+
+            if (bothCache) {
               toast.info("前回と同じ内容のためキャッシュから読み込みました", {
                 description: "AI には送信していません",
               });
-            } else if (e.annotation_count === 0) {
+            } else if (totalCount === 0) {
               toast.success("全シーンで矛盾は見つかりませんでした");
             } else {
-              toast.success(`${e.annotation_count} 件の矛盾候補を検出しました`);
+              toast.success(`${totalCount} 件の矛盾候補を検出しました`, {
+                description: `Codex: ${consCount}件 / シーン内: ${intraCount}件`,
+              });
             }
-          },
-          onError: (e) => {
-            console.error("post-effect multi error", e.error);
-            setRunningAll(false);
-            toast.error("全シーン整合性チェックに失敗しました", {
-              description: e.error,
+          }
+        } else {
+          // consistency または intra 単独
+          const res = await startOneMulti(kind);
+          await afterRunAll(activeSceneId);
+          setRunningAll(false);
+
+          if (res.kind === "err") {
+            const label =
+              kind === "consistency" ? "Codex整合性" : "シーン内矛盾";
+            toast.error(`全シーン${label}チェックに失敗しました`, {
+              description: res.error,
             });
-          },
-        },
-      );
-    } catch (e) {
-      console.error("post-effect multi launch error", e);
-      setRunningAll(false);
-      toast.error("全シーン整合性チェックを起動できませんでした", {
-        description: e instanceof Error ? e.message : String(e),
-      });
-    }
-  }, [runningAll, projectId, storeSetAnnotations]);
+            return;
+          }
+          if (res.e.from_cache) {
+            toast.info("前回と同じ内容のためキャッシュから読み込みました", {
+              description: "AI には送信していません",
+            });
+          } else if (res.e.annotation_count === 0) {
+            const label =
+              kind === "consistency" ? "Codex整合性" : "シーン内矛盾";
+            toast.success(`全シーンで${label}の問題は見つかりませんでした`);
+          } else {
+            toast.success(
+              `${res.e.annotation_count} 件の矛盾候補を検出しました`,
+            );
+          }
+        }
+      } catch (e) {
+        console.error("post-effect multi launch error", e);
+        setRunningAll(false);
+        toast.error("全シーン整合性チェックを起動できませんでした", {
+          description: e instanceof Error ? e.message : String(e),
+        });
+      }
+    },
+    [runningAll, projectId, afterRunAll],
+  );
 
   // ---- grouping ----
   type Group = {
@@ -211,24 +329,44 @@ export function ProjectAnnotationsView() {
             </button>
           </div>
         </div>
-        <button
-          aria-label="全シーンの整合性チェックを実行"
-          title="全シーンの整合性チェックを実行"
-          disabled={runningAll}
-          onClick={runAll}
-          className={cn(
-            "flex items-center gap-1 rounded px-2 py-0.5 text-xs",
-            "text-muted-foreground hover:bg-accent hover:text-accent-foreground",
-            "disabled:cursor-not-allowed disabled:opacity-50",
-          )}
-        >
-          {runningAll ? (
-            <Loader2 size={12} className="animate-spin" />
-          ) : (
-            <BookOpen size={12} />
-          )}
-          <span>実行</span>
-        </button>
+        <DropdownMenu>
+          <DropdownMenuTrigger
+            disabled={runningAll || analysisCapability.state !== "enabled"}
+            title={
+              analysisCapability.state === "disabled"
+                ? analysisCapability.reason === "policy"
+                  ? "AIポリシーにより無効"
+                  : analysisCapability.reason === "no-model"
+                    ? "AIモデルが未選択です"
+                    : "AIが未設定です"
+                : "全シーンの整合性チェックを実行"
+            }
+            className={cn(
+              "flex items-center gap-1 rounded px-2 py-0.5 text-xs",
+              "text-muted-foreground hover:bg-accent hover:text-accent-foreground",
+              "disabled:cursor-not-allowed disabled:opacity-50",
+            )}
+          >
+            {runningAll ? (
+              <Loader2 size={12} className="animate-spin" />
+            ) : (
+              <BookOpen size={12} />
+            )}
+            <span>実行</span>
+            <ChevronDown size={10} />
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end" className="min-w-[140px]">
+            <DropdownMenuItem onSelect={() => void runMulti("consistency")}>
+              Codex整合性
+            </DropdownMenuItem>
+            <DropdownMenuItem onSelect={() => void runMulti("intra")}>
+              シーン内矛盾
+            </DropdownMenuItem>
+            <DropdownMenuItem onSelect={() => void runMulti("both")}>
+              両方実行
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
       </div>
 
       {loading ? (
