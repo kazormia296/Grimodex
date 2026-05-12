@@ -81,6 +81,19 @@ export async function listAnnotationsForScene(params: {
   });
 }
 
+export async function listAnnotationsForProject(params: {
+  projectId: string;
+  status?: PostEffectStatus;
+}): Promise<{ annotations: PostEffectAnnotation[] }> {
+  return invoke<{ annotations: PostEffectAnnotation[] }>(
+    "list_annotations_for_project",
+    {
+      projectId: params.projectId,
+      status: params.status ?? null,
+    },
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Status updates
 // ---------------------------------------------------------------------------

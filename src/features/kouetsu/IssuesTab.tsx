@@ -4,6 +4,8 @@ import { cn } from "@/lib/utils";
 import { useLintStore } from "@/features/lint/lintStore";
 import { useAnnotationStore } from "@/features/post-effect/annotationStore";
 import { useTreeStore } from "@/features/tree/treeStore";
+import { useKouetsuStore } from "./kouetsuStore";
+import { IssuesScopeBar } from "./IssuesScopeBar";
 import { LinterSection } from "./sections/LinterSection";
 import { ConsistencySection } from "./sections/ConsistencySection";
 
@@ -24,7 +26,7 @@ function SectionHeader({
     <button
       type="button"
       onClick={onToggle}
-      className="flex w-full items-center gap-1.5 border-b border-border bg-muted/20 px-3 py-1.5 text-left text-xs font-medium hover:bg-muted/40"
+      className="flex w-full shrink-0 items-center gap-1.5 border-b border-border bg-muted/20 px-3 py-1.5 text-left text-xs font-medium hover:bg-muted/40"
     >
       <ChevronRight
         size={12}
@@ -56,16 +58,21 @@ export function IssuesTab() {
   const [linterExpanded, setLinterExpanded] = useState(true);
   const [consistencyExpanded, setConsistencyExpanded] = useState(true);
 
+  const scope = useKouetsuStore((s) => s.activeIssuesScope);
   const diagnosticCount = useLintStore((s) => s.diagnostics.length);
   const activeSceneId = useTreeStore((s) => s.activeSceneId);
   const annotationsByScene = useAnnotationStore((s) => s.annotationsByScene);
-  const consistencyCount = activeSceneId
-    ? (annotationsByScene.get(activeSceneId)?.filter((a) => a.status === "open")
-        .length ?? 0)
-    : 0;
+  const consistencyCount =
+    scope === "current" && activeSceneId
+      ? (annotationsByScene
+          .get(activeSceneId)
+          ?.filter((a) => a.status === "open").length ?? 0)
+      : 0;
 
   return (
-    <div className="flex h-full flex-col overflow-y-auto">
+    <div className="flex h-full flex-col overflow-hidden">
+      <IssuesScopeBar />
+
       <SectionHeader
         title="校正"
         count={diagnosticCount}
@@ -73,7 +80,7 @@ export function IssuesTab() {
         onToggle={() => setLinterExpanded((v) => !v)}
       />
       {linterExpanded && (
-        <div className="min-h-0 flex-1">
+        <div className="min-h-0 flex-1 overflow-hidden">
           <LinterSection />
         </div>
       )}
@@ -84,7 +91,11 @@ export function IssuesTab() {
         expanded={consistencyExpanded}
         onToggle={() => setConsistencyExpanded((v) => !v)}
       />
-      {consistencyExpanded && <ConsistencySection />}
+      {consistencyExpanded && (
+        <div className="min-h-0 flex-1 overflow-y-auto">
+          <ConsistencySection />
+        </div>
+      )}
     </div>
   );
 }

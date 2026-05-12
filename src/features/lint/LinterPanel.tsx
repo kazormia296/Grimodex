@@ -904,18 +904,12 @@ function ContextMenu({
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// Top-level orchestrator: mode toggle + dispatch.
+// Top-level orchestrator: mode dispatch (mode controlled by caller).
 // ─────────────────────────────────────────────────────────────────────
 
-/**
- * Phase 2 Linter panel entry point. Owns the Current / Project mode
- * toggle; each sub-view owns its own filters / selection / progress.
- */
-export function LinterPanel() {
-  const [mode, setMode] = useState<PanelMode>("current");
+export function LinterPanel({ mode }: { mode: PanelMode }) {
   return (
     <div className="flex h-full flex-col" data-testid="lint-panel">
-      <ModeBar mode={mode} setMode={setMode} />
       <div className="min-h-0 flex-1">
         {mode === "current" ? (
           <CurrentLinterView />
@@ -925,52 +919,6 @@ export function LinterPanel() {
           <DisablesView />
         )}
       </div>
-    </div>
-  );
-}
-
-function ModeBar({
-  mode,
-  setMode,
-}: {
-  mode: PanelMode;
-  setMode: (m: PanelMode) => void;
-}) {
-  return (
-    <div className="flex items-center gap-1 border-b border-border bg-muted/20 px-2 py-1 text-xs">
-      <button
-        type="button"
-        onClick={() => setMode("current")}
-        className={`rounded px-2 py-0.5 ${
-          mode === "current"
-            ? "bg-primary text-primary-foreground"
-            : "text-muted-foreground hover:bg-accent"
-        }`}
-      >
-        現在シーン
-      </button>
-      <button
-        type="button"
-        onClick={() => setMode("project")}
-        className={`rounded px-2 py-0.5 ${
-          mode === "project"
-            ? "bg-primary text-primary-foreground"
-            : "text-muted-foreground hover:bg-accent"
-        }`}
-      >
-        プロジェクト
-      </button>
-      <button
-        type="button"
-        onClick={() => setMode("disables")}
-        className={`rounded px-2 py-0.5 ${
-          mode === "disables"
-            ? "bg-primary text-primary-foreground"
-            : "text-muted-foreground hover:bg-accent"
-        }`}
-      >
-        Disables
-      </button>
     </div>
   );
 }
