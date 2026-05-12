@@ -227,9 +227,25 @@ fn dismiss_key_consistency(entry_id: &str, found_text: &str) -> String {
     sha256_hex(&format!("{}|{}", entry_id, strong_normalize(found_text)))
 }
 
+/// dismiss_key の v1.0 版 (Phase 3 より前): hash(entry_id + "|" + normalize_ws(found_text))
+///
+/// is_manually_dismissed の dual-lookup 専用。既存 DB の manual dismiss は
+/// この v1.0 key で保存されているため、後方互換を取るためだけに残す。
+/// 新規 annotation の保存には `dismiss_key_consistency` のみを使う。
+fn dismiss_key_consistency_legacy(entry_id: &str, found_text: &str) -> String {
+    sha256_hex(&format!("{}|{}", entry_id, normalize_ws(found_text)))
+}
+
 /// dismiss_key (intra_scene): hash(scene_id + "|" + sorted found_texts joined)
 fn dismiss_key_intra(scene_id: &str, a_text: &str, b_text: &str) -> String {
     let mut texts = [strong_normalize(a_text), strong_normalize(b_text)];
+    texts.sort();
+    sha256_hex(&format!("{}|{}|{}", scene_id, texts[0], texts[1]))
+}
+
+/// intra_scene 版 legacy key (Phase 3 より前)。理由は consistency 版と同じ。
+fn dismiss_key_intra_legacy(scene_id: &str, a_text: &str, b_text: &str) -> String {
+    let mut texts = [normalize_ws(a_text), normalize_ws(b_text)];
     texts.sort();
     sha256_hex(&format!("{}|{}|{}", scene_id, texts[0], texts[1]))
 }
@@ -710,6 +726,64 @@ mod merge_confidence_tests {
     }
 }
 
+#[cfg(test)]
+mod dismiss_key_legacy_tests {
+    use super::{
+        dismiss_key_consistency, dismiss_key_consistency_legacy, dismiss_key_intra,
+        dismiss_key_intra_legacy,
+    };
+
+    /// 句読点付き found_text に対して legacy (normalize_ws) と新版
+    /// (strong_normalize) の hash が異なることを確認する。
+    /// この差異こそが既存 manual dismiss が無効化される regression の根源。
+    /// is_manually_dismissed の dual-lookup で両方を照会してカバーする。
+    #[test]
+    fn new_and_legacy_differ_when_punctuation_present() {
+        let entry = "entry-1";
+        let text = "朱紐は乾いていた。";
+        assert_ne!(
+            dismiss_key_consistency(entry, text),
+            dismiss_key_consistency_legacy(entry, text),
+            "句読点ありなら新旧 key は別物 (= regression が成立する状況)"
+        );
+    }
+
+    /// 句読点が無い found_text なら新旧で一致する (空白正規化のみ違うので)。
+    #[test]
+    fn new_and_legacy_agree_when_no_punctuation() {
+        let entry = "entry-1";
+        let text = "朱紐は乾いていた";
+        assert_eq!(
+            dismiss_key_consistency(entry, text),
+            dismiss_key_consistency_legacy(entry, text),
+            "句読点なしなら新旧 key は同じ"
+        );
+    }
+
+    /// legacy 関数は決定論的 (同じ入力で同じ出力)
+    #[test]
+    fn legacy_is_deterministic() {
+        let entry = "entry-1";
+        let text = "テキスト";
+        assert_eq!(
+            dismiss_key_consistency_legacy(entry, text),
+            dismiss_key_consistency_legacy(entry, text)
+        );
+    }
+
+    /// intra_scene 版も同様に新旧で違うことを確認
+    #[test]
+    fn intra_new_and_legacy_differ_with_punctuation() {
+        let scene = "scene-1";
+        let a = "前は乾いていた。";
+        let b = "後は濡れていた、";
+        assert_ne!(
+            dismiss_key_intra(scene, a, b),
+            dismiss_key_intra_legacy(scene, a, b)
+        );
+    }
+}
+
 /// `idx` を直下の char 境界に丸める（`is_char_boundary` が安定 API なので自前実装）。
 /// stable Rust では `str::floor_char_boundary` がまだ unstable なため。
 fn floor_char_boundary(s: &str, mut idx: usize) -> usize {
@@ -830,16 +904,32 @@ fn score_context_match(window: &str, context: &str) -> u32 {
 // DB ヘルパー: dismiss_key が manual dismiss 済みかチェック
 // ---------------------------------------------------------------------------
 
-fn is_manually_dismissed(conn: &rusqlite::Connection, dismiss_key: &str) -> bool {
-    conn.query_row(
+/// dismiss_key 群のいずれかが manual dismiss されているかを判定する。
+///
+/// Phase 3 で dismiss_key の hash 計算が変わったため (normalize_ws →
+/// strong_normalize)、既存 DB の dismiss_key は旧版で保存されている。
+/// 新規 run では呼び出し側から legacy key を併せて渡し、両方を
+/// 1 クエリで照会することでユーザーの過去判断を尊重する。
+fn is_manually_dismissed(conn: &rusqlite::Connection, dismiss_keys: &[&str]) -> bool {
+    if dismiss_keys.is_empty() {
+        return false;
+    }
+    // SQL IN (?, ?, ...) を動的に組み立てる
+    let placeholders = std::iter::repeat_n("?", dismiss_keys.len())
+        .collect::<Vec<_>>()
+        .join(", ");
+    let sql = format!(
         "SELECT 1 FROM post_effect_annotations
-          WHERE json_extract(metadata, '$.dismiss_key') = ?
+          WHERE json_extract(metadata, '$.dismiss_key') IN ({placeholders})
             AND json_extract(metadata, '$.dismiss_source') = 'manual'
-          LIMIT 1",
-        params![dismiss_key],
-        |_| Ok(()),
-    )
-    .is_ok()
+          LIMIT 1"
+    );
+    let params: Vec<&dyn rusqlite::ToSql> = dismiss_keys
+        .iter()
+        .map(|k| k as &dyn rusqlite::ToSql)
+        .collect();
+    conn.query_row(&sql, rusqlite::params_from_iter(params), |_| Ok(()))
+        .is_ok()
 }
 
 /// confidence の優先順位 (high > medium > low) で重みを返す。
@@ -1126,8 +1216,12 @@ async fn process_consistency_scene(
                 };
 
                 let dismiss_key = dismiss_key_consistency(entry_id, found_text);
+                let legacy_dismiss_key = dismiss_key_consistency_legacy(entry_id, found_text);
                 let entry_name = name_map.get(entry_id).cloned().unwrap_or_default();
-                let initial_status = if is_manually_dismissed(conn, &dismiss_key) {
+                let initial_status = if is_manually_dismissed(
+                    conn,
+                    &[&dismiss_key, &legacy_dismiss_key],
+                ) {
                     "dismissed"
                 } else {
                     "open"
@@ -1462,7 +1556,11 @@ async fn process_intra_scene(
                 };
 
                 let dismiss_key = dismiss_key_intra(scene_id, a_text, b_text);
-                let initial_status = if is_manually_dismissed(conn, &dismiss_key) {
+                let legacy_dismiss_key = dismiss_key_intra_legacy(scene_id, a_text, b_text);
+                let initial_status = if is_manually_dismissed(
+                    conn,
+                    &[&dismiss_key, &legacy_dismiss_key],
+                ) {
                     "dismissed"
                 } else {
                     "open"
