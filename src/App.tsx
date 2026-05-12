@@ -71,7 +71,7 @@ import { useGlobalHistoryStore } from "@/store/globalHistoryStore";
 import { HistoryButtons } from "@/features/history/HistoryButtons";
 import { getProject } from "@/features/project/api";
 import { usePhaseStore } from "@/features/codex/phaseStore";
-import { WelcomeDialog } from "@/features/onboarding/WelcomeDialog";
+import { SampleTour } from "@/features/onboarding/SampleTour";
 
 /* ── Panel content components for dockview ── */
 
@@ -270,27 +270,46 @@ function EditorScreen() {
   const [showExport, setShowExport] = useState(false);
   const [showSearch, setShowSearch] = useState(false);
   const [showCommandPalette, setShowCommandPalette] = useState(false);
-  const { globalSettings, updateGlobalSettings } = useWorkspaceStore();
-  const [showWelcome, setShowWelcome] = useState(
-    () => !globalSettings?.hasSeenWelcome,
-  );
+  const { setShowSampleTour, seedAndOpenSample } = useWorkspaceStore();
 
-  const handleCloseWelcome = useCallback(async () => {
-    setShowWelcome(false);
-    if (!globalSettings?.hasSeenWelcome) {
-      await updateGlobalSettings({ hasSeenWelcome: true });
-    }
-  }, [globalSettings, updateGlobalSettings]);
-
-  // Allow re-triggering from settings via custom event
+  // Re-run SampleTour: open/re-seed sample workspace then start tour
   useEffect(() => {
-    function onShowTour() {
+    function onRestartTutorial() {
       setShowSettings(false);
-      setShowWelcome(true);
+      const samplePath =
+        useWorkspaceStore.getState().globalSettings?.sampleWorkspacePath;
+      const activeWorkspacePath =
+        useWorkspaceStore.getState().activeWorkspacePath;
+      if (samplePath && samplePath === activeWorkspacePath) {
+        // Already in sample workspace — just show the tour
+        setShowSampleTour(true);
+      } else if (samplePath) {
+        // Open the existing sample workspace then show tour
+        void useWorkspaceStore
+          .getState()
+          .openWorkspace(samplePath)
+          .then(() => {
+            setShowSampleTour(true);
+          });
+      } else {
+        // No sample workspace yet — re-seed
+        const lang =
+          useWorkspaceStore.getState().globalSettings?.uiLanguage ?? "ja";
+        const policy =
+          useWorkspaceStore.getState().globalSettings?.defaultAiPolicy ??
+          JSON.stringify({
+            preset: "off",
+            toggles: { chat: false, bodyWrite: false, analysis: false },
+          });
+        void seedAndOpenSample(lang, policy).then(() => {
+          setShowSampleTour(true);
+        });
+      }
     }
-    window.addEventListener("show-welcome-tour", onShowTour);
-    return () => window.removeEventListener("show-welcome-tour", onShowTour);
-  }, []);
+    window.addEventListener("restart-sample-tour", onRestartTutorial);
+    return () =>
+      window.removeEventListener("restart-sample-tour", onRestartTutorial);
+  }, [seedAndOpenSample, setShowSampleTour]);
 
   // 執筆言語を <html lang> に反映、Phase resolution mode を初期化
   useEffect(() => {
@@ -653,10 +672,7 @@ function EditorScreen() {
       {showCommandPalette && (
         <CommandPalette onClose={() => setShowCommandPalette(false)} />
       )}
-      <WelcomeDialog
-        open={showWelcome}
-        onClose={() => void handleCloseWelcome()}
-      />
+      <SampleTour />
       <div className="flex flex-1 overflow-hidden">
         {/* Dockview layout */}
         <DockviewReact

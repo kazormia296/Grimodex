@@ -40,7 +40,7 @@ function buildCommands(
   t: (k: string) => string,
 ): Command[] {
   const hasScene = !!activeSceneId;
-  return STATUS_OPTIONS.map<Command>((status) => ({
+  const statusCommands = STATUS_OPTIONS.map<Command>((status) => ({
     id: `set-scene-status-${status}`,
     label: `${t("commandPalette.setSceneStatus")}: ${STATUS_LABELS[status]}`,
     description: hasScene
@@ -56,6 +56,17 @@ function buildCommands(
       );
     },
   }));
+
+  const tourCommand: Command = {
+    id: "restart-sample-tour",
+    label: t("tour.restartTutorial"),
+    available: true,
+    run: () => {
+      window.dispatchEvent(new CustomEvent("restart-sample-tour"));
+    },
+  };
+
+  return [...statusCommands, tourCommand];
 }
 
 export function CommandPalette({ onClose }: CommandPaletteProps) {

@@ -32,11 +32,11 @@ export function AppInfoHeader() {
           <button
             type="button"
             onClick={() =>
-              window.dispatchEvent(new CustomEvent("show-welcome-tour"))
+              window.dispatchEvent(new CustomEvent("restart-sample-tour"))
             }
             className="flex items-center gap-1.5 rounded-md border border-border px-2.5 py-1.5 text-xs text-muted-foreground hover:border-foreground/40 hover:text-foreground"
           >
-            {t("settings.about.showWelcomeTour")}
+            {t("tour.restartTutorial")}
           </button>
           <a
             href={GITHUB_URL}

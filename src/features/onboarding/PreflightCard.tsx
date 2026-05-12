@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useMemo } from "react";
 import { useTranslation } from "react-i18next";
 import { AnimatePresence, motion } from "motion/react";
 import { X } from "lucide-react";
@@ -9,10 +9,9 @@ import { expandPreset } from "@/features/ai-policy/preset";
 import type { AiPolicyPreset } from "@/features/ai-policy/types";
 import { LanguageStep } from "./preflight-steps/LanguageStep";
 import { AiPolicyStep } from "./preflight-steps/AiPolicyStep";
+import { AiProviderStep } from "./preflight-steps/AiProviderStep";
 
-type Step = "language" | "aiPolicy";
-
-const STEPS: Step[] = ["language", "aiPolicy"];
+type Step = "language" | "aiPolicy" | "provider";
 
 interface SkipDialogProps {
   onConfirm: () => void;
@@ -77,8 +76,16 @@ export function PreflightCard() {
   const seedAndOpenSample = useWorkspaceStore((s) => s.seedAndOpenSample);
   const error = useWorkspaceStore((s) => s.error);
 
-  const stepIndex = STEPS.indexOf(step);
-  const totalSteps = STEPS.length;
+  // Provider step only shown when policy requires AI
+  const steps: Step[] = useMemo(
+    () =>
+      selectedPolicy === "off"
+        ? ["language", "aiPolicy"]
+        : ["language", "aiPolicy", "provider"],
+    [selectedPolicy],
+  );
+  const stepIndex = steps.indexOf(step);
+  const totalSteps = steps.length;
 
   function handleLangChange(lang: string) {
     setSelectedLang(lang);
@@ -86,42 +93,37 @@ export function PreflightCard() {
     void i18next.changeLanguage(lang);
   }
 
-  async function handleNext() {
-    if (step === "language") {
-      setStep("aiPolicy");
-    }
-  }
-
   function handleBack() {
     if (step === "aiPolicy") setStep("language");
+    else if (step === "provider") setStep("aiPolicy");
   }
 
-  async function handleStartSample() {
+  async function startSample(overridePolicy?: string) {
     setStarting(true);
     const toggles = expandPreset(selectedPolicy);
-    const policy = JSON.stringify({ preset: selectedPolicy, toggles });
+    const policy =
+      overridePolicy ?? JSON.stringify({ preset: selectedPolicy, toggles });
     await updateGlobalSettings({ defaultAiPolicy: policy });
     await seedAndOpenSample(selectedLang, policy);
     setStarting(false);
   }
 
-  async function handleNextProvider() {
-    const toggles = expandPreset(selectedPolicy);
-    const policy = JSON.stringify({ preset: selectedPolicy, toggles });
-    await updateGlobalSettings({ defaultAiPolicy: policy });
-    // Slice 3 will wire this up; for now it's a no-op placeholder
+  async function handleSetupLater() {
+    // Downgrade policy to "off" so AI steps don't show in tour
+    const offTogles = expandPreset("off");
+    const offPolicy = JSON.stringify({ preset: "off", toggles: offTogles });
+    await startSample(offPolicy);
   }
 
   async function handleSkipConfirm() {
     setShowSkipConfirm(false);
-    // Mark as seen and open sample without tour
     await updateGlobalSettings({ hasSeenWelcome: true });
-    // Seed a basic sample workspace so we still have something to open
-    const toggles = expandPreset(selectedPolicy);
-    const policy = JSON.stringify({ preset: selectedPolicy, toggles });
-    await updateGlobalSettings({ defaultAiPolicy: policy });
-    await seedAndOpenSample(selectedLang, policy);
+    await startSample();
   }
+
+  const isLastStep = stepIndex === totalSteps - 1;
+  const isAiPolicyStep = step === "aiPolicy";
+  const isPolicyOff = selectedPolicy === "off";
 
   return (
     <>
@@ -148,7 +150,7 @@ export function PreflightCard() {
 
           {/* Progress dots */}
           <div className="flex justify-center gap-1.5">
-            {STEPS.map((s, i) => (
+            {steps.map((s, i) => (
               <span
                 key={s}
                 className={[
@@ -184,6 +186,9 @@ export function PreflightCard() {
                   onChange={setSelectedPolicy}
                 />
               )}
+              {step === "provider" && (
+                <AiProviderStep onSetupLater={() => void handleSetupLater()} />
+              )}
             </motion.div>
           </AnimatePresence>
 
@@ -197,49 +202,51 @@ export function PreflightCard() {
             {step === "language" && (
               <button
                 type="button"
-                onClick={() => void handleNext()}
+                onClick={() => setStep("aiPolicy")}
                 className="w-full rounded-lg bg-primary py-2.5 text-sm font-medium text-primary-foreground hover:bg-primary/90"
               >
                 {t("preflight.next")}
               </button>
             )}
 
-            {step === "aiPolicy" && (
+            {isAiPolicyStep && (
               <>
-                {selectedPolicy === "off" ||
-                selectedPolicy === "review-only" ? (
-                  <button
-                    type="button"
-                    onClick={() => void handleStartSample()}
-                    disabled={starting}
-                    className="w-full rounded-lg bg-primary py-2.5 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
-                  >
-                    {starting
-                      ? t("preflight.starting")
-                      : t("preflight.startSample")}
-                  </button>
-                ) : (
-                  <>
-                    <button
-                      type="button"
-                      onClick={() => void handleNextProvider()}
-                      className="w-full rounded-lg bg-primary py-2.5 text-sm font-medium text-primary-foreground hover:bg-primary/90 opacity-60 cursor-not-allowed"
-                      title="Slice 3 で実装予定"
-                    >
-                      {t("preflight.nextProvider")}
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => void handleStartSample()}
-                      disabled={starting}
-                      className="w-full rounded-lg border border-border py-2 text-xs text-muted-foreground hover:bg-accent disabled:opacity-50"
-                    >
-                      {starting
-                        ? t("preflight.starting")
-                        : t("preflight.startSample")}
-                    </button>
-                  </>
-                )}
+                <button
+                  type="button"
+                  onClick={() =>
+                    isPolicyOff ? void startSample() : setStep("provider")
+                  }
+                  disabled={starting}
+                  className="w-full rounded-lg bg-primary py-2.5 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+                >
+                  {starting
+                    ? t("preflight.starting")
+                    : isPolicyOff
+                      ? t("preflight.startSample")
+                      : t("preflight.nextProvider")}
+                </button>
+                <button
+                  type="button"
+                  onClick={handleBack}
+                  className="w-full py-1.5 text-xs text-muted-foreground hover:text-foreground"
+                >
+                  {t("preflight.back")}
+                </button>
+              </>
+            )}
+
+            {step === "provider" && isLastStep && (
+              <>
+                <button
+                  type="button"
+                  onClick={() => void startSample()}
+                  disabled={starting}
+                  className="w-full rounded-lg bg-primary py-2.5 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+                >
+                  {starting
+                    ? t("preflight.starting")
+                    : t("preflight.startSample")}
+                </button>
                 <button
                   type="button"
                   onClick={handleBack}
