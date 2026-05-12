@@ -1177,6 +1177,7 @@ async fn process_consistency_scene(
                         "confidence": merged_confidence,
                         "llm_reason": reason,
                         "dismiss_key": dismiss_key,
+                        "detected_by_model": ai_settings.model,
                     },
                     "orphaned": orphaned,
                 });
@@ -1489,6 +1490,7 @@ async fn process_intra_scene(
                     "found_context": a_ctx,
                     "dismiss_key": dismiss_key,
                     "orphaned": a_orphaned,
+                    "detected_by_model": ai_settings.model,
                 });
                 let meta_b = serde_json::json!({
                     "confidence": confidence,
@@ -1497,6 +1499,7 @@ async fn process_intra_scene(
                     "found_context": b_ctx,
                     "dismiss_key": dismiss_key,
                     "orphaned": b_orphaned,
+                    "detected_by_model": ai_settings.model,
                 });
 
                 conn.execute(

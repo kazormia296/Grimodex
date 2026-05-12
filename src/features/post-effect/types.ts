@@ -49,7 +49,11 @@ export interface ConsistencyAnnotationMeta {
     dismiss_key: string;
     dismiss_source?: "manual" | "run_completed" | "cascade";
     resolved_via?: string;
+    /** この annotation を検出した時の AI model 識別子 (例 "gpt-4o-mini") */
+    detected_by_model?: string;
   };
+  /** range が特定できなかった (LLM の found_text が scene に見つからない等) */
+  orphaned?: boolean;
 }
 
 export interface IntraAnnotationMeta {
@@ -60,6 +64,7 @@ export interface IntraAnnotationMeta {
   dismiss_key: string;
   dismiss_source?: "manual" | "run_completed" | "cascade";
   orphaned?: boolean;
+  detected_by_model?: string;
 }
 
 // ---------------------------------------------------------------------------

@@ -12,10 +12,47 @@ import {
 import { runPostEffect, listAnnotationsForScene } from "./api";
 import { applyAnnotationsToEditor } from "./applyAnnotationsToEditor";
 import type { Editor } from "@tiptap/core";
+import type { PostEffectAnnotation } from "./types";
 
 interface Props {
   sceneId: string;
   editor: Editor | null;
+}
+
+/** annotation の metadata から detected_by_model を取り出す。 */
+function getDetectedByModel(ann: PostEffectAnnotation): string | undefined {
+  let meta: Record<string, unknown> | undefined;
+  try {
+    meta =
+      typeof ann.metadata === "string"
+        ? (JSON.parse(ann.metadata) as Record<string, unknown>)
+        : (ann.metadata as Record<string, unknown> | undefined);
+  } catch {
+    return undefined;
+  }
+  if (!meta) return undefined;
+  const ref = (meta.codex_ref as Record<string, unknown> | undefined) ?? {};
+  return (
+    (ref.detected_by_model as string | undefined) ??
+    (meta.detected_by_model as string | undefined)
+  );
+}
+
+/** open annotation のうち、現在 model と異なるモデルで検出されたものを集計 */
+function countOpenByOtherModel(
+  annotations: PostEffectAnnotation[],
+  currentModel: string,
+): { total: number; byModel: Map<string, number> } {
+  const byModel = new Map<string, number>();
+  let total = 0;
+  for (const ann of annotations) {
+    if (ann.status !== "open") continue;
+    const m = getDetectedByModel(ann);
+    if (!m || m === currentModel) continue;
+    byModel.set(m, (byModel.get(m) ?? 0) + 1);
+    total += 1;
+  }
+  return { total, byModel };
 }
 
 export function PostEffectToolbar({ sceneId, editor }: Props) {
@@ -64,6 +101,24 @@ export function PostEffectToolbar({ sceneId, editor }: Props) {
               });
             } else if (e.annotation_count === 0) {
               toast.success("矛盾は見つかりませんでした");
+            }
+            // 別モデルで検出された open annotation を集計し info 通知。
+            // 過去 run で別 LLM が見つけた指摘がまだ残っていることを伝える
+            // (自動 dismiss を廃止したのでユーザーが気付けない場合がある)
+            const otherModelCount = countOpenByOtherModel(
+              resp.annotations,
+              model,
+            );
+            if (otherModelCount.total > 0) {
+              const sample = [...otherModelCount.byModel.entries()]
+                .map(([m, n]) => `${m}: ${n}件`)
+                .join(", ");
+              toast.info(
+                `${otherModelCount.total} 件は別モデルで検出された指摘です`,
+                {
+                  description: sample,
+                },
+              );
             }
           },
           onError: (e) => {
