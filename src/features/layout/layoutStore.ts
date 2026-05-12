@@ -21,7 +21,7 @@ export type PanelId =
   | "codex-quick"
   | "timeline"
   | "map"
-  | "linter"
+  | "kouetsu"
   | "foreshadow"
   | "grid"
   | "matrix"
@@ -83,7 +83,7 @@ const PANEL_INSERT_REGISTRY: Record<PanelId, InsertRule[]> = {
     { panel: "editor", direction: "below" },
     { panel: null, direction: "below" },
   ],
-  linter: [
+  kouetsu: [
     { panel: "attribution", direction: "within" },
     { panel: "snippets", direction: "within" },
     { panel: "editor", direction: "below" },

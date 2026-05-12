@@ -33,7 +33,7 @@ export function StatusBarIndicator() {
   // stale "✓" on codex/snippet tabs).
   if (!currentSceneId) return null;
 
-  const onClick = () => togglePanel("linter");
+  const onClick = () => togglePanel("kouetsu");
 
   if (lastErrorMessage) {
     return (

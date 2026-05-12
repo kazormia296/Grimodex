@@ -378,7 +378,7 @@
       "stats": "Stats",
       "timeline": "Timeline",
       "map": "Map",
-      "linter": "Linter",
+      "kouetsu": "Review",
       "foreshadow": "Foreshadow",
       "grid": "Grid",
       "matrix": "Matrix",
@@ -395,6 +395,13 @@
       "codexMain": "Codex",
       "saveLayout": "Save current layout",
       "resetDefault": "Reset to default"
+    }
+  },
+  "kouetsu": {
+    "tab": {
+      "issues": "Issues",
+      "editorial": "Editorial",
+      "comments": "Comments"
     }
   },
   "chat": {

@@ -378,7 +378,7 @@
       "stats": "統計",
       "timeline": "タイムライン",
       "map": "マップ",
-      "linter": "Linter",
+      "kouetsu": "校閲",
       "foreshadow": "伏線",
       "grid": "グリッド",
       "matrix": "マトリクス",
@@ -395,6 +395,13 @@
       "codexMain": "Codex",
       "saveLayout": "現在のレイアウトを保存",
       "resetDefault": "デフォルトに戻す"
+    }
+  },
+  "kouetsu": {
+    "tab": {
+      "issues": "課題",
+      "editorial": "批評",
+      "comments": "コメント"
     }
   },
   "chat": {

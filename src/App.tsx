@@ -44,7 +44,7 @@ import { SnippetPanel } from "@/features/snippets/SnippetPanel";
 import { AttributionReport } from "@/features/attribution/AttributionReport";
 import { TimelinePanel } from "@/features/timeline/TimelinePanel";
 import { MapPanel } from "@/features/map/MapPanel";
-import { LinterPanel } from "@/features/lint/LinterPanel";
+import { KouetsuPanel } from "@/features/kouetsu/KouetsuPanel";
 import { ForeshadowPanel } from "@/features/foreshadow/ForeshadowPanel";
 import { GridPanel } from "@/features/grid/GridPanel";
 import { MatrixPanel } from "@/features/matrix/MatrixPanel";
@@ -115,8 +115,8 @@ function MapContent(_props: IDockviewPanelProps) {
   return <MapPanel />;
 }
 
-function LinterContent(_props: IDockviewPanelProps) {
-  return <LinterPanel />;
+function KouetsuContent(_props: IDockviewPanelProps) {
+  return <KouetsuPanel />;
 }
 
 function ForeshadowContent(_props: IDockviewPanelProps) {
@@ -324,7 +324,7 @@ function EditorScreen() {
       "codex-quick": CodexQuickContent,
       timeline: TimelineContent,
       map: MapContent,
-      linter: LinterContent,
+      kouetsu: KouetsuContent,
       foreshadow: ForeshadowContent,
       grid: GridContent,
       matrix: MatrixContent,
@@ -480,7 +480,7 @@ function EditorScreen() {
         q: "codex-quick",
         l: "timeline",
         m: "map",
-        t: "linter",
+        t: "kouetsu",
         f: "foreshadow",
         b: "trash-bin",
         ",": "settings",
