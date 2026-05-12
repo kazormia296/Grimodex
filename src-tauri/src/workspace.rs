@@ -60,6 +60,20 @@ pub struct GlobalSettings {
     /// Grid panel display settings (showSynopsis, showBeats, etc.).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub grid: Option<serde_json::Value>,
+    /// Matrix panel settings.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub matrix: Option<serde_json::Value>,
+    /// User-preference settings (cross-workspace): editor visuals, keys, display, data, revision.
+    /// Keyed by the same key strings used in app_settings (e.g. "editor.fontFamily").
+    #[serde(default)]
+    #[serde(skip_serializing_if = "std::collections::HashMap::is_empty")]
+    pub user_preferences: std::collections::HashMap<String, String>,
+    /// Default values applied to new projects/workspaces on creation.
+    /// Keyed by the same key strings as user_preferences; covers work-specific settings
+    /// (tree.*, export.*, beat.*, editor.targetCharCount, ai.contextBudget.*, etc.).
+    #[serde(default)]
+    #[serde(skip_serializing_if = "std::collections::HashMap::is_empty")]
+    pub project_defaults: std::collections::HashMap<String, String>,
 }
 
 impl Default for GlobalSettings {
@@ -81,6 +95,9 @@ impl Default for GlobalSettings {
             timeline: None,
             map: None,
             grid: None,
+            matrix: None,
+            user_preferences: std::collections::HashMap::new(),
+            project_defaults: std::collections::HashMap::new(),
         }
     }
 }
@@ -503,6 +520,91 @@ mod tests {
         }
         assert_eq!(settings.recent_workspaces.len(), 10);
         assert_eq!(settings.recent_workspaces[0].path, "D:\\Workspace14");
+    }
+
+    // --- user_preferences / project_defaults ---
+
+    #[test]
+    fn test_global_settings_user_preferences_roundtrip() {
+        let dir = temp_dir("gs_user_prefs");
+        cleanup(&dir);
+        fs::create_dir_all(&dir).ok();
+        let path = dir.join("settings.json");
+
+        let mut prefs = std::collections::HashMap::new();
+        prefs.insert("editor.fontFamily".to_string(), "sans-serif".to_string());
+        prefs.insert("editor.fontSize".to_string(), "16".to_string());
+
+        let settings = GlobalSettings {
+            user_preferences: prefs.clone(),
+            ..GlobalSettings::default()
+        };
+
+        write_global_settings(&path, &settings).expect("write");
+        let loaded = read_global_settings(&path);
+
+        assert_eq!(
+            loaded.user_preferences.get("editor.fontFamily"),
+            Some(&"sans-serif".to_string())
+        );
+        assert_eq!(
+            loaded.user_preferences.get("editor.fontSize"),
+            Some(&"16".to_string())
+        );
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn test_global_settings_project_defaults_roundtrip() {
+        let dir = temp_dir("gs_proj_defaults");
+        cleanup(&dir);
+        fs::create_dir_all(&dir).ok();
+        let path = dir.join("settings.json");
+
+        let mut defaults = std::collections::HashMap::new();
+        defaults.insert("export.format".to_string(), "docx".to_string());
+        defaults.insert("editor.targetCharCount".to_string(), "40000".to_string());
+
+        let settings = GlobalSettings {
+            project_defaults: defaults,
+            ..GlobalSettings::default()
+        };
+
+        write_global_settings(&path, &settings).expect("write");
+        let loaded = read_global_settings(&path);
+
+        assert_eq!(
+            loaded.project_defaults.get("export.format"),
+            Some(&"docx".to_string())
+        );
+        assert_eq!(
+            loaded.project_defaults.get("editor.targetCharCount"),
+            Some(&"40000".to_string())
+        );
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn test_global_settings_legacy_json_has_empty_user_preferences() {
+        let dir = temp_dir("gs_legacy_prefs");
+        cleanup(&dir);
+        fs::create_dir_all(&dir).ok();
+        let path = dir.join("settings.json");
+
+        let legacy_json = r#"{
+            "recentWorkspaces": [],
+            "lastActiveWorkspace": null,
+            "theme": "system",
+            "uiLanguage": "ja",
+            "uiScale": 100,
+            "showLauncherOnStartup": false
+        }"#;
+        fs::write(&path, legacy_json).expect("write");
+
+        let loaded = read_global_settings(&path);
+        assert!(loaded.user_preferences.is_empty());
+        assert!(loaded.project_defaults.is_empty());
+        cleanup(&dir);
     }
 
     // --- workspace_name ---

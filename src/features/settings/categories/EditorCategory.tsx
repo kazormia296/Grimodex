@@ -1,5 +1,6 @@
 import { useTranslation } from "react-i18next";
 import { SettingSection } from "../components/SettingSection";
+import { SettingScopeHeader } from "../components/SettingScopeHeader";
 import { SettingRow } from "../components/SettingRow";
 import { SettingToggle } from "../components/SettingToggle";
 import { SettingSlider } from "../components/SettingSlider";
@@ -82,6 +83,7 @@ export function EditorCategory() {
 
   return (
     <div className="p-6">
+      <SettingScopeHeader title={t("settings.scopeGlobal")} />
       <SettingSection title={t("settings.editor.textDisplay")}>
         <SettingRow label={t("settings.editor.font")}>
           <SettingDropdown
@@ -128,36 +130,6 @@ export function EditorCategory() {
             step={2}
             defaultValue={8}
             format={(v) => `${v}px`}
-          />
-        </SettingRow>
-        <SettingRow
-          label={t("settings.editor.paragraphIndent")}
-          description={t("settings.editor.paragraphIndentDesc")}
-        >
-          <SettingDropdown
-            settingKey="editor.paragraphIndent"
-            options={PARAGRAPH_INDENT_OPTIONS}
-            defaultValue="0"
-          />
-        </SettingRow>
-        <SettingRow
-          label={t("settings.editor.wordBreak")}
-          description={t("settings.editor.wordBreakDesc")}
-        >
-          <SettingDropdown
-            settingKey="editor.wordBreak"
-            options={WORD_BREAK_OPTIONS}
-            defaultValue="normal"
-          />
-        </SettingRow>
-        <SettingRow
-          label={t("settings.editor.lineBreak")}
-          description={t("settings.editor.lineBreakDesc")}
-        >
-          <SettingDropdown
-            settingKey="editor.lineBreak"
-            options={LINE_BREAK_OPTIONS}
-            defaultValue="strict"
           />
         </SettingRow>
       </SettingSection>
@@ -272,6 +244,40 @@ export function EditorCategory() {
             value={fadeOut}
             onChange={setFadeOut}
             disabled={disableAll}
+          />
+        </SettingRow>
+      </SettingSection>
+
+      <SettingScopeHeader title={t("settings.scopeProject")} />
+      <SettingSection title={t("settings.editor.paragraphStyle")}>
+        <SettingRow
+          label={t("settings.editor.paragraphIndent")}
+          description={t("settings.editor.paragraphIndentDesc")}
+        >
+          <SettingDropdown
+            settingKey="editor.paragraphIndent"
+            options={PARAGRAPH_INDENT_OPTIONS}
+            defaultValue="0"
+          />
+        </SettingRow>
+        <SettingRow
+          label={t("settings.editor.wordBreak")}
+          description={t("settings.editor.wordBreakDesc")}
+        >
+          <SettingDropdown
+            settingKey="editor.wordBreak"
+            options={WORD_BREAK_OPTIONS}
+            defaultValue="normal"
+          />
+        </SettingRow>
+        <SettingRow
+          label={t("settings.editor.lineBreak")}
+          description={t("settings.editor.lineBreakDesc")}
+        >
+          <SettingDropdown
+            settingKey="editor.lineBreak"
+            options={LINE_BREAK_OPTIONS}
+            defaultValue="strict"
           />
         </SettingRow>
       </SettingSection>

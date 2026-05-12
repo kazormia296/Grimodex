@@ -40,6 +40,89 @@ export const SETTINGS_CATEGORIES: CategoryDef[] = [
   { id: "about", label: "About", Icon: Info },
 ];
 
+/**
+ * Scope of each settings key.
+ * "global"  → stored in global-settings.json userPreferences (user preference, cross-workspace)
+ * "project" → stored in project_settings table (work-specific, seeded from projectDefaults on creation)
+ */
+export const KEY_SCOPE: Record<string, "global" | "project"> = {
+  // Editor — user preference (global)
+  "editor.fontFamily": "global",
+  "editor.fontSize": "global",
+  "editor.lineHeight": "global",
+  "editor.maxContentWidth": "global",
+  "editor.paragraphSpacing": "global",
+  "editor.typewriterMode": "global",
+  "editor.focusMode": "global",
+  "editor.autoSaveDelay": "global",
+  "editor.spellCheck": "global",
+  "editor.smartQuotes": "global",
+  "editor.smartDashes": "global",
+  "editor.inlineAiCommand": "global",
+  "editor.inlineAiShortcut": "global",
+  "editor.smoothCaret": "global",
+  "editor.cursorBlink": "global",
+  "editor.characterFadeIn": "global",
+  "editor.characterFadeOut": "global",
+  "editor.disableAllAnimations": "global",
+  "editor.focusModeHideBeats": "global",
+  "editor.sceneMetaPanelOpen": "global",
+  "editor.sceneMetaPanelWidth": "global",
+  "editor.linearBeatDisplay": "global",
+  "editor.showBreadcrumb": "global",
+  "editor.showLineNumbers": "global",
+  // Editor — work-specific (project)
+  "editor.targetCharCount": "project",
+  "editor.wordBreak": "project",
+  "editor.lineBreak": "project",
+  "editor.paragraphIndent": "project",
+  // Display — user preference (global)
+  "display.showWordCount": "global",
+  "display.showAiBadge": "global",
+  "display.reduceMotion": "global",
+  "display.codexHighlight": "global",
+  "display.codexHighlightStyle": "global",
+  "display.attributionHighlightOpacity": "global",
+  // AI — user preference (global)
+  "ai.inlineModel": "global",
+  "ai.sessionTitleModel": "global",
+  "ai.modelWhitelist": "global",
+  // AI — work-specific (project)
+  "ai.contextBudget.l1": "project",
+  "ai.contextBudget.l2": "project",
+  "ai.contextBudget.l3": "project",
+  "ai.contextBudget.l4": "project",
+  "ai.contextBudget.l5": "project",
+  "ai.contextBudget.reserve": "project",
+  // Beat — work-specific (project)
+  "beat.injectIntoContext": "project",
+  "beat.inferRoles": "project",
+  "beat.roleInferenceConfidenceThreshold": "project",
+  // Keys — user preference (global)
+  "keys.bindings": "global",
+  // Data — user preference (global)
+  "data.autoBackup": "global",
+  "data.backupInterval": "global",
+  "data.maxBackups": "global",
+  // Revision — user preference (global)
+  "revision.autoInterval": "global",
+  "revision.keepCount": "global",
+  // Tree — work-specific (project)
+  "tree.folderNaming": "project",
+  "tree.numberingScope": "project",
+  // Export — work-specific (project)
+  "export.format": "project",
+  "export.folderHeading": "project",
+  "export.folderHeadingStyle": "project",
+  "export.sceneDivider": "project",
+  "export.sceneDividerCustom": "project",
+  "export.sceneTitle": "project",
+  "export.rubyStyle": "project",
+  "export.emphasisDotsStyle": "project",
+  "export.sceneBreakStyle": "project",
+  "export.sceneBreakCustom": "project",
+};
+
 export const DEFAULT_SETTINGS: Record<string, string> = {
   // Editor
   "editor.fontFamily": "serif",

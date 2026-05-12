@@ -93,6 +93,8 @@
   },
   "settings": {
     "title": "Settings",
+    "scopeGlobal": "Application Settings",
+    "scopeProject": "This Work's Settings",
     "display": {
       "theme": "Theme",
       "colorTheme": "Color Theme",
@@ -120,6 +122,7 @@
     },
     "editor": {
       "textDisplay": "Text Display",
+      "paragraphStyle": "Paragraph Style",
       "font": "Font",
       "fontSize": "Font Size",
       "lineHeight": "Line Height",
@@ -270,7 +273,12 @@
       "aiInstructionsPlaceholder": "Additional AI instructions…",
       "outline": "Project-wide outline",
       "outlineDesc": "Author-facing description of intent, theme, and arc. Always injected into chat context (Layer 2). Optional.",
-      "outlinePlaceholder": "Three-act structure. Theme: 'the cost of revenge'. The mentor betrays at Act 2 break. The kingdom falls but Akane is redeemed…"
+      "outlinePlaceholder": "Three-act structure. Theme: 'the cost of revenge'. The mentor betrays at Act 2 break. The kingdom falls but Akane is redeemed…",
+      "defaults": "Default Template",
+      "saveAsDefaults": "Save current settings as default template",
+      "saveAsDefaultsDesc": "Saves work-specific settings (tree, export, AI budget, etc.) as the initial values for newly created projects.",
+      "saveAsDefaultsButton": "Save",
+      "saveAsDefaultsDone": "Default template saved"
     },
     "keys": {
       "search": "Search keybindings…",

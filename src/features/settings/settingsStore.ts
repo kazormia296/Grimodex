@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import * as api from "./api";
-import { DEFAULT_SETTINGS } from "./types";
+import { DEFAULT_SETTINGS, KEY_SCOPE } from "./types";
+import { PROJECT_ID } from "@/features/project/constants";
 
 interface SettingsState {
   cache: Record<string, string>;
@@ -15,15 +16,43 @@ interface SettingsState {
   flushPending: () => Promise<void>;
 }
 
+// Route a key/value write to the correct persistent store.
+// Dynamic import of workspace store breaks the circular dep
+// (workspace/store → settingsStore → workspace/store).
+async function persistSetting(key: string, value: string): Promise<void> {
+  const scope = KEY_SCOPE[key];
+  if (scope === "global") {
+    const { useWorkspaceStore } = await import("@/features/workspace/store");
+    await useWorkspaceStore.getState().updateUserPreference(key, value);
+  } else if (scope === "project") {
+    await api.setProjectSetting(PROJECT_ID, key, value);
+  } else {
+    await api.setSetting(key, value);
+  }
+}
+
 export const useSettingsStore = create<SettingsState>()((set, get) => ({
   cache: { ...DEFAULT_SETTINGS },
   isLoaded: false,
   _timers: new Map(),
 
   loadAll: async () => {
-    const all = await api.getSettingsByPrefix("");
+    const [legacyAll, workspaceModule, projectAll] = await Promise.all([
+      api.getSettingsByPrefix(""),
+      import("@/features/workspace/store"),
+      api.getAllProjectSettings(PROJECT_ID),
+    ]);
+    const globalPrefs =
+      workspaceModule.useWorkspaceStore.getState().globalSettings
+        ?.userPreferences ?? {};
+    // Precedence: DEFAULT < app_settings(legacy) < project_settings < userPreferences
     set((s) => ({
-      cache: { ...DEFAULT_SETTINGS, ...all },
+      cache: {
+        ...DEFAULT_SETTINGS,
+        ...legacyAll,
+        ...projectAll,
+        ...globalPrefs,
+      },
       isLoaded: true,
       _timers: s._timers,
     }));
@@ -52,16 +81,14 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
   },
 
   set: (key: string, value: string) => {
-    // Update cache immediately
     set((s) => ({ cache: { ...s.cache, [key]: value } }));
 
-    // Debounced DB write (per key)
     const state = get();
     const existing = state._timers.get(key);
     if (existing) clearTimeout(existing);
 
     const timer = setTimeout(async () => {
-      await api.setSetting(key, value);
+      await persistSetting(key, value);
       state._timers.delete(key);
     }, 300);
 
@@ -70,12 +97,11 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
 
   flushPending: async () => {
     const state = get();
-    // Clear all pending timers and write immediately
     for (const [key, timer] of state._timers.entries()) {
       clearTimeout(timer);
       const value = state.cache[key];
       if (value !== undefined) {
-        await api.setSetting(key, value);
+        await persistSetting(key, value);
       }
     }
     state._timers.clear();

@@ -42,6 +42,16 @@ export interface GlobalSettings {
   grid?: unknown;
   /** Persisted matrix panel settings */
   matrix?: unknown;
+  /**
+   * User-preference settings (cross-workspace): editor visuals, keys, display, data, revision.
+   * Keyed by the same key strings used in app_settings (e.g. "editor.fontFamily").
+   */
+  userPreferences?: Record<string, string>;
+  /**
+   * Default values applied to new projects on creation.
+   * Covers work-specific settings (tree.*, export.*, beat.*, editor.targetCharCount, ai.contextBudget.*).
+   */
+  projectDefaults?: Record<string, string>;
 }
 
 export type AppView = "loading" | "welcome" | "launcher" | "editor";
@@ -66,6 +76,8 @@ interface WorkspaceState {
   trustAndOpen: () => Promise<void>;
   cancelTrust: () => void;
   updateGlobalSettings: (updates: Partial<GlobalSettings>) => Promise<void>;
+  updateUserPreference: (key: string, value: string) => Promise<void>;
+  updateProjectDefaults: (updates: Record<string, string>) => Promise<void>;
   showLauncher: () => void;
   clearError: () => void;
 }
@@ -144,6 +156,16 @@ export const useWorkspaceStore = create<WorkspaceState>()((set, get) => ({
         activeWorkspaceName: result.name,
         globalSettings: settings,
       });
+      // Migrate app_settings → userPreferences + project_settings (runs once per workspace)
+      const {
+        migrateAppSettingsToScopedStores,
+        seedProjectSettingsFromDefaults,
+      } = await import("@/features/settings/migration");
+      await migrateAppSettingsToScopedStores();
+      // Seed project defaults for brand-new workspaces
+      if (!result.isExisting) {
+        await seedProjectSettingsFromDefaults();
+      }
       // Load persisted editor settings and apply to runtime stores
       await useSettingsStore.getState().loadAll();
       useCursorSettingsStore.getState().initFromSettings();
@@ -239,6 +261,36 @@ export const useWorkspaceStore = create<WorkspaceState>()((set, get) => ({
       await invoke("save_global_settings", { settings: updated });
     } catch {
       // Revert on failure
+      set({ globalSettings: current });
+    }
+  },
+
+  async updateUserPreference(key: string, value: string) {
+    const current = get().globalSettings;
+    if (!current) return;
+    const updated = {
+      ...current,
+      userPreferences: { ...(current.userPreferences ?? {}), [key]: value },
+    };
+    set({ globalSettings: updated });
+    try {
+      await invoke("save_global_settings", { settings: updated });
+    } catch {
+      set({ globalSettings: current });
+    }
+  },
+
+  async updateProjectDefaults(updates: Record<string, string>) {
+    const current = get().globalSettings;
+    if (!current) return;
+    const updated = {
+      ...current,
+      projectDefaults: { ...(current.projectDefaults ?? {}), ...updates },
+    };
+    set({ globalSettings: updated });
+    try {
+      await invoke("save_global_settings", { settings: updated });
+    } catch {
       set({ globalSettings: current });
     }
   },

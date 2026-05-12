@@ -1,4 +1,5 @@
 import { useTranslation } from "react-i18next";
+import { toast } from "sonner";
 import { useProjectSettings } from "../hooks/useProjectSettings";
 import {
   useSettingControl,
@@ -8,11 +9,14 @@ import {
 import { SettingSection } from "../components/SettingSection";
 import { SettingRow } from "../components/SettingRow";
 import { SettingTextarea } from "../components/SettingTextarea";
+import { getAllProjectSettings } from "../api";
 import { usePhaseStore } from "@/features/codex/phaseStore";
 import type { PhaseResolutionMode } from "@/features/codex/phaseResolver";
 import { parseAiPolicy, serializeAiPolicy } from "@/features/ai-policy/parse";
 import { expandPreset, inferPreset } from "@/features/ai-policy/preset";
 import type { AiFeature, AiPolicyPreset } from "@/features/ai-policy/types";
+import { useWorkspaceStore } from "@/features/workspace/store";
+import { PROJECT_ID } from "@/features/project/constants";
 
 const LANGUAGE_OPTIONS = [
   { value: "ja", label: "日本語" },
@@ -96,6 +100,16 @@ export function ProjectCategory() {
     { value: "project", label: t("settings.project.numberingScopeProject") },
     { value: "folder", label: t("settings.project.numberingScopeFolder") },
   ];
+
+  const updateProjectDefaults = useWorkspaceStore(
+    (s) => s.updateProjectDefaults,
+  );
+
+  async function handleSaveAsDefaults() {
+    const all = await getAllProjectSettings(PROJECT_ID);
+    await updateProjectDefaults(all);
+    toast.success(t("settings.project.saveAsDefaultsDone"));
+  }
 
   if (isLoading || !project) {
     return (
@@ -428,6 +442,27 @@ export function ProjectCategory() {
             rows={5}
           />
         </div>
+      </SettingSection>
+
+      <SettingSection title={t("settings.project.defaults", "デフォルト雛形")}>
+        <SettingRow
+          label={t(
+            "settings.project.saveAsDefaults",
+            "現在の設定をデフォルト雛形として保存",
+          )}
+          description={t(
+            "settings.project.saveAsDefaultsDesc",
+            "ツリー・エクスポート・AI 予算等の作品設定を、今後新規作成するプロジェクトの初期値として保存します。",
+          )}
+        >
+          <button
+            type="button"
+            onClick={handleSaveAsDefaults}
+            className="rounded-md border border-border px-3 py-1 text-sm hover:bg-accent"
+          >
+            {t("settings.project.saveAsDefaultsButton", "保存")}
+          </button>
+        </SettingRow>
       </SettingSection>
     </div>
   );

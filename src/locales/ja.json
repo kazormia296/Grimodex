@@ -93,6 +93,8 @@
   },
   "settings": {
     "title": "Settings",
+    "scopeGlobal": "アプリケーション設定",
+    "scopeProject": "この作品の設定",
     "display": {
       "theme": "テーマ",
       "colorTheme": "カラーテーマ",
@@ -120,6 +122,7 @@
     },
     "editor": {
       "textDisplay": "テキスト表示",
+      "paragraphStyle": "段落スタイル",
       "font": "フォント",
       "fontSize": "フォントサイズ",
       "lineHeight": "行間",
@@ -270,7 +273,12 @@
       "aiInstructionsPlaceholder": "AIへの追加指示…",
       "outline": "プロジェクト全体の outline",
       "outlineDesc": "物語の意図・テーマ・到達点を著者の視点で記述します。Chat のコンテキスト（Layer 2）に常時注入されます。空でも構いません。",
-      "outlinePlaceholder": "全3部構成。テーマは「復讐の代償」。Act 2 break で師匠が裏切る。最終的に王国は崩壊するが、朱音は救われる…"
+      "outlinePlaceholder": "全3部構成。テーマは「復讐の代償」。Act 2 break で師匠が裏切る。最終的に王国は崩壊するが、朱音は救われる…",
+      "defaults": "デフォルト雛形",
+      "saveAsDefaults": "現在の設定をデフォルト雛形として保存",
+      "saveAsDefaultsDesc": "ツリー・エクスポート・AI 予算等の作品設定を、今後新規作成するプロジェクトの初期値として保存します。",
+      "saveAsDefaultsButton": "保存",
+      "saveAsDefaultsDone": "デフォルト雛形を保存しました"
     },
     "keys": {
       "search": "キーバインドを検索…",

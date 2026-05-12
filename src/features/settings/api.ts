@@ -76,3 +76,13 @@ export async function deleteProjectSetting(
       ),
     );
 }
+
+export async function getAllProjectSettings(
+  projectId: string,
+): Promise<Record<string, string>> {
+  const rows = await db
+    .select()
+    .from(projectSettings)
+    .where(eq(projectSettings.projectId, projectId));
+  return Object.fromEntries(rows.map((r) => [r.key, r.value]));
+}

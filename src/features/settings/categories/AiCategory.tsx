@@ -16,6 +16,7 @@ import {
   AINOVERIST_EXTRA_SAMPLING_KEYS,
 } from "@/features/chat/aiNovelist";
 import { SettingSection } from "../components/SettingSection";
+import { SettingScopeHeader } from "../components/SettingScopeHeader";
 import { SettingRow } from "../components/SettingRow";
 import { SettingToggle } from "../components/SettingToggle";
 import { useSettingsStore } from "../settingsStore";
@@ -268,6 +269,7 @@ export function AiCategory() {
 
   return (
     <div className="p-6">
+      <SettingScopeHeader title={t("settings.scopeGlobal")} />
       {/* Provider */}
       <SettingSection title={t("settings.ai.provider")}>
         <div className="flex flex-wrap gap-2 mb-3">
@@ -938,6 +940,7 @@ export function AiCategory() {
         )}
       </SettingSection>
 
+      <SettingScopeHeader title={t("settings.scopeProject")} />
       {/* Context budget */}
       <SettingSection title={t("settings.ai.contextBudget")}>
         <div className="space-y-2">
