@@ -2,8 +2,10 @@ import { useEffect, useState } from "react";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { useChatStore } from "@/features/chat/chatStore";
 import { useCodexStore } from "@/features/codex/codexStore";
+import { useSnippetStore } from "@/features/snippets/snippetStore";
 import { useAnnotationStore } from "@/features/post-effect/annotationStore";
 import { useTabStore } from "@/features/editor/tabStore";
+import { useLayoutStore, type PanelId } from "@/features/layout/layoutStore";
 
 /**
  * True once the user opens at least one scene in the editor (tabs becomes
@@ -154,6 +156,144 @@ export function usePostEffectRunGate(): boolean {
     });
     return unsub;
   }, [done]);
+
+  return done;
+}
+
+/**
+ * True once the user interacts with the Snippets panel — either inserts a
+ * snippet (usageCount sum grows), creates/deletes one (entries.length
+ * changes), or edits one (updatedAt advances).
+ *
+ * Seeded workspaces ship with snippets pre-populated, so the baseline must
+ * be captured after the snippet store settles to avoid false positives.
+ */
+export function useSnippetUsedGate(): boolean {
+  const [done, setDone] = useState(false);
+
+  useEffect(() => {
+    if (done) return;
+
+    let settled = false;
+    let baselineLen = 0;
+    let baselineUsage = 0;
+    let baselineMaxUpdated = "";
+
+    function check() {
+      const { isLoading, entries } = useSnippetStore.getState();
+      if (isLoading) return;
+      const usage = entries.reduce((acc, e) => acc + (e.usageCount ?? 0), 0);
+      const maxUpdated = entries.reduce(
+        (acc, e) => (e.updatedAt > acc ? e.updatedAt : acc),
+        "",
+      );
+      if (!settled) {
+        baselineLen = entries.length;
+        baselineUsage = usage;
+        baselineMaxUpdated = maxUpdated;
+        settled = true;
+        return;
+      }
+      if (
+        entries.length !== baselineLen ||
+        usage > baselineUsage ||
+        maxUpdated > baselineMaxUpdated
+      ) {
+        setDone(true);
+      }
+    }
+
+    check();
+    const unsub = useSnippetStore.subscribe(check);
+    return unsub;
+  }, [done]);
+
+  return done;
+}
+
+/**
+ * True once the user opens at least one Codex entry after the store has
+ * settled. The codex store does not retain an "active entry" id, but
+ * `requestSelectEntry` writes to `pendingEntryId` whenever the user clicks
+ * an entry; we watch that signal plus growth of `previewPhaseByEntry`
+ * (set as soon as a detail view subscribes to a phase).
+ *
+ * Also accepts a dwell fallback so users who keep the panel open without
+ * clicking specific entries still advance.
+ */
+export function useCodexViewGate(dwellMs = 3000): boolean {
+  const [done, setDone] = useState(false);
+
+  useEffect(() => {
+    if (done) return;
+
+    let settled = false;
+    let baselinePreviewKeys = 0;
+    let dwell = 0;
+
+    function check() {
+      const s = useCodexStore.getState();
+      if (s.isLoading) return;
+      const previewKeys = Object.keys(s.previewPhaseByEntry).length;
+      if (!settled) {
+        baselinePreviewKeys = previewKeys;
+        settled = true;
+        return;
+      }
+      // Any select request after settle, or growth in preview tracking,
+      // means the user looked at an entry.
+      if (s.pendingEntryId !== null || previewKeys > baselinePreviewKeys) {
+        setDone(true);
+      }
+    }
+
+    check();
+    const unsubStore = useCodexStore.subscribe(check);
+
+    const tick = 250;
+    const handle = window.setInterval(() => {
+      if (!useLayoutStore.getState().isPanelVisible("codex")) {
+        dwell = 0;
+        return;
+      }
+      dwell += tick;
+      if (dwell >= dwellMs) setDone(true);
+    }, tick);
+
+    return () => {
+      unsubStore();
+      window.clearInterval(handle);
+    };
+  }, [done, dwellMs]);
+
+  return done;
+}
+
+/**
+ * True once the target panel has been continuously visible for `dwellMs`.
+ * Used for "lecture-only" panels (timeline, foreshadow) where there is no
+ * single store mutation to gate on; we just want the user to look at it.
+ */
+export function usePanelDwellGate(panelId: PanelId, dwellMs = 3000): boolean {
+  const [done, setDone] = useState(false);
+
+  useEffect(() => {
+    if (done) return;
+    let dwell = 0;
+    const tick = 250;
+    const handle = window.setInterval(() => {
+      if (!useLayoutStore.getState().isPanelVisible(panelId)) {
+        dwell = 0;
+        return;
+      }
+      dwell += tick;
+      if (dwell >= dwellMs) {
+        setDone(true);
+        window.clearInterval(handle);
+      }
+    }, tick);
+    return () => window.clearInterval(handle);
+  }, [done, panelId, dwellMs]);
 
   return done;
 }

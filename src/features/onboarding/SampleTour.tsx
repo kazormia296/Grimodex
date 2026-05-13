@@ -17,6 +17,9 @@ import {
   useEditorWriteGate,
   useChatSentGate,
   useCodexExtractGate,
+  useCodexViewGate,
+  useSnippetUsedGate,
+  usePanelDwellGate,
   usePostEffectRunGate,
 } from "./tourGates";
 
@@ -27,46 +30,98 @@ import {
 type TourStepKey =
   | "scenes"
   | "editor"
+  | "snippets"
   | "codex"
   | "chat"
   | "codexExtract"
   | "aiWrite"
+  | "foreshadow"
   | "consistency"
+  | "timeline"
   | "end";
+
+interface TourSlide {
+  /** Slide id — used as i18n suffix (tour.steps.<step>.slides.<slide>) and motion key. */
+  id: string;
+}
 
 interface TourStepDef {
   key: TourStepKey;
   panelId: PanelId | null;
   requires: keyof AiPolicyToggles | null;
+  slides: TourSlide[];
+  /** Index of the slide that requires the action gate. Defaults to last slide. */
+  gatedSlideIndex?: number;
 }
 
 const ALL_STEPS: TourStepDef[] = [
-  { key: "scenes", panelId: "scenes", requires: null },
-  { key: "editor", panelId: "editor", requires: null },
-  { key: "codex", panelId: "codex", requires: null },
-  { key: "chat", panelId: "chat", requires: "chat" },
-  { key: "codexExtract", panelId: "codex", requires: "chat" },
-  { key: "aiWrite", panelId: "editor", requires: "bodyWrite" },
-  { key: "consistency", panelId: "editor", requires: "analysis" },
-  { key: "end", panelId: null, requires: null },
+  {
+    key: "scenes",
+    panelId: "scenes",
+    requires: null,
+    slides: [{ id: "overview" }, { id: "hierarchy" }, { id: "action" }],
+  },
+  {
+    key: "editor",
+    panelId: "editor",
+    requires: null,
+    slides: [{ id: "overview" }, { id: "beatNode" }, { id: "action" }],
+  },
+  {
+    key: "snippets",
+    panelId: "snippets",
+    requires: null,
+    slides: [{ id: "overview" }, { id: "action" }],
+  },
+  {
+    key: "codex",
+    panelId: "codex",
+    requires: null,
+    slides: [{ id: "overview" }, { id: "fourLayers" }, { id: "action" }],
+  },
+  {
+    key: "chat",
+    panelId: "chat",
+    requires: "chat",
+    slides: [{ id: "overview" }, { id: "mention" }, { id: "action" }],
+  },
+  {
+    key: "codexExtract",
+    panelId: "codex",
+    requires: "chat",
+    slides: [{ id: "overview" }, { id: "action" }],
+  },
+  {
+    key: "aiWrite",
+    panelId: "editor",
+    requires: "bodyWrite",
+    slides: [{ id: "overview" }, { id: "beatQuality" }, { id: "action" }],
+  },
+  {
+    key: "foreshadow",
+    panelId: "foreshadow",
+    requires: null,
+    slides: [{ id: "overview" }, { id: "payoffAnchored" }, { id: "action" }],
+  },
+  {
+    key: "consistency",
+    panelId: "editor",
+    requires: "analysis",
+    slides: [{ id: "overview" }, { id: "resultPlacement" }, { id: "action" }],
+  },
+  {
+    key: "timeline",
+    panelId: "timeline",
+    requires: null,
+    slides: [{ id: "overview" }, { id: "zoom" }],
+  },
+  {
+    key: "end",
+    panelId: null,
+    requires: null,
+    slides: [{ id: "summary" }, { id: "restartHint" }],
+  },
 ];
-
-// ---------------------------------------------------------------------------
-// Step key → i18n number helper
-// ---------------------------------------------------------------------------
-function stepNum(key: TourStepKey): string {
-  const map: Record<TourStepKey, string> = {
-    scenes: "step1",
-    editor: "step2",
-    codex: "step3",
-    chat: "step4",
-    codexExtract: "step5",
-    aiWrite: "step6",
-    consistency: "step7",
-    end: "step8",
-  };
-  return map[key];
-}
 
 // ---------------------------------------------------------------------------
 // Tour card
@@ -74,29 +129,39 @@ function stepNum(key: TourStepKey): string {
 
 interface TourCardProps {
   stepKey: TourStepKey;
+  slideId: string;
   stepIndex: number;
   totalSteps: number;
-  isDone: boolean;
+  isLastStep: boolean;
+  isLastSlide: boolean;
+  showActionHint: boolean;
+  canAdvance: boolean;
+  highlightNext: boolean;
   onNext: () => void;
   onSkip: () => void;
 }
 
 function TourCard({
   stepKey,
+  slideId,
   stepIndex,
   totalSteps,
-  isDone,
+  isLastStep,
+  isLastSlide,
+  showActionHint,
+  canAdvance,
+  highlightNext,
   onNext,
   onSkip,
 }: TourCardProps) {
   const { t } = useTranslation();
   const nextBtnRef = useRef<HTMLButtonElement>(null);
-  const prevDone = useRef(isDone);
+  const prevHighlight = useRef(highlightNext);
   const [skipConfirmOpen, setSkipConfirmOpen] = useState(false);
   const skipContainerRef = useRef<HTMLDivElement>(null);
 
   useGSAP(() => {
-    if (isDone && !prevDone.current && nextBtnRef.current) {
+    if (highlightNext && !prevHighlight.current && nextBtnRef.current) {
       if (isReducedMotion()) {
         gsap.set(nextBtnRef.current, { scale: 1 });
       } else {
@@ -113,11 +178,13 @@ function TourCard({
         );
       }
     }
-    prevDone.current = isDone;
-  }, [isDone]);
+    prevHighlight.current = highlightNext;
+  }, [highlightNext]);
 
   const isEnd = stepKey === "end";
-  const sn = stepNum(stepKey);
+  const titleKey = `tour.steps.${stepKey}.slides.${slideId}.title`;
+  const bodyKey = `tour.steps.${stepKey}.slides.${slideId}.body`;
+  const isDoneAtEnd = isLastStep && isLastSlide;
 
   return (
     <div
@@ -180,13 +247,13 @@ function TourCard({
         </div>
 
         <p className="mb-1 text-sm font-semibold text-foreground">
-          {t(`tour.${sn}.title`)}
+          {t(titleKey)}
         </p>
         <p className="mb-4 text-xs leading-relaxed text-muted-foreground">
-          {t(`tour.${sn}.desc`)}
+          {t(bodyKey)}
         </p>
 
-        {!isDone && !isEnd && (
+        {showActionHint && (
           <p className="mb-3 text-center text-[10px] italic text-muted-foreground/60">
             {t("tour.actionRequired")}
           </p>
@@ -196,10 +263,10 @@ function TourCard({
           ref={nextBtnRef}
           type="button"
           onClick={onNext}
-          disabled={!isDone}
+          disabled={!canAdvance}
           className="w-full rounded-lg bg-primary py-2 text-sm font-medium text-primary-foreground transition-opacity hover:bg-primary/90 disabled:opacity-30"
         >
-          {isEnd ? t("tour.done") : t("tour.next")}
+          {isDoneAtEnd ? t("tour.done") : t("tour.next")}
         </button>
       </motion.div>
     </div>
@@ -243,7 +310,21 @@ export function SampleTour() {
   );
 
   const [stepIndex, setStepIndex] = useState(0);
+  const [slideIndex, setSlideIndex] = useState(0);
   const currentStep = steps[stepIndex] ?? steps[steps.length - 1];
+  const currentSlide =
+    currentStep.slides[slideIndex] ??
+    currentStep.slides[currentStep.slides.length - 1];
+  const gatedSlideIndex =
+    currentStep.gatedSlideIndex ?? currentStep.slides.length - 1;
+  const isGatedSlide = slideIndex === gatedSlideIndex;
+  const isLastSlide = slideIndex === currentStep.slides.length - 1;
+  const isLastStep = stepIndex === steps.length - 1;
+
+  // Reset slide index when entering a new step.
+  useEffect(() => {
+    setSlideIndex(0);
+  }, [stepIndex]);
 
   // Open the target panel whenever the step changes.
   useEffect(() => {
@@ -258,49 +339,71 @@ export function SampleTour() {
   // then detects increases from that point.
   const sceneOpenDone = useSceneOpenGate();
   const editorDone = useEditorWriteGate();
+  const snippetDone = useSnippetUsedGate();
+  const codexViewDone = useCodexViewGate();
   const chatDone = useChatSentGate();
   const codexExtractDone = useCodexExtractGate();
   const aiWriteDone = useEditorWriteGate(50);
+  const foreshadowDwellDone = usePanelDwellGate("foreshadow", 3000);
   const postEffectDone = usePostEffectRunGate();
+  const timelineDwellDone = usePanelDwellGate("timeline", 3000);
 
   // Auto-advance from the scenes step once the user opens a scene —
   // the action is unambiguous and self-completing, so waiting for a
-  // manual "Next" click would feel pedantic.
+  // manual "Next" click would feel pedantic. Only fires when the user
+  // has already reached the gated (action) slide.
   useEffect(() => {
     if (currentStep.key !== "scenes" || !sceneOpenDone) return;
+    if (!isGatedSlide) return;
     const timer = setTimeout(() => {
       setStepIndex((i) => Math.min(i + 1, steps.length - 1));
     }, 500);
     return () => clearTimeout(timer);
-  }, [currentStep.key, sceneOpenDone, steps.length]);
+  }, [currentStep.key, sceneOpenDone, isGatedSlide, steps.length]);
 
-  function isDone(key: TourStepKey): boolean {
+  function isStepDone(key: TourStepKey): boolean {
     switch (key) {
       case "scenes":
         return sceneOpenDone;
       case "editor":
         return editorDone;
+      case "snippets":
+        return snippetDone;
       case "codex":
-        return true; // codex is always viewable; let user proceed at will
+        return codexViewDone;
       case "chat":
         return chatDone;
       case "codexExtract":
         return codexExtractDone;
       case "aiWrite":
         return aiWriteDone;
+      case "foreshadow":
+        return foreshadowDwellDone;
       case "consistency":
         return postEffectDone;
+      case "timeline":
+        return timelineDwellDone;
       case "end":
         return true;
     }
   }
 
+  const gateDone = isStepDone(currentStep.key);
+  const canAdvance = !isGatedSlide || gateDone;
+  const showActionHint = isGatedSlide && !gateDone && currentStep.key !== "end";
+  const highlightNext = isGatedSlide && gateDone && currentStep.key !== "end";
+
   async function handleNext() {
-    if (stepIndex < steps.length - 1) {
-      setStepIndex((i) => i + 1);
-    } else {
-      await completeTour();
+    if (!canAdvance) return;
+    if (!isLastSlide) {
+      setSlideIndex((i) => i + 1);
+      return;
     }
+    if (!isLastStep) {
+      setStepIndex((i) => i + 1);
+      return;
+    }
+    await completeTour();
   }
 
   async function completeTour() {
@@ -313,11 +416,16 @@ export function SampleTour() {
       <SpotlightOverlay panelId={currentStep.panelId} />
       <AnimatePresence mode="wait">
         <TourCard
-          key={currentStep.key}
+          key={`${currentStep.key}:${currentSlide.id}`}
           stepKey={currentStep.key}
+          slideId={currentSlide.id}
           stepIndex={stepIndex}
           totalSteps={steps.length}
-          isDone={isDone(currentStep.key)}
+          isLastStep={isLastStep}
+          isLastSlide={isLastSlide}
+          showActionHint={showActionHint}
+          canAdvance={canAdvance}
+          highlightNext={highlightNext}
           onNext={() => void handleNext()}
           onSkip={() => void completeTour()}
         />

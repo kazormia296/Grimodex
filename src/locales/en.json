@@ -2230,37 +2230,167 @@
     "skipConfirmDesc": "You can restart it any time from Settings > About.",
     "actionRequired": "Complete the action above, then press Next",
     "restartTutorial": "Restart Tutorial",
-    "step1": {
-      "title": "Open a scene",
-      "desc": "Double-click 'Awakening of the Swordsman' in the Scenes panel on the left to open it."
-    },
-    "step2": {
-      "title": "Write something in the editor",
-      "desc": "Add some text to the body of the scene you just opened."
-    },
-    "step3": {
-      "title": "Explore the Codex",
-      "desc": "Characters, locations, and lore are stored in the Codex. Click an entry to see its details."
-    },
-    "step4": {
-      "title": "Brainstorm with AI",
-      "desc": "Send a question to the chat panel on the right. Ask for story ideas or help with the narrative."
-    },
-    "step5": {
-      "title": "Extract to Codex",
-      "desc": "Highlight text in an AI message and choose 'Add to Codex' to save it as a new entry."
-    },
-    "step6": {
-      "title": "Let AI write the next part",
-      "desc": "Use the Beat node in the editor to trigger AI writing and extend the scene."
-    },
-    "step7": {
-      "title": "Run a consistency check",
-      "desc": "Press the consistency check button in the toolbar to analyze the scene with AI."
-    },
-    "step8": {
-      "title": "Tutorial complete!",
-      "desc": "You've experienced the core Grimodex workflow. Keep practicing on this sample project or open a new workspace to start writing!"
+    "steps": {
+      "scenes": {
+        "slides": {
+          "overview": {
+            "title": "Scenes panel",
+            "body": "Your manuscript is organized as Chapters → Scenes. The left panel is the table of contents for the whole project."
+          },
+          "hierarchy": {
+            "title": "Reorder and context menu",
+            "body": "Drag scenes across chapters to reorder. The right-click menu creates chapters, duplicates scenes, and sends items to the trash."
+          },
+          "action": {
+            "title": "Open a scene",
+            "body": "Double-click 'Awakening of the Swordsman' to open it. A tab will appear and you can start editing."
+          }
+        }
+      },
+      "editor": {
+        "slides": {
+          "overview": {
+            "title": "Editor",
+            "body": "Each scene opens its own editor tab. Prose and Beat structure blocks coexist in the same writing view."
+          },
+          "beatNode": {
+            "title": "What is a Beat node?",
+            "body": "A structured block where you bullet-point a scene's intent. It also doubles as the prompt for AI-driven writing later on."
+          },
+          "action": {
+            "title": "Type at least 5 characters",
+            "body": "Add some text to the body. Edits autosave and feed into Codex / consistency analysis."
+          }
+        }
+      },
+      "snippets": {
+        "slides": {
+          "overview": {
+            "title": "Snippets",
+            "body": "A reusable-fragment library. Drag into the editor or click to insert — perfect for recurring phrases or world-building boilerplate."
+          },
+          "action": {
+            "title": "Try one out",
+            "body": "Create a new snippet, or insert one of the existing snippets into the editor."
+          }
+        }
+      },
+      "codex": {
+        "slides": {
+          "overview": {
+            "title": "Codex",
+            "body": "Your knowledge base for characters, locations, and lore — and the source of context fed to the AI."
+          },
+          "fourLayers": {
+            "title": "Use all four layers",
+            "body": "Summary / Content / DetailValues are canonical info sent to the AI. Notes is a scratchpad and is NOT shared with the AI. Split them deliberately for better generations."
+          },
+          "action": {
+            "title": "Open one entry",
+            "body": "Click any entry to open the detail pane. You'll see the four input layers laid out."
+          }
+        }
+      },
+      "chat": {
+        "slides": {
+          "overview": {
+            "title": "AI Chat",
+            "body": "Brainstorm, summarize, and ask for continuations on the right panel. Each scene keeps its own chat history."
+          },
+          "mention": {
+            "title": "Pin context with @mention",
+            "body": "Type @scene-name to pin a scene as context. Related Codex entries are pulled in automatically, so replies stay on target."
+          },
+          "action": {
+            "title": "Send one message",
+            "body": "Ask anything — the next story beat, an opening line, a tone check."
+          }
+        }
+      },
+      "codexExtract": {
+        "slides": {
+          "overview": {
+            "title": "Chat → Codex",
+            "body": "Distill insights from AI replies into Codex entries so the world-building you discover in chat doesn't slip away."
+          },
+          "action": {
+            "title": "Highlight to extract",
+            "body": "Select text in an AI message and choose 'Add to Codex'. A new entry will be created."
+          }
+        }
+      },
+      "aiWrite": {
+        "slides": {
+          "overview": {
+            "title": "Beat-driven AI writing",
+            "body": "The AI uses the Beat node's intent as context to generate prose. The whole flow stays inside the editor."
+          },
+          "beatQuality": {
+            "title": "Better beats, better output",
+            "body": "Write one concrete line: who does what and feels how. Vague beats produce vague prose — that's the biggest quality lever."
+          },
+          "action": {
+            "title": "Let AI write",
+            "body": "Press the generate button next to a Beat node and have it produce at least 50 characters."
+          }
+        }
+      },
+      "foreshadow": {
+        "slides": {
+          "overview": {
+            "title": "Foreshadowing register",
+            "body": "A Grimodex-original tool for tracking setups and payoffs across the whole story."
+          },
+          "payoffAnchored": {
+            "title": "Payoff-anchored design",
+            "body": "Foreshadows are anchored to their payoff scene. Unpaid setups surface as warnings so you never forget to deliver them."
+          },
+          "action": {
+            "title": "Take a look inside",
+            "body": "Spend a few seconds browsing the sample foreshadows. The tour will advance once you've absorbed the layout."
+          }
+        }
+      },
+      "consistency": {
+        "slides": {
+          "overview": {
+            "title": "Consistency check",
+            "body": "An AI scan that finds contradictions between your prose and Codex / prior scenes — like a character's eye color suddenly changing."
+          },
+          "resultPlacement": {
+            "title": "Results appear in-editor",
+            "body": "Findings are rendered as highlights and inline annotations. Click each to inspect, fix, or dismiss."
+          },
+          "action": {
+            "title": "Run it once",
+            "body": "Trigger the consistency check from the editor toolbar. The AI will analyze the current scene."
+          }
+        }
+      },
+      "timeline": {
+        "slides": {
+          "overview": {
+            "title": "Timeline",
+            "body": "A chronological view of your scenes. See pacing and density at a glance."
+          },
+          "zoom": {
+            "title": "Zoom and reorder",
+            "body": "Scroll-wheel to zoom the time axis. Drag to reposition scenes when the order needs adjusting."
+          }
+        }
+      },
+      "end": {
+        "slides": {
+          "summary": {
+            "title": "Tutorial complete!",
+            "body": "You've walked through the Grimodex core workflow. Feel free to keep practicing on this sample project."
+          },
+          "restartHint": {
+            "title": "What's next",
+            "body": "Open a new workspace and start writing. You can rerun this tutorial any time from Settings > About."
+          }
+        }
+      }
     }
   }
 
