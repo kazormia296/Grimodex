@@ -1393,6 +1393,8 @@
       "confirmPayoff": "払い出し成立として確定",
       "confirmDisabled": "Payoff anchor が必要です",
       "abandonedLabel": "破棄",
+      "secretLabel": "AI にこの伏線を見せない",
+      "secretDesc": "未回収伏線ダッシュボードでの AI 公開を抑制",
       "payoffAnchorSection": "Payoff anchor",
       "payoffAnchorNone": "未設定",
       "unsetAnchor": "Payoff anchor を解除",

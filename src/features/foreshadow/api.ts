@@ -74,6 +74,7 @@ function normalizeForeshadowRow(raw: unknown): ForeshadowRow {
       null,
     payoffConfirmed: toBool(row.payoffConfirmed ?? row.payoff_confirmed),
     abandoned: toBool(row.abandoned),
+    secret: toBool(row.secret ?? false),
     loadBearing:
       ((row.loadBearing ?? row.load_bearing) as
         | ForeshadowLoadBearing
@@ -219,6 +220,7 @@ export async function listOpenForeshadowsForContext(
         eq(foreshadows.projectId, projectId),
         eq(foreshadows.payoffConfirmed, false),
         eq(foreshadows.abandoned, false),
+        eq(foreshadows.secret, false),
       ),
     )) as Array<{
     id: string;
@@ -390,6 +392,7 @@ export async function updateForeshadow(
       | "notes"
       | "payoffConfirmed"
       | "abandoned"
+      | "secret"
       | "loadBearing"
       | "payoffSceneId"
       | "payoffFromPos"
@@ -414,6 +417,7 @@ export async function updateForeshadow(
       tauriPatch.payoffConfirmed = patch.payoffConfirmed;
     }
     if (patch.abandoned !== undefined) tauriPatch.abandoned = patch.abandoned;
+    if (patch.secret !== undefined) tauriPatch.secret = patch.secret;
     if (patch.loadBearing !== undefined)
       tauriPatch.loadBearing = patch.loadBearing;
 

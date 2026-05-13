@@ -16,6 +16,7 @@ function makeRow(overrides: Partial<ForeshadowRow> = {}): ForeshadowRow {
     payoffToPos: null,
     payoffConfirmed: false,
     abandoned: false,
+    secret: false,
     loadBearing: null,
     createdAt: new Date("2024-01-01"),
     updatedAt: new Date("2024-01-01"),

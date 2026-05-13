@@ -771,6 +771,7 @@ impl Database {
                 payoff_to_pos    INTEGER,
                 payoff_confirmed INTEGER NOT NULL DEFAULT 0,
                 abandoned        INTEGER NOT NULL DEFAULT 0,
+                secret           INTEGER NOT NULL DEFAULT 1,
                 load_bearing     TEXT,
                 created_at       INTEGER NOT NULL,
                 updated_at       INTEGER NOT NULL
@@ -879,6 +880,9 @@ impl Database {
             "sticky_id",
             "TEXT REFERENCES map_stickies(id) ON DELETE CASCADE",
         )?;
+
+        // Foreshadow secret flag — existing records default false (backwards-compat)
+        Self::add_column_if_missing(&conn, "foreshadows", "secret", "INTEGER NOT NULL DEFAULT 0")?;
 
         // Beat-level POV override cache for Matrix ★ display.
         conn.execute_batch(

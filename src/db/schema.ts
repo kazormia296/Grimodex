@@ -942,6 +942,7 @@ export const foreshadows = sqliteTable(
     abandoned: integer("abandoned", { mode: "boolean" })
       .notNull()
       .default(false),
+    secret: integer("secret", { mode: "boolean" }).notNull().default(true),
 
     // Phase 6: load_bearing 軸（critical / supporting / optional / null）
     loadBearing: text("load_bearing"),

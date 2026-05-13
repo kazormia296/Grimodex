@@ -72,6 +72,7 @@ function makeItem(
     payoffToPos: null,
     payoffConfirmed: false,
     abandoned: false,
+    secret: true,
     loadBearing: null,
     createdAt: new Date(),
     updatedAt: new Date(),

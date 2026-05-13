@@ -117,6 +117,8 @@ AI が「アリス = 真犯人」を **知らない** 状態で scene-7 を書�
 
 現設計（reading モードで一律隠す）は **その上位機能を入れるまでの妥当な落とし所**。将来 Phase に `aiVisibility` のような属性を足せば、reading モードの粒度を細かくできる余地はある。
 
+同じ「AI への spoiler 制御は作者体験のため」という思想を、より単純な形で **Foreshadow 側に先行導入した**。`foreshadows.secret` フラグ（boolean、新規作成時 default=true）が ON の伏線は `listOpenForeshadowsForContext` の L2 ブロックから除外される。Phase のような scene 順序依存の解決は不要なため、1 カラム追加で完結している。
+
 ## 検討した代替案
 
 ### A) 1 モードに統合

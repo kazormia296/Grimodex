@@ -1393,6 +1393,8 @@
       "confirmPayoff": "Confirm payoff as resolved",
       "confirmDisabled": "Payoff anchor required",
       "abandonedLabel": "Abandoned",
+      "secretLabel": "Hide this foreshadow from AI",
+      "secretDesc": "Suppresses AI disclosure in the open-foreshadow context block",
       "payoffAnchorSection": "Payoff anchor",
       "payoffAnchorNone": "Not set",
       "unsetAnchor": "Remove payoff anchor",

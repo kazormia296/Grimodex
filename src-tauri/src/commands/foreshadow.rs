@@ -28,6 +28,7 @@ pub(crate) struct ForeshadowPatch {
     payoff_to_pos: Option<Option<i64>>,
     payoff_confirmed: Option<bool>,
     abandoned: Option<bool>,
+    secret: Option<bool>,
     load_bearing: Option<Option<String>>,
 }
 
@@ -199,8 +200,8 @@ fn foreshadow_create_impl(
     let id = uuid::Uuid::new_v4().to_string();
     db.execute(
         "INSERT INTO foreshadows
-         (id, project_id, title, intent, notes, payoff_scene_id, payoff_from_pos, payoff_to_pos, payoff_confirmed, abandoned, load_bearing, created_at, updated_at)
-         VALUES (?, ?, ?, ?, NULL, NULL, NULL, NULL, 0, 0, ?, ?, ?)",
+         (id, project_id, title, intent, notes, payoff_scene_id, payoff_from_pos, payoff_to_pos, payoff_confirmed, abandoned, secret, load_bearing, created_at, updated_at)
+         VALUES (?, ?, ?, ?, NULL, NULL, NULL, NULL, 0, 0, 1, ?, ?, ?)",
         &[
             Value::String(id.clone()),
             Value::String(payload.project_id),
@@ -283,6 +284,10 @@ fn foreshadow_update_impl(
     if let Some(abandoned) = patch.abandoned {
         sets.push("abandoned = ?");
         params.push(Value::Bool(abandoned));
+    }
+    if let Some(secret) = patch.secret {
+        sets.push("secret = ?");
+        params.push(Value::Bool(secret));
     }
     if let Some(load_bearing) = patch.load_bearing {
         sets.push("load_bearing = ?");
@@ -1105,8 +1110,8 @@ mod tests {
         let id = uuid::Uuid::new_v4().to_string();
         let now = chrono::Utc::now().timestamp_millis();
         db.execute(
-            "INSERT INTO foreshadows (id, project_id, title, payoff_confirmed, abandoned, created_at, updated_at)
-             VALUES (?, ?, 'Test', 0, 0, ?, ?)",
+            "INSERT INTO foreshadows (id, project_id, title, payoff_confirmed, abandoned, secret, created_at, updated_at)
+             VALUES (?, ?, 'Test', 0, 0, 0, ?, ?)",
             &[
                 Value::String(id.clone()),
                 Value::String(project_id.to_string()),
@@ -1181,6 +1186,7 @@ mod tests {
             payoff_to_pos: None,
             payoff_confirmed: None,
             abandoned: None,
+            secret: None,
             load_bearing: None,
         };
         let result = foreshadow_update_impl(&db, fid.clone(), patch).unwrap();
@@ -1202,6 +1208,7 @@ mod tests {
             payoff_to_pos: None,
             payoff_confirmed: None,
             abandoned: None,
+            secret: None,
             load_bearing: None,
         };
         let result = foreshadow_update_impl(&db, fid.clone(), patch).unwrap();
@@ -1224,6 +1231,7 @@ mod tests {
             payoff_to_pos: None,
             payoff_confirmed: None,
             abandoned: None,
+            secret: None,
             load_bearing: None,
         };
         foreshadow_update_impl(&db, fid.clone(), set_patch).unwrap();
@@ -1238,6 +1246,7 @@ mod tests {
             payoff_to_pos: None,
             payoff_confirmed: None,
             abandoned: None,
+            secret: None,
             load_bearing: None,
         };
         let result = foreshadow_update_impl(&db, fid.clone(), clear_patch).unwrap();
@@ -1315,6 +1324,7 @@ mod tests {
             payoff_to_pos: None,
             payoff_confirmed: None,
             abandoned: None,
+            secret: None,
             load_bearing: Some(Some("supporting".to_string())),
         };
         let result = foreshadow_update_impl(&db, fid, patch).unwrap();
@@ -1340,6 +1350,7 @@ mod tests {
             payoff_to_pos: None,
             payoff_confirmed: None,
             abandoned: None,
+            secret: None,
             load_bearing: Some(Some("critical".to_string())),
         };
         foreshadow_update_impl(&db, fid.clone(), set_patch).unwrap();
@@ -1354,6 +1365,7 @@ mod tests {
             payoff_to_pos: None,
             payoff_confirmed: None,
             abandoned: None,
+            secret: None,
             load_bearing: Some(None),
         };
         let result = foreshadow_update_impl(&db, fid, clear_patch).unwrap();
@@ -1375,6 +1387,7 @@ mod tests {
             payoff_to_pos: None,
             payoff_confirmed: None,
             abandoned: None,
+            secret: None,
             load_bearing: Some(Some("bogus".to_string())),
         };
         let result = foreshadow_update_impl(&db, fid.clone(), patch);

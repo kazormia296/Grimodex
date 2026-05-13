@@ -72,6 +72,7 @@ export interface ForeshadowRow {
   payoffToPos: number | null;
   payoffConfirmed: boolean;
   abandoned: boolean;
+  secret: boolean;
   loadBearing: ForeshadowLoadBearing | null;
   createdAt: Date;
   updatedAt: Date;
