@@ -1,10 +1,11 @@
-import { useState, useMemo, useRef } from "react";
+import { useState, useMemo, useRef, useEffect } from "react";
 import { useTranslation } from "react-i18next";
 import { AnimatePresence, motion } from "motion/react";
 import { useGSAP } from "@gsap/react";
 import { gsap } from "gsap";
 import { X } from "lucide-react";
 import { useWorkspaceStore } from "@/features/workspace/store";
+import { useLayoutStore } from "@/features/layout/layoutStore";
 import { DURATIONS, EASINGS } from "@/lib/animation";
 import { isReducedMotion } from "@/lib/gsap";
 import type { AiPolicyToggles } from "@/features/ai-policy/types";
@@ -201,6 +202,13 @@ export function SampleTour() {
 
   const [stepIndex, setStepIndex] = useState(0);
   const currentStep = steps[stepIndex] ?? steps[steps.length - 1];
+
+  // Open the target panel whenever the step changes
+  useEffect(() => {
+    if (currentStep.panelId) {
+      useLayoutStore.getState().showPanel(currentStep.panelId);
+    }
+  }, [currentStep.panelId]);
 
   // Gates — all called unconditionally (Rules of Hooks).
   // Each gate self-manages its baseline via "settle-then-track":
