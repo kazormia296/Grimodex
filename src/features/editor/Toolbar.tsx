@@ -10,7 +10,8 @@ import {
   useSettingBoolean,
   useSettingNumber,
 } from "@/features/settings/useSettingControl";
-import { PostEffectToolbar } from "@/features/post-effect/PostEffectToolbar";
+import { useAnnotationStore } from "@/features/post-effect/annotationStore";
+import { ANNOTATION_REBUILD_META } from "@/features/post-effect/AnnotationPlugin";
 
 function ToolbarButton({
   active,
@@ -129,6 +130,10 @@ export function Toolbar({
     showForeshadowMarks,
     toggleShowForeshadowMarks,
   } = useCursorSettingsStore();
+  const showAnnotations = useAnnotationStore((s) => s.showAnnotations);
+  const toggleShowAnnotations = useAnnotationStore(
+    (s) => s.toggleShowAnnotations,
+  );
 
   // Force re-render when editor selection/state changes so isActive() is accurate
   const [, setEditorTick] = useState(0);
@@ -505,6 +510,20 @@ export function Toolbar({
           >
             TW
           </ToolbarButton>
+          {sceneId && nodeType === "scene" && (
+            <ToolbarButton
+              label={t("editor.toolbar.consistencyMarks")}
+              active={showAnnotations}
+              onClick={() => {
+                toggleShowAnnotations();
+                editor.view.dispatch(
+                  editor.state.tr.setMeta(ANNOTATION_REBUILD_META, true),
+                );
+              }}
+            >
+              Cs
+            </ToolbarButton>
+          )}
           {onTogglePanel !== undefined && (
             <ToolbarButton
               label={t("editor.toolbar.sceneMetaPanel")}
@@ -513,12 +532,6 @@ export function Toolbar({
             >
               ▶
             </ToolbarButton>
-          )}
-          {sceneId && nodeType === "scene" && (
-            <>
-              <Sep />
-              <PostEffectToolbar sceneId={sceneId} editor={editor} />
-            </>
           )}
           <Sep />
           <div ref={overflowBtnRef}>

@@ -1,6 +1,6 @@
 import { useKouetsuStore } from "@/features/kouetsu/kouetsuStore";
 import { useTreeStore } from "@/features/tree/treeStore";
-import { PostEffectAnnotationPanel } from "@/features/post-effect/PostEffectAnnotationPanel";
+import { CurrentSceneAnnotationsView } from "@/features/kouetsu/views/CurrentSceneAnnotationsView";
 import { ProjectAnnotationsView } from "@/features/kouetsu/views/ProjectAnnotationsView";
 import { DismissedAnnotationsView } from "@/features/kouetsu/views/DismissedAnnotationsView";
 
@@ -24,5 +24,5 @@ export function ConsistencySection() {
       </div>
     );
   }
-  return <PostEffectAnnotationPanel sceneId={activeSceneId} />;
+  return <CurrentSceneAnnotationsView sceneId={activeSceneId} />;
 }
