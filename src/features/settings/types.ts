@@ -36,7 +36,7 @@ export const SETTINGS_CATEGORIES: CategoryDef[] = [
   { id: "keys", label: "Keys", Icon: Keyboard },
   { id: "data", label: "Data", Icon: Database },
   { id: "codex", label: "Codex", Icon: BookOpen },
-  { id: "linter", label: "校正", Icon: CheckSquare },
+  { id: "linter", label: "Linter", Icon: CheckSquare },
   { id: "about", label: "About", Icon: Info },
 ];
 
