@@ -6,6 +6,8 @@ import { gsap } from "gsap";
 import { X } from "lucide-react";
 import { useWorkspaceStore } from "@/features/workspace/store";
 import { useLayoutStore } from "@/features/layout/layoutStore";
+import { useTreeStore } from "@/features/tree/treeStore";
+import { useTabStore } from "@/features/editor/tabStore";
 import { DURATIONS, EASINGS } from "@/lib/animation";
 import { isReducedMotion } from "@/lib/gsap";
 import type { AiPolicyToggles } from "@/features/ai-policy/types";
@@ -203,10 +205,31 @@ export function SampleTour() {
   const [stepIndex, setStepIndex] = useState(0);
   const currentStep = steps[stepIndex] ?? steps[steps.length - 1];
 
-  // Open the target panel whenever the step changes
+  // Open the target panel whenever the step changes.
+  // For the editor panel, also ensure the first scene is open in a tab —
+  // a fresh sample workspace has no persisted tab state so tabs start empty.
   useEffect(() => {
-    if (currentStep.panelId) {
-      useLayoutStore.getState().showPanel(currentStep.panelId);
+    if (!currentStep.panelId) return;
+    useLayoutStore.getState().showPanel(currentStep.panelId);
+
+    if (currentStep.panelId !== "editor") return;
+
+    function tryOpenScene(): boolean {
+      const { isLoading, activeSceneId } = useTreeStore.getState();
+      const { tabs, openPinned } = useTabStore.getState();
+      if (!isLoading && activeSceneId && tabs.length === 0) {
+        openPinned(activeSceneId);
+        return true;
+      }
+      return false;
+    }
+
+    if (!tryOpenScene()) {
+      // Tree still loading — open once it settles
+      const unsub = useTreeStore.subscribe(() => {
+        if (tryOpenScene()) unsub();
+      });
+      return unsub;
     }
   }, [currentStep.panelId]);
 
