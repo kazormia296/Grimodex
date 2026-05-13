@@ -2175,6 +2175,8 @@
     "step1Title": "言語を選んでください",
     "step2Title": "AI の利用範囲を設定してください",
     "step2Subtitle": "プロバイダは後からいつでも変更できます。",
+    "step3Title": "AI プロバイダを設定してください",
+    "step3Subtitle": "API キーをお持ちでない場合は「あとで設定する」を選んでください。",
     "next": "次へ",
     "back": "← 戻る",
     "skip": "スキップ",
@@ -2185,7 +2187,19 @@
     "startSample": "サンプルで始める",
     "starting": "準備中…",
     "nextProvider": "次へ：プロバイダ設定 →",
-    "stepOf": "{{current}} / {{total}}"
+    "stepOf": "{{current}} / {{total}}",
+    "setupLater": "あとで設定する",
+    "setupLaterConfirm": "プロバイダ未設定のため、AI 機能はオフで開始します。Settings > AI から後で設定できます。",
+    "testConnection": "接続テスト",
+    "testing": "テスト中…",
+    "testSuccess": "✓ 接続成功",
+    "selectProvider": "プロバイダを選択",
+    "apiKey": "API キー",
+    "saveKey": "保存",
+    "keyPlaceholder": "sk-…",
+    "modelLabel": "モデル",
+    "loadModels": "モデルを取得",
+    "connected": "接続済み"
   },
   "aiPolicy": {
     "full": {
@@ -2240,22 +2254,6 @@
       "title": "チュートリアル完了！",
       "desc": "Grimodex の基本操作をひと通り体験しました。このサンプルプロジェクトで引き続き練習するか、新しいワークスペースを開いて執筆を始めましょう！"
     }
-  },
-  "preflight": {
-    "step3Title": "AI プロバイダを設定してください",
-    "step3Subtitle": "API キーをお持ちでない場合は「あとで設定する」を選んでください。",
-    "setupLater": "あとで設定する",
-    "setupLaterConfirm": "プロバイダ未設定のため、AI 機能はオフで開始します。Settings > AI から後で設定できます。",
-    "testConnection": "接続テスト",
-    "testing": "テスト中…",
-    "testSuccess": "✓ 接続成功",
-    "selectProvider": "プロバイダを選択",
-    "apiKey": "API キー",
-    "saveKey": "保存",
-    "keyPlaceholder": "sk-…",
-    "modelLabel": "モデル",
-    "loadModels": "モデルを取得",
-    "connected": "接続済み"
   }
 
 }
