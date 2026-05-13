@@ -2195,9 +2195,6 @@
     "keyPlaceholder": "sk-…",
     "modelLabel": "モデル",
     "loadModels": "モデルを取得",
-    "loadingModels": "モデルを取得中…",
-    "selectModel": "— モデルを選択 —",
-    "noModels": "モデルが見つかりませんでした",
     "connected": "接続済み"
   },
   "aiPolicy": {

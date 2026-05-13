@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from "react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import { useAiSettingsStore } from "@/features/chat/store";
+import { ModelPicker } from "@/features/chat/ModelPicker";
 import {
   AI_PROVIDERS,
   DEFAULT_OPENAI_COMPATIBLE_SETTINGS,
@@ -662,21 +663,6 @@ export function AiCategory() {
             dev
               ? dev.charAt(0).toUpperCase() + dev.slice(1)
               : t("common.other");
-          const modelOptgroups = (extraOption?: React.ReactNode) => (
-            <>
-              {extraOption}
-              {grouped.map(([dev, devModels]) => (
-                <optgroup key={dev || "__other"} label={devLabel(dev)}>
-                  {devModels.map((m) => (
-                    <option key={m.id} value={m.id}>
-                      {m.name}
-                    </option>
-                  ))}
-                </optgroup>
-              ))}
-            </>
-          );
-
           const whitelist: string[] = (() => {
             try {
               return JSON.parse(settingsStore.get("ai.modelWhitelist") || "[]");
@@ -704,20 +690,12 @@ export function AiCategory() {
             <>
               <SettingRow label={t("settings.ai.defaultChatModel")}>
                 <div className="flex gap-2">
-                  <select
+                  <ModelPicker
+                    models={models}
                     value={localSettings.model}
-                    onChange={(e) => handleModelChange(e.target.value)}
-                    className="rounded-md border border-input bg-background px-2 py-1 text-sm focus:outline-none"
-                    disabled={isLoadingModels}
-                  >
-                    {modelOptgroups(
-                      <option value="">
-                        {isLoadingModels
-                          ? t("settings.ai.loadingModels")
-                          : t("settings.ai.selectModel")}
-                      </option>,
-                    )}
-                  </select>
+                    onChange={handleModelChange}
+                    isLoading={isLoadingModels}
+                  />
                   <button
                     type="button"
                     onClick={handleLoadModels}
@@ -733,36 +711,26 @@ export function AiCategory() {
                 label={t("settings.ai.inlineModel")}
                 description={t("settings.ai.inlineModelDesc")}
               >
-                <select
+                <ModelPicker
+                  models={models}
                   value={settingsStore.get("ai.inlineModel")}
-                  onChange={(e) =>
-                    settingsStore.set("ai.inlineModel", e.target.value)
-                  }
-                  className="rounded-md border border-input bg-background px-2 py-1 text-sm focus:outline-none"
-                  disabled={isLoadingModels}
-                >
-                  {modelOptgroups(
-                    <option value="">{t("settings.ai.sameChatModel")}</option>,
-                  )}
-                </select>
+                  onChange={(v) => settingsStore.set("ai.inlineModel", v)}
+                  isLoading={isLoadingModels}
+                  placeholder={t("settings.ai.sameChatModel")}
+                />
               </SettingRow>
 
               <SettingRow
                 label={t("settings.ai.titleModel")}
                 description={t("settings.ai.titleModelDesc")}
               >
-                <select
+                <ModelPicker
+                  models={models}
                   value={settingsStore.get("ai.sessionTitleModel")}
-                  onChange={(e) =>
-                    settingsStore.set("ai.sessionTitleModel", e.target.value)
-                  }
-                  className="rounded-md border border-input bg-background px-2 py-1 text-sm focus:outline-none"
-                  disabled={isLoadingModels}
-                >
-                  {modelOptgroups(
-                    <option value="">{t("settings.ai.sameChatModel")}</option>,
-                  )}
-                </select>
+                  onChange={(v) => settingsStore.set("ai.sessionTitleModel", v)}
+                  isLoading={isLoadingModels}
+                  placeholder={t("settings.ai.sameChatModel")}
+                />
               </SettingRow>
 
               {/* Model whitelist */}

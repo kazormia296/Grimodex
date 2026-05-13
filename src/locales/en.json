@@ -2186,9 +2186,6 @@
     "keyPlaceholder": "sk-…",
     "modelLabel": "Model",
     "loadModels": "Load models",
-    "loadingModels": "Loading models…",
-    "selectModel": "— Select a model —",
-    "noModels": "No models found",
     "connected": "Connected"
   },
   "aiPolicy": {

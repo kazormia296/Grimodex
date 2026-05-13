@@ -4,6 +4,7 @@ import { CheckCircle } from "lucide-react";
 import { useAiSettingsStore } from "@/features/chat/store";
 import type { AiProvider } from "@/features/chat/types";
 import { DEFAULT_AI_SETTINGS } from "@/features/chat/types";
+import { ModelPicker } from "@/features/chat/ModelPicker";
 
 const PREFLIGHT_PROVIDERS: AiProvider[] = [
   "openrouter",
@@ -166,28 +167,13 @@ export function AiProviderStep({ onSetupLater }: AiProviderStepProps) {
           <p className="mb-1.5 text-xs font-medium text-muted-foreground">
             {t("preflight.modelLabel")}
           </p>
-          {isLoadingModels ? (
-            <p className="text-xs text-muted-foreground/70">
-              {t("preflight.loadingModels")}
-            </p>
-          ) : models.length === 0 ? (
-            <p className="text-xs text-muted-foreground/70">
-              {t("preflight.noModels")}
-            </p>
-          ) : (
-            <select
-              value={localSettings.model}
-              onChange={(e) => void handleModelChange(e.target.value)}
-              className="w-full rounded-md border border-input bg-background px-2 py-1.5 text-xs focus:outline-none focus:ring-1 focus:ring-primary"
-            >
-              <option value="">{t("preflight.selectModel")}</option>
-              {models.map((m) => (
-                <option key={m.id} value={m.id}>
-                  {m.name || m.id}
-                </option>
-              ))}
-            </select>
-          )}
+          <ModelPicker
+            models={models}
+            value={localSettings.model}
+            onChange={(id) => void handleModelChange(id)}
+            isLoading={isLoadingModels}
+            className="w-full rounded-md border border-input bg-background px-2 py-1.5 text-xs focus:outline-none focus:ring-1 focus:ring-primary"
+          />
         </div>
       )}
 
