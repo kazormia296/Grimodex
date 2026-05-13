@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { schema } from "@tiptap/pm/schema-basic";
+import { schema } from "prosemirror-schema-basic";
 import { buildOffsetMap, strOffsetToPmPos } from "./offsetMap";
 
 function docFromParagraphs(...paragraphs: string[]) {

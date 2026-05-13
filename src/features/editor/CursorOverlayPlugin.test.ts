@@ -2,7 +2,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { EditorView } from "@tiptap/pm/view";
 import { EditorState } from "@tiptap/pm/state";
-import { schema } from "@tiptap/pm/schema-basic";
+import { schema } from "prosemirror-schema-basic";
 import { createCursorOverlayPlugin } from "./CursorOverlayPlugin";
 
 /**

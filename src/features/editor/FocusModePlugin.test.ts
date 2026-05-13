@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { buildFocusDimDecorations } from "./FocusModePlugin";
 import { Node as ProseMirrorNode } from "@tiptap/pm/model";
-import { schema } from "@tiptap/pm/schema-basic";
+import { schema } from "prosemirror-schema-basic";
 import { DecorationSet } from "@tiptap/pm/view";
 
 function makeDoc(paragraphCount: number): ProseMirrorNode {
