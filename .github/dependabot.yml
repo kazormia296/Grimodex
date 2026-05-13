@@ -16,6 +16,12 @@ updates:
         patterns:
           - "ai"
           - "@ai-sdk/*"
+      react:
+        patterns:
+          - "react"
+          - "react-dom"
+          - "@types/react"
+          - "@types/react-dom"
 
   # GitHub Actions
   - package-ecosystem: "github-actions"
