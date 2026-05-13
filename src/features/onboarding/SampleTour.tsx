@@ -225,6 +225,17 @@ export function SampleTour() {
   const aiWriteDone = useEditorWriteGate(50);
   const postEffectDone = usePostEffectRunGate();
 
+  // Auto-advance from the scenes step once the user opens a scene —
+  // the action is unambiguous and self-completing, so waiting for a
+  // manual "Next" click would feel pedantic.
+  useEffect(() => {
+    if (currentStep.key !== "scenes" || !sceneOpenDone) return;
+    const timer = setTimeout(() => {
+      setStepIndex((i) => Math.min(i + 1, steps.length - 1));
+    }, 500);
+    return () => clearTimeout(timer);
+  }, [currentStep.key, sceneOpenDone, steps.length]);
+
   function isDone(key: TourStepKey): boolean {
     switch (key) {
       case "scenes":
