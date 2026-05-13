@@ -1,4 +1,10 @@
-import { useState, useMemo, useRef, useEffect } from "react";
+import {
+  useState,
+  useMemo,
+  useRef,
+  useEffect,
+  type CSSProperties,
+} from "react";
 import { useTranslation } from "react-i18next";
 import { AnimatePresence, motion } from "motion/react";
 import { useGSAP } from "@gsap/react";
@@ -11,7 +17,12 @@ import { DURATIONS, EASINGS } from "@/lib/animation";
 import { isReducedMotion } from "@/lib/gsap";
 import type { AiPolicyToggles } from "@/features/ai-policy/types";
 import type { PanelId } from "@/features/layout/layoutStore";
-import { SpotlightOverlay } from "./spotlight";
+import {
+  SpotlightOverlay,
+  useFocusRects,
+  boundingRect,
+  type FocusRect,
+} from "./spotlight";
 import {
   useSceneOpenGate,
   useEditorWriteGate,
@@ -29,12 +40,12 @@ import {
 
 type TourStepKey =
   | "scenes"
+  | "layout"
   | "editor"
   | "snippets"
   | "codex"
   | "chat"
   | "codexExtract"
-  | "aiWrite"
   | "foreshadow"
   | "consistency"
   | "timeline"
@@ -43,6 +54,12 @@ type TourStepKey =
 interface TourSlide {
   /** Slide id — used as i18n suffix (tour.steps.<step>.slides.<slide>) and motion key. */
   id: string;
+  /**
+   * data-tour-target values to spotlight for this slide.
+   * Overrides panelId highlight when at least one element is found in the DOM.
+   * Falls back to panelId panel when nothing matches.
+   */
+  targets?: string[];
 }
 
 interface TourStepDef {
@@ -52,6 +69,8 @@ interface TourStepDef {
   slides: TourSlide[];
   /** Index of the slide that requires the action gate. Defaults to last slide. */
   gatedSlideIndex?: number;
+  /** No gate required — all slides advance freely. */
+  passive?: boolean;
 }
 
 const ALL_STEPS: TourStepDef[] = [
@@ -59,55 +78,80 @@ const ALL_STEPS: TourStepDef[] = [
     key: "scenes",
     panelId: "scenes",
     requires: null,
-    slides: [{ id: "overview" }, { id: "hierarchy" }, { id: "action" }],
+    slides: [
+      { id: "overview" },
+      { id: "addItems" },
+      { id: "hierarchy" },
+      { id: "action" },
+    ],
+  },
+  {
+    key: "layout",
+    panelId: null,
+    requires: null,
+    passive: true,
+    slides: [
+      {
+        id: "overview",
+        targets: ["layout-preset-btn", "panel-toggle-btn"],
+      },
+    ],
   },
   {
     key: "editor",
     panelId: "editor",
     requires: null,
-    slides: [{ id: "overview" }, { id: "beatNode" }, { id: "action" }],
+    passive: true,
+    slides: [{ id: "overview" }, { id: "beatNode" }],
   },
   {
     key: "snippets",
     panelId: "snippets",
     requires: null,
-    slides: [{ id: "overview" }, { id: "action" }],
+    passive: true,
+    slides: [{ id: "overview" }],
   },
   {
     key: "codex",
     panelId: "codex",
     requires: null,
-    slides: [{ id: "overview" }, { id: "fourLayers" }, { id: "action" }],
+    gatedSlideIndex: 1,
+    slides: [{ id: "overview" }, { id: "action" }, { id: "fourLayers" }],
   },
   {
     key: "chat",
     panelId: "chat",
     requires: "chat",
-    slides: [{ id: "overview" }, { id: "mention" }, { id: "action" }],
+    passive: true,
+    slides: [
+      { id: "overview" },
+      { id: "contextBar", targets: ["chat-context-bar"] },
+      {
+        id: "contextUsage",
+        targets: ["chat-tokens-badge", "chat-context-progress"],
+      },
+    ],
   },
   {
     key: "codexExtract",
-    panelId: "codex",
+    panelId: "chat",
     requires: "chat",
+    passive: true,
     slides: [{ id: "overview" }, { id: "action" }],
-  },
-  {
-    key: "aiWrite",
-    panelId: "editor",
-    requires: "bodyWrite",
-    slides: [{ id: "overview" }, { id: "beatQuality" }, { id: "action" }],
   },
   {
     key: "foreshadow",
     panelId: "foreshadow",
     requires: null,
-    slides: [{ id: "overview" }, { id: "payoffAnchored" }, { id: "action" }],
+    passive: true,
+    slides: [{ id: "overview" }],
   },
   {
     key: "consistency",
-    panelId: "editor",
+    panelId: "kouetsu",
     requires: "analysis",
-    slides: [{ id: "overview" }, { id: "resultPlacement" }, { id: "action" }],
+    passive: true,
+    slides: [{ id: "overview" }],
   },
   {
     key: "timeline",
@@ -132,13 +176,73 @@ interface TourCardProps {
   slideId: string;
   stepIndex: number;
   totalSteps: number;
+  slideIndex: number;
+  slideCount: number;
   isLastStep: boolean;
   isLastSlide: boolean;
   showActionHint: boolean;
   canAdvance: boolean;
   highlightNext: boolean;
+  focusRects: FocusRect[];
+  viewport: { vw: number; vh: number };
   onNext: () => void;
   onSkip: () => void;
+  onCreateWorkspace: () => void;
+}
+
+const CARD_WIDTH = 384;
+const CARD_GAP = 16;
+const VIEWPORT_PAD = 16;
+const CARD_ESTIMATED_HEIGHT = 200;
+
+function computeCardStyle(
+  focusRects: FocusRect[],
+  vw: number,
+  vh: number,
+  isEnd: boolean,
+): CSSProperties {
+  const r = boundingRect(focusRects);
+  if (isEnd || !r || !vw || !vh) {
+    return isEnd
+      ? { left: "50%", top: "50%", transform: "translate(-50%, -50%)" }
+      : { left: "50%", bottom: 24, transform: "translateX(-50%)" };
+  }
+  const clampTop = (t: number) =>
+    Math.max(
+      VIEWPORT_PAD,
+      Math.min(t, vh - CARD_ESTIMATED_HEIGHT - VIEWPORT_PAD),
+    );
+  const clampLeft = (l: number) =>
+    Math.max(VIEWPORT_PAD, Math.min(l, vw - CARD_WIDTH - VIEWPORT_PAD));
+
+  // Right of panel
+  const rightX = r.left + r.width + CARD_GAP;
+  if (rightX + CARD_WIDTH + VIEWPORT_PAD <= vw) {
+    return { left: rightX, top: clampTop(r.top) };
+  }
+  // Left of panel
+  const leftX = r.left - CARD_GAP - CARD_WIDTH;
+  if (leftX >= VIEWPORT_PAD) {
+    return { left: leftX, top: clampTop(r.top) };
+  }
+  // Below panel
+  const belowY = r.top + r.height + CARD_GAP;
+  if (belowY + CARD_ESTIMATED_HEIGHT + VIEWPORT_PAD <= vh) {
+    return {
+      left: clampLeft(r.left + r.width / 2 - CARD_WIDTH / 2),
+      top: belowY,
+    };
+  }
+  // Above panel
+  const aboveY = r.top - CARD_GAP - CARD_ESTIMATED_HEIGHT;
+  if (aboveY >= VIEWPORT_PAD) {
+    return {
+      left: clampLeft(r.left + r.width / 2 - CARD_WIDTH / 2),
+      top: aboveY,
+    };
+  }
+  // Fallback: bottom-center
+  return { left: "50%", bottom: 24, transform: "translateX(-50%)" };
 }
 
 function TourCard({
@@ -146,13 +250,18 @@ function TourCard({
   slideId,
   stepIndex,
   totalSteps,
+  slideIndex,
+  slideCount,
   isLastStep,
   isLastSlide,
   showActionHint,
   canAdvance,
   highlightNext,
+  focusRects,
+  viewport,
   onNext,
   onSkip,
+  onCreateWorkspace,
 }: TourCardProps) {
   const { t } = useTranslation();
   const nextBtnRef = useRef<HTMLButtonElement>(null);
@@ -186,13 +295,22 @@ function TourCard({
   const bodyKey = `tour.steps.${stepKey}.slides.${slideId}.body`;
   const isDoneAtEnd = isLastStep && isLastSlide;
 
+  const positionStyle = computeCardStyle(
+    focusRects,
+    viewport.vw,
+    viewport.vh,
+    isEnd,
+  );
+
   return (
     <div
-      style={{ zIndex: 50 }}
-      className={[
-        "fixed left-1/2 -translate-x-1/2 w-full max-w-xs px-4",
-        isEnd ? "top-1/2 -translate-y-1/2" : "bottom-6",
-      ].join(" ")}
+      style={{
+        ...positionStyle,
+        position: "fixed",
+        zIndex: 50,
+        width: CARD_WIDTH,
+      }}
+      className="px-2"
     >
       <motion.div
         initial={{ opacity: 0, y: 12 }}
@@ -202,8 +320,9 @@ function TourCard({
         className="rounded-2xl border border-border bg-card/95 p-5 shadow-2xl backdrop-blur-sm"
       >
         <div className="mb-3 flex items-center justify-between">
-          <span className="text-xs text-muted-foreground">
-            {stepIndex + 1} / {totalSteps}
+          <span className="text-sm font-medium text-muted-foreground tabular-nums">
+            {stepIndex + 1}
+            {slideCount > 1 ? `.${slideIndex + 1}` : ""} / {totalSteps}
           </span>
           <div ref={skipContainerRef} className="relative">
             <button
@@ -246,15 +365,15 @@ function TourCard({
           </div>
         </div>
 
-        <p className="mb-1 text-sm font-semibold text-foreground">
+        <p className="mb-2 text-base font-semibold text-foreground">
           {t(titleKey)}
         </p>
-        <p className="mb-4 text-xs leading-relaxed text-muted-foreground">
+        <p className="mb-4 text-sm leading-relaxed text-muted-foreground">
           {t(bodyKey)}
         </p>
 
         {showActionHint && (
-          <p className="mb-3 text-center text-[10px] italic text-muted-foreground/60">
+          <p className="mb-3 text-center text-xs italic text-muted-foreground/70">
             {t("tour.actionRequired")}
           </p>
         )}
@@ -264,10 +383,20 @@ function TourCard({
           type="button"
           onClick={onNext}
           disabled={!canAdvance}
-          className="w-full rounded-lg bg-primary py-2 text-sm font-medium text-primary-foreground transition-opacity hover:bg-primary/90 disabled:opacity-30"
+          className="w-full rounded-lg bg-primary py-2.5 text-base font-medium text-primary-foreground transition-opacity hover:bg-primary/90 disabled:opacity-30"
         >
           {isDoneAtEnd ? t("tour.done") : t("tour.next")}
         </button>
+
+        {isDoneAtEnd && (
+          <button
+            type="button"
+            onClick={onCreateWorkspace}
+            className="mt-2 w-full rounded-lg border border-border py-2 text-sm text-muted-foreground hover:bg-accent hover:text-foreground"
+          >
+            {t("tour.createWorkspace")}
+          </button>
+        )}
       </motion.div>
     </div>
   );
@@ -285,6 +414,7 @@ function TourCard({
 export function SampleTour() {
   const setShowSampleTour = useWorkspaceStore((s) => s.setShowSampleTour);
   const updateGlobalSettings = useWorkspaceStore((s) => s.updateGlobalSettings);
+  const showLauncher = useWorkspaceStore((s) => s.showLauncher);
   const defaultAiPolicy = useWorkspaceStore(
     (s) => s.globalSettings?.defaultAiPolicy,
   );
@@ -317,7 +447,7 @@ export function SampleTour() {
     currentStep.slides[currentStep.slides.length - 1];
   const gatedSlideIndex =
     currentStep.gatedSlideIndex ?? currentStep.slides.length - 1;
-  const isGatedSlide = slideIndex === gatedSlideIndex;
+  const isGatedSlide = !currentStep.passive && slideIndex === gatedSlideIndex;
   const isLastSlide = slideIndex === currentStep.slides.length - 1;
   const isLastStep = stepIndex === steps.length - 1;
 
@@ -338,14 +468,15 @@ export function SampleTour() {
   // it captures the baseline on the first settled store observation,
   // then detects increases from that point.
   const sceneOpenDone = useSceneOpenGate();
-  const editorDone = useEditorWriteGate();
-  const snippetDone = useSnippetUsedGate();
+  useEditorWriteGate(); // editor step is passive; kept for Rules of Hooks
+  useSnippetUsedGate(); // snippets step is passive; kept for Rules of Hooks
   const codexViewDone = useCodexViewGate();
-  const chatDone = useChatSentGate();
-  const codexExtractDone = useCodexExtractGate();
-  const aiWriteDone = useEditorWriteGate(50);
-  const foreshadowDwellDone = usePanelDwellGate("foreshadow", 3000);
-  const postEffectDone = usePostEffectRunGate();
+  useChatSentGate(); // chat step is passive; kept for Rules of Hooks
+  useCodexExtractGate(); // codexExtract step is passive; kept for Rules of Hooks
+  // Hooks below are kept for Rules of Hooks compliance; their steps are passive.
+  useEditorWriteGate(50);
+  usePanelDwellGate("foreshadow", 3000);
+  usePostEffectRunGate();
   const timelineDwellDone = usePanelDwellGate("timeline", 3000);
 
   // Auto-advance from the scenes step once the user opens a scene —
@@ -365,24 +496,18 @@ export function SampleTour() {
     switch (key) {
       case "scenes":
         return sceneOpenDone;
-      case "editor":
-        return editorDone;
-      case "snippets":
-        return snippetDone;
       case "codex":
         return codexViewDone;
-      case "chat":
-        return chatDone;
-      case "codexExtract":
-        return codexExtractDone;
-      case "aiWrite":
-        return aiWriteDone;
-      case "foreshadow":
-        return foreshadowDwellDone;
-      case "consistency":
-        return postEffectDone;
       case "timeline":
         return timelineDwellDone;
+      // passive steps — gate never blocks (isGatedSlide is always false)
+      case "layout":
+      case "editor":
+      case "snippets":
+      case "chat":
+      case "codexExtract":
+      case "foreshadow":
+      case "consistency":
       case "end":
         return true;
     }
@@ -392,6 +517,12 @@ export function SampleTour() {
   const canAdvance = !isGatedSlide || gateDone;
   const showActionHint = isGatedSlide && !gateDone && currentStep.key !== "end";
   const highlightNext = isGatedSlide && gateDone && currentStep.key !== "end";
+
+  const {
+    rects: focusRects,
+    vw,
+    vh,
+  } = useFocusRects(currentStep.panelId, currentSlide.targets);
 
   async function handleNext() {
     if (!canAdvance) return;
@@ -413,7 +544,10 @@ export function SampleTour() {
 
   return (
     <>
-      <SpotlightOverlay panelId={currentStep.panelId} />
+      <SpotlightOverlay
+        panelId={currentStep.panelId}
+        targets={currentSlide.targets}
+      />
       <AnimatePresence mode="wait">
         <TourCard
           key={`${currentStep.key}:${currentSlide.id}`}
@@ -421,13 +555,21 @@ export function SampleTour() {
           slideId={currentSlide.id}
           stepIndex={stepIndex}
           totalSteps={steps.length}
+          slideIndex={slideIndex}
+          slideCount={currentStep.slides.length}
           isLastStep={isLastStep}
           isLastSlide={isLastSlide}
           showActionHint={showActionHint}
           canAdvance={canAdvance}
           highlightNext={highlightNext}
+          focusRects={focusRects}
+          viewport={{ vw, vh }}
           onNext={() => void handleNext()}
           onSkip={() => void completeTour()}
+          onCreateWorkspace={() => {
+            void completeTour();
+            showLauncher();
+          }}
         />
       </AnimatePresence>
     </>

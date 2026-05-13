@@ -24,7 +24,9 @@
       "synopsis": "エリアスが封印の夢を見て目を覚ます。祖父の形見の古剣が光り始め、旅立ちの予感を感じる。",
       "sort_order": "a0",
       "status": "draft",
-      "content": "{\"type\":\"doc\",\"content\":[{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"夜明け前の静寂の中、エリアスは汗ばんだ額を拭いながら起き上がった。また同じ夢だった。蒼く輝く封印の扉、その向こうから響く無数の叫び声。十七年間、一度も会ったことのない父の声も、その中に混じっているような気がした。\"}]},{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"窓の外では、ハルト村の朝が静かに始まろうとしていた。鶏の鳴き声、パン屋の煙突から立ち上る煙。いつもと変わらぬ光景のはずなのに、今日は何かが違った。\"}]},{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"壁に掛けてあった祖父の形見の剣が、微かに光を放っていた。\"}]},{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"「また始まったか」\"}]},{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"エリアスは剣を手に取った。鞘から抜くと、刀身に古代語の文字が浮かび上がり、青白い光の帯が走った。祖父ガルドが死の床で語っていた言葉が蘇る。\"}]},{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"――この剣は、お前が真の試練に立ち向かう時、目を覚ます。その時が来たら、ドラクタールへ行け。封印の秘密は、あそこにある。\"}]},{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"ドラクタール。北の山脈に屹立する古城。千年前の魔法大戦の戦場となり、今は廃墟となって人々から忌み嫌われる場所。エリアスはベッドの端に腰かけ、剣を膝の上に横たえながら、長い時間をかけて決意を固めた。\"}]},{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"旅立ちの朝は、こうして始まった。\"}]}]}"
+      "story_time_order": "0001",
+      "story_time_label": "夜明け前",
+      "content": "{\"type\": \"doc\", \"content\": [{\"type\": \"paragraph\", \"content\": [{\"type\": \"text\", \"text\": \"夜明け前の静寂の中、エリアスは汗ばんだ額を拭いながら起き上がった。また同じ夢だった。\"}, {\"type\": \"ruby\", \"attrs\": {\"base\": \"蒼穹\", \"annotation\": \"そうきゅう\"}}, {\"type\": \"text\", \"text\": \"の封印の扉、その向こうから響く無数の叫び声。十七年間、一度も会ったことのない父の声も、その中に混じっているような気がした。\"}]}, {\"type\": \"paragraph\", \"content\": [{\"type\": \"text\", \"text\": \"窓の外では、ハルト村の朝が静かに始まろうとしていた。鶏の鳴き声、パン屋の煙突から立ち上る煙。いつもと変わらぬ光景のはずなのに、今日は何かが違った。\"}]}, {\"type\": \"paragraph\", \"content\": [{\"type\": \"text\", \"text\": \"壁に掛けてあった祖父の形見の\"}, {\"type\": \"ruby\", \"attrs\": {\"base\": \"剣\", \"annotation\": \"つるぎ\"}}, {\"type\": \"text\", \"text\": \"が、微かに\"}, {\"type\": \"text\", \"text\": \"光\", \"marks\": [{\"type\": \"emphasisDots\"}]}, {\"type\": \"text\", \"text\": \"を放っていた。\"}]}, {\"type\": \"paragraph\", \"content\": [{\"type\": \"text\", \"text\": \"「また始まったか」\"}]}, {\"type\": \"paragraph\", \"content\": [{\"type\": \"text\", \"text\": \"エリアスは剣を手に取った。鞘から抜くと、刀身に古代語の文字が浮かび上がり、青白い光の帯が走った。祖父ガルドが死の床で語っていた言葉が蘇る。\"}]}, {\"type\": \"paragraph\", \"content\": [{\"type\": \"text\", \"text\": \"――この剣は、お前が真の試練に立ち向かう時、目を覚ます。その時が来たら、ドラクタールへ行け。封印の秘密は、あそこにある。\"}]}, {\"type\": \"paragraph\", \"content\": [{\"type\": \"text\", \"text\": \"ドラクタール。北の山脈に屹立する古城。千年前の魔法大戦の戦場となり、今は廃墟となって人々から忌み嫌われる場所。エリアスはベッドの端に腰かけ、剣を膝の上に横たえながら、長い時間をかけて決意を固めた。\"}]}, {\"type\": \"sceneBeat\", \"attrs\": {\"id\": \"beat-seed-scene1\", \"collapsed\": false, \"beatType\": \"free\", \"pov\": null, \"model\": null}, \"content\": [{\"type\": \"text\", \"text\": \"エリアスは長い思案の末、ドラクタールへ旅立つ決意を固める。父の残した謎と封印の真相を暴くために。\"}]}, {\"type\": \"paragraph\", \"content\": [{\"type\": \"text\", \"text\": \"旅立ちの朝は、こうして始まった。\"}]}]}"
     },
     {
       "id": "sample-scene-2",
@@ -34,7 +36,9 @@
       "synopsis": "村の導師セレーナがエリアスに旅立ちの餞別として古代魔法の秘伝書を渡す。二人の間に芽生えた感情を匂わせる。",
       "sort_order": "a1",
       "status": "outline",
-      "content": "{\"type\":\"doc\",\"content\":[{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"セレーナは魔法工房の棚から、古びた革装丁の本を取り出した。\"}]}]}"
+      "story_time_order": "0002",
+      "story_time_label": "翌朝",
+      "content": "{\"type\":\"doc\",\"content\":[{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"セレーナは魔法工房の棚から、古びた革装丁の本を取り出した。\"}]},{\"type\":\"sceneBeat\",\"attrs\":{\"id\":\"beat-seed-1\",\"collapsed\":false,\"beatType\":\"free\",\"pov\":null,\"model\":null},\"content\":[{\"type\":\"text\",\"text\":\"エリアスがセレーナに別れを告げる。秘伝書を渡す彼女の手が震えているのをエリアスは気づくが、何も言えない。\"}]}]}"
     },
     {
       "id": "sample-folder-2",
@@ -53,6 +57,8 @@
       "synopsis": "ドラクタールの城門前で魔物の群れに遭遇。エリアスが祖父の剣の真の力を初めて解放する。",
       "sort_order": "a0",
       "status": "outline",
+      "story_time_order": "0003",
+      "story_time_label": "三日後の夕暮れ",
       "content": "{\"type\":\"doc\",\"content\":[{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"城門に近づくにつれ、空気が変わった。\"}]}]}"
     },
     {
@@ -63,6 +69,8 @@
       "synopsis": "城の深部で闇の魔導師ヴェルズと対面。封印の真実が明かされ始め、エリアスの出自に関わる衝撃の事実が示唆される。",
       "sort_order": "a1",
       "status": "outline",
+      "story_time_order": "0004",
+      "story_time_label": "同夜",
       "content": "{\"type\":\"doc\",\"content\":[{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"「待っていたぞ、エリアス・フォン・ハルト」\"}]}]}"
     }
   ],
@@ -157,7 +165,58 @@
       "id": "sample-foreshadow-1",
       "title": "祖父の剣が放つ光",
       "intent": "エリアスの血統と封印の関係を示す伏線。物語終盤で「剣がエリアスの血に反応していた＝一族の封印魔法の鍵だった」という形で回収される。",
-      "notes": "第一章scene-1で剣が光るシーンが伏線の設置。回収は第三章以降（未執筆）の予定。"
+      "notes": "第一章 scene-1 で剣が光るシーンが仕込み。回収は第三章以降（未執筆）の予定。",
+      "payoff_scene_id": null
+    },
+    {
+      "id": "sample-foreshadow-2",
+      "title": "セレーナの震える手",
+      "intent": "別れの場面でセレーナの手が震えているのをエリアスは気づきながら何も言えない。これは物語後半「セレーナが旅に出る決意をした理由」の伏線。",
+      "notes": "scene-2「導師との別れ」で仕込み済み。回収は第三章で予定。",
+      "payoff_scene_id": "sample-scene-4"
+    },
+    {
+      "id": "sample-foreshadow-3",
+      "title": "ヴェルズの「待っていた」という言葉",
+      "intent": "ヴェルズがエリアスの来訪を知っていた理由——父との繋がりを暗示する伏線。終盤で父の正体が明かされる際に回収される。",
+      "notes": "scene-4「闇の宣告」で仕込み済み。回収シーンは未執筆。",
+      "payoff_scene_id": null
+    }
+  ],
+  "snippets": [
+    {
+      "id": "sample-snippet-1",
+      "title": "旅立ちの夜明け描写",
+      "content": "夜明けの光が、山の稜線を白く縁どり始めた頃——",
+      "content_source": "human"
+    },
+    {
+      "id": "sample-snippet-2",
+      "title": "内面の葛藤ビート",
+      "content": "（主人公は決断する。しかしその足は、一歩踏み出すたびに重くなっていく。）",
+      "content_source": "human"
+    }
+  ],
+  "foreshadow_setups": [
+    {
+      "id": "sample-setup-1",
+      "foreshadow_id": "sample-foreshadow-1",
+      "scene_id": "sample-scene-1",
+      "from_pos": 195,
+      "to_pos": 215,
+      "kind": "designated_existing",
+      "strength": "subtle",
+      "attribution": "human"
+    },
+    {
+      "id": "sample-setup-2",
+      "foreshadow_id": "sample-foreshadow-2",
+      "scene_id": "sample-scene-2",
+      "from_pos": 75,
+      "to_pos": 140,
+      "kind": "designated_existing",
+      "strength": "moderate",
+      "attribution": "human"
     }
   ]
 }

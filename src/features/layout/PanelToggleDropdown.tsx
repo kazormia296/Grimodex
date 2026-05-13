@@ -112,7 +112,12 @@ export function PanelToggleDropdown() {
   }
 
   return (
-    <div ref={menuRef} className="relative" data-tour="panel-toggle-root">
+    <div
+      ref={menuRef}
+      className="relative"
+      data-tour="panel-toggle-root"
+      data-tour-target="panel-toggle-btn"
+    >
       {/* Trigger button */}
       <button
         type="button"

@@ -260,7 +260,11 @@ export function ContextBar({
 
   return (
     <>
-      <div className="border-b border-border" data-testid="context-bar">
+      <div
+        className="border-b border-border"
+        data-testid="context-bar"
+        data-tour-target="chat-context-bar"
+      >
         {/* ヘッダー行: クリックで折りたたみ */}
         <div
           role="button"
@@ -294,6 +298,7 @@ export function ContextBar({
                   <div className="flex items-center gap-1">
                     <button
                       type="button"
+                      data-tour-target="chat-tokens-badge"
                       onClick={(e) => {
                         e.stopPropagation();
                         setPreviewOpen(true);
@@ -317,6 +322,7 @@ export function ContextBar({
                     {windowFillPct !== null && windowFillStroke && (
                       <div
                         role="progressbar"
+                        data-tour-target="chat-context-progress"
                         aria-valuenow={windowFillPct}
                         aria-valuemin={0}
                         aria-valuemax={100}

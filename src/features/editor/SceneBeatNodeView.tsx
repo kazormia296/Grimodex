@@ -597,6 +597,7 @@ export function SceneBeatNodeView({
           <button
             type="button"
             data-testid="beat-generate-btn"
+            data-tour-target="beat-generate-btn"
             disabled={generateDisabled}
             onClick={generate}
             aria-label={t("editor.beat.generate")}

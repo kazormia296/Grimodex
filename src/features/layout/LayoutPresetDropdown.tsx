@@ -85,7 +85,11 @@ export function LayoutPresetDropdown() {
   }
 
   return (
-    <div ref={menuRef} className="relative">
+    <div
+      ref={menuRef}
+      className="relative"
+      data-tour-target="layout-preset-btn"
+    >
       {/* Trigger button */}
       <button
         type="button"

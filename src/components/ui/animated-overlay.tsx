@@ -12,6 +12,8 @@ interface AnimatedOverlayProps {
   backdropClassName?: string;
   /** data-testid forwarded to the inner content motion.div */
   testId?: string;
+  /** data-tour-target forwarded to the inner content motion.div */
+  "data-tour-target"?: string;
   children: React.ReactNode;
 }
 
@@ -21,6 +23,7 @@ export function AnimatedOverlay({
   className,
   backdropClassName = "bg-black/50",
   testId,
+  "data-tour-target": tourTarget,
   children,
 }: AnimatedOverlayProps) {
   const reduced = useReducedMotion();
@@ -58,6 +61,7 @@ export function AnimatedOverlay({
           <motion.div
             className={cn(className)}
             data-testid={testId}
+            data-tour-target={tourTarget}
             initial={{ opacity: 0, scale: 0.97 }}
             animate={{ opacity: 1, scale: 1 }}
             exit={{ opacity: 0, scale: 0.97 }}

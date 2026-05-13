@@ -277,35 +277,17 @@ function EditorScreen() {
   useEffect(() => {
     function onRestartTutorial() {
       setShowSettings(false);
-      const samplePath =
-        useWorkspaceStore.getState().globalSettings?.sampleWorkspacePath;
-      const activeWorkspacePath =
-        useWorkspaceStore.getState().activeWorkspacePath;
-      if (samplePath && samplePath === activeWorkspacePath) {
-        // Already in sample workspace — just show the tour
-        setShowSampleTour(true);
-      } else if (samplePath) {
-        // Open the existing sample workspace then show tour
-        void useWorkspaceStore
-          .getState()
-          .openWorkspace(samplePath)
-          .then(() => {
-            setShowSampleTour(true);
-          });
-      } else {
-        // No sample workspace yet — re-seed
-        const lang =
-          useWorkspaceStore.getState().globalSettings?.uiLanguage ?? "ja";
-        const policy =
-          useWorkspaceStore.getState().globalSettings?.defaultAiPolicy ??
-          JSON.stringify({
-            preset: "off",
-            toggles: { chat: false, bodyWrite: false, analysis: false },
-          });
-        void seedAndOpenSample(lang, policy).then(() => {
-          setShowSampleTour(true);
+      const lang =
+        useWorkspaceStore.getState().globalSettings?.uiLanguage ?? "ja";
+      const policy =
+        useWorkspaceStore.getState().globalSettings?.defaultAiPolicy ??
+        JSON.stringify({
+          preset: "off",
+          toggles: { chat: false, bodyWrite: false, analysis: false },
         });
-      }
+      void seedAndOpenSample(lang, policy).then(() => {
+        setShowSampleTour(true);
+      });
     }
     window.addEventListener("restart-sample-tour", onRestartTutorial);
     return () =>

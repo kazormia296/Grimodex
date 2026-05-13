@@ -35,6 +35,10 @@ struct SeedTreeNode {
     status: Option<String>,
     #[serde(default)]
     content: Option<String>,
+    #[serde(default)]
+    story_time_order: Option<String>,
+    #[serde(default)]
+    story_time_label: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -80,6 +84,30 @@ struct SeedForeshadow {
     intent: Option<String>,
     #[serde(default)]
     notes: Option<String>,
+    #[serde(default)]
+    payoff_scene_id: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct SeedSnippet {
+    id: String,
+    title: String,
+    content: String,
+    #[serde(default)]
+    content_source: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct SeedForeshadowSetup {
+    id: String,
+    foreshadow_id: String,
+    scene_id: String,
+    from_pos: i64,
+    to_pos: i64,
+    kind: String,
+    #[serde(default)]
+    strength: Option<String>,
+    attribution: String,
 }
 
 #[derive(Deserialize)]
@@ -90,6 +118,10 @@ struct SeedData {
     chat_sessions: Vec<SeedChatSession>,
     chat_messages: Vec<SeedChatMessage>,
     foreshadows: Vec<SeedForeshadow>,
+    #[serde(default)]
+    snippets: Vec<SeedSnippet>,
+    #[serde(default)]
+    foreshadow_setups: Vec<SeedForeshadowSetup>,
 }
 
 // ---------------------------------------------------------------------------
@@ -167,8 +199,8 @@ pub(crate) fn seed_sample_workspace(
                 .unwrap_or_else(|| r#"{"type":"doc","content":[]}"#.to_string());
             conn.execute(
                 "INSERT INTO tree_nodes
-                    (id, project_id, parent_id, node_type, title, synopsis, sort_order, status, content, created_at, updated_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?10)",
+                    (id, project_id, parent_id, node_type, title, synopsis, sort_order, status, content, story_time_order, story_time_label, created_at, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?12)",
                 rusqlite::params![
                     node.id,
                     project_id,
@@ -179,6 +211,8 @@ pub(crate) fn seed_sample_workspace(
                     node.sort_order,
                     node.status,
                     content,
+                    node.story_time_order,
+                    node.story_time_label,
                     now_dt,
                 ],
             )?;
@@ -244,14 +278,53 @@ pub(crate) fn seed_sample_workspace(
         for fs in &seed.foreshadows {
             conn.execute(
                 "INSERT INTO foreshadows
-                    (id, project_id, title, intent, notes, created_at, updated_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6)",
+                    (id, project_id, title, intent, notes, payoff_scene_id, created_at, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7)",
                 rusqlite::params![
                     fs.id,
                     project_id,
                     fs.title,
                     fs.intent,
                     fs.notes,
+                    fs.payoff_scene_id,
+                    now_ms,
+                ],
+            )?;
+        }
+
+        // Snippets
+        for sn in &seed.snippets {
+            conn.execute(
+                "INSERT INTO snippets
+                    (id, project_id, title, content, content_source, created_at, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6)",
+                rusqlite::params![
+                    sn.id,
+                    project_id,
+                    sn.title,
+                    sn.content,
+                    sn.content_source,
+                    now_dt,
+                ],
+            )?;
+        }
+
+        // Foreshadow setups
+        for setup in &seed.foreshadow_setups {
+            conn.execute(
+                "INSERT INTO foreshadow_setups
+                    (id, foreshadow_id, scene_id, from_pos, to_pos, kind, strength,
+                     attribution, is_orphan, created_at, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 0, ?9, ?9)",
+                rusqlite::params![
+                    setup.id,
+                    setup.foreshadow_id,
+                    setup.scene_id,
+                    setup.from_pos,
+                    setup.to_pos,
+                    setup.kind,
+                    setup.strength,
+                    setup.attribution,
                     now_ms,
                 ],
             )?;
@@ -330,8 +403,8 @@ mod tests {
             for node in &seed.tree_nodes {
                 let content = node.content.clone().unwrap_or_else(|| r#"{"type":"doc","content":[]}"#.to_string());
                 conn.execute(
-                    "INSERT INTO tree_nodes (id, project_id, parent_id, node_type, title, synopsis, sort_order, status, content, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?10)",
-                    rusqlite::params![node.id, project_id, node.parent_id, node.node_type, node.title, node.synopsis, node.sort_order, node.status, content, now_dt],
+                    "INSERT INTO tree_nodes (id, project_id, parent_id, node_type, title, synopsis, sort_order, status, content, story_time_order, story_time_label, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?12)",
+                    rusqlite::params![node.id, project_id, node.parent_id, node.node_type, node.title, node.synopsis, node.sort_order, node.status, content, node.story_time_order, node.story_time_label, now_dt],
                 )?;
             }
 
@@ -360,8 +433,22 @@ mod tests {
 
             for fs in &seed.foreshadows {
                 conn.execute(
-                    "INSERT INTO foreshadows (id, project_id, title, intent, notes, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6)",
-                    rusqlite::params![fs.id, project_id, fs.title, fs.intent, fs.notes, now_ms],
+                    "INSERT INTO foreshadows (id, project_id, title, intent, notes, payoff_scene_id, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7)",
+                    rusqlite::params![fs.id, project_id, fs.title, fs.intent, fs.notes, fs.payoff_scene_id, now_ms],
+                )?;
+            }
+
+            for sn in &seed.snippets {
+                conn.execute(
+                    "INSERT INTO snippets (id, project_id, title, content, content_source, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6)",
+                    rusqlite::params![sn.id, project_id, sn.title, sn.content, sn.content_source, now_dt],
+                )?;
+            }
+
+            for setup in &seed.foreshadow_setups {
+                conn.execute(
+                    "INSERT INTO foreshadow_setups (id, foreshadow_id, scene_id, from_pos, to_pos, kind, strength, attribution, is_orphan, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 0, ?9, ?9)",
+                    rusqlite::params![setup.id, setup.foreshadow_id, setup.scene_id, setup.from_pos, setup.to_pos, setup.kind, setup.strength, setup.attribution, now_ms],
                 )?;
             }
 
@@ -419,6 +506,14 @@ mod tests {
                 |r| r.get(0),
             )?;
             assert_eq!(fs_count, seed.foreshadows.len() as i64, "foreshadows");
+
+            let setup_count: i64 =
+                conn.query_row("SELECT COUNT(*) FROM foreshadow_setups", [], |r| r.get(0))?;
+            assert_eq!(
+                setup_count,
+                seed.foreshadow_setups.len() as i64,
+                "foreshadow_setups"
+            );
 
             Ok(())
         })

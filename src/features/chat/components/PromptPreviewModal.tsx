@@ -43,6 +43,7 @@ export function PromptPreviewModal({
       open
       onClose={onClose}
       className="relative flex max-h-[80vh] w-[600px] max-w-[90vw] flex-col rounded-lg bg-background shadow-lg"
+      data-tour-target="prompt-preview-modal"
     >
       {/* ヘッダー */}
       <div className="flex items-center justify-between border-b border-border px-4 py-3">

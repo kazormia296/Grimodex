@@ -3,42 +3,101 @@ import { createPortal } from "react-dom";
 import { getPanelRect } from "@/features/layout/PanelHighlightOverlay";
 import type { PanelId } from "@/features/layout/layoutStore";
 
-interface Rect {
+export interface FocusRect {
   left: number;
   top: number;
   width: number;
   height: number;
 }
 
-export function buildFocusClipPath(rect: Rect, vw: number, vh: number): string {
-  const { left, top, width, height } = rect;
-  return (
-    `path(evenodd, 'M 0 0 H ${vw} V ${vh} H 0 Z ` +
-    `M ${left} ${top} H ${left + width} V ${top + height} H ${left} Z')`
-  );
+/** Build an SVG clip-path that cuts holes for each rect (even-odd fill). */
+export function buildFocusClipPath(
+  rects: FocusRect[],
+  vw: number,
+  vh: number,
+): string {
+  if (rects.length === 0) return "";
+  const holes = rects
+    .map(
+      (r) =>
+        `M ${r.left} ${r.top} H ${r.left + r.width} V ${r.top + r.height} H ${r.left} Z`,
+    )
+    .join(" ");
+  return `path(evenodd, 'M 0 0 H ${vw} V ${vh} H 0 Z ${holes}')`;
 }
 
-interface SpotlightOverlayProps {
-  panelId: PanelId | null;
+/** Axis-aligned bounding box of a non-empty array of rects. */
+export function boundingRect(rects: FocusRect[]): FocusRect | null {
+  if (rects.length === 0) return null;
+  const left = Math.min(...rects.map((r) => r.left));
+  const top = Math.min(...rects.map((r) => r.top));
+  const right = Math.max(...rects.map((r) => r.left + r.width));
+  const bottom = Math.max(...rects.map((r) => r.top + r.height));
+  return { left, top, width: right - left, height: bottom - top };
 }
 
-export function SpotlightOverlay({ panelId }: SpotlightOverlayProps) {
-  const [focusRect, setFocusRect] = useState<Rect | null>(null);
-  const [vw, setVw] = useState(0);
-  const [vh, setVh] = useState(0);
-  const [visible, setVisible] = useState(false);
+function queryTargetRects(targets: string[]): FocusRect[] {
+  const rects: FocusRect[] = [];
+  for (const id of targets) {
+    const el = document.querySelector(`[data-tour-target="${CSS.escape(id)}"]`);
+    if (el) {
+      const r = el.getBoundingClientRect();
+      rects.push({
+        left: r.left,
+        top: r.top,
+        width: r.width,
+        height: r.height,
+      });
+    }
+  }
+  return rects;
+}
+
+function computeRects(
+  panelId: PanelId | null,
+  targets?: string[],
+): FocusRect[] {
+  // Element-level targets take priority; fall back to panel rect if nothing found.
+  if (targets && targets.length > 0) {
+    const rects = queryTargetRects(targets);
+    if (rects.length > 0) return rects;
+  }
+  if (panelId) {
+    const r = getPanelRect(panelId);
+    if (r) return [r];
+  }
+  return [];
+}
+
+interface FocusRectsState {
+  rects: FocusRect[];
+  vw: number;
+  vh: number;
+}
+
+/**
+ * Returns the set of rects that the spotlight should cut holes for.
+ *
+ * Priority: `targets` (data-tour-target queries) > `panelId` rect > empty.
+ * Remeasures on DOM resize.
+ */
+export function useFocusRects(
+  panelId: PanelId | null,
+  targets?: string[],
+): FocusRectsState {
+  const [state, setState] = useState<FocusRectsState>({
+    rects: [],
+    vw: 0,
+    vh: 0,
+  });
 
   useLayoutEffect(() => {
-    requestAnimationFrame(() => setVisible(true));
-
     function measure() {
-      setVw(window.innerWidth);
-      setVh(window.innerHeight);
-      if (!panelId) {
-        setFocusRect(null);
-        return;
-      }
-      setFocusRect(getPanelRect(panelId));
+      setState({
+        rects: computeRects(panelId, targets),
+        vw: window.innerWidth,
+        vh: window.innerHeight,
+      });
     }
 
     measure();
@@ -52,10 +111,28 @@ export function SpotlightOverlay({ panelId }: SpotlightOverlayProps) {
       observer.disconnect();
       window.removeEventListener("resize", measure);
     };
-  }, [panelId]);
+  }, [panelId, targets]);
+
+  return state;
+}
+
+interface SpotlightOverlayProps {
+  panelId: PanelId | null;
+  targets?: string[];
+}
+
+export function SpotlightOverlay({ panelId, targets }: SpotlightOverlayProps) {
+  const { rects, vw, vh } = useFocusRects(panelId, targets);
+  const [visible, setVisible] = useState(false);
+
+  useLayoutEffect(() => {
+    requestAnimationFrame(() => setVisible(true));
+  }, []);
 
   const clipPath =
-    focusRect && vw && vh ? buildFocusClipPath(focusRect, vw, vh) : undefined;
+    rects.length > 0 && vw && vh
+      ? buildFocusClipPath(rects, vw, vh)
+      : undefined;
 
   return createPortal(
     <div

@@ -2230,20 +2230,33 @@
     "skipConfirmDesc": "You can restart it any time from Settings > About.",
     "actionRequired": "Complete the action above, then press Next",
     "restartTutorial": "Restart Tutorial",
+    "createWorkspace": "Create a new workspace",
     "steps": {
       "scenes": {
         "slides": {
           "overview": {
             "title": "Scenes panel",
-            "body": "Your manuscript is organized as Chapters → Scenes. The left panel is the table of contents for the whole project."
+            "body": "The manuscript is represented as a tree. Export concatenates content in this exact order."
+          },
+          "addItems": {
+            "title": "What you can add",
+            "body": "Three item types are available: Scenes (prose), Folders (grouping), and Notes (memos)."
           },
           "hierarchy": {
-            "title": "Reorder and context menu",
-            "body": "Drag scenes across chapters to reorder. The right-click menu creates chapters, duplicates scenes, and sends items to the trash."
+            "title": "Reorder and nest",
+            "body": "Drag any item by its left-edge handle to move it. Folders can be nested too."
           },
           "action": {
             "title": "Open a scene",
-            "body": "Double-click 'Awakening of the Swordsman' to open it. A tab will appear and you can start editing."
+            "body": "Click 'Awakening of the Swordsman' to open it. A tab will appear in the editor and you can start editing."
+          }
+        }
+      },
+      "layout": {
+        "slides": {
+          "overview": {
+            "title": "Customizing the layout",
+            "body": "Drag panel borders to resize. The 'Layout' dropdown in the top-right switches between presets, and the 'Panels' dropdown shows or hides individual panels."
           }
         }
       },
@@ -2251,15 +2264,11 @@
         "slides": {
           "overview": {
             "title": "Editor",
-            "body": "Each scene opens its own editor tab. Prose and Beat structure blocks coexist in the same writing view."
+            "body": "Each scene opens its own tab. Prose supports Markdown syntax, ruby annotations, and emphasis dots. Edits are saved automatically."
           },
           "beatNode": {
-            "title": "What is a Beat node?",
-            "body": "A structured block where you bullet-point a scene's intent. It also doubles as the prompt for AI-driven writing later on."
-          },
-          "action": {
-            "title": "Type at least 5 characters",
-            "body": "Add some text to the body. Edits autosave and feed into Codex / consistency analysis."
+            "title": "Beat nodes",
+            "body": "The grey bordered block is a Beat node. Write what happens in the scene there — it stays out of the final prose. The AI reads the Beat to generate the corresponding body text. Add a Beat with the / command."
           }
         }
       },
@@ -2267,11 +2276,11 @@
         "slides": {
           "overview": {
             "title": "Snippets",
-            "body": "A reusable-fragment library. Drag into the editor or click to insert — perfect for recurring phrases or world-building boilerplate."
+            "body": "Save reusable passages or memos. Drag and drop into the editor, or insert via the button."
           },
           "action": {
-            "title": "Try one out",
-            "body": "Create a new snippet, or insert one of the existing snippets into the editor."
+            "title": "Insert a snippet",
+            "body": "Insert a snippet into the editor."
           }
         }
       },
@@ -2279,15 +2288,15 @@
         "slides": {
           "overview": {
             "title": "Codex",
-            "body": "Your knowledge base for characters, locations, and lore — and the source of context fed to the AI."
-          },
-          "fourLayers": {
-            "title": "Use all four layers",
-            "body": "Summary / Content / DetailValues are canonical info sent to the AI. Notes is a scratchpad and is NOT shared with the AI. Split them deliberately for better generations."
+            "body": "A knowledge base for characters, locations, and lore — and the source of context fed to the AI."
           },
           "action": {
-            "title": "Open one entry",
-            "body": "Click any entry to open the detail pane. You'll see the four input layers laid out."
+            "title": "Open an entry",
+            "body": "Select an entry from the left list to view its details."
+          },
+          "fourLayers": {
+            "title": "Summary vs. content",
+            "body": "Summary and Content are both sent to the AI. Use Summary for light character info and Content for deeper background."
           }
         }
       },
@@ -2295,27 +2304,35 @@
         "slides": {
           "overview": {
             "title": "AI Chat",
-            "body": "Brainstorm, summarize, and ask for continuations on the right panel. Each scene keeps its own chat history."
+            "body": "Build the story and worldbuilding through dialogue with the AI. Each scene keeps its own chat history (session)."
           },
-          "mention": {
-            "title": "Pin context with @mention",
-            "body": "Type @scene-name to pin a scene as context. Related Codex entries are pulled in automatically, so replies stay on target."
+          "contextBar": {
+            "title": "Context bar",
+            "body": "Codex entries linked to the current scene are automatically injected as context. You can also add entries manually via Spotlight."
           },
-          "action": {
-            "title": "Send one message",
-            "body": "Ask anything — the next story beat, an opening line, a tone check."
+          "contextUsage": {
+            "title": "Context window usage",
+            "body": "The graph below the input shows how much of the context window is consumed. Narrowing context when usage is high improves response quality."
+          },
+          "promptPreview": {
+            "title": "Prompt preview",
+            "body": "Click the tokens badge to open a dialog showing the full system prompt and a per-layer token breakdown — exactly what the AI receives. Give it a try."
+          },
+          "injectedContext": {
+            "title": "Injected context depth",
+            "body": "Spotlighted entries inject full descriptions; auto-added entries inject summaries only. Use Spotlight selectively to control context weight."
           }
         }
       },
       "codexExtract": {
         "slides": {
           "overview": {
-            "title": "Chat → Codex",
-            "body": "Distill insights from AI replies into Codex entries so the world-building you discover in chat doesn't slip away."
+            "title": "Chat → Codex extraction",
+            "body": "Select any text in an AI reply — an 'Add to Codex' button appears in the popup. Press it to save that text as a new Codex entry instantly. World-building born in chat stays in chat no more."
           },
           "action": {
-            "title": "Highlight to extract",
-            "body": "Select text in an AI message and choose 'Add to Codex'. A new entry will be created."
+            "title": "Try it yourself",
+            "body": "Select text in one of the AI messages and press 'Add to Codex'."
           }
         }
       },
@@ -2323,15 +2340,7 @@
         "slides": {
           "overview": {
             "title": "Beat-driven AI writing",
-            "body": "The AI uses the Beat node's intent as context to generate prose. The whole flow stays inside the editor."
-          },
-          "beatQuality": {
-            "title": "Better beats, better output",
-            "body": "Write one concrete line: who does what and feels how. Vague beats produce vague prose — that's the biggest quality lever."
-          },
-          "action": {
-            "title": "Let AI write",
-            "body": "Press the generate button next to a Beat node and have it produce at least 50 characters."
+            "body": "The AI reads the Beat's content and generates the prose that follows. Hit the generate button (▷ icon) at the right edge of a Beat node to run it."
           }
         }
       },
@@ -2339,15 +2348,11 @@
         "slides": {
           "overview": {
             "title": "Foreshadowing register",
-            "body": "A Grimodex-original tool for tracking setups and payoffs across the whole story."
-          },
-          "payoffAnchored": {
-            "title": "Payoff-anchored design",
-            "body": "Foreshadows are anchored to their payoff scene. Unpaid setups surface as warnings so you never forget to deliver them."
+            "body": "Structurally manage each foreshadow's intent and state. Link setup scenes to their payoff scenes and track them all in one place."
           },
           "action": {
-            "title": "Take a look inside",
-            "body": "Spend a few seconds browsing the sample foreshadows. The tour will advance once you've absorbed the layout."
+            "title": "Explore the sample foreshadows",
+            "body": "Click an entry in the list to see how its setup scene and payoff scene are linked together."
           }
         }
       },
@@ -2355,15 +2360,11 @@
         "slides": {
           "overview": {
             "title": "Consistency check",
-            "body": "An AI scan that finds contradictions between your prose and Codex / prior scenes — like a character's eye color suddenly changing."
-          },
-          "resultPlacement": {
-            "title": "Results appear in-editor",
-            "body": "Findings are rendered as highlights and inline annotations. Click each to inspect, fix, or dismiss."
+            "body": "An AI scan that finds contradictions between your prose and Codex / prior scenes — like a character's eye color suddenly changing. Results appear in this panel."
           },
           "action": {
-            "title": "Run it once",
-            "body": "Trigger the consistency check from the editor toolbar. The AI will analyze the current scene."
+            "title": "Run the check",
+            "body": "Press the review button in the editor toolbar to start a consistency analysis. Flagged passages are highlighted inline and listed here."
           }
         }
       },
@@ -2371,7 +2372,7 @@
         "slides": {
           "overview": {
             "title": "Timeline",
-            "body": "A chronological view of your scenes. See pacing and density at a glance."
+            "body": "View scenes in narrative order or in chronological order. See the flow of the story at a glance."
           },
           "zoom": {
             "title": "Zoom and reorder",
