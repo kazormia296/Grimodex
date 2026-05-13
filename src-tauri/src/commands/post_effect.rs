@@ -1005,7 +1005,6 @@ fn find_overlapping_open_annotation(
 /// consistency チェックを 1 シーン分実行し、挿入したアノテーション数を返す。
 /// 進捗イベントや run ステータス更新は呼び出し側が担当する。
 #[allow(clippy::too_many_arguments)]
-#[allow(clippy::too_many_arguments)]
 async fn process_consistency_scene(
     app: &AppHandle,
     run_id: &str,
@@ -1013,7 +1012,7 @@ async fn process_consistency_scene(
     scene_id: &str,
     codex_payload_json: &str,
     scene_text: &str,
-    ai_settings_path: &std::path::PathBuf,
+    ai_settings_path: &std::path::Path,
     on_stage: impl Fn(f32, &str) + Send,
 ) -> Result<usize, anyhow::Error> {
     let ai_settings = read_ai_settings(ai_settings_path);
@@ -1446,7 +1445,7 @@ async fn process_intra_scene(
     project_id: &str,
     scene_id: &str,
     scene_text: &str,
-    ai_settings_path: &std::path::PathBuf,
+    ai_settings_path: &std::path::Path,
     on_stage: impl Fn(f32, &str) + Send,
 ) -> Result<usize, anyhow::Error> {
     let ai_settings = read_ai_settings(ai_settings_path);
