@@ -1,13 +1,10 @@
-import { useState, useMemo, useRef, useEffect } from "react";
+import { useState, useMemo, useRef } from "react";
 import { useTranslation } from "react-i18next";
 import { AnimatePresence, motion } from "motion/react";
 import { useGSAP } from "@gsap/react";
 import { gsap } from "gsap";
 import { X } from "lucide-react";
 import { useWorkspaceStore } from "@/features/workspace/store";
-import { useTreeStore } from "@/features/tree/treeStore";
-import { useChatStore } from "@/features/chat/chatStore";
-import { useCodexStore } from "@/features/codex/codexStore";
 import { DURATIONS, EASINGS } from "@/lib/animation";
 import { isReducedMotion } from "@/lib/gsap";
 import type { AiPolicyToggles } from "@/features/ai-policy/types";
@@ -205,32 +202,14 @@ export function SampleTour() {
   const [stepIndex, setStepIndex] = useState(0);
   const currentStep = steps[stepIndex] ?? steps[steps.length - 1];
 
-  // Capture baselines at mount (delayed for tree load)
-  const [editorBaseline, setEditorBaseline] = useState<number | null>(null);
-  const [chatBaseline] = useState(
-    () =>
-      useChatStore.getState().messages.filter((m) => m.role === "user").length,
-  );
-  const [codexBaseline] = useState(
-    () => useCodexStore.getState().entries.length,
-  );
-
-  useEffect(() => {
-    const timer = setTimeout(() => {
-      const state = useTreeStore.getState();
-      const count = state.charCounts[state.activeSceneId] ?? 0;
-      setEditorBaseline(count);
-    }, 1500);
-    return () => clearTimeout(timer);
-  }, []);
-
-  // Gates — all called unconditionally (Rules of Hooks)
-  const editorDone = useEditorWriteGate(editorBaseline);
-  const chatDone = useChatSentGate(chatBaseline);
-  const codexExtractDone = useCodexExtractGate(codexBaseline);
-  const aiWriteDone = useEditorWriteGate(
-    editorBaseline !== null ? editorBaseline + 50 : null,
-  );
+  // Gates — all called unconditionally (Rules of Hooks).
+  // Each gate self-manages its baseline via "settle-then-track":
+  // it captures the baseline on the first settled store observation,
+  // then detects increases from that point.
+  const editorDone = useEditorWriteGate();
+  const chatDone = useChatSentGate();
+  const codexExtractDone = useCodexExtractGate();
+  const aiWriteDone = useEditorWriteGate(50);
   const postEffectDone = usePostEffectRunGate();
 
   function isDone(key: TourStepKey): boolean {

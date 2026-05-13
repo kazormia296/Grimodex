@@ -4,59 +4,118 @@ import { useChatStore } from "@/features/chat/chatStore";
 import { useCodexStore } from "@/features/codex/codexStore";
 import { useAnnotationStore } from "@/features/post-effect/annotationStore";
 
-/** True once the active scene has more chars than the captured baseline. */
-export function useEditorWriteGate(baseline: number | null): boolean {
+/**
+ * True once the user writes at least `threshold` chars beyond the baseline
+ * captured when the tree store finishes loading.
+ *
+ * Uses "settle-then-track": subscribes immediately, captures baseline on the
+ * first settled observation (!isLoading && activeSceneId set), then detects
+ * increases from that point. This avoids the race where the baseline is read
+ * before seeded data has loaded.
+ */
+export function useEditorWriteGate(threshold = 5): boolean {
   const [done, setDone] = useState(false);
+
   useEffect(() => {
-    if (done || baseline === null) return;
-    const unsub = useTreeStore.subscribe((state) => {
-      const count = state.charCounts[state.activeSceneId] ?? 0;
-      if (count > baseline + 5) {
-        setDone(true);
-        unsub();
+    if (done) return;
+
+    let settled = false;
+    let baseline = 0;
+
+    function check() {
+      const { isLoading, activeSceneId, charCounts } = useTreeStore.getState();
+      if (isLoading || !activeSceneId) return;
+      const count = charCounts[activeSceneId] ?? 0;
+      if (!settled) {
+        baseline = count;
+        settled = true;
+        return;
       }
-    });
+      if (count > baseline + threshold) setDone(true);
+    }
+
+    check(); // handle already-settled state at mount
+    const unsub = useTreeStore.subscribe(check);
     return unsub;
-  }, [baseline, done]);
+  }, [done, threshold]);
+
   return done;
 }
 
-/** True once at least one user message was sent after the captured baseline. */
-export function useChatSentGate(baselineMsgCount: number): boolean {
+/**
+ * True once the user sends a chat message after the session has loaded.
+ *
+ * Settled = sessions not loading AND an active session exists (messages are
+ * loaded synchronously with activeSessionId in selectSession).
+ */
+export function useChatSentGate(): boolean {
   const [done, setDone] = useState(false);
+
   useEffect(() => {
     if (done) return;
-    const unsub = useChatStore.subscribe((state) => {
-      const userMsgs = state.messages.filter((m) => m.role === "user").length;
-      if (userMsgs > baselineMsgCount) {
-        setDone(true);
-        unsub();
+
+    let settled = false;
+    let baseline = 0;
+
+    function check() {
+      const { isLoadingSessions, activeSessionId, messages } =
+        useChatStore.getState();
+      if (isLoadingSessions || activeSessionId === null) return;
+      const userMsgs = messages.filter((m) => m.role === "user").length;
+      if (!settled) {
+        baseline = userMsgs;
+        settled = true;
+        return;
       }
-    });
+      if (userMsgs > baseline) setDone(true);
+    }
+
+    check();
+    const unsub = useChatStore.subscribe(check);
     return unsub;
-  }, [baselineMsgCount, done]);
+  }, [done]);
+
   return done;
 }
 
-/** True once codex entries count exceeds the captured baseline. */
-export function useCodexExtractGate(baselineCount: number): boolean {
+/**
+ * True once a codex entry is added after the initial load.
+ *
+ * Settled = not loading AND entries.length > 0 (the seeded workspace always
+ * has entries; this guards against the initial empty state before first load).
+ */
+export function useCodexExtractGate(): boolean {
   const [done, setDone] = useState(false);
+
   useEffect(() => {
     if (done) return;
-    const unsub = useCodexStore.subscribe((state) => {
-      if (state.entries.length > baselineCount) {
-        setDone(true);
-        unsub();
+
+    let settled = false;
+    let baseline = 0;
+
+    function check() {
+      const { isLoading, entries } = useCodexStore.getState();
+      if (isLoading || entries.length === 0) return;
+      if (!settled) {
+        baseline = entries.length;
+        settled = true;
+        return;
       }
-    });
+      if (entries.length > baseline) setDone(true);
+    }
+
+    check();
+    const unsub = useCodexStore.subscribe(check);
     return unsub;
-  }, [baselineCount, done]);
+  }, [done]);
+
   return done;
 }
 
 /** True once any annotations appear (post-effect run completed). */
 export function usePostEffectRunGate(): boolean {
   const [done, setDone] = useState(false);
+
   useEffect(() => {
     if (done) return;
     const unsub = useAnnotationStore.subscribe((state) => {
@@ -71,5 +130,6 @@ export function usePostEffectRunGate(): boolean {
     });
     return unsub;
   }, [done]);
+
   return done;
 }
