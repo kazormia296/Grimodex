@@ -22,7 +22,7 @@ export type LayoutPreset = BuiltinPreset | CustomPreset;
 
 /* ── Builtin layout builders ── */
 
-function buildDefault(api: DockviewApi) {
+function buildWrite(api: DockviewApi) {
   api.addPanel({
     id: "scenes",
     component: "scenes",
@@ -68,44 +68,51 @@ function buildDefault(api: DockviewApi) {
     inactive: true,
   });
 
-  api.addPanel({
-    id: "matrix",
-    component: "matrix",
-    title: getPanelTitle("matrix"),
-    position: { referencePanel: "snippets", direction: "within" },
-    inactive: true,
-  });
-
   const leftGroup = api.getPanel("scenes")?.group;
   const rightGroup = api.getPanel("chat")?.group;
   if (leftGroup && rightGroup) {
     leftGroup.api.setSize({ width: Math.round(api.width * 0.18) });
-    rightGroup.api.setSize({ width: Math.round(api.width * 0.3) });
+    rightGroup.api.setSize({ width: Math.round(api.width * 0.33) });
   }
   api.getPanel("scenes")?.api.setActive();
 }
 
-function buildChatMain(api: DockviewApi) {
-  // 1. Create 3 columns first: scenes | chat | codex
+function buildPlan(api: DockviewApi) {
+  // 1. Establish 2 horizontal columns first: grid | chat
   api.addPanel({
-    id: "scenes",
-    component: "scenes",
-    title: getPanelTitle("scenes"),
+    id: "grid",
+    component: "grid",
+    title: getPanelTitle("grid"),
   });
   api.addPanel({
     id: "chat",
     component: "chat",
     title: getPanelTitle("chat"),
-    position: { referencePanel: "scenes", direction: "right" },
+    position: { referencePanel: "grid", direction: "right" },
+  });
+
+  // 2. Split each column vertically
+  api.addPanel({
+    id: "timeline",
+    component: "timeline",
+    title: getPanelTitle("timeline"),
+    position: { referencePanel: "grid", direction: "below" },
   });
   api.addPanel({
     id: "codex",
     component: "codex",
     title: getPanelTitle("codex"),
-    position: { referencePanel: "chat", direction: "right" },
+    position: { referencePanel: "chat", direction: "below" },
   });
 
-  // 2. Add tabs within groups
+  // 3. Add tabs within groups
+  api.addPanel({
+    id: "map",
+    component: "map",
+    title: getPanelTitle("map"),
+    position: { referencePanel: "grid", direction: "within" },
+    inactive: true,
+  });
   api.addPanel({
     id: "chat-history",
     component: "chat-history",
@@ -120,35 +127,168 @@ function buildChatMain(api: DockviewApi) {
     position: { referencePanel: "codex", direction: "within" },
     inactive: true,
   });
-
-  // 3. Split left column vertically LAST (after columns are established)
   api.addPanel({
-    id: "editor",
-    component: "editor",
-    title: getPanelTitle("editor"),
-    position: { referencePanel: "scenes", direction: "below" },
-    minimumWidth: 320,
+    id: "foreshadow",
+    component: "foreshadow",
+    title: getPanelTitle("foreshadow"),
+    position: { referencePanel: "codex", direction: "within" },
+    inactive: true,
   });
-
   api.addPanel({
     id: "matrix",
     component: "matrix",
     title: getPanelTitle("matrix"),
-    position: { referencePanel: "snippets", direction: "within" },
+    position: { referencePanel: "codex", direction: "within" },
     inactive: true,
   });
 
-  // 4. Set sizes: left ~15%, right ~30%, center gets the rest (~55%)
-  const leftGroup = api.getPanel("scenes")?.group;
-  const rightGroup = api.getPanel("codex")?.group;
-  if (leftGroup && rightGroup) {
-    leftGroup.api.setSize({ width: Math.round(api.width * 0.15) });
-    rightGroup.api.setSize({ width: Math.round(api.width * 0.3) });
+  // 4. Sizes
+  const leftGroup = api.getPanel("grid")?.group;
+  if (leftGroup) {
+    leftGroup.api.setSize({ width: Math.round(api.width * 0.67) });
+  }
+  const timelineGroup = api.getPanel("timeline")?.group;
+  if (timelineGroup) {
+    timelineGroup.api.setSize({ height: Math.round(api.height * 0.17) });
+  }
+
+  api.getPanel("grid")?.api.setActive();
+  api.getPanel("codex")?.api.setActive();
+}
+
+function buildChat(api: DockviewApi) {
+  // 2 columns: chat (with chat-history) | codex (with snippets, matrix)
+  api.addPanel({
+    id: "chat",
+    component: "chat",
+    title: getPanelTitle("chat"),
+  });
+  api.addPanel({
+    id: "codex",
+    component: "codex",
+    title: getPanelTitle("codex"),
+    position: { referencePanel: "chat", direction: "right" },
+  });
+  api.addPanel({
+    id: "chat-history",
+    component: "chat-history",
+    title: getPanelTitle("chat-history"),
+    position: { referencePanel: "chat", direction: "within" },
+    inactive: true,
+  });
+  api.addPanel({
+    id: "snippets",
+    component: "snippets",
+    title: getPanelTitle("snippets"),
+    position: { referencePanel: "codex", direction: "within" },
+    inactive: true,
+  });
+  api.addPanel({
+    id: "matrix",
+    component: "matrix",
+    title: getPanelTitle("matrix"),
+    position: { referencePanel: "codex", direction: "within" },
+    inactive: true,
+  });
+
+  const leftGroup = api.getPanel("chat")?.group;
+  if (leftGroup) {
+    leftGroup.api.setSize({ width: Math.round(api.width * 0.67) });
   }
   api.getPanel("chat")?.api.setActive();
 }
 
-function buildCodexMain(api: DockviewApi) {
+function buildReview(api: DockviewApi) {
+  // 1. Establish 4 horizontal columns: scenes | editor | kouetsu | codex
+  api.addPanel({
+    id: "scenes",
+    component: "scenes",
+    title: getPanelTitle("scenes"),
+  });
+  api.addPanel({
+    id: "editor",
+    component: "editor",
+    title: getPanelTitle("editor"),
+    position: { referencePanel: "scenes", direction: "right" },
+    minimumWidth: 320,
+  });
+  api.addPanel({
+    id: "kouetsu",
+    component: "kouetsu",
+    title: getPanelTitle("kouetsu"),
+    position: { referencePanel: "editor", direction: "right" },
+  });
+  api.addPanel({
+    id: "codex",
+    component: "codex",
+    title: getPanelTitle("codex"),
+    position: { referencePanel: "kouetsu", direction: "right" },
+  });
+
+  // 2. Split left column vertically: scenes / attribution
+  api.addPanel({
+    id: "attribution",
+    component: "attribution",
+    title: getPanelTitle("attribution"),
+    position: { referencePanel: "scenes", direction: "below" },
+  });
+
+  // 3. Add tabs within groups
+  api.addPanel({
+    id: "grid",
+    component: "grid",
+    title: getPanelTitle("grid"),
+    position: { referencePanel: "scenes", direction: "within" },
+    inactive: true,
+  });
+  api.addPanel({
+    id: "snippets",
+    component: "snippets",
+    title: getPanelTitle("snippets"),
+    position: { referencePanel: "codex", direction: "within" },
+    inactive: true,
+  });
+  api.addPanel({
+    id: "matrix",
+    component: "matrix",
+    title: getPanelTitle("matrix"),
+    position: { referencePanel: "codex", direction: "within" },
+    inactive: true,
+  });
+  api.addPanel({
+    id: "foreshadow",
+    component: "foreshadow",
+    title: getPanelTitle("foreshadow"),
+    position: { referencePanel: "codex", direction: "within" },
+    inactive: true,
+  });
+  api.addPanel({
+    id: "timeline",
+    component: "timeline",
+    title: getPanelTitle("timeline"),
+    position: { referencePanel: "codex", direction: "within" },
+    inactive: true,
+  });
+
+  // 4. Sizes (left ~13%, codex ~25%, kouetsu ~30%, editor takes the rest ~32%)
+  const leftGroup = api.getPanel("scenes")?.group;
+  const codexGroup = api.getPanel("codex")?.group;
+  const kouetsuGroup = api.getPanel("kouetsu")?.group;
+  if (leftGroup) {
+    leftGroup.api.setSize({ width: Math.round(api.width * 0.13) });
+  }
+  if (codexGroup) {
+    codexGroup.api.setSize({ width: Math.round(api.width * 0.25) });
+  }
+  if (kouetsuGroup) {
+    kouetsuGroup.api.setSize({ width: Math.round(api.width * 0.3) });
+  }
+
+  api.getPanel("scenes")?.api.setActive();
+  api.getPanel("editor")?.api.setActive();
+}
+
+function buildCondense(api: DockviewApi) {
   // Codex(Snippets) | Editor | Chat(Chat History)
   api.addPanel({
     id: "codex",
@@ -190,6 +330,13 @@ function buildCodexMain(api: DockviewApi) {
     position: { referencePanel: "snippets", direction: "within" },
     inactive: true,
   });
+  api.addPanel({
+    id: "map",
+    component: "map",
+    title: getPanelTitle("map"),
+    position: { referencePanel: "editor", direction: "within" },
+    inactive: true,
+  });
 
   const leftGroup = api.getPanel("codex")?.group;
   const rightGroup = api.getPanel("chat")?.group;
@@ -208,19 +355,31 @@ export function getBuiltinPresets(): BuiltinPreset[] {
       id: "builtin:default",
       name: i18next.t("layout.preset.default"),
       builtin: true,
-      build: buildDefault,
+      build: buildWrite,
+    },
+    {
+      id: "builtin:plan",
+      name: i18next.t("layout.preset.plan"),
+      builtin: true,
+      build: buildPlan,
     },
     {
       id: "builtin:chat-main",
       name: i18next.t("layout.preset.chatMain"),
       builtin: true,
-      build: buildChatMain,
+      build: buildChat,
+    },
+    {
+      id: "builtin:review",
+      name: i18next.t("layout.preset.review"),
+      builtin: true,
+      build: buildReview,
     },
     {
       id: "builtin:codex-main",
       name: i18next.t("layout.preset.codexMain"),
       builtin: true,
-      build: buildCodexMain,
+      build: buildCondense,
     },
   ];
 }

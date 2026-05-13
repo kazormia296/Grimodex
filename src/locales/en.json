@@ -398,9 +398,11 @@
       "builtinSection": "Presets",
       "customSection": "Custom",
       "saveName": "Preset name",
-      "default": "Default",
+      "default": "Write",
+      "plan": "Plan",
       "chatMain": "Chat",
-      "codexMain": "Codex",
+      "review": "Review",
+      "codexMain": "Condense",
       "saveLayout": "Save current layout",
       "resetDefault": "Reset to default"
     }

@@ -398,9 +398,11 @@
       "builtinSection": "プリセット",
       "customSection": "カスタム",
       "saveName": "プリセット名",
-      "default": "デフォルト",
-      "chatMain": "チャット",
-      "codexMain": "Codex",
+      "default": "Write",
+      "plan": "Plan",
+      "chatMain": "Chat",
+      "review": "Review",
+      "codexMain": "Condense",
       "saveLayout": "現在のレイアウトを保存",
       "resetDefault": "デフォルトに戻す"
     }
