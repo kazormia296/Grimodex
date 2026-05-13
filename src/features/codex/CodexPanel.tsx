@@ -1,11 +1,12 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { useTranslation } from "react-i18next";
-import { Search, ArrowLeft, Pencil, Trash2 } from "lucide-react";
+import { Search, ArrowLeft, Pencil, Trash2, ExternalLink } from "lucide-react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { useCodexStore } from "./codexStore";
 import { getTypeLabel } from "@/features/chat/utils/typeLabels";
 import type { CodexEntry, CodexEntryType } from "./api";
 import { useDropTarget } from "@/features/trash-bin/useDropTarget";
+import { useTabStore } from "@/features/editor/tabStore";
 
 const TYPE_OPTION_KEYS: { value: CodexEntryType; key: string }[] = [
   { value: "character", key: "codex.character" },
@@ -25,6 +26,7 @@ function CodexDetailView({
   onEdit: () => void;
   onDelete: () => void;
 }) {
+  const { t } = useTranslation();
   return (
     <div data-testid="codex-detail-view" className="flex h-full flex-col">
       <div className="flex items-center gap-2 border-b border-border px-3 py-2">
@@ -37,6 +39,14 @@ function CodexDetailView({
           <ArrowLeft className="h-4 w-4" />
         </button>
         <h3 className="flex-1 truncate text-sm font-semibold">{entry.name}</h3>
+        <button
+          type="button"
+          onClick={() => useTabStore.getState().openCodexTab(entry.id)}
+          className="rounded p-1 text-muted-foreground hover:bg-accent hover:text-accent-foreground"
+          title={t("codex.detail.openInEditor")}
+        >
+          <ExternalLink className="h-3.5 w-3.5" />
+        </button>
         <button
           type="button"
           data-testid="codex-edit-button"

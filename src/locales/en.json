@@ -401,7 +401,7 @@
       "default": "Write",
       "plan": "Plan",
       "chatMain": "Chat",
-      "review": "Review",
+      "review": "Proofread",
       "codexMain": "Condense",
       "saveLayout": "Save current layout",
       "resetDefault": "Reset to default"
@@ -506,6 +506,10 @@
     "deleteMessageFailed": "Failed to delete message",
     "starUpdateFailed": "Failed to update star",
     "extractedToCodex": "Extracted to Codex",
+    "scopeHint": {
+      "message": "Project scope is recommended for this layout",
+      "action": "Switch"
+    },
     "copied": "Copied",
     "noMessages": "No messages yet",
     "actions": {

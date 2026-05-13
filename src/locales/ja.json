@@ -401,7 +401,7 @@
       "default": "Write",
       "plan": "Plan",
       "chatMain": "Chat",
-      "review": "Review",
+      "review": "Proofread",
       "codexMain": "Condense",
       "saveLayout": "現在のレイアウトを保存",
       "resetDefault": "デフォルトに戻す"
@@ -506,6 +506,10 @@
     "deleteMessageFailed": "メッセージの削除に失敗しました",
     "starUpdateFailed": "スターの更新に失敗しました",
     "extractedToCodex": "Codexに抽出しました",
+    "scopeHint": {
+      "message": "このレイアウトではProjectスコープを推奨します",
+      "action": "切り替える"
+    },
     "copied": "コピーしました",
     "noMessages": "メッセージはまだありません",
     "actions": {
