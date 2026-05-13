@@ -32,6 +32,7 @@ import { buildCrossReferenceReport } from "./crossReference";
 import * as chatApi from "@/features/chat/chatApi";
 import { useChatStore } from "@/features/chat/chatStore";
 import { useTabStore } from "@/features/editor/tabStore";
+import { EditorPane } from "@/features/editor/EditorPane";
 import { useMatrixStore } from "@/features/matrix/matrixStore";
 import { useDropTarget } from "@/features/trash-bin/useDropTarget";
 
@@ -495,6 +496,7 @@ export function CodexManagementPanel({
   const [showCommandPalette, setShowCommandPalette] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const [isStackMode, setIsStackMode] = useState(initialStackMode);
+  const [isWideMode, setIsWideMode] = useState(false);
   const [showDetail, setShowDetail] = useState(false);
   const [codexTypes, setCodexTypes] = useState<CodexType[]>([]);
   // When the user triggers "Find in scenes" we open the Mentions tab
@@ -598,6 +600,7 @@ export function CodexManagementPanel({
     const observer = new ResizeObserver(([entry]) => {
       const width = entry.contentRect.width;
       setIsStackMode(width < 400);
+      setIsWideMode(width >= 1200);
     });
     observer.observe(container);
     return () => observer.disconnect();
@@ -1086,6 +1089,49 @@ export function CodexManagementPanel({
             )}
           </div>
         </>
+      ) : isWideMode ? (
+        <ResizablePanelGroup
+          orientation="horizontal"
+          className="flex-1 overflow-hidden"
+        >
+          <ResizablePanel defaultSize={22} minSize={15}>
+            <div className="flex h-full flex-col">
+              {header}
+              <div className="min-h-0 flex-1">{listPanelContent}</div>
+            </div>
+          </ResizablePanel>
+
+          <ResizableHandle withHandle />
+
+          <ResizablePanel
+            defaultSize={50}
+            minSize={30}
+            className="flex flex-col"
+          >
+            {selectedEntry ? (
+              <EditorPane
+                nodeId={selectedEntry.id}
+                contentType="codex"
+                groupIndex={0}
+                onFocus={() => {}}
+              />
+            ) : (
+              <div className="flex h-full items-center justify-center">
+                <p className="text-xs text-muted-foreground">
+                  {t("codex.selectPrompt")}
+                </p>
+              </div>
+            )}
+          </ResizablePanel>
+
+          <ResizableHandle withHandle />
+
+          <ResizablePanel defaultSize={28} minSize={20}>
+            <div data-testid="codex-detail-panel" className="h-full">
+              {detailPanelContent}
+            </div>
+          </ResizablePanel>
+        </ResizablePanelGroup>
       ) : (
         <ResizablePanelGroup
           orientation="horizontal"
