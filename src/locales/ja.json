@@ -2224,6 +2224,7 @@
     "done": "完了",
     "skip": "スキップ",
     "skipConfirm": "チュートリアルをスキップしますか？後から Settings > About で再実行できます。",
+    "cancel": "キャンセル",
     "actionRequired": "上のアクションを完了してから「次へ」を押してください",
     "restartTutorial": "チュートリアルを再実行",
     "step1": {

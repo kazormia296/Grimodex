@@ -6,6 +6,7 @@ import { gsap } from "gsap";
 import { X } from "lucide-react";
 import { useWorkspaceStore } from "@/features/workspace/store";
 import { useLayoutStore } from "@/features/layout/layoutStore";
+import { AnimatedPopover } from "@/components/ui/animated-popover";
 import { DURATIONS, EASINGS } from "@/lib/animation";
 import { isReducedMotion } from "@/lib/gsap";
 import type { AiPolicyToggles } from "@/features/ai-policy/types";
@@ -91,6 +92,8 @@ function TourCard({
   const { t } = useTranslation();
   const nextBtnRef = useRef<HTMLButtonElement>(null);
   const prevDone = useRef(isDone);
+  const [skipConfirmOpen, setSkipConfirmOpen] = useState(false);
+  const skipContainerRef = useRef<HTMLDivElement>(null);
 
   useGSAP(() => {
     if (isDone && !prevDone.current && nextBtnRef.current) {
@@ -135,14 +138,42 @@ function TourCard({
           <span className="text-xs text-muted-foreground">
             {stepIndex + 1} / {totalSteps}
           </span>
-          <button
-            type="button"
-            onClick={onSkip}
-            className="rounded-md p-0.5 text-muted-foreground hover:bg-accent hover:text-foreground"
-            aria-label={t("tour.skip")}
-          >
-            <X size={14} />
-          </button>
+          <div ref={skipContainerRef} className="relative">
+            <button
+              type="button"
+              onClick={() => setSkipConfirmOpen((v) => !v)}
+              className="rounded-md p-0.5 text-muted-foreground hover:bg-accent hover:text-foreground"
+              aria-label={t("tour.skip")}
+            >
+              <X size={14} />
+            </button>
+            <AnimatedPopover
+              open={skipConfirmOpen}
+              onClose={() => setSkipConfirmOpen(false)}
+              containerRef={skipContainerRef}
+              className="absolute right-0 top-full z-50 mt-2 w-64 origin-top-right rounded-lg border border-border bg-popover p-3 shadow-lg"
+            >
+              <p className="mb-3 text-xs leading-relaxed text-foreground">
+                {t("tour.skipConfirm")}
+              </p>
+              <div className="flex justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={() => setSkipConfirmOpen(false)}
+                  className="rounded-md px-2 py-1 text-xs text-muted-foreground hover:bg-accent hover:text-foreground"
+                >
+                  {t("tour.cancel")}
+                </button>
+                <button
+                  type="button"
+                  onClick={onSkip}
+                  className="rounded-md bg-destructive px-2 py-1 text-xs font-medium text-destructive-foreground hover:bg-destructive/90"
+                >
+                  {t("tour.skip")}
+                </button>
+              </div>
+            </AnimatedPopover>
+          </div>
         </div>
 
         <p className="mb-1 text-sm font-semibold text-foreground">

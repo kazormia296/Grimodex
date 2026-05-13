@@ -2215,6 +2215,7 @@
     "done": "Done",
     "skip": "Skip",
     "skipConfirm": "Skip the tutorial? You can restart it any time from Settings > About.",
+    "cancel": "Cancel",
     "actionRequired": "Complete the action above, then press Next",
     "restartTutorial": "Restart Tutorial",
     "step1": {
