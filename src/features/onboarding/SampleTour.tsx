@@ -6,14 +6,13 @@ import { gsap } from "gsap";
 import { X } from "lucide-react";
 import { useWorkspaceStore } from "@/features/workspace/store";
 import { useLayoutStore } from "@/features/layout/layoutStore";
-import { useTreeStore } from "@/features/tree/treeStore";
-import { useTabStore } from "@/features/editor/tabStore";
 import { DURATIONS, EASINGS } from "@/lib/animation";
 import { isReducedMotion } from "@/lib/gsap";
 import type { AiPolicyToggles } from "@/features/ai-policy/types";
 import type { PanelId } from "@/features/layout/layoutStore";
 import { SpotlightOverlay } from "./spotlight";
 import {
+  useSceneOpenGate,
   useEditorWriteGate,
   useChatSentGate,
   useCodexExtractGate,
@@ -25,6 +24,7 @@ import {
 // ---------------------------------------------------------------------------
 
 type TourStepKey =
+  | "scenes"
   | "editor"
   | "codex"
   | "chat"
@@ -40,6 +40,7 @@ interface TourStepDef {
 }
 
 const ALL_STEPS: TourStepDef[] = [
+  { key: "scenes", panelId: "scenes", requires: null },
   { key: "editor", panelId: "editor", requires: null },
   { key: "codex", panelId: "codex", requires: null },
   { key: "chat", panelId: "chat", requires: "chat" },
@@ -54,13 +55,14 @@ const ALL_STEPS: TourStepDef[] = [
 // ---------------------------------------------------------------------------
 function stepNum(key: TourStepKey): string {
   const map: Record<TourStepKey, string> = {
-    editor: "step1",
-    codex: "step2",
-    chat: "step3",
-    codexExtract: "step4",
-    aiWrite: "step5",
-    consistency: "step6",
-    end: "step7",
+    scenes: "step1",
+    editor: "step2",
+    codex: "step3",
+    chat: "step4",
+    codexExtract: "step5",
+    aiWrite: "step6",
+    consistency: "step7",
+    end: "step8",
   };
   return map[key];
 }
@@ -206,30 +208,9 @@ export function SampleTour() {
   const currentStep = steps[stepIndex] ?? steps[steps.length - 1];
 
   // Open the target panel whenever the step changes.
-  // For the editor panel, also ensure the first scene is open in a tab —
-  // a fresh sample workspace has no persisted tab state so tabs start empty.
   useEffect(() => {
-    if (!currentStep.panelId) return;
-    useLayoutStore.getState().showPanel(currentStep.panelId);
-
-    if (currentStep.panelId !== "editor") return;
-
-    function tryOpenScene(): boolean {
-      const { isLoading, activeSceneId } = useTreeStore.getState();
-      const { tabs, openPinned } = useTabStore.getState();
-      if (!isLoading && activeSceneId && tabs.length === 0) {
-        openPinned(activeSceneId);
-        return true;
-      }
-      return false;
-    }
-
-    if (!tryOpenScene()) {
-      // Tree still loading — open once it settles
-      const unsub = useTreeStore.subscribe(() => {
-        if (tryOpenScene()) unsub();
-      });
-      return unsub;
+    if (currentStep.panelId) {
+      useLayoutStore.getState().showPanel(currentStep.panelId);
     }
   }, [currentStep.panelId]);
 
@@ -237,6 +218,7 @@ export function SampleTour() {
   // Each gate self-manages its baseline via "settle-then-track":
   // it captures the baseline on the first settled store observation,
   // then detects increases from that point.
+  const sceneOpenDone = useSceneOpenGate();
   const editorDone = useEditorWriteGate();
   const chatDone = useChatSentGate();
   const codexExtractDone = useCodexExtractGate();
@@ -245,6 +227,8 @@ export function SampleTour() {
 
   function isDone(key: TourStepKey): boolean {
     switch (key) {
+      case "scenes":
+        return sceneOpenDone;
       case "editor":
         return editorDone;
       case "codex":

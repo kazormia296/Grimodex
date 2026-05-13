@@ -3,6 +3,30 @@ import { useTreeStore } from "@/features/tree/treeStore";
 import { useChatStore } from "@/features/chat/chatStore";
 import { useCodexStore } from "@/features/codex/codexStore";
 import { useAnnotationStore } from "@/features/post-effect/annotationStore";
+import { useTabStore } from "@/features/editor/tabStore";
+
+/**
+ * True once the user opens at least one scene in the editor (tabs becomes
+ * non-empty). A fresh sample workspace has tabs:[] after loadTabState resets,
+ * so any tab opening is a clear user action.
+ */
+export function useSceneOpenGate(): boolean {
+  const [done, setDone] = useState(false);
+
+  useEffect(() => {
+    if (done) return;
+
+    function check() {
+      if (useTabStore.getState().tabs.length > 0) setDone(true);
+    }
+
+    check();
+    const unsub = useTabStore.subscribe(check);
+    return unsub;
+  }, [done]);
+
+  return done;
+}
 
 /**
  * True once the user writes at least `threshold` chars beyond the baseline

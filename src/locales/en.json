@@ -2218,30 +2218,34 @@
     "actionRequired": "Complete the action above, then press Next",
     "restartTutorial": "Restart Tutorial",
     "step1": {
-      "title": "Write something in the editor",
-      "desc": "Open the Awakening of the Swordsman scene and add some text."
+      "title": "Open a scene",
+      "desc": "Double-click 'Awakening of the Swordsman' in the Scenes panel on the left to open it."
     },
     "step2": {
+      "title": "Write something in the editor",
+      "desc": "Add some text to the body of the scene you just opened."
+    },
+    "step3": {
       "title": "Explore the Codex",
       "desc": "Characters, locations, and lore are stored in the Codex. Click an entry to see its details."
     },
-    "step3": {
+    "step4": {
       "title": "Brainstorm with AI",
       "desc": "Send a question to the chat panel on the right. Ask for story ideas or help with the narrative."
     },
-    "step4": {
+    "step5": {
       "title": "Extract to Codex",
       "desc": "Highlight text in an AI message and choose 'Add to Codex' to save it as a new entry."
     },
-    "step5": {
+    "step6": {
       "title": "Let AI write the next part",
       "desc": "Use the Beat node in the editor to trigger AI writing and extend the scene."
     },
-    "step6": {
+    "step7": {
       "title": "Run a consistency check",
       "desc": "Press the consistency check button in the toolbar to analyze the scene with AI."
     },
-    "step7": {
+    "step8": {
       "title": "Tutorial complete!",
       "desc": "You've experienced the core Grimodex workflow. Keep practicing on this sample project or open a new workspace to start writing!"
     }
