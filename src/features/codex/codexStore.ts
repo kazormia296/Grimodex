@@ -77,6 +77,13 @@ interface CodexState {
   sortOrder: CodexSortOrder;
   isLoading: boolean;
   pendingEntryId: string | null;
+  /**
+   * Codex panel の wide mode 用 phase preview。entry id → phase id (`__base__` or実際の phase id)。
+   * null（key 不在）は「auto-resolve に従う」を意味する。DetailsTab の PhaseIndicator から書き込み、
+   * 同じ entry を内部 EditorPane が読む経路を媒介する。
+   */
+  previewPhaseByEntry: Record<string, string | null>;
+  setPreviewPhase: (entryId: string, phaseId: string | null) => void;
 
   loadEntries: () => Promise<void>;
   search: (query: string) => Promise<void>;
@@ -117,6 +124,22 @@ export const useCodexStore = create<CodexState>()((set, get) => ({
   sortOrder: "category" as CodexSortOrder,
   isLoading: false,
   pendingEntryId: null,
+  previewPhaseByEntry: {},
+
+  setPreviewPhase: (entryId, phaseId) => {
+    set((s) => {
+      if (phaseId == null) {
+        if (!(entryId in s.previewPhaseByEntry)) return s;
+        const next = { ...s.previewPhaseByEntry };
+        delete next[entryId];
+        return { previewPhaseByEntry: next };
+      }
+      if (s.previewPhaseByEntry[entryId] === phaseId) return s;
+      return {
+        previewPhaseByEntry: { ...s.previewPhaseByEntry, [entryId]: phaseId },
+      };
+    });
+  },
 
   loadEntries: async () => {
     set({ isLoading: true });

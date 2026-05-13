@@ -161,6 +161,12 @@ interface EditorPaneProps {
   contentType: TabContentType;
   groupIndex: GroupIndex;
   onFocus: () => void;
+  /**
+   * tabStore の overridePhaseId 経路を bypass して直接 phase を指定する。
+   * Codex パネル wide mode のように tabStore に対応タブを持たない standalone mount 用。
+   * undefined のときは従来通り tabStore から取得する。
+   */
+  phaseIdOverride?: string | null;
 }
 
 /**
@@ -184,6 +190,7 @@ export function EditorPane({
   contentType,
   groupIndex,
   onFocus,
+  phaseIdOverride,
 }: EditorPaneProps) {
   const { t } = useTranslation();
   const isCodexMode = contentType === "codex";
@@ -241,10 +248,13 @@ export function EditorPane({
     isSnippetMode ? s.entries.find((e) => e.id === nodeId) : null,
   );
   // Codex tabs: which phase's content to display/edit (set via openCodexTab)
-  const overridePhaseId = useTabStore((s) => {
+  const tabStoreOverridePhaseId = useTabStore((s) => {
     const allTabs = groupIndex === 0 ? s.tabs : s.secondaryTabs;
     return allTabs.find((t) => t.nodeId === nodeId)?.overridePhaseId ?? null;
   });
+  // standalone mount (Codex panel wide mode) では prop で直接渡される
+  const overridePhaseId =
+    phaseIdOverride !== undefined ? phaseIdOverride : tabStoreOverridePhaseId;
   // Phases for this codex entry (populated into store during load)
   const codexPhases = usePhaseStore((s) =>
     isCodexMode ? (s.phasesByEntry[nodeId] ?? null) : null,

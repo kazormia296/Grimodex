@@ -10,6 +10,7 @@ import { extractPlainText } from "../prosemirrorTextExtractor";
 import { generateSynopsisFromContent } from "@/features/chat/chatApi";
 import { useTabStore } from "@/features/editor/tabStore";
 import { usePhaseStore } from "../phaseStore";
+import { useCodexStore } from "../codexStore";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { resolveCodexState } from "../phaseResolver";
 import { useAutoSave } from "@/hooks/useAutoSave";
@@ -33,8 +34,15 @@ export function DetailsTab({
   const emptyContent = !entry.content || entry.content === "{}";
   const [isGenerating, setIsGenerating] = useState(false);
 
-  // プレビューフェーズ管理
-  const [previewPhaseId, setPreviewPhaseId] = useState<string | null>(null);
+  // プレビューフェーズ管理（codexStore にリフトアップ済み — wide mode の中央 EditorPane と共有）
+  const previewPhaseId = useCodexStore(
+    (s) => s.previewPhaseByEntry[entry.id] ?? null,
+  );
+  const setPreviewPhase = useCodexStore((s) => s.setPreviewPhase);
+  const setPreviewPhaseId = useCallback(
+    (phaseId: string | null) => setPreviewPhase(entry.id, phaseId),
+    [entry.id, setPreviewPhase],
+  );
   const activeSceneId = useTreeStore((s) => s.activeSceneId);
   const phases = usePhaseStore((s) => s.phasesByEntry[entry.id]);
   const detailOverrides = usePhaseStore((s) => s.detailOverrides);
@@ -43,13 +51,8 @@ export function DetailsTab({
 
   // アクティブシーン変更時にプレビューをリセット
   useEffect(() => {
-    setPreviewPhaseId(null);
-  }, [activeSceneId]);
-
-  // エントリ変更時もリセット
-  useEffect(() => {
-    setPreviewPhaseId(null);
-  }, [entry.id]);
+    setPreviewPhase(entry.id, null);
+  }, [activeSceneId, entry.id, setPreviewPhase]);
 
   // シーン順でソートされたフェーズ
   const sortedPhases = useMemo(() => {

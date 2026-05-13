@@ -479,6 +479,7 @@ export function CodexManagementPanel({
   }));
 
   const entries = useCodexStore((s) => s.entries);
+  const previewPhaseByEntry = useCodexStore((s) => s.previewPhaseByEntry);
   const filterType = useCodexStore((s) => s.filterType);
   const sortOrder = useCodexStore((s) => s.sortOrder);
   const isLoading = useCodexStore((s) => s.isLoading);
@@ -1114,6 +1115,7 @@ export function CodexManagementPanel({
                 contentType="codex"
                 groupIndex={0}
                 onFocus={() => {}}
+                phaseIdOverride={previewPhaseByEntry[selectedEntry.id] ?? null}
               />
             ) : (
               <div className="flex h-full items-center justify-center">
