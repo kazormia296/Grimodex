@@ -210,8 +210,12 @@ function TourCard({
 // Main SampleTour
 // ---------------------------------------------------------------------------
 
+/**
+ * Renders the active sample tour. Caller (App.tsx) controls visibility via
+ * `showSampleTour` from the workspace store — this component should be
+ * mounted conditionally so all useState/useRef/gate state resets between runs.
+ */
 export function SampleTour() {
-  const showSampleTour = useWorkspaceStore((s) => s.showSampleTour);
   const setShowSampleTour = useWorkspaceStore((s) => s.setShowSampleTour);
   const updateGlobalSettings = useWorkspaceStore((s) => s.updateGlobalSettings);
   const defaultAiPolicy = useWorkspaceStore(
@@ -303,8 +307,6 @@ export function SampleTour() {
     setShowSampleTour(false);
     await updateGlobalSettings({ hasSeenWelcome: true });
   }
-
-  if (!showSampleTour) return null;
 
   return (
     <>

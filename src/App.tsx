@@ -271,6 +271,7 @@ function EditorScreen() {
   const [showSearch, setShowSearch] = useState(false);
   const [showCommandPalette, setShowCommandPalette] = useState(false);
   const { setShowSampleTour, seedAndOpenSample } = useWorkspaceStore();
+  const showSampleTour = useWorkspaceStore((s) => s.showSampleTour);
 
   // Re-run SampleTour: open/re-seed sample workspace then start tour
   useEffect(() => {
@@ -672,7 +673,7 @@ function EditorScreen() {
       {showCommandPalette && (
         <CommandPalette onClose={() => setShowCommandPalette(false)} />
       )}
-      <SampleTour />
+      {showSampleTour && <SampleTour />}
       <div className="flex flex-1 overflow-hidden">
         {/* Dockview layout */}
         <DockviewReact
