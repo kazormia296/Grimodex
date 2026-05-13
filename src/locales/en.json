@@ -759,8 +759,15 @@
     "timeline": {
       "noPhases": "No phases configured.",
       "noPhasesDesc": "Add phases to manage how this entry changes as the story progresses.",
-      "currentScene": "Current scene",
-      "currentSceneArrow": "← Current scene",
+      "currentSceneHere": "You are here: {{title}}",
+      "noSceneContext": "No scene selected — applying Base",
+      "orderModeReading": "Order: Reading",
+      "orderModeStory": "Order: Story-time",
+      "orderModeAuto": "Order: Auto",
+      "orderModeReadingDesc": "Phases apply in manuscript (writing) order. Information revealed in later scenes won't leak to AI when working on earlier scenes — good for mysteries and unreliable narrators.",
+      "orderModeStoryDesc": "Phases apply by in-story chronological time. Flashbacks and non-linear narratives correctly reflect what's true at that moment.",
+      "orderModeAutoDesc": "Scenes with a story-time set use chronological order; others fall back to reading order. A sensible default for most works.",
+      "orderModeOpenSettings": "Change in Settings",
       "empty": "(empty)",
       "contentOverride": "(overridden)"
     },

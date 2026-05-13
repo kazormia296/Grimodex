@@ -759,8 +759,15 @@
     "timeline": {
       "noPhases": "フェーズが設定されていません。",
       "noPhasesDesc": "フェーズを追加すると、物語の進行に伴うこのエントリの変化を管理できます。",
-      "currentScene": "現在のシーン",
-      "currentSceneArrow": "← 現在のシーン",
+      "currentSceneHere": "現在地: {{title}}",
+      "noSceneContext": "シーン未選択 — Base を適用中",
+      "orderModeReading": "順序: 読者順",
+      "orderModeStory": "順序: 作中時間順",
+      "orderModeAuto": "順序: 自動",
+      "orderModeReadingDesc": "ツリーの執筆順で Phase を適用します。後の章で明かす設定が前のシーン執筆時に AI に漏れません。ミステリーや叙述トリック向け。",
+      "orderModeStoryDesc": "シーンの「作中時間」順で Phase を適用します。フラッシュバックや時系列入れ替えがあっても、その時点で起きている事実だけが Codex に反映されます。",
+      "orderModeAutoDesc": "作中時間が設定されたシーンは時系列順、未設定のシーンは執筆順にフォールバックします。多くの作品でちょうど良い既定値。",
+      "orderModeOpenSettings": "Settings で変更",
       "empty": "(空)",
       "contentOverride": "(上書きあり)"
     },

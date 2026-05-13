@@ -445,10 +445,11 @@ const mockSceneNodes: TreeNodeData[] = [
   },
 ];
 
-function mockTreeWith(nodes: TreeNodeData[]) {
+function mockTreeWith(nodes: TreeNodeData[], activeSceneId = "") {
   vi.mocked(useTreeStore).mockImplementation((sel) =>
     (sel as (s: unknown) => unknown)({
       nodes,
+      activeSceneId,
       setActiveScene: vi.fn(),
       updateStoryTime: vi.fn(),
       deleteNode: mockDeleteNode,
@@ -572,5 +573,44 @@ describe("TimelinePanel – arrow key navigation (#3)", () => {
     expect(ids).toContain("s1");
     expect(ids).toContain("s2");
     expect(ids).not.toContain("s3");
+  });
+});
+
+describe("TimelinePanel – active scene ring (現在地マーカー)", () => {
+  beforeEach(() => {
+    resetStore();
+    vi.clearAllMocks();
+  });
+
+  afterEach(() => {
+    mockTreeWith([]);
+  });
+
+  it("activeSceneId と一致する scene の dot に外側リングが描画される", () => {
+    mockTreeWith(mockSceneNodes, "s2");
+    const { container } = render(<TimelinePanel />);
+    // Ring is a stroke-only circle with stroke="var(--primary)"
+    const rings = container.querySelectorAll(
+      'circle[stroke="var(--primary)"][fill="none"]',
+    );
+    expect(rings.length).toBe(1);
+  });
+
+  it("activeSceneId が空ならリングは描画されない", () => {
+    mockTreeWith(mockSceneNodes, "");
+    const { container } = render(<TimelinePanel />);
+    const rings = container.querySelectorAll(
+      'circle[stroke="var(--primary)"][fill="none"]',
+    );
+    expect(rings.length).toBe(0);
+  });
+
+  it("activeSceneId が nodes に無い場合もリングは描画されない", () => {
+    mockTreeWith(mockSceneNodes, "scene-deleted");
+    const { container } = render(<TimelinePanel />);
+    const rings = container.querySelectorAll(
+      'circle[stroke="var(--primary)"][fill="none"]',
+    );
+    expect(rings.length).toBe(0);
   });
 });

@@ -1,6 +1,6 @@
 import { useRef, useState, useEffect, useCallback, forwardRef } from "react";
 import { useTranslation } from "react-i18next";
-import type { TreeNodeData } from "@/features/tree/treeStore";
+import { useTreeStore, type TreeNodeData } from "@/features/tree/treeStore";
 import { useTimelineStore } from "./timelineStore";
 import { computeAxisLabels } from "./timelineLabels";
 import { ZOOM_STEP, STEP_BASE } from "./timelineZoom";
@@ -77,6 +77,7 @@ export const TimelineViewport = forwardRef<HTMLDivElement, Props>(
     forwardedRef,
   ) {
     const { t } = useTranslation();
+    const activeSceneId = useTreeStore((s) => s.activeSceneId);
     const selectedNodeIds = useTimelineStore((s) => s.selectedNodeIds);
     const toggleSelect = useTimelineStore((s) => s.toggleSelect);
     const rangeSelectTo = useTimelineStore((s) => s.rangeSelectTo);
@@ -409,6 +410,7 @@ export const TimelineViewport = forwardRef<HTMLDivElement, Props>(
               const fill =
                 STATUS_FILL[scene.status ?? "outline"] ?? STATUS_FILL.outline;
               const isSelected = selectedNodeIds.includes(scene.id);
+              const isActive = scene.id === activeSceneId;
               const pins = pinsByNode.get(scene.id) ?? [];
               const isUnscheduled = i >= scheduledCount;
 
@@ -452,6 +454,26 @@ export const TimelineViewport = forwardRef<HTMLDivElement, Props>(
                         />
                       );
                     })()}
+
+                  {/* Active scene ring (現在地マーカー) */}
+                  {isActive && (
+                    <circle
+                      cx={drag?.nodeId === scene.id ? drag.currentX : cx}
+                      cy={
+                        drag?.nodeId === scene.id
+                          ? Math.abs(drag.currentY - LANE_Y) <
+                            AXIS_LOCK_THRESHOLD
+                            ? LANE_Y
+                            : drag.currentY
+                          : cy
+                      }
+                      r={DOT_R + 3}
+                      fill="none"
+                      stroke="var(--primary)"
+                      strokeWidth={1.5}
+                      pointerEvents="none"
+                    />
+                  )}
 
                   {/* Scene dot */}
                   <circle

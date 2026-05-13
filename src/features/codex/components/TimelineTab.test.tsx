@@ -28,6 +28,7 @@ const mockEntry: CodexEntry = {
 const mockPhaseState = {
   phasesByEntry: {} as Record<string, CodexEntryPhase[]>,
   globalSceneOrder: new Map<string, number>(),
+  resolutionMode: "auto" as "reading" | "story" | "auto",
   loadPhasesForEntry: vi.fn().mockResolvedValue(undefined),
   deletePhase: vi.fn().mockResolvedValue(undefined),
   createPhase: vi.fn(),
@@ -61,6 +62,7 @@ describe("TimelineTab", () => {
     mockPhaseState.globalSceneOrder = new Map();
     mockPhaseState.loadPhasesForEntry = vi.fn().mockResolvedValue(undefined);
     mockPhaseState.deletePhase = vi.fn().mockResolvedValue(undefined);
+    mockPhaseState.resolutionMode = "auto";
   });
 
   it("フェーズなし時に説明テキストが表示される", async () => {
@@ -107,6 +109,135 @@ describe("TimelineTab", () => {
     await waitFor(() => {
       expect(screen.getByText("Base state")).toBeInTheDocument();
       expect(screen.getByText("変身後")).toBeInTheDocument();
+    });
+  });
+
+  describe("現在地マーカー", () => {
+    const makePhase = (
+      id: string,
+      label: string,
+      anchor: string,
+    ): CodexEntryPhase => ({
+      id,
+      entryId: "entry-1",
+      label,
+      anchorNodeId: anchor,
+      summaryOverride: null,
+      contentOverride: null,
+      contextModeOverride: null,
+      createdAt: "2024-01-01T00:00:00Z",
+      updatedAt: "2024-01-01T00:00:00Z",
+    });
+
+    it("activeScene が phase アンカー上の時は ▶ 行を出さず ◉ のみ", async () => {
+      mockPhaseState.globalSceneOrder = new Map([
+        ["scene-1", 0],
+        ["scene-2", 1],
+      ]);
+      mockPhaseState.phasesByEntry = {
+        "entry-1": [makePhase("phase-1", "変身後", "scene-2")],
+      };
+      mockTreeState.nodes = [
+        { id: "scene-2", title: "対決", nodeType: "scene" } as never,
+      ];
+      mockTreeState.activeSceneId = "scene-2";
+
+      render(<TimelineTab entry={mockEntry} />);
+      await waitFor(() => {
+        expect(screen.getByText("変身後")).toBeInTheDocument();
+      });
+      expect(screen.queryByText(/現在地:/)).not.toBeInTheDocument();
+      expect(
+        screen.queryByText("シーン未選択 — Base を適用中"),
+      ).not.toBeInTheDocument();
+    });
+
+    it("activeScene が phase アンカー間にいる時は ▶ ここ 行が出る", async () => {
+      mockPhaseState.globalSceneOrder = new Map([
+        ["scene-1", 0],
+        ["scene-2", 1],
+        ["scene-3", 2],
+      ]);
+      mockPhaseState.phasesByEntry = {
+        "entry-1": [
+          makePhase("phase-1", "出会い", "scene-1"),
+          makePhase("phase-2", "変身後", "scene-3"),
+        ],
+      };
+      mockTreeState.nodes = [
+        { id: "scene-2", title: "夜の街", nodeType: "scene" } as never,
+      ];
+      mockTreeState.activeSceneId = "scene-2";
+
+      render(<TimelineTab entry={mockEntry} />);
+      await waitFor(() => {
+        expect(screen.getByText("現在地: 夜の街")).toBeInTheDocument();
+      });
+    });
+
+    it("activeScene が最終 phase より後にいる時は ▶ ここ 行が末尾に出る", async () => {
+      mockPhaseState.globalSceneOrder = new Map([
+        ["scene-1", 0],
+        ["scene-2", 1],
+      ]);
+      mockPhaseState.phasesByEntry = {
+        "entry-1": [makePhase("phase-1", "出会い", "scene-1")],
+      };
+      mockTreeState.nodes = [
+        { id: "scene-2", title: "終章", nodeType: "scene" } as never,
+      ];
+      mockTreeState.activeSceneId = "scene-2";
+
+      render(<TimelineTab entry={mockEntry} />);
+      await waitFor(() => {
+        expect(screen.getByText("現在地: 終章")).toBeInTheDocument();
+      });
+    });
+
+    it("activeSceneId が未設定なら Scene 文脈なし pill が出る", async () => {
+      mockPhaseState.globalSceneOrder = new Map([["scene-1", 0]]);
+      mockPhaseState.phasesByEntry = {
+        "entry-1": [makePhase("phase-1", "出会い", "scene-1")],
+      };
+      mockTreeState.nodes = [];
+      mockTreeState.activeSceneId = "";
+
+      render(<TimelineTab entry={mockEntry} />);
+      await waitFor(() => {
+        expect(
+          screen.getByText("シーン未選択 — Base を適用中"),
+        ).toBeInTheDocument();
+      });
+      expect(screen.queryByText(/現在地:/)).not.toBeInTheDocument();
+    });
+
+    it("resolutionMode に応じた順序バッジが表示される", async () => {
+      mockPhaseState.globalSceneOrder = new Map([["scene-1", 0]]);
+      mockPhaseState.phasesByEntry = {
+        "entry-1": [makePhase("phase-1", "出会い", "scene-1")],
+      };
+      mockPhaseState.resolutionMode = "story";
+
+      render(<TimelineTab entry={mockEntry} />);
+      await waitFor(() => {
+        expect(screen.getByText("順序: 作中時間順")).toBeInTheDocument();
+      });
+    });
+
+    it("activeSceneId が globalSceneOrder に無い（削除済み）時も pill が出る", async () => {
+      mockPhaseState.globalSceneOrder = new Map([["scene-1", 0]]);
+      mockPhaseState.phasesByEntry = {
+        "entry-1": [makePhase("phase-1", "出会い", "scene-1")],
+      };
+      mockTreeState.nodes = [];
+      mockTreeState.activeSceneId = "scene-deleted";
+
+      render(<TimelineTab entry={mockEntry} />);
+      await waitFor(() => {
+        expect(
+          screen.getByText("シーン未選択 — Base を適用中"),
+        ).toBeInTheDocument();
+      });
     });
   });
 });

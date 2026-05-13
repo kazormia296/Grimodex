@@ -1,11 +1,16 @@
-import { useEffect, useMemo, useState } from "react";
+import { Fragment, useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { Pencil, Trash2, Plus } from "lucide-react";
+import { Clock, MapPin, Pencil, Trash2, Plus, Settings2 } from "lucide-react";
 import type { CodexEntry } from "../api";
 import type { CodexEntryPhase } from "../phaseApi";
 import { usePhaseStore } from "../phaseStore";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { PhaseDialog } from "./PhaseDialog";
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover";
 
 interface TimelineTabProps {
   entry: CodexEntry;
@@ -18,6 +23,7 @@ export function TimelineTab({ entry }: TimelineTabProps) {
   const rawPhases = usePhaseStore((s) => s.phasesByEntry[entry.id]);
   const phases = rawPhases ?? EMPTY_PHASES;
   const globalSceneOrder = usePhaseStore((s) => s.globalSceneOrder);
+  const resolutionMode = usePhaseStore((s) => s.resolutionMode);
   const loadPhasesForEntry = usePhaseStore((s) => s.loadPhasesForEntry);
   const deletePhase = usePhaseStore((s) => s.deletePhase);
   const nodes = useTreeStore((s) => s.nodes);
@@ -74,6 +80,31 @@ export function TimelineTab({ entry }: TimelineTabProps) {
     );
     return applicable[applicable.length - 1]?.id ?? null;
   }, [sortedPhases, globalSceneOrder, activeSceneId]);
+
+  // 現在地マーカー: activeSceneId の order と phase アンカーを比較し、
+  // ① 該当 scene が phase アンカー上なら既存 ◉ に任せて ▶ 行は出さない
+  // ② アンカー間なら sortedPhases の差込位置 (insertBefore) を算出
+  // ③ activeSceneId が未解決 / 未設定なら isMissingContext = true で pill を出す
+  const currentMarker = useMemo(() => {
+    if (!activeSceneId) return { missing: true as const };
+    const currentOrder = globalSceneOrder.get(activeSceneId);
+    if (currentOrder === undefined) return { missing: true as const };
+    const exactMatch = sortedPhases.some(
+      (p) => globalSceneOrder.get(p.anchorNodeId!) === currentOrder,
+    );
+    if (exactMatch) return { missing: false as const, insertBefore: null };
+    const idx = sortedPhases.findIndex(
+      (p) => globalSceneOrder.get(p.anchorNodeId!)! > currentOrder,
+    );
+    return {
+      missing: false as const,
+      insertBefore: idx === -1 ? sortedPhases.length : idx,
+    };
+  }, [activeSceneId, globalSceneOrder, sortedPhases]);
+
+  const currentSceneTitle = activeSceneId
+    ? (nodes.find((n) => n.id === activeSceneId)?.title ?? null)
+    : null;
 
   const getSceneTitle = (nodeId: string | null): string => {
     if (!nodeId) return "─";
@@ -134,8 +165,81 @@ export function TimelineTab({ entry }: TimelineTabProps) {
     );
   }
 
+  const orderModeLabelKey =
+    resolutionMode === "reading"
+      ? "codex.timeline.orderModeReading"
+      : resolutionMode === "story"
+        ? "codex.timeline.orderModeStory"
+        : "codex.timeline.orderModeAuto";
+  const orderModeDescKey =
+    resolutionMode === "reading"
+      ? "codex.timeline.orderModeReadingDesc"
+      : resolutionMode === "story"
+        ? "codex.timeline.orderModeStoryDesc"
+        : "codex.timeline.orderModeAutoDesc";
+
+  const orderModeBadge = (
+    <Popover>
+      <PopoverTrigger asChild>
+        <button
+          type="button"
+          className="inline-flex items-center gap-1 rounded-full border border-border bg-muted/50 px-2 py-0.5 text-[10px] text-muted-foreground hover:bg-muted hover:text-foreground"
+        >
+          <Clock className="h-2.5 w-2.5" />
+          {t(orderModeLabelKey)}
+        </button>
+      </PopoverTrigger>
+      <PopoverContent align="start" className="w-64 text-xs">
+        <p className="font-semibold text-foreground">{t(orderModeLabelKey)}</p>
+        <p className="mt-1 text-[11px] leading-relaxed text-muted-foreground">
+          {t(orderModeDescKey)}
+        </p>
+        <button
+          type="button"
+          onClick={() =>
+            window.dispatchEvent(
+              new CustomEvent("open-settings", {
+                detail: { category: "project" },
+              }),
+            )
+          }
+          className="mt-2 inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] text-primary hover:bg-accent"
+        >
+          <Settings2 className="h-3 w-3" />
+          {t("codex.timeline.orderModeOpenSettings")}
+        </button>
+      </PopoverContent>
+    </Popover>
+  );
+
+  const currentMarkerRow = currentSceneTitle ? (
+    <div className="flex gap-2">
+      <div className="flex w-4 justify-center">
+        <MapPin className="mt-1 h-3 w-3 text-primary" />
+      </div>
+      <div className="flex flex-1 items-center gap-1 py-1">
+        <div className="h-px flex-1 bg-primary/30" />
+        <span className="shrink-0 text-[10px] font-medium text-primary">
+          {t("codex.timeline.currentSceneHere", { title: currentSceneTitle })}
+        </span>
+        <div className="h-px flex-1 bg-primary/30" />
+      </div>
+    </div>
+  ) : null;
+
   return (
     <div className="space-y-0">
+      {/* Order mode badge + Scene 文脈なし pill */}
+      <div className="mb-2 flex flex-wrap items-center gap-1">
+        {orderModeBadge}
+        {currentMarker.missing && (
+          <span className="inline-flex items-center gap-1 rounded-full border border-border bg-muted/50 px-2 py-0.5 text-[10px] text-muted-foreground">
+            <MapPin className="h-2.5 w-2.5" />
+            {t("codex.timeline.noSceneContext")}
+          </span>
+        )}
+      </div>
+
       {/* Base state */}
       <div className="flex gap-2">
         <div className="flex flex-col items-center">
@@ -153,10 +257,13 @@ export function TimelineTab({ entry }: TimelineTabProps) {
       </div>
 
       {/* Sorted phases */}
-      {sortedPhases.map((phase) => {
+      {sortedPhases.map((phase, i) => {
         const isActive = phase.id === activePhaseId;
         return (
-          <div key={phase.id}>
+          <Fragment key={phase.id}>
+            {!currentMarker.missing &&
+              currentMarker.insertBefore === i &&
+              currentMarkerRow}
             {/* Scene separator */}
             <div className="flex items-center gap-2">
               <div className="flex w-4 justify-center">
@@ -176,9 +283,6 @@ export function TimelineTab({ entry }: TimelineTabProps) {
               <div className="flex flex-col items-center">
                 <span
                   className={`mt-1 text-xs ${isActive ? "text-primary" : "text-muted-foreground"}`}
-                  title={
-                    isActive ? t("codex.timeline.currentScene") : undefined
-                  }
                 >
                   {isActive ? "◉" : "●"}
                 </span>
@@ -190,11 +294,6 @@ export function TimelineTab({ entry }: TimelineTabProps) {
                     className={`text-xs font-semibold ${isActive ? "text-primary" : ""}`}
                   >
                     {phase.label}
-                    {isActive && (
-                      <span className="ml-1.5 text-[10px] font-normal text-muted-foreground">
-                        {t("codex.timeline.currentSceneArrow")}
-                      </span>
-                    )}
                   </p>
                   <div className="flex shrink-0 items-center gap-0.5">
                     <button
@@ -239,9 +338,14 @@ export function TimelineTab({ entry }: TimelineTabProps) {
                 </div>
               </div>
             </div>
-          </div>
+          </Fragment>
         );
       })}
+
+      {/* 最後の Phase より後ろにいる場合の ▶ ここ */}
+      {!currentMarker.missing &&
+        currentMarker.insertBefore === sortedPhases.length &&
+        currentMarkerRow}
 
       {/* アンカーなしフェーズ（末尾に表示） */}
       {unsortedPhases.map((phase) => (
