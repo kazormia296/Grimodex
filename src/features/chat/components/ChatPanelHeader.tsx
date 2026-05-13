@@ -14,6 +14,7 @@ import {
 import { useTreeStore } from "@/features/tree/treeStore";
 import type { TreeNodeData } from "@/features/tree/treeStore";
 import { cmpKeys } from "@/features/tree/fractionalIndex";
+import { useLayoutStore } from "@/features/layout/layoutStore";
 
 type ChatScope = "scene" | "folder" | "project";
 
@@ -104,6 +105,8 @@ export function ChatPanelHeader({
 
   const [open, setOpen] = useState(false);
   const dropdownRef = useRef<HTMLDivElement>(null);
+  const [scopeHint, setScopeHint] = useState(false);
+  const activePresetId = useLayoutStore((s) => s.activePresetId);
 
   useEffect(() => {
     if (!open) return;
@@ -118,6 +121,16 @@ export function ChatPanelHeader({
     document.addEventListener("mousedown", onOutside);
     return () => document.removeEventListener("mousedown", onOutside);
   }, [open]);
+
+  // Chat プリセット切替時に Project スコープを時限ポップオーバーで提案
+  useEffect(() => {
+    if (activePresetId !== "builtin:chat-main") return;
+    if (chatScope === "project") return;
+    setScopeHint(true);
+    const timer = setTimeout(() => setScopeHint(false), 6000);
+    return () => clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const handlePickScene = (sceneId: string) => {
     onSelectScene(sceneId);
@@ -158,6 +171,33 @@ export function ChatPanelHeader({
             <span className="truncate">{currentLabel}</span>
             <ChevronDown className="h-3 w-3 shrink-0" />
           </button>
+
+          {scopeHint && !open && (
+            <div className="absolute left-0 top-full z-50 mt-1 w-52 rounded-md border border-primary/40 bg-popover p-2.5 shadow-md">
+              <p className="mb-2 text-[11px] text-muted-foreground">
+                {t("chat.scopeHint.message")}
+              </p>
+              <div className="flex items-center justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={() => setScopeHint(false)}
+                  className="rounded px-2 py-0.5 text-[11px] text-muted-foreground hover:bg-accent"
+                >
+                  {t("common.close")}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    onScopeChange("project");
+                    setScopeHint(false);
+                  }}
+                  className="rounded bg-primary px-2 py-0.5 text-[11px] text-primary-foreground hover:bg-primary/90"
+                >
+                  {t("chat.scopeHint.action")}
+                </button>
+              </div>
+            </div>
+          )}
 
           {open && (
             <div className="absolute left-0 top-full z-50 mt-1 w-72 rounded-md border border-border bg-popover shadow-lg">

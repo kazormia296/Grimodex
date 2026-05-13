@@ -109,21 +109,6 @@ export function ChatPanel() {
     loadAiSettings();
   }, [loadAiSettings]);
 
-  const activePresetId = useLayoutStore((s) => s.activePresetId);
-  // Chat プリセット切替時に Project スコープを提案
-  useEffect(() => {
-    if (activePresetId !== "builtin:chat-main") return;
-    if (chatScope === "project") return;
-    toast(t("chat.scopeHint.message"), {
-      action: {
-        label: t("chat.scopeHint.action"),
-        onClick: () => setChatScope("project"),
-      },
-      duration: 8000,
-    });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
   const [sessionsPanelOpen, setSessionsPanelOpen] = useState(false);
   const [inputHasText, setInputHasText] = useState(false);
   const chatEditorRef = useRef<Editor | null>(null);
