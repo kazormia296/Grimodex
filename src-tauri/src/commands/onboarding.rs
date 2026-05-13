@@ -143,8 +143,9 @@ pub(crate) fn seed_sample_workspace(
 
     db.with_conn(|conn| {
         // Project
+        // Migration pre-inserts "default-project"; replace it with sample data.
         conn.execute(
-            "INSERT INTO projects
+            "INSERT OR REPLACE INTO projects
                 (id, title, genre, language, ai_instructions, ai_policy, is_sample, created_at, updated_at)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, 1, ?7, ?7)",
             rusqlite::params![
@@ -322,7 +323,7 @@ mod tests {
 
         db.with_conn(|conn| {
             conn.execute(
-                "INSERT INTO projects (id, title, language, ai_policy, is_sample, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, 1, ?5, ?5)",
+                "INSERT OR REPLACE INTO projects (id, title, language, ai_policy, is_sample, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, 1, ?5, ?5)",
                 rusqlite::params![project_id, seed.project.title, "ja", ai_policy, now_dt],
             )?;
 
