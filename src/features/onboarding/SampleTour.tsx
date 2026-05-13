@@ -153,8 +153,11 @@ function TourCard({
               containerRef={skipContainerRef}
               className="absolute right-0 top-full z-50 mt-2 w-64 origin-top-right rounded-lg border border-border bg-popover p-3 shadow-lg"
             >
-              <p className="mb-3 text-xs leading-relaxed text-foreground">
-                {t("tour.skipConfirm")}
+              <p className="mb-1 text-xs font-semibold text-foreground">
+                {t("tour.skipConfirmTitle")}
+              </p>
+              <p className="mb-3 text-xs leading-relaxed text-muted-foreground">
+                {t("tour.skipConfirmDesc")}
               </p>
               <div className="flex justify-end gap-2">
                 <button

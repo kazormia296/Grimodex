@@ -36,10 +36,10 @@ function SkipDialog({ onConfirm, onCancel }: SkipDialogProps) {
         transition={{ duration: DURATIONS.normal, ease: EASINGS.easeOut }}
       >
         <p className="mb-2 text-sm font-semibold text-foreground">
-          {t("preflight.skipConfirmTitle")}
+          {t("tour.skipConfirmTitle")}
         </p>
         <p className="mb-5 text-xs text-muted-foreground">
-          {t("preflight.skipConfirmDesc")}
+          {t("tour.skipConfirmDesc")}
         </p>
         <div className="flex justify-end gap-2">
           <button
@@ -47,14 +47,14 @@ function SkipDialog({ onConfirm, onCancel }: SkipDialogProps) {
             onClick={onCancel}
             className="rounded-md border border-border px-4 py-1.5 text-xs hover:bg-accent"
           >
-            {t("preflight.skipNo")}
+            {t("tour.cancel")}
           </button>
           <button
             type="button"
             onClick={onConfirm}
             className="rounded-md bg-destructive px-4 py-1.5 text-xs text-destructive-foreground hover:bg-destructive/90"
           >
-            {t("preflight.skipYes")}
+            {t("tour.skip")}
           </button>
         </div>
       </motion.div>
