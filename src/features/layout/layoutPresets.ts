@@ -289,29 +289,37 @@ function buildReview(api: DockviewApi) {
 }
 
 function buildCondense(api: DockviewApi) {
-  // Codex(Snippets) | Editor | Chat(Chat History)
+  // Codex(Snippets, Matrix, Map) | Chat(Chat History)
+  // Codex を大きく取り、内部 wide mode で list|Editor|detail の 3 カラムを発動させる。
   api.addPanel({
     id: "codex",
     component: "codex",
     title: getPanelTitle("codex"),
   });
   api.addPanel({
-    id: "editor",
-    component: "editor",
-    title: getPanelTitle("editor"),
-    position: { referencePanel: "codex", direction: "right" },
-    minimumWidth: 320,
-  });
-  api.addPanel({
     id: "chat",
     component: "chat",
     title: getPanelTitle("chat"),
-    position: { referencePanel: "editor", direction: "right" },
+    position: { referencePanel: "codex", direction: "right" },
   });
   api.addPanel({
     id: "snippets",
     component: "snippets",
     title: getPanelTitle("snippets"),
+    position: { referencePanel: "codex", direction: "within" },
+    inactive: true,
+  });
+  api.addPanel({
+    id: "matrix",
+    component: "matrix",
+    title: getPanelTitle("matrix"),
+    position: { referencePanel: "codex", direction: "within" },
+    inactive: true,
+  });
+  api.addPanel({
+    id: "map",
+    component: "map",
+    title: getPanelTitle("map"),
     position: { referencePanel: "codex", direction: "within" },
     inactive: true,
   });
@@ -323,25 +331,8 @@ function buildCondense(api: DockviewApi) {
     inactive: true,
   });
 
-  api.addPanel({
-    id: "matrix",
-    component: "matrix",
-    title: getPanelTitle("matrix"),
-    position: { referencePanel: "snippets", direction: "within" },
-    inactive: true,
-  });
-  api.addPanel({
-    id: "map",
-    component: "map",
-    title: getPanelTitle("map"),
-    position: { referencePanel: "editor", direction: "within" },
-    inactive: true,
-  });
-
-  const leftGroup = api.getPanel("codex")?.group;
   const rightGroup = api.getPanel("chat")?.group;
-  if (leftGroup && rightGroup) {
-    leftGroup.api.setSize({ width: Math.round(api.width * 0.3) });
+  if (rightGroup) {
     rightGroup.api.setSize({ width: Math.round(api.width * 0.25) });
   }
   api.getPanel("codex")?.api.setActive();
