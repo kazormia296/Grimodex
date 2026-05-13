@@ -34,6 +34,8 @@ export function AiProviderStep({ onSetupLater }: AiProviderStepProps) {
     hasApiKey,
     isTestingConnection,
     connectionTestResult,
+    models,
+    isLoadingModels,
     loadSettings,
     saveSettings,
     saveApiKey,
@@ -61,6 +63,12 @@ export function AiProviderStep({ onSetupLater }: AiProviderStepProps) {
     if (hasApiKey || noKey) loadModels();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [hasApiKey, settings?.provider]);
+
+  async function handleModelChange(modelId: string) {
+    const updated = { ...localSettings, model: modelId };
+    setLocalSettings(updated);
+    await saveSettings(updated);
+  }
 
   async function handleProviderChange(provider: AiProvider) {
     const updated = { ...localSettings, provider, model: "" };
@@ -149,6 +157,38 @@ export function AiProviderStep({ onSetupLater }: AiProviderStepProps) {
           <CheckCircle size={13} />
           {t("preflight.connected")}
         </p>
+      )}
+
+      {/* Model selection — shown once models can be loaded.
+          CLI manages models separately so it's excluded. */}
+      {provider !== "cli" && (hasApiKey || !needsKey) && (
+        <div>
+          <p className="mb-1.5 text-xs font-medium text-muted-foreground">
+            {t("preflight.modelLabel")}
+          </p>
+          {isLoadingModels ? (
+            <p className="text-xs text-muted-foreground/70">
+              {t("preflight.loadingModels")}
+            </p>
+          ) : models.length === 0 ? (
+            <p className="text-xs text-muted-foreground/70">
+              {t("preflight.noModels")}
+            </p>
+          ) : (
+            <select
+              value={localSettings.model}
+              onChange={(e) => void handleModelChange(e.target.value)}
+              className="w-full rounded-md border border-input bg-background px-2 py-1.5 text-xs focus:outline-none focus:ring-1 focus:ring-primary"
+            >
+              <option value="">{t("preflight.selectModel")}</option>
+              {models.map((m) => (
+                <option key={m.id} value={m.id}>
+                  {m.name || m.id}
+                </option>
+              ))}
+            </select>
+          )}
+        </div>
       )}
 
       {/* Test connection */}
