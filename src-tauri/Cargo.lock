@@ -1778,6 +1778,7 @@ dependencies = [
  "tracing-appender",
  "tracing-subscriber",
  "uuid",
+ "window-vibrancy",
 ]
 
 [[package]]

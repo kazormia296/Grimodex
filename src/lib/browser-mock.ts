@@ -421,6 +421,8 @@ export async function createBrowserMock(): Promise<BrowserMock> {
         return handleValidateWorkspacePath() as T;
       case "open_workspace":
         return handleOpenWorkspace(args) as T;
+      case "set_window_vibrancy":
+        return undefined as T;
       case "db_execute":
         return handleDbExecute(args) as T;
       case "get_ai_settings":

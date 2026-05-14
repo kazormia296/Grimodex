@@ -313,7 +313,7 @@ export function Toolbar({
   const hasOverflowedButtons = visibleUnitCount < 4;
 
   return (
-    <div className="relative flex-shrink-0 border-b border-border">
+    <div className="glass-editor-chrome relative flex-shrink-0 border-b border-border">
       {/* Toolbar content area — overflow-hidden clips at panel width */}
       <div ref={innerRef} className="relative overflow-hidden">
         <div className="flex w-max items-center px-1.5 py-1">

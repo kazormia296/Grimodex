@@ -275,7 +275,7 @@ export function LinearEditorView() {
       />
       <div
         ref={scrollRef}
-        className="flex-1 overflow-auto bg-content-background text-content-foreground-secondary p-4"
+        className="glass-editor-body flex-1 overflow-auto bg-content-background text-content-foreground-secondary p-4"
       >
         <div
           ref={editorContainerRef}

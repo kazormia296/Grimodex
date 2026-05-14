@@ -34,6 +34,15 @@ export function DisplayCategory() {
     { value: "underline", label: t("settings.display.underline") },
   ];
 
+  const GLASS_INTENSITY_OPTIONS = [
+    {
+      value: "lightweight",
+      label: t("settings.display.glassLightweight", "Lightweight"),
+    },
+    { value: "subtle", label: t("settings.display.glassSubtle", "Subtle") },
+    { value: "rich", label: t("settings.display.glassRich", "Rich") },
+  ];
+
   // Global settings (stored in global-settings.json, available before workspace open)
   const theme = useWorkspaceStore((s) => s.globalSettings?.theme ?? "system");
   const colorTheme = useWorkspaceStore(
@@ -145,6 +154,118 @@ export function DisplayCategory() {
           <SettingToggle
             settingKey="display.reduceMotion"
             defaultValue={false}
+          />
+        </SettingRow>
+      </SettingSection>
+
+      <SettingSection title={t("settings.display.glass", "Liquid Glass")}>
+        <SettingRow
+          label={t(
+            "settings.display.glassEffectEnabled",
+            "Enable glass effect",
+          )}
+          description={t(
+            "settings.display.glassEffectEnabledDesc",
+            "Applies translucent glass surfaces across the app chrome.",
+          )}
+        >
+          <SettingToggle
+            settingKey="display.glassEffectEnabled"
+            defaultValue={false}
+          />
+        </SettingRow>
+        <SettingRow
+          label={t("settings.display.glassEffectIntensity", "Glass intensity")}
+          description={t(
+            "settings.display.glassEffectIntensityDesc",
+            "Controls blur and shadow strength (transparency is set separately).",
+          )}
+        >
+          <SettingDropdown
+            settingKey="display.glassEffectIntensity"
+            options={GLASS_INTENSITY_OPTIONS}
+            defaultValue="rich"
+          />
+        </SettingRow>
+        <SettingRow
+          label={t("settings.display.glassTransparency", "Transparency")}
+          description={t(
+            "settings.display.glassTransparencyDesc",
+            "Higher values let more of what's behind the window show through, uniformly across all glass surfaces.",
+          )}
+        >
+          <SettingSlider
+            settingKey="display.glassTransparency"
+            min={0}
+            max={70}
+            step={5}
+            defaultValue={30}
+            format={(v) => `${v}%`}
+          />
+        </SettingRow>
+        <SettingRow
+          label={t(
+            "settings.display.glassNativeVibrancy",
+            "macOS native vibrancy",
+          )}
+          description={t(
+            "settings.display.glassNativeVibrancyDesc",
+            "Uses the native macOS window material when available.",
+          )}
+        >
+          <SettingToggle
+            settingKey="display.glassNativeVibrancy"
+            defaultValue={true}
+          />
+        </SettingRow>
+        <SettingRow
+          label={t("settings.display.glassSurfaceShell", "Window and header")}
+        >
+          <SettingToggle
+            settingKey="display.glassSurfaceShell"
+            defaultValue={true}
+          />
+        </SettingRow>
+        <SettingRow
+          label={t("settings.display.glassSurfaceDock", "Dock and tabs")}
+        >
+          <SettingToggle
+            settingKey="display.glassSurfaceDock"
+            defaultValue={true}
+          />
+        </SettingRow>
+        <SettingRow label={t("settings.display.glassSurfacePanels", "Panels")}>
+          <SettingToggle
+            settingKey="display.glassSurfacePanels"
+            defaultValue={true}
+          />
+        </SettingRow>
+        <SettingRow label={t("settings.display.glassSurfaceChat", "Chat")}>
+          <SettingToggle
+            settingKey="display.glassSurfaceChat"
+            defaultValue={true}
+          />
+        </SettingRow>
+        <SettingRow
+          label={t(
+            "settings.display.glassSurfacePopovers",
+            "Popovers and dialogs",
+          )}
+        >
+          <SettingToggle
+            settingKey="display.glassSurfacePopovers"
+            defaultValue={true}
+          />
+        </SettingRow>
+        <SettingRow
+          label={t(
+            "settings.display.glassSurfaceEditorChrome",
+            "Editor chrome",
+          )}
+        >
+          <SettingToggle
+            settingKey="display.glassSurfaceEditorChrome"
+            defaultValue={true}
           />
         </SettingRow>
       </SettingSection>

@@ -565,7 +565,7 @@ export function ChatPanel() {
   }, [createNewSession, chatScope, scopeAnchorId, chatSceneId]);
 
   return (
-    <div className="relative flex h-full flex-col bg-background">
+    <div className="glass-chat relative flex h-full flex-col bg-background">
       {/* メッセージリスト内の Codex ハイライトポップオーバー（単一インスタンス） */}
       <CodexPopover containerEl={messagesContainerEl} />
 

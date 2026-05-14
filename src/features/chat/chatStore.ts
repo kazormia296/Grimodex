@@ -2002,20 +2002,20 @@ export const useChatStore = create<ChatState>()((set, get) => ({
         };
 
         const streamPromise = isCliProvider
-            ? cliApi.sendCliChatStream(
-                {
-                  cli: cliConfig.kind,
-                  binaryPath: cliConfig.binaryPath || undefined,
-                  model: cliConfig.model || undefined,
-                  prompt: flattenMessagesForCli(apiPayload),
-                },
-                callbacks,
-              )
-            : chatApi.sendChatMessageStream(
-                apiPayload,
-                chatThinkingParams,
-                callbacks,
-              );
+          ? cliApi.sendCliChatStream(
+              {
+                cli: cliConfig.kind,
+                binaryPath: cliConfig.binaryPath || undefined,
+                model: cliConfig.model || undefined,
+                prompt: flattenMessagesForCli(apiPayload),
+              },
+              callbacks,
+            )
+          : chatApi.sendChatMessageStream(
+              apiPayload,
+              chatThinkingParams,
+              callbacks,
+            );
 
         streamPromise
           .then((cleanup) => {

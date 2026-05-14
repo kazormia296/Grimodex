@@ -34,6 +34,16 @@ describe("KEY_SCOPE routing invariants", () => {
       "editor.cursorBlink",
       "display.showWordCount",
       "display.reduceMotion",
+      "display.glassEffectEnabled",
+      "display.glassEffectIntensity",
+      "display.glassTransparency",
+      "display.glassNativeVibrancy",
+      "display.glassSurfaceShell",
+      "display.glassSurfaceDock",
+      "display.glassSurfacePanels",
+      "display.glassSurfaceChat",
+      "display.glassSurfacePopovers",
+      "display.glassSurfaceEditorChrome",
       "keys.bindings",
       "data.autoBackup",
       "revision.autoInterval",
@@ -62,5 +72,18 @@ describe("KEY_SCOPE routing invariants", () => {
     for (const key of projects) {
       expect(KEY_SCOPE[key], `${key} should be project`).toBe("project");
     }
+  });
+
+  it("glass settings default to off with rich intensity and all surfaces available", () => {
+    expect(DEFAULT_SETTINGS["display.glassEffectEnabled"]).toBe("false");
+    expect(DEFAULT_SETTINGS["display.glassEffectIntensity"]).toBe("rich");
+    expect(DEFAULT_SETTINGS["display.glassTransparency"]).toBe("30");
+    expect(DEFAULT_SETTINGS["display.glassNativeVibrancy"]).toBe("true");
+    expect(DEFAULT_SETTINGS["display.glassSurfaceShell"]).toBe("true");
+    expect(DEFAULT_SETTINGS["display.glassSurfaceDock"]).toBe("true");
+    expect(DEFAULT_SETTINGS["display.glassSurfacePanels"]).toBe("true");
+    expect(DEFAULT_SETTINGS["display.glassSurfaceChat"]).toBe("true");
+    expect(DEFAULT_SETTINGS["display.glassSurfacePopovers"]).toBe("true");
+    expect(DEFAULT_SETTINGS["display.glassSurfaceEditorChrome"]).toBe("true");
   });
 });

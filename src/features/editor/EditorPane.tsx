@@ -1588,7 +1588,7 @@ export function EditorPane({
                 data-focus-hide-beats={
                   focusModeHideBeats && focusMode ? "true" : undefined
                 }
-                className={`flex-1 overflow-auto bg-content-background text-content-foreground-secondary p-4${typewriterMode ? " typewriter-padding" : ""}${filterSource ? ` attribution-filter-${filterSource}` : ""}`}
+                className={`glass-editor-body flex-1 overflow-auto bg-content-background text-content-foreground-secondary p-4${typewriterMode ? " typewriter-padding" : ""}${filterSource ? ` attribution-filter-${filterSource}` : ""}`}
                 onClick={(e) => {
                   if (e.target === e.currentTarget) {
                     editor?.commands.focus();
@@ -1719,7 +1719,7 @@ export function EditorPane({
                 data-focus-hide-beats={
                   focusModeHideBeats && focusMode ? "true" : undefined
                 }
-                className={`flex-1 overflow-auto bg-content-background text-content-foreground-secondary p-4${typewriterMode ? " typewriter-padding" : ""}${filterSource ? ` attribution-filter-${filterSource}` : ""}`}
+                className={`glass-editor-body flex-1 overflow-auto bg-content-background text-content-foreground-secondary p-4${typewriterMode ? " typewriter-padding" : ""}${filterSource ? ` attribution-filter-${filterSource}` : ""}`}
                 onClick={(e) => {
                   if (e.target === e.currentTarget) {
                     editor?.commands.focus();
@@ -1834,7 +1834,7 @@ export function EditorPane({
           )}
         </DragOverlay>
       </DndContext>
-      <div className="flex flex-shrink-0 items-center justify-between border-t border-border px-3 py-1 text-xs text-muted-foreground">
+      <div className="glass-editor-chrome flex flex-shrink-0 items-center justify-between border-t border-border px-3 py-1 text-xs text-muted-foreground">
         {/* Left: status badge */}
         <div className="relative flex min-w-0 items-center">
           {activeStatus ? (

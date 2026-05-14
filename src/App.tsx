@@ -70,6 +70,7 @@ import { useTreeStore } from "@/features/tree/treeStore";
 import { useGlobalHistoryStore } from "@/store/globalHistoryStore";
 import { HistoryButtons } from "@/features/history/HistoryButtons";
 import { getProject } from "@/features/project/api";
+import { invoke } from "@/lib/tauri";
 import { usePhaseStore } from "@/features/codex/phaseStore";
 import { SampleTour } from "@/features/onboarding/SampleTour";
 
@@ -178,6 +179,16 @@ function applyTheme(theme: string, colorTheme?: string) {
   }
 }
 
+function isMacPlatform() {
+  if (typeof navigator === "undefined") return false;
+  const nav = navigator as Navigator & {
+    userAgentData?: { platform?: string };
+  };
+  const data = nav.userAgentData;
+  const platform = data?.platform ?? navigator.platform ?? "";
+  return /mac/i.test(platform);
+}
+
 function App() {
   const view = useWorkspaceStore((s) => s.view);
   const activeWorkspacePath = useWorkspaceStore((s) => s.activeWorkspacePath);
@@ -272,6 +283,68 @@ function EditorScreen() {
   const [showCommandPalette, setShowCommandPalette] = useState(false);
   const { setShowSampleTour, seedAndOpenSample } = useWorkspaceStore();
   const showSampleTour = useWorkspaceStore((s) => s.showSampleTour);
+  const glassEnabled = useSettingsStore((s) =>
+    s.getBoolean("display.glassEffectEnabled", false),
+  );
+  const glassIntensity = useSettingsStore((s) =>
+    s.get("display.glassEffectIntensity", "rich"),
+  );
+  const glassTransparency = useSettingsStore((s) =>
+    s.getNumber("display.glassTransparency", 30),
+  );
+  const glassNativeVibrancy = useSettingsStore((s) =>
+    s.getBoolean("display.glassNativeVibrancy", true),
+  );
+  const glassSurfaceShell = useSettingsStore((s) =>
+    s.getBoolean("display.glassSurfaceShell", true),
+  );
+  const glassSurfaceDock = useSettingsStore((s) =>
+    s.getBoolean("display.glassSurfaceDock", true),
+  );
+  const glassSurfacePanels = useSettingsStore((s) =>
+    s.getBoolean("display.glassSurfacePanels", true),
+  );
+  const glassSurfaceChat = useSettingsStore((s) =>
+    s.getBoolean("display.glassSurfaceChat", true),
+  );
+  const glassSurfacePopovers = useSettingsStore((s) =>
+    s.getBoolean("display.glassSurfacePopovers", true),
+  );
+  const glassSurfaceEditorChrome = useSettingsStore((s) =>
+    s.getBoolean("display.glassSurfaceEditorChrome", true),
+  );
+  const isMac = isMacPlatform();
+
+  useEffect(() => {
+    const html = document.documentElement;
+    if (glassEnabled) {
+      html.dataset.glassEnabled = "true";
+      html.dataset.glassIntensity = glassIntensity;
+    } else {
+      delete html.dataset.glassEnabled;
+      delete html.dataset.glassIntensity;
+    }
+    html.dataset.glassPopovers =
+      glassEnabled && glassSurfacePopovers ? "true" : "false";
+    const clamped = Math.max(0, Math.min(70, glassTransparency));
+    html.style.setProperty("--glass-transparency-pct", `${clamped}%`);
+
+    return () => {
+      delete html.dataset.glassEnabled;
+      delete html.dataset.glassIntensity;
+      delete html.dataset.glassPopovers;
+      html.style.removeProperty("--glass-transparency-pct");
+    };
+  }, [glassEnabled, glassIntensity, glassSurfacePopovers, glassTransparency]);
+
+  useEffect(() => {
+    invoke("set_window_vibrancy", {
+      enabled: glassEnabled && glassNativeVibrancy,
+    }).catch(() => {});
+    return () => {
+      invoke("set_window_vibrancy", { enabled: false }).catch(() => {});
+    };
+  }, [glassEnabled, glassNativeVibrancy]);
 
   // Re-run SampleTour: open/re-seed sample workspace then start tour
   useEffect(() => {
@@ -608,9 +681,20 @@ function EditorScreen() {
   }, []);
 
   return (
-    <main className="flex h-screen flex-col">
+    <main
+      className="app-shell flex h-screen flex-col"
+      data-glass-enabled={glassEnabled ? "true" : undefined}
+      data-glass-intensity={glassIntensity}
+      data-glass-shell={glassSurfaceShell ? "true" : undefined}
+      data-glass-dock={glassSurfaceDock ? "true" : undefined}
+      data-glass-panels={glassSurfacePanels ? "true" : undefined}
+      data-glass-chat={glassSurfaceChat ? "true" : undefined}
+      data-glass-popovers={glassSurfacePopovers ? "true" : undefined}
+      data-glass-editor-chrome={glassSurfaceEditorChrome ? "true" : undefined}
+      data-platform-mac={isMac ? "true" : undefined}
+    >
       <header
-        className="flex flex-shrink-0 items-center gap-3 border-b border-border px-4 py-1"
+        className={`glass-shell flex flex-shrink-0 items-center gap-3 border-b border-border px-4 py-1 ${isMac ? "pl-20" : ""}`}
         data-tauri-drag-region
       >
         <GrimodexLogo height={24} className="text-foreground" />
@@ -640,8 +724,12 @@ function EditorScreen() {
           <Settings className="h-4 w-4" />
           <span className="text-sm">{t("app.settingsLabel")}</span>
         </button>
-        <div className="h-4 w-px bg-border" />
-        <WindowControls />
+        {!isMac && (
+          <>
+            <div className="h-4 w-px bg-border" />
+            <WindowControls />
+          </>
+        )}
       </header>
       <SettingsDialog
         open={showSettings}
@@ -659,7 +747,7 @@ function EditorScreen() {
       <div className="flex flex-1 overflow-hidden">
         {/* Dockview layout */}
         <DockviewReact
-          className="dockview-theme-dark flex-1"
+          className="dockview-theme-dark glass-dock flex-1"
           onReady={handleReady}
           onDidDrop={handlePanelDrop}
           components={components}

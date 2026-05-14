@@ -16,6 +16,37 @@ use commands::{
     PostEffectAbortFlag, StreamAbortFlag, WorkspaceState,
 };
 
+#[tauri::command]
+fn set_window_vibrancy(app: tauri::AppHandle, enabled: bool) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        use window_vibrancy::{apply_vibrancy, clear_vibrancy, NSVisualEffectMaterial};
+
+        let window = app
+            .get_webview_window("main")
+            .ok_or_else(|| "main window was not found".to_string())?;
+
+        if enabled {
+            apply_vibrancy(
+                &window,
+                NSVisualEffectMaterial::UnderWindowBackground,
+                None,
+                None,
+            )
+            .map_err(|error| error.to_string())?;
+        } else {
+            clear_vibrancy(&window).map_err(|error| error.to_string())?;
+        }
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (app, enabled);
+    }
+
+    Ok(())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // Daily-rotating file log under `~/.grimodex/logs/lint-tauri-*.log`
@@ -80,6 +111,7 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            set_window_vibrancy,
             commands::workspace::get_global_settings,
             commands::workspace::save_global_settings,
             commands::workspace::validate_workspace_path,

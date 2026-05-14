@@ -6,12 +6,22 @@ function isTauri(): boolean {
   return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 }
 
+function isMacPlatform(): boolean {
+  if (typeof navigator === "undefined") return false;
+  const nav = navigator as Navigator & {
+    userAgentData?: { platform?: string };
+  };
+  const data = nav.userAgentData;
+  const platform = data?.platform ?? navigator.platform ?? "";
+  return /mac/i.test(platform);
+}
+
 export function WindowControls() {
   const { t } = useTranslation();
   const [isMaximized, setIsMaximized] = useState(false);
 
   useEffect(() => {
-    if (!isTauri()) return;
+    if (!isTauri() || isMacPlatform()) return;
 
     let unlisten: (() => void) | undefined;
 
@@ -33,7 +43,7 @@ export function WindowControls() {
     };
   }, []);
 
-  if (!isTauri()) return null;
+  if (!isTauri() || isMacPlatform()) return null;
 
   async function minimize() {
     const { getCurrentWindow } = await import("@tauri-apps/api/window");
