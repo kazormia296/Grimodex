@@ -119,7 +119,7 @@
       "attribution": "帰属表示",
       "attributionOpacity": "帰属ハイライトの不透明度",
       "attributionOpacityDesc": "Attribution 表示時の背景色の強さ (5〜25%)",
-      "glass": "リキッドガラス",
+      "glass": "ガラス",
       "glassEffectEnabled": "ガラス効果を有効化",
       "glassEffectEnabledDesc": "アプリ全体に半透明ガラス表面を適用します。",
       "glassTransparency": "透明度",

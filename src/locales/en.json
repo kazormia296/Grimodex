@@ -119,7 +119,7 @@
       "attribution": "Attribution",
       "attributionOpacity": "Attribution highlight opacity",
       "attributionOpacityDesc": "Background intensity when Attribution is visible (5–25%)",
-      "glass": "Liquid Glass",
+      "glass": "Glass",
       "glassEffectEnabled": "Enable glass effect",
       "glassEffectEnabledDesc": "Applies translucent glass surfaces across the app chrome.",
       "glassTransparency": "Transparency",

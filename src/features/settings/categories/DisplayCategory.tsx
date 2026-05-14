@@ -52,7 +52,7 @@ export function DisplayCategory() {
   );
   const setCodexHighlightEnabled = useCodexHighlightStore((s) => s.setEnabled);
 
-  // Master Liquid Glass toggle — when OFF every other glass-related control
+  // Master glass toggle — when OFF every other glass-related control
   // below is rendered inert (disabled + dimmed) so it's clear that they
   // have no visual effect until the master is turned ON. Their stored
   // values are preserved across the toggle.
@@ -159,7 +159,7 @@ export function DisplayCategory() {
         </SettingRow>
       </SettingSection>
 
-      <SettingSection title={t("settings.display.glass", "Liquid Glass")}>
+      <SettingSection title={t("settings.display.glass", "Glass")}>
         <SettingRow
           label={t(
             "settings.display.glassEffectEnabled",

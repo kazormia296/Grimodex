@@ -32,7 +32,7 @@ export interface ThemePalette {
   "--content-foreground-muted": string;
   "--content-accent": string;
   "--content-border": string;
-  // Liquid Glass backdrop highlight tints (top-left / top-right radial).
+  // Glass backdrop highlight tints (top-left / top-right radial).
   // Decoupled from --primary / --content-accent so themes can tune the
   // glass aurora independently from the brand colours.
   "--glass-tint-a": string;
