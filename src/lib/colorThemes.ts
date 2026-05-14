@@ -32,6 +32,11 @@ export interface ThemePalette {
   "--content-foreground-muted": string;
   "--content-accent": string;
   "--content-border": string;
+  // Liquid Glass backdrop highlight tints (top-left / top-right radial).
+  // Decoupled from --primary / --content-accent so themes can tune the
+  // glass aurora independently from the brand colours.
+  "--glass-tint-a": string;
+  "--glass-tint-b": string;
 }
 
 export interface PaletteSlot {
@@ -86,6 +91,8 @@ export const THEME_CSS_VARS = [
   "--content-foreground-muted",
   "--content-accent",
   "--content-border",
+  "--glass-tint-a",
+  "--glass-tint-b",
 ] as const;
 
 export const COLOR_THEMES: ColorTheme[] = [
@@ -126,6 +133,8 @@ export const COLOR_THEMES: ColorTheme[] = [
       "--content-foreground-muted": "oklch(0.556 0 0)",
       "--content-accent": "oklch(0.205 0 0)",
       "--content-border": "oklch(0.922 0 0)",
+      "--glass-tint-a": "#8FB4D6",
+      "--glass-tint-b": "#D6B5A5",
     },
     dark: {
       "--background": "oklch(0.145 0 0)",
@@ -161,6 +170,8 @@ export const COLOR_THEMES: ColorTheme[] = [
       "--content-foreground-muted": "oklch(0.708 0 0)",
       "--content-accent": "oklch(0.985 0 0)",
       "--content-border": "oklch(0.269 0 0)",
+      "--glass-tint-a": "#4A6FA8",
+      "--glass-tint-b": "#A87055",
     },
     palette: {
       light: [
@@ -226,6 +237,8 @@ export const COLOR_THEMES: ColorTheme[] = [
       "--content-foreground-muted": "#9A8DA6",
       "--content-accent": "#8B6914",
       "--content-border": "#D8D0C4",
+      "--glass-tint-a": "#B0892C",
+      "--glass-tint-b": "#7B4F40",
     },
     dark: {
       "--background": "#1C1C1C",
@@ -261,6 +274,8 @@ export const COLOR_THEMES: ColorTheme[] = [
       "--content-foreground-muted": "#7A6D55",
       "--content-accent": "#C9A84C",
       "--content-border": "#3A3530",
+      "--glass-tint-a": "#D4B568",
+      "--glass-tint-b": "#A87055",
     },
     palette: {
       light: [
@@ -326,6 +341,8 @@ export const COLOR_THEMES: ColorTheme[] = [
       "--content-foreground-muted": "#8098B0",
       "--content-accent": "#0097A7",
       "--content-border": "#C8D6E0",
+      "--glass-tint-a": "#0097A7",
+      "--glass-tint-b": "#5B5BC4",
     },
     dark: {
       "--background": "#151A22",
@@ -361,6 +378,8 @@ export const COLOR_THEMES: ColorTheme[] = [
       "--content-foreground-muted": "#4A7080",
       "--content-accent": "#00BCD4",
       "--content-border": "#1A3348",
+      "--glass-tint-a": "#3DDFE6",
+      "--glass-tint-b": "#7878D8",
     },
     palette: {
       light: [
@@ -426,6 +445,8 @@ export const COLOR_THEMES: ColorTheme[] = [
       "--content-foreground-muted": "#A89080",
       "--content-accent": "#B07D10",
       "--content-border": "#DDD0BC",
+      "--glass-tint-a": "#B07D10",
+      "--glass-tint-b": "#A85510",
     },
     dark: {
       "--background": "#221C18",
@@ -461,6 +482,8 @@ export const COLOR_THEMES: ColorTheme[] = [
       "--content-foreground-muted": "#8B7260",
       "--content-accent": "#D4930D",
       "--content-border": "#5A4035",
+      "--glass-tint-a": "#E0A030",
+      "--glass-tint-b": "#D86618",
     },
     palette: {
       light: [
