@@ -4,17 +4,9 @@ import { MapCanvas } from "./MapCanvas";
 
 export function MapPanel() {
   return (
-    <div
-      style={{
-        display: "flex",
-        flexDirection: "column",
-        width: "100%",
-        height: "100%",
-        background: "var(--background)",
-      }}
-    >
+    <div className="flex h-full w-full flex-col bg-background">
       <MapHeader />
-      <div style={{ flex: 1, minHeight: 0 }}>
+      <div className="min-h-0 flex-1">
         <ReactFlowProvider>
           <MapCanvas />
         </ReactFlowProvider>

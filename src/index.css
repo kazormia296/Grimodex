@@ -199,11 +199,25 @@
   );
 }
 
-/* Optional tinted radial gradients layered on top of the flat base.
-   Driven by display.glassBackdropGradient — colours come from
-   `--glass-tint-a` (top-left) and `--glass-tint-b` (top-right), both
-   overridden per color theme in colorThemes.ts. */
-.app-shell[data-glass-enabled="true"][data-glass-gradient="true"] {
+/* Tinted radial gradients rendered as an UPPER overlay (pseudo-element)
+   independent of `--glass-transparency-pct`. This makes the highlight a
+   real "surface aurora" that always sits above every glass material — its
+   strength does not change with the transparency slider, and panels that
+   correctly use the glass system have their content read through it
+   uniformly. Colours come from `--glass-tint-a` (top-left) and
+   `--glass-tint-b` (bottom-right), overridden per color theme in
+   colorThemes.ts. Driven by display.glassBackdropGradient.
+
+   `pointer-events: none` ensures the overlay never blocks input.
+   `z-index: 30` keeps it above regular panel content (DockView panels live
+   below this layer) while staying under Tailwind's z-50 popover/modal
+   surfaces, which carry their own backdrop blur. */
+.app-shell[data-glass-enabled="true"][data-glass-gradient="true"]::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 30;
   background:
     radial-gradient(
       120% 70% at 8% 0%,
@@ -214,11 +228,6 @@
       100% 80% at 100% 20%,
       color-mix(in oklch, var(--glass-tint-b) 10%, transparent),
       transparent 58%
-    ),
-    color-mix(
-      in oklch,
-      var(--background) calc(100% - var(--glass-transparency-pct) * 0.8),
-      transparent
     );
 }
 
@@ -313,7 +322,10 @@ html[data-glass-enabled="true"] body {
 
 .app-shell[data-glass-enabled="true"][data-glass-panels="true"]
   .dv-content-container
-  .bg-background:not(.tiptap):not(.ProseMirror) {
+  .bg-background:not(.tiptap):not(.ProseMirror),
+.app-shell[data-glass-enabled="true"][data-glass-panels="true"]
+  .dv-content-container
+  .bg-card {
   background-color: var(--glass-bg);
 }
 
