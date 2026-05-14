@@ -67,12 +67,13 @@ pub enum CliEvent {
     },
 }
 
-/// `which <bin>` 経由で PATH 上のバイナリパスを解決する。
-/// macOS GUI 起動時 (Tauri アプリを Launchpad から開く等) に zsh 設定ファイルが
-/// 読まれず PATH が貧弱になる問題を回避するため、`bash -lc 'which <bin>'` を使う。
+/// PATH 上のバイナリパスを解決する。
+///
+/// - **Unix**: macOS GUI 起動時に shell 初期化前で PATH が貧弱になりがちなため、
+///   `bash -lc 'which <bin>'` でログイン shell 相当の PATH を使う。
+/// - **Windows**: `where.exe` で解決 (コンソールウィンドウは出さない)。
 pub async fn detect_binary(kind: CliKind) -> Option<String> {
     let bin_name = kind.default_binary_name();
-    // Windows native は v1 範囲外なので Unix only でログイン shell を使う
     #[cfg(unix)]
     {
         let output = Command::new("bash")
@@ -90,9 +91,32 @@ pub async fn detect_binary(kind: CliKind) -> Option<String> {
         }
         Some(path)
     }
-    #[cfg(not(unix))]
+    #[cfg(windows)]
     {
-        // Windows native は未対応。Settings UI 側で OS 判定して非表示にする
+        use std::os::windows::process::CommandExt;
+
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        let output = Command::new("where.exe")
+            .arg(bin_name)
+            .creation_flags(CREATE_NO_WINDOW)
+            .output()
+            .await
+            .ok()?;
+        if !output.status.success() {
+            return None;
+        }
+        let path = String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .next()?
+            .trim()
+            .to_string();
+        if path.is_empty() {
+            return None;
+        }
+        Some(path)
+    }
+    #[cfg(all(not(unix), not(windows)))]
+    {
         let _ = bin_name;
         None
     }
@@ -101,8 +125,15 @@ pub async fn detect_binary(kind: CliKind) -> Option<String> {
 /// バイナリパスの存在確認 (`<bin> --version` を叩いて 0 終了するか)。
 /// 認証状態までは確認しない (CLI 側でログインプロンプトが出る or stderr を読む)。
 pub async fn test_binary(binary_path: &str) -> anyhow::Result<String> {
-    let output = Command::new(binary_path)
-        .arg("--version")
+    let mut cmd = Command::new(binary_path);
+    cmd.arg("--version");
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+    let output = cmd
         .output()
         .await
         .map_err(|e| anyhow::anyhow!("Failed to spawn `{binary_path} --version`: {e}"))?;
@@ -126,6 +157,12 @@ fn build_command(kind: CliKind, opts: &CliRunOpts) -> Command {
     cmd.stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
     // 子プロセスの孫プロセス対策: Unix では新しいプロセスグループを切って
     // abort 時に -pgid kill で纏めて殺せるようにする
     #[cfg(unix)]
@@ -286,9 +323,10 @@ fn libc_sigkill() -> i32 {
     0
 }
 
-/// 指定 PID のプロセスグループ (Unix) を殺す。
-/// `setsid()` 済みなので pgid == pid。-pid で同グループ全体にシグナル送信。
-/// abort 時に呼び出し、子の孫プロセスも纏めて停止する。
+/// 指定 PID のプロセスグループを殺す。
+///
+/// - **Unix**: `setsid()` 済みなので pgid == pid。-pid で同グループへ SIG* 送信。
+/// - **Windows**: `taskkill /T /F` で子ツリー一括終了。`sig` は未使用。
 fn kill_process_group(pid: Option<u32>, sig: i32) {
     let Some(pid) = pid else {
         return;
@@ -299,7 +337,21 @@ fn kill_process_group(pid: Option<u32>, sig: i32) {
             libc::kill(-(pid as i32), sig);
         }
     }
-    #[cfg(not(unix))]
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        use std::process::Stdio;
+
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        let _ = sig;
+        let _ = std::process::Command::new("taskkill.exe")
+            .args(["/PID", &pid.to_string(), "/T", "/F"])
+            .creation_flags(CREATE_NO_WINDOW)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+    }
+    #[cfg(all(not(unix), not(windows)))]
     {
         let _ = (pid, sig);
     }

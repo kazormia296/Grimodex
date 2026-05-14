@@ -14,8 +14,9 @@ use crate::cli_provider::{self, CliEvent, CliKind, CliRunOpts};
 use super::{AppError, CliStreamAbortFlag};
 
 /// CLI バイナリを PATH 上から探し、見つかったパスを返す。
-/// macOS GUI 起動時の PATH 問題を回避するため `bash -lc 'which <bin>'` 経由。
-/// 見つからなければ None。
+///
+/// Unix では GUI 起動時の PATH 問題を避けるため `bash -lc 'which <bin>'`、
+/// Windows では `where.exe` を使う。見つからなければ `None`。
 #[tauri::command]
 pub(crate) async fn detect_cli_binary(cli: CliKind) -> Result<Option<String>, AppError> {
     Ok(cli_provider::detect_binary(cli).await)

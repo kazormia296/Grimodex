@@ -484,18 +484,8 @@ export function AiCategory() {
               setLocalSettings(updated);
               await saveSettings(updated);
             };
-            const isWindowsNative =
-              typeof navigator !== "undefined" &&
-              /Win/.test(navigator.platform) &&
-              !/WSL/i.test(navigator.userAgent);
             return (
               <>
-                {isWindowsNative && (
-                  <p className="mb-2 rounded-md border border-yellow-500/50 bg-yellow-500/10 p-2 text-xs text-yellow-700 dark:text-yellow-400">
-                    Windows ネイティブはまだ対応していません。WSL
-                    経由でアプリを起動してください。
-                  </p>
-                )}
                 <SettingRow label="CLI 種別">
                   <select
                     value={cli.kind}
@@ -528,7 +518,7 @@ export function AiCategory() {
                 )}
                 <SettingRow
                   label="バイナリパス"
-                  description="空欄なら CLI 名で PATH 解決。「自動検出」で bash -lc 経由で which を試行します"
+                  description="空欄なら CLI 名で PATH 解決。「自動検出」は macOS/Linux で bash -lc which、Windows で where.exe を使います"
                 >
                   <div className="flex gap-2">
                     <input
@@ -538,7 +528,7 @@ export function AiCategory() {
                         updateCli({ binaryPath: e.target.value })
                       }
                       className="w-72 rounded-md border border-input bg-background px-2 py-1 text-sm font-mono focus:outline-none"
-                      placeholder={`/usr/local/bin/${cli.kind}`}
+                      placeholder={`${cli.kind}（PATH またはフルパス）`}
                     />
                     <button
                       type="button"
