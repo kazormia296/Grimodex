@@ -5,6 +5,7 @@
     "args": {
       "TZ": "${localEnv:TZ:Asia/Tokyo}",
       "CLAUDE_CODE_VERSION": "latest",
+      "CODEX_CLI_VERSION": "latest",
       "GIT_DELTA_VERSION": "0.18.2",
       "ZSH_IN_DOCKER_VERSION": "1.2.0",
       "RUST_VERSION": "stable"
@@ -53,6 +54,7 @@
   "mounts": [
     "source=grimodex-bashhistory-${devcontainerId},target=/commandhistory,type=volume",
     "source=grimodex-claude-config-${devcontainerId},target=/home/node/.claude,type=volume",
+    "source=grimodex-codex-config-${devcontainerId},target=/home/node/.codex,type=volume",
     "source=grimodex-cargo-registry-${devcontainerId},target=/home/node/.cargo/registry,type=volume",
     "source=grimodex-cargo-git-${devcontainerId},target=/home/node/.cargo/git,type=volume",
     "source=grimodex-target-${devcontainerId},target=/workspace/src-tauri/target,type=volume",
@@ -67,7 +69,7 @@
   },
   "workspaceMount": "source=${localWorkspaceFolder},target=/workspace,type=bind,consistency=delegated",
   "workspaceFolder": "/workspace",
-  "postCreateCommand": "sudo chown -R node:node /home/node/.cargo /workspace/src-tauri/target /workspace/node_modules && pnpm install",
+  "postCreateCommand": "sudo chown -R node:node /home/node/.cargo /home/node/.codex /workspace/src-tauri/target /workspace/node_modules && pnpm install",
   "postStartCommand": "sudo /usr/local/bin/init-firewall.sh",
   "waitFor": "postStartCommand"
 }

@@ -4,6 +4,7 @@ ARG TZ
 ENV TZ="$TZ"
 
 ARG CLAUDE_CODE_VERSION=latest
+ARG CODEX_CLI_VERSION=latest
 
 # Install basic development tools, iptables/ipset, and Tauri v2 build dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -56,8 +57,8 @@ RUN sed -i '/ja_JP.UTF-8/s/^# //' /etc/locale.gen && \
 ENV LANG=ja_JP.UTF-8
 ENV LC_ALL=ja_JP.UTF-8
 
-# Ensure default node user has access to /usr/local/share
-RUN mkdir -p /usr/local/share/npm-global && \
+# Ensure default node user has access to global package locations
+RUN mkdir -p /usr/local/share/npm-global /usr/local/share/pnpm && \
   chown -R node:node /usr/local/share
 
 ARG USERNAME=node
@@ -77,10 +78,10 @@ RUN echo "node ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/node && \
 
 # Create workspace, config, and volume mount-point directories with correct ownership
 # These dirs must exist before named volumes are mounted, otherwise Docker creates them as root
-RUN mkdir -p /workspace /home/node/.claude \
+RUN mkdir -p /workspace /home/node/.claude /home/node/.codex \
   /home/node/.cargo/registry \
   /home/node/.cargo/git \
-  && chown -R node:node /workspace /home/node/.claude /home/node/.cargo
+  && chown -R node:node /workspace /home/node/.claude /home/node/.codex /home/node/.cargo
 
 WORKDIR /workspace
 
@@ -102,10 +103,12 @@ ENV PATH="/home/node/.cargo/bin:$PATH"
 
 # Install global packages
 ENV NPM_CONFIG_PREFIX=/usr/local/share/npm-global
-ENV PATH=$PATH:/usr/local/share/npm-global/bin
+ENV PNPM_HOME=/usr/local/share/pnpm
+ENV PATH=$PATH:/usr/local/share/npm-global/bin:$PNPM_HOME
 
-# Install Tauri CLI and pnpm globally
-RUN npm install -g @tauri-apps/cli pnpm@10.33.0
+# Install pnpm, then project CLI tools globally through pnpm
+RUN npm install -g pnpm@10.33.0 && \
+  pnpm add -g @tauri-apps/cli @openai/codex@${CODEX_CLI_VERSION}
 
 # Set the default shell to zsh rather than sh
 ENV SHELL=/bin/zsh
@@ -126,7 +129,7 @@ RUN sh -c "$(wget -O- https://github.com/deluan/zsh-in-docker/releases/download/
   -x
 
 # Install Claude
-RUN npm install -g @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}
+RUN pnpm add -g @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}
 
 # Copy and set up firewall script
 COPY init-firewall.sh /usr/local/bin/
