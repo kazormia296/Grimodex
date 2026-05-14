@@ -505,17 +505,16 @@ export function AiCategory() {
                 </SettingRow>
                 <p className="mb-2 text-xs text-muted-foreground">
                   CLI 側で事前に{" "}
-                  <code className="font-mono">{cli.kind} login</code>{" "}
+                  <code className="font-mono">
+                    {cli.kind === "opencode"
+                      ? "opencode auth login"
+                      : cli.kind === "codex"
+                        ? "codex login"
+                        : "claude login"}
+                  </code>{" "}
                   等で認証を済ませてください。本パネルからはツール (ファイル R/W
                   / shell) は全て無効化された状態で起動します。
                 </p>
-                {cli.kind !== "claude" && (
-                  <p className="mb-2 rounded-md border border-yellow-500/50 bg-yellow-500/10 p-2 text-xs text-yellow-700 dark:text-yellow-400">
-                    {cli.kind === "codex" ? "Codex CLI" : "OpenCode"}{" "}
-                    用の出力パーサは未実装です
-                    (将来対応予定)。現状は応答が空のまま終了します。
-                  </p>
-                )}
                 <SettingRow
                   label="バイナリパス"
                   description="空欄なら CLI 名で PATH 解決。「自動検出」は macOS/Linux で bash -lc which、Windows で where.exe を使います"
