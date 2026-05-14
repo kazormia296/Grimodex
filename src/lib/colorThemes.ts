@@ -237,8 +237,8 @@ export const COLOR_THEMES: ColorTheme[] = [
       "--content-foreground-muted": "#9A8DA6",
       "--content-accent": "#8B6914",
       "--content-border": "#D8D0C4",
-      "--glass-tint-a": "#B0892C",
-      "--glass-tint-b": "#7B4F40",
+      "--glass-tint-a": "#3D2447",
+      "--glass-tint-b": "#1E5236",
     },
     dark: {
       "--background": "#1C1C1C",
@@ -274,8 +274,8 @@ export const COLOR_THEMES: ColorTheme[] = [
       "--content-foreground-muted": "#7A6D55",
       "--content-accent": "#C9A84C",
       "--content-border": "#3A3530",
-      "--glass-tint-a": "#D4B568",
-      "--glass-tint-b": "#A87055",
+      "--glass-tint-a": "#7A4A8C",
+      "--glass-tint-b": "#4A9B6E",
     },
     palette: {
       light: [
