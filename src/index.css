@@ -273,7 +273,11 @@ html[data-glass-enabled="true"] body {
 .app-shell[data-glass-enabled="true"][data-glass-dock="true"]
   .dockview-theme-dark.dockview-theme-dark {
   --dv-group-view-background-color: transparent;
-  --dv-tabs-and-actions-container-background-color: var(--glass-bg-strong);
+  /* Tab strip uses the same translucency as other glass surfaces so the
+     app-shell radial gradient bleeds through it. Previously this was
+     `--glass-bg-strong`, which acted as a hard band that hid the
+     backdrop gradient and looked visually disconnected from the rest. */
+  --dv-tabs-and-actions-container-background-color: var(--glass-bg);
   --dv-activegroup-visiblepanel-tab-background-color: var(--glass-bg);
   --dv-activegroup-hiddenpanel-tab-background-color: transparent;
   --dv-inactivegroup-visiblepanel-tab-background-color: var(--glass-bg);
