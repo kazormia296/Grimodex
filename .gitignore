@@ -10,6 +10,7 @@ docs/.claude/settings.local.json
 .claude/worktrees/
 temp/
 .cache/
+.codex/
 
 # Lindera UniDic 辞書のキャッシュ（~140MB）。
 # cargo build 時に LINDERA_DICTIONARIES_PATH でここを指す想定。
