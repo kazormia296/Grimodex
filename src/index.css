@@ -203,26 +203,30 @@
   );
 }
 
-/* Tinted radial gradients rendered as an UPPER overlay (pseudo-element)
-   independent of `--glass-transparency-pct`. This makes the highlight a
-   real "surface aurora" that always sits above every glass material — its
-   strength does not change with the transparency slider, and panels that
-   correctly use the glass system have their content read through it
-   uniformly. Colours come from `--glass-tint-a` (top-left) and
-   `--glass-tint-b` (bottom-right), overridden per color theme in
-   colorThemes.ts. Driven by display.glassBackdropGradient.
+/* Tinted radial gradients rendered as a property of each glass surface
+   itself (NOT as a top-level overlay). `background-attachment: fixed`
+   makes every surface paint the gradient at viewport coordinates, so all
+   glass surfaces visually share one continuous aurora across the window.
 
-   `pointer-events: none` ensures the overlay never blocks input.
-   `z-index: 30` keeps it above regular panel content (DockView panels live
-   below this layer) while staying under Tailwind's z-50 popover/modal
-   surfaces, which carry their own backdrop blur. */
-.app-shell[data-glass-enabled="true"][data-glass-gradient="true"]::after {
-  content: "";
-  position: fixed;
-  inset: 0;
-  pointer-events: none;
-  z-index: 30;
-  background:
+   Why not a `position: fixed` `::after` overlay on `.app-shell`? Because
+   surfaces like `.glass-shell` (the header) use `backdrop-filter`, which
+   creates its own stacking context. Children of such surfaces — most
+   notably absolutely-positioned dropdown menus extending below the bar —
+   live inside that context. An overlay on `.app-shell` at any z-index
+   above the surface's z:auto would visually occlude those children
+   (popover backgrounds are translucent, so the tint blends them into
+   oblivion). Anchoring the gradient INSIDE each surface keeps it on the
+   same stacking plane as the surface's content and leaves dropdowns
+   free.
+
+   The gradient is captured in a custom property so the per-surface
+   rules below only need a single line each. When
+   `data-glass-gradient="true"` is absent, `--glass-aurora` is never set
+   and the surfaces fall back to no image. Colours come from
+   `--glass-tint-a` (top-left) and `--glass-tint-b` (bottom-right),
+   overridden per color theme in colorThemes.ts. */
+.app-shell[data-glass-enabled="true"][data-glass-gradient="true"] {
+  --glass-aurora:
     radial-gradient(
       120% 70% at 8% 0%,
       color-mix(in oklch, var(--glass-tint-a) 12%, transparent),
@@ -256,12 +260,28 @@ html[data-glass-enabled="true"] body {
 .app-shell[data-glass-enabled="true"][data-glass-chat="true"] .glass-chat,
 .app-shell[data-glass-enabled="true"][data-glass-editor-chrome="true"]
   .glass-editor-chrome {
-  background: var(--glass-bg);
+  background-color: var(--glass-bg);
+  background-image: var(--glass-aurora);
+  background-attachment: fixed;
   border-color: var(--glass-border);
   box-shadow: var(--glass-shadow);
   backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
   -webkit-backdrop-filter: blur(var(--glass-blur))
     saturate(var(--glass-saturate));
+}
+
+/* `.glass-shell` (the top-level header) sits ABOVE the DockView container
+   in DOM order, but `backdrop-filter` traps its absolutely-positioned
+   children (dropdown menus extending below the bar) inside its own
+   stacking context. Without an explicit z-index here, the header's whole
+   stacking context renders at z:auto, and the later-painted DockView
+   wrapper covers any dropdowns that overflow downward — making the menus
+   look "invisible". `position: relative; z-index: 30` lifts the entire
+   header context above the dock so dropdowns paint over panel content
+   normally, while staying under Tailwind's z-50 modals/dialogs. */
+.app-shell[data-glass-enabled="true"][data-glass-shell="true"] .glass-shell {
+  position: relative;
+  z-index: 30;
 }
 
 .app-shell[data-glass-enabled="true"][data-glass-dock="true"]
@@ -278,6 +298,18 @@ html[data-glass-enabled="true"] body {
   --dv-inactivegroup-hiddenpanel-tab-background-color: transparent;
   --dv-tab-divider-color: var(--glass-border);
   --dv-separator-border: var(--glass-border);
+}
+
+/* Tab strip + active sash are visible glass surfaces, so they paint the
+   aurora. The DockView content container itself is just a pass-through
+   stacking parent: its visible children (panel roots with `bg-background`
+   / `bg-card`) already paint the aurora, and adding it here too would
+   double the tint wherever a translucent panel sits on top. */
+.app-shell[data-glass-enabled="true"][data-glass-dock="true"]
+  .dv-tabs-and-actions-container,
+.app-shell[data-glass-enabled="true"][data-glass-dock="true"] .dv-active-sash {
+  background-image: var(--glass-aurora);
+  background-attachment: fixed;
 }
 
 .app-shell[data-glass-enabled="true"][data-glass-dock="true"]
@@ -307,11 +339,15 @@ html[data-glass-enabled="true"] body {
   .dv-content-container
   .bg-card {
   background-color: var(--glass-bg);
+  background-image: var(--glass-aurora);
+  background-attachment: fixed;
 }
 
 .app-shell[data-glass-enabled="true"][data-glass-panels="true"]
   .glass-editor-body {
   background-color: var(--glass-content-bg);
+  background-image: var(--glass-aurora);
+  background-attachment: fixed;
   backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
   -webkit-backdrop-filter: blur(var(--glass-blur))
     saturate(var(--glass-saturate));
@@ -327,6 +363,8 @@ html[data-glass-enabled="true"] body {
   .glass-chat
   .bg-background {
   background-color: var(--glass-bg);
+  background-image: var(--glass-aurora);
+  background-attachment: fixed;
 }
 
 .app-shell[data-glass-enabled="true"][data-glass-chat="true"]
@@ -353,6 +391,8 @@ html[data-glass-enabled="true"][data-glass-popovers="true"]
   [data-radix-popper-content-wrapper]
   > * {
   background-color: var(--glass-bg-strong);
+  background-image: var(--glass-aurora);
+  background-attachment: fixed;
   border-color: var(--glass-border);
   box-shadow: var(--glass-shadow);
   backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
@@ -375,7 +415,9 @@ html[data-glass-enabled="true"][data-glass-popovers="true"]
   .app-shell[data-glass-enabled="true"][data-glass-chat="true"] .glass-chat,
   .app-shell[data-glass-enabled="true"][data-glass-editor-chrome="true"]
     .glass-editor-chrome {
-    background: var(--glass-bg-strong);
+    background-color: var(--glass-bg-strong);
+    background-image: var(--glass-aurora);
+    background-attachment: fixed;
     box-shadow: 0 8px 20px rgb(0 0 0 / 0.12);
   }
 }

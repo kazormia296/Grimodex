@@ -67,7 +67,7 @@ export function WorkspaceMenu() {
       </button>
 
       {isOpen && (
-        <div className="absolute left-0 top-full z-50 mt-1 min-w-56 rounded-md border border-border bg-background py-1 shadow-lg">
+        <div className="absolute left-0 top-full z-50 mt-1 min-w-56 rounded-md border border-border bg-popover py-1 shadow-lg">
           <div className="flex items-center gap-2 px-3 py-1.5 text-sm text-muted-foreground">
             <span>✓</span>
             <span className="truncate font-medium text-foreground">
