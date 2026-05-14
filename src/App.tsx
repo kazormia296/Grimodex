@@ -284,10 +284,7 @@ function EditorScreen() {
   const { setShowSampleTour, seedAndOpenSample } = useWorkspaceStore();
   const showSampleTour = useWorkspaceStore((s) => s.showSampleTour);
   const glassEnabled = useSettingsStore((s) =>
-    s.getBoolean("display.glassEffectEnabled", false),
-  );
-  const glassIntensity = useSettingsStore((s) =>
-    s.get("display.glassEffectIntensity", "rich"),
+    s.getBoolean("display.glassEffectEnabled", true),
   );
   const glassTransparency = useSettingsStore((s) =>
     s.getNumber("display.glassTransparency", 30),
@@ -322,10 +319,8 @@ function EditorScreen() {
     const html = document.documentElement;
     if (glassEnabled) {
       html.dataset.glassEnabled = "true";
-      html.dataset.glassIntensity = glassIntensity;
     } else {
       delete html.dataset.glassEnabled;
-      delete html.dataset.glassIntensity;
     }
     html.dataset.glassPopovers =
       glassEnabled && glassSurfacePopovers ? "true" : "false";
@@ -334,11 +329,10 @@ function EditorScreen() {
 
     return () => {
       delete html.dataset.glassEnabled;
-      delete html.dataset.glassIntensity;
       delete html.dataset.glassPopovers;
       html.style.removeProperty("--glass-transparency-pct");
     };
-  }, [glassEnabled, glassIntensity, glassSurfacePopovers, glassTransparency]);
+  }, [glassEnabled, glassSurfacePopovers, glassTransparency]);
 
   useEffect(() => {
     invoke("set_window_vibrancy", {
@@ -687,7 +681,6 @@ function EditorScreen() {
     <main
       className="app-shell flex h-screen flex-col"
       data-glass-enabled={glassEnabled ? "true" : undefined}
-      data-glass-intensity={glassIntensity}
       data-glass-shell={glassSurfaceShell ? "true" : undefined}
       data-glass-dock={glassSurfaceDock ? "true" : undefined}
       data-glass-panels={glassSurfacePanels ? "true" : undefined}

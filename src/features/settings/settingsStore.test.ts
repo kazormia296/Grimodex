@@ -35,7 +35,6 @@ describe("KEY_SCOPE routing invariants", () => {
       "display.showWordCount",
       "display.reduceMotion",
       "display.glassEffectEnabled",
-      "display.glassEffectIntensity",
       "display.glassTransparency",
       "display.glassBackdropGradient",
       "display.glassNativeVibrancy",
@@ -75,9 +74,8 @@ describe("KEY_SCOPE routing invariants", () => {
     }
   });
 
-  it("glass settings default to off with rich intensity and all surfaces available", () => {
-    expect(DEFAULT_SETTINGS["display.glassEffectEnabled"]).toBe("false");
-    expect(DEFAULT_SETTINGS["display.glassEffectIntensity"]).toBe("rich");
+  it("glass settings default to on with all surfaces available", () => {
+    expect(DEFAULT_SETTINGS["display.glassEffectEnabled"]).toBe("true");
     expect(DEFAULT_SETTINGS["display.glassTransparency"]).toBe("30");
     expect(DEFAULT_SETTINGS["display.glassBackdropGradient"]).toBe("true");
     expect(DEFAULT_SETTINGS["display.glassNativeVibrancy"]).toBe("true");

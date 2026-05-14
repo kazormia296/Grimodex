@@ -5,7 +5,7 @@ import { SettingRow } from "../components/SettingRow";
 import { SettingToggle } from "../components/SettingToggle";
 import { SettingSlider } from "../components/SettingSlider";
 import { SettingDropdown } from "../components/SettingDropdown";
-import { useSettingControl } from "../useSettingControl";
+import { useSettingBoolean, useSettingControl } from "../useSettingControl";
 import { useCodexHighlightStore } from "@/features/editor/codexHighlightStore";
 import { useWorkspaceStore } from "@/features/workspace/store";
 import { COLOR_THEMES, DEFAULT_COLOR_THEME } from "@/lib/colorThemes";
@@ -34,15 +34,6 @@ export function DisplayCategory() {
     { value: "underline", label: t("settings.display.underline") },
   ];
 
-  const GLASS_INTENSITY_OPTIONS = [
-    {
-      value: "lightweight",
-      label: t("settings.display.glassLightweight", "Lightweight"),
-    },
-    { value: "subtle", label: t("settings.display.glassSubtle", "Subtle") },
-    { value: "rich", label: t("settings.display.glassRich", "Rich") },
-  ];
-
   // Global settings (stored in global-settings.json, available before workspace open)
   const theme = useWorkspaceStore((s) => s.globalSettings?.theme ?? "system");
   const colorTheme = useWorkspaceStore(
@@ -60,6 +51,16 @@ export function DisplayCategory() {
     "true",
   );
   const setCodexHighlightEnabled = useCodexHighlightStore((s) => s.setEnabled);
+
+  // Master Liquid Glass toggle — when OFF every other glass-related control
+  // below is rendered inert (disabled + dimmed) so it's clear that they
+  // have no visual effect until the master is turned ON. Their stored
+  // values are preserved across the toggle.
+  const { value: glassEnabled } = useSettingBoolean(
+    "display.glassEffectEnabled",
+    true,
+  );
+  const glassChildrenDisabled = !glassEnabled;
 
   // Sync codex highlight to store
   useEffect(() => {
@@ -171,20 +172,7 @@ export function DisplayCategory() {
         >
           <SettingToggle
             settingKey="display.glassEffectEnabled"
-            defaultValue={false}
-          />
-        </SettingRow>
-        <SettingRow
-          label={t("settings.display.glassEffectIntensity", "Glass intensity")}
-          description={t(
-            "settings.display.glassEffectIntensityDesc",
-            "Controls blur and shadow strength (transparency is set separately).",
-          )}
-        >
-          <SettingDropdown
-            settingKey="display.glassEffectIntensity"
-            options={GLASS_INTENSITY_OPTIONS}
-            defaultValue="rich"
+            defaultValue={true}
           />
         </SettingRow>
         <SettingRow
@@ -193,6 +181,7 @@ export function DisplayCategory() {
             "settings.display.glassTransparencyDesc",
             "Higher values let more of what's behind the window show through, uniformly across all glass surfaces.",
           )}
+          disabled={glassChildrenDisabled}
         >
           <SettingSlider
             settingKey="display.glassTransparency"
@@ -201,6 +190,7 @@ export function DisplayCategory() {
             step={5}
             defaultValue={30}
             format={(v) => `${v}%`}
+            disabled={glassChildrenDisabled}
           />
         </SettingRow>
         <SettingRow
@@ -212,10 +202,12 @@ export function DisplayCategory() {
             "settings.display.glassBackdropGradientDesc",
             "Adds a soft tinted highlight at the top corners using the active color theme. Turn off for a flat translucent backdrop.",
           )}
+          disabled={glassChildrenDisabled}
         >
           <SettingToggle
             settingKey="display.glassBackdropGradient"
             defaultValue={true}
+            disabled={glassChildrenDisabled}
           />
         </SettingRow>
         <SettingRow
@@ -227,38 +219,52 @@ export function DisplayCategory() {
             "settings.display.glassNativeVibrancyDesc",
             "Uses the native macOS window material when available.",
           )}
+          disabled={glassChildrenDisabled}
         >
           <SettingToggle
             settingKey="display.glassNativeVibrancy"
             defaultValue={true}
+            disabled={glassChildrenDisabled}
           />
         </SettingRow>
         <SettingRow
           label={t("settings.display.glassSurfaceShell", "Window and header")}
+          disabled={glassChildrenDisabled}
         >
           <SettingToggle
             settingKey="display.glassSurfaceShell"
             defaultValue={true}
+            disabled={glassChildrenDisabled}
           />
         </SettingRow>
         <SettingRow
           label={t("settings.display.glassSurfaceDock", "Dock and tabs")}
+          disabled={glassChildrenDisabled}
         >
           <SettingToggle
             settingKey="display.glassSurfaceDock"
             defaultValue={true}
+            disabled={glassChildrenDisabled}
           />
         </SettingRow>
-        <SettingRow label={t("settings.display.glassSurfacePanels", "Panels")}>
+        <SettingRow
+          label={t("settings.display.glassSurfacePanels", "Panels")}
+          disabled={glassChildrenDisabled}
+        >
           <SettingToggle
             settingKey="display.glassSurfacePanels"
             defaultValue={true}
+            disabled={glassChildrenDisabled}
           />
         </SettingRow>
-        <SettingRow label={t("settings.display.glassSurfaceChat", "Chat")}>
+        <SettingRow
+          label={t("settings.display.glassSurfaceChat", "Chat")}
+          disabled={glassChildrenDisabled}
+        >
           <SettingToggle
             settingKey="display.glassSurfaceChat"
             defaultValue={true}
+            disabled={glassChildrenDisabled}
           />
         </SettingRow>
         <SettingRow
@@ -266,10 +272,12 @@ export function DisplayCategory() {
             "settings.display.glassSurfacePopovers",
             "Popovers and dialogs",
           )}
+          disabled={glassChildrenDisabled}
         >
           <SettingToggle
             settingKey="display.glassSurfacePopovers"
             defaultValue={true}
+            disabled={glassChildrenDisabled}
           />
         </SettingRow>
         <SettingRow
@@ -277,10 +285,12 @@ export function DisplayCategory() {
             "settings.display.glassSurfaceEditorChrome",
             "Editor chrome",
           )}
+          disabled={glassChildrenDisabled}
         >
           <SettingToggle
             settingKey="display.glassSurfaceEditorChrome"
             defaultValue={true}
+            disabled={glassChildrenDisabled}
           />
         </SettingRow>
       </SettingSection>
