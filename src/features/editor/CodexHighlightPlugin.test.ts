@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { EditorState } from "@tiptap/pm/state";
-import { schema } from "@tiptap/pm/schema-basic";
+import { schema } from "prosemirror-schema-basic";
 import { DecorationSet } from "@tiptap/pm/view";
 import type { CodexMatch } from "@/features/codex/codexMatcher";
 import {
