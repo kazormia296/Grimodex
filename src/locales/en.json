@@ -126,6 +126,8 @@
       "glassEffectIntensityDesc": "Controls blur and shadow strength (transparency is set separately).",
       "glassTransparency": "Transparency",
       "glassTransparencyDesc": "Higher values let more of what's behind the window show through, uniformly across all glass surfaces.",
+      "glassBackdropGradient": "Tinted backdrop gradient",
+      "glassBackdropGradientDesc": "Adds a soft tinted highlight at the top corners using the active color theme. Turn off for a flat translucent backdrop.",
       "glassLightweight": "Lightweight",
       "glassSubtle": "Subtle",
       "glassRich": "Rich",

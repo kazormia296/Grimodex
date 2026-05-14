@@ -197,10 +197,25 @@ export function DisplayCategory() {
           <SettingSlider
             settingKey="display.glassTransparency"
             min={0}
-            max={70}
+            max={90}
             step={5}
             defaultValue={30}
             format={(v) => `${v}%`}
+          />
+        </SettingRow>
+        <SettingRow
+          label={t(
+            "settings.display.glassBackdropGradient",
+            "Tinted backdrop gradient",
+          )}
+          description={t(
+            "settings.display.glassBackdropGradientDesc",
+            "Adds a soft tinted highlight at the top corners using the active color theme. Turn off for a flat translucent backdrop.",
+          )}
+        >
+          <SettingToggle
+            settingKey="display.glassBackdropGradient"
+            defaultValue={true}
           />
         </SettingRow>
         <SettingRow

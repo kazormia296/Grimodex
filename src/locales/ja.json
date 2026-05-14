@@ -126,6 +126,8 @@
       "glassEffectIntensityDesc": "ぼかしと影の強さを切り替えます（透明度は別スライダーで設定）。",
       "glassTransparency": "透明度",
       "glassTransparencyDesc": "値を大きくするほどウィンドウ越しに背景が透けます。すべてのガラス表面に一律で適用されます。",
+      "glassBackdropGradient": "背景グラデーション",
+      "glassBackdropGradientDesc": "カラーテーマの色で上端の左右にやわらかいハイライトを乗せます。オフにするとフラットな半透明背景になります。",
       "glassLightweight": "ライト",
       "glassSubtle": "ふつう",
       "glassRich": "リッチ",

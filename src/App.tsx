@@ -292,6 +292,9 @@ function EditorScreen() {
   const glassTransparency = useSettingsStore((s) =>
     s.getNumber("display.glassTransparency", 30),
   );
+  const glassBackdropGradient = useSettingsStore((s) =>
+    s.getBoolean("display.glassBackdropGradient", true),
+  );
   const glassNativeVibrancy = useSettingsStore((s) =>
     s.getBoolean("display.glassNativeVibrancy", true),
   );
@@ -326,7 +329,7 @@ function EditorScreen() {
     }
     html.dataset.glassPopovers =
       glassEnabled && glassSurfacePopovers ? "true" : "false";
-    const clamped = Math.max(0, Math.min(70, glassTransparency));
+    const clamped = Math.max(0, Math.min(90, glassTransparency));
     html.style.setProperty("--glass-transparency-pct", `${clamped}%`);
 
     return () => {
@@ -691,6 +694,7 @@ function EditorScreen() {
       data-glass-chat={glassSurfaceChat ? "true" : undefined}
       data-glass-popovers={glassSurfacePopovers ? "true" : undefined}
       data-glass-editor-chrome={glassSurfaceEditorChrome ? "true" : undefined}
+      data-glass-gradient={glassBackdropGradient ? "true" : undefined}
       data-platform-mac={isMac ? "true" : undefined}
     >
       <header

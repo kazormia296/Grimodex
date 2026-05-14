@@ -37,6 +37,7 @@ describe("KEY_SCOPE routing invariants", () => {
       "display.glassEffectEnabled",
       "display.glassEffectIntensity",
       "display.glassTransparency",
+      "display.glassBackdropGradient",
       "display.glassNativeVibrancy",
       "display.glassSurfaceShell",
       "display.glassSurfaceDock",
@@ -78,6 +79,7 @@ describe("KEY_SCOPE routing invariants", () => {
     expect(DEFAULT_SETTINGS["display.glassEffectEnabled"]).toBe("false");
     expect(DEFAULT_SETTINGS["display.glassEffectIntensity"]).toBe("rich");
     expect(DEFAULT_SETTINGS["display.glassTransparency"]).toBe("30");
+    expect(DEFAULT_SETTINGS["display.glassBackdropGradient"]).toBe("true");
     expect(DEFAULT_SETTINGS["display.glassNativeVibrancy"]).toBe("true");
     expect(DEFAULT_SETTINGS["display.glassSurfaceShell"]).toBe("true");
     expect(DEFAULT_SETTINGS["display.glassSurfaceDock"]).toBe("true");
