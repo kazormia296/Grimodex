@@ -10,8 +10,7 @@
  *   model / cli kind を payload で渡す。
  */
 
-import { invoke } from "@/lib/tauri";
-import { listen } from "@tauri-apps/api/event";
+import { invoke, listen } from "@/lib/tauri";
 import type { CliKind } from "./types";
 
 interface StreamChunkPayload {
@@ -60,24 +59,22 @@ export async function sendCliChatStream(
   // HTTP 系チャット (chat:stream-*) と inline AI が同じバスを使っているため、
   // CLI も同じイベント名にすると複数ストリーム同時走行時に混信する。
   const unlisteners = await Promise.all([
-    listen<StreamChunkPayload>("cli:stream-chunk", (event) => {
-      const p = event.payload;
+    listen<StreamChunkPayload>("cli:stream-chunk", (p) => {
       if (p.block_type === "thinking") {
         callbacks.onThinkingDelta(p.delta);
       } else {
         callbacks.onTextDelta(p.delta);
       }
     }),
-    listen<StreamDonePayload>("cli:stream-done", (event) => {
-      const p = event.payload;
+    listen<StreamDonePayload>("cli:stream-done", (p) => {
       callbacks.onDone({
         stopReason: p.stop_reason,
         inputTokens: p.input_tokens,
         outputTokens: p.output_tokens,
       });
     }),
-    listen<StreamErrorPayload>("cli:stream-error", (event) => {
-      callbacks.onError(event.payload.message);
+    listen<StreamErrorPayload>("cli:stream-error", (p) => {
+      callbacks.onError(p.message);
     }),
   ]);
   const cleanup = () => {

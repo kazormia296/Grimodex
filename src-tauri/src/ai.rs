@@ -1379,6 +1379,12 @@ pub async fn send_chat_with_tools(
         ));
     }
 
+    if matches!(params.provider, AiProvider::Cli) {
+        return Err(anyhow::anyhow!(
+            "CLI プロバイダは Agent（ツール使用）に非対応です。チャットで Agent をオフにするか HTTP プロバイダを使ってください"
+        ));
+    }
+
     match params.provider {
         AiProvider::Anthropic => {
             // Collect system content
@@ -1731,9 +1737,57 @@ fn extract_first_text_block_openai(result: &serde_json::Value) -> anyhow::Result
         })
 }
 
+/// OpenAI 互換チャンクの `choices[0].delta.content` は文字列のほか、
+/// 一部プロバイダ・エンドポイントで `{type,text}[]` 形式になる。
+fn openai_stream_delta_content(delta: &serde_json::Value) -> Option<String> {
+    match delta.get("content") {
+        None | Some(serde_json::Value::Null) => None,
+        Some(serde_json::Value::String(s)) => {
+            if s.is_empty() {
+                None
+            } else {
+                Some(s.clone())
+            }
+        }
+        Some(serde_json::Value::Array(parts)) => {
+            let mut out = String::new();
+            for p in parts {
+                let Some(obj) = p.as_object() else {
+                    continue;
+                };
+                if obj.get("type").and_then(|t| t.as_str()) != Some("text") {
+                    continue;
+                }
+                if let Some(t) = obj.get("text").and_then(|v| v.as_str()) {
+                    out.push_str(t);
+                }
+            }
+            if out.is_empty() {
+                None
+            } else {
+                Some(out)
+            }
+        }
+        Some(_other) => None,
+    }
+}
+
 // ---------------------------------------------------------------------------
 // G1: Streaming chat
 // ---------------------------------------------------------------------------
+
+/// SSE イベント境界。仕様は「空行」だが、`\r\n\r\n` と `\n\n` の両方を扱う。
+/// Windows 経由や一部プロキシでは CRLF のみになり `"\n\n"` 検出で永遠にバッファが進まないことがある。
+#[inline]
+fn find_sse_frame_separator(buf: &str) -> Option<(usize, usize)> {
+    if let Some(pos) = buf.find("\r\n\r\n") {
+        return Some((pos, 4));
+    }
+    if let Some(pos) = buf.find("\n\n") {
+        return Some((pos, 2));
+    }
+    None
+}
 
 pub async fn send_chat_stream(
     params: &ChatParams<'_>,
@@ -1788,6 +1842,11 @@ pub async fn send_chat_stream(
     }
 
     match params.provider {
+        AiProvider::Cli => {
+            anyhow::bail!(
+                "CLI は send_cli_chat_stream を使う必要があります (HTTP ストリームは未対応)"
+            );
+        }
         AiProvider::Anthropic => {
             let (system_content, chat_messages) = split_system_messages(messages);
 
@@ -1824,13 +1883,14 @@ pub async fn send_chat_stream(
                 let bytes = chunk.map_err(|e| anyhow::anyhow!("stream error: {e}"))?;
                 buf.push_str(&String::from_utf8_lossy(&bytes));
 
-                // Process complete SSE messages separated by \n\n
-                while let Some(pos) = buf.find("\n\n") {
+                // Process complete SSE messages separated by \n\n or \r\n\r\n
+                while let Some((pos, sep_len)) = find_sse_frame_separator(&buf) {
                     let chunk_str = buf[..pos].to_string();
-                    buf.drain(..pos + 2);
+                    buf.drain(..pos + sep_len);
 
                     for line in chunk_str.lines() {
-                        if let Some(data) = line.strip_prefix("data: ") {
+                        if let Some(rest) = line.strip_prefix("data: ") {
+                            let data = rest.trim_end_matches('\r');
                             if data == "[DONE]" {
                                 break;
                             }
@@ -1947,12 +2007,13 @@ pub async fn send_chat_stream(
                 let bytes = chunk.map_err(|e| anyhow::anyhow!("stream error: {e}"))?;
                 buf.push_str(&String::from_utf8_lossy(&bytes));
 
-                while let Some(pos) = buf.find("\n\n") {
+                while let Some((pos, sep_len)) = find_sse_frame_separator(&buf) {
                     let chunk_str = buf[..pos].to_string();
-                    buf.drain(..pos + 2);
+                    buf.drain(..pos + sep_len);
 
                     for line in chunk_str.lines() {
-                        if let Some(data) = line.strip_prefix("data: ") {
+                        if let Some(rest) = line.strip_prefix("data: ") {
+                            let data = rest.trim_end_matches('\r');
                             if data.trim() == "[DONE]" {
                                 break;
                             }
@@ -2007,16 +2068,14 @@ pub async fn send_chat_stream(
                                 }
                             }
 
-                            if let Some(content) = delta["content"].as_str() {
-                                if !content.is_empty() {
-                                    let _ = app_handle.emit(
-                                        &chunk_event,
-                                        serde_json::json!({
-                                            "delta": content,
-                                            "block_type": "text"
-                                        }),
-                                    );
-                                }
+                            if let Some(content) = openai_stream_delta_content(delta) {
+                                let _ = app_handle.emit(
+                                    &chunk_event,
+                                    serde_json::json!({
+                                        "delta": content,
+                                        "block_type": "text"
+                                    }),
+                                );
                             }
                         }
                     }
@@ -2051,6 +2110,27 @@ mod tests {
         if let Some(parent) = path.parent() {
             fs::remove_dir(parent).ok();
         }
+    }
+
+    #[test]
+    fn openai_stream_delta_content_parses_text_parts_array() {
+        let delta = serde_json::json!({
+            "role": "assistant",
+            "content": [{ "type": "text", "text": "hello" }]
+        });
+        assert_eq!(
+            openai_stream_delta_content(&delta).as_deref(),
+            Some("hello")
+        );
+    }
+
+    #[test]
+    fn openai_stream_delta_content_string_still_works() {
+        let delta = serde_json::json!({ "content": "plain" });
+        assert_eq!(
+            openai_stream_delta_content(&delta).as_deref(),
+            Some("plain")
+        );
     }
 
     #[test]

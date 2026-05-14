@@ -14,6 +14,8 @@ const AI_IPC_TIMEOUT_MS = 300_000; // 5 minutes
 const SLOW_COMMANDS = new Set([
   "send_chat_message",
   "send_chat_message_stream",
+  /** CLI は invoke が子プロセス終了までブロックするため HTTP ストリームと同様に長めのタイムアウト */
+  "send_cli_chat_stream",
   "send_agent_message",
   "send_inline_ai_stream",
   "abort_inline_ai_stream",

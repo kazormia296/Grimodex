@@ -182,10 +182,14 @@ fn build_command(kind: CliKind, opts: &CliRunOpts) -> Command {
                 .arg(&opts.prompt)
                 .arg("--output-format")
                 .arg("stream-json")
+                // `-p` / print モードでは stream-json が追加ログを stderr に出す前提で --verbose 必須
+                .arg("--verbose")
                 .arg("--allowed-tools")
                 .arg("")
+                // ツールは --allowed-tools "" で無効。plan は「プラン専用」挙動になり
+                // チャット用途で不自然なので default（危険操作のみ確認、読み取りはそのまま）。
                 .arg("--permission-mode")
-                .arg("plan");
+                .arg("default");
             if let Some(model) = opts.model.as_deref() {
                 if !model.is_empty() {
                     cmd.arg("--model").arg(model);
@@ -234,6 +238,19 @@ where
         .spawn()
         .map_err(|e| anyhow::anyhow!("Failed to spawn CLI: {e}"))?;
     let pid = child.id();
+    // stderr を読まないとパイプが詰まり子プロセスがブロックすることがある（ログは出さず破棄）
+    if let Some(stderr) = child.stderr.take() {
+        tokio::spawn(async move {
+            let mut reader = BufReader::new(stderr).lines();
+            loop {
+                match reader.next_line().await {
+                    Ok(Some(_)) => {}
+                    Ok(None) => break,
+                    Err(_) => break,
+                }
+            }
+        });
+    }
     let stdout = child
         .stdout
         .take()
@@ -303,6 +320,7 @@ where
         output_tokens: total_out,
         stop_reason,
     });
+
     Ok(())
 }
 

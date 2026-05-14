@@ -1314,6 +1314,10 @@ export const useChatStore = create<ChatState>()((set, get) => ({
     // 一回限りの Agent mode override (サジェストチップ / 再試行ボタンから)
     // ユーザーの永続トグルは変更しない。
     const agentModeForThisSend = options?.overrideAgentMode ?? get().agentMode;
+    const aiProvider = useAiSettingsStore.getState().settings?.provider;
+    // CLI は subprocess 専用。Agent モードでも HTTP の send_agent_message に落とすと
+    // 空応答・無応答になるため、常に通常モードの sendCliChatStream へ回す。
+    const useAgentPath = agentModeForThisSend && aiProvider !== "cli";
 
     const sessionId = activeSessionId ?? "";
 
@@ -1379,7 +1383,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
     // を注入する。Agent はその上で必要に応じて search_codex / get_codex_entry を
     // 叩いて未注入エントリの探索や詳細深掘りを行う、という階層的アクセス前提。
     // -----------------------------------------------------------------------
-    if (agentModeForThisSend) {
+    if (useAgentPath) {
       try {
         const sceneCtx = effectiveSceneId
           ? await fetchSceneContext(effectiveSceneId)
@@ -1842,7 +1846,11 @@ export const useChatStore = create<ChatState>()((set, get) => ({
       // CLI は単一プロンプトしか受け付けないので、会話履歴は role タグ付きで
       // 平坦化する。
       const isCliProvider = aiSettings?.provider === "cli";
-      const cliConfig = aiSettings?.cli;
+      const cliConfig = aiSettings?.cli ?? {
+        kind: "claude" as const,
+        binaryPath: "",
+        model: "",
+      };
 
       // Start streaming — returns a Promise<cleanup_fn>
       await new Promise<void>((resolve, reject) => {
@@ -1993,8 +2001,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
           },
         };
 
-        const streamPromise =
-          isCliProvider && cliConfig
+        const streamPromise = isCliProvider
             ? cliApi.sendCliChatStream(
                 {
                   cli: cliConfig.kind,
