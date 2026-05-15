@@ -2,7 +2,7 @@ import type { BrowserMock } from "./browser-mock";
 export type { BrowserMock };
 
 /** Check at call time, not module-load time, to avoid race with Tauri bridge injection. */
-function isTauri(): boolean {
+export function isTauri(): boolean {
   return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 }
 

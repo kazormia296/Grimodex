@@ -4,6 +4,15 @@
  * Usage:
  *   pnpm screenshot
  *   pnpm screenshot:one -- panel-editor-1080x890
+ *
+ * Hi-DPI 撮影（devicePixelRatio のみ倍率適用）:
+ *   pnpm screenshot -- --scale 2
+ *   SCREENSHOT_RENDER_SCALE=2 pnpm screenshot
+ *
+ * アプリ UI スケール（%・整数。staging で最大 500／通常アプリは別途 150 でクランプ）:
+ *   pnpm screenshot -- --ui-scale 200
+ *   SCREENSHOT_UI_SCALE=200 pnpm screenshot
+ * captureManifest の各エントリで `uiScale` を指定すると、そのカットだけ上書きされます。
  */
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { mkdir, stat } from "node:fs/promises";
@@ -13,49 +22,155 @@ import { chromium, type Page } from "playwright";
 import {
   DEFAULT_SCREENSHOT_DIR,
   SCREENSHOT_CAPTURES,
+  SCREENSHOT_CAPTURE_UI_SCALE_MAX_PCT,
+  SCREENSHOT_CAPTURE_UI_SCALE_MIN_PCT,
   findScreenshotCapture,
   type ScreenshotCapture,
 } from "../src/screenshot-scenes/captureManifest";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const DEFAULT_PORT = 4174;
+/** 機材負荷と誤入力を抑える上限（1 = 従来どおり） */
+const MAX_SCREENSHOT_RENDER_SCALE = 8;
 const MIN_SCREENSHOT_BYTES = 1_500;
 const MAX_SCREENSHOT_BYTES_FLOOR = 10_000;
+/** アプリ側と同じ許容範囲（staging クランプ上限） */
+const SCREENSHOT_UI_SCALE_ENV_KEY = "SCREENSHOT_UI_SCALE";
 /** 平坦なダークUIは PNG 圧縮率が高く、画素数が小さいほど変動が大きい */
 const SCREENSHOT_MIN_BYTES_SLACK = 0.88;
 
-function minScreenshotBytes(capture: ScreenshotCapture) {
+function parsePositiveRenderScale(value: string): number {
+  const n = Number(value);
+  if (
+    !Number.isFinite(n) ||
+    n < 1 ||
+    n > MAX_SCREENSHOT_RENDER_SCALE
+  ) {
+    throw new Error(
+      `Screenshot render scale must be between 1 and ${MAX_SCREENSHOT_RENDER_SCALE}, got "${value}"`,
+    );
+  }
+  return n;
+}
+
+function envRenderScale(): number {
+  const raw = process.env.SCREENSHOT_RENDER_SCALE;
+  if (raw === undefined || raw === "") return 1;
+  return parsePositiveRenderScale(raw);
+}
+
+function parseUiScalePercent(value: string): number {
+  const n = Number(value);
+  if (!Number.isFinite(n) || !Number.isInteger(n)) {
+    throw new Error(
+      `UI scale (${SCREENSHOT_UI_SCALE_ENV_KEY} / --ui-scale) must be an integer percent, got "${value}"`,
+    );
+  }
+  if (
+    n < SCREENSHOT_CAPTURE_UI_SCALE_MIN_PCT ||
+    n > SCREENSHOT_CAPTURE_UI_SCALE_MAX_PCT
+  ) {
+    throw new Error(
+      `UI scale must be ${SCREENSHOT_CAPTURE_UI_SCALE_MIN_PCT}–${SCREENSHOT_CAPTURE_UI_SCALE_MAX_PCT}, got ${n}`,
+    );
+  }
+  return n;
+}
+
+function envUiScalePercent(): number | undefined {
+  const raw = process.env[SCREENSHOT_UI_SCALE_ENV_KEY];
+  if (raw === undefined || raw === "") return undefined;
+  return parseUiScalePercent(raw.trim());
+}
+
+function minScreenshotBytes(
+  capture: ScreenshotCapture,
+  renderScale: number,
+) {
+  const pixelFactor = renderScale * renderScale;
   return Math.max(
     MIN_SCREENSHOT_BYTES,
     Math.min(
       MAX_SCREENSHOT_BYTES_FLOOR,
-      Math.floor((capture.width * capture.height * capture.scale) / 20),
+      Math.floor(
+        (capture.width * capture.height * capture.scale * pixelFactor) / 20,
+      ),
     ),
   );
 }
 
 /** 厳密下限ではなく slack をかけたしきい値（白飛び検知は維持しつつフレークを抑える） */
-function effectiveMinScreenshotBytes(capture: ScreenshotCapture) {
-  const raw = minScreenshotBytes(capture);
+function effectiveMinScreenshotBytes(
+  capture: ScreenshotCapture,
+  renderScale: number,
+) {
+  const raw = minScreenshotBytes(capture, renderScale);
   return Math.max(
     MIN_SCREENSHOT_BYTES,
     Math.floor(raw * SCREENSHOT_MIN_BYTES_SLACK),
   );
 }
 
-function parseCaptures(): readonly ScreenshotCapture[] {
-  const requested = process.argv.slice(2).filter((arg) => !arg.startsWith("-"));
-  if (requested.length === 0) return SCREENSHOT_CAPTURES;
+function parseCli(): {
+  captures: readonly ScreenshotCapture[];
+  renderScale: number;
+  uiScalePercent?: number;
+} {
+  const raw = process.argv.slice(2);
+  let renderScale = envRenderScale();
+  let uiScalePercent = envUiScalePercent();
+  const requested: string[] = [];
 
-  return requested.map((id) => {
-    const capture = findScreenshotCapture(id);
-    if (!capture) {
+  for (let i = 0; i < raw.length; i++) {
+    const arg = raw[i];
+    if (arg === "--scale" || arg === "-s") {
+      const next = raw[++i];
+      if (next === undefined) {
+        throw new Error(`${arg} requires a number (e.g. ${arg} 2)`);
+      }
+      renderScale = parsePositiveRenderScale(next);
+      continue;
+    }
+    const scaleEq = /^--scale=(.+)$/.exec(arg);
+    if (scaleEq) {
+      renderScale = parsePositiveRenderScale(scaleEq[1]);
+      continue;
+    }
+    if (arg === "--ui-scale") {
+      const next = raw[++i];
+      if (next === undefined) {
+        throw new Error(`${arg} requires integer percent (e.g. ${arg} 200)`);
+      }
+      uiScalePercent = parseUiScalePercent(next);
+      continue;
+    }
+    const uiEq = /^--ui-scale=(.+)$/.exec(arg);
+    if (uiEq) {
+      uiScalePercent = parseUiScalePercent(uiEq[1]);
+      continue;
+    }
+    if (arg.startsWith("-")) {
       throw new Error(
-        `Unknown screenshot capture "${id}". Available: ${SCREENSHOT_CAPTURES.map((item) => item.id).join(", ")}`,
+        `Unknown option "${arg}". Use --scale N (or -s N) for Hi-DPI capture, --ui-scale PCT for UI zoom.`,
       );
     }
-    return capture;
-  });
+    requested.push(arg);
+  }
+
+  const captures =
+    requested.length === 0
+      ? SCREENSHOT_CAPTURES
+      : requested.map((id) => {
+          const capture = findScreenshotCapture(id);
+          if (!capture) {
+            throw new Error(
+              `Unknown screenshot capture "${id}". Available: ${SCREENSHOT_CAPTURES.map((item) => item.id).join(", ")}`,
+            );
+          }
+          return capture;
+        });
+
+  return { captures, renderScale, uiScalePercent };
 }
 
 async function isServerReady(baseUrl: string): Promise<boolean> {
@@ -140,15 +255,45 @@ async function performCaptureActions(page: Page, capture: ScreenshotCapture) {
   }
 }
 
-async function captureOne(baseUrl: string, capture: ScreenshotCapture) {
+function resolveScreenshotUiScalePercent(
+  capture: ScreenshotCapture,
+  cliOrEnvUiScale?: number,
+): number {
+  return capture.uiScale ?? cliOrEnvUiScale ?? 100;
+}
+
+async function captureOne(
+  baseUrl: string,
+  capture: ScreenshotCapture,
+  renderScale: number,
+  defaultUiScalePercent?: number,
+) {
+  if (capture.uiScale != null) {
+    if (
+      !Number.isInteger(capture.uiScale) ||
+      capture.uiScale < SCREENSHOT_CAPTURE_UI_SCALE_MIN_PCT ||
+      capture.uiScale > SCREENSHOT_CAPTURE_UI_SCALE_MAX_PCT
+    ) {
+      throw new Error(
+        `Invalid uiScale ${capture.uiScale} for capture "${capture.id}" (must be integer ${SCREENSHOT_CAPTURE_UI_SCALE_MIN_PCT}–${SCREENSHOT_CAPTURE_UI_SCALE_MAX_PCT})`,
+      );
+    }
+  }
+
   const browser = await chromium.launch();
   try {
+    const effectiveDpr = capture.scale * renderScale;
     const page = await browser.newPage({
       viewport: { width: capture.width, height: capture.height },
-      deviceScaleFactor: capture.scale,
+      deviceScaleFactor: effectiveDpr,
     });
+    const uiScalePct = resolveScreenshotUiScalePercent(
+      capture,
+      defaultUiScalePercent,
+    );
+
     await page.addInitScript(
-      ({ captureId, panelId, presetId, theme }) => {
+      ({ captureId, panelId, presetId, theme, uiScale }) => {
         const workspacePath = "/dev/workspace";
         localStorage.setItem("grimodex:screenshot-mode", "true");
         localStorage.setItem("grimodex:screenshot-capture", captureId);
@@ -171,7 +316,7 @@ async function captureOne(baseUrl: string, capture: ScreenshotCapture) {
             lastActiveWorkspace: workspacePath,
             theme,
             uiLanguage: "ja",
-            uiScale: 1,
+            uiScale,
             showLauncherOnStartup: false,
             acceptedEulaVersion: "1.0",
             trustedWorkspaces: [workspacePath],
@@ -187,6 +332,7 @@ async function captureOne(baseUrl: string, capture: ScreenshotCapture) {
         panelId: capture.panelId,
         presetId: capture.presetId,
         theme: capture.theme,
+        uiScale: uiScalePct,
       },
     );
     await page.emulateMedia({ colorScheme: capture.theme });
@@ -227,28 +373,38 @@ async function captureOne(baseUrl: string, capture: ScreenshotCapture) {
     await page.screenshot({ path: outputPath, fullPage: false });
 
     const file = await stat(outputPath);
-    const minimumBytes = effectiveMinScreenshotBytes(capture);
+    const minimumBytes = effectiveMinScreenshotBytes(capture, renderScale);
     if (file.size < minimumBytes) {
       throw new Error(
         `Screenshot ${capture.output} is unexpectedly small (${file.size} bytes, expected at least ${minimumBytes})`,
       );
     }
-    console.log(`captured ${capture.output}`);
+    const scaleNote = renderScale !== 1 ? ` (scale=${renderScale})` : "";
+    const uiNote = uiScalePct !== 100 ? ` (ui-scale=${uiScalePct}%)` : "";
+    console.log(`captured ${capture.output}${scaleNote}${uiNote}`);
   } finally {
     await browser.close();
   }
 }
 
 async function main() {
-  const captures = parseCaptures();
+  const { captures, renderScale, uiScalePercent } = parseCli();
   const port = Number(process.env.SCREENSHOT_PORT ?? DEFAULT_PORT);
   const baseUrl = `http://127.0.0.1:${port}`;
   let server: ChildProcessWithoutNullStreams | undefined;
 
   try {
     server = await ensureServer(baseUrl, port);
+    if (renderScale !== 1) {
+      console.log(
+        `Screenshot render scale ${renderScale}x (devicePixelRatio ×${renderScale})`,
+      );
+    }
+    if (uiScalePercent != null && uiScalePercent !== 100) {
+      console.log(`Default screenshot UI scale ${uiScalePercent}%`);
+    }
     for (const capture of captures) {
-      await captureOne(baseUrl, capture);
+      await captureOne(baseUrl, capture, renderScale, uiScalePercent);
     }
   } finally {
     server?.kill();

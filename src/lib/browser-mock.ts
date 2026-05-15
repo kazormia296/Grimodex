@@ -15,6 +15,7 @@ import type {
   AgentMessagePayload,
   AgentToolDefinition,
 } from "@/features/chat/agent/agentTypes";
+import { isScreenshotStagingActive } from "@/screenshot-scenes/screenshotMode";
 
 const SCHEMA_DDL = `
   CREATE TABLE IF NOT EXISTS projects (
@@ -361,7 +362,7 @@ export async function createBrowserMock(): Promise<BrowserMock> {
   );
 
   seedBuiltinCodexTypes(db, now);
-  if (isScreenshotMode()) {
+  if (isScreenshotStagingActive()) {
     seedScreenshotWorkspace(db, now);
   }
 
@@ -681,14 +682,6 @@ export async function createBrowserMock(): Promise<BrowserMock> {
   return { invoke };
 }
 
-function isScreenshotMode(): boolean {
-  try {
-    return localStorage.getItem("grimodex:screenshot-mode") === "true";
-  } catch {
-    return false;
-  }
-}
-
 function proseDoc(lines: string[]): string {
   return JSON.stringify({
     type: "doc",
@@ -700,7 +693,7 @@ function proseDoc(lines: string[]): string {
 }
 
 function getScreenshotAnnotations(now: string) {
-  if (!isScreenshotMode()) return [];
+  if (!isScreenshotStagingActive()) return [];
   return [
     {
       id: "ann-akahimo-wet",
@@ -773,7 +766,7 @@ function getScreenshotAnnotations(now: string) {
 }
 
 function getScreenshotTrashItems(now: string) {
-  if (!isScreenshotMode()) return [];
+  if (!isScreenshotStagingActive()) return [];
   return [
     {
       id: "trash-scene-draft",

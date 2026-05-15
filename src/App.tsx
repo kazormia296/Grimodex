@@ -15,6 +15,7 @@ import { WorkspaceMenu } from "@/features/workspace/WorkspaceMenu";
 import { WorkspaceTrustDialog } from "@/features/workspace/WorkspaceTrustDialog";
 import { EulaConsentDialog } from "@/features/legal/EulaConsentDialog";
 import { useWorkspaceStore } from "@/features/workspace/store";
+import { useSyncUiScale } from "@/features/workspace/useSyncUiScale";
 import { SettingsDialog } from "@/features/settings/SettingsDialog";
 import type { SettingsCategory } from "@/features/settings/types";
 import { PanelToggleDropdown } from "@/features/layout/PanelToggleDropdown";
@@ -270,6 +271,8 @@ function App() {
   useEffect(() => {
     initialize();
   }, [initialize]);
+
+  useSyncUiScale();
 
   // Ctrl+Shift+D toggles debug log viewer
   const toggleDebugLog = useDebugLogStore((s) => s.toggle);

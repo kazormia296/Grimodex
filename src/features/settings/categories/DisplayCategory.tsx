@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { SettingSection } from "../components/SettingSection";
 import { SettingRow } from "../components/SettingRow";
@@ -9,6 +9,7 @@ import { useSettingBoolean, useSettingControl } from "../useSettingControl";
 import { useCodexHighlightStore } from "@/features/editor/codexHighlightStore";
 import { useWorkspaceStore } from "@/features/workspace/store";
 import { COLOR_THEMES, DEFAULT_COLOR_THEME } from "@/lib/colorThemes";
+import { getUiScaleMaxPercent } from "@/lib/uiScale";
 
 const COLOR_THEME_OPTIONS = COLOR_THEMES.map((t) => ({
   value: t.id,
@@ -44,6 +45,17 @@ export function DisplayCategory() {
   );
   const uiScale = useWorkspaceStore((s) => s.globalSettings?.uiScale ?? 100);
   const updateGlobal = useWorkspaceStore((s) => s.updateGlobalSettings);
+
+  const uiScaleSliderMax = getUiScaleMaxPercent();
+
+  /** True while dragging the UI scale slider with pointer — avoids zooming mid-drag */
+  const uiScalePointerDragRef = useRef(false);
+  const [uiScaleDraft, setUiScaleDraft] = useState(uiScale);
+
+  useEffect(() => {
+    if (uiScalePointerDragRef.current) return;
+    setUiScaleDraft(uiScale);
+  }, [uiScale]);
 
   // Workspace-specific settings (stored in workspace DB)
   const { value: codexHighlight } = useSettingControl(
@@ -120,16 +132,39 @@ export function DisplayCategory() {
             <input
               type="range"
               min={80}
-              max={150}
+              max={uiScaleSliderMax}
               step={5}
-              value={uiScale}
-              onChange={(e) =>
-                updateGlobal({ uiScale: Number(e.target.value) })
-              }
+              value={uiScaleDraft}
+              onPointerDown={(e) => {
+                uiScalePointerDragRef.current = true;
+                e.currentTarget.setPointerCapture(e.pointerId);
+              }}
+              onPointerUp={(e) => {
+                uiScalePointerDragRef.current = false;
+                try {
+                  e.currentTarget.releasePointerCapture(e.pointerId);
+                } catch {
+                  /* already released */
+                }
+                const next = Number(e.currentTarget.value);
+                setUiScaleDraft(next);
+                void updateGlobal({ uiScale: next });
+              }}
+              onPointerCancel={() => {
+                uiScalePointerDragRef.current = false;
+                setUiScaleDraft(uiScale);
+              }}
+              onChange={(e) => {
+                const next = Number(e.target.value);
+                setUiScaleDraft(next);
+                if (!uiScalePointerDragRef.current) {
+                  void updateGlobal({ uiScale: next });
+                }
+              }}
               className="w-32"
             />
             <span className="w-10 text-right text-sm text-muted-foreground">
-              {uiScale}%
+              {uiScaleDraft}%
             </span>
           </div>
         </SettingRow>

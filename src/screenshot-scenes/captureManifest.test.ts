@@ -2,9 +2,24 @@ import { describe, expect, it } from "vitest";
 import {
   DEFAULT_SCREENSHOT_DIR,
   SCREENSHOT_CAPTURES,
+  screenshotOutputFilename,
   type ScreenshotPanelId,
   type ScreenshotPresetId,
 } from "./captureManifest";
+
+describe("screenshotOutputFilename", () => {
+  it("strips trailing -WxH from capture ids", () => {
+    expect(screenshotOutputFilename("panel-editor-1080x890")).toBe(
+      "panel-editor.png",
+    );
+    expect(screenshotOutputFilename("preset-default-1920x1080")).toBe(
+      "preset-default.png",
+    );
+    expect(screenshotOutputFilename("panel-scenes-460x650")).toBe(
+      "panel-scenes.png",
+    );
+  });
+});
 
 describe("SCREENSHOT_CAPTURES", () => {
   it("defines every built-in layout preset at 1920x1080", () => {

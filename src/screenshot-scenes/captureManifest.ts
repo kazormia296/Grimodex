@@ -40,12 +40,28 @@ export interface ScreenshotCapture {
   theme: ScreenshotTheme;
   width: number;
   height: number;
+  /** devicePixelRatio 系（UI の uiScale / ％ズームとは別） */
   scale: number;
   output: string;
   actions?: readonly ScreenshotAction[];
+  /**
+   * アプリの UI スケール（%/整数）。staging では最大 500 まで許可される。
+   * 未指定時は `pnpm screenshot -- --ui-scale` または `SCREENSHOT_UI_SCALE`、`100` の順。
+   */
+  uiScale?: number;
 }
 
+/** capture-screenshots.ts の `--ui-scale` / `SCREENSHOT_UI_SCALE` 検証にも使用 */
+export const SCREENSHOT_CAPTURE_UI_SCALE_MIN_PCT = 80;
+/** WebView 系のズーム目安上限に合わせた staging 上限 */
+export const SCREENSHOT_CAPTURE_UI_SCALE_MAX_PCT = 500;
+
 export const DEFAULT_SCREENSHOT_DIR = "docs/screenshots/generated";
+
+/** `-123x456` 形式の末尾サイズを除いた PNG ファイル名（撮影 ID は従来どおり維持）。 */
+export function screenshotOutputFilename(captureId: string): string {
+  return `${captureId.replace(/-\d+x\d+$/, "")}.png`;
+}
 
 const SIZE_1080P = {
   theme: "dark",
@@ -164,35 +180,35 @@ export const SCREENSHOT_CAPTURES: readonly ScreenshotCapture[] = [
     id: "preset-default-1920x1080",
     kind: "preset",
     presetId: "builtin:default",
-    output: "preset-default-1920x1080.png",
+    output: screenshotOutputFilename("preset-default-1920x1080"),
     ...SIZE_1080P,
   },
   {
     id: "preset-plan-1920x1080",
     kind: "preset",
     presetId: "builtin:plan",
-    output: "preset-plan-1920x1080.png",
+    output: screenshotOutputFilename("preset-plan-1920x1080"),
     ...SIZE_1080P,
   },
   {
     id: "preset-chat-main-1920x1080",
     kind: "preset",
     presetId: "builtin:chat-main",
-    output: "preset-chat-main-1920x1080.png",
+    output: screenshotOutputFilename("preset-chat-main-1920x1080"),
     ...SIZE_1080P,
   },
   {
     id: "preset-review-1920x1080",
     kind: "preset",
     presetId: "builtin:review",
-    output: "preset-review-1920x1080.png",
+    output: screenshotOutputFilename("preset-review-1920x1080"),
     ...SIZE_1080P,
   },
   {
     id: "preset-codex-main-1920x1080",
     kind: "preset",
     presetId: "builtin:codex-main",
-    output: "preset-codex-main-1920x1080.png",
+    output: screenshotOutputFilename("preset-codex-main-1920x1080"),
     ...SIZE_1080P,
   },
   ...PANEL_CAPTURES.map((capture) => ({
@@ -200,7 +216,7 @@ export const SCREENSHOT_CAPTURES: readonly ScreenshotCapture[] = [
     kind: "panel" as const,
     theme: "dark" as const,
     scale: 1,
-    output: `${capture.id}.png`,
+    output: screenshotOutputFilename(capture.id),
   })),
 ] as const;
 
