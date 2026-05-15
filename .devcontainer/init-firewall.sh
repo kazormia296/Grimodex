@@ -43,7 +43,7 @@ iptables -A INPUT -p tcp --sport 22 -m state --state ESTABLISHED -j ACCEPT
 iptables -A INPUT -i lo -j ACCEPT
 iptables -A OUTPUT -o lo -j ACCEPT
 # Allow X11 forwarding to Docker host (VcXsrv on port 6000)
-DOCKER_HOST_IP=$(getent hosts host.docker.internal | awk '{print $1}')
+DOCKER_HOST_IP=$(getent hosts host.docker.internal | awk '{print $1}' || true)
 if [ -n "$DOCKER_HOST_IP" ]; then
     echo "Allowing X11 to Docker host: $DOCKER_HOST_IP"
     iptables -A OUTPUT -p tcp -d "$DOCKER_HOST_IP" --dport 6000 -j ACCEPT
@@ -80,6 +80,10 @@ done < <(echo "$gh_ranges" | jq -r '(.web + .api + .git)[]' | aggregate -q)
 # Resolve and add other allowed domains
 for domain in \
     "registry.npmjs.org" \
+    "auth.openai.com" \
+    "api.openai.com" \
+    "chatgpt.com" \
+    "platform.openai.com" \
     "api.anthropic.com" \
     "sentry.io" \
     "statsig.anthropic.com" \
@@ -96,7 +100,7 @@ for domain in \
     ips=$(dig +noall +answer A "$domain" | awk '$4 == "A" {print $5}')
     if [ -z "$ips" ]; then
         echo "WARNING: Failed to resolve $domain (may use CNAME chain), trying with +short..."
-        ips=$(dig +short A "$domain" | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$')
+        ips=$(dig +short A "$domain" | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' || true)
     fi
     if [ -z "$ips" ]; then
         echo "WARNING: Could not resolve $domain, skipping"
@@ -128,7 +132,7 @@ else
 fi
 
 # Get host IP from default route
-HOST_IP=$(ip route | grep default | cut -d" " -f3)
+HOST_IP=$(ip route | grep default | cut -d" " -f3 || true)
 if [ -z "$HOST_IP" ]; then
     echo "ERROR: Failed to detect host IP"
     exit 1

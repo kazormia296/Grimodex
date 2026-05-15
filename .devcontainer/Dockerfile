@@ -128,8 +128,11 @@ RUN sh -c "$(wget -O- https://github.com/deluan/zsh-in-docker/releases/download/
   -a "export PROMPT_COMMAND='history -a' && export HISTFILE=/commandhistory/.bash_history" \
   -x
 
-# Install Claude
-RUN pnpm add -g @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}
+# Install Claude. Keep package lifecycle scripts disabled, then run only Claude's
+# known installer to fetch the platform-native binary.
+RUN pnpm add -g --ignore-scripts @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION} && \
+  node "$(pnpm root -g)/@anthropic-ai/claude-code/install.cjs" && \
+  claude --version
 
 # Copy and set up firewall script
 COPY init-firewall.sh /usr/local/bin/
