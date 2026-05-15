@@ -27,8 +27,10 @@ function HChip({ children, hl, on }) {
 function HZBar({ items }) {
   return (
     <div style={{ display: "flex", borderTop: `2px solid ${HZ_INK}`, borderBottom: `2px solid ${HZ_INK}` }}>
-      {items.map((it, i) => (
-        <div key={i} style={{
+      {items.map((it, i) => {
+        const Component = it.href ? "a" : "div";
+        return (
+        <Component key={i} href={it.href} target={it.href ? "_blank" : undefined} rel={it.href ? "noreferrer" : undefined} style={{
           flex: it.k ? "0 0 auto" : 1,
           padding: "10px 18px",
           borderRight: i < items.length - 1 ? `2px solid ${HZ_INK}` : "none",
@@ -37,8 +39,10 @@ function HZBar({ items }) {
           background: it.k ? HZ_INK : it.hl ? HZ_HL : HZ_BG,
           color: it.k ? HZ_BG : HZ_INK,
           fontWeight: it.k ? 700 : 400,
-        }}>{it.t}</div>
-      ))}
+          textDecoration: "none",
+        }}>{it.t}</Component>
+        );
+      })}
     </div>
   );
 }
@@ -183,7 +187,16 @@ function LPVariantH() {
       const navHeight =
         document.querySelector("[data-hz-nav]")?.getBoundingClientRect().height ?? 0;
       const centeredX = window.innerWidth / 2 - (rect.left + rect.width / 2);
-      const finalY = Math.max(218, (window.innerHeight + navHeight) / 2 - (rect.top + rect.height / 2));
+      const groupRects = [
+        rect,
+        ...heroBits.map((element) => element.getBoundingClientRect()),
+      ];
+      const groupTop = Math.min(...groupRects.map((groupRect) => groupRect.top));
+      const groupBottom = Math.max(...groupRects.map((groupRect) => groupRect.bottom));
+      const groupHeight = groupBottom - groupTop;
+      const availableHeight = window.innerHeight - navHeight;
+      const centerCorrection = Math.min(96, Math.max(48, availableHeight * 0.065));
+      const finalY = navHeight + (availableHeight - groupHeight) / 2 - groupTop + centerCorrection;
 
       gsap.set(heroBits, { autoAlpha: 0, y: finalY + 28 });
       gsap.set(lines, {
@@ -278,11 +291,11 @@ function LPVariantH() {
 
     const goToPage = (direction) => {
       const pages = getPages();
-      if (pages.length === 0 || pagingLockRef.current) return;
+      if (pages.length === 0 || pagingLockRef.current) return false;
 
       const current = getCurrentIndex(pages);
       const next = Math.min(Math.max(current + direction, 0), pages.length - 1);
-      if (next === current) return;
+      if (next === current) return false;
 
       pagingLockRef.current = true;
       window.scrollTo({
@@ -291,24 +304,25 @@ function LPVariantH() {
       });
       window.setTimeout(() => {
         pagingLockRef.current = false;
-      }, HMotionOK() ? 1300 : 120);
+      }, HMotionOK() ? 720 : 120);
+      return true;
     };
 
     const onWheel = (event) => {
       if (Math.abs(event.deltaY) < 18 || Math.abs(event.deltaX) > Math.abs(event.deltaY)) return;
-      event.preventDefault();
-      goToPage(event.deltaY > 0 ? 1 : -1);
+      if (pagingLockRef.current) return;
+      if (goToPage(event.deltaY > 0 ? 1 : -1)) {
+        event.preventDefault();
+      }
     };
 
     const onKeyDown = (event) => {
       if (event.defaultPrevented) return;
       if (["ArrowDown", "PageDown", " "].includes(event.key)) {
-        event.preventDefault();
-        goToPage(1);
+        if (goToPage(1)) event.preventDefault();
       }
       if (["ArrowUp", "PageUp"].includes(event.key)) {
-        event.preventDefault();
-        goToPage(-1);
+        if (goToPage(-1)) event.preventDefault();
       }
     };
 
@@ -587,7 +601,7 @@ function LPVariantH() {
       </section>
 
       {/* THREE MOVES — D layout, G accents */}
-      <section data-hz-page id="moves" className="hz-page" style={{ borderTop: `2px solid ${HZ_INK}`, padding: "100px 48px", color: HZ_INK }}>
+      <section data-hz-page id="moves" className="hz-page" style={{ padding: "100px 48px", color: HZ_INK }}>
         <div style={{ display: "grid", gridTemplateColumns: "180px 1fr", gap: 40 }}>
           <HSectionMark tag="C / 03" kicker="THREE MOVES" />
           <div>
@@ -637,7 +651,7 @@ function LPVariantH() {
       </section>
 
       {/* WORKFLOW */}
-      <section data-hz-page id="workflow" className="hz-page" style={{ borderTop: `2px solid ${HZ_INK}`, padding: "100px 48px", color: HZ_INK }}>
+      <section data-hz-page id="workflow" className="hz-page" style={{ padding: "100px 48px", color: HZ_INK }}>
         <div style={{ display: "grid", gridTemplateColumns: "180px 1fr", gap: 40 }}>
           <HSectionMark tag="D / 04" kicker="WORKFLOW" />
           <div>
@@ -708,7 +722,7 @@ function LPVariantH() {
       </section>
 
       {/* USE CASES */}
-      <section data-hz-page id="for" className="hz-page" style={{ borderTop: `2px solid ${HZ_INK}`, padding: "100px 48px", color: HZ_INK }}>
+      <section data-hz-page id="for" className="hz-page" style={{ padding: "100px 48px", color: HZ_INK }}>
         <div style={{ display: "grid", gridTemplateColumns: "180px 1fr", gap: 40 }}>
           <HSectionMark tag="E / 05" kicker="FOR" />
           <div>
@@ -745,7 +759,7 @@ function LPVariantH() {
       </section>
 
       {/* CTA — D's massive scale, G's brutalist buttons */}
-      <section data-hz-page id="download" className="hz-page" style={{ borderTop: `4px solid ${HZ_INK}`, padding: "120px 48px", color: HZ_INK, textAlign: "center" }}>
+      <section data-hz-page id="download" className="hz-page" style={{ padding: "120px 48px", color: HZ_INK, textAlign: "center" }}>
         <h2 style={{ fontSize: 220, lineHeight: 0.86, fontWeight: 800, letterSpacing: -8, margin: 0 }}>
           WRITE<br />
           <span className="hz-mark" style={{ padding: "0 18px" }}>DIFFERENTLY.</span>
@@ -781,7 +795,7 @@ function LPVariantH() {
             { t: "GRIMODEX", k: true },
             { t: "BETA" },
             { t: "TAURI v2" },
-            { t: "GITHUB ↗" },
+            { t: "GITHUB ↗", href: "https://github.com/kazormia296/Grimodex" },
             { t: "DOCS ↗" },
             { t: "© 2026", hl: true },
           ]} />
