@@ -9,7 +9,7 @@ import { useSettingBoolean, useSettingControl } from "../useSettingControl";
 import { useCodexHighlightStore } from "@/features/editor/codexHighlightStore";
 import { useWorkspaceStore } from "@/features/workspace/store";
 import { COLOR_THEMES, DEFAULT_COLOR_THEME } from "@/lib/colorThemes";
-import { getUiScaleMaxPercent } from "@/lib/uiScale";
+import { clampUiScalePercent, getUiScaleMaxPercent } from "@/lib/uiScale";
 
 const COLOR_THEME_OPTIONS = COLOR_THEMES.map((t) => ({
   value: t.id,
@@ -47,15 +47,26 @@ export function DisplayCategory() {
   const updateGlobal = useWorkspaceStore((s) => s.updateGlobalSettings);
 
   const uiScaleSliderMax = getUiScaleMaxPercent();
+  const clampedUiScale = clampUiScalePercent(uiScale);
 
   /** True while dragging the UI scale slider with pointer — avoids zooming mid-drag */
   const uiScalePointerDragRef = useRef(false);
-  const [uiScaleDraft, setUiScaleDraft] = useState(uiScale);
+  const [uiScaleDraft, setUiScaleDraft] = useState(clampedUiScale);
+  /** Last value committed to the store. Guards against duplicate IPC writes when
+   *  `onPointerUp` and a trailing `onChange` both fire for the same release. */
+  const uiScaleCommittedRef = useRef(clampedUiScale);
 
   useEffect(() => {
     if (uiScalePointerDragRef.current) return;
-    setUiScaleDraft(uiScale);
-  }, [uiScale]);
+    setUiScaleDraft(clampedUiScale);
+    uiScaleCommittedRef.current = clampedUiScale;
+  }, [clampedUiScale]);
+
+  const commitUiScale = (next: number) => {
+    if (uiScaleCommittedRef.current === next) return;
+    uiScaleCommittedRef.current = next;
+    void updateGlobal({ uiScale: next });
+  };
 
   // Workspace-specific settings (stored in workspace DB)
   const { value: codexHighlight } = useSettingControl(
@@ -148,17 +159,17 @@ export function DisplayCategory() {
                 }
                 const next = Number(e.currentTarget.value);
                 setUiScaleDraft(next);
-                void updateGlobal({ uiScale: next });
+                commitUiScale(next);
               }}
               onPointerCancel={() => {
                 uiScalePointerDragRef.current = false;
-                setUiScaleDraft(uiScale);
+                setUiScaleDraft(clampedUiScale);
               }}
               onChange={(e) => {
                 const next = Number(e.target.value);
                 setUiScaleDraft(next);
                 if (!uiScalePointerDragRef.current) {
-                  void updateGlobal({ uiScale: next });
+                  commitUiScale(next);
                 }
               }}
               className="w-32"
